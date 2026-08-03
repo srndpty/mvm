@@ -2,11 +2,18 @@
 
 Windows 向けノンリニア動画編集ソフト。YouTube 向けの技術・数学解説動画を主対象とする。
 
-**現在 Phase 0（技術スパイク）の S0〜S1 まで実装済み。製品コードはまだ存在しない。**
+**現在 Phase 0（技術スパイク）の S0 / S1 / R0 / S2 / S4 まで実装済み。
+製品コードはまだ存在しない。**
 
 Phase 0 の目的は、MLT 7 を mvm の編集・プレビュー・書き出しエンジンとして
-採用できるかを判定することのみ。詳細は [docs/phase0-plan.md](docs/phase0-plan.md)、
-S1 までの実測結果は [docs/phase0-findings.md](docs/phase0-findings.md) を参照。
+採用できるかを判定することのみ。
+
+| ドキュメント | 内容 |
+| --- | --- |
+| [docs/phase0-plan.md](docs/phase0-plan.md) | 計画全体と exit criteria |
+| [docs/phase0-findings.md](docs/phase0-findings.md) | 実測結果。事実 / 推測 / 未検証を区別して記録 |
+| [docs/research/mlt-notes.md](docs/research/mlt-notes.md) | MLT の実装メモ（実際に動かして確かめた範囲） |
+| [docs/research/test-media-format.md](docs/research/test-media-format.md) | 検証素材とフレーム固有マーカーの仕様 |
 
 ## ツールチェーン
 
@@ -50,13 +57,60 @@ UCRT64 の gcc は依存 DLL を PATH から解決するため、これが無い
 MSYS2 UCRT64 シェル、または VSCode の統合ターミナル「MSYS2 UCRT64」からなら
 `cmake --preset ucrt64-release` を直接呼んでもよい。
 
+## 検証素材の生成
+
+自動テストは検証素材を必要とする。生成には UCRT64 版 FFmpeg を直接使う
+（ホストの `C:\tools` 版や winget 版へはフォールバックしない）。
+
+```powershell
+pwsh scripts/make-testmedia.ps1 -Mode Smoke       # 5 秒。自動検査用
+pwsh scripts/make-testmedia.ps1 -Mode Benchmark   # 60 秒。S7 以降の性能計測用
+```
+
+生成物は `tests/assets/<mode>/`（git 管理外）。
+映像にはフレーム固有マーカーが焼き込まれ、`mvm_bench decode --expect-marker` が
+要求フレームとの一致を機械判定する（OCR は使わない）。
+日本語・半角空白・全角空白・全角記号を含むパスへの複製も作られる（V10）。
+
+## テスト
+
+```powershell
+$env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
+cd build\ucrt64-release
+ctest --output-on-failure
+```
+
+素材が未生成のテストは実行されず、実行すべきコマンドが案内される。
+
 ## 動作確認
 
 ```powershell
 $env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
-.\build\ucrt64-release\bin\mvm_mlt_hello.exe   # MLT モジュール解決の確認 (exit 0 が成功)
-.\build\ucrt64-release\bin\mvm_qt_probe.exe    # Qt が UCRT64 版であることの確認
+cd build\ucrt64-release\bin
+
+.\mvm_mlt_hello.exe                       # MLT モジュール解決の確認 (exit 0 が成功)
+.\mvm_qt_probe.exe                        # Qt が UCRT64 版であることの確認
+
+.\mvm_bench.exe doctor                    # MLT ランタイムの健全性検査
+.\mvm_bench.exe probe <素材>              # MLT と ffprobe の解析結果を比較
+.\mvm_bench.exe decode <素材> --frame 137 --expect-marker
+.\mvm_bench.exe verify-media <manifest>
 ```
+
+`mvm_bench` の終了コード: `0`=成功 `1`=実行時エラー `2`=使い方の誤り `3`=検証不一致。
+
+## 再現性の検証 (R0)
+
+`third_party/pkgs` の凍結パッケージだけで環境を組み直せることを、
+**クリーンな MSYS2 ベース**（新規取得した base tarball）で検証する。
+既存環境のコピーでは凍結物の不足を検出できないため意味がない。
+
+```powershell
+pwsh scripts/verify-frozen-restore.ps1
+```
+
+既存の `C:\msys64` と `C:\Users\lambe\sdk\Qt\6.8.3` は変更しない。
+スクリプトはこれらを検証先に指定できないよう拒否する。
 
 ## 設計上の制約（Phase 0 全体で守る）
 
@@ -74,8 +128,11 @@ $env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
 | | |
 | --- | --- |
 | `cmake/` | ツールチェーン検証、MLT 探索 |
-| `scripts/` | bootstrap / freeze / build |
+| `scripts/` | bootstrap / freeze / build / 素材生成 / 復元検証 |
+| `src/util/` | UTF-8・wide 変換ヘルパ（Phase 0 スパイク用。製品 platform 層ではない） |
 | `src/media/mlt/` | MLT adapter（MLT ヘッダを include できる唯一の場所） |
 | `src/app/` | Qt スパイクシェル |
+| `tests/harness/` | `mvm_bench`（Qt 非依存の検証 CLI） |
+| `tests/assets/` | 生成された検証素材（git 管理外） |
 | `docs/` | 計画・所見・依存 lock |
-| `third_party/pkgs/` | 凍結 MSYS2 パッケージ（git 管理外） |
+| `third_party/pkgs/` | 凍結 MSYS2 パッケージと署名（git 管理外） |

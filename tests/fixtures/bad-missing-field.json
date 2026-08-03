@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "mode": "Fixture",
+  "assets": [
+    {
+      "id": "v1080p60_h264",
+      "relative_path": "../assets/smoke/v1080p60_h264.mp4",
+      "kind": "video",
+      "expected": {
+        "width": 1920,
+        "height": 1080,
+        "video_codec": "h264",
+        "fps_num": 60,
+        "fps_den": 1,
+        "frames": 300,
+        "sar_num": 1,
+        "sar_den": 1,
+        "duration_sec": 5.0,
+        "audio_codec": "aac",
+        "sample_rate": 48000,
+        "channels": 2,
+        "has_alpha": false
+      }
+    }
+  ]
+}

@@ -44,8 +44,10 @@ if ($LASTEXITCODE -ne 0 -or -not $installed) {
 
 Write-Host "対象: $($installed.Count) パッケージ"
 
-$copied  = 0
-$missing = @()
+$copied    = 0
+$sigCopied = 0
+$missing   = @()
+$noSig     = @()
 
 foreach ($line in $installed) {
     $parts = $line -split '\s+'
@@ -63,17 +65,37 @@ foreach ($line in $installed) {
     }
 
     $dest = Join-Path $FrozenDir $file.Name
-    if ((Test-Path $dest) -and -not $Force) { continue }
+    if (-not (Test-Path $dest) -or $Force) {
+        Copy-Item -Path $file.FullName -Destination $dest -Force
+        $copied++
+    }
 
-    Copy-Item -Path $file.FullName -Destination $dest -Force
-    $copied++
+    # 署名も一緒に退避する。
+    # 署名が無いと復元時に SigLevel=Never へ落とさざるを得ず、
+    # 「復元できた」ことの意味が弱くなる (改竄・破損を検出できない)。
+    $sig = "$($file.FullName).sig"
+    if (Test-Path $sig) {
+        $sigDest = "$dest.sig"
+        if (-not (Test-Path $sigDest) -or $Force) {
+            Copy-Item -Path $sig -Destination $sigDest -Force
+            $sigCopied++
+        }
+    } else {
+        $noSig += $file.Name
+    }
 }
 
 $total = (Get-ChildItem $FrozenDir -Filter '*.pkg.tar.zst' -ErrorAction SilentlyContinue |
           Measure-Object -Property Length -Sum).Sum
 
-Write-Host "`n退避しました: $copied 件 (新規)" -ForegroundColor Green
+Write-Host "`n退避しました: $copied 件 (新規パッケージ), $sigCopied 件 (新規署名)" -ForegroundColor Green
 Write-Host ("退避先の合計サイズ: {0:N1} MB" -f ($total / 1MB))
+
+if ($noSig) {
+    Write-Host "`n!! 署名が見つからないパッケージ: $($noSig.Count) 件" -ForegroundColor Yellow
+    Write-Host '   復元時にこれらは署名検証できません。' -ForegroundColor Yellow
+    $noSig | Select-Object -First 10 | ForEach-Object { Write-Host "   $_" -ForegroundColor Yellow }
+}
 
 if ($missing) {
     Write-Host "`n!! キャッシュに実体が無いパッケージ: $($missing.Count) 件" -ForegroundColor Yellow

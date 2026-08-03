@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "mode": "Fixture",
+  "assets": [
+    {
+      "id": "v1080p60_h264",
+      "relative_path": "../assets/smoke/v1080p60_h264.mp4",
+      "kind": "video",
+      "expected": {
+        "width": 1920,
+        "height": 1080,
+        "video_codec": "h264",
+        "pix_fmt": "yuv420p",
+        "fps_num": 60,
+        "fps_den": 1,
+        "frames": 300,
+        "sar_num": 1,
+        "sar_den": 1,
+        "duration_sec": 5.0,
+        "audio_codec": "aac",
+        "sample_rate": 48000,
+        "channels": 2,
+        "has_alpha": false
+      }
+    },
+    {
+      "id": "png_alpha",
+      "relative_path": "../assets/smoke/png_alpha.png",
+      "kind": "image",
+      "expected": {
+        "width": 512,
+        "height": 512,
+        "video_codec": "png",
+        "pix_fmt": "rgba",
+        "sar_num": 1,
+        "sar_den": 1,
+        "has_alpha": true,
+        "alpha_min_le": 5,
+        "alpha_max_ge": 250
+      }
+    }
+  ]
+}

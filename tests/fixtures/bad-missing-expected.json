@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "mode": "Fixture",
+  "assets": [
+    {
+      "id": "v1080p60_h264",
+      "relative_path": "../assets/smoke/v1080p60_h264.mp4",
+      "kind": "video"
+    }
+  ]
+}
