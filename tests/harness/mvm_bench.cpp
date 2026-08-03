@@ -24,6 +24,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -357,6 +358,74 @@ std::optional<std::string> readFileUtf8(const std::string& path)
 }
 
 // --------------------------------------------------------------------------
+// 有理数 (SAR / fps)
+// --------------------------------------------------------------------------
+// SAR は "1:1" と "2:2" のように等価な表現があるため、文字列比較してはいけない。
+// gcd で正規化してから比較する。
+
+struct Rational {
+    long long num = 0;
+    long long den = 0;
+    bool valid = false;
+
+    std::string str() const
+    {
+        if (!valid)
+            return "(未指定)";
+        return std::to_string(num) + "/" + std::to_string(den);
+    }
+    bool operator==(const Rational& o) const
+    {
+        return valid == o.valid && (!valid || (num == o.num && den == o.den));
+    }
+};
+
+long long gcdLL(long long a, long long b)
+{
+    a = a < 0 ? -a : a;
+    b = b < 0 ? -b : b;
+    while (b != 0) {
+        long long t = a % b;
+        a = b;
+        b = t;
+    }
+    return a;
+}
+
+Rational makeRational(long long n, long long d)
+{
+    Rational r;
+    // 0/0 や N/0 は「未指定」として扱う。ffprobe は SAR 不明時に
+    // 0:1 を返すことがあるので、それも未指定とする。
+    if (d == 0 || n == 0)
+        return r;
+    long long g = gcdLL(n, d);
+    if (g == 0)
+        return r;
+    r.num = n / g;
+    r.den = d / g;
+    if (r.den < 0) {
+        r.num = -r.num;
+        r.den = -r.den;
+    }
+    r.valid = true;
+    return r;
+}
+
+// ffprobe の "N:M" (SAR) / "N/M" (frame rate) の両方を受ける
+Rational parseRational(const std::string& s)
+{
+    if (s.empty() || s == "N/A")
+        return Rational{};
+    size_t sep = s.find_first_of(":/");
+    if (sep == std::string::npos)
+        return Rational{};
+    long long n = std::strtoll(s.substr(0, sep).c_str(), nullptr, 10);
+    long long d = std::strtoll(s.substr(sep + 1).c_str(), nullptr, 10);
+    return makeRational(n, d);
+}
+
+// --------------------------------------------------------------------------
 // ffprobe 実行
 // --------------------------------------------------------------------------
 // ホストの C:\tools や winget 版ではなく、UCRT64 版を必ず使う。
@@ -367,41 +436,102 @@ std::string ffprobePath()
     return std::string(MVM_FFPROBE_EXE);
 }
 
+// コマンドライン引数を CreateProcessW 用に quote する。
+// 引数中の " と、その直前の連続する \ をエスケープする必要がある
+// (Windows の標準的な引数解析規則)。
+std::wstring quoteArg(const std::wstring& arg)
+{
+    if (!arg.empty() && arg.find_first_of(L" \t\n\v\"") == std::wstring::npos)
+        return arg;
+
+    std::wstring out = L"\"";
+    for (size_t i = 0;; i++) {
+        size_t backslashes = 0;
+        while (i < arg.size() && arg[i] == L'\\') {
+            i++;
+            backslashes++;
+        }
+        if (i == arg.size()) {
+            out.append(backslashes * 2, L'\\');
+            break;
+        }
+        if (arg[i] == L'"') {
+            out.append(backslashes * 2 + 1, L'\\');
+        } else {
+            out.append(backslashes, L'\\');
+        }
+        out += arg[i];
+    }
+    out += L'"';
+    return out;
+}
+
+std::wstring toWide(const std::string& utf8)
+{
+    wchar_t* w = mvm_utf8_to_wide(utf8.c_str());
+    std::wstring out = w ? w : L"";
+    mvm_str_free(w);
+    return out;
+}
+
+// ffprobe を直接起動する。
+//
+// cmd.exe は経由しない。cmd.exe を挟むと、リダイレクトの記法や
+// ^ & | といった文字の解釈がもう一段入り、日本語や記号を含むパスで
+// 壊れ方が環境依存になる。stdout/stderr は一時ファイルのハンドルを
+// 直接渡して受け取る。
 std::optional<std::string> runFfprobe(const std::string& mediaPath)
 {
-    // 一時ファイル経由。パイプだと日本語引数の受け渡しで環境依存が出る。
+    static std::atomic<unsigned> counter{0};
     fs::path tmp = fs::temp_directory_path()
-                   / ("mvm_ffprobe_" + std::to_string(GetCurrentProcessId()) + ".json");
+                   / ("mvm_ffprobe_" + std::to_string(GetCurrentProcessId()) + "_"
+                      + std::to_string(counter++) + ".json");
 
-    std::wstring cmd = L"\"";
-    {
-        wchar_t* w = mvm_utf8_to_wide(ffprobePath().c_str());
-        cmd += w ? w : L"ffprobe";
-        mvm_str_free(w);
-    }
-    cmd += L"\" -hide_banner -loglevel error -print_format json -show_format -show_streams -- \"";
-    {
-        wchar_t* w = mvm_utf8_to_wide(mediaPath.c_str());
-        cmd += w ? w : L"";
-        mvm_str_free(w);
-    }
-    cmd += L"\" > \"" + tmp.wstring() + L"\" 2>nul";
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE; // 子プロセスへ継承させる
 
-    std::wstring full = L"cmd.exe /C \"" + cmd + L"\"";
+    HANDLE hOut = CreateFileW(tmp.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &sa, CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_TEMPORARY, nullptr);
+    if (hOut == INVALID_HANDLE_VALUE)
+        return std::nullopt;
+
+    // 引数は自前で quote する。ffprobe 実行ファイル名も含めて 1 本の
+    // コマンドラインに組む (lpApplicationName は別途フルパスで渡す)。
+    std::wstring exe = toWide(ffprobePath());
+    std::wstring cmdline = quoteArg(exe);
+    for (const wchar_t* opt : {L"-hide_banner", L"-loglevel", L"error", L"-print_format", L"json",
+                               L"-show_format", L"-show_streams", L"--"}) {
+        cmdline += L' ';
+        cmdline += opt;
+    }
+    cmdline += L' ';
+    cmdline += quoteArg(toWide(mediaPath));
 
     STARTUPINFOW si{};
     si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_HIDE;
-    PROCESS_INFORMATION pi{};
+    si.hStdOutput = hOut;
+    si.hStdError = hOut; // 診断も同じ先へ。ffprobe は error 以外を出さない設定
+    si.hStdInput = nullptr;
 
-    std::vector<wchar_t> buf(full.begin(), full.end());
+    PROCESS_INFORMATION pi{};
+    std::vector<wchar_t> buf(cmdline.begin(), cmdline.end());
     buf.push_back(L'\0');
 
-    if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr,
-                        nullptr, &si, &pi)) {
+    BOOL started = CreateProcessW(exe.c_str(), buf.data(), nullptr, nullptr,
+                                  /*bInheritHandles=*/TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si,
+                                  &pi);
+    CloseHandle(hOut);
+
+    if (!started) {
+        std::error_code ec;
+        fs::remove(tmp, ec);
+        logMsg("ffprobe を起動できません: " + ffprobePath());
         return std::nullopt;
     }
+
     WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD code = 1;
     GetExitCodeProcess(pi.hProcess, &code);
@@ -409,8 +539,11 @@ std::optional<std::string> runFfprobe(const std::string& mediaPath)
     CloseHandle(pi.hThread);
 
     std::ifstream f(tmp, std::ios::binary);
-    if (!f)
+    if (!f) {
+        std::error_code ec;
+        fs::remove(tmp, ec);
         return std::nullopt;
+    }
     std::ostringstream ss;
     ss << f.rdbuf();
     f.close();
@@ -675,6 +808,9 @@ int cmdDoctor(const Args& a)
     int wantH = (int) std::strtol(a.get("expect-height", "1080").c_str(), nullptr, 10);
     int wantFpsNum = (int) std::strtol(a.get("expect-fps-num", "60").c_str(), nullptr, 10);
     int wantFpsDen = (int) std::strtol(a.get("expect-fps-den", "1").c_str(), nullptr, 10);
+    // SAR も既定で照合する。取り違えると V12 で「なぜか横に伸びる」形で表面化する。
+    int wantSarNum = (int) std::strtol(a.get("expect-sar-num", "1").c_str(), nullptr, 10);
+    int wantSarDen = (int) std::strtol(a.get("expect-sar-den", "1").c_str(), nullptr, 10);
 
     if (!initMlt())
         return kExitError;
@@ -684,7 +820,7 @@ int cmdDoctor(const Args& a)
     report.data_dir = gDataDir.c_str();
 
     int issues = mvm_mlt_doctor_run(profileName.c_str(), wantW, wantH, wantFpsNum, wantFpsDen,
-                                   &report);
+                                   wantSarNum, wantSarDen, &report);
 
     if (a.has("json")) {
         std::string out = a.get("json");
@@ -767,12 +903,33 @@ int cmdProbe(const Args& a)
                        && (ff.container.find("image2") != std::string::npos
                            || ff.container.find("png") != std::string::npos));
 
+    // MLT SAR は profile 由来。ffprobe SAR は "1:1" 形式の文字列。
+    // どちらも gcd で正規化してから比較する。
+    Rational mltSar = makeRational(mlt.sar_num, mlt.sar_den);
+    Rational ffSar = parseRational(ff.sar);
+
     if (rc == 0 && ff.ok) {
-        if (ff.hasVideo) {
+        // ストリームの有無そのものを比較する。
+        // 「MLT は音声を見つけられなかったが ffprobe は見つけた」という
+        // 食い違いは、これを比較しないと最後まで表面化しない。
+        if (mlt.has_video != (ff.hasVideo ? 1 : 0))
+            mismatches.push_back(
+                {"has_video", mlt.has_video ? "true" : "false", ff.hasVideo ? "true" : "false"});
+        if (mlt.has_audio != (ff.hasAudio ? 1 : 0))
+            mismatches.push_back(
+                {"has_audio", mlt.has_audio ? "true" : "false", ff.hasAudio ? "true" : "false"});
+
+        if (ff.hasVideo && mlt.has_video) {
             cmpStr("video_codec", mlt.video_codec, ff.videoCodec);
+            cmpStr("pix_fmt", mlt.pix_fmt, ff.pixFmt);
             cmpInt("width", mlt.width, ff.width);
             cmpInt("height", mlt.height, ff.height);
-            // 静止画は ffprobe が既定の 25/1 を返し、MLT は profile 由来の値を返す。
+
+            // SAR は静止画でも意味を持つ (profile 由来でも 1/1 であるべき)
+            if (!(mltSar == ffSar))
+                mismatches.push_back({"sample_aspect_ratio", mltSar.str(), ffSar.str()});
+
+            // 静止画は ffprobe が既定の 25/1 を返し、MLT は length を INT_MAX とする。
             // 比較しても意味が無いので明示的に除外する (黙って丸めるのではなく除外)。
             if (!isImage) {
                 cmpInt("fps_num", mlt.fps_num, ff.fpsNum);
@@ -780,7 +937,7 @@ int cmdProbe(const Args& a)
                 cmpInt("frame_count", mlt.frame_count, ff.frameCount);
             }
         }
-        if (ff.hasAudio) {
+        if (ff.hasAudio && mlt.has_audio) {
             cmpStr("audio_codec", mlt.audio_codec, ff.audioCodec);
             cmpInt("sample_rate", mlt.sample_rate, ff.sampleRate);
             cmpInt("channels", mlt.channels, ff.channels);
@@ -810,7 +967,11 @@ int cmdProbe(const Args& a)
     js << "  \"ffprobe_ok\": " << (ff.ok ? "true" : "false") << ",\n";
     js << "  \"is_image\": " << (isImage ? "true" : "false") << ",\n";
     js << "  \"duration_tolerance_sec\": " << kDurationToleranceSec << ",\n";
-    js << "  \"mlt\": { \"video_codec\": \"" << jsonEscape(mlt.video_codec) << "\", \"audio_codec\": \""
+    js << "  \"sar_normalized\": { \"mlt\": \"" << mltSar.str() << "\", \"ffprobe\": \""
+       << ffSar.str() << "\" },\n";
+    js << "  \"mlt\": { \"has_video\": " << (mlt.has_video ? "true" : "false")
+       << ", \"has_audio\": " << (mlt.has_audio ? "true" : "false") << ", \"video_codec\": \""
+       << jsonEscape(mlt.video_codec) << "\", \"audio_codec\": \""
        << jsonEscape(mlt.audio_codec) << "\", \"pix_fmt\": \"" << jsonEscape(mlt.pix_fmt)
        << "\", \"width\": " << mlt.width << ", \"height\": " << mlt.height
        << ", \"fps_num\": " << mlt.fps_num << ", \"fps_den\": " << mlt.fps_den
@@ -822,8 +983,10 @@ int cmdProbe(const Args& a)
        << ", \"sample_rate\": " << mlt.sample_rate << ", \"channels\": " << mlt.channels
        << ", \"has_alpha\": " << (mlt.has_alpha ? "true" : "false")
        << ", \"alpha_min\": " << mlt.alpha_min << ", \"alpha_max\": " << mlt.alpha_max << " },\n";
-    js << "  \"ffprobe\": { \"video_codec\": \"" << jsonEscape(ff.videoCodec)
-       << "\", \"audio_codec\": \"" << jsonEscape(ff.audioCodec) << "\", \"pix_fmt\": \""
+    js << "  \"ffprobe\": { \"has_video\": " << (ff.hasVideo ? "true" : "false")
+       << ", \"has_audio\": " << (ff.hasAudio ? "true" : "false") << ", \"video_codec\": \""
+       << jsonEscape(ff.videoCodec) << "\", \"audio_codec\": \"" << jsonEscape(ff.audioCodec)
+       << "\", \"pix_fmt\": \""
        << jsonEscape(ff.pixFmt) << "\", \"container\": \"" << jsonEscape(ff.container)
        << "\", \"width\": " << ff.width << ", \"height\": " << ff.height
        << ", \"fps_num\": " << ff.fpsNum << ", \"fps_den\": " << ff.fpsDen
@@ -977,9 +1140,29 @@ int cmdVerifyMedia(const Args& a)
         return kExitError;
     }
 
+    // --- manifest 自体の妥当性検査 ---
+    // 壊れた manifest を「検証対象 0 件で成功」にしてしまうと、
+    // このコマンド全体が無意味になる。構造から先に確かめる。
+    constexpr long long kSupportedSchema = 1;
+
+    auto* schema = root->find("schema_version");
+    if (!schema || schema->type != JsonValue::Type::Number) {
+        logMsg("manifest に schema_version がありません: " + manifestPath);
+        return kExitError;
+    }
+    if (schema->asInt() != kSupportedSchema) {
+        logMsg("manifest の schema_version が対応外です: " + std::to_string(schema->asInt())
+               + " (対応: " + std::to_string(kSupportedSchema) + ")");
+        return kExitError;
+    }
+
     auto* assets = root->find("assets");
     if (!assets || assets->type != JsonValue::Type::Array) {
         logMsg("manifest に assets がありません");
+        return kExitError;
+    }
+    if (assets->arr.empty()) {
+        logMsg("manifest の assets が空です");
         return kExitError;
     }
 
@@ -989,14 +1172,49 @@ int cmdVerifyMedia(const Args& a)
         return kExitError;
 
     int checked = 0, failed = 0;
+    std::map<std::string, int> seenIds;
+
+    static const std::vector<std::string> kValidKinds = {"video", "image", "audio"};
 
     for (const auto& asset : assets->arr) {
+        checked++;
+
+        // 必須フィールドの欠落は、その asset を黙って飛ばすのではなく失敗にする。
+        // 飛ばすと「検証したつもり」になる。
         auto* idv = asset.find("id");
         auto* relv = asset.find("relative_path");
-        if (!idv || !relv)
-            continue;
+        auto* kindv = asset.find("kind");
+        auto* expected = asset.find("expected");
 
-        std::string id = idv->asString();
+        std::vector<std::string> schemaProblems;
+        if (!idv || idv->type != JsonValue::Type::String || idv->asString().empty())
+            schemaProblems.push_back("id が無いか文字列でない");
+        if (!relv || relv->type != JsonValue::Type::String || relv->asString().empty())
+            schemaProblems.push_back("relative_path が無いか文字列でない");
+        if (!kindv || kindv->type != JsonValue::Type::String)
+            schemaProblems.push_back("kind が無いか文字列でない");
+        if (!expected || expected->type != JsonValue::Type::Object)
+            schemaProblems.push_back("expected が無いかオブジェクトでない");
+
+        std::string id = idv ? idv->asString() : "(id 無し)";
+        std::string kind = kindv ? kindv->asString() : "";
+
+        if (kindv
+            && std::find(kValidKinds.begin(), kValidKinds.end(), kind) == kValidKinds.end()) {
+            schemaProblems.push_back("未知の kind: '" + kind + "'");
+        }
+
+        if (idv && ++seenIds[id] > 1)
+            schemaProblems.push_back("id が重複しています");
+
+        if (!schemaProblems.empty()) {
+            std::printf("  FAIL %-22s (manifest の構造)\n", id.c_str());
+            for (const auto& p : schemaProblems)
+                std::printf("         %s\n", p.c_str());
+            failed++;
+            continue;
+        }
+
         std::string rel = relv->asString();
 
         // relative_path は manifest 生成時の Windows 形式 (バックスラッシュ) を含む
@@ -1006,16 +1224,11 @@ int cmdVerifyMedia(const Args& a)
         std::string fullStr = fullUtf8 ? fullUtf8 : "";
         mvm_str_free(fullUtf8);
 
-        checked++;
-
         if (!fs::exists(full)) {
             std::printf("  FAIL %-22s ファイルがありません: %s\n", id.c_str(), fullStr.c_str());
             failed++;
             continue;
         }
-
-        auto* expected = asset.find("expected");
-        std::string kind = asset.find("kind") ? asset.find("kind")->asString() : "";
 
         MvmMltProbeResult r{};
         if (mvm_mlt_probe_file(fullStr.c_str(), &r) != 0) {
@@ -1026,54 +1239,121 @@ int cmdVerifyMedia(const Args& a)
 
         std::vector<std::string> problems;
 
-        if (expected) {
-            auto expInt = [&](const char* key) -> long long {
-                auto* v = expected->find(key);
-                return v ? v->asInt() : 0;
-            };
-            auto expStr = [&](const char* key) -> std::string {
-                auto* v = expected->find(key);
-                return v ? v->asString() : "";
-            };
+        // expected のフィールドは「無ければ 0 とみなす」のではなく、
+        // 「無ければ検証しない」と「必須」を区別する。
+        auto expHas = [&](const char* key) { return expected->find(key) != nullptr; };
+        auto expInt = [&](const char* key) -> long long {
+            auto* v = expected->find(key);
+            return v ? v->asInt() : 0;
+        };
+        auto expStr = [&](const char* key) -> std::string {
+            auto* v = expected->find(key);
+            return v ? v->asString() : "";
+        };
+        auto expDouble = [&](const char* key) -> double {
+            auto* v = expected->find(key);
+            return v ? v->asDouble() : 0.0;
+        };
+        auto require = [&](const char* key) {
+            if (!expHas(key))
+                problems.push_back(std::string("expected に必須フィールド '") + key
+                                   + "' がありません");
+        };
 
-            if (kind == "video") {
-                if (r.width != expInt("width"))
-                    problems.push_back("width " + std::to_string(r.width) + " != "
-                                       + std::to_string(expInt("width")));
-                if (r.height != expInt("height"))
-                    problems.push_back("height " + std::to_string(r.height) + " != "
-                                       + std::to_string(expInt("height")));
-                if (r.video_codec != expStr("video_codec"))
-                    problems.push_back("video_codec " + std::string(r.video_codec) + " != "
-                                       + expStr("video_codec"));
-                // smoke 素材は CFR なので fps と frame count は完全一致を要求する
-                if (r.fps_num != expInt("fps_num") || r.fps_den != expInt("fps_den"))
-                    problems.push_back("fps " + std::to_string(r.fps_num) + "/"
-                                       + std::to_string(r.fps_den) + " != "
-                                       + std::to_string(expInt("fps_num")) + "/"
-                                       + std::to_string(expInt("fps_den")));
-                if (r.frame_count != expInt("frames"))
-                    problems.push_back("frame_count " + std::to_string(r.frame_count) + " != "
-                                       + std::to_string(expInt("frames")));
+        // kind 別に必須フィールドを定める。欠けていれば失敗にする。
+        if (kind == "video") {
+            for (const char* k : {"width", "height", "video_codec", "pix_fmt", "fps_num", "fps_den",
+                                  "frames", "sar_num", "sar_den", "duration_sec"})
+                require(k);
+        } else if (kind == "image") {
+            for (const char* k : {"width", "height", "video_codec", "pix_fmt", "sar_num", "sar_den"})
+                require(k);
+        } else if (kind == "audio") {
+            for (const char* k : {"audio_codec", "sample_rate", "channels", "duration_sec"})
+                require(k);
+        }
+
+        if (kind == "video" || kind == "image") {
+            if (!r.has_video)
+                problems.push_back("映像ストリームがありません");
+
+            if (expHas("width") && r.width != expInt("width"))
+                problems.push_back("width " + std::to_string(r.width) + " != "
+                                   + std::to_string(expInt("width")));
+            if (expHas("height") && r.height != expInt("height"))
+                problems.push_back("height " + std::to_string(r.height) + " != "
+                                   + std::to_string(expInt("height")));
+            if (expHas("video_codec") && r.video_codec != expStr("video_codec"))
+                problems.push_back("video_codec " + std::string(r.video_codec) + " != "
+                                   + expStr("video_codec"));
+            if (expHas("pix_fmt") && r.pix_fmt != expStr("pix_fmt"))
+                problems.push_back("pix_fmt " + std::string(r.pix_fmt) + " != "
+                                   + expStr("pix_fmt"));
+
+            // SAR は gcd で正規化して比較する
+            if (expHas("sar_num") && expHas("sar_den")) {
+                Rational got = makeRational(r.sar_num, r.sar_den);
+                Rational want = makeRational(expInt("sar_num"), expInt("sar_den"));
+                if (!(got == want))
+                    problems.push_back("sample_aspect_ratio " + got.str() + " != " + want.str());
             }
+        }
 
-            if (!expStr("audio_codec").empty()) {
-                if (r.audio_codec != expStr("audio_codec"))
-                    problems.push_back("audio_codec " + std::string(r.audio_codec) + " != "
-                                       + expStr("audio_codec"));
-                if (r.sample_rate != expInt("sample_rate"))
-                    problems.push_back("sample_rate " + std::to_string(r.sample_rate) + " != "
-                                       + std::to_string(expInt("sample_rate")));
-                if (r.channels != expInt("channels"))
-                    problems.push_back("channels " + std::to_string(r.channels) + " != "
-                                       + std::to_string(expInt("channels")));
+        if (kind == "video") {
+            // smoke 素材は CFR なので fps と frame count は完全一致を要求する
+            if (expHas("fps_num") && expHas("fps_den")
+                && (r.fps_num != expInt("fps_num") || r.fps_den != expInt("fps_den")))
+                problems.push_back("fps " + std::to_string(r.fps_num) + "/"
+                                   + std::to_string(r.fps_den) + " != "
+                                   + std::to_string(expInt("fps_num")) + "/"
+                                   + std::to_string(expInt("fps_den")));
+            if (expHas("frames") && r.frame_count != expInt("frames"))
+                problems.push_back("frame_count " + std::to_string(r.frame_count) + " != "
+                                   + std::to_string(expInt("frames")));
+        }
+
+        // duration。静止画は length が INT_MAX なので対象外。
+        if (kind != "image" && expHas("duration_sec")) {
+            double want = expDouble("duration_sec");
+            if (r.is_unbounded_length) {
+                problems.push_back("尺が無限 (INT_MAX) です。duration を検証できません");
+            } else if (std::fabs(r.duration_sec - want) > kDurationToleranceSec) {
+                problems.push_back("duration_sec " + std::to_string(r.duration_sec) + " != "
+                                   + std::to_string(want) + " (許容差 "
+                                   + std::to_string(kDurationToleranceSec) + ")");
             }
+        }
 
-            auto* alphaV = expected->find("has_alpha");
-            if (alphaV && alphaV->asBool() && !r.has_alpha) {
+        if (kind == "audio" || (expHas("audio_codec") && !expStr("audio_codec").empty())) {
+            if (!r.has_audio)
+                problems.push_back("音声ストリームがありません");
+            if (expHas("audio_codec") && r.audio_codec != expStr("audio_codec"))
+                problems.push_back("audio_codec " + std::string(r.audio_codec) + " != "
+                                   + expStr("audio_codec"));
+            if (expHas("sample_rate") && r.sample_rate != expInt("sample_rate"))
+                problems.push_back("sample_rate " + std::to_string(r.sample_rate) + " != "
+                                   + std::to_string(expInt("sample_rate")));
+            if (expHas("channels") && r.channels != expInt("channels"))
+                problems.push_back("channels " + std::to_string(r.channels) + " != "
+                                   + std::to_string(expInt("channels")));
+        }
+
+        // アルファ。has_alpha の真偽だけでなく、実測した値域まで検証する。
+        // pix_fmt が rgba でも中身が全て 255 ならアルファは死んでいる。
+        auto* alphaV = expected->find("has_alpha");
+        if (alphaV && alphaV->asBool()) {
+            if (!r.has_alpha) {
                 problems.push_back("alpha が失われています (alpha_min=" + std::to_string(r.alpha_min)
                                    + " alpha_max=" + std::to_string(r.alpha_max) + ")");
             }
+            if (expHas("alpha_min_le") && r.alpha_min > expInt("alpha_min_le"))
+                problems.push_back("alpha_min " + std::to_string(r.alpha_min) + " > "
+                                   + std::to_string(expInt("alpha_min_le"))
+                                   + " (透明な画素が見つかりません)");
+            if (expHas("alpha_max_ge") && r.alpha_max < expInt("alpha_max_ge"))
+                problems.push_back("alpha_max " + std::to_string(r.alpha_max) + " < "
+                                   + std::to_string(expInt("alpha_max_ge"))
+                                   + " (不透明な画素が見つかりません)");
         }
 
         if (problems.empty()) {

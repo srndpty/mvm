@@ -210,6 +210,43 @@ PNG と WAV は非圧縮または可逆なので、実際には hash も安定�
 
 `mvm_bench verify-media <manifest>` がこれを期待値として検証する。
 
+### `expected` の必須フィールド
+
+kind ごとに必須フィールドが決まっている。欠けていれば**失敗**とする
+（黙って検証を飛ばすと「検証したつもり」になる）。
+
+| kind | 必須フィールド |
+| --- | --- |
+| `video` | `width` `height` `video_codec` `pix_fmt` `fps_num` `fps_den` `frames` `sar_num` `sar_den` `duration_sec` |
+| `image` | `width` `height` `video_codec` `pix_fmt` `sar_num` `sar_den` |
+| `audio` | `audio_codec` `sample_rate` `channels` `duration_sec` |
+
+`has_alpha` が真の場合は `alpha_min_le` / `alpha_max_ge` で値域も検証できる。
+
+manifest 自体についても以下を検証する。いずれも失敗にする。
+
+- `schema_version` が存在し、対応する値であること
+- `assets` が存在し、空でないこと
+- 各 asset に `id` / `relative_path` / `kind` / `expected` があること
+- `kind` が `video` / `image` / `audio` のいずれかであること
+- `id` が重複していないこと
+
+### 破損・退化素材（`_corrupt/`）
+
+`verify-media` の対象ではない。`probe` / `decode` が
+これらを成功扱いしないことを CTest で確認するために置く。
+
+| ファイル | 内容 |
+| --- | --- |
+| `zero.mp4` | 0 バイト |
+| `random.mp4` | ランダムなバイト列 64KB（固定 seed で決定論的） |
+| `truncated.mp4` | `v1080p60_h264.mp4` の先頭 20% |
+| `text.mp4` | 拡張子だけ mp4 のテキスト |
+| `subtitle_only.mp4` | コンテナは正当だが映像も音声も無い（字幕トラックのみ） |
+
+`subtitle_only.mp4` は破損していない。「読めるが使えない」入力であり、
+壊れたバイト列とは別の失敗経路を通る。ユーザーが実際に投入しうる形でもある。
+
 ---
 
 ## FFmpeg の固定

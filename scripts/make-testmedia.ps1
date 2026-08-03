@@ -150,6 +150,7 @@ $Assets = @(
         Id = 'v1080p60_h264'; File = 'v1080p60_h264.mp4'; Kind = 'video'
         Expect = @{ width = 1920; height = 1080; video_codec = 'h264'; pix_fmt = 'yuv420p'
                     fps_num = 60; fps_den = 1; frames = $ExpectedFrames
+                    sar_num = 1; sar_den = 1; duration_sec = $Duration
                     audio_codec = 'aac'; sample_rate = 48000; channels = 2; has_alpha = $false }
         Args = { New-VideoArgs -Width 1920 -Height 1080 -VCodec 'libx264' -PixFmt 'yuv420p' `
                                -Preset 'medium' -Output $args[0] }
@@ -158,6 +159,7 @@ $Assets = @(
         Id = 'v1080p60_hevc'; File = 'v1080p60_hevc.mp4'; Kind = 'video'
         Expect = @{ width = 1920; height = 1080; video_codec = 'hevc'; pix_fmt = 'yuv420p'
                     fps_num = 60; fps_den = 1; frames = $ExpectedFrames
+                    sar_num = 1; sar_den = 1; duration_sec = $Duration
                     audio_codec = 'aac'; sample_rate = 48000; channels = 2; has_alpha = $false }
         Args = { New-VideoArgs -Width 1920 -Height 1080 -VCodec 'libx265' -PixFmt 'yuv420p' `
                                -Preset 'medium' -Output $args[0] }
@@ -166,6 +168,7 @@ $Assets = @(
         Id = 'v4k60_h264'; File = 'v4k60_h264.mp4'; Kind = 'video'
         Expect = @{ width = 3840; height = 2160; video_codec = 'h264'; pix_fmt = 'yuv420p'
                     fps_num = 60; fps_den = 1; frames = $ExpectedFrames
+                    sar_num = 1; sar_den = 1; duration_sec = $Duration
                     audio_codec = 'aac'; sample_rate = 48000; channels = 2; has_alpha = $false }
         Args = { New-VideoArgs -Width 3840 -Height 2160 -VCodec 'libx264' -PixFmt 'yuv420p' `
                                -Preset 'veryfast' -Output $args[0] }
@@ -174,15 +177,20 @@ $Assets = @(
         Id = 'v4k60_hevc10'; File = 'v4k60_hevc10.mp4'; Kind = 'video'
         Expect = @{ width = 3840; height = 2160; video_codec = 'hevc'; pix_fmt = 'yuv420p10le'
                     fps_num = 60; fps_den = 1; frames = $ExpectedFrames
+                    sar_num = 1; sar_den = 1; duration_sec = $Duration
                     audio_codec = 'aac'; sample_rate = 48000; channels = 2; has_alpha = $false }
         Args = { New-VideoArgs -Width 3840 -Height 2160 -VCodec 'libx265' -PixFmt 'yuv420p10le' `
                                -Preset 'veryfast' -Output $args[0] }
     },
     @{
         Id = 'png_alpha'; File = 'png_alpha.png'; Kind = 'image'
+        # アルファは (X+Y)*255/(W+H) のグラデーションなので、
+        # 透明 (0 付近) と不透明 (253) の両方が必ず含まれる。
+        # pix_fmt が rgba でも中身が全て 255 ならアルファは死んでいるので、
+        # 実測値域まで検証する。
         Expect = @{ width = 512; height = 512; video_codec = 'png'; pix_fmt = 'rgba'
-                    fps_num = 0; fps_den = 0; frames = 1
-                    audio_codec = ''; sample_rate = 0; channels = 0; has_alpha = $true }
+                    sar_num = 1; sar_den = 1
+                    has_alpha = $true; alpha_min_le = 5; alpha_max_ge = 250 }
         Args = {
             # アルファは左上から右下へのグラデーション。
             # 完全不透明・完全透明・中間の全てを含むので、
@@ -200,9 +208,8 @@ $Assets = @(
     },
     @{
         Id = 'wav_48k'; File = 'wav_48k.wav'; Kind = 'audio'
-        Expect = @{ width = 0; height = 0; video_codec = ''; pix_fmt = ''
-                    fps_num = 0; fps_den = 0; frames = 0
-                    audio_codec = 'pcm_s16le'; sample_rate = 48000; channels = 2; has_alpha = $false }
+        Expect = @{ audio_codec = 'pcm_s16le'; sample_rate = 48000; channels = 2
+                    duration_sec = $Duration; has_alpha = $false }
         Args = {
             @(
                 '-hide_banner', '-y', '-loglevel', 'error', '-nostdin'
@@ -335,6 +342,52 @@ foreach ($c in $JpCopies) {
 $entries += $jpEntries
 
 Write-Host "  日本語パスへコピー: $($jpEntries.Count) 件 -> $JpRelDir" -ForegroundColor Green
+
+# --- 破損素材 (negative test 用) --------------------------------------------
+# MLT は開けなかった素材でも producer を返す。これらが「成功」扱いされないことを
+# 確認するために、意図的に壊れた入力を用意する。
+# manifest の assets には載せない (verify-media の検証対象ではない)。
+
+$CorruptDir = Join-Path $OutputRoot '_corrupt'
+New-Item -ItemType Directory -Force -Path $CorruptDir | Out-Null
+
+# 1. 0 バイト
+$zeroPath = Join-Path $CorruptDir 'zero.mp4'
+[System.IO.File]::WriteAllBytes($zeroPath, @())
+
+# 2. ランダムなバイト列 (コンテナとして解釈できない)
+$randomPath = Join-Path $CorruptDir 'random.mp4'
+$rnd = [byte[]]::new(65536)
+# 決定論的にするため固定 seed
+$gen = [System.Random]::new(20260804)
+$gen.NextBytes($rnd)
+[System.IO.File]::WriteAllBytes($randomPath, $rnd)
+
+# 3. 途中で切断された動画 (moov はあるがデータが足りない / あるいは逆)
+#    先頭 20% だけを取り出す。fragmented でない mp4 は moov が末尾にあるため、
+#    これは「コンテナとして開けない」ケースになる。
+$truncPath = Join-Path $CorruptDir 'truncated.mp4'
+$srcFull = Join-Path $OutputRoot 'v1080p60_h264.mp4'
+if (Test-Path $srcFull) {
+    $srcBytes = [System.IO.File]::ReadAllBytes($srcFull)
+    $take = [int]($srcBytes.Length * 0.2)
+    [System.IO.File]::WriteAllBytes($truncPath, $srcBytes[0..($take - 1)])
+}
+
+# 4. 拡張子は動画だが中身がテキスト
+$textPath = Join-Path $CorruptDir 'text.mp4'
+Set-Content -Path $textPath -Value 'this is not a video file' -Encoding ASCII -NoNewline
+
+# 5. コンテナは正当だが映像も音声も無い (字幕のみの mp4)。
+#    破損ではないが「読めるが使えない」入力であり、ユーザーが実際に
+#    投入しうる。壊れたバイト列とは別の失敗経路を通る。
+$subOnlyPath = Join-Path $CorruptDir 'subtitle_only.mp4'
+$srtPath = Join-Path $CorruptDir '_sub.srt'
+Set-Content -Path $srtPath -Value "1`r`n00:00:00,000 --> 00:00:03,000`r`nmvm phase0`r`n" -Encoding ASCII
+& $FFmpeg -hide_banner -loglevel error -y -i $srtPath -c:s mov_text $subOnlyPath
+if ($LASTEXITCODE -ne 0) { Write-Host '  (字幕のみ mp4 の生成に失敗しました)' -ForegroundColor Yellow }
+
+Write-Host "  破損・退化素材 (negative test 用): 5 件 -> _corrupt\" -ForegroundColor Green
 
 # --- manifest ---------------------------------------------------------------
 

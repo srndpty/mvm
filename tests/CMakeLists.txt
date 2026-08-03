@@ -71,6 +71,17 @@ mvm_add_test(doctor_wrong_profile_expectation
     COMMAND mvm_bench doctor --expect-width 1280 --expect-height 720
     PROPERTIES WILL_FAIL TRUE)
 
+# negative: SAR の期待値が誤っていれば失敗する。
+# SAR を取り違えると V12 で「なぜか横に伸びる」形で表面化するため、
+# doctor の段階で照合しておく。
+mvm_add_test(doctor_wrong_sar_expectation
+    COMMAND mvm_bench doctor --expect-sar-num 4 --expect-sar-den 3
+    PROPERTIES WILL_FAIL TRUE)
+
+# SAR は gcd で正規化して比較する。2/2 は 1/1 と等価なので通るべき。
+mvm_add_test(doctor_sar_normalized
+    COMMAND mvm_bench doctor --expect-sar-num 2 --expect-sar-den 2)
+
 # --- 素材の検証 -------------------------------------------------------------
 
 mvm_add_test(verify_media_smoke
@@ -79,6 +90,63 @@ mvm_add_test(verify_media_smoke
         REQUIRED_FILES "${MVM_SMOKE_MANIFEST}"
         FAIL_REGULAR_EXPRESSION "FAIL"
 )
+
+# --- manifest の negative test ---------------------------------------------
+# 壊した manifest が失敗することを確認する。通ってしまうと verify-media が
+# 「検証したつもり」で成功していることになり、V2 の判定根拠が無意味になる。
+# 詳細は tests/fixtures/README.md。
+
+set(MVM_FIXTURES "${CMAKE_SOURCE_DIR}/tests/fixtures")
+
+# 対照群: 正しい最小 manifest は通る。
+# これが落ちるなら、下の negative test は意図した箇所で落ちていない。
+mvm_add_test(verify_media_fixture_good
+    COMMAND mvm_bench verify-media "${MVM_FIXTURES}/good-minimal.json"
+    PROPERTIES
+        REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_h264.mp4"
+        FAIL_REGULAR_EXPRESSION "FAIL")
+
+foreach(bad
+        missing-schema      # schema_version が無い
+        schema-version      # schema_version が対応外
+        empty-assets        # assets が空
+        unknown-kind        # kind が未知
+        duplicate-id        # id が重複
+        missing-expected    # expected が無い
+        missing-field       # expected に必須フィールドが無い
+        wrong-pix-fmt       # pix_fmt を改変
+        wrong-sar           # SAR を改変
+        wrong-duration      # duration を改変
+        wrong-alpha)        # alpha の期待範囲を改変
+    string(REPLACE "-" "_" bad_name "${bad}")
+    mvm_add_test(verify_media_bad_${bad_name}
+        COMMAND mvm_bench verify-media "${MVM_FIXTURES}/bad-${bad}.json"
+        PROPERTIES
+            REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_h264.mp4"
+            WILL_FAIL TRUE)
+endforeach()
+
+# --- 破損・退化素材の negative test -----------------------------------------
+# これらが成功扱いされないことを確認する。
+#
+# subtitle_only は破損していない。コンテナは正当だが映像も音声も無い、
+# 「読めるが使えない」入力であり、壊れたバイト列とは別の経路を通る。
+
+set(MVM_CORRUPT_DIR "${MVM_SMOKE_DIR}/_corrupt")
+
+foreach(corrupt zero random truncated text subtitle_only)
+    mvm_add_test(probe_corrupt_${corrupt}
+        COMMAND mvm_bench probe "${MVM_CORRUPT_DIR}/${corrupt}.mp4"
+        PROPERTIES
+            REQUIRED_FILES "${MVM_CORRUPT_DIR}/${corrupt}.mp4"
+            WILL_FAIL TRUE)
+
+    mvm_add_test(decode_corrupt_${corrupt}
+        COMMAND mvm_bench decode "${MVM_CORRUPT_DIR}/${corrupt}.mp4" --frame 0
+        PROPERTIES
+            REQUIRED_FILES "${MVM_CORRUPT_DIR}/${corrupt}.mp4"
+            WILL_FAIL TRUE)
+endforeach()
 
 # --- probe (V2) -------------------------------------------------------------
 
@@ -137,6 +205,20 @@ mvm_add_test(decode_marker_hevc
             --frame 137 --expect-marker
             --output "${CMAKE_CURRENT_BINARY_DIR}/decode_hevc_137.png"
     PROPERTIES REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_hevc.mp4")
+
+# 4K HEVC 10bit。10bit -> RGBA の変換を経てもマーカーが読めることを確認する。
+# probe だけでは「ピクセルが正しく出てくるか」は分からない。
+mvm_add_test(decode_marker_4k_hevc10
+    COMMAND mvm_bench decode "${MVM_SMOKE_DIR}/v4k60_hevc10.mp4"
+            --frame 137 --expect-marker
+            --output "${CMAKE_CURRENT_BINARY_DIR}/decode_4k_hevc10_137.png"
+    PROPERTIES REQUIRED_FILES "${MVM_SMOKE_DIR}/v4k60_hevc10.mp4")
+
+mvm_add_test(decode_marker_4k_h264
+    COMMAND mvm_bench decode "${MVM_SMOKE_DIR}/v4k60_h264.mp4"
+            --frame 42 --expect-marker
+            --output "${CMAKE_CURRENT_BINARY_DIR}/decode_4k_h264_42.png"
+    PROPERTIES REQUIRED_FILES "${MVM_SMOKE_DIR}/v4k60_h264.mp4")
 
 mvm_add_test(decode_marker_jp_path
     COMMAND mvm_bench decode "${MVM_JP_DIR}/講義映像　第1回＆演習.mp4"

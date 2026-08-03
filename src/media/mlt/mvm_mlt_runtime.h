@@ -100,10 +100,14 @@ int mvm_mlt_scan_modules(const char* module_dir, MvmMltDoctorReport* report);
  * 実値と照合する。値が一致しなければ失敗として数える (S1 所見 2)。
  * want_* に 0 を渡した項目は照合しない。
  *
+ * SAR も照合対象に含める。SAR は幾何の解釈を決めるため、取り違えると
+ * V12 (preview と final の一致) で「なぜか横に伸びる」という形で表面化する。
+ *
  * 戻り値: 問題の総数 (0 = 健全)
  */
 int mvm_mlt_doctor_run(const char* profile_name, int want_w, int want_h, int want_fps_num,
-                       int want_fps_den, MvmMltDoctorReport* report);
+                       int want_fps_den, int want_sar_num, int want_sar_den,
+                       MvmMltDoctorReport* report);
 
 /* 人間向けのレポートを出力する */
 void mvm_mlt_doctor_print(const MvmMltDoctorReport* report, FILE* out);

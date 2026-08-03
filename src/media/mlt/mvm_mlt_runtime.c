@@ -307,8 +307,32 @@ static int check_category(MvmMltDoctorReport* r, const char* label, mlt_properti
 /* doctor                                                                     */
 /* ------------------------------------------------------------------------- */
 
+/* 有理数を gcd で正規化する。SAR は 1/1 と 2/2 のような等価表現があるため、
+ * 数値をそのまま比較してはいけない。 */
+static void normalize_ratio(int* num, int* den)
+{
+    if (*den == 0)
+        return;
+    int a = *num < 0 ? -*num : *num;
+    int b = *den < 0 ? -*den : *den;
+    while (b != 0) {
+        int t = a % b;
+        a = b;
+        b = t;
+    }
+    if (a > 0) {
+        *num /= a;
+        *den /= a;
+    }
+    if (*den < 0) {
+        *num = -*num;
+        *den = -*den;
+    }
+}
+
 int mvm_mlt_doctor_run(const char* profile_name, int want_w, int want_h, int want_fps_num,
-                       int want_fps_den, MvmMltDoctorReport* report)
+                       int want_fps_den, int want_sar_num, int want_sar_den,
+                       MvmMltDoctorReport* report)
 {
     if (!report)
         return -1;
@@ -362,15 +386,26 @@ int mvm_mlt_doctor_run(const char* profile_name, int want_w, int want_h, int wan
             if (want_fps_den && p->frame_rate_den != want_fps_den)
                 ok = 0;
 
+            /* SAR は等価な表現 (1/1 と 2/2) があるので、正規化してから比較する。 */
+            if (want_sar_num && want_sar_den) {
+                int gn = p->sample_aspect_num, gd = p->sample_aspect_den;
+                int wn = want_sar_num, wd = want_sar_den;
+                normalize_ratio(&gn, &gd);
+                normalize_ratio(&wn, &wd);
+                if (gn != wn || gd != wd)
+                    ok = 0;
+            }
+
             report->profile_ok = ok;
             if (!ok) {
                 char detail[512];
                 snprintf(detail, sizeof(detail),
-                         "期待 %dx%d @ %d/%d に対し実値 %dx%d @ %d/%d。"
-                         "profile 定義が解決できず既定値へフォールバックしています "
+                         "期待 %dx%d @ %d/%d SAR %d/%d に対し実値 %dx%d @ %d/%d SAR %d/%d。"
+                         "profile 定義が解決できず既定値へフォールバックしている可能性があります "
                          "(MLT_DATA=%s/profiles を確認)",
-                         want_w, want_h, want_fps_num, want_fps_den, p->width, p->height,
-                         p->frame_rate_num, p->frame_rate_den,
+                         want_w, want_h, want_fps_num, want_fps_den, want_sar_num, want_sar_den,
+                         p->width, p->height, p->frame_rate_num, p->frame_rate_den,
+                         p->sample_aspect_num, p->sample_aspect_den,
                          report->data_dir ? report->data_dir : "(未設定)");
                 add_issue(report, profile_name, detail);
             }

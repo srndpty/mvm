@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "mode": "Fixture",
+  "assets": [
+    {
+      "id": "png_alpha",
+      "relative_path": "../assets/smoke/png_alpha.png",
+      "kind": "image",
+      "expected": {
+        "width": 512,
+        "height": 512,
+        "video_codec": "png",
+        "pix_fmt": "rgba",
+        "sar_num": 1,
+        "sar_den": 1,
+        "has_alpha": true,
+        "alpha_min_le": -1,
+        "alpha_max_ge": 250
+      }
+    }
+  ]
+}

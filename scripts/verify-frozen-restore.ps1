@@ -194,12 +194,30 @@ $env:CHERE_INVOKING = '1'
 & $TestBash -lc 'exit 0' 2>&1 | Out-Null
 & $TestBash -lc 'exit 0' 2>&1 | Out-Null
 
-if (-not $NoSignatureCheck) {
+if ($NoSignatureCheck) {
+    # 署名なしを許すのは、利用者が明示的にそう指定した場合だけ。
+    # 自動でここへ落ちてはいけない。
+    Write-Host "`n!! -NoSignatureCheck が指定されました。" -ForegroundColor Yellow
+    Write-Host '   署名検証なしで復元します。改竄・破損は検出できません。' -ForegroundColor Yellow
+} else {
     Write-Host 'pacman キーリングを初期化します (署名検証のため)...' -ForegroundColor Yellow
     & $TestBash -lc 'pacman-key --init && pacman-key --populate msys2' 2>&1 | Select-Object -Last 3
     if ($LASTEXITCODE -ne 0) {
-        Write-Host '  キーリング初期化に失敗しました。署名検証を無効化して続行します。' -ForegroundColor Yellow
-        $NoSignatureCheck = $true
+        # 自動で署名検証を切ってはいけない。
+        # 切ると「復元できた」の意味が静かに弱くなり、
+        # R0 が何を保証しているのか分からなくなる。
+        throw @"
+pacman キーリングの初期化に失敗しました (exit $LASTEXITCODE)。
+
+署名検証なしで続行することはしません。それでは「凍結物から復元できた」ことの
+意味が弱くなり (改竄・破損を検出できない)、R0 の結論が曖昧になるためです。
+
+対処:
+  - ネットワーク接続と msys2-keyring パッケージを確認する
+  - 署名なしでよいと判断する場合のみ、明示的に指定する:
+        pwsh scripts/verify-frozen-restore.ps1 -NoSignatureCheck
+    その場合、レポートの signature_checked が false として記録されます。
+"@
     }
 }
 
@@ -263,16 +281,24 @@ if ($expected.Count -eq 0) {
     Add-Result 'R0-2' 'docs/deps-lock.txt と version が一致する' $false `
         '復元先の version を取得できませんでした'
 } else {
-    $missing = @(); $diff = @()
+    $missing = @(); $diff = @(); $unexpected = @()
     foreach ($k in $expected.Keys) {
         if (-not $actual.ContainsKey($k)) { $missing += $k }
         elseif ($actual[$k] -ne $expected[$k]) { $diff += "$k : $($expected[$k]) -> $($actual[$k])" }
     }
-    $ok = ($missing.Count -eq 0 -and $diff.Count -eq 0)
+    # 余分なパッケージも失敗にする。
+    # 「lock に無いものが入っている」= 復元先が lock の示す構成と別物という意味であり、
+    # 一致の検証としては欠落と同じくらい重大である。
+    foreach ($k in $actual.Keys) {
+        if (-not $expected.ContainsKey($k)) { $unexpected += "$k $($actual[$k])" }
+    }
+
+    $ok = ($missing.Count -eq 0 -and $diff.Count -eq 0 -and $unexpected.Count -eq 0)
     $detail = "期待 $($expected.Count) 件 / 復元 $($actual.Count) 件"
-    if ($missing.Count) { $detail += " / 欠落 $($missing.Count) 件: $(($missing | Select-Object -First 5) -join ', ')" }
-    if ($diff.Count)    { $detail += " / version 差 $($diff.Count) 件: $(($diff | Select-Object -First 5) -join '; ')" }
-    Add-Result 'R0-2' 'docs/deps-lock.txt と version が一致する' $ok $detail
+    if ($missing.Count)    { $detail += " / 欠落 $($missing.Count) 件: $(($missing | Select-Object -First 5) -join ', ')" }
+    if ($diff.Count)       { $detail += " / version 差 $($diff.Count) 件: $(($diff | Select-Object -First 5) -join '; ')" }
+    if ($unexpected.Count) { $detail += " / lock に無い余分なパッケージ $($unexpected.Count) 件: $(($unexpected | Select-Object -First 5) -join ', ')" }
+    Add-Result 'R0-2' 'docs/deps-lock.txt と version が完全に一致する (欠落・version 差・余分すべて無し)' $ok $detail
 }
 
 # --- 必須の直接指定パッケージが揃っているか --------------------------------
@@ -318,8 +344,11 @@ if (-not (Test-Path $restModules)) {
     $outText = ($out | Out-String)
     Set-Content -Path (Join-Path $TestRootFull 'hello-output.txt') -Value $outText -Encoding UTF8
 
-    Add-Result 'R0-3' '復元先の ucrt64/bin だけを PATH にして mvm_mlt_hello を実行できる' `
-        ($exit -ne $null) "exit=$exit / PATH=$minimalPath"
+    # 「起動できた」ではなく「exit 0 で終わった」ことを要求する。
+    # mvm_mlt_hello は問題を検出すると exit 2 を返すので、
+    # exit を見ないと検査が落ちていても成功扱いになる。
+    Add-Result 'R0-3' '復元先の ucrt64/bin だけを PATH にして mvm_mlt_hello が exit 0 で終わる' `
+        ($exit -eq 0) "exit=$exit / PATH=$minimalPath"
 
     $summary = ($out | Select-String -Pattern '^MVM_DOCTOR_RESULT' | Select-Object -First 1)
     if (-not $summary) {
@@ -335,7 +364,8 @@ if (-not (Test-Path $restModules)) {
         $modFailed  = [int](Get-Field 'modules_failed')
         $svcMissing = [int](Get-Field 'services_missing')
         $profileOk  = [int](Get-Field 'profile_ok')
-        $profile    = Get-Field 'profile'
+        # $profile は PowerShell の自動変数なので別名にする
+        $profileGeom = Get-Field 'profile'
         $sar        = Get-Field 'sar'
 
         Add-Result 'R0-4' '復元先のモジュールを全てロードできる' `
@@ -345,8 +375,8 @@ if (-not (Test-Path $restModules)) {
             ($svcMissing -eq 0) "services_missing=$svcMissing"
 
         Add-Result 'R0-6' 'atsc_1080p_60 が 1920x1080 / 60|1 / SAR 1|1 になる' `
-            ($profileOk -eq 1 -and $profile -eq '1920x1080@60/1' -and $sar -eq '1/1') `
-            "profile=$profile sar=$sar profile_ok=$profileOk"
+            ($profileOk -eq 1 -and $profileGeom -eq '1920x1080@60/1' -and $sar -eq '1/1') `
+            "profile=$profileGeom sar=$sar profile_ok=$profileOk"
 
         # optional 扱いだった依存の DLL がロードできるか。
         # modules_failed=0 はこれを含むが、明示的に個別確認もする。

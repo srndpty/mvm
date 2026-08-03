@@ -74,8 +74,8 @@ int main(void)
     report.data_dir = data_dir;
 
     /* atsc_1080p_60 の実値まで照合する。非 NULL が返ったことは
-     * 成功を意味しない (S1 所見 2)。 */
-    int issues = mvm_mlt_doctor_run("atsc_1080p_60", 1920, 1080, 60, 1, &report);
+     * 成功を意味しない (S1 所見 2)。SAR も含める。 */
+    int issues = mvm_mlt_doctor_run("atsc_1080p_60", 1920, 1080, 60, 1, 1, 1, &report);
 
     mvm_mlt_doctor_print(&report, stdout);
     mvm_mlt_doctor_print_summary_line(&report, stdout);

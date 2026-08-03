@@ -131,10 +131,20 @@ int mvm_mlt_probe_file(const char* path, MvmMltProbeResult* out)
 
     mlt_properties props = MLT_PRODUCER_PROPERTIES(p);
 
-    /* [重要] MLT は開けなかった素材でも producer を返すことがある。
-     * その場合 length が 0 や 1 になり、後段で「1 フレームの黒」として
-     * 静かに処理が進む。実際に読めたことを確認する。 */
-    const char* resource = mlt_properties_get(props, "resource");
+    /* [実測] service に "avformat" を明示指定した場合、MLT は開けない素材に対して
+     * mlt_factory_producer が NULL を返す。以下の 5 種で確認済み:
+     *   0 バイト / ランダムバイト列 / 途中切断 mp4 / テキスト / 字幕のみ mp4
+     * したがって現時点では、下の 2 つの検査はいずれも到達しない。
+     *
+     * それでも残すのは以下の理由による。
+     *   - service を NULL (loader / 自動判定) にすると、MLT は未知の入力に対して
+     *     別の producer へフォールバックしうる。その場合 producer は非 NULL で
+     *     返り、length が 0 や 1 の「無音の黒 1 フレーム」として静かに流れる。
+     *     mvm が将来 loader 経路を使うなら、この検査が唯一の防波堤になる。
+     *   - コストがほぼゼロで、失敗を静かに通すリスクの方が高い。
+     *
+     * [未検証] loader 経路の実際のフォールバック挙動は測っていない。
+     * service を可変にする時点で必ず確かめること。 */
     int nb_streams = mlt_properties_get_int(props, "meta.media.nb_streams");
 
     int vs = find_stream(props, "video");
@@ -142,6 +152,26 @@ int mvm_mlt_probe_file(const char* path, MvmMltProbeResult* out)
 
     out->has_video = (vs >= 0);
     out->has_audio = (as >= 0);
+
+    if (nb_streams <= 0) {
+        snprintf(out->error, sizeof(out->error),
+                 "ストリームを 1 つも解釈できません (meta.media.nb_streams=%d)。"
+                 "素材が壊れているか、対応していない形式です",
+                 nb_streams);
+        mlt_producer_close(p);
+        mlt_profile_close(profile);
+        return 1;
+    }
+
+    if (!out->has_video && !out->has_audio) {
+        snprintf(out->error, sizeof(out->error),
+                 "映像ストリームも音声ストリームもありません (nb_streams=%d)。"
+                 "素材が壊れている可能性があります",
+                 nb_streams);
+        mlt_producer_close(p);
+        mlt_profile_close(profile);
+        return 1;
+    }
 
     if (vs >= 0) {
         char key[128];
@@ -200,14 +230,6 @@ int mvm_mlt_probe_file(const char* path, MvmMltProbeResult* out)
     if (!out->is_unbounded_length && out->profile_fps_num > 0 && out->profile_fps_den > 0) {
         out->duration_sec = (double) out->frame_count * (double) out->profile_fps_den
                             / (double) out->profile_fps_num;
-    }
-
-    if (nb_streams <= 0 && !resource) {
-        set_err(out->error, sizeof(out->error),
-                "meta.media が空です。素材を実際には読めていない可能性があります");
-        mlt_producer_close(p);
-        mlt_profile_close(profile);
-        return 1;
     }
 
     /* alpha は実際のフレームを見て判定する。pix_fmt 文字列だけでは
