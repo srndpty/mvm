@@ -1,0 +1,31 @@
+---
+Language: Cpp
+BasedOnStyle: LLVM
+Standard: c++20
+ColumnLimit: 100
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+AccessModifierOffset: -4
+PointerAlignment: Left
+ReferenceAlignment: Left
+AllowShortFunctionsOnASingleLine: Inline
+AlwaysBreakTemplateDeclarations: Yes
+BreakBeforeBraces: Attach
+FixNamespaceComments: true
+IncludeBlocks: Regroup
+NamespaceIndentation: None
+SeparateDefinitionBlocks: Always
+SortIncludes: CaseSensitive
+SpaceAfterTemplateKeyword: false
+IncludeCategories:
+  # Own headers first (paired header handled by clang-format automatically)
+  - Regex: '^"'
+    Priority: 1
+  # MLT: only legal inside src/media/mlt/
+  - Regex: '^<(framework|mlt)/'
+    Priority: 4
+  - Regex: '^<Q'
+    Priority: 3
+  - Regex: '^<'
+    Priority: 2

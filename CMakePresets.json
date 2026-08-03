@@ -1,0 +1,58 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+
+    "configurePresets": [
+        {
+            "name": "ucrt64-base",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "installDir": "${sourceDir}/install/${presetName}",
+
+            "environment": {
+                "MSYSTEM": "UCRT64",
+                "QTDIR": "",
+                "Qt6_DIR": "",
+                "CMAKE_PREFIX_PATH": "",
+                "PKG_CONFIG_PATH": "C:/msys64/ucrt64/lib/pkgconfig;C:/msys64/ucrt64/share/pkgconfig"
+            },
+
+            "cacheVariables": {
+                "MVM_UCRT64_ROOT": "C:/msys64/ucrt64",
+
+                "CMAKE_C_COMPILER": "C:/msys64/ucrt64/bin/gcc.exe",
+                "CMAKE_CXX_COMPILER": "C:/msys64/ucrt64/bin/g++.exe",
+                "CMAKE_MAKE_PROGRAM": "C:/msys64/ucrt64/bin/ninja.exe",
+
+                "CMAKE_PREFIX_PATH": "C:/msys64/ucrt64",
+                "Qt6_DIR": "C:/msys64/ucrt64/lib/cmake/Qt6",
+                "PKG_CONFIG_EXECUTABLE": "C:/msys64/ucrt64/bin/pkgconf.exe",
+
+                "CMAKE_IGNORE_PREFIX_PATH": "C:/Users/lambe/sdk/Qt;C:/Users/lambe/sdk/Qt/6.8.3;C:/Users/lambe/sdk/Qt/6.8.3/msvc2022_64;C:/Qt",
+                "CMAKE_IGNORE_PATH": "C:/Users/lambe/AppData/Local/Programs/Python/Python310/Scripts;C:/tools",
+
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+            }
+        },
+        {
+            "name": "ucrt64-debug",
+            "displayName": "UCRT64 Debug",
+            "description": "MSYS2 UCRT64 / gcc / Ninja - デバッグビルド",
+            "inherits": "ucrt64-base",
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+        },
+        {
+            "name": "ucrt64-release",
+            "displayName": "UCRT64 Release",
+            "description": "MSYS2 UCRT64 / gcc / Ninja - 計測用ビルド (デバッグ情報付き)",
+            "inherits": "ucrt64-base",
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+        }
+    ],
+
+    "buildPresets": [
+        { "name": "ucrt64-debug",   "configurePreset": "ucrt64-debug" },
+        { "name": "ucrt64-release", "configurePreset": "ucrt64-release" }
+    ]
+}

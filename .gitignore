@@ -1,0 +1,26 @@
+# Build output
+/build/
+/out/
+/staging/
+/install/
+
+# CMake user files
+CMakeUserPresets.json
+
+# Generated test media (regenerate with scripts/make-testmedia.ps1)
+/tests/assets/
+
+# Frozen MSYS2 packages: large binaries, kept on disk for reproducible
+# rebuilds but not committed. docs/deps-lock.txt is the committed record.
+/third_party/pkgs/*
+!/third_party/pkgs/README.md
+
+# Benchmark results are committed; scratch files are not
+/bench/results/scratch/
+
+# Editor / OS
+.vs/
+.idea/
+*.user
+Thumbs.db
+desktop.ini
