@@ -1,0 +1,36 @@
+# pre-commit 設定
+#
+#   python -m pip install pre-commit
+#   pre-commit install
+#
+# 重い処理 (ビルド・テスト) はここに入れない。コミットのたびに数分待つと
+# フックを無効化されてしまい、結果として何も守られなくなる。
+# ビルドとテストは CI と scripts/test.ps1 の役割とする。
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '\.md$'
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: [--fix=lf]
+        exclude: '\.(ps1|bat|cmd)$'
+      - id: check-json
+      - id: check-yaml
+      - id: check-added-large-files
+        # 凍結パッケージや検証素材を誤ってコミットしないための保険
+        args: [--maxkb=512]
+
+  - repo: local
+    hooks:
+      # MLT のヘッダの漏れ出しを検出する。Phase 0 の中核的な制約であり、
+      # 人間のレビューでは必ず漏れるため機械的に強制する。
+      - id: mvm-architecture
+        name: アーキテクチャ検査 (MLT ヘッダの漏れ出し)
+        entry: pwsh -NoProfile -File scripts/lint.ps1
+        language: system
+        pass_filenames: false
+        files: '\.(c|h|cpp|hpp)$'
