@@ -20,6 +20,21 @@
 .PARAMETER SkipUpdate
     pacman -Syu を省略する。rolling 更新による構成変化を避けたい場合に使う。
 
+.PARAMETER Msys2Root
+    対象の MSYS2 ルート。復元検証では別ルートを指定する。
+    既定の C:\msys64 は開発機の本番環境であり、検証で壊してはならない。
+
+.PARAMETER LockFile
+    version 記録の出力先。既定は docs/deps-lock.txt。
+    復元検証では別ファイルを指定し、コミット済みの lock と照合する。
+
+.PARAMETER NoWriteLock
+    version 記録を書き出さない。docs/deps-lock.txt を汚さずに導入だけ行う。
+
+.PARAMETER NoSignatureCheck
+    pacman -U の署名検証を無効化する。凍結物に .sig が揃っていない場合の
+    最後の手段であり、既定では使わない。使った場合は検証結果に必ず明記すること。
+
 .EXAMPLE
     pwsh scripts/bootstrap-msys2.ps1
     pwsh scripts/bootstrap-msys2.ps1 -FromFrozen
@@ -28,7 +43,10 @@
 param(
     [switch]$FromFrozen,
     [switch]$SkipUpdate,
-    [string]$Msys2Root = 'C:\msys64'
+    [string]$Msys2Root = 'C:\msys64',
+    [string]$LockFile,
+    [switch]$NoWriteLock,
+    [switch]$NoSignatureCheck
 )
 
 $ErrorActionPreference = 'Stop'
@@ -38,7 +56,10 @@ $RepoRoot  = Split-Path -Parent $PSScriptRoot
 $Bash      = Join-Path $Msys2Root 'usr\bin\bash.exe'
 $Ucrt64    = Join-Path $Msys2Root 'ucrt64'
 $FrozenDir = Join-Path $RepoRoot 'third_party\pkgs'
-$LockFile  = Join-Path $RepoRoot 'docs\deps-lock.txt'
+
+if (-not $LockFile) {
+    $LockFile = Join-Path $RepoRoot 'docs\deps-lock.txt'
+}
 
 # Phase 0 の依存パッケージ (mingw-w64-ucrt-x86_64- プレフィクスを補う)
 # NOTE: 'toolchain' は group であり package ではない。group は pacman -Q で引けず
@@ -128,13 +149,34 @@ $FullNames = $Packages | ForEach-Object { "mingw-w64-ucrt-x86_64-$_" }
 
 if ($FromFrozen) {
     Write-Host "`n凍結パッケージから復元します: $FrozenDir" -ForegroundColor Yellow
-    $frozen = Get-ChildItem -Path $FrozenDir -Filter '*.pkg.tar.zst' -ErrorAction SilentlyContinue
-    if (-not $frozen) {
+    # @() で包む。Get-ChildItem は 0 件で $null、1 件でスカラーを返すため、
+    # StrictMode 下では .Count が存在しないというエラーになる。
+    $frozen = @(Get-ChildItem -Path $FrozenDir -Filter '*.pkg.tar.zst' -ErrorAction SilentlyContinue)
+    if ($frozen.Count -eq 0) {
         throw "凍結パッケージがありません: $FrozenDir`nまず通常導入 + scripts/freeze-deps.ps1 を実行してください。"
     }
-    Write-Host "  $($frozen.Count) 個のパッケージを検出"
+    $sigs = @(Get-ChildItem -Path $FrozenDir -Filter '*.pkg.tar.zst.sig' -ErrorAction SilentlyContinue)
+    Write-Host "  パッケージ $($frozen.Count) 件 / 署名 $($sigs.Count) 件を検出"
+
     $unixDir = '/' + ($FrozenDir -replace '\\', '/' -replace '^([A-Za-z]):', '$1').ToLower()
-    Invoke-Msys2 "pacman -U --noconfirm --needed $unixDir/*.pkg.tar.zst"
+
+    if ($NoSignatureCheck) {
+        # pacman.conf を複製し SigLevel だけ Never に落とす。
+        # --nodeps や --overwrite で誤魔化さないこと。それらは依存解決の失敗を
+        # 隠してしまい、「復元できた」という判断を無意味にする。
+        Write-Host '  !! 署名検証を無効化します (-NoSignatureCheck)' -ForegroundColor Yellow
+        Invoke-Msys2 @"
+sed -e 's/^SigLevel.*/SigLevel = Never/' -e 's/^LocalFileSigLevel.*/LocalFileSigLevel = Never/' /etc/pacman.conf > /tmp/pacman-nosig.conf
+pacman --config /tmp/pacman-nosig.conf -U --noconfirm --needed $unixDir/*.pkg.tar.zst
+"@
+    } else {
+        if ($sigs.Count -lt $frozen.Count) {
+            Write-Host "  !! 署名が $($frozen.Count - $sigs.Count) 件不足しています。" -ForegroundColor Yellow
+            Write-Host '     署名検証が失敗する場合は scripts/freeze-deps.ps1 -Force を実行するか、' -ForegroundColor Yellow
+            Write-Host '     最後の手段として -NoSignatureCheck を使ってください (検証結果に明記すること)。' -ForegroundColor Yellow
+        }
+        Invoke-Msys2 "pacman -U --noconfirm --needed $unixDir/*.pkg.tar.zst"
+    }
 }
 else {
     if (-not $SkipUpdate) {
@@ -151,7 +193,11 @@ else {
 # --- version 記録 -----------------------------------------------------------
 # rolling repo に対する唯一の防衛線。必ず commit すること。
 
-Write-Host "`nversion を記録します: $LockFile" -ForegroundColor Yellow
+if ($NoWriteLock) {
+    Write-Host "`nversion 記録はスキップします (-NoWriteLock)" -ForegroundColor DarkGray
+} else {
+    Write-Host "`nversion を記録します: $LockFile" -ForegroundColor Yellow
+}
 
 $header = @(
     '# mvm Phase 0 - MSYS2 UCRT64 dependency lock'
@@ -180,7 +226,13 @@ $content = $header + $explicit + @(
     '# ---------------------------------------------------------------------------'
 ) + $all
 
-Set-Content -Path $LockFile -Value $content -Encoding UTF8
+if (-not $NoWriteLock) {
+    $lockDir = Split-Path -Parent $LockFile
+    if ($lockDir -and -not (Test-Path $lockDir)) {
+        New-Item -ItemType Directory -Force -Path $lockDir | Out-Null
+    }
+    Set-Content -Path $LockFile -Value $content -Encoding UTF8
+}
 
 # --- 検証 -------------------------------------------------------------------
 

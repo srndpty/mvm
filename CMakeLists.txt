@@ -65,9 +65,26 @@ option(MVM_ENABLE_QT "Qt6 を探して検証する (S1 の依存確認用)" ON)
 find_package(MLT REQUIRED)
 message(STATUS "[mvm] MLT ${MLT_VERSION}: ${MLT_LIBRARY}")
 
+# 開発ビルドでは実行ファイルが build/ 配下にあり、MLT の実行ファイル相対の
+# 推測が必ず外れる (モジュール 0 件のまま静かに縮退する)。ビルド時に実際の
+# 場所を埋め込む。V11 (staging) ではこれを同梱パスへ差し替える。
+#
+# src/ と tests/ の両方から使うので、ここ (トップレベル) で定義する。
+set(MVM_MLT_PATH_DEFS
+    MVM_MLT_MODULE_DIR="${MLT_MODULE_DIR}"
+    MVM_MLT_DATA_DIR="${MLT_DATA_DIR}"
+)
+message(STATUS "[mvm] MLT modules: ${MLT_MODULE_DIR}")
+message(STATUS "[mvm] MLT data   : ${MLT_DATA_DIR}")
+
 if(MVM_ENABLE_QT)
     find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick Svg)
     mvm_guard_qt()
 endif()
 
 add_subdirectory(src)
+
+include(CTest)
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
