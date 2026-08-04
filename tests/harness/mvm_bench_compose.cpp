@@ -1135,23 +1135,25 @@ int cmdScrubBench(const bench::Args& a) {
 
     std::vector<long long> frames = makePattern(pattern, length, count, seed);
 
-    // --- coalescing 本体は純粋な状態機械 (scrub_coalescer.h) に分離してある ---
+    // coalescing と表示契約は scrub_coalescer.h の ScrubCoalescer にある。
     // ここはスレッドと MLT の接続だけを担当する。
     ScrubCoalescer coal;
 
     std::mutex mu;
     std::condition_variable cv;
 
-    // accepted 結果だけを集計する。stale の decode 時間は診断値として別に持つ。
-    std::vector<double> acceptedLatencies;
-    std::vector<double> staleDecodeMs;
+    // 表示された結果 (DisplayLatest + DisplayLagging) だけを集計する。
+    std::vector<double> displayedLatencies;
+    std::vector<double> generationLag;
     long long markerMismatch = 0;
-    long long acceptedNonMonotonic = 0;
-    long long lastAcceptedGen = -1;
-    long long finalDisplayedFrame = -1;
+    long long displayNonMonotonic = 0;
+    long long prevDisplayed = -1;
+    long long lastDisplayedFrame = -1;
+    Clock::time_point lastSubmitTime{};
+    Clock::time_point finalDisplayTime{};
+    bool haveFinalDisplay = false;
     std::vector<std::string> contractErrors;
 
-    // 要求の投入時刻。request -> accepted result のレイテンシに使う。
     std::vector<Clock::time_point> submitTime((size_t)frames.size());
 
     auto tStart = Clock::now();
@@ -1161,23 +1163,21 @@ int cmdScrubBench(const bench::Args& a) {
             ScrubRequest req;
             {
                 std::unique_lock<std::mutex> lk(mu);
-                // busy wait をやめ、pending 投入か done で起床する。
                 cv.wait(lk, [&] { return coal.hasPending() || coal.isDone(); });
                 auto taken = coal.takePending();
                 if (!taken) {
                     if (coal.isDone())
-                        return; // done かつ pending 無し
+                        return;
                     continue;
                 }
                 req = *taken;
             }
 
-            // decode はロックの外で行う。処理中の要求は中断しない。
+            // decode はロックの外。in-flight は中断しない。
             MvmMltImage img{};
             char err[512] = {0};
-            auto t0 = Clock::now();
             int r = mvm_mlt_compose_frame(s.handle, req.frame, &img, err, sizeof(err));
-            auto t1 = Clock::now();
+            auto tDone = Clock::now();
 
             ScrubResult res;
             res.generation = req.generation;
@@ -1195,29 +1195,33 @@ int cmdScrubBench(const bench::Args& a) {
 
             {
                 std::lock_guard<std::mutex> lk(mu);
+                long long latestAtCompletion = coal.latestSubmittedGeneration();
                 ScrubResultDecision d = coal.complete(res);
                 switch (d) {
-                case ScrubResultDecision::Accept: {
-                    double lat = msSince(submitTime[(size_t)req.generation], t1);
-                    acceptedLatencies.push_back(lat);
-                    // marker は accepted 結果だけを対象に集計する
+                case ScrubResultDecision::DisplayLatest:
+                case ScrubResultDecision::DisplayLagging: {
+                    displayedLatencies.push_back(
+                        msSince(submitTime[(size_t)req.generation], tDone));
+                    generationLag.push_back((double)(latestAtCompletion - req.generation));
+                    // marker は表示された結果だけを対象に集計する
                     if (!markerSync || markerValue != req.frame)
                         markerMismatch++;
-                    if (req.generation <= lastAcceptedGen)
-                        acceptedNonMonotonic++;
-                    lastAcceptedGen = req.generation;
-                    finalDisplayedFrame = req.frame;
+                    if (req.generation <= prevDisplayed)
+                        displayNonMonotonic++;
+                    prevDisplayed = req.generation;
+                    lastDisplayedFrame = req.frame;
+                    finalDisplayTime = tDone;
+                    haveFinalDisplay = true;
                     break;
                 }
-                case ScrubResultDecision::RejectStale:
-                    staleDecodeMs.push_back(msSince(t0, t1));
-                    break;
+                case ScrubResultDecision::RejectRegression:
+                    break; // 巻き戻るので表示しない
                 case ScrubResultDecision::DecodeFailed:
                     contractErrors.push_back("decode 失敗 gen=" + std::to_string(req.generation) +
                                              ": " + err);
                     break;
                 case ScrubResultDecision::InvalidFutureGeneration:
-                    contractErrors.push_back("未投入の generation を complete した gen=" +
+                    contractErrors.push_back("未投入 generation の complete gen=" +
                                              std::to_string(req.generation));
                     break;
                 case ScrubResultDecision::NotInFlight:
@@ -1233,15 +1237,18 @@ int cmdScrubBench(const bench::Args& a) {
     for (long long i = 0; i < (long long)frames.size(); i++) {
         {
             std::lock_guard<std::mutex> lk(mu);
-            submitTime[(size_t)i] = Clock::now();
-            coal.submit({i, frames[(size_t)i]});
+            auto now = Clock::now();
+            auto sr = coal.submit(frames[(size_t)i]);
+            if (sr.accepted && sr.generation >= 0 && sr.generation < (long long)submitTime.size())
+                submitTime[(size_t)sr.generation] = now;
+            lastSubmitTime = now;
         }
         cv.notify_all();
         if (submitIntervalUs > 0)
             std::this_thread::sleep_for(std::chrono::microseconds(submitIntervalUs));
     }
 
-    // 最終要求は必ず処理する契約。pending と in-flight が捌けるまで待ってから done。
+    // 入力停止後、最終要求が必ず DisplayLatest されるまで drain する。
     {
         std::unique_lock<std::mutex> lk(mu);
         cv.wait(lk, [&] { return !coal.hasPending() && !coal.hasInFlight(); });
@@ -1252,94 +1259,98 @@ int cmdScrubBench(const bench::Args& a) {
 
     auto tEnd = Clock::now();
     double elapsedSec = std::chrono::duration<double>(tEnd - tStart).count();
-    // updates/sec は accepted 結果だけで計算する
-    double updatesPerSec = elapsedSec > 0 ? (double)coal.accepted() / elapsedSec : 0.0;
+    long long displayedTotal = coal.displayedTotal();
+    double displayUps = elapsedSec > 0 ? (double)displayedTotal / elapsedSec : 0.0;
+
+    // 入力停止から最終表示までの追いつき時間
+    double finalCatchupMs = haveFinalDisplay ? msSince(lastSubmitTime, finalDisplayTime) : -1.0;
 
     long long finalRequestedFrame = frames.empty() ? -1 : frames.back();
-    bool finalFrameMatches = (finalDisplayedFrame == finalRequestedFrame);
-    bool finalGenMatches = (coal.finalDisplayedGeneration() == coal.latestSubmittedGeneration());
+    bool finalFrameMatches = (lastDisplayedFrame == finalRequestedFrame);
+    bool finalGenMatches = (coal.lastDisplayedGeneration() == coal.latestSubmittedGeneration());
 
-    Percentiles p = computeStats(acceptedLatencies);
-    Percentiles pStale = computeStats(staleDecodeMs);
+    Percentiles p = computeStats(displayedLatencies);
+    Percentiles lag = computeStats(generationLag);
 
     // --- counter invariant -------------------------------------------------
     std::vector<std::string> invariantErrors;
     if (!coal.countersBalanced())
         invariantErrors.push_back("submitted(" + std::to_string(coal.submitted()) +
-                                  ") != superseded(" + std::to_string(coal.superseded()) +
-                                  ") + decoded(" + std::to_string(coal.decoded()) + ")");
+                                  ") != superseded_pending(" +
+                                  std::to_string(coal.supersededPending()) + ") + decoded(" +
+                                  std::to_string(coal.decoded()) + ")");
     if (!coal.decodeCountersBalanced())
-        invariantErrors.push_back("decoded(" + std::to_string(coal.decoded()) + ") != accepted(" +
-                                  std::to_string(coal.accepted()) + ") + stale(" +
-                                  std::to_string(coal.staleRejected()) + ") + failed(" +
+        invariantErrors.push_back("decoded(" + std::to_string(coal.decoded()) +
+                                  ") != display_latest(" + std::to_string(coal.displayLatest()) +
+                                  ") + display_lagging(" + std::to_string(coal.displayLagging()) +
+                                  ") + reject_regression(" +
+                                  std::to_string(coal.rejectRegression()) + ") + decode_failed(" +
                                   std::to_string(coal.decodeFailed()) + ")");
-    if (acceptedNonMonotonic != 0)
-        invariantErrors.push_back("accepted の generation が単調増加していません (" +
-                                  std::to_string(acceptedNonMonotonic) + " 件)");
+    if (displayNonMonotonic != 0)
+        invariantErrors.push_back("表示 generation が巻き戻りました (" +
+                                  std::to_string(displayNonMonotonic) + " 件)");
     if (!finalGenMatches)
         invariantErrors.push_back(
-            "final displayed generation(" + std::to_string(coal.finalDisplayedGeneration()) +
+            "final displayed generation(" + std::to_string(coal.lastDisplayedGeneration()) +
             ") != latest submitted(" + std::to_string(coal.latestSubmittedGeneration()) + ")");
-    if (coal.accepted() == 0)
-        invariantErrors.push_back("accepted が 0 件です (成功扱いにしない)");
+    if (displayedTotal == 0)
+        invariantErrors.push_back("displayed_total が 0 件です (成功扱いにしない)");
     if (coal.contractViolations() != 0)
         invariantErrors.push_back("契約違反 " + std::to_string(coal.contractViolations()) + " 件");
+    // 集計の自己整合。手で転記した値と JSON がずれないことを機械で担保する。
+    if (elapsedSec > 0) {
+        double recomputed = (double)displayedTotal / elapsedSec;
+        if (std::fabs(displayUps - recomputed) > 1e-6)
+            invariantErrors.push_back("display_updates_per_sec が displayed_total/elapsed と "
+                                      "一致しません");
+    }
     for (const auto& e : contractErrors)
         invariantErrors.push_back(e);
-
-    std::string csv = a.get("csv");
-    if (!csv.empty() && csv != "1") {
-        FILE* f = _wfopen(utf8Path(csv).c_str(), L"wb");
-        if (f) {
-            std::fprintf(f, "metric,value\n");
-            std::fprintf(f, "pattern,%s\n", pattern.c_str());
-            std::fprintf(f, "submit_interval_us,%d\n", submitIntervalUs);
-            std::fprintf(f, "submitted,%lld\n", coal.submitted());
-            std::fprintf(f, "superseded,%lld\n", coal.superseded());
-            std::fprintf(f, "decoded,%lld\n", coal.decoded());
-            std::fprintf(f, "accepted,%lld\n", coal.accepted());
-            std::fprintf(f, "stale_rejected,%lld\n", coal.staleRejected());
-            std::fprintf(f, "decode_failed,%lld\n", coal.decodeFailed());
-            std::fprintf(f, "updates_per_sec,%.4f\n", updatesPerSec);
-            std::fprintf(f, "accepted_latency_p50_ms,%.4f\n", p.p50);
-            std::fprintf(f, "accepted_latency_p95_ms,%.4f\n", p.p95);
-            std::fprintf(f, "accepted_latency_max_ms,%.4f\n", p.max);
-            std::fprintf(f, "stale_decode_count,%zu\n", staleDecodeMs.size());
-            std::fprintf(f, "marker_mismatch,%lld\n", markerMismatch);
-            std::fclose(f);
-        }
-    }
 
     std::ostringstream js;
     js << "{\n  \"scenario\": \"" << jsonEscape(s.scenario.name) << "\",\n";
     js << "  \"pattern\": \"" << pattern << "\",\n";
     js << "  \"submit_interval_us\": " << submitIntervalUs << ",\n";
+    js << "  \"seed\": " << seed << ",\n";
     js << "  \"length\": " << length << ",\n";
     js << "  \"elapsed_sec\": " << elapsedSec << ",\n";
     js << "  \"submitted\": " << coal.submitted() << ",\n";
-    js << "  \"superseded\": " << coal.superseded() << ",\n";
+    js << "  \"superseded_pending\": " << coal.supersededPending() << ",\n";
     js << "  \"decoded\": " << coal.decoded() << ",\n";
-    js << "  \"accepted\": " << coal.accepted() << ",\n";
-    js << "  \"stale_rejected\": " << coal.staleRejected() << ",\n";
+    js << "  \"display_latest\": " << coal.displayLatest() << ",\n";
+    js << "  \"display_lagging\": " << coal.displayLagging() << ",\n";
+    js << "  \"displayed_total\": " << displayedTotal << ",\n";
+    js << "  \"reject_regression\": " << coal.rejectRegression() << ",\n";
     js << "  \"decode_failed\": " << coal.decodeFailed() << ",\n";
     js << "  \"contract_violations\": " << coal.contractViolations() << ",\n";
-    js << "  \"marker_mismatch_accepted_only\": " << markerMismatch << ",\n";
-    js << "  \"updates_per_sec_accepted\": " << updatesPerSec << ",\n";
+    js << "  \"display_updates_per_sec\": " << displayUps << ",\n";
+    js << "  \"displayed_latency_ms\": { \"p50\": " << p.p50 << ", \"p95\": " << p.p95
+       << ", \"max\": " << p.max << ", \"mean\": " << p.mean << " },\n";
+    js << "  \"generation_lag\": { \"p50\": " << lag.p50 << ", \"p95\": " << lag.p95
+       << ", \"max\": " << lag.max << " },\n";
+    js << "  \"final_catchup_ms\": " << finalCatchupMs << ",\n";
+    js << "  \"marker_mismatch_displayed_only\": " << markerMismatch << ",\n";
+    js << "  \"display_non_monotonic\": " << displayNonMonotonic << ",\n";
     js << "  \"final_requested_frame\": " << finalRequestedFrame << ",\n";
-    js << "  \"final_displayed_frame\": " << finalDisplayedFrame << ",\n";
+    js << "  \"final_displayed_frame\": " << lastDisplayedFrame << ",\n";
     js << "  \"final_frame_matches\": " << (finalFrameMatches ? "true" : "false") << ",\n";
     js << "  \"latest_submitted_generation\": " << coal.latestSubmittedGeneration() << ",\n";
-    js << "  \"final_displayed_generation\": " << coal.finalDisplayedGeneration() << ",\n";
+    js << "  \"final_displayed_generation\": " << coal.lastDisplayedGeneration() << ",\n";
     js << "  \"final_generation_matches\": " << (finalGenMatches ? "true" : "false") << ",\n";
-    js << "  \"accepted_latency_ms\": { \"p50\": " << p.p50 << ", \"p95\": " << p.p95
-       << ", \"max\": " << p.max << ", \"mean\": " << p.mean << " },\n";
-    js << "  \"stale_decode_diagnostic\": { \"count\": " << staleDecodeMs.size()
-       << ", \"p50\": " << pStale.p50 << ", \"p95\": " << pStale.p95 << " },\n";
     js << "  \"invariant_errors\": [";
     for (size_t i = 0; i < invariantErrors.size(); i++)
         js << (i ? ",\n    " : "\n    ") << "\"" << jsonEscape(invariantErrors[i]) << "\"";
     js << (invariantErrors.empty() ? "]\n}\n" : "\n  ]\n}\n");
 
+    std::string jsonOut = a.get("json");
+    if (!jsonOut.empty() && jsonOut != "1") {
+        FILE* f = _wfopen(utf8Path(jsonOut).c_str(), L"wb");
+        if (f) {
+            std::string t = js.str();
+            std::fwrite(t.data(), 1, t.size(), f);
+            std::fclose(f);
+        }
+    }
     std::fputs(js.str().c_str(), stdout);
     closeScenario(s);
 
@@ -1356,25 +1367,25 @@ int cmdScrubBench(const bench::Args& a) {
         bool ok = true;
         if (!finalFrameMatches) {
             logMsg("M6 不合格: 最終要求 " + std::to_string(finalRequestedFrame) +
-                   " が表示されていません (表示 " + std::to_string(finalDisplayedFrame) + ")");
+                   " が表示されていません (表示 " + std::to_string(lastDisplayedFrame) + ")");
             ok = false;
         }
         if (markerMismatch != 0) {
             logMsg("M6 不合格: marker 不一致 " + std::to_string(markerMismatch) + " 件");
             ok = false;
         }
-        if (updatesPerSec < minUps) {
-            logMsg("M6 不合格: updates/sec " + std::to_string(updatesPerSec) + " < " +
+        if (displayUps < minUps) {
+            logMsg("M6 不合格: display updates/sec " + std::to_string(displayUps) + " < " +
                    std::to_string(minUps));
             ok = false;
         }
         if (p.p95 > p95Limit) {
-            logMsg("M6 不合格: accepted latency p95 " + std::to_string(p.p95) + "ms > " +
+            logMsg("M6 不合格: displayed latency p95 " + std::to_string(p.p95) + "ms > " +
                    std::to_string(p95Limit) + "ms");
             ok = false;
         }
-        if (a.has("require-coalescing") && coal.superseded() == 0) {
-            logMsg("coalescing が機能していません: superseded が 0 です");
+        if (a.has("require-coalescing") && coal.supersededPending() == 0) {
+            logMsg("coalescing が機能していません: superseded_pending が 0 です");
             ok = false;
         }
         if (!ok)
@@ -2270,6 +2281,10 @@ struct MemSample {
     unsigned long long privateUsage = 0;
     unsigned long long pagefileUsage = 0;
     unsigned long handles = 0;
+    // 採取に失敗したサンプルは 0 のまま。0 を実測値として扱うと
+    // 「メモリが減った」「handle が 0 になった」という誤った結論になる。
+    bool valid = false;
+    unsigned long lastError = 0;
 };
 
 MemSample takeMemSample(int iteration, const std::string& phase) {
@@ -2278,15 +2293,22 @@ MemSample takeMemSample(int iteration, const std::string& phase) {
     s.phase = phase;
     PROCESS_MEMORY_COUNTERS_EX pmc{};
     pmc.cb = sizeof(pmc);
-    if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
-        s.workingSet = pmc.WorkingSetSize;
-        s.peakWorkingSet = pmc.PeakWorkingSetSize;
-        s.privateUsage = pmc.PrivateUsage;
-        s.pagefileUsage = pmc.PagefileUsage;
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
+        s.lastError = GetLastError();
+        return s; // valid = false
     }
+    s.workingSet = pmc.WorkingSetSize;
+    s.peakWorkingSet = pmc.PeakWorkingSetSize;
+    s.privateUsage = pmc.PrivateUsage;
+    s.pagefileUsage = pmc.PagefileUsage;
+
     DWORD h = 0;
-    GetProcessHandleCount(GetCurrentProcess(), &h);
+    if (!GetProcessHandleCount(GetCurrentProcess(), &h)) {
+        s.lastError = GetLastError();
+        return s; // valid = false
+    }
     s.handles = h;
+    s.valid = true;
     return s;
 }
 
@@ -2394,6 +2416,17 @@ int cmdMemoryProbe(const bench::Args& a) {
         return kExitError;
     }
     std::string wavDir = a.get("wav-dir");
+    const bool haveWavDir = !wavDir.empty() && wavDir != "1";
+
+    // D と E は音声レンダリングを含むケースである。--wav-dir が無いと
+    // 音声を黙って飛ばし、「音声ありのケースを測った」という誤った記録が残る。
+    // 測れないなら測れないと言う。
+    if ((caseName == "D" || caseName == "E") && !haveWavDir) {
+        logMsg("ケース " + caseName +
+               " は音声レンダリングを含むため --wav-dir が必要です。"
+               "指定が無いと音声を含まない測定になり、ケースの意味が変わります。");
+        return kExitUsage;
+    }
 
     std::vector<MemSample> samples;
     std::vector<std::string> problems;
@@ -2480,7 +2513,7 @@ int cmdMemoryProbe(const bench::Args& a) {
             }
 
             bool wantAudio = (caseName == "D") || (caseName == "E" && it % 10 == 0);
-            if (wantAudio && !wavDir.empty() && wavDir != "1") {
+            if (wantAudio) {
                 std::string tmp = wavDir + "/mem_tmp.wav";
                 char rerr[512] = {0};
                 if (mvm_mlt_compose_render_audio(h, tmp.c_str(), 120000, rerr, sizeof(rerr)) != 0) {
@@ -2531,12 +2564,13 @@ int cmdMemoryProbe(const bench::Args& a) {
     if (!csv.empty() && csv != "1") {
         FILE* f = _wfopen(utf8Path(csv).c_str(), L"wb");
         if (f) {
-            std::fprintf(f, "case,iteration,phase,working_set,peak_working_set,private_usage,"
-                            "pagefile_usage,handles\n");
+            std::fprintf(f, "case,iteration,phase,valid,working_set,peak_working_set,private_usage,"
+                            "pagefile_usage,handles,last_error\n");
             for (const auto& m : samples)
-                std::fprintf(f, "%s,%d,%s,%llu,%llu,%llu,%llu,%lu\n", caseName.c_str(), m.iteration,
-                             m.phase.c_str(), m.workingSet, m.peakWorkingSet, m.privateUsage,
-                             m.pagefileUsage, m.handles);
+                std::fprintf(f, "%s,%d,%s,%d,%llu,%llu,%llu,%llu,%lu,%lu\n", caseName.c_str(),
+                             m.iteration, m.phase.c_str(), m.valid ? 1 : 0, m.workingSet,
+                             m.peakWorkingSet, m.privateUsage, m.pagefileUsage, m.handles,
+                             m.lastError);
             std::fclose(f);
         }
     }
@@ -2548,7 +2582,8 @@ int cmdMemoryProbe(const bench::Args& a) {
                                                : "after_close";
     std::vector<double> ws, priv;
     for (const auto& m : samples) {
-        if (m.iteration >= 0 && m.phase == repPhase) {
+        // 無効サンプルは集計から外す。0 を実測値として混ぜない。
+        if (m.valid && m.iteration >= 0 && m.phase == repPhase) {
             ws.push_back((double)m.workingSet);
             priv.push_back((double)m.privateUsage);
         }
@@ -2559,7 +2594,7 @@ int cmdMemoryProbe(const bench::Args& a) {
 
     auto findPhase = [&](const std::string& ph) -> const MemSample* {
         for (const auto& m : samples)
-            if (m.phase == ph && m.iteration < 0)
+            if (m.valid && m.phase == ph && m.iteration < 0)
                 return &m;
         return nullptr;
     };
@@ -2604,8 +2639,24 @@ int cmdMemoryProbe(const bench::Args& a) {
     js << ",\n    ";
     emitGrowth(js, "private_usage", gPriv);
     js << " },\n";
-    js << "  \"handles\": { \"first\": " << (samples.empty() ? 0 : samples.front().handles)
-       << ", \"last\": " << (samples.empty() ? 0 : samples.back().handles) << " },\n";
+    // handle 数は有効サンプルからのみ取る。採取に失敗した 0 を
+    // 「handle が減った」と読み違えないため。
+    const MemSample* firstValid = nullptr;
+    const MemSample* lastValid = nullptr;
+    long long invalidSamples = 0;
+    for (const auto& m : samples) {
+        if (!m.valid) {
+            invalidSamples++;
+            continue;
+        }
+        if (!firstValid)
+            firstValid = &m;
+        lastValid = &m;
+    }
+    js << "  \"handles\": { \"first\": " << (firstValid ? firstValid->handles : 0)
+       << ", \"last\": " << (lastValid ? lastValid->handles : 0) << " },\n";
+    js << "  \"invalid_samples\": " << invalidSamples << ",\n";
+    js << "  \"samples_valid\": " << (long long)samples.size() - invalidSamples << ",\n";
     if (beforeInit)
         js << "  \"before_runtime_init_mb\": { \"ws\": " << mb(beforeInit->workingSet)
            << ", \"priv\": " << mb(beforeInit->privateUsage) << " },\n";
@@ -2616,6 +2667,16 @@ int cmdMemoryProbe(const bench::Args& a) {
         js << "  \"after_runtime_shutdown_idle_mb\": { \"ws\": " << mb(idle->workingSet)
            << ", \"priv\": " << mb(idle->privateUsage) << " },\n";
     js << "  \"marker_first\": " << firstMarker << ",\n  \"marker_last\": " << lastMarker << ",\n";
+
+    // 採取に失敗したサンプルが 1 件でもあれば、この測定を根拠に使ってはいけない。
+    // 欠測を黙って無視した平均値は、無いより悪い。
+    if (invalidSamples > 0)
+        problems.push_back("メモリ採取に失敗したサンプルが " + std::to_string(invalidSamples) +
+                           " 件あります。この測定は判断根拠に使えません。");
+    if (ws.empty())
+        problems.push_back("代表 phase (" + std::string(repPhase) +
+                           ") の有効サンプルが 0 件です。");
+
     js << "  \"problems\": [";
     for (size_t i = 0; i < problems.size(); i++)
         js << (i ? ",\n    " : "\n    ") << "\"" << jsonEscape(problems[i]) << "\"";

@@ -61,7 +61,9 @@ try {
     Push-Location $BuildDir
     try {
         # カバレッジ収集が目的なので、失敗しても集計まで進む
-        & $CTest --output-on-failure -LE performance
+        # 通常テストだけを測る。performance と stability は
+        # 実行時間が長く、カバレッジの対象としても意味が薄い。
+        & $CTest --output-on-failure -LE 'performance|stability'
         $testExit = $LASTEXITCODE
     } finally {
         Pop-Location

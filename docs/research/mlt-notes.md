@@ -116,7 +116,9 @@ mlt_frame_close(f);
 - `mlt_image_rgba` で取り出すとアルファが保持される
   （PNG のアルファグラデーションが `alpha_min=0 / alpha_max=253` で残ることを確認済み）
 - 単発 seek + 取得は要求フレームに正確に着地する（マーカーで確認、frame 0/1/137/299）
-- **連続 seek / scrub の挙動は未検証**（S6）
+- 連続 seek / scrub は S6 で実測した（[seek-scrub-notes.md](seek-scrub-notes.md)）。
+  seek 精度は 214/214 一致。速度（M5）と scrub の random パターン（M6）は
+  基準未達で、**proxy 導入後（S7）の再測定が必要**
 
 ## service の登録名
 

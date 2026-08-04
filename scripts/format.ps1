@@ -47,14 +47,15 @@ Write-Host "clang-format: $((& $ClangFormat --version))"
 Write-Host "対象: $($targets.Count) ファイル"
 
 if ($Check) {
+    # clang-format の出力を PowerShell の文字列として受け取って比較しない。
+    # stdout は現在のコンソール符号化で復号されるため、日本語コメントを含む
+    # ファイルが全件「差分あり」になる。実際に起きた
+    # (23 ファイル中 23 ファイルが未整形と誤検出された)。
+    # 終了コードだけで判定すればテキストの往復が発生しない。
     $bad = @()
     foreach ($f in $targets) {
-        $formatted = & $ClangFormat --style=file $f.FullName
-        $current   = Get-Content -Raw -LiteralPath $f.FullName
-        # clang-format の出力は配列で返るので結合し、末尾改行の差を無視する
-        $formattedText = ($formatted -join "`n").TrimEnd("`r", "`n")
-        $currentText   = ($current -replace "`r`n", "`n").TrimEnd("`r", "`n")
-        if ($formattedText -ne $currentText) {
+        & $ClangFormat --style=file --dry-run -Werror $f.FullName 2>$null
+        if ($LASTEXITCODE -ne 0) {
             $bad += $f.FullName.Substring($RepoRoot.Length + 1)
         }
     }
