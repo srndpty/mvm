@@ -519,7 +519,37 @@ Qt は 6.11.1 / ABI `x86_64-little_endian-llp64` / prefix `C:/msys64/ucrt64` で
 
 ---
 
-## S5 / S6 の暫定判定
+## S5 修復バッチ後の判定（最新）
+
+| 基準 | 実測 | 判定 |
+| --- | --- | --- |
+| **M3** | PiP・文字は達成（下表）。**音声 mix が未実証** | **部分達成 / 未達** |
+| **M4** | affine グラフで再測 214/214 一致、mismatch **0** | **合格** |
+| **M5** | p50 144ms / **p95 259ms** / max 368ms | **不合格** |
+| **M6** | 未再測（realistic scrub 未実施） | **測定不成立** |
+
+M3 の内訳:
+
+| 項目 | 実測 | 判定 |
+| --- | --- | --- |
+| PiP 縮小配置 | 差分外接矩形 = `1260,700 640x360`（期待と完全一致）、矩形内差分 1.00 / 矩形外 0.00 | 合格 |
+| 日本語文字描画 | qtext で矩形内差分 0.5685 / 矩形外 0.00。全角空白・数学記号・改行を目視確認 | 合格 |
+| マーカー保持 | frame 0/1/137/299 すべて一致 | 合格 |
+| 音声 A1+A2 の mix | **バッファ解釈が未解決で未実証** | **未達** |
+
+**[事実]** PiP は `affine` transition + typed rect で解決した。
+`qtblend` は typed API で設定・読み戻しが一致しても描画は正しくならない。
+詳細は [composition-notes.md](research/composition-notes.md)。
+
+**[事実]** M4 は合成グラフを affine へ変更した後も 214/214 一致を維持した。
+グラフ変更が seek 精度を壊していないことを確認済み。
+
+**[事実]** M5 は affine 化で p95 が 232ms → 259ms とやや悪化した。
+合成が正しくなった分の処理が増えたためと考えられる（**[推測]**）。
+
+---
+
+## S5 / S6 の暫定判定（修復前・参考）
 
 詳細は [composition-notes.md](research/composition-notes.md) と
 [seek-scrub-notes.md](research/seek-scrub-notes.md)。

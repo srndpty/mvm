@@ -41,7 +41,68 @@
 フレーム合成経路が期待と異なる形で解決されていたと考えられる。
 MLT のソースは読んでいないため断定しない。
 
-## 所見 B: 縮小配置（PiP）は未解決。M3 は未達
+## 所見 B-2（解決）: 縮小配置は `affine` transition で成立する
+
+**[事実]** 前回「未解決」としていた PiP は解決した。**使用したのは
+`affine` transition + `mlt_properties_anim_set_rect` による typed rect** である。
+
+```c
+mlt_rect want = {1260, 700, 640, 360, 1.0};   /* x, y, w, h, opacity */
+mlt_properties_anim_set_rect(MLT_TRANSITION_PROPERTIES(tr), "rect",
+                             want, 0, length - 1, mlt_keyframe_discrete);
+```
+
+設定後は `mlt_properties_anim_get_rect(props, "rect", frame, length)` で
+frame 0 / 1 / 137 / 最終フレームから読み戻し、x/y/w/h/opacity が
+一致することを確認してから配置している（不一致なら構築を失敗させる）。
+
+読み戻した値: `1260/700:640x360:1`（全プローブフレームで一致）。
+
+A/B 差分による実測結果（frame 0 / 1 / 137 / 299 すべて同じ）:
+
+| 指標 | 実測 | 判定 |
+| --- | --- | --- |
+| PiP 矩形内の差分率 | **1.00** | V2 が矩形を完全に占める |
+| PiP 矩形外の差分率 | **0.00** | 矩形外へ 1 画素も漏れていない |
+| 差分の外接矩形 | **x=1260, y=700, w=640, h=360** | 期待値と完全一致 |
+
+1920x1080 → 640x360 は同じ 16:9 なので縦横比も維持されている。
+
+**[事実] `affine` にしたことで文字トラックの合成も初めて成立した。**
+qtblend では文字も合成されていなかった。
+
+### qtblend transition では成立しない（typed API でも）
+
+**[事実]** 同じ typed rect を `qtblend` transition に設定した場合:
+
+- `mlt_properties_anim_set_rect` は成功を返す
+- `mlt_properties_anim_get_rect` で読み戻すと **設定値と完全に一致する**
+- しかし実際の描画では **x のオフセットしか効かない**。
+  y・w・h と縮小が無視され、等倍のまま切り出して配置される
+
+`rect=0/0:200x200:1` を与えると V2 が全画面を覆い、
+`rect=1260/700:640x360:1` を与えると x=1260 から右端まで全高で覆う。
+
+追加で試して効果が無かったもの: `always_active=1` の有無、
+`mlt_transition_set_in_and_out` による in/out の明示、`compositing`、`distort`。
+
+**つまり「値が正しく設定・読み戻しできること」は「正しく描画されること」を
+まったく保証しない。** 読み戻し照合だけでは不十分で、
+描画結果を A/B 差分で確かめる必要がある。
+
+**[未検証]** qtblend transition が rect を無視する理由。
+MLT のソースは読んでいない。
+
+### composite transition は使わない
+
+**[事実]** `composite` transition に `geometry` を設定すると
+アクセス違反（0xC0000005）でプロセスが落ちる。
+`geometry` と `always_active` だけの最小構成でも再現する。
+**この経路は使用しない。**
+
+---
+
+## 所見 B（旧・解決済み）: 縮小配置（PiP）は未解決だった
 
 **[事実]** 3 通り試し、いずれも目的を達成できなかった。
 
@@ -122,6 +183,71 @@ V1（testsrc2）と視覚的に区別できるようにした
 `outline`、`opacity`。`qtext` にのみ `pixel_ratio` と `typewriter.*` がある。
 
 `qtext` には producer 版もあり、`text` / `encoding=UTF-8` / `align` を持つ。
+
+## 所見 F: 文字 service の比較（qtext / dynamictext）
+
+同じ文章・同じフォント（`C:/Windows/Fonts/meiryo.ttc` / family `Meiryo`）・
+同じ矩形（96/240 1500x320）で 5 トラック合成を実行した。
+
+| service | 結果 |
+| --- | --- |
+| **`qtext`** | **成功。** A/B 差分で text 矩形内 0.5685 / 矩形外 0.00。frame 0/1/137/299 すべて同じ |
+| `dynamictext` | **アクセス違反（0xC0000005）でクラッシュ** |
+
+**[事実] mvm の第一候補は `qtext` とする。** dynamictext は
+この構成（color producer に attach し affine で合成）ではクラッシュするため使わない。
+
+**[未検証]** dynamictext のクラッシュ原因。別の使い方（producer への
+直接 attach など）なら動く可能性はあるが追っていない。
+
+### 日本語・数学記号の描画（目視確認）
+
+`qtext` で以下がすべて正しく描画されることを目視で確認した。
+
+```
+第1回　微分積分＆線形代数
+極限 lim(x→0) sin(x)/x = 1
+日本語・English・123・（）「」±×÷
+```
+
+- 豆腐・文字化けなし
+- **全角空白が保持されている**（「第1回」と「微分積分」の間）
+- 数学記号が描画される（`→` `±` `×` `÷`）
+- 改行が 3 行として扱われる
+- 指定した黄色（`0xffff00ff`）と半透明黒背景（`0x000000c0`）が反映される
+
+フォントは実ファイルの存在を構築前に検査し、無ければ失敗させる
+（別フォントへ無言で fallback しない）。
+
+## 所見 G（未解決）: 音声バッファの解釈
+
+**[未解決]** `mlt_frame_get_audio` から得たバッファを読むと、
+RMS が `nan` や `1e+33` になり、さらに **heap 破壊（0xC0000374）** が起きる。
+
+試した組み合わせ:
+
+| format | samples 入力 | 結果 |
+| --- | --- | --- |
+| `mlt_audio_float`（planar と解釈） | 計算値 | 値が `1e+34` |
+| `mlt_audio_f32le`（interleaved） | 0 | `nan` + heap 破壊 |
+| `mlt_audio_f32le` | `mlt_audio_calculate_frame_samples` の値 | `nan` + heap 破壊 |
+
+戻り値の format 検査は通る（`mlt_audio_f32le` = 5 が返る）。
+`frequency=48000 channels=2 samples=800` も妥当な値が返る。
+それでもバッファの中身が期待と合わない。
+
+**[回避策]** 原因を特定できていない以上、バッファを読むこと自体が危険なので
+**読まずに失敗させている**。誤った RMS を「音が出ている」と誤認するより、
+検証できていないことを明示する方が安全である。
+
+**したがって A1 / A2 が両方 mix されているかは未実証である。**
+
+素材側の準備は完了している。A1（映像に埋めた音声）は L 1000Hz / R 500Hz、
+A2（WAV）は **L 1500Hz / R 750Hz** と別周波数にしたので、
+バッファ問題が解決すれば「4 周波数すべてが検出されるか」で
+片方だけでは通らない検査ができる。
+
+**次バッチの最優先項目。**
 
 ## 所見 E: 音声の mix
 

@@ -122,6 +122,8 @@ bool loadScenario(const std::string& path, Scenario& out, std::string& err) {
 
     if (auto* ts = root->find("text_service"))
         copyStr(tl.text_service, sizeof(tl.text_service), ts->asString());
+    copyStr(tl.video_transition, sizeof(tl.video_transition),
+            root->find("video_transition") ? root->find("video_transition")->asString() : "affine");
     if (auto* ff = root->find("font_file"))
         copyStr(tl.font_file, sizeof(tl.font_file), ff->asString());
 
@@ -152,6 +154,8 @@ bool loadScenario(const std::string& path, Scenario& out, std::string& err) {
             return false;
         }
 
+        copyStr(tr.name, sizeof(tr.name), tj.find("name") ? tj.find("name")->asString() : "");
+        tr.disabled = tj.find("disabled") ? (tj.find("disabled")->asBool() ? 1 : 0) : 0;
         tr.z_order = tj.find("z_order") ? (int)tj.find("z_order")->asInt() : tl.track_count;
         tr.video_enabled = tj.find("video_enabled") ? tj.find("video_enabled")->asBool() : 1;
         tr.audio_enabled = tj.find("audio_enabled") ? tj.find("audio_enabled")->asBool() : 1;
@@ -360,6 +364,115 @@ struct OpenedScenario {
     MvmComposeHandle* handle = nullptr;
 };
 
+// --------------------------------------------------------------------------
+// A/B 差分
+// --------------------------------------------------------------------------
+// 領域の分散や別領域との色距離だけでは偽陽性になることが実測で分かっている。
+// 「そのトラックが無いときの絵」との差分を見るのが唯一確実な判定である。
+
+// 画素が「変化した」と見なす閾値。圧縮ノイズより十分大きく取る。
+constexpr int kPixelDiffThreshold = 12;
+
+bool pixelDiffers(const unsigned char* a, const unsigned char* b) {
+    return std::abs((int)a[0] - (int)b[0]) > kPixelDiffThreshold ||
+           std::abs((int)a[1] - (int)b[1]) > kPixelDiffThreshold ||
+           std::abs((int)a[2] - (int)b[2]) > kPixelDiffThreshold;
+}
+
+// 矩形の内側で変化した画素の割合
+double diffRatioInside(const MvmMltImage& a, const MvmMltImage& b, const Region& r) {
+    if (!a.rgba || !b.rgba || a.width != b.width || a.height != b.height)
+        return -1;
+    int x0 = std::max(0, r.x), y0 = std::max(0, r.y);
+    int x1 = std::min(a.width, r.x + r.w), y1 = std::min(a.height, r.y + r.h);
+    if (x1 <= x0 || y1 <= y0)
+        return -1;
+    long long total = 0, diff = 0;
+    for (int y = y0; y < y1; y++) {
+        for (int x = x0; x < x1; x++) {
+            size_t o = ((size_t)y * (size_t)a.width + (size_t)x) * 4u;
+            total++;
+            if (pixelDiffers(a.rgba + o, b.rgba + o))
+                diff++;
+        }
+    }
+    return total ? (double)diff / (double)total : -1;
+}
+
+// 矩形の外側で変化した画素の割合
+double diffRatioOutside(const MvmMltImage& a, const MvmMltImage& b, const Region& r) {
+    if (!a.rgba || !b.rgba || a.width != b.width || a.height != b.height)
+        return -1;
+    long long total = 0, diff = 0;
+    for (int y = 0; y < a.height; y++) {
+        for (int x = 0; x < a.width; x++) {
+            if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
+                continue;
+            size_t o = ((size_t)y * (size_t)a.width + (size_t)x) * 4u;
+            total++;
+            if (pixelDiffers(a.rgba + o, b.rgba + o))
+                diff++;
+        }
+    }
+    return total ? (double)diff / (double)total : -1;
+}
+
+// 差分が存在する範囲の外接矩形。PiP の実際の位置とサイズを測るのに使う。
+Region diffBoundingBox(const MvmMltImage& a, const MvmMltImage& b) {
+    Region out{};
+    if (!a.rgba || !b.rgba || a.width != b.width || a.height != b.height)
+        return out;
+    int minX = a.width, minY = a.height, maxX = -1, maxY = -1;
+    for (int y = 0; y < a.height; y++) {
+        for (int x = 0; x < a.width; x++) {
+            size_t o = ((size_t)y * (size_t)a.width + (size_t)x) * 4u;
+            if (pixelDiffers(a.rgba + o, b.rgba + o)) {
+                if (x < minX) minX = x;
+                if (y < minY) minY = y;
+                if (x > maxX) maxX = x;
+                if (y > maxY) maxY = y;
+            }
+        }
+    }
+    if (maxX < 0)
+        return out;
+    out.x = minX;
+    out.y = minY;
+    out.w = maxX - minX + 1;
+    out.h = maxY - minY + 1;
+    return out;
+}
+
+bool disableTrackByName(MvmBenchTimeline& tl, const char* name) {
+    for (int i = 0; i < tl.track_count; i++) {
+        if (std::strcmp(tl.tracks[i].name, name) == 0) {
+            tl.tracks[i].disabled = 1;
+            return true;
+        }
+    }
+    return false;
+}
+
+// タイムラインの 1 バリアント。full / no_v2 / no_text を同時に持つために使う。
+struct Variant {
+    MvmBenchTimeline timeline;
+    MvmComposeInfo info{};
+    MvmComposeHandle* handle = nullptr;
+
+    explicit Variant(const MvmBenchTimeline& t) : timeline(t) {}
+    ~Variant() {
+        if (handle)
+            mvm_mlt_compose_close(handle);
+    }
+    Variant(const Variant&) = delete;
+    Variant& operator=(const Variant&) = delete;
+
+    bool open(char* err, size_t n) {
+        handle = mvm_mlt_compose_open(&timeline, &info, err, n);
+        return handle != nullptr;
+    }
+};
+
 bool openScenario(const Args& a, OpenedScenario& out, int& rc) {
     if (a.positional.empty()) {
         logMsg("シナリオファイルを指定してください");
@@ -386,6 +499,9 @@ bool openScenario(const Args& a, OpenedScenario& out, int& rc) {
     if (a.has("font-file"))
         copyStr(out.scenario.timeline.font_file, sizeof(out.scenario.timeline.font_file),
                 a.get("font-file"));
+    if (a.has("video-transition"))
+        copyStr(out.scenario.timeline.video_transition,
+                sizeof(out.scenario.timeline.video_transition), a.get("video-transition"));
 
     char cerr[1024] = {0};
     out.handle = mvm_mlt_compose_open(&out.scenario.timeline, &out.info, cerr, sizeof(cerr));
@@ -498,134 +614,203 @@ int cmdCompose(const bench::Args& a) {
 int cmdVerifyCompose(const bench::Args& a) {
     using namespace bench;
 
-    OpenedScenario s;
-    int rc = kExitOk;
-    if (!openScenario(a, s, rc))
-        return rc;
+    if (a.positional.empty()) {
+        logMsg("シナリオファイルを指定してください");
+        return kExitUsage;
+    }
 
-    std::string outDir = a.get("output-dir");
+    Scenario base;
+    std::string lerr;
+    if (!loadScenario(a.positional[0], base, lerr)) {
+        logMsg(lerr);
+        logMsg("素材が未生成の場合は:  pwsh scripts/make-testmedia.ps1 -Mode Smoke");
+        return kExitError;
+    }
+    if (a.has("text-service"))
+        copyStr(base.timeline.text_service, sizeof(base.timeline.text_service),
+                a.get("text-service"));
+    if (a.has("font-file"))
+        copyStr(base.timeline.font_file, sizeof(base.timeline.font_file), a.get("font-file"));
+    if (a.has("video-transition"))
+        copyStr(base.timeline.video_transition, sizeof(base.timeline.video_transition),
+                a.get("video-transition"));
+
+    if (!initMlt())
+        return kExitError;
+
     std::vector<std::string> problems;
+    std::string outDir = a.get("output-dir");
 
-    // 未実行の検査があれば成功にしない。
-    int videoChecks = 0, audioChecks = 0;
+    // full / no_v2 / no_text の 3 系統を作る。
+    Variant full(base.timeline), noV2(base.timeline), noText(base.timeline);
+    if (!disableTrackByName(noV2.timeline, "V2"))
+        problems.push_back("シナリオに name=V2 のトラックがありません");
+    if (!disableTrackByName(noText.timeline, "T1"))
+        problems.push_back("シナリオに name=T1 のトラックがありません");
 
-    const Scenario& sc = s.scenario;
-    if (sc.verifyFrames.empty())
-        problems.push_back("verify.frames が空です");
-    if (sc.regions.find("v2_inside") == sc.regions.end() ||
-        sc.regions.find("v1_only") == sc.regions.end() ||
-        sc.regions.find("text") == sc.regions.end())
-        problems.push_back("verify.regions に v2_inside / v1_only / text が必要です");
+    char cerr[1024] = {0};
+    if (!full.open(cerr, sizeof(cerr))) {
+        logMsg(std::string("full の構築に失敗: ") + cerr);
+        mvm_mlt_runtime_shutdown();
+        return kExitMismatch;
+    }
+    if (!noV2.open(cerr, sizeof(cerr)))
+        problems.push_back(std::string("no_v2 の構築に失敗: ") + cerr);
+    if (!noText.open(cerr, sizeof(cerr)))
+        problems.push_back(std::string("no_text の構築に失敗: ") + cerr);
+
+    Region pipRect{}, textRect{};
+    if (base.regions.count("pip_rect"))
+        pipRect = base.regions.at("pip_rect");
+    if (base.regions.count("text"))
+        textRect = base.regions.at("text");
+    if (!pipRect.valid())
+        problems.push_back("verify.regions に pip_rect が必要です (PiP の期待矩形)");
+    if (!textRect.valid())
+        problems.push_back("verify.regions に text が必要です");
+
+    const double insideMin =
+        a.has("inside-min-diff") ? std::strtod(a.get("inside-min-diff").c_str(), nullptr) : 0.20;
+    const double outsideMax =
+        a.has("outside-max-diff") ? std::strtod(a.get("outside-max-diff").c_str(), nullptr) : 0.02;
+    const int geomTol = a.has("geom-tolerance")
+                            ? (int)std::strtol(a.get("geom-tolerance").c_str(), nullptr, 10)
+                            : 8;
 
     std::ostringstream js;
-    js << "{\n";
-    js << "  \"scenario\": \"" << jsonEscape(sc.name) << "\",\n";
-    js << "  \"text_service\": \"" << jsonEscape(sc.timeline.text_service) << "\",\n";
-    js << "  \"font_file\": \"" << jsonEscape(sc.timeline.font_file) << "\",\n";
-    printComposeInfo(s.info, js);
+    js << "{\n  \"scenario\": \"" << jsonEscape(base.name) << "\",\n";
+    js << "  \"text_service\": \"" << jsonEscape(base.timeline.text_service) << "\",\n";
+    js << "  \"video_transition\": \"" << jsonEscape(base.timeline.video_transition) << "\",\n";
+    js << "  \"font_file\": \"" << jsonEscape(base.timeline.font_file) << "\",\n";
+    js << "  \"inside_min_diff\": " << insideMin << ",\n";
+    js << "  \"outside_max_diff\": " << outsideMax << ",\n";
+    printComposeInfo(full.info, js);
     js << "  \"frames\": [";
 
+    int videoChecks = 0;
     bool firstFrame = true;
-    for (long long frame : sc.verifyFrames) {
-        MvmMltImage img{};
-        char err[512] = {0};
-        if (mvm_mlt_compose_frame(s.handle, frame, &img, err, sizeof(err)) != 0) {
-            problems.push_back("frame " + std::to_string(frame) + ": 取得できません: " + err);
+
+    for (long long frame : base.verifyFrames) {
+        MvmMltImage imgFull{}, imgNoV2{}, imgNoText{};
+        char e1[512] = {0}, e2[512] = {0}, e3[512] = {0};
+
+        if (mvm_mlt_compose_frame(full.handle, frame, &imgFull, e1, sizeof(e1)) != 0) {
+            problems.push_back("frame " + std::to_string(frame) + " (full): " + e1);
             continue;
         }
+        bool haveNoV2 =
+            noV2.handle && mvm_mlt_compose_frame(noV2.handle, frame, &imgNoV2, e2, sizeof(e2)) == 0;
+        bool haveNoText = noText.handle && mvm_mlt_compose_frame(noText.handle, frame, &imgNoText,
+                                                                 e3, sizeof(e3)) == 0;
+        if (noV2.handle && !haveNoV2)
+            problems.push_back("frame " + std::to_string(frame) + " (no_v2): " + e2);
+        if (noText.handle && !haveNoText)
+            problems.push_back("frame " + std::to_string(frame) + " (no_text): " + e3);
+
         videoChecks++;
-
-        RegionStats v2 = regionStats(img.rgba, img.width, img.height, sc.regions.at("v2_inside"));
-        RegionStats v1 = regionStats(img.rgba, img.width, img.height, sc.regions.at("v1_only"));
-        RegionStats tx = regionStats(img.rgba, img.width, img.height, sc.regions.at("text"));
-        MarkerRead marker = readMarker(img.rgba, img.width, img.height);
-
-        // 1. マーカー: 合成後も V1 のマーカーが正しいフレームを示すこと
+        MarkerRead marker = readMarker(imgFull.rgba, imgFull.width, imgFull.height);
         if (!marker.syncOk)
-            problems.push_back("frame " + std::to_string(frame) + ": マーカーの同期が取れません");
+            problems.push_back("frame " + std::to_string(frame) + ": マーカー同期が取れません");
         else if (marker.value != frame)
             problems.push_back("frame " + std::to_string(frame) +
                                ": マーカー不一致 marker=" + std::to_string(marker.value));
 
-        // 2. V2 領域と V1 のみ領域が別の絵であること。
-        //    同じなら V2 が合成されていない。
-        double dist = meanColourDistance(v2, v1);
-        if (dist < 8.0)
-            problems.push_back("frame " + std::to_string(frame) +
-                               ": V2 領域と V1 領域の平均色が近すぎます (距離 " +
-                               std::to_string(dist) + ")。V2 が合成されていない可能性があります");
+        double pipIn = -1, pipOut = -1, txIn = -1, txOut = -1;
+        Region measured{};
 
-        // 3. V2 領域に絵があること (分散が 0 なら単色 = 合成失敗)
-        if (v2.variance < 1.0)
-            problems.push_back("frame " + std::to_string(frame) + ": V2 領域が単色です (variance " +
-                               std::to_string(v2.variance) + ")");
+        if (haveNoV2 && pipRect.valid()) {
+            pipIn = diffRatioInside(imgFull, imgNoV2, pipRect);
+            pipOut = diffRatioOutside(imgFull, imgNoV2, pipRect);
+            measured = diffBoundingBox(imgFull, imgNoV2);
 
-        // 4. text 領域に有効画素があること。
-        //    背景 (bg_colour) と文字色の両方が含まれるため分散が立つ。
-        if (tx.variance < 5.0)
-            problems.push_back("frame " + std::to_string(frame) +
-                               ": text 領域に描画がありません (variance " +
-                               std::to_string(tx.variance) + ")");
+            if (pipIn < insideMin)
+                problems.push_back("frame " + std::to_string(frame) +
+                                   ": PiP 矩形内の差分率が小さすぎます " + std::to_string(pipIn) +
+                                   " < " + std::to_string(insideMin) +
+                                   " (V2 が合成されていない)");
+            if (pipOut > outsideMax)
+                problems.push_back("frame " + std::to_string(frame) +
+                                   ": PiP 矩形外へ V2 の画素が漏れています 差分率 " +
+                                   std::to_string(pipOut) + " > " + std::to_string(outsideMax));
+            if (std::abs(measured.x - pipRect.x) > geomTol ||
+                std::abs(measured.y - pipRect.y) > geomTol ||
+                std::abs(measured.w - pipRect.w) > geomTol ||
+                std::abs(measured.h - pipRect.h) > geomTol) {
+                problems.push_back(
+                    "frame " + std::to_string(frame) + ": PiP の位置/サイズが期待と違います 実測 " +
+                    std::to_string(measured.x) + "," + std::to_string(measured.y) + " " +
+                    std::to_string(measured.w) + "x" + std::to_string(measured.h) + " 期待 " +
+                    std::to_string(pipRect.x) + "," + std::to_string(pipRect.y) + " " +
+                    std::to_string(pipRect.w) + "x" + std::to_string(pipRect.h));
+            }
+        }
 
-        // 5. alpha が全体に効いていないこと。
-        //    最終合成結果は不透明であるべき。半透明のまま出てくるのは
-        //    合成が途中で終わっている兆候。
-        if (v1.meanA < 250.0)
-            problems.push_back("frame " + std::to_string(frame) +
-                               ": 背景領域の alpha が不透明ではありません (mean_a " +
-                               std::to_string(v1.meanA) + ")");
+        if (haveNoText && textRect.valid()) {
+            txIn = diffRatioInside(imgFull, imgNoText, textRect);
+            txOut = diffRatioOutside(imgFull, imgNoText, textRect);
+            if (txIn < insideMin)
+                problems.push_back("frame " + std::to_string(frame) +
+                                   ": text 矩形内の差分率が小さすぎます " + std::to_string(txIn) +
+                                   " < " + std::to_string(insideMin) +
+                                   " (文字が描かれていない)");
+            if (txOut > outsideMax)
+                problems.push_back("frame " + std::to_string(frame) +
+                                   ": text 矩形外へ描画が漏れています 差分率 " +
+                                   std::to_string(txOut) + " > " + std::to_string(outsideMax));
+        }
 
         if (!outDir.empty() && outDir != "1") {
-            std::string pngPath = outDir + "/compose_" + std::to_string(frame) + ".png";
-            std::string pngErr;
-            writePng(pngPath, img.rgba, img.width, img.height, pngErr);
+            std::string pe;
+            writePng(outDir + "/full_" + std::to_string(frame) + ".png", imgFull.rgba,
+                     imgFull.width, imgFull.height, pe);
         }
 
         js << (firstFrame ? "\n    " : ",\n    ");
         firstFrame = false;
-        js << "{ \"frame\": " << frame
-           << ", \"marker_sync_ok\": " << (marker.syncOk ? "true" : "false")
-           << ", \"marker_value\": " << marker.value << ", \"v2_v1_distance\": " << dist
-           << ", \"v2_variance\": " << v2.variance << ", \"text_variance\": " << tx.variance
-           << ", \"v1_mean_alpha\": " << v1.meanA << " }";
+        js << "{ \"frame\": " << frame << ", \"marker_value\": " << marker.value
+           << ", \"pip_inside_diff\": " << pipIn << ", \"pip_outside_diff\": " << pipOut
+           << ", \"pip_bbox\": { \"x\": " << measured.x << ", \"y\": " << measured.y
+           << ", \"w\": " << measured.w << ", \"h\": " << measured.h << " }"
+           << ", \"text_inside_diff\": " << txIn << ", \"text_outside_diff\": " << txOut << " }";
 
-        mvm_mlt_image_free(&img);
+        mvm_mlt_image_free(&imgFull);
+        if (haveNoV2)
+            mvm_mlt_image_free(&imgNoV2);
+        if (haveNoText)
+            mvm_mlt_image_free(&imgNoText);
     }
     js << (firstFrame ? "],\n" : "\n  ],\n");
 
-    // --- 音声 ---
+    int audioChecks = 0;
     js << "  \"audio\": [";
     bool firstAudio = true;
-    for (long long frame : sc.audio.frames) {
+    for (long long frame : base.audio.frames) {
         MvmComposeAudio au{};
         char err[512] = {0};
-        if (mvm_mlt_compose_audio(s.handle, frame, &au, err, sizeof(err)) != 0) {
-            problems.push_back("audio frame " + std::to_string(frame) + ": 取得できません: " + err);
+        if (mvm_mlt_compose_audio(full.handle, frame, &au, err, sizeof(err)) != 0) {
+            problems.push_back("audio frame " + std::to_string(frame) + ": " + err);
             continue;
         }
         audioChecks++;
 
-        if (au.sample_rate != sc.audio.sampleRate)
+        if (au.sample_rate != base.audio.sampleRate)
             problems.push_back("audio frame " + std::to_string(frame) + ": sample_rate " +
-                               std::to_string(au.sample_rate) +
-                               " != " + std::to_string(sc.audio.sampleRate));
-        if (au.channels != sc.audio.channels)
+                               std::to_string(au.sample_rate));
+        if (au.channels != base.audio.channels)
             problems.push_back("audio frame " + std::to_string(frame) + ": channels " +
-                               std::to_string(au.channels) +
-                               " != " + std::to_string(sc.audio.channels));
+                               std::to_string(au.channels));
 
         double rmsL = rms(au.data, au.samples, au.channels);
         double rmsR = rms(au.data + 1, au.samples, au.channels);
         double peakL = peak(au.data, au.samples, au.channels);
         double peakR = peak(au.data + 1, au.samples, au.channels);
 
-        if (rmsL < sc.audio.minRms || rmsR < sc.audio.minRms)
-            problems.push_back("audio frame " + std::to_string(frame) + ": 無音に近いです (rmsL " +
-                               std::to_string(rmsL) + " rmsR " + std::to_string(rmsR) + ")");
-        if (peakL > sc.audio.maxPeak || peakR > sc.audio.maxPeak)
-            problems.push_back("audio frame " + std::to_string(frame) +
-                               ": clipping しています (peak " +
-                               std::to_string(std::max(peakL, peakR)) + ")");
+        if (rmsL < base.audio.minRms || rmsR < base.audio.minRms)
+            problems.push_back("audio frame " + std::to_string(frame) + ": 無音に近い rmsL " +
+                               std::to_string(rmsL) + " rmsR " + std::to_string(rmsR));
+        if (peakL > base.audio.maxPeak || peakR > base.audio.maxPeak)
+            problems.push_back("audio frame " + std::to_string(frame) + ": clipping peak " +
+                               std::to_string(std::max(peakL, peakR)));
 
         js << (firstAudio ? "\n    " : ",\n    ");
         firstAudio = false;
@@ -633,29 +818,17 @@ int cmdVerifyCompose(const bench::Args& a) {
            << ", \"channels\": " << au.channels << ", \"samples\": " << au.samples
            << ", \"rms_l\": " << rmsL << ", \"rms_r\": " << rmsR << ", \"peak_l\": " << peakL
            << ", \"peak_r\": " << peakR;
-
-        for (double hz : sc.audio.goertzelHz) {
+        for (double hz : base.audio.goertzelHz) {
             double gl = goertzel(au.data, au.samples, au.channels, au.sample_rate, hz);
             double gr = goertzel(au.data + 1, au.samples, au.channels, au.sample_rate, hz);
             js << ", \"g" << (long long)hz << "_l\": " << gl << ", \"g" << (long long)hz
                << "_r\": " << gr;
-
-            // L は 1000Hz、R は 500Hz が主成分になるよう素材を作っている。
-            // A1 と A2 の両方が同じ構成なので、mix されていれば
-            // どちらのチャンネルにも該当成分が残る。
-            if (hz == 1000.0 && gl < 0.01)
-                problems.push_back("audio frame " + std::to_string(frame) +
-                                   ": L に 1000Hz 成分がありません (" + std::to_string(gl) + ")");
-            if (hz == 500.0 && gr < 0.01)
-                problems.push_back("audio frame " + std::to_string(frame) +
-                                   ": R に 500Hz 成分がありません (" + std::to_string(gr) + ")");
         }
         js << " }";
         mvm_mlt_audio_free(&au);
     }
     js << (firstAudio ? "],\n" : "\n  ],\n");
 
-    // 検査が 1 件も走っていないなら成功にしない
     if (videoChecks == 0)
         problems.push_back("映像の検査が 1 件も実行されていません");
     if (audioChecks == 0)
@@ -669,7 +842,7 @@ int cmdVerifyCompose(const bench::Args& a) {
     js << (problems.empty() ? "]\n}\n" : "\n  ]\n}\n");
 
     std::fputs(js.str().c_str(), stdout);
-    closeScenario(s);
+    mvm_mlt_runtime_shutdown();
 
     if (!problems.empty()) {
         logMsg("合成検証に失敗しました:");

@@ -76,11 +76,20 @@ typedef struct {
 typedef struct {
     MvmBenchTrackKind kind;
 
+    /* シナリオ内でトラックを指す名前 ("V1" / "V2" / "A1" / "A2" / "T1")。
+     * A/B 差分検証で「V2 だけ無効」を指定するために使う。 */
+    char name[64];
+
     /* 合成順。小さいほど下 (背景側)。MLT の track index とは独立に持つ。 */
     int z_order;
 
     int video_enabled;
     int audio_enabled;
+
+    /* 1 なら、このトラックをグラフから完全に除外する。
+     * A/B 差分検証で使う。hide で隠すのではなく構築自体から外すので、
+     * 「本当にそのトラックが無いときの絵」が得られる。 */
+    int disabled;
 
     MvmBenchClip clips[MVM_BENCH_MAX_CLIPS];
     int clip_count;
@@ -99,6 +108,10 @@ typedef struct {
     /* 文字描画に使う service: "qtext" または "dynamictext"。
      * どちらを第一候補にするかは S5 の比較で決める。 */
     char text_service[32];
+
+    /* 映像の重ね合わせに使う transition。既定 "qtblend"。
+     * 拡縮配置がどの service で成立するかを実測で比較するために可変にする。 */
+    char video_transition[32];
 
     /* フォントファイルの存在確認に使う。無言で別フォントへ
      * fallback させないため、実ファイルのパスを持つ。 */

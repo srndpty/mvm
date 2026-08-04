@@ -3,6 +3,7 @@
 #include "../../util/mvm_win_utf8.h"
 #include "mvm_mlt_runtime.h"
 
+#include <math.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
@@ -165,10 +166,6 @@ MvmComposeHandle* mvm_mlt_compose_open(const MvmBenchTimeline* tl, MvmComposeInf
         set_err(err, err_size, "必須 producer 'avformat' がありません");
         goto fail;
     }
-    if (!service_exists(transitions, "qtblend")) {
-        set_err(err, err_size, "必須 transition 'qtblend' がありません");
-        goto fail;
-    }
     if (!service_exists(transitions, "mix")) {
         set_err(err, err_size, "必須 transition 'mix' がありません");
         goto fail;
@@ -236,8 +233,22 @@ MvmComposeHandle* mvm_mlt_compose_open(const MvmBenchTimeline* tl, MvmComposeInf
         }
     }
 
-    for (int ti = 0; ti < tl->track_count; ti++) {
-        const MvmBenchTrack* track = &tl->tracks[order[ti]];
+    /* disabled のトラックはグラフから完全に外す。
+     * hide で隠すのではなく構築自体から外すので、A/B 差分検証で
+     * 「本当にそのトラックが無いときの絵」が得られる。 */
+    int built[MVM_BENCH_MAX_TRACKS];
+    int built_count = 0;
+    for (int i = 0; i < tl->track_count; i++) {
+        if (!tl->tracks[order[i]].disabled)
+            built[built_count++] = order[i];
+    }
+    if (built_count <= 0) {
+        set_err(err, err_size, "有効なトラックがありません");
+        goto fail;
+    }
+
+    for (int ti = 0; ti < built_count; ti++) {
+        const MvmBenchTrack* track = &tl->tracks[built[ti]];
 
         mlt_playlist pl = mlt_playlist_new(h->profile);
         if (!pl) {
@@ -433,17 +444,26 @@ MvmComposeHandle* mvm_mlt_compose_open(const MvmBenchTimeline* tl, MvmComposeInf
             mlt_properties_set_int(MLT_PLAYLIST_PROPERTIES(pl), "hide", hide);
 
         if (info) {
-            add_note(info, "track", "index=%d kind=%d z_order=%d hide=%d clips=%d", ti,
-                     (int)track->kind, track->z_order, hide, track->clip_count);
+            add_note(info, "track", "index=%d name=%s kind=%d z_order=%d hide=%d clips=%d", ti,
+                     track->name[0] ? track->name : "(no name)", (int) track->kind, track->z_order,
+                     hide, track->clip_count);
         }
+    }
+
+    /* transition の rect を設定する前に length を確定させる。
+     * anim_set_rect は length を必要とする。 */
+    h->length = (long long) mlt_producer_get_length(MLT_TRACTOR_PRODUCER(h->tractor));
+    if (h->length <= 0) {
+        set_err(err, err_size, "tractor の長さが 0 です");
+        goto fail;
     }
 
     /* --- transition ------------------------------------------------------- */
     /* 映像: track 0 を背景に、上のトラックを qtblend で重ねる。
      * 音声: mix で合成する。always_active と sum を立てないと
      *       トラック全域で効かない。 */
-    for (int ti = 1; ti < tl->track_count; ti++) {
-        const MvmBenchTrack* track = &tl->tracks[order[ti]];
+    for (int ti = 1; ti < built_count; ti++) {
+        const MvmBenchTrack* track = &tl->tracks[built[ti]];
 
         if (track->kind == MVM_BENCH_TRACK_AUDIO) {
             mlt_transition mx = mlt_factory_transition(h->profile, "mix", NULL);
@@ -465,59 +485,108 @@ MvmComposeHandle* mvm_mlt_compose_open(const MvmBenchTimeline* tl, MvmComposeInf
             if (info)
                 add_note(info, "transition", "mix a_track=0 b_track=%d always_active=1 sum=1", ti);
         } else {
-            /* [実測所見] 映像の重ね合わせは qtblend transition + rect で行う。
+            /* 映像の重ね合わせは qtblend transition + rect。
              *
-             * ここまでに試した 3 通りと結果:
-             *   1. qtblend transition, rect なし  -> b_track がまったく合成されない
-             *      (エラーは出ず、下のトラックだけが出力される)
-             *   2. qtblend filter (rect) + transition -> そのトラックが消える
-             *   3. composite transition + geometry -> アクセス違反でクラッシュ
+             * [重要] rect は文字列で組み立てず mlt_rect の typed API で設定する。
              *
-             * したがって現状は 1 の rect あり版だけが動く。ただし rect の
-             * 幅・高さは拡縮に効かず、等倍の切り出しとして働く
-             * (docs/research/composition-notes.md に記録)。
-             * 縮小 PiP は未解決であり、M3 は未達である。 */
-            mlt_transition qb = mlt_factory_transition(h->profile, "qtblend", NULL);
+             * 以前は "1260 700 640 360 1" という空白区切りの文字列を渡していた。
+             * MLT rect の書式は "X/Y:WxH[:opacity]" であり、空白区切りは
+             * 正式な書式ではない。それでも MLT はエラーを返さず、
+             * 一部の値だけを拾って「等倍の切り出し」という別の絵を出していた。
+             * 縮小されないだけで何かは重なるため、気づきにくい。
+             *
+             * 設定後は anim_get_rect で読み戻して照合する。
+             * 「設定できたつもり」を成功と見なさない。 */
+            /* [実測所見] 映像の重ね合わせは affine transition を使う。
+             *
+             * qtblend transition では拡縮配置ができなかった。typed API
+             * (mlt_properties_anim_set_rect) で設定し、anim_get_rect で
+             * 読み戻して値が一致することまで確認しても、実際の描画では
+             * x のオフセットしか効かず、y・w・h と縮小が無視される。
+             * エラーは出ないため「重なってはいる」状態で見過ごしやすい。
+             *
+             * affine transition は同じ typed rect でそのまま正しく動く。
+             * PiP だけでなく、文字トラックの合成も affine で初めて成立した。 */
+            const char* vt = tl->video_transition[0] ? tl->video_transition : "affine";
+            if (!service_exists(transitions, vt)) {
+                set_err(err, err_size, "映像合成 transition '%s' がありません", vt);
+                goto fail;
+            }
+            mlt_transition qb = mlt_factory_transition(h->profile, vt, NULL);
             if (!qb) {
-                set_err(err, err_size, "qtblend transition を作れません (track %d)", ti);
+                set_err(err, err_size, "%s transition を作れません (track %d)", vt, ti);
                 goto fail;
             }
             mlt_properties qp = MLT_TRANSITION_PROPERTIES(qb);
-            mlt_properties_set_int(qp, "always_active", 1);
+            /* [重要] always_active ではなく in/out を明示する。
+             * always_active=1 のまま in=out=0 にしておくと transition の
+             * length が 1 になり、animated property の評価位置が壊れる。 */
+            mlt_transition_set_in_and_out(qb, 0, (mlt_position) (h->length - 1));
 
             const MvmBenchClip* c0 = &track->clips[0];
-            char rect[128];
+            mlt_rect want;
             if (c0->rect_w > 0 && c0->rect_h > 0) {
-                snprintf(rect, sizeof(rect), "%g %g %g %g %g", c0->rect_x, c0->rect_y, c0->rect_w,
-                         c0->rect_h, c0->opacity);
+                want.x = c0->rect_x;
+                want.y = c0->rect_y;
+                want.w = c0->rect_w;
+                want.h = c0->rect_h;
             } else {
-                snprintf(rect, sizeof(rect), "0 0 %d %d %g", h->profile->width, h->profile->height,
-                         c0->opacity);
+                want.x = 0;
+                want.y = 0;
+                want.w = h->profile->width;
+                want.h = h->profile->height;
             }
-            mlt_properties_set(qp, "rect", rect);
-            mlt_properties_set_int(qp, "compositing", 0);
+            want.o = c0->opacity;
+
+            int tl_last = (int) (h->length > 0 ? h->length - 1 : 0);
+            if (mlt_properties_anim_set_rect(qp, "rect", want, 0, tl_last, mlt_keyframe_discrete)
+                != 0) {
+                set_err(err, err_size, "rect を設定できません (track %d)", ti);
+                goto fail;
+            }
+
+            /* 読み戻して照合する。frame 0 と代表フレームの両方を見る。 */
+            const int probe_frames[] = {0, 1, 137, tl_last};
+            for (size_t pi = 0; pi < sizeof(probe_frames) / sizeof(probe_frames[0]); pi++) {
+                int pf = probe_frames[pi];
+                if (pf > tl_last)
+                    continue;
+                mlt_rect got = mlt_properties_anim_get_rect(qp, "rect", pf, tl_last);
+                const double eps = 0.001;
+                if (fabs(got.x - want.x) > eps || fabs(got.y - want.y) > eps
+                    || fabs(got.w - want.w) > eps || fabs(got.h - want.h) > eps
+                    || fabs(got.o - want.o) > eps) {
+                    set_err(err, err_size,
+                            "track %d: rect の読み戻しが一致しません (frame %d)。"
+                            "設定 %g/%g:%gx%g:%g -> 読戻 %g/%g:%gx%g:%g",
+                            ti, pf, want.x, want.y, want.w, want.h, want.o, got.x, got.y, got.w,
+                            got.h, got.o);
+                    goto fail;
+                }
+            }
+
+            /* distort=0 でアスペクト比を維持する。
+             * 1920x1080 -> 640x360 は同じ 16:9 なので歪まない。 */
             mlt_properties_set_int(qp, "distort", 0);
+            mlt_properties_set_int(qp, "compositing", 0);
 
             mlt_transition_set_tracks(qb, 0, ti);
             if (mlt_field_plant_transition(mlt_tractor_field(h->tractor), qb, 0, ti) != 0) {
-                set_err(err, err_size, "qtblend transition を配置できません (track %d)", ti);
+                set_err(err, err_size, "%s transition を配置できません (track %d)", vt, ti);
                 goto fail;
             }
             h->transitions[h->transition_count++] = qb;
-            if (info)
-                add_note(info, "transition", "qtblend a_track=0 b_track=%d rect=%s", ti, rect);
+            if (info) {
+                add_note(info, "transition",
+                         "%s a_track=0 b_track=%d rect=%g/%g:%gx%g:%g (typed, 読戻し照合済)", vt,
+                         ti, want.x, want.y, want.w, want.h, want.o);
+            }
         }
-    }
-
-    h->length = (long long)mlt_producer_get_length(MLT_TRACTOR_PRODUCER(h->tractor));
-    if (h->length <= 0) {
-        set_err(err, err_size, "tractor の長さが 0 です");
-        goto fail;
     }
 
     if (info) {
         info->length = h->length;
-        info->track_count = tl->track_count;
+        info->track_count = h->playlist_count;
     }
     return h;
 
@@ -602,12 +671,24 @@ int mvm_mlt_compose_audio(MvmComposeHandle* h, long long frame, MvmComposeAudio*
         return 1;
     }
 
-    mlt_audio_format afmt = mlt_audio_float;
-    int frequency = h->profile->frame_rate_num ? 48000 : 48000;
+    /* [実測所見] mlt_audio_float は **planar** (チャンネルごとに連続) である。
+     * interleaved が欲しいときは mlt_audio_f32le を要求する。
+     * planar を interleaved と誤解して読むと、RMS が 1e+34 のような
+     * 明らかな異常値になる。値が異常なので気づけたが、もし桁が近ければ
+     * 「音は出ている」と誤認しかねない。
+     *
+     * さらに、要求した format が通るとは限らない。MLT は変換できない場合に
+     * 別の format を返す。戻り値の afmt を必ず確認する。 */
+    mlt_audio_format afmt = mlt_audio_f32le;
+    int frequency = 48000;
     int channels = 2;
-    int samples = mlt_audio_calculate_frame_samples((float)h->profile->frame_rate_num /
-                                                        (float)h->profile->frame_rate_den,
-                                                    frequency, (int)frame);
+    /* [重要] samples は in/out である。0 を渡してはいけない。
+     * 0 のまま呼ぶと MLT は 0 サンプル分しか用意しないのに戻り値では
+     * 800 を返し、その差分を読んだ結果 heap 破壊と nan を引き起こす。
+     * 正しいフレーム内サンプル数を入力として渡す。 */
+    int samples = mlt_audio_calculate_frame_samples(
+        (float)h->profile->frame_rate_num / (float)h->profile->frame_rate_den, frequency,
+        (int)frame);
     void* buffer = NULL;
 
     if (mlt_frame_get_audio(f, &buffer, &afmt, &frequency, &channels, &samples) != 0 || !buffer ||
@@ -616,9 +697,39 @@ int mvm_mlt_compose_audio(MvmComposeHandle* h, long long frame, MvmComposeAudio*
         mlt_frame_close(f);
         return 1;
     }
+    if (afmt != mlt_audio_f32le) {
+        set_err(err, err_size,
+                "音声 format が要求と異なります (要求 f32le=%d, 実際 %d)。"
+                "誤った解釈を避けるため失敗させます",
+                (int)mlt_audio_f32le, (int)afmt);
+        mlt_frame_close(f);
+        return 1;
+    }
 
-    /* mlt_audio_float は planar (チャンネルごとに連続)。
-     * 呼び出し側で扱いやすいよう interleaved へ直す。 */
+    /* [未解決 / 危険]
+     * ここで buffer を samples * channels * sizeof(float) として読むと、
+     * 値が nan や 1e+33 になり、さらに heap 破壊 (0xC0000374) が発生する。
+     *
+     * 試した範囲:
+     *   - mlt_audio_float (planar) として読む      -> 値が 1e+34
+     *   - mlt_audio_f32le (interleaved) を要求      -> format 検査は通るが値は異常
+     *   - samples を 0 で渡す / 正しい値で渡す      -> どちらも異常
+     *
+     * つまり MLT が返すバッファの実サイズと、報告される samples/channels が
+     * 一致していない。原因を特定できていない以上、読むこと自体が危険なので
+     * 読まずに失敗させる。誤った RMS を「音が出ている」と誤認するより、
+     * 検証できていないことを明示する方が安全である。
+     *
+     * docs/research/composition-notes.md に記録。次バッチの最優先項目。 */
+    (void)buffer;
+    set_err(err, err_size,
+            "音声バッファの解釈が未解決です (frequency=%d channels=%d samples=%d format=%d)。"
+            "誤った値を返すより失敗させます",
+            frequency, channels, samples, (int)afmt);
+    mlt_frame_close(f);
+    return 1;
+
+#if 0
     out->sample_rate = frequency;
     out->channels = channels;
     out->samples = samples;
@@ -628,13 +739,8 @@ int mvm_mlt_compose_audio(MvmComposeHandle* h, long long frame, MvmComposeAudio*
         mlt_frame_close(f);
         return 1;
     }
-
-    const float* src = (const float*)buffer;
-    for (int c = 0; c < channels; c++) {
-        const float* plane = src + (size_t)c * (size_t)samples;
-        for (int s = 0; s < samples; s++)
-            out->data[(size_t)s * (size_t)channels + (size_t)c] = plane[s];
-    }
+    memcpy(out->data, buffer, (size_t)samples * (size_t)channels * sizeof(float));
+#endif
 
     mlt_frame_close(f);
     return 0;

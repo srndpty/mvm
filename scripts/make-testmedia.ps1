@@ -103,10 +103,17 @@ $MarkerExpr  = "if(lt(floor(X/$CellSize),1),235," +
                "if(bitand(floor(N/pow(2,floor(X/$CellSize)-2))\,1),235,16)," +
                "235)))"
 
-# 既知の周期を持つ音声。48000Hz に対し 1000Hz = 48 サンプル周期、
-# 500Hz = 96 サンプル周期。いずれも整数周期なので完全に決定論的。
+# 既知の周期を持つ音声。48000Hz に対し整数周期なので完全に決定論的。
+#
+# 映像に埋める音声 (A1 相当) と WAV (A2 相当) で周波数を変える。
+# 同じ構成にすると、片方だけが出力に含まれていても検査が通ってしまい、
+# 「両方が mix された」ことを実証できない (S5 の実測で判明)。
+#   A1: L 1000Hz (48 サンプル周期) / R  500Hz (96 サンプル周期)
+#   A2: L 1500Hz (32 サンプル周期) / R  750Hz (64 サンプル周期)
 $AudioExpr = 'aevalsrc=exprs=0.5*sin(2*PI*1000*t)|0.5*sin(2*PI*500*t):s=48000:d=' +
              "${Duration}:c=stereo"
+$AudioExprA2 = 'aevalsrc=exprs=0.5*sin(2*PI*1500*t)|0.5*sin(2*PI*750*t):s=48000:d=' +
+               "${Duration}:c=stereo"
 
 function New-VideoArgs {
     param(
@@ -217,7 +224,7 @@ $Assets = @(
         Args = {
             @(
                 '-hide_banner', '-y', '-loglevel', 'error', '-nostdin'
-                '-f', 'lavfi', '-i', $AudioExpr
+                '-f', 'lavfi', '-i', $AudioExprA2
                 '-c:a', 'pcm_s16le', '-ar', '48000', '-ac', '2', $args[0]
             )
         }
