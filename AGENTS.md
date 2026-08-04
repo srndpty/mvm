@@ -111,6 +111,17 @@ pwsh scripts/lint.ps1                # 整形差分と静的検査
 pwsh scripts/coverage.ps1            # カバレッジ
 ```
 
+計測用の matrix スクリプト（いずれも生 JSON から集計まで行う）:
+
+```powershell
+pwsh scripts/scrub-matrix.ps1        # M6 scrub (8 条件 x 3 回)
+pwsh scripts/memory-matrix.ps1       # メモリ切り分け (ケース A-G)
+pwsh scripts/audio-graph-matrix.ps1  # 音声グラフの最小構成切り分け
+```
+
+**計測値を文書へ手で転記しない。** スクリプトが生 JSON から再計算し、
+集計の自己整合（例: `updates/sec == displayed/elapsed`）を機械で検査する。
+
 `scripts/build.ps1` を使うこと。`C:\msys64\ucrt64\bin` が PATH に無いと
 gcc は**エラー出力なしに**失敗し、CMake からは「compiler is broken」としか見えない。
 
@@ -123,6 +134,10 @@ ctest --output-on-failure
 
 - 通常の CTest は Smoke 素材（5 秒）を使い短時間で終わること
 - 長時間の性能計測は `-L performance` で分離する（通常実行に含めない）
+- 合否を決められない長時間の診断は `-L stability` で分離する
+  （メモリ測定など）。通常実行は `-LE 'performance|stability'` で
+  **両方を除外する**。除外しないと「通常テストが何件通ったか」が分からなくなる
+- テスト件数は種別ごとに分けて報告する（`scripts/test.ps1` が出力する）
 - **性能値を exit criteria に使うときは release / RelWithDebInfo で測る。**
   debug ビルドの数値を判定に使わない
 

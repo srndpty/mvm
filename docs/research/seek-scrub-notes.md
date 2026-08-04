@@ -9,7 +9,9 @@
 
 ```powershell
 mvm_bench seek-bench  bench/scenarios/s5-five-track.json --random 200 --csv seek.csv
-mvm_bench scrub-bench bench/scenarios/s5-five-track.json --requests 300 --pattern linear
+
+# M6 は matrix スクリプトで測る。単発実行の値を文書へ転記しない。
+pwsh scripts/scrub-matrix.ps1 -Runs 3 -Requests 300
 ```
 
 ---
@@ -36,9 +38,29 @@ loader 修正と所有権修正を入れても seek 精度は変わらない。
 初回実行時のファイルキャッシュの影響と考えられる（**[推測]**）。
 中央値を代表値とする。
 
-**[exit]** M4 合格 / M5 不合格（p95 223.8ms > 基準 150ms）。
+**[exit]** M4 合格 / M5 不合格。
 
-### scrub baseline（realistic 条件）
+**M5 の max 記録の訂正:** 中央値 275.7ms を「max 基準合格」と扱わない。
+**3 回を通して観測した max は 476.4ms であり、基準 400ms を超えている。**
+1 回目だけが 476.4ms で 2・3 回目は 275.7 / 261.2ms だが、
+外れ値を落として合格とするなら、**warm-up 条件を明示的に定義してから
+再測定する必要がある**。現時点ではその定義が無いので、
+**p95 と max の両方で不合格**とする。
+
+### scrub baseline（**判定式が壊れていた時期**・参考）
+
+**[重要] 以下の値は使ってはいけない。**
+当時の判定は `result.generation < lastAcceptedGeneration` であり、
+consumer が generation 昇順に処理する以上この条件は成立しない。
+つまり**棄却が一度も働かず、古い結果もすべて表示していた。**
+したがって `accepted` と `updates_per_sec` は、
+どの契約の値でもない（契約が実装されていなかった）。
+
+`stale_rejected` が全条件 0 だったのは棄却が働いていた証拠ではなく、
+判定式が成立しなかったためである。
+
+削除せず参考として残す。現在の契約での値は
+「[scrub と request coalescing — M6](#scrub-と-request-coalescing--m6)」を参照。
 
 1000 要求 × 4 パターン × 投入間隔 2 種。native 素材のみ、proxy なし。
 
@@ -75,12 +97,109 @@ seek の p50 が 102〜106ms とほぼ 1 フレーム分の decode コストに�
 4. consumer による先読みを使わず `mlt_service_get_frame` を直接呼んでいる
 5. 毎フレーム 1920x1080 の RGBA を全面コピーしている
 
-**[未検証 / 既知の限界]** `stale_rejected` が全条件で 0 である。
-現在の判定は `res.generation < lastAcceptedGeneration` であり、
-consumer が 1 件ずつ順に処理する限り結果は常に generation 昇順で返るため、
-この条件は成立しない。**stale 棄却が働くことを実証できてはいない。**
-`latestSubmittedGeneration` を使う修正と決定論的テストは次バッチの課題
-（今回の指示範囲外）。
+---
+
+## 表示契約の変更（S6 correctness closure）
+
+### 経緯 1: stale 判定が成立していなかった
+
+```cpp
+if (res.generation < lastAcceptedGeneration)  // ← 誤り
+    staleRejected++;
+else
+    accept(res);
+```
+
+consumer は 1 件ずつ順に処理するため、結果は常に generation 昇順で返る。
+`lastAcceptedGeneration` は直前に accept した値なので、この条件は**成立しない**。
+判定式が死んでいた。
+
+### 経緯 2: strict latest-only は使い物にならなかった
+
+そこで判定基準を `latestSubmittedGeneration` に変え、
+**`generation == latestSubmitted` のときだけ表示する**契約にした。
+これは論理的には筋が通っているが、実測すると
+**投入間隔より decode が遅い間、入力が止まるまで画が 1 枚も出ない。**
+
+間隔 0 で 300 要求を投入した測定では decoded が 1 件しかなく、
+updates/sec は約 3 だった。coalescing は正しく動いていたが、
+**この契約のもとでは「スクラブ中に画が更新される」という
+UI 上の要求そのものが満たせない。**
+
+「latestSubmitted より古いものはすべて stale」という言い方は、
+この契約に固有の言い方だったので廃止した。
+
+### 現在の契約: monotonic display
+
+保証するのは**「表示が巻き戻らないこと」**であって
+**「常に最新であること」ではない。**
+
+| 条件 | 判定 |
+| --- | --- |
+| `result.generation > latestSubmitted` | **InvalidFutureGeneration**（契約違反 / fail-closed） |
+| in-flight と一致しない generation | **NotInFlight**（二重 complete を含む） |
+| `decodeOk == false` | **DecodeFailed** |
+| `result.generation <= lastDisplayed` | **RejectRegression**（表示すると巻き戻る） |
+| `result.generation == latestSubmitted` | **DisplayLatest** |
+| `lastDisplayed < result.generation < latestSubmitted` | **DisplayLagging** |
+
+**DisplayLagging は捨てない。** 新しい要求が pending であっても、
+現在表示中より新しい decode 結果なら表示する。これによりスクラブ中も
+画が更新され続ける。追従の遅れは `generation_lag` として別に測る。
+
+維持しているもの:
+
+- pending は最新 1 件だけ保持する（latest-only coalescing）
+- decode 中の処理は中断しない
+- 入力停止後、最終要求は必ず `DisplayLatest` される
+
+### generation の採番
+
+generation は `ScrubCoalescer` が内部で単調採番する（`submit(frame)`）。
+外部で採番する場合は `submitWithGeneration()` を使うが、
+**`latestSubmitted` 以下の generation は受理せず、契約違反に数える。**
+呼び出し側が採番を巻き戻すと `InvalidFutureGeneration` が
+「未投入の generation」ではなく「一度は投入した generation」を
+指しうるようになり、契約が意味を失うためである。
+
+`InvalidFutureGeneration` の判定は in-flight 判定より**先**に行う。
+未投入の generation を受け取ること自体が、
+in-flight の不一致より重い異常だからである。この順序により
+両方の分岐が単体テストから到達可能になっている。
+
+### busy wait の除去
+
+pending が無いときの `std::this_thread::yield()` ループを
+`std::condition_variable` に置き換えた。consumer は
+「pending が投入された」か「done になった」で起床する。
+終了は producer が done を立て、pending も in-flight も無くなった時点。
+最終要求が必ず処理される契約は、done を立てる前に
+`cv.wait(lk, [&]{ return !hasPending() && !hasInFlight(); })` で保証している。
+
+### counter invariant
+
+scrub 終了時に以下を検査し、破れたら失敗にする。
+
+- `submitted == superseded_pending + decoded`
+- `decoded == display_latest + display_lagging + reject_regression + decode_failed`
+- 表示した generation が単調増加（巻き戻りが 1 件でもあれば失敗）
+- `final displayed generation == latest submitted generation`
+- `displayed_total == 0` を成功扱いしない
+- 契約違反カウンタが 0
+- `display_updates_per_sec == displayed_total / elapsed_sec`（集計の自己整合）
+
+marker 不一致と latency p50/p95 は **表示した結果だけ**を対象に集計する。
+
+### テスト
+
+| テスト | 対象 | 内容 |
+| --- | --- | --- |
+| `scrub_coalescer_unit` | 状態機械のみ | スレッドも実時間も使わない。全 decision 分岐の**到達回数を数え、0 回の分岐を「テスト済み」と呼ばない** |
+| `scrub_coalescer_threaded` | 実 mutex / condition_variable | sleep を使わない。cv ハンドシェイクで take と complete の順序を固定し、`DisplayLagging` が起きる interleaving を確実に作る |
+
+`RejectRegression` は防御的分岐であり、
+`submitWithGeneration` が逆行を拒否する現在の設計では通常経路から到達しない。
+**到達しないことを到達回数 0 として記録している**（「テスト済み」とは書かない）。
 
 ---
 
@@ -149,54 +268,91 @@ proxy 込みで再測定すれば基準を満たす可能性は十分あるが�
 
 ## scrub と request coalescing — M6
 
-実装したモデル:
+**monotonic display 契約での再測定。** 旧契約の値は上に理由付きで残してある。
 
-- producer 側は連続的に要求を投入する
-- consumer 側は、処理中でない未処理要求を **最新 1 件だけ** 保持する
-- 新しい要求が来たら古い pending を supersede する
-- decode 中の処理は中断しない
-- 各要求に generation を付け、**現在の最新受理より古い結果は棄却する**
+計測: `mvm_bench scrub-bench`、実行: `scripts/scrub-matrix.ps1`
+**8 条件（pattern 2 種 × 投入間隔 4 種）× 3 回。表の値は 3 回の中央値。**
+run ごとに別プロセスで実行する。300 要求、native 素材、proxy なし。
 
-**[事実]** 300 要求（投入間隔 0）での結果:
+表の値はすべて `scripts/scrub-matrix.ps1` が生 JSON から再計算している。
+手で転記していない。各 run で counter invariant と
+`display_updates_per_sec == displayed_total / elapsed_sec` を検査し、
+1 件でも破れたらスクリプトが停止する。
 
-| 指標 | linear | random |
-| --- | --- | --- |
-| submitted | 300 | 300 |
-| decoded | 1 | 1 |
-| superseded | 299 | 299 |
-| accepted | 1 | 1 |
-| stale rejected | 0 | 0 |
-| marker mismatch | **0** | **0** |
-| updates/sec | 2.92 | 3.22 |
-| latency p50 / p95 / max (ms) | 342 / 342 / 342 | 309 / 309 / 309 |
-| 最終要求と最終表示の一致 | **true** | **true** |
+### 投入間隔について
+
+**間隔 0 は実際のスクラブ操作ではない。** 人が触るスライダの更新は
+60Hz 前後が上限なので、**16667µs（60Hz）が基準条件**である。
+0 は上限側の負荷条件として残している。
+
+### linear（連続スクラブ）
+
+| 条件 | submitted | superseded_pending | decoded | display_latest | display_lagging | displayed_total | reject_regression | decode_failed | updates/sec | p50 | p95 | max | gen_lag p95 | catchup(ms) | elapsed(s) | marker不一致 | M6 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| linear-0 | 300 | 299 | 1 | 1 | 0 | 1 | 0 | 0 | **2.82** | 353.4 | 353.4 | 353.4 | 0.0 | 353.4 | 0.35 | 0.0 | 不合格 |
+| linear-8333 | 300 | 157 | 143 | 2 | 142 | 143 | 0 | 0 | **29.61** | 33.5 | 69.8 | 250.0 | 4.0 | 80.0 | 4.82 | 0.0 | 合格 |
+| linear-16667 | 300 | 104 | 196 | 66 | 126 | 196 | 0 | 0 | **21.66** | 57.1 | 88.3 | 250.6 | 2.0 | 97.5 | 9.13 | 0.0 | 合格 |
+| linear-33333 | 300 | 48 | 252 | 62 | 194 | 252 | 0 | 0 | **17.33** | 70.3 | 102.4 | 259.0 | 2.0 | 70.5 | 14.59 | 0.0 | 合格 |
+
+### random（無作為な飛び）
+
+| 条件 | submitted | superseded_pending | decoded | display_latest | display_lagging | displayed_total | reject_regression | decode_failed | updates/sec | p50 | p95 | max | gen_lag p95 | catchup(ms) | elapsed(s) | marker不一致 | M6 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| random-0 | 300 | 299 | 1 | 1 | 0 | 1 | 0 | 0 | **2.95** | 338.6 | 338.6 | 338.6 | 0.0 | 338.6 | 0.34 | 0.0 | 不合格 |
+| random-8333 | 300 | 257 | 43 | 1 | 42 | 43 | 0 | 0 | **8.67** | 116.0 | 239.5 | 338.3 | 14.0 | 245.0 | 4.96 | 0.0 | 不合格 |
+| random-16667 | 300 | 233 | 67 | 1 | 66 | 67 | 0 | 0 | **7.47** | 140.3 | 255.8 | 344.7 | 8.0 | 193.8 | 9.05 | 0.0 | 不合格 |
+| random-33333 | 300 | 197 | 103 | 3 | 100 | 103 | 0 | 0 | **6.98** | 155.5 | 275.8 | 357.9 | 5.0 | 172.2 | 14.28 | 0.0 | 不合格 |
 
 ### 何が言えるか
 
-**[事実] coalescing 自体は正しく動いている。**
+**[事実] 契約の変更で linear の updates/sec が約 3 → 17〜30 になった。**
+同じ decode 速度のまま、`DisplayLagging` を捨てずに表示するようにしただけである。
+旧契約の約 3 updates/sec は **decode 速度ではなく表示契約が作っていた数字**だった。
 
-- 最終要求が必ず表示される（`final_matches: true`）
-- stale な結果を表示していない
-- marker 不一致 0 件
+**[事実] linear は投入間隔 8333 / 16667 / 33333µs のすべてで M6 基準を満たす。**
+基準は ≥ 15 updates/sec かつ request→display p95 ≤ 200ms。
 
-**[事実] updates/sec は基準に遠く届かない。** 基準 15 に対し約 3。
+**[事実] random はどの間隔でも基準を満たさない。**
+7.0〜8.7 updates/sec、p95 は 239〜276ms。
+`generation_lag` p95 が linear の 2〜4 に対し random は 5〜14 で、
+**表示が要求から大きく遅れている。**
 
-**[事実] この計測条件では decoded が 1 件しかない。**
-投入間隔 0 で 300 件を一気に投入したため、consumer が 1 件目を取り出す前に
-299 件が supersede された。**coalescing としては正しい挙動だが、
-scrub の実性能を測れていない。**
+**[事実] 間隔 0 は両パターンとも decoded が 1 件しかない。**
+300 件を一気に投入すると、consumer が 1 件目を取り出す前に
+299 件が supersede される。coalescing としては正しい挙動だが、
+**この条件は scrub の性能を測っていない。**
 
-**[exit] M6: 不合格。** ただし不合格の理由は coalescing ではなく、
-**1 フレームの取得に 130〜340ms かかること**である。
-1 フレーム 300ms なら、理論上の上限が約 3 updates/sec であり、
-15 updates/sec には 1 フレーム 67ms 以下が必要になる。
+**[事実] marker 不一致は全条件・全 run で 0 件。**
+表示したフレームは常に要求したフレームである。
 
-つまり **M6 は M5 と同じ原因で不合格**であり、
-seek レイテンシを改善しない限り達成できない。
+**[事実] 表示 generation の巻き戻りは全条件・全 run で 0 件。**
+`reject_regression` も 0 件だった（in-flight が 1 件しかない現在の構造では、
+古い結果が後から返ることが起こらないため）。
 
-**[未検証]** 現実的な投入間隔（`--submit-interval-us` で
-マウスドラッグ相当の 8000〜16000µs）での再計測。
-今回は間隔 0 でしか測っていない。
+**[事実] final catchup（入力停止から最終表示まで）は
+linear で 70〜98ms、random で 172〜245ms。**
+最終要求は全条件・全 run で表示されている。
+
+### 判定
+
+**[exit] M6: 条件付き。**
+
+- **linear（連続スクラブ、8333〜33333µs）: 合格**（3 / 8 条件）
+- **random（無作為な飛び）: 不合格**（updates/sec が基準の約半分）
+- **間隔 0: 測定条件として不適**（decoded 1 件）
+
+実際のスクラブ操作は linear に近い。しかし
+**マーカー間のジャンプやクリップ境界への移動は random に近く、
+その場合に基準を満たさない。**
+条件を選べば合格する、という書き方で M6 を合格にはしない。
+
+**[推測]** random が遅い原因は M5 と同じで、
+毎回 GOP 内の前方 decode が必要になることである。
+random の displayed latency p50（116〜156ms）は
+seek の p50（129ms）とほぼ一致する。
+
+**[未検証]** proxy を入れた場合の再測定。これは S7 の範囲である。
+**M6 の最終判定は S7 の proxy 導入後に行う。**
 
 ## MLT のキャッシュと purge
 

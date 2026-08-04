@@ -11,6 +11,20 @@ add_executable(mvm_bench
     harness/mvm_bench_compose.cpp
 )
 
+# ScrubCoalescer の純粋単体テスト。MLT にも Qt にも依存しない。
+add_executable(mvm_test_scrub_coalescer harness/test_scrub_coalescer.cpp)
+target_include_directories(mvm_test_scrub_coalescer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/harness)
+target_link_libraries(mvm_test_scrub_coalescer PRIVATE mvm::warnings)
+add_test(NAME scrub_coalescer_unit COMMAND mvm_test_scrub_coalescer)
+
+# 同じ契約を実際の mutex / condition_variable の下で検査する。
+# sleep には依存しない (tests/harness/test_scrub_threaded.cpp 冒頭を参照)。
+add_executable(mvm_test_scrub_threaded harness/test_scrub_threaded.cpp)
+target_include_directories(mvm_test_scrub_threaded PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/harness)
+target_link_libraries(mvm_test_scrub_threaded PRIVATE mvm::warnings)
+add_test(NAME scrub_coalescer_threaded COMMAND mvm_test_scrub_threaded)
+set_tests_properties(scrub_coalescer_threaded PROPERTIES TIMEOUT 120)
+
 target_link_libraries(mvm_bench PRIVATE
     psapi
     mvm::mlt
@@ -340,12 +354,55 @@ mvm_add_test(verify_audio_no_clipping
 # 通常 CTest では 100 回、時間がかかるので performance ラベルは付けない
 # (所有権は正しさの問題であり性能ではない)。
 
+# ownership は「正しさ」だけを見る。
+# Working Set の増減だけを理由に ownership 失敗としない。
+# メモリは memory_soak_diagnostic (stability ラベル) へ分離した。
 mvm_add_test(ownership_soak_100
     COMMAND mvm_bench soak "${MVM_S5_SCENARIO}" --iterations 100
-            --wav-dir "${MVM_AUDIO_OUT}"
+            --wav-dir "${MVM_AUDIO_OUT}" --no-memory-check
     PROPERTIES
         REQUIRED_FILES "${MVM_S5_SCENARIO}"
         TIMEOUT 1800)
+
+# メモリは長時間かかるうえ、まだ合否を決められる段階にない。
+# 通常 CTest から外し、stability ラベルで明示的に実行する。
+mvm_add_test(memory_soak_diagnostic
+    COMMAND mvm_bench memory-probe "${MVM_S5_SCENARIO}" --case C
+            --csv "${CMAKE_CURRENT_BINARY_DIR}/memory_case_c.csv"
+            --wav-dir "${MVM_AUDIO_OUT}"
+    PROPERTIES
+        REQUIRED_FILES "${MVM_S5_SCENARIO}"
+        LABELS stability
+        TIMEOUT 1800)
+
+# --- scrub 表示契約の回帰テスト (M6) ----------------------------------------
+# 閾値ではなく契約を見る。counter invariant・表示 generation の単調性・
+# 最終要求の表示・marker 一致・集計の自己整合が破れたら失敗する。
+# 性能の判定は scripts/scrub-matrix.ps1 で行う (8 条件 x 3 回)。
+foreach(iv 8333 16667)
+    mvm_add_test(scrub_contract_linear_${iv}
+        COMMAND mvm_bench scrub-bench "${MVM_S5_SCENARIO}"
+                --requests 60 --pattern linear --submit-interval-us ${iv}
+        PROPERTIES REQUIRED_FILES "${MVM_S5_SCENARIO}" TIMEOUT 300)
+endforeach()
+
+# coalescing が実際に働いていることを確認する。
+# superseded_pending が 0 なら、latest-only の置換が一度も起きていない。
+mvm_add_test(scrub_coalescing_occurs
+    COMMAND mvm_bench scrub-bench "${MVM_S5_SCENARIO}"
+            --requests 60 --pattern linear --submit-interval-us 0
+            --check --require-coalescing --min-updates-per-sec 0 --max-p95-ms 100000
+    PROPERTIES REQUIRED_FILES "${MVM_S5_SCENARIO}" TIMEOUT 300)
+
+# negative: 音声を含むケースで --wav-dir が無いとき、
+# 音声を黙って飛ばした測定を成功扱いしない。
+foreach(mcase D E)
+    mvm_add_test(memory_probe_${mcase}_requires_wav_dir
+        COMMAND mvm_bench memory-probe "${MVM_S5_SCENARIO}" --case ${mcase} --iterations 1
+        PROPERTIES
+            REQUIRED_FILES "${MVM_S5_SCENARIO}"
+            WILL_FAIL TRUE)
+endforeach()
 
 # --- lint 自身の negative test ----------------------------------------------
 # 検査を書いただけでは効いている証明にならない。
