@@ -59,6 +59,17 @@ mvm_guard_toolchain()
 
 include(mvm_warnings)
 
+# --- カバレッジ -------------------------------------------------------------
+# 専用ビルドディレクトリ (build/ucrt64-coverage) でのみ有効にする。
+# Phase 0 では合格条件にせず、「一度も実行されていない検証コード」を
+# 見つけるために使う。
+option(MVM_ENABLE_COVERAGE "gcov 用の計測を有効にする" OFF)
+if(MVM_ENABLE_COVERAGE)
+    message(STATUS "[mvm] カバレッジ計測を有効化します")
+    add_compile_options(--coverage -O0 -g)
+    add_link_options(--coverage)
+endif()
+
 # --- 依存 -------------------------------------------------------------------
 option(MVM_ENABLE_QT "Qt6 を探して検証する (S1 の依存確認用)" ON)
 

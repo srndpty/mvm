@@ -15,6 +15,9 @@ add_library(mvm::util ALIAS mvm_util)
 add_library(mvm_mlt STATIC
     media/mlt/mvm_mlt_runtime.c
     media/mlt/mvm_mlt_probe.c
+    media/mlt/mvm_mlt_explore.c
+    media/mlt/mvm_mlt_compose.c
+    media/mlt/mvm_mlt_audiograph.c
 )
 target_include_directories(mvm_mlt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_mlt PUBLIC mvm::util PRIVATE MLT::MLT)

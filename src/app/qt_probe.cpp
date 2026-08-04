@@ -29,8 +29,8 @@ int main(int argc, char* argv[]) {
     out << "plugins      : " << QLibraryInfo::path(QLibraryInfo::PluginsPath) << '\n';
 
     const QString prefix = QLibraryInfo::path(QLibraryInfo::PrefixPath);
-    const bool isUcrt64 = prefix.contains(QStringLiteral("msys64/ucrt64"), Qt::CaseInsensitive)
-                          || prefix.contains(QStringLiteral("msys64\\ucrt64"), Qt::CaseInsensitive);
+    const bool isUcrt64 = prefix.contains(QStringLiteral("msys64/ucrt64"), Qt::CaseInsensitive) ||
+                          prefix.contains(QStringLiteral("msys64\\ucrt64"), Qt::CaseInsensitive);
 
     out << '\n';
     if (isUcrt64) {

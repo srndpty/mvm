@@ -1,14 +1,12 @@
 #include "mvm_win_utf8.h"
 
-#include <windows.h>
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include <windows.h>
 
-wchar_t* mvm_utf8_to_wide(const char* utf8)
-{
+wchar_t* mvm_utf8_to_wide(const char* utf8) {
     if (!utf8)
         return NULL;
 
@@ -16,7 +14,7 @@ wchar_t* mvm_utf8_to_wide(const char* utf8)
     if (need <= 0)
         return NULL;
 
-    wchar_t* out = (wchar_t*) malloc((size_t) need * sizeof(wchar_t));
+    wchar_t* out = (wchar_t*)malloc((size_t)need * sizeof(wchar_t));
     if (!out)
         return NULL;
 
@@ -27,8 +25,7 @@ wchar_t* mvm_utf8_to_wide(const char* utf8)
     return out;
 }
 
-char* mvm_wide_to_utf8(const wchar_t* wide)
-{
+char* mvm_wide_to_utf8(const wchar_t* wide) {
     if (!wide)
         return NULL;
 
@@ -36,7 +33,7 @@ char* mvm_wide_to_utf8(const wchar_t* wide)
     if (need <= 0)
         return NULL;
 
-    char* out = (char*) malloc((size_t) need);
+    char* out = (char*)malloc((size_t)need);
     if (!out)
         return NULL;
 
@@ -47,8 +44,7 @@ char* mvm_wide_to_utf8(const wchar_t* wide)
     return out;
 }
 
-wchar_t* mvm_wide_concat(const wchar_t* a, const wchar_t* b)
-{
+wchar_t* mvm_wide_concat(const wchar_t* a, const wchar_t* b) {
     if (!a || !b)
         return NULL;
 
@@ -56,7 +52,7 @@ wchar_t* mvm_wide_concat(const wchar_t* a, const wchar_t* b)
     size_t lb = wcslen(b);
 
     /* MAX_PATH には依存しない。必要な長さを都度確保する。 */
-    wchar_t* out = (wchar_t*) malloc((la + lb + 1) * sizeof(wchar_t));
+    wchar_t* out = (wchar_t*)malloc((la + lb + 1) * sizeof(wchar_t));
     if (!out)
         return NULL;
 
@@ -66,13 +62,11 @@ wchar_t* mvm_wide_concat(const wchar_t* a, const wchar_t* b)
     return out;
 }
 
-char* mvm_win_error_message(unsigned long error_code)
-{
+char* mvm_win_error_message(unsigned long error_code) {
     LPWSTR buf = NULL;
-    DWORD n = FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM
-                                 | FORMAT_MESSAGE_IGNORE_INSERTS,
-                             NULL, (DWORD) error_code, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                             (LPWSTR) &buf, 0, NULL);
+    DWORD n = FormatMessageW(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+        NULL, (DWORD)error_code, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPWSTR)&buf, 0, NULL);
 
     char* text = NULL;
     if (n > 0 && buf) {
@@ -89,14 +83,13 @@ char* mvm_win_error_message(unsigned long error_code)
         return text;
 
     /* FormatMessageW が失敗しても、少なくとも数値は返す */
-    char* fallback = (char*) malloc(64);
+    char* fallback = (char*)malloc(64);
     if (fallback)
         snprintf(fallback, 64, "(説明を取得できません)");
     return fallback;
 }
 
-char** mvm_win_get_utf8_args(int* out_argc)
-{
+char** mvm_win_get_utf8_args(int* out_argc) {
     if (out_argc)
         *out_argc = 0;
 
@@ -105,7 +98,7 @@ char** mvm_win_get_utf8_args(int* out_argc)
     if (!wargv)
         return NULL;
 
-    char** argv = (char**) calloc((size_t) wargc + 1, sizeof(char*));
+    char** argv = (char**)calloc((size_t)wargc + 1, sizeof(char*));
     if (!argv) {
         LocalFree(wargv);
         return NULL;
@@ -128,8 +121,7 @@ char** mvm_win_get_utf8_args(int* out_argc)
     return argv;
 }
 
-void mvm_win_free_utf8_args(char** argv, int argc)
-{
+void mvm_win_free_utf8_args(char** argv, int argc) {
     if (!argv)
         return;
     for (int i = 0; i < argc; i++)
@@ -137,13 +129,11 @@ void mvm_win_free_utf8_args(char** argv, int argc)
     free(argv);
 }
 
-void mvm_str_free(void* p)
-{
+void mvm_str_free(void* p) {
     free(p);
 }
 
-void mvm_enable_utf8_console(void)
-{
+void mvm_enable_utf8_console(void) {
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
 }

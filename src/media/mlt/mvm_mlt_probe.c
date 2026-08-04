@@ -2,13 +2,12 @@
 
 #include "mvm_mlt_runtime.h"
 
-#include <framework/mlt.h>
-
 #include <stdlib.h>
 #include <string.h>
 
-static void set_err(char* err, size_t n, const char* msg)
-{
+#include <framework/mlt.h>
+
+static void set_err(char* err, size_t n, const char* msg) {
     if (err && n)
         snprintf(err, n, "%s", msg);
 }
@@ -18,12 +17,22 @@ static void set_err(char* err, size_t n, const char* msg)
  * 固定 profile のまま avformat producer を読むと、length や frame_rate が
  * profile 側に正規化される。その値を ffprobe と比較しても
  * 「MLT が素材をどう解釈したか」ではなく「profile を何にしたか」しか分からない。 */
-static mlt_producer open_producer(const char* path, mlt_profile* out_profile)
-{
+static mlt_producer open_producer(const char* path, mlt_profile* out_profile) {
     mlt_profile profile = mlt_profile_init(NULL);
     if (!profile)
         return NULL;
 
+    /* [意図的に avformat を直接指定している]
+     *
+     * probe の目的は「MLT の avformat producer が素材をどう解釈したか」を
+     * ffprobe と突き合わせることである (V2)。loader にすると wrapper が
+     * 付ける正規化後の値を見ることになり、比較の意味が変わる。
+     * また loader は静止画を qimage producer で開くため meta.media.* が
+     * 生成されず、メタデータ比較そのものが成立しない。
+     *
+     * 再生・レンダリング経路 (mvm_mlt_compose.c) は loader を使う。
+     * そちらは音声の正規化 filter が必須である (所見 I)。
+     * この非対称は意図的であり、scripts/lint.ps1 の例外に登録している。 */
     mlt_producer probe = mlt_factory_producer(profile, "avformat", path);
     if (!probe) {
         mlt_profile_close(profile);
@@ -45,8 +54,7 @@ static mlt_producer open_producer(const char* path, mlt_profile* out_profile)
     return p;
 }
 
-int mvm_mlt_dump_properties(const char* path, FILE* out)
-{
+int mvm_mlt_dump_properties(const char* path, FILE* out) {
     if (!mvm_mlt_runtime_is_ready()) {
         fprintf(out, "!! MLT が初期化されていません\n");
         return 1;
@@ -77,8 +85,8 @@ int mvm_mlt_dump_properties(const char* path, FILE* out)
             profile->display_aspect_den, profile->progressive, profile->colorspace);
 
     fprintf(out, "\n=== producer geometry ===\n");
-    fprintf(out, "  length=%d in=%d out=%d\n", (int) mlt_producer_get_length(p),
-            (int) mlt_producer_get_in(p), (int) mlt_producer_get_out(p));
+    fprintf(out, "  length=%d in=%d out=%d\n", (int)mlt_producer_get_length(p),
+            (int)mlt_producer_get_in(p), (int)mlt_producer_get_out(p));
 
     mlt_producer_close(p);
     mlt_profile_close(profile);
@@ -86,8 +94,7 @@ int mvm_mlt_dump_properties(const char* path, FILE* out)
 }
 
 /* meta.media.<n>.stream.type が target のストリームを探す */
-static int find_stream(mlt_properties props, const char* target)
-{
+static int find_stream(mlt_properties props, const char* target) {
     int nb = mlt_properties_get_int(props, "meta.media.nb_streams");
     for (int i = 0; i < nb; i++) {
         char key[128];
@@ -99,14 +106,12 @@ static int find_stream(mlt_properties props, const char* target)
     return -1;
 }
 
-static void copy_prop(char* dst, size_t n, mlt_properties props, const char* key)
-{
+static void copy_prop(char* dst, size_t n, mlt_properties props, const char* key) {
     const char* v = mlt_properties_get(props, key);
     snprintf(dst, n, "%s", v ? v : "");
 }
 
-int mvm_mlt_probe_file(const char* path, MvmMltProbeResult* out)
-{
+int mvm_mlt_probe_file(const char* path, MvmMltProbeResult* out) {
     if (!out)
         return 1;
     memset(out, 0, sizeof(*out));
@@ -215,7 +220,7 @@ int mvm_mlt_probe_file(const char* path, MvmMltProbeResult* out)
 
     /* length は profile を素材から導出した後の値なので、素材のフレーム数に一致する。
      * ただし MLT の length は「最後のフレーム + 1」であり out = length - 1。 */
-    out->frame_count = (long long) mlt_producer_get_length(p);
+    out->frame_count = (long long)mlt_producer_get_length(p);
     out->profile_fps_num = profile->frame_rate_num;
     out->profile_fps_den = profile->frame_rate_den;
 
@@ -228,8 +233,8 @@ int mvm_mlt_probe_file(const char* path, MvmMltProbeResult* out)
      * 音声のみの素材には映像 fps が無く、length は profile の fps で
      * 数えられているため、素材 fps で割ると 0 になる。 */
     if (!out->is_unbounded_length && out->profile_fps_num > 0 && out->profile_fps_den > 0) {
-        out->duration_sec = (double) out->frame_count * (double) out->profile_fps_den
-                            / (double) out->profile_fps_num;
+        out->duration_sec =
+            (double)out->frame_count * (double)out->profile_fps_den / (double)out->profile_fps_num;
     }
 
     /* alpha は実際のフレームを見て判定する。pix_fmt 文字列だけでは
@@ -240,13 +245,13 @@ int mvm_mlt_probe_file(const char* path, MvmMltProbeResult* out)
             mlt_image_format fmt = mlt_image_rgba;
             int w = 0, h = 0;
             uint8_t* image = NULL;
-            if (mlt_frame_get_image(frame, &image, &fmt, &w, &h, 0) == 0 && image && w > 0
-                && h > 0) {
+            if (mlt_frame_get_image(frame, &image, &fmt, &w, &h, 0) == 0 && image && w > 0 &&
+                h > 0) {
                 int amin = 255, amax = 0;
                 for (int y = 0; y < h; y += 4) {
-                    const uint8_t* row = image + (size_t) y * (size_t) w * 4;
+                    const uint8_t* row = image + (size_t)y * (size_t)w * 4;
                     for (int x = 0; x < w; x += 4) {
-                        int a = row[(size_t) x * 4 + 3];
+                        int a = row[(size_t)x * 4 + 3];
                         if (a < amin)
                             amin = a;
                         if (a > amax)
@@ -268,8 +273,7 @@ int mvm_mlt_probe_file(const char* path, MvmMltProbeResult* out)
 }
 
 int mvm_mlt_decode_frame(const char* path, long long frame, MvmMltImage* out, char* err,
-                         size_t err_size)
-{
+                         size_t err_size) {
     if (!out)
         return 1;
     memset(out, 0, sizeof(*out));
@@ -288,7 +292,7 @@ int mvm_mlt_decode_frame(const char* path, long long frame, MvmMltImage* out, ch
         return 1;
     }
 
-    int length = (int) mlt_producer_get_length(p);
+    int length = (int)mlt_producer_get_length(p);
     if (frame < 0 || frame >= length) {
         char msg[256];
         snprintf(msg, sizeof(msg), "フレーム番号が範囲外です: %lld (length=%d)", frame, length);
@@ -298,7 +302,7 @@ int mvm_mlt_decode_frame(const char* path, long long frame, MvmMltImage* out, ch
         return 1;
     }
 
-    mlt_producer_seek(p, (mlt_position) frame);
+    mlt_producer_seek(p, (mlt_position)frame);
 
     mlt_frame f = NULL;
     if (mlt_service_get_frame(MLT_PRODUCER_SERVICE(p), &f, 0) != 0 || !f) {
@@ -319,8 +323,8 @@ int mvm_mlt_decode_frame(const char* path, long long frame, MvmMltImage* out, ch
         return 1;
     }
 
-    size_t bytes = (size_t) w * (size_t) h * 4;
-    out->rgba = (unsigned char*) malloc(bytes);
+    size_t bytes = (size_t)w * (size_t)h * 4;
+    out->rgba = (unsigned char*)malloc(bytes);
     if (!out->rgba) {
         set_err(err, err_size, "メモリを確保できません");
         mlt_frame_close(f);
@@ -338,8 +342,7 @@ int mvm_mlt_decode_frame(const char* path, long long frame, MvmMltImage* out, ch
     return 0;
 }
 
-void mvm_mlt_image_free(MvmMltImage* img)
-{
+void mvm_mlt_image_free(MvmMltImage* img) {
     if (!img)
         return;
     free(img->rgba);

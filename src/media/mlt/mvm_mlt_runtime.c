@@ -2,12 +2,11 @@
 
 #include "../../util/mvm_win_utf8.h"
 
-#include <framework/mlt.h>
-
-#include <windows.h>
-
 #include <stdlib.h>
 #include <string.h>
+#include <windows.h>
+
+#include <framework/mlt.h>
 
 /* ------------------------------------------------------------------------- */
 /* 必須 service                                                               */
@@ -48,10 +47,21 @@ static const char* const kRequiredConsumers[] = {
     NULL,
 };
 
-const char* const* mvm_mlt_required_producers(void) { return kRequiredProducers; }
-const char* const* mvm_mlt_required_filters(void) { return kRequiredFilters; }
-const char* const* mvm_mlt_required_transitions(void) { return kRequiredTransitions; }
-const char* const* mvm_mlt_required_consumers(void) { return kRequiredConsumers; }
+const char* const* mvm_mlt_required_producers(void) {
+    return kRequiredProducers;
+}
+
+const char* const* mvm_mlt_required_filters(void) {
+    return kRequiredFilters;
+}
+
+const char* const* mvm_mlt_required_transitions(void) {
+    return kRequiredTransitions;
+}
+
+const char* const* mvm_mlt_required_consumers(void) {
+    return kRequiredConsumers;
+}
 
 /* ------------------------------------------------------------------------- */
 /* 内部状態                                                                   */
@@ -60,14 +70,15 @@ const char* const* mvm_mlt_required_consumers(void) { return kRequiredConsumers;
 static mlt_repository g_repo = NULL;
 static int g_ready = 0;
 
-int mvm_mlt_runtime_is_ready(void) { return g_ready; }
+int mvm_mlt_runtime_is_ready(void) {
+    return g_ready;
+}
 
 /* ------------------------------------------------------------------------- */
 /* issue 記録                                                                 */
 /* ------------------------------------------------------------------------- */
 
-static void add_issue(MvmMltDoctorReport* r, const char* subject, const char* detail)
-{
+static void add_issue(MvmMltDoctorReport* r, const char* subject, const char* detail) {
     if (!r || r->issue_count >= MVM_MLT_MAX_ISSUES)
         return;
 
@@ -80,8 +91,7 @@ static void add_issue(MvmMltDoctorReport* r, const char* subject, const char* de
 /* 初期化                                                                     */
 /* ------------------------------------------------------------------------- */
 
-int mvm_mlt_runtime_init(const char* module_dir, const char* data_dir)
-{
+int mvm_mlt_runtime_init(const char* module_dir, const char* data_dir) {
     if (g_ready)
         return 0;
 
@@ -107,7 +117,7 @@ int mvm_mlt_runtime_init(const char* module_dir, const char* data_dir)
      *
      * ここでは「気づかないまま縮退する」ことだけは防ぐ。 */
     for (const char* p = module_dir; *p; ++p) {
-        if ((unsigned char) *p >= 0x80) {
+        if ((unsigned char)*p >= 0x80) {
             fprintf(stderr,
                     "[mvm] 警告: module_dir に非 ASCII 文字が含まれています。\n"
                     "      MLT はこれを解決できず、service 0 件のまま縮退します。\n"
@@ -117,7 +127,7 @@ int mvm_mlt_runtime_init(const char* module_dir, const char* data_dir)
         }
     }
     for (const char* p = data_dir; *p; ++p) {
-        if ((unsigned char) *p >= 0x80) {
+        if ((unsigned char)*p >= 0x80) {
             fprintf(stderr,
                     "[mvm] 警告: data_dir に非 ASCII 文字が含まれています。\n"
                     "      profile が解決できず既定値へフォールバックする可能性があります: %s\n",
@@ -143,8 +153,7 @@ int mvm_mlt_runtime_init(const char* module_dir, const char* data_dir)
     return 0;
 }
 
-void mvm_mlt_runtime_shutdown(void)
-{
+void mvm_mlt_runtime_shutdown(void) {
     if (g_ready) {
         mlt_factory_close();
         g_repo = NULL;
@@ -156,8 +165,7 @@ void mvm_mlt_runtime_shutdown(void)
 /* モジュール走査 (wide API)                                                  */
 /* ------------------------------------------------------------------------- */
 
-int mvm_mlt_scan_modules(const char* module_dir, MvmMltDoctorReport* report)
-{
+int mvm_mlt_scan_modules(const char* module_dir, MvmMltDoctorReport* report) {
     MvmMltDoctorReport dummy;
     if (!report) {
         memset(&dummy, 0, sizeof(dummy));
@@ -204,7 +212,7 @@ int mvm_mlt_scan_modules(const char* module_dir, MvmMltDoctorReport* report)
                      "MLT はこの状態でも初期化に成功し、service 0 件のまま縮退します。");
         } else {
             snprintf(detail, sizeof(detail), "走査できません (Win32 error %lu: %s)",
-                     (unsigned long) err, msg ? msg : "");
+                     (unsigned long)err, msg ? msg : "");
         }
         mvm_str_free(msg);
         add_issue(report, module_dir, detail);
@@ -243,7 +251,7 @@ int mvm_mlt_scan_modules(const char* module_dir, MvmMltDoctorReport* report)
             /* 数値だけでは原因が分からない。ERROR_MOD_NOT_FOUND (126) は
              * ほぼ常に「依存 DLL が足りない」であり、S1 所見 3 の再来である。 */
             snprintf(detail, sizeof(detail), "LoadLibraryW 失敗 (Win32 error %lu: %s)%s",
-                     (unsigned long) err, msg ? msg : "",
+                     (unsigned long)err, msg ? msg : "",
                      err == ERROR_MOD_NOT_FOUND ? " -- 依存 DLL 不足の可能性が高い" : "");
 
             add_issue(report, name ? name : "(unknown)", detail);
@@ -271,8 +279,7 @@ int mvm_mlt_scan_modules(const char* module_dir, MvmMltDoctorReport* report)
 /* service 照合                                                               */
 /* ------------------------------------------------------------------------- */
 
-static int has_service(mlt_properties list, const char* name)
-{
+static int has_service(mlt_properties list, const char* name) {
     if (!list)
         return 0;
     int count = mlt_properties_count(list);
@@ -285,8 +292,7 @@ static int has_service(mlt_properties list, const char* name)
 }
 
 static int check_category(MvmMltDoctorReport* r, const char* label, mlt_properties list,
-                          const char* const* required, int* out_count)
-{
+                          const char* const* required, int* out_count) {
     *out_count = list ? mlt_properties_count(list) : 0;
 
     int missing = 0;
@@ -309,8 +315,7 @@ static int check_category(MvmMltDoctorReport* r, const char* label, mlt_properti
 
 /* 有理数を gcd で正規化する。SAR は 1/1 と 2/2 のような等価表現があるため、
  * 数値をそのまま比較してはいけない。 */
-static void normalize_ratio(int* num, int* den)
-{
+static void normalize_ratio(int* num, int* den) {
     if (*den == 0)
         return;
     int a = *num < 0 ? -*num : *num;
@@ -332,8 +337,7 @@ static void normalize_ratio(int* num, int* den)
 
 int mvm_mlt_doctor_run(const char* profile_name, int want_w, int want_h, int want_fps_num,
                        int want_fps_den, int want_sar_num, int want_sar_den,
-                       MvmMltDoctorReport* report)
-{
+                       MvmMltDoctorReport* report) {
     if (!report)
         return -1;
 
@@ -353,9 +357,9 @@ int mvm_mlt_doctor_run(const char* profile_name, int want_w, int want_h, int wan
                                                kRequiredProducers, &report->producers_count);
     report->services_missing += check_category(report, "filter", mlt_repository_filters(g_repo),
                                                kRequiredFilters, &report->filters_count);
-    report->services_missing
-        += check_category(report, "transition", mlt_repository_transitions(g_repo),
-                          kRequiredTransitions, &report->transitions_count);
+    report->services_missing +=
+        check_category(report, "transition", mlt_repository_transitions(g_repo),
+                       kRequiredTransitions, &report->transitions_count);
     report->services_missing += check_category(report, "consumer", mlt_repository_consumers(g_repo),
                                                kRequiredConsumers, &report->consumers_count);
 
@@ -420,8 +424,7 @@ int mvm_mlt_doctor_run(const char* profile_name, int want_w, int want_h, int wan
 /* 出力                                                                       */
 /* ------------------------------------------------------------------------- */
 
-void mvm_mlt_doctor_print(const MvmMltDoctorReport* r, FILE* out)
-{
+void mvm_mlt_doctor_print(const MvmMltDoctorReport* r, FILE* out) {
     if (!r || !out)
         return;
 
@@ -432,8 +435,7 @@ void mvm_mlt_doctor_print(const MvmMltDoctorReport* r, FILE* out)
     fprintf(out, "\n[modules] %d 件中 %d 件がロード失敗\n", r->modules_total, r->modules_failed);
     fprintf(out, "[services] producers=%d filters=%d transitions=%d consumers=%d\n",
             r->producers_count, r->filters_count, r->transitions_count, r->consumers_count);
-    fprintf(out, "           必須 %d 件中 %d 件が欠落\n", r->services_checked,
-            r->services_missing);
+    fprintf(out, "           必須 %d 件中 %d 件が欠落\n", r->services_checked, r->services_missing);
 
     if (r->profile_checked) {
         fprintf(out, "[profile]  %dx%d @ %d/%d fps (SAR %d/%d) -> %s\n", r->profile_width,
@@ -451,8 +453,7 @@ void mvm_mlt_doctor_print(const MvmMltDoctorReport* r, FILE* out)
     }
 }
 
-void mvm_mlt_doctor_print_summary_line(const MvmMltDoctorReport* r, FILE* out)
-{
+void mvm_mlt_doctor_print_summary_line(const MvmMltDoctorReport* r, FILE* out) {
     if (!r || !out)
         return;
 
@@ -465,28 +466,36 @@ void mvm_mlt_doctor_print_summary_line(const MvmMltDoctorReport* r, FILE* out)
             r->profile_fps_den, r->profile_sar_num, r->profile_sar_den, r->issue_count);
 }
 
-static void json_escape(const char* s, FILE* out)
-{
+static void json_escape(const char* s, FILE* out) {
     fputc('"', out);
-    for (const unsigned char* p = (const unsigned char*) (s ? s : ""); *p; ++p) {
+    for (const unsigned char* p = (const unsigned char*)(s ? s : ""); *p; ++p) {
         switch (*p) {
-        case '"': fputs("\\\"", out); break;
-        case '\\': fputs("\\\\", out); break;
-        case '\n': fputs("\\n", out); break;
-        case '\r': fputs("\\r", out); break;
-        case '\t': fputs("\\t", out); break;
+        case '"':
+            fputs("\\\"", out);
+            break;
+        case '\\':
+            fputs("\\\\", out);
+            break;
+        case '\n':
+            fputs("\\n", out);
+            break;
+        case '\r':
+            fputs("\\r", out);
+            break;
+        case '\t':
+            fputs("\\t", out);
+            break;
         default:
             if (*p < 0x20)
                 fprintf(out, "\\u%04x", *p);
             else
-                fputc((int) *p, out);
+                fputc((int)*p, out);
         }
     }
     fputc('"', out);
 }
 
-void mvm_mlt_doctor_print_json(const MvmMltDoctorReport* r, FILE* out)
-{
+void mvm_mlt_doctor_print_json(const MvmMltDoctorReport* r, FILE* out) {
     if (!r || !out)
         return;
 

@@ -3,7 +3,7 @@
 # MSYS2 は rolling repository であり、ここに記録した version は将来ミラーから
 # 消える。パッケージ実体は scripts/freeze-deps.ps1 で third_party/pkgs/ へ退避する。
 #
-# 生成日時 : 2026-08-04 02:49:08 +09:00
+# 生成日時 : 2026-08-04 06:50:13 +09:00
 # ホスト   : LILY
 # MSYS2    : C:\msys64
 #
@@ -33,6 +33,8 @@ mingw-w64-ucrt-x86_64-rubberband 3.3.0-1
 mingw-w64-ucrt-x86_64-sox 14.4.2.r3239.f3094754-1
 mingw-w64-ucrt-x86_64-rtaudio 6.0.1-1
 mingw-w64-ucrt-x86_64-gtest 1.17.0-2
+mingw-w64-ucrt-x86_64-clang 22.1.8-2
+mingw-w64-ucrt-x86_64-gcovr 8.6-1
 
 # UCRT64 環境の全インストール済みパッケージ
 # ---------------------------------------------------------------------------
@@ -44,6 +46,8 @@ mingw-w64-ucrt-x86_64-bzip2 1.0.8-3
 mingw-w64-ucrt-x86_64-c-ares 1.34.8-1
 mingw-w64-ucrt-x86_64-ca-certificates 20250419-1
 mingw-w64-ucrt-x86_64-cairo 1.18.4-4
+mingw-w64-ucrt-x86_64-clang 22.1.8-2
+mingw-w64-ucrt-x86_64-clang-libs 22.1.8-2
 mingw-w64-ucrt-x86_64-cmake 4.4.2-1
 mingw-w64-ucrt-x86_64-cppdap 1.65-1
 mingw-w64-ucrt-x86_64-crt 14.0.0.r220.gd999af622-1
@@ -63,6 +67,7 @@ mingw-w64-ucrt-x86_64-fribidi 1.0.16-1
 mingw-w64-ucrt-x86_64-gcc 16.1.0-6
 mingw-w64-ucrt-x86_64-gcc-libgfortran 16.1.0-6
 mingw-w64-ucrt-x86_64-gcc-libs 16.1.0-6
+mingw-w64-ucrt-x86_64-gcovr 8.6-1
 mingw-w64-ucrt-x86_64-gdb 17.2-1
 mingw-w64-ucrt-x86_64-gdb-multiarch 17.2-1
 mingw-w64-ucrt-x86_64-gdk-pixbuf2 2.44.7-1
@@ -140,6 +145,8 @@ mingw-w64-ucrt-x86_64-libwebp 1.6.0-1
 mingw-w64-ucrt-x86_64-libwinpthread 14.0.0.r220.gd999af622-1
 mingw-w64-ucrt-x86_64-libx264 0.165.r3222.b35605a-2
 mingw-w64-ucrt-x86_64-libxml2 2.15.3-1
+mingw-w64-ucrt-x86_64-libxslt 1.1.45-1
+mingw-w64-ucrt-x86_64-llvm-libs 22.1.8-2
 mingw-w64-ucrt-x86_64-lv2 1.18.10-1
 mingw-w64-ucrt-x86_64-lz4 1.10.0-1
 mingw-w64-ucrt-x86_64-lzo2 2.10-3
@@ -172,7 +179,13 @@ mingw-w64-ucrt-x86_64-pcre2 10.47-1
 mingw-w64-ucrt-x86_64-pixman 0.46.4-3
 mingw-w64-ucrt-x86_64-pkgconf 1~3.0.5-1
 mingw-w64-ucrt-x86_64-python 3.14.6-2
+mingw-w64-ucrt-x86_64-python-colorama 0.4.6-5
+mingw-w64-ucrt-x86_64-python-colorlog 6.12.0-1
+mingw-w64-ucrt-x86_64-python-jinja 3.1.6-4
+mingw-w64-ucrt-x86_64-python-lxml 6.1.1-1
+mingw-w64-ucrt-x86_64-python-markupsafe 3.0.3-3
 mingw-w64-ucrt-x86_64-python-packaging 26.2-1
+mingw-w64-ucrt-x86_64-python-pygments 2.20.0-1
 mingw-w64-ucrt-x86_64-qt6-5compat 6.11.1-1
 mingw-w64-ucrt-x86_64-qt6-base 6.11.1-1
 mingw-w64-ucrt-x86_64-qt6-declarative 6.11.1-1
