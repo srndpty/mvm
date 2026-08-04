@@ -1,0 +1,90 @@
+# mvm CI
+#
+# Phase 0 の CI。Windows + MSYS2 UCRT64 でビルドしてテストする。
+#
+# 注意: 開発機の凍結パッケージ (third_party/pkgs) は git 管理外なので、
+# CI は MSYS2 の最新パッケージを取得する。したがって CI の緑は
+# 「最新の依存でも動く」ことしか示さず、docs/deps-lock.txt の構成を
+# 再現したことにはならない。再現性の検証は scripts/verify-frozen-restore.ps1
+# の役割であり、開発機で行う。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: MSYS2 UCRT64 を用意
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-binutils
+            mingw-w64-ucrt-x86_64-make
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-clang
+            mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-qt6-declarative
+            mingw-w64-ucrt-x86_64-qt6-shadertools
+            mingw-w64-ucrt-x86_64-qt6-multimedia
+            mingw-w64-ucrt-x86_64-qt6-svg
+            mingw-w64-ucrt-x86_64-qt6-5compat
+            mingw-w64-ucrt-x86_64-mlt
+            mingw-w64-ucrt-x86_64-ffmpeg
+            mingw-w64-ucrt-x86_64-SDL2
+            mingw-w64-ucrt-x86_64-frei0r-plugins
+            mingw-w64-ucrt-x86_64-libebur128
+            mingw-w64-ucrt-x86_64-fftw
+            mingw-w64-ucrt-x86_64-libsamplerate
+            mingw-w64-ucrt-x86_64-rubberband
+            mingw-w64-ucrt-x86_64-sox
+            mingw-w64-ucrt-x86_64-rtaudio
+            mingw-w64-ucrt-x86_64-gtest
+            mingw-w64-ucrt-x86_64-libpng
+
+      - name: MLT ランタイムの健全性を確認
+        run: |
+          # モジュールが dlopen できない状態だと、後段が
+          # 「filter が見つからない」という分かりにくい形で失敗する。
+          # 先にここで落とす。
+          ls -la /ucrt64/lib/mlt/ | head -30
+          pkgconf --modversion mlt-framework-7
+
+      - name: 整形とアーキテクチャ検査
+        shell: pwsh
+        run: pwsh scripts/lint.ps1
+
+      - name: 検証素材を生成 (Smoke)
+        shell: pwsh
+        run: pwsh scripts/make-testmedia.ps1 -Mode Smoke
+
+      - name: ビルドとテスト
+        shell: pwsh
+        run: pwsh scripts/test.ps1
+
+      - name: 失敗時の診断情報
+        if: failure()
+        shell: pwsh
+        run: |
+          Get-ChildItem build -Recurse -Filter '*.log' -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host "--- $($_.FullName) ---"; Get-Content $_.FullName -Tail 50 }

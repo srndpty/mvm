@@ -1,0 +1,176 @@
+# AGENTS.md
+
+mvm リポジトリで作業する人間およびエージェント向けの規約。
+
+**現在 Phase 0（技術スパイク）である。** 目的は MLT 7 を編集・プレビュー・書き出し
+エンジンとして採用できるかの判定だけであり、製品コードはまだ存在しない。
+判定に必要のないものを作らないこと。
+
+---
+
+## 言語
+
+**人間が読む想定の文章はすべて日本語で書く。**
+
+- AI チャットの返答
+- コードのコメント
+- コミットメッセージ
+- ドキュメント
+- ログ・エラーメッセージ（利用者が読むもの）
+
+識別子・型名・ファイル名・CLI のサブコマンド名は英語のままでよい。
+混在させる基準は「読み手が人間か、機械か」である。
+
+## 設計原則
+
+### DRY
+
+同じ判断ロジックを 2 箇所に書かない。特に検査ロジックは、
+実装が食い違うと「片方だけ通る」という最悪の形で表面化する。
+
+例: MLT の健全性検査は `src/media/mlt/mvm_mlt_runtime.c` に一本化し、
+`mvm_mlt_hello` と `mvm_bench doctor` の両方がこれを呼ぶ。
+
+ただし、テストの期待値は重複してよい。テストが実装と同じ式を共有すると、
+実装のバグをテストが追認してしまう。
+
+### 責務の分離
+
+| 層 | 責務 | 依存してよいもの |
+| --- | --- | --- |
+| `src/core`, `src/project` | 純粋なデータと計算 | 何にも依存しない |
+| `src/util` | OS 依存の小さなヘルパ | Win32 |
+| `src/media/mlt` | MLT との唯一の接点 | MLT C API |
+| `src/app` | Qt シェル | Qt |
+| `tests/harness` | 検証 CLI | 上記の公開ヘッダのみ |
+
+**MLT のヘッダを include してよいのは `src/media/mlt/` だけ。**
+Mlt++（C++ ラッパ）は使わず C API のみを使う。
+これにより Project Model・UI・公開 interface へ MLT の型が漏れず、
+将来 backend を差し替える余地が残る。
+
+`src/media/mlt/` の公開ヘッダに MLT の型を出してはいけない。
+プレーンな構造体と関数だけを出す。
+
+### フォールバックと互換性
+
+**開発中なので最小でよい。**
+
+- 依存が見つからなければ、代替を探さずに明確なメッセージで失敗する
+- 環境差の吸収を先回りして書かない
+- 後方互換のための分岐を残さない
+
+暗黙のフォールバックは、失敗を静かに成功へ変えてしまう。
+Phase 0 で最も避けたい事故がこれである（後述）。
+
+### 失敗は必ず失敗として扱う (fail-closed)
+
+MLT は失敗しても失敗と分からない形で縮退する。
+実測した例は `docs/phase0-findings.md` にある。
+
+- モジュールが 0 件でも `mlt_factory_init` は成功を返す
+- profile が解決できなくても既定値を返す
+- 静止画の尺は INT_MAX
+
+したがって:
+
+- 戻り値が非 NULL であることを成功と見なさない。**値を検証する**
+- 「比較対象が無いので比較しない」を成功にしない。
+  検証を飛ばしたなら、飛ばしたことを出力に残す
+- テストが通ったら、**空振りで通っていないか**を確認する
+
+過去に、duration の計算式が原因で WAV のテストが空振りで通過していた。
+「一致した」ではなく「本当に比較したか」まで確認すること。
+
+### テストしにくい巨大クラスを作らない
+
+Phase 0 では検証 CLI が中心だが、それでも
+「引数解析」「MLT 操作」「判定」「出力」は分けて書く。
+
+---
+
+## ツールチェーン
+
+**MSYS2 UCRT64 に統一する。** Qt / MLT / FFmpeg / アプリ本体で
+CRT および C++ ABI を混在させない。
+
+この開発機には他プロジェクト用の Qt 6.8.3 (MSVC) が
+`C:\Users\lambe\sdk\Qt\6.8.3` にある。**これを参照・変更・削除しない。**
+誤って拾うとリンクは通るのに実行時に不可解な形で壊れるため、
+`cmake/mvm_toolchain_guard.cmake` が configure 時に弾く。
+
+FFmpeg / ffprobe は `C:\msys64\ucrt64\bin` のものだけを使う。
+ホストの `C:\tools` 版や winget 版へフォールバックしない。
+
+```powershell
+pwsh scripts/bootstrap-msys2.ps1     # 依存導入
+pwsh scripts/build.ps1               # ビルド (PATH を整えて cmake を呼ぶ)
+pwsh scripts/test.ps1                # ビルド + CTest (release/debug)
+pwsh scripts/format.ps1              # clang-format 適用
+pwsh scripts/lint.ps1                # 整形差分と静的検査
+pwsh scripts/coverage.ps1            # カバレッジ
+```
+
+`scripts/build.ps1` を使うこと。`C:\msys64\ucrt64\bin` が PATH に無いと
+gcc は**エラー出力なしに**失敗し、CMake からは「compiler is broken」としか見えない。
+
+## テスト
+
+```powershell
+cd build\ucrt64-release
+ctest --output-on-failure
+```
+
+- 通常の CTest は Smoke 素材（5 秒）を使い短時間で終わること
+- 長時間の性能計測は `-L performance` で分離する（通常実行に含めない）
+- **性能値を exit criteria に使うときは release / RelWithDebInfo で測る。**
+  debug ビルドの数値を判定に使わない
+
+素材が未生成のテストは、原因不明の失敗にせず、
+実行すべきコマンドを案内すること。
+
+```powershell
+pwsh scripts/make-testmedia.ps1 -Mode Smoke       # 自動検査用
+pwsh scripts/make-testmedia.ps1 -Mode Benchmark   # 性能計測用
+```
+
+### negative test を必ず添える
+
+新しい検査を足したら、**その検査が無ければ落ちるテスト**を同時に足す。
+検査を書いただけでは、それが効いている証明にならない。
+
+`tests/fixtures/` に、意図的に壊した manifest を置いてある。
+対照群 `good-minimal.json` も置き、
+「negative test が構造ではなく壊した箇所で落ちている」ことを示している。
+
+## コミット
+
+- 日本語で書く
+- 何を変えたかではなく、**なぜ変えたか**を書く
+- 実測値がある場合は含める（「24/24 通過」「seek p95 = 12ms」など）
+- 依頼されない限りコミットしない
+
+## ドキュメント
+
+`docs/phase0-findings.md` は Phase 0 の中心的な記録である。
+記述は必ず次のいずれかに分類する。混ぜない。
+
+| 印 | 意味 |
+| --- | --- |
+| `[事実]` | 実際に実行して観測した。再現手順を併記する |
+| `[推測]` | 観測から導いた説明。ソースを読んで確かめてはいない |
+| `[未検証]` | まだ測っていない。できると仮定してはいけない |
+| `[回避策]` | 現在の対処。恒久策とは限らない |
+| `[exit]` | exit criteria への影響 |
+
+**「動くはず」を「動く」と書かない。** 過去に
+「MLT は開けなかった素材でも producer を返す」と書いたが、
+これは測って確かめた事実ではなく仮定であり、実測すると誤りだった。
+
+## Phase 0 で作らないもの
+
+タイムライン UI、undo/redo、本番 Project Model、自動字幕、数式アニメーション、
+Python worker、エフェクト UI、キーフレーム編集、レンダーキャッシュ、
+インストーラ、コード署名、`IMediaEngine` の全体像。
+
+詳細は `docs/phase0-plan.md` の「Phase 0 では実装しない項目」を参照。

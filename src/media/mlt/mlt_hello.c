@@ -23,15 +23,13 @@
  *   2 = 検査で問題を検出
  */
 
-#include "mvm_mlt_runtime.h"
-
 #include "../../util/mvm_win_utf8.h"
+#include "mvm_mlt_runtime.h"
 
 #include <stdio.h>
 #include <string.h>
 
-int main(void)
-{
+int main(void) {
     /* FormatMessageW 由来の日本語メッセージや日本語パスを化けさせない */
     mvm_enable_utf8_console();
 

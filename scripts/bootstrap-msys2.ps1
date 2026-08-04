@@ -111,8 +111,10 @@ $Packages = @(
     'sox'
     'rtaudio'
 
-    # test
+    # test / 品質
     'gtest'
+    'clang'   # clang-format (整形と lint に使う)
+    'gcovr'   # カバレッジ集計
 )
 
 function Invoke-Msys2 {
