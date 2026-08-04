@@ -535,7 +535,22 @@ M3 の内訳:
 | PiP 縮小配置 | 差分外接矩形 = `1260,700 640x360`（期待と完全一致）、矩形内差分 1.00 / 矩形外 0.00 | 合格 |
 | 日本語文字描画 | qtext で矩形内差分 0.5685 / 矩形外 0.00。全角空白・数学記号・改行を目視確認 | 合格 |
 | マーカー保持 | frame 0/1/137/299 すべて一致 | 合格 |
-| 音声 A1+A2 の mix | consumer 経由の WAV 出力は成功。**A2 は完全に保存されるが A1 のトーンが MLT を通すと消える** | **不合格** |
+| 音声 A1+A2 の mix | **解決。** producer service を `avformat` 明示から `loader` へ変更 | **合格** |
+
+**[事実] M3 は合格。** 音声破損と volume filter クラッシュは同一原因で、
+`mlt_factory_producer` に service を明示していたことだった（詳細は
+[composition-notes.md](research/composition-notes.md) の所見 I）。
+
+最終の実測値（`render-audio` + `verify-audio`）:
+
+| 出力 | L | R |
+| --- | --- | --- |
+| A1-only | 1000Hz=**0.4986**（SNR 5579） | 500Hz=**0.5014**（SNR 17981） |
+| A2-only (-6dB) | 1500Hz=**0.2506**（SNR 1e6） | 750Hz=**0.2506**（SNR 1e6） |
+| **mixed** | 1000Hz=**0.4986** + 1500Hz=**0.2505** | 500Hz=**0.5014** + 750Hz=**0.2506** |
+
+**mixed に 4 周波数すべてが存在する。** gain 実測 **-6.00072dB**（許容 ±1dB）。
+clipping 率 0、DC offset ~1e-6、peak 0.746、NaN/Inf なし。
 
 音声の詳細（consumer 経由の実測）:
 

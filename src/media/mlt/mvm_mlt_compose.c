@@ -28,7 +28,7 @@ struct MvmComposeHandle {
     mlt_transition transitions[MVM_BENCH_MAX_TRACKS * 2];
     int transition_count;
 
-    mlt_filter filters[MVM_BENCH_MAX_TRACKS * 2];
+    mlt_filter filters[MVM_BENCH_MAX_TRACKS * MVM_BENCH_MAX_CLIPS];
     int filter_count;
 
     MvmSeekMode seek_mode;
@@ -356,13 +356,53 @@ MvmComposeHandle* mvm_mlt_compose_open(const MvmBenchTimeline* tl, MvmComposeInf
                  * 内部の読み取り位置を奪い合う。
                  * playlist への追加自体は共有でも通るので、
                  * 問題は「構築時」ではなく「再生時」に出る。 */
-                mlt_producer p = mlt_factory_producer(h->profile, "avformat", clip->source);
+                /* [重要] service には NULL (= loader) を渡す。"avformat" を
+                 * 明示してはいけない。
+                 *
+                 * loader は avformat producer に音声の正規化 filter を付ける。
+                 * これが無いと以下が両方起きる (最小構成で実測):
+                 *   - AAC/MP4 の音声が壊れる (トーンが消え RMS が 1.6 倍になる)
+                 *   - volume filter を付けるとアクセス違反 / heap 破壊で落ちる
+                 * どちらも playlist / tractor / mix とは無関係で、
+                 * producer -> consumer の最小構成から再現する。
+                 * melt が正常なのは既定が loader だからである。 */
+                mlt_producer p = mlt_factory_producer(h->profile, NULL, clip->source);
                 if (!p) {
                     set_err(err, err_size, "track %d clip %d: producer を開けません: %s", ti, ci,
                             clip->source);
                     goto fail;
                 }
                 h->producers[h->producer_count++] = p;
+
+                /* stream の無効化を index で明示する。playlist の hide は
+                 * 二重防御として別途設定している。
+                 *
+                 * astream / vstream が設定されている場合はそちらが優先されるため、
+                 * 推測で設定せず読み戻した値を記録する。 */
+                {
+                    mlt_properties pr = MLT_PRODUCER_PROPERTIES(p);
+                    if (!track->audio_enabled)
+                        mlt_properties_set_int(pr, "audio_index", -1);
+                    if (!track->video_enabled)
+                        mlt_properties_set_int(pr, "video_index", -1);
+
+                    if (info) {
+                        add_note(
+                            info, "stream",
+                            "track=%s audio_index=%s video_index=%s astream=%s vstream=%s",
+                            track->name[0] ? track->name : "(no name)",
+                            mlt_properties_get(pr, "audio_index")
+                                ? mlt_properties_get(pr, "audio_index")
+                                : "(未設定)",
+                            mlt_properties_get(pr, "video_index")
+                                ? mlt_properties_get(pr, "video_index")
+                                : "(未設定)",
+                            mlt_properties_get(pr, "astream") ? mlt_properties_get(pr, "astream")
+                                                              : "(未設定)",
+                            mlt_properties_get(pr, "vstream") ? mlt_properties_get(pr, "vstream")
+                                                              : "(未設定)");
+                    }
+                }
 
                 long long src_len = (long long)mlt_producer_get_length(p);
                 if (clip->source_in < 0 || clip->source_out < clip->source_in) {
@@ -402,6 +442,14 @@ MvmComposeHandle* mvm_mlt_compose_open(const MvmBenchTimeline* tl, MvmComposeInf
                 /* 音量。mix transition には gain 相当の property が無いことを
                  * 実測で確認済みなので、volume filter を使う。 */
                 if (clip->gain_db != 0.0) {
+                    /* 配列容量を超えたら黙って捨てず失敗させる。
+                     * 最大 track 数 x 最大 clip 数を格納できる必要がある。 */
+                    if (h->filter_count >= (int)(sizeof(h->filters) / sizeof(h->filters[0]))) {
+                        set_err(err, err_size,
+                                "filter 配列の容量を超えました (%d)。容量を増やしてください",
+                                (int)(sizeof(h->filters) / sizeof(h->filters[0])));
+                        goto fail;
+                    }
                     mlt_filter vf = mlt_factory_filter(h->profile, "volume", NULL);
                     if (!vf) {
                         set_err(err, err_size, "track %d clip %d: volume filter を作れません", ti,
@@ -418,7 +466,7 @@ MvmComposeHandle* mvm_mlt_compose_open(const MvmBenchTimeline* tl, MvmComposeInf
                      *
                      * 症状はアクセス違反であり、gain=0 (filter を付けない) なら
                      * 起きないので「音量を変えた時だけ落ちる」という形で出る。 */
-                    mlt_filter_set_in_and_out(vf, 0, (mlt_position) (tl_len - 1));
+                    mlt_filter_set_in_and_out(vf, 0, (mlt_position)(tl_len - 1));
 
                     /* "level" は animated property であり、consumer で通し
                      * レンダリングするとクラッシュする (in/out を設定しても解消しない)。
@@ -460,14 +508,14 @@ MvmComposeHandle* mvm_mlt_compose_open(const MvmBenchTimeline* tl, MvmComposeInf
 
         if (info) {
             add_note(info, "track", "index=%d name=%s kind=%d z_order=%d hide=%d clips=%d", ti,
-                     track->name[0] ? track->name : "(no name)", (int) track->kind, track->z_order,
+                     track->name[0] ? track->name : "(no name)", (int)track->kind, track->z_order,
                      hide, track->clip_count);
         }
     }
 
     /* transition の rect を設定する前に length を確定させる。
      * anim_set_rect は length を必要とする。 */
-    h->length = (long long) mlt_producer_get_length(MLT_TRACTOR_PRODUCER(h->tractor));
+    h->length = (long long)mlt_producer_get_length(MLT_TRACTOR_PRODUCER(h->tractor));
     if (h->length <= 0) {
         set_err(err, err_size, "tractor の長さが 0 です");
         goto fail;
@@ -493,7 +541,7 @@ MvmComposeHandle* mvm_mlt_compose_open(const MvmBenchTimeline* tl, MvmComposeInf
             /* start/end を設定するかどうかは実測で決める (docs 参照)。
              * property を設定できたことではなく、出力 WAV の振幅で判断する。 */
             const char* mix_mode = tl->audio_mix_mode[0] ? tl->audio_mix_mode : "sum";
-            if (strcmp(mix_mode, "sum_half") == 0) {
+            if (strcmp(mix_mode, "b_half") == 0) {
                 mlt_properties_set(mp, "start", "0.5");
                 mlt_properties_set(mp, "end", "0.5");
             } else if (strcmp(mix_mode, "sum") != 0) {
@@ -508,8 +556,8 @@ MvmComposeHandle* mvm_mlt_compose_open(const MvmBenchTimeline* tl, MvmComposeInf
             }
             h->transitions[h->transition_count++] = mx;
             if (info)
-                add_note(info, "transition", "mix a_track=0 b_track=%d always_active=1 sum=1 mode=%s",
-                         ti, mix_mode);
+                add_note(info, "transition",
+                         "mix a_track=0 b_track=%d always_active=1 sum=1 mode=%s", ti, mix_mode);
         } else {
             /* 映像の重ね合わせは qtblend transition + rect。
              *
@@ -547,7 +595,7 @@ MvmComposeHandle* mvm_mlt_compose_open(const MvmBenchTimeline* tl, MvmComposeInf
             /* [重要] always_active ではなく in/out を明示する。
              * always_active=1 のまま in=out=0 にしておくと transition の
              * length が 1 になり、animated property の評価位置が壊れる。 */
-            mlt_transition_set_in_and_out(qb, 0, (mlt_position) (h->length - 1));
+            mlt_transition_set_in_and_out(qb, 0, (mlt_position)(h->length - 1));
 
             const MvmBenchClip* c0 = &track->clips[0];
             mlt_rect want;
@@ -564,9 +612,9 @@ MvmComposeHandle* mvm_mlt_compose_open(const MvmBenchTimeline* tl, MvmComposeInf
             }
             want.o = c0->opacity;
 
-            int tl_last = (int) (h->length > 0 ? h->length - 1 : 0);
-            if (mlt_properties_anim_set_rect(qp, "rect", want, 0, tl_last, mlt_keyframe_discrete)
-                != 0) {
+            int tl_last = (int)(h->length > 0 ? h->length - 1 : 0);
+            if (mlt_properties_anim_set_rect(qp, "rect", want, 0, tl_last, mlt_keyframe_discrete) !=
+                0) {
                 set_err(err, err_size, "rect を設定できません (track %d)", ti);
                 goto fail;
             }
@@ -579,9 +627,9 @@ MvmComposeHandle* mvm_mlt_compose_open(const MvmBenchTimeline* tl, MvmComposeInf
                     continue;
                 mlt_rect got = mlt_properties_anim_get_rect(qp, "rect", pf, tl_last);
                 const double eps = 0.001;
-                if (fabs(got.x - want.x) > eps || fabs(got.y - want.y) > eps
-                    || fabs(got.w - want.w) > eps || fabs(got.h - want.h) > eps
-                    || fabs(got.o - want.o) > eps) {
+                if (fabs(got.x - want.x) > eps || fabs(got.y - want.y) > eps ||
+                    fabs(got.w - want.w) > eps || fabs(got.h - want.h) > eps ||
+                    fabs(got.o - want.o) > eps) {
                     set_err(err, err_size,
                             "track %d: rect の読み戻しが一致しません (frame %d)。"
                             "設定 %g/%g:%gx%g:%g -> 読戻 %g/%g:%gx%g:%g",
@@ -712,9 +760,9 @@ int mvm_mlt_compose_audio(MvmComposeHandle* h, long long frame, MvmComposeAudio*
      * 0 のまま呼ぶと MLT は 0 サンプル分しか用意しないのに戻り値では
      * 800 を返し、その差分を読んだ結果 heap 破壊と nan を引き起こす。
      * 正しいフレーム内サンプル数を入力として渡す。 */
-    int samples = mlt_audio_calculate_frame_samples(
-        (float)h->profile->frame_rate_num / (float)h->profile->frame_rate_den, frequency,
-        (int)frame);
+    int samples = mlt_audio_calculate_frame_samples((float)h->profile->frame_rate_num /
+                                                        (float)h->profile->frame_rate_den,
+                                                    frequency, (int)frame);
     void* buffer = NULL;
 
     if (mlt_frame_get_audio(f, &buffer, &afmt, &frequency, &channels, &samples) != 0 || !buffer ||

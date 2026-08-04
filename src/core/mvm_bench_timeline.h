@@ -114,8 +114,9 @@ typedef struct {
     char video_transition[32];
 
     /* 音声 mix transition の設定。実測で決めるため可変にする。
-     *   "sum"      : sum=1 のみ (start/end を設定しない)
-     *   "sum_half" : sum=1 + start=0.5 end=0.5
+     *   "sum"    : sum=1 のみ (start/end を設定しない)。これが正式。
+     *   "b_half" : sum=1 + start=0.5 end=0.5。B だけが 0.5 倍される。
+     *              0.5A + 0.5B ではない (実測で確認)。実験用に残す。
      * property を読み戻せたことではなく、出力 WAV の測定結果で決める。 */
     char audio_mix_mode[16];
 

@@ -400,6 +400,61 @@ if ($LASTEXITCODE -ne 0) { Write-Host '  (字幕のみ mp4 の生成に失敗し
 
 Write-Host "  破損・退化素材 (negative test 用): 5 件 -> _corrupt\" -ForegroundColor Green
 
+# --- 音声切り分け用素材 (_diag) ---------------------------------------------
+# S5 の音声不具合を最小構成で切り分けるための素材。
+# 既存素材は削除せず追加する。manifest には載せない (verify-media の対象外)。
+#
+# 周波数は整数倍関係を避ける。1000/500 や 1500/750 のような関係だと、
+# 高調波と別トラックからの漏洩を区別できない。
+#   A1: L 997Hz / R 613Hz
+#   A2: L 1429Hz / R 823Hz
+# いずれも互いに整数倍でなく、2倍・3倍高調波も他方のターゲットと重ならない。
+
+$DiagDir = Join-Path $OutputRoot '_diag'
+New-Item -ItemType Directory -Force -Path $DiagDir | Out-Null
+
+$DiagA1Expr = 'aevalsrc=exprs=0.5*sin(2*PI*997*t)|0.5*sin(2*PI*613*t):s=48000:d=' +
+              "${Duration}:c=stereo"
+$DiagA2Expr = 'aevalsrc=exprs=0.5*sin(2*PI*1429*t)|0.5*sin(2*PI*823*t):s=48000:d=' +
+              "${Duration}:c=stereo"
+$DiagVideo  = "testsrc2=s=1280x720:r=${Fps}:d=${Duration}"
+
+$diagJobs = @(
+    @{ Name = 'v1_video_only.mp4'
+       Args = @('-hide_banner','-y','-loglevel','error','-nostdin',
+                '-f','lavfi','-i',$DiagVideo,
+                '-an','-c:v','libx264','-preset','veryfast','-crf','23',
+                '-pix_fmt','yuv420p','-r',"$Fps",'-fps_mode','cfr') }
+    @{ Name = 'a1_av.mp4'
+       Args = @('-hide_banner','-y','-loglevel','error','-nostdin',
+                '-f','lavfi','-i',$DiagVideo,
+                '-f','lavfi','-i',$DiagA1Expr,
+                '-c:v','libx264','-preset','veryfast','-crf','23',
+                '-pix_fmt','yuv420p','-r',"$Fps",'-fps_mode','cfr',
+                '-c:a','aac','-b:a','192k','-ar','48000','-ac','2') }
+    @{ Name = 'a1_audio_only.m4a'
+       Args = @('-hide_banner','-y','-loglevel','error','-nostdin',
+                '-f','lavfi','-i',$DiagA1Expr,
+                '-c:a','aac','-b:a','192k','-ar','48000','-ac','2') }
+    @{ Name = 'a2.wav'
+       Args = @('-hide_banner','-y','-loglevel','error','-nostdin',
+                '-f','lavfi','-i',$DiagA2Expr,
+                '-c:a','pcm_s16le','-ar','48000','-ac','2') }
+    # 参照用: A1 を PCM でそのまま持つ (AAC を経由しない基準)
+    @{ Name = 'a1_ref.wav'
+       Args = @('-hide_banner','-y','-loglevel','error','-nostdin',
+                '-f','lavfi','-i',$DiagA1Expr,
+                '-c:a','pcm_s16le','-ar','48000','-ac','2') }
+)
+
+foreach ($j in $diagJobs) {
+    $p = Join-Path $DiagDir $j.Name
+    if ((Test-Path $p) -and -not $Force) { continue }
+    & $FFmpeg @($j.Args + @($p))
+    if ($LASTEXITCODE -ne 0) { throw "切り分け用素材の生成に失敗: $($j.Name)" }
+}
+Write-Host "  音声切り分け用素材: $($diagJobs.Count) 件 -> _diag\ (A1 997/613Hz, A2 1429/823Hz)" -ForegroundColor Green
+
 # --- manifest ---------------------------------------------------------------
 
 $ffVersion = (& $FFmpeg -hide_banner -version 2>&1 | Select-Object -First 1)

@@ -100,6 +100,7 @@ mvm_add_test(verify_media_smoke
 # 詳細は tests/fixtures/README.md。
 
 set(MVM_FIXTURES "${CMAKE_SOURCE_DIR}/tests/fixtures")
+set(MVM_S5_SCENARIO "${CMAKE_SOURCE_DIR}/bench/scenarios/s5-five-track.json")
 
 # 対照群: 正しい最小 manifest は通る。
 # これが落ちるなら、下の negative test は意図した箇所で落ちていない。
@@ -240,3 +241,94 @@ mvm_add_test(decode_out_of_range
 mvm_add_test(probe_missing_file
     COMMAND mvm_bench probe "${CMAKE_CURRENT_BINARY_DIR}/no-such-media.mp4"
     PROPERTIES WILL_FAIL TRUE)
+
+# --- S5 音声 (M3) -----------------------------------------------------------
+# 音声の正式なゲートは render-audio + verify-audio である。
+# mvm_mlt_compose_audio (生バッファ) は fail-closed のままで、
+# verify-compose の音声検査には使わない。
+
+set(MVM_DIAG_DIR "${MVM_SMOKE_DIR}/_diag")
+set(MVM_AUDIO_OUT "${CMAKE_CURRENT_BINARY_DIR}/audio")
+file(MAKE_DIRECTORY "${MVM_AUDIO_OUT}")
+
+# 最小グラフの切り分けケース。
+# producer service に loader を使わないと AAC が壊れ volume が落ちることが
+# 実測で分かっている (docs/research/composition-notes.md)。
+# これらはその回帰テストである。
+set(MVM_AG_CASES
+    audio_direct_aac        A   # producer -> consumer のみ
+    audio_playlist_aac      B   # + playlist + tractor
+    audio_stream_selectors  C   # + video_index=-1
+    audio_separate_resources D  # 別 resource
+    audio_same_resource     E   # 同一 resource を別 producer で stream 分離
+    audio_mix_sum           F   # mix(sum=1)
+    audio_volume_minus_6db  G   # + volume -6dB
+    audio_full_five_track   H   # 5 トラック相当
+)
+list(LENGTH MVM_AG_CASES _ag_len)
+math(EXPR _ag_last "${_ag_len} / 2 - 1")
+foreach(i RANGE ${_ag_last})
+    math(EXPR _n "${i} * 2")
+    math(EXPR _c "${i} * 2 + 1")
+    list(GET MVM_AG_CASES ${_n} _name)
+    list(GET MVM_AG_CASES ${_c} _case)
+    mvm_add_test(${_name}
+        COMMAND mvm_bench audio-graph-probe --case ${_case}
+                --output "${MVM_AUDIO_OUT}/${_case}.wav"
+                --diag-dir "${MVM_DIAG_DIR}" --smoke-dir "${MVM_SMOKE_DIR}"
+                --timeout-ms 60000
+        PROPERTIES REQUIRED_FILES "${MVM_DIAG_DIR}/a1_av.mp4")
+endforeach()
+
+# negative: 書き込めない出力先を成功扱いしない
+mvm_add_test(audio_invalid_output_negative
+    COMMAND mvm_bench audio-graph-probe --case A
+            --output "${CMAKE_CURRENT_BINARY_DIR}/no-such-dir/x/y.wav"
+            --diag-dir "${MVM_DIAG_DIR}" --smoke-dir "${MVM_SMOKE_DIR}"
+    PROPERTIES
+        REQUIRED_FILES "${MVM_DIAG_DIR}/a1_av.mp4"
+        WILL_FAIL TRUE)
+
+# negative: timeout を成功扱いしない (1ms では絶対に終わらない)
+mvm_add_test(audio_timeout_negative
+    COMMAND mvm_bench audio-graph-probe --case H
+            --output "${MVM_AUDIO_OUT}/timeout.wav"
+            --diag-dir "${MVM_DIAG_DIR}" --smoke-dir "${MVM_SMOKE_DIR}"
+            --timeout-ms 1
+    PROPERTIES
+        REQUIRED_FILES "${MVM_DIAG_DIR}/a1_av.mp4"
+        WILL_FAIL TRUE)
+
+# --- M3 の正式ゲート: 5 トラック構成の音声を実ファイルで検証 ----------------
+# render で 4 種類を出力し、verify で 4 周波数 / gain / clipping を検査する。
+
+mvm_add_test(render_audio_a1_only
+    COMMAND mvm_bench render-audio "${MVM_S5_SCENARIO}"
+            --output "${MVM_AUDIO_OUT}/A1-only.wav" --disable-track A2
+    PROPERTIES REQUIRED_FILES "${MVM_S5_SCENARIO}" FIXTURES_SETUP mvm_audio)
+
+mvm_add_test(render_audio_a2_only
+    COMMAND mvm_bench render-audio "${MVM_S5_SCENARIO}"
+            --output "${MVM_AUDIO_OUT}/A2-only.wav" --disable-track A1
+    PROPERTIES REQUIRED_FILES "${MVM_S5_SCENARIO}" FIXTURES_SETUP mvm_audio)
+
+mvm_add_test(render_audio_a2_only_0db
+    COMMAND mvm_bench render-audio "${MVM_S5_SCENARIO}"
+            --output "${MVM_AUDIO_OUT}/A2-only-0db.wav" --disable-track A1 --gain-db 0
+    PROPERTIES REQUIRED_FILES "${MVM_S5_SCENARIO}" FIXTURES_SETUP mvm_audio)
+
+mvm_add_test(render_audio_mixed
+    COMMAND mvm_bench render-audio "${MVM_S5_SCENARIO}" --output "${MVM_AUDIO_OUT}/mixed.wav"
+    PROPERTIES REQUIRED_FILES "${MVM_S5_SCENARIO}" FIXTURES_SETUP mvm_audio)
+
+mvm_add_test(verify_audio_four_frequencies
+    COMMAND mvm_bench verify-audio "${MVM_AUDIO_OUT}" --check-mix
+    PROPERTIES FIXTURES_REQUIRED mvm_audio)
+
+mvm_add_test(verify_audio_gain_minus_6db
+    COMMAND mvm_bench verify-audio "${MVM_AUDIO_OUT}" --check-gain
+    PROPERTIES FIXTURES_REQUIRED mvm_audio)
+
+mvm_add_test(verify_audio_no_clipping
+    COMMAND mvm_bench verify-audio "${MVM_AUDIO_OUT}" --check-clipping
+    PROPERTIES FIXTURES_REQUIRED mvm_audio)

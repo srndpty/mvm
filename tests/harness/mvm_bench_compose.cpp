@@ -10,6 +10,7 @@
 //   golden PNG のバイト一致は要求しない (圧縮とアンチエイリアスに弱いため)。
 
 #include "bench_common.h"
+#include "media/mlt/mvm_mlt_audiograph.h"
 #include "media/mlt/mvm_mlt_compose.h"
 
 #include <chrono>
@@ -429,10 +430,14 @@ Region diffBoundingBox(const MvmMltImage& a, const MvmMltImage& b) {
         for (int x = 0; x < a.width; x++) {
             size_t o = ((size_t)y * (size_t)a.width + (size_t)x) * 4u;
             if (pixelDiffers(a.rgba + o, b.rgba + o)) {
-                if (x < minX) minX = x;
-                if (y < minY) minY = y;
-                if (x > maxX) maxX = x;
-                if (y > maxY) maxY = y;
+                if (x < minX)
+                    minX = x;
+                if (y < minY)
+                    minY = y;
+                if (x > maxX)
+                    maxX = x;
+                if (y > maxY)
+                    maxY = y;
             }
         }
     }
@@ -462,10 +467,12 @@ struct Variant {
     MvmComposeHandle* handle = nullptr;
 
     explicit Variant(const MvmBenchTimeline& t) : timeline(t) {}
+
     ~Variant() {
         if (handle)
             mvm_mlt_compose_close(handle);
     }
+
     Variant(const Variant&) = delete;
     Variant& operator=(const Variant&) = delete;
 
@@ -505,8 +512,8 @@ bool openScenario(const Args& a, OpenedScenario& out, int& rc) {
         copyStr(out.scenario.timeline.video_transition,
                 sizeof(out.scenario.timeline.video_transition), a.get("video-transition"));
     if (a.has("mix-mode"))
-        copyStr(out.scenario.timeline.audio_mix_mode,
-                sizeof(out.scenario.timeline.audio_mix_mode), a.get("mix-mode"));
+        copyStr(out.scenario.timeline.audio_mix_mode, sizeof(out.scenario.timeline.audio_mix_mode),
+                a.get("mix-mode"));
 
     char cerr[1024] = {0};
     out.handle = mvm_mlt_compose_open(&out.scenario.timeline, &out.info, cerr, sizeof(cerr));
@@ -731,8 +738,7 @@ int cmdVerifyCompose(const bench::Args& a) {
             if (pipIn < insideMin)
                 problems.push_back("frame " + std::to_string(frame) +
                                    ": PiP 矩形内の差分率が小さすぎます " + std::to_string(pipIn) +
-                                   " < " + std::to_string(insideMin) +
-                                   " (V2 が合成されていない)");
+                                   " < " + std::to_string(insideMin) + " (V2 が合成されていない)");
             if (pipOut > outsideMax)
                 problems.push_back("frame " + std::to_string(frame) +
                                    ": PiP 矩形外へ V2 の画素が漏れています 差分率 " +
@@ -756,8 +762,7 @@ int cmdVerifyCompose(const bench::Args& a) {
             if (txIn < insideMin)
                 problems.push_back("frame " + std::to_string(frame) +
                                    ": text 矩形内の差分率が小さすぎます " + std::to_string(txIn) +
-                                   " < " + std::to_string(insideMin) +
-                                   " (文字が描かれていない)");
+                                   " < " + std::to_string(insideMin) + " (文字が描かれていない)");
             if (txOut > outsideMax)
                 problems.push_back("frame " + std::to_string(frame) +
                                    ": text 矩形外へ描画が漏れています 差分率 " +
@@ -1328,7 +1333,6 @@ int cmdScrubBench(const bench::Args& a) {
     return kExitOk;
 }
 
-
 // ==========================================================================
 // WAV 読み取りと音声検証 (M3)
 // ==========================================================================
@@ -1342,7 +1346,7 @@ namespace {
 struct WavData {
     int sampleRate = 0;
     int channels = 0;
-    long long frames = 0;   // チャンネルあたりのサンプル数
+    long long frames = 0;    // チャンネルあたりのサンプル数
     std::vector<float> data; // interleaved, -1.0..1.0
     bool ok = false;
     std::string error;
@@ -1351,6 +1355,7 @@ struct WavData {
 uint32_t rdU32(const unsigned char* p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
+
 uint16_t rdU16(const unsigned char* p) {
     return (uint16_t)((uint32_t)p[0] | ((uint32_t)p[1] << 8));
 }
@@ -1629,8 +1634,8 @@ int cmdRenderAudio(const bench::Args& a) {
     const double durTol = 0.05; // 許容差 ±50ms (3 フレーム分)
     if (std::fabs(ff.duration - wantDuration) > durTol)
         problems.push_back("duration が " + std::to_string(wantDuration) + "s ±" +
-                           std::to_string(durTol) + " から外れています: " +
-                           std::to_string(ff.duration));
+                           std::to_string(durTol) +
+                           " から外れています: " + std::to_string(ff.duration));
 
     // 妥当なサイズ: 48000 * 2ch * 2byte * 5s = 960000 バイト前後
     std::error_code ec;
@@ -1809,5 +1814,164 @@ int cmdVerifyAudio(const bench::Args& a) {
             logMsg("  " + p);
         return kExitMismatch;
     }
+    return kExitOk;
+}
+
+// ==========================================================================
+// 音声グラフの最小切り分け (S5)
+// ==========================================================================
+
+int cmdAudioGraphProbe(const bench::Args& a) {
+    using namespace bench;
+
+    std::string caseName = a.get("case");
+    std::string out = a.get("output");
+    std::string diag = a.get("diag-dir");
+    std::string smoke = a.get("smoke-dir");
+    if (caseName.empty() || caseName == "1" || out.empty() || out == "1" || diag.empty() ||
+        diag == "1") {
+        logMsg("使い方: mvm_bench audio-graph-probe --case A --output x.wav "
+               "--diag-dir <dir> [--smoke-dir <dir>]");
+        return kExitUsage;
+    }
+    if (smoke.empty() || smoke == "1")
+        smoke = diag + "/..";
+
+    MvmAudioGraphPaths paths{};
+    auto set = [](char* dst, size_t n, const std::string& v) {
+        std::snprintf(dst, n, "%s", v.c_str());
+    };
+    set(paths.a1_av, sizeof(paths.a1_av), diag + "/a1_av.mp4");
+    set(paths.a1_audio_only, sizeof(paths.a1_audio_only), diag + "/a1_audio_only.m4a");
+    set(paths.v1_video_only, sizeof(paths.v1_video_only), diag + "/v1_video_only.mp4");
+    set(paths.a2_wav, sizeof(paths.a2_wav), diag + "/a2.wav");
+    set(paths.v1_h264, sizeof(paths.v1_h264), smoke + "/v1080p60_h264.mp4");
+    set(paths.v2_hevc, sizeof(paths.v2_hevc), smoke + "/v1080p60_hevc.mp4");
+    set(paths.wav_48k, sizeof(paths.wav_48k), smoke + "/wav_48k.wav");
+
+    if (!initMlt())
+        return kExitError;
+
+    int timeoutMs = (int)std::strtol(a.get("timeout-ms", "60000").c_str(), nullptr, 10);
+    char err[1024] = {0};
+    int rc = mvm_mlt_audiograph_run(caseName.c_str(), &paths, out.c_str(), timeoutMs, stderr, err,
+                                    sizeof(err));
+    mvm_mlt_runtime_shutdown();
+
+    if (rc == 2) {
+        logMsg(std::string("timeout: ") + err);
+        return 4; // timeout 専用
+    }
+    if (rc != 0) {
+        logMsg(std::string("失敗: ") + err);
+        return kExitMismatch;
+    }
+    return kExitOk;
+}
+
+int cmdAnalyzeWav(const bench::Args& a) {
+    using namespace bench;
+
+    if (a.positional.empty()) {
+        logMsg("使い方: mvm_bench analyze-wav <file.wav> [--targets 997,613,1429,823]");
+        return kExitUsage;
+    }
+    std::string path = a.positional[0];
+
+    // 既定は切り分け用素材の 4 周波数。整数倍関係が無いものを選んである。
+    std::vector<int> targets = {997, 613, 1429, 823};
+    if (a.has("targets")) {
+        targets.clear();
+        std::string spec = a.get("targets"), cur;
+        for (char c : spec) {
+            if (c == ',') {
+                if (!cur.empty())
+                    targets.push_back(std::atoi(cur.c_str()));
+                cur.clear();
+            } else
+                cur += c;
+        }
+        if (!cur.empty())
+            targets.push_back(std::atoi(cur.c_str()));
+    }
+
+    // 高調波も測る。別トラックからの漏洩と高調波を混同しないため。
+    std::vector<int> all = targets;
+    for (int t : targets) {
+        all.push_back(t * 2);
+        all.push_back(t * 3);
+    }
+
+    WavData w = readWavS16(path);
+    if (!w.ok) {
+        logMsg("WAV を読めません: " + w.error);
+        return kExitError;
+    }
+
+    // 先頭 1 秒ではなく 1.5 秒以降の中央区間を使う。
+    // 立ち上がりやフィルタの過渡応答を避けるため。
+    long long startFrame = (long long)(1.5 * w.sampleRate);
+    long long useFrames = std::min<long long>(w.frames - startFrame, w.sampleRate);
+    if (useFrames <= 0) {
+        logMsg("解析区間が取れません (frames=" + std::to_string(w.frames) + ")");
+        return kExitError;
+    }
+
+    std::printf("{\n  \"path\": \"%s\",\n", jsonEscape(path).c_str());
+    std::printf("  \"sample_rate\": %d,\n  \"channels\": %d,\n  \"frames\": %lld,\n", w.sampleRate,
+                w.channels, w.frames);
+    std::printf("  \"analysis_start_sec\": 1.5,\n  \"analysis_frames\": %lld,\n", useFrames);
+
+    const char* chName[2] = {"L", "R"};
+    for (int ch = 0; ch < std::min(2, w.channels); ch++) {
+        const float* base = w.data.data() + (size_t)startFrame * (size_t)w.channels + (size_t)ch;
+        int n = (int)useFrames;
+        int stride = w.channels;
+
+        double r = rms(base, n, stride);
+        double pk = peak(base, n, stride);
+        double dc = 0;
+        long long clipped = 0;
+        for (int i = 0; i < n; i++) {
+            double v = base[(size_t)i * (size_t)stride];
+            dc += v;
+            if (std::fabs(v) >= 0.999)
+                clipped++;
+        }
+        dc /= n;
+
+        std::printf("  \"%s\": { \"rms\": %g, \"peak\": %g, \"dc\": %g, \"clip_ratio\": %g,\n",
+                    chName[ch], r, pk, dc, (double)clipped / n);
+        std::printf("    \"tones\": {");
+        std::map<int, double> tv;
+        bool first = true;
+        for (int hz : all) {
+            double g = goertzel(base, n, stride, w.sampleRate, (double)hz);
+            tv[hz] = g;
+            std::printf("%s \"%d\": %g", first ? "" : ",", hz, g);
+            first = false;
+        }
+        std::printf(" },\n");
+
+        // SNR: このチャンネルの target / それ以外の最大 (高調波を除く)
+        double best = 0;
+        int bestHz = 0;
+        for (int t : targets)
+            if (tv[t] > best) {
+                best = tv[t];
+                bestHz = t;
+            }
+        double other = 0;
+        for (int t : targets) {
+            if (t == bestHz)
+                continue;
+            other = std::max(other, tv[t]);
+        }
+        std::printf("    \"dominant_hz\": %d, \"dominant\": %g, \"max_other_target\": %g,\n",
+                    bestHz, best, other);
+        std::printf("    \"snr\": %g }%s\n", other > 1e-12 ? best / other : 1e6,
+                    ch + 1 < std::min(2, w.channels) ? "," : "");
+    }
+    std::printf("}\n");
     return kExitOk;
 }

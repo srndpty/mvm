@@ -29,6 +29,8 @@ int cmdSeekBench(const bench::Args& a);
 int cmdScrubBench(const bench::Args& a);
 int cmdRenderAudio(const bench::Args& a);
 int cmdVerifyAudio(const bench::Args& a);
+int cmdAudioGraphProbe(const bench::Args& a);
+int cmdAnalyzeWav(const bench::Args& a);
 
 namespace {
 
@@ -705,6 +707,10 @@ int main() {
         rc = cmdRenderAudio(a);
     else if (cmd == "verify-audio")
         rc = cmdVerifyAudio(a);
+    else if (cmd == "audio-graph-probe")
+        rc = cmdAudioGraphProbe(a);
+    else if (cmd == "analyze-wav")
+        rc = cmdAnalyzeWav(a);
     else if (cmd == "explore")
         rc = cmdExplore(a);
     else {

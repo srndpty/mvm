@@ -219,6 +219,88 @@ V1（testsrc2）と視覚的に区別できるようにした
 フォントは実ファイルの存在を構築前に検査し、無ければ失敗させる
 （別フォントへ無言で fallback しない）。
 
+## 所見 I（解決）: 音声破損と volume クラッシュの原因は producer service
+
+**[事実]** 最小構成から 1 段ずつ足して切り分けた結果、
+S5 の音声に関する 2 つの症状は**同一の原因**だった。
+
+> `mlt_factory_producer(profile, "avformat", path)` と service を明示していた。
+> 正しくは `NULL`（= `loader`）を渡す。
+
+`loader` は avformat producer に音声の正規化 filter を付ける。
+これが無いと以下が両方起きる。
+
+- AAC/MP4 の音声が壊れる（トーンが消え RMS が約 1.6 倍になる）
+- `volume` filter を付けるとアクセス違反 / heap 破壊で落ちる
+
+**どちらも playlist / tractor / mix / transition とは無関係**で、
+`producer -> consumer` の最小構成から再現した。
+`melt` が正常だったのは既定が `loader` だからである。
+
+### 切り分けの経過（producer service = avformat）
+
+| ケース | 構成 | 結果 |
+| --- | --- | --- |
+| A | producer -> consumer のみ | **既に破損**（997Hz=0.0082） |
+| B〜F, H | playlist / tractor / mix を追加 | 同様に破損 |
+| G | F + volume -6dB | **heap 破壊 (0xC0000374)** |
+| V0 | volume なし（WAV 素材） | 正常 |
+| V1〜V4 | volume あり（構成を変えて 4 通り） | **全てクラッシュ** |
+
+A の時点で壊れているため、playlist / mix は調査対象外と判断した。
+
+### `melt` による裏取り
+
+同じファイル・同じ consumer property を `melt` で実行すると正常だった。
+
+```
+melt -profile atsc_1080p_60 a1_audio_only.m4a \
+  -consumer avformat:out.wav f=wav acodec=pcm_s16le \
+  frequency=48000 channels=2 vn=1 real_time=-1 terminate_on_pause=1
+```
+
+結果: L 997Hz=0.4978 / R 613Hz=0.5004（SNR 72463）。
+profile を強制しても結果は変わらなかったため、profile は原因ではない。
+
+**つまり MLT パッケージは正常であり、原因は mvm 側の API の使い方だった。**
+
+### 修正後（producer service = loader）
+
+A〜H、V0〜V4 の **13 ケースすべて成功**。
+
+| ケース | L | R |
+| --- | --- | --- |
+| A〜E | 997Hz=0.4978（SNR 73098） | 613Hz=0.5004（SNR 36632） |
+| F（A1+A2 mix） | 997Hz と 1429Hz の両方 | 613Hz と 823Hz の両方 |
+| V0（volume なし） | 1429Hz=0.5000 | 823Hz=0.5000 |
+| V1〜V4（volume -6dB） | 1429Hz=**0.2506** | 823Hz=**0.2506** |
+
+`0.2506 / 0.5000 = 0.5012` → **-6.00dB**。attach の順序（V1/V2）も
+`level` vs `gain`（V3）も tractor の有無（V4）も結果に影響しなかった。
+
+**[教訓]** service を明示すると「より厳密」に見えるが、
+MLT では `loader` が付ける正規化を失う。
+S1 で「場所を推測させない」ために明示を徹底した方針が、
+ここでは裏目に出た。**明示すべきなのは場所であって service ではない。**
+
+## 所見 J: mix transition の意味論（A/B 実測）
+
+**[事実]** `sum=1` は `output = A + mix * B` である。
+`start=0.5 / end=0.5` を足しても `0.5A + 0.5B` にはならない。
+
+同一シナリオで実測した振幅:
+
+| 設定 | A1 (997Hz 相当) | A2 (-6dB 適用済み) |
+| --- | --- | --- |
+| `sum=1` のみ | 0.4998 | **0.2506** |
+| `sum=1` + `start=end=0.5` | 0.4998（**変わらない**） | **0.1253**（半分） |
+
+A 側は一切変わらず B 側だけが半分になる。**採用するのは `sum=1` のみ**とし、
+`start` / `end` は設定しない。
+
+実験用に残す設定名は `sum_half` から **`b_half`** へ改名した。
+「両方が半分になる」という誤解を招くためである。
+
 ## 所見 H: 音声の consumer 出力（M3 の正式経路）
 
 **[事実]** MLT の `avformat` consumer による WAV 出力は成功する。
