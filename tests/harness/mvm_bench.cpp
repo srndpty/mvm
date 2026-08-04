@@ -32,6 +32,7 @@ int cmdVerifyAudio(const bench::Args& a);
 int cmdAudioGraphProbe(const bench::Args& a);
 int cmdAnalyzeWav(const bench::Args& a);
 int cmdSoak(const bench::Args& a);
+int cmdMemoryProbe(const bench::Args& a);
 
 namespace {
 
@@ -714,6 +715,8 @@ int main() {
         rc = cmdAnalyzeWav(a);
     else if (cmd == "soak")
         rc = cmdSoak(a);
+    else if (cmd == "memory-probe")
+        rc = cmdMemoryProbe(a);
     else if (cmd == "explore")
         rc = cmdExplore(a);
     else {

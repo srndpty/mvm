@@ -11,6 +11,12 @@ add_executable(mvm_bench
     harness/mvm_bench_compose.cpp
 )
 
+# ScrubCoalescer の純粋単体テスト。MLT にも Qt にも依存しない。
+add_executable(mvm_test_scrub_coalescer harness/test_scrub_coalescer.cpp)
+target_include_directories(mvm_test_scrub_coalescer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/harness)
+target_link_libraries(mvm_test_scrub_coalescer PRIVATE mvm::warnings)
+add_test(NAME scrub_coalescer_unit COMMAND mvm_test_scrub_coalescer)
+
 target_link_libraries(mvm_bench PRIVATE
     psapi
     mvm::mlt
@@ -340,11 +346,25 @@ mvm_add_test(verify_audio_no_clipping
 # 通常 CTest では 100 回、時間がかかるので performance ラベルは付けない
 # (所有権は正しさの問題であり性能ではない)。
 
+# ownership は「正しさ」だけを見る。
+# Working Set の増減だけを理由に ownership 失敗としない。
+# メモリは memory_soak_diagnostic (stability ラベル) へ分離した。
 mvm_add_test(ownership_soak_100
     COMMAND mvm_bench soak "${MVM_S5_SCENARIO}" --iterations 100
+            --wav-dir "${MVM_AUDIO_OUT}" --no-memory-check
+    PROPERTIES
+        REQUIRED_FILES "${MVM_S5_SCENARIO}"
+        TIMEOUT 1800)
+
+# メモリは長時間かかるうえ、まだ合否を決められる段階にない。
+# 通常 CTest から外し、stability ラベルで明示的に実行する。
+mvm_add_test(memory_soak_diagnostic
+    COMMAND mvm_bench memory-probe "${MVM_S5_SCENARIO}" --case C
+            --csv "${CMAKE_CURRENT_BINARY_DIR}/memory_case_c.csv"
             --wav-dir "${MVM_AUDIO_OUT}"
     PROPERTIES
         REQUIRED_FILES "${MVM_S5_SCENARIO}"
+        LABELS stability
         TIMEOUT 1800)
 
 # --- lint 自身の negative test ----------------------------------------------

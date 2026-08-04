@@ -12,8 +12,10 @@
 #include "bench_common.h"
 #include "media/mlt/mvm_mlt_audiograph.h"
 #include "media/mlt/mvm_mlt_compose.h"
+#include "scrub_coalescer.h"
 
 #include <chrono>
+#include <condition_variable>
 #include <deque>
 #include <mutex>
 #include <numeric>
@@ -1080,19 +1082,7 @@ int cmdSeekBench(const bench::Args& a) {
 
 namespace {
 
-struct ScrubRequest {
-    long long generation = 0;
-    long long frame = 0;
-    Clock::time_point submitted;
-};
-
-struct ScrubResult {
-    long long generation = 0;
-    long long frame = 0;
-    long long markerValue = -1;
-    bool markerSync = false;
-    double latencyMs = 0;
-};
+// ScrubRequest / ScrubResult は scrub_coalescer.h で定義している。
 
 std::vector<long long> makePattern(const std::string& name, long long length, int count,
                                    unsigned seed) {
@@ -1141,24 +1131,28 @@ int cmdScrubBench(const bench::Args& a) {
     int count = (int)std::strtol(a.get("requests", "1000").c_str(), nullptr, 10);
     std::string pattern = a.get("pattern", "linear");
     unsigned seed = (unsigned)std::strtoul(a.get("seed", "20260804").c_str(), nullptr, 10);
-    // 人間のスクラブ操作を模して要求を発行する間隔
     int submitIntervalUs = (int)std::strtol(a.get("submit-interval-us", "0").c_str(), nullptr, 10);
 
     std::vector<long long> frames = makePattern(pattern, length, count, seed);
 
-    // --- coalescing モデル ---
-    // producer 側: 要求を投入する
-    // consumer 側: 処理中でない未処理要求は最新 1 件だけ保持する
-    std::mutex mu;
-    ScrubRequest pending;
-    bool hasPending = false;
-    bool done = false;
+    // --- coalescing 本体は純粋な状態機械 (scrub_coalescer.h) に分離してある ---
+    // ここはスレッドと MLT の接続だけを担当する。
+    ScrubCoalescer coal;
 
-    long long submitted = 0, superseded = 0, decoded = 0, accepted = 0, staleRejected = 0;
-    long long lastAcceptedGeneration = -1;
-    long long lastAcceptedFrame = -1;
+    std::mutex mu;
+    std::condition_variable cv;
+
+    // accepted 結果だけを集計する。stale の decode 時間は診断値として別に持つ。
+    std::vector<double> acceptedLatencies;
+    std::vector<double> staleDecodeMs;
     long long markerMismatch = 0;
-    std::vector<double> latencies;
+    long long acceptedNonMonotonic = 0;
+    long long lastAcceptedGen = -1;
+    long long finalDisplayedFrame = -1;
+    std::vector<std::string> contractErrors;
+
+    // 要求の投入時刻。request -> accepted result のレイテンシに使う。
+    std::vector<Clock::time_point> submitTime((size_t)frames.size());
 
     auto tStart = Clock::now();
 
@@ -1166,98 +1160,132 @@ int cmdScrubBench(const bench::Args& a) {
         for (;;) {
             ScrubRequest req;
             {
-                std::lock_guard<std::mutex> lk(mu);
-                if (!hasPending) {
-                    if (done)
-                        return;
-                    req.generation = -1;
-                } else {
-                    req = pending;
-                    hasPending = false;
+                std::unique_lock<std::mutex> lk(mu);
+                // busy wait をやめ、pending 投入か done で起床する。
+                cv.wait(lk, [&] { return coal.hasPending() || coal.isDone(); });
+                auto taken = coal.takePending();
+                if (!taken) {
+                    if (coal.isDone())
+                        return; // done かつ pending 無し
+                    continue;
                 }
-            }
-            if (req.generation < 0) {
-                std::this_thread::yield();
-                continue;
+                req = *taken;
             }
 
+            // decode はロックの外で行う。処理中の要求は中断しない。
             MvmMltImage img{};
             char err[512] = {0};
             auto t0 = Clock::now();
             int r = mvm_mlt_compose_frame(s.handle, req.frame, &img, err, sizeof(err));
             auto t1 = Clock::now();
-            (void)t0;
 
             ScrubResult res;
             res.generation = req.generation;
             res.frame = req.frame;
-            res.latencyMs = msSince(req.submitted, t1);
+            res.decodeOk = (r == 0);
 
+            long long markerValue = -1;
+            bool markerSync = false;
             if (r == 0) {
                 MarkerRead m = readMarker(img.rgba, img.width, img.height);
-                res.markerSync = m.syncOk;
-                res.markerValue = m.value;
+                markerSync = m.syncOk;
+                markerValue = m.value;
                 mvm_mlt_image_free(&img);
             }
 
             {
                 std::lock_guard<std::mutex> lk(mu);
-                decoded++;
-                // 古い結果は表示対象にしない。
-                // generation が現在の最新受理より古ければ stale。
-                if (res.generation < lastAcceptedGeneration) {
-                    staleRejected++;
-                } else {
-                    accepted++;
-                    lastAcceptedGeneration = res.generation;
-                    lastAcceptedFrame = res.frame;
-                    latencies.push_back(res.latencyMs);
-                    if (!res.markerSync || res.markerValue != res.frame)
+                ScrubResultDecision d = coal.complete(res);
+                switch (d) {
+                case ScrubResultDecision::Accept: {
+                    double lat = msSince(submitTime[(size_t)req.generation], t1);
+                    acceptedLatencies.push_back(lat);
+                    // marker は accepted 結果だけを対象に集計する
+                    if (!markerSync || markerValue != req.frame)
                         markerMismatch++;
+                    if (req.generation <= lastAcceptedGen)
+                        acceptedNonMonotonic++;
+                    lastAcceptedGen = req.generation;
+                    finalDisplayedFrame = req.frame;
+                    break;
+                }
+                case ScrubResultDecision::RejectStale:
+                    staleDecodeMs.push_back(msSince(t0, t1));
+                    break;
+                case ScrubResultDecision::DecodeFailed:
+                    contractErrors.push_back("decode 失敗 gen=" + std::to_string(req.generation) +
+                                             ": " + err);
+                    break;
+                case ScrubResultDecision::InvalidFutureGeneration:
+                    contractErrors.push_back("未投入の generation を complete した gen=" +
+                                             std::to_string(req.generation));
+                    break;
+                case ScrubResultDecision::NotInFlight:
+                    contractErrors.push_back("in-flight でない complete gen=" +
+                                             std::to_string(req.generation));
+                    break;
                 }
             }
+            cv.notify_all();
         }
     });
 
     for (long long i = 0; i < (long long)frames.size(); i++) {
-        ScrubRequest req;
-        req.generation = i;
-        req.frame = frames[(size_t)i];
-        req.submitted = Clock::now();
         {
             std::lock_guard<std::mutex> lk(mu);
-            if (hasPending)
-                superseded++; // 未処理のまま置き換えられた
-            pending = req;
-            hasPending = true;
-            submitted++;
+            submitTime[(size_t)i] = Clock::now();
+            coal.submit({i, frames[(size_t)i]});
         }
+        cv.notify_all();
         if (submitIntervalUs > 0)
             std::this_thread::sleep_for(std::chrono::microseconds(submitIntervalUs));
     }
 
-    // 最終要求は必ず処理されなければならない。
-    // 投入を止めたうえで、pending が捌けるまで待つ。
-    for (;;) {
-        {
-            std::lock_guard<std::mutex> lk(mu);
-            if (!hasPending) {
-                done = true;
-                break;
-            }
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    // 最終要求は必ず処理する契約。pending と in-flight が捌けるまで待ってから done。
+    {
+        std::unique_lock<std::mutex> lk(mu);
+        cv.wait(lk, [&] { return !coal.hasPending() && !coal.hasInFlight(); });
+        coal.markDone();
     }
+    cv.notify_all();
     consumer.join();
 
     auto tEnd = Clock::now();
     double elapsedSec = std::chrono::duration<double>(tEnd - tStart).count();
-    double updatesPerSec = elapsedSec > 0 ? (double)accepted / elapsedSec : 0.0;
+    // updates/sec は accepted 結果だけで計算する
+    double updatesPerSec = elapsedSec > 0 ? (double)coal.accepted() / elapsedSec : 0.0;
 
     long long finalRequestedFrame = frames.empty() ? -1 : frames.back();
-    bool finalMatches = (lastAcceptedFrame == finalRequestedFrame);
+    bool finalFrameMatches = (finalDisplayedFrame == finalRequestedFrame);
+    bool finalGenMatches = (coal.finalDisplayedGeneration() == coal.latestSubmittedGeneration());
 
-    Percentiles p = computeStats(latencies);
+    Percentiles p = computeStats(acceptedLatencies);
+    Percentiles pStale = computeStats(staleDecodeMs);
+
+    // --- counter invariant -------------------------------------------------
+    std::vector<std::string> invariantErrors;
+    if (!coal.countersBalanced())
+        invariantErrors.push_back("submitted(" + std::to_string(coal.submitted()) +
+                                  ") != superseded(" + std::to_string(coal.superseded()) +
+                                  ") + decoded(" + std::to_string(coal.decoded()) + ")");
+    if (!coal.decodeCountersBalanced())
+        invariantErrors.push_back("decoded(" + std::to_string(coal.decoded()) + ") != accepted(" +
+                                  std::to_string(coal.accepted()) + ") + stale(" +
+                                  std::to_string(coal.staleRejected()) + ") + failed(" +
+                                  std::to_string(coal.decodeFailed()) + ")");
+    if (acceptedNonMonotonic != 0)
+        invariantErrors.push_back("accepted の generation が単調増加していません (" +
+                                  std::to_string(acceptedNonMonotonic) + " 件)");
+    if (!finalGenMatches)
+        invariantErrors.push_back(
+            "final displayed generation(" + std::to_string(coal.finalDisplayedGeneration()) +
+            ") != latest submitted(" + std::to_string(coal.latestSubmittedGeneration()) + ")");
+    if (coal.accepted() == 0)
+        invariantErrors.push_back("accepted が 0 件です (成功扱いにしない)");
+    if (coal.contractViolations() != 0)
+        invariantErrors.push_back("契約違反 " + std::to_string(coal.contractViolations()) + " 件");
+    for (const auto& e : contractErrors)
+        invariantErrors.push_back(e);
 
     std::string csv = a.get("csv");
     if (!csv.empty() && csv != "1") {
@@ -1265,15 +1293,19 @@ int cmdScrubBench(const bench::Args& a) {
         if (f) {
             std::fprintf(f, "metric,value\n");
             std::fprintf(f, "pattern,%s\n", pattern.c_str());
-            std::fprintf(f, "submitted,%lld\n", submitted);
-            std::fprintf(f, "decoded,%lld\n", decoded);
-            std::fprintf(f, "superseded,%lld\n", superseded);
-            std::fprintf(f, "accepted,%lld\n", accepted);
-            std::fprintf(f, "stale_rejected,%lld\n", staleRejected);
+            std::fprintf(f, "submit_interval_us,%d\n", submitIntervalUs);
+            std::fprintf(f, "submitted,%lld\n", coal.submitted());
+            std::fprintf(f, "superseded,%lld\n", coal.superseded());
+            std::fprintf(f, "decoded,%lld\n", coal.decoded());
+            std::fprintf(f, "accepted,%lld\n", coal.accepted());
+            std::fprintf(f, "stale_rejected,%lld\n", coal.staleRejected());
+            std::fprintf(f, "decode_failed,%lld\n", coal.decodeFailed());
             std::fprintf(f, "updates_per_sec,%.4f\n", updatesPerSec);
-            std::fprintf(f, "latency_p50_ms,%.4f\n", p.p50);
-            std::fprintf(f, "latency_p95_ms,%.4f\n", p.p95);
-            std::fprintf(f, "latency_max_ms,%.4f\n", p.max);
+            std::fprintf(f, "accepted_latency_p50_ms,%.4f\n", p.p50);
+            std::fprintf(f, "accepted_latency_p95_ms,%.4f\n", p.p95);
+            std::fprintf(f, "accepted_latency_max_ms,%.4f\n", p.max);
+            std::fprintf(f, "stale_decode_count,%zu\n", staleDecodeMs.size());
+            std::fprintf(f, "marker_mismatch,%lld\n", markerMismatch);
             std::fclose(f);
         }
     }
@@ -1281,31 +1313,50 @@ int cmdScrubBench(const bench::Args& a) {
     std::ostringstream js;
     js << "{\n  \"scenario\": \"" << jsonEscape(s.scenario.name) << "\",\n";
     js << "  \"pattern\": \"" << pattern << "\",\n";
+    js << "  \"submit_interval_us\": " << submitIntervalUs << ",\n";
     js << "  \"length\": " << length << ",\n";
     js << "  \"elapsed_sec\": " << elapsedSec << ",\n";
-    js << "  \"submitted\": " << submitted << ",\n";
-    js << "  \"decoded\": " << decoded << ",\n";
-    js << "  \"superseded\": " << superseded << ",\n";
-    js << "  \"accepted\": " << accepted << ",\n";
-    js << "  \"stale_rejected\": " << staleRejected << ",\n";
-    js << "  \"marker_mismatch\": " << markerMismatch << ",\n";
-    js << "  \"updates_per_sec\": " << updatesPerSec << ",\n";
+    js << "  \"submitted\": " << coal.submitted() << ",\n";
+    js << "  \"superseded\": " << coal.superseded() << ",\n";
+    js << "  \"decoded\": " << coal.decoded() << ",\n";
+    js << "  \"accepted\": " << coal.accepted() << ",\n";
+    js << "  \"stale_rejected\": " << coal.staleRejected() << ",\n";
+    js << "  \"decode_failed\": " << coal.decodeFailed() << ",\n";
+    js << "  \"contract_violations\": " << coal.contractViolations() << ",\n";
+    js << "  \"marker_mismatch_accepted_only\": " << markerMismatch << ",\n";
+    js << "  \"updates_per_sec_accepted\": " << updatesPerSec << ",\n";
     js << "  \"final_requested_frame\": " << finalRequestedFrame << ",\n";
-    js << "  \"final_displayed_frame\": " << lastAcceptedFrame << ",\n";
-    js << "  \"final_matches\": " << (finalMatches ? "true" : "false") << ",\n";
-    js << "  \"latency_ms\": { \"p50\": " << p.p50 << ", \"p95\": " << p.p95
-       << ", \"max\": " << p.max << ", \"mean\": " << p.mean << " }\n}\n";
+    js << "  \"final_displayed_frame\": " << finalDisplayedFrame << ",\n";
+    js << "  \"final_frame_matches\": " << (finalFrameMatches ? "true" : "false") << ",\n";
+    js << "  \"latest_submitted_generation\": " << coal.latestSubmittedGeneration() << ",\n";
+    js << "  \"final_displayed_generation\": " << coal.finalDisplayedGeneration() << ",\n";
+    js << "  \"final_generation_matches\": " << (finalGenMatches ? "true" : "false") << ",\n";
+    js << "  \"accepted_latency_ms\": { \"p50\": " << p.p50 << ", \"p95\": " << p.p95
+       << ", \"max\": " << p.max << ", \"mean\": " << p.mean << " },\n";
+    js << "  \"stale_decode_diagnostic\": { \"count\": " << staleDecodeMs.size()
+       << ", \"p50\": " << pStale.p50 << ", \"p95\": " << pStale.p95 << " },\n";
+    js << "  \"invariant_errors\": [";
+    for (size_t i = 0; i < invariantErrors.size(); i++)
+        js << (i ? ",\n    " : "\n    ") << "\"" << jsonEscape(invariantErrors[i]) << "\"";
+    js << (invariantErrors.empty() ? "]\n}\n" : "\n  ]\n}\n");
 
     std::fputs(js.str().c_str(), stdout);
     closeScenario(s);
+
+    if (!invariantErrors.empty()) {
+        logMsg("counter invariant / 契約に違反しました:");
+        for (const auto& e : invariantErrors)
+            logMsg("  " + e);
+        return kExitMismatch;
+    }
 
     if (a.has("check")) {
         double minUps = std::strtod(a.get("min-updates-per-sec", "15").c_str(), nullptr);
         double p95Limit = std::strtod(a.get("max-p95-ms", "200").c_str(), nullptr);
         bool ok = true;
-        if (!finalMatches) {
+        if (!finalFrameMatches) {
             logMsg("M6 不合格: 最終要求 " + std::to_string(finalRequestedFrame) +
-                   " が表示されていません (表示 " + std::to_string(lastAcceptedFrame) + ")");
+                   " が表示されていません (表示 " + std::to_string(finalDisplayedFrame) + ")");
             ok = false;
         }
         if (markerMismatch != 0) {
@@ -1318,13 +1369,11 @@ int cmdScrubBench(const bench::Args& a) {
             ok = false;
         }
         if (p.p95 > p95Limit) {
-            logMsg("M6 不合格: latency p95 " + std::to_string(p.p95) + "ms > " +
+            logMsg("M6 不合格: accepted latency p95 " + std::to_string(p.p95) + "ms > " +
                    std::to_string(p95Limit) + "ms");
             ok = false;
         }
-        // coalescing が機能していない実装を検出する。
-        // 全要求を逐次処理していれば decoded == submitted になる。
-        if (a.has("require-coalescing") && superseded == 0) {
+        if (a.has("require-coalescing") && coal.superseded() == 0) {
             logMsg("coalescing が機能していません: superseded が 0 です");
             ok = false;
         }
@@ -2125,6 +2174,10 @@ int cmdSoak(const bench::Args& a) {
         }
     }
 
+    // --no-memory-check: メモリ判定は memory-probe の担当。
+    // ownership テストは正しさ (完走 / crash なし / 値の一致 / handle) だけを見る。
+    const bool checkMemory = !a.has("no-memory-check");
+
     // handle は単調増加してはいけない。最後の 1/4 が最初の 1/4 より
     // 明確に多ければリークとみなす。
     size_t handleFirst = 0, handleLast = 0;
@@ -2148,13 +2201,13 @@ int cmdSoak(const bench::Args& a) {
             problems.push_back("handle 数が増加しています " + std::to_string(handleFirst) + " -> " +
                                std::to_string(handleLast));
 
-        // RSS は allocator のキャッシュで揺れる。
-        // 反復あたり 256KB を超える線形増加のみ不合格にする。
+        // WorkingSetSize だけを「リーク量」とは呼ばない。常駐した物理ページと
+        // 確保し続けている仮想メモリを区別できないため、既定では合否に使わない。
         double perIter =
             (double)((long long)rssLast - (long long)rssFirst) / (double)(samples.size() * 3 / 4);
-        if (perIter > 256.0 * 1024.0)
+        if (checkMemory && perIter > 256.0 * 1024.0)
             problems.push_back("RSS が反復あたり " + std::to_string((long long)perIter) +
-                               " バイト増加しています (線形増加の疑い)");
+                               " バイト増加しています (診断は mvm_bench memory-probe を使うこと)");
     }
 
     std::printf("{\n  \"scenario\": \"%s\",\n", jsonEscape(sc.name).c_str());
@@ -2189,6 +2242,388 @@ int cmdSoak(const bench::Args& a) {
 
     if (!problems.empty()) {
         logMsg("反復テストに失敗しました:");
+        for (const auto& p : problems)
+            logMsg("  " + p);
+        return kExitMismatch;
+    }
+    return kExitOk;
+}
+
+// ==========================================================================
+// メモリ切り分け (S6 correctness closure)
+// ==========================================================================
+//
+// WorkingSetSize だけでは「常駐した物理ページ」と「確保し続けている仮想メモリ」
+// を区別できない。PROCESS_MEMORY_COUNTERS_EX の PrivateUsage を併記し、
+// phase 単位で記録する。
+//
+// 各ケースは必ず別プロセスで実行する (scripts/memory-matrix.ps1)。
+// MLT の global cache が前のケースから持ち越されるのを避けるため。
+
+namespace {
+
+struct MemSample {
+    int iteration = -1;
+    std::string phase;
+    unsigned long long workingSet = 0;
+    unsigned long long peakWorkingSet = 0;
+    unsigned long long privateUsage = 0;
+    unsigned long long pagefileUsage = 0;
+    unsigned long handles = 0;
+};
+
+MemSample takeMemSample(int iteration, const std::string& phase) {
+    MemSample s;
+    s.iteration = iteration;
+    s.phase = phase;
+    PROCESS_MEMORY_COUNTERS_EX pmc{};
+    pmc.cb = sizeof(pmc);
+    if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
+        s.workingSet = pmc.WorkingSetSize;
+        s.peakWorkingSet = pmc.PeakWorkingSetSize;
+        s.privateUsage = pmc.PrivateUsage;
+        s.pagefileUsage = pmc.PagefileUsage;
+    }
+    DWORD h = 0;
+    GetProcessHandleCount(GetCurrentProcess(), &h);
+    s.handles = h;
+    return s;
+}
+
+double mb(unsigned long long v) {
+    return (double)v / 1048576.0;
+}
+
+// 増加の形を区別する。単純な first-last の傾きだけでは
+// 「線形増加」「段差後 plateau」「周期的変動」を取り違える。
+struct GrowthShape {
+    double perIterBytes = 0;       // 全体の平均傾き
+    double lastQuarterPerIter = 0; // 後半 1/4 の傾き
+    long long biggestJumpIteration = -1;
+    double biggestJumpBytes = 0;
+    double beforeJump = 0;
+    double afterJump = 0;
+    std::string classification;
+};
+
+GrowthShape analyseGrowth(const std::vector<double>& v) {
+    GrowthShape g;
+    if (v.size() < 4)
+        return g;
+    g.perIterBytes = (v.back() - v.front()) / (double)(v.size() - 1);
+
+    size_t q = v.size() / 4;
+    if (q >= 2) {
+        double a = v[v.size() - q];
+        double b = v.back();
+        g.lastQuarterPerIter = (b - a) / (double)(q - 1);
+    }
+
+    for (size_t i = 1; i < v.size(); i++) {
+        double d = v[i] - v[i - 1];
+        if (d > g.biggestJumpBytes) {
+            g.biggestJumpBytes = d;
+            g.biggestJumpIteration = (long long)i;
+            g.beforeJump = v[i - 1];
+            g.afterJump = v[i];
+        }
+    }
+
+    // 分類。閾値は診断の目安であり合否ではない。
+    double total = v.back() - v.front();
+    if (total <= 0) {
+        g.classification = "増加なし";
+    } else if (g.biggestJumpBytes > total * 0.6) {
+        g.classification = (g.lastQuarterPerIter < g.perIterBytes * 0.3) ? "段差後 plateau"
+                                                                         : "段差あり + 継続増加";
+    } else if (g.lastQuarterPerIter > g.perIterBytes * 0.6) {
+        g.classification = "線形増加";
+    } else {
+        g.classification = "逓減 (cache 充填の可能性)";
+    }
+    return g;
+}
+
+void emitGrowth(std::ostream& os, const char* name, const GrowthShape& g) {
+    os << "\"" << name << "\": { \"per_iter_bytes\": " << (long long)g.perIterBytes
+       << ", \"last_quarter_per_iter_bytes\": " << (long long)g.lastQuarterPerIter
+       << ", \"biggest_jump_iteration\": " << g.biggestJumpIteration
+       << ", \"biggest_jump_mb\": " << g.biggestJumpBytes / 1048576.0
+       << ", \"before_jump_mb\": " << g.beforeJump / 1048576.0
+       << ", \"after_jump_mb\": " << g.afterJump / 1048576.0 << ", \"classification\": \""
+       << g.classification << "\" }";
+}
+
+} // namespace
+
+int cmdMemoryProbe(const bench::Args& a) {
+    using namespace bench;
+
+    std::string caseName = a.get("case", "E");
+    if (a.positional.empty()) {
+        logMsg("使い方: mvm_bench memory-probe <scenario.json> --case A|B|C|D|E|F|G "
+               "[--csv <path>] [--wav-dir <dir>]");
+        return kExitUsage;
+    }
+
+    // ケースごとの既定反復回数
+    int iterations = 0;
+    if (caseName == "A")
+        iterations = 50;
+    else if (caseName == "B" || caseName == "C")
+        iterations = 200;
+    else if (caseName == "D")
+        iterations = 30;
+    else if (caseName == "E")
+        iterations = 100;
+    else if (caseName == "F")
+        iterations = 1000;
+    else if (caseName == "G")
+        iterations = 50;
+    else {
+        logMsg("未知のケース: " + caseName);
+        return kExitUsage;
+    }
+    if (a.has("iterations"))
+        iterations = (int)std::strtol(a.get("iterations").c_str(), nullptr, 10);
+
+    Scenario sc;
+    std::string lerr;
+    if (!loadScenario(a.positional[0], sc, lerr)) {
+        logMsg(lerr);
+        return kExitError;
+    }
+    std::string wavDir = a.get("wav-dir");
+
+    std::vector<MemSample> samples;
+    std::vector<std::string> problems;
+    auto tStart = Clock::now();
+
+    samples.push_back(takeMemSample(-1, "before_runtime_init"));
+
+    // G は反復ごとに runtime を作り直す。それ以外は 1 回だけ。
+    const bool runtimePerIteration = (caseName == "G");
+
+    if (!runtimePerIteration) {
+        if (!initMlt())
+            return kExitError;
+        samples.push_back(takeMemSample(-1, "after_runtime_init"));
+    }
+
+    MvmComposeHandle* sharedHandle = nullptr;
+    if (caseName == "F") {
+        MvmComposeInfo info{};
+        char cerr[1024] = {0};
+        sharedHandle = mvm_mlt_compose_open(&sc.timeline, &info, cerr, sizeof(cerr));
+        if (!sharedHandle) {
+            logMsg(std::string("open 失敗: ") + cerr);
+            mvm_mlt_runtime_shutdown();
+            return kExitError;
+        }
+        samples.push_back(takeMemSample(-1, "after_open"));
+    }
+
+    long long firstMarker = -1, lastMarker = -1;
+
+    for (int it = 0; it < iterations; it++) {
+        if (runtimePerIteration) {
+            if (!initMlt()) {
+                problems.push_back("iteration " + std::to_string(it) + ": runtime init 失敗");
+                break;
+            }
+        }
+
+        if (caseName == "F") {
+            // グラフは使い回し、フレームだけ変える
+            long long frame = (long long)(it % 300);
+            MvmMltImage img{};
+            char err[512] = {0};
+            if (mvm_mlt_compose_frame(sharedHandle, frame, &img, err, sizeof(err)) != 0) {
+                problems.push_back("iteration " + std::to_string(it) + ": frame 失敗");
+                break;
+            }
+            mvm_mlt_image_free(&img);
+            samples.push_back(takeMemSample(it, "after_frame"));
+        } else if (caseName == "A") {
+            // runtime だけ。open もしない。
+            samples.push_back(takeMemSample(it, "after_runtime_init"));
+            mvm_mlt_runtime_shutdown();
+            samples.push_back(takeMemSample(it, "after_runtime_shutdown"));
+            if (it + 1 < iterations && !initMlt()) {
+                problems.push_back("re-init 失敗");
+                break;
+            }
+        } else {
+            MvmComposeInfo info{};
+            char cerr[1024] = {0};
+            MvmComposeHandle* h = mvm_mlt_compose_open(&sc.timeline, &info, cerr, sizeof(cerr));
+            if (!h) {
+                problems.push_back("iteration " + std::to_string(it) + ": open 失敗: " + cerr);
+                break;
+            }
+            samples.push_back(takeMemSample(it, "after_open"));
+
+            if (caseName == "C" || caseName == "E" || caseName == "G") {
+                MvmMltImage img{};
+                char err[512] = {0};
+                if (mvm_mlt_compose_frame(h, 137, &img, err, sizeof(err)) != 0) {
+                    problems.push_back("iteration " + std::to_string(it) + ": frame 失敗");
+                    mvm_mlt_compose_close(h);
+                    break;
+                }
+                MarkerRead m = readMarker(img.rgba, img.width, img.height);
+                if (firstMarker < 0)
+                    firstMarker = m.value;
+                lastMarker = m.value;
+                mvm_mlt_image_free(&img);
+                samples.push_back(takeMemSample(it, "after_frame"));
+            }
+
+            bool wantAudio = (caseName == "D") || (caseName == "E" && it % 10 == 0);
+            if (wantAudio && !wavDir.empty() && wavDir != "1") {
+                std::string tmp = wavDir + "/mem_tmp.wav";
+                char rerr[512] = {0};
+                if (mvm_mlt_compose_render_audio(h, tmp.c_str(), 120000, rerr, sizeof(rerr)) != 0) {
+                    problems.push_back("iteration " + std::to_string(it) + ": audio 失敗: " + rerr);
+                    mvm_mlt_compose_close(h);
+                    break;
+                }
+                std::error_code ec;
+                fs::remove(utf8Path(tmp), ec);
+                samples.push_back(takeMemSample(it, "after_audio"));
+            }
+
+            mvm_mlt_compose_close(h);
+            samples.push_back(takeMemSample(it, "after_close"));
+        }
+
+        if (runtimePerIteration) {
+            mvm_mlt_runtime_shutdown();
+            samples.push_back(takeMemSample(it, "after_runtime_shutdown"));
+        }
+
+        if ((it + 1) % 25 == 0) {
+            std::fprintf(stderr, "  mem[%s] %d/%d ws=%.1fMB priv=%.1fMB\n", caseName.c_str(),
+                         it + 1, iterations, mb(samples.back().workingSet),
+                         mb(samples.back().privateUsage));
+            std::fflush(stderr);
+        }
+    }
+
+    if (caseName == "F" && sharedHandle) {
+        mvm_mlt_compose_close(sharedHandle);
+        samples.push_back(takeMemSample(-1, "after_close"));
+    }
+
+    if (!runtimePerIteration) {
+        mvm_mlt_runtime_shutdown();
+        samples.push_back(takeMemSample(-1, "after_runtime_shutdown"));
+        // allocator が返すのを待つ。強制 trim はしない。
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        samples.push_back(takeMemSample(-1, "after_runtime_shutdown_idle"));
+    }
+
+    auto tEnd = Clock::now();
+    double elapsed = std::chrono::duration<double>(tEnd - tStart).count();
+
+    // --- CSV には全サンプルを出す (省略しない) ---
+    std::string csv = a.get("csv");
+    if (!csv.empty() && csv != "1") {
+        FILE* f = _wfopen(utf8Path(csv).c_str(), L"wb");
+        if (f) {
+            std::fprintf(f, "case,iteration,phase,working_set,peak_working_set,private_usage,"
+                            "pagefile_usage,handles\n");
+            for (const auto& m : samples)
+                std::fprintf(f, "%s,%d,%s,%llu,%llu,%llu,%llu,%lu\n", caseName.c_str(), m.iteration,
+                             m.phase.c_str(), m.workingSet, m.peakWorkingSet, m.privateUsage,
+                             m.pagefileUsage, m.handles);
+            std::fclose(f);
+        }
+    }
+
+    // 反復ごとの代表 phase (after_close / after_frame) だけで形を見る
+    const char* repPhase = (caseName == "F")   ? "after_frame"
+                           : (caseName == "A") ? "after_runtime_shutdown"
+                           : (caseName == "G") ? "after_runtime_shutdown"
+                                               : "after_close";
+    std::vector<double> ws, priv;
+    for (const auto& m : samples) {
+        if (m.iteration >= 0 && m.phase == repPhase) {
+            ws.push_back((double)m.workingSet);
+            priv.push_back((double)m.privateUsage);
+        }
+    }
+
+    GrowthShape gWs = analyseGrowth(ws);
+    GrowthShape gPriv = analyseGrowth(priv);
+
+    auto findPhase = [&](const std::string& ph) -> const MemSample* {
+        for (const auto& m : samples)
+            if (m.phase == ph && m.iteration < 0)
+                return &m;
+        return nullptr;
+    };
+    const MemSample* beforeInit = findPhase("before_runtime_init");
+    const MemSample* shutdown = findPhase("after_runtime_shutdown");
+    const MemSample* idle = findPhase("after_runtime_shutdown_idle");
+
+    std::ostringstream js;
+    js << "{\n  \"case\": \"" << caseName << "\",\n";
+    js << "  \"iterations\": " << iterations << ",\n";
+    js << "  \"representative_phase\": \"" << repPhase << "\",\n";
+    js << "  \"elapsed_sec\": " << elapsed << ",\n";
+    js << "  \"samples_total\": " << samples.size() << ",\n";
+    if (!ws.empty()) {
+        size_t q = ws.size() / 4;
+        double wsFirstQ = 0, wsLastQ = 0, pFirstQ = 0, pLastQ = 0;
+        if (q >= 1) {
+            for (size_t i = 0; i < q; i++) {
+                wsFirstQ += ws[i];
+                pFirstQ += priv[i];
+            }
+            for (size_t i = ws.size() - q; i < ws.size(); i++) {
+                wsLastQ += ws[i];
+                pLastQ += priv[i];
+            }
+            wsFirstQ /= q;
+            wsLastQ /= q;
+            pFirstQ /= q;
+            pLastQ /= q;
+        }
+        js << "  \"working_set_mb\": { \"first\": " << mb((unsigned long long)ws.front())
+           << ", \"last\": " << mb((unsigned long long)ws.back())
+           << ", \"first_quartile\": " << wsFirstQ / 1048576.0
+           << ", \"last_quartile\": " << wsLastQ / 1048576.0 << " },\n";
+        js << "  \"private_usage_mb\": { \"first\": " << mb((unsigned long long)priv.front())
+           << ", \"last\": " << mb((unsigned long long)priv.back())
+           << ", \"first_quartile\": " << pFirstQ / 1048576.0
+           << ", \"last_quartile\": " << pLastQ / 1048576.0 << " },\n";
+    }
+    js << "  \"growth\": { ";
+    emitGrowth(js, "working_set", gWs);
+    js << ",\n    ";
+    emitGrowth(js, "private_usage", gPriv);
+    js << " },\n";
+    js << "  \"handles\": { \"first\": " << (samples.empty() ? 0 : samples.front().handles)
+       << ", \"last\": " << (samples.empty() ? 0 : samples.back().handles) << " },\n";
+    if (beforeInit)
+        js << "  \"before_runtime_init_mb\": { \"ws\": " << mb(beforeInit->workingSet)
+           << ", \"priv\": " << mb(beforeInit->privateUsage) << " },\n";
+    if (shutdown)
+        js << "  \"after_runtime_shutdown_mb\": { \"ws\": " << mb(shutdown->workingSet)
+           << ", \"priv\": " << mb(shutdown->privateUsage) << " },\n";
+    if (idle)
+        js << "  \"after_runtime_shutdown_idle_mb\": { \"ws\": " << mb(idle->workingSet)
+           << ", \"priv\": " << mb(idle->privateUsage) << " },\n";
+    js << "  \"marker_first\": " << firstMarker << ",\n  \"marker_last\": " << lastMarker << ",\n";
+    js << "  \"problems\": [";
+    for (size_t i = 0; i < problems.size(); i++)
+        js << (i ? ",\n    " : "\n    ") << "\"" << jsonEscape(problems[i]) << "\"";
+    js << (problems.empty() ? "]\n}\n" : "\n  ]\n}\n");
+
+    std::fputs(js.str().c_str(), stdout);
+
+    if (!problems.empty()) {
         for (const auto& p : problems)
             logMsg("  " + p);
         return kExitMismatch;

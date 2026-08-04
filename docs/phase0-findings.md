@@ -523,8 +523,25 @@ Qt は 6.11.1 / ABI `x86_64-little_endian-llp64` / prefix `C:/msys64/ucrt64` で
 | --- | --- | --- |
 | **M3** | PiP・文字・マーカー・音声 mix のすべてを実測で確認（下表） | **合格** |
 | **M4** | affine グラフで再測 214/214 一致、mismatch **0** | **合格** |
-| **M5** | p50 144ms / **p95 259ms** / max 368ms | **不合格** |
-| **M6** | realistic scrub 未実施 | **測定不成立** |
+| **M5** | p50 154.3ms / **p95 223.8ms**（3 回中央値）/ **観測 max 476.4ms** | **不合格**（p95・max とも） |
+| **M6** | stale 判定を修正済み。**修正後の再測定が必要** | **判定保留** |
+
+**M5 の max について:** max の中央値 275.7ms を「基準内」と扱わない。
+**3 回を通して観測した max は 476.4ms** であり基準 400ms を超えている。
+外れ値を除外して合格とするなら、warm-up 条件を明示的に定義してから
+再測定する必要がある。現時点でその定義が無いので不合格とする。
+
+**M6 について:** 修正前の判定は
+`result.generation < lastAcceptedGeneration` であり、
+**decode 中に新しい要求が来た古い結果を accept していた。**
+当時の `accepted` と `updates_per_sec`（11.9〜61.6）には
+表示すべきでない stale 結果が含まれている。
+`stale_rejected` が全条件 0 だったのは棄却が働いた証拠ではなく、
+判定式が成立しなかったためである。
+
+判定は `latestSubmittedGeneration` 基準へ修正し、
+決定論的な単体テストで実証した（[seek-scrub-notes.md](research/seek-scrub-notes.md)）。
+**修正後の値でしか M6 は判定できない。**
 
 ### M3 の内訳（すべて loader 修正後の値）
 

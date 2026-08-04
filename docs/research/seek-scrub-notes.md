@@ -36,9 +36,27 @@ loader 修正と所有権修正を入れても seek 精度は変わらない。
 初回実行時のファイルキャッシュの影響と考えられる（**[推測]**）。
 中央値を代表値とする。
 
-**[exit]** M4 合格 / M5 不合格（p95 223.8ms > 基準 150ms）。
+**[exit]** M4 合格 / M5 不合格。
 
-### scrub baseline（realistic 条件）
+**M5 の max 記録の訂正:** 中央値 275.7ms を「max 基準合格」と扱わない。
+**3 回を通して観測した max は 476.4ms であり、基準 400ms を超えている。**
+1 回目だけが 476.4ms で 2・3 回目は 275.7 / 261.2ms だが、
+外れ値を落として合格とするなら、**warm-up 条件を明示的に定義してから
+再測定する必要がある**。現時点ではその定義が無いので、
+**p95 と max の両方で不合格**とする。
+
+### scrub baseline（**stale 判定修正前**・参考）
+
+**[重要] 以下の値は使ってはいけない。**
+当時の判定は `result.generation < lastAcceptedGeneration` であり、
+**decode 中に新しい要求が来た古い結果を accept していた。**
+したがって `accepted` と `updates_per_sec` には、
+表示すべきでない stale 結果が含まれている。
+
+`stale_rejected` が全条件 0 だったのは棄却が働いていた証拠ではなく、
+判定式が成立しなかったためである。
+
+削除せず参考として残す。
 
 1000 要求 × 4 パターン × 投入間隔 2 種。native 素材のみ、proxy なし。
 
@@ -75,12 +93,62 @@ seek の p50 が 102〜106ms とほぼ 1 フレーム分の decode コストに�
 4. consumer による先読みを使わず `mlt_service_get_frame` を直接呼んでいる
 5. 毎フレーム 1920x1080 の RGBA を全面コピーしている
 
-**[未検証 / 既知の限界]** `stale_rejected` が全条件で 0 である。
-現在の判定は `res.generation < lastAcceptedGeneration` であり、
-consumer が 1 件ずつ順に処理する限り結果は常に generation 昇順で返るため、
-この条件は成立しない。**stale 棄却が働くことを実証できてはいない。**
-`latestSubmittedGeneration` を使う修正と決定論的テストは次バッチの課題
-（今回の指示範囲外）。
+---
+
+## stale 判定の修正（S6 correctness closure）
+
+### 修正前
+
+```cpp
+if (res.generation < lastAcceptedGeneration)  // ← 誤り
+    staleRejected++;
+else
+    accept(res);
+```
+
+consumer は 1 件ずつ順に処理するため、結果は常に generation 昇順で返る。
+`lastAcceptedGeneration` は直前に accept した値なので、この条件は**成立しない**。
+結果として **decode 中に新しい要求が来た古い結果をすべて accept** していた。
+
+### 修正後
+
+判定の基準を `latestSubmittedGeneration` にした。
+
+| 条件 | 判定 |
+| --- | --- |
+| `result.generation < latestSubmittedGeneration` | **RejectStale** |
+| `result.generation == latestSubmittedGeneration` | **Accept** |
+| `result.generation > latestSubmittedGeneration` | **InvalidFutureGeneration**（契約違反 / fail-closed） |
+| in-flight と一致しない generation | **NotInFlight**（二重 complete を含む） |
+
+判定ロジックは `tests/harness/scrub_coalescer.h` の `ScrubCoalescer` に
+分離した。MLT にもスレッドにも実時間にも依存しない純粋な状態機械であり、
+決定論的に単体テストできる。
+
+`lastAcceptedGeneration` との比較は削除した。
+
+### busy wait の除去
+
+pending が無いときの `std::this_thread::yield()` ループを
+`std::condition_variable` に置き換えた。consumer は
+「pending が投入された」か「done になった」で起床する。
+終了は producer が done を立て、pending も in-flight も無くなった時点。
+最終要求が必ず処理される契約は、done を立てる前に
+`cv.wait(lk, [&]{ return !hasPending() && !hasInFlight(); })` で保証している。
+
+### counter invariant
+
+scrub 終了時に以下を検査し、破れたら失敗にする。
+
+- `submitted == superseded + decoded`
+- `decoded == accepted + stale_rejected + decode_failed`
+- accepted の generation が単調増加
+- `final displayed generation == latest submitted generation`
+- `accepted == 0` を成功扱いしない
+- 契約違反カウンタが 0
+
+marker 不一致と latency p50/p95 は **accepted 結果だけ**を対象に集計する。
+stale 結果の decode 時間は `stale_decode_diagnostic` として別に残す。
 
 ---
 
