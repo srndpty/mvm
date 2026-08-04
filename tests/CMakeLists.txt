@@ -6,7 +6,10 @@ pkg_check_modules(PNG REQUIRED IMPORTED_TARGET libpng)
 
 # --- mvm_bench --------------------------------------------------------------
 # Qt に依存しない C++20 CLI。MLT のヘッダは include しない。
-add_executable(mvm_bench harness/mvm_bench.cpp)
+add_executable(mvm_bench
+    harness/mvm_bench.cpp
+    harness/mvm_bench_compose.cpp
+)
 
 target_link_libraries(mvm_bench PRIVATE
     mvm::mlt

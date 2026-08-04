@@ -111,7 +111,11 @@ $AudioExpr = 'aevalsrc=exprs=0.5*sin(2*PI*1000*t)|0.5*sin(2*PI*500*t):s=48000:d=
 function New-VideoArgs {
     param(
         [int]$Width, [int]$Height, [string]$VCodec, [string]$PixFmt,
-        [string]$Preset, [string]$Output, [switch]$NoAudio
+        [string]$Preset, [string]$Output, [switch]$NoAudio,
+        # 背景パターン。S5 の合成検証では V1 と V2 が視覚的に区別できる必要がある。
+        # 同じ testsrc2 を使うと「全画面で重ねた」のか「縮小して重ねた」のかを
+        # 画素から判定できず、検証が空振りする。
+        [string]$Pattern = 'testsrc2'
     )
 
     $marker = "nullsrc=s=${MarkerWidth}x${CellSize}:r=${Fps}:d=${Duration}," +
@@ -126,7 +130,7 @@ function New-VideoArgs {
 
     $a = @(
         '-hide_banner', '-y', '-loglevel', 'error', '-nostdin'
-        '-f', 'lavfi', '-i', "testsrc2=s=${Width}x${Height}:r=${Fps}:d=${Duration}"
+        '-f', 'lavfi', '-i', "${Pattern}=s=${Width}x${Height}:r=${Fps}:d=${Duration}"
         '-f', 'lavfi', '-i', $marker
     )
     if (-not $NoAudio) { $a += @('-f', 'lavfi', '-i', $AudioExpr) }
@@ -162,7 +166,7 @@ $Assets = @(
                     sar_num = 1; sar_den = 1; duration_sec = $Duration
                     audio_codec = 'aac'; sample_rate = 48000; channels = 2; has_alpha = $false }
         Args = { New-VideoArgs -Width 1920 -Height 1080 -VCodec 'libx265' -PixFmt 'yuv420p' `
-                               -Preset 'medium' -Output $args[0] }
+                               -Preset 'medium' -Pattern 'smptehdbars' -Output $args[0] }
     },
     @{
         Id = 'v4k60_h264'; File = 'v4k60_h264.mp4'; Kind = 'video'
@@ -180,7 +184,7 @@ $Assets = @(
                     sar_num = 1; sar_den = 1; duration_sec = $Duration
                     audio_codec = 'aac'; sample_rate = 48000; channels = 2; has_alpha = $false }
         Args = { New-VideoArgs -Width 3840 -Height 2160 -VCodec 'libx265' -PixFmt 'yuv420p10le' `
-                               -Preset 'veryfast' -Output $args[0] }
+                               -Preset 'veryfast' -Pattern 'smptehdbars' -Output $args[0] }
     },
     @{
         Id = 'png_alpha'; File = 'png_alpha.png'; Kind = 'image'
