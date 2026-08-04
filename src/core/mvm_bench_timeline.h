@@ -109,9 +109,15 @@ typedef struct {
      * どちらを第一候補にするかは S5 の比較で決める。 */
     char text_service[32];
 
-    /* 映像の重ね合わせに使う transition。既定 "qtblend"。
+    /* 映像の重ね合わせに使う transition。既定 "affine"。
      * 拡縮配置がどの service で成立するかを実測で比較するために可変にする。 */
     char video_transition[32];
+
+    /* 音声 mix transition の設定。実測で決めるため可変にする。
+     *   "sum"      : sum=1 のみ (start/end を設定しない)
+     *   "sum_half" : sum=1 + start=0.5 end=0.5
+     * property を読み戻せたことではなく、出力 WAV の測定結果で決める。 */
+    char audio_mix_mode[16];
 
     /* フォントファイルの存在確認に使う。無言で別フォントへ
      * fallback させないため、実ファイルのパスを持つ。 */

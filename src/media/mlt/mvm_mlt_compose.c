@@ -408,9 +408,24 @@ MvmComposeHandle* mvm_mlt_compose_open(const MvmBenchTimeline* tl, MvmComposeInf
                                 ci);
                         goto fail;
                     }
+                    /* [実測所見] volume filter の in/out を明示しないとクラッシュする。
+                     *
+                     * filter は既定で in=out=0 であり、length が 1 になる。
+                     * volume filter は "level" を animated property として
+                     * mlt_properties_anim_get_double(props, "level", position, length)
+                     * で読むため、position が length を超えた時点で破綻する。
+                     * consumer で通しレンダリングすると必ず踏む。
+                     *
+                     * 症状はアクセス違反であり、gain=0 (filter を付けない) なら
+                     * 起きないので「音量を変えた時だけ落ちる」という形で出る。 */
+                    mlt_filter_set_in_and_out(vf, 0, (mlt_position) (tl_len - 1));
+
+                    /* "level" は animated property であり、consumer で通し
+                     * レンダリングするとクラッシュする (in/out を設定しても解消しない)。
+                     * 非 animated の "gain" を dB 文字列で使う。 */
                     char level[64];
-                    snprintf(level, sizeof(level), "%.4f", clip->gain_db);
-                    mlt_properties_set(MLT_FILTER_PROPERTIES(vf), "level", level);
+                    snprintf(level, sizeof(level), "%.4fdB", clip->gain_db);
+                    mlt_properties_set(MLT_FILTER_PROPERTIES(vf), "gain", level);
                     mlt_producer_attach(p, vf);
                     h->filters[h->filter_count++] = vf;
                     if (info)
@@ -474,8 +489,18 @@ MvmComposeHandle* mvm_mlt_compose_open(const MvmBenchTimeline* tl, MvmComposeInf
             mlt_properties mp = MLT_TRANSITION_PROPERTIES(mx);
             mlt_properties_set_int(mp, "always_active", 1);
             mlt_properties_set_int(mp, "sum", 1);
-            mlt_properties_set(mp, "start", "0.5");
-            mlt_properties_set(mp, "end", "0.5");
+
+            /* start/end を設定するかどうかは実測で決める (docs 参照)。
+             * property を設定できたことではなく、出力 WAV の振幅で判断する。 */
+            const char* mix_mode = tl->audio_mix_mode[0] ? tl->audio_mix_mode : "sum";
+            if (strcmp(mix_mode, "sum_half") == 0) {
+                mlt_properties_set(mp, "start", "0.5");
+                mlt_properties_set(mp, "end", "0.5");
+            } else if (strcmp(mix_mode, "sum") != 0) {
+                set_err(err, err_size, "未知の audio_mix_mode: %s", mix_mode);
+                mlt_transition_close(mx);
+                goto fail;
+            }
             mlt_transition_set_tracks(mx, 0, ti);
             if (mlt_field_plant_transition(mlt_tractor_field(h->tractor), mx, 0, ti) != 0) {
                 set_err(err, err_size, "mix transition を配置できません (track %d)", ti);
@@ -483,7 +508,8 @@ MvmComposeHandle* mvm_mlt_compose_open(const MvmBenchTimeline* tl, MvmComposeInf
             }
             h->transitions[h->transition_count++] = mx;
             if (info)
-                add_note(info, "transition", "mix a_track=0 b_track=%d always_active=1 sum=1", ti);
+                add_note(info, "transition", "mix a_track=0 b_track=%d always_active=1 sum=1 mode=%s",
+                         ti, mix_mode);
         } else {
             /* 映像の重ね合わせは qtblend transition + rect。
              *
@@ -743,6 +769,95 @@ int mvm_mlt_compose_audio(MvmComposeHandle* h, long long frame, MvmComposeAudio*
 #endif
 
     mlt_frame_close(f);
+    return 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/* WAV 書き出し (M3 の正式な音声検証経路)                                     */
+/* ------------------------------------------------------------------------- */
+
+int mvm_mlt_compose_render_audio(MvmComposeHandle* h, const char* out_path, int timeout_ms,
+                                 char* err, size_t err_size) {
+    if (!h || !out_path || !*out_path) {
+        set_err(err, err_size, "引数が不正です");
+        return 1;
+    }
+
+    mlt_producer tp = MLT_TRACTOR_PRODUCER(h->tractor);
+
+    /* 出力範囲を明示する。in/out を設定しないと consumer が
+     * どこまで書くのかが曖昧になる。 */
+    mlt_producer_set_in_and_out(tp, 0, (mlt_position)(h->length - 1));
+    mlt_producer_seek(tp, 0);
+
+    mlt_consumer consumer = mlt_factory_consumer(h->profile, "avformat", out_path);
+    if (!consumer) {
+        set_err(err, err_size, "avformat consumer を作れません: %s", out_path);
+        return 1;
+    }
+
+    mlt_properties cp = MLT_CONSUMER_PROPERTIES(consumer);
+    /* 音声だけを PCM で出す。推測に頼らず全て明示する。 */
+    mlt_properties_set(cp, "target", out_path);
+    mlt_properties_set(cp, "f", "wav");
+    mlt_properties_set(cp, "acodec", "pcm_s16le");
+    mlt_properties_set_int(cp, "frequency", 48000);
+    mlt_properties_set_int(cp, "channels", 2);
+    mlt_properties_set_int(cp, "ar", 48000);
+    mlt_properties_set_int(cp, "ac", 2);
+    mlt_properties_set_int(cp, "vn", 1);
+    mlt_properties_set_int(cp, "real_time", -1);
+    mlt_properties_set_int(cp, "terminate_on_pause", 1);
+
+    if (mlt_consumer_connect(consumer, MLT_PRODUCER_SERVICE(tp)) != 0) {
+        set_err(err, err_size, "consumer を tractor へ接続できません");
+        mlt_consumer_close(consumer);
+        return 1;
+    }
+
+    if (mlt_consumer_start(consumer) != 0) {
+        set_err(err, err_size, "consumer を開始できません");
+        mlt_consumer_close(consumer);
+        return 1;
+    }
+
+    /* 完了待ち。timeout を成功扱いにしない。 */
+    int waited = 0;
+    const int step = 20;
+    while (!mlt_consumer_is_stopped(consumer)) {
+        Sleep(step);
+        waited += step;
+        if (waited >= timeout_ms) {
+            mlt_consumer_stop(consumer);
+            mlt_consumer_close(consumer);
+            set_err(err, err_size, "consumer が %d ms 以内に終了しませんでした (timeout)",
+                    timeout_ms);
+            return 1;
+        }
+    }
+
+    mlt_consumer_stop(consumer);
+    mlt_consumer_close(consumer);
+
+    /* 空ファイルを成功扱いしない。中身の妥当性は呼び出し側が ffprobe で見る。 */
+    wchar_t* w = mvm_utf8_to_wide(out_path);
+    if (!w) {
+        set_err(err, err_size, "出力パスを変換できません");
+        return 1;
+    }
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    BOOL ok = GetFileAttributesExW(w, GetFileExInfoStandard, &fad);
+    mvm_str_free(w);
+    if (!ok) {
+        set_err(err, err_size, "出力ファイルが生成されていません: %s", out_path);
+        return 1;
+    }
+    unsigned long long size = ((unsigned long long)fad.nFileSizeHigh << 32) | fad.nFileSizeLow;
+    if (size == 0) {
+        set_err(err, err_size, "出力ファイルが 0 バイトです: %s", out_path);
+        return 1;
+    }
+
     return 0;
 }
 

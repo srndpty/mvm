@@ -219,6 +219,87 @@ V1（testsrc2）と視覚的に区別できるようにした
 フォントは実ファイルの存在を構築前に検査し、無ければ失敗させる
 （別フォントへ無言で fallback しない）。
 
+## 所見 H: 音声の consumer 出力（M3 の正式経路）
+
+**[事実]** MLT の `avformat` consumer による WAV 出力は成功する。
+
+使用した consumer と全 property:
+
+| property | 値 |
+| --- | --- |
+| service | `avformat` |
+| `target` | 一時 WAV パス |
+| `f` | `wav` |
+| `acodec` | `pcm_s16le` |
+| `frequency` / `ar` | `48000` |
+| `channels` / `ac` | `2` |
+| `vn` | `1` |
+| `real_time` | `-1` |
+| `terminate_on_pause` | `1` |
+
+tractor producer の in/out を `0..299` に明示。`mlt_consumer_start` の後
+`mlt_consumer_is_stopped` を 20ms 間隔で監視し、timeout（既定 60s）で失敗させる。
+出力は一時ファイルへ書き、ffprobe 検証が通ってから正規名へ rename する。
+
+ffprobe 検証結果（3 種すべて同一）:
+
+```
+container=wav codec=pcm_s16le sample_rate=48000 channels=2
+duration=5.0 size=960078 bytes has_video=false
+```
+
+期待サイズ 960000 バイト（48000×2ch×2byte×5s）に対し 960078。
+
+### [不合格] MLT を通すと A1（AAC/MP4 の音声）のトーンが失われる
+
+**[事実]** 素材そのものと、MLT を通した出力を同じ Goertzel で比較した。
+
+| 対象 | rms L / R | L の主成分 | R の主成分 |
+| --- | --- | --- | --- |
+| `src_a1.wav`（MP4 から ffmpeg で直接抽出） | 0.353 / 0.355 | **1000Hz = 0.4986** | **500Hz = 0.5015** |
+| `src_a2.wav`（WAV 素材そのもの） | 0.354 / 0.354 | **1500Hz = 0.5000** | **750Hz = 0.5000** |
+| `A2-only.wav`（MLT 経由） | 0.354 / 0.354 | **1500Hz = 0.4999** | **750Hz = 0.4999** |
+| `A1-only.wav`（MLT 経由） | **0.576 / 0.500** | 1000Hz = 0.0013 | 500Hz = 0.0108 |
+| `mixed.wav`（MLT 経由） | 0.516 / 0.437 | 1500Hz = 0.223 / 750Hz = 0.195 | 750Hz = 0.308 |
+
+読み取れること:
+
+- **素材は両方とも正しい。** 問題は MLT の音声経路にある
+- **WAV 素材（A2）は MLT を通しても完全に保存される**（SNR 1e6）
+- **MP4 の AAC 音声（A1）は MLT を通すとトーンが消える。**
+  RMS は 0.576 と元（0.353）より大きく、peak 1.0 で clipping 率 0.0009
+- `mixed` には A2 の 1500/750Hz が明確に存在する（A2 は mix されている）が、
+  A1 の 1000/500Hz は存在しない
+- `A1-only` の R に 1500Hz が 0.1045 出ている。A2 を無効化しているので
+  本来存在しえない周波数であり、**トラックの配線に問題がある可能性が高い**
+
+**[未検証]** 原因。切り分けできていないもの:
+- AAC decode の問題か、`hide=2` による映像トラックの音声ミュートが
+  効いていないのか（V1 と A1 は同じファイルを参照している）
+- `mix` transition の `sum=1` が意図どおり働いているか
+- `disabled` によるトラック除去で transition の track index がずれていないか
+
+**[exit] M3 の音声は不合格。** A2 単独は実証できたが、
+**A1 と A2 の両方が正しく mix されていることは実証できていない。**
+
+### volume filter がクラッシュする
+
+**[事実]** `volume` filter を attach したタイムラインを consumer で
+レンダリングすると、アクセス違反または heap 破壊で落ちる。
+
+| 設定 | 結果 |
+| --- | --- |
+| gain 0dB（filter を付けない） | 成功 |
+| `level` = `-6.0000` | クラッシュ |
+| `level` + `mlt_filter_set_in_and_out(0, len-1)` | クラッシュ |
+| `gain` = `-6.0000dB` | クラッシュ |
+
+そのため **gain -6dB の検証（要求 6）は実施できていない。**
+現在の実装は `gain` 文字列を使う形になっているが、
+0dB 以外では使えない状態である。
+
+**[未検証]** クラッシュ原因。
+
 ## 所見 G（未解決）: 音声バッファの解釈
 
 **[未解決]** `mlt_frame_get_audio` から得たバッファを読むと、

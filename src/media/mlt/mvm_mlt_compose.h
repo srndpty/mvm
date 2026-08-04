@@ -86,6 +86,24 @@ int mvm_mlt_compose_audio(MvmComposeHandle* h, long long frame, MvmComposeAudio*
 
 void mvm_mlt_audio_free(MvmComposeAudio* a);
 
+/*
+ * タイムラインの音声を WAV へ書き出す (M3 の正式な検証経路)。
+ *
+ * mlt_frame_get_audio の生バッファ解釈が未解決なので、M3 の判定には
+ * MLT の avformat consumer による実ファイル出力を使う。
+ * FFmpeg CLI で別途 mix するのではなく、必ず MLT の tractor +
+ * mix transition が合成した結果を書き出す。
+ *
+ * out_path には一時パスを渡すこと。呼び出し側が ffprobe で検証してから
+ * 正規名へ rename する。この関数は rename しない。
+ *
+ * 空ファイル・途中出力・timeout はすべて失敗として返す。
+ *
+ * 戻り値: 0 = 成功
+ */
+int mvm_mlt_compose_render_audio(MvmComposeHandle* h, const char* out_path, int timeout_ms,
+                                 char* err, size_t err_size);
+
 /* seek 後のキャッシュ破棄方法の比較 (S6 / 実験用) */
 typedef enum {
     MVM_SEEK_PLAIN = 0,     /* seek のみ */

@@ -27,6 +27,8 @@ int cmdCompose(const bench::Args& a);
 int cmdVerifyCompose(const bench::Args& a);
 int cmdSeekBench(const bench::Args& a);
 int cmdScrubBench(const bench::Args& a);
+int cmdRenderAudio(const bench::Args& a);
+int cmdVerifyAudio(const bench::Args& a);
 
 namespace {
 
@@ -699,6 +701,10 @@ int main() {
         rc = cmdSeekBench(a);
     else if (cmd == "scrub-bench")
         rc = cmdScrubBench(a);
+    else if (cmd == "render-audio")
+        rc = cmdRenderAudio(a);
+    else if (cmd == "verify-audio")
+        rc = cmdVerifyAudio(a);
     else if (cmd == "explore")
         rc = cmdExplore(a);
     else {
