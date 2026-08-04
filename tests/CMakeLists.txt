@@ -12,6 +12,7 @@ add_executable(mvm_bench
 )
 
 target_link_libraries(mvm_bench PRIVATE
+    psapi
     mvm::mlt
     mvm::util
     PkgConfig::PNG
@@ -332,3 +333,32 @@ mvm_add_test(verify_audio_gain_minus_6db
 mvm_add_test(verify_audio_no_clipping
     COMMAND mvm_bench verify-audio "${MVM_AUDIO_OUT}" --check-clipping
     PROPERTIES FIXTURES_REQUIRED mvm_audio)
+
+# --- 参照所有権の反復テスト -------------------------------------------------
+# MLT の参照所有権を間違えると 1 回では露見せず、回数を重ねて
+# handle 数や RSS の線形増加として現れる。
+# 通常 CTest では 100 回、時間がかかるので performance ラベルは付けない
+# (所有権は正しさの問題であり性能ではない)。
+
+mvm_add_test(ownership_soak_100
+    COMMAND mvm_bench soak "${MVM_S5_SCENARIO}" --iterations 100
+            --wav-dir "${MVM_AUDIO_OUT}"
+    PROPERTIES
+        REQUIRED_FILES "${MVM_S5_SCENARIO}"
+        TIMEOUT 1800)
+
+# --- lint 自身の negative test ----------------------------------------------
+# 検査を書いただけでは効いている証明にならない。
+# 違反を入れたら落ち、正しいコードでは落ちないことを両方確かめる。
+
+find_program(MVM_PWSH pwsh)
+if(MVM_PWSH)
+    add_test(NAME lint_producer_service_negative
+        COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/lint.ps1"
+                -Path "${CMAKE_SOURCE_DIR}/tests/lint-negative/bad")
+    set_tests_properties(lint_producer_service_negative PROPERTIES WILL_FAIL TRUE)
+
+    add_test(NAME lint_producer_service_control
+        COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/lint.ps1"
+                -Path "${CMAKE_SOURCE_DIR}/tests/lint-negative/good")
+endif()

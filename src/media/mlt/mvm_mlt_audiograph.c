@@ -20,10 +20,8 @@ typedef struct {
     int producer_count;
     mlt_playlist playlists[MAX_OBJ];
     int playlist_count;
-    mlt_filter filters[MAX_OBJ];
-    int filter_count;
-    mlt_transition transitions[MAX_OBJ];
-    int transition_count;
+    /* filter と transition は保持しない。attach / plant 直後に
+     * factory 参照を閉じる (mvm_mlt_compose.c と同じ根拠)。 */
     mlt_tractor tractor;
 } Graph;
 
@@ -105,10 +103,10 @@ static mlt_playlist add_playlist(Graph* g, mlt_producer p, int hide, FILE* log,
 }
 
 static void graph_close(Graph* g) {
-    /* 参照はちょうど 1 回ずつ解放する。
-     * tractor -> playlist -> producer の順。filter と transition は
-     * attach / plant した時点で所有権が移っているものがあるため、
-     * ここでは close しない (二重解放を避ける)。 */
+    /* 参照はちょうど 1 回ずつ解放する。tractor -> playlist -> producer の順。
+     *
+     * filter と transition はここでは扱わない。attach / plant の直後に
+     * factory 参照を閉じてあり、以降は attach/plant 先が唯一の所有者である。 */
     if (g->tractor)
         mlt_tractor_close(g->tractor);
     for (int i = 0; i < g->playlist_count; i++)
@@ -204,13 +202,17 @@ static mlt_filter attach_volume(Graph* g, mlt_producer p, const char* prop, cons
     mlt_properties_set(fp, prop, value);
     if (set_in_out)
         mlt_filter_set_in_and_out(vf, 0, length - 1);
-    mlt_producer_attach(p, vf);
     if (log)
         fprintf(log, "  filter volume %s=%s in_out=%s (読み戻し %s=%s)\n", prop, value,
                 set_in_out ? "設定" : "既定", prop,
                 mlt_properties_get(fp, prop) ? mlt_properties_get(fp, prop) : "(null)");
-    g->filters[g->filter_count++] = vf;
-    return vf;
+    if (mlt_producer_attach(p, vf) != 0) {
+        mlt_filter_close(vf);
+        return NULL;
+    }
+    /* attach が inc_ref するので factory 参照は閉じる */
+    mlt_filter_close(vf);
+    return vf; /* borrowed: 以降 property を触らないこと */
 }
 
 static mlt_transition plant_mix(Graph* g, int a_track, int b_track, FILE* log) {
@@ -224,14 +226,18 @@ static mlt_transition plant_mix(Graph* g, int a_track, int b_track, FILE* log) {
     mlt_properties_set_int(mp, "always_active", 1);
     mlt_properties_set_int(mp, "sum", 1);
     mlt_transition_set_tracks(mx, a_track, b_track);
-    mlt_field_plant_transition(mlt_tractor_field(g->tractor), mx, a_track, b_track);
+    if (mlt_field_plant_transition(mlt_tractor_field(g->tractor), mx, a_track, b_track) != 0) {
+        mlt_transition_close(mx);
+        return NULL;
+    }
     if (log)
         fprintf(log,
                 "  transition mix a_track=%d b_track=%d always_active=1 sum=1 "
                 "(start/end は設定しない)\n",
                 a_track, b_track);
-    g->transitions[g->transition_count++] = mx;
-    return mx;
+    /* plant すると tractor 側が inc_ref するので factory 参照は閉じる */
+    mlt_transition_close(mx);
+    return mx; /* borrowed: 以降 property を触らないこと */
 }
 
 int mvm_mlt_audiograph_run(const char* case_name, const MvmAudioGraphPaths* paths,

@@ -517,31 +517,27 @@ Qt は 6.11.1 / ABI `x86_64-little_endian-llp64` / prefix `C:/msys64/ucrt64` で
 
 ---
 
----
-
-## S5 修復バッチ後の判定（最新）
+## S5 完了時点の判定（最新）
 
 | 基準 | 実測 | 判定 |
 | --- | --- | --- |
-| **M3** | PiP・文字は達成（下表）。**音声 mix が未実証** | **部分達成 / 未達** |
+| **M3** | PiP・文字・マーカー・音声 mix のすべてを実測で確認（下表） | **合格** |
 | **M4** | affine グラフで再測 214/214 一致、mismatch **0** | **合格** |
 | **M5** | p50 144ms / **p95 259ms** / max 368ms | **不合格** |
-| **M6** | 未再測（realistic scrub 未実施） | **測定不成立** |
+| **M6** | realistic scrub 未実施 | **測定不成立** |
 
-M3 の内訳:
+### M3 の内訳（すべて loader 修正後の値）
 
 | 項目 | 実測 | 判定 |
 | --- | --- | --- |
 | PiP 縮小配置 | 差分外接矩形 = `1260,700 640x360`（期待と完全一致）、矩形内差分 1.00 / 矩形外 0.00 | 合格 |
 | 日本語文字描画 | qtext で矩形内差分 0.5685 / 矩形外 0.00。全角空白・数学記号・改行を目視確認 | 合格 |
 | マーカー保持 | frame 0/1/137/299 すべて一致 | 合格 |
-| 音声 A1+A2 の mix | **解決。** producer service を `avformat` 明示から `loader` へ変更 | **合格** |
+| 音声 A1+A2 の mix | mixed に 4 周波数すべて存在（下表） | 合格 |
+| gain | 実測 **-6.00072dB**（許容 ±1dB） | 合格 |
+| clipping / DC / NaN | clip 率 0、DC ~1e-6、peak 0.746、NaN/Inf なし | 合格 |
 
-**[事実] M3 は合格。** 音声破損と volume filter クラッシュは同一原因で、
-`mlt_factory_producer` に service を明示していたことだった（詳細は
-[composition-notes.md](research/composition-notes.md) の所見 I）。
-
-最終の実測値（`render-audio` + `verify-audio`）:
+**M3 正式ゲートの実測値**（`render-audio` + `verify-audio`）:
 
 | 出力 | L | R |
 | --- | --- | --- |
@@ -549,32 +545,83 @@ M3 の内訳:
 | A2-only (-6dB) | 1500Hz=**0.2506**（SNR 1e6） | 750Hz=**0.2506**（SNR 1e6） |
 | **mixed** | 1000Hz=**0.4986** + 1500Hz=**0.2505** | 500Hz=**0.5014** + 750Hz=**0.2506** |
 
-**mixed に 4 周波数すべてが存在する。** gain 実測 **-6.00072dB**（許容 ±1dB）。
-clipping 率 0、DC offset ~1e-6、peak 0.746、NaN/Inf なし。
+### 素材の使い分け（周波数が 2 系統ある理由）
 
-音声の詳細（consumer 経由の実測）:
+混同しやすいので明記する。**目的も素材も別である。**
 
-| 対象 | L の主成分 | R の主成分 |
-| --- | --- | --- |
-| 素材 A1（直接抽出） | 1000Hz = 0.4986 | 500Hz = 0.5015 |
-| 素材 A2（WAV） | 1500Hz = 0.5000 | 750Hz = 0.5000 |
-| A2-only（MLT 経由） | 1500Hz = 0.4999 | 750Hz = 0.4999 |
-| A1-only（MLT 経由） | 1000Hz = **0.0013** | 500Hz = **0.0108** |
-| mixed（MLT 経由） | 1500Hz = 0.223 | 750Hz = 0.308 |
+| 用途 | 素材 | A1 | A2 |
+| --- | --- | --- | --- |
+| **M3 の正式ゲート** | `tests/assets/smoke/` の 5 トラックシナリオ | L 1000Hz / R 500Hz | L 1500Hz / R 750Hz |
+| **原因切り分け（診断用）** | `tests/assets/smoke/_diag/` | L 997Hz / R 613Hz | L 1429Hz / R 823Hz |
 
-**素材は両方とも正しい。MLT の音声経路が MP4/AAC 側を壊している。**
-また `volume` filter を使うとレンダリングがクラッシュするため、
-gain -6dB の検証も実施できていない。
+診断用は整数倍関係を避けてある。1000/500 や 1500/750 では
+2 倍高調波と他トラックのターゲットが重なり、
+「高調波」と「別トラックからの漏洩」を区別できないためである。
+
+### 原因（S5 で最も重要な所見）
+
+**[事実]** 音声破損と volume filter クラッシュは**同一原因**だった。
+
+> `mlt_factory_producer(profile, "avformat", path)` と service を直接指定していた。
+> 正しくは `NULL`（= `loader`）を渡す。
+
+`loader` は avformat producer に音声の正規化 filter を付ける。
+これが無いと AAC/MP4 の音声が壊れ、`volume` filter でクラッシュする。
+どちらも `producer -> consumer` の最小構成から再現し、
+playlist / tractor / mix とは無関係だった。
+`melt` が正常なのは既定が `loader` だからである。
+
+詳細は [composition-notes.md](research/composition-notes.md) の所見 I。
+この誤りを繰り返さないよう `scripts/lint.ps1` で機械的に禁止している。
+
+### CTest の件数
+
+| 区分 | 件数 |
+| --- | --- |
+| S5 音声で追加（`audio_*` / `render_audio_*` / `verify_audio_*`） | **17** |
+| それ以前（doctor / probe / decode / verify-media / 破損素材など） | 50 |
+| **合計** | **67** |
+
+内訳: 最小グラフ切り分け 8（A〜H）、negative 2、render 4、verify 3。
 
 **[事実]** PiP は `affine` transition + typed rect で解決した。
 `qtblend` は typed API で設定・読み戻しが一致しても描画は正しくならない。
-詳細は [composition-notes.md](research/composition-notes.md)。
 
 **[事実]** M4 は合成グラフを affine へ変更した後も 214/214 一致を維持した。
 グラフ変更が seek 精度を壊していないことを確認済み。
 
 **[事実]** M5 は affine 化で p95 が 232ms → 259ms とやや悪化した。
 合成が正しくなった分の処理が増えたためと考えられる（**[推測]**）。
+
+---
+
+## 修正前・参考: loader 修正前に観測していた値
+
+**以下はすべて `avformat` を直接指定していた頃の記録である。**
+現在は再現しない。原因究明の経緯として残す。
+
+音声（consumer 経由）:
+
+| 対象 | L の主成分 | R の主成分 |
+| --- | --- | --- |
+| 素材 A1（ffmpeg で直接抽出） | 1000Hz = 0.4986 | 500Hz = 0.5015 |
+| 素材 A2（WAV そのもの） | 1500Hz = 0.5000 | 750Hz = 0.5000 |
+| A2-only（MLT 経由） | 1500Hz = 0.4999 | 750Hz = 0.4999 |
+| **A1-only（MLT 経由）** | 1000Hz = **0.0013** | 500Hz = **0.0108** |
+| **mixed（MLT 経由）** | 1500Hz = 0.223（A2 のみ） | 750Hz = 0.308（A2 のみ） |
+
+素材は両方とも正しく、MLT を通した A1 側だけが壊れていた。
+
+`volume` filter は当時どの構成でもクラッシュした。
+
+| 設定 | 結果（当時） |
+| --- | --- |
+| gain 0dB（filter を付けない） | 成功 |
+| `level="-6.0000"` | アクセス違反 |
+| `level` + `mlt_filter_set_in_and_out` | heap 破壊 |
+| `gain="-6.0000dB"` | アクセス違反 |
+
+**いずれも producer service を `loader` にすることで解消した。**
 
 ---
 

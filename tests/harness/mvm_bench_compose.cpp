@@ -17,6 +17,7 @@
 #include <deque>
 #include <mutex>
 #include <numeric>
+#include <psapi.h>
 #include <random>
 #include <thread>
 
@@ -1973,5 +1974,224 @@ int cmdAnalyzeWav(const bench::Args& a) {
                     ch + 1 < std::min(2, w.channels) ? "," : "");
     }
     std::printf("}\n");
+    return kExitOk;
+}
+
+// ==========================================================================
+// 反復テスト (参照リーク / handle リークの検出)
+// ==========================================================================
+//
+// 同一プロセス内で open -> frame -> audio render -> close を繰り返す。
+// MLT の参照所有権を間違えると、1 回では露見せず回数を重ねて初めて
+// handle 数や RSS の線形増加として現れる。
+//
+// RSS には allocator のキャッシュが乗るため、小さな増減は
+// 即リークと断定しない。明確な線形増加のみ不合格にする。
+
+int cmdSoak(const bench::Args& a) {
+    using namespace bench;
+
+    if (a.positional.empty()) {
+        logMsg("使い方: mvm_bench soak <scenario.json> [--iterations 100] [--wav-dir <dir>]");
+        return kExitUsage;
+    }
+    int iterations = (int)std::strtol(a.get("iterations", "100").c_str(), nullptr, 10);
+    std::string wavDir = a.get("wav-dir");
+    bool doAudio = !wavDir.empty() && wavDir != "1";
+
+    Scenario sc;
+    std::string lerr;
+    if (!loadScenario(a.positional[0], sc, lerr)) {
+        logMsg(lerr);
+        return kExitError;
+    }
+    if (!initMlt())
+        return kExitError;
+
+    struct Sample {
+        int iteration;
+        size_t handles;
+        unsigned long long rssBytes;
+        long long markerValue;
+        double audioRmsL;
+    };
+
+    std::vector<Sample> samples;
+    std::vector<std::string> problems;
+
+    auto handleCount = []() -> size_t {
+        DWORD n = 0;
+        GetProcessHandleCount(GetCurrentProcess(), &n);
+        return (size_t)n;
+    };
+    auto rssBytes = []() -> unsigned long long {
+        PROCESS_MEMORY_COUNTERS pmc{};
+        pmc.cb = sizeof(pmc);
+        if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)))
+            return (unsigned long long)pmc.WorkingSetSize;
+        return 0;
+    };
+
+    const long long probeFrame = 137;
+
+    for (int it = 0; it < iterations; it++) {
+        MvmComposeInfo info{};
+        char cerr[1024] = {0};
+        MvmComposeHandle* h = mvm_mlt_compose_open(&sc.timeline, &info, cerr, sizeof(cerr));
+        if (!h) {
+            problems.push_back("iteration " + std::to_string(it) + ": open 失敗: " + cerr);
+            break;
+        }
+
+        MvmMltImage img{};
+        char ferr[512] = {0};
+        long long markerValue = -1;
+        if (mvm_mlt_compose_frame(h, probeFrame, &img, ferr, sizeof(ferr)) != 0) {
+            problems.push_back("iteration " + std::to_string(it) + ": frame 失敗: " + ferr);
+            mvm_mlt_compose_close(h);
+            break;
+        }
+        MarkerRead m = readMarker(img.rgba, img.width, img.height);
+        markerValue = m.value;
+        mvm_mlt_image_free(&img);
+
+        // 音声レンダリングは 5 秒分の通しレンダリングなので重い。
+        // 毎回行うと 100 回で現実的な時間に収まらないため、10 回に 1 回にする。
+        // 音声経路の参照リークはこれで十分検出できる。
+        double rmsL = 0;
+        const bool audioThisIter = doAudio && (it % 10 == 0);
+        if (audioThisIter) {
+            std::string tmp = wavDir + "/soak_tmp.wav";
+            char rerr[512] = {0};
+            if (mvm_mlt_compose_render_audio(h, tmp.c_str(), 60000, rerr, sizeof(rerr)) != 0) {
+                problems.push_back("iteration " + std::to_string(it) + ": audio 失敗: " + rerr);
+                mvm_mlt_compose_close(h);
+                break;
+            }
+            WavData w = readWavS16(tmp);
+            if (!w.ok) {
+                problems.push_back("iteration " + std::to_string(it) + ": WAV 読めず: " + w.error);
+                mvm_mlt_compose_close(h);
+                break;
+            }
+            rmsL = rms(w.data.data(), (int)std::min<long long>(w.frames, 48000), w.channels);
+            std::error_code ec;
+            fs::remove(utf8Path(tmp), ec);
+        }
+
+        mvm_mlt_compose_close(h);
+
+        samples.push_back({it, handleCount(), rssBytes(), markerValue, rmsL});
+
+        // 進捗を stderr へ。長時間走るので無反応に見えないようにする。
+        if ((it + 1) % 10 == 0 || it == 0) {
+            std::fprintf(stderr, "  soak %d/%d handles=%zu rss=%.1fMB\n", it + 1, iterations,
+                         samples.back().handles, samples.back().rssBytes / 1048576.0);
+            std::fflush(stderr);
+        }
+    }
+
+    mvm_mlt_runtime_shutdown();
+
+    if (samples.size() < (size_t)iterations)
+        problems.push_back("完走しませんでした (" + std::to_string(samples.size()) + "/" +
+                           std::to_string(iterations) + ")");
+
+    bool valuesStable = true;
+    if (samples.size() >= 2) {
+        const Sample& f = samples.front();
+        const Sample& l = samples.back();
+        if (f.markerValue != l.markerValue) {
+            problems.push_back("marker が初回と最終回で違います " + std::to_string(f.markerValue) +
+                               " -> " + std::to_string(l.markerValue));
+            valuesStable = false;
+        }
+        if (f.markerValue != probeFrame)
+            problems.push_back("marker が要求フレームと一致しません " +
+                               std::to_string(f.markerValue));
+        // 音声は 10 回に 1 回なので、最初と最後に測った回どうしを比べる
+        double firstAudio = 0, lastAudio = 0;
+        for (const auto& sm : samples) {
+            if (sm.audioRmsL > 0) {
+                if (firstAudio == 0)
+                    firstAudio = sm.audioRmsL;
+                lastAudio = sm.audioRmsL;
+            }
+        }
+        if (doAudio && firstAudio > 0 && std::fabs(firstAudio - lastAudio) > 1e-6) {
+            problems.push_back("音声 RMS が初回と最終回で違います " + std::to_string(firstAudio) +
+                               " -> " + std::to_string(lastAudio));
+            valuesStable = false;
+        }
+    }
+
+    // handle は単調増加してはいけない。最後の 1/4 が最初の 1/4 より
+    // 明確に多ければリークとみなす。
+    size_t handleFirst = 0, handleLast = 0;
+    unsigned long long rssFirst = 0, rssLast = 0;
+    if (samples.size() >= 8) {
+        size_t q = samples.size() / 4;
+        for (size_t i = 0; i < q; i++) {
+            handleFirst += samples[i].handles;
+            rssFirst += samples[i].rssBytes;
+        }
+        for (size_t i = samples.size() - q; i < samples.size(); i++) {
+            handleLast += samples[i].handles;
+            rssLast += samples[i].rssBytes;
+        }
+        handleFirst /= q;
+        handleLast /= q;
+        rssFirst /= q;
+        rssLast /= q;
+
+        if (handleLast > handleFirst + 8)
+            problems.push_back("handle 数が増加しています " + std::to_string(handleFirst) + " -> " +
+                               std::to_string(handleLast));
+
+        // RSS は allocator のキャッシュで揺れる。
+        // 反復あたり 256KB を超える線形増加のみ不合格にする。
+        double perIter =
+            (double)((long long)rssLast - (long long)rssFirst) / (double)(samples.size() * 3 / 4);
+        if (perIter > 256.0 * 1024.0)
+            problems.push_back("RSS が反復あたり " + std::to_string((long long)perIter) +
+                               " バイト増加しています (線形増加の疑い)");
+    }
+
+    std::printf("{\n  \"scenario\": \"%s\",\n", jsonEscape(sc.name).c_str());
+    std::printf("  \"iterations_requested\": %d,\n  \"iterations_completed\": %zu,\n", iterations,
+                samples.size());
+    std::printf("  \"audio_enabled\": %s,\n", doAudio ? "true" : "false");
+    std::printf("  \"values_stable\": %s,\n", valuesStable ? "true" : "false");
+    if (!samples.empty()) {
+        std::printf("  \"first\": { \"handles\": %zu, \"rss_mb\": %.2f, \"marker\": %lld,"
+                    " \"audio_rms_l\": %g },\n",
+                    samples.front().handles, samples.front().rssBytes / 1048576.0,
+                    samples.front().markerValue, samples.front().audioRmsL);
+        std::printf("  \"last\": { \"handles\": %zu, \"rss_mb\": %.2f, \"marker\": %lld,"
+                    " \"audio_rms_l\": %g },\n",
+                    samples.back().handles, samples.back().rssBytes / 1048576.0,
+                    samples.back().markerValue, samples.back().audioRmsL);
+    }
+    std::printf("  \"quartile_avg\": { \"handles_first\": %zu, \"handles_last\": %zu,"
+                " \"rss_mb_first\": %.2f, \"rss_mb_last\": %.2f },\n",
+                handleFirst, handleLast, rssFirst / 1048576.0, rssLast / 1048576.0);
+    std::printf("  \"samples\": [");
+    for (size_t i = 0; i < samples.size(); i++) {
+        if (i % 10 != 0 && i + 1 != samples.size())
+            continue; // 10 回ごとと最終回だけ出す
+        std::printf("%s\n    { \"i\": %d, \"handles\": %zu, \"rss_mb\": %.2f }", i ? "," : "",
+                    samples[i].iteration, samples[i].handles, samples[i].rssBytes / 1048576.0);
+    }
+    std::printf("\n  ],\n  \"problems\": [");
+    for (size_t i = 0; i < problems.size(); i++)
+        std::printf("%s\n    \"%s\"", i ? "," : "", jsonEscape(problems[i]).c_str());
+    std::printf("%s\n}\n", problems.empty() ? "]" : "\n  ]");
+
+    if (!problems.empty()) {
+        logMsg("反復テストに失敗しました:");
+        for (const auto& p : problems)
+            logMsg("  " + p);
+        return kExitMismatch;
+    }
     return kExitOk;
 }

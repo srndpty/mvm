@@ -25,11 +25,19 @@ struct MvmComposeHandle {
     mlt_producer producers[MAX_PRODUCERS];
     int producer_count;
 
-    mlt_transition transitions[MVM_BENCH_MAX_TRACKS * 2];
-    int transition_count;
-
-    mlt_filter filters[MVM_BENCH_MAX_TRACKS * MVM_BENCH_MAX_CLIPS];
-    int filter_count;
+    /* filter と transition は配列で保持しない。
+     *
+     * MLT 7.36.1 のソースで確認した参照の流れ:
+     *   mlt_service_attach()          -> mlt_properties_inc_ref(filter)
+     *   mlt_service_close() -> detach -> mlt_filter_close(filter)
+     *   mlt_field_plant_transition()  -> mlt_tractor_connect()
+     *                                 -> mlt_service_connect_producer()
+     *                                 -> mlt_properties_inc_ref(transition)
+     *   mlt_service_close(tractor)    -> mlt_service_close(base->in[i])
+     *
+     * つまり attach / plant 先が自前の参照を持つので、
+     * factory で得た参照は attach / plant 成功直後に呼び出し側が閉じる。
+     * 保持し続けると参照が 1 多いまま残る。 */
 
     MvmSeekMode seek_mode;
     long long length;
@@ -328,8 +336,14 @@ MvmComposeHandle* mvm_mlt_compose_open(const MvmBenchTimeline* tl, MvmComposeInf
                          clip->text_w, clip->text_h);
                 mlt_properties_set(tp, "geometry", geom);
 
-                mlt_producer_attach(cp, tf);
-                h->filters[h->filter_count++] = tf;
+                /* attach が inc_ref するので factory 参照はここで閉じる。 */
+                if (mlt_producer_attach(cp, tf) != 0) {
+                    set_err(err, err_size, "track %d clip %d: text filter を attach できません", ti,
+                            ci);
+                    mlt_filter_close(tf);
+                    goto fail;
+                }
+                mlt_filter_close(tf);
 
                 if (mlt_playlist_append_io(pl, cp, 0, (mlt_position)(tl_len - 1)) != 0) {
                     set_err(err, err_size, "track %d clip %d: playlist へ追加できません", ti, ci);
@@ -442,14 +456,6 @@ MvmComposeHandle* mvm_mlt_compose_open(const MvmBenchTimeline* tl, MvmComposeInf
                 /* 音量。mix transition には gain 相当の property が無いことを
                  * 実測で確認済みなので、volume filter を使う。 */
                 if (clip->gain_db != 0.0) {
-                    /* 配列容量を超えたら黙って捨てず失敗させる。
-                     * 最大 track 数 x 最大 clip 数を格納できる必要がある。 */
-                    if (h->filter_count >= (int)(sizeof(h->filters) / sizeof(h->filters[0]))) {
-                        set_err(err, err_size,
-                                "filter 配列の容量を超えました (%d)。容量を増やしてください",
-                                (int)(sizeof(h->filters) / sizeof(h->filters[0])));
-                        goto fail;
-                    }
                     mlt_filter vf = mlt_factory_filter(h->profile, "volume", NULL);
                     if (!vf) {
                         set_err(err, err_size, "track %d clip %d: volume filter を作れません", ti,
@@ -474,8 +480,15 @@ MvmComposeHandle* mvm_mlt_compose_open(const MvmBenchTimeline* tl, MvmComposeInf
                     char level[64];
                     snprintf(level, sizeof(level), "%.4fdB", clip->gain_db);
                     mlt_properties_set(MLT_FILTER_PROPERTIES(vf), "gain", level);
-                    mlt_producer_attach(p, vf);
-                    h->filters[h->filter_count++] = vf;
+                    /* attach が inc_ref するので、factory 参照はここで閉じる。
+                     * 以降 vf は使わない (property の後から変更もしない)。 */
+                    if (mlt_producer_attach(p, vf) != 0) {
+                        set_err(err, err_size,
+                                "track %d clip %d: volume filter を attach できません", ti, ci);
+                        mlt_filter_close(vf);
+                        goto fail;
+                    }
+                    mlt_filter_close(vf);
                     if (info)
                         add_note(info, "volume", "track %d clip %d level=%s dB", ti, ci, level);
                 }
@@ -552,9 +565,11 @@ MvmComposeHandle* mvm_mlt_compose_open(const MvmBenchTimeline* tl, MvmComposeInf
             mlt_transition_set_tracks(mx, 0, ti);
             if (mlt_field_plant_transition(mlt_tractor_field(h->tractor), mx, 0, ti) != 0) {
                 set_err(err, err_size, "mix transition を配置できません (track %d)", ti);
+                mlt_transition_close(mx);
                 goto fail;
             }
-            h->transitions[h->transition_count++] = mx;
+            /* plant すると tractor 側が inc_ref するので factory 参照は閉じる。 */
+            mlt_transition_close(mx);
             if (info)
                 add_note(info, "transition",
                          "mix a_track=0 b_track=%d always_active=1 sum=1 mode=%s", ti, mix_mode);
@@ -616,6 +631,7 @@ MvmComposeHandle* mvm_mlt_compose_open(const MvmBenchTimeline* tl, MvmComposeInf
             if (mlt_properties_anim_set_rect(qp, "rect", want, 0, tl_last, mlt_keyframe_discrete) !=
                 0) {
                 set_err(err, err_size, "rect を設定できません (track %d)", ti);
+                mlt_transition_close(qb);
                 goto fail;
             }
 
@@ -635,6 +651,7 @@ MvmComposeHandle* mvm_mlt_compose_open(const MvmBenchTimeline* tl, MvmComposeInf
                             "設定 %g/%g:%gx%g:%g -> 読戻 %g/%g:%gx%g:%g",
                             ti, pf, want.x, want.y, want.w, want.h, want.o, got.x, got.y, got.w,
                             got.h, got.o);
+                    mlt_transition_close(qb);
                     goto fail;
                 }
             }
@@ -647,9 +664,11 @@ MvmComposeHandle* mvm_mlt_compose_open(const MvmBenchTimeline* tl, MvmComposeInf
             mlt_transition_set_tracks(qb, 0, ti);
             if (mlt_field_plant_transition(mlt_tractor_field(h->tractor), qb, 0, ti) != 0) {
                 set_err(err, err_size, "%s transition を配置できません (track %d)", vt, ti);
+                mlt_transition_close(qb);
                 goto fail;
             }
-            h->transitions[h->transition_count++] = qb;
+            /* plant すると tractor 側が inc_ref するので factory 参照は閉じる。 */
+            mlt_transition_close(qb);
             if (info) {
                 add_note(info, "transition",
                          "%s a_track=0 b_track=%d rect=%g/%g:%gx%g:%g (typed, 読戻し照合済)", vt,

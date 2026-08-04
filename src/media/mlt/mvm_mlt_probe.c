@@ -22,6 +22,17 @@ static mlt_producer open_producer(const char* path, mlt_profile* out_profile) {
     if (!profile)
         return NULL;
 
+    /* [意図的に avformat を直接指定している]
+     *
+     * probe の目的は「MLT の avformat producer が素材をどう解釈したか」を
+     * ffprobe と突き合わせることである (V2)。loader にすると wrapper が
+     * 付ける正規化後の値を見ることになり、比較の意味が変わる。
+     * また loader は静止画を qimage producer で開くため meta.media.* が
+     * 生成されず、メタデータ比較そのものが成立しない。
+     *
+     * 再生・レンダリング経路 (mvm_mlt_compose.c) は loader を使う。
+     * そちらは音声の正規化 filter が必須である (所見 I)。
+     * この非対称は意図的であり、scripts/lint.ps1 の例外に登録している。 */
     mlt_producer probe = mlt_factory_producer(profile, "avformat", path);
     if (!probe) {
         mlt_profile_close(profile);
