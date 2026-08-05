@@ -25,3 +25,7 @@ CMakeUserPresets.json
 Thumbs.db
 desktop.ini
 tmp/
+
+# ablation の派生 scenario は build/<preset>/ablation/scenarios にだけ置く。
+# 以前は bench/scenarios へ書いており、派生物が Git に入ってしまった。
+bench/scenarios/abl-*.json

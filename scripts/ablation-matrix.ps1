@@ -1,0 +1,306 @@
+<#
+.SYNOPSIS
+    all-video proxy が M5 / M8 を満たさなかったときの原因切り分け (S7.1 / I)。
+
+.DESCRIPTION
+    「何を外すと速くなるか」を preview (既定 60 秒) で測る。
+
+    **このスクリプトは diagnostic である。採否判定には使わない。**
+    ablation は run 間の変動が大きく再現しないことが分かっており
+    (`docs/research/proxy-notes.md`)、ここで得た fps を採否の根拠にしてはいけない。
+    目的は「何が重いかの見当をつける」ことだけである。
+    採否 (M7 / M8) の判定は scripts/preview-matrix.ps1 の記録値だけで行う。
+
+    ケース:
+      A. V1 proxy のみ (V2 は 1080p HEVC original)
+      B. V1 + V2 proxy、全 5 トラック  ← 基準
+      C. B から qtext を除去
+      D. B から音声 2 トラックを除去
+      E. B から V2 / affine を除去
+      F. B の qtext を **静的 RGBA overlay の代用物**へ置換
+         (png_alpha.png。文字画像ではない。視覚的に同等とは主張しない)
+      G. V2 proxy を 640x360 にした構成
+
+    **フレームを作らない構成で速く見せることはしない。**
+    各ケースは必ず 1920x1080 の RGBA を毎フレーム生成する。
+    除去したケースは「その処理が無い場合の上限」であって、
+    製品で使える構成とは限らない。それも表に書く。
+
+    private API の cache purge、EmptyWorkingSet、閾値緩和は使わない。
+
+.EXAMPLE
+    pwsh scripts/ablation-matrix.ps1
+#>
+[CmdletBinding()]
+param(
+    [string]$Preset = 'ucrt64-release',
+    [string]$Ucrt64 = 'C:\msys64\ucrt64',
+    # **短い窓では足りない。** 同じ scenario を 15 秒で 3 回測ると
+    # 29.5 / 74.6 / 84.5 fps という二峰性が出た (全 run とも
+    # rendered=0 なし、position 連番、duplicate なしの正当な計測)。
+    # 既定は 60 秒 (M7 / M8 と条件を揃える) にしているが、
+    # **60 秒に延ばしても変動は解消しなかった** (ケース A で 1.73 倍のばらつき)。
+    # したがってこの値は diagnostic 目的であり、採否判定には用いない。
+    [int]$MeasureMs = 60000,
+    [int]$Runs = 3,
+    [string]$OutDir,
+    # 派生 scenario の生成だけを行い、性能計測はしない。
+    # 「このスクリプトが tracked file を汚さないこと」を
+    # 長い計測なしで確認するために使う。
+    [switch]$ScenariosOnly
+)
+
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+$Bench    = Join-Path $RepoRoot "build\$Preset\bin\mvm_bench.exe"
+$ScenDir  = Join-Path $RepoRoot 'bench\scenarios'
+$ProxyDir = Join-Path $RepoRoot 'tests\assets\benchmark\_proxy'
+if (-not $OutDir) { $OutDir = Join-Path $RepoRoot "build\$Preset\ablation" }
+
+# 派生 scenario は **build の下** へ置く。bench/scenarios は入力であり、
+# 実行するたびに派生物が湧く場所にしてはいけない。
+# 以前はここへ書いていたため abl-*.json が Git に入ってしまった。
+#
+# 別階層へ置くと media_root ("../../tests/assets/benchmark") がずれる。
+# 派生 scenario では media_root を絶対パスへ書き直して回避する。
+# 派生物は build の下だけに存在し、コミットされないので絶対パスでよい。
+$AblDir = Join-Path $OutDir 'scenarios'
+New-Item -ItemType Directory -Force -Path $OutDir, $AblDir | Out-Null
+$MediaRootAbs = (Resolve-Path (Join-Path $RepoRoot 'tests\assets\benchmark')).Path -replace '\\', '/'
+if (-not (Test-Path $Bench)) { throw "mvm_bench がありません: $Bench" }
+$env:PATH = "$Ucrt64\bin;$env:PATH"
+
+$baseAll = Join-Path $ScenDir 's7-4k-proxy-all-gop12.json'
+if (-not (Test-Path $baseAll)) { throw "all-video proxy scenario がありません: $baseAll" }
+
+# --- ケース用 scenario を生成する -------------------------------------------
+function New-Variant {
+    param([string]$Name, [scriptblock]$Mutate)
+    $o = Get-Content $baseAll -Raw | ConvertFrom-Json
+    & $Mutate $o
+    $o.name = $Name
+    # 出力先が bench/scenarios ではないので、相対の media_root は使えない。
+    $o.media_root = $MediaRootAbs
+    $path = Join-Path $AblDir "$Name.json"
+    $o | ConvertTo-Json -Depth 20 | Set-Content $path -Encoding UTF8
+    return $path
+}
+
+# 640x360 の V2 proxy (ケース G 用)。無ければ作る。
+$v2small = Join-Path $ProxyDir 'v1080p60_hevc_proxy_360.mp4'
+if (-not (Test-Path $v2small)) {
+    Write-Host "ケース G 用に 640x360 の V2 proxy を生成します..." -ForegroundColor Cyan
+    $src = Join-Path $RepoRoot 'tests\assets\benchmark\v1080p60_hevc.mp4'
+    $tmp = "$v2small.mvmtmp"
+    & (Join-Path $Ucrt64 'bin\ffmpeg.exe') -hide_banner -v error -y -i $src `
+        -vf 'scale=640:360' -c:v h264_nvenc -preset p4 -rc vbr -cq 25 -b:v 0 -g 12 -bf 0 `
+        -c:a copy -movflags +faststart -f mp4 $tmp
+    if ($LASTEXITCODE -ne 0) { Remove-Item $tmp -ErrorAction SilentlyContinue; throw '640x360 proxy の生成に失敗' }
+    Move-Item -Force $tmp $v2small
+}
+
+$cases = @(
+    @{ Id = 'A'; Desc = 'V1 proxy のみ (V2 は 1080p HEVC original)'
+       Scenario = (Join-Path $ScenDir 's7-4k-proxy-gop12.json'); Removed = 'なし'; Usable = 'いいえ (V2 が original)' }
+    @{ Id = 'B'; Desc = 'V1 + V2 proxy、全 5 トラック (基準)'
+       Scenario = $baseAll; Removed = 'なし'; Usable = 'はい' }
+    @{ Id = 'C'; Desc = 'B から qtext を除去'
+       Scenario = (New-Variant 'abl-C-no-text' { param($o) $o.tracks = @($o.tracks | Where-Object { $_.kind -ne 'text' }) })
+       Removed = '文字レイヤ'; Usable = 'いいえ (文字は必須機能)' }
+    @{ Id = 'D'; Desc = 'B から音声 2 トラックを除去'
+       Scenario = (New-Variant 'abl-D-no-audio' { param($o) $o.tracks = @($o.tracks | Where-Object { $_.kind -ne 'audio' }) })
+       Removed = '音声 A1/A2'; Usable = 'いいえ (音声は必須)' }
+    @{ Id = 'E'; Desc = 'B から V2 / affine を除去'
+       Scenario = (New-Variant 'abl-E-no-v2' { param($o) $o.tracks = @($o.tracks | Where-Object { $_.name -ne 'V2' }) })
+       Removed = 'V2 と affine 合成'; Usable = 'いいえ (PiP は必須)' }
+    # **F は「文字を事前描画した画像」ではない。**
+    # 使っているのは既存の png_alpha.png であり、文字は入っていない。
+    # 測っているのは「qtext の毎フレーム描画を、
+    # 同じ位置・同じ大きさの静的 RGBA overlay 1 枚に置き換えた場合の上限」だけである。
+    # 実際の文字画像に置き換えたときに同じ fps になる保証は無い
+    # (グリフの多さ、alpha の分布、素材の解像度で変わりうる)。
+    # 視覚的な同等性はこのケースでは一切確認していない。
+    @{ Id = 'F'; Desc = 'B の qtext を静的 RGBA overlay の代用物へ置換 (文字画像ではない)'
+       Scenario = (New-Variant 'abl-F-text-png' {
+           param($o)
+           foreach ($t in $o.tracks) {
+               if ($t.kind -eq 'text') {
+                   $t.kind = 'video'
+                   foreach ($c in $t.clips) {
+                       $c | Add-Member -NotePropertyName source -NotePropertyValue 'png_alpha.png' -Force
+                       $c | Add-Member -NotePropertyName rect_x -NotePropertyValue 96 -Force
+                       $c | Add-Member -NotePropertyName rect_y -NotePropertyValue 240 -Force
+                       $c | Add-Member -NotePropertyName rect_w -NotePropertyValue 1500 -Force
+                       $c | Add-Member -NotePropertyName rect_h -NotePropertyValue 320 -Force
+                       $c | Add-Member -NotePropertyName opacity -NotePropertyValue 1.0 -Force
+                       $c | Add-Member -NotePropertyName source_in -NotePropertyValue 0 -Force
+                       $c | Add-Member -NotePropertyName source_out -NotePropertyValue 3599 -Force
+                   }
+               }
+           }
+       })
+       Removed = 'qtext の毎フレーム描画 (静的 RGBA overlay で代用)'
+       Usable = '未確認 (代用物での上限。文字画像での等価性は未検証)' }
+    @{ Id = 'G'; Desc = 'V2 proxy を 640x360 にした構成'
+       Scenario = (New-Variant 'abl-G-v2-360' {
+           param($o)
+           foreach ($t in $o.tracks) {
+               foreach ($c in $t.clips) {
+                   if ($c.PSObject.Properties['source'] -and
+                       "$($c.source)" -like '*v1080p60_hevc_proxy_gop12*') {
+                       $c.source = '_proxy/v1080p60_hevc_proxy_360.mp4'
+                   }
+               }
+           }
+       })
+       Removed = 'なし (V2 の proxy 解像度のみ変更)'; Usable = 'はい' }
+)
+
+function Get-Median {
+    param([double[]]$Values)
+    if ($Values.Count -eq 0) { return 0.0 }
+    $s = @($Values | Sort-Object); $n = $s.Count
+    if ($n % 2 -eq 1) { return $s[[int](($n - 1) / 2)] }
+    return ($s[$n / 2 - 1] + $s[$n / 2]) / 2
+}
+
+if ($ScenariosOnly) {
+    # $cases の構築時点で New-Variant が派生 scenario を書き終えている。
+    Write-Host "派生 scenario を生成しました (性能計測は行いません):"
+    foreach ($c in $cases) { Write-Host ("  {0}: {1}" -f $c.Id, $c.Scenario) }
+    Write-Host "出力先: $AblDir"
+    exit 0
+}
+
+$rows = @()
+foreach ($c in $cases) {
+    Write-Host "`n=== ケース $($c.Id): $($c.Desc) ===" -ForegroundColor Cyan
+    $runObjs = @()
+    for ($r = 1; $r -le $Runs; $r++) {
+        $json = Join-Path $OutDir "$($c.Id)-run$r.json"
+        $log  = Join-Path $OutDir "$($c.Id)-run$r.log"
+        $p = Start-Process -FilePath $Bench -NoNewWindow -Wait -PassThru `
+            -ArgumentList @('preview-bench', $c.Scenario, '--consumer', 'null',
+                            '--real-time', -1, '--measure-ms', $MeasureMs,
+                            '--warmup-ms', 3000, '--timeout-ms', 120000, '--json', $json) `
+            -RedirectStandardOutput (Join-Path $OutDir "$($c.Id)-run$r.stdout") `
+            -RedirectStandardError $log
+        if ($p.ExitCode -ne 0) {
+            Write-Host "  ケース $($c.Id) run $r が exit $($p.ExitCode) で失敗。$log を参照。" -ForegroundColor Red
+            continue
+        }
+        $o = Get-Content $json -Raw | ConvertFrom-Json
+        # 「描画していないのに速い」を弾く。rendered=0 が混じっていたら採用しない。
+        if ($o.not_rendered_frames -ne 0) {
+            throw "ケース $($c.Id) run ${r}: rendered=0 の frame が $($o.not_rendered_frames) 件"
+        }
+        if ($o.rendered_frames -le 0) { throw "ケース $($c.Id) run ${r}: 描画 frame が 0" }
+        $runObjs += $o
+        Write-Host ("  run{0}: fps={1:N2} cpu={2:N2} priv={3:N0}MB" -f `
+            $r, $o.effective_fps, $o.cpu_utilization, $o.private_usage_mb.peak)
+    }
+    # 0 件成功のケースを黙って表から落とさない。
+    # 「測れなかった」を「そのケースは無かった」にしてはいけない。
+    if ($runObjs.Count -eq 0) {
+        throw "ケース $($c.Id) は 1 回も成功しませんでした。$OutDir のログを参照。"
+    }
+    function M([string]$Path) { Get-Median (@($runObjs | ForEach-Object { [double](Invoke-Expression "`$_.$Path") })) }
+
+    # run 間のばらつきが大きい測定は中央値を取っても意味が無い。
+    # 二峰性に当たっていた場合、中央値は「たまたま多かった側」を指すだけである。
+    # 中央値を出す前に、run どうしが同じものを測れているかを確認する。
+    $caseFps = @($runObjs | ForEach-Object { [double]$_.effective_fps })
+    $lo = ($caseFps | Measure-Object -Minimum).Minimum
+    $hi = ($caseFps | Measure-Object -Maximum).Maximum
+    $spread = if ($lo -gt 0) { [math]::Round($hi / $lo, 3) } else { 0 }
+    # 1.25 倍を超えるばらつきは「run 間で同じものを測れていない」とみなす。
+    # 落とさずに続けるが、**その値は判断に使わない**と表へ書き込む。
+    # これは機構の断定 (安定/不安定) ではなく、単に閾値内かどうかの記録である。
+    $spreadWithinThreshold = ($lo -gt 0 -and $spread -le 1.25)
+    if (-not $spreadWithinThreshold) {
+        Write-Host ("  [ばらつき大] run 間が {0:N2}〜{1:N2} fps ({2} 倍)。この値は判断に使わない。" -f `
+            $lo, $hi, $spread) -ForegroundColor Yellow
+    }
+
+    $rows += [pscustomobject]([ordered]@{
+        Case = $c.Id; Desc = $c.Desc
+        Fps = [math]::Round((M 'effective_fps'), 2)
+        IntervalP50 = [math]::Round((M 'inter_frame_interval_ms.p50'), 2)
+        CpuUtil = [math]::Round((M 'cpu_utilization'), 2)
+        PrivPeakMb = [math]::Round((M 'private_usage_mb.peak'), 1)
+        Rendered = [int](M 'rendered_frames')
+        Removed = $c.Removed
+        Usable = $c.Usable
+        DeltaVsB = 0.0
+        Spread = $spread
+        SpreadWithinThreshold = if ($spreadWithinThreshold) { 'はい' } else { '**いいえ**' }
+    })
+}
+
+$baseFps = ($rows | Where-Object { $_.Case -eq 'B' } | Select-Object -First 1).Fps
+foreach ($r in $rows) { $r.DeltaVsB = [math]::Round($r.Fps - $baseFps, 2) }
+
+# --- 想定外の性能順序を記録する (correctness invariant ではない) -----------
+#
+# A は B と同じ合成に対して V2 だけ 1080p HEVC original を使う。
+# C / D / E は B から処理を取り除いた構成である。
+# 直感的には A <= B <= (C / D / E) のはずだが、
+# **性能の大小関係は correctness invariant ではない。**
+# ablation は run 間の変動が大きく、想定外の順序が出ても
+# それは「計測が汚染された」ことの証明にはならない。
+# したがって hard failure にはせず、UnexpectedOrdering として
+# 警告し、JSON にも記録するだけにする。
+$fps = @{}
+foreach ($r in $rows) { if ($r.SpreadWithinThreshold -eq 'はい') { $fps[$r.Case] = $r.Fps } }
+$unexpectedOrdering = New-Object System.Collections.Generic.List[string]
+function Test-Ordering {
+    param([string]$Slower, [string]$Faster, [string]$Why)
+    if (-not ($fps.ContainsKey($Slower) -and $fps.ContainsKey($Faster))) { return }
+    # 5% の測定ゆらぎは無視する。
+    if ($fps[$Slower] -gt $fps[$Faster] * 1.05) {
+        $unexpectedOrdering.Add(("{0}={1} が {2}={3} より速い。{4}" -f `
+            $Slower, $fps[$Slower], $Faster, $fps[$Faster], $Why))
+    }
+}
+Test-Ordering 'A' 'B' 'A は V2 に 1080p HEVC original を使う (直感的には B 以下のはず)。'
+Test-Ordering 'B' 'C' 'C は B から qtext を除いた構成である。'
+Test-Ordering 'B' 'D' 'D は B から音声 2 トラックを除いた構成である。'
+Test-Ordering 'B' 'E' 'E は B から V2 / affine を除いた構成である。'
+if ($unexpectedOrdering.Count -ne 0) {
+    Write-Host "`n[UnexpectedOrdering] 想定外の性能順序が出ました (判定には使いません):" -ForegroundColor Yellow
+    foreach ($v in $unexpectedOrdering) { Write-Host "  - $v" -ForegroundColor Yellow }
+    Write-Host "ablation は run 間の変動が大きく、順序の逆転は珍しくありません。" -ForegroundColor Yellow
+}
+
+$secLabel = [int]([math]::Round($MeasureMs / 1000))
+Write-Host "`n=== ablation ($secLabel 秒 preview / real_time=-1 / $Runs runs 中央値) ===" -ForegroundColor Cyan
+Write-Host "**これは diagnostic であり採否判定には使わない。**"
+Write-Host "基準は B (all-video proxy)。DeltaVsB は B との fps 差。"
+Write-Host "SpreadWithinThreshold=いいえ の行は run 間のばらつきが 1.25 倍を超えている。**判断に使わない。**"
+$rows | Format-Table Case, Fps, DeltaVsB, Spread, SpreadWithinThreshold, IntervalP50, CpuUtil, PrivPeakMb, Usable -AutoSize
+
+# UnexpectedOrdering も JSON へ残す。
+$abl = [ordered]@{
+    measure_ms = $MeasureMs
+    runs = $Runs
+    note = 'diagnostic のみ。採否判定には使わない。性能順序は correctness invariant ではない。'
+    unexpected_ordering = @($unexpectedOrdering)
+    cases = $rows
+}
+$abl | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $OutDir 'ablation.json') -Encoding UTF8
+
+$withinRows = @($rows | Where-Object { $_.SpreadWithinThreshold -eq 'はい' })
+$outOfThreshold = @($rows | Where-Object { $_.SpreadWithinThreshold -ne 'はい' })
+if ($outOfThreshold.Count -ne 0) {
+    Write-Host ("`nばらつきが大きく判断に使えないケース: {0}" -f (($outOfThreshold | ForEach-Object { $_.Case }) -join ', ')) `
+        -ForegroundColor Yellow
+}
+if ($withinRows.Count -eq 0) {
+    Write-Host "`n閾値内で測れたケースが 1 つもありません (diagnostic なので停止はしません)。" -ForegroundColor Yellow
+} else {
+    $best = ($withinRows | Sort-Object -Property Fps -Descending | Select-Object -First 1)
+    Write-Host "`n最速ケース (ばらつき閾値内のものだけ): $($best.Case) = $($best.Fps) fps (製品で使えるか: $($best.Usable))"
+}
+Write-Host "生 JSON: $OutDir"

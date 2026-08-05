@@ -2,17 +2,35 @@
 
 Windows 向けノンリニア動画編集ソフト。YouTube 向けの技術・数学解説動画を主対象とする。
 
-**現在 Phase 0（技術スパイク）の S0 / S1 / R0 / S2 / S4 まで実装済み。
-製品コードはまだ存在しない。**
+**Phase 0（技術スパイク）は S0〜S7.1 および早期 S16（採否判定）まで完了。
+Phase 0 は「MLT を採用しない」という不採用判定で終了した。
+製品コードは未着手である。**
 
 Phase 0 の目的は、MLT 7 を mvm の編集・プレビュー・書き出しエンジンとして
 採用できるかを判定することのみ。
 
+> **判定:「MLT 7.36.1 / MSYS2 UCRT64 の現行 CPU・RGBA 経路を、
+> mvm の統合編集・リアルタイム preview engine として採用しない。」**
+>
+> 1080p60 / 5 トラックの連続 preview が最良 19.85 fps（基準 50）で、
+> 全 video を proxy 化しても 19.67 fps だったため。
+> 判定の射程と、**測っていない項目**（書き出し、オフラインレンダ、
+> エフェクト、clean VM 起動など）は
+> [docs/phase0-decision.md](docs/phase0-decision.md) に明記している。
+
 | ドキュメント | 内容 |
 | --- | --- |
+| **[docs/phase0-decision.md](docs/phase0-decision.md)** | **採否判定書（S16）** |
+| **[docs/adr/0001-mlt-adoption.md](docs/adr/0001-mlt-adoption.md)** | **ADR: MLT 採否の決定** |
 | [docs/phase0-plan.md](docs/phase0-plan.md) | 計画全体と exit criteria |
 | [docs/phase0-findings.md](docs/phase0-findings.md) | 実測結果。事実 / 推測 / 未検証を区別して記録 |
 | [docs/research/mlt-notes.md](docs/research/mlt-notes.md) | MLT の実装メモ（実際に動かして確かめた範囲） |
+| [docs/research/preview-performance-notes.md](docs/research/preview-performance-notes.md) | preview（consumer 経路）の実測と `real_time` の意味 |
+| [docs/research/proxy-notes.md](docs/research/proxy-notes.md) | proxy の生成・path resolver・frame mapping |
+| [docs/research/seek-scrub-notes.md](docs/research/seek-scrub-notes.md) | seek / scrub の実測と表示契約 |
+| [docs/research/composition-notes.md](docs/research/composition-notes.md) | 5 トラック合成の実測 |
+| [docs/research/memory-notes.md](docs/research/memory-notes.md) | メモリ増加の切り分け（診断であり合否ではない） |
+| [docs/research/mlt-ownership.md](docs/research/mlt-ownership.md) | MLT の参照所有権 |
 | [docs/research/test-media-format.md](docs/research/test-media-format.md) | 検証素材とフレーム固有マーカーの仕様 |
 
 ## ツールチェーン

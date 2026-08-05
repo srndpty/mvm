@@ -25,6 +25,11 @@
 // compose 系サブコマンド (mvm_bench_compose.cpp)
 int cmdCompose(const bench::Args& a);
 int cmdVerifyCompose(const bench::Args& a);
+int cmdPreviewBench(const bench::Args& a);
+
+// proxy 系サブコマンド (mvm_bench_proxy.cpp)
+int cmdResolveProxy(const bench::Args& a);
+int cmdProxyMapping(const bench::Args& a);
 int cmdSeekBench(const bench::Args& a);
 int cmdScrubBench(const bench::Args& a);
 int cmdRenderAudio(const bench::Args& a);
@@ -701,6 +706,8 @@ int main() {
         rc = cmdCompose(a);
     else if (cmd == "verify-compose")
         rc = cmdVerifyCompose(a);
+    else if (cmd == "preview-bench")
+        rc = cmdPreviewBench(a);
     else if (cmd == "seek-bench")
         rc = cmdSeekBench(a);
     else if (cmd == "scrub-bench")
@@ -717,6 +724,10 @@ int main() {
         rc = cmdSoak(a);
     else if (cmd == "memory-probe")
         rc = cmdMemoryProbe(a);
+    else if (cmd == "resolve-proxy")
+        rc = cmdResolveProxy(a);
+    else if (cmd == "proxy-mapping")
+        rc = cmdProxyMapping(a);
     else if (cmd == "explore")
         rc = cmdExplore(a);
     else {

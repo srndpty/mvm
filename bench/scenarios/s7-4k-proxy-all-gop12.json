@@ -1,0 +1,194 @@
+{
+  "//": "**正式 M8 評価**: preview で使う video source (V1 / V2) を全て proxy 化した scenario。",
+  "schema_version": 1,
+  "name": "s7-4k-proxy-all-gop12",
+  "media_root": "../../tests/assets/benchmark",
+  "profile": {
+    "name": "atsc_1080p_60",
+    "width": 1920,
+    "height": 1080,
+    "fps_num": 60,
+    "fps_den": 1,
+    "sar_num": 1,
+    "sar_den": 1,
+    "progressive": 1
+  },
+  "text_service": "qtext",
+  "font_file": "C:/Windows/Fonts/meiryo.ttc",
+  "tracks": [
+    {
+      "//": "V1: 背景。全画面。音声も持つが A1 として別トラックで扱うためここでは無効化。",
+      "kind": "video",
+      "z_order": 0,
+      "video_enabled": true,
+      "audio_enabled": false,
+      "clips": [
+        {
+          "source": "_proxy/v4k60_h264_proxy_gop12.mp4",
+          "timeline_in": 0,
+          "timeline_out": 3599,
+          "source_in": 0,
+          "source_out": 3599,
+          "rect_x": 0,
+          "rect_y": 0,
+          "rect_w": 0,
+          "rect_h": 0,
+          "opacity": 1.0
+        }
+      ],
+      "name": "V1"
+    },
+    {
+      "//": "V2: HEVC を 1/3 に縮小して右下へ。1920x1080 -> 640x360、位置 (1260, 700)。",
+      "kind": "video",
+      "z_order": 1,
+      "video_enabled": true,
+      "audio_enabled": false,
+      "clips": [
+        {
+          "source": "_proxy/v1080p60_hevc_proxy_gop12.mp4",
+          "timeline_in": 0,
+          "timeline_out": 3599,
+          "source_in": 0,
+          "source_out": 3599,
+          "rect_x": 1260,
+          "rect_y": 700,
+          "rect_w": 640,
+          "rect_h": 360,
+          "opacity": 1.0
+        }
+      ],
+      "name": "V2"
+    },
+    {
+      "//": "A1: H.264 素材の音声。",
+      "kind": "audio",
+      "z_order": 2,
+      "video_enabled": false,
+      "audio_enabled": true,
+      "clips": [
+        {
+          "source": "v1080p60_h264.mp4",
+          "timeline_in": 0,
+          "timeline_out": 3599,
+          "source_in": 0,
+          "source_out": 3599,
+          "gain_db": 0.0
+        }
+      ],
+      "name": "A1"
+    },
+    {
+      "//": "A2: WAV。gain を下げて mix されていることを RMS 差で判定できるようにする。",
+      "kind": "audio",
+      "z_order": 3,
+      "video_enabled": false,
+      "audio_enabled": true,
+      "clips": [
+        {
+          "source": "wav_48k.wav",
+          "timeline_in": 0,
+          "timeline_out": 3599,
+          "source_in": 0,
+          "source_out": 3599,
+          "gain_db": -6.0
+        }
+      ],
+      "name": "A2"
+    },
+    {
+      "//": "T1: 日本語テキスト。ASCII・日本語・全角空白・数学記号・改行を含む。",
+      "kind": "text",
+      "z_order": 4,
+      "video_enabled": true,
+      "audio_enabled": false,
+      "clips": [
+        {
+          "timeline_in": 0,
+          "timeline_out": 3599,
+          "text": "第1回　微分積分＆線形代数\n極限 lim(x→0) sin(x)/x = 1\n日本語・English・123・（）「」±×÷",
+          "font_family": "Meiryo",
+          "font_size": 56,
+          "fg_colour": "0xffff00ff",
+          "bg_colour": "0x000000c0",
+          "halign": "left",
+          "valign": "top",
+          "text_x": 96,
+          "text_y": 240,
+          "text_w": 1500,
+          "text_h": 320
+        }
+      ],
+      "name": "T1"
+    }
+  ],
+  "verify": {
+    "//": "機械検証の期待値。一点判定ではなく小領域の統計で見る。",
+    "frames": [
+      0,
+      1,
+      137,
+      299,
+      600,
+      1799,
+      3599
+    ],
+    "regions": {
+      "//": "V2 の内側。ここは V2 (HEVC) が見えるので V1 とは異なるはず。",
+      "v2_inside": {
+        "x": 1400,
+        "y": 800,
+        "w": 160,
+        "h": 120
+      },
+      "//2": "V2 の外側かつ text の外側。ここは V1 だけが見える。",
+      "v1_only": {
+        "x": 200,
+        "y": 900,
+        "w": 200,
+        "h": 120
+      },
+      "//3": "text 領域。背景と異なる有効画素があるはず。",
+      "text": {
+        "x": 96,
+        "y": 240,
+        "w": 1500,
+        "h": 320
+      },
+      "//4": "マーカー帯。V1 のマーカーがそのまま見えるはず。",
+      "marker": {
+        "x": 0,
+        "y": 0,
+        "w": 1216,
+        "h": 64
+      },
+      "pip_rect": {
+        "x": 1260,
+        "y": 700,
+        "w": 640,
+        "h": 360
+      }
+    },
+    "audio": {
+      "frames": [
+        30,
+        600,
+        1799,
+        3500
+      ],
+      "expect_sample_rate": 48000,
+      "expect_channels": 2,
+      "//": "A1: L1000/R500, A2: L1500/R750 (gain -6dB)。4 周波数すべてが検出されれば両方 mix されている。",
+      "//2": "片方だけでは 2 周波数しか出ないため、この検査は空振りしない。",
+      "goertzel_hz": [
+        1000.0,
+        500.0,
+        1500.0,
+        750.0
+      ],
+      "min_rms": 0.02,
+      "max_peak": 0.999
+    }
+  },
+  "video_transition": "affine"
+}

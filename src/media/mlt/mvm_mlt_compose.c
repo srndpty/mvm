@@ -98,6 +98,278 @@ long long mvm_mlt_compose_length(const MvmComposeHandle* h) {
 }
 
 /* ------------------------------------------------------------------------- */
+/* preview (S7 / M7)                                                          */
+/* ------------------------------------------------------------------------- */
+
+/* consumer-frame-show の listener が使う collector。
+ * null consumer の consumer_thread は 1 本なので、この構造体へは
+ * 1 スレッドだけが書き込む。 */
+typedef struct {
+    MvmPreviewSample* samples;
+    long long capacity;
+    long long count;
+    long long overflow;
+    LARGE_INTEGER t0;
+    double freq;
+    double first_ms;
+    int have_first;
+} PreviewCollector;
+
+static double pv_elapsed_ms(const PreviewCollector* c) {
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    return (double)(now.QuadPart - c->t0.QuadPart) * 1000.0 / c->freq;
+}
+
+/* mlt_listener の実体。MLT 7 の listener 署名は
+ *   void (*)(mlt_properties owner, void* listener_data, mlt_event_data)
+ * である。frame は mlt_event_data_to_frame で取り出す。 */
+static void pv_on_frame_show(mlt_properties owner, void* data, mlt_event_data ev) {
+    PreviewCollector* c = (PreviewCollector*)data;
+    mlt_frame frame = mlt_event_data_to_frame(ev);
+    (void)owner;
+    if (!c || !frame)
+        return;
+
+    double ms = pv_elapsed_ms(c);
+    if (!c->have_first) {
+        c->first_ms = ms;
+        c->have_first = 1;
+    }
+    if (c->count < c->capacity) {
+        MvmPreviewSample* s = &c->samples[c->count++];
+        s->position = (long long)mlt_frame_get_position(frame);
+        s->rendered = mlt_properties_get_int(MLT_FRAME_PROPERTIES(frame), "rendered");
+        s->t_ms = ms;
+    } else {
+        c->overflow++;
+    }
+}
+
+/* consumer を 1 本作って接続し、開始する。失敗時は NULL。 */
+static mlt_consumer pv_make_consumer(MvmComposeHandle* h, const MvmPreviewRequest* req, char* err,
+                                     size_t err_size) {
+    mlt_producer tp = MLT_TRACTOR_PRODUCER(h->tractor);
+    mlt_producer_set_in_and_out(tp, 0, (mlt_position)(h->length - 1));
+    mlt_producer_seek(tp, 0);
+
+    mlt_consumer consumer = mlt_factory_consumer(h->profile, req->consumer_service, NULL);
+    if (!consumer) {
+        set_err(err, err_size, "consumer を作れません: service=%s", req->consumer_service);
+        return NULL;
+    }
+
+    mlt_properties cp = MLT_CONSUMER_PROPERTIES(consumer);
+    mlt_properties_set_int(cp, "real_time", req->real_time);
+    /* 素材の終端で自然に止める。consumer_null は terminate_on_pause を見る。 */
+    mlt_properties_set_int(cp, "terminate_on_pause", 1);
+    /* preview の画は RGBA で扱う。既定 (yuv422) のままだと、
+     * 実際の preview 経路と異なるコストを測ることになる。 */
+    mlt_properties_set(cp, "mlt_image_format", "rgba");
+
+    if (mlt_consumer_connect(consumer, MLT_PRODUCER_SERVICE(tp)) != 0) {
+        set_err(err, err_size, "consumer を tractor へ接続できません");
+        mlt_consumer_close(consumer);
+        return NULL;
+    }
+    return consumer;
+}
+
+/* 経過時間を実測する。Sleep(n) は要求より長く眠るので、
+ * Sleep の回数を足し込んだ値を経過時間として使ってはいけない。
+ * 既定のタイマ分解能では Sleep(5) が約 15ms 眠り、
+ * 「6 秒計測」のつもりが 12 秒になる。実際にそうなった。 */
+static double pv_now_ms(LARGE_INTEGER t0, double freq) {
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    return (double)(now.QuadPart - t0.QuadPart) * 1000.0 / freq;
+}
+
+/* 停止して join する。timeout なら 1 を返す。 */
+static int pv_stop(mlt_consumer consumer, int timeout_ms) {
+    LARGE_INTEGER t0, f;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&t0);
+    mlt_consumer_stop(consumer);
+    while (!mlt_consumer_is_stopped(consumer)) {
+        Sleep(5);
+        if (pv_now_ms(t0, (double)f.QuadPart) >= (double)timeout_ms)
+            return 1;
+    }
+    return 0;
+}
+
+int mvm_mlt_compose_preview(MvmComposeHandle* h, const MvmPreviewRequest* req,
+                            MvmPreviewResult* out, char* err, size_t err_size) {
+    if (!h || !req || !out) {
+        set_err(err, err_size, "引数が NULL です");
+        return 1;
+    }
+    memset(out, 0, sizeof(*out));
+
+    if (!req->consumer_service || !req->consumer_service[0]) {
+        set_err(err, err_size, "consumer service が指定されていません");
+        return 1;
+    }
+    /* real_time=0 は同期経路で、MLT が mlt_frame_get_image を呼ばない。
+     * null consumer も呼ばない。したがって「何も描画せずに高速に回る」
+     * 値が出る。測定として無意味なので受け付けない。
+     * (src/framework/mlt_consumer.c の mlt_consumer_rt_frame で確認) */
+    if (req->real_time == 0) {
+        set_err(err, err_size,
+                "real_time=0 は同期経路で mlt_frame_get_image を呼ばないため "
+                "preview の計測に使えません");
+        return 1;
+    }
+    if (req->measure_ms <= 0) {
+        set_err(err, err_size, "measure_ms が 0 以下です");
+        return 1;
+    }
+    if (req->max_samples <= 0) {
+        set_err(err, err_size, "max_samples が 0 以下です");
+        return 1;
+    }
+
+    int timeout_ms = req->timeout_ms > 0 ? req->timeout_ms : 30000;
+
+    /* --- warm-up。別の start/stop で回し、計測には含めない。 --- */
+    if (req->warmup_ms > 0) {
+        mlt_consumer wc = pv_make_consumer(h, req, err, err_size);
+        if (!wc)
+            return 1;
+        if (mlt_consumer_start(wc) != 0) {
+            set_err(err, err_size, "warm-up consumer を開始できません");
+            mlt_consumer_close(wc);
+            return 1;
+        }
+        LARGE_INTEGER wt0, wf;
+        QueryPerformanceFrequency(&wf);
+        QueryPerformanceCounter(&wt0);
+        while (!mlt_consumer_is_stopped(wc) &&
+               pv_now_ms(wt0, (double)wf.QuadPart) < (double)req->warmup_ms) {
+            Sleep(5);
+        }
+        if (pv_stop(wc, timeout_ms) != 0) {
+            mlt_consumer_close(wc);
+            set_err(err, err_size, "warm-up consumer が停止しませんでした");
+            return 1;
+        }
+        mlt_consumer_close(wc);
+    }
+
+    /* --- 計測 --- */
+    PreviewCollector col;
+    memset(&col, 0, sizeof(col));
+    col.capacity = req->max_samples;
+    col.samples = (MvmPreviewSample*)calloc((size_t)col.capacity, sizeof(MvmPreviewSample));
+    if (!col.samples) {
+        set_err(err, err_size, "サンプル配列を確保できません");
+        return 1;
+    }
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    col.freq = (double)f.QuadPart;
+
+    mlt_consumer consumer = pv_make_consumer(h, req, err, err_size);
+    if (!consumer) {
+        free(col.samples);
+        return 1;
+    }
+    mlt_properties cp = MLT_CONSUMER_PROPERTIES(consumer);
+
+    /* 実際に設定された値を読み戻して記録する。設定したつもりの値ではなく、
+     * consumer が持っている値を報告する。 */
+    out->effective_real_time = mlt_properties_get_int(cp, "real_time");
+    snprintf(out->actual_properties, sizeof(out->actual_properties),
+             "service=%s real_time=%d terminate_on_pause=%d mlt_image_format=%s "
+             "buffer=%d prefill=%d drop_max=%d frequency=%d channels=%d "
+             "width=%d height=%d fps=%.6f rescale=%s",
+             req->consumer_service, out->effective_real_time,
+             mlt_properties_get_int(cp, "terminate_on_pause"),
+             mlt_properties_get(cp, "mlt_image_format") ? mlt_properties_get(cp, "mlt_image_format")
+                                                        : "(unset)",
+             mlt_properties_get_int(cp, "buffer"), mlt_properties_get_int(cp, "prefill"),
+             mlt_properties_get_int(cp, "drop_max"), mlt_properties_get_int(cp, "frequency"),
+             mlt_properties_get_int(cp, "channels"), mlt_properties_get_int(cp, "width"),
+             mlt_properties_get_int(cp, "height"), mlt_properties_get_double(cp, "fps"),
+             mlt_properties_get(cp, "rescale") ? mlt_properties_get(cp, "rescale") : "(unset)");
+
+    /* mlt_events_listen の戻り値を mlt_event_close してはいけない。
+     *
+     * MLT 7.36.1 の mlt_events_listen (src/framework/mlt_events.c) は
+     *   event->ref_count = 0;
+     *   mlt_properties_set_data(listeners, temp, event, 0,
+     *                           (mlt_destructor) mlt_event_close, NULL);
+     *   mlt_event_inc_ref(event);          -> ref_count = 1
+     * という順で作る。つまり **ref_count 1 は listeners 側の所有分**であり、
+     * 呼び出し側は参照を持っていない。
+     *
+     * ここで mlt_event_close を呼ぶと ref_count が 0 になって free され、
+     * その後 consumer の properties が閉じるときに destructor が
+     * 解放済みポインタをもう一度 close してヒープを壊す。
+     * 実際に 0xC0000374 (STATUS_HEAP_CORRUPTION) で落ちた。
+     *
+     * 早めに外したいときは mlt_events_disconnect を使う。 */
+    mlt_events_listen(cp, &col, "consumer-frame-show", (mlt_listener)pv_on_frame_show);
+
+    QueryPerformanceCounter(&col.t0);
+    if (mlt_consumer_start(consumer) != 0) {
+        set_err(err, err_size, "consumer を開始できません");
+        mlt_events_disconnect(cp, &col);
+        mlt_consumer_close(consumer);
+        free(col.samples);
+        return 1;
+    }
+
+    /* wall 時間で打ち切る。素材の尺で打ち切ると、遅い構成ほど長く走り、
+     * 構成間で「同じ時間あたり何枚出たか」を比較できなくなる。 */
+    int ended = 0;
+    while (pv_now_ms(col.t0, col.freq) < (double)req->measure_ms) {
+        if (mlt_consumer_is_stopped(consumer)) {
+            ended = 1; /* terminate_on_pause による自然終了 */
+            break;
+        }
+        Sleep(5);
+    }
+    double wallMs = pv_elapsed_ms(&col);
+    int timedOut = pv_stop(consumer, timeout_ms);
+
+    out->drop_count = (long long)mlt_properties_get_int(cp, "drop_count");
+    out->effective_real_time = mlt_properties_get_int(cp, "real_time");
+
+    /* collector はこの関数のスタック上にある。consumer を閉じる前に
+     * listener を外し、停止後に遅れて発火しても触られないようにする。 */
+    mlt_events_disconnect(cp, &col);
+    mlt_consumer_close(consumer);
+
+    out->samples = col.samples;
+    out->sample_count = col.count;
+    out->sample_overflow = col.overflow;
+    out->start_latency_ms = col.have_first ? col.first_ms : -1.0;
+    out->wall_sec = wallMs / 1000.0;
+    out->producer_ended = ended;
+    out->stopped_by_timeout = timedOut;
+
+    if (timedOut) {
+        set_err(err, err_size, "consumer が %d ms 以内に停止しませんでした", timeout_ms);
+        return 1;
+    }
+    if (col.count == 0) {
+        set_err(err, err_size, "frame が 1 枚も出力されませんでした");
+        return 1;
+    }
+    return 0;
+}
+
+void mvm_mlt_preview_free(MvmPreviewResult* r) {
+    if (!r)
+        return;
+    free(r->samples);
+    r->samples = NULL;
+    r->sample_count = 0;
+}
+
+/* ------------------------------------------------------------------------- */
 /* 構築                                                                       */
 /* ------------------------------------------------------------------------- */
 
