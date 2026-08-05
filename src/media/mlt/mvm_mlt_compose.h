@@ -112,6 +112,72 @@ typedef enum {
 
 void mvm_mlt_compose_set_seek_mode(MvmComposeHandle* h, MvmSeekMode mode);
 
+/* --------------------------------------------------------------------------
+ * preview (S7 / M7)
+ *
+ * compose_frame を連続で呼ぶことは preview ではない。あれは「毎回 seek して
+ * 1 枚取る」経路であり、consumer の read-ahead も worker thread も通らない。
+ * preview は mlt_consumer に tractor を接続し、consumer 側が連続して
+ * frame を要求する経路で測る。
+ *
+ * MLT 7.36.1 のソースで確認した事実 (src/framework/mlt_consumer.c):
+ *
+ *   real_time > 0 : 非同期。フレームドロップあり。
+ *   real_time < 0 : 非同期。フレームドロップなし。
+ *   real_time = 0 : 同期。**mlt_frame_get_image を呼ばない。**
+ *                   frame を取得して "rendered" を 1 にするだけである。
+ *   render thread 数 = abs(real_time)  (consumer_work_start の n = abs(real_time))
+ *   drop_count       = consumer の int property。"rendered" が立っていない
+ *                      frame を数える。
+ *
+ *   null consumer (src/modules/core/consumer_null.c) も get_image を呼ばない。
+ *   したがって real_time=0 と null consumer の組み合わせでは
+ *   **何も描画されない。** fps を測っても意味が無いので、
+ *   この組み合わせは呼び出し側で拒否すること。
+ *
+ * 計測は wall 時間で打ち切る。素材の尺で打ち切ると、遅い構成ほど
+ * 長時間走ることになり、構成間で比較できなくなる。
+ * -------------------------------------------------------------------------- */
+
+typedef struct {
+    long long position; /* mlt_frame_get_position */
+    int rendered;       /* frame の "rendered" property */
+    double t_ms;        /* consumer start からの経過ミリ秒 */
+} MvmPreviewSample;
+
+typedef struct {
+    const char* consumer_service; /* "null" など。NULL 不可 */
+    int real_time;                /* consumer の real_time property。0 は拒否する */
+    int measure_ms;               /* wall 時間での計測上限。0 以下は拒否する */
+    int warmup_ms;                /* 計測前に別 start/stop で回す時間。0 で省略 */
+    int timeout_ms;               /* 停止待ちの上限 */
+    long long max_samples;        /* サンプル配列の上限 */
+} MvmPreviewRequest;
+
+typedef struct {
+    MvmPreviewSample* samples; /* mvm_mlt_preview_free で解放する */
+    long long sample_count;
+    long long sample_overflow; /* max_samples を超えて捨てた数 */
+
+    int effective_real_time; /* consumer から読み戻した real_time */
+    long long drop_count;    /* consumer の drop_count property */
+    double start_latency_ms; /* start() から最初の frame-show まで */
+    double wall_sec;         /* start() から stop 完了まで */
+    int producer_ended;      /* terminate_on_pause で自然終了したか */
+    int stopped_by_timeout;  /* timeout で打ち切ったか (失敗扱い) */
+
+    char actual_properties[2048]; /* 実際に設定された consumer property のダンプ */
+} MvmPreviewResult;
+
+/*
+ * consumer 経路で preview を計測する。
+ * 戻り値: 0 = 成功。失敗時は err に理由を書く。
+ */
+int mvm_mlt_compose_preview(MvmComposeHandle* h, const MvmPreviewRequest* req,
+                            MvmPreviewResult* out, char* err, size_t err_size);
+
+void mvm_mlt_preview_free(MvmPreviewResult* r);
+
 long long mvm_mlt_compose_length(const MvmComposeHandle* h);
 
 void mvm_mlt_compose_close(MvmComposeHandle* h);

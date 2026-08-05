@@ -9,6 +9,7 @@ pkg_check_modules(PNG REQUIRED IMPORTED_TARGET libpng)
 add_executable(mvm_bench
     harness/mvm_bench.cpp
     harness/mvm_bench_compose.cpp
+    harness/mvm_bench_proxy.cpp
 )
 
 # ScrubCoalescer の純粋単体テスト。MLT にも Qt にも依存しない。
@@ -23,6 +24,12 @@ add_executable(mvm_test_scrub_threaded harness/test_scrub_threaded.cpp)
 target_include_directories(mvm_test_scrub_threaded PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/harness)
 target_link_libraries(mvm_test_scrub_threaded PRIVATE mvm::warnings)
 add_test(NAME scrub_coalescer_threaded COMMAND mvm_test_scrub_threaded)
+
+# proxy path resolver。preview と final で解決先が違うことを検査する。
+add_executable(mvm_test_proxy_resolver harness/test_proxy_resolver.cpp)
+target_include_directories(mvm_test_proxy_resolver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/harness)
+target_link_libraries(mvm_test_proxy_resolver PRIVATE mvm::warnings)
+add_test(NAME proxy_resolver_unit COMMAND mvm_test_proxy_resolver)
 set_tests_properties(scrub_coalescer_threaded PROPERTIES TIMEOUT 120)
 
 target_link_libraries(mvm_bench PRIVATE
@@ -396,6 +403,10 @@ mvm_add_test(scrub_coalescing_occurs
 
 # negative: 音声を含むケースで --wav-dir が無いとき、
 # 音声を黙って飛ばした測定を成功扱いしない。
+#
+# WILL_FAIL は「0 以外なら合格」でしかない。使い方エラー (2) を期待して
+# いるのに、クラッシュや DLL ロード失敗でも合格になってしまう。
+# expect-exit.ps1 で終了コードを厳密に照合する。
 foreach(mcase D E)
     mvm_add_test(memory_probe_${mcase}_requires_wav_dir
         COMMAND mvm_bench memory-probe "${MVM_S5_SCENARIO}" --case ${mcase} --iterations 1
@@ -403,6 +414,135 @@ foreach(mcase D E)
             REQUIRED_FILES "${MVM_S5_SCENARIO}"
             WILL_FAIL TRUE)
 endforeach()
+
+# --- S7: preview / proxy -----------------------------------------------------
+
+# pwsh はこの下の negative test でも使う。find_program は結果を cache するので
+# 後段でもう一度呼んでも実害は無い。
+find_program(MVM_PWSH pwsh)
+
+set(MVM_S7_SCENARIO "${CMAKE_SOURCE_DIR}/bench/scenarios/s7-five-track-60s.json")
+set(MVM_BENCH_DIR   "${CMAKE_SOURCE_DIR}/tests/assets/benchmark")
+set(MVM_PROXY_DIR   "${MVM_BENCH_DIR}/_proxy")
+set(MVM_MAKE_BENCH_HINT "pwsh scripts/make-testmedia.ps1 -Mode Benchmark")
+
+# 60 秒 scenario の schema と代表フレームの合成。
+# 映像だけを見る。音声の正式ゲートは render-audio + verify-audio である。
+mvm_add_test(preview_scenario_schema
+    COMMAND mvm_bench compose "${MVM_S7_SCENARIO}" --frame 3599 --expect-marker
+    PROPERTIES
+        REQUIRED_FILES "${MVM_S7_SCENARIO}"
+        TIMEOUT 300)
+
+# preview は短時間で契約だけ見る。性能判定は performance ラベル側。
+mvm_add_test(preview_contract_short
+    COMMAND mvm_bench preview-bench "${MVM_S5_SCENARIO}"
+            --consumer null --real-time -4 --measure-ms 3000 --warmup-ms 0
+    PROPERTIES REQUIRED_FILES "${MVM_S5_SCENARIO}" TIMEOUT 300)
+
+if(MVM_PWSH)
+    # negative: real_time=0 は mlt_frame_get_image を呼ばないので計測に使えない。
+    # 「失敗した」ではなく「使い方エラー (2) で失敗した」ことを検査する。
+    add_test(NAME preview_invalid_real_time_exit2
+        COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+                -ExpectExit 3 -Exe "$<TARGET_FILE:mvm_bench>"
+                -ChildArgs "preview-bench;${MVM_S5_SCENARIO};--real-time;0;--measure-ms;1000")
+
+    # negative: 存在しない consumer service を成功扱いしない。
+    add_test(NAME preview_missing_consumer_service
+        COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+                -ExpectExit 3 -Exe "$<TARGET_FILE:mvm_bench>"
+                -ChildArgs "preview-bench;${MVM_S5_SCENARIO};--consumer;mvm_no_such_consumer;--real-time;-1;--measure-ms;1000")
+
+    # negative: 音声ケースの --wav-dir 欠落は「使い方エラー (2)」であること。
+    foreach(mcase D E)
+        add_test(NAME memory_probe_${mcase}_exit_code_is_usage
+            COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+                    -ExpectExit 2 -Exe "$<TARGET_FILE:mvm_bench>"
+                    -ChildArgs "memory-probe;${MVM_S5_SCENARIO};--case;${mcase};--iterations;1")
+    endforeach()
+endif()
+
+# proxy resolver: final が proxy を返さないこと。
+# resolver が壊れると preview/final 一致 (M11) が構造的に破れる。
+mvm_add_test(proxy_resolve_final_uses_original
+    COMMAND mvm_bench resolve-proxy "${MVM_S5_SCENARIO}" --target final
+            --map "v1080p60_h264.mp4=_proxy/x.mp4"
+            --out "${CMAKE_CURRENT_BINARY_DIR}/resolved-final.json"
+    PROPERTIES REQUIRED_FILES "${MVM_S5_SCENARIO}")
+
+mvm_add_test(proxy_resolve_preview_uses_proxy
+    COMMAND mvm_bench resolve-proxy "${MVM_S5_SCENARIO}" --target preview
+            --map "v1080p60_h264.mp4=_proxy/x.mp4" --require-proxy
+            --out "${CMAKE_CURRENT_BINARY_DIR}/resolved-preview.json"
+    PROPERTIES REQUIRED_FILES "${MVM_S5_SCENARIO}")
+
+# negative: proxy へ 1 件も解決されない map を --require-proxy で成功扱いしない。
+mvm_add_test(proxy_resolve_requires_proxy_negative
+    COMMAND mvm_bench resolve-proxy "${MVM_S5_SCENARIO}" --target preview
+            --map "no_such_source.mp4=_proxy/x.mp4" --require-proxy
+    PROPERTIES REQUIRED_FILES "${MVM_S5_SCENARIO}" WILL_FAIL TRUE)
+
+# negative: メタデータが違う proxy を成功扱いしない。
+# 1080p 素材を 4K 素材の proxy と称して渡す。frame count も解像度も違う。
+mvm_add_test(proxy_mapping_metadata_mismatch_negative
+    COMMAND mvm_bench proxy-mapping
+            --original "${MVM_SMOKE_DIR}/v1080p60_h264.mp4"
+            --proxy "${MVM_BENCH_DIR}/v1080p60_h264.mp4"
+            --random 0
+    PROPERTIES
+        REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_h264.mp4"
+        WILL_FAIL TRUE)
+
+# --- performance ラベル ------------------------------------------------------
+# 長時間の性能試験。通常 CTest には混ぜない。
+# 実行: pwsh scripts/test.ps1 -Preset ucrt64-release -Performance
+
+mvm_add_test(preview_1080p60
+    COMMAND mvm_bench preview-bench "${MVM_S7_SCENARIO}"
+            --consumer null --real-time -8 --measure-ms 30000 --warmup-ms 5000
+    PROPERTIES
+        REQUIRED_FILES "${MVM_S7_SCENARIO}"
+        LABELS performance
+        TIMEOUT 900)
+
+mvm_add_test(seek_proxy
+    COMMAND mvm_bench seek-bench "${MVM_S7_SCENARIO}" --random 100
+    PROPERTIES
+        REQUIRED_FILES "${MVM_S7_SCENARIO}"
+        LABELS performance
+        TIMEOUT 1800)
+
+mvm_add_test(scrub_proxy
+    COMMAND mvm_bench scrub-bench "${MVM_S7_SCENARIO}"
+            --requests 300 --pattern linear --submit-interval-us 16667
+    PROPERTIES
+        REQUIRED_FILES "${MVM_S7_SCENARIO}"
+        LABELS performance
+        TIMEOUT 1800)
+
+if(EXISTS "${MVM_PROXY_DIR}/v4k60_h264_proxy_gop12.mp4")
+    mvm_add_test(proxy_generate_4k
+        COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/proxy-matrix.ps1"
+                -Candidates gop12 -Force
+        PROPERTIES LABELS performance TIMEOUT 1800)
+
+    mvm_add_test(preview_4k_proxy
+        COMMAND mvm_bench preview-bench
+                "${CMAKE_SOURCE_DIR}/bench/scenarios/s7-4k-proxy-gop12.json"
+                --consumer null --real-time -8 --measure-ms 30000 --warmup-ms 5000
+        PROPERTIES
+            REQUIRED_FILES "${CMAKE_SOURCE_DIR}/bench/scenarios/s7-4k-proxy-gop12.json"
+            LABELS performance
+            TIMEOUT 900)
+
+    mvm_add_test(proxy_frame_mapping
+        COMMAND mvm_bench proxy-mapping
+                --original "${MVM_BENCH_DIR}/v4k60_h264.mp4"
+                --proxy "${MVM_PROXY_DIR}/v4k60_h264_proxy_gop12.mp4"
+                --random 200 --seed 20260804
+        PROPERTIES LABELS performance TIMEOUT 1800)
+endif()
 
 # --- lint 自身の negative test ----------------------------------------------
 # 検査を書いただけでは効いている証明にならない。

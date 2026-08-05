@@ -14,6 +14,7 @@
 #include "media/mlt/mvm_mlt_compose.h"
 #include "scrub_coalescer.h"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
@@ -21,7 +22,9 @@
 #include <numeric>
 #include <psapi.h>
 #include <random>
+#include <set>
 #include <thread>
+#include <tlhelp32.h>
 
 namespace {
 
@@ -576,7 +579,7 @@ int cmdCompose(const bench::Args& a) {
         return kExitMismatch;
     }
 
-    MarkerRead marker = readMarker(img.rgba, img.width, img.height);
+    MarkerRead marker = readMarkerAuto(img.rgba, img.width, img.height);
 
     bool wrote = false;
     std::string pngErr;
@@ -723,7 +726,7 @@ int cmdVerifyCompose(const bench::Args& a) {
             problems.push_back("frame " + std::to_string(frame) + " (no_text): " + e3);
 
         videoChecks++;
-        MarkerRead marker = readMarker(imgFull.rgba, imgFull.width, imgFull.height);
+        MarkerRead marker = readMarkerAuto(imgFull.rgba, imgFull.width, imgFull.height);
         if (!marker.syncOk)
             problems.push_back("frame " + std::to_string(frame) + ": マーカー同期が取れません");
         else if (marker.value != frame)
@@ -979,7 +982,7 @@ int cmdSeekBench(const bench::Args& a) {
             continue;
         }
 
-        MarkerRead m = readMarker(img.rgba, img.width, img.height);
+        MarkerRead m = readMarkerAuto(img.rgba, img.width, img.height);
         smp.markerSync = m.syncOk;
         smp.markerValue = m.value;
         // 再試行はしない。retry で隠すと M4 の判定が意味を失う。
@@ -1145,6 +1148,8 @@ int cmdScrubBench(const bench::Args& a) {
     // 表示された結果 (DisplayLatest + DisplayLagging) だけを集計する。
     std::vector<double> displayedLatencies;
     std::vector<double> generationLag;
+    std::vector<double> frameDistance;
+    std::vector<double> submitAgeMs;
     long long markerMismatch = 0;
     long long displayNonMonotonic = 0;
     long long prevDisplayed = -1;
@@ -1187,7 +1192,7 @@ int cmdScrubBench(const bench::Args& a) {
             long long markerValue = -1;
             bool markerSync = false;
             if (r == 0) {
-                MarkerRead m = readMarker(img.rgba, img.width, img.height);
+                MarkerRead m = readMarkerAuto(img.rgba, img.width, img.height);
                 markerSync = m.syncOk;
                 markerValue = m.value;
                 mvm_mlt_image_free(&img);
@@ -1196,6 +1201,10 @@ int cmdScrubBench(const bench::Args& a) {
             {
                 std::lock_guard<std::mutex> lk(mu);
                 long long latestAtCompletion = coal.latestSubmittedGeneration();
+                long long latestFrameAtCompletion =
+                    (latestAtCompletion >= 0 && latestAtCompletion < (long long)frames.size())
+                        ? frames[(size_t)latestAtCompletion]
+                        : req.frame;
                 ScrubResultDecision d = coal.complete(res);
                 switch (d) {
                 case ScrubResultDecision::DisplayLatest:
@@ -1203,6 +1212,12 @@ int cmdScrubBench(const bench::Args& a) {
                     displayedLatencies.push_back(
                         msSince(submitTime[(size_t)req.generation], tDone));
                     generationLag.push_back((double)(latestAtCompletion - req.generation));
+                    frameDistance.push_back(
+                        (double)std::llabs(latestFrameAtCompletion - req.frame));
+                    if (latestAtCompletion >= 0 &&
+                        latestAtCompletion < (long long)submitTime.size())
+                        submitAgeMs.push_back(msSince(submitTime[(size_t)req.generation],
+                                                      submitTime[(size_t)latestAtCompletion]));
                     // marker は表示された結果だけを対象に集計する
                     if (!markerSync || markerValue != req.frame)
                         markerMismatch++;
@@ -1271,6 +1286,8 @@ int cmdScrubBench(const bench::Args& a) {
 
     Percentiles p = computeStats(displayedLatencies);
     Percentiles lag = computeStats(generationLag);
+    Percentiles fdist = computeStats(frameDistance);
+    Percentiles sage = computeStats(submitAgeMs);
 
     // --- counter invariant -------------------------------------------------
     std::vector<std::string> invariantErrors;
@@ -1328,6 +1345,14 @@ int cmdScrubBench(const bench::Args& a) {
        << ", \"max\": " << p.max << ", \"mean\": " << p.mean << " },\n";
     js << "  \"generation_lag\": { \"p50\": " << lag.p50 << ", \"p95\": " << lag.p95
        << ", \"max\": " << lag.max << " },\n";
+    // 表示フレームと最新要求フレームの絶対距離。generation の差だけでは
+    // 「どれだけ絵がずれて見えるか」が分からない。
+    js << "  \"frame_distance\": { \"p50\": " << fdist.p50 << ", \"p95\": " << fdist.p95
+       << ", \"max\": " << fdist.max << " },\n";
+    // 表示した要求の submit 時刻と、その時点の最新要求の submit 時刻の差。
+    // 「いま見ている絵は何ミリ秒前の操作か」に相当する。
+    js << "  \"submit_age_ms\": { \"p50\": " << sage.p50 << ", \"p95\": " << sage.p95
+       << ", \"max\": " << sage.max << " },\n";
     js << "  \"final_catchup_ms\": " << finalCatchupMs << ",\n";
     js << "  \"marker_mismatch_displayed_only\": " << markerMismatch << ",\n";
     js << "  \"display_non_monotonic\": " << displayNonMonotonic << ",\n";
@@ -2038,6 +2063,317 @@ int cmdAnalyzeWav(const bench::Args& a) {
 }
 
 // ==========================================================================
+// preview-bench (S7 / M7)
+// ==========================================================================
+//
+// compose_frame を連続で呼ぶ経路は preview ではない。あれは毎回 seek して
+// 1 枚取る経路であり、consumer の read-ahead も worker thread も通らない。
+// ここでは mlt_consumer に tractor を接続し、consumer 側が連続して
+// frame を要求する経路を測る。
+//
+// MLT 7.36.1 のソースで確認した事実は mvm_mlt_compose.h の
+// preview セクションに記録してある。要点:
+//   render thread 数 = abs(real_time)、正値はドロップあり、負値はドロップなし、
+//   real_time=0 は mlt_frame_get_image を呼ばないので計測に使えない。
+
+namespace {
+
+// プロセス単位のスレッド数。CreateToolhelp32Snapshot で自プロセスを数える。
+long long currentThreadCount() {
+    DWORD me = GetCurrentProcessId();
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE)
+        return -1;
+    THREADENTRY32 te{};
+    te.dwSize = sizeof(te);
+    long long n = 0;
+    if (Thread32First(snap, &te)) {
+        do {
+            if (te.dwSize >= FIELD_OFFSET(THREADENTRY32, th32OwnerProcessID) +
+                                 sizeof(te.th32OwnerProcessID) &&
+                te.th32OwnerProcessID == me)
+                n++;
+        } while (Thread32Next(snap, &te));
+    }
+    CloseHandle(snap);
+    return n;
+}
+
+double processCpuSeconds() {
+    FILETIME c{}, e{}, k{}, u{};
+    if (!GetProcessTimes(GetCurrentProcess(), &c, &e, &k, &u))
+        return -1.0;
+    auto toSec = [](const FILETIME& f) {
+        ULARGE_INTEGER x;
+        x.LowPart = f.dwLowDateTime;
+        x.HighPart = f.dwHighDateTime;
+        return (double)x.QuadPart / 1e7; // 100ns 単位
+    };
+    return toSec(k) + toSec(u);
+}
+
+struct MemSnap {
+    double wsMb = 0, privMb = 0;
+    unsigned long handles = 0;
+    bool valid = false;
+};
+
+MemSnap takeMemSnap() {
+    MemSnap s;
+    PROCESS_MEMORY_COUNTERS_EX pmc{};
+    pmc.cb = sizeof(pmc);
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc)))
+        return s;
+    DWORD h = 0;
+    if (!GetProcessHandleCount(GetCurrentProcess(), &h))
+        return s;
+    s.wsMb = (double)pmc.WorkingSetSize / 1048576.0;
+    s.privMb = (double)pmc.PrivateUsage / 1048576.0;
+    s.handles = h;
+    s.valid = true;
+    return s;
+}
+
+} // namespace
+
+int cmdPreviewBench(const bench::Args& a) {
+    using namespace bench;
+
+    OpenedScenario s;
+    int rc = kExitOk;
+    if (!openScenario(a, s, rc))
+        return rc;
+
+    long long length = mvm_mlt_compose_length(s.handle);
+
+    MvmPreviewRequest req{};
+    std::string service = a.get("consumer", "null");
+    req.consumer_service = service.c_str();
+    req.real_time = (int)std::strtol(a.get("real-time", "-4").c_str(), nullptr, 10);
+    req.measure_ms = (int)std::strtol(a.get("measure-ms", "60000").c_str(), nullptr, 10);
+    req.warmup_ms = (int)std::strtol(a.get("warmup-ms", "5000").c_str(), nullptr, 10);
+    req.timeout_ms = (int)std::strtol(a.get("timeout-ms", "60000").c_str(), nullptr, 10);
+    req.max_samples = std::strtoll(a.get("max-samples", "2000000").c_str(), nullptr, 10);
+
+    MemSnap m0 = takeMemSnap();
+    long long threadsFirst = currentThreadCount();
+    double cpu0 = processCpuSeconds();
+
+    // 計測中のピークを別スレッドで拾う。5ms ごとでは重すぎるので 100ms。
+    std::atomic<bool> sampling{true};
+    std::atomic<double> peakWs{m0.wsMb}, peakPriv{m0.privMb};
+    std::atomic<long long> peakThreads{threadsFirst};
+    std::thread watcher([&] {
+        while (sampling.load()) {
+            MemSnap m = takeMemSnap();
+            if (m.valid) {
+                double w = peakWs.load();
+                if (m.wsMb > w)
+                    peakWs.store(m.wsMb);
+                double p = peakPriv.load();
+                if (m.privMb > p)
+                    peakPriv.store(m.privMb);
+            }
+            long long t = currentThreadCount();
+            if (t > peakThreads.load())
+                peakThreads.store(t);
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    });
+
+    MvmPreviewResult res{};
+    char err[1024] = {0};
+    int prc = mvm_mlt_compose_preview(s.handle, &req, &res, err, sizeof(err));
+
+    sampling.store(false);
+    watcher.join();
+
+    double cpu1 = processCpuSeconds();
+    MemSnap m1 = takeMemSnap();
+    long long threadsLast = currentThreadCount();
+
+    // --- サンプル解析 ---------------------------------------------------
+    std::vector<double> intervals;
+    std::set<long long> unique;
+    long long duplicates = 0, backwards = 0, outOfRange = 0, notRendered = 0;
+    long long skipped = 0;
+    long long prevPos = -1;
+    double prevMs = -1;
+    long long minPos = -1, maxPos = -1;
+
+    for (long long i = 0; i < res.sample_count; i++) {
+        const MvmPreviewSample& sm = res.samples[i];
+        if (sm.position < 0 || sm.position >= length)
+            outOfRange++;
+        if (!sm.rendered)
+            notRendered++;
+        if (!unique.insert(sm.position).second)
+            duplicates++;
+        if (prevPos >= 0) {
+            if (sm.position < prevPos)
+                backwards++;
+            else if (sm.position > prevPos + 1)
+                skipped += sm.position - prevPos - 1;
+        }
+        if (minPos < 0 || sm.position < minPos)
+            minPos = sm.position;
+        if (sm.position > maxPos)
+            maxPos = sm.position;
+        if (prevMs >= 0)
+            intervals.push_back(sm.t_ms - prevMs);
+        prevPos = sm.position;
+        prevMs = sm.t_ms;
+    }
+
+    Percentiles iv = computeStats(intervals);
+
+    // 配信された frame のうち、実際に描画されたものだけを「更新」と数える。
+    //
+    // real_time > 0 では、MLT はドロップした frame も consumer-frame-show で
+    // 配信する。その frame は "rendered" が 0 である。これを配信数に混ぜると
+    // 「絵が更新された回数」を水増しすることになる。
+    // (mlt_consumer.c: rendered が立っていない frame を drop_count に数える)
+    long long renderedFrames = res.sample_count - notRendered;
+    double deliveredFps = res.wall_sec > 0 ? (double)res.sample_count / res.wall_sec : 0.0;
+    double fps = res.wall_sec > 0 ? (double)renderedFrames / res.wall_sec : 0.0;
+    // 起動待ちを含まない定常 fps。最初の frame から最後の frame までで割る。
+    // effective_fps は起動待ちを含む値。判定には effective_fps を使い、
+    // steady_state_fps は「起動待ちがどれだけ効いているか」を見るために出す。
+    double steadyFps = 0.0;
+    if (res.sample_count >= 2) {
+        double span = res.samples[res.sample_count - 1].t_ms - res.samples[0].t_ms;
+        if (span > 0)
+            steadyFps = (double)(res.sample_count - 1) / (span / 1000.0);
+    }
+    // 期待フレーム数は「wall 時間 x profile fps」。素材の尺ではない。
+    double profileFps = (double)s.scenario.timeline.fps_num / (double)s.scenario.timeline.fps_den;
+    double expectedFrames = profileFps * res.wall_sec;
+    // drop 率は consumer の drop_count を基準にする。
+    // delivered だけから推測しない。
+    double dropRate = (renderedFrames + res.drop_count) > 0
+                          ? (double)res.drop_count / (double)(renderedFrames + res.drop_count)
+                          : 0.0;
+    double cpuSec = (cpu1 >= 0 && cpu0 >= 0) ? (cpu1 - cpu0) : -1.0;
+    double cpuUtil = (cpuSec >= 0 && res.wall_sec > 0) ? cpuSec / res.wall_sec : -1.0;
+
+    std::vector<std::string> problems;
+    if (prc != 0)
+        problems.push_back(err);
+    if (res.sample_overflow > 0)
+        problems.push_back("サンプル配列が溢れました (" + std::to_string(res.sample_overflow) +
+                           " 件)。--max-samples を増やしてください");
+    if (outOfRange > 0)
+        problems.push_back("範囲外の frame position が " + std::to_string(outOfRange) + " 件");
+    // real_time < 0 はドロップしない契約なので、rendered=0 が出たら異常。
+    // real_time > 0 では rendered=0 がドロップそのものなので異常ではない。
+    if (notRendered > 0 && res.effective_real_time < 0)
+        problems.push_back("real_time<0 (ドロップなし) なのに rendered=0 の frame が " +
+                           std::to_string(notRendered) + " 件あります");
+    if (notRendered > 0 && res.effective_real_time > 0 && notRendered != res.drop_count)
+        problems.push_back("rendered=0 の frame 数 (" + std::to_string(notRendered) +
+                           ") と consumer の drop_count (" + std::to_string(res.drop_count) +
+                           ") が一致しません");
+    if (renderedFrames <= 0)
+        problems.push_back("描画された frame が 1 枚もありません");
+    if (!m0.valid || !m1.valid)
+        problems.push_back("メモリ採取に失敗しました。この測定は根拠に使えません");
+    if (res.stopped_by_timeout)
+        problems.push_back("consumer が timeout で停止しました");
+
+    std::ostringstream js;
+    js << "{\n";
+    js << "  \"scenario\": \"" << jsonEscape(s.scenario.name) << "\",\n";
+    js << "  \"configured_profile\": { \"width\": " << s.scenario.timeline.width
+       << ", \"height\": " << s.scenario.timeline.height
+       << ", \"fps_num\": " << s.scenario.timeline.fps_num
+       << ", \"fps_den\": " << s.scenario.timeline.fps_den << " },\n";
+    js << "  \"consumer_service\": \"" << jsonEscape(service) << "\",\n";
+    js << "  \"requested_real_time\": " << req.real_time << ",\n";
+    js << "  \"effective_real_time\": " << res.effective_real_time << ",\n";
+    js << "  \"render_threads_implied\": " << std::abs(res.effective_real_time) << ",\n";
+    js << "  \"drops_enabled\": " << (res.effective_real_time > 0 ? "true" : "false") << ",\n";
+    js << "  \"timeline_length_frames\": " << length << ",\n";
+    js << "  \"media_duration_sec\": " << (profileFps > 0 ? (double)length / profileFps : 0.0)
+       << ",\n";
+    js << "  \"warmup_ms\": " << req.warmup_ms << ",\n";
+    js << "  \"measure_ms\": " << req.measure_ms << ",\n";
+    js << "  \"measured_wall_sec\": " << res.wall_sec << ",\n";
+    js << "  \"producer_ended\": " << (res.producer_ended ? "true" : "false") << ",\n";
+    js << "  \"expected_frames\": " << expectedFrames << ",\n";
+    js << "  \"delivered_frames\": " << res.sample_count << ",\n";
+    js << "  \"rendered_frames\": " << renderedFrames << ",\n";
+    js << "  \"delivered_fps\": " << deliveredFps << ",\n";
+    js << "  \"unique_positions\": " << (long long)unique.size() << ",\n";
+    js << "  \"duplicate_positions\": " << duplicates << ",\n";
+    js << "  \"skipped_positions\": " << skipped << ",\n";
+    js << "  \"backward_positions\": " << backwards << ",\n";
+    js << "  \"out_of_range_positions\": " << outOfRange << ",\n";
+    js << "  \"not_rendered_frames\": " << notRendered << ",\n";
+    js << "  \"position_min\": " << minPos << ",\n";
+    js << "  \"position_max\": " << maxPos << ",\n";
+    js << "  \"dropped_frames\": " << res.drop_count << ",\n";
+    js << "  \"effective_fps\": " << fps << ",\n";
+    js << "  \"steady_state_fps\": " << steadyFps << ",\n";
+    js << "  \"drop_rate\": " << dropRate << ",\n";
+    js << "  \"startup_latency_ms\": " << res.start_latency_ms << ",\n";
+    js << "  \"inter_frame_interval_ms\": { \"p50\": " << iv.p50 << ", \"p95\": " << iv.p95
+       << ", \"max\": " << iv.max << ", \"mean\": " << iv.mean << " },\n";
+    js << "  \"cpu_process_sec\": " << cpuSec << ",\n";
+    js << "  \"cpu_utilization\": " << cpuUtil << ",\n";
+    js << "  \"threads\": { \"first\": " << threadsFirst << ", \"peak\": " << peakThreads.load()
+       << ", \"last\": " << threadsLast << " },\n";
+    js << "  \"working_set_mb\": { \"first\": " << m0.wsMb << ", \"peak\": " << peakWs.load()
+       << ", \"last\": " << m1.wsMb << " },\n";
+    js << "  \"private_usage_mb\": { \"first\": " << m0.privMb << ", \"peak\": " << peakPriv.load()
+       << ", \"last\": " << m1.privMb << " },\n";
+    js << "  \"handles\": { \"first\": " << m0.handles << ", \"last\": " << m1.handles << " },\n";
+    js << "  \"actual_properties\": \"" << jsonEscape(res.actual_properties) << "\",\n";
+    js << "  \"problems\": [";
+    for (size_t i = 0; i < problems.size(); i++)
+        js << (i ? ",\n    " : "\n    ") << "\"" << jsonEscape(problems[i]) << "\"";
+    js << (problems.empty() ? "]\n}\n" : "\n  ]\n}\n");
+
+    std::string jsonOut = a.get("json");
+    if (!jsonOut.empty() && jsonOut != "1") {
+        FILE* f = _wfopen(utf8Path(jsonOut).c_str(), L"wb");
+        if (f) {
+            std::string t = js.str();
+            std::fwrite(t.data(), 1, t.size(), f);
+            std::fclose(f);
+        }
+    }
+    std::fputs(js.str().c_str(), stdout);
+
+    mvm_mlt_preview_free(&res);
+    closeScenario(s);
+
+    if (!problems.empty()) {
+        for (const auto& p : problems)
+            logMsg("  " + p);
+        return kExitMismatch;
+    }
+
+    if (a.has("check")) {
+        double minFps = std::strtod(a.get("min-fps", "50").c_str(), nullptr);
+        double maxDrop = std::strtod(a.get("max-drop-rate", "0.05").c_str(), nullptr);
+        bool ok = true;
+        if (fps < minFps) {
+            logMsg("M7 不合格: effective_fps " + std::to_string(fps) + " < " +
+                   std::to_string(minFps));
+            ok = false;
+        }
+        if (dropRate > maxDrop) {
+            logMsg("M7 不合格: drop_rate " + std::to_string(dropRate) + " > " +
+                   std::to_string(maxDrop));
+            ok = false;
+        }
+        if (!ok)
+            return kExitMismatch;
+    }
+    return kExitOk;
+}
+
+// ==========================================================================
 // 反復テスト (参照リーク / handle リークの検出)
 // ==========================================================================
 //
@@ -2111,7 +2447,7 @@ int cmdSoak(const bench::Args& a) {
             mvm_mlt_compose_close(h);
             break;
         }
-        MarkerRead m = readMarker(img.rgba, img.width, img.height);
+        MarkerRead m = readMarkerAuto(img.rgba, img.width, img.height);
         markerValue = m.value;
         mvm_mlt_image_free(&img);
 
@@ -2402,6 +2738,11 @@ int cmdMemoryProbe(const bench::Args& a) {
         iterations = 1000;
     else if (caseName == "G")
         iterations = 50;
+    else if (caseName == "U")
+        // S7 診断: unique frame を順に取る。ケース F の frame = iteration % 300 とは違い、
+        // 同じフレームを取り直さない。「上限で止まった」のか
+        // 「新しいフレームが来なくなったから止まった」のかを区別するため。
+        iterations = 3600;
     else {
         logMsg("未知のケース: " + caseName);
         return kExitUsage;
@@ -2444,7 +2785,7 @@ int cmdMemoryProbe(const bench::Args& a) {
     }
 
     MvmComposeHandle* sharedHandle = nullptr;
-    if (caseName == "F") {
+    if (caseName == "F" || caseName == "U") {
         MvmComposeInfo info{};
         char cerr[1024] = {0};
         sharedHandle = mvm_mlt_compose_open(&sc.timeline, &info, cerr, sizeof(cerr));
@@ -2457,6 +2798,11 @@ int cmdMemoryProbe(const bench::Args& a) {
     }
 
     long long firstMarker = -1, lastMarker = -1;
+    // ケース U 用。実際に何種類のフレームへアクセスしたかを数える。
+    // 「unique frame を N 件触った」を推測ではなく実測で言うため。
+    std::set<long long> uniqueFrames;
+    long long markerBad = 0;
+    const long long timelineLength = std::max(1LL, mvm_mlt_compose_length(sharedHandle));
 
     for (int it = 0; it < iterations; it++) {
         if (runtimePerIteration) {
@@ -2466,14 +2812,32 @@ int cmdMemoryProbe(const bench::Args& a) {
             }
         }
 
-        if (caseName == "F") {
-            // グラフは使い回し、フレームだけ変える
-            long long frame = (long long)(it % 300);
+        if (caseName == "F" || caseName == "U") {
+            // グラフは使い回し、フレームだけ変える。
+            //
+            // F: frame = iteration % 300。**同じ 300 フレームを取り直す。**
+            //    「増加が止まった」ことは「固有フレーム 300 件分を保持しきった」
+            //    までしか意味しない。
+            // U: frame = iteration。固有フレームを順に取る (S7 診断)。
+            //    こちらは固有フレーム数に比例して増え続けるかどうかを見られる。
+            long long frame =
+                (caseName == "U") ? (long long)it % timelineLength : (long long)(it % 300);
             MvmMltImage img{};
             char err[512] = {0};
             if (mvm_mlt_compose_frame(sharedHandle, frame, &img, err, sizeof(err)) != 0) {
                 problems.push_back("iteration " + std::to_string(it) + ": frame 失敗");
                 break;
+            }
+            if (caseName == "U") {
+                // 取ったフレームが要求どおりか確認する。
+                // 中身が違うのに「unique frame を取った」と記録しない。
+                MarkerRead m = readMarkerAuto(img.rgba, img.width, img.height);
+                if (firstMarker < 0)
+                    firstMarker = m.value;
+                lastMarker = m.value;
+                if (!m.syncOk || m.value != frame)
+                    markerBad++;
+                uniqueFrames.insert(frame);
             }
             mvm_mlt_image_free(&img);
             samples.push_back(takeMemSample(it, "after_frame"));
@@ -2504,7 +2868,7 @@ int cmdMemoryProbe(const bench::Args& a) {
                     mvm_mlt_compose_close(h);
                     break;
                 }
-                MarkerRead m = readMarker(img.rgba, img.width, img.height);
+                MarkerRead m = readMarkerAuto(img.rgba, img.width, img.height);
                 if (firstMarker < 0)
                     firstMarker = m.value;
                 lastMarker = m.value;
@@ -2543,7 +2907,7 @@ int cmdMemoryProbe(const bench::Args& a) {
         }
     }
 
-    if (caseName == "F" && sharedHandle) {
+    if ((caseName == "F" || caseName == "U") && sharedHandle) {
         mvm_mlt_compose_close(sharedHandle);
         samples.push_back(takeMemSample(-1, "after_close"));
     }
@@ -2576,10 +2940,10 @@ int cmdMemoryProbe(const bench::Args& a) {
     }
 
     // 反復ごとの代表 phase (after_close / after_frame) だけで形を見る
-    const char* repPhase = (caseName == "F")   ? "after_frame"
-                           : (caseName == "A") ? "after_runtime_shutdown"
-                           : (caseName == "G") ? "after_runtime_shutdown"
-                                               : "after_close";
+    const char* repPhase = (caseName == "F" || caseName == "U") ? "after_frame"
+                           : (caseName == "A")                  ? "after_runtime_shutdown"
+                           : (caseName == "G")                  ? "after_runtime_shutdown"
+                                                                : "after_close";
     std::vector<double> ws, priv;
     for (const auto& m : samples) {
         // 無効サンプルは集計から外す。0 を実測値として混ぜない。
@@ -2667,6 +3031,11 @@ int cmdMemoryProbe(const bench::Args& a) {
         js << "  \"after_runtime_shutdown_idle_mb\": { \"ws\": " << mb(idle->workingSet)
            << ", \"priv\": " << mb(idle->privateUsage) << " },\n";
     js << "  \"marker_first\": " << firstMarker << ",\n  \"marker_last\": " << lastMarker << ",\n";
+    // 実際にアクセスした固有フレーム数。ケース F と U を取り違えないため、
+    // どのケースでも出す。
+    js << "  \"unique_frames_accessed\": " << (long long)uniqueFrames.size() << ",\n";
+    js << "  \"timeline_length\": " << timelineLength << ",\n";
+    js << "  \"marker_mismatch\": " << markerBad << ",\n";
 
     // 採取に失敗したサンプルが 1 件でもあれば、この測定を根拠に使ってはいけない。
     // 欠測を黙って無視した平均値は、無いより悪い。
@@ -2676,6 +3045,9 @@ int cmdMemoryProbe(const bench::Args& a) {
     if (ws.empty())
         problems.push_back("代表 phase (" + std::string(repPhase) +
                            ") の有効サンプルが 0 件です。");
+    if (markerBad > 0)
+        problems.push_back("要求と違うフレームが " + std::to_string(markerBad) +
+                           " 件返りました。unique frame を触ったと記録できません。");
 
     js << "  \"problems\": [";
     for (size_t i = 0; i < problems.size(); i++)

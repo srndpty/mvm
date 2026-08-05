@@ -2,7 +2,7 @@
 
 Windows 向けノンリニア動画編集ソフト。YouTube 向けの技術・数学解説動画を主対象とする。
 
-**現在 Phase 0（技術スパイク）の S0 / S1 / R0 / S2 / S4 まで実装済み。
+**現在 Phase 0（技術スパイク）の S0〜S7 まで実装済み。
 製品コードはまだ存在しない。**
 
 Phase 0 の目的は、MLT 7 を mvm の編集・プレビュー・書き出しエンジンとして
@@ -13,6 +13,12 @@ Phase 0 の目的は、MLT 7 を mvm の編集・プレビュー・書き出し�
 | [docs/phase0-plan.md](docs/phase0-plan.md) | 計画全体と exit criteria |
 | [docs/phase0-findings.md](docs/phase0-findings.md) | 実測結果。事実 / 推測 / 未検証を区別して記録 |
 | [docs/research/mlt-notes.md](docs/research/mlt-notes.md) | MLT の実装メモ（実際に動かして確かめた範囲） |
+| [docs/research/preview-performance-notes.md](docs/research/preview-performance-notes.md) | preview（consumer 経路）の実測と `real_time` の意味 |
+| [docs/research/proxy-notes.md](docs/research/proxy-notes.md) | proxy の生成・path resolver・frame mapping |
+| [docs/research/seek-scrub-notes.md](docs/research/seek-scrub-notes.md) | seek / scrub の実測と表示契約 |
+| [docs/research/composition-notes.md](docs/research/composition-notes.md) | 5 トラック合成の実測 |
+| [docs/research/memory-notes.md](docs/research/memory-notes.md) | メモリ増加の切り分け（診断であり合否ではない） |
+| [docs/research/mlt-ownership.md](docs/research/mlt-ownership.md) | MLT の参照所有権 |
 | [docs/research/test-media-format.md](docs/research/test-media-format.md) | 検証素材とフレーム固有マーカーの仕様 |
 
 ## ツールチェーン

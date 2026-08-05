@@ -52,14 +52,55 @@ $anyFailed = $false
 $summary = @()
 $lastGroupExit = 0
 
+# fail-closed。「測れなかった」を「通った」と報告しない。
+#
+#   - ctest -N 自体が失敗したら失敗
+#   - Total Tests 行が取れなければ失敗 (件数不明を成功にしない)
+#   - 対象が 0 件なら失敗 (ラベル指定の誤りを緑にしない)
+#   - 実行数と件数が食い違ったら失敗
+#
+# $Required は「この種別は必ず 1 件以上あるはず」を表す。
 function Invoke-CTestGroup {
-    param([string]$Preset, [string]$Kind, [string[]]$CTestArgs)
+    param([string]$Preset, [string]$Kind, [string[]]$CTestArgs, [switch]$Required)
 
-    # 対象件数は -N (dry run) で先に数える。0 件を「通った」と report しない。
-    $listed = & $script:CTest -N @CTestArgs
-    $total = 0
+    # 対象件数は -N (dry run) で先に数える。
+    $listed = & $script:CTest -N @CTestArgs 2>&1
+    $listExit = $LASTEXITCODE
+    $total = -1
     foreach ($line in $listed) {
-        if ($line -match '^Total Tests:\s*(\d+)') { $total = [int]$Matches[1] }
+        if ("$line" -match '^Total Tests:\s*(\d+)') { $total = [int]$Matches[1] }
+    }
+
+    $fatal = @()
+    if ($listExit -ne 0) {
+        $fatal += "ctest -N が exit $listExit で失敗しました"
+    }
+    if ($total -lt 0) {
+        $fatal += "ctest -N の出力から 'Total Tests' 行を取得できませんでした"
+    }
+    if ($fatal.Count -gt 0) {
+        foreach ($m in $fatal) { Write-Host "${Kind}: $m" -ForegroundColor Red }
+        $script:summary += [pscustomobject]@{
+            Preset = $Preset; Kind = $Kind; Total = $total; Ran = 0
+            Failed = -1; Passed = -1; Exit = 1; Note = ($fatal -join ' / ')
+        }
+        $script:lastGroupExit = 1
+        return
+    }
+
+    if ($total -eq 0) {
+        $msg = if ($Required) {
+            '対象テストが 0 件です。この種別は 1 件以上あるはずなので失敗にします。'
+        } else {
+            '対象テストが 0 件です。ラベル指定を確認してください。'
+        }
+        Write-Host "${Kind}: $msg" -ForegroundColor Red
+        $script:summary += [pscustomobject]@{
+            Preset = $Preset; Kind = $Kind; Total = 0; Ran = 0
+            Failed = 0; Passed = 0; Exit = 1; Note = '0 件'
+        }
+        $script:lastGroupExit = 1
+        return
     }
 
     $failedLog = Join-Path (Get-Location) 'Testing\Temporary\LastTestsFailed.log'
@@ -69,16 +110,37 @@ function Invoke-CTestGroup {
     # 返すと、呼び出し側は「出力行の配列」と 0 を比較することになり、
     # 全テストが通っていても失敗と判定される。実際に一度そうなった。
     # 終了コードは script スコープの変数で受け渡す。
-    & $script:CTest --output-on-failure @CTestArgs
+    # Tee-Object -Variable は 2 回目以降の呼び出しで空になることがあった。
+    # 一旦すべて受け取ってから自分で表示する。
+    $outLines = & $script:CTest --output-on-failure @CTestArgs 2>&1
     $code = $LASTEXITCODE
+    $outLines | ForEach-Object { Write-Host "$_" }
+
+    # 実際に何件走ったかを ctest の要約行から取る。
+    # 失敗が 0 件のときは "100% tests passed out of 88" となり
+    # "tests failed" を含まない。両方の書式に当たる必要がある。
+    #   失敗あり: "95% tests passed, 4 tests failed out of 88"
+    #   失敗なし: "100% tests passed out of 88"
+    $ran = -1
+    foreach ($line in $outLines) {
+        if ("$line" -match 'tests passed.*out of\s+(\d+)') { $ran = [int]$Matches[1] }
+    }
 
     $failed = @(Get-Content $failedLog -ErrorAction SilentlyContinue).Count
-    $script:summary += [pscustomobject]@{
-        Preset = $Preset; Kind = $Kind; Total = $total
-        Failed = $failed; Passed = $total - $failed; Exit = $code
+    $note = ''
+    if ($ran -lt 0) {
+        $note = 'ctest の要約行を取得できませんでした'
+        Write-Host "${Kind}: $note" -ForegroundColor Red
+        $code = 1
+    } elseif ($ran -ne $total) {
+        $note = "件数 $total に対し実行 $ran 件。数が合いません"
+        Write-Host "${Kind}: $note" -ForegroundColor Red
+        $code = 1
     }
-    if ($total -eq 0) {
-        Write-Host "${Kind}: 対象テストが 0 件です。ラベル指定を確認してください。" -ForegroundColor Yellow
+
+    $script:summary += [pscustomobject]@{
+        Preset = $Preset; Kind = $Kind; Total = $total; Ran = $ran
+        Failed = $failed; Passed = $ran - $failed; Exit = $code; Note = $note
     }
     $script:lastGroupExit = $code
 }
@@ -94,7 +156,8 @@ foreach ($p in $presets) {
     Push-Location $buildDir
     try {
         # 通常テスト: performance と stability の両方を除外する
-        Invoke-CTestGroup -Preset $p -Kind '通常' -CTestArgs @('-LE', 'performance|stability')
+        Invoke-CTestGroup -Preset $p -Kind '通常' -Required `
+            -CTestArgs @('-LE', 'performance|stability')
         if ($lastGroupExit -ne 0) { $anyFailed = $true }
 
         if ($Performance) {
@@ -102,7 +165,8 @@ foreach ($p in $presets) {
                 Write-Host "性能計測は release でのみ実行します ($p はスキップ)" -ForegroundColor Yellow
             } else {
                 Write-Host "`n--- 性能計測 ---" -ForegroundColor Cyan
-                Invoke-CTestGroup -Preset $p -Kind '性能' -CTestArgs @('-L', 'performance')
+                # -Performance を指定したのに 0 件なら失敗にする。
+                Invoke-CTestGroup -Preset $p -Kind '性能' -Required -CTestArgs @('-L', 'performance')
                 if ($lastGroupExit -ne 0) { $anyFailed = $true }
             }
         }
@@ -110,8 +174,13 @@ foreach ($p in $presets) {
         if ($Stability) {
             Write-Host "`n--- 安定性・診断 ---" -ForegroundColor Cyan
             # 診断であって合否ではない。失敗しても全体の判定には含めない。
-            Invoke-CTestGroup -Preset $p -Kind '安定性(診断)' -CTestArgs @('-L', 'stability')
-            if ($lastGroupExit -ne 0) {
+            # -Stability を指定したのに 0 件なら失敗にする。
+            # テスト自体の失敗は診断扱いだが、「対象が無い」は別の問題である。
+            Invoke-CTestGroup -Preset $p -Kind '安定性(診断)' -Required -CTestArgs @('-L', 'stability')
+            $row = $summary[-1]
+            if ($row.Total -eq 0 -or $row.Ran -lt 0) {
+                $anyFailed = $true
+            } elseif ($lastGroupExit -ne 0) {
                 Write-Host "安定性テストに失敗がありますが、診断扱いなので全体判定には含めません。" `
                     -ForegroundColor Yellow
             }
@@ -122,7 +191,7 @@ foreach ($p in $presets) {
 }
 
 Write-Host "`n=== テスト種別ごとの結果 ===" -ForegroundColor Cyan
-$summary | Format-Table Preset, Kind, Total, Passed, Failed, Exit -AutoSize
+$summary | Format-Table Preset, Kind, Total, Ran, Passed, Failed, Exit, Note -AutoSize
 
 if ($anyFailed) {
     Write-Host "`nテストに失敗があります。" -ForegroundColor Red

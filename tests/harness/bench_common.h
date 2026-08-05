@@ -652,19 +652,29 @@ struct MarkerRead {
     int lumaMin = 255, lumaMax = 0;
 };
 
-inline MarkerRead readMarker(const unsigned char* rgba, int w, int h) {
+// セル幅を明示して読む版。
+//
+// マーカーは解像度に関係なく **64px セルの固定ピクセル**で焼き込まれている
+// (docs/research/test-media-format.md)。したがって縮小した proxy では
+// セル幅も縮む。960x540 の proxy は 3840x2160 の 1/4 なのでセル幅 16px になる。
+//
+// 既定の 64px 決め打ちで proxy を読むと `w < 1216` で必ず読めず、
+// 「proxy のマーカーが壊れている」と誤って結論することになる。
+inline MarkerRead readMarkerWithCellSize(const unsigned char* rgba, int w, int h, int cellSize) {
     MarkerRead r;
-    if (!rgba || w < kCellSize * kCellCount || h < kCellSize)
+    if (!rgba || cellSize < 4 || w < cellSize * kCellCount || h < cellSize)
         return r;
 
+    // 標本はセル幅に比例させる。セル中心の半分の幅を平均する。
+    const int radius = std::max(2, cellSize / 4);
+
     auto cellLuma = [&](int cell) -> int {
-        // セル中心の 8x8 を平均する。圧縮ノイズに対する余裕を持たせる。
-        const int cx = cell * kCellSize + kCellSize / 2;
-        const int cy = kCellSize / 2;
+        const int cx = cell * cellSize + cellSize / 2;
+        const int cy = cellSize / 2;
         long sum = 0;
         int n = 0;
-        for (int y = cy - 4; y < cy + 4; y++) {
-            for (int x = cx - 4; x < cx + 4; x++) {
+        for (int y = cy - radius; y < cy + radius; y++) {
+            for (int x = cx - radius; x < cx + radius; x++) {
                 const size_t offset =
                     ((size_t)(unsigned)y * (size_t)(unsigned)w + (size_t)(unsigned)x) * 4u;
                 const unsigned char* px = rgba + offset;
@@ -688,6 +698,28 @@ inline MarkerRead readMarker(const unsigned char* rgba, int w, int h) {
     const int threshold = 128;
     bool sync = (luma[0] > threshold) && (luma[1] < threshold) &&
                 (luma[(size_t)kCellCount - 1] > threshold);
+
+    // さらに「19 セルすべてが白か黒に振り切れていること」を要求する。
+    //
+    // なぜ必要か:
+    //   セル幅を間違えて読むと、マーカー帯の外側 (映像本体) を
+    //   セルとして読んでしまう。同期 3 セルだけの検査では、
+    //   たまたま明暗が合致したときに **偽の同期**が成立する。
+    //   実際に 4K を 1080p profile へ入れた合成フレームで、
+    //   64px 決め打ちの読み取りが偽同期し、frame 0 を 64512 と読んだ。
+    //
+    //   マーカーは純白と純黒で焼かれているので、正しいセル幅なら
+    //   すべてのセルが振り切れる。映像本体は中間調が混ざるので落ちる。
+    const int kWhite = 200;
+    const int kBlack = 55;
+    bool saturated = true;
+    for (int c = 0; c < kCellCount; c++) {
+        if (luma[(size_t)c] < kWhite && luma[(size_t)c] > kBlack) {
+            saturated = false;
+            break;
+        }
+    }
+    sync = sync && saturated;
     r.syncOk = sync;
     if (!sync)
         return r;
@@ -699,6 +731,47 @@ inline MarkerRead readMarker(const unsigned char* rgba, int w, int h) {
     }
     r.value = value;
     return r;
+}
+
+// 元素材と同じ 64px セルで読む。等倍の素材はこちらを使う。
+inline MarkerRead readMarker(const unsigned char* rgba, int w, int h) {
+    return readMarkerWithCellSize(rgba, w, h, kCellSize);
+}
+
+// 縮小された素材を読む。元の幅からセル幅を割り出す。
+// 例: 3840 -> 960 なら 64 * 960 / 3840 = 16px セル。
+inline MarkerRead readMarkerScaled(const unsigned char* rgba, int w, int h, int originalWidth) {
+    if (originalWidth <= 0)
+        return MarkerRead{};
+    int cell = (int)((long long)kCellSize * w / originalWidth);
+    return readMarkerWithCellSize(rgba, w, h, cell);
+}
+
+// セル幅を自動判定して読む。
+//
+// なぜ必要か:
+//   合成後のフレームでは、素材の解像度と profile の解像度が違うと
+//   マーカーも一緒に拡縮される。3840x2160 の素材を 1920x1080 の profile へ
+//   入れると 0.5 倍になり、64px セルは 32px になる。
+//   960x540 の proxy を 1920x1080 へ入れると 2 倍になり、やはり 32px である。
+//
+//   64px 決め打ちで読むと、この場合 **全フレームが不一致**になる。
+//   実際に 4K scenario の seek 計測で 314/314 が不一致になり、
+//   「seek 精度が壊れた」ように見えた。原因は計測側だった。
+//
+// 同期セル (白・黒・…・白) が一致した候補だけを採用するので、
+// 当てずっぽうで値を読むことにはならない。どれも一致しなければ syncOk=false。
+inline MarkerRead readMarkerAuto(const unsigned char* rgba, int w, int h) {
+    // 大きい方から試す。小さいセル幅は誤検出しやすいので後回しにする。
+    static const int kCandidates[] = {64, 48, 32, 24, 16, 12, 8};
+    for (int cell : kCandidates) {
+        if (w < cell * kCellCount || h < cell)
+            continue;
+        MarkerRead r = readMarkerWithCellSize(rgba, w, h, cell);
+        if (r.syncOk)
+            return r;
+    }
+    return MarkerRead{};
 }
 
 // --------------------------------------------------------------------------

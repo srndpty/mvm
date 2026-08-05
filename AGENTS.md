@@ -114,10 +114,19 @@ pwsh scripts/coverage.ps1            # カバレッジ
 計測用の matrix スクリプト（いずれも生 JSON から集計まで行う）:
 
 ```powershell
-pwsh scripts/scrub-matrix.ps1        # M6 scrub (8 条件 x 3 回)
-pwsh scripts/memory-matrix.ps1       # メモリ切り分け (ケース A-G)
-pwsh scripts/audio-graph-matrix.ps1  # 音声グラフの最小構成切り分け
+pwsh scripts/preview-matrix.ps1        # M7 preview (real_time 構成別)
+pwsh scripts/proxy-matrix.ps1          # proxy 生成 (M8 の生成速度)
+pwsh scripts/make-proxy-scenarios.ps1  # original / proxy の scenario 生成
+pwsh scripts/scrub-matrix.ps1          # M6 scrub (正式 8 条件 x 3 回)
+pwsh scripts/seek-matrix.ps1           # M5 seek (経路別)
+pwsh scripts/memory-matrix.ps1         # メモリ切り分け (ケース A-G)
+pwsh scripts/memory-unique-frames.ps1  # unique frame メモリ診断 (ケース U)
+pwsh scripts/audio-graph-matrix.ps1    # 音声グラフの最小構成切り分け
 ```
+
+`scripts/expect-exit.ps1` は「意図した終了コードで失敗したこと」を検査する。
+CTest の `WILL_FAIL` は 0 以外なら合格なので、
+使い方エラーを期待している negative test がクラッシュでも通ってしまう。
 
 **計測値を文書へ手で転記しない。** スクリプトが生 JSON から再計算し、
 集計の自己整合（例: `updates/sec == displayed/elapsed`）を機械で検査する。
@@ -189,3 +198,18 @@ Python worker、エフェクト UI、キーフレーム編集、レンダーキ�
 インストーラ、コード署名、`IMediaEngine` の全体像。
 
 詳細は `docs/phase0-plan.md` の「Phase 0 では実装しない項目」を参照。
+
+## 計測で踏んだ罠（同じ失敗を繰り返さない）
+
+いずれも**「緑に見える」方向**の誤りだった。計測を書くときは必ず確認する。
+
+| 罠 | 症状 | 対処 |
+| --- | --- | --- |
+| 配信数を fps と呼ぶ | 60fps 出ているように見えて実際は 13.6fps | `rendered=1` の frame だけ数える。`delivered` と `effective` を分けて出す |
+| `real_time=0` で計測 | 何も描画せずに高い fps が出る | 拒否する（MLT は `mlt_frame_get_image` を呼ばない） |
+| `Sleep` 回数で経過時間 | 「6 秒計測」が 12.3 秒になる | `QueryPerformanceCounter` の実測値を使う |
+| マーカーのセル幅を決め打ち | 4K→1080p 合成で 314/314 不一致 | `readMarkerAuto`。同期は「19 セル全部が振り切れている」まで要求する |
+| proxy の音声を再エンコード | 尺が 1 frame 伸びて MLT からは 3601 frame に見える | `-c:a copy`。duration 差 1 frame **以上**で破棄 |
+| 中央値の max で判定 | 外れ値が隠れる | 全 run を通した**観測 max** も出して、そちらで判定する |
+| `WILL_FAIL` で negative test | クラッシュでも合格になる | `scripts/expect-exit.ps1` で終了コードを厳密に照合 |
+| 対象 0 件のテスト群 | 「全部通った」と報告される | `-N` で件数を数え、0 件なら失敗にする |
