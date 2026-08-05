@@ -110,14 +110,34 @@ bool writeFileUtf8(const std::string& path, const std::string& data) {
 // 解決した新しい scenario を書き出す。
 //
 // --map は「素材 id = proxy ファイル名」の行を並べたテキスト。
-// 未登録の素材は解決しない。黙って元のパスを使う fallback は入れない。
+//
+// --- required / optional の契約 (S7.1 で明確化) ---------------------------
+//
+// 「全 source を proxy 必須」にはできない。WAV や音声専用 source まで
+// proxy 必須になってしまうためである。そこで 2 種類に分ける。
+//
+//   required (--require-proxy-ids で明示)
+//     - scenario にその id が実在すること
+//     - --map に登録されていること
+//     - preview では **全出現が** proxy へ置換されること
+//     - final では **1 件も** proxy にならないこと
+//     いずれか 1 つでも破れたら exit 4 で fail-closed。
+//
+//   optional (required に挙げていない source)
+//     - 未登録なら original のまま。これは正常
+//     - ただし id と件数を必ず報告する。黙って通さない
+//
+// 旧 --require-proxy (「1 件以上置換されれば成功」) は契約として弱すぎる。
+// V1 だけ proxy 化されて V2 が original のままでも通ってしまい、
+// 実際に S7 の M8 はその状態で「proxy 評価」として報告されていた。
+// diagnostic 専用へ降格し、判定には使わない。
 
 int cmdResolveProxy(const bench::Args& a) {
     using namespace bench;
 
     if (a.positional.empty()) {
         logMsg("使い方: mvm_bench resolve-proxy <scenario.json> --target preview|final "
-               "--map <id=proxyPath;...> [--out <path>] [--media-root-out <rel>]");
+               "--map <id=proxyPath;...> [--require-proxy-ids <id;id>] [--out <path>]");
         return kExitUsage;
     }
 
@@ -163,6 +183,22 @@ int cmdResolveProxy(const bench::Args& a) {
         start = sep + 1;
     }
 
+    // --require-proxy-ids の解析。';' 区切り。
+    std::vector<std::string> requiredIds;
+    {
+        std::string s = a.get("require-proxy-ids");
+        size_t p = 0;
+        while (p < s.size()) {
+            size_t sep = s.find(';', p);
+            std::string item = s.substr(p, sep == std::string::npos ? std::string::npos : sep - p);
+            if (!item.empty())
+                requiredIds.push_back(item);
+            if (sep == std::string::npos)
+                break;
+            p = sep + 1;
+        }
+    }
+
     ResolveTarget rt = (target == "preview") ? ResolveTarget::Preview : ResolveTarget::Final;
 
     std::vector<SourceRef> refs = findSourceRefs(json);
@@ -175,18 +211,35 @@ int cmdResolveProxy(const bench::Args& a) {
     std::string out = json;
     long long replaced = 0, keptOriginal = 0, unknown = 0;
     std::vector<std::string> lines;
+    std::set<std::string> unregisteredIds;
+    // required id ごとに「scenario に何回現れたか」「何回 proxy へ置換したか」。
+    // 同じ素材が複数 clip にある場合、全出現を置換できたかを見る。
+    std::map<std::string, long long> occurrences, proxied;
+    for (const auto& id : requiredIds) {
+        occurrences[id] = 0;
+        proxied[id] = 0;
+    }
+
     for (auto it = refs.rbegin(); it != refs.rend(); ++it) {
+        auto occ = occurrences.find(it->value);
+        if (occ != occurrences.end())
+            occ->second++;
+
         ResolveResult r = resolver.resolve(it->value, rt);
         if (!r.ok()) {
             // 未登録は「そのまま」でよい。proxy 対象でない素材があるのは正常。
-            // ただし件数を必ず報告する。黙って通さない。
+            // ただし id と件数を必ず報告する。黙って通さない。
             unknown++;
+            unregisteredIds.insert(it->value);
             lines.push_back(it->value + " -> (未登録のためそのまま)");
             continue;
         }
         if (r.usedProxy()) {
             out.replace(it->valueStart, it->valueLen, r.path);
             replaced++;
+            auto pr = proxied.find(it->value);
+            if (pr != proxied.end())
+                pr->second++;
             lines.push_back(it->value + " -> " + r.path + " [proxy]");
         } else {
             keptOriginal++;
@@ -194,6 +247,38 @@ int cmdResolveProxy(const bench::Args& a) {
         }
     }
     std::reverse(lines.begin(), lines.end());
+
+    // --- required proxy id の検査 (fail-closed) ---------------------------
+    std::vector<std::string> resolvedRequired, missingRequired;
+    long long resolvedOccurrences = 0;
+    for (const auto& id : requiredIds) {
+        long long occ = occurrences[id];
+        long long px = proxied[id];
+        resolvedOccurrences += px;
+
+        if (occ == 0) {
+            missingRequired.push_back(id + " (scenario に存在しない)");
+            continue;
+        }
+        if (!resolver.has(id)) {
+            missingRequired.push_back(id + " (--map に登録されていない)");
+            continue;
+        }
+        if (rt == ResolveTarget::Preview) {
+            if (px != occ) {
+                missingRequired.push_back(id + " (出現 " + std::to_string(occ) + " 件中 " +
+                                          std::to_string(px) + " 件しか proxy へ置換されていない)");
+                continue;
+            }
+        } else {
+            // final では proxy になってはいけない。
+            if (px != 0) {
+                missingRequired.push_back(id + " (final なのに proxy へ置換された)");
+                continue;
+            }
+        }
+        resolvedRequired.push_back(id);
+    }
 
     // final で proxy が 1 件でも混ざったら、それは resolver の設計が壊れている。
     if (rt == ResolveTarget::Final && replaced != 0) {
@@ -217,14 +302,39 @@ int cmdResolveProxy(const bench::Args& a) {
     js << "  \"kept_original\": " << keptOriginal << ",\n";
     js << "  \"unregistered\": " << unknown << ",\n";
     js << "  \"out\": \"" << jsonEscape(outPath) << "\",\n";
+
+    auto emitList = [&](const char* key, const std::vector<std::string>& v) {
+        js << "  \"" << key << "\": [";
+        for (size_t i = 0; i < v.size(); i++)
+            js << (i ? ",\n    " : "\n    ") << "\"" << jsonEscape(v[i]) << "\"";
+        js << (v.empty() ? "],\n" : "\n  ],\n");
+    };
+    emitList("required_proxy_ids", requiredIds);
+    emitList("resolved_required_ids", resolvedRequired);
+    emitList("missing_required_ids", missingRequired);
+    js << "  \"resolved_occurrences\": " << resolvedOccurrences << ",\n";
+    emitList("unregistered_optional_sources",
+             std::vector<std::string>(unregisteredIds.begin(), unregisteredIds.end()));
+
     js << "  \"mapping\": [";
     for (size_t i = 0; i < lines.size(); i++)
         js << (i ? ",\n    " : "\n    ") << "\"" << jsonEscape(lines[i]) << "\"";
     js << (lines.empty() ? "]\n}\n" : "\n  ]\n}\n");
     std::fputs(js.str().c_str(), stdout);
 
+    // required が 1 件でも解決できていなければ専用の exit code で落とす。
+    // 「proxy が効いていない構成」を測定に使わせないための門である。
+    if (!missingRequired.empty()) {
+        logMsg("required proxy id が解決できませんでした:");
+        for (const auto& m : missingRequired)
+            logMsg("  " + m);
+        return kExitRequiredProxyUnresolved;
+    }
+
+    // 旧契約。diagnostic 専用であり、判定には使わない。
     if (a.has("require-proxy") && replaced == 0) {
-        logMsg("proxy へ解決された source が 1 件もありません");
+        logMsg("[diagnostic] proxy へ解決された source が 1 件もありません "
+               "(この検査は弱い。判定には --require-proxy-ids を使うこと)");
         return kExitMismatch;
     }
     return kExitOk;

@@ -26,6 +26,7 @@ param(
     [int]$Runs = 3,
     [int]$Random = 1000,
     [int]$Seed = 20260804,
+    [string[]]$Only,
     [string]$OutDir
 )
 
@@ -41,10 +42,14 @@ if (-not (Test-Path $Bench)) { throw "mvm_bench がありません: $Bench" }
 $env:PATH = "$Ucrt64\bin;$env:PATH"
 
 $paths = @(
-    @{ Tag = '4k-original'; Scenario = 's7-4k-original.json' }
-    @{ Tag = 'proxy-gop12'; Scenario = 's7-4k-proxy-gop12.json' }
-    @{ Tag = 'proxy-gop1';  Scenario = 's7-4k-proxy-gop1.json' }
+    @{ Tag = '4k-original';  Scenario = 's7-4k-original.json' }
+    @{ Tag = 'proxy-gop12';  Scenario = 's7-4k-proxy-gop12.json' }
+    @{ Tag = 'proxy-gop1';   Scenario = 's7-4k-proxy-gop1.json' }
+    # S7.1: preview で使う video source を全て proxy 化した正式評価用。
+    @{ Tag = 'proxy-all-gop12'; Scenario = 's7-4k-proxy-all-gop12.json' }
 )
+if ($Only) { $paths = @($paths | Where-Object { $Only -contains $_.Tag }) }
+if ($paths.Count -eq 0) { throw "対象の経路がありません (-Only の指定を確認)" }
 
 function Get-Median {
     param([double[]]$Values)

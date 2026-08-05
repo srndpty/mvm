@@ -146,7 +146,11 @@ GOP 境界 (12 の倍数の前後)、seed 20260804 のランダム 200 点であ
 
 ---
 
-## 4K original / proxy の preview 比較 (M8)
+## 4K original / V1-only proxy の preview 比較 (**旧 M8 / partial proxy diagnostic**)
+
+**[注意] この節の測定は V1 だけを proxy 化したものである。**
+V2 (1080p HEVC) は original のまま残っており、正式な M8 評価ではない。
+正式評価は下の「S7.1」節を参照。
 
 計測は `preview-bench` (null consumer, `real_time=-1`, warm-up 5s, wall 60s, 3 回中央値)。
 `real_time=-1` を使うのは 1080p の matrix で最も速かった構成だからである。
@@ -178,9 +182,19 @@ V1 を 540p に落としても、タイムラインには 1080p の V2 (HEVC)・
 合成コスト自体を下げる (GPU 合成、レイヤ数削減、キャッシュ) か、
 別の backend が必要である。
 
-### 正式な proxy 候補
+### proxy 候補の選定 (**S7.1 で撤回**)
 
-**GOP1 (all-intra) を正式候補とする。**
+**[撤回] 「GOP1 を正式候補とする」という S7 の記述を撤回する。**
+
+根拠にした差は preview 14.88 対 15.38 fps、seek p95 460.5 対 452.4ms であり、
+いずれも 3 回の中央値どうしの微差である。
+しかも **GOP1 は libx264、GOP12 は NVENC で encoder が違う。**
+encoder が違う候補間の微差を GOP 差と解釈してはいけない。
+
+S7.1 の all-video proxy は **NVENC GOP12 で統一**して測っており、
+そちらで M5 は合格している。GOP1 を選ぶ根拠は現時点で無い。
+
+以下は撤回した比較表であり、記録として残す。
 
 | 観点 | GOP12 (NVENC) | GOP1 (x264 all-intra) | 選択 |
 | --- | --- | --- | --- |
@@ -197,6 +211,154 @@ scrub / seek の結果 (seek-scrub-notes.md) も踏まえて GOP1 を採る。
 
 **[注意] GOP1 は encoder が libx264 である** (NVENC が GOP 長 1 を
 受け付けないため)。したがって GOP12 との差は GOP だけの差ではない。
+
+---
+
+# S7.1: all-video proxy による正式 M8 評価
+
+## S7 の M8 は部分 proxy の評価だった
+
+**[事実] S7 で M8 と呼んでいた測定は V1 だけを proxy 化したものだった。**
+タイムラインには V2 (1080p HEVC) の original が残っており、
+「proxy にした場合の上限」を測っていなかった。
+
+S7.1 では preview で使う **video source を全て proxy 化**して測り直した。
+
+| scenario | V1 | V2 | 位置づけ |
+| --- | --- | --- | --- |
+| `s7-4k-original.json` | 4K original | 1080p HEVC original | native 基準 |
+| `s7-4k-proxy-gop12.json` | 540p proxy | **1080p HEVC original** | **partial proxy diagnostic** (旧 M8。正式評価に使わない) |
+| `s7-4k-proxy-all-gop12.json` | 540p proxy | **540p proxy** | **正式 M8 評価** |
+
+## required / optional source の契約
+
+「全 source を proxy 必須」にはできない。WAV や音声専用 source が混ざるためである。
+2 種類に分けた。
+
+| 種別 | 指定 | 未解決のとき |
+| --- | --- | --- |
+| **required** | `--require-proxy-ids "id;id"` | **exit 4 で fail-closed** |
+| optional | 指定しない | original のまま。**id と件数を必ず報告** |
+
+required id ごとに以下を全て検査する。
+
+- scenario にその id が実在する
+- `--map` に登録されている
+- preview では**全出現が**置換される (同じ素材が複数 clip にあっても)
+- final では **1 件も** proxy にならない
+
+旧 `--require-proxy` (「1 件以上置換されれば成功」) は契約として弱すぎる。
+**V1 だけ proxy 化されて V2 が original のままでも通ってしまい、
+実際に S7 の M8 はその状態で「proxy 評価」として報告されていた。**
+diagnostic 専用へ降格し、判定には使わない。
+
+### 置換の証拠 (all-video proxy scenario の生成時)
+
+```
+required_proxy_ids            : v4k60_h264.mp4, v1080p60_hevc.mp4
+resolved_required_ids         : v4k60_h264.mp4, v1080p60_hevc.mp4
+missing_required_ids          : (なし)
+resolved_occurrences          : 2
+unregistered_optional_sources : v1080p60_h264.mp4 (A1 音声), wav_48k.wav (A2)
+```
+
+## V2 proxy のメタデータ
+
+| 項目 | 値 |
+| --- | --- |
+| encoder / GOP | h264_nvenc / 12 (実測 keyframe 間隔 12..12) |
+| 解像度 | 960x540 |
+| fps | 60/1 (元と完全一致) |
+| frames | 3600 (元と一致) |
+| duration | 60.0s (差 0) |
+| SAR / pix_fmt | 1:1 / yuv420p |
+| 音声 | aac 48000Hz 2ch (copy) |
+| サイズ / 生成 | 34.4 MB / 7.4s (**realtime 比 8.11x**) |
+
+frame mapping: fps 完全一致、frame 数一致、duration 差 0、
+232 frame 検査で **marker 不一致 0**。
+
+all-video scenario の合成でも frame 0 / 1 / 137 / 299 / 600 / 1799 / 3599 が
+**すべて marker 一致**。
+
+## 正式 M8: preview 比較
+
+計測は `preview-bench` (null consumer, `real_time=-1`, warm-up 5s, wall 60s, 3 回中央値)。
+
+| 経路 | effective_fps | drop | 起動待ち | frame 間隔 p50 | p95 | CPU | Priv ピーク | M8 fps |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 4K original (proxy なし) | **10.0** | 0 | 191.5ms | 121.46ms | 142.79ms | 2.42 | 1045.9MB | 不合格 |
+| **V1-only partial proxy** (旧 M8) | **14.88** | 0 | 110.2ms | 66.14ms | 81.6ms | 2.44 | 422.3MB | 不合格 |
+| **all-video proxy** (正式 M8) | **19.67** | 0 | 57.2ms | 50.09ms | 65.72ms | 2.64 | 289.2MB | 不合格 |
+
+**[事実] 全 video を proxy 化すると 14.88 -> 19.67 fps へ改善する。**
+V1 だけの proxy 化では V2 の 1080p HEVC デコードが残っており、
+**旧 M8 は proxy の効果を過小評価していた。**
+
+**[事実] それでも基準 50 fps には届かない。** 19.67 は 39% である。
+
+**[事実] all-video proxy でも 1080p native (19.85 fps) をわずかに下回る。**
+4K を 540p に落としても、**1080p native と同程度が上限**である。
+解像度ではなく合成そのものが律速していることの直接的な証拠である。
+
+**[exit] M8 preview: 不合格。**
+生成速度 (realtime 比 8.11〜8.38x) と frame mapping (mismatch 0) は合格である。
+
+## all-video proxy の M5
+
+| 経路 | mismatch | p50 | **p95** | max 中央値 | **観測 max** | M5 |
+| --- | --- | --- | --- | --- | --- | --- |
+| all-video proxy | **0** | 57.7ms | **81.7ms** | 232.5ms | **285.6ms** | **合格** |
+
+**[事実] M5 は合格した。** 基準 p95 <= 150ms / 観測 max <= 400ms に対し
+p95 81.7ms、観測 max 285.6ms である。
+
+V1-only proxy では p95 452ms で不合格だったので、
+**V2 を proxy 化したことが seek の合否を分けた。**
+
+300 点で基準から大幅に外れてはいないが、**M8 が不合格なので 1000 点の最終確認は行っていない。**
+
+## ablation (原因の切り分け)
+
+15 秒 preview、`real_time=-1`、3 回中央値。基準は B (all-video proxy)。
+**フレームを作らない構成で速く見せることはしていない。**
+全ケースが 1920x1080 RGBA を毎フレーム生成し、`rendered=0` が 1 件でもあれば採用しない。
+
+| ケース | 内容 | fps | B との差 | frame 間隔 p50 | CPU | Priv ピーク | 製品で使えるか |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| A | V1 proxy のみ (V2 は 1080p HEVC original) | **16.39** | -5.14 | 60.6ms | 3.1 | 421.1MB | いいえ (V2 が original) |
+| B | V1 + V2 proxy、全 5 トラック (基準) | **21.53** | +0 | 45.73ms | 3.47 | 289.3MB | はい |
+| C | B から qtext を除去 | **33.65** | +12.12 | 28.79ms | 2.41 | 267.2MB | いいえ (文字は必須機能) |
+| D | B から音声 2 トラックを除去 | **22.45** | +0.92 | 43.99ms | 3.57 | 267.6MB | いいえ (音声は必須) |
+| E | B から V2 / affine を除去 | **35.84** | +14.31 | 27.09ms | 4.21 | 235.4MB | いいえ (PiP は必須) |
+| F | B の qtext を事前描画 PNG へ置換 | **31.1** | +9.57 | 31.59ms | 2.45 | 269.6MB | はい (静的文字なら) |
+| G | V2 proxy を 640x360 にした構成 | **24.47** | +2.94 | 39.72ms | 3.41 | 506.2MB | はい |
+
+### 何が言えるか
+
+**[事実] 単独の低コスト回避策で 50fps へ届く根拠は無い。**
+
+- 製品で使える最良は **F (文字を事前描画 PNG 化) の 31.1 fps**。基準の 62% である
+- 必須機能を削ったケースでも最良は **E (PiP 除去) の 35.84 fps**
+- **PiP を丸ごと捨てても 50fps に届かない。**
+
+コスト内訳 (B からの差):
+
+| 除去したもの | 効果 | 製品で外せるか |
+| --- | --- | --- |
+| V2 / affine 合成 | +14.31 fps | 外せない (PiP は必須) |
+| qtext の毎フレーム描画 | +12.12 fps | 事前描画なら外せる (F = +9.57) |
+| 音声 2 トラック | +0.92 fps | 外せない。**そもそも効果が小さい** |
+| V2 proxy を 640x360 へ | +2.94 fps | 外せるが効果が小さい |
+
+**[推測]** 合成コストは V2 の affine 合成と qtext 描画に集中している。
+両方を外して初めて 30〜36 fps であり、**残り 14〜20 fps 分の説明がついていない。**
+1920x1080 RGBA の生成と転送そのものが下限を作っている可能性があるが、
+**MLT 内部のどこかは特定していない。**
+
+**[方針] 追加の最適化探索は打ち切る。**
+private API の cache purge、`EmptyWorkingSet`、閾値緩和、
+フレームを作らない構成による偽高速化はいずれも行わない。
 
 ---
 

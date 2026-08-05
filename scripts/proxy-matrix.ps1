@@ -32,6 +32,7 @@
 param(
     [string]$Ucrt64 = 'C:\msys64\ucrt64',
     [string]$Source,
+    [string]$Tag = 'v4k60_h264',
     [string[]]$Candidates = @('gop12', 'gop1', 'x264'),
     [string]$OutDir,
     [switch]$Force
@@ -148,7 +149,7 @@ $rows = @()
 foreach ($cand in $Candidates) {
     if (-not $specs.ContainsKey($cand)) { throw "未知の候補: $cand" }
     $spec = $specs[$cand]
-    $final = Join-Path $OutDir "v4k60_h264_proxy_$cand.mp4"
+    $final = Join-Path $OutDir "${Tag}_proxy_$cand.mp4"
     $tmp   = "$final.mvmtmp"
 
     if ((Test-Path $final) -and -not $Force) {
@@ -248,5 +249,5 @@ $rows | Format-Table Candidate, Encoder, RequestedGop, Formal, Width, Height, Fp
                      DurationSec, Sar, PixFmt, AudioRate, KeyframeMinGap, KeyframeMaxGap,
                      SizeMb, GenWallSec, RealtimeRatio, M8Speed -AutoSize
 
-$rows | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $OutDir 'proxy-matrix.json') -Encoding UTF8
+$rows | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $OutDir "proxy-matrix-$Tag.json") -Encoding UTF8
 Write-Host "成果物: $OutDir"

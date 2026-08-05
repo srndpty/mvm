@@ -535,3 +535,45 @@ jump は generation lag 2〜3 と小さいのに frame 距離は 3598 ある。
 
 この 2 つは別の不快さであり、分けて測る必要がある。
 
+
+---
+
+# S7.1: all-video proxy の seek
+
+## V1-only proxy と all-video proxy を区別する
+
+**S7 で「proxy」と書いていた経路は V1 だけを proxy 化したものだった。**
+V2 (1080p HEVC) は original のまま残っていた。
+
+| 経路 | V1 | V2 | seek p95 | 観測 max | M5 |
+| --- | --- | --- | --- | --- | --- |
+| 4K original | 4K | 1080p HEVC | 888.2ms | 2343.3ms | 不合格 |
+| V1-only proxy (partial) | 540p | **1080p HEVC** | 452.4〜460.5ms | 574.6ms | 不合格 |
+| **all-video proxy** | 540p | **540p** | **81.7ms** | **285.6ms** | **合格** |
+
+**[事実] V2 を proxy 化したことが M5 の合否を分けた。**
+V1 だけでは p95 452ms で不合格、両方 proxy 化して p95 81.7ms で合格である。
+partial proxy の測定を「proxy の実力」として読んではいけない。
+
+**[注意] M6 (scrub) は all-video proxy で再測定していない。**
+M8 preview が不合格だったため、正式 8 条件の長時間再実行は行っていない
+(S7.1 の停止規則)。したがって以下の S7 の M6 表はすべて
+**V1-only partial proxy の値**であり、all-video proxy の M6 は**未測定**である。
+
+## jump の updates/sec を快適性の根拠にしない
+
+**[事実]** S7 の M6 で唯一どの経路でも合格したのは `jump` である
+(4K 17.16、proxy 24.84 updates/sec)。
+
+しかし `jump` は **frame 距離 p95 が 3598** である。
+タイムラインの両端付近を往復するだけなので、
+「更新は速いが、常に最も遠い絵を見ている」状態にすぎない。
+
+**updates/sec だけを見て「スクラブが快適」と結論してはいけない。**
+判断には必ず以下を併記する。
+
+- **frame 距離** (表示フレームと最新要求フレームの絶対差)
+- **表示の古さ** (表示した要求の submit 時刻と最新要求の submit 時刻の差)
+
+`fine` はその逆で、frame 距離 8〜9 と小さいのに
+表示の古さ p95 が 421〜745ms ある。両者は別の不快さである。

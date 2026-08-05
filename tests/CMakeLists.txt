@@ -446,20 +446,20 @@ if(MVM_PWSH)
     add_test(NAME preview_invalid_real_time_exit2
         COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
                 -ExpectExit 3 -Exe "$<TARGET_FILE:mvm_bench>"
-                -ChildArgs "preview-bench;${MVM_S5_SCENARIO};--real-time;0;--measure-ms;1000")
+                -ChildArgs "preview-bench|${MVM_S5_SCENARIO}|--real-time|0|--measure-ms|1000")
 
     # negative: 存在しない consumer service を成功扱いしない。
     add_test(NAME preview_missing_consumer_service
         COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
                 -ExpectExit 3 -Exe "$<TARGET_FILE:mvm_bench>"
-                -ChildArgs "preview-bench;${MVM_S5_SCENARIO};--consumer;mvm_no_such_consumer;--real-time;-1;--measure-ms;1000")
+                -ChildArgs "preview-bench|${MVM_S5_SCENARIO}|--consumer|mvm_no_such_consumer|--real-time|-1|--measure-ms|1000")
 
     # negative: 音声ケースの --wav-dir 欠落は「使い方エラー (2)」であること。
     foreach(mcase D E)
         add_test(NAME memory_probe_${mcase}_exit_code_is_usage
             COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
                     -ExpectExit 2 -Exe "$<TARGET_FILE:mvm_bench>"
-                    -ChildArgs "memory-probe;${MVM_S5_SCENARIO};--case;${mcase};--iterations;1")
+                    -ChildArgs "memory-probe|${MVM_S5_SCENARIO}|--case|${mcase}|--iterations|1")
     endforeach()
 endif()
 
@@ -477,11 +477,57 @@ mvm_add_test(proxy_resolve_preview_uses_proxy
             --out "${CMAKE_CURRENT_BINARY_DIR}/resolved-preview.json"
     PROPERTIES REQUIRED_FILES "${MVM_S5_SCENARIO}")
 
-# negative: proxy へ 1 件も解決されない map を --require-proxy で成功扱いしない。
-mvm_add_test(proxy_resolve_requires_proxy_negative
-    COMMAND mvm_bench resolve-proxy "${MVM_S5_SCENARIO}" --target preview
-            --map "no_such_source.mp4=_proxy/x.mp4" --require-proxy
-    PROPERTIES REQUIRED_FILES "${MVM_S5_SCENARIO}" WILL_FAIL TRUE)
+# --- required proxy id 契約 (S7.1) ------------------------------------------
+# 「全 source を proxy 必須」にはできない (WAV や音声専用 source が混ざる)。
+# required と optional を分け、required が 1 件でも未解決なら exit 4 で落とす。
+#
+# WILL_FAIL は使わない。0 以外なら何でも合格になるため、
+# クラッシュや DLL ロード失敗でも緑になってしまう。
+# expect-exit.ps1 で終了コードを厳密に照合する。
+
+if(MVM_PWSH)
+    set(MVM_S7_4K "${CMAKE_SOURCE_DIR}/bench/scenarios/s7-4k-original.json")
+    set(MVM_REQ2 "v4k60_h264.mp4;v1080p60_hevc.mp4")
+    set(MVM_MAP2 "v4k60_h264.mp4=_proxy/a.mp4;v1080p60_hevc.mp4=_proxy/b.mp4")
+
+    # required 2 件が両方置換される (正常系)
+    add_test(NAME proxy_required_two_ids_resolved
+        COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+                -ExpectExit 0 -Exe "$<TARGET_FILE:mvm_bench>"
+                -ChildArgs "resolve-proxy|${MVM_S7_4K}|--target|preview|--map|${MVM_MAP2}|--require-proxy-ids|${MVM_REQ2}")
+
+    # required の片方だけ map にある -> exit 4
+    add_test(NAME proxy_required_partial_map_fails
+        COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+                -ExpectExit 4 -Exe "$<TARGET_FILE:mvm_bench>"
+                -ChildArgs "resolve-proxy|${MVM_S7_4K}|--target|preview|--map|v4k60_h264.mp4=_proxy/a.mp4|--require-proxy-ids|${MVM_REQ2}")
+
+    # scenario に存在しない required id -> exit 4
+    add_test(NAME proxy_required_absent_in_scenario_fails
+        COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+                -ExpectExit 4 -Exe "$<TARGET_FILE:mvm_bench>"
+                -ChildArgs "resolve-proxy|${MVM_S7_4K}|--target|preview|--map|no_such.mp4=_proxy/x.mp4|--require-proxy-ids|no_such.mp4")
+
+    # final では required も original のまま。proxy になったら exit 4。
+    add_test(NAME proxy_required_final_keeps_original
+        COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+                -ExpectExit 0 -Exe "$<TARGET_FILE:mvm_bench>"
+                -ChildArgs "resolve-proxy|${MVM_S7_4K}|--target|final|--map|${MVM_MAP2}|--require-proxy-ids|${MVM_REQ2}")
+
+    # 同じ source が複数 clip にある scenario で全出現が置換されること。
+    # s5 は V1 と A1 が同じ v1080p60_h264.mp4 を指しており出現は 2 件ある。
+    add_test(NAME proxy_required_all_occurrences_replaced
+        COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+                -ExpectExit 0 -Exe "$<TARGET_FILE:mvm_bench>"
+                -ChildArgs "resolve-proxy|${MVM_S5_SCENARIO}|--target|preview|--map|v1080p60_h264.mp4=_proxy/x.mp4|--require-proxy-ids|v1080p60_h264.mp4")
+
+    # 旧 --require-proxy は diagnostic 専用へ降格した。
+    # 「0 件なら失敗」であることは維持するが、判定には使わない。
+    add_test(NAME proxy_legacy_require_proxy_diagnostic
+        COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+                -ExpectExit 3 -Exe "$<TARGET_FILE:mvm_bench>"
+                -ChildArgs "resolve-proxy|${MVM_S5_SCENARIO}|--target|preview|--map|no_such_source.mp4=_proxy/x.mp4|--require-proxy")
+endif()
 
 # negative: メタデータが違う proxy を成功扱いしない。
 # 1080p 素材を 4K 素材の proxy と称して渡す。frame count も解像度も違う。

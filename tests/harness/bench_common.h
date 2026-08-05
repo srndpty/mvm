@@ -45,6 +45,10 @@ constexpr int kExitOk = 0;
 constexpr int kExitError = 1;
 constexpr int kExitUsage = 2;
 constexpr int kExitMismatch = 3;
+// required proxy ID が解決できなかったとき専用。
+// mismatch (3) と混ぜると「proxy が効いていない測定」を
+// 「値が違うだけ」と読み違える余地が残る。
+constexpr int kExitRequiredProxyUnresolved = 4;
 
 // duration はコンテナのタイムベース丸めがあるため完全一致を要求できない。
 // 1 フレーム分 (60fps で 16.7ms) より十分小さい値を許容差とする。

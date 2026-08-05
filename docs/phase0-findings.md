@@ -785,3 +785,81 @@ build/ucrt64-release/bin/mvm_bench.exe probe tests/assets/smoke/v1080p60_h264.mp
 build/ucrt64-release/bin/mvm_bench.exe verify-media tests/assets/smoke/manifest.json
 ctest --output-on-failure        # build/ucrt64-release と build/ucrt64-debug の両方
 ```
+
+---
+
+## S7.1 完了時点の判定 (最新)
+
+S7 の M8 は **V1 だけを proxy 化した部分評価**だった。
+preview で使う video source を全て proxy 化して測り直した。
+
+| 基準 | all-video proxy での実測 | 判定 |
+| --- | --- | --- |
+| **M4** | seek 精度 mismatch **0** | **合格** |
+| **M5** | p95 **81.7ms** / 観測 max **285.6ms** (基準 150 / 400) | **合格** |
+| **M7** | native 1080p 最良 19.85 fps (基準 50) | **不合格** |
+| **M8** | preview **19.67 fps** (基準 50)。生成 realtime 比 8.11〜8.38x、frame mapping mismatch 0 | **不合格** (fps) |
+| **M6** | **未測定** (M8 不合格のため長時間再実行を停止) | **保留** |
+
+### strict MUST で見た結論
+
+**[事実] MUST は全充足していない。**
+計画の判定規則は「MUST の全充足」であり、1 つでも欠ければ
+「不採用」または「条件付き採用 (回避策付き)」である。
+
+**M7 は native の時点で不合格**である。19.85 fps は基準の 40% で、
+これは Qt を含まない MLT の RGBA 供給層の値である。
+Qt を足しても速くはならない。
+
+### all-video proxy は M5 を救ったが M8 は救わなかった
+
+**[事実] proxy を全 video へ広げると seek は基準内に入る。**
+p95 888ms (native) -> 452ms (V1-only) -> **81.7ms (all-video)**。
+**M5 は合格**である。
+
+**[事実] しかし連続再生の fps は救えない。**
+19.67 fps は 1080p native (19.85) をわずかに下回る。
+**素材の解像度を下げても 20 fps 付近が上限**である。
+
+したがって「常時 proxy を使う条件付き採用」は成立しない。
+その条件下でも M7 / M8 の fps が満たせないからである。
+
+### 回避策の探索は打ち切った
+
+ablation (15 秒 preview × 3 回) の結果:
+
+| 除去したもの | fps | 製品で外せるか |
+| --- | --- | --- |
+| なし (all-video proxy 基準) | 21.53 | — |
+| qtext を事前描画 PNG へ | **31.1** | **外せる** |
+| V2 / affine 合成を除去 | **35.84** | 外せない (PiP は必須) |
+| qtext を除去 | 33.65 | 外せない (文字は必須) |
+| 音声 2 トラックを除去 | 22.45 | 外せない。効果も小さい |
+
+**[事実] 製品で使える単独の回避策は最良で 31.1 fps。**
+**必須機能を捨てた場合ですら最良 35.84 fps で、基準 50 に届かない。**
+
+単独の低コスト回避策で 50fps へ届く根拠が無いため、追加の最適化探索は打ち切った。
+
+### 判定: 早期 S16 を推奨する
+
+**[exit] S12 へは進まない。**
+
+- native M7 が **MLT の供給層で** 不合格であり、Qt を足しても改善しない
+- all-video proxy でも上限は 20 fps 付近
+- 必須機能を捨てても 36 fps 止まり
+- 単独の低コスト回避策が無い
+
+**S12 に意味があるのは、別 GPU 経路 / zero-copy で供給層そのものを
+作り替える場合だけ**であり、それは MLT の外側を作り直すことになる。
+Phase 0 の目的は「MLT を採用できるか」の判定であり、その答えは出ている。
+
+**S16 (判定書と ADR) へ進むことを推奨する。**
+計画の「S6 / S7 / S12 のいずれかが早期に MUST を大きく割った場合、
+残りを打ち切って S16 に進む判断を許容する」に該当する。
+
+**[未検証] 以下は S16 の判定書で「測っていない」と明記する。**
+
+- Qt 転送を含む end-to-end の fps (S12)
+- all-video proxy での M6 (scrub) 正式 8 条件
+- M9〜M16 (エフェクト、書き出し、preview/final 一致、clean VM、UI 応答性、抽象化、安定性)

@@ -15,7 +15,13 @@
     実行するファイル。
 
 .PARAMETER ChildArgs
-    子プロセスへ渡す引数。**';' 区切りの 1 つの文字列**で渡す。
+    子プロセスへ渡す引数。**'|' 区切りの 1 つの文字列**で渡す。
+
+    区切りに ';' は使わない。mvm_bench 自身が --map や
+    --require-proxy-ids で ';' 区切りのリストを取るため、
+    区切り文字が衝突して引数が分割されてしまう。
+    実際に required id が 1 件しか渡らず、
+    「2 件必須」のはずのテストが 1 件で通ってしまった。
 
     PowerShell は素の '--' を「あいまいなパラメータ名」として弾き、
     '--case' のような値もパラメータ名として束縛しようとする。
@@ -23,7 +29,7 @@
 
 .EXAMPLE
     pwsh scripts/expect-exit.ps1 -ExpectExit 2 -Exe mvm_bench.exe `
-        -ChildArgs "memory-probe;x.json;--case;D"
+        -ChildArgs "memory-probe|x.json|--case|D"
 #>
 [CmdletBinding()]
 param(
@@ -40,7 +46,7 @@ if (-not (Test-Path $Exe)) {
     exit 1
 }
 
-$argv = @($ChildArgs -split ';' | Where-Object { $_ -ne '' })
+$argv = @($ChildArgs -split '\|' | Where-Object { $_ -ne '' })
 
 $out = New-TemporaryFile
 $errf = New-TemporaryFile
