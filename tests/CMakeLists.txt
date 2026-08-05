@@ -550,6 +550,23 @@ if(EXISTS "${MVM_PX_V1_ABS}" AND EXISTS "${MVM_PX_V2_ABS}")
              --map "${MVM_MAP2}" --require-proxy-ids "${MVM_REQ2}"
         PROPERTIES REQUIRED_FILES "${MVM_S7_4K}")
 
+    # final は proxy に依存しない。
+    # **同じ「proxy の実体が無い」状況で、preview は exit 4、final は exit 0** に
+    # なることを対で確かめる。preview 側は proxy_required_missing_proxy_file_fails。
+    # final は required id が scenario にあり全出現が original のままなら成功する。
+    mvm_add_exit_test(proxy_final_succeeds_without_proxy_file EXIT 0
+        ARGS resolve-proxy "${MVM_S7_4K}" --target final
+             --map "v4k60_h264.mp4=${MVM_PX_V1}@SEMI@v1080p60_hevc.mp4=_proxy/mvm_no_such_proxy.mp4"
+             --require-proxy-ids "${MVM_REQ2}"
+        PROPERTIES REQUIRED_FILES "${MVM_S7_4K}")
+
+    # map を一切与えなくても final は成功する。
+    # final は preview proxy の map 登録を要求しない。
+    mvm_add_exit_test(proxy_final_succeeds_without_map EXIT 0
+        ARGS resolve-proxy "${MVM_S7_4K}" --target final
+             --require-proxy-ids "${MVM_REQ2}"
+        PROPERTIES REQUIRED_FILES "${MVM_S7_4K}")
+
     # out ファイルの契約。終了コードだけでは見えない部分を検査する。
     #   - 失敗時に out を新規作成しない
     #   - 失敗時に既存の out を変更しない

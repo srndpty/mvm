@@ -212,7 +212,7 @@ null consumer の値は「MLT が供給できる上限」であって、
 
 ---
 
-## S7.1: all-video proxy でも上限は変わらない
+## S7.1: all-video proxy でも fps は改善しなかった
 
 **[事実]** preview で使う video source を全て proxy 化しても
 **19.67 fps** であり、1080p native (19.85 fps) をわずかに下回る。
@@ -224,9 +224,11 @@ null consumer の値は「MLT が供給できる上限」であって、
 | V1-only proxy (partial) | 14.88 |
 | **all-video proxy** | **19.67** |
 
-**素材の解像度を下げても 20 fps 付近で頭打ちになる。**
-律速は解像度ではなく、5 トラック合成と 1920x1080 RGBA 生成そのものである。
+**[事実] 素材の解像度を下げても 20 fps 前後から改善しなかった。**
+**[推測]** 解像度ではなく合成側 (5 トラック合成と 1920x1080 RGBA 生成) に
+コストが集中していることを示唆するが、**「それが律速であると証明した」とまでは
+書かない** (MLT 内部の切り分けは行っておらず、原因は特定していない)。
 
-ablation では qtext 除去で +12.12 fps、V2/affine 除去で +14.31 fps 得られるが、
-**両方を捨てても 30〜36 fps** で基準に届かない
-(`docs/research/proxy-notes.md` の ablation 節)。
+ablation で個別処理を除くと fps は増えるが、その値は run 間の変動が大きく
+**再現できなかったため、定量的な根拠には採用しない**
+(`docs/research/proxy-notes.md` の ablation 節。参考値・再現不能・判定非依存)。

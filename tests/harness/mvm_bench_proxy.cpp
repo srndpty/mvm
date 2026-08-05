@@ -196,10 +196,16 @@ bool isRegularFileUtf8(const std::string& path) {
 // proxy 必須になってしまうためである。そこで 2 種類に分ける。
 //
 //   required (--require-proxy-ids で明示)
-//     - scenario にその id が実在すること
-//     - --map に登録されていること
-//     - preview では **全出現が** proxy へ置換されること
-//     - final では **1 件も** proxy にならないこと
+//     共通:
+//       - scenario にその id が実在すること
+//     preview のとき:
+//       - --map に登録されていること
+//       - proxy の実体ファイルが存在すること
+//       - **全出現が** proxy へ置換されること
+//     final のとき:
+//       - **全出現が** original のまま (proxy へ置換 0 件) であること
+//       - preview proxy の map 登録や実体ファイルの存在は要求しない。
+//         final は proxy に一切依存しないので、proxy が未生成でも final は成功する。
 //     いずれか 1 つでも破れたら exit 4 で fail-closed。
 //
 //   optional (required に挙げていない source)
@@ -353,30 +359,34 @@ int cmdResolveProxy(const bench::Args& a) {
             missingRequired.push_back(id + " (scenario に存在しない)");
             continue;
         }
-        if (!resolver.has(id)) {
-            missingRequired.push_back(id + " (--map に登録されていない)");
-            continue;
-        }
-        // 文字列置換が成功しただけでは required 解決とみなさない。
-        // proxy の実体が無ければ、その scenario で測っても
-        // 「proxy を使った」ことにならない。
-        {
-            ResolveResult pv = resolver.resolve(id, ResolveTarget::Preview);
-            std::string rel = pv.usedProxy() ? pv.path : std::string();
-            std::string abs = joinPath(mediaRoot, rel);
-            if (rel.empty() || !isRegularFileUtf8(abs)) {
-                missingRequired.push_back(id + " (proxy の実体がありません: " + abs + ")");
+        if (rt == ResolveTarget::Preview) {
+            // preview のときだけ map 登録と proxy 実体を要求する。
+            if (!resolver.has(id)) {
+                missingRequired.push_back(id + " (--map に登録されていない)");
                 continue;
             }
-        }
-        if (rt == ResolveTarget::Preview) {
+            // 文字列置換が成功しただけでは required 解決とみなさない。
+            // proxy の実体が無ければ、その scenario で測っても
+            // 「proxy を使った」ことにならない。
+            {
+                ResolveResult pv = resolver.resolve(id, ResolveTarget::Preview);
+                std::string rel = pv.usedProxy() ? pv.path : std::string();
+                std::string abs = joinPath(mediaRoot, rel);
+                if (rel.empty() || !isRegularFileUtf8(abs)) {
+                    missingRequired.push_back(id + " (proxy の実体がありません: " + abs + ")");
+                    continue;
+                }
+            }
             if (px != occ) {
                 missingRequired.push_back(id + " (出現 " + std::to_string(occ) + " 件中 " +
                                           std::to_string(px) + " 件しか proxy へ置換されていない)");
                 continue;
             }
         } else {
-            // final では proxy になってはいけない。
+            // final は proxy に依存しない。
+            // required id が scenario にあり、全出現が original のまま
+            // (proxy へ置換 0 件) であればよい。
+            // preview proxy の map 登録や実体ファイルの存在は要求しない。
             if (px != 0) {
                 missingRequired.push_back(id + " (final なのに proxy へ置換された)");
                 continue;

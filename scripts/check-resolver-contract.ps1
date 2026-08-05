@@ -11,6 +11,7 @@
       4. 成功時は out に proxy パスが入る
       5. final の出力に proxy パスが 1 件も無い
       6. optional (音声専用 source / WAV) は original のまま残る
+      7. proxy の実体が無いとき preview は exit 4、final は exit 0 で original を出す
 
     1 と 2 が守られていないと、失敗した実行が「それらしい scenario」を残し、
     次の測定がそれを拾って **proxy が効いていない構成で測ってしまう**。
@@ -121,6 +122,42 @@ $fin = Get-Content $out5 -Raw
 Check "final に $PX1 が無い" (-not ($fin -match [regex]::Escape($PX1)))
 Check "final に $PX2 が無い" (-not ($fin -match [regex]::Escape($PX2)))
 Check 'final に _proxy/ が一切無い' (-not ($fin -match '_proxy/'))
+
+# --- 6) proxy 無しでも final は成功し original を出す ------------------------
+# preview は proxy の実体が無ければ exit 4 (fail-closed) だが、
+# final は proxy に依存しないので同じ状況でも exit 0 で original を出す。
+Write-Host "`n[6] proxy の実体が無いとき preview は落ち final は成功する"
+$out6prev = Join-Path $WorkDir 'preview-no-proxy.json'
+$code = Invoke-Bench @('resolve-proxy', $Scenario, '--target', 'preview',
+                       '--map', $MAP_BAD, '--require-proxy-ids', $REQ, '--out', $out6prev)
+Check 'preview は exit 4 で落ちる' ($code -eq 4) "(実際 $code)"
+Check 'preview の out は作られていない' (-not (Test-Path $out6prev))
+Check '一時ファイルが残っていない' ((@(Get-TempLeftovers)).Count -eq 0)
+
+$out6fin = Join-Path $WorkDir 'final-no-proxy.json'
+$code = Invoke-Bench @('resolve-proxy', $Scenario, '--target', 'final',
+                       '--map', $MAP_BAD, '--require-proxy-ids', $REQ, '--out', $out6fin)
+Check 'final は exit 0 で成功する' ($code -eq 0) "(実際 $code)"
+Check 'final の out が作られた' (Test-Path $out6fin)
+if (Test-Path $out6fin) {
+    $fin6 = Get-Content $out6fin -Raw
+    Check 'proxy 無し final に _proxy/ が一切無い' (-not ($fin6 -match '_proxy/'))
+    $fin6Json = $fin6 | ConvertFrom-Json
+    $srcs6 = @()
+    foreach ($t in $fin6Json.tracks) {
+        foreach ($c in $t.clips) {
+            if ($c.PSObject.Properties['source']) { $srcs6 += $c.source }
+        }
+    }
+    Check "final の V1 ($V1) が original path" ($srcs6 -contains $V1)
+    Check "final の V2 ($V2) が original path" ($srcs6 -contains $V2)
+}
+# map を一切与えなくても final は成功する (proxy 登録を要求しない)。
+$out6nomap = Join-Path $WorkDir 'final-no-map.json'
+$code = Invoke-Bench @('resolve-proxy', $Scenario, '--target', 'final',
+                       '--require-proxy-ids', $REQ, '--out', $out6nomap)
+Check 'map 無しでも final は exit 0' ($code -eq 0) "(実際 $code)"
+Check 'map 無し final の out が作られた' (Test-Path $out6nomap)
 
 # --- 結果 --------------------------------------------------------------------
 if ($failures.Count -ne 0) {

@@ -3,9 +3,13 @@
     all-video proxy が M5 / M8 を満たさなかったときの原因切り分け (S7.1 / I)。
 
 .DESCRIPTION
-    「何を外すと速くなるか」を 15 秒 preview で短時間に測る。
-    目的は最適化ではなく、**単独の低コスト回避策で 50fps へ届く根拠があるか**を
-    判断することだけである。
+    「何を外すと速くなるか」を preview (既定 60 秒) で測る。
+
+    **このスクリプトは diagnostic である。採否判定には使わない。**
+    ablation は run 間の変動が大きく再現しないことが分かっており
+    (`docs/research/proxy-notes.md`)、ここで得た fps を採否の根拠にしてはいけない。
+    目的は「何が重いかの見当をつける」ことだけである。
+    採否 (M7 / M8) の判定は scripts/preview-matrix.ps1 の記録値だけで行う。
 
     ケース:
       A. V1 proxy のみ (V2 は 1080p HEVC original)
@@ -31,15 +35,19 @@
 param(
     [string]$Preset = 'ucrt64-release',
     [string]$Ucrt64 = 'C:\msys64\ucrt64',
-    # **15 秒では足りない。** 同じ scenario を 15 秒で 3 回測ると
+    # **短い窓では足りない。** 同じ scenario を 15 秒で 3 回測ると
     # 29.5 / 74.6 / 84.5 fps という二峰性が出た (全 run とも
     # rendered=0 なし、position 連番、duplicate なしの正当な計測)。
-    # 60 秒にすると preview-matrix と同じ 1〜3% の再現性に収まる。
-    # 短い窓は速い側・遅い側のどちらかに丸ごと入ってしまい、
-    # 3 回の中央値でも救えない (2 回が速い側に入れば中央値も速い側になる)。
+    # 既定は 60 秒 (M7 / M8 と条件を揃える) にしているが、
+    # **60 秒に延ばしても変動は解消しなかった** (ケース A で 1.73 倍のばらつき)。
+    # したがってこの値は diagnostic 目的であり、採否判定には用いない。
     [int]$MeasureMs = 60000,
     [int]$Runs = 3,
-    [string]$OutDir
+    [string]$OutDir,
+    # 派生 scenario の生成だけを行い、性能計測はしない。
+    # 「このスクリプトが tracked file を汚さないこと」を
+    # 長い計測なしで確認するために使う。
+    [switch]$ScenariosOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -158,6 +166,14 @@ function Get-Median {
     return ($s[$n / 2 - 1] + $s[$n / 2]) / 2
 }
 
+if ($ScenariosOnly) {
+    # $cases の構築時点で New-Variant が派生 scenario を書き終えている。
+    Write-Host "派生 scenario を生成しました (性能計測は行いません):"
+    foreach ($c in $cases) { Write-Host ("  {0}: {1}" -f $c.Id, $c.Scenario) }
+    Write-Host "出力先: $AblDir"
+    exit 0
+}
+
 $rows = @()
 foreach ($c in $cases) {
     Write-Host "`n=== ケース $($c.Id): $($c.Desc) ===" -ForegroundColor Cyan
@@ -199,12 +215,12 @@ foreach ($c in $cases) {
     $lo = ($caseFps | Measure-Object -Minimum).Minimum
     $hi = ($caseFps | Measure-Object -Maximum).Maximum
     $spread = if ($lo -gt 0) { [math]::Round($hi / $lo, 3) } else { 0 }
-    # 1.25 倍を超えるばらつきは「同じものを測れていない」とみなす。
+    # 1.25 倍を超えるばらつきは「run 間で同じものを測れていない」とみなす。
     # 落とさずに続けるが、**その値は判断に使わない**と表へ書き込む。
-    # 中止すると安定して測れているケースまで捨てることになる。
-    $stable = ($lo -gt 0 -and $spread -le 1.25)
-    if (-not $stable) {
-        Write-Host ("  [不安定] run 間が {0:N2}〜{1:N2} fps ({2} 倍)。この値は判断に使わない。" -f `
+    # これは機構の断定 (安定/不安定) ではなく、単に閾値内かどうかの記録である。
+    $spreadWithinThreshold = ($lo -gt 0 -and $spread -le 1.25)
+    if (-not $spreadWithinThreshold) {
+        Write-Host ("  [ばらつき大] run 間が {0:N2}〜{1:N2} fps ({2} 倍)。この値は判断に使わない。" -f `
             $lo, $hi, $spread) -ForegroundColor Yellow
     }
 
@@ -219,63 +235,72 @@ foreach ($c in $cases) {
         Usable = $c.Usable
         DeltaVsB = 0.0
         Spread = $spread
-        Stable = if ($stable) { 'はい' } else { '**いいえ**' }
+        SpreadWithinThreshold = if ($spreadWithinThreshold) { 'はい' } else { '**いいえ**' }
     })
 }
 
 $baseFps = ($rows | Where-Object { $_.Case -eq 'B' } | Select-Object -First 1).Fps
 foreach ($r in $rows) { $r.DeltaVsB = [math]::Round($r.Fps - $baseFps, 2) }
 
-# --- 物理的にありえない結果を採用しない ------------------------------------
+# --- 想定外の性能順序を記録する (correctness invariant ではない) -----------
 #
 # A は B と同じ合成に対して V2 だけ 1080p HEVC original を使う。
-# **A のデコード仕事量は B 以上**であり、A が B より速くなることはない。
-# 同様に C / D / E は B から処理を取り除いた構成なので B 以上のはずである。
-#
-# 実際に、他の作業と並行して流したバックグラウンド実行で
-# A=38.17 / B=20.32 という結果が出た。単独で測り直すと A=14.8 / B=19.3 で、
-# **A の値だけが再現しなかった。** 計測が汚染されていたということである。
-# 数値の大小を見ただけでは気づけないので、機械で弾く。
+# C / D / E は B から処理を取り除いた構成である。
+# 直感的には A <= B <= (C / D / E) のはずだが、
+# **性能の大小関係は correctness invariant ではない。**
+# ablation は run 間の変動が大きく、想定外の順序が出ても
+# それは「計測が汚染された」ことの証明にはならない。
+# したがって hard failure にはせず、UnexpectedOrdering として
+# 警告し、JSON にも記録するだけにする。
 $fps = @{}
-foreach ($r in $rows) { if ($r.Stable -eq 'はい') { $fps[$r.Case] = $r.Fps } }
-$violations = New-Object System.Collections.Generic.List[string]
-function Assert-NotFaster {
+foreach ($r in $rows) { if ($r.SpreadWithinThreshold -eq 'はい') { $fps[$r.Case] = $r.Fps } }
+$unexpectedOrdering = New-Object System.Collections.Generic.List[string]
+function Test-Ordering {
     param([string]$Slower, [string]$Faster, [string]$Why)
     if (-not ($fps.ContainsKey($Slower) -and $fps.ContainsKey($Faster))) { return }
-    # 5% の測定ゆらぎは許す。桁で違うものだけを弾く。
+    # 5% の測定ゆらぎは無視する。
     if ($fps[$Slower] -gt $fps[$Faster] * 1.05) {
-        $violations.Add(("{0}={1} が {2}={3} より速い。{4}" -f `
+        $unexpectedOrdering.Add(("{0}={1} が {2}={3} より速い。{4}" -f `
             $Slower, $fps[$Slower], $Faster, $fps[$Faster], $Why))
     }
 }
-Assert-NotFaster 'A' 'B' 'A は V2 に 1080p HEVC original を使う。B 以上に速くなることはない。'
-Assert-NotFaster 'B' 'C' 'C は B から qtext を除いた構成である。'
-Assert-NotFaster 'B' 'D' 'D は B から音声 2 トラックを除いた構成である。'
-Assert-NotFaster 'B' 'E' 'E は B から V2 / affine を除いた構成である。'
-if ($violations.Count -ne 0) {
-    Write-Host "`n計測結果が物理的に矛盾しています。採用しません:" -ForegroundColor Red
-    foreach ($v in $violations) { Write-Host "  - $v" -ForegroundColor Red }
-    Write-Host "他の負荷を止めてから測り直してください。" -ForegroundColor Red
-    throw "ablation の計測が汚染されています ($($violations.Count) 件)"
+Test-Ordering 'A' 'B' 'A は V2 に 1080p HEVC original を使う (直感的には B 以下のはず)。'
+Test-Ordering 'B' 'C' 'C は B から qtext を除いた構成である。'
+Test-Ordering 'B' 'D' 'D は B から音声 2 トラックを除いた構成である。'
+Test-Ordering 'B' 'E' 'E は B から V2 / affine を除いた構成である。'
+if ($unexpectedOrdering.Count -ne 0) {
+    Write-Host "`n[UnexpectedOrdering] 想定外の性能順序が出ました (判定には使いません):" -ForegroundColor Yellow
+    foreach ($v in $unexpectedOrdering) { Write-Host "  - $v" -ForegroundColor Yellow }
+    Write-Host "ablation は run 間の変動が大きく、順序の逆転は珍しくありません。" -ForegroundColor Yellow
 }
 
-Write-Host "`n=== ablation (15 秒 preview / real_time=-1 / $Runs runs 中央値) ===" -ForegroundColor Cyan
+$secLabel = [int]([math]::Round($MeasureMs / 1000))
+Write-Host "`n=== ablation ($secLabel 秒 preview / real_time=-1 / $Runs runs 中央値) ===" -ForegroundColor Cyan
+Write-Host "**これは diagnostic であり採否判定には使わない。**"
 Write-Host "基準は B (all-video proxy)。DeltaVsB は B との fps 差。"
-Write-Host "Stable=いいえ の行は run 間のばらつきが 1.25 倍を超えている。**判断に使わない。**"
-$rows | Format-Table Case, Fps, DeltaVsB, Spread, Stable, IntervalP50, CpuUtil, PrivPeakMb, Usable -AutoSize
+Write-Host "SpreadWithinThreshold=いいえ の行は run 間のばらつきが 1.25 倍を超えている。**判断に使わない。**"
+$rows | Format-Table Case, Fps, DeltaVsB, Spread, SpreadWithinThreshold, IntervalP50, CpuUtil, PrivPeakMb, Usable -AutoSize
 
-$rows | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $OutDir 'ablation.json') -Encoding UTF8
+# UnexpectedOrdering も JSON へ残す。
+$abl = [ordered]@{
+    measure_ms = $MeasureMs
+    runs = $Runs
+    note = 'diagnostic のみ。採否判定には使わない。性能順序は correctness invariant ではない。'
+    unexpected_ordering = @($unexpectedOrdering)
+    cases = $rows
+}
+$abl | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $OutDir 'ablation.json') -Encoding UTF8
 
-$stableRows = @($rows | Where-Object { $_.Stable -eq 'はい' })
-$unstable = @($rows | Where-Object { $_.Stable -ne 'はい' })
-if ($unstable.Count -ne 0) {
-    Write-Host ("`n測定が不安定で判断に使えないケース: {0}" -f (($unstable | ForEach-Object { $_.Case }) -join ', ')) `
+$withinRows = @($rows | Where-Object { $_.SpreadWithinThreshold -eq 'はい' })
+$outOfThreshold = @($rows | Where-Object { $_.SpreadWithinThreshold -ne 'はい' })
+if ($outOfThreshold.Count -ne 0) {
+    Write-Host ("`nばらつきが大きく判断に使えないケース: {0}" -f (($outOfThreshold | ForEach-Object { $_.Case }) -join ', ')) `
         -ForegroundColor Yellow
 }
-if ($stableRows.Count -eq 0) { throw '安定して測れたケースが 1 つもありません。' }
-$best = ($stableRows | Sort-Object -Property Fps -Descending | Select-Object -First 1)
-Write-Host "`n最速ケース (安定して測れたものだけ): $($best.Case) = $($best.Fps) fps (製品で使えるか: $($best.Usable))"
-if ($best.Fps -lt 50) {
-    Write-Host "**すべて除去しても 50fps に届かない。単独の低コスト回避策では埋まらない。**" -ForegroundColor Yellow
+if ($withinRows.Count -eq 0) {
+    Write-Host "`n閾値内で測れたケースが 1 つもありません (diagnostic なので停止はしません)。" -ForegroundColor Yellow
+} else {
+    $best = ($withinRows | Sort-Object -Property Fps -Descending | Select-Object -First 1)
+    Write-Host "`n最速ケース (ばらつき閾値内のものだけ): $($best.Case) = $($best.Fps) fps (製品で使えるか: $($best.Usable))"
 }
 Write-Host "生 JSON: $OutDir"

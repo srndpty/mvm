@@ -16,6 +16,11 @@
     **観測された全 run の max を無視しない。** 中央値の max ではなく
     「3 回を通して観測した最大値」も併記し、そちらでも判定する。
 
+    **件数を明示し、invariant を機械検査する。**
+    matrix.json / matrix.csv に total / cold / warm / random / fixed を出す。
+    total == cold + warm、total == random + fixed の両方を確かめ、
+    破れたら fail-closed で停止する (件数の食い違いを黙って通さない)。
+
 .EXAMPLE
     pwsh scripts/seek-matrix.ps1
 #>
@@ -97,12 +102,49 @@ foreach ($p in $paths) {
     $observedMax = ($runObjs | ForEach-Object { [double]$_.latency_ms.all.max } | Measure-Object -Maximum).Maximum
     $totalMismatch = ($runObjs | ForEach-Object { [long]$_.mismatch } | Measure-Object -Sum).Sum
 
+    # --- 件数の集計と invariant 検査 (fail-closed) --------------------------
+    # total == cold + warm と total == random + fixed を確かめる。
+    # 固定点数は scenario 長で決まる決定論的な値であり、run 間で一致するはず。
+    # 一致しなければ「同じ workload を測れていない」ので停止する。
+    $totalSamples = 0L; $coldCount = 0L; $warmCount = 0L
+    $fixedPerRun = $null
+    foreach ($o in $runObjs) {
+        $c    = [long]$o.count
+        $cold = [long]$o.latency_ms.cold.count
+        $warm = [long]$o.latency_ms.warm.count
+        if ($c -ne ($cold + $warm)) {
+            throw "件数 invariant 違反 ($($p.Tag)): count=$c != cold=$cold + warm=$warm"
+        }
+        $fpr = $c - [long]$Random
+        if ($fpr -lt 0) {
+            throw "件数 invariant 違反 ($($p.Tag)): count=$c が --random $Random を下回っている"
+        }
+        if ($null -eq $fixedPerRun) { $fixedPerRun = $fpr }
+        elseif ($fixedPerRun -ne $fpr) {
+            throw "件数 invariant 違反 ($($p.Tag)): run 間で固定点数が食い違う ($fixedPerRun vs $fpr)"
+        }
+        $totalSamples += $c; $coldCount += $cold; $warmCount += $warm
+    }
+    $randomCount = [long]$Random * $runObjs.Count
+    $fixedCount  = $totalSamples - $randomCount
+    if ($totalSamples -ne ($coldCount + $warmCount)) {
+        throw "件数 invariant 違反 ($($p.Tag)): total=$totalSamples != cold=$coldCount + warm=$warmCount"
+    }
+    if ($totalSamples -ne ($randomCount + $fixedCount)) {
+        throw "件数 invariant 違反 ($($p.Tag)): total=$totalSamples != random=$randomCount + fixed=$fixedCount"
+    }
+
     $rows += [pscustomobject]([ordered]@{
         Tag          = $p.Tag
         Runs         = $Runs
         Requests     = $Random
         Seed         = $Seed
         Mismatch     = $totalMismatch
+        TotalSamples = $totalSamples
+        ColdCount    = $coldCount
+        WarmCount    = $warmCount
+        RandomCount  = $randomCount
+        FixedCount   = $fixedCount
         P50Ms        = [math]::Round((M 'latency_ms.all.p50'), 1)
         P95Ms        = [math]::Round((M 'latency_ms.all.p95'), 1)
         MaxMedianMs  = [math]::Round((M 'latency_ms.all.max'), 1)
@@ -125,6 +167,8 @@ foreach ($r in $rows) {
 
 Write-Host "`n=== M5 seek matrix (中央値 / $Runs runs / seed $Seed 固定) ===" -ForegroundColor Cyan
 Write-Host "MaxObservedMs は 3 回を通して観測した最大値。中央値で隠さない。"
+Write-Host "件数の invariant (total==cold+warm, total==random+fixed) は集計時に検査済み。"
+$rows | Format-Table Tag, TotalSamples, ColdCount, WarmCount, RandomCount, FixedCount -AutoSize
 $rows | Format-Table Tag, Mismatch, P50Ms, P95Ms, MaxMedianMs, MaxObservedMs, MeanMs, StddevMs,
                      ColdP50Ms, WarmP50Ms, FwdP95Ms, BackP95Ms, M5 -AutoSize
 
