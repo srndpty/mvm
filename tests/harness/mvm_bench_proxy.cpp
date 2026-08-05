@@ -100,6 +100,85 @@ bool writeFileUtf8(const std::string& path, const std::string& data) {
     return true;
 }
 
+// 一時ファイルへ書いて flush/close を確認してから正規名へ rename する。
+//
+// 検証前に正規の out を書いてしまうと、required の解決に失敗した実行でも
+// 「それらしい scenario」が残る。次の実行がそれを拾えば、
+// proxy が効いていない構成で測定してしまう。
+// 書き込みは検証が全て通った後にしか行わない。
+bool writeFileAtomic(const std::string& path, const std::string& data, std::string& err) {
+    std::string tmp = path + ".mvmtmp";
+    FILE* f = _wfopen(utf8Path(tmp).c_str(), L"wb");
+    if (!f) {
+        err = "一時ファイルを開けません: " + tmp;
+        return false;
+    }
+    size_t wrote = std::fwrite(data.data(), 1, data.size(), f);
+    bool ok = (wrote == data.size());
+    if (ok && std::fflush(f) != 0)
+        ok = false;
+    if (std::fclose(f) != 0)
+        ok = false;
+    if (!ok) {
+        err = "一時ファイルへ書き切れません: " + tmp;
+        std::error_code ec;
+        fs::remove(utf8Path(tmp), ec);
+        return false;
+    }
+    std::error_code ec;
+    // MoveFileEx 相当。既存の out を置き換える。
+    fs::rename(utf8Path(tmp), utf8Path(path), ec);
+    if (ec) {
+        err = "rename できません: " + tmp + " -> " + path;
+        std::error_code ec2;
+        fs::remove(utf8Path(tmp), ec2);
+        return false;
+    }
+    return true;
+}
+
+// scenario JSON から media_root を取り出す。
+// proxy の実在確認をこの基準で行う。
+std::string findMediaRoot(const std::string& json) {
+    const std::string key = "\"media_root\"";
+    size_t pos = json.find(key);
+    if (pos == std::string::npos)
+        return {};
+    size_t q1 = json.find('"', json.find(':', pos + key.size()));
+    if (q1 == std::string::npos)
+        return {};
+    size_t q2 = q1 + 1;
+    std::string v;
+    while (q2 < json.size() && json[q2] != '"') {
+        if (json[q2] == '\\' && q2 + 1 < json.size()) {
+            v += json[q2 + 1];
+            q2 += 2;
+            continue;
+        }
+        v += json[q2];
+        q2++;
+    }
+    return v;
+}
+
+std::string dirOf(const std::string& p) {
+    size_t i = p.find_last_of("/\\");
+    return (i == std::string::npos) ? std::string(".") : p.substr(0, i);
+}
+
+std::string joinPath(const std::string& base, const std::string& rel) {
+    if (base.empty())
+        return rel;
+    if (rel.size() > 1 && (rel[1] == ':' || rel[0] == '/' || rel[0] == '\\'))
+        return rel;
+    return base + "/" + rel;
+}
+
+bool isRegularFileUtf8(const std::string& path) {
+    std::error_code ec;
+    return fs::is_regular_file(utf8Path(path), ec);
+}
+
 } // namespace
 
 // ==========================================================================
@@ -187,12 +266,20 @@ int cmdResolveProxy(const bench::Args& a) {
     std::vector<std::string> requiredIds;
     {
         std::string s = a.get("require-proxy-ids");
+        std::set<std::string> seen;
         size_t p = 0;
         while (p < s.size()) {
             size_t sep = s.find(';', p);
             std::string item = s.substr(p, sep == std::string::npos ? std::string::npos : sep - p);
-            if (!item.empty())
+            if (!item.empty()) {
+                // 重複指定は使い方の誤り。黙って 1 件として扱うと
+                // 「2 件必須のつもりが 1 件だった」に気づけない。
+                if (!seen.insert(item).second) {
+                    logMsg("--require-proxy-ids に同じ id が二度あります: " + item);
+                    return kExitUsage;
+                }
                 requiredIds.push_back(item);
+            }
             if (sep == std::string::npos)
                 break;
             p = sep + 1;
@@ -200,6 +287,12 @@ int cmdResolveProxy(const bench::Args& a) {
     }
 
     ResolveTarget rt = (target == "preview") ? ResolveTarget::Preview : ResolveTarget::Final;
+
+    // proxy の実在確認は scenario の media_root を基準に行う。
+    // media_root は scenario ファイルからの相対である。
+    std::string mediaRootRel = findMediaRoot(json);
+    std::string mediaRoot = mediaRootRel.empty() ? dirOf(a.positional[0])
+                                                 : joinPath(dirOf(a.positional[0]), mediaRootRel);
 
     std::vector<SourceRef> refs = findSourceRefs(json);
     if (refs.empty()) {
@@ -211,7 +304,7 @@ int cmdResolveProxy(const bench::Args& a) {
     std::string out = json;
     long long replaced = 0, keptOriginal = 0, unknown = 0;
     std::vector<std::string> lines;
-    std::set<std::string> unregisteredIds;
+    std::map<std::string, long long> unregisteredIds;
     // required id ごとに「scenario に何回現れたか」「何回 proxy へ置換したか」。
     // 同じ素材が複数 clip にある場合、全出現を置換できたかを見る。
     std::map<std::string, long long> occurrences, proxied;
@@ -230,7 +323,7 @@ int cmdResolveProxy(const bench::Args& a) {
             // 未登録は「そのまま」でよい。proxy 対象でない素材があるのは正常。
             // ただし id と件数を必ず報告する。黙って通さない。
             unknown++;
-            unregisteredIds.insert(it->value);
+            unregisteredIds[it->value]++;
             lines.push_back(it->value + " -> (未登録のためそのまま)");
             continue;
         }
@@ -264,6 +357,18 @@ int cmdResolveProxy(const bench::Args& a) {
             missingRequired.push_back(id + " (--map に登録されていない)");
             continue;
         }
+        // 文字列置換が成功しただけでは required 解決とみなさない。
+        // proxy の実体が無ければ、その scenario で測っても
+        // 「proxy を使った」ことにならない。
+        {
+            ResolveResult pv = resolver.resolve(id, ResolveTarget::Preview);
+            std::string rel = pv.usedProxy() ? pv.path : std::string();
+            std::string abs = joinPath(mediaRoot, rel);
+            if (rel.empty() || !isRegularFileUtf8(abs)) {
+                missingRequired.push_back(id + " (proxy の実体がありません: " + abs + ")");
+                continue;
+            }
+        }
         if (rt == ResolveTarget::Preview) {
             if (px != occ) {
                 missingRequired.push_back(id + " (出現 " + std::to_string(occ) + " 件中 " +
@@ -288,12 +393,6 @@ int cmdResolveProxy(const bench::Args& a) {
     }
 
     std::string outPath = a.get("out");
-    if (!outPath.empty() && outPath != "1") {
-        if (!writeFileUtf8(outPath, out)) {
-            logMsg("書き出せません: " + outPath);
-            return kExitError;
-        }
-    }
 
     std::ostringstream js;
     js << "{\n  \"target\": \"" << target << "\",\n";
@@ -313,8 +412,18 @@ int cmdResolveProxy(const bench::Args& a) {
     emitList("resolved_required_ids", resolvedRequired);
     emitList("missing_required_ids", missingRequired);
     js << "  \"resolved_occurrences\": " << resolvedOccurrences << ",\n";
-    emitList("unregistered_optional_sources",
-             std::vector<std::string>(unregisteredIds.begin(), unregisteredIds.end()));
+    // 未登録 optional は id だけでなく出現件数も出す。
+    // 「1 箇所だけ original が残っていた」を件数で追えるようにする。
+    js << "  \"unregistered_optional_sources\": [";
+    {
+        bool first = true;
+        for (const auto& kv : unregisteredIds) {
+            js << (first ? "\n    " : ",\n    ") << "{ \"id\": \"" << jsonEscape(kv.first)
+               << "\", \"occurrences\": " << kv.second << " }";
+            first = false;
+        }
+        js << (unregisteredIds.empty() ? "],\n" : "\n  ],\n");
+    }
 
     js << "  \"mapping\": [";
     for (size_t i = 0; i < lines.size(); i++)
@@ -324,10 +433,16 @@ int cmdResolveProxy(const bench::Args& a) {
 
     // required が 1 件でも解決できていなければ専用の exit code で落とす。
     // 「proxy が効いていない構成」を測定に使わせないための門である。
+    //
+    // **ここで返る場合、out は一切書いていない。**
+    // 検証前に書くと、失敗した実行でも「それらしい scenario」が残り、
+    // 次の実行がそれを拾って proxy 無しの構成で測ってしまう。
     if (!missingRequired.empty()) {
         logMsg("required proxy id が解決できませんでした:");
         for (const auto& m : missingRequired)
             logMsg("  " + m);
+        logMsg("out は作成も変更もしていません: " +
+               (outPath.empty() ? std::string("(なし)") : outPath));
         return kExitRequiredProxyUnresolved;
     }
 
@@ -336,6 +451,15 @@ int cmdResolveProxy(const bench::Args& a) {
         logMsg("[diagnostic] proxy へ解決された source が 1 件もありません "
                "(この検査は弱い。判定には --require-proxy-ids を使うこと)");
         return kExitMismatch;
+    }
+
+    // 全ての検証を通過した後にだけ書く。一時ファイル経由で atomic に置き換える。
+    if (!outPath.empty() && outPath != "1") {
+        std::string werr;
+        if (!writeFileAtomic(outPath, out, werr)) {
+            logMsg(werr);
+            return kExitError;
+        }
     }
     return kExitOk;
 }

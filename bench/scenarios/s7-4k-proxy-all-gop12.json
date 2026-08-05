@@ -1,5 +1,5 @@
 {
-  "//": "S7.1 の all-video proxy scenario。preview で使う video source (V1=4K, V2=1080p HEVC) を両方 proxy 化した正式な M8 評価用。",
+  "//": "**正式 M8 評価**: preview で使う video source (V1 / V2) を全て proxy 化した scenario。",
   "schema_version": 1,
   "name": "s7-4k-proxy-all-gop12",
   "media_root": "../../tests/assets/benchmark",

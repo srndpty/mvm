@@ -1,5 +1,5 @@
 {
-  "//": "S7 の 4K logical timeline (original)。preview 用の proxy 版は resolve-proxy が生成する。",
+  "//": "**partial proxy diagnostic**: V1 のみ proxy。V2 は original。正式な M8 評価に使わない。",
   "schema_version": 1,
   "name": "s7-4k-proxy-gop12",
   "media_root": "../../tests/assets/benchmark",

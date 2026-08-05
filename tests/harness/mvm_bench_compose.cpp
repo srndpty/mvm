@@ -2150,6 +2150,16 @@ int cmdPreviewBench(const bench::Args& a) {
     std::string service = a.get("consumer", "null");
     req.consumer_service = service.c_str();
     req.real_time = (int)std::strtol(a.get("real-time", "-4").c_str(), nullptr, 10);
+    // real_time=0 は同期経路で、mlt_frame_get_image を一度も呼ばない。
+    // 走らせれば「フレームを作らずに速い」測定になる。これは測定の使い方の
+    // 誤りなので、走らせる前に使い方エラー (2) で止める。
+    // 走らせてから「rendered が 0 件」で落とすと、
+    // 「使い方が誤っている」のか「実装が壊れている」のか区別できない。
+    if (req.real_time == 0) {
+        logMsg("--real-time 0 は mlt_frame_get_image を呼ばないため計測に使えません。"
+               "非 0 を指定してください (負値=ドロップなし、正値=ドロップあり)。");
+        return kExitUsage;
+    }
     req.measure_ms = (int)std::strtol(a.get("measure-ms", "60000").c_str(), nullptr, 10);
     req.warmup_ms = (int)std::strtol(a.get("warmup-ms", "5000").c_str(), nullptr, 10);
     req.timeout_ms = (int)std::strtol(a.get("timeout-ms", "60000").c_str(), nullptr, 10);
