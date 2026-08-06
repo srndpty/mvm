@@ -64,10 +64,14 @@ Assert-That ($d.software_frame_rejects -eq 0) "software frame を受け取った
 # --- 正しさ ------------------------------------------------------------------
 Assert-That ($d.marker_mismatch -eq 0) "marker 不一致が $($d.marker_mismatch) 件"
 Assert-That ($d.seek_failures -eq 0) "seek 失敗が $($d.seek_failures) 件"
+# **表示された frame が要求と違うのを 0 にする (P1.1 §5)。**
+# decode-ready で一致していても、画面に出たのが別 frame なら意味が無い。
+Assert-That ($d.seek_display_mismatch -eq 0) `
+    "seek の表示 frame が要求と違うものが $($d.seek_display_mismatch) 件"
 Assert-That ($d.decode_errors -eq 0) "decode error が $($d.decode_errors) 件"
 Assert-That ($d.render_errors -eq 0) "render error が $($d.render_errors) 件"
 Assert-That ($d.device_lost_count -eq 0) "device lost が $($d.device_lost_count) 回"
-Assert-That ($d.device_mismatch_rejects -eq 0) "device mismatch で拒否したフレームがある"
+Assert-That ($d.device_rejected -eq 0) "device mismatch で拒否したフレームがある"
 Assert-That ($d.exit_code -eq 0) "exit_code が 0 ではない: $($d.exit_code)"
 
 # marker の明細も個別に見る。集計値だけを信じない。
@@ -80,6 +84,61 @@ foreach ($m in $d.markers) {
         "marker frame $($m.requested): 表示されたのは $($m.displayed)"
 }
 
+# --- P1.1 §1: GPU 完了に基づく retirement ------------------------------------
+Assert-That ($d.gpu_completion_backend -in @('fence', 'event_query')) `
+    "GPU 完了追跡の backend が不正: $($d.gpu_completion_backend)"
+# **GPU が読み終わる前に frame を手放したら不合格。** ここが retainDepth の
+# 置き換えの要点である。
+Assert-That ($d.frames_released_before_completion -eq 0) `
+    "GPU 完了前に解放した frame が $($d.frames_released_before_completion) 件"
+Assert-That ($d.retirement_timeout_count -eq 0) `
+    "retirement の drain が $($d.retirement_timeout_count) 回 timeout した"
+# per-frame で GPU 完了を blocking wait していないこと。
+Assert-That ($d.forced_gpu_wait_count -eq 0) `
+    "GPU 完了の強制待ちが $($d.forced_gpu_wait_count) 回発生した"
+Assert-That ($d.gpu_completed_serial -le $d.gpu_submitted_serial) `
+    "completed serial が submitted を超えている"
+Assert-That ($d.gpu_submitted_serial -gt 0) "GPU submission serial が 1 度も発行されていない"
+Assert-That ($d.retirement_depth_peak -ge $d.retirement_depth_current) `
+    "retirement depth の peak が current を下回っている"
+
+# --- P1.1 §4: SRV cache が epoch を跨いで増え続けない ------------------------
+Assert-That ($d.resource_epoch -gt 0) "resource_epoch が 0 のまま"
+Assert-That ($d.srv_cache_entries_current -le $d.srv_cache_entries_peak) `
+    "SRV cache の current が peak を超えている"
+# 1 本の decoder で計測している間、pool は 1 つだけのはず。
+Assert-That ($d.active_decoder_pools -ge 1) "active_decoder_pools が 0"
+Assert-That ($d.active_decoder_pools -le 2) `
+    "active_decoder_pools が $($d.active_decoder_pools) 件ある (旧 epoch が retire されていない)"
+
+# --- P1.1 §8: device lifecycle ----------------------------------------------
+# device が変わったのに握り潰していないこと。変化したなら
+# 「処理した」か「fail-closed にした」かのどちらかが記録されていること。
+Assert-That ($d.device_change_count -eq
+             ($d.device_change_handled_count + $d.device_change_fail_closed_count)) `
+    "device change の件数と処理結果の件数が合わない"
+
+# --- P1.1 §7: frame accounting ----------------------------------------------
+# queue に残っている frame を無条件に drop と呼ばない。
+# drop は「表示期限を過ぎて意図的に捨てた」ものだけである。
+Assert-That ($d.displayed_frames -le $d.submitted_frames) `
+    "displayed が submitted を超えている (displayed=$($d.displayed_frames) submitted=$($d.submitted_frames))"
+Assert-That ($d.pending_at_end -ge 0) "pending_at_end が負"
+Assert-That ($d.dropped_frames -ge 0) "dropped_frames が負"
+Assert-That (($d.displayed_frames + $d.dropped_frames + $d.pending_at_end) -le $d.decoded_frames) `
+    "displayed + dropped + pending が decoded を超えている"
+foreach ($k in 'stale_rejected', 'future_rejected', 'invalid_rejected', 'device_rejected',
+               'generation_regression_rejected', 'decode_failed', 'render_failed',
+               'retired_not_completed') {
+    Assert-That ($d.$k -ge 0) "$k が負"
+}
+# **未来 generation と generation 逆行は起きてはならない。**
+# 起きたら decode 側と表示側の世代管理が食い違っている。
+Assert-That ($d.future_rejected -eq 0) "未来 generation の frame が $($d.future_rejected) 件届いた"
+Assert-That ($d.generation_regression_rejected -eq 0) `
+    "generation の逆行が $($d.generation_regression_rejected) 件あった"
+Assert-That ($d.invalid_rejected -eq 0) "不正な frame が $($d.invalid_rejected) 件届いた"
+
 # --- 集計の自己整合 ----------------------------------------------------------
 # 「effective_fps」が displayed / elapsed と一致すること。
 # 一致しないなら、どこかで別の数を fps と呼んでいる。
@@ -89,8 +148,6 @@ if ($d.measure_elapsed_ms -gt 0) {
     Assert-That ($diff -lt 0.01) `
         "effective_fps が displayed/elapsed と一致しない (JSON=$($d.effective_fps) 再計算=$expected)"
 }
-# dropped は decode したのに表示されなかった数である。
-Assert-That ($d.dropped_frames -ge 0) "dropped_frames が負"
 Assert-That ($d.decoded_frames -ge $d.displayed_frames) `
     "displayed が decoded を超えている (decoded=$($d.decoded_frames) displayed=$($d.displayed_frames))"
 

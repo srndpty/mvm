@@ -4,8 +4,7 @@
 
 namespace mvm::gpu {
 
-PreviewFrameQueue::PreviewFrameQueue(size_t capacity, size_t retainDepth)
-    : capacity_(capacity == 0 ? 1 : capacity), retainDepth_(retainDepth) {}
+PreviewFrameQueue::PreviewFrameQueue(size_t capacity) : capacity_(capacity == 0 ? 1 : capacity) {}
 
 PreviewFrameQueue::~PreviewFrameQueue() {
     stop();
@@ -26,16 +25,28 @@ void PreviewFrameQueue::setExpectedDevice(ID3D11Device* device) {
     expectedDevice_ = device;
 }
 
-void PreviewFrameQueue::setCurrentGeneration(unsigned long long generation) {
+GenerationUpdateResult PreviewFrameQueue::setCurrentGeneration(GenerationId generation) {
     std::lock_guard<std::mutex> g(mutex_);
-    generation_ = generation;
-    // generation が進んだら、まだ表示していない古いフレームは捨てる。
+    // 逆行は受け付けない。逆行を黙って通すと、seek 済みの新しい世代を
+    // 古い世代で上書きし、飛ぶ前の絵が復活しうる (fail-closed)。
+    if (generation < generation_) {
+        generationRegressions_++;
+        return GenerationUpdateResult::RejectedRegression;
+    }
+    // 同値は no-op。**pending を破棄しない。** 同じ generation の再設定
+    // (例: 冪等な再同期) で表示待ちが消えると、正常な frame を落とす。
+    if (generation == generation_)
+        return GenerationUpdateResult::NoOp;
+
+    // 前進したときだけ、まだ表示していない古いフレームを捨てる。
     // 残すと seek 直後に飛ぶ前の絵が出る。
+    generation_ = generation;
     pending_.clear();
     spaceAvailable_.notify_all();
+    return GenerationUpdateResult::Updated;
 }
 
-unsigned long long PreviewFrameQueue::currentGeneration() const {
+GenerationId PreviewFrameQueue::currentGeneration() const {
     std::lock_guard<std::mutex> g(mutex_);
     return generation_;
 }
@@ -46,12 +57,20 @@ SubmitResult PreviewFrameQueue::submitFrame(const DecodedGpuFrame& frame) {
     if (stopped_)
         return SubmitResult::RejectedNotReady;
 
-    if (!frame.valid())
+    if (!frame.valid()) {
+        invalidRejects_++;
         return SubmitResult::RejectedInvalidFrame;
+    }
 
     if (frame.generation < generation_) {
         staleRejects_++;
         return SubmitResult::RejectedStaleGeneration;
+    }
+    // 未来の generation は表示側がまだ知らない世代である。受け取ると、
+    // まだ設定していない構成のフレームを表示してしまう。fail-closed で拒否する。
+    if (generation_ < frame.generation) {
+        futureRejects_++;
+        return SubmitResult::RejectedFutureGeneration;
     }
 
     if (expectedDevice_) {
@@ -76,7 +95,6 @@ SubmitResult PreviewFrameQueue::submitFrame(const DecodedGpuFrame& frame) {
 void PreviewFrameQueue::clear() {
     std::lock_guard<std::mutex> g(mutex_);
     pending_.clear();
-    retained_.clear();
     displayedFrame_ = -1;
     spaceAvailable_.notify_all();
 }
@@ -100,12 +118,6 @@ void PreviewFrameQueue::noteDisplayed(const DecodedGpuFrame& frame) {
     std::lock_guard<std::mutex> g(mutex_);
     displayedFrame_ = frame.frameNumber;
     displayed_++;
-
-    // GPU が読み終わるまで解放しない。D3D11 immediate context には
-    // fence が無いので、深さで代用する。
-    retained_.push_back(frame.lifetime);
-    while (retained_.size() > retainDepth_)
-        retained_.pop_front();
     spaceAvailable_.notify_all();
 }
 
@@ -125,7 +137,6 @@ void PreviewFrameQueue::stop() {
         std::lock_guard<std::mutex> g(mutex_);
         stopped_ = true;
         pending_.clear();
-        retained_.clear();
     }
     spaceAvailable_.notify_all();
 }
@@ -155,6 +166,16 @@ long long PreviewFrameQueue::rejectedStaleCount() const {
     return staleRejects_;
 }
 
+long long PreviewFrameQueue::rejectedFutureCount() const {
+    std::lock_guard<std::mutex> g(mutex_);
+    return futureRejects_;
+}
+
+long long PreviewFrameQueue::rejectedInvalidCount() const {
+    std::lock_guard<std::mutex> g(mutex_);
+    return invalidRejects_;
+}
+
 long long PreviewFrameQueue::rejectedDeviceMismatchCount() const {
     std::lock_guard<std::mutex> g(mutex_);
     return deviceRejects_;
@@ -163,6 +184,11 @@ long long PreviewFrameQueue::rejectedDeviceMismatchCount() const {
 long long PreviewFrameQueue::queueFullCount() const {
     std::lock_guard<std::mutex> g(mutex_);
     return queueFull_;
+}
+
+long long PreviewFrameQueue::generationRegressionCount() const {
+    std::lock_guard<std::mutex> g(mutex_);
+    return generationRegressions_;
 }
 
 } // namespace mvm::gpu

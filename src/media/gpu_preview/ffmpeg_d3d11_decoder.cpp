@@ -12,6 +12,7 @@ extern "C" {
 #include <libavutil/pixdesc.h>
 }
 
+#include <atomic>
 #include <cstdio>
 #include <string>
 
@@ -74,6 +75,20 @@ bool isExpectedHwFormat(int avPixelFormat) {
 }
 
 namespace {
+
+// resource / composition epoch は **プロセス全体で単調増加させる。**
+//
+// decoder インスタンスごとのカウンタにすると、別の decoder がどれも epoch 1 になり、
+// SRV cache の key (epoch, texture, ...) が衝突する。
+// texture のアドレスは pool 解放後に再利用されるので、衝突すると
+// **前の pool 用の SRV を新しい pool のフレームに使ってしまう。**
+//
+// 実際に open/close soak で発覚した: 旧 epoch と判定されず 1 件も retire されず、
+// SRV cache が 100 cycle で 400 entry まで増え続けた。
+unsigned long long allocateResourceEpoch() {
+    static std::atomic<unsigned long long> counter{0};
+    return counter.fetch_add(1, std::memory_order_relaxed) + 1;
+}
 
 std::string avErr(const char* what, int code) {
     char buf[AV_ERROR_MAX_STRING_SIZE] = {0};
@@ -142,6 +157,9 @@ struct FFmpegD3D11Decoder::Impl {
     unsigned long long decodeDevice = 0;
 
     unsigned long long generation = 1;
+    // open ごとに進む resource / composition epoch (§4)。
+    // decode pool・SRV cache・texture の世代を表す。
+    unsigned long long resourceEpoch = 0;
     bool eofSent = false;
     bool eofReached = false;
 
@@ -296,7 +314,7 @@ bool FFmpegD3D11Decoder::Impl::wrapFrame(AVFrame* frame, DecodedGpuFrame& out, s
     out.colorRange = cd.range;
     out.colorSpaceInferred = cd.spaceInferred;
     out.colorRangeInferred = cd.rangeInferred;
-    out.generation = generation;
+    out.generation = GenerationId{resourceEpoch, generation};
 
     // lifetime token: AVFrame の所有権をここへ移す。
     // token が生きている間、この texture slice は再利用されない。
@@ -541,6 +559,9 @@ bool FFmpegD3D11Decoder::open(const std::string& utf8Path, std::string& err) {
 
     d.info = vi;
     d.generation++;
+    // open ごとに resource_epoch を進める (§4)。
+    // 前の open で作った SRV / decode pool は別世代のものとして扱う。
+    d.resourceEpoch = allocateResourceEpoch();
     return true;
 }
 
@@ -690,6 +711,10 @@ const VideoStreamInfo& FFmpegD3D11Decoder::info() const {
 
 unsigned long long FFmpegD3D11Decoder::generation() const {
     return impl_->generation;
+}
+
+unsigned long long FFmpegD3D11Decoder::resourceEpoch() const {
+    return impl_->resourceEpoch;
 }
 
 OpenFailure FFmpegD3D11Decoder::openFailure() const {

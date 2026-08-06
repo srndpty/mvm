@@ -12,6 +12,34 @@ DecodeWorker::~DecodeWorker() {
     stop();
 }
 
+// decoderMutex_ を保持した状態で呼ぶこと。
+// decoder_ を読むのはこの関数と decode 経路だけにする (§2)。
+void DecodeWorker::refreshSnapshotLocked() {
+    DecoderSnapshot s;
+    s.running = running_.load(std::memory_order_relaxed);
+    if (decoder_) {
+        s.open = true;
+        s.info = decoder_->info();
+        s.adapter = decoder_->decodeAdapter();
+        s.decodeDevicePointer = decoder_->decodeDevicePointer();
+        s.generation = decoder_->generationId();
+        s.resourceEpoch = decoder_->resourceEpoch();
+        s.decodedFrameCount = decoder_->decodedFrameCount();
+        s.decodeErrorCount = decoder_->decodeErrorCount();
+        s.softwareFrameRejectCount = decoder_->softwareFrameRejectCount();
+        s.seekBackoffCount = decoder_->seekBackoffCount();
+    }
+    std::lock_guard<std::mutex> g(snapshotMutex_);
+    // lastError は decode ループが別に書き込む。上書きして消さない。
+    s.lastError = snapshot_.lastError;
+    snapshot_ = std::move(s);
+}
+
+DecoderSnapshot DecodeWorker::snapshot() const {
+    std::lock_guard<std::mutex> g(snapshotMutex_);
+    return snapshot_; // **値のコピー**を返す。参照は返さない
+}
+
 bool DecodeWorker::start(const std::string& utf8Path, std::string& err) {
     stop();
 
@@ -21,27 +49,40 @@ bool DecodeWorker::start(const std::string& utf8Path, std::string& err) {
         return false;
     }
 
-    decoder_ = std::make_unique<FFmpegD3D11Decoder>(state_.device, &state_.counters);
-    if (!decoder_->open(utf8Path, err)) {
-        decoder_.reset();
-        return false;
+    {
+        std::lock_guard<std::mutex> g(snapshotMutex_);
+        snapshot_ = DecoderSnapshot{};
     }
-    info_ = decoder_->info();
+
+    auto decoder = std::make_unique<FFmpegD3D11Decoder>(state_.device, &state_.counters);
+    if (!decoder->open(utf8Path, err))
+        return false;
+
+    {
+        std::lock_guard<std::mutex> g(decoderMutex_);
+        decoder_ = std::move(decoder);
+    }
 
     state_.queue.restart();
     state_.queue.clear();
     state_.queue.setExpectedDevice(state_.device.device());
-    state_.queue.setCurrentGeneration(decoder_->generation());
+    {
+        std::lock_guard<std::mutex> g(decoderMutex_);
+        state_.queue.setCurrentGeneration(decoder_->generationId());
+    }
 
     eof_.store(false);
     playing_.store(false);
     {
         std::lock_guard<std::mutex> g(mutex_);
         stepsPending_ = 1; // 開いた直後に 1 枚出す (黒いままにしない)
-        lastError_.clear();
     }
 
     running_.store(true);
+    {
+        std::lock_guard<std::mutex> g(decoderMutex_);
+        refreshSnapshotLocked();
+    }
     thread_ = std::thread([this] { run(); });
     return true;
 }
@@ -59,6 +100,7 @@ void DecodeWorker::stop() {
 
     std::lock_guard<std::mutex> g(decoderMutex_);
     decoder_.reset();
+    refreshSnapshotLocked();
 }
 
 void DecodeWorker::play() {
@@ -79,8 +121,8 @@ void DecodeWorker::stepForward() {
     wake_.notify_all();
 }
 
-bool DecodeWorker::seekBlocking(long long frameNumber, double& elapsedMs, std::string& err) {
-    elapsedMs = 0.0;
+bool DecodeWorker::seekBlocking(long long frameNumber, double& decodeReadyMs, std::string& err) {
+    decodeReadyMs = 0.0;
     std::lock_guard<std::mutex> g(decoderMutex_);
     if (!decoder_) {
         err = "decoder が開かれていません";
@@ -92,25 +134,29 @@ bool DecodeWorker::seekBlocking(long long frameNumber, double& elapsedMs, std::s
     // 表示側の generation を先に進める。
     // decode 中に飛ぶ前のフレームが submit されても弾かれる。
     if (!decoder_->seek(frameNumber, err)) {
-        state_.queue.setCurrentGeneration(decoder_->generation());
-        elapsedMs = qpcMsBetween(t0, qpcTicks());
+        state_.queue.setCurrentGeneration(decoder_->generationId());
+        decodeReadyMs = qpcMsBetween(t0, qpcTicks());
+        refreshSnapshotLocked();
         return false;
     }
-    state_.queue.setCurrentGeneration(decoder_->generation());
+    state_.queue.setCurrentGeneration(decoder_->generationId());
 
-    // seek は「目標フレームを decode し終えた時点」で完了とする。
+    // seek は「目標フレームを decode し終えた時点」を decode-ready とする。
     // packet を投げただけを seek 完了と呼ぶと、実測が実態と合わない。
+    // **画面に出るまで**は呼び出し側が別に測る (§5)。
     DecodedGpuFrame frame;
     const DecodeStatus st = decoder_->requestFrame(frame, err);
-    elapsedMs = qpcMsBetween(t0, qpcTicks());
+    decodeReadyMs = qpcMsBetween(t0, qpcTicks());
     if (st != DecodeStatus::Ok) {
         if (err.empty())
             err = std::string("seek 後の decode が ") + toString(st) + " でした";
+        refreshSnapshotLocked();
         return false;
     }
     if (frame.frameNumber != frameNumber) {
         err = "seek 先が要求と違います (要求 " + std::to_string(frameNumber) + " / 着地 " +
               std::to_string(frame.frameNumber) + ")";
+        refreshSnapshotLocked();
         return false;
     }
 
@@ -120,6 +166,7 @@ bool DecodeWorker::seekBlocking(long long frameNumber, double& elapsedMs, std::s
         state_.queue.submitFrame(frame);
     }
     eof_.store(false);
+    refreshSnapshotLocked();
     return true;
 }
 
@@ -157,50 +204,32 @@ void DecodeWorker::run() {
         if (st == DecodeStatus::Eof) {
             eof_.store(true);
             playing_.store(false);
+            refreshSnapshotLocked();
             continue;
         }
         if (st == DecodeStatus::Again)
             continue;
         if (st != DecodeStatus::Ok) {
-            std::lock_guard<std::mutex> g2(mutex_);
-            lastError_ = err;
+            {
+                std::lock_guard<std::mutex> g2(snapshotMutex_);
+                snapshot_.lastError = err;
+            }
             playing_.store(false);
+            refreshSnapshotLocked();
             continue;
         }
 
         const SubmitResult sr = state_.queue.submitFrame(frame);
         if (sr == SubmitResult::RejectedDeviceMismatch) {
             // 致命的。device 共有が壊れている。黙って続けない。
-            std::lock_guard<std::mutex> g2(mutex_);
-            lastError_ = "decode texture が表示側の device と一致しません";
+            {
+                std::lock_guard<std::mutex> g2(snapshotMutex_);
+                snapshot_.lastError = "decode texture が表示側の device と一致しません";
+            }
             playing_.store(false);
         }
+        refreshSnapshotLocked();
     }
-}
-
-const AdapterInfo& DecodeWorker::decodeAdapter() const {
-    static const AdapterInfo empty;
-    return decoder_ ? decoder_->decodeAdapter() : empty;
-}
-
-unsigned long long DecodeWorker::decodeDevicePointer() const {
-    return decoder_ ? decoder_->decodeDevicePointer() : 0;
-}
-
-long long DecodeWorker::decodedFrameCount() const {
-    return decoder_ ? decoder_->decodedFrameCount() : 0;
-}
-
-long long DecodeWorker::decodeErrorCount() const {
-    return decoder_ ? decoder_->decodeErrorCount() : 0;
-}
-
-long long DecodeWorker::softwareFrameRejectCount() const {
-    return decoder_ ? decoder_->softwareFrameRejectCount() : 0;
-}
-
-long long DecodeWorker::seekBackoffCount() const {
-    return decoder_ ? decoder_->seekBackoffCount() : 0;
 }
 
 } // namespace mvm::gpu

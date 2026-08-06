@@ -7,7 +7,7 @@
 
       - 素材ごとに warm-up 5 秒 -> 測定 60 秒
       - 3 run。**run ごとに別プロセス**
-      - seek は seed 固定で 1000 点
+      - seek は seed 固定で 1000 点 (判定は **表示されるまで** の時間で行う)
       - marker 代表点 0 / 1 / 137 / 299 / 600 / 1799 / 3599
 
     判定対象は 1080p60 H.264 と 1080p60 HEVC。
@@ -126,9 +126,20 @@ foreach ($t in $targets) {
             intervalP95   = [double]$d.frame_interval_p95_ms
             intervalMax   = [double]$d.frame_interval_max_ms
             startupMs     = [double]$d.startup_latency_ms
-            seekP50       = [double]$d.seek_p50_ms
-            seekP95       = [double]$d.seek_p95_ms
-            seekMax       = [double]$d.seek_max_ms
+            seekDecodeP50 = [double]$d.seek_decode_ready_p50_ms
+            seekDecodeP95 = [double]$d.seek_decode_ready_p95_ms
+            seekP50       = [double]$d.seek_displayed_p50_ms
+            seekP95       = [double]$d.seek_displayed_p95_ms
+            seekMax       = [double]$d.seek_displayed_max_ms
+            seekDispMismatch = [long]$d.seek_display_mismatch
+            gpuBackend    = [string]$d.gpu_completion_backend
+            releasedEarly = [long]$d.frames_released_before_completion
+            retireTimeout = [long]$d.retirement_timeout_count
+            retireePeak   = [long]$d.retirement_depth_peak
+            srvPeak       = [long]$d.srv_cache_entries_peak
+            srvCurrent    = [long]$d.srv_cache_entries_current
+            pools         = [long]$d.active_decoder_pools
+            pendingAtEnd  = [long]$d.pending_at_end
             seekFail      = [long]$d.seek_failures
             markerChecked = [long]$d.marker_checked
             markerMismatch= [long]$d.marker_mismatch
@@ -166,6 +177,12 @@ foreach ($id in ($rows | Select-Object -ExpandProperty id -Unique)) {
         readback       = ($g | ForEach-Object { $_.readback } | Measure-Object -Sum).Sum
         deviceLost     = ($g | ForEach-Object { $_.deviceLost } | Measure-Object -Sum).Sum
         seekFail       = ($g | ForEach-Object { $_.seekFail } | Measure-Object -Sum).Sum
+        seekDispMismatch = ($g | ForEach-Object { $_.seekDispMismatch } | Measure-Object -Sum).Sum
+        releasedEarly  = ($g | ForEach-Object { $_.releasedEarly } | Measure-Object -Sum).Sum
+        retireTimeout  = ($g | ForEach-Object { $_.retireTimeout } | Measure-Object -Sum).Sum
+        srvPeakMax     = ($g | ForEach-Object { $_.srvPeak } | Measure-Object -Maximum).Maximum
+        poolsMax       = ($g | ForEach-Object { $_.pools } | Measure-Object -Maximum).Maximum
+        gpuBackend     = $g[0].gpuBackend
         sameAdapter    = -not ($g | Where-Object { -not $_.sameAdapter })
         sameDevice     = -not ($g | Where-Object { -not $_.sameDevice })
         contractOk     = -not ($g | Where-Object { -not $_.contractOk })
@@ -176,8 +193,8 @@ foreach ($id in ($rows | Select-Object -ExpandProperty id -Unique)) {
 Write-Host "`n=== 集計 ===" -ForegroundColor Cyan
 $summary | Format-Table id, gate, runs, @{n='fps(min)';e={'{0:N2}' -f $_.fpsMin}},
     @{n='drop(max)';e={'{0:N4}' -f $_.dropRateMax}},
-    @{n='seek p95';e={'{0:N1}' -f $_.seekP95Max}},
-    @{n='seek max';e={'{0:N1}' -f $_.seekObservedMax}},
+    @{n='seek(表示) p95';e={'{0:N1}' -f $_.seekP95Max}},
+    @{n='seek(表示) max';e={'{0:N1}' -f $_.seekObservedMax}},
     markerChecked, markerMismatch, readback, deviceLost, sameDevice, sameAdapter, contractOk -AutoSize
 
 # --- exit criteria (docs/phase1-plan.md §12) ---------------------------------
@@ -200,6 +217,10 @@ foreach ($s in $gates) {
     if ($s.seekP95Max -gt 150)           { $verdict.Add("$($s.id): seek p95 $('{0:N1}' -f $s.seekP95Max)ms > 150ms") }
     if ($s.seekObservedMax -gt 400)      { $verdict.Add("$($s.id): seek 観測 max $('{0:N1}' -f $s.seekObservedMax)ms > 400ms") }
     if ($s.seekFail -ne 0)               { $verdict.Add("$($s.id): seek 失敗 $($s.seekFail) 件") }
+    if ($s.seekDispMismatch -ne 0)       { $verdict.Add("$($s.id): seek 表示 frame の不一致 $($s.seekDispMismatch) 件") }
+    if ($s.releasedEarly -ne 0)          { $verdict.Add("$($s.id): GPU 完了前に解放した frame $($s.releasedEarly) 件") }
+    if ($s.retireTimeout -ne 0)          { $verdict.Add("$($s.id): retirement drain の timeout $($s.retireTimeout) 回") }
+    if ($s.poolsMax -gt 2)               { $verdict.Add("$($s.id): active_decoder_pools が $($s.poolsMax) 件 (旧 epoch が retire されていない)") }
     if ($s.deviceLost -ne 0)             { $verdict.Add("$($s.id): device lost $($s.deviceLost) 回") }
 }
 

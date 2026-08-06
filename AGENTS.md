@@ -148,7 +148,13 @@ Phase 1 / P1:
 pwsh scripts/p1-matrix.ps1             # **P1 の正式な計測。合否はこれだけで決める**
 pwsh scripts/p1-matrix.ps1 -Quick      # 短縮版 (経路確認のみ。判定に使えない)
 pwsh scripts/check-p1-contract.ps1 -Json <path>   # 生 JSON の契約検査
+pwsh scripts/make-color-fixtures.ps1   # color correctness 用 fixture の生成
 ```
+
+color fixture は `tests/assets/color/` に置く。
+期待 RGB は生成スクリプトが **標準式から独立に**計算しており、
+実装の関数 (`coefficientsFor`) は呼んでいない。
+実装を呼んで期待値を作ると、実装のバグをテストが追認する。
 
 契約検査は `check-p1-contract.ps1` に一本化している。
 CTest と `p1-matrix.ps1` の両方がこれを呼ぶ。2 箇所に書かない。

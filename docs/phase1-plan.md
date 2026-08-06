@@ -285,8 +285,11 @@ array texture の 1 slice なので、**AVFrame を解放した瞬間に
 別のフレームが同じ slice へ decode されうる**。
 
 renderer は submit された frame を **GPU command が完了するまで**保持する。
-D3D11 immediate context には fence が無いので、
-直近 N フレーム分を retain queue に保持して解放を遅らせる（N は JSON に記録する）。
+
+> **P1.1 で方式を変えた。** P1 は「直近 N 枚を retain する」深さ方式だったが、
+> これは「たぶん GPU は読み終わっているだろう」という推測でしかなく、
+> 負荷が上がれば保証が崩れる。P1.1 では `ID3D11Fence`（無ければ
+> `D3D11_QUERY_EVENT`）の **完了 serial** を根拠にする。詳細は §15。
 
 ### stale generation rejection
 
@@ -365,12 +368,18 @@ WorkingSet / PrivateUsage / device lost count / errors
 | --- | --- |
 | `decoded_frames` | 計測区間で decode したフレーム数 |
 | `displayed_frames` | 計測区間で **実際に描画した** ユニークなフレーム数 |
-| `dropped_frames` | `decoded - displayed`。**decode したのに一度も表示されなかった数** |
+| `dropped_frames` | **表示期限を過ぎて意図的に捨てた数**（P1.1 §7 で定義を締めた） |
+| `pending_at_end` | 計測終了時に queue に残っていた数。**drop ではない** |
 | `drop_rate` | `dropped / decoded` |
 | `repeated_presents` | 新しいフレームが無く、前の絵をもう一度出した present の回数 |
 | `repeat_rate` | `repeated / present_calls` |
 | `effective_fps` | `displayed_frames / 実測経過秒` |
 | `present_rate_hz` | `present_calls / 実測経過秒` |
+
+**queue に残っている frame を drop と呼ばない (P1.1 §7)。**
+計測を止めた瞬間に表示待ちが数枚残るのは正常であり、
+それを drop に数えると「正常終了が不合格」になる。
+drop は「表示期限を過ぎたので捨てた」ものだけを指す。
 
 `dropped` と `repeated` を **同じ指標にしない**。
 表示のリフレッシュが素材の fps より速ければ `repeated` は必ず出る
@@ -420,8 +429,8 @@ GPU engine utilization は取得できない場合がある。
 | 4 | `cpu_full_frame_readback_count` **== 0** |
 | 5 | 1080p60 `effective_fps` **>= 55** |
 | 6 | `drop_rate` **<= 0.02**（decode したのに表示されなかった割合。§11 の定義） |
-| 7 | seek p95 **<= 150 ms** |
-| 8 | 観測 max **<= 400 ms** |
+| 7 | seek **displayed** p95 **<= 150 ms**（P1.1 §5。decode-ready ではない） |
+| 8 | seek **displayed** 観測 max **<= 400 ms** |
 | 9 | crash **0** / device lost **0** |
 | 10 | 通常の release / debug CTest が**全通過** |
 
@@ -472,7 +481,54 @@ Phase 0 の規約を継承する。
 - vsync を外した最大スループットの計測（余力の測定）。
   P1 は「60 fps に間に合うか」までしか見ない
 
-## 15. P1 の後
+## 15. P1.1: GPU 寿命・並行性・計測契約のクローズ
+
+P1 の縦切りは成立したが、P2（二動画 GPU 合成）へ広げる前に
+**正しさの面で開いたままの穴**を閉じる。P1.1 で閉じたのは次の 7 点である。
+
+| # | 穴 | 閉じ方 |
+| --- | --- | --- |
+| 1 | frame の解放が「直近 N 枚保持」という**推測**だった | GPU の完了 serial を根拠にする（`GpuCompletionTracker` / `GpuRetirementQueue`）。fence を第一候補、event query を fallback |
+| 2 | GUI が decoder 内部を**無排他で読んでいた** | `DecoderSnapshot` の値コピーだけを返す。mutable object への const 参照を廃止 |
+| 3 | generation の照合が片側だけだった | 未来 generation を拒否、逆行を拒否、同値は no-op（pending を破棄しない） |
+| 4 | SRV cache の key が (texture, index) だけだった | key に `resource_epoch` と pixel format を含め、旧 epoch は GPU 完了後に retire |
+| 5 | seek を **decode 完了**までしか測っていなかった | `seek_decode_ready_ms` と `seek_displayed_ms` に分け、**判定は displayed** |
+| 6 | 色の正しさを marker 一致で代用していた | 既知 YUV patch の fixture を作り、表示と同じ shader で照合 |
+| 7 | `initialize()` の再入で古い device を使い続けうる | 毎回 native device / context を照合し、変化したら drain して再初期化。件数を JSON へ出す |
+
+### GPU 完了に基づく retire（§1 の契約）
+
+- draw を発行するたびに submission serial を得る
+- 描画に使った lifetime token / SRV は、その serial が完了するまで解放しない
+- seek / clear / stop でも即解放せず retirement queue へ移す
+- **per-frame で GPU 完了を blocking wait しない。** render ごとに poll する
+- shutdown だけ有限 timeout で drain する。timeout は fail-closed
+- **`Flush` を毎 frame 呼んで見かけ上解決しない**
+
+`frames_released_before_completion` は **必ず 0**。
+0 でなければ「GPU が読み終わる前に手放した」ことを意味するので不合格とする。
+
+### source_generation と composition_epoch
+
+P1.1 では decoder は 1 本だが、**単一の global generation に固定しない**。
+
+- `source_generation`: ある source の seek / flush で進む
+- `composition_epoch`: decode pool / device / resource が作り直された世代
+
+比較は composition_epoch を上位、source_generation を下位とする辞書式で行う。
+P2 で source が増えても、この形のまま拡張できる。
+
+### 色検査の位置づけ
+
+正式な色検査は `mvm_test_gpu_decode color` が
+`tests/assets/color/` の fixture に対して行う（CTest 登録済み）。
+期待 RGB は `scripts/make-color-fixtures.ps1` が
+**標準式から独立に**計算しており、実装の関数は呼んでいない。
+
+`preview_spike` 側の `--color-patch` は診断であり、合否には使わない
+（どの行列 / レンジが選ばれたかを JSON へ残すだけ）。
+
+## 16. P1 の後
 
 実測所見は [phase1-findings.md](phase1-findings.md) に、
 事実 / 推測 / 未検証を区別して記録する。

@@ -24,7 +24,7 @@ public:
     explicit PreviewRhiRenderer(std::shared_ptr<gpu::PreviewState> state)
         : state_(std::move(state)) {}
 
-    ~PreviewRhiRenderer() override { releaseRtv(); }
+    ~PreviewRhiRenderer() override { teardownDeviceResources(); }
 
 protected:
     void initialize(QRhiCommandBuffer* cb) override;
@@ -42,9 +42,18 @@ private:
 
     bool ensureRtv(QRhiTexture* tex, std::string& err);
     void runMarkerProbe(const gpu::DecodedGpuFrame& frame);
+    void runColorPatchProbe(const gpu::DecodedGpuFrame& frame);
+    void noteDisplayCompletion(const gpu::DecodedGpuFrame& frame, long long qpc);
+    bool adoptDevice(void* dev, void* ctx, int featureLevel, unsigned int luidLow, int luidHigh);
+    void teardownDeviceResources();
 
     std::shared_ptr<gpu::PreviewState> state_;
-    bool adopted_ = false;
+    // **adopted_ だけで「もう初期化済み」と判断しない (§8)。**
+    // initialize() は color texture の再生成のたびに呼ばれ、
+    // そのとき device が別物へ差し替わっていることがありうる。
+    // 実際の device / context ポインタを毎回照合する。
+    void* adoptedDevice_ = nullptr;
+    void* adoptedContext_ = nullptr;
 
     ID3D11Texture2D* rtvTexture_ = nullptr;
     ID3D11RenderTargetView* rtv_ = nullptr;
@@ -79,11 +88,9 @@ void PreviewRhiRenderer::initialize(QRhiCommandBuffer* /*cb*/) {
         return;
     }
 
-    // color texture が作り直されるたびに initialize() が呼ばれる。
-    // device の採用は 1 度だけでよい。
-    if (adopted_)
-        return;
-
+    // **initialize() は複数回呼ばれる。** color texture の再生成 (resize)、
+    // window の作り直し、scene graph の invalidate で来る。
+    // そのたびに native device / context を照合する (§8)。
     const auto* h = static_cast<const QRhiD3D11NativeHandles*>(r->nativeHandles());
     if (!h || !h->dev || !h->context) {
         std::lock_guard<std::mutex> g(state_->infoMutex);
@@ -92,21 +99,72 @@ void PreviewRhiRenderer::initialize(QRhiCommandBuffer* /*cb*/) {
         return;
     }
 
-    auto* dev = static_cast<ID3D11Device*>(h->dev);
-    auto* ctx = static_cast<ID3D11DeviceContext*>(h->context);
+    if (adoptedDevice_ == h->dev && adoptedContext_ == h->context) {
+        // 同一 device。既存 resource をそのまま使ってよい。
+        return;
+    }
+
+    if (adoptedDevice_ != nullptr) {
+        // device が変わった。**黙って古い device を使い続けない。**
+        state_->deviceChangeCount.fetch_add(1, std::memory_order_relaxed);
+        // P1.1 の方針: 完全再初期化を試みる。
+        // decoder は GUI thread が所有しているのでここでは止められない。
+        // したがって deviceReady を落として fail-closed にし、
+        // GUI 側が decoder を止めてから再 open する契機にする。
+        state_->deviceReady.store(false, std::memory_order_release);
+        state_->queue.stop();
+        teardownDeviceResources();
+    }
+
+    if (!adoptDevice(h->dev, h->context, h->featureLevel, h->adapterLuidLow, h->adapterLuidHigh)) {
+        if (adoptedDevice_ != nullptr)
+            state_->deviceChangeFailClosedCount.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    if (state_->deviceChangeCount.load(std::memory_order_relaxed) > 0)
+        state_->deviceChangeHandledCount.fetch_add(1, std::memory_order_relaxed);
+}
+
+void PreviewRhiRenderer::teardownDeviceResources() {
+    // GPU がまだ読んでいるものを即 Release しない。有限 timeout で drain する。
+    // timeout したら fail-closed で数える (retirement_timeout_count)。
+    if (state_->completion.ready()) {
+        state_->retirement.drain([this] { return state_->completion.polledCompleted(); }, 2000);
+    }
+    state_->retirement.releaseWithoutCompletion();
+    releaseRtv();
+    state_->converter.release();
+    state_->completion.release();
+    state_->device.release();
+    adoptedDevice_ = nullptr;
+    adoptedContext_ = nullptr;
+}
+
+bool PreviewRhiRenderer::adoptDevice(void* dev, void* ctx, int featureLevel, unsigned int luidLow,
+                                     int luidHigh) {
+    auto* d3dDev = static_cast<ID3D11Device*>(dev);
+    auto* d3dCtx = static_cast<ID3D11DeviceContext*>(ctx);
 
     std::string err;
-    if (!state_->device.adopt(dev, ctx, err)) {
+    if (!state_->device.adopt(d3dDev, d3dCtx, err)) {
         std::lock_guard<std::mutex> g(state_->infoMutex);
         state_->initError = "D3D11 device を共有できません: " + err;
         state_->initFailed.store(true);
-        return;
+        return false;
+    }
+    if (!state_->completion.initialize(state_->device, err)) {
+        // GPU 完了を確認する手段が無いなら、frame lifetime を保証できない。
+        // 「たぶん大丈夫」で続けない (fail-closed)。
+        std::lock_guard<std::mutex> g(state_->infoMutex);
+        state_->initError = "GPU 完了追跡を初期化できません: " + err;
+        state_->initFailed.store(true);
+        return false;
     }
     if (!state_->converter.initialize(state_->device, &state_->counters, err)) {
         std::lock_guard<std::mutex> g(state_->infoMutex);
         state_->initError = "NV12 変換パスを初期化できません: " + err;
         state_->initFailed.store(true);
-        return;
+        return false;
     }
     state_->queue.setExpectedDevice(state_->device.device());
 
@@ -114,15 +172,18 @@ void PreviewRhiRenderer::initialize(QRhiCommandBuffer* /*cb*/) {
         std::lock_guard<std::mutex> g(state_->infoMutex);
         // QRhi が申告する値と、device から DXGI 経由で取った値を **両方** 記録する。
         // 一致しなければ、どちらかの取得経路が誤っている。
-        state_->qtReportedLuidLow = h->adapterLuidLow;
-        state_->qtReportedLuidHigh = h->adapterLuidHigh;
-        state_->qtFeatureLevel = h->featureLevel;
-        state_->qtDevicePointer = reinterpret_cast<unsigned long long>(dev);
-        state_->qtContextPointer = reinterpret_cast<unsigned long long>(ctx);
+        state_->qtReportedLuidLow = luidLow;
+        state_->qtReportedLuidHigh = luidHigh;
+        state_->qtFeatureLevel = featureLevel;
+        state_->qtDevicePointer = reinterpret_cast<unsigned long long>(d3dDev);
+        state_->qtContextPointer = reinterpret_cast<unsigned long long>(d3dCtx);
+        state_->gpuCompletionBackend = gpu::toString(state_->completion.backend());
     }
 
-    adopted_ = true;
+    adoptedDevice_ = dev;
+    adoptedContext_ = ctx;
     state_->deviceReady.store(true, std::memory_order_release);
+    return true;
 }
 
 void PreviewRhiRenderer::synchronize(QQuickRhiItem* item) {
@@ -203,6 +264,11 @@ void PreviewRhiRenderer::render(QRhiCommandBuffer* cb) {
     if (!state_->deviceReady.load(std::memory_order_acquire))
         return;
 
+    // **毎 render で完了済み serial を poll して解放する (§1)。**
+    // blocking wait はしない。Flush も呼ばない。
+    // GPU が遅れれば retirement queue が深くなるだけで、正しさは崩れない。
+    state_->retirement.poll(state_->completion.polledCompleted());
+
     if ((state_->presentCount.load(std::memory_order_relaxed) % kDeviceLostCheckInterval) == 0) {
         long reason = 0;
         if (state_->device.deviceLost(reason))
@@ -245,14 +311,24 @@ void PreviewRhiRenderer::render(QRhiCommandBuffer* cb) {
     const bool ok = state_->converter.drawToRenderTarget(frame, rtv_, sz.width(), sz.height(),
                                                          linearFilter_, clearColor_, err);
 
-    if (ok)
+    if (ok) {
         runMarkerProbe(frame);
+        runColorPatchProbe(frame);
+    }
+
+    // draw を発行したので submission serial を得る。**draw の直後に 1 回だけ。**
+    // ここで得た serial が完了するまで、この frame の lifetime token と
+    // 使用した SRV を解放しない。
+    const unsigned long long serial = state_->completion.signalSubmission();
+    state_->converter.stampSubmissionSerial(serial);
 
     cb->endExternal();
     cb->endPass();
 
     if (!ok) {
         state_->renderErrorCount.fetch_add(1, std::memory_order_relaxed);
+        // 描けなかった frame も GPU が触った可能性があるので retire する。
+        state_->retirement.retire(serial, frame.lifetime);
         return;
     }
 
@@ -262,9 +338,63 @@ void PreviewRhiRenderer::render(QRhiCommandBuffer* cb) {
     state_->uniqueDisplayed.fetch_add(1, std::memory_order_relaxed);
 
     const long long now = gpu::qpcTicks();
+    noteDisplayCompletion(frame, now);
+
+    // retainDepth ではなく **GPU 完了**を根拠に保持する (§1)。
+    state_->retirement.retire(serial, frame.lifetime);
+
     if (lastPresentTicks_ != 0)
         state_->pushInterval(gpu::qpcMsBetween(lastPresentTicks_, now));
     lastPresentTicks_ = now;
+}
+
+void PreviewRhiRenderer::noteDisplayCompletion(const gpu::DecodedGpuFrame& frame, long long qpc) {
+    auto& slot = state_->displayCompletion;
+    std::lock_guard<std::mutex> g(slot.mutex);
+    if (!slot.waiting)
+        return;
+    // 4 つすべて一致したときだけ completion とする。
+    // 1 つでも緩めると、古い表示を別 request の成功として使ってしまう。
+    if (frame.generation != slot.generation || frame.frameNumber != slot.requestedFrame)
+        return;
+
+    slot.last.valid = true;
+    slot.last.requestId = slot.requestId;
+    slot.last.generation = slot.generation;
+    slot.last.requestedFrame = slot.requestedFrame;
+    slot.last.displayedFrame = frame.frameNumber;
+    slot.last.displayedQpc = qpc;
+    slot.waiting = false;
+}
+
+void PreviewRhiRenderer::runColorPatchProbe(const gpu::DecodedGpuFrame& frame) {
+    auto& slot = state_->colorPatch;
+    int w = 0, h = 0;
+    {
+        std::lock_guard<std::mutex> g(slot.mutex);
+        if (!slot.requested)
+            return;
+        if (slot.expectedFrame >= 0 && frame.frameNumber != slot.expectedFrame)
+            return;
+        w = slot.patchWidth;
+        h = slot.patchHeight;
+    }
+
+    std::vector<unsigned char> rgba;
+    std::string err;
+    const bool ok = state_->converter.readColorPatches(frame, w, h, rgba, err);
+
+    std::lock_guard<std::mutex> g(slot.mutex);
+    slot.requested = false;
+    slot.done = true;
+    slot.rgba = std::move(rgba);
+    // **どの行列 / レンジが選ばれたか**を必ず一緒に出す。
+    // 期待 RGB と合わないとき、metadata が違うのか変換が違うのかを分けるため。
+    slot.colorSpace = frame.colorSpace;
+    slot.colorRange = frame.colorRange;
+    slot.colorSpaceInferred = frame.colorSpaceInferred;
+    slot.colorRangeInferred = frame.colorRangeInferred;
+    slot.error = ok ? std::string() : err;
 }
 
 } // namespace

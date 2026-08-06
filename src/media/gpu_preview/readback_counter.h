@@ -28,6 +28,9 @@ public:
     // marker 帯 (1216x64) だけを読んだ。判定には使わない。
     void noteMarkerBandReadback() { markerBand_.fetch_add(1, std::memory_order_relaxed); }
 
+    // color patch (小領域) だけを読んだ。判定には使わない。
+    void noteColorPatchReadback() { colorPatch_.fetch_add(1, std::memory_order_relaxed); }
+
     // GPU 内の copy / 変換 pass。CPU 転送ではない。
     void noteGpuCopy() { gpuCopy_.fetch_add(1, std::memory_order_relaxed); }
 
@@ -35,17 +38,21 @@ public:
 
     long long markerBandReadbacks() const { return markerBand_.load(std::memory_order_relaxed); }
 
+    long long colorPatchReadbacks() const { return colorPatch_.load(std::memory_order_relaxed); }
+
     long long gpuCopies() const { return gpuCopy_.load(std::memory_order_relaxed); }
 
     void reset() {
         fullFrame_.store(0, std::memory_order_relaxed);
         markerBand_.store(0, std::memory_order_relaxed);
+        colorPatch_.store(0, std::memory_order_relaxed);
         gpuCopy_.store(0, std::memory_order_relaxed);
     }
 
 private:
     std::atomic<long long> fullFrame_{0};
     std::atomic<long long> markerBand_{0};
+    std::atomic<long long> colorPatch_{0};
     std::atomic<long long> gpuCopy_{0};
 };
 

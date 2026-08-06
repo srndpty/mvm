@@ -817,6 +817,64 @@ mvm_add_gpu_exit_test(gpu_seek_out_of_range_negative EXIT 3
 # negative: 使い方の誤りを 2 で返す (実行結果の不一致 3 と区別する)。
 mvm_add_gpu_exit_test(gpu_usage_error_negative EXIT 2 ARGS mvm_no_such_command)
 
+# --- P1.1 §2: decoder snapshot の同期契約 -----------------------------------
+# TSAN は Windows / MSYS2 で使えないので、決定論的な回数だけ
+# 別スレッドから snapshot() を叩き、返り値の内部整合を検査する。
+mvm_add_test(gpu_snapshot_race
+    COMMAND mvm_test_gpu_decode snapshot-race "${MVM_SMOKE_DIR}/v1080p60_h264.mp4" 3000
+    PROPERTIES REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_h264.mp4" TIMEOUT 300)
+
+# --- P1.1 §4: open/close soak ------------------------------------------------
+# SRV cache が decoder epoch を跨いで増え続けないこと。
+# **通常 CTest では 20 cycle。** 正式な 100 cycle は performance ラベル側で回す
+# (100 cycle は 1 分近くかかるため)。
+mvm_add_test(gpu_open_close_soak_short
+    COMMAND mvm_test_gpu_decode soak "${MVM_SMOKE_DIR}/v1080p60_h264.mp4"
+            "${MVM_SMOKE_DIR}/v1080p60_hevc.mp4" 20
+    PROPERTIES
+        REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_h264.mp4"
+        TIMEOUT 600)
+
+mvm_add_test(gpu_open_close_soak_100
+    COMMAND mvm_test_gpu_decode soak "${MVM_SMOKE_DIR}/v1080p60_h264.mp4"
+            "${MVM_SMOKE_DIR}/v1080p60_hevc.mp4" 100
+    PROPERTIES
+        REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_h264.mp4"
+        LABELS performance
+        TIMEOUT 1800)
+
+# --- P1.1 §6: color correctness ---------------------------------------------
+# **marker 一致を色の証拠にしない。** 既知の YUV patch を
+# 表示と同じ shader で RGB 化し、期待値 (標準式から独立に計算) と照合する。
+set(MVM_COLOR_DIR "${CMAKE_SOURCE_DIR}/tests/assets/color")
+set(MVM_COLOR_MANIFEST "${MVM_COLOR_DIR}/manifest.txt")
+set(MVM_MAKE_COLOR_HINT "pwsh scripts/make-color-fixtures.ps1")
+
+if(EXISTS "${MVM_COLOR_MANIFEST}")
+    # 判定対象
+    foreach(color_id bt709_limited bt709_full bt601_limited)
+        mvm_add_test(gpu_color_${color_id}
+            COMMAND mvm_test_gpu_decode color "${MVM_COLOR_MANIFEST}" ${color_id}
+            PROPERTIES REQUIRED_FILES "${MVM_COLOR_DIR}/${color_id}.mp4" TIMEOUT 180)
+    endforeach()
+
+    # 診断のみ (判定には使わないが、経路が壊れたら気づけるようにする)
+    foreach(color_id bt2020ncl_limited p010_bt709_limited)
+        mvm_add_test(gpu_color_${color_id}_diagnostic
+            COMMAND mvm_test_gpu_decode color "${MVM_COLOR_MANIFEST}" ${color_id}
+            PROPERTIES REQUIRED_FILES "${MVM_COLOR_DIR}/${color_id}.mp4" TIMEOUT 180)
+    endforeach()
+
+    # negative: manifest に無い id を成功扱いしない (使い方の誤り = 2)。
+    mvm_add_gpu_exit_test(gpu_color_unknown_id_negative EXIT 2
+        ARGS color "${MVM_COLOR_MANIFEST}" mvm_no_such_fixture
+        PROPERTIES REQUIRED_FILES "${MVM_COLOR_MANIFEST}")
+else()
+    message(STATUS
+        "color fixture が無いため color 検査を登録しません。"
+        " 先に ${MVM_MAKE_COLOR_HINT} を実行してください。")
+endif()
+
 # --- preview_spike (Qt / device 共有) ----------------------------------------
 # **Qt と FFmpeg の device 共有を検査できるのはここだけ。**
 # QRhi から device を取るには window が要るため、CLI の decode テストでは見られない。
@@ -908,6 +966,8 @@ add_test(NAME lint_producer_service_control
 # 層はパスで判定するので、リポジトリ外のフィクスチャには -AsLayer で
 # 「どの層として見るか」を与える。
 
+# layer-bad/ には Qt/QRhi 違反と CPU readback 違反の両方が入っている。
+# どちらか一方でも検査が効いていなければ、このテストは緑にならない。
 add_test(NAME lint_layer_isolation_negative
     COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
             -ExpectExit 1 -Exe "${MVM_PWSH}"

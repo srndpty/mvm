@@ -15,10 +15,13 @@
  *     P1 の主要仮説 (device 共有) が崩れていることを、絵ではなく
  *     この拒否で検出する。
  *
- *  3. **frame lifetime**
- *     表示に使ったフレームは、GPU が読み終わるまで解放しない。
- *     D3D11 の immediate context には fence が無いので、
- *     直近 retainDepth 枚を保持して解放を遅らせる。
+ *  3. **generation 契約 (fail-closed)**
+ *     submit は generation を厳密に照合する。過去 (stale) は正常な破棄、
+ *     未来 (future) は表示側がまだ知らない世代なので拒否する。
+ *     setCurrentGeneration は逆行 (regression) を拒否する。
+ *     「表示に使ったフレームを GPU 完了まで解放しない」責務は
+ *     このクラスではなく GpuRetirementQueue が持つ (§1)。
+ *     直近 N 枚を保持する retainDepth 方式は **廃止した**。
  */
 
 #ifndef MVM_GPU_PREVIEW_FRAME_QUEUE_H
@@ -38,16 +41,18 @@ class PreviewFrameQueue : public IPreviewSurface {
 public:
     // capacity: 表示待ちの上限。超えたら submitFrame は RejectedQueueFull を返し、
     //           decode 側が待つ (backpressure)。落として詰め込まない。
-    // retainDepth: 表示後に保持しておくフレーム数。
-    explicit PreviewFrameQueue(size_t capacity = 3, size_t retainDepth = 3);
+    explicit PreviewFrameQueue(size_t capacity = 3);
     ~PreviewFrameQueue() override;
 
     // 期待する device。null なら device 検査を行わない。
     void setExpectedDevice(ID3D11Device* device);
 
-    // これより古い generation の frame を拒否する。
-    void setCurrentGeneration(unsigned long long generation);
-    unsigned long long currentGeneration() const;
+    // 表示側が知る最新 generation を更新する。§3 の契約:
+    //   new > current : 更新し、まだ表示していない pending を破棄する (Updated)
+    //   new == current: 何もしない。**pending は破棄しない** (NoOp)
+    //   new <  current: 逆行は受け付けない (RejectedRegression / fail-closed)
+    GenerationUpdateResult setCurrentGeneration(GenerationId generation);
+    GenerationId currentGeneration() const;
 
     SubmitResult submitFrame(const DecodedGpuFrame& frame) override;
     void clear() override;
@@ -59,6 +64,7 @@ public:
     // 実際に描画し終えたことを記録する。**描画してから呼ぶ。**
     // 「submit した番号」を displayedFrameNumber にすると、
     // 表示できていないのに一致したことになる。
+    // frame の GPU 完了までの保持は呼び出し側 (GpuRetirementQueue) が行う。
     void noteDisplayed(const DecodedGpuFrame& frame);
 
     // --- decode thread 側 ---------------------------------------------------
@@ -72,8 +78,11 @@ public:
     long long submittedCount() const;
     long long displayedCount() const;
     long long rejectedStaleCount() const;
+    long long rejectedFutureCount() const;
+    long long rejectedInvalidCount() const;
     long long rejectedDeviceMismatchCount() const;
     long long queueFullCount() const;
+    long long generationRegressionCount() const;
 
 protected:
     // texture の所有 device。テストから差し替えられるようにしている
@@ -85,20 +94,21 @@ private:
     std::condition_variable spaceAvailable_;
 
     std::deque<DecodedGpuFrame> pending_;
-    std::deque<FrameLifetimeToken> retained_;
 
     size_t capacity_;
-    size_t retainDepth_;
     ID3D11Device* expectedDevice_ = nullptr;
-    unsigned long long generation_ = 0;
+    GenerationId generation_{};
     long long displayedFrame_ = -1;
     bool stopped_ = false;
 
     long long submitted_ = 0;
     long long displayed_ = 0;
     long long staleRejects_ = 0;
+    long long futureRejects_ = 0;
+    long long invalidRejects_ = 0;
     long long deviceRejects_ = 0;
     long long queueFull_ = 0;
+    long long generationRegressions_ = 0;
 };
 
 } // namespace mvm::gpu

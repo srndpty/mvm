@@ -48,6 +48,7 @@ add_library(mvm_gpu_preview STATIC
     media/gpu_preview/ffmpeg_d3d11_decoder.cpp
     media/gpu_preview/nv12_converter.cpp
     media/gpu_preview/frame_queue.cpp
+    media/gpu_preview/gpu_completion.cpp
     media/gpu_preview/decode_worker.cpp
 )
 target_include_directories(mvm_gpu_preview PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

@@ -16,6 +16,7 @@
 #include "media/gpu_preview/color_metadata.h"
 #include "media/gpu_preview/ffmpeg_d3d11_decoder.h"
 #include "media/gpu_preview/frame_queue.h"
+#include "media/gpu_preview/gpu_completion.h"
 #include "media/gpu_preview/nv12_converter.h"
 #include "media/gpu_preview/readback_counter.h"
 #include "media/gpu_preview/timebase.h"
@@ -254,7 +255,7 @@ DecodedGpuFrame makeFrame(long long n, unsigned long long gen, int* freedFlag = 
     f.pixelFormat = GpuPixelFormat::NV12;
     // 実在しないポインタ。参照外ししない経路だけを検査している。
     f.texture = reinterpret_cast<ID3D11Texture2D*>(0x1000 + n);
-    f.generation = gen;
+    f.generation = GenerationId{0, gen};
     if (freedFlag) {
         *freedFlag = 0;
         f.lifetime = FrameLifetimeToken(freedFlag, [](void* p) { *static_cast<int*>(p) = 1; });
@@ -268,8 +269,8 @@ void testFrameQueue() {
     std::fprintf(stderr, "[frame queue]\n");
 
     { // 正常系と backpressure
-        PreviewFrameQueue q(2, 2);
-        q.setCurrentGeneration(5);
+        PreviewFrameQueue q(2);
+        q.setCurrentGeneration(GenerationId{0, 5});
         check(q.submitFrame(makeFrame(0, 5)) == SubmitResult::Accepted, "受理");
         check(q.submitFrame(makeFrame(1, 5)) == SubmitResult::Accepted, "受理 2");
         // 満杯なら落とさずに拒否する (decode 側が待つ)
@@ -278,25 +279,10 @@ void testFrameQueue() {
         checkEq(q.queueFullCount(), 1, "満杯回数");
     }
 
-    { // stale generation rejection
-        PreviewFrameQueue q(4, 2);
-        q.setCurrentGeneration(7);
-        check(q.submitFrame(makeFrame(100, 6)) == SubmitResult::RejectedStaleGeneration,
-              "古い generation を拒否");
-        checkEq(q.rejectedStaleCount(), 1, "stale 回数");
-        check(q.submitFrame(makeFrame(100, 7)) == SubmitResult::Accepted, "同一 generation は受理");
-        check(q.submitFrame(makeFrame(101, 8)) == SubmitResult::Accepted,
-              "新しい generation も受理");
-
-        // generation を進めると、表示前の古いフレームは捨てられる。
-        q.setCurrentGeneration(9);
-        checkEq(static_cast<long long>(q.depth()), 0, "generation 更新で表示待ちを破棄");
-    }
-
     { // device mismatch negative
         auto* expected = reinterpret_cast<ID3D11Device*>(0xAAAA);
         auto* other = reinterpret_cast<ID3D11Device*>(0xBBBB);
-        FakeQueue q(4, 2);
+        FakeQueue q(4);
         q.setExpectedDevice(expected);
 
         q.owner = other;
@@ -309,10 +295,11 @@ void testFrameQueue() {
     }
 
     { // 不正な frame を受理しない
-        PreviewFrameQueue q(4, 2);
+        PreviewFrameQueue q(4);
         DecodedGpuFrame bad = makeFrame(1, 0);
         bad.texture = nullptr;
         check(q.submitFrame(bad) == SubmitResult::RejectedInvalidFrame, "texture 無しは拒否");
+        checkEq(q.rejectedInvalidCount(), 1, "invalid を数える");
 
         DecodedGpuFrame noToken = makeFrame(1, 0);
         noToken.lifetime.reset();
@@ -320,38 +307,145 @@ void testFrameQueue() {
               "lifetime token 無しは拒否");
     }
 
-    { // frame lifetime: 表示後 retainDepth 枚は解放されない
-        PreviewFrameQueue q(8, 2);
-        int freed0 = 0, freed1 = 0, freed2 = 0;
+    { // noteDisplayed は番号だけを更新する (retain は GpuRetirementQueue の責務)
+        PreviewFrameQueue q(8);
+        int freed0 = 0;
         {
             DecodedGpuFrame f0 = makeFrame(0, 0, &freed0);
-            DecodedGpuFrame f1 = makeFrame(1, 0, &freed1);
-            DecodedGpuFrame f2 = makeFrame(2, 0, &freed2);
             q.submitFrame(f0);
-            q.submitFrame(f1);
-            q.submitFrame(f2);
         }
         DecodedGpuFrame out;
         check(q.takeForDisplay(out), "取り出し 0");
         q.noteDisplayed(out);
         checkEq(q.displayedFrameNumber(), 0, "描画してから displayed を更新する");
-        // まだ queue 内にも参照があるので解放されていない
-        checkEq(freed0, 0, "表示直後は解放しない");
-
-        check(q.takeForDisplay(out), "取り出し 1");
-        q.noteDisplayed(out);
-        check(q.takeForDisplay(out), "取り出し 2");
-        q.noteDisplayed(out);
-        // retainDepth=2 なので frame 0 は押し出されて解放される
-        checkEq(freed0, 1, "retainDepth を超えたら解放される");
-        checkEq(freed1, 0, "直近 2 枚は保持される");
-        checkEq(freed2, 0, "直近 2 枚は保持される (2)");
-
-        out = DecodedGpuFrame{}; // ローカルの参照を落としてから clear する
+        // queue は retain しない。ローカル out が唯一の参照。
+        checkEq(freed0, 0, "out が生きている間は解放されない");
+        out = DecodedGpuFrame{};
+        checkEq(freed0, 1, "最後の参照を落とすと解放される (queue は retain しない)");
         q.clear();
-        checkEq(freed1, 1, "clear で解放される");
-        checkEq(freed2, 1, "clear で解放される (2)");
         checkEq(q.displayedFrameNumber(), -1, "clear で displayed を戻す");
+    }
+}
+
+// --------------------------------------------------------------------------
+// generation 契約 (§3): future 拒否・逆行拒否・同値 no-op
+// --------------------------------------------------------------------------
+void testGenerationContract() {
+    std::fprintf(stderr, "[generation contract]\n");
+
+    { // stale / accepted / future
+        PreviewFrameQueue q(8);
+        q.setCurrentGeneration(GenerationId{0, 7});
+        check(q.submitFrame(makeFrame(100, 6)) == SubmitResult::RejectedStaleGeneration,
+              "過去 generation は stale 拒否");
+        checkEq(q.rejectedStaleCount(), 1, "stale 回数");
+        check(q.submitFrame(makeFrame(100, 7)) == SubmitResult::Accepted, "同一 generation は受理");
+        // 未来の generation は表示側がまだ知らない世代。fail-closed で拒否する。
+        check(q.submitFrame(makeFrame(101, 8)) == SubmitResult::RejectedFutureGeneration,
+              "未来 generation は future 拒否");
+        checkEq(q.rejectedFutureCount(), 1, "future 回数");
+    }
+
+    { // setCurrentGeneration の 3 分岐
+        PreviewFrameQueue q(8);
+        checkEq(static_cast<long long>(q.setCurrentGeneration(GenerationId{0, 5})),
+                static_cast<long long>(GenerationUpdateResult::Updated), "初回は更新");
+        // 前進: pending を破棄する
+        check(q.submitFrame(makeFrame(0, 5)) == SubmitResult::Accepted, "受理");
+        checkEq(static_cast<long long>(q.setCurrentGeneration(GenerationId{0, 6})),
+                static_cast<long long>(GenerationUpdateResult::Updated), "前進は更新");
+        checkEq(static_cast<long long>(q.depth()), 0, "前進で pending 破棄");
+
+        // 同値: no-op。**pending は破棄しない。**
+        check(q.submitFrame(makeFrame(1, 6)) == SubmitResult::Accepted, "受理 2");
+        checkEq(static_cast<long long>(q.setCurrentGeneration(GenerationId{0, 6})),
+                static_cast<long long>(GenerationUpdateResult::NoOp), "同値は no-op");
+        checkEq(static_cast<long long>(q.depth()), 1, "同値設定で pending は消えない");
+
+        // 逆行: 拒否。current は変わらない。
+        checkEq(static_cast<long long>(q.setCurrentGeneration(GenerationId{0, 5})),
+                static_cast<long long>(GenerationUpdateResult::RejectedRegression), "逆行は拒否");
+        checkEq(q.generationRegressionCount(), 1, "逆行回数");
+        check(q.currentGeneration() == (GenerationId{0, 6}), "逆行で current は変わらない");
+        checkEq(static_cast<long long>(q.depth()), 1, "逆行で pending も変わらない");
+    }
+
+    { // composition_epoch が上位。source generation の値に関わらず新しい
+        PreviewFrameQueue q(8);
+        q.setCurrentGeneration(GenerationId{1, 0});
+        // 同じ epoch のより小さい source は stale
+        DecodedGpuFrame f = makeFrame(0, 0);
+        f.generation = GenerationId{0, 999999}; // 古い epoch は source が大きくても stale
+        check(q.submitFrame(f) == SubmitResult::RejectedStaleGeneration,
+              "古い composition_epoch は source が大きくても stale");
+        // epoch を進めると逆に future
+        DecodedGpuFrame g = makeFrame(0, 0);
+        g.generation = GenerationId{2, 0};
+        check(q.submitFrame(g) == SubmitResult::RejectedFutureGeneration,
+              "新しい composition_epoch は future");
+    }
+}
+
+// --------------------------------------------------------------------------
+// GpuRetirementQueue (§1): serial 完了で解放。未完了は保持
+// --------------------------------------------------------------------------
+void testRetirementQueue() {
+    std::fprintf(stderr, "[retirement queue]\n");
+
+    GpuRetirementQueue rq;
+    int a = 0, b = 0, c = 0;
+    auto tok = [](int* p) {
+        *p = 0;
+        return FrameLifetimeToken(p, [](void* x) { *static_cast<int*>(x) = 1; });
+    };
+
+    rq.retire(10, tok(&a));
+    rq.retire(20, tok(&b));
+    rq.retire(30, tok(&c));
+    checkEq(static_cast<long long>(rq.depthCurrent()), 3, "3 件保持");
+    checkEq(static_cast<long long>(rq.depthPeak()), 3, "peak 3");
+
+    // completed=5: まだ何も完了していない
+    checkEq(static_cast<long long>(rq.poll(5)), 0, "未完了は解放しない");
+    checkEq(a, 0, "serial 10 は未完了");
+
+    // completed=20: serial 10 と 20 が解放される
+    checkEq(static_cast<long long>(rq.poll(20)), 2, "10 と 20 を解放");
+    checkEq(a, 1, "serial 10 解放");
+    checkEq(b, 1, "serial 20 解放");
+    checkEq(c, 0, "serial 30 は未完了のまま保持");
+    checkEq(static_cast<long long>(rq.depthCurrent()), 1, "残り 1 件");
+
+    // completed=100: 残りも解放
+    checkEq(static_cast<long long>(rq.poll(100)), 1, "30 を解放");
+    checkEq(c, 1, "serial 30 解放");
+    checkEq(static_cast<long long>(rq.depthCurrent()), 0, "空");
+
+    // **frames_released_before_completion は必ず 0**
+    checkEq(rq.framesReleasedBeforeCompletion(), 0, "完了前解放は 0");
+
+    { // drain: completed が追いつけば true
+        GpuRetirementQueue r2;
+        int x = 0;
+        r2.retire(50, tok(&x));
+        unsigned long long completed = 0;
+        // 呼ばれるたびに completed が進む擬似 GPU
+        check(r2.drain(
+                  [&completed] {
+                      completed += 25;
+                      return completed;
+                  },
+                  1000),
+              "completed が追いつけば drain 成功");
+        checkEq(x, 1, "drain で解放");
+    }
+    { // drain: 追いつかなければ timeout で false (fail-closed)
+        GpuRetirementQueue r3;
+        int y = 0;
+        r3.retire(1000000, tok(&y));
+        check(!r3.drain([] { return 0ULL; }, 30), "完了しなければ timeout で false");
+        checkEq(r3.retirementTimeoutCount(), 1, "timeout を数える");
+        checkEq(y, 0, "timeout では強制解放しない (payload は保持)");
     }
 }
 
@@ -385,6 +479,8 @@ int main() {
     testAspectFit();
     testReadbackCounters();
     testFrameQueue();
+    testGenerationContract();
+    testRetirementQueue();
     testHwFormatSelection();
 
     std::fprintf(stderr, "\n検査 %d 件 / 失敗 %d 件\n", gChecks, gFailures);

@@ -158,6 +158,73 @@ if ($layerViolations.Count -gt 0) {
     Write-Host "OK ($($sources.Count) ファイル)" -ForegroundColor Green
 }
 
+# --- Phase 1.1: gpu_preview 層の禁止事項 -------------------------------------
+Write-Section 'gpu_preview の禁止事項 (CPU readback / software fallback)'
+
+# 規約 (docs/phase1-plan.md, P1.1 §9):
+#
+#   gpu_preview 層は decode 結果を CPU へ戻さない。
+#   例外は marker 帯と color patch の **小領域 readback だけ**で、
+#   実装は 1 箇所に限る (nv12_converter.cpp の readSmallRegionTopLeft)。
+#
+# 「動くけれど zero-copy ではない」経路は、絵が出てしまうので
+# 人間のレビューでは見逃す。機械で塞ぐ。
+
+$forbiddenAlways = @(
+    @{ token = 'av_hwframe_transfer_data'; why = 'GPU frame を毎回 CPU へ転送する' }
+    @{ token = 'sws_scale';                why = 'swscale による CPU 変換' }
+    @{ token = 'sws_getContext';           why = 'swscale による CPU 変換' }
+    @{ token = 'swscale.h';                why = 'swscale への依存' }
+    @{ token = 'QImage';                   why = 'CPU 画像への copy' }
+    @{ token = 'QPixmap';                  why = 'CPU 画像への copy' }
+)
+
+# readback を構成する token。**印のある file でのみ、各 1 箇所まで**許可する。
+$readbackTokens = @('D3D11_USAGE_STAGING', 'D3D11_CPU_ACCESS_READ', 'D3D11_MAP_READ')
+$allowMarker = 'MVM_ALLOW_SMALL_REGION_READBACK'
+
+$gpuViolations = @()
+foreach ($f in $sources) {
+    $rel = if ($f.FullName.StartsWith($RepoRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        $f.FullName.Substring($RepoRoot.Length + 1)
+    } else { $f.FullName }
+
+    if ($AsLayer) {
+        $isGpuLayer = ($AsLayer -eq 'gpu_preview')
+    } else {
+        $isGpuLayer = $f.FullName.StartsWith($gpuPreviewDir, [StringComparison]::OrdinalIgnoreCase)
+    }
+    if (-not $isGpuLayer) { continue }
+
+    $text = Get-Content -Raw -LiteralPath $f.FullName
+
+    foreach ($fb in $forbiddenAlways) {
+        if ($text -match [regex]::Escape($fb.token)) {
+            $gpuViolations += "$rel : '$($fb.token)' は禁止 ($($fb.why))"
+        }
+    }
+
+    $allowed = $text -match [regex]::Escape($allowMarker)
+    foreach ($t in $readbackTokens) {
+        $n = ([regex]::Matches($text, [regex]::Escape($t))).Count
+        if ($n -eq 0) { continue }
+        if (-not $allowed) {
+            $gpuViolations += "$rel : '$t' は CPU readback。許可された小領域実装だけが使える ($allowMarker の印が要る)"
+        } elseif ($n -gt 1) {
+            # 印のある file でも 2 本目の readback 経路は作らせない。
+            $gpuViolations += "$rel : '$t' が $n 箇所ある。小領域 readback は 1 実装だけに限る"
+        }
+    }
+}
+
+if ($gpuViolations.Count -gt 0) {
+    Write-Host "違反 $($gpuViolations.Count) 件" -ForegroundColor Red
+    $gpuViolations | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+    $failed += 'gpu_preview の禁止事項'
+} else {
+    Write-Host "OK" -ForegroundColor Green
+}
+
 # --- media producer は loader を使う -----------------------------------------
 Write-Section 'producer service 検査 (loader 強制)'
 

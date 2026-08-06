@@ -16,14 +16,26 @@ namespace mvm::gpu {
 // device 取り違えという致命的な誤りなのかが区別できない。
 enum class SubmitResult {
     Accepted = 0,
-    RejectedStaleGeneration, // seek より前のフレームが遅れて届いた (正常)
-    RejectedInvalidFrame,    // texture が無い / 解像度が 0 など
-    RejectedDeviceMismatch,  // 別の ID3D11Device の texture (致命的)
-    RejectedNotReady,        // surface がまだ初期化されていない
-    RejectedQueueFull,       // 表示が追いついていない (backpressure)
+    RejectedStaleGeneration,  // seek より前のフレームが遅れて届いた (正常)
+    RejectedFutureGeneration, // 表示側がまだ知らない未来の generation (fail-closed)
+    RejectedInvalidFrame,     // texture が無い / 解像度が 0 など
+    RejectedDeviceMismatch,   // 別の ID3D11Device の texture (致命的)
+    RejectedNotReady,         // surface がまだ初期化されていない
+    RejectedQueueFull,        // 表示が追いついていない (backpressure)
 };
 
 const char* toString(SubmitResult r);
+
+// setCurrentGeneration の結果。
+// **結果 enum と counter を分ける** (§3)。呼び出し側が「更新した / 何もしなかった /
+// 逆行を拒否した」を型で受け取り、counter はその後で数える。
+enum class GenerationUpdateResult {
+    Updated = 0,        // new > current。更新し pending を破棄した
+    NoOp,               // new == current。pending は破棄しない
+    RejectedRegression, // new < current。逆行は受け付けない (fail-closed)
+};
+
+const char* toString(GenerationUpdateResult r);
 
 class IPreviewSurface {
 public:

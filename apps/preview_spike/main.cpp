@@ -42,7 +42,9 @@ void usage() {
                  "  --measure-ms <n>      既定 60000\n"
                  "  --seeks <n>           既定 1000\n"
                  "  --seed <n>            既定 20260806\n"
-                 "  --marker-frames a,b,c 既定 0,1,137,299,600,1799,3599\n");
+                 "  --marker-frames a,b,c 既定 0,1,137,299,600,1799,3599\n"
+                 "  --display-timeout-ms <n>  seek 表示待ちの上限 (既定 2000)\n"
+                 "  --color-patch WxH     color patch を診断読み取りする領域\n");
 }
 
 bool parseArgs(const QStringList& args, MeasureConfig& cfg, QString& mediaPath) {
@@ -88,6 +90,20 @@ bool parseArgs(const QStringList& args, MeasureConfig& cfg, QString& mediaPath) 
             if (!next(v))
                 return false;
             cfg.seed = v.toUInt();
+        } else if (a == "--display-timeout-ms") {
+            if (!next(v))
+                return false;
+            cfg.displayTimeoutMs = v.toInt();
+        } else if (a == "--color-patch") {
+            if (!next(v))
+                return false;
+            const QStringList parts = v.split('x', Qt::SkipEmptyParts);
+            if (parts.size() != 2) {
+                std::fprintf(stderr, "--color-patch は WxH の形式で指定してください\n");
+                return false;
+            }
+            cfg.colorPatchWidth = parts[0].toInt();
+            cfg.colorPatchHeight = parts[1].toInt();
         } else if (a == "--marker-frames") {
             if (!next(v))
                 return false;

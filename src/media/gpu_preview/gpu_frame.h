@@ -52,6 +52,37 @@ enum class ColorRange {
 inline constexpr long long kNoPts = INT64_MIN;
 
 // --------------------------------------------------------------------------
+// generation id (source_generation / composition_epoch)
+// --------------------------------------------------------------------------
+// P1.1 では decoder が 1 本なので single generation でも足りるが、
+// **概念を単一 global generation へ固定しない**。P2 の二動画合成では
+//   - source_generation : ある source の seek / flush で進む世代
+//   - composition_epoch : 合成の構成 (decoder pool / device / resource) が
+//                         切り替わった世代
+// を別々に持つ必要がある。ここで型として分けておき、比較規則を 1 箇所に置く。
+//
+// 順序は composition_epoch を上位、source_generation を下位とする辞書式。
+// composition_epoch が進めば source_generation の値に関わらず「新しい」。
+struct GenerationId {
+    unsigned long long compositionEpoch = 0;
+    unsigned long long sourceGeneration = 0;
+
+    friend bool operator==(const GenerationId& a, const GenerationId& b) {
+        return a.compositionEpoch == b.compositionEpoch && a.sourceGeneration == b.sourceGeneration;
+    }
+
+    friend bool operator!=(const GenerationId& a, const GenerationId& b) { return !(a == b); }
+
+    friend bool operator<(const GenerationId& a, const GenerationId& b) {
+        if (a.compositionEpoch != b.compositionEpoch)
+            return a.compositionEpoch < b.compositionEpoch;
+        return a.sourceGeneration < b.sourceGeneration;
+    }
+
+    friend bool operator>(const GenerationId& a, const GenerationId& b) { return b < a; }
+};
+
+// --------------------------------------------------------------------------
 // lifetime token
 // --------------------------------------------------------------------------
 // decode texture は FFmpeg の pool 内の array texture の 1 slice である。
@@ -90,7 +121,10 @@ struct DecodedGpuFrame {
     FrameLifetimeToken lifetime;
 
     // seek / flush のたびに増える。これより古い frame は表示側が拒否する。
-    unsigned long long generation = 0;
+    // P2 を見越し、source_generation と composition_epoch を分けて持つ。
+    // P1.1 では composition_epoch は decoder open (= resource_epoch) と連動し、
+    // source_generation は seek / flush で進む。
+    GenerationId generation{};
 
     bool valid() const {
         return texture != nullptr && width > 0 && height > 0 &&

@@ -36,6 +36,7 @@ cbuffer Params : register(b0)
     float4 uvRect;   // xy = offset, zw = scale
     float4 lum;      // x = yScale, y = yOffset, z = uvScale, w = sampleScale
     float4 mat;      // x = vr, y = ug, z = vg, w = ub
+    float4 misc;     // x = chroma neutral (8bit: 128/255, 10bit: 512/1023)
 };
 
 Texture2DArray<float4> texLuma   : register(t0);
@@ -63,7 +64,10 @@ float4 ps_main(VSOut i) : SV_Target
     float2 c  = texChroma.Sample(samp, float3(uv, 0)).rg * lum.w;
 
     y = (y - lum.y) * lum.x;
-    c = (c - 0.5) * lum.z;
+    // **chroma の中立点は 0.5 ではない。**
+    // 8bit は 128/255 = 0.50196、10bit は 512/1023 = 0.50049 である。
+    // 0.5 を使うと全画素に約 1 LSB の色かぶりが出る (color patch 検査で検出した)。
+    c = (c - misc.x) * lum.z;
 
     float3 rgb;
     rgb.r = y + mat.x * c.y;
@@ -77,6 +81,7 @@ struct ShaderParams {
     float uvRect[4];
     float lum[4];
     float mat[4];
+    float misc[4];
 };
 
 bool compile(const char* entry, const char* target, ID3DBlob** out, std::string& err) {
@@ -102,12 +107,15 @@ bool compile(const char* entry, const char* target, ID3DBlob** out, std::string&
 // NV12 / P010 の各平面に対応する SRV format。
 // **平面の選択は format で行う** (D3D11 の NV12 は R8_UNORM が Y、
 // R8G8_UNORM が UV を指す)。
-bool planeFormats(GpuPixelFormat f, DXGI_FORMAT& luma, DXGI_FORMAT& chroma, float& sampleScale) {
+bool planeFormats(GpuPixelFormat f, DXGI_FORMAT& luma, DXGI_FORMAT& chroma, float& sampleScale,
+                  float& chromaNeutral) {
     switch (f) {
     case GpuPixelFormat::NV12:
         luma = DXGI_FORMAT_R8_UNORM;
         chroma = DXGI_FORMAT_R8G8_UNORM;
         sampleScale = 1.0f;
+        // **8bit の chroma 中立点は 0.5 ではなく 128/255 である。**
+        chromaNeutral = 128.0f / 255.0f;
         return true;
     case GpuPixelFormat::P010:
         luma = DXGI_FORMAT_R16_UNORM;
@@ -115,6 +123,8 @@ bool planeFormats(GpuPixelFormat f, DXGI_FORMAT& luma, DXGI_FORMAT& chroma, floa
         // P010 は 10bit を 16bit の上位ビットへ詰める (下位 6bit は 0)。
         // R16_UNORM は 65535 で割るので、1023 で割った値へ直す。
         sampleScale = 65535.0f / 65472.0f;
+        // 10bit の中立点は 512/1023。
+        chromaNeutral = 512.0f / 1023.0f;
         return true;
     case GpuPixelFormat::Unknown:
         break;
@@ -268,6 +278,7 @@ void Nv12Converter::release() {
         safeRelease(e.srv.chroma);
     }
     srvCache_.clear();
+    pendingStamp_.clear();
 
     safeRelease(bandRtv_);
     safeRelease(bandTexture_);
@@ -289,9 +300,17 @@ void Nv12Converter::release() {
 }
 
 bool Nv12Converter::acquireSrvs(const DecodedGpuFrame& frame, SrvPair& out, std::string& err) {
-    for (const auto& e : srvCache_) {
-        if (e.texture == frame.texture && e.arrayIndex == frame.arrayIndex) {
+    // key は (resource_epoch, texture, arrayIndex, pixelFormat)。
+    // **texture ポインタだけでは足りない。** decoder を開き直すと
+    // 古い pool が解放され、同じアドレスに新しい pool が来ることがある。
+    // その状態で古い SRV を再利用すると、別のフレームの画素を描く。
+    const unsigned long long epoch = frame.generation.compositionEpoch;
+    for (size_t i = 0; i < srvCache_.size(); i++) {
+        const auto& e = srvCache_[i];
+        if (e.epoch == epoch && e.texture == frame.texture && e.arrayIndex == frame.arrayIndex &&
+            e.pixelFormat == frame.pixelFormat) {
             out = e.srv;
+            pendingStamp_.push_back(i);
             return true;
         }
     }
@@ -299,7 +318,8 @@ bool Nv12Converter::acquireSrvs(const DecodedGpuFrame& frame, SrvPair& out, std:
     DXGI_FORMAT lumaFmt = DXGI_FORMAT_UNKNOWN;
     DXGI_FORMAT chromaFmt = DXGI_FORMAT_UNKNOWN;
     float scale = 1.0f;
-    if (!planeFormats(frame.pixelFormat, lumaFmt, chromaFmt, scale)) {
+    float neutral = 0.5f;
+    if (!planeFormats(frame.pixelFormat, lumaFmt, chromaFmt, scale, neutral)) {
         err = "対応していない画素形式です";
         return false;
     }
@@ -338,9 +358,74 @@ bool Nv12Converter::acquireSrvs(const DecodedGpuFrame& frame, SrvPair& out, std:
         return false;
     }
 
-    srvCache_.push_back(SrvCacheEntry{frame.texture, frame.arrayIndex, pair});
+    SrvCacheEntry entry;
+    entry.epoch = epoch;
+    entry.texture = frame.texture;
+    entry.arrayIndex = frame.arrayIndex;
+    entry.pixelFormat = frame.pixelFormat;
+    entry.srv = pair;
+    srvCache_.push_back(entry);
+    if (srvCache_.size() > srvCachePeak_)
+        srvCachePeak_ = srvCache_.size();
+    pendingStamp_.push_back(srvCache_.size() - 1);
     out = pair;
     return true;
+}
+
+void Nv12Converter::stampSubmissionSerial(unsigned long long serial) {
+    for (size_t i : pendingStamp_) {
+        if (i < srvCache_.size())
+            srvCache_[i].lastUsedSerial = serial;
+    }
+    pendingStamp_.clear();
+}
+
+size_t Nv12Converter::activeDecoderPools() const {
+    // (epoch, texture) の異なる組み合わせを数える。
+    // decode pool 1 つにつき array texture 1 枚なので、これが pool 数になる。
+    std::vector<std::pair<unsigned long long, ID3D11Texture2D*>> seen;
+    for (const auto& e : srvCache_) {
+        const std::pair<unsigned long long, ID3D11Texture2D*> k{e.epoch, e.texture};
+        bool found = false;
+        for (const auto& s2 : seen)
+            if (s2 == k) {
+                found = true;
+                break;
+            }
+        if (!found)
+            seen.push_back(k);
+    }
+    return seen.size();
+}
+
+void Nv12Converter::retireEntriesNotInEpoch(unsigned long long epoch, GpuRetirementQueue& queue) {
+    // 旧 epoch の SRV を **即 Release しない。**
+    // GPU がまだそのフレームを読んでいる可能性がある。
+    // 最後に使った submission serial とともに retirement queue へ渡し、
+    // その serial が完了してから解放させる。
+    std::vector<SrvCacheEntry> keep;
+    keep.reserve(srvCache_.size());
+    for (auto& e : srvCache_) {
+        if (e.epoch == epoch) {
+            keep.push_back(e);
+            continue;
+        }
+        auto* holder = new SrvPair{e.srv.luma, e.srv.chroma};
+        queue.retire(e.lastUsedSerial, std::shared_ptr<void>(holder, [](void* p) {
+                         auto* pair = static_cast<SrvPair*>(p);
+                         if (pair->luma)
+                             pair->luma->Release();
+                         if (pair->chroma)
+                             pair->chroma->Release();
+                         delete pair;
+                     }));
+        retiredSrvEntries_++;
+    }
+    // 添字が変わるので、まだ刻んでいない参照は捨てる
+    // (次の draw で刻み直される。刻み損ねた entry は serial 0 のまま
+    //  retire されるが、それは「まだ一度も描いていない」= 解放して安全)。
+    pendingStamp_.clear();
+    srvCache_.swap(keep);
 }
 
 bool Nv12Converter::drawInternal(const DecodedGpuFrame& frame, ID3D11RenderTargetView* rtv,
@@ -352,7 +437,8 @@ bool Nv12Converter::drawInternal(const DecodedGpuFrame& frame, ID3D11RenderTarge
 
     DXGI_FORMAT lumaFmt, chromaFmt;
     float sampleScale = 1.0f;
-    planeFormats(frame.pixelFormat, lumaFmt, chromaFmt, sampleScale);
+    float chromaNeutral = 0.5f;
+    planeFormats(frame.pixelFormat, lumaFmt, chromaFmt, sampleScale, chromaNeutral);
 
     const YuvToRgbCoefficients k = coefficientsFor(frame.colorSpace, frame.colorRange);
 
@@ -366,6 +452,7 @@ bool Nv12Converter::drawInternal(const DecodedGpuFrame& frame, ID3D11RenderTarge
     params.mat[1] = k.ug;
     params.mat[2] = k.vg;
     params.mat[3] = k.ub;
+    params.misc[0] = chromaNeutral;
 
     ID3D11DeviceContext* ctx = shared_->context();
 
@@ -443,8 +530,20 @@ bool Nv12Converter::drawToRenderTarget(const DecodedGpuFrame& frame, ID3D11Rende
     return drawInternal(frame, rtv, fit, uvRect, linearFilter, err);
 }
 
-bool Nv12Converter::readMarkerBand(const DecodedGpuFrame& frame, int bandWidth, int bandHeight,
-                                   std::vector<unsigned char>& rgbaOut, std::string& err) {
+// MVM_ALLOW_SMALL_REGION_READBACK
+//
+// **このファイルは CPU readback を書いてよい唯一の場所である。**
+// scripts/lint.ps1 が gpu_preview 層で staging / CPU_ACCESS_READ / MAP_READ を
+// 禁止し、この印がある file だけを、しかも **各 1 箇所まで**許可する。
+// 2 本目の readback 経路を足すと lint が落ちる。
+//
+// marker 帯と color patch の共通実装。
+// **CPU へ画素を戻す経路はこの 1 本だけ。** 呼び出し元は 2 つ
+// (readMarkerBand / readColorPatches) で、どちらも左上の小領域しか読まない。
+// full frame を読む経路をここへ足さないこと (lint が場所を限定して検査する)。
+bool Nv12Converter::readSmallRegionTopLeft(const DecodedGpuFrame& frame, int bandWidth,
+                                           int bandHeight, std::vector<unsigned char>& rgbaOut,
+                                           std::string& err) {
     if (!ready_) {
         err = "Nv12Converter が初期化されていません";
         return false;
@@ -454,7 +553,13 @@ bool Nv12Converter::readMarkerBand(const DecodedGpuFrame& frame, int bandWidth, 
         return false;
     }
     if (bandWidth <= 0 || bandHeight <= 0 || bandWidth > frame.width || bandHeight > frame.height) {
-        err = "marker 帯の大きさが素材に収まりません";
+        err = "読み取る小領域の大きさが素材に収まりません";
+        return false;
+    }
+    // full frame を読ませない。ここが唯一の readback 経路なので、
+    // 「うっかり全画素」を機械的に塞いでおく。
+    if (static_cast<long long>(bandWidth) * bandHeight * 4 > kMaxSmallRegionBytes) {
+        err = "小領域 readback の上限を超えています (full-frame readback は禁止)";
         return false;
     }
 
@@ -523,9 +628,23 @@ bool Nv12Converter::readMarkerBand(const DecodedGpuFrame& frame, int bandWidth, 
                     src + static_cast<size_t>(y) * m.RowPitch, bw * 4);
     }
     ctx->Unmap(bandStaging_, 0);
+    return true;
+}
 
+bool Nv12Converter::readMarkerBand(const DecodedGpuFrame& frame, int bandWidth, int bandHeight,
+                                   std::vector<unsigned char>& rgbaOut, std::string& err) {
+    if (!readSmallRegionTopLeft(frame, bandWidth, bandHeight, rgbaOut, err))
+        return false;
     // **full frame ではなく帯だけを読んだ**ことを、専用のカウンタで記録する。
     counters_->noteMarkerBandReadback();
+    return true;
+}
+
+bool Nv12Converter::readColorPatches(const DecodedGpuFrame& frame, int patchW, int patchH,
+                                     std::vector<unsigned char>& rgbaOut, std::string& err) {
+    if (!readSmallRegionTopLeft(frame, patchW, patchH, rgbaOut, err))
+        return false;
+    counters_->noteColorPatchReadback();
     return true;
 }
 

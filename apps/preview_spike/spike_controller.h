@@ -1,10 +1,11 @@
 /*
- * mvm Phase 1 / P1 - preview_spike の制御と計測
+ * mvm Phase 1 / P1.1 - preview_spike の制御と計測
  *
  * **製品 UI ではない。** P1 の exit criteria を測るための最小アプリである。
  * タイムライン・Project Model・undo/redo・音声・文字・export は無い。
  *
  * GUI thread 上で動く。decode は DecodeWorker が別スレッドで行う。
+ * decoder の状態は **DecoderSnapshot の値コピー**でしか読まない (§2)。
  */
 
 #ifndef MVM_APPS_PREVIEW_SPIKE_SPIKE_CONTROLLER_H
@@ -33,8 +34,13 @@ struct MeasureConfig {
     int measureMs = 60000;
     int seekCount = 1000;
     unsigned int seed = 20260806;
+    // seek 要求から **画面に出る**までの待ち上限。超えたら fail-closed。
+    int displayTimeoutMs = 2000;
     std::vector<long long> markerFrames;
-    bool quitWhenDone = true;
+    // color patch の診断読み取り (0 なら行わない)。正式な色検査は
+    // mvm_test_gpu_decode color が行う。
+    int colorPatchWidth = 0;
+    int colorPatchHeight = 0;
 };
 
 class SpikeController : public QObject {
@@ -55,7 +61,6 @@ public:
 
     void attach(PreviewRhiItem* item);
     void setMeasureConfig(const MeasureConfig& cfg) { measure_ = cfg; }
-    // 計測モードの終了コード。0 = 正常。
     int exitCode() const { return exitCode_; }
 
     QString mediaPath() const { return mediaPath_; }
@@ -84,11 +89,20 @@ private:
     void updateDeviceText();
 
     // --- 計測 ---------------------------------------------------------------
-    enum class Phase { Idle, WaitDevice, Warmup, Measure, Markers, Seeks, Done };
+    enum class Phase { Idle, WaitDevice, Warmup, Measure, Markers, Colors, Seeks, Done };
     void advanceMeasurement();
     bool runMarkerChecks();
+    void runColorPatchDiagnostic();
     void runSeekBenchmark();
     bool writeJson();
+
+    // seek 要求 -> 画面表示 までを測る (§5)。
+    //
+    // 4 つ (request_id / source_generation / composition_epoch / requested_frame)
+    // すべてが一致した completion だけを成功とする。
+    // 待ち時間は必ず有限。timeout は fail-closed で、待機フラグを必ず降ろす
+    // (降ろさないと、後から来た表示が次の request の成功として拾われる)。
+    bool seekAndWaitForDisplay(long long frame, gpu::SeekSample& sample, QString& err);
 
     PreviewRhiItem* item_ = nullptr;
     std::shared_ptr<gpu::PreviewState> state_;
@@ -101,6 +115,7 @@ private:
     QString counterText_;
     qlonglong requestedFrame_ = 0;
     double fps_ = 0.0;
+    unsigned long long nextRequestId_ = 1;
 
     // fps 表示用 (UI のみ。判定には使わない)
     QElapsedTimer fpsTimer_;
@@ -109,8 +124,6 @@ private:
     // --- 計測状態 -----------------------------------------------------------
     MeasureConfig measure_;
     Phase phase_ = Phase::Idle;
-    // advanceMeasurement への再入防止。marker / seek のフェーズは
-    // processEvents を回すので、その間に QTimer が発火しうる。
     bool inPhase_ = false;
     QElapsedTimer phaseTimer_;
     int exitCode_ = 0;
@@ -124,13 +137,13 @@ private:
     long long repeatedAtStart_ = 0;
     long long presentAtStart_ = 0;
     long long decodedAtStart_ = 0;
+    long long submittedAtStart_ = 0;
     long long loopCount_ = 0;
-    // 計測区間が終わった時点で確定させる値。
-    // marker 検査と seek 計測でも decode は進むため、後から読むと汚れる。
     long long displayedInWindow_ = 0;
     long long repeatedInWindow_ = 0;
     long long presentsInWindow_ = 0;
     long long decodedInWindow_ = 0;
+    long long submittedInWindow_ = 0;
 
     unsigned long long cpuUserStart_ = 0;
     unsigned long long cpuKernelStart_ = 0;
@@ -149,9 +162,16 @@ private:
         QString error;
     };
     std::vector<MarkerResult> markerResults_;
+    // color patch の診断 (正式判定ではない)
+    bool colorDiagDone_ = false;
+    QString colorDiagSpace_;
+    QString colorDiagRange_;
+    bool colorDiagSpaceInferred_ = false;
+    bool colorDiagRangeInferred_ = false;
+    QString colorDiagError_;
     QStringList errors_;
 };
 
-}  // namespace mvm::app
+} // namespace mvm::app
 
-#endif  // MVM_APPS_PREVIEW_SPIKE_SPIKE_CONTROLLER_H
+#endif // MVM_APPS_PREVIEW_SPIKE_SPIKE_CONTROLLER_H

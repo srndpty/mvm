@@ -1,4 +1,4 @@
-# Phase 1 / P1 の所見
+# Phase 1 / P1・P1.1 の所見
 
 記述は Phase 0 と同じ規則で分類する。混ぜない。
 
@@ -142,9 +142,14 @@ Phase 0 の結論（4K は proxy 前提）と矛盾しない。
 P1 は metadata をそのまま信じ、未指定のときだけ解像度から推定して
 `color_space_inferred` を立てる。**推定を黙って確定値にしない。**
 
-**[未検証] 表示色が正しいかは目視でも測定でも確かめていない。**
-marker は白 235 / 黒 16 の高コントラストなので、
-係数が多少ずれても読めてしまう。色の正しさは P1 の判定対象外である。
+**P1 の時点では [未検証] だった。P1.1 で測った。**
+既知 YUV patch の fixture (BT.709 limited / full、BT.601 limited、
+診断で BT.2020 NCL と P010) を作り、表示と同じ shader で RGB 化して照合した。
+結果は §8.2 / §8.3 のとおりで、**実装にも生成側にも欠陥が見つかった**。
+修正後は 5 fixture すべて最大差 0〜1 (許容 3)。
+
+marker 一致を色の証拠に使ってはいけない、という判断は正しかった。
+marker は白 235 / 黒 16 なので、1 LSB の色かぶりでは絶対に落ちない。
 
 ## 7. 10bit / P010
 
@@ -153,10 +158,98 @@ marker は白 235 / 黒 16 の高コントラストなので、
 SRV format を R16_UNORM / R16G16_UNORM に切り替え、
 10bit を 16bit の上位へ詰める分（65535/65472）を shader で補正している。
 
-**[未検証] 10bit の表示品質**（バンディング、丸め）は評価していない。
-判定対象は 8bit である。
+P1.1 で P010 の color patch も測った (診断)。最大差 1。
+ただし **[未検証] バンディングや階調の評価はしていない**。判定対象は 8bit である。
 
-## 8. 測っていないこと
+## 8. P1.1 で見つけた欠陥
+
+いずれも **P1 の計測では緑のまま通っていた**。
+「動いている」ことと「正しい」ことは別である。
+
+### 8.1 [事実] resource epoch が decoder インスタンスごとだった
+
+SRV cache の key に `resource_epoch` を入れたが、その epoch を
+**decoder インスタンスのメンバ**として 0 から数えていた。
+新しい decoder はどれも epoch 1 になるので、key が衝突する。
+
+open/close soak (100 cycle) で発覚した。
+旧 epoch と判定されず 1 件も retire されず、
+**SRV cache が 100 cycle で 4 -> 400 entry まで増え続けた**
+(`retired_srv_entries=0` / `active_decoder_pools=100`)。
+
+texture のアドレスは pool 解放後に再利用されるので、衝突した状態では
+**前の pool 用の SRV を新しい pool のフレームに使う**危険もあった。
+
+`[回避策]` ではなく修正: epoch をプロセス全体で単調増加させる。
+修正後は `srv_cache 4 (plateau) -> 4 (last)` / `retired_srv_entries=396` /
+`active_decoder_pools=1`。
+
+**soak を書かなければ気づけなかった。** 1 回の open/close では再現しない。
+
+### 8.2 [事実] shader の chroma 中立点が 0.5 だった
+
+8bit の chroma 中立点は `128/255 = 0.50196` であり 0.5 ではない
+(10bit は `512/1023 = 0.50049`)。
+0.5 を使うと全画素に約 1 LSB の色かぶりが出る。
+
+color patch 検査を書いて初めて分かった。
+**marker 一致では絶対に検出できない** (marker は白 235 / 黒 16 なので
+1 LSB ずれても読める)。修正後、5 fixture すべてで最大差 0〜1。
+
+### 8.3 [事実] color fixture の生成側にも欠陥があった
+
+最初の fixture は BT.601 だけ一致し、BT.709 / BT.2020 が 10〜25 ずれた。
+原因は実装ではなく **生成側**だった。
+
+ffmpeg は raw video の入力を「BT.601」と仮定するので、
+出力に `-colorspace bt709` を指定すると **colorspace 変換を自動挿入する**。
+その結果、書き込んだはずの YUV とは別の値が焼かれていた
+(V=240 と書いて 229 で復元された)。
+
+BT.601 fixture だけ一致していたのは、仮定と一致していたからにすぎない。
+**「1 つ通っているから検査は正しい」と考えてはいけなかった。**
+
+`[回避策]` ではなく修正: `setparams` フィルタで入力フレームに色情報を付け、
+変換が挿入されないようにする。
+
+### 8.4 [事実] GUI が decoder 内部を無排他で読んでいた
+
+P1 の `info()` / `decodeAdapter()` / `lastError()` は、
+decode thread が書き換えている実体への **const 参照**を返していた。
+`std::string` の書き換え中に読めば壊れた文字列が見える。
+
+観測はできていない (Windows / MSYS2 で TSAN が使えない)。
+**「観測していない」ことを「起きていない」と書かない。**
+契約の側を直した: GUI へ返すのは `DecoderSnapshot` の値コピーだけにし、
+`decoder_` には `decoderMutex_` 無しで触らない。
+
+決定論的な thread test (`snapshot-race`) を追加した。
+別スレッドから snapshot を叩き、codec 名 / 解像度 / decode 数の整合を検査する。
+実測 45,261,726 回で違反 0 件。
+**これは「race が無い証明」ではなく「この形の破損は出ていない」という観測である。**
+
+## 9. P1.1 の soak が示したこと
+
+**[事実]** H.264 / HEVC を交互に 100 cycle 開閉して:
+
+- marker mismatch 0 / device lost 0
+- `cpu_full_frame_readback = 0`
+- SRV cache は 4 entry で頭打ち、retire 396 件、active pool 1
+- retirement は timeout 0 で drain でき、未完了の解放 0 件
+
+**[事実] handle 数は単調増加ではない。**
+first 1259 / mid 3188 / last 1987。中盤で増えて終盤で減っている。
+
+**[推測]** driver 側の cache か遅延解放だと思われるが、
+**機構は特定していない**。PrivateUsage も
+first 122MB / mid 150MB / peak 155MB / last 147MB で、
+増えたまま戻らない分がある。
+
+**[未検証]** これがリークなのか定常状態なのかは、
+100 cycle では判断できない。数千 cycle か長時間再生で測る必要がある。
+**「問題ない」とは書かない。生データを残す。**
+
+## 10. 測っていないこと
 
 「動くはず」を「動く」と書かないために、明示しておく。
 

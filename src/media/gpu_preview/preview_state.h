@@ -13,6 +13,7 @@
 
 #include "media/gpu_preview/d3d11_shared_device.h"
 #include "media/gpu_preview/frame_queue.h"
+#include "media/gpu_preview/gpu_completion.h"
 #include "media/gpu_preview/nv12_converter.h"
 #include "media/gpu_preview/readback_counter.h"
 
@@ -22,6 +23,59 @@
 #include <vector>
 
 namespace mvm::gpu {
+
+// --------------------------------------------------------------------------
+// display completion (§5)
+// --------------------------------------------------------------------------
+// 「seek を要求してから、実際に画面へ出るまで」を測るための受け渡し。
+//
+// **decode が終わった時点と、画面に出た時点は別物である。**
+// P1 は decode-ready しか測っていなかった。編集操作の体感は displayed 側で決まる。
+//
+// 古い completion を別 request の成功として使わないため、
+// 一致条件を 4 つ全部要求する:
+//   request_id / source_generation / composition_epoch / requested_frame
+struct DisplayCompletion {
+    bool valid = false;
+    unsigned long long requestId = 0;
+    GenerationId generation{};
+    long long requestedFrame = -1;
+    long long displayedFrame = -1;
+    long long displayedQpc = 0;
+};
+
+struct DisplayCompletionSlot {
+    std::mutex mutex;
+    // GUI -> render: この request の表示を待っている
+    bool waiting = false;
+    unsigned long long requestId = 0;
+    GenerationId generation{};
+    long long requestedFrame = -1;
+    // render -> GUI: 直近に成立した completion
+    DisplayCompletion last;
+};
+
+// --------------------------------------------------------------------------
+// color patch 検査 (§6)
+// --------------------------------------------------------------------------
+// marker が一致することは color correctness の証拠にならない。
+// marker は白 235 / 黒 16 の高コントラストなので、係数がずれても読めてしまう。
+// 既知の YUV patch を **表示と同じ shader** で RGB 化し、小領域だけ読んで照合する。
+struct ColorPatchSlot {
+    std::mutex mutex;
+    bool requested = false;
+    bool done = false;
+    long long expectedFrame = -1;
+    int patchWidth = 0;
+    int patchHeight = 0;
+    std::vector<unsigned char> rgba; // patchWidth*patchHeight*4
+    // 実際に選ばれた行列 / レンジと、それが推定だったか
+    ColorSpace colorSpace = ColorSpace::Unknown;
+    ColorRange colorRange = ColorRange::Unknown;
+    bool colorSpaceInferred = false;
+    bool colorRangeInferred = false;
+    std::string error;
+};
 
 // marker 検証の依頼と結果。render thread が実行し、GUI thread が読む。
 struct MarkerProbeSlot {
@@ -40,10 +94,21 @@ struct PreviewState {
     SharedD3D11Device device;
     Nv12Converter converter;
     ReadbackCounters counters;
+    // GPU 完了に基づく frame / SRV / texture の retire (§1)。
+    // すべて render thread が所有する (device / context と同じ)。
+    GpuCompletionTracker completion;
+    GpuRetirementQueue retirement;
 
     // --- 3 スレッド共有 (内部で lock 済み) ----------------------------------
-    PreviewFrameQueue queue{3, 3};
+    PreviewFrameQueue queue{3};
     MarkerProbeSlot markerProbe;
+    DisplayCompletionSlot displayCompletion;
+    ColorPatchSlot colorPatch;
+
+    // --- frame accounting (§7) ----------------------------------------------
+    // 「queue に残っている」と「期限を過ぎて捨てた」を区別する。
+    // 残っているだけの frame を drop と呼ぶと、正常な終了状態が不合格になる。
+    std::atomic<long long> displayDeadlineDrops{0};
 
     // --- render -> GUI (atomic) ---------------------------------------------
     std::atomic<bool> deviceReady{false};
@@ -54,6 +119,10 @@ struct PreviewState {
     std::atomic<long long> deviceLostCount{0};
     std::atomic<long long> renderErrorCount{0};
     std::atomic<long long> displayedFrameNumber{-1};
+    // device change (§8) の検出回数と、その処理結果。
+    std::atomic<long long> deviceChangeCount{0};
+    std::atomic<long long> deviceChangeHandledCount{0};
+    std::atomic<long long> deviceChangeFailClosedCount{0};
 
     // --- GUI -> render (atomic) ---------------------------------------------
     std::atomic<bool> linearFilter{true};
@@ -65,6 +134,7 @@ struct PreviewState {
     std::mutex infoMutex;
     std::string initError;
     std::string rhiBackend;
+    std::string gpuCompletionBackend;
     // QRhi が申告する adapter LUID (native handles 由来)。
     unsigned int qtReportedLuidLow = 0;
     int qtReportedLuidHigh = 0;

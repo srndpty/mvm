@@ -49,6 +49,8 @@ const char* toString(SubmitResult r) {
         return "accepted";
     case SubmitResult::RejectedStaleGeneration:
         return "rejected_stale_generation";
+    case SubmitResult::RejectedFutureGeneration:
+        return "rejected_future_generation";
     case SubmitResult::RejectedInvalidFrame:
         return "rejected_invalid_frame";
     case SubmitResult::RejectedDeviceMismatch:
@@ -57,6 +59,18 @@ const char* toString(SubmitResult r) {
         return "rejected_not_ready";
     case SubmitResult::RejectedQueueFull:
         return "rejected_queue_full";
+    }
+    return "unknown";
+}
+
+const char* toString(GenerationUpdateResult r) {
+    switch (r) {
+    case GenerationUpdateResult::Updated:
+        return "updated";
+    case GenerationUpdateResult::NoOp:
+        return "noop";
+    case GenerationUpdateResult::RejectedRegression:
+        return "rejected_regression";
     }
     return "unknown";
 }

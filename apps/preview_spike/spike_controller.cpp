@@ -81,7 +81,7 @@ void processCpuTimes(unsigned long long& userOut, unsigned long long& kernelOut)
     }
 }
 
-}  // namespace
+} // namespace
 
 SpikeController::SpikeController(QObject* parent) : QObject(parent) {
     timer_.setInterval(100);
@@ -110,7 +110,7 @@ qlonglong SpikeController::displayedFrame() const {
 }
 
 qlonglong SpikeController::frameCount() const {
-    return worker_ ? worker_->info().frameCount : -1;
+    return worker_ ? worker_->snapshot().info.frameCount : -1;
 }
 
 bool SpikeController::playing() const {
@@ -172,25 +172,113 @@ void SpikeController::seekTo(qlonglong frame) {
     if (!worker_)
         return;
     requestedFrame_ = frame;
-    double ms = 0.0;
-    std::string err;
-    if (!worker_->seekBlocking(frame, ms, err))
-        status_ = QStringLiteral("seek 失敗: ") + QString::fromStdString(err);
+    gpu::SeekSample s;
+    QString err;
+    if (!seekAndWaitForDisplay(frame, s, err))
+        status_ = QStringLiteral("seek 失敗: ") + err;
     else
-        status_ = QStringLiteral("seek %1 (%2 ms)").arg(frame).arg(ms, 0, 'f', 1);
+        status_ = QStringLiteral("seek %1 (decode %2ms / 表示 %3ms)")
+                      .arg(frame)
+                      .arg(s.decodeReadyMs, 0, 'f', 1)
+                      .arg(s.displayedMs, 0, 'f', 1);
     Q_EMIT statusChanged();
+}
+
+// --------------------------------------------------------------------------
+// §5 request-to-display seek
+// --------------------------------------------------------------------------
+bool SpikeController::seekAndWaitForDisplay(long long frame, gpu::SeekSample& sample,
+                                            QString& err) {
+    sample = gpu::SeekSample{};
+    sample.requestedFrame = frame;
+    if (!worker_ || !state_) {
+        err = QStringLiteral("worker がありません");
+        return false;
+    }
+
+    const unsigned long long requestId = nextRequestId_++;
+    const long long t0 = gpu::qpcTicks();
+
+    // **seek を出す前に待機を登録する。** 後から登録すると、
+    // 表示が先に起きた場合に completion を取りこぼす。
+    // generation は seek 後に確定するので、いったん requestId と frame だけ入れ、
+    // seek 成功後に generation を埋める。
+    {
+        std::lock_guard<std::mutex> g(state_->displayCompletion.mutex);
+        state_->displayCompletion.waiting = false;
+        state_->displayCompletion.last = gpu::DisplayCompletion{};
+    }
+
+    double decodeReadyMs = 0.0;
+    std::string serr;
+    if (!worker_->seekBlocking(frame, decodeReadyMs, serr)) {
+        sample.decodeReadyMs = decodeReadyMs;
+        err = QString::fromStdString(serr);
+        return false;
+    }
+    sample.decodeReadyMs = decodeReadyMs;
+
+    const gpu::DecoderSnapshot snap = worker_->snapshot();
+    {
+        std::lock_guard<std::mutex> g(state_->displayCompletion.mutex);
+        state_->displayCompletion.waiting = true;
+        state_->displayCompletion.requestId = requestId;
+        state_->displayCompletion.generation = snap.generation;
+        state_->displayCompletion.requestedFrame = frame;
+    }
+
+    // 有限時間だけ待つ。**無制限に processEvents を回さない。**
+    QElapsedTimer wait;
+    wait.start();
+    gpu::DisplayCompletion done;
+    bool got = false;
+    while (wait.elapsed() < measure_.displayTimeoutMs) {
+        {
+            std::lock_guard<std::mutex> g(state_->displayCompletion.mutex);
+            const auto& last = state_->displayCompletion.last;
+            if (last.valid && last.requestId == requestId && last.generation == snap.generation &&
+                last.requestedFrame == frame && last.displayedFrame == frame) {
+                done = last;
+                got = true;
+            }
+        }
+        if (got)
+            break;
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 2);
+    }
+
+    if (!got) {
+        // fail-closed。待機を必ず降ろす。降ろさないと、後から来た表示が
+        // 次の request の成功として拾われる。
+        std::lock_guard<std::mutex> g(state_->displayCompletion.mutex);
+        state_->displayCompletion.waiting = false;
+        state_->displayCompletion.last = gpu::DisplayCompletion{};
+        err = QStringLiteral("frame %1 が %2ms 以内に表示されませんでした")
+                  .arg(frame)
+                  .arg(measure_.displayTimeoutMs);
+        return false;
+    }
+
+    sample.landedFrame = done.displayedFrame;
+    sample.displayedMs = gpu::qpcMsBetween(t0, done.displayedQpc);
+    sample.ok = true;
+    sample.displayed = true;
+    return true;
 }
 
 void SpikeController::updateDeviceText() {
     if (!state_)
         return;
+    const gpu::DecoderSnapshot snap = worker_ ? worker_->snapshot() : gpu::DecoderSnapshot{};
     std::lock_guard<std::mutex> g(state_->infoMutex);
-    const gpu::AdapterInfo& qt = state_->device.adapter();
-    const gpu::AdapterInfo& dec = worker_ ? worker_->decodeAdapter() : qt;
+    const gpu::AdapterInfo qt = state_->device.adapter();
+    const gpu::AdapterInfo dec = snap.adapter;
 
     deviceText_ =
-        QStringLiteral("backend=%1  adapter=%2  FL=0x%3\nQt LUID=%4:%5  decode LUID=%6:%7  %8")
+        QStringLiteral("backend=%1  gpu完了=%2  adapter=%3  FL=0x%4\nQt LUID=%5:%6  decode "
+                       "LUID=%7:%8  %9")
             .arg(QString::fromStdString(state_->rhiBackend))
+            .arg(QString::fromStdString(state_->gpuCompletionBackend))
             .arg(QString::fromStdString(qt.description))
             .arg(qt.featureLevel, 0, 16)
             .arg(qt.luidHigh)
@@ -206,6 +294,8 @@ void SpikeController::tick() {
     if (!state_)
         return;
 
+    const gpu::DecoderSnapshot snap = worker_ ? worker_->snapshot() : gpu::DecoderSnapshot{};
+
     // UI 表示用の fps。判定には使わない (判定は計測フェーズの実測値)。
     const long long displayed = state_->uniqueDisplayed.load(std::memory_order_relaxed);
     const qint64 elapsed = fpsTimer_.elapsed();
@@ -219,19 +309,25 @@ void SpikeController::tick() {
     counterText_ =
         QStringLiteral(
             "decoded=%1  displayed=%2  repeated=%3  queue=%4\n"
-            "CPU full-frame readback=%5  marker band readback=%6  GPU copy=%7  device lost=%8")
-            .arg(worker_ ? worker_->decodedFrameCount() : 0)
+            "CPU full-frame readback=%5  marker band=%6  GPU copy=%7  device lost=%8\n"
+            "retirement depth=%9 (peak %10)  SRV=%11")
+            .arg(snap.decodedFrameCount)
             .arg(displayed)
             .arg(state_->repeatedPresents.load(std::memory_order_relaxed))
             .arg(state_->queue.depth())
             .arg(state_->counters.fullFrameReadbacks())
             .arg(state_->counters.markerBandReadbacks())
             .arg(state_->counters.gpuCopies())
-            .arg(state_->deviceLostCount.load(std::memory_order_relaxed));
+            .arg(state_->deviceLostCount.load(std::memory_order_relaxed))
+            .arg(state_->retirement.depthCurrent())
+            .arg(state_->retirement.depthPeak())
+            .arg(state_->converter.srvCacheEntries());
 
     if (state_->initFailed.load(std::memory_order_relaxed) && exitCode_ == 0) {
-        std::lock_guard<std::mutex> g(state_->infoMutex);
-        status_ = QStringLiteral("初期化失敗: ") + QString::fromStdString(state_->initError);
+        {
+            std::lock_guard<std::mutex> g(state_->infoMutex);
+            status_ = QStringLiteral("初期化失敗: ") + QString::fromStdString(state_->initError);
+        }
         errors_ << status_;
         exitCode_ = 5;
         if (measure_.enabled) {
@@ -256,7 +352,7 @@ void SpikeController::tick() {
 // --------------------------------------------------------------------------
 
 void SpikeController::advanceMeasurement() {
-    // marker 検査と seek 計測は processEvents を回す。
+    // marker / color / seek のフェーズは processEvents を回す。
     // その間に QTimer が発火してここへ再入すると、同じフェーズを二重に走らせる。
     if (inPhase_)
         return;
@@ -293,12 +389,12 @@ void SpikeController::advanceMeasurement() {
 
     case Phase::Warmup: {
         // startup latency = 開いてから最初の 1 枚が **表示された** まで。
-        if (startupLatencyMs_ < 0 &&
-            state_->uniqueDisplayed.load(std::memory_order_relaxed) > 0) {
+        if (startupLatencyMs_ < 0 && state_->uniqueDisplayed.load(std::memory_order_relaxed) > 0)
             startupLatencyMs_ = gpu::qpcMsBetween(startupLatencyTicks_, gpu::qpcTicks());
-        }
         if (worker_->eof()) {
-            seekTo(0);
+            gpu::SeekSample s;
+            QString e;
+            seekAndWaitForDisplay(0, s, e);
             play();
         }
         if (phaseTimer_.elapsed() < measure_.warmupMs)
@@ -308,7 +404,8 @@ void SpikeController::advanceMeasurement() {
         displayedAtStart_ = state_->uniqueDisplayed.load(std::memory_order_relaxed);
         repeatedAtStart_ = state_->repeatedPresents.load(std::memory_order_relaxed);
         presentAtStart_ = state_->presentCount.load(std::memory_order_relaxed);
-        decodedAtStart_ = worker_->decodedFrameCount();
+        decodedAtStart_ = worker_->snapshot().decodedFrameCount;
+        submittedAtStart_ = state_->queue.submittedCount();
         {
             std::lock_guard<std::mutex> g(state_->intervalMutex);
             state_->frameIntervalsMs.clear();
@@ -325,7 +422,9 @@ void SpikeController::advanceMeasurement() {
         if (worker_->eof()) {
             // 素材が尽きたら先頭へ戻して測り続ける。回数は記録する。
             loopCount_++;
-            seekTo(0);
+            gpu::SeekSample s;
+            QString e;
+            seekAndWaitForDisplay(0, s, e);
             play();
         }
         if (phaseTimer_.elapsed() < measure_.measureMs)
@@ -335,20 +434,20 @@ void SpikeController::advanceMeasurement() {
         state_->collectIntervals.store(false, std::memory_order_relaxed);
         pause();
         // 計測区間の値をここで確定させる。
-        // このあとの marker 検査と seek 計測でも decode は進むので、
+        // このあとの marker / color / seek でも decode は進むので、
         // JSON を書く時点で読むと計測区間の値ではなくなる。
         displayedInWindow_ = state_->uniqueDisplayed.load(std::memory_order_relaxed) -
                              displayedAtStart_;
-        repeatedInWindow_ = state_->repeatedPresents.load(std::memory_order_relaxed) -
-                            repeatedAtStart_;
-        presentsInWindow_ = state_->presentCount.load(std::memory_order_relaxed) -
-                            presentAtStart_;
-        decodedInWindow_ = worker_->decodedFrameCount() - decodedAtStart_;
+        repeatedInWindow_ =
+            state_->repeatedPresents.load(std::memory_order_relaxed) - repeatedAtStart_;
+        presentsInWindow_ = state_->presentCount.load(std::memory_order_relaxed) - presentAtStart_;
+        decodedInWindow_ = worker_->snapshot().decodedFrameCount - decodedAtStart_;
+        submittedInWindow_ = state_->queue.submittedCount() - submittedAtStart_;
         processCpuTimes(cpuUserEnd_, cpuKernelEnd_);
         PROCESS_MEMORY_COUNTERS_EX pm{};
         pm.cb = sizeof pm;
-        GetProcessMemoryInfo(GetCurrentProcess(),
-                             reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pm), sizeof pm);
+        GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pm),
+                             sizeof pm);
         workingSetAtEnd_ = static_cast<long long>(pm.WorkingSetSize);
         privateUsageAtEnd_ = static_cast<long long>(pm.PrivateUsage);
         phase_ = Phase::Markers;
@@ -358,6 +457,13 @@ void SpikeController::advanceMeasurement() {
 
     case Phase::Markers: {
         runMarkerChecks();
+        phase_ = Phase::Colors;
+        phaseTimer_.restart();
+        return;
+    }
+
+    case Phase::Colors: {
+        runColorPatchDiagnostic();
         phase_ = Phase::Seeks;
         phaseTimer_.restart();
         return;
@@ -379,7 +485,7 @@ void SpikeController::advanceMeasurement() {
 
 bool SpikeController::runMarkerChecks() {
     bool allOk = true;
-    const long long total = worker_->info().frameCount;
+    const long long total = worker_->snapshot().info.frameCount;
 
     for (long long f : measure_.markerFrames) {
         if (total > 0 && f >= total) {
@@ -404,12 +510,12 @@ bool SpikeController::runMarkerChecks() {
             state_->markerProbe.error.clear();
         }
 
-        double ms = 0.0;
-        std::string err;
         MarkerResult r;
         r.requested = f;
-        if (!worker_->seekBlocking(f, ms, err)) {
-            r.error = QString::fromStdString(err);
+        gpu::SeekSample sample;
+        QString serr;
+        if (!seekAndWaitForDisplay(f, sample, serr)) {
+            r.error = serr;
             markerResults_.push_back(r);
             allOk = false;
             std::lock_guard<std::mutex> g(state_->markerProbe.mutex);
@@ -417,21 +523,25 @@ bool SpikeController::runMarkerChecks() {
             continue;
         }
 
-        // 描画されるまで待つ。render thread が動くよう event を回す。
+        // 表示が済んでいるので marker 読み取りも済んでいるはずだが、
+        // render thread の完了は別なので有限時間だけ待つ。
         QElapsedTimer wait;
         wait.start();
         bool done = false;
         while (wait.elapsed() < 3000) {
-            QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
-            std::lock_guard<std::mutex> g(state_->markerProbe.mutex);
-            if (state_->markerProbe.done) {
-                done = true;
-                r.displayed = state_->markerProbe.displayedFrame;
-                r.marker = state_->markerProbe.markerValue;
-                r.syncOk = state_->markerProbe.syncOk;
-                r.error = QString::fromStdString(state_->markerProbe.error);
-                break;
+            {
+                std::lock_guard<std::mutex> g(state_->markerProbe.mutex);
+                if (state_->markerProbe.done) {
+                    done = true;
+                    r.displayed = state_->markerProbe.displayedFrame;
+                    r.marker = state_->markerProbe.markerValue;
+                    r.syncOk = state_->markerProbe.syncOk;
+                    r.error = QString::fromStdString(state_->markerProbe.error);
+                }
             }
+            if (done)
+                break;
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
         }
         if (!done) {
             r.error = QStringLiteral("marker の読み取りがタイムアウトしました");
@@ -445,8 +555,60 @@ bool SpikeController::runMarkerChecks() {
     return allOk;
 }
 
+void SpikeController::runColorPatchDiagnostic() {
+    // **これは診断であって色の合否判定ではない。**
+    // 正式な color patch 検査は mvm_test_gpu_decode color が
+    // 既知の YUV fixture に対して行う (§6)。
+    // ここでは「表示経路がどの行列 / レンジを選んだか」を記録するだけ。
+    if (measure_.colorPatchWidth <= 0 || measure_.colorPatchHeight <= 0)
+        return;
+
+    {
+        std::lock_guard<std::mutex> g(state_->colorPatch.mutex);
+        state_->colorPatch.requested = true;
+        state_->colorPatch.done = false;
+        state_->colorPatch.expectedFrame = 0;
+        state_->colorPatch.patchWidth = measure_.colorPatchWidth;
+        state_->colorPatch.patchHeight = measure_.colorPatchHeight;
+        state_->colorPatch.error.clear();
+    }
+
+    gpu::SeekSample sample;
+    QString serr;
+    if (!seekAndWaitForDisplay(0, sample, serr)) {
+        colorDiagError_ = serr;
+        std::lock_guard<std::mutex> g(state_->colorPatch.mutex);
+        state_->colorPatch.requested = false;
+        return;
+    }
+
+    QElapsedTimer wait;
+    wait.start();
+    while (wait.elapsed() < 3000) {
+        bool done = false;
+        {
+            std::lock_guard<std::mutex> g(state_->colorPatch.mutex);
+            if (state_->colorPatch.done) {
+                done = true;
+                colorDiagDone_ = true;
+                colorDiagSpace_ = QString::fromLatin1(gpu::toString(state_->colorPatch.colorSpace));
+                colorDiagRange_ = QString::fromLatin1(gpu::toString(state_->colorPatch.colorRange));
+                colorDiagSpaceInferred_ = state_->colorPatch.colorSpaceInferred;
+                colorDiagRangeInferred_ = state_->colorPatch.colorRangeInferred;
+                colorDiagError_ = QString::fromStdString(state_->colorPatch.error);
+            }
+        }
+        if (done)
+            return;
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+    }
+    colorDiagError_ = QStringLiteral("color patch の読み取りがタイムアウトしました");
+    std::lock_guard<std::mutex> g(state_->colorPatch.mutex);
+    state_->colorPatch.requested = false;
+}
+
 void SpikeController::runSeekBenchmark() {
-    const long long total = worker_->info().frameCount;
+    const long long total = worker_->snapshot().info.frameCount;
     if (total <= 1 || measure_.seekCount <= 0)
         return;
 
@@ -457,19 +619,11 @@ void SpikeController::runSeekBenchmark() {
     for (int i = 0; i < measure_.seekCount; i++) {
         const long long target = rng.bounded(static_cast<quint32>(total));
         gpu::SeekSample s;
-        s.requestedFrame = target;
-        double ms = 0.0;
-        std::string err;
-        s.ok = worker_->seekBlocking(target, ms, err);
-        s.elapsedMs = ms;
-        s.landedFrame = s.ok ? target : -1;
+        QString serr;
+        seekAndWaitForDisplay(target, s, serr);
         if (!s.ok && errors_.size() < 20)
-            errors_ << QStringLiteral("seek %1 失敗: %2").arg(target).arg(
-                QString::fromStdString(err));
+            errors_ << QStringLiteral("seek %1 失敗: %2").arg(target).arg(serr);
         seekSamples_.push_back(s);
-
-        if ((i % 50) == 0)
-            QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
     }
 }
 
@@ -477,46 +631,51 @@ bool SpikeController::writeJson() {
     if (measure_.jsonPath.isEmpty())
         return true;
 
+    const gpu::DecoderSnapshot snap = worker_ ? worker_->snapshot() : gpu::DecoderSnapshot{};
+
     std::vector<double> intervals;
     {
         std::lock_guard<std::mutex> g(state_->intervalMutex);
         intervals = state_->frameIntervalsMs;
     }
-    std::vector<double> seekMs;
+    std::vector<double> seekDisplayedMs;
+    std::vector<double> seekDecodeMs;
     long long seekFail = 0;
+    long long seekDisplayMismatch = 0;
     for (const auto& s : seekSamples_) {
-        seekMs.push_back(s.elapsedMs);
-        if (!s.ok)
+        seekDecodeMs.push_back(s.decodeReadyMs);
+        if (s.ok) {
+            seekDisplayedMs.push_back(s.displayedMs);
+            if (s.landedFrame != s.requestedFrame)
+                seekDisplayMismatch++;
+        } else {
             seekFail++;
+        }
     }
 
     const long long displayed = displayedInWindow_;
     const long long repeated = repeatedInWindow_;
     const long long presents = presentsInWindow_;
     const long long decoded = decodedInWindow_;
+    const long long submitted = submittedInWindow_;
 
     const double elapsedSec = measureElapsedMs_ / 1000.0;
     const double effectiveFps = elapsedSec > 0 ? static_cast<double>(displayed) / elapsedSec : 0.0;
 
-    // **dropped の定義**: decode したのに一度も表示されなかったフレーム数。
-    // 表示が追いつかないときは backpressure がかかるので、正常なら
-    // 計測終了時に queue に残っている数 (数枚) しか出ない。
-    //
-    // 「新しいフレームが無くて前の絵をもう一度出した present」は
-    // **別の指標** (repeated_presents) として出す。表示リフレッシュが
-    // 素材の fps より速ければ必ず起きるので、drop と混ぜてはいけない。
-    const long long dropped = decoded > displayed ? decoded - displayed : 0;
+    // §7: queue に残っているものを無条件に dropped と呼ばない。
+    // dropped は「表示期限を過ぎて意図的に捨てた」ものだけ。
+    const long long pendingAtEnd = static_cast<long long>(state_->queue.depth());
+    const long long dropped = state_->displayDeadlineDrops.load(std::memory_order_relaxed);
     const double dropRate =
         decoded > 0 ? static_cast<double>(dropped) / static_cast<double>(decoded) : 0.0;
     const double repeatRate =
         presents > 0 ? static_cast<double>(repeated) / static_cast<double>(presents) : 0.0;
-    const double presentRateHz = elapsedSec > 0 ? static_cast<double>(presents) / elapsedSec : 0.0;
+    const double presentRateHz =
+        elapsedSec > 0 ? static_cast<double>(presents) / elapsedSec : 0.0;
 
-    // CPU 使用率も計測区間の値を使う。
-    // JSON を書く時点で読むと marker 検査と seek 計測の分が混ざる。
-    const double cpuMs = static_cast<double>((cpuUserEnd_ - cpuUserStart_) +
-                                             (cpuKernelEnd_ - cpuKernelStart_)) /
-                         10000.0;
+    const double cpuMs =
+        static_cast<double>((cpuUserEnd_ - cpuUserStart_) + (cpuKernelEnd_ - cpuKernelStart_)) /
+        10000.0;
     SYSTEM_INFO si{};
     GetSystemInfo(&si);
     const double cpuUtil = (measureElapsedMs_ > 0 && si.dwNumberOfProcessors > 0)
@@ -527,7 +686,7 @@ bool SpikeController::writeJson() {
     long long markerChecked = 0;
     for (const auto& m : markerResults_) {
         if (!m.error.isEmpty()) {
-            markerMismatch++;  // 検査できなかったものを「一致」にしない
+            markerMismatch++; // 検査できなかったものを「一致」にしない
             continue;
         }
         markerChecked++;
@@ -535,8 +694,8 @@ bool SpikeController::writeJson() {
             markerMismatch++;
     }
 
-    gpu::AdapterInfo qtAdapter = state_->device.adapter();
-    gpu::AdapterInfo decAdapter = worker_ ? worker_->decodeAdapter() : gpu::AdapterInfo{};
+    const gpu::AdapterInfo qtAdapter = state_->device.adapter();
+    const gpu::AdapterInfo decAdapter = snap.adapter;
 
     QString json;
     QTextStream o(&json);
@@ -553,27 +712,24 @@ bool SpikeController::writeJson() {
     };
 
     o << "{\n";
-    kv("schema", QStringLiteral("mvm-p1-preview-1"));
+    kv("schema", QStringLiteral("mvm-p1-preview-2"));
     kv("label", measure_.label);
     kv("media", mediaPath_);
     kv("timestamp", QDateTime::currentDateTime().toString(Qt::ISODate));
-    kv("codec", QString::fromStdString(worker_ ? worker_->info().codecName : std::string()));
-    kv("hwaccel", QString::fromStdString(worker_ ? worker_->info().hwaccelName : std::string()));
-    kvi("width", worker_ ? worker_->info().width : 0);
-    kvi("height", worker_ ? worker_->info().height : 0);
-    kvi("frame_count", worker_ ? worker_->info().frameCount : -1);
-    kv("pixel_format",
-       QString::fromLatin1(gpu::toString(worker_ ? worker_->info().pixelFormat
-                                                 : gpu::GpuPixelFormat::Unknown)));
-    kv("color_space", QString::fromLatin1(gpu::toString(
-                          worker_ ? worker_->info().colorSpace : gpu::ColorSpace::Unknown)));
-    kv("color_range", QString::fromLatin1(gpu::toString(
-                          worker_ ? worker_->info().colorRange : gpu::ColorRange::Unknown)));
+    kv("codec", QString::fromStdString(snap.info.codecName));
+    kv("hwaccel", QString::fromStdString(snap.info.hwaccelName));
+    kvi("width", snap.info.width);
+    kvi("height", snap.info.height);
+    kvi("frame_count", snap.info.frameCount);
+    kv("pixel_format", QString::fromLatin1(gpu::toString(snap.info.pixelFormat)));
+    kv("color_space", QString::fromLatin1(gpu::toString(snap.info.colorSpace)));
+    kv("color_range", QString::fromLatin1(gpu::toString(snap.info.colorRange)));
 
     // --- device 共有 --------------------------------------------------------
     {
         std::lock_guard<std::mutex> g(state_->infoMutex);
         kv("rhi_backend", QString::fromStdString(state_->rhiBackend));
+        kv("gpu_completion_backend", QString::fromStdString(state_->gpuCompletionBackend));
         o << "  \"qt_d3d11_device\": \"0x" << Qt::hex << state_->qtDevicePointer << Qt::dec
           << "\",\n";
         o << "  \"qt_d3d11_context\": \"0x" << Qt::hex << state_->qtContextPointer << Qt::dec
@@ -590,27 +746,47 @@ bool SpikeController::writeJson() {
     kvi("ffmpeg_adapter_luid_high", decAdapter.luidHigh);
     kvb("ffmpeg_adapter_known", decAdapter.valid);
 
-    // FFmpeg には Qt の device をそのまま渡している。だが照合するのは
-    // 「渡した値」ではなく「decode 結果の texture が実際に属していた device」である。
-    //
     // same_device と same_adapter は **別の意味**である。
     //   same_device  : 同一 ID3D11Device。zero-copy が成立している
     //   same_adapter : 同じ GPU。device が別でも GPU copy で繋げる
-    // 同じ条件で両方を出すと、どちらが成立したのか分からなくなる。
-    const unsigned long long ffmpegDevice =
-        worker_ ? worker_->decodeDevicePointer() : 0ULL;
+    const unsigned long long ffmpegDevice = snap.decodeDevicePointer;
     o << "  \"ffmpeg_d3d11_device\": \"0x" << Qt::hex << ffmpegDevice << Qt::dec << "\",\n";
     kvb("same_device", ffmpegDevice != 0 && ffmpegDevice == qtDevicePointer_);
     kvb("same_adapter", decAdapter.valid && decAdapter.sameAdapterAs(qtAdapter));
     kvb("multithread_protected", state_->device.multithreadProtected());
     kvi("device_lost_count", state_->deviceLostCount.load(std::memory_order_relaxed));
 
+    // --- §8 device lifecycle ------------------------------------------------
+    kvi("device_change_count", state_->deviceChangeCount.load(std::memory_order_relaxed));
+    kvi("device_change_handled_count",
+        state_->deviceChangeHandledCount.load(std::memory_order_relaxed));
+    kvi("device_change_fail_closed_count",
+        state_->deviceChangeFailClosedCount.load(std::memory_order_relaxed));
+
+    // --- §1 GPU completion / retirement -------------------------------------
+    kvi("gpu_submitted_serial", static_cast<long long>(state_->completion.submittedSerial()));
+    kvi("gpu_completed_serial", static_cast<long long>(state_->completion.polledCompleted()));
+    kvi("retirement_depth_current", static_cast<long long>(state_->retirement.depthCurrent()));
+    kvi("retirement_depth_peak", static_cast<long long>(state_->retirement.depthPeak()));
+    kvi("retirement_timeout_count", state_->retirement.retirementTimeoutCount());
+    kvi("forced_gpu_wait_count", state_->retirement.forcedGpuWaitCount());
+    kvi("frames_released_before_completion", state_->retirement.framesReleasedBeforeCompletion());
+
+    // --- §4 resource epoch / SRV cache --------------------------------------
+    kvi("resource_epoch", static_cast<long long>(snap.resourceEpoch));
+    kvi("srv_cache_entries_current", static_cast<long long>(state_->converter.srvCacheEntries()));
+    kvi("srv_cache_entries_peak", static_cast<long long>(state_->converter.srvCacheEntriesPeak()));
+    kvi("retired_srv_entries", state_->converter.retiredSrvEntries());
+    kvi("active_decoder_pools", static_cast<long long>(state_->converter.activeDecoderPools()));
+
     // --- 計測 ---------------------------------------------------------------
     kvi("warmup_ms", measure_.warmupMs);
     kvn("measure_elapsed_ms", measureElapsedMs_);
     kvi("decoded_frames", decoded);
+    kvi("submitted_frames", submitted);
     kvi("displayed_frames", displayed);
     kvi("present_calls", presents);
+    kvi("pending_at_end", pendingAtEnd);
     kvi("dropped_frames", dropped);
     kvi("repeated_presents", repeated);
     kvi("loop_count", loopCount_);
@@ -624,27 +800,49 @@ bool SpikeController::writeJson() {
     kvn("frame_interval_max_ms", maxOf(intervals));
     kvi("frame_interval_samples", static_cast<long long>(intervals.size()));
 
+    // --- §7 frame accounting ------------------------------------------------
+    kvi("stale_rejected", state_->queue.rejectedStaleCount());
+    kvi("future_rejected", state_->queue.rejectedFutureCount());
+    kvi("invalid_rejected", state_->queue.rejectedInvalidCount());
+    kvi("device_rejected", state_->queue.rejectedDeviceMismatchCount());
+    kvi("generation_regression_rejected", state_->queue.generationRegressionCount());
+    kvi("decode_failed", snap.decodeErrorCount);
+    kvi("render_failed", state_->renderErrorCount.load(std::memory_order_relaxed));
+    kvi("retired_not_completed", static_cast<long long>(state_->retirement.depthCurrent()));
+
+    // --- §5 seek ------------------------------------------------------------
     kvi("seek_count", static_cast<long long>(seekSamples_.size()));
     kvi("seek_failures", seekFail);
-    kvn("seek_p50_ms", percentile(seekMs, 0.50));
-    kvn("seek_p95_ms", percentile(seekMs, 0.95));
-    kvn("seek_max_ms", maxOf(seekMs));
-    kvi("seek_backoff_count", worker_ ? worker_->seekBackoffCount() : 0);
+    kvi("seek_display_mismatch", seekDisplayMismatch);
+    kvn("seek_decode_ready_p50_ms", percentile(seekDecodeMs, 0.50));
+    kvn("seek_decode_ready_p95_ms", percentile(seekDecodeMs, 0.95));
+    kvn("seek_decode_ready_max_ms", maxOf(seekDecodeMs));
+    kvn("seek_displayed_p50_ms", percentile(seekDisplayedMs, 0.50));
+    kvn("seek_displayed_p95_ms", percentile(seekDisplayedMs, 0.95));
+    kvn("seek_displayed_max_ms", maxOf(seekDisplayedMs));
+    kvi("seek_backoff_count", snap.seekBackoffCount);
 
     kvi("marker_checked", markerChecked);
     kvi("marker_mismatch", markerMismatch);
 
+    // --- color patch (診断。正式判定は mvm_test_gpu_decode color) -----------
+    kvb("color_patch_read", colorDiagDone_);
+    kv("color_patch_space", colorDiagSpace_);
+    kv("color_patch_range", colorDiagRange_);
+    kvb("color_patch_space_inferred", colorDiagSpaceInferred_);
+    kvb("color_patch_range_inferred", colorDiagRangeInferred_);
+    kv("color_patch_error", colorDiagError_);
+
     // --- readback -----------------------------------------------------------
     kvi("cpu_full_frame_readback_count", state_->counters.fullFrameReadbacks());
     kvi("marker_band_readback_count", state_->counters.markerBandReadbacks());
+    kvi("color_patch_readback_count", state_->counters.colorPatchReadbacks());
     kvi("gpu_copy_count", state_->counters.gpuCopies());
 
-    kvi("decode_errors", worker_ ? worker_->decodeErrorCount() : 0);
-    kvi("software_frame_rejects", worker_ ? worker_->softwareFrameRejectCount() : 0);
+    kvi("decode_errors", snap.decodeErrorCount);
+    kvi("software_frame_rejects", snap.softwareFrameRejectCount);
     kvi("render_errors", state_->renderErrorCount.load(std::memory_order_relaxed));
     kvi("queue_full_events", state_->queue.queueFullCount());
-    kvi("stale_generation_rejects", state_->queue.rejectedStaleCount());
-    kvi("device_mismatch_rejects", state_->queue.rejectedDeviceMismatchCount());
 
     kvn("cpu_utilization", cpuUtil);
     kvi("cpu_processors", si.dwNumberOfProcessors);
@@ -692,4 +890,4 @@ bool SpikeController::writeJson() {
     return true;
 }
 
-}  // namespace mvm::app
+} // namespace mvm::app

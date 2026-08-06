@@ -18,6 +18,7 @@
 #define MVM_GPU_PREVIEW_NV12_CONVERTER_H
 
 #include "media/gpu_preview/d3d11_shared_device.h"
+#include "media/gpu_preview/gpu_completion.h"
 #include "media/gpu_preview/gpu_frame.h"
 #include "media/gpu_preview/readback_counter.h"
 
@@ -64,8 +65,40 @@ public:
     // カウンタも full-frame とは別に持つ (readback_counter.h を参照)。
     //
     // rgbaOut は bandWidth*bandHeight*4 バイトになる。
+    //
+    // MVM_ALLOW_SMALL_REGION_READBACK: この関数と readColorPatches だけが
+    // CPU へ画素を戻してよい (scripts/lint.ps1 が場所を限定して検査する)。
     bool readMarkerBand(const DecodedGpuFrame& frame, int bandWidth, int bandHeight,
                         std::vector<unsigned char>& rgbaOut, std::string& err);
+
+    // color patch の検査用に、左上の patchW x patchH だけを 1:1 で読む (§6)。
+    // marker 帯と同じ経路・同じ shader を通る。full-frame readback は増やさない。
+    //
+    // MVM_ALLOW_SMALL_REGION_READBACK
+    bool readColorPatches(const DecodedGpuFrame& frame, int patchW, int patchH,
+                          std::vector<unsigned char>& rgbaOut, std::string& err);
+
+    // --- SRV cache の世代管理 (§4) ------------------------------------------
+    // decoder を開き直すと decode pool の texture がまるごと入れ替わる。
+    // ポインタは再利用されうるので、**texture の同一性だけでは足りない**。
+    // resource_epoch を key に含め、epoch が変わったら旧 entry を retire する。
+    //
+    // 旧 entry は即 Release しない。GPU がまだ読んでいる可能性があるので、
+    // 最後に使った submission serial とともに retirement queue へ渡す。
+    void retireEntriesNotInEpoch(unsigned long long epoch, GpuRetirementQueue& queue);
+
+    // draw で使った entry に、この submission serial を刻む。
+    // **signalSubmission() の直後に呼ぶ。**
+    void stampSubmissionSerial(unsigned long long serial);
+
+    size_t srvCacheEntries() const { return srvCache_.size(); }
+
+    size_t srvCacheEntriesPeak() const { return srvCachePeak_; }
+
+    long long retiredSrvEntries() const { return retiredSrvEntries_; }
+
+    // 現在 cache が抱えている異なる decode pool (epoch, texture) の数。
+    size_t activeDecoderPools() const;
 
 private:
     struct SrvPair {
@@ -73,17 +106,33 @@ private:
         ID3D11ShaderResourceView* chroma = nullptr;
     };
 
-    // (texture, arrayIndex) ごとの SRV。毎フレーム作り直すと
-    // 60fps で 120 回/秒の resource 生成になり、計測値を汚す。
-    // decode pool は固定サイズなので、この cache は有界である。
+    // cache key は (resource_epoch, texture identity, array index, pixel format)。
+    // 毎フレーム作り直すと 60fps で 120 回/秒の resource 生成になり、
+    // 計測値を汚す。decode pool は固定サイズなので、epoch ごとには有界である。
     struct SrvCacheEntry {
+        unsigned long long epoch = 0;
         ID3D11Texture2D* texture = nullptr;
         unsigned int arrayIndex = 0;
+        GpuPixelFormat pixelFormat = GpuPixelFormat::Unknown;
         SrvPair srv;
+        // この entry を使った最後の submission serial。
+        // retire するときの解放条件になる。
+        unsigned long long lastUsedSerial = 0;
     };
 
     std::vector<SrvCacheEntry> srvCache_;
+    // stampSubmissionSerial がまだ刻んでいない entry の添字。
+    std::vector<size_t> pendingStamp_;
+    size_t srvCachePeak_ = 0;
+    long long retiredSrvEntries_ = 0;
 
+    // 小領域 readback の上限。これを超える要求は拒否する
+    // (full-frame readback をうっかり書けないようにするため)。
+    // 1216x64 の marker 帯 = 311,296 byte。余裕を見て 1 MiB。
+    static constexpr long long kMaxSmallRegionBytes = 1024 * 1024;
+
+    bool readSmallRegionTopLeft(const DecodedGpuFrame& frame, int bandWidth, int bandHeight,
+                                std::vector<unsigned char>& rgbaOut, std::string& err);
     bool ensureShaders(std::string& err);
     bool acquireSrvs(const DecodedGpuFrame& frame, SrvPair& out, std::string& err);
     bool drawInternal(const DecodedGpuFrame& frame, ID3D11RenderTargetView* rtv,

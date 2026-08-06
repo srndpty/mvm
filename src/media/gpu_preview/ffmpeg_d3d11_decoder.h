@@ -67,6 +67,7 @@ public:
     void close() override;
     const VideoStreamInfo& info() const override;
     unsigned long long generation() const override;
+    unsigned long long resourceEpoch() const override;
 
     OpenFailure openFailure() const;
 
