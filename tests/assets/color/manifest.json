@@ -1,0 +1,802 @@
+{
+  "schema": "mvm-color-fixture-1",
+  "generated": "2026-08-06T19:51:45.6134679+09:00",
+  "note": "期待 RGB は標準式から独立に計算している。実装の関数は呼んでいない。",
+  "assets": [
+    {
+      "id": "bt709_limited",
+      "relative_path": "bt709_limited.mp4",
+      "gate": true,
+      "matrix": "bt709",
+      "range": "limited",
+      "depth": 8,
+      "width": 512,
+      "height": 256,
+      "patch_size": 64,
+      "patch_count": 8,
+      "tolerance": 3,
+      "patches": [
+        {
+          "index": 0,
+          "source_rgb": [
+            255,
+            255,
+            255
+          ],
+          "yuv": [
+            235,
+            128,
+            128
+          ],
+          "expected_rgb": [
+            255,
+            255,
+            255
+          ]
+        },
+        {
+          "index": 1,
+          "source_rgb": [
+            0,
+            0,
+            0
+          ],
+          "yuv": [
+            16,
+            128,
+            128
+          ],
+          "expected_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "index": 2,
+          "source_rgb": [
+            128,
+            128,
+            128
+          ],
+          "yuv": [
+            126,
+            128,
+            128
+          ],
+          "expected_rgb": [
+            128,
+            128,
+            128
+          ]
+        },
+        {
+          "index": 3,
+          "source_rgb": [
+            255,
+            0,
+            0
+          ],
+          "yuv": [
+            63,
+            102,
+            240
+          ],
+          "expected_rgb": [
+            255,
+            1,
+            0
+          ]
+        },
+        {
+          "index": 4,
+          "source_rgb": [
+            0,
+            255,
+            0
+          ],
+          "yuv": [
+            173,
+            42,
+            26
+          ],
+          "expected_rgb": [
+            0,
+            255,
+            1
+          ]
+        },
+        {
+          "index": 5,
+          "source_rgb": [
+            0,
+            0,
+            255
+          ],
+          "yuv": [
+            32,
+            240,
+            118
+          ],
+          "expected_rgb": [
+            1,
+            0,
+            255
+          ]
+        },
+        {
+          "index": 6,
+          "source_rgb": [
+            0,
+            255,
+            255
+          ],
+          "yuv": [
+            188,
+            154,
+            16
+          ],
+          "expected_rgb": [
+            0,
+            254,
+            255
+          ]
+        },
+        {
+          "index": 7,
+          "source_rgb": [
+            255,
+            255,
+            0
+          ],
+          "yuv": [
+            219,
+            16,
+            138
+          ],
+          "expected_rgb": [
+            254,
+            255,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "id": "bt709_full",
+      "relative_path": "bt709_full.mp4",
+      "gate": true,
+      "matrix": "bt709",
+      "range": "full",
+      "depth": 8,
+      "width": 512,
+      "height": 256,
+      "patch_size": 64,
+      "patch_count": 8,
+      "tolerance": 3,
+      "patches": [
+        {
+          "index": 0,
+          "source_rgb": [
+            255,
+            255,
+            255
+          ],
+          "yuv": [
+            255,
+            128,
+            128
+          ],
+          "expected_rgb": [
+            255,
+            255,
+            255
+          ]
+        },
+        {
+          "index": 1,
+          "source_rgb": [
+            0,
+            0,
+            0
+          ],
+          "yuv": [
+            0,
+            128,
+            128
+          ],
+          "expected_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "index": 2,
+          "source_rgb": [
+            128,
+            128,
+            128
+          ],
+          "yuv": [
+            128,
+            128,
+            128
+          ],
+          "expected_rgb": [
+            128,
+            128,
+            128
+          ]
+        },
+        {
+          "index": 3,
+          "source_rgb": [
+            255,
+            0,
+            0
+          ],
+          "yuv": [
+            54,
+            98,
+            255
+          ],
+          "expected_rgb": [
+            254,
+            0,
+            0
+          ]
+        },
+        {
+          "index": 4,
+          "source_rgb": [
+            0,
+            255,
+            0
+          ],
+          "yuv": [
+            182,
+            29,
+            12
+          ],
+          "expected_rgb": [
+            0,
+            255,
+            0
+          ]
+        },
+        {
+          "index": 5,
+          "source_rgb": [
+            0,
+            0,
+            255
+          ],
+          "yuv": [
+            18,
+            255,
+            116
+          ],
+          "expected_rgb": [
+            0,
+            0,
+            254
+          ]
+        },
+        {
+          "index": 6,
+          "source_rgb": [
+            0,
+            255,
+            255
+          ],
+          "yuv": [
+            201,
+            157,
+            0
+          ],
+          "expected_rgb": [
+            0,
+            255,
+            255
+          ]
+        },
+        {
+          "index": 7,
+          "source_rgb": [
+            255,
+            255,
+            0
+          ],
+          "yuv": [
+            237,
+            0,
+            139
+          ],
+          "expected_rgb": [
+            254,
+            255,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "id": "bt601_limited",
+      "relative_path": "bt601_limited.mp4",
+      "gate": true,
+      "matrix": "bt601",
+      "range": "limited",
+      "depth": 8,
+      "width": 512,
+      "height": 256,
+      "patch_size": 64,
+      "patch_count": 8,
+      "tolerance": 3,
+      "patches": [
+        {
+          "index": 0,
+          "source_rgb": [
+            255,
+            255,
+            255
+          ],
+          "yuv": [
+            235,
+            128,
+            128
+          ],
+          "expected_rgb": [
+            255,
+            255,
+            255
+          ]
+        },
+        {
+          "index": 1,
+          "source_rgb": [
+            0,
+            0,
+            0
+          ],
+          "yuv": [
+            16,
+            128,
+            128
+          ],
+          "expected_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "index": 2,
+          "source_rgb": [
+            128,
+            128,
+            128
+          ],
+          "yuv": [
+            126,
+            128,
+            128
+          ],
+          "expected_rgb": [
+            128,
+            128,
+            128
+          ]
+        },
+        {
+          "index": 3,
+          "source_rgb": [
+            255,
+            0,
+            0
+          ],
+          "yuv": [
+            81,
+            90,
+            240
+          ],
+          "expected_rgb": [
+            254,
+            0,
+            0
+          ]
+        },
+        {
+          "index": 4,
+          "source_rgb": [
+            0,
+            255,
+            0
+          ],
+          "yuv": [
+            145,
+            54,
+            34
+          ],
+          "expected_rgb": [
+            0,
+            255,
+            1
+          ]
+        },
+        {
+          "index": 5,
+          "source_rgb": [
+            0,
+            0,
+            255
+          ],
+          "yuv": [
+            41,
+            240,
+            110
+          ],
+          "expected_rgb": [
+            0,
+            0,
+            255
+          ]
+        },
+        {
+          "index": 6,
+          "source_rgb": [
+            0,
+            255,
+            255
+          ],
+          "yuv": [
+            170,
+            166,
+            16
+          ],
+          "expected_rgb": [
+            1,
+            255,
+            255
+          ]
+        },
+        {
+          "index": 7,
+          "source_rgb": [
+            255,
+            255,
+            0
+          ],
+          "yuv": [
+            210,
+            16,
+            146
+          ],
+          "expected_rgb": [
+            255,
+            255,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "id": "bt2020ncl_limited",
+      "relative_path": "bt2020ncl_limited.mp4",
+      "gate": false,
+      "matrix": "bt2020ncl",
+      "range": "limited",
+      "depth": 8,
+      "width": 512,
+      "height": 256,
+      "patch_size": 64,
+      "patch_count": 8,
+      "tolerance": 3,
+      "patches": [
+        {
+          "index": 0,
+          "source_rgb": [
+            255,
+            255,
+            255
+          ],
+          "yuv": [
+            235,
+            128,
+            128
+          ],
+          "expected_rgb": [
+            255,
+            255,
+            255
+          ]
+        },
+        {
+          "index": 1,
+          "source_rgb": [
+            0,
+            0,
+            0
+          ],
+          "yuv": [
+            16,
+            128,
+            128
+          ],
+          "expected_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "index": 2,
+          "source_rgb": [
+            128,
+            128,
+            128
+          ],
+          "yuv": [
+            126,
+            128,
+            128
+          ],
+          "expected_rgb": [
+            128,
+            128,
+            128
+          ]
+        },
+        {
+          "index": 3,
+          "source_rgb": [
+            255,
+            0,
+            0
+          ],
+          "yuv": [
+            74,
+            97,
+            240
+          ],
+          "expected_rgb": [
+            255,
+            0,
+            1
+          ]
+        },
+        {
+          "index": 4,
+          "source_rgb": [
+            0,
+            255,
+            0
+          ],
+          "yuv": [
+            164,
+            47,
+            25
+          ],
+          "expected_rgb": [
+            0,
+            254,
+            0
+          ]
+        },
+        {
+          "index": 5,
+          "source_rgb": [
+            0,
+            0,
+            255
+          ],
+          "yuv": [
+            29,
+            240,
+            119
+          ],
+          "expected_rgb": [
+            0,
+            0,
+            255
+          ]
+        },
+        {
+          "index": 6,
+          "source_rgb": [
+            0,
+            255,
+            255
+          ],
+          "yuv": [
+            177,
+            159,
+            16
+          ],
+          "expected_rgb": [
+            0,
+            255,
+            254
+          ]
+        },
+        {
+          "index": 7,
+          "source_rgb": [
+            255,
+            255,
+            0
+          ],
+          "yuv": [
+            222,
+            16,
+            137
+          ],
+          "expected_rgb": [
+            255,
+            255,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p010_bt709_limited",
+      "relative_path": "p010_bt709_limited.mp4",
+      "gate": false,
+      "matrix": "bt709",
+      "range": "limited",
+      "depth": 10,
+      "width": 512,
+      "height": 256,
+      "patch_size": 64,
+      "patch_count": 8,
+      "tolerance": 3,
+      "patches": [
+        {
+          "index": 0,
+          "source_rgb": [
+            255,
+            255,
+            255
+          ],
+          "yuv": [
+            940,
+            512,
+            512
+          ],
+          "expected_rgb": [
+            255,
+            255,
+            255
+          ]
+        },
+        {
+          "index": 1,
+          "source_rgb": [
+            0,
+            0,
+            0
+          ],
+          "yuv": [
+            64,
+            512,
+            512
+          ],
+          "expected_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "index": 2,
+          "source_rgb": [
+            128,
+            128,
+            128
+          ],
+          "yuv": [
+            504,
+            512,
+            512
+          ],
+          "expected_rgb": [
+            128,
+            128,
+            128
+          ]
+        },
+        {
+          "index": 3,
+          "source_rgb": [
+            255,
+            0,
+            0
+          ],
+          "yuv": [
+            250,
+            409,
+            960
+          ],
+          "expected_rgb": [
+            255,
+            0,
+            0
+          ]
+        },
+        {
+          "index": 4,
+          "source_rgb": [
+            0,
+            255,
+            0
+          ],
+          "yuv": [
+            691,
+            167,
+            105
+          ],
+          "expected_rgb": [
+            0,
+            255,
+            0
+          ]
+        },
+        {
+          "index": 5,
+          "source_rgb": [
+            0,
+            0,
+            255
+          ],
+          "yuv": [
+            127,
+            960,
+            471
+          ],
+          "expected_rgb": [
+            0,
+            0,
+            255
+          ]
+        },
+        {
+          "index": 6,
+          "source_rgb": [
+            0,
+            255,
+            255
+          ],
+          "yuv": [
+            754,
+            615,
+            64
+          ],
+          "expected_rgb": [
+            0,
+            255,
+            255
+          ]
+        },
+        {
+          "index": 7,
+          "source_rgb": [
+            255,
+            255,
+            0
+          ],
+          "yuv": [
+            877,
+            64,
+            553
+          ],
+          "expected_rgb": [
+            255,
+            255,
+            0
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -2,9 +2,16 @@
 
 mvm リポジトリで作業する人間およびエージェント向けの規約。
 
-**現在 Phase 0（技術スパイク）である。** 目的は MLT 7 を編集・プレビュー・書き出し
-エンジンとして採用できるかの判定だけであり、製品コードはまだ存在しない。
-判定に必要のないものを作らないこと。
+**現在 Phase 1 / P1（GPU Preview Engine Spike）である。**
+Phase 0（MLT スパイク）は「MLT を採用しない」で終了した
+（[docs/phase0-decision.md](docs/phase0-decision.md)）。
+P1 の目的は、FFmpeg (D3D11VA) で decode した frame を CPU へ戻さずに
+Qt Quick 上へ表示できるかの判定だけであり、製品コードはまだ存在しない
+（[docs/phase1-plan.md](docs/phase1-plan.md)）。判定に必要のないものを作らないこと。
+
+**この規約は Phase 1 でもそのまま適用する。** 特に fail-closed、
+negative test の同時追加、指標の定義を先に決めること、
+「計測値を文書へ手で転記しない」は Phase 1 でも変えない。
 
 ---
 
@@ -44,7 +51,18 @@ mvm リポジトリで作業する人間およびエージェント向けの規�
 | `src/app` | Qt シェル | Qt |
 | `tests/harness` | 検証 CLI | 上記の公開ヘッダのみ |
 
+Phase 1 で追加した層:
+
+| 層 | 責務 | 依存してよいもの |
+| --- | --- | --- |
+| `src/core` | 純粋なデータと計算（marker reader を含む） | 何にも依存しない |
+| `src/media/gpu_preview` | FFmpeg (D3D11VA) と D3D11 | FFmpeg C API / D3D11。**Qt は不可** |
+| `src/app/preview` | QRhi / QQuickRhiItem との唯一の接点 | Qt（private API を含む） |
+| `apps/preview_spike` | P1 の検証アプリ | 上記の公開ヘッダと Qt |
+
 **MLT のヘッダを include してよいのは `src/media/mlt/` だけ。**
+同様に、**QRhi（Qt の private API）を include してよいのは `src/app/preview/` だけ。**
+QRhi は patch release 間でも互換保証が無いため、壊れる範囲を限定する。
 Mlt++（C++ ラッパ）は使わず C API のみを使う。
 これにより Project Model・UI・公開 interface へ MLT の型が漏れず、
 将来 backend を差し替える余地が残る。
@@ -123,6 +141,23 @@ pwsh scripts/memory-matrix.ps1         # メモリ切り分け (ケース A-G)
 pwsh scripts/memory-unique-frames.ps1  # unique frame メモリ診断 (ケース U)
 pwsh scripts/audio-graph-matrix.ps1    # 音声グラフの最小構成切り分け
 ```
+
+Phase 1 / P1:
+
+```powershell
+pwsh scripts/p1-matrix.ps1             # **P1 の正式な計測。合否はこれだけで決める**
+pwsh scripts/p1-matrix.ps1 -Quick      # 短縮版 (経路確認のみ。判定に使えない)
+pwsh scripts/check-p1-contract.ps1 -Json <path>   # 生 JSON の契約検査
+pwsh scripts/make-color-fixtures.ps1   # color correctness 用 fixture の生成
+```
+
+color fixture は `tests/assets/color/` に置く。
+期待 RGB は生成スクリプトが **標準式から独立に**計算しており、
+実装の関数 (`coefficientsFor`) は呼んでいない。
+実装を呼んで期待値を作ると、実装のバグをテストが追認する。
+
+契約検査は `check-p1-contract.ps1` に一本化している。
+CTest と `p1-matrix.ps1` の両方がこれを呼ぶ。2 箇所に書かない。
 
 `scripts/expect-exit.ps1` は「意図した終了コードで失敗したこと」を検査する。
 CTest の `WILL_FAIL` は 0 以外なら合格なので、

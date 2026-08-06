@@ -706,6 +706,298 @@ if(EXISTS "${MVM_PX_V1_ABS}" AND EXISTS "${MVM_PX_V2_ABS}")
             TIMEOUT 900)
 endif()
 
+# --- Phase 1 / P1: GPU preview -----------------------------------------------
+# 通常 CTest で回すのは短時間の契約検査だけ。
+# 60 秒 x 3 run の性能計測は scripts/p1-matrix.ps1 で行い、
+# その結果だけを P1 の合否判定に使う (docs/phase1-plan.md §11 / §12)。
+
+add_executable(mvm_test_gpu_pure gpu_preview/test_gpu_pure.cpp)
+target_link_libraries(mvm_test_gpu_pure PRIVATE mvm::gpu_preview mvm::warnings)
+# mvm_add_test を使う。ucrt64in を PATH に入れないと
+# 依存 DLL が解決できず 0xC0000135 で落ちる (実際に落ちた)。
+mvm_add_test(gpu_pure_unit COMMAND mvm_test_gpu_pure)
+
+add_executable(mvm_test_gpu_decode gpu_preview/test_gpu_decode.cpp)
+target_link_libraries(mvm_test_gpu_decode PRIVATE mvm::gpu_preview mvm::util mvm::warnings)
+
+# 実 GPU を使う検査は終了コードを分けている。
+# 0 以外なら合格ではなく、**意図した理由で失敗したこと**を照合する。
+function(mvm_add_gpu_exit_test name)
+    cmake_parse_arguments(T "" "EXIT" "ARGS;PROPERTIES" ${ARGN})
+    if(NOT DEFINED T_EXIT)
+        message(FATAL_ERROR "mvm_add_gpu_exit_test(${name}) に EXIT がありません")
+    endif()
+    list(JOIN T_ARGS "|" _child_args)
+    add_test(NAME ${name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+                -ExpectExit ${T_EXIT} -Exe "$<TARGET_FILE:mvm_test_gpu_decode>"
+                -ChildArgs "${_child_args}")
+    set_tests_properties(${name} PROPERTIES
+        ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+        ${T_PROPERTIES})
+endfunction()
+
+# 正常系: H.264 / HEVC の両方で GPU frame が出る。
+foreach(gpu_asset v1080p60_h264 v1080p60_hevc)
+    mvm_add_test(gpu_decode_${gpu_asset}
+        COMMAND mvm_test_gpu_decode decode "${MVM_SMOKE_DIR}/${gpu_asset}.mp4" 10
+        PROPERTIES REQUIRED_FILES "${MVM_SMOKE_DIR}/${gpu_asset}.mp4" TIMEOUT 120)
+
+    mvm_add_test(gpu_seek_flush_${gpu_asset}
+        COMMAND mvm_test_gpu_decode seek "${MVM_SMOKE_DIR}/${gpu_asset}.mp4" 137,0,299,42
+        PROPERTIES REQUIRED_FILES "${MVM_SMOKE_DIR}/${gpu_asset}.mp4" TIMEOUT 120)
+
+    mvm_add_test(gpu_marker_${gpu_asset}
+        COMMAND mvm_test_gpu_decode marker "${MVM_SMOKE_DIR}/${gpu_asset}.mp4" 0,1,137,299
+        PROPERTIES REQUIRED_FILES "${MVM_SMOKE_DIR}/${gpu_asset}.mp4" TIMEOUT 120)
+endforeach()
+
+# 回帰テスト: seek の着地は **完全一致**でなければならない。
+#
+# [事実] AVSEEK_FLAG_BACKWARD は「目標以前のキーフレーム」を保証しない。
+# benchmark の 1080p60 HEVC で frame 299 を要求して 300 に着地し、
+# 1000 点中 65 点 (6.5%) が同じ形で外れた。同じ time_base / fps の
+# H.264 では 1 件も起きない。B frame 構造の差である。
+#
+# 「>= なら成功」にすると 1 frame ずれを飲み込み、編集点がずれる。
+# 60 秒素材があるときだけ登録する (smoke の 5 秒素材では再現しない)。
+if(EXISTS "${MVM_BENCH_DIR}/v1080p60_hevc.mp4")
+    mvm_add_test(gpu_seek_exact_landing_hevc
+        COMMAND mvm_test_gpu_decode seek "${MVM_BENCH_DIR}/v1080p60_hevc.mp4"
+                299,1799,300,1800,2999,3599
+        PROPERTIES REQUIRED_FILES "${MVM_BENCH_DIR}/v1080p60_hevc.mp4" TIMEOUT 300)
+
+    mvm_add_test(gpu_marker_exact_landing_hevc
+        COMMAND mvm_test_gpu_decode marker "${MVM_BENCH_DIR}/v1080p60_hevc.mp4"
+                0,1,137,299,600,1799,3599
+        PROPERTIES REQUIRED_FILES "${MVM_BENCH_DIR}/v1080p60_hevc.mp4" TIMEOUT 300)
+endif()
+
+# 4K は診断のみ。判定には使わないが、経路が通ることは見る。
+mvm_add_test(gpu_marker_4k_h264_diagnostic
+    COMMAND mvm_test_gpu_decode marker "${MVM_SMOKE_DIR}/v4k60_h264.mp4" 0,137
+    PROPERTIES REQUIRED_FILES "${MVM_SMOKE_DIR}/v4k60_h264.mp4" TIMEOUT 180)
+
+# 10bit (P010) の経路。表示品質は判定対象外だが、
+# 「NV12 決め打ちで落ちる」ことは検出しておく。
+mvm_add_test(gpu_marker_4k_hevc10_diagnostic
+    COMMAND mvm_test_gpu_decode marker "${MVM_SMOKE_DIR}/v4k60_hevc10.mp4" 0,137
+    PROPERTIES REQUIRED_FILES "${MVM_SMOKE_DIR}/v4k60_hevc10.mp4" TIMEOUT 180)
+
+# 日本語パス (UTF-8) で開けること。
+mvm_add_test(gpu_decode_jp_path
+    COMMAND mvm_test_gpu_decode decode "${MVM_JP_DIR}/講義映像　第1回＆演習.mp4" 3
+    PROPERTIES REQUIRED_FILES "${MVM_JP_DIR}/講義映像　第1回＆演習.mp4" TIMEOUT 120)
+
+# negative: BindFlags 検査が効いていること。
+# これが落ちなければ、D3D11_BIND_SHADER_RESOURCE を外しても気づけない。
+mvm_add_test(gpu_bind_flags_check_works
+    COMMAND mvm_test_gpu_decode no-shader-bind
+    PROPERTIES TIMEOUT 120)
+
+# negative: hardware decoder が無い codec を成功扱いしない (exit 6)。
+# PNG には D3D11VA の hwaccel が無い。software decode へは落ちない。
+mvm_add_gpu_exit_test(gpu_missing_hw_decoder_negative EXIT 6
+    ARGS decode "${MVM_SMOKE_DIR}/png_alpha.png"
+    PROPERTIES REQUIRED_FILES "${MVM_SMOKE_DIR}/png_alpha.png" TIMEOUT 120)
+
+# negative: 破損・退化素材を成功扱いしない (exit 4)。
+# 「開けない」(4) と「hardware decoder が無い」(6) を区別できることが要点。
+foreach(corrupt zero random truncated text subtitle_only)
+    mvm_add_gpu_exit_test(gpu_invalid_media_${corrupt}_negative EXIT 4
+        ARGS decode "${MVM_CORRUPT_DIR}/${corrupt}.mp4"
+        PROPERTIES REQUIRED_FILES "${MVM_CORRUPT_DIR}/${corrupt}.mp4" TIMEOUT 120)
+endforeach()
+
+# negative: 範囲外のフレームへの seek を成功扱いしない (exit 3)。
+mvm_add_gpu_exit_test(gpu_seek_out_of_range_negative EXIT 3
+    ARGS seek "${MVM_SMOKE_DIR}/v1080p60_h264.mp4" 999999
+    PROPERTIES REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_h264.mp4" TIMEOUT 120)
+
+# negative: 使い方の誤りを 2 で返す (実行結果の不一致 3 と区別する)。
+mvm_add_gpu_exit_test(gpu_usage_error_negative EXIT 2 ARGS mvm_no_such_command)
+
+# --- P1.1 §2: decoder snapshot の同期契約 -----------------------------------
+# TSAN は Windows / MSYS2 で使えないので、決定論的な回数だけ
+# 別スレッドから snapshot() を叩き、返り値の内部整合を検査する。
+mvm_add_test(gpu_snapshot_race
+    COMMAND mvm_test_gpu_decode snapshot-race "${MVM_SMOKE_DIR}/v1080p60_h264.mp4" 3000
+    PROPERTIES REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_h264.mp4" TIMEOUT 300)
+
+# --- P1.1 §4: open/close soak ------------------------------------------------
+# SRV cache が decoder epoch を跨いで増え続けないこと。
+# **通常 CTest では 20 cycle。** 正式な 100 cycle は performance ラベル側で回す
+# (100 cycle は 1 分近くかかるため)。
+mvm_add_test(gpu_open_close_soak_short
+    COMMAND mvm_test_gpu_decode soak "${MVM_SMOKE_DIR}/v1080p60_h264.mp4"
+            "${MVM_SMOKE_DIR}/v1080p60_hevc.mp4" 20
+    PROPERTIES
+        REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_h264.mp4"
+        TIMEOUT 600)
+
+mvm_add_test(gpu_open_close_soak_100
+    COMMAND mvm_test_gpu_decode soak "${MVM_SMOKE_DIR}/v1080p60_h264.mp4"
+            "${MVM_SMOKE_DIR}/v1080p60_hevc.mp4" 100
+    PROPERTIES
+        REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_h264.mp4"
+        LABELS performance
+        TIMEOUT 1800)
+
+# --- P1.1 §6: color correctness ---------------------------------------------
+# **marker 一致を色の証拠にしない。** 既知の YUV patch を
+# 表示と同じ shader で RGB 化し、期待値 (標準式から独立に計算) と照合する。
+set(MVM_COLOR_DIR "${CMAKE_SOURCE_DIR}/tests/assets/color")
+set(MVM_COLOR_MANIFEST "${MVM_COLOR_DIR}/manifest.txt")
+set(MVM_MAKE_COLOR_HINT "pwsh scripts/make-color-fixtures.ps1")
+
+# **fixture が無ければ configure を失敗させる (P1.2 §5)。**
+#
+# P1.1 は「無ければ登録しない」だった。これは最悪の形の縮退である:
+#   - clean checkout では color test が 1 件も登録されない
+#   - CTest は「全部通った」と報告する
+#   - 色の検査が消えたことに誰も気づかない
+#
+# fixture は tests/assets/color/ に **追跡対象として**入れてある
+# (.gitignore に例外を書いた)。それでも無いなら、生成方法を案内して止める。
+if(NOT EXISTS "${MVM_COLOR_MANIFEST}")
+    message(FATAL_ERROR
+        "\n"
+        "[mvm] color fixture がありません: ${MVM_COLOR_MANIFEST}\n"
+        "\n"
+        "  color correctness の検査を黙って飛ばすことはしません。\n"
+        "  fixture は本来リポジトリに含まれています。失われている場合は:\n"
+        "\n"
+        "    ${MVM_MAKE_COLOR_HINT}\n")
+endif()
+
+# 判定対象と診断対象。**この一覧が減ったら configure が落ちる** (下の件数検査)。
+set(MVM_COLOR_GATE_IDS bt709_limited bt709_full bt601_limited)
+set(MVM_COLOR_DIAG_IDS bt2020ncl_limited p010_bt709_limited)
+set(MVM_COLOR_EXPECTED_COUNT 5)
+
+set(_mvm_color_registered 0)
+foreach(color_id ${MVM_COLOR_GATE_IDS})
+    if(NOT EXISTS "${MVM_COLOR_DIR}/${color_id}.mp4")
+        message(FATAL_ERROR
+            "[mvm] color fixture の素材がありません: ${MVM_COLOR_DIR}/${color_id}.mp4\n"
+            "  ${MVM_MAKE_COLOR_HINT} を実行してください。")
+    endif()
+    mvm_add_test(gpu_color_${color_id}
+        COMMAND mvm_test_gpu_decode color "${MVM_COLOR_MANIFEST}" ${color_id}
+        PROPERTIES REQUIRED_FILES "${MVM_COLOR_DIR}/${color_id}.mp4" TIMEOUT 180)
+    math(EXPR _mvm_color_registered "${_mvm_color_registered} + 1")
+endforeach()
+
+foreach(color_id ${MVM_COLOR_DIAG_IDS})
+    if(NOT EXISTS "${MVM_COLOR_DIR}/${color_id}.mp4")
+        message(FATAL_ERROR
+            "[mvm] color fixture の素材がありません: ${MVM_COLOR_DIR}/${color_id}.mp4\n"
+            "  ${MVM_MAKE_COLOR_HINT} を実行してください。")
+    endif()
+    mvm_add_test(gpu_color_${color_id}_diagnostic
+        COMMAND mvm_test_gpu_decode color "${MVM_COLOR_MANIFEST}" ${color_id}
+        PROPERTIES REQUIRED_FILES "${MVM_COLOR_DIR}/${color_id}.mp4" TIMEOUT 180)
+    math(EXPR _mvm_color_registered "${_mvm_color_registered} + 1")
+endforeach()
+
+# **登録件数を数える。** Phase 0 の「対象 0 件のテスト群が全部通ったと
+# 報告される」罠と同じ形なので、件数そのものを検査する。
+if(NOT _mvm_color_registered EQUAL MVM_COLOR_EXPECTED_COUNT)
+    message(FATAL_ERROR
+        "[mvm] color test の登録件数が ${_mvm_color_registered} 件です "
+        "(期待 ${MVM_COLOR_EXPECTED_COUNT} 件)。\n"
+        "  bt709 limited / bt709 full / bt601 limited / bt2020 診断 / P010 診断 の\n"
+        "  5 件が必ず登録されている必要があります。")
+endif()
+message(STATUS "[mvm] color test を ${_mvm_color_registered} 件登録しました")
+
+# negative: manifest に無い id を成功扱いしない (使い方の誤り = 2)。
+mvm_add_gpu_exit_test(gpu_color_unknown_id_negative EXIT 2
+    ARGS color "${MVM_COLOR_MANIFEST}" mvm_no_such_fixture
+    PROPERTIES REQUIRED_FILES "${MVM_COLOR_MANIFEST}")
+
+# --- P1.2 §4: event query backend を実際に走らせる --------------------------
+# fence が使える機体でも fallback 経路を通す。
+# **fallback が「必要になる状況」は再現していない** (fence 非対応機が無い)。
+# 走らせているのは経路であって、切り替え条件ではない。
+mvm_add_test(gpu_soak_event_query_backend
+    COMMAND mvm_test_gpu_decode soak "${MVM_SMOKE_DIR}/v1080p60_h264.mp4"
+            "${MVM_SMOKE_DIR}/v1080p60_hevc.mp4" 12 event_query
+    PROPERTIES
+        REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_h264.mp4"
+        TIMEOUT 600)
+
+# --- preview_spike (Qt / device 共有) ----------------------------------------
+# **Qt と FFmpeg の device 共有を検査できるのはここだけ。**
+# QRhi から device を取るには window が要るため、CLI の decode テストでは見られない。
+# 通常 CTest では短時間 (warm-up 1 秒 / 計測 3 秒 / seek 20) で契約だけ見る。
+if(TARGET mvm_preview_spike)
+    add_test(NAME preview_spike_device_sharing_contract
+        COMMAND mvm_preview_spike --measure
+                --media "${MVM_SMOKE_DIR}/v1080p60_h264.mp4"
+                --json "${CMAKE_CURRENT_BINARY_DIR}/p1/contract-h264.json"
+                --label ctest-h264
+                --warmup-ms 1000 --measure-ms 3000 --seeks 20
+                --marker-frames 0,1,137,299)
+    set_tests_properties(preview_spike_device_sharing_contract PROPERTIES
+        ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+        REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_h264.mp4"
+        TIMEOUT 300)
+
+    # 出力 JSON の契約を検査する。終了コードだけでは
+    # 「device が別 adapter でも 0 で終わる」ような取りこぼしが出る。
+    add_test(NAME preview_spike_json_contract
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+                "${CMAKE_SOURCE_DIR}/scripts/check-p1-contract.ps1"
+                -Json "${CMAKE_CURRENT_BINARY_DIR}/p1/contract-h264.json")
+    set_tests_properties(preview_spike_json_contract PROPERTIES
+        DEPENDS preview_spike_device_sharing_contract
+        TIMEOUT 120)
+
+    # negative: --measure に --media が無いのは使い方の誤り (exit 2)。
+    add_test(NAME preview_spike_usage_error_negative
+        COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+                -ExpectExit 2 -Exe "$<TARGET_FILE:mvm_preview_spike>"
+                -ChildArgs "|--measure")
+    set_tests_properties(preview_spike_usage_error_negative PROPERTIES
+        ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 120)
+
+    # negative: 開けない素材を成功扱いしない (exit 3)。
+    add_test(NAME preview_spike_invalid_media_negative
+        COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+                -ExpectExit 3 -Exe "$<TARGET_FILE:mvm_preview_spike>"
+                # 先頭を空要素にしている。'--measure' で始めると PowerShell が
+                # -ChildArgs の値ではなくパラメータ名として束縛しようとする
+                # (tests/CMakeLists.txt の lint_producer_service_negative と同じ)。
+                -ChildArgs "|--measure|--media|${MVM_CORRUPT_DIR}/random.mp4|--json|${CMAKE_CURRENT_BINARY_DIR}/p1/invalid.json|--warmup-ms|500|--measure-ms|500|--seeks|0")
+    set_tests_properties(preview_spike_invalid_media_negative PROPERTIES
+        ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+        REQUIRED_FILES "${MVM_CORRUPT_DIR}/random.mp4"
+        TIMEOUT 180)
+
+    # --- performance ラベル --------------------------------------------------
+    # **このラベルの緑を P1 の合格根拠にしない。**
+    # 判定は scripts/p1-matrix.ps1 の記録された数値だけで行う。
+    if(EXISTS "${MVM_BENCH_DIR}/v1080p60_h264.mp4")
+        add_test(NAME preview_spike_1080p60_h264_smoke
+            COMMAND mvm_preview_spike --measure
+                    --media "${MVM_BENCH_DIR}/v1080p60_h264.mp4"
+                    --json "${CMAKE_CURRENT_BINARY_DIR}/p1/smoke-h264.json"
+                    --label perf-smoke-h264
+                    --warmup-ms 5000 --measure-ms 15000 --seeks 100)
+        set_tests_properties(preview_spike_1080p60_h264_smoke PROPERTIES
+            ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+            LABELS performance
+            TIMEOUT 900)
+    endif()
+endif()
+
+# GPU 無しで final shutdown report の formal contract を検査する。
+add_test(NAME p1_shutdown_contract_timeout_negative
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_SOURCE_DIR}/tests/gpu_preview/test-p1-shutdown-contract.ps1")
+set_tests_properties(p1_shutdown_contract_timeout_negative PROPERTIES TIMEOUT 120)
+
 # --- lint 自身の negative test ----------------------------------------------
 # 検査を書いただけでは効いている証明にならない。
 # 違反を入れたら落ち、正しいコードでは落ちないことを両方確かめる。
@@ -723,3 +1015,25 @@ add_test(NAME lint_producer_service_negative
 add_test(NAME lint_producer_service_control
     COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/lint.ps1"
             -Path "${CMAKE_SOURCE_DIR}/tests/lint-negative/good")
+
+# --- Phase 1: 層の隔離検査自身の negative test -------------------------------
+# 「src/media/gpu_preview は Qt を include しない」「QRhi は src/app/preview のみ」
+# という規約が、機械的に強制されていることを確かめる。
+# 検査を書いただけでは効いている証明にならない。
+#
+# 層はパスで判定するので、リポジトリ外のフィクスチャには -AsLayer で
+# 「どの層として見るか」を与える。
+
+# layer-bad/ には Qt/QRhi 違反と CPU readback 違反の両方が入っている。
+# どちらか一方でも検査が効いていなければ、このテストは緑にならない。
+add_test(NAME lint_layer_isolation_negative
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+            -ExpectExit 1 -Exe "${MVM_PWSH}"
+            # 先頭の空要素は lint_producer_service_negative と同じ理由。
+            -ChildArgs "|-NoProfile|-File|${CMAKE_SOURCE_DIR}/scripts/lint.ps1|-Path|${CMAKE_SOURCE_DIR}/tests/lint-negative/layer-bad|-AsLayer|gpu_preview")
+
+# 対照群: Qt も QRhi も使っていないコードでは落ちない。
+# これが落ちるなら、上の negative test は意図した箇所で落ちていない。
+add_test(NAME lint_layer_isolation_control
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/lint.ps1"
+            -Path "${CMAKE_SOURCE_DIR}/tests/lint-negative/layer-good" -AsLayer gpu_preview)

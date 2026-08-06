@@ -1,0 +1,48 @@
+# mvm-color-fixture-1  (scripts/make-color-fixtures.ps1 が生成)
+# asset <id> <relpath> <gate> <matrix> <range> <depth> <patchSize> <patchCount> <tolerance>
+# patch <id> <index> <y> <u> <v> <expR> <expG> <expB>
+asset bt709_limited bt709_limited.mp4 gate bt709 limited 8 64 8 3
+patch bt709_limited 0 235 128 128 255 255 255
+patch bt709_limited 1 16 128 128 0 0 0
+patch bt709_limited 2 126 128 128 128 128 128
+patch bt709_limited 3 63 102 240 255 1 0
+patch bt709_limited 4 173 42 26 0 255 1
+patch bt709_limited 5 32 240 118 1 0 255
+patch bt709_limited 6 188 154 16 0 254 255
+patch bt709_limited 7 219 16 138 254 255 0
+asset bt709_full bt709_full.mp4 gate bt709 full 8 64 8 3
+patch bt709_full 0 255 128 128 255 255 255
+patch bt709_full 1 0 128 128 0 0 0
+patch bt709_full 2 128 128 128 128 128 128
+patch bt709_full 3 54 98 255 254 0 0
+patch bt709_full 4 182 29 12 0 255 0
+patch bt709_full 5 18 255 116 0 0 254
+patch bt709_full 6 201 157 0 0 255 255
+patch bt709_full 7 237 0 139 254 255 0
+asset bt601_limited bt601_limited.mp4 gate bt601 limited 8 64 8 3
+patch bt601_limited 0 235 128 128 255 255 255
+patch bt601_limited 1 16 128 128 0 0 0
+patch bt601_limited 2 126 128 128 128 128 128
+patch bt601_limited 3 81 90 240 254 0 0
+patch bt601_limited 4 145 54 34 0 255 1
+patch bt601_limited 5 41 240 110 0 0 255
+patch bt601_limited 6 170 166 16 1 255 255
+patch bt601_limited 7 210 16 146 255 255 0
+asset bt2020ncl_limited bt2020ncl_limited.mp4 diag bt2020ncl limited 8 64 8 3
+patch bt2020ncl_limited 0 235 128 128 255 255 255
+patch bt2020ncl_limited 1 16 128 128 0 0 0
+patch bt2020ncl_limited 2 126 128 128 128 128 128
+patch bt2020ncl_limited 3 74 97 240 255 0 1
+patch bt2020ncl_limited 4 164 47 25 0 254 0
+patch bt2020ncl_limited 5 29 240 119 0 0 255
+patch bt2020ncl_limited 6 177 159 16 0 255 254
+patch bt2020ncl_limited 7 222 16 137 255 255 0
+asset p010_bt709_limited p010_bt709_limited.mp4 diag bt709 limited 10 64 8 3
+patch p010_bt709_limited 0 940 512 512 255 255 255
+patch p010_bt709_limited 1 64 512 512 0 0 0
+patch p010_bt709_limited 2 504 512 512 128 128 128
+patch p010_bt709_limited 3 250 409 960 255 0 0
+patch p010_bt709_limited 4 691 167 105 0 255 0
+patch p010_bt709_limited 5 127 960 471 0 0 255
+patch p010_bt709_limited 6 754 615 64 0 255 255
+patch p010_bt709_limited 7 877 64 553 255 255 0

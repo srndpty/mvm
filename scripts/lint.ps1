@@ -22,7 +22,13 @@ param(
     # 走査対象を差し替える。lint 自身の negative test で使う。
     # 指定時は clang-format と PSScriptAnalyzer をスキップし、
     # ソース検査だけを行う。
-    [string]$Path
+    [string]$Path,
+
+    # -Path で与えたフィクスチャを、どの層にあるものとして検査するか。
+    # 層の判定はパスで行うため、リポジトリ外のフィクスチャでは
+    # そのままでは検査が発火しない。negative test を書けるようにするための指定。
+    [ValidateSet('', 'gpu_preview', 'preview_qt')]
+    [string]$AsLayer = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -96,6 +102,127 @@ if ($violations.Count -gt 0) {
     $failed += 'アーキテクチャ検査'
 } else {
     Write-Host "OK ($($sources.Count) ファイル)" -ForegroundColor Green
+}
+
+# --- Phase 1: 層の隔離検査 ---------------------------------------------------
+Write-Section '層の隔離検査 (Qt / QRhi)'
+
+# 規約 (docs/phase1-plan.md §7, AGENTS.md):
+#
+#   src/media/gpu_preview/ : Qt を一切 include しない
+#   src/app/preview/       : QRhi (Qt の private API) を include してよい唯一の場所
+#
+# QRhi は patch release 間でも互換保証が無い。隔離しても「壊れないこと」は
+# 保証できないが、**壊れる範囲を 2 ファイルに限定する**ことはできる。
+# 人間のレビューでは必ず漏れるので機械的に強制する。
+
+$gpuPreviewDir = Join-Path $RepoRoot 'src\media\gpu_preview'
+$previewQtDir  = Join-Path $RepoRoot 'src\app\preview'
+
+# Qt のヘッダ: <QObject> / <QtCore/...> / <QtQuick/...> / "qquickrhiitem.h" など
+$qtIncludePattern  = '#\s*include\s*[<"](Qt[A-Za-z0-9]*/|Q[A-Z][A-Za-z0-9]*>|q[a-z0-9_]+\.h[">])'
+# QRhi は private API。パスが版番号を含む形と rhi/ 直下の両方に当たるようにする。
+$qrhiIncludePattern = '#\s*include\s*[<"][^">]*rhi/q(rhi|shader)'
+
+$layerViolations = @()
+foreach ($f in $sources) {
+    $rel = if ($f.FullName.StartsWith($RepoRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        $f.FullName.Substring($RepoRoot.Length + 1)
+    } else { $f.FullName }
+
+    if ($AsLayer) {
+        $layer = $AsLayer
+    } elseif ($f.FullName.StartsWith($gpuPreviewDir, [StringComparison]::OrdinalIgnoreCase)) {
+        $layer = 'gpu_preview'
+    } elseif ($f.FullName.StartsWith($previewQtDir, [StringComparison]::OrdinalIgnoreCase)) {
+        $layer = 'preview_qt'
+    } else {
+        $layer = 'other'
+    }
+
+    $text = Get-Content -Raw -LiteralPath $f.FullName
+
+    if ($layer -eq 'gpu_preview' -and $text -match $qtIncludePattern) {
+        $layerViolations += "$rel : src/media/gpu_preview は Qt を include してはいけない"
+    }
+    if ($layer -ne 'preview_qt' -and $text -match $qrhiIncludePattern) {
+        $layerViolations += "$rel : QRhi (Qt の private API) は src/app/preview/ でのみ使える"
+    }
+}
+
+if ($layerViolations.Count -gt 0) {
+    Write-Host "違反 $($layerViolations.Count) 件" -ForegroundColor Red
+    $layerViolations | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+    $failed += '層の隔離検査'
+} else {
+    Write-Host "OK ($($sources.Count) ファイル)" -ForegroundColor Green
+}
+
+# --- Phase 1.1: gpu_preview 層の禁止事項 -------------------------------------
+Write-Section 'gpu_preview の禁止事項 (CPU readback / software fallback)'
+
+# 規約 (docs/phase1-plan.md, P1.1 §9):
+#
+#   gpu_preview 層は decode 結果を CPU へ戻さない。
+#   例外は marker 帯と color patch の **小領域 readback だけ**で、
+#   実装は 1 箇所に限る (nv12_converter.cpp の readSmallRegionTopLeft)。
+#
+# 「動くけれど zero-copy ではない」経路は、絵が出てしまうので
+# 人間のレビューでは見逃す。機械で塞ぐ。
+
+$forbiddenAlways = @(
+    @{ token = 'av_hwframe_transfer_data'; why = 'GPU frame を毎回 CPU へ転送する' }
+    @{ token = 'sws_scale';                why = 'swscale による CPU 変換' }
+    @{ token = 'sws_getContext';           why = 'swscale による CPU 変換' }
+    @{ token = 'swscale.h';                why = 'swscale への依存' }
+    @{ token = 'QImage';                   why = 'CPU 画像への copy' }
+    @{ token = 'QPixmap';                  why = 'CPU 画像への copy' }
+)
+
+# readback を構成する token。**印のある file でのみ、各 1 箇所まで**許可する。
+$readbackTokens = @('D3D11_USAGE_STAGING', 'D3D11_CPU_ACCESS_READ', 'D3D11_MAP_READ')
+$allowMarker = 'MVM_ALLOW_SMALL_REGION_READBACK'
+
+$gpuViolations = @()
+foreach ($f in $sources) {
+    $rel = if ($f.FullName.StartsWith($RepoRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        $f.FullName.Substring($RepoRoot.Length + 1)
+    } else { $f.FullName }
+
+    if ($AsLayer) {
+        $isGpuLayer = ($AsLayer -eq 'gpu_preview')
+    } else {
+        $isGpuLayer = $f.FullName.StartsWith($gpuPreviewDir, [StringComparison]::OrdinalIgnoreCase)
+    }
+    if (-not $isGpuLayer) { continue }
+
+    $text = Get-Content -Raw -LiteralPath $f.FullName
+
+    foreach ($fb in $forbiddenAlways) {
+        if ($text -match [regex]::Escape($fb.token)) {
+            $gpuViolations += "$rel : '$($fb.token)' は禁止 ($($fb.why))"
+        }
+    }
+
+    $allowed = $text -match [regex]::Escape($allowMarker)
+    foreach ($t in $readbackTokens) {
+        $n = ([regex]::Matches($text, [regex]::Escape($t))).Count
+        if ($n -eq 0) { continue }
+        if (-not $allowed) {
+            $gpuViolations += "$rel : '$t' は CPU readback。許可された小領域実装だけが使える ($allowMarker の印が要る)"
+        } elseif ($n -gt 1) {
+            # 印のある file でも 2 本目の readback 経路は作らせない。
+            $gpuViolations += "$rel : '$t' が $n 箇所ある。小領域 readback は 1 実装だけに限る"
+        }
+    }
+}
+
+if ($gpuViolations.Count -gt 0) {
+    Write-Host "違反 $($gpuViolations.Count) 件" -ForegroundColor Red
+    $gpuViolations | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+    $failed += 'gpu_preview の禁止事項'
+} else {
+    Write-Host "OK" -ForegroundColor Green
 }
 
 # --- media producer は loader を使う -----------------------------------------
