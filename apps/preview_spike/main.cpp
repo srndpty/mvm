@@ -184,6 +184,12 @@ int main(int argc, char** argv) {
     surface->setPreferredCompletionBackend(cfg.gpuCompletion);
     controller.attach(surface);
 
+    // Window / app の暗黙 destructor 順に任せず、ユーザー終了も共通 shutdown へ入れる。
+    QObject::connect(window, &QQuickWindow::closing, &controller,
+                     [&controller](QQuickCloseEvent*) { controller.shutdownForUserExit(); });
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, &controller,
+                     &SpikeController::shutdownForUserExit);
+
     if (cfg.enabled) {
         QObject::connect(&controller, &SpikeController::finished, &app, [&] {
             std::fprintf(stdout, "計測を終了しました (exit %d)\n", controller.exitCode());

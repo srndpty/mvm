@@ -95,6 +95,74 @@ SpikeController::~SpikeController() {
     worker_.reset();
 }
 
+void SpikeController::shutdownForUserExit() {
+    if (!state_ || shutdownStarted_)
+        return;
+    beginShutdown(QStringLiteral("ユーザーによる終了"), false);
+}
+
+void SpikeController::beginShutdown(const QString& reason, bool fatal) {
+    if (!state_ || shutdownStarted_)
+        return;
+    shutdownStarted_ = true;
+    timer_.stop();
+    phase_ = Phase::Done;
+
+    // teardown 前に、release で失われる計測値を GUI 側へ退避する。
+    finalDecoderSnapshot_ = worker_ ? worker_->snapshot() : gpu::DecoderSnapshot{};
+    finalQtAdapter_ = state_->device.adapter();
+    finalMultithreadProtected_ = state_->device.multithreadProtected();
+    finalSrvEntries_ = static_cast<long long>(state_->converter.srvCacheEntries());
+    finalSrvEntriesPeak_ = static_cast<long long>(state_->converter.srvCacheEntriesPeak());
+    finalRetiredSrvEntries_ = state_->converter.retiredSrvEntries();
+    finalSrvTextureGroups_ =
+        static_cast<long long>(state_->converter.srvCacheTextureGroups());
+
+    state_->lifecycle.requestDecodeStop(reason.toStdString(), fatal);
+    if (worker_)
+        worker_->stop(); // stop() は thread::join まで完了して戻る
+    if (state_->deviceChange.state() == gpu::DeviceChangeState::Detected)
+        state_->deviceChange.noteWorkerStopped();
+    state_->lifecycle.noteDecodeStopped();
+    state_->lifecycle.requestRenderTeardown();
+    if (item_)
+        item_->requestRenderTeardown();
+
+    // render thread の明示 teardown 完了を condition_variable で有限待機する。
+    QElapsedTimer wait;
+    wait.start();
+    bool tornDown = false;
+    while (wait.elapsed() < 3000) {
+        if (state_->lifecycle.waitForRenderTornDown(5, shutdownReport_)) {
+            tornDown = true;
+            break;
+        }
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 2);
+        if (item_)
+            item_->requestRenderTeardown();
+    }
+    if (!tornDown) {
+        errors_ << QStringLiteral("render teardown が 3000ms 以内に完了しませんでした");
+        if (exitCode_ == 0)
+            exitCode_ = 8;
+    } else if (!shutdownReport_.teardownSuccess && exitCode_ == 0) {
+        errors_ << QStringLiteral("render teardown report が不合格でした");
+        exitCode_ = 10;
+    }
+
+    finalReportWrittenAfterTeardown_ = tornDown;
+    bool reportWritten = true;
+    if (measure_.enabled && !measure_.jsonPath.isEmpty())
+        reportWritten = writeJson();
+    if (tornDown && reportWritten)
+        state_->lifecycle.noteFinalReportWritten();
+    if (tornDown && reportWritten)
+        state_->lifecycle.noteExit();
+
+    if (measure_.enabled)
+        Q_EMIT finished();
+}
+
 void SpikeController::attach(PreviewRhiItem* item) {
     item_ = item;
     state_ = item->state();
@@ -140,6 +208,7 @@ void SpikeController::openMedia(const QString& path) {
         errors_ << status_;
         exitCode_ = 3;
         Q_EMIT statusChanged();
+        beginShutdown(status_, true);
         return;
     }
 
@@ -324,22 +393,24 @@ void SpikeController::tick() {
     // render thread は「検出した」ことしか伝えてこない。
     // **ここで decode thread を止めて join し切ってから** teardown を許可する。
     if (state_->deviceChange.detected()) {
-        if (worker_) {
-            worker_->stop(); // thread::join まで行う
-        }
-        state_->deviceChange.noteWorkerStopped();
         state_->deviceChange.noteFailClosed();
         status_ = QStringLiteral("device が変わったため停止しました (P1.2 は自動復帰しない): ") +
                   QString::fromStdString(state_->deviceChange.reason());
         errors_ << status_;
         if (exitCode_ == 0)
             exitCode_ = 7; // device change による fail-closed 停止
-        if (measure_.enabled) {
-            phase_ = Phase::Done;
-            writeJson();
-            Q_EMIT finished();
-            return;
-        }
+        beginShutdown(status_, true);
+        return;
+    }
+
+    if (state_->lifecycle.state() == gpu::ShutdownState::DecodeStopRequested) {
+        status_ = QStringLiteral("GPU 完了追跡の致命的エラー: ") +
+                  QString::fromStdString(state_->lifecycle.reason());
+        errors_ << status_;
+        if (exitCode_ == 0)
+            exitCode_ = 9;
+        beginShutdown(status_, true);
+        return;
     }
 
     if (state_->initFailed.load(std::memory_order_relaxed) && exitCode_ == 0) {
@@ -349,12 +420,8 @@ void SpikeController::tick() {
         }
         errors_ << status_;
         exitCode_ = 5;
-        if (measure_.enabled) {
-            phase_ = Phase::Done;
-            writeJson();
-            Q_EMIT finished();
-            return;
-        }
+        beginShutdown(status_, true);
+        return;
     }
 
     updateDeviceText();
@@ -387,17 +454,13 @@ void SpikeController::advanceMeasurement() {
             if (phaseTimer_.elapsed() > 15000) {
                 errors_ << QStringLiteral("D3D11 device が 15 秒以内に準備できませんでした");
                 exitCode_ = 5;
-                phase_ = Phase::Done;
-                writeJson();
-                Q_EMIT finished();
+                beginShutdown(QStringLiteral("device 初期化 timeout"), true);
             }
             return;
         }
         openMedia(measure_.mediaPath);
         if (exitCode_ != 0) {
-            phase_ = Phase::Done;
-            writeJson();
-            Q_EMIT finished();
+            beginShutdown(QStringLiteral("素材を開けません"), true);
             return;
         }
         play();
@@ -490,9 +553,7 @@ void SpikeController::advanceMeasurement() {
 
     case Phase::Seeks: {
         runSeekBenchmark();
-        phase_ = Phase::Done;
-        writeJson();
-        Q_EMIT finished();
+        beginShutdown(QStringLiteral("計測を正常完了"), false);
         return;
     }
 
@@ -650,7 +711,7 @@ bool SpikeController::writeJson() {
     if (measure_.jsonPath.isEmpty())
         return true;
 
-    const gpu::DecoderSnapshot snap = worker_ ? worker_->snapshot() : gpu::DecoderSnapshot{};
+    const gpu::DecoderSnapshot snap = finalDecoderSnapshot_;
 
     std::vector<double> intervals;
     {
@@ -713,7 +774,7 @@ bool SpikeController::writeJson() {
             markerMismatch++;
     }
 
-    const gpu::AdapterInfo qtAdapter = state_->device.adapter();
+    const gpu::AdapterInfo qtAdapter = finalQtAdapter_;
     const gpu::AdapterInfo decAdapter = snap.adapter;
 
     QString json;
@@ -731,7 +792,7 @@ bool SpikeController::writeJson() {
     };
 
     o << "{\n";
-    kv("schema", QStringLiteral("mvm-p1-preview-3"));
+    kv("schema", QStringLiteral("mvm-p1-preview-4"));
     kv("label", measure_.label);
     kv("media", mediaPath_);
     kv("timestamp", QDateTime::currentDateTime().toString(Qt::ISODate));
@@ -772,7 +833,7 @@ bool SpikeController::writeJson() {
     o << "  \"ffmpeg_d3d11_device\": \"0x" << Qt::hex << ffmpegDevice << Qt::dec << "\",\n";
     kvb("same_device", ffmpegDevice != 0 && ffmpegDevice == qtDevicePointer_);
     kvb("same_adapter", decAdapter.valid && decAdapter.sameAdapterAs(qtAdapter));
-    kvb("multithread_protected", state_->device.multithreadProtected());
+    kvb("multithread_protected", finalMultithreadProtected_);
     kvi("device_lost_count", state_->deviceLostCount.load(std::memory_order_relaxed));
 
     // --- device lifecycle (P1.2 §3) -----------------------------------------
@@ -787,26 +848,32 @@ bool SpikeController::writeJson() {
     kv("device_recovery_support", QStringLiteral("none (P1.2 は fail-closed のみ)"));
 
     // --- §1 GPU completion / retirement -------------------------------------
-    kvi("gpu_submitted_serial", static_cast<long long>(state_->completion.submittedSerial()));
-    kvi("gpu_completed_serial",
-        static_cast<long long>(state_->completion.polledCompletedSerial()));
+    kvi("gpu_submitted_serial", static_cast<long long>(shutdownReport_.submittedSerial));
+    kvi("gpu_completed_serial", static_cast<long long>(shutdownReport_.completedSerial));
     // 追跡できなかった submission (P1.2 §4)。0 でなければ
     // 「GPU 完了を待った」とは言えない。
     kvi("untracked_submission_count",
-        state_->untrackedSubmissionCount.load(std::memory_order_relaxed));
+        shutdownReport_.untrackedCount);
     kvi("completion_poll_failure_count",
-        state_->completionPollFailureCount.load(std::memory_order_relaxed));
-    kvi("gpu_completion_device_removed_count", state_->completion.deviceRemovedCount());
-    kvb("gpu_completion_fatal", state_->completion.fatal());
-    kv("gpu_completion_fatal_reason",
-       QString::fromStdString(state_->completion.fatalReason()));
-    kvi("retirement_depth_current", static_cast<long long>(state_->retirement.depthCurrent()));
+        shutdownReport_.pollFailureCount);
+    kvi("gpu_completion_device_removed_count", 0);
+    kvb("gpu_completion_fatal", shutdownReport_.completionFatal);
+    kv("gpu_completion_fatal_reason", QString::fromStdString(shutdownReport_.completionFatalReason));
+    kvi("retirement_depth_current", shutdownReport_.retirementDepthAfterDrain);
+    kvi("retirement_depth_before_drain", shutdownReport_.retirementDepthBeforeDrain);
+    kvi("retirement_depth_after_drain", shutdownReport_.retirementDepthAfterDrain);
     kvi("retirement_depth_peak", static_cast<long long>(state_->retirement.depthPeak()));
-    kvi("retirement_timeout_count", state_->retirement.retirementTimeoutCount());
+    kvi("retirement_timeout_count", shutdownReport_.retirementTimeoutCount);
     kvi("forced_gpu_wait_count", state_->retirement.forcedGpuWaitCount());
     // **frame だけでなく SRV も同じ queue に入る。** 名前を実態に合わせる (§6)。
     kvi("payloads_released_before_completion",
-        state_->retirement.payloadsReleasedBeforeCompletion());
+        shutdownReport_.payloadsReleasedBeforeCompletion);
+    kvn("shutdown_drain_elapsed_ms", shutdownReport_.drainElapsedMs);
+    kvb("teardown_success", shutdownReport_.teardownSuccess);
+    kvi("lifecycle_order_violation_count",
+        shutdownReport_.lifecycleOrderViolationCount);
+    kvb("final_report_written_after_teardown", finalReportWrittenAfterTeardown_);
+    kv("shutdown_reason", QString::fromStdString(state_->lifecycle.reason()));
 
     // --- §4 resource epoch / SRV cache --------------------------------------
     kvi("resource_epoch", static_cast<long long>(snap.resourceEpoch.value));
@@ -814,13 +881,13 @@ bool SpikeController::writeJson() {
     kvi("source_generation", static_cast<long long>(snap.sourceGeneration.value));
     kvi("composition_epoch",
         static_cast<long long>(state_->queue.compositionEpoch().value));
-    kvi("srv_cache_entries_current", static_cast<long long>(state_->converter.srvCacheEntries()));
-    kvi("srv_cache_entries_peak", static_cast<long long>(state_->converter.srvCacheEntriesPeak()));
-    kvi("retired_srv_entries", state_->converter.retiredSrvEntries());
+    kvi("srv_cache_entries_current", finalSrvEntries_);
+    kvi("srv_cache_entries_peak", finalSrvEntriesPeak_);
+    kvi("retired_srv_entries", finalRetiredSrvEntries_);
     // **cache 内の (epoch, texture) の異なる組み合わせ数**である。
     // 「今 open している decoder の数」ではない (§6)。
     kvi("srv_cache_texture_groups",
-        static_cast<long long>(state_->converter.srvCacheTextureGroups()));
+        finalSrvTextureGroups_);
 
     // --- 計測 ---------------------------------------------------------------
     kvi("warmup_ms", measure_.warmupMs);
@@ -851,7 +918,7 @@ bool SpikeController::writeJson() {
     kvi("generation_regression_rejected", state_->queue.generationRegressionCount());
     kvi("decode_failed", snap.decodeErrorCount);
     kvi("render_failed", state_->renderErrorCount.load(std::memory_order_relaxed));
-    kvi("retired_not_completed", static_cast<long long>(state_->retirement.depthCurrent()));
+    kvi("retired_not_completed", shutdownReport_.retirementDepthAfterDrain);
 
     // --- §5 seek ------------------------------------------------------------
     kvi("seek_count", static_cast<long long>(seekSamples_.size()));

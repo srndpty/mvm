@@ -81,6 +81,7 @@ public Q_SLOTS:
     void pause();
     void stepForward();
     void seekTo(qlonglong frame);
+    void shutdownForUserExit();
 
 Q_SIGNALS:
     void statusChanged();
@@ -97,6 +98,7 @@ private:
     void runColorPatchDiagnostic();
     void runSeekBenchmark();
     bool writeJson();
+    void beginShutdown(const QString& reason, bool fatal);
 
     // seek 要求 -> 画面表示 までを測る (P1.2 §1)。
     //
@@ -129,6 +131,16 @@ private:
     bool inPhase_ = false;
     QElapsedTimer phaseTimer_;
     int exitCode_ = 0;
+    bool shutdownStarted_ = false;
+    bool finalReportWrittenAfterTeardown_ = false;
+    gpu::ShutdownReport shutdownReport_;
+    gpu::DecoderSnapshot finalDecoderSnapshot_;
+    gpu::AdapterInfo finalQtAdapter_;
+    bool finalMultithreadProtected_ = false;
+    long long finalSrvEntries_ = 0;
+    long long finalSrvEntriesPeak_ = 0;
+    long long finalRetiredSrvEntries_ = 0;
+    long long finalSrvTextureGroups_ = 0;
 
     long long startupLatencyTicks_ = 0;
     double startupLatencyMs_ = -1.0;

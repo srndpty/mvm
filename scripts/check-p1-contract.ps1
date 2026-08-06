@@ -68,7 +68,7 @@ Assert-That ($d.seek_failures -eq 0) "seek 失敗が $($d.seek_failures) 件"
 # decode-ready で一致していても、画面に出たのが別 frame なら意味が無い。
 Assert-That ($d.seek_display_mismatch -eq 0) `
     "seek の表示 frame が要求と違うものが $($d.seek_display_mismatch) 件"
-Assert-That ($d.schema -eq 'mvm-p1-preview-3') "JSON schema が想定と違う: $($d.schema)"
+Assert-That ($d.schema -eq 'mvm-p1-preview-4') "JSON schema が想定と違う: $($d.schema)"
 Assert-That ($d.decode_errors -eq 0) "decode error が $($d.decode_errors) 件"
 Assert-That ($d.render_errors -eq 0) "render error が $($d.render_errors) 件"
 Assert-That ($d.device_lost_count -eq 0) "device lost が $($d.device_lost_count) 回"
@@ -104,6 +104,13 @@ Assert-That ($d.gpu_completion_device_removed_count -eq 0) `
     "device removed が $($d.gpu_completion_device_removed_count) 回"
 Assert-That ($d.retirement_timeout_count -eq 0) `
     "retirement の drain が $($d.retirement_timeout_count) 回 timeout した"
+Assert-That ($d.teardown_success -eq $true) "render teardown が成功していない"
+Assert-That ($d.retirement_depth_after_drain -eq 0) `
+    "shutdown drain 後も retirement が $($d.retirement_depth_after_drain) 件残っている"
+Assert-That ($d.lifecycle_order_violation_count -eq 0) `
+    "shutdown lifecycle の順序違反が $($d.lifecycle_order_violation_count) 件"
+Assert-That ($d.final_report_written_after_teardown -eq $true) `
+    "final JSON が teardown 完了前に書かれた"
 # per-frame で GPU 完了を blocking wait していないこと。
 Assert-That ($d.forced_gpu_wait_count -eq 0) `
     "GPU 完了の強制待ちが $($d.forced_gpu_wait_count) 回発生した"

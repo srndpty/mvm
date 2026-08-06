@@ -271,6 +271,8 @@ public:
     // これまでに signal した最大 serial。
     unsigned long long submittedSerial() const { return submitted_; }
 
+    unsigned long long completedSerial() const { return completed_; }
+
 private:
     void releaseEventQueries();
 

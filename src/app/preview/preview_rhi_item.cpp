@@ -25,7 +25,7 @@ public:
                        gpu::GpuCompletionBackend preferred)
         : state_(std::move(state)), preferredCompletion_(preferred) {}
 
-    ~PreviewRhiRenderer() override { teardownDeviceResources(); }
+    ~PreviewRhiRenderer() override;
 
 protected:
     void initialize(QRhiCommandBuffer* cb) override;
@@ -45,7 +45,8 @@ private:
     void runMarkerProbe(const gpu::DecodedGpuFrame& frame);
     void runColorPatchProbe(const gpu::DecodedGpuFrame& frame);
     bool adoptDevice(void* dev, void* ctx, int featureLevel, unsigned int luidLow, int luidHigh);
-    void teardownDeviceResources();
+    void teardownDeviceResources(bool destructorFallback);
+    void stopForCompletionFatal(const std::string& reason);
 
     std::shared_ptr<gpu::PreviewState> state_;
     // **adopted_ だけで「もう初期化済み」と判断しない (§8)。**
@@ -66,6 +67,11 @@ private:
 
     long long lastPresentTicks_ = 0;
 };
+
+PreviewRhiRenderer::~PreviewRhiRenderer() {
+    if (adoptedDevice_ != nullptr)
+        teardownDeviceResources(true);
+}
 
 void PreviewRhiRenderer::initialize(QRhiCommandBuffer* /*cb*/) {
     QRhi* r = rhi();
@@ -132,7 +138,36 @@ void PreviewRhiRenderer::initialize(QRhiCommandBuffer* /*cb*/) {
     adoptDevice(h->dev, h->context, h->featureLevel, h->adapterLuidLow, h->adapterLuidHigh);
 }
 
-void PreviewRhiRenderer::teardownDeviceResources() {
+void PreviewRhiRenderer::teardownDeviceResources(bool destructorFallback) {
+    if (adoptedDevice_ == nullptr) {
+        if (!destructorFallback && state_->lifecycle.mayTeardown()) {
+            gpu::ShutdownReport report;
+            report.teardownSuccess = true;
+            state_->lifecycle.noteRenderTornDown(std::move(report));
+        }
+        return;
+    }
+
+    if (destructorFallback) {
+        // 正常 shutdown の主経路ではない。worker の join を確認できないため、
+        // teardown 成功としては記録せず順序違反を必ず残す。
+        state_->lifecycle.noteDestructorFallback();
+    } else if (!state_->lifecycle.mayTeardown()) {
+        // 実際の解放箇所で順序を強制する。呼び出し側の思い込みを信用しない。
+        state_->lifecycle.noteDestructorFallback();
+        return;
+    }
+
+    gpu::ShutdownReport report;
+    report.submittedSerial = state_->completion.submittedSerial();
+    report.backend = gpu::toString(state_->completion.backend());
+    report.completionFatal = state_->completion.fatal();
+    report.completionFatalReason = state_->completion.fatalReason();
+    report.untrackedCount = state_->untrackedSubmissionCount.load(std::memory_order_relaxed);
+    report.pollFailureCount = state_->completionPollFailureCount.load(std::memory_order_relaxed);
+    report.retirementDepthBeforeDrain = static_cast<long long>(state_->retirement.depthCurrent());
+    const long long drainStart = gpu::qpcTicks();
+
     // GPU がまだ読んでいるものを即 Release しない。有限 timeout で drain する。
     // timeout したら fail-closed で数える (retirement_timeout_count)。
     if (state_->completion.ready()) {
@@ -142,13 +177,39 @@ void PreviewRhiRenderer::teardownDeviceResources() {
         state_->retirement.drain([this] { return state_->completion.polledCompletedSerial(); },
                                  2000);
     }
+    report.drainElapsedMs = gpu::qpcMsBetween(drainStart, gpu::qpcTicks());
+    report.completedSerial = state_->completion.completedSerial();
+    report.retirementDepthAfterDrain = static_cast<long long>(state_->retirement.depthCurrent());
     state_->retirement.releaseWithoutCompletion();
+    report.retirementTimeoutCount = state_->retirement.retirementTimeoutCount();
+    report.payloadsReleasedBeforeCompletion = state_->retirement.payloadsReleasedBeforeCompletion();
     releaseRtv();
     state_->converter.release();
     state_->completion.release();
     state_->device.release();
     adoptedDevice_ = nullptr;
     adoptedContext_ = nullptr;
+    report.teardownSuccess = !destructorFallback && report.retirementDepthAfterDrain == 0 &&
+                             report.retirementTimeoutCount == 0 &&
+                             report.payloadsReleasedBeforeCompletion == 0;
+    if (!destructorFallback) {
+        if (state_->deviceChange.mayTeardown())
+            state_->deviceChange.noteTornDown();
+        state_->lifecycle.noteRenderTornDown(std::move(report));
+    }
+}
+
+void PreviewRhiRenderer::stopForCompletionFatal(const std::string& reason) {
+    state_->renderFatalGate.noteFatal();
+    state_->deviceReady.store(false, std::memory_order_release);
+    state_->queue.stop();
+    state_->displayLedger.abort();
+    state_->lifecycle.requestDecodeStop(reason, true);
+    {
+        std::lock_guard<std::mutex> lock(state_->infoMutex);
+        state_->gpuCompletionFatalReason = reason;
+        state_->initError = "GPU 完了追跡が壊れたため安全に停止しました: " + reason;
+    }
 }
 
 bool PreviewRhiRenderer::adoptDevice(void* dev, void* ctx, int featureLevel, unsigned int luidLow,
@@ -163,6 +224,10 @@ bool PreviewRhiRenderer::adoptDevice(void* dev, void* ctx, int featureLevel, uns
         state_->initFailed.store(true);
         return false;
     }
+    // 以降の初期化が途中で失敗しても、明示 shutdown が partial resource を
+    // render thread 上で解放できるよう直ちに所有を記録する。
+    adoptedDevice_ = dev;
+    adoptedContext_ = ctx;
     if (!state_->completion.initialize(state_->device, err, preferredCompletion_)) {
         // GPU 完了を確認する手段が無いなら、frame lifetime を保証できない。
         // 「たぶん大丈夫」で続けない (fail-closed)。
@@ -195,8 +260,6 @@ bool PreviewRhiRenderer::adoptDevice(void* dev, void* ctx, int featureLevel, uns
         state_->gpuCompletionBackend = gpu::toString(state_->completion.backend());
     }
 
-    adoptedDevice_ = dev;
-    adoptedContext_ = ctx;
     state_->deviceReady.store(true, std::memory_order_release);
     return true;
 }
@@ -276,6 +339,11 @@ void PreviewRhiRenderer::render(QRhiCommandBuffer* cb) {
     // 連続描画を続ける。update() を呼ばないと次の render() が来ない。
     update();
 
+    if (state_->lifecycle.mayTeardown()) {
+        teardownDeviceResources(false);
+        return;
+    }
+
     if (!state_->deviceReady.load(std::memory_order_acquire))
         return;
 
@@ -285,8 +353,11 @@ void PreviewRhiRenderer::render(QRhiCommandBuffer* cb) {
     {
         const gpu::CompletionPollResult pr = state_->completion.polledCompleted();
         if (pr.status != gpu::CompletionPollStatus::Ok) {
-            // poll が失敗したら完了は分からない。**解放しない (fail-closed)。**
             state_->completionPollFailureCount.fetch_add(1, std::memory_order_relaxed);
+            stopForCompletionFatal(state_->completion.fatalReason().empty()
+                                       ? "GPU 完了 serial の poll に失敗しました"
+                                       : state_->completion.fatalReason());
+            return;
         } else {
             state_->retirement.poll(pr.completed);
         }
@@ -314,6 +385,9 @@ void PreviewRhiRenderer::render(QRhiCommandBuffer* cb) {
         state_->repeatedPresents.fetch_add(1, std::memory_order_relaxed);
         return;
     }
+
+    if (haveNew && !state_->renderFatalGate.tryBeginDraw())
+        return;
 
     // QRhi の pass を開き、その中で生の D3D11 を発行する。
     // ExternalContent + beginExternal() が、QRhi へ
@@ -351,11 +425,15 @@ void PreviewRhiRenderer::render(QRhiCommandBuffer* cb) {
         state_->untrackedSubmissionCount.fetch_add(1, std::memory_order_relaxed);
         state_->renderErrorCount.fetch_add(1, std::memory_order_relaxed);
         state_->retirement.retire(gpu::kNeverCompletingSerial, frame.lifetime);
+        stopForCompletionFatal(state_->completion.fatalReason().empty()
+                                   ? "GPU submission を追跡できませんでした"
+                                   : state_->completion.fatalReason());
         cb->endExternal();
         cb->endPass();
         return;
     }
     const unsigned long long serial = sub.serial;
+    state_->renderFatalGate.noteSubmission();
     state_->converter.stampSubmissionSerial(serial);
 
     cb->endExternal();
@@ -474,6 +552,10 @@ void PreviewRhiItem::clearSurface() {
 
 void PreviewRhiItem::refreshStatus() {
     Q_EMIT statusChanged();
+}
+
+void PreviewRhiItem::requestRenderTeardown() {
+    update();
 }
 
 } // namespace mvm::app

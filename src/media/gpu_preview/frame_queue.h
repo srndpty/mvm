@@ -48,6 +48,11 @@ public:
     // 期待する device。null なら device 検査を行わない。
     void setExpectedDevice(ID3D11Device* device);
 
+    // SourceId は compositor/source registry が発行し、open 前に登録する。
+    bool registerSource(SourceId source, SourceGeneration generation);
+    bool unregisterSource(SourceId source);
+    size_t registeredSourceCount() const;
+
     // 表示側が知る最新 generation を **source 単位で**更新する。
     //   new > current : 更新し、その source の pending を破棄する (Updated)
     //   new == current: 何もしない。**pending は破棄しない** (NoOp)

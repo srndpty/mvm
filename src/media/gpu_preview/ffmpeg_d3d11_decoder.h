@@ -57,7 +57,10 @@ class FFmpegD3D11Decoder final : public IVideoDecoder {
 public:
     // shared device は decoder より長生きすること。
     // counters は null 可 (その場合 globalReadbackCounters を使う)。
-    explicit FFmpegD3D11Decoder(SharedD3D11Device& device, ReadbackCounters* counters = nullptr);
+    // SourceId は decoder が発行しない。source registry の役割を持つ呼び出し側が
+    // open 前に発行して渡す。
+    explicit FFmpegD3D11Decoder(SharedD3D11Device& device, SourceId sourceId,
+                                ReadbackCounters* counters = nullptr);
     ~FFmpegD3D11Decoder() override;
 
     bool open(const std::string& utf8Path, std::string& err) override;

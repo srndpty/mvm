@@ -25,11 +25,41 @@ void PreviewFrameQueue::setExpectedDevice(ID3D11Device* device) {
     expectedDevice_ = device;
 }
 
+bool PreviewFrameQueue::registerSource(SourceId source, SourceGeneration generation) {
+    std::lock_guard<std::mutex> g(mutex_);
+    if (source.value == 0 || generations_.find(source) != generations_.end())
+        return false;
+    generations_.emplace(source, generation);
+    return true;
+}
+
+bool PreviewFrameQueue::unregisterSource(SourceId source) {
+    std::lock_guard<std::mutex> g(mutex_);
+    if (generations_.erase(source) == 0)
+        return false;
+    for (auto it = pending_.begin(); it != pending_.end();) {
+        if (it->sourceId == source)
+            it = pending_.erase(it);
+        else
+            ++it;
+    }
+    spaceAvailable_.notify_all();
+    return true;
+}
+
+size_t PreviewFrameQueue::registeredSourceCount() const {
+    std::lock_guard<std::mutex> g(mutex_);
+    return generations_.size();
+}
+
 GenerationUpdateResult PreviewFrameQueue::setCurrentGeneration(SourceId source,
                                                                SourceGeneration generation) {
     std::lock_guard<std::mutex> g(mutex_);
     const auto it = generations_.find(source);
-    if (it != generations_.end()) {
+    if (it == generations_.end()) {
+        generationRegressions_++;
+        return GenerationUpdateResult::RejectedRegression;
+    } else {
         // 逆行は受け付けない。逆行を黙って通すと、seek 済みの新しい世代を
         // 古い世代で上書きし、飛ぶ前の絵が復活しうる (fail-closed)。
         if (generation < it->second) {

@@ -14,11 +14,13 @@
 //   - AV_PIX_FMT_D3D11 以外を選ばないこと (software frame rejection)
 
 #include "media/gpu_preview/color_metadata.h"
+#include "media/gpu_preview/composed_frame.h"
 #include "media/gpu_preview/device_change.h"
 #include "media/gpu_preview/display_ledger.h"
 #include "media/gpu_preview/ffmpeg_d3d11_decoder.h"
 #include "media/gpu_preview/frame_queue.h"
 #include "media/gpu_preview/gpu_completion.h"
+#include "media/gpu_preview/lifecycle.h"
 #include "media/gpu_preview/nv12_converter.h"
 #include "media/gpu_preview/readback_counter.h"
 #include "media/gpu_preview/timebase.h"
@@ -275,7 +277,7 @@ void testFrameQueue() {
 
     { // 正常系と backpressure
         PreviewFrameQueue q(2);
-        q.setCurrentGeneration(SourceId{1}, SourceGeneration{5});
+        check(q.registerSource(SourceId{1}, SourceGeneration{5}), "source を登録");
         check(q.submitFrame(makeFrame(0, 5)) == SubmitResult::Accepted, "受理");
         check(q.submitFrame(makeFrame(1, 5)) == SubmitResult::Accepted, "受理 2");
         // 満杯なら落とさずに拒否する (decode 側が待つ)
@@ -290,7 +292,7 @@ void testFrameQueue() {
         FakeQueue q(4);
         // **source を先に登録する。** 未登録の source は fail-closed で
         // 拒否されるようになった (P1.2 §2)。
-        q.setCurrentGeneration(SourceId{1}, SourceGeneration{0});
+        check(q.registerSource(SourceId{1}, SourceGeneration{0}), "source を登録");
         q.setExpectedDevice(expected);
 
         q.owner = other;
@@ -304,7 +306,7 @@ void testFrameQueue() {
 
     { // 不正な frame を受理しない
         PreviewFrameQueue q(4);
-        q.setCurrentGeneration(SourceId{1}, SourceGeneration{0});
+        check(q.registerSource(SourceId{1}, SourceGeneration{0}), "source を登録");
         DecodedGpuFrame bad = makeFrame(1, 0);
         bad.texture = nullptr;
         check(q.submitFrame(bad) == SubmitResult::RejectedInvalidFrame, "texture 無しは拒否");
@@ -318,7 +320,7 @@ void testFrameQueue() {
 
     { // noteDisplayed は番号だけを更新する (retain は GpuRetirementQueue の責務)
         PreviewFrameQueue q(8);
-        q.setCurrentGeneration(SourceId{1}, SourceGeneration{0});
+        check(q.registerSource(SourceId{1}, SourceGeneration{0}), "source を登録");
         int freed0 = 0;
         {
             DecodedGpuFrame f0 = makeFrame(0, 0, &freed0);
@@ -345,7 +347,7 @@ void testGenerationContract() {
 
     { // stale / accepted / future
         PreviewFrameQueue q(8);
-        q.setCurrentGeneration(SourceId{1}, SourceGeneration{7});
+        check(q.registerSource(SourceId{1}, SourceGeneration{7}), "source を登録");
         check(q.submitFrame(makeFrame(100, 6)) == SubmitResult::RejectedStaleGeneration,
               "過去 generation は stale 拒否");
         checkEq(q.rejectedStaleCount(), 1, "stale 回数");
@@ -358,8 +360,7 @@ void testGenerationContract() {
 
     { // setCurrentGeneration の 3 分岐
         PreviewFrameQueue q(8);
-        checkEq(static_cast<long long>(q.setCurrentGeneration(SourceId{1}, SourceGeneration{5})),
-                static_cast<long long>(GenerationUpdateResult::Updated), "初回は更新");
+        check(q.registerSource(SourceId{1}, SourceGeneration{5}), "初回は登録");
         // 前進: pending を破棄する
         check(q.submitFrame(makeFrame(0, 5)) == SubmitResult::Accepted, "受理");
         checkEq(static_cast<long long>(q.setCurrentGeneration(SourceId{1}, SourceGeneration{6})),
@@ -384,8 +385,8 @@ void testGenerationContract() {
     { // **source ごとに独立していること (P1.2 §2)**
         // source A の seek が source B のフレームを stale / future にしない。
         PreviewFrameQueue q(8);
-        q.setCurrentGeneration(SourceId{1}, SourceGeneration{5});
-        q.setCurrentGeneration(SourceId{2}, SourceGeneration{1});
+        check(q.registerSource(SourceId{1}, SourceGeneration{5}), "source A を登録");
+        check(q.registerSource(SourceId{2}, SourceGeneration{1}), "source B を登録");
 
         DecodedGpuFrame a = makeFrame(10, 5);
         a.sourceId = SourceId{1};
@@ -423,7 +424,7 @@ void testGenerationContract() {
 
     { // 知らない source は受理しない (fail-closed)
         PreviewFrameQueue q(4);
-        q.setCurrentGeneration(SourceId{1}, SourceGeneration{1});
+        check(q.registerSource(SourceId{1}, SourceGeneration{1}), "既知 source を登録");
         DecodedGpuFrame other = makeFrame(0, 1);
         other.sourceId = SourceId{99};
         check(q.submitFrame(other) == SubmitResult::RejectedFutureGeneration,
@@ -575,6 +576,97 @@ void testDeviceChangeOrder() {
     c.noteFailClosed();
     checkEq(c.failClosedCount(), 1, "fail-closed を数える");
     checkEq(c.handledCount(), 0, "復帰は実装していないので handled は 0");
+
+    // device change も共通 lifecycle の終端まで同じ順序を通る。
+    LifecycleCoordinator lifecycle;
+    check(lifecycle.requestDecodeStop("device change", true), "検出後に stop を要求");
+    check(lifecycle.noteDecodeStopped(), "device change の worker join");
+    check(lifecycle.requestRenderTeardown(), "join 後に render teardown を要求");
+    ShutdownReport report;
+    report.teardownSuccess = true;
+    check(lifecycle.noteRenderTornDown(report), "device change の render teardown 完了");
+    check(lifecycle.noteFinalReportWritten(), "device change でも teardown 後に JSON");
+}
+
+// --------------------------------------------------------------------------
+// 共通 shutdown state machine (P1.2-finalize)
+// --------------------------------------------------------------------------
+void testLifecycleOrder() {
+    std::fprintf(stderr, "[shutdown lifecycle]\n");
+
+    LifecycleCoordinator c;
+    check(c.state() == ShutdownState::Running, "shutdown 初期状態");
+    check(c.requestDecodeStop("通常完了", false), "decode stop を要求");
+    check(c.noteDecodeStopped(), "worker join を記録");
+    check(c.requestRenderTeardown(), "render teardown を要求");
+    check(c.mayTeardown(), "join 後だけ teardown 可能");
+
+    ShutdownReport written;
+    written.teardownSuccess = true;
+    written.retirementDepthAfterDrain = 0;
+    check(c.noteRenderTornDown(written), "render teardown 完了を記録");
+    ShutdownReport observed;
+    check(c.waitForRenderTornDown(0, observed), "condition_variable から完了を取得");
+    check(observed.teardownSuccess, "teardown report を保持");
+    check(c.noteFinalReportWritten(), "teardown 後に final report を記録");
+    check(c.noteExit(), "final report 後に exit");
+    check(c.state() == ShutdownState::Exit, "正常な最終状態");
+    checkEq(c.orderViolationCount(), 0, "正常順序は違反 0");
+
+    LifecycleCoordinator negative;
+    check(!negative.requestRenderTeardown(), "worker running 中の teardown を拒否");
+    check(!negative.mayTeardown(), "順序違反後も teardown 不可");
+    negative.noteDestructorFallback();
+    checkEq(negative.orderViolationCount(), 2, "destructor fallback も違反として記録");
+    check(!negative.report().teardownSuccess, "fallback を成功扱いしない");
+}
+
+void testCompletionFatalStopsRendering() {
+    std::fprintf(stderr, "[completion fatal gate]\n");
+    RenderFatalGate gate;
+    check(gate.tryBeginDraw(), "fatal 前は draw 可能");
+    gate.noteSubmission();
+    check(gate.noteFatal(), "最初の fatal を記録");
+    const long long draws = gate.drawCount();
+    const long long submissions = gate.submissionCount();
+    check(!gate.tryBeginDraw(), "fatal 後の draw を拒否");
+    checkEq(gate.drawCount(), draws, "fatal 後に draw 数が増えない");
+    checkEq(gate.submissionCount(), submissions, "fatal 後に submission 数が増えない");
+    check(!gate.noteFatal(), "二度目の fatal は最初として扱わない");
+}
+
+void testSourceLifecycle() {
+    std::fprintf(stderr, "[source lifecycle]\n");
+    PreviewFrameQueue q(8);
+    const SourceId a{1};
+    const SourceId b{2};
+    check(q.registerSource(a, SourceGeneration{5}), "A を登録");
+    check(q.registerSource(b, SourceGeneration{9}), "B を登録");
+    check(q.unregisterSource(a), "A を解除");
+    check(q.submitFrame(makeFrame(0, 5)) == SubmitResult::RejectedFutureGeneration,
+          "解除後の A frame を拒否");
+    DecodedGpuFrame bf = makeFrame(1, 9);
+    bf.sourceId = b;
+    check(q.submitFrame(bf) == SubmitResult::Accepted, "A 解除後も B は継続");
+    check(q.currentGeneration(b) == SourceGeneration{9}, "A 再 open は B を変えない");
+
+    for (unsigned long long i = 0; i < 1000; ++i) {
+        const SourceId id{100 + i};
+        check(q.registerSource(id, SourceGeneration{1}), "soak source を登録");
+        check(q.unregisterSource(id), "soak source を解除");
+    }
+    checkEq(static_cast<long long>(q.registeredSourceCount()), 1,
+            "1000 回 open/close 後も登録数は増えない");
+}
+
+void testCompositionAdoptionEpoch() {
+    std::fprintf(stderr, "[composition adoption epoch]\n");
+    const DecodedGpuFrame decoded = makeFrame(10, 1);
+    CompositionEpoch mutableEpoch{3};
+    const ComposedFrame adopted = adoptForComposition(decoded, mutableEpoch);
+    mutableEpoch = CompositionEpoch{4};
+    check(adopted.compositionEpoch == CompositionEpoch{3},
+          "composition 採用時点の epoch を値で固定する");
 }
 
 // --------------------------------------------------------------------------
@@ -750,6 +842,10 @@ int main() {
     testFrameQueue();
     testDisplayLedger();
     testDeviceChangeOrder();
+    testLifecycleOrder();
+    testCompletionFatalStopsRendering();
+    testSourceLifecycle();
+    testCompositionAdoptionEpoch();
     testEventQueryLedger();
     testGenerationContract();
     testRetirementQueue();

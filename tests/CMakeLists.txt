@@ -992,6 +992,12 @@ if(TARGET mvm_preview_spike)
     endif()
 endif()
 
+# GPU 無しで final shutdown report の formal contract を検査する。
+add_test(NAME p1_shutdown_contract_timeout_negative
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_SOURCE_DIR}/tests/gpu_preview/test-p1-shutdown-contract.ps1")
+set_tests_properties(p1_shutdown_contract_timeout_negative PROPERTIES TIMEOUT 120)
+
 # --- lint 自身の negative test ----------------------------------------------
 # 検査を書いただけでは効いている証明にならない。
 # 違反を入れたら落ち、正しいコードでは落ちないことを両方確かめる。

@@ -191,7 +191,7 @@ int cmdDecode(const std::string& media, int count) {
     if (!dev.create(err))
         return fail(err, kNoDevice);
 
-    FFmpegD3D11Decoder dec(dev.shared);
+    FFmpegD3D11Decoder dec(dev.shared, SourceId{1});
     if (!dec.open(media, err))
         return fail(err, openFailureExit(dec.openFailure()));
 
@@ -243,7 +243,7 @@ int cmdSeek(const std::string& media, const std::vector<long long>& targets) {
     if (!dev.create(err))
         return fail(err, kNoDevice);
 
-    FFmpegD3D11Decoder dec(dev.shared);
+    FFmpegD3D11Decoder dec(dev.shared, SourceId{1});
     if (!dec.open(media, err))
         return fail(err, openFailureExit(dec.openFailure()));
 
@@ -294,7 +294,7 @@ int cmdMarker(const std::string& media, const std::vector<long long>& frames) {
     if (!dev.create(err))
         return fail(err, kNoDevice);
 
-    FFmpegD3D11Decoder dec(dev.shared);
+    FFmpegD3D11Decoder dec(dev.shared, SourceId{1});
     if (!dec.open(media, err))
         return fail(err, openFailureExit(dec.openFailure()));
 
@@ -579,7 +579,8 @@ int cmdSoak(const std::string& mediaA, const std::string& mediaB, int cycles,
 
     for (int cycle = 0; cycle < cycles; cycle++) {
         const std::string& media = (cycle % 2 == 0) ? mediaA : mediaB;
-        FFmpegD3D11Decoder dec(dev.shared, &counters);
+        FFmpegD3D11Decoder dec(dev.shared, SourceId{static_cast<unsigned long long>(cycle + 1)},
+                               &counters);
         if (!dec.open(media, err))
             return fail("cycle " + std::to_string(cycle) + " の open に失敗: " + err,
                         openFailureExit(dec.openFailure()));
@@ -722,7 +723,7 @@ int cmdColor(const std::string& manifestPath, const std::string& id) {
     if (!dev.create(err))
         return fail(err, kNoDevice);
 
-    FFmpegD3D11Decoder dec(dev.shared);
+    FFmpegD3D11Decoder dec(dev.shared, SourceId{1});
     if (!dec.open(media, err))
         return fail(err, openFailureExit(dec.openFailure()));
 

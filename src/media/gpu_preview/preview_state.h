@@ -16,6 +16,7 @@
 #include "media/gpu_preview/display_ledger.h"
 #include "media/gpu_preview/frame_queue.h"
 #include "media/gpu_preview/gpu_completion.h"
+#include "media/gpu_preview/lifecycle.h"
 #include "media/gpu_preview/nv12_converter.h"
 #include "media/gpu_preview/readback_counter.h"
 
@@ -79,6 +80,9 @@ struct PreviewState {
     ColorPatchSlot colorPatch;
     // device 変更時の停止順序 (P1.2 §3)。
     DeviceChangeCoordinator deviceChange;
+    // 通常終了・error・device change・ユーザー終了に共通の shutdown 順序。
+    LifecycleCoordinator lifecycle;
+    RenderFatalGate renderFatalGate;
 
     // --- frame accounting (§7) ----------------------------------------------
     // 「queue に残っている」と「期限を過ぎて捨てた」を区別する。

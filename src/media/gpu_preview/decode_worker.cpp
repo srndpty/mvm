@@ -2,9 +2,20 @@
 
 #include "media/gpu_preview/qpc_clock.h"
 
+#include <atomic>
 #include <chrono>
 
 namespace mvm::gpu {
+
+namespace {
+// P1.2 では DecodeWorker が最小の source registry 役を持つ。decoder は
+// SourceId を発行せず、constructor で受け取る。P2 では compositor registry が
+// この発行責務を引き継ぐ。
+SourceId allocateSourceId() {
+    static std::atomic<unsigned long long> next{0};
+    return SourceId{next.fetch_add(1, std::memory_order_relaxed) + 1};
+}
+} // namespace
 
 DecodeWorker::DecodeWorker(PreviewState& state) : state_(state) {}
 
@@ -55,7 +66,8 @@ bool DecodeWorker::start(const std::string& utf8Path, std::string& err) {
         snapshot_ = DecoderSnapshot{};
     }
 
-    auto decoder = std::make_unique<FFmpegD3D11Decoder>(state_.device, &state_.counters);
+    auto decoder =
+        std::make_unique<FFmpegD3D11Decoder>(state_.device, allocateSourceId(), &state_.counters);
     if (!decoder->open(utf8Path, err))
         return false;
 
@@ -69,7 +81,11 @@ bool DecodeWorker::start(const std::string& utf8Path, std::string& err) {
     state_.queue.setExpectedDevice(state_.device.device());
     {
         std::lock_guard<std::mutex> g(decoderMutex_);
-        state_.queue.setCurrentGeneration(decoder_->sourceId(), decoder_->sourceGeneration());
+        if (!state_.queue.registerSource(decoder_->sourceId(), decoder_->sourceGeneration())) {
+            err = "SourceId を queue へ登録できません";
+            decoder_.reset();
+            return false;
+        }
     }
 
     eof_.store(false);
@@ -100,6 +116,8 @@ void DecodeWorker::stop() {
         thread_.join();
 
     std::lock_guard<std::mutex> g(decoderMutex_);
+    if (decoder_)
+        state_.queue.unregisterSource(decoder_->sourceId());
     decoder_.reset();
     refreshSnapshotLocked();
 }

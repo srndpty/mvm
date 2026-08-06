@@ -90,13 +90,6 @@ unsigned long long allocateResourceEpoch() {
     return counter.fetch_add(1, std::memory_order_relaxed) + 1;
 }
 
-// source id もプロセス全体で一意にする。P1.2 では decoder は 1 本だが、
-// 「1 本だから 0 でよい」と決め打つと P2 で衝突する。
-unsigned long long allocateSourceId() {
-    static std::atomic<unsigned long long> counter{0};
-    return counter.fetch_add(1, std::memory_order_relaxed) + 1;
-}
-
 std::string avErr(const char* what, int code) {
     char buf[AV_ERROR_MAX_STRING_SIZE] = {0};
     av_strerror(code, buf, sizeof buf);
@@ -169,7 +162,7 @@ struct FFmpegD3D11Decoder::Impl {
     // **composition epoch ではない (P1.2 §2)。**
     ResourceEpoch resourceEpoch{0};
     // この decoder が担当する source。インスタンスごとに一意。
-    SourceId sourceId{allocateSourceId()};
+    SourceId sourceId{};
     bool eofSent = false;
     bool eofReached = false;
 
@@ -184,7 +177,8 @@ struct FFmpegD3D11Decoder::Impl {
     DecodedGpuFrame pending;
     bool hasPending = false;
 
-    Impl(SharedD3D11Device& d, ReadbackCounters& c) : shared(d), counters(c) {}
+    Impl(SharedD3D11Device& d, SourceId id, ReadbackCounters& c)
+        : shared(d), counters(c), sourceId(id) {}
 
     ~Impl() { teardown(); }
 
@@ -412,8 +406,10 @@ DecodeStatus FFmpegD3D11Decoder::Impl::pull(DecodedGpuFrame& out, std::string& e
 
 // --------------------------------------------------------------------------
 
-FFmpegD3D11Decoder::FFmpegD3D11Decoder(SharedD3D11Device& device, ReadbackCounters* counters)
-    : impl_(std::make_unique<Impl>(device, counters ? *counters : globalReadbackCounters())) {}
+FFmpegD3D11Decoder::FFmpegD3D11Decoder(SharedD3D11Device& device, SourceId sourceId,
+                                       ReadbackCounters* counters)
+    : impl_(std::make_unique<Impl>(device, sourceId,
+                                   counters ? *counters : globalReadbackCounters())) {}
 
 FFmpegD3D11Decoder::~FFmpegD3D11Decoder() = default;
 

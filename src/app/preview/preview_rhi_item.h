@@ -68,6 +68,10 @@ public:
     // 表示状態を QML へ通知する (GUI thread のタイマから呼ぶ)。
     Q_INVOKABLE void refreshStatus();
 
+    // GUI thread から render thread へ明示的な teardown を依頼する。
+    // resource 自体は render thread の render() 内でだけ解放する。
+    void requestRenderTeardown();
+
 Q_SIGNALS:
     void statusChanged();
     void linearFilterChanged();
