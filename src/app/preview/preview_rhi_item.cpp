@@ -69,8 +69,11 @@ private:
 };
 
 PreviewRhiRenderer::~PreviewRhiRenderer() {
-    if (adoptedDevice_ != nullptr)
-        teardownDeviceResources(true);
+    if (adoptedDevice_ != nullptr) {
+        // worker join 済みなら destructor からでも通常 teardown を完了できる。
+        // join 未確認なら shared resource は process 終了まで保持する方が安全である。
+        teardownDeviceResources(!state_->lifecycle.mayTeardown());
+    }
 }
 
 void PreviewRhiRenderer::initialize(QRhiCommandBuffer* /*cb*/) {
@@ -148,11 +151,23 @@ void PreviewRhiRenderer::teardownDeviceResources(bool destructorFallback) {
         return;
     }
 
-    if (destructorFallback) {
-        // 正常 shutdown の主経路ではない。worker の join を確認できないため、
-        // teardown 成功としては記録せず順序違反を必ず残す。
+    if (destructorFallback && !state_->lifecycle.mayTeardown()) {
+        // worker の join を確認できない異常経路。共有 device の足元で worker が
+        // decode 中かもしれないため、retirement/converter/completion/device は
+        // **一切解放しない**。process 終了まで保持する方が安全である。
+        state_->renderFatalGate.noteFatal();
+        state_->deviceReady.store(false, std::memory_order_release);
+        state_->queue.stop();
+        state_->displayLedger.abort();
+        state_->lifecycle.requestDecodeStop(
+            "renderer destructor fallback: decode worker の停止を確認できません", true);
         state_->lifecycle.noteDestructorFallback();
-    } else if (!state_->lifecycle.mayTeardown()) {
+        // RTV は renderer-local で、他 thread から参照されない。
+        releaseRtv();
+        return;
+    }
+
+    if (!state_->lifecycle.mayTeardown()) {
         // 実際の解放箇所で順序を強制する。呼び出し側の思い込みを信用しない。
         state_->lifecycle.noteDestructorFallback();
         return;
@@ -189,14 +204,12 @@ void PreviewRhiRenderer::teardownDeviceResources(bool destructorFallback) {
     state_->device.release();
     adoptedDevice_ = nullptr;
     adoptedContext_ = nullptr;
-    report.teardownSuccess = !destructorFallback && report.retirementDepthAfterDrain == 0 &&
+    report.teardownSuccess = report.retirementDepthAfterDrain == 0 &&
                              report.retirementTimeoutCount == 0 &&
                              report.payloadsReleasedBeforeCompletion == 0;
-    if (!destructorFallback) {
-        if (state_->deviceChange.mayTeardown())
-            state_->deviceChange.noteTornDown();
-        state_->lifecycle.noteRenderTornDown(std::move(report));
-    }
+    if (state_->deviceChange.mayTeardown())
+        state_->deviceChange.noteTornDown();
+    state_->lifecycle.noteRenderTornDown(std::move(report));
 }
 
 void PreviewRhiRenderer::stopForCompletionFatal(const std::string& reason) {

@@ -53,6 +53,9 @@ add_library(mvm_gpu_preview STATIC
     media/gpu_preview/device_change.cpp
     media/gpu_preview/lifecycle.cpp
     media/gpu_preview/decode_worker.cpp
+    media/gpu_preview/source_registry.cpp
+    media/gpu_preview/source_frame_buffer.cpp
+    media/gpu_preview/compositor_coordinator.cpp
 )
 target_include_directories(mvm_gpu_preview PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_gpu_preview

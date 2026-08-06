@@ -1,0 +1,102 @@
+#include "media/gpu_preview/source_frame_buffer.h"
+
+#include <chrono>
+
+namespace mvm::gpu {
+
+SourceFrameBuffer::SourceFrameBuffer(SourceId source, SourceGeneration generation, size_t capacity)
+    : source_(source), generation_(generation), capacity_(capacity == 0 ? 1 : capacity) {}
+
+SubmitResult SourceFrameBuffer::submitFrame(const DecodedGpuFrame& frame) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopped_)
+        return SubmitResult::RejectedNotReady;
+    if (!frame.valid() || frame.sourceId != source_)
+        return SubmitResult::RejectedInvalidFrame;
+    if (frame.sourceGeneration < generation_)
+        return SubmitResult::RejectedStaleGeneration;
+    if (generation_ < frame.sourceGeneration)
+        return SubmitResult::RejectedFutureGeneration;
+    if (frames_.size() >= capacity_)
+        return SubmitResult::RejectedQueueFull;
+    frames_.push_back(frame);
+    changed_.notify_all();
+    return SubmitResult::Accepted;
+}
+
+void SourceFrameBuffer::clear() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    frames_.clear();
+    displayed_ = -1;
+    changed_.notify_all();
+}
+
+long long SourceFrameBuffer::displayedFrameNumber() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return displayed_;
+}
+
+GenerationUpdateResult SourceFrameBuffer::setGeneration(SourceGeneration generation) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (generation < generation_)
+        return GenerationUpdateResult::RejectedRegression;
+    if (generation == generation_)
+        return GenerationUpdateResult::NoOp;
+    generation_ = generation;
+    frames_.clear();
+    changed_.notify_all();
+    return GenerationUpdateResult::Updated;
+}
+
+SourceGeneration SourceFrameBuffer::generation() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return generation_;
+}
+
+bool SourceFrameBuffer::take(DecodedGpuFrame& frame) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (frames_.empty())
+        return false;
+    frame = std::move(frames_.front());
+    frames_.pop_front();
+    changed_.notify_all();
+    return true;
+}
+
+void SourceFrameBuffer::noteDisplayed(long long frameNumber) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    displayed_ = frameNumber;
+}
+
+bool SourceFrameBuffer::waitForSpace(int timeoutMs) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return changed_.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                             [this] { return stopped_ || frames_.size() < capacity_; }) &&
+           !stopped_;
+}
+
+void SourceFrameBuffer::stop() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stopped_ = true;
+    frames_.clear();
+    changed_.notify_all();
+}
+
+void SourceFrameBuffer::restart() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stopped_ = false;
+    frames_.clear();
+    changed_.notify_all();
+}
+
+bool SourceFrameBuffer::stopped() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return stopped_;
+}
+
+size_t SourceFrameBuffer::depth() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return frames_.size();
+}
+
+} // namespace mvm::gpu
