@@ -21,8 +21,9 @@ constexpr long long kDeviceLostCheckInterval = 120;
 
 class PreviewRhiRenderer : public QQuickRhiItemRenderer {
 public:
-    explicit PreviewRhiRenderer(std::shared_ptr<gpu::PreviewState> state)
-        : state_(std::move(state)) {}
+    PreviewRhiRenderer(std::shared_ptr<gpu::PreviewState> state,
+                       gpu::GpuCompletionBackend preferred)
+        : state_(std::move(state)), preferredCompletion_(preferred) {}
 
     ~PreviewRhiRenderer() override { teardownDeviceResources(); }
 
@@ -43,7 +44,6 @@ private:
     bool ensureRtv(QRhiTexture* tex, std::string& err);
     void runMarkerProbe(const gpu::DecodedGpuFrame& frame);
     void runColorPatchProbe(const gpu::DecodedGpuFrame& frame);
-    void noteDisplayCompletion(const gpu::DecodedGpuFrame& frame, long long qpc);
     bool adoptDevice(void* dev, void* ctx, int featureLevel, unsigned int luidLow, int luidHigh);
     void teardownDeviceResources();
 
@@ -54,6 +54,7 @@ private:
     // 実際の device / context ポインタを毎回照合する。
     void* adoptedDevice_ = nullptr;
     void* adoptedContext_ = nullptr;
+    gpu::GpuCompletionBackend preferredCompletion_ = gpu::GpuCompletionBackend::Fence;
 
     ID3D11Texture2D* rtvTexture_ = nullptr;
     ID3D11RenderTargetView* rtv_ = nullptr;
@@ -105,31 +106,41 @@ void PreviewRhiRenderer::initialize(QRhiCommandBuffer* /*cb*/) {
     }
 
     if (adoptedDevice_ != nullptr) {
-        // device が変わった。**黙って古い device を使い続けない。**
-        state_->deviceChangeCount.fetch_add(1, std::memory_order_relaxed);
-        // P1.1 の方針: 完全再初期化を試みる。
-        // decoder は GUI thread が所有しているのでここでは止められない。
-        // したがって deviceReady を落として fail-closed にし、
-        // GUI 側が decoder を止めてから再 open する契機にする。
+        // device が変わった。**ここでは resource を壊さない (P1.2 §3)。**
+        //
+        // decode thread はまだ動いており、同じ SharedD3D11Device を握って
+        // FFmpeg の decode を回している。その足元で device を Release すると
+        // 未定義動作になる。queue.stop() は submit を止めるだけで、
+        // decode 自体は止まらない。
+        //
+        // ここでやるのは 3 つだけ:
+        //   deviceReady を落とす / queue と ledger を止める / GUI へ通知する
+        // teardown は GUI が decode thread を join し終えてから行う。
         state_->deviceReady.store(false, std::memory_order_release);
         state_->queue.stop();
-        teardownDeviceResources();
-    }
+        state_->displayLedger.abort();
+        state_->deviceChange.noteDetected("QRhi の D3D11 device が差し替わりました");
 
-    if (!adoptDevice(h->dev, h->context, h->featureLevel, h->adapterLuidLow, h->adapterLuidHigh)) {
-        if (adoptedDevice_ != nullptr)
-            state_->deviceChangeFailClosedCount.fetch_add(1, std::memory_order_relaxed);
+        std::lock_guard<std::mutex> g(state_->infoMutex);
+        state_->initError =
+            "D3D11 device が差し替わりました。P1.2 では自動復帰しません (fail-closed)";
+        state_->initFailed.store(true);
         return;
     }
-    if (state_->deviceChangeCount.load(std::memory_order_relaxed) > 0)
-        state_->deviceChangeHandledCount.fetch_add(1, std::memory_order_relaxed);
+
+    // 初回のみ adopt する。**P1.2 は device 変更からの復帰を実装しない。**
+    adoptDevice(h->dev, h->context, h->featureLevel, h->adapterLuidLow, h->adapterLuidHigh);
 }
 
 void PreviewRhiRenderer::teardownDeviceResources() {
     // GPU がまだ読んでいるものを即 Release しない。有限 timeout で drain する。
     // timeout したら fail-closed で数える (retirement_timeout_count)。
     if (state_->completion.ready()) {
-        state_->retirement.drain([this] { return state_->completion.polledCompleted(); }, 2000);
+        // **終端で 1 度だけ** flush する。以降 draw は来ないので、
+        // これをしないと最後の submission が永久に完了しない。
+        state_->completion.flushForShutdown();
+        state_->retirement.drain([this] { return state_->completion.polledCompletedSerial(); },
+                                 2000);
     }
     state_->retirement.releaseWithoutCompletion();
     releaseRtv();
@@ -152,7 +163,7 @@ bool PreviewRhiRenderer::adoptDevice(void* dev, void* ctx, int featureLevel, uns
         state_->initFailed.store(true);
         return false;
     }
-    if (!state_->completion.initialize(state_->device, err)) {
+    if (!state_->completion.initialize(state_->device, err, preferredCompletion_)) {
         // GPU 完了を確認する手段が無いなら、frame lifetime を保証できない。
         // 「たぶん大丈夫」で続けない (fail-closed)。
         std::lock_guard<std::mutex> g(state_->infoMutex);
@@ -167,6 +178,10 @@ bool PreviewRhiRenderer::adoptDevice(void* dev, void* ctx, int featureLevel, uns
         return false;
     }
     state_->queue.setExpectedDevice(state_->device.device());
+    // **CompositionEpoch は compositor が所有する (P1.2 §2)。**
+    // P1.2 には compositor がまだ無いので preview 層が暫定的に発行する。
+    // decoder は決してこれを発行しない。
+    state_->queue.setCompositionEpoch(gpu::CompositionEpoch{1});
 
     {
         std::lock_guard<std::mutex> g(state_->infoMutex);
@@ -267,7 +282,15 @@ void PreviewRhiRenderer::render(QRhiCommandBuffer* cb) {
     // **毎 render で完了済み serial を poll して解放する (§1)。**
     // blocking wait はしない。Flush も呼ばない。
     // GPU が遅れれば retirement queue が深くなるだけで、正しさは崩れない。
-    state_->retirement.poll(state_->completion.polledCompleted());
+    {
+        const gpu::CompletionPollResult pr = state_->completion.polledCompleted();
+        if (pr.status != gpu::CompletionPollStatus::Ok) {
+            // poll が失敗したら完了は分からない。**解放しない (fail-closed)。**
+            state_->completionPollFailureCount.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            state_->retirement.poll(pr.completed);
+        }
+    }
 
     if ((state_->presentCount.load(std::memory_order_relaxed) % kDeviceLostCheckInterval) == 0) {
         long reason = 0;
@@ -319,7 +342,20 @@ void PreviewRhiRenderer::render(QRhiCommandBuffer* cb) {
     // draw を発行したので submission serial を得る。**draw の直後に 1 回だけ。**
     // ここで得た serial が完了するまで、この frame の lifetime token と
     // 使用した SRV を解放しない。
-    const unsigned long long serial = state_->completion.signalSubmission();
+    const gpu::SubmissionResult sub = state_->completion.signalSubmission();
+    if (!sub.tracked()) {
+        // **追跡できない serial で retire してはいけない (P1.2 §4)。**
+        // 完了を確認できないまま解放することになる。
+        // 決して完了しない serial で retire し、shutdown の drain で
+        // payloads_released_before_completion として表面化させる。
+        state_->untrackedSubmissionCount.fetch_add(1, std::memory_order_relaxed);
+        state_->renderErrorCount.fetch_add(1, std::memory_order_relaxed);
+        state_->retirement.retire(gpu::kNeverCompletingSerial, frame.lifetime);
+        cb->endExternal();
+        cb->endPass();
+        return;
+    }
+    const unsigned long long serial = sub.serial;
     state_->converter.stampSubmissionSerial(serial);
 
     cb->endExternal();
@@ -338,7 +374,9 @@ void PreviewRhiRenderer::render(QRhiCommandBuffer* cb) {
     state_->uniqueDisplayed.fetch_add(1, std::memory_order_relaxed);
 
     const long long now = gpu::qpcTicks();
-    noteDisplayCompletion(frame, now);
+    // **待機の有無に関わらず、すべての display を記録する (P1.2 §1)。**
+    // arm より前に描かれても取りこぼさないための要点である。
+    state_->displayLedger.recordDisplay(frame, state_->queue.compositionEpoch(), now);
 
     // retainDepth ではなく **GPU 完了**を根拠に保持する (§1)。
     state_->retirement.retire(serial, frame.lifetime);
@@ -346,25 +384,6 @@ void PreviewRhiRenderer::render(QRhiCommandBuffer* cb) {
     if (lastPresentTicks_ != 0)
         state_->pushInterval(gpu::qpcMsBetween(lastPresentTicks_, now));
     lastPresentTicks_ = now;
-}
-
-void PreviewRhiRenderer::noteDisplayCompletion(const gpu::DecodedGpuFrame& frame, long long qpc) {
-    auto& slot = state_->displayCompletion;
-    std::lock_guard<std::mutex> g(slot.mutex);
-    if (!slot.waiting)
-        return;
-    // 4 つすべて一致したときだけ completion とする。
-    // 1 つでも緩めると、古い表示を別 request の成功として使ってしまう。
-    if (frame.generation != slot.generation || frame.frameNumber != slot.requestedFrame)
-        return;
-
-    slot.last.valid = true;
-    slot.last.requestId = slot.requestId;
-    slot.last.generation = slot.generation;
-    slot.last.requestedFrame = slot.requestedFrame;
-    slot.last.displayedFrame = frame.frameNumber;
-    slot.last.displayedQpc = qpc;
-    slot.waiting = false;
 }
 
 void PreviewRhiRenderer::runColorPatchProbe(const gpu::DecodedGpuFrame& frame) {
@@ -414,7 +433,7 @@ PreviewRhiItem::~PreviewRhiItem() {
 }
 
 QQuickRhiItemRenderer* PreviewRhiItem::createRenderer() {
-    return new PreviewRhiRenderer(state_);
+    return new PreviewRhiRenderer(state_, preferredCompletion_);
 }
 
 bool PreviewRhiItem::deviceReady() const {

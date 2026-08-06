@@ -57,6 +57,11 @@ public:
 
     void setBackgroundColor(const QColor& c);
 
+    // GPU 完了追跡の backend を強制する (テスト用)。**attach より前に呼ぶ。**
+    void setPreferredCompletionBackend(gpu::GpuCompletionBackend b) { preferredCompletion_ = b; }
+
+    gpu::GpuCompletionBackend preferredCompletionBackend() const { return preferredCompletion_; }
+
     // GUI thread から呼ぶ。表示を捨てて背景だけにする。
     Q_INVOKABLE void clearSurface();
 
@@ -75,6 +80,7 @@ private:
     std::shared_ptr<gpu::PreviewState> state_;
     bool linearFilter_ = true;
     QColor background_{0, 0, 0};
+    gpu::GpuCompletionBackend preferredCompletion_ = gpu::GpuCompletionBackend::Fence;
 };
 
 } // namespace mvm::app

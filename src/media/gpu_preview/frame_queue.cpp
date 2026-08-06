@@ -25,30 +25,56 @@ void PreviewFrameQueue::setExpectedDevice(ID3D11Device* device) {
     expectedDevice_ = device;
 }
 
-GenerationUpdateResult PreviewFrameQueue::setCurrentGeneration(GenerationId generation) {
+GenerationUpdateResult PreviewFrameQueue::setCurrentGeneration(SourceId source,
+                                                               SourceGeneration generation) {
     std::lock_guard<std::mutex> g(mutex_);
-    // 逆行は受け付けない。逆行を黙って通すと、seek 済みの新しい世代を
-    // 古い世代で上書きし、飛ぶ前の絵が復活しうる (fail-closed)。
-    if (generation < generation_) {
-        generationRegressions_++;
-        return GenerationUpdateResult::RejectedRegression;
+    const auto it = generations_.find(source);
+    if (it != generations_.end()) {
+        // 逆行は受け付けない。逆行を黙って通すと、seek 済みの新しい世代を
+        // 古い世代で上書きし、飛ぶ前の絵が復活しうる (fail-closed)。
+        if (generation < it->second) {
+            generationRegressions_++;
+            return GenerationUpdateResult::RejectedRegression;
+        }
+        // 同値は no-op。**pending を破棄しない。** 同じ generation の再設定
+        // (例: 冪等な再同期) で表示待ちが消えると、正常な frame を落とす。
+        if (generation == it->second)
+            return GenerationUpdateResult::NoOp;
     }
-    // 同値は no-op。**pending を破棄しない。** 同じ generation の再設定
-    // (例: 冪等な再同期) で表示待ちが消えると、正常な frame を落とす。
-    if (generation == generation_)
-        return GenerationUpdateResult::NoOp;
 
-    // 前進したときだけ、まだ表示していない古いフレームを捨てる。
-    // 残すと seek 直後に飛ぶ前の絵が出る。
-    generation_ = generation;
-    pending_.clear();
+    generations_[source] = generation;
+
+    // 前進したときだけ、**その source の**古いフレームを捨てる。
+    // 他の source の表示待ちには触らない (P1.2 §2)。
+    for (auto p = pending_.begin(); p != pending_.end();) {
+        if (p->sourceId == source && p->sourceGeneration < generation)
+            p = pending_.erase(p);
+        else
+            ++p;
+    }
     spaceAvailable_.notify_all();
     return GenerationUpdateResult::Updated;
 }
 
-GenerationId PreviewFrameQueue::currentGeneration() const {
+SourceGeneration PreviewFrameQueue::currentGeneration(SourceId source) const {
     std::lock_guard<std::mutex> g(mutex_);
-    return generation_;
+    const auto it = generations_.find(source);
+    return it == generations_.end() ? SourceGeneration{} : it->second;
+}
+
+bool PreviewFrameQueue::knowsSource(SourceId source) const {
+    std::lock_guard<std::mutex> g(mutex_);
+    return generations_.find(source) != generations_.end();
+}
+
+void PreviewFrameQueue::setCompositionEpoch(CompositionEpoch epoch) {
+    std::lock_guard<std::mutex> g(mutex_);
+    compositionEpoch_ = epoch;
+}
+
+CompositionEpoch PreviewFrameQueue::compositionEpoch() const {
+    std::lock_guard<std::mutex> g(mutex_);
+    return compositionEpoch_;
 }
 
 SubmitResult PreviewFrameQueue::submitFrame(const DecodedGpuFrame& frame) {
@@ -62,13 +88,23 @@ SubmitResult PreviewFrameQueue::submitFrame(const DecodedGpuFrame& frame) {
         return SubmitResult::RejectedInvalidFrame;
     }
 
-    if (frame.generation < generation_) {
+    // **判定は source 単位で行う (P1.2 §2)。**
+    // 他の source の generation は一切見ない。見ると、source A の seek で
+    // source B のフレームが弾かれる。
+    const auto it = generations_.find(frame.sourceId);
+    if (it == generations_.end()) {
+        // 知らない source からのフレームは受け取らない。
+        // 「知らないなら通す」にすると、stop 済みの source が復活しうる。
+        futureRejects_++;
+        return SubmitResult::RejectedFutureGeneration;
+    }
+    if (frame.sourceGeneration < it->second) {
         staleRejects_++;
         return SubmitResult::RejectedStaleGeneration;
     }
     // 未来の generation は表示側がまだ知らない世代である。受け取ると、
     // まだ設定していない構成のフレームを表示してしまう。fail-closed で拒否する。
-    if (generation_ < frame.generation) {
+    if (it->second < frame.sourceGeneration) {
         futureRejects_++;
         return SubmitResult::RejectedFutureGeneration;
     }

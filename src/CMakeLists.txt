@@ -49,6 +49,8 @@ add_library(mvm_gpu_preview STATIC
     media/gpu_preview/nv12_converter.cpp
     media/gpu_preview/frame_queue.cpp
     media/gpu_preview/gpu_completion.cpp
+    media/gpu_preview/display_ledger.cpp
+    media/gpu_preview/device_change.cpp
     media/gpu_preview/decode_worker.cpp
 )
 target_include_directories(mvm_gpu_preview PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

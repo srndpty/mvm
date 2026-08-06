@@ -64,18 +64,18 @@ public:
 
     virtual const VideoStreamInfo& info() const = 0;
 
-    // seek / flush のたびに増える。表示側の stale rejection に使う。
-    // これは **source_generation** である (§3)。
-    virtual unsigned long long generation() const = 0;
+    // この decoder が担当する source の識別子。インスタンスごとに一意。
+    virtual SourceId sourceId() const = 0;
 
-    // open ごとに進む resource / composition epoch (§4)。
-    // decoder pool / device / SRV cache が作り直された世代を表す。
-    // source_generation とは別に持つ (P2 で source を増やしても崩れないように)。
-    virtual unsigned long long resourceEpoch() const = 0;
+    // seek / flush のたびに増える。表示側の stale / future 判定に使う。
+    virtual SourceGeneration sourceGeneration() const = 0;
 
-    // 表示側へ渡す generation id。composition_epoch = resourceEpoch、
-    // source_generation = generation。
-    GenerationId generationId() const { return GenerationId{resourceEpoch(), generation()}; }
+    // open ごとに進む resource epoch。
+    // decode pool / texture / SRV cache が作り直された世代を表す。
+    //
+    // **decoder は CompositionEpoch を発行しない (P1.2 §2)。**
+    // 合成構成の世代を知っているのは compositor だけである。
+    virtual ResourceEpoch resourceEpoch() const = 0;
 };
 
 } // namespace mvm::gpu

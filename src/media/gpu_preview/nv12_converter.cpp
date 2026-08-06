@@ -304,7 +304,7 @@ bool Nv12Converter::acquireSrvs(const DecodedGpuFrame& frame, SrvPair& out, std:
     // **texture ポインタだけでは足りない。** decoder を開き直すと
     // 古い pool が解放され、同じアドレスに新しい pool が来ることがある。
     // その状態で古い SRV を再利用すると、別のフレームの画素を描く。
-    const unsigned long long epoch = frame.generation.compositionEpoch;
+    const ResourceEpoch epoch = frame.resourceEpoch;
     for (size_t i = 0; i < srvCache_.size(); i++) {
         const auto& e = srvCache_[i];
         if (e.epoch == epoch && e.texture == frame.texture && e.arrayIndex == frame.arrayIndex &&
@@ -380,15 +380,14 @@ void Nv12Converter::stampSubmissionSerial(unsigned long long serial) {
     pendingStamp_.clear();
 }
 
-size_t Nv12Converter::activeDecoderPools() const {
+size_t Nv12Converter::srvCacheTextureGroups() const {
     // (epoch, texture) の異なる組み合わせを数える。
-    // decode pool 1 つにつき array texture 1 枚なので、これが pool 数になる。
-    std::vector<std::pair<unsigned long long, ID3D11Texture2D*>> seen;
+    std::vector<std::pair<ResourceEpoch, ID3D11Texture2D*>> seen;
     for (const auto& e : srvCache_) {
-        const std::pair<unsigned long long, ID3D11Texture2D*> k{e.epoch, e.texture};
+        const std::pair<ResourceEpoch, ID3D11Texture2D*> k{e.epoch, e.texture};
         bool found = false;
         for (const auto& s2 : seen)
-            if (s2 == k) {
+            if (s2.first == k.first && s2.second == k.second) {
                 found = true;
                 break;
             }
@@ -398,7 +397,7 @@ size_t Nv12Converter::activeDecoderPools() const {
     return seen.size();
 }
 
-void Nv12Converter::retireEntriesNotInEpoch(unsigned long long epoch, GpuRetirementQueue& queue) {
+void Nv12Converter::retireEntriesNotInEpoch(ResourceEpoch epoch, GpuRetirementQueue& queue) {
     // 旧 epoch の SRV を **即 Release しない。**
     // GPU がまだそのフレームを読んでいる可能性がある。
     // 最後に使った submission serial とともに retirement queue へ渡し、

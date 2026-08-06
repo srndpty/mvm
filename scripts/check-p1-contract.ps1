@@ -68,6 +68,7 @@ Assert-That ($d.seek_failures -eq 0) "seek 失敗が $($d.seek_failures) 件"
 # decode-ready で一致していても、画面に出たのが別 frame なら意味が無い。
 Assert-That ($d.seek_display_mismatch -eq 0) `
     "seek の表示 frame が要求と違うものが $($d.seek_display_mismatch) 件"
+Assert-That ($d.schema -eq 'mvm-p1-preview-3') "JSON schema が想定と違う: $($d.schema)"
 Assert-That ($d.decode_errors -eq 0) "decode error が $($d.decode_errors) 件"
 Assert-That ($d.render_errors -eq 0) "render error が $($d.render_errors) 件"
 Assert-That ($d.device_lost_count -eq 0) "device lost が $($d.device_lost_count) 回"
@@ -89,8 +90,18 @@ Assert-That ($d.gpu_completion_backend -in @('fence', 'event_query')) `
     "GPU 完了追跡の backend が不正: $($d.gpu_completion_backend)"
 # **GPU が読み終わる前に frame を手放したら不合格。** ここが retainDepth の
 # 置き換えの要点である。
-Assert-That ($d.frames_released_before_completion -eq 0) `
-    "GPU 完了前に解放した frame が $($d.frames_released_before_completion) 件"
+Assert-That ($d.payloads_released_before_completion -eq 0) `
+    "GPU 完了前に手放した payload が $($d.payloads_released_before_completion) 件"
+# **追跡できない submission があってはならない (P1.2 §4)。**
+# 1 件でもあれば「GPU 完了を待った」とは言えない。
+Assert-That ($d.untracked_submission_count -eq 0) `
+    "追跡できない submission が $($d.untracked_submission_count) 件"
+Assert-That ($d.completion_poll_failure_count -eq 0) `
+    "GPU 完了 poll の失敗が $($d.completion_poll_failure_count) 件"
+Assert-That ($d.gpu_completion_fatal -eq $false) `
+    "GPU 完了追跡が壊れた: $($d.gpu_completion_fatal_reason)"
+Assert-That ($d.gpu_completion_device_removed_count -eq 0) `
+    "device removed が $($d.gpu_completion_device_removed_count) 回"
 Assert-That ($d.retirement_timeout_count -eq 0) `
     "retirement の drain が $($d.retirement_timeout_count) 回 timeout した"
 # per-frame で GPU 完了を blocking wait していないこと。
@@ -106,17 +117,34 @@ Assert-That ($d.retirement_depth_peak -ge $d.retirement_depth_current) `
 Assert-That ($d.resource_epoch -gt 0) "resource_epoch が 0 のまま"
 Assert-That ($d.srv_cache_entries_current -le $d.srv_cache_entries_peak) `
     "SRV cache の current が peak を超えている"
-# 1 本の decoder で計測している間、pool は 1 つだけのはず。
-Assert-That ($d.active_decoder_pools -ge 1) "active_decoder_pools が 0"
-Assert-That ($d.active_decoder_pools -le 2) `
-    "active_decoder_pools が $($d.active_decoder_pools) 件ある (旧 epoch が retire されていない)"
+# **cache 内の (epoch, texture) group 数**であって decoder 数ではない (§6)。
+# 1 本の decoder で計測している間、group は 1 つだけのはず。
+Assert-That ($d.srv_cache_texture_groups -ge 1) "srv_cache_texture_groups が 0"
+Assert-That ($d.srv_cache_texture_groups -le 2) `
+    "srv_cache_texture_groups が $($d.srv_cache_texture_groups) 件ある (旧 epoch が retire されていない)"
+
+# --- P1.2 §2: 3 つの世代がすべて出ていること --------------------------------
+Assert-That ($null -ne $d.source_id) "source_id が無い"
+Assert-That ($null -ne $d.source_generation) "source_generation が無い"
+Assert-That ($null -ne $d.composition_epoch) "composition_epoch が無い"
+# composition epoch は compositor (P1.2 では preview 層) が発行する。
+# decoder の resource epoch と **同じ値になってはならない**わけではないが、
+# 別のフィールドとして出ていることを要求する。
+Assert-That ($d.composition_epoch -ge 1) "composition_epoch が発行されていない"
 
 # --- P1.1 §8: device lifecycle ----------------------------------------------
 # device が変わったのに握り潰していないこと。変化したなら
 # 「処理した」か「fail-closed にした」かのどちらかが記録されていること。
-Assert-That ($d.device_change_count -eq
+#
+# **P1.2 は復帰を実装していない。** handled は常に 0 で、
+# 検出したものはすべて fail_closed になる。
+Assert-That ($d.device_change_detected_count -eq
              ($d.device_change_handled_count + $d.device_change_fail_closed_count)) `
-    "device change の件数と処理結果の件数が合わない"
+    "device change の検出件数と処理結果の件数が合わない"
+Assert-That ($d.device_change_handled_count -eq 0) `
+    "P1.2 は device 復帰を実装していないのに handled が $($d.device_change_handled_count) 件ある"
+Assert-That ($d.device_recovery_support -eq 'none (P1.2 は fail-closed のみ)') `
+    "device recovery の記述が実装と食い違っている: $($d.device_recovery_support)"
 
 # --- P1.1 §7: frame accounting ----------------------------------------------
 # queue に残っている frame を無条件に drop と呼ばない。

@@ -12,6 +12,8 @@
 #define MVM_GPU_PREVIEW_PREVIEW_STATE_H
 
 #include "media/gpu_preview/d3d11_shared_device.h"
+#include "media/gpu_preview/device_change.h"
+#include "media/gpu_preview/display_ledger.h"
 #include "media/gpu_preview/frame_queue.h"
 #include "media/gpu_preview/gpu_completion.h"
 #include "media/gpu_preview/nv12_converter.h"
@@ -23,37 +25,6 @@
 #include <vector>
 
 namespace mvm::gpu {
-
-// --------------------------------------------------------------------------
-// display completion (§5)
-// --------------------------------------------------------------------------
-// 「seek を要求してから、実際に画面へ出るまで」を測るための受け渡し。
-//
-// **decode が終わった時点と、画面に出た時点は別物である。**
-// P1 は decode-ready しか測っていなかった。編集操作の体感は displayed 側で決まる。
-//
-// 古い completion を別 request の成功として使わないため、
-// 一致条件を 4 つ全部要求する:
-//   request_id / source_generation / composition_epoch / requested_frame
-struct DisplayCompletion {
-    bool valid = false;
-    unsigned long long requestId = 0;
-    GenerationId generation{};
-    long long requestedFrame = -1;
-    long long displayedFrame = -1;
-    long long displayedQpc = 0;
-};
-
-struct DisplayCompletionSlot {
-    std::mutex mutex;
-    // GUI -> render: この request の表示を待っている
-    bool waiting = false;
-    unsigned long long requestId = 0;
-    GenerationId generation{};
-    long long requestedFrame = -1;
-    // render -> GUI: 直近に成立した completion
-    DisplayCompletion last;
-};
 
 // --------------------------------------------------------------------------
 // color patch 検査 (§6)
@@ -102,8 +73,12 @@ struct PreviewState {
     // --- 3 スレッド共有 (内部で lock 済み) ----------------------------------
     PreviewFrameQueue queue{3};
     MarkerProbeSlot markerProbe;
-    DisplayCompletionSlot displayCompletion;
+    // **すべての display を記録する台帳 (P1.2 §1)。**
+    // 待機の有無に関わらず記録するので、arm 前に描かれても取りこぼさない。
+    DisplayLedger displayLedger;
     ColorPatchSlot colorPatch;
+    // device 変更時の停止順序 (P1.2 §3)。
+    DeviceChangeCoordinator deviceChange;
 
     // --- frame accounting (§7) ----------------------------------------------
     // 「queue に残っている」と「期限を過ぎて捨てた」を区別する。
@@ -118,12 +93,11 @@ struct PreviewState {
     std::atomic<long long> repeatedPresents{0}; // 新しい frame が無く前の絵のままだった回数
     std::atomic<long long> deviceLostCount{0};
     std::atomic<long long> renderErrorCount{0};
+    // GPU 完了を追跡できなかった submission の数 (P1.2 §4)。
+    // 0 でなければ「GPU 完了を待った」と言えない。
+    std::atomic<long long> untrackedSubmissionCount{0};
+    std::atomic<long long> completionPollFailureCount{0};
     std::atomic<long long> displayedFrameNumber{-1};
-    // device change (§8) の検出回数と、その処理結果。
-    std::atomic<long long> deviceChangeCount{0};
-    std::atomic<long long> deviceChangeHandledCount{0};
-    std::atomic<long long> deviceChangeFailClosedCount{0};
-
     // --- GUI -> render (atomic) ---------------------------------------------
     std::atomic<bool> linearFilter{true};
     std::atomic<bool> clearRequested{false};
@@ -135,6 +109,8 @@ struct PreviewState {
     std::string initError;
     std::string rhiBackend;
     std::string gpuCompletionBackend;
+    // GPU 完了追跡が壊れた理由 (空なら正常)。
+    std::string gpuCompletionFatalReason;
     // QRhi が申告する adapter LUID (native handles 由来)。
     unsigned int qtReportedLuidLow = 0;
     int qtReportedLuidHigh = 0;

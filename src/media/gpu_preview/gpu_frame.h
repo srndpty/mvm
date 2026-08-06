@@ -52,34 +52,74 @@ enum class ColorRange {
 inline constexpr long long kNoPts = INT64_MIN;
 
 // --------------------------------------------------------------------------
-// generation id (source_generation / composition_epoch)
+// 世代を表す 3 つの概念 (P1.2 §2)
 // --------------------------------------------------------------------------
-// P1.1 では decoder が 1 本なので single generation でも足りるが、
-// **概念を単一 global generation へ固定しない**。P2 の二動画合成では
-//   - source_generation : ある source の seek / flush で進む世代
-//   - composition_epoch : 合成の構成 (decoder pool / device / resource) が
-//                         切り替わった世代
-// を別々に持つ必要がある。ここで型として分けておき、比較規則を 1 箇所に置く。
+// P1.1 では compositionEpoch と sourceGeneration を 1 つの GenerationId に
+// まとめ、decoder が **両方**を発行していた。これは誤りだった。
 //
-// 順序は composition_epoch を上位、source_generation を下位とする辞書式。
-// composition_epoch が進めば source_generation の値に関わらず「新しい」。
-struct GenerationId {
-    unsigned long long compositionEpoch = 0;
-    unsigned long long sourceGeneration = 0;
+//   - decoder は「自分の pool を作り直した」ことしか知らない
+//   - 「合成の構成が変わった」ことを知っているのは compositor だけ
+//
+// 1 本の decoder しかないうちは同じ値で困らないが、P2 で source が 2 本になると
+// **source A の open が source B のフレームを future/stale にしてしまう。**
+// 先に分けておく。
+//
+// 3 つの所有者:
+//   ResourceEpoch     : decoder が open ごとに発行する (decode pool / texture / SRV の世代)
+//   SourceGeneration  : decoder が seek / flush ごとに発行する (source 単位)
+//   CompositionEpoch  : **compositor が発行する** (timeline / 合成構成の世代)
+//
+// **decoder は CompositionEpoch を発行してはいけない。**
+// P1.2 では compositor がまだ無いので、preview 層が暫定的に所有する。
+//
+// 素の unsigned long long を使わず別型にしているのは、取り違えを型で止めるため。
+// 実際 P1.1 では resourceEpoch を compositionEpoch として渡していた。
 
-    friend bool operator==(const GenerationId& a, const GenerationId& b) {
-        return a.compositionEpoch == b.compositionEpoch && a.sourceGeneration == b.sourceGeneration;
-    }
+// どの source から来たフレームか。P1.2 では 1 本だが、値は決め打ちにしない。
+struct SourceId {
+    unsigned long long value = 0;
 
-    friend bool operator!=(const GenerationId& a, const GenerationId& b) { return !(a == b); }
+    friend bool operator==(SourceId a, SourceId b) { return a.value == b.value; }
 
-    friend bool operator<(const GenerationId& a, const GenerationId& b) {
-        if (a.compositionEpoch != b.compositionEpoch)
-            return a.compositionEpoch < b.compositionEpoch;
-        return a.sourceGeneration < b.sourceGeneration;
-    }
+    friend bool operator!=(SourceId a, SourceId b) { return !(a == b); }
 
-    friend bool operator>(const GenerationId& a, const GenerationId& b) { return b < a; }
+    friend bool operator<(SourceId a, SourceId b) { return a.value < b.value; }
+};
+
+// decode pool / texture / SRV の世代。decoder が open ごとに発行する。
+// SRV cache の key に使う (texture のアドレスは pool 解放後に再利用されるため)。
+struct ResourceEpoch {
+    unsigned long long value = 0;
+
+    friend bool operator==(ResourceEpoch a, ResourceEpoch b) { return a.value == b.value; }
+
+    friend bool operator!=(ResourceEpoch a, ResourceEpoch b) { return !(a == b); }
+
+    friend bool operator<(ResourceEpoch a, ResourceEpoch b) { return a.value < b.value; }
+};
+
+// source 単位の seek / flush 世代。stale / future の判定に使う。
+struct SourceGeneration {
+    unsigned long long value = 0;
+
+    friend bool operator==(SourceGeneration a, SourceGeneration b) { return a.value == b.value; }
+
+    friend bool operator!=(SourceGeneration a, SourceGeneration b) { return !(a == b); }
+
+    friend bool operator<(SourceGeneration a, SourceGeneration b) { return a.value < b.value; }
+
+    friend bool operator>(SourceGeneration a, SourceGeneration b) { return b < a; }
+};
+
+// 合成構成の世代。**compositor が発行する。** decoder は発行しない。
+struct CompositionEpoch {
+    unsigned long long value = 0;
+
+    friend bool operator==(CompositionEpoch a, CompositionEpoch b) { return a.value == b.value; }
+
+    friend bool operator!=(CompositionEpoch a, CompositionEpoch b) { return !(a == b); }
+
+    friend bool operator<(CompositionEpoch a, CompositionEpoch b) { return a.value < b.value; }
 };
 
 // --------------------------------------------------------------------------
@@ -120,11 +160,14 @@ struct DecodedGpuFrame {
 
     FrameLifetimeToken lifetime;
 
-    // seek / flush のたびに増える。これより古い frame は表示側が拒否する。
-    // P2 を見越し、source_generation と composition_epoch を分けて持つ。
-    // P1.1 では composition_epoch は decoder open (= resource_epoch) と連動し、
-    // source_generation は seek / flush で進む。
-    GenerationId generation{};
+    // どの source の、どの世代の、どの resource 世代のフレームか。
+    //
+    // **compositionEpoch は持たない。** 合成構成の世代を知っているのは
+    // compositor であり、decoder ではない (P1.2 §2)。
+    // P2 で compositor がフレームを受け取った時点で付与する。
+    SourceId sourceId{};
+    SourceGeneration sourceGeneration{};
+    ResourceEpoch resourceEpoch{};
 
     bool valid() const {
         return texture != nullptr && width > 0 && height > 0 &&

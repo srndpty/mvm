@@ -14,6 +14,8 @@
 //   - AV_PIX_FMT_D3D11 以外を選ばないこと (software frame rejection)
 
 #include "media/gpu_preview/color_metadata.h"
+#include "media/gpu_preview/device_change.h"
+#include "media/gpu_preview/display_ledger.h"
 #include "media/gpu_preview/ffmpeg_d3d11_decoder.h"
 #include "media/gpu_preview/frame_queue.h"
 #include "media/gpu_preview/gpu_completion.h"
@@ -23,6 +25,7 @@
 
 #include <cstdio>
 #include <string>
+#include <thread>
 
 using namespace mvm::gpu;
 
@@ -255,7 +258,9 @@ DecodedGpuFrame makeFrame(long long n, unsigned long long gen, int* freedFlag = 
     f.pixelFormat = GpuPixelFormat::NV12;
     // 実在しないポインタ。参照外ししない経路だけを検査している。
     f.texture = reinterpret_cast<ID3D11Texture2D*>(0x1000 + n);
-    f.generation = GenerationId{0, gen};
+    f.sourceId = SourceId{1};
+    f.sourceGeneration = SourceGeneration{gen};
+    f.resourceEpoch = ResourceEpoch{1};
     if (freedFlag) {
         *freedFlag = 0;
         f.lifetime = FrameLifetimeToken(freedFlag, [](void* p) { *static_cast<int*>(p) = 1; });
@@ -270,7 +275,7 @@ void testFrameQueue() {
 
     { // 正常系と backpressure
         PreviewFrameQueue q(2);
-        q.setCurrentGeneration(GenerationId{0, 5});
+        q.setCurrentGeneration(SourceId{1}, SourceGeneration{5});
         check(q.submitFrame(makeFrame(0, 5)) == SubmitResult::Accepted, "受理");
         check(q.submitFrame(makeFrame(1, 5)) == SubmitResult::Accepted, "受理 2");
         // 満杯なら落とさずに拒否する (decode 側が待つ)
@@ -283,6 +288,9 @@ void testFrameQueue() {
         auto* expected = reinterpret_cast<ID3D11Device*>(0xAAAA);
         auto* other = reinterpret_cast<ID3D11Device*>(0xBBBB);
         FakeQueue q(4);
+        // **source を先に登録する。** 未登録の source は fail-closed で
+        // 拒否されるようになった (P1.2 §2)。
+        q.setCurrentGeneration(SourceId{1}, SourceGeneration{0});
         q.setExpectedDevice(expected);
 
         q.owner = other;
@@ -296,6 +304,7 @@ void testFrameQueue() {
 
     { // 不正な frame を受理しない
         PreviewFrameQueue q(4);
+        q.setCurrentGeneration(SourceId{1}, SourceGeneration{0});
         DecodedGpuFrame bad = makeFrame(1, 0);
         bad.texture = nullptr;
         check(q.submitFrame(bad) == SubmitResult::RejectedInvalidFrame, "texture 無しは拒否");
@@ -309,6 +318,7 @@ void testFrameQueue() {
 
     { // noteDisplayed は番号だけを更新する (retain は GpuRetirementQueue の責務)
         PreviewFrameQueue q(8);
+        q.setCurrentGeneration(SourceId{1}, SourceGeneration{0});
         int freed0 = 0;
         {
             DecodedGpuFrame f0 = makeFrame(0, 0, &freed0);
@@ -335,7 +345,7 @@ void testGenerationContract() {
 
     { // stale / accepted / future
         PreviewFrameQueue q(8);
-        q.setCurrentGeneration(GenerationId{0, 7});
+        q.setCurrentGeneration(SourceId{1}, SourceGeneration{7});
         check(q.submitFrame(makeFrame(100, 6)) == SubmitResult::RejectedStaleGeneration,
               "過去 generation は stale 拒否");
         checkEq(q.rejectedStaleCount(), 1, "stale 回数");
@@ -348,47 +358,306 @@ void testGenerationContract() {
 
     { // setCurrentGeneration の 3 分岐
         PreviewFrameQueue q(8);
-        checkEq(static_cast<long long>(q.setCurrentGeneration(GenerationId{0, 5})),
+        checkEq(static_cast<long long>(q.setCurrentGeneration(SourceId{1}, SourceGeneration{5})),
                 static_cast<long long>(GenerationUpdateResult::Updated), "初回は更新");
         // 前進: pending を破棄する
         check(q.submitFrame(makeFrame(0, 5)) == SubmitResult::Accepted, "受理");
-        checkEq(static_cast<long long>(q.setCurrentGeneration(GenerationId{0, 6})),
+        checkEq(static_cast<long long>(q.setCurrentGeneration(SourceId{1}, SourceGeneration{6})),
                 static_cast<long long>(GenerationUpdateResult::Updated), "前進は更新");
         checkEq(static_cast<long long>(q.depth()), 0, "前進で pending 破棄");
 
         // 同値: no-op。**pending は破棄しない。**
         check(q.submitFrame(makeFrame(1, 6)) == SubmitResult::Accepted, "受理 2");
-        checkEq(static_cast<long long>(q.setCurrentGeneration(GenerationId{0, 6})),
+        checkEq(static_cast<long long>(q.setCurrentGeneration(SourceId{1}, SourceGeneration{6})),
                 static_cast<long long>(GenerationUpdateResult::NoOp), "同値は no-op");
         checkEq(static_cast<long long>(q.depth()), 1, "同値設定で pending は消えない");
 
         // 逆行: 拒否。current は変わらない。
-        checkEq(static_cast<long long>(q.setCurrentGeneration(GenerationId{0, 5})),
+        checkEq(static_cast<long long>(q.setCurrentGeneration(SourceId{1}, SourceGeneration{5})),
                 static_cast<long long>(GenerationUpdateResult::RejectedRegression), "逆行は拒否");
         checkEq(q.generationRegressionCount(), 1, "逆行回数");
-        check(q.currentGeneration() == (GenerationId{0, 6}), "逆行で current は変わらない");
+        check(q.currentGeneration(SourceId{1}) == SourceGeneration{6},
+              "逆行で current は変わらない");
         checkEq(static_cast<long long>(q.depth()), 1, "逆行で pending も変わらない");
     }
 
-    { // composition_epoch が上位。source generation の値に関わらず新しい
+    { // **source ごとに独立していること (P1.2 §2)**
+        // source A の seek が source B のフレームを stale / future にしない。
         PreviewFrameQueue q(8);
-        q.setCurrentGeneration(GenerationId{1, 0});
-        // 同じ epoch のより小さい source は stale
-        DecodedGpuFrame f = makeFrame(0, 0);
-        f.generation = GenerationId{0, 999999}; // 古い epoch は source が大きくても stale
-        check(q.submitFrame(f) == SubmitResult::RejectedStaleGeneration,
-              "古い composition_epoch は source が大きくても stale");
-        // epoch を進めると逆に future
-        DecodedGpuFrame g = makeFrame(0, 0);
-        g.generation = GenerationId{2, 0};
-        check(q.submitFrame(g) == SubmitResult::RejectedFutureGeneration,
-              "新しい composition_epoch は future");
+        q.setCurrentGeneration(SourceId{1}, SourceGeneration{5});
+        q.setCurrentGeneration(SourceId{2}, SourceGeneration{1});
+
+        DecodedGpuFrame a = makeFrame(10, 5);
+        a.sourceId = SourceId{1};
+        a.sourceGeneration = SourceGeneration{5};
+        a.resourceEpoch = ResourceEpoch{7};
+
+        DecodedGpuFrame b = makeFrame(20, 1);
+        b.sourceId = SourceId{2};
+        b.sourceGeneration = SourceGeneration{1};
+        b.resourceEpoch = ResourceEpoch{8};
+
+        // 別 decoder は別の resource epoch を持つ
+        check(a.resourceEpoch != b.resourceEpoch, "decoder A と B は別の resourceEpoch");
+
+        check(q.submitFrame(a) == SubmitResult::Accepted, "source A を受理");
+        check(q.submitFrame(b) == SubmitResult::Accepted, "source B も受理");
+
+        // source A だけ seek する
+        checkEq(static_cast<long long>(q.setCurrentGeneration(SourceId{1}, SourceGeneration{6})),
+                static_cast<long long>(GenerationUpdateResult::Updated),
+                "A の generation を進める");
+        // **B の generation は変わらない**
+        check(q.currentGeneration(SourceId{2}) == SourceGeneration{1},
+              "A の seek が B の generation を変えない");
+
+        // B の同世代フレームは今も受理される
+        DecodedGpuFrame b2 = makeFrame(21, 1);
+        b2.sourceId = SourceId{2};
+        b2.sourceGeneration = SourceGeneration{1};
+        check(q.submitFrame(b2) == SubmitResult::Accepted, "B は A の seek の影響を受けない");
+
+        // A の旧世代は stale
+        check(q.submitFrame(a) == SubmitResult::RejectedStaleGeneration, "A の旧世代は stale");
+    }
+
+    { // 知らない source は受理しない (fail-closed)
+        PreviewFrameQueue q(4);
+        q.setCurrentGeneration(SourceId{1}, SourceGeneration{1});
+        DecodedGpuFrame other = makeFrame(0, 1);
+        other.sourceId = SourceId{99};
+        check(q.submitFrame(other) == SubmitResult::RejectedFutureGeneration,
+              "知らない source は受理しない");
+    }
+
+    { // composition epoch は compositor が持つ。decoder は発行しない
+        PreviewFrameQueue q(4);
+        check(q.compositionEpoch() == CompositionEpoch{}, "初期値は 0");
+        q.setCompositionEpoch(CompositionEpoch{3});
+        check(q.compositionEpoch() == CompositionEpoch{3}, "compositor が設定する");
     }
 }
 
 // --------------------------------------------------------------------------
-// GpuRetirementQueue (§1): serial 完了で解放。未完了は保持
+// display ledger (P1.2 §1)
 // --------------------------------------------------------------------------
+void testDisplayLedger() {
+    std::fprintf(stderr, "[display ledger]\n");
+
+    const SourceId src{1};
+    const SourceGeneration gen{5};
+    const CompositionEpoch epoch{2};
+
+    DisplayWaitKey key;
+    key.sourceId = src;
+    key.sourceGeneration = gen;
+    key.compositionEpoch = epoch;
+    key.requestedFrame = 137;
+
+    auto frameFor = [&](long long n, SourceGeneration g) {
+        DecodedGpuFrame f = makeFrame(n, g.value);
+        f.sourceId = src;
+        f.sourceGeneration = g;
+        return f;
+    };
+
+    { // **これが P1.1 の race そのものである。**
+      // baseline を取った後、待機を始める *前* に display が起きる。
+      // 旧方式 (arm してから次の display を待つ) なら永久に来ないので timeout した。
+      // 新方式は記録済みのものを見つけるので、待たずに成功する。
+        DisplayLedger ledger;
+        const unsigned long long baseline = ledger.currentSequence();
+
+        // waiter が arm する前に render thread が描いた
+        ledger.recordDisplay(frameFor(137, gen), epoch, 12345);
+
+        DisplayRecord rec;
+        // timeout 0 で呼ぶ。**sleep も待機もせずに見つからなければ失敗**なので、
+        // 「記録済みを拾えること」だけを決定論的に検査できる。
+        check(ledger.waitForDisplay(baseline, key, 0, rec),
+              "arm 前に描かれた display を取りこぼさない");
+        checkEq(rec.displayedFrame, 137, "取得した frame 番号");
+        checkEq(static_cast<long long>(rec.displayedQpc), 12345, "取得した qpc");
+        check(rec.sequence > baseline, "baseline より後の記録である");
+    }
+
+    { // **古い display を新しい request の成功にしない。**
+      // baseline より前の記録は、条件が全部一致していても採用しない。
+        DisplayLedger ledger;
+        ledger.recordDisplay(frameFor(137, gen), epoch, 111);         // 先に描かれた
+        const unsigned long long baseline = ledger.currentSequence(); // その後で baseline
+
+        DisplayRecord rec;
+        check(!ledger.waitForDisplay(baseline, key, 0, rec),
+              "baseline 以前の display は採用しない");
+    }
+
+    { // generation / source / epoch / frame のどれか 1 つでも違えば採用しない
+        DisplayLedger ledger;
+        const unsigned long long baseline = ledger.currentSequence();
+        DisplayRecord rec;
+
+        ledger.recordDisplay(frameFor(137, SourceGeneration{4}), epoch, 1);
+        check(!ledger.waitForDisplay(baseline, key, 0, rec), "generation 違いは採用しない");
+
+        DecodedGpuFrame otherSource = frameFor(137, gen);
+        otherSource.sourceId = SourceId{2};
+        ledger.recordDisplay(otherSource, epoch, 2);
+        check(!ledger.waitForDisplay(baseline, key, 0, rec), "source 違いは採用しない");
+
+        ledger.recordDisplay(frameFor(137, gen), CompositionEpoch{9}, 3);
+        check(!ledger.waitForDisplay(baseline, key, 0, rec), "composition epoch 違いは採用しない");
+
+        ledger.recordDisplay(frameFor(138, gen), epoch, 4);
+        check(!ledger.waitForDisplay(baseline, key, 0, rec), "frame 違いは採用しない");
+
+        // 最後に正しいものを入れると成功する (対照)
+        ledger.recordDisplay(frameFor(137, gen), epoch, 5);
+        check(ledger.waitForDisplay(baseline, key, 0, rec), "全一致なら採用する");
+        checkEq(static_cast<long long>(rec.displayedQpc), 5, "最後に入れた記録を取る");
+    }
+
+    { // 別スレッドから記録されたものを待てる (通知経路)。
+      // 記録側が先に走っても後に走っても成立する。sleep には依存しない。
+        DisplayLedger ledger;
+        const unsigned long long baseline = ledger.currentSequence();
+        std::thread writer([&] { ledger.recordDisplay(frameFor(137, gen), epoch, 777); });
+        DisplayRecord rec;
+        const bool got = ledger.waitForDisplay(baseline, key, 5000, rec);
+        writer.join();
+        check(got, "別スレッドの記録を待って取得できる");
+        checkEq(static_cast<long long>(rec.displayedQpc), 777, "待って取得した qpc");
+    }
+
+    { // abort すると待たずに false
+        DisplayLedger ledger;
+        ledger.abort();
+        DisplayRecord rec;
+        check(!ledger.waitForDisplay(0, key, 0, rec), "abort 後は待たない");
+    }
+}
+
+// --------------------------------------------------------------------------
+// device change の停止順序 (P1.2 §3)
+// --------------------------------------------------------------------------
+void testDeviceChangeOrder() {
+    std::fprintf(stderr, "[device change order]\n");
+
+    DeviceChangeCoordinator c;
+    check(c.state() == DeviceChangeState::None, "初期状態");
+    check(!c.mayTeardown(), "検出前に teardown してはいけない");
+    checkEq(c.detectedCount(), 0, "検出 0 件");
+
+    c.noteDetected("device が差し替わった");
+    check(c.state() == DeviceChangeState::Detected, "検出済み");
+    checkEq(c.detectedCount(), 1, "検出 1 件");
+    check(c.detected(), "GUI から検出が見える");
+
+    // **decode thread の join が済むまで teardown を許さない。**
+    // ここを緩めると、decode 中の device を Release することになる。
+    check(!c.mayTeardown(), "worker 停止前は teardown 不可");
+
+    c.noteWorkerStopped();
+    check(c.state() == DeviceChangeState::WorkerStopped, "worker 停止済み");
+    check(!c.detected(), "停止後は detected を再処理しない");
+    check(c.mayTeardown(), "worker 停止後は teardown 可");
+
+    c.noteTornDown();
+    check(c.state() == DeviceChangeState::TornDown, "teardown 済み");
+    check(!c.mayTeardown(), "teardown 後は二重に行わない");
+
+    // 二重検出で段階を巻き戻さない
+    c.noteDetected("二度目");
+    check(c.state() == DeviceChangeState::TornDown, "段階を巻き戻さない");
+    checkEq(c.detectedCount(), 1, "二重検出を数え直さない");
+
+    // **P1.2 は復帰を実装していない。** handled は 0 のまま。
+    c.noteFailClosed();
+    checkEq(c.failClosedCount(), 1, "fail-closed を数える");
+    checkEq(c.handledCount(), 0, "復帰は実装していないので handled は 0");
+}
+
+// --------------------------------------------------------------------------
+// event query の serial state machine (P1.2 §4)
+// --------------------------------------------------------------------------
+// **実 GPU では再現させにくい経路**なので、純粋な状態機械として検査する。
+// 実機で event query backend を通した検証はしていない (実機未検証)。
+void testEventQueryLedger() {
+    std::fprintf(stderr, "[event query ledger]\n");
+
+    // slot は不透明な識別子。ここでは int の番地を使う。
+    int slots[4] = {0, 1, 2, 3};
+
+    { // slot が無ければ serial を確定しない (追跡できないものを進めない)
+        EventQueryLedger l(2);
+        checkEq(static_cast<long long>(l.confirmSubmission(nullptr)), 0,
+                "slot 無しでは serial を確定しない");
+        checkEq(static_cast<long long>(l.submittedSerial()), 0, "submitted も進まない");
+    }
+
+    { // 確保 -> 確定 -> 完了で serial が進む
+        EventQueryLedger l(4);
+        l.addSlot(&slots[0]);
+        l.addSlot(&slots[1]);
+        checkEq(static_cast<long long>(l.totalSlots()), 2, "slot 2 個");
+
+        auto* s0 = l.acquireFreeSlot();
+        check(s0 != nullptr, "slot を確保できる");
+        const unsigned long long serial0 = l.confirmSubmission(s0);
+        checkEq(static_cast<long long>(serial0), 1, "最初の serial は 1");
+
+        auto* s1 = l.acquireFreeSlot();
+        const unsigned long long serial1 = l.confirmSubmission(s1);
+        checkEq(static_cast<long long>(serial1), 2, "次の serial は 2");
+        checkEq(static_cast<long long>(l.inFlight()), 2, "2 件が in-flight");
+
+        // 先頭が未完了なら completed は進まない (**terminal serial を飛ばさない**)
+        check(l.advanceCompleted([&](void* s) { return s == s1 ? 1 : 0; }), "poll は成功");
+        checkEq(static_cast<long long>(l.completedSerial()), 0,
+                "先頭が未完了なら後ろが完了していても進めない");
+
+        // 先頭が完了すれば 1 まで進む
+        check(l.advanceCompleted([&](void* s) { return s == s0 ? 1 : 0; }), "poll は成功");
+        checkEq(static_cast<long long>(l.completedSerial()), 1, "先頭の完了で 1 まで");
+
+        // 残りも完了すれば 2 まで
+        check(l.advanceCompleted([](void*) { return 1; }), "poll は成功");
+        checkEq(static_cast<long long>(l.completedSerial()), 2, "全部完了で 2 まで");
+
+        // 完了した slot は再利用される
+        checkEq(static_cast<long long>(l.inFlight()), 0, "in-flight は 0");
+        check(l.acquireFreeSlot() != nullptr, "完了した slot を再利用できる");
+    }
+
+    { // 上限に達したら nullptr を返す (fail-closed 側は呼び出し元が判断)
+        EventQueryLedger l(1);
+        l.addSlot(&slots[0]);
+        auto* s0 = l.acquireFreeSlot();
+        l.confirmSubmission(s0);
+        check(l.acquireFreeSlot() == nullptr, "空きが無ければ nullptr");
+        check(l.atCapacity(), "上限に達している");
+    }
+
+    { // GetData が失敗したら completed を進めない (fail-closed)
+        EventQueryLedger l(4);
+        l.addSlot(&slots[0]);
+        auto* s0 = l.acquireFreeSlot();
+        l.confirmSubmission(s0);
+        check(!l.advanceCompleted([](void*) { return -1; }), "失敗は false を返す");
+        checkEq(static_cast<long long>(l.completedSerial()), 0, "失敗時に completed を進めない");
+    }
+
+    { // takeAllSlots で使用中・未使用の両方を回収できる (解放漏れを防ぐ)
+        EventQueryLedger l(4);
+        l.addSlot(&slots[0]);
+        l.addSlot(&slots[1]);
+        auto* s0 = l.acquireFreeSlot();
+        l.confirmSubmission(s0);
+        checkEq(static_cast<long long>(l.takeAllSlots().size()), 2, "全 slot を回収する");
+        checkEq(static_cast<long long>(l.totalSlots()), 0, "回収後は空");
+    }
+}
+
 void testRetirementQueue() {
     std::fprintf(stderr, "[retirement queue]\n");
 
@@ -422,7 +691,7 @@ void testRetirementQueue() {
     checkEq(static_cast<long long>(rq.depthCurrent()), 0, "空");
 
     // **frames_released_before_completion は必ず 0**
-    checkEq(rq.framesReleasedBeforeCompletion(), 0, "完了前解放は 0");
+    checkEq(rq.payloadsReleasedBeforeCompletion(), 0, "完了前解放は 0");
 
     { // drain: completed が追いつけば true
         GpuRetirementQueue r2;
@@ -479,6 +748,9 @@ int main() {
     testAspectFit();
     testReadbackCounters();
     testFrameQueue();
+    testDisplayLedger();
+    testDeviceChangeOrder();
+    testEventQueryLedger();
     testGenerationContract();
     testRetirementQueue();
     testHwFormatSelection();

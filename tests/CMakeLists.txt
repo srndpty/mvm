@@ -850,30 +850,82 @@ set(MVM_COLOR_DIR "${CMAKE_SOURCE_DIR}/tests/assets/color")
 set(MVM_COLOR_MANIFEST "${MVM_COLOR_DIR}/manifest.txt")
 set(MVM_MAKE_COLOR_HINT "pwsh scripts/make-color-fixtures.ps1")
 
-if(EXISTS "${MVM_COLOR_MANIFEST}")
-    # 判定対象
-    foreach(color_id bt709_limited bt709_full bt601_limited)
-        mvm_add_test(gpu_color_${color_id}
-            COMMAND mvm_test_gpu_decode color "${MVM_COLOR_MANIFEST}" ${color_id}
-            PROPERTIES REQUIRED_FILES "${MVM_COLOR_DIR}/${color_id}.mp4" TIMEOUT 180)
-    endforeach()
-
-    # 診断のみ (判定には使わないが、経路が壊れたら気づけるようにする)
-    foreach(color_id bt2020ncl_limited p010_bt709_limited)
-        mvm_add_test(gpu_color_${color_id}_diagnostic
-            COMMAND mvm_test_gpu_decode color "${MVM_COLOR_MANIFEST}" ${color_id}
-            PROPERTIES REQUIRED_FILES "${MVM_COLOR_DIR}/${color_id}.mp4" TIMEOUT 180)
-    endforeach()
-
-    # negative: manifest に無い id を成功扱いしない (使い方の誤り = 2)。
-    mvm_add_gpu_exit_test(gpu_color_unknown_id_negative EXIT 2
-        ARGS color "${MVM_COLOR_MANIFEST}" mvm_no_such_fixture
-        PROPERTIES REQUIRED_FILES "${MVM_COLOR_MANIFEST}")
-else()
-    message(STATUS
-        "color fixture が無いため color 検査を登録しません。"
-        " 先に ${MVM_MAKE_COLOR_HINT} を実行してください。")
+# **fixture が無ければ configure を失敗させる (P1.2 §5)。**
+#
+# P1.1 は「無ければ登録しない」だった。これは最悪の形の縮退である:
+#   - clean checkout では color test が 1 件も登録されない
+#   - CTest は「全部通った」と報告する
+#   - 色の検査が消えたことに誰も気づかない
+#
+# fixture は tests/assets/color/ に **追跡対象として**入れてある
+# (.gitignore に例外を書いた)。それでも無いなら、生成方法を案内して止める。
+if(NOT EXISTS "${MVM_COLOR_MANIFEST}")
+    message(FATAL_ERROR
+        "\n"
+        "[mvm] color fixture がありません: ${MVM_COLOR_MANIFEST}\n"
+        "\n"
+        "  color correctness の検査を黙って飛ばすことはしません。\n"
+        "  fixture は本来リポジトリに含まれています。失われている場合は:\n"
+        "\n"
+        "    ${MVM_MAKE_COLOR_HINT}\n")
 endif()
+
+# 判定対象と診断対象。**この一覧が減ったら configure が落ちる** (下の件数検査)。
+set(MVM_COLOR_GATE_IDS bt709_limited bt709_full bt601_limited)
+set(MVM_COLOR_DIAG_IDS bt2020ncl_limited p010_bt709_limited)
+set(MVM_COLOR_EXPECTED_COUNT 5)
+
+set(_mvm_color_registered 0)
+foreach(color_id ${MVM_COLOR_GATE_IDS})
+    if(NOT EXISTS "${MVM_COLOR_DIR}/${color_id}.mp4")
+        message(FATAL_ERROR
+            "[mvm] color fixture の素材がありません: ${MVM_COLOR_DIR}/${color_id}.mp4\n"
+            "  ${MVM_MAKE_COLOR_HINT} を実行してください。")
+    endif()
+    mvm_add_test(gpu_color_${color_id}
+        COMMAND mvm_test_gpu_decode color "${MVM_COLOR_MANIFEST}" ${color_id}
+        PROPERTIES REQUIRED_FILES "${MVM_COLOR_DIR}/${color_id}.mp4" TIMEOUT 180)
+    math(EXPR _mvm_color_registered "${_mvm_color_registered} + 1")
+endforeach()
+
+foreach(color_id ${MVM_COLOR_DIAG_IDS})
+    if(NOT EXISTS "${MVM_COLOR_DIR}/${color_id}.mp4")
+        message(FATAL_ERROR
+            "[mvm] color fixture の素材がありません: ${MVM_COLOR_DIR}/${color_id}.mp4\n"
+            "  ${MVM_MAKE_COLOR_HINT} を実行してください。")
+    endif()
+    mvm_add_test(gpu_color_${color_id}_diagnostic
+        COMMAND mvm_test_gpu_decode color "${MVM_COLOR_MANIFEST}" ${color_id}
+        PROPERTIES REQUIRED_FILES "${MVM_COLOR_DIR}/${color_id}.mp4" TIMEOUT 180)
+    math(EXPR _mvm_color_registered "${_mvm_color_registered} + 1")
+endforeach()
+
+# **登録件数を数える。** Phase 0 の「対象 0 件のテスト群が全部通ったと
+# 報告される」罠と同じ形なので、件数そのものを検査する。
+if(NOT _mvm_color_registered EQUAL MVM_COLOR_EXPECTED_COUNT)
+    message(FATAL_ERROR
+        "[mvm] color test の登録件数が ${_mvm_color_registered} 件です "
+        "(期待 ${MVM_COLOR_EXPECTED_COUNT} 件)。\n"
+        "  bt709 limited / bt709 full / bt601 limited / bt2020 診断 / P010 診断 の\n"
+        "  5 件が必ず登録されている必要があります。")
+endif()
+message(STATUS "[mvm] color test を ${_mvm_color_registered} 件登録しました")
+
+# negative: manifest に無い id を成功扱いしない (使い方の誤り = 2)。
+mvm_add_gpu_exit_test(gpu_color_unknown_id_negative EXIT 2
+    ARGS color "${MVM_COLOR_MANIFEST}" mvm_no_such_fixture
+    PROPERTIES REQUIRED_FILES "${MVM_COLOR_MANIFEST}")
+
+# --- P1.2 §4: event query backend を実際に走らせる --------------------------
+# fence が使える機体でも fallback 経路を通す。
+# **fallback が「必要になる状況」は再現していない** (fence 非対応機が無い)。
+# 走らせているのは経路であって、切り替え条件ではない。
+mvm_add_test(gpu_soak_event_query_backend
+    COMMAND mvm_test_gpu_decode soak "${MVM_SMOKE_DIR}/v1080p60_h264.mp4"
+            "${MVM_SMOKE_DIR}/v1080p60_hevc.mp4" 12 event_query
+    PROPERTIES
+        REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_h264.mp4"
+        TIMEOUT 600)
 
 # --- preview_spike (Qt / device 共有) ----------------------------------------
 # **Qt と FFmpeg の device 共有を検査できるのはここだけ。**

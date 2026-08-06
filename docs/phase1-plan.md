@@ -477,7 +477,9 @@ Phase 0 の規約を継承する。
 - 10bit 表示品質の検証（P010 の経路は通すが、判定対象は 8bit）
 - proxy 生成・切り替え（Phase 0 の resolver をそのまま使う）
 - インストーラ / 署名 / clean environment 検証
-- 複数 GPU / adapter 切り替え / device lost からの復帰（**検出はする**）
+- 複数 GPU / adapter 切り替え / device lost からの復帰（**検出して停止するだけ**）
+- **device 変更からの復帰は実装しない。** P1.2 は fail-closed で終了コードを返す。
+  `device_change_handled_count` は「完全な復帰が成立した回数」なので常に 0 である
 - vsync を外した最大スループットの計測（余力の測定）。
   P1 は「60 fps に間に合うか」までしか見ない
 
@@ -493,8 +495,18 @@ P1 の縦切りは成立したが、P2（二動画 GPU 合成）へ広げる前�
 | 3 | generation の照合が片側だけだった | 未来 generation を拒否、逆行を拒否、同値は no-op（pending を破棄しない） |
 | 4 | SRV cache の key が (texture, index) だけだった | key に `resource_epoch` と pixel format を含め、旧 epoch は GPU 完了後に retire |
 | 5 | seek を **decode 完了**までしか測っていなかった | `seek_decode_ready_ms` と `seek_displayed_ms` に分け、**判定は displayed** |
+
+### P1.2 で追加で閉じたもの
+
+| # | 穴 | 閉じ方 |
+| --- | --- | --- |
+| 1 | seek の表示待ちに race があった（submit 後・arm 前に描かれると取りこぼす） | render thread が **全 display を記録**し、待機側は seek 前に取った baseline より後の記録を探す（`DisplayLedger`） |
+| 2 | epoch が 2 つしか無く、decoder が composition epoch を発行していた | 3 つに分離し発行者を固定（上表） |
+| 3 | device 変更時に decode thread が動いたまま device を Release しうる | 検出 → GUI が decode thread を join → その後に teardown、という順序を `DeviceChangeCoordinator` で強制 |
+| 4 | `Signal` / `CreateQuery` / `GetData` の戻り値を検査していなかった | `SubmissionResult` / `CompletionPollResult` を返し、追跡できない serial では retire しない |
+| 5 | color fixture が無いと color test が**黙って未登録**になっていた | fixture を追跡対象にし、無ければ configure を失敗させ、登録件数 5 を検査 |
 | 6 | 色の正しさを marker 一致で代用していた | 既知 YUV patch の fixture を作り、表示と同じ shader で照合 |
-| 7 | `initialize()` の再入で古い device を使い続けうる | 毎回 native device / context を照合し、変化したら drain して再初期化。件数を JSON へ出す |
+| 7 | `initialize()` の再入で古い device を使い続けうる | 毎回 native device / context を照合し、変化したら fail-closed で停止する。件数を JSON へ出す |
 
 ### GPU 完了に基づく retire（§1 の契約）
 
@@ -508,15 +520,30 @@ P1 の縦切りは成立したが、P2（二動画 GPU 合成）へ広げる前�
 `frames_released_before_completion` は **必ず 0**。
 0 でなければ「GPU が読み終わる前に手放した」ことを意味するので不合格とする。
 
-### source_generation と composition_epoch
+### 世代を表す 3 つの概念（P1.2 で分離した）
 
-P1.1 では decoder は 1 本だが、**単一の global generation に固定しない**。
+> **P1.1 の記述は誤っていた。** 「composition_epoch と source_generation を
+> 分けた」と書いていたが、実際には decoder が **両方**を発行しており、
+> composition_epoch の中身は resource epoch そのものだった。
+> 1 本の decoder では困らないが、P2 で source が 2 本になると
+> **source A の open が source B のフレームを future / stale にする。**
+> P1.2 で 3 つに分け、発行者を固定した。
 
-- `source_generation`: ある source の seek / flush で進む
-- `composition_epoch`: decode pool / device / resource が作り直された世代
+| 概念 | 発行者 | 意味 |
+| --- | --- | --- |
+| `ResourceEpoch` | **decoder** | open ごと。decode pool / texture / SRV の世代 |
+| `SourceGeneration` | **decoder** | seek / flush ごと。source 単位 |
+| `CompositionEpoch` | **compositor** | 合成構成 / timeline の世代 |
 
-比較は composition_epoch を上位、source_generation を下位とする辞書式で行う。
-P2 で source が増えても、この形のまま拡張できる。
+**decoder は `CompositionEpoch` を発行しない。**
+P1.2 には compositor がまだ無いので preview 層が暫定的に所有している。
+
+3 つとも別の型にしてある（素の `unsigned long long` にしない）。
+P1.1 の取り違えは、同じ型だったからコンパイルが通ってしまった。
+
+`DecodedGpuFrame` が持つのは `sourceId` / `sourceGeneration` / `resourceEpoch` の 3 つ。
+表示側の stale / future 判定は **source 単位**で行い、
+SRV cache の key には `resourceEpoch` を使う。
 
 ### 色検査の位置づけ
 

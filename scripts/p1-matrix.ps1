@@ -133,12 +133,13 @@ foreach ($t in $targets) {
             seekMax       = [double]$d.seek_displayed_max_ms
             seekDispMismatch = [long]$d.seek_display_mismatch
             gpuBackend    = [string]$d.gpu_completion_backend
-            releasedEarly = [long]$d.frames_released_before_completion
+            releasedEarly = [long]$d.payloads_released_before_completion
+            untracked     = [long]$d.untracked_submission_count
             retireTimeout = [long]$d.retirement_timeout_count
             retireePeak   = [long]$d.retirement_depth_peak
             srvPeak       = [long]$d.srv_cache_entries_peak
             srvCurrent    = [long]$d.srv_cache_entries_current
-            pools         = [long]$d.active_decoder_pools
+            pools         = [long]$d.srv_cache_texture_groups
             pendingAtEnd  = [long]$d.pending_at_end
             seekFail      = [long]$d.seek_failures
             markerChecked = [long]$d.marker_checked
@@ -179,6 +180,7 @@ foreach ($id in ($rows | Select-Object -ExpandProperty id -Unique)) {
         seekFail       = ($g | ForEach-Object { $_.seekFail } | Measure-Object -Sum).Sum
         seekDispMismatch = ($g | ForEach-Object { $_.seekDispMismatch } | Measure-Object -Sum).Sum
         releasedEarly  = ($g | ForEach-Object { $_.releasedEarly } | Measure-Object -Sum).Sum
+        untracked      = ($g | ForEach-Object { $_.untracked } | Measure-Object -Sum).Sum
         retireTimeout  = ($g | ForEach-Object { $_.retireTimeout } | Measure-Object -Sum).Sum
         srvPeakMax     = ($g | ForEach-Object { $_.srvPeak } | Measure-Object -Maximum).Maximum
         poolsMax       = ($g | ForEach-Object { $_.pools } | Measure-Object -Maximum).Maximum
@@ -218,9 +220,10 @@ foreach ($s in $gates) {
     if ($s.seekObservedMax -gt 400)      { $verdict.Add("$($s.id): seek 観測 max $('{0:N1}' -f $s.seekObservedMax)ms > 400ms") }
     if ($s.seekFail -ne 0)               { $verdict.Add("$($s.id): seek 失敗 $($s.seekFail) 件") }
     if ($s.seekDispMismatch -ne 0)       { $verdict.Add("$($s.id): seek 表示 frame の不一致 $($s.seekDispMismatch) 件") }
-    if ($s.releasedEarly -ne 0)          { $verdict.Add("$($s.id): GPU 完了前に解放した frame $($s.releasedEarly) 件") }
+    if ($s.releasedEarly -ne 0)          { $verdict.Add("$($s.id): GPU 完了前に手放した payload $($s.releasedEarly) 件") }
+    if ($s.untracked -ne 0)              { $verdict.Add("$($s.id): 追跡できない submission $($s.untracked) 件") }
     if ($s.retireTimeout -ne 0)          { $verdict.Add("$($s.id): retirement drain の timeout $($s.retireTimeout) 回") }
-    if ($s.poolsMax -gt 2)               { $verdict.Add("$($s.id): active_decoder_pools が $($s.poolsMax) 件 (旧 epoch が retire されていない)") }
+    if ($s.poolsMax -gt 2)               { $verdict.Add("$($s.id): srv_cache_texture_groups が $($s.poolsMax) 件 (旧 epoch が retire されていない)") }
     if ($s.deviceLost -ne 0)             { $verdict.Add("$($s.id): device lost $($s.deviceLost) 回") }
 }
 

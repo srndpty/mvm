@@ -20,6 +20,97 @@ const char* toString(GpuCompletionBackend b) {
     return "unknown";
 }
 
+const char* toString(SubmissionStatus st) {
+    switch (st) {
+    case SubmissionStatus::Ok:
+        return "ok";
+    case SubmissionStatus::NotTracked:
+        return "not_tracked";
+    case SubmissionStatus::Failed:
+        return "failed";
+    }
+    return "unknown";
+}
+
+const char* toString(CompletionPollStatus st) {
+    switch (st) {
+    case CompletionPollStatus::Ok:
+        return "ok";
+    case CompletionPollStatus::Failed:
+        return "failed";
+    case CompletionPollStatus::DeviceRemoved:
+        return "device_removed";
+    }
+    return "unknown";
+}
+
+// --------------------------------------------------------------------------
+// EventQueryLedger (純粋)
+// --------------------------------------------------------------------------
+EventQueryLedger::EventQueryLedger(size_t maxSlots) : maxSlots_(maxSlots == 0 ? 1 : maxSlots) {}
+
+EventQueryLedger::Slot EventQueryLedger::acquireFreeSlot() {
+    if (free_.empty())
+        return nullptr;
+    Slot s = free_.front();
+    free_.pop_front();
+    return s;
+}
+
+void EventQueryLedger::addSlot(Slot slot) {
+    if (slot)
+        free_.push_back(slot);
+}
+
+size_t EventQueryLedger::totalSlots() const {
+    return pending_.size() + free_.size();
+}
+
+size_t EventQueryLedger::inFlight() const {
+    return pending_.size();
+}
+
+bool EventQueryLedger::atCapacity() const {
+    return totalSlots() >= maxSlots_ && free_.empty();
+}
+
+unsigned long long EventQueryLedger::confirmSubmission(Slot slot) {
+    // **slot がなければ serial を確定しない。**
+    // 確定してしまうと、追跡できない serial を「完了した」と扱う経路が生まれる。
+    if (!slot)
+        return 0;
+    submitted_++;
+    pending_.push_back(Pending{submitted_, slot});
+    return submitted_;
+}
+
+bool EventQueryLedger::advanceCompleted(const std::function<int(Slot)>& isComplete) {
+    // 先頭から順にしか進めない。**terminal serial を飛ばさない。**
+    // GPU の完了順は投入順なので、先頭が未完了なら後ろも未完了とみなす。
+    while (!pending_.empty()) {
+        const int r = isComplete(pending_.front().slot);
+        if (r < 0)
+            return false; // fatal。completed は進めない
+        if (r == 0)
+            break; // まだ完了していない
+        completed_ = pending_.front().serial;
+        free_.push_back(pending_.front().slot);
+        pending_.pop_front();
+    }
+    return true;
+}
+
+std::deque<EventQueryLedger::Slot> EventQueryLedger::takeAllSlots() {
+    std::deque<Slot> all;
+    for (auto& p : pending_)
+        all.push_back(p.slot);
+    pending_.clear();
+    for (auto* s : free_)
+        all.push_back(s);
+    free_.clear();
+    return all;
+}
+
 // --------------------------------------------------------------------------
 // GpuRetirementQueue
 // --------------------------------------------------------------------------
@@ -86,7 +177,7 @@ long long GpuRetirementQueue::forcedGpuWaitCount() const {
     return forcedWaitCount_;
 }
 
-long long GpuRetirementQueue::framesReleasedBeforeCompletion() const {
+long long GpuRetirementQueue::payloadsReleasedBeforeCompletion() const {
     std::lock_guard<std::mutex> g(mutex_);
     return releasedBeforeCompletion_;
 }
@@ -127,7 +218,15 @@ GpuCompletionTracker::~GpuCompletionTracker() {
     release();
 }
 
-bool GpuCompletionTracker::initialize(SharedD3D11Device& device, std::string& err) {
+void GpuCompletionTracker::noteFatal(const std::string& reason) {
+    if (!fatal_) {
+        fatal_ = true;
+        fatalReason_ = reason;
+    }
+}
+
+bool GpuCompletionTracker::initialize(SharedD3D11Device& device, std::string& err,
+                                      GpuCompletionBackend preferred) {
     release();
     if (!device.valid()) {
         err = "共有 D3D11 device が未初期化です";
@@ -137,31 +236,35 @@ bool GpuCompletionTracker::initialize(SharedD3D11Device& device, std::string& er
 
     std::lock_guard<D3D11Lock> guard(shared_->lock());
 
+    // preferred == EventQuery のときは fence を試さない。
+    // fallback 経路を実際に走らせるためのテスト用オプションである。
     // --- 第一候補: ID3D11Fence ---------------------------------------------
-    ID3D11Device5* dev5 = nullptr;
-    ID3D11DeviceContext4* ctx4 = nullptr;
-    HRESULT hr =
-        shared_->device()->QueryInterface(__uuidof(ID3D11Device5), reinterpret_cast<void**>(&dev5));
-    if (SUCCEEDED(hr) && dev5) {
-        hr = shared_->context()->QueryInterface(__uuidof(ID3D11DeviceContext4),
-                                                reinterpret_cast<void**>(&ctx4));
-        if (SUCCEEDED(hr) && ctx4) {
-            hr = dev5->CreateFence(0, D3D11_FENCE_FLAG_NONE, __uuidof(ID3D11Fence),
-                                   reinterpret_cast<void**>(&fence_));
-            if (SUCCEEDED(hr) && fence_) {
-                context4_ = ctx4;
-                ctx4 = nullptr;
-                backend_ = GpuCompletionBackend::Fence;
+    if (preferred != GpuCompletionBackend::EventQuery) {
+        ID3D11Device5* dev5 = nullptr;
+        ID3D11DeviceContext4* ctx4 = nullptr;
+        HRESULT fenceHr = shared_->device()->QueryInterface(__uuidof(ID3D11Device5),
+                                                            reinterpret_cast<void**>(&dev5));
+        if (SUCCEEDED(fenceHr) && dev5) {
+            fenceHr = shared_->context()->QueryInterface(__uuidof(ID3D11DeviceContext4),
+                                                         reinterpret_cast<void**>(&ctx4));
+            if (SUCCEEDED(fenceHr) && ctx4) {
+                fenceHr = dev5->CreateFence(0, D3D11_FENCE_FLAG_NONE, __uuidof(ID3D11Fence),
+                                            reinterpret_cast<void**>(&fence_));
+                if (SUCCEEDED(fenceHr) && fence_) {
+                    context4_ = ctx4;
+                    ctx4 = nullptr;
+                    backend_ = GpuCompletionBackend::Fence;
+                }
             }
         }
-    }
-    if (dev5)
-        dev5->Release();
-    if (ctx4)
-        ctx4->Release();
+        if (dev5)
+            dev5->Release();
+        if (ctx4)
+            ctx4->Release();
 
-    if (backend_ == GpuCompletionBackend::Fence)
-        return true;
+        if (backend_ == GpuCompletionBackend::Fence)
+            return true;
+    }
 
     // --- fallback: D3D11_QUERY_EVENT ---------------------------------------
     // event query は「End した時点までの GPU コマンドが完了したか」を返す。
@@ -170,7 +273,7 @@ bool GpuCompletionTracker::initialize(SharedD3D11Device& device, std::string& er
     D3D11_QUERY_DESC qd{};
     qd.Query = D3D11_QUERY_EVENT;
     ID3D11Query* probe = nullptr;
-    hr = shared_->device()->CreateQuery(&qd, &probe);
+    HRESULT hr = shared_->device()->CreateQuery(&qd, &probe);
     if (FAILED(hr) || !probe) {
         char buf[128];
         std::snprintf(buf, sizeof buf,
@@ -180,20 +283,16 @@ bool GpuCompletionTracker::initialize(SharedD3D11Device& device, std::string& er
         shared_ = nullptr;
         return false;
     }
-    freeQueries_.push_back(probe);
+    ledger_.addSlot(probe);
     backend_ = GpuCompletionBackend::EventQuery;
     return true;
 }
 
 void GpuCompletionTracker::releaseEventQueries() {
-    for (auto& p : pendingQueries_)
-        if (p.query)
-            p.query->Release();
-    pendingQueries_.clear();
-    for (auto* q : freeQueries_)
-        if (q)
-            q->Release();
-    freeQueries_.clear();
+    for (auto* slot : ledger_.takeAllSlots())
+        if (slot)
+            static_cast<ID3D11Query*>(slot)->Release();
+    ledger_ = EventQueryLedger{256};
 }
 
 void GpuCompletionTracker::release() {
@@ -210,66 +309,134 @@ void GpuCompletionTracker::release() {
     shared_ = nullptr;
     submitted_ = 0;
     completed_ = 0;
+    fatal_ = false;
+    fatalReason_.clear();
+    untracked_ = 0;
+    deviceRemoved_ = 0;
 }
 
-unsigned long long GpuCompletionTracker::signalSubmission() {
+SubmissionResult GpuCompletionTracker::signalSubmission() {
     if (backend_ == GpuCompletionBackend::None || !shared_)
-        return 0;
+        return SubmissionResult{SubmissionStatus::Failed, 0};
+    if (fatal_)
+        return SubmissionResult{SubmissionStatus::Failed, 0};
 
     std::lock_guard<D3D11Lock> guard(shared_->lock());
-    submitted_++;
 
     if (backend_ == GpuCompletionBackend::Fence) {
-        // GPU が queue 上のここまでを終えたら fence に submitted_ を書かせる。
-        context4_->Signal(fence_, submitted_);
-        return submitted_;
+        // **Signal の HRESULT を検査する。** P1.1 は戻り値を捨てていた。
+        // 失敗したのに serial を進めると、追跡できない serial で retire する。
+        const unsigned long long next = submitted_ + 1;
+        const HRESULT hr = context4_->Signal(fence_, next);
+        if (FAILED(hr)) {
+            char buf[128];
+            std::snprintf(buf, sizeof buf, "ID3D11DeviceContext4::Signal に失敗 (0x%08lX)",
+                          static_cast<unsigned long>(hr));
+            noteFatal(buf);
+            return SubmissionResult{SubmissionStatus::Failed, 0};
+        }
+        submitted_ = next;
+        return SubmissionResult{SubmissionStatus::Ok, submitted_};
     }
 
-    // event query: 未使用の query を End する。
-    ID3D11Query* q = nullptr;
-    if (!freeQueries_.empty()) {
-        q = freeQueries_.front();
-        freeQueries_.pop_front();
-    } else if (pendingQueries_.size() < kMaxEventQueries) {
+    // --- event query --------------------------------------------------------
+    // 空きが無ければ、まず poll して完了した slot を回収する。
+    EventQueryLedger::Slot slot = ledger_.acquireFreeSlot();
+    if (!slot) {
+        CompletionPollResult pr = polledCompleted();
+        if (pr.status != CompletionPollStatus::Ok)
+            return SubmissionResult{SubmissionStatus::Failed, 0};
+        slot = ledger_.acquireFreeSlot();
+    }
+    if (!slot && !ledger_.atCapacity()) {
         D3D11_QUERY_DESC qd{};
         qd.Query = D3D11_QUERY_EVENT;
-        shared_->device()->CreateQuery(&qd, &q);
+        ID3D11Query* q = nullptr;
+        const HRESULT hr = shared_->device()->CreateQuery(&qd, &q);
+        if (FAILED(hr) || !q) {
+            // 作れないなら追跡できない。**serial を進めない。**
+            untracked_++;
+            return SubmissionResult{SubmissionStatus::NotTracked, 0};
+        }
+        slot = q;
     }
-    if (!q) {
-        // query を作れない / 上限。serial は進めるが query を積まない。
-        // 次の poll で completed が追いつく (古い query が完了する) のを待つ。
-        return submitted_;
+    if (!slot) {
+        // 上限に達し、poll しても空かなかった。fail-closed。
+        untracked_++;
+        return SubmissionResult{SubmissionStatus::NotTracked, 0};
     }
-    shared_->context()->End(q);
-    pendingQueries_.push_back(PendingQuery{submitted_, q});
-    return submitted_;
+
+    // End は戻り値を返さないが、直前の CreateQuery が成功していることと
+    // slot が有効であることが確定してから呼ぶ。
+    shared_->context()->End(static_cast<ID3D11Query*>(slot));
+    const unsigned long long serial = ledger_.confirmSubmission(slot);
+    if (serial == 0) {
+        untracked_++;
+        return SubmissionResult{SubmissionStatus::NotTracked, 0};
+    }
+    submitted_ = serial;
+    return SubmissionResult{SubmissionStatus::Ok, serial};
 }
 
-unsigned long long GpuCompletionTracker::polledCompleted() {
+CompletionPollResult GpuCompletionTracker::polledCompleted() {
     if (backend_ == GpuCompletionBackend::None || !shared_)
-        return 0;
+        return CompletionPollResult{CompletionPollStatus::Failed, 0};
 
     std::lock_guard<D3D11Lock> guard(shared_->lock());
+
+    // device が失われていれば、それ以上の完了は来ない。明示的に記録する。
+    long removedReason = 0;
+    if (shared_->deviceLost(removedReason)) {
+        deviceRemoved_++;
+        noteFatal("device が失われました (GetDeviceRemovedReason)");
+        return CompletionPollResult{CompletionPollStatus::DeviceRemoved, completed_};
+    }
 
     if (backend_ == GpuCompletionBackend::Fence) {
         completed_ = fence_->GetCompletedValue();
-        return completed_;
+        return CompletionPollResult{CompletionPollStatus::Ok, completed_};
     }
 
     // event query: 先頭から順に、完了しているものだけ completed を進める。
     // **DONOTFLUSH** を渡す。ここで flush すると「毎 frame Flush で
     // 見かけ上解決」に等しくなり、計測を汚す (§1)。
-    while (!pendingQueries_.empty()) {
-        PendingQuery& p = pendingQueries_.front();
-        const HRESULT hr =
-            shared_->context()->GetData(p.query, nullptr, 0, D3D11_ASYNC_GETDATA_DONOTFLUSH);
-        if (hr != S_OK)
-            break; // まだ完了していない。以降も未完了とみなす
-        completed_ = p.serial;
-        freeQueries_.push_back(p.query);
-        pendingQueries_.pop_front();
+    //
+    // GetData の戻り値は 3 通りある。混ぜない。
+    //   S_OK      完了
+    //   S_FALSE   未完了
+    //   FAILED    致命的
+    bool fatalHere = false;
+    const bool ok = ledger_.advanceCompleted([&](EventQueryLedger::Slot slot) -> int {
+        const HRESULT hr = shared_->context()->GetData(static_cast<ID3D11Query*>(slot), nullptr, 0,
+                                                       D3D11_ASYNC_GETDATA_DONOTFLUSH);
+        if (hr == S_OK)
+            return 1;
+        if (hr == S_FALSE)
+            return 0;
+        fatalHere = true;
+        return -1;
+    });
+    if (!ok || fatalHere) {
+        noteFatal("ID3D11DeviceContext::GetData が失敗しました");
+        return CompletionPollResult{CompletionPollStatus::Failed, completed_};
     }
-    return completed_;
+    completed_ = ledger_.completedSerial();
+    return CompletionPollResult{CompletionPollStatus::Ok, completed_};
+}
+
+void GpuCompletionTracker::flushForShutdown() {
+    if (backend_ == GpuCompletionBackend::None || !shared_)
+        return;
+    std::lock_guard<D3D11Lock> guard(shared_->lock());
+    // 投入済みのコマンドを GPU へ押し出す。これをしないと、
+    // 以降 draw が来ない状況で最後の query / fence が完了しない。
+    shared_->context()->Flush();
+}
+
+unsigned long long GpuCompletionTracker::polledCompletedSerial() {
+    const CompletionPollResult r = polledCompleted();
+    // 失敗時に「completed が進んだ」と見せない。fail-closed 側へ倒す。
+    return r.status == CompletionPollStatus::Ok ? r.completed : 0;
 }
 
 } // namespace mvm::gpu

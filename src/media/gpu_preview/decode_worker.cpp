@@ -22,7 +22,8 @@ void DecodeWorker::refreshSnapshotLocked() {
         s.info = decoder_->info();
         s.adapter = decoder_->decodeAdapter();
         s.decodeDevicePointer = decoder_->decodeDevicePointer();
-        s.generation = decoder_->generationId();
+        s.sourceId = decoder_->sourceId();
+        s.sourceGeneration = decoder_->sourceGeneration();
         s.resourceEpoch = decoder_->resourceEpoch();
         s.decodedFrameCount = decoder_->decodedFrameCount();
         s.decodeErrorCount = decoder_->decodeErrorCount();
@@ -68,7 +69,7 @@ bool DecodeWorker::start(const std::string& utf8Path, std::string& err) {
     state_.queue.setExpectedDevice(state_.device.device());
     {
         std::lock_guard<std::mutex> g(decoderMutex_);
-        state_.queue.setCurrentGeneration(decoder_->generationId());
+        state_.queue.setCurrentGeneration(decoder_->sourceId(), decoder_->sourceGeneration());
     }
 
     eof_.store(false);
@@ -134,12 +135,12 @@ bool DecodeWorker::seekBlocking(long long frameNumber, double& decodeReadyMs, st
     // 表示側の generation を先に進める。
     // decode 中に飛ぶ前のフレームが submit されても弾かれる。
     if (!decoder_->seek(frameNumber, err)) {
-        state_.queue.setCurrentGeneration(decoder_->generationId());
+        state_.queue.setCurrentGeneration(decoder_->sourceId(), decoder_->sourceGeneration());
         decodeReadyMs = qpcMsBetween(t0, qpcTicks());
         refreshSnapshotLocked();
         return false;
     }
-    state_.queue.setCurrentGeneration(decoder_->generationId());
+    state_.queue.setCurrentGeneration(decoder_->sourceId(), decoder_->sourceGeneration());
 
     // seek は「目標フレームを decode し終えた時点」を decode-ready とする。
     // packet を投げただけを seek 完了と呼ぶと、実測が実態と合わない。

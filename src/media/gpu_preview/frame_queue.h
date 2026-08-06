@@ -31,6 +31,7 @@
 
 #include <condition_variable>
 #include <deque>
+#include <map>
 #include <mutex>
 
 namespace mvm::gpu {
@@ -47,12 +48,23 @@ public:
     // 期待する device。null なら device 検査を行わない。
     void setExpectedDevice(ID3D11Device* device);
 
-    // 表示側が知る最新 generation を更新する。§3 の契約:
-    //   new > current : 更新し、まだ表示していない pending を破棄する (Updated)
+    // 表示側が知る最新 generation を **source 単位で**更新する。
+    //   new > current : 更新し、その source の pending を破棄する (Updated)
     //   new == current: 何もしない。**pending は破棄しない** (NoOp)
     //   new <  current: 逆行は受け付けない (RejectedRegression / fail-closed)
-    GenerationUpdateResult setCurrentGeneration(GenerationId generation);
-    GenerationId currentGeneration() const;
+    //
+    // **source 単位であることが要点 (P1.2 §2)。**
+    // 全体で 1 つの generation にすると、source A の seek が
+    // source B のフレームを stale/future にしてしまう。
+    GenerationUpdateResult setCurrentGeneration(SourceId source, SourceGeneration generation);
+    SourceGeneration currentGeneration(SourceId source) const;
+    // まだ一度も generation を設定していない source かどうか。
+    bool knowsSource(SourceId source) const;
+
+    // 合成構成の世代。**compositor (P1.2 では preview 層) が所有する。**
+    // decoder は発行しない。表示記録の照合に使う。
+    void setCompositionEpoch(CompositionEpoch epoch);
+    CompositionEpoch compositionEpoch() const;
 
     SubmitResult submitFrame(const DecodedGpuFrame& frame) override;
     void clear() override;
@@ -97,7 +109,10 @@ private:
 
     size_t capacity_;
     ID3D11Device* expectedDevice_ = nullptr;
-    GenerationId generation_{};
+    // source ごとの「表示側が知る最新 generation」。
+    // P1.2 では 1 件しか入らないが、構造を単一 global へ固定しない。
+    std::map<SourceId, SourceGeneration> generations_;
+    CompositionEpoch compositionEpoch_{};
     long long displayedFrame_ = -1;
     bool stopped_ = false;
 

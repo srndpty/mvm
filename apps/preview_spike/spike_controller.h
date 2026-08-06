@@ -41,6 +41,8 @@ struct MeasureConfig {
     // mvm_test_gpu_decode color が行う。
     int colorPatchWidth = 0;
     int colorPatchHeight = 0;
+    // GPU 完了追跡の backend を強制する (テスト用)。既定は fence 優先。
+    gpu::GpuCompletionBackend gpuCompletion = gpu::GpuCompletionBackend::Fence;
 };
 
 class SpikeController : public QObject {
@@ -96,12 +98,12 @@ private:
     void runSeekBenchmark();
     bool writeJson();
 
-    // seek 要求 -> 画面表示 までを測る (§5)。
+    // seek 要求 -> 画面表示 までを測る (P1.2 §1)。
     //
-    // 4 つ (request_id / source_generation / composition_epoch / requested_frame)
-    // すべてが一致した completion だけを成功とする。
-    // 待ち時間は必ず有限。timeout は fail-closed で、待機フラグを必ず降ろす
-    // (降ろさないと、後から来た表示が次の request の成功として拾われる)。
+    // seek より前に baseline sequence を取り、それより後の display だけを見る。
+    // source / source_generation / composition_epoch / frame の 4 つが
+    // すべて一致した記録だけを成功とする。
+    // 待ち時間は必ず有限。timeout は fail-closed。
     bool seekAndWaitForDisplay(long long frame, gpu::SeekSample& sample, QString& err);
 
     PreviewRhiItem* item_ = nullptr;

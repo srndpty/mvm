@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 
 namespace mvm::app {
 namespace {
@@ -185,8 +186,20 @@ void SpikeController::seekTo(qlonglong frame) {
 }
 
 // --------------------------------------------------------------------------
-// §5 request-to-display seek
+// §1 (P1.2) request-to-display seek: race を残さない待ち方
 // --------------------------------------------------------------------------
+// **旧経路 (P1.1)**
+//     waiting = false
+//     seekBlocking()      <- ここで frame が queue に入る
+//     waiting = true      <- arm。この前に描かれると記録が残らず取りこぼす
+//
+// **新経路 (P1.2)**
+//     baseline = ledger.currentSequence()   <- seek より前に取る
+//     seekBlocking()
+//     ledger.waitForDisplay(baseline, key)  <- 記録済みなら即座に見つかる
+//
+// render thread は待機の有無に関わらず全 display を記録するので、
+// arm のタイミングに依存しない。
 bool SpikeController::seekAndWaitForDisplay(long long frame, gpu::SeekSample& sample,
                                             QString& err) {
     sample = gpu::SeekSample{};
@@ -196,18 +209,11 @@ bool SpikeController::seekAndWaitForDisplay(long long frame, gpu::SeekSample& sa
         return false;
     }
 
-    const unsigned long long requestId = nextRequestId_++;
+    // **seek を出す前に baseline を取る。**
+    // これより後の display だけを成功と見なすので、
+    // 「古い display を新しい request の成功にする」ことが構造的に起きない。
+    const unsigned long long baseline = state_->displayLedger.currentSequence();
     const long long t0 = gpu::qpcTicks();
-
-    // **seek を出す前に待機を登録する。** 後から登録すると、
-    // 表示が先に起きた場合に completion を取りこぼす。
-    // generation は seek 後に確定するので、いったん requestId と frame だけ入れ、
-    // seek 成功後に generation を埋める。
-    {
-        std::lock_guard<std::mutex> g(state_->displayCompletion.mutex);
-        state_->displayCompletion.waiting = false;
-        state_->displayCompletion.last = gpu::DisplayCompletion{};
-    }
 
     double decodeReadyMs = 0.0;
     std::string serr;
@@ -219,48 +225,39 @@ bool SpikeController::seekAndWaitForDisplay(long long frame, gpu::SeekSample& sa
     sample.decodeReadyMs = decodeReadyMs;
 
     const gpu::DecoderSnapshot snap = worker_->snapshot();
-    {
-        std::lock_guard<std::mutex> g(state_->displayCompletion.mutex);
-        state_->displayCompletion.waiting = true;
-        state_->displayCompletion.requestId = requestId;
-        state_->displayCompletion.generation = snap.generation;
-        state_->displayCompletion.requestedFrame = frame;
-    }
+    gpu::DisplayWaitKey key;
+    key.sourceId = snap.sourceId;
+    key.sourceGeneration = snap.sourceGeneration;
+    key.compositionEpoch = state_->queue.compositionEpoch();
+    key.requestedFrame = frame;
 
     // 有限時間だけ待つ。**無制限に processEvents を回さない。**
+    // 待つのは ledger 側の condition_variable であり、sleep ではない。
+    gpu::DisplayRecord record;
     QElapsedTimer wait;
     wait.start();
-    gpu::DisplayCompletion done;
     bool got = false;
     while (wait.elapsed() < measure_.displayTimeoutMs) {
-        {
-            std::lock_guard<std::mutex> g(state_->displayCompletion.mutex);
-            const auto& last = state_->displayCompletion.last;
-            if (last.valid && last.requestId == requestId && last.generation == snap.generation &&
-                last.requestedFrame == frame && last.displayedFrame == frame) {
-                done = last;
-                got = true;
-            }
-        }
-        if (got)
+        const int remaining =
+            static_cast<int>(measure_.displayTimeoutMs - wait.elapsed());
+        // GUI thread は render thread の update を回す必要があるので、
+        // ledger の待ちは短く刻み、その合間に processEvents を挟む。
+        if (state_->displayLedger.waitForDisplay(baseline, key, std::min(remaining, 5), record)) {
+            got = true;
             break;
+        }
         QCoreApplication::processEvents(QEventLoop::AllEvents, 2);
     }
 
     if (!got) {
-        // fail-closed。待機を必ず降ろす。降ろさないと、後から来た表示が
-        // 次の request の成功として拾われる。
-        std::lock_guard<std::mutex> g(state_->displayCompletion.mutex);
-        state_->displayCompletion.waiting = false;
-        state_->displayCompletion.last = gpu::DisplayCompletion{};
         err = QStringLiteral("frame %1 が %2ms 以内に表示されませんでした")
                   .arg(frame)
                   .arg(measure_.displayTimeoutMs);
         return false;
     }
 
-    sample.landedFrame = done.displayedFrame;
-    sample.displayedMs = gpu::qpcMsBetween(t0, done.displayedQpc);
+    sample.landedFrame = record.displayedFrame;
+    sample.displayedMs = gpu::qpcMsBetween(t0, record.displayedQpc);
     sample.ok = true;
     sample.displayed = true;
     return true;
@@ -322,6 +319,28 @@ void SpikeController::tick() {
             .arg(state_->retirement.depthCurrent())
             .arg(state_->retirement.depthPeak())
             .arg(state_->converter.srvCacheEntries());
+
+    // --- §3 device change: 停止順序を GUI が主導する -----------------------
+    // render thread は「検出した」ことしか伝えてこない。
+    // **ここで decode thread を止めて join し切ってから** teardown を許可する。
+    if (state_->deviceChange.detected()) {
+        if (worker_) {
+            worker_->stop(); // thread::join まで行う
+        }
+        state_->deviceChange.noteWorkerStopped();
+        state_->deviceChange.noteFailClosed();
+        status_ = QStringLiteral("device が変わったため停止しました (P1.2 は自動復帰しない): ") +
+                  QString::fromStdString(state_->deviceChange.reason());
+        errors_ << status_;
+        if (exitCode_ == 0)
+            exitCode_ = 7; // device change による fail-closed 停止
+        if (measure_.enabled) {
+            phase_ = Phase::Done;
+            writeJson();
+            Q_EMIT finished();
+            return;
+        }
+    }
 
     if (state_->initFailed.load(std::memory_order_relaxed) && exitCode_ == 0) {
         {
@@ -712,7 +731,7 @@ bool SpikeController::writeJson() {
     };
 
     o << "{\n";
-    kv("schema", QStringLiteral("mvm-p1-preview-2"));
+    kv("schema", QStringLiteral("mvm-p1-preview-3"));
     kv("label", measure_.label);
     kv("media", mediaPath_);
     kv("timestamp", QDateTime::currentDateTime().toString(Qt::ISODate));
@@ -756,28 +775,52 @@ bool SpikeController::writeJson() {
     kvb("multithread_protected", state_->device.multithreadProtected());
     kvi("device_lost_count", state_->deviceLostCount.load(std::memory_order_relaxed));
 
-    // --- §8 device lifecycle ------------------------------------------------
-    kvi("device_change_count", state_->deviceChangeCount.load(std::memory_order_relaxed));
-    kvi("device_change_handled_count",
-        state_->deviceChangeHandledCount.load(std::memory_order_relaxed));
-    kvi("device_change_fail_closed_count",
-        state_->deviceChangeFailClosedCount.load(std::memory_order_relaxed));
+    // --- device lifecycle (P1.2 §3) -----------------------------------------
+    // **device_change_handled は「完全な復帰が成立した回数」である。**
+    // P1.2 は復帰を実装していないので、常に 0 になる。
+    // 検出は detected、停止は fail_closed で数える。
+    kvi("device_change_detected_count", state_->deviceChange.detectedCount());
+    kvi("device_change_handled_count", state_->deviceChange.handledCount());
+    kvi("device_change_fail_closed_count", state_->deviceChange.failClosedCount());
+    kv("device_change_state", QString::fromLatin1(gpu::toString(state_->deviceChange.state())));
+    kv("device_change_reason", QString::fromStdString(state_->deviceChange.reason()));
+    kv("device_recovery_support", QStringLiteral("none (P1.2 は fail-closed のみ)"));
 
     // --- §1 GPU completion / retirement -------------------------------------
     kvi("gpu_submitted_serial", static_cast<long long>(state_->completion.submittedSerial()));
-    kvi("gpu_completed_serial", static_cast<long long>(state_->completion.polledCompleted()));
+    kvi("gpu_completed_serial",
+        static_cast<long long>(state_->completion.polledCompletedSerial()));
+    // 追跡できなかった submission (P1.2 §4)。0 でなければ
+    // 「GPU 完了を待った」とは言えない。
+    kvi("untracked_submission_count",
+        state_->untrackedSubmissionCount.load(std::memory_order_relaxed));
+    kvi("completion_poll_failure_count",
+        state_->completionPollFailureCount.load(std::memory_order_relaxed));
+    kvi("gpu_completion_device_removed_count", state_->completion.deviceRemovedCount());
+    kvb("gpu_completion_fatal", state_->completion.fatal());
+    kv("gpu_completion_fatal_reason",
+       QString::fromStdString(state_->completion.fatalReason()));
     kvi("retirement_depth_current", static_cast<long long>(state_->retirement.depthCurrent()));
     kvi("retirement_depth_peak", static_cast<long long>(state_->retirement.depthPeak()));
     kvi("retirement_timeout_count", state_->retirement.retirementTimeoutCount());
     kvi("forced_gpu_wait_count", state_->retirement.forcedGpuWaitCount());
-    kvi("frames_released_before_completion", state_->retirement.framesReleasedBeforeCompletion());
+    // **frame だけでなく SRV も同じ queue に入る。** 名前を実態に合わせる (§6)。
+    kvi("payloads_released_before_completion",
+        state_->retirement.payloadsReleasedBeforeCompletion());
 
     // --- §4 resource epoch / SRV cache --------------------------------------
-    kvi("resource_epoch", static_cast<long long>(snap.resourceEpoch));
+    kvi("resource_epoch", static_cast<long long>(snap.resourceEpoch.value));
+    kvi("source_id", static_cast<long long>(snap.sourceId.value));
+    kvi("source_generation", static_cast<long long>(snap.sourceGeneration.value));
+    kvi("composition_epoch",
+        static_cast<long long>(state_->queue.compositionEpoch().value));
     kvi("srv_cache_entries_current", static_cast<long long>(state_->converter.srvCacheEntries()));
     kvi("srv_cache_entries_peak", static_cast<long long>(state_->converter.srvCacheEntriesPeak()));
     kvi("retired_srv_entries", state_->converter.retiredSrvEntries());
-    kvi("active_decoder_pools", static_cast<long long>(state_->converter.activeDecoderPools()));
+    // **cache 内の (epoch, texture) の異なる組み合わせ数**である。
+    // 「今 open している decoder の数」ではない (§6)。
+    kvi("srv_cache_texture_groups",
+        static_cast<long long>(state_->converter.srvCacheTextureGroups()));
 
     // --- 計測 ---------------------------------------------------------------
     kvi("warmup_ms", measure_.warmupMs);

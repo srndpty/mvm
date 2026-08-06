@@ -90,6 +90,13 @@ unsigned long long allocateResourceEpoch() {
     return counter.fetch_add(1, std::memory_order_relaxed) + 1;
 }
 
+// source id もプロセス全体で一意にする。P1.2 では decoder は 1 本だが、
+// 「1 本だから 0 でよい」と決め打つと P2 で衝突する。
+unsigned long long allocateSourceId() {
+    static std::atomic<unsigned long long> counter{0};
+    return counter.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
 std::string avErr(const char* what, int code) {
     char buf[AV_ERROR_MAX_STRING_SIZE] = {0};
     av_strerror(code, buf, sizeof buf);
@@ -156,10 +163,13 @@ struct FFmpegD3D11Decoder::Impl {
     AdapterInfo decodeAdapter;
     unsigned long long decodeDevice = 0;
 
-    unsigned long long generation = 1;
-    // open ごとに進む resource / composition epoch (§4)。
-    // decode pool・SRV cache・texture の世代を表す。
-    unsigned long long resourceEpoch = 0;
+    // source 単位の seek / flush 世代。
+    SourceGeneration generation{1};
+    // open ごとに進む resource epoch。decode pool・SRV cache・texture の世代。
+    // **composition epoch ではない (P1.2 §2)。**
+    ResourceEpoch resourceEpoch{0};
+    // この decoder が担当する source。インスタンスごとに一意。
+    SourceId sourceId{allocateSourceId()};
     bool eofSent = false;
     bool eofReached = false;
 
@@ -314,7 +324,9 @@ bool FFmpegD3D11Decoder::Impl::wrapFrame(AVFrame* frame, DecodedGpuFrame& out, s
     out.colorRange = cd.range;
     out.colorSpaceInferred = cd.spaceInferred;
     out.colorRangeInferred = cd.rangeInferred;
-    out.generation = GenerationId{resourceEpoch, generation};
+    out.sourceId = sourceId;
+    out.sourceGeneration = generation;
+    out.resourceEpoch = resourceEpoch;
 
     // lifetime token: AVFrame の所有権をここへ移す。
     // token が生きている間、この texture slice は再利用されない。
@@ -484,8 +496,13 @@ bool FFmpegD3D11Decoder::open(const std::string& utf8Path, std::string& err) {
     d.codec->pkt_timebase = st->time_base;
     d.codec->get_format = getFormatCallback;
     d.codec->hw_device_ctx = av_buffer_ref(d.hwDevice);
-    // 表示側が直近フレームを retain するので、その分プールを広げる。
-    // 足りないと decoder が「空きが無い」で止まる。
+    // 表示側は GPU 完了まで frame を retire queue に保持する (P1.1 §1)。
+    // その分だけ pool に余裕が要る。足りないと decoder が「空きが無い」で止まる。
+    //
+    // **「直近 N 枚を retain する」方式は P1.1 で廃止した。** 保持期間は
+    // GPU の完了 serial が決めるので、8 は「実測で足りている上限側の余裕」であって
+    // retain 深さではない。retirement_depth_peak を JSON で観測している
+    // (実測では 2)。
     d.codec->extra_hw_frames = 8;
     d.codec->thread_count = 1; // hwaccel では frame thread を使わない
 
@@ -558,10 +575,10 @@ bool FFmpegD3D11Decoder::open(const std::string& utf8Path, std::string& err) {
     }
 
     d.info = vi;
-    d.generation++;
+    d.generation.value++;
     // open ごとに resource_epoch を進める (§4)。
     // 前の open で作った SRV / decode pool は別世代のものとして扱う。
-    d.resourceEpoch = allocateResourceEpoch();
+    d.resourceEpoch = ResourceEpoch{allocateResourceEpoch()};
     return true;
 }
 
@@ -695,7 +712,7 @@ void FFmpegD3D11Decoder::flush() {
     d.eofSent = false;
     d.eofReached = false;
     // 表示側が「seek 前のフレーム」を弾けるように generation を進める。
-    d.generation++;
+    d.generation.value++;
 }
 
 void FFmpegD3D11Decoder::close() {
@@ -709,11 +726,15 @@ const VideoStreamInfo& FFmpegD3D11Decoder::info() const {
     return impl_->info;
 }
 
-unsigned long long FFmpegD3D11Decoder::generation() const {
+SourceId FFmpegD3D11Decoder::sourceId() const {
+    return impl_->sourceId;
+}
+
+SourceGeneration FFmpegD3D11Decoder::sourceGeneration() const {
     return impl_->generation;
 }
 
-unsigned long long FFmpegD3D11Decoder::resourceEpoch() const {
+ResourceEpoch FFmpegD3D11Decoder::resourceEpoch() const {
     return impl_->resourceEpoch;
 }
 

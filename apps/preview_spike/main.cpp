@@ -44,7 +44,8 @@ void usage() {
                  "  --seed <n>            既定 20260806\n"
                  "  --marker-frames a,b,c 既定 0,1,137,299,600,1799,3599\n"
                  "  --display-timeout-ms <n>  seek 表示待ちの上限 (既定 2000)\n"
-                 "  --color-patch WxH     color patch を診断読み取りする領域\n");
+                 "  --color-patch WxH     color patch を診断読み取りする領域\n"
+                 "  --gpu-completion fence|event_query  完了追跡の backend を強制\n");
 }
 
 bool parseArgs(const QStringList& args, MeasureConfig& cfg, QString& mediaPath) {
@@ -104,6 +105,17 @@ bool parseArgs(const QStringList& args, MeasureConfig& cfg, QString& mediaPath) 
             }
             cfg.colorPatchWidth = parts[0].toInt();
             cfg.colorPatchHeight = parts[1].toInt();
+        } else if (a == "--gpu-completion") {
+            if (!next(v))
+                return false;
+            if (v == "event_query") {
+                cfg.gpuCompletion = mvm::gpu::GpuCompletionBackend::EventQuery;
+            } else if (v == "fence") {
+                cfg.gpuCompletion = mvm::gpu::GpuCompletionBackend::Fence;
+            } else {
+                std::fprintf(stderr, "--gpu-completion は fence か event_query です\n");
+                return false;
+            }
         } else if (a == "--marker-frames") {
             if (!next(v))
                 return false;
@@ -169,6 +181,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "PreviewSurface が見つかりません\n");
         return 5;
     }
+    surface->setPreferredCompletionBackend(cfg.gpuCompletion);
     controller.attach(surface);
 
     if (cfg.enabled) {

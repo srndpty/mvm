@@ -59,8 +59,9 @@ struct DecoderSnapshot {
     VideoStreamInfo info;
     AdapterInfo adapter;
     unsigned long long decodeDevicePointer = 0;
-    GenerationId generation{};
-    unsigned long long resourceEpoch = 0;
+    SourceId sourceId{};
+    SourceGeneration sourceGeneration{};
+    ResourceEpoch resourceEpoch{};
     long long decodedFrameCount = 0;
     long long decodeErrorCount = 0;
     long long softwareFrameRejectCount = 0;

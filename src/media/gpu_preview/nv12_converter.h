@@ -85,7 +85,7 @@ public:
     //
     // 旧 entry は即 Release しない。GPU がまだ読んでいる可能性があるので、
     // 最後に使った submission serial とともに retirement queue へ渡す。
-    void retireEntriesNotInEpoch(unsigned long long epoch, GpuRetirementQueue& queue);
+    void retireEntriesNotInEpoch(ResourceEpoch epoch, GpuRetirementQueue& queue);
 
     // draw で使った entry に、この submission serial を刻む。
     // **signalSubmission() の直後に呼ぶ。**
@@ -97,8 +97,12 @@ public:
 
     long long retiredSrvEntries() const { return retiredSrvEntries_; }
 
-    // 現在 cache が抱えている異なる decode pool (epoch, texture) の数。
-    size_t activeDecoderPools() const;
+    // cache が抱えている (resource_epoch, texture) の **異なる組み合わせ数**。
+    //
+    // 「今 open している decoder の数」ではない (§6)。
+    // 1 decoder = 1 array texture なので値としては一致しがちだが、
+    // 意味が違うものを同じ名前で呼ぶと、増えた理由を取り違える。
+    size_t srvCacheTextureGroups() const;
 
 private:
     struct SrvPair {
@@ -110,7 +114,7 @@ private:
     // 毎フレーム作り直すと 60fps で 120 回/秒の resource 生成になり、
     // 計測値を汚す。decode pool は固定サイズなので、epoch ごとには有界である。
     struct SrvCacheEntry {
-        unsigned long long epoch = 0;
+        ResourceEpoch epoch{};
         ID3D11Texture2D* texture = nullptr;
         unsigned int arrayIndex = 0;
         GpuPixelFormat pixelFormat = GpuPixelFormat::Unknown;

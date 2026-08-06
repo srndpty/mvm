@@ -1,4 +1,4 @@
-# Phase 1 / P1・P1.1 の所見
+# Phase 1 / P1・P1.1・P1.2 の所見
 
 記述は Phase 0 と同じ規則で分類する。混ぜない。
 
@@ -249,14 +249,139 @@ first 122MB / mid 150MB / peak 155MB / last 147MB で、
 100 cycle では判断できない。数千 cycle か長時間再生で測る必要がある。
 **「問題ない」とは書かない。生データを残す。**
 
-## 10. 測っていないこと
+## 10. P1.2 で直した設計上の穴
+
+P1.1 の実装は **測ると緑になる**が、正しさの根拠が足りていなかった。
+なぜ気づけなかったかも含めて残す。
+
+### 10.1 [事実] seek の表示待ちに race があった
+
+P1.1 の `seekAndWaitForDisplay` は
+
+```
+waiting = false
+seekBlocking()      <- ここで frame が queue に入る
+waiting = true      <- arm
+```
+
+の順だった。**submit 後・arm 前に render thread が描くと、その display は
+誰にも記録されない。** 待機側は次の display を待つが、静止画では来ないので
+timeout する。seek 直後は「1 枚だけ入ってすぐ描かれる」状況なので、
+この窓に入る確率は低くない。
+
+**計測では露見していなかった。** 9 run x 1000 点で
+`seek_display_mismatch` は 0 だった。「測って緑だった」は
+「race が無い」ではない。
+
+修正: render thread が **待機の有無に関わらず全 display を記録**し、
+待機側は seek より前に取った baseline より後の記録を探す (`DisplayLedger`)。
+arm のタイミングに依存しない。
+
+決定論的テストを 5 件足した。中心は「arm 前に描かれた display を拾えること」で、
+**timeout 0 で成功すること**を要求する (sleep に依存しない)。
+
+### 10.2 [事実] decoder が composition epoch を発行していた
+
+P1.1 の所見に「compositionEpoch と resourceEpoch を分離済み」と書いたが
+**誤りだった。** 実際には `GenerationId{compositionEpoch, sourceGeneration}` の
+compositionEpoch に decoder の resource epoch を入れていた。
+つまり decoder が合成構成の世代を発行していた。
+
+1 本の decoder では困らない。P2 で source が 2 本になると
+**source A の open が source B のフレームを future / stale にする。**
+
+修正: 3 つに分け、発行者を固定した。
+
+| 概念 | 発行者 |
+| --- | --- |
+| `ResourceEpoch` | decoder (open ごと) |
+| `SourceGeneration` | decoder (seek / flush ごと) |
+| `CompositionEpoch` | **compositor** (P1.2 では preview 層が暫定所有) |
+
+3 つとも別の型にした。P1.1 の取り違えは、同じ `unsigned long long` だったから
+コンパイルが通ってしまったのが原因である。
+
+queue の stale / future 判定も source 単位にした。
+「source A の seek が source B の generation を変えない」ことを単体テストで検査する。
+
+### 10.3 [事実] device 変更時に decode thread の足元で device を Release しえた
+
+P1.1 は render thread が device 変化を検出したその場で
+`converter.release()` / `completion.release()` / `device.release()` まで行っていた。
+**このとき decode thread はまだ動いている。**
+`queue.stop()` は submit を止めるだけで、decode 自体は止まらない。
+
+修正: 検出 -> GUI が `DecodeWorker::stop()` (join まで) -> その後に teardown、
+という順序を `DeviceChangeCoordinator` で強制した。
+`mayTeardown()` は join 済みのときしか true を返さない。
+
+**[未検証] 実際に device が差し替わる状況は再現していない。**
+順序の検査は状態機械の単体テストで行っている。
+また **P1.2 は復帰を実装していない**。検出したら fail-closed で停止する。
+`device_change_handled_count` は「完全な復帰が成立した回数」なので常に 0 である。
+
+### 10.4 [事実] GPU completion の API 戻り値を検査していなかった
+
+`ID3D11DeviceContext4::Signal` の HRESULT、`CreateQuery` の失敗、
+`GetData` の `S_FALSE` と `FAILED` の区別を、P1.1 は見ていなかった。
+失敗しても serial を進めていたので、**追跡できない serial で retire** しうる。
+それは「GPU 完了を待った」ことにならない。
+
+修正: `SubmissionResult` / `CompletionPollResult` を返し、
+追跡できない submission では retire しない
+(決して完了しない serial で保持し、shutdown の drain で必ず表面化させる)。
+
+**[事実] event query backend を実機で走らせた。**
+`--gpu-completion event_query` / `soak ... event_query` で強制できるようにし、
+12 cycle の soak が通った。
+
+**[事実] その過程で drain の timeout を踏んだ。**
+event query は `DONOTFLUSH` で poll しているので、以降 GPU へ何も投入されないと
+最後の query が永久に未完了になる。payload が 3 件残り、drain が timeout した。
+
+修正: **shutdown の直前に 1 度だけ** flush する。
+これは「毎 frame Flush して見かけ上解決する」こととは別である
+(通常の render 経路からは呼ばない)。
+
+**[未検証] fallback が「必要になる状況」は再現していない。**
+fence 非対応の機体を持っていないので、切り替え条件そのものは検証していない。
+走らせたのは経路であって、切り替えの判断ではない。
+
+### 10.5 [事実] color fixture が無いと color test が黙って未登録になっていた
+
+P1.1 の CMake は `if(EXISTS manifest)` で囲っており、
+**clean checkout では color test が 1 件も登録されなかった。**
+fixture は `.gitignore` の `/tests/assets/` に飲まれていて追跡されていない。
+その状態で CTest は「全部通った」と報告する。
+
+Phase 0 の「対象 0 件のテスト群が全部通ったと報告される」罠と同じ形である。
+
+修正: fixture (全部で 40KB) を追跡対象にし、
+無ければ **configure を失敗させ**、登録件数が 5 件であることを検査する。
+実際に fixture を隠して configure が落ちることを確認した。
+
+### 10.6 名前と実態のずれ
+
+- `frames_released_before_completion` -> `payloads_released_before_completion`
+  (queue に入るのは frame の lifetime token だけではない。SRV holder も入る)
+- `active_decoder_pools` -> `srv_cache_texture_groups`
+  (実際は cache 内の (epoch, texture) の異なる組み合わせ数であって、
+   open している decoder の数ではない)
+- `extra_hw_frames = 8` の由来コメントを更新
+  (retain 深さではない。保持期間を決めるのは GPU の完了 serial である)
+
+## 11. 測っていないこと
 
 「動くはず」を「動く」と書かないために、明示しておく。
 
 - **NVIDIA RTX 4090 の 1 台でしか測っていない。** Intel / AMD の内蔵 GPU、
   複数 GPU 環境、ノート PC の切り替え可能 GPU は範囲外。
   **「Windows で動く」と一般化しない**
-- device lost からの復帰。**検出しかしていない**（9 run とも発生 0）
+- device lost / device 変更からの**復帰**。P1.2 は検出して fail-closed で止めるだけで、
+  新しい device で開き直す実装を持たない（9 run とも発生 0）
+- device が実際に差し替わる状況の再現。順序の検査は状態機械の単体テストのみ
+- fence 非対応機での event query fallback の**切り替え条件**
+  （経路は強制オプションで実機実行したが、切り替えの判断は未検証）
 - 長時間再生（数十分〜数時間）でのリーク。60 秒 x 3 run しか測っていない
 - 音声、A/V 同期、複数トラック、export
 - Qt の patch release をまたいだときの QRhi 互換

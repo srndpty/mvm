@@ -255,13 +255,13 @@ int cmdSeek(const std::string& media, const std::vector<long long>& targets) {
             return fail("事前 decode に失敗: " + err, kMismatch);
     }
 
-    unsigned long long prevGen = dec.generation();
+    SourceGeneration prevGen = dec.sourceGeneration();
     for (long long t : targets) {
         if (!dec.seek(t, err))
             return fail("seek " + std::to_string(t) + " に失敗: " + err, kMismatch);
 
-        const unsigned long long gen = dec.generation();
-        if (gen <= prevGen)
+        const SourceGeneration gen = dec.sourceGeneration();
+        if (!(prevGen < gen))
             return fail("seek で generation が進んでいません", kMismatch);
         prevGen = gen;
 
@@ -272,7 +272,7 @@ int cmdSeek(const std::string& media, const std::vector<long long>& targets) {
             return fail("seek 先が違います: 要求 " + std::to_string(t) + " / 着地 " +
                             std::to_string(f.frameNumber),
                         kMismatch);
-        if (f.generation.sourceGeneration != gen)
+        if (f.sourceGeneration != gen)
             return fail("frame の generation が decoder と一致しません", kMismatch);
 
         // 続きが連番で出ること (flush 後の状態が正しいこと)
@@ -517,7 +517,8 @@ int cmdSnapshotRace(const std::string& media, int iterations) {
 //   - PrivateUsage first / peak / last
 //   - SRV cache entry が plateau すること
 // を見る。PrivateUsage が増えた場合、機構を断定せず生データを残す。
-int cmdSoak(const std::string& mediaA, const std::string& mediaB, int cycles) {
+int cmdSoak(const std::string& mediaA, const std::string& mediaB, int cycles,
+            GpuCompletionBackend preferred) {
     OwnedDevice dev;
     std::string err;
     if (!dev.create(err))
@@ -529,8 +530,11 @@ int cmdSoak(const std::string& mediaA, const std::string& mediaB, int cycles) {
         return fail("変換パスを初期化できません: " + err, kMismatch);
 
     GpuCompletionTracker completion;
-    if (!completion.initialize(dev.shared, err))
+    if (!completion.initialize(dev.shared, err, preferred))
         return fail("GPU 完了追跡を初期化できません: " + err, kMismatch);
+    if (preferred == GpuCompletionBackend::EventQuery &&
+        completion.backend() != GpuCompletionBackend::EventQuery)
+        return fail("event query backend を強制できませんでした", kMismatch);
     GpuRetirementQueue retirement;
     std::fprintf(stdout, "gpu_completion_backend=%s\n", toString(completion.backend()));
 
@@ -590,10 +594,14 @@ int cmdSoak(const std::string& mediaA, const std::string& mediaB, int cycles) {
                             kMismatch);
             if (!conv.drawToRenderTarget(f, rtv, 640, 360, true, clear, err))
                 return fail("cycle " + std::to_string(cycle) + " の描画に失敗: " + err, kMismatch);
-            const unsigned long long serial = completion.signalSubmission();
-            conv.stampSubmissionSerial(serial);
-            retirement.retire(serial, f.lifetime);
-            retirement.poll(completion.polledCompleted());
+            const SubmissionResult sub = completion.signalSubmission();
+            if (!sub.tracked())
+                return fail("cycle " + std::to_string(cycle) +
+                                " で GPU submission を追跡できませんでした",
+                            kMismatch);
+            conv.stampSubmissionSerial(sub.serial);
+            retirement.retire(sub.serial, f.lifetime);
+            retirement.poll(completion.polledCompletedSerial());
 
             if (i == 0) {
                 std::vector<unsigned char> rgba;
@@ -630,7 +638,9 @@ int cmdSoak(const std::string& mediaA, const std::string& mediaB, int cycles) {
     }
 
     // 終了時は有限 timeout で drain する。timeout は fail-closed。
-    const bool drained = retirement.drain([&] { return completion.polledCompleted(); }, 2000);
+    // **終端で 1 度だけ** flush する (毎 frame ではない)。
+    completion.flushForShutdown();
+    const bool drained = retirement.drain([&] { return completion.polledCompletedSerial(); }, 2000);
     const long long leftover = static_cast<long long>(retirement.releaseWithoutCompletion());
 
     const long long handlesLast = handleCount();
@@ -646,20 +656,26 @@ int cmdSoak(const std::string& mediaA, const std::string& mediaB, int cycles) {
                  "handles_first=%lld handles_mid=%lld handles_last=%lld\n"
                  "private_usage_first=%lld mid=%lld peak=%lld last=%lld\n"
                  "srv_cache_plateau=%zu srv_cache_last=%zu retired_srv_entries=%lld\n"
-                 "active_decoder_pools=%zu\n"
+                 "srv_cache_texture_groups=%zu\n"
                  "retirement_drained=%s leftover=%lld timeout_count=%lld\n"
                  "frames_released_before_completion=%lld\n"
                  "cpu_full_frame_readback=%lld marker_band_readback=%lld\n",
                  cycles, markerMismatch, handlesFirst, handlesMid, handlesLast, privFirst, privMid,
                  privPeak, privLast, srvPlateau, srvLast, conv.retiredSrvEntries(),
-                 conv.activeDecoderPools(), drained ? "true" : "false", leftover,
-                 retirement.retirementTimeoutCount(), retirement.framesReleasedBeforeCompletion(),
+                 conv.srvCacheTextureGroups(), drained ? "true" : "false", leftover,
+                 retirement.retirementTimeoutCount(), retirement.payloadsReleasedBeforeCompletion(),
                  counters.fullFrameReadbacks(), counters.markerBandReadbacks());
 
     if (markerMismatch != 0)
         return fail("marker 不一致が " + std::to_string(markerMismatch) + " 件", kMismatch);
     if (counters.fullFrameReadbacks() != 0)
         return fail("CPU full-frame readback が発生しました", kMismatch);
+    if (completion.untrackedSubmissionCount() != 0)
+        return fail("追跡できない submission が " +
+                        std::to_string(completion.untrackedSubmissionCount()) + " 件ありました",
+                    kMismatch);
+    if (completion.fatal())
+        return fail("GPU 完了追跡が壊れました: " + completion.fatalReason(), kMismatch);
     if (!drained)
         return fail("GPU retirement を timeout 内に drain できませんでした", kMismatch);
     if (leftover != 0)
@@ -880,7 +896,18 @@ int main(int, char**) {
             std::fprintf(stderr, "cycles は 1 以上にしてください\n");
             return kUsage;
         }
-        return cmdSoak(argv[2], argv[3], cycles);
+        // 5 番目の引数で backend を強制できる (fallback 経路を実際に走らせる)。
+        GpuCompletionBackend preferred = GpuCompletionBackend::Fence;
+        if (argc >= 6) {
+            const std::string b = argv[5];
+            if (b == "event_query")
+                preferred = GpuCompletionBackend::EventQuery;
+            else if (b != "fence") {
+                std::fprintf(stderr, "backend は fence か event_query です\n");
+                return kUsage;
+            }
+        }
+        return cmdSoak(argv[2], argv[3], cycles, preferred);
     }
 
     if (cmd == "seek" || cmd == "marker") {

@@ -66,8 +66,9 @@ public:
     void flush() override;
     void close() override;
     const VideoStreamInfo& info() const override;
-    unsigned long long generation() const override;
-    unsigned long long resourceEpoch() const override;
+    SourceId sourceId() const override;
+    SourceGeneration sourceGeneration() const override;
+    ResourceEpoch resourceEpoch() const override;
 
     OpenFailure openFailure() const;
 

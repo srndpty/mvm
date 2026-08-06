@@ -8,7 +8,17 @@
 CMakeUserPresets.json
 
 # Generated test media (regenerate with scripts/make-testmedia.ps1)
-/tests/assets/
+#
+# **ディレクトリごと除外しない。** 除外すると git が中へ降りないので、
+# 個別の否定パターン (!) が効かなくなる。中身を除外して例外を作る。
+/tests/assets/*
+
+# color correctness の fixture は **追跡する** (P1.2 §5)。
+# 生成物ではあるが全部で 25KB 程度しかなく、無いと color test が
+# 「黙って未登録」になり、clean checkout で色検査が消える。
+# 必ず検査させるためリポジトリに入れる。
+# manifest.txt は C++ 側が読む行指向の版 (JSON parser を足さないため)。
+!/tests/assets/color/
 
 # Frozen MSYS2 packages: large binaries, kept on disk for reproducible
 # rebuilds but not committed. docs/deps-lock.txt is the committed record.
