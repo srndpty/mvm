@@ -36,9 +36,45 @@ target_compile_definitions(mvm_mlt_hello PRIVATE
     ${MVM_MLT_PATH_DEFS}
 )
 
+# --- Phase 1 / P1: GPU preview スパイク --------------------------------------
+# FFmpeg (D3D11VA) + D3D11。**Qt には依存しない。**
+# QRhi / QQuickRhiItem を触るコードは src/app/preview/ にだけ置く
+# (docs/phase1-plan.md §7)。MLT にも依存しない。Phase 0 のコードを流用しない。
+add_library(mvm_gpu_preview STATIC
+    media/gpu_preview/gpu_frame.cpp
+    media/gpu_preview/timebase.cpp
+    media/gpu_preview/color_metadata.cpp
+    media/gpu_preview/d3d11_shared_device.cpp
+    media/gpu_preview/ffmpeg_d3d11_decoder.cpp
+    media/gpu_preview/nv12_converter.cpp
+    media/gpu_preview/frame_queue.cpp
+    media/gpu_preview/decode_worker.cpp
+)
+target_include_directories(mvm_gpu_preview PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_gpu_preview
+    PUBLIC  PkgConfig::MVM_FFMPEG d3d11 dxgi
+    PRIVATE d3dcompiler mvm::warnings
+)
+add_library(mvm::gpu_preview ALIAS mvm_gpu_preview)
+
 # --- Qt probe ---------------------------------------------------------------
 # Qt が UCRT64 版であり、実際にリンク・起動できることを確認する。
 if(MVM_ENABLE_QT)
     add_executable(mvm_qt_probe app/qt_probe.cpp)
     target_link_libraries(mvm_qt_probe PRIVATE Qt6::Core mvm::warnings)
+
+    # --- Phase 1 / P1: Qt 隔離層 --------------------------------------------
+    # **QRhi (Qt の private API) を include してよいのはこのターゲットだけ。**
+    # Phase 0 で「MLT のヘッダを include してよいのは src/media/mlt/ だけ」と
+    # 決めたのと同じ規則を QRhi に対して適用する (docs/phase1-plan.md §7)。
+    add_library(mvm_preview_qt STATIC
+        app/preview/preview_rhi_item.cpp
+    )
+    set_target_properties(mvm_preview_qt PROPERTIES AUTOMOC ON)
+    target_include_directories(mvm_preview_qt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(mvm_preview_qt
+        PUBLIC  mvm::gpu_preview Qt6::Quick Qt6::Gui
+        PRIVATE Qt6::GuiPrivate mvm::warnings
+    )
+    add_library(mvm::preview_qt ALIAS mvm_preview_qt)
 endif()

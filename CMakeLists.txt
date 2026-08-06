@@ -73,6 +73,8 @@ endif()
 # --- 依存 -------------------------------------------------------------------
 option(MVM_ENABLE_QT "Qt6 を探して検証する (S1 の依存確認用)" ON)
 
+find_package(PkgConfig REQUIRED)
+
 find_package(MLT REQUIRED)
 message(STATUS "[mvm] MLT ${MLT_VERSION}: ${MLT_LIBRARY}")
 
@@ -89,11 +91,26 @@ message(STATUS "[mvm] MLT modules: ${MLT_MODULE_DIR}")
 message(STATUS "[mvm] MLT data   : ${MLT_DATA_DIR}")
 
 if(MVM_ENABLE_QT)
-    find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick Svg)
+    # Phase 1 の PreviewRhiItem は QRhi (QtGui の private API) を使う。
+    # 互換保証が弱いことは docs/phase1-plan.md §7 に記録し、
+    # 依存を src/app/preview/ の 2 ファイルへ隔離している。
+    find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick Svg GuiPrivate Qml QuickControls2)
     mvm_guard_qt()
 endif()
 
+# --- Phase 1 / P1: FFmpeg -----------------------------------------------------
+# UCRT64 の libav* だけを使う。ホストの C:\tools 版・winget 版へは落ちない。
+pkg_check_modules(MVM_FFMPEG REQUIRED IMPORTED_TARGET
+    libavformat libavcodec libavutil)
+message(STATUS "[mvm] FFmpeg: libavcodec ${MVM_FFMPEG_libavcodec_VERSION}")
+
 add_subdirectory(src)
+
+# Phase 1 / P1 の検証アプリ。Qt が無ければ作らない。
+if(MVM_ENABLE_QT)
+    qt_standard_project_setup(REQUIRES 6.5)
+    add_subdirectory(apps/preview_spike)
+endif()
 
 include(CTest)
 if(BUILD_TESTING)

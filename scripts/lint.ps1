@@ -22,7 +22,13 @@ param(
     # 走査対象を差し替える。lint 自身の negative test で使う。
     # 指定時は clang-format と PSScriptAnalyzer をスキップし、
     # ソース検査だけを行う。
-    [string]$Path
+    [string]$Path,
+
+    # -Path で与えたフィクスチャを、どの層にあるものとして検査するか。
+    # 層の判定はパスで行うため、リポジトリ外のフィクスチャでは
+    # そのままでは検査が発火しない。negative test を書けるようにするための指定。
+    [ValidateSet('', 'gpu_preview', 'preview_qt')]
+    [string]$AsLayer = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -94,6 +100,60 @@ if ($violations.Count -gt 0) {
     Write-Host "違反 $($violations.Count) 件" -ForegroundColor Red
     $violations | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
     $failed += 'アーキテクチャ検査'
+} else {
+    Write-Host "OK ($($sources.Count) ファイル)" -ForegroundColor Green
+}
+
+# --- Phase 1: 層の隔離検査 ---------------------------------------------------
+Write-Section '層の隔離検査 (Qt / QRhi)'
+
+# 規約 (docs/phase1-plan.md §7, AGENTS.md):
+#
+#   src/media/gpu_preview/ : Qt を一切 include しない
+#   src/app/preview/       : QRhi (Qt の private API) を include してよい唯一の場所
+#
+# QRhi は patch release 間でも互換保証が無い。隔離しても「壊れないこと」は
+# 保証できないが、**壊れる範囲を 2 ファイルに限定する**ことはできる。
+# 人間のレビューでは必ず漏れるので機械的に強制する。
+
+$gpuPreviewDir = Join-Path $RepoRoot 'src\media\gpu_preview'
+$previewQtDir  = Join-Path $RepoRoot 'src\app\preview'
+
+# Qt のヘッダ: <QObject> / <QtCore/...> / <QtQuick/...> / "qquickrhiitem.h" など
+$qtIncludePattern  = '#\s*include\s*[<"](Qt[A-Za-z0-9]*/|Q[A-Z][A-Za-z0-9]*>|q[a-z0-9_]+\.h[">])'
+# QRhi は private API。パスが版番号を含む形と rhi/ 直下の両方に当たるようにする。
+$qrhiIncludePattern = '#\s*include\s*[<"][^">]*rhi/q(rhi|shader)'
+
+$layerViolations = @()
+foreach ($f in $sources) {
+    $rel = if ($f.FullName.StartsWith($RepoRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        $f.FullName.Substring($RepoRoot.Length + 1)
+    } else { $f.FullName }
+
+    if ($AsLayer) {
+        $layer = $AsLayer
+    } elseif ($f.FullName.StartsWith($gpuPreviewDir, [StringComparison]::OrdinalIgnoreCase)) {
+        $layer = 'gpu_preview'
+    } elseif ($f.FullName.StartsWith($previewQtDir, [StringComparison]::OrdinalIgnoreCase)) {
+        $layer = 'preview_qt'
+    } else {
+        $layer = 'other'
+    }
+
+    $text = Get-Content -Raw -LiteralPath $f.FullName
+
+    if ($layer -eq 'gpu_preview' -and $text -match $qtIncludePattern) {
+        $layerViolations += "$rel : src/media/gpu_preview は Qt を include してはいけない"
+    }
+    if ($layer -ne 'preview_qt' -and $text -match $qrhiIncludePattern) {
+        $layerViolations += "$rel : QRhi (Qt の private API) は src/app/preview/ でのみ使える"
+    }
+}
+
+if ($layerViolations.Count -gt 0) {
+    Write-Host "違反 $($layerViolations.Count) 件" -ForegroundColor Red
+    $layerViolations | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+    $failed += '層の隔離検査'
 } else {
     Write-Host "OK ($($sources.Count) ファイル)" -ForegroundColor Green
 }

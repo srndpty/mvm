@@ -18,8 +18,16 @@ Phase 0 の目的は、MLT 7 を mvm の編集・プレビュー・書き出し�
 > エフェクト、clean VM 起動など）は
 > [docs/phase0-decision.md](docs/phase0-decision.md) に明記している。
 
+**現在は Phase 1（GPU Preview Engine Spike）の P1 に着手している。**
+FFmpeg (D3D11VA) で decode した frame を CPU へ戻さずに
+Qt Quick 上へ表示できるかを検証する縦切りである。
+製品用 NLE・タイムライン UI・Project Model は引き続き未着手。
+
 | ドキュメント | 内容 |
 | --- | --- |
+| **[docs/phase1-plan.md](docs/phase1-plan.md)** | **Phase 1 / P1 の計画と exit criteria** |
+| **[docs/phase1-findings.md](docs/phase1-findings.md)** | **P1 の実測所見。事実 / 推測 / 未検証を区別して記録** |
+| **[docs/adr/0002-preview-backend-spike.md](docs/adr/0002-preview-backend-spike.md)** | **ADR: 内製 GPU preview backend の検証（Proposed）** |
 | **[docs/phase0-decision.md](docs/phase0-decision.md)** | **採否判定書（S16）** |
 | **[docs/adr/0001-mlt-adoption.md](docs/adr/0001-mlt-adoption.md)** | **ADR: MLT 採否の決定** |
 | [docs/phase0-plan.md](docs/phase0-plan.md) | 計画全体と exit criteria |
