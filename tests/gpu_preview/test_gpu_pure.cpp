@@ -28,6 +28,7 @@
 #include "media/gpu_preview/source_registry.h"
 #include "media/gpu_preview/timebase.h"
 
+#include <atomic>
 #include <cstdio>
 #include <string>
 #include <thread>
@@ -718,6 +719,14 @@ void testP2SourceAndComposition() {
 
     SourceFrameBuffer bufferA(a, SourceGeneration{1}, 2);
     SourceFrameBuffer bufferB(b, SourceGeneration{7}, 2);
+    auto staleA = makeFrame(0, 0);
+    staleA.sourceId = a;
+    check(bufferA.submitFrame(staleA) == SubmitResult::RejectedStaleGeneration,
+          "source-local buffer は stale generation を区別して拒否");
+    auto futureA = makeFrame(0, 2);
+    futureA.sourceId = a;
+    check(bufferA.submitFrame(futureA) == SubmitResult::RejectedFutureGeneration,
+          "source-local buffer は future generation を区別して拒否");
     check(bufferA.setGeneration(SourceGeneration{2}) == GenerationUpdateResult::Updated,
           "A seek で A generation を進める");
     check(bufferB.generation() == SourceGeneration{7}, "A seek は B generation を変えない");
@@ -751,11 +760,11 @@ void testP2SourceAndComposition() {
 
     auto stale = fb;
     stale.sourceGeneration = SourceGeneration{6};
-    check(coordinator.compose(10, {fa, stale}, composed) == CompositionResult::MixedGeneration,
+    check(coordinator.compose(10, {fa, stale}, composed) == CompositionResult::StaleGeneration,
           "stale source generation を拒否");
     auto future = fb;
     future.sourceGeneration = SourceGeneration{8};
-    check(coordinator.compose(10, {fa, future}, composed) == CompositionResult::MixedGeneration,
+    check(coordinator.compose(10, {fa, future}, composed) == CompositionResult::FutureGeneration,
           "future source generation を拒否");
 
     check(coordinator.compose(10, {fa}, composed) == CompositionResult::MissingSource,
@@ -775,9 +784,9 @@ void testP2SourceAndComposition() {
     check(coordinator.validateForDisplay(composed) == CompositionResult::StaleEpoch,
           "old CompositionEpoch を拒否");
 
-    checkNear(straightAlphaBlend(0.8, 0.2, 0.0), 0.2, 1e-6, "opacity 0");
-    checkNear(straightAlphaBlend(0.8, 0.2, 0.5), 0.5, 1e-6, "opacity 0.5");
-    checkNear(straightAlphaBlend(0.8, 0.2, 1.0), 0.8, 1e-6, "opacity 1");
+    checkNear(straightAlphaBlend(0.8f, 0.2f, 0.0f), 0.2, 1e-6, "opacity 0");
+    checkNear(straightAlphaBlend(0.8f, 0.2f, 0.5f), 0.5, 1e-6, "opacity 0.5");
+    checkNear(straightAlphaBlend(0.8f, 0.2f, 1.0f), 0.8, 1e-6, "opacity 1");
 
     int releasedA = 0;
     int releasedB = 0;
@@ -790,7 +799,7 @@ void testP2SourceAndComposition() {
     composed = {};
     fa.lifetime.reset();
     fb.lifetime.reset();
-    checkEq(retirement.poll(19), 0, "serial 完了前は aggregate を保持");
+    checkEq(static_cast<long long>(retirement.poll(19)), 0, "serial 完了前は aggregate を保持");
     checkEq(releasedA, 0, "serial 完了前は A を解放しない");
     checkEq(releasedB, 0, "serial 完了前は B を解放しない");
     checkEq(static_cast<long long>(retirement.poll(20)), 1, "serial 完了で aggregate を解放");
@@ -803,6 +812,47 @@ void testP2SourceAndComposition() {
     check(!joins.allJoined(), "A だけの join では teardown 不可");
     check(joins.noteJoined(1), "worker B join");
     check(joins.allJoined(), "両 worker join 後だけ teardown 可");
+
+    SourceFrameBuffer bounded(a, SourceGeneration{2}, 0);
+    auto bounded0 = makeFrame(0, 2);
+    bounded0.sourceId = a;
+    auto bounded1 = makeFrame(1, 2);
+    bounded1.sourceId = a;
+    check(bounded.submitFrame(bounded0) == SubmitResult::Accepted,
+          "capacity 0 は最小 capacity 1 として 1 frame を受理");
+    check(bounded.submitFrame(bounded1) == SubmitResult::RejectedQueueFull,
+          "overflow は暗黙 drop せず結果を返す");
+    checkEq(static_cast<long long>(bounded.depth()), 1, "bounded buffer は capacity を超えない");
+
+    std::atomic<int> waiting{0};
+    bool waiterResults[2] = {true, true};
+    auto waitForStop = [&](int index) {
+        waiting.fetch_add(1, std::memory_order_release);
+        waiterResults[index] = bounded.waitForSpace(10000);
+    };
+    std::thread waiterA(waitForStop, 0);
+    std::thread waiterB(waitForStop, 1);
+    while (waiting.load(std::memory_order_acquire) != 2)
+        std::this_thread::yield();
+    bounded.stop();
+    waiterA.join();
+    waiterB.join();
+    check(!waiterResults[0] && !waiterResults[1], "stop ですべての waiter が起床");
+
+    PreviewFrameQueue pending(4);
+    check(pending.registerSource(a, SourceGeneration{2}), "pending 検査で A を登録");
+    check(pending.registerSource(b, SourceGeneration{7}), "pending 検査で B を登録");
+    auto pendingA = makeFrame(10, 2);
+    pendingA.sourceId = a;
+    auto pendingB = makeFrame(10, 7);
+    pendingB.sourceId = b;
+    check(pending.submitFrame(pendingA) == SubmitResult::Accepted, "A pending を追加");
+    check(pending.submitFrame(pendingB) == SubmitResult::Accepted, "B pending を追加");
+    check(pending.unregisterSource(a), "A unregister で A pending だけ除去");
+    checkEq(static_cast<long long>(pending.depth()), 1, "B pending は維持");
+    DecodedGpuFrame remaining;
+    check(pending.takeForDisplay(remaining) && remaining.sourceId == b,
+          "unregister 後に残る pending は B");
 }
 
 // --------------------------------------------------------------------------

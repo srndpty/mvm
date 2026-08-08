@@ -13,7 +13,8 @@ enum class CompositionResult {
     Accepted = 0,
     MissingSource,
     MixedFrame,
-    MixedGeneration,
+    StaleGeneration,
+    FutureGeneration,
     StaleEpoch,
     UnknownSource,
 };
@@ -52,7 +53,7 @@ private:
     CompositionEpoch epoch_{1};
     long long mixedFrame_ = 0;
     long long mixedGeneration_ = 0;
-    long long staleEpoch_ = 0;
+    mutable long long staleEpoch_ = 0;
     long long missing_ = 0;
 };
 

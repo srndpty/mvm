@@ -109,6 +109,7 @@ private:
 class WorkerJoinBarrier {
 public:
     explicit WorkerJoinBarrier(size_t required) : required_(required) {}
+
     bool noteJoined(size_t workerIndex);
     bool allJoined() const;
     size_t joinedCount() const;

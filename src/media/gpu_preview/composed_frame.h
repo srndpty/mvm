@@ -62,8 +62,7 @@ inline ComposedFrame adoptForComposition(const DecodedGpuFrame& frame, Compositi
     return {frame.frameNumber, epoch, {std::move(layer)}};
 }
 
-inline bool deterministicLayerLess(const CompositionLayerFrame& a,
-                                   const CompositionLayerFrame& b) {
+inline bool deterministicLayerLess(const CompositionLayerFrame& a, const CompositionLayerFrame& b) {
     if (a.zOrder != b.zOrder)
         return a.zOrder < b.zOrder;
     return a.frame.sourceId < b.frame.sourceId;

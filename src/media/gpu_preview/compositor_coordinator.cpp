@@ -5,8 +5,8 @@
 
 namespace mvm::gpu {
 
-bool CompositorCoordinator::configure(
-    std::vector<LayerLayout> layout, const std::map<SourceId, SourceGeneration>& generations) {
+bool CompositorCoordinator::configure(std::vector<LayerLayout> layout,
+                                      const std::map<SourceId, SourceGeneration>& generations) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (layout.empty() || layout.size() != generations.size())
         return false;
@@ -56,8 +56,9 @@ CompositionEpoch CompositorCoordinator::compositionEpoch() const {
     return epoch_;
 }
 
-CompositionResult CompositorCoordinator::validateLocked(
-    long long outputFrameNumber, const std::vector<DecodedGpuFrame>& frames) const {
+CompositionResult
+CompositorCoordinator::validateLocked(long long outputFrameNumber,
+                                      const std::vector<DecodedGpuFrame>& frames) const {
     if (frames.size() != layout_.size())
         return CompositionResult::MissingSource;
     std::set<SourceId> seen;
@@ -69,15 +70,17 @@ CompositionResult CompositorCoordinator::validateLocked(
             return CompositionResult::MissingSource;
         if (frame.frameNumber != outputFrameNumber)
             return CompositionResult::MixedFrame;
-        if (frame.sourceGeneration != expected->second)
-            return CompositionResult::MixedGeneration;
+        if (frame.sourceGeneration < expected->second)
+            return CompositionResult::StaleGeneration;
+        if (expected->second < frame.sourceGeneration)
+            return CompositionResult::FutureGeneration;
     }
     return CompositionResult::Accepted;
 }
 
 CompositionResult CompositorCoordinator::compose(long long outputFrameNumber,
-                                                  const std::vector<DecodedGpuFrame>& frames,
-                                                  ComposedFrame& out) {
+                                                 const std::vector<DecodedGpuFrame>& frames,
+                                                 ComposedFrame& out) {
     std::lock_guard<std::mutex> lock(mutex_);
     const CompositionResult result = validateLocked(outputFrameNumber, frames);
     if (result != CompositionResult::Accepted) {
@@ -85,7 +88,8 @@ CompositionResult CompositorCoordinator::compose(long long outputFrameNumber,
             ++missing_;
         else if (result == CompositionResult::MixedFrame)
             ++mixedFrame_;
-        else if (result == CompositionResult::MixedGeneration)
+        else if (result == CompositionResult::StaleGeneration ||
+                 result == CompositionResult::FutureGeneration)
             ++mixedGeneration_;
         return result;
     }
@@ -105,7 +109,7 @@ CompositionResult CompositorCoordinator::compose(long long outputFrameNumber,
 CompositionResult CompositorCoordinator::validateForDisplay(const ComposedFrame& frame) const {
     std::lock_guard<std::mutex> lock(mutex_);
     if (frame.compositionEpoch != epoch_) {
-        ++const_cast<CompositorCoordinator*>(this)->staleEpoch_;
+        ++staleEpoch_;
         return CompositionResult::StaleEpoch;
     }
     std::vector<DecodedGpuFrame> frames;
@@ -119,14 +123,17 @@ long long CompositorCoordinator::mixedSourceFrameCount() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return mixedFrame_;
 }
+
 long long CompositorCoordinator::mixedGenerationCount() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return mixedGeneration_;
 }
+
 long long CompositorCoordinator::staleCompositionEpochCount() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return staleEpoch_;
 }
+
 long long CompositorCoordinator::missingSourceFrameCount() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return missing_;

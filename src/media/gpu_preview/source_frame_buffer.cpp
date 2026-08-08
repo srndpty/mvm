@@ -70,9 +70,9 @@ void SourceFrameBuffer::noteDisplayed(long long frameNumber) {
 
 bool SourceFrameBuffer::waitForSpace(int timeoutMs) {
     std::unique_lock<std::mutex> lock(mutex_);
-    return changed_.wait_for(lock, std::chrono::milliseconds(timeoutMs),
-                             [this] { return stopped_ || frames_.size() < capacity_; }) &&
-           !stopped_;
+    return changed_.wait_for(lock, std::chrono::milliseconds(timeoutMs), [this] {
+        return stopped_ || frames_.size() < capacity_;
+    }) && !stopped_;
 }
 
 void SourceFrameBuffer::stop() {
