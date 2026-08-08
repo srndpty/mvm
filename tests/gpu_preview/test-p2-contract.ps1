@@ -9,15 +9,17 @@ param(
         'NegativePrerollFrontA', 'NegativePrerollFrontB', 'SeekGood',
         'NegativeSeekPublishReject', 'NegativeSeekRequestMismatch',
         'NegativeSeekStaleCompletion', 'NegativeSeekBusyAcceptance',
-        'NegativeSeekStoppedSuperseded', 'NegativeSeekOverlapCount',
-        'NegativeSeekConcurrencyCount', 'NegativeSeekSampleOverlap')][string]$Case,
+        'NegativeSeekStoppedSuperseded', 'NegativeSeekConcurrencyCount',
+        'SeekExecutionNonoverlapGood', 'FormalSeekGood',
+        'NegativeParallelDispatchCount', 'NegativeParallelDispatchSample',
+        'NegativeBRequestResult', 'NegativeDispatchAfterFirstReady')][string]$Case,
     [Parameter(Mandatory)][string]$Checker,
     [Parameter(Mandatory)][string]$Output
 )
 $ErrorActionPreference = 'Stop'
 
 $raw = [ordered]@{
-    schema='mvm-p2-formal-1'; formal_contract_version='P2-D4-2'; mode='playback'
+    schema='mvm-p2-formal-1'; formal_contract_version='P2-D5-1'; mode='playback'
     formal_preflight=$true; process_exit_code=0
     same_device_a=$true; same_device_b=$true
     actual_output_width=1920; actual_output_height=1080
@@ -53,21 +55,35 @@ $raw = [ordered]@{
     completion_poll_failure_count=0; seek_completion_publish_reject_count=0
     seek_completion_request_mismatch_count=0; seek_stale_completion_count=0
     seek_busy_acceptance_count=0; seek_completion_stopped_superseded_count=0
-    software_fallback_count=0; worker_join_leak_count=0; seek_overlap_count=16
-    seek_concurrency_samples=@(1..16 | ForEach-Object { [ordered]@{ overlap=$true } })
+    software_fallback_count=0; worker_join_leak_count=0
+    parallel_dispatch_valid_count=16; execution_overlap_count=16
+    execution_nonoverlap_count=0
+    seek_concurrency_samples=@(1..16 | ForEach-Object {
+        [ordered]@{
+            request_start_qpc=100; a_request_qpc=101; b_request_qpc=102
+            dispatch_complete_qpc=103; a_begin_qpc=104; a_ready_qpc=106
+            b_begin_qpc=105; b_ready_qpc=107; a_request_id=$_; b_request_id=$_
+            a_request_result='Accepted'; b_request_result='Accepted'
+            parallel_dispatch_valid=$true; execution_overlap=$true
+        }
+    })
 }
 $seekCases = @(
     'SeekGood', 'NegativeSeekPublishReject', 'NegativeSeekRequestMismatch',
     'NegativeSeekStaleCompletion', 'NegativeSeekBusyAcceptance',
-    'NegativeSeekStoppedSuperseded', 'NegativeSeekOverlapCount',
-    'NegativeSeekConcurrencyCount', 'NegativeSeekSampleOverlap'
+    'NegativeSeekStoppedSuperseded', 'NegativeSeekConcurrencyCount',
+    'SeekExecutionNonoverlapGood', 'FormalSeekGood',
+    'NegativeParallelDispatchCount', 'NegativeParallelDispatchSample',
+    'NegativeBRequestResult', 'NegativeDispatchAfterFirstReady'
 )
 if ($Case -in $seekCases) { $raw.mode = 'seek' }
-$formalCases = @(
+$formalPlaybackCases = @(
     'FormalGood', 'NegativeFormalTiming', 'NegativeScheduledHigh',
     'NegativeScheduledLow', 'NegativeCoverage', 'NegativeSourceFrameCount',
     'NegativeMissingPair', 'NegativeEofA', 'NegativeEofB'
 )
+$formalSeekCases = @('FormalSeekGood', 'NegativeParallelDispatchCount')
+$formalCases = @($formalPlaybackCases) + @($formalSeekCases)
 if ($Case -in $formalCases) {
     $raw.configured_warmup_seconds = 5
     $raw.configured_measure_seconds = 60
@@ -78,6 +94,22 @@ if ($Case -in $formalCases) {
     $raw.measurement_gpu_submission_count = 3600
     $raw.measurement_layer_draw_count = 7200
     $raw.measurement_logical_clear_count = 3600
+}
+if ($Case -in $formalSeekCases) {
+    $raw.dual_seek_displayed_ms = @(1.0) * 1000
+    $raw.dual_seek_decode_ready_ms = @(0.5) * 1000
+    $raw.parallel_dispatch_valid_count = 1000
+    $raw.execution_overlap_count = 1000
+    $raw.execution_nonoverlap_count = 0
+    $raw.seek_concurrency_samples = @(1..1000 | ForEach-Object {
+        [ordered]@{
+            request_start_qpc=100; a_request_qpc=101; b_request_qpc=102
+            dispatch_complete_qpc=103; a_begin_qpc=104; a_ready_qpc=106
+            b_begin_qpc=105; b_ready_qpc=107; a_request_id=$_; b_request_id=$_
+            a_request_result='Accepted'; b_request_result='Accepted'
+            parallel_dispatch_valid=$true; execution_overlap=$true
+        }
+    })
 }
 switch ($Case) {
     # 実装と同じ式を共有せず、各caseで1 fieldだけを壊してcheckerの効力を確認する。
@@ -105,22 +137,38 @@ switch ($Case) {
     'NegativeSeekStaleCompletion' { $raw.seek_stale_completion_count = 1 }
     'NegativeSeekBusyAcceptance' { $raw.seek_busy_acceptance_count = 1 }
     'NegativeSeekStoppedSuperseded' { $raw.seek_completion_stopped_superseded_count = 1 }
-    'NegativeSeekOverlapCount' { $raw.seek_overlap_count = 15 }
     'NegativeSeekConcurrencyCount' {
         $raw.seek_concurrency_samples = @($raw.seek_concurrency_samples | Select-Object -First 15)
     }
-    'NegativeSeekSampleOverlap' { $raw.seek_concurrency_samples[7].overlap = $false }
+    'SeekExecutionNonoverlapGood' {
+        $raw.seek_concurrency_samples[7].a_ready_qpc = 105
+        $raw.seek_concurrency_samples[7].b_begin_qpc = 106
+        $raw.seek_concurrency_samples[7].b_ready_qpc = 107
+        $raw.seek_concurrency_samples[7].execution_overlap = $false
+        $raw.execution_overlap_count = 15
+        $raw.execution_nonoverlap_count = 1
+    }
+    'NegativeParallelDispatchCount' { $raw.parallel_dispatch_valid_count = 999 }
+    'NegativeParallelDispatchSample' {
+        $raw.seek_concurrency_samples[7].parallel_dispatch_valid = $false
+    }
+    'NegativeBRequestResult' { $raw.seek_concurrency_samples[7].b_request_result = 'RejectedBusy' }
+    'NegativeDispatchAfterFirstReady' {
+        $raw.seek_concurrency_samples[7].dispatch_complete_qpc = 107
+    }
 }
 $raw | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $Output -Encoding utf8
 $formal = $Case -in $formalCases
 if ($formal) {
-    & pwsh -NoProfile -File $Checker -Json $Output -Mode Playback -ProcessExitCode 0
+    $mode = if ($Case -in $seekCases) { 'Seek' } else { 'Playback' }
+    & pwsh -NoProfile -File $Checker -Json $Output -Mode $mode -ProcessExitCode 0
 } else {
     $mode = if ($Case -in $seekCases) { 'Seek' } else { 'Playback' }
     & pwsh -NoProfile -File $Checker -Json $Output -Mode $mode -ProcessExitCode 0 -DryRun
 }
 $actual = $LASTEXITCODE
-$expected = if ($Case -in @('Good', 'FormalGood', 'SeekGood')) { 0 } else { 3 }
+$expected = if ($Case -in @(
+    'Good', 'FormalGood', 'SeekGood', 'SeekExecutionNonoverlapGood', 'FormalSeekGood')) { 0 } else { 3 }
 if ($actual -ne $expected) {
     throw "$Case contract testの終了codeが違います: expected=$expected actual=$actual"
 }

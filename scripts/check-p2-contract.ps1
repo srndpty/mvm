@@ -43,7 +43,7 @@ try {
 }
 
 Require-Equal (Require-Property $raw 'schema') 'mvm-p2-formal-1' 'schema'
-Require-Equal (Require-Property $raw 'formal_contract_version') 'P2-D4-2' 'formal_contract_version'
+Require-Equal (Require-Property $raw 'formal_contract_version') 'P2-D5-1' 'formal_contract_version'
 Require-Equal (Require-Property $raw 'mode') $Mode.ToLowerInvariant() 'mode'
 Require-Equal (Require-Property $raw 'process_exit_code') 0 'JSON process_exit_code'
 Require-Equal $ProcessExitCode 0 '実process exit code'
@@ -191,14 +191,67 @@ if ($Mode -eq 'Playback') {
     Require-Zero $raw 'untracked_submission_count'
     Require-Zero $raw 'completion_poll_failure_count'
 
-    $overlapCount = Require-Property $raw 'seek_overlap_count'
     $concurrencySamples = @(Require-Property $raw 'seek_concurrency_samples')
-    Require-Equal $overlapCount $expectedCount 'seek_overlap_count'
     Require-Equal $concurrencySamples.Count $expectedCount 'seek_concurrency_samples.Count'
+    $parallelDispatchValidCount = 0
+    $executionOverlapCount = 0
     for ($sampleIndex = 0; $sampleIndex -lt $concurrencySamples.Count; ++$sampleIndex) {
-        Require-Equal (Require-Property $concurrencySamples[$sampleIndex] 'overlap') $true `
-            "seek_concurrency_samples[$sampleIndex].overlap"
+        $sample = $concurrencySamples[$sampleIndex]
+        $prefix = "seek_concurrency_samples[$sampleIndex]"
+        $requestStart = Require-Property $sample 'request_start_qpc'
+        $aRequest = Require-Property $sample 'a_request_qpc'
+        $bRequest = Require-Property $sample 'b_request_qpc'
+        $dispatchComplete = Require-Property $sample 'dispatch_complete_qpc'
+        $aBegin = Require-Property $sample 'a_begin_qpc'
+        $bBegin = Require-Property $sample 'b_begin_qpc'
+        $aReady = Require-Property $sample 'a_ready_qpc'
+        $bReady = Require-Property $sample 'b_ready_qpc'
+        $aRequestId = Require-Property $sample 'a_request_id'
+        $bRequestId = Require-Property $sample 'b_request_id'
+        $aResult = Require-Property $sample 'a_request_result'
+        $bResult = Require-Property $sample 'b_request_result'
+        $recordedParallel = Require-Property $sample 'parallel_dispatch_valid'
+        $recordedOverlap = Require-Property $sample 'execution_overlap'
+
+        Require-Equal $aResult 'Accepted' "$prefix.a_request_result"
+        Require-Equal $bResult 'Accepted' "$prefix.b_request_result"
+        if ($null -ne $aRequestId -and [long]$aRequestId -le 0) {
+            Add-Failure "$prefix.a_request_idは正数である必要があります (actual=$aRequestId)"
+        }
+        if ($null -ne $bRequestId -and [long]$bRequestId -le 0) {
+            Add-Failure "$prefix.b_request_idは正数である必要があります (actual=$bRequestId)"
+        }
+
+        $timestampsPresent = $null -notin @(
+            $requestStart, $aRequest, $bRequest, $dispatchComplete,
+            $aBegin, $bBegin, $aReady, $bReady)
+        $parallel = $false
+        $executionOverlap = $false
+        if ($timestampsPresent) {
+            $parallel = [long]$requestStart -gt 0 -and
+                [long]$aRequest -ge [long]$requestStart -and
+                [long]$bRequest -ge [long]$requestStart -and
+                [long]$dispatchComplete -ge [long]$aRequest -and
+                [long]$dispatchComplete -ge [long]$bRequest -and
+                [long]$dispatchComplete -le [math]::Min([long]$aReady, [long]$bReady) -and
+                $aResult -eq 'Accepted' -and $bResult -eq 'Accepted'
+            $executionOverlap = [math]::Max([long]$aBegin, [long]$bBegin) -lt
+                [math]::Min([long]$aReady, [long]$bReady)
+        }
+        Require-Equal $recordedParallel $parallel "$prefix.parallel_dispatch_valid"
+        Require-Equal $recordedParallel $true "$prefix.parallel_dispatch_valid"
+        Require-Equal $recordedOverlap $executionOverlap "$prefix.execution_overlap"
+        if ($parallel) { ++$parallelDispatchValidCount }
+        if ($executionOverlap) { ++$executionOverlapCount }
     }
+    Require-Equal (Require-Property $raw 'parallel_dispatch_valid_count') $expectedCount `
+        'parallel_dispatch_valid_count'
+    Require-Equal $parallelDispatchValidCount $expectedCount `
+        '再計算parallel_dispatch_valid_count'
+    Require-Equal (Require-Property $raw 'execution_overlap_count') $executionOverlapCount `
+        'execution_overlap_count'
+    Require-Equal (Require-Property $raw 'execution_nonoverlap_count') `
+        ($expectedCount - $executionOverlapCount) 'execution_nonoverlap_count'
 
     if ($displayedValues.Count -gt 0) {
         [double[]]$sorted = $displayedValues | ForEach-Object { [double]$_ } | Sort-Object

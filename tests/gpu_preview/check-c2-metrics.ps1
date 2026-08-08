@@ -38,7 +38,8 @@ switch ($Kind) {
     'seek' {
         if ($m.dual_seek_displayed_ms.Count -ne 64 -or $m.seek_display_mismatch -ne 0 -or
             $m.seek_timeout_count -ne 0 -or $m.seek_stale_completion_count -ne 0 -or
-            $m.seek_busy_acceptance_count -ne 0 -or $m.seek_overlap_count -eq 0 -or
+            $m.seek_busy_acceptance_count -ne 0 -or
+            $m.parallel_dispatch_valid_count -ne 64 -or
             $m.seek_concurrency_samples.Count -ne 64 -or
             $m.seek_completion_publish_reject_count -ne 0 -or
             $m.seek_completion_request_mismatch_count -ne 0) {

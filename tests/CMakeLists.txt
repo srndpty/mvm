@@ -769,7 +769,13 @@ mvm_add_test(compositor_qt_two_layers
     PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120
         FIXTURES_SETUP mvm_c2_playback)
 
-# P2-D4-2 formal checkerはGPU非依存の対照群と、1 fieldだけを壊したnegativeで固定する。
+# P2-D5-1のdispatch順序はGPU非依存のpure helperで固定する。
+add_executable(mvm_test_parallel_dispatch_order gpu_preview/test_parallel_dispatch_order.cpp)
+target_include_directories(mvm_test_parallel_dispatch_order PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_link_libraries(mvm_test_parallel_dispatch_order PRIVATE mvm::warnings)
+mvm_add_test(p2_parallel_dispatch_order COMMAND mvm_test_parallel_dispatch_order)
+
+# P2-D5-1 formal checkerはGPU非依存の対照群と、1 fieldだけを壊したnegativeで固定する。
 foreach(_p2_contract_case Good FormalGood NegativeInvariant NegativeSameDevice NegativeOutputSize
         NegativeBackend NegativeSeed NegativeFormalTiming NegativeScheduledHigh
         NegativeScheduledLow NegativeCoverage NegativeSourceFrameCount NegativeMissingPair
@@ -778,8 +784,10 @@ foreach(_p2_contract_case Good FormalGood NegativeInvariant NegativeSameDevice N
         NegativePrerollFrontB SeekGood NegativeSeekPublishReject
         NegativeSeekRequestMismatch NegativeSeekStaleCompletion
         NegativeSeekBusyAcceptance NegativeSeekStoppedSuperseded
-        NegativeSeekOverlapCount NegativeSeekConcurrencyCount
-        NegativeSeekSampleOverlap)
+        NegativeSeekConcurrencyCount SeekExecutionNonoverlapGood
+        FormalSeekGood NegativeParallelDispatchCount
+        NegativeParallelDispatchSample NegativeBRequestResult
+        NegativeDispatchAfterFirstReady)
     string(TOLOWER "${_p2_contract_case}" _p2_contract_name)
     mvm_add_test(p2_formal_checker_${_p2_contract_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File

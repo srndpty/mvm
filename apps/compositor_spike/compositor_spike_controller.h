@@ -2,6 +2,7 @@
 #define MVM_APPS_COMPOSITOR_SPIKE_CONTROLLER_H
 
 #include "app/preview/compositor_rhi_item.h"
+#include "core/mvm_parallel_dispatch.h"
 
 #include <QElapsedTimer>
 #include <QObject>
@@ -43,10 +44,18 @@ Q_SIGNALS:
 private:
     struct SeekConcurrencySample {
         long long requestStartQpc = 0;
+        long long aRequestQpc = 0;
+        long long bRequestQpc = 0;
+        long long dispatchCompleteQpc = 0;
         long long aBeginQpc = 0;
         long long aReadyQpc = 0;
         long long bBeginQpc = 0;
         long long bReadyQpc = 0;
+        unsigned long long aRequestId = 0;
+        unsigned long long bRequestId = 0;
+        gpu::SeekRequestResult aRequestResult = gpu::SeekRequestResult::RejectedInvalid;
+        gpu::SeekRequestResult bRequestResult = gpu::SeekRequestResult::RejectedInvalid;
+        bool dispatchOrderValid = false;
     };
     enum class Phase { WaitDevice, MarkerStart, MarkerWait, OutputPreflightWait, Warmup,
                        MeasurementResetStart, MeasurementResetWait, MeasurementPrimeStart,
@@ -102,6 +111,7 @@ private:
     QElapsedTimer waitTimer_;
     long long seekRequestStartQpc_ = 0;
     long long seekDecodeReadyQpc_ = 0;
+    core::ParallelDispatchOrder seekDispatchOrder_;
     gpu::SeekTicket seekTicketA_;
     gpu::SeekTicket seekTicketB_;
     gpu::SeekCompletion seekCompletionA_;

@@ -662,3 +662,59 @@ P2 formalが1 runでもMUST失敗したためP1 formal regressionは実行して
 したがって最終判定は **P2 FINAL FAIL** である。Playback gateとSeek latency/correctness gateは
 通過したが、採用したparallel dual-source architectureの1000/1000 overlap provenanceが
 成立しなかった。性能修正と再formalは次ラリーの対象とし、P3へは進まない。
+
+## 16. P2-D5-1 parallel dispatch contract correction
+
+### 16.1 [事実] P2-D4-2のFAILはhistorical resultとして保持する
+
+§15のP2 FINAL FAILと`build/ucrt64-release/p2-matrix-d4/`は、P2-D4-2 contractで
+取得した正式結果として正しい。raw、summary、判定は変更していない。
+
+P2-D4-2が要求した1000/1000 execution overlapは、controllerがA/B sourceへ並列に
+dispatchしたことに加えて、OSが両workerのexecution intervalを毎回物理的に重ねることまで
+要求していた。後者はparallel architectureの必要条件ではなく、thread schedulingの観測結果で
+ある。したがって「以前のFAILが誤りだった」とは扱わない。P2-D4-2 contractではFAILし、
+その後にcontract semanticsの過剰制約を修正してP2-D5-1で再評価する。
+
+### 16.2 [事実] P2-D5-1はparallel dispatchを直接検証する
+
+各seek sampleへrequest開始、A/B request、dispatch完了、A/B execution begin、A/B readyの
+各QPCと、A/B request ID、A/B request resultを記録する。controllerはA request、B request、
+dispatch完了の後にだけcompletion pollへ進む。pureな順序検査は
+`A dispatch -> B dispatch -> wait`を受理し、`A dispatch -> wait A -> B dispatch`を拒否する。
+
+formal checkerはA/B resultが`Accepted`、各requestがrequest開始以後、dispatch完了が両request
+以後かつfirst ready以前であることをsampleごとに再計算する。1000 seekでは
+`parallel_dispatch_valid_count == 1000`をMUSTとする。execution overlapは同じinterval式で
+引き続き保存するが、`execution_overlap_count`と`execution_nonoverlap_count`は診断値であり、
+単独ではformal PASS/FAILに使用しない。overlap率のthresholdは設けていない。
+
+### 16.3 [事実] short validationはparallel dispatch全件成立だった
+
+Release build、seed 20260808、fence backendで64 seek integrationと256 seek x 1 processを
+実行した。これは経路確認であり、P2 formal thresholdによる判定には使用しない。
+
+| seek | parallel dispatch valid | execution overlap | mismatch / timeout / stale / busy |
+| ---: | ---: | ---: | ---: |
+| 64 | 64 / 64 | 64 / 64 | 0 / 0 / 0 / 0 |
+| 256 | 256 / 256 | 256 / 256 | 0 / 0 / 0 / 0 |
+
+両方でpublish reject、request mismatch、stopped superseded、software fallback、device lostは0だった。
+256 seekではCPU full-frame readback、full-frame GPU copy、lifecycle violationも0で、teardownは
+成功した。execution overlapは観測値として報告するだけであり、この値を合否条件には戻さない。
+
+### 16.4 [事実] Release / Debug full CTestは各191/191通過した
+
+UCRT64のDLLを解決するPATHを明示し、共有proxy artifactの競合を避けるため直列で全登録testを
+実行した。Release / Debugとも191/191通過した。各191件にはperformance 11件とstability 1件を
+含む。P2-D5-1 checkerのpure順序検査、execution non-overlap対照、parallel dispatchのcount、
+sample、B request result、first-ready境界のnegativeもこの回帰に含まれる。format、lint、
+`git diff --check`も通過した。
+
+### 16.5 [未検証] P2-D5-1 formalはclean HEAD freeze後に実行する
+
+新しい正式出力先は`build/ucrt64-release/p2-matrix-d5/`、contract versionは`P2-D5-1`である。
+ユーザーが変更をcommitしたclean HEADからPlayback 3 runとSeek 3 runをすべて新規取得する。
+現時点ではformal未実行のため、§15の
+**P2 FINAL FAIL under P2-D4-2**が最後の正式判定である。P2-D5-1がPASSした場合だけP1 formal
+regressionへ進み、P1もPASSした場合だけP2 FINAL PASSへ更新する。P3には進まない。
