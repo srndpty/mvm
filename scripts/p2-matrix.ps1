@@ -63,6 +63,9 @@ function Get-Provenance {
 }
 
 $startProvenance = Get-Provenance
+if (-not $DryRun -and $startProvenance.dirty_worktree) {
+    throw 'P2 formal matrixはclean worktreeでのみ実行できます。変更をcommitしてから再実行してください'
+}
 $entries = [System.Collections.Generic.List[object]]::new()
 $matrixFailed = $false
 
@@ -188,7 +191,8 @@ $summary = [ordered]@{
     all_playback_runs_pass = $allPlayback
     all_seek_runs_pass = $allSeek
     dry_run_harness_pass = [bool]($DryRun -and $allPlayback -and $allSeek -and $provenanceUnchanged)
-    p2_pass = [bool]((-not $DryRun) -and $allPlayback -and $allSeek -and $provenanceUnchanged)
+    p2_pass = [bool]((-not $DryRun) -and (-not $startProvenance.dirty_worktree) -and
+        $allPlayback -and $allSeek -and $provenanceUnchanged)
 }
 
 $summaryPath = Join-Path $OutputDirectory 'summary.json'

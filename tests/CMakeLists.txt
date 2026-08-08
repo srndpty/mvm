@@ -770,7 +770,8 @@ mvm_add_test(compositor_qt_two_layers
         FIXTURES_SETUP mvm_c2_playback)
 
 # P2-D1 formal checkerはGPU非依存の対照群と、1 fieldだけを壊したnegativeで固定する。
-foreach(_p2_contract_case Good Negative)
+foreach(_p2_contract_case Good FormalGood NegativeInvariant NegativeSameDevice NegativeOutputSize
+        NegativeBackend NegativeSeed NegativeFormalTiming)
     string(TOLOWER "${_p2_contract_case}" _p2_contract_name)
     mvm_add_test(p2_formal_checker_${_p2_contract_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File

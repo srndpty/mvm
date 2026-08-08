@@ -48,6 +48,21 @@ Require-Equal (Require-Property $raw 'mode') $Mode.ToLowerInvariant() 'mode'
 Require-Equal (Require-Property $raw 'process_exit_code') 0 'JSON process_exit_code'
 Require-Equal $ProcessExitCode 0 '実process exit code'
 Require-Equal (Require-Property $raw 'formal_preflight') $true 'formal_preflight'
+Require-Equal (Require-Property $raw 'same_device_a') $true 'same_device_a'
+Require-Equal (Require-Property $raw 'same_device_b') $true 'same_device_b'
+Require-Equal (Require-Property $raw 'actual_output_width') 1920 'actual_output_width'
+Require-Equal (Require-Property $raw 'actual_output_height') 1080 'actual_output_height'
+Require-Equal (Require-Property $raw 'actual_gpu_completion_backend') 'fence' `
+    'actual_gpu_completion_backend'
+Require-Equal (Require-Property $raw 'configured_seed') 20260808 'configured_seed'
+$configuredWarmup = Require-Property $raw 'configured_warmup_seconds'
+$configuredMeasure = Require-Property $raw 'configured_measure_seconds'
+$configuredSeekCount = Require-Property $raw 'configured_seek_count'
+if (-not $DryRun) {
+    Require-Equal $configuredWarmup 5 'configured_warmup_seconds'
+    Require-Equal $configuredMeasure 60 'configured_measure_seconds'
+    Require-Equal $configuredSeekCount 1000 'configured_seek_count'
+}
 
 Require-Equal (Require-Property $raw 'marker_a_checked_count') 7 'marker_a_checked_count'
 Require-Equal (Require-Property $raw 'marker_b_checked_count') 7 'marker_b_checked_count'
@@ -119,7 +134,7 @@ if ($Mode -eq 'Playback') {
 } else {
     $displayedValues = @(Require-Property $raw 'dual_seek_displayed_ms')
     $decodeValues = @(Require-Property $raw 'dual_seek_decode_ready_ms')
-    $expectedCount = if ($DryRun) { [int](Require-Property $raw 'configured_seek_count') } else { 1000 }
+    $expectedCount = if ($DryRun) { [int]$configuredSeekCount } else { 1000 }
     Require-Equal $displayedValues.Count $expectedCount 'dual_seek_displayed_ms.Count'
     Require-Equal $decodeValues.Count $expectedCount 'dual_seek_decode_ready_ms.Count'
     Require-Zero $raw 'seek_display_mismatch'

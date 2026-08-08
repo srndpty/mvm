@@ -90,7 +90,11 @@ struct CompositorSpikeState {
     std::atomic<long long> lifecycleOrderViolationCount{0};
     std::atomic<long long> actualTargetProbeMismatch{0};
     std::atomic<long long> actualTargetProbeChecked{0};
+    std::atomic<bool> actualTargetProbeStarted{false};
     std::atomic<bool> actualTargetProbeDone{false};
+    std::atomic<int> actualOutputWidth{0};
+    std::atomic<int> actualOutputHeight{0};
+    std::string actualGpuCompletionBackend;
     CompositorMarkerProbe markerProbe;
     std::atomic<long long> markerAChecked{0};
     std::atomic<long long> markerBChecked{0};

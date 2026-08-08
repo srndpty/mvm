@@ -465,6 +465,10 @@ bool CompositorSpikeController::writeMetrics() {
                   {"measurement_elapsed_seconds", measureElapsedSeconds_},
                   {"same_device_a", a.decodeDevicePointer == state_->nativeDevicePointer.load()},
                   {"same_device_b", b.decodeDevicePointer == state_->nativeDevicePointer.load()},
+                  {"actual_output_width", state_->actualOutputWidth.load()},
+                  {"actual_output_height", state_->actualOutputHeight.load()},
+                  {"actual_gpu_completion_backend",
+                   QString::fromStdString(state_->actualGpuCompletionBackend)},
                   {"adapter_a", QString::fromStdString(a.adapter.description)},
                   {"adapter_b", QString::fromStdString(b.adapter.description)},
                   {"effective_fps", measureElapsedSeconds_ > 0

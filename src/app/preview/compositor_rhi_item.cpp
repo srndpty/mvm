@@ -55,6 +55,7 @@ protected:
         }
         nativeDevice_ = h->dev;
         nativeContext_ = h->context;
+        state_->actualGpuCompletionBackend = gpu::toString(state_->compositor.completionBackend());
         state_->nativeDevicePointer.store(reinterpret_cast<unsigned long long>(h->dev),
                                           std::memory_order_relaxed);
         state_->qtAdapter = state_->device.adapter();
@@ -139,6 +140,8 @@ protected:
         state_->logicalClearCount.fetch_add(1, std::memory_order_relaxed);
         cb->beginExternal();
         const QSize size = colorTexture()->pixelSize();
+        state_->actualOutputWidth.store(size.width(), std::memory_order_relaxed);
+        state_->actualOutputHeight.store(size.height(), std::memory_order_relaxed);
         const bool ok =
             state_->compositor.composeToTarget(frame, {rtv_, size.width(), size.height()}, err);
         cb->endExternal();
@@ -150,8 +153,11 @@ protected:
                 fail(state_->compositor.fatalReason());
             return;
         }
-        if (!state_->actualTargetProbeDone.exchange(true))
+        if (!state_->actualTargetProbeStarted.exchange(true, std::memory_order_acq_rel)) {
             runActualTargetProbe(frame, size);
+            // 4点すべてのreadback・比較とmismatch確定後にだけ完了を公開する。
+            state_->actualTargetProbeDone.store(true, std::memory_order_release);
+        }
         a->buffer().noteDisplayed(output);
         b->buffer().noteDisplayed(output);
         state_->ledger.record(frame, gpu::qpcTicks());
