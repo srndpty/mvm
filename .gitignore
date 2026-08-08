@@ -19,6 +19,7 @@ CMakeUserPresets.json
 # 必ず検査させるためリポジトリに入れる。
 # manifest.txt は C++ 側が読む行指向の版 (JSON parser を足さないため)。
 !/tests/assets/color/
+!/tests/assets/p2_compositor/
 
 # Frozen MSYS2 packages: large binaries, kept on disk for reproducible
 # rebuilds but not committed. docs/deps-lock.txt is the committed record.

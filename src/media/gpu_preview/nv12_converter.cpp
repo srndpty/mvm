@@ -36,7 +36,7 @@ cbuffer Params : register(b0)
     float4 uvRect;   // xy = offset, zw = scale
     float4 lum;      // x = yScale, y = yOffset, z = uvScale, w = sampleScale
     float4 mat;      // x = vr, y = ug, z = vg, w = ub
-    float4 misc;     // x = chroma neutral (8bit: 128/255, 10bit: 512/1023)
+    float4 misc;     // x = chroma neutral, y = straight layer opacity
 };
 
 Texture2DArray<float4> texLuma   : register(t0);
@@ -73,7 +73,7 @@ float4 ps_main(VSOut i) : SV_Target
     rgb.r = y + mat.x * c.y;
     rgb.g = y - mat.y * c.x - mat.z * c.y;
     rgb.b = y + mat.w * c.x;
-    return float4(saturate(rgb), 1.0);
+    return float4(saturate(rgb), saturate(misc.y));
 }
 )HLSL";
 
@@ -254,6 +254,14 @@ bool Nv12Converter::ensureShaders(std::string& err) {
     }
 
     D3D11_BLEND_DESC bl{};
+    bl.RenderTarget[0].BlendEnable = TRUE;
+    bl.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+    bl.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    bl.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    // clear alpha=1 と組み合わせ、preview output alphaを常に1に保つ。
+    bl.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+    bl.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+    bl.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
     bl.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
     rc = dev->CreateBlendState(&bl, &blend_);
     if (FAILED(rc)) {
@@ -429,7 +437,7 @@ void Nv12Converter::retireEntriesNotInEpoch(ResourceEpoch epoch, GpuRetirementQu
 
 bool Nv12Converter::drawInternal(const DecodedGpuFrame& frame, ID3D11RenderTargetView* rtv,
                                  const FitRect& viewport, const float uvRect[4], bool linearFilter,
-                                 std::string& err) {
+                                 float opacity, std::string& err) {
     SrvPair srv;
     if (!acquireSrvs(frame, srv, err))
         return false;
@@ -452,6 +460,7 @@ bool Nv12Converter::drawInternal(const DecodedGpuFrame& frame, ID3D11RenderTarge
     params.mat[2] = k.vg;
     params.mat[3] = k.ub;
     params.misc[0] = chromaNeutral;
+    params.misc[1] = opacity;
 
     ID3D11DeviceContext* ctx = shared_->context();
 
@@ -526,7 +535,74 @@ bool Nv12Converter::drawToRenderTarget(const DecodedGpuFrame& frame, ID3D11Rende
 
     const FitRect fit = aspectFit(frame.width, frame.height, targetWidth, targetHeight);
     const float uvRect[4] = {0.0f, 0.0f, 1.0f, 1.0f};
-    return drawInternal(frame, rtv, fit, uvRect, linearFilter, err);
+    return drawInternal(frame, rtv, fit, uvRect, linearFilter, 1.0f, err);
+}
+
+bool Nv12Converter::drawLayer(const DecodedGpuFrame& frame, ID3D11RenderTargetView* rtv,
+                              const FitRect& destination, const float sourceUv[4], float opacity,
+                              bool linearFilter, std::string& err) {
+    if (!ready_ || !rtv || !frame.valid() || destination.width <= 0 || destination.height <= 0 ||
+        opacity < 0.0f || opacity > 1.0f) {
+        err = "compositor layerの引数が不正です";
+        return false;
+    }
+    std::lock_guard<D3D11Lock> guard(shared_->lock());
+    return drawInternal(frame, rtv, destination, sourceUv, linearFilter, opacity, err);
+}
+
+// MVM_ALLOW_SMALL_REGION_READBACK
+bool Nv12Converter::ensureReadbackSurfaces(int width, int height, std::string& err) {
+    if (bandWidth_ == width && bandHeight_ == height)
+        return true;
+    safeRelease(bandRtv_);
+    safeRelease(bandTexture_);
+    safeRelease(bandStaging_);
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = static_cast<UINT>(width);
+    td.Height = static_cast<UINT>(height);
+    td.MipLevels = td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.BindFlags = D3D11_BIND_RENDER_TARGET;
+    HRESULT rc = shared_->device()->CreateTexture2D(&td, nullptr, &bandTexture_);
+    if (SUCCEEDED(rc))
+        rc = shared_->device()->CreateRenderTargetView(bandTexture_, nullptr, &bandRtv_);
+    if (SUCCEEDED(rc)) {
+        td.BindFlags = 0;
+        td.Usage = D3D11_USAGE_STAGING;
+        td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        rc = shared_->device()->CreateTexture2D(&td, nullptr, &bandStaging_);
+    }
+    if (FAILED(rc)) {
+        safeRelease(bandRtv_);
+        safeRelease(bandTexture_);
+        safeRelease(bandStaging_);
+        err = hr("小領域readback textureの生成", rc);
+        return false;
+    }
+    bandWidth_ = width;
+    bandHeight_ = height;
+    return true;
+}
+
+bool Nv12Converter::mapReadbackSurface(int width, int height, std::vector<unsigned char>& rgbaOut,
+                                       std::string& err) {
+    ID3D11DeviceContext* ctx = shared_->context();
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    const HRESULT rc = ctx->Map(bandStaging_, 0, D3D11_MAP_READ, 0, &mapped);
+    if (FAILED(rc)) {
+        err = hr("小領域stagingのMap", rc);
+        return false;
+    }
+    const size_t rowBytes = static_cast<size_t>(width) * 4;
+    rgbaOut.resize(rowBytes * static_cast<size_t>(height));
+    for (int row = 0; row < height; ++row)
+        std::memcpy(rgbaOut.data() + static_cast<size_t>(row) * rowBytes,
+                    static_cast<const unsigned char*>(mapped.pData) +
+                        static_cast<size_t>(row) * mapped.RowPitch,
+                    rowBytes);
+    ctx->Unmap(bandStaging_, 0);
+    return true;
 }
 
 // MVM_ALLOW_SMALL_REGION_READBACK
@@ -563,42 +639,10 @@ bool Nv12Converter::readSmallRegionTopLeft(const DecodedGpuFrame& frame, int ban
     }
 
     std::lock_guard<D3D11Lock> guard(shared_->lock());
-    ID3D11Device* dev = shared_->device();
     ID3D11DeviceContext* ctx = shared_->context();
 
-    if (bandWidth_ != bandWidth || bandHeight_ != bandHeight) {
-        safeRelease(bandRtv_);
-        safeRelease(bandTexture_);
-        safeRelease(bandStaging_);
-
-        D3D11_TEXTURE2D_DESC td{};
-        td.Width = static_cast<UINT>(bandWidth);
-        td.Height = static_cast<UINT>(bandHeight);
-        td.MipLevels = 1;
-        td.ArraySize = 1;
-        td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        td.SampleDesc.Count = 1;
-        td.Usage = D3D11_USAGE_DEFAULT;
-        td.BindFlags = D3D11_BIND_RENDER_TARGET;
-        HRESULT rc = dev->CreateTexture2D(&td, nullptr, &bandTexture_);
-        if (SUCCEEDED(rc))
-            rc = dev->CreateRenderTargetView(bandTexture_, nullptr, &bandRtv_);
-        if (SUCCEEDED(rc)) {
-            td.BindFlags = 0;
-            td.Usage = D3D11_USAGE_STAGING;
-            td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-            rc = dev->CreateTexture2D(&td, nullptr, &bandStaging_);
-        }
-        if (FAILED(rc)) {
-            safeRelease(bandRtv_);
-            safeRelease(bandTexture_);
-            safeRelease(bandStaging_);
-            err = hr("marker 帯用 texture の生成", rc);
-            return false;
-        }
-        bandWidth_ = bandWidth;
-        bandHeight_ = bandHeight;
-    }
+    if (!ensureReadbackSurfaces(bandWidth, bandHeight, err))
+        return false;
 
     // 表示と同じ shader で 1:1 に描く。
     // 別経路で読むと「表示は壊れているが marker は合う」状態を作ってしまう。
@@ -606,28 +650,12 @@ bool Nv12Converter::readSmallRegionTopLeft(const DecodedGpuFrame& frame, int ban
     const float uvRect[4] = {0.0f, 0.0f,
                              static_cast<float>(bandWidth) / static_cast<float>(frame.width),
                              static_cast<float>(bandHeight) / static_cast<float>(frame.height)};
-    if (!drawInternal(frame, bandRtv_, vp, uvRect, /*linearFilter=*/false, err))
+    if (!drawInternal(frame, bandRtv_, vp, uvRect, /*linearFilter=*/false, 1.0f, err))
         return false;
 
     ctx->CopyResource(bandStaging_, bandTexture_);
 
-    D3D11_MAPPED_SUBRESOURCE m{};
-    const HRESULT rc = ctx->Map(bandStaging_, 0, D3D11_MAP_READ, 0, &m);
-    if (FAILED(rc)) {
-        err = hr("marker 帯 staging の Map", rc);
-        return false;
-    }
-
-    const size_t bw = static_cast<size_t>(bandWidth);
-    const size_t bh = static_cast<size_t>(bandHeight);
-    rgbaOut.resize(bw * bh * 4);
-    const auto* src = static_cast<const unsigned char*>(m.pData);
-    for (int y = 0; y < bandHeight; y++) {
-        std::memcpy(rgbaOut.data() + static_cast<size_t>(y) * bw * 4,
-                    src + static_cast<size_t>(y) * m.RowPitch, bw * 4);
-    }
-    ctx->Unmap(bandStaging_, 0);
-    return true;
+    return mapReadbackSurface(bandWidth, bandHeight, rgbaOut, err);
 }
 
 bool Nv12Converter::readMarkerBand(const DecodedGpuFrame& frame, int bandWidth, int bandHeight,
@@ -644,6 +672,35 @@ bool Nv12Converter::readColorPatches(const DecodedGpuFrame& frame, int patchW, i
     if (!readSmallRegionTopLeft(frame, patchW, patchH, rgbaOut, err))
         return false;
     counters_->noteColorPatchReadback();
+    return true;
+}
+
+bool Nv12Converter::readOutputProbe(ID3D11Texture2D* texture, int x, int y, int width, int height,
+                                    std::vector<unsigned char>& rgbaOut, std::string& err) {
+    if (!ready_ || !texture || x < 0 || y < 0 || width <= 0 || height <= 0 ||
+        static_cast<long long>(width) * height * 4 > kMaxSmallRegionBytes) {
+        err = "output probeの小領域が不正です";
+        return false;
+    }
+    D3D11_TEXTURE2D_DESC sourceDesc{};
+    texture->GetDesc(&sourceDesc);
+    if (sourceDesc.Format != DXGI_FORMAT_R8G8B8A8_UNORM ||
+        x + width > static_cast<int>(sourceDesc.Width) ||
+        y + height > static_cast<int>(sourceDesc.Height)) {
+        err = "output probeがrender targetの範囲または形式と一致しません";
+        return false;
+    }
+    std::lock_guard<D3D11Lock> guard(shared_->lock());
+    ID3D11DeviceContext* ctx = shared_->context();
+    if (!ensureReadbackSurfaces(width, height, err))
+        return false;
+    const D3D11_BOX box{static_cast<UINT>(x),         static_cast<UINT>(y),          0,
+                        static_cast<UINT>(x + width), static_cast<UINT>(y + height), 1};
+    ctx->CopySubresourceRegion(bandTexture_, 0, 0, 0, 0, texture, 0, &box);
+    ctx->CopyResource(bandStaging_, bandTexture_);
+    if (!mapReadbackSurface(width, height, rgbaOut, err))
+        return false;
+    counters_->noteOutputProbeReadback();
     return true;
 }
 

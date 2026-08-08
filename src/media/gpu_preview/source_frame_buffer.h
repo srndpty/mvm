@@ -22,6 +22,10 @@ public:
     bool take(DecodedGpuFrame& frame);
     bool peekFrontIdentity(SourceFrameIdentity& identity) const;
     bool takeExact(long long frameNumber, DecodedGpuFrame& frame);
+    // 2 source の front を単一 transaction で取得する。両方が requested と
+    // 一致する場合だけ commit し、一方でも変化していればどちらも残す。
+    static bool takeExactPair(SourceFrameBuffer& a, SourceFrameBuffer& b, long long frameNumber,
+                              DecodedGpuFrame& frameA, DecodedGpuFrame& frameB);
     size_t discardBefore(long long frameNumber);
     void noteDisplayed(long long frameNumber);
     bool waitForSpace(int timeoutMs);

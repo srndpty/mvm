@@ -27,6 +27,7 @@ struct ExactPairingCounters {
     long long mixedFrameRejected = 0;
     long long staleGenerationRejected = 0;
     long long futureGenerationRejected = 0;
+    long long partialPairConsumeCount = 0;
 };
 
 // 2本のsource-local bufferから同じoutput frame番号だけを取り出す。

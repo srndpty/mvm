@@ -29,8 +29,7 @@ PairResult ExactFramePairer::tryPair(long long outputFrameNumber, ComposedFrame&
 
     DecodedGpuFrame frameA;
     DecodedGpuFrame frameB;
-    if (!sourceA_.takeExact(outputFrameNumber, frameA) ||
-        !sourceB_.takeExact(outputFrameNumber, frameB)) {
+    if (!SourceFrameBuffer::takeExactPair(sourceA_, sourceB_, outputFrameNumber, frameA, frameB)) {
         ++counters_.mixedFrameRejected;
         return PairResult::MixedFrame;
     }
