@@ -769,6 +769,17 @@ mvm_add_test(compositor_qt_two_layers
     PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120
         FIXTURES_SETUP mvm_c2_playback)
 
+# P2-D1 formal checkerはGPU非依存の対照群と、1 fieldだけを壊したnegativeで固定する。
+foreach(_p2_contract_case Good Negative)
+    string(TOLOWER "${_p2_contract_case}" _p2_contract_name)
+    mvm_add_test(p2_formal_checker_${_p2_contract_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-contract.ps1"
+            -Case ${_p2_contract_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-contract.ps1"
+            -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-contract-${_p2_contract_name}.json")
+endforeach()
+
 foreach(_kind_name actual_device no_full_frame_copy actual_target_probe shutdown)
     if(_kind_name STREQUAL "actual_device")
         set(_kind device)

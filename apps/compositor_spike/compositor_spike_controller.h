@@ -25,6 +25,7 @@ struct CompositorSpikeConfig {
     CompositorMode mode = CompositorMode::Playback;
     gpu::GpuCompletionBackend completion = gpu::GpuCompletionBackend::Fence;
     QString testFault;
+    bool formalPreflight = false;
 };
 
 class CompositorSpikeController final : public QObject {
@@ -38,10 +39,14 @@ Q_SIGNALS:
     void finished();
 
 private:
-    enum class Phase { WaitDevice, Warmup, Measure, SeekStart, SeekWait, LayoutStart, LayoutWait,
-                       ShutdownWait, Done };
+    enum class Phase { WaitDevice, MarkerStart, MarkerWait, OutputPreflightWait, Warmup,
+                       MeasureStartWait, Measure, MeasureStopWait, SeekStart, SeekWait,
+                       LayoutStart, LayoutWait, ShutdownWait, Done };
     void tick();
     bool startWorkers();
+    void startMarkerProbe();
+    void pollMarkerProbe();
+    bool resetAfterMarkerPreflight();
     void startSeek();
     void pollSeek();
     void startLayoutChange();
@@ -58,13 +63,12 @@ private:
     QElapsedTimer phaseTimer_;
     Phase phase_ = Phase::WaitDevice;
     int exitCode_ = 0;
-    long long displayedAtMeasureStart_ = 0;
-    long long droppedAtMeasureStart_ = 0;
-    long long scheduledAtMeasureStart_ = 0;
-    long long clearsAtMeasureStart_ = 0;
-    long long presentsAtMeasureStart_ = 0;
+    CompositorMeasurementCounters measurementStart_;
+    CompositorMeasurementCounters measurementStop_;
     double measureElapsedSeconds_ = 0;
     std::vector<long long> seekTargets_;
+    const std::vector<long long> markerTargets_{0, 1, 137, 299, 600, 1799, 3599};
+    size_t markerIndex_ = 0;
     size_t seekIndex_ = 0;
     unsigned long long waitBaseline_ = 0;
     gpu::CompositionDisplayExpectation waitExpectation_;

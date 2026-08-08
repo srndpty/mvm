@@ -14,6 +14,45 @@
 
 namespace mvm::app {
 
+struct CompositorMeasurementCounters {
+    long long qpc = 0;
+    long long compositionRequested = 0;
+    long long compositionDrawn = 0;
+    long long gpuSubmission = 0;
+    long long layerDraw = 0;
+    long long logicalClear = 0;
+    long long scheduled = 0;
+    long long displayed = 0;
+    long long dropped = 0;
+    long long dropSchedulerDeadline = 0;
+    long long dropMissingSourceA = 0;
+    long long dropMissingSourceB = 0;
+    long long dropMissingBoth = 0;
+    long long dropStaleGeneration = 0;
+    long long dropFutureGeneration = 0;
+    long long dropStaleCompositionEpoch = 0;
+    long long dropRenderFailure = 0;
+    long long presentCallback = 0;
+    long long repeatedPresent = 0;
+    long long partialGpuIssueFailure = 0;
+    long long completionPollFailure = 0;
+    long long untrackedSubmission = 0;
+};
+
+struct CompositorMarkerProbe {
+    std::mutex mutex;
+    bool requested = false;
+    bool done = false;
+    long long expectedFrame = -1;
+    gpu::DecodedGpuFrame frameA;
+    gpu::DecodedGpuFrame frameB;
+    long long markerA = -1;
+    long long markerB = -1;
+    bool syncA = false;
+    bool syncB = false;
+    std::string error;
+};
+
 struct CompositorSpikeState {
     gpu::SharedD3D11Device device;
     gpu::ReadbackCounters readbacks;
@@ -38,6 +77,10 @@ struct CompositorSpikeState {
     std::atomic<long long> missingPairDropCount{0};
     std::atomic<long long> missingSourceADropCount{0};
     std::atomic<long long> missingSourceBDropCount{0};
+    std::atomic<long long> missingBothDropCount{0};
+    std::atomic<long long> staleGenerationDropCount{0};
+    std::atomic<long long> futureGenerationDropCount{0};
+    std::atomic<long long> staleCompositionEpochDropCount{0};
     std::atomic<long long> displayedCompositionCount{0};
     std::atomic<long long> presentCallbackCount{0};
     std::atomic<long long> repeatedPresentCount{0};
@@ -46,7 +89,23 @@ struct CompositorSpikeState {
     std::atomic<long long> deviceLostCount{0};
     std::atomic<long long> lifecycleOrderViolationCount{0};
     std::atomic<long long> actualTargetProbeMismatch{0};
+    std::atomic<long long> actualTargetProbeChecked{0};
     std::atomic<bool> actualTargetProbeDone{false};
+    CompositorMarkerProbe markerProbe;
+    std::atomic<long long> markerAChecked{0};
+    std::atomic<long long> markerBChecked{0};
+    std::atomic<long long> markerAMismatch{0};
+    std::atomic<long long> markerBMismatch{0};
+
+    // render threadが境界snapshotを作る。これによりwarmup中のGPU commandを
+    // measurementへ混ぜず、全counterを同じ区間で差分化する。
+    std::atomic<bool> measurementStartRequested{false};
+    std::atomic<bool> measurementStartCaptured{false};
+    std::atomic<bool> measurementStopRequested{false};
+    std::atomic<bool> measurementStopCaptured{false};
+    std::mutex measurementMutex;
+    CompositorMeasurementCounters measurementStart;
+    CompositorMeasurementCounters measurementStop;
     std::atomic<unsigned long long> nativeDevicePointer{0};
     gpu::AdapterInfo qtAdapter;
     std::mutex errorMutex;
