@@ -43,7 +43,7 @@ try {
 }
 
 Require-Equal (Require-Property $raw 'schema') 'mvm-p2-formal-1' 'schema'
-Require-Equal (Require-Property $raw 'formal_contract_version') 'P2-D4-1' 'formal_contract_version'
+Require-Equal (Require-Property $raw 'formal_contract_version') 'P2-D4-2' 'formal_contract_version'
 Require-Equal (Require-Property $raw 'mode') $Mode.ToLowerInvariant() 'mode'
 Require-Equal (Require-Property $raw 'process_exit_code') 0 'JSON process_exit_code'
 Require-Equal $ProcessExitCode 0 '実process exit code'
@@ -84,6 +84,22 @@ Require-Equal (Require-Property $raw 'teardown_success') $true 'teardown_success
 Require-Equal (Require-Property $raw 'final_report_written_after_teardown') $true 'final_report_written_after_teardown'
 
 if ($Mode -eq 'Playback') {
+    Require-Equal (Require-Property $raw 'configured_measurement_preroll_frames') 8 `
+        'configured_measurement_preroll_frames'
+    Require-Equal (Require-Property $raw 'measurement_preroll_ok') $true `
+        'measurement_preroll_ok'
+    $prerollDepthA = Require-Property $raw 'measurement_preroll_depth_a'
+    $prerollDepthB = Require-Property $raw 'measurement_preroll_depth_b'
+    if ($null -ne $prerollDepthA -and [long]$prerollDepthA -lt 8) {
+        Add-Failure "measurement_preroll_depth_aは8以上が必要です (actual=$prerollDepthA)"
+    }
+    if ($null -ne $prerollDepthB -and [long]$prerollDepthB -lt 8) {
+        Add-Failure "measurement_preroll_depth_bは8以上が必要です (actual=$prerollDepthB)"
+    }
+    Require-Equal (Require-Property $raw 'measurement_preroll_front_a') 0 `
+        'measurement_preroll_front_a'
+    Require-Equal (Require-Property $raw 'measurement_preroll_front_b') 0 `
+        'measurement_preroll_front_b'
     $sourceAFrames = Require-Property $raw 'source_a_frame_count'
     $sourceBFrames = Require-Property $raw 'source_b_frame_count'
     $requiredFrames = Require-Property $raw 'required_measurement_frame_count'
@@ -165,6 +181,8 @@ if ($Mode -eq 'Playback') {
     Require-Equal $decodeValues.Count $expectedCount 'dual_seek_decode_ready_ms.Count'
     Require-Zero $raw 'seek_display_mismatch'
     Require-Zero $raw 'seek_timeout_count'
+    Require-Zero $raw 'seek_completion_publish_reject_count'
+    Require-Zero $raw 'seek_completion_request_mismatch_count'
     Require-Zero $raw 'untracked_submission_count'
     Require-Zero $raw 'completion_poll_failure_count'
 

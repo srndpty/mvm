@@ -38,6 +38,50 @@ struct SeekCompletion {
 
 enum class SeekWaitResult { Ready, Timeout, StaleTicket };
 
+enum class SeekCompletionPublishResult {
+    Published,
+    RejectedNoOutstanding,
+    RejectedAlreadyPublished,
+    RejectedRequestMismatch,
+    RejectedStoppedSuperseded
+};
+
+enum class SeekExecutionPhase {
+    Idle,
+    Queued,
+    WaitingDecoderMutex,
+    DecoderSeek,
+    GenerationReset,
+    RequestExactFrame,
+    SubmitExactFrame,
+    PublishingCompletion,
+    Completed
+};
+
+struct SourceSeekMailboxSnapshot {
+    bool stopped = true;
+    bool outstanding = false;
+    bool pending = false;
+    bool completionReady = false;
+    SeekTicket currentTicket;
+    unsigned long long completionRequestId = 0;
+};
+
+struct SourceSeekDiagnosticSnapshot {
+    SeekExecutionPhase phase = SeekExecutionPhase::Idle;
+    unsigned long long requestId = 0;
+    long long targetFrame = -1;
+    long long phaseEnterQpc = 0;
+    long long lastProgressQpc = 0;
+    SourceSeekMailboxSnapshot mailbox;
+    long long completionPublishRejectCount = 0;
+    long long completionRequestMismatchCount = 0;
+    long long completionStoppedSupersededCount = 0;
+};
+
+const char* toString(SeekCompletionPublishResult result);
+const char* toString(SeekExecutionPhase phase);
+
 // sourceごとに1件だけを受理するseek mailbox。decoderやGPUに依存しないため、
 // request identity / busy / stale / stop wakeを決定論的に検査できる。
 class SourceSeekMailbox {
@@ -46,11 +90,12 @@ public:
     SeekRequestResult request(long long frameNumber, long long requestQpc, SeekTicket& ticket,
                               std::string& err);
     bool takePending(SeekTicket& ticket, long long& requestQpc);
-    void publish(const SeekCompletion& completion);
+    SeekCompletionPublishResult publish(const SeekCompletion& completion);
     SeekWaitResult wait(const SeekTicket& ticket, int timeoutMs, SeekCompletion& completion);
     void stop();
     bool hasPending() const;
     bool hasOutstanding() const;
+    SourceSeekMailboxSnapshot snapshot() const;
 
 private:
     mutable std::mutex mutex_;
@@ -120,6 +165,7 @@ public:
     const SourceFrameBuffer& buffer() const { return buffer_; }
 
     SourceDecoderSnapshot snapshot() const;
+    SourceSeekDiagnosticSnapshot seekDiagnosticSnapshot() const;
 
     bool running() const { return running_.load(std::memory_order_acquire); }
 
@@ -136,6 +182,7 @@ private:
     bool submitWithBackpressure(const DecodedGpuFrame& frame, std::string& err);
     bool validateTextureDevice(const DecodedGpuFrame& frame, std::string& err);
     void noteFatal(const std::string& err);
+    void setSeekPhase(SeekExecutionPhase phase, const SeekTicket& ticket);
 
     SourceId sourceId_{};
     SharedD3D11Device& device_;
@@ -157,6 +204,14 @@ private:
     std::atomic<bool> playing_{false};
     std::atomic<bool> eof_{false};
     std::atomic<bool> joined_{true};
+    std::atomic<SeekExecutionPhase> seekPhase_{SeekExecutionPhase::Idle};
+    std::atomic<unsigned long long> seekRequestId_{0};
+    std::atomic<long long> seekTargetFrame_{-1};
+    std::atomic<long long> seekPhaseEnterQpc_{0};
+    std::atomic<long long> seekLastProgressQpc_{0};
+    std::atomic<long long> seekCompletionPublishRejectCount_{0};
+    std::atomic<long long> seekCompletionRequestMismatchCount_{0};
+    std::atomic<long long> seekCompletionStoppedSupersededCount_{0};
 };
 
 } // namespace mvm::gpu

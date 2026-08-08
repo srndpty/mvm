@@ -4,19 +4,25 @@ param(
         'NegativeOutputSize', 'NegativeBackend', 'NegativeSeed',
         'NegativeFormalTiming', 'NegativeScheduledHigh', 'NegativeScheduledLow',
         'NegativeCoverage', 'NegativeSourceFrameCount', 'NegativeMissingPair',
-        'NegativeEofA', 'NegativeEofB')][string]$Case,
+        'NegativeEofA', 'NegativeEofB', 'NegativePrerollConfigured',
+        'NegativePrerollOk', 'NegativePrerollDepthA', 'NegativePrerollDepthB',
+        'NegativePrerollFrontA', 'NegativePrerollFrontB', 'SeekGood',
+        'NegativeSeekPublishReject', 'NegativeSeekRequestMismatch')][string]$Case,
     [Parameter(Mandatory)][string]$Checker,
     [Parameter(Mandatory)][string]$Output
 )
 $ErrorActionPreference = 'Stop'
 
 $raw = [ordered]@{
-    schema='mvm-p2-formal-1'; formal_contract_version='P2-D4-1'; mode='playback'
+    schema='mvm-p2-formal-1'; formal_contract_version='P2-D4-2'; mode='playback'
     formal_preflight=$true; process_exit_code=0
     same_device_a=$true; same_device_b=$true
     actual_output_width=1920; actual_output_height=1080
     actual_gpu_completion_backend='fence'; configured_seed=20260808
     configured_warmup_seconds=1; configured_measure_seconds=2; configured_seek_count=16
+    configured_measurement_preroll_frames=8; measurement_preroll_ok=$true
+    measurement_preroll_depth_a=8; measurement_preroll_depth_b=8
+    measurement_preroll_front_a=0; measurement_preroll_front_b=0
     source_a_frame_count=3600; source_b_frame_count=3600
     required_measurement_frame_count=120; source_coverage_ok=$true
     marker_a_checked_count=7; marker_b_checked_count=7
@@ -38,7 +44,14 @@ $raw = [ordered]@{
     measurement_drop_stale_composition_epoch=0; measurement_drop_render_failure=0
     measurement_untracked_submission_count=0; measurement_completion_poll_failure_count=0
     measurement_partial_gpu_issue_failure_count=0; effective_fps=60.0; drop_rate=0.0
+    dual_seek_displayed_ms=@(1.0) * 16; dual_seek_decode_ready_ms=@(0.5) * 16
+    dual_seek_displayed_p95_ms=1.0; dual_seek_displayed_observed_max_ms=1.0
+    seek_display_mismatch=0; seek_timeout_count=0; untracked_submission_count=0
+    completion_poll_failure_count=0; seek_completion_publish_reject_count=0
+    seek_completion_request_mismatch_count=0
 }
+$seekCases = @('SeekGood', 'NegativeSeekPublishReject', 'NegativeSeekRequestMismatch')
+if ($Case -in $seekCases) { $raw.mode = 'seek' }
 $formalCases = @(
     'FormalGood', 'NegativeFormalTiming', 'NegativeScheduledHigh',
     'NegativeScheduledLow', 'NegativeCoverage', 'NegativeSourceFrameCount',
@@ -70,16 +83,25 @@ switch ($Case) {
     'NegativeMissingPair' { $raw.measurement_missing_pair_count = 1 }
     'NegativeEofA' { $raw.measurement_source_a_eof_count = 1 }
     'NegativeEofB' { $raw.measurement_source_b_eof_count = 1 }
+    'NegativePrerollConfigured' { $raw.configured_measurement_preroll_frames = 7 }
+    'NegativePrerollOk' { $raw.measurement_preroll_ok = $false }
+    'NegativePrerollDepthA' { $raw.measurement_preroll_depth_a = 7 }
+    'NegativePrerollDepthB' { $raw.measurement_preroll_depth_b = 7 }
+    'NegativePrerollFrontA' { $raw.measurement_preroll_front_a = 1 }
+    'NegativePrerollFrontB' { $raw.measurement_preroll_front_b = 1 }
+    'NegativeSeekPublishReject' { $raw.seek_completion_publish_reject_count = 1 }
+    'NegativeSeekRequestMismatch' { $raw.seek_completion_request_mismatch_count = 1 }
 }
 $raw | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $Output -Encoding utf8
 $formal = $Case -in $formalCases
 if ($formal) {
     & pwsh -NoProfile -File $Checker -Json $Output -Mode Playback -ProcessExitCode 0
 } else {
-    & pwsh -NoProfile -File $Checker -Json $Output -Mode Playback -ProcessExitCode 0 -DryRun
+    $mode = if ($Case -in $seekCases) { 'Seek' } else { 'Playback' }
+    & pwsh -NoProfile -File $Checker -Json $Output -Mode $mode -ProcessExitCode 0 -DryRun
 }
 $actual = $LASTEXITCODE
-$expected = if ($Case -in @('Good', 'FormalGood')) { 0 } else { 3 }
+$expected = if ($Case -in @('Good', 'FormalGood', 'SeekGood')) { 0 } else { 3 }
 if ($actual -ne $expected) {
     throw "$Case contract testの終了codeが違います: expected=$expected actual=$actual"
 }

@@ -147,7 +147,7 @@ $allSeek = $seekEntries.Count -eq $runCount -and
     @($seekEntries | Where-Object { -not $_.pass }).Count -eq 0
 $summary = [ordered]@{
     schema = 'mvm-p2-matrix-summary-1'
-    formal_contract_version = 'P2-D4-1'
+    formal_contract_version = 'P2-D4-2'
     dry_run = [bool]$DryRun
     git_commit = $startProvenance.git_commit
     dirty_worktree = $startProvenance.dirty_worktree

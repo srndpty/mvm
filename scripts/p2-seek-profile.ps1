@@ -11,7 +11,7 @@ Set-StrictMode -Version Latest
 $repo = Split-Path -Parent $PSScriptRoot
 $build = Join-Path $repo 'build\ucrt64-release'
 $exe = Join-Path $build 'bin\mvm_compositor_spike.exe'
-if (-not $OutputDirectory) { $OutputDirectory = Join-Path $build 'p2-seek-profile-d4b' }
+if (-not $OutputDirectory) { $OutputDirectory = Join-Path $build 'p2-seek-profile-d4c' }
 if (-not $SourceA) { $SourceA = Join-Path $repo 'tests\assets\benchmark\v1080p60_h264.mp4' }
 if (-not $SourceB) { $SourceB = Join-Path $repo 'tests\assets\benchmark\v1080p60_hevc.mp4' }
 foreach ($required in @($exe, $SourceA, $SourceB)) {
@@ -38,6 +38,8 @@ foreach ($run in 1..3) {
         $raw.seek_overlap_count -eq 0 -or $raw.seek_display_mismatch -ne 0 -or
         $raw.seek_timeout_count -ne 0 -or $raw.seek_stale_completion_count -ne 0 -or
         $raw.seek_busy_acceptance_count -ne 0 -or $raw.software_fallback_count -ne 0 -or
+        $raw.seek_completion_publish_reject_count -ne 0 -or
+        $raw.seek_completion_request_mismatch_count -ne 0 -or
         $raw.cpu_full_frame_readback_count -ne 0 -or $raw.device_lost_count -ne 0 -or
         $raw.worker_join_leak_count -ne 0) {
         throw "seek profile run $run のJSON契約が不正です"
@@ -51,6 +53,8 @@ foreach ($run in 1..3) {
         timeout = $raw.seek_timeout_count
         stale_completion = $raw.seek_stale_completion_count
         busy_acceptance = $raw.seek_busy_acceptance_count
+        completion_publish_reject = $raw.seek_completion_publish_reject_count
+        completion_request_mismatch = $raw.seek_completion_request_mismatch_count
         overlap_count = $raw.seek_overlap_count
     }
 }

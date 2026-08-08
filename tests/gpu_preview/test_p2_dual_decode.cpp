@@ -9,10 +9,12 @@
 #include "media/gpu_preview/source_registry.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <random>
 #include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -29,6 +31,62 @@ constexpr int kNoDevice = 5;
 int fail(const std::string& message, int code = kMismatch) {
     std::fprintf(stderr, "FAIL: %s\n", message.c_str());
     return code;
+}
+
+std::string seekDiagnostic(const char* source, const SourceDecodeWorker& worker) {
+    const auto value = worker.seekDiagnosticSnapshot();
+    std::ostringstream out;
+    out << "source=" << source << " phase=" << toString(value.phase)
+        << " request_id=" << value.requestId << " target=" << value.targetFrame
+        << " phase_enter_qpc=" << value.phaseEnterQpc
+        << " last_progress_qpc=" << value.lastProgressQpc
+        << " mailbox_stopped=" << value.mailbox.stopped
+        << " mailbox_outstanding=" << value.mailbox.outstanding
+        << " mailbox_pending=" << value.mailbox.pending
+        << " completion_ready=" << value.mailbox.completionReady
+        << " mailbox_ticket_id=" << value.mailbox.currentTicket.requestId
+        << " mailbox_target=" << value.mailbox.currentTicket.targetFrame
+        << " completion_request_id=" << value.mailbox.completionRequestId
+        << " publish_rejects=" << value.completionPublishRejectCount
+        << " request_mismatches=" << value.completionRequestMismatchCount
+        << " stopped_superseded=" << value.completionStoppedSupersededCount;
+    return out.str();
+}
+
+bool waitForParallelSeek(SourceDecodeWorker& workerA, SourceDecodeWorker& workerB,
+                         const SeekTicket& ticketA, const SeekTicket& ticketB,
+                         SeekCompletion& completionA, SeekCompletion& completionB,
+                         std::string& err) {
+    const long long deadline = qpcTicks() + static_cast<long long>(qpcFrequency()) * 30;
+    bool readyA = false;
+    bool readyB = false;
+    while (!readyA || !readyB) {
+        if (!readyA) {
+            const auto waited = workerA.waitSeek(ticketA, 0, completionA);
+            if (waited == SeekWaitResult::StaleTicket) {
+                err = "Source A completionがstaleです";
+                return false;
+            }
+            readyA = waited == SeekWaitResult::Ready;
+        }
+        if (!readyB) {
+            const auto waited = workerB.waitSeek(ticketB, 0, completionB);
+            if (waited == SeekWaitResult::StaleTicket) {
+                err = "Source B completionがstaleです";
+                return false;
+            }
+            readyB = waited == SeekWaitResult::Ready;
+        }
+        if (readyA && readyB)
+            return true;
+        if (qpcTicks() >= deadline) {
+            err = "A/B parallel seek共通30秒deadline timeout: " + seekDiagnostic("A", workerA) +
+                  " | " + seekDiagnostic("B", workerB);
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
 }
 
 class OwnedDevice {
@@ -272,6 +330,11 @@ int run(const std::string& pathA, const std::string& pathB) {
         SeekTicket onlyA;
         if (workerA.requestSeek(0, onlyA, err) != SeekRequestResult::Accepted)
             return fail("Source A単独async seekをdispatchできません: " + err);
+        workerA.play();
+        SeekTicket rejectedBusy;
+        if (workerA.requestSeek(1, rejectedBusy, err) != SeekRequestResult::RejectedBusy ||
+            !workerA.playing())
+            return fail("busy seek拒否がplayback状態を変更しました");
         SeekCompletion completionA;
         if (workerA.waitSeek(onlyA, 30000, completionA) != SeekWaitResult::Ready ||
             completionA.status != SeekCompletionStatus::Completed ||
@@ -283,6 +346,12 @@ int run(const std::string& pathA, const std::string& pathB) {
             return fail("Source A単独async seek後のbuffer先頭がexact targetではありません");
 
         const SourceGeneration afterA = workerA.snapshot().sourceGeneration;
+        workerB.play();
+        SeekTicket rejectedInvalid;
+        if (workerB.requestSeek(-1, rejectedInvalid, err) != SeekRequestResult::RejectedInvalid ||
+            !workerB.playing())
+            return fail("invalid seek拒否がplayback状態を変更しました");
+        workerB.pause();
         SeekTicket onlyB;
         if (workerB.requestSeek(0, onlyB, err) != SeekRequestResult::Accepted)
             return fail("Source B単独async seekをdispatchできません: " + err);
@@ -330,18 +399,8 @@ int run(const std::string& pathA, const std::string& pathB) {
 
         SeekCompletion completionA;
         SeekCompletion completionB;
-        const SeekWaitResult waitA = workerA.waitSeek(ticketA, 30000, completionA);
-        const SeekWaitResult waitB = workerB.waitSeek(ticketB, 30000, completionB);
-        if (waitA != SeekWaitResult::Ready || waitB != SeekWaitResult::Ready) {
-            const auto timedA = workerA.snapshot();
-            const auto timedB = workerB.snapshot();
-            return fail("A/B parallel seek completionがtimeoutしました: target=" +
-                        std::to_string(requested) +
-                        " waitA=" + std::to_string(static_cast<int>(waitA)) +
-                        " waitB=" + std::to_string(static_cast<int>(waitB)) +
-                        " depthA=" + std::to_string(timedA.bufferDepth) +
-                        " depthB=" + std::to_string(timedB.bufferDepth));
-        }
+        if (!waitForParallelSeek(workerA, workerB, ticketA, ticketB, completionA, completionB, err))
+            return fail("target=" + std::to_string(requested) + " " + err);
         if (completionA.status != SeekCompletionStatus::Completed ||
             completionA.decodedFrameNumber != requested ||
             completionA.requestId != ticketA.requestId)
@@ -385,6 +444,13 @@ int run(const std::string& pathA, const std::string& pathB) {
     decodedB = workerB.snapshot();
     if (decodedA.softwareFrameRejectCount != 0 || decodedB.softwareFrameRejectCount != 0)
         return fail("software frameがdecode経路へ入りました");
+    const auto seekDiagnosticA = workerA.seekDiagnosticSnapshot();
+    const auto seekDiagnosticB = workerB.seekDiagnosticSnapshot();
+    if (seekDiagnosticA.completionPublishRejectCount != 0 ||
+        seekDiagnosticB.completionPublishRejectCount != 0 ||
+        seekDiagnosticA.completionRequestMismatchCount != 0 ||
+        seekDiagnosticB.completionRequestMismatchCount != 0)
+        return fail("seek completion publish reject/mismatch counterが0ではありません");
 
     std::fprintf(stderr, "[source_a_stop_does_not_stop_b]\n");
     double resetMs = 0.0;

@@ -49,7 +49,8 @@ private:
         long long bReadyQpc = 0;
     };
     enum class Phase { WaitDevice, MarkerStart, MarkerWait, OutputPreflightWait, Warmup,
-                       MeasurementResetStart, MeasurementResetWait, MeasureStartWait, Measure,
+                       MeasurementResetStart, MeasurementResetWait, MeasurementPrimeStart,
+                       MeasurementPrimeWait, MeasureStartWait, Measure,
                        MeasureStopWait, SeekStart, SeekDecodeWait, SeekDisplayWait, LayoutStart,
                        LayoutWait, ShutdownWait, Done };
     void tick();
@@ -58,6 +59,7 @@ private:
     void pollMarkerProbe();
     bool resetAfterMarkerPreflight();
     bool resetPlaybackForMeasurement();
+    void requestMeasurementStart();
     void startSeek();
     void pollSeekDecode();
     void pollSeekDisplay();
@@ -86,6 +88,11 @@ private:
     long long sourceBFrameCount_ = -1;
     long long requiredMeasurementFrameCount_ = 0;
     bool sourceCoverageOk_ = false;
+    bool measurementPrerollOk_ = false;
+    long long measurementPrerollDepthA_ = -1;
+    long long measurementPrerollDepthB_ = -1;
+    long long measurementPrerollFrontA_ = -1;
+    long long measurementPrerollFrontB_ = -1;
     std::vector<long long> seekTargets_;
     const std::vector<long long> markerTargets_{0, 1, 137, 299, 600, 1799, 3599};
     size_t markerIndex_ = 0;

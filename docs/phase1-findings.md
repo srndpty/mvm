@@ -501,3 +501,98 @@ Release / Debugの対象30 testは各test単体では成功を観測したが、
 
 Playback missing pairとintegration timeoutの再現条件を解消するまで、D5のclean HEAD
 formal全6 runへ進めない。P2-D2の`p2_pass = false`を引き続き最後の正式判定とする。
+
+## 14. P2-D4C playback pre-roll / parallel seek reliability closure
+
+### 14.1 [事実] 測定開始前に固定8 frameのpre-rollを追加した
+
+Playbackの測定開始を `MeasurementResetStart`、`MeasurementResetWait`、
+`MeasurementPrimeStart`、`MeasurementPrimeWait`、`MeasureStartWait`、`Measure` に分けた。
+reset後はschedulerを停止したままA/B workerだけを再生し、buffer先頭が現generationの
+frame 0、かつA/B両方のdepthが8以上になるまでconsumer popを開始しない。watermarkは8、
+buffer capacityは16、timeoutは2000 msで固定し、測定値による調整はしていない。
+
+formal contractを`P2-D4-2`へ更新し、設定watermark、pre-roll成立、A/B depth、A/B frontを
+raw JSONとcheckerへ追加した。depth 7、front 1、成立false、設定値7を個別に拒否する
+negative testと、generation / EOF / fatal / timeout / scheduler開始前 / 非破壊判定の
+pure testを追加した。
+
+修正後の1秒warmup + 2秒measurementを20 independent processで実行した結果は
+`build/ucrt64-release/p2-d4c-reliability/playbackstartup-ucrt64-release-summary.json`にある。
+20/20でfirst output 0、pre-roll depth A/Bは各8..16、front A/Bは0、missing pair、EOF A/B、
+non-deadline drop、device lost、worker join leakはいずれも0だった。
+
+### 14.2 [事実] 5秒 + 15秒 Playback回帰は3/3でmissing pair 0になった
+
+修正後のrawと機械集計は
+`build/ucrt64-release/p2-d4c-reliability/playbackregression-ucrt64-release-summary.json`
+に保存した。
+
+| run | pre-roll depth A/B | first | scheduled | displayed | deadline drop | missing / EOF A / EOF B | effective fps | drop rate |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 16 / 16 | 0 | 900 | 891 | 9 | 0 / 0 / 0 | 59.283 | 1.000% |
+| 2 | 16 / 16 | 0 | 900 | 888 | 12 | 0 / 0 / 0 | 59.154 | 1.333% |
+| 3 | 16 / 16 | 0 | 900 | 898 | 2 | 0 / 0 / 0 | 59.817 | 0.222% |
+
+全dropはscheduler deadline分類であり、missing source、generation、composition epoch、
+render failureによるdropは全runで0だった。この3 runは短縮回帰であり、formal判定値ではない。
+
+### 14.3 [事実] completion publishをfail-closed化し、timeout時の状態を可視化した
+
+`SourceSeekMailbox::publish`はsilent returnを廃止し、`Published`、outstandingなし、
+二重公開、request不一致、stop completionによる置換を別の結果として返す。通常実行中の
+非`Published`はfatalにし、publish rejectとrequest mismatchをraw JSONへ記録する。
+requestがinvalid / busy / stoppedで拒否された場合はplayback stateを変更しない。
+
+seek executorは `Idle`、`Queued`、`WaitingDecoderMutex`、`DecoderSeek`、
+`GenerationReset`、`RequestExactFrame`、`SubmitExactFrame`、`PublishingCompletion`、
+`Completed` を記録する。snapshotはdecoder mutexを待たず、request id、target、phase開始QPC、
+最終進捗QPC、mailbox pending / outstanding / completion ready / current ticketを取得する。
+統合testのA/B待機は逐次30秒 + 30秒ではなく、共通30秒deadlineを1 ms間隔でpollする。
+
+### 14.4 [事実] 診断によりnotify取りこぼしを再現・修正した
+
+最初のDebug 20 process soakでは17/20が成功し、3件が30秒timeoutになった。失敗時snapshotは
+いずれも片sourceが`phase=queued`、`mailbox_pending=1`、`outstanding=1`、publish reject 0、
+request mismatch 0で、反対sourceは`Completed`だった。raw logとsummaryは
+`build/ucrt64-debug/p2-d4c-reliability/pre-fix-lost-wakeup/`へ保存した。
+
+workerは`commandMutex`を使ってcondition variableのwaitへ入る一方、request側は同じmutexを
+取らずにmailbox pendingを更新してnotifyしていた。predicate確認からwait開始までの間にnotifyが
+入ると、pendingが残ったまま次の通知を待つ。request / play / pause / step / stopのpredicate更新を
+`commandMutex`でwait遷移と直列化した。
+
+修正後はRelease 20/20、Debug 20/20のindependent processが成功した。各processは64点exact
+parallel seekで、retryや失敗runの取消しはしていない。summaryは各buildの
+`p2-d4c-reliability/seekintegration-<preset>-summary.json`にある。
+
+### 14.5 [事実] 関連batchと256 x 3 profileが安定して通過した
+
+修正後の関連batchはRelease / Debugとも38 test x 5回、各190/190通過した。
+`RESOURCE_LOCK mvm_gpu`、`RUN_SERIAL`は維持している。全通常回帰もRelease / Debug各168/168、
+最終同期修正後の静的検査と関連batchも通過した。PSScriptAnalyzerは未導入のためlint scriptが
+明示的にskipし、clang-format、層隔離、GPU禁止事項、producer service検査は通過した。
+
+seed 20260808、fence backendの256 seek x 3を
+`build/ucrt64-release/p2-seek-profile-d4c/`へ保存した。旧D3 / D4B rawは上書きしていない。
+
+| run | A request-ready p95 | B request-ready p95 | dual ready p95 | request-display p95 | overlap | publish reject / mismatch |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 73.26 ms | 77.52 ms | 78.11 ms | 86.91 ms | 256/256 | 0 / 0 |
+| 2 | 76.44 ms | 75.71 ms | 80.09 ms | 93.85 ms | 256/256 | 0 / 0 |
+| 3 | 73.80 ms | 73.33 ms | 77.75 ms | 90.00 ms | 256/256 | 0 / 0 |
+
+全runでdisplay mismatch、timeout、stale completion、busy acceptance、software fallback、
+CPU full-frame readback、device lost、join leakは0だった。decoder D3D11 lock wait p95は
+A 1.141..1.150 ms、B 1.140..1.150 ms、render lock wait p95は全run 0.1 usだった。
+D3D11 lockとparallel architectureは変更していない。
+
+### 14.6 [exit] D5 readinessは成立したが、formalはまだ実行していない
+
+Playback startup 20/20、5+15秒回帰3/3、Release / Debug seek integration各20/20、
+関連batch各5/5、256 x 3の全correctness counter 0、request-display p95 150 ms以下を満たした。
+したがってP2-D4Cの範囲ではD5へ進む条件は成立した。
+
+この節ではP2/P1 formalを実行していない。P2-D2の`build/ucrt64-release/p2-matrix/`は
+timestamp 18:15..18:22、contract `P2-D1-1`、`p2_pass = false`のまま変更していない。
+D5のclean HEAD formal全6 runを実行するまでは、P2-D2のfalseが最後の正式判定である。

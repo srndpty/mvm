@@ -1,5 +1,6 @@
 #include "compositor_spike_controller.h"
 
+#include "media/gpu_preview/measurement_preroll.h"
 #include "media/gpu_preview/qpc_clock.h"
 
 #include <QFile>
@@ -69,6 +70,30 @@ QString diagnosticCaseName(CompositorDiagnosticCase value) {
         return QStringLiteral("none");
     }
     return QStringLiteral("none");
+}
+
+QString seekDiagnosticText(const char* source, const gpu::SourceDecodeWorker& worker) {
+    const auto value = worker.seekDiagnosticSnapshot();
+    return QStringLiteral("source=%1 phase=%2 requestId=%3 target=%4 phaseEnterQpc=%5 "
+                          "lastProgressQpc=%6 mailbox(stopped=%7 outstanding=%8 pending=%9 "
+                          "ready=%10 ticket=%11/%12 completion=%13) rejects=%14 mismatch=%15 "
+                          "stopSuperseded=%16")
+        .arg(QString::fromLatin1(source))
+        .arg(QString::fromLatin1(gpu::toString(value.phase)))
+        .arg(value.requestId)
+        .arg(value.targetFrame)
+        .arg(value.phaseEnterQpc)
+        .arg(value.lastProgressQpc)
+        .arg(value.mailbox.stopped)
+        .arg(value.mailbox.outstanding)
+        .arg(value.mailbox.pending)
+        .arg(value.mailbox.completionReady)
+        .arg(value.mailbox.currentTicket.requestId)
+        .arg(value.mailbox.currentTicket.targetFrame)
+        .arg(value.mailbox.completionRequestId)
+        .arg(value.completionPublishRejectCount)
+        .arg(value.completionRequestMismatchCount)
+        .arg(value.completionStoppedSupersededCount);
 }
 
 CompositorMeasurementCounters subtract(const CompositorMeasurementCounters& end,
@@ -347,6 +372,19 @@ bool CompositorSpikeController::resetPlaybackForMeasurement() {
     return true;
 }
 
+void CompositorSpikeController::requestMeasurementStart() {
+    state_->measurementFirstOutputFrame.store(-1, std::memory_order_release);
+    state_->measurementDurationQpc.store(
+        static_cast<long long>(gpu::qpcFrequency()) * config_.measureSeconds,
+        std::memory_order_release);
+    state_->measurementStartRequested.store(true, std::memory_order_release);
+    state_->measurementStartCaptured.store(false, std::memory_order_release);
+    state_->measurementStopRequested.store(false, std::memory_order_release);
+    state_->measurementStopCaptured.store(false, std::memory_order_release);
+    phase_ = Phase::MeasureStartWait;
+    item_->update();
+}
+
 void CompositorSpikeController::tick() {
     if (!item_ || phase_ == Phase::Done)
         return;
@@ -396,28 +434,60 @@ void CompositorSpikeController::tick() {
         }
         if (!resetPlaybackForMeasurement())
             return;
-        state_->measurementFirstOutputFrame.store(-1, std::memory_order_release);
-        state_->measurementDurationQpc.store(
-            static_cast<long long>(gpu::qpcFrequency()) * config_.measureSeconds,
-            std::memory_order_release);
-        state_->measurementStartRequested.store(true, std::memory_order_release);
-        state_->measurementStartCaptured.store(false, std::memory_order_release);
-        state_->measurementStopRequested.store(false, std::memory_order_release);
-        state_->measurementStopCaptured.store(false, std::memory_order_release);
-        phase_ = Phase::MeasureStartWait;
-        item_->update();
+        if (config_.diagnosticCase == CompositorDiagnosticCase::FixedTextures) {
+            requestMeasurementStart();
+            return;
+        }
+        phase_ = Phase::MeasurementPrimeStart;
+    } else if (phase_ == Phase::MeasurementPrimeStart) {
+        if (state_->playbackSchedulerEnabled.load(std::memory_order_acquire)) {
+            beginShutdown(QStringLiteral("pre-roll開始前にschedulerが有効です"), true);
+            return;
+        }
+        workerA_->play();
+        workerB_->play();
+        phaseTimer_.restart();
+        phase_ = Phase::MeasurementPrimeWait;
+    } else if (phase_ == Phase::MeasurementPrimeWait) {
+        const auto a = workerA_->snapshot();
+        const auto b = workerB_->snapshot();
+        gpu::SourceFrameIdentity frontA;
+        gpu::SourceFrameIdentity frontB;
+        const bool hasA = workerA_->buffer().peekFrontIdentity(frontA);
+        const bool hasB = workerB_->buffer().peekFrontIdentity(frontB);
+        const gpu::MeasurementPrerollSourceState stateA{
+            workerA_->buffer().depth(), hasA, frontA, a.sourceGeneration, a.eof, a.fatal};
+        const gpu::MeasurementPrerollSourceState stateB{
+            workerB_->buffer().depth(), hasB, frontB, b.sourceGeneration, b.eof, b.fatal};
+        const auto result = gpu::evaluateMeasurementPreroll(
+            stateA, stateB,
+            state_->playbackSchedulerEnabled.load(std::memory_order_acquire),
+            static_cast<int>(phaseTimer_.elapsed()));
+        if (result == gpu::MeasurementPrerollResult::Waiting)
+            return;
+        if (result != gpu::MeasurementPrerollResult::Ready) {
+            beginShutdown(QStringLiteral("測定pre-roll契約が不成立です: result=%1 depthA=%2 "
+                                         "depthB=%3 frontA=%4 frontB=%5")
+                              .arg(static_cast<int>(result))
+                              .arg(stateA.depth)
+                              .arg(stateB.depth)
+                              .arg(hasA ? frontA.frameNumber : -1)
+                              .arg(hasB ? frontB.frameNumber : -1),
+                          true);
+            return;
+        }
+        measurementPrerollOk_ = true;
+        measurementPrerollDepthA_ = static_cast<long long>(stateA.depth);
+        measurementPrerollDepthB_ = static_cast<long long>(stateB.depth);
+        measurementPrerollFrontA_ = frontA.frameNumber;
+        measurementPrerollFrontB_ = frontB.frameNumber;
+        requestMeasurementStart();
     } else if (phase_ == Phase::MeasureStartWait) {
         if (state_->measurementStartCaptured.load(std::memory_order_acquire)) {
             std::lock_guard<std::mutex> lock(state_->measurementMutex);
             measurementStart_ = state_->measurementStart;
             measurementStartA_ = workerA_ ? workerA_->snapshot() : gpu::SourceDecoderSnapshot{};
             measurementStartB_ = workerB_ ? workerB_->snapshot() : gpu::SourceDecoderSnapshot{};
-            if (config_.diagnosticCase != CompositorDiagnosticCase::FixedTextures) {
-                if (workerA_)
-                    workerA_->play();
-                if (workerB_)
-                    workerB_->play();
-            }
             phase_ = Phase::Measure;
         } else {
             item_->update();
@@ -519,7 +589,10 @@ void CompositorSpikeController::pollSeekDecode() {
     if (!seekAReady_ || !seekBReady_) {
         if (waitTimer_.elapsed() >= config_.displayTimeoutMs) {
             ++seekTimeout_;
-            beginShutdown(QStringLiteral("dual seek decode completionがtimeoutしました"), true);
+            beginShutdown(QStringLiteral("dual seek decode completionがtimeoutしました: %1 | %2")
+                              .arg(seekDiagnosticText("A", *workerA_))
+                              .arg(seekDiagnosticText("B", *workerB_)),
+                          true);
         }
         return;
     }
@@ -651,6 +724,10 @@ void CompositorSpikeController::beginShutdown(const QString& reason, bool failur
 bool CompositorSpikeController::writeMetrics() {
     const auto a = workerA_ ? workerA_->snapshot() : gpu::SourceDecoderSnapshot{};
     const auto b = workerB_ ? workerB_->snapshot() : gpu::SourceDecoderSnapshot{};
+    const auto seekA = workerA_ ? workerA_->seekDiagnosticSnapshot()
+                                : gpu::SourceSeekDiagnosticSnapshot{};
+    const auto seekB = workerB_ ? workerB_->seekDiagnosticSnapshot()
+                                : gpu::SourceSeekDiagnosticSnapshot{};
     const auto& c = state_->compositor.counters();
     CompositorMeasurementCounters measurement;
     if (config_.mode == CompositorMode::Playback) {
@@ -773,7 +850,7 @@ bool CompositorSpikeController::writeMetrics() {
                                                                     : QStringLiteral("layout");
     QJsonObject o{{"schema", config_.diagnosticTiming ? "mvm-p2-diagnostic-1"
                                                        : "mvm-p2-formal-1"},
-                  {"formal_contract_version", "P2-D4-1"},
+                  {"formal_contract_version", "P2-D4-2"},
                   {"mode", mode},
                   {"formal_preflight", config_.formalPreflight},
                   {"process_exit_code", exitCode_},
@@ -781,6 +858,13 @@ bool CompositorSpikeController::writeMetrics() {
                   {"configured_warmup_seconds", config_.warmupSeconds},
                   {"configured_measure_seconds", config_.measureSeconds},
                   {"configured_seek_count", config_.seekCount},
+                  {"configured_measurement_preroll_frames",
+                   static_cast<qint64>(gpu::kMeasurementPrerollFrames)},
+                  {"measurement_preroll_ok", measurementPrerollOk_},
+                  {"measurement_preroll_depth_a", measurementPrerollDepthA_},
+                  {"measurement_preroll_depth_b", measurementPrerollDepthB_},
+                  {"measurement_preroll_front_a", measurementPrerollFrontA_},
+                  {"measurement_preroll_front_b", measurementPrerollFrontB_},
                   {"source_a_frame_count", sourceAFrameCount_},
                   {"source_b_frame_count", sourceBFrameCount_},
                   {"required_measurement_frame_count", requiredMeasurementFrameCount_},
@@ -866,6 +950,14 @@ bool CompositorSpikeController::writeMetrics() {
                   {"seek_timeout_count", seekTimeout_},
                   {"seek_stale_completion_count", seekStaleCompletion_},
                   {"seek_busy_acceptance_count", 0},
+                  {"seek_completion_publish_reject_count",
+                   seekA.completionPublishRejectCount + seekB.completionPublishRejectCount},
+                  {"seek_completion_request_mismatch_count",
+                   seekA.completionRequestMismatchCount +
+                       seekB.completionRequestMismatchCount},
+                  {"seek_completion_stopped_superseded_count",
+                   seekA.completionStoppedSupersededCount +
+                       seekB.completionStoppedSupersededCount},
                   {"seek_overlap_count", overlapCount},
                   {"seek_concurrency_samples", concurrencySamples},
                   {"layout_epoch_mismatch", layoutMismatch_},

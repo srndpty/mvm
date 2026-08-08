@@ -24,6 +24,7 @@
 #include "media/gpu_preview/frame_queue.h"
 #include "media/gpu_preview/gpu_completion.h"
 #include "media/gpu_preview/lifecycle.h"
+#include "media/gpu_preview/measurement_preroll.h"
 #include "media/gpu_preview/nv12_converter.h"
 #include "media/gpu_preview/output_scheduler.h"
 #include "media/gpu_preview/readback_counter.h"
@@ -1203,7 +1204,14 @@ void testSourceSeekMailbox() {
     completed.sourceGeneration = {8};
     completed.resourceEpoch = {3};
     completed.decodedFrameNumber = 137;
-    mailbox.publish(completed);
+    check(mailbox.publish(completed) == SeekCompletionPublishResult::Published,
+          "一致するcompletionを公開する");
+    check(mailbox.publish(completed) == SeekCompletionPublishResult::RejectedAlreadyPublished,
+          "同じcompletionの二重公開を分類して拒否する");
+    SeekCompletion mismatch = completed;
+    ++mismatch.requestId;
+    check(mailbox.publish(mismatch) == SeekCompletionPublishResult::RejectedRequestMismatch,
+          "異なるrequestIdの公開を分類して拒否する");
     SeekTicket stale = first;
     ++stale.requestId;
     check(mailbox.wait(stale, 0, observed) == SeekWaitResult::StaleTicket,
@@ -1214,6 +1222,8 @@ void testSourceSeekMailbox() {
     check(observed.sourceGeneration == SourceGeneration{8}, "generation advanceを保持する");
     check(mailbox.wait(first, 0, observed) == SeekWaitResult::StaleTicket,
           "消費済みticketを次seekへ流用しない");
+    check(mailbox.publish(completed) == SeekCompletionPublishResult::RejectedNoOutstanding,
+          "outstandingがない公開を分類して拒否する");
 
     SeekTicket failedTicket;
     check(mailbox.request(999999, 2000, failedTicket, err) == SeekRequestResult::Accepted,
@@ -1224,7 +1234,8 @@ void testSourceSeekMailbox() {
     failed.targetFrame = failedTicket.targetFrame;
     failed.status = SeekCompletionStatus::Failed;
     failed.error = "test failure";
-    mailbox.publish(failed);
+    check(mailbox.publish(failed) == SeekCompletionPublishResult::Published,
+          "Failed completionも明示的に公開する");
     check(mailbox.wait(failedTicket, 0, observed) == SeekWaitResult::Ready &&
               observed.status == SeekCompletionStatus::Failed,
           "failed seekを成功へ変えない");
@@ -1240,8 +1251,78 @@ void testSourceSeekMailbox() {
     check(waitResult.load() == SeekWaitResult::Ready &&
               stopped.status == SeekCompletionStatus::Stopped,
           "stopがseek waiterをStoppedで起こす");
+    SeekCompletion late;
+    late.requestId = stoppedTicket.requestId;
+    late.targetFrame = stoppedTicket.targetFrame;
+    check(mailbox.publish(late) == SeekCompletionPublishResult::RejectedStoppedSuperseded,
+          "stop completion消費後の遅延公開もstop競合に分類する");
     check(mailbox.request(1, 4000, busy, err) == SeekRequestResult::RejectedStopped,
           "stop後のseek requestを拒否する");
+
+    SourceSeekMailbox stopRace;
+    stopRace.restart();
+    SeekTicket stopRaceTicket;
+    check(stopRace.request(5, 5000, stopRaceTicket, err) == SeekRequestResult::Accepted,
+          "stop競合用requestを受理する");
+    check(stopRace.takePending(executing, requestQpc), "stop競合requestを実行中にする");
+    stopRace.stop();
+    SeekCompletion stopRaceLate;
+    stopRaceLate.requestId = stopRaceTicket.requestId;
+    stopRaceLate.targetFrame = stopRaceTicket.targetFrame;
+    check(stopRace.publish(stopRaceLate) == SeekCompletionPublishResult::RejectedStoppedSuperseded,
+          "stopが先に公開したcompletionとの競合を明示分類する");
+    const auto mailboxSnapshot = stopRace.snapshot();
+    check(mailboxSnapshot.stopped && mailboxSnapshot.outstanding &&
+              mailboxSnapshot.completionReady &&
+              mailboxSnapshot.currentTicket.requestId == stopRaceTicket.requestId,
+          "mailbox snapshotがstop競合状態を短時間で取得する");
+}
+
+void testMeasurementPreroll() {
+    std::fprintf(stderr, "[measurement preroll]\n");
+    MeasurementPrerollSourceState a{8, true, {{1}, {4}, {}, 0}, {4}, false, false};
+    MeasurementPrerollSourceState b{8, true, {{2}, {7}, {}, 0}, {7}, false, false};
+    check(evaluateMeasurementPreroll(a, b, false, 1999) == MeasurementPrerollResult::Ready,
+          "A/Bともdepth 8、front 0、現generationならready");
+
+    --a.depth;
+    check(evaluateMeasurementPreroll(a, b, false, 1999) == MeasurementPrerollResult::Waiting,
+          "A depth 7では待機する");
+    a.depth = 8;
+    --b.depth;
+    check(evaluateMeasurementPreroll(a, b, false, 1999) == MeasurementPrerollResult::Waiting,
+          "B depth 7では待機する");
+    b.depth = 8;
+
+    a.front.frameNumber = 1;
+    check(evaluateMeasurementPreroll(a, b, false, 0) == MeasurementPrerollResult::RejectedFront,
+          "front Aが0でなければ拒否する");
+    a.front.frameNumber = 0;
+    b.front.sourceGeneration = {6};
+    check(evaluateMeasurementPreroll(a, b, false, 0) == MeasurementPrerollResult::RejectedFront,
+          "front Bのgeneration不一致を拒否する");
+    b.front.sourceGeneration = b.generation;
+
+    a.eof = true;
+    check(evaluateMeasurementPreroll(a, b, false, 0) == MeasurementPrerollResult::RejectedEof,
+          "prime中のEOFを拒否する");
+    a.eof = false;
+    b.fatal = true;
+    check(evaluateMeasurementPreroll(a, b, false, 0) == MeasurementPrerollResult::RejectedFatal,
+          "prime中のfatalを拒否する");
+    b.fatal = false;
+    check(evaluateMeasurementPreroll(a, b, true, 0) ==
+              MeasurementPrerollResult::RejectedSchedulerStarted,
+          "prime完了前のscheduler開始を拒否する");
+
+    a.depth = 7;
+    const auto beforeA = a;
+    const auto beforeB = b;
+    check(evaluateMeasurementPreroll(a, b, false, 2000) == MeasurementPrerollResult::TimedOut,
+          "watermark未達を有限2000msでtimeoutにする");
+    check(a.depth == beforeA.depth && a.front.frameNumber == beforeA.front.frameNumber &&
+              b.depth == beforeB.depth && b.front.frameNumber == beforeB.front.frameNumber,
+          "pre-roll判定はconsumer popを行わない");
 }
 
 // --------------------------------------------------------------------------
@@ -1287,6 +1368,7 @@ int main() {
     testCompositionDisplayLedger();
     testOutputScheduler();
     testSourceSeekMailbox();
+    testMeasurementPreroll();
     testHwFormatSelection();
 
     std::fprintf(stderr, "\n検査 %d 件 / 失敗 %d 件\n", gChecks, gFailures);
