@@ -43,11 +43,26 @@ try {
 }
 
 Require-Equal (Require-Property $raw 'schema') 'mvm-p2-formal-1' 'schema'
-Require-Equal (Require-Property $raw 'formal_contract_version') 'P2-D1-1' 'formal_contract_version'
+Require-Equal (Require-Property $raw 'formal_contract_version') 'P2-D4-2' 'formal_contract_version'
 Require-Equal (Require-Property $raw 'mode') $Mode.ToLowerInvariant() 'mode'
 Require-Equal (Require-Property $raw 'process_exit_code') 0 'JSON process_exit_code'
 Require-Equal $ProcessExitCode 0 '実process exit code'
 Require-Equal (Require-Property $raw 'formal_preflight') $true 'formal_preflight'
+Require-Equal (Require-Property $raw 'same_device_a') $true 'same_device_a'
+Require-Equal (Require-Property $raw 'same_device_b') $true 'same_device_b'
+Require-Equal (Require-Property $raw 'actual_output_width') 1920 'actual_output_width'
+Require-Equal (Require-Property $raw 'actual_output_height') 1080 'actual_output_height'
+Require-Equal (Require-Property $raw 'actual_gpu_completion_backend') 'fence' `
+    'actual_gpu_completion_backend'
+Require-Equal (Require-Property $raw 'configured_seed') 20260808 'configured_seed'
+$configuredWarmup = Require-Property $raw 'configured_warmup_seconds'
+$configuredMeasure = Require-Property $raw 'configured_measure_seconds'
+$configuredSeekCount = Require-Property $raw 'configured_seek_count'
+if (-not $DryRun) {
+    Require-Equal $configuredWarmup 5 'configured_warmup_seconds'
+    Require-Equal $configuredMeasure 60 'configured_measure_seconds'
+    Require-Equal $configuredSeekCount 1000 'configured_seek_count'
+}
 
 Require-Equal (Require-Property $raw 'marker_a_checked_count') 7 'marker_a_checked_count'
 Require-Equal (Require-Property $raw 'marker_b_checked_count') 7 'marker_b_checked_count'
@@ -69,6 +84,35 @@ Require-Equal (Require-Property $raw 'teardown_success') $true 'teardown_success
 Require-Equal (Require-Property $raw 'final_report_written_after_teardown') $true 'final_report_written_after_teardown'
 
 if ($Mode -eq 'Playback') {
+    Require-Equal (Require-Property $raw 'configured_measurement_preroll_frames') 8 `
+        'configured_measurement_preroll_frames'
+    Require-Equal (Require-Property $raw 'measurement_preroll_ok') $true `
+        'measurement_preroll_ok'
+    $prerollDepthA = Require-Property $raw 'measurement_preroll_depth_a'
+    $prerollDepthB = Require-Property $raw 'measurement_preroll_depth_b'
+    if ($null -ne $prerollDepthA -and [long]$prerollDepthA -lt 8) {
+        Add-Failure "measurement_preroll_depth_aは8以上が必要です (actual=$prerollDepthA)"
+    }
+    if ($null -ne $prerollDepthB -and [long]$prerollDepthB -lt 8) {
+        Add-Failure "measurement_preroll_depth_bは8以上が必要です (actual=$prerollDepthB)"
+    }
+    Require-Equal (Require-Property $raw 'measurement_preroll_front_a') 0 `
+        'measurement_preroll_front_a'
+    Require-Equal (Require-Property $raw 'measurement_preroll_front_b') 0 `
+        'measurement_preroll_front_b'
+    $sourceAFrames = Require-Property $raw 'source_a_frame_count'
+    $sourceBFrames = Require-Property $raw 'source_b_frame_count'
+    $requiredFrames = Require-Property $raw 'required_measurement_frame_count'
+    Require-Equal (Require-Property $raw 'source_coverage_ok') $true 'source_coverage_ok'
+    if (-not $DryRun) {
+        Require-Equal $requiredFrames 3600 'required_measurement_frame_count'
+        if ($null -ne $sourceAFrames -and [long]$sourceAFrames -lt 3600) {
+            Add-Failure "source_a_frame_countは3600以上が必要です (actual=$sourceAFrames)"
+        }
+        if ($null -ne $sourceBFrames -and [long]$sourceBFrames -lt 3600) {
+            Add-Failure "source_b_frame_countは3600以上が必要です (actual=$sourceBFrames)"
+        }
+    }
     $scheduled = Require-Property $raw 'measurement_scheduled_output_count'
     $displayed = Require-Property $raw 'measurement_displayed_composition_count'
     $dropped = Require-Property $raw 'measurement_dropped_output_count'
@@ -103,10 +147,23 @@ if ($Mode -eq 'Playback') {
     if ($null -ne $clears -and $null -ne $displayed) {
         Require-Equal ([long]$clears) ([long]$displayed) 'logical clear == displayed'
     }
+    Require-Zero $raw 'measurement_missing_pair_count'
+    Require-Zero $raw 'measurement_source_a_eof_count'
+    Require-Zero $raw 'measurement_source_b_eof_count'
+    Require-Zero $raw 'measurement_drop_missing_source_a'
+    Require-Zero $raw 'measurement_drop_missing_source_b'
+    Require-Zero $raw 'measurement_drop_missing_both'
+    Require-Zero $raw 'measurement_drop_stale_generation'
+    Require-Zero $raw 'measurement_drop_future_generation'
+    Require-Zero $raw 'measurement_drop_stale_composition_epoch'
+    Require-Zero $raw 'measurement_drop_render_failure'
     Require-Zero $raw 'measurement_untracked_submission_count'
     Require-Zero $raw 'measurement_completion_poll_failure_count'
     Require-Zero $raw 'measurement_partial_gpu_issue_failure_count'
     if (-not $DryRun) {
+        Require-Equal $scheduled 3600 'measurement_scheduled_output_count'
+        Require-Equal (Require-Property $raw 'measurement_first_output_frame') 0 `
+            'measurement_first_output_frame'
         $fps = Require-Property $raw 'effective_fps'
         $dropRate = Require-Property $raw 'drop_rate'
         if ($null -ne $fps -and [double]$fps -lt 55) {
@@ -119,13 +176,29 @@ if ($Mode -eq 'Playback') {
 } else {
     $displayedValues = @(Require-Property $raw 'dual_seek_displayed_ms')
     $decodeValues = @(Require-Property $raw 'dual_seek_decode_ready_ms')
-    $expectedCount = if ($DryRun) { [int](Require-Property $raw 'configured_seek_count') } else { 1000 }
+    $expectedCount = if ($DryRun) { [int]$configuredSeekCount } else { 1000 }
     Require-Equal $displayedValues.Count $expectedCount 'dual_seek_displayed_ms.Count'
     Require-Equal $decodeValues.Count $expectedCount 'dual_seek_decode_ready_ms.Count'
     Require-Zero $raw 'seek_display_mismatch'
     Require-Zero $raw 'seek_timeout_count'
+    Require-Zero $raw 'seek_stale_completion_count'
+    Require-Zero $raw 'seek_busy_acceptance_count'
+    Require-Zero $raw 'seek_completion_publish_reject_count'
+    Require-Zero $raw 'seek_completion_request_mismatch_count'
+    Require-Zero $raw 'seek_completion_stopped_superseded_count'
+    Require-Zero $raw 'software_fallback_count'
+    Require-Zero $raw 'worker_join_leak_count'
     Require-Zero $raw 'untracked_submission_count'
     Require-Zero $raw 'completion_poll_failure_count'
+
+    $overlapCount = Require-Property $raw 'seek_overlap_count'
+    $concurrencySamples = @(Require-Property $raw 'seek_concurrency_samples')
+    Require-Equal $overlapCount $expectedCount 'seek_overlap_count'
+    Require-Equal $concurrencySamples.Count $expectedCount 'seek_concurrency_samples.Count'
+    for ($sampleIndex = 0; $sampleIndex -lt $concurrencySamples.Count; ++$sampleIndex) {
+        Require-Equal (Require-Property $concurrencySamples[$sampleIndex] 'overlap') $true `
+            "seek_concurrency_samples[$sampleIndex].overlap"
+    }
 
     if ($displayedValues.Count -gt 0) {
         [double[]]$sorted = $displayedValues | ForEach-Object { [double]$_ } | Sort-Object

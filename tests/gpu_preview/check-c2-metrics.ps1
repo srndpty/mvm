@@ -9,7 +9,15 @@ if (-not (Test-Path -LiteralPath $Json)) { throw "C2 metricsがありません: 
 $m = Get-Content -Raw -LiteralPath $Json | ConvertFrom-Json
 switch ($Kind) {
     'device' {
-        if (-not $m.same_device_a -or -not $m.same_device_b) { throw 'A/B deviceがQt deviceと一致しません' }
+        if (-not $m.same_device_a -or -not $m.same_device_b -or
+            $m.configured_measurement_preroll_frames -ne 8 -or
+            -not $m.measurement_preroll_ok -or
+            $m.measurement_preroll_depth_a -lt 8 -or
+            $m.measurement_preroll_depth_b -lt 8 -or
+            $m.measurement_preroll_front_a -ne 0 -or
+            $m.measurement_preroll_front_b -ne 0) {
+            throw 'A/B deviceまたは測定pre-roll契約が不成立です'
+        }
     }
     'copy' {
         if ($m.full_frame_gpu_copy_count -ne 0 -or $m.cpu_full_frame_readback_count -ne 0) {
@@ -29,7 +37,13 @@ switch ($Kind) {
     }
     'seek' {
         if ($m.dual_seek_displayed_ms.Count -ne 64 -or $m.seek_display_mismatch -ne 0 -or
-            $m.seek_timeout_count -ne 0) { throw '64点actual-display seek契約が不成立です' }
+            $m.seek_timeout_count -ne 0 -or $m.seek_stale_completion_count -ne 0 -or
+            $m.seek_busy_acceptance_count -ne 0 -or $m.seek_overlap_count -eq 0 -or
+            $m.seek_concurrency_samples.Count -ne 64 -or
+            $m.seek_completion_publish_reject_count -ne 0 -or
+            $m.seek_completion_request_mismatch_count -ne 0) {
+            throw '64点parallel actual-display seek契約が不成立です'
+        }
     }
     'layout' {
         if ($m.layout_epoch_mismatch -ne 0 -or $m.stale_composition_epoch_count -ne 0) {

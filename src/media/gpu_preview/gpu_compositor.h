@@ -31,6 +31,12 @@ struct ExternalCompositionTarget {
     int height = 0;
 };
 
+struct GpuCompositorStageTiming {
+    double prepareUs = 0.0;
+    double issueUs = 0.0;
+    double completionPollUs = 0.0;
+};
+
 enum class GpuCompositorInitializeFault {
     None = 0,
     Completion,
@@ -58,6 +64,10 @@ public:
     bool compose(const ComposedFrame& frame, std::string& err);
     bool composeToTarget(const ComposedFrame& frame, const ExternalCompositionTarget& target,
                          std::string& err);
+    // P2-D3診断専用。1または2 layerを許可し、formal契約には使用しない。
+    bool composeDiagnosticToTarget(const ComposedFrame& frame,
+                                   const ExternalCompositionTarget& target,
+                                   GpuCompositorStageTiming& timing, std::string& err);
     bool poll(std::string& err);
     bool shutdown(int timeoutMs, std::string& err);
     bool readOutputProbe(int x, int y, int width, int height, std::vector<unsigned char>& rgba,
@@ -91,9 +101,9 @@ private:
     void rollbackInitialize();
     void enterFatal(const std::string& reason);
     bool prepareComposition(const ComposedFrame& frame, const ExternalCompositionTarget& target,
-                            std::string& err);
+                            size_t expectedLayerCount, std::string& err);
     bool issueComposition(const ComposedFrame& frame, const ExternalCompositionTarget& target,
-                          bool clearTarget, std::string& err);
+                          bool clearTarget, GpuCompositorStageTiming* timing, std::string& err);
 
     SharedD3D11Device* shared_ = nullptr;
     Nv12Converter converter_;

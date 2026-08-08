@@ -35,6 +35,8 @@ public:
     void start(long long startQpc, long long qpcFrequency);
     ScheduledOutput next();
     OutputScheduleDecision takeDue(long long nowQpc);
+    OutputScheduleDecision takeDueBefore(long long nowQpc, long long endQpcExclusive);
+    long long closeBefore(long long endQpcExclusive);
     static OutputDropReason classifyDeadline(PairResult pairResult,
                                              CompositionResult compositionResult);
 

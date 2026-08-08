@@ -32,6 +32,10 @@ inline double qpcMsBetween(long long from, long long to) {
     return static_cast<double>(to - from) * 1000.0 / qpcFrequency();
 }
 
+inline double qpcUsBetween(long long from, long long to) {
+    return static_cast<double>(to - from) * 1000000.0 / qpcFrequency();
+}
+
 } // namespace mvm::gpu
 
 #endif // MVM_GPU_PREVIEW_QPC_CLOCK_H

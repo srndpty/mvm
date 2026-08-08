@@ -14,6 +14,20 @@
 
 namespace mvm::app {
 
+enum class CompositorDiagnosticCase { None = 0, SingleDecode, PairOnly, FixedTextures, FullPath };
+
+struct CompositorDiagnosticRenderSample {
+    double schedulerToPairUs = 0.0;
+    double pairUs = 0.0;
+    double compositionPrepareUs = 0.0;
+    double compositionIssueUs = 0.0;
+    double completionPollUs = 0.0;
+    double qtExternalUs = 0.0;
+    double renderCallbackTotalUs = 0.0;
+    size_t bufferDepthA = 0;
+    size_t bufferDepthB = 0;
+};
+
 struct CompositorMeasurementCounters {
     long long qpc = 0;
     long long compositionRequested = 0;
@@ -24,6 +38,9 @@ struct CompositorMeasurementCounters {
     long long scheduled = 0;
     long long displayed = 0;
     long long dropped = 0;
+    long long missingPair = 0;
+    long long sourceAEof = 0;
+    long long sourceBEof = 0;
     long long dropSchedulerDeadline = 0;
     long long dropMissingSourceA = 0;
     long long dropMissingSourceB = 0;
@@ -75,6 +92,8 @@ struct CompositorSpikeState {
     std::atomic<long long> droppedOutputCount{0};
     std::atomic<long long> schedulerDeadlineDropCount{0};
     std::atomic<long long> missingPairDropCount{0};
+    std::atomic<long long> sourceAEofCount{0};
+    std::atomic<long long> sourceBEofCount{0};
     std::atomic<long long> missingSourceADropCount{0};
     std::atomic<long long> missingSourceBDropCount{0};
     std::atomic<long long> missingBothDropCount{0};
@@ -90,7 +109,18 @@ struct CompositorSpikeState {
     std::atomic<long long> lifecycleOrderViolationCount{0};
     std::atomic<long long> actualTargetProbeMismatch{0};
     std::atomic<long long> actualTargetProbeChecked{0};
+    std::atomic<bool> actualTargetProbeStarted{false};
     std::atomic<bool> actualTargetProbeDone{false};
+    std::atomic<int> actualOutputWidth{0};
+    std::atomic<int> actualOutputHeight{0};
+    std::string actualGpuCompletionBackend;
+    std::atomic<CompositorDiagnosticCase> diagnosticCase{CompositorDiagnosticCase::None};
+    std::atomic<bool> diagnosticTimingEnabled{false};
+    std::mutex diagnosticTimingMutex;
+    std::vector<CompositorDiagnosticRenderSample> diagnosticRenderSamples;
+    std::vector<double> diagnosticRenderCallbackIntervalUs;
+    gpu::D3D11LockTimingSnapshot diagnosticLockTiming;
+    gpu::ComposedFrame diagnosticFixedFrame;
     CompositorMarkerProbe markerProbe;
     std::atomic<long long> markerAChecked{0};
     std::atomic<long long> markerBChecked{0};
@@ -99,10 +129,16 @@ struct CompositorSpikeState {
 
     // render threadが境界snapshotを作る。これによりwarmup中のGPU commandを
     // measurementへ混ぜず、全counterを同じ区間で差分化する。
+    std::atomic<bool> measurementResetRequested{false};
+    std::atomic<bool> measurementResetCaptured{false};
     std::atomic<bool> measurementStartRequested{false};
     std::atomic<bool> measurementStartCaptured{false};
     std::atomic<bool> measurementStopRequested{false};
     std::atomic<bool> measurementStopCaptured{false};
+    std::atomic<long long> measurementDurationQpc{0};
+    std::atomic<long long> measurementEndQpc{0};
+    std::atomic<bool> measurementIntervalActive{false};
+    std::atomic<long long> measurementFirstOutputFrame{-1};
     std::mutex measurementMutex;
     CompositorMeasurementCounters measurementStart;
     CompositorMeasurementCounters measurementStop;

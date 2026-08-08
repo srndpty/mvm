@@ -14,9 +14,12 @@
 #ifndef MVM_GPU_PREVIEW_D3D11_SHARED_DEVICE_H
 #define MVM_GPU_PREVIEW_D3D11_SHARED_DEVICE_H
 
+#include <array>
+#include <atomic>
 #include <d3d11.h>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace mvm::gpu {
 
@@ -44,9 +47,36 @@ bool queryAdapterInfo(ID3D11Device* device, AdapterInfo& out, std::string& err);
 // decode thread と render thread の両方がこれを取る。
 // FFmpeg の AVD3D11VADeviceContext::lock / unlock にも同じものを渡す
 // (FFmpeg は再帰的にロックする。非再帰 mutex では自己デッドロックする)。
+enum class D3D11LockRole { Unknown = 0, Render = 1, DecoderA = 2, DecoderB = 3 };
+
+struct D3D11LockTimingSnapshot {
+    std::vector<double> renderWaitUs;
+    std::vector<double> decoderAWaitUs;
+    std::vector<double> decoderBWaitUs;
+};
+
 class D3D11Lock {
 public:
-    void lock() { mutex_.lock(); }
+    void lock() {
+        if (!diagnosticsEnabled_.load(std::memory_order_relaxed)) {
+            mutex_.lock();
+            return;
+        }
+        LARGE_INTEGER begin{};
+        LARGE_INTEGER end{};
+        QueryPerformanceCounter(&begin);
+        mutex_.lock();
+        QueryPerformanceCounter(&end);
+        LARGE_INTEGER frequency{};
+        QueryPerformanceFrequency(&frequency);
+        const double waitUs = static_cast<double>(end.QuadPart - begin.QuadPart) * 1000000.0 /
+                              static_cast<double>(frequency.QuadPart);
+        const D3D11LockRole role = currentRole();
+        if (role == D3D11LockRole::Unknown)
+            return;
+        std::lock_guard<std::mutex> timingLock(timingMutex_);
+        waits_[static_cast<size_t>(role)].push_back(waitUs);
+    }
 
     void unlock() { mutex_.unlock(); }
 
@@ -54,8 +84,50 @@ public:
 
     static void unlockCallback(void* ctx) { static_cast<D3D11Lock*>(ctx)->unlock(); }
 
+    static D3D11LockRole setCurrentRole(D3D11LockRole role) {
+        D3D11LockRole& current = currentRoleStorage();
+        const D3D11LockRole previous = current;
+        current = role;
+        return previous;
+    }
+
+    void beginDiagnostics() {
+        std::lock_guard<std::mutex> lock(timingMutex_);
+        for (auto& values : waits_) {
+            values.clear();
+            values.reserve(8192);
+        }
+        diagnosticsEnabled_.store(true, std::memory_order_release);
+    }
+
+    D3D11LockTimingSnapshot endDiagnostics() {
+        diagnosticsEnabled_.store(false, std::memory_order_release);
+        std::lock_guard<std::mutex> lock(timingMutex_);
+        return {waits_[1], waits_[2], waits_[3]};
+    }
+
 private:
+    static D3D11LockRole& currentRoleStorage() {
+        static thread_local D3D11LockRole role = D3D11LockRole::Unknown;
+        return role;
+    }
+
+    static D3D11LockRole currentRole() { return currentRoleStorage(); }
+
     std::recursive_mutex mutex_;
+    std::atomic<bool> diagnosticsEnabled_{false};
+    std::mutex timingMutex_;
+    std::array<std::vector<double>, 4> waits_;
+};
+
+class D3D11LockRoleScope {
+public:
+    explicit D3D11LockRoleScope(D3D11LockRole role) : previous_(D3D11Lock::setCurrentRole(role)) {}
+
+    ~D3D11LockRoleScope() { D3D11Lock::setCurrentRole(previous_); }
+
+private:
+    D3D11LockRole previous_;
 };
 
 class SharedD3D11Device {

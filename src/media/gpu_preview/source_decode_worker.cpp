@@ -2,10 +2,162 @@
 
 #include "media/gpu_preview/qpc_clock.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 
 namespace mvm::gpu {
+
+const char* toString(SeekCompletionPublishResult result) {
+    switch (result) {
+    case SeekCompletionPublishResult::Published:
+        return "published";
+    case SeekCompletionPublishResult::RejectedNoOutstanding:
+        return "rejected_no_outstanding";
+    case SeekCompletionPublishResult::RejectedAlreadyPublished:
+        return "rejected_already_published";
+    case SeekCompletionPublishResult::RejectedRequestMismatch:
+        return "rejected_request_mismatch";
+    case SeekCompletionPublishResult::RejectedStoppedSuperseded:
+        return "rejected_stopped_superseded";
+    }
+    return "unknown";
+}
+
+const char* toString(SeekExecutionPhase phase) {
+    switch (phase) {
+    case SeekExecutionPhase::Idle:
+        return "idle";
+    case SeekExecutionPhase::Queued:
+        return "queued";
+    case SeekExecutionPhase::WaitingDecoderMutex:
+        return "waiting_decoder_mutex";
+    case SeekExecutionPhase::DecoderSeek:
+        return "decoder_seek";
+    case SeekExecutionPhase::GenerationReset:
+        return "generation_reset";
+    case SeekExecutionPhase::RequestExactFrame:
+        return "request_exact_frame";
+    case SeekExecutionPhase::SubmitExactFrame:
+        return "submit_exact_frame";
+    case SeekExecutionPhase::PublishingCompletion:
+        return "publishing_completion";
+    case SeekExecutionPhase::Completed:
+        return "completed";
+    }
+    return "unknown";
+}
+
+void SourceSeekMailbox::restart() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stopped_ = false;
+    outstanding_ = false;
+    pending_ = false;
+    completionReady_ = false;
+}
+
+SeekRequestResult SourceSeekMailbox::request(long long frameNumber, long long requestQpc,
+                                             SeekTicket& ticket, std::string& err) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopped_) {
+        err = "停止中のworkerへseekを要求できません";
+        return SeekRequestResult::RejectedStopped;
+    }
+    if (frameNumber < 0) {
+        err = "seek targetは0以上である必要があります";
+        return SeekRequestResult::RejectedInvalid;
+    }
+    if (outstanding_) {
+        err = "同じsourceに未完了seekが既にあります";
+        return SeekRequestResult::RejectedBusy;
+    }
+    ticket = {++nextRequestId_, frameNumber};
+    ticket_ = ticket;
+    requestQpc_ = requestQpc;
+    outstanding_ = true;
+    pending_ = true;
+    completionReady_ = false;
+    return SeekRequestResult::Accepted;
+}
+
+bool SourceSeekMailbox::takePending(SeekTicket& ticket, long long& requestQpc) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!pending_)
+        return false;
+    ticket = ticket_;
+    requestQpc = requestQpc_;
+    pending_ = false;
+    return true;
+}
+
+SeekCompletionPublishResult SourceSeekMailbox::publish(const SeekCompletion& completion) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!outstanding_) {
+        if (stopped_ && completion.requestId == ticket_.requestId)
+            return SeekCompletionPublishResult::RejectedStoppedSuperseded;
+        return SeekCompletionPublishResult::RejectedNoOutstanding;
+    }
+    if (completion.requestId != ticket_.requestId)
+        return SeekCompletionPublishResult::RejectedRequestMismatch;
+    if (completionReady_) {
+        if (stopped_ && completion_.status == SeekCompletionStatus::Stopped)
+            return SeekCompletionPublishResult::RejectedStoppedSuperseded;
+        return SeekCompletionPublishResult::RejectedAlreadyPublished;
+    }
+    completion_ = completion;
+    completionReady_ = true;
+    completed_.notify_all();
+    return SeekCompletionPublishResult::Published;
+}
+
+SeekWaitResult SourceSeekMailbox::wait(const SeekTicket& ticket, int timeoutMs,
+                                       SeekCompletion& completion) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (!outstanding_ || ticket.requestId != ticket_.requestId ||
+        ticket.targetFrame != ticket_.targetFrame)
+        return SeekWaitResult::StaleTicket;
+    if (!completed_.wait_for(
+            lock, std::chrono::milliseconds(std::max(0, timeoutMs)), [this, &ticket] {
+                return completionReady_ && completion_.requestId == ticket.requestId;
+            }))
+        return SeekWaitResult::Timeout;
+    completion = completion_;
+    outstanding_ = false;
+    completionReady_ = false;
+    return SeekWaitResult::Ready;
+}
+
+void SourceSeekMailbox::stop() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stopped_ = true;
+    pending_ = false;
+    if (outstanding_ && !completionReady_) {
+        completion_ = {};
+        completion_.requestId = ticket_.requestId;
+        completion_.targetFrame = ticket_.targetFrame;
+        completion_.requestQpc = requestQpc_;
+        completion_.status = SeekCompletionStatus::Stopped;
+        completion_.error = "seek中にworkerが停止しました";
+        completionReady_ = true;
+    }
+    completed_.notify_all();
+}
+
+bool SourceSeekMailbox::hasPending() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return pending_;
+}
+
+bool SourceSeekMailbox::hasOutstanding() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return outstanding_;
+}
+
+SourceSeekMailboxSnapshot SourceSeekMailbox::snapshot() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return {stopped_,         outstanding_, pending_,
+            completionReady_, ticket_,      completionReady_ ? completion_.requestId : 0};
+}
 
 SourceDecodeWorker::SourceDecodeWorker(SourceId sourceId, SharedD3D11Device& device,
                                        ReadbackCounters& counters, size_t bufferCapacity)
@@ -59,6 +211,32 @@ SourceDecoderSnapshot SourceDecodeWorker::snapshot() const {
     return result;
 }
 
+SourceSeekDiagnosticSnapshot SourceDecodeWorker::seekDiagnosticSnapshot() const {
+    SourceSeekDiagnosticSnapshot result;
+    result.phase = seekPhase_.load(std::memory_order_acquire);
+    result.requestId = seekRequestId_.load(std::memory_order_acquire);
+    result.targetFrame = seekTargetFrame_.load(std::memory_order_acquire);
+    result.phaseEnterQpc = seekPhaseEnterQpc_.load(std::memory_order_acquire);
+    result.lastProgressQpc = seekLastProgressQpc_.load(std::memory_order_acquire);
+    result.mailbox = seekMailbox_.snapshot();
+    result.completionPublishRejectCount =
+        seekCompletionPublishRejectCount_.load(std::memory_order_acquire);
+    result.completionRequestMismatchCount =
+        seekCompletionRequestMismatchCount_.load(std::memory_order_acquire);
+    result.completionStoppedSupersededCount =
+        seekCompletionStoppedSupersededCount_.load(std::memory_order_acquire);
+    return result;
+}
+
+void SourceDecodeWorker::setSeekPhase(SeekExecutionPhase phase, const SeekTicket& ticket) {
+    const long long now = qpcTicks();
+    seekRequestId_.store(ticket.requestId, std::memory_order_release);
+    seekTargetFrame_.store(ticket.targetFrame, std::memory_order_release);
+    seekPhaseEnterQpc_.store(now, std::memory_order_release);
+    seekLastProgressQpc_.store(now, std::memory_order_release);
+    seekPhase_.store(phase, std::memory_order_release);
+}
+
 bool SourceDecodeWorker::start(const std::string& utf8Path, std::string& err) {
     if (startedOnce_) {
         err = "同じSourceIdのworkerは再openできません。新しいSourceIdを登録してください";
@@ -83,6 +261,7 @@ bool SourceDecodeWorker::start(const std::string& utf8Path, std::string& err) {
     }
 
     buffer_.restart();
+    seekMailbox_.restart();
     {
         std::lock_guard<std::mutex> lock(decoderMutex_);
         decoder_ = std::move(decoder);
@@ -112,8 +291,13 @@ bool SourceDecodeWorker::start(const std::string& utf8Path, std::string& err) {
 }
 
 void SourceDecodeWorker::stop() {
-    playing_.store(false, std::memory_order_release);
-    running_.store(false, std::memory_order_release);
+    {
+        // wake_ のpredicate更新とwait遷移を同じmutexで直列化し、通知の取りこぼしを防ぐ。
+        std::lock_guard<std::mutex> lock(commandMutex_);
+        playing_.store(false, std::memory_order_release);
+        running_.store(false, std::memory_order_release);
+        seekMailbox_.stop();
+    }
     buffer_.stop();
     wake_.notify_all();
     if (thread_.joinable())
@@ -140,22 +324,28 @@ void SourceDecodeWorker::stop() {
 }
 
 void SourceDecodeWorker::play() {
-    if (!running())
-        return;
-    playing_.store(true, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(commandMutex_);
+        if (!running())
+            return;
+        playing_.store(true, std::memory_order_release);
+    }
     wake_.notify_all();
 }
 
 void SourceDecodeWorker::pause() {
-    playing_.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(commandMutex_);
+        playing_.store(false, std::memory_order_release);
+    }
     wake_.notify_all();
 }
 
 void SourceDecodeWorker::stepForward() {
-    if (!running())
-        return;
     {
         std::lock_guard<std::mutex> lock(commandMutex_);
+        if (!running())
+            return;
         ++stepsPending_;
     }
     wake_.notify_all();
@@ -188,6 +378,10 @@ bool SourceDecodeWorker::submitWithBackpressure(const DecodedGpuFrame& frame, st
         return false;
     }
     while (running()) {
+        // seek request後の旧generation frameは、満杯buffer待ちより先に破棄する。
+        // ここで戻らないとworkerがsubmit待ちに留まり、mailboxのseek優先順位を破る。
+        if (seekMailbox_.hasPending())
+            return false;
         const SubmitResult result = buffer_.submitFrame(frame);
         if (result == SubmitResult::Accepted) {
             std::lock_guard<std::mutex> lock(snapshotMutex_);
@@ -221,47 +415,116 @@ bool SourceDecodeWorker::submitWithBackpressure(const DecodedGpuFrame& frame, st
     return false;
 }
 
-bool SourceDecodeWorker::seekBlocking(long long frameNumber, double& decodeReadyMs,
-                                      std::string& err) {
-    pause();
-    decodeReadyMs = 0.0;
+SeekRequestResult SourceDecodeWorker::requestSeek(long long frameNumber, SeekTicket& ticket,
+                                                  std::string& err) {
+    if (!running()) {
+        err = "停止中のworkerへseekを要求できません";
+        return SeekRequestResult::RejectedStopped;
+    }
+    SeekRequestResult result = SeekRequestResult::RejectedStopped;
+    {
+        // mailbox pendingはwake_のpredicateである。commandMutexなしで更新すると、workerが
+        // predicate確認からwaitへ移る隙間のnotifyを失い、pendingのまま停止し得る。
+        std::lock_guard<std::mutex> lock(commandMutex_);
+        result = seekMailbox_.request(frameNumber, qpcTicks(), ticket, err);
+        if (result == SeekRequestResult::Accepted) {
+            playing_.store(false, std::memory_order_release);
+            setSeekPhase(SeekExecutionPhase::Queued, ticket);
+        }
+    }
+    if (result == SeekRequestResult::Accepted)
+        wake_.notify_all();
+    return result;
+}
+
+SeekWaitResult SourceDecodeWorker::waitSeek(const SeekTicket& ticket, int timeoutMs,
+                                            SeekCompletion& completion) {
+    return seekMailbox_.wait(ticket, timeoutMs, completion);
+}
+
+SeekCompletion SourceDecodeWorker::executeSeek(const SeekTicket& ticket, long long requestQpc) {
+    D3D11LockRoleScope role(sourceId_.value == 1 ? D3D11LockRole::DecoderA
+                                                 : D3D11LockRole::DecoderB);
+    SeekCompletion completion;
+    completion.requestId = ticket.requestId;
+    completion.targetFrame = ticket.targetFrame;
+    completion.requestQpc = requestQpc;
+    completion.beginQpc = qpcTicks();
+    setSeekPhase(SeekExecutionPhase::WaitingDecoderMutex, ticket);
     std::lock_guard<std::mutex> lock(decoderMutex_);
+    setSeekPhase(SeekExecutionPhase::DecoderSeek, ticket);
     if (!decoder_) {
-        err = "decoderが開かれていません";
-        return false;
+        completion.error = "decoderが開かれていません";
+        completion.decodeReadyQpc = qpcTicks();
+        return completion;
     }
-    const long long begin = qpcTicks();
-    if (!decoder_->seek(frameNumber, err)) {
+    if (!decoder_->seek(ticket.targetFrame, completion.error)) {
+        setSeekPhase(SeekExecutionPhase::GenerationReset, ticket);
         buffer_.setGeneration(decoder_->sourceGeneration());
-        decodeReadyMs = qpcMsBetween(begin, qpcTicks());
         refreshSnapshotLocked();
-        return false;
+        completion.decodeReadyQpc = qpcTicks();
+        completion.decodeReadyMs = qpcMsBetween(requestQpc, completion.decodeReadyQpc);
+        return completion;
     }
+    setSeekPhase(SeekExecutionPhase::GenerationReset, ticket);
     if (buffer_.setGeneration(decoder_->sourceGeneration()) ==
         GenerationUpdateResult::RejectedRegression) {
-        err = "seek後のsource generationが逆行しました";
-        decodeReadyMs = qpcMsBetween(begin, qpcTicks());
-        noteFatal(err);
-        return false;
+        completion.error = "seek後のsource generationが逆行しました";
+        noteFatal(completion.error);
+        completion.decodeReadyQpc = qpcTicks();
+        completion.decodeReadyMs = qpcMsBetween(requestQpc, completion.decodeReadyQpc);
+        return completion;
     }
 
     DecodedGpuFrame frame;
-    const DecodeStatus status = decoder_->requestFrame(frame, err);
-    decodeReadyMs = qpcMsBetween(begin, qpcTicks());
-    if (status != DecodeStatus::Ok || frame.frameNumber != frameNumber) {
-        if (err.empty())
-            err = "exact seekが要求frameへ完全一致しませんでした";
-        noteFatal(err);
+    setSeekPhase(SeekExecutionPhase::RequestExactFrame, ticket);
+    const DecodeStatus status = decoder_->requestFrame(frame, completion.error);
+    if (status != DecodeStatus::Ok || frame.frameNumber != ticket.targetFrame) {
+        if (completion.error.empty())
+            completion.error = "exact seekが要求frameへ完全一致しませんでした";
+        noteFatal(completion.error);
         refreshSnapshotLocked();
-        return false;
+        completion.decodeReadyQpc = qpcTicks();
+        completion.decodeReadyMs = qpcMsBetween(requestQpc, completion.decodeReadyQpc);
+        return completion;
     }
-    if (!submitWithBackpressure(frame, err)) {
+    completion.decodedFrameNumber = frame.frameNumber;
+    setSeekPhase(SeekExecutionPhase::SubmitExactFrame, ticket);
+    if (!submitWithBackpressure(frame, completion.error)) {
         refreshSnapshotLocked();
-        return false;
+        completion.status =
+            running() ? SeekCompletionStatus::Failed : SeekCompletionStatus::Stopped;
+        completion.decodeReadyQpc = qpcTicks();
+        completion.decodeReadyMs = qpcMsBetween(requestQpc, completion.decodeReadyQpc);
+        return completion;
     }
     eof_.store(false, std::memory_order_release);
     refreshSnapshotLocked();
-    return true;
+    completion.decodeReadyQpc = qpcTicks();
+    completion.decodeReadyMs = qpcMsBetween(requestQpc, completion.decodeReadyQpc);
+    completion.sourceGeneration = decoder_->sourceGeneration();
+    completion.resourceEpoch = decoder_->resourceEpoch();
+    completion.status = running() ? SeekCompletionStatus::Completed : SeekCompletionStatus::Stopped;
+    return completion;
+}
+
+bool SourceDecodeWorker::seekBlocking(long long frameNumber, double& decodeReadyMs,
+                                      std::string& err) {
+    if (!running()) {
+        err = "停止中のworkerへseekを要求できません";
+        return false;
+    }
+    if (seekMailbox_.hasOutstanding()) {
+        err = "async seek outstanding中にblocking seekを実行できません";
+        return false;
+    }
+    pause();
+    const long long requestQpc = qpcTicks();
+    const SeekCompletion completion = executeSeek({0, frameNumber}, requestQpc);
+    setSeekPhase(SeekExecutionPhase::Completed, {0, frameNumber});
+    decodeReadyMs = completion.decodeReadyMs;
+    err = completion.error;
+    return completion.status == SeekCompletionStatus::Completed;
 }
 
 bool SourceDecodeWorker::flushBlocking(std::string& err) {
@@ -284,12 +547,37 @@ bool SourceDecodeWorker::flushBlocking(std::string& err) {
 }
 
 void SourceDecodeWorker::run() {
+    D3D11LockRoleScope role(sourceId_.value == 1 ? D3D11LockRole::DecoderA
+                                                 : D3D11LockRole::DecoderB);
     while (running()) {
         {
             std::unique_lock<std::mutex> lock(commandMutex_);
-            wake_.wait(lock, [this] { return !running() || playing() || stepsPending_ > 0; });
+            wake_.wait(lock, [this] {
+                return !running() || seekMailbox_.hasPending() || playing() || stepsPending_ > 0;
+            });
             if (!running())
                 break;
+            SeekTicket seekTicket;
+            long long seekRequestQpc = 0;
+            if (seekMailbox_.takePending(seekTicket, seekRequestQpc)) {
+                lock.unlock();
+                const SeekCompletion completion = executeSeek(seekTicket, seekRequestQpc);
+                setSeekPhase(SeekExecutionPhase::PublishingCompletion, seekTicket);
+                const SeekCompletionPublishResult published = seekMailbox_.publish(completion);
+                if (published == SeekCompletionPublishResult::Published) {
+                    setSeekPhase(SeekExecutionPhase::Completed, seekTicket);
+                } else if (published == SeekCompletionPublishResult::RejectedStoppedSuperseded) {
+                    seekCompletionStoppedSupersededCount_.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    seekCompletionPublishRejectCount_.fetch_add(1, std::memory_order_relaxed);
+                    if (published == SeekCompletionPublishResult::RejectedRequestMismatch)
+                        seekCompletionRequestMismatchCount_.fetch_add(1, std::memory_order_relaxed);
+                    if (running())
+                        noteFatal(std::string("seek completionを公開できません: ") +
+                                  toString(published));
+                }
+                continue;
+            }
             if (!playing() && stepsPending_ > 0)
                 --stepsPending_;
         }

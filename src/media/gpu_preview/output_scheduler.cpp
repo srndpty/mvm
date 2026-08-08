@@ -54,6 +54,34 @@ OutputScheduleDecision OutputScheduler60Hz::takeDue(long long nowQpc) {
     return decision;
 }
 
+OutputScheduleDecision OutputScheduler60Hz::takeDueBefore(long long nowQpc,
+                                                          long long endQpcExclusive) {
+    OutputScheduleDecision decision;
+    if (frequency_ <= 0 || nowQpc >= endQpcExclusive)
+        return decision;
+    auto deadlineFor = [this](long long frame) { return startQpc_ + (frame * frequency_) / 60; };
+    if (deadlineFor(nextFrame_) >= endQpcExclusive || nowQpc < deadlineFor(nextFrame_))
+        return decision;
+    while (deadlineFor(nextFrame_ + 1) < endQpcExclusive && nowQpc >= deadlineFor(nextFrame_ + 1)) {
+        ++nextFrame_;
+        ++decision.skippedDeadlineCount;
+    }
+    decision.due = true;
+    decision.output = next();
+    return decision;
+}
+
+long long OutputScheduler60Hz::closeBefore(long long endQpcExclusive) {
+    if (frequency_ <= 0)
+        return 0;
+    long long closed = 0;
+    while (startQpc_ + (nextFrame_ * frequency_) / 60 < endQpcExclusive) {
+        ++nextFrame_;
+        ++closed;
+    }
+    return closed;
+}
+
 OutputDropReason OutputScheduler60Hz::classifyDeadline(PairResult pairResult,
                                                        CompositionResult compositionResult) {
     if (compositionResult == CompositionResult::StaleEpoch)

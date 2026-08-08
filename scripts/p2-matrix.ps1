@@ -14,7 +14,7 @@ $repo = Split-Path -Parent $PSScriptRoot
 $build = Join-Path $repo 'build\ucrt64-release'
 $exe = Join-Path $build 'bin\mvm_compositor_spike.exe'
 $checker = Join-Path $PSScriptRoot 'check-p2-contract.ps1'
-if (-not $OutputDirectory) { $OutputDirectory = Join-Path $build 'p2-matrix' }
+if (-not $OutputDirectory) { $OutputDirectory = Join-Path $build 'p2-matrix-d4' }
 if (-not $SourceA) { $SourceA = Join-Path $repo 'tests\assets\benchmark\v1080p60_h264.mp4' }
 if (-not $SourceB) { $SourceB = Join-Path $repo 'tests\assets\benchmark\v1080p60_hevc.mp4' }
 foreach ($required in @($exe, $checker, $SourceA, $SourceB)) {
@@ -63,6 +63,9 @@ function Get-Provenance {
 }
 
 $startProvenance = Get-Provenance
+if (-not $DryRun -and $startProvenance.dirty_worktree) {
+    throw 'P2 formal matrixはclean worktreeでのみ実行できます。変更をcommitしてから再実行してください'
+}
 $entries = [System.Collections.Generic.List[object]]::new()
 $matrixFailed = $false
 
@@ -144,7 +147,7 @@ $allSeek = $seekEntries.Count -eq $runCount -and
     @($seekEntries | Where-Object { -not $_.pass }).Count -eq 0
 $summary = [ordered]@{
     schema = 'mvm-p2-matrix-summary-1'
-    formal_contract_version = 'P2-D1-1'
+    formal_contract_version = 'P2-D4-2'
     dry_run = [bool]$DryRun
     git_commit = $startProvenance.git_commit
     dirty_worktree = $startProvenance.dirty_worktree
@@ -188,7 +191,8 @@ $summary = [ordered]@{
     all_playback_runs_pass = $allPlayback
     all_seek_runs_pass = $allSeek
     dry_run_harness_pass = [bool]($DryRun -and $allPlayback -and $allSeek -and $provenanceUnchanged)
-    p2_pass = [bool]((-not $DryRun) -and $allPlayback -and $allSeek -and $provenanceUnchanged)
+    p2_pass = [bool]((-not $DryRun) -and (-not $startProvenance.dirty_worktree) -and
+        $allPlayback -and $allSeek -and $provenanceUnchanged)
 }
 
 $summaryPath = Join-Path $OutputDirectory 'summary.json'

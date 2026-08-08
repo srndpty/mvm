@@ -9,10 +9,12 @@
 #include "media/gpu_preview/source_registry.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <random>
 #include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -29,6 +31,62 @@ constexpr int kNoDevice = 5;
 int fail(const std::string& message, int code = kMismatch) {
     std::fprintf(stderr, "FAIL: %s\n", message.c_str());
     return code;
+}
+
+std::string seekDiagnostic(const char* source, const SourceDecodeWorker& worker) {
+    const auto value = worker.seekDiagnosticSnapshot();
+    std::ostringstream out;
+    out << "source=" << source << " phase=" << toString(value.phase)
+        << " request_id=" << value.requestId << " target=" << value.targetFrame
+        << " phase_enter_qpc=" << value.phaseEnterQpc
+        << " last_progress_qpc=" << value.lastProgressQpc
+        << " mailbox_stopped=" << value.mailbox.stopped
+        << " mailbox_outstanding=" << value.mailbox.outstanding
+        << " mailbox_pending=" << value.mailbox.pending
+        << " completion_ready=" << value.mailbox.completionReady
+        << " mailbox_ticket_id=" << value.mailbox.currentTicket.requestId
+        << " mailbox_target=" << value.mailbox.currentTicket.targetFrame
+        << " completion_request_id=" << value.mailbox.completionRequestId
+        << " publish_rejects=" << value.completionPublishRejectCount
+        << " request_mismatches=" << value.completionRequestMismatchCount
+        << " stopped_superseded=" << value.completionStoppedSupersededCount;
+    return out.str();
+}
+
+bool waitForParallelSeek(SourceDecodeWorker& workerA, SourceDecodeWorker& workerB,
+                         const SeekTicket& ticketA, const SeekTicket& ticketB,
+                         SeekCompletion& completionA, SeekCompletion& completionB,
+                         std::string& err) {
+    const long long deadline = qpcTicks() + static_cast<long long>(qpcFrequency()) * 30;
+    bool readyA = false;
+    bool readyB = false;
+    while (!readyA || !readyB) {
+        if (!readyA) {
+            const auto waited = workerA.waitSeek(ticketA, 0, completionA);
+            if (waited == SeekWaitResult::StaleTicket) {
+                err = "Source A completionがstaleです";
+                return false;
+            }
+            readyA = waited == SeekWaitResult::Ready;
+        }
+        if (!readyB) {
+            const auto waited = workerB.waitSeek(ticketB, 0, completionB);
+            if (waited == SeekWaitResult::StaleTicket) {
+                err = "Source B completionがstaleです";
+                return false;
+            }
+            readyB = waited == SeekWaitResult::Ready;
+        }
+        if (readyA && readyB)
+            return true;
+        if (qpcTicks() >= deadline) {
+            err = "A/B parallel seek共通30秒deadline timeout: " + seekDiagnostic("A", workerA) +
+                  " | " + seekDiagnostic("B", workerB);
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
 }
 
 class OwnedDevice {
@@ -266,38 +324,117 @@ int run(const std::string& pathA, const std::string& pathB) {
     const std::vector<long long> targets = makeSeekTargets();
     if (targets.size() != 64)
         return fail("seek対象が64点ではありません");
+    {
+        const SourceGeneration beforeA = workerA.snapshot().sourceGeneration;
+        const SourceGeneration beforeB = workerB.snapshot().sourceGeneration;
+        SeekTicket onlyA;
+        if (workerA.requestSeek(0, onlyA, err) != SeekRequestResult::Accepted)
+            return fail("Source A単独async seekをdispatchできません: " + err);
+        workerA.play();
+        SeekTicket rejectedBusy;
+        if (workerA.requestSeek(1, rejectedBusy, err) != SeekRequestResult::RejectedBusy ||
+            !workerA.playing())
+            return fail("busy seek拒否がplayback状態を変更しました");
+        SeekCompletion completionA;
+        if (workerA.waitSeek(onlyA, 30000, completionA) != SeekWaitResult::Ready ||
+            completionA.status != SeekCompletionStatus::Completed ||
+            workerB.snapshot().sourceGeneration != beforeB ||
+            !(beforeA < completionA.sourceGeneration))
+            return fail("Source A requestがSource B stateへ影響しました");
+        DecodedGpuFrame discardA;
+        if (!workerA.buffer().takeExact(0, discardA))
+            return fail("Source A単独async seek後のbuffer先頭がexact targetではありません");
+
+        const SourceGeneration afterA = workerA.snapshot().sourceGeneration;
+        workerB.play();
+        SeekTicket rejectedInvalid;
+        if (workerB.requestSeek(-1, rejectedInvalid, err) != SeekRequestResult::RejectedInvalid ||
+            !workerB.playing())
+            return fail("invalid seek拒否がplayback状態を変更しました");
+        workerB.pause();
+        SeekTicket onlyB;
+        if (workerB.requestSeek(0, onlyB, err) != SeekRequestResult::Accepted)
+            return fail("Source B単独async seekをdispatchできません: " + err);
+        SeekCompletion completionB;
+        if (workerB.waitSeek(onlyB, 30000, completionB) != SeekWaitResult::Ready ||
+            completionB.status != SeekCompletionStatus::Completed ||
+            workerA.snapshot().sourceGeneration != afterA ||
+            !(beforeB < completionB.sourceGeneration))
+            return fail("Source B requestがSource A stateへ影響しました");
+        DecodedGpuFrame discardB;
+        if (!workerB.buffer().takeExact(0, discardB))
+            return fail("Source B単独async seek後のbuffer先頭がexact targetではありません");
+    }
     double seekElapsedA = 0.0;
     double seekElapsedB = 0.0;
+    int exactA = 0;
+    int exactB = 0;
+    int exactPair = 0;
+    int overlapCount = 0;
+    int staleCompletionAccepted = 0;
+    int busyAccepted = 0;
     for (const long long requested : targets) {
         workerA.pause();
         workerB.pause();
         const SourceGeneration beforeA = workerA.snapshot().sourceGeneration;
         const SourceGeneration beforeB = workerB.snapshot().sourceGeneration;
-        double elapsedA = 0.0;
-        if (!workerA.seekBlocking(requested, elapsedA, err))
-            return fail("Source A seek " + std::to_string(requested) + ": " + err);
-        seekElapsedA += elapsedA;
-        const SourceGeneration afterA = workerA.snapshot().sourceGeneration;
-        if (!(beforeA < afterA) || workerB.snapshot().sourceGeneration != beforeB)
-            return fail("Source A seekがsource-local generation契約を破りました");
-        if (!coordinator.setSourceGeneration(sourceA, afterA))
-            return fail("coordinatorへSource A generationを設定できません");
+        if (requested == targets.front()) {
+            // playback decode中でもseek commandを優先し、同じworker threadで処理する。
+            workerA.play();
+            workerB.play();
+        }
+        SeekTicket ticketA;
+        SeekTicket ticketB;
+        if (workerA.requestSeek(requested, ticketA, err) != SeekRequestResult::Accepted ||
+            workerB.requestSeek(requested, ticketB, err) != SeekRequestResult::Accepted)
+            return fail("A/B parallel seek dispatchに失敗しました: " + err);
+        SeekTicket busy;
+        if (workerA.requestSeek(requested, busy, err) == SeekRequestResult::Accepted)
+            ++busyAccepted;
+        SeekCompletion ignored;
+        SeekTicket stale = ticketA;
+        ++stale.requestId;
+        if (workerA.waitSeek(stale, 0, ignored) == SeekWaitResult::Ready)
+            ++staleCompletionAccepted;
 
-        double elapsedB = 0.0;
-        if (!workerB.seekBlocking(requested, elapsedB, err))
-            return fail("Source B seek " + std::to_string(requested) + ": " + err);
-        seekElapsedB += elapsedB;
+        SeekCompletion completionA;
+        SeekCompletion completionB;
+        if (!waitForParallelSeek(workerA, workerB, ticketA, ticketB, completionA, completionB, err))
+            return fail("target=" + std::to_string(requested) + " " + err);
+        if (completionA.status != SeekCompletionStatus::Completed ||
+            completionA.decodedFrameNumber != requested ||
+            completionA.requestId != ticketA.requestId)
+            return fail("Source A exact completion契約が不成立です");
+        if (completionB.status != SeekCompletionStatus::Completed ||
+            completionB.decodedFrameNumber != requested ||
+            completionB.requestId != ticketB.requestId)
+            return fail("Source B exact completion契約が不成立です");
+        ++exactA;
+        ++exactB;
+        seekElapsedA += completionA.decodeReadyMs;
+        seekElapsedB += completionB.decodeReadyMs;
+        if (std::max(completionA.beginQpc, completionB.beginQpc) <
+            std::min(completionA.decodeReadyQpc, completionB.decodeReadyQpc))
+            ++overlapCount;
+        const SourceGeneration afterA = workerA.snapshot().sourceGeneration;
         const SourceGeneration afterB = workerB.snapshot().sourceGeneration;
-        if (!(beforeB < afterB) || workerA.snapshot().sourceGeneration != afterA)
-            return fail("Source B seekがsource-local generation契約を破りました");
-        if (!coordinator.setSourceGeneration(sourceB, afterB))
-            return fail("coordinatorへSource B generationを設定できません");
+        if (!(beforeA < completionA.sourceGeneration) ||
+            !(beforeB < completionB.sourceGeneration) || afterA != completionA.sourceGeneration ||
+            afterB != completionB.sourceGeneration)
+            return fail("A/B generation独立性またはcompletion identityが不正です");
+        if (!coordinator.setSourceGeneration(sourceA, completionA.sourceGeneration) ||
+            !coordinator.setSourceGeneration(sourceB, completionB.sourceGeneration))
+            return fail("coordinatorへA/B generationを設定できません");
 
         ComposedFrame pair;
         if (!waitForPair(requested, pairer, workerA, workerB, pair, err) ||
             !verifyPair(pair, requested, sourceA, sourceB, owned.shared.device(), err))
             return fail("exact seek pair " + std::to_string(requested) + ": " + err);
+        ++exactPair;
     }
+    if (exactA != 64 || exactB != 64 || exactPair != 64 || busyAccepted != 0 ||
+        staleCompletionAccepted != 0 || overlapCount == 0)
+        return fail("64点parallel seekのexact/busy/stale/overlap契約が不成立です");
     if (pairer.counters().pairedCount != 664 || pairer.counters().mixedFrameRejected != 0 ||
         pairer.counters().staleGenerationRejected != 0 ||
         pairer.counters().futureGenerationRejected != 0)
@@ -307,6 +444,13 @@ int run(const std::string& pathA, const std::string& pathB) {
     decodedB = workerB.snapshot();
     if (decodedA.softwareFrameRejectCount != 0 || decodedB.softwareFrameRejectCount != 0)
         return fail("software frameがdecode経路へ入りました");
+    const auto seekDiagnosticA = workerA.seekDiagnosticSnapshot();
+    const auto seekDiagnosticB = workerB.seekDiagnosticSnapshot();
+    if (seekDiagnosticA.completionPublishRejectCount != 0 ||
+        seekDiagnosticB.completionPublishRejectCount != 0 ||
+        seekDiagnosticA.completionRequestMismatchCount != 0 ||
+        seekDiagnosticB.completionRequestMismatchCount != 0)
+        return fail("seek completion publish reject/mismatch counterが0ではありません");
 
     std::fprintf(stderr, "[source_a_stop_does_not_stop_b]\n");
     double resetMs = 0.0;
@@ -338,6 +482,15 @@ int run(const std::string& pathA, const std::string& pathB) {
     SourceDecodeWorker workerReverseB(reverseB, owned.shared, counters, 3);
     if (!workerReverseA.start(pathA, err) || !workerReverseB.start(pathB, err))
         return fail("逆順stop検査のdual openに失敗: " + err);
+
+    std::fprintf(stderr, "[async_failed_seek_completion]\n");
+    SeekTicket failedTicket;
+    if (workerReverseB.requestSeek(999999, failedTicket, err) != SeekRequestResult::Accepted)
+        return fail("失敗seek commandを受理できません: " + err);
+    SeekCompletion failedCompletion;
+    if (workerReverseB.waitSeek(failedTicket, 30000, failedCompletion) != SeekWaitResult::Ready ||
+        failedCompletion.status != SeekCompletionStatus::Failed)
+        return fail("範囲外async seekをFailed completionにできません");
 
     std::fprintf(stderr, "[backpressure_no_busy_loop]\n");
     workerReverseA.play();
@@ -392,6 +545,11 @@ int run(const std::string& pathA, const std::string& pathB) {
     std::fprintf(stdout,
                  "sequential_600_elapsed_ms=%.3f\nseek_a_total_ms=%.3f\nseek_b_total_ms=%.3f\n",
                  sequentialMs, seekElapsedA, seekElapsedB);
+    std::fprintf(stdout,
+                 "parallel_seek_exact_a=%d\nparallel_seek_exact_b=%d\n"
+                 "parallel_seek_exact_pair=%d\nparallel_seek_overlap_count=%d\n"
+                 "stale_completion_acceptance_count=%d\nbusy_acceptance_count=%d\n",
+                 exactA, exactB, exactPair, overlapCount, staleCompletionAccepted, busyAccepted);
     std::fprintf(stdout,
                  "backpressure_wait_count=%lld\nqueue_full_count=%lld\n"
                  "buffer_overflow_implicit_drop_count=0\n",

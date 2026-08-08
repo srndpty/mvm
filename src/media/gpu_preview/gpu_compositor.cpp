@@ -1,5 +1,7 @@
 #include "media/gpu_preview/gpu_compositor.h"
 
+#include "media/gpu_preview/qpc_clock.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -128,13 +130,14 @@ bool GpuCompositor::initializeExternal(SharedD3D11Device& device, ReadbackCounte
 }
 
 bool GpuCompositor::prepareComposition(const ComposedFrame& frame,
-                                       const ExternalCompositionTarget& target, std::string& err) {
+                                       const ExternalCompositionTarget& target,
+                                       size_t expectedLayerCount, std::string& err) {
     if (!target.rtv || target.width <= 0 || target.height <= 0) {
         err = "composition targetが不正です";
         return false;
     }
-    if (frame.layers.size() != 2) {
-        err = "P2-C1 compositionは2 layer必須です";
+    if (frame.layers.size() != expectedLayerCount) {
+        err = "compositionのlayer数が診断契約と一致しません";
         return false;
     }
     for (const auto& layer : frame.layers) {
@@ -187,16 +190,36 @@ bool GpuCompositor::composeToTarget(const ComposedFrame& frame,
         err = "GpuCompositorはfatal状態です: " + fatalReason_;
         return false;
     }
-    if (!prepareComposition(frame, target, err))
+    if (!prepareComposition(frame, target, 2, err))
         return false;
     // owned offscreen wrapperだけがclearする。external targetはQRhi passがclear owner。
     const bool clearTarget = target.rtv == targetRtv_;
-    return issueComposition(frame, target, clearTarget, err);
+    return issueComposition(frame, target, clearTarget, nullptr, err);
+}
+
+bool GpuCompositor::composeDiagnosticToTarget(const ComposedFrame& frame,
+                                              const ExternalCompositionTarget& target,
+                                              GpuCompositorStageTiming& timing, std::string& err) {
+    ++counters_.compositionRequestedCount;
+    if (!ready_ || fatal_ || (frame.layers.size() != 1 && frame.layers.size() != 2)) {
+        err = !ready_  ? "GpuCompositorが初期化されていません"
+              : fatal_ ? "GpuCompositorはfatal状態です: " + fatalReason_
+                       : "P2-D3診断compositionは1または2 layer必須です";
+        return false;
+    }
+    const long long prepareBegin = qpcTicks();
+    const bool prepared = prepareComposition(frame, target, frame.layers.size(), err);
+    timing.prepareUs = qpcUsBetween(prepareBegin, qpcTicks());
+    if (!prepared)
+        return false;
+    const bool clearTarget = target.rtv == targetRtv_;
+    return issueComposition(frame, target, clearTarget, &timing, err);
 }
 
 bool GpuCompositor::issueComposition(const ComposedFrame& frame,
                                      const ExternalCompositionTarget& target, bool clearTarget,
-                                     std::string& err) {
+                                     GpuCompositorStageTiming* timing, std::string& err) {
+    const long long issueBegin = timing ? qpcTicks() : 0;
     if (clearTarget) {
         std::lock_guard<D3D11Lock> guard(shared_->lock());
         const float clear[4] = {0, 0, 0, 1};
@@ -248,8 +271,13 @@ bool GpuCompositor::issueComposition(const ComposedFrame& frame,
     converter_.stampSubmissionSerial(submission.serial);
     retirement_.retire(submission.serial, aggregateLifetime(frame));
     counters_.retirementDepthPeak = retirement_.depthPeak();
+    if (timing)
+        timing->issueUs = qpcUsBetween(issueBegin, qpcTicks());
+    const long long pollBegin = timing ? qpcTicks() : 0;
     if (!poll(err))
         return false;
+    if (timing)
+        timing->completionPollUs = qpcUsBetween(pollBegin, qpcTicks());
     return true;
 }
 

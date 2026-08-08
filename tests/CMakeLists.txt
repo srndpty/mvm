@@ -769,8 +769,17 @@ mvm_add_test(compositor_qt_two_layers
     PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120
         FIXTURES_SETUP mvm_c2_playback)
 
-# P2-D1 formal checkerはGPU非依存の対照群と、1 fieldだけを壊したnegativeで固定する。
-foreach(_p2_contract_case Good Negative)
+# P2-D4-2 formal checkerはGPU非依存の対照群と、1 fieldだけを壊したnegativeで固定する。
+foreach(_p2_contract_case Good FormalGood NegativeInvariant NegativeSameDevice NegativeOutputSize
+        NegativeBackend NegativeSeed NegativeFormalTiming NegativeScheduledHigh
+        NegativeScheduledLow NegativeCoverage NegativeSourceFrameCount NegativeMissingPair
+        NegativeEofA NegativeEofB NegativePrerollConfigured NegativePrerollOk
+        NegativePrerollDepthA NegativePrerollDepthB NegativePrerollFrontA
+        NegativePrerollFrontB SeekGood NegativeSeekPublishReject
+        NegativeSeekRequestMismatch NegativeSeekStaleCompletion
+        NegativeSeekBusyAcceptance NegativeSeekStoppedSuperseded
+        NegativeSeekOverlapCount NegativeSeekConcurrencyCount
+        NegativeSeekSampleOverlap)
     string(TOLOWER "${_p2_contract_case}" _p2_contract_name)
     mvm_add_test(p2_formal_checker_${_p2_contract_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File
@@ -779,6 +788,14 @@ foreach(_p2_contract_case Good Negative)
             -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-contract.ps1"
             -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-contract-${_p2_contract_name}.json")
 endforeach()
+
+# 診断case typoを通常playbackへ暗黙fallbackさせない。
+add_test(NAME compositor_diagnostic_case_invalid_negative
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+        -ExpectExit 2 -Exe "$<TARGET_FILE:mvm_compositor_spike>"
+        -ChildArgs "--diagnostic-case|invalid")
+set_tests_properties(compositor_diagnostic_case_invalid_negative PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 30)
 
 foreach(_kind_name actual_device no_full_frame_copy actual_target_probe shutdown)
     if(_kind_name STREQUAL "actual_device")

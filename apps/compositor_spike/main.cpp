@@ -18,6 +18,7 @@ void usage() {
                  "  --warmup-seconds <n> --measure-seconds <n> --seed <n>\n"
                  "  --seek-count <n> --display-timeout-ms <n>\n"
                  "  --formal-preflight\n"
+                 "  --diagnostic-timing --diagnostic-case a|b|c|d\n"
                  "  --gpu-completion fence|event_query --mode playback|seek|layout\n");
 }
 
@@ -51,6 +52,16 @@ bool parse(const QStringList& args, CompositorSpikeConfig& config) {
             if (config.testFault != "device_change" && config.testFault != "completion_fatal")
                 return false;
         } else if (arg == "--formal-preflight") config.formalPreflight = true;
+        else if (arg == "--diagnostic-timing") config.diagnosticTiming = true;
+        else if (arg == "--diagnostic-case") {
+            const QString v = value().toLower();
+            if (v == "a") config.diagnosticCase = CompositorDiagnosticCase::SingleDecode;
+            else if (v == "b") config.diagnosticCase = CompositorDiagnosticCase::PairOnly;
+            else if (v == "c") config.diagnosticCase = CompositorDiagnosticCase::FixedTextures;
+            else if (v == "d") config.diagnosticCase = CompositorDiagnosticCase::FullPath;
+            else return false;
+            config.diagnosticTiming = true;
+        }
         else return false;
     }
     return !config.sourceA.isEmpty() && !config.sourceB.isEmpty() &&
