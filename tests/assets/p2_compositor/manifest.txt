@@ -1,0 +1,4 @@
+# P2-C1 deterministic NV12 fixture (independent CPU expectations in test)
+A=Y81,U90,V240,bt709_limited
+B_left=Y145,U54,V34,bt709_limited
+B_right=Y41,U240,V110,bt709_limited

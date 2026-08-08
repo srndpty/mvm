@@ -906,6 +906,31 @@ void testP2SourceAndComposition() {
     check(exactB.peekFrontIdentity(keptB) && keptB.frameNumber == 11,
           "片方だけ成立したB frameを消費しない");
     checkEq(pairer.counters().missingACount, 1, "missing Aを計数");
+
+    // A の確認後、commit 前に B の generation が変わった状況を決定論的に再現する。
+    SourceFrameBuffer transactionalA(a, SourceGeneration{2}, 2);
+    SourceFrameBuffer transactionalB(b, SourceGeneration{7}, 2);
+    auto keptFrameA = makeFrame(20, 2);
+    keptFrameA.sourceId = a;
+    auto changedFrameB = makeFrame(20, 7);
+    changedFrameB.sourceId = b;
+    check(transactionalA.submitFrame(keptFrameA) == SubmitResult::Accepted,
+          "transactional A を追加");
+    check(transactionalB.submitFrame(changedFrameB) == SubmitResult::Accepted,
+          "transactional B を追加");
+    SourceFrameIdentity confirmedA;
+    check(transactionalA.peekFrontIdentity(confirmedA) && confirmedA.frameNumber == 20,
+          "commit 前に A exact を確認");
+    check(transactionalB.setGeneration(SourceGeneration{8}) == GenerationUpdateResult::Updated,
+          "A確認後にB generation changeを再現");
+    DecodedGpuFrame notTakenA;
+    DecodedGpuFrame notTakenB;
+    check(
+        !SourceFrameBuffer::takeExactPair(transactionalA, transactionalB, 20, notTakenA, notTakenB),
+        "片側変更時はpair commitを拒否");
+    check(transactionalA.peekFrontIdentity(confirmedA) && confirmedA.frameNumber == 20,
+          "pair失敗でAを失わない");
+    checkEq(pairer.counters().partialPairConsumeCount, 0, "partial pair consume は 0");
 }
 
 // --------------------------------------------------------------------------

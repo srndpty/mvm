@@ -733,6 +733,27 @@ mvm_add_test(p2_dual_decode_integration
 set_tests_properties(p2_dual_decode_integration PROPERTIES
     REQUIRED_FILES "${MVM_BENCH_DIR}/v1080p60_h264.mp4;${MVM_BENCH_DIR}/v1080p60_hevc.mp4")
 
+# P2 GPU testsを有効にした構成ではbenchmark素材とdeterministic fixtureを必須にする。
+set(MVM_P2_COMPOSITOR_FIXTURE "${CMAKE_SOURCE_DIR}/tests/assets/p2_compositor/manifest.txt")
+foreach(_p2_required
+        "${MVM_BENCH_DIR}/v1080p60_h264.mp4"
+        "${MVM_BENCH_DIR}/v1080p60_hevc.mp4"
+        "${MVM_P2_COMPOSITOR_FIXTURE}")
+    if(NOT EXISTS "${_p2_required}")
+        message(FATAL_ERROR
+            "[mvm] P2 GPU test必須fixtureがありません: ${_p2_required}\n"
+            "  benchmark動画は pwsh scripts/make-testmedia.ps1 -Mode Benchmark で生成してください。")
+    endif()
+endforeach()
+
+add_executable(mvm_test_p2_gpu_compositor gpu_preview/test_p2_gpu_compositor.cpp)
+target_link_libraries(mvm_test_p2_gpu_compositor PRIVATE mvm::gpu_preview mvm::warnings)
+mvm_add_test(p2_gpu_compositor_offscreen
+    COMMAND mvm_test_p2_gpu_compositor
+            "${MVM_BENCH_DIR}/v1080p60_h264.mp4"
+            "${MVM_BENCH_DIR}/v1080p60_hevc.mp4"
+    PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 900)
+
 # 実 GPU を使う検査は終了コードを分けている。
 # 0 以外なら合格ではなく、**意図した理由で失敗したこと**を照合する。
 function(mvm_add_gpu_exit_test name)

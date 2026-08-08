@@ -31,6 +31,9 @@ public:
     // color patch (小領域) だけを読んだ。判定には使わない。
     void noteColorPatchReadback() { colorPatch_.fetch_add(1, std::memory_order_relaxed); }
 
+    // compositor 出力の小領域 probe。source marker とは分離する。
+    void noteOutputProbeReadback() { outputProbe_.fetch_add(1, std::memory_order_relaxed); }
+
     // GPU 内の copy / 変換 pass。CPU 転送ではない。
     void noteGpuCopy() { gpuCopy_.fetch_add(1, std::memory_order_relaxed); }
 
@@ -40,12 +43,15 @@ public:
 
     long long colorPatchReadbacks() const { return colorPatch_.load(std::memory_order_relaxed); }
 
+    long long outputProbeReadbacks() const { return outputProbe_.load(std::memory_order_relaxed); }
+
     long long gpuCopies() const { return gpuCopy_.load(std::memory_order_relaxed); }
 
     void reset() {
         fullFrame_.store(0, std::memory_order_relaxed);
         markerBand_.store(0, std::memory_order_relaxed);
         colorPatch_.store(0, std::memory_order_relaxed);
+        outputProbe_.store(0, std::memory_order_relaxed);
         gpuCopy_.store(0, std::memory_order_relaxed);
     }
 
@@ -53,6 +59,7 @@ private:
     std::atomic<long long> fullFrame_{0};
     std::atomic<long long> markerBand_{0};
     std::atomic<long long> colorPatch_{0};
+    std::atomic<long long> outputProbe_{0};
     std::atomic<long long> gpuCopy_{0};
 };
 

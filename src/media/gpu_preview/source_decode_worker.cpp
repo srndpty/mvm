@@ -118,20 +118,25 @@ void SourceDecodeWorker::stop() {
     wake_.notify_all();
     if (thread_.joinable())
         thread_.join();
-    joined_.store(true, std::memory_order_release);
 
-    std::lock_guard<std::mutex> lock(decoderMutex_);
-    if (decoder_) {
-        refreshSnapshotLocked();
-        decoder_->close();
-        decoder_.reset();
+    {
+        std::lock_guard<std::mutex> lock(decoderMutex_);
+        if (decoder_) {
+            refreshSnapshotLocked();
+            decoder_->close();
+            decoder_.reset();
+        }
     }
-    std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
-    snapshot_.open = false;
-    snapshot_.running = false;
-    snapshot_.playing = false;
-    snapshot_.joined = true;
-    snapshot_.bufferDepth = 0;
+    {
+        std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
+        snapshot_.open = false;
+        snapshot_.running = false;
+        snapshot_.playing = false;
+        snapshot_.bufferDepth = 0;
+        snapshot_.joined = true;
+    }
+    // joined は decoder close/reset と最終 snapshot の後にだけ公開する。
+    joined_.store(true, std::memory_order_release);
 }
 
 void SourceDecodeWorker::play() {

@@ -58,6 +58,16 @@ public:
                             int targetWidth, int targetHeight, bool linearFilter,
                             const float clearColor[4], std::string& err);
 
+    // clear を行わず1 layerだけ描く。compositorが全layer検証と1回のclearを
+    // 済ませた後に呼ぶ。shaderはstraight alphaとしてopacityを出力する。
+    bool drawLayer(const DecodedGpuFrame& frame, ID3D11RenderTargetView* rtv,
+                   const FitRect& destination, const float sourceUv[4], float opacity,
+                   bool linearFilter, std::string& err);
+
+    // RGBA render target の指定小領域だけを読む。既存の単一 staging 経路を再利用する。
+    bool readOutputProbe(ID3D11Texture2D* texture, int x, int y, int width, int height,
+                         std::vector<unsigned char>& rgbaOut, std::string& err);
+
     // marker 帯 (左上 1216x64) だけを 1:1 で RGBA へ変換し、CPU へ読む。
     //
     // **これは full-frame readback ではない。**
@@ -137,11 +147,14 @@ private:
 
     bool readSmallRegionTopLeft(const DecodedGpuFrame& frame, int bandWidth, int bandHeight,
                                 std::vector<unsigned char>& rgbaOut, std::string& err);
+    bool ensureReadbackSurfaces(int width, int height, std::string& err);
+    bool mapReadbackSurface(int width, int height, std::vector<unsigned char>& rgbaOut,
+                            std::string& err);
     bool ensureShaders(std::string& err);
     bool acquireSrvs(const DecodedGpuFrame& frame, SrvPair& out, std::string& err);
     bool drawInternal(const DecodedGpuFrame& frame, ID3D11RenderTargetView* rtv,
                       const FitRect& viewport, const float uvRect[4], bool linearFilter,
-                      std::string& err);
+                      float opacity, std::string& err);
 
     SharedD3D11Device* shared_ = nullptr;
     ReadbackCounters* counters_ = nullptr;

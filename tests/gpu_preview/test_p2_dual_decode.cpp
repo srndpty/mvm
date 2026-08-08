@@ -321,13 +321,13 @@ int run(const std::string& pathA, const std::string& pathB) {
     std::fprintf(stderr, "[two_worker_join_barrier]\n");
     WorkerJoinBarrier joins(2);
     workerA.stop();
-    if (!workerA.joined() || !joins.noteJoined(0) || joins.allJoined())
+    if (!workerA.joined() || workerA.snapshot().open || !joins.noteJoined(0) || joins.allJoined())
         return fail("Source Aだけのjoinでbarrierがreadyになりました");
     if (!workerB.running() || workerB.buffer().stopped() || !workerB.buffer().waitForFrame(5000))
         return fail("Source A stopがSource Bのdecodeを停止しました");
     workerA.stop(); // repeated stop
     workerB.stop();
-    if (!workerB.joined() || !joins.noteJoined(1) || !joins.allJoined())
+    if (!workerB.joined() || workerB.snapshot().open || !joins.noteJoined(1) || !joins.allJoined())
         return fail("A/B両workerのjoin後にbarrierがreadyになりません");
     workerB.stop(); // repeated stop
 
@@ -382,11 +382,13 @@ int run(const std::string& pathA, const std::string& pathB) {
     std::fprintf(stdout,
                  "missing_a_count=%lld\nmissing_b_count=%lld\nstale_a_discard_count=%lld\n"
                  "stale_b_discard_count=%lld\nmixed_frame_rejected=%lld\n"
-                 "stale_generation_rejected=%lld\nfuture_generation_rejected=%lld\n",
+                 "stale_generation_rejected=%lld\nfuture_generation_rejected=%lld\n"
+                 "partial_pair_consume_count=%lld\n",
                  pairer.counters().missingACount, pairer.counters().missingBCount,
                  pairer.counters().staleADiscardCount, pairer.counters().staleBDiscardCount,
                  pairer.counters().mixedFrameRejected, pairer.counters().staleGenerationRejected,
-                 pairer.counters().futureGenerationRejected);
+                 pairer.counters().futureGenerationRejected,
+                 pairer.counters().partialPairConsumeCount);
     std::fprintf(stdout,
                  "sequential_600_elapsed_ms=%.3f\nseek_a_total_ms=%.3f\nseek_b_total_ms=%.3f\n",
                  sequentialMs, seekElapsedA, seekElapsedB);

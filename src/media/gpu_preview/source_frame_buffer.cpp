@@ -81,6 +81,24 @@ bool SourceFrameBuffer::takeExact(long long frameNumber, DecodedGpuFrame& frame)
     return true;
 }
 
+bool SourceFrameBuffer::takeExactPair(SourceFrameBuffer& a, SourceFrameBuffer& b,
+                                      long long frameNumber, DecodedGpuFrame& frameA,
+                                      DecodedGpuFrame& frameB) {
+    if (&a == &b)
+        return false;
+    std::scoped_lock lock(a.mutex_, b.mutex_);
+    if (a.frames_.empty() || b.frames_.empty() || a.frames_.front().frameNumber != frameNumber ||
+        b.frames_.front().frameNumber != frameNumber)
+        return false;
+    frameA = std::move(a.frames_.front());
+    frameB = std::move(b.frames_.front());
+    a.frames_.pop_front();
+    b.frames_.pop_front();
+    a.changed_.notify_all();
+    b.changed_.notify_all();
+    return true;
+}
+
 size_t SourceFrameBuffer::discardBefore(long long frameNumber) {
     std::lock_guard<std::mutex> lock(mutex_);
     size_t discarded = 0;
