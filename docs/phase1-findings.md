@@ -596,3 +596,69 @@ Playback startup 20/20、5+15秒回帰3/3、Release / Debug seek integration各2
 この節ではP2/P1 formalを実行していない。P2-D2の`build/ucrt64-release/p2-matrix/`は
 timestamp 18:15..18:22、contract `P2-D1-1`、`p2_pass = false`のまま変更していない。
 D5のclean HEAD formal全6 runを実行するまでは、P2-D2のfalseが最後の正式判定である。
+
+## 15. P2-D5 formal再実行と最終判定
+
+### 15.1 [事実] formal対象をclean HEADでfreezeした
+
+formal対象HEADは`cb57253e9c932623eab9822dcae963d60c5b05ae`である。
+開始時の`git status --porcelain`は空で、matrix summaryの`dirty_worktree`はfalse、
+`provenance_unchanged_during_matrix`はtrueだった。
+
+matrix前のfull CTestはRelease / Debugとも186/186通過した。performance 11件、stability 1件を
+含む全登録testを`-j 4`で実行し、`RESOURCE_LOCK`と`RUN_SERIAL`は変更していない。
+
+### 15.2 [事実] Playback formalは3/3通過した
+
+P2-D4-2、seed 20260808、fence、5秒warmup、固定8 frame pre-roll、60秒measurementを
+3 independent processで実行した。rawは
+`build/ucrt64-release/p2-matrix-d4/playback-run1.json`から`playback-run3.json`に保存した。
+
+| run | effective fps | drop rate | pre-roll A/B | displayed / scheduled | missing | EOF A/B |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 59.2506 | 1.2222% | 16 / 16 | 3556 / 3600 | 0 | 0 / 0 |
+| 2 | 58.8507 | 1.8889% | 13 / 16 | 3532 / 3600 | 0 | 0 / 0 |
+| 3 | 59.0842 | 1.5000% | 16 / 16 | 3546 / 3600 | 0 | 0 / 0 |
+
+全runでfront A/B 0、first output 0だった。dropは44 / 68 / 54件で、全件scheduler
+deadline分類だった。non-deadline drop、marker/probe mismatch、mixed frame/generation、
+stale composition epoch、CPU readback、full-frame GPU copyは0だった。submissionはdisplayed、
+layer drawはdisplayedの2倍、logical clearはdisplayedと一致した。
+
+### 15.3 [事実] Seek formalはparallel provenance MUSTで2/3失敗した
+
+1000 deterministic seekを3 independent processで実行した。rawは
+`build/ucrt64-release/p2-matrix-d4/seek-run1.json`から`seek-run3.json`に保存した。
+
+| run | p95 | observed max | overlap | false sample index | contract |
+| --- | ---: | ---: | ---: | --- | --- |
+| 1 | 125.9236 ms | 219.0096 ms | 999 / 1000 | 971 | FAIL |
+| 2 | 125.5704 ms | 235.5991 ms | 1000 / 1000 | なし | PASS |
+| 3 | 125.7466 ms | 208.7424 ms | 997 / 1000 | 103, 127, 294 | FAIL |
+
+全runで1000 latency値を記録し、nearest-rank p95は150 ms以下、observed maxは400 ms以下だった。
+3000 seekのglobal observed maxは235.5991 msである。display mismatch、timeout、stale、busy、
+publish reject、request mismatch、stopped superseded、software fallbackは全runで0だった。
+
+失敗MUSTは`seek_overlap_count == 1000`と全concurrency sampleの`overlap == true`だけである。
+run1は1 sample、run3は3 sampleでA/B execution intervalが重ならなかった。平均による救済、
+再試行、sample除外、seed/threshold変更は行っていない。
+
+### 15.4 [事実] lifecycle / teardownとprovenanceは成立した
+
+6 run合計でmarker mismatch、actual target probe mismatch、mixed frame、mixed generation、
+stale epoch、CPU full-frame readback、full-frame GPU copy、untracked submission、completion failure、
+early release、retirement timeout、retirement after drain、device lost、lifecycle violationは0だった。
+全runでprocess exit 0、teardown success、final report after teardownが成立した。
+
+正式summaryは`build/ucrt64-release/p2-matrix-d4/summary.json`に保存した。
+`formal_contract_version = P2-D4-2`、`all_playback_runs_pass = true`、
+`all_seek_runs_pass = false`、`p2_pass = false`である。旧P2-D2の`p2-matrix/`は
+historical artifactとして変更していない。
+
+### 15.5 [exit] P2 FINAL FAIL
+
+P2 formalが1 runでもMUST失敗したためP1 formal regressionは実行していない。
+したがって最終判定は **P2 FINAL FAIL** である。Playback gateとSeek latency/correctness gateは
+通過したが、採用したparallel dual-source architectureの1000/1000 overlap provenanceが
+成立しなかった。性能修正と再formalは次ラリーの対象とし、P3へは進まない。
