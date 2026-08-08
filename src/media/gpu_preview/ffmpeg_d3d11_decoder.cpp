@@ -499,7 +499,9 @@ bool FFmpegD3D11Decoder::open(const std::string& utf8Path, std::string& err) {
     // GPU の完了 serial が決めるので、8 は「実測で足りている上限側の余裕」であって
     // retain 深さではない。retirement_depth_peak を JSON で観測している
     // (実測では 2)。
-    d.codec->extra_hw_frames = 8;
+    // P2-C2 はA/Bそれぞれ最大16 frameをbounded bufferで先読みする。
+    // decoder内部参照とは別に保持できるよう、固定D3D11 poolへ同数を足す。
+    d.codec->extra_hw_frames = 16;
     d.codec->thread_count = 1; // hwaccel では frame thread を使わない
 
     rc = avcodec_open2(d.codec, decoder, nullptr);

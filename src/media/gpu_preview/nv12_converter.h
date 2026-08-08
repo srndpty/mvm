@@ -64,6 +64,10 @@ public:
                    const FitRect& destination, const float sourceUv[4], float opacity,
                    bool linearFilter, std::string& err);
 
+    // composition の issue 前準備。SRV 生成を含む失敗しうる resource 準備を
+    // clear/draw より前に完了させる。drawLayer は同じ cache entry を再利用する。
+    bool prepareLayer(const DecodedGpuFrame& frame, std::string& err);
+
     // RGBA render target の指定小領域だけを読む。既存の単一 staging 経路を再利用する。
     bool readOutputProbe(ID3D11Texture2D* texture, int x, int y, int width, int height,
                          std::vector<unsigned char>& rgbaOut, std::string& err);
@@ -87,6 +91,10 @@ public:
     // MVM_ALLOW_SMALL_REGION_READBACK
     bool readColorPatches(const DecodedGpuFrame& frame, int patchW, int patchH,
                           std::vector<unsigned char>& rgbaOut, std::string& err);
+
+    // actual-target correctness probeの期待値用。sourceの正規化座標を1 pixelだけ読む。
+    bool readSourceProbe(const DecodedGpuFrame& frame, float u, float v,
+                         std::vector<unsigned char>& rgbaOut, std::string& err);
 
     // --- SRV cache の世代管理 (§4) ------------------------------------------
     // decoder を開き直すと decode pool の texture がまるごと入れ替わる。

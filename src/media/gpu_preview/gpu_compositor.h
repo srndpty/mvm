@@ -20,6 +20,29 @@ struct GpuCompositorCounters {
     size_t retirementDepthAfterDrain = 0;
     long long payloadsReleasedBeforeCompletion = 0;
     long long retirementTimeoutCount = 0;
+    long long partialGpuIssueFailureCount = 0;
+    long long composeAfterFatalRejectedCount = 0;
+    long long fullFrameGpuCopyCount = 0;
+};
+
+struct ExternalCompositionTarget {
+    ID3D11RenderTargetView* rtv = nullptr; // 借用。GpuCompositor は Release しない。
+    int width = 0;
+    int height = 0;
+};
+
+enum class GpuCompositorInitializeFault {
+    None = 0,
+    Completion,
+    TargetTexture,
+    TargetRtv,
+    TargetSrv,
+};
+
+struct GpuCompositorTestFaults {
+    GpuCompositorInitializeFault initialize = GpuCompositorInitializeFault::None;
+    int failBeforeLayerDraw = -1;
+    bool failCompletionPoll = false;
 };
 
 // Qt非依存のoffscreen compositor。全layerを事前検証し、1 clear + N drawを
@@ -29,11 +52,20 @@ public:
     ~GpuCompositor();
     bool initialize(SharedD3D11Device& device, ReadbackCounters& readbacks, int width, int height,
                     std::string& err, GpuCompletionBackend backend = GpuCompletionBackend::Fence);
+    bool initializeExternal(SharedD3D11Device& device, ReadbackCounters& readbacks,
+                            std::string& err,
+                            GpuCompletionBackend backend = GpuCompletionBackend::Fence);
     bool compose(const ComposedFrame& frame, std::string& err);
+    bool composeToTarget(const ComposedFrame& frame, const ExternalCompositionTarget& target,
+                         std::string& err);
     bool poll(std::string& err);
     bool shutdown(int timeoutMs, std::string& err);
     bool readOutputProbe(int x, int y, int width, int height, std::vector<unsigned char>& rgba,
                          std::string& err);
+    bool readExternalOutputProbe(ID3D11Texture2D* texture, int x, int y, int width, int height,
+                                 std::vector<unsigned char>& rgba, std::string& err);
+    bool readSourceProbe(const DecodedGpuFrame& frame, float u, float v,
+                         std::vector<unsigned char>& rgba, std::string& err);
     bool readSourceMarker(const DecodedGpuFrame& frame, int width, int height,
                           std::vector<unsigned char>& rgba, std::string& err);
 
@@ -45,9 +77,23 @@ public:
 
     GpuCompletionBackend completionBackend() const { return completion_.backend(); }
 
+    bool fatal() const { return fatal_; }
+
+    const std::string& fatalReason() const { return fatalReason_; }
+
+    bool ready() const { return ready_; }
+
+    // 決定論的negative test専用。既定値では一切動作を変えない。
+    void setTestFaults(GpuCompositorTestFaults faults) { testFaults_ = faults; }
+
 private:
     void releaseTarget();
-    bool validateAllLayers(const ComposedFrame& frame, std::string& err);
+    void rollbackInitialize();
+    void enterFatal(const std::string& reason);
+    bool prepareComposition(const ComposedFrame& frame, const ExternalCompositionTarget& target,
+                            std::string& err);
+    bool issueComposition(const ComposedFrame& frame, const ExternalCompositionTarget& target,
+                          bool clearTarget, std::string& err);
 
     SharedD3D11Device* shared_ = nullptr;
     Nv12Converter converter_;
@@ -59,7 +105,10 @@ private:
     int width_ = 0;
     int height_ = 0;
     bool ready_ = false;
+    bool fatal_ = false;
+    std::string fatalReason_;
     GpuCompositorCounters counters_;
+    GpuCompositorTestFaults testFaults_;
 };
 
 } // namespace mvm::gpu

@@ -754,6 +754,80 @@ mvm_add_test(p2_gpu_compositor_offscreen
             "${MVM_BENCH_DIR}/v1080p60_hevc.mp4"
     PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 900)
 
+# --- Phase 1 / P2-C2: actual QQuickRhiItem target ---------------------------
+set(MVM_C2_PLAYBACK_JSON "${CMAKE_CURRENT_BINARY_DIR}/c2-playback.json")
+set(MVM_C2_SEEK_JSON "${CMAKE_CURRENT_BINARY_DIR}/c2-seek.json")
+set(MVM_C2_LAYOUT_JSON "${CMAKE_CURRENT_BINARY_DIR}/c2-layout.json")
+
+mvm_add_test(compositor_qt_two_layers
+    COMMAND mvm_compositor_spike
+        --source-a "${MVM_BENCH_DIR}/v1080p60_h264.mp4"
+        --source-b "${MVM_BENCH_DIR}/v1080p60_hevc.mp4"
+        --warmup-seconds 1 --measure-seconds 2 --seed 20260808 --seek-count 64
+        --metrics "${MVM_C2_PLAYBACK_JSON}" --gpu-completion fence
+        --display-timeout-ms 2000 --mode playback
+    PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120
+        FIXTURES_SETUP mvm_c2_playback)
+
+foreach(_kind_name actual_device no_full_frame_copy actual_target_probe shutdown)
+    if(_kind_name STREQUAL "actual_device")
+        set(_kind device)
+    elseif(_kind_name STREQUAL "no_full_frame_copy")
+        set(_kind copy)
+    elseif(_kind_name STREQUAL "actual_target_probe")
+        set(_kind probe)
+    else()
+        set(_kind shutdown)
+    endif()
+    mvm_add_test(compositor_qt_${_kind_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/check-c2-metrics.ps1"
+            -Json "${MVM_C2_PLAYBACK_JSON}" -Kind ${_kind}
+        PROPERTIES FIXTURES_REQUIRED mvm_c2_playback)
+endforeach()
+
+mvm_add_test(compositor_qt_dual_seek_64
+    COMMAND mvm_compositor_spike
+        --source-a "${MVM_BENCH_DIR}/v1080p60_h264.mp4"
+        --source-b "${MVM_BENCH_DIR}/v1080p60_hevc.mp4"
+        --warmup-seconds 0 --measure-seconds 1 --seed 20260808 --seek-count 64
+        --metrics "${MVM_C2_SEEK_JSON}" --gpu-completion fence
+        --display-timeout-ms 2000 --mode seek
+    PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 300)
+mvm_add_test(compositor_qt_dual_seek_64_contract
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/check-c2-metrics.ps1"
+        -Json "${MVM_C2_SEEK_JSON}" -Kind seek
+    PROPERTIES DEPENDS compositor_qt_dual_seek_64)
+
+mvm_add_test(compositor_qt_layout_epoch
+    COMMAND mvm_compositor_spike
+        --source-a "${MVM_BENCH_DIR}/v1080p60_h264.mp4"
+        --source-b "${MVM_BENCH_DIR}/v1080p60_hevc.mp4"
+        --warmup-seconds 0 --measure-seconds 1 --seed 20260808 --seek-count 1
+        --metrics "${MVM_C2_LAYOUT_JSON}" --gpu-completion fence
+        --display-timeout-ms 2000 --mode layout
+    PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120)
+mvm_add_test(compositor_qt_layout_epoch_contract
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/check-c2-metrics.ps1"
+        -Json "${MVM_C2_LAYOUT_JSON}" -Kind layout
+    PROPERTIES DEPENDS compositor_qt_layout_epoch)
+
+foreach(_fault device_change completion_fatal)
+    set(_fault_json "${CMAKE_CURRENT_BINARY_DIR}/c2-${_fault}.json")
+    add_test(NAME compositor_qt_${_fault}_fail_closed
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/run-c2-negative.ps1"
+            -Exe "$<TARGET_FILE:mvm_compositor_spike>"
+            -SourceA "${MVM_BENCH_DIR}/v1080p60_h264.mp4"
+            -SourceB "${MVM_BENCH_DIR}/v1080p60_hevc.mp4"
+            -Metrics "${_fault_json}" -Fault ${_fault})
+    set_tests_properties(compositor_qt_${_fault}_fail_closed PROPERTIES
+        ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+        RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120)
+endforeach()
+
 # 実 GPU を使う検査は終了コードを分けている。
 # 0 以外なら合格ではなく、**意図した理由で失敗したこと**を照合する。
 function(mvm_add_gpu_exit_test name)

@@ -15,6 +15,7 @@
 
 #include "media/gpu_preview/color_metadata.h"
 #include "media/gpu_preview/composed_frame.h"
+#include "media/gpu_preview/composition_display_ledger.h"
 #include "media/gpu_preview/compositor_coordinator.h"
 #include "media/gpu_preview/device_change.h"
 #include "media/gpu_preview/display_ledger.h"
@@ -24,6 +25,7 @@
 #include "media/gpu_preview/gpu_completion.h"
 #include "media/gpu_preview/lifecycle.h"
 #include "media/gpu_preview/nv12_converter.h"
+#include "media/gpu_preview/output_scheduler.h"
 #include "media/gpu_preview/readback_counter.h"
 #include "media/gpu_preview/source_frame_buffer.h"
 #include "media/gpu_preview/source_registry.h"
@@ -1074,6 +1076,70 @@ void testRetirementQueue() {
     }
 }
 
+void testCompositionDisplayLedger() {
+    std::fprintf(stderr, "[composition display ledger]\n");
+    CompositionDisplayLedger ledger(2);
+    auto a = makeFrame(10, 3);
+    a.sourceId = {1};
+    a.resourceEpoch = {7};
+    auto b = makeFrame(10, 4);
+    b.sourceId = {2};
+    b.resourceEpoch = {8};
+    ComposedFrame frame{10, {9}, {{a, {}, {}, 1.0f, 0}, {b, {}, {}, 0.75f, 1}}};
+
+    const auto before = ledger.baseline();
+    checkEq(static_cast<long long>(before), 0, "初期baseline");
+    ledger.record(frame, 100);
+    CompositionDisplayExpectation expected{10, {9}, {identityOf(a), identityOf(b)}};
+    CompositionDisplayRecord found;
+    check(ledger.findAfter(before, expected, found), "baseline後の完全identity一致");
+    check(ledger.findEpochAfter(before, CompositionEpoch{9}, found), "baseline後の要求epoch一致");
+    check(!ledger.findEpochAfter(before, CompositionEpoch{8}, found), "old epochを拒否");
+    checkEq(static_cast<long long>(found.displaySequence), 1, "sequenceは単調増加");
+
+    auto wrong = expected;
+    wrong.sources[1].sourceGeneration = {99};
+    check(!ledger.findAfter(before, wrong, found), "一方のgeneration違いを拒否");
+    check(!ledger.findAfter(ledger.baseline(), expected, found), "arm前displayを成功にしない");
+
+    frame.outputFrameNumber = 11;
+    ledger.record(frame, 101);
+    frame.outputFrameNumber = 12;
+    ledger.record(frame, 102);
+    checkEq(static_cast<long long>(ledger.size()), 2, "historyを上限内に保つ");
+}
+
+void testOutputScheduler() {
+    std::fprintf(stderr, "[output scheduler]\n");
+    OutputScheduler60Hz scheduler;
+    scheduler.start(1000, 60000);
+    checkEq(scheduler.next().deadlineQpc, 1000, "frame 0 deadline");
+    checkEq(scheduler.next().deadlineQpc, 2000, "frame 1 deadline");
+    scheduler.start(1000, 60000);
+    const auto notDue = scheduler.takeDue(999);
+    check(!notDue.due, "deadline前はscheduleしない");
+    const auto skipped = scheduler.takeDue(3050);
+    check(skipped.due, "deadline到達でscheduleする");
+    checkEq(skipped.output.outputFrameNumber, 2, "missしたdeadline後のexact output frame");
+    checkEq(skipped.skippedDeadlineCount, 2, "missしたdeadlineを個別に数える");
+    check(
+        OutputScheduler60Hz::classifyDeadline(PairResult::MissingA, CompositionResult::Accepted) ==
+            OutputDropReason::MissingSourceA,
+        "missing A分類");
+    check(
+        OutputScheduler60Hz::classifyDeadline(PairResult::MissingB, CompositionResult::Accepted) ==
+            OutputDropReason::MissingSourceB,
+        "missing B分類");
+    check(OutputScheduler60Hz::classifyDeadline(PairResult::StaleGeneration,
+                                                CompositionResult::Accepted) ==
+              OutputDropReason::StaleGeneration,
+          "stale generation分類");
+    check(
+        OutputScheduler60Hz::classifyDeadline(PairResult::Paired, CompositionResult::StaleEpoch) ==
+            OutputDropReason::StaleCompositionEpoch,
+        "stale epoch分類");
+}
+
 // --------------------------------------------------------------------------
 // hardware format の選択 (software frame rejection)
 // --------------------------------------------------------------------------
@@ -1114,6 +1180,8 @@ int main() {
     testEventQueryLedger();
     testGenerationContract();
     testRetirementQueue();
+    testCompositionDisplayLedger();
+    testOutputScheduler();
     testHwFormatSelection();
 
     std::fprintf(stderr, "\n検査 %d 件 / 失敗 %d 件\n", gChecks, gFailures);
