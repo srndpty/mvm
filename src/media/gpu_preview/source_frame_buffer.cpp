@@ -63,6 +63,36 @@ bool SourceFrameBuffer::take(DecodedGpuFrame& frame) {
     return true;
 }
 
+bool SourceFrameBuffer::peekFrontIdentity(SourceFrameIdentity& identity) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (frames_.empty())
+        return false;
+    identity = identityOf(frames_.front());
+    return true;
+}
+
+bool SourceFrameBuffer::takeExact(long long frameNumber, DecodedGpuFrame& frame) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (frames_.empty() || frames_.front().frameNumber != frameNumber)
+        return false;
+    frame = std::move(frames_.front());
+    frames_.pop_front();
+    changed_.notify_all();
+    return true;
+}
+
+size_t SourceFrameBuffer::discardBefore(long long frameNumber) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    size_t discarded = 0;
+    while (!frames_.empty() && frames_.front().frameNumber < frameNumber) {
+        frames_.pop_front();
+        ++discarded;
+    }
+    if (discarded > 0)
+        changed_.notify_all();
+    return discarded;
+}
+
 void SourceFrameBuffer::noteDisplayed(long long frameNumber) {
     std::lock_guard<std::mutex> lock(mutex_);
     displayed_ = frameNumber;
@@ -73,6 +103,13 @@ bool SourceFrameBuffer::waitForSpace(int timeoutMs) {
     return changed_.wait_for(lock, std::chrono::milliseconds(timeoutMs), [this] {
         return stopped_ || frames_.size() < capacity_;
     }) && !stopped_;
+}
+
+bool SourceFrameBuffer::waitForFrame(int timeoutMs) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return changed_.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                             [this] { return stopped_ || !frames_.empty(); }) &&
+           !stopped_ && !frames_.empty();
 }
 
 void SourceFrameBuffer::stop() {

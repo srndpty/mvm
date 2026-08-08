@@ -720,6 +720,19 @@ mvm_add_test(gpu_pure_unit COMMAND mvm_test_gpu_pure)
 add_executable(mvm_test_gpu_decode gpu_preview/test_gpu_decode.cpp)
 target_link_libraries(mvm_test_gpu_decode PRIVATE mvm::gpu_preview mvm::util mvm::warnings)
 
+add_executable(mvm_test_p2_dual_decode gpu_preview/test_p2_dual_decode.cpp)
+target_link_libraries(mvm_test_p2_dual_decode PRIVATE mvm::gpu_preview mvm::warnings)
+mvm_add_test(p2_dual_decode_integration
+    COMMAND mvm_test_p2_dual_decode
+            "${MVM_BENCH_DIR}/v1080p60_h264.mp4"
+            "${MVM_BENCH_DIR}/v1080p60_hevc.mp4"
+    PROPERTIES
+        RESOURCE_LOCK mvm_gpu
+        RUN_SERIAL TRUE
+        TIMEOUT 900)
+set_tests_properties(p2_dual_decode_integration PROPERTIES
+    REQUIRED_FILES "${MVM_BENCH_DIR}/v1080p60_h264.mp4;${MVM_BENCH_DIR}/v1080p60_hevc.mp4")
+
 # 実 GPU を使う検査は終了コードを分けている。
 # 0 以外なら合格ではなく、**意図した理由で失敗したこと**を照合する。
 function(mvm_add_gpu_exit_test name)
