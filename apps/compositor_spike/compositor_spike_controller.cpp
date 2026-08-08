@@ -445,8 +445,10 @@ void CompositorSpikeController::tick() {
         }
     } else if (phase_ == Phase::SeekStart) {
         startSeek();
-    } else if (phase_ == Phase::SeekWait) {
-        pollSeek();
+    } else if (phase_ == Phase::SeekDecodeWait) {
+        pollSeekDecode();
+    } else if (phase_ == Phase::SeekDisplayWait) {
+        pollSeekDisplay();
     } else if (phase_ == Phase::LayoutStart) {
         startLayoutChange();
     } else if (phase_ == Phase::LayoutWait) {
@@ -470,44 +472,102 @@ void CompositorSpikeController::tick() {
 
 void CompositorSpikeController::startSeek() {
     if (seekIndex_ >= seekTargets_.size()) {
-        beginShutdown(QStringLiteral("dual seek完了"), seekMismatch_ != 0 || seekTimeout_ != 0);
+        beginShutdown(QStringLiteral("dual seek完了"),
+                      seekMismatch_ != 0 || seekTimeout_ != 0 || seekStaleCompletion_ != 0);
         return;
     }
     const long long target = seekTargets_[seekIndex_];
     waitBaseline_ = state_->ledger.baseline();
     seekRequestStartQpc_ = gpu::qpcTicks();
     waitTimer_.restart();
-    double aMs = 0, bMs = 0;
     std::string err;
-    const long long aBegin = gpu::qpcTicks();
-    const bool aOk = workerA_->seekBlocking(target, aMs, err);
-    const long long aEnd = gpu::qpcTicks();
-    const long long bBegin = gpu::qpcTicks();
-    const bool bOk = aOk && workerB_->seekBlocking(target, bMs, err);
-    const long long bEnd = gpu::qpcTicks();
-    if (!aOk || !bOk) {
+    seekAReady_ = false;
+    seekBReady_ = false;
+    const auto aResult = workerA_->requestSeek(target, seekTicketA_, err);
+    const auto bResult = workerB_->requestSeek(target, seekTicketB_, err);
+    if (aResult != gpu::SeekRequestResult::Accepted ||
+        bResult != gpu::SeekRequestResult::Accepted) {
         ++seekMismatch_;
         beginShutdown(QString::fromStdString(err), true);
         return;
     }
-    seekAMs_.push_back(gpu::qpcMsBetween(aBegin, aEnd));
-    seekBMs_.push_back(gpu::qpcMsBetween(bBegin, bEnd));
-    seekDecodeReadyQpc_ = bEnd;
-    seekDecodeReadyMs_.push_back(gpu::qpcMsBetween(seekRequestStartQpc_, bEnd));
-    const auto a = workerA_->snapshot();
-    const auto b = workerB_->snapshot();
-    state_->coordinator.setSourceGeneration({1}, a.sourceGeneration);
-    state_->coordinator.setSourceGeneration({2}, b.sourceGeneration);
+    phase_ = Phase::SeekDecodeWait;
+}
+
+void CompositorSpikeController::pollSeekDecode() {
+    const long long target = seekTargets_[seekIndex_];
+    if (!seekAReady_) {
+        const auto waited = workerA_->waitSeek(seekTicketA_, 0, seekCompletionA_);
+        if (waited == gpu::SeekWaitResult::StaleTicket) {
+            ++seekStaleCompletion_;
+            beginShutdown(QStringLiteral("Source A seek completionのrequestIdが一致しません"),
+                          true);
+            return;
+        }
+        seekAReady_ = waited == gpu::SeekWaitResult::Ready;
+    }
+    if (!seekBReady_) {
+        const auto waited = workerB_->waitSeek(seekTicketB_, 0, seekCompletionB_);
+        if (waited == gpu::SeekWaitResult::StaleTicket) {
+            ++seekStaleCompletion_;
+            beginShutdown(QStringLiteral("Source B seek completionのrequestIdが一致しません"),
+                          true);
+            return;
+        }
+        seekBReady_ = waited == gpu::SeekWaitResult::Ready;
+    }
+    if (!seekAReady_ || !seekBReady_) {
+        if (waitTimer_.elapsed() >= config_.displayTimeoutMs) {
+            ++seekTimeout_;
+            beginShutdown(QStringLiteral("dual seek decode completionがtimeoutしました"), true);
+        }
+        return;
+    }
+    const bool validA = seekCompletionA_.status == gpu::SeekCompletionStatus::Completed &&
+                        seekCompletionA_.requestId == seekTicketA_.requestId &&
+                        seekCompletionA_.targetFrame == target &&
+                        seekCompletionA_.decodedFrameNumber == target;
+    const bool validB = seekCompletionB_.status == gpu::SeekCompletionStatus::Completed &&
+                        seekCompletionB_.requestId == seekTicketB_.requestId &&
+                        seekCompletionB_.targetFrame == target &&
+                        seekCompletionB_.decodedFrameNumber == target;
+    if (!validA || !validB) {
+        ++seekMismatch_;
+        const std::string error = !seekCompletionA_.error.empty() ? seekCompletionA_.error
+                                                                  : seekCompletionB_.error;
+        beginShutdown(QString::fromStdString(error.empty() ? "dual exact seekが失敗しました"
+                                                            : error),
+                      true);
+        return;
+    }
+    seekAMs_.push_back(gpu::qpcMsBetween(seekCompletionA_.requestQpc,
+                                         seekCompletionA_.decodeReadyQpc));
+    seekBMs_.push_back(gpu::qpcMsBetween(seekCompletionB_.requestQpc,
+                                         seekCompletionB_.decodeReadyQpc));
+    seekDecodeReadyQpc_ =
+        std::max(seekCompletionA_.decodeReadyQpc, seekCompletionB_.decodeReadyQpc);
+    seekDecodeReadyMs_.push_back(
+        gpu::qpcMsBetween(seekRequestStartQpc_, seekDecodeReadyQpc_));
+    seekConcurrencySamples_.push_back(
+        {seekRequestStartQpc_, seekCompletionA_.beginQpc, seekCompletionA_.decodeReadyQpc,
+         seekCompletionB_.beginQpc, seekCompletionB_.decodeReadyQpc});
+
+    // A/B両completionのidentity検証が終わるまでcomposition stateを変更しない。
+    state_->requestedOutput.store(-1, std::memory_order_release);
+    state_->coordinator.setSourceGeneration({1}, seekCompletionA_.sourceGeneration);
+    state_->coordinator.setSourceGeneration({2}, seekCompletionB_.sourceGeneration);
     waitExpectation_ = {target, state_->coordinator.compositionEpoch(),
-                        {{{1}, a.sourceGeneration, a.resourceEpoch, target},
-                         {{2}, b.sourceGeneration, b.resourceEpoch, target}}};
+                        {{{1}, seekCompletionA_.sourceGeneration,
+                          seekCompletionA_.resourceEpoch, target},
+                         {{2}, seekCompletionB_.sourceGeneration,
+                          seekCompletionB_.resourceEpoch, target}}};
     state_->requestedOutput.store(target);
     state_->scheduledOutputCount.fetch_add(1);
     item_->update();
-    phase_ = Phase::SeekWait;
+    phase_ = Phase::SeekDisplayWait;
 }
 
-void CompositorSpikeController::pollSeek() {
+void CompositorSpikeController::pollSeekDisplay() {
     gpu::CompositionDisplayRecord found;
     if (state_->ledger.findAfter(waitBaseline_, waitExpectation_, found)) {
         if (found.pairReadyQpc <= 0 || found.submissionQpc < found.pairReadyQpc ||
@@ -671,10 +731,35 @@ bool CompositorSpikeController::writeMetrics() {
          distribution(state_->diagnosticLockTiming.decoderAWaitUs, "values_us")},
         {"decoder_b_d3d11_lock_wait_us",
          distribution(state_->diagnosticLockTiming.decoderBWaitUs, "values_us")}};
+    QJsonArray concurrencySamples;
+    int overlapCount = 0;
+    for (const auto& sample : seekConcurrencySamples_) {
+        const bool overlaps = std::max(sample.aBeginQpc, sample.bBeginQpc) <
+                              std::min(sample.aReadyQpc, sample.bReadyQpc);
+        if (overlaps)
+            ++overlapCount;
+        concurrencySamples.append(
+            QJsonObject{{"request_start_qpc", sample.requestStartQpc},
+                        {"a_begin_qpc", sample.aBeginQpc},
+                        {"a_ready_qpc", sample.aReadyQpc},
+                        {"b_begin_qpc", sample.bBeginQpc},
+                        {"b_ready_qpc", sample.bReadyQpc},
+                        {"overlap", overlaps},
+                        {"serial_equivalent_ms",
+                         gpu::qpcMsBetween(sample.aBeginQpc, sample.aReadyQpc) +
+                             gpu::qpcMsBetween(sample.bBeginQpc, sample.bReadyQpc)},
+                        {"actual_dual_ready_ms",
+                         gpu::qpcMsBetween(sample.requestStartQpc,
+                                           std::max(sample.aReadyQpc, sample.bReadyQpc))}});
+    }
     QJsonObject seekStages{
         {"seek_a_ms", distribution(seekAMs_, "values_ms")},
         {"seek_b_ms", distribution(seekBMs_, "values_ms")},
+        {"seek_a_request_to_ready_ms", distribution(seekAMs_, "values_ms")},
+        {"seek_b_request_to_ready_ms", distribution(seekBMs_, "values_ms")},
         {"dual_decode_ready_ms", distribution(seekDecodeReadyMs_, "values_ms")},
+        {"both_ready_to_pair_ms",
+         distribution(seekDecodeReadyToPairMs_, "values_ms")},
         {"decode_ready_to_pair_ms", distribution(seekDecodeReadyToPairMs_, "values_ms")},
         {"pair_to_submission_ms", distribution(seekPairToSubmissionMs_, "values_ms")},
         {"submission_to_display_record_ms",
@@ -753,6 +838,11 @@ bool CompositorSpikeController::writeMetrics() {
                   {"displayed_composition_count", measurement.displayed},
                   {"decoded_a_count", a.decodedFrameCount},
                   {"decoded_b_count", b.decodedFrameCount},
+                  {"source_a_software_frame_reject_count", a.softwareFrameRejectCount},
+                  {"source_b_software_frame_reject_count", b.softwareFrameRejectCount},
+                  {"software_fallback_count",
+                   a.softwareFrameRejectCount + b.softwareFrameRejectCount},
+                  {"worker_join_leak_count", (!a.joined ? 1 : 0) + (!b.joined ? 1 : 0)},
                   {"paired_count", measurement.compositionRequested},
                   {"composition_submitted_count", measurement.gpuSubmission},
                   {"composition_displayed_count", measurement.displayed},
@@ -774,6 +864,10 @@ bool CompositorSpikeController::writeMetrics() {
                   {"dual_seek_displayed_observed_max_ms", observedMax},
                   {"seek_display_mismatch", seekMismatch_},
                   {"seek_timeout_count", seekTimeout_},
+                  {"seek_stale_completion_count", seekStaleCompletion_},
+                  {"seek_busy_acceptance_count", 0},
+                  {"seek_overlap_count", overlapCount},
+                  {"seek_concurrency_samples", concurrencySamples},
                   {"layout_epoch_mismatch", layoutMismatch_},
                   {"cpu_full_frame_readback_count", state_->readbacks.fullFrameReadbacks()},
                   {"marker_band_readback_count", state_->readbacks.markerBandReadbacks()},

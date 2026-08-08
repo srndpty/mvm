@@ -29,7 +29,11 @@ switch ($Kind) {
     }
     'seek' {
         if ($m.dual_seek_displayed_ms.Count -ne 64 -or $m.seek_display_mismatch -ne 0 -or
-            $m.seek_timeout_count -ne 0) { throw '64点actual-display seek契約が不成立です' }
+            $m.seek_timeout_count -ne 0 -or $m.seek_stale_completion_count -ne 0 -or
+            $m.seek_busy_acceptance_count -ne 0 -or $m.seek_overlap_count -eq 0 -or
+            $m.seek_concurrency_samples.Count -ne 64) {
+            throw '64点parallel actual-display seek契約が不成立です'
+        }
     }
     'layout' {
         if ($m.layout_epoch_mismatch -ne 0 -or $m.stale_composition_epoch_count -ne 0) {

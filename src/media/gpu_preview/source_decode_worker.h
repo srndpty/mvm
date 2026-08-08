@@ -13,6 +13,58 @@
 
 namespace mvm::gpu {
 
+struct SeekTicket {
+    unsigned long long requestId = 0;
+    long long targetFrame = -1;
+};
+
+enum class SeekRequestResult { Accepted, RejectedBusy, RejectedStopped, RejectedInvalid };
+
+enum class SeekCompletionStatus { Completed, Failed, Stopped };
+
+struct SeekCompletion {
+    unsigned long long requestId = 0;
+    long long targetFrame = -1;
+    SeekCompletionStatus status = SeekCompletionStatus::Failed;
+    long long requestQpc = 0;
+    long long beginQpc = 0;
+    long long decodeReadyQpc = 0;
+    double decodeReadyMs = 0.0;
+    SourceGeneration sourceGeneration{};
+    ResourceEpoch resourceEpoch{};
+    long long decodedFrameNumber = -1;
+    std::string error;
+};
+
+enum class SeekWaitResult { Ready, Timeout, StaleTicket };
+
+// sourceごとに1件だけを受理するseek mailbox。decoderやGPUに依存しないため、
+// request identity / busy / stale / stop wakeを決定論的に検査できる。
+class SourceSeekMailbox {
+public:
+    void restart();
+    SeekRequestResult request(long long frameNumber, long long requestQpc, SeekTicket& ticket,
+                              std::string& err);
+    bool takePending(SeekTicket& ticket, long long& requestQpc);
+    void publish(const SeekCompletion& completion);
+    SeekWaitResult wait(const SeekTicket& ticket, int timeoutMs, SeekCompletion& completion);
+    void stop();
+    bool hasPending() const;
+    bool hasOutstanding() const;
+
+private:
+    mutable std::mutex mutex_;
+    std::condition_variable completed_;
+    bool stopped_ = true;
+    bool outstanding_ = false;
+    bool pending_ = false;
+    unsigned long long nextRequestId_ = 0;
+    SeekTicket ticket_;
+    long long requestQpc_ = 0;
+    bool completionReady_ = false;
+    SeekCompletion completion_;
+};
+
 struct SourceDecoderSnapshot {
     bool open = false;
     bool running = false;
@@ -58,6 +110,8 @@ public:
     void play();
     void pause();
     void stepForward();
+    SeekRequestResult requestSeek(long long frameNumber, SeekTicket& ticket, std::string& err);
+    SeekWaitResult waitSeek(const SeekTicket& ticket, int timeoutMs, SeekCompletion& completion);
     bool seekBlocking(long long frameNumber, double& decodeReadyMs, std::string& err);
     bool flushBlocking(std::string& err);
 
@@ -77,6 +131,7 @@ public:
 
 private:
     void run();
+    SeekCompletion executeSeek(const SeekTicket& ticket, long long requestQpc);
     void refreshSnapshotLocked();
     bool submitWithBackpressure(const DecodedGpuFrame& frame, std::string& err);
     bool validateTextureDevice(const DecodedGpuFrame& frame, std::string& err);
@@ -93,6 +148,7 @@ private:
     mutable std::mutex decoderMutex_;
     mutable std::mutex snapshotMutex_;
     std::condition_variable wake_;
+    SourceSeekMailbox seekMailbox_;
     SourceDecoderSnapshot snapshot_;
     int stepsPending_ = 0;
     bool startedOnce_ = false;

@@ -432,7 +432,72 @@ RTX 4090、H.264 / HEVC 各 3600 frame、seed 20260808、fence backend で 1 pro
 
 ### 12.4 [exit] D4B へ進めるが、P2 の最終判定はまだ更新しない
 
-P2-D4A の source coverage 修正と短縮経路確認は成立したため、D4B の正式 matrix
-再実行へ進める。P2-D4A の smoke 値を P2 の合否根拠には使わない。
-`P2-D4-1` の clean worktree で formal Playback / Seek を再実行し、その raw から
-集計するまでは、P2-D2 の `p2_pass = false` が最後の正式判定である。
+P2-D4A の source coverage 修正と短縮経路確認は成立したため、D4B の parallel
+dual seek 実装・短縮検証へ進める。formal Playback / Seek 全6 runの再実行はD5で
+clean HEADから行う。P2-D4A の smoke 値を P2 の合否根拠には使わない。
+D5で `P2-D4-1` の rawから集計するまでは、P2-D2 の `p2_pass = false` が最後の
+正式判定である。
+
+## 13. P2-D4B parallel dual-source exact seek
+
+### 13.1 [事実] A/B seekの直列待機をsource-local workerへ分離した
+
+`SourceDecodeWorker` に request / wait を分けた非同期seek commandを追加した。
+sourceごとにoutstandingは最大1件で、2件目は `RejectedBusy`、古いticketは
+`StaleTicket`、stop中は `Stopped` completionとしてfail-closedにする。
+seek本体は既存worker threadで実行し、seekごとのthread生成は行わない。
+
+decoder seek、generation更新、exact target decode、source-local buffer submitは
+共通executorに一本化した。`seekBlocking` はstartupとD4A resetの同期挙動を保つため
+caller同期の共通executor呼び出しとし、async outstanding中は拒否する。
+
+controllerはA/Bへ先にrequestをdispatchし、tickで両completionをpollする。
+A/B両方のrequestId、target、decoded frame、generation、resource epochを検証するまで
+composition generationと`requestedOutput`を更新しない。
+
+### 13.2 [事実] 64点exact integration
+
+H.264 A / HEVC Bのdeterministic 64点で、A exact 64/64、B exact 64/64、
+pair exact 64/64、実行区間overlap 64/64を観測した。mismatch、timeout、
+stale completion acceptance、busy acceptance、generation cross-impact、software fallback、
+CPU full-frame readback、worker join leakはいずれも0。A/B textureは同一D3D11 deviceだった。
+
+### 13.3 [事実] D3比較用256 seek x 3
+
+seed 20260808、fence backend、3 independent processを
+`build/ucrt64-release/p2-seek-profile-d4b/`へ出力した。旧D3 rawは上書きしていない。
+
+| run | A request-ready p95 | B request-ready p95 | dual ready p95 (D3 -> D4B) | request-display p95 (D3 -> D4B) | overlap |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 76.78 ms | 74.45 ms | 105.28 -> 78.02 ms | 114.62 -> 83.41 ms | 256/256 |
+| 2 | 75.94 ms | 74.00 ms | 108.81 -> 77.75 ms | 120.65 -> 83.36 ms | 256/256 |
+| 3 | 75.39 ms | 71.88 ms | 107.85 -> 76.29 ms | 116.28 -> 83.39 ms | 256/256 |
+
+dual ready p95は25.9% / 28.5% / 29.3%、request-display p95は
+27.2% / 30.9% / 28.3%短縮した。全runでmismatch、timeout、stale、busy acceptance、
+software fallback、CPU full-frame readback、device lost、join leakは0だった。
+
+**[事実]** parallel化後のdecoder D3D11 lock wait p95はA 1.127..1.130 ms、
+B 1.122..1.130 msへ増えた。maxはA 2.90..3.46 ms、B 2.87..3.29 ms。
+render lock wait p95は全run 0.1 us、max 11.0..45.8 usだった。
+lockを外す変更は行っていない。
+
+### 13.4 [事実] D4A Playback回帰は安定してMUSTを満たさなかった
+
+5秒warmup + 15秒measurementを複数回確認した。全runでfirst output 0、scheduled 900、
+EOF A/B 0、coverage true、CPU readback 0、device lost 0だったが、
+measurement開始直後の`WaitingForSource`によりmissing pairが1件になるrunがあった。
+観測4 run中、missing pair 0は1 run、missing pair 1は3 runだった。
+
+async wrapperが原因かを切り分けるため`seekBlocking`をcaller同期の共通executorへ戻しても
+再現した。したがってparallel seekの性能値は改善したが、D4B exit criteriaの
+「Playback D4A regression成功」は安定して成立していない。
+
+### 13.5 [未検証] D5 formalへは進まない
+
+Release / Debugの対象30 testは各test単体では成功を観測したが、まとめ実行では
+`p2_dual_decode_integration`がまれに30秒completion timeoutとなるrunも観測した。
+256 x 3 diagnosticではtimeout 0だが、この不安定性を無視して「deadlock 0」とは書かない。
+
+Playback missing pairとintegration timeoutの再現条件を解消するまで、D5のclean HEAD
+formal全6 runへ進めない。P2-D2の`p2_pass = false`を引き続き最後の正式判定とする。

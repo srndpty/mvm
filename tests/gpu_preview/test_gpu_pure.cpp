@@ -27,6 +27,7 @@
 #include "media/gpu_preview/nv12_converter.h"
 #include "media/gpu_preview/output_scheduler.h"
 #include "media/gpu_preview/readback_counter.h"
+#include "media/gpu_preview/source_decode_worker.h"
 #include "media/gpu_preview/source_frame_buffer.h"
 #include "media/gpu_preview/source_registry.h"
 #include "media/gpu_preview/timebase.h"
@@ -1172,6 +1173,77 @@ void testOutputScheduler() {
         "stale epoch分類");
 }
 
+void testSourceSeekMailbox() {
+    std::fprintf(stderr, "[source seek mailbox]\n");
+    SourceSeekMailbox mailbox;
+    mailbox.restart();
+    SeekTicket first;
+    std::string err;
+    check(mailbox.request(137, 1000, first, err) == SeekRequestResult::Accepted,
+          "最初のseek requestを受理する");
+    SeekTicket busy;
+    check(mailbox.request(299, 1001, busy, err) == SeekRequestResult::RejectedBusy,
+          "outstanding中の2件目をbusyで拒否する");
+    SeekTicket executing;
+    long long requestQpc = 0;
+    check(mailbox.takePending(executing, requestQpc), "workerがpending seekを取得する");
+    checkEq(static_cast<long long>(executing.requestId), static_cast<long long>(first.requestId),
+            "workerへ同じrequestIdを渡す");
+    checkEq(requestQpc, 1000, "request QPCを保持する");
+    SeekCompletion observed;
+    check(mailbox.wait(first, 0, observed) == SeekWaitResult::Timeout,
+          "completion前の有限waitはtimeoutする");
+    SeekCompletion completed;
+    completed.requestId = first.requestId;
+    completed.targetFrame = first.targetFrame;
+    completed.status = SeekCompletionStatus::Completed;
+    completed.requestQpc = requestQpc;
+    completed.beginQpc = 1010;
+    completed.decodeReadyQpc = 1100;
+    completed.sourceGeneration = {8};
+    completed.resourceEpoch = {3};
+    completed.decodedFrameNumber = 137;
+    mailbox.publish(completed);
+    SeekTicket stale = first;
+    ++stale.requestId;
+    check(mailbox.wait(stale, 0, observed) == SeekWaitResult::StaleTicket,
+          "異なるrequestIdのcompletionを拒否する");
+    check(mailbox.wait(first, 0, observed) == SeekWaitResult::Ready,
+          "一致するcompletionを取得する");
+    checkEq(observed.decodedFrameNumber, 137, "exact target completionを保持する");
+    check(observed.sourceGeneration == SourceGeneration{8}, "generation advanceを保持する");
+    check(mailbox.wait(first, 0, observed) == SeekWaitResult::StaleTicket,
+          "消費済みticketを次seekへ流用しない");
+
+    SeekTicket failedTicket;
+    check(mailbox.request(999999, 2000, failedTicket, err) == SeekRequestResult::Accepted,
+          "失敗させるseek requestを受理する");
+    check(mailbox.takePending(executing, requestQpc), "失敗seekをworkerへ渡す");
+    SeekCompletion failed;
+    failed.requestId = failedTicket.requestId;
+    failed.targetFrame = failedTicket.targetFrame;
+    failed.status = SeekCompletionStatus::Failed;
+    failed.error = "test failure";
+    mailbox.publish(failed);
+    check(mailbox.wait(failedTicket, 0, observed) == SeekWaitResult::Ready &&
+              observed.status == SeekCompletionStatus::Failed,
+          "failed seekを成功へ変えない");
+
+    SeekTicket stoppedTicket;
+    check(mailbox.request(42, 3000, stoppedTicket, err) == SeekRequestResult::Accepted,
+          "stop wake用seekを受理する");
+    std::atomic<SeekWaitResult> waitResult{SeekWaitResult::Timeout};
+    SeekCompletion stopped;
+    std::thread waiter([&] { waitResult.store(mailbox.wait(stoppedTicket, 5000, stopped)); });
+    mailbox.stop();
+    waiter.join();
+    check(waitResult.load() == SeekWaitResult::Ready &&
+              stopped.status == SeekCompletionStatus::Stopped,
+          "stopがseek waiterをStoppedで起こす");
+    check(mailbox.request(1, 4000, busy, err) == SeekRequestResult::RejectedStopped,
+          "stop後のseek requestを拒否する");
+}
+
 // --------------------------------------------------------------------------
 // hardware format の選択 (software frame rejection)
 // --------------------------------------------------------------------------
@@ -1214,6 +1286,7 @@ int main() {
     testRetirementQueue();
     testCompositionDisplayLedger();
     testOutputScheduler();
+    testSourceSeekMailbox();
     testHwFormatSelection();
 
     std::fprintf(stderr, "\n検査 %d 件 / 失敗 %d 件\n", gChecks, gFailures);

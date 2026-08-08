@@ -266,38 +266,116 @@ int run(const std::string& pathA, const std::string& pathB) {
     const std::vector<long long> targets = makeSeekTargets();
     if (targets.size() != 64)
         return fail("seek対象が64点ではありません");
+    {
+        const SourceGeneration beforeA = workerA.snapshot().sourceGeneration;
+        const SourceGeneration beforeB = workerB.snapshot().sourceGeneration;
+        SeekTicket onlyA;
+        if (workerA.requestSeek(0, onlyA, err) != SeekRequestResult::Accepted)
+            return fail("Source A単独async seekをdispatchできません: " + err);
+        SeekCompletion completionA;
+        if (workerA.waitSeek(onlyA, 30000, completionA) != SeekWaitResult::Ready ||
+            completionA.status != SeekCompletionStatus::Completed ||
+            workerB.snapshot().sourceGeneration != beforeB ||
+            !(beforeA < completionA.sourceGeneration))
+            return fail("Source A requestがSource B stateへ影響しました");
+        DecodedGpuFrame discardA;
+        if (!workerA.buffer().takeExact(0, discardA))
+            return fail("Source A単独async seek後のbuffer先頭がexact targetではありません");
+
+        const SourceGeneration afterA = workerA.snapshot().sourceGeneration;
+        SeekTicket onlyB;
+        if (workerB.requestSeek(0, onlyB, err) != SeekRequestResult::Accepted)
+            return fail("Source B単独async seekをdispatchできません: " + err);
+        SeekCompletion completionB;
+        if (workerB.waitSeek(onlyB, 30000, completionB) != SeekWaitResult::Ready ||
+            completionB.status != SeekCompletionStatus::Completed ||
+            workerA.snapshot().sourceGeneration != afterA ||
+            !(beforeB < completionB.sourceGeneration))
+            return fail("Source B requestがSource A stateへ影響しました");
+        DecodedGpuFrame discardB;
+        if (!workerB.buffer().takeExact(0, discardB))
+            return fail("Source B単独async seek後のbuffer先頭がexact targetではありません");
+    }
     double seekElapsedA = 0.0;
     double seekElapsedB = 0.0;
+    int exactA = 0;
+    int exactB = 0;
+    int exactPair = 0;
+    int overlapCount = 0;
+    int staleCompletionAccepted = 0;
+    int busyAccepted = 0;
     for (const long long requested : targets) {
         workerA.pause();
         workerB.pause();
         const SourceGeneration beforeA = workerA.snapshot().sourceGeneration;
         const SourceGeneration beforeB = workerB.snapshot().sourceGeneration;
-        double elapsedA = 0.0;
-        if (!workerA.seekBlocking(requested, elapsedA, err))
-            return fail("Source A seek " + std::to_string(requested) + ": " + err);
-        seekElapsedA += elapsedA;
-        const SourceGeneration afterA = workerA.snapshot().sourceGeneration;
-        if (!(beforeA < afterA) || workerB.snapshot().sourceGeneration != beforeB)
-            return fail("Source A seekがsource-local generation契約を破りました");
-        if (!coordinator.setSourceGeneration(sourceA, afterA))
-            return fail("coordinatorへSource A generationを設定できません");
+        if (requested == targets.front()) {
+            // playback decode中でもseek commandを優先し、同じworker threadで処理する。
+            workerA.play();
+            workerB.play();
+        }
+        SeekTicket ticketA;
+        SeekTicket ticketB;
+        if (workerA.requestSeek(requested, ticketA, err) != SeekRequestResult::Accepted ||
+            workerB.requestSeek(requested, ticketB, err) != SeekRequestResult::Accepted)
+            return fail("A/B parallel seek dispatchに失敗しました: " + err);
+        SeekTicket busy;
+        if (workerA.requestSeek(requested, busy, err) == SeekRequestResult::Accepted)
+            ++busyAccepted;
+        SeekCompletion ignored;
+        SeekTicket stale = ticketA;
+        ++stale.requestId;
+        if (workerA.waitSeek(stale, 0, ignored) == SeekWaitResult::Ready)
+            ++staleCompletionAccepted;
 
-        double elapsedB = 0.0;
-        if (!workerB.seekBlocking(requested, elapsedB, err))
-            return fail("Source B seek " + std::to_string(requested) + ": " + err);
-        seekElapsedB += elapsedB;
+        SeekCompletion completionA;
+        SeekCompletion completionB;
+        const SeekWaitResult waitA = workerA.waitSeek(ticketA, 30000, completionA);
+        const SeekWaitResult waitB = workerB.waitSeek(ticketB, 30000, completionB);
+        if (waitA != SeekWaitResult::Ready || waitB != SeekWaitResult::Ready) {
+            const auto timedA = workerA.snapshot();
+            const auto timedB = workerB.snapshot();
+            return fail("A/B parallel seek completionがtimeoutしました: target=" +
+                        std::to_string(requested) +
+                        " waitA=" + std::to_string(static_cast<int>(waitA)) +
+                        " waitB=" + std::to_string(static_cast<int>(waitB)) +
+                        " depthA=" + std::to_string(timedA.bufferDepth) +
+                        " depthB=" + std::to_string(timedB.bufferDepth));
+        }
+        if (completionA.status != SeekCompletionStatus::Completed ||
+            completionA.decodedFrameNumber != requested ||
+            completionA.requestId != ticketA.requestId)
+            return fail("Source A exact completion契約が不成立です");
+        if (completionB.status != SeekCompletionStatus::Completed ||
+            completionB.decodedFrameNumber != requested ||
+            completionB.requestId != ticketB.requestId)
+            return fail("Source B exact completion契約が不成立です");
+        ++exactA;
+        ++exactB;
+        seekElapsedA += completionA.decodeReadyMs;
+        seekElapsedB += completionB.decodeReadyMs;
+        if (std::max(completionA.beginQpc, completionB.beginQpc) <
+            std::min(completionA.decodeReadyQpc, completionB.decodeReadyQpc))
+            ++overlapCount;
+        const SourceGeneration afterA = workerA.snapshot().sourceGeneration;
         const SourceGeneration afterB = workerB.snapshot().sourceGeneration;
-        if (!(beforeB < afterB) || workerA.snapshot().sourceGeneration != afterA)
-            return fail("Source B seekがsource-local generation契約を破りました");
-        if (!coordinator.setSourceGeneration(sourceB, afterB))
-            return fail("coordinatorへSource B generationを設定できません");
+        if (!(beforeA < completionA.sourceGeneration) ||
+            !(beforeB < completionB.sourceGeneration) || afterA != completionA.sourceGeneration ||
+            afterB != completionB.sourceGeneration)
+            return fail("A/B generation独立性またはcompletion identityが不正です");
+        if (!coordinator.setSourceGeneration(sourceA, completionA.sourceGeneration) ||
+            !coordinator.setSourceGeneration(sourceB, completionB.sourceGeneration))
+            return fail("coordinatorへA/B generationを設定できません");
 
         ComposedFrame pair;
         if (!waitForPair(requested, pairer, workerA, workerB, pair, err) ||
             !verifyPair(pair, requested, sourceA, sourceB, owned.shared.device(), err))
             return fail("exact seek pair " + std::to_string(requested) + ": " + err);
+        ++exactPair;
     }
+    if (exactA != 64 || exactB != 64 || exactPair != 64 || busyAccepted != 0 ||
+        staleCompletionAccepted != 0 || overlapCount == 0)
+        return fail("64点parallel seekのexact/busy/stale/overlap契約が不成立です");
     if (pairer.counters().pairedCount != 664 || pairer.counters().mixedFrameRejected != 0 ||
         pairer.counters().staleGenerationRejected != 0 ||
         pairer.counters().futureGenerationRejected != 0)
@@ -338,6 +416,15 @@ int run(const std::string& pathA, const std::string& pathB) {
     SourceDecodeWorker workerReverseB(reverseB, owned.shared, counters, 3);
     if (!workerReverseA.start(pathA, err) || !workerReverseB.start(pathB, err))
         return fail("逆順stop検査のdual openに失敗: " + err);
+
+    std::fprintf(stderr, "[async_failed_seek_completion]\n");
+    SeekTicket failedTicket;
+    if (workerReverseB.requestSeek(999999, failedTicket, err) != SeekRequestResult::Accepted)
+        return fail("失敗seek commandを受理できません: " + err);
+    SeekCompletion failedCompletion;
+    if (workerReverseB.waitSeek(failedTicket, 30000, failedCompletion) != SeekWaitResult::Ready ||
+        failedCompletion.status != SeekCompletionStatus::Failed)
+        return fail("範囲外async seekをFailed completionにできません");
 
     std::fprintf(stderr, "[backpressure_no_busy_loop]\n");
     workerReverseA.play();
@@ -392,6 +479,11 @@ int run(const std::string& pathA, const std::string& pathB) {
     std::fprintf(stdout,
                  "sequential_600_elapsed_ms=%.3f\nseek_a_total_ms=%.3f\nseek_b_total_ms=%.3f\n",
                  sequentialMs, seekElapsedA, seekElapsedB);
+    std::fprintf(stdout,
+                 "parallel_seek_exact_a=%d\nparallel_seek_exact_b=%d\n"
+                 "parallel_seek_exact_pair=%d\nparallel_seek_overlap_count=%d\n"
+                 "stale_completion_acceptance_count=%d\nbusy_acceptance_count=%d\n",
+                 exactA, exactB, exactPair, overlapCount, staleCompletionAccepted, busyAccepted);
     std::fprintf(stdout,
                  "backpressure_wait_count=%lld\nqueue_full_count=%lld\n"
                  "buffer_overflow_implicit_drop_count=0\n",

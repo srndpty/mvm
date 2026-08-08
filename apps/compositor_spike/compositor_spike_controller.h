@@ -41,10 +41,17 @@ Q_SIGNALS:
     void finished();
 
 private:
+    struct SeekConcurrencySample {
+        long long requestStartQpc = 0;
+        long long aBeginQpc = 0;
+        long long aReadyQpc = 0;
+        long long bBeginQpc = 0;
+        long long bReadyQpc = 0;
+    };
     enum class Phase { WaitDevice, MarkerStart, MarkerWait, OutputPreflightWait, Warmup,
                        MeasurementResetStart, MeasurementResetWait, MeasureStartWait, Measure,
-                       MeasureStopWait, SeekStart, SeekWait, LayoutStart, LayoutWait,
-                       ShutdownWait, Done };
+                       MeasureStopWait, SeekStart, SeekDecodeWait, SeekDisplayWait, LayoutStart,
+                       LayoutWait, ShutdownWait, Done };
     void tick();
     bool startWorkers();
     void startMarkerProbe();
@@ -52,7 +59,8 @@ private:
     bool resetAfterMarkerPreflight();
     bool resetPlaybackForMeasurement();
     void startSeek();
-    void pollSeek();
+    void pollSeekDecode();
+    void pollSeekDisplay();
     void startLayoutChange();
     void pollLayoutChange();
     void beginShutdown(const QString& reason, bool failure);
@@ -87,6 +95,12 @@ private:
     QElapsedTimer waitTimer_;
     long long seekRequestStartQpc_ = 0;
     long long seekDecodeReadyQpc_ = 0;
+    gpu::SeekTicket seekTicketA_;
+    gpu::SeekTicket seekTicketB_;
+    gpu::SeekCompletion seekCompletionA_;
+    gpu::SeekCompletion seekCompletionB_;
+    bool seekAReady_ = false;
+    bool seekBReady_ = false;
     std::vector<double> seekAMs_;
     std::vector<double> seekBMs_;
     std::vector<double> seekDecodeReadyMs_;
@@ -95,8 +109,10 @@ private:
     std::vector<double> seekSubmissionToDisplayMs_;
     std::vector<double> seekDecodeReadyToDisplayMs_;
     std::vector<double> seekDisplayedMs_;
+    std::vector<SeekConcurrencySample> seekConcurrencySamples_;
     int seekMismatch_ = 0;
     int seekTimeout_ = 0;
+    int seekStaleCompletion_ = 0;
     size_t layoutIndex_ = 0;
     int layoutMismatch_ = 0;
     bool seekLockTimingActive_ = false;
