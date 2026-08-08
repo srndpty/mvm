@@ -15,6 +15,7 @@
 
 #include "media/gpu_preview/color_metadata.h"
 #include "media/gpu_preview/composed_frame.h"
+#include "media/gpu_preview/compositor_coordinator.h"
 #include "media/gpu_preview/device_change.h"
 #include "media/gpu_preview/display_ledger.h"
 #include "media/gpu_preview/ffmpeg_d3d11_decoder.h"
@@ -23,8 +24,11 @@
 #include "media/gpu_preview/lifecycle.h"
 #include "media/gpu_preview/nv12_converter.h"
 #include "media/gpu_preview/readback_counter.h"
+#include "media/gpu_preview/source_frame_buffer.h"
+#include "media/gpu_preview/source_registry.h"
 #include "media/gpu_preview/timebase.h"
 
+#include <atomic>
 #include <cstdio>
 #include <string>
 #include <thread>
@@ -618,7 +622,40 @@ void testLifecycleOrder() {
     check(!negative.mayTeardown(), "順序違反後も teardown 不可");
     negative.noteDestructorFallback();
     checkEq(negative.orderViolationCount(), 2, "destructor fallback も違反として記録");
+    check(negative.fatal(), "destructor fallback は fatal shutdown を要求");
     check(!negative.report().teardownSuccess, "fallback を成功扱いしない");
+
+    // worker running の fallback では shared resource の release callback を
+    // 一度も呼ばない、という renderer の分岐条件を決定論的に固定する。
+    int retirementReleaseCount = 0;
+    int converterReleaseCount = 0;
+    int completionReleaseCount = 0;
+    int deviceReleaseCount = 0;
+    const bool mayReleaseShared = negative.mayTeardown();
+    if (mayReleaseShared) {
+        ++retirementReleaseCount;
+        ++converterReleaseCount;
+        ++completionReleaseCount;
+        ++deviceReleaseCount;
+    }
+    checkEq(retirementReleaseCount, 0, "fallback は retirement を解放しない");
+    checkEq(converterReleaseCount, 0, "fallback は converter を解放しない");
+    checkEq(completionReleaseCount, 0, "fallback は completion を解放しない");
+    checkEq(deviceReleaseCount, 0, "fallback は shared device を解放しない");
+
+    LifecycleCoordinator normal;
+    check(normal.requestDecodeStop("通常終了", false), "通常終了の stop 要求");
+    check(normal.noteDecodeStopped(), "通常終了の join");
+    check(normal.requestRenderTeardown(), "通常 teardown の要求");
+    int normalReleaseCount = 0;
+    if (normal.mayTeardown())
+        ++normalReleaseCount;
+    ShutdownReport normalReport;
+    normalReport.teardownSuccess = true;
+    check(normal.noteRenderTornDown(normalReport), "通常 teardown を記録");
+    if (normal.mayTeardown())
+        ++normalReleaseCount;
+    checkEq(normalReleaseCount, 1, "通常 teardown は一度だけ実行する");
 }
 
 void testCompletionFatalStopsRendering() {
@@ -667,6 +704,155 @@ void testCompositionAdoptionEpoch() {
     mutableEpoch = CompositionEpoch{4};
     check(adopted.compositionEpoch == CompositionEpoch{3},
           "composition 採用時点の epoch を値で固定する");
+}
+
+void testP2SourceAndComposition() {
+    std::fprintf(stderr, "[P2 source / composition]\n");
+    SourceRegistry registry;
+    const SourceId a = registry.registerSource();
+    const SourceId b = registry.registerSource();
+    check(a != b, "SourceId は一意");
+    checkEq(static_cast<long long>(registry.registeredSourceCount()), 2, "source 登録数 2");
+    check(registry.unregisterSource(a), "A を unregister");
+    check(registry.contains(b), "A unregister 後も B を保持");
+    check(!registry.contains(SourceId{999}), "unknown SourceId を認識しない");
+
+    SourceFrameBuffer bufferA(a, SourceGeneration{1}, 2);
+    SourceFrameBuffer bufferB(b, SourceGeneration{7}, 2);
+    auto staleA = makeFrame(0, 0);
+    staleA.sourceId = a;
+    check(bufferA.submitFrame(staleA) == SubmitResult::RejectedStaleGeneration,
+          "source-local buffer は stale generation を区別して拒否");
+    auto futureA = makeFrame(0, 2);
+    futureA.sourceId = a;
+    check(bufferA.submitFrame(futureA) == SubmitResult::RejectedFutureGeneration,
+          "source-local buffer は future generation を区別して拒否");
+    check(bufferA.setGeneration(SourceGeneration{2}) == GenerationUpdateResult::Updated,
+          "A seek で A generation を進める");
+    check(bufferB.generation() == SourceGeneration{7}, "A seek は B generation を変えない");
+    bufferA.stop();
+    check(bufferA.stopped(), "A buffer を stop");
+    check(!bufferB.stopped(), "A stop は B buffer を止めない");
+
+    CompositorCoordinator coordinator;
+    const std::vector<LayerLayout> layout = {
+        {a, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0f, 0},
+        {b, {0.5f, 0.5f, 0.5f, 0.5f}, {0, 0, 1, 1}, 0.75f, 1},
+    };
+    check(coordinator.configure(layout, {{a, {2}}, {b, {7}}}), "2 source layout を構成");
+
+    auto fa = makeFrame(10, 2);
+    fa.sourceId = a;
+    auto fb = makeFrame(10, 7);
+    fb.sourceId = b;
+    ComposedFrame composed;
+    check(coordinator.compose(10, {fa, fb}, composed) == CompositionResult::Accepted,
+          "A=N/B=N だけを合成");
+    checkEq(static_cast<long long>(composed.layers.size()), 2, "layer は 2 枚");
+    check(composed.layers[0].frame.sourceId == a && composed.layers[1].frame.sourceId == b,
+          "z-order は決定論的");
+
+    auto oldB = fb;
+    oldB.frameNumber = 9;
+    check(coordinator.compose(10, {fa, oldB}, composed) == CompositionResult::MixedFrame,
+          "A=N/B=N-1 を拒否");
+    checkEq(coordinator.mixedSourceFrameCount(), 1, "mixed frame を数える");
+
+    auto stale = fb;
+    stale.sourceGeneration = SourceGeneration{6};
+    check(coordinator.compose(10, {fa, stale}, composed) == CompositionResult::StaleGeneration,
+          "stale source generation を拒否");
+    auto future = fb;
+    future.sourceGeneration = SourceGeneration{8};
+    check(coordinator.compose(10, {fa, future}, composed) == CompositionResult::FutureGeneration,
+          "future source generation を拒否");
+
+    check(coordinator.compose(10, {fa}, composed) == CompositionResult::MissingSource,
+          "source missing を拒否");
+    auto unknown = fb;
+    unknown.sourceId = SourceId{999};
+    check(coordinator.compose(10, {fa, unknown}, composed) == CompositionResult::UnknownSource,
+          "unknown SourceId を fail-closed で拒否");
+
+    check(coordinator.compose(10, {fa, fb}, composed) == CompositionResult::Accepted,
+          "epoch test 用に採用");
+    const CompositionEpoch adopted = composed.compositionEpoch;
+    auto changedLayout = layout;
+    changedLayout[1].opacity = 0.5f;
+    check(coordinator.updateLayout(changedLayout), "layout snapshot を変更");
+    check(composed.compositionEpoch == adopted, "採用済み epoch は immutable");
+    check(coordinator.validateForDisplay(composed) == CompositionResult::StaleEpoch,
+          "old CompositionEpoch を拒否");
+
+    checkNear(straightAlphaBlend(0.8f, 0.2f, 0.0f), 0.2, 1e-6, "opacity 0");
+    checkNear(straightAlphaBlend(0.8f, 0.2f, 0.5f), 0.5, 1e-6, "opacity 0.5");
+    checkNear(straightAlphaBlend(0.8f, 0.2f, 1.0f), 0.8, 1e-6, "opacity 1");
+
+    int releasedA = 0;
+    int releasedB = 0;
+    fa.lifetime = FrameLifetimeToken(&releasedA, [](void* p) { ++*static_cast<int*>(p); });
+    fb.lifetime = FrameLifetimeToken(&releasedB, [](void* p) { ++*static_cast<int*>(p); });
+    check(coordinator.compose(10, {fa, fb}, composed) == CompositionResult::Accepted,
+          "aggregate 用 composition");
+    GpuRetirementQueue retirement;
+    retirement.retire(20, aggregateLifetime(composed));
+    composed = {};
+    fa.lifetime.reset();
+    fb.lifetime.reset();
+    checkEq(static_cast<long long>(retirement.poll(19)), 0, "serial 完了前は aggregate を保持");
+    checkEq(releasedA, 0, "serial 完了前は A を解放しない");
+    checkEq(releasedB, 0, "serial 完了前は B を解放しない");
+    checkEq(static_cast<long long>(retirement.poll(20)), 1, "serial 完了で aggregate を解放");
+    checkEq(releasedA, 1, "A を aggregate と同時に解放");
+    checkEq(releasedB, 1, "B を aggregate と同時に解放");
+
+    WorkerJoinBarrier joins(2);
+    check(!joins.allJoined(), "worker running 中は teardown 不可");
+    check(joins.noteJoined(0), "worker A join");
+    check(!joins.allJoined(), "A だけの join では teardown 不可");
+    check(joins.noteJoined(1), "worker B join");
+    check(joins.allJoined(), "両 worker join 後だけ teardown 可");
+
+    SourceFrameBuffer bounded(a, SourceGeneration{2}, 0);
+    auto bounded0 = makeFrame(0, 2);
+    bounded0.sourceId = a;
+    auto bounded1 = makeFrame(1, 2);
+    bounded1.sourceId = a;
+    check(bounded.submitFrame(bounded0) == SubmitResult::Accepted,
+          "capacity 0 は最小 capacity 1 として 1 frame を受理");
+    check(bounded.submitFrame(bounded1) == SubmitResult::RejectedQueueFull,
+          "overflow は暗黙 drop せず結果を返す");
+    checkEq(static_cast<long long>(bounded.depth()), 1, "bounded buffer は capacity を超えない");
+
+    std::atomic<int> waiting{0};
+    bool waiterResults[2] = {true, true};
+    auto waitForStop = [&](int index) {
+        waiting.fetch_add(1, std::memory_order_release);
+        waiterResults[index] = bounded.waitForSpace(10000);
+    };
+    std::thread waiterA(waitForStop, 0);
+    std::thread waiterB(waitForStop, 1);
+    while (waiting.load(std::memory_order_acquire) != 2)
+        std::this_thread::yield();
+    bounded.stop();
+    waiterA.join();
+    waiterB.join();
+    check(!waiterResults[0] && !waiterResults[1], "stop ですべての waiter が起床");
+
+    PreviewFrameQueue pending(4);
+    check(pending.registerSource(a, SourceGeneration{2}), "pending 検査で A を登録");
+    check(pending.registerSource(b, SourceGeneration{7}), "pending 検査で B を登録");
+    auto pendingA = makeFrame(10, 2);
+    pendingA.sourceId = a;
+    auto pendingB = makeFrame(10, 7);
+    pendingB.sourceId = b;
+    check(pending.submitFrame(pendingA) == SubmitResult::Accepted, "A pending を追加");
+    check(pending.submitFrame(pendingB) == SubmitResult::Accepted, "B pending を追加");
+    check(pending.unregisterSource(a), "A unregister で A pending だけ除去");
+    checkEq(static_cast<long long>(pending.depth()), 1, "B pending は維持");
+    DecodedGpuFrame remaining;
+    check(pending.takeForDisplay(remaining) && remaining.sourceId == b,
+          "unregister 後に残る pending は B");
 }
 
 // --------------------------------------------------------------------------
@@ -846,6 +1032,7 @@ int main() {
     testCompletionFatalStopsRendering();
     testSourceLifecycle();
     testCompositionAdoptionEpoch();
+    testP2SourceAndComposition();
     testEventQueryLedger();
     testGenerationContract();
     testRetirementQueue();

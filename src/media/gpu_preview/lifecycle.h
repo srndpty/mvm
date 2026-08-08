@@ -11,6 +11,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
+#include <set>
 #include <string>
 
 namespace mvm::gpu {
@@ -55,7 +56,8 @@ public:
     bool noteFinalReportWritten();
     bool noteExit();
 
-    // renderer destructor 専用。正常経路として数えず、順序違反を記録する。
+    // renderer destructor 専用。正常経路として数えず、順序違反と fatal shutdown を
+    // 記録する。worker の join を確認できない異常経路である。
     void noteDestructorFallback();
 
     ShutdownState state() const;
@@ -100,6 +102,22 @@ private:
     std::atomic<bool> fatal_{false};
     std::atomic<long long> drawCount_{0};
     std::atomic<long long> submissionCount_{0};
+};
+
+// 複数 worker の shutdown を sleep なしで合流させる。全 worker の join を
+// 記録するまで render teardown を要求してはいけない。
+class WorkerJoinBarrier {
+public:
+    explicit WorkerJoinBarrier(size_t required) : required_(required) {}
+
+    bool noteJoined(size_t workerIndex);
+    bool allJoined() const;
+    size_t joinedCount() const;
+
+private:
+    mutable std::mutex mutex_;
+    size_t required_ = 0;
+    std::set<size_t> joined_;
 };
 
 } // namespace mvm::gpu

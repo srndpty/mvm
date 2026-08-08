@@ -104,6 +104,9 @@ bool LifecycleCoordinator::noteExit() {
 void LifecycleCoordinator::noteDestructorFallback() {
     std::lock_guard<std::mutex> lock(mutex_);
     ++violations_;
+    fatal_ = true;
+    if (reason_.empty())
+        reason_ = "renderer destructor fallback: decode worker の停止を確認できません";
     report_.teardownSuccess = false;
     report_.lifecycleOrderViolationCount = violations_;
     changed_.notify_all();
@@ -132,6 +135,24 @@ long long LifecycleCoordinator::orderViolationCount() const {
 ShutdownReport LifecycleCoordinator::report() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return report_;
+}
+
+bool WorkerJoinBarrier::noteJoined(size_t workerIndex) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (workerIndex >= required_)
+        return false;
+    joined_.insert(workerIndex);
+    return true;
+}
+
+bool WorkerJoinBarrier::allJoined() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return required_ > 0 && joined_.size() == required_;
+}
+
+size_t WorkerJoinBarrier::joinedCount() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return joined_.size();
 }
 
 } // namespace mvm::gpu
