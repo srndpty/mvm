@@ -96,6 +96,20 @@ QString seekDiagnosticText(const char* source, const gpu::SourceDecodeWorker& wo
         .arg(value.completionStoppedSupersededCount);
 }
 
+QString seekRequestResultName(gpu::SeekRequestResult result) {
+    switch (result) {
+    case gpu::SeekRequestResult::Accepted:
+        return QStringLiteral("Accepted");
+    case gpu::SeekRequestResult::RejectedBusy:
+        return QStringLiteral("RejectedBusy");
+    case gpu::SeekRequestResult::RejectedStopped:
+        return QStringLiteral("RejectedStopped");
+    case gpu::SeekRequestResult::RejectedInvalid:
+        return QStringLiteral("RejectedInvalid");
+    }
+    return QStringLiteral("Unknown");
+}
+
 CompositorMeasurementCounters subtract(const CompositorMeasurementCounters& end,
                                        const CompositorMeasurementCounters& start) {
     CompositorMeasurementCounters out;
@@ -549,14 +563,30 @@ void CompositorSpikeController::startSeek() {
     const long long target = seekTargets_[seekIndex_];
     waitBaseline_ = state_->ledger.baseline();
     seekRequestStartQpc_ = gpu::qpcTicks();
+    seekDispatchOrder_ = {};
+    if (!seekDispatchOrder_.begin(seekRequestStartQpc_)) {
+        ++seekMismatch_;
+        beginShutdown(QStringLiteral("parallel dispatch開始順序が不正です"), true);
+        return;
+    }
     waitTimer_.restart();
     std::string err;
     seekAReady_ = false;
     seekBReady_ = false;
+    const long long aRequestQpc = gpu::qpcTicks();
+    const bool aOrderValid = seekDispatchOrder_.requestA(aRequestQpc);
     const auto aResult = workerA_->requestSeek(target, seekTicketA_, err);
+    const long long bRequestQpc = gpu::qpcTicks();
+    const bool bOrderValid = seekDispatchOrder_.requestB(bRequestQpc);
     const auto bResult = workerB_->requestSeek(target, seekTicketB_, err);
+    const long long dispatchCompleteQpc = gpu::qpcTicks();
+    const bool completeOrderValid = seekDispatchOrder_.dispatchComplete(dispatchCompleteQpc);
+    seekConcurrencySamples_.push_back(
+        {seekRequestStartQpc_, aRequestQpc, bRequestQpc, dispatchCompleteQpc,
+         0, 0, 0, 0, seekTicketA_.requestId, seekTicketB_.requestId, aResult, bResult,
+         aOrderValid && bOrderValid && completeOrderValid && seekDispatchOrder_.valid()});
     if (aResult != gpu::SeekRequestResult::Accepted ||
-        bResult != gpu::SeekRequestResult::Accepted) {
+        bResult != gpu::SeekRequestResult::Accepted || !seekDispatchOrder_.valid()) {
         ++seekMismatch_;
         beginShutdown(QString::fromStdString(err), true);
         return;
@@ -566,6 +596,11 @@ void CompositorSpikeController::startSeek() {
 
 void CompositorSpikeController::pollSeekDecode() {
     const long long target = seekTargets_[seekIndex_];
+    if (!seekDispatchOrder_.completionPoll()) {
+        ++seekMismatch_;
+        beginShutdown(QStringLiteral("B dispatch完了前にcompletion pollへ進みました"), true);
+        return;
+    }
     if (!seekAReady_) {
         const auto waited = workerA_->waitSeek(seekTicketA_, 0, seekCompletionA_);
         if (waited == gpu::SeekWaitResult::StaleTicket) {
@@ -621,9 +656,11 @@ void CompositorSpikeController::pollSeekDecode() {
         std::max(seekCompletionA_.decodeReadyQpc, seekCompletionB_.decodeReadyQpc);
     seekDecodeReadyMs_.push_back(
         gpu::qpcMsBetween(seekRequestStartQpc_, seekDecodeReadyQpc_));
-    seekConcurrencySamples_.push_back(
-        {seekRequestStartQpc_, seekCompletionA_.beginQpc, seekCompletionA_.decodeReadyQpc,
-         seekCompletionB_.beginQpc, seekCompletionB_.decodeReadyQpc});
+    auto& concurrencySample = seekConcurrencySamples_.back();
+    concurrencySample.aBeginQpc = seekCompletionA_.beginQpc;
+    concurrencySample.aReadyQpc = seekCompletionA_.decodeReadyQpc;
+    concurrencySample.bBeginQpc = seekCompletionB_.beginQpc;
+    concurrencySample.bReadyQpc = seekCompletionB_.decodeReadyQpc;
 
     // A/B両completionのidentity検証が終わるまでcomposition stateを変更しない。
     state_->requestedOutput.store(-1, std::memory_order_release);
@@ -810,18 +847,38 @@ bool CompositorSpikeController::writeMetrics() {
          distribution(state_->diagnosticLockTiming.decoderBWaitUs, "values_us")}};
     QJsonArray concurrencySamples;
     int overlapCount = 0;
+    int parallelDispatchValidCount = 0;
     for (const auto& sample : seekConcurrencySamples_) {
         const bool overlaps = std::max(sample.aBeginQpc, sample.bBeginQpc) <
                               std::min(sample.aReadyQpc, sample.bReadyQpc);
+        const bool parallelDispatchValid =
+            sample.dispatchOrderValid &&
+            sample.aRequestResult == gpu::SeekRequestResult::Accepted &&
+            sample.bRequestResult == gpu::SeekRequestResult::Accepted &&
+            sample.aRequestQpc >= sample.requestStartQpc &&
+            sample.bRequestQpc >= sample.requestStartQpc &&
+            sample.dispatchCompleteQpc >= sample.aRequestQpc &&
+            sample.dispatchCompleteQpc >= sample.bRequestQpc &&
+            sample.dispatchCompleteQpc <= std::min(sample.aReadyQpc, sample.bReadyQpc);
         if (overlaps)
             ++overlapCount;
+        if (parallelDispatchValid)
+            ++parallelDispatchValidCount;
         concurrencySamples.append(
             QJsonObject{{"request_start_qpc", sample.requestStartQpc},
+                        {"a_request_qpc", sample.aRequestQpc},
+                        {"b_request_qpc", sample.bRequestQpc},
+                        {"dispatch_complete_qpc", sample.dispatchCompleteQpc},
                         {"a_begin_qpc", sample.aBeginQpc},
                         {"a_ready_qpc", sample.aReadyQpc},
                         {"b_begin_qpc", sample.bBeginQpc},
                         {"b_ready_qpc", sample.bReadyQpc},
-                        {"overlap", overlaps},
+                        {"a_request_id", static_cast<qint64>(sample.aRequestId)},
+                        {"b_request_id", static_cast<qint64>(sample.bRequestId)},
+                        {"a_request_result", seekRequestResultName(sample.aRequestResult)},
+                        {"b_request_result", seekRequestResultName(sample.bRequestResult)},
+                        {"parallel_dispatch_valid", parallelDispatchValid},
+                        {"execution_overlap", overlaps},
                         {"serial_equivalent_ms",
                          gpu::qpcMsBetween(sample.aBeginQpc, sample.aReadyQpc) +
                              gpu::qpcMsBetween(sample.bBeginQpc, sample.bReadyQpc)},
@@ -850,7 +907,7 @@ bool CompositorSpikeController::writeMetrics() {
                                                                     : QStringLiteral("layout");
     QJsonObject o{{"schema", config_.diagnosticTiming ? "mvm-p2-diagnostic-1"
                                                        : "mvm-p2-formal-1"},
-                  {"formal_contract_version", "P2-D4-2"},
+                  {"formal_contract_version", "P2-D5-1"},
                   {"mode", mode},
                   {"formal_preflight", config_.formalPreflight},
                   {"process_exit_code", exitCode_},
@@ -958,7 +1015,10 @@ bool CompositorSpikeController::writeMetrics() {
                   {"seek_completion_stopped_superseded_count",
                    seekA.completionStoppedSupersededCount +
                        seekB.completionStoppedSupersededCount},
-                  {"seek_overlap_count", overlapCount},
+                  {"parallel_dispatch_valid_count", parallelDispatchValidCount},
+                  {"execution_overlap_count", overlapCount},
+                  {"execution_nonoverlap_count",
+                   static_cast<qint64>(seekConcurrencySamples_.size()) - overlapCount},
                   {"seek_concurrency_samples", concurrencySamples},
                   {"layout_epoch_mismatch", layoutMismatch_},
                   {"cpu_full_frame_readback_count", state_->readbacks.fullFrameReadbacks()},

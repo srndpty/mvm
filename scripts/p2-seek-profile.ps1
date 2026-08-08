@@ -35,7 +35,7 @@ foreach ($run in 1..3) {
     $raw = Get-Content -LiteralPath $path -Raw -Encoding utf8 | ConvertFrom-Json
     if ($raw.schema -ne 'mvm-p2-diagnostic-1' -or
         $raw.seek_stage_timings.request_to_display_ms.count -ne 256 -or
-        $raw.seek_overlap_count -eq 0 -or $raw.seek_display_mismatch -ne 0 -or
+        $raw.parallel_dispatch_valid_count -ne 256 -or $raw.seek_display_mismatch -ne 0 -or
         $raw.seek_timeout_count -ne 0 -or $raw.seek_stale_completion_count -ne 0 -or
         $raw.seek_busy_acceptance_count -ne 0 -or $raw.software_fallback_count -ne 0 -or
         $raw.seek_completion_publish_reject_count -ne 0 -or
@@ -55,7 +55,9 @@ foreach ($run in 1..3) {
         busy_acceptance = $raw.seek_busy_acceptance_count
         completion_publish_reject = $raw.seek_completion_publish_reject_count
         completion_request_mismatch = $raw.seek_completion_request_mismatch_count
-        overlap_count = $raw.seek_overlap_count
+        parallel_dispatch_valid_count = $raw.parallel_dispatch_valid_count
+        execution_overlap_count = $raw.execution_overlap_count
+        execution_nonoverlap_count = $raw.execution_nonoverlap_count
     }
 }
 
