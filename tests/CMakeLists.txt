@@ -776,7 +776,10 @@ foreach(_p2_contract_case Good FormalGood NegativeInvariant NegativeSameDevice N
         NegativeEofA NegativeEofB NegativePrerollConfigured NegativePrerollOk
         NegativePrerollDepthA NegativePrerollDepthB NegativePrerollFrontA
         NegativePrerollFrontB SeekGood NegativeSeekPublishReject
-        NegativeSeekRequestMismatch)
+        NegativeSeekRequestMismatch NegativeSeekStaleCompletion
+        NegativeSeekBusyAcceptance NegativeSeekStoppedSuperseded
+        NegativeSeekOverlapCount NegativeSeekConcurrencyCount
+        NegativeSeekSampleOverlap)
     string(TOLOWER "${_p2_contract_case}" _p2_contract_name)
     mvm_add_test(p2_formal_checker_${_p2_contract_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File

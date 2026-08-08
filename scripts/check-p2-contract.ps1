@@ -181,10 +181,24 @@ if ($Mode -eq 'Playback') {
     Require-Equal $decodeValues.Count $expectedCount 'dual_seek_decode_ready_ms.Count'
     Require-Zero $raw 'seek_display_mismatch'
     Require-Zero $raw 'seek_timeout_count'
+    Require-Zero $raw 'seek_stale_completion_count'
+    Require-Zero $raw 'seek_busy_acceptance_count'
     Require-Zero $raw 'seek_completion_publish_reject_count'
     Require-Zero $raw 'seek_completion_request_mismatch_count'
+    Require-Zero $raw 'seek_completion_stopped_superseded_count'
+    Require-Zero $raw 'software_fallback_count'
+    Require-Zero $raw 'worker_join_leak_count'
     Require-Zero $raw 'untracked_submission_count'
     Require-Zero $raw 'completion_poll_failure_count'
+
+    $overlapCount = Require-Property $raw 'seek_overlap_count'
+    $concurrencySamples = @(Require-Property $raw 'seek_concurrency_samples')
+    Require-Equal $overlapCount $expectedCount 'seek_overlap_count'
+    Require-Equal $concurrencySamples.Count $expectedCount 'seek_concurrency_samples.Count'
+    for ($sampleIndex = 0; $sampleIndex -lt $concurrencySamples.Count; ++$sampleIndex) {
+        Require-Equal (Require-Property $concurrencySamples[$sampleIndex] 'overlap') $true `
+            "seek_concurrency_samples[$sampleIndex].overlap"
+    }
 
     if ($displayedValues.Count -gt 0) {
         [double[]]$sorted = $displayedValues | ForEach-Object { [double]$_ } | Sort-Object

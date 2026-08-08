@@ -7,7 +7,10 @@ param(
         'NegativeEofA', 'NegativeEofB', 'NegativePrerollConfigured',
         'NegativePrerollOk', 'NegativePrerollDepthA', 'NegativePrerollDepthB',
         'NegativePrerollFrontA', 'NegativePrerollFrontB', 'SeekGood',
-        'NegativeSeekPublishReject', 'NegativeSeekRequestMismatch')][string]$Case,
+        'NegativeSeekPublishReject', 'NegativeSeekRequestMismatch',
+        'NegativeSeekStaleCompletion', 'NegativeSeekBusyAcceptance',
+        'NegativeSeekStoppedSuperseded', 'NegativeSeekOverlapCount',
+        'NegativeSeekConcurrencyCount', 'NegativeSeekSampleOverlap')][string]$Case,
     [Parameter(Mandatory)][string]$Checker,
     [Parameter(Mandatory)][string]$Output
 )
@@ -48,9 +51,17 @@ $raw = [ordered]@{
     dual_seek_displayed_p95_ms=1.0; dual_seek_displayed_observed_max_ms=1.0
     seek_display_mismatch=0; seek_timeout_count=0; untracked_submission_count=0
     completion_poll_failure_count=0; seek_completion_publish_reject_count=0
-    seek_completion_request_mismatch_count=0
+    seek_completion_request_mismatch_count=0; seek_stale_completion_count=0
+    seek_busy_acceptance_count=0; seek_completion_stopped_superseded_count=0
+    software_fallback_count=0; worker_join_leak_count=0; seek_overlap_count=16
+    seek_concurrency_samples=@(1..16 | ForEach-Object { [ordered]@{ overlap=$true } })
 }
-$seekCases = @('SeekGood', 'NegativeSeekPublishReject', 'NegativeSeekRequestMismatch')
+$seekCases = @(
+    'SeekGood', 'NegativeSeekPublishReject', 'NegativeSeekRequestMismatch',
+    'NegativeSeekStaleCompletion', 'NegativeSeekBusyAcceptance',
+    'NegativeSeekStoppedSuperseded', 'NegativeSeekOverlapCount',
+    'NegativeSeekConcurrencyCount', 'NegativeSeekSampleOverlap'
+)
 if ($Case -in $seekCases) { $raw.mode = 'seek' }
 $formalCases = @(
     'FormalGood', 'NegativeFormalTiming', 'NegativeScheduledHigh',
@@ -91,6 +102,14 @@ switch ($Case) {
     'NegativePrerollFrontB' { $raw.measurement_preroll_front_b = 1 }
     'NegativeSeekPublishReject' { $raw.seek_completion_publish_reject_count = 1 }
     'NegativeSeekRequestMismatch' { $raw.seek_completion_request_mismatch_count = 1 }
+    'NegativeSeekStaleCompletion' { $raw.seek_stale_completion_count = 1 }
+    'NegativeSeekBusyAcceptance' { $raw.seek_busy_acceptance_count = 1 }
+    'NegativeSeekStoppedSuperseded' { $raw.seek_completion_stopped_superseded_count = 1 }
+    'NegativeSeekOverlapCount' { $raw.seek_overlap_count = 15 }
+    'NegativeSeekConcurrencyCount' {
+        $raw.seek_concurrency_samples = @($raw.seek_concurrency_samples | Select-Object -First 15)
+    }
+    'NegativeSeekSampleOverlap' { $raw.seek_concurrency_samples[7].overlap = $false }
 }
 $raw | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $Output -Encoding utf8
 $formal = $Case -in $formalCases
