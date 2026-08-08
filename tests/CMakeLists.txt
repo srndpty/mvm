@@ -725,6 +725,9 @@ mvm_add_test(p3_audio_pure_unit COMMAND mvm_test_audio_pure)
 add_executable(mvm_p3_audio_smoke audio_preview/mvm_p3_audio_smoke.cpp)
 target_link_libraries(mvm_p3_audio_smoke PRIVATE mvm::audio_preview mvm::warnings)
 
+add_executable(mvm_test_audio_worker_wake audio_preview/test_audio_worker_wake.cpp)
+target_link_libraries(mvm_test_audio_worker_wake PRIVATE mvm::audio_preview mvm::warnings)
+
 foreach(_p3_case Good NegativeCounter)
     string(TOLOWER "${_p3_case}" _p3_case_name)
     mvm_add_test(p3_a_contract_${_p3_case_name}
@@ -735,15 +738,57 @@ foreach(_p3_case Good NegativeCounter)
             -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/p3-a-contract-${_p3_case_name}")
 endforeach()
 
+foreach(_p3b_case Good NegativeFallback)
+    string(TOLOWER "${_p3b_case}" _p3b_case_name)
+    mvm_add_test(p3_b_contract_${_p3b_case_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/audio_preview/test-p3-b-contract.ps1"
+            -Case ${_p3b_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p3-b-contract.ps1"
+            -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/p3-b-contract-${_p3b_case_name}")
+endforeach()
+
 set(MVM_P3_AUDIO_FIXTURE "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4")
 if(EXISTS "${MVM_P3_AUDIO_FIXTURE}")
     mvm_add_test(p3_audio_fixture_decode
         COMMAND mvm_p3_audio_smoke fixture "${MVM_P3_AUDIO_FIXTURE}"
                 "${CMAKE_CURRENT_BINARY_DIR}/p3-a-fixture.json"
         PROPERTIES REQUIRED_FILES "${MVM_P3_AUDIO_FIXTURE}" TIMEOUT 120)
+    mvm_add_test(p3_audio_worker_wake_soak_short
+        COMMAND mvm_test_audio_worker_wake "${MVM_P3_AUDIO_FIXTURE}" 50
+        PROPERTIES REQUIRED_FILES "${MVM_P3_AUDIO_FIXTURE}" TIMEOUT 180)
+    mvm_add_test(p3_audio_worker_wake_soak_1000
+        COMMAND mvm_test_audio_worker_wake "${MVM_P3_AUDIO_FIXTURE}" 1000
+        PROPERTIES REQUIRED_FILES "${MVM_P3_AUDIO_FIXTURE}" LABELS performance TIMEOUT 1800)
 else()
     message(STATUS
         "[mvm] P3-A fixture 未生成のため decode integration は未登録です。\n"
+        "  pwsh scripts/make-p3-fixture.ps1 を実行してください。")
+endif()
+
+set(MVM_P3_B_VIDEO_FIXTURE "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_video_hevc_b.mp4")
+if(TARGET mvm_p3_av_sync_spike AND EXISTS "${MVM_P3_AUDIO_FIXTURE}" AND
+   EXISTS "${MVM_P3_B_VIDEO_FIXTURE}")
+    mvm_add_test(p3_b_playback_integration_short
+        COMMAND mvm_p3_av_sync_spike
+            --source-a "${MVM_P3_AUDIO_FIXTURE}" --source-b "${MVM_P3_B_VIDEO_FIXTURE}"
+            --metrics "${CMAKE_CURRENT_BINARY_DIR}/p3-b-playback-short.json"
+            --mode playback --duration-seconds 3
+        PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 180)
+    mvm_add_test(p3_b_pause_resume_integration
+        COMMAND mvm_p3_av_sync_spike
+            --source-a "${MVM_P3_AUDIO_FIXTURE}" --source-b "${MVM_P3_B_VIDEO_FIXTURE}"
+            --metrics "${CMAKE_CURRENT_BINARY_DIR}/p3-b-pause.json" --mode pause-resume
+        PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 180)
+    mvm_add_test(p3_b_seek_integration_short
+        COMMAND mvm_p3_av_sync_spike
+            --source-a "${MVM_P3_AUDIO_FIXTURE}" --source-b "${MVM_P3_B_VIDEO_FIXTURE}"
+            --metrics "${CMAKE_CURRENT_BINARY_DIR}/p3-b-seek-short.json"
+            --mode seek --seek-count 4
+        PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 300)
+else()
+    message(STATUS
+        "[mvm] P3-B fixture 未生成のため integration は未登録です。\n"
         "  pwsh scripts/make-p3-fixture.ps1 を実行してください。")
 endif()
 

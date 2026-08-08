@@ -13,13 +13,17 @@
 
 namespace mvm::gpu {
 
-inline double qpcFrequency() {
-    static const double f = [] {
+inline unsigned long long qpcFrequencyTicks() {
+    static const unsigned long long f = [] {
         LARGE_INTEGER li{};
         QueryPerformanceFrequency(&li);
-        return static_cast<double>(li.QuadPart);
+        return static_cast<unsigned long long>(li.QuadPart);
     }();
     return f;
+}
+
+inline double qpcFrequency() {
+    return static_cast<double>(qpcFrequencyTicks());
 }
 
 inline long long qpcTicks() {

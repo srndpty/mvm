@@ -30,6 +30,11 @@ struct WasapiSnapshot {
     std::int64_t firstConsumedSample = -1;
     std::int64_t playStartFirstConsumedSample = -1;
     std::int64_t lastConsumedSampleExclusive = -1;
+    std::uint64_t endpointPrefillFrames = 0;
+    std::int64_t endpointFirstMediaSample = -1;
+    std::uint64_t endpointStartDevicePosition = 0;
+    std::int64_t clockAnchorMediaSample = -1;
+    std::uint64_t clockAnchorDevicePosition = 0;
     std::uint64_t deviceFailureCount = 0;
     std::uint64_t audioRenderThreadJoinLeak = 0;
     std::uint64_t audioDeviceReleaseBeforeJoin = 0;
@@ -54,6 +59,8 @@ public:
 private:
     void renderLoop();
     bool renderAvailable();
+    bool prefillEndpoint(std::int64_t mediaStartSample, SourceGeneration generation,
+                         std::string& error);
     bool resetClient(std::string& error);
     void recordFailure(const std::string& error);
     void releaseDevice();
@@ -61,6 +68,7 @@ private:
     AudioFrameQueue& queue_;
     AudioMasterClock& clock_;
     mutable std::mutex mutex_;
+    std::mutex clientMutex_;
     WasapiSnapshot metrics_;
     IMMDeviceEnumerator* enumerator_ = nullptr;
     IMMDevice* device_ = nullptr;
@@ -80,6 +88,7 @@ private:
     std::atomic<bool> playing_{false};
     std::atomic<std::uint64_t> generation_{0};
     bool comInitialized_ = false;
+    bool endpointPrefillRequired_ = true;
 };
 
 } // namespace mvm::audio

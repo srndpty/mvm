@@ -1,6 +1,7 @@
 #ifndef MVM_APP_PREVIEW_COMPOSITOR_RHI_ITEM_H
 #define MVM_APP_PREVIEW_COMPOSITOR_RHI_ITEM_H
 
+#include "media/audio_preview/audio_clock.h"
 #include "media/gpu_preview/composition_display_ledger.h"
 #include "media/gpu_preview/compositor_coordinator.h"
 #include "media/gpu_preview/gpu_compositor.h"
@@ -86,6 +87,24 @@ struct CompositorSpikeState {
     std::atomic<bool> teardownRequested{false};
     std::atomic<bool> teardownComplete{false};
     std::atomic<bool> playbackSchedulerEnabled{false};
+    // P3-B 専用。P2 の QPC scheduler とは同時に有効にしない。
+    std::shared_ptr<audio::AudioMasterClock> audioMasterClock;
+    std::atomic<bool> audioMasterSchedulerEnabled{false};
+    std::atomic<unsigned long long> audioMasterGeneration{0};
+    std::atomic<long long> audioMasterVideoFrameCount{0};
+    std::atomic<long long> audioMasterLastRequested{-1};
+    std::atomic<long long> audioMasterLastDisplayed{-1};
+    std::atomic<long long> audioClockVideoStaleDiscardA{0};
+    std::atomic<long long> audioClockVideoStaleDiscardB{0};
+    std::atomic<long long> audioClockVideoCatchupSkipCount{0};
+    std::atomic<long long> videoPairWaitCount{0};
+    std::atomic<long long> videoTargetSupersededCount{0};
+    std::atomic<long long> videoAheadViolationCount{0};
+    std::atomic<long long> videoClockRegressionCount{0};
+    std::atomic<long long> videoQpcMasterFallbackCount{0};
+    std::atomic<bool> audioMasterMarkerProbePending{false};
+    std::mutex applicationAvDeltaMutex;
+    std::vector<double> applicationAvDeltaMs;
     std::atomic<bool> testDeviceChange{false};
     std::atomic<long long> requestedOutput{-1};
     std::atomic<long long> scheduledOutputCount{0};

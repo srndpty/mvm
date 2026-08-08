@@ -30,12 +30,6 @@ void releaseCom(T*& value) {
     }
 }
 
-std::int64_t qpcNow() {
-    LARGE_INTEGER value{};
-    QueryPerformanceCounter(&value);
-    return value.QuadPart;
-}
-
 std::string hresultText(HRESULT result) {
     char buffer[32]{};
     std::snprintf(buffer, sizeof(buffer), "HRESULT 0x%08lx", static_cast<unsigned long>(result));
@@ -171,6 +165,7 @@ bool WasapiAudioSink::open(std::string& error) {
     metrics_.joined = false;
     acceptingCommands_ = true;
     threadRunning_ = true;
+    endpointPrefillRequired_ = true;
     ResetEvent(static_cast<HANDLE>(stopEvent_));
     thread_ = std::thread(&WasapiAudioSink::renderLoop, this);
     return true;
@@ -178,17 +173,32 @@ bool WasapiAudioSink::open(std::string& error) {
 
 bool WasapiAudioSink::play(std::int64_t mediaStartSample, SourceGeneration generation,
                            std::string& error) {
-    if (!acceptingCommands_ || !metrics_.open) {
-        error = "WASAPI endpoint は play を受理できません";
-        return false;
+    {
+        std::lock_guard lock(mutex_);
+        if (!acceptingCommands_ || !metrics_.open) {
+            error = "WASAPI endpoint は play を受理できません";
+            return false;
+        }
     }
     if (!queue_.waitForSamples(kAudioPrerollSamples, kPrerollTimeoutMs)) {
         error = "固定 100 ms の audio pre-roll を 5000 ms 以内に満たせません";
         return false;
     }
-    std::lock_guard lock(mutex_);
     if (playing_)
         return true;
+    std::lock_guard clientLock(clientMutex_);
+    const bool didPrefill = endpointPrefillRequired_;
+    if (endpointPrefillRequired_) {
+        if (!prefillEndpoint(mediaStartSample, generation, error)) {
+            std::lock_guard lock(mutex_);
+            ++metrics_.audioLifecycleViolation;
+            return false;
+        }
+        endpointPrefillRequired_ = false;
+    } else {
+        std::lock_guard lock(mutex_);
+        metrics_.playStartFirstConsumedSample = -1;
+    }
     UINT64 devicePosition = 0;
     UINT64 qpcPosition = 0;
     UINT64 frequency = 0;
@@ -198,75 +208,174 @@ bool WasapiAudioSink::play(std::int64_t mediaStartSample, SourceGeneration gener
     if (FAILED(hr) || frequency == 0) {
         clock_.noteQueryFailure();
         error = "IAudioClock anchor を取得できません: " + hresultText(hr);
+        std::lock_guard lock(mutex_);
         ++metrics_.deviceFailureCount;
         return false;
     }
-    if (!clock_.start({mediaStartSample, devicePosition, qpcNow(), frequency, generation})) {
+    if (!clock_.start(
+            {mediaStartSample, devicePosition, Qpc100ns{qpcPosition}, frequency, generation})) {
         error = "audio clock anchor が無効です";
+        std::lock_guard lock(mutex_);
         ++metrics_.audioLifecycleViolation;
         return false;
     }
     generation_ = generation.value;
-    metrics_.playStartFirstConsumedSample = -1;
     hr = client_->Start();
     if (FAILED(hr)) {
         error = "WASAPI client を開始できません: " + hresultText(hr);
+        std::lock_guard lock(mutex_);
         ++metrics_.deviceFailureCount;
         clock_.pause();
         return false;
     }
     playing_ = true;
-    metrics_.running = true;
+    {
+        std::lock_guard lock(mutex_);
+        if (didPrefill) {
+            metrics_.endpointStartDevicePosition = devicePosition;
+            metrics_.clockAnchorMediaSample = mediaStartSample;
+            metrics_.clockAnchorDevicePosition = devicePosition;
+        }
+        metrics_.running = true;
+    }
+    return true;
+}
+
+bool WasapiAudioSink::prefillEndpoint(std::int64_t mediaStartSample, SourceGeneration generation,
+                                      std::string& error) {
+    UINT32 padding = 0;
+    HRESULT hr = client_->GetCurrentPadding(&padding);
+    if (FAILED(hr) || padding != 0) {
+        error = "endpoint prefill 前の buffer が空ではありません: " + hresultText(hr);
+        return false;
+    }
+    BYTE* deviceBuffer = nullptr;
+    hr = renderClient_->GetBuffer(bufferFrames_, &deviceBuffer);
+    if (FAILED(hr) || !deviceBuffer) {
+        error = "endpoint prefill buffer を取得できません: " + hresultText(hr);
+        return false;
+    }
+    const int sourceNeeded =
+        std::min(sourceScratchSamples_,
+                 static_cast<int>(av_rescale_rnd(bufferFrames_, kInternalSampleRate,
+                                                 mixFormat_->nSamplesPerSec, AV_ROUND_UP)));
+    const AudioConsumeResult consumed =
+        queue_.consume(sourceScratch_.data(), sourceNeeded, generation);
+    if (consumed.audioSamples != sourceNeeded || consumed.firstSample != mediaStartSample) {
+        renderClient_->ReleaseBuffer(bufferFrames_, AUDCLNT_BUFFERFLAGS_SILENT);
+        error = "endpoint prefill は requested media sample 由来の PCM を満たせません";
+        return false;
+    }
+    const std::uint8_t* input[] = {reinterpret_cast<const std::uint8_t*>(sourceScratch_.data())};
+    std::uint8_t* output[] = {deviceBuffer};
+    const int converted =
+        swr_convert(outputResampler_, output, static_cast<int>(bufferFrames_), input, sourceNeeded);
+    if (converted != static_cast<int>(bufferFrames_)) {
+        renderClient_->ReleaseBuffer(bufferFrames_, AUDCLNT_BUFFERFLAGS_SILENT);
+        error = "endpoint prefill の PCM 変換 frame 数が一致しません";
+        return false;
+    }
+    hr = renderClient_->ReleaseBuffer(bufferFrames_, 0);
+    if (FAILED(hr)) {
+        error = "endpoint prefill buffer を返却できません: " + hresultText(hr);
+        return false;
+    }
+    {
+        std::lock_guard lock(mutex_);
+        metrics_.endpointPrefillFrames = bufferFrames_;
+        metrics_.endpointFirstMediaSample = consumed.firstSample;
+        metrics_.playStartFirstConsumedSample = consumed.firstSample;
+        metrics_.audioRenderedSamples += static_cast<std::uint64_t>(consumed.audioSamples);
+        if (metrics_.firstConsumedSample < 0)
+            metrics_.firstConsumedSample = consumed.firstSample;
+        metrics_.lastConsumedSampleExclusive = consumed.lastSampleExclusive;
+    }
     return true;
 }
 
 bool WasapiAudioSink::pause(std::string& error) {
-    std::lock_guard lock(mutex_);
-    if (!metrics_.open) {
-        error = "WASAPI endpoint は open されていません";
-        return false;
+    std::lock_guard clientLock(clientMutex_);
+    {
+        std::lock_guard lock(mutex_);
+        if (!metrics_.open) {
+            error = "WASAPI endpoint は open されていません";
+            return false;
+        }
     }
     if (!playing_)
         return true;
-    const HRESULT hr = client_->Stop();
+    UINT64 devicePosition = 0;
+    UINT64 qpcPosition = 0;
+    HRESULT hr = deviceClock_->GetPosition(&devicePosition, &qpcPosition);
+    const SourceGeneration expected{generation_.load()};
+    if (FAILED(hr)) {
+        clock_.noteQueryFailure();
+        error = "pause 直前の IAudioClock position を取得できません: " + hresultText(hr);
+        std::lock_guard lock(mutex_);
+        ++metrics_.deviceFailureCount;
+        return false;
+    }
+    if (!clock_.update(devicePosition, Qpc100ns{qpcPosition}, expected)) {
+        error = "pause 直前の IAudioClock position を media sample へ写像できません";
+        std::lock_guard lock(mutex_);
+        ++metrics_.audioLifecycleViolation;
+        return false;
+    }
+    hr = client_->Stop();
     if (FAILED(hr)) {
         error = "WASAPI client を pause できません: " + hresultText(hr);
+        std::lock_guard lock(mutex_);
         ++metrics_.deviceFailureCount;
         return false;
     }
     playing_ = false;
-    metrics_.running = false;
+    {
+        std::lock_guard lock(mutex_);
+        metrics_.running = false;
+    }
     clock_.pause();
     return true;
 }
 
 bool WasapiAudioSink::resetForSeek(std::string& error) {
-    std::lock_guard lock(mutex_);
+    std::lock_guard clientLock(clientMutex_);
     if (playing_) {
         error = "seek reset は pause 後にだけ実行できます";
+        std::lock_guard lock(mutex_);
         ++metrics_.audioLifecycleViolation;
         return false;
     }
     const HRESULT hr = client_->Reset();
     if (FAILED(hr)) {
         error = "WASAPI client buffer を seek 用に reset できません: " + hresultText(hr);
+        std::lock_guard lock(mutex_);
         ++metrics_.deviceFailureCount;
         return false;
     }
     swr_close(outputResampler_);
     if (swr_init(outputResampler_) < 0) {
         error = "seek 時に endpoint resampler を reset できません";
+        std::lock_guard lock(mutex_);
         ++metrics_.audioLifecycleViolation;
         return false;
+    }
+    endpointPrefillRequired_ = true;
+    {
+        std::lock_guard lock(mutex_);
+        metrics_.endpointPrefillFrames = 0;
+        metrics_.endpointFirstMediaSample = -1;
     }
     return true;
 }
 
 void WasapiAudioSink::stop() {
     acceptingCommands_ = false;
-    if (client_)
-        client_->Stop();
-    playing_ = false;
+    {
+        std::lock_guard clientLock(clientMutex_);
+        if (client_)
+            client_->Stop();
+        playing_ = false;
+    }
     clock_.stop();
     if (stopEvent_)
         SetEvent(static_cast<HANDLE>(stopEvent_));
@@ -303,6 +412,11 @@ void WasapiAudioSink::renderLoop() {
 }
 
 bool WasapiAudioSink::renderAvailable() {
+    std::lock_guard clientLock(clientMutex_);
+    // event 判定後に pause/reset が clientMutex_ を先に取得した場合、古い
+    // playing=true を見た callback が reset 後へ PCM を書かないよう再検査する。
+    if (!playing_)
+        return true;
     UINT32 padding = 0;
     HRESULT hr = client_->GetCurrentPadding(&padding);
     if (FAILED(hr) || padding > bufferFrames_) {
@@ -368,7 +482,7 @@ bool WasapiAudioSink::renderAvailable() {
         recordFailure("IAudioClock position を取得できません: " + hresultText(hr));
         return false;
     }
-    clock_.update(position, static_cast<std::int64_t>(qpcPosition), expected);
+    clock_.update(position, Qpc100ns{qpcPosition}, expected);
     return true;
 }
 

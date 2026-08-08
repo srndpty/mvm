@@ -105,6 +105,11 @@ void writeJson(const Args& args, const AudioDecoderSnapshot& decoder,
         << "  \"audio_preroll_ms\": " << kAudioPrerollMs << ",\n"
         << "  \"elapsed_seconds\": " << elapsed << ",\n"
         << "  \"audio_rendered_samples\": " << sink.audioRenderedSamples << ",\n"
+        << "  \"endpoint_prefill_frames\": " << sink.endpointPrefillFrames << ",\n"
+        << "  \"endpoint_first_media_sample\": " << sink.endpointFirstMediaSample << ",\n"
+        << "  \"endpoint_start_device_position\": " << sink.endpointStartDevicePosition << ",\n"
+        << "  \"clock_anchor_media_sample\": " << sink.clockAnchorMediaSample << ",\n"
+        << "  \"clock_anchor_device_position\": " << sink.clockAnchorDevicePosition << ",\n"
         << "  \"expected_elapsed_samples\": " << std::llround(elapsed * kInternalSampleRate)
         << ",\n"
         << "  \"queued_duration_ms\": " << queue.queuedDurationMs << ",\n"

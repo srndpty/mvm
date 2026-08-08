@@ -4,6 +4,84 @@
 
 namespace mvm::audio {
 
+namespace {
+constexpr std::uint64_t kHundredNsPerSecond = 10'000'000;
+
+// value < divisor を前提に floor(value * multiplier / divisor) を求める。
+// residue を divisor 未満に保ったまま加算するため、中間積は overflow しない。
+std::uint64_t multiplyDivideFloor(std::uint64_t value, std::uint64_t multiplier,
+                                  std::uint64_t divisor) {
+    std::uint64_t quotient = 0;
+    std::uint64_t remainder = 0;
+    std::uint64_t termQuotient = value / divisor;
+    std::uint64_t termRemainder = value % divisor;
+    while (multiplier != 0) {
+        if ((multiplier & 1U) != 0) {
+            quotient += termQuotient;
+            if (remainder >= divisor - termRemainder) {
+                remainder -= divisor - termRemainder;
+                ++quotient;
+            } else {
+                remainder += termRemainder;
+            }
+        }
+        multiplier >>= 1U;
+        if (multiplier == 0)
+            break;
+        termQuotient *= 2;
+        if (termRemainder >= divisor - termRemainder) {
+            termRemainder -= divisor - termRemainder;
+            ++termQuotient;
+        } else {
+            termRemainder *= 2;
+        }
+    }
+    return quotient;
+}
+} // namespace
+
+bool qpcTicksTo100ns(QpcTicks ticks, std::uint64_t frequency, Qpc100ns& converted) {
+    if (frequency == 0)
+        return false;
+    const std::uint64_t whole = ticks.value / frequency;
+    const std::uint64_t remainder = ticks.value % frequency;
+    if (whole > std::numeric_limits<std::uint64_t>::max() / kHundredNsPerSecond)
+        return false;
+    const std::uint64_t base = whole * kHundredNsPerSecond;
+    const std::uint64_t fraction = multiplyDivideFloor(remainder, kHundredNsPerSecond, frequency);
+    if (base > std::numeric_limits<std::uint64_t>::max() - fraction)
+        return false;
+    converted.value = base + fraction;
+    return true;
+}
+
+AudioClockProjection projectAtQpc100ns(const AudioClockSnapshot& snapshot, Qpc100ns now,
+                                       SourceGeneration expectedGeneration) {
+    AudioClockProjection result;
+    result.generation = snapshot.generation;
+    if (!snapshot.running || snapshot.deviceFrequency == 0 || expectedGeneration.value == 0 ||
+        snapshot.generation != expectedGeneration || now.value < snapshot.qpcPosition100ns.value ||
+        snapshot.mediaSamplePosition < 0)
+        return result;
+    const std::uint64_t elapsed100ns = now.value - snapshot.qpcPosition100ns.value;
+    const std::uint64_t whole = elapsed100ns / kHundredNsPerSecond;
+    const std::uint64_t remainder = elapsed100ns % kHundredNsPerSecond;
+    if (whole >
+        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max() / kInternalSampleRate))
+        return result;
+    const std::uint64_t extrapolated =
+        whole * kInternalSampleRate + (remainder * kInternalSampleRate) / kHundredNsPerSecond;
+    if (extrapolated > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
+        snapshot.mediaSamplePosition >
+            std::numeric_limits<std::int64_t>::max() - static_cast<std::int64_t>(extrapolated))
+        return result;
+    result.valid = true;
+    result.extrapolatedSamples = static_cast<std::int64_t>(extrapolated);
+    result.mediaSample = snapshot.mediaSamplePosition + result.extrapolatedSamples;
+    result.mediaTimeSeconds = static_cast<double>(result.mediaSample) / kInternalSampleRate;
+    return result;
+}
+
 bool AudioMasterClock::start(const ClockAnchor& anchor) {
     std::lock_guard lock(mutex_);
     if (anchor.deviceFrequency == 0 || anchor.generation.value == 0 || anchor.mediaStartSample < 0)
@@ -11,7 +89,7 @@ bool AudioMasterClock::start(const ClockAnchor& anchor) {
     anchor_ = anchor;
     snapshot_.devicePosition = anchor.deviceStartPosition;
     snapshot_.deviceFrequency = anchor.deviceFrequency;
-    snapshot_.qpcAtSample = anchor.qpcStart;
+    snapshot_.qpcPosition100ns = anchor.qpcPosition100ns;
     snapshot_.mediaSamplePosition = anchor.mediaStartSample;
     snapshot_.mediaTimeSeconds = static_cast<double>(anchor.mediaStartSample) / kInternalSampleRate;
     snapshot_.running = true;
@@ -19,7 +97,7 @@ bool AudioMasterClock::start(const ClockAnchor& anchor) {
     return true;
 }
 
-bool AudioMasterClock::update(std::uint64_t devicePosition, std::int64_t qpcAtSample,
+bool AudioMasterClock::update(std::uint64_t devicePosition, Qpc100ns qpcPosition100ns,
                               SourceGeneration generation) {
     std::lock_guard lock(mutex_);
     if (!snapshot_.running)
@@ -49,7 +127,7 @@ bool AudioMasterClock::update(std::uint64_t devicePosition, std::int64_t qpcAtSa
         return false;
     }
     snapshot_.devicePosition = devicePosition;
-    snapshot_.qpcAtSample = qpcAtSample;
+    snapshot_.qpcPosition100ns = qpcPosition100ns;
     snapshot_.mediaSamplePosition = mapped;
     snapshot_.mediaTimeSeconds = static_cast<double>(mapped) / kInternalSampleRate;
     return true;

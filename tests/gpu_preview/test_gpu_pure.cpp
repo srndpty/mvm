@@ -1101,6 +1101,8 @@ void testCompositionDisplayLedger() {
     checkEq(found.pairReadyQpc, 80, "pair-ready QPCを保持");
     checkEq(found.submissionQpc, 90, "submission QPCを保持");
     checkEq(found.displayedQpc, 100, "display QPCを保持");
+    checkEq(found.displayRecordQpc, 100, "application-level display record QPCを保持");
+    checkEq(found.frameNumber, 10, "display recordのframe numberを保持");
 
     auto wrong = expected;
     wrong.sources[1].sourceGeneration = {99};
