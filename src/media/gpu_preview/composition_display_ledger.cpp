@@ -26,7 +26,9 @@ CompositionDisplayLedger::CompositionDisplayLedger(size_t capacity)
 
 unsigned long long CompositionDisplayLedger::record(const ComposedFrame& frame,
                                                     long long displayedQpc, long long pairReadyQpc,
-                                                    long long submissionQpc) {
+                                                    long long submissionQpc,
+                                                    bool applicationAvProjectionValid,
+                                                    double applicationAvDeltaMs) {
     CompositionDisplayRecord record;
     record.pairReadyQpc = pairReadyQpc;
     record.submissionQpc = submissionQpc;
@@ -34,6 +36,8 @@ unsigned long long CompositionDisplayLedger::record(const ComposedFrame& frame,
     record.displayRecordQpc = displayedQpc;
     record.outputFrameNumber = frame.outputFrameNumber;
     record.frameNumber = frame.outputFrameNumber;
+    record.applicationAvProjectionValid = applicationAvProjectionValid;
+    record.applicationAvDeltaMs = applicationAvDeltaMs;
     record.compositionEpoch = frame.compositionEpoch;
     record.sources.reserve(frame.layers.size());
     for (const auto& layer : frame.layers)

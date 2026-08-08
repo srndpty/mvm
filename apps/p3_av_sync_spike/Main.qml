@@ -7,7 +7,7 @@ Window {
     height: 1080
     visible: true
     color: "black"
-    title: "mvm P3-B audio-master A/V sync spike"
+    title: "mvm P3 audio-master A/V sync spike"
     CompositorSurface {
         objectName: "compositorSurface"
         anchors.fill: parent

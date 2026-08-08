@@ -71,12 +71,20 @@ struct CompositorMarkerProbe {
     std::string error;
 };
 
+struct P3MeasurementDisplayRecord {
+    long long outputFrameNumber = -1;
+    long long displayRecordQpc = 0;
+    bool applicationAvProjectionValid = false;
+    double applicationAvDeltaMs = 0.0;
+};
+
 struct CompositorSpikeState {
     gpu::SharedD3D11Device device;
     gpu::ReadbackCounters readbacks;
     gpu::GpuCompositor compositor;
     gpu::CompositorCoordinator coordinator;
-    gpu::CompositionDisplayLedger ledger{1024};
+    // formal playback の 3600 display identity を欠落なく保持する。
+    gpu::CompositionDisplayLedger ledger{4096};
 
     mutable std::mutex workerMutex;
     std::shared_ptr<gpu::SourceDecodeWorker> workerA;
@@ -105,6 +113,10 @@ struct CompositorSpikeState {
     std::atomic<bool> audioMasterMarkerProbePending{false};
     std::mutex applicationAvDeltaMutex;
     std::vector<double> applicationAvDeltaMs;
+    std::atomic<bool> p3MeasurementActive{false};
+    std::atomic<long long> p3MeasurementEndSampleExclusive{0};
+    std::mutex p3MeasurementDisplayMutex;
+    std::vector<P3MeasurementDisplayRecord> p3MeasurementDisplays;
     std::atomic<bool> testDeviceChange{false};
     std::atomic<long long> requestedOutput{-1};
     std::atomic<long long> scheduledOutputCount{0};

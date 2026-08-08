@@ -28,6 +28,8 @@ bool parse(const QStringList& args, P3AvConfig& config) {
         else if (key == "--seek-count") config.seekCount = value().toInt();
         else if (key == "--seed") config.seed = value().toUInt();
         else if (key == "--display-timeout-ms") config.displayTimeoutMs = value().toInt();
+        else if (key == "--warmup-seconds") config.warmupSeconds = value().toInt();
+        else if (key == "--formal-contract") config.formalContract = true;
         else if (key == "--mode") {
             const QString mode = value();
             if (mode == "playback") config.mode = P3AvMode::Playback;
@@ -40,7 +42,7 @@ bool parse(const QStringList& args, P3AvConfig& config) {
     }
     return !config.sourceA.isEmpty() && !config.sourceB.isEmpty() &&
            !config.metricsPath.isEmpty() && config.durationSeconds > 0 && config.seekCount > 0 &&
-           config.displayTimeoutMs > 0;
+           config.displayTimeoutMs > 0 && config.warmupSeconds >= 0;
 }
 } // namespace
 

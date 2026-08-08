@@ -126,6 +126,12 @@ protected:
                     state_->videoClockRegressionCount.fetch_add(1, std::memory_order_relaxed);
                 return;
             }
+            const long long formalEnd =
+                state_->p3MeasurementEndSampleExclusive.load(std::memory_order_acquire);
+            if (state_->p3MeasurementActive.load(std::memory_order_acquire) &&
+                audio::formalVideoTargetForSample(projection.mediaSample, formalEnd)
+                    .measurementEnded)
+                return;
             const long long lastDisplayed =
                 state_->audioMasterLastDisplayed.load(std::memory_order_acquire);
             const long long lastRequested =
@@ -293,7 +299,8 @@ protected:
                                               ? state_->audioMasterClock->snapshot()
                                               : audio::AudioClockSnapshot{};
         const long long displayedQpc = gpu::qpcTicks();
-        state_->ledger.record(frame, displayedQpc, pairReadyQpc, submissionQpc);
+        bool displayProjectionValid = false;
+        double displayDeltaMs = 0.0;
         if (audioMasterEnabled) {
             state_->audioMasterLastDisplayed.store(output, std::memory_order_release);
             audio::Qpc100ns displayed100ns;
@@ -314,6 +321,8 @@ protected:
                 const long long videoSample = output * audio::kSamplesPerVideoFrame;
                 const double deltaMs = static_cast<double>(videoSample - projection.mediaSample) *
                                        1000.0 / audio::kInternalSampleRate;
+                displayProjectionValid = true;
+                displayDeltaMs = deltaMs;
                 {
                     std::lock_guard<std::mutex> lock(state_->applicationAvDeltaMutex);
                     state_->applicationAvDeltaMs.push_back(deltaMs);
@@ -321,6 +330,13 @@ protected:
                 if (audio::isVideoAheadViolation(output, projection.mediaSample))
                     state_->videoAheadViolationCount.fetch_add(1, std::memory_order_relaxed);
             }
+        }
+        state_->ledger.record(frame, displayedQpc, pairReadyQpc, submissionQpc,
+                              displayProjectionValid, displayDeltaMs);
+        if (state_->p3MeasurementActive.load(std::memory_order_acquire)) {
+            std::lock_guard<std::mutex> lock(state_->p3MeasurementDisplayMutex);
+            state_->p3MeasurementDisplays.push_back(
+                {output, displayedQpc, displayProjectionValid, displayDeltaMs});
         }
         state_->displayedCompositionCount.fetch_add(1, std::memory_order_relaxed);
         if (state_->measurementIntervalActive.load(std::memory_order_acquire)) {

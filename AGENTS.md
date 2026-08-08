@@ -1,20 +1,5 @@
 # AGENTS.md
 
-mvm リポジトリで作業する人間およびエージェント向けの規約。
-
-**現在 Phase 1 / P1（GPU Preview Engine Spike）である。**
-Phase 0（MLT スパイク）は「MLT を採用しない」で終了した
-（[docs/phase0-decision.md](docs/phase0-decision.md)）。
-P1 の目的は、FFmpeg (D3D11VA) で decode した frame を CPU へ戻さずに
-Qt Quick 上へ表示できるかの判定だけであり、製品コードはまだ存在しない
-（[docs/phase1-plan.md](docs/phase1-plan.md)）。判定に必要のないものを作らないこと。
-
-**この規約は Phase 1 でもそのまま適用する。** 特に fail-closed、
-negative test の同時追加、指標の定義を先に決めること、
-「計測値を文書へ手で転記しない」は Phase 1 でも変えない。
-
----
-
 ## 言語
 
 **人間が読む想定の文章はすべて日本語で書く。**
@@ -312,3 +297,44 @@ metadata recoveryを行った場合は、
 6. 最後の手段として新しい clean build directory で再現確認
 
 既存 build directory を無条件で削除しない。
+
+「build directoryを保持している」「Ninja dependency DBが壊れている」等の原因を、
+process/logによる証拠なしに推定して修復操作へ進まない。
+
+agent の反復確認では `pwsh scripts/build.ps1 -Target <target>` を使う。
+timeout 後の読み取り専用診断は
+`pwsh scripts/build-diagnostics.ps1 -Preset ucrt64-release` を使い、表示された
+repo-scoped PID、CPU time、child compiler、`.ninja_log` 更新時刻を根拠に次の操作を決める。
+
+### Codex sandbox の既知制約
+
+この開発環境では、sandbox 内から CMake/Ninja を実行した場合に、
+Ninja 自体は起動するが child compiler (`g++` / `cc1plus`) が起動せず停止する事例を確認済み。
+
+確認済みの特徴:
+
+- CMake/Ninja process は存在する
+- CMake/Ninja の CPU time がほぼ増加しない
+- `g++` / `cc1plus` が存在しない
+- `.ninja_log` が進行しない
+- `ninja -n <target>` は正常かつ短時間で完了する
+- 新しい clean build directory でも同じ症状になる
+- 同じ公式 build command を sandbox 外で実行すると正常完了する
+
+この既知パターンに一致する場合、
+Ninja metadata corruption や source/CMake の問題を毎回再調査しない。
+
+1. `scripts/build-diagnostics.ps1` で上記signatureを確認する
+2. repo/build-dirへ重複buildを起動しない
+3. `.ninja_deps` / `.ninja_log` を変更しない
+4. clean build directoryを毎回作り直さない
+5. 公式 `scripts/build.ps1 -Target <target>` を sandbox 外で1回実行する
+
+sandbox 内での失敗だけを product/source の失敗として扱わない。
+sandbox 外でも再現した場合にのみ通常の recovery escalation へ戻る。
+
+### プロセス終了安全対策
+
+process command line を権限制約で取得できず repo ownership を確認できない場合、
+process名だけを根拠に終了してはいけない。
+終了可能なのは、このagent自身が起動してPID/process treeを追跡できているprocessだけとする。

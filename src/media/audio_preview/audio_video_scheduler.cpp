@@ -2,6 +2,13 @@
 
 namespace mvm::audio {
 
+FormalVideoTarget formalVideoTargetForSample(std::int64_t mediaSample,
+                                             std::int64_t endSampleExclusive) {
+    if (mediaSample < 0 || endSampleExclusive <= 0 || mediaSample >= endSampleExclusive)
+        return {};
+    return {false, mediaSample / kSamplesPerVideoFrame};
+}
+
 bool acceptsVideoMasterSource(VideoMasterSource source) {
     return source == VideoMasterSource::AudioDeviceClock;
 }
