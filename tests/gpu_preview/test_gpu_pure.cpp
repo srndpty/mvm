@@ -18,6 +18,7 @@
 #include "media/gpu_preview/compositor_coordinator.h"
 #include "media/gpu_preview/device_change.h"
 #include "media/gpu_preview/display_ledger.h"
+#include "media/gpu_preview/exact_frame_pairer.h"
 #include "media/gpu_preview/ffmpeg_d3d11_decoder.h"
 #include "media/gpu_preview/frame_queue.h"
 #include "media/gpu_preview/gpu_completion.h"
@@ -739,7 +740,16 @@ void testP2SourceAndComposition() {
         {a, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0f, 0},
         {b, {0.5f, 0.5f, 0.5f, 0.5f}, {0, 0, 1, 1}, 0.75f, 1},
     };
-    check(coordinator.configure(layout, {{a, {2}}, {b, {7}}}), "2 source layout を構成");
+    check(coordinator.configure(layout, {{a, {2}}, {b, {7}}}) == ConfigureResult::Configured,
+          "2 source layout を構成");
+    check(coordinator.compositionEpoch() == CompositionEpoch{1}, "configure 後の epoch は 1");
+    check(coordinator.configure(layout, {{a, {2}}, {b, {7}}}) ==
+              ConfigureResult::RejectedAlreadyConfigured,
+          "再 configure を拒否");
+    check(coordinator.compositionEpoch() == CompositionEpoch{1},
+          "再 configure で epoch を巻き戻さない");
+    check(coordinator.updateLayout(layout) == LayoutUpdateResult::NoOp, "同一 layout は no-op");
+    check(coordinator.compositionEpoch() == CompositionEpoch{1}, "同一 layout で epoch を進めない");
 
     auto fa = makeFrame(10, 2);
     fa.sourceId = a;
@@ -779,10 +789,18 @@ void testP2SourceAndComposition() {
     const CompositionEpoch adopted = composed.compositionEpoch;
     auto changedLayout = layout;
     changedLayout[1].opacity = 0.5f;
-    check(coordinator.updateLayout(changedLayout), "layout snapshot を変更");
+    check(coordinator.updateLayout(changedLayout) == LayoutUpdateResult::Updated,
+          "opacity snapshot を変更");
+    check(coordinator.compositionEpoch() == CompositionEpoch{2}, "opacity 変更で epoch +1");
     check(composed.compositionEpoch == adopted, "採用済み epoch は immutable");
     check(coordinator.validateForDisplay(composed) == CompositionResult::StaleEpoch,
           "old CompositionEpoch を拒否");
+
+    auto movedLayout = changedLayout;
+    movedLayout[1].destination.x = 0.25f;
+    check(coordinator.updateLayout(movedLayout) == LayoutUpdateResult::Updated,
+          "destination snapshot を変更");
+    check(coordinator.compositionEpoch() == CompositionEpoch{3}, "destination 変更で epoch +1");
 
     checkNear(straightAlphaBlend(0.8f, 0.2f, 0.0f), 0.2, 1e-6, "opacity 0");
     checkNear(straightAlphaBlend(0.8f, 0.2f, 0.5f), 0.5, 1e-6, "opacity 0.5");
@@ -853,6 +871,41 @@ void testP2SourceAndComposition() {
     DecodedGpuFrame remaining;
     check(pending.takeForDisplay(remaining) && remaining.sourceId == b,
           "unregister 後に残る pending は B");
+
+    SourceFrameBuffer exactA(a, SourceGeneration{2}, 4);
+    SourceFrameBuffer exactB(b, SourceGeneration{7}, 4);
+    auto oldA = makeFrame(9, 2);
+    oldA.sourceId = a;
+    auto exactFrameA = makeFrame(10, 2);
+    exactFrameA.sourceId = a;
+    auto oldFrameB = makeFrame(8, 7);
+    oldFrameB.sourceId = b;
+    auto exactFrameB = makeFrame(10, 7);
+    exactFrameB.sourceId = b;
+    check(exactA.submitFrame(oldA) == SubmitResult::Accepted, "A stale候補を追加");
+    check(exactA.submitFrame(exactFrameA) == SubmitResult::Accepted, "A exact候補を追加");
+    check(exactB.submitFrame(oldFrameB) == SubmitResult::Accepted, "B stale候補を追加");
+    check(exactB.submitFrame(exactFrameB) == SubmitResult::Accepted, "B exact候補を追加");
+    ExactFramePairer pairer(exactA, exactB, coordinator);
+    check(pairer.tryPair(10, composed) == PairResult::Paired, "staleを除去してexact pairを形成");
+    checkEq(pairer.counters().staleADiscardCount, 1, "A stale discardを計数");
+    checkEq(pairer.counters().staleBDiscardCount, 1, "B stale discardを計数");
+    checkEq(pairer.counters().pairedCount, 1, "exact pairを計数");
+
+    auto futureFrameA = makeFrame(12, 2);
+    futureFrameA.sourceId = a;
+    auto requestedFrameB = makeFrame(11, 7);
+    requestedFrameB.sourceId = b;
+    check(exactA.submitFrame(futureFrameA) == SubmitResult::Accepted, "A future frameを追加");
+    check(exactB.submitFrame(requestedFrameB) == SubmitResult::Accepted, "B requested frameを追加");
+    check(pairer.tryPair(11, composed) == PairResult::MissingA,
+          "A future/B exactをmixed pairにしない");
+    SourceFrameIdentity keptA;
+    SourceFrameIdentity keptB;
+    check(exactA.peekFrontIdentity(keptA) && keptA.frameNumber == 12, "A future frameを消費しない");
+    check(exactB.peekFrontIdentity(keptB) && keptB.frameNumber == 11,
+          "片方だけ成立したB frameを消費しない");
+    checkEq(pairer.counters().missingACount, 1, "missing Aを計数");
 }
 
 // --------------------------------------------------------------------------

@@ -19,6 +19,18 @@ enum class CompositionResult {
     UnknownSource,
 };
 
+enum class ConfigureResult {
+    Configured = 0,
+    RejectedInvalid,
+    RejectedAlreadyConfigured,
+};
+
+enum class LayoutUpdateResult {
+    Updated = 0,
+    NoOp,
+    Rejected,
+};
+
 struct LayerLayout {
     SourceId sourceId{};
     RectF destination{};
@@ -29,9 +41,9 @@ struct LayerLayout {
 
 class CompositorCoordinator {
 public:
-    bool configure(std::vector<LayerLayout> layout,
-                   const std::map<SourceId, SourceGeneration>& generations);
-    bool updateLayout(std::vector<LayerLayout> layout);
+    ConfigureResult configure(std::vector<LayerLayout> layout,
+                              const std::map<SourceId, SourceGeneration>& generations);
+    LayoutUpdateResult updateLayout(std::vector<LayerLayout> layout);
     bool setSourceGeneration(SourceId source, SourceGeneration generation);
     SourceGeneration sourceGeneration(SourceId source) const;
     CompositionEpoch compositionEpoch() const;
@@ -50,7 +62,8 @@ private:
     mutable std::mutex mutex_;
     std::vector<LayerLayout> layout_;
     std::map<SourceId, SourceGeneration> generations_;
-    CompositionEpoch epoch_{1};
+    CompositionEpoch epoch_{};
+    bool configured_ = false;
     long long mixedFrame_ = 0;
     long long mixedGeneration_ = 0;
     mutable long long staleEpoch_ = 0;

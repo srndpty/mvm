@@ -1,6 +1,7 @@
 #ifndef MVM_GPU_PREVIEW_SOURCE_FRAME_BUFFER_H
 #define MVM_GPU_PREVIEW_SOURCE_FRAME_BUFFER_H
 
+#include "media/gpu_preview/composed_frame.h"
 #include "media/gpu_preview/preview_surface.h"
 
 #include <condition_variable>
@@ -19,12 +20,18 @@ public:
     GenerationUpdateResult setGeneration(SourceGeneration generation);
     SourceGeneration generation() const;
     bool take(DecodedGpuFrame& frame);
+    bool peekFrontIdentity(SourceFrameIdentity& identity) const;
+    bool takeExact(long long frameNumber, DecodedGpuFrame& frame);
+    size_t discardBefore(long long frameNumber);
     void noteDisplayed(long long frameNumber);
     bool waitForSpace(int timeoutMs);
+    bool waitForFrame(int timeoutMs);
     void stop();
     void restart();
     bool stopped() const;
     size_t depth() const;
+
+    size_t capacity() const { return capacity_; }
 
 private:
     SourceId source_{};

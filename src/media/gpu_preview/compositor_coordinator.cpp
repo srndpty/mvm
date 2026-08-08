@@ -1,39 +1,60 @@
 #include "media/gpu_preview/compositor_coordinator.h"
 
 #include <algorithm>
+#include <limits>
 #include <set>
 
 namespace mvm::gpu {
+namespace {
 
-bool CompositorCoordinator::configure(std::vector<LayerLayout> layout,
-                                      const std::map<SourceId, SourceGeneration>& generations) {
+bool sameRect(const RectF& a, const RectF& b) {
+    return a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height;
+}
+
+bool sameLayout(const LayerLayout& a, const LayerLayout& b) {
+    return a.sourceId == b.sourceId && sameRect(a.destination, b.destination) &&
+           sameRect(a.sourceUv, b.sourceUv) && a.opacity == b.opacity && a.zOrder == b.zOrder;
+}
+
+} // namespace
+
+ConfigureResult
+CompositorCoordinator::configure(std::vector<LayerLayout> layout,
+                                 const std::map<SourceId, SourceGeneration>& generations) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (configured_)
+        return ConfigureResult::RejectedAlreadyConfigured;
     if (layout.empty() || layout.size() != generations.size())
-        return false;
+        return ConfigureResult::RejectedInvalid;
     std::set<SourceId> ids;
     for (const auto& layer : layout) {
         if (layer.sourceId.value == 0 || !generations.contains(layer.sourceId) ||
             !ids.insert(layer.sourceId).second)
-            return false;
+            return ConfigureResult::RejectedInvalid;
     }
     layout_ = std::move(layout);
     generations_ = generations;
     epoch_ = CompositionEpoch{1};
-    return true;
+    configured_ = true;
+    return ConfigureResult::Configured;
 }
 
-bool CompositorCoordinator::updateLayout(std::vector<LayerLayout> layout) {
+LayoutUpdateResult CompositorCoordinator::updateLayout(std::vector<LayerLayout> layout) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (layout.size() != layout_.size())
-        return false;
+    if (!configured_ || layout.size() != layout_.size())
+        return LayoutUpdateResult::Rejected;
     std::set<SourceId> ids;
     for (const auto& layer : layout) {
         if (!generations_.contains(layer.sourceId) || !ids.insert(layer.sourceId).second)
-            return false;
+            return LayoutUpdateResult::Rejected;
     }
+    if (std::equal(layout.begin(), layout.end(), layout_.begin(), sameLayout))
+        return LayoutUpdateResult::NoOp;
+    if (epoch_.value == std::numeric_limits<unsigned long long>::max())
+        return LayoutUpdateResult::Rejected;
     layout_ = std::move(layout);
     ++epoch_.value;
-    return true;
+    return LayoutUpdateResult::Updated;
 }
 
 bool CompositorCoordinator::setSourceGeneration(SourceId source, SourceGeneration generation) {
@@ -59,6 +80,8 @@ CompositionEpoch CompositorCoordinator::compositionEpoch() const {
 CompositionResult
 CompositorCoordinator::validateLocked(long long outputFrameNumber,
                                       const std::vector<DecodedGpuFrame>& frames) const {
+    if (!configured_)
+        return CompositionResult::MissingSource;
     if (frames.size() != layout_.size())
         return CompositionResult::MissingSource;
     std::set<SourceId> seen;
