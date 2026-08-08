@@ -387,3 +387,52 @@ Phase 0 の「対象 0 件のテスト群が全部通ったと報告される」
 - Qt の patch release をまたいだときの QRhi 互換
 - vsync を外した最大スループット（§4）
 - 表示色の正しさ（§6）
+
+## 12. P2-D4A Playback formal の source coverage 修正
+
+### 12.1 [事実] P2-D2 の Playback 測定区間は source frame 0 から始まっていなかった
+
+P2-D2 formal の raw / summary は `formal_contract_version = P2-D1-1` のまま保存し、
+`p2_pass = false` という当時の判定を変更していない。P2-D4A ではこの成果物を
+上書きせず、修正後の smoke を `build/ucrt64-release/p2-d4a-smoke/` へ分離した。
+
+旧 harness は warmup で進んだ 60 Hz scheduler と source buffer を、そのまま
+measurement へ引き継いでいた。このため「60 秒の Playback formal」が source の
+frame 0..3599 を測る契約になっておらず、source 末尾への到達と EOF を性能問題から
+区別できなかった。
+
+修正後の formal contract は `P2-D4-1` とする。変更した意味は次のとおり。
+
+- warmup 終了時に render thread から scheduler 停止の ACK を返し、その後にだけ
+  A/B を pause、frame 0 へ exact seek、source generation 同期する
+- measurement 開始 callback で QPC 起点と scheduler frame 0 を同時に設定する
+- 測定区間を `[start, end)` とし、60 秒 formal の slot を frame 0..3599 の
+  3600 件に固定する。frame 3600 は含めない
+- source frame count、coverage、measurement 区間の missing pair / EOF A / EOF B を
+  raw JSON に記録し、formal checker は fail-closed で検査する
+
+### 12.2 [事実] checker の negative test で新しい契約を固定した
+
+対照群に加え、scheduled 3601 / 3599、coverage false、source A 3599 frame、
+missing pair 1、EOF A 1、EOF B 1 をそれぞれ拒否する検査を追加した。
+Release / Debug とも、P2 checker を含む限定回帰は 24/24 通過した。
+既存の fps 55 以上、drop rate 2% 以下、seek p95 / observed max の閾値は変更していない。
+
+### 12.3 [事実] 5 秒 warmup + 15 秒 measurement の単一 smoke
+
+RTX 4090、H.264 / HEVC 各 3600 frame、seed 20260808、fence backend で 1 process だけ
+実行した。formal 3 run x 60 秒は P2-D4A では実行していない。
+
+- required frame 900、source coverage true
+- first measurement output frame 0
+- scheduled 900、displayed 897、deadline drop 3
+- measurement missing pair 0、EOF A 0、EOF B 0
+- QPC elapsed 15.0125577 秒
+- effective fps 59.7499785、drop rate 0.0033333（いずれも smoke の診断値）
+
+### 12.4 [exit] D4B へ進めるが、P2 の最終判定はまだ更新しない
+
+P2-D4A の source coverage 修正と短縮経路確認は成立したため、D4B の正式 matrix
+再実行へ進める。P2-D4A の smoke 値を P2 の合否根拠には使わない。
+`P2-D4-1` の clean worktree で formal Playback / Seek を再実行し、その raw から
+集計するまでは、P2-D2 の `p2_pass = false` が最後の正式判定である。

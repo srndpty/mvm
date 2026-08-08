@@ -1125,6 +1125,31 @@ void testOutputScheduler() {
     check(skipped.due, "deadline到達でscheduleする");
     checkEq(skipped.output.outputFrameNumber, 2, "missしたdeadline後のexact output frame");
     checkEq(skipped.skippedDeadlineCount, 2, "missしたdeadlineを個別に数える");
+
+    // warmupでschedulerを進めても、測定開始時のstartでsource frame 0へ戻る。
+    scheduler.takeDue(12050);
+    constexpr long long measurementStart = 500000;
+    constexpr long long frequency = 60000;
+    constexpr long long measurementEnd = measurementStart + frequency * 60;
+    scheduler.start(measurementStart, frequency);
+    const auto resetFirst = scheduler.takeDueBefore(measurementStart, measurementEnd);
+    check(resetFirst.due, "測定開始slotをscheduleする");
+    checkEq(resetFirst.output.outputFrameNumber, 0, "測定開始後の最初のoutputはframe 0");
+
+    scheduler.start(measurementStart, frequency);
+    const auto last = scheduler.takeDueBefore(measurementEnd - 1, measurementEnd);
+    check(last.due, "半開区間の最終slotはscheduleする");
+    checkEq(last.output.outputFrameNumber, 3599, "60秒区間の最終outputはframe 3599");
+    checkEq(last.skippedDeadlineCount + 1, 3600, "skipを含むslot総数は3600");
+    check(!scheduler.takeDueBefore(measurementEnd, measurementEnd).due,
+          "t == endではframe 3600をscheduleしない");
+    checkEq(scheduler.closeBefore(measurementEnd), 0, "閉じた区間に追加slotは無い");
+
+    scheduler.start(measurementStart, frequency);
+    const auto first = scheduler.takeDueBefore(measurementStart, measurementEnd);
+    const long long remaining = scheduler.closeBefore(measurementEnd);
+    checkEq((first.due ? 1LL : 0LL) + first.skippedDeadlineCount + remaining, 3600,
+            "途中終了でも半開区間のslot総数は3600以下で固定する");
     check(
         OutputScheduler60Hz::classifyDeadline(PairResult::MissingA, CompositionResult::Accepted) ==
             OutputDropReason::MissingSourceA,

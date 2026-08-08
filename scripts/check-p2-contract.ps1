@@ -43,7 +43,7 @@ try {
 }
 
 Require-Equal (Require-Property $raw 'schema') 'mvm-p2-formal-1' 'schema'
-Require-Equal (Require-Property $raw 'formal_contract_version') 'P2-D1-1' 'formal_contract_version'
+Require-Equal (Require-Property $raw 'formal_contract_version') 'P2-D4-1' 'formal_contract_version'
 Require-Equal (Require-Property $raw 'mode') $Mode.ToLowerInvariant() 'mode'
 Require-Equal (Require-Property $raw 'process_exit_code') 0 'JSON process_exit_code'
 Require-Equal $ProcessExitCode 0 '実process exit code'
@@ -84,6 +84,19 @@ Require-Equal (Require-Property $raw 'teardown_success') $true 'teardown_success
 Require-Equal (Require-Property $raw 'final_report_written_after_teardown') $true 'final_report_written_after_teardown'
 
 if ($Mode -eq 'Playback') {
+    $sourceAFrames = Require-Property $raw 'source_a_frame_count'
+    $sourceBFrames = Require-Property $raw 'source_b_frame_count'
+    $requiredFrames = Require-Property $raw 'required_measurement_frame_count'
+    Require-Equal (Require-Property $raw 'source_coverage_ok') $true 'source_coverage_ok'
+    if (-not $DryRun) {
+        Require-Equal $requiredFrames 3600 'required_measurement_frame_count'
+        if ($null -ne $sourceAFrames -and [long]$sourceAFrames -lt 3600) {
+            Add-Failure "source_a_frame_countは3600以上が必要です (actual=$sourceAFrames)"
+        }
+        if ($null -ne $sourceBFrames -and [long]$sourceBFrames -lt 3600) {
+            Add-Failure "source_b_frame_countは3600以上が必要です (actual=$sourceBFrames)"
+        }
+    }
     $scheduled = Require-Property $raw 'measurement_scheduled_output_count'
     $displayed = Require-Property $raw 'measurement_displayed_composition_count'
     $dropped = Require-Property $raw 'measurement_dropped_output_count'
@@ -118,10 +131,23 @@ if ($Mode -eq 'Playback') {
     if ($null -ne $clears -and $null -ne $displayed) {
         Require-Equal ([long]$clears) ([long]$displayed) 'logical clear == displayed'
     }
+    Require-Zero $raw 'measurement_missing_pair_count'
+    Require-Zero $raw 'measurement_source_a_eof_count'
+    Require-Zero $raw 'measurement_source_b_eof_count'
+    Require-Zero $raw 'measurement_drop_missing_source_a'
+    Require-Zero $raw 'measurement_drop_missing_source_b'
+    Require-Zero $raw 'measurement_drop_missing_both'
+    Require-Zero $raw 'measurement_drop_stale_generation'
+    Require-Zero $raw 'measurement_drop_future_generation'
+    Require-Zero $raw 'measurement_drop_stale_composition_epoch'
+    Require-Zero $raw 'measurement_drop_render_failure'
     Require-Zero $raw 'measurement_untracked_submission_count'
     Require-Zero $raw 'measurement_completion_poll_failure_count'
     Require-Zero $raw 'measurement_partial_gpu_issue_failure_count'
     if (-not $DryRun) {
+        Require-Equal $scheduled 3600 'measurement_scheduled_output_count'
+        Require-Equal (Require-Property $raw 'measurement_first_output_frame') 0 `
+            'measurement_first_output_frame'
         $fps = Require-Property $raw 'effective_fps'
         $dropRate = Require-Property $raw 'drop_rate'
         if ($null -ne $fps -and [double]$fps -lt 55) {

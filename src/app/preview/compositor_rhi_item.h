@@ -38,6 +38,9 @@ struct CompositorMeasurementCounters {
     long long scheduled = 0;
     long long displayed = 0;
     long long dropped = 0;
+    long long missingPair = 0;
+    long long sourceAEof = 0;
+    long long sourceBEof = 0;
     long long dropSchedulerDeadline = 0;
     long long dropMissingSourceA = 0;
     long long dropMissingSourceB = 0;
@@ -89,6 +92,8 @@ struct CompositorSpikeState {
     std::atomic<long long> droppedOutputCount{0};
     std::atomic<long long> schedulerDeadlineDropCount{0};
     std::atomic<long long> missingPairDropCount{0};
+    std::atomic<long long> sourceAEofCount{0};
+    std::atomic<long long> sourceBEofCount{0};
     std::atomic<long long> missingSourceADropCount{0};
     std::atomic<long long> missingSourceBDropCount{0};
     std::atomic<long long> missingBothDropCount{0};
@@ -124,10 +129,16 @@ struct CompositorSpikeState {
 
     // render threadが境界snapshotを作る。これによりwarmup中のGPU commandを
     // measurementへ混ぜず、全counterを同じ区間で差分化する。
+    std::atomic<bool> measurementResetRequested{false};
+    std::atomic<bool> measurementResetCaptured{false};
     std::atomic<bool> measurementStartRequested{false};
     std::atomic<bool> measurementStartCaptured{false};
     std::atomic<bool> measurementStopRequested{false};
     std::atomic<bool> measurementStopCaptured{false};
+    std::atomic<long long> measurementDurationQpc{0};
+    std::atomic<long long> measurementEndQpc{0};
+    std::atomic<bool> measurementIntervalActive{false};
+    std::atomic<long long> measurementFirstOutputFrame{-1};
     std::mutex measurementMutex;
     CompositorMeasurementCounters measurementStart;
     CompositorMeasurementCounters measurementStop;

@@ -42,13 +42,15 @@ Q_SIGNALS:
 
 private:
     enum class Phase { WaitDevice, MarkerStart, MarkerWait, OutputPreflightWait, Warmup,
-                       MeasureStartWait, Measure, MeasureStopWait, SeekStart, SeekWait,
-                       LayoutStart, LayoutWait, ShutdownWait, Done };
+                       MeasurementResetStart, MeasurementResetWait, MeasureStartWait, Measure,
+                       MeasureStopWait, SeekStart, SeekWait, LayoutStart, LayoutWait,
+                       ShutdownWait, Done };
     void tick();
     bool startWorkers();
     void startMarkerProbe();
     void pollMarkerProbe();
     bool resetAfterMarkerPreflight();
+    bool resetPlaybackForMeasurement();
     void startSeek();
     void pollSeek();
     void startLayoutChange();
@@ -72,6 +74,10 @@ private:
     gpu::SourceDecoderSnapshot measurementStopA_;
     gpu::SourceDecoderSnapshot measurementStopB_;
     double measureElapsedSeconds_ = 0;
+    long long sourceAFrameCount_ = -1;
+    long long sourceBFrameCount_ = -1;
+    long long requiredMeasurementFrameCount_ = 0;
+    bool sourceCoverageOk_ = false;
     std::vector<long long> seekTargets_;
     const std::vector<long long> markerTargets_{0, 1, 137, 299, 600, 1799, 3599};
     size_t markerIndex_ = 0;

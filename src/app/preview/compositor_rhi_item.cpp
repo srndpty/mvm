@@ -77,7 +77,7 @@ protected:
         if (!state_->deviceReady.load(std::memory_order_acquire) ||
             state_->fatal.load(std::memory_order_acquire))
             return;
-        if (captureMeasurementBoundary())
+        if (captureMeasurementBoundary(callbackBegin))
             return;
         state_->presentCallbackCount.fetch_add(1, std::memory_order_relaxed);
         if (state_->diagnosticTimingEnabled.load(std::memory_order_acquire)) {
@@ -111,7 +111,12 @@ protected:
                 scheduler_.start(now, static_cast<long long>(gpu::qpcFrequency()));
                 schedulerStarted_ = true;
             }
-            const gpu::OutputScheduleDecision decision = scheduler_.takeDue(now);
+            const long long measurementEnd =
+                state_->measurementEndQpc.load(std::memory_order_acquire);
+            const gpu::OutputScheduleDecision decision =
+                state_->measurementIntervalActive.load(std::memory_order_acquire)
+                    ? scheduler_.takeDueBefore(now, measurementEnd)
+                    : scheduler_.takeDue(now);
             if (decision.due) {
                 output = decision.output.outputFrameNumber;
                 schedulerDeadlineQpc = decision.output.deadlineQpc;
@@ -136,6 +141,8 @@ protected:
             gpu::DecodedGpuFrame sourceFrame;
             if (!a->buffer().takeExact(output, sourceFrame)) {
                 state_->missingPairDropCount.fetch_add(1, std::memory_order_relaxed);
+                if (state_->measurementIntervalActive.load(std::memory_order_acquire) && a->eof())
+                    state_->sourceAEofCount.fetch_add(1, std::memory_order_relaxed);
                 noteDrop(gpu::OutputDropReason::MissingSourceA);
                 return;
             }
@@ -146,6 +153,12 @@ protected:
             const gpu::PairResult paired = pairer.tryPair(output, frame);
             if (paired != gpu::PairResult::Paired) {
                 state_->missingPairDropCount.fetch_add(1, std::memory_order_relaxed);
+                if (state_->measurementIntervalActive.load(std::memory_order_acquire)) {
+                    if (a->eof())
+                        state_->sourceAEofCount.fetch_add(1, std::memory_order_relaxed);
+                    if (b->eof())
+                        state_->sourceBEofCount.fetch_add(1, std::memory_order_relaxed);
+                }
                 noteDrop(gpu::OutputScheduler60Hz::classifyDeadline(
                     paired, gpu::CompositionResult::Accepted));
                 return;
@@ -208,6 +221,11 @@ protected:
         const long long displayedQpc = gpu::qpcTicks();
         state_->ledger.record(frame, displayedQpc, pairReadyQpc, submissionQpc);
         state_->displayedCompositionCount.fetch_add(1, std::memory_order_relaxed);
+        if (state_->measurementIntervalActive.load(std::memory_order_acquire)) {
+            long long unset = -1;
+            state_->measurementFirstOutputFrame.compare_exchange_strong(unset, output,
+                                                                        std::memory_order_relaxed);
+        }
         if (diagnostic && state_->diagnosticTimingEnabled.load(std::memory_order_acquire)) {
             CompositorDiagnosticRenderSample sample;
             sample.schedulerToPairUs = gpu::qpcUsBetween(schedulerDeadlineQpc, pairReadyQpc);
@@ -236,6 +254,9 @@ private:
                 state_->scheduledOutputCount.load(std::memory_order_relaxed),
                 state_->displayedCompositionCount.load(std::memory_order_relaxed),
                 state_->droppedOutputCount.load(std::memory_order_relaxed),
+                state_->missingPairDropCount.load(std::memory_order_relaxed),
+                state_->sourceAEofCount.load(std::memory_order_relaxed),
+                state_->sourceBEofCount.load(std::memory_order_relaxed),
                 state_->schedulerDeadlineDropCount.load(std::memory_order_relaxed),
                 state_->missingSourceADropCount.load(std::memory_order_relaxed),
                 state_->missingSourceBDropCount.load(std::memory_order_relaxed),
@@ -251,19 +272,44 @@ private:
                 c.untrackedSubmissionCount};
     }
 
-    bool captureMeasurementBoundary() {
-        if (state_->measurementStopRequested.exchange(false, std::memory_order_acq_rel)) {
+    bool captureMeasurementBoundary(long long callbackBegin) {
+        if (state_->measurementResetRequested.exchange(false, std::memory_order_acq_rel)) {
+            state_->playbackSchedulerEnabled.store(false, std::memory_order_release);
+            state_->requestedOutput.store(-1, std::memory_order_release);
+            state_->measurementIntervalActive.store(false, std::memory_order_release);
+            state_->measurementResetCaptured.store(true, std::memory_order_release);
+            return true;
+        }
+        const bool intervalEnded =
+            state_->measurementIntervalActive.load(std::memory_order_acquire) &&
+            callbackBegin >= state_->measurementEndQpc.load(std::memory_order_acquire);
+        const bool stopRequested =
+            state_->measurementStopRequested.exchange(false, std::memory_order_acq_rel);
+        if (intervalEnded || stopRequested) {
+            if (state_->measurementIntervalActive.exchange(false, std::memory_order_acq_rel)) {
+                const long long closed = scheduler_.closeBefore(
+                    state_->measurementEndQpc.load(std::memory_order_acquire));
+                state_->scheduledOutputCount.fetch_add(closed, std::memory_order_relaxed);
+                noteDrop(gpu::OutputDropReason::SchedulerDeadline, closed);
+            }
             state_->playbackSchedulerEnabled.store(false, std::memory_order_release);
             state_->diagnosticTimingEnabled.store(false, std::memory_order_release);
             state_->diagnosticLockTiming = state_->device.lock().endDiagnostics();
             {
                 std::lock_guard<std::mutex> lock(state_->measurementMutex);
                 state_->measurementStop = measurementCounters();
+                state_->measurementStop.qpc = callbackBegin;
             }
             state_->measurementStopCaptured.store(true, std::memory_order_release);
             return true;
         }
         if (state_->measurementStartRequested.exchange(false, std::memory_order_acq_rel)) {
+            const long long duration =
+                state_->measurementDurationQpc.load(std::memory_order_acquire);
+            scheduler_.start(callbackBegin, static_cast<long long>(gpu::qpcFrequency()));
+            schedulerStarted_ = true;
+            state_->measurementEndQpc.store(callbackBegin + duration, std::memory_order_release);
+            state_->measurementIntervalActive.store(true, std::memory_order_release);
             if (state_->diagnosticCase.load(std::memory_order_acquire) !=
                 CompositorDiagnosticCase::None) {
                 {
@@ -271,14 +317,16 @@ private:
                     state_->diagnosticRenderSamples.clear();
                     state_->diagnosticRenderCallbackIntervalUs.clear();
                 }
-                previousDiagnosticCallbackQpc_ = gpu::qpcTicks();
+                previousDiagnosticCallbackQpc_ = callbackBegin;
                 state_->device.lock().beginDiagnostics();
                 state_->diagnosticTimingEnabled.store(true, std::memory_order_release);
             }
             {
                 std::lock_guard<std::mutex> lock(state_->measurementMutex);
                 state_->measurementStart = measurementCounters();
+                state_->measurementStart.qpc = callbackBegin;
             }
+            state_->playbackSchedulerEnabled.store(true, std::memory_order_release);
             state_->measurementStartCaptured.store(true, std::memory_order_release);
         }
         return false;

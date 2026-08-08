@@ -84,6 +84,9 @@ CompositorMeasurementCounters subtract(const CompositorMeasurementCounters& end,
     MVM_DELTA(scheduled);
     MVM_DELTA(displayed);
     MVM_DELTA(dropped);
+    MVM_DELTA(missingPair);
+    MVM_DELTA(sourceAEof);
+    MVM_DELTA(sourceBEof);
     MVM_DELTA(dropSchedulerDeadline);
     MVM_DELTA(dropMissingSourceA);
     MVM_DELTA(dropMissingSourceB);
@@ -141,6 +144,16 @@ bool CompositorSpikeController::startWorkers() {
     }
     const auto a = workerA_->snapshot();
     const auto b = workerB_ ? workerB_->snapshot() : gpu::SourceDecoderSnapshot{};
+    sourceAFrameCount_ = a.info.frameCount;
+    sourceBFrameCount_ = b.info.frameCount;
+    requiredMeasurementFrameCount_ = static_cast<long long>(config_.measureSeconds) * 60;
+    sourceCoverageOk_ = sourceAFrameCount_ >= requiredMeasurementFrameCount_ &&
+                        (!workerB_ || sourceBFrameCount_ >= requiredMeasurementFrameCount_);
+    if (config_.formalPreflight && config_.mode == CompositorMode::Playback &&
+        config_.diagnosticCase == CompositorDiagnosticCase::None && !sourceCoverageOk_) {
+        beginShutdown(QStringLiteral("Playback測定区間をsourceがcoverageしていません"), true);
+        return false;
+    }
     if (a.decodeDevicePointer != state_->nativeDevicePointer.load() ||
         (workerB_ && b.decodeDevicePointer != state_->nativeDevicePointer.load()) ||
         !a.adapter.sameAdapterAs(state_->qtAdapter) ||
@@ -295,6 +308,45 @@ bool CompositorSpikeController::resetAfterMarkerPreflight() {
     return true;
 }
 
+bool CompositorSpikeController::resetPlaybackForMeasurement() {
+    state_->playbackSchedulerEnabled.store(false, std::memory_order_release);
+    state_->requestedOutput.store(-1, std::memory_order_release);
+    state_->measurementIntervalActive.store(false, std::memory_order_release);
+    if (config_.diagnosticCase == CompositorDiagnosticCase::FixedTextures)
+        return true;
+
+    workerA_->pause();
+    if (workerB_)
+        workerB_->pause();
+    double elapsed = 0.0;
+    std::string err;
+    if (!workerA_->seekBlocking(0, elapsed, err) ||
+        (workerB_ && !workerB_->seekBlocking(0, elapsed, err))) {
+        beginShutdown(QString::fromStdString(err), true);
+        return false;
+    }
+    const auto a = workerA_->snapshot();
+    const auto b = workerB_ ? workerB_->snapshot() : gpu::SourceDecoderSnapshot{};
+    state_->coordinator.setSourceGeneration({1}, a.sourceGeneration);
+    if (workerB_)
+        state_->coordinator.setSourceGeneration({2}, b.sourceGeneration);
+
+    gpu::SourceFrameIdentity frontA;
+    gpu::SourceFrameIdentity frontB;
+    const bool validA = workerA_->buffer().peekFrontIdentity(frontA) &&
+                        frontA.frameNumber == 0 && frontA.sourceGeneration == a.sourceGeneration;
+    const bool validB = !workerB_ ||
+                        (workerB_->buffer().peekFrontIdentity(frontB) &&
+                         frontB.frameNumber == 0 &&
+                         frontB.sourceGeneration == b.sourceGeneration);
+    if (!validA || !validB) {
+        beginShutdown(QStringLiteral("測定開始reset後のsource buffer先頭がframe 0ではありません"),
+                      true);
+        return false;
+    }
+    return true;
+}
+
 void CompositorSpikeController::tick() {
     if (!item_ || phase_ == Phase::Done)
         return;
@@ -330,8 +382,28 @@ void CompositorSpikeController::tick() {
         }
     } else if (phase_ == Phase::Warmup &&
                phaseTimer_.elapsed() >= config_.warmupSeconds * 1000) {
+        state_->playbackSchedulerEnabled.store(false, std::memory_order_release);
+        phase_ = Phase::MeasurementResetStart;
+    } else if (phase_ == Phase::MeasurementResetStart) {
+        state_->measurementResetCaptured.store(false, std::memory_order_release);
+        state_->measurementResetRequested.store(true, std::memory_order_release);
+        phase_ = Phase::MeasurementResetWait;
+        item_->update();
+    } else if (phase_ == Phase::MeasurementResetWait) {
+        if (!state_->measurementResetCaptured.load(std::memory_order_acquire)) {
+            item_->update();
+            return;
+        }
+        if (!resetPlaybackForMeasurement())
+            return;
+        state_->measurementFirstOutputFrame.store(-1, std::memory_order_release);
+        state_->measurementDurationQpc.store(
+            static_cast<long long>(gpu::qpcFrequency()) * config_.measureSeconds,
+            std::memory_order_release);
         state_->measurementStartRequested.store(true, std::memory_order_release);
         state_->measurementStartCaptured.store(false, std::memory_order_release);
+        state_->measurementStopRequested.store(false, std::memory_order_release);
+        state_->measurementStopCaptured.store(false, std::memory_order_release);
         phase_ = Phase::MeasureStartWait;
         item_->update();
     } else if (phase_ == Phase::MeasureStartWait) {
@@ -340,6 +412,12 @@ void CompositorSpikeController::tick() {
             measurementStart_ = state_->measurementStart;
             measurementStartA_ = workerA_ ? workerA_->snapshot() : gpu::SourceDecoderSnapshot{};
             measurementStartB_ = workerB_ ? workerB_->snapshot() : gpu::SourceDecoderSnapshot{};
+            if (config_.diagnosticCase != CompositorDiagnosticCase::FixedTextures) {
+                if (workerA_)
+                    workerA_->play();
+                if (workerB_)
+                    workerB_->play();
+            }
             phase_ = Phase::Measure;
         } else {
             item_->update();
@@ -526,6 +604,9 @@ bool CompositorSpikeController::writeMetrics() {
         measurement.scheduled = state_->scheduledOutputCount.load();
         measurement.displayed = state_->displayedCompositionCount.load();
         measurement.dropped = state_->droppedOutputCount.load();
+        measurement.missingPair = state_->missingPairDropCount.load();
+        measurement.sourceAEof = state_->sourceAEofCount.load();
+        measurement.sourceBEof = state_->sourceBEofCount.load();
         measurement.dropSchedulerDeadline = state_->schedulerDeadlineDropCount.load();
         measurement.dropMissingSourceA = state_->missingSourceADropCount.load();
         measurement.dropMissingSourceB = state_->missingSourceBDropCount.load();
@@ -607,7 +688,7 @@ bool CompositorSpikeController::writeMetrics() {
                                                                     : QStringLiteral("layout");
     QJsonObject o{{"schema", config_.diagnosticTiming ? "mvm-p2-diagnostic-1"
                                                        : "mvm-p2-formal-1"},
-                  {"formal_contract_version", "P2-D1-1"},
+                  {"formal_contract_version", "P2-D4-1"},
                   {"mode", mode},
                   {"formal_preflight", config_.formalPreflight},
                   {"process_exit_code", exitCode_},
@@ -615,6 +696,10 @@ bool CompositorSpikeController::writeMetrics() {
                   {"configured_warmup_seconds", config_.warmupSeconds},
                   {"configured_measure_seconds", config_.measureSeconds},
                   {"configured_seek_count", config_.seekCount},
+                  {"source_a_frame_count", sourceAFrameCount_},
+                  {"source_b_frame_count", sourceBFrameCount_},
+                  {"required_measurement_frame_count", requiredMeasurementFrameCount_},
+                  {"source_coverage_ok", sourceCoverageOk_},
                   {"measurement_elapsed_seconds", measureElapsedSeconds_},
                   {"same_device_a", a.decodeDevicePointer == state_->nativeDevicePointer.load()},
                   {"same_device_b", b.decodeDevicePointer == state_->nativeDevicePointer.load()},
@@ -641,6 +726,11 @@ bool CompositorSpikeController::writeMetrics() {
                   {"measurement_scheduled_output_count", measurement.scheduled},
                   {"measurement_displayed_composition_count", measurement.displayed},
                   {"measurement_dropped_output_count", measurement.dropped},
+                  {"measurement_missing_pair_count", measurement.missingPair},
+                  {"measurement_source_a_eof_count", measurement.sourceAEof},
+                  {"measurement_source_b_eof_count", measurement.sourceBEof},
+                  {"measurement_first_output_frame",
+                   state_->measurementFirstOutputFrame.load()},
                   {"measurement_drop_scheduler_deadline",
                    measurement.dropSchedulerDeadline},
                   {"measurement_drop_missing_source_a", measurement.dropMissingSourceA},
