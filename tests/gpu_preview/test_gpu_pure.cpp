@@ -1089,13 +1089,16 @@ void testCompositionDisplayLedger() {
 
     const auto before = ledger.baseline();
     checkEq(static_cast<long long>(before), 0, "初期baseline");
-    ledger.record(frame, 100);
+    ledger.record(frame, 100, 80, 90);
     CompositionDisplayExpectation expected{10, {9}, {identityOf(a), identityOf(b)}};
     CompositionDisplayRecord found;
     check(ledger.findAfter(before, expected, found), "baseline後の完全identity一致");
     check(ledger.findEpochAfter(before, CompositionEpoch{9}, found), "baseline後の要求epoch一致");
     check(!ledger.findEpochAfter(before, CompositionEpoch{8}, found), "old epochを拒否");
     checkEq(static_cast<long long>(found.displaySequence), 1, "sequenceは単調増加");
+    checkEq(found.pairReadyQpc, 80, "pair-ready QPCを保持");
+    checkEq(found.submissionQpc, 90, "submission QPCを保持");
+    checkEq(found.displayedQpc, 100, "display QPCを保持");
 
     auto wrong = expected;
     wrong.sources[1].sourceGeneration = {99};

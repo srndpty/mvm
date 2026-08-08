@@ -65,6 +65,8 @@ protected:
     void synchronize(QQuickRhiItem*) override {}
 
     void render(QRhiCommandBuffer* cb) override {
+        gpu::D3D11LockRoleScope lockRole(gpu::D3D11LockRole::Render);
+        const long long callbackBegin = gpu::qpcTicks();
         // P1と同じくrender threadから次のframeを要求する。GUI timerだけでは
         // scene graph requestがcoalesceされ、60Hz output deadlineを取りこぼす。
         update();
@@ -78,6 +80,14 @@ protected:
         if (captureMeasurementBoundary())
             return;
         state_->presentCallbackCount.fetch_add(1, std::memory_order_relaxed);
+        if (state_->diagnosticTimingEnabled.load(std::memory_order_acquire)) {
+            if (previousDiagnosticCallbackQpc_ != 0) {
+                std::lock_guard<std::mutex> lock(state_->diagnosticTimingMutex);
+                state_->diagnosticRenderCallbackIntervalUs.push_back(
+                    gpu::qpcUsBetween(previousDiagnosticCallbackQpc_, callbackBegin));
+            }
+            previousDiagnosticCallbackQpc_ = callbackBegin;
+        }
         processMarkerProbe();
         if (state_->testDeviceChange.exchange(false)) {
             fail("test fault: QRhi D3D11 device change");
@@ -91,6 +101,9 @@ protected:
             a = state_->workerA;
             b = state_->workerB;
         }
+        const CompositorDiagnosticCase diagnosticCase =
+            state_->diagnosticCase.load(std::memory_order_acquire);
+        long long schedulerDeadlineQpc = callbackBegin;
         long long output = state_->requestedOutput.exchange(-1);
         if (output < 0 && state_->playbackSchedulerEnabled.load(std::memory_order_acquire)) {
             const long long now = gpu::qpcTicks();
@@ -101,31 +114,50 @@ protected:
             const gpu::OutputScheduleDecision decision = scheduler_.takeDue(now);
             if (decision.due) {
                 output = decision.output.outputFrameNumber;
+                schedulerDeadlineQpc = decision.output.deadlineQpc;
                 state_->scheduledOutputCount.fetch_add(decision.skippedDeadlineCount + 1,
                                                        std::memory_order_relaxed);
                 noteDrop(gpu::OutputDropReason::SchedulerDeadline, decision.skippedDeadlineCount);
             }
         }
-        if (!a || !b || output < 0) {
+        const bool needsB = diagnosticCase != CompositorDiagnosticCase::SingleDecode;
+        if (!a || (needsB && !b) || output < 0) {
             state_->repeatedPresentCount.fetch_add(1, std::memory_order_relaxed);
             return;
         }
 
-        gpu::ExactFramePairer pairer(a->buffer(), b->buffer(), state_->coordinator);
         gpu::ComposedFrame frame;
-        const gpu::PairResult paired = pairer.tryPair(output, frame);
-        if (paired != gpu::PairResult::Paired) {
-            state_->missingPairDropCount.fetch_add(1, std::memory_order_relaxed);
-            noteDrop(gpu::OutputScheduler60Hz::classifyDeadline(paired,
-                                                                gpu::CompositionResult::Accepted));
-            return;
+        const long long pairBegin = gpu::qpcTicks();
+        if (diagnosticCase == CompositorDiagnosticCase::FixedTextures) {
+            frame = state_->diagnosticFixedFrame;
+            frame.outputFrameNumber = output;
+        } else if (diagnosticCase == CompositorDiagnosticCase::SingleDecode) {
+            a->buffer().discardBefore(output);
+            gpu::DecodedGpuFrame sourceFrame;
+            if (!a->buffer().takeExact(output, sourceFrame)) {
+                state_->missingPairDropCount.fetch_add(1, std::memory_order_relaxed);
+                noteDrop(gpu::OutputDropReason::MissingSourceA);
+                return;
+            }
+            frame.outputFrameNumber = output;
+            frame.layers.push_back({std::move(sourceFrame), {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0f, 0});
+        } else {
+            gpu::ExactFramePairer pairer(a->buffer(), b->buffer(), state_->coordinator);
+            const gpu::PairResult paired = pairer.tryPair(output, frame);
+            if (paired != gpu::PairResult::Paired) {
+                state_->missingPairDropCount.fetch_add(1, std::memory_order_relaxed);
+                noteDrop(gpu::OutputScheduler60Hz::classifyDeadline(
+                    paired, gpu::CompositionResult::Accepted));
+                return;
+            }
+            const auto validation = state_->coordinator.validateForDisplay(frame);
+            if (validation != gpu::CompositionResult::Accepted) {
+                noteDrop(gpu::OutputScheduler60Hz::classifyDeadline(gpu::PairResult::Paired,
+                                                                    validation));
+                return;
+            }
         }
-        const auto validation = state_->coordinator.validateForDisplay(frame);
-        if (validation != gpu::CompositionResult::Accepted) {
-            noteDrop(
-                gpu::OutputScheduler60Hz::classifyDeadline(gpu::PairResult::Paired, validation));
-            return;
-        }
+        const long long pairReadyQpc = gpu::qpcTicks();
         std::string err;
         if (!ensureRtv(colorTexture(), err)) {
             state_->renderFailureCount.fetch_add(1, std::memory_order_relaxed);
@@ -138,13 +170,22 @@ protected:
         cb->beginPass(renderTarget(), Qt::black, {1.0f, 0}, nullptr,
                       QRhiCommandBuffer::ExternalContent);
         state_->logicalClearCount.fetch_add(1, std::memory_order_relaxed);
+        const long long externalBegin = gpu::qpcTicks();
         cb->beginExternal();
         const QSize size = colorTexture()->pixelSize();
         state_->actualOutputWidth.store(size.width(), std::memory_order_relaxed);
         state_->actualOutputHeight.store(size.height(), std::memory_order_relaxed);
+        gpu::GpuCompositorStageTiming compositorTiming;
+        const bool pairOnly = diagnosticCase == CompositorDiagnosticCase::PairOnly;
+        const bool diagnostic = diagnosticCase != CompositorDiagnosticCase::None;
         const bool ok =
-            state_->compositor.composeToTarget(frame, {rtv_, size.width(), size.height()}, err);
+            pairOnly ||
+            (diagnostic ? state_->compositor.composeDiagnosticToTarget(
+                              frame, {rtv_, size.width(), size.height()}, compositorTiming, err)
+                        : state_->compositor.composeToTarget(
+                              frame, {rtv_, size.width(), size.height()}, err));
         cb->endExternal();
+        const long long externalEnd = gpu::qpcTicks();
         cb->endPass();
         if (!ok) {
             state_->renderFailureCount.fetch_add(1, std::memory_order_relaxed);
@@ -153,15 +194,34 @@ protected:
                 fail(state_->compositor.fatalReason());
             return;
         }
-        if (!state_->actualTargetProbeStarted.exchange(true, std::memory_order_acq_rel)) {
+        const long long submissionQpc = gpu::qpcTicks();
+        if (!diagnostic &&
+            !state_->actualTargetProbeStarted.exchange(true, std::memory_order_acq_rel)) {
             runActualTargetProbe(frame, size);
             // 4点すべてのreadback・比較とmismatch確定後にだけ完了を公開する。
             state_->actualTargetProbeDone.store(true, std::memory_order_release);
         }
-        a->buffer().noteDisplayed(output);
-        b->buffer().noteDisplayed(output);
-        state_->ledger.record(frame, gpu::qpcTicks());
+        if (diagnosticCase != CompositorDiagnosticCase::FixedTextures)
+            a->buffer().noteDisplayed(output);
+        if (b && diagnosticCase != CompositorDiagnosticCase::FixedTextures)
+            b->buffer().noteDisplayed(output);
+        const long long displayedQpc = gpu::qpcTicks();
+        state_->ledger.record(frame, displayedQpc, pairReadyQpc, submissionQpc);
         state_->displayedCompositionCount.fetch_add(1, std::memory_order_relaxed);
+        if (diagnostic && state_->diagnosticTimingEnabled.load(std::memory_order_acquire)) {
+            CompositorDiagnosticRenderSample sample;
+            sample.schedulerToPairUs = gpu::qpcUsBetween(schedulerDeadlineQpc, pairReadyQpc);
+            sample.pairUs = gpu::qpcUsBetween(pairBegin, pairReadyQpc);
+            sample.compositionPrepareUs = compositorTiming.prepareUs;
+            sample.compositionIssueUs = compositorTiming.issueUs;
+            sample.completionPollUs = compositorTiming.completionPollUs;
+            sample.qtExternalUs = gpu::qpcUsBetween(externalBegin, externalEnd);
+            sample.renderCallbackTotalUs = gpu::qpcUsBetween(callbackBegin, displayedQpc);
+            sample.bufferDepthA = a->buffer().depth();
+            sample.bufferDepthB = b ? b->buffer().depth() : 0;
+            std::lock_guard<std::mutex> lock(state_->diagnosticTimingMutex);
+            state_->diagnosticRenderSamples.push_back(sample);
+        }
     }
 
 private:
@@ -194,6 +254,8 @@ private:
     bool captureMeasurementBoundary() {
         if (state_->measurementStopRequested.exchange(false, std::memory_order_acq_rel)) {
             state_->playbackSchedulerEnabled.store(false, std::memory_order_release);
+            state_->diagnosticTimingEnabled.store(false, std::memory_order_release);
+            state_->diagnosticLockTiming = state_->device.lock().endDiagnostics();
             {
                 std::lock_guard<std::mutex> lock(state_->measurementMutex);
                 state_->measurementStop = measurementCounters();
@@ -202,6 +264,17 @@ private:
             return true;
         }
         if (state_->measurementStartRequested.exchange(false, std::memory_order_acq_rel)) {
+            if (state_->diagnosticCase.load(std::memory_order_acquire) !=
+                CompositorDiagnosticCase::None) {
+                {
+                    std::lock_guard<std::mutex> lock(state_->diagnosticTimingMutex);
+                    state_->diagnosticRenderSamples.clear();
+                    state_->diagnosticRenderCallbackIntervalUs.clear();
+                }
+                previousDiagnosticCallbackQpc_ = gpu::qpcTicks();
+                state_->device.lock().beginDiagnostics();
+                state_->diagnosticTimingEnabled.store(true, std::memory_order_release);
+            }
             {
                 std::lock_guard<std::mutex> lock(state_->measurementMutex);
                 state_->measurementStart = measurementCounters();
@@ -409,6 +482,7 @@ private:
     ID3D11RenderTargetView* rtv_ = nullptr;
     gpu::OutputScheduler60Hz scheduler_;
     bool schedulerStarted_ = false;
+    long long previousDiagnosticCallbackQpc_ = 0;
 };
 
 } // namespace

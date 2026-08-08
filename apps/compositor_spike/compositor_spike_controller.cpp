@@ -29,6 +29,48 @@ QJsonArray doubles(const std::vector<double>& values) {
     return out;
 }
 
+double nearestRank(const std::vector<double>& sorted, double percentile) {
+    if (sorted.empty())
+        return -1.0;
+    const size_t index = static_cast<size_t>(
+        std::ceil(static_cast<double>(sorted.size()) * percentile) - 1.0);
+    return sorted[std::min(index, sorted.size() - 1)];
+}
+
+QJsonObject distribution(const std::vector<double>& values, const char* valuesField) {
+    std::vector<double> sorted = values;
+    std::sort(sorted.begin(), sorted.end());
+    double sum = 0.0;
+    for (double value : values)
+        sum += value;
+    QJsonObject result{{"count", static_cast<qint64>(values.size())},
+                       {"mean", values.empty()
+                                    ? -1.0
+                                    : sum / static_cast<double>(values.size())},
+                       {"p50", nearestRank(sorted, 0.50)},
+                       {"p95", nearestRank(sorted, 0.95)},
+                       {"p99", nearestRank(sorted, 0.99)},
+                       {"max", sorted.empty() ? -1.0 : sorted.back()}};
+    result.insert(valuesField, doubles(values));
+    return result;
+}
+
+QString diagnosticCaseName(CompositorDiagnosticCase value) {
+    switch (value) {
+    case CompositorDiagnosticCase::SingleDecode:
+        return QStringLiteral("a");
+    case CompositorDiagnosticCase::PairOnly:
+        return QStringLiteral("b");
+    case CompositorDiagnosticCase::FixedTextures:
+        return QStringLiteral("c");
+    case CompositorDiagnosticCase::FullPath:
+        return QStringLiteral("d");
+    case CompositorDiagnosticCase::None:
+        return QStringLiteral("none");
+    }
+    return QStringLiteral("none");
+}
+
 CompositorMeasurementCounters subtract(const CompositorMeasurementCounters& end,
                                        const CompositorMeasurementCounters& start) {
     CompositorMeasurementCounters out;
@@ -70,18 +112,22 @@ CompositorSpikeController::CompositorSpikeController(CompositorSpikeConfig confi
 void CompositorSpikeController::attach(CompositorRhiItem* item) {
     item_ = item;
     state_ = item->state();
+    state_->diagnosticCase.store(config_.diagnosticCase, std::memory_order_release);
     phaseTimer_.start();
     timer_.start();
 }
 
 bool CompositorSpikeController::startWorkers() {
+    const bool single = config_.diagnosticCase == CompositorDiagnosticCase::SingleDecode;
+    const bool fixed = config_.diagnosticCase == CompositorDiagnosticCase::FixedTextures;
     workerA_ = std::make_shared<gpu::SourceDecodeWorker>(gpu::SourceId{1}, state_->device,
                                                         state_->readbacks, 16);
-    workerB_ = std::make_shared<gpu::SourceDecodeWorker>(gpu::SourceId{2}, state_->device,
-                                                        state_->readbacks, 16);
+    if (!single)
+        workerB_ = std::make_shared<gpu::SourceDecodeWorker>(gpu::SourceId{2}, state_->device,
+                                                            state_->readbacks, 16);
     std::string err;
     if (!workerA_->start(config_.sourceA.toUtf8().constData(), err) ||
-        !workerB_->start(config_.sourceB.toUtf8().constData(), err)) {
+        (workerB_ && !workerB_->start(config_.sourceB.toUtf8().constData(), err))) {
         beginShutdown(QString::fromStdString(err), true);
         return false;
     }
@@ -89,22 +135,24 @@ bool CompositorSpikeController::startWorkers() {
     double initialAMs = 0;
     double initialBMs = 0;
     if (!workerA_->seekBlocking(0, initialAMs, err) ||
-        !workerB_->seekBlocking(0, initialBMs, err)) {
+        (workerB_ && !workerB_->seekBlocking(0, initialBMs, err))) {
         beginShutdown(QString::fromStdString(err), true);
         return false;
     }
     const auto a = workerA_->snapshot();
-    const auto b = workerB_->snapshot();
+    const auto b = workerB_ ? workerB_->snapshot() : gpu::SourceDecoderSnapshot{};
     if (a.decodeDevicePointer != state_->nativeDevicePointer.load() ||
-        b.decodeDevicePointer != state_->nativeDevicePointer.load() ||
-        !a.adapter.sameAdapterAs(state_->qtAdapter) || !b.adapter.sameAdapterAs(state_->qtAdapter)) {
+        (workerB_ && b.decodeDevicePointer != state_->nativeDevicePointer.load()) ||
+        !a.adapter.sameAdapterAs(state_->qtAdapter) ||
+        (workerB_ && !b.adapter.sameAdapterAs(state_->qtAdapter))) {
         beginShutdown(QStringLiteral("A/B decode texture deviceがQt deviceと一致しません"), true);
         return false;
     }
-    if (state_->coordinator.configure(layoutFor(0),
+    if (!single &&
+        state_->coordinator.configure(layoutFor(0),
                                       {{gpu::SourceId{1}, a.sourceGeneration},
                                        {gpu::SourceId{2}, b.sourceGeneration}}) !=
-        gpu::ConfigureResult::Configured) {
+            gpu::ConfigureResult::Configured) {
         beginShutdown(QStringLiteral("CompositorCoordinatorを初期化できません"), true);
         return false;
     }
@@ -112,6 +160,20 @@ bool CompositorSpikeController::startWorkers() {
         std::lock_guard<std::mutex> lock(state_->workerMutex);
         state_->workerA = workerA_;
         state_->workerB = workerB_;
+    }
+    if (fixed) {
+        gpu::DecodedGpuFrame frameA;
+        gpu::DecodedGpuFrame frameB;
+        if (!workerA_->buffer().takeExact(0, frameA) ||
+            !workerB_->buffer().takeExact(0, frameB)) {
+            beginShutdown(QStringLiteral("fixed texture診断用frameを取得できません"), true);
+            return false;
+        }
+        state_->diagnosticFixedFrame =
+            {0,
+             state_->coordinator.compositionEpoch(),
+             {{std::move(frameA), {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0f, 0},
+              {std::move(frameB), {0.5f, 0.5f, 0.5f, 0.5f}, {0, 0, 1, 1}, 0.75f, 1}}};
     }
     if (config_.testFault == "device_change")
         state_->testDeviceChange.store(true);
@@ -128,14 +190,20 @@ bool CompositorSpikeController::startWorkers() {
         std::uniform_int_distribution<long long> dist(0, limit - 1);
         for (int i = 0; i < config_.seekCount; ++i)
             seekTargets_.push_back(dist(rng));
+        if (config_.diagnosticTiming) {
+            state_->device.lock().beginDiagnostics();
+            seekLockTimingActive_ = true;
+        }
     }
     if (config_.formalPreflight && config_.mode != CompositorMode::Layout) {
         phase_ = Phase::MarkerStart;
     } else if (config_.mode == CompositorMode::Seek) {
         phase_ = Phase::SeekStart;
     } else {
-        workerA_->play();
-        workerB_->play();
+        if (!fixed)
+            workerA_->play();
+        if (workerB_ && !fixed)
+            workerB_->play();
         phase_ = config_.mode == CompositorMode::Layout ? Phase::LayoutStart : Phase::Warmup;
         state_->playbackSchedulerEnabled.store(true, std::memory_order_release);
     }
@@ -270,6 +338,8 @@ void CompositorSpikeController::tick() {
         if (state_->measurementStartCaptured.load(std::memory_order_acquire)) {
             std::lock_guard<std::mutex> lock(state_->measurementMutex);
             measurementStart_ = state_->measurementStart;
+            measurementStartA_ = workerA_ ? workerA_->snapshot() : gpu::SourceDecoderSnapshot{};
+            measurementStartB_ = workerB_ ? workerB_->snapshot() : gpu::SourceDecoderSnapshot{};
             phase_ = Phase::Measure;
         } else {
             item_->update();
@@ -289,6 +359,8 @@ void CompositorSpikeController::tick() {
             }
             measureElapsedSeconds_ =
                 gpu::qpcMsBetween(measurementStart_.qpc, measurementStop_.qpc) / 1000.0;
+            measurementStopA_ = workerA_ ? workerA_->snapshot() : gpu::SourceDecoderSnapshot{};
+            measurementStopB_ = workerB_ ? workerB_->snapshot() : gpu::SourceDecoderSnapshot{};
             beginShutdown(QStringLiteral("playback measurement完了"), false);
         } else {
             item_->update();
@@ -329,12 +401,21 @@ void CompositorSpikeController::startSeek() {
     waitTimer_.restart();
     double aMs = 0, bMs = 0;
     std::string err;
-    if (!workerA_->seekBlocking(target, aMs, err) || !workerB_->seekBlocking(target, bMs, err)) {
+    const long long aBegin = gpu::qpcTicks();
+    const bool aOk = workerA_->seekBlocking(target, aMs, err);
+    const long long aEnd = gpu::qpcTicks();
+    const long long bBegin = gpu::qpcTicks();
+    const bool bOk = aOk && workerB_->seekBlocking(target, bMs, err);
+    const long long bEnd = gpu::qpcTicks();
+    if (!aOk || !bOk) {
         ++seekMismatch_;
         beginShutdown(QString::fromStdString(err), true);
         return;
     }
-    seekDecodeReadyMs_.push_back(gpu::qpcMsBetween(seekRequestStartQpc_, gpu::qpcTicks()));
+    seekAMs_.push_back(gpu::qpcMsBetween(aBegin, aEnd));
+    seekBMs_.push_back(gpu::qpcMsBetween(bBegin, bEnd));
+    seekDecodeReadyQpc_ = bEnd;
+    seekDecodeReadyMs_.push_back(gpu::qpcMsBetween(seekRequestStartQpc_, bEnd));
     const auto a = workerA_->snapshot();
     const auto b = workerB_->snapshot();
     state_->coordinator.setSourceGeneration({1}, a.sourceGeneration);
@@ -351,8 +432,21 @@ void CompositorSpikeController::startSeek() {
 void CompositorSpikeController::pollSeek() {
     gpu::CompositionDisplayRecord found;
     if (state_->ledger.findAfter(waitBaseline_, waitExpectation_, found)) {
-        seekDisplayedMs_.push_back(
-            gpu::qpcMsBetween(seekRequestStartQpc_, found.displayedQpc));
+        if (found.pairReadyQpc <= 0 || found.submissionQpc < found.pairReadyQpc ||
+            found.displayedQpc < found.submissionQpc) {
+            ++seekMismatch_;
+        } else {
+            seekDecodeReadyToPairMs_.push_back(
+                gpu::qpcMsBetween(seekDecodeReadyQpc_, found.pairReadyQpc));
+            seekPairToSubmissionMs_.push_back(
+                gpu::qpcMsBetween(found.pairReadyQpc, found.submissionQpc));
+            seekSubmissionToDisplayMs_.push_back(
+                gpu::qpcMsBetween(found.submissionQpc, found.displayedQpc));
+            seekDecodeReadyToDisplayMs_.push_back(
+                gpu::qpcMsBetween(seekDecodeReadyQpc_, found.displayedQpc));
+            seekDisplayedMs_.push_back(
+                gpu::qpcMsBetween(seekRequestStartQpc_, found.displayedQpc));
+        }
         ++seekIndex_;
         phase_ = Phase::SeekStart;
     } else if (waitTimer_.elapsed() >= config_.displayTimeoutMs) {
@@ -402,6 +496,10 @@ void CompositorSpikeController::beginShutdown(const QString& reason, bool failur
     shutdownReason_ = reason;
     if (failure)
         exitCode_ = 3;
+    if (seekLockTimingActive_) {
+        state_->diagnosticLockTiming = state_->device.lock().endDiagnostics();
+        seekLockTimingActive_ = false;
+    }
     if (workerA_)
         workerA_->stop();
     if (workerB_)
@@ -449,11 +547,66 @@ bool CompositorSpikeController::writeMetrics() {
                            : sorted[static_cast<size_t>(
                                  std::ceil(static_cast<double>(sorted.size()) * 0.95) - 1)];
     const double observedMax = sorted.empty() ? -1.0 : sorted.back();
+    std::vector<double> schedulerToPairUs;
+    std::vector<double> pairUs;
+    std::vector<double> prepareUs;
+    std::vector<double> issueUs;
+    std::vector<double> pollUs;
+    std::vector<double> qtExternalUs;
+    std::vector<double> renderTotalUs;
+    std::vector<double> bufferDepthA;
+    std::vector<double> bufferDepthB;
+    std::vector<double> callbackIntervalUs;
+    {
+        std::lock_guard<std::mutex> lock(state_->diagnosticTimingMutex);
+        callbackIntervalUs = state_->diagnosticRenderCallbackIntervalUs;
+        for (const auto& sample : state_->diagnosticRenderSamples) {
+            schedulerToPairUs.push_back(sample.schedulerToPairUs);
+            pairUs.push_back(sample.pairUs);
+            prepareUs.push_back(sample.compositionPrepareUs);
+            issueUs.push_back(sample.compositionIssueUs);
+            pollUs.push_back(sample.completionPollUs);
+            qtExternalUs.push_back(sample.qtExternalUs);
+            renderTotalUs.push_back(sample.renderCallbackTotalUs);
+            bufferDepthA.push_back(static_cast<double>(sample.bufferDepthA));
+            bufferDepthB.push_back(static_cast<double>(sample.bufferDepthB));
+        }
+    }
+    QJsonObject renderStages{
+        {"scheduler_to_pair_us", distribution(schedulerToPairUs, "values_us")},
+        {"pair_us", distribution(pairUs, "values_us")},
+        {"composition_prepare_us", distribution(prepareUs, "values_us")},
+        {"composition_issue_us", distribution(issueUs, "values_us")},
+        {"completion_poll_us", distribution(pollUs, "values_us")},
+        {"qt_external_us", distribution(qtExternalUs, "values_us")},
+        {"render_callback_total_us", distribution(renderTotalUs, "values_us")},
+        {"render_callback_interval_us", distribution(callbackIntervalUs, "values_us")},
+        {"buffer_depth_a", distribution(bufferDepthA, "values")},
+        {"buffer_depth_b", distribution(bufferDepthB, "values")}};
+    QJsonObject lockTimings{
+        {"render_d3d11_lock_wait_us",
+         distribution(state_->diagnosticLockTiming.renderWaitUs, "values_us")},
+        {"decoder_a_d3d11_lock_wait_us",
+         distribution(state_->diagnosticLockTiming.decoderAWaitUs, "values_us")},
+        {"decoder_b_d3d11_lock_wait_us",
+         distribution(state_->diagnosticLockTiming.decoderBWaitUs, "values_us")}};
+    QJsonObject seekStages{
+        {"seek_a_ms", distribution(seekAMs_, "values_ms")},
+        {"seek_b_ms", distribution(seekBMs_, "values_ms")},
+        {"dual_decode_ready_ms", distribution(seekDecodeReadyMs_, "values_ms")},
+        {"decode_ready_to_pair_ms", distribution(seekDecodeReadyToPairMs_, "values_ms")},
+        {"pair_to_submission_ms", distribution(seekPairToSubmissionMs_, "values_ms")},
+        {"submission_to_display_record_ms",
+         distribution(seekSubmissionToDisplayMs_, "values_ms")},
+        {"decode_ready_to_display_ms",
+         distribution(seekDecodeReadyToDisplayMs_, "values_ms")},
+        {"request_to_display_ms", distribution(seekDisplayedMs_, "values_ms")}};
     const QString mode = config_.mode == CompositorMode::Playback
                              ? QStringLiteral("playback")
                              : config_.mode == CompositorMode::Seek ? QStringLiteral("seek")
                                                                     : QStringLiteral("layout");
-    QJsonObject o{{"schema", "mvm-p2-formal-1"},
+    QJsonObject o{{"schema", config_.diagnosticTiming ? "mvm-p2-diagnostic-1"
+                                                       : "mvm-p2-formal-1"},
                   {"formal_contract_version", "P2-D1-1"},
                   {"mode", mode},
                   {"formal_preflight", config_.formalPreflight},
@@ -563,6 +716,40 @@ bool CompositorSpikeController::writeMetrics() {
                   {"partial_gpu_issue_failure_count", c.partialGpuIssueFailureCount},
                   {"compose_after_fatal_rejected_count", c.composeAfterFatalRejectedCount},
                   {"shutdown_reason", shutdownReason_}};
+    const long long decodedADelta =
+        measurementStopA_.decodedFrameCount - measurementStartA_.decodedFrameCount;
+    const long long decodedBDelta =
+        measurementStopB_.decodedFrameCount - measurementStartB_.decodedFrameCount;
+    const long long waitADelta =
+        measurementStopA_.backpressureWaitCount - measurementStartA_.backpressureWaitCount;
+    const long long waitBDelta =
+        measurementStopB_.backpressureWaitCount - measurementStartB_.backpressureWaitCount;
+    o.insert("diagnostic_case", diagnosticCaseName(config_.diagnosticCase));
+    o.insert("diagnostic_timing", config_.diagnosticTiming);
+    o.insert("effective_pair_rate", measureElapsedSeconds_ > 0
+                                        ? static_cast<double>(measurement.displayed) /
+                                              measureElapsedSeconds_
+                                        : 0.0);
+    o.insert("deadline_drop_rate",
+             measurement.scheduled > 0
+                 ? static_cast<double>(measurement.dropSchedulerDeadline) /
+                       static_cast<double>(measurement.scheduled)
+                 : 0.0);
+    o.insert("measurement_decoded_a_count", decodedADelta);
+    o.insert("measurement_decoded_b_count", decodedBDelta);
+    o.insert("measurement_wait_for_space_a_count", waitADelta);
+    o.insert("measurement_wait_for_space_b_count", waitBDelta);
+    o.insert("measurement_buffer_depth_a_start",
+             static_cast<qint64>(measurementStartA_.bufferDepth));
+    o.insert("measurement_buffer_depth_a_end",
+             static_cast<qint64>(measurementStopA_.bufferDepth));
+    o.insert("measurement_buffer_depth_b_start",
+             static_cast<qint64>(measurementStartB_.bufferDepth));
+    o.insert("measurement_buffer_depth_b_end",
+             static_cast<qint64>(measurementStopB_.bufferDepth));
+    o.insert("render_stage_timings", renderStages);
+    o.insert("d3d11_lock_timings", lockTimings);
+    o.insert("seek_stage_timings", seekStages);
     QSaveFile file(config_.metricsPath);
     if (!file.open(QIODevice::WriteOnly))
         return false;

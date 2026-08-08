@@ -26,6 +26,8 @@ struct CompositorSpikeConfig {
     gpu::GpuCompletionBackend completion = gpu::GpuCompletionBackend::Fence;
     QString testFault;
     bool formalPreflight = false;
+    bool diagnosticTiming = false;
+    CompositorDiagnosticCase diagnosticCase = CompositorDiagnosticCase::None;
 };
 
 class CompositorSpikeController final : public QObject {
@@ -65,6 +67,10 @@ private:
     int exitCode_ = 0;
     CompositorMeasurementCounters measurementStart_;
     CompositorMeasurementCounters measurementStop_;
+    gpu::SourceDecoderSnapshot measurementStartA_;
+    gpu::SourceDecoderSnapshot measurementStartB_;
+    gpu::SourceDecoderSnapshot measurementStopA_;
+    gpu::SourceDecoderSnapshot measurementStopB_;
     double measureElapsedSeconds_ = 0;
     std::vector<long long> seekTargets_;
     const std::vector<long long> markerTargets_{0, 1, 137, 299, 600, 1799, 3599};
@@ -74,12 +80,20 @@ private:
     gpu::CompositionDisplayExpectation waitExpectation_;
     QElapsedTimer waitTimer_;
     long long seekRequestStartQpc_ = 0;
+    long long seekDecodeReadyQpc_ = 0;
+    std::vector<double> seekAMs_;
+    std::vector<double> seekBMs_;
     std::vector<double> seekDecodeReadyMs_;
+    std::vector<double> seekDecodeReadyToPairMs_;
+    std::vector<double> seekPairToSubmissionMs_;
+    std::vector<double> seekSubmissionToDisplayMs_;
+    std::vector<double> seekDecodeReadyToDisplayMs_;
     std::vector<double> seekDisplayedMs_;
     int seekMismatch_ = 0;
     int seekTimeout_ = 0;
     size_t layoutIndex_ = 0;
     int layoutMismatch_ = 0;
+    bool seekLockTimingActive_ = false;
     QString shutdownReason_;
 };
 

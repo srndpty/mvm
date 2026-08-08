@@ -223,6 +223,8 @@ bool SourceDecodeWorker::submitWithBackpressure(const DecodedGpuFrame& frame, st
 
 bool SourceDecodeWorker::seekBlocking(long long frameNumber, double& decodeReadyMs,
                                       std::string& err) {
+    D3D11LockRoleScope role(sourceId_.value == 1 ? D3D11LockRole::DecoderA
+                                                 : D3D11LockRole::DecoderB);
     pause();
     decodeReadyMs = 0.0;
     std::lock_guard<std::mutex> lock(decoderMutex_);
@@ -284,6 +286,8 @@ bool SourceDecodeWorker::flushBlocking(std::string& err) {
 }
 
 void SourceDecodeWorker::run() {
+    D3D11LockRoleScope role(sourceId_.value == 1 ? D3D11LockRole::DecoderA
+                                                 : D3D11LockRole::DecoderB);
     while (running()) {
         {
             std::unique_lock<std::mutex> lock(commandMutex_);

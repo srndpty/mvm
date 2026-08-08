@@ -12,6 +12,8 @@ namespace mvm::gpu {
 
 struct CompositionDisplayRecord {
     unsigned long long displaySequence = 0;
+    long long pairReadyQpc = 0;
+    long long submissionQpc = 0;
     long long displayedQpc = 0;
     long long outputFrameNumber = -1;
     CompositionEpoch compositionEpoch{};
@@ -31,7 +33,8 @@ class CompositionDisplayLedger {
 public:
     explicit CompositionDisplayLedger(size_t capacity = 512);
 
-    unsigned long long record(const ComposedFrame& frame, long long displayedQpc);
+    unsigned long long record(const ComposedFrame& frame, long long displayedQpc,
+                              long long pairReadyQpc = 0, long long submissionQpc = 0);
     unsigned long long baseline() const;
     bool findAfter(unsigned long long baseline, const CompositionDisplayExpectation& expectation,
                    CompositionDisplayRecord& out) const;

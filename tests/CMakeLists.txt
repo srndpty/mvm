@@ -781,6 +781,14 @@ foreach(_p2_contract_case Good FormalGood NegativeInvariant NegativeSameDevice N
             -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-contract-${_p2_contract_name}.json")
 endforeach()
 
+# 診断case typoを通常playbackへ暗黙fallbackさせない。
+add_test(NAME compositor_diagnostic_case_invalid_negative
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+        -ExpectExit 2 -Exe "$<TARGET_FILE:mvm_compositor_spike>"
+        -ChildArgs "--diagnostic-case|invalid")
+set_tests_properties(compositor_diagnostic_case_invalid_negative PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 30)
+
 foreach(_kind_name actual_device no_full_frame_copy actual_target_probe shutdown)
     if(_kind_name STREQUAL "actual_device")
         set(_kind device)

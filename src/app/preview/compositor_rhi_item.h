@@ -14,6 +14,20 @@
 
 namespace mvm::app {
 
+enum class CompositorDiagnosticCase { None = 0, SingleDecode, PairOnly, FixedTextures, FullPath };
+
+struct CompositorDiagnosticRenderSample {
+    double schedulerToPairUs = 0.0;
+    double pairUs = 0.0;
+    double compositionPrepareUs = 0.0;
+    double compositionIssueUs = 0.0;
+    double completionPollUs = 0.0;
+    double qtExternalUs = 0.0;
+    double renderCallbackTotalUs = 0.0;
+    size_t bufferDepthA = 0;
+    size_t bufferDepthB = 0;
+};
+
 struct CompositorMeasurementCounters {
     long long qpc = 0;
     long long compositionRequested = 0;
@@ -95,6 +109,13 @@ struct CompositorSpikeState {
     std::atomic<int> actualOutputWidth{0};
     std::atomic<int> actualOutputHeight{0};
     std::string actualGpuCompletionBackend;
+    std::atomic<CompositorDiagnosticCase> diagnosticCase{CompositorDiagnosticCase::None};
+    std::atomic<bool> diagnosticTimingEnabled{false};
+    std::mutex diagnosticTimingMutex;
+    std::vector<CompositorDiagnosticRenderSample> diagnosticRenderSamples;
+    std::vector<double> diagnosticRenderCallbackIntervalUs;
+    gpu::D3D11LockTimingSnapshot diagnosticLockTiming;
+    gpu::ComposedFrame diagnosticFixedFrame;
     CompositorMarkerProbe markerProbe;
     std::atomic<long long> markerAChecked{0};
     std::atomic<long long> markerBChecked{0};

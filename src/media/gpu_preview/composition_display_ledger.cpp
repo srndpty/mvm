@@ -25,8 +25,11 @@ CompositionDisplayLedger::CompositionDisplayLedger(size_t capacity)
     : capacity_(std::max<size_t>(1, capacity)) {}
 
 unsigned long long CompositionDisplayLedger::record(const ComposedFrame& frame,
-                                                    long long displayedQpc) {
+                                                    long long displayedQpc, long long pairReadyQpc,
+                                                    long long submissionQpc) {
     CompositionDisplayRecord record;
+    record.pairReadyQpc = pairReadyQpc;
+    record.submissionQpc = submissionQpc;
     record.displayedQpc = displayedQpc;
     record.outputFrameNumber = frame.outputFrameNumber;
     record.compositionEpoch = frame.compositionEpoch;
