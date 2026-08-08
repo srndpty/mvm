@@ -31,7 +31,9 @@ unsigned long long CompositionDisplayLedger::record(const ComposedFrame& frame,
     record.pairReadyQpc = pairReadyQpc;
     record.submissionQpc = submissionQpc;
     record.displayedQpc = displayedQpc;
+    record.displayRecordQpc = displayedQpc;
     record.outputFrameNumber = frame.outputFrameNumber;
+    record.frameNumber = frame.outputFrameNumber;
     record.compositionEpoch = frame.compositionEpoch;
     record.sources.reserve(frame.layers.size());
     for (const auto& layer : frame.layers)

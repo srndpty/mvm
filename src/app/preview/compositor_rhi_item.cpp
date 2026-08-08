@@ -1,6 +1,7 @@
 #include "app/preview/compositor_rhi_item.h"
 
 #include "core/mvm_marker.h"
+#include "media/audio_preview/audio_video_scheduler.h"
 #include "media/gpu_preview/exact_frame_pairer.h"
 #include "media/gpu_preview/output_scheduler.h"
 #include "media/gpu_preview/qpc_clock.h"
@@ -105,7 +106,56 @@ protected:
             state_->diagnosticCase.load(std::memory_order_acquire);
         long long schedulerDeadlineQpc = callbackBegin;
         long long output = state_->requestedOutput.exchange(-1);
-        if (output < 0 && state_->playbackSchedulerEnabled.load(std::memory_order_acquire)) {
+        const bool audioMasterEnabled =
+            state_->audioMasterSchedulerEnabled.load(std::memory_order_acquire);
+        if (output < 0 && audioMasterEnabled) {
+            const auto master = state_->audioMasterClock;
+            const auto clockSnapshot = master ? master->snapshot() : audio::AudioClockSnapshot{};
+            const long long projectionQpc = gpu::qpcTicks();
+            audio::Qpc100ns now100ns;
+            const bool converted =
+                audio::qpcTicksTo100ns({static_cast<unsigned long long>(projectionQpc)},
+                                       gpu::qpcFrequencyTicks(), now100ns);
+            const audio::SourceGeneration expected{
+                state_->audioMasterGeneration.load(std::memory_order_acquire)};
+            const auto projection =
+                master && converted ? audio::projectAtQpc100ns(clockSnapshot, now100ns, expected)
+                                    : audio::AudioClockProjection{};
+            if (!projection.valid) {
+                if (state_->audioMasterSchedulerEnabled.load(std::memory_order_acquire))
+                    state_->videoClockRegressionCount.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+            const long long lastDisplayed =
+                state_->audioMasterLastDisplayed.load(std::memory_order_acquire);
+            const long long lastRequested =
+                state_->audioMasterLastRequested.load(std::memory_order_acquire);
+            const auto decision = audio::scheduleVideoForAudio(
+                projection.mediaSample, lastDisplayed, lastRequested,
+                state_->audioMasterVideoFrameCount.load(std::memory_order_acquire));
+            if (decision.action == audio::AudioVideoScheduleAction::ClockRegression ||
+                decision.action == audio::AudioVideoScheduleAction::Invalid) {
+                state_->videoClockRegressionCount.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+            if (decision.action == audio::AudioVideoScheduleAction::End)
+                return;
+            if (decision.action == audio::AudioVideoScheduleAction::Hold) {
+                if (decision.targetFrame <= lastDisplayed) {
+                    state_->repeatedPresentCount.fetch_add(1, std::memory_order_relaxed);
+                    return;
+                }
+                output = decision.targetFrame;
+            } else {
+                output = decision.targetFrame;
+                if (lastRequested > lastDisplayed && lastRequested != output)
+                    state_->videoTargetSupersededCount.fetch_add(1, std::memory_order_relaxed);
+                state_->audioMasterLastRequested.store(output, std::memory_order_release);
+                state_->audioClockVideoCatchupSkipCount.fetch_add(decision.skippedFrames,
+                                                                  std::memory_order_relaxed);
+                state_->scheduledOutputCount.fetch_add(1, std::memory_order_relaxed);
+            }
+        } else if (output < 0 && state_->playbackSchedulerEnabled.load(std::memory_order_acquire)) {
             const long long now = gpu::qpcTicks();
             if (!schedulerStarted_) {
                 scheduler_.start(now, static_cast<long long>(gpu::qpcFrequency()));
@@ -149,9 +199,21 @@ protected:
             frame.outputFrameNumber = output;
             frame.layers.push_back({std::move(sourceFrame), {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0f, 0});
         } else {
+            if (audioMasterEnabled) {
+                state_->audioClockVideoStaleDiscardA.fetch_add(
+                    static_cast<long long>(a->buffer().discardBefore(output)),
+                    std::memory_order_relaxed);
+                state_->audioClockVideoStaleDiscardB.fetch_add(
+                    static_cast<long long>(b->buffer().discardBefore(output)),
+                    std::memory_order_relaxed);
+            }
             gpu::ExactFramePairer pairer(a->buffer(), b->buffer(), state_->coordinator);
             const gpu::PairResult paired = pairer.tryPair(output, frame);
             if (paired != gpu::PairResult::Paired) {
+                if (audioMasterEnabled) {
+                    state_->videoPairWaitCount.fetch_add(1, std::memory_order_relaxed);
+                    return;
+                }
                 state_->missingPairDropCount.fetch_add(1, std::memory_order_relaxed);
                 if (state_->measurementIntervalActive.load(std::memory_order_acquire)) {
                     if (a->eof())
@@ -171,6 +233,15 @@ protected:
             }
         }
         const long long pairReadyQpc = gpu::qpcTicks();
+        if (audioMasterEnabled &&
+            state_->audioMasterMarkerProbePending.exchange(false, std::memory_order_acq_rel)) {
+            std::lock_guard<std::mutex> lock(state_->markerProbe.mutex);
+            state_->markerProbe.expectedFrame = output;
+            state_->markerProbe.frameA = frame.layers[0].frame;
+            state_->markerProbe.frameB = frame.layers[1].frame;
+            state_->markerProbe.requested = true;
+            state_->markerProbe.done = false;
+        }
         std::string err;
         if (!ensureRtv(colorTexture(), err)) {
             state_->renderFailureCount.fetch_add(1, std::memory_order_relaxed);
@@ -218,8 +289,39 @@ protected:
             a->buffer().noteDisplayed(output);
         if (b && diagnosticCase != CompositorDiagnosticCase::FixedTextures)
             b->buffer().noteDisplayed(output);
+        const auto displayClockSnapshot = audioMasterEnabled && state_->audioMasterClock
+                                              ? state_->audioMasterClock->snapshot()
+                                              : audio::AudioClockSnapshot{};
         const long long displayedQpc = gpu::qpcTicks();
         state_->ledger.record(frame, displayedQpc, pairReadyQpc, submissionQpc);
+        if (audioMasterEnabled) {
+            state_->audioMasterLastDisplayed.store(output, std::memory_order_release);
+            audio::Qpc100ns displayed100ns;
+            const auto master = state_->audioMasterClock;
+            const audio::SourceGeneration expected{
+                state_->audioMasterGeneration.load(std::memory_order_acquire)};
+            const bool converted =
+                audio::qpcTicksTo100ns({static_cast<unsigned long long>(displayedQpc)},
+                                       gpu::qpcFrequencyTicks(), displayed100ns);
+            const auto projection =
+                master && converted
+                    ? audio::projectAtQpc100ns(displayClockSnapshot, displayed100ns, expected)
+                    : audio::AudioClockProjection{};
+            if (!projection.valid) {
+                if (state_->audioMasterSchedulerEnabled.load(std::memory_order_acquire))
+                    state_->videoClockRegressionCount.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                const long long videoSample = output * audio::kSamplesPerVideoFrame;
+                const double deltaMs = static_cast<double>(videoSample - projection.mediaSample) *
+                                       1000.0 / audio::kInternalSampleRate;
+                {
+                    std::lock_guard<std::mutex> lock(state_->applicationAvDeltaMutex);
+                    state_->applicationAvDeltaMs.push_back(deltaMs);
+                }
+                if (audio::isVideoAheadViolation(output, projection.mediaSample))
+                    state_->videoAheadViolationCount.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
         state_->displayedCompositionCount.fetch_add(1, std::memory_order_relaxed);
         if (state_->measurementIntervalActive.load(std::memory_order_acquire)) {
             long long unset = -1;

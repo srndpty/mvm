@@ -75,6 +75,7 @@ add_library(mvm::gpu_preview ALIAS mvm_gpu_preview)
 add_library(mvm_audio_preview STATIC
     media/audio_preview/audio_frame_queue.cpp
     media/audio_preview/audio_clock.cpp
+    media/audio_preview/audio_video_scheduler.cpp
     media/audio_preview/audio_decode_worker.cpp
     media/audio_preview/wasapi_audio_sink.cpp
 )
@@ -102,7 +103,7 @@ if(MVM_ENABLE_QT)
     set_target_properties(mvm_preview_qt PROPERTIES AUTOMOC ON)
     target_include_directories(mvm_preview_qt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(mvm_preview_qt
-        PUBLIC  mvm::gpu_preview Qt6::Quick Qt6::Gui
+        PUBLIC  mvm::gpu_preview mvm::audio_preview Qt6::Quick Qt6::Gui
         PRIVATE Qt6::GuiPrivate mvm::warnings
     )
     add_library(mvm::preview_qt ALIAS mvm_preview_qt)

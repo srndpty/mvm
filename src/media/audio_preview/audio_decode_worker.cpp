@@ -123,53 +123,62 @@ bool AudioDecodeWorker::start(const std::string& utf8Path, std::string& error) {
 }
 
 void AudioDecodeWorker::play() {
-    playing_ = true;
     {
         std::lock_guard lock(mutex_);
+        playing_ = true;
         metrics_.playing = true;
     }
     wake_.notify_all();
 }
 
 void AudioDecodeWorker::pause() {
-    playing_ = false;
-    std::lock_guard lock(mutex_);
-    metrics_.playing = false;
+    {
+        std::lock_guard lock(mutex_);
+        playing_ = false;
+        metrics_.playing = false;
+    }
 }
 
 void AudioDecodeWorker::stop() {
-    running_ = false;
-    playing_ = false;
+    {
+        std::lock_guard lock(mutex_);
+        running_ = false;
+        playing_ = false;
+        metrics_.running = false;
+        metrics_.playing = false;
+    }
     queue_.stop();
     wake_.notify_all();
     seekDone_.notify_all();
     if (thread_.joinable())
         thread_.join();
     joined_ = true;
-    std::lock_guard lock(mutex_);
-    metrics_.running = false;
-    metrics_.playing = false;
-    metrics_.joined = true;
-    seekOutstanding_ = false;
-    closeInput();
+    {
+        std::lock_guard lock(mutex_);
+        metrics_.joined = true;
+        seekOutstanding_ = false;
+        closeInput();
+    }
 }
 
 AudioSeekRequestResult AudioDecodeWorker::requestSeek(std::int64_t sample, AudioSeekTicket& ticket,
                                                       std::string& error) {
-    std::lock_guard lock(mutex_);
-    if (!running_)
-        return AudioSeekRequestResult::RejectedStopped;
-    if (sample < 0) {
-        error = "seek sample は 0 以上でなければなりません";
-        return AudioSeekRequestResult::RejectedInvalid;
+    {
+        std::lock_guard lock(mutex_);
+        if (!running_)
+            return AudioSeekRequestResult::RejectedStopped;
+        if (sample < 0) {
+            error = "seek sample は 0 以上でなければなりません";
+            return AudioSeekRequestResult::RejectedInvalid;
+        }
+        if (seekOutstanding_)
+            return AudioSeekRequestResult::RejectedBusy;
+        ticket = {++nextSeekId_, sample};
+        seekTicket_ = ticket;
+        pendingSeek_ = true;
+        seekOutstanding_ = true;
+        seekCompletion_ = {};
     }
-    if (seekOutstanding_)
-        return AudioSeekRequestResult::RejectedBusy;
-    ticket = {++nextSeekId_, sample};
-    seekTicket_ = ticket;
-    pendingSeek_ = true;
-    seekOutstanding_ = true;
-    seekCompletion_ = {};
     wake_.notify_all();
     return AudioSeekRequestResult::Accepted;
 }

@@ -16,6 +16,7 @@ $ffmpeg = Join-Path $Ucrt64 'bin\ffmpeg.exe'
 $ffprobe = Join-Path $Ucrt64 'bin\ffprobe.exe'
 $outputDir = Join-Path $repo 'tests\assets\p3_audio'
 $output = Join-Path $outputDir 'p3_av_h264_aac.mp4'
+$outputB = Join-Path $outputDir 'p3_video_hevc_b.mp4'
 $manifest = Join-Path $outputDir 'manifest.json'
 if (-not (Test-Path $ffmpeg) -or -not (Test-Path $ffprobe)) {
     throw "UCRT64 の ffmpeg/ffprobe が見つかりません: $Ucrt64"
@@ -51,6 +52,18 @@ if ($Force -or -not (Test-Path $output)) {
     if ($LASTEXITCODE -ne 0) { throw "P3-A fixture の生成に失敗しました (exit $LASTEXITCODE)" }
 }
 
+# P3-B source B。P3-A fixture は変更せず、同じ time origin / frame marker を持つ
+# audio 無し HEVC source を別ファイルとして生成する。
+if ($Force -or -not (Test-Path $outputB)) {
+    & $ffmpeg -hide_banner -y -loglevel error -nostdin `
+        -f lavfi -i "testsrc2=s=1920x1080:r=60:d=$duration" `
+        -f lavfi -i $videoMarker `
+        -filter_complex $videoFilter -map '[v]' -an `
+        -c:v libx265 -preset ultrafast -x265-params 'log-level=error:keyint=60:min-keyint=60:scenecut=0' `
+        -crf 24 -pix_fmt yuv420p -r 60 -fps_mode cfr -g 60 $outputB
+    if ($LASTEXITCODE -ne 0) { throw "P3-B source B fixture の生成に失敗しました (exit $LASTEXITCODE)" }
+}
+
 $probeRaw = & $ffprobe -hide_banner -loglevel error -print_format json `
     -show_format -show_streams -- $output
 if ($LASTEXITCODE -ne 0) { throw "P3-A fixture の ffprobe に失敗しました" }
@@ -65,6 +78,18 @@ if (-not $video -or -not $audioStream -or $video.codec_name -ne 'h264' -or
     throw '生成済み P3-A fixture が固定 contract と一致しません'
 }
 
+$probeBRaw = & $ffprobe -hide_banner -loglevel error -print_format json `
+    -show_format -show_streams -- $outputB
+if ($LASTEXITCODE -ne 0) { throw "P3-B source B fixture の ffprobe に失敗しました" }
+$probeB = ($probeBRaw -join "`n") | ConvertFrom-Json
+$videoB = $probeB.streams | Where-Object codec_type -eq 'video' | Select-Object -First 1
+$audioB = $probeB.streams | Where-Object codec_type -eq 'audio' | Select-Object -First 1
+if (-not $videoB -or $audioB -or $videoB.codec_name -ne 'hevc' -or
+    [int]$videoB.width -ne 1920 -or [int]$videoB.height -ne 1080 -or
+    $videoB.r_frame_rate -ne '60/1' -or [double]$probeB.format.duration -lt 65.0) {
+    throw '生成済み P3-B source B fixture が固定 contract と一致しません'
+}
+
 $record = [ordered]@{
     schema_version = 1
     file = 'p3_av_h264_aac.mp4'
@@ -76,8 +101,17 @@ $record = [ordered]@{
         marker_samples = $markerSamples; marker_window_samples = 480
         marker_signal = '左右同相 1000 Hz / amplitude 0.8 / 10 ms'
     }
+    p3_b_source = [ordered]@{
+        file = 'p3_video_hevc_b.mp4'
+        sha256 = (Get-FileHash -Algorithm SHA256 $outputB).Hash.ToLower()
+        duration_seconds = [double]$probeB.format.duration
+        video = [ordered]@{ codec = 'hevc'; width = 1920; height = 1080; fps = '60/1'; marker = '19-cell-v1' }
+        audio = $false
+        time_origin = '0/1'
+    }
     ffmpeg_arguments_fixed = $true
 }
 $record | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifest -Encoding utf8
 Write-Host "P3-A fixture: $output" -ForegroundColor Green
 Write-Host "manifest      : $manifest"
+Write-Host "P3-B source B : $outputB" -ForegroundColor Green

@@ -15,7 +15,9 @@ struct CompositionDisplayRecord {
     long long pairReadyQpc = 0;
     long long submissionQpc = 0;
     long long displayedQpc = 0;
+    long long displayRecordQpc = 0;
     long long outputFrameNumber = -1;
+    long long frameNumber = -1;
     CompositionEpoch compositionEpoch{};
     std::vector<SourceFrameIdentity> sources;
 };
