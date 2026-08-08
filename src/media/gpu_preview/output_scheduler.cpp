@@ -10,6 +10,8 @@ const char* toString(OutputDropReason reason) {
         return "missing_source_a";
     case OutputDropReason::MissingSourceB:
         return "missing_source_b";
+    case OutputDropReason::MissingBoth:
+        return "missing_both";
     case OutputDropReason::StaleGeneration:
         return "stale_generation";
     case OutputDropReason::FutureGeneration:
@@ -67,7 +69,7 @@ OutputDropReason OutputScheduler60Hz::classifyDeadline(PairResult pairResult,
     if (pairResult == PairResult::MissingB)
         return OutputDropReason::MissingSourceB;
     if (pairResult == PairResult::MissingBoth)
-        return OutputDropReason::MissingSourceA;
+        return OutputDropReason::MissingBoth;
     return OutputDropReason::SchedulerDeadline;
 }
 

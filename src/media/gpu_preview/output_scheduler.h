@@ -9,6 +9,7 @@ enum class OutputDropReason {
     None = 0,
     MissingSourceA,
     MissingSourceB,
+    MissingBoth,
     StaleGeneration,
     FutureGeneration,
     StaleCompositionEpoch,

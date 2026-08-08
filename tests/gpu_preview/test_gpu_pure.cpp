@@ -1130,6 +1130,10 @@ void testOutputScheduler() {
         OutputScheduler60Hz::classifyDeadline(PairResult::MissingB, CompositionResult::Accepted) ==
             OutputDropReason::MissingSourceB,
         "missing B分類");
+    check(OutputScheduler60Hz::classifyDeadline(PairResult::MissingBoth,
+                                                CompositionResult::Accepted) ==
+              OutputDropReason::MissingBoth,
+          "missing bothを単一理由へ分類");
     check(OutputScheduler60Hz::classifyDeadline(PairResult::StaleGeneration,
                                                 CompositionResult::Accepted) ==
               OutputDropReason::StaleGeneration,

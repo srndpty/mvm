@@ -1,5 +1,6 @@
 #include "app/preview/compositor_rhi_item.h"
 
+#include "core/mvm_marker.h"
 #include "media/gpu_preview/exact_frame_pairer.h"
 #include "media/gpu_preview/output_scheduler.h"
 #include "media/gpu_preview/qpc_clock.h"
@@ -12,6 +13,9 @@
 
 namespace mvm::app {
 namespace {
+
+constexpr int kMarkerBandWidth = mvm::marker::kCellSize * mvm::marker::kCellCount;
+constexpr int kMarkerBandHeight = mvm::marker::kCellSize;
 
 class CompositorRhiRenderer final : public QQuickRhiItemRenderer {
 public:
@@ -60,7 +64,6 @@ protected:
     void synchronize(QQuickRhiItem*) override {}
 
     void render(QRhiCommandBuffer* cb) override {
-        state_->presentCallbackCount.fetch_add(1, std::memory_order_relaxed);
         // P1と同じくrender threadから次のframeを要求する。GUI timerだけでは
         // scene graph requestがcoalesceされ、60Hz output deadlineを取りこぼす。
         update();
@@ -71,6 +74,10 @@ protected:
         if (!state_->deviceReady.load(std::memory_order_acquire) ||
             state_->fatal.load(std::memory_order_acquire))
             return;
+        if (captureMeasurementBoundary())
+            return;
+        state_->presentCallbackCount.fetch_add(1, std::memory_order_relaxed);
+        processMarkerProbe();
         if (state_->testDeviceChange.exchange(false)) {
             fail("test fault: QRhi D3D11 device change");
             return;
@@ -95,10 +102,7 @@ protected:
                 output = decision.output.outputFrameNumber;
                 state_->scheduledOutputCount.fetch_add(decision.skippedDeadlineCount + 1,
                                                        std::memory_order_relaxed);
-                state_->droppedOutputCount.fetch_add(decision.skippedDeadlineCount,
-                                                     std::memory_order_relaxed);
-                state_->schedulerDeadlineDropCount.fetch_add(decision.skippedDeadlineCount,
-                                                             std::memory_order_relaxed);
+                noteDrop(gpu::OutputDropReason::SchedulerDeadline, decision.skippedDeadlineCount);
             }
         }
         if (!a || !b || output < 0) {
@@ -110,21 +114,21 @@ protected:
         gpu::ComposedFrame frame;
         const gpu::PairResult paired = pairer.tryPair(output, frame);
         if (paired != gpu::PairResult::Paired) {
-            state_->droppedOutputCount.fetch_add(1, std::memory_order_relaxed);
             state_->missingPairDropCount.fetch_add(1, std::memory_order_relaxed);
-            if (paired == gpu::PairResult::MissingA || paired == gpu::PairResult::MissingBoth)
-                state_->missingSourceADropCount.fetch_add(1, std::memory_order_relaxed);
-            if (paired == gpu::PairResult::MissingB || paired == gpu::PairResult::MissingBoth)
-                state_->missingSourceBDropCount.fetch_add(1, std::memory_order_relaxed);
+            noteDrop(gpu::OutputScheduler60Hz::classifyDeadline(paired,
+                                                                gpu::CompositionResult::Accepted));
             return;
         }
-        if (state_->coordinator.validateForDisplay(frame) != gpu::CompositionResult::Accepted) {
-            state_->droppedOutputCount.fetch_add(1, std::memory_order_relaxed);
+        const auto validation = state_->coordinator.validateForDisplay(frame);
+        if (validation != gpu::CompositionResult::Accepted) {
+            noteDrop(
+                gpu::OutputScheduler60Hz::classifyDeadline(gpu::PairResult::Paired, validation));
             return;
         }
         std::string err;
         if (!ensureRtv(colorTexture(), err)) {
             state_->renderFailureCount.fetch_add(1, std::memory_order_relaxed);
+            noteDrop(gpu::OutputDropReason::RenderFailure);
             fail(err);
             return;
         }
@@ -141,7 +145,7 @@ protected:
         cb->endPass();
         if (!ok) {
             state_->renderFailureCount.fetch_add(1, std::memory_order_relaxed);
-            state_->droppedOutputCount.fetch_add(1, std::memory_order_relaxed);
+            noteDrop(gpu::OutputDropReason::RenderFailure);
             if (state_->compositor.fatal())
                 fail(state_->compositor.fatalReason());
             return;
@@ -155,6 +159,127 @@ protected:
     }
 
 private:
+    CompositorMeasurementCounters measurementCounters() const {
+        const auto& c = state_->compositor.counters();
+        return {gpu::qpcTicks(),
+                c.compositionRequestedCount,
+                c.compositionDrawnCount,
+                c.gpuSubmissionCount,
+                c.layerDrawCount,
+                state_->logicalClearCount.load(std::memory_order_relaxed),
+                state_->scheduledOutputCount.load(std::memory_order_relaxed),
+                state_->displayedCompositionCount.load(std::memory_order_relaxed),
+                state_->droppedOutputCount.load(std::memory_order_relaxed),
+                state_->schedulerDeadlineDropCount.load(std::memory_order_relaxed),
+                state_->missingSourceADropCount.load(std::memory_order_relaxed),
+                state_->missingSourceBDropCount.load(std::memory_order_relaxed),
+                state_->missingBothDropCount.load(std::memory_order_relaxed),
+                state_->staleGenerationDropCount.load(std::memory_order_relaxed),
+                state_->futureGenerationDropCount.load(std::memory_order_relaxed),
+                state_->staleCompositionEpochDropCount.load(std::memory_order_relaxed),
+                state_->renderFailureCount.load(std::memory_order_relaxed),
+                state_->presentCallbackCount.load(std::memory_order_relaxed),
+                state_->repeatedPresentCount.load(std::memory_order_relaxed),
+                c.partialGpuIssueFailureCount,
+                c.completionPollFailureCount,
+                c.untrackedSubmissionCount};
+    }
+
+    bool captureMeasurementBoundary() {
+        if (state_->measurementStopRequested.exchange(false, std::memory_order_acq_rel)) {
+            state_->playbackSchedulerEnabled.store(false, std::memory_order_release);
+            {
+                std::lock_guard<std::mutex> lock(state_->measurementMutex);
+                state_->measurementStop = measurementCounters();
+            }
+            state_->measurementStopCaptured.store(true, std::memory_order_release);
+            return true;
+        }
+        if (state_->measurementStartRequested.exchange(false, std::memory_order_acq_rel)) {
+            {
+                std::lock_guard<std::mutex> lock(state_->measurementMutex);
+                state_->measurementStart = measurementCounters();
+            }
+            state_->measurementStartCaptured.store(true, std::memory_order_release);
+        }
+        return false;
+    }
+
+    void noteDrop(gpu::OutputDropReason reason, long long count = 1) {
+        if (count <= 0)
+            return;
+        state_->droppedOutputCount.fetch_add(count, std::memory_order_relaxed);
+        switch (reason) {
+        case gpu::OutputDropReason::MissingSourceA:
+            state_->missingSourceADropCount.fetch_add(count, std::memory_order_relaxed);
+            break;
+        case gpu::OutputDropReason::MissingSourceB:
+            state_->missingSourceBDropCount.fetch_add(count, std::memory_order_relaxed);
+            break;
+        case gpu::OutputDropReason::MissingBoth:
+            state_->missingBothDropCount.fetch_add(count, std::memory_order_relaxed);
+            break;
+        case gpu::OutputDropReason::StaleGeneration:
+            state_->staleGenerationDropCount.fetch_add(count, std::memory_order_relaxed);
+            break;
+        case gpu::OutputDropReason::FutureGeneration:
+            state_->futureGenerationDropCount.fetch_add(count, std::memory_order_relaxed);
+            break;
+        case gpu::OutputDropReason::StaleCompositionEpoch:
+            state_->staleCompositionEpochDropCount.fetch_add(count, std::memory_order_relaxed);
+            break;
+        case gpu::OutputDropReason::RenderFailure:
+            break; // renderFailureCountがこのreasonのcounterを兼ねる。
+        case gpu::OutputDropReason::SchedulerDeadline:
+            state_->schedulerDeadlineDropCount.fetch_add(count, std::memory_order_relaxed);
+            break;
+        case gpu::OutputDropReason::None:
+            break;
+        }
+    }
+
+    void processMarkerProbe() {
+        gpu::DecodedGpuFrame frameA;
+        gpu::DecodedGpuFrame frameB;
+        long long expected = -1;
+        {
+            std::lock_guard<std::mutex> lock(state_->markerProbe.mutex);
+            if (!state_->markerProbe.requested)
+                return;
+            state_->markerProbe.requested = false;
+            frameA = state_->markerProbe.frameA;
+            frameB = state_->markerProbe.frameB;
+            expected = state_->markerProbe.expectedFrame;
+        }
+        std::vector<unsigned char> rgbaA;
+        std::vector<unsigned char> rgbaB;
+        std::string errA;
+        std::string errB;
+        const bool okA = state_->compositor.readSourceMarker(frameA, kMarkerBandWidth,
+                                                             kMarkerBandHeight, rgbaA, errA);
+        const auto markerA =
+            okA ? mvm::marker::readMarkerAuto(rgbaA.data(), kMarkerBandWidth, kMarkerBandHeight)
+                : mvm::marker::MarkerRead{};
+        const bool okB = state_->compositor.readSourceMarker(frameB, kMarkerBandWidth,
+                                                             kMarkerBandHeight, rgbaB, errB);
+        const auto markerB =
+            okB ? mvm::marker::readMarkerAuto(rgbaB.data(), kMarkerBandWidth, kMarkerBandHeight)
+                : mvm::marker::MarkerRead{};
+        state_->markerAChecked.fetch_add(1, std::memory_order_relaxed);
+        state_->markerBChecked.fetch_add(1, std::memory_order_relaxed);
+        if (!okA || !markerA.syncOk || markerA.value != expected)
+            state_->markerAMismatch.fetch_add(1, std::memory_order_relaxed);
+        if (!okB || !markerB.syncOk || markerB.value != expected)
+            state_->markerBMismatch.fetch_add(1, std::memory_order_relaxed);
+        std::lock_guard<std::mutex> lock(state_->markerProbe.mutex);
+        state_->markerProbe.markerA = markerA.value;
+        state_->markerProbe.markerB = markerB.value;
+        state_->markerProbe.syncA = markerA.syncOk;
+        state_->markerProbe.syncB = markerB.syncOk;
+        state_->markerProbe.error = !errA.empty() ? errA : errB;
+        state_->markerProbe.done = true;
+    }
+
     void runActualTargetProbe(const gpu::ComposedFrame& frame, const QSize& size) {
         // performance区間外の最初のactual targetだけを、sourceの同じsampling結果と比較する。
         const int points[4][2] = {
@@ -163,6 +288,7 @@ private:
             {size.width() / 2, size.height() / 2},
             {std::max(0, size.width() / 2 - 1), std::max(0, size.height() / 2 - 1)}};
         for (const auto& point : points) {
+            state_->actualTargetProbeChecked.fetch_add(1, std::memory_order_relaxed);
             std::vector<unsigned char> actual;
             std::vector<unsigned char> sourceA;
             std::vector<unsigned char> sourceB;

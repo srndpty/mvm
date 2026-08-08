@@ -28,6 +28,36 @@ QJsonArray doubles(const std::vector<double>& values) {
         out.append(value);
     return out;
 }
+
+CompositorMeasurementCounters subtract(const CompositorMeasurementCounters& end,
+                                       const CompositorMeasurementCounters& start) {
+    CompositorMeasurementCounters out;
+#define MVM_DELTA(field) out.field = end.field - start.field
+    MVM_DELTA(qpc);
+    MVM_DELTA(compositionRequested);
+    MVM_DELTA(compositionDrawn);
+    MVM_DELTA(gpuSubmission);
+    MVM_DELTA(layerDraw);
+    MVM_DELTA(logicalClear);
+    MVM_DELTA(scheduled);
+    MVM_DELTA(displayed);
+    MVM_DELTA(dropped);
+    MVM_DELTA(dropSchedulerDeadline);
+    MVM_DELTA(dropMissingSourceA);
+    MVM_DELTA(dropMissingSourceB);
+    MVM_DELTA(dropMissingBoth);
+    MVM_DELTA(dropStaleGeneration);
+    MVM_DELTA(dropFutureGeneration);
+    MVM_DELTA(dropStaleCompositionEpoch);
+    MVM_DELTA(dropRenderFailure);
+    MVM_DELTA(presentCallback);
+    MVM_DELTA(repeatedPresent);
+    MVM_DELTA(partialGpuIssueFailure);
+    MVM_DELTA(completionPollFailure);
+    MVM_DELTA(untrackedSubmission);
+#undef MVM_DELTA
+    return out;
+}
 } // namespace
 
 CompositorSpikeController::CompositorSpikeController(CompositorSpikeConfig config, QObject* parent)
@@ -98,12 +128,100 @@ bool CompositorSpikeController::startWorkers() {
         std::uniform_int_distribution<long long> dist(0, limit - 1);
         for (int i = 0; i < config_.seekCount; ++i)
             seekTargets_.push_back(dist(rng));
+    }
+    if (config_.formalPreflight && config_.mode != CompositorMode::Layout) {
+        phase_ = Phase::MarkerStart;
+    } else if (config_.mode == CompositorMode::Seek) {
         phase_ = Phase::SeekStart;
     } else {
         workerA_->play();
         workerB_->play();
         phase_ = config_.mode == CompositorMode::Layout ? Phase::LayoutStart : Phase::Warmup;
         state_->playbackSchedulerEnabled.store(true, std::memory_order_release);
+    }
+    phaseTimer_.restart();
+    return true;
+}
+
+void CompositorSpikeController::startMarkerProbe() {
+    if (markerIndex_ >= markerTargets_.size()) {
+        if (!resetAfterMarkerPreflight())
+            return;
+        return;
+    }
+    const long long target = markerTargets_[markerIndex_];
+    double elapsed = 0;
+    std::string err;
+    if (!workerA_->seekBlocking(target, elapsed, err) ||
+        !workerB_->seekBlocking(target, elapsed, err)) {
+        beginShutdown(QString::fromStdString(err), true);
+        return;
+    }
+    gpu::DecodedGpuFrame frameA;
+    gpu::DecodedGpuFrame frameB;
+    if (!workerA_->buffer().takeExact(target, frameA) ||
+        !workerB_->buffer().takeExact(target, frameB)) {
+        beginShutdown(QStringLiteral("marker preflightのexact frameを取得できません"), true);
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(state_->markerProbe.mutex);
+        state_->markerProbe.done = false;
+        state_->markerProbe.expectedFrame = target;
+        state_->markerProbe.frameA = std::move(frameA);
+        state_->markerProbe.frameB = std::move(frameB);
+        state_->markerProbe.error.clear();
+        state_->markerProbe.requested = true;
+    }
+    waitTimer_.restart();
+    phase_ = Phase::MarkerWait;
+    item_->update();
+}
+
+void CompositorSpikeController::pollMarkerProbe() {
+    bool done = false;
+    std::string error;
+    {
+        std::lock_guard<std::mutex> lock(state_->markerProbe.mutex);
+        done = state_->markerProbe.done;
+        error = state_->markerProbe.error;
+    }
+    if (done) {
+        if (!error.empty()) {
+            beginShutdown(QString::fromStdString(error), true);
+            return;
+        }
+        ++markerIndex_;
+        phase_ = Phase::MarkerStart;
+    } else if (waitTimer_.elapsed() >= config_.displayTimeoutMs) {
+        beginShutdown(QStringLiteral("marker preflightがtimeoutしました"), true);
+    } else {
+        item_->update();
+    }
+}
+
+bool CompositorSpikeController::resetAfterMarkerPreflight() {
+    double elapsed = 0;
+    std::string err;
+    if (!workerA_->seekBlocking(0, elapsed, err) || !workerB_->seekBlocking(0, elapsed, err)) {
+        beginShutdown(QString::fromStdString(err), true);
+        return false;
+    }
+    const auto a = workerA_->snapshot();
+    const auto b = workerB_->snapshot();
+    state_->coordinator.setSourceGeneration({1}, a.sourceGeneration);
+    state_->coordinator.setSourceGeneration({2}, b.sourceGeneration);
+    if (config_.mode == CompositorMode::Seek) {
+        // seek latency配列へactual target probeの4 readbackを混ぜない。
+        state_->requestedOutput.store(0, std::memory_order_release);
+        state_->scheduledOutputCount.fetch_add(1, std::memory_order_relaxed);
+        phase_ = Phase::OutputPreflightWait;
+        item_->update();
+    } else {
+        workerA_->play();
+        workerB_->play();
+        state_->playbackSchedulerEnabled.store(true, std::memory_order_release);
+        phase_ = Phase::OutputPreflightWait;
     }
     phaseTimer_.restart();
     return true;
@@ -129,18 +247,52 @@ void CompositorSpikeController::tick() {
             beginShutdown(QStringLiteral("Qt D3D11 device初期化がtimeoutしました"), true);
         return;
     }
-    if (phase_ == Phase::Warmup && phaseTimer_.elapsed() >= config_.warmupSeconds * 1000) {
-        displayedAtMeasureStart_ = state_->displayedCompositionCount.load();
-        droppedAtMeasureStart_ = state_->droppedOutputCount.load();
-        scheduledAtMeasureStart_ = state_->scheduledOutputCount.load();
-        clearsAtMeasureStart_ = state_->logicalClearCount.load();
-        presentsAtMeasureStart_ = state_->presentCallbackCount.load();
-        phase_ = Phase::Measure;
-        phaseTimer_.restart();
+    if (phase_ == Phase::MarkerStart) {
+        startMarkerProbe();
+    } else if (phase_ == Phase::MarkerWait) {
+        pollMarkerProbe();
+    } else if (phase_ == Phase::OutputPreflightWait) {
+        if (state_->actualTargetProbeDone.load(std::memory_order_acquire)) {
+            phase_ = config_.mode == CompositorMode::Seek ? Phase::SeekStart : Phase::Warmup;
+            phaseTimer_.restart();
+        } else if (phaseTimer_.elapsed() >= config_.displayTimeoutMs) {
+            beginShutdown(QStringLiteral("actual target preflightがtimeoutしました"), true);
+        } else {
+            item_->update();
+        }
+    } else if (phase_ == Phase::Warmup &&
+               phaseTimer_.elapsed() >= config_.warmupSeconds * 1000) {
+        state_->measurementStartRequested.store(true, std::memory_order_release);
+        state_->measurementStartCaptured.store(false, std::memory_order_release);
+        phase_ = Phase::MeasureStartWait;
+        item_->update();
+    } else if (phase_ == Phase::MeasureStartWait) {
+        if (state_->measurementStartCaptured.load(std::memory_order_acquire)) {
+            std::lock_guard<std::mutex> lock(state_->measurementMutex);
+            measurementStart_ = state_->measurementStart;
+            phase_ = Phase::Measure;
+        } else {
+            item_->update();
+        }
     } else if (phase_ == Phase::Measure &&
-               phaseTimer_.elapsed() >= config_.measureSeconds * 1000) {
-        measureElapsedSeconds_ = static_cast<double>(phaseTimer_.elapsed()) / 1000.0;
-        beginShutdown(QStringLiteral("playback smoke完了"), false);
+               gpu::qpcMsBetween(measurementStart_.qpc, gpu::qpcTicks()) >=
+                   config_.measureSeconds * 1000.0) {
+        state_->measurementStopRequested.store(true, std::memory_order_release);
+        state_->measurementStopCaptured.store(false, std::memory_order_release);
+        phase_ = Phase::MeasureStopWait;
+        item_->update();
+    } else if (phase_ == Phase::MeasureStopWait) {
+        if (state_->measurementStopCaptured.load(std::memory_order_acquire)) {
+            {
+                std::lock_guard<std::mutex> lock(state_->measurementMutex);
+                measurementStop_ = state_->measurementStop;
+            }
+            measureElapsedSeconds_ =
+                gpu::qpcMsBetween(measurementStart_.qpc, measurementStop_.qpc) / 1000.0;
+            beginShutdown(QStringLiteral("playback measurement完了"), false);
+        } else {
+            item_->update();
+        }
     } else if (phase_ == Phase::SeekStart) {
         startSeek();
     } else if (phase_ == Phase::SeekWait) {
@@ -264,15 +416,32 @@ bool CompositorSpikeController::writeMetrics() {
     const auto a = workerA_ ? workerA_->snapshot() : gpu::SourceDecoderSnapshot{};
     const auto b = workerB_ ? workerB_->snapshot() : gpu::SourceDecoderSnapshot{};
     const auto& c = state_->compositor.counters();
-    const long long displayed = config_.mode == CompositorMode::Playback
-                                    ? state_->displayedCompositionCount.load() - displayedAtMeasureStart_
-                                    : state_->displayedCompositionCount.load();
-    const long long scheduled = config_.mode == CompositorMode::Playback
-                                    ? state_->scheduledOutputCount.load() - scheduledAtMeasureStart_
-                                    : state_->scheduledOutputCount.load();
-    const long long dropped = config_.mode == CompositorMode::Playback
-                                  ? state_->droppedOutputCount.load() - droppedAtMeasureStart_
-                                  : state_->droppedOutputCount.load();
+    CompositorMeasurementCounters measurement;
+    if (config_.mode == CompositorMode::Playback) {
+        measurement = subtract(measurementStop_, measurementStart_);
+    } else {
+        measurement.compositionRequested = c.compositionRequestedCount;
+        measurement.compositionDrawn = c.compositionDrawnCount;
+        measurement.gpuSubmission = c.gpuSubmissionCount;
+        measurement.layerDraw = c.layerDrawCount;
+        measurement.logicalClear = state_->logicalClearCount.load();
+        measurement.scheduled = state_->scheduledOutputCount.load();
+        measurement.displayed = state_->displayedCompositionCount.load();
+        measurement.dropped = state_->droppedOutputCount.load();
+        measurement.dropSchedulerDeadline = state_->schedulerDeadlineDropCount.load();
+        measurement.dropMissingSourceA = state_->missingSourceADropCount.load();
+        measurement.dropMissingSourceB = state_->missingSourceBDropCount.load();
+        measurement.dropMissingBoth = state_->missingBothDropCount.load();
+        measurement.dropStaleGeneration = state_->staleGenerationDropCount.load();
+        measurement.dropFutureGeneration = state_->futureGenerationDropCount.load();
+        measurement.dropStaleCompositionEpoch = state_->staleCompositionEpochDropCount.load();
+        measurement.dropRenderFailure = state_->renderFailureCount.load();
+        measurement.presentCallback = state_->presentCallbackCount.load();
+        measurement.repeatedPresent = state_->repeatedPresentCount.load();
+        measurement.partialGpuIssueFailure = c.partialGpuIssueFailureCount;
+        measurement.completionPollFailure = c.completionPollFailureCount;
+        measurement.untrackedSubmission = c.untrackedSubmissionCount;
+    }
     std::vector<double> sorted = seekDisplayedMs_;
     std::sort(sorted.begin(), sorted.end());
     const double p95 = sorted.empty()
@@ -280,34 +449,73 @@ bool CompositorSpikeController::writeMetrics() {
                            : sorted[static_cast<size_t>(
                                  std::ceil(static_cast<double>(sorted.size()) * 0.95) - 1)];
     const double observedMax = sorted.empty() ? -1.0 : sorted.back();
-    QJsonObject o{{"same_device_a", a.decodeDevicePointer == state_->nativeDevicePointer.load()},
+    const QString mode = config_.mode == CompositorMode::Playback
+                             ? QStringLiteral("playback")
+                             : config_.mode == CompositorMode::Seek ? QStringLiteral("seek")
+                                                                    : QStringLiteral("layout");
+    QJsonObject o{{"schema", "mvm-p2-formal-1"},
+                  {"formal_contract_version", "P2-D1-1"},
+                  {"mode", mode},
+                  {"formal_preflight", config_.formalPreflight},
+                  {"process_exit_code", exitCode_},
+                  {"configured_seed", static_cast<qint64>(config_.seed)},
+                  {"configured_warmup_seconds", config_.warmupSeconds},
+                  {"configured_measure_seconds", config_.measureSeconds},
+                  {"configured_seek_count", config_.seekCount},
+                  {"measurement_elapsed_seconds", measureElapsedSeconds_},
+                  {"same_device_a", a.decodeDevicePointer == state_->nativeDevicePointer.load()},
                   {"same_device_b", b.decodeDevicePointer == state_->nativeDevicePointer.load()},
                   {"adapter_a", QString::fromStdString(a.adapter.description)},
                   {"adapter_b", QString::fromStdString(b.adapter.description)},
                   {"effective_fps", measureElapsedSeconds_ > 0
-                                        ? static_cast<double>(displayed) / measureElapsedSeconds_
+                                        ? static_cast<double>(measurement.displayed) /
+                                              measureElapsedSeconds_
                                         : 0},
-                  {"drop_rate", scheduled > 0
-                                    ? static_cast<double>(dropped) /
-                                          static_cast<double>(scheduled)
+                  {"drop_rate", measurement.scheduled > 0
+                                    ? static_cast<double>(measurement.dropped) /
+                                          static_cast<double>(measurement.scheduled)
                                     : 0},
-                  {"scheduled_output_count", scheduled},
-                  {"displayed_composition_count", displayed},
+                  {"measurement_composition_requested_count",
+                   measurement.compositionRequested},
+                  {"measurement_composition_drawn_count", measurement.compositionDrawn},
+                  {"measurement_gpu_submission_count", measurement.gpuSubmission},
+                  {"measurement_layer_draw_count", measurement.layerDraw},
+                  {"measurement_logical_clear_count", measurement.logicalClear},
+                  {"measurement_scheduled_output_count", measurement.scheduled},
+                  {"measurement_displayed_composition_count", measurement.displayed},
+                  {"measurement_dropped_output_count", measurement.dropped},
+                  {"measurement_drop_scheduler_deadline",
+                   measurement.dropSchedulerDeadline},
+                  {"measurement_drop_missing_source_a", measurement.dropMissingSourceA},
+                  {"measurement_drop_missing_source_b", measurement.dropMissingSourceB},
+                  {"measurement_drop_missing_both", measurement.dropMissingBoth},
+                  {"measurement_drop_stale_generation", measurement.dropStaleGeneration},
+                  {"measurement_drop_future_generation", measurement.dropFutureGeneration},
+                  {"measurement_drop_stale_composition_epoch",
+                   measurement.dropStaleCompositionEpoch},
+                  {"measurement_drop_render_failure", measurement.dropRenderFailure},
+                  {"measurement_present_callback_count", measurement.presentCallback},
+                  {"measurement_repeated_present_count", measurement.repeatedPresent},
+                  {"measurement_partial_gpu_issue_failure_count",
+                   measurement.partialGpuIssueFailure},
+                  {"measurement_completion_poll_failure_count",
+                   measurement.completionPollFailure},
+                  {"measurement_untracked_submission_count",
+                   measurement.untrackedSubmission},
+                  {"scheduled_output_count", measurement.scheduled},
+                  {"displayed_composition_count", measurement.displayed},
                   {"decoded_a_count", a.decodedFrameCount},
                   {"decoded_b_count", b.decodedFrameCount},
-                  {"paired_count", c.compositionRequestedCount},
-                  {"composition_submitted_count", c.gpuSubmissionCount},
-                  {"composition_displayed_count", displayed},
-                  {"present_callback_count",
-                   config_.mode == CompositorMode::Playback
-                       ? state_->presentCallbackCount.load() - presentsAtMeasureStart_
-                       : state_->presentCallbackCount.load()},
-                  {"dropped_output_count", dropped},
-                  {"scheduler_deadline_drop_count", state_->schedulerDeadlineDropCount.load()},
+                  {"paired_count", measurement.compositionRequested},
+                  {"composition_submitted_count", measurement.gpuSubmission},
+                  {"composition_displayed_count", measurement.displayed},
+                  {"present_callback_count", measurement.presentCallback},
+                  {"dropped_output_count", measurement.dropped},
+                  {"scheduler_deadline_drop_count", measurement.dropSchedulerDeadline},
                   {"missing_pair_drop_count", state_->missingPairDropCount.load()},
                   {"missing_source_a_drop_count", state_->missingSourceADropCount.load()},
                   {"missing_source_b_drop_count", state_->missingSourceBDropCount.load()},
-                  {"repeated_present_count", state_->repeatedPresentCount.load()},
+                  {"repeated_present_count", measurement.repeatedPresent},
                   {"pending_pair_count", static_cast<qint64>(a.bufferDepth + b.bufferDepth)},
                   {"retired_not_completed", static_cast<qint64>(c.retirementDepthAfterDrain)},
                   {"mixed_source_frame_count", state_->coordinator.mixedSourceFrameCount()},
@@ -323,6 +531,10 @@ bool CompositorSpikeController::writeMetrics() {
                   {"cpu_full_frame_readback_count", state_->readbacks.fullFrameReadbacks()},
                   {"marker_band_readback_count", state_->readbacks.markerBandReadbacks()},
                   {"output_probe_readback_count", state_->readbacks.outputProbeReadbacks()},
+                  {"marker_a_checked_count", state_->markerAChecked.load()},
+                  {"marker_b_checked_count", state_->markerBChecked.load()},
+                  {"marker_a_mismatch", state_->markerAMismatch.load()},
+                  {"marker_b_mismatch", state_->markerBMismatch.load()},
                   {"gpu_submission_count", c.gpuSubmissionCount},
                   {"untracked_submission_count", c.untrackedSubmissionCount},
                   {"completion_poll_failure_count", c.completionPollFailureCount},
@@ -334,11 +546,15 @@ bool CompositorSpikeController::writeMetrics() {
                   {"lifecycle_order_violation_count", state_->lifecycleOrderViolationCount.load()},
                   {"teardown_success", state_->teardownComplete.load()},
                   {"final_report_written_after_teardown", state_->teardownComplete.load()},
-                  {"gpu_passes_per_composition", displayed > 0 ? 1 : 0},
+                  {"gpu_passes_per_composition",
+                   measurement.displayed > 0
+                       ? static_cast<double>(measurement.gpuSubmission) /
+                             static_cast<double>(measurement.displayed)
+                       : 0.0},
                   {"full_frame_gpu_copy_count", c.fullFrameGpuCopyCount},
-                  {"logical_clear_count", config_.mode == CompositorMode::Playback
-                                                ? state_->logicalClearCount.load() - clearsAtMeasureStart_
-                                                : state_->logicalClearCount.load()},
+                  {"logical_clear_count", measurement.logicalClear},
+                  {"actual_target_probe_checked_count",
+                   state_->actualTargetProbeChecked.load()},
                   {"actual_target_probe_mismatch", state_->actualTargetProbeMismatch.load()},
                   {"partial_gpu_issue_failure_count", c.partialGpuIssueFailureCount},
                   {"compose_after_fatal_rejected_count", c.composeAfterFatalRejectedCount},

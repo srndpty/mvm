@@ -17,6 +17,7 @@ void usage() {
                  "--metrics <json> [options]\n"
                  "  --warmup-seconds <n> --measure-seconds <n> --seed <n>\n"
                  "  --seek-count <n> --display-timeout-ms <n>\n"
+                 "  --formal-preflight\n"
                  "  --gpu-completion fence|event_query --mode playback|seek|layout\n");
 }
 
@@ -49,7 +50,8 @@ bool parse(const QStringList& args, CompositorSpikeConfig& config) {
             config.testFault = value();
             if (config.testFault != "device_change" && config.testFault != "completion_fatal")
                 return false;
-        } else return false;
+        } else if (arg == "--formal-preflight") config.formalPreflight = true;
+        else return false;
     }
     return !config.sourceA.isEmpty() && !config.sourceB.isEmpty() &&
            !config.metricsPath.isEmpty() && config.warmupSeconds >= 0 &&
