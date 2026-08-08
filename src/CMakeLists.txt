@@ -59,6 +59,8 @@ add_library(mvm_gpu_preview STATIC
     media/gpu_preview/exact_frame_pairer.cpp
     media/gpu_preview/source_decode_worker.cpp
     media/gpu_preview/gpu_compositor.cpp
+    media/gpu_preview/composition_display_ledger.cpp
+    media/gpu_preview/output_scheduler.cpp
 )
 target_include_directories(mvm_gpu_preview PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_gpu_preview
@@ -79,6 +81,7 @@ if(MVM_ENABLE_QT)
     # 決めたのと同じ規則を QRhi に対して適用する (docs/phase1-plan.md §7)。
     add_library(mvm_preview_qt STATIC
         app/preview/preview_rhi_item.cpp
+        app/preview/compositor_rhi_item.cpp
     )
     set_target_properties(mvm_preview_qt PROPERTIES AUTOMOC ON)
     target_include_directories(mvm_preview_qt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

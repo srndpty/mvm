@@ -94,8 +94,8 @@ bool SourceFrameBuffer::takeExactPair(SourceFrameBuffer& a, SourceFrameBuffer& b
     frameB = std::move(b.frames_.front());
     a.frames_.pop_front();
     b.frames_.pop_front();
-    a.changed_.notify_all();
-    b.changed_.notify_all();
+    // composition drawより先にdecode workerを起こすと、shared D3D11 context lockを
+    // workerが奪いdeadlineを遅らせる。空き通知はactual display後のnoteDisplayedで行う。
     return true;
 }
 
@@ -112,8 +112,11 @@ size_t SourceFrameBuffer::discardBefore(long long frameNumber) {
 }
 
 void SourceFrameBuffer::noteDisplayed(long long frameNumber) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    displayed_ = frameNumber;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        displayed_ = frameNumber;
+    }
+    changed_.notify_all();
 }
 
 bool SourceFrameBuffer::waitForSpace(int timeoutMs) {

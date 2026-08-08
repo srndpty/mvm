@@ -286,12 +286,63 @@ bool checkInvariants(const GpuCompositorCounters& c, std::string& err) {
     return true;
 }
 
+bool runLatentFailureCases(OwnedDevice& owned, ReadbackCounters& readbacks, std::string& err) {
+    std::fprintf(stderr, "[compositor_initialize_rollback_negative]\n");
+    for (auto fault :
+         {GpuCompositorInitializeFault::Completion, GpuCompositorInitializeFault::TargetTexture,
+          GpuCompositorInitializeFault::TargetRtv, GpuCompositorInitializeFault::TargetSrv}) {
+        GpuCompositor compositor;
+        compositor.setTestFaults({fault, -1});
+        if (compositor.initialize(owned.shared, readbacks, kW, kH, err) || compositor.ready()) {
+            err = "initialize fault後にready/resourceが残りました";
+            return false;
+        }
+        compositor.setTestFaults({});
+        err.clear();
+        if (!compositor.initialize(owned.shared, readbacks, kW, kH, err) ||
+            !compositor.shutdown(10000, err)) {
+            err = "initialize rollback後に再initializeできません: " + err;
+            return false;
+        }
+    }
+
+    std::fprintf(stderr, "[compositor_partial_gpu_issue_negative]\n"
+                         "[compositor_fatal_gate_negative]\n");
+    OwnedNv12 aTexture, bTexture;
+    if (!makeNv12(owned.device, 16, 16, 81, 90, 240, 81, 90, 240, aTexture, err) ||
+        !makeNv12(owned.device, 16, 16, 145, 54, 34, 145, 54, 34, bTexture, err))
+        return false;
+    auto a = fixtureFrame(aTexture, {1}, {20});
+    auto b = fixtureFrame(bTexture, {2}, {21});
+    GpuCompositor compositor;
+    if (!compositor.initialize(owned.shared, readbacks, kW, kH, err))
+        return false;
+    compositor.setTestFaults({GpuCompositorInitializeFault::None, 1});
+    if (compositor.compose(composition(a, b, 0.75f), err) || !compositor.fatal() ||
+        compositor.counters().partialGpuIssueFailureCount != 1 ||
+        compositor.counters().gpuSubmissionCount != 1) {
+        err = "partial issueをtracked retirement付きfatalへ遷移できませんでした";
+        return false;
+    }
+    const long long draws = compositor.counters().layerDrawCount;
+    if (compositor.compose(composition(a, b, 0.75f), err) ||
+        compositor.counters().composeAfterFatalRejectedCount != 1 ||
+        compositor.counters().layerDrawCount != draws) {
+        err = "fatal後のcomposeがGPU command発行前に拒否されませんでした";
+        return false;
+    }
+    return compositor.shutdown(10000, err);
+}
+
 int run(const std::string& pathA, const std::string& pathB) {
     OwnedDevice owned;
     ReadbackCounters readbacks;
     std::string err;
     if (!owned.create(err))
         return fail(err, 5);
+
+    if (!runLatentFailureCases(owned, readbacks, err))
+        return fail(err);
 
     GpuCompositor fence;
     if (!fence.initialize(owned.shared, readbacks, kW, kH, err))

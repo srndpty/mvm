@@ -36,6 +36,24 @@ void GpuCompositor::releaseTarget() {
     safeRelease(target_);
 }
 
+void GpuCompositor::rollbackInitialize() {
+    releaseTarget();
+    completion_.release();
+    converter_.release();
+    shared_ = nullptr;
+    width_ = height_ = 0;
+    ready_ = false;
+    fatal_ = false;
+    fatalReason_.clear();
+}
+
+void GpuCompositor::enterFatal(const std::string& reason) {
+    if (!fatal_) {
+        fatal_ = true;
+        fatalReason_ = reason;
+    }
+}
+
 bool GpuCompositor::initialize(SharedD3D11Device& device, ReadbackCounters& readbacks, int width,
                                int height, std::string& err, GpuCompletionBackend backend) {
     if (ready_ || !device.valid() || width <= 0 || height <= 0) {
@@ -45,9 +63,17 @@ bool GpuCompositor::initialize(SharedD3D11Device& device, ReadbackCounters& read
     shared_ = &device;
     width_ = width;
     height_ = height;
-    if (!converter_.initialize(device, &readbacks, err) ||
-        !completion_.initialize(device, err, backend))
+    if (!converter_.initialize(device, &readbacks, err)) {
+        rollbackInitialize();
         return false;
+    }
+    if (testFaults_.initialize == GpuCompositorInitializeFault::Completion ||
+        !completion_.initialize(device, err, backend)) {
+        if (err.empty())
+            err = "test fault: completion initialize";
+        rollbackInitialize();
+        return false;
+    }
     D3D11_TEXTURE2D_DESC td{};
     td.Width = static_cast<UINT>(width);
     td.Height = static_cast<UINT>(height);
@@ -55,28 +81,70 @@ bool GpuCompositor::initialize(SharedD3D11Device& device, ReadbackCounters& read
     td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     td.SampleDesc.Count = 1;
     td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-    HRESULT rc = device.device()->CreateTexture2D(&td, nullptr, &target_);
-    if (SUCCEEDED(rc))
-        rc = device.device()->CreateRenderTargetView(target_, nullptr, &targetRtv_);
-    if (SUCCEEDED(rc))
-        rc = device.device()->CreateShaderResourceView(target_, nullptr, &targetSrv_);
+    HRESULT rc = testFaults_.initialize == GpuCompositorInitializeFault::TargetTexture
+                     ? E_FAIL
+                     : device.device()->CreateTexture2D(&td, nullptr, &target_);
+    if (SUCCEEDED(rc)) {
+        if (testFaults_.initialize == GpuCompositorInitializeFault::TargetRtv)
+            rc = E_FAIL;
+        else
+            rc = device.device()->CreateRenderTargetView(target_, nullptr, &targetRtv_);
+    }
+    if (SUCCEEDED(rc)) {
+        if (testFaults_.initialize == GpuCompositorInitializeFault::TargetSrv)
+            rc = E_FAIL;
+        else
+            rc = device.device()->CreateShaderResourceView(target_, nullptr, &targetSrv_);
+    }
     if (FAILED(rc)) {
         err = hrText("offscreen render targetの生成", rc);
-        releaseTarget();
+        rollbackInitialize();
         return false;
     }
     ready_ = true;
     return true;
 }
 
-bool GpuCompositor::validateAllLayers(const ComposedFrame& frame, std::string& err) {
+bool GpuCompositor::initializeExternal(SharedD3D11Device& device, ReadbackCounters& readbacks,
+                                       std::string& err, GpuCompletionBackend backend) {
+    if (ready_ || !device.valid()) {
+        err = "GpuCompositorのexternal初期化引数が不正です";
+        return false;
+    }
+    shared_ = &device;
+    if (!converter_.initialize(device, &readbacks, err)) {
+        rollbackInitialize();
+        return false;
+    }
+    if (testFaults_.initialize == GpuCompositorInitializeFault::Completion ||
+        !completion_.initialize(device, err, backend)) {
+        if (err.empty())
+            err = "test fault: completion initialize";
+        rollbackInitialize();
+        return false;
+    }
+    ready_ = true;
+    return true;
+}
+
+bool GpuCompositor::prepareComposition(const ComposedFrame& frame,
+                                       const ExternalCompositionTarget& target, std::string& err) {
+    if (!target.rtv || target.width <= 0 || target.height <= 0) {
+        err = "composition targetが不正です";
+        return false;
+    }
     if (frame.layers.size() != 2) {
         err = "P2-C1 compositionは2 layer必須です";
         return false;
     }
     for (const auto& layer : frame.layers) {
         if (!layer.frame.valid() || layer.destination.width <= 0 || layer.destination.height <= 0 ||
-            layer.sourceUv.width <= 0 || layer.sourceUv.height <= 0 || layer.opacity < 0.0f ||
+            layer.destination.x < 0 || layer.destination.y < 0 ||
+            layer.destination.x + layer.destination.width > 1.0f ||
+            layer.destination.y + layer.destination.height > 1.0f || layer.sourceUv.width <= 0 ||
+            layer.sourceUv.height <= 0 || layer.sourceUv.x < 0 || layer.sourceUv.y < 0 ||
+            layer.sourceUv.x + layer.sourceUv.width > 1.0f ||
+            layer.sourceUv.y + layer.sourceUv.height > 1.0f || layer.opacity < 0.0f ||
             layer.opacity > 1.0f) {
             err = "composition layerの値が不正です";
             return false;
@@ -91,43 +159,88 @@ bool GpuCompositor::validateAllLayers(const ComposedFrame& frame, std::string& e
             err = "layer textureの実owner deviceがshared deviceと一致しません";
             return false;
         }
+        // SRV 生成を issue 前に終える。ここで失敗した場合 GPU command は 0。
+        if (!converter_.prepareLayer(layer.frame, err))
+            return false;
     }
     return true;
 }
 
 bool GpuCompositor::compose(const ComposedFrame& frame, std::string& err) {
+    if (!targetRtv_) {
+        ++counters_.compositionRequestedCount;
+        err = "external-only GpuCompositorではoffscreen composeを使用できません";
+        return false;
+    }
+    return composeToTarget(frame, {targetRtv_, width_, height_}, err);
+}
+
+bool GpuCompositor::composeToTarget(const ComposedFrame& frame,
+                                    const ExternalCompositionTarget& target, std::string& err) {
     ++counters_.compositionRequestedCount;
     if (!ready_) {
         err = "GpuCompositorが初期化されていません";
         return false;
     }
-    // validation passはGPU command発行より必ず先に完了させる。
-    if (!validateAllLayers(frame, err))
+    if (fatal_) {
+        ++counters_.composeAfterFatalRejectedCount;
+        err = "GpuCompositorはfatal状態です: " + fatalReason_;
         return false;
-    {
+    }
+    if (!prepareComposition(frame, target, err))
+        return false;
+    // owned offscreen wrapperだけがclearする。external targetはQRhi passがclear owner。
+    const bool clearTarget = target.rtv == targetRtv_;
+    return issueComposition(frame, target, clearTarget, err);
+}
+
+bool GpuCompositor::issueComposition(const ComposedFrame& frame,
+                                     const ExternalCompositionTarget& target, bool clearTarget,
+                                     std::string& err) {
+    if (clearTarget) {
         std::lock_guard<D3D11Lock> guard(shared_->lock());
         const float clear[4] = {0, 0, 0, 1};
-        shared_->context()->ClearRenderTargetView(targetRtv_, clear);
+        shared_->context()->ClearRenderTargetView(target.rtv, clear);
         ++counters_.clearCount;
     }
+    int layerIndex = 0;
     for (const auto& layer : frame.layers) {
         const FitRect destination{
-            static_cast<int>(std::lround(layer.destination.x * static_cast<float>(width_))),
-            static_cast<int>(std::lround(layer.destination.y * static_cast<float>(height_))),
-            static_cast<int>(std::lround(layer.destination.width * static_cast<float>(width_))),
-            static_cast<int>(std::lround(layer.destination.height * static_cast<float>(height_)))};
+            static_cast<int>(std::lround(layer.destination.x * static_cast<float>(target.width))),
+            static_cast<int>(std::lround(layer.destination.y * static_cast<float>(target.height))),
+            static_cast<int>(
+                std::lround(layer.destination.width * static_cast<float>(target.width))),
+            static_cast<int>(
+                std::lround(layer.destination.height * static_cast<float>(target.height)))};
         const float uv[4] = {layer.sourceUv.x, layer.sourceUv.y, layer.sourceUv.width,
                              layer.sourceUv.height};
-        if (!converter_.drawLayer(layer.frame, targetRtv_, destination, uv, layer.opacity, true,
-                                  err))
+        const bool injectedFailure = testFaults_.failBeforeLayerDraw == layerIndex;
+        if (injectedFailure)
+            err = "test fault: issue開始後のlayer描画失敗";
+        if (injectedFailure || !converter_.drawLayer(layer.frame, target.rtv, destination, uv,
+                                                     layer.opacity, true, err)) {
+            ++counters_.partialGpuIssueFailureCount;
+            const SubmissionResult partial = completion_.signalSubmission();
+            if (partial.tracked()) {
+                ++counters_.gpuSubmissionCount;
+                converter_.stampSubmissionSerial(partial.serial);
+                retirement_.retire(partial.serial, aggregateLifetime(frame));
+            } else {
+                ++counters_.untrackedSubmissionCount;
+                retirement_.retire(kNeverCompletingSerial, aggregateLifetime(frame));
+            }
+            enterFatal("issue開始後のlayer描画に失敗しました: " + err);
             return false;
+        }
         ++counters_.layerDrawCount;
+        ++layerIndex;
     }
     const SubmissionResult submission = completion_.signalSubmission();
     if (!submission.tracked()) {
         ++counters_.untrackedSubmissionCount;
         retirement_.retire(kNeverCompletingSerial, aggregateLifetime(frame));
         err = "composition submissionをGPU完了trackerで追跡できません";
+        enterFatal(err);
         return false;
     }
     ++counters_.gpuSubmissionCount;
@@ -135,14 +248,24 @@ bool GpuCompositor::compose(const ComposedFrame& frame, std::string& err) {
     converter_.stampSubmissionSerial(submission.serial);
     retirement_.retire(submission.serial, aggregateLifetime(frame));
     counters_.retirementDepthPeak = retirement_.depthPeak();
-    return poll(err);
+    if (!poll(err))
+        return false;
+    return true;
 }
 
 bool GpuCompositor::poll(std::string& err) {
+    if (testFaults_.failCompletionPoll) {
+        ++counters_.completionPollFailureCount;
+        err = "test fault: GPU completion poll failure";
+        enterFatal(err);
+        return false;
+    }
     const CompletionPollResult result = completion_.polledCompleted();
     if (result.status != CompletionPollStatus::Ok) {
         ++counters_.completionPollFailureCount;
-        err = "GPU completion pollに失敗しました";
+        err = completion_.fatalReason().empty() ? "GPU completion pollに失敗しました"
+                                                : completion_.fatalReason();
+        enterFatal(err);
         return false;
     }
     retirement_.poll(result.completed);
@@ -167,12 +290,25 @@ bool GpuCompositor::shutdown(int timeoutMs, std::string& err) {
     completion_.release();
     releaseTarget();
     ready_ = false;
+    shared_ = nullptr;
+    width_ = height_ = 0;
     return true;
 }
 
 bool GpuCompositor::readOutputProbe(int x, int y, int width, int height,
                                     std::vector<unsigned char>& rgba, std::string& err) {
     return converter_.readOutputProbe(target_, x, y, width, height, rgba, err);
+}
+
+bool GpuCompositor::readExternalOutputProbe(ID3D11Texture2D* texture, int x, int y, int width,
+                                            int height, std::vector<unsigned char>& rgba,
+                                            std::string& err) {
+    return converter_.readOutputProbe(texture, x, y, width, height, rgba, err);
+}
+
+bool GpuCompositor::readSourceProbe(const DecodedGpuFrame& frame, float u, float v,
+                                    std::vector<unsigned char>& rgba, std::string& err) {
+    return converter_.readSourceProbe(frame, u, v, rgba, err);
 }
 
 bool GpuCompositor::readSourceMarker(const DecodedGpuFrame& frame, int width, int height,

@@ -550,6 +550,37 @@ bool Nv12Converter::drawLayer(const DecodedGpuFrame& frame, ID3D11RenderTargetVi
     return drawInternal(frame, rtv, destination, sourceUv, linearFilter, opacity, err);
 }
 
+bool Nv12Converter::readSourceProbe(const DecodedGpuFrame& frame, float u, float v,
+                                    std::vector<unsigned char>& rgbaOut, std::string& err) {
+    if (!ready_ || !frame.valid() || u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f) {
+        err = "source pixel probeの引数が不正です";
+        return false;
+    }
+    std::lock_guard<D3D11Lock> guard(shared_->lock());
+    if (!ensureReadbackSurfaces(1, 1, err))
+        return false;
+    const float pixelU = 1.0f / static_cast<float>(frame.width);
+    const float pixelV = 1.0f / static_cast<float>(frame.height);
+    const float uv[4] = {u - pixelU * 0.5f, v - pixelV * 0.5f, pixelU, pixelV};
+    if (!drawInternal(frame, bandRtv_, {0, 0, 1, 1}, uv, true, 1.0f, err))
+        return false;
+    shared_->context()->CopyResource(bandStaging_, bandTexture_);
+    if (!mapReadbackSurface(1, 1, rgbaOut, err))
+        return false;
+    counters_->noteColorPatchReadback();
+    return true;
+}
+
+bool Nv12Converter::prepareLayer(const DecodedGpuFrame& frame, std::string& err) {
+    if (!ready_ || !frame.valid()) {
+        err = "compositor layerの準備引数が不正です";
+        return false;
+    }
+    SrvPair ignored;
+    std::lock_guard<D3D11Lock> guard(shared_->lock());
+    return acquireSrvs(frame, ignored, err);
+}
+
 // MVM_ALLOW_SMALL_REGION_READBACK
 bool Nv12Converter::ensureReadbackSurfaces(int width, int height, std::string& err) {
     if (bandWidth_ == width && bandHeight_ == height)

@@ -110,6 +110,7 @@ add_subdirectory(src)
 if(MVM_ENABLE_QT)
     qt_standard_project_setup(REQUIRES 6.5)
     add_subdirectory(apps/preview_spike)
+    add_subdirectory(apps/compositor_spike)
 endif()
 
 include(CTest)
