@@ -125,6 +125,16 @@ int main() {
           "audio clock regression を fail-closed にする");
     check(scheduleVideoForAudio(100 * 800, 99, 99, 100).action == AudioVideoScheduleAction::End,
           "video end boundary を検出する");
+    check(!formalVideoTargetForSample(0, kFormalPlaybackSamples).measurementEnded &&
+              formalVideoTargetForSample(0, kFormalPlaybackSamples).frameNumber == 0,
+          "formal sample 0 は frame 0 へ写像する");
+    check(formalVideoTargetForSample(799, kFormalPlaybackSamples).frameNumber == 0 &&
+              formalVideoTargetForSample(800, kFormalPlaybackSamples).frameNumber == 1,
+          "formal frame 境界を整数 sample で写像する");
+    check(formalVideoTargetForSample(2'879'999, kFormalPlaybackSamples).frameNumber == 3'599,
+          "formal 終端直前は frame 3599 へ写像する");
+    check(formalVideoTargetForSample(2'880'000, kFormalPlaybackSamples).measurementEnded,
+          "formal end sample では測定終了とする negative endpoint test");
     check(scheduleVideoForAudio(-1, -1, -1, 100).action == AudioVideoScheduleAction::Invalid,
           "負の audio sample を拒否する negative test");
     check(!isVideoAheadViolation(2, 800) && isVideoAheadViolation(3, 800),

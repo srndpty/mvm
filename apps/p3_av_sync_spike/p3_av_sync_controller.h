@@ -22,6 +22,8 @@ struct P3AvConfig {
     int seekCount = 64;
     unsigned int seed = 20260808;
     int displayTimeoutMs = 3000;
+    bool formalContract = false;
+    int warmupSeconds = 5;
 };
 
 class P3AvSyncController final : public QObject {
@@ -35,7 +37,7 @@ Q_SIGNALS:
     void finished();
 
 private:
-    enum class Phase { WaitDevice, Start, WaitDisplay, Playback, PauseStart, PauseWait,
+    enum class Phase { WaitDevice, Start, WaitDisplay, Warmup, Playback, PauseStart, PauseWait,
                        ResumePlayback, ShutdownWait, Done };
     struct SeekRecord {
         long long requestedFrame = -1;
@@ -51,11 +53,31 @@ private:
         double allMediaReadyMs = -1;
         double resumeToFirstVideoMs = -1;
         double requestToFirstVideoMs = -1;
+        bool firstDisplayApplicationAvProjectionValid = false;
+        double firstDisplayApplicationAvDeltaMs = 0.0;
+    };
+
+    struct MeasurementBaseline {
+        long long pairWait = 0;
+        long long targetSuperseded = 0;
+        long long staleA = 0;
+        long long staleB = 0;
+        long long underflow = 0;
+        long long overflow = 0;
+        long long markerAMismatch = 0;
+        long long markerBMismatch = 0;
+        long long mixedPair = 0;
+        long long mixedGeneration = 0;
+        long long staleEpoch = 0;
+        long long ahead = 0;
+        long long clockRegression = 0;
+        long long qpcFallback = 0;
+        long long audioClockQueryFailure = 0;
     };
 
     void tick();
     bool openPipelines();
-    bool startAtFrame(long long targetFrame);
+    bool startAtFrame(long long targetFrame, bool measurementStart = false);
     bool pollFirstDisplay();
     void startShutdown(const QString& reason, bool failure);
     bool writeMetrics() const;
@@ -87,6 +109,17 @@ private:
     bool pauseVideoAdvanceZero_ = false;
     bool pauseGenerationStable_ = false;
     bool coordinatorConfigured_ = false;
+    bool warmupResetComplete_ = false;
+    MeasurementBaseline measurementBaseline_;
+    long long observedMeasurementEndSample_ = -1;
+    long long pauseDisplayCount_ = -1;
+    long long pauseGeneration_ = -1;
+    long long pauseQpcFallback_ = -1;
+    long long seekTimeoutCount_ = 0;
+    long long seekBusyAcceptanceCount_ = 0;
+    long long seekGenerationMismatchCount_ = 0;
+    long long seekStaleCompletionCount_ = 0;
+    QString seekTimeoutDiagnostic_;
 };
 
 } // namespace mvm::app

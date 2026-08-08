@@ -34,6 +34,7 @@ param(
 
     [switch]$Clean,
     [switch]$ConfigureOnly,
+    [string]$Target,
     [string]$Ucrt64 = 'C:\msys64\ucrt64'
 )
 
@@ -77,7 +78,9 @@ try {
     }
 
     Write-Host "`n--- build ---" -ForegroundColor Yellow
-    & $CMake --build --preset $Preset
+    $buildArguments = @('--build','--preset',$Preset)
+    if ($Target) { $buildArguments += @('--target',$Target) }
+    & $CMake @buildArguments
     if ($LASTEXITCODE -ne 0) { throw "build に失敗しました (exit $LASTEXITCODE)" }
 
     Write-Host "`n完了。成果物:" -ForegroundColor Green

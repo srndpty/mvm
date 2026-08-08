@@ -127,7 +127,7 @@ bool P3AvSyncController::openPipelines() {
     return true;
 }
 
-bool P3AvSyncController::startAtFrame(long long targetFrame) {
+bool P3AvSyncController::startAtFrame(long long targetFrame, bool measurementStart) {
     state_->audioMasterSchedulerEnabled.store(false, std::memory_order_release);
     state_->playbackSchedulerEnabled.store(false, std::memory_order_release);
     state_->requestedOutput.store(-1, std::memory_order_release);
@@ -154,16 +154,67 @@ bool P3AvSyncController::startAtFrame(long long targetFrame) {
     if (requestA != gpu::SeekRequestResult::Accepted ||
         requestB != gpu::SeekRequestResult::Accepted ||
         requestAudio != audio::AudioSeekRequestResult::Accepted) {
+        ++seekBusyAcceptanceCount_;
         startShutdown(QStringLiteral("integrated seek request が拒否されました"), true);
         return false;
     }
     gpu::SeekCompletion completionA;
     gpu::SeekCompletion completionB;
     audio::AudioSeekCompletion completionAudio;
-    if (workerA_->waitSeek(ticketA, 5000, completionA) != gpu::SeekWaitResult::Ready ||
-        workerB_->waitSeek(ticketB, 5000, completionB) != gpu::SeekWaitResult::Ready ||
-        audioWorker_->waitSeek(audioTicket, 5000, completionAudio) !=
-            audio::AudioSeekWaitResult::Ready ||
+    bool readyA = false;
+    bool readyB = false;
+    bool readyAudio = false;
+    const auto commonDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!(readyA && readyB && readyAudio) && std::chrono::steady_clock::now() < commonDeadline) {
+        if (!readyA) {
+            const auto result = workerA_->waitSeek(ticketA, 0, completionA);
+            readyA = result == gpu::SeekWaitResult::Ready;
+            if (result == gpu::SeekWaitResult::StaleTicket)
+                ++seekStaleCompletionCount_;
+        }
+        if (!readyB) {
+            const auto result = workerB_->waitSeek(ticketB, 0, completionB);
+            readyB = result == gpu::SeekWaitResult::Ready;
+            if (result == gpu::SeekWaitResult::StaleTicket)
+                ++seekStaleCompletionCount_;
+        }
+        if (!readyAudio) {
+            const auto result = audioWorker_->waitSeek(audioTicket, 0, completionAudio);
+            readyAudio = result == audio::AudioSeekWaitResult::Ready;
+            if (result == audio::AudioSeekWaitResult::StaleTicket)
+                ++seekStaleCompletionCount_;
+        }
+        if (!(readyA && readyB && readyAudio))
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    if (!(readyA && readyB && readyAudio)) {
+        ++seekTimeoutCount_;
+        const auto da = workerA_->seekDiagnosticSnapshot();
+        const auto db = workerB_->seekDiagnosticSnapshot();
+        seekTimeoutDiagnostic_ = QStringLiteral(
+            "A(ticket=%1 phase=%2 generation=%3 depth=%4 ready=%5) "
+            "B(ticket=%6 phase=%7 generation=%8 depth=%9 ready=%10) "
+            "audio(ticket=%11 generation=%12 depth=%13 ready=%14)")
+                                     .arg(ticketA.requestId)
+                                     .arg(QString::fromLatin1(gpu::toString(da.phase)))
+                                     .arg(workerA_->snapshot().sourceGeneration.value)
+                                     .arg(workerA_->buffer().depth())
+                                     .arg(readyA)
+                                     .arg(ticketB.requestId)
+                                     .arg(QString::fromLatin1(gpu::toString(db.phase)))
+                                     .arg(workerB_->snapshot().sourceGeneration.value)
+                                     .arg(workerB_->buffer().depth())
+                                     .arg(readyB)
+                                     .arg(audioTicket.requestId)
+                                     .arg(audioWorker_->snapshot().sourceGeneration.value)
+                                     .arg(audioWorker_->queue().snapshot().queuedSamples)
+                                     .arg(readyAudio);
+        startShutdown(QStringLiteral("integrated seek 共通 5 秒 deadline timeout: ") +
+                          seekTimeoutDiagnostic_,
+                      true);
+        return false;
+    }
+    if (
         completionA.status != gpu::SeekCompletionStatus::Completed ||
         completionB.status != gpu::SeekCompletionStatus::Completed || !completionAudio.completed ||
         completionA.decodedFrameNumber != targetFrame ||
@@ -212,6 +263,34 @@ bool P3AvSyncController::startAtFrame(long long targetFrame) {
         !audioWorker_->queue().waitForSamples(audio::kAudioPrerollSamples, 5000)) {
         startShutdown(QStringLiteral("固定 video/audio pre-roll を満たせません"), true);
         return false;
+    }
+    if (measurementStart) {
+        const auto queue = audioWorker_->queue().snapshot();
+        measurementBaseline_ = {
+            state_->videoPairWaitCount.load(),
+            state_->videoTargetSupersededCount.load(),
+            state_->audioClockVideoStaleDiscardA.load(),
+            state_->audioClockVideoStaleDiscardB.load(),
+            static_cast<long long>(queue.underflowCount),
+            static_cast<long long>(queue.overflowRejectCount),
+            state_->markerAMismatch.load(),
+            state_->markerBMismatch.load(),
+            state_->coordinator.mixedSourceFrameCount(),
+            state_->coordinator.mixedGenerationCount(),
+            state_->coordinator.staleCompositionEpochCount(),
+            state_->videoAheadViolationCount.load(),
+            state_->videoClockRegressionCount.load(),
+            state_->videoQpcMasterFallbackCount.load(),
+            static_cast<long long>(audioClock_->snapshot().clockQueryFailureCount)};
+        {
+            std::lock_guard<std::mutex> lock(state_->p3MeasurementDisplayMutex);
+            state_->p3MeasurementDisplays.clear();
+        }
+        const long long requiredSamples =
+            static_cast<long long>(config_.durationSeconds) * audio::kInternalSampleRate;
+        state_->p3MeasurementEndSampleExclusive.store(requiredSamples,
+                                                       std::memory_order_release);
+        state_->p3MeasurementActive.store(true, std::memory_order_release);
     }
     if (!audioSink_->play(targetSample, completionAudio.seekGeneration, error)) {
         startShutdown(QString::fromStdString(error), true);
@@ -264,6 +343,8 @@ bool P3AvSyncController::pollFirstDisplay() {
     record.firstDisplayedVideoFrame = display.outputFrameNumber;
     record.resumeToFirstVideoMs = qpcMs(audioStartQpc_, display.displayRecordQpc);
     record.requestToFirstVideoMs = qpcMs(requestStartQpc_, display.displayRecordQpc);
+    record.firstDisplayApplicationAvProjectionValid = display.applicationAvProjectionValid;
+    record.firstDisplayApplicationAvDeltaMs = display.applicationAvDeltaMs;
     if (record.firstAudioSample != record.requestedAudioSample ||
         record.firstDisplayedVideoFrame != record.requestedFrame) {
         startShutdown(QStringLiteral("first audio/video identity が seek target と不一致です"),
@@ -324,7 +405,9 @@ void P3AvSyncController::tick() {
     case Phase::Start:
         if (openPipelines()) {
             seekIndex_ = 0;
-            startAtFrame(seekTargets_.front());
+            const bool measurementStart =
+                config_.formalContract && config_.mode == P3AvMode::PauseResume;
+            startAtFrame(seekTargets_.front(), measurementStart);
         }
         break;
     case Phase::WaitDisplay:
@@ -338,12 +421,37 @@ void P3AvSyncController::tick() {
                 startAtFrame(seekTargets_[seekIndex_]);
         } else {
             runTimer_.restart();
-            phase_ = config_.mode == P3AvMode::PauseResume ? Phase::PauseStart : Phase::Playback;
+            if (config_.formalContract && config_.mode == P3AvMode::Playback &&
+                !warmupResetComplete_)
+                phase_ = Phase::Warmup;
+            else
+                phase_ =
+                    config_.mode == P3AvMode::PauseResume ? Phase::PauseStart : Phase::Playback;
         }
         break;
+    case Phase::Warmup: {
+        const auto clock = audioClock_->snapshot();
+        if (clock.mediaSamplePosition >=
+            static_cast<long long>(config_.warmupSeconds) * audio::kInternalSampleRate) {
+            warmupResetComplete_ = true;
+            startAtFrame(0, true);
+        }
+        break;
+    }
     case Phase::Playback:
-        if (runTimer_.elapsed() >= config_.durationSeconds * 1000)
+        if (config_.formalContract) {
+            const auto clock = audioClock_->snapshot();
+            const long long required =
+                static_cast<long long>(config_.durationSeconds) * audio::kInternalSampleRate;
+            if (clock.mediaSamplePosition >= required) {
+                observedMeasurementEndSample_ = clock.mediaSamplePosition;
+                state_->p3MeasurementActive.store(false, std::memory_order_release);
+                state_->audioMasterSchedulerEnabled.store(false, std::memory_order_release);
+                startShutdown(QStringLiteral("audio sample formal interval 完了"), false);
+            }
+        } else if (runTimer_.elapsed() >= config_.durationSeconds * 1000) {
             startShutdown(QStringLiteral("playback 完了"), false);
+        }
         break;
     case Phase::PauseStart:
         if (runTimer_.elapsed() >= 2000) {
@@ -358,6 +466,9 @@ void P3AvSyncController::tick() {
             }
             pauseAudioSample_ = audioClock_->snapshot().mediaSamplePosition;
             pauseVideoFrame_ = state_->audioMasterLastDisplayed.load();
+            pauseDisplayCount_ = state_->displayedCompositionCount.load();
+            pauseGeneration_ = static_cast<long long>(state_->audioMasterGeneration.load());
+            pauseQpcFallback_ = state_->videoQpcMasterFallbackCount.load();
             phaseTimer_.restart();
             phase_ = Phase::PauseWait;
         }
@@ -365,13 +476,16 @@ void P3AvSyncController::tick() {
     case Phase::PauseWait:
         if (phaseTimer_.elapsed() >= 1000) {
             pauseFrozen_ = audioClock_->snapshot().mediaSamplePosition == pauseAudioSample_;
-            pauseVideoAdvanceZero_ = state_->audioMasterLastDisplayed.load() == pauseVideoFrame_;
+            pauseVideoAdvanceZero_ = state_->audioMasterLastDisplayed.load() == pauseVideoFrame_ &&
+                                     state_->displayedCompositionCount.load() == pauseDisplayCount_;
             const auto audioGeneration = audioWorker_->snapshot().sourceGeneration.value;
             const auto aGeneration = workerA_->snapshot().sourceGeneration.value;
             const auto bGeneration = workerB_->snapshot().sourceGeneration.value;
             pauseGenerationStable_ = audioGeneration == state_->audioMasterGeneration.load() &&
+                                     static_cast<long long>(audioGeneration) == pauseGeneration_ &&
                                      aGeneration == displayExpectation_.sources[0].sourceGeneration.value &&
-                                     bGeneration == displayExpectation_.sources[1].sourceGeneration.value;
+                                     bGeneration == displayExpectation_.sources[1].sourceGeneration.value &&
+                                     state_->videoQpcMasterFallbackCount.load() == pauseQpcFallback_;
             workerA_->play();
             workerB_->play();
             audioWorker_->play();
@@ -387,9 +501,11 @@ void P3AvSyncController::tick() {
         }
         break;
     case Phase::ResumePlayback:
-        if (runTimer_.elapsed() >= 2000)
+        if (runTimer_.elapsed() >= 2000) {
+            state_->p3MeasurementActive.store(false, std::memory_order_release);
             startShutdown(QStringLiteral("pause/resume 完了"),
                           !(pauseFrozen_ && pauseVideoAdvanceZero_ && pauseGenerationStable_));
+        }
         break;
     case Phase::ShutdownWait:
         if (state_->teardownComplete.load(std::memory_order_acquire)) {
@@ -422,6 +538,226 @@ bool P3AvSyncController::writeMetrics() const {
     {
         std::lock_guard<std::mutex> lock(state_->applicationAvDeltaMutex);
         deltas = state_->applicationAvDeltaMs;
+    }
+    if (config_.formalContract) {
+        std::vector<P3MeasurementDisplayRecord> measurementDisplays;
+        {
+            std::lock_guard<std::mutex> lock(state_->p3MeasurementDisplayMutex);
+            measurementDisplays = state_->p3MeasurementDisplays;
+        }
+        const auto clock = audioClock_ ? audioClock_->snapshot() : audio::AudioClockSnapshot{};
+        const auto& compositor = state_->compositor.counters();
+        const long long requiredSamples =
+            static_cast<long long>(config_.durationSeconds) * audio::kInternalSampleRate;
+        const long long requiredFrames = requiredSamples / audio::kSamplesPerVideoFrame;
+        long long firstFrame = -1;
+        long long lastFrame = -1;
+        long long uniqueDisplayed = 0;
+        long long skipped = 0;
+        long long duplicate = 0;
+        long long nonIncreasing = 0;
+        std::vector<double> measurementDeltas;
+        QJsonArray displayJson;
+        for (const auto& display : measurementDisplays) {
+            displayJson.append(
+                QJsonObject{{"frame", display.outputFrameNumber},
+                            {"display_record_qpc", display.displayRecordQpc},
+                            {"application_av_projection_valid",
+                             display.applicationAvProjectionValid},
+                            {"application_av_delta_ms", display.applicationAvDeltaMs}});
+            if (firstFrame < 0)
+                firstFrame = display.outputFrameNumber;
+            if (lastFrame >= 0) {
+                if (display.outputFrameNumber == lastFrame)
+                    ++duplicate;
+                if (display.outputFrameNumber <= lastFrame)
+                    ++nonIncreasing;
+                else
+                    skipped += display.outputFrameNumber - lastFrame - 1;
+            }
+            if (display.outputFrameNumber != lastFrame)
+                ++uniqueDisplayed;
+            lastFrame = display.outputFrameNumber;
+            if (display.applicationAvProjectionValid)
+                measurementDeltas.push_back(display.applicationAvDeltaMs);
+        }
+        if (config_.mode == P3AvMode::Playback && lastFrame >= 0 && lastFrame < requiredFrames)
+            skipped += requiredFrames - lastFrame - 1;
+
+        std::vector<double> seekLatencies;
+        std::vector<double> seekDeltas;
+        QJsonArray seekJson;
+        for (const auto& value : seeks_) {
+            seekLatencies.push_back(value.requestToFirstVideoMs);
+            if (value.firstDisplayApplicationAvProjectionValid)
+                seekDeltas.push_back(value.firstDisplayApplicationAvDeltaMs);
+            seekJson.append(QJsonObject{
+                {"requested_frame", value.requestedFrame},
+                {"requested_audio_sample", value.requestedAudioSample},
+                {"audio_generation", static_cast<qint64>(value.audioGeneration)},
+                {"video_generation_a", static_cast<qint64>(value.videoGenerationA)},
+                {"video_generation_b", static_cast<qint64>(value.videoGenerationB)},
+                {"first_audio_sample", value.firstAudioSample},
+                {"first_displayed_video_frame", value.firstDisplayedVideoFrame},
+                {"audio_ready_ms", value.audioSeekReadyMs},
+                {"video_a_ready_ms", value.videoAReadyMs},
+                {"video_b_ready_ms", value.videoBReadyMs},
+                {"all_media_ready_ms", value.allMediaReadyMs},
+                {"resume_to_display_ms", value.resumeToFirstVideoMs},
+                {"request_to_first_display_ms", value.requestToFirstVideoMs},
+                {"first_display_application_av_projection_valid",
+                 value.firstDisplayApplicationAvProjectionValid},
+                {"first_display_application_av_delta_ms",
+                 value.firstDisplayApplicationAvDeltaMs}});
+        }
+
+        const auto delta = [&](long long current, long long baseline) {
+            return std::max(0LL, current - baseline);
+        };
+        const bool playbackAccounting =
+            config_.mode != P3AvMode::Playback ||
+            (firstFrame == 0 && nonIncreasing == 0 && uniqueDisplayed + skipped == requiredFrames);
+        const bool seekIdentity = std::all_of(seeks_.begin(), seeks_.end(), [](const auto& value) {
+            return value.firstAudioSample == value.requestedAudioSample &&
+                   value.firstDisplayedVideoFrame == value.requestedFrame &&
+                   value.firstDisplayApplicationAvProjectionValid;
+        });
+        const bool modeCount = config_.mode != P3AvMode::Seek ||
+                               seeks_.size() == static_cast<size_t>(config_.seekCount);
+        const long long underflow = delta(static_cast<long long>(queue.underflowCount),
+                                          measurementBaseline_.underflow);
+        const long long overflow = delta(static_cast<long long>(queue.overflowRejectCount),
+                                         measurementBaseline_.overflow);
+        const long long markerMismatch =
+            delta(state_->markerAMismatch.load(), measurementBaseline_.markerAMismatch) +
+            delta(state_->markerBMismatch.load(), measurementBaseline_.markerBMismatch);
+        const long long mixedPair = delta(state_->coordinator.mixedSourceFrameCount(),
+                                          measurementBaseline_.mixedPair);
+        const long long mixedGeneration = delta(state_->coordinator.mixedGenerationCount(),
+                                                measurementBaseline_.mixedGeneration);
+        const long long staleEpoch = delta(state_->coordinator.staleCompositionEpochCount(),
+                                           measurementBaseline_.staleEpoch);
+        const long long ahead =
+            delta(state_->videoAheadViolationCount.load(), measurementBaseline_.ahead);
+        const long long clockRegression =
+            delta(state_->videoClockRegressionCount.load(), measurementBaseline_.clockRegression);
+        const long long qpcFallback = delta(state_->videoQpcMasterFallbackCount.load(),
+                                            measurementBaseline_.qpcFallback);
+        const long long audioClockQueryFailure =
+            delta(static_cast<long long>(clock.clockQueryFailureCount),
+                  measurementBaseline_.audioClockQueryFailure);
+        const bool correctness =
+            exitCode_ == 0 && playbackAccounting && modeCount && seekIdentity && underflow == 0 &&
+            overflow == 0 && markerMismatch == 0 && mixedPair == 0 && mixedGeneration == 0 &&
+            staleEpoch == 0 && ahead == 0 && clockRegression == 0 && qpcFallback == 0 &&
+            audioClockQueryFailure == 0 && seekTimeoutCount_ == 0 &&
+            seekBusyAcceptanceCount_ == 0 && seekGenerationMismatchCount_ == 0 &&
+            seekStaleCompletionCount_ == 0 && state_->deviceLostCount.load() == 0 &&
+            state_->lifecycleOrderViolationCount.load() == 0 &&
+            state_->readbacks.fullFrameReadbacks() == 0 &&
+            compositor.fullFrameGpuCopyCount == 0 && a.softwareFrameRejectCount == 0 &&
+            b.softwareFrameRejectCount == 0 && sink.audioRenderThreadJoinLeak == 0 &&
+            audioDecoder.audioDecodeThreadJoinLeak == 0 && a.joined && b.joined && sink.joined &&
+            audioDecoder.joined &&
+            (config_.mode != P3AvMode::PauseResume ||
+             (pauseFrozen_ && pauseVideoAdvanceZero_ && pauseGenerationStable_));
+
+        QJsonObject root{
+            {"schema", "mvm-p3-formal-1"},
+            {"contract_version", "P3-C-1"},
+            {"phase", "P3-C"},
+            {"formal_verdict", "NOT_RUN"},
+            {"mode", modeName(config_.mode)},
+            {"pass", correctness},
+            {"detail", shutdownReason_},
+            {"audio_master_only", true},
+            {"configured_video_preroll_frames", 8},
+            {"configured_audio_preroll_ms", audio::kAudioPrerollMs},
+            {"warmup_seconds", config_.warmupSeconds},
+            {"measurement_seconds", config_.durationSeconds},
+            {"measurement_audio_start_sample", 0},
+            {"measurement_audio_end_sample", requiredSamples},
+            {"observed_audio_stop_sample", observedMeasurementEndSample_},
+            {"required_measurement_samples", requiredSamples},
+            {"required_video_frames", requiredFrames},
+            {"measurement_video_first_frame", firstFrame},
+            {"measurement_video_last_frame", lastFrame},
+            {"measurement_video_displayed_unique_count", uniqueDisplayed},
+            {"measurement_video_skipped_frame_count", skipped},
+            {"measurement_duplicate_display_identity_count", duplicate},
+            {"measurement_non_increasing_display_count", nonIncreasing},
+            {"measurement_display_records", displayJson},
+            {"effective_video_fps",
+             config_.mode == P3AvMode::Playback
+                 ? static_cast<double>(uniqueDisplayed) / config_.durationSeconds
+                 : 0.0},
+            {"drop_rate", config_.mode == P3AvMode::Playback
+                              ? static_cast<double>(skipped) / requiredFrames
+                              : 0.0},
+            {"measurement_pair_wait_count",
+             delta(state_->videoPairWaitCount.load(), measurementBaseline_.pairWait)},
+            {"measurement_target_superseded_count",
+             delta(state_->videoTargetSupersededCount.load(),
+                   measurementBaseline_.targetSuperseded)},
+            {"measurement_stale_discard_a",
+             delta(state_->audioClockVideoStaleDiscardA.load(), measurementBaseline_.staleA)},
+            {"measurement_stale_discard_b",
+             delta(state_->audioClockVideoStaleDiscardB.load(), measurementBaseline_.staleB)},
+            {"measurement_audio_underflow_count", underflow},
+            {"measurement_audio_overflow_count", overflow},
+            {"measurement_marker_mismatch_count", markerMismatch},
+            {"measurement_mixed_pair_count", mixedPair},
+            {"measurement_mixed_generation_count", mixedGeneration},
+            {"measurement_stale_composition_epoch_count", staleEpoch},
+            {"measurement_video_ahead_violation_count", ahead},
+            {"measurement_clock_regression_count", clockRegression},
+            {"measurement_video_qpc_master_fallback_count", qpcFallback},
+            {"measurement_audio_clock_query_failure_count",
+             audioClockQueryFailure},
+            {"application_av_delta_ms", deltaDistribution(measurementDeltas, false)},
+            {"application_av_delta_abs_ms", deltaDistribution(measurementDeltas, true)},
+            {"application_av_projection_failure_count",
+             static_cast<qint64>(measurementDisplays.size() - measurementDeltas.size())},
+            {"endpoint_prefill_frames", static_cast<qint64>(sink.endpointPrefillFrames)},
+            {"endpoint_first_media_sample", sink.endpointFirstMediaSample},
+            {"clock_anchor_media_sample", sink.clockAnchorMediaSample},
+            {"integrated_seek_requested", config_.mode == P3AvMode::Seek ? config_.seekCount : 0},
+            {"integrated_seek_exact",
+             config_.mode == P3AvMode::Seek ? static_cast<int>(seeks_.size()) : 0},
+            {"integrated_seek_timeout_count", seekTimeoutCount_},
+            {"integrated_seek_busy_acceptance_count", seekBusyAcceptanceCount_},
+            {"integrated_seek_stale_completion_count", seekStaleCompletionCount_},
+            {"integrated_seek_generation_mismatch_count", seekGenerationMismatchCount_},
+            {"seek_timeout_diagnostic", seekTimeoutDiagnostic_},
+            {"seek_request_to_first_display_ms", deltaDistribution(seekLatencies, false)},
+            {"seek_first_display_application_av_delta_ms", deltaDistribution(seekDeltas, false)},
+            {"seeks", seekJson},
+            {"pause_clock_frozen", pauseFrozen_},
+            {"pause_video_advance_zero", pauseVideoAdvanceZero_},
+            {"pause_generation_stable", pauseGenerationStable_},
+            {"cpu_full_frame_readback_count", state_->readbacks.fullFrameReadbacks()},
+            {"full_frame_gpu_copy_count", compositor.fullFrameGpuCopyCount},
+            {"software_video_fallback_count",
+             a.softwareFrameRejectCount + b.softwareFrameRejectCount},
+            {"device_lost_count", state_->deviceLostCount.load()},
+            {"lifecycle_violation_count", state_->lifecycleOrderViolationCount.load()},
+            {"audio_render_thread_join_leak",
+             static_cast<qint64>(sink.audioRenderThreadJoinLeak)},
+            {"audio_decode_thread_join_leak",
+             static_cast<qint64>(audioDecoder.audioDecodeThreadJoinLeak)},
+            {"video_worker_a_joined", a.joined},
+            {"video_worker_b_joined", b.joined},
+            {"teardown_success", state_->teardownComplete.load()},
+            {"final_report_after_teardown", state_->teardownComplete.load()},
+            {"adapter", QString::fromStdString(a.adapter.description)},
+            {"audio_endpoint_sample_rate", sink.deviceFormat.sampleRate},
+            {"audio_endpoint_channels", sink.deviceFormat.channels},
+            {"audio_endpoint_sample_format", QString::fromStdString(sink.deviceFormat.sampleFormat)}};
+        QSaveFile file(config_.metricsPath);
+        if (!file.open(QIODevice::WriteOnly))
+            return false;
+        file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+        return file.commit() && correctness;
     }
     const bool seeksExact = std::all_of(seeks_.begin(), seeks_.end(), [](const SeekRecord& value) {
         return value.firstAudioSample == value.requestedAudioSample &&

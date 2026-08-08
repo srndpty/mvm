@@ -1,20 +1,5 @@
 # AGENTS.md
 
-mvm リポジトリで作業する人間およびエージェント向けの規約。
-
-**現在 Phase 1 / P1（GPU Preview Engine Spike）である。**
-Phase 0（MLT スパイク）は「MLT を採用しない」で終了した
-（[docs/phase0-decision.md](docs/phase0-decision.md)）。
-P1 の目的は、FFmpeg (D3D11VA) で decode した frame を CPU へ戻さずに
-Qt Quick 上へ表示できるかの判定だけであり、製品コードはまだ存在しない
-（[docs/phase1-plan.md](docs/phase1-plan.md)）。判定に必要のないものを作らないこと。
-
-**この規約は Phase 1 でもそのまま適用する。** 特に fail-closed、
-negative test の同時追加、指標の定義を先に決めること、
-「計測値を文書へ手で転記しない」は Phase 1 でも変えない。
-
----
-
 ## 言語
 
 **人間が読む想定の文章はすべて日本語で書く。**
@@ -43,22 +28,22 @@ negative test の同時追加、指標の定義を先に決めること、
 
 ### 責務の分離
 
-| 層 | 責務 | 依存してよいもの |
-| --- | --- | --- |
-| `src/core`, `src/project` | 純粋なデータと計算 | 何にも依存しない |
-| `src/util` | OS 依存の小さなヘルパ | Win32 |
-| `src/media/mlt` | MLT との唯一の接点 | MLT C API |
-| `src/app` | Qt シェル | Qt |
-| `tests/harness` | 検証 CLI | 上記の公開ヘッダのみ |
+| 層                        | 責務                  | 依存してよいもの     |
+| ------------------------- | --------------------- | -------------------- |
+| `src/core`, `src/project` | 純粋なデータと計算    | 何にも依存しない     |
+| `src/util`                | OS 依存の小さなヘルパ | Win32                |
+| `src/media/mlt`           | MLT との唯一の接点    | MLT C API            |
+| `src/app`                 | Qt シェル             | Qt                   |
+| `tests/harness`           | 検証 CLI              | 上記の公開ヘッダのみ |
 
 Phase 1 で追加した層:
 
-| 層 | 責務 | 依存してよいもの |
-| --- | --- | --- |
-| `src/core` | 純粋なデータと計算（marker reader を含む） | 何にも依存しない |
-| `src/media/gpu_preview` | FFmpeg (D3D11VA) と D3D11 | FFmpeg C API / D3D11。**Qt は不可** |
-| `src/app/preview` | QRhi / QQuickRhiItem との唯一の接点 | Qt（private API を含む） |
-| `apps/preview_spike` | P1 の検証アプリ | 上記の公開ヘッダと Qt |
+| 層                      | 責務                                       | 依存してよいもの                    |
+| ----------------------- | ------------------------------------------ | ----------------------------------- |
+| `src/core`              | 純粋なデータと計算（marker reader を含む） | 何にも依存しない                    |
+| `src/media/gpu_preview` | FFmpeg (D3D11VA) と D3D11                  | FFmpeg C API / D3D11。**Qt は不可** |
+| `src/app/preview`       | QRhi / QQuickRhiItem との唯一の接点        | Qt（private API を含む）            |
+| `apps/preview_spike`    | P1 の検証アプリ                            | 上記の公開ヘッダと Qt               |
 
 **MLT のヘッダを include してよいのは `src/media/mlt/` だけ。**
 同様に、**QRhi（Qt の private API）を include してよいのは `src/app/preview/` だけ。**
@@ -214,13 +199,13 @@ pwsh scripts/make-testmedia.ps1 -Mode Benchmark   # 性能計測用
 `docs/phase0-findings.md` は Phase 0 の中心的な記録である。
 記述は必ず次のいずれかに分類する。混ぜない。
 
-| 印 | 意味 |
-| --- | --- |
-| `[事実]` | 実際に実行して観測した。再現手順を併記する |
-| `[推測]` | 観測から導いた説明。ソースを読んで確かめてはいない |
-| `[未検証]` | まだ測っていない。できると仮定してはいけない |
-| `[回避策]` | 現在の対処。恒久策とは限らない |
-| `[exit]` | exit criteria への影響 |
+| 印         | 意味                                               |
+| ---------- | -------------------------------------------------- |
+| `[事実]`   | 実際に実行して観測した。再現手順を併記する         |
+| `[推測]`   | 観測から導いた説明。ソースを読んで確かめてはいない |
+| `[未検証]` | まだ測っていない。できると仮定してはいけない       |
+| `[回避策]` | 現在の対処。恒久策とは限らない                     |
+| `[exit]`   | exit criteria への影響                             |
 
 **「動くはず」を「動く」と書かない。** 過去に
 「MLT は開けなかった素材でも producer を返す」と書いたが、
@@ -238,13 +223,118 @@ Python worker、エフェクト UI、キーフレーム編集、レンダーキ�
 
 いずれも**「緑に見える」方向**の誤りだった。計測を書くときは必ず確認する。
 
-| 罠 | 症状 | 対処 |
-| --- | --- | --- |
-| 配信数を fps と呼ぶ | 60fps 出ているように見えて実際は 13.6fps | `rendered=1` の frame だけ数える。`delivered` と `effective` を分けて出す |
-| `real_time=0` で計測 | 何も描画せずに高い fps が出る | 拒否する（MLT は `mlt_frame_get_image` を呼ばない） |
-| `Sleep` 回数で経過時間 | 「6 秒計測」が 12.3 秒になる | `QueryPerformanceCounter` の実測値を使う |
-| マーカーのセル幅を決め打ち | 4K→1080p 合成で 314/314 不一致 | `readMarkerAuto`。同期は「19 セル全部が振り切れている」まで要求する |
-| proxy の音声を再エンコード | 尺が 1 frame 伸びて MLT からは 3601 frame に見える | `-c:a copy`。duration 差 1 frame **以上**で破棄 |
-| 中央値の max で判定 | 外れ値が隠れる | 全 run を通した**観測 max** も出して、そちらで判定する |
-| `WILL_FAIL` で negative test | クラッシュでも合格になる | `scripts/expect-exit.ps1` で終了コードを厳密に照合 |
-| 対象 0 件のテスト群 | 「全部通った」と報告される | `-N` で件数を数え、0 件なら失敗にする |
+| 罠                           | 症状                                               | 対処                                                                      |
+| ---------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------- |
+| 配信数を fps と呼ぶ          | 60fps 出ているように見えて実際は 13.6fps           | `rendered=1` の frame だけ数える。`delivered` と `effective` を分けて出す |
+| `real_time=0` で計測         | 何も描画せずに高い fps が出る                      | 拒否する（MLT は `mlt_frame_get_image` を呼ばない）                       |
+| `Sleep` 回数で経過時間       | 「6 秒計測」が 12.3 秒になる                       | `QueryPerformanceCounter` の実測値を使う                                  |
+| マーカーのセル幅を決め打ち   | 4K→1080p 合成で 314/314 不一致                     | `readMarkerAuto`。同期は「19 セル全部が振り切れている」まで要求する       |
+| proxy の音声を再エンコード   | 尺が 1 frame 伸びて MLT からは 3601 frame に見える | `-c:a copy`。duration 差 1 frame **以上**で破棄                           |
+| 中央値の max で判定          | 外れ値が隠れる                                     | 全 run を通した**観測 max** も出して、そちらで判定する                    |
+| `WILL_FAIL` で negative test | クラッシュでも合格になる                           | `scripts/expect-exit.ps1` で終了コードを厳密に照合                        |
+| 対象 0 件のテスト群          | 「全部通った」と報告される                         | `-N` で件数を数え、0 件なら失敗にする                                     |
+
+## Windows / CMake / Ninja ビルド運用
+
+このリポジトリでは MSYS2 UCRT64 の CMake/Ninja ビルドが長時間かかることがある。
+tool の command timeout と実際のビルドハングを混同しないこと。
+
+### ビルドの原則
+
+- CMake/Ninja のビルドには短い command timeout を設定しない。
+- 変更確認では、まず変更対象に対応する最小 target をビルドする。
+- full build / full CTest は必要なゲートでのみ実行する。
+- command invocation が timeout しただけでは、Ninja がハングしたと判断しない。
+- timeout 後に同じ build directory へ即座に別の build を重ねて起動しない。
+
+### timeout / 長時間ビルド時の確認
+
+ビルドが長時間返らない場合、ソースや Ninja metadata を変更する前に以下を確認する。
+
+1. 現在の repo/build directory を使用している cmake/ninja/compiler process が残っているか。
+2. CPU time が増えているか。
+3. child compiler (`g++`, `cc1plus` 等) が動作中か。
+4. process command line がこのリポジトリの build directory を指しているか。
+5. `.ninja_log` の更新時刻が進んでいるか。
+
+CPU / child process / log のいずれかが進行している場合は、原則として待つ。
+「tool timeout」だけを理由に process を kill しない。
+
+### process cleanup
+
+`Stop-Process -Name ninja,cmake` のような machine-wide kill を禁止する。
+
+cleanup が必要な場合は、このリポジトリの build directory を command line に含む
+process、または今回起動した build process tree の PID に限定する。
+
+別リポジトリやユーザーが起動した cmake/ninja/compiler processを終了しない。
+
+### Ninja metadata
+
+`.ninja_deps` / `.ninja_log` の削除・退避は通常のビルド手順として行わない。
+
+以下を確認した場合のみ recovery として行う。
+
+- この repo に属する残留 build process がすべて終了済み
+- source/build.ninja/CMake configure の状態に問題がない
+- Ninja が依存DB読み込み・依存走査付近で再現性をもって停止する
+- 通常の再実行でも再現する
+
+metadata recoveryを行った場合は、
+何を退避/削除したか、なぜ必要だったかを報告する。
+
+ソース変更によってビルド問題を回避しない。
+
+### recovery escalation
+
+順序は以下とする。
+
+1. active buildなら待つ
+2. repo-scoped residual processのみ終了
+3. 同じ build dir で再実行
+4. 必要なら CMake reconfigure
+5. Ninja metadata corruptionの根拠がある場合だけ `.ninja_deps` 等を退避して再生成
+6. 最後の手段として新しい clean build directory で再現確認
+
+既存 build directory を無条件で削除しない。
+
+「build directoryを保持している」「Ninja dependency DBが壊れている」等の原因を、
+process/logによる証拠なしに推定して修復操作へ進まない。
+
+agent の反復確認では `pwsh scripts/build.ps1 -Target <target>` を使う。
+timeout 後の読み取り専用診断は
+`pwsh scripts/build-diagnostics.ps1 -Preset ucrt64-release` を使い、表示された
+repo-scoped PID、CPU time、child compiler、`.ninja_log` 更新時刻を根拠に次の操作を決める。
+
+### Codex sandbox の既知制約
+
+この開発環境では、sandbox 内から CMake/Ninja を実行した場合に、
+Ninja 自体は起動するが child compiler (`g++` / `cc1plus`) が起動せず停止する事例を確認済み。
+
+確認済みの特徴:
+
+- CMake/Ninja process は存在する
+- CMake/Ninja の CPU time がほぼ増加しない
+- `g++` / `cc1plus` が存在しない
+- `.ninja_log` が進行しない
+- `ninja -n <target>` は正常かつ短時間で完了する
+- 新しい clean build directory でも同じ症状になる
+- 同じ公式 build command を sandbox 外で実行すると正常完了する
+
+この既知パターンに一致する場合、
+Ninja metadata corruption や source/CMake の問題を毎回再調査しない。
+
+1. `scripts/build-diagnostics.ps1` で上記signatureを確認する
+2. repo/build-dirへ重複buildを起動しない
+3. `.ninja_deps` / `.ninja_log` を変更しない
+4. clean build directoryを毎回作り直さない
+5. 公式 `scripts/build.ps1 -Target <target>` を sandbox 外で1回実行する
+
+sandbox 内での失敗だけを product/source の失敗として扱わない。
+sandbox 外でも再現した場合にのみ通常の recovery escalation へ戻る。
+
+### プロセス終了安全対策
+
+process command line を権限制約で取得できず repo ownership を確認できない場合、
+process名だけを根拠に終了してはいけない。
+終了可能なのは、このagent自身が起動してPID/process treeを追跡できているprocessだけとする。

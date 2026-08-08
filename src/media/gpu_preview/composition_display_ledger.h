@@ -18,6 +18,8 @@ struct CompositionDisplayRecord {
     long long displayRecordQpc = 0;
     long long outputFrameNumber = -1;
     long long frameNumber = -1;
+    bool applicationAvProjectionValid = false;
+    double applicationAvDeltaMs = 0.0;
     CompositionEpoch compositionEpoch{};
     std::vector<SourceFrameIdentity> sources;
 };
@@ -36,7 +38,9 @@ public:
     explicit CompositionDisplayLedger(size_t capacity = 512);
 
     unsigned long long record(const ComposedFrame& frame, long long displayedQpc,
-                              long long pairReadyQpc = 0, long long submissionQpc = 0);
+                              long long pairReadyQpc = 0, long long submissionQpc = 0,
+                              bool applicationAvProjectionValid = false,
+                              double applicationAvDeltaMs = 0.0);
     unsigned long long baseline() const;
     bool findAfter(unsigned long long baseline, const CompositionDisplayExpectation& expectation,
                    CompositionDisplayRecord& out) const;

@@ -6,6 +6,18 @@
 namespace mvm::audio {
 
 constexpr std::int64_t kSamplesPerVideoFrame = 800;
+constexpr std::int64_t kFormalPlaybackSamples = 2'880'000;
+constexpr std::int64_t kFormalPlaybackFrames = 3'600;
+
+// formal 区間は end sample を含まない。[0, endSampleExclusive) の外では
+// frame を新規 schedule しない。source の長さとは別の測定境界である。
+struct FormalVideoTarget {
+    bool measurementEnded = true;
+    std::int64_t frameNumber = -1;
+};
+
+FormalVideoTarget formalVideoTargetForSample(std::int64_t mediaSample,
+                                             std::int64_t endSampleExclusive);
 
 enum class AudioVideoScheduleAction { Hold, Request, CatchUp, End, ClockRegression, Invalid };
 enum class VideoMasterSource { AudioDeviceClock, Qpc };

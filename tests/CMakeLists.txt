@@ -748,6 +748,25 @@ foreach(_p3b_case Good NegativeFallback)
             -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/p3-b-contract-${_p3b_case_name}")
 endforeach()
 
+set(_p3c_contract_cases
+    Good
+    NegativeFps NegativeDrop NegativeAvP95 NegativeAvMax NegativeAvCount
+    NegativeScheduledAccounting NegativeFirstFrame NegativeAudioStartSample
+    NegativeUnderflow NegativeOverflow NegativeMarker NegativeMixedPair
+    NegativeGeneration NegativeAhead NegativeClockRegression NegativeQpcFallback
+    NegativeSeekCount999 NegativeSeekMismatch NegativeSeekTimeout NegativeSeekP95
+    NegativeSeekMax NegativePauseAdvance NegativePauseClock NegativeNaN
+    NegativeMissingProperty)
+foreach(_p3c_case IN LISTS _p3c_contract_cases)
+    string(TOLOWER "${_p3c_case}" _p3c_case_name)
+    mvm_add_test(p3_c_contract_${_p3c_case_name}
+        COMMAND pwsh -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/audio_preview/test-p3-c-contract.ps1"
+            -Case ${_p3c_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p3-c-contract.ps1"
+            -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/p3-c-contract-${_p3c_case_name}")
+endforeach()
+
 set(MVM_P3_AUDIO_FIXTURE "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4")
 if(EXISTS "${MVM_P3_AUDIO_FIXTURE}")
     mvm_add_test(p3_audio_fixture_decode
