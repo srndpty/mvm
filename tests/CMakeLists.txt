@@ -717,6 +717,36 @@ target_link_libraries(mvm_test_gpu_pure PRIVATE mvm::gpu_preview mvm::warnings)
 # 依存 DLL が解決できず 0xC0000135 で落ちる (実際に落ちた)。
 mvm_add_test(gpu_pure_unit COMMAND mvm_test_gpu_pure)
 
+# --- Phase 1 / P3-A: audio pipeline -----------------------------------------
+add_executable(mvm_test_audio_pure audio_preview/test_audio_pure.cpp)
+target_link_libraries(mvm_test_audio_pure PRIVATE mvm::audio_preview mvm::warnings)
+mvm_add_test(p3_audio_pure_unit COMMAND mvm_test_audio_pure)
+
+add_executable(mvm_p3_audio_smoke audio_preview/mvm_p3_audio_smoke.cpp)
+target_link_libraries(mvm_p3_audio_smoke PRIVATE mvm::audio_preview mvm::warnings)
+
+foreach(_p3_case Good NegativeCounter)
+    string(TOLOWER "${_p3_case}" _p3_case_name)
+    mvm_add_test(p3_a_contract_${_p3_case_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/audio_preview/test-p3-a-contract.ps1"
+            -Case ${_p3_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p3-a-contract.ps1"
+            -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/p3-a-contract-${_p3_case_name}")
+endforeach()
+
+set(MVM_P3_AUDIO_FIXTURE "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4")
+if(EXISTS "${MVM_P3_AUDIO_FIXTURE}")
+    mvm_add_test(p3_audio_fixture_decode
+        COMMAND mvm_p3_audio_smoke fixture "${MVM_P3_AUDIO_FIXTURE}"
+                "${CMAKE_CURRENT_BINARY_DIR}/p3-a-fixture.json"
+        PROPERTIES REQUIRED_FILES "${MVM_P3_AUDIO_FIXTURE}" TIMEOUT 120)
+else()
+    message(STATUS
+        "[mvm] P3-A fixture 未生成のため decode integration は未登録です。\n"
+        "  pwsh scripts/make-p3-fixture.ps1 を実行してください。")
+endif()
+
 add_executable(mvm_test_gpu_decode gpu_preview/test_gpu_decode.cpp)
 target_link_libraries(mvm_test_gpu_decode PRIVATE mvm::gpu_preview mvm::util mvm::warnings)
 

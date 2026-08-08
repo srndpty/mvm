@@ -69,6 +69,22 @@ target_link_libraries(mvm_gpu_preview
 )
 add_library(mvm::gpu_preview ALIAS mvm_gpu_preview)
 
+# --- Phase 1 / P3-A: audio pipeline -----------------------------------------
+# FFmpeg audio decode / bounded PCM queue / WASAPI / IAudioClock。Qt および
+# video scheduler へ依存させず、P2 runtime path を変更しない。
+add_library(mvm_audio_preview STATIC
+    media/audio_preview/audio_frame_queue.cpp
+    media/audio_preview/audio_clock.cpp
+    media/audio_preview/audio_decode_worker.cpp
+    media/audio_preview/wasapi_audio_sink.cpp
+)
+target_include_directories(mvm_audio_preview PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_audio_preview
+    PUBLIC PkgConfig::MVM_FFMPEG
+    PRIVATE ole32 uuid avrt mvm::warnings
+)
+add_library(mvm::audio_preview ALIAS mvm_audio_preview)
+
 # --- Qt probe ---------------------------------------------------------------
 # Qt が UCRT64 版であり、実際にリンク・起動できることを確認する。
 if(MVM_ENABLE_QT)

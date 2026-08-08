@@ -101,7 +101,7 @@ endif()
 # --- Phase 1 / P1: FFmpeg -----------------------------------------------------
 # UCRT64 の libav* だけを使う。ホストの C:\tools 版・winget 版へは落ちない。
 pkg_check_modules(MVM_FFMPEG REQUIRED IMPORTED_TARGET
-    libavformat libavcodec libavutil)
+    libavformat libavcodec libavutil libswresample)
 message(STATUS "[mvm] FFmpeg: libavcodec ${MVM_FFMPEG_libavcodec_VERSION}")
 
 add_subdirectory(src)
