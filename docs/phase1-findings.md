@@ -711,10 +711,72 @@ UCRT64のDLLを解決するPATHを明示し、共有proxy artifactの競合を�
 sample、B request result、first-ready境界のnegativeもこの回帰に含まれる。format、lint、
 `git diff --check`も通過した。
 
-### 16.5 [未検証] P2-D5-1 formalはclean HEAD freeze後に実行する
+### 16.5 [事実] clean HEADからP2-D5-1 formalを新規取得した
 
-新しい正式出力先は`build/ucrt64-release/p2-matrix-d5/`、contract versionは`P2-D5-1`である。
-ユーザーが変更をcommitしたclean HEADからPlayback 3 runとSeek 3 runをすべて新規取得する。
-現時点ではformal未実行のため、§15の
-**P2 FINAL FAIL under P2-D4-2**が最後の正式判定である。P2-D5-1がPASSした場合だけP1 formal
-regressionへ進み、P1もPASSした場合だけP2 FINAL PASSへ更新する。P3には進まない。
+formal対象HEADは`9ebe3f3eda0252512e7f8f965f01446910d9ae35`である。開始時の
+`git status --porcelain`は空で、matrix summaryの`dirty_worktree`はfalse、
+`provenance_unchanged_during_matrix`はtrueだった。旧D4 rawは流用せず、Playback 3 runと
+Seek 3 runをすべて新規取得して`build/ucrt64-release/p2-matrix-d5/`へ保存した。
+
+### 16.6 [事実] Playback formalは3/3通過した
+
+P2-D5-1、seed 20260808、fence、5秒warmup、固定8 frame pre-roll、60秒measurementで
+3 independent processを実行した。
+
+| run | effective fps | drop rate | pre-roll A/B | displayed / scheduled | missing | EOF A/B |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 59.7837 | 0.3333% | 9 / 8 | 3588 / 3600 | 0 | 0 / 0 |
+| 2 | 59.9002 | 0.1389% | 10 / 12 | 3595 / 3600 | 0 | 0 / 0 |
+| 3 | 59.8837 | 0.1667% | 16 / 9 | 3594 / 3600 | 0 | 0 / 0 |
+
+全dropはscheduler deadline分類だった。front A/B 0、first output 0、non-deadline drop、
+marker/probe mismatch、mixed frame/generation、stale composition epoch、CPU readback、
+full-frame GPU copyはいずれも全runで0だった。
+
+### 16.7 [事実] Seek formalはparallel dispatch 1000/1000で3/3通過した
+
+1000 deterministic seekを3 independent processで実行した。
+
+| run | p95 | observed max | parallel dispatch valid | execution overlap | contract |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 1 | 132.2224 ms | 216.4735 ms | 1000 / 1000 | 1000 / 1000 | PASS |
+| 2 | 132.7596 ms | 215.9984 ms | 1000 / 1000 | 999 / 1000 | PASS |
+| 3 | 132.4941 ms | 216.8287 ms | 1000 / 1000 | 999 / 1000 | PASS |
+
+全runでnearest-rank p95は150 ms以下、observed maxは400 ms以下であり、3000 seekの
+global observed maxは216.8287 msだった。display mismatch、timeout、stale completion、
+busy acceptance、publish reject、request mismatch、stopped superseded、software fallback、
+CPU full-frame readback、full-frame GPU copyは全runで0だった。run2とrun3の各1件の
+execution non-overlapはOS schedulingの診断値として保存し、formal判定には使用していない。
+
+6 run合計でmarker/probe mismatch、mixed frame/generation、stale epoch、untracked submission、
+completion failure、early release、retirement timeout、retirement after drain、device lost、
+lifecycle violationは0だった。全runでteardown successとfinal report after teardownが成立した。
+summaryは`all_playback_runs_pass = true`、`all_seek_runs_pass = true`、`p2_pass = true`である。
+
+### 16.8 [事実] P1 formal regressionも通過した
+
+P2-D5-1 PASS後、同じclean HEADで既存P1 contractを変更せずformal regressionを実行した。
+5秒warmup、60秒measurement、1000 seek、3 independent processで、各rawの契約92項目は
+判定対象と診断対象の全9 runで成立した。
+
+| source | gate | fps min | drop max | seek p95 max | seek observed max | marker mismatch |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 1080p60 H.264 | 対象 | 59.879 | 0 | 100.065 ms | 133.432 ms | 0 / 21 |
+| 1080p60 HEVC | 対象 | 59.891 | 0 | 50.325 ms | 117.496 ms | 0 / 21 |
+| 4K60 H.264 | 診断のみ | 59.754 | 0 | 250.897 ms | 281.889 ms | 0 / 21 |
+
+判定対象のH.264 / HEVCはsame adapter、same device、fence backendで、CPU full-frame readback、
+seek failure、seek display mismatch、early release、untracked submission、retirement timeout、
+device lostはいずれも0だった。正式summaryは`build/ucrt64-release/p1-matrix/summary.json`に
+保存し、`pass = true`、`violations = []`である。4Kのseek値は診断のみで判定に使用していない。
+
+### 16.9 [exit] P2 FINAL PASS under P2-D5-1
+
+P2-D5-1のPlayback 3/3、Seek 3/3、parallel dispatch各1000/1000と全既存MUSTが成立し、
+続くP1 formal regressionも通過した。したがって最終判定は
+**P2 FINAL PASS under P2-D5-1**である。
+
+§15のP2-D4-2におけるP2 FINAL FAILはhistorical resultとして維持する。P2-D4-2 contractでは
+FAILし、その後にcontract semanticsの過剰制約を修正してP2-D5-1で再評価した結果が本節の
+PASSである。P3には進まない。
