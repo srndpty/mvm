@@ -239,6 +239,25 @@ if ($rawLags.Count -ne $boundaries.Count) {
     }
 }
 
+# --- freeze 済み shutdown 順 (docs/phase4-plan.md §7) ------------------------
+# 期待値は raw から読まずここへ literal で書く。
+$expectedShutdown = @('DisableSchedulers', 'StopAudioSink', 'StopAudioDecodeWorker',
+                      'StopVideoWorkerA', 'StopVideoWorkerB', 'DetachSharedWorkerRefs',
+                      'RequestRenderTeardown')
+$actualShutdown = @($raw.shutdown_sequence)
+if ($actualShutdown.Count -ne $expectedShutdown.Count) {
+    Fail "shutdown_sequence の step 数が $($expectedShutdown.Count) ではありません: $($actualShutdown.Count)"
+} else {
+    for ($i = 0; $i -lt $expectedShutdown.Count; $i++) {
+        if ($actualShutdown[$i] -ne $expectedShutdown[$i]) {
+            Fail "shutdown step $i が freeze 順と違います: $($actualShutdown[$i]) != $($expectedShutdown[$i])"
+        }
+    }
+}
+NeedZero $raw 'shutdown_order_violation_count'
+NeedTrue $raw 'shutdown_workers_joined_before_teardown'
+NeedTrue $raw 'shutdown_render_teardown_requested'
+
 # --- 継承した P3 correctness / lifecycle counter ----------------------------
 foreach ($name in @('measurement_audio_underflow_count', 'measurement_audio_overflow_count',
                     'measurement_marker_mismatch_count', 'measurement_mixed_pair_count',

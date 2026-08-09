@@ -778,12 +778,32 @@ foreach(test_name IN LISTS MVM_PHASE4B_TESTS)
         COMMAND mvm_test_phase4b_integration ${test_name})
 endforeach()
 
+# --- Phase 4 / B.1: freeze 済み shutdown 順 ---------------------------------
+add_executable(mvm_test_phase4b_lifecycle gpu_preview/test_phase4b_lifecycle.cpp)
+target_link_libraries(mvm_test_phase4b_lifecycle PRIVATE mvm::gpu_preview mvm::warnings)
+set(MVM_PHASE4B_LIFECYCLE_TESTS
+    SchedulerDisabledBeforeAudioStop
+    AudioSinkStoppedBeforeAudioWorker
+    AudioWorkerStoppedBeforeVideoWorkers
+    WorkersJoinedBeforeRenderTeardown
+    SharedRefsDetachedBeforeRenderTeardown
+    FrozenOrderMatchesContract
+    UnjoinedWorkerBlocksRenderTeardown
+    MissingJoinCheckBlocksRenderTeardown
+    MissingPipelinesStillReachesTeardown
+)
+foreach(test_name IN LISTS MVM_PHASE4B_LIFECYCLE_TESTS)
+    mvm_add_test(phase4b_lifecycle_${test_name}
+        COMMAND mvm_test_phase4b_lifecycle ${test_name})
+endforeach()
+
 # 4/B verifier の対照群と negative。verifier が壊した箇所で落ちることを見る。
 set(_p4b_verifier_cases
     Good NegativeWrongState NegativeStaleEpoch NegativeAdoptionCount
     NegativeCounterSelfConsistency NegativeProbeFabricated NegativeProbeFieldMissing
     NegativeFormalHash NegativeLagOutOfRange NegativeGenerationChange
-    NegativeLayerIdentity NegativeFalseSanityPass NegativeFirstFrame)
+    NegativeLayerIdentity NegativeFalseSanityPass NegativeFirstFrame
+    NegativeShutdownOrder NegativeShutdownMissingStep NegativeTeardownBeforeJoin)
 foreach(_p4b_case IN LISTS _p4b_verifier_cases)
     string(TOLOWER "${_p4b_case}" _p4b_case_name)
     mvm_add_test(phase4b_verifier_${_p4b_case_name}

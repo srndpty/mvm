@@ -6,6 +6,7 @@
 #include "media/audio_preview/audio_decode_worker.h"
 #include "media/audio_preview/wasapi_audio_sink.h"
 #include "media/gpu_preview/phase4_composition_catalog.h"
+#include "media/gpu_preview/shutdown_sequence.h"
 
 #include <QElapsedTimer>
 #include <QObject>
@@ -117,6 +118,7 @@ private:
     DisplayEnvironmentSnapshot displayEnvironmentStart_;
     DisplayEnvironmentSnapshot displayEnvironmentEnd_;
     bool displayPreflightPassed_ = false;
+    gpu::ShutdownSequenceResult shutdownSequence_;
 };
 
 } // namespace mvm::app

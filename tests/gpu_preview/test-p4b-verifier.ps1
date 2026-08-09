@@ -11,7 +11,8 @@ param(
                  'NegativeCounterSelfConsistency', 'NegativeProbeFabricated',
                  'NegativeProbeFieldMissing', 'NegativeFormalHash', 'NegativeLagOutOfRange',
                  'NegativeGenerationChange', 'NegativeLayerIdentity', 'NegativeFalseSanityPass',
-                 'NegativeFirstFrame')]
+                 'NegativeFirstFrame', 'NegativeShutdownOrder', 'NegativeShutdownMissingStep',
+                 'NegativeTeardownBeforeJoin')]
     [string]$Case,
     [Parameter(Mandatory)][string]$Checker,
     [Parameter(Mandatory)][string]$OutputDir
@@ -140,6 +141,12 @@ $raw = [ordered]@{
     teardown_success = $true
     final_report_after_teardown = $true
     display_target_preflight_pass = $true
+    shutdown_sequence = @('DisableSchedulers', 'StopAudioSink', 'StopAudioDecodeWorker',
+                          'StopVideoWorkerA', 'StopVideoWorkerB', 'DetachSharedWorkerRefs',
+                          'RequestRenderTeardown')
+    shutdown_workers_joined_before_teardown = $true
+    shutdown_render_teardown_requested = $true
+    shutdown_order_violation_count = 0
 }
 
 switch ($Case) {
@@ -153,6 +160,18 @@ switch ($Case) {
     }
     'NegativeGenerationChange' { $raw.source_generation_change_due_to_layout_count = 1 }
     'NegativeFalseSanityPass' { $raw.integration_sanity_pass = $false }
+    'NegativeShutdownOrder' {
+        # Phase 4/B の実装が実際に持っていた誤り: audio worker を sink より先に停止する。
+        $raw.shutdown_sequence = @('DisableSchedulers', 'StopAudioDecodeWorker', 'StopAudioSink',
+                                   'StopVideoWorkerA', 'StopVideoWorkerB',
+                                   'DetachSharedWorkerRefs', 'RequestRenderTeardown')
+    }
+    'NegativeShutdownMissingStep' {
+        $raw.shutdown_sequence = @('DisableSchedulers', 'StopAudioSink', 'StopAudioDecodeWorker',
+                                   'StopVideoWorkerA', 'StopVideoWorkerB',
+                                   'RequestRenderTeardown')
+    }
+    'NegativeTeardownBeforeJoin' { $raw.shutdown_workers_joined_before_teardown = $false }
 }
 
 # ConvertTo-Json は $null を持つ key を落とさない。probe field の null は raw に残る。

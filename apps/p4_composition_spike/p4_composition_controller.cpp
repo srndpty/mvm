@@ -422,28 +422,53 @@ void P4CompositionController::startShutdown(const QString& reason, bool failure)
     displayEnvironmentEnd_ = captureDisplayEnvironment();
     if (failure)
         exitCode_ = 3;
-    state_->phase4Enabled.store(false, std::memory_order_release);
-    state_->audioMasterSchedulerEnabled.store(false, std::memory_order_release);
-    state_->playbackSchedulerEnabled.store(false, std::memory_order_release);
-    state_->p3MeasurementActive.store(false, std::memory_order_release);
-    state_->requestedOutput.store(-1, std::memory_order_release);
-    std::string ignored;
+
+    // 順序は docs/phase4-plan.md §7 に freeze されている。ここへ手書きせず
+    // runFrozenShutdownSequence へ委ねる。worker join 前に render teardown を
+    // 要求しないことも、その helper が fail-closed に保証する。
+    gpu::ShutdownActions actions;
+    actions.disableSchedulers = [this] {
+        state_->phase4Enabled.store(false, std::memory_order_release);
+        state_->audioMasterSchedulerEnabled.store(false, std::memory_order_release);
+        state_->playbackSchedulerEnabled.store(false, std::memory_order_release);
+        state_->p3MeasurementActive.store(false, std::memory_order_release);
+        state_->requestedOutput.store(-1, std::memory_order_release);
+    };
     if (audioSink_)
-        audioSink_->pause(ignored);
+        actions.stopAudioSink = [this] {
+            // pause は endpoint を止めるだけで join しない。stop() が
+            // client stop / stop event / render thread join / device release を行う。
+            std::string ignored;
+            audioSink_->pause(ignored);
+            audioSink_->stop();
+        };
     if (audioWorker_)
-        audioWorker_->stop();
-    if (audioSink_)
-        audioSink_->stop();
+        actions.stopAudioDecodeWorker = [this] { audioWorker_->stop(); };
     if (workerA_)
-        workerA_->stop();
+        actions.stopVideoWorkerA = [this] { workerA_->stop(); };
     if (workerB_)
-        workerB_->stop();
-    {
+        actions.stopVideoWorkerB = [this] { workerB_->stop(); };
+    actions.detachSharedWorkerRefs = [this] {
         std::lock_guard<std::mutex> lock(state_->workerMutex);
         state_->workerA.reset();
         state_->workerB.reset();
+    };
+    // stop() は同期 join するので、要求直前に最終 snapshot で join を確認する。
+    actions.allWorkersJoined = [this] {
+        return (!audioSink_ || audioSink_->snapshot().joined) &&
+               (!audioWorker_ || audioWorker_->snapshot().joined) &&
+               (!workerA_ || workerA_->joined()) && (!workerB_ || workerB_->joined());
+    };
+    actions.requestRenderTeardown = [this] { item_->requestTeardown(); };
+
+    shutdownSequence_ = gpu::runFrozenShutdownSequence(actions);
+    if (!shutdownSequence_.renderTeardownRequested) {
+        // join を確認できないまま teardown を要求しない。黙って続行もしない。
+        exitCode_ = 3;
+        shutdownReason_ =
+            QStringLiteral("worker join を確認できないため render teardown を要求しません: ") +
+            reason;
     }
-    item_->requestTeardown();
     phaseTimer_.restart();
     phase_ = Phase::ShutdownWait;
 }
@@ -665,6 +690,10 @@ bool P4CompositionController::writeMetrics() const {
                    : QJsonValue(QJsonValue::Null)}});
     }
 
+    QJsonArray shutdownSequenceJson;
+    for (const auto step : shutdownSequence_.executed)
+        shutdownSequenceJson.append(QString::fromLatin1(gpu::toString(step)));
+
     QJsonArray scheduleJson;
     for (const auto& entry : scheduleEntries_)
         scheduleJson.append(QJsonObject{{"boundary", entry.boundaryOutputFrame},
@@ -712,6 +741,8 @@ bool P4CompositionController::writeMetrics() const {
         activationLagInRange && underflow == 0 && overflow == 0 && markerMismatch == 0 &&
         mixedPair == 0 && mixedGeneration == 0 && staleEpoch == 0 && ahead == 0 &&
         clockRegression == 0 && qpcFallback == 0 && audioClockQueryFailure == 0 &&
+        shutdownSequence_.joinVerified && shutdownSequence_.renderTeardownRequested &&
+        shutdownSequence_.orderViolationCount == 0 &&
         state_->phase4AdoptionFailureCount.load() == 0 && state_->deviceLostCount.load() == 0 &&
         state_->lifecycleOrderViolationCount.load() == 0 &&
         state_->readbacks.fullFrameReadbacks() == 0 && compositor.fullFrameGpuCopyCount == 0 &&
@@ -820,6 +851,10 @@ bool P4CompositionController::writeMetrics() const {
         {"video_worker_b_joined", b.joined},
         {"teardown_success", state_->teardownComplete.load()},
         {"final_report_after_teardown", state_->teardownComplete.load()},
+        {"shutdown_sequence", shutdownSequenceJson},
+        {"shutdown_workers_joined_before_teardown", shutdownSequence_.joinVerified},
+        {"shutdown_render_teardown_requested", shutdownSequence_.renderTeardownRequested},
+        {"shutdown_order_violation_count", shutdownSequence_.orderViolationCount},
         {"display_target_preflight_pass", displayPreflightPassed_},
         {"requested_output_width", 1920},
         {"requested_output_height", 1080},

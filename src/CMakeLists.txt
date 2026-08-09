@@ -59,6 +59,7 @@ add_library(mvm_gpu_preview STATIC
     media/gpu_preview/compositor_coordinator.cpp
     media/gpu_preview/phase4_composition_catalog.cpp
     media/gpu_preview/phase4_composition_driver.cpp
+    media/gpu_preview/shutdown_sequence.cpp
     media/gpu_preview/exact_frame_pairer.cpp
     media/gpu_preview/source_decode_worker.cpp
     media/gpu_preview/gpu_compositor.cpp
