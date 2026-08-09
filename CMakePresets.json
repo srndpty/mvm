@@ -14,8 +14,7 @@
                 "MSYSTEM": "UCRT64",
                 "QTDIR": "",
                 "Qt6_DIR": "",
-                "CMAKE_PREFIX_PATH": "",
-                "PKG_CONFIG_PATH": "C:/msys64/ucrt64/lib/pkgconfig;C:/msys64/ucrt64/share/pkgconfig"
+                "CMAKE_PREFIX_PATH": ""
             },
 
             "cacheVariables": {

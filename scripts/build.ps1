@@ -40,6 +40,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'lib\cmake-toolchain.ps1')
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $CMake    = Join-Path $Ucrt64 'bin\cmake.exe'
@@ -50,7 +51,8 @@ if (-not (Test-Path $CMake)) {
 }
 
 # UCRT64 を最優先にする。ホストの pip 版 cmake や MSVC 版 Qt を拾わせない。
-$env:PATH = "$Ucrt64\bin;$env:PATH"
+Set-MvmUcrt64Environment -Ucrt64 $Ucrt64
+$toolchainArguments = @(Get-MvmCMakeToolchainArguments -Ucrt64 $Ucrt64)
 
 # 他プロジェクトの設定が漏れてこないようにする
 $env:QTDIR = ''
@@ -69,7 +71,7 @@ if ($Clean -and (Test-Path $BuildDir)) {
 Push-Location $RepoRoot
 try {
     Write-Host "`n--- configure ---" -ForegroundColor Yellow
-    & $CMake --preset $Preset
+    & $CMake --preset $Preset @toolchainArguments
     if ($LASTEXITCODE -ne 0) { throw "configure に失敗しました (exit $LASTEXITCODE)" }
 
     if ($ConfigureOnly) {
