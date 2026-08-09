@@ -244,6 +244,11 @@ try {
             (Integer $probe 'composition_epoch') -ne (Expected-Epoch $frame)) {
             Contract-Fail "$key のactual frame/state/epochがledger再計算値と違います"
         }
+        $referenceState = Text $probe 'cpu_reference_state'
+        if ($referenceState -ne (Expected-State $boundary) -or
+            $referenceState -ne (Text $probe 'composition_state')) {
+            Contract-Fail "$key のCPU reference state identityがactual/canonical stateと違います"
+        }
         if ((Integer $probe 'gpu_ticket') -le 0 -or (Integer $probe 'gpu_completion_serial') -le 0) {
             Contract-Fail "$key のGPU ticket/serialが不正です"
         }

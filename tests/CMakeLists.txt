@@ -819,7 +819,7 @@ set(_p4c_checker_cases
     Good WrongProbeRgb WrongProbeAlpha ProbeMissing ProbeDuplicate ProbeWrongCoordinate
     ProbeWrongBoundary ProbeWrongActualFrame ProbeWrongState ProbeWrongEpoch ProbeCount3
     ProbeCount5 ProbeBlockingWait ProbePendingAfterDrain ProbeCompletionFailure
-    ProbeUntrackedCompletion WrongCpuReference WrongScheduleHash FormalScheduleInSmoke
+    ProbeUntrackedCompletion WrongCpuReference CpuReferenceWrongState WrongScheduleHash FormalScheduleInSmoke
     FormalCountInSmoke WrongState StaleEpoch OldStateAfterBoundary Lag3 GenerationChanged
     ShutdownOrder TeardownBeforeJoin MissingBoolean StringFalseBoolean)
 foreach(_p4c_case IN LISTS _p4c_checker_cases)
@@ -835,7 +835,8 @@ endforeach()
 add_executable(mvm_test_phase4c_probe gpu_preview/test_phase4c_probe.cpp)
 target_link_libraries(mvm_test_phase4c_probe PRIVATE mvm::gpu_preview mvm::warnings)
 set(_p4c_probe_cases CandidateFrameSelection DuplicateTransitionSuppression
-    ExpectedLocationsAndOpacity Bt709Reference StraightAlpha ToleranceAndAlpha AsyncGpuCopy)
+    ExpectedLocationsAndOpacity InvalidStateHasNoProbeExpectation VisibleUvNormalization
+    Bt709Reference StraightAlpha ToleranceAndAlpha AsyncGpuCopy)
 foreach(_p4c_probe_case IN LISTS _p4c_probe_cases)
     string(TOLOWER "${_p4c_probe_case}" _p4c_probe_case_name)
     mvm_add_test(phase4c_probe_${_p4c_probe_case_name}
@@ -847,6 +848,10 @@ mvm_add_test(phase4c_probe_fixturereference
         "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_video_hevc_b.mp4"
     PROPERTIES REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4"
         TIMEOUT 120)
+mvm_add_test(phase4c_nonblocking_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-phase4c-nonblocking-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}")
 
 # --- Phase 3 / A: audio pipeline --------------------------------------------
 add_executable(mvm_test_audio_pure audio_preview/test_audio_pure.cpp)

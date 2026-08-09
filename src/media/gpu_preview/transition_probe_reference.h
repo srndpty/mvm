@@ -3,27 +3,18 @@
 
 #include "media/gpu_preview/composed_frame.h"
 #include "media/gpu_preview/transition_probe.h"
+#include "media/gpu_preview/validation_reference.h"
 
 #include <array>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace mvm::gpu {
 
-struct Rgba8 {
-    int r = 0;
-    int g = 0;
-    int b = 0;
-    int a = 255;
-    bool operator==(const Rgba8&) const = default;
-};
-
-Rgba8 bt709Limited(int y, int u, int v);
-Rgba8 straightAlphaBlend(Rgba8 source, Rgba8 destination, double opacity);
-bool probeWithinTolerance(const Rgba8& actual, const Rgba8& expected, int rgbTolerance = 3);
-Rgba8 phase4ExpectedProbe(CompositionStateId state, TransitionProbePoint point, Rgba8 aTl,
-                          Rgba8 aBr, Rgba8 bCenter);
+std::optional<Rgba8> phase4ExpectedProbe(CompositionStateId state, TransitionProbePoint point,
+                                         Rgba8 aTl, Rgba8 aBr, Rgba8 bCenter);
 
 struct Phase4ProbeExpected {
     long long boundary = -1;

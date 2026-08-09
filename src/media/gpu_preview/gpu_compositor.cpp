@@ -314,13 +314,71 @@ bool GpuCompositor::shutdown(int timeoutMs, std::string& err) {
         err = "GPU retirementを有限時間でdrainできませんでした";
         return false;
     }
+    finishShutdown();
+    return true;
+}
+
+bool GpuCompositor::beginShutdown(int timeoutMs, std::string& err) {
+    if (shutdownStarted_ || timeoutMs < 0) {
+        err = "GPU compositor shutdownの開始状態が不正です";
+        return false;
+    }
+    shutdownStarted_ = true;
+    shutdownFailed_ = false;
+    if (!ready_)
+        return true;
+    completion_.flushForShutdown();
+    const long long timeoutTicks = static_cast<long long>(
+        (static_cast<long double>(timeoutMs) * qpcFrequencyTicks()) / 1000.0L);
+    shutdownDeadlineQpc_ = qpcTicks() + timeoutTicks;
+    return true;
+}
+
+GpuCompositorShutdownStatus GpuCompositor::pollShutdown(std::string& err) {
+    if (!shutdownStarted_) {
+        err = "GPU compositor shutdownが開始されていません";
+        return GpuCompositorShutdownStatus::Failed;
+    }
+    if (shutdownFailed_)
+        return GpuCompositorShutdownStatus::Failed;
+    if (!ready_)
+        return GpuCompositorShutdownStatus::Complete;
+    // shutdownではcompose/poll用のtest faultを再注入せず、実GPU completionだけを
+    // 非blockingに確認する。fatal発生後も既投入resourceは安全にretireさせる。
+    const CompletionPollResult result = completion_.polledCompleted();
+    if (result.status != CompletionPollStatus::Ok) {
+        ++counters_.completionPollFailureCount;
+        err = completion_.fatalReason().empty() ? "GPU completion shutdown pollに失敗しました"
+                                                : completion_.fatalReason();
+        shutdownFailed_ = true;
+        return GpuCompositorShutdownStatus::Failed;
+    }
+    retirement_.poll(result.completed);
+    counters_.retirementDepthAfterDrain = retirement_.depthCurrent();
+    counters_.retirementDepthPeak = retirement_.depthPeak();
+    counters_.payloadsReleasedBeforeCompletion = retirement_.payloadsReleasedBeforeCompletion();
+    if (counters_.retirementDepthAfterDrain == 0) {
+        finishShutdown();
+        return GpuCompositorShutdownStatus::Complete;
+    }
+    if (qpcTicks() < shutdownDeadlineQpc_)
+        return GpuCompositorShutdownStatus::Pending;
+    ++counters_.retirementTimeoutCount;
+    shutdownFailed_ = true;
+    err = "GPU retirementを有限時間でdrainできませんでした";
+    return GpuCompositorShutdownStatus::Failed;
+}
+
+void GpuCompositor::finishShutdown() {
     converter_.release();
     completion_.release();
     releaseTarget();
     ready_ = false;
     shared_ = nullptr;
     width_ = height_ = 0;
-    return true;
+    shutdownStarted_ = false;
+    shutdownFailed_ = false;
+    shutdownDeadlineQpc_ = 0;
 }
 
 bool GpuCompositor::readOutputProbe(int x, int y, int width, int height,

@@ -46,6 +46,8 @@ struct TransitionProbeCounters {
     size_t pendingAfterDrainCount = 0;
 };
 
+enum class TransitionProbeDrainStatus { Pending = 0, Complete, Failed };
+
 // actual display frameから、まだprobeしていないboundaryだけを一度だけ選ぶ純粋state machine。
 class TransitionProbeSelector {
 public:
@@ -68,7 +70,9 @@ public:
     bool issue(ID3D11Texture2D* source, const TransitionProbeRequest& request,
                unsigned long long& ticket, std::string& err);
     bool poll(std::vector<TransitionProbeResult>& completed, std::string& err);
-    bool drain(int timeoutMs, std::vector<TransitionProbeResult>& completed, std::string& err);
+    bool beginDrain(int timeoutMs, std::string& err);
+    TransitionProbeDrainStatus pollDrain(std::vector<TransitionProbeResult>& completed,
+                                         std::string& err);
     void release();
 
     TransitionProbeCounters counters() const;
@@ -93,6 +97,8 @@ private:
     unsigned long long nextTicket_ = 1;
     TransitionProbeCounters counters_;
     bool testDeferCompletionPollOnce_ = false;
+    bool drainStarted_ = false;
+    long long drainDeadlineQpc_ = 0;
 };
 
 } // namespace mvm::gpu

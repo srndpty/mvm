@@ -2,6 +2,7 @@
 #include "core/mvm_marker.h"
 #include "media/gpu_preview/gpu_compositor.h"
 #include "media/gpu_preview/source_decode_worker.h"
+#include "media/gpu_preview/validation_reference.h"
 
 #include <algorithm>
 #include <cmath>
@@ -113,48 +114,21 @@ DecodedGpuFrame fixtureFrame(OwnedNv12& texture, SourceId source, ResourceEpoch 
     return f;
 }
 
-struct Rgb {
-    int r;
-    int g;
-    int b;
-};
-
-Rgb expected709(int y, int u, int v) {
-    // shader helperを使わない、BT.709 limitedの独立した標準式。
-    const double c = y - 16.0, d = u - 128.0, e = v - 128.0;
-    auto q = [](double value) { return std::clamp(static_cast<int>(std::lround(value)), 0, 255); };
-    return {q(1.164383 * c + 1.792741 * e), q(1.164383 * c - 0.213249 * d - 0.532909 * e),
-            q(1.164383 * c + 2.112402 * d)};
-}
-
-Rgb expected601(int y, int u, int v) {
+Rgba8 expected601(int y, int u, int v) {
     const double c = y - 16.0, d = u - 128.0, e = v - 128.0;
     auto q = [](double value) { return std::clamp(static_cast<int>(std::lround(value)), 0, 255); };
     return {q(1.164383 * c + 1.596027 * e), q(1.164383 * c - 0.391762 * d - 0.812968 * e),
-            q(1.164383 * c + 2.017232 * d)};
+            q(1.164383 * c + 2.017232 * d), 255};
 }
 
-Rgb blend(Rgb source, Rgb destination, double opacity) {
-    auto q = [opacity](int s, int d) {
-        return static_cast<int>(std::lround(s * opacity + d * (1.0 - opacity)));
-    };
-    return {q(source.r, destination.r), q(source.g, destination.g), q(source.b, destination.b)};
-}
-
-bool probeEquals(GpuCompositor& c, int x, int y, Rgb expected, std::string& err) {
+bool probeEquals(GpuCompositor& c, int x, int y, Rgba8 expected, std::string& err) {
     std::vector<unsigned char> rgba;
     if (!c.readOutputProbe(x, y, 1, 1, rgba, err))
         return false;
-    for (int channel = 0; channel < 3; ++channel) {
-        const int want[] = {expected.r, expected.g, expected.b};
-        if (std::abs(static_cast<int>(rgba[static_cast<size_t>(channel)]) - want[channel]) > 3) {
-            err = "output probe RGBが±3を超えました (位置 " + std::to_string(x) + "," +
-                  std::to_string(y) + ")";
-            return false;
-        }
-    }
-    if (rgba[3] != 255) {
-        err = "preview output alphaがopaqueではありません";
+    const Rgba8 actual{rgba[0], rgba[1], rgba[2], rgba[3]};
+    if (!probeWithinTolerance(actual, expected)) {
+        err = "output probe RGBAがreference tolerance外です (位置 " + std::to_string(x) + "," +
+              std::to_string(y) + ")";
         return false;
     }
     return true;
@@ -175,23 +149,23 @@ bool runFixtureCases(GpuCompositor& compositor, OwnedDevice& owned, std::string&
         return false;
     const DecodedGpuFrame a = fixtureFrame(aTexture, {1}, {1});
     const DecodedGpuFrame b = fixtureFrame(bTexture, {2}, {2});
-    const Rgb rgbA = expected709(81, 90, 240);
-    const Rgb rgbBLeft = expected709(145, 54, 34);
-    const Rgb rgbBRight = expected709(41, 240, 110);
+    const Rgba8 rgbA = bt709Limited(81, 90, 240);
+    const Rgba8 rgbBLeft = bt709Limited(145, 54, 34);
+    const Rgba8 rgbBRight = bt709Limited(41, 240, 110);
 
     std::fprintf(stderr, "[compositor_two_layers]\n[compositor_clear_once]\n"
                          "[compositor_z_order]\n[compositor_destination_rect]\n");
     if (!compositor.compose(composition(a, b, 0.75f), err) ||
         !probeEquals(compositor, 100, 100, rgbA, err) ||
-        !probeEquals(compositor, 1500, 800, blend(rgbBRight, rgbA, 0.75), err) ||
-        !probeEquals(compositor, 960, 540, blend(rgbBLeft, rgbA, 0.75), err) ||
+        !probeEquals(compositor, 1500, 800, straightAlphaBlend(rgbBRight, rgbA, 0.75), err) ||
+        !probeEquals(compositor, 960, 540, straightAlphaBlend(rgbBLeft, rgbA, 0.75), err) ||
         !probeEquals(compositor, 959, 539, rgbA, err))
         return false;
 
     std::fprintf(stderr, "[compositor_opacity]\n");
     for (float opacity : {0.5f, 0.0f, 1.0f}) {
         if (!compositor.compose(composition(a, b, opacity), err) ||
-            !probeEquals(compositor, 1500, 800, blend(rgbBRight, rgbA, opacity), err))
+            !probeEquals(compositor, 1500, 800, straightAlphaBlend(rgbBRight, rgbA, opacity), err))
             return false;
     }
 
@@ -205,10 +179,10 @@ bool runFixtureCases(GpuCompositor& compositor, OwnedDevice& owned, std::string&
     // constant bufferへ反映されることを標準式の期待値で検査する。
     auto a601 = a;
     a601.colorSpace = ColorSpace::BT601;
-    const Rgb rgbA601 = expected601(81, 90, 240);
+    const Rgba8 rgbA601 = expected601(81, 90, 240);
     if (!compositor.compose(composition(a601, b, 0.75f), err) ||
         !probeEquals(compositor, 100, 100, rgbA601, err) ||
-        !probeEquals(compositor, 1500, 800, blend(rgbBRight, rgbA601, 0.75), err))
+        !probeEquals(compositor, 1500, 800, straightAlphaBlend(rgbBRight, rgbA601, 0.75), err))
         return false;
 
     std::fprintf(stderr, "[compositor_actual_device_validation]\n"

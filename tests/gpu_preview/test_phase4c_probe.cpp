@@ -1,6 +1,8 @@
 #include "media/gpu_preview/gpu_compositor.h"
+#include "media/gpu_preview/phase4_composition_catalog.h"
 #include "media/gpu_preview/transition_probe.h"
 #include "media/gpu_preview/transition_probe_reference.h"
+#include "media/gpu_preview/visible_uv.h"
 
 #include <chrono>
 #include <cstdio>
@@ -38,22 +40,49 @@ void expectedLocationsAndOpacity() {
     const Rgba8 aTl{10, 20, 30, 255};
     const Rgba8 aBr{100, 110, 120, 255};
     const Rgba8 b{210, 220, 230, 255};
-    require(phase4ExpectedProbe({0}, TransitionProbePoint::TL, aTl, aBr, b) == aTl,
+    require(phase4ExpectedProbe(kPhase4S0, TransitionProbePoint::TL, aTl, aBr, b) == aTl,
             "S0 TLはA-onlyではありません");
-    require(phase4ExpectedProbe({0}, TransitionProbePoint::BR, aTl, aBr, b) ==
+    require(phase4ExpectedProbe(kPhase4S0, TransitionProbePoint::BR, aTl, aBr, b) ==
                 straightAlphaBlend(b, aBr, 0.75),
             "S0 BRのopacityが0.75ではありません");
-    require(phase4ExpectedProbe({1}, TransitionProbePoint::TL, aTl, aBr, b) ==
+    require(phase4ExpectedProbe(kPhase4S1, TransitionProbePoint::TL, aTl, aBr, b) ==
                 straightAlphaBlend(b, aTl, 0.75),
             "S1 TLのopacityが0.75ではありません");
-    require(phase4ExpectedProbe({1}, TransitionProbePoint::BR, aTl, aBr, b) == aBr,
+    require(phase4ExpectedProbe(kPhase4S1, TransitionProbePoint::BR, aTl, aBr, b) == aBr,
             "S1 BRはA-onlyではありません");
-    require(phase4ExpectedProbe({2}, TransitionProbePoint::TL, aTl, aBr, b) ==
+    require(phase4ExpectedProbe(kPhase4S2, TransitionProbePoint::TL, aTl, aBr, b) ==
                 straightAlphaBlend(b, aTl, 0.50),
             "S2 TLのopacityが0.50ではありません");
-    require(phase4ExpectedProbe({3}, TransitionProbePoint::BR, aTl, aBr, b) ==
+    require(phase4ExpectedProbe(kPhase4S3, TransitionProbePoint::BR, aTl, aBr, b) ==
                 straightAlphaBlend(b, aBr, 0.50),
             "S3 BRのopacityが0.50ではありません");
+}
+
+void invalidStateHasNoProbeExpectation() {
+    const Rgba8 aTl{10, 20, 30, 255};
+    const Rgba8 aBr{100, 110, 120, 255};
+    const Rgba8 b{210, 220, 230, 255};
+    require(!phase4ExpectedProbe({}, TransitionProbePoint::TL, aTl, aBr, b),
+            "invalid state 0を有効なexpectationへ縮退させました");
+    require(!phase4ExpectedProbe({99}, TransitionProbePoint::BR, aTl, aBr, b),
+            "未知stateを有効なexpectationへ縮退させました");
+}
+
+void visibleUvNormalization() {
+    const RectF full{0, 0, 1, 1};
+    const auto padded = normalizeVisibleUv(full, 1920, 1080, 1920, 1088);
+    require(padded.has_value(), "1920x1088 allocationのvisible UVを解決できません");
+    require(padded->x == 0 && padded->y == 0 && padded->width == 1.0f &&
+                std::abs(padded->height - (1080.0f / 1088.0f)) < 0.000001f,
+            "1920x1088 allocationのvisible UVが違います");
+    const auto unchanged = normalizeVisibleUv(full, 1920, 1080, 1920, 1080);
+    require(unchanged && unchanged->x == full.x && unchanged->y == full.y &&
+                unchanged->width == full.width && unchanged->height == full.height,
+            "physical == logicalでUVを変更しました");
+    require(!normalizeVisibleUv(full, 1920, 1080, 1919, 1080),
+            "physical width < logical widthを受理しました");
+    require(!normalizeVisibleUv(full, 1920, 1080, 1920, 1079),
+            "physical height < logical heightを受理しました");
 }
 
 void bt709Reference() {
@@ -153,7 +182,14 @@ void asyncGpuCopy() {
                 results[1].rgba == std::array<unsigned char, 4>{40, 50, 60, 255},
             "BR probe identity/RGBAが違います");
     std::vector<TransitionProbeResult> drained;
-    require(readback.drain(5000, drained, err), err.c_str());
+    require(readback.beginDrain(5000, err), err.c_str());
+    TransitionProbeDrainStatus drainStatus = TransitionProbeDrainStatus::Pending;
+    for (int i = 0; drainStatus == TransitionProbeDrainStatus::Pending && i < 1000; ++i) {
+        drainStatus = readback.pollDrain(drained, err);
+        if (drainStatus == TransitionProbeDrainStatus::Pending)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    require(drainStatus == TransitionProbeDrainStatus::Complete, err.c_str());
     const auto counters = readback.counters();
     require(counters.renderThreadBlockingWaitCount == 0 && counters.pendingAfterDrainCount == 0 &&
                 counters.completionFailureCount == 0 && counters.untrackedSubmissionCount == 0,
@@ -173,6 +209,8 @@ struct Case {
 const Case cases[] = {{"CandidateFrameSelection", candidateFrameSelection},
                       {"DuplicateTransitionSuppression", duplicateSuppression},
                       {"ExpectedLocationsAndOpacity", expectedLocationsAndOpacity},
+                      {"InvalidStateHasNoProbeExpectation", invalidStateHasNoProbeExpectation},
+                      {"VisibleUvNormalization", visibleUvNormalization},
                       {"Bt709Reference", bt709Reference},
                       {"StraightAlpha", straightAlpha},
                       {"ToleranceAndAlpha", toleranceAndAlpha},
@@ -192,11 +230,14 @@ int main(int argc, char** argv) {
             return 3;
         }
         require(references.candidates.size() == 12, "CPU reference候補が12件ではありません");
-        for (const auto& candidate : references.candidates)
+        for (const auto& candidate : references.candidates) {
+            require(candidate.state == (candidate.boundary == 200 ? kPhase4S1 : kPhase4S2),
+                    "CPU reference候補のcanonical state identityが違います");
             std::fprintf(stderr, "reference boundary=%lld frame=%lld point=%s rgba=%d,%d,%d,%d\n",
                          candidate.boundary, candidate.outputFrame,
                          transitionProbePointName(candidate.point), candidate.rgba.r,
                          candidate.rgba.g, candidate.rgba.b, candidate.rgba.a);
+        }
         return 0;
     }
     if (argc != 2) {

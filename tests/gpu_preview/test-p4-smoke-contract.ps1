@@ -27,6 +27,7 @@ function Probe([long]$Boundary, [string]$Name) {
     $rgba = if ($Name -eq 'TL') { @(80,90,100,255) } else { @(110,120,130,255) }
     [ordered]@{
         boundary=$Boundary; actual_output_frame=$frame; composition_state=(State $frame)
+        cpu_reference_state=(State $frame)
         composition_epoch=(Epoch $frame); probe=$Name
         x=$(if ($Name -eq 'TL') {480} else {1440}); y=$(if ($Name -eq 'TL') {270} else {810})
         actual_rgba=@($rgba); cpu_expected_rgba=@($rgba); gpu_ticket=$Boundary
@@ -118,6 +119,7 @@ switch ($Case) {
     ProbeCompletionFailure { $raw.transition_probe_completion_failure_count=1 }
     ProbeUntrackedCompletion { $raw.transition_probe_untracked_submission_count=1 }
     WrongCpuReference { $raw.transition_probe_records[0].cpu_expected_rgba[1] += 4 }
+    CpuReferenceWrongState { $raw.transition_probe_records[0].cpu_reference_state = 'S2' }
     WrongScheduleHash { $raw.canonical_schedule_sha256 = '00' * 32 }
     FormalScheduleInSmoke { $raw.canonical_schedule='0:S0;600:S1;1200:S2;1800:S3;2400:S0;3000:S1' }
     FormalCountInSmoke { $raw.composition_state_adoption_count=5 }

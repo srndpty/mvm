@@ -3,7 +3,6 @@
 #include "media/gpu_preview/qpc_clock.h"
 
 #include <algorithm>
-#include <thread>
 
 // MVM_ALLOW_SMALL_REGION_READBACK
 // Phase 4 transition専用の1x1 staging経路。full-frame fallbackは持たない。
@@ -153,30 +152,43 @@ bool AsyncTransitionProbeReadback::poll(std::vector<TransitionProbeResult>& comp
     return true;
 }
 
-bool AsyncTransitionProbeReadback::drain(int timeoutMs,
-                                         std::vector<TransitionProbeResult>& completed,
-                                         std::string& err) {
-    completion_.flushForShutdown();
-    const long long start = qpcTicks();
-    for (;;) {
-        if (!poll(completed, err))
-            return false;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (pending_.empty()) {
-                counters_.pendingAfterDrainCount = 0;
-                return true;
-            }
-        }
-        if (qpcMsBetween(start, qpcTicks()) >= timeoutMs) {
-            std::lock_guard<std::mutex> lock(mutex_);
-            ++counters_.retirementTimeoutCount;
-            counters_.pendingAfterDrainCount = pending_.size();
-            err = "transition probeを有限時間でdrainできませんでした";
-            return false;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+bool AsyncTransitionProbeReadback::beginDrain(int timeoutMs, std::string& err) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!shared_ || drainStarted_ || timeoutMs < 0) {
+        err = "transition probe drainの開始状態が不正です";
+        return false;
     }
+    completion_.flushForShutdown();
+    const long long timeoutTicks = static_cast<long long>(
+        (static_cast<long double>(timeoutMs) * qpcFrequencyTicks()) / 1000.0L);
+    drainDeadlineQpc_ = qpcTicks() + timeoutTicks;
+    drainStarted_ = true;
+    return true;
+}
+
+TransitionProbeDrainStatus
+AsyncTransitionProbeReadback::pollDrain(std::vector<TransitionProbeResult>& completed,
+                                        std::string& err) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!drainStarted_) {
+            err = "transition probe drainが開始されていません";
+            return TransitionProbeDrainStatus::Failed;
+        }
+    }
+    if (!poll(completed, err))
+        return TransitionProbeDrainStatus::Failed;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (pending_.empty()) {
+        counters_.pendingAfterDrainCount = 0;
+        return TransitionProbeDrainStatus::Complete;
+    }
+    if (qpcTicks() < drainDeadlineQpc_)
+        return TransitionProbeDrainStatus::Pending;
+    ++counters_.retirementTimeoutCount;
+    counters_.pendingAfterDrainCount = pending_.size();
+    err = "transition probeを有限時間でdrainできませんでした";
+    return TransitionProbeDrainStatus::Failed;
 }
 
 void AsyncTransitionProbeReadback::releasePending() {
@@ -193,6 +205,8 @@ void AsyncTransitionProbeReadback::release() {
     releasePending();
     completion_.release();
     shared_ = nullptr;
+    drainStarted_ = false;
+    drainDeadlineQpc_ = 0;
 }
 
 TransitionProbeCounters AsyncTransitionProbeReadback::counters() const {

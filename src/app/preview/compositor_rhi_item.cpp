@@ -5,6 +5,7 @@
 #include "media/gpu_preview/exact_frame_pairer.h"
 #include "media/gpu_preview/output_scheduler.h"
 #include "media/gpu_preview/qpc_clock.h"
+#include "media/gpu_preview/visible_uv.h"
 
 #include <algorithm>
 #include <cmath>
@@ -71,13 +72,14 @@ protected:
     void render(QRhiCommandBuffer* cb) override {
         gpu::D3D11LockRoleScope lockRole(gpu::D3D11LockRole::Render);
         const long long callbackBegin = gpu::qpcTicks();
+        if (state_->teardownRequested.load(std::memory_order_acquire)) {
+            if (teardown())
+                update();
+            return;
+        }
         // P1と同じくrender threadから次のframeを要求する。GUI timerだけでは
         // scene graph requestがcoalesceされ、60Hz output deadlineを取りこぼす。
         update();
-        if (state_->teardownRequested.load(std::memory_order_acquire)) {
-            teardown();
-            return;
-        }
         if (!state_->deviceReady.load(std::memory_order_acquire) ||
             state_->fatal.load(std::memory_order_acquire))
             return;
@@ -399,16 +401,14 @@ private:
         for (auto& layer : frame.layers) {
             D3D11_TEXTURE2D_DESC desc{};
             layer.frame.texture->GetDesc(&desc);
-            if (desc.Width < static_cast<UINT>(layer.frame.width) ||
-                desc.Height < static_cast<UINT>(layer.frame.height) || desc.Width == 0 ||
-                desc.Height == 0) {
+            const auto normalized = gpu::normalizeVisibleUv(
+                layer.sourceUv, layer.frame.width, layer.frame.height, static_cast<int>(desc.Width),
+                static_cast<int>(desc.Height));
+            if (!normalized) {
                 err = "decode textureのphysical extentがlogical visible extentより小さいです";
                 return false;
             }
-            layer.sourceUv.width *=
-                static_cast<float>(layer.frame.width) / static_cast<float>(desc.Width);
-            layer.sourceUv.height *=
-                static_cast<float>(layer.frame.height) / static_cast<float>(desc.Height);
+            layer.sourceUv = *normalized;
         }
         return true;
     }
@@ -701,39 +701,84 @@ private:
         rtvTexture_ = nullptr;
     }
 
-    void teardown() {
+    enum class TeardownStage { NotStarted, ProbeDrain, CompositorDrain, Failed, Complete };
+
+    // true は次のrender callbackでpollを継続することを表す。ここでは待たない。
+    bool teardown() {
         if (state_->teardownComplete.load(std::memory_order_acquire))
-            return;
-        std::shared_ptr<gpu::SourceDecodeWorker> a;
-        std::shared_ptr<gpu::SourceDecodeWorker> b;
-        {
-            std::lock_guard<std::mutex> lock(state_->workerMutex);
-            a = state_->workerA;
-            b = state_->workerB;
-        }
-        if ((a && !a->joined()) || (b && !b->joined())) {
-            state_->lifecycleOrderViolationCount.fetch_add(1, std::memory_order_relaxed);
-            return;
-        }
+            return false;
         std::string err;
-        std::vector<gpu::TransitionProbeResult> drained;
-        if (state_->transitionProbeReady.load(std::memory_order_acquire) &&
-            !state_->transitionProbeReadback.drain(5000, drained, err))
-            fail(err);
-        if (!drained.empty()) {
-            std::lock_guard<std::mutex> lock(state_->transitionProbeResultMutex);
-            state_->transitionProbeResults.insert(state_->transitionProbeResults.end(),
-                                                  drained.begin(), drained.end());
+        if (teardownStage_ == TeardownStage::NotStarted) {
+            std::shared_ptr<gpu::SourceDecodeWorker> a;
+            std::shared_ptr<gpu::SourceDecodeWorker> b;
+            {
+                std::lock_guard<std::mutex> lock(state_->workerMutex);
+                a = state_->workerA;
+                b = state_->workerB;
+            }
+            if ((a && !a->joined()) || (b && !b->joined())) {
+                state_->lifecycleOrderViolationCount.fetch_add(1, std::memory_order_relaxed);
+                return true;
+            }
+            if (state_->transitionProbeReady.load(std::memory_order_acquire)) {
+                if (!state_->transitionProbeReadback.beginDrain(5000, err)) {
+                    fail(err);
+                    teardownStage_ = TeardownStage::Failed;
+                    return false;
+                }
+                teardownStage_ = TeardownStage::ProbeDrain;
+            } else {
+                if (!state_->compositor.beginShutdown(10000, err)) {
+                    fail(err);
+                    teardownStage_ = TeardownStage::Failed;
+                    return false;
+                }
+                teardownStage_ = TeardownStage::CompositorDrain;
+            }
         }
-        state_->transitionProbeReadback.release();
-        state_->transitionProbeReady.store(false, std::memory_order_release);
-        if (!state_->compositor.shutdown(10000, err))
-            fail(err);
+
+        if (teardownStage_ == TeardownStage::ProbeDrain) {
+            std::vector<gpu::TransitionProbeResult> drained;
+            const auto status = state_->transitionProbeReadback.pollDrain(drained, err);
+            if (!drained.empty()) {
+                std::lock_guard<std::mutex> lock(state_->transitionProbeResultMutex);
+                state_->transitionProbeResults.insert(state_->transitionProbeResults.end(),
+                                                      drained.begin(), drained.end());
+            }
+            if (status == gpu::TransitionProbeDrainStatus::Pending)
+                return true;
+            if (status == gpu::TransitionProbeDrainStatus::Failed) {
+                fail(err);
+                teardownStage_ = TeardownStage::Failed;
+                return false;
+            }
+            state_->transitionProbeReady.store(false, std::memory_order_release);
+            state_->transitionProbeReadback.release();
+            if (!state_->compositor.beginShutdown(10000, err)) {
+                fail(err);
+                teardownStage_ = TeardownStage::Failed;
+                return false;
+            }
+            teardownStage_ = TeardownStage::CompositorDrain;
+        }
+
+        if (teardownStage_ == TeardownStage::CompositorDrain) {
+            const auto status = state_->compositor.pollShutdown(err);
+            if (status == gpu::GpuCompositorShutdownStatus::Pending)
+                return true;
+            if (status == gpu::GpuCompositorShutdownStatus::Failed) {
+                fail(err);
+                teardownStage_ = TeardownStage::Failed;
+                return false;
+            }
+        }
         releaseRtv();
         state_->device.release();
         nativeDevice_ = nativeContext_ = nullptr;
         state_->deviceReady.store(false, std::memory_order_release);
         state_->teardownComplete.store(true, std::memory_order_release);
+        teardownStage_ = TeardownStage::Complete;
+        return false;
     }
 
     std::shared_ptr<CompositorSpikeState> state_;
@@ -745,6 +790,7 @@ private:
     gpu::OutputScheduler60Hz scheduler_;
     bool schedulerStarted_ = false;
     long long previousDiagnosticCallbackQpc_ = 0;
+    TeardownStage teardownStage_ = TeardownStage::NotStarted;
 };
 
 } // namespace

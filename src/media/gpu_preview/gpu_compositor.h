@@ -51,6 +51,8 @@ struct GpuCompositorTestFaults {
     bool failCompletionPoll = false;
 };
 
+enum class GpuCompositorShutdownStatus { Pending = 0, Complete, Failed };
+
 // Qt非依存のoffscreen compositor。全layerを事前検証し、1 clear + N drawを
 // 1 submission serialとして追跡する。
 class GpuCompositor {
@@ -70,6 +72,8 @@ public:
                                    GpuCompositorStageTiming& timing, std::string& err);
     bool poll(std::string& err);
     bool shutdown(int timeoutMs, std::string& err);
+    bool beginShutdown(int timeoutMs, std::string& err);
+    GpuCompositorShutdownStatus pollShutdown(std::string& err);
     bool readOutputProbe(int x, int y, int width, int height, std::vector<unsigned char>& rgba,
                          std::string& err);
     bool readExternalOutputProbe(ID3D11Texture2D* texture, int x, int y, int width, int height,
@@ -99,6 +103,7 @@ public:
 private:
     void releaseTarget();
     void rollbackInitialize();
+    void finishShutdown();
     void enterFatal(const std::string& reason);
     bool prepareComposition(const ComposedFrame& frame, const ExternalCompositionTarget& target,
                             size_t expectedLayerCount, std::string& err);
@@ -119,6 +124,9 @@ private:
     std::string fatalReason_;
     GpuCompositorCounters counters_;
     GpuCompositorTestFaults testFaults_;
+    bool shutdownStarted_ = false;
+    bool shutdownFailed_ = false;
+    long long shutdownDeadlineQpc_ = 0;
 };
 
 } // namespace mvm::gpu

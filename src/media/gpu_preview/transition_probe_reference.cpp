@@ -1,5 +1,7 @@
 #include "media/gpu_preview/transition_probe_reference.h"
 
+#include "media/gpu_preview/phase4_composition_catalog.h"
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -25,10 +27,6 @@ struct FrameSamples {
     Rgba8 center;
 };
 
-int clampByte(double value) {
-    return std::clamp(static_cast<int>(std::lround(value)), 0, 255);
-}
-
 double samplePlane(const uint8_t* data, int stride, int width, int height, double u, double v) {
     const double px = std::clamp(u * width - 0.5, 0.0, static_cast<double>(width - 1));
     const double py = std::clamp(v * height - 0.5, 0.0, static_cast<double>(height - 1));
@@ -44,12 +42,7 @@ double samplePlane(const uint8_t* data, int stride, int width, int height, doubl
 }
 
 Rgba8 convert709(double y, double u, double v) {
-    const double c = y - 16.0;
-    const double d = u - 128.0;
-    const double e = v - 128.0;
-    return {clampByte(1.164383 * c + 1.792741 * e),
-            clampByte(1.164383 * c - 0.213249 * d - 0.532909 * e),
-            clampByte(1.164383 * c + 2.112402 * d), 255};
+    return bt709Limited(y, u, v);
 }
 
 Rgba8 sampleYuv420(const AVFrame* frame, double u, double v) {
@@ -191,29 +184,17 @@ bool decodeSamples(const std::string& path, const std::set<long long>& targets,
 
 } // namespace
 
-Rgba8 bt709Limited(int y, int u, int v) {
-    return convert709(y, u, v);
-}
-
-Rgba8 straightAlphaBlend(Rgba8 source, Rgba8 destination, double opacity) {
-    auto blend = [opacity](int s, int d) { return clampByte(s * opacity + d * (1.0 - opacity)); };
-    return {blend(source.r, destination.r), blend(source.g, destination.g),
-            blend(source.b, destination.b), 255};
-}
-
-bool probeWithinTolerance(const Rgba8& actual, const Rgba8& expected, int rgbTolerance) {
-    return std::abs(actual.r - expected.r) <= rgbTolerance &&
-           std::abs(actual.g - expected.g) <= rgbTolerance &&
-           std::abs(actual.b - expected.b) <= rgbTolerance && actual.a == 255 && expected.a == 255;
-}
-
-Rgba8 phase4ExpectedProbe(CompositionStateId state, TransitionProbePoint point, Rgba8 aTl,
-                          Rgba8 aBr, Rgba8 bCenter) {
-    const bool pipAtTopLeft = state.value == 1 || state.value == 2;
-    const double opacity = state.value == 0 || state.value == 1 ? 0.75 : 0.50;
-    if (point == TransitionProbePoint::TL)
-        return pipAtTopLeft ? straightAlphaBlend(bCenter, aTl, opacity) : aTl;
-    return pipAtTopLeft ? aBr : straightAlphaBlend(bCenter, aBr, opacity);
+std::optional<Rgba8> phase4ExpectedProbe(CompositionStateId state, TransitionProbePoint point,
+                                         Rgba8 aTl, Rgba8 aBr, Rgba8 bCenter) {
+    if (state == kPhase4S0)
+        return point == TransitionProbePoint::TL ? aTl : straightAlphaBlend(bCenter, aBr, 0.75);
+    if (state == kPhase4S1)
+        return point == TransitionProbePoint::TL ? straightAlphaBlend(bCenter, aTl, 0.75) : aBr;
+    if (state == kPhase4S2)
+        return point == TransitionProbePoint::TL ? straightAlphaBlend(bCenter, aTl, 0.50) : aBr;
+    if (state == kPhase4S3)
+        return point == TransitionProbePoint::TL ? aTl : straightAlphaBlend(bCenter, aBr, 0.50);
+    return std::nullopt;
 }
 
 const Phase4ProbeExpected* Phase4CpuReferenceSet::find(long long boundary, long long outputFrame,
@@ -241,18 +222,28 @@ bool buildPhase4SmokeCpuReferences(const std::string& sourceA, const std::string
     std::map<long long, FrameSamples> b;
     if (!decodeSamples(sourceA, targets, a, err) || !decodeSamples(sourceB, targets, b, err))
         return false;
+    const auto schedule = phase4Schedule(Phase4ScheduleKind::Smoke);
+    if (!schedule) {
+        err = "canonical Phase 4 smoke scheduleを構築できません";
+        return false;
+    }
     for (long long boundary : {200LL, 400LL}) {
-        const CompositionStateId state =
-            boundary == 200 ? CompositionStateId{1} : CompositionStateId{2};
+        const auto state = schedule->resolve(boundary);
+        if (!state) {
+            err = "canonical Phase 4 smoke scheduleからprobe stateを解決できません";
+            return false;
+        }
         for (long long frame = boundary; frame <= boundary + 2; ++frame) {
-            output.candidates.push_back(
-                {boundary, frame, state, TransitionProbePoint::TL,
-                 phase4ExpectedProbe(state, TransitionProbePoint::TL, a.at(frame).tl,
-                                     a.at(frame).br, b.at(frame).center)});
-            output.candidates.push_back(
-                {boundary, frame, state, TransitionProbePoint::BR,
-                 phase4ExpectedProbe(state, TransitionProbePoint::BR, a.at(frame).tl,
-                                     a.at(frame).br, b.at(frame).center)});
+            const auto tl = phase4ExpectedProbe(*state, TransitionProbePoint::TL, a.at(frame).tl,
+                                                a.at(frame).br, b.at(frame).center);
+            const auto br = phase4ExpectedProbe(*state, TransitionProbePoint::BR, a.at(frame).tl,
+                                                a.at(frame).br, b.at(frame).center);
+            if (!tl || !br) {
+                err = "canonical Phase 4 stateのprobe expectationを解決できません";
+                return false;
+            }
+            output.candidates.push_back({boundary, frame, *state, TransitionProbePoint::TL, *tl});
+            output.candidates.push_back({boundary, frame, *state, TransitionProbePoint::BR, *br});
         }
     }
     return true;

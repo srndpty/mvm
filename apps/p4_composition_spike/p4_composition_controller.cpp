@@ -744,7 +744,8 @@ bool P4CompositionController::writeMetrics() const {
                                                    probe.request.actualOutputFrame,
                                                    probe.request.point);
         const gpu::Rgba8 actual{probe.rgba[0], probe.rgba[1], probe.rgba[2], probe.rgba[3]};
-        const bool matches = expected && gpu::probeWithinTolerance(actual, expected->rgba);
+        const bool matches = expected && expected->state == probe.request.compositionState &&
+                             gpu::probeWithinTolerance(actual, expected->rgba);
         if (!matches)
             ++probeMismatch;
         QJsonArray actualJson{actual.r, actual.g, actual.b, actual.a};
@@ -759,6 +760,8 @@ bool P4CompositionController::writeMetrics() const {
             {"boundary", probe.request.boundary},
             {"actual_output_frame", probe.request.actualOutputFrame},
             {"composition_state", stateNameJson(probe.request.compositionState)},
+            {"cpu_reference_state",
+             expected ? stateNameJson(expected->state) : QJsonValue(QJsonValue::Null)},
             {"composition_epoch", static_cast<qint64>(probe.request.compositionEpoch.value)},
             {"probe", QString::fromLatin1(gpu::transitionProbePointName(probe.request.point))},
             {"x", probe.request.x},
