@@ -84,7 +84,9 @@ jobs:
 
       - name: ビルドとテスト
         shell: pwsh
-        run: pwsh scripts/test.ps1 -Ucrt64 '${{ steps.msys2.outputs.msys2-location }}\ucrt64'
+        # GitHub hosted runner には Meiryo と D3D11VA hardware device が無い。
+        # portable suite の件数と結果を検査し、workstation test は開発機で実行する。
+        run: pwsh scripts/test.ps1 -Portable -Ucrt64 '${{ steps.msys2.outputs.msys2-location }}\ucrt64'
 
       - name: 失敗時の診断情報
         if: failure()

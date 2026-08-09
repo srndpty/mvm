@@ -1276,6 +1276,69 @@ add_test(NAME p1_shutdown_contract_timeout_negative
             "${CMAKE_SOURCE_DIR}/tests/gpu_preview/test-p1-shutdown-contract.ps1")
 set_tests_properties(p1_shutdown_contract_timeout_negative PROPERTIES TIMEOUT 120)
 
+# --- CI portable suite と workstation suite の境界 -------------------------
+# GitHub hosted runner には Meiryo と D3D11VA hardware device が無い。
+# その環境で実行不能なテストだけを明示的に分類する。SKIP_RETURN_CODE や
+# software fallback で成功に見せず、ローカルの既定 CTest では従来どおり実行する。
+set(MVM_WORKSTATION_TESTS
+    render_audio_a1_only
+    render_audio_a2_only
+    render_audio_a2_only_0db
+    render_audio_mixed
+    verify_audio_four_frequencies
+    verify_audio_gain_minus_6db
+    verify_audio_no_clipping
+    ownership_soak_100
+    memory_soak_diagnostic
+    scrub_contract_linear_8333
+    scrub_contract_linear_16667
+    scrub_coalescing_occurs
+    preview_scenario_schema
+    preview_contract_short
+    preview_invalid_real_time_exit2
+    p2_dual_decode_integration
+    p2_gpu_compositor_offscreen
+    compositor_qt_two_layers
+    compositor_qt_actual_device
+    compositor_qt_no_full_frame_copy
+    compositor_qt_actual_target_probe
+    compositor_qt_shutdown
+    compositor_qt_dual_seek_64
+    compositor_qt_dual_seek_64_contract
+    compositor_qt_layout_epoch
+    compositor_qt_layout_epoch_contract
+    compositor_qt_device_change_fail_closed
+    compositor_qt_completion_fatal_fail_closed
+    gpu_decode_v1080p60_h264
+    gpu_seek_flush_v1080p60_h264
+    gpu_marker_v1080p60_h264
+    gpu_decode_v1080p60_hevc
+    gpu_seek_flush_v1080p60_hevc
+    gpu_marker_v1080p60_hevc
+    gpu_seek_exact_landing_hevc
+    gpu_marker_exact_landing_hevc
+    gpu_marker_4k_h264_diagnostic
+    gpu_marker_4k_hevc10_diagnostic
+    gpu_decode_jp_path
+    gpu_snapshot_race
+    gpu_open_close_soak_short
+    gpu_open_close_soak_100
+    gpu_color_bt709_limited
+    gpu_color_bt709_full
+    gpu_color_bt601_limited
+    gpu_color_bt2020ncl_limited_diagnostic
+    gpu_color_p010_bt709_limited_diagnostic
+    gpu_soak_event_query_backend
+    preview_spike_device_sharing_contract
+    preview_spike_json_contract
+    preview_spike_1080p60_h264_smoke)
+
+foreach(_workstation_test IN LISTS MVM_WORKSTATION_TESTS)
+    if(TEST "${_workstation_test}")
+        set_property(TEST "${_workstation_test}" APPEND PROPERTY LABELS workstation)
+    endif()
+endforeach()
+
 # --- lint 自身の negative test ----------------------------------------------
 # 検査を書いただけでは効いている証明にならない。
 # 違反を入れたら落ち、正しいコードでは落ちないことを両方確かめる。

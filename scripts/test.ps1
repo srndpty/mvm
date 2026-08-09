@@ -10,6 +10,9 @@
     既定では実行しない。両方を除外しないと、通常テストの所要時間に
     長時間の診断が混ざり、「通常テストが何件通ったか」が分からなくなる。
 
+    -Portable は、特定の開発機環境 (Meiryo / D3D11VA hardware device) が必要な
+    workstation ラベルも除外する。GPUやフォントの無いCIでのみ使用する。
+
     debug ビルドの性能値を判定に使わないため、-Performance は
     release でのみ意味を持つ。-Stability は診断が目的なので preset を問わない。
 
@@ -35,6 +38,7 @@ param(
 
     [switch]$Performance,
     [switch]$Stability,
+    [switch]$Portable,
     [string]$Ucrt64 = 'C:\msys64\ucrt64'
 )
 
@@ -51,6 +55,8 @@ $anyFailed = $false
 # 「通常テストが減っている」ことに気づけない。
 $summary = @()
 $lastGroupExit = 0
+$normalExclude = if ($Portable) { 'performance|stability|workstation' } else { 'performance|stability' }
+$normalKind = if ($Portable) { '通常(portable)' } else { '通常' }
 
 # fail-closed。「測れなかった」を「通った」と報告しない。
 #
@@ -156,8 +162,8 @@ foreach ($p in $presets) {
     Push-Location $buildDir
     try {
         # 通常テスト: performance と stability の両方を除外する
-        Invoke-CTestGroup -Preset $p -Kind '通常' -Required `
-            -CTestArgs @('-LE', 'performance|stability')
+        Invoke-CTestGroup -Preset $p -Kind $normalKind -Required `
+            -CTestArgs @('-LE', $normalExclude)
         if ($lastGroupExit -ne 0) { $anyFailed = $true }
 
         if ($Performance) {
