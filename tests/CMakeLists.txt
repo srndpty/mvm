@@ -728,6 +728,12 @@ target_link_libraries(mvm_p3_audio_smoke PRIVATE mvm::audio_preview mvm::warning
 add_executable(mvm_test_audio_worker_wake audio_preview/test_audio_worker_wake.cpp)
 target_link_libraries(mvm_test_audio_worker_wake PRIVATE mvm::audio_preview mvm::warnings)
 
+add_executable(mvm_test_display_target_contract
+    audio_preview/test_display_target_contract.cpp)
+target_link_libraries(mvm_test_display_target_contract PRIVATE mvm::preview_qt mvm::warnings)
+mvm_add_test(p3_c2_display_target_preflight_unit
+    COMMAND mvm_test_display_target_contract)
+
 foreach(_p3_case Good NegativeCounter)
     string(TOLOWER "${_p3_case}" _p3_case_name)
     mvm_add_test(p3_a_contract_${_p3_case_name}
@@ -765,6 +771,28 @@ foreach(_p3c_case IN LISTS _p3c_contract_cases)
             -Case ${_p3c_case}
             -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p3-c-contract.ps1"
             -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/p3-c-contract-${_p3c_case_name}")
+endforeach()
+
+set(_p3c2_contract_cases
+    GoodC2 NegativeMissingDisplayTelemetry NegativeRequestedWidth
+    NegativeWindowWidth NegativeWindowHeight NegativeSurfaceWidth NegativeSurfaceHeight
+    NegativeRhiWidth NegativeRhiHeight NegativeDpr
+    NegativeDisplayStartEndOrientation NegativeDisplayStartEndGeometry
+    NegativeDisplayStartEndDpr NegativeDisplayStartEndWindow
+    NegativeDisplayStartEndSurface NegativeDisplayStartEndRhiTarget
+    NegativeDisplayEnvironmentRunMismatch NegativeDisplayNull NegativeDisplayNaN
+    NegativeDisplayType)
+foreach(_p3c2_case IN LISTS _p3c2_contract_cases)
+    string(TOLOWER "${_p3c2_case}" _p3c2_case_name)
+    mvm_add_test(p3_c2_contract_${_p3c2_case_name}
+        COMMAND pwsh -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/audio_preview/test-p3-c2-contract.ps1"
+            -Case ${_p3c2_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p3-c2-contract.ps1"
+            -LegacyChecker "${CMAKE_SOURCE_DIR}/scripts/check-p3-c-contract.ps1"
+            -LegacyFixtureScript
+                "${CMAKE_CURRENT_SOURCE_DIR}/audio_preview/test-p3-c-contract.ps1"
+            -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/p3-c2-contract-${_p3c2_case_name}")
 endforeach()
 
 set(MVM_P3_AUDIO_FIXTURE "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4")

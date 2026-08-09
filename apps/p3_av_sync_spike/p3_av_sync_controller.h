@@ -2,6 +2,7 @@
 #define MVM_APPS_P3_AV_SYNC_CONTROLLER_H
 
 #include "app/preview/compositor_rhi_item.h"
+#include "app/preview/display_target_contract.h"
 #include "media/audio_preview/audio_decode_worker.h"
 #include "media/audio_preview/wasapi_audio_sink.h"
 
@@ -23,6 +24,7 @@ struct P3AvConfig {
     unsigned int seed = 20260808;
     int displayTimeoutMs = 3000;
     bool formalContract = false;
+    bool formalContractC2 = false;
     int warmupSeconds = 5;
 };
 
@@ -37,7 +39,7 @@ Q_SIGNALS:
     void finished();
 
 private:
-    enum class Phase { WaitDevice, Start, WaitDisplay, Warmup, Playback, PauseStart, PauseWait,
+    enum class Phase { WaitDevice, DisplayPreflight, Start, WaitDisplay, Warmup, Playback, PauseStart, PauseWait,
                        ResumePlayback, ShutdownWait, Done };
     struct SeekRecord {
         long long requestedFrame = -1;
@@ -79,6 +81,7 @@ private:
     bool openPipelines();
     bool startAtFrame(long long targetFrame, bool measurementStart = false);
     bool pollFirstDisplay();
+    DisplayEnvironmentSnapshot captureDisplayEnvironment() const;
     void startShutdown(const QString& reason, bool failure);
     bool writeMetrics() const;
 
@@ -120,6 +123,10 @@ private:
     long long seekGenerationMismatchCount_ = 0;
     long long seekStaleCompletionCount_ = 0;
     QString seekTimeoutDiagnostic_;
+    DisplayEnvironmentSnapshot displayEnvironmentStart_;
+    DisplayEnvironmentSnapshot displayEnvironmentEnd_;
+    bool displayPreflightPassed_ = false;
+    bool formalWorkloadStarted_ = false;
 };
 
 } // namespace mvm::app

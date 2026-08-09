@@ -78,6 +78,12 @@ protected:
         if (!state_->deviceReady.load(std::memory_order_acquire) ||
             state_->fatal.load(std::memory_order_acquire))
             return;
+        // pipelineをopenする前のP3-C-2 preflightでもactual targetを検査できるよう、
+        // frame pairの有無に依存せずQRhi textureの実pixel sizeを公開する。
+        if (auto* texture = colorTexture()) {
+            const QSize targetSize = texture->pixelSize();
+            state_->publishActualOutputSize(targetSize.width(), targetSize.height());
+        }
         if (captureMeasurementBoundary(callbackBegin))
             return;
         state_->presentCallbackCount.fetch_add(1, std::memory_order_relaxed);
@@ -263,8 +269,7 @@ protected:
         const long long externalBegin = gpu::qpcTicks();
         cb->beginExternal();
         const QSize size = colorTexture()->pixelSize();
-        state_->actualOutputWidth.store(size.width(), std::memory_order_relaxed);
-        state_->actualOutputHeight.store(size.height(), std::memory_order_relaxed);
+        state_->publishActualOutputSize(size.width(), size.height());
         gpu::GpuCompositorStageTiming compositorTiming;
         const bool pairOnly = diagnosticCase == CompositorDiagnosticCase::PairOnly;
         const bool diagnostic = diagnosticCase != CompositorDiagnosticCase::None;

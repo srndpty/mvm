@@ -875,3 +875,77 @@ P3-C-1 new path formalとP3-A regressionはPASSしたが、後続のP2-D5-1 form
 Phase-1 P3 closureの最終判定は **P3 FINAL FAIL under P3-C-1** である。
 
 P3-C-1 raw / summaryとP2-D5-1 regression raw / summaryは保存し、P4へは進まない。
+
+## 18. P3-C-2 display-target contract hardening
+
+### 18.1 [事実] P3-C-1のhistorical判定は変更しない
+
+§17のP3-C-1 formal PASS、P3-A regression PASS、P2-D5-1 regression FAIL、P1 NOT_RUN、
+**P3 FINAL FAIL under P3-C-1**はhistorical resultとして維持する。P3-C-1のraw schema、checker、
+matrix summaryの意味をP3-C-2へ合わせて変更していない。
+
+P2-D5-1 regression時、1920x1200 monitorはWindows portrait orientationだった。全6 rawのactual
+RHI targetは1204x1080だったが、screen geometry、orientation、availableGeometry、DPR、Windowと
+Surfaceのlogical sizeは保存していなかった。その後landscapeへ戻した同一環境のshort diagnosticでは
+P2 actual RHI targetが1920x1080になった。orientationに伴うWindows/Qt window sizing issueを強く
+支持するが、historical screen telemetryが無いため完全な因果証明とは扱わない。
+
+### 18.2 [事実] P3-C-2を独立contractとして追加した
+
+P3-C-2はraw schema `mvm-p3-formal-2`、matrix summary schema
+`mvm-p3-matrix-summary-2`、新規output directory
+`build/ucrt64-release/p3-matrix-c2/`を使う。P3-C-1の性能、A/V、seek、pause/resume、correctness、
+teardown条件は変更せず、新checkerからP3-C-1 checkerを呼んで再検査する。
+
+各rawはrequested size、screen name/orientation、screen/available geometry、DPR、QQuickWindowと
+CompositorSurfaceのlogical size、actual RHI target pixel sizeをstart/endで保存する。native window
+outer/client sizeも診断値として保存する。orientation名とavailableGeometryの大小は単独のMUSTに
+せず、Window / Surface / RHIが1920x1080、DPRが1.0であることをMUSTにした。
+
+### 18.3 [事実] preflightをpipeline open前にfail-closedで実行する
+
+Qt/D3D11 device ready後、render callbackがactual color textureの`pixelSize()`をthread-safeなpacked
+snapshotへ公開する。GUI threadのcontrollerがWindow、Surface、QScreen、native windowとRHI
+snapshotを取得し、decoder/audio pipelineをopenする前にpure preflightを実行する。
+
+target未初期化中は最大10秒待つ。不一致ならresizeで補正せず、formal workloadを開始しないままrawを
+保存してnonzero終了する。最初のDryRunではactual size公開がframe pair合成後だったためpreflightが
+ready timeoutになり、3 processとも`formal_workload_started = false`で停止した。公開位置をframeの
+有無に依存しないrender callback先頭へ移し、pipeline前preflightとの循環を解消した。
+
+### 18.4 [事実] checkerとpreflightのpositive/negativeは21/21通過した
+
+production preflight helperのpure testは1920x1080 / DPR 1.0を受理し、1204x1080を拒否して
+workload開始を許可しない。C2 checkerはGoodC2 1件とnegative 19件を登録した。missing telemetry、
+requested/window/surface/RHI/DPR、start/end orientation/geometry/DPR/window/surface/RHI、run間
+display mismatch、null、NaN、型違反をそれぞれfail-closedで拒否した。
+
+Release限定の先行実行と、後続のRelease / Debug ordinary CTest内の両方でC2関連21/21が通過した。
+
+### 18.5 [事実] landscape環境のP3-C-2 DryRunは3/3通過した
+
+最終Release executableで`pwsh -NoProfile -File scripts/p3-c2-matrix.ps1 -DryRun`を実行した。
+Playback 5秒、Seek 64件、PauseResumeの各1 independent processがC2 checkerと継承したC1 checkerを
+通過した。全rawのstart/endでWindow、Surface、actual RHI targetは1920x1080、DPRは1.0だった。
+
+summaryは3/3 complete、`all_runs_pass = true`、source/hardware/display environment provenanceは
+すべてunchangedだった。rawとsummaryの`formal_verdict`は`NOT_RUN`、`p3_c_pass = false`である。
+正式9 runのPASSを表す結果ではない。
+
+### 18.6 [事実] P2 sanityと既存回帰は通過した
+
+P2 formalは再実行せず、short Playbackを1 processだけ実行した。process exit 0、actual RHI targetは
+1920x1080、adapterはNVIDIA GeForce RTX 4090、completion backendはfenceだった。このsanityで
+historical P2-D5-1 regression FAILを置き換えない。
+
+P3-A standalone smokeはplayback 15秒 x 3、exact seek 64/64、pause/resume、marker 6/6を通過した。
+P3-B playback sanityは1/1通過した。Release / Debug ordinary CTestは各236/236通過し、format、lint、
+`git diff --check`も通過した。
+
+### 18.7 [未検証] P3-C-2 formalはまだ実行していない
+
+P3-C-2のcontract/harness hardening、negative、DryRun、P2 sanity、既存回帰は完了し、clean HEADを
+用意した後にformalへ進める状態である。正式commandは
+`pwsh -NoProfile -File scripts/p3-c2-matrix.ps1`だが、本ラリーでは実行していない。
+
+P2/P1 formal、P4、windowの強制resize、commit、pushも実行していない。
