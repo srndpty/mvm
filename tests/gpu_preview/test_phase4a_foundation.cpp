@@ -2,15 +2,30 @@
 #include "media/gpu_preview/composition_schedule.h"
 #include "media/gpu_preview/compositor_coordinator.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <functional>
+#include <limits>
 #include <map>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
 using namespace mvm::gpu;
+
+namespace mvm::gpu {
+
+// overflow pathを実回数だけ進めず検査するための限定したwhite-box access。
+struct CompositorCoordinatorTestAccess {
+    static void setCompositionEpoch(CompositorCoordinator& coordinator, CompositionEpoch epoch) {
+        std::lock_guard<std::mutex> lock(coordinator.mutex_);
+        coordinator.epoch_ = epoch;
+    }
+};
+
+} // namespace mvm::gpu
 
 namespace {
 
@@ -29,6 +44,58 @@ void require(bool condition, const char* message) {
 std::vector<LayerLayout> fixedLayout() {
     return {{kSourceA, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0f, 0},
             {kSourceB, {0.5f, 0.5f, 0.5f, 0.5f}, {0, 0, 1, 1}, 0.75f, 1}};
+}
+
+std::vector<LayerLayout> layoutFor(CompositionStateId state) {
+    auto layout = fixedLayout();
+    if (state == kS1) {
+        layout[1].destination = {0, 0.5f, 0.5f, 0.5f};
+        layout[1].opacity = 0.5f;
+    } else if (state == kS2) {
+        layout[0].sourceUv = {0.25f, 0, 0.75f, 1};
+        layout[1].destination = {0.5f, 0, 0.5f, 0.5f};
+    } else if (state == kS3) {
+        layout[0].destination = {0, 0, 0.5f, 1};
+        layout[1].destination = {0.5f, 0, 0.5f, 1};
+        layout[1].opacity = 1.0f;
+    }
+    return layout;
+}
+
+bool sameRectForTest(const RectF& a, const RectF& b) {
+    return a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height;
+}
+
+DecodedGpuFrame sourceFrame(SourceId source, long long frameNumber, unsigned long long generation,
+                            unsigned long long resourceEpoch);
+
+void requireComposedSnapshot(CompositorCoordinator& coordinator, CompositionStateId state,
+                             CompositionEpoch epoch, const std::vector<LayerLayout>& layout,
+                             long long frameNumber) {
+    ComposedFrame composed;
+    require(coordinator.compose(frameNumber,
+                                {sourceFrame(kSourceA, frameNumber, 7, 101),
+                                 sourceFrame(kSourceB, frameNumber, 11, 202)},
+                                composed) == CompositionResult::Accepted,
+            "snapshotをcomposeできません");
+    require(composed.compositionState == state && composed.compositionEpoch == epoch,
+            "compose identityがactive snapshotと一致しません");
+    require(composed.layers.size() == layout.size(), "compose layer数がlayoutと一致しません");
+    for (const auto& expected : layout) {
+        const auto found = std::find_if(composed.layers.begin(), composed.layers.end(),
+                                        [&](const CompositionLayerFrame& layer) {
+                                            return layer.frame.sourceId == expected.sourceId;
+                                        });
+        require(found != composed.layers.end(), "layoutのsourceがcompose結果にありません");
+        require(sameRectForTest(found->destination, expected.destination) &&
+                    sameRectForTest(found->sourceUv, expected.sourceUv) &&
+                    found->opacity == expected.opacity && found->zOrder == expected.zOrder,
+                "compose結果のlayout fieldがactive snapshotと一致しません");
+        require(found->frame.sourceGeneration == coordinator.sourceGeneration(expected.sourceId) &&
+                    found->frame.resourceEpoch ==
+                        (expected.sourceId == kSourceA ? ResourceEpoch{101} : ResourceEpoch{202}),
+                "composeでsource/resource identityが変化しました");
+    }
 }
 
 void configure(CompositorCoordinator& coordinator) {
@@ -265,6 +332,126 @@ void displayLedgerSnapshotIdentity() {
     require(found.sources == expected.sources, "ledgerのA/B layer snapshotが変化しました");
 }
 
+CompositionEpoch initializeAtomicSnapshot(CompositorCoordinator& coordinator) {
+    configure(coordinator);
+    require(coordinator.adoptCompositionSnapshot(kS0, layoutFor(kS0)) ==
+                CompositionStateAdoptionResult::Adopted,
+            "初期S0/layout0 snapshotを採用できません");
+    return coordinator.compositionEpoch();
+}
+
+void atomicAdoptChangesStateLayoutEpochOnce() {
+    CompositorCoordinator coordinator;
+    const auto baseline = initializeAtomicSnapshot(coordinator);
+    require(coordinator.adoptCompositionSnapshot(kS1, layoutFor(kS1)) ==
+                CompositionStateAdoptionResult::Adopted,
+            "S1/layout1 snapshotを採用できません");
+    const auto adoptedEpoch = coordinator.compositionEpoch();
+    require(adoptedEpoch.value == baseline.value + 1,
+            "atomic adoptionでepochがexactly 1進みません");
+    require(coordinator.sourceGeneration(kSourceA) == SourceGeneration{7} &&
+                coordinator.sourceGeneration(kSourceB) == SourceGeneration{11},
+            "atomic adoptionがSourceGenerationを変更しました");
+    requireComposedSnapshot(coordinator, kS1, adoptedEpoch, layoutFor(kS1), 80);
+}
+
+void atomicAdoptSameSnapshotIsNoOp() {
+    CompositorCoordinator coordinator;
+    const auto baseline = initializeAtomicSnapshot(coordinator);
+    require(coordinator.adoptCompositionSnapshot(kS0, layoutFor(kS0)) ==
+                CompositionStateAdoptionResult::NoOp,
+            "同一snapshotがNoOpになりません");
+    require(coordinator.compositionEpoch() == baseline, "同一snapshotでepochが進みました");
+    requireComposedSnapshot(coordinator, kS0, baseline, layoutFor(kS0), 81);
+}
+
+void atomicRejectInvalidStateDoesNotMutate() {
+    CompositorCoordinator unconfigured;
+    require(unconfigured.adoptCompositionSnapshot(kS1, layoutFor(kS1)) ==
+                CompositionStateAdoptionResult::Rejected,
+            "未初期化coordinatorがsnapshotを受理しました");
+    require(unconfigured.compositionEpoch() == CompositionEpoch{} &&
+                !unconfigured.compositionState().valid(),
+            "未初期化rejectでidentityが変化しました");
+
+    CompositorCoordinator coordinator;
+    const auto baseline = initializeAtomicSnapshot(coordinator);
+    require(coordinator.adoptCompositionSnapshot({}, layoutFor(kS1)) ==
+                CompositionStateAdoptionResult::Rejected,
+            "invalid stateを含むsnapshotを受理しました");
+    require(coordinator.compositionState() == kS0 && coordinator.compositionEpoch() == baseline,
+            "invalid state rejectでidentityが変化しました");
+    requireComposedSnapshot(coordinator, kS0, baseline, layoutFor(kS0), 82);
+}
+
+void atomicRejectInvalidLayoutDoesNotMutate() {
+    CompositorCoordinator coordinator;
+    const auto baseline = initializeAtomicSnapshot(coordinator);
+    auto invalid = layoutFor(kS1);
+    invalid[1].sourceId = kSourceA;
+    require(coordinator.adoptCompositionSnapshot(kS1, std::move(invalid)) ==
+                CompositionStateAdoptionResult::Rejected,
+            "duplicate sourceを含むlayoutを受理しました");
+    require(coordinator.compositionState() == kS0 && coordinator.compositionEpoch() == baseline,
+            "invalid layout rejectでidentityが変化しました");
+    requireComposedSnapshot(coordinator, kS0, baseline, layoutFor(kS0), 83);
+}
+
+void atomicRejectSameStateDifferentLayout() {
+    CompositorCoordinator coordinator;
+    const auto baseline = initializeAtomicSnapshot(coordinator);
+    require(coordinator.adoptCompositionSnapshot(kS0, layoutFor(kS1)) ==
+                CompositionStateAdoptionResult::Rejected,
+            "同じstateへ異なるlayoutを割り当てました");
+    require(coordinator.compositionState() == kS0 && coordinator.compositionEpoch() == baseline,
+            "same-state/different-layout rejectでidentityが変化しました");
+    requireComposedSnapshot(coordinator, kS0, baseline, layoutFor(kS0), 84);
+}
+
+void atomicEpochOverflowDoesNotMutate() {
+    CompositorCoordinator coordinator;
+    initializeAtomicSnapshot(coordinator);
+    const CompositionEpoch maximum{std::numeric_limits<unsigned long long>::max()};
+    CompositorCoordinatorTestAccess::setCompositionEpoch(coordinator, maximum);
+    require(coordinator.adoptCompositionSnapshot(kS1, layoutFor(kS1)) ==
+                CompositionStateAdoptionResult::Rejected,
+            "epoch overflowとなるsnapshotを受理しました");
+    require(coordinator.compositionState() == kS0 && coordinator.compositionEpoch() == maximum,
+            "epoch overflow rejectでidentityが変化しました");
+    requireComposedSnapshot(coordinator, kS0, maximum, layoutFor(kS0), 85);
+}
+
+void atomicSnapshotComposeMatchesStateAndLayout() {
+    CompositorCoordinator coordinator;
+    initializeAtomicSnapshot(coordinator);
+    require(coordinator.adoptCompositionSnapshot(kS3, layoutFor(kS3)) ==
+                CompositionStateAdoptionResult::Adopted,
+            "S3/layout3 snapshotを採用できません");
+    requireComposedSnapshot(coordinator, kS3, coordinator.compositionEpoch(), layoutFor(kS3), 86);
+}
+
+void atomicTransitionSequenceIncrementsFiveTimes() {
+    CompositorCoordinator coordinator;
+    const auto baseline = initializeAtomicSnapshot(coordinator);
+    const std::vector<CompositionStateId> states{kS1, kS2, kS3, kS0, kS1};
+    for (size_t i = 0; i < states.size(); ++i) {
+        const auto state = states[i];
+        require(coordinator.adoptCompositionSnapshot(state, layoutFor(state)) ==
+                    CompositionStateAdoptionResult::Adopted,
+                "atomic transition sequenceを採用できません");
+        const CompositionEpoch expected{baseline.value + i + 1};
+        require(coordinator.compositionEpoch() == expected,
+                "atomic transitionのepochがexactly 1進みません");
+        require(coordinator.sourceGeneration(kSourceA) == SourceGeneration{7} &&
+                    coordinator.sourceGeneration(kSourceB) == SourceGeneration{11},
+                "atomic transitionがSourceGenerationを変更しました");
+        requireComposedSnapshot(coordinator, state, expected, layoutFor(state),
+                                90 + static_cast<long long>(i));
+    }
+    require(coordinator.compositionEpoch().value == baseline.value + 5,
+            "atomic transition sequenceのepoch増分が5ではありません");
+}
+
 using Test = std::pair<const char*, std::function<void()>>;
 
 const std::vector<Test> kTests = {
@@ -285,6 +472,14 @@ const std::vector<Test> kTests = {
     {"TransitionSequenceIncrementsFiveTimes", transitionSequenceIncrementsFiveTimes},
     {"ComposedFrameSnapshotIdentity", composedFrameSnapshotIdentity},
     {"DisplayLedgerSnapshotIdentity", displayLedgerSnapshotIdentity},
+    {"AtomicAdoptChangesStateLayoutEpochOnce", atomicAdoptChangesStateLayoutEpochOnce},
+    {"AtomicAdoptSameSnapshotIsNoOp", atomicAdoptSameSnapshotIsNoOp},
+    {"AtomicRejectInvalidStateDoesNotMutate", atomicRejectInvalidStateDoesNotMutate},
+    {"AtomicRejectInvalidLayoutDoesNotMutate", atomicRejectInvalidLayoutDoesNotMutate},
+    {"AtomicRejectSameStateDifferentLayout", atomicRejectSameStateDifferentLayout},
+    {"AtomicEpochOverflowDoesNotMutate", atomicEpochOverflowDoesNotMutate},
+    {"AtomicSnapshotComposeMatchesStateAndLayout", atomicSnapshotComposeMatchesStateAndLayout},
+    {"AtomicTransitionSequenceIncrementsFiveTimes", atomicTransitionSequenceIncrementsFiveTimes},
 };
 
 } // namespace

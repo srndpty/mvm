@@ -45,12 +45,17 @@ struct LayerLayout {
     int zOrder = 0;
 };
 
+struct CompositorCoordinatorTestAccess;
+
 class CompositorCoordinator {
 public:
     ConfigureResult configure(std::vector<LayerLayout> layout,
                               const std::map<SourceId, SourceGeneration>& generations);
     LayoutUpdateResult updateLayout(std::vector<LayerLayout> layout);
     CompositionStateAdoptionResult adoptCompositionState(CompositionStateId requested);
+    CompositionStateAdoptionResult
+    adoptCompositionSnapshot(CompositionStateId requestedState,
+                             std::vector<LayerLayout> requestedLayout);
     bool setSourceGeneration(SourceId source, SourceGeneration generation);
     SourceGeneration sourceGeneration(SourceId source) const;
     CompositionEpoch compositionEpoch() const;
@@ -65,6 +70,7 @@ public:
     long long missingSourceFrameCount() const;
 
 private:
+    friend struct CompositorCoordinatorTestAccess;
     CompositionResult validateLocked(long long outputFrameNumber,
                                      const std::vector<DecodedGpuFrame>& frames) const;
     mutable std::mutex mutex_;

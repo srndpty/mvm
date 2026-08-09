@@ -740,6 +740,14 @@ set(MVM_PHASE4A_TESTS
     TransitionSequenceIncrementsFiveTimes
     ComposedFrameSnapshotIdentity
     DisplayLedgerSnapshotIdentity
+    AtomicAdoptChangesStateLayoutEpochOnce
+    AtomicAdoptSameSnapshotIsNoOp
+    AtomicRejectInvalidStateDoesNotMutate
+    AtomicRejectInvalidLayoutDoesNotMutate
+    AtomicRejectSameStateDifferentLayout
+    AtomicEpochOverflowDoesNotMutate
+    AtomicSnapshotComposeMatchesStateAndLayout
+    AtomicTransitionSequenceIncrementsFiveTimes
 )
 foreach(test_name IN LISTS MVM_PHASE4A_TESTS)
     mvm_add_test(phase4a_${test_name}
