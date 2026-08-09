@@ -48,6 +48,9 @@ public:
                    CompositionDisplayRecord& out) const;
     bool findEpochAfter(unsigned long long baseline, CompositionEpoch epoch,
                         CompositionDisplayRecord& out) const;
+    // baseline より後の record を記録順に返す。集計側が producer の要約ではなく
+    // 記録そのものから再計算できるようにするための raw access である。
+    std::vector<CompositionDisplayRecord> recordsAfter(unsigned long long baseline) const;
     bool waitAfter(unsigned long long baseline, const CompositionDisplayExpectation& expectation,
                    int timeoutMs, CompositionDisplayRecord& out);
     void abort();

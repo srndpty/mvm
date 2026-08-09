@@ -1,6 +1,7 @@
 #include "media/gpu_preview/composition_display_ledger.h"
 #include "media/gpu_preview/composition_schedule.h"
 #include "media/gpu_preview/compositor_coordinator.h"
+#include "media/gpu_preview/phase4_composition_catalog.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -29,34 +30,28 @@ struct CompositorCoordinatorTestAccess {
 
 namespace {
 
-constexpr CompositionStateId kS0{1};
-constexpr CompositionStateId kS1{2};
-constexpr CompositionStateId kS2{3};
-constexpr CompositionStateId kS3{4};
-constexpr SourceId kSourceA{1};
-constexpr SourceId kSourceB{2};
+// runtime と test で mapping を二重定義しない。canonical 値は catalog にだけある。
+// 期待値 (下の canonicalLayoutSx) は catalog を呼ばずに literal で書く。
+constexpr CompositionStateId kS0 = kPhase4S0;
+constexpr CompositionStateId kS1 = kPhase4S1;
+constexpr CompositionStateId kS2 = kPhase4S2;
+constexpr CompositionStateId kS3 = kPhase4S3;
+constexpr SourceId kSourceA = kPhase4SourceA;
+constexpr SourceId kSourceB = kPhase4SourceB;
 
 void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
 
-std::vector<LayerLayout> fixedLayout() {
-    return {{kSourceA, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0f, 0},
-            {kSourceB, {0.5f, 0.5f, 0.5f, 0.5f}, {0, 0, 1, 1}, 0.75f, 1}};
+std::vector<LayerLayout> layoutFor(CompositionStateId state) {
+    auto layout = phase4CanonicalLayout(state);
+    require(!layout.empty(), "canonical layout が catalog にありません");
+    return layout;
 }
 
-std::vector<LayerLayout> layoutFor(CompositionStateId state) {
-    auto layout = fixedLayout();
-    if (state == kS1) {
-        layout[1].destination = {0, 0, 0.5f, 0.5f};
-    } else if (state == kS2) {
-        layout[1].destination = {0, 0, 0.5f, 0.5f};
-        layout[1].opacity = 0.5f;
-    } else if (state == kS3) {
-        layout[1].opacity = 0.5f;
-    }
-    return layout;
+std::vector<LayerLayout> fixedLayout() {
+    return layoutFor(kS0);
 }
 
 bool sameRectForTest(const RectF& a, const RectF& b) {
@@ -149,16 +144,39 @@ DecodedGpuFrame sourceFrame(SourceId source, long long frameNumber, unsigned lon
 }
 
 CompositionSchedule formalSchedule() {
-    auto schedule = CompositionSchedule::create(
-        {{0, kS0}, {600, kS1}, {1200, kS2}, {1800, kS3}, {2400, kS0}, {3000, kS1}});
+    auto schedule = phase4Schedule(Phase4ScheduleKind::Formal);
     require(schedule.has_value(), "formal scheduleを構築できません");
     return *schedule;
 }
 
 CompositionSchedule smokeSchedule() {
-    auto schedule = CompositionSchedule::create({{0, kS0}, {200, kS1}, {400, kS2}});
+    auto schedule = phase4Schedule(Phase4ScheduleKind::Smoke);
     require(schedule.has_value(), "smoke scheduleを構築できません");
     return *schedule;
+}
+
+// canonical serialization は docs/phase4-plan.md §3.2 / §3.8 の freeze 値と
+// 完全一致でなければならない。catalog を呼んで期待値を作らない。
+void canonicalScheduleStrings() {
+    require(phase4CanonicalScheduleString(Phase4ScheduleKind::Smoke) == "0:S0;200:S1;400:S2",
+            "smoke canonical schedule 文字列が freeze 値と違います");
+    require(phase4CanonicalScheduleString(Phase4ScheduleKind::Formal) ==
+                "0:S0;600:S1;1200:S2;1800:S3;2400:S0;3000:S1",
+            "formal canonical schedule 文字列が freeze 値と違います");
+}
+
+void canonicalStateNames() {
+    const std::vector<std::pair<CompositionStateId, std::string>> expected{
+        {kS0, "S0"}, {kS1, "S1"}, {kS2, "S2"}, {kS3, "S3"}};
+    for (const auto& [state, name] : expected) {
+        require(phase4StateName(state) == name, "state id -> name mapping が違います");
+        require(phase4StateFromName(name) == state, "name -> state id mapping が違います");
+    }
+    require(phase4StateName(CompositionStateId{99}) == nullptr,
+            "未知 state を既定 name へ縮退させました");
+    require(!phase4StateFromName("S4").valid(), "未知 name を既定 state へ縮退させました");
+    require(phase4CanonicalLayout(CompositionStateId{99}).empty(),
+            "未知 state へ layout を返しました");
 }
 
 void requireResolution(const CompositionSchedule& schedule,
@@ -493,6 +511,8 @@ const std::vector<Test> kTests = {
     {"CanonicalLayoutS1", canonicalLayoutS1},
     {"CanonicalLayoutS2", canonicalLayoutS2},
     {"CanonicalLayoutS3", canonicalLayoutS3},
+    {"CanonicalScheduleStrings", canonicalScheduleStrings},
+    {"CanonicalStateNames", canonicalStateNames},
     {"GoodFormalScheduleResolution", goodFormalScheduleResolution},
     {"GoodSmokeScheduleResolution", goodSmokeScheduleResolution},
     {"RejectEmptySchedule", rejectEmptySchedule},

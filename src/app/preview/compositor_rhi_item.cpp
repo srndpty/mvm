@@ -193,6 +193,19 @@ protected:
             return;
         }
 
+        // Phase 4 / B: exact pair より**前**に schedule を resolve し、state と
+        // layout を atomic snapshot として adopt する。compose 後や display 後に
+        // adopt すると、既に表示した frame へ後付けの state が付く。
+        if (state_->phase4Enabled.load(std::memory_order_acquire)) {
+            const auto driven = state_->phase4Driver->onTargetFrame(state_->coordinator, output);
+            if (driven == gpu::Phase4DriveResult::Rejected ||
+                driven == gpu::Phase4DriveResult::Unresolved) {
+                state_->phase4AdoptionFailureCount.fetch_add(1, std::memory_order_relaxed);
+                fail("Phase 4 composition snapshot を target frame へ適用できません");
+                return;
+            }
+        }
+
         gpu::ComposedFrame frame;
         const long long pairBegin = gpu::qpcTicks();
         if (diagnosticCase == CompositorDiagnosticCase::FixedTextures) {
