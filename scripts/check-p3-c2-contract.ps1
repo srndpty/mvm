@@ -44,6 +44,12 @@ function Text([object]$Object, [string]$Name) {
     }
     return [string]$value
 }
+function Boolean([object]$Object, [string]$Name, [bool]$Expected) {
+    $value = Property $Object $Name
+    if ($value -isnot [bool]) { Fail "$Name はJSON booleanではありません" }
+    if ($value -ne $Expected) { Fail "$Name が期待値 $Expected ではありません" }
+    return [bool]$value
+}
 
 $displayFields = @(
     'screen_name','screen_orientation','screen_geometry_width','screen_geometry_height',
@@ -121,8 +127,8 @@ if ((Integer $data 'requested_output_width') -ne 1920 -or
     (Integer $data 'requested_output_height') -ne 1080) {
     Fail 'requested output sizeが1920x1080ではありません'
 }
-if (-not (Property $data 'display_target_preflight_pass')) { Fail 'display target preflightがFAILです' }
-if (-not (Property $data 'formal_workload_started')) { Fail 'formal workloadが開始されていません' }
+Boolean $data 'display_target_preflight_pass' $true | Out-Null
+Boolean $data 'formal_workload_started' $true | Out-Null
 
 $start = DisplayEnvironment $data 'display_environment_start'
 $end = DisplayEnvironment $data 'display_environment_end'

@@ -42,6 +42,10 @@ $nanToken = $false
 
 switch ($Case) {
     'GoodC2' {}
+    'NegativePreflightFalse' {$record.display_target_preflight_pass=$false}
+    'NegativePreflightType' {$record.display_target_preflight_pass='false'}
+    'NegativeWorkloadFalse' {$record.formal_workload_started=$false}
+    'NegativeWorkloadType' {$record.formal_workload_started='false'}
     'NegativeMissingDisplayTelemetry' {$record.PSObject.Properties.Remove('display_environment_start')}
     'NegativeRequestedWidth' {$record.requested_output_width=1919}
     'NegativeWindowWidth' {$record.display_environment_start.window_logical_width=1919}

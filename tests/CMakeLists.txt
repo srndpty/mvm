@@ -774,7 +774,9 @@ foreach(_p3c_case IN LISTS _p3c_contract_cases)
 endforeach()
 
 set(_p3c2_contract_cases
-    GoodC2 NegativeMissingDisplayTelemetry NegativeRequestedWidth
+    GoodC2 NegativePreflightFalse NegativePreflightType
+    NegativeWorkloadFalse NegativeWorkloadType
+    NegativeMissingDisplayTelemetry NegativeRequestedWidth
     NegativeWindowWidth NegativeWindowHeight NegativeSurfaceWidth NegativeSurfaceHeight
     NegativeRhiWidth NegativeRhiHeight NegativeDpr
     NegativeDisplayStartEndOrientation NegativeDisplayStartEndGeometry
