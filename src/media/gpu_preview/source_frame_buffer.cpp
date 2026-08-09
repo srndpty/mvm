@@ -157,4 +157,18 @@ size_t SourceFrameBuffer::depth() const {
     return frames_.size();
 }
 
+SourceFrameBufferSnapshot SourceFrameBuffer::snapshot() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    SourceFrameBufferSnapshot result;
+    result.generation = generation_;
+    result.displayedFrame = displayed_;
+    result.depth = frames_.size();
+    result.stopped = stopped_;
+    if (!frames_.empty()) {
+        result.frontFrame = frames_.front().frameNumber;
+        result.backFrame = frames_.back().frameNumber;
+    }
+    return result;
+}
+
 } // namespace mvm::gpu

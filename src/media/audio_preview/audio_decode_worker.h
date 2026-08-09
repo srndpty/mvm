@@ -31,6 +31,7 @@ struct AudioSeekCompletion {
     std::int64_t requestedSample = -1;
     std::int64_t firstOutputSample = -1;
     SourceGeneration seekGeneration{};
+    std::int64_t readyQpc = 0;
     std::int64_t discardedPrerollSamples = 0;
     double latencyMs = 0.0;
     bool completed = false;

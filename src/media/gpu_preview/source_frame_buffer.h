@@ -10,6 +10,15 @@
 
 namespace mvm::gpu {
 
+struct SourceFrameBufferSnapshot {
+    SourceGeneration generation{};
+    long long displayedFrame = -1;
+    long long frontFrame = -1;
+    long long backFrame = -1;
+    size_t depth = 0;
+    bool stopped = false;
+};
+
 // 1 source 専用の bounded buffer。他 source の stop/seek を表現する API を持たない。
 class SourceFrameBuffer final : public IPreviewSurface {
 public:
@@ -34,6 +43,7 @@ public:
     void restart();
     bool stopped() const;
     size_t depth() const;
+    SourceFrameBufferSnapshot snapshot() const;
 
     size_t capacity() const { return capacity_; }
 

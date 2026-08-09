@@ -121,6 +121,13 @@ int main() {
     check(catchUp.action == AudioVideoScheduleAction::CatchUp && catchUp.targetFrame == 3 &&
               catchUp.skippedFrames == 2,
           "複数 frame 前進を明示的な catch-up とする");
+    const auto pendingSeek = scheduleVideoForAudio(2384 * 800, 2382, -1, 3000, 2383);
+    check(pendingSeek.action == AudioVideoScheduleAction::Request &&
+              pendingSeek.targetFrame == 2383 && pendingSeek.skippedFrames == 0,
+          "seek直後はclockが1 frame進んでもexact targetを先に要求する");
+    check(scheduleVideoForAudio(2384 * 800, 2383, 2383, 3000, 2383).action ==
+              AudioVideoScheduleAction::Invalid,
+          "表示済みseek targetをpendingとして再要求しない");
     check(scheduleVideoForAudio(800, 2, 2, 100).action == AudioVideoScheduleAction::ClockRegression,
           "audio clock regression を fail-closed にする");
     check(scheduleVideoForAudio(100 * 800, 99, 99, 100).action == AudioVideoScheduleAction::End,
