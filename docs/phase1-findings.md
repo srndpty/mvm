@@ -2,13 +2,13 @@
 
 記述は Phase 0 と同じ規則で分類する。混ぜない。
 
-| 印 | 意味 |
-| --- | --- |
-| `[事実]` | 実際に実行して観測した。再現手順を併記する |
-| `[推測]` | 観測から導いた説明。ソースを読んで確かめてはいない |
-| `[未検証]` | まだ測っていない。できると仮定してはいけない |
-| `[回避策]` | 現在の対処。恒久策とは限らない |
-| `[exit]` | exit criteria への影響 |
+| 印         | 意味                                               |
+| ---------- | -------------------------------------------------- |
+| `[事実]`   | 実際に実行して観測した。再現手順を併記する         |
+| `[推測]`   | 観測から導いた説明。ソースを読んで確かめてはいない |
+| `[未検証]` | まだ測っていない。できると仮定してはいけない       |
+| `[回避策]` | 現在の対処。恒久策とは限らない                     |
+| `[exit]`   | exit criteria への影響                             |
 
 **数値の出典は `build/ucrt64-release/p1-matrix/summary.json` である。**
 このファイルの数値は `scripts/p1-matrix.ps1` が生 JSON から再計算したものであり、
@@ -292,10 +292,10 @@ compositionEpoch に decoder の resource epoch を入れていた。
 
 修正: 3 つに分け、発行者を固定した。
 
-| 概念 | 発行者 |
-| --- | --- |
-| `ResourceEpoch` | decoder (open ごと) |
-| `SourceGeneration` | decoder (seek / flush ごと) |
+| 概念               | 発行者                                          |
+| ------------------ | ----------------------------------------------- |
+| `ResourceEpoch`    | decoder (open ごと)                             |
+| `SourceGeneration` | decoder (seek / flush ごと)                     |
 | `CompositionEpoch` | **compositor** (P1.2 では preview 層が暫定所有) |
 
 3 つとも別の型にした。P1.1 の取り違えは、同じ `unsigned long long` だったから
@@ -366,7 +366,7 @@ Phase 0 の「対象 0 件のテスト群が全部通ったと報告される」
   (queue に入るのは frame の lifetime token だけではない。SRV holder も入る)
 - `active_decoder_pools` -> `srv_cache_texture_groups`
   (実際は cache 内の (epoch, texture) の異なる組み合わせ数であって、
-   open している decoder の数ではない)
+  open している decoder の数ではない)
 - `extra_hw_frames = 8` の由来コメントを更新
   (retain 深さではない。保持期間を決めるのは GPU の完了 serial である)
 
@@ -468,10 +468,10 @@ seed 20260808、fence backend、3 independent processを
 `build/ucrt64-release/p2-seek-profile-d4b/`へ出力した。旧D3 rawは上書きしていない。
 
 | run | A request-ready p95 | B request-ready p95 | dual ready p95 (D3 -> D4B) | request-display p95 (D3 -> D4B) | overlap |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 1 | 76.78 ms | 74.45 ms | 105.28 -> 78.02 ms | 114.62 -> 83.41 ms | 256/256 |
-| 2 | 75.94 ms | 74.00 ms | 108.81 -> 77.75 ms | 120.65 -> 83.36 ms | 256/256 |
-| 3 | 75.39 ms | 71.88 ms | 107.85 -> 76.29 ms | 116.28 -> 83.39 ms | 256/256 |
+| --- | ------------------: | ------------------: | -------------------------: | ------------------------------: | ------: |
+| 1   |            76.78 ms |            74.45 ms |         105.28 -> 78.02 ms |              114.62 -> 83.41 ms | 256/256 |
+| 2   |            75.94 ms |            74.00 ms |         108.81 -> 77.75 ms |              120.65 -> 83.36 ms | 256/256 |
+| 3   |            75.39 ms |            71.88 ms |         107.85 -> 76.29 ms |              116.28 -> 83.39 ms | 256/256 |
 
 dual ready p95は25.9% / 28.5% / 29.3%、request-display p95は
 27.2% / 30.9% / 28.3%短縮した。全runでmismatch、timeout、stale、busy acceptance、
@@ -529,10 +529,10 @@ non-deadline drop、device lost、worker join leakはいずれも0だった。
 に保存した。
 
 | run | pre-roll depth A/B | first | scheduled | displayed | deadline drop | missing / EOF A / EOF B | effective fps | drop rate |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 16 / 16 | 0 | 900 | 891 | 9 | 0 / 0 / 0 | 59.283 | 1.000% |
-| 2 | 16 / 16 | 0 | 900 | 888 | 12 | 0 / 0 / 0 | 59.154 | 1.333% |
-| 3 | 16 / 16 | 0 | 900 | 898 | 2 | 0 / 0 / 0 | 59.817 | 0.222% |
+| --- | -----------------: | ----: | --------: | --------: | ------------: | ----------------------: | ------------: | --------: |
+| 1   |            16 / 16 |     0 |       900 |       891 |             9 |               0 / 0 / 0 |        59.283 |    1.000% |
+| 2   |            16 / 16 |     0 |       900 |       888 |            12 |               0 / 0 / 0 |        59.154 |    1.333% |
+| 3   |            16 / 16 |     0 |       900 |       898 |             2 |               0 / 0 / 0 |        59.817 |    0.222% |
 
 全dropはscheduler deadline分類であり、missing source、generation、composition epoch、
 render failureによるdropは全runで0だった。この3 runは短縮回帰であり、formal判定値ではない。
@@ -577,10 +577,10 @@ seed 20260808、fence backendの256 seek x 3を
 `build/ucrt64-release/p2-seek-profile-d4c/`へ保存した。旧D3 / D4B rawは上書きしていない。
 
 | run | A request-ready p95 | B request-ready p95 | dual ready p95 | request-display p95 | overlap | publish reject / mismatch |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 73.26 ms | 77.52 ms | 78.11 ms | 86.91 ms | 256/256 | 0 / 0 |
-| 2 | 76.44 ms | 75.71 ms | 80.09 ms | 93.85 ms | 256/256 | 0 / 0 |
-| 3 | 73.80 ms | 73.33 ms | 77.75 ms | 90.00 ms | 256/256 | 0 / 0 |
+| --- | ------------------: | ------------------: | -------------: | ------------------: | ------: | ------------------------: |
+| 1   |            73.26 ms |            77.52 ms |       78.11 ms |            86.91 ms | 256/256 |                     0 / 0 |
+| 2   |            76.44 ms |            75.71 ms |       80.09 ms |            93.85 ms | 256/256 |                     0 / 0 |
+| 3   |            73.80 ms |            73.33 ms |       77.75 ms |            90.00 ms | 256/256 |                     0 / 0 |
 
 全runでdisplay mismatch、timeout、stale completion、busy acceptance、software fallback、
 CPU full-frame readback、device lost、join leakは0だった。decoder D3D11 lock wait p95は
@@ -615,10 +615,10 @@ P2-D4-2、seed 20260808、fence、5秒warmup、固定8 frame pre-roll、60秒mea
 `build/ucrt64-release/p2-matrix-d4/playback-run1.json`から`playback-run3.json`に保存した。
 
 | run | effective fps | drop rate | pre-roll A/B | displayed / scheduled | missing | EOF A/B |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 59.2506 | 1.2222% | 16 / 16 | 3556 / 3600 | 0 | 0 / 0 |
-| 2 | 58.8507 | 1.8889% | 13 / 16 | 3532 / 3600 | 0 | 0 / 0 |
-| 3 | 59.0842 | 1.5000% | 16 / 16 | 3546 / 3600 | 0 | 0 / 0 |
+| --- | ------------: | --------: | -----------: | --------------------: | ------: | ------: |
+| 1   |       59.2506 |   1.2222% |      16 / 16 |           3556 / 3600 |       0 |   0 / 0 |
+| 2   |       58.8507 |   1.8889% |      13 / 16 |           3532 / 3600 |       0 |   0 / 0 |
+| 3   |       59.0842 |   1.5000% |      16 / 16 |           3546 / 3600 |       0 |   0 / 0 |
 
 全runでfront A/B 0、first output 0だった。dropは44 / 68 / 54件で、全件scheduler
 deadline分類だった。non-deadline drop、marker/probe mismatch、mixed frame/generation、
@@ -630,11 +630,11 @@ layer drawはdisplayedの2倍、logical clearはdisplayedと一致した。
 1000 deterministic seekを3 independent processで実行した。rawは
 `build/ucrt64-release/p2-matrix-d4/seek-run1.json`から`seek-run3.json`に保存した。
 
-| run | p95 | observed max | overlap | false sample index | contract |
-| --- | ---: | ---: | ---: | --- | --- |
-| 1 | 125.9236 ms | 219.0096 ms | 999 / 1000 | 971 | FAIL |
-| 2 | 125.5704 ms | 235.5991 ms | 1000 / 1000 | なし | PASS |
-| 3 | 125.7466 ms | 208.7424 ms | 997 / 1000 | 103, 127, 294 | FAIL |
+| run |         p95 | observed max |     overlap | false sample index | contract |
+| --- | ----------: | -----------: | ----------: | ------------------ | -------- |
+| 1   | 125.9236 ms |  219.0096 ms |  999 / 1000 | 971                | FAIL     |
+| 2   | 125.5704 ms |  235.5991 ms | 1000 / 1000 | なし               | PASS     |
+| 3   | 125.7466 ms |  208.7424 ms |  997 / 1000 | 103, 127, 294      | FAIL     |
 
 全runで1000 latency値を記録し、nearest-rank p95は150 ms以下、observed maxは400 ms以下だった。
 3000 seekのglobal observed maxは235.5991 msである。display mismatch、timeout、stale、busy、
@@ -695,9 +695,9 @@ Release build、seed 20260808、fence backendで64 seek integrationと256 seek x
 実行した。これは経路確認であり、P2 formal thresholdによる判定には使用しない。
 
 | seek | parallel dispatch valid | execution overlap | mismatch / timeout / stale / busy |
-| ---: | ---: | ---: | ---: |
-| 64 | 64 / 64 | 64 / 64 | 0 / 0 / 0 / 0 |
-| 256 | 256 / 256 | 256 / 256 | 0 / 0 / 0 / 0 |
+| ---: | ----------------------: | ----------------: | --------------------------------: |
+|   64 |                 64 / 64 |           64 / 64 |                     0 / 0 / 0 / 0 |
+|  256 |               256 / 256 |         256 / 256 |                     0 / 0 / 0 / 0 |
 
 両方でpublish reject、request mismatch、stopped superseded、software fallback、device lostは0だった。
 256 seekではCPU full-frame readback、full-frame GPU copy、lifecycle violationも0で、teardownは
@@ -724,10 +724,10 @@ P2-D5-1、seed 20260808、fence、5秒warmup、固定8 frame pre-roll、60秒mea
 3 independent processを実行した。
 
 | run | effective fps | drop rate | pre-roll A/B | displayed / scheduled | missing | EOF A/B |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 59.7837 | 0.3333% | 9 / 8 | 3588 / 3600 | 0 | 0 / 0 |
-| 2 | 59.9002 | 0.1389% | 10 / 12 | 3595 / 3600 | 0 | 0 / 0 |
-| 3 | 59.8837 | 0.1667% | 16 / 9 | 3594 / 3600 | 0 | 0 / 0 |
+| --- | ------------: | --------: | -----------: | --------------------: | ------: | ------: |
+| 1   |       59.7837 |   0.3333% |        9 / 8 |           3588 / 3600 |       0 |   0 / 0 |
+| 2   |       59.9002 |   0.1389% |      10 / 12 |           3595 / 3600 |       0 |   0 / 0 |
+| 3   |       59.8837 |   0.1667% |       16 / 9 |           3594 / 3600 |       0 |   0 / 0 |
 
 全dropはscheduler deadline分類だった。front A/B 0、first output 0、non-deadline drop、
 marker/probe mismatch、mixed frame/generation、stale composition epoch、CPU readback、
@@ -737,11 +737,11 @@ full-frame GPU copyはいずれも全runで0だった。
 
 1000 deterministic seekを3 independent processで実行した。
 
-| run | p95 | observed max | parallel dispatch valid | execution overlap | contract |
-| --- | ---: | ---: | ---: | ---: | --- |
-| 1 | 132.2224 ms | 216.4735 ms | 1000 / 1000 | 1000 / 1000 | PASS |
-| 2 | 132.7596 ms | 215.9984 ms | 1000 / 1000 | 999 / 1000 | PASS |
-| 3 | 132.4941 ms | 216.8287 ms | 1000 / 1000 | 999 / 1000 | PASS |
+| run |         p95 | observed max | parallel dispatch valid | execution overlap | contract |
+| --- | ----------: | -----------: | ----------------------: | ----------------: | -------- |
+| 1   | 132.2224 ms |  216.4735 ms |             1000 / 1000 |       1000 / 1000 | PASS     |
+| 2   | 132.7596 ms |  215.9984 ms |             1000 / 1000 |        999 / 1000 | PASS     |
+| 3   | 132.4941 ms |  216.8287 ms |             1000 / 1000 |        999 / 1000 | PASS     |
 
 全runでnearest-rank p95は150 ms以下、observed maxは400 ms以下であり、3000 seekの
 global observed maxは216.8287 msだった。display mismatch、timeout、stale completion、
@@ -760,11 +760,11 @@ P2-D5-1 PASS後、同じclean HEADで既存P1 contractを変更せずformal regr
 5秒warmup、60秒measurement、1000 seek、3 independent processで、各rawの契約92項目は
 判定対象と診断対象の全9 runで成立した。
 
-| source | gate | fps min | drop max | seek p95 max | seek observed max | marker mismatch |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| 1080p60 H.264 | 対象 | 59.879 | 0 | 100.065 ms | 133.432 ms | 0 / 21 |
-| 1080p60 HEVC | 対象 | 59.891 | 0 | 50.325 ms | 117.496 ms | 0 / 21 |
-| 4K60 H.264 | 診断のみ | 59.754 | 0 | 250.897 ms | 281.889 ms | 0 / 21 |
+| source        | gate     | fps min | drop max | seek p95 max | seek observed max | marker mismatch |
+| ------------- | -------- | ------: | -------: | -----------: | ----------------: | --------------: |
+| 1080p60 H.264 | 対象     |  59.879 |        0 |   100.065 ms |        133.432 ms |          0 / 21 |
+| 1080p60 HEVC  | 対象     |  59.891 |        0 |    50.325 ms |        117.496 ms |          0 / 21 |
+| 4K60 H.264    | 診断のみ |  59.754 |        0 |   250.897 ms |        281.889 ms |          0 / 21 |
 
 判定対象のH.264 / HEVCはsame adapter、same device、fence backendで、CPU full-frame readback、
 seek failure、seek display mismatch、early release、untracked submission、retirement timeout、
@@ -800,10 +800,10 @@ contract versionが一致した。GPU adapterは両時点ともNVIDIA GeForce RT
 Playbackは5秒warmup後、60秒、3,600 frameを3 independent processで測定した。
 
 | run | displayed / skipped / required | effective fps | drop rate | AV abs p95 | AV abs max | underflow / overflow |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 3590 / 10 / 3600 | 59.8333 | 0.2778% | 16.083 ms | 17.458 ms | 0 / 0 |
-| 2 | 3583 / 17 / 3600 | 59.7167 | 0.4722% | 16.000 ms | 17.500 ms | 0 / 0 |
-| 3 | 3582 / 18 / 3600 | 59.7000 | 0.5000% | 16.083 ms | 17.354 ms | 0 / 0 |
+| --- | -----------------------------: | ------------: | --------: | ---------: | ---------: | -------------------: |
+| 1   |               3590 / 10 / 3600 |       59.8333 |   0.2778% |  16.083 ms |  17.458 ms |                0 / 0 |
+| 2   |               3583 / 17 / 3600 |       59.7167 |   0.4722% |  16.000 ms |  17.500 ms |                0 / 0 |
+| 3   |               3582 / 18 / 3600 |       59.7000 |   0.5000% |  16.083 ms |  17.354 ms |                0 / 0 |
 
 各runでfirst frame 0、`displayed_unique + skipped == 3600`、AV raw countとdisplayed uniqueの
 一致が成立した。duplicate display、non-increasing display、AV projection failure、marker mismatch、
@@ -814,11 +814,11 @@ audio clock query failureは0だった。
 
 seed 20260808の1000 deterministic integrated seekを3 independent processで実行した。
 
-| run | exact | request-display p95 | observed max | first-display AV abs p95 | AV abs max | timeout / busy / stale / generation mismatch |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 1000 / 1000 | 133.7115 ms | 183.3806 ms | 9.0625 ms | 10.2917 ms | 0 / 0 / 0 / 0 |
-| 2 | 1000 / 1000 | 134.5040 ms | 183.1812 ms | 8.9375 ms | 10.2292 ms | 0 / 0 / 0 / 0 |
-| 3 | 1000 / 1000 | 149.7502 ms | 200.0543 ms | 9.0833 ms | 10.2083 ms | 0 / 0 / 0 / 0 |
+| run |       exact | request-display p95 | observed max | first-display AV abs p95 | AV abs max | timeout / busy / stale / generation mismatch |
+| --- | ----------: | ------------------: | -----------: | -----------------------: | ---------: | -------------------------------------------: |
+| 1   | 1000 / 1000 |         133.7115 ms |  183.3806 ms |                9.0625 ms | 10.2917 ms |                                0 / 0 / 0 / 0 |
+| 2   | 1000 / 1000 |         134.5040 ms |  183.1812 ms |                8.9375 ms | 10.2292 ms |                                0 / 0 / 0 / 0 |
+| 3   | 1000 / 1000 |         149.7502 ms |  200.0543 ms |                9.0833 ms | 10.2083 ms |                                0 / 0 / 0 / 0 |
 
 各runでrequested audio sample、first audio sample、first displayed video frame、first-display AV projectionの
 exact contractが成立した。run 3のp95は150.000 ms閾値近傍だが、丸め、平均、再試行による救済は
@@ -827,10 +827,10 @@ exact contractが成立した。run 3のp95は150.000 ms閾値近傍だが、丸
 ### 17.4 [事実] P3-C PauseResume formalは3/3通過した
 
 | run | clock frozen | video advance zero | generation stable | AV abs p95 | AV abs max |
-| --- | --- | --- | --- | ---: | ---: |
-| 1 | true | true | true | 14.313 ms | 15.208 ms |
-| 2 | true | true | true | 16.646 ms | 17.021 ms |
-| 3 | true | true | true | 10.458 ms | 11.667 ms |
+| --- | ------------ | ------------------ | ----------------- | ---------: | ---------: |
+| 1   | true         | true               | true              |  14.313 ms |  15.208 ms |
+| 2   | true         | true               | true              |  16.646 ms |  17.021 ms |
+| 3   | true         | true               | true              |  10.458 ms |  11.667 ms |
 
 全runでunderflow、clock regression、QPC fallbackは0だった。
 
@@ -949,3 +949,19 @@ P3-C-2のcontract/harness hardening、negative、DryRun、P2 sanity、既存回�
 `pwsh -NoProfile -File scripts/p3-c2-matrix.ps1`だが、本ラリーでは実行していない。
 
 P2/P1 formal、P4、windowの強制resize、commit、pushも実行していない。
+
+### 18.8 [事実] formal前にBoolean fieldのfail-closed検査を追加した
+
+P3-C-2 checkerの`display_target_preflight_pass`と
+`formal_workload_started`について、PowerShellのtruthinessに依存せず、
+JSON boolean型かつexact `true`であることを要求するようhardeningした。
+
+`false`値および文字列`"false"`を拒否するnegative 4件を追加し、
+C2 checkerはGood 1件 + negative 23件の24/24、
+display-target pure unitを含めて25/25通過した。
+
+既存P3-C-2 DryRun raw 3件は新checkerでも3/3通過した。
+Release / Debug ordinary CTestは各240/240通過した。
+format、lint、`git diff --check`も通過した。
+
+P3-C-2 formalはまだNOT_RUNである。
