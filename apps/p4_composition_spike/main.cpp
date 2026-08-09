@@ -15,7 +15,6 @@ void usage() {
     std::fprintf(stderr,
                  "使い方: mvm_p4_composition_spike --source-a <path> --source-b <path> "
                  "--metrics <json> [options]\n"
-                 "  --duration-seconds <n>   measurement 秒数 (既定 10)\n"
                  "  --warmup-seconds <n>     warmup 秒数 (既定 1)\n"
                  "  --display-timeout-ms <n> 初回表示待ち (既定 3000)\n"
                  "schedule は smoke 固定である。CLI から上書きできない。\n");
@@ -28,13 +27,12 @@ bool parse(const QStringList& args, P4Config& config) {
         if (key == "--source-a") config.sourceA = value();
         else if (key == "--source-b") config.sourceB = value();
         else if (key == "--metrics") config.metricsPath = value();
-        else if (key == "--duration-seconds") config.durationSeconds = value().toInt();
         else if (key == "--warmup-seconds") config.warmupSeconds = value().toInt();
         else if (key == "--display-timeout-ms") config.displayTimeoutMs = value().toInt();
         else return false;
     }
     return !config.sourceA.isEmpty() && !config.sourceB.isEmpty() &&
-           !config.metricsPath.isEmpty() && config.durationSeconds > 0 &&
+           !config.metricsPath.isEmpty() && config.durationSeconds == 10 &&
            config.warmupSeconds >= 0 && config.displayTimeoutMs > 0;
 }
 } // namespace

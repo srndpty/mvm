@@ -7,6 +7,7 @@
 #include "media/gpu_preview/gpu_compositor.h"
 #include "media/gpu_preview/phase4_composition_driver.h"
 #include "media/gpu_preview/source_decode_worker.h"
+#include "media/gpu_preview/transition_probe.h"
 
 #include <atomic>
 #include <memory>
@@ -123,6 +124,12 @@ struct CompositorSpikeState {
     std::shared_ptr<gpu::Phase4CompositionDriver> phase4Driver;
     std::atomic<bool> phase4Enabled{false};
     std::atomic<long long> phase4AdoptionFailureCount{0};
+    gpu::TransitionProbeSelector transitionProbeSelector{{200, 400}};
+    gpu::AsyncTransitionProbeReadback transitionProbeReadback;
+    std::atomic<bool> transitionProbeReady{false};
+    std::atomic<long long> transitionProbeIssueFailureCount{0};
+    std::mutex transitionProbeResultMutex;
+    std::vector<gpu::TransitionProbeResult> transitionProbeResults;
 
     std::mutex applicationAvDeltaMutex;
     std::vector<double> applicationAvDeltaMs;

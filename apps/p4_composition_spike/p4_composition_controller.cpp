@@ -26,6 +26,10 @@ constexpr auto kScheduleKind = gpu::Phase4ScheduleKind::Smoke;
 // smoke schedule の boundary。frame 0 は initial state なので transition ではない。
 constexpr long long kBoundaries[] = {200, 400};
 constexpr int kRawSchemaVersion = 1;
+constexpr const char* kFixtureASha256 =
+    "d398114c38806f39670df51dfabb0095d462cbc35286ea1467901d4007cf0308";
+constexpr const char* kFixtureBSha256 =
+    "fe7cd1a45d101d363cb3930497601efd41dd55fd36c194acf8f24e3e4728b479";
 
 double nearestRank(const std::vector<double>& sorted, double p) {
     if (sorted.empty())
@@ -217,6 +221,35 @@ bool P4CompositionController::openPipelines() {
         std::lock_guard<std::mutex> lock(state_->workerMutex);
         state_->workerA = workerA_;
         state_->workerB = workerB_;
+    }
+    return true;
+}
+
+bool P4CompositionController::prepareCpuReferences() {
+    std::string error;
+    if (!gpu::buildPhase4SmokeCpuReferences(config_.sourceA.toUtf8().constData(),
+                                            config_.sourceB.toUtf8().constData(),
+                                            kFixtureASha256, kFixtureBSha256, cpuReferences_,
+                                            error)) {
+        startShutdown(QString::fromStdString(error), true);
+        return false;
+    }
+    return true;
+}
+
+bool P4CompositionController::pollTransitionProbes() {
+    if (!state_->transitionProbeReady.load(std::memory_order_acquire))
+        return true;
+    std::vector<gpu::TransitionProbeResult> completed;
+    std::string error;
+    if (!state_->transitionProbeReadback.poll(completed, error)) {
+        startShutdown(QString::fromStdString(error), true);
+        return false;
+    }
+    if (!completed.empty()) {
+        std::lock_guard<std::mutex> lock(state_->transitionProbeResultMutex);
+        state_->transitionProbeResults.insert(state_->transitionProbeResults.end(),
+                                              completed.begin(), completed.end());
     }
     return true;
 }
@@ -484,6 +517,8 @@ void P4CompositionController::tick() {
         }
         startShutdown(QString::fromStdString(reason), true);
     }
+    if (phase_ != Phase::ShutdownWait && phase_ != Phase::Done && !pollTransitionProbes())
+        return;
     switch (phase_) {
     case Phase::WaitDevice:
         if (state_->deviceReady.load(std::memory_order_acquire)) {
@@ -511,7 +546,8 @@ void P4CompositionController::tick() {
     }
     case Phase::Start:
         // schedule の検証は decoder / audio open より前に済ませる。
-        if (validateSchedule() && openPipelines())
+        // fixture hash検証とCPU候補reference生成もmeasurement開始前に完了させる。
+        if (validateSchedule() && prepareCpuReferences() && openPipelines())
             startAtFrameZero(false);
         break;
     case Phase::WaitWarmupDisplay:
@@ -587,6 +623,12 @@ bool P4CompositionController::writeMetrics() const {
     const auto records = firstMeasurementDisplaySeen_
                              ? state_->ledger.recordsAfter(measurementLedgerBaseline_)
                              : std::vector<gpu::CompositionDisplayRecord>{};
+    std::vector<gpu::TransitionProbeResult> probeResults;
+    {
+        std::lock_guard<std::mutex> lock(state_->transitionProbeResultMutex);
+        probeResults = state_->transitionProbeResults;
+    }
+    const auto probeCounters = state_->transitionProbeReadback.counters();
 
     // producer 側の集計。checker はこれを信用せず ledger から再計算する。
     QJsonArray ledgerJson;
@@ -676,6 +718,10 @@ bool P4CompositionController::writeMetrics() const {
         if (lag < 0 || lag > 2)
             activationLagInRange = false;
         activationLagJson.append(lag);
+        QJsonArray firstDisplaySources;
+        if (found)
+            for (const auto& identity : found->sources)
+                firstDisplaySources.append(sourceIdentityJson(identity));
         boundaryJson.append(QJsonObject{
             {"boundary", boundary},
             {"expected_state",
@@ -687,7 +733,46 @@ bool P4CompositionController::writeMetrics() const {
                                           : QJsonValue(QJsonValue::Null)},
             {"first_display_composition_epoch",
              found ? QJsonValue(static_cast<qint64>(found->compositionEpoch.value))
-                   : QJsonValue(QJsonValue::Null)}});
+                   : QJsonValue(QJsonValue::Null)},
+            {"first_display_sources", firstDisplaySources}});
+    }
+
+    QJsonArray probeJson;
+    long long probeMismatch = 0;
+    for (const auto& probe : probeResults) {
+        const auto* expected = cpuReferences_.find(probe.request.boundary,
+                                                   probe.request.actualOutputFrame,
+                                                   probe.request.point);
+        const gpu::Rgba8 actual{probe.rgba[0], probe.rgba[1], probe.rgba[2], probe.rgba[3]};
+        const bool matches = expected && expected->state == probe.request.compositionState &&
+                             gpu::probeWithinTolerance(actual, expected->rgba);
+        if (!matches)
+            ++probeMismatch;
+        QJsonArray actualJson{actual.r, actual.g, actual.b, actual.a};
+        QJsonArray expectedJson;
+        if (expected)
+            expectedJson = {expected->rgba.r, expected->rgba.g, expected->rgba.b,
+                            expected->rgba.a};
+        QJsonArray sourcesJson;
+        for (const auto& identity : probe.request.sources)
+            sourcesJson.append(sourceIdentityJson(identity));
+        probeJson.append(QJsonObject{
+            {"boundary", probe.request.boundary},
+            {"actual_output_frame", probe.request.actualOutputFrame},
+            {"composition_state", stateNameJson(probe.request.compositionState)},
+            {"cpu_reference_state",
+             expected ? stateNameJson(expected->state) : QJsonValue(QJsonValue::Null)},
+            {"composition_epoch", static_cast<qint64>(probe.request.compositionEpoch.value)},
+            {"probe", QString::fromLatin1(gpu::transitionProbePointName(probe.request.point))},
+            {"x", probe.request.x},
+            {"y", probe.request.y},
+            {"actual_rgba", actualJson},
+            {"cpu_expected_rgba", expectedJson},
+            {"gpu_ticket", static_cast<qint64>(probe.ticket)},
+            {"gpu_completion_serial", static_cast<qint64>(probe.completionSerial)},
+            {"completion_observed", probe.completionObserved},
+            {"blocking_wait_count", probeCounters.renderThreadBlockingWaitCount},
+            {"sources", sourcesJson}});
     }
 
     QJsonArray shutdownSequenceJson;
@@ -728,8 +813,15 @@ bool P4CompositionController::writeMetrics() const {
     const bool counterSelfConsistent =
         driverCounters.resolveCount ==
         driverCounters.adoptionCount + driverCounters.noopCount + driverCounters.rejectCount;
-    // **これは Phase 4 smoke contract の verdict ではない。**
-    // transition pixel probe を含まない 4/B 経路確認だけの合否である。
+    std::vector<double> absoluteDeltas = measurementDeltas;
+    for (double& value : absoluteDeltas)
+        value = std::abs(value);
+    std::sort(absoluteDeltas.begin(), absoluteDeltas.end());
+    const double avAbsP95 = nearestRank(absoluteDeltas, 0.95);
+    const double avAbsMax = absoluteDeltas.empty() ? 0.0 : absoluteDeltas.back();
+    const double effectiveFps = static_cast<double>(uniqueDisplayed) / config_.durationSeconds;
+    const double dropRate = static_cast<double>(skipped) / static_cast<double>(requiredFrames);
+    // producer側の完了判定であり、smoke PASS authorityではない。
     const bool integrationSanityPass =
         exitCode_ == 0 && displayPreflightPassed_ && warmupComplete_ &&
         firstMeasurementDisplaySeen_ && counterSelfConsistent && !records.empty() &&
@@ -746,6 +838,16 @@ bool P4CompositionController::writeMetrics() const {
         state_->phase4AdoptionFailureCount.load() == 0 && state_->deviceLostCount.load() == 0 &&
         state_->lifecycleOrderViolationCount.load() == 0 &&
         state_->readbacks.fullFrameReadbacks() == 0 && compositor.fullFrameGpuCopyCount == 0 &&
+        probeResults.size() == 4 && probeMismatch == 0 && probeCounters.issuedCount == 4 &&
+        probeCounters.completedCount == 4 &&
+        probeCounters.renderThreadBlockingWaitCount == 0 &&
+        probeCounters.untrackedSubmissionCount == 0 &&
+        probeCounters.completionFailureCount == 0 &&
+        probeCounters.retirementTimeoutCount == 0 &&
+        probeCounters.pendingAfterDrainCount == 0 &&
+        state_->transitionProbeIssueFailureCount.load() == 0 &&
+        effectiveFps >= 55.0 && dropRate <= 0.02 && avAbsP95 <= 20.0 &&
+        avAbsMax <= 33.334 &&
         a.softwareFrameRejectCount == 0 && b.softwareFrameRejectCount == 0 &&
         sink.audioRenderThreadJoinLeak == 0 && audioDecoder.audioDecodeThreadJoinLeak == 0 &&
         a.joined && b.joined && sink.joined && audioDecoder.joined &&
@@ -753,15 +855,15 @@ bool P4CompositionController::writeMetrics() const {
         sameDisplayEnvironment(displayEnvironmentStart_, displayEnvironmentEnd_);
 
     QJsonObject root{
-        {"schema", "mvm-p4-b-integration-1"},
+        {"schema", "mvm-p4-smoke-1"},
         {"schema_version", kRawSchemaVersion},
-        {"contract_version", "P4-B"},
-        {"phase", "P4-B"},
+        {"contract_version", "P4-C-smoke-frozen"},
+        {"phase", "P4-C"},
         {"schedule_kind", gpu::phase4ScheduleKindName(kScheduleKind)},
         // Phase 4 formal / smoke の contract verdict はここでは出さない。
         {"formal_verdict", "NOT_RUN"},
         {"smoke_contract_verdict", "NOT_RUN"},
-        {"integration_sanity_pass", integrationSanityPass},
+        {"producer_complete", integrationSanityPass},
         {"detail", shutdownReason_},
         {"canonical_schedule", canonicalSchedule_},
         {"canonical_schedule_sha256", canonicalScheduleSha256_},
@@ -796,20 +898,34 @@ bool P4CompositionController::writeMetrics() const {
         {"transition_activation_lag_frames", activationLagJson},
         {"measurement_display_ledger", ledgerJson},
         {"measurement_display_ledger_count", static_cast<qint64>(records.size())},
-        // 4/C 未実装。0 を書くと「probe mismatch 0」と誤読される。null にする。
-        {"transition_pixel_probe_status", "NOT_IMPLEMENTED"},
-        {"transition_probe_checked_count", QJsonValue(QJsonValue::Null)},
-        {"transition_probe_mismatch_count", QJsonValue(QJsonValue::Null)},
-        {"transition_probe_render_thread_blocking_wait_count", QJsonValue(QJsonValue::Null)},
-        {"cpu_reference_pixel_status", "NOT_IMPLEMENTED"},
+        {"transition_pixel_probe_status", "COMPLETE"},
+        {"transition_probe_records", probeJson},
+        {"transition_probe_checked_count", static_cast<qint64>(probeResults.size())},
+        {"transition_probe_mismatch_count", probeMismatch},
+        {"transition_probe_render_thread_blocking_wait_count",
+         probeCounters.renderThreadBlockingWaitCount},
+        {"transition_probe_not_ready_poll_count", probeCounters.notReadyPollCount},
+        {"transition_probe_untracked_submission_count",
+         probeCounters.untrackedSubmissionCount},
+        {"transition_probe_completion_failure_count", probeCounters.completionFailureCount},
+        {"transition_probe_retirement_timeout_count", probeCounters.retirementTimeoutCount},
+        {"transition_probe_pending_after_drain_count",
+         static_cast<qint64>(probeCounters.pendingAfterDrainCount)},
+        {"transition_probe_issue_failure_count",
+         state_->transitionProbeIssueFailureCount.load()},
+        {"cpu_reference_pixel_status", "PRECOMPUTED"},
+        {"fixture_a_sha256", QString::fromStdString(cpuReferences_.fixtureASha256)},
+        {"fixture_b_sha256", QString::fromStdString(cpuReferences_.fixtureBSha256)},
+        {"cpu_reference_candidate_frame_count", 6},
+        {"cpu_reference_candidate_probe_count",
+         static_cast<qint64>(cpuReferences_.candidates.size())},
         {"measurement_video_first_frame", firstFrame},
         {"measurement_video_last_frame", lastFrame},
         {"measurement_video_displayed_unique_count", uniqueDisplayed},
         {"measurement_video_skipped_frame_count", skipped},
         {"measurement_non_increasing_display_count", nonIncreasing},
-        {"effective_video_fps",
-         static_cast<double>(uniqueDisplayed) / config_.durationSeconds},
-        {"drop_rate", static_cast<double>(skipped) / static_cast<double>(requiredFrames)},
+        {"effective_video_fps", effectiveFps},
+        {"drop_rate", dropRate},
         {"measurement_pair_wait_count",
          delta(state_->videoPairWaitCount.load(), measurementBaseline_.pairWait)},
         {"measurement_target_superseded_count",

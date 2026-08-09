@@ -7,6 +7,7 @@
 #include "media/audio_preview/wasapi_audio_sink.h"
 #include "media/gpu_preview/phase4_composition_catalog.h"
 #include "media/gpu_preview/shutdown_sequence.h"
+#include "media/gpu_preview/transition_probe_reference.h"
 
 #include <QElapsedTimer>
 #include <QObject>
@@ -25,15 +26,14 @@ struct P4Config {
     int displayTimeoutMs = 3000;
 };
 
-// Phase 4 / B の integration sanity controller。
+// Phase 4 / C のcontract smoke raw producer。
 //
 // Phase 3 の integrated playback path (SourceDecodeWorker x2 / AudioDecodeWorker /
 // WasapiAudioSink / IAudioClock master / CompositorRhiItem) をそのまま使う。
 // 新しい decode / audio / render architecture は作らない。
 //
-// **このcontrollerはPhase 4 smoke contract (docs/phase4-plan.md §10.3) を判定しない。**
-// transition pixel probe が未実装なので、raw の formal_verdict は NOT_RUN、
-// contract smoke verdict も NOT_RUN のままにする。
+// **最終PASSは独立checkerだけが判定する。** rawのformal_verdictと
+// smoke_contract_verdictは常にNOT_RUNであり、producer集計をauthorityにしない。
 class P4CompositionController final : public QObject {
     Q_OBJECT
 public:
@@ -78,6 +78,8 @@ private:
     void tick();
     bool validateSchedule();
     bool openPipelines();
+    bool prepareCpuReferences();
+    bool pollTransitionProbes();
     bool startAtFrameZero(bool measurementStart);
     bool pollFirstDisplay(bool measurementStart);
     DisplayEnvironmentSnapshot captureDisplayEnvironment() const;
@@ -119,6 +121,7 @@ private:
     DisplayEnvironmentSnapshot displayEnvironmentEnd_;
     bool displayPreflightPassed_ = false;
     gpu::ShutdownSequenceResult shutdownSequence_;
+    gpu::Phase4CpuReferenceSet cpuReferences_;
 };
 
 } // namespace mvm::app

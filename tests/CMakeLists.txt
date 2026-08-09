@@ -814,6 +814,45 @@ foreach(_p4b_case IN LISTS _p4b_verifier_cases)
             -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/p4-b-verifier-${_p4b_case_name}")
 endforeach()
 
+# --- Phase 4 / C: fail-closed smoke checker --------------------------------
+set(_p4c_checker_cases
+    Good WrongProbeRgb WrongProbeAlpha ProbeMissing ProbeDuplicate ProbeWrongCoordinate
+    ProbeWrongBoundary ProbeWrongActualFrame ProbeWrongState ProbeWrongEpoch ProbeCount3
+    ProbeCount5 ProbeBlockingWait ProbePendingAfterDrain ProbeCompletionFailure
+    ProbeUntrackedCompletion WrongCpuReference CpuReferenceWrongState WrongScheduleHash FormalScheduleInSmoke
+    FormalCountInSmoke WrongState StaleEpoch OldStateAfterBoundary Lag3 GenerationChanged
+    ShutdownOrder TeardownBeforeJoin MissingBoolean StringFalseBoolean)
+foreach(_p4c_case IN LISTS _p4c_checker_cases)
+    string(TOLOWER "${_p4c_case}" _p4c_case_name)
+    mvm_add_test(phase4c_checker_${_p4c_case_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p4-smoke-contract.ps1"
+            -Case ${_p4c_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p4-smoke-contract.ps1"
+            -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/p4-c-checker-${_p4c_case_name}")
+endforeach()
+
+add_executable(mvm_test_phase4c_probe gpu_preview/test_phase4c_probe.cpp)
+target_link_libraries(mvm_test_phase4c_probe PRIVATE mvm::gpu_preview mvm::warnings)
+set(_p4c_probe_cases CandidateFrameSelection DuplicateTransitionSuppression
+    ExpectedLocationsAndOpacity InvalidStateHasNoProbeExpectation VisibleUvNormalization
+    Bt709Reference StraightAlpha ToleranceAndAlpha AsyncGpuCopy)
+foreach(_p4c_probe_case IN LISTS _p4c_probe_cases)
+    string(TOLOWER "${_p4c_probe_case}" _p4c_probe_case_name)
+    mvm_add_test(phase4c_probe_${_p4c_probe_case_name}
+        COMMAND mvm_test_phase4c_probe ${_p4c_probe_case})
+endforeach()
+mvm_add_test(phase4c_probe_fixturereference
+    COMMAND mvm_test_phase4c_probe FixtureReference
+        "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4"
+        "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_video_hevc_b.mp4"
+    PROPERTIES REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4"
+        TIMEOUT 120)
+mvm_add_test(phase4c_nonblocking_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-phase4c-nonblocking-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}")
+
 # --- Phase 3 / A: audio pipeline --------------------------------------------
 add_executable(mvm_test_audio_pure audio_preview/test_audio_pure.cpp)
 target_link_libraries(mvm_test_audio_pure PRIVATE mvm::audio_preview mvm::warnings)
@@ -938,25 +977,24 @@ else()
         "  pwsh scripts/make-p3-fixture.ps1 を実行してください。")
 endif()
 
-# --- Phase 4 / B: 10 秒 integration sanity ----------------------------------
-# **Phase 4 smoke contract の PASS ではない。** transition pixel probe は 4/C。
-set(MVM_P4_B_JSON "${CMAKE_CURRENT_BINARY_DIR}/p4-b-integration.json")
+# --- Phase 4 / C: 10秒 contract smoke ---------------------------------------
+# checkerだけがsmoke PASS authority。formal_verdictは常にNOT_RUN。
+set(MVM_P4_C_JSON "${CMAKE_CURRENT_BINARY_DIR}/p4-c-smoke.json")
 if(TARGET mvm_p4_composition_spike AND EXISTS "${MVM_P3_AUDIO_FIXTURE}" AND
    EXISTS "${MVM_P3_B_VIDEO_FIXTURE}")
-    mvm_add_test(p4_b_composition_integration
+    mvm_add_test(p4_c_contract_smoke
         COMMAND mvm_p4_composition_spike
             --source-a "${MVM_P3_AUDIO_FIXTURE}" --source-b "${MVM_P3_B_VIDEO_FIXTURE}"
-            --metrics "${MVM_P4_B_JSON}"
-            --duration-seconds 10 --warmup-seconds 1
+            --metrics "${MVM_P4_C_JSON}" --warmup-seconds 1
         PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 300
-            FIXTURES_SETUP mvm_p4_b)
-    mvm_add_test(p4_b_composition_integration_verify
+            FIXTURES_SETUP mvm_p4_c)
+    mvm_add_test(p4_c_contract_smoke_check
         COMMAND "${MVM_PWSH}" -NoProfile -File
-            "${CMAKE_SOURCE_DIR}/scripts/verify-p4-b-integration.ps1" -Json "${MVM_P4_B_JSON}"
-        PROPERTIES FIXTURES_REQUIRED mvm_p4_b TIMEOUT 120)
+            "${CMAKE_SOURCE_DIR}/scripts/check-p4-smoke-contract.ps1" -Json "${MVM_P4_C_JSON}"
+        PROPERTIES FIXTURES_REQUIRED mvm_p4_c TIMEOUT 120)
 else()
     message(STATUS
-        "[mvm] P4-B fixture 未生成のため integration は未登録です。\n"
+        "[mvm] P4-C fixture 未生成のため contract smoke は未登録です。\n"
         "  pwsh scripts/make-p3-fixture.ps1 を実行してください。")
 endif()
 
@@ -1426,6 +1464,9 @@ set(MVM_WORKSTATION_TESTS
     compositor_qt_layout_epoch_contract
     compositor_qt_device_change_fail_closed
     compositor_qt_completion_fatal_fail_closed
+    phase4c_probe_asyncgpucopy
+    p4_c_contract_smoke
+    p4_c_contract_smoke_check
     gpu_decode_v1080p60_h264
     gpu_seek_flush_v1080p60_h264
     gpu_marker_v1080p60_h264
