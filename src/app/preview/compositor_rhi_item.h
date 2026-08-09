@@ -5,6 +5,7 @@
 #include "media/gpu_preview/composition_display_ledger.h"
 #include "media/gpu_preview/compositor_coordinator.h"
 #include "media/gpu_preview/gpu_compositor.h"
+#include "media/gpu_preview/phase4_composition_driver.h"
 #include "media/gpu_preview/source_decode_worker.h"
 
 #include <atomic>
@@ -116,6 +117,13 @@ struct CompositorSpikeState {
     std::atomic<long long> videoClockRegressionCount{0};
     std::atomic<long long> videoQpcMasterFallbackCount{0};
     std::atomic<bool> audioMasterMarkerProbePending{false};
+
+    // Phase 4 / B。driver は measurement 開始前に GUI thread が publish し、
+    // 以後は変更しない。phase4Enabled の release/acquire が publish を見せる。
+    std::shared_ptr<gpu::Phase4CompositionDriver> phase4Driver;
+    std::atomic<bool> phase4Enabled{false};
+    std::atomic<long long> phase4AdoptionFailureCount{0};
+
     std::mutex applicationAvDeltaMutex;
     std::vector<double> applicationAvDeltaMs;
     std::atomic<bool> p3MeasurementActive{false};

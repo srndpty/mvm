@@ -727,6 +727,8 @@ set(MVM_PHASE4A_TESTS
     CanonicalLayoutS1
     CanonicalLayoutS2
     CanonicalLayoutS3
+    CanonicalScheduleStrings
+    CanonicalStateNames
     GoodFormalScheduleResolution
     GoodSmokeScheduleResolution
     RejectEmptySchedule
@@ -756,6 +758,60 @@ set(MVM_PHASE4A_TESTS
 foreach(test_name IN LISTS MVM_PHASE4A_TESTS)
     mvm_add_test(phase4a_${test_name}
         COMMAND mvm_test_phase4a_foundation ${test_name})
+endforeach()
+
+# --- Phase 4 / B: schedule resolve -> atomic adoption -> pair -> ledger ------
+add_executable(mvm_test_phase4b_integration gpu_preview/test_phase4b_integration.cpp)
+target_link_libraries(mvm_test_phase4b_integration PRIVATE mvm::gpu_preview mvm::warnings)
+set(MVM_PHASE4B_TESTS
+    SmokeRunAdoptsExactlyTwice
+    LedgerVerificationDetectsWrongState
+    BoundaryDropStillActivatesNewState
+    RepeatedSameFrameIsNoop
+    UnconfiguredCoordinatorIsRejected
+    UnresolvableFrameIsNotCountedAsResolve
+    TransitionKeepsSourceGeneration
+    ComposedLayoutMatchesScheduleState
+)
+foreach(test_name IN LISTS MVM_PHASE4B_TESTS)
+    mvm_add_test(phase4b_${test_name}
+        COMMAND mvm_test_phase4b_integration ${test_name})
+endforeach()
+
+# --- Phase 4 / B.1: freeze 済み shutdown 順 ---------------------------------
+add_executable(mvm_test_phase4b_lifecycle gpu_preview/test_phase4b_lifecycle.cpp)
+target_link_libraries(mvm_test_phase4b_lifecycle PRIVATE mvm::gpu_preview mvm::warnings)
+set(MVM_PHASE4B_LIFECYCLE_TESTS
+    SchedulerDisabledBeforeAudioStop
+    AudioSinkStoppedBeforeAudioWorker
+    AudioWorkerStoppedBeforeVideoWorkers
+    WorkersJoinedBeforeRenderTeardown
+    SharedRefsDetachedBeforeRenderTeardown
+    FrozenOrderMatchesContract
+    UnjoinedWorkerBlocksRenderTeardown
+    MissingJoinCheckBlocksRenderTeardown
+    MissingPipelinesStillReachesTeardown
+)
+foreach(test_name IN LISTS MVM_PHASE4B_LIFECYCLE_TESTS)
+    mvm_add_test(phase4b_lifecycle_${test_name}
+        COMMAND mvm_test_phase4b_lifecycle ${test_name})
+endforeach()
+
+# 4/B verifier の対照群と negative。verifier が壊した箇所で落ちることを見る。
+set(_p4b_verifier_cases
+    Good NegativeWrongState NegativeStaleEpoch NegativeAdoptionCount
+    NegativeCounterSelfConsistency NegativeProbeFabricated NegativeProbeFieldMissing
+    NegativeFormalHash NegativeLagOutOfRange NegativeGenerationChange
+    NegativeLayerIdentity NegativeFalseSanityPass NegativeFirstFrame
+    NegativeShutdownOrder NegativeShutdownMissingStep NegativeTeardownBeforeJoin)
+foreach(_p4b_case IN LISTS _p4b_verifier_cases)
+    string(TOLOWER "${_p4b_case}" _p4b_case_name)
+    mvm_add_test(phase4b_verifier_${_p4b_case_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p4b-verifier.ps1"
+            -Case ${_p4b_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/verify-p4-b-integration.ps1"
+            -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/p4-b-verifier-${_p4b_case_name}")
 endforeach()
 
 # --- Phase 3 / A: audio pipeline --------------------------------------------
@@ -879,6 +935,28 @@ if(TARGET mvm_p3_av_sync_spike AND EXISTS "${MVM_P3_AUDIO_FIXTURE}" AND
 else()
     message(STATUS
         "[mvm] P3-B fixture 未生成のため integration は未登録です。\n"
+        "  pwsh scripts/make-p3-fixture.ps1 を実行してください。")
+endif()
+
+# --- Phase 4 / B: 10 秒 integration sanity ----------------------------------
+# **Phase 4 smoke contract の PASS ではない。** transition pixel probe は 4/C。
+set(MVM_P4_B_JSON "${CMAKE_CURRENT_BINARY_DIR}/p4-b-integration.json")
+if(TARGET mvm_p4_composition_spike AND EXISTS "${MVM_P3_AUDIO_FIXTURE}" AND
+   EXISTS "${MVM_P3_B_VIDEO_FIXTURE}")
+    mvm_add_test(p4_b_composition_integration
+        COMMAND mvm_p4_composition_spike
+            --source-a "${MVM_P3_AUDIO_FIXTURE}" --source-b "${MVM_P3_B_VIDEO_FIXTURE}"
+            --metrics "${MVM_P4_B_JSON}"
+            --duration-seconds 10 --warmup-seconds 1
+        PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 300
+            FIXTURES_SETUP mvm_p4_b)
+    mvm_add_test(p4_b_composition_integration_verify
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_SOURCE_DIR}/scripts/verify-p4-b-integration.ps1" -Json "${MVM_P4_B_JSON}"
+        PROPERTIES FIXTURES_REQUIRED mvm_p4_b TIMEOUT 120)
+else()
+    message(STATUS
+        "[mvm] P4-B fixture 未生成のため integration は未登録です。\n"
         "  pwsh scripts/make-p3-fixture.ps1 を実行してください。")
 endif()
 

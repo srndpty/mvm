@@ -84,6 +84,16 @@ bool CompositionDisplayLedger::findEpochAfter(unsigned long long baselineValue,
     return false;
 }
 
+std::vector<CompositionDisplayRecord>
+CompositionDisplayLedger::recordsAfter(unsigned long long baselineValue) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<CompositionDisplayRecord> result;
+    for (const auto& record : history_)
+        if (record.displaySequence > baselineValue)
+            result.push_back(record);
+    return result;
+}
+
 bool CompositionDisplayLedger::waitAfter(unsigned long long baselineValue,
                                          const CompositionDisplayExpectation& expectation,
                                          int timeoutMs, CompositionDisplayRecord& out) {
