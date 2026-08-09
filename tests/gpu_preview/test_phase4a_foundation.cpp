@@ -49,21 +49,55 @@ std::vector<LayerLayout> fixedLayout() {
 std::vector<LayerLayout> layoutFor(CompositionStateId state) {
     auto layout = fixedLayout();
     if (state == kS1) {
-        layout[1].destination = {0, 0.5f, 0.5f, 0.5f};
-        layout[1].opacity = 0.5f;
+        layout[1].destination = {0, 0, 0.5f, 0.5f};
     } else if (state == kS2) {
-        layout[0].sourceUv = {0.25f, 0, 0.75f, 1};
-        layout[1].destination = {0.5f, 0, 0.5f, 0.5f};
+        layout[1].destination = {0, 0, 0.5f, 0.5f};
+        layout[1].opacity = 0.5f;
     } else if (state == kS3) {
-        layout[0].destination = {0, 0, 0.5f, 1};
-        layout[1].destination = {0.5f, 0, 0.5f, 1};
-        layout[1].opacity = 1.0f;
+        layout[1].opacity = 0.5f;
     }
     return layout;
 }
 
 bool sameRectForTest(const RectF& a, const RectF& b) {
     return a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height;
+}
+
+void requireCanonicalLayout(const std::vector<LayerLayout>& actual,
+                            const std::vector<LayerLayout>& expected) {
+    require(actual.size() == expected.size(), "canonical layoutのlayer数が違います");
+    for (size_t i = 0; i < expected.size(); ++i) {
+        require(actual[i].sourceId == expected[i].sourceId, "canonical layoutのSourceIdが違います");
+        require(sameRectForTest(actual[i].destination, expected[i].destination),
+                "canonical layoutのdestinationが違います");
+        require(sameRectForTest(actual[i].sourceUv, expected[i].sourceUv),
+                "canonical layoutのsourceUvが違います");
+        require(actual[i].opacity == expected[i].opacity, "canonical layoutのopacityが違います");
+        require(actual[i].zOrder == expected[i].zOrder, "canonical layoutのzOrderが違います");
+    }
+}
+
+void canonicalLayoutS0() {
+    requireCanonicalLayout(layoutFor(kS0),
+                           {{kSourceA, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0f, 0},
+                            {kSourceB, {0.5f, 0.5f, 0.5f, 0.5f}, {0, 0, 1, 1}, 0.75f, 1}});
+}
+
+void canonicalLayoutS1() {
+    requireCanonicalLayout(layoutFor(kS1),
+                           {{kSourceA, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0f, 0},
+                            {kSourceB, {0, 0, 0.5f, 0.5f}, {0, 0, 1, 1}, 0.75f, 1}});
+}
+
+void canonicalLayoutS2() {
+    requireCanonicalLayout(layoutFor(kS2), {{kSourceA, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0f, 0},
+                                            {kSourceB, {0, 0, 0.5f, 0.5f}, {0, 0, 1, 1}, 0.5f, 1}});
+}
+
+void canonicalLayoutS3() {
+    requireCanonicalLayout(layoutFor(kS3),
+                           {{kSourceA, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0f, 0},
+                            {kSourceB, {0.5f, 0.5f, 0.5f, 0.5f}, {0, 0, 1, 1}, 0.5f, 1}});
 }
 
 DecodedGpuFrame sourceFrame(SourceId source, long long frameNumber, unsigned long long generation,
@@ -455,6 +489,10 @@ void atomicTransitionSequenceIncrementsFiveTimes() {
 using Test = std::pair<const char*, std::function<void()>>;
 
 const std::vector<Test> kTests = {
+    {"CanonicalLayoutS0", canonicalLayoutS0},
+    {"CanonicalLayoutS1", canonicalLayoutS1},
+    {"CanonicalLayoutS2", canonicalLayoutS2},
+    {"CanonicalLayoutS3", canonicalLayoutS3},
     {"GoodFormalScheduleResolution", goodFormalScheduleResolution},
     {"GoodSmokeScheduleResolution", goodSmokeScheduleResolution},
     {"RejectEmptySchedule", rejectEmptySchedule},

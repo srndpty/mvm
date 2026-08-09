@@ -723,6 +723,10 @@ mvm_add_test(gpu_pure_unit COMMAND mvm_test_gpu_pure)
 add_executable(mvm_test_phase4a_foundation gpu_preview/test_phase4a_foundation.cpp)
 target_link_libraries(mvm_test_phase4a_foundation PRIVATE mvm::gpu_preview mvm::warnings)
 set(MVM_PHASE4A_TESTS
+    CanonicalLayoutS0
+    CanonicalLayoutS1
+    CanonicalLayoutS2
+    CanonicalLayoutS3
     GoodFormalScheduleResolution
     GoodSmokeScheduleResolution
     RejectEmptySchedule
