@@ -353,20 +353,13 @@ try {
         if ((Property $start $name) -ne (Property $end $name)) { Contract-Fail "display environmentが変化しました: $name" }
     }
 
-    if ($recomputedFps -lt 55.0 -or $recomputedDrop -gt 0.02) {
-        Contract-Fail 'playback fps/drop thresholdを満たしません'
-    }
     $av = Property $raw 'application_av_delta_abs_ms'
     if ((Integer $av 'count') -ne $unique -or
         [Math]::Abs((Number $av 'p95') - $rawAvP95) -gt 0.000000001 -or
         [Math]::Abs((Number $av 'max') - $rawAvMax) -gt 0.000000001) {
         Contract-Fail 'producer A/V summaryがraw display再計算値と違います'
     }
-    if ($rawAvP95 -gt 20.000 -or $rawAvMax -gt 33.334) {
-        Contract-Fail 'application A/V thresholdを満たしません'
-    }
-
-    Write-Host ("[p4-smoke] PASS fps={0:N2} drop={1:P2} av_p95={2:N3}ms av_max={3:N3}ms probes=4" -f `
+    Write-Host ("[p4-smoke] PASS correctness/path fps={0:N2} drop={1:P2} av_p95={2:N3}ms av_max={3:N3}ms probes=4（performance値はdiagnostic）" -f `
         (Number $raw 'effective_video_fps'), (Number $raw 'drop_rate'), (Number $av 'p95'), (Number $av 'max'))
     Write-Host '[p4-smoke] formal_verdict=NOT_RUN（Phase 4 formal PASSではありません）'
     exit 0

@@ -820,15 +820,10 @@ bool P4CompositionController::writeMetrics() const {
     const bool counterSelfConsistent =
         driverCounters.resolveCount ==
         driverCounters.adoptionCount + driverCounters.noopCount + driverCounters.rejectCount;
-    std::vector<double> absoluteDeltas = measurementDeltas;
-    for (double& value : absoluteDeltas)
-        value = std::abs(value);
-    std::sort(absoluteDeltas.begin(), absoluteDeltas.end());
-    const double avAbsP95 = nearestRank(absoluteDeltas, 0.95);
-    const double avAbsMax = absoluteDeltas.empty() ? 0.0 : absoluteDeltas.back();
     const double effectiveFps = static_cast<double>(uniqueDisplayed) / config_.durationSeconds;
     const double dropRate = static_cast<double>(skipped) / static_cast<double>(requiredFrames);
-    // producer側の完了判定であり、smoke PASS authorityではない。
+    // producer側の構造的な完了判定であり、performance PASS authorityではない。
+    // rawを正常に確定できたかだけを表し、performance thresholdはformal checkerが判定する。
     const bool integrationSanityPass =
         exitCode_ == 0 && displayPreflightPassed_ && warmupComplete_ &&
         firstMeasurementDisplaySeen_ && counterSelfConsistent && !records.empty() &&
@@ -861,8 +856,6 @@ bool P4CompositionController::writeMetrics() const {
         probeCounters.retirementTimeoutCount == 0 &&
         probeCounters.pendingAfterDrainCount == 0 &&
         state_->transitionProbeIssueFailureCount.load() == 0 &&
-        effectiveFps >= 55.0 && dropRate <= 0.02 && avAbsP95 <= 20.0 &&
-        avAbsMax <= 33.334 &&
         a.softwareFrameRejectCount == 0 && b.softwareFrameRejectCount == 0 &&
         sink.audioRenderThreadJoinLeak == 0 && audioDecoder.audioDecodeThreadJoinLeak == 0 &&
         a.joined && b.joined && sink.joined && audioDecoder.joined &&

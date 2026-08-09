@@ -19,16 +19,6 @@ Phase4DriveResult Phase4CompositionDriver::onTargetFrame(CompositorCoordinator& 
         return Phase4DriveResult::Unresolved;
     }
 
-    // scheduleとlayoutはworkload開始前にimmutable publish済みであり、呼び出しも
-    // render threadだけである。同一segmentの各frameでlayout生成とcoordinatorの
-    // 複数mutex取得を繰り返さず、resolve/noop会計だけを進める。
-    if (lastResolvedState_ && *lastResolvedState_ == *resolved) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        ++counters_.resolveCount;
-        ++counters_.noopCount;
-        return Phase4DriveResult::NoOp;
-    }
-
     auto layout = phase4CanonicalLayout(*resolved);
     if (layout.empty()) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -60,11 +50,9 @@ Phase4DriveResult Phase4CompositionDriver::onTargetFrame(CompositorCoordinator& 
 
     switch (adoption) {
     case CompositionStateAdoptionResult::Adopted:
-        lastResolvedState_ = *resolved;
         ++counters_.adoptionCount;
         return Phase4DriveResult::Adopted;
     case CompositionStateAdoptionResult::NoOp:
-        lastResolvedState_ = *resolved;
         ++counters_.noopCount;
         return Phase4DriveResult::NoOp;
     case CompositionStateAdoptionResult::Rejected:

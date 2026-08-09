@@ -17,7 +17,6 @@
 #include "media/gpu_preview/compositor_coordinator.h"
 
 #include <mutex>
-#include <optional>
 #include <vector>
 
 namespace mvm::gpu {
@@ -57,9 +56,6 @@ public:
 private:
     const CompositionSchedule schedule_;
     const std::vector<SourceId> watchedSources_;
-    // render thread専有。immutable schedule内で同じstateが続く間は、前回成功した
-    // snapshot adoptionを再検査せずnoopとして数える。
-    std::optional<CompositionStateId> lastResolvedState_;
     mutable std::mutex mutex_;
     Phase4DriverCounters counters_;
 };

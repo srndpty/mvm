@@ -817,12 +817,13 @@ endforeach()
 
 # --- Phase 4 / C: fail-closed smoke checker --------------------------------
 set(_p4c_checker_cases
-    Good WrongProbeRgb WrongProbeAlpha ProbeMissing ProbeDuplicate ProbeWrongCoordinate
+    Good SmokePerformanceDiagnosticOnly WrongProbeRgb WrongProbeAlpha ProbeMissing ProbeDuplicate ProbeWrongCoordinate
     ProbeWrongBoundary ProbeWrongActualFrame ProbeWrongState ProbeWrongEpoch ProbeCount3
     ProbeCount5 ProbeBlockingWait ProbePendingAfterDrain ProbeCompletionFailure
     ProbeUntrackedCompletion WrongCpuReference CpuReferenceWrongState WrongScheduleHash FormalScheduleInSmoke
     FormalCountInSmoke WrongState StaleEpoch OldStateAfterBoundary Lag3 GenerationChanged
-    ShutdownOrder TeardownBeforeJoin MissingBoolean StringFalseBoolean AvRawBadSummaryGood)
+    ShutdownOrder TeardownBeforeJoin MissingBoolean StringFalseBoolean AvRawBadSummaryGood
+    SmokeFpsSummaryMismatch SmokeDropSummaryMismatch SmokeAvSummaryMismatch)
 foreach(_p4c_case IN LISTS _p4c_checker_cases)
     string(TOLOWER "${_p4c_case}" _p4c_case_name)
     mvm_add_test(phase4c_checker_${_p4c_case_name}
