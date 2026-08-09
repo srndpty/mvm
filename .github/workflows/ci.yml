@@ -73,7 +73,10 @@ jobs:
 
       - name: 整形とアーキテクチャ検査
         shell: pwsh
-        run: pwsh scripts/lint.ps1 -Ucrt64 '${{ steps.msys2.outputs.msys2-location }}\ucrt64'
+        run: |
+          $analyzerVersion = (Get-Content scripts/PSScriptAnalyzer.version -Raw).Trim()
+          Install-Module PSScriptAnalyzer -RequiredVersion $analyzerVersion -Scope CurrentUser -Force
+          pwsh scripts/lint.ps1 -Ucrt64 '${{ steps.msys2.outputs.msys2-location }}\ucrt64'
 
       - name: 検証素材を生成 (Smoke)
         shell: pwsh

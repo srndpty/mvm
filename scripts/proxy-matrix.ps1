@@ -178,13 +178,13 @@ foreach ($cand in $Candidates) {
     # 一時ファイルの拡張子は .mvmtmp なので、ffmpeg は拡張子から
     # コンテナを推測できない。-f mp4 を明示する。
     # 明示しないと「Unable to choose an output format」で失敗する。
-    $args = @('-hide_banner', '-v', 'error', '-y', '-i', $Source,
+    $ffmpegArgs = @('-hide_banner', '-v', 'error', '-y', '-i', $Source,
               '-vf', 'scale=960:540') + $spec.Options + @(
               '-c:a', 'copy', '-movflags', '+faststart',
               '-f', 'mp4', $tmp)
 
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    & $FFmpeg @args
+    & $FFmpeg @ffmpegArgs
     $enc = $LASTEXITCODE
     $sw.Stop()
     $wall = $sw.Elapsed.TotalSeconds

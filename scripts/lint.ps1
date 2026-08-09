@@ -7,7 +7,7 @@
 
       1. clang-format の差分検査
       2. アーキテクチャ検査 (MLT ヘッダの漏れ出し)
-      3. PSScriptAnalyzer (導入されている場合のみ)
+      3. PSScriptAnalyzer (固定バージョンとリポジトリ設定を使用)
 
     2 は Phase 0 の中核的な制約であり、失敗させる価値が最も高い。
     「MLT のヘッダを include してよいのは src/media/mlt/ だけ」という規約は、
@@ -288,21 +288,29 @@ if ($producerViolations.Count -gt 0) {
 Write-Section 'PSScriptAnalyzer'
 if ($Path) {
     Write-Host '-Path 指定のためスキップ' -ForegroundColor DarkGray
-} elseif (Get-Module -ListAvailable PSScriptAnalyzer) {
-    Import-Module PSScriptAnalyzer
-    $issues = Invoke-ScriptAnalyzer -Path (Join-Path $RepoRoot 'scripts') -Severity Error, Warning
-    if ($issues) {
-        $issues | ForEach-Object {
-            Write-Host ("  {0}:{1} [{2}] {3}" -f (Split-Path $_.ScriptPath -Leaf), $_.Line,
-                                                 $_.RuleName, $_.Message) -ForegroundColor Red
-        }
+} else {
+    $versionFile = Join-Path $PSScriptRoot 'PSScriptAnalyzer.version'
+    $requiredVersion = [version](Get-Content -Raw -LiteralPath $versionFile).Trim()
+    $analyzer = Get-Module -ListAvailable -Name PSScriptAnalyzer |
+        Where-Object { $_.Version -eq $requiredVersion } |
+        Select-Object -First 1
+    if (-not $analyzer) {
+        Write-Host "必要な PSScriptAnalyzer $requiredVersion がありません。" -ForegroundColor Red
+        Write-Host "導入: Install-Module PSScriptAnalyzer -RequiredVersion $requiredVersion -Scope CurrentUser" -ForegroundColor Yellow
         $failed += 'PSScriptAnalyzer'
     } else {
-        Write-Host 'OK' -ForegroundColor Green
+        $settings = Join-Path $PSScriptRoot 'PSScriptAnalyzerSettings.psd1'
+        $analyzerRunner = Join-Path $PSScriptRoot 'run-script-analyzer.ps1'
+        # 対話シェルに別バージョンの型情報が残っていても衝突しないよう、
+        # Analyzer は毎回クリーンな子プロセスで実行する。
+        $pwsh = (Get-Process -Id $PID).Path
+        & $pwsh -NoProfile -NonInteractive -File $analyzerRunner `
+            -AnalysisPath (Join-Path $RepoRoot 'scripts') `
+            -SettingsPath $settings -RequiredVersion $requiredVersion
+        if ($LASTEXITCODE -ne 0) {
+            $failed += 'PSScriptAnalyzer'
+        }
     }
-} else {
-    # 開発中なのでフォールバックは最小。導入方法だけ示して先へ進む。
-    Write-Host '未導入のためスキップ: Install-Module PSScriptAnalyzer -Scope CurrentUser' -ForegroundColor Yellow
 }
 
 # --- 結果 -------------------------------------------------------------------

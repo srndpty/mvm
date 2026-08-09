@@ -253,7 +253,7 @@ foreach ($fx in $fixtures) {
                      "color_trc=$($trcName[$fx.matrix]):" +
                      "colorspace=$($csName[$fx.matrix]):range=$rangeTag"
 
-        $args = @(
+        $ffmpegArgs = @(
             '-hide_banner', '-loglevel', 'error', '-y',
             '-f', 'rawvideo', '-pix_fmt', $pixFmt, '-s', "${Width}x${Height}", '-r', '30',
             '-i', $rawPath, '-frames:v', '30', '-vf', $setparams
@@ -265,7 +265,7 @@ foreach ($fx in $fixtures) {
             '-color_range', $rangeTag,
             $outPath
         )
-        & $FFmpeg @args
+        & $FFmpeg @ffmpegArgs
         if ($LASTEXITCODE -ne 0) { throw "$($fx.id) の生成に失敗しました (exit $LASTEXITCODE)" }
         Remove-Item $rawPath -Force
     }

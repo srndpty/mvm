@@ -129,7 +129,9 @@ function Stop-TestRootProcesses([string]$Root) {
             try {
                 Stop-Process -Id $p.Id -Force -ErrorAction Stop
                 $stopped++
-            } catch { }
+            } catch {
+                Write-Warning "検証ルート配下のプロセスを停止できませんでした (PID $($p.Id)): $($_.Exception.Message)"
+            }
         }
     }
     if ($stopped -gt 0) {

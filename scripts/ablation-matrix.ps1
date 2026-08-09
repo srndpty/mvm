@@ -52,6 +52,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'lib\metrics.ps1')
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $Bench    = Join-Path $RepoRoot "build\$Preset\bin\mvm_bench.exe"
@@ -206,7 +207,9 @@ foreach ($c in $cases) {
     if ($runObjs.Count -eq 0) {
         throw "ケース $($c.Id) は 1 回も成功しませんでした。$OutDir のログを参照。"
     }
-    function M([string]$Path) { Get-Median (@($runObjs | ForEach-Object { [double](Invoke-Expression "`$_.$Path") })) }
+    function M([string]$Path) {
+        Get-Median (@($runObjs | ForEach-Object { [double](Get-NestedPropertyValue $_ $Path) }))
+    }
 
     # run 間のばらつきが大きい測定は中央値を取っても意味が無い。
     # 二峰性に当たっていた場合、中央値は「たまたま多かった側」を指すだけである。
