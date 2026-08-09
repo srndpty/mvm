@@ -97,6 +97,7 @@ if(MVM_ENABLE_QT)
     # Phase 0 で「MLT のヘッダを include してよいのは src/media/mlt/ だけ」と
     # 決めたのと同じ規則を QRhi に対して適用する (docs/phase1-plan.md §7)。
     add_library(mvm_preview_qt STATIC
+        app/preview/display_target_contract.cpp
         app/preview/preview_rhi_item.cpp
         app/preview/compositor_rhi_item.cpp
     )

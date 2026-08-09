@@ -49,6 +49,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'lib\metrics.ps1')
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $Bench    = Join-Path $RepoRoot "build\$Preset\bin\mvm_bench.exe"
@@ -115,7 +116,7 @@ function New-SummaryRow {
     param([string]$Condition, [string]$Pattern, [int]$Interval, [object[]]$RunObjs, [int]$UsedSeed)
 
     function M([string]$Path) {
-        $vals = @($RunObjs | ForEach-Object { [double](Invoke-Expression "`$_.$Path") })
+        $vals = @($RunObjs | ForEach-Object { [double](Get-NestedPropertyValue $_ $Path) })
         Get-Median $vals
     }
 

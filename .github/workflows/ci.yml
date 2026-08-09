@@ -31,6 +31,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: MSYS2 UCRT64 を用意
+        id: msys2
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -72,15 +73,20 @@ jobs:
 
       - name: 整形とアーキテクチャ検査
         shell: pwsh
-        run: pwsh scripts/lint.ps1
+        run: |
+          $analyzerVersion = (Get-Content scripts/PSScriptAnalyzer.version -Raw).Trim()
+          Install-Module PSScriptAnalyzer -RequiredVersion $analyzerVersion -Scope CurrentUser -Force
+          pwsh scripts/lint.ps1 -Ucrt64 '${{ steps.msys2.outputs.msys2-location }}\ucrt64'
 
       - name: 検証素材を生成 (Smoke)
         shell: pwsh
-        run: pwsh scripts/make-testmedia.ps1 -Mode Smoke
+        run: pwsh scripts/make-testmedia.ps1 -Mode Smoke -Ucrt64 '${{ steps.msys2.outputs.msys2-location }}\ucrt64'
 
       - name: ビルドとテスト
         shell: pwsh
-        run: pwsh scripts/test.ps1
+        # GitHub hosted runner には Meiryo と D3D11VA hardware device が無い。
+        # portable suite の件数と結果を検査し、workstation test は開発機で実行する。
+        run: pwsh scripts/test.ps1 -Portable -Ucrt64 '${{ steps.msys2.outputs.msys2-location }}\ucrt64'
 
       - name: 失敗時の診断情報
         if: failure()

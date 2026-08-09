@@ -14,7 +14,8 @@ namespace {
 void usage() {
     std::fprintf(stderr,
                  "使い方: mvm_p3_av_sync_spike --source-a <path> --source-b <path> "
-                 "--metrics <json> --mode playback|seek|pause-resume [options]\n");
+                 "--metrics <json> --mode playback|seek|pause-resume [options]\n"
+                 "  --formal-contract | --formal-contract-c2\n");
 }
 
 bool parse(const QStringList& args, P3AvConfig& config) {
@@ -30,6 +31,10 @@ bool parse(const QStringList& args, P3AvConfig& config) {
         else if (key == "--display-timeout-ms") config.displayTimeoutMs = value().toInt();
         else if (key == "--warmup-seconds") config.warmupSeconds = value().toInt();
         else if (key == "--formal-contract") config.formalContract = true;
+        else if (key == "--formal-contract-c2") {
+            config.formalContract = true;
+            config.formalContractC2 = true;
+        }
         else if (key == "--mode") {
             const QString mode = value();
             if (mode == "playback") config.mode = P3AvMode::Playback;

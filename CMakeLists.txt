@@ -6,10 +6,16 @@ cmake_minimum_required(VERSION 3.25)
 # 「The C compiler is not able to compile a simple test program」という
 # 原因の分からないメッセージを出すだけになる。先回りして実情を伝える。
 if(NOT DEFINED MVM_SKIP_PATH_CHECK)
-    set(_mvm_ucrt64_bin "C:/msys64/ucrt64/bin")
+    if(DEFINED MVM_UCRT64_ROOT)
+        set(_mvm_ucrt64_bin "${MVM_UCRT64_ROOT}/bin")
+    else()
+        set(_mvm_ucrt64_bin "C:/msys64/ucrt64/bin")
+    endif()
+    file(TO_CMAKE_PATH "${_mvm_ucrt64_bin}" _mvm_ucrt64_bin)
+    string(TOLOWER "${_mvm_ucrt64_bin}" _mvm_ucrt64_bin_lower)
     string(TOLOWER "$ENV{PATH}" _mvm_path_lower)
     string(REPLACE "\\" "/" _mvm_path_lower "${_mvm_path_lower}")
-    string(FIND "${_mvm_path_lower}" "msys64/ucrt64/bin" _mvm_path_idx)
+    string(FIND "${_mvm_path_lower}" "${_mvm_ucrt64_bin_lower}" _mvm_path_idx)
     if(_mvm_path_idx EQUAL -1)
         message(FATAL_ERROR
             "\n"

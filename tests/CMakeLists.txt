@@ -601,9 +601,11 @@ mvm_add_exit_test(proxy_legacy_require_proxy_diagnostic EXIT 3
 mvm_add_exit_test(proxy_mapping_metadata_mismatch_negative EXIT 3
     ARGS proxy-mapping
          --original "${MVM_SMOKE_DIR}/v1080p60_h264.mp4"
-         --proxy "${MVM_BENCH_DIR}/v1080p60_h264.mp4"
+         --proxy "${MVM_SMOKE_DIR}/v4k60_h264.mp4"
          --random 0
     PROPERTIES REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_h264.mp4")
+set_tests_properties(proxy_mapping_metadata_mismatch_negative PROPERTIES
+    REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_h264.mp4;${MVM_SMOKE_DIR}/v4k60_h264.mp4")
 
 # --- performance ラベル ------------------------------------------------------
 # 長時間の性能試験。通常 CTest には混ぜない。
@@ -728,6 +730,12 @@ target_link_libraries(mvm_p3_audio_smoke PRIVATE mvm::audio_preview mvm::warning
 add_executable(mvm_test_audio_worker_wake audio_preview/test_audio_worker_wake.cpp)
 target_link_libraries(mvm_test_audio_worker_wake PRIVATE mvm::audio_preview mvm::warnings)
 
+add_executable(mvm_test_display_target_contract
+    audio_preview/test_display_target_contract.cpp)
+target_link_libraries(mvm_test_display_target_contract PRIVATE mvm::preview_qt mvm::warnings)
+mvm_add_test(p3_c2_display_target_preflight_unit
+    COMMAND mvm_test_display_target_contract)
+
 foreach(_p3_case Good NegativeCounter)
     string(TOLOWER "${_p3_case}" _p3_case_name)
     mvm_add_test(p3_a_contract_${_p3_case_name}
@@ -765,6 +773,30 @@ foreach(_p3c_case IN LISTS _p3c_contract_cases)
             -Case ${_p3c_case}
             -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p3-c-contract.ps1"
             -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/p3-c-contract-${_p3c_case_name}")
+endforeach()
+
+set(_p3c2_contract_cases
+    GoodC2 NegativePreflightFalse NegativePreflightType
+    NegativeWorkloadFalse NegativeWorkloadType
+    NegativeMissingDisplayTelemetry NegativeRequestedWidth
+    NegativeWindowWidth NegativeWindowHeight NegativeSurfaceWidth NegativeSurfaceHeight
+    NegativeRhiWidth NegativeRhiHeight NegativeDpr
+    NegativeDisplayStartEndOrientation NegativeDisplayStartEndGeometry
+    NegativeDisplayStartEndDpr NegativeDisplayStartEndWindow
+    NegativeDisplayStartEndSurface NegativeDisplayStartEndRhiTarget
+    NegativeDisplayEnvironmentRunMismatch NegativeDisplayNull NegativeDisplayNaN
+    NegativeDisplayType)
+foreach(_p3c2_case IN LISTS _p3c2_contract_cases)
+    string(TOLOWER "${_p3c2_case}" _p3c2_case_name)
+    mvm_add_test(p3_c2_contract_${_p3c2_case_name}
+        COMMAND pwsh -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/audio_preview/test-p3-c2-contract.ps1"
+            -Case ${_p3c2_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p3-c2-contract.ps1"
+            -LegacyChecker "${CMAKE_SOURCE_DIR}/scripts/check-p3-c-contract.ps1"
+            -LegacyFixtureScript
+                "${CMAKE_CURRENT_SOURCE_DIR}/audio_preview/test-p3-c-contract.ps1"
+            -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/p3-c2-contract-${_p3c2_case_name}")
 endforeach()
 
 set(MVM_P3_AUDIO_FIXTURE "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4")
@@ -816,52 +848,58 @@ target_link_libraries(mvm_test_gpu_decode PRIVATE mvm::gpu_preview mvm::util mvm
 
 add_executable(mvm_test_p2_dual_decode gpu_preview/test_p2_dual_decode.cpp)
 target_link_libraries(mvm_test_p2_dual_decode PRIVATE mvm::gpu_preview mvm::warnings)
-mvm_add_test(p2_dual_decode_integration
-    COMMAND mvm_test_p2_dual_decode
-            "${MVM_BENCH_DIR}/v1080p60_h264.mp4"
-            "${MVM_BENCH_DIR}/v1080p60_hevc.mp4"
-    PROPERTIES
-        RESOURCE_LOCK mvm_gpu
-        RUN_SERIAL TRUE
-        TIMEOUT 900)
-set_tests_properties(p2_dual_decode_integration PROPERTIES
-    REQUIRED_FILES "${MVM_BENCH_DIR}/v1080p60_h264.mp4;${MVM_BENCH_DIR}/v1080p60_hevc.mp4")
+add_executable(mvm_test_p2_gpu_compositor gpu_preview/test_p2_gpu_compositor.cpp)
+target_link_libraries(mvm_test_p2_gpu_compositor PRIVATE mvm::gpu_preview mvm::warnings)
 
-# P2 GPU testsを有効にした構成ではbenchmark素材とdeterministic fixtureを必須にする。
+# deterministic fixture はリポジトリ管理なので常に必須。
+# 60秒 benchmark 動画は通常CIでは生成しないため、それを使う統合テストだけを
+# 条件付き登録する。Smoke 素材へ置き換えると frame 3599 の検査が空振りする。
 set(MVM_P2_COMPOSITOR_FIXTURE "${CMAKE_SOURCE_DIR}/tests/assets/p2_compositor/manifest.txt")
-foreach(_p2_required
-        "${MVM_BENCH_DIR}/v1080p60_h264.mp4"
-        "${MVM_BENCH_DIR}/v1080p60_hevc.mp4"
-        "${MVM_P2_COMPOSITOR_FIXTURE}")
-    if(NOT EXISTS "${_p2_required}")
-        message(FATAL_ERROR
-            "[mvm] P2 GPU test必須fixtureがありません: ${_p2_required}\n"
-            "  benchmark動画は pwsh scripts/make-testmedia.ps1 -Mode Benchmark で生成してください。")
+if(NOT EXISTS "${MVM_P2_COMPOSITOR_FIXTURE}")
+    message(FATAL_ERROR "[mvm] P2 deterministic fixtureがありません: ${MVM_P2_COMPOSITOR_FIXTURE}")
+endif()
+
+set(MVM_HAVE_P2_BENCHMARK_FIXTURES TRUE)
+foreach(_p2_video v1080p60_h264.mp4 v1080p60_hevc.mp4)
+    if(NOT EXISTS "${MVM_BENCH_DIR}/${_p2_video}")
+        set(MVM_HAVE_P2_BENCHMARK_FIXTURES FALSE)
     endif()
 endforeach()
 
-add_executable(mvm_test_p2_gpu_compositor gpu_preview/test_p2_gpu_compositor.cpp)
-target_link_libraries(mvm_test_p2_gpu_compositor PRIVATE mvm::gpu_preview mvm::warnings)
-mvm_add_test(p2_gpu_compositor_offscreen
-    COMMAND mvm_test_p2_gpu_compositor
-            "${MVM_BENCH_DIR}/v1080p60_h264.mp4"
-            "${MVM_BENCH_DIR}/v1080p60_hevc.mp4"
-    PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 900)
+if(MVM_HAVE_P2_BENCHMARK_FIXTURES)
+    mvm_add_test(p2_dual_decode_integration
+        COMMAND mvm_test_p2_dual_decode
+                "${MVM_BENCH_DIR}/v1080p60_h264.mp4"
+                "${MVM_BENCH_DIR}/v1080p60_hevc.mp4"
+        PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 900)
+
+    mvm_add_test(p2_gpu_compositor_offscreen
+        COMMAND mvm_test_p2_gpu_compositor
+                "${MVM_BENCH_DIR}/v1080p60_h264.mp4"
+                "${MVM_BENCH_DIR}/v1080p60_hevc.mp4"
+        PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 900)
+else()
+    message(STATUS
+        "[mvm] P2 benchmark統合テストは未登録です。\n"
+        "  実行するには pwsh scripts/make-testmedia.ps1 -Mode Benchmark")
+endif()
 
 # --- Phase 1 / P2-C2: actual QQuickRhiItem target ---------------------------
 set(MVM_C2_PLAYBACK_JSON "${CMAKE_CURRENT_BINARY_DIR}/c2-playback.json")
 set(MVM_C2_SEEK_JSON "${CMAKE_CURRENT_BINARY_DIR}/c2-seek.json")
 set(MVM_C2_LAYOUT_JSON "${CMAKE_CURRENT_BINARY_DIR}/c2-layout.json")
 
-mvm_add_test(compositor_qt_two_layers
-    COMMAND mvm_compositor_spike
-        --source-a "${MVM_BENCH_DIR}/v1080p60_h264.mp4"
-        --source-b "${MVM_BENCH_DIR}/v1080p60_hevc.mp4"
-        --warmup-seconds 1 --measure-seconds 2 --seed 20260808 --seek-count 64
-        --metrics "${MVM_C2_PLAYBACK_JSON}" --gpu-completion fence
-        --display-timeout-ms 2000 --mode playback
-    PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120
-        FIXTURES_SETUP mvm_c2_playback)
+if(MVM_HAVE_P2_BENCHMARK_FIXTURES)
+    mvm_add_test(compositor_qt_two_layers
+        COMMAND mvm_compositor_spike
+            --source-a "${MVM_BENCH_DIR}/v1080p60_h264.mp4"
+            --source-b "${MVM_BENCH_DIR}/v1080p60_hevc.mp4"
+            --warmup-seconds 1 --measure-seconds 2 --seed 20260808 --seek-count 64
+            --metrics "${MVM_C2_PLAYBACK_JSON}" --gpu-completion fence
+            --display-timeout-ms 2000 --mode playback
+        PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120
+            FIXTURES_SETUP mvm_c2_playback)
+endif()
 
 # P2-D5-1のdispatch順序はGPU非依存のpure helperで固定する。
 add_executable(mvm_test_parallel_dispatch_order gpu_preview/test_parallel_dispatch_order.cpp)
@@ -899,64 +937,66 @@ add_test(NAME compositor_diagnostic_case_invalid_negative
 set_tests_properties(compositor_diagnostic_case_invalid_negative PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 30)
 
-foreach(_kind_name actual_device no_full_frame_copy actual_target_probe shutdown)
-    if(_kind_name STREQUAL "actual_device")
-        set(_kind device)
-    elseif(_kind_name STREQUAL "no_full_frame_copy")
-        set(_kind copy)
-    elseif(_kind_name STREQUAL "actual_target_probe")
-        set(_kind probe)
-    else()
-        set(_kind shutdown)
-    endif()
-    mvm_add_test(compositor_qt_${_kind_name}
+if(MVM_HAVE_P2_BENCHMARK_FIXTURES)
+    foreach(_kind_name actual_device no_full_frame_copy actual_target_probe shutdown)
+        if(_kind_name STREQUAL "actual_device")
+            set(_kind device)
+        elseif(_kind_name STREQUAL "no_full_frame_copy")
+            set(_kind copy)
+        elseif(_kind_name STREQUAL "actual_target_probe")
+            set(_kind probe)
+        else()
+            set(_kind shutdown)
+        endif()
+        mvm_add_test(compositor_qt_${_kind_name}
+            COMMAND "${MVM_PWSH}" -NoProfile -File
+                "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/check-c2-metrics.ps1"
+                -Json "${MVM_C2_PLAYBACK_JSON}" -Kind ${_kind}
+            PROPERTIES FIXTURES_REQUIRED mvm_c2_playback)
+    endforeach()
+
+    mvm_add_test(compositor_qt_dual_seek_64
+        COMMAND mvm_compositor_spike
+            --source-a "${MVM_BENCH_DIR}/v1080p60_h264.mp4"
+            --source-b "${MVM_BENCH_DIR}/v1080p60_hevc.mp4"
+            --warmup-seconds 0 --measure-seconds 1 --seed 20260808 --seek-count 64
+            --metrics "${MVM_C2_SEEK_JSON}" --gpu-completion fence
+            --display-timeout-ms 2000 --mode seek
+        PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 300)
+    mvm_add_test(compositor_qt_dual_seek_64_contract
         COMMAND "${MVM_PWSH}" -NoProfile -File
             "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/check-c2-metrics.ps1"
-            -Json "${MVM_C2_PLAYBACK_JSON}" -Kind ${_kind}
-        PROPERTIES FIXTURES_REQUIRED mvm_c2_playback)
-endforeach()
+            -Json "${MVM_C2_SEEK_JSON}" -Kind seek
+        PROPERTIES DEPENDS compositor_qt_dual_seek_64)
 
-mvm_add_test(compositor_qt_dual_seek_64
-    COMMAND mvm_compositor_spike
-        --source-a "${MVM_BENCH_DIR}/v1080p60_h264.mp4"
-        --source-b "${MVM_BENCH_DIR}/v1080p60_hevc.mp4"
-        --warmup-seconds 0 --measure-seconds 1 --seed 20260808 --seek-count 64
-        --metrics "${MVM_C2_SEEK_JSON}" --gpu-completion fence
-        --display-timeout-ms 2000 --mode seek
-    PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 300)
-mvm_add_test(compositor_qt_dual_seek_64_contract
-    COMMAND "${MVM_PWSH}" -NoProfile -File
-        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/check-c2-metrics.ps1"
-        -Json "${MVM_C2_SEEK_JSON}" -Kind seek
-    PROPERTIES DEPENDS compositor_qt_dual_seek_64)
-
-mvm_add_test(compositor_qt_layout_epoch
-    COMMAND mvm_compositor_spike
-        --source-a "${MVM_BENCH_DIR}/v1080p60_h264.mp4"
-        --source-b "${MVM_BENCH_DIR}/v1080p60_hevc.mp4"
-        --warmup-seconds 0 --measure-seconds 1 --seed 20260808 --seek-count 1
-        --metrics "${MVM_C2_LAYOUT_JSON}" --gpu-completion fence
-        --display-timeout-ms 2000 --mode layout
-    PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120)
-mvm_add_test(compositor_qt_layout_epoch_contract
-    COMMAND "${MVM_PWSH}" -NoProfile -File
-        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/check-c2-metrics.ps1"
-        -Json "${MVM_C2_LAYOUT_JSON}" -Kind layout
-    PROPERTIES DEPENDS compositor_qt_layout_epoch)
-
-foreach(_fault device_change completion_fatal)
-    set(_fault_json "${CMAKE_CURRENT_BINARY_DIR}/c2-${_fault}.json")
-    add_test(NAME compositor_qt_${_fault}_fail_closed
+    mvm_add_test(compositor_qt_layout_epoch
+        COMMAND mvm_compositor_spike
+            --source-a "${MVM_BENCH_DIR}/v1080p60_h264.mp4"
+            --source-b "${MVM_BENCH_DIR}/v1080p60_hevc.mp4"
+            --warmup-seconds 0 --measure-seconds 1 --seed 20260808 --seek-count 1
+            --metrics "${MVM_C2_LAYOUT_JSON}" --gpu-completion fence
+            --display-timeout-ms 2000 --mode layout
+        PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120)
+    mvm_add_test(compositor_qt_layout_epoch_contract
         COMMAND "${MVM_PWSH}" -NoProfile -File
-            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/run-c2-negative.ps1"
-            -Exe "$<TARGET_FILE:mvm_compositor_spike>"
-            -SourceA "${MVM_BENCH_DIR}/v1080p60_h264.mp4"
-            -SourceB "${MVM_BENCH_DIR}/v1080p60_hevc.mp4"
-            -Metrics "${_fault_json}" -Fault ${_fault})
-    set_tests_properties(compositor_qt_${_fault}_fail_closed PROPERTIES
-        ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
-        RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120)
-endforeach()
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/check-c2-metrics.ps1"
+            -Json "${MVM_C2_LAYOUT_JSON}" -Kind layout
+        PROPERTIES DEPENDS compositor_qt_layout_epoch)
+
+    foreach(_fault device_change completion_fatal)
+        set(_fault_json "${CMAKE_CURRENT_BINARY_DIR}/c2-${_fault}.json")
+        add_test(NAME compositor_qt_${_fault}_fail_closed
+            COMMAND "${MVM_PWSH}" -NoProfile -File
+                "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/run-c2-negative.ps1"
+                -Exe "$<TARGET_FILE:mvm_compositor_spike>"
+                -SourceA "${MVM_BENCH_DIR}/v1080p60_h264.mp4"
+                -SourceB "${MVM_BENCH_DIR}/v1080p60_hevc.mp4"
+                -Metrics "${_fault_json}" -Fault ${_fault})
+        set_tests_properties(compositor_qt_${_fault}_fail_closed PROPERTIES
+            ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+            RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120)
+    endforeach()
+endif()
 
 # 実 GPU を使う検査は終了コードを分けている。
 # 0 以外なら合格ではなく、**意図した理由で失敗したこと**を照合する。
@@ -1235,6 +1275,69 @@ add_test(NAME p1_shutdown_contract_timeout_negative
     COMMAND "${MVM_PWSH}" -NoProfile -File
             "${CMAKE_SOURCE_DIR}/tests/gpu_preview/test-p1-shutdown-contract.ps1")
 set_tests_properties(p1_shutdown_contract_timeout_negative PROPERTIES TIMEOUT 120)
+
+# --- CI portable suite と workstation suite の境界 -------------------------
+# GitHub hosted runner には Meiryo と D3D11VA hardware device が無い。
+# その環境で実行不能なテストだけを明示的に分類する。SKIP_RETURN_CODE や
+# software fallback で成功に見せず、ローカルの既定 CTest では従来どおり実行する。
+set(MVM_WORKSTATION_TESTS
+    render_audio_a1_only
+    render_audio_a2_only
+    render_audio_a2_only_0db
+    render_audio_mixed
+    verify_audio_four_frequencies
+    verify_audio_gain_minus_6db
+    verify_audio_no_clipping
+    ownership_soak_100
+    memory_soak_diagnostic
+    scrub_contract_linear_8333
+    scrub_contract_linear_16667
+    scrub_coalescing_occurs
+    preview_scenario_schema
+    preview_contract_short
+    preview_invalid_real_time_exit2
+    p2_dual_decode_integration
+    p2_gpu_compositor_offscreen
+    compositor_qt_two_layers
+    compositor_qt_actual_device
+    compositor_qt_no_full_frame_copy
+    compositor_qt_actual_target_probe
+    compositor_qt_shutdown
+    compositor_qt_dual_seek_64
+    compositor_qt_dual_seek_64_contract
+    compositor_qt_layout_epoch
+    compositor_qt_layout_epoch_contract
+    compositor_qt_device_change_fail_closed
+    compositor_qt_completion_fatal_fail_closed
+    gpu_decode_v1080p60_h264
+    gpu_seek_flush_v1080p60_h264
+    gpu_marker_v1080p60_h264
+    gpu_decode_v1080p60_hevc
+    gpu_seek_flush_v1080p60_hevc
+    gpu_marker_v1080p60_hevc
+    gpu_seek_exact_landing_hevc
+    gpu_marker_exact_landing_hevc
+    gpu_marker_4k_h264_diagnostic
+    gpu_marker_4k_hevc10_diagnostic
+    gpu_decode_jp_path
+    gpu_snapshot_race
+    gpu_open_close_soak_short
+    gpu_open_close_soak_100
+    gpu_color_bt709_limited
+    gpu_color_bt709_full
+    gpu_color_bt601_limited
+    gpu_color_bt2020ncl_limited_diagnostic
+    gpu_color_p010_bt709_limited_diagnostic
+    gpu_soak_event_query_backend
+    preview_spike_device_sharing_contract
+    preview_spike_json_contract
+    preview_spike_1080p60_h264_smoke)
+
+foreach(_workstation_test IN LISTS MVM_WORKSTATION_TESTS)
+    if(TEST "${_workstation_test}")
+        set_property(TEST "${_workstation_test}" APPEND PROPERTY LABELS workstation)
+    endif()
+endforeach()
 
 # --- lint 自身の negative test ----------------------------------------------
 # 検査を書いただけでは効いている証明にならない。

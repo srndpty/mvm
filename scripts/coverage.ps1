@@ -23,6 +23,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'lib\cmake-toolchain.ps1')
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $CMake    = Join-Path $Ucrt64 'bin\cmake.exe'
@@ -39,7 +40,8 @@ gcovr が見つかりません: $Gcovr
 "@
 }
 
-$env:PATH = "$Ucrt64\bin;$env:PATH"
+Set-MvmUcrt64Environment -Ucrt64 $Ucrt64
+$toolchainArguments = @(Get-MvmCMakeToolchainArguments -Ucrt64 $Ucrt64)
 $env:QTDIR = ''
 $env:Qt6_DIR = ''
 $env:CMAKE_PREFIX_PATH = ''
@@ -51,7 +53,7 @@ if ($Clean -and (Test-Path $BuildDir)) {
 Push-Location $RepoRoot
 try {
     Write-Host '=== カバレッジビルド ===' -ForegroundColor Cyan
-    & $CMake --preset ucrt64-debug -B $BuildDir -DMVM_ENABLE_COVERAGE=ON
+    & $CMake --preset ucrt64-debug -B $BuildDir @toolchainArguments -DMVM_ENABLE_COVERAGE=ON
     if ($LASTEXITCODE -ne 0) { throw 'configure に失敗しました' }
 
     & $CMake --build $BuildDir

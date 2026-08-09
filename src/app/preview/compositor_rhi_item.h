@@ -78,6 +78,11 @@ struct P3MeasurementDisplayRecord {
     double applicationAvDeltaMs = 0.0;
 };
 
+struct ActualTargetPixelSize {
+    int width = 0;
+    int height = 0;
+};
+
 struct CompositorSpikeState {
     gpu::SharedD3D11Device device;
     gpu::ReadbackCounters readbacks;
@@ -144,6 +149,23 @@ struct CompositorSpikeState {
     std::atomic<bool> actualTargetProbeDone{false};
     std::atomic<int> actualOutputWidth{0};
     std::atomic<int> actualOutputHeight{0};
+    std::atomic<unsigned long long> actualOutputSizePacked{0};
+
+    void publishActualOutputSize(int width, int height) {
+        actualOutputWidth.store(width, std::memory_order_relaxed);
+        actualOutputHeight.store(height, std::memory_order_relaxed);
+        const auto packed =
+            (static_cast<unsigned long long>(static_cast<unsigned int>(width)) << 32U) |
+            static_cast<unsigned int>(height);
+        actualOutputSizePacked.store(packed, std::memory_order_release);
+    }
+
+    ActualTargetPixelSize actualOutputSizeSnapshot() const {
+        const auto packed = actualOutputSizePacked.load(std::memory_order_acquire);
+        return {static_cast<int>(static_cast<unsigned int>(packed >> 32U)),
+                static_cast<int>(static_cast<unsigned int>(packed))};
+    }
+
     std::string actualGpuCompletionBackend;
     std::atomic<CompositorDiagnosticCase> diagnosticCase{CompositorDiagnosticCase::None};
     std::atomic<bool> diagnosticTimingEnabled{false};

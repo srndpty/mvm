@@ -38,6 +38,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'lib\metrics.ps1')
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $Bench    = Join-Path $RepoRoot "build\$Preset\bin\mvm_bench.exe"
@@ -112,7 +113,7 @@ foreach ($rt in $RealTimes) {
     }
 
     function M([string]$Path) {
-        Get-Median (@($runObjs | ForEach-Object { [double](Invoke-Expression "`$_.$Path") }))
+        Get-Median (@($runObjs | ForEach-Object { [double](Get-NestedPropertyValue $_ $Path) }))
     }
 
     $rows += [pscustomobject]([ordered]@{

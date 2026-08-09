@@ -1,6 +1,6 @@
 # mvm_toolchain_guard.cmake
 #
-# 目的: Phase 0 のビルドが MSYS2 UCRT64 (C:/msys64/ucrt64) で完結していることを
+# 目的: Phase 0 のビルドが指定された MSYS2 UCRT64 で完結していることを
 # configure 時に機械的に保証する。
 #
 # 背景:
@@ -14,7 +14,7 @@
 #   誤検出の事故源であるため、同じ仕組みで弾く。
 
 set(MVM_UCRT64_ROOT "C:/msys64/ucrt64" CACHE PATH
-    "Phase 0 で使用する MSYS2 UCRT64 のルート。ここ以外の toolchain / Qt は拒否される")
+    "使用する MSYS2 UCRT64 のルート。ここ以外の toolchain / Qt は拒否される")
 
 # 既知の「拾ってはいけない」パス断片。小文字で比較する。
 set(_MVM_FORBIDDEN_FRAGMENTS

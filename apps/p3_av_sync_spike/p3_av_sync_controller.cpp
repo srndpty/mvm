@@ -6,12 +6,18 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QQuickWindow>
 #include <QSaveFile>
+#include <QScreen>
 
 #include <algorithm>
 #include <cmath>
 #include <random>
 #include <thread>
+
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 
 namespace mvm::app {
 namespace {
@@ -63,6 +69,37 @@ QString modeName(P3AvMode mode) {
     }
     return QStringLiteral("unknown");
 }
+
+QString orientationName(Qt::ScreenOrientation orientation) {
+    switch (orientation) {
+    case Qt::LandscapeOrientation: return QStringLiteral("landscape");
+    case Qt::PortraitOrientation: return QStringLiteral("portrait");
+    case Qt::InvertedLandscapeOrientation: return QStringLiteral("inverted-landscape");
+    case Qt::InvertedPortraitOrientation: return QStringLiteral("inverted-portrait");
+    case Qt::PrimaryOrientation: return QStringLiteral("primary");
+    }
+    return QStringLiteral("unknown");
+}
+
+QJsonObject displayEnvironmentJson(const DisplayEnvironmentSnapshot& value) {
+    return {{"screen_name", QString::fromStdString(value.screenName)},
+            {"screen_orientation", QString::fromStdString(value.screenOrientation)},
+            {"screen_geometry_width", value.screenGeometryWidth},
+            {"screen_geometry_height", value.screenGeometryHeight},
+            {"available_geometry_width", value.availableGeometryWidth},
+            {"available_geometry_height", value.availableGeometryHeight},
+            {"device_pixel_ratio", value.devicePixelRatio},
+            {"window_logical_width", value.windowLogicalWidth},
+            {"window_logical_height", value.windowLogicalHeight},
+            {"compositor_surface_logical_width", value.compositorSurfaceLogicalWidth},
+            {"compositor_surface_logical_height", value.compositorSurfaceLogicalHeight},
+            {"rhi_target_pixel_width", value.rhiTargetPixelWidth},
+            {"rhi_target_pixel_height", value.rhiTargetPixelHeight},
+            {"native_window_outer_width", value.nativeWindowOuterWidth},
+            {"native_window_outer_height", value.nativeWindowOuterHeight},
+            {"native_window_client_width", value.nativeWindowClientWidth},
+            {"native_window_client_height", value.nativeWindowClientHeight}};
+}
 } // namespace
 
 P3AvSyncController::P3AvSyncController(P3AvConfig config, QObject* parent)
@@ -79,6 +116,47 @@ void P3AvSyncController::attach(CompositorRhiItem* item) {
     state_->audioMasterClock = audioClock_;
     phaseTimer_.start();
     timer_.start();
+}
+
+DisplayEnvironmentSnapshot P3AvSyncController::captureDisplayEnvironment() const {
+    DisplayEnvironmentSnapshot result;
+    if (!item_)
+        return result;
+    const auto target = state_->actualOutputSizeSnapshot();
+    result.rhiTargetPixelWidth = target.width;
+    result.rhiTargetPixelHeight = target.height;
+    result.compositorSurfaceLogicalWidth = static_cast<int>(std::lround(item_->width()));
+    result.compositorSurfaceLogicalHeight = static_cast<int>(std::lround(item_->height()));
+    auto* window = item_->window();
+    if (!window)
+        return result;
+    result.windowLogicalWidth = window->width();
+    result.windowLogicalHeight = window->height();
+    if (auto* screen = window->screen()) {
+        const QRect geometry = screen->geometry();
+        const QRect available = screen->availableGeometry();
+        result.screenName = screen->name().toStdString();
+        result.screenOrientation = orientationName(screen->orientation()).toStdString();
+        result.screenGeometryWidth = geometry.width();
+        result.screenGeometryHeight = geometry.height();
+        result.availableGeometryWidth = available.width();
+        result.availableGeometryHeight = available.height();
+        result.devicePixelRatio = screen->devicePixelRatio();
+    }
+#ifdef Q_OS_WIN
+    const auto hwnd = reinterpret_cast<HWND>(window->winId());
+    RECT outer{};
+    RECT client{};
+    if (hwnd && GetWindowRect(hwnd, &outer)) {
+        result.nativeWindowOuterWidth = outer.right - outer.left;
+        result.nativeWindowOuterHeight = outer.bottom - outer.top;
+    }
+    if (hwnd && GetClientRect(hwnd, &client)) {
+        result.nativeWindowClientWidth = client.right - client.left;
+        result.nativeWindowClientHeight = client.bottom - client.top;
+    }
+#endif
+    return result;
 }
 
 bool P3AvSyncController::openPipelines() {
@@ -358,6 +436,8 @@ void P3AvSyncController::startShutdown(const QString& reason, bool failure) {
     if (phase_ == Phase::ShutdownWait || phase_ == Phase::Done)
         return;
     shutdownReason_ = reason;
+    if (config_.formalContractC2)
+        displayEnvironmentEnd_ = captureDisplayEnvironment();
     if (failure)
         exitCode_ = 3;
     state_->audioMasterSchedulerEnabled.store(false, std::memory_order_release);
@@ -397,11 +477,30 @@ void P3AvSyncController::tick() {
     }
     switch (phase_) {
     case Phase::WaitDevice:
-        if (state_->deviceReady.load(std::memory_order_acquire))
-            phase_ = Phase::Start;
+        if (state_->deviceReady.load(std::memory_order_acquire)) {
+            phaseTimer_.restart();
+            phase_ = config_.formalContractC2 ? Phase::DisplayPreflight : Phase::Start;
+        }
         else if (phaseTimer_.elapsed() > 10000)
             startShutdown(QStringLiteral("Qt/D3D11 device ready timeout"), true);
         break;
+    case Phase::DisplayPreflight: {
+        displayEnvironmentStart_ = captureDisplayEnvironment();
+        const auto result = evaluateP3C2DisplayTarget(displayEnvironmentStart_);
+        if (result.state == DisplayTargetPreflightState::Waiting) {
+            if (phaseTimer_.elapsed() > 10000)
+                startShutdown(QStringLiteral("display target preflight ready timeout"), true);
+            break;
+        }
+        if (!result.workloadMayStart()) {
+            startShutdown(QString::fromStdString(result.error), true);
+            break;
+        }
+        displayPreflightPassed_ = true;
+        formalWorkloadStarted_ = true;
+        phase_ = Phase::Start;
+        break;
+    }
     case Phase::Start:
         if (openPipelines()) {
             seekIndex_ = 0;
@@ -646,6 +745,10 @@ bool P3AvSyncController::writeMetrics() const {
         const long long audioClockQueryFailure =
             delta(static_cast<long long>(clock.clockQueryFailureCount),
                   measurementBaseline_.audioClockQueryFailure);
+        const bool displayCorrectness =
+            !config_.formalContractC2 ||
+            (displayPreflightPassed_ && formalWorkloadStarted_ &&
+             sameDisplayEnvironment(displayEnvironmentStart_, displayEnvironmentEnd_));
         const bool correctness =
             exitCode_ == 0 && playbackAccounting && modeCount && seekIdentity && underflow == 0 &&
             overflow == 0 && markerMismatch == 0 && mixedPair == 0 && mixedGeneration == 0 &&
@@ -658,13 +761,13 @@ bool P3AvSyncController::writeMetrics() const {
             compositor.fullFrameGpuCopyCount == 0 && a.softwareFrameRejectCount == 0 &&
             b.softwareFrameRejectCount == 0 && sink.audioRenderThreadJoinLeak == 0 &&
             audioDecoder.audioDecodeThreadJoinLeak == 0 && a.joined && b.joined && sink.joined &&
-            audioDecoder.joined &&
+            audioDecoder.joined && displayCorrectness &&
             (config_.mode != P3AvMode::PauseResume ||
              (pauseFrozen_ && pauseVideoAdvanceZero_ && pauseGenerationStable_));
 
         QJsonObject root{
-            {"schema", "mvm-p3-formal-1"},
-            {"contract_version", "P3-C-1"},
+            {"schema", config_.formalContractC2 ? "mvm-p3-formal-2" : "mvm-p3-formal-1"},
+            {"contract_version", config_.formalContractC2 ? "P3-C-2" : "P3-C-1"},
             {"phase", "P3-C"},
             {"formal_verdict", "NOT_RUN"},
             {"mode", modeName(config_.mode)},
@@ -753,6 +856,15 @@ bool P3AvSyncController::writeMetrics() const {
             {"audio_endpoint_sample_rate", sink.deviceFormat.sampleRate},
             {"audio_endpoint_channels", sink.deviceFormat.channels},
             {"audio_endpoint_sample_format", QString::fromStdString(sink.deviceFormat.sampleFormat)}};
+        if (config_.formalContractC2) {
+            root.insert("requested_output_width", 1920);
+            root.insert("requested_output_height", 1080);
+            root.insert("display_target_preflight_pass", displayPreflightPassed_);
+            root.insert("formal_workload_started", formalWorkloadStarted_);
+            root.insert("display_environment_start",
+                        displayEnvironmentJson(displayEnvironmentStart_));
+            root.insert("display_environment_end", displayEnvironmentJson(displayEnvironmentEnd_));
+        }
         QSaveFile file(config_.metricsPath);
         if (!file.open(QIODevice::WriteOnly))
             return false;
