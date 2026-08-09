@@ -66,7 +66,7 @@ formal schedule の canonical UTF-8 serialization は、末尾改行を含まな
 SHA-256 は canonical string の UTF-8 byte列に対して計算し、lowercase hexadecimal で
 `5b66543f43f98ad261a5a96e961332ef4a3d5b21f8f30b1713b4ff420a855f79` とする。
 
-各 raw は次の3表現をすべて保存する。
+formal rawは`schedule_kind = "formal"`を持ち、次の3表現をすべて保存する。
 
 - `canonical_schedule`: 上記文字列と完全一致
 - `canonical_schedule_sha256`: 上記 SHA-256 と完全一致
@@ -87,6 +87,9 @@ parsed arrayのJSON表現も次に固定する。
 
 checkerは固定文字列からarrayを独立parseし、raw arrayとの完全一致とhashを再計算する。
 空白、末尾separator、末尾改行、state別名を許さない。formal結果取得後にserializationを変更しない。
+formal modeはbuilt-inの上記scheduleだけを選択できる。CLIからboundary、state、canonical string、
+hashを上書きするoptionは設けず、`schedule_kind = "formal"`で固定値以外を受け取った場合は
+formal workload開始前にfail-closedとする。
 
 ### 3.3 CompositionEpoch semantics
 
@@ -162,6 +165,42 @@ activationLag(b)
 - state が実際に変わるときだけ `CompositionEpoch` を進め、同一 state の再採用は no-op とする
 - display ledger に output frame、state id、composition epoch、全 layer identity を値で記録する
 - 各 boundary 後の最初の新 state 表示について、小領域 probe で layout / opacity を検査する
+
+### 3.8 smoke schedule
+
+smokeはformal scheduleを短縮して使わず、次の専用scheduleに固定する。
+
+```text
+0:S0;200:S1;400:S2
+```
+
+- `schedule_kind = "smoke"`
+- measurementは10秒、output frames `[0, 600)`
+- segmentsは`0..199 = S0`、`200..399 = S1`、`400..599 = S2`
+- canonical UTF-8 serializationは上記文字列、末尾改行なし
+- smoke SHA-256は`418ae09f4bb9349aa7ac53ca38028782aef074ca1696338758ccfa6b4e4398e8`
+- `formal_verdict = "NOT_RUN"`
+
+parsed arrayは次に固定する。
+
+```json
+[
+  {"boundary": 0, "state": "S0"},
+  {"boundary": 200, "state": "S1"},
+  {"boundary": 400, "state": "S2"}
+]
+```
+
+smoke checkerもcanonical string、smoke hash、3要素parsed arrayを相互検査する。formal scheduleの
+SHA-256をsmoke rawへ書かず、smoke結果をformal PASSへ使用しない。
+
+initial S0はmeasurement前にactiveとし、smoke counter baselineから除外する。smoke intervalの
+MUSTはtransition 2、adoption 2、epoch increment 2、reject 0、全displayのstate / E0相対epoch /
+layer identity一致、`source_generation_change_due_to_layout_count == 0`である。
+
+smokeではactivation lagとtransition probeの経路も検査する。対象boundaryは200 / 400だけとし、
+lag rawは2件で各0..2、probeは2点 x 2 transitionの4件、probe mismatch / old state after boundary /
+render-thread blocking waitは0とする。formalの5 lag / 10 probeをsmokeへ要求しない。
 
 ## 4. explicit non-goals
 
@@ -290,7 +329,8 @@ thread join 前の device release、未追跡 GPU submission の release、drain
 
 P3-C-2 の全 field に加え、raw へ少なくとも次を保存する。
 
-- contract / raw schema version、canonical schedule文字列、SHA-256、parsed array
+- contract / raw schema version、`schedule_kind`、`formal_verdict`
+- modeに対応するcanonical schedule文字列、SHA-256、parsed array
 - measurement baseline `E0`
 - boundary frame、expected state id、expected epoch の一覧
 - `composition_state_resolve_count`
@@ -404,11 +444,16 @@ full-frame CPU readback / full-frame GPU copy countを増やさない。
 
 ### 10.3 smoke validation
 
-- 10 秒、1 秒 warmup、少なくとも 3 state を通す短縮 playback
+- `schedule_kind = "smoke"`、10秒、frames `[0, 600)`、3 segment / 2 transition
+- S0 / S1 / S2をframe 0..199 / 200..399 / 400..599にexact適用
+- adoption 2、epoch increment 2、state reject / display mismatch / layout起因generation変更 0
+- activation lag raw 2件、各0..2、transition probe checked 4 / mismatch 0
+- old state after boundary / probe render-thread blocking wait 0
+- `formal_verdict = "NOT_RUN"`
 - schedule parser / resolver の pure unit test
 - boundary 前後、同一 state no-op、非単調 boundary、未知 state の negative test
 - stale epoch / wrong state / missing metric / false Boolean を checker が拒否する negative test
-- transition probe の positive / negative
+- smoke rawへformal schedule/hashまたはformal expected count 5/10を入れたnegative test
 - Release / Debug ordinary CTest。対象件数 0 は失敗
 
 smoke は経路確認であり Phase 4 の formal PASS に使わない。
@@ -416,6 +461,7 @@ smoke は経路確認であり Phase 4 の formal PASS に使わない。
 ### 10.4 formal validation
 
 - clean worktree の Release build
+- `schedule_kind = "formal"`かつ固定formal schedule / SHA-256以外をworkload開始前に拒否
 - 5 秒 warmup + 60 秒 measurement、3 independent processes
 - 全 run が独立 PASS。平均による救済をしない
 - 6 segment / 5 transitionのすべてで全displayのstate / epoch / layer identityが一致
