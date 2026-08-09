@@ -19,7 +19,7 @@ Phase 0 の目的は、MLT 7 を mvm の編集・プレビュー・書き出し�
 > [docs/phase0-decision.md](docs/phase0-decision.md) に明記している。
 
 **Phase 1～3 の GPU preview / compositor / A/V sync spike は closure 済みで、
-現在は Phase 4 の実装前契約を整理している。**
+現在は Phase 4 の実装前契約をfreeze済みである。**
 製品用 NLE・タイムライン UI・Project Model は引き続き未着手。
 
 | ドキュメント | 内容 |
@@ -32,7 +32,7 @@ Phase 0 の目的は、MLT 7 を mvm の編集・プレビュー・書き出し�
 | **[docs/phase3-c-contract.md](docs/phase3-c-contract.md)** | **Phase 3 / C-1 formal contract** |
 | **[docs/phase3-c2-contract.md](docs/phase3-c2-contract.md)** | **Phase 3 / C-2 display-target formal contract** |
 | **[docs/phase3-findings.md](docs/phase3-findings.md)** | **Phase 3 closure と historical result** |
-| **[docs/phase4-plan.md](docs/phase4-plan.md)** | **Phase 4 の実装前契約案** |
+| **[docs/phase4-plan.md](docs/phase4-plan.md)** | **Phase 4 のfreeze済み実装前契約** |
 | **[docs/adr/0002-preview-backend-spike.md](docs/adr/0002-preview-backend-spike.md)** | **ADR: 内製 GPU preview backend の検証（Proposed）** |
 | **[docs/phase0-decision.md](docs/phase0-decision.md)** | **採否判定書（S16）** |
 | **[docs/adr/0001-mlt-adoption.md](docs/adr/0001-mlt-adoption.md)** | **ADR: MLT 採否の決定** |

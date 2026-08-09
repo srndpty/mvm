@@ -1,6 +1,6 @@
-# Phase 4 — Audio-master Dynamic Composition Snapshot Spike 契約案
+# Phase 4 — Audio-master Dynamic Composition Snapshot Spike 固定契約
 
-> 状態: **Phase 4 scope recovery で freeze する実装前契約案**
+> 状態: **実装・計測前に freeze 済み**
 >
 > この文書は Phase 4 実装を含まない。Phase 1～3 の historical contract、formal result、
 > threshold を変更しない。また、Phase 4 の合格を全 phase の FINAL PASS や製品採用決定と
@@ -20,7 +20,7 @@ Phase 4 は既存の canonical documentation では定義されていなかっ�
   定義していない
 
 したがって本書の Phase 4 は既存定義の回収ではなく、Phase 1～3 の成立済み architecture を
-弱めずに置く**新規の最小 vertical slice 提案**である。
+弱めずに置く**採用済みの最小 vertical slice**である。
 
 ## 2. Phase 4 goal
 
@@ -54,7 +54,108 @@ Phase 2 は二動画合成と独立した layout stress、Phase 3 は固定 layo
 state sequence は `S0, S1, S2, S3, S0, S1` に固定する。schedule は playback 開始前に
 immutable value として publish し、formal workload 中は変更しない。
 
-### 3.2 Phase 4 が追加する能力
+### 3.2 canonical schedule
+
+formal schedule の canonical UTF-8 serialization は、末尾改行を含まない次の ASCII 文字列に
+固定する。
+
+```text
+0:S0;600:S1;1200:S2;1800:S3;2400:S0;3000:S1
+```
+
+SHA-256 は canonical string の UTF-8 byte列に対して計算し、lowercase hexadecimal で
+`5b66543f43f98ad261a5a96e961332ef4a3d5b21f8f30b1713b4ff420a855f79` とする。
+
+各 raw は次の3表現をすべて保存する。
+
+- `canonical_schedule`: 上記文字列と完全一致
+- `canonical_schedule_sha256`: 上記 SHA-256 と完全一致
+- `schedule`: boundaryを整数、stateを文字列で持つ6要素のparsed array
+
+parsed arrayのJSON表現も次に固定する。
+
+```json
+[
+  {"boundary": 0, "state": "S0"},
+  {"boundary": 600, "state": "S1"},
+  {"boundary": 1200, "state": "S2"},
+  {"boundary": 1800, "state": "S3"},
+  {"boundary": 2400, "state": "S0"},
+  {"boundary": 3000, "state": "S1"}
+]
+```
+
+checkerは固定文字列からarrayを独立parseし、raw arrayとの完全一致とhashを再計算する。
+空白、末尾separator、末尾改行、state別名を許さない。formal結果取得後にserializationを変更しない。
+
+### 3.3 CompositionEpoch semantics
+
+measurement開始前にS0をactiveにし、frame 0に対応するactual displayの
+`CompositionEpoch`をbaseline `E0`としてrawへ保存する。`E0`のabsolute valueは規定しない。
+measurement ledgerのfirst recordはoutput frame 0 / state S0でなければならない。
+
+| output frame | expected state | expected epoch |
+| --- | --- | --- |
+| 0..599 | S0 | E0 |
+| 600..1199 | S1 | E0 + 1 |
+| 1200..1799 | S2 | E0 + 2 |
+| 1800..2399 | S3 | E0 + 3 |
+| 2400..2999 | S0 | E0 + 4 |
+| 3000..3599 | S1 | E0 + 5 |
+
+epochを進めるのはlayout stateが変わる5 boundaryだけである。seek、decoder generation、
+audio generation、同一stateの再採用では進めない。formal intervalのMUSTは
+`composition_epoch_increment_count == 5`とし、counterはmeasurement baselineとの差分である。
+
+### 3.4 resolve / adopt / noop semantics
+
+- resolve: target output frameからimmutable scheduleのstateを一意に求める
+- adopt: resolved stateがcurrent stateと異なるため、active stateを変更しepochを1進める
+- noop: resolved stateがcurrent stateと同じため、stateとepochを変更しない
+- reject: schedule、state、epochまたはadoption preconditionが不正で変更を拒否する
+
+initial S0 adoptionはmeasurement開始前に完了させ、formal counter baselineから除外する。
+したがってformal intervalでは`composition_state_adoption_count == 5`、
+`composition_state_reject_count == 0`をMUSTとする。noopの絶対件数はdropやschedule attempt数に
+依存するため固定せず、`resolve == adoption + noop + reject`の自己整合だけを要求する。
+
+### 3.5 every-display invariant
+
+checkerはproducerのmismatch counterを信用せず、measurement中の**全actual display ledger
+record**についてcanonical scheduleから次を独立再計算する。
+
+```text
+expectedState(frame) = frameを含む最大boundaryのstate
+expectedEpoch(frame, E0) = E0 + frameを含むsegment index
+```
+
+各recordはoutput frame、actual state、actual composition epoch、A/Bそれぞれのsource id、
+frame number、`SourceGeneration`、`ResourceEpoch`を必須fieldとして持つ。次をすべてMUSTとする。
+
+- actual state `== expectedState(outputFrame)`
+- actual composition epoch `== expectedEpoch(outputFrame, E0)`
+- A/B frame number `== outputFrame`
+- A/B source id、`SourceGeneration`、`ResourceEpoch`がそのrunでadopt済みの期待identityと一致
+
+1件でも不一致、missing、null、型不一致ならFAILとする。
+
+### 3.6 activation lag
+
+各boundary `b in {600,1200,1800,2400,3000}`について次のように固定する。
+
+```text
+firstDisplayedFrameAfterBoundary(b)
+  = actual display ledgerに存在する frame >= b の最小frame
+activationLag(b)
+  = firstDisplayedFrameAfterBoundary(b) - b
+```
+
+5件すべてで`0 <= activationLag <= 2`をMUSTとする。boundaryから2 frame以内にactual displayが
+無ければFAILである。これは旧state表示の猶予ではない。最初のdisplay自体がnew state / new epochを
+満たさなければevery-display invariantでFAILとし、lag値では救済しない。
+`old_state_after_boundary_count == 0`も独立MUSTとして維持する。
+
+### 3.7 Phase 4 が追加する能力
 
 - output frame number から期待 composition state を一意に解決する小さな schedule
 - audio-master scheduler が決めた target frame に対し、pairing より前に該当 state を adopt する
@@ -111,8 +212,8 @@ single AudioDecodeWorker
 | state | owner | Phase 4 で進める条件 |
 | --- | --- | --- |
 | `SourceId` | `SourceRegistry` | source register のみ。Phase 4 transition では不変 |
-| `ResourceEpoch` | 各 decoder | open / decode pool 再作成のみ |
-| `SourceGeneration` | 各 source worker | seek / flush のみ。layout transition では不変 |
+| `ResourceEpoch` | `FFmpegD3D11Decoder` | open / decode pool 再作成のみ |
+| `SourceGeneration` | `FFmpegD3D11Decoder` / `SourceDecodeWorker` | decoderがseek / flushで発行し、workerがsource-localにpublish。layout transitionでは不変 |
 | audio `SourceGeneration` | `AudioDecodeWorker` | audio seek / flush のみ |
 | composition schedule | Phase 4 harness/controller | playback 前に immutable publish |
 | active composition state | render path | target output frame から解決 |
@@ -139,7 +240,7 @@ formal workload 開始後に GUI thread から mutable layout を直接書き換
 | --- | --- |
 | Decoder / `SourceDecodeWorker` | 変更不要 |
 | `SourceRegistry` | 変更不要 |
-| `CompositionCoordinator` | state id の値保持と target frame に対応した state adoption を追加 |
+| `CompositorCoordinator` | state id の値保持と target frame に対応した state adoption を追加 |
 | `GpuCompositor` | shader / copy path は変更不要。既存 layout を描画するだけ |
 | `QQuickRhiItem` / `CompositorRhiItem` | pair 前の schedule resolve/adopt と ledger metric を追加 |
 | `AudioDecodeWorker` | 変更不要 |
@@ -153,14 +254,17 @@ formal workload 開始後に GUI thread から mutable layout を直接書き換
 ## 7. lifecycle
 
 1. P3-C-2 display preflight を decoder / audio pipeline open 前に通す
-2. Source A / B と audio source を open し、immutable schedule を検証して publish する
+2. Source A / B と audio source を open し、canonical schedule / hash / parsed arrayを検証してpublishする
 3. frame 0 / sample 0 の exact seek、generation adoption、video / audio pre-roll を完了する
-4. WASAPI endpoint を開始し、`IAudioClock` anchor を確立する
-5. audio-master scheduling を enable にする
-6. render thread は各 target frame の state を resolve してから exact pair を compose する
-7. 終了時は scheduler disable、audio sink stop、audio/video worker stop + join の順に進める
-8. worker join 後だけ render teardown を要求し、GPU retirement を有限 timeout で drain する
-9. device / Qt resource release 後に final metrics を保存する
+4. S0をactiveにしてinitial adoptionをformal counter baselineから除外する
+5. WASAPI endpoint を開始し、`IAudioClock` anchor を確立する
+6. initial S0 setup後、measurement開始直前にcounter baselineを確定する
+7. audio-master scheduling を enable にしてmeasurementを開始する
+8. measurementのfirst actual displayをframe 0 / S0と検査し、そのepochを`E0`として記録する
+9. render thread は各 target frame の state を resolve してから exact pair を compose する
+10. 終了時は scheduler disable、audio sink stop、audio/video worker stop + join の順に進める
+11. worker join 後だけ render teardown を要求し、GPU retirement を有限 timeout で drain する
+12. device / Qt resource release 後に final metrics を保存する
 
 thread join 前の device release、未追跡 GPU submission の release、drain timeout はすべて失敗とする。
 
@@ -169,6 +273,7 @@ thread join 前の device release、未追跡 GPU submission の release、drain
 次は process failure とし、formal summary で平均や別 run による救済をしない。
 
 - schedule が空、frame 0 state が無い、boundary が非単調、state id が未知
+- canonical schedule文字列、SHA-256、parsed arrayのいずれかが不一致
 - target frame に対応する state を一意に解決できない
 - state adoption の拒否、意図しない epoch increment / regression / no-increment
 - expected state と display ledger の state / epoch / layer identity が不一致
@@ -185,7 +290,8 @@ thread join 前の device release、未追跡 GPU submission の release、drain
 
 P3-C-2 の全 field に加え、raw へ少なくとも次を保存する。
 
-- contract / raw schema version、schedule SHA-256 または canonical serialization hash
+- contract / raw schema version、canonical schedule文字列、SHA-256、parsed array
+- measurement baseline `E0`
 - boundary frame、expected state id、expected epoch の一覧
 - `composition_state_resolve_count`
 - `composition_state_adoption_count`
@@ -196,10 +302,37 @@ P3-C-2 の全 field に加え、raw へ少なくとも次を保存する。
 - `old_state_after_boundary_count`
 - `transition_activation_lag_frames` の raw 5 件
 - transition ごとの first displayed output frame / state / epoch / layer identity
-- transition probe checked / mismatch
-- source generation change during layout transition
+- `transition_probe_checked_count`
+- `transition_probe_mismatch_count`
+- `transition_probe_render_thread_blocking_wait_count`
+- `source_generation_change_due_to_layout_count`
+- measurement中の全actual display ledger recordと、その完全なstate / epoch / layer identity
 
-producer が出した percentile や verdict を checker は信用せず、raw から再計算する。
+formal intervalのcounterはinitial S0 setup後のbaselineとの差分とする。producer が出した
+percentile、expected state / epoch、mismatch counter、verdictをcheckerは信用せずrawから再計算する。
+
+### 9.1 formal expected counts
+
+各formal runの期待値を次に固定する。
+
+| metric | expected |
+| --- | ---: |
+| schedule segments | 6 |
+| state transitions | 5 |
+| `composition_state_adoption_count` | 5 |
+| `composition_epoch_increment_count` | 5 |
+| `transition_activation_lag_frames` raw length | 5 |
+| `composition_state_reject_count` | 0 |
+| `composition_state_display_mismatch_count` | 0 |
+| `old_state_after_boundary_count` | 0 |
+| `transition_probe_checked_count` | 10 |
+| `transition_probe_mismatch_count` | 0 |
+| `transition_probe_render_thread_blocking_wait_count` | 0 |
+| `source_generation_change_due_to_layout_count` | 0 |
+
+全actual display recordにstate、epoch、A/B layer identityが存在しなければならない。
+`composition_state_resolve_count`と`composition_state_noop_count`の絶対値は固定しないが、
+`resolve == adoption + noop + reject`をMUSTとする。
 
 ## 10. fixtures と validation
 
@@ -209,10 +342,67 @@ producer が出した percentile や verdict を checker は信用せず、raw �
 - `tests/assets/p3_audio/p3_video_hevc_b.mp4`
 - 既存 manifest と SHA-256
 
-期待 layout と opacity は shader 実装から作らず、contract 固定値から checker / test の期待値を
-独立に持つ。新しい media fixture は不要である。
+新しい media fixture は作らない。probe referenceは固定fixture SHA-256とactual frame numberを
+入力に、product decoder / shaderと独立したtest-only CPU reference pathで得る。
 
-### 10.2 smoke validation
+### 10.2 transition probe contract
+
+各transitionの`firstDisplayedFrameAfterBoundary`について、actual 1920x1080 RHI targetの次の2点を
+各1回だけ読む。座標原点は左上、probe sizeは各`1x1 RGBA8`である。
+
+| probe | output coordinate | purpose |
+| --- | --- | --- |
+| TL | (480, 270) | 左上PiP stateではoverlap、右下PiP stateではA-only |
+| BR | (1440, 810) | 右下PiP stateではoverlap、左上PiP stateではA-only |
+
+boundaryは600、1200、1800、2400、3000の5件なので、formal runあたり
+`transition_probe_checked_count == 10`とする。probeはnew state / epochを持つfirst displayと同じ
+output textureに対して発行する。
+
+期待値はPhase 2の独立probe contractを共有test helperへ切り出して再利用し、Phase 4側へ係数や
+blend式を複製しない。現在の根拠実装は
+`tests/gpu_preview/test_p2_gpu_compositor.cpp`の`expected709`、`blend`、`probeEquals`である。
+reference pathは固定fixtureの該当frameをCPUでplanar YUVとしてdecodeし、上記pixel centerに
+対応するnormalized UVをlinear samplingする。product D3D11 texture、`Nv12Converter`、
+product shader、output/source probe結果を期待値生成に使わない。
+reference extractionはfixture SHA-256検証後、formal measurement開始前にorchestration側で行い、
+appのelapsed time、preview readback counter、performance分布へ含めない。
+
+reference sampling座標は次に固定する。
+
+| value | normalized UV |
+| --- | --- |
+| A(TL) | `((480 + 0.5) / 1920, (270 + 0.5) / 1080)` |
+| A(BR) | `((1440 + 0.5) / 1920, (810 + 0.5) / 1080)` |
+| B(center) | `((480 + 0.5) / 960, (270 + 0.5) / 540)` |
+
+BT.709 limitedの変換はPhase 2と同じ標準式を使う。
+
+```text
+C = Y - 16, D = U - 128, E = V - 128
+R = clamp(round(1.164383*C + 1.792741*E))
+G = clamp(round(1.164383*C - 0.213249*D - 0.532909*E))
+B = clamp(round(1.164383*C + 2.112402*D))
+```
+
+PiP overlapのstraight-alpha期待値はchannelごとに
+`round(B * opacity + A * (1 - opacity))`とする。state別期待値は次のとおり。
+
+| state | TL expected | BR expected |
+| --- | --- | --- |
+| S0 / S3（右下） | A(TL) | blend(B(center), A(BR), opacity) |
+| S1 / S2（左上） | blend(B(center), A(TL), opacity) | A(BR) |
+
+S0/S1はopacity 0.75、S2/S3は0.50を使う。各RGB channelの許容差はPhase 2と同じ±3、
+alphaはexact 255とする。期待値はactual first frame `f`に対して計算するため、lag 1/2でも
+boundary frameの色を誤用しない。
+
+readbackはfull-frameでなく上記10 pixelだけとする。各copyをGPU completion serialで追跡し、
+Qt render threadでblocking waitしない。`transition_probe_render_thread_blocking_wait_count == 0`を
+MUSTとし、performance区間に同期stallを混ぜない。small-region copy countは別counterへ記録し、
+full-frame CPU readback / full-frame GPU copy countを増やさない。
+
+### 10.3 smoke validation
 
 - 10 秒、1 秒 warmup、少なくとも 3 state を通す短縮 playback
 - schedule parser / resolver の pure unit test
@@ -223,21 +413,23 @@ producer が出した percentile や verdict を checker は信用せず、raw �
 
 smoke は経路確認であり Phase 4 の formal PASS に使わない。
 
-### 10.3 formal validation
+### 10.4 formal validation
 
 - clean worktree の Release build
 - 5 秒 warmup + 60 秒 measurement、3 independent processes
 - 全 run が独立 PASS。平均による救済をしない
-- 5 transition のすべてで state / epoch / layer identity が一致
+- 6 segment / 5 transitionのすべてで全displayのstate / epoch / layer identityが一致
+- `composition_state_adoption_count == 5`、`composition_epoch_increment_count == 5`
 - 各 transition の activation lag は 0～2 output frame
-- transition probe mismatch 0、old state after boundary 0、state reject 0
-- layout transition による video / audio source generation change 0
+- activation lag raw値5件、transition probe checked 10 / mismatch 0
+- old state after boundary 0、state reject 0、probe render-thread blocking wait 0
+- `source_generation_change_due_to_layout_count == 0`
 - P3-C-2 の Playback performance / A/V / correctness threshold を全て維持
 - teardown と provenance を含む summary を raw から再計算する
 
 ## 11. regression matrix
 
-Phase 4 は `CompositionCoordinator`、Qt render path、Phase 3 integrated harness という shared path を通る。
+Phase 4 は `CompositorCoordinator`、Qt render path、Phase 3 integrated harness という shared path を通る。
 Phase 4 closure には次をすべて要求する。
 
 | gate | reason |
@@ -255,10 +447,11 @@ shared source を変更しなかったという理由だけで gate を省略し
 
 次をすべて満たした場合だけ **Phase 4 FINAL PASS under this contract** とする。
 
-- formal 3/3 が §10.3 の全条件を満たす
+- formal 3/3 が §10.4 の全条件を満たす
 - P3-C-2 Playback の `effective_video_fps >= 55`、`drop_rate <= 0.02` を維持
 - application A/V absolute p95 `<= 20.000 ms`、observed max `<= 33.334 ms`
 - marker / pair / generation / state / epoch / probe mismatch がすべて 0
+- state adoption / epoch incrementが各5、activation lag rawが5件、probe checkedが10
 - CPU full-frame readback、full-frame GPU copy、software fallback、QPC master fallback が 0
 - device lost、GPU completion failure、early release、retirement timeout、lifecycle / join leak が 0
 - display preflight と start/end/matrix provenance が成立
@@ -275,6 +468,7 @@ ADR 0002 は preview backend の製品採用を別 ADR（0003 を想定）へ残
 
 したがって本契約で Phase 4 が PASS しても、意味するのは §2 の vertical slice が成立したことだけである。
 **Phase 4 PASS != 全 phase の FINAL PASS != preview backend の製品採用決定** とする。
+Phase 4 PASSはPhase 1～3のclosure結果を再判定または変更しない。
 
 preview backend spike 全体を閉じるには、少なくとも別ラリーで次を canonical に定義する必要がある。
 
@@ -283,9 +477,9 @@ preview backend spike 全体を閉じるには、少なくとも別ラリーで�
 - Phase 1～4 の evidence から backend を採用 / 条件付き採用 / 不採用のどれにするか
 - ADR 0002 を supersede / accept / reject する decision record
 
-## 14. Phase 4 外の機能の提案上の分類
+## 14. Phase 4 外の機能の固定分類
 
-これは既存 canonical scope の回収結果ではなく、本契約案が置く境界である。
+これは既存 canonical scope の回収結果ではなく、本契約が置く固定境界である。
 
 | classification | items |
 | --- | --- |
