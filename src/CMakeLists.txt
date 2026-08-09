@@ -69,7 +69,7 @@ target_link_libraries(mvm_gpu_preview
 )
 add_library(mvm::gpu_preview ALIAS mvm_gpu_preview)
 
-# --- Phase 1 / P3-A: audio pipeline -----------------------------------------
+# --- Phase 3 / A: audio pipeline --------------------------------------------
 # FFmpeg audio decode / bounded PCM queue / WASAPI / IAudioClock。Qt および
 # video scheduler へ依存させず、P2 runtime path を変更しない。
 add_library(mvm_audio_preview STATIC

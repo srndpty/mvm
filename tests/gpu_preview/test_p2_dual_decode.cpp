@@ -1,4 +1,4 @@
-// mvm Phase 1 / P2-B - dual-source decodeとexact pairingのGPU統合検査
+// mvm Phase 2 / B - dual-source decodeとexact pairingのGPU統合検査
 // GPU合成・Qt表示・full-frame readbackは行わない。
 
 #include "media/gpu_preview/exact_frame_pairer.h"

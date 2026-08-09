@@ -1,4 +1,4 @@
-// mvm Phase 1 / P2-C1 - offscreen D3D11 GPU compositor 統合検査
+// mvm Phase 2 / C1 - offscreen D3D11 GPU compositor 統合検査
 #include "core/mvm_marker.h"
 #include "media/gpu_preview/gpu_compositor.h"
 #include "media/gpu_preview/source_decode_worker.h"

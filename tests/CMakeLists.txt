@@ -719,7 +719,7 @@ target_link_libraries(mvm_test_gpu_pure PRIVATE mvm::gpu_preview mvm::warnings)
 # 依存 DLL が解決できず 0xC0000135 で落ちる (実際に落ちた)。
 mvm_add_test(gpu_pure_unit COMMAND mvm_test_gpu_pure)
 
-# --- Phase 1 / P3-A: audio pipeline -----------------------------------------
+# --- Phase 3 / A: audio pipeline --------------------------------------------
 add_executable(mvm_test_audio_pure audio_preview/test_audio_pure.cpp)
 target_link_libraries(mvm_test_audio_pure PRIVATE mvm::audio_preview mvm::warnings)
 mvm_add_test(p3_audio_pure_unit COMMAND mvm_test_audio_pure)
@@ -884,7 +884,7 @@ else()
         "  実行するには pwsh scripts/make-testmedia.ps1 -Mode Benchmark")
 endif()
 
-# --- Phase 1 / P2-C2: actual QQuickRhiItem target ---------------------------
+# --- Phase 2 / C2: actual QQuickRhiItem target ------------------------------
 set(MVM_C2_PLAYBACK_JSON "${CMAKE_CURRENT_BINARY_DIR}/c2-playback.json")
 set(MVM_C2_SEEK_JSON "${CMAKE_CURRENT_BINARY_DIR}/c2-seek.json")
 set(MVM_C2_LAYOUT_JSON "${CMAKE_CURRENT_BINARY_DIR}/c2-layout.json")
