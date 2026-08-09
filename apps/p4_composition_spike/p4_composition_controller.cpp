@@ -384,7 +384,10 @@ bool P4CompositionController::startAtFrameZero(bool measurementStart) {
                                 state_->videoAheadViolationCount.load(),
                                 state_->videoClockRegressionCount.load(),
                                 state_->videoQpcMasterFallbackCount.load(),
-                                static_cast<long long>(audioClock_->snapshot().clockQueryFailureCount)};
+                                static_cast<long long>(audioClock_->snapshot().clockQueryFailureCount),
+                                state_->audioClockVideoCatchupSkipCount.load(),
+                                state_->schedulerDeadlineDropCount.load(),
+                                state_->renderFailureCount.load()};
         measurementBaselineEpoch_ = state_->coordinator.compositionEpoch();
         baselineGenerationA_ = completionA.sourceGeneration;
         baselineGenerationB_ = completionB.sourceGeneration;
@@ -961,6 +964,13 @@ bool P4CompositionController::writeMetrics() const {
         {"measurement_clock_regression_count", clockRegression},
         {"measurement_video_qpc_master_fallback_count", qpcFallback},
         {"measurement_audio_clock_query_failure_count", audioClockQueryFailure},
+        {"measurement_audio_clock_catchup_skip_count",
+         delta(state_->audioClockVideoCatchupSkipCount.load(), measurementBaseline_.catchupSkip)},
+        {"measurement_scheduler_deadline_drop_count",
+         delta(state_->schedulerDeadlineDropCount.load(),
+               measurementBaseline_.schedulerDeadlineDrop)},
+        {"measurement_render_failure_count",
+         delta(state_->renderFailureCount.load(), measurementBaseline_.renderFailure)},
         {"application_av_delta_ms", deltaDistribution(measurementDeltas, false)},
         {"application_av_delta_abs_ms", deltaDistribution(measurementDeltas, true)},
         {"application_av_projection_failure_count",

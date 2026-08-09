@@ -866,13 +866,16 @@ set(_p4d_formal_cases
     GoodFormal WrongFormalSchedule WrongFormalHash SmokeScheduleInFormal WrongWarmup4
     WrongDuration59 WrongRequiredFrames WrongAudioEndSample Adoption4 Adoption6
     EpochIncrement4 Reject1 WrongState StaleEpoch WrongReturnToS0EpochAt2400
-    WrongReturnToS1EpochAt3000 Lag3 MissingLag OldStateAfterBoundary ProbeCount9
+    WrongReturnToS1EpochAt3000 Lag3 MissingLag LagStringZero LagDoubleZero LagBoolean
+    OldStateAfterBoundary ProbeCount9
     ProbeCount11 ProbeMissing ProbeDuplicate ProbeWrongFrame ProbeWrongState ProbeWrongEpoch
-    CpuReferenceWrongState WrongProbeRgb WrongProbeAlpha ProbeBlockingWait ProbePending
-    ProbeCompletionFailure GenerationChanged ResourceEpochChanged Fps54_999 DropOver2Percent
+    CpuReferenceWrongState WrongProbeRgb WrongProbeAlpha ProbeActualRgbString
+    ProbeExpectedRgbString ProbeRgbaNull ProbeRgbaOutOfRange ProbeBlockingWait ProbePending
+    ProbeCompletionFailure GenerationChanged ResourceEpochChanged FpsBelow55 DropOver2Percent
     AvP95_20_001 AvMax_33_335 AvProjectionFalse AvMissingRaw AvNaN
     AvSummaryDoesNotMatchRaw ShutdownOrder TeardownBeforeJoin MissingBoolean
-    StringFalseBoolean ProcessExitNonzero)
+    StringFalseBoolean ProcessExitNonzero WrongAudioSampleRate WrongAudioChannels
+    WrongAudioSampleFormat)
 foreach(_case IN LISTS _p4d_formal_cases)
     string(TOLOWER "${_case}" _case_name)
     mvm_add_test(phase4d_formal_checker_${_case_name}

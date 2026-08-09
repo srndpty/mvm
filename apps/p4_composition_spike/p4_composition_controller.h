@@ -74,6 +74,9 @@ private:
         long long clockRegression = 0;
         long long qpcFallback = 0;
         long long audioClockQueryFailure = 0;
+        long long catchupSkip = 0;
+        long long schedulerDeadlineDrop = 0;
+        long long renderFailure = 0;
     };
 
     void tick();

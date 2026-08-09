@@ -26,11 +26,19 @@ $raw=[ordered]@{
  transition_activation_lag_frames=@(0,0,0,0,0);transition_boundaries=@($bounds|ForEach-Object{Transition $_});old_state_after_boundary_count=0
  transition_pixel_probe_status='COMPLETE';transition_probe_records=$probes;transition_probe_checked_count=10;transition_probe_mismatch_count=0;transition_probe_render_thread_blocking_wait_count=0;transition_probe_untracked_submission_count=0;transition_probe_completion_failure_count=0;transition_probe_retirement_timeout_count=0;transition_probe_pending_after_drain_count=0;transition_probe_issue_failure_count=0
  composition_state_display_mismatch_count=0;composition_pair_identity_violation_count=0;composition_layer_generation_mismatch_count=0;source_generation_change_due_to_layout_count=0;phase4_adoption_failure_count=0
- measurement_audio_underflow_count=0;measurement_audio_overflow_count=0;measurement_marker_mismatch_count=0;measurement_mixed_pair_count=0;measurement_mixed_generation_count=0;measurement_stale_composition_epoch_count=0;measurement_video_ahead_violation_count=0;measurement_clock_regression_count=0;measurement_video_qpc_master_fallback_count=0;measurement_audio_clock_query_failure_count=0
+ measurement_audio_underflow_count=0;measurement_audio_overflow_count=0;measurement_marker_mismatch_count=0;measurement_mixed_pair_count=0;measurement_mixed_generation_count=0;measurement_stale_composition_epoch_count=0;measurement_video_ahead_violation_count=0;measurement_clock_regression_count=0;measurement_video_qpc_master_fallback_count=0;measurement_audio_clock_query_failure_count=0;measurement_audio_clock_catchup_skip_count=0;measurement_scheduler_deadline_drop_count=0;measurement_render_failure_count=0
  cpu_full_frame_readback_count=0;full_frame_gpu_copy_count=0;software_video_fallback_count=0;untracked_submission_count=0;completion_poll_failure_count=0;retirement_depth_after_drain=0;payloads_released_before_completion=0;retirement_timeout_count=0;partial_gpu_issue_failure_count=0;device_lost_count=0;lifecycle_violation_count=0;audio_render_thread_join_leak=0;audio_decode_thread_join_leak=0
  video_worker_a_joined=$true;video_worker_b_joined=$true;teardown_success=$true;final_report_after_teardown=$true;shutdown_workers_joined_before_teardown=$true;shutdown_render_teardown_requested=$true;shutdown_order_violation_count=0
  shutdown_sequence=@('DisableSchedulers','StopAudioSink','StopAudioDecodeWorker','StopVideoWorkerA','StopVideoWorkerB','DetachSharedWorkerRefs','RequestRenderTeardown')
- display_target_preflight_pass=$true;requested_output_width=1920;requested_output_height=1080;display_environment_start=$env;display_environment_end=([ordered]@{}+$env);adapter='synthetic-adapter';audio_endpoint_sample_rate=48000;audio_endpoint_channels=2;audio_endpoint_sample_format='float32'
+ display_target_preflight_pass=$true;requested_output_width=1920;requested_output_height=1080;display_environment_start=$env;display_environment_end=([ordered]@{}+$env);adapter='synthetic-adapter';audio_endpoint_sample_rate=48000;audio_endpoint_channels=2;audio_endpoint_sample_format='flt'
+}
+function Remove-Frames([long]$First,[long]$Last){
+ $raw.measurement_display_ledger=@($raw.measurement_display_ledger|Where-Object{$_.output_frame-lt$First-or$_.output_frame-gt$Last})
+ $skipped=$Last-$First+1;$unique=3600-$skipped
+ $raw.measurement_display_ledger_count=$unique;$raw.measurement_video_displayed_unique_count=$unique;$raw.measurement_video_skipped_frame_count=$skipped
+ $raw.effective_video_fps=$unique/60.0;$raw.drop_rate=$skipped/3600.0
+ $raw.application_av_delta_ms.count=$unique;$raw.application_av_delta_abs_ms.count=$unique
+ $raw.measurement_audio_clock_catchup_skip_count=$skipped
 }
 switch($Case){
  'GoodFormal'{}
@@ -51,6 +59,9 @@ switch($Case){
  'WrongReturnToS1EpochAt3000'{$raw.measurement_display_ledger[3000].composition_epoch=$e0+1}
  'Lag3'{$raw.measurement_display_ledger=@($raw.measurement_display_ledger|Where-Object{$_.output_frame-notin@(600,601,602)});$raw.measurement_display_ledger_count=3597;$raw.measurement_video_displayed_unique_count=3597;$raw.measurement_video_skipped_frame_count=3;$raw.effective_video_fps=59.95;$raw.drop_rate=3/3600;$raw.application_av_delta_abs_ms.count=3597;$raw.transition_activation_lag_frames[0]=3;$raw.transition_boundaries[0].first_displayed_output_frame=603;$raw.transition_boundaries[0].activation_lag_frames=3}
  'MissingLag'{$raw.transition_activation_lag_frames=@(0,0,0,0)}
+ 'LagStringZero'{$raw.transition_activation_lag_frames[0]='0'}
+ 'LagDoubleZero'{$raw.transition_activation_lag_frames[0]=[double]0.0}
+ 'LagBoolean'{$raw.transition_activation_lag_frames[0]=$true}
  'OldStateAfterBoundary'{$raw.old_state_after_boundary_count=1}
  'ProbeCount9'{$raw.transition_probe_records=@($raw.transition_probe_records|Select-Object -First 9);$raw.transition_probe_checked_count=9}
  'ProbeCount11'{$raw.transition_probe_records+=Probe 3000 'BR';$raw.transition_probe_checked_count=11}
@@ -62,13 +73,17 @@ switch($Case){
  'CpuReferenceWrongState'{$raw.transition_probe_records[0].cpu_reference_state='S0'}
  'WrongProbeRgb'{$raw.transition_probe_records[0].actual_rgba[0]+=4}
  'WrongProbeAlpha'{$raw.transition_probe_records[0].actual_rgba[3]=254}
+ 'ProbeActualRgbString'{$raw.transition_probe_records[0].actual_rgba[0]='80'}
+ 'ProbeExpectedRgbString'{$raw.transition_probe_records[0].cpu_expected_rgba[0]='80'}
+ 'ProbeRgbaNull'{$raw.transition_probe_records[0].actual_rgba[0]=$null}
+ 'ProbeRgbaOutOfRange'{$raw.transition_probe_records[0].actual_rgba[0]=256}
  'ProbeBlockingWait'{$raw.transition_probe_render_thread_blocking_wait_count=1}
  'ProbePending'{$raw.transition_probe_pending_after_drain_count=1}
  'ProbeCompletionFailure'{$raw.transition_probe_completion_failure_count=1}
  'GenerationChanged'{$raw.measurement_display_ledger[100].sources[0].source_generation=13}
  'ResourceEpochChanged'{$raw.measurement_display_ledger[100].sources[0].resource_epoch=23}
- 'Fps54_999'{$raw.effective_video_fps=54.999}
- 'DropOver2Percent'{$raw.drop_rate=0.020001}
+ 'FpsBelow55'{Remove-Frames 3003 3303}
+ 'DropOver2Percent'{Remove-Frames 3003 3075}
  'AvP95_20_001'{for($i=0;$i-lt216;$i++){$raw.measurement_display_ledger[$i].application_av_delta_ms=20.001};$raw.application_av_delta_ms.p95=20.001;$raw.application_av_delta_ms.max=20.001;$raw.application_av_delta_abs_ms.p95=20.001;$raw.application_av_delta_abs_ms.p99=20.001;$raw.application_av_delta_abs_ms.max=20.001}
  'AvMax_33_335'{$raw.measurement_display_ledger[0].application_av_delta_ms=33.335;$raw.application_av_delta_ms.max=33.335;$raw.application_av_delta_abs_ms.p99=0.0;$raw.application_av_delta_abs_ms.max=33.335}
  'AvProjectionFalse'{$raw.measurement_display_ledger[0].application_av_projection_valid=$false}
@@ -80,6 +95,9 @@ switch($Case){
  'MissingBoolean'{$raw.Remove('teardown_success')}
  'StringFalseBoolean'{$raw.teardown_success='false'}
  'ProcessExitNonzero'{$raw.process_exit_code=3}
+ 'WrongAudioSampleRate'{$raw.audio_endpoint_sample_rate=44100}
+ 'WrongAudioChannels'{$raw.audio_endpoint_channels=1}
+ 'WrongAudioSampleFormat'{$raw.audio_endpoint_sample_format='float'}
  default{throw "未知caseです: $Case"}
 }
 $parent=Split-Path -Parent $Output;if($parent){New-Item -ItemType Directory -Force -Path $parent|Out-Null}

@@ -87,7 +87,9 @@ $raw = [ordered]@{
     measurement_mixed_pair_count=0;measurement_mixed_generation_count=0
     measurement_stale_composition_epoch_count=0;measurement_video_ahead_violation_count=0
     measurement_clock_regression_count=0;measurement_video_qpc_master_fallback_count=0
-    measurement_audio_clock_query_failure_count=0;cpu_full_frame_readback_count=0
+    measurement_audio_clock_query_failure_count=0;measurement_audio_clock_catchup_skip_count=0
+    measurement_scheduler_deadline_drop_count=0;measurement_render_failure_count=0
+    cpu_full_frame_readback_count=0
     full_frame_gpu_copy_count=0;software_video_fallback_count=0;untracked_submission_count=0
     completion_poll_failure_count=0;retirement_depth_after_drain=0
     payloads_released_before_completion=0;retirement_timeout_count=0

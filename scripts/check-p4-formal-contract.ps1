@@ -18,6 +18,13 @@ function Int([object]$Object, [string]$Name) {
     }
     [long]$v
 }
+function IntElement([object]$Value, [string]$Name) {
+    if ($null -eq $Value -or
+        $Value.GetType() -notin @([sbyte],[byte],[int16],[uint16],[int32],[uint32],[int64],[uint64])) {
+        Fail "$Name はJSON integerではありません"
+    }
+    [long]$Value
+}
 function Num([object]$Object, [string]$Name) {
     $v = Prop $Object $Name
     if ($v -isnot [ValueType] -or $v -is [bool]) { Fail "$Name は数値ではありません" }
@@ -118,7 +125,8 @@ try {
         (Int $raw 'measurement_non_increasing_display_count') -ne 0) { Fail 'producer display summaryが再計算値と違います' }
     $fps=$unique/60.0; $drop=$skipped/3600.0
     Close (Num $raw 'effective_video_fps') $fps 'effective_video_fps'; Close (Num $raw 'drop_rate') $drop 'drop_rate'
-    if ($fps -lt 55.0 -or $drop -gt 0.02) { Fail 'fps/drop threshold違反です' }
+    if ($fps -lt 55.0) { Fail 'recomputed effective fpsが55未満です' }
+    if ($drop -gt 0.02) { Fail 'recomputed drop rateが2%を超えています' }
     $sorted=@($deltas | Sort-Object); $signedSorted=@($signedDeltas | Sort-Object)
     $rank=[Math]::Ceiling($sorted.Count*0.95)-1
     $p95=[double]$sorted[$rank]; $max=[double]$sorted[-1]
@@ -149,7 +157,8 @@ try {
         $boundary=$boundaries[$i]; $record=@($ledger | Where-Object { (Int $_ 'output_frame') -ge $boundary } | Select-Object -First 1)
         if ($record.Count -ne 1) { Fail "boundary $boundary 後のdisplayがありません" }
         $frame=Int $record[0] 'output_frame'; $lag=$frame-$boundary
-        if ($lag -lt 0 -or $lag -gt 2 -or [long]$lags[$i] -ne $lag) { Fail "boundary $boundary のlagが不正です" }
+        $rawLag=IntElement $lags[$i] "transition_activation_lag_frames[$i]"
+        if ($lag -lt 0 -or $lag -gt 2 -or $rawLag -ne $lag) { Fail "boundary $boundary のlagが不正です" }
         $firstAfter[$boundary]=$frame; $t=$transitions[$i]
         if ((Int $t 'boundary') -ne $boundary -or (Str $t 'expected_state') -ne (Expected-State $boundary) -or
             (Int $t 'first_displayed_output_frame') -ne $frame -or
@@ -179,8 +188,15 @@ try {
         Bool $p 'completion_observed' $true
         $actual=Arr $p 'actual_rgba';$expected=Arr $p 'cpu_expected_rgba'
         if($actual.Count-ne4 -or $expected.Count-ne4){Fail "$key のRGBA件数が違います"}
-        for($c=0;$c-lt3;$c++){if([Math]::Abs([int]$actual[$c]-[int]$expected[$c])-gt3){Fail "$key のRGBが±3外です"}}
-        if([int]$actual[3]-ne255 -or [int]$expected[3]-ne255){Fail "$key のalphaが255ではありません"}
+        $actualChannels=@();$expectedChannels=@()
+        for($c=0;$c-lt4;$c++){
+            $actualChannel=IntElement $actual[$c] "$key actual_rgba[$c]"
+            $expectedChannel=IntElement $expected[$c] "$key cpu_expected_rgba[$c]"
+            if($actualChannel-lt0 -or $actualChannel-gt255 -or $expectedChannel-lt0 -or $expectedChannel-gt255){Fail "$key のRGBAが0..255外です"}
+            $actualChannels+=$actualChannel;$expectedChannels+=$expectedChannel
+        }
+        for($c=0;$c-lt3;$c++){if([Math]::Abs($actualChannels[$c]-$expectedChannels[$c])-gt3){Fail "$key のRGBが±3外です"}}
+        if($actualChannels[3]-ne255 -or $expectedChannels[3]-ne255){Fail "$key のalphaが255ではありません"}
         $s=Arr $p 'sources'; if($s.Count-ne2 -or (Int $s[0] 'source_id')-ne1 -or (Int $s[1] 'source_id')-ne2 -or
             (Int $s[0] 'frame')-ne$frame -or (Int $s[1] 'frame')-ne$frame -or
             (Int $s[0] 'source_generation')-ne$genA -or (Int $s[1] 'source_generation')-ne$genB -or
@@ -194,7 +210,8 @@ try {
         'phase4_adoption_failure_count','measurement_audio_underflow_count','measurement_audio_overflow_count','measurement_marker_mismatch_count',
         'measurement_mixed_pair_count','measurement_mixed_generation_count','measurement_stale_composition_epoch_count',
         'measurement_video_ahead_violation_count','measurement_clock_regression_count','measurement_video_qpc_master_fallback_count',
-        'measurement_audio_clock_query_failure_count','cpu_full_frame_readback_count','full_frame_gpu_copy_count','software_video_fallback_count',
+        'measurement_audio_clock_query_failure_count','measurement_scheduler_deadline_drop_count','measurement_render_failure_count',
+        'cpu_full_frame_readback_count','full_frame_gpu_copy_count','software_video_fallback_count',
         'untracked_submission_count','completion_poll_failure_count','retirement_depth_after_drain',
         'payloads_released_before_completion','retirement_timeout_count','partial_gpu_issue_failure_count',
         'device_lost_count','lifecycle_violation_count','audio_render_thread_join_leak','audio_decode_thread_join_leak')){Zero $raw $n}
@@ -211,8 +228,9 @@ try {
     foreach($n in @('screen_name','screen_orientation','screen_geometry_width','screen_geometry_height','available_geometry_width','available_geometry_height',
         'device_pixel_ratio','window_logical_width','window_logical_height','compositor_surface_logical_width','compositor_surface_logical_height','rhi_target_pixel_width','rhi_target_pixel_height')){
         if((Prop $start $n)-ne(Prop $end $n)){Fail "display environmentが変化しました: $n"}}
-    [void](Str $raw 'adapter'); if((Int $raw 'audio_endpoint_sample_rate')-le0 -or (Int $raw 'audio_endpoint_channels')-le0){Fail 'audio endpoint provenanceが不正です'}
-    [void](Str $raw 'audio_endpoint_sample_format')
+    [void](Str $raw 'adapter')
+    if((Int $raw 'audio_endpoint_sample_rate')-ne48000 -or (Int $raw 'audio_endpoint_channels')-ne2 -or
+        (Str $raw 'audio_endpoint_sample_format')-ne'flt'){Fail 'audio endpointがP3-C-2 exact 48kHz/stereo/fltではありません'}
     Write-Host ("[p4-formal] CHECKER PASS fps={0:N3} drop={1:P3} av_p95={2:N3}ms av_max={3:N3}ms probes=10" -f $fps,$drop,$p95,$max)
     exit 0
 } catch { Write-Host "[p4-formal] FAIL $($_.Exception.Message)"; exit 3 }
