@@ -122,6 +122,22 @@ struct CompositionEpoch {
     friend bool operator<(CompositionEpoch a, CompositionEpoch b) { return a.value < b.value; }
 };
 
+// 合成状態の opaque identity。0 は Phase 4 metadata を持たない legacy path を表す。
+// S0 などの文字列表現は harness 側の責務であり、render hot path ではこの値だけを扱う。
+struct CompositionStateId {
+    unsigned long long value = 0;
+
+    constexpr bool valid() const { return value != 0; }
+
+    friend bool operator==(CompositionStateId a, CompositionStateId b) {
+        return a.value == b.value;
+    }
+
+    friend bool operator!=(CompositionStateId a, CompositionStateId b) { return !(a == b); }
+
+    friend bool operator<(CompositionStateId a, CompositionStateId b) { return a.value < b.value; }
+};
+
 // --------------------------------------------------------------------------
 // lifetime token
 // --------------------------------------------------------------------------

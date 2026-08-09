@@ -57,6 +57,21 @@ LayoutUpdateResult CompositorCoordinator::updateLayout(std::vector<LayerLayout> 
     return LayoutUpdateResult::Updated;
 }
 
+CompositionStateAdoptionResult
+CompositorCoordinator::adoptCompositionState(CompositionStateId requested) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!configured_ || !requested.valid())
+        return CompositionStateAdoptionResult::Rejected;
+    if (requested == state_)
+        return CompositionStateAdoptionResult::NoOp;
+    if (epoch_.value == std::numeric_limits<unsigned long long>::max())
+        return CompositionStateAdoptionResult::Rejected;
+
+    state_ = requested;
+    ++epoch_.value;
+    return CompositionStateAdoptionResult::Adopted;
+}
+
 bool CompositorCoordinator::setSourceGeneration(SourceId source, SourceGeneration generation) {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto it = generations_.find(source);
@@ -75,6 +90,11 @@ SourceGeneration CompositorCoordinator::sourceGeneration(SourceId source) const 
 CompositionEpoch CompositorCoordinator::compositionEpoch() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return epoch_;
+}
+
+CompositionStateId CompositorCoordinator::compositionState() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return state_;
 }
 
 CompositionResult
@@ -119,6 +139,7 @@ CompositionResult CompositorCoordinator::compose(long long outputFrameNumber,
     out = {};
     out.outputFrameNumber = outputFrameNumber;
     out.compositionEpoch = epoch_; // mutable global への参照ではなく値で固定
+    out.compositionState = state_;
     for (const auto& spec : layout_) {
         const auto it = std::find_if(frames.begin(), frames.end(), [&](const auto& frame) {
             return frame.sourceId == spec.sourceId;

@@ -719,6 +719,33 @@ target_link_libraries(mvm_test_gpu_pure PRIVATE mvm::gpu_preview mvm::warnings)
 # 依存 DLL が解決できず 0xC0000135 で落ちる (実際に落ちた)。
 mvm_add_test(gpu_pure_unit COMMAND mvm_test_gpu_pure)
 
+# --- Phase 4 / A: composition schedule と snapshot identity foundation -------
+add_executable(mvm_test_phase4a_foundation gpu_preview/test_phase4a_foundation.cpp)
+target_link_libraries(mvm_test_phase4a_foundation PRIVATE mvm::gpu_preview mvm::warnings)
+set(MVM_PHASE4A_TESTS
+    GoodFormalScheduleResolution
+    GoodSmokeScheduleResolution
+    RejectEmptySchedule
+    RejectFirstBoundaryNonzero
+    RejectNegativeBoundary
+    RejectDuplicateBoundary
+    RejectDescendingBoundary
+    RejectInvalidState
+    RejectUnresolvableFrame
+    InitialStateSetup
+    AdoptDifferentStateIncrementsEpochOnce
+    AdoptSameStateIsNoop
+    RejectedAdoptionDoesNotMutate
+    RepeatedNoopDoesNotIncrementEpoch
+    TransitionSequenceIncrementsFiveTimes
+    ComposedFrameSnapshotIdentity
+    DisplayLedgerSnapshotIdentity
+)
+foreach(test_name IN LISTS MVM_PHASE4A_TESTS)
+    mvm_add_test(phase4a_${test_name}
+        COMMAND mvm_test_phase4a_foundation ${test_name})
+endforeach()
+
 # --- Phase 3 / A: audio pipeline --------------------------------------------
 add_executable(mvm_test_audio_pure audio_preview/test_audio_pure.cpp)
 target_link_libraries(mvm_test_audio_pure PRIVATE mvm::audio_preview mvm::warnings)

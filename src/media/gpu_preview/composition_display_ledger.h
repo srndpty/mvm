@@ -22,12 +22,14 @@ struct CompositionDisplayRecord {
     double applicationAvDeltaMs = 0.0;
     CompositionEpoch compositionEpoch{};
     std::vector<SourceFrameIdentity> sources;
+    CompositionStateId compositionState{};
 };
 
 struct CompositionDisplayExpectation {
     long long outputFrameNumber = -1;
     CompositionEpoch compositionEpoch{};
     std::vector<SourceFrameIdentity> sources;
+    CompositionStateId compositionState{};
 };
 
 bool matches(const CompositionDisplayRecord& record,
