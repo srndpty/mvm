@@ -16,6 +16,22 @@ bool sameLayout(const LayerLayout& a, const LayerLayout& b) {
            sameRect(a.sourceUv, b.sourceUv) && a.opacity == b.opacity && a.zOrder == b.zOrder;
 }
 
+bool validLayout(const std::vector<LayerLayout>& layout,
+                 const std::map<SourceId, SourceGeneration>& generations) {
+    if (layout.empty() || layout.size() != generations.size())
+        return false;
+    std::set<SourceId> ids;
+    for (const auto& layer : layout)
+        if (layer.sourceId.value == 0 || !generations.contains(layer.sourceId) ||
+            !ids.insert(layer.sourceId).second)
+            return false;
+    return true;
+}
+
+bool sameLayouts(const std::vector<LayerLayout>& a, const std::vector<LayerLayout>& b) {
+    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), sameLayout);
+}
+
 } // namespace
 
 ConfigureResult
@@ -24,14 +40,8 @@ CompositorCoordinator::configure(std::vector<LayerLayout> layout,
     std::lock_guard<std::mutex> lock(mutex_);
     if (configured_)
         return ConfigureResult::RejectedAlreadyConfigured;
-    if (layout.empty() || layout.size() != generations.size())
+    if (!validLayout(layout, generations))
         return ConfigureResult::RejectedInvalid;
-    std::set<SourceId> ids;
-    for (const auto& layer : layout) {
-        if (layer.sourceId.value == 0 || !generations.contains(layer.sourceId) ||
-            !ids.insert(layer.sourceId).second)
-            return ConfigureResult::RejectedInvalid;
-    }
     layout_ = std::move(layout);
     generations_ = generations;
     epoch_ = CompositionEpoch{1};
@@ -41,20 +51,49 @@ CompositorCoordinator::configure(std::vector<LayerLayout> layout,
 
 LayoutUpdateResult CompositorCoordinator::updateLayout(std::vector<LayerLayout> layout) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!configured_ || layout.size() != layout_.size())
+    if (!configured_ || !validLayout(layout, generations_))
         return LayoutUpdateResult::Rejected;
-    std::set<SourceId> ids;
-    for (const auto& layer : layout) {
-        if (!generations_.contains(layer.sourceId) || !ids.insert(layer.sourceId).second)
-            return LayoutUpdateResult::Rejected;
-    }
-    if (std::equal(layout.begin(), layout.end(), layout_.begin(), sameLayout))
+    if (sameLayouts(layout, layout_))
         return LayoutUpdateResult::NoOp;
     if (epoch_.value == std::numeric_limits<unsigned long long>::max())
         return LayoutUpdateResult::Rejected;
     layout_ = std::move(layout);
     ++epoch_.value;
     return LayoutUpdateResult::Updated;
+}
+
+CompositionStateAdoptionResult
+CompositorCoordinator::adoptCompositionState(CompositionStateId requested) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!configured_ || !requested.valid())
+        return CompositionStateAdoptionResult::Rejected;
+    if (requested == state_)
+        return CompositionStateAdoptionResult::NoOp;
+    if (epoch_.value == std::numeric_limits<unsigned long long>::max())
+        return CompositionStateAdoptionResult::Rejected;
+
+    state_ = requested;
+    ++epoch_.value;
+    return CompositionStateAdoptionResult::Adopted;
+}
+
+CompositionStateAdoptionResult
+CompositorCoordinator::adoptCompositionSnapshot(CompositionStateId requestedState,
+                                                std::vector<LayerLayout> requestedLayout) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!configured_ || !requestedState.valid() || !validLayout(requestedLayout, generations_))
+        return CompositionStateAdoptionResult::Rejected;
+
+    if (requestedState == state_)
+        return sameLayouts(requestedLayout, layout_) ? CompositionStateAdoptionResult::NoOp
+                                                     : CompositionStateAdoptionResult::Rejected;
+    if (epoch_.value == std::numeric_limits<unsigned long long>::max())
+        return CompositionStateAdoptionResult::Rejected;
+
+    state_ = requestedState;
+    layout_ = std::move(requestedLayout);
+    ++epoch_.value;
+    return CompositionStateAdoptionResult::Adopted;
 }
 
 bool CompositorCoordinator::setSourceGeneration(SourceId source, SourceGeneration generation) {
@@ -75,6 +114,11 @@ SourceGeneration CompositorCoordinator::sourceGeneration(SourceId source) const 
 CompositionEpoch CompositorCoordinator::compositionEpoch() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return epoch_;
+}
+
+CompositionStateId CompositorCoordinator::compositionState() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return state_;
 }
 
 CompositionResult
@@ -119,6 +163,7 @@ CompositionResult CompositorCoordinator::compose(long long outputFrameNumber,
     out = {};
     out.outputFrameNumber = outputFrameNumber;
     out.compositionEpoch = epoch_; // mutable global への参照ではなく値で固定
+    out.compositionState = state_;
     for (const auto& spec : layout_) {
         const auto it = std::find_if(frames.begin(), frames.end(), [&](const auto& frame) {
             return frame.sourceId == spec.sourceId;

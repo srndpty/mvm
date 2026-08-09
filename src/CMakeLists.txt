@@ -55,6 +55,7 @@ add_library(mvm_gpu_preview STATIC
     media/gpu_preview/decode_worker.cpp
     media/gpu_preview/source_registry.cpp
     media/gpu_preview/source_frame_buffer.cpp
+    media/gpu_preview/composition_schedule.cpp
     media/gpu_preview/compositor_coordinator.cpp
     media/gpu_preview/exact_frame_pairer.cpp
     media/gpu_preview/source_decode_worker.cpp

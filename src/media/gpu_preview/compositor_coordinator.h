@@ -31,6 +31,12 @@ enum class LayoutUpdateResult {
     Rejected,
 };
 
+enum class CompositionStateAdoptionResult {
+    Adopted = 0,
+    NoOp,
+    Rejected,
+};
+
 struct LayerLayout {
     SourceId sourceId{};
     RectF destination{};
@@ -39,14 +45,21 @@ struct LayerLayout {
     int zOrder = 0;
 };
 
+struct CompositorCoordinatorTestAccess;
+
 class CompositorCoordinator {
 public:
     ConfigureResult configure(std::vector<LayerLayout> layout,
                               const std::map<SourceId, SourceGeneration>& generations);
     LayoutUpdateResult updateLayout(std::vector<LayerLayout> layout);
+    CompositionStateAdoptionResult adoptCompositionState(CompositionStateId requested);
+    CompositionStateAdoptionResult
+    adoptCompositionSnapshot(CompositionStateId requestedState,
+                             std::vector<LayerLayout> requestedLayout);
     bool setSourceGeneration(SourceId source, SourceGeneration generation);
     SourceGeneration sourceGeneration(SourceId source) const;
     CompositionEpoch compositionEpoch() const;
+    CompositionStateId compositionState() const;
     CompositionResult compose(long long outputFrameNumber,
                               const std::vector<DecodedGpuFrame>& frames, ComposedFrame& out);
     CompositionResult validateForDisplay(const ComposedFrame& frame) const;
@@ -57,12 +70,14 @@ public:
     long long missingSourceFrameCount() const;
 
 private:
+    friend struct CompositorCoordinatorTestAccess;
     CompositionResult validateLocked(long long outputFrameNumber,
                                      const std::vector<DecodedGpuFrame>& frames) const;
     mutable std::mutex mutex_;
     std::vector<LayerLayout> layout_;
     std::map<SourceId, SourceGeneration> generations_;
     CompositionEpoch epoch_{};
+    CompositionStateId state_{};
     bool configured_ = false;
     long long mixedFrame_ = 0;
     long long mixedGeneration_ = 0;

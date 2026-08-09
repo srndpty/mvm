@@ -22,6 +22,8 @@ struct SourceFrameIdentity {
     SourceGeneration sourceGeneration{};
     ResourceEpoch resourceEpoch{};
     long long frameNumber = -1;
+
+    friend bool operator==(const SourceFrameIdentity&, const SourceFrameIdentity&) = default;
 };
 
 inline SourceFrameIdentity identityOf(const DecodedGpuFrame& frame) {
@@ -40,6 +42,7 @@ struct ComposedFrame {
     long long outputFrameNumber = -1;
     CompositionEpoch compositionEpoch{};
     std::vector<CompositionLayerFrame> layers;
+    CompositionStateId compositionState{};
 };
 
 // GPU serial 完了まで全 layer の lifetime を一括保持する。
@@ -59,7 +62,7 @@ inline std::shared_ptr<void> aggregateLifetime(const ComposedFrame& frame) {
 inline ComposedFrame adoptForComposition(const DecodedGpuFrame& frame, CompositionEpoch epoch) {
     CompositionLayerFrame layer;
     layer.frame = frame;
-    return {frame.frameNumber, epoch, {std::move(layer)}};
+    return {frame.frameNumber, epoch, {std::move(layer)}, {}};
 }
 
 inline bool deterministicLayerLess(const CompositionLayerFrame& a, const CompositionLayerFrame& b) {

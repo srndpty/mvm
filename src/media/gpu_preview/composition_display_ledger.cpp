@@ -9,6 +9,7 @@ bool matches(const CompositionDisplayRecord& record,
              const CompositionDisplayExpectation& expectation) {
     if (record.outputFrameNumber != expectation.outputFrameNumber ||
         record.compositionEpoch != expectation.compositionEpoch ||
+        record.compositionState != expectation.compositionState ||
         record.sources.size() != expectation.sources.size())
         return false;
     for (size_t i = 0; i < record.sources.size(); ++i) {
@@ -39,6 +40,7 @@ unsigned long long CompositionDisplayLedger::record(const ComposedFrame& frame,
     record.applicationAvProjectionValid = applicationAvProjectionValid;
     record.applicationAvDeltaMs = applicationAvDeltaMs;
     record.compositionEpoch = frame.compositionEpoch;
+    record.compositionState = frame.compositionState;
     record.sources.reserve(frame.layers.size());
     for (const auto& layer : frame.layers)
         record.sources.push_back(identityOf(layer.frame));
