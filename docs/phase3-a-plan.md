@@ -1,4 +1,4 @@
-# Phase 1 / P3-A — Audio Pipeline & Master Clock Foundation 契約
+# Phase 3 / A — Audio Pipeline & Master Clock Foundation 契約
 
 この文書は P3-A 実装・計測前の固定契約である。P3-A は音声単独の decode、
 buffering、WASAPI 出力、device clock を検証する。video scheduler は変更せず、P3-B の

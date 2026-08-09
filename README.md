@@ -18,15 +18,21 @@ Phase 0 の目的は、MLT 7 を mvm の編集・プレビュー・書き出し�
 > エフェクト、clean VM 起動など）は
 > [docs/phase0-decision.md](docs/phase0-decision.md) に明記している。
 
-**現在は Phase 1（GPU Preview Engine Spike）の P1 に着手している。**
-FFmpeg (D3D11VA) で decode した frame を CPU へ戻さずに
-Qt Quick 上へ表示できるかを検証する縦切りである。
+**Phase 1～3 の GPU preview / compositor / A/V sync spike は closure 済みで、
+現在は Phase 4 の実装前契約を整理している。**
 製品用 NLE・タイムライン UI・Project Model は引き続き未着手。
 
 | ドキュメント | 内容 |
 | --- | --- |
-| **[docs/phase1-plan.md](docs/phase1-plan.md)** | **Phase 1 / P1 の計画と exit criteria** |
-| **[docs/phase1-findings.md](docs/phase1-findings.md)** | **P1 の実測所見。事実 / 推測 / 未検証を区別して記録** |
+| **[docs/phase1-plan.md](docs/phase1-plan.md)** | **Phase 1 の計画と exit criteria** |
+| **[docs/phase1-findings.md](docs/phase1-findings.md)** | **Phase 1 の実測所見** |
+| **[docs/phase2-plan.md](docs/phase2-plan.md)** | **Phase 2 の計画と exit criteria** |
+| **[docs/phase2-findings.md](docs/phase2-findings.md)** | **Phase 2 の実測所見** |
+| **[docs/phase3-a-plan.md](docs/phase3-a-plan.md)** | **Phase 3 / A の実装前契約** |
+| **[docs/phase3-c-contract.md](docs/phase3-c-contract.md)** | **Phase 3 / C-1 formal contract** |
+| **[docs/phase3-c2-contract.md](docs/phase3-c2-contract.md)** | **Phase 3 / C-2 display-target formal contract** |
+| **[docs/phase3-findings.md](docs/phase3-findings.md)** | **Phase 3 closure と historical result** |
+| **[docs/phase4-plan.md](docs/phase4-plan.md)** | **Phase 4 の実装前契約案** |
 | **[docs/adr/0002-preview-backend-spike.md](docs/adr/0002-preview-backend-spike.md)** | **ADR: 内製 GPU preview backend の検証（Proposed）** |
 | **[docs/phase0-decision.md](docs/phase0-decision.md)** | **採否判定書（S16）** |
 | **[docs/adr/0001-mlt-adoption.md](docs/adr/0001-mlt-adoption.md)** | **ADR: MLT 採否の決定** |

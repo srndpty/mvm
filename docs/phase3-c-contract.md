@@ -1,6 +1,6 @@
-# P3-C-1 formal contract
+# Phase 3 / C-1 formal contract
 
-本書は Phase 1 / P3-C の合否条件を、正式計測を実行する前に固定する。
+本書は Phase 3 / C の合否条件を、正式計測を実行する前に固定する。
 raw schema は `mvm-p3-formal-1`、matrix summary は
 `mvm-p3-matrix-summary-1` とする。P3-B の結果は historical diagnostic であり、
 P3-C の正式判定には使用しない。

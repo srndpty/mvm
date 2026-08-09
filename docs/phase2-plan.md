@@ -1,4 +1,4 @@
-# Phase 1 / P2 — Two-Video D3D11 GPU Compositor Spike 計画
+# Phase 2 — Two-Video D3D11 GPU Compositor Spike 計画
 
 この文書は P2 実装前の判定契約である。P2 の実装中または計測後に閾値を緩めて
 合格扱いにしない。正式判定の唯一の入口は `scripts/p2-matrix.ps1` とし、文書へ

@@ -1,4 +1,4 @@
-# P3-C-2 display-target formal contract
+# Phase 3 / C-2 display-target formal contract
 
 本書はP3-C-1の性能・correctness条件を維持したまま、display targetの妥当性と
 provenanceを追加する新しいformal contractを定義する。P3-C-1のraw、checker、summary、
