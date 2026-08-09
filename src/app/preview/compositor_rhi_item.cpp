@@ -10,6 +10,7 @@
 #include <cmath>
 #include <rhi/qrhi.h>
 #include <rhi/qrhi_platform.h>
+#include <tuple>
 #include <vector>
 
 namespace mvm::app {
@@ -50,13 +51,15 @@ protected:
         if (!state_->device.adopt(static_cast<ID3D11Device*>(h->dev),
                                   static_cast<ID3D11DeviceContext*>(h->context), err) ||
             !state_->compositor.initializeExternal(state_->device, state_->readbacks, err,
-                                                   backend_)) {
+                                                   backend_) ||
+            !state_->transitionProbeReadback.initialize(state_->device, err)) {
             fail(err);
             return;
         }
         nativeDevice_ = h->dev;
         nativeContext_ = h->context;
         state_->actualGpuCompletionBackend = gpu::toString(state_->compositor.completionBackend());
+        state_->transitionProbeReady.store(true, std::memory_order_release);
         state_->nativeDevicePointer.store(reinterpret_cast<unsigned long long>(h->dev),
                                           std::memory_order_relaxed);
         state_->qtAdapter = state_->device.adapter();
@@ -257,6 +260,14 @@ protected:
                 return;
             }
         }
+        std::string err;
+        if (state_->phase4Enabled.load(std::memory_order_acquire) &&
+            !normalizePhase4VisibleUv(frame, err)) {
+            state_->renderFailureCount.fetch_add(1, std::memory_order_relaxed);
+            noteDrop(gpu::OutputDropReason::RenderFailure);
+            fail(err);
+            return;
+        }
         const long long pairReadyQpc = gpu::qpcTicks();
         if (audioMasterEnabled &&
             state_->audioMasterMarkerProbePending.exchange(false, std::memory_order_acq_rel)) {
@@ -267,7 +278,6 @@ protected:
             state_->markerProbe.requested = true;
             state_->markerProbe.done = false;
         }
-        std::string err;
         if (!ensureRtv(colorTexture(), err)) {
             state_->renderFailureCount.fetch_add(1, std::memory_order_relaxed);
             noteDrop(gpu::OutputDropReason::RenderFailure);
@@ -286,12 +296,14 @@ protected:
         gpu::GpuCompositorStageTiming compositorTiming;
         const bool pairOnly = diagnosticCase == CompositorDiagnosticCase::PairOnly;
         const bool diagnostic = diagnosticCase != CompositorDiagnosticCase::None;
-        const bool ok =
-            pairOnly ||
-            (diagnostic ? state_->compositor.composeDiagnosticToTarget(
-                              frame, {rtv_, size.width(), size.height()}, compositorTiming, err)
-                        : state_->compositor.composeToTarget(
-                              frame, {rtv_, size.width(), size.height()}, err));
+        bool ok = pairOnly || (diagnostic ? state_->compositor.composeDiagnosticToTarget(
+                                                frame, {rtv_, size.width(), size.height()},
+                                                compositorTiming, err)
+                                          : state_->compositor.composeToTarget(
+                                                frame, {rtv_, size.width(), size.height()}, err));
+        if (ok && !diagnostic && state_->p3MeasurementActive.load(std::memory_order_acquire) &&
+            state_->phase4Enabled.load(std::memory_order_acquire))
+            ok = issueTransitionProbes(frame, size, err);
         cb->endExternal();
         const long long externalEnd = gpu::qpcTicks();
         cb->endPass();
@@ -379,6 +391,61 @@ protected:
     }
 
 private:
+    bool normalizePhase4VisibleUv(gpu::ComposedFrame& frame, std::string& err) const {
+        // D3D11VAのallocationはlogical heightより大きいことがある（実fixtureは
+        // 1920x1080に対して1920x1088）。catalogのfull visible UVをphysical
+        // textureのvisible extentへ変換する。Phase 4 branch限定で、P3 pathや
+        // destination/state/epoch/source identityは変更しない。
+        for (auto& layer : frame.layers) {
+            D3D11_TEXTURE2D_DESC desc{};
+            layer.frame.texture->GetDesc(&desc);
+            if (desc.Width < static_cast<UINT>(layer.frame.width) ||
+                desc.Height < static_cast<UINT>(layer.frame.height) || desc.Width == 0 ||
+                desc.Height == 0) {
+                err = "decode textureのphysical extentがlogical visible extentより小さいです";
+                return false;
+            }
+            layer.sourceUv.width *=
+                static_cast<float>(layer.frame.width) / static_cast<float>(desc.Width);
+            layer.sourceUv.height *=
+                static_cast<float>(layer.frame.height) / static_cast<float>(desc.Height);
+        }
+        return true;
+    }
+
+    bool issueTransitionProbes(const gpu::ComposedFrame& frame, const QSize& size,
+                               std::string& err) {
+        const auto boundary = state_->transitionProbeSelector.select(frame.outputFrameNumber);
+        if (!boundary)
+            return true;
+        if (size.width() != 1920 || size.height() != 1080 || !rtvTexture_) {
+            err = "transition probe actual targetが1920x1080ではありません";
+            state_->transitionProbeIssueFailureCount.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+        std::vector<gpu::SourceFrameIdentity> sources;
+        sources.reserve(frame.layers.size());
+        for (const auto& layer : frame.layers)
+            sources.push_back(gpu::identityOf(layer.frame));
+        for (const auto [point, x, y] : {std::tuple{gpu::TransitionProbePoint::TL, 480, 270},
+                                         std::tuple{gpu::TransitionProbePoint::BR, 1440, 810}}) {
+            gpu::TransitionProbeRequest request{*boundary,
+                                                frame.outputFrameNumber,
+                                                frame.compositionState,
+                                                frame.compositionEpoch,
+                                                point,
+                                                x,
+                                                y,
+                                                sources};
+            unsigned long long ticket = 0;
+            if (!state_->transitionProbeReadback.issue(rtvTexture_, request, ticket, err)) {
+                state_->transitionProbeIssueFailureCount.fetch_add(1, std::memory_order_relaxed);
+                return false;
+            }
+        }
+        return true;
+    }
+
     CompositorMeasurementCounters measurementCounters() const {
         const auto& c = state_->compositor.counters();
         return {gpu::qpcTicks(),
@@ -649,6 +716,17 @@ private:
             return;
         }
         std::string err;
+        std::vector<gpu::TransitionProbeResult> drained;
+        if (state_->transitionProbeReady.load(std::memory_order_acquire) &&
+            !state_->transitionProbeReadback.drain(5000, drained, err))
+            fail(err);
+        if (!drained.empty()) {
+            std::lock_guard<std::mutex> lock(state_->transitionProbeResultMutex);
+            state_->transitionProbeResults.insert(state_->transitionProbeResults.end(),
+                                                  drained.begin(), drained.end());
+        }
+        state_->transitionProbeReadback.release();
+        state_->transitionProbeReady.store(false, std::memory_order_release);
         if (!state_->compositor.shutdown(10000, err))
             fail(err);
         releaseRtv();
