@@ -780,3 +780,98 @@ P2-D5-1のPlayback 3/3、Seek 3/3、parallel dispatch各1000/1000と全既存MUS
 §15のP2-D4-2におけるP2 FINAL FAILはhistorical resultとして維持する。P2-D4-2 contractでは
 FAILし、その後にcontract semanticsの過剰制約を修正してP2-D5-1で再評価した結果が本節の
 PASSである。P3には進まない。
+
+## 17. P3-C-1 formal実行とP3 closure判定
+
+### 17.1 [事実] clean HEADと通常回帰をformal前に固定した
+
+formal対象HEADは`5ed555a9939705768f1372385456113a0ba1439c`である。開始時とformal開始直前の
+`git status --porcelain`は空だった。formal前のordinary CTestはperformance / stabilityを除外し、
+Release / Debugとも215/215通過した。
+
+P3-C-1 summaryではstart/endのgit commit、dirty状態、fixture A/B SHA-256、executable SHA-256、
+contract versionが一致した。GPU adapterは両時点ともNVIDIA GeForce RTX 4090、audio endpointは
+48,000 Hz、2 channel、`flt`だった。`provenance_unchanged = true`、
+`hardware_provenance_unchanged = true`である。
+
+### 17.2 [事実] P3-C Playback formalは3/3通過した
+
+`pwsh -NoProfile -File scripts/p3-matrix.ps1`を`DryRun`、`StopOnFailure`なしで一度だけ実行した。
+Playbackは5秒warmup後、60秒、3,600 frameを3 independent processで測定した。
+
+| run | displayed / skipped / required | effective fps | drop rate | AV abs p95 | AV abs max | underflow / overflow |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 3590 / 10 / 3600 | 59.8333 | 0.2778% | 16.083 ms | 17.458 ms | 0 / 0 |
+| 2 | 3583 / 17 / 3600 | 59.7167 | 0.4722% | 16.000 ms | 17.500 ms | 0 / 0 |
+| 3 | 3582 / 18 / 3600 | 59.7000 | 0.5000% | 16.083 ms | 17.354 ms | 0 / 0 |
+
+各runでfirst frame 0、`displayed_unique + skipped == 3600`、AV raw countとdisplayed uniqueの
+一致が成立した。duplicate display、non-increasing display、AV projection failure、marker mismatch、
+mixed pair/generation、stale composition epoch、video ahead violation、clock regression、QPC fallback、
+audio clock query failureは0だった。
+
+### 17.3 [事実] P3-C Seek formalは3/3通過した
+
+seed 20260808の1000 deterministic integrated seekを3 independent processで実行した。
+
+| run | exact | request-display p95 | observed max | first-display AV abs p95 | AV abs max | timeout / busy / stale / generation mismatch |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 1000 / 1000 | 133.7115 ms | 183.3806 ms | 9.0625 ms | 10.2917 ms | 0 / 0 / 0 / 0 |
+| 2 | 1000 / 1000 | 134.5040 ms | 183.1812 ms | 8.9375 ms | 10.2292 ms | 0 / 0 / 0 / 0 |
+| 3 | 1000 / 1000 | 149.7502 ms | 200.0543 ms | 9.0833 ms | 10.2083 ms | 0 / 0 / 0 / 0 |
+
+各runでrequested audio sample、first audio sample、first displayed video frame、first-display AV projectionの
+exact contractが成立した。run 3のp95は150.000 ms閾値近傍だが、丸め、平均、再試行による救済は
+行っていない。
+
+### 17.4 [事実] P3-C PauseResume formalは3/3通過した
+
+| run | clock frozen | video advance zero | generation stable | AV abs p95 | AV abs max |
+| --- | --- | --- | --- | ---: | ---: |
+| 1 | true | true | true | 14.313 ms | 15.208 ms |
+| 2 | true | true | true | 16.646 ms | 17.021 ms |
+| 3 | true | true | true | 10.458 ms | 11.667 ms |
+
+全runでunderflow、clock regression、QPC fallbackは0だった。
+
+### 17.5 [事実] P3-C global correctnessと正式summaryはPASSだった
+
+9 run合計でCPU full-frame readback、full-frame GPU copy、software video fallback、device lost、
+lifecycle violation、audio decode/render thread join leakは0だった。全runでvideo worker join、
+teardown success、final report after teardownが成立した。
+
+raw producerの`formal_verdict`は全9件とも設計どおり`NOT_RUN`のままである。正式summaryは
+`build/ucrt64-release/p3-matrix/summary.json`に保存し、schemaは
+`mvm-p3-matrix-summary-1`、`expected_processes = 9`、`completed_processes = 9`、
+`formal_verdict = PASS`、`all_runs_pass = true`、`p3_c_pass = true`である。
+
+### 17.6 [事実] P3-A standalone regressionは通過した
+
+P3-C PASS後に既存`pwsh -NoProfile -File scripts/p3-a-smoke.ps1`を変更せず実行した。
+playback 15秒 x 3、exact audio seek 64/64、pause/resume、audio marker 6/6がすべて通過し、
+`build/p3-a-smoke/summary.json`の`verdict`は`PASS`、`errors`は空だった。
+
+### 17.7 [事実] P2-D5-1 formal regressionはoutput size MUSTで6/6失敗した
+
+P3-A PASS後に既存`pwsh -NoProfile -File scripts/p2-matrix.ps1`を変更せず一度だけ実行した。
+Playback 3 runとSeek 3 runの全process自体はexit 0だったが、全6 rawで
+`actual_output_width = 1204`、`actual_output_height = 1080`だった。P2-D5-1 checkerが要求する
+width 1920と一致しないため、全runのcontract exitは3、per-run `pass`はfalseになった。
+
+Playbackのeffective fpsは59.6844 / 59.7505 / 59.7830、drop rateは0.5000% / 0.3889% /
+0.3333%だった。Seekのp95は83.3333 / 83.2379 / 83.2814 ms、observed maxは
+150.6075 / 150.1728 / 150.3128 ms、parallel dispatch validは各1000/1000だったが、これらの
+診断値でoutput size MUSTを救済していない。
+
+P2 summaryは`build/ucrt64-release/p2-matrix-d5/summary.json`に保存した。
+`provenance_unchanged_during_matrix = true`、`all_playback_runs_pass = false`、
+`all_seek_runs_pass = false`、`p2_pass = false`である。原因の推測、performance fix、checker変更、
+threshold変更、同じHEAD/seedでの再試行は行っていない。
+
+### 17.8 [exit] P3 FINAL FAIL under P3-C-1
+
+P3-C-1 new path formalとP3-A regressionはPASSしたが、後続のP2-D5-1 formal regressionが
+1 run以上でMUST失敗したため、指示どおりP1 formal regressionは実行していない。したがって
+Phase-1 P3 closureの最終判定は **P3 FINAL FAIL under P3-C-1** である。
+
+P3-C-1 raw / summaryとP2-D5-1 regression raw / summaryは保存し、P4へは進まない。
