@@ -21,6 +21,7 @@ struct P4Config {
     QString sourceA;
     QString sourceB;
     QString metricsPath;
+    gpu::Phase4ScheduleKind workload = gpu::Phase4ScheduleKind::Smoke;
     int durationSeconds = 10;
     int warmupSeconds = 1;
     int displayTimeoutMs = 3000;
@@ -103,6 +104,7 @@ private:
     QString canonicalSchedule_;
     QString canonicalScheduleSha256_;
     std::vector<gpu::CompositionScheduleEntry> scheduleEntries_;
+    std::vector<long long> transitionBoundaries_;
     std::optional<gpu::CompositionSchedule> schedule_;
 
     unsigned long long measurementLedgerBaseline_ = 0;

@@ -88,7 +88,10 @@ $raw = [ordered]@{
     measurement_stale_composition_epoch_count=0;measurement_video_ahead_violation_count=0
     measurement_clock_regression_count=0;measurement_video_qpc_master_fallback_count=0
     measurement_audio_clock_query_failure_count=0;cpu_full_frame_readback_count=0
-    full_frame_gpu_copy_count=0;software_video_fallback_count=0;device_lost_count=0
+    full_frame_gpu_copy_count=0;software_video_fallback_count=0;untracked_submission_count=0
+    completion_poll_failure_count=0;retirement_depth_after_drain=0
+    payloads_released_before_completion=0;retirement_timeout_count=0
+    partial_gpu_issue_failure_count=0;device_lost_count=0
     lifecycle_violation_count=0;audio_render_thread_join_leak=0;audio_decode_thread_join_leak=0
     video_worker_a_joined=$true;video_worker_b_joined=$true;teardown_success=$true
     final_report_after_teardown=$true;shutdown_workers_joined_before_teardown=$true
@@ -132,6 +135,7 @@ switch ($Case) {
     TeardownBeforeJoin { $raw.shutdown_workers_joined_before_teardown=$false }
     MissingBoolean { $raw.Remove('teardown_success') }
     StringFalseBoolean { $raw.teardown_success='false' }
+    AvRawBadSummaryGood { $raw.measurement_display_ledger[0].application_av_delta_ms=40.0 }
     default { throw "未知caseです: $Case" }
 }
 $raw | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $json -Encoding utf8

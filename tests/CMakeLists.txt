@@ -2,6 +2,7 @@
 # 性能最適化はここでは行わない (S7 以降)。
 
 find_package(PkgConfig REQUIRED)
+find_package(Git REQUIRED)
 pkg_check_modules(PNG REQUIRED IMPORTED_TARGET libpng)
 
 # --- mvm_bench --------------------------------------------------------------
@@ -821,7 +822,7 @@ set(_p4c_checker_cases
     ProbeCount5 ProbeBlockingWait ProbePendingAfterDrain ProbeCompletionFailure
     ProbeUntrackedCompletion WrongCpuReference CpuReferenceWrongState WrongScheduleHash FormalScheduleInSmoke
     FormalCountInSmoke WrongState StaleEpoch OldStateAfterBoundary Lag3 GenerationChanged
-    ShutdownOrder TeardownBeforeJoin MissingBoolean StringFalseBoolean)
+    ShutdownOrder TeardownBeforeJoin MissingBoolean StringFalseBoolean AvRawBadSummaryGood)
 foreach(_p4c_case IN LISTS _p4c_checker_cases)
     string(TOLOWER "${_p4c_case}" _p4c_case_name)
     mvm_add_test(phase4c_checker_${_p4c_case_name}
@@ -835,6 +836,7 @@ endforeach()
 add_executable(mvm_test_phase4c_probe gpu_preview/test_phase4c_probe.cpp)
 target_link_libraries(mvm_test_phase4c_probe PRIVATE mvm::gpu_preview mvm::warnings)
 set(_p4c_probe_cases CandidateFrameSelection DuplicateTransitionSuppression
+    FormalBoundaryConfiguration
     ExpectedLocationsAndOpacity InvalidStateHasNoProbeExpectation VisibleUvNormalization
     Bt709Reference StraightAlpha ToleranceAndAlpha AsyncGpuCopy)
 foreach(_p4c_probe_case IN LISTS _p4c_probe_cases)
@@ -848,10 +850,61 @@ mvm_add_test(phase4c_probe_fixturereference
         "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_video_hevc_b.mp4"
     PROPERTIES REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4"
         TIMEOUT 120)
+mvm_add_test(phase4d_probe_formal_fixturereference
+    COMMAND mvm_test_phase4c_probe FormalFixtureReference
+        "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4"
+        "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_video_hevc_b.mp4"
+    PROPERTIES REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4"
+        TIMEOUT 180)
 mvm_add_test(phase4c_nonblocking_architecture
     COMMAND "${MVM_PWSH}" -NoProfile -File
         "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-phase4c-nonblocking-architecture.ps1"
         -SourceRoot "${CMAKE_SOURCE_DIR}")
+
+# --- Phase 4 / D1: formal checker / 3-process matrix harness ----------------
+set(_p4d_formal_cases
+    GoodFormal WrongFormalSchedule WrongFormalHash SmokeScheduleInFormal WrongWarmup4
+    WrongDuration59 WrongRequiredFrames WrongAudioEndSample Adoption4 Adoption6
+    EpochIncrement4 Reject1 WrongState StaleEpoch WrongReturnToS0EpochAt2400
+    WrongReturnToS1EpochAt3000 Lag3 MissingLag OldStateAfterBoundary ProbeCount9
+    ProbeCount11 ProbeMissing ProbeDuplicate ProbeWrongFrame ProbeWrongState ProbeWrongEpoch
+    CpuReferenceWrongState WrongProbeRgb WrongProbeAlpha ProbeBlockingWait ProbePending
+    ProbeCompletionFailure GenerationChanged ResourceEpochChanged Fps54_999 DropOver2Percent
+    AvP95_20_001 AvMax_33_335 AvProjectionFalse AvMissingRaw AvNaN
+    AvSummaryDoesNotMatchRaw ShutdownOrder TeardownBeforeJoin MissingBoolean
+    StringFalseBoolean ProcessExitNonzero)
+foreach(_case IN LISTS _p4d_formal_cases)
+    string(TOLOWER "${_case}" _case_name)
+    mvm_add_test(phase4d_formal_checker_${_case_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p4-formal-contract.ps1"
+            -Case ${_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p4-formal-contract.ps1"
+            -Generator "${CMAKE_SOURCE_DIR}/scripts/new-p4-formal-synthetic.ps1"
+            -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/p4-d-formal-${_case_name}")
+endforeach()
+
+foreach(_case GoodDryRun OneRunFailure DirtyBaseline ProvenanceChange)
+    string(TOLOWER "${_case}" _case_name)
+    mvm_add_test(phase4d_matrix_${_case_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p4-formal-matrix.ps1"
+            -Case ${_case}
+            -Harness "${CMAKE_SOURCE_DIR}/scripts/run-p4-formal-matrix.ps1"
+            -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/p4-d-matrix-${_case_name}"
+            -GitExe "${GIT_EXECUTABLE}")
+endforeach()
+
+if(TARGET mvm_p4_composition_spike)
+    mvm_add_test(phase4d_runtime_reject_unknown_workload
+        COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+            -ExpectExit 2 -Exe "$<TARGET_FILE:mvm_p4_composition_spike>"
+            -ChildArgs "--workload|unknown")
+    mvm_add_test(phase4d_runtime_reject_duration_override
+        COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+            -ExpectExit 2 -Exe "$<TARGET_FILE:mvm_p4_composition_spike>"
+            -ChildArgs "--duration-seconds|60")
+endif()
 
 # --- Phase 3 / A: audio pipeline --------------------------------------------
 add_executable(mvm_test_audio_pure audio_preview/test_audio_pure.cpp)
@@ -985,7 +1038,7 @@ if(TARGET mvm_p4_composition_spike AND EXISTS "${MVM_P3_AUDIO_FIXTURE}" AND
     mvm_add_test(p4_c_contract_smoke
         COMMAND mvm_p4_composition_spike
             --source-a "${MVM_P3_AUDIO_FIXTURE}" --source-b "${MVM_P3_B_VIDEO_FIXTURE}"
-            --metrics "${MVM_P4_C_JSON}" --warmup-seconds 1
+            --metrics "${MVM_P4_C_JSON}" --workload smoke
         PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 300
             FIXTURES_SETUP mvm_p4_c)
     mvm_add_test(p4_c_contract_smoke_check

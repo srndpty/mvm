@@ -51,7 +51,10 @@ enum class TransitionProbeDrainStatus { Pending = 0, Complete, Failed };
 // actual display frameから、まだprobeしていないboundaryだけを一度だけ選ぶ純粋state machine。
 class TransitionProbeSelector {
 public:
+    TransitionProbeSelector() = default;
     explicit TransitionProbeSelector(std::vector<long long> boundaries);
+    // workload開始前に一度だけ設定する。選択開始後の変更は拒否する。
+    bool configure(std::vector<long long> boundaries);
     std::optional<long long> select(long long actualOutputFrame);
 
     size_t selectedCount() const { return selectedCount_; }

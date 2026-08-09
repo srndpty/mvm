@@ -15,25 +15,39 @@ void usage() {
     std::fprintf(stderr,
                  "使い方: mvm_p4_composition_spike --source-a <path> --source-b <path> "
                  "--metrics <json> [options]\n"
-                 "  --warmup-seconds <n>     warmup 秒数 (既定 1)\n"
+                 "  --workload smoke|formal 固定workloadを選択 (既定 smoke)\n"
                  "  --display-timeout-ms <n> 初回表示待ち (既定 3000)\n"
-                 "schedule は smoke 固定である。CLI から上書きできない。\n");
+                 "duration/warmup/schedule/boundaryはworkloadごとに固定で上書きできない。\n");
 }
 
 bool parse(const QStringList& args, P4Config& config) {
+    bool workloadSeen = false;
     for (int i = 1; i < args.size(); ++i) {
         const QString key = args[i];
         auto value = [&]() { return i + 1 < args.size() ? args[++i] : QString{}; };
         if (key == "--source-a") config.sourceA = value();
         else if (key == "--source-b") config.sourceB = value();
         else if (key == "--metrics") config.metricsPath = value();
-        else if (key == "--warmup-seconds") config.warmupSeconds = value().toInt();
+        else if (key == "--workload") {
+            if (workloadSeen)
+                return false;
+            workloadSeen = true;
+            const QString mode = value();
+            if (mode == "smoke") {
+                config.workload = mvm::gpu::Phase4ScheduleKind::Smoke;
+                config.durationSeconds = 10;
+                config.warmupSeconds = 1;
+            } else if (mode == "formal") {
+                config.workload = mvm::gpu::Phase4ScheduleKind::Formal;
+                config.durationSeconds = 60;
+                config.warmupSeconds = 5;
+            } else return false;
+        }
         else if (key == "--display-timeout-ms") config.displayTimeoutMs = value().toInt();
         else return false;
     }
     return !config.sourceA.isEmpty() && !config.sourceB.isEmpty() &&
-           !config.metricsPath.isEmpty() && config.durationSeconds == 10 &&
-           config.warmupSeconds >= 0 && config.displayTimeoutMs > 0;
+           !config.metricsPath.isEmpty() && config.displayTimeoutMs > 0;
 }
 } // namespace
 

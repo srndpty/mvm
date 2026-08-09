@@ -124,7 +124,8 @@ struct CompositorSpikeState {
     std::shared_ptr<gpu::Phase4CompositionDriver> phase4Driver;
     std::atomic<bool> phase4Enabled{false};
     std::atomic<long long> phase4AdoptionFailureCount{0};
-    gpu::TransitionProbeSelector transitionProbeSelector{{200, 400}};
+    // controllerがcanonical scheduleからworkload開始前に一度だけ設定する。
+    gpu::TransitionProbeSelector transitionProbeSelector;
     gpu::AsyncTransitionProbeReadback transitionProbeReadback;
     std::atomic<bool> transitionProbeReady{false};
     std::atomic<long long> transitionProbeIssueFailureCount{0};
