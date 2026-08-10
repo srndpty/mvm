@@ -714,6 +714,31 @@ endif()
 # 60 秒 x 3 run の性能計測は scripts/p1-matrix.ps1 で行い、
 # その結果だけを P1 の合否判定に使う (docs/phase1-plan.md §11 / §12)。
 
+# --- Phase 5 / P5-B: PreviewEngine product foundation -----------------------
+add_executable(mvm_test_preview_engine preview_engine/test_preview_engine.cpp)
+target_link_libraries(mvm_test_preview_engine PRIVATE mvm::preview_engine mvm::warnings)
+mvm_add_test(preview_engine_p5b_unit COMMAND mvm_test_preview_engine
+    PROPERTIES LABELS p5b)
+
+add_test(NAME preview_engine_p5b_unsafe_destructor
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+            -ExpectExit 86 -Exe "$<TARGET_FILE:mvm_test_preview_engine>"
+            -ChildArgs "|--unsafe-destructor")
+set_tests_properties(preview_engine_p5b_unsafe_destructor PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS p5b)
+
+add_executable(mvm_test_preview_public_boundary
+    preview_engine/test_preview_public_boundary.cpp)
+target_link_libraries(mvm_test_preview_public_boundary PRIVATE mvm::preview_engine mvm::warnings)
+mvm_add_test(preview_engine_p5b_public_compile COMMAND mvm_test_preview_public_boundary
+    PROPERTIES LABELS p5b)
+mvm_add_test(preview_engine_p5b_public_tokens
+    COMMAND "${MVM_PWSH}" -NoProfile
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/preview_engine/check-public-boundary.ps1"
+            -PublicDir "${CMAKE_SOURCE_DIR}/src/preview_engine"
+    PROPERTIES LABELS p5b)
+
 add_executable(mvm_test_gpu_pure gpu_preview/test_gpu_pure.cpp)
 target_link_libraries(mvm_test_gpu_pure PRIVATE mvm::gpu_preview mvm::warnings)
 # mvm_add_test を使う。ucrt64in を PATH に入れないと
@@ -848,18 +873,23 @@ foreach(_p4c_probe_case IN LISTS _p4c_probe_cases)
     mvm_add_test(phase4c_probe_${_p4c_probe_case_name}
         COMMAND mvm_test_phase4c_probe ${_p4c_probe_case})
 endforeach()
-mvm_add_test(phase4c_probe_fixturereference
-    COMMAND mvm_test_phase4c_probe FixtureReference
-        "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4"
-        "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_video_hevc_b.mp4"
-    PROPERTIES REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4"
-        TIMEOUT 120)
-mvm_add_test(phase4d_probe_formal_fixturereference
-    COMMAND mvm_test_phase4c_probe FormalFixtureReference
-        "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4"
-        "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_video_hevc_b.mp4"
-    PROPERTIES REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4"
-        TIMEOUT 180)
+set(_p4_probe_fixture_a "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4")
+set(_p4_probe_fixture_b "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_video_hevc_b.mp4")
+if(EXISTS "${_p4_probe_fixture_a}" AND EXISTS "${_p4_probe_fixture_b}")
+    mvm_add_test(phase4c_probe_fixturereference
+        COMMAND mvm_test_phase4c_probe FixtureReference
+            "${_p4_probe_fixture_a}" "${_p4_probe_fixture_b}"
+        PROPERTIES REQUIRED_FILES "${_p4_probe_fixture_a}"
+            TIMEOUT 120)
+    mvm_add_test(phase4d_probe_formal_fixturereference
+        COMMAND mvm_test_phase4c_probe FormalFixtureReference
+            "${_p4_probe_fixture_a}" "${_p4_probe_fixture_b}"
+        PROPERTIES REQUIRED_FILES "${_p4_probe_fixture_a}"
+            TIMEOUT 180)
+else()
+    message(STATUS "[mvm] P4-C/D fixture referenceは未登録です。")
+    message(STATUS "  pwsh scripts/make-p3-fixture.ps1 を実行してください。")
+endif()
 mvm_add_test(phase4c_nonblocking_architecture
     COMMAND "${MVM_PWSH}" -NoProfile -File
         "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-phase4c-nonblocking-architecture.ps1"
@@ -891,7 +921,7 @@ foreach(_case IN LISTS _p4d_formal_cases)
             -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/p4-d-formal-${_case_name}")
 endforeach()
 
-foreach(_case GoodDryRun OneRunFailure DirtyBaseline ProvenanceChange MissingRaw InvalidRuntimeBin)
+foreach(_case GoodDryRun DetachedHead OneRunFailure DirtyBaseline ProvenanceChange MissingRaw InvalidRuntimeBin)
     string(TOLOWER "${_case}" _case_name)
     mvm_add_test(phase4d_matrix_${_case_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File

@@ -143,6 +143,16 @@ media playback、FFmpeg open、D3D11 attach、QQuick presentationは要求しな
 - engine-owned revisionがrejectで進まないtest
 - latest desiredと同一compositionのno-op token test
 - capability超過のnegative test
+- destinationとsourceRectの双方について、full-frame `{0, 0, 1, 1}`、interior
+  `{0.25, 0.25, 0.5, 0.5}`、edge-touching `{0.5, 0.5, 0.5, 0.5}`を受理するtest
+- destinationとsourceRectの双方について、負の`x`/`y`、positive width/heightを伴う`x == 1`/`y == 1`、
+  0または負のwidth/height、1より大きいwidth/height、`x + width > 1`、`y + height > 1`をrejectするtest
+- destinationとsourceRectの各fieldについてNaN、正Infinity、負Infinityをrejectするtest
+- opacityの0、1、interior valueを受理し、0未満、1超、NaN、正負Infinityをrejectするtest
+- opacity 0のlayerが構造比較、layer count、distinct source countに残るtest
+- empty snapshotを`CompositionFailure`としてrejectするtest
+- invalid rect/opacityまたはempty snapshotのrejectがID/revisionとlatest desiredを変更しないtest
+- composition validatorを使わず独立したliteralから上記期待値を検査するtest
 - event ordering/coalescing/capacity test
 - event sink attach/detach lifecycle test
 - sink detach後にcallbackが開始しないtest
@@ -272,6 +282,16 @@ API typeは二layerへhard-codeしない。runtime capabilityは
 - duplicate source layer policyのnegative test
 - layer count/order/source ID/各rect field/opacityのstructural equality boundary test
 - NaN/Infinity rejectと`-0.0` canonicalizationのtest
+- destinationとsourceRectの双方について、full-frame `{0, 0, 1, 1}`、interior
+  `{0.25, 0.25, 0.5, 0.5}`、edge-touching `{0.5, 0.5, 0.5, 0.5}`を受理するtest
+- destinationとsourceRectの双方について、負の`x`/`y`、positive width/heightを伴う`x == 1`/`y == 1`、
+  0または負のwidth/height、1より大きいwidth/height、`x + width > 1`、`y + height > 1`をrejectするtest
+- destinationとsourceRectの各fieldについてNaN、正Infinity、負Infinityをrejectするtest
+- opacityの0、1、interior valueを受理し、0未満、1超、NaN、正負Infinityをrejectするtest
+- opacity 0のlayerを削除せず、構造比較とsource/layer capability countに含めるtest
+- empty snapshotを`CompositionFailure`としてrejectするtest
+- invalid rect/opacityまたはempty snapshotのrejectがID/revisionとlatest desiredを変更しないtest
+- composition validatorを使わず独立したliteralから上記期待値を検査するtest
 - `PresentedFrameInfo`がactual accepted tokenを保持
 - unknown/removed source拒否
 - active/pending snapshot参照中のremove拒否

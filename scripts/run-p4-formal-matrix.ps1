@@ -5,6 +5,7 @@ param(
     [ValidateRange(0, 3)][int]$DryRunMissingRawRun = 0,
     [switch]$DryRunDirtyBaseline,
     [switch]$DryRunProvenanceChange,
+    [switch]$DryRunDetachedHead,
     [switch]$DryRunRuntimePreflight,
     [string]$GitExe = 'git',
     [string]$OutputDir = 'tmp/p4-formal-matrix',
@@ -77,7 +78,12 @@ try {
         $actualDirty = @(Invoke-Git @('status', '--porcelain'))
         $startClean = $actualDirty.Count -eq 0
         $startHead = (Invoke-Git @('rev-parse', 'HEAD')).Trim()
-        $branch = (Invoke-Git @('branch', '--show-current')).Trim()
+        $branchOutput = if ($DryRunDetachedHead) {
+            $null
+        } else {
+            Invoke-Git @('branch', '--show-current')
+        }
+        $branch = if ($null -eq $branchOutput) { $null } else { "$branchOutput".Trim() }
 
         $computed = [Convert]::ToHexString(
             [Security.Cryptography.SHA256]::HashData(
@@ -93,12 +99,14 @@ try {
             throw 'REAL formal matrixはclean worktreeだけで開始できます'
         }
 
-        foreach ($pair in @(@($SourceA, $fixtureA), @($SourceB, $fixtureB))) {
-            if (-not (Test-Path -LiteralPath $pair[0])) {
-                throw "fixtureがありません: $($pair[0])"
-            }
-            if ((Get-Hash $pair[0]) -ne $pair[1]) {
-                throw "fixture hashが違います: $($pair[0])"
+        if (-not $DryRun) {
+            foreach ($pair in @(@($SourceA, $fixtureA), @($SourceB, $fixtureB))) {
+                if (-not (Test-Path -LiteralPath $pair[0])) {
+                    throw "fixtureがありません: $($pair[0])"
+                }
+                if ((Get-Hash $pair[0]) -ne $pair[1]) {
+                    throw "fixture hashが違います: $($pair[0])"
+                }
             }
         }
         if (-not $DryRun -and -not (Test-Path -LiteralPath $Executable)) {
@@ -223,9 +231,12 @@ try {
 
     $runProvenanceUnchanged = $runs.Count -eq 3 -and
         @($runs | Where-Object { $null -eq $_.provenance -or $_.provenance -ne $baselineProvenance }).Count -eq 0
+    $executableProvenanceUnchanged = $DryRun -or $exeHash -eq $endExeHash
+    $fixtureProvenanceUnchanged = $DryRun -or
+        ($endFixtureA -eq $fixtureA -and $endFixtureB -eq $fixtureB)
     $provenanceUnchanged = $null -eq $failureReason -and $startHead -eq $endHead -and `
-        $exeHash -eq $endExeHash -and $runProvenanceUnchanged -and `
-        $endFixtureA -eq $fixtureA -and $endFixtureB -eq $fixtureB
+        $executableProvenanceUnchanged -and $runProvenanceUnchanged -and `
+        $fixtureProvenanceUnchanged
     $allRuns = $null -eq $failureReason -and $runs.Count -eq 3 -and `
         @($runs | Where-Object { -not $_.pass }).Count -eq 0
     if (-not $DryRun) {

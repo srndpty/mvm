@@ -200,7 +200,51 @@ rectangle、opacity、layer orderだけである。
 transition、keyframe、effect graph、S0/S1/S2/S3、formal boundary、fixture catalog、Phase 4 schedule
 kindは含めない。
 
-### 7.1 IDとrevisionのauthority
+### 7.1 Composition value domain
+
+初期Phase 5では、`destination`と`sourceRect`の両方に同じnormalized containment ruleを適用する。
+validな`PreviewNormalizedRect`は全fieldが有限であり、次を全て満たす。
+
+```text
+0 <= x < 1
+0 <= y < 1
+0 < width <= 1
+0 < height <= 1
+x + width <= 1
+y + height <= 1
+```
+
+すなわち`[x, x + width]`と`[y, y + height]`がそれぞれ`[0, 1]`に包含され、面積が正である
+rectangleだけを受理する。`{0, 0, 1, 1}`はvalidなfull-frame rectangleである。負の座標、1以上の
+`x`または`y`、0以下または1より大きい`width`または`height`、境界を越えるrectangle、NaN、正負Infinityは
+rejectする。
+
+この初期domainでは、destinationのoutput境界外配置、source境界外sampling、implicit clipping、wrap/repeat
+sampling、negative coordinates、overscan coordinatesをsupportしない。これはpublic struct shapeの恒久的な
+限界ではなく、初期Phase 5でsupportするsemantic domainである。将来domainを拡張する場合も、silent clampで
+旧invalid inputをsuccessへ変えず、独立したcontractで扱う。
+
+上記の数学的domainをauthorityとする。implementationは有限性を確認した後、例えば
+`width <= 1 - x`と`height <= 1 - y`のようなoverflow/roundingを考慮した同値な検査を使ってよい。
+validation用epsilonを導入して境界外値をacceptしてはならない。
+
+`opacity`は有限かつ`0.0 <= opacity <= 1.0`を満たす場合だけvalidとし、両端を含む。範囲外、NaN、
+正負Infinityはrejectし、暗黙clampしない。
+
+`opacity == 0.0`のlayerもsnapshot内に存在するlayerとして扱う。canonicalizationで削除せず、構造比較、
+layer count、distinct active video source count、token/no-op判定の全てに含める。したがってopacity 0のlayerと
+layer自体が存在しないsnapshotは構造的に異なる。zero-opacity layer elisionを将来導入する場合も、public
+composition identityとtoken semanticsを変えないinternal optimizationとして別途証明する。
+
+`CompositionSnapshot::layers`がemptyのsnapshotは、blank/clear frame semanticsが未contractであるため
+`CompositionFailure`のrecoverable errorとしてrejectする。rejectはIDとrevisionを消費せず、
+`latestAcceptedDesiredComposition`を変更しない。blank/clear compositionは将来の明示的なcontractで扱う。
+
+このdomain freezeはPhase 5のproduct input semanticsを定義するものであり、全normalized rectangleまたは
+opacity値についてP1～P4のformal GPU correctnessを新たに証明するものではない。正式validated envelopeと
+未検証能力は変更せず、clipping、HDR、effect等を追加でqualificationしたとは扱わない。
+
+### 7.2 IDとrevisionのauthority
 
 `CompositionSnapshotId`と`revision`のauthorityはengineだけが持つ。
 
@@ -235,7 +279,7 @@ Result<AcceptedComposition> submitComposition(
     std::shared_ptr<const CompositionSnapshot> snapshot);
 ```
 
-### 7.2 Structural equality
+### 7.3 Structural equality
 
 no-op判定はpointer identityやepsilon比較ではなく、validation後のcanonical product valueの構造比較で行う。
 最低限、次を全て比較する。
@@ -254,7 +298,7 @@ equalityで比較する。epsilon依存のno-op判定、暗黙clamp、caller obj
 production structural-equality helperとtest expectationを同じ実装から生成しない。testはlayer order、source
 ID、各rectangle field、opacityの差を独立した期待値で検査する。
 
-### 7.3 Capability policy
+### 7.4 Capability policy
 
 `CompositionSnapshot`は将来のqualificationで型を作り直さないためlayer vectorを持つ。ただしvectorで
 あることは任意track数の性能・correctness qualificationを意味しない。
@@ -267,13 +311,37 @@ ID、各rectangle field、opacityの差を独立した期待値で検査する�
 - capabilityを超えるsnapshotはaccept前に`UnsupportedCapability`で拒否する
 - 将来のqualificationはsnapshot formatを変えずにcapabilityを増やせる
 
-source countはsnapshot内のdistinctなactive video source数、layer countはvector要素数として独立に数える。
-同一sourceを複数layerへ重複配置する能力はformalにqualificationされていないため、初期capabilityでは
-`UnsupportedCapability`で拒否する。将来qualificationしてもpublic snapshot formatを変更する必要はない。
+source countはsnapshot内のvideo-enabled registered sourceを参照するdistinctな`PreviewSourceId`数、layer
+countは`layers.size()`として独立に数える。opacity 0のlayerも両方のcount対象である。video-enabledでない
+sourceはvideo compositionへ参加できない。同一sourceを複数layerへ重複配置する能力はformalにqualification
+されていないため、初期capabilityでは`UnsupportedCapability`で拒否する。将来qualificationしてもpublic
+snapshot formatを変更する必要はない。
 
 正式な表現は
 **“Formally validated topology: two simultaneous 1080p60 video sources.”**
 である。二本を恒久的なvideo source数の上限とは表現しない。
+
+### 7.5 Composition validation order
+
+`submitComposition()`は次の概念順で、accept前に全validationを行う。
+
+1. snapshot pointerがnon-nullであること
+2. layer countが1以上であること
+3. layer countがcurrent capability以内であること
+4. 各sourceが登録済みかつvideo-enabledであること
+5. duplicate-source policyを満たすこと
+6. distinct source countがcurrent capability以内であること
+7. 各`destination`がvalidであること
+8. 各`sourceRect`がvalidであること
+9. 各`opacity`がvalidであること
+10. `-0.0`を`+0.0`へcanonicalizeすること
+11. canonical valueを構造比較し、no-opを判定すること
+12. contentが変わった場合だけ新しいtokenをacceptすること
+
+unknownまたはvideo-enabledでないsourceは`InvalidSource`、capability超過とduplicate sourceは
+`UnsupportedCapability`、null/empty snapshotとinvalid rectangle/opacityは`CompositionFailure`とする。
+これらは全てsubmission前validationの`Recoverable` errorである。validation failureはstate/content/tokenを
+変更せず、IDもrevisionも消費しない。
 
 ## 8. Public API shape
 
@@ -709,6 +777,9 @@ Phase 5実装は最低限次を守る。
 - public output timeは明示的な有理数frame rateに属する
 - accepted snapshot revisionのauthorityはengineだけが持つ
 - composition no-opはlatest accepted desiredだけと比較する
+- destinationとsourceRectを同じinitial normalized containment domainで検査する
+- opacity 0のlayerを構造比較とsource/layer countから除外しない
+- empty compositionとinvalid rectangle/opacityをaccept前にrejectし、ID/revisionを消費しない
 - active source countとcomposition layer countを別capabilityとして検査する
 - capability外をtype shapeだけでsupport済みと扱わない
 - render device attachmentはprivate/render-thread-only

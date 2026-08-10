@@ -9,6 +9,16 @@ add_library(mvm_util STATIC
 target_include_directories(mvm_util PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 add_library(mvm::util ALIAS mvm_util)
 
+# --- Phase 5 / P5-B: PreviewEngine product foundation -----------------------
+# 標準C++の値型・state・event contractだけを持つ。Qt、FFmpeg、D3D11、
+# spike/formal targetには依存しない。
+add_library(mvm_preview_engine STATIC
+    preview_engine/preview_engine.cpp
+)
+target_include_directories(mvm_preview_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_preview_engine PRIVATE mvm::warnings)
+add_library(mvm::preview_engine ALIAS mvm_preview_engine)
+
 # --- MLT adapter ------------------------------------------------------------
 # MLT のヘッダを include してよいのはこのターゲットのソースだけ。
 # 上位 (mvm_bench の CLI 部分など) は MLT の型を一切知らない。
