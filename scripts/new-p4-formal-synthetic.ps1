@@ -1,6 +1,10 @@
 [CmdletBinding()]
 param([Parameter(Mandatory)][string]$Output, [string]$Case = 'GoodFormal')
 $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
+if ($Case -eq 'MissingRaw') {
+ if(Test-Path -LiteralPath $Output){Remove-Item -LiteralPath $Output -Force}
+ exit 7
+}
 $e0=7L
 function State([long]$f){if($f-lt600){'S0'}elseif($f-lt1200){'S1'}elseif($f-lt1800){'S2'}elseif($f-lt2400){'S3'}elseif($f-lt3000){'S0'}else{'S1'}}
 function Epoch([long]$f){[long]($e0+[Math]::Floor($f/600))}
