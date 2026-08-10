@@ -873,18 +873,23 @@ foreach(_p4c_probe_case IN LISTS _p4c_probe_cases)
     mvm_add_test(phase4c_probe_${_p4c_probe_case_name}
         COMMAND mvm_test_phase4c_probe ${_p4c_probe_case})
 endforeach()
-mvm_add_test(phase4c_probe_fixturereference
-    COMMAND mvm_test_phase4c_probe FixtureReference
-        "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4"
-        "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_video_hevc_b.mp4"
-    PROPERTIES REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4"
-        TIMEOUT 120)
-mvm_add_test(phase4d_probe_formal_fixturereference
-    COMMAND mvm_test_phase4c_probe FormalFixtureReference
-        "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4"
-        "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_video_hevc_b.mp4"
-    PROPERTIES REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4"
-        TIMEOUT 180)
+set(_p4_probe_fixture_a "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4")
+set(_p4_probe_fixture_b "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_video_hevc_b.mp4")
+if(EXISTS "${_p4_probe_fixture_a}" AND EXISTS "${_p4_probe_fixture_b}")
+    mvm_add_test(phase4c_probe_fixturereference
+        COMMAND mvm_test_phase4c_probe FixtureReference
+            "${_p4_probe_fixture_a}" "${_p4_probe_fixture_b}"
+        PROPERTIES REQUIRED_FILES "${_p4_probe_fixture_a}"
+            TIMEOUT 120)
+    mvm_add_test(phase4d_probe_formal_fixturereference
+        COMMAND mvm_test_phase4c_probe FormalFixtureReference
+            "${_p4_probe_fixture_a}" "${_p4_probe_fixture_b}"
+        PROPERTIES REQUIRED_FILES "${_p4_probe_fixture_a}"
+            TIMEOUT 180)
+else()
+    message(STATUS "[mvm] P4-C/D fixture referenceは未登録です。")
+    message(STATUS "  pwsh scripts/make-p3-fixture.ps1 を実行してください。")
+endif()
 mvm_add_test(phase4c_nonblocking_architecture
     COMMAND "${MVM_PWSH}" -NoProfile -File
         "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-phase4c-nonblocking-architecture.ps1"
@@ -916,7 +921,7 @@ foreach(_case IN LISTS _p4d_formal_cases)
             -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/p4-d-formal-${_case_name}")
 endforeach()
 
-foreach(_case GoodDryRun OneRunFailure DirtyBaseline ProvenanceChange MissingRaw InvalidRuntimeBin)
+foreach(_case GoodDryRun DetachedHead OneRunFailure DirtyBaseline ProvenanceChange MissingRaw InvalidRuntimeBin)
     string(TOLOWER "${_case}" _case_name)
     mvm_add_test(phase4d_matrix_${_case_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File

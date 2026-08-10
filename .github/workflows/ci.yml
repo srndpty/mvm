@@ -60,6 +60,7 @@ jobs:
             mingw-w64-ucrt-x86_64-rubberband
             mingw-w64-ucrt-x86_64-sox
             mingw-w64-ucrt-x86_64-rtaudio
+            mingw-w64-ucrt-x86_64-rnnoise
             mingw-w64-ucrt-x86_64-gtest
             mingw-w64-ucrt-x86_64-libpng
 
