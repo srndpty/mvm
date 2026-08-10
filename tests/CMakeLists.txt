@@ -714,6 +714,31 @@ endif()
 # 60 秒 x 3 run の性能計測は scripts/p1-matrix.ps1 で行い、
 # その結果だけを P1 の合否判定に使う (docs/phase1-plan.md §11 / §12)。
 
+# --- Phase 5 / P5-B: PreviewEngine product foundation -----------------------
+add_executable(mvm_test_preview_engine preview_engine/test_preview_engine.cpp)
+target_link_libraries(mvm_test_preview_engine PRIVATE mvm::preview_engine mvm::warnings)
+mvm_add_test(preview_engine_p5b_unit COMMAND mvm_test_preview_engine
+    PROPERTIES LABELS p5b)
+
+add_test(NAME preview_engine_p5b_unsafe_destructor
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+            -ExpectExit 86 -Exe "$<TARGET_FILE:mvm_test_preview_engine>"
+            -ChildArgs "|--unsafe-destructor")
+set_tests_properties(preview_engine_p5b_unsafe_destructor PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS p5b)
+
+add_executable(mvm_test_preview_public_boundary
+    preview_engine/test_preview_public_boundary.cpp)
+target_link_libraries(mvm_test_preview_public_boundary PRIVATE mvm::preview_engine mvm::warnings)
+mvm_add_test(preview_engine_p5b_public_compile COMMAND mvm_test_preview_public_boundary
+    PROPERTIES LABELS p5b)
+mvm_add_test(preview_engine_p5b_public_tokens
+    COMMAND "${MVM_PWSH}" -NoProfile
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/preview_engine/check-public-boundary.ps1"
+            -PublicDir "${CMAKE_SOURCE_DIR}/src/preview_engine"
+    PROPERTIES LABELS p5b)
+
 add_executable(mvm_test_gpu_pure gpu_preview/test_gpu_pure.cpp)
 target_link_libraries(mvm_test_gpu_pure PRIVATE mvm::gpu_preview mvm::warnings)
 # mvm_add_test を使う。ucrt64in を PATH に入れないと
