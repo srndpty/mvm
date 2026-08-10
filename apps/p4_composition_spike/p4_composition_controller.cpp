@@ -630,6 +630,16 @@ bool P4CompositionController::writeMetrics() const {
     const auto records = firstMeasurementDisplaySeen_
                              ? state_->ledger.recordsAfter(measurementLedgerBaseline_)
                              : std::vector<gpu::CompositionDisplayRecord>{};
+    const unsigned long long measurementLatestSequence = state_->ledger.baseline();
+    const unsigned long long actualMeasurementRecordCount =
+        measurementLatestSequence >= measurementLedgerBaseline_
+            ? measurementLatestSequence - measurementLedgerBaseline_
+            : 0;
+    const bool ledgerRetentionComplete =
+        measurementLatestSequence >= measurementLedgerBaseline_ &&
+        records.size() == static_cast<size_t>(actualMeasurementRecordCount) &&
+        (records.empty() ||
+         records.front().displaySequence == measurementLedgerBaseline_ + 1);
     std::vector<gpu::TransitionProbeResult> probeResults;
     {
         std::lock_guard<std::mutex> lock(state_->transitionProbeResultMutex);
@@ -826,8 +836,9 @@ bool P4CompositionController::writeMetrics() const {
     // rawを正常に確定できたかだけを表し、performance thresholdはformal checkerが判定する。
     const bool integrationSanityPass =
         exitCode_ == 0 && displayPreflightPassed_ && warmupComplete_ &&
-        firstMeasurementDisplaySeen_ && counterSelfConsistent && !records.empty() &&
-        firstFrame == 0 && nonIncreasing == 0 && uniqueDisplayed + skipped == requiredFrames &&
+        firstMeasurementDisplaySeen_ && counterSelfConsistent && ledgerRetentionComplete &&
+        !records.empty() && firstFrame == 0 && lastFrame >= 0 && lastFrame < requiredFrames &&
+        nonIncreasing == 0 && uniqueDisplayed + skipped == requiredFrames &&
         driverCounters.adoptionCount == static_cast<long long>(transitionBoundaries_.size()) &&
         driverCounters.epochIncrementCount == static_cast<long long>(transitionBoundaries_.size()) &&
         driverCounters.rejectCount == 0 && driverCounters.unresolvedFrameCount == 0 &&
@@ -910,6 +921,10 @@ bool P4CompositionController::writeMetrics() const {
         {"transition_activation_lag_frames", activationLagJson},
         {"measurement_display_ledger", ledgerJson},
         {"measurement_display_ledger_count", static_cast<qint64>(records.size())},
+        {"display_ledger_capacity", static_cast<qint64>(state_->ledger.capacity())},
+        {"measurement_actual_display_record_count",
+         static_cast<qint64>(actualMeasurementRecordCount)},
+        {"measurement_display_ledger_retention_complete", ledgerRetentionComplete},
         {"transition_pixel_probe_status", "COMPLETE"},
         {"transition_probe_records", probeJson},
         {"transition_probe_checked_count", static_cast<qint64>(probeResults.size())},

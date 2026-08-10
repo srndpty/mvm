@@ -766,6 +766,9 @@ add_executable(mvm_test_phase4b_integration gpu_preview/test_phase4b_integration
 target_link_libraries(mvm_test_phase4b_integration PRIVATE mvm::gpu_preview mvm::warnings)
 set(MVM_PHASE4B_TESTS
     SmokeRunAdoptsExactlyTwice
+    FormalLedgerRetainsAll3600
+    FormalLedgerCapacityExceedsMeasurement
+    BoundedLedgerEvictsOldest
     LedgerVerificationDetectsWrongState
     BoundaryDropStillActivatesNewState
     RepeatedSameFrameIsNoop

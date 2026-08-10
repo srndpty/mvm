@@ -135,8 +135,7 @@ struct CompositorSpikeState {
     gpu::ReadbackCounters readbacks;
     gpu::GpuCompositor compositor;
     gpu::CompositorCoordinator coordinator;
-    // formal playback の 3600 display identity を欠落なく保持する。
-    gpu::CompositionDisplayLedger ledger{4096};
+    gpu::CompositionDisplayLedger ledger{gpu::kCompositionDisplayLedgerCapacity};
 
     mutable std::mutex workerMutex;
     std::shared_ptr<gpu::SourceDecodeWorker> workerA;

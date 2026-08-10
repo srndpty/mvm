@@ -25,6 +25,8 @@ constexpr SourceGeneration kGenerationB{11};
 constexpr ResourceEpoch kResourceA{101};
 constexpr ResourceEpoch kResourceB{202};
 constexpr long long kMeasurementFrames = 600;
+constexpr long long kFormalMeasurementFrames = 3600;
+constexpr size_t kFormalLedgerSafetyMargin = 512;
 
 void require(bool condition, const char* message) {
     if (!condition)
@@ -155,6 +157,47 @@ void smokeRunAdoptsExactlyTwice() {
     require(verdict.oldStateAfterBoundary == 0, "boundary 後に旧 state を表示しました");
 }
 
+void formalLedgerRetainsAll3600() {
+    CompositionDisplayLedger ledger(kCompositionDisplayLedgerCapacity);
+    const auto baseline = ledger.baseline();
+    ComposedFrame frame;
+    for (long long outputFrame = 0; outputFrame < kFormalMeasurementFrames; ++outputFrame) {
+        frame.outputFrameNumber = outputFrame;
+        ledger.record(frame, outputFrame);
+    }
+
+    const auto records = ledger.recordsAfter(baseline);
+    require(records.size() == static_cast<size_t>(kFormalMeasurementFrames),
+            "formal 3600 displayを全件保持できません");
+    require(records.front().outputFrameNumber == 0, "formal ledgerの先頭からframe 0が失われました");
+    require(records.back().outputFrameNumber == 3599,
+            "formal ledgerの末尾がframe 3599ではありません");
+}
+
+void formalLedgerCapacityExceedsMeasurement() {
+    CompositionDisplayLedger ledger(kCompositionDisplayLedgerCapacity);
+    require(ledger.capacity() == kCompositionDisplayLedgerCapacity,
+            "production ledger capacity constantがconstructionに反映されません");
+    require(ledger.capacity() >=
+                static_cast<size_t>(kFormalMeasurementFrames) + kFormalLedgerSafetyMargin,
+            "formal measurementに対するledger safety marginが不足しています");
+}
+
+void boundedLedgerEvictsOldest() {
+    CompositionDisplayLedger ledger(3);
+    const auto baseline = ledger.baseline();
+    ComposedFrame frame;
+    for (long long outputFrame = 0; outputFrame < 4; ++outputFrame) {
+        frame.outputFrameNumber = outputFrame;
+        ledger.record(frame, outputFrame);
+    }
+
+    const auto records = ledger.recordsAfter(baseline);
+    require(records.size() == 3, "small capacity ledgerが上限3件を守りません");
+    require(records.front().outputFrameNumber == 1 && records.back().outputFrameNumber == 3,
+            "bounded ringが最古の1件を破棄しません");
+}
+
 // verify 側が本当に効いていることを示す。これが通らなければ上の 0 件は空振りである。
 void ledgerVerificationDetectsWrongState() {
     CompositorCoordinator coordinator;
@@ -274,6 +317,9 @@ using Test = std::pair<const char*, std::function<void()>>;
 
 const std::vector<Test> kTests = {
     {"SmokeRunAdoptsExactlyTwice", smokeRunAdoptsExactlyTwice},
+    {"FormalLedgerRetainsAll3600", formalLedgerRetainsAll3600},
+    {"FormalLedgerCapacityExceedsMeasurement", formalLedgerCapacityExceedsMeasurement},
+    {"BoundedLedgerEvictsOldest", boundedLedgerEvictsOldest},
     {"LedgerVerificationDetectsWrongState", ledgerVerificationDetectsWrongState},
     {"BoundaryDropStillActivatesNewState", boundaryDropStillActivatesNewState},
     {"RepeatedSameFrameIsNoop", repeatedSameFrameIsNoop},
