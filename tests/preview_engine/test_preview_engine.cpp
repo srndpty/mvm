@@ -7,8 +7,10 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -38,6 +40,15 @@ void requireFailure(const Result<T>& result, PreviewErrorCategory category, cons
 class ManualDispatcher final : public PreviewEventDispatcher {
 public:
     bool post(std::function<void()> callback) override {
+        ++postAttemptCount;
+        if (throwNextPost) {
+            throwNextPost = false;
+            throw std::runtime_error("dispatcher post exception");
+        }
+        if (rejectNextPost) {
+            rejectNextPost = false;
+            return false;
+        }
         if (!acceptPosts) {
             return false;
         }
@@ -60,8 +71,29 @@ public:
     }
 
     bool acceptPosts = true;
+    bool rejectNextPost = false;
+    bool throwNextPost = false;
+    std::size_t postAttemptCount = 0;
     std::size_t postCount = 0;
     std::deque<std::function<void()>> tasks;
+};
+
+class ThrowingSink final : public PreviewEventSink {
+public:
+    void stateChanged(PreviewEngineState) override {
+        ++callbackCount;
+        throw std::runtime_error("sink callback exception");
+    }
+
+    void positionChanged(PreviewPosition) override {}
+
+    void framePresented(PresentedFrameInfo) override {}
+
+    void errorOccurred(PreviewError) override {}
+
+    void deviceChanged(PreviewDeviceInfo) override {}
+
+    std::size_t callbackCount = 0;
 };
 
 class RecordingSink final : public PreviewEventSink {
@@ -220,6 +252,38 @@ void stateMachineLifecycle() {
             "fatal teardown後にErrorになりません");
     require(fatal.destructionSafe() && fatal.lastError() == error,
             "terminal ErrorにlastErrorが残りません");
+
+    PreviewStateMachine teardownFatal;
+    require(teardownFatal.initialize(), "teardown fatal test initializeに失敗しました");
+    require(teardownFatal.requestShutdown(), "normal shutdown requestに失敗しました");
+    PreviewError shutdownError{PreviewErrorCategory::ShutdownFailure,
+                               PreviewErrorSeverity::FatalToSession,
+                               PreviewOperation::Shutdown,
+                               std::nullopt,
+                               "GPU drain failure",
+                               9};
+    require(teardownFatal.recordFatal(shutdownError), "ShuttingDown中のfatalをrecordできません");
+    require(teardownFatal.state() == PreviewEngineState::ShuttingDown,
+            "teardown fatalがShuttingDownを維持しません");
+    require(teardownFatal.completeTeardown() && teardownFatal.state() == PreviewEngineState::Error,
+            "teardown fatalをShutdownへ誤変換しました");
+    require(teardownFatal.lastError() == shutdownError, "teardown fatalを保持していません");
+
+    PreviewStateMachine multipleFatal;
+    require(multipleFatal.initialize(), "multiple fatal test initializeに失敗しました");
+    PreviewError rootError{PreviewErrorCategory::DeviceFailure,
+                           PreviewErrorSeverity::FatalToSession,
+                           PreviewOperation::RenderDeviceAttach,
+                           std::nullopt,
+                           "root device failure",
+                           10};
+    require(multipleFatal.recordFatal(rootError), "root fatalをrecordできません");
+    require(multipleFatal.recordFatal(shutdownError), "teardown secondary fatalを拒否しました");
+    require(multipleFatal.lastError() == rootError, "secondary fatalがroot fatalを上書きしました");
+    require(multipleFatal.completeTeardown() && multipleFatal.state() == PreviewEngineState::Error,
+            "multiple fatalがErrorになりません");
+    requireFailure(multipleFatal.recordFatal(shutdownError), PreviewErrorCategory::InvalidState,
+                   "terminal Errorでfatal mutationを受理しました");
 }
 
 void mailboxOrderingAndBounds() {
@@ -503,6 +567,198 @@ void eventOwnershipAndFatalPath() {
             "final terminal acknowledgement後にcallbackを発行しました");
 }
 
+void constructorThreadAuthority() {
+    PreviewEngine wrongThreadInitialize;
+    auto rejectedDispatcher = std::make_shared<ManualDispatcher>();
+    std::weak_ptr<ManualDispatcher> rejectedWeak = rejectedDispatcher;
+    std::optional<Result<void>> initializeResult;
+    std::thread initializeThread([&] {
+        initializeResult.emplace(
+            wrongThreadInitialize.initialize(qualifiedConfig(), rejectedDispatcher));
+    });
+    initializeThread.join();
+    require(initializeResult.has_value(), "wrong-thread initialize resultがありません");
+    requireFailure(*initializeResult, PreviewErrorCategory::InvalidState,
+                   "construction thread以外のinitializeを受理しました");
+    require(wrongThreadInitialize.status().state == PreviewEngineState::Uninitialized,
+            "wrong-thread initializeがstateを変更しました");
+    rejectedDispatcher.reset();
+    require(rejectedWeak.expired(), "wrong-thread initializeがdispatcherを保持しました");
+
+    PreviewEngine engine;
+    auto dispatcher = std::make_shared<ManualDispatcher>();
+    require(engine.initialize(qualifiedConfig(), dispatcher),
+            "owner-thread initializeに失敗しました");
+    dispatcher->runAll();
+    auto sink = std::make_shared<RecordingSink>();
+    std::optional<Result<void>> controlResult;
+    std::thread controlThread([&] {
+        controlResult.emplace(engine.attachEventSink(std::weak_ptr<PreviewEventSink>(sink)));
+    });
+    controlThread.join();
+    require(controlResult.has_value(), "wrong-thread control resultがありません");
+    requireFailure(*controlResult, PreviewErrorCategory::InvalidState,
+                   "construction thread以外のcontrol operationを受理しました");
+    require(engine.status().state == PreviewEngineState::WaitingForRenderDevice,
+            "wrong-thread control operationがstateを変更しました");
+    require(engine.requestShutdown(), "thread authority test shutdownに失敗しました");
+    require(PreviewRenderPort::completeTeardown(engine),
+            "thread authority test teardownに失敗しました");
+    dispatcher->runAll();
+}
+
+void dispatcherAndSinkFailureContainment() {
+    PreviewEngine rejectedPost;
+    auto rejectingDispatcher = std::make_shared<ManualDispatcher>();
+    require(rejectedPost.initialize(qualifiedConfig(), rejectingDispatcher),
+            "runtime reject test initializeに失敗しました");
+    rejectingDispatcher->runAll();
+    rejectingDispatcher->rejectNextPost = true;
+    require(PreviewRenderPort::attachLogicalDevice(rejectedPost),
+            "dispatcher rejectをrender attach rejectionへ変換しました");
+    require(rejectedPost.status().state == PreviewEngineState::ReadyPaused,
+            "dispatcher rejectがauthoritative stateをrollbackしました");
+    require(rejectedPost.telemetry().eventDeliveryFailureCount == 1,
+            "runtime dispatcher rejectをdiagnosticへ記録していません");
+    require(rejectedPost.requestShutdown(), "dispatcher reject後のshutdownに失敗しました");
+    rejectingDispatcher->runAll();
+    require(PreviewRenderPort::completeTeardown(rejectedPost),
+            "dispatcher reject後のteardownに失敗しました");
+    rejectingDispatcher->runAll();
+
+    PreviewEngine throwingPost;
+    auto throwingDispatcher = std::make_shared<ManualDispatcher>();
+    require(throwingPost.initialize(qualifiedConfig(), throwingDispatcher),
+            "runtime throw test initializeに失敗しました");
+    throwingDispatcher->runAll();
+    throwingDispatcher->throwNextPost = true;
+    bool dispatcherExceptionEscaped = false;
+    try {
+        require(PreviewRenderPort::attachLogicalDevice(throwingPost),
+                "dispatcher throwをrender attach rejectionへ変換しました");
+    } catch (...) {
+        dispatcherExceptionEscaped = true;
+    }
+    require(!dispatcherExceptionEscaped, "dispatcher post exceptionがengine境界から漏れました");
+    require(throwingPost.status().state == PreviewEngineState::ReadyPaused,
+            "dispatcher throwがauthoritative stateをrollbackしました");
+    require(throwingPost.telemetry().eventDeliveryFailureCount == 1,
+            "dispatcher throwをdiagnosticへ記録していません");
+    require(throwingPost.requestShutdown(), "dispatcher throw後のshutdownに失敗しました");
+    throwingDispatcher->runAll();
+    require(PreviewRenderPort::completeTeardown(throwingPost),
+            "dispatcher throw後のteardownに失敗しました");
+    throwingDispatcher->runAll();
+
+    PreviewEngine throwingSinkEngine;
+    auto sinkDispatcher = std::make_shared<ManualDispatcher>();
+    auto throwingSink = std::make_shared<ThrowingSink>();
+    require(throwingSinkEngine.initialize(qualifiedConfig(), sinkDispatcher),
+            "sink throw test initializeに失敗しました");
+    require(throwingSinkEngine.attachEventSink(throwingSink), "throwing sink attachに失敗しました");
+    bool sinkExceptionEscaped = false;
+    try {
+        sinkDispatcher->runAll();
+    } catch (...) {
+        sinkExceptionEscaped = true;
+    }
+    require(!sinkExceptionEscaped, "sink callback exceptionがdispatcherへ漏れました");
+    require(throwingSink->callbackCount == 1, "throwing sink callbackを実行していません");
+    require(throwingSinkEngine.telemetry().eventDeliveryFailureCount == 1,
+            "sink callback exceptionをdiagnosticへ記録していません");
+    require(throwingSinkEngine.requestShutdown(), "sink throw後のshutdownに失敗しました");
+    require(PreviewRenderPort::completeTeardown(throwingSinkEngine),
+            "sink throw後のterminal teardownに失敗しました");
+    sinkDispatcher->runAll();
+    require(throwingSinkEngine.status().state == PreviewEngineState::Shutdown,
+            "sink throw後にterminal Shutdownへ到達しません");
+}
+
+void dispatcherContinuationFailure() {
+    PreviewEngine engine;
+    auto dispatcher = std::make_shared<ManualDispatcher>();
+    require(engine.initialize(qualifiedConfig(), dispatcher),
+            "continuation test initializeに失敗しました");
+    require(PreviewRenderPort::attachLogicalDevice(engine),
+            "continuation test render attachに失敗しました");
+    require(PreviewRenderPort::mailboxSizeForTest(engine) == 2,
+            "continuation test backlogを構築できません");
+
+    dispatcher->rejectNextPost = true;
+    dispatcher->runOne();
+    require(engine.telemetry().eventDeliveryFailureCount == 1,
+            "continuation post failureをdiagnosticへ記録していません");
+    require(PreviewRenderPort::mailboxSizeForTest(engine) == 1,
+            "continuation failure時のpending event数が違います");
+    require(dispatcher->tasks.empty(), "continuation failureで無限retry taskを生成しました");
+    require(engine.status().state == PreviewEngineState::ReadyPaused,
+            "continuation failureがauthoritative stateを変更しました");
+
+    require(engine.requestShutdown(), "later enqueueによるretry開始に失敗しました");
+    dispatcher->runAll();
+    require(PreviewRenderPort::mailboxSizeForTest(engine) == 0,
+            "later enqueueでstranded eventを再配送できません");
+    require(PreviewRenderPort::completeTeardown(engine),
+            "continuation failure後のteardownに失敗しました");
+    dispatcher->runAll();
+}
+
+void fillNonTerminalMailbox(PreviewEngine& engine) {
+    while (PreviewRenderPort::mailboxSizeForTest(engine) < 31) {
+        PreviewRenderPort::enqueueEventForTest(engine,
+                                               StateChangedEvent{PreviewEngineState::ReadyPaused});
+    }
+}
+
+void mailboxSaturationLifecycle() {
+    PreviewEngine normal;
+    auto normalDispatcher = std::make_shared<ManualDispatcher>();
+    require(normal.initialize(qualifiedConfig(), normalDispatcher),
+            "mailbox normal test initializeに失敗しました");
+    normalDispatcher->runAll();
+    normalDispatcher->acceptPosts = false;
+    fillNonTerminalMailbox(normal);
+    const std::uint64_t failuresBeforeShutdown = normal.telemetry().eventDeliveryFailureCount;
+    require(normal.requestShutdown(), "mailbox-fullでshutdown requestをfalse failureにしました");
+    require(normal.status().state == PreviewEngineState::ShuttingDown,
+            "mailbox-fullでShuttingDown transitionをrollbackしました");
+    require(normal.telemetry().eventDeliveryFailureCount > failuresBeforeShutdown,
+            "mailbox-full shutdown notification failureを記録していません");
+    require(PreviewRenderPort::completeTeardown(normal),
+            "mailbox-fullでterminal completionをfalse failureにしました");
+    require(normal.status().state == PreviewEngineState::Shutdown,
+            "mailbox-full normal teardownがShutdownになりません");
+    require(PreviewRenderPort::mailboxSizeForTest(normal) == 32,
+            "terminal reserved slotを使用していません");
+
+    PreviewEngine fatal;
+    auto fatalDispatcher = std::make_shared<ManualDispatcher>();
+    require(fatal.initialize(qualifiedConfig(), fatalDispatcher),
+            "mailbox fatal test initializeに失敗しました");
+    fatalDispatcher->runAll();
+    fatalDispatcher->acceptPosts = false;
+    fillNonTerminalMailbox(fatal);
+    PreviewError fatalError{PreviewErrorCategory::DeviceFailure,
+                            PreviewErrorSeverity::FatalToSession,
+                            PreviewOperation::RenderDeviceAttach,
+                            std::nullopt,
+                            "mailbox saturated fatal",
+                            77};
+    const std::uint64_t failuresBeforeFatal = fatal.telemetry().eventDeliveryFailureCount;
+    require(PreviewRenderPort::injectFatal(fatal, fatalError),
+            "mailbox-fullでfatal injectionをfalse failureにしました");
+    require(fatal.status().state == PreviewEngineState::ShuttingDown,
+            "mailbox-full fatalがShuttingDownへ進みません");
+    require(fatal.telemetry().eventDeliveryFailureCount >= failuresBeforeFatal + 2,
+            "fatal event overflowを全てdiagnosticへ記録していません");
+    require(PreviewRenderPort::completeTeardown(fatal),
+            "mailbox-full fatal completionをfalse failureにしました");
+    require(fatal.status().state == PreviewEngineState::Error,
+            "mailbox-full fatal teardownがErrorになりません");
+    require(fatal.status().lastError == fatalError,
+            "mailbox-full fatalでauthoritative lastErrorを失いました");
+}
+
 void dispatcherRetention() {
     PreviewEngine engine;
     auto dispatcher = std::make_shared<ManualDispatcher>();
@@ -570,6 +826,10 @@ int main(int argc, char** argv) {
         {"composition identity", compositionIdentityAndCapabilities},
         {"engine façade / events", engineFacadeAndEvents},
         {"event ownership / fatal", eventOwnershipAndFatalPath},
+        {"constructor thread authority", constructorThreadAuthority},
+        {"dispatcher / sink failure containment", dispatcherAndSinkFailureContainment},
+        {"dispatcher continuation failure", dispatcherContinuationFailure},
+        {"mailbox saturation lifecycle", mailboxSaturationLifecycle},
         {"dispatcher retention", dispatcherRetention},
         {"safe destruction", safeDestruction},
     };

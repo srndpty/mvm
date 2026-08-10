@@ -259,11 +259,14 @@ Result<void> PreviewStateMachine::requestShutdown() {
 }
 
 Result<void> PreviewStateMachine::recordFatal(PreviewError error) {
-    if (!isActiveState(state_)) {
+    if (!isActiveState(state_) && state_ != PreviewEngineState::ShuttingDown) {
         return invalidState(error.operation, "fatal errorを受理できないstateです");
     }
     error.severity = PreviewErrorSeverity::FatalToSession;
-    lastError_ = std::move(error);
+    // teardown中の二次障害でroot causeを上書きしない。履歴は保持せず最初の一件だけを残す。
+    if (!lastError_) {
+        lastError_ = std::move(error);
+    }
     fatalPending_ = true;
     state_ = PreviewEngineState::ShuttingDown;
     return Result<void>::success();
@@ -369,24 +372,37 @@ CompositionAcceptanceState::latestAcceptedSnapshot() const {
 } // namespace internal
 
 struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
+    Impl() : controlThread(std::this_thread::get_id()) {}
+
     mutable std::mutex mutex;
     internal::PreviewStateMachine machine;
     internal::EventMailbox mailbox{32};
     std::shared_ptr<PreviewEventDispatcher> dispatcher;
     std::weak_ptr<PreviewEventSink> sink;
-    std::thread::id controlThread;
+    const std::thread::id controlThread;
     std::uint64_t sinkGeneration = 0;
-    bool controlThreadSet = false;
     bool dispatchScheduled = false;
     PreviewCapabilities capability;
     PreviewTelemetry telemetrySnapshot;
     PreviewDeviceInfo deviceSnapshot;
 
     Result<void> requireControlThread(PreviewOperation operation) const {
-        if (controlThreadSet && controlThread != std::this_thread::get_id()) {
+        if (controlThread != std::this_thread::get_id()) {
             return invalidState(operation, "control methodが作成時のthread以外から呼ばれました");
         }
         return Result<void>::success();
+    }
+
+    void noteEventDeliveryFailureLocked() {
+        if (telemetrySnapshot.eventDeliveryFailureCount <
+            std::numeric_limits<std::uint64_t>::max()) {
+            ++telemetrySnapshot.eventDeliveryFailureCount;
+        }
+    }
+
+    void noteEventDeliveryFailure() {
+        std::lock_guard<std::mutex> lock(mutex);
+        noteEventDeliveryFailureLocked();
     }
 
     void deliver(const internal::PreviewEvent& event,
@@ -432,7 +448,11 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                 stillAttached = sinkGeneration == generation && current == target;
             }
             if (stillAttached) {
-                deliver(*event, target);
+                try {
+                    deliver(*event, target);
+                } catch (...) {
+                    noteEventDeliveryFailure();
+                }
             }
         }
 
@@ -455,13 +475,20 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         }
         if (nextDispatcher) {
             const std::weak_ptr<Impl> weak = shared_from_this();
-            if (!nextDispatcher->post([weak] {
+            bool posted = false;
+            try {
+                posted = nextDispatcher->post([weak] {
                     if (const std::shared_ptr<Impl> self = weak.lock()) {
                         self->dispatchOne();
                     }
-                })) {
+                });
+            } catch (...) {
+                posted = false;
+            }
+            if (!posted) {
                 std::lock_guard<std::mutex> lock(mutex);
                 dispatchScheduled = false;
+                noteEventDeliveryFailureLocked();
             }
         }
     }
@@ -481,11 +508,17 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         }
         if (targetDispatcher) {
             const std::weak_ptr<Impl> weak = shared_from_this();
-            if (!targetDispatcher->post([weak] {
+            bool posted = false;
+            try {
+                posted = targetDispatcher->post([weak] {
                     if (const std::shared_ptr<Impl> self = weak.lock()) {
                         self->dispatchOne();
                     }
-                })) {
+                });
+            } catch (...) {
+                posted = false;
+            }
+            if (!posted) {
                 std::lock_guard<std::mutex> lock(mutex);
                 dispatchScheduled = false;
                 return Result<void>::failure(
@@ -494,6 +527,13 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
             }
         }
         return Result<void>::success();
+    }
+
+    void notify(internal::PreviewEvent event) {
+        Result<void> notified = enqueue(std::move(event));
+        if (!notified) {
+            noteEventDeliveryFailure();
+        }
     }
 };
 
@@ -512,6 +552,13 @@ PreviewEngine::~PreviewEngine() {
 
 Result<void> PreviewEngine::initialize(const PreviewEngineConfig& config,
                                        std::shared_ptr<PreviewEventDispatcher> dispatcher) {
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        Result<void> affinity = impl_->requireControlThread(PreviewOperation::Initialize);
+        if (!affinity) {
+            return affinity;
+        }
+    }
     if (!dispatcher) {
         return Result<void>::failure(makeError(PreviewErrorCategory::InvalidState,
                                                PreviewOperation::Initialize,
@@ -534,8 +581,6 @@ Result<void> PreviewEngine::initialize(const PreviewEngineConfig& config,
         if (!initialized) {
             return initialized;
         }
-        impl_->controlThread = std::this_thread::get_id();
-        impl_->controlThreadSet = true;
         impl_->dispatcher = std::move(dispatcher);
         impl_->telemetrySnapshot.status.state = impl_->machine.state();
     }
@@ -548,7 +593,6 @@ Result<void> PreviewEngine::initialize(const PreviewEngineConfig& config,
         impl_->dispatcher.reset();
         impl_->sink.reset();
         ++impl_->sinkGeneration;
-        impl_->controlThreadSet = false;
         impl_->dispatchScheduled = false;
         impl_->telemetrySnapshot = PreviewTelemetry{};
         return posted;
@@ -588,14 +632,14 @@ Result<void> PreviewEngine::detachEventSink() {
 }
 
 Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& descriptor) {
-    Result<void> valid = validatePreviewSourceDescriptor(descriptor);
-    if (!valid) {
-        return Result<PreviewSourceId>::failure(valid.error());
-    }
     std::lock_guard<std::mutex> lock(impl_->mutex);
     Result<void> affinity = impl_->requireControlThread(PreviewOperation::AddSource);
     if (!affinity) {
         return Result<PreviewSourceId>::failure(affinity.error());
+    }
+    Result<void> valid = validatePreviewSourceDescriptor(descriptor);
+    if (!valid) {
+        return Result<PreviewSourceId>::failure(valid.error());
     }
     if (impl_->machine.state() != PreviewEngineState::ReadyPaused) {
         return Result<PreviewSourceId>::failure(
@@ -726,7 +770,7 @@ Result<void> PreviewEngine::requestShutdown() {
         impl_->telemetrySnapshot.status.state = after;
     }
     if (before != after) {
-        return impl_->enqueue(internal::StateChangedEvent{after});
+        impl_->notify(internal::StateChangedEvent{after});
     }
     return Result<void>::success();
 }
@@ -742,7 +786,8 @@ Result<void> PreviewRenderPort::attachLogicalDevice(PreviewEngine& engine) {
         }
         engine.impl_->telemetrySnapshot.status.state = engine.impl_->machine.state();
     }
-    return engine.impl_->enqueue(StateChangedEvent{PreviewEngineState::ReadyPaused});
+    engine.impl_->notify(StateChangedEvent{PreviewEngineState::ReadyPaused});
+    return Result<void>::success();
 }
 
 Result<void> PreviewRenderPort::completeTeardown(PreviewEngine& engine) {
@@ -757,7 +802,8 @@ Result<void> PreviewRenderPort::completeTeardown(PreviewEngine& engine) {
         engine.impl_->telemetrySnapshot.status.state = terminal;
         engine.impl_->telemetrySnapshot.status.lastError = engine.impl_->machine.lastError();
     }
-    return engine.impl_->enqueue(StateChangedEvent{terminal});
+    engine.impl_->notify(StateChangedEvent{terminal});
+    return Result<void>::success();
 }
 
 Result<void> PreviewRenderPort::injectFatal(PreviewEngine& engine, PreviewError error) {
@@ -770,13 +816,20 @@ Result<void> PreviewRenderPort::injectFatal(PreviewEngine& engine, PreviewError 
             return accepted;
         }
         engine.impl_->telemetrySnapshot.status.state = PreviewEngineState::ShuttingDown;
-        engine.impl_->telemetrySnapshot.status.lastError = recorded;
+        engine.impl_->telemetrySnapshot.status.lastError = engine.impl_->machine.lastError();
     }
-    Result<void> errorEvent = engine.impl_->enqueue(ErrorOccurredEvent{recorded});
-    if (!errorEvent) {
-        return errorEvent;
-    }
-    return engine.impl_->enqueue(StateChangedEvent{PreviewEngineState::ShuttingDown});
+    engine.impl_->notify(ErrorOccurredEvent{recorded});
+    engine.impl_->notify(StateChangedEvent{PreviewEngineState::ShuttingDown});
+    return Result<void>::success();
+}
+
+void PreviewRenderPort::enqueueEventForTest(PreviewEngine& engine, PreviewEvent event) {
+    engine.impl_->notify(std::move(event));
+}
+
+std::size_t PreviewRenderPort::mailboxSizeForTest(const PreviewEngine& engine) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    return engine.impl_->mailbox.size();
 }
 
 } // namespace internal

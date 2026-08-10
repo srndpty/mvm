@@ -105,6 +105,10 @@ public:
     static Result<void> attachLogicalDevice(PreviewEngine& engine);
     static Result<void> completeTeardown(PreviewEngine& engine);
     static Result<void> injectFatal(PreviewEngine& engine, PreviewError error);
+
+    // bounded mailboxのfailure semanticsをbackend接続前に検査するinternal test seam。
+    static void enqueueEventForTest(PreviewEngine& engine, PreviewEvent event);
+    static std::size_t mailboxSizeForTest(const PreviewEngine& engine);
 };
 
 } // namespace mvm::preview::internal
