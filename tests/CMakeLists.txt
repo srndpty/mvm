@@ -891,7 +891,7 @@ foreach(_case IN LISTS _p4d_formal_cases)
             -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/p4-d-formal-${_case_name}")
 endforeach()
 
-foreach(_case GoodDryRun OneRunFailure DirtyBaseline ProvenanceChange)
+foreach(_case GoodDryRun OneRunFailure DirtyBaseline ProvenanceChange MissingRaw InvalidRuntimeBin)
     string(TOLOWER "${_case}" _case_name)
     mvm_add_test(phase4d_matrix_${_case_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File
