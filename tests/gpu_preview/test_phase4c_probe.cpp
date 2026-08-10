@@ -36,6 +36,19 @@ void duplicateSuppression() {
         require(!selector.select(frame), "同じtransitionを複数回選択しました");
 }
 
+void formalBoundaryConfiguration() {
+    TransitionProbeSelector selector;
+    std::vector<long long> boundaries;
+    const auto entries = phase4ScheduleEntries(Phase4ScheduleKind::Formal);
+    for (size_t i = 1; i < entries.size(); ++i)
+        boundaries.push_back(entries[i].boundaryOutputFrame);
+    require(selector.configure(boundaries), "formal boundaryを開始前に設定できません");
+    for (long long boundary : boundaries)
+        require(selector.select(boundary) == boundary, "formal boundaryを選択できません");
+    require(selector.selectedCount() == 5, "formal transitionが5件ではありません");
+    require(!selector.configure({200, 400}), "選択開始後にboundaryを変更できました");
+}
+
 void expectedLocationsAndOpacity() {
     const Rgba8 aTl{10, 20, 30, 255};
     const Rgba8 aBr{100, 110, 120, 255};
@@ -208,6 +221,7 @@ struct Case {
 
 const Case cases[] = {{"CandidateFrameSelection", candidateFrameSelection},
                       {"DuplicateTransitionSuppression", duplicateSuppression},
+                      {"FormalBoundaryConfiguration", formalBoundaryConfiguration},
                       {"ExpectedLocationsAndOpacity", expectedLocationsAndOpacity},
                       {"InvalidStateHasNoProbeExpectation", invalidStateHasNoProbeExpectation},
                       {"VisibleUvNormalization", visibleUvNormalization},
@@ -218,21 +232,28 @@ const Case cases[] = {{"CandidateFrameSelection", candidateFrameSelection},
 } // namespace
 
 int main(int argc, char** argv) {
-    if (argc == 4 && std::string(argv[1]) == "FixtureReference") {
+    if (argc == 4 && (std::string(argv[1]) == "FixtureReference" ||
+                      std::string(argv[1]) == "FormalFixtureReference")) {
+        const auto kind = std::string(argv[1]) == "FormalFixtureReference"
+                              ? Phase4ScheduleKind::Formal
+                              : Phase4ScheduleKind::Smoke;
         Phase4CpuReferenceSet references;
         std::string error;
-        if (!buildPhase4SmokeCpuReferences(
-                argv[2], argv[3],
+        if (!buildPhase4CpuReferences(
+                kind, argv[2], argv[3],
                 "d398114c38806f39670df51dfabb0095d462cbc35286ea1467901d4007cf0308",
                 "fe7cd1a45d101d363cb3930497601efd41dd55fd36c194acf8f24e3e4728b479", references,
                 error)) {
             std::fprintf(stderr, "FAIL: %s\n", error.c_str());
             return 3;
         }
-        require(references.candidates.size() == 12, "CPU reference候補が12件ではありません");
+        const size_t expectedCount = kind == Phase4ScheduleKind::Formal ? 30 : 12;
+        require(references.candidates.size() == expectedCount,
+                "CPU reference候補件数がworkload契約と違います");
         for (const auto& candidate : references.candidates) {
-            require(candidate.state == (candidate.boundary == 200 ? kPhase4S1 : kPhase4S2),
-                    "CPU reference候補のcanonical state identityが違います");
+            const auto schedule = phase4Schedule(kind);
+            require(schedule && schedule->resolve(candidate.boundary) == candidate.state,
+                    "CPU reference候補のstateがcanonical resolveと違います");
             std::fprintf(stderr, "reference boundary=%lld frame=%lld point=%s rgba=%d,%d,%d,%d\n",
                          candidate.boundary, candidate.outputFrame,
                          transitionProbePointName(candidate.point), candidate.rgba.r,

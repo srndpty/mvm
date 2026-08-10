@@ -72,6 +72,11 @@ protected:
     void render(QRhiCommandBuffer* cb) override {
         gpu::D3D11LockRoleScope lockRole(gpu::D3D11LockRole::Render);
         const long long callbackBegin = gpu::qpcTicks();
+        if (state_->p3SeekDiagnostics.active.load(std::memory_order_acquire)) {
+            state_->p3SeekDiagnostics.renderCallbackCount.fetch_add(1, std::memory_order_relaxed);
+            state_->p3SeekDiagnostics.lastRenderCallbackQpc.store(callbackBegin,
+                                                                  std::memory_order_relaxed);
+        }
         if (state_->teardownRequested.load(std::memory_order_acquire)) {
             if (teardown())
                 update();
@@ -147,9 +152,31 @@ protected:
                 state_->audioMasterLastDisplayed.load(std::memory_order_acquire);
             const long long lastRequested =
                 state_->audioMasterLastRequested.load(std::memory_order_acquire);
+            const long long pendingSeekFrame =
+                state_->audioMasterPendingSeekFrame.load(std::memory_order_acquire);
             const auto decision = audio::scheduleVideoForAudio(
                 projection.mediaSample, lastDisplayed, lastRequested,
-                state_->audioMasterVideoFrameCount.load(std::memory_order_acquire));
+                state_->audioMasterVideoFrameCount.load(std::memory_order_acquire),
+                pendingSeekFrame);
+            if (state_->p3SeekDiagnostics.active.load(std::memory_order_acquire)) {
+                auto& diagnostic = state_->p3SeekDiagnostics;
+                diagnostic.schedulerLastDisplayed.store(lastDisplayed, std::memory_order_relaxed);
+                diagnostic.schedulerLastRequested.store(lastRequested, std::memory_order_relaxed);
+                diagnostic.schedulerTargetFrame.store(decision.targetFrame,
+                                                      std::memory_order_relaxed);
+                diagnostic.schedulerLastAction.store(static_cast<int>(decision.action),
+                                                     std::memory_order_relaxed);
+                diagnostic.schedulerSkippedFrames.store(decision.skippedFrames,
+                                                        std::memory_order_relaxed);
+                int unset = -1;
+                if (diagnostic.schedulerFirstAction.compare_exchange_strong(
+                        unset, static_cast<int>(decision.action), std::memory_order_relaxed)) {
+                    diagnostic.schedulerFirstTargetFrame.store(decision.targetFrame,
+                                                               std::memory_order_relaxed);
+                    diagnostic.schedulerFirstSkippedFrames.store(decision.skippedFrames,
+                                                                 std::memory_order_relaxed);
+                }
+            }
             if (decision.action == audio::AudioVideoScheduleAction::ClockRegression ||
                 decision.action == audio::AudioVideoScheduleAction::Invalid) {
                 state_->videoClockRegressionCount.fetch_add(1, std::memory_order_relaxed);
@@ -167,10 +194,12 @@ protected:
                 output = decision.targetFrame;
                 if (lastRequested > lastDisplayed && lastRequested != output)
                     state_->videoTargetSupersededCount.fetch_add(1, std::memory_order_relaxed);
-                state_->audioMasterLastRequested.store(output, std::memory_order_release);
-                state_->audioClockVideoCatchupSkipCount.fetch_add(decision.skippedFrames,
-                                                                  std::memory_order_relaxed);
-                state_->scheduledOutputCount.fetch_add(1, std::memory_order_relaxed);
+                if (lastRequested != output) {
+                    state_->audioMasterLastRequested.store(output, std::memory_order_release);
+                    state_->audioClockVideoCatchupSkipCount.fetch_add(decision.skippedFrames,
+                                                                      std::memory_order_relaxed);
+                    state_->scheduledOutputCount.fetch_add(1, std::memory_order_relaxed);
+                }
             }
         } else if (output < 0 && state_->playbackSchedulerEnabled.load(std::memory_order_acquire)) {
             const long long now = gpu::qpcTicks();
@@ -238,7 +267,12 @@ protected:
                     std::memory_order_relaxed);
             }
             gpu::ExactFramePairer pairer(a->buffer(), b->buffer(), state_->coordinator);
+            if (state_->p3SeekDiagnostics.active.load(std::memory_order_acquire))
+                state_->p3SeekDiagnostics.pairAttemptCount.fetch_add(1, std::memory_order_relaxed);
             const gpu::PairResult paired = pairer.tryPair(output, frame);
+            if (state_->p3SeekDiagnostics.active.load(std::memory_order_acquire))
+                state_->p3SeekDiagnostics.lastPairResult.store(static_cast<int>(paired),
+                                                               std::memory_order_relaxed);
             if (paired != gpu::PairResult::Paired) {
                 if (audioMasterEnabled) {
                     state_->videoPairWaitCount.fetch_add(1, std::memory_order_relaxed);
@@ -271,6 +305,10 @@ protected:
             return;
         }
         const long long pairReadyQpc = gpu::qpcTicks();
+        if (state_->p3SeekDiagnostics.active.load(std::memory_order_acquire) &&
+            output == state_->p3SeekDiagnostics.expectedFrame.load(std::memory_order_relaxed))
+            state_->p3SeekDiagnostics.exactPairFormedQpc.store(pairReadyQpc,
+                                                               std::memory_order_relaxed);
         if (audioMasterEnabled &&
             state_->audioMasterMarkerProbePending.exchange(false, std::memory_order_acq_rel)) {
             std::lock_guard<std::mutex> lock(state_->markerProbe.mutex);
@@ -317,6 +355,10 @@ protected:
             return;
         }
         const long long submissionQpc = gpu::qpcTicks();
+        if (state_->p3SeekDiagnostics.active.load(std::memory_order_acquire) &&
+            output == state_->p3SeekDiagnostics.expectedFrame.load(std::memory_order_relaxed))
+            state_->p3SeekDiagnostics.gpuComposeSubmittedQpc.store(submissionQpc,
+                                                                   std::memory_order_relaxed);
         if (!diagnostic &&
             !state_->actualTargetProbeStarted.exchange(true, std::memory_order_acq_rel)) {
             runActualTargetProbe(frame, size);
@@ -365,6 +407,13 @@ protected:
         }
         state_->ledger.record(frame, displayedQpc, pairReadyQpc, submissionQpc,
                               displayProjectionValid, displayDeltaMs);
+        long long pendingSeekFrame = output;
+        state_->audioMasterPendingSeekFrame.compare_exchange_strong(pendingSeekFrame, -1,
+                                                                    std::memory_order_acq_rel);
+        if (state_->p3SeekDiagnostics.active.load(std::memory_order_acquire) &&
+            output == state_->p3SeekDiagnostics.expectedFrame.load(std::memory_order_relaxed))
+            state_->p3SeekDiagnostics.displayLedgerAppendQpc.store(gpu::qpcTicks(),
+                                                                   std::memory_order_relaxed);
         if (state_->p3MeasurementActive.load(std::memory_order_acquire)) {
             std::lock_guard<std::mutex> lock(state_->p3MeasurementDisplayMutex);
             state_->p3MeasurementDisplays.push_back(

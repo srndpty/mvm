@@ -33,7 +33,8 @@ struct AudioVideoScheduleDecision {
 AudioVideoScheduleDecision scheduleVideoForAudio(std::int64_t audioMediaSample,
                                                  std::int64_t lastDisplayedFrame,
                                                  std::int64_t lastRequestedFrame,
-                                                 std::int64_t videoFrameCount);
+                                                 std::int64_t videoFrameCount,
+                                                 std::int64_t pendingSeekFrame = -1);
 
 bool isVideoAheadViolation(std::int64_t videoFrameNumber, std::int64_t audioMediaSampleAtDisplay);
 

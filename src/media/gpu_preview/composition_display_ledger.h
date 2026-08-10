@@ -10,6 +10,10 @@
 
 namespace mvm::gpu {
 
+// Phase 4 formal の3600 displayと、測定境界・終了処理付近の余裕を保持する。
+// bounded ringであることは維持し、全preview workloadで同じ固定容量を使う。
+inline constexpr size_t kCompositionDisplayLedgerCapacity = 8192;
+
 struct CompositionDisplayRecord {
     unsigned long long displaySequence = 0;
     long long pairReadyQpc = 0;

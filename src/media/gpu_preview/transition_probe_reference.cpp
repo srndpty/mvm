@@ -206,9 +206,10 @@ const Phase4ProbeExpected* Phase4CpuReferenceSet::find(long long boundary, long 
     return found == candidates.end() ? nullptr : &*found;
 }
 
-bool buildPhase4SmokeCpuReferences(const std::string& sourceA, const std::string& sourceB,
-                                   const std::string& expectedShaA, const std::string& expectedShaB,
-                                   Phase4CpuReferenceSet& output, std::string& err) {
+bool buildPhase4CpuReferences(Phase4ScheduleKind kind, const std::string& sourceA,
+                              const std::string& sourceB, const std::string& expectedShaA,
+                              const std::string& expectedShaB, Phase4CpuReferenceSet& output,
+                              std::string& err) {
     output = {};
     if (!sha256File(sourceA, output.fixtureASha256, err) ||
         !sha256File(sourceB, output.fixtureBSha256, err))
@@ -217,20 +218,26 @@ bool buildPhase4SmokeCpuReferences(const std::string& sourceA, const std::string
         err = "CPU reference fixture SHA-256が固定manifestと一致しません";
         return false;
     }
-    const std::set<long long> targets{200, 201, 202, 400, 401, 402};
+    const auto entries = phase4ScheduleEntries(kind);
+    std::set<long long> targets;
+    for (size_t i = 1; i < entries.size(); ++i)
+        for (long long frame = entries[i].boundaryOutputFrame;
+             frame <= entries[i].boundaryOutputFrame + 2; ++frame)
+            targets.insert(frame);
     std::map<long long, FrameSamples> a;
     std::map<long long, FrameSamples> b;
     if (!decodeSamples(sourceA, targets, a, err) || !decodeSamples(sourceB, targets, b, err))
         return false;
-    const auto schedule = phase4Schedule(Phase4ScheduleKind::Smoke);
+    const auto schedule = phase4Schedule(kind);
     if (!schedule) {
-        err = "canonical Phase 4 smoke scheduleを構築できません";
+        err = "canonical Phase 4 scheduleを構築できません";
         return false;
     }
-    for (long long boundary : {200LL, 400LL}) {
+    for (size_t i = 1; i < entries.size(); ++i) {
+        const long long boundary = entries[i].boundaryOutputFrame;
         const auto state = schedule->resolve(boundary);
         if (!state) {
-            err = "canonical Phase 4 smoke scheduleからprobe stateを解決できません";
+            err = "canonical Phase 4 scheduleからprobe stateを解決できません";
             return false;
         }
         for (long long frame = boundary; frame <= boundary + 2; ++frame) {

@@ -16,10 +16,18 @@ bool acceptsVideoMasterSource(VideoMasterSource source) {
 AudioVideoScheduleDecision scheduleVideoForAudio(std::int64_t audioMediaSample,
                                                  std::int64_t lastDisplayedFrame,
                                                  std::int64_t lastRequestedFrame,
-                                                 std::int64_t videoFrameCount) {
+                                                 std::int64_t videoFrameCount,
+                                                 std::int64_t pendingSeekFrame) {
     if (audioMediaSample < 0 || lastDisplayedFrame < -1 || lastRequestedFrame < -1 ||
-        videoFrameCount <= 0)
+        videoFrameCount <= 0 || pendingSeekFrame < -1)
         return {};
+    // seek completionがexact targetをpublish済みなら、最初のdisplayだけは通常再生の
+    // catch-upより先に要求する。表示後にcallerがpendingをclearする。
+    if (pendingSeekFrame >= 0) {
+        if (pendingSeekFrame >= videoFrameCount || pendingSeekFrame <= lastDisplayedFrame)
+            return {};
+        return {AudioVideoScheduleAction::Request, pendingSeekFrame, 0};
+    }
     const std::int64_t target = audioMediaSample / kSamplesPerVideoFrame;
     if (target >= videoFrameCount)
         return {AudioVideoScheduleAction::End, target, 0};

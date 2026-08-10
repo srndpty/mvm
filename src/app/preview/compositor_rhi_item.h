@@ -85,13 +85,57 @@ struct ActualTargetPixelSize {
     int height = 0;
 };
 
+// P3 integrated seek timeout時にrender threadの到達stageを凍結する診断値。
+// 判定やscheduler動作には使わない。
+struct P3SeekRenderDiagnostics {
+    std::atomic<bool> active{false};
+    std::atomic<long long> expectedFrame{-1};
+    std::atomic<long long> renderCallbackCount{0};
+    std::atomic<long long> lastRenderCallbackQpc{0};
+    std::atomic<long long> schedulerLastDisplayed{-1};
+    std::atomic<long long> schedulerLastRequested{-1};
+    std::atomic<long long> schedulerTargetFrame{-1};
+    std::atomic<int> schedulerLastAction{-1};
+    std::atomic<long long> schedulerSkippedFrames{0};
+    std::atomic<int> schedulerFirstAction{-1};
+    std::atomic<long long> schedulerFirstTargetFrame{-1};
+    std::atomic<long long> schedulerFirstSkippedFrames{0};
+    std::atomic<long long> pairAttemptCount{0};
+    std::atomic<int> lastPairResult{-1};
+    std::atomic<long long> exactPairFormedQpc{0};
+    std::atomic<long long> gpuComposeSubmittedQpc{0};
+    std::atomic<long long> gpuCompletionObservedQpc{0};
+    std::atomic<long long> displayLedgerAppendQpc{0};
+
+    void reset(long long frame) {
+        active.store(false, std::memory_order_release);
+        expectedFrame.store(frame, std::memory_order_relaxed);
+        renderCallbackCount.store(0, std::memory_order_relaxed);
+        lastRenderCallbackQpc.store(0, std::memory_order_relaxed);
+        schedulerLastDisplayed.store(-1, std::memory_order_relaxed);
+        schedulerLastRequested.store(-1, std::memory_order_relaxed);
+        schedulerTargetFrame.store(-1, std::memory_order_relaxed);
+        schedulerLastAction.store(-1, std::memory_order_relaxed);
+        schedulerSkippedFrames.store(0, std::memory_order_relaxed);
+        schedulerFirstAction.store(-1, std::memory_order_relaxed);
+        schedulerFirstTargetFrame.store(-1, std::memory_order_relaxed);
+        schedulerFirstSkippedFrames.store(0, std::memory_order_relaxed);
+        pairAttemptCount.store(0, std::memory_order_relaxed);
+        lastPairResult.store(-1, std::memory_order_relaxed);
+        exactPairFormedQpc.store(0, std::memory_order_relaxed);
+        gpuComposeSubmittedQpc.store(0, std::memory_order_relaxed);
+        gpuCompletionObservedQpc.store(0, std::memory_order_relaxed);
+        displayLedgerAppendQpc.store(0, std::memory_order_relaxed);
+        active.store(true, std::memory_order_release);
+    }
+};
+
 struct CompositorSpikeState {
     gpu::SharedD3D11Device device;
     gpu::ReadbackCounters readbacks;
     gpu::GpuCompositor compositor;
     gpu::CompositorCoordinator coordinator;
-    // formal playback の 3600 display identity を欠落なく保持する。
-    gpu::CompositionDisplayLedger ledger{4096};
+    gpu::CompositionDisplayLedger ledger{gpu::kCompositionDisplayLedgerCapacity};
 
     mutable std::mutex workerMutex;
     std::shared_ptr<gpu::SourceDecodeWorker> workerA;
@@ -109,6 +153,8 @@ struct CompositorSpikeState {
     std::atomic<long long> audioMasterVideoFrameCount{0};
     std::atomic<long long> audioMasterLastRequested{-1};
     std::atomic<long long> audioMasterLastDisplayed{-1};
+    // integrated seekの最初のexact frame。generation publish後、表示完了時だけclearする。
+    std::atomic<long long> audioMasterPendingSeekFrame{-1};
     std::atomic<long long> audioClockVideoStaleDiscardA{0};
     std::atomic<long long> audioClockVideoStaleDiscardB{0};
     std::atomic<long long> audioClockVideoCatchupSkipCount{0};
@@ -118,13 +164,15 @@ struct CompositorSpikeState {
     std::atomic<long long> videoClockRegressionCount{0};
     std::atomic<long long> videoQpcMasterFallbackCount{0};
     std::atomic<bool> audioMasterMarkerProbePending{false};
+    P3SeekRenderDiagnostics p3SeekDiagnostics;
 
     // Phase 4 / B。driver は measurement 開始前に GUI thread が publish し、
     // 以後は変更しない。phase4Enabled の release/acquire が publish を見せる。
     std::shared_ptr<gpu::Phase4CompositionDriver> phase4Driver;
     std::atomic<bool> phase4Enabled{false};
     std::atomic<long long> phase4AdoptionFailureCount{0};
-    gpu::TransitionProbeSelector transitionProbeSelector{{200, 400}};
+    // controllerがcanonical scheduleからworkload開始前に一度だけ設定する。
+    gpu::TransitionProbeSelector transitionProbeSelector;
     gpu::AsyncTransitionProbeReadback transitionProbeReadback;
     std::atomic<bool> transitionProbeReady{false};
     std::atomic<long long> transitionProbeIssueFailureCount{0};

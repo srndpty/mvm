@@ -340,7 +340,8 @@ AudioSeekCompletion AudioDecodeWorker::executeSeek(const AudioSeekTicket& ticket
             return completion;
         }
         completion.completed = true;
-        completion.latencyMs = qpcMilliseconds(begin, qpcNow());
+        completion.readyQpc = qpcNow();
+        completion.latencyMs = qpcMilliseconds(begin, completion.readyQpc);
         std::lock_guard lock(mutex_);
         metrics_.discardedPrerollSamples += completion.discardedPrerollSamples;
         return completion;

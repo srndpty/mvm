@@ -139,6 +139,7 @@ try {
         Contract-Fail 'display ledgerが空または件数不整合です'
     }
     $last = -1L; $unique = 0L; $skipped = 0L; $nonIncreasing = 0L
+    $rawAvAbs = [Collections.Generic.List[double]]::new()
     foreach ($record in $ledger) {
         $frame = Integer $record 'output_frame'
         if ($frame -lt 0 -or $frame -ge 600) { Contract-Fail "ledger frameが[0,600)外です: $frame" }
@@ -146,6 +147,8 @@ try {
             (Integer $record 'composition_epoch') -ne (Expected-Epoch $frame)) {
             Contract-Fail "ledger state/epochが違います: frame $frame"
         }
+        [void](Boolean $record 'application_av_projection_valid' $true)
+        $rawAvAbs.Add([Math]::Abs((Number $record 'application_av_delta_ms')))
         $sources = Array $record 'sources'
         if ($sources.Count -ne 2) { Contract-Fail "frame $frame のsource数が2ではありません" }
         $a = $sources[0]; $b = $sources[1]
@@ -177,6 +180,16 @@ try {
         (Integer $raw 'measurement_non_increasing_display_count') -ne $nonIncreasing) {
         Contract-Fail 'producer display countがledger再計算値と違います'
     }
+    $recomputedFps = $unique / 10.0
+    $recomputedDrop = $skipped / 600.0
+    if ([Math]::Abs((Number $raw 'effective_video_fps') - $recomputedFps) -gt 0.000000001 -or
+        [Math]::Abs((Number $raw 'drop_rate') - $recomputedDrop) -gt 0.000000001) {
+        Contract-Fail 'producer fps/dropがledger再計算値と違います'
+    }
+    if ($rawAvAbs.Count -ne $unique) { Contract-Fail 'raw A/V sample件数がdisplay件数と違います' }
+    $sortedAv = @($rawAvAbs | Sort-Object)
+    $rawAvP95 = [double]$sortedAv[[Math]::Ceiling($sortedAv.Count * 0.95) - 1]
+    $rawAvMax = [double]$sortedAv[-1]
 
     $lags = Array $raw 'transition_activation_lag_frames'
     if ($lags.Count -ne 2) { Contract-Fail 'activation lag rawが2件ではありません' }
@@ -298,8 +311,12 @@ try {
             'measurement_mixed_pair_count','measurement_mixed_generation_count',
             'measurement_stale_composition_epoch_count','measurement_video_ahead_violation_count',
             'measurement_clock_regression_count','measurement_video_qpc_master_fallback_count',
-            'measurement_audio_clock_query_failure_count','cpu_full_frame_readback_count',
-            'full_frame_gpu_copy_count','software_video_fallback_count','device_lost_count',
+            'measurement_audio_clock_query_failure_count','measurement_scheduler_deadline_drop_count',
+            'measurement_render_failure_count','cpu_full_frame_readback_count',
+            'full_frame_gpu_copy_count','software_video_fallback_count','untracked_submission_count',
+            'completion_poll_failure_count','retirement_depth_after_drain',
+            'payloads_released_before_completion','retirement_timeout_count',
+            'partial_gpu_issue_failure_count','device_lost_count',
             'lifecycle_violation_count','audio_render_thread_join_leak','audio_decode_thread_join_leak')) {
         Zero $raw $name
     }
@@ -336,15 +353,13 @@ try {
         if ((Property $start $name) -ne (Property $end $name)) { Contract-Fail "display environmentが変化しました: $name" }
     }
 
-    if ((Number $raw 'effective_video_fps') -lt 55.0 -or (Number $raw 'drop_rate') -gt 0.02) {
-        Contract-Fail 'playback fps/drop thresholdを満たしません'
-    }
     $av = Property $raw 'application_av_delta_abs_ms'
-    if ((Number $av 'p95') -gt 20.000 -or (Number $av 'max') -gt 33.334) {
-        Contract-Fail 'application A/V thresholdを満たしません'
+    if ((Integer $av 'count') -ne $unique -or
+        [Math]::Abs((Number $av 'p95') - $rawAvP95) -gt 0.000000001 -or
+        [Math]::Abs((Number $av 'max') - $rawAvMax) -gt 0.000000001) {
+        Contract-Fail 'producer A/V summaryがraw display再計算値と違います'
     }
-
-    Write-Host ("[p4-smoke] PASS fps={0:N2} drop={1:P2} av_p95={2:N3}ms av_max={3:N3}ms probes=4" -f `
+    Write-Host ("[p4-smoke] PASS correctness/path fps={0:N2} drop={1:P2} av_p95={2:N3}ms av_max={3:N3}ms probes=4（performance値はdiagnostic）" -f `
         (Number $raw 'effective_video_fps'), (Number $raw 'drop_rate'), (Number $av 'p95'), (Number $av 'max'))
     Write-Host '[p4-smoke] formal_verdict=NOT_RUN（Phase 4 formal PASSではありません）'
     exit 0

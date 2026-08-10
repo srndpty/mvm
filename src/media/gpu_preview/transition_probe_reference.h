@@ -13,6 +13,8 @@
 
 namespace mvm::gpu {
 
+enum class Phase4ScheduleKind;
+
 std::optional<Rgba8> phase4ExpectedProbe(CompositionStateId state, TransitionProbePoint point,
                                          Rgba8 aTl, Rgba8 aBr, Rgba8 bCenter);
 
@@ -34,9 +36,10 @@ struct Phase4CpuReferenceSet {
 };
 
 // Phase 4 harness専用。software decodeしたplanar YUVだけを入力に期待値を作る。
-bool buildPhase4SmokeCpuReferences(const std::string& sourceA, const std::string& sourceB,
-                                   const std::string& expectedShaA, const std::string& expectedShaB,
-                                   Phase4CpuReferenceSet& output, std::string& err);
+bool buildPhase4CpuReferences(Phase4ScheduleKind kind, const std::string& sourceA,
+                              const std::string& sourceB, const std::string& expectedShaA,
+                              const std::string& expectedShaB, Phase4CpuReferenceSet& output,
+                              std::string& err);
 
 } // namespace mvm::gpu
 

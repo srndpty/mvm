@@ -22,9 +22,6 @@
 namespace mvm::app {
 namespace {
 
-constexpr auto kScheduleKind = gpu::Phase4ScheduleKind::Smoke;
-// smoke schedule の boundary。frame 0 は initial state なので transition ではない。
-constexpr long long kBoundaries[] = {200, 400};
 constexpr int kRawSchemaVersion = 1;
 constexpr const char* kFixtureASha256 =
     "d398114c38806f39670df51dfabb0095d462cbc35286ea1467901d4007cf0308";
@@ -119,7 +116,8 @@ void P4CompositionController::attach(CompositorRhiItem* item) {
 }
 
 bool P4CompositionController::validateSchedule() {
-    const std::string canonical = gpu::phase4CanonicalScheduleString(kScheduleKind);
+    const auto kind = config_.workload;
+    const std::string canonical = gpu::phase4CanonicalScheduleString(kind);
     if (canonical.empty()) {
         startShutdown(QStringLiteral("canonical schedule 文字列を構築できません"), true);
         return false;
@@ -130,17 +128,24 @@ bool P4CompositionController::validateSchedule() {
                                                      QCryptographicHash::Sha256)
                                 .toHex());
     const QString expected =
-        QString::fromLatin1(gpu::phase4ExpectedScheduleSha256(kScheduleKind));
+        QString::fromLatin1(gpu::phase4ExpectedScheduleSha256(kind));
     if (canonicalScheduleSha256_ != expected) {
         startShutdown(QStringLiteral("canonical schedule SHA-256 が freeze 値と一致しません: ") +
                           canonicalScheduleSha256_,
                       true);
         return false;
     }
-    scheduleEntries_ = gpu::phase4ScheduleEntries(kScheduleKind);
-    schedule_ = gpu::phase4Schedule(kScheduleKind);
+    scheduleEntries_ = gpu::phase4ScheduleEntries(kind);
+    schedule_ = gpu::phase4Schedule(kind);
     if (!schedule_) {
-        startShutdown(QStringLiteral("smoke schedule が validation を通りません"), true);
+        startShutdown(QStringLiteral("選択した固定scheduleが validation を通りません"), true);
+        return false;
+    }
+    transitionBoundaries_.clear();
+    for (size_t i = 1; i < scheduleEntries_.size(); ++i)
+        transitionBoundaries_.push_back(scheduleEntries_[i].boundaryOutputFrame);
+    if (!state_->transitionProbeSelector.configure(transitionBoundaries_)) {
+        startShutdown(QStringLiteral("transition boundaryをimmutable設定できません"), true);
         return false;
     }
     return true;
@@ -227,10 +232,9 @@ bool P4CompositionController::openPipelines() {
 
 bool P4CompositionController::prepareCpuReferences() {
     std::string error;
-    if (!gpu::buildPhase4SmokeCpuReferences(config_.sourceA.toUtf8().constData(),
-                                            config_.sourceB.toUtf8().constData(),
-                                            kFixtureASha256, kFixtureBSha256, cpuReferences_,
-                                            error)) {
+    if (!gpu::buildPhase4CpuReferences(config_.workload, config_.sourceA.toUtf8().constData(),
+                                       config_.sourceB.toUtf8().constData(), kFixtureASha256,
+                                       kFixtureBSha256, cpuReferences_, error)) {
         startShutdown(QString::fromStdString(error), true);
         return false;
     }
@@ -380,7 +384,10 @@ bool P4CompositionController::startAtFrameZero(bool measurementStart) {
                                 state_->videoAheadViolationCount.load(),
                                 state_->videoClockRegressionCount.load(),
                                 state_->videoQpcMasterFallbackCount.load(),
-                                static_cast<long long>(audioClock_->snapshot().clockQueryFailureCount)};
+                                static_cast<long long>(audioClock_->snapshot().clockQueryFailureCount),
+                                state_->audioClockVideoCatchupSkipCount.load(),
+                                state_->schedulerDeadlineDropCount.load(),
+                                state_->renderFailureCount.load()};
         measurementBaselineEpoch_ = state_->coordinator.compositionEpoch();
         baselineGenerationA_ = completionA.sourceGeneration;
         baselineGenerationB_ = completionB.sourceGeneration;
@@ -580,7 +587,7 @@ void P4CompositionController::tick() {
             state_->p3MeasurementActive.store(false, std::memory_order_release);
             state_->phase4Enabled.store(false, std::memory_order_release);
             state_->audioMasterSchedulerEnabled.store(false, std::memory_order_release);
-            startShutdown(QStringLiteral("10 秒 integration sanity 区間完了"), false);
+            startShutdown(QStringLiteral("固定 measurement 区間完了"), false);
         }
         break;
     }
@@ -623,6 +630,16 @@ bool P4CompositionController::writeMetrics() const {
     const auto records = firstMeasurementDisplaySeen_
                              ? state_->ledger.recordsAfter(measurementLedgerBaseline_)
                              : std::vector<gpu::CompositionDisplayRecord>{};
+    const unsigned long long measurementLatestSequence = state_->ledger.baseline();
+    const unsigned long long actualMeasurementRecordCount =
+        measurementLatestSequence >= measurementLedgerBaseline_
+            ? measurementLatestSequence - measurementLedgerBaseline_
+            : 0;
+    const bool ledgerRetentionComplete =
+        measurementLatestSequence >= measurementLedgerBaseline_ &&
+        records.size() == static_cast<size_t>(actualMeasurementRecordCount) &&
+        (records.empty() ||
+         records.front().displaySequence == measurementLedgerBaseline_ + 1);
     std::vector<gpu::TransitionProbeResult> probeResults;
     {
         std::lock_guard<std::mutex> lock(state_->transitionProbeResultMutex);
@@ -655,7 +672,7 @@ bool P4CompositionController::writeMetrics() const {
                              record.compositionEpoch == expectedEpoch;
         if (!stateOk) {
             ++stateMismatch;
-            for (const long long boundary : kBoundaries)
+            for (const long long boundary : transitionBoundaries_)
                 if (record.outputFrameNumber >= boundary && expectedState &&
                     record.compositionState != *expectedState)
                     ++oldStateAfterBoundary;
@@ -705,7 +722,7 @@ bool P4CompositionController::writeMetrics() const {
     QJsonArray boundaryJson;
     QJsonArray activationLagJson;
     bool activationLagInRange = true;
-    for (const long long boundary : kBoundaries) {
+    for (const long long boundary : transitionBoundaries_) {
         long long firstAfter = -1;
         const gpu::CompositionDisplayRecord* found = nullptr;
         for (const auto& record : records)
@@ -813,20 +830,17 @@ bool P4CompositionController::writeMetrics() const {
     const bool counterSelfConsistent =
         driverCounters.resolveCount ==
         driverCounters.adoptionCount + driverCounters.noopCount + driverCounters.rejectCount;
-    std::vector<double> absoluteDeltas = measurementDeltas;
-    for (double& value : absoluteDeltas)
-        value = std::abs(value);
-    std::sort(absoluteDeltas.begin(), absoluteDeltas.end());
-    const double avAbsP95 = nearestRank(absoluteDeltas, 0.95);
-    const double avAbsMax = absoluteDeltas.empty() ? 0.0 : absoluteDeltas.back();
     const double effectiveFps = static_cast<double>(uniqueDisplayed) / config_.durationSeconds;
     const double dropRate = static_cast<double>(skipped) / static_cast<double>(requiredFrames);
-    // producer側の完了判定であり、smoke PASS authorityではない。
+    // producer側の構造的な完了判定であり、performance PASS authorityではない。
+    // rawを正常に確定できたかだけを表し、performance thresholdはformal checkerが判定する。
     const bool integrationSanityPass =
         exitCode_ == 0 && displayPreflightPassed_ && warmupComplete_ &&
-        firstMeasurementDisplaySeen_ && counterSelfConsistent && !records.empty() &&
-        firstFrame == 0 && nonIncreasing == 0 && uniqueDisplayed + skipped == requiredFrames &&
-        driverCounters.adoptionCount == 2 && driverCounters.epochIncrementCount == 2 &&
+        firstMeasurementDisplaySeen_ && counterSelfConsistent && ledgerRetentionComplete &&
+        !records.empty() && firstFrame == 0 && lastFrame >= 0 && lastFrame < requiredFrames &&
+        nonIncreasing == 0 && uniqueDisplayed + skipped == requiredFrames &&
+        driverCounters.adoptionCount == static_cast<long long>(transitionBoundaries_.size()) &&
+        driverCounters.epochIncrementCount == static_cast<long long>(transitionBoundaries_.size()) &&
         driverCounters.rejectCount == 0 && driverCounters.unresolvedFrameCount == 0 &&
         driverCounters.sourceGenerationChangeDueToLayoutCount == 0 && stateMismatch == 0 &&
         oldStateAfterBoundary == 0 && pairIdentityViolation == 0 && generationMismatch == 0 &&
@@ -838,16 +852,21 @@ bool P4CompositionController::writeMetrics() const {
         state_->phase4AdoptionFailureCount.load() == 0 && state_->deviceLostCount.load() == 0 &&
         state_->lifecycleOrderViolationCount.load() == 0 &&
         state_->readbacks.fullFrameReadbacks() == 0 && compositor.fullFrameGpuCopyCount == 0 &&
-        probeResults.size() == 4 && probeMismatch == 0 && probeCounters.issuedCount == 4 &&
-        probeCounters.completedCount == 4 &&
+        compositor.untrackedSubmissionCount == 0 &&
+        compositor.completionPollFailureCount == 0 &&
+        compositor.retirementDepthAfterDrain == 0 &&
+        compositor.payloadsReleasedBeforeCompletion == 0 &&
+        compositor.retirementTimeoutCount == 0 &&
+        compositor.partialGpuIssueFailureCount == 0 &&
+        probeResults.size() == transitionBoundaries_.size() * 2 && probeMismatch == 0 &&
+        probeCounters.issuedCount == static_cast<long long>(transitionBoundaries_.size() * 2) &&
+        probeCounters.completedCount == static_cast<long long>(transitionBoundaries_.size() * 2) &&
         probeCounters.renderThreadBlockingWaitCount == 0 &&
         probeCounters.untrackedSubmissionCount == 0 &&
         probeCounters.completionFailureCount == 0 &&
         probeCounters.retirementTimeoutCount == 0 &&
         probeCounters.pendingAfterDrainCount == 0 &&
         state_->transitionProbeIssueFailureCount.load() == 0 &&
-        effectiveFps >= 55.0 && dropRate <= 0.02 && avAbsP95 <= 20.0 &&
-        avAbsMax <= 33.334 &&
         a.softwareFrameRejectCount == 0 && b.softwareFrameRejectCount == 0 &&
         sink.audioRenderThreadJoinLeak == 0 && audioDecoder.audioDecodeThreadJoinLeak == 0 &&
         a.joined && b.joined && sink.joined && audioDecoder.joined &&
@@ -855,13 +874,17 @@ bool P4CompositionController::writeMetrics() const {
         sameDisplayEnvironment(displayEnvironmentStart_, displayEnvironmentEnd_);
 
     QJsonObject root{
-        {"schema", "mvm-p4-smoke-1"},
+        {"schema", config_.workload == gpu::Phase4ScheduleKind::Formal ? "mvm-p4-formal-1"
+                                                                       : "mvm-p4-smoke-1"},
         {"schema_version", kRawSchemaVersion},
-        {"contract_version", "P4-C-smoke-frozen"},
-        {"phase", "P4-C"},
-        {"schedule_kind", gpu::phase4ScheduleKindName(kScheduleKind)},
+        {"contract_version", config_.workload == gpu::Phase4ScheduleKind::Formal
+                                 ? "P4-formal-frozen"
+                                 : "P4-C-smoke-frozen"},
+        {"phase", config_.workload == gpu::Phase4ScheduleKind::Formal ? "P4-D" : "P4-C"},
+        {"schedule_kind", gpu::phase4ScheduleKindName(config_.workload)},
         // Phase 4 formal / smoke の contract verdict はここでは出さない。
         {"formal_verdict", "NOT_RUN"},
+        {"process_exit_code", exitCode_},
         {"smoke_contract_verdict", "NOT_RUN"},
         {"producer_complete", integrationSanityPass},
         {"detail", shutdownReason_},
@@ -898,6 +921,10 @@ bool P4CompositionController::writeMetrics() const {
         {"transition_activation_lag_frames", activationLagJson},
         {"measurement_display_ledger", ledgerJson},
         {"measurement_display_ledger_count", static_cast<qint64>(records.size())},
+        {"display_ledger_capacity", static_cast<qint64>(state_->ledger.capacity())},
+        {"measurement_actual_display_record_count",
+         static_cast<qint64>(actualMeasurementRecordCount)},
+        {"measurement_display_ledger_retention_complete", ledgerRetentionComplete},
         {"transition_pixel_probe_status", "COMPLETE"},
         {"transition_probe_records", probeJson},
         {"transition_probe_checked_count", static_cast<qint64>(probeResults.size())},
@@ -916,7 +943,8 @@ bool P4CompositionController::writeMetrics() const {
         {"cpu_reference_pixel_status", "PRECOMPUTED"},
         {"fixture_a_sha256", QString::fromStdString(cpuReferences_.fixtureASha256)},
         {"fixture_b_sha256", QString::fromStdString(cpuReferences_.fixtureBSha256)},
-        {"cpu_reference_candidate_frame_count", 6},
+        {"cpu_reference_candidate_frame_count",
+         static_cast<qint64>(transitionBoundaries_.size() * 3)},
         {"cpu_reference_candidate_probe_count",
          static_cast<qint64>(cpuReferences_.candidates.size())},
         {"measurement_video_first_frame", firstFrame},
@@ -944,6 +972,13 @@ bool P4CompositionController::writeMetrics() const {
         {"measurement_clock_regression_count", clockRegression},
         {"measurement_video_qpc_master_fallback_count", qpcFallback},
         {"measurement_audio_clock_query_failure_count", audioClockQueryFailure},
+        {"measurement_audio_clock_catchup_skip_count",
+         delta(state_->audioClockVideoCatchupSkipCount.load(), measurementBaseline_.catchupSkip)},
+        {"measurement_scheduler_deadline_drop_count",
+         delta(state_->schedulerDeadlineDropCount.load(),
+               measurementBaseline_.schedulerDeadlineDrop)},
+        {"measurement_render_failure_count",
+         delta(state_->renderFailureCount.load(), measurementBaseline_.renderFailure)},
         {"application_av_delta_ms", deltaDistribution(measurementDeltas, false)},
         {"application_av_delta_abs_ms", deltaDistribution(measurementDeltas, true)},
         {"application_av_projection_failure_count",
@@ -957,6 +992,13 @@ bool P4CompositionController::writeMetrics() const {
         {"baseline_resource_epoch_b", static_cast<qint64>(baselineResourceEpochB_.value)},
         {"cpu_full_frame_readback_count", state_->readbacks.fullFrameReadbacks()},
         {"full_frame_gpu_copy_count", compositor.fullFrameGpuCopyCount},
+        {"untracked_submission_count", compositor.untrackedSubmissionCount},
+        {"completion_poll_failure_count", compositor.completionPollFailureCount},
+        {"retirement_depth_after_drain",
+         static_cast<qint64>(compositor.retirementDepthAfterDrain)},
+        {"payloads_released_before_completion", compositor.payloadsReleasedBeforeCompletion},
+        {"retirement_timeout_count", compositor.retirementTimeoutCount},
+        {"partial_gpu_issue_failure_count", compositor.partialGpuIssueFailureCount},
         {"software_video_fallback_count", a.softwareFrameRejectCount + b.softwareFrameRejectCount},
         {"device_lost_count", state_->deviceLostCount.load()},
         {"lifecycle_violation_count", state_->lifecycleOrderViolationCount.load()},

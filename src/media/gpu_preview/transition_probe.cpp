@@ -16,6 +16,16 @@ const char* transitionProbePointName(TransitionProbePoint point) {
 TransitionProbeSelector::TransitionProbeSelector(std::vector<long long> boundaries)
     : boundaries_(std::move(boundaries)), selected_(boundaries_.size(), false) {}
 
+bool TransitionProbeSelector::configure(std::vector<long long> boundaries) {
+    if (selectedCount_ != 0 || !boundaries_.empty() || boundaries.empty() ||
+        !std::is_sorted(boundaries.begin(), boundaries.end()) || boundaries.front() <= 0 ||
+        std::adjacent_find(boundaries.begin(), boundaries.end()) != boundaries.end())
+        return false;
+    boundaries_ = std::move(boundaries);
+    selected_.assign(boundaries_.size(), false);
+    return true;
+}
+
 std::optional<long long> TransitionProbeSelector::select(long long actualOutputFrame) {
     for (size_t i = 0; i < boundaries_.size(); ++i) {
         if (!selected_[i] && actualOutputFrame >= boundaries_[i]) {

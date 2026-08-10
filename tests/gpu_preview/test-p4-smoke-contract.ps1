@@ -87,8 +87,13 @@ $raw = [ordered]@{
     measurement_mixed_pair_count=0;measurement_mixed_generation_count=0
     measurement_stale_composition_epoch_count=0;measurement_video_ahead_violation_count=0
     measurement_clock_regression_count=0;measurement_video_qpc_master_fallback_count=0
-    measurement_audio_clock_query_failure_count=0;cpu_full_frame_readback_count=0
-    full_frame_gpu_copy_count=0;software_video_fallback_count=0;device_lost_count=0
+    measurement_audio_clock_query_failure_count=0;measurement_audio_clock_catchup_skip_count=0
+    measurement_scheduler_deadline_drop_count=0;measurement_render_failure_count=0
+    cpu_full_frame_readback_count=0
+    full_frame_gpu_copy_count=0;software_video_fallback_count=0;untracked_submission_count=0
+    completion_poll_failure_count=0;retirement_depth_after_drain=0
+    payloads_released_before_completion=0;retirement_timeout_count=0
+    partial_gpu_issue_failure_count=0;device_lost_count=0
     lifecycle_violation_count=0;audio_render_thread_join_leak=0;audio_decode_thread_join_leak=0
     video_worker_a_joined=$true;video_worker_b_joined=$true;teardown_success=$true
     final_report_after_teardown=$true;shutdown_workers_joined_before_teardown=$true
@@ -101,8 +106,30 @@ $raw = [ordered]@{
     application_av_delta_abs_ms=@{count=600;p50=0.0;p95=0.0;p99=0.0;min=0.0;max=0.0}
 }
 
+function Set-PerformanceDiagnosticOnly {
+    # transition/probe frameを避けてledger自体から51 frameを除く。
+    # fps/dropとA/Vの旧performance thresholdをすべて超えるが、summaryはrawと一致させる。
+    $raw.measurement_display_ledger = @($raw.measurement_display_ledger |
+        Where-Object { $_.output_frame -lt 500 -or $_.output_frame -gt 550 })
+    foreach ($record in @($raw.measurement_display_ledger | Select-Object -First 28)) {
+        $record.application_av_delta_ms = 40.0
+    }
+    $unique = 549
+    $skipped = 51
+    $raw.measurement_display_ledger_count = $unique
+    $raw.measurement_video_displayed_unique_count = $unique
+    $raw.measurement_video_skipped_frame_count = $skipped
+    $raw.composition_state_resolve_count = $unique
+    $raw.composition_state_noop_count = $unique - 2
+    $raw.effective_video_fps = $unique / 10.0
+    $raw.drop_rate = $skipped / 600.0
+    $raw.measurement_audio_clock_catchup_skip_count = $skipped
+    $raw.application_av_delta_abs_ms = @{count=$unique;p50=0.0;p95=40.0;p99=40.0;min=0.0;max=40.0}
+}
+
 switch ($Case) {
     Good {}
+    SmokePerformanceDiagnosticOnly { Set-PerformanceDiagnosticOnly }
     WrongProbeRgb { $raw.transition_probe_records[0].actual_rgba[0] += 4 }
     WrongProbeAlpha { $raw.transition_probe_records[0].actual_rgba[3] = 254 }
     ProbeMissing { $raw.transition_probe_records = @($raw.transition_probe_records | Select-Object -Skip 1); $raw.transition_probe_checked_count=3 }
@@ -132,12 +159,16 @@ switch ($Case) {
     TeardownBeforeJoin { $raw.shutdown_workers_joined_before_teardown=$false }
     MissingBoolean { $raw.Remove('teardown_success') }
     StringFalseBoolean { $raw.teardown_success='false' }
+    AvRawBadSummaryGood { $raw.measurement_display_ledger[0].application_av_delta_ms=40.0 }
+    SmokeFpsSummaryMismatch { $raw.effective_video_fps=59.0 }
+    SmokeDropSummaryMismatch { $raw.drop_rate=0.01 }
+    SmokeAvSummaryMismatch { $raw.application_av_delta_abs_ms.max=1.0 }
     default { throw "未知caseです: $Case" }
 }
 $raw | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $json -Encoding utf8
 & $Checker -Json $json
 $actualExit = $LASTEXITCODE
-$expectedExit = if ($Case -eq 'Good') { 0 } else { 3 }
+$expectedExit = if ($Case -in @('Good','SmokePerformanceDiagnosticOnly')) { 0 } else { 3 }
 if ($actualExit -ne $expectedExit) {
     Write-Error "checker終了コードが違います: case=$Case actual=$actualExit expected=$expectedExit"
     exit 1

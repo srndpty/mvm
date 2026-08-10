@@ -7,6 +7,7 @@
 #include "media/audio_preview/wasapi_audio_sink.h"
 
 #include <QElapsedTimer>
+#include <QJsonObject>
 #include <QObject>
 #include <QTimer>
 
@@ -81,6 +82,7 @@ private:
     bool openPipelines();
     bool startAtFrame(long long targetFrame, bool measurementStart = false);
     bool pollFirstDisplay();
+    void captureSeekTimeoutStageEvidence();
     DisplayEnvironmentSnapshot captureDisplayEnvironment() const;
     void startShutdown(const QString& reason, bool failure);
     bool writeMetrics() const;
@@ -123,6 +125,10 @@ private:
     long long seekGenerationMismatchCount_ = 0;
     long long seekStaleCompletionCount_ = 0;
     QString seekTimeoutDiagnostic_;
+    QJsonObject seekTimeoutStageEvidence_;
+    long long seekStaleABaseline_ = 0;
+    long long seekStaleBBaseline_ = 0;
+    long long seekPairWaitBaseline_ = 0;
     DisplayEnvironmentSnapshot displayEnvironmentStart_;
     DisplayEnvironmentSnapshot displayEnvironmentEnd_;
     bool displayPreflightPassed_ = false;
