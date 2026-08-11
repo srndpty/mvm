@@ -471,11 +471,10 @@ void engineFacadeAndEvents() {
     require(engine.status().state == PreviewEngineState::ReadyPaused,
             "private render-ready transitionが違います");
 
-    requireFailure(engine.addSource({"movie.mp4", true, false}),
-                   PreviewErrorCategory::UnsupportedCapability,
-                   "P5-Bでdummy source IDを発行しました");
-    requireFailure(engine.play(), PreviewErrorCategory::UnsupportedCapability,
-                   "P5-Bでfake Playingへ遷移しました");
+    requireFailure(engine.addSource({"movie.mp4", true, false}), PreviewErrorCategory::InvalidState,
+                   "native deviceなしでsource IDを発行しました");
+    requireFailure(engine.play(), PreviewErrorCategory::InvalidState,
+                   "source/compositionなしでPlayingへ遷移しました");
 
     require(engine.detachEventSink(), "sink detachに失敗しました");
     require(engine.detachEventSink(), "sink detachがidempotentではありません");
@@ -802,6 +801,49 @@ void safeDestruction() {
     }
 }
 
+void p5cControlAndRenderNegatives() {
+    PreviewEngine engine;
+    auto dispatcher = std::make_shared<ManualDispatcher>();
+    require(engine.initialize(qualifiedConfig(), dispatcher), "initializeに失敗しました");
+    requireFailure(engine.play(), PreviewErrorCategory::InvalidState,
+                   "render attach前のplayを受理しました");
+    requireFailure(engine.addSource({"movie.mp4", true, false}), PreviewErrorCategory::InvalidState,
+                   "ReadyPaused前のaddSourceを受理しました");
+    require(PreviewRenderPort::bindRenderThread(engine), "render thread bindに失敗しました");
+    requireFailure(PreviewRenderPort::bindRenderThread(engine), PreviewErrorCategory::InvalidState,
+                   "duplicate render thread bindを受理しました");
+
+    std::optional<Result<void>> wrongThreadAttach;
+    std::thread wrongThread([&] {
+        wrongThreadAttach.emplace(
+            PreviewRenderPort::attachNativeD3D11Device(engine, nullptr, nullptr));
+    });
+    wrongThread.join();
+    require(wrongThreadAttach.has_value(), "wrong-thread attach resultがありません");
+    requireFailure(*wrongThreadAttach, PreviewErrorCategory::InvalidState,
+                   "wrong-thread native attachを受理しました");
+    requireFailure(PreviewRenderPort::attachNativeD3D11Device(engine, nullptr, nullptr),
+                   PreviewErrorCategory::DeviceFailure, "null native attachを受理しました");
+
+    require(PreviewRenderPort::attachLogicalDevice(engine), "logical test seamに失敗しました");
+    requireFailure(engine.addSource({"movie.mp4", true, true}),
+                   PreviewErrorCategory::UnsupportedCapability,
+                   "audioEnabled sourceを受理しました");
+    requireFailure(engine.submitComposition(std::make_shared<const CompositionSnapshot>()),
+                   PreviewErrorCategory::CompositionFailure, "empty compositionを受理しました");
+    requireFailure(engine.submitComposition(snapshot({layer(99)})),
+                   PreviewErrorCategory::InvalidSource, "unknown sourceを受理しました");
+    requireFailure(engine.submitComposition(snapshot({layer(1), layer(2)})),
+                   PreviewErrorCategory::UnsupportedCapability,
+                   "P5-Cでtwo-layer product submissionを受理しました");
+    requireFailure(engine.pause(), PreviewErrorCategory::InvalidState,
+                   "Playing以外のpauseを受理しました");
+    requireFailure(engine.seek({0}), PreviewErrorCategory::UnsupportedCapability,
+                   "P5-Cでseekを受理しました");
+    require(engine.requestShutdown(), "shutdown requestに失敗しました");
+    require(PreviewRenderPort::completeTeardown(engine), "teardown completionに失敗しました");
+}
+
 void unsafeDestructionProcess() {
     std::set_terminate([] { std::_Exit(86); });
     PreviewEngine engine;
@@ -832,6 +874,7 @@ int main(int argc, char** argv) {
         {"mailbox saturation lifecycle", mailboxSaturationLifecycle},
         {"dispatcher retention", dispatcherRetention},
         {"safe destruction", safeDestruction},
+        {"P5-C control / render negatives", p5cControlAndRenderNegatives},
     };
 
     try {

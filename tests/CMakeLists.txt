@@ -739,6 +739,27 @@ mvm_add_test(preview_engine_p5b_public_tokens
             -PublicDir "${CMAKE_SOURCE_DIR}/src/preview_engine"
     PROPERTIES LABELS p5b)
 
+add_executable(mvm_test_p5c_native_attach
+    preview_engine/test_p5c_native_attach.cpp)
+target_link_libraries(mvm_test_p5c_native_attach PRIVATE
+    mvm::preview_engine d3d11 mvm::warnings)
+
+set(_p5c_fixture_a "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4")
+if(MVM_ENABLE_QT AND EXISTS "${_p5c_fixture_a}")
+    mvm_add_test(preview_engine_p5c_product_smoke
+        COMMAND mvm_p5c_preview_smoke "${_p5c_fixture_a}"
+        PROPERTIES LABELS p5c TIMEOUT 40)
+    mvm_add_test(preview_engine_p5c_gpu_drain_failure
+        COMMAND mvm_p5c_preview_smoke "${_p5c_fixture_a}" --fault-gpu-drain
+        PROPERTIES LABELS p5c TIMEOUT 40)
+    mvm_add_test(preview_engine_p5c_device_fatal
+        COMMAND mvm_p5c_preview_smoke "${_p5c_fixture_a}" --fault-device
+        PROPERTIES LABELS p5c TIMEOUT 40)
+    mvm_add_test(preview_engine_p5c_shutdown_source_startup
+        COMMAND mvm_p5c_preview_smoke "${_p5c_fixture_a}" --shutdown-source-startup
+        PROPERTIES LABELS p5c TIMEOUT 40)
+endif()
+
 add_executable(mvm_test_gpu_pure gpu_preview/test_gpu_pure.cpp)
 target_link_libraries(mvm_test_gpu_pure PRIVATE mvm::gpu_preview mvm::warnings)
 # mvm_add_test を使う。ucrt64in を PATH に入れないと

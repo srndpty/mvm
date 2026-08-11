@@ -1,6 +1,13 @@
+#include "media/gpu_preview/composed_frame.h"
+#include "media/gpu_preview/d3d11_shared_device.h"
+#include "media/gpu_preview/gpu_compositor.h"
+#include "media/gpu_preview/readback_counter.h"
+#include "media/gpu_preview/source_decode_worker.h"
+#include "media/gpu_preview/source_registry.h"
 #include "preview_engine/preview_engine_internal.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <mutex>
@@ -8,6 +15,7 @@
 #include <set>
 #include <thread>
 #include <type_traits>
+#include <unordered_set>
 #include <utility>
 
 namespace mvm::preview {
@@ -374,6 +382,15 @@ CompositionAcceptanceState::latestAcceptedSnapshot() const {
 struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     Impl() : controlThread(std::this_thread::get_id()) {}
 
+    ~Impl() {
+        if (!shutdownThread.joinable())
+            return;
+        if (shutdownThread.get_id() == std::this_thread::get_id())
+            shutdownThread.detach();
+        else
+            shutdownThread.join();
+    }
+
     mutable std::mutex mutex;
     internal::PreviewStateMachine machine;
     internal::EventMailbox mailbox{32};
@@ -386,11 +403,107 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     PreviewTelemetry telemetrySnapshot;
     PreviewDeviceInfo deviceSnapshot;
 
+    // P5-C private backend。public headerへmedia/native型を漏らさない。
+    gpu::SharedD3D11Device renderDevice;
+    gpu::SourceRegistry sourceRegistry;
+    gpu::ReadbackCounters readbacks;
+    std::unique_ptr<gpu::SourceDecodeWorker> videoWorker;
+    std::unique_ptr<gpu::GpuCompositor> compositor;
+    std::unordered_map<std::uint64_t, internal::EligibleSource> eligibleSources;
+    internal::CompositionAcceptanceState compositionState;
+    std::optional<PreviewSourceId> publicVideoSource;
+    gpu::SourceId internalVideoSource{};
+    std::uint64_t nextPublicSourceId = 1;
+    PreviewFrameRate configuredFrameRate{60, 1};
+
+    std::optional<std::thread::id> renderThread;
+    void* nativeDeviceIdentity = nullptr;
+    void* nativeContextIdentity = nullptr;
+    bool nativeDeviceAttached = false;
+    bool schedulerEnabled = false;
+    std::chrono::steady_clock::time_point schedulerStart;
+    std::int64_t schedulerBaseFrame = 0;
+    std::int64_t lastSchedulerTarget = -1;
+    std::uint64_t presentationSequence = 0;
+    std::unordered_set<std::int64_t> distinctPresentedFrames;
+    std::thread shutdownThread;
+    bool shutdownWorkerStarted = false;
+    bool workerJoined = true;
+    bool renderTeardownRequested = false;
+    bool gpuDrainStarted = false;
+    bool renderTeardownComplete = false;
+    bool deviceReleased = true;
+    bool forceGpuDrainFailure = false;
+    std::uint64_t lifecycleViolationCount = 0;
+    std::uint64_t staleSubstitutionCount = 0;
+    internal::P5CRuntimeDiagnostics finalRuntimeDiagnostics;
+
     Result<void> requireControlThread(PreviewOperation operation) const {
         if (controlThread != std::this_thread::get_id()) {
             return invalidState(operation, "control methodが作成時のthread以外から呼ばれました");
         }
         return Result<void>::success();
+    }
+
+    std::int64_t schedulerTarget(std::chrono::steady_clock::time_point now) const {
+        const auto elapsed =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now - schedulerStart).count();
+        if (elapsed <= 0)
+            return schedulerBaseFrame;
+        constexpr std::uint64_t kNanosecondsPerSecond = 1000000000ULL;
+        const auto elapsedValue = static_cast<std::uint64_t>(elapsed);
+        const std::uint64_t seconds = elapsedValue / kNanosecondsPerSecond;
+        const std::uint64_t nanoseconds = elapsedValue % kNanosecondsPerSecond;
+        const std::uint64_t numerator = configuredFrameRate.numerator;
+        const std::uint64_t denominator = configuredFrameRate.denominator;
+        const std::uint64_t wholeRate = numerator / denominator;
+        const std::uint64_t rateRemainder = numerator % denominator;
+        const auto maximum = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+        if (wholeRate != 0 && seconds > maximum / wholeRate)
+            return std::numeric_limits<std::int64_t>::max();
+        std::uint64_t advanced = seconds * wholeRate;
+        const std::uint64_t secondsQuotient = seconds / denominator;
+        const std::uint64_t secondsRemainder = seconds % denominator;
+        const std::uint64_t secondary =
+            secondsQuotient * rateRemainder + (secondsRemainder * rateRemainder) / denominator;
+        const std::uint64_t fractionalRemainder = (secondsRemainder * rateRemainder) % denominator;
+        const std::uint64_t fractional =
+            (fractionalRemainder * kNanosecondsPerSecond + nanoseconds * numerator) /
+            (denominator * kNanosecondsPerSecond);
+        if (advanced > maximum - secondary || advanced + secondary > maximum - fractional)
+            return std::numeric_limits<std::int64_t>::max();
+        advanced += secondary + fractional;
+        const auto value = static_cast<std::int64_t>(advanced);
+        if (schedulerBaseFrame > std::numeric_limits<std::int64_t>::max() - value)
+            return std::numeric_limits<std::int64_t>::max();
+        return schedulerBaseFrame + value;
+    }
+
+    void startWorkerShutdown() {
+        if (shutdownWorkerStarted)
+            return;
+        shutdownWorkerStarted = true;
+        workerJoined = videoWorker == nullptr || videoWorker->joined();
+        renderTeardownRequested = workerJoined;
+        if (workerJoined)
+            return;
+        const std::shared_ptr<Impl> self = shared_from_this();
+        shutdownThread = std::thread([self] {
+            gpu::SourceDecodeWorker* worker = nullptr;
+            {
+                std::lock_guard<std::mutex> lock(self->mutex);
+                worker = self->videoWorker.get();
+            }
+            if (worker)
+                worker->stop();
+            {
+                std::lock_guard<std::mutex> lock(self->mutex);
+                self->workerJoined = worker == nullptr || worker->joined();
+                self->renderTeardownRequested = self->workerJoined;
+                if (!self->workerJoined)
+                    ++self->lifecycleViolationCount;
+            }
+        });
     }
 
     void noteEventDeliveryFailureLocked() {
@@ -582,6 +695,7 @@ Result<void> PreviewEngine::initialize(const PreviewEngineConfig& config,
             return initialized;
         }
         impl_->dispatcher = std::move(dispatcher);
+        impl_->configuredFrameRate = rate.value();
         impl_->telemetrySnapshot.status.state = impl_->machine.state();
     }
     Result<void> posted =
@@ -646,9 +760,58 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
             makeError(PreviewErrorCategory::InvalidState, PreviewOperation::AddSource,
                       "source registrationはReadyPausedでのみ受理します"));
     }
-    return Result<PreviewSourceId>::failure(
-        makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
-                  "P5-Bではmedia backendを接続していないためsourceを登録できません"));
+    if (descriptor.audioEnabled) {
+        return Result<PreviewSourceId>::failure(
+            makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
+                      "P5-CではaudioEnabled sourceをsupportしません"));
+    }
+    if (!descriptor.videoEnabled) {
+        return Result<PreviewSourceId>::failure(
+            makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
+                      "P5-CではvideoEnabled sourceだけをsupportします"));
+    }
+    if (!impl_->nativeDeviceAttached || !impl_->compositor || !impl_->renderDevice.valid()) {
+        return Result<PreviewSourceId>::failure(
+            makeError(PreviewErrorCategory::InvalidState, PreviewOperation::AddSource,
+                      "native render deviceの準備前にsourceを登録できません"));
+    }
+    if (impl_->publicVideoSource) {
+        return Result<PreviewSourceId>::failure(
+            makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
+                      "P5-C product wiringはvideo sourceを1件だけ受理します"));
+    }
+
+    const gpu::SourceId internal = impl_->sourceRegistry.registerSource();
+    auto worker = std::make_unique<gpu::SourceDecodeWorker>(internal, impl_->renderDevice,
+                                                            impl_->readbacks, 6);
+    std::string openError;
+    const auto utf8Path = descriptor.mediaPath.u8string();
+    const std::string path(reinterpret_cast<const char*>(utf8Path.data()), utf8Path.size());
+    if (!worker->start(path, openError)) {
+        worker->stop();
+        impl_->sourceRegistry.unregisterSource(internal);
+        ++impl_->telemetrySnapshot.decodeFailureCount;
+        return Result<PreviewSourceId>::failure(
+            makeError(PreviewErrorCategory::DecodeFailure, PreviewOperation::AddSource,
+                      "D3D11VA video sourceをopenできません: " + openError));
+    }
+
+    if (impl_->nextPublicSourceId == 0) {
+        worker->stop();
+        impl_->sourceRegistry.unregisterSource(internal);
+        return Result<PreviewSourceId>::failure(makeError(PreviewErrorCategory::InvalidSource,
+                                                          PreviewOperation::AddSource,
+                                                          "PreviewSourceIdがoverflowしました"));
+    }
+    const PreviewSourceId published{impl_->nextPublicSourceId++};
+    impl_->internalVideoSource = internal;
+    impl_->publicVideoSource = published;
+    impl_->eligibleSources.emplace(published.value, internal::EligibleSource{true});
+    impl_->videoWorker = std::move(worker);
+    impl_->workerJoined = false;
+    impl_->deviceReleased = false;
+    impl_->telemetrySnapshot.currentSourceQueueDepth = 0;
+    return Result<PreviewSourceId>::success(published);
 }
 
 Result<void> PreviewEngine::removeSource(PreviewSourceId) {
@@ -667,7 +830,7 @@ Result<void> PreviewEngine::removeSource(PreviewSourceId) {
 }
 
 Result<AcceptedComposition>
-PreviewEngine::submitComposition(std::shared_ptr<const CompositionSnapshot>) {
+PreviewEngine::submitComposition(std::shared_ptr<const CompositionSnapshot> snapshot) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     Result<void> affinity = impl_->requireControlThread(PreviewOperation::SubmitComposition);
     if (!affinity) {
@@ -679,37 +842,66 @@ PreviewEngine::submitComposition(std::shared_ptr<const CompositionSnapshot>) {
             makeError(PreviewErrorCategory::InvalidState, PreviewOperation::SubmitComposition,
                       "composition submissionを受理できないstateです"));
     }
-    return Result<AcceptedComposition>::failure(
-        makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::SubmitComposition,
-                  "P5-Bではsource tableとpresentationを接続していません"));
+    if (snapshot && snapshot->layers.size() > 1) {
+        return Result<AcceptedComposition>::failure(makeError(
+            PreviewErrorCategory::UnsupportedCapability, PreviewOperation::SubmitComposition,
+            "P5-C product wiringはexactly 1 layerだけを受理します"));
+    }
+    Result<AcceptedComposition> accepted =
+        impl_->compositionState.submit(snapshot, impl_->eligibleSources, impl_->capability);
+    if (!accepted)
+        return accepted;
+    impl_->telemetrySnapshot.status.latestAcceptedDesiredComposition = accepted.value();
+    return accepted;
 }
 
 Result<void> PreviewEngine::play() {
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    Result<void> affinity = impl_->requireControlThread(PreviewOperation::Play);
-    if (!affinity) {
-        return affinity;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        Result<void> affinity = impl_->requireControlThread(PreviewOperation::Play);
+        if (!affinity)
+            return affinity;
+        if (impl_->machine.state() != PreviewEngineState::ReadyPaused)
+            return invalidState(PreviewOperation::Play, "playを受理できないstateです");
+        if (!impl_->videoWorker || !impl_->publicVideoSource ||
+            !impl_->compositionState.latestAcceptedToken()) {
+            return invalidState(PreviewOperation::Play,
+                                "playには登録済みvideo sourceとaccepted compositionが必要です");
+        }
+        Result<void> played = impl_->machine.play();
+        if (!played)
+            return played;
+        impl_->schedulerEnabled = true;
+        impl_->schedulerStart = std::chrono::steady_clock::now();
+        impl_->schedulerBaseFrame = impl_->telemetrySnapshot.presentedFrameCount == 0
+                                        ? 0
+                                        : impl_->telemetrySnapshot.status.position.outputFrame + 1;
+        impl_->lastSchedulerTarget = impl_->schedulerBaseFrame - 1;
+        impl_->videoWorker->play();
+        impl_->telemetrySnapshot.status.state = PreviewEngineState::Playing;
     }
-    if (impl_->machine.state() != PreviewEngineState::ReadyPaused) {
-        return invalidState(PreviewOperation::Play, "playを受理できないstateです");
-    }
-    return Result<void>::failure(makeError(PreviewErrorCategory::UnsupportedCapability,
-                                           PreviewOperation::Play,
-                                           "P5-Bではtransportを接続していません"));
+    impl_->notify(internal::StateChangedEvent{PreviewEngineState::Playing});
+    return Result<void>::success();
 }
 
 Result<void> PreviewEngine::pause() {
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    Result<void> affinity = impl_->requireControlThread(PreviewOperation::Pause);
-    if (!affinity) {
-        return affinity;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        Result<void> affinity = impl_->requireControlThread(PreviewOperation::Pause);
+        if (!affinity)
+            return affinity;
+        if (impl_->machine.state() != PreviewEngineState::Playing)
+            return invalidState(PreviewOperation::Pause, "pauseを受理できないstateです");
+        Result<void> paused = impl_->machine.pause();
+        if (!paused)
+            return paused;
+        impl_->schedulerEnabled = false;
+        if (impl_->videoWorker)
+            impl_->videoWorker->pause();
+        impl_->telemetrySnapshot.status.state = PreviewEngineState::ReadyPaused;
     }
-    if (impl_->machine.state() != PreviewEngineState::Playing) {
-        return invalidState(PreviewOperation::Pause, "pauseを受理できないstateです");
-    }
-    return Result<void>::failure(makeError(PreviewErrorCategory::UnsupportedCapability,
-                                           PreviewOperation::Pause,
-                                           "P5-Bではtransportを接続していません"));
+    impl_->notify(internal::StateChangedEvent{PreviewEngineState::ReadyPaused});
+    return Result<void>::success();
 }
 
 Result<void> PreviewEngine::seek(PreviewPosition) {
@@ -767,6 +959,11 @@ Result<void> PreviewEngine::requestShutdown() {
             return requested;
         }
         after = impl_->machine.state();
+        impl_->schedulerEnabled = false;
+        if (impl_->videoWorker)
+            impl_->videoWorker->pause();
+        if (impl_->nativeDeviceAttached)
+            impl_->startWorkerShutdown();
         impl_->telemetrySnapshot.status.state = after;
     }
     if (before != after) {
@@ -776,6 +973,215 @@ Result<void> PreviewEngine::requestShutdown() {
 }
 
 namespace internal {
+
+Result<void> PreviewRenderPort::bindRenderThread(PreviewEngine& engine) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    if (engine.impl_->machine.state() != PreviewEngineState::WaitingForRenderDevice) {
+        return invalidState(PreviewOperation::RenderDeviceAttach,
+                            "render threadはdevice attach待ちでのみ登録できます");
+    }
+    if (engine.impl_->renderThread) {
+        return invalidState(PreviewOperation::RenderDeviceAttach,
+                            "render threadは既に登録されています");
+    }
+    engine.impl_->renderThread = std::this_thread::get_id();
+    return Result<void>::success();
+}
+
+Result<void> PreviewRenderPort::attachNativeD3D11Device(PreviewEngine& engine, void* device,
+                                                        void* context) {
+    PreviewDeviceInfo info;
+    {
+        std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+        if (!engine.impl_->renderThread ||
+            *engine.impl_->renderThread != std::this_thread::get_id()) {
+            return invalidState(PreviewOperation::RenderDeviceAttach,
+                                "native device attachは登録済みrender threadで実行してください");
+        }
+        if (!device || !context) {
+            return Result<void>::failure(makeError(PreviewErrorCategory::DeviceFailure,
+                                                   PreviewOperation::RenderDeviceAttach,
+                                                   "D3D11 device/contextがnullです"));
+        }
+        if (engine.impl_->nativeDeviceAttached) {
+            return invalidState(PreviewOperation::RenderDeviceAttach,
+                                "native render deviceは既にattachされています");
+        }
+
+        auto* nativeDevice = static_cast<ID3D11Device*>(device);
+        auto* nativeContext = static_cast<ID3D11DeviceContext*>(context);
+        ID3D11Device* contextDevice = nullptr;
+        nativeContext->GetDevice(&contextDevice);
+        const bool sameDevice = contextDevice == nativeDevice;
+        if (contextDevice)
+            contextDevice->Release();
+        if (!sameDevice) {
+            return Result<void>::failure(makeError(PreviewErrorCategory::DeviceFailure,
+                                                   PreviewOperation::RenderDeviceAttach,
+                                                   "contextとdeviceの実体が一致しません"));
+        }
+
+        std::string error;
+        if (!engine.impl_->renderDevice.adopt(nativeDevice, nativeContext, error)) {
+            return Result<void>::failure(makeError(PreviewErrorCategory::DeviceFailure,
+                                                   PreviewOperation::RenderDeviceAttach,
+                                                   "共有D3D11 deviceをadoptできません: " + error));
+        }
+        auto compositor = std::make_unique<gpu::GpuCompositor>();
+        if (!compositor->initializeExternal(engine.impl_->renderDevice, engine.impl_->readbacks,
+                                            error)) {
+            engine.impl_->renderDevice.release();
+            return Result<void>::failure(
+                makeError(PreviewErrorCategory::DeviceFailure, PreviewOperation::RenderDeviceAttach,
+                          "product compositorを初期化できません: " + error));
+        }
+        Result<void> attached = engine.impl_->machine.attachRenderDevice();
+        if (!attached) {
+            std::string ignored;
+            compositor->shutdown(2000, ignored);
+            engine.impl_->renderDevice.release();
+            return attached;
+        }
+
+        engine.impl_->compositor = std::move(compositor);
+        engine.impl_->nativeDeviceIdentity = device;
+        engine.impl_->nativeContextIdentity = context;
+        engine.impl_->nativeDeviceAttached = true;
+        engine.impl_->deviceReleased = false;
+        const gpu::AdapterInfo& adapter = engine.impl_->renderDevice.adapter();
+        info.adapterDescription = adapter.description;
+        info.adapterLuidLow = adapter.luidLow;
+        info.adapterLuidHigh = adapter.luidHigh;
+        engine.impl_->deviceSnapshot = info;
+        engine.impl_->telemetrySnapshot.status.state = PreviewEngineState::ReadyPaused;
+    }
+    engine.impl_->notify(DeviceChangedEvent{info});
+    engine.impl_->notify(StateChangedEvent{PreviewEngineState::ReadyPaused});
+    return Result<void>::success();
+}
+
+Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
+                                                         void* renderTargetView, int width,
+                                                         int height) {
+    RenderFrameResult result;
+    std::optional<PreviewError> fatal;
+    {
+        std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+        if (!engine.impl_->renderThread ||
+            *engine.impl_->renderThread != std::this_thread::get_id()) {
+            return Result<RenderFrameResult>::failure(
+                invalidState(PreviewOperation::RenderDeviceAttach,
+                             "renderは登録済みrender threadで実行してください")
+                    .error());
+        }
+        if (engine.impl_->machine.state() != PreviewEngineState::Playing ||
+            !engine.impl_->schedulerEnabled) {
+            return Result<RenderFrameResult>::success(result);
+        }
+        if (!renderTargetView || width <= 0 || height <= 0 || !engine.impl_->videoWorker ||
+            !engine.impl_->compositor) {
+            return Result<RenderFrameResult>::failure(
+                makeError(PreviewErrorCategory::InvalidState, PreviewOperation::RenderDeviceAttach,
+                          "render targetまたはproduct runtimeが未準備です"));
+        }
+
+        const std::int64_t target = engine.impl_->schedulerTarget(std::chrono::steady_clock::now());
+        if (target <= engine.impl_->lastSchedulerTarget)
+            return Result<RenderFrameResult>::success(result);
+        engine.impl_->lastSchedulerTarget = target;
+
+        gpu::SourceFrameBuffer& buffer = engine.impl_->videoWorker->buffer();
+        buffer.discardBefore(target);
+        gpu::DecodedGpuFrame decoded;
+        if (!buffer.takeExact(target, decoded)) {
+            ++engine.impl_->telemetrySnapshot.droppedFrameCount;
+            engine.impl_->telemetrySnapshot.currentSourceQueueDepth =
+                static_cast<std::uint32_t>(buffer.depth());
+            return Result<RenderFrameResult>::success(result);
+        }
+        if (decoded.sourceId != engine.impl_->internalVideoSource ||
+            !engine.impl_->sourceRegistry.contains(decoded.sourceId)) {
+            PreviewError error =
+                makeError(PreviewErrorCategory::DecodeFailure, PreviewOperation::RenderDeviceAttach,
+                          "decode frameのsource identityが一致しません");
+            error.severity = PreviewErrorSeverity::FatalToSession;
+            fatal = error;
+        } else {
+            const auto token = engine.impl_->compositionState.latestAcceptedToken();
+            const auto snapshot = engine.impl_->compositionState.latestAcceptedSnapshot();
+            if (!token || !snapshot || snapshot->layers.size() != 1) {
+                return Result<RenderFrameResult>::failure(makeError(
+                    PreviewErrorCategory::CompositionFailure, PreviewOperation::RenderDeviceAttach,
+                    "accepted single-layer compositionが見つかりません"));
+            }
+            const PreviewCompositionLayer& sourceLayer = snapshot->layers.front();
+            gpu::CompositionLayerFrame layer;
+            layer.frame = std::move(decoded);
+            layer.destination = {sourceLayer.destination.x, sourceLayer.destination.y,
+                                 sourceLayer.destination.width, sourceLayer.destination.height};
+            layer.sourceUv = {sourceLayer.sourceRect.x, sourceLayer.sourceRect.y,
+                              sourceLayer.sourceRect.width, sourceLayer.sourceRect.height};
+            layer.opacity = sourceLayer.opacity;
+            gpu::ComposedFrame composed;
+            composed.outputFrameNumber = target;
+            composed.compositionEpoch = {token->revision};
+            composed.compositionState = {token->id.value};
+            composed.layers.push_back(std::move(layer));
+            gpu::ExternalCompositionTarget targetView{
+                static_cast<ID3D11RenderTargetView*>(renderTargetView), width, height};
+            std::string error;
+            if (!engine.impl_->compositor->composeSingleLayerToTarget(composed, targetView,
+                                                                      error)) {
+                PreviewError failure = makeError(
+                    PreviewErrorCategory::DeviceFailure, PreviewOperation::RenderDeviceAttach,
+                    "single-layer GPU compositionに失敗しました: " + error);
+                failure.severity = PreviewErrorSeverity::FatalToSession;
+                fatal = failure;
+            } else {
+                buffer.noteDisplayed(target);
+                engine.impl_->compositionState.markPresented(*token);
+                engine.impl_->distinctPresentedFrames.insert(target);
+                ++engine.impl_->presentationSequence;
+                ++engine.impl_->telemetrySnapshot.presentedFrameCount;
+                engine.impl_->telemetrySnapshot.currentSourceQueueDepth =
+                    static_cast<std::uint32_t>(buffer.depth());
+                const auto& counters = engine.impl_->compositor->counters();
+                engine.impl_->telemetrySnapshot.gpuRetirementCurrentDepth =
+                    static_cast<std::uint32_t>(counters.retirementDepthAfterDrain);
+                engine.impl_->telemetrySnapshot.gpuRetirementPeakDepth =
+                    static_cast<std::uint32_t>(counters.retirementDepthPeak);
+                engine.impl_->telemetrySnapshot.status.position = {target};
+                engine.impl_->telemetrySnapshot.status.lastPresentedComposition = *token;
+                result.presented = true;
+                result.sourceFrame = target;
+                result.frame = {engine.impl_->presentationSequence, {target}, *token, 1};
+            }
+        }
+
+        if (fatal) {
+            Result<void> accepted = engine.impl_->machine.recordFatal(*fatal);
+            if (accepted) {
+                engine.impl_->schedulerEnabled = false;
+                if (engine.impl_->videoWorker)
+                    engine.impl_->videoWorker->pause();
+                engine.impl_->startWorkerShutdown();
+                engine.impl_->telemetrySnapshot.status.state = PreviewEngineState::ShuttingDown;
+                engine.impl_->telemetrySnapshot.status.lastError =
+                    engine.impl_->machine.lastError();
+            }
+        }
+    }
+    if (fatal) {
+        engine.impl_->notify(ErrorOccurredEvent{*fatal});
+        engine.impl_->notify(StateChangedEvent{PreviewEngineState::ShuttingDown});
+        return Result<RenderFrameResult>::failure(*fatal);
+    }
+    if (result.presented) {
+        engine.impl_->notify(PositionChangedEvent{result.frame.position});
+        engine.impl_->notify(FramePresentedEvent{result.frame});
+    }
+    return Result<RenderFrameResult>::success(result);
+}
 
 Result<void> PreviewRenderPort::attachLogicalDevice(PreviewEngine& engine) {
     {
@@ -788,6 +1194,100 @@ Result<void> PreviewRenderPort::attachLogicalDevice(PreviewEngine& engine) {
     }
     engine.impl_->notify(StateChangedEvent{PreviewEngineState::ReadyPaused});
     return Result<void>::success();
+}
+
+Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
+    PreviewEngineState terminal = PreviewEngineState::ShuttingDown;
+    std::optional<PreviewError> drainFailure;
+    {
+        std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+        if (!engine.impl_->renderThread ||
+            *engine.impl_->renderThread != std::this_thread::get_id()) {
+            return Result<bool>::failure(
+                invalidState(PreviewOperation::Shutdown,
+                             "runtime teardownは登録済みrender threadで実行してください")
+                    .error());
+        }
+        if (engine.impl_->machine.state() != PreviewEngineState::ShuttingDown) {
+            return Result<bool>::failure(
+                invalidState(PreviewOperation::Shutdown,
+                             "runtime teardownはShuttingDownでのみ実行できます")
+                    .error());
+        }
+        if (!engine.impl_->renderTeardownRequested || !engine.impl_->workerJoined)
+            return Result<bool>::success(false);
+
+        std::string error;
+        bool drained = true;
+        if (engine.impl_->compositor) {
+            if (!engine.impl_->gpuDrainStarted) {
+                if (!engine.impl_->compositor->beginShutdown(2000, error))
+                    drained = false;
+                engine.impl_->gpuDrainStarted = true;
+            }
+            if (drained) {
+                const gpu::GpuCompositorShutdownStatus drainStatus =
+                    engine.impl_->compositor->pollShutdown(error);
+                if (drainStatus == gpu::GpuCompositorShutdownStatus::Pending)
+                    return Result<bool>::success(false);
+                drained = drainStatus == gpu::GpuCompositorShutdownStatus::Complete;
+            }
+        }
+        if (engine.impl_->forceGpuDrainFailure)
+            drained = false;
+        if (!drained) {
+            PreviewError failure =
+                makeError(PreviewErrorCategory::ShutdownFailure, PreviewOperation::Shutdown,
+                          error.empty() ? "GPU retirement drainのtest faultを検出しました"
+                                        : "GPU retirement drainに失敗しました: " + error);
+            failure.severity = PreviewErrorSeverity::FatalToSession;
+            Result<void> recorded = engine.impl_->machine.recordFatal(failure);
+            if (recorded)
+                drainFailure = failure;
+        }
+
+        if (engine.impl_->compositor) {
+            const auto& counters = engine.impl_->compositor->counters();
+            engine.impl_->finalRuntimeDiagnostics.untrackedSubmissionCount =
+                static_cast<std::uint64_t>(counters.untrackedSubmissionCount);
+            engine.impl_->finalRuntimeDiagnostics.earlyPayloadReleaseCount =
+                static_cast<std::uint64_t>(counters.payloadsReleasedBeforeCompletion);
+            engine.impl_->finalRuntimeDiagnostics.retirementTimeoutCount =
+                static_cast<std::uint64_t>(counters.retirementTimeoutCount);
+            engine.impl_->finalRuntimeDiagnostics.gpuCompositionPassCount =
+                static_cast<std::uint64_t>(counters.compositionDrawnCount);
+            engine.impl_->finalRuntimeDiagnostics.fullFrameGpuCopyCount =
+                static_cast<std::uint64_t>(counters.fullFrameGpuCopyCount);
+        }
+        engine.impl_->compositor.reset();
+        engine.impl_->videoWorker.reset();
+        if (engine.impl_->internalVideoSource.value != 0)
+            engine.impl_->sourceRegistry.unregisterSource(engine.impl_->internalVideoSource);
+        engine.impl_->renderDevice.release();
+        engine.impl_->nativeDeviceAttached = false;
+        engine.impl_->deviceReleased = true;
+        engine.impl_->renderTeardownComplete = true;
+        engine.impl_->finalRuntimeDiagnostics.workerJoined = engine.impl_->workerJoined;
+        engine.impl_->finalRuntimeDiagnostics.renderTeardownComplete = true;
+        engine.impl_->finalRuntimeDiagnostics.deviceReleased = true;
+        engine.impl_->finalRuntimeDiagnostics.distinctPresentedSourceFrameCount =
+            engine.impl_->distinctPresentedFrames.size();
+        engine.impl_->finalRuntimeDiagnostics.fullCpuReadbackCount =
+            static_cast<std::uint64_t>(engine.impl_->readbacks.fullFrameReadbacks());
+        Result<void> completed = engine.impl_->machine.completeTeardown();
+        if (!completed)
+            return Result<bool>::failure(completed.error());
+        terminal = engine.impl_->machine.state();
+        engine.impl_->telemetrySnapshot.status.state = terminal;
+        engine.impl_->telemetrySnapshot.status.lastError = engine.impl_->machine.lastError();
+    }
+    if (engine.impl_->shutdownThread.joinable() &&
+        engine.impl_->shutdownThread.get_id() != std::this_thread::get_id())
+        engine.impl_->shutdownThread.join();
+    if (drainFailure)
+        engine.impl_->notify(ErrorOccurredEvent{*drainFailure});
+    engine.impl_->notify(StateChangedEvent{terminal});
+    return Result<bool>::success(true);
 }
 
 Result<void> PreviewRenderPort::completeTeardown(PreviewEngine& engine) {
@@ -817,10 +1317,60 @@ Result<void> PreviewRenderPort::injectFatal(PreviewEngine& engine, PreviewError 
         }
         engine.impl_->telemetrySnapshot.status.state = PreviewEngineState::ShuttingDown;
         engine.impl_->telemetrySnapshot.status.lastError = engine.impl_->machine.lastError();
+        engine.impl_->schedulerEnabled = false;
+        if (engine.impl_->videoWorker)
+            engine.impl_->videoWorker->pause();
+        if (engine.impl_->nativeDeviceAttached)
+            engine.impl_->startWorkerShutdown();
     }
     engine.impl_->notify(ErrorOccurredEvent{recorded});
     engine.impl_->notify(StateChangedEvent{PreviewEngineState::ShuttingDown});
     return Result<void>::success();
+}
+
+Result<void> PreviewRenderPort::injectGpuDrainFailureForTest(PreviewEngine& engine) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    if (!engine.impl_->nativeDeviceAttached || engine.impl_->renderTeardownComplete) {
+        return invalidState(PreviewOperation::Shutdown,
+                            "GPU drain faultはactive native runtimeでのみ設定できます");
+    }
+    engine.impl_->forceGpuDrainFailure = true;
+    return Result<void>::success();
+}
+
+P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine& engine) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    P5CRuntimeDiagnostics result = engine.impl_->finalRuntimeDiagnostics;
+    result.nativeDeviceAttached = engine.impl_->nativeDeviceAttached;
+    result.workerJoined = engine.impl_->workerJoined;
+    result.renderTeardownComplete = engine.impl_->renderTeardownComplete;
+    result.deviceReleased = engine.impl_->deviceReleased;
+    result.registeredVideoSourceCount = engine.impl_->sourceRegistry.registeredSourceCount();
+    result.distinctPresentedSourceFrameCount = engine.impl_->distinctPresentedFrames.size();
+    result.staleSubstitutionCount = engine.impl_->staleSubstitutionCount;
+    result.lifecycleViolationCount = engine.impl_->lifecycleViolationCount;
+    result.fullCpuReadbackCount =
+        static_cast<std::uint64_t>(engine.impl_->readbacks.fullFrameReadbacks());
+    if (engine.impl_->videoWorker) {
+        const gpu::SourceDecoderSnapshot decoder = engine.impl_->videoWorker->snapshot();
+        result.d3d11vaActive = decoder.open && decoder.softwareFrameRejectCount == 0;
+        result.decodeRenderSameDevice =
+            decoder.decodeDevicePointer ==
+            reinterpret_cast<std::uintptr_t>(engine.impl_->renderDevice.device());
+        result.softwareFallbackCount = static_cast<std::uint64_t>(decoder.softwareFrameRejectCount);
+        result.deviceLostCount = static_cast<std::uint64_t>(decoder.deviceMismatchCount);
+    }
+    if (engine.impl_->compositor) {
+        const auto& counters = engine.impl_->compositor->counters();
+        result.untrackedSubmissionCount =
+            static_cast<std::uint64_t>(counters.untrackedSubmissionCount);
+        result.earlyPayloadReleaseCount =
+            static_cast<std::uint64_t>(counters.payloadsReleasedBeforeCompletion);
+        result.retirementTimeoutCount = static_cast<std::uint64_t>(counters.retirementTimeoutCount);
+        result.gpuCompositionPassCount = static_cast<std::uint64_t>(counters.compositionDrawnCount);
+        result.fullFrameGpuCopyCount = static_cast<std::uint64_t>(counters.fullFrameGpuCopyCount);
+    }
+    return result;
 }
 
 void PreviewRenderPort::enqueueEventForTest(PreviewEngine& engine, PreviewEvent event) {

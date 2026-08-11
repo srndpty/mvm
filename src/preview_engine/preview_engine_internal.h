@@ -80,6 +80,33 @@ struct EligibleSource {
     bool videoEnabled = false;
 };
 
+struct RenderFrameResult {
+    bool presented = false;
+    PresentedFrameInfo frame;
+    std::int64_t sourceFrame = -1;
+};
+
+struct P5CRuntimeDiagnostics {
+    bool nativeDeviceAttached = false;
+    bool d3d11vaActive = false;
+    bool decodeRenderSameDevice = false;
+    bool workerJoined = true;
+    bool renderTeardownComplete = false;
+    bool deviceReleased = true;
+    std::uint64_t registeredVideoSourceCount = 0;
+    std::uint64_t distinctPresentedSourceFrameCount = 0;
+    std::uint64_t staleSubstitutionCount = 0;
+    std::uint64_t untrackedSubmissionCount = 0;
+    std::uint64_t earlyPayloadReleaseCount = 0;
+    std::uint64_t retirementTimeoutCount = 0;
+    std::uint64_t deviceLostCount = 0;
+    std::uint64_t lifecycleViolationCount = 0;
+    std::uint64_t fullCpuReadbackCount = 0;
+    std::uint64_t fullFrameGpuCopyCount = 0;
+    std::uint64_t softwareFallbackCount = 0;
+    std::uint64_t gpuCompositionPassCount = 0;
+};
+
 class CompositionAcceptanceState {
 public:
     Result<AcceptedComposition>
@@ -103,8 +130,15 @@ private:
 class PreviewRenderPort {
 public:
     static Result<void> attachLogicalDevice(PreviewEngine& engine);
+    static Result<void> bindRenderThread(PreviewEngine& engine);
+    static Result<void> attachNativeD3D11Device(PreviewEngine& engine, void* device, void* context);
+    static Result<RenderFrameResult> renderFrame(PreviewEngine& engine, void* renderTargetView,
+                                                 int width, int height);
+    static Result<bool> completeRuntimeTeardown(PreviewEngine& engine);
     static Result<void> completeTeardown(PreviewEngine& engine);
     static Result<void> injectFatal(PreviewEngine& engine, PreviewError error);
+    static Result<void> injectGpuDrainFailureForTest(PreviewEngine& engine);
+    static P5CRuntimeDiagnostics runtimeDiagnostics(const PreviewEngine& engine);
 
     // bounded mailboxのfailure semanticsをbackend接続前に検査するinternal test seam。
     static void enqueueEventForTest(PreviewEngine& engine, PreviewEvent event);
