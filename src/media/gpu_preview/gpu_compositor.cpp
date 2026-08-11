@@ -180,6 +180,21 @@ bool GpuCompositor::compose(const ComposedFrame& frame, std::string& err) {
 
 bool GpuCompositor::composeToTarget(const ComposedFrame& frame,
                                     const ExternalCompositionTarget& target, std::string& err) {
+    return composeProductToTarget(frame, target, 2, "compositionのlayer数が診断契約と一致しません",
+                                  err);
+}
+
+bool GpuCompositor::composeSingleLayerToTarget(const ComposedFrame& frame,
+                                               const ExternalCompositionTarget& target,
+                                               std::string& err) {
+    return composeProductToTarget(frame, target, 1,
+                                  "single-layer product compositionはexactly 1 layer必須です", err);
+}
+
+bool GpuCompositor::composeProductToTarget(const ComposedFrame& frame,
+                                           const ExternalCompositionTarget& target,
+                                           size_t expectedLayerCount, const char* layerCountError,
+                                           std::string& err) {
     ++counters_.compositionRequestedCount;
     if (!ready_) {
         err = "GpuCompositorが初期化されていません";
@@ -190,7 +205,11 @@ bool GpuCompositor::composeToTarget(const ComposedFrame& frame,
         err = "GpuCompositorはfatal状態です: " + fatalReason_;
         return false;
     }
-    if (!prepareComposition(frame, target, 2, err))
+    if (frame.layers.size() != expectedLayerCount) {
+        err = layerCountError;
+        return false;
+    }
+    if (!prepareComposition(frame, target, expectedLayerCount, err))
         return false;
     // owned offscreen wrapperだけがclearする。external targetはQRhi passがclear owner。
     const bool clearTarget = target.rtv == targetRtv_;
