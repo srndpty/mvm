@@ -1409,6 +1409,34 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
     return Result<bool>::success(true);
 }
 
+Result<void> PreviewRenderPort::completeRendererDetach(PreviewEngine& engine) {
+    PreviewEngineState state = engine.status().state;
+    if (state == PreviewEngineState::Shutdown || state == PreviewEngineState::Error)
+        return Result<void>::success();
+
+    if (state != PreviewEngineState::ShuttingDown) {
+        PreviewError error =
+            makeError(PreviewErrorCategory::DeviceFailure, PreviewOperation::Shutdown,
+                      "renderer破棄前にnative runtime teardownを開始しました");
+        error.severity = PreviewErrorSeverity::FatalToSession;
+        Result<void> started = injectFatal(engine, std::move(error));
+        if (!started)
+            return started;
+    }
+
+    if (!nativeRuntimeAttached(engine))
+        return completeTeardown(engine);
+
+    for (;;) {
+        Result<bool> completed = completeRuntimeTeardown(engine);
+        if (!completed)
+            return Result<void>::failure(completed.error());
+        if (completed.value())
+            return Result<void>::success();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
+
 Result<void> PreviewRenderPort::completeTeardown(PreviewEngine& engine) {
     PreviewEngineState terminal;
     {

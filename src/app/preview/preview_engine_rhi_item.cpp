@@ -15,7 +15,11 @@ class PreviewEngineRhiRenderer final : public QQuickRhiItemRenderer {
 public:
     explicit PreviewEngineRhiRenderer(preview::PreviewEngine* engine) : engine_(engine) {}
 
-    ~PreviewEngineRhiRenderer() override { releaseRtv(); }
+    ~PreviewEngineRhiRenderer() override {
+        releaseRtv();
+        if (engine_)
+            preview::internal::PreviewRenderPort::completeRendererDetach(*engine_);
+    }
 
 protected:
     void initialize(QRhiCommandBuffer*) override { attachEngine(); }

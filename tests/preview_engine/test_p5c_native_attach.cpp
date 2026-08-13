@@ -266,6 +266,40 @@ int main() {
         require(replacedComplete && replaced.status().state == PreviewEngineState::Error,
                 "engine差し替え後に旧runtimeをterminal Errorまでteardownできませんでした");
 
+        PreviewEngine finalDetach;
+        auto finalDetachSink = std::make_shared<RecordingSink>();
+        require(finalDetach.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),
+                "final renderer detach test initializeに失敗しました");
+        require(finalDetach.attachEventSink(finalDetachSink),
+                "final renderer detach sink attachに失敗しました");
+        require(
+            PreviewRenderPort::acquireNativeD3D11Device(finalDetach, deviceA.get(), contextA.get()),
+            "final renderer detach native attachに失敗しました");
+        require(PreviewRenderPort::completeRendererDetach(finalDetach),
+                "active rendererの最終detach handshakeに失敗しました");
+        require(finalDetach.status().state == PreviewEngineState::Error &&
+                    finalDetachSink->errors.size() == 1 &&
+                    finalDetachSink->errors.front().detail.find("renderer破棄") !=
+                        std::string::npos,
+                "active renderer最終detachをfail-closed terminalにできませんでした");
+
+        PreviewEngine requestedDetach;
+        auto requestedDetachSink = std::make_shared<RecordingSink>();
+        require(requestedDetach.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),
+                "requested detach test initializeに失敗しました");
+        require(requestedDetach.attachEventSink(requestedDetachSink),
+                "requested detach sink attachに失敗しました");
+        require(PreviewRenderPort::acquireNativeD3D11Device(requestedDetach, deviceA.get(),
+                                                            contextA.get()),
+                "requested detach native attachに失敗しました");
+        require(requestedDetach.requestShutdown(),
+                "renderer detach前のshutdown requestに失敗しました");
+        require(PreviewRenderPort::completeRendererDetach(requestedDetach),
+                "shutdown requested rendererの最終detach handshakeに失敗しました");
+        require(requestedDetach.status().state == PreviewEngineState::Shutdown &&
+                    requestedDetachSink->errors.empty(),
+                "正常shutdown済みrenderer detachをErrorへ誤変換しました");
+
         PreviewEngine engine;
         require(engine.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),
                 "success engine initializeに失敗しました");

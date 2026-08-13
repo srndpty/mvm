@@ -150,6 +150,7 @@ public:
     static Result<RenderFrameResult> renderFrame(PreviewEngine& engine, void* renderTargetView,
                                                  int width, int height);
     static Result<bool> completeRuntimeTeardown(PreviewEngine& engine);
+    static Result<void> completeRendererDetach(PreviewEngine& engine);
     static Result<void> completeTeardown(PreviewEngine& engine);
     static Result<void> injectFatal(PreviewEngine& engine, PreviewError error);
     static Result<void> reportRenderTargetFailure(PreviewEngine& engine, long hresult);
