@@ -1482,15 +1482,10 @@ Result<void> PreviewRenderPort::completeRendererDetach(PreviewEngine& engine) {
     if (state == PreviewEngineState::Shutdown || state == PreviewEngineState::Error)
         return Result<void>::success();
 
-    if (state != PreviewEngineState::ShuttingDown) {
-        PreviewError error =
-            makeError(PreviewErrorCategory::DeviceFailure, PreviewOperation::Shutdown,
-                      "renderer破棄前にnative runtime teardownを開始しました");
-        error.severity = PreviewErrorSeverity::FatalToSession;
-        Result<void> started = injectFatal(engine, std::move(error));
-        if (!started)
-            return started;
-    }
+    // scene graph invalidateによる一時破棄ではactive runtimeを保持する。後継rendererが
+    // 同じdevice/contextをacquireし、render thread authorityを引き継ぐ。
+    if (state != PreviewEngineState::ShuttingDown)
+        return Result<void>::success();
 
     if (!nativeRuntimeAttached(engine))
         return completeTeardown(engine);

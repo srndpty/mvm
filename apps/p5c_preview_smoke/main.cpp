@@ -2,6 +2,7 @@
 #include "preview_engine/preview_engine.h"
 #include "preview_engine/preview_engine_internal.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <memory>
@@ -61,7 +62,10 @@ enum class Stage {
     PauseHold,
     WaitResume,
     WaitShutdown,
-    WaitEngineRelease
+    WaitEngineRelease,
+    WaitRenderIdle,
+    WaitRendererInvalidation,
+    WaitRendererResume
 };
 enum class Fault {
     None,
@@ -70,7 +74,8 @@ enum class Fault {
     Decoder,
     SourceStartupShutdown,
     PreAttachShutdown,
-    EngineLifetimeDetach
+    EngineLifetimeDetach,
+    RendererRecreation
 };
 
 } // namespace
@@ -78,12 +83,14 @@ enum class Fault {
 int main(int argc, char** argv) {
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
     QGuiApplication app(argc, argv);
+    app.setQuitOnLastWindowClosed(false);
     const QStringList arguments = app.arguments();
     if (arguments.size() < 2 || arguments.size() > 3) {
         std::fprintf(stderr, "使い方: mvm_p5c_preview_smoke <fixture-a-path> "
                              "[--fault-gpu-drain|--fault-device|--fault-decoder|"
                              "--shutdown-source-startup|"
-                             "--shutdown-before-attach|--engine-lifetime-detach]\n");
+                             "--shutdown-before-attach|--engine-lifetime-detach|"
+                             "--renderer-recreation]\n");
         return 2;
     }
     Fault fault = Fault::None;
@@ -100,6 +107,8 @@ int main(int argc, char** argv) {
             fault = Fault::PreAttachShutdown;
         else if (arguments[2] == "--engine-lifetime-detach")
             fault = Fault::EngineLifetimeDetach;
+        else if (arguments[2] == "--renderer-recreation")
+            fault = Fault::RendererRecreation;
         else
             return 2;
     }
@@ -128,6 +137,15 @@ int main(int argc, char** argv) {
     }
 
     QQuickWindow window;
+    std::atomic_uint64_t renderPassCount{0};
+    std::atomic_uint64_t sceneGraphInvalidationCount{0};
+    QObject::connect(&window, &QQuickWindow::afterRendering, &app,
+                     [&] { renderPassCount.fetch_add(1, std::memory_order_relaxed); },
+                     Qt::DirectConnection);
+    QObject::connect(
+        &window, &QQuickWindow::sceneGraphInvalidated, &app,
+        [&] { sceneGraphInvalidationCount.fetch_add(1, std::memory_order_release); },
+        Qt::DirectConnection);
     window.setWidth(1920);
     window.setHeight(1080);
     auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
@@ -144,6 +162,7 @@ int main(int argc, char** argv) {
     std::uint64_t pausePresentedCount = 0;
     std::uint64_t decodeFailureCountBeforeFault = 0;
     std::weak_ptr<mvm::preview::PreviewEngine> detachedEngine;
+    std::uint64_t idleRenderPassCount = 0;
     std::int64_t pausePosition = -1;
     mvm::preview::internal::P5CRuntimeDiagnostics activeDiagnostics;
     const auto started = std::chrono::steady_clock::now();
@@ -161,11 +180,31 @@ int main(int argc, char** argv) {
             return;
         }
         if (stage == Stage::WaitEngineRelease) {
-            surface->requestRenderUpdate();
             if (!detachedEngine.expired())
                 return;
-            std::printf("{\"verdict\":\"PASS\",\"engine_lifetime_retained\":true}\n");
+            idleRenderPassCount = renderPassCount.load(std::memory_order_relaxed);
+            stage = Stage::WaitRenderIdle;
+            stageStarted = now;
+            return;
+        }
+        if (stage == Stage::WaitRenderIdle) {
+            if (now - stageStarted < std::chrono::milliseconds(300))
+                return;
+            const bool idle = renderPassCount.load(std::memory_order_relaxed) ==
+                              idleRenderPassCount;
+            std::printf("{\"verdict\":\"%s\",\"engine_lifetime_retained\":true,"
+                        "\"detached_render_idle\":%s}\n",
+                        idle ? "PASS" : "FAIL", idle ? "true" : "false");
+            exitCode = idle ? 0 : 17;
             app.quit();
+            return;
+        }
+        if (stage == Stage::WaitRendererInvalidation) {
+            if (sceneGraphInvalidationCount.load(std::memory_order_acquire) == 0)
+                return;
+            window.show();
+            stage = Stage::WaitRendererResume;
+            stageStarted = now;
             return;
         }
         const auto status = engine->status();
@@ -267,6 +306,14 @@ int main(int argc, char** argv) {
                 stage = Stage::WaitEngineRelease;
                 return;
             }
+            if (fault == Fault::RendererRecreation) {
+                pausePresentedCount = telemetry.presentedFrameCount;
+                window.setPersistentSceneGraph(false);
+                window.hide();
+                stage = Stage::WaitRendererInvalidation;
+                stageStarted = now;
+                return;
+            }
             if (fault != Fault::None) {
                 bool injected = false;
                 if (fault == Fault::GpuDrain) {
@@ -315,6 +362,22 @@ int main(int argc, char** argv) {
                 return;
             }
             stage = Stage::WaitResume;
+        } else if (stage == Stage::WaitRendererResume) {
+            if (status.state == mvm::preview::PreviewEngineState::Error) {
+                exitCode = 18;
+                app.quit();
+                return;
+            }
+            if (telemetry.presentedFrameCount >= pausePresentedCount + 8) {
+                activeDiagnostics =
+                    mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+                if (!engine->requestShutdown()) {
+                    exitCode = 19;
+                    app.quit();
+                    return;
+                }
+                stage = Stage::WaitShutdown;
+            }
         } else if (stage == Stage::WaitResume &&
                    telemetry.presentedFrameCount >= pausePresentedCount + 8) {
             activeDiagnostics =
@@ -408,7 +471,6 @@ int main(int argc, char** argv) {
             exitCode = pass ? 0 : 9;
             app.quit();
         }
-        surface->requestRenderUpdate();
     });
     timer.start();
     app.exec();

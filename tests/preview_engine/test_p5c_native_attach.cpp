@@ -303,22 +303,30 @@ int main() {
         require(replacedComplete && replaced.status().state == PreviewEngineState::Error,
                 "engine差し替え後に旧runtimeをterminal Errorまでteardownできませんでした");
 
-        PreviewEngine finalDetach;
-        auto finalDetachSink = std::make_shared<RecordingSink>();
-        require(finalDetach.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),
-                "final renderer detach test initializeに失敗しました");
-        require(finalDetach.attachEventSink(finalDetachSink),
-                "final renderer detach sink attachに失敗しました");
-        require(
-            PreviewRenderPort::acquireNativeD3D11Device(finalDetach, deviceA.get(), contextA.get()),
-            "final renderer detach native attachに失敗しました");
-        require(PreviewRenderPort::completeRendererDetach(finalDetach),
-                "active rendererの最終detach handshakeに失敗しました");
-        require(finalDetach.status().state == PreviewEngineState::Error &&
-                    finalDetachSink->errors.size() == 1 &&
-                    finalDetachSink->errors.front().detail.find("renderer破棄") !=
-                        std::string::npos,
-                "active renderer最終detachをfail-closed terminalにできませんでした");
+        PreviewEngine temporaryDetach;
+        auto temporaryDetachSink = std::make_shared<RecordingSink>();
+        require(temporaryDetach.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),
+                "temporary renderer detach test initializeに失敗しました");
+        require(temporaryDetach.attachEventSink(temporaryDetachSink),
+                "temporary renderer detach sink attachに失敗しました");
+        require(PreviewRenderPort::acquireNativeD3D11Device(temporaryDetach, deviceA.get(),
+                                                            contextA.get()),
+                "temporary renderer detach native attachに失敗しました");
+        require(PreviewRenderPort::completeRendererDetach(temporaryDetach),
+                "active rendererの一時detachに失敗しました");
+        require(temporaryDetach.status().state == PreviewEngineState::ReadyPaused &&
+                    temporaryDetachSink->errors.empty() &&
+                    PreviewRenderPort::nativeRuntimeAttached(temporaryDetach),
+                "一時的なrenderer破棄でactive sessionを終了しました");
+        require(PreviewRenderPort::acquireNativeD3D11Device(temporaryDetach, deviceA.get(),
+                                                            contextA.get()),
+                "後継rendererへnative runtimeを引き継げませんでした");
+        require(temporaryDetach.requestShutdown(),
+                "temporary renderer detach test shutdown requestに失敗しました");
+        require(PreviewRenderPort::completeRendererDetach(temporaryDetach),
+                "temporary renderer detach test cleanupに失敗しました");
+        require(temporaryDetach.status().state == PreviewEngineState::Shutdown,
+                "temporary renderer detach testを安全に終了できませんでした");
 
         PreviewEngine requestedDetach;
         auto requestedDetachSink = std::make_shared<RecordingSink>();

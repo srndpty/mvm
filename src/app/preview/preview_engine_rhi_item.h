@@ -20,8 +20,6 @@ public:
 
     std::shared_ptr<preview::PreviewEngine> engine() const { return engine_; }
 
-    void requestRenderUpdate();
-
 protected:
     QQuickRhiItemRenderer* createRenderer() override;
 

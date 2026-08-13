@@ -788,11 +788,13 @@ if(MVM_ENABLE_QT)
         ARGS --shutdown-before-attach)
     mvm_add_p5c_product_test(preview_engine_p5c_engine_lifetime_detach
         ARGS --engine-lifetime-detach)
+    mvm_add_p5c_product_test(preview_engine_p5c_renderer_recreation
+        ARGS --renderer-recreation)
 
     list(LENGTH _mvm_p5c_product_tests _mvm_p5c_product_registered)
-    if(NOT _mvm_p5c_product_registered EQUAL 7)
+    if(NOT _mvm_p5c_product_registered EQUAL 8)
         message(FATAL_ERROR
-            "[mvm] P5-C product testの登録数が不正です: ${_mvm_p5c_product_registered}/7")
+            "[mvm] P5-C product testの登録数が不正です: ${_mvm_p5c_product_registered}/8")
     endif()
 endif()
 

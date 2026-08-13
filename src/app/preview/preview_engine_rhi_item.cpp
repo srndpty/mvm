@@ -29,12 +29,14 @@ protected:
     void synchronize(QQuickRhiItem* item) override {
         std::shared_ptr<preview::PreviewEngine> requested =
             static_cast<PreviewEngineRhiItem*>(item)->engine();
-        if (requested == engine_)
+        if (requested == engine_ && !switchPending_)
             return;
         if (engine_) {
             const preview::PreviewEngineState state = engine_->status().state;
             if (state != preview::PreviewEngineState::Shutdown &&
                 state != preview::PreviewEngineState::Error) {
+                pendingEngine_ = std::move(requested);
+                switchPending_ = true;
                 attached_ = attached_ ||
                             preview::internal::PreviewRenderPort::nativeRuntimeAttached(*engine_);
                 if (state != preview::PreviewEngineState::ShuttingDown)
@@ -42,32 +44,43 @@ protected:
                 return;
             }
         }
-        releaseRtv();
-        engine_ = requested;
-        attached_ = false;
-        attachEngine();
+        switchEngine(std::move(requested));
     }
 
     void render(QRhiCommandBuffer* commandBuffer) override {
-        update();
         if (!engine_)
             return;
 
         const preview::PreviewEngineState state = engine_->status().state;
+        if (state == preview::PreviewEngineState::Shutdown ||
+            state == preview::PreviewEngineState::Error)
+            return;
+
         if (state == preview::PreviewEngineState::ShuttingDown) {
             releaseRtv();
             if (!attached_) {
                 // native runtimeを所有していない場合も論理teardownを明示的に完了する。
-                preview::internal::PreviewRenderPort::completeTeardown(*engine_);
+                const auto completed =
+                    preview::internal::PreviewRenderPort::completeTeardown(*engine_);
+                if (completed && switchPending_)
+                    switchEngine(std::move(pendingEngine_));
                 return;
             }
             // 新規submission停止後、borrowed target参照をdevice releaseより先に外す。
             const auto completed =
                 preview::internal::PreviewRenderPort::completeRuntimeTeardown(*engine_);
-            if (completed && completed.value())
+            if (completed && completed.value()) {
                 attached_ = false;
+                if (switchPending_)
+                    switchEngine(std::move(pendingEngine_));
+                return;
+            }
+            // GPU retirement pollがpendingの間だけ次回frameを予約する。
+            update();
             return;
         }
+        // Playing/ReadyPausedでは描画とdevice lost監視を継続する。
+        update();
         if (!attached_)
             return;
         if (detectDeviceLost())
@@ -88,6 +101,18 @@ protected:
     }
 
 private:
+    void switchEngine(std::shared_ptr<preview::PreviewEngine> engine) {
+        releaseRtv();
+        engine_ = std::move(engine);
+        pendingEngine_.reset();
+        switchPending_ = false;
+        attached_ = false;
+        attachEngine();
+        if (engine_ && engine_->status().state != preview::PreviewEngineState::Shutdown &&
+            engine_->status().state != preview::PreviewEngineState::Error)
+            update();
+    }
+
     bool detectDeviceLost() {
         QRhi* renderHardware = rhi();
         const auto* handles =
@@ -164,6 +189,8 @@ private:
     }
 
     std::shared_ptr<preview::PreviewEngine> engine_;
+    std::shared_ptr<preview::PreviewEngine> pendingEngine_;
+    bool switchPending_ = false;
     bool attached_ = false;
     ID3D11Texture2D* rtvTexture_ = nullptr;
     ID3D11RenderTargetView* rtv_ = nullptr;
@@ -177,10 +204,6 @@ PreviewEngineRhiItem::PreviewEngineRhiItem(QQuickItem* parent) : QQuickRhiItem(p
 
 void PreviewEngineRhiItem::setEngine(std::shared_ptr<preview::PreviewEngine> engine) {
     engine_ = std::move(engine);
-    update();
-}
-
-void PreviewEngineRhiItem::requestRenderUpdate() {
     update();
 }
 
