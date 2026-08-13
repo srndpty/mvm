@@ -144,6 +144,8 @@ std::uint64_t skippedSchedulerFrameCount(std::int64_t previousTarget, std::int64
 
 class PreviewRenderPort {
 public:
+    enum class FatalDiagnostic { None, DeviceLost };
+
     static Result<void> attachLogicalDevice(PreviewEngine& engine);
     static Result<void> bindRenderThread(PreviewEngine& engine);
     static Result<void> attachNativeD3D11Device(PreviewEngine& engine, void* device, void* context);
@@ -156,7 +158,8 @@ public:
     static Result<bool> completeRuntimeTeardown(PreviewEngine& engine);
     static Result<void> completeRendererDetach(PreviewEngine& engine);
     static Result<void> completeTeardown(PreviewEngine& engine);
-    static Result<void> injectFatal(PreviewEngine& engine, PreviewError error);
+    static Result<void> injectFatal(PreviewEngine& engine, PreviewError error,
+                                    FatalDiagnostic diagnostic = FatalDiagnostic::None);
     static Result<void> reportRenderTargetFailure(PreviewEngine& engine, long hresult);
     static Result<void> reportDeviceLost(PreviewEngine& engine, long hresult);
     static Result<void> reportUnsupportedRenderBackend(PreviewEngine& engine);

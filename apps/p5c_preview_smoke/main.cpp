@@ -290,11 +290,13 @@ int main(int argc, char** argv) {
         } else if (stage == Stage::WaitShutdown &&
                    (status.state == mvm::preview::PreviewEngineState::Shutdown ||
                     status.state == mvm::preview::PreviewEngineState::Error)) {
+            const bool failureFault = fault == Fault::GpuDrain || fault == Fault::Device ||
+                                      fault == Fault::Decoder;
+            if (failureFault && sink->errors.empty())
+                return;
             const auto terminalTelemetry = engine.telemetry();
             const auto diagnostics =
                 mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(engine);
-            const bool failureFault = fault == Fault::GpuDrain || fault == Fault::Device ||
-                                      fault == Fault::Decoder;
             const bool expectedTerminal =
                 failureFault ? status.state == mvm::preview::PreviewEngineState::Error
                              : status.state == mvm::preview::PreviewEngineState::Shutdown;

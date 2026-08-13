@@ -264,6 +264,8 @@ int main() {
                     pausedDeviceLostSink->errors.front().detail.find("GetDeviceRemovedReason") !=
                         std::string::npos,
                 "pause中のdevice lostがHRESULT付きsession fatalになっていません");
+        require(PreviewRenderPort::runtimeDiagnostics(pausedDeviceLost).deviceLostCount == 1,
+                "実device lostをactive runtime診断へ1件記録していません");
         bool pausedDeviceLostComplete = false;
         for (int attempt = 0; attempt < 8 && !pausedDeviceLostComplete; ++attempt) {
             const Result<bool> teardown =
@@ -274,6 +276,8 @@ int main() {
         require(pausedDeviceLostComplete &&
                     pausedDeviceLost.status().state == PreviewEngineState::Error,
                 "pause中のdevice lostをterminal Errorにできませんでした");
+        require(PreviewRenderPort::runtimeDiagnostics(pausedDeviceLost).deviceLostCount == 1,
+                "実device lostがterminal diagnosticsから失われました");
 
         PreviewEngine replaced;
         auto replacedSink = std::make_shared<RecordingSink>();

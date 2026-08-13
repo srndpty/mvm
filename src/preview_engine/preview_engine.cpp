@@ -482,6 +482,7 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     bool unsafeGpuResourcesRetained = false;
     std::uint64_t lifecycleViolationCount = 0;
     std::uint64_t staleSubstitutionCount = 0;
+    std::uint64_t deviceLostCount = 0;
     internal::P5CRuntimeDiagnostics finalRuntimeDiagnostics;
 
     Result<void> requireControlThread(PreviewOperation operation) const {
@@ -1416,6 +1417,16 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
             engine.impl_->finalRuntimeDiagnostics.fullFrameGpuCopyCount =
                 static_cast<std::uint64_t>(counters.fullFrameGpuCopyCount);
         }
+        engine.impl_->finalRuntimeDiagnostics.deviceLostCount = engine.impl_->deviceLostCount;
+        if (engine.impl_->videoWorker) {
+            const auto mismatchCount = static_cast<std::uint64_t>(
+                engine.impl_->videoWorker->snapshot().deviceMismatchCount);
+            const std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
+            if (mismatchCount > maximum - engine.impl_->finalRuntimeDiagnostics.deviceLostCount)
+                engine.impl_->finalRuntimeDiagnostics.deviceLostCount = maximum;
+            else
+                engine.impl_->finalRuntimeDiagnostics.deviceLostCount += mismatchCount;
+        }
         if (drained) {
             engine.impl_->compositor.reset();
             engine.impl_->videoWorker.reset();
@@ -1510,7 +1521,8 @@ Result<void> PreviewRenderPort::completeTeardown(PreviewEngine& engine) {
     return Result<void>::success();
 }
 
-Result<void> PreviewRenderPort::injectFatal(PreviewEngine& engine, PreviewError error) {
+Result<void> PreviewRenderPort::injectFatal(PreviewEngine& engine, PreviewError error,
+                                            FatalDiagnostic diagnostic) {
     PreviewError recorded = error;
     recorded.severity = PreviewErrorSeverity::FatalToSession;
     {
@@ -1518,6 +1530,10 @@ Result<void> PreviewRenderPort::injectFatal(PreviewEngine& engine, PreviewError 
         Result<void> accepted = engine.impl_->machine.recordFatal(recorded);
         if (!accepted) {
             return accepted;
+        }
+        if (diagnostic == FatalDiagnostic::DeviceLost &&
+            engine.impl_->deviceLostCount != std::numeric_limits<std::uint64_t>::max()) {
+            ++engine.impl_->deviceLostCount;
         }
         engine.impl_->telemetrySnapshot.status.state = PreviewEngineState::ShuttingDown;
         engine.impl_->telemetrySnapshot.status.lastError = engine.impl_->machine.lastError();
@@ -1551,7 +1567,7 @@ Result<void> PreviewRenderPort::reportDeviceLost(PreviewEngine& engine, long hre
     PreviewError error = makeError(PreviewErrorCategory::DeviceFailure,
                                    PreviewOperation::RenderDeviceAttach, detail);
     error.severity = PreviewErrorSeverity::FatalToSession;
-    return injectFatal(engine, std::move(error));
+    return injectFatal(engine, std::move(error), FatalDiagnostic::DeviceLost);
 }
 
 Result<void> PreviewRenderPort::reportUnsupportedRenderBackend(PreviewEngine& engine) {
@@ -1620,6 +1636,7 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
     result.lifecycleViolationCount = engine.impl_->lifecycleViolationCount;
     result.fullCpuReadbackCount =
         static_cast<std::uint64_t>(engine.impl_->readbacks.fullFrameReadbacks());
+    result.deviceLostCount = std::max(result.deviceLostCount, engine.impl_->deviceLostCount);
     if (engine.impl_->videoWorker) {
         const gpu::SourceDecoderSnapshot decoder = engine.impl_->videoWorker->snapshot();
         result.d3d11vaActive = decoder.open && decoder.softwareFrameRejectCount == 0;
@@ -1627,7 +1644,12 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
             decoder.decodeDevicePointer ==
             reinterpret_cast<std::uintptr_t>(engine.impl_->renderDevice->device());
         result.softwareFallbackCount = static_cast<std::uint64_t>(decoder.softwareFrameRejectCount);
-        result.deviceLostCount = static_cast<std::uint64_t>(decoder.deviceMismatchCount);
+        const auto mismatchCount = static_cast<std::uint64_t>(decoder.deviceMismatchCount);
+        const std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
+        if (mismatchCount > maximum - result.deviceLostCount)
+            result.deviceLostCount = maximum;
+        else
+            result.deviceLostCount += mismatchCount;
     }
     if (engine.impl_->compositor) {
         const auto& counters = engine.impl_->compositor->counters();
