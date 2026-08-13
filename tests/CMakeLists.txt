@@ -743,21 +743,54 @@ add_executable(mvm_test_p5c_native_attach
     preview_engine/test_p5c_native_attach.cpp)
 target_link_libraries(mvm_test_p5c_native_attach PRIVATE
     mvm::preview_engine d3d11 mvm::warnings)
+mvm_add_test(preview_engine_p5c_native_attach COMMAND mvm_test_p5c_native_attach
+    PROPERTIES LABELS p5c)
+set_tests_properties(preview_engine_p5c_native_attach PROPERTIES
+    LABELS "p5c;workstation")
 
 set(_p5c_fixture_a "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4")
-if(MVM_ENABLE_QT AND EXISTS "${_p5c_fixture_a}")
-    mvm_add_test(preview_engine_p5c_product_smoke
-        COMMAND mvm_p5c_preview_smoke "${_p5c_fixture_a}"
-        PROPERTIES LABELS p5c TIMEOUT 40)
-    mvm_add_test(preview_engine_p5c_gpu_drain_failure
-        COMMAND mvm_p5c_preview_smoke "${_p5c_fixture_a}" --fault-gpu-drain
-        PROPERTIES LABELS p5c TIMEOUT 40)
-    mvm_add_test(preview_engine_p5c_device_fatal
-        COMMAND mvm_p5c_preview_smoke "${_p5c_fixture_a}" --fault-device
-        PROPERTIES LABELS p5c TIMEOUT 40)
-    mvm_add_test(preview_engine_p5c_shutdown_source_startup
-        COMMAND mvm_p5c_preview_smoke "${_p5c_fixture_a}" --shutdown-source-startup
-        PROPERTIES LABELS p5c TIMEOUT 40)
+set(_p5c_fixture_hint "pwsh scripts/make-p3-fixture.ps1")
+set(_p5c_fixture_wrapper "${CMAKE_SOURCE_DIR}/scripts/run-with-required-fixture.ps1")
+
+mvm_add_test(preview_engine_p5c_fixture_wrapper_contract
+    COMMAND "${MVM_PWSH}" -NoProfile
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/preview_engine/check-required-fixture-wrapper.ps1"
+            -Wrapper "${_p5c_fixture_wrapper}"
+            -PresentFile "${CMAKE_SOURCE_DIR}/CMakeLists.txt"
+            -MissingFile "${CMAKE_CURRENT_BINARY_DIR}/p5c-missing-fixture.mp4"
+    PROPERTIES LABELS p5c)
+
+if(MVM_ENABLE_QT)
+    set(_mvm_p5c_product_tests)
+    macro(mvm_add_p5c_product_test name)
+        cmake_parse_arguments(T "" "" "ARGS" ${ARGN})
+        set(_command
+            "${MVM_PWSH}" -NoProfile -File "${_p5c_fixture_wrapper}"
+            -RequiredFile "${_p5c_fixture_a}" -Hint "${_p5c_fixture_hint}"
+            -Exe "$<TARGET_FILE:mvm_p5c_preview_smoke>")
+        if(T_ARGS)
+            list(JOIN T_ARGS "|" _child_args)
+            list(APPEND _command -ChildArgs "${_child_args}")
+        endif()
+        mvm_add_test(${name} COMMAND ${_command}
+            PROPERTIES LABELS p5c TIMEOUT 40)
+        set_tests_properties(${name} PROPERTIES LABELS "p5c;workstation")
+        list(APPEND _mvm_p5c_product_tests ${name})
+    endmacro()
+
+    mvm_add_p5c_product_test(preview_engine_p5c_product_smoke)
+    mvm_add_p5c_product_test(preview_engine_p5c_gpu_drain_failure ARGS --fault-gpu-drain)
+    mvm_add_p5c_product_test(preview_engine_p5c_device_fatal ARGS --fault-device)
+    mvm_add_p5c_product_test(preview_engine_p5c_shutdown_source_startup
+        ARGS --shutdown-source-startup)
+    mvm_add_p5c_product_test(preview_engine_p5c_pre_attach_shutdown
+        ARGS --shutdown-before-attach)
+
+    list(LENGTH _mvm_p5c_product_tests _mvm_p5c_product_registered)
+    if(NOT _mvm_p5c_product_registered EQUAL 5)
+        message(FATAL_ERROR
+            "[mvm] P5-C product testの登録数が不正です: ${_mvm_p5c_product_registered}/5")
+    endif()
 endif()
 
 add_executable(mvm_test_gpu_pure gpu_preview/test_gpu_pure.cpp)

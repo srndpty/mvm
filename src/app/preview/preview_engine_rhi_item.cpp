@@ -42,20 +42,26 @@ protected:
 
     void render(QRhiCommandBuffer* commandBuffer) override {
         update();
-        if (!engine_ || !attached_)
+        if (!engine_)
             return;
 
         const preview::PreviewEngineState state = engine_->status().state;
         if (state == preview::PreviewEngineState::ShuttingDown) {
-            // 新規submission停止後、borrowed target参照をdevice releaseより先に外す。
             releaseRtv();
-            auto completed =
-                preview::internal::PreviewRenderPort::completeRuntimeTeardown(*engine_);
-            if (completed && completed.value()) {
-                attached_ = false;
+            if (!attached_) {
+                // native runtimeを所有していない場合も論理teardownを明示的に完了する。
+                preview::internal::PreviewRenderPort::completeTeardown(*engine_);
+                return;
             }
+            // 新規submission停止後、borrowed target参照をdevice releaseより先に外す。
+            const auto completed =
+                preview::internal::PreviewRenderPort::completeRuntimeTeardown(*engine_);
+            if (completed && completed.value())
+                attached_ = false;
             return;
         }
+        if (!attached_)
+            return;
         if (state != preview::PreviewEngineState::Playing)
             return;
         if (!ensureRtv(colorTexture()))

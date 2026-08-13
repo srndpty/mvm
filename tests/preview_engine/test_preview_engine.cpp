@@ -822,8 +822,6 @@ void p5cControlAndRenderNegatives() {
     require(wrongThreadAttach.has_value(), "wrong-thread attach resultがありません");
     requireFailure(*wrongThreadAttach, PreviewErrorCategory::InvalidState,
                    "wrong-thread native attachを受理しました");
-    requireFailure(PreviewRenderPort::attachNativeD3D11Device(engine, nullptr, nullptr),
-                   PreviewErrorCategory::DeviceFailure, "null native attachを受理しました");
 
     require(PreviewRenderPort::attachLogicalDevice(engine), "logical test seamに失敗しました");
     requireFailure(engine.addSource({"movie.mp4", true, true}),

@@ -991,6 +991,7 @@ Result<void> PreviewRenderPort::bindRenderThread(PreviewEngine& engine) {
 Result<void> PreviewRenderPort::attachNativeD3D11Device(PreviewEngine& engine, void* device,
                                                         void* context) {
     PreviewDeviceInfo info;
+    std::optional<PreviewError> failure;
     {
         std::lock_guard<std::mutex> lock(engine.impl_->mutex);
         if (!engine.impl_->renderThread ||
@@ -998,62 +999,79 @@ Result<void> PreviewRenderPort::attachNativeD3D11Device(PreviewEngine& engine, v
             return invalidState(PreviewOperation::RenderDeviceAttach,
                                 "native device attachは登録済みrender threadで実行してください");
         }
-        if (!device || !context) {
-            return Result<void>::failure(makeError(PreviewErrorCategory::DeviceFailure,
-                                                   PreviewOperation::RenderDeviceAttach,
-                                                   "D3D11 device/contextがnullです"));
-        }
-        if (engine.impl_->nativeDeviceAttached) {
+        if (engine.impl_->machine.state() != PreviewEngineState::WaitingForRenderDevice) {
             return invalidState(PreviewOperation::RenderDeviceAttach,
-                                "native render deviceは既にattachされています");
+                                "native device attachはdevice attach待ちでのみ実行できます");
         }
-
-        auto* nativeDevice = static_cast<ID3D11Device*>(device);
-        auto* nativeContext = static_cast<ID3D11DeviceContext*>(context);
-        ID3D11Device* contextDevice = nullptr;
-        nativeContext->GetDevice(&contextDevice);
-        const bool sameDevice = contextDevice == nativeDevice;
-        if (contextDevice)
-            contextDevice->Release();
-        if (!sameDevice) {
-            return Result<void>::failure(makeError(PreviewErrorCategory::DeviceFailure,
-                                                   PreviewOperation::RenderDeviceAttach,
-                                                   "contextとdeviceの実体が一致しません"));
-        }
-
-        std::string error;
-        if (!engine.impl_->renderDevice.adopt(nativeDevice, nativeContext, error)) {
-            return Result<void>::failure(makeError(PreviewErrorCategory::DeviceFailure,
-                                                   PreviewOperation::RenderDeviceAttach,
-                                                   "共有D3D11 deviceをadoptできません: " + error));
-        }
-        auto compositor = std::make_unique<gpu::GpuCompositor>();
-        if (!compositor->initializeExternal(engine.impl_->renderDevice, engine.impl_->readbacks,
-                                            error)) {
-            engine.impl_->renderDevice.release();
-            return Result<void>::failure(
+        if (!device || !context) {
+            failure =
                 makeError(PreviewErrorCategory::DeviceFailure, PreviewOperation::RenderDeviceAttach,
-                          "product compositorを初期化できません: " + error));
-        }
-        Result<void> attached = engine.impl_->machine.attachRenderDevice();
-        if (!attached) {
-            std::string ignored;
-            compositor->shutdown(2000, ignored);
-            engine.impl_->renderDevice.release();
-            return attached;
+                          "D3D11 device/contextがnullです");
+        } else {
+            auto* nativeDevice = static_cast<ID3D11Device*>(device);
+            auto* nativeContext = static_cast<ID3D11DeviceContext*>(context);
+            ID3D11Device* contextDevice = nullptr;
+            nativeContext->GetDevice(&contextDevice);
+            const bool sameDevice = contextDevice == nativeDevice;
+            if (contextDevice)
+                contextDevice->Release();
+            if (!sameDevice) {
+                failure = makeError(PreviewErrorCategory::DeviceFailure,
+                                    PreviewOperation::RenderDeviceAttach,
+                                    "contextとdeviceの実体が一致しません");
+            } else {
+                std::string error;
+                if (!engine.impl_->renderDevice.adopt(nativeDevice, nativeContext, error)) {
+                    failure = makeError(PreviewErrorCategory::DeviceFailure,
+                                        PreviewOperation::RenderDeviceAttach,
+                                        "共有D3D11 deviceをadoptできません: " + error);
+                } else {
+                    auto compositor = std::make_unique<gpu::GpuCompositor>();
+                    if (!compositor->initializeExternal(engine.impl_->renderDevice,
+                                                        engine.impl_->readbacks, error)) {
+                        engine.impl_->renderDevice.release();
+                        failure = makeError(PreviewErrorCategory::DeviceFailure,
+                                            PreviewOperation::RenderDeviceAttach,
+                                            "product compositorを初期化できません: " + error);
+                    } else {
+                        Result<void> attached = engine.impl_->machine.attachRenderDevice();
+                        if (!attached) {
+                            std::string ignored;
+                            compositor->shutdown(2000, ignored);
+                            engine.impl_->renderDevice.release();
+                            failure = attached.error();
+                        } else {
+                            engine.impl_->compositor = std::move(compositor);
+                            engine.impl_->nativeDeviceIdentity = device;
+                            engine.impl_->nativeContextIdentity = context;
+                            engine.impl_->nativeDeviceAttached = true;
+                            engine.impl_->deviceReleased = false;
+                            const gpu::AdapterInfo& adapter = engine.impl_->renderDevice.adapter();
+                            info.adapterDescription = adapter.description;
+                            info.adapterLuidLow = adapter.luidLow;
+                            info.adapterLuidHigh = adapter.luidHigh;
+                            engine.impl_->deviceSnapshot = info;
+                            engine.impl_->telemetrySnapshot.status.state =
+                                PreviewEngineState::ReadyPaused;
+                        }
+                    }
+                }
+            }
         }
 
-        engine.impl_->compositor = std::move(compositor);
-        engine.impl_->nativeDeviceIdentity = device;
-        engine.impl_->nativeContextIdentity = context;
-        engine.impl_->nativeDeviceAttached = true;
-        engine.impl_->deviceReleased = false;
-        const gpu::AdapterInfo& adapter = engine.impl_->renderDevice.adapter();
-        info.adapterDescription = adapter.description;
-        info.adapterLuidLow = adapter.luidLow;
-        info.adapterLuidHigh = adapter.luidHigh;
-        engine.impl_->deviceSnapshot = info;
-        engine.impl_->telemetrySnapshot.status.state = PreviewEngineState::ReadyPaused;
+        if (failure) {
+            failure->severity = PreviewErrorSeverity::FatalToSession;
+            Result<void> recorded = engine.impl_->machine.recordFatal(*failure);
+            if (!recorded)
+                return recorded;
+            engine.impl_->telemetrySnapshot.status.state = PreviewEngineState::ShuttingDown;
+            engine.impl_->telemetrySnapshot.status.lastError = engine.impl_->machine.lastError();
+        }
+    }
+    if (failure) {
+        engine.impl_->notify(ErrorOccurredEvent{*failure});
+        engine.impl_->notify(StateChangedEvent{PreviewEngineState::ShuttingDown});
+        return Result<void>::failure(*failure);
     }
     engine.impl_->notify(DeviceChangedEvent{info});
     engine.impl_->notify(StateChangedEvent{PreviewEngineState::ReadyPaused});

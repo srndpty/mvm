@@ -6,6 +6,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 using namespace mvm::preview;
 using namespace mvm::preview::internal;
@@ -29,6 +30,23 @@ public:
         task();
         return true;
     }
+};
+
+class RecordingSink final : public PreviewEventSink {
+public:
+    void stateChanged(PreviewEngineState state) override { states.push_back(state); }
+
+    void positionChanged(PreviewPosition) override {}
+
+    void framePresented(PresentedFrameInfo) override {}
+
+    void errorOccurred(PreviewError error) override { errors.push_back(std::move(error)); }
+
+    void deviceChanged(PreviewDeviceInfo) override { ++deviceChanges; }
+
+    std::vector<PreviewEngineState> states;
+    std::vector<PreviewError> errors;
+    int deviceChanges = 0;
 };
 
 void require(bool condition, const char* message) {
@@ -69,15 +87,69 @@ int main() {
         require(createDevice(deviceA, contextA), "D3D11 device Aを作成できません");
         require(createDevice(deviceB, contextB), "D3D11 device Bを作成できません");
 
+        PreviewEngine failed;
+        auto failedSink = std::make_shared<RecordingSink>();
+        require(failed.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),
+                "failure engine initializeに失敗しました");
+        require(failed.attachEventSink(failedSink), "failure sink attachに失敗しました");
+        require(PreviewRenderPort::bindRenderThread(failed),
+                "failure render thread bindに失敗しました");
+        const Result<void> mismatch =
+            PreviewRenderPort::attachNativeD3D11Device(failed, deviceA.get(), contextB.get());
+        requireFailure(mismatch, PreviewErrorCategory::DeviceFailure,
+                       "device/context不一致のattachを受理しました");
+        require(mismatch.error().severity == PreviewErrorSeverity::FatalToSession,
+                "attach failureをFatalToSessionとして返していません");
+        require(failed.status().state == PreviewEngineState::ShuttingDown,
+                "attach failureがShuttingDownへ遷移していません");
+        require(failed.status().lastError == mismatch.error(),
+                "engineに正確なattach root failureが残っていません");
+        require(failedSink->errors == std::vector{mismatch.error()},
+                "attach error eventが重複または欠落しています");
+        require(failedSink->states == std::vector{PreviewEngineState::ShuttingDown},
+                "attach failureのShuttingDown eventが重複または欠落しています");
+        require(failedSink->deviceChanges == 0,
+                "失敗したnative deviceをdevice eventで公開しました");
+
+        const std::size_t errorCount = failedSink->errors.size();
+        const std::size_t stateCount = failedSink->states.size();
+        requireFailure(
+            PreviewRenderPort::attachNativeD3D11Device(failed, deviceA.get(), contextA.get()),
+            PreviewErrorCategory::InvalidState, "fatal attach後のsilent retryを受理しました");
+        require(failedSink->errors.size() == errorCount && failedSink->states.size() == stateCount,
+                "retry rejectでerror/state eventを重複発行しました");
+        require(PreviewRenderPort::completeTeardown(failed),
+                "runtime未attachのfatal teardownを完了できません");
+        require(failed.status().state == PreviewEngineState::Error,
+                "attach failureがErrorまでteardownされていません");
+        require(failed.status().lastError == mismatch.error(),
+                "terminal Errorでattach root failureを失いました");
+        require(failedSink->states ==
+                    std::vector{PreviewEngineState::ShuttingDown, PreviewEngineState::Error},
+                "attach failureのterminal state event順序が違います");
+        require(failedSink->errors.size() == 1,
+                "terminal completionでattach error eventを重複発行しました");
+        require(failed.requestShutdown(), "terminal Errorのshutdownがidempotentではありません");
+
+        PreviewEngine nullFailed;
+        require(nullFailed.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),
+                "null failure engine initializeに失敗しました");
+        require(PreviewRenderPort::bindRenderThread(nullFailed),
+                "null failure render thread bindに失敗しました");
+        requireFailure(PreviewRenderPort::attachNativeD3D11Device(nullFailed, nullptr, nullptr),
+                       PreviewErrorCategory::DeviceFailure, "null attachを受理しました");
+        require(nullFailed.status().state == PreviewEngineState::ShuttingDown,
+                "null attach failureをShuttingDownにしませんでした");
+        require(PreviewRenderPort::completeTeardown(nullFailed),
+                "null attach failureのteardownを完了できません");
+        require(nullFailed.status().state == PreviewEngineState::Error,
+                "null attach failureをterminal Errorにしませんでした");
+
         PreviewEngine engine;
         require(engine.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),
-                "engine initializeに失敗しました");
-        require(PreviewRenderPort::bindRenderThread(engine), "render thread bindに失敗しました");
-        requireFailure(PreviewRenderPort::attachNativeD3D11Device(engine, nullptr, nullptr),
-                       PreviewErrorCategory::DeviceFailure, "null attachを受理しました");
-        requireFailure(
-            PreviewRenderPort::attachNativeD3D11Device(engine, deviceA.get(), contextB.get()),
-            PreviewErrorCategory::DeviceFailure, "device/context不一致のattachを受理しました");
+                "success engine initializeに失敗しました");
+        require(PreviewRenderPort::bindRenderThread(engine),
+                "success render thread bindに失敗しました");
         require(PreviewRenderPort::attachNativeD3D11Device(engine, deviceA.get(), contextA.get()),
                 "compatible native attachに失敗しました");
         require(engine.status().state == PreviewEngineState::ReadyPaused,

@@ -53,7 +53,7 @@ public:
 };
 
 enum class Stage { WaitDevice, WaitInitial, PauseHold, WaitResume, WaitShutdown };
-enum class Fault { None, GpuDrain, Device, SourceStartupShutdown };
+enum class Fault { None, GpuDrain, Device, SourceStartupShutdown, PreAttachShutdown };
 
 } // namespace
 
@@ -63,7 +63,8 @@ int main(int argc, char** argv) {
     const QStringList arguments = app.arguments();
     if (arguments.size() < 2 || arguments.size() > 3) {
         std::fprintf(stderr, "使い方: mvm_p5c_preview_smoke <fixture-a-path> "
-                             "[--fault-gpu-drain|--fault-device|--shutdown-source-startup]\n");
+                             "[--fault-gpu-drain|--fault-device|--shutdown-source-startup|"
+                             "--shutdown-before-attach]\n");
         return 2;
     }
     Fault fault = Fault::None;
@@ -74,6 +75,8 @@ int main(int argc, char** argv) {
             fault = Fault::Device;
         else if (arguments[2] == "--shutdown-source-startup")
             fault = Fault::SourceStartupShutdown;
+        else if (arguments[2] == "--shutdown-before-attach")
+            fault = Fault::PreAttachShutdown;
         else
             return 2;
     }
@@ -108,9 +111,12 @@ int main(int argc, char** argv) {
     surface->setWidth(1920);
     surface->setHeight(1080);
     surface->setEngine(&engine);
+    if (fault == Fault::PreAttachShutdown && !engine.requestShutdown())
+        return 15;
     window.show();
 
-    Stage stage = Stage::WaitDevice;
+    Stage stage =
+        fault == Fault::PreAttachShutdown ? Stage::WaitShutdown : Stage::WaitDevice;
     mvm::preview::AcceptedComposition accepted;
     std::uint64_t pausePresentedCount = 0;
     std::int64_t pausePosition = -1;
@@ -278,7 +284,13 @@ int main(int argc, char** argv) {
             const bool expectedTerminal =
                 failureFault ? status.state == mvm::preview::PreviewEngineState::Error
                              : status.state == mvm::preview::PreviewEngineState::Shutdown;
-            const bool needsPresentedFrames = fault != Fault::SourceStartupShutdown;
+            const bool preAttachShutdown = fault == Fault::PreAttachShutdown;
+            const bool needsPresentedFrames =
+                fault != Fault::SourceStartupShutdown && !preAttachShutdown;
+            const bool runtimeTeardownPass =
+                preAttachShutdown ||
+                (diagnostics.workerJoined && diagnostics.renderTeardownComplete &&
+                 diagnostics.deviceReleased);
             const bool pass =
                 expectedTerminal && !sink->sequenceViolation &&
                 (!needsPresentedFrames ||
@@ -296,8 +308,7 @@ int main(int argc, char** argv) {
                 diagnostics.untrackedSubmissionCount == 0 &&
                 diagnostics.earlyPayloadReleaseCount == 0 &&
                 diagnostics.retirementTimeoutCount == 0 &&
-                diagnostics.lifecycleViolationCount == 0 && diagnostics.workerJoined &&
-                diagnostics.renderTeardownComplete && diagnostics.deviceReleased &&
+                diagnostics.lifecycleViolationCount == 0 && runtimeTeardownPass &&
                 telemetry.eventDeliveryFailureCount == 0;
             const double seconds = std::chrono::duration<double>(now - started).count();
             std::printf(
