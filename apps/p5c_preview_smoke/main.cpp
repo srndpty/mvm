@@ -55,8 +55,23 @@ public:
     bool sequenceViolation = false;
 };
 
-enum class Stage { WaitDevice, WaitInitial, PauseHold, WaitResume, WaitShutdown };
-enum class Fault { None, GpuDrain, Device, Decoder, SourceStartupShutdown, PreAttachShutdown };
+enum class Stage {
+    WaitDevice,
+    WaitInitial,
+    PauseHold,
+    WaitResume,
+    WaitShutdown,
+    WaitEngineRelease
+};
+enum class Fault {
+    None,
+    GpuDrain,
+    Device,
+    Decoder,
+    SourceStartupShutdown,
+    PreAttachShutdown,
+    EngineLifetimeDetach
+};
 
 } // namespace
 
@@ -68,7 +83,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "使い方: mvm_p5c_preview_smoke <fixture-a-path> "
                              "[--fault-gpu-drain|--fault-device|--fault-decoder|"
                              "--shutdown-source-startup|"
-                             "--shutdown-before-attach]\n");
+                             "--shutdown-before-attach|--engine-lifetime-detach]\n");
         return 2;
     }
     Fault fault = Fault::None;
@@ -83,6 +98,8 @@ int main(int argc, char** argv) {
             fault = Fault::SourceStartupShutdown;
         else if (arguments[2] == "--shutdown-before-attach")
             fault = Fault::PreAttachShutdown;
+        else if (arguments[2] == "--engine-lifetime-detach")
+            fault = Fault::EngineLifetimeDetach;
         else
             return 2;
     }
@@ -95,14 +112,14 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    mvm::preview::PreviewEngine engine;
+    auto engine = std::make_shared<mvm::preview::PreviewEngine>();
     auto dispatcher = std::make_shared<QtDispatcher>(&app);
     auto sink = std::make_shared<SmokeSink>();
-    auto initialized = engine.initialize({{{60, 1}}}, dispatcher);
-    if (!initialized || !engine.attachEventSink(sink))
+    auto initialized = engine->initialize({{{60, 1}}}, dispatcher);
+    if (!initialized || !engine->attachEventSink(sink))
         return 3;
-    const auto beforeAttachPlay = engine.play();
-    const auto beforeAttachSource = engine.addSource({arguments[1].toStdWString(), true, false});
+    const auto beforeAttachPlay = engine->play();
+    const auto beforeAttachSource = engine->addSource({arguments[1].toStdWString(), true, false});
     if (beforeAttachPlay ||
         beforeAttachPlay.error().category != mvm::preview::PreviewErrorCategory::InvalidState ||
         beforeAttachSource ||
@@ -116,8 +133,8 @@ int main(int argc, char** argv) {
     auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
     surface->setWidth(1920);
     surface->setHeight(1080);
-    surface->setEngine(&engine);
-    if (fault == Fault::PreAttachShutdown && !engine.requestShutdown())
+    surface->setEngine(engine);
+    if (fault == Fault::PreAttachShutdown && !engine->requestShutdown())
         return 15;
     window.show();
 
@@ -126,6 +143,7 @@ int main(int argc, char** argv) {
     mvm::preview::AcceptedComposition accepted;
     std::uint64_t pausePresentedCount = 0;
     std::uint64_t decodeFailureCountBeforeFault = 0;
+    std::weak_ptr<mvm::preview::PreviewEngine> detachedEngine;
     std::int64_t pausePosition = -1;
     mvm::preview::internal::P5CRuntimeDiagnostics activeDiagnostics;
     const auto started = std::chrono::steady_clock::now();
@@ -142,8 +160,16 @@ int main(int argc, char** argv) {
             app.quit();
             return;
         }
-        const auto status = engine.status();
-        const auto telemetry = engine.telemetry();
+        if (stage == Stage::WaitEngineRelease) {
+            surface->requestRenderUpdate();
+            if (!detachedEngine.expired())
+                return;
+            std::printf("{\"verdict\":\"PASS\",\"engine_lifetime_retained\":true}\n");
+            app.quit();
+            return;
+        }
+        const auto status = engine->status();
+        const auto telemetry = engine->telemetry();
         if (stage == Stage::WaitDevice &&
             status.state == mvm::preview::PreviewEngineState::ReadyPaused) {
             const QFileInfo fixtureInfo(arguments[1]);
@@ -151,9 +177,9 @@ int main(int argc, char** argv) {
                 (fixtureInfo.absoluteFilePath() + ".missing").toStdWString();
             const std::filesystem::path noVideo =
                 fixtureInfo.dir().filePath("manifest.json").toStdWString();
-            const auto missingResult = engine.addSource({missing, true, false});
-            const auto noVideoResult = engine.addSource({noVideo, true, false});
-            const auto audioResult = engine.addSource({arguments[1].toStdWString(), true, true});
+            const auto missingResult = engine->addSource({missing, true, false});
+            const auto noVideoResult = engine->addSource({noVideo, true, false});
+            const auto audioResult = engine->addSource({arguments[1].toStdWString(), true, true});
             if (missingResult || noVideoResult || audioResult ||
                 missingResult.error().category !=
                     mvm::preview::PreviewErrorCategory::DecodeFailure ||
@@ -168,26 +194,26 @@ int main(int argc, char** argv) {
             mvm::preview::PreviewSourceDescriptor descriptor;
             descriptor.mediaPath = arguments[1].toStdWString();
             descriptor.videoEnabled = true;
-            auto source = engine.addSource(descriptor);
+            auto source = engine->addSource(descriptor);
             if (!source) {
                 std::fprintf(stderr, "source open失敗: %s\n", source.error().detail.c_str());
                 exitCode = 4;
                 app.quit();
                 return;
             }
-            const auto second = engine.addSource(descriptor);
+            const auto second = engine->addSource(descriptor);
             const auto empty =
-                engine.submitComposition(std::make_shared<mvm::preview::CompositionSnapshot>());
+                engine->submitComposition(std::make_shared<mvm::preview::CompositionSnapshot>());
             auto unknownSnapshot = std::make_shared<mvm::preview::CompositionSnapshot>();
             unknownSnapshot->layers.push_back(
                 {{source.value().value + 100}, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
-            const auto unknown = engine.submitComposition(unknownSnapshot);
+            const auto unknown = engine->submitComposition(unknownSnapshot);
             auto twoLayerSnapshot = std::make_shared<mvm::preview::CompositionSnapshot>();
             twoLayerSnapshot->layers.push_back({source.value(), {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
             twoLayerSnapshot->layers.push_back({source.value(), {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
-            const auto twoLayer = engine.submitComposition(twoLayerSnapshot);
-            const auto playWithoutComposition = engine.play();
-            const auto pauseOutsidePlaying = engine.pause();
+            const auto twoLayer = engine->submitComposition(twoLayerSnapshot);
+            const auto playWithoutComposition = engine->play();
+            const auto pauseOutsidePlaying = engine->pause();
             if (second || empty || unknown || twoLayer || playWithoutComposition ||
                 pauseOutsidePlaying ||
                 second.error().category !=
@@ -205,7 +231,7 @@ int main(int argc, char** argv) {
                 return;
             }
             if (fault == Fault::SourceStartupShutdown) {
-                if (!engine.requestShutdown()) {
+                if (!engine->requestShutdown()) {
                     exitCode = 14;
                     app.quit();
                     return;
@@ -215,12 +241,12 @@ int main(int argc, char** argv) {
             }
             auto snapshot = std::make_shared<mvm::preview::CompositionSnapshot>();
             snapshot->layers.push_back({source.value(), {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
-            auto composition = engine.submitComposition(snapshot);
-            const auto seek = engine.seek({0});
+            auto composition = engine->submitComposition(snapshot);
+            const auto seek = engine->seek({0});
             if (!composition || seek ||
                 seek.error().category !=
                     mvm::preview::PreviewErrorCategory::UnsupportedCapability ||
-                !engine.play()) {
+                !engine->play()) {
                 exitCode = 5;
                 app.quit();
                 return;
@@ -229,14 +255,26 @@ int main(int argc, char** argv) {
             stage = Stage::WaitInitial;
             stageStarted = now;
         } else if (stage == Stage::WaitInitial && telemetry.presentedFrameCount >= 12) {
+            if (fault == Fault::EngineLifetimeDetach) {
+                detachedEngine = engine;
+                surface->setEngine({});
+                engine.reset();
+                if (detachedEngine.expired()) {
+                    exitCode = 16;
+                    app.quit();
+                    return;
+                }
+                stage = Stage::WaitEngineRelease;
+                return;
+            }
             if (fault != Fault::None) {
                 bool injected = false;
                 if (fault == Fault::GpuDrain) {
                     injected = static_cast<bool>(
                         mvm::preview::internal::PreviewRenderPort::injectGpuDrainFailureForTest(
-                            engine));
+                            *engine));
                     if (injected)
-                        injected = static_cast<bool>(engine.requestShutdown());
+                        injected = static_cast<bool>(engine->requestShutdown());
                 } else if (fault == Fault::Device) {
                     mvm::preview::PreviewError error;
                     error.category = mvm::preview::PreviewErrorCategory::DeviceFailure;
@@ -244,12 +282,12 @@ int main(int argc, char** argv) {
                     error.operation = mvm::preview::PreviewOperation::RenderDeviceAttach;
                     error.detail = "P5-C injected device fatal";
                     injected = static_cast<bool>(
-                        mvm::preview::internal::PreviewRenderPort::injectFatal(engine, error));
+                        mvm::preview::internal::PreviewRenderPort::injectFatal(*engine, error));
                 } else {
                     decodeFailureCountBeforeFault = telemetry.decodeFailureCount;
                     injected = static_cast<bool>(
                         mvm::preview::internal::PreviewRenderPort::injectDecoderFatalForTest(
-                            engine, "P5-C injected decoder fatal"));
+                            *engine, "P5-C injected decoder fatal"));
                 }
                 if (!injected) {
                     exitCode = 13;
@@ -259,7 +297,7 @@ int main(int argc, char** argv) {
                 stage = Stage::WaitShutdown;
                 return;
             }
-            if (!engine.pause()) {
+            if (!engine->pause()) {
                 exitCode = 6;
                 app.quit();
                 return;
@@ -271,7 +309,7 @@ int main(int argc, char** argv) {
         } else if (stage == Stage::PauseHold &&
                    now - stageStarted > std::chrono::milliseconds(500)) {
             if (telemetry.presentedFrameCount != pausePresentedCount ||
-                status.position.outputFrame != pausePosition || !engine.play()) {
+                status.position.outputFrame != pausePosition || !engine->play()) {
                 exitCode = 7;
                 app.quit();
                 return;
@@ -280,8 +318,8 @@ int main(int argc, char** argv) {
         } else if (stage == Stage::WaitResume &&
                    telemetry.presentedFrameCount >= pausePresentedCount + 8) {
             activeDiagnostics =
-                mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(engine);
-            if (!engine.requestShutdown()) {
+                mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+            if (!engine->requestShutdown()) {
                 exitCode = 8;
                 app.quit();
                 return;
@@ -294,9 +332,9 @@ int main(int argc, char** argv) {
                                       fault == Fault::Decoder;
             if (failureFault && sink->errors.empty())
                 return;
-            const auto terminalTelemetry = engine.telemetry();
+            const auto terminalTelemetry = engine->telemetry();
             const auto diagnostics =
-                mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(engine);
+                mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
             const bool expectedTerminal =
                 failureFault ? status.state == mvm::preview::PreviewEngineState::Error
                              : status.state == mvm::preview::PreviewEngineState::Shutdown;

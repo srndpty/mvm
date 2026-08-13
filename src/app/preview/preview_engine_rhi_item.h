@@ -3,19 +3,22 @@
 
 #include "preview_engine/preview_engine.h"
 
+#include <memory>
+
 #include <QQuickRhiItem>
 
 namespace mvm::app {
 
-// P5-C product用の薄いQt隔離層。engineとnative targetの所有権は持たない。
+// P5-C product用の薄いQt隔離層。native targetは所有しないが、engineはrendererの
+// 切替完了まで共有所有し、GUI側の即時破棄によるuse-after-freeを防ぐ。
 class PreviewEngineRhiItem final : public QQuickRhiItem {
     Q_OBJECT
 public:
     explicit PreviewEngineRhiItem(QQuickItem* parent = nullptr);
 
-    void setEngine(preview::PreviewEngine* engine);
+    void setEngine(std::shared_ptr<preview::PreviewEngine> engine);
 
-    preview::PreviewEngine* engine() const { return engine_; }
+    std::shared_ptr<preview::PreviewEngine> engine() const { return engine_; }
 
     void requestRenderUpdate();
 
@@ -23,7 +26,7 @@ protected:
     QQuickRhiItemRenderer* createRenderer() override;
 
 private:
-    preview::PreviewEngine* engine_ = nullptr;
+    std::shared_ptr<preview::PreviewEngine> engine_;
 };
 
 } // namespace mvm::app

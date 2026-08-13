@@ -5,6 +5,7 @@
 #include <d3d11.h>
 #include <rhi/qrhi.h>
 #include <rhi/qrhi_platform.h>
+#include <utility>
 
 #include <QColor>
 
@@ -13,7 +14,8 @@ namespace {
 
 class PreviewEngineRhiRenderer final : public QQuickRhiItemRenderer {
 public:
-    explicit PreviewEngineRhiRenderer(preview::PreviewEngine* engine) : engine_(engine) {}
+    explicit PreviewEngineRhiRenderer(std::shared_ptr<preview::PreviewEngine> engine)
+        : engine_(std::move(engine)) {}
 
     ~PreviewEngineRhiRenderer() override {
         releaseRtv();
@@ -25,7 +27,8 @@ protected:
     void initialize(QRhiCommandBuffer*) override { attachEngine(); }
 
     void synchronize(QQuickRhiItem* item) override {
-        preview::PreviewEngine* requested = static_cast<PreviewEngineRhiItem*>(item)->engine();
+        std::shared_ptr<preview::PreviewEngine> requested =
+            static_cast<PreviewEngineRhiItem*>(item)->engine();
         if (requested == engine_)
             return;
         if (engine_) {
@@ -160,7 +163,7 @@ private:
         rtvTexture_ = nullptr;
     }
 
-    preview::PreviewEngine* engine_ = nullptr;
+    std::shared_ptr<preview::PreviewEngine> engine_;
     bool attached_ = false;
     ID3D11Texture2D* rtvTexture_ = nullptr;
     ID3D11RenderTargetView* rtv_ = nullptr;
@@ -172,8 +175,8 @@ PreviewEngineRhiItem::PreviewEngineRhiItem(QQuickItem* parent) : QQuickRhiItem(p
     setMirrorVertically(true);
 }
 
-void PreviewEngineRhiItem::setEngine(preview::PreviewEngine* engine) {
-    engine_ = engine;
+void PreviewEngineRhiItem::setEngine(std::shared_ptr<preview::PreviewEngine> engine) {
+    engine_ = std::move(engine);
     update();
 }
 
