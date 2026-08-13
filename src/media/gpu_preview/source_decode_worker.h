@@ -179,6 +179,8 @@ public:
 
     void injectFatalForTest(const std::string& err) { noteFatal(err); }
 
+    void injectEofForTest();
+
     void armAfterInitialSpaceBarrierForTest();
     bool waitAfterInitialSpaceBarrierForTest(int timeoutMs);
     void releaseAfterInitialSpaceBarrierForTest();

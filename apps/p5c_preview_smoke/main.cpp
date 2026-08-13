@@ -65,7 +65,8 @@ enum class Stage {
     WaitEngineRelease,
     WaitRenderIdle,
     WaitRendererInvalidation,
-    WaitRendererResume
+    WaitRendererResume,
+    WaitEofIdle
 };
 enum class Fault {
     None,
@@ -75,7 +76,8 @@ enum class Fault {
     SourceStartupShutdown,
     PreAttachShutdown,
     EngineLifetimeDetach,
-    RendererRecreation
+    RendererRecreation,
+    DecoderEof
 };
 
 } // namespace
@@ -90,7 +92,7 @@ int main(int argc, char** argv) {
                              "[--fault-gpu-drain|--fault-device|--fault-decoder|"
                              "--shutdown-source-startup|"
                              "--shutdown-before-attach|--engine-lifetime-detach|"
-                             "--renderer-recreation]\n");
+                             "--renderer-recreation|--decoder-eof]\n");
         return 2;
     }
     Fault fault = Fault::None;
@@ -109,6 +111,8 @@ int main(int argc, char** argv) {
             fault = Fault::EngineLifetimeDetach;
         else if (arguments[2] == "--renderer-recreation")
             fault = Fault::RendererRecreation;
+        else if (arguments[2] == "--decoder-eof")
+            fault = Fault::DecoderEof;
         else
             return 2;
     }
@@ -163,6 +167,7 @@ int main(int argc, char** argv) {
     std::uint64_t decodeFailureCountBeforeFault = 0;
     std::weak_ptr<mvm::preview::PreviewEngine> detachedEngine;
     std::uint64_t idleRenderPassCount = 0;
+    std::uint64_t eofDroppedFrameCount = 0;
     std::int64_t pausePosition = -1;
     mvm::preview::internal::P5CRuntimeDiagnostics activeDiagnostics;
     const auto started = std::chrono::steady_clock::now();
@@ -205,6 +210,27 @@ int main(int argc, char** argv) {
             window.show();
             stage = Stage::WaitRendererResume;
             stageStarted = now;
+            return;
+        }
+        if (stage == Stage::WaitEofIdle) {
+            if (now - stageStarted < std::chrono::milliseconds(300))
+                return;
+            const auto eofTelemetry = engine->telemetry();
+            const auto eofDiagnostics =
+                mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+            const bool pass = eofTelemetry.droppedFrameCount == eofDroppedFrameCount &&
+                              renderPassCount.load(std::memory_order_relaxed) ==
+                                  idleRenderPassCount &&
+                              eofTelemetry.status.state ==
+                                  mvm::preview::PreviewEngineState::Shutdown &&
+                              eofDiagnostics.renderTeardownComplete &&
+                              eofDiagnostics.deviceReleased && sink->errors.empty();
+            std::printf("{\"verdict\":\"%s\",\"eof_render_idle\":%s,"
+                        "\"dropped_stable\":%s}\n",
+                        pass ? "PASS" : "FAIL", pass ? "true" : "false",
+                        pass ? "true" : "false");
+            exitCode = pass ? 0 : 20;
+            app.quit();
             return;
         }
         const auto status = engine->status();
@@ -314,6 +340,15 @@ int main(int argc, char** argv) {
                 stageStarted = now;
                 return;
             }
+            if (fault == Fault::DecoderEof) {
+                if (!mvm::preview::internal::PreviewRenderPort::injectDecoderEofForTest(*engine)) {
+                    exitCode = 21;
+                    app.quit();
+                    return;
+                }
+                stage = Stage::WaitShutdown;
+                return;
+            }
             if (fault != Fault::None) {
                 bool injected = false;
                 if (fault == Fault::GpuDrain) {
@@ -391,6 +426,18 @@ int main(int argc, char** argv) {
         } else if (stage == Stage::WaitShutdown &&
                    (status.state == mvm::preview::PreviewEngineState::Shutdown ||
                     status.state == mvm::preview::PreviewEngineState::Error)) {
+            if (fault == Fault::DecoderEof) {
+                if (status.state != mvm::preview::PreviewEngineState::Shutdown) {
+                    exitCode = 22;
+                    app.quit();
+                    return;
+                }
+                eofDroppedFrameCount = telemetry.droppedFrameCount;
+                idleRenderPassCount = renderPassCount.load(std::memory_order_relaxed);
+                stage = Stage::WaitEofIdle;
+                stageStarted = now;
+                return;
+            }
             const bool failureFault = fault == Fault::GpuDrain || fault == Fault::Device ||
                                       fault == Fault::Decoder;
             if (failureFault && sink->errors.empty())

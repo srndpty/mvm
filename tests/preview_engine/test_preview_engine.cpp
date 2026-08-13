@@ -378,7 +378,10 @@ void compositionDomains() {
 
 void compositionIdentityAndCapabilities() {
     const auto sources = twoSources();
-    const PreviewCapabilities capabilities;
+    PreviewCapabilities capabilities;
+    // acceptance algorithm自体の2層順序・distinct source検査用。product公開値は1層。
+    capabilities.maxQualifiedActiveVideoSources = 2;
+    capabilities.maxQualifiedCompositionLayers = 2;
     CompositionAcceptanceState state;
 
     const auto a = snapshot({layer(1)});
@@ -463,6 +466,13 @@ void engineFacadeAndEvents() {
     auto sink = std::make_shared<RecordingSink>();
     sink->engine = &engine;
     require(engine.initialize(qualifiedConfig(), dispatcher), "engine initializeに失敗しました");
+    const PreviewCapabilities productCapabilities = engine.capabilities();
+    require(productCapabilities.maxQualifiedActiveVideoSources == 1 &&
+                productCapabilities.maxQualifiedCompositionLayers == 1 &&
+                productCapabilities.maxQualifiedActiveAudioSources == 0 &&
+                productCapabilities.qualifiedAudioSampleRate == 0 &&
+                productCapabilities.qualifiedAudioChannelCount == 0,
+            "公開capabilityがP5-C product wiringの実装上限と一致しません");
     require(engine.status().state == PreviewEngineState::WaitingForRenderDevice,
             "logical initialize stateが違います");
     require(engine.attachEventSink(sink), "sink attachに失敗しました");

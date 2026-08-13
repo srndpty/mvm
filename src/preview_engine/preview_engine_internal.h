@@ -168,6 +168,7 @@ public:
     static bool nativeRuntimeAttached(const PreviewEngine& engine);
     static Result<void> injectGpuDrainFailureForTest(PreviewEngine& engine);
     static Result<void> injectDecoderFatalForTest(PreviewEngine& engine, std::string detail);
+    static Result<void> injectDecoderEofForTest(PreviewEngine& engine);
     static P5CRuntimeDiagnostics runtimeDiagnostics(const PreviewEngine& engine);
 
     // bounded mailboxのfailure semanticsをbackend接続前に検査するinternal test seam。

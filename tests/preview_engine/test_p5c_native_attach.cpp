@@ -1,11 +1,13 @@
 #include "preview_engine/preview_engine_internal.h"
 
+#include <chrono>
 #include <d3d11.h>
 #include <functional>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace mvm::preview;
@@ -327,6 +329,24 @@ int main() {
                 "temporary renderer detach test cleanupに失敗しました");
         require(temporaryDetach.status().state == PreviewEngineState::Shutdown,
                 "temporary renderer detach testを安全に終了できませんでした");
+
+        PreviewEngine detachedShutdown;
+        require(detachedShutdown.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),
+                "detached shutdown test initializeに失敗しました");
+        require(PreviewRenderPort::acquireNativeD3D11Device(detachedShutdown, deviceA.get(),
+                                                            contextA.get()),
+                "detached shutdown native attachに失敗しました");
+        require(PreviewRenderPort::completeRendererDetach(detachedShutdown),
+                "shutdown前のrenderer detachに失敗しました");
+        require(detachedShutdown.requestShutdown(),
+                "renderer消失後のshutdown requestに失敗しました");
+        for (int attempt = 0;
+             attempt < 200 && detachedShutdown.status().state != PreviewEngineState::Shutdown;
+             ++attempt) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        require(detachedShutdown.status().state == PreviewEngineState::Shutdown,
+                "renderer消失後のstandby authorityがteardownを完了しませんでした");
 
         PreviewEngine requestedDetach;
         auto requestedDetachSink = std::make_shared<RecordingSink>();

@@ -306,8 +306,9 @@ ID、各rectangle field、opacityの差を独立した期待値で検査する�
 - API typeは二layerへhard-codeしない
 - `PreviewCapabilities::maxQualifiedActiveVideoSources`と
   `PreviewCapabilities::maxQualifiedCompositionLayers`を別fieldとして報告する
-- 現在の初期値は`maxQualifiedActiveVideoSources == 2`、
-  `maxQualifiedCompositionLayers == 2`である
+- P5-C product wiringの現在値は`maxQualifiedActiveVideoSources == 1`、
+  `maxQualifiedCompositionLayers == 1`、`maxQualifiedActiveAudioSources == 0`である
+- audio source未対応中はqualified audio sample rate/channel countも0として報告する
 - capabilityを超えるsnapshotはaccept前に`UnsupportedCapability`で拒否する
 - 将来のqualificationはsnapshot formatを変えずにcapabilityを増やせる
 
@@ -317,9 +318,8 @@ sourceはvideo compositionへ参加できない。同一sourceを複数layerへ�
 されていないため、初期capabilityでは`UnsupportedCapability`で拒否する。将来qualificationしてもpublic
 snapshot formatを変更する必要はない。
 
-正式な表現は
-**“Formally validated topology: two simultaneous 1080p60 video sources.”**
-である。二本を恒久的なvideo source数の上限とは表現しない。
+二source/二layerはP5-Eでproduct wiringとformal qualificationを完了した後にcapabilityを引き上げる。
+型が将来の値を表現できることを、現在利用可能な能力として報告しない。
 
 ### 7.5 Composition validation order
 

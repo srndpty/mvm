@@ -428,12 +428,16 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     Impl() : controlThread(std::this_thread::get_id()) {}
 
     ~Impl() {
-        if (!shutdownThread.joinable())
-            return;
-        if (shutdownThread.get_id() == std::this_thread::get_id())
-            shutdownThread.detach();
-        else
-            shutdownThread.join();
+        const auto finish = [](std::thread& thread) {
+            if (!thread.joinable())
+                return;
+            if (thread.get_id() == std::this_thread::get_id())
+                thread.detach();
+            else
+                thread.join();
+        };
+        finish(shutdownThread);
+        finish(detachedTeardownThread);
     }
 
     mutable std::mutex mutex;
@@ -473,6 +477,9 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     std::uint64_t presentationSequence = 0;
     internal::DistinctFrameCounter distinctPresentedFrames;
     std::thread shutdownThread;
+    std::thread detachedTeardownThread;
+    bool rendererDetached = false;
+    bool detachedTeardownStarted = false;
     bool shutdownWorkerStarted = false;
     bool workerJoined = true;
     bool renderTeardownRequested = false;
@@ -1003,6 +1010,7 @@ PreviewDeviceInfo PreviewEngine::deviceInfo() const {
 Result<void> PreviewEngine::requestShutdown() {
     PreviewEngineState before;
     PreviewEngineState after;
+    bool startDetachedTeardown = false;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         Result<void> affinity = impl_->requireControlThread(PreviewOperation::Shutdown);
@@ -1020,10 +1028,33 @@ Result<void> PreviewEngine::requestShutdown() {
             impl_->videoWorker->pause();
         if (impl_->nativeDeviceAttached)
             impl_->startWorkerShutdown();
+        if (impl_->rendererDetached && impl_->nativeDeviceAttached &&
+            !impl_->detachedTeardownStarted) {
+            impl_->detachedTeardownStarted = true;
+            startDetachedTeardown = true;
+        }
         impl_->telemetrySnapshot.status.state = after;
     }
     if (before != after) {
         impl_->notify(internal::StateChangedEvent{after});
+    }
+    if (startDetachedTeardown) {
+        const std::shared_ptr<Impl> retained = impl_;
+        retained->detachedTeardownThread = std::thread([retained] {
+            PreviewEngine authority;
+            authority.impl_ = retained;
+            {
+                std::lock_guard<std::mutex> lock(retained->mutex);
+                retained->renderThread = std::this_thread::get_id();
+            }
+            for (;;) {
+                Result<bool> completed =
+                    internal::PreviewRenderPort::completeRuntimeTeardown(authority);
+                if (!completed || completed.value())
+                    return;
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        });
     }
     return Result<void>::success();
 }
@@ -1142,6 +1173,7 @@ Result<void> PreviewRenderPort::acquireNativeD3D11Device(PreviewEngine& engine, 
         attached = engine.impl_->nativeDeviceAttached;
         if (attached) {
             // renderer再生成後は既存runtimeの所有render threadを新rendererへ移す。
+            engine.impl_->rendererDetached = false;
             engine.impl_->renderThread = std::this_thread::get_id();
             if (engine.impl_->nativeDeviceIdentity == device &&
                 engine.impl_->nativeContextIdentity == context) {
@@ -1200,6 +1232,7 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
     RenderFrameResult result;
     std::optional<PreviewError> fatal;
     bool decoderFatal = false;
+    bool playbackEnded = false;
     {
         std::lock_guard<std::mutex> lock(engine.impl_->mutex);
         if (!engine.impl_->renderThread ||
@@ -1247,6 +1280,14 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                 failure.source = engine.impl_->publicVideoSource;
                 fatal = std::move(failure);
                 decoderFatal = true;
+            } else if (worker.eof) {
+                Result<void> shutdown = engine.impl_->machine.requestShutdown();
+                if (shutdown) {
+                    engine.impl_->schedulerEnabled = false;
+                    engine.impl_->startWorkerShutdown();
+                    engine.impl_->telemetrySnapshot.status.state = PreviewEngineState::ShuttingDown;
+                    playbackEnded = true;
+                }
             } else {
                 if (engine.impl_->telemetrySnapshot.droppedFrameCount !=
                     std::numeric_limits<std::uint64_t>::max()) {
@@ -1336,6 +1377,8 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
         engine.impl_->notify(StateChangedEvent{PreviewEngineState::ShuttingDown});
         return Result<RenderFrameResult>::failure(*fatal);
     }
+    if (playbackEnded)
+        engine.impl_->notify(StateChangedEvent{PreviewEngineState::ShuttingDown});
     if (result.presented) {
         engine.impl_->notify(PositionChangedEvent{result.frame.position});
         engine.impl_->notify(FramePresentedEvent{result.frame});
@@ -1483,9 +1526,14 @@ Result<void> PreviewRenderPort::completeRendererDetach(PreviewEngine& engine) {
         return Result<void>::success();
 
     // scene graph invalidateによる一時破棄ではactive runtimeを保持する。後継rendererが
-    // 同じdevice/contextをacquireし、render thread authorityを引き継ぐ。
-    if (state != PreviewEngineState::ShuttingDown)
+    // 同じdevice/contextをacquireし、render thread authorityを引き継ぐ。後継が無いまま
+    // shutdownされた場合はrequestShutdown()がstandby teardown threadを起動する。
+    if (state != PreviewEngineState::ShuttingDown) {
+        std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+        engine.impl_->rendererDetached = true;
+        engine.impl_->renderThread.reset();
         return Result<void>::success();
+    }
 
     if (!nativeRuntimeAttached(engine))
         return completeTeardown(engine);
@@ -1614,6 +1662,17 @@ Result<void> PreviewRenderPort::injectDecoderFatalForTest(PreviewEngine& engine,
                             "decoder fatal faultは再生中のvideo workerにのみ設定できます");
     }
     engine.impl_->videoWorker->injectFatalForTest(detail);
+    return Result<void>::success();
+}
+
+Result<void> PreviewRenderPort::injectDecoderEofForTest(PreviewEngine& engine) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    if (!engine.impl_->videoWorker ||
+        engine.impl_->machine.state() != PreviewEngineState::Playing) {
+        return invalidState(PreviewOperation::RenderDeviceAttach,
+                            "decoder EOF faultは再生中のvideo workerにのみ設定できます");
+    }
+    engine.impl_->videoWorker->injectEofForTest();
     return Result<void>::success();
 }
 

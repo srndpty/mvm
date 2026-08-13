@@ -394,6 +394,13 @@ void SourceDecodeWorker::noteFatal(const std::string& err) {
     snapshot_.lastError = err;
 }
 
+void SourceDecodeWorker::injectEofForTest() {
+    eof_.store(true, std::memory_order_release);
+    playing_.store(false, std::memory_order_release);
+    buffer_.clear();
+    wake_.notify_all();
+}
+
 bool SourceDecodeWorker::submitWithBackpressure(const DecodedGpuFrame& frame, std::string& err) {
     if (!validateTextureDevice(frame, err)) {
         noteFatal(err);
