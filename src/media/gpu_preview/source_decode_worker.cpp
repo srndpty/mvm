@@ -432,8 +432,12 @@ SeekRequestResult SourceDecodeWorker::requestSeek(long long frameNumber, SeekTic
             setSeekPhase(SeekExecutionPhase::Queued, ticket);
         }
     }
-    if (result == SeekRequestResult::Accepted)
+    if (result == SeekRequestResult::Accepted) {
+        // mailbox 公開後に initial-buffer wait を起こす。buffer mutex の取得は
+        // commandMutex_ 解放後なので mailbox -> buffer の lock inversion を作らない。
+        buffer_.notifyWaiters();
         wake_.notify_all();
+    }
     return result;
 }
 
@@ -582,7 +586,9 @@ void SourceDecodeWorker::run() {
                 --stepsPending_;
         }
 
-        if (!buffer_.waitForSpace(50)) {
+        const SourceBufferSpaceWaitResult initialWait = buffer_.waitForSpaceInterruptible(
+            50, [this] { return seekMailbox_.hasPending(); });
+        if (initialWait != SourceBufferSpaceWaitResult::SpaceAvailable) {
             if (!running() || buffer_.stopped())
                 break;
             std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);

@@ -766,6 +766,13 @@ target_link_libraries(mvm_test_gpu_pure PRIVATE mvm::gpu_preview mvm::warnings)
 # 依存 DLL が解決できず 0xC0000135 で落ちる (実際に落ちた)。
 mvm_add_test(gpu_pure_unit COMMAND mvm_test_gpu_pure)
 
+add_executable(mvm_test_source_frame_buffer_interruptible_wait
+    gpu_preview/test_source_frame_buffer_interruptible_wait.cpp)
+target_link_libraries(mvm_test_source_frame_buffer_interruptible_wait PRIVATE
+    mvm::gpu_preview mvm::warnings)
+mvm_add_test(source_frame_buffer_interruptible_wait
+    COMMAND mvm_test_source_frame_buffer_interruptible_wait)
+
 # --- Phase 4 / A: composition schedule と snapshot identity foundation -------
 add_executable(mvm_test_phase4a_foundation gpu_preview/test_phase4a_foundation.cpp)
 target_link_libraries(mvm_test_phase4a_foundation PRIVATE mvm::gpu_preview mvm::warnings)
@@ -1317,6 +1324,19 @@ if(EXISTS "${MVM_BENCH_DIR}/v1080p60_hevc.mp4")
         PROPERTIES REQUIRED_FILES "${MVM_BENCH_DIR}/v1080p60_hevc.mp4" TIMEOUT 300)
 endif()
 
+# exact target search の product contract。GOP=60 の直前/境界/直後、
+# repeated/unrelated seek、EOS、flush/generation、保持中 hardware frame を検査する。
+if(MVM_HAVE_P2_BENCHMARK_FIXTURES)
+    foreach(_seek_contract_asset v1080p60_h264 v1080p60_hevc)
+        mvm_add_test(gpu_seek_exact_search_contract_${_seek_contract_asset}
+            COMMAND mvm_test_gpu_decode seek-contract
+                    "${MVM_BENCH_DIR}/${_seek_contract_asset}.mp4"
+                    0,1,58,59,60,61,118,119,120,121,299,300,3599 4
+            PROPERTIES REQUIRED_FILES "${MVM_BENCH_DIR}/${_seek_contract_asset}.mp4"
+                RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 300)
+    endforeach()
+endif()
+
 # 4K は診断のみ。判定には使わないが、経路が通ることは見る。
 mvm_add_test(gpu_marker_4k_h264_diagnostic
     COMMAND mvm_test_gpu_decode marker "${MVM_SMOKE_DIR}/v4k60_h264.mp4" 0,137
@@ -1585,6 +1605,8 @@ set(MVM_WORKSTATION_TESTS
     gpu_seek_flush_v1080p60_hevc
     gpu_marker_v1080p60_hevc
     gpu_seek_exact_landing_hevc
+    gpu_seek_exact_search_contract_v1080p60_h264
+    gpu_seek_exact_search_contract_v1080p60_hevc
     gpu_marker_exact_landing_hevc
     gpu_marker_4k_h264_diagnostic
     gpu_marker_4k_hevc10_diagnostic
