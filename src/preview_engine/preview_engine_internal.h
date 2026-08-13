@@ -93,6 +93,7 @@ struct P5CRuntimeDiagnostics {
     bool workerJoined = true;
     bool renderTeardownComplete = false;
     bool deviceReleased = true;
+    bool unsafeGpuResourcesRetained = false;
     std::uint64_t registeredVideoSourceCount = 0;
     std::uint64_t distinctPresentedSourceFrameCount = 0;
     std::uint64_t staleSubstitutionCount = 0;
@@ -132,6 +133,8 @@ public:
     static Result<void> attachLogicalDevice(PreviewEngine& engine);
     static Result<void> bindRenderThread(PreviewEngine& engine);
     static Result<void> attachNativeD3D11Device(PreviewEngine& engine, void* device, void* context);
+    static Result<void> acquireNativeD3D11Device(PreviewEngine& engine, void* device,
+                                                 void* context);
     static Result<void> validateNativeD3D11Device(PreviewEngine& engine, void* device,
                                                   void* context);
     static Result<RenderFrameResult> renderFrame(PreviewEngine& engine, void* renderTargetView,
@@ -139,6 +142,8 @@ public:
     static Result<bool> completeRuntimeTeardown(PreviewEngine& engine);
     static Result<void> completeTeardown(PreviewEngine& engine);
     static Result<void> injectFatal(PreviewEngine& engine, PreviewError error);
+    static Result<void> reportRenderTargetFailure(PreviewEngine& engine, long hresult);
+    static bool nativeRuntimeAttached(const PreviewEngine& engine);
     static Result<void> injectGpuDrainFailureForTest(PreviewEngine& engine);
     static Result<void> injectDecoderFatalForTest(PreviewEngine& engine, std::string detail);
     static P5CRuntimeDiagnostics runtimeDiagnostics(const PreviewEngine& engine);

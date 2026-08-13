@@ -299,9 +299,15 @@ int main(int argc, char** argv) {
             const bool needsPresentedFrames =
                 fault != Fault::SourceStartupShutdown && !preAttachShutdown;
             const bool runtimeTeardownPass =
-                preAttachShutdown ||
-                (diagnostics.workerJoined && diagnostics.renderTeardownComplete &&
-                 diagnostics.deviceReleased);
+                preAttachShutdown || (fault == Fault::GpuDrain
+                                          ? diagnostics.workerJoined &&
+                                                !diagnostics.renderTeardownComplete &&
+                                                !diagnostics.deviceReleased &&
+                                                diagnostics.unsafeGpuResourcesRetained
+                                          : diagnostics.workerJoined &&
+                                                diagnostics.renderTeardownComplete &&
+                                                diagnostics.deviceReleased &&
+                                                !diagnostics.unsafeGpuResourcesRetained);
             const bool decoderErrorPass =
                 fault != Fault::Decoder ||
                 (sink->errors.size() == 1 &&
@@ -311,8 +317,18 @@ int main(int argc, char** argv) {
                      mvm::preview::PreviewErrorSeverity::FatalToSession &&
                  sink->errors.front().detail.find("P5-C injected decoder fatal") !=
                      std::string::npos);
+            const bool gpuDrainRetentionPass =
+                fault != Fault::GpuDrain ||
+                (sink->errors.size() == 1 &&
+                 sink->errors.front().category ==
+                     mvm::preview::PreviewErrorCategory::ShutdownFailure &&
+                 sink->errors.front().severity ==
+                     mvm::preview::PreviewErrorSeverity::FatalToSession &&
+                 sink->errors.front().detail.find("shutdown completion poll failure") !=
+                     std::string::npos);
             const bool pass =
-                expectedTerminal && decoderErrorPass && !sink->sequenceViolation &&
+                expectedTerminal && decoderErrorPass && gpuDrainRetentionPass &&
+                !sink->sequenceViolation &&
                 (!needsPresentedFrames ||
                  (!sink->frames.empty() && sink->frames.back().composition == accepted)) &&
                 diagnostics.distinctPresentedSourceFrameCount >=

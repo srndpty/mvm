@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <mutex>
 #include <numeric>
@@ -17,6 +18,7 @@
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace mvm::preview {
 namespace {
@@ -404,7 +406,8 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     PreviewDeviceInfo deviceSnapshot;
 
     // P5-C private backend。public headerへmedia/native型を漏らさない。
-    gpu::SharedD3D11Device renderDevice;
+    std::unique_ptr<gpu::SharedD3D11Device> renderDevice =
+        std::make_unique<gpu::SharedD3D11Device>();
     gpu::SourceRegistry sourceRegistry;
     gpu::ReadbackCounters readbacks;
     std::unique_ptr<gpu::SourceDecodeWorker> videoWorker;
@@ -433,7 +436,7 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     bool gpuDrainStarted = false;
     bool renderTeardownComplete = false;
     bool deviceReleased = true;
-    bool forceGpuDrainFailure = false;
+    bool unsafeGpuResourcesRetained = false;
     std::uint64_t lifecycleViolationCount = 0;
     std::uint64_t staleSubstitutionCount = 0;
     internal::P5CRuntimeDiagnostics finalRuntimeDiagnostics;
@@ -770,7 +773,7 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
             makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
                       "P5-CではvideoEnabled sourceだけをsupportします"));
     }
-    if (!impl_->nativeDeviceAttached || !impl_->compositor || !impl_->renderDevice.valid()) {
+    if (!impl_->nativeDeviceAttached || !impl_->compositor || !impl_->renderDevice->valid()) {
         return Result<PreviewSourceId>::failure(
             makeError(PreviewErrorCategory::InvalidState, PreviewOperation::AddSource,
                       "native render deviceの準備前にsourceを登録できません"));
@@ -782,7 +785,7 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
     }
 
     const gpu::SourceId internal = impl_->sourceRegistry.registerSource();
-    auto worker = std::make_unique<gpu::SourceDecodeWorker>(internal, impl_->renderDevice,
+    auto worker = std::make_unique<gpu::SourceDecodeWorker>(internal, *impl_->renderDevice,
                                                             impl_->readbacks, 6);
     std::string openError;
     const auto utf8Path = descriptor.mediaPath.u8string();
@@ -1021,15 +1024,15 @@ Result<void> PreviewRenderPort::attachNativeD3D11Device(PreviewEngine& engine, v
                                     "contextとdeviceの実体が一致しません");
             } else {
                 std::string error;
-                if (!engine.impl_->renderDevice.adopt(nativeDevice, nativeContext, error)) {
+                if (!engine.impl_->renderDevice->adopt(nativeDevice, nativeContext, error)) {
                     failure = makeError(PreviewErrorCategory::DeviceFailure,
                                         PreviewOperation::RenderDeviceAttach,
                                         "共有D3D11 deviceをadoptできません: " + error);
                 } else {
                     auto compositor = std::make_unique<gpu::GpuCompositor>();
-                    if (!compositor->initializeExternal(engine.impl_->renderDevice,
+                    if (!compositor->initializeExternal(*engine.impl_->renderDevice,
                                                         engine.impl_->readbacks, error)) {
-                        engine.impl_->renderDevice.release();
+                        engine.impl_->renderDevice->release();
                         failure = makeError(PreviewErrorCategory::DeviceFailure,
                                             PreviewOperation::RenderDeviceAttach,
                                             "product compositorを初期化できません: " + error);
@@ -1038,7 +1041,7 @@ Result<void> PreviewRenderPort::attachNativeD3D11Device(PreviewEngine& engine, v
                         if (!attached) {
                             std::string ignored;
                             compositor->shutdown(2000, ignored);
-                            engine.impl_->renderDevice.release();
+                            engine.impl_->renderDevice->release();
                             failure = attached.error();
                         } else {
                             engine.impl_->compositor = std::move(compositor);
@@ -1046,7 +1049,7 @@ Result<void> PreviewRenderPort::attachNativeD3D11Device(PreviewEngine& engine, v
                             engine.impl_->nativeContextIdentity = context;
                             engine.impl_->nativeDeviceAttached = true;
                             engine.impl_->deviceReleased = false;
-                            const gpu::AdapterInfo& adapter = engine.impl_->renderDevice.adapter();
+                            const gpu::AdapterInfo& adapter = engine.impl_->renderDevice->adapter();
                             info.adapterDescription = adapter.description;
                             info.adapterLuidLow = adapter.luidLow;
                             info.adapterLuidHigh = adapter.luidHigh;
@@ -1076,6 +1079,37 @@ Result<void> PreviewRenderPort::attachNativeD3D11Device(PreviewEngine& engine, v
     engine.impl_->notify(DeviceChangedEvent{info});
     engine.impl_->notify(StateChangedEvent{PreviewEngineState::ReadyPaused});
     return Result<void>::success();
+}
+
+Result<void> PreviewRenderPort::acquireNativeD3D11Device(PreviewEngine& engine, void* device,
+                                                         void* context) {
+    bool attached = false;
+    {
+        std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+        attached = engine.impl_->nativeDeviceAttached;
+        if (attached) {
+            // renderer再生成後は既存runtimeの所有render threadを新rendererへ移す。
+            engine.impl_->renderThread = std::this_thread::get_id();
+            if (engine.impl_->nativeDeviceIdentity == device &&
+                engine.impl_->nativeContextIdentity == context) {
+                return Result<void>::success();
+            }
+        }
+    }
+    if (attached) {
+        PreviewError failure =
+            makeError(PreviewErrorCategory::DeviceFailure, PreviewOperation::RenderDeviceAttach,
+                      "renderer再生成時にQRhiのD3D11 device/context identityが差し替わりました");
+        failure.severity = PreviewErrorSeverity::FatalToSession;
+        Result<void> recorded = injectFatal(engine, failure);
+        if (!recorded)
+            return recorded;
+        return Result<void>::failure(std::move(failure));
+    }
+    Result<void> bound = bindRenderThread(engine);
+    if (!bound)
+        return bound;
+    return attachNativeD3D11Device(engine, device, context);
 }
 
 Result<void> PreviewRenderPort::validateNativeD3D11Device(PreviewEngine& engine, void* device,
@@ -1290,8 +1324,6 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
                 drained = drainStatus == gpu::GpuCompositorShutdownStatus::Complete;
             }
         }
-        if (engine.impl_->forceGpuDrainFailure)
-            drained = false;
         if (!drained) {
             PreviewError failure =
                 makeError(PreviewErrorCategory::ShutdownFailure, PreviewOperation::Shutdown,
@@ -1316,17 +1348,36 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
             engine.impl_->finalRuntimeDiagnostics.fullFrameGpuCopyCount =
                 static_cast<std::uint64_t>(counters.fullFrameGpuCopyCount);
         }
-        engine.impl_->compositor.reset();
-        engine.impl_->videoWorker.reset();
-        if (engine.impl_->internalVideoSource.value != 0)
-            engine.impl_->sourceRegistry.unregisterSource(engine.impl_->internalVideoSource);
-        engine.impl_->renderDevice.release();
-        engine.impl_->nativeDeviceAttached = false;
-        engine.impl_->deviceReleased = true;
-        engine.impl_->renderTeardownComplete = true;
+        if (drained) {
+            engine.impl_->compositor.reset();
+            engine.impl_->videoWorker.reset();
+            if (engine.impl_->internalVideoSource.value != 0)
+                engine.impl_->sourceRegistry.unregisterSource(engine.impl_->internalVideoSource);
+            engine.impl_->renderDevice->release();
+            engine.impl_->nativeDeviceAttached = false;
+            engine.impl_->deviceReleased = true;
+            engine.impl_->renderTeardownComplete = true;
+        } else {
+            // GPU完了を確認できないresourceは解放しない。engineの論理lifecycleだけを
+            // terminalへ進め、native runtime全体をprocess lifetimeまで隔離する。
+            engine.impl_->unsafeGpuResourcesRetained = true;
+            static auto* quarantineMutex = new std::mutex;
+            static auto* retainedCompositors = new std::vector<std::unique_ptr<gpu::GpuCompositor>>;
+            static auto* retainedWorkers =
+                new std::vector<std::unique_ptr<gpu::SourceDecodeWorker>>;
+            static auto* retainedDevices = new std::vector<std::unique_ptr<gpu::SharedD3D11Device>>;
+            std::lock_guard<std::mutex> quarantineLock(*quarantineMutex);
+            retainedCompositors->push_back(std::move(engine.impl_->compositor));
+            retainedWorkers->push_back(std::move(engine.impl_->videoWorker));
+            retainedDevices->push_back(std::move(engine.impl_->renderDevice));
+            engine.impl_->nativeDeviceAttached = false;
+        }
         engine.impl_->finalRuntimeDiagnostics.workerJoined = engine.impl_->workerJoined;
-        engine.impl_->finalRuntimeDiagnostics.renderTeardownComplete = true;
-        engine.impl_->finalRuntimeDiagnostics.deviceReleased = true;
+        engine.impl_->finalRuntimeDiagnostics.renderTeardownComplete =
+            engine.impl_->renderTeardownComplete;
+        engine.impl_->finalRuntimeDiagnostics.deviceReleased = engine.impl_->deviceReleased;
+        engine.impl_->finalRuntimeDiagnostics.unsafeGpuResourcesRetained =
+            engine.impl_->unsafeGpuResourcesRetained;
         engine.impl_->finalRuntimeDiagnostics.distinctPresentedSourceFrameCount =
             engine.impl_->distinctPresentedFrames.size();
         engine.impl_->finalRuntimeDiagnostics.fullCpuReadbackCount =
@@ -1385,13 +1436,30 @@ Result<void> PreviewRenderPort::injectFatal(PreviewEngine& engine, PreviewError 
     return Result<void>::success();
 }
 
+Result<void> PreviewRenderPort::reportRenderTargetFailure(PreviewEngine& engine, long hresult) {
+    char detail[160];
+    std::snprintf(detail, sizeof detail,
+                  "QRhi render target viewを生成できませんでした (HRESULT=0x%08lX)",
+                  static_cast<unsigned long>(hresult));
+    PreviewError error = makeError(PreviewErrorCategory::DeviceFailure,
+                                   PreviewOperation::RenderDeviceAttach, detail);
+    error.severity = PreviewErrorSeverity::FatalToSession;
+    return injectFatal(engine, std::move(error));
+}
+
+bool PreviewRenderPort::nativeRuntimeAttached(const PreviewEngine& engine) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    return engine.impl_->nativeDeviceAttached;
+}
+
 Result<void> PreviewRenderPort::injectGpuDrainFailureForTest(PreviewEngine& engine) {
     std::lock_guard<std::mutex> lock(engine.impl_->mutex);
     if (!engine.impl_->nativeDeviceAttached || engine.impl_->renderTeardownComplete) {
         return invalidState(PreviewOperation::Shutdown,
                             "GPU drain faultはactive native runtimeでのみ設定できます");
     }
-    engine.impl_->forceGpuDrainFailure = true;
+    engine.impl_->compositor->setTestFaults(
+        {gpu::GpuCompositorInitializeFault::None, -1, false, true});
     return Result<void>::success();
 }
 
@@ -1414,6 +1482,7 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
     result.workerJoined = engine.impl_->workerJoined;
     result.renderTeardownComplete = engine.impl_->renderTeardownComplete;
     result.deviceReleased = engine.impl_->deviceReleased;
+    result.unsafeGpuResourcesRetained = engine.impl_->unsafeGpuResourcesRetained;
     result.registeredVideoSourceCount = engine.impl_->sourceRegistry.registeredSourceCount();
     result.distinctPresentedSourceFrameCount = engine.impl_->distinctPresentedFrames.size();
     result.staleSubstitutionCount = engine.impl_->staleSubstitutionCount;
@@ -1425,7 +1494,7 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
         result.d3d11vaActive = decoder.open && decoder.softwareFrameRejectCount == 0;
         result.decodeRenderSameDevice =
             decoder.decodeDevicePointer ==
-            reinterpret_cast<std::uintptr_t>(engine.impl_->renderDevice.device());
+            reinterpret_cast<std::uintptr_t>(engine.impl_->renderDevice->device());
         result.softwareFallbackCount = static_cast<std::uint64_t>(decoder.softwareFrameRejectCount);
         result.deviceLostCount = static_cast<std::uint64_t>(decoder.deviceMismatchCount);
     }

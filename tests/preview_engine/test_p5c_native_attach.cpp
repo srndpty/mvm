@@ -154,11 +154,10 @@ int main() {
                 "device change render thread bindに失敗しました");
         require(PreviewRenderPort::attachNativeD3D11Device(changed, deviceA.get(), contextA.get()),
                 "device change testの初回attachに失敗しました");
-        require(
-            PreviewRenderPort::validateNativeD3D11Device(changed, deviceA.get(), contextA.get()),
-            "同一native identityを拒否しました");
+        require(PreviewRenderPort::acquireNativeD3D11Device(changed, deviceA.get(), contextA.get()),
+                "renderer再生成時の同一native runtime引き継ぎを拒否しました");
         const Result<void> changedIdentity =
-            PreviewRenderPort::validateNativeD3D11Device(changed, deviceB.get(), contextB.get());
+            PreviewRenderPort::acquireNativeD3D11Device(changed, deviceB.get(), contextB.get());
         requireFailure(changedIdentity, PreviewErrorCategory::DeviceFailure,
                        "native device差し替えを受理しました");
         require(changedIdentity.error().severity == PreviewErrorSeverity::FatalToSession,
@@ -177,6 +176,32 @@ int main() {
         }
         require(changedComplete && changed.status().state == PreviewEngineState::Error,
                 "native device差し替えをterminal Errorにできませんでした");
+
+        PreviewEngine rtvFailed;
+        auto rtvSink = std::make_shared<RecordingSink>();
+        require(rtvFailed.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),
+                "RTV failure engine initializeに失敗しました");
+        require(rtvFailed.attachEventSink(rtvSink), "RTV failure sink attachに失敗しました");
+        require(
+            PreviewRenderPort::acquireNativeD3D11Device(rtvFailed, deviceA.get(), contextA.get()),
+            "RTV failure native attachに失敗しました");
+        require(PreviewRenderPort::reportRenderTargetFailure(rtvFailed, E_INVALIDARG),
+                "RTV生成失敗をengineへ記録できませんでした");
+        require(rtvFailed.status().state == PreviewEngineState::ShuttingDown,
+                "RTV生成失敗がteardownを開始しませんでした");
+        require(rtvSink->errors.size() == 1 &&
+                    rtvSink->errors.front().category == PreviewErrorCategory::DeviceFailure &&
+                    rtvSink->errors.front().severity == PreviewErrorSeverity::FatalToSession &&
+                    rtvSink->errors.front().detail.find("HRESULT=0x80070057") != std::string::npos,
+                "RTV生成失敗のHRESULT付きsession fatalが不正です");
+        bool rtvComplete = false;
+        for (int attempt = 0; attempt < 8 && !rtvComplete; ++attempt) {
+            const Result<bool> teardown = PreviewRenderPort::completeRuntimeTeardown(rtvFailed);
+            require(teardown, "RTV failure runtime teardownに失敗しました");
+            rtvComplete = teardown.value();
+        }
+        require(rtvComplete && rtvFailed.status().state == PreviewEngineState::Error,
+                "RTV生成失敗をterminal Errorにできませんでした");
 
         PreviewEngine engine;
         require(engine.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),

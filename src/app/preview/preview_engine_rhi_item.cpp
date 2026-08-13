@@ -33,12 +33,10 @@ protected:
                                                                             handles->context);
             return;
         }
-        auto bound = preview::internal::PreviewRenderPort::bindRenderThread(*engine_);
-        if (!bound)
-            return;
-        auto attached = preview::internal::PreviewRenderPort::attachNativeD3D11Device(
+        auto attached = preview::internal::PreviewRenderPort::acquireNativeD3D11Device(
             *engine_, handles->dev, handles->context);
-        attached_ = static_cast<bool>(attached);
+        attached_ = static_cast<bool>(attached) ||
+                    preview::internal::PreviewRenderPort::nativeRuntimeAttached(*engine_);
     }
 
     void synchronize(QQuickRhiItem* item) override {
@@ -100,8 +98,11 @@ private:
         if (!handles || !handles->dev)
             return false;
         auto* device = static_cast<ID3D11Device*>(handles->dev);
-        if (FAILED(device->CreateRenderTargetView(native, nullptr, &rtv_)))
+        const HRESULT created = device->CreateRenderTargetView(native, nullptr, &rtv_);
+        if (FAILED(created)) {
+            preview::internal::PreviewRenderPort::reportRenderTargetFailure(*engine_, created);
             return false;
+        }
         rtvTexture_ = native;
         return true;
     }
