@@ -535,7 +535,8 @@ void eventOwnershipAndFatalPath() {
     detachedDispatcher->runAll();
     require(detachedSink->states.empty(), "detach return後にpending callbackを開始しました");
     require(detached.requestShutdown(), "shutdownに失敗しました");
-    require(PreviewRenderPort::completeTeardown(detached), "shutdown完了に失敗しました");
+    require(detached.status().state == PreviewEngineState::Shutdown,
+            "renderer未生成のshutdownを内部完了できませんでした");
     detachedDispatcher->runAll();
 
     PreviewEngine expired;
@@ -548,7 +549,8 @@ void eventOwnershipAndFatalPath() {
     require(expired.status().state == PreviewEngineState::WaitingForRenderDevice,
             "weak sink失効でstate progressionが止まりました");
     require(expired.requestShutdown(), "shutdownに失敗しました");
-    require(PreviewRenderPort::completeTeardown(expired), "shutdown完了に失敗しました");
+    require(expired.status().state == PreviewEngineState::Shutdown,
+            "renderer未生成のshutdownを内部完了できませんでした");
     expiredDispatcher->runAll();
 
     PreviewEngine fatal;
@@ -617,8 +619,8 @@ void constructorThreadAuthority() {
     require(engine.status().state == PreviewEngineState::WaitingForRenderDevice,
             "wrong-thread control operationがstateを変更しました");
     require(engine.requestShutdown(), "thread authority test shutdownに失敗しました");
-    require(PreviewRenderPort::completeTeardown(engine),
-            "thread authority test teardownに失敗しました");
+    require(engine.status().state == PreviewEngineState::Shutdown,
+            "renderer未生成のthread authority testを内部完了できませんでした");
     dispatcher->runAll();
 }
 
@@ -682,8 +684,8 @@ void dispatcherAndSinkFailureContainment() {
     require(throwingSinkEngine.telemetry().eventDeliveryFailureCount == 1,
             "sink callback exceptionをdiagnosticへ記録していません");
     require(throwingSinkEngine.requestShutdown(), "sink throw後のshutdownに失敗しました");
-    require(PreviewRenderPort::completeTeardown(throwingSinkEngine),
-            "sink throw後のterminal teardownに失敗しました");
+    require(throwingSinkEngine.status().state == PreviewEngineState::Shutdown,
+            "renderer未生成のsink throw testを内部完了できませんでした");
     sinkDispatcher->runAll();
     require(throwingSinkEngine.status().state == PreviewEngineState::Shutdown,
             "sink throw後にterminal Shutdownへ到達しません");
@@ -735,14 +737,10 @@ void mailboxSaturationLifecycle() {
     fillNonTerminalMailbox(normal);
     const std::uint64_t failuresBeforeShutdown = normal.telemetry().eventDeliveryFailureCount;
     require(normal.requestShutdown(), "mailbox-fullでshutdown requestをfalse failureにしました");
-    require(normal.status().state == PreviewEngineState::ShuttingDown,
-            "mailbox-fullでShuttingDown transitionをrollbackしました");
+    require(normal.status().state == PreviewEngineState::Shutdown,
+            "mailbox-fullでrenderer未生成shutdownを内部完了できませんでした");
     require(normal.telemetry().eventDeliveryFailureCount > failuresBeforeShutdown,
             "mailbox-full shutdown notification failureを記録していません");
-    require(PreviewRenderPort::completeTeardown(normal),
-            "mailbox-fullでterminal completionをfalse failureにしました");
-    require(normal.status().state == PreviewEngineState::Shutdown,
-            "mailbox-full normal teardownがShutdownになりません");
     require(PreviewRenderPort::mailboxSizeForTest(normal) == 32,
             "terminal reserved slotを使用していません");
 
@@ -785,7 +783,8 @@ void dispatcherRetention() {
     require(retained != nullptr, "retained dispatcherを取得できません");
     retained->runAll();
     require(engine.requestShutdown(), "shutdown requestに失敗しました");
-    require(PreviewRenderPort::completeTeardown(engine), "teardown completionに失敗しました");
+    require(engine.status().state == PreviewEngineState::Shutdown,
+            "renderer未生成のshutdownを内部完了できませんでした");
     retained->runAll();
     retained.reset();
     require(weak.expired(), "terminal acknowledgement後もdispatcherを保持しています");
@@ -800,7 +799,8 @@ void safeDestruction() {
         auto dispatcher = std::make_shared<ManualDispatcher>();
         require(engine.initialize(qualifiedConfig(), dispatcher), "initializeに失敗しました");
         require(engine.requestShutdown(), "shutdown requestに失敗しました");
-        require(PreviewRenderPort::completeTeardown(engine), "Shutdown completionに失敗しました");
+        require(engine.status().state == PreviewEngineState::Shutdown,
+                "renderer未生成のshutdownを内部完了できませんでした");
     }
     {
         PreviewEngine engine;

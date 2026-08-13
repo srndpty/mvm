@@ -1,5 +1,6 @@
 #include "preview_engine/preview_engine_internal.h"
 
+#include <atomic>
 #include <chrono>
 #include <d3d11.h>
 #include <functional>
@@ -347,6 +348,40 @@ int main() {
         }
         require(detachedShutdown.status().state == PreviewEngineState::Shutdown,
                 "renderer消失後のstandby authorityがteardownを完了しませんでした");
+
+        for (int iteration = 0; iteration < 16; ++iteration) {
+            PreviewEngine racedDetach;
+            require(racedDetach.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),
+                    "detach/shutdown race test initializeに失敗しました");
+            std::atomic_bool attached = false;
+            std::atomic_bool start = false;
+            bool attachSucceeded = false;
+            bool detachSucceeded = false;
+            std::thread renderer([&] {
+                attachSucceeded = PreviewRenderPort::acquireNativeD3D11Device(
+                                      racedDetach, deviceA.get(), contextA.get())
+                                      .hasValue();
+                attached.store(true, std::memory_order_release);
+                while (!start.load(std::memory_order_acquire))
+                    std::this_thread::yield();
+                detachSucceeded = PreviewRenderPort::completeRendererDetach(racedDetach).hasValue();
+            });
+            while (!attached.load(std::memory_order_acquire))
+                std::this_thread::yield();
+            require(attachSucceeded, "race test native attachに失敗しました");
+            start.store(true, std::memory_order_release);
+            require(racedDetach.requestShutdown(),
+                    "detachと競合したshutdown requestに失敗しました");
+            renderer.join();
+            require(detachSucceeded, "shutdownと競合したrenderer detachに失敗しました");
+            for (int attempt = 0;
+                 attempt < 200 && racedDetach.status().state != PreviewEngineState::Shutdown;
+                 ++attempt) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            require(racedDetach.status().state == PreviewEngineState::Shutdown,
+                    "detach/shutdown競合後にteardown authorityを失いました");
+        }
 
         PreviewEngine requestedDetach;
         auto requestedDetachSink = std::make_shared<RecordingSink>();

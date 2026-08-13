@@ -1010,6 +1010,7 @@ PreviewDeviceInfo PreviewEngine::deviceInfo() const {
 Result<void> PreviewEngine::requestShutdown() {
     PreviewEngineState before;
     PreviewEngineState after;
+    bool completeWithoutRuntime = false;
     bool startDetachedTeardown = false;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -1028,6 +1029,8 @@ Result<void> PreviewEngine::requestShutdown() {
             impl_->videoWorker->pause();
         if (impl_->nativeDeviceAttached)
             impl_->startWorkerShutdown();
+        completeWithoutRuntime =
+            before == PreviewEngineState::WaitingForRenderDevice && !impl_->nativeDeviceAttached;
         if (impl_->rendererDetached && impl_->nativeDeviceAttached &&
             !impl_->detachedTeardownStarted) {
             impl_->detachedTeardownStarted = true;
@@ -1038,6 +1041,8 @@ Result<void> PreviewEngine::requestShutdown() {
     if (before != after) {
         impl_->notify(internal::StateChangedEvent{after});
     }
+    if (completeWithoutRuntime)
+        return internal::PreviewRenderPort::completeTeardown(*this);
     if (startDetachedTeardown) {
         const std::shared_ptr<Impl> retained = impl_;
         retained->detachedTeardownThread = std::thread([retained] {
@@ -1521,21 +1526,24 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
 }
 
 Result<void> PreviewRenderPort::completeRendererDetach(PreviewEngine& engine) {
-    PreviewEngineState state = engine.status().state;
-    if (state == PreviewEngineState::Shutdown || state == PreviewEngineState::Error)
-        return Result<void>::success();
-
-    // scene graph invalidateによる一時破棄ではactive runtimeを保持する。後継rendererが
-    // 同じdevice/contextをacquireし、render thread authorityを引き継ぐ。後継が無いまま
-    // shutdownされた場合はrequestShutdown()がstandby teardown threadを起動する。
-    if (state != PreviewEngineState::ShuttingDown) {
+    bool nativeRuntimeAttached = false;
+    {
         std::lock_guard<std::mutex> lock(engine.impl_->mutex);
-        engine.impl_->rendererDetached = true;
-        engine.impl_->renderThread.reset();
-        return Result<void>::success();
+        const PreviewEngineState state = engine.impl_->machine.state();
+        if (state == PreviewEngineState::Shutdown || state == PreviewEngineState::Error)
+            return Result<void>::success();
+
+        // state判定とdetach公開を同じcritical sectionに置く。これによりshutdown側は、
+        // renderer authorityが残る状態かstandby authorityが必要な状態かを必ず判別できる。
+        if (state != PreviewEngineState::ShuttingDown) {
+            engine.impl_->rendererDetached = true;
+            engine.impl_->renderThread.reset();
+            return Result<void>::success();
+        }
+        nativeRuntimeAttached = engine.impl_->nativeDeviceAttached;
     }
 
-    if (!nativeRuntimeAttached(engine))
+    if (!nativeRuntimeAttached)
         return completeTeardown(engine);
 
     for (;;) {
