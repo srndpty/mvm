@@ -115,6 +115,38 @@ Result<void> validatePreviewSourceDescriptor(const PreviewSourceDescriptor& desc
 
 namespace internal {
 
+Result<void> validateSourceFrameRate(long long sourceNumerator, long long sourceDenominator,
+                                     PreviewFrameRate outputFrameRate) {
+    if (sourceNumerator <= 0 || sourceDenominator <= 0) {
+        return Result<void>::failure(makeError(PreviewErrorCategory::UnsupportedCapability,
+                                               PreviewOperation::AddSource,
+                                               "sourceのフレームレートが不正です"));
+    }
+
+    auto numerator = static_cast<std::uint64_t>(sourceNumerator);
+    auto denominator = static_cast<std::uint64_t>(sourceDenominator);
+    const std::uint64_t divisor = std::gcd(numerator, denominator);
+    numerator /= divisor;
+    denominator /= divisor;
+    if (numerator == outputFrameRate.numerator && denominator == outputFrameRate.denominator)
+        return Result<void>::success();
+
+    return Result<void>::failure(
+        makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
+                  "P5-Cはoutputと同じフレームレートのsourceだけをsupportします (source=" +
+                      std::to_string(sourceNumerator) + "/" + std::to_string(sourceDenominator) +
+                      ", output=" + std::to_string(outputFrameRate.numerator) + "/" +
+                      std::to_string(outputFrameRate.denominator) + ")"));
+}
+
+std::uint64_t skippedSchedulerFrameCount(std::int64_t previousTarget, std::int64_t currentTarget) {
+    if (currentTarget <= previousTarget)
+        return 0;
+    const std::uint64_t distance =
+        static_cast<std::uint64_t>(currentTarget) - static_cast<std::uint64_t>(previousTarget);
+    return distance > 1 ? distance - 1 : 0;
+}
+
 EventMailbox::EventMailbox(std::size_t capacity) : capacity_(capacity) {}
 
 bool EventMailbox::isTerminal(const PreviewEvent& event) const {
@@ -795,30 +827,39 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
                       "P5-C product wiringはvideo sourceを1件だけ受理します"));
     }
 
-    const gpu::SourceId internal = impl_->sourceRegistry.registerSource();
-    auto worker = std::make_unique<gpu::SourceDecodeWorker>(internal, *impl_->renderDevice,
+    const gpu::SourceId internalSource = impl_->sourceRegistry.registerSource();
+    auto worker = std::make_unique<gpu::SourceDecodeWorker>(internalSource, *impl_->renderDevice,
                                                             impl_->readbacks, 6);
     std::string openError;
     const auto utf8Path = descriptor.mediaPath.u8string();
     const std::string path(reinterpret_cast<const char*>(utf8Path.data()), utf8Path.size());
     if (!worker->start(path, openError)) {
         worker->stop();
-        impl_->sourceRegistry.unregisterSource(internal);
+        impl_->sourceRegistry.unregisterSource(internalSource);
         ++impl_->telemetrySnapshot.decodeFailureCount;
         return Result<PreviewSourceId>::failure(
             makeError(PreviewErrorCategory::DecodeFailure, PreviewOperation::AddSource,
                       "D3D11VA video sourceをopenできません: " + openError));
     }
 
+    const gpu::SourceDecoderSnapshot opened = worker->snapshot();
+    Result<void> supportedRate = internal::validateSourceFrameRate(
+        opened.info.frameRate.num, opened.info.frameRate.den, impl_->configuredFrameRate);
+    if (!supportedRate) {
+        worker->stop();
+        impl_->sourceRegistry.unregisterSource(internalSource);
+        return Result<PreviewSourceId>::failure(supportedRate.error());
+    }
+
     if (impl_->nextPublicSourceId == 0) {
         worker->stop();
-        impl_->sourceRegistry.unregisterSource(internal);
+        impl_->sourceRegistry.unregisterSource(internalSource);
         return Result<PreviewSourceId>::failure(makeError(PreviewErrorCategory::InvalidSource,
                                                           PreviewOperation::AddSource,
                                                           "PreviewSourceIdがoverflowしました"));
     }
     const PreviewSourceId published{impl_->nextPublicSourceId++};
-    impl_->internalVideoSource = internal;
+    impl_->internalVideoSource = internalSource;
     impl_->publicVideoSource = published;
     impl_->eligibleSources.emplace(published.value, internal::EligibleSource{true});
     impl_->videoWorker = std::move(worker);
@@ -1157,6 +1198,7 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                                                          int height) {
     RenderFrameResult result;
     std::optional<PreviewError> fatal;
+    bool decoderFatal = false;
     {
         std::lock_guard<std::mutex> lock(engine.impl_->mutex);
         if (!engine.impl_->renderThread ||
@@ -1180,6 +1222,13 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
         const std::int64_t target = engine.impl_->schedulerTarget(std::chrono::steady_clock::now());
         if (target <= engine.impl_->lastSchedulerTarget)
             return Result<RenderFrameResult>::success(result);
+        const std::uint64_t skipped =
+            internal::skippedSchedulerFrameCount(engine.impl_->lastSchedulerTarget, target);
+        const std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
+        if (skipped > maximum - engine.impl_->telemetrySnapshot.droppedFrameCount)
+            engine.impl_->telemetrySnapshot.droppedFrameCount = maximum;
+        else
+            engine.impl_->telemetrySnapshot.droppedFrameCount += skipped;
         engine.impl_->lastSchedulerTarget = target;
 
         gpu::SourceFrameBuffer& buffer = engine.impl_->videoWorker->buffer();
@@ -1196,8 +1245,12 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                 failure.severity = PreviewErrorSeverity::FatalToSession;
                 failure.source = engine.impl_->publicVideoSource;
                 fatal = std::move(failure);
+                decoderFatal = true;
             } else {
-                ++engine.impl_->telemetrySnapshot.droppedFrameCount;
+                if (engine.impl_->telemetrySnapshot.droppedFrameCount !=
+                    std::numeric_limits<std::uint64_t>::max()) {
+                    ++engine.impl_->telemetrySnapshot.droppedFrameCount;
+                }
                 engine.impl_->telemetrySnapshot.currentSourceQueueDepth =
                     static_cast<std::uint32_t>(buffer.depth());
             }
@@ -1263,6 +1316,10 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
         if (fatal) {
             Result<void> accepted = engine.impl_->machine.recordFatal(*fatal);
             if (accepted) {
+                if (decoderFatal && engine.impl_->telemetrySnapshot.decodeFailureCount !=
+                                        std::numeric_limits<std::uint64_t>::max()) {
+                    ++engine.impl_->telemetrySnapshot.decodeFailureCount;
+                }
                 engine.impl_->schedulerEnabled = false;
                 if (engine.impl_->videoWorker)
                     engine.impl_->videoWorker->pause();
@@ -1479,6 +1536,17 @@ Result<void> PreviewRenderPort::reportRenderTargetFailure(PreviewEngine& engine,
     char detail[160];
     std::snprintf(detail, sizeof detail,
                   "QRhi render target viewを生成できませんでした (HRESULT=0x%08lX)",
+                  static_cast<unsigned long>(hresult));
+    PreviewError error = makeError(PreviewErrorCategory::DeviceFailure,
+                                   PreviewOperation::RenderDeviceAttach, detail);
+    error.severity = PreviewErrorSeverity::FatalToSession;
+    return injectFatal(engine, std::move(error));
+}
+
+Result<void> PreviewRenderPort::reportDeviceLost(PreviewEngine& engine, long hresult) {
+    char detail[160];
+    std::snprintf(detail, sizeof detail,
+                  "D3D11 device lostを検出しました (GetDeviceRemovedReason=0x%08lX)",
                   static_cast<unsigned long>(hresult));
     PreviewError error = makeError(PreviewErrorCategory::DeviceFailure,
                                    PreviewOperation::RenderDeviceAttach, detail);

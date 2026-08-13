@@ -156,6 +156,12 @@ void frameRateAndDescriptorValidation() {
         "uint32 boundary overflowをrejectしませんでした");
     const auto validButUnqualified = validatePreviewFrameRate(24, 1);
     require(validButUnqualified, "positive rationalをtype validationでrejectしました");
+    require(validateSourceFrameRate(120, 2, {60, 1}), "source frame rateをcanonical比較できません");
+    requireFailure(validateSourceFrameRate(30, 1, {60, 1}),
+                   PreviewErrorCategory::UnsupportedCapability, "30fps sourceをP5-Cで受理しました");
+    requireFailure(validateSourceFrameRate(120, 1, {60, 1}),
+                   PreviewErrorCategory::UnsupportedCapability,
+                   "120fps sourceをP5-Cで受理しました");
 
     PreviewEngine unqualifiedEngine;
     auto dispatcher = std::make_shared<ManualDispatcher>();
@@ -852,6 +858,15 @@ void distinctFrameCounterIsBounded() {
     require(counter.count() == 2, "distinct frame counterが重複または逆行frameを加算しました");
 }
 
+void schedulerSkippedFramesAreCounted() {
+    require(skippedSchedulerFrameCount(10, 11) == 0, "連続scheduler targetをdropとして数えました");
+    require(skippedSchedulerFrameCount(10, 13) == 2,
+            "schedulerが飛ばしたoutput frameを数えていません");
+    require(skippedSchedulerFrameCount(-1, 2) == 2,
+            "再生開始直後に飛ばしたoutput frameを数えていません");
+    require(skippedSchedulerFrameCount(13, 13) == 0, "同一scheduler targetをdropとして数えました");
+}
+
 void unsafeDestructionProcess() {
     std::set_terminate([] { std::_Exit(86); });
     PreviewEngine engine;
@@ -884,6 +899,7 @@ int main(int argc, char** argv) {
         {"safe destruction", safeDestruction},
         {"P5-C control / render negatives", p5cControlAndRenderNegatives},
         {"bounded distinct frame counter", distinctFrameCounterIsBounded},
+        {"scheduler skipped frame count", schedulerSkippedFramesAreCounted},
     };
 
     try {

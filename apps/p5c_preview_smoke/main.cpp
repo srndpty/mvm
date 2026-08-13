@@ -125,6 +125,7 @@ int main(int argc, char** argv) {
         fault == Fault::PreAttachShutdown ? Stage::WaitShutdown : Stage::WaitDevice;
     mvm::preview::AcceptedComposition accepted;
     std::uint64_t pausePresentedCount = 0;
+    std::uint64_t decodeFailureCountBeforeFault = 0;
     std::int64_t pausePosition = -1;
     mvm::preview::internal::P5CRuntimeDiagnostics activeDiagnostics;
     const auto started = std::chrono::steady_clock::now();
@@ -245,6 +246,7 @@ int main(int argc, char** argv) {
                     injected = static_cast<bool>(
                         mvm::preview::internal::PreviewRenderPort::injectFatal(engine, error));
                 } else {
+                    decodeFailureCountBeforeFault = telemetry.decodeFailureCount;
                     injected = static_cast<bool>(
                         mvm::preview::internal::PreviewRenderPort::injectDecoderFatalForTest(
                             engine, "P5-C injected decoder fatal"));
@@ -288,6 +290,7 @@ int main(int argc, char** argv) {
         } else if (stage == Stage::WaitShutdown &&
                    (status.state == mvm::preview::PreviewEngineState::Shutdown ||
                     status.state == mvm::preview::PreviewEngineState::Error)) {
+            const auto terminalTelemetry = engine.telemetry();
             const auto diagnostics =
                 mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(engine);
             const bool failureFault = fault == Fault::GpuDrain || fault == Fault::Device ||
@@ -311,6 +314,7 @@ int main(int argc, char** argv) {
             const bool decoderErrorPass =
                 fault != Fault::Decoder ||
                 (sink->errors.size() == 1 &&
+                 terminalTelemetry.decodeFailureCount == decodeFailureCountBeforeFault + 1 &&
                  sink->errors.front().category ==
                      mvm::preview::PreviewErrorCategory::DecodeFailure &&
                  sink->errors.front().severity ==
@@ -345,15 +349,20 @@ int main(int argc, char** argv) {
                 diagnostics.earlyPayloadReleaseCount == 0 &&
                 diagnostics.retirementTimeoutCount == 0 &&
                 diagnostics.lifecycleViolationCount == 0 && runtimeTeardownPass &&
-                telemetry.eventDeliveryFailureCount == 0;
+                terminalTelemetry.eventDeliveryFailureCount == 0;
             const double seconds = std::chrono::duration<double>(now - started).count();
             std::printf(
                 "{\"verdict\":\"%s\",\"presented\":%llu,\"dropped\":%llu,"
+                "\"decode_failures\":%llu,\"errors\":%zu,"
                 "\"fps\":%.3f,\"distinct\":%llu,\"terminal\":%d}\n",
                 pass ? "PASS" : "FAIL",
-                static_cast<unsigned long long>(telemetry.presentedFrameCount),
-                static_cast<unsigned long long>(telemetry.droppedFrameCount),
-                seconds > 0.0 ? static_cast<double>(telemetry.presentedFrameCount) / seconds : 0.0,
+                static_cast<unsigned long long>(terminalTelemetry.presentedFrameCount),
+                static_cast<unsigned long long>(terminalTelemetry.droppedFrameCount),
+                static_cast<unsigned long long>(terminalTelemetry.decodeFailureCount),
+                sink->errors.size(),
+                seconds > 0.0
+                    ? static_cast<double>(terminalTelemetry.presentedFrameCount) / seconds
+                    : 0.0,
                 static_cast<unsigned long long>(diagnostics.distinctPresentedSourceFrameCount),
                 static_cast<int>(status.state));
             exitCode = pass ? 0 : 9;

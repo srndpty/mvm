@@ -242,6 +242,39 @@ int main() {
         require(rtvComplete && rtvFailed.status().state == PreviewEngineState::Error,
                 "RTV生成失敗をterminal Errorにできませんでした");
 
+        PreviewEngine pausedDeviceLost;
+        auto pausedDeviceLostSink = std::make_shared<RecordingSink>();
+        require(pausedDeviceLost.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),
+                "paused device lost test initializeに失敗しました");
+        require(pausedDeviceLost.attachEventSink(pausedDeviceLostSink),
+                "paused device lost sink attachに失敗しました");
+        require(PreviewRenderPort::acquireNativeD3D11Device(pausedDeviceLost, deviceA.get(),
+                                                            contextA.get()),
+                "paused device lost native attachに失敗しました");
+        require(pausedDeviceLost.status().state == PreviewEngineState::ReadyPaused,
+                "device lost注入前のstateがReadyPausedではありません");
+        require(PreviewRenderPort::reportDeviceLost(pausedDeviceLost, DXGI_ERROR_DEVICE_REMOVED),
+                "pause中のdevice lostをengineへ記録できませんでした");
+        require(pausedDeviceLost.status().state == PreviewEngineState::ShuttingDown &&
+                    pausedDeviceLostSink->errors.size() == 1 &&
+                    pausedDeviceLostSink->errors.front().category ==
+                        PreviewErrorCategory::DeviceFailure &&
+                    pausedDeviceLostSink->errors.front().severity ==
+                        PreviewErrorSeverity::FatalToSession &&
+                    pausedDeviceLostSink->errors.front().detail.find("GetDeviceRemovedReason") !=
+                        std::string::npos,
+                "pause中のdevice lostがHRESULT付きsession fatalになっていません");
+        bool pausedDeviceLostComplete = false;
+        for (int attempt = 0; attempt < 8 && !pausedDeviceLostComplete; ++attempt) {
+            const Result<bool> teardown =
+                PreviewRenderPort::completeRuntimeTeardown(pausedDeviceLost);
+            require(teardown, "paused device lost runtime teardownに失敗しました");
+            pausedDeviceLostComplete = teardown.value();
+        }
+        require(pausedDeviceLostComplete &&
+                    pausedDeviceLost.status().state == PreviewEngineState::Error,
+                "pause中のdevice lostをterminal Errorにできませんでした");
+
         PreviewEngine replaced;
         auto replacedSink = std::make_shared<RecordingSink>();
         require(replaced.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),

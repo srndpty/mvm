@@ -138,6 +138,10 @@ private:
     std::uint64_t count_ = 0;
 };
 
+Result<void> validateSourceFrameRate(long long sourceNumerator, long long sourceDenominator,
+                                     PreviewFrameRate outputFrameRate);
+std::uint64_t skippedSchedulerFrameCount(std::int64_t previousTarget, std::int64_t currentTarget);
+
 class PreviewRenderPort {
 public:
     static Result<void> attachLogicalDevice(PreviewEngine& engine);
@@ -154,6 +158,7 @@ public:
     static Result<void> completeTeardown(PreviewEngine& engine);
     static Result<void> injectFatal(PreviewEngine& engine, PreviewError error);
     static Result<void> reportRenderTargetFailure(PreviewEngine& engine, long hresult);
+    static Result<void> reportDeviceLost(PreviewEngine& engine, long hresult);
     static Result<void> reportUnsupportedRenderBackend(PreviewEngine& engine);
     static Result<void> reportMissingNativeD3D11Handles(PreviewEngine& engine);
     static Result<void> reportEngineReplacement(PreviewEngine& engine);

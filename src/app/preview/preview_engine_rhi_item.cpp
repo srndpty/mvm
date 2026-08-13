@@ -67,6 +67,8 @@ protected:
         }
         if (!attached_)
             return;
+        if (detectDeviceLost())
+            return;
         if (state != preview::PreviewEngineState::Playing)
             return;
         if (!ensureRtv(colorTexture()))
@@ -83,6 +85,23 @@ protected:
     }
 
 private:
+    bool detectDeviceLost() {
+        QRhi* renderHardware = rhi();
+        const auto* handles =
+            renderHardware
+                ? static_cast<const QRhiD3D11NativeHandles*>(renderHardware->nativeHandles())
+                : nullptr;
+        if (!handles || !handles->dev) {
+            preview::internal::PreviewRenderPort::reportMissingNativeD3D11Handles(*engine_);
+            return true;
+        }
+        const HRESULT removed = static_cast<ID3D11Device*>(handles->dev)->GetDeviceRemovedReason();
+        if (SUCCEEDED(removed))
+            return false;
+        preview::internal::PreviewRenderPort::reportDeviceLost(*engine_, removed);
+        return true;
+    }
+
     void attachEngine() {
         if (!engine_)
             return;
