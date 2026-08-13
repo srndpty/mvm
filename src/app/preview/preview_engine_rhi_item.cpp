@@ -18,29 +18,27 @@ public:
     ~PreviewEngineRhiRenderer() override { releaseRtv(); }
 
 protected:
-    void initialize(QRhiCommandBuffer*) override {
-        if (!engine_)
-            return;
-        QRhi* renderHardware = rhi();
-        if (!renderHardware || renderHardware->backend() != QRhi::D3D11)
-            return;
-        const auto* handles =
-            static_cast<const QRhiD3D11NativeHandles*>(renderHardware->nativeHandles());
-        if (!handles || !handles->dev || !handles->context)
-            return;
-        if (attached_) {
-            preview::internal::PreviewRenderPort::validateNativeD3D11Device(*engine_, handles->dev,
-                                                                            handles->context);
-            return;
-        }
-        auto attached = preview::internal::PreviewRenderPort::acquireNativeD3D11Device(
-            *engine_, handles->dev, handles->context);
-        attached_ = static_cast<bool>(attached) ||
-                    preview::internal::PreviewRenderPort::nativeRuntimeAttached(*engine_);
-    }
+    void initialize(QRhiCommandBuffer*) override { attachEngine(); }
 
     void synchronize(QQuickRhiItem* item) override {
-        engine_ = static_cast<PreviewEngineRhiItem*>(item)->engine();
+        preview::PreviewEngine* requested = static_cast<PreviewEngineRhiItem*>(item)->engine();
+        if (requested == engine_)
+            return;
+        if (engine_) {
+            const preview::PreviewEngineState state = engine_->status().state;
+            if (state != preview::PreviewEngineState::Shutdown &&
+                state != preview::PreviewEngineState::Error) {
+                attached_ = attached_ ||
+                            preview::internal::PreviewRenderPort::nativeRuntimeAttached(*engine_);
+                if (state != preview::PreviewEngineState::ShuttingDown)
+                    preview::internal::PreviewRenderPort::reportEngineReplacement(*engine_);
+                return;
+            }
+        }
+        releaseRtv();
+        engine_ = requested;
+        attached_ = false;
+        attachEngine();
     }
 
     void render(QRhiCommandBuffer* commandBuffer) override {
@@ -81,6 +79,29 @@ protected:
     }
 
 private:
+    void attachEngine() {
+        if (!engine_)
+            return;
+        QRhi* renderHardware = rhi();
+        if (!renderHardware || renderHardware->backend() != QRhi::D3D11) {
+            preview::internal::PreviewRenderPort::reportUnsupportedRenderBackend(*engine_);
+            return;
+        }
+        const auto* handles =
+            static_cast<const QRhiD3D11NativeHandles*>(renderHardware->nativeHandles());
+        if (!handles || !handles->dev || !handles->context)
+            return;
+        if (attached_) {
+            preview::internal::PreviewRenderPort::validateNativeD3D11Device(*engine_, handles->dev,
+                                                                            handles->context);
+            return;
+        }
+        auto attached = preview::internal::PreviewRenderPort::acquireNativeD3D11Device(
+            *engine_, handles->dev, handles->context);
+        attached_ = static_cast<bool>(attached) ||
+                    preview::internal::PreviewRenderPort::nativeRuntimeAttached(*engine_);
+    }
+
     bool ensureRtv(QRhiTexture* texture) {
         if (!texture)
             return false;

@@ -128,6 +128,16 @@ private:
     std::uint64_t nextRevision_ = 1;
 };
 
+class DistinctFrameCounter {
+public:
+    void note(std::int64_t frame);
+    std::uint64_t count() const;
+
+private:
+    std::optional<std::int64_t> lastFrame_;
+    std::uint64_t count_ = 0;
+};
+
 class PreviewRenderPort {
 public:
     static Result<void> attachLogicalDevice(PreviewEngine& engine);
@@ -143,6 +153,8 @@ public:
     static Result<void> completeTeardown(PreviewEngine& engine);
     static Result<void> injectFatal(PreviewEngine& engine, PreviewError error);
     static Result<void> reportRenderTargetFailure(PreviewEngine& engine, long hresult);
+    static Result<void> reportUnsupportedRenderBackend(PreviewEngine& engine);
+    static Result<void> reportEngineReplacement(PreviewEngine& engine);
     static bool nativeRuntimeAttached(const PreviewEngine& engine);
     static Result<void> injectGpuDrainFailureForTest(PreviewEngine& engine);
     static Result<void> injectDecoderFatalForTest(PreviewEngine& engine, std::string detail);

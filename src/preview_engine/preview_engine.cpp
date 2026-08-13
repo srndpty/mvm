@@ -16,7 +16,6 @@
 #include <set>
 #include <thread>
 #include <type_traits>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -366,6 +365,18 @@ void CompositionAcceptanceState::markPresented(AcceptedComposition composition) 
     lastPresentedToken_ = composition;
 }
 
+void DistinctFrameCounter::note(std::int64_t frame) {
+    if (lastFrame_ && frame <= *lastFrame_)
+        return;
+    lastFrame_ = frame;
+    if (count_ != std::numeric_limits<std::uint64_t>::max())
+        ++count_;
+}
+
+std::uint64_t DistinctFrameCounter::count() const {
+    return count_;
+}
+
 std::optional<AcceptedComposition> CompositionAcceptanceState::latestAcceptedToken() const {
     return latestAcceptedToken_;
 }
@@ -428,7 +439,7 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     std::int64_t schedulerBaseFrame = 0;
     std::int64_t lastSchedulerTarget = -1;
     std::uint64_t presentationSequence = 0;
-    std::unordered_set<std::int64_t> distinctPresentedFrames;
+    internal::DistinctFrameCounter distinctPresentedFrames;
     std::thread shutdownThread;
     bool shutdownWorkerStarted = false;
     bool workerJoined = true;
@@ -1231,7 +1242,7 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
             } else {
                 buffer.noteDisplayed(target);
                 engine.impl_->compositionState.markPresented(*token);
-                engine.impl_->distinctPresentedFrames.insert(target);
+                engine.impl_->distinctPresentedFrames.note(target);
                 ++engine.impl_->presentationSequence;
                 ++engine.impl_->telemetrySnapshot.presentedFrameCount;
                 engine.impl_->telemetrySnapshot.currentSourceQueueDepth =
@@ -1379,7 +1390,7 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
         engine.impl_->finalRuntimeDiagnostics.unsafeGpuResourcesRetained =
             engine.impl_->unsafeGpuResourcesRetained;
         engine.impl_->finalRuntimeDiagnostics.distinctPresentedSourceFrameCount =
-            engine.impl_->distinctPresentedFrames.size();
+            engine.impl_->distinctPresentedFrames.count();
         engine.impl_->finalRuntimeDiagnostics.fullCpuReadbackCount =
             static_cast<std::uint64_t>(engine.impl_->readbacks.fullFrameReadbacks());
         Result<void> completed = engine.impl_->machine.completeTeardown();
@@ -1447,6 +1458,22 @@ Result<void> PreviewRenderPort::reportRenderTargetFailure(PreviewEngine& engine,
     return injectFatal(engine, std::move(error));
 }
 
+Result<void> PreviewRenderPort::reportUnsupportedRenderBackend(PreviewEngine& engine) {
+    PreviewError error =
+        makeError(PreviewErrorCategory::DeviceFailure, PreviewOperation::RenderDeviceAttach,
+                  "preview engineはQRhi D3D11 backendを必須とします");
+    error.severity = PreviewErrorSeverity::FatalToSession;
+    return injectFatal(engine, std::move(error));
+}
+
+Result<void> PreviewRenderPort::reportEngineReplacement(PreviewEngine& engine) {
+    PreviewError error =
+        makeError(PreviewErrorCategory::DeviceFailure, PreviewOperation::RenderDeviceAttach,
+                  "attach済みrendererのengine差し替えを検出しました");
+    error.severity = PreviewErrorSeverity::FatalToSession;
+    return injectFatal(engine, std::move(error));
+}
+
 bool PreviewRenderPort::nativeRuntimeAttached(const PreviewEngine& engine) {
     std::lock_guard<std::mutex> lock(engine.impl_->mutex);
     return engine.impl_->nativeDeviceAttached;
@@ -1484,7 +1511,7 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
     result.deviceReleased = engine.impl_->deviceReleased;
     result.unsafeGpuResourcesRetained = engine.impl_->unsafeGpuResourcesRetained;
     result.registeredVideoSourceCount = engine.impl_->sourceRegistry.registeredSourceCount();
-    result.distinctPresentedSourceFrameCount = engine.impl_->distinctPresentedFrames.size();
+    result.distinctPresentedSourceFrameCount = engine.impl_->distinctPresentedFrames.count();
     result.staleSubstitutionCount = engine.impl_->staleSubstitutionCount;
     result.lifecycleViolationCount = engine.impl_->lifecycleViolationCount;
     result.fullCpuReadbackCount =

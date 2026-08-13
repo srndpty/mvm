@@ -145,6 +145,24 @@ int main() {
         require(nullFailed.status().state == PreviewEngineState::Error,
                 "null attach failureをterminal Errorにしませんでした");
 
+        PreviewEngine unsupportedBackend;
+        auto unsupportedSink = std::make_shared<RecordingSink>();
+        require(unsupportedBackend.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),
+                "unsupported backend engine initializeに失敗しました");
+        require(unsupportedBackend.attachEventSink(unsupportedSink),
+                "unsupported backend sink attachに失敗しました");
+        require(PreviewRenderPort::reportUnsupportedRenderBackend(unsupportedBackend),
+                "非D3D11 backendをsession fatalへ昇格できませんでした");
+        require(
+            unsupportedBackend.status().state == PreviewEngineState::ShuttingDown &&
+                unsupportedSink->errors.size() == 1 &&
+                unsupportedSink->errors.front().category == PreviewErrorCategory::DeviceFailure &&
+                unsupportedSink->errors.front().severity == PreviewErrorSeverity::FatalToSession,
+            "非D3D11 backendのfail-closed状態が不正です");
+        require(PreviewRenderPort::completeTeardown(unsupportedBackend) &&
+                    unsupportedBackend.status().state == PreviewEngineState::Error,
+                "非D3D11 backendをlogical teardownできませんでした");
+
         PreviewEngine changed;
         auto changedSink = std::make_shared<RecordingSink>();
         require(changed.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),
@@ -202,6 +220,30 @@ int main() {
         }
         require(rtvComplete && rtvFailed.status().state == PreviewEngineState::Error,
                 "RTV生成失敗をterminal Errorにできませんでした");
+
+        PreviewEngine replaced;
+        auto replacedSink = std::make_shared<RecordingSink>();
+        require(replaced.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),
+                "engine replacement test initializeに失敗しました");
+        require(replaced.attachEventSink(replacedSink),
+                "engine replacement sink attachに失敗しました");
+        require(
+            PreviewRenderPort::acquireNativeD3D11Device(replaced, deviceA.get(), contextA.get()),
+            "engine replacement native attachに失敗しました");
+        require(PreviewRenderPort::reportEngineReplacement(replaced),
+                "engine差し替えをsession fatalへ昇格できませんでした");
+        require(replaced.status().state == PreviewEngineState::ShuttingDown &&
+                    replacedSink->errors.size() == 1 &&
+                    replacedSink->errors.front().detail.find("engine差し替え") != std::string::npos,
+                "engine差し替えで旧runtimeのteardownが開始されませんでした");
+        bool replacedComplete = false;
+        for (int attempt = 0; attempt < 8 && !replacedComplete; ++attempt) {
+            const Result<bool> teardown = PreviewRenderPort::completeRuntimeTeardown(replaced);
+            require(teardown, "engine replacement runtime teardownに失敗しました");
+            replacedComplete = teardown.value();
+        }
+        require(replacedComplete && replaced.status().state == PreviewEngineState::Error,
+                "engine差し替え後に旧runtimeをterminal Errorまでteardownできませんでした");
 
         PreviewEngine engine;
         require(engine.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),

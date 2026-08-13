@@ -842,6 +842,16 @@ void p5cControlAndRenderNegatives() {
     require(PreviewRenderPort::completeTeardown(engine), "teardown completionに失敗しました");
 }
 
+void distinctFrameCounterIsBounded() {
+    DistinctFrameCounter counter;
+    require(counter.count() == 0, "distinct frame counterの初期値が0ではありません");
+    counter.note(10);
+    counter.note(10);
+    counter.note(9);
+    counter.note(11);
+    require(counter.count() == 2, "distinct frame counterが重複または逆行frameを加算しました");
+}
+
 void unsafeDestructionProcess() {
     std::set_terminate([] { std::_Exit(86); });
     PreviewEngine engine;
@@ -873,6 +883,7 @@ int main(int argc, char** argv) {
         {"dispatcher retention", dispatcherRetention},
         {"safe destruction", safeDestruction},
         {"P5-C control / render negatives", p5cControlAndRenderNegatives},
+        {"bounded distinct frame counter", distinctFrameCounterIsBounded},
     };
 
     try {
