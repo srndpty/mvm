@@ -6,6 +6,7 @@
 
 #include <condition_variable>
 #include <deque>
+#include <functional>
 #include <mutex>
 
 namespace mvm::gpu {
@@ -18,6 +19,8 @@ struct SourceFrameBufferSnapshot {
     size_t depth = 0;
     bool stopped = false;
 };
+
+enum class SourceBufferSpaceWaitResult { SpaceAvailable, Interrupted, TimedOut, Stopped };
 
 // 1 source 専用の bounded buffer。他 source の stop/seek を表現する API を持たない。
 class SourceFrameBuffer final : public IPreviewSurface {
@@ -38,6 +41,10 @@ public:
     size_t discardBefore(long long frameNumber);
     void noteDisplayed(long long frameNumber);
     bool waitForSpace(int timeoutMs);
+    SourceBufferSpaceWaitResult
+    waitForSpaceInterruptible(int timeoutMs,
+                              const std::function<bool()>& interruptPredicate);
+    void notifyWaiters();
     bool waitForFrame(int timeoutMs);
     void stop();
     void restart();

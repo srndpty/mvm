@@ -286,6 +286,84 @@ int cmdSeek(const std::string& media, const std::vector<long long>& targets) {
 }
 
 // --------------------------------------------------------------------------
+// exact seek product contract
+// --------------------------------------------------------------------------
+int cmdSeekContract(const std::string& media, const std::vector<long long>& targets, int repeats) {
+    OwnedDevice dev;
+    std::string err;
+    if (!dev.create(err))
+        return fail(err, kNoDevice);
+
+    FFmpegD3D11Decoder dec(dev.shared, SourceId{1});
+    if (!dec.open(media, err))
+        return fail(err, openFailureExit(dec.openFailure()));
+    if (dec.info().frameCount <= 0)
+        return fail("frame count が不明な素材では exact seek contract を検査できません",
+                    kMismatch);
+
+    SourceGeneration generation = dec.sourceGeneration();
+    DecodedGpuFrame retained;
+    int checked = 0;
+
+    for (int repeat = 0; repeat < repeats; ++repeat) {
+        for (long long target : targets) {
+            if (target < 0 || target >= dec.info().frameCount)
+                return fail("contract target が素材範囲外です", kUsage);
+
+            if (!dec.seek(target, err))
+                return fail("exact seek に失敗: " + err, kMismatch);
+            if (!(generation < dec.sourceGeneration()))
+                return fail("seek/flush で generation が進みませんでした", kMismatch);
+            generation = dec.sourceGeneration();
+
+            DecodedGpuFrame exactFrame;
+            if (dec.requestFrame(exactFrame, err) != DecodeStatus::Ok)
+                return fail("seek 後の exact frame を取得できません: " + err, kMismatch);
+            if (exactFrame.frameNumber != target)
+                return fail("exact seek が要求 frame へ完全一致しませんでした", kMismatch);
+            if (exactFrame.sourceGeneration != generation)
+                return fail("exact frame の generation が decoder と一致しません", kMismatch);
+
+            // 前の seek で得た AVFrame token を保持したまま unrelated seek を完了しても、
+            // hardware texture の ownership が壊れていないことを確認する。
+            if (retained.lifetime) {
+                D3D11_TEXTURE2D_DESC desc{};
+                retained.texture->GetDesc(&desc);
+                if (desc.Width == 0 || desc.Height == 0)
+                    return fail("seek を跨いで保持した hardware frame が無効です", kMismatch);
+            }
+            retained = exactFrame;
+
+            if (target + 1 < dec.info().frameCount) {
+                DecodedGpuFrame nextFrame;
+                if (dec.requestFrame(nextFrame, err) != DecodeStatus::Ok ||
+                    nextFrame.frameNumber != target + 1)
+                    return fail("seek 後の decoder state が連番を維持していません", kMismatch);
+            }
+            ++checked;
+        }
+    }
+
+    // EOS の次を success や近傍 frame に縮退させない。失敗後にも先頭への
+    // unrelated seek が完全一致し、stale frame が残らないことを検査する。
+    const long long unavailable = dec.info().frameCount;
+    std::string unavailableError;
+    if (dec.seek(unavailable, unavailableError))
+        return fail("素材末尾の次の frame を受理しました", kMismatch);
+    if (unavailableError.empty())
+        return fail("unavailable target が理由を報告しませんでした", kMismatch);
+
+    if (!dec.seek(0, err))
+        return fail("unavailable target 後の reset seek に失敗: " + err, kMismatch);
+    DecodedGpuFrame zero;
+    if (dec.requestFrame(zero, err) != DecodeStatus::Ok || zero.frameNumber != 0)
+        return fail("unavailable target 後に stale frame が残りました", kMismatch);
+
+    std::fprintf(stdout, "OK exact seek contract %d 点 (EOS、generation、lifetime)\n", checked);
+    return kOk;
+}
+
+// --------------------------------------------------------------------------
 // marker: 要求フレームと焼き込みマーカーが一致すること
 // --------------------------------------------------------------------------
 int cmdMarker(const std::string& media, const std::vector<long long>& frames) {
@@ -819,6 +897,7 @@ void usage() {
     std::fprintf(stderr, "使い方: mvm_test_gpu_decode <command> [args]\n"
                          "  decode <media> [count]        先頭から連番で decode できること\n"
                          "  seek <media> <f1,f2,...>      seek + flush が効いていること\n"
+                         "  seek-contract <media> <list> [repeat] exact seek 契約を検査\n"
                          "  marker <media> <f1,f2,...>    marker 代表点が一致すること\n"
                          "  no-shader-bind                BindFlags 検査の negative test\n");
 }
@@ -911,7 +990,7 @@ int main(int, char**) {
         return cmdSoak(argv[2], argv[3], cycles, preferred);
     }
 
-    if (cmd == "seek" || cmd == "marker") {
+    if (cmd == "seek" || cmd == "marker" || cmd == "seek-contract") {
         if (argc < 4) {
             usage();
             return kUsage;
@@ -920,6 +999,14 @@ int main(int, char**) {
         if (list.empty()) {
             std::fprintf(stderr, "フレーム番号のリストが空です\n");
             return kUsage;
+        }
+        if (cmd == "seek-contract") {
+            const int repeats = argc >= 5 ? std::atoi(argv[4]) : 1;
+            if (repeats <= 0) {
+                std::fprintf(stderr, "repeat は 1 以上にしてください\n");
+                return kUsage;
+            }
+            return cmdSeekContract(argv[2], list, repeats);
         }
         return (cmd == "seek") ? cmdSeek(argv[2], list) : cmdMarker(argv[2], list);
     }

@@ -120,10 +120,35 @@ void SourceFrameBuffer::noteDisplayed(long long frameNumber) {
 }
 
 bool SourceFrameBuffer::waitForSpace(int timeoutMs) {
+    return waitForSpaceInterruptible(timeoutMs, {}) ==
+           SourceBufferSpaceWaitResult::SpaceAvailable;
+}
+
+SourceBufferSpaceWaitResult SourceFrameBuffer::waitForSpaceInterruptible(
+    int timeoutMs, const std::function<bool()>& interruptPredicate) {
     std::unique_lock<std::mutex> lock(mutex_);
-    return changed_.wait_for(lock, std::chrono::milliseconds(timeoutMs), [this] {
-        return stopped_ || frames_.size() < capacity_;
-    }) && !stopped_;
+    changed_.wait_for(lock, std::chrono::milliseconds(timeoutMs), [this, &interruptPredicate] {
+        return stopped_ || (interruptPredicate && interruptPredicate()) ||
+               frames_.size() < capacity_;
+    });
+
+    if (stopped_)
+        return SourceBufferSpaceWaitResult::Stopped;
+    // buffer space と command が同時に成立した場合も control plane を優先する。
+    if (interruptPredicate && interruptPredicate())
+        return SourceBufferSpaceWaitResult::Interrupted;
+    if (frames_.size() < capacity_)
+        return SourceBufferSpaceWaitResult::SpaceAvailable;
+    return SourceBufferSpaceWaitResult::TimedOut;
+}
+
+void SourceFrameBuffer::notifyWaiters() {
+    {
+        // 外部 predicate の公開と wait 開始の間に通知を失わないよう、wait と同じ
+        // mutex を一度取得して unlock-and-wait の遷移と直列化する。
+        std::lock_guard<std::mutex> lock(mutex_);
+    }
+    changed_.notify_all();
 }
 
 bool SourceFrameBuffer::waitForFrame(int timeoutMs) {
