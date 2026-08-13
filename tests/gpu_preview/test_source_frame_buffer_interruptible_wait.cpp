@@ -101,7 +101,8 @@ bool testCommandInterruptWhileFull() {
     auto result = std::async(std::launch::async, [&] {
         return buffer.waitForSpaceInterruptible(5000, [&] { return probe.observe(interrupted); });
     });
-    if (!require(probe.waitUntilObserved(1), "command interrupt 前に wait へ到達する必要があります")) {
+    if (!require(probe.waitUntilObserved(1),
+                 "command interrupt 前に wait へ到達する必要があります")) {
         buffer.stop();
         result.wait();
         return false;
@@ -167,8 +168,8 @@ bool testTimeoutFallback() {
     std::atomic<bool> interrupted{false};
     PredicateProbe probe;
     const auto begin = std::chrono::steady_clock::now();
-    const auto result = buffer.waitForSpaceInterruptible(
-        50, [&] { return probe.observe(interrupted); });
+    const auto result =
+        buffer.waitForSpaceInterruptible(50, [&] { return probe.observe(interrupted); });
     const auto elapsed = std::chrono::steady_clock::now() - begin;
     return require(result == SourceBufferSpaceWaitResult::TimedOut,
                    "command 無しの 50 ms timeout は fallback である必要があります") &&
@@ -185,10 +186,11 @@ bool testRepeatedCommandHasNoLostWake() {
         std::atomic<bool> interrupted{false};
         PredicateProbe probe;
         auto result = std::async(std::launch::async, [&] {
-            return buffer.waitForSpaceInterruptible(
-                5000, [&] { return probe.observe(interrupted); });
+            return buffer.waitForSpaceInterruptible(5000,
+                                                    [&] { return probe.observe(interrupted); });
         });
-        if (!require(probe.waitUntilObserved(1), "反復 interrupt で wait へ到達する必要があります")) {
+        if (!require(probe.waitUntilObserved(1),
+                     "反復 interrupt で wait へ到達する必要があります")) {
             buffer.stop();
             result.wait();
             return false;

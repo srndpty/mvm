@@ -339,7 +339,7 @@ bool FFmpegD3D11Decoder::Impl::wrapFrame(AVFrame* frame, DecodedGpuFrame& out, s
 }
 
 DecodeStatus FFmpegD3D11Decoder::Impl::pull(DecodedGpuFrame& out, std::string& err,
-                                           long long exactTargetPts) {
+                                            long long exactTargetPts) {
     if (!codec)
         return DecodeStatus::Error;
 
@@ -631,6 +631,7 @@ bool FFmpegD3D11Decoder::seek(long long frameNumber, std::string& err) {
     struct SkipFrameGuard {
         AVCodecContext* codec = nullptr;
         AVDiscard saved = AVDISCARD_DEFAULT;
+
         ~SkipFrameGuard() {
             if (codec)
                 codec->skip_frame = saved;

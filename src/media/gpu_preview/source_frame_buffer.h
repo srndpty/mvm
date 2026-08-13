@@ -42,8 +42,7 @@ public:
     void noteDisplayed(long long frameNumber);
     bool waitForSpace(int timeoutMs);
     SourceBufferSpaceWaitResult
-    waitForSpaceInterruptible(int timeoutMs,
-                              const std::function<bool()>& interruptPredicate);
+    waitForSpaceInterruptible(int timeoutMs, const std::function<bool()>& interruptPredicate);
     void notifyWaiters();
     bool waitForFrame(int timeoutMs);
     void stop();

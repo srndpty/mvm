@@ -298,8 +298,7 @@ int cmdSeekContract(const std::string& media, const std::vector<long long>& targ
     if (!dec.open(media, err))
         return fail(err, openFailureExit(dec.openFailure()));
     if (dec.info().frameCount <= 0)
-        return fail("frame count が不明な素材では exact seek contract を検査できません",
-                    kMismatch);
+        return fail("frame count が不明な素材では exact seek contract を検査できません", kMismatch);
 
     SourceGeneration generation = dec.sourceGeneration();
     DecodedGpuFrame retained;

@@ -586,8 +586,8 @@ void SourceDecodeWorker::run() {
                 --stepsPending_;
         }
 
-        const SourceBufferSpaceWaitResult initialWait = buffer_.waitForSpaceInterruptible(
-            50, [this] { return seekMailbox_.hasPending(); });
+        const SourceBufferSpaceWaitResult initialWait =
+            buffer_.waitForSpaceInterruptible(50, [this] { return seekMailbox_.hasPending(); });
         if (initialWait != SourceBufferSpaceWaitResult::SpaceAvailable) {
             if (!running() || buffer_.stopped())
                 break;

@@ -120,12 +120,12 @@ void SourceFrameBuffer::noteDisplayed(long long frameNumber) {
 }
 
 bool SourceFrameBuffer::waitForSpace(int timeoutMs) {
-    return waitForSpaceInterruptible(timeoutMs, {}) ==
-           SourceBufferSpaceWaitResult::SpaceAvailable;
+    return waitForSpaceInterruptible(timeoutMs, {}) == SourceBufferSpaceWaitResult::SpaceAvailable;
 }
 
-SourceBufferSpaceWaitResult SourceFrameBuffer::waitForSpaceInterruptible(
-    int timeoutMs, const std::function<bool()>& interruptPredicate) {
+SourceBufferSpaceWaitResult
+SourceFrameBuffer::waitForSpaceInterruptible(int timeoutMs,
+                                             const std::function<bool()>& interruptPredicate) {
     std::unique_lock<std::mutex> lock(mutex_);
     changed_.wait_for(lock, std::chrono::milliseconds(timeoutMs), [this, &interruptPredicate] {
         return stopped_ || (interruptPredicate && interruptPredicate()) ||
