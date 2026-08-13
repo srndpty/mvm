@@ -49,6 +49,7 @@ struct GpuCompositorTestFaults {
     GpuCompositorInitializeFault initialize = GpuCompositorInitializeFault::None;
     int failBeforeLayerDraw = -1;
     bool failCompletionPoll = false;
+    bool failShutdownCompletionPoll = false;
 };
 
 enum class GpuCompositorShutdownStatus { Pending = 0, Complete, Failed };
@@ -109,6 +110,8 @@ private:
     void rollbackInitialize();
     void finishShutdown();
     void enterFatal(const std::string& reason);
+    GpuCompositorShutdownStatus failShutdownCompletionPoll(const std::string& reason,
+                                                           std::string& err);
     bool composeProductToTarget(const ComposedFrame& frame, const ExternalCompositionTarget& target,
                                 size_t expectedLayerCount, const char* layerCountError,
                                 std::string& err);

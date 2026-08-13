@@ -364,14 +364,14 @@ GpuCompositorShutdownStatus GpuCompositor::pollShutdown(std::string& err) {
         return GpuCompositorShutdownStatus::Complete;
     // shutdownではcompose/poll用のtest faultを再注入せず、実GPU completionだけを
     // 非blockingに確認する。fatal発生後も既投入resourceは安全にretireさせる。
+    if (testFaults_.failShutdownCompletionPoll)
+        return failShutdownCompletionPoll("test fault: GPU shutdown completion poll failure", err);
     const CompletionPollResult result = completion_.polledCompleted();
-    if (result.status != CompletionPollStatus::Ok) {
-        ++counters_.completionPollFailureCount;
-        err = completion_.fatalReason().empty() ? "GPU completion shutdown pollに失敗しました"
-                                                : completion_.fatalReason();
-        shutdownFailed_ = true;
-        return GpuCompositorShutdownStatus::Failed;
-    }
+    if (result.status != CompletionPollStatus::Ok)
+        return failShutdownCompletionPoll(completion_.fatalReason().empty()
+                                              ? "GPU completion shutdown pollに失敗しました"
+                                              : completion_.fatalReason(),
+                                          err);
     retirement_.poll(result.completed);
     counters_.retirementDepthAfterDrain = retirement_.depthCurrent();
     counters_.retirementDepthPeak = retirement_.depthPeak();
@@ -385,6 +385,14 @@ GpuCompositorShutdownStatus GpuCompositor::pollShutdown(std::string& err) {
     ++counters_.retirementTimeoutCount;
     shutdownFailed_ = true;
     err = "GPU retirementを有限時間でdrainできませんでした";
+    return GpuCompositorShutdownStatus::Failed;
+}
+
+GpuCompositorShutdownStatus GpuCompositor::failShutdownCompletionPoll(const std::string& reason,
+                                                                      std::string& err) {
+    ++counters_.completionPollFailureCount;
+    err = reason;
+    shutdownFailed_ = true;
     return GpuCompositorShutdownStatus::Failed;
 }
 

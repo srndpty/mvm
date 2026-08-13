@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace mvm::gpu;
@@ -311,6 +312,90 @@ bool runSingleLayerProductCases(OwnedDevice& owned, ReadbackCounters& readbacks,
     return true;
 }
 
+bool pollShutdownToCompletion(GpuCompositor& compositor, std::string& err) {
+    for (;;) {
+        const auto status = compositor.pollShutdown(err);
+        if (status == GpuCompositorShutdownStatus::Complete)
+            return true;
+        if (status == GpuCompositorShutdownStatus::Failed)
+            return false;
+        std::this_thread::yield();
+    }
+}
+
+bool runShutdownPollCases(OwnedDevice& owned, ReadbackCounters& readbacks, std::string& err) {
+    std::fprintf(stderr, "[compositor_async_shutdown_complete]\n"
+                         "[compositor_normal_poll_fault_not_shutdown_authority]\n"
+                         "[compositor_shutdown_poll_fault_negative]\n"
+                         "[compositor_shutdown_poll_fault_sticky]\n");
+    OwnedNv12 texture;
+    OwnedTarget target;
+    if (!makeNv12(owned.device, 16, 16, 81, 90, 240, 145, 54, 34, texture, err) ||
+        !target.create(owned.device, 64, 64, err))
+        return false;
+    const DecodedGpuFrame frame = fixtureFrame(texture, {61}, {71});
+    const ExternalCompositionTarget external{target.rtv, 64, 64};
+
+    GpuCompositor baseline;
+    if (!baseline.initializeExternal(owned.shared, readbacks, err) ||
+        !baseline.composeSingleLayerToTarget(singleLayerComposition(frame), external, err) ||
+        !baseline.beginShutdown(10000, err) || !pollShutdownToCompletion(baseline, err) ||
+        baseline.ready()) {
+        err = "async shutdownの正常完了を確認できませんでした: " + err;
+        return false;
+    }
+
+    GpuCompositor normalPollFault;
+    if (!normalPollFault.initializeExternal(owned.shared, readbacks, err) ||
+        !normalPollFault.composeSingleLayerToTarget(singleLayerComposition(frame), external, err))
+        return false;
+    normalPollFault.setTestFaults({GpuCompositorInitializeFault::None, -1, true, false});
+    if (!normalPollFault.beginShutdown(10000, err) ||
+        !pollShutdownToCompletion(normalPollFault, err) || normalPollFault.ready() ||
+        normalPollFault.counters().completionPollFailureCount != 0) {
+        err = "通常poll faultがshutdown pollのauthorityへ漏れました: " + err;
+        return false;
+    }
+
+    GpuCompositor shutdownPollFault;
+    shutdownPollFault.setTestFaults({GpuCompositorInitializeFault::None, -1, false, true});
+    if (!shutdownPollFault.initializeExternal(owned.shared, readbacks, err) ||
+        !shutdownPollFault.composeSingleLayerToTarget(singleLayerComposition(frame), external,
+                                                      err)) {
+        err = "shutdown poll faultが通常compose/pollへ漏れました: " + err;
+        return false;
+    }
+    const auto before = shutdownPollFault.counters();
+    if (!shutdownPollFault.beginShutdown(10000, err))
+        return false;
+    err.clear();
+    if (shutdownPollFault.pollShutdown(err) != GpuCompositorShutdownStatus::Failed || err.empty() ||
+        !shutdownPollFault.ready() ||
+        shutdownPollFault.counters().completionPollFailureCount !=
+            before.completionPollFailureCount + 1 ||
+        shutdownPollFault.counters().retirementDepthAfterDrain !=
+            before.retirementDepthAfterDrain ||
+        shutdownPollFault.counters().untrackedSubmissionCount != 0 ||
+        shutdownPollFault.counters().payloadsReleasedBeforeCompletion != 0) {
+        err = "shutdown completion poll faultが追跡済みFailedとして固定されませんでした: " + err;
+        return false;
+    }
+    err.clear();
+    if (shutdownPollFault.pollShutdown(err) != GpuCompositorShutdownStatus::Failed ||
+        !shutdownPollFault.ready() ||
+        shutdownPollFault.counters().completionPollFailureCount !=
+            before.completionPollFailureCount + 1) {
+        err = "shutdown completion poll fault後の再pollがFailedを維持しませんでした";
+        return false;
+    }
+    shutdownPollFault.setTestFaults({});
+    if (!shutdownPollFault.shutdown(10000, err)) {
+        err = "shutdown fault検査後に追跡resourceを安全にdrainできませんでした: " + err;
+        return false;
+    }
+    return true;
+}
+
 bool runFixtureCases(GpuCompositor& compositor, OwnedDevice& owned, std::string& err) {
     OwnedNv12 aTexture, bTexture;
     if (!makeNv12(owned.device, 16, 16, 81, 90, 240, 81, 90, 240, aTexture, err) ||
@@ -485,6 +570,9 @@ int run(const std::string& pathA, const std::string& pathB) {
         return fail(err, 5);
 
     if (!runSingleLayerProductCases(owned, readbacks, err))
+        return fail(err);
+
+    if (!runShutdownPollCases(owned, readbacks, err))
         return fail(err);
 
     if (!runLatentFailureCases(owned, readbacks, err))
