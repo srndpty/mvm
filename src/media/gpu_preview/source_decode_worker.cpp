@@ -299,6 +299,7 @@ void SourceDecodeWorker::stop() {
         seekMailbox_.stop();
     }
     buffer_.stop();
+    testBarrierChanged_.notify_all();
     wake_.notify_all();
     if (thread_.joinable())
         thread_.join();
@@ -321,6 +322,27 @@ void SourceDecodeWorker::stop() {
     }
     // joined は decoder close/reset と最終 snapshot の後にだけ公開する。
     joined_.store(true, std::memory_order_release);
+}
+
+void SourceDecodeWorker::armAfterInitialSpaceBarrierForTest() {
+    std::lock_guard<std::mutex> lock(testBarrierMutex_);
+    testBarrierArmed_ = true;
+    testBarrierReached_ = false;
+    testBarrierReleased_ = false;
+}
+
+bool SourceDecodeWorker::waitAfterInitialSpaceBarrierForTest(int timeoutMs) {
+    std::unique_lock<std::mutex> lock(testBarrierMutex_);
+    return testBarrierChanged_.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                                        [this] { return testBarrierReached_; });
+}
+
+void SourceDecodeWorker::releaseAfterInitialSpaceBarrierForTest() {
+    {
+        std::lock_guard<std::mutex> lock(testBarrierMutex_);
+        testBarrierReleased_ = true;
+    }
+    testBarrierChanged_.notify_all();
 }
 
 void SourceDecodeWorker::play() {
@@ -372,6 +394,13 @@ void SourceDecodeWorker::noteFatal(const std::string& err) {
     snapshot_.lastError = err;
 }
 
+void SourceDecodeWorker::injectEofForTest() {
+    eof_.store(true, std::memory_order_release);
+    playing_.store(false, std::memory_order_release);
+    buffer_.clear();
+    wake_.notify_all();
+}
+
 bool SourceDecodeWorker::submitWithBackpressure(const DecodedGpuFrame& frame, std::string& err) {
     if (!validateTextureDevice(frame, err)) {
         noteFatal(err);
@@ -393,8 +422,18 @@ bool SourceDecodeWorker::submitWithBackpressure(const DecodedGpuFrame& frame, st
                 std::lock_guard<std::mutex> lock(snapshotMutex_);
                 ++snapshot_.queueFullCount;
                 ++snapshot_.backpressureWaitCount;
+                snapshot_.submitBackpressureWaitActive = true;
             }
-            if (!buffer_.waitForSpace(50) && buffer_.stopped())
+            const SourceBufferSpaceWaitResult wait =
+                buffer_.waitForSpaceInterruptible(50, [this] { return seekMailbox_.hasPending(); });
+            {
+                std::lock_guard<std::mutex> lock(snapshotMutex_);
+                snapshot_.submitBackpressureWaitActive = false;
+                if (wait == SourceBufferSpaceWaitResult::Interrupted)
+                    ++snapshot_.seekInterruptedSubmitWaitCount;
+            }
+            if (wait == SourceBufferSpaceWaitResult::Interrupted ||
+                wait == SourceBufferSpaceWaitResult::Stopped)
                 return false;
             continue;
         }
@@ -432,8 +471,12 @@ SeekRequestResult SourceDecodeWorker::requestSeek(long long frameNumber, SeekTic
             setSeekPhase(SeekExecutionPhase::Queued, ticket);
         }
     }
-    if (result == SeekRequestResult::Accepted)
+    if (result == SeekRequestResult::Accepted) {
+        // mailbox 公開後に initial-buffer wait を起こす。buffer mutex の取得は
+        // commandMutex_ 解放後なので mailbox -> buffer の lock inversion を作らない。
+        buffer_.notifyWaiters();
         wake_.notify_all();
+    }
     return result;
 }
 
@@ -582,13 +625,28 @@ void SourceDecodeWorker::run() {
                 --stepsPending_;
         }
 
-        if (!buffer_.waitForSpace(50)) {
+        const SourceBufferSpaceWaitResult initialWait =
+            buffer_.waitForSpaceInterruptible(50, [this] { return seekMailbox_.hasPending(); });
+        if (initialWait != SourceBufferSpaceWaitResult::SpaceAvailable) {
             if (!running() || buffer_.stopped())
                 break;
             std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
             ++snapshot_.backpressureWaitCount;
             continue;
         }
+
+        {
+            std::unique_lock<std::mutex> testLock(testBarrierMutex_);
+            if (testBarrierArmed_) {
+                testBarrierReached_ = true;
+                testBarrierChanged_.notify_all();
+                testBarrierChanged_.wait(testLock,
+                                         [this] { return !running() || testBarrierReleased_; });
+                testBarrierArmed_ = false;
+            }
+        }
+        if (!running())
+            break;
 
         std::lock_guard<std::mutex> lock(decoderMutex_);
         if (!decoder_)

@@ -132,6 +132,8 @@ struct SourceDecoderSnapshot {
     long long submittedCount = 0;
     long long queueFullCount = 0;
     long long backpressureWaitCount = 0;
+    long long seekInterruptedSubmitWaitCount = 0;
+    bool submitBackpressureWaitActive = false;
     long long staleGenerationRejectCount = 0;
     long long futureGenerationRejectCount = 0;
     long long invalidFrameRejectCount = 0;
@@ -175,6 +177,14 @@ public:
 
     bool joined() const { return joined_.load(std::memory_order_acquire); }
 
+    void injectFatalForTest(const std::string& err) { noteFatal(err); }
+
+    void injectEofForTest();
+
+    void armAfterInitialSpaceBarrierForTest();
+    bool waitAfterInitialSpaceBarrierForTest(int timeoutMs);
+    void releaseAfterInitialSpaceBarrierForTest();
+
 private:
     void run();
     SeekCompletion executeSeek(const SeekTicket& ticket, long long requestQpc);
@@ -195,6 +205,11 @@ private:
     mutable std::mutex decoderMutex_;
     mutable std::mutex snapshotMutex_;
     std::condition_variable wake_;
+    std::mutex testBarrierMutex_;
+    std::condition_variable testBarrierChanged_;
+    bool testBarrierArmed_ = false;
+    bool testBarrierReached_ = false;
+    bool testBarrierReleased_ = false;
     SourceSeekMailbox seekMailbox_;
     SourceDecoderSnapshot snapshot_;
     int stepsPending_ = 0;

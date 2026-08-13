@@ -206,7 +206,8 @@ struct FFmpegD3D11Decoder::Impl {
     }
 
     bool createHwDevice(std::string& err);
-    DecodeStatus pull(DecodedGpuFrame& out, std::string& err);
+    DecodeStatus pull(DecodedGpuFrame& out, std::string& err,
+                      long long exactTargetPts = AV_NOPTS_VALUE);
     bool wrapFrame(AVFrame* frame, DecodedGpuFrame& out, std::string& err);
 };
 
@@ -337,7 +338,8 @@ bool FFmpegD3D11Decoder::Impl::wrapFrame(AVFrame* frame, DecodedGpuFrame& out, s
     return true;
 }
 
-DecodeStatus FFmpegD3D11Decoder::Impl::pull(DecodedGpuFrame& out, std::string& err) {
+DecodeStatus FFmpegD3D11Decoder::Impl::pull(DecodedGpuFrame& out, std::string& err,
+                                            long long exactTargetPts) {
     if (!codec)
         return DecodeStatus::Error;
 
@@ -392,6 +394,14 @@ DecodeStatus FFmpegD3D11Decoder::Impl::pull(DecodedGpuFrame& out, std::string& e
         if (packet->stream_index != streamIndex) {
             av_packet_unref(packet);
             continue;
+        }
+
+        // exact seek の探索中は target の再構成に不要な非参照 frame を省略する。
+        // PTS 不明や B-frame の並べ替えで target 以降の PTS が先に現れた場合は
+        // exactness を優先し、その packet を送る前に通常 decode へ戻す。
+        if (codec->skip_frame == AVDISCARD_NONREF && exactTargetPts != AV_NOPTS_VALUE &&
+            (packet->pts == AV_NOPTS_VALUE || packet->pts >= exactTargetPts)) {
+            codec->skip_frame = AVDISCARD_DEFAULT;
         }
 
         rc = avcodec_send_packet(codec, packet);
@@ -610,11 +620,23 @@ bool FFmpegD3D11Decoder::seek(long long frameNumber, std::string& err) {
 
     // time base / fps が不正なら、この先の PTS 計算はすべて無意味になる。
     // 先に 1 度だけ確かめる (実際の seek 先は下のループが計算する)。
-    if (frameNumberToPts(frameNumber, d.info.startPts, d.info.timeBase, d.info.frameRate) ==
-        kNoPts) {
+    const long long targetPts =
+        frameNumberToPts(frameNumber, d.info.startPts, d.info.timeBase, d.info.frameRate);
+    if (targetPts == kNoPts) {
         err = "frame number から PTS を作れませんでした";
         return false;
     }
+
+    // seek 中だけ skip_frame を変更し、成功・失敗を問わず呼出前の値へ戻す。
+    struct SkipFrameGuard {
+        AVCodecContext* codec = nullptr;
+        AVDiscard saved = AVDISCARD_DEFAULT;
+
+        ~SkipFrameGuard() {
+            if (codec)
+                codec->skip_frame = saved;
+        }
+    } skipFrameGuard{d.codec, d.codec->skip_frame};
 
     // --- 行き過ぎたら戻して測り直す --------------------------------------
     //
@@ -660,11 +682,15 @@ bool FFmpegD3D11Decoder::seek(long long frameNumber, std::string& err) {
         if (attempt > 0)
             d.seekBackoffs++;
 
+        // 各 attempt は flush 後から非参照 frame の省略を開始する。pull() が
+        // target 関連 packet の送信前に通常 decode へ戻す。
+        d.codec->skip_frame = AVDISCARD_NONREF;
+
         bool overshot = false;
         for (;;) {
             DecodedGpuFrame f;
             std::string derr;
-            const DecodeStatus st = d.pull(f, derr);
+            const DecodeStatus st = d.pull(f, derr, targetPts);
             if (st == DecodeStatus::Eof) {
                 err =
                     "seek 先が素材の末尾を超えています (frame " + std::to_string(frameNumber) + ")";

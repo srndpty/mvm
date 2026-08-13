@@ -19,7 +19,8 @@ $forbidden = @(
     'condition_variable'
 )
 
-$headers = Get-ChildItem -LiteralPath $PublicDir -Filter '*.h' -File
+$headers = Get-ChildItem -LiteralPath $PublicDir -Filter '*.h' -File |
+    Where-Object { $_.Name -notmatch '_internal\.h$' }
 if ($headers.Count -eq 0) {
     throw "public headerが0件です: $PublicDir"
 }

@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace mvm::gpu;
@@ -58,6 +59,36 @@ struct OwnedNv12 {
     ~OwnedNv12() {
         if (texture)
             texture->Release();
+    }
+};
+
+struct OwnedTarget {
+    ID3D11Texture2D* texture = nullptr;
+    ID3D11RenderTargetView* rtv = nullptr;
+
+    ~OwnedTarget() {
+        if (rtv)
+            rtv->Release();
+        if (texture)
+            texture->Release();
+    }
+
+    bool create(ID3D11Device* device, int width, int height, std::string& err) {
+        D3D11_TEXTURE2D_DESC td{};
+        td.Width = static_cast<UINT>(width);
+        td.Height = static_cast<UINT>(height);
+        td.MipLevels = td.ArraySize = 1;
+        td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        td.SampleDesc.Count = 1;
+        td.BindFlags = D3D11_BIND_RENDER_TARGET;
+        HRESULT rc = device->CreateTexture2D(&td, nullptr, &texture);
+        if (SUCCEEDED(rc))
+            rc = device->CreateRenderTargetView(texture, nullptr, &rtv);
+        if (FAILED(rc)) {
+            err = "single-layer external targetを生成できません";
+            return false;
+        }
+        return true;
     }
 };
 
@@ -140,6 +171,229 @@ ComposedFrame composition(const DecodedGpuFrame& a, const DecodedGpuFrame& b, fl
         a.frameNumber,
         {1},
         {{a, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0f, 0}, {b, {0.5f, 0.5f, 0.5f, 0.5f}, uv, opacity, 1}}};
+}
+
+ComposedFrame singleLayerComposition(const DecodedGpuFrame& frame, RectF destination = {0, 0, 1, 1},
+                                     float opacity = 1.0F) {
+    return {frame.frameNumber, {1}, {{frame, destination, {0, 0, 1, 1}, opacity, 0}}, {}};
+}
+
+bool externalProbeEquals(GpuCompositor& compositor, ID3D11Texture2D* texture, int x, int y,
+                         Rgba8 expected, std::string& err) {
+    std::vector<unsigned char> rgba;
+    if (!compositor.readExternalOutputProbe(texture, x, y, 1, 1, rgba, err))
+        return false;
+    const Rgba8 actual{rgba[0], rgba[1], rgba[2], rgba[3]};
+    if (!probeWithinTolerance(actual, expected)) {
+        err = "single-layer external target probeがreference tolerance外です";
+        return false;
+    }
+    return true;
+}
+
+bool runSingleLayerProductCases(OwnedDevice& owned, ReadbackCounters& readbacks, std::string& err) {
+    std::fprintf(stderr, "[compositor_single_layer_product]\n"
+                         "[compositor_single_layer_fullscreen]\n"
+                         "[compositor_single_layer_destination_opacity]\n"
+                         "[compositor_single_layer_tracked_retirement]\n");
+    OwnedNv12 texture;
+    OwnedTarget target;
+    if (!makeNv12(owned.device, 16, 16, 81, 90, 240, 145, 54, 34, texture, err) ||
+        !target.create(owned.device, 64, 64, err))
+        return false;
+    const DecodedGpuFrame frame = fixtureFrame(texture, {41}, {51});
+    const ExternalCompositionTarget external{target.rtv, 64, 64};
+    const Rgba8 left = bt709Limited(81, 90, 240);
+    const Rgba8 right = bt709Limited(145, 54, 34);
+
+    GpuCompositor compositor;
+    if (!compositor.initializeExternal(owned.shared, readbacks, err))
+        return false;
+
+    ComposedFrame empty;
+    if (compositor.composeSingleLayerToTarget(empty, external, err)) {
+        err = "empty single-layer compositionを拒否しませんでした";
+        return false;
+    }
+    err.clear();
+    if (compositor.composeSingleLayerToTarget(singleLayerComposition(frame), {nullptr, 64, 64},
+                                              err)) {
+        err = "null external targetを拒否しませんでした";
+        return false;
+    }
+    err.clear();
+    auto invalidRect = singleLayerComposition(frame, {0, 0, 0, 1});
+    if (compositor.composeSingleLayerToTarget(invalidRect, external, err)) {
+        err = "invalid destinationを拒否しませんでした";
+        return false;
+    }
+    err.clear();
+
+    const float black[4] = {0, 0, 0, 1};
+    {
+        std::lock_guard<D3D11Lock> lock(owned.shared.lock());
+        owned.context->ClearRenderTargetView(target.rtv, black);
+    }
+    if (!compositor.composeSingleLayerToTarget(singleLayerComposition(frame), external, err) ||
+        !externalProbeEquals(compositor, target.texture, 8, 32, left, err) ||
+        !externalProbeEquals(compositor, target.texture, 56, 32, right, err))
+        return false;
+
+    {
+        std::lock_guard<D3D11Lock> lock(owned.shared.lock());
+        owned.context->ClearRenderTargetView(target.rtv, black);
+    }
+    if (!compositor.composeSingleLayerToTarget(
+            singleLayerComposition(frame, {0.25F, 0.25F, 0.5F, 0.5F}, 0.5F), external, err) ||
+        !externalProbeEquals(compositor, target.texture, 20, 32,
+                             straightAlphaBlend(left, {0, 0, 0, 255}, 0.5), err) ||
+        !externalProbeEquals(compositor, target.texture, 44, 32,
+                             straightAlphaBlend(right, {0, 0, 0, 255}, 0.5), err))
+        return false;
+
+    const auto beforeShutdown = compositor.counters();
+    if (beforeShutdown.compositionDrawnCount != 2 || beforeShutdown.layerDrawCount != 2 ||
+        beforeShutdown.gpuSubmissionCount != 2 || beforeShutdown.untrackedSubmissionCount != 0 ||
+        !compositor.shutdown(10000, err)) {
+        err = "single-layer submission/retirement invariantが成立しません: " + err;
+        return false;
+    }
+    const auto afterShutdown = compositor.counters();
+    if (afterShutdown.retirementDepthAfterDrain != 0 ||
+        afterShutdown.payloadsReleasedBeforeCompletion != 0 ||
+        afterShutdown.retirementTimeoutCount != 0) {
+        err = "single-layer retirementを安全にdrainできませんでした";
+        return false;
+    }
+
+    std::fprintf(stderr, "[compositor_single_layer_device_mismatch_negative]\n"
+                         "[compositor_single_layer_issue_failure_negative]\n"
+                         "[compositor_single_layer_completion_failure_negative]\n");
+    OwnedDevice foreign;
+    OwnedNv12 foreignTexture;
+    GpuCompositor mismatch;
+    if (!foreign.create(err) ||
+        !makeNv12(foreign.device, 16, 16, 81, 90, 240, 81, 90, 240, foreignTexture, err) ||
+        !mismatch.initializeExternal(owned.shared, readbacks, err))
+        return false;
+    const DecodedGpuFrame foreignFrame = fixtureFrame(foreignTexture, {42}, {52});
+    if (mismatch.composeSingleLayerToTarget(singleLayerComposition(foreignFrame), external, err) ||
+        mismatch.counters().deviceMismatchCount != 1 ||
+        mismatch.counters().gpuSubmissionCount != 0 || !mismatch.shutdown(10000, err)) {
+        err = "single-layer device mismatchがdraw前にfail-closedになりませんでした";
+        return false;
+    }
+    err.clear();
+
+    GpuCompositor issueFailure;
+    issueFailure.setTestFaults({GpuCompositorInitializeFault::None, 0, false});
+    if (!issueFailure.initializeExternal(owned.shared, readbacks, err) ||
+        issueFailure.composeSingleLayerToTarget(singleLayerComposition(frame), external, err) ||
+        !issueFailure.fatal() || issueFailure.counters().partialGpuIssueFailureCount != 1 ||
+        issueFailure.counters().gpuSubmissionCount != 1 || !issueFailure.shutdown(10000, err)) {
+        err = "single-layer partial issueをtracked fatalとしてretireできませんでした";
+        return false;
+    }
+    err.clear();
+
+    GpuCompositor completionFailure;
+    completionFailure.setTestFaults({GpuCompositorInitializeFault::None, -1, true});
+    if (!completionFailure.initializeExternal(owned.shared, readbacks, err) ||
+        completionFailure.composeSingleLayerToTarget(singleLayerComposition(frame), external,
+                                                     err) ||
+        !completionFailure.fatal() ||
+        completionFailure.counters().completionPollFailureCount != 1 ||
+        completionFailure.counters().gpuSubmissionCount != 1 ||
+        !completionFailure.shutdown(10000, err)) {
+        err = "single-layer completion failureをfatalとして安全にdrainできませんでした";
+        return false;
+    }
+    err.clear();
+    return true;
+}
+
+bool pollShutdownToCompletion(GpuCompositor& compositor, std::string& err) {
+    for (;;) {
+        const auto status = compositor.pollShutdown(err);
+        if (status == GpuCompositorShutdownStatus::Complete)
+            return true;
+        if (status == GpuCompositorShutdownStatus::Failed)
+            return false;
+        std::this_thread::yield();
+    }
+}
+
+bool runShutdownPollCases(OwnedDevice& owned, ReadbackCounters& readbacks, std::string& err) {
+    std::fprintf(stderr, "[compositor_async_shutdown_complete]\n"
+                         "[compositor_normal_poll_fault_not_shutdown_authority]\n"
+                         "[compositor_shutdown_poll_fault_negative]\n"
+                         "[compositor_shutdown_poll_fault_sticky]\n");
+    OwnedNv12 texture;
+    OwnedTarget target;
+    if (!makeNv12(owned.device, 16, 16, 81, 90, 240, 145, 54, 34, texture, err) ||
+        !target.create(owned.device, 64, 64, err))
+        return false;
+    const DecodedGpuFrame frame = fixtureFrame(texture, {61}, {71});
+    const ExternalCompositionTarget external{target.rtv, 64, 64};
+
+    GpuCompositor baseline;
+    if (!baseline.initializeExternal(owned.shared, readbacks, err) ||
+        !baseline.composeSingleLayerToTarget(singleLayerComposition(frame), external, err) ||
+        !baseline.beginShutdown(10000, err) || !pollShutdownToCompletion(baseline, err) ||
+        baseline.ready()) {
+        err = "async shutdownの正常完了を確認できませんでした: " + err;
+        return false;
+    }
+
+    GpuCompositor normalPollFault;
+    if (!normalPollFault.initializeExternal(owned.shared, readbacks, err) ||
+        !normalPollFault.composeSingleLayerToTarget(singleLayerComposition(frame), external, err))
+        return false;
+    normalPollFault.setTestFaults({GpuCompositorInitializeFault::None, -1, true, false});
+    if (!normalPollFault.beginShutdown(10000, err) ||
+        !pollShutdownToCompletion(normalPollFault, err) || normalPollFault.ready() ||
+        normalPollFault.counters().completionPollFailureCount != 0) {
+        err = "通常poll faultがshutdown pollのauthorityへ漏れました: " + err;
+        return false;
+    }
+
+    GpuCompositor shutdownPollFault;
+    shutdownPollFault.setTestFaults({GpuCompositorInitializeFault::None, -1, false, true});
+    if (!shutdownPollFault.initializeExternal(owned.shared, readbacks, err) ||
+        !shutdownPollFault.composeSingleLayerToTarget(singleLayerComposition(frame), external,
+                                                      err)) {
+        err = "shutdown poll faultが通常compose/pollへ漏れました: " + err;
+        return false;
+    }
+    const auto before = shutdownPollFault.counters();
+    if (!shutdownPollFault.beginShutdown(10000, err))
+        return false;
+    err.clear();
+    if (shutdownPollFault.pollShutdown(err) != GpuCompositorShutdownStatus::Failed || err.empty() ||
+        !shutdownPollFault.ready() ||
+        shutdownPollFault.counters().completionPollFailureCount !=
+            before.completionPollFailureCount + 1 ||
+        shutdownPollFault.counters().retirementDepthAfterDrain !=
+            before.retirementDepthAfterDrain ||
+        shutdownPollFault.counters().untrackedSubmissionCount != 0 ||
+        shutdownPollFault.counters().payloadsReleasedBeforeCompletion != 0) {
+        err = "shutdown completion poll faultが追跡済みFailedとして固定されませんでした: " + err;
+        return false;
+    }
+    err.clear();
+    if (shutdownPollFault.pollShutdown(err) != GpuCompositorShutdownStatus::Failed ||
+        !shutdownPollFault.ready() ||
+        shutdownPollFault.counters().completionPollFailureCount !=
+            before.completionPollFailureCount + 1) {
+        err = "shutdown completion poll fault後の再pollがFailedを維持しませんでした";
+        return false;
+    }
+    shutdownPollFault.setTestFaults({});
+    if (!shutdownPollFault.shutdown(10000, err)) {
+        err = "shutdown fault検査後に追跡resourceを安全にdrainできませんでした: " + err;
+        return false;
+    }
+    return true;
 }
 
 bool runFixtureCases(GpuCompositor& compositor, OwnedDevice& owned, std::string& err) {
@@ -314,6 +568,12 @@ int run(const std::string& pathA, const std::string& pathB) {
     std::string err;
     if (!owned.create(err))
         return fail(err, 5);
+
+    if (!runSingleLayerProductCases(owned, readbacks, err))
+        return fail(err);
+
+    if (!runShutdownPollCases(owned, readbacks, err))
+        return fail(err);
 
     if (!runLatentFailureCases(owned, readbacks, err))
         return fail(err);

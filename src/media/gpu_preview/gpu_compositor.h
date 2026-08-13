@@ -49,6 +49,7 @@ struct GpuCompositorTestFaults {
     GpuCompositorInitializeFault initialize = GpuCompositorInitializeFault::None;
     int failBeforeLayerDraw = -1;
     bool failCompletionPoll = false;
+    bool failShutdownCompletionPoll = false;
 };
 
 enum class GpuCompositorShutdownStatus { Pending = 0, Complete, Failed };
@@ -64,6 +65,10 @@ public:
                             std::string& err,
                             GpuCompletionBackend backend = GpuCompletionBackend::Fence);
     bool compose(const ComposedFrame& frame, std::string& err);
+    // P5-C0: productのone-video slice専用。exactly 1 layerだけを受理する。
+    // arbitrary-Nや既存2-layer product/formal契約の代替にはしない。
+    bool composeSingleLayerToTarget(const ComposedFrame& frame,
+                                    const ExternalCompositionTarget& target, std::string& err);
     bool composeToTarget(const ComposedFrame& frame, const ExternalCompositionTarget& target,
                          std::string& err);
     // P2-D3診断専用。1または2 layerを許可し、formal契約には使用しない。
@@ -105,6 +110,11 @@ private:
     void rollbackInitialize();
     void finishShutdown();
     void enterFatal(const std::string& reason);
+    GpuCompositorShutdownStatus failShutdownCompletionPoll(const std::string& reason,
+                                                           std::string& err);
+    bool composeProductToTarget(const ComposedFrame& frame, const ExternalCompositionTarget& target,
+                                size_t expectedLayerCount, const char* layerCountError,
+                                std::string& err);
     bool prepareComposition(const ComposedFrame& frame, const ExternalCompositionTarget& target,
                             size_t expectedLayerCount, std::string& err);
     bool issueComposition(const ComposedFrame& frame, const ExternalCompositionTarget& target,

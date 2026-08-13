@@ -132,12 +132,12 @@ struct PreviewError {
 };
 
 struct PreviewCapabilities {
-    std::uint32_t maxQualifiedActiveVideoSources = 2;
-    std::uint32_t maxQualifiedCompositionLayers = 2;
-    std::uint32_t maxQualifiedActiveAudioSources = 1;
+    std::uint32_t maxQualifiedActiveVideoSources = 1;
+    std::uint32_t maxQualifiedCompositionLayers = 1;
+    std::uint32_t maxQualifiedActiveAudioSources = 0;
     PreviewFrameRate qualifiedOutputFrameRate{60, 1};
-    std::uint32_t qualifiedAudioSampleRate = 48000;
-    std::uint32_t qualifiedAudioChannelCount = 2;
+    std::uint32_t qualifiedAudioSampleRate = 0;
+    std::uint32_t qualifiedAudioChannelCount = 0;
     bool duplicateSourceLayersSupported = false;
     bool deviceRecoverySupported = false;
 };

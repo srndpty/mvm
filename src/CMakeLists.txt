@@ -10,13 +10,12 @@ target_include_directories(mvm_util PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 add_library(mvm::util ALIAS mvm_util)
 
 # --- Phase 5 / P5-B: PreviewEngine product foundation -----------------------
-# 標準C++の値型・state・event contractだけを持つ。Qt、FFmpeg、D3D11、
-# spike/formal targetには依存しない。
+# public boundaryは標準C++の値型だけを保ち、private実装でGPU backendへ接続する。
 add_library(mvm_preview_engine STATIC
     preview_engine/preview_engine.cpp
 )
 target_include_directories(mvm_preview_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(mvm_preview_engine PRIVATE mvm::warnings)
+target_link_libraries(mvm_preview_engine PRIVATE mvm_gpu_preview mvm::warnings)
 add_library(mvm::preview_engine ALIAS mvm_preview_engine)
 
 # --- MLT adapter ------------------------------------------------------------
@@ -118,11 +117,12 @@ if(MVM_ENABLE_QT)
         app/preview/display_target_contract.cpp
         app/preview/preview_rhi_item.cpp
         app/preview/compositor_rhi_item.cpp
+        app/preview/preview_engine_rhi_item.cpp
     )
     set_target_properties(mvm_preview_qt PROPERTIES AUTOMOC ON)
     target_include_directories(mvm_preview_qt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(mvm_preview_qt
-        PUBLIC  mvm::gpu_preview mvm::audio_preview Qt6::Quick Qt6::Gui
+        PUBLIC  mvm::gpu_preview mvm::audio_preview mvm::preview_engine Qt6::Quick Qt6::Gui
         PRIVATE Qt6::GuiPrivate mvm::warnings
     )
     add_library(mvm::preview_qt ALIAS mvm_preview_qt)

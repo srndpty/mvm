@@ -80,6 +80,34 @@ struct EligibleSource {
     bool videoEnabled = false;
 };
 
+struct RenderFrameResult {
+    bool presented = false;
+    PresentedFrameInfo frame;
+    std::int64_t sourceFrame = -1;
+};
+
+struct P5CRuntimeDiagnostics {
+    bool nativeDeviceAttached = false;
+    bool d3d11vaActive = false;
+    bool decodeRenderSameDevice = false;
+    bool workerJoined = true;
+    bool renderTeardownComplete = false;
+    bool deviceReleased = true;
+    bool unsafeGpuResourcesRetained = false;
+    std::uint64_t registeredVideoSourceCount = 0;
+    std::uint64_t distinctPresentedSourceFrameCount = 0;
+    std::uint64_t staleSubstitutionCount = 0;
+    std::uint64_t untrackedSubmissionCount = 0;
+    std::uint64_t earlyPayloadReleaseCount = 0;
+    std::uint64_t retirementTimeoutCount = 0;
+    std::uint64_t deviceLostCount = 0;
+    std::uint64_t lifecycleViolationCount = 0;
+    std::uint64_t fullCpuReadbackCount = 0;
+    std::uint64_t fullFrameGpuCopyCount = 0;
+    std::uint64_t softwareFallbackCount = 0;
+    std::uint64_t gpuCompositionPassCount = 0;
+};
+
 class CompositionAcceptanceState {
 public:
     Result<AcceptedComposition>
@@ -100,11 +128,48 @@ private:
     std::uint64_t nextRevision_ = 1;
 };
 
+class DistinctFrameCounter {
+public:
+    void note(std::int64_t frame);
+    std::uint64_t count() const;
+
+private:
+    std::optional<std::int64_t> lastFrame_;
+    std::uint64_t count_ = 0;
+};
+
+Result<void> validateSourceFrameRate(long long sourceNumerator, long long sourceDenominator,
+                                     PreviewFrameRate outputFrameRate);
+std::uint64_t skippedSchedulerFrameCount(std::int64_t previousTarget, std::int64_t currentTarget);
+
 class PreviewRenderPort {
 public:
+    enum class FatalDiagnostic { None, DeviceLost };
+
     static Result<void> attachLogicalDevice(PreviewEngine& engine);
+    static Result<void> bindRenderThread(PreviewEngine& engine);
+    static Result<void> attachNativeD3D11Device(PreviewEngine& engine, void* device, void* context);
+    static Result<void> acquireNativeD3D11Device(PreviewEngine& engine, void* device,
+                                                 void* context);
+    static Result<void> validateNativeD3D11Device(PreviewEngine& engine, void* device,
+                                                  void* context);
+    static Result<RenderFrameResult> renderFrame(PreviewEngine& engine, void* renderTargetView,
+                                                 int width, int height);
+    static Result<bool> completeRuntimeTeardown(PreviewEngine& engine);
+    static Result<void> completeRendererDetach(PreviewEngine& engine);
     static Result<void> completeTeardown(PreviewEngine& engine);
-    static Result<void> injectFatal(PreviewEngine& engine, PreviewError error);
+    static Result<void> injectFatal(PreviewEngine& engine, PreviewError error,
+                                    FatalDiagnostic diagnostic = FatalDiagnostic::None);
+    static Result<void> reportRenderTargetFailure(PreviewEngine& engine, long hresult);
+    static Result<void> reportDeviceLost(PreviewEngine& engine, long hresult);
+    static Result<void> reportUnsupportedRenderBackend(PreviewEngine& engine);
+    static Result<void> reportMissingNativeD3D11Handles(PreviewEngine& engine);
+    static Result<void> reportEngineReplacement(PreviewEngine& engine);
+    static bool nativeRuntimeAttached(const PreviewEngine& engine);
+    static Result<void> injectGpuDrainFailureForTest(PreviewEngine& engine);
+    static Result<void> injectDecoderFatalForTest(PreviewEngine& engine, std::string detail);
+    static Result<void> injectDecoderEofForTest(PreviewEngine& engine);
+    static P5CRuntimeDiagnostics runtimeDiagnostics(const PreviewEngine& engine);
 
     // bounded mailboxのfailure semanticsをbackend接続前に検査するinternal test seam。
     static void enqueueEventForTest(PreviewEngine& engine, PreviewEvent event);

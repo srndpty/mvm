@@ -156,6 +156,12 @@ void frameRateAndDescriptorValidation() {
         "uint32 boundary overflowをrejectしませんでした");
     const auto validButUnqualified = validatePreviewFrameRate(24, 1);
     require(validButUnqualified, "positive rationalをtype validationでrejectしました");
+    require(validateSourceFrameRate(120, 2, {60, 1}), "source frame rateをcanonical比較できません");
+    requireFailure(validateSourceFrameRate(30, 1, {60, 1}),
+                   PreviewErrorCategory::UnsupportedCapability, "30fps sourceをP5-Cで受理しました");
+    requireFailure(validateSourceFrameRate(120, 1, {60, 1}),
+                   PreviewErrorCategory::UnsupportedCapability,
+                   "120fps sourceをP5-Cで受理しました");
 
     PreviewEngine unqualifiedEngine;
     auto dispatcher = std::make_shared<ManualDispatcher>();
@@ -372,7 +378,10 @@ void compositionDomains() {
 
 void compositionIdentityAndCapabilities() {
     const auto sources = twoSources();
-    const PreviewCapabilities capabilities;
+    PreviewCapabilities capabilities;
+    // acceptance algorithm自体の2層順序・distinct source検査用。product公開値は1層。
+    capabilities.maxQualifiedActiveVideoSources = 2;
+    capabilities.maxQualifiedCompositionLayers = 2;
     CompositionAcceptanceState state;
 
     const auto a = snapshot({layer(1)});
@@ -457,6 +466,13 @@ void engineFacadeAndEvents() {
     auto sink = std::make_shared<RecordingSink>();
     sink->engine = &engine;
     require(engine.initialize(qualifiedConfig(), dispatcher), "engine initializeに失敗しました");
+    const PreviewCapabilities productCapabilities = engine.capabilities();
+    require(productCapabilities.maxQualifiedActiveVideoSources == 1 &&
+                productCapabilities.maxQualifiedCompositionLayers == 1 &&
+                productCapabilities.maxQualifiedActiveAudioSources == 0 &&
+                productCapabilities.qualifiedAudioSampleRate == 0 &&
+                productCapabilities.qualifiedAudioChannelCount == 0,
+            "公開capabilityがP5-C product wiringの実装上限と一致しません");
     require(engine.status().state == PreviewEngineState::WaitingForRenderDevice,
             "logical initialize stateが違います");
     require(engine.attachEventSink(sink), "sink attachに失敗しました");
@@ -471,11 +487,10 @@ void engineFacadeAndEvents() {
     require(engine.status().state == PreviewEngineState::ReadyPaused,
             "private render-ready transitionが違います");
 
-    requireFailure(engine.addSource({"movie.mp4", true, false}),
-                   PreviewErrorCategory::UnsupportedCapability,
-                   "P5-Bでdummy source IDを発行しました");
-    requireFailure(engine.play(), PreviewErrorCategory::UnsupportedCapability,
-                   "P5-Bでfake Playingへ遷移しました");
+    requireFailure(engine.addSource({"movie.mp4", true, false}), PreviewErrorCategory::InvalidState,
+                   "native deviceなしでsource IDを発行しました");
+    requireFailure(engine.play(), PreviewErrorCategory::InvalidState,
+                   "source/compositionなしでPlayingへ遷移しました");
 
     require(engine.detachEventSink(), "sink detachに失敗しました");
     require(engine.detachEventSink(), "sink detachがidempotentではありません");
@@ -520,7 +535,8 @@ void eventOwnershipAndFatalPath() {
     detachedDispatcher->runAll();
     require(detachedSink->states.empty(), "detach return後にpending callbackを開始しました");
     require(detached.requestShutdown(), "shutdownに失敗しました");
-    require(PreviewRenderPort::completeTeardown(detached), "shutdown完了に失敗しました");
+    require(detached.status().state == PreviewEngineState::Shutdown,
+            "renderer未生成のshutdownを内部完了できませんでした");
     detachedDispatcher->runAll();
 
     PreviewEngine expired;
@@ -533,7 +549,8 @@ void eventOwnershipAndFatalPath() {
     require(expired.status().state == PreviewEngineState::WaitingForRenderDevice,
             "weak sink失効でstate progressionが止まりました");
     require(expired.requestShutdown(), "shutdownに失敗しました");
-    require(PreviewRenderPort::completeTeardown(expired), "shutdown完了に失敗しました");
+    require(expired.status().state == PreviewEngineState::Shutdown,
+            "renderer未生成のshutdownを内部完了できませんでした");
     expiredDispatcher->runAll();
 
     PreviewEngine fatal;
@@ -602,8 +619,8 @@ void constructorThreadAuthority() {
     require(engine.status().state == PreviewEngineState::WaitingForRenderDevice,
             "wrong-thread control operationがstateを変更しました");
     require(engine.requestShutdown(), "thread authority test shutdownに失敗しました");
-    require(PreviewRenderPort::completeTeardown(engine),
-            "thread authority test teardownに失敗しました");
+    require(engine.status().state == PreviewEngineState::Shutdown,
+            "renderer未生成のthread authority testを内部完了できませんでした");
     dispatcher->runAll();
 }
 
@@ -667,8 +684,8 @@ void dispatcherAndSinkFailureContainment() {
     require(throwingSinkEngine.telemetry().eventDeliveryFailureCount == 1,
             "sink callback exceptionをdiagnosticへ記録していません");
     require(throwingSinkEngine.requestShutdown(), "sink throw後のshutdownに失敗しました");
-    require(PreviewRenderPort::completeTeardown(throwingSinkEngine),
-            "sink throw後のterminal teardownに失敗しました");
+    require(throwingSinkEngine.status().state == PreviewEngineState::Shutdown,
+            "renderer未生成のsink throw testを内部完了できませんでした");
     sinkDispatcher->runAll();
     require(throwingSinkEngine.status().state == PreviewEngineState::Shutdown,
             "sink throw後にterminal Shutdownへ到達しません");
@@ -720,14 +737,10 @@ void mailboxSaturationLifecycle() {
     fillNonTerminalMailbox(normal);
     const std::uint64_t failuresBeforeShutdown = normal.telemetry().eventDeliveryFailureCount;
     require(normal.requestShutdown(), "mailbox-fullでshutdown requestをfalse failureにしました");
-    require(normal.status().state == PreviewEngineState::ShuttingDown,
-            "mailbox-fullでShuttingDown transitionをrollbackしました");
+    require(normal.status().state == PreviewEngineState::Shutdown,
+            "mailbox-fullでrenderer未生成shutdownを内部完了できませんでした");
     require(normal.telemetry().eventDeliveryFailureCount > failuresBeforeShutdown,
             "mailbox-full shutdown notification failureを記録していません");
-    require(PreviewRenderPort::completeTeardown(normal),
-            "mailbox-fullでterminal completionをfalse failureにしました");
-    require(normal.status().state == PreviewEngineState::Shutdown,
-            "mailbox-full normal teardownがShutdownになりません");
     require(PreviewRenderPort::mailboxSizeForTest(normal) == 32,
             "terminal reserved slotを使用していません");
 
@@ -770,7 +783,8 @@ void dispatcherRetention() {
     require(retained != nullptr, "retained dispatcherを取得できません");
     retained->runAll();
     require(engine.requestShutdown(), "shutdown requestに失敗しました");
-    require(PreviewRenderPort::completeTeardown(engine), "teardown completionに失敗しました");
+    require(engine.status().state == PreviewEngineState::Shutdown,
+            "renderer未生成のshutdownを内部完了できませんでした");
     retained->runAll();
     retained.reset();
     require(weak.expired(), "terminal acknowledgement後もdispatcherを保持しています");
@@ -785,7 +799,8 @@ void safeDestruction() {
         auto dispatcher = std::make_shared<ManualDispatcher>();
         require(engine.initialize(qualifiedConfig(), dispatcher), "initializeに失敗しました");
         require(engine.requestShutdown(), "shutdown requestに失敗しました");
-        require(PreviewRenderPort::completeTeardown(engine), "Shutdown completionに失敗しました");
+        require(engine.status().state == PreviewEngineState::Shutdown,
+                "renderer未生成のshutdownを内部完了できませんでした");
     }
     {
         PreviewEngine engine;
@@ -800,6 +815,66 @@ void safeDestruction() {
         require(PreviewRenderPort::injectFatal(engine, error), "fatal injectionに失敗しました");
         require(PreviewRenderPort::completeTeardown(engine), "Error completionに失敗しました");
     }
+}
+
+void p5cControlAndRenderNegatives() {
+    PreviewEngine engine;
+    auto dispatcher = std::make_shared<ManualDispatcher>();
+    require(engine.initialize(qualifiedConfig(), dispatcher), "initializeに失敗しました");
+    requireFailure(engine.play(), PreviewErrorCategory::InvalidState,
+                   "render attach前のplayを受理しました");
+    requireFailure(engine.addSource({"movie.mp4", true, false}), PreviewErrorCategory::InvalidState,
+                   "ReadyPaused前のaddSourceを受理しました");
+    require(PreviewRenderPort::bindRenderThread(engine), "render thread bindに失敗しました");
+    requireFailure(PreviewRenderPort::bindRenderThread(engine), PreviewErrorCategory::InvalidState,
+                   "duplicate render thread bindを受理しました");
+
+    std::optional<Result<void>> wrongThreadAttach;
+    std::thread wrongThread([&] {
+        wrongThreadAttach.emplace(
+            PreviewRenderPort::attachNativeD3D11Device(engine, nullptr, nullptr));
+    });
+    wrongThread.join();
+    require(wrongThreadAttach.has_value(), "wrong-thread attach resultがありません");
+    requireFailure(*wrongThreadAttach, PreviewErrorCategory::InvalidState,
+                   "wrong-thread native attachを受理しました");
+
+    require(PreviewRenderPort::attachLogicalDevice(engine), "logical test seamに失敗しました");
+    requireFailure(engine.addSource({"movie.mp4", true, true}),
+                   PreviewErrorCategory::UnsupportedCapability,
+                   "audioEnabled sourceを受理しました");
+    requireFailure(engine.submitComposition(std::make_shared<const CompositionSnapshot>()),
+                   PreviewErrorCategory::CompositionFailure, "empty compositionを受理しました");
+    requireFailure(engine.submitComposition(snapshot({layer(99)})),
+                   PreviewErrorCategory::InvalidSource, "unknown sourceを受理しました");
+    requireFailure(engine.submitComposition(snapshot({layer(1), layer(2)})),
+                   PreviewErrorCategory::UnsupportedCapability,
+                   "P5-Cでtwo-layer product submissionを受理しました");
+    requireFailure(engine.pause(), PreviewErrorCategory::InvalidState,
+                   "Playing以外のpauseを受理しました");
+    requireFailure(engine.seek({0}), PreviewErrorCategory::UnsupportedCapability,
+                   "P5-Cでseekを受理しました");
+    require(engine.requestShutdown(), "shutdown requestに失敗しました");
+    require(PreviewRenderPort::completeTeardown(engine), "teardown completionに失敗しました");
+}
+
+void distinctFrameCounterIsBounded() {
+    DistinctFrameCounter counter;
+    require(counter.count() == 0, "distinct frame counterの初期値が0ではありません");
+    counter.note(10);
+    counter.note(10);
+    counter.note(9);
+    counter.note(11);
+    require(counter.count() == 2, "distinct frame counterが重複または逆行frameを加算しました");
+}
+
+void schedulerSkippedFramesAreCounted() {
+    require(skippedSchedulerFrameCount(10, 11) == 0, "連続scheduler targetをdropとして数えました");
+    require(skippedSchedulerFrameCount(10, 13) == 2,
+            "schedulerが飛ばしたoutput frameを数えていません");
+    require(skippedSchedulerFrameCount(-1, 2) == 2,
+            "再生開始直後に飛ばしたoutput frameを数えていません");
+    require(skippedSchedulerFrameCount(13, 13) == 0, "同一scheduler targetをdropとして数えました");
 }
 
 void unsafeDestructionProcess() {
@@ -832,6 +907,9 @@ int main(int argc, char** argv) {
         {"mailbox saturation lifecycle", mailboxSaturationLifecycle},
         {"dispatcher retention", dispatcherRetention},
         {"safe destruction", safeDestruction},
+        {"P5-C control / render negatives", p5cControlAndRenderNegatives},
+        {"bounded distinct frame counter", distinctFrameCounterIsBounded},
+        {"scheduler skipped frame count", schedulerSkippedFramesAreCounted},
     };
 
     try {

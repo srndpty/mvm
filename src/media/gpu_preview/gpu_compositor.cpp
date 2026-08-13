@@ -180,6 +180,21 @@ bool GpuCompositor::compose(const ComposedFrame& frame, std::string& err) {
 
 bool GpuCompositor::composeToTarget(const ComposedFrame& frame,
                                     const ExternalCompositionTarget& target, std::string& err) {
+    return composeProductToTarget(frame, target, 2, "compositionのlayer数が診断契約と一致しません",
+                                  err);
+}
+
+bool GpuCompositor::composeSingleLayerToTarget(const ComposedFrame& frame,
+                                               const ExternalCompositionTarget& target,
+                                               std::string& err) {
+    return composeProductToTarget(frame, target, 1,
+                                  "single-layer product compositionはexactly 1 layer必須です", err);
+}
+
+bool GpuCompositor::composeProductToTarget(const ComposedFrame& frame,
+                                           const ExternalCompositionTarget& target,
+                                           size_t expectedLayerCount, const char* layerCountError,
+                                           std::string& err) {
     ++counters_.compositionRequestedCount;
     if (!ready_) {
         err = "GpuCompositorが初期化されていません";
@@ -190,7 +205,11 @@ bool GpuCompositor::composeToTarget(const ComposedFrame& frame,
         err = "GpuCompositorはfatal状態です: " + fatalReason_;
         return false;
     }
-    if (!prepareComposition(frame, target, 2, err))
+    if (frame.layers.size() != expectedLayerCount) {
+        err = layerCountError;
+        return false;
+    }
+    if (!prepareComposition(frame, target, expectedLayerCount, err))
         return false;
     // owned offscreen wrapperだけがclearする。external targetはQRhi passがclear owner。
     const bool clearTarget = target.rtv == targetRtv_;
@@ -345,14 +364,14 @@ GpuCompositorShutdownStatus GpuCompositor::pollShutdown(std::string& err) {
         return GpuCompositorShutdownStatus::Complete;
     // shutdownではcompose/poll用のtest faultを再注入せず、実GPU completionだけを
     // 非blockingに確認する。fatal発生後も既投入resourceは安全にretireさせる。
+    if (testFaults_.failShutdownCompletionPoll)
+        return failShutdownCompletionPoll("test fault: GPU shutdown completion poll failure", err);
     const CompletionPollResult result = completion_.polledCompleted();
-    if (result.status != CompletionPollStatus::Ok) {
-        ++counters_.completionPollFailureCount;
-        err = completion_.fatalReason().empty() ? "GPU completion shutdown pollに失敗しました"
-                                                : completion_.fatalReason();
-        shutdownFailed_ = true;
-        return GpuCompositorShutdownStatus::Failed;
-    }
+    if (result.status != CompletionPollStatus::Ok)
+        return failShutdownCompletionPoll(completion_.fatalReason().empty()
+                                              ? "GPU completion shutdown pollに失敗しました"
+                                              : completion_.fatalReason(),
+                                          err);
     retirement_.poll(result.completed);
     counters_.retirementDepthAfterDrain = retirement_.depthCurrent();
     counters_.retirementDepthPeak = retirement_.depthPeak();
@@ -366,6 +385,14 @@ GpuCompositorShutdownStatus GpuCompositor::pollShutdown(std::string& err) {
     ++counters_.retirementTimeoutCount;
     shutdownFailed_ = true;
     err = "GPU retirementを有限時間でdrainできませんでした";
+    return GpuCompositorShutdownStatus::Failed;
+}
+
+GpuCompositorShutdownStatus GpuCompositor::failShutdownCompletionPoll(const std::string& reason,
+                                                                      std::string& err) {
+    ++counters_.completionPollFailureCount;
+    err = reason;
+    shutdownFailed_ = true;
     return GpuCompositorShutdownStatus::Failed;
 }
 

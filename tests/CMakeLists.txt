@@ -739,11 +739,79 @@ mvm_add_test(preview_engine_p5b_public_tokens
             -PublicDir "${CMAKE_SOURCE_DIR}/src/preview_engine"
     PROPERTIES LABELS p5b)
 
+add_executable(mvm_test_p5c_native_attach
+    preview_engine/test_p5c_native_attach.cpp)
+target_link_libraries(mvm_test_p5c_native_attach PRIVATE
+    mvm::preview_engine d3d11 mvm::warnings)
+mvm_add_test(preview_engine_p5c_native_attach COMMAND mvm_test_p5c_native_attach
+    PROPERTIES LABELS p5c)
+set_tests_properties(preview_engine_p5c_native_attach PROPERTIES
+    LABELS "p5c;workstation")
+
+set(_p5c_fixture_a "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4")
+set(_p5c_fixture_hint "pwsh scripts/make-p3-fixture.ps1")
+set(_p5c_fixture_wrapper "${CMAKE_SOURCE_DIR}/scripts/run-with-required-fixture.ps1")
+
+mvm_add_test(preview_engine_p5c_fixture_wrapper_contract
+    COMMAND "${MVM_PWSH}" -NoProfile
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/preview_engine/check-required-fixture-wrapper.ps1"
+            -Wrapper "${_p5c_fixture_wrapper}"
+            -PresentFile "${CMAKE_SOURCE_DIR}/CMakeLists.txt"
+            -MissingFile "${CMAKE_CURRENT_BINARY_DIR}/p5c-missing-fixture.mp4"
+    PROPERTIES LABELS p5c)
+
+if(MVM_ENABLE_QT)
+    set(_mvm_p5c_product_tests)
+    macro(mvm_add_p5c_product_test name)
+        cmake_parse_arguments(T "" "" "ARGS" ${ARGN})
+        set(_command
+            "${MVM_PWSH}" -NoProfile -File "${_p5c_fixture_wrapper}"
+            -RequiredFile "${_p5c_fixture_a}" -Hint "${_p5c_fixture_hint}"
+            -Exe "$<TARGET_FILE:mvm_p5c_preview_smoke>")
+        if(T_ARGS)
+            list(JOIN T_ARGS "|" _child_args)
+            list(APPEND _command -ChildArgs "${_child_args}")
+        endif()
+        mvm_add_test(${name} COMMAND ${_command}
+            PROPERTIES LABELS p5c TIMEOUT 40)
+        set_tests_properties(${name} PROPERTIES LABELS "p5c;workstation")
+        list(APPEND _mvm_p5c_product_tests ${name})
+    endmacro()
+
+    mvm_add_p5c_product_test(preview_engine_p5c_product_smoke)
+    mvm_add_p5c_product_test(preview_engine_p5c_gpu_drain_failure ARGS --fault-gpu-drain)
+    mvm_add_p5c_product_test(preview_engine_p5c_device_fatal ARGS --fault-device)
+    mvm_add_p5c_product_test(preview_engine_p5c_decoder_fatal ARGS --fault-decoder)
+    mvm_add_p5c_product_test(preview_engine_p5c_shutdown_source_startup
+        ARGS --shutdown-source-startup)
+    mvm_add_p5c_product_test(preview_engine_p5c_pre_attach_shutdown
+        ARGS --shutdown-before-attach)
+    mvm_add_p5c_product_test(preview_engine_p5c_engine_lifetime_detach
+        ARGS --engine-lifetime-detach)
+    mvm_add_p5c_product_test(preview_engine_p5c_renderer_recreation
+        ARGS --renderer-recreation)
+    mvm_add_p5c_product_test(preview_engine_p5c_decoder_eof
+        ARGS --decoder-eof)
+
+    list(LENGTH _mvm_p5c_product_tests _mvm_p5c_product_registered)
+    if(NOT _mvm_p5c_product_registered EQUAL 9)
+        message(FATAL_ERROR
+            "[mvm] P5-C product testの登録数が不正です: ${_mvm_p5c_product_registered}/9")
+    endif()
+endif()
+
 add_executable(mvm_test_gpu_pure gpu_preview/test_gpu_pure.cpp)
 target_link_libraries(mvm_test_gpu_pure PRIVATE mvm::gpu_preview mvm::warnings)
 # mvm_add_test を使う。ucrt64in を PATH に入れないと
 # 依存 DLL が解決できず 0xC0000135 で落ちる (実際に落ちた)。
 mvm_add_test(gpu_pure_unit COMMAND mvm_test_gpu_pure)
+
+add_executable(mvm_test_source_frame_buffer_interruptible_wait
+    gpu_preview/test_source_frame_buffer_interruptible_wait.cpp)
+target_link_libraries(mvm_test_source_frame_buffer_interruptible_wait PRIVATE
+    mvm::gpu_preview mvm::warnings)
+mvm_add_test(source_frame_buffer_interruptible_wait
+    COMMAND mvm_test_source_frame_buffer_interruptible_wait)
 
 # --- Phase 4 / A: composition schedule と snapshot identity foundation -------
 add_executable(mvm_test_phase4a_foundation gpu_preview/test_phase4a_foundation.cpp)
@@ -1296,6 +1364,19 @@ if(EXISTS "${MVM_BENCH_DIR}/v1080p60_hevc.mp4")
         PROPERTIES REQUIRED_FILES "${MVM_BENCH_DIR}/v1080p60_hevc.mp4" TIMEOUT 300)
 endif()
 
+# exact target search の product contract。GOP=60 の直前/境界/直後、
+# repeated/unrelated seek、EOS、flush/generation、保持中 hardware frame を検査する。
+if(MVM_HAVE_P2_BENCHMARK_FIXTURES)
+    foreach(_seek_contract_asset v1080p60_h264 v1080p60_hevc)
+        mvm_add_test(gpu_seek_exact_search_contract_${_seek_contract_asset}
+            COMMAND mvm_test_gpu_decode seek-contract
+                    "${MVM_BENCH_DIR}/${_seek_contract_asset}.mp4"
+                    0,1,58,59,60,61,118,119,120,121,299,300,3599 4
+            PROPERTIES REQUIRED_FILES "${MVM_BENCH_DIR}/${_seek_contract_asset}.mp4"
+                RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 300)
+    endforeach()
+endif()
+
 # 4K は診断のみ。判定には使わないが、経路が通ることは見る。
 mvm_add_test(gpu_marker_4k_h264_diagnostic
     COMMAND mvm_test_gpu_decode marker "${MVM_SMOKE_DIR}/v4k60_h264.mp4" 0,137
@@ -1564,6 +1645,8 @@ set(MVM_WORKSTATION_TESTS
     gpu_seek_flush_v1080p60_hevc
     gpu_marker_v1080p60_hevc
     gpu_seek_exact_landing_hevc
+    gpu_seek_exact_search_contract_v1080p60_h264
+    gpu_seek_exact_search_contract_v1080p60_hevc
     gpu_marker_exact_landing_hevc
     gpu_marker_4k_h264_diagnostic
     gpu_marker_4k_hevc10_diagnostic

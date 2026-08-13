@@ -209,7 +209,8 @@ bool waitForBackpressure(SourceDecodeWorker& worker, int timeoutMs) {
     const long long begin = qpcTicks();
     while (qpcMsBetween(begin, qpcTicks()) < timeoutMs) {
         const SourceDecoderSnapshot snapshot = worker.snapshot();
-        if (snapshot.bufferDepth == snapshot.bufferCapacity && snapshot.backpressureWaitCount > 0)
+        if (snapshot.bufferDepth == snapshot.bufferCapacity && snapshot.queueFullCount > 0 &&
+            snapshot.submitBackpressureWaitActive)
             return true;
         std::this_thread::yield();
     }
@@ -493,12 +494,51 @@ int run(const std::string& pathA, const std::string& pathB) {
         return fail("範囲外async seekをFailed completionにできません");
 
     std::fprintf(stderr, "[backpressure_no_busy_loop]\n");
+    workerReverseA.armAfterInitialSpaceBarrierForTest();
     workerReverseA.play();
+    if (!workerReverseA.waitAfterInitialSpaceBarrierForTest(5000))
+        return fail("workerがinitial-space通過後のtest barrierへ到達しませんでした");
+    const SourceDecoderSnapshot beforePressure = workerReverseA.snapshot();
+    DecodedGpuFrame blocker;
+    blocker.frameNumber = 0;
+    blocker.pts = 0;
+    blocker.timeBase = {1, 60};
+    blocker.width = 16;
+    blocker.height = 16;
+    blocker.pixelFormat = GpuPixelFormat::NV12;
+    blocker.texture = reinterpret_cast<ID3D11Texture2D*>(1);
+    blocker.sourceId = reverseA;
+    blocker.sourceGeneration = beforePressure.sourceGeneration;
+    blocker.resourceEpoch = beforePressure.resourceEpoch;
+    blocker.lifetime = FrameLifetimeToken(reinterpret_cast<void*>(1), [](void*) {});
+    while (workerReverseA.buffer().depth() < workerReverseA.buffer().capacity()) {
+        blocker.frameNumber = static_cast<long long>(workerReverseA.buffer().depth());
+        if (workerReverseA.buffer().submitFrame(blocker) != SubmitResult::Accepted)
+            return fail("submit backpressure test用bufferを満杯にできませんでした");
+    }
+    workerReverseA.releaseAfterInitialSpaceBarrierForTest();
     if (!waitForBackpressure(workerReverseA, 5000))
         return fail("source-local bufferがbounded backpressure待機へ入りませんでした");
     const SourceDecoderSnapshot pressure = workerReverseA.snapshot();
     if (pressure.bufferDepth > pressure.bufferCapacity || pressure.bufferCapacity != 3)
         return fail("source-local bufferがcapacityを超えました");
+    std::fprintf(stderr, "[submit_backpressure_seek_interrupt]\n");
+    SeekTicket pressureSeek;
+    if (workerReverseA.requestSeek(0, pressureSeek, err) != SeekRequestResult::Accepted)
+        return fail("submit backpressure中のseek requestを受理できません: " + err);
+    SeekCompletion pressureCompletion;
+    if (workerReverseA.waitSeek(pressureSeek, 30000, pressureCompletion) != SeekWaitResult::Ready ||
+        pressureCompletion.status != SeekCompletionStatus::Completed)
+        return fail("submit backpressure中のseekを完了できません");
+    const SourceDecoderSnapshot interruptedPressure = workerReverseA.snapshot();
+    if (interruptedPressure.seekInterruptedSubmitWaitCount !=
+        pressure.seekInterruptedSubmitWaitCount + 1)
+        return fail("submitWithBackpressureのwaitをpending seekで中断していません");
+    DecodedGpuFrame pressureFrame;
+    if (!workerReverseA.buffer().takeExact(0, pressureFrame))
+        return fail("backpressure中断後のseek frameがexact targetではありません");
+    pressureFrame = {};
+    workerReverseA.play();
 
     WorkerJoinBarrier reverseJoins(2);
     workerReverseB.stop();
