@@ -154,6 +154,7 @@ public:
     static Result<void> injectFatal(PreviewEngine& engine, PreviewError error);
     static Result<void> reportRenderTargetFailure(PreviewEngine& engine, long hresult);
     static Result<void> reportUnsupportedRenderBackend(PreviewEngine& engine);
+    static Result<void> reportMissingNativeD3D11Handles(PreviewEngine& engine);
     static Result<void> reportEngineReplacement(PreviewEngine& engine);
     static bool nativeRuntimeAttached(const PreviewEngine& engine);
     static Result<void> injectGpuDrainFailureForTest(PreviewEngine& engine);

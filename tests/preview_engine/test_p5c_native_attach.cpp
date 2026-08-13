@@ -163,6 +163,27 @@ int main() {
                     unsupportedBackend.status().state == PreviewEngineState::Error,
                 "非D3D11 backendをlogical teardownできませんでした");
 
+        PreviewEngine missingHandles;
+        auto missingHandlesSink = std::make_shared<RecordingSink>();
+        require(missingHandles.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),
+                "missing native handles engine initializeに失敗しました");
+        require(missingHandles.attachEventSink(missingHandlesSink),
+                "missing native handles sink attachに失敗しました");
+        require(PreviewRenderPort::reportMissingNativeD3D11Handles(missingHandles),
+                "native handles欠如をsession fatalへ昇格できませんでした");
+        require(missingHandles.status().state == PreviewEngineState::ShuttingDown &&
+                    missingHandlesSink->errors.size() == 1 &&
+                    missingHandlesSink->errors.front().category ==
+                        PreviewErrorCategory::DeviceFailure &&
+                    missingHandlesSink->errors.front().severity ==
+                        PreviewErrorSeverity::FatalToSession &&
+                    missingHandlesSink->errors.front().detail.find("device/context") !=
+                        std::string::npos,
+                "native handles欠如のfail-closed状態が不正です");
+        require(PreviewRenderPort::completeTeardown(missingHandles) &&
+                    missingHandles.status().state == PreviewEngineState::Error,
+                "native handles欠如をlogical teardownできませんでした");
+
         PreviewEngine changed;
         auto changedSink = std::make_shared<RecordingSink>();
         require(changed.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),

@@ -89,8 +89,10 @@ private:
         }
         const auto* handles =
             static_cast<const QRhiD3D11NativeHandles*>(renderHardware->nativeHandles());
-        if (!handles || !handles->dev || !handles->context)
+        if (!handles || !handles->dev || !handles->context) {
+            preview::internal::PreviewRenderPort::reportMissingNativeD3D11Handles(*engine_);
             return;
+        }
         if (attached_) {
             preview::internal::PreviewRenderPort::validateNativeD3D11Device(*engine_, handles->dev,
                                                                             handles->context);

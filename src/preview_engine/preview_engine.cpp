@@ -1466,6 +1466,14 @@ Result<void> PreviewRenderPort::reportUnsupportedRenderBackend(PreviewEngine& en
     return injectFatal(engine, std::move(error));
 }
 
+Result<void> PreviewRenderPort::reportMissingNativeD3D11Handles(PreviewEngine& engine) {
+    PreviewError error =
+        makeError(PreviewErrorCategory::DeviceFailure, PreviewOperation::RenderDeviceAttach,
+                  "QRhi D3D11 native handlesからdevice/contextを取得できませんでした");
+    error.severity = PreviewErrorSeverity::FatalToSession;
+    return injectFatal(engine, std::move(error));
+}
+
 Result<void> PreviewRenderPort::reportEngineReplacement(PreviewEngine& engine) {
     PreviewError error =
         makeError(PreviewErrorCategory::DeviceFailure, PreviewOperation::RenderDeviceAttach,
