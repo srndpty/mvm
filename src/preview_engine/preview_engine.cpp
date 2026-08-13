@@ -1078,6 +1078,35 @@ Result<void> PreviewRenderPort::attachNativeD3D11Device(PreviewEngine& engine, v
     return Result<void>::success();
 }
 
+Result<void> PreviewRenderPort::validateNativeD3D11Device(PreviewEngine& engine, void* device,
+                                                          void* context) {
+    {
+        std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+        if (!engine.impl_->renderThread ||
+            *engine.impl_->renderThread != std::this_thread::get_id()) {
+            return invalidState(PreviewOperation::RenderDeviceAttach,
+                                "native device検証は登録済みrender threadで実行してください");
+        }
+        if (!engine.impl_->nativeDeviceAttached) {
+            return invalidState(PreviewOperation::RenderDeviceAttach,
+                                "native device未attachのためidentityを検証できません");
+        }
+        if (engine.impl_->nativeDeviceIdentity == device &&
+            engine.impl_->nativeContextIdentity == context) {
+            return Result<void>::success();
+        }
+    }
+
+    PreviewError failure =
+        makeError(PreviewErrorCategory::DeviceFailure, PreviewOperation::RenderDeviceAttach,
+                  "QRhiのD3D11 device/context identityが差し替わりました");
+    failure.severity = PreviewErrorSeverity::FatalToSession;
+    Result<void> recorded = injectFatal(engine, failure);
+    if (!recorded)
+        return recorded;
+    return Result<void>::failure(std::move(failure));
+}
+
 Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                                                          void* renderTargetView, int width,
                                                          int height) {
@@ -1112,13 +1141,23 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
         buffer.discardBefore(target);
         gpu::DecodedGpuFrame decoded;
         if (!buffer.takeExact(target, decoded)) {
-            ++engine.impl_->telemetrySnapshot.droppedFrameCount;
-            engine.impl_->telemetrySnapshot.currentSourceQueueDepth =
-                static_cast<std::uint32_t>(buffer.depth());
-            return Result<RenderFrameResult>::success(result);
-        }
-        if (decoded.sourceId != engine.impl_->internalVideoSource ||
-            !engine.impl_->sourceRegistry.contains(decoded.sourceId)) {
+            const gpu::SourceDecoderSnapshot worker = engine.impl_->videoWorker->snapshot();
+            if (worker.fatal) {
+                PreviewError failure = makeError(
+                    PreviewErrorCategory::DecodeFailure, PreviewOperation::RenderDeviceAttach,
+                    worker.lastError.empty()
+                        ? "video decode workerがfatal終了しました"
+                        : "video decode workerがfatal終了しました: " + worker.lastError);
+                failure.severity = PreviewErrorSeverity::FatalToSession;
+                failure.source = engine.impl_->publicVideoSource;
+                fatal = std::move(failure);
+            } else {
+                ++engine.impl_->telemetrySnapshot.droppedFrameCount;
+                engine.impl_->telemetrySnapshot.currentSourceQueueDepth =
+                    static_cast<std::uint32_t>(buffer.depth());
+            }
+        } else if (decoded.sourceId != engine.impl_->internalVideoSource ||
+                   !engine.impl_->sourceRegistry.contains(decoded.sourceId)) {
             PreviewError error =
                 makeError(PreviewErrorCategory::DecodeFailure, PreviewOperation::RenderDeviceAttach,
                           "decode frameのsource identityが一致しません");
@@ -1353,6 +1392,18 @@ Result<void> PreviewRenderPort::injectGpuDrainFailureForTest(PreviewEngine& engi
                             "GPU drain faultはactive native runtimeでのみ設定できます");
     }
     engine.impl_->forceGpuDrainFailure = true;
+    return Result<void>::success();
+}
+
+Result<void> PreviewRenderPort::injectDecoderFatalForTest(PreviewEngine& engine,
+                                                          std::string detail) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    if (!engine.impl_->videoWorker ||
+        engine.impl_->machine.state() != PreviewEngineState::Playing) {
+        return invalidState(PreviewOperation::RenderDeviceAttach,
+                            "decoder fatal faultは再生中のvideo workerにのみ設定できます");
+    }
+    engine.impl_->videoWorker->injectFatalForTest(detail);
     return Result<void>::success();
 }
 

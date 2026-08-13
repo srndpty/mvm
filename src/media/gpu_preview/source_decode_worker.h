@@ -175,6 +175,8 @@ public:
 
     bool joined() const { return joined_.load(std::memory_order_acquire); }
 
+    void injectFatalForTest(const std::string& err) { noteFatal(err); }
+
 private:
     void run();
     SeekCompletion executeSeek(const SeekTicket& ticket, long long requestQpc);

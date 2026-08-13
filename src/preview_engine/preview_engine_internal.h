@@ -132,12 +132,15 @@ public:
     static Result<void> attachLogicalDevice(PreviewEngine& engine);
     static Result<void> bindRenderThread(PreviewEngine& engine);
     static Result<void> attachNativeD3D11Device(PreviewEngine& engine, void* device, void* context);
+    static Result<void> validateNativeD3D11Device(PreviewEngine& engine, void* device,
+                                                  void* context);
     static Result<RenderFrameResult> renderFrame(PreviewEngine& engine, void* renderTargetView,
                                                  int width, int height);
     static Result<bool> completeRuntimeTeardown(PreviewEngine& engine);
     static Result<void> completeTeardown(PreviewEngine& engine);
     static Result<void> injectFatal(PreviewEngine& engine, PreviewError error);
     static Result<void> injectGpuDrainFailureForTest(PreviewEngine& engine);
+    static Result<void> injectDecoderFatalForTest(PreviewEngine& engine, std::string detail);
     static P5CRuntimeDiagnostics runtimeDiagnostics(const PreviewEngine& engine);
 
     // bounded mailboxのfailure semanticsをbackend接続前に検査するinternal test seam。

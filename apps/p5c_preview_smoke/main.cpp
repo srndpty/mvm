@@ -43,17 +43,20 @@ public:
         frames.push_back(frame);
     }
 
-    void errorOccurred(mvm::preview::PreviewError) override {}
+    void errorOccurred(mvm::preview::PreviewError error) override {
+        errors.push_back(std::move(error));
+    }
 
     void deviceChanged(mvm::preview::PreviewDeviceInfo) override {}
 
     std::vector<mvm::preview::PresentedFrameInfo> frames;
+    std::vector<mvm::preview::PreviewError> errors;
     mvm::preview::PreviewEngineState terminal = mvm::preview::PreviewEngineState::Uninitialized;
     bool sequenceViolation = false;
 };
 
 enum class Stage { WaitDevice, WaitInitial, PauseHold, WaitResume, WaitShutdown };
-enum class Fault { None, GpuDrain, Device, SourceStartupShutdown, PreAttachShutdown };
+enum class Fault { None, GpuDrain, Device, Decoder, SourceStartupShutdown, PreAttachShutdown };
 
 } // namespace
 
@@ -63,7 +66,8 @@ int main(int argc, char** argv) {
     const QStringList arguments = app.arguments();
     if (arguments.size() < 2 || arguments.size() > 3) {
         std::fprintf(stderr, "使い方: mvm_p5c_preview_smoke <fixture-a-path> "
-                             "[--fault-gpu-drain|--fault-device|--shutdown-source-startup|"
+                             "[--fault-gpu-drain|--fault-device|--fault-decoder|"
+                             "--shutdown-source-startup|"
                              "--shutdown-before-attach]\n");
         return 2;
     }
@@ -73,6 +77,8 @@ int main(int argc, char** argv) {
             fault = Fault::GpuDrain;
         else if (arguments[2] == "--fault-device")
             fault = Fault::Device;
+        else if (arguments[2] == "--fault-decoder")
+            fault = Fault::Decoder;
         else if (arguments[2] == "--shutdown-source-startup")
             fault = Fault::SourceStartupShutdown;
         else if (arguments[2] == "--shutdown-before-attach")
@@ -230,7 +236,7 @@ int main(int argc, char** argv) {
                             engine));
                     if (injected)
                         injected = static_cast<bool>(engine.requestShutdown());
-                } else {
+                } else if (fault == Fault::Device) {
                     mvm::preview::PreviewError error;
                     error.category = mvm::preview::PreviewErrorCategory::DeviceFailure;
                     error.severity = mvm::preview::PreviewErrorSeverity::FatalToSession;
@@ -238,6 +244,10 @@ int main(int argc, char** argv) {
                     error.detail = "P5-C injected device fatal";
                     injected = static_cast<bool>(
                         mvm::preview::internal::PreviewRenderPort::injectFatal(engine, error));
+                } else {
+                    injected = static_cast<bool>(
+                        mvm::preview::internal::PreviewRenderPort::injectDecoderFatalForTest(
+                            engine, "P5-C injected decoder fatal"));
                 }
                 if (!injected) {
                     exitCode = 13;
@@ -280,7 +290,8 @@ int main(int argc, char** argv) {
                     status.state == mvm::preview::PreviewEngineState::Error)) {
             const auto diagnostics =
                 mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(engine);
-            const bool failureFault = fault == Fault::GpuDrain || fault == Fault::Device;
+            const bool failureFault = fault == Fault::GpuDrain || fault == Fault::Device ||
+                                      fault == Fault::Decoder;
             const bool expectedTerminal =
                 failureFault ? status.state == mvm::preview::PreviewEngineState::Error
                              : status.state == mvm::preview::PreviewEngineState::Shutdown;
@@ -291,8 +302,17 @@ int main(int argc, char** argv) {
                 preAttachShutdown ||
                 (diagnostics.workerJoined && diagnostics.renderTeardownComplete &&
                  diagnostics.deviceReleased);
+            const bool decoderErrorPass =
+                fault != Fault::Decoder ||
+                (sink->errors.size() == 1 &&
+                 sink->errors.front().category ==
+                     mvm::preview::PreviewErrorCategory::DecodeFailure &&
+                 sink->errors.front().severity ==
+                     mvm::preview::PreviewErrorSeverity::FatalToSession &&
+                 sink->errors.front().detail.find("P5-C injected decoder fatal") !=
+                     std::string::npos);
             const bool pass =
-                expectedTerminal && !sink->sequenceViolation &&
+                expectedTerminal && decoderErrorPass && !sink->sequenceViolation &&
                 (!needsPresentedFrames ||
                  (!sink->frames.empty() && sink->frames.back().composition == accepted)) &&
                 diagnostics.distinctPresentedSourceFrameCount >=

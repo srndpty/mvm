@@ -145,6 +145,39 @@ int main() {
         require(nullFailed.status().state == PreviewEngineState::Error,
                 "null attach failureをterminal Errorにしませんでした");
 
+        PreviewEngine changed;
+        auto changedSink = std::make_shared<RecordingSink>();
+        require(changed.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),
+                "device change engine initializeに失敗しました");
+        require(changed.attachEventSink(changedSink), "device change sink attachに失敗しました");
+        require(PreviewRenderPort::bindRenderThread(changed),
+                "device change render thread bindに失敗しました");
+        require(PreviewRenderPort::attachNativeD3D11Device(changed, deviceA.get(), contextA.get()),
+                "device change testの初回attachに失敗しました");
+        require(
+            PreviewRenderPort::validateNativeD3D11Device(changed, deviceA.get(), contextA.get()),
+            "同一native identityを拒否しました");
+        const Result<void> changedIdentity =
+            PreviewRenderPort::validateNativeD3D11Device(changed, deviceB.get(), contextB.get());
+        requireFailure(changedIdentity, PreviewErrorCategory::DeviceFailure,
+                       "native device差し替えを受理しました");
+        require(changedIdentity.error().severity == PreviewErrorSeverity::FatalToSession,
+                "native device差し替えをsession fatalにしませんでした");
+        require(changed.status().state == PreviewEngineState::ShuttingDown,
+                "native device差し替えがteardownを開始しませんでした");
+        require(changed.status().lastError == changedIdentity.error(),
+                "native device差し替えのroot errorを保持していません");
+        require(changedSink->errors == std::vector{changedIdentity.error()},
+                "native device差し替えのerror eventが重複または欠落しています");
+        bool changedComplete = false;
+        for (int attempt = 0; attempt < 8 && !changedComplete; ++attempt) {
+            const Result<bool> teardown = PreviewRenderPort::completeRuntimeTeardown(changed);
+            require(teardown, "device change runtime teardownに失敗しました");
+            changedComplete = teardown.value();
+        }
+        require(changedComplete && changed.status().state == PreviewEngineState::Error,
+                "native device差し替えをterminal Errorにできませんでした");
+
         PreviewEngine engine;
         require(engine.initialize({{{60, 1}}}, std::make_shared<ImmediateDispatcher>()),
                 "success engine initializeに失敗しました");

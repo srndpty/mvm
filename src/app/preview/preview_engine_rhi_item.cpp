@@ -19,7 +19,7 @@ public:
 
 protected:
     void initialize(QRhiCommandBuffer*) override {
-        if (attached_ || !engine_)
+        if (!engine_)
             return;
         QRhi* renderHardware = rhi();
         if (!renderHardware || renderHardware->backend() != QRhi::D3D11)
@@ -28,6 +28,11 @@ protected:
             static_cast<const QRhiD3D11NativeHandles*>(renderHardware->nativeHandles());
         if (!handles || !handles->dev || !handles->context)
             return;
+        if (attached_) {
+            preview::internal::PreviewRenderPort::validateNativeD3D11Device(*engine_, handles->dev,
+                                                                            handles->context);
+            return;
+        }
         auto bound = preview::internal::PreviewRenderPort::bindRenderThread(*engine_);
         if (!bound)
             return;

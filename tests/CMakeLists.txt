@@ -781,15 +781,16 @@ if(MVM_ENABLE_QT)
     mvm_add_p5c_product_test(preview_engine_p5c_product_smoke)
     mvm_add_p5c_product_test(preview_engine_p5c_gpu_drain_failure ARGS --fault-gpu-drain)
     mvm_add_p5c_product_test(preview_engine_p5c_device_fatal ARGS --fault-device)
+    mvm_add_p5c_product_test(preview_engine_p5c_decoder_fatal ARGS --fault-decoder)
     mvm_add_p5c_product_test(preview_engine_p5c_shutdown_source_startup
         ARGS --shutdown-source-startup)
     mvm_add_p5c_product_test(preview_engine_p5c_pre_attach_shutdown
         ARGS --shutdown-before-attach)
 
     list(LENGTH _mvm_p5c_product_tests _mvm_p5c_product_registered)
-    if(NOT _mvm_p5c_product_registered EQUAL 5)
+    if(NOT _mvm_p5c_product_registered EQUAL 6)
         message(FATAL_ERROR
-            "[mvm] P5-C product testの登録数が不正です: ${_mvm_p5c_product_registered}/5")
+            "[mvm] P5-C product testの登録数が不正です: ${_mvm_p5c_product_registered}/6")
     endif()
 endif()
 
