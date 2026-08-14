@@ -1161,6 +1161,11 @@ target_link_libraries(mvm_test_gpu_decode PRIVATE mvm::gpu_preview mvm::util mvm
 
 add_executable(mvm_test_p2_dual_decode gpu_preview/test_p2_dual_decode.cpp)
 target_link_libraries(mvm_test_p2_dual_decode PRIVATE mvm::gpu_preview mvm::warnings)
+mvm_add_test(source_decode_worker_test_barrier_stop
+    COMMAND mvm_test_p2_dual_decode --barrier-stop
+            "${MVM_SMOKE_DIR}/v1080p60_h264.mp4"
+    PROPERTIES REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_h264.mp4"
+        RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120)
 add_executable(mvm_test_p2_gpu_compositor gpu_preview/test_p2_gpu_compositor.cpp)
 target_link_libraries(mvm_test_p2_gpu_compositor PRIVATE mvm::gpu_preview mvm::warnings)
 
@@ -1652,6 +1657,7 @@ set(MVM_WORKSTATION_TESTS
     gpu_marker_4k_hevc10_diagnostic
     gpu_decode_jp_path
     gpu_snapshot_race
+    source_decode_worker_test_barrier_stop
     gpu_open_close_soak_short
     gpu_open_close_soak_100
     gpu_color_bt709_limited

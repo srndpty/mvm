@@ -9,9 +9,11 @@
 #include "media/gpu_preview/source_registry.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <random>
 #include <set>
 #include <sstream>
@@ -27,6 +29,7 @@ constexpr int kOk = 0;
 constexpr int kUsage = 2;
 constexpr int kMismatch = 3;
 constexpr int kNoDevice = 5;
+constexpr int kBarrierStopIterations = 16;
 
 int fail(const std::string& message, int code = kMismatch) {
     std::fprintf(stderr, "FAIL: %s\n", message.c_str());
@@ -122,6 +125,52 @@ private:
     ID3D11Device* device_ = nullptr;
     ID3D11DeviceContext* context_ = nullptr;
 };
+
+bool stopWithin(SourceDecodeWorker& worker, std::chrono::milliseconds timeout) {
+    std::atomic<bool> completed{false};
+    std::thread stopper([&] {
+        worker.stop();
+        completed.store(true, std::memory_order_release);
+    });
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!completed.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    if (!completed.load(std::memory_order_acquire)) {
+        std::fprintf(stderr, "FAIL: test barrier停止後のjoinが有限時間内に完了しませんでした\n");
+        std::_Exit(kMismatch);
+    }
+    stopper.join();
+    return worker.joined() && !worker.running();
+}
+
+int runBarrierStopRegression(const std::string& path) {
+    OwnedDevice owned;
+    ReadbackCounters counters;
+    std::string err;
+    if (!owned.create(err))
+        return fail(err, kNoDevice);
+
+    for (int iteration = 0; iteration < kBarrierStopIterations; ++iteration) {
+        SourceDecodeWorker worker(SourceId{static_cast<unsigned int>(iteration + 1)}, owned.shared,
+                                  counters, 3);
+        if (!worker.start(path, err))
+            return fail("test barrier停止回帰のsource openに失敗: " + err);
+        worker.armAfterInitialSpaceBarrierForTest();
+        worker.play();
+        if (!worker.waitAfterInitialSpaceBarrierForTest(5000)) {
+            stopWithin(worker, std::chrono::seconds(5));
+            return fail("workerがreleaseなし停止用test barrierへ到達しませんでした");
+        }
+        // release hookを呼ばず、stop通知だけでbarrier待機とjoinを完了させる。
+        if (!stopWithin(worker, std::chrono::seconds(5)))
+            return fail("test barrier停止後のworker状態が不正です");
+    }
+
+    std::fprintf(stdout, "barrier_stop_iterations=%d\n", kBarrierStopIterations);
+    std::fprintf(stdout, "OK SourceDecodeWorker test barrier stop regression\n");
+    return kOk;
+}
 
 bool actualDeviceMatches(const DecodedGpuFrame& frame, ID3D11Device* expected) {
     ID3D11Device* actual = nullptr;
@@ -608,7 +657,11 @@ int run(const std::string& pathA, const std::string& pathB) {
 } // namespace
 
 int main(int argc, char** argv) {
+    if (argc == 3 && std::string(argv[1]) == "--barrier-stop")
+        return runBarrierStopRegression(argv[2]);
     if (argc != 3)
-        return fail("使い方: mvm_test_p2_dual_decode <h264> <hevc>", kUsage);
+        return fail("使い方: mvm_test_p2_dual_decode <h264> <hevc> | "
+                    "--barrier-stop <h264>",
+                    kUsage);
     return run(argv[1], argv[2]);
 }
