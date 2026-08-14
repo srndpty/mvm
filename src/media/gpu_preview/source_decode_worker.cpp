@@ -292,14 +292,17 @@ bool SourceDecodeWorker::start(const std::string& utf8Path, std::string& err) {
 
 void SourceDecodeWorker::stop() {
     {
-        // wake_ のpredicate更新とwait遷移を同じmutexで直列化し、通知の取りこぼしを防ぐ。
+        // 両condition variableのpredicate更新を、それぞれのwait用mutexで直列化する。
         std::lock_guard<std::mutex> lock(commandMutex_);
         playing_.store(false, std::memory_order_release);
-        running_.store(false, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> testLock(testBarrierMutex_);
+            running_.store(false, std::memory_order_release);
+            testBarrierChanged_.notify_all();
+        }
         seekMailbox_.stop();
     }
     buffer_.stop();
-    testBarrierChanged_.notify_all();
     wake_.notify_all();
     if (thread_.joinable())
         thread_.join();
