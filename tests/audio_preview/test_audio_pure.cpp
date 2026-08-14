@@ -1,3 +1,4 @@
+#include "core/checked_output_timebase.h"
 #include "media/audio_preview/audio_clock.h"
 #include "media/audio_preview/audio_frame_queue.h"
 #include "media/audio_preview/audio_video_scheduler.h"
@@ -146,6 +147,13 @@ int main() {
           "負の audio sample を拒否する negative test");
     check(!isVideoAheadViolation(2, 800) && isVideoAheadViolation(3, 800),
           "1 frame を超える video ahead を検出する");
+    const auto injectedTimebase = mvm::core::CheckedOutputTimebase::create(3, 2, 10);
+    check(injectedTimebase &&
+              scheduleVideoForAudio(20, 0, 0, 100, -1, injectedTimebase.value()).targetFrame == 3 &&
+              formalVideoTargetForSample(9, 100, injectedTimebase.value()).frameNumber == 1 &&
+              !isVideoAheadViolation(2, 9, injectedTimebase.value()) &&
+              isVideoAheadViolation(3, 9, injectedTimebase.value()),
+          "checked timebase の明示注入を scheduler 全経路で使用する");
     check(acceptsVideoMasterSource(VideoMasterSource::AudioDeviceClock) &&
               !acceptsVideoMasterSource(VideoMasterSource::Qpc),
           "QPC master fallback attempt を拒否する negative test");

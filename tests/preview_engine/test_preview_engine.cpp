@@ -171,6 +171,19 @@ void frameRateAndDescriptorValidation() {
     require(unqualifiedEngine.status().state == PreviewEngineState::Uninitialized,
             "initialize reject後にstateが変化しました");
 
+    PreviewEngine equivalentRateEngine;
+    auto equivalentRateDispatcher = std::make_shared<ManualDispatcher>();
+    require(equivalentRateEngine.initialize({{{120, 2}}}, equivalentRateDispatcher),
+            "60/1と等価な120/2をinitializeで受理しませんでした");
+    require(equivalentRateEngine.capabilities().qualifiedOutputFrameRate ==
+                    PreviewFrameRate{60, 1} &&
+                equivalentRateEngine.capabilities().maxQualifiedActiveAudioSources == 0,
+            "等価rationalの受理で公開capabilityを変更しました");
+    require(equivalentRateEngine.requestShutdown(),
+            "等価rational regression testのshutdownに失敗しました");
+    require(equivalentRateEngine.status().state == PreviewEngineState::Shutdown,
+            "等価rational regression testがterminal Shutdownへ到達しませんでした");
+
     requireFailure(validatePreviewSourceDescriptor({}), PreviewErrorCategory::InvalidSource,
                    "empty pathをrejectしませんでした");
     requireFailure(validatePreviewSourceDescriptor({"movie.mp4", false, false}),
