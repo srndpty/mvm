@@ -1,6 +1,14 @@
 # Phase 0: 依存が正しく解決され、実行時にも動作することを確認するための
 # 最小ターゲットのみ。製品コードはまだ無い。
 
+# --- pure core --------------------------------------------------------------
+add_library(mvm_core STATIC
+    core/checked_output_timebase.cpp
+)
+target_include_directories(mvm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_core PRIVATE mvm::warnings)
+add_library(mvm::core ALIAS mvm_core)
+
 # --- Windows / UTF-8 ヘルパ -------------------------------------------------
 # Phase 0 スパイク用の小さなヘルパ。製品用の platform 層ではない。
 add_library(mvm_util STATIC
@@ -93,12 +101,13 @@ add_library(mvm_audio_preview STATIC
     media/audio_preview/audio_frame_queue.cpp
     media/audio_preview/audio_clock.cpp
     media/audio_preview/audio_video_scheduler.cpp
+    media/audio_preview/checked_audio_video_scheduler.cpp
     media/audio_preview/audio_decode_worker.cpp
     media/audio_preview/wasapi_audio_sink.cpp
 )
 target_include_directories(mvm_audio_preview PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_audio_preview
-    PUBLIC PkgConfig::MVM_FFMPEG
+    PUBLIC PkgConfig::MVM_FFMPEG mvm::core
     PRIVATE ole32 uuid avrt mvm::warnings
 )
 add_library(mvm::audio_preview ALIAS mvm_audio_preview)

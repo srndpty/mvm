@@ -3,6 +3,10 @@
 
 #include <cstdint>
 
+namespace mvm::core {
+class CheckedOutputTimebase;
+}
+
 namespace mvm::audio {
 
 constexpr std::int64_t kSamplesPerVideoFrame = 800;
@@ -18,6 +22,9 @@ struct FormalVideoTarget {
 
 FormalVideoTarget formalVideoTargetForSample(std::int64_t mediaSample,
                                              std::int64_t endSampleExclusive);
+FormalVideoTarget formalVideoTargetForSample(std::int64_t mediaSample,
+                                             std::int64_t endSampleExclusive,
+                                             const core::CheckedOutputTimebase& timebase);
 
 enum class AudioVideoScheduleAction { Hold, Request, CatchUp, End, ClockRegression, Invalid };
 enum class VideoMasterSource { AudioDeviceClock, Qpc };
@@ -35,8 +42,14 @@ AudioVideoScheduleDecision scheduleVideoForAudio(std::int64_t audioMediaSample,
                                                  std::int64_t lastRequestedFrame,
                                                  std::int64_t videoFrameCount,
                                                  std::int64_t pendingSeekFrame = -1);
+AudioVideoScheduleDecision
+scheduleVideoForAudio(std::int64_t audioMediaSample, std::int64_t lastDisplayedFrame,
+                      std::int64_t lastRequestedFrame, std::int64_t videoFrameCount,
+                      std::int64_t pendingSeekFrame, const core::CheckedOutputTimebase& timebase);
 
 bool isVideoAheadViolation(std::int64_t videoFrameNumber, std::int64_t audioMediaSampleAtDisplay);
+bool isVideoAheadViolation(std::int64_t videoFrameNumber, std::int64_t audioMediaSampleAtDisplay,
+                           const core::CheckedOutputTimebase& timebase);
 
 } // namespace mvm::audio
 #endif

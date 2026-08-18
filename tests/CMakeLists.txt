@@ -715,10 +715,20 @@ endif()
 # その結果だけを P1 の合否判定に使う (docs/phase1-plan.md §11 / §12)。
 
 # --- Phase 5 / P5-B: PreviewEngine product foundation -----------------------
+set(_mvm_p5d1_tests)
+
+add_executable(mvm_test_checked_output_timebase core/test_checked_output_timebase.cpp)
+target_link_libraries(mvm_test_checked_output_timebase PRIVATE mvm::core mvm::warnings)
+mvm_add_test(preview_timebase_p5d1_unit COMMAND mvm_test_checked_output_timebase
+    PROPERTIES LABELS p5d1)
+list(APPEND _mvm_p5d1_tests preview_timebase_p5d1_unit)
+
 add_executable(mvm_test_preview_engine preview_engine/test_preview_engine.cpp)
 target_link_libraries(mvm_test_preview_engine PRIVATE mvm::preview_engine mvm::warnings)
 mvm_add_test(preview_engine_p5b_unit COMMAND mvm_test_preview_engine
     PROPERTIES LABELS p5b)
+set_property(TEST preview_engine_p5b_unit APPEND PROPERTY LABELS p5d1)
+list(APPEND _mvm_p5d1_tests preview_engine_p5b_unit)
 
 add_test(NAME preview_engine_p5b_unsafe_destructor
     COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
@@ -1015,6 +1025,15 @@ endif()
 add_executable(mvm_test_audio_pure audio_preview/test_audio_pure.cpp)
 target_link_libraries(mvm_test_audio_pure PRIVATE mvm::audio_preview mvm::warnings)
 mvm_add_test(p3_audio_pure_unit COMMAND mvm_test_audio_pure)
+set_tests_properties(p3_audio_pure_unit PROPERTIES LABELS p5d1)
+list(APPEND _mvm_p5d1_tests p3_audio_pure_unit)
+
+list(LENGTH _mvm_p5d1_tests _mvm_p5d1_registered)
+if(NOT _mvm_p5d1_registered EQUAL 3)
+    message(FATAL_ERROR
+        "[mvm] P5-D1 testの登録数が不正です: ${_mvm_p5d1_registered}/3")
+endif()
+message(STATUS "[mvm] P5-D1 testを${_mvm_p5d1_registered}件登録しました")
 
 add_executable(mvm_p3_audio_smoke audio_preview/mvm_p3_audio_smoke.cpp)
 target_link_libraries(mvm_p3_audio_smoke PRIVATE mvm::audio_preview mvm::warnings)
