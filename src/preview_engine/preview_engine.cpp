@@ -27,6 +27,12 @@
 namespace mvm::preview {
 namespace {
 
+// internal PCM domainのsample formatは`AudioChunk::pcm`の要素型で決まる。
+// runtimeの観測値ではなく型不変条件なので、ここで固定して"flt"の根拠にする。
+static_assert(
+    std::is_same_v<audio::AudioChunk::PcmSample, float>,
+    "internal PCM domainはfloat32である。変更する場合はqualified audio domainも見直すこと");
+
 PreviewError makeError(PreviewErrorCategory category, PreviewOperation operation,
                        std::string detail,
                        PreviewErrorSeverity severity = PreviewErrorSeverity::Recoverable) {
@@ -504,16 +510,26 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     bool audioWorkerJoined = true;
     std::uint64_t audioMasterProjectionFailureCount = 0;
     std::uint64_t audioGenerationMismatchCount = 0;
-    std::uint64_t audioDeviceFailureCount = 0;
+    std::uint64_t audioTransportFailureCount = 0;
+    std::uint64_t audioDomainRejectCount = 0;
     bool audioClockStallInjected = false;
     std::vector<internal::ShutdownStep> shutdownSequence;
+    bool renderVisibleWorkersDetached = false;
 
-    // 同じstepを二重に記録しない。順序はここに追加された順そのものである。
+    // 実行順をそのまま積む。重複を畳むと、誤った再実行や並べ替えがexact比較を
+    // すり抜けるため、畳まずに残したうえでviolationとして数える。
     void noteShutdownStepLocked(internal::ShutdownStep step) {
         if (std::find(shutdownSequence.begin(), shutdownSequence.end(), step) !=
-            shutdownSequence.end())
-            return;
+            shutdownSequence.end()) {
+            ++lifecycleViolationCount;
+        }
         shutdownSequence.push_back(step);
+    }
+
+    // renderから見えるworker参照を切る。ここを通るまでrender teardownへ進まない。
+    void detachRenderVisibleWorkerRefsLocked() {
+        renderVisibleWorkersDetached = true;
+        noteShutdownStepLocked(internal::ShutdownStep::DetachRenderVisibleWorkerRefs);
     }
 
     // 製品既定は unity。検証アプリだけが下げる。
@@ -642,6 +658,7 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
             noteShutdownStepLocked(internal::ShutdownStep::StopAudioSink);
             noteShutdownStepLocked(internal::ShutdownStep::StopAudioDecodeWorker);
             noteShutdownStepLocked(internal::ShutdownStep::StopVideoWorkers);
+            detachRenderVisibleWorkerRefsLocked();
             noteShutdownStepLocked(internal::ShutdownStep::VerifyJoins);
             noteShutdownStepLocked(internal::ShutdownStep::RequestRenderTeardown);
             return;
@@ -677,6 +694,7 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
             {
                 std::lock_guard<std::mutex> lock(self->mutex);
                 self->noteShutdownStepLocked(internal::ShutdownStep::StopVideoWorkers);
+                self->detachRenderVisibleWorkerRefsLocked();
                 self->audioSinkJoined =
                     audioEndpoint == nullptr || audioEndpoint->snapshot().joined;
                 self->audioWorkerJoined =
@@ -1039,8 +1057,9 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
                 makeError(PreviewErrorCategory::DecodeFailure, PreviewOperation::AddSource,
                           "audio sourceをopenできません: " + audioError));
         }
-        // engineのconfig由来のaudio domainを検査する。期待値そのものを渡すと
-        // 原理的に失敗できない検査になるため、timebaseが保持する実際の値を使う。
+        // ここはengine configの検査である。sample rateはtimebaseが保持する実際の値、
+        // channelはcapabilityが公開している実際の値を使う。decode出力そのものの
+        // domainは、実データが出そろうplay()側で観測値を使って検査する。
         const std::int64_t configuredSampleRate =
             impl_->timebase ? impl_->timebase->audioSampleRate() : 0;
         Result<void> domain = internal::validateQualifiedAudioDomain(
@@ -1057,7 +1076,7 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
             newAudioSink->stop();
             newAudioWorker->stop();
             rollbackVideo();
-            ++impl_->audioDeviceFailureCount;
+            ++impl_->audioTransportFailureCount;
             return Result<PreviewSourceId>::failure(
                 makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::AddSource,
                           "WASAPI shared event-driven endpointをopenできません: " + audioError));
@@ -1164,19 +1183,24 @@ Result<void> PreviewEngine::play() {
                                                  audio::kPrerollTimeoutMs)) {
             audioWorker->pause();
             std::lock_guard<std::mutex> lock(impl_->mutex);
-            ++impl_->audioDeviceFailureCount;
+            ++impl_->audioTransportFailureCount;
             return Result<void>::failure(
                 makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::Play,
                           "audio prerollを満たせないままplayを開始できません"));
         }
-        // AudioFrameQueueはinternal PCM domain (48 kHz / stereo / float32) 以外の
-        // chunkをrejectする。preroll後にreject累計が残っていれば、workerの出力が
-        // qualified domainと一致していない。暗黙に鳴らさずfail-closedにする。
+        // decode workerが実際に出したPCM domainを観測値として検査する。期待値を
+        // そのまま渡すと原理的に失敗できない検査になるため、queueが受理したchunkの
+        // 実測sample rate / channel数を使う。invalid rejectが残っている場合も、
+        // qualified domain以外を暗黙に鳴らさずfail-closedにする。
         const audio::AudioQueueSnapshot prerolled = audioWorker->queue().snapshot();
-        if (prerolled.invalidRejectCount != 0) {
+        Result<void> observedDomain = internal::validateQualifiedAudioDomain(
+            prerolled.observedSampleRate, prerolled.observedChannels, "flt");
+        if (prerolled.invalidRejectCount != 0 || !observedDomain) {
             audioWorker->pause();
             std::lock_guard<std::mutex> lock(impl_->mutex);
-            ++impl_->audioDeviceFailureCount;
+            ++impl_->audioDomainRejectCount;
+            if (!observedDomain)
+                return Result<void>::failure(observedDomain.error());
             return Result<void>::failure(
                 makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::Play,
                           "audio decode出力がqualified PCM domainと一致しません (invalid reject=" +
@@ -1186,7 +1210,7 @@ Result<void> PreviewEngine::play() {
         if (!audioSink->play(startSample, audioWorker->snapshot().sourceGeneration, error)) {
             audioWorker->pause();
             std::lock_guard<std::mutex> lock(impl_->mutex);
-            ++impl_->audioDeviceFailureCount;
+            ++impl_->audioTransportFailureCount;
             return Result<void>::failure(makeError(PreviewErrorCategory::AudioFailure,
                                                    PreviewOperation::Play,
                                                    "WASAPI renderingを開始できません: " + error));
@@ -1253,7 +1277,7 @@ Result<void> PreviewEngine::pause() {
         if (!sinkPaused) {
             // audio sinkを止められないまま`ReadyPaused`を公開しない。videoだけ
             // 停止してaudioが鳴り続ける状態はsession-fatalとして扱う。
-            ++impl_->audioDeviceFailureCount;
+            ++impl_->audioTransportFailureCount;
             PreviewError failure =
                 makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::Pause,
                           "WASAPI renderingを停止できません: " + sinkError,
@@ -1769,18 +1793,25 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
                     .error());
         }
         // audio sink / audio worker のjoinを確認できなければrender teardownへ進まない。
-        if (!engine.impl_->renderTeardownRequested || !engine.impl_->workerJoined ||
-            !engine.impl_->audioSinkJoined || !engine.impl_->audioWorkerJoined)
+        // render可視worker参照のdetachと、audio sink / audio worker / video workerの
+        // joinを確認できなければrender teardownへ進まない (contract §12)。
+        if (!engine.impl_->renderTeardownRequested || !engine.impl_->renderVisibleWorkersDetached ||
+            !engine.impl_->workerJoined || !engine.impl_->audioSinkJoined ||
+            !engine.impl_->audioWorkerJoined)
             return Result<bool>::success(false);
 
-        engine.impl_->noteShutdownStepLocked(internal::ShutdownStep::FiniteGpuRetirementDrain);
         std::string error;
         bool drained = true;
+        // pollingで複数回入るが、drainを開始するのは一度だけである。
+        const bool startingDrain = !engine.impl_->gpuDrainStarted;
+        engine.impl_->gpuDrainStarted = true;
+        if (startingDrain) {
+            engine.impl_->noteShutdownStepLocked(internal::ShutdownStep::FiniteGpuRetirementDrain);
+        }
         if (engine.impl_->compositor) {
-            if (!engine.impl_->gpuDrainStarted) {
+            if (startingDrain) {
                 if (!engine.impl_->compositor->beginShutdown(2000, error))
                     drained = false;
-                engine.impl_->gpuDrainStarted = true;
             }
             if (drained) {
                 const gpu::GpuCompositorShutdownStatus drainStatus =
@@ -1831,13 +1862,15 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
         }
         if (engine.impl_->audioSink) {
             const audio::WasapiSnapshot endpoint = engine.impl_->audioSink->snapshot();
-            engine.impl_->finalRuntimeDiagnostics.audioDeviceFailureCount =
-                endpoint.deviceFailureCount + engine.impl_->audioDeviceFailureCount;
+            // sink snapshotがdevice failureのauthority。engine側counterを足さない。
+            engine.impl_->finalRuntimeDiagnostics.audioSinkDeviceFailureCount =
+                endpoint.deviceFailureCount;
             engine.impl_->finalRuntimeDiagnostics.audioSessionVolume = endpoint.sessionVolume;
-        } else {
-            engine.impl_->finalRuntimeDiagnostics.audioDeviceFailureCount =
-                engine.impl_->audioDeviceFailureCount;
         }
+        engine.impl_->finalRuntimeDiagnostics.audioTransportFailureCount =
+            engine.impl_->audioTransportFailureCount;
+        engine.impl_->finalRuntimeDiagnostics.audioDomainRejectCount =
+            engine.impl_->audioDomainRejectCount;
         engine.impl_->finalRuntimeDiagnostics.audioMasterProjectionFailureCount =
             engine.impl_->audioMasterProjectionFailureCount;
         engine.impl_->finalRuntimeDiagnostics.audioGenerationMismatchCount =
@@ -2081,17 +2114,15 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
     result.registeredAudioSourceCount = engine.impl_->publicAudioSource ? 1U : 0U;
     result.audioMasterProjectionFailureCount = engine.impl_->audioMasterProjectionFailureCount;
     result.audioGenerationMismatchCount = engine.impl_->audioGenerationMismatchCount;
-    // teardown完了後はsink/workerが解放済みで、live counterは終端値を持たない。
-    // completeRuntimeTeardown()が確定させた値を、ここで0へ上書きしない。
-    result.audioDeviceFailureCount =
-        std::max(result.audioDeviceFailureCount, engine.impl_->audioDeviceFailureCount);
+    result.audioTransportFailureCount = engine.impl_->audioTransportFailureCount;
+    result.audioDomainRejectCount = engine.impl_->audioDomainRejectCount;
     if (engine.impl_->audioWorker) {
         result.audioUnderflowCount = engine.impl_->audioWorker->queue().snapshot().underflowCount;
     }
     if (engine.impl_->audioSink) {
+        // teardown後はsinkが解放済みなので、確定済みのfinal値をそのまま残す。
         const audio::WasapiSnapshot endpoint = engine.impl_->audioSink->snapshot();
-        result.audioDeviceFailureCount =
-            engine.impl_->audioDeviceFailureCount + endpoint.deviceFailureCount;
+        result.audioSinkDeviceFailureCount = endpoint.deviceFailureCount;
         result.audioSessionVolume = endpoint.sessionVolume;
     }
     result.fullCpuReadbackCount =

@@ -39,6 +39,8 @@ AudioQueuePushResult AudioFrameQueue::push(AudioChunk chunk) {
     }
     metrics_.queuedSamples += chunk.sampleCount;
     ++metrics_.pushCount;
+    metrics_.observedSampleRate = chunk.sampleRate;
+    metrics_.observedChannels = chunk.channels;
     metrics_.queuedDurationMs = toMs(metrics_.queuedSamples);
     metrics_.highWatermarkMs = std::max(metrics_.highWatermarkMs, metrics_.queuedDurationMs);
     chunks_.push_back(std::move(chunk));

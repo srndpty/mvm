@@ -344,18 +344,34 @@ int main(int argc, char** argv) {
                   diagnostics.audioMasterProjectionFailureCount >= 1) &&
                  // sink faultは完成errorの注入ではなく、sink自身のdevice failureを
                  // product側が検知して昇格した結果でなければならない。
+                 // pause失敗はengine側transport failureちょうど1件として数える。
+                 // shutdown threadが再度pause()を呼ぶためsink側は1件以上になる。
                  (fault != Fault::AudioPauseFault ||
-                  (diagnostics.audioDeviceFailureCount >= 1 &&
-                   sink->errors.front().detail.find("pause fault") != std::string::npos)) &&
-                 (fault != Fault::AudioSinkFatal ||
-                  (diagnostics.audioDeviceFailureCount >= 1 &&
+                  (diagnostics.audioTransportFailureCount == 1 &&
+                   diagnostics.audioSinkDeviceFailureCount >= 1 &&
+                   diagnostics.audioDomainRejectCount == 0 &&
                    diagnostics.audioMasterProjectionFailureCount == 0 &&
-                   sink->errors.front().detail.find("runtime failure") != std::string::npos)));
+                   sink->errors.front().detail.find("pause fault") != std::string::npos)) &&
+                 // sink render faultはsink自身のdevice failureだけが立ち、engine側の
+                 // transport操作は失敗していない (polling経由で昇格したことの証拠)。
+                 (fault != Fault::AudioSinkFatal ||
+                  (diagnostics.audioSinkDeviceFailureCount >= 1 &&
+                   diagnostics.audioTransportFailureCount == 0 &&
+                   diagnostics.audioDomainRejectCount == 0 &&
+                   diagnostics.audioMasterProjectionFailureCount == 0 &&
+                   sink->errors.front().detail.find("runtime failure") != std::string::npos)) &&
+                 // clock stallはprojection失敗だけで、sink/transportは無傷である。
+                 (fault != Fault::AudioClockStall ||
+                  (diagnostics.audioSinkDeviceFailureCount == 0 &&
+                   diagnostics.audioTransportFailureCount == 0 &&
+                   diagnostics.audioDomainRejectCount == 0)));
             const bool cleanRunPass =
                 failureFault ||
                 (diagnostics.audioMasterProjectionFailureCount == 0 &&
                  diagnostics.audioGenerationMismatchCount == 0 &&
-                 diagnostics.audioDeviceFailureCount == 0 && !sink->positionRegression &&
+                 diagnostics.audioSinkDeviceFailureCount == 0 &&
+                 diagnostics.audioTransportFailureCount == 0 &&
+                 diagnostics.audioDomainRejectCount == 0 && !sink->positionRegression &&
                  sink->errors.empty() && terminalTelemetry.presentedFrameCount >= 32 &&
                  activeDiagnostics.audioMasterActive &&
                  activeDiagnostics.registeredAudioSourceCount == 1 &&
@@ -367,9 +383,13 @@ int main(int argc, char** argv) {
             // 最終状態だけでなく、contract §12 の停止順序そのものを固定する。
             using mvm::preview::internal::ShutdownStep;
             const std::vector<ShutdownStep> expectedSequence{
-                ShutdownStep::DisableSchedulers,      ShutdownStep::StopAudioSink,
-                ShutdownStep::StopAudioDecodeWorker,  ShutdownStep::StopVideoWorkers,
-                ShutdownStep::VerifyJoins,            ShutdownStep::RequestRenderTeardown,
+                ShutdownStep::DisableSchedulers,
+                ShutdownStep::StopAudioSink,
+                ShutdownStep::StopAudioDecodeWorker,
+                ShutdownStep::StopVideoWorkers,
+                ShutdownStep::DetachRenderVisibleWorkerRefs,
+                ShutdownStep::VerifyJoins,
+                ShutdownStep::RequestRenderTeardown,
                 ShutdownStep::FiniteGpuRetirementDrain,
                 ShutdownStep::ReleaseRenderTargetDevice,
                 ShutdownStep::PublishShutdownComplete};
@@ -399,6 +419,8 @@ int main(int argc, char** argv) {
 
             std::printf("{\"verdict\":\"%s\",\"presented\":%llu,\"underflow\":%llu,"
                         "\"audio_projection_failures\":%llu,\"audio_generation_mismatch\":%llu,"
+                        "\"audio_sink_device_failures\":%llu,\"audio_transport_failures\":%llu,"
+                        "\"audio_domain_rejects\":%llu,\"shutdown_steps\":%zu,"
                         "\"errors\":%zu,\"terminal\":%d}\n",
                         pass ? "PASS" : "FAIL",
                         static_cast<unsigned long long>(terminalTelemetry.presentedFrameCount),
@@ -406,7 +428,11 @@ int main(int argc, char** argv) {
                         static_cast<unsigned long long>(
                             diagnostics.audioMasterProjectionFailureCount),
                         static_cast<unsigned long long>(diagnostics.audioGenerationMismatchCount),
-                        sink->errors.size(), static_cast<int>(status.state));
+                        static_cast<unsigned long long>(diagnostics.audioSinkDeviceFailureCount),
+                        static_cast<unsigned long long>(diagnostics.audioTransportFailureCount),
+                        static_cast<unsigned long long>(diagnostics.audioDomainRejectCount),
+                        diagnostics.shutdownSequence.size(), sink->errors.size(),
+                        static_cast<int>(status.state));
             exitCode = pass ? 0 : 9;
             app.quit();
         }

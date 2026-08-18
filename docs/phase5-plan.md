@@ -259,7 +259,7 @@ P5-Dは一度に閉じない。§9.1のscopeを次の4 sliceへ分け、各slice
 | slice | 範囲 | 状態 |
 | --- | --- | --- |
 | P5-D1 | `CheckedOutputTimebase`による換算authorityの一本化 | 済 |
-| P5-D2 | audio source登録、`AudioDecodeWorker` / `WasapiAudioSink` / `AudioMasterClock`のengine所有、audio-master `play()` / `pause()`、shutdown ordering拡張 | 済 |
+| P5-D2 | audio source登録、`AudioDecodeWorker` / `WasapiAudioSink` / `AudioMasterClock`のengine所有、audio-master `play()` / `pause()`、shutdown ordering拡張 | 実装完了。closureはgate PASS確認後に確定する |
 | P5-D3 | exact `seek()`、audio/video generation alignment、actual requested frameによるseek completion | 未 |
 | P5-D4 | P5-D closure (capability確定、frozen P3 regression再走、§9.3全項目の突き合わせ) | 未 |
 
@@ -281,15 +281,27 @@ P5-Dは一度に閉じない。§9.1のscopeを次の4 sliceへ分け、各slice
 - **audio sink自身のruntime failureをproduct側が検知して`AudioFailure` /
   `FatalToSession`へ昇格する。** negative testは完成errorをengineへ注入するのではなく、
   `WasapiAudioSink`にdevice failureを起こさせ、通常のpolling経路を通すこと
-- shutdown orderingが`DisableSchedulers -> StopAudioSink -> StopAudioDecodeWorker ->
-  StopVideoWorkers -> VerifyJoins -> RequestRenderTeardown ->
-  FiniteGpuRetirementDrain -> ReleaseRenderTarget/Device -> PublishShutdownComplete`である。
+- shutdown orderingがcontract §12の全stepと一致する。
+  `DisableSchedulers -> StopAudioSink -> StopAudioDecodeWorker -> StopVideoWorkers ->
+  DetachRenderVisibleWorkerRefs -> VerifyJoins -> RequestRenderTeardown ->
+  FiniteGpuRetirementDrain -> ReleaseRenderTarget/Device -> PublishShutdownComplete`。
   **最終状態だけでなく、実行されたstepの順序そのものをassertionで固定する**
-  (`P5CRuntimeDiagnostics::shutdownSequence`)
+  (`P5CRuntimeDiagnostics::shutdownSequence`)。ledgerは重複を畳まないので、
+  誤った再実行や並べ替えはexact比較でそのまま失敗する
+- `DetachRenderVisibleWorkerRefs`はledgerの飾りではなく実挙動である。
+  detachを確認するまでrender teardownへ進まない
 - audio sink / audio workerのjoinを確認できなければrender teardownを要求しない
 - `PreviewCapabilities`がqualified audio domain (48000 Hz / stereo / float32 / 1 source) を報告する
-- qualified audio domainの検査に期待値そのものを渡さない。engine configから導出した実際の値を
-  使い、加えてpreroll後に`AudioFrameQueue`のinvalid rejectが0であることでworkerの実出力を確認する
+- qualified audio domainの検査に期待値そのものを渡さない。
+  sample rate / channel数は`AudioFrameQueue`が実際に受理したchunkの観測値
+  (`observedSampleRate` / `observedChannels`) を使い、preroll後に検査する。
+  sample formatは観測値ではなく`AudioChunk::PcmSample`の型不変条件として`static_assert`で固定する。
+  加えてinvalid rejectが0であることも要求する
+- audio failure counterのauthorityを混ぜない。
+  `audioSinkDeviceFailureCount` (authorityは`WasapiSnapshot`)、
+  `audioTransportFailureCount` (engine側のopen/preroll/play/pause失敗)、
+  `audioDomainRejectCount` (PCM domain不一致。device failureではない) を別々に報告し、
+  合算しない
 - video-only経路 (P5-C) のregressionを変えない
 
 #### P5-D3 exit criteria

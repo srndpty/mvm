@@ -51,6 +51,9 @@ struct Rational {
 };
 
 struct AudioChunk {
+    // internal PCM domain の sample 型。qualified domain の "float32" はこの型が根拠。
+    using PcmSample = float;
+
     SourceId sourceId{};
     SourceGeneration sourceGeneration{};
     AudioResourceEpoch resourceEpoch{};
@@ -60,7 +63,7 @@ struct AudioChunk {
     Rational timeBase{};
     int sampleRate = 0;
     int channels = 0;
-    std::shared_ptr<std::vector<float>> pcm;
+    std::shared_ptr<std::vector<PcmSample>> pcm;
     std::size_t offsetSamples = 0;
 
     bool valid() const {

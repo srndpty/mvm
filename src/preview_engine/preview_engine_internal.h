@@ -95,6 +95,7 @@ enum class ShutdownStep {
     StopAudioSink,
     StopAudioDecodeWorker,
     StopVideoWorkers,
+    DetachRenderVisibleWorkerRefs,
     VerifyJoins,
     RequestRenderTeardown,
     FiniteGpuRetirementDrain,
@@ -132,12 +133,21 @@ struct P5CRuntimeDiagnostics {
     std::uint64_t audioMasterProjectionFailureCount = 0;
     std::uint64_t audioUnderflowCount = 0;
     std::uint64_t audioGenerationMismatchCount = 0;
-    std::uint64_t audioDeviceFailureCount = 0;
+    // failure authorityを混ぜない。
+    //  - Sink: `WasapiAudioSink`自身が数えたdevice failure (authorityはsink snapshot)
+    //  - Transport: engine側のtransport操作失敗 (open/preroll/play/pause)
+    //  - DomainReject: PCM domain不一致。device failureではない
+    std::uint64_t audioSinkDeviceFailureCount = 0;
+    std::uint64_t audioTransportFailureCount = 0;
+    std::uint64_t audioDomainRejectCount = 0;
     // endpointへ実際に適用されたsession volume。要求しただけで適用されて
     // いない状態をPASSにしないために報告する。
     float audioSessionVolume = 1.0F;
-    // 実際に実行されたshutdown stepの順序 (重複なし、実行順)。
+    // 実際に実行されたshutdown stepを、実行順にそのまま積んだもの。
+    // 重複を畳まないので、誤った再実行や並べ替えはexact比較でそのまま失敗する。
     std::vector<ShutdownStep> shutdownSequence;
+    // renderから見えるworker参照を切ったか (contract §12 DetachRenderVisibleWorkerRefs)。
+    bool renderVisibleWorkersDetached = false;
 };
 
 class CompositionAcceptanceState {
