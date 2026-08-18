@@ -1,3 +1,7 @@
+#include "core/checked_output_timebase.h"
+#include "media/audio_preview/audio_clock.h"
+#include "media/audio_preview/audio_decode_worker.h"
+#include "media/audio_preview/wasapi_audio_sink.h"
 #include "media/gpu_preview/composed_frame.h"
 #include "media/gpu_preview/d3d11_shared_device.h"
 #include "media/gpu_preview/gpu_compositor.h"
@@ -14,6 +18,7 @@
 #include <mutex>
 #include <numeric>
 #include <set>
+#include <string>
 #include <thread>
 #include <type_traits>
 #include <utility>
@@ -137,6 +142,19 @@ Result<void> validateSourceFrameRate(long long sourceNumerator, long long source
                       std::to_string(sourceNumerator) + "/" + std::to_string(sourceDenominator) +
                       ", output=" + std::to_string(outputFrameRate.numerator) + "/" +
                       std::to_string(outputFrameRate.denominator) + ")"));
+}
+
+Result<void> validateQualifiedAudioDomain(int sampleRate, int channels,
+                                          const std::string& sampleFormat) {
+    if (sampleRate != audio::kInternalSampleRate || channels != audio::kInternalChannels ||
+        sampleFormat != "flt") {
+        return Result<void>::failure(
+            makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
+                      "qualified audio domainは48000 Hz / stereo / float32だけです (要求=" +
+                          std::to_string(sampleRate) + " Hz / " + std::to_string(channels) +
+                          "ch / " + sampleFormat + ")"));
+    }
+    return Result<void>::success();
 }
 
 std::uint64_t skippedSchedulerFrameCount(std::int64_t previousTarget, std::int64_t currentTarget) {
@@ -448,7 +466,14 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     const std::thread::id controlThread;
     std::uint64_t sinkGeneration = 0;
     bool dispatchScheduled = false;
-    PreviewCapabilities capability;
+    PreviewCapabilities capability = [] {
+        PreviewCapabilities value;
+        // P5-D2でaudio-master transportを接続したため、qualified audio domainを公開する。
+        value.maxQualifiedActiveAudioSources = 1;
+        value.qualifiedAudioSampleRate = audio::kInternalSampleRate;
+        value.qualifiedAudioChannelCount = audio::kInternalChannels;
+        return value;
+    }();
     PreviewTelemetry telemetrySnapshot;
     PreviewDeviceInfo deviceSnapshot;
 
@@ -465,6 +490,22 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     gpu::SourceId internalVideoSource{};
     std::uint64_t nextPublicSourceId = 1;
     PreviewFrameRate configuredFrameRate{60, 1};
+
+    // P5-D2 private audio backend。public headerへWASAPI/FFmpeg型を漏らさない。
+    std::optional<core::CheckedOutputTimebase> timebase;
+    std::shared_ptr<audio::AudioMasterClock> audioClock;
+    std::shared_ptr<audio::AudioDecodeWorker> audioWorker;
+    std::shared_ptr<audio::WasapiAudioSink> audioSink;
+    std::optional<PreviewSourceId> publicAudioSource;
+    audio::SourceId internalAudioSource{};
+    std::int64_t resumeAudioSample = 0;
+    bool audioMasterActive = false;
+    bool audioSinkJoined = true;
+    bool audioWorkerJoined = true;
+    std::uint64_t audioMasterProjectionFailureCount = 0;
+    std::uint64_t audioGenerationMismatchCount = 0;
+    std::uint64_t audioDeviceFailureCount = 0;
+    bool audioClockStallInjected = false;
 
     std::optional<std::thread::id> renderThread;
     void* nativeDeviceIdentity = nullptr;
@@ -499,62 +540,110 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         return Result<void>::success();
     }
 
-    std::int64_t schedulerTarget(std::chrono::steady_clock::time_point now) const {
+    struct SchedulerTarget {
+        bool valid = false;
+        std::int64_t frame = 0;
+        PreviewError error;
+    };
+
+    // output frameのmasterはaudio source登録時のみ`IAudioClock`である。projectionが
+    // 成立しない場合はQPC/steady_clockへ退避せず、`AudioFailure`として表面化する。
+    // frame換算そのものは`CheckedOutputTimebase`へ一本化し、ここで再実装しない。
+    SchedulerTarget schedulerTargetLocked(std::chrono::steady_clock::time_point now) {
+        SchedulerTarget result;
+        if (!timebase) {
+            result.error =
+                makeError(PreviewErrorCategory::InvalidState, PreviewOperation::RenderDeviceAttach,
+                          "output timebaseが未確定のままscheduleしようとしました");
+            return result;
+        }
+
+        if (audioMasterActive) {
+            const auto audioFailure = [&](std::string detail) {
+                ++audioMasterProjectionFailureCount;
+                result.error = makeError(PreviewErrorCategory::AudioFailure,
+                                         PreviewOperation::RenderDeviceAttach, std::move(detail),
+                                         PreviewErrorSeverity::FatalToSession);
+                result.error.source = publicAudioSource;
+            };
+            if (audioClockStallInjected || !audioClock) {
+                audioFailure("audio master clockが利用できません");
+                return result;
+            }
+            const audio::AudioClockSnapshot clock = audioClock->snapshot();
+            if (!clock.running) {
+                audioFailure("audio master clockが停止しています");
+                return result;
+            }
+            const auto frame = timebase->schedulerOutputFrame(clock.mediaSamplePosition);
+            if (!frame) {
+                audioFailure("audio sample positionをoutput frameへ換算できません");
+                return result;
+            }
+            result.valid = true;
+            result.frame = frame.value();
+            return result;
+        }
+
+        // audio sourceが無いvideo-only経路 (P5-C) だけがwall-clockを使う。
         const auto elapsed =
             std::chrono::duration_cast<std::chrono::nanoseconds>(now - schedulerStart).count();
-        if (elapsed <= 0)
-            return schedulerBaseFrame;
-        constexpr std::uint64_t kNanosecondsPerSecond = 1000000000ULL;
-        const auto elapsedValue = static_cast<std::uint64_t>(elapsed);
-        const std::uint64_t seconds = elapsedValue / kNanosecondsPerSecond;
-        const std::uint64_t nanoseconds = elapsedValue % kNanosecondsPerSecond;
-        const std::uint64_t numerator = configuredFrameRate.numerator;
-        const std::uint64_t denominator = configuredFrameRate.denominator;
-        const std::uint64_t wholeRate = numerator / denominator;
-        const std::uint64_t rateRemainder = numerator % denominator;
-        const auto maximum = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
-        if (wholeRate != 0 && seconds > maximum / wholeRate)
-            return std::numeric_limits<std::int64_t>::max();
-        std::uint64_t advanced = seconds * wholeRate;
-        const std::uint64_t secondsQuotient = seconds / denominator;
-        const std::uint64_t secondsRemainder = seconds % denominator;
-        const std::uint64_t secondary =
-            secondsQuotient * rateRemainder + (secondsRemainder * rateRemainder) / denominator;
-        const std::uint64_t fractionalRemainder = (secondsRemainder * rateRemainder) % denominator;
-        const std::uint64_t fractional =
-            (fractionalRemainder * kNanosecondsPerSecond + nanoseconds * numerator) /
-            (denominator * kNanosecondsPerSecond);
-        if (advanced > maximum - secondary || advanced + secondary > maximum - fractional)
-            return std::numeric_limits<std::int64_t>::max();
-        advanced += secondary + fractional;
-        const auto value = static_cast<std::int64_t>(advanced);
-        if (schedulerBaseFrame > std::numeric_limits<std::int64_t>::max() - value)
-            return std::numeric_limits<std::int64_t>::max();
-        return schedulerBaseFrame + value;
+        const auto maximum = std::numeric_limits<std::int64_t>::max();
+        std::int64_t advanced = 0;
+        if (elapsed > 0) {
+            const auto frames = timebase->outputFrameForNanoseconds(elapsed);
+            advanced = frames ? frames.value() : maximum;
+        }
+        result.valid = true;
+        result.frame =
+            schedulerBaseFrame > maximum - advanced ? maximum : schedulerBaseFrame + advanced;
+        return result;
     }
 
     void startWorkerShutdown() {
         if (shutdownWorkerStarted)
             return;
         shutdownWorkerStarted = true;
+        // preview-engine-contract.md §12の固定順:
+        // DisableSchedulers -> StopAudioSink -> StopAudioDecodeWorker -> StopVideoWorkers
+        // -> DetachRenderVisibleWorkerRefs -> VerifyJoins -> RequestRenderTeardown
+        audioMasterActive = false;
+        audioSinkJoined = audioSink == nullptr;
+        audioWorkerJoined = audioWorker == nullptr;
         workerJoined = videoWorker == nullptr || videoWorker->joined();
-        renderTeardownRequested = workerJoined;
-        if (workerJoined)
+        renderTeardownRequested = workerJoined && audioSinkJoined && audioWorkerJoined;
+        if (renderTeardownRequested)
             return;
         const std::shared_ptr<Impl> self = shared_from_this();
         shutdownThread = std::thread([self] {
+            std::shared_ptr<audio::WasapiAudioSink> audioEndpoint;
+            std::shared_ptr<audio::AudioDecodeWorker> audioDecoder;
             gpu::SourceDecodeWorker* worker = nullptr;
             {
                 std::lock_guard<std::mutex> lock(self->mutex);
+                audioEndpoint = self->audioSink;
+                audioDecoder = self->audioWorker;
                 worker = self->videoWorker.get();
             }
+            std::string ignored;
+            if (audioEndpoint) {
+                audioEndpoint->pause(ignored);
+                audioEndpoint->stop();
+            }
+            if (audioDecoder)
+                audioDecoder->stop();
             if (worker)
                 worker->stop();
             {
                 std::lock_guard<std::mutex> lock(self->mutex);
+                self->audioSinkJoined =
+                    audioEndpoint == nullptr || audioEndpoint->snapshot().joined;
+                self->audioWorkerJoined =
+                    audioDecoder == nullptr || audioDecoder->snapshot().joined;
                 self->workerJoined = worker == nullptr || worker->joined();
-                self->renderTeardownRequested = self->workerJoined;
-                if (!self->workerJoined)
+                self->renderTeardownRequested =
+                    self->workerJoined && self->audioSinkJoined && self->audioWorkerJoined;
+                if (!self->renderTeardownRequested)
                     ++self->lifecycleViolationCount;
             }
         });
@@ -741,6 +830,15 @@ Result<void> PreviewEngine::initialize(const PreviewEngineConfig& config,
             makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::Initialize,
                       "指定frame rateは現在qualifiedな60/1ではありません"));
     }
+    // scheduler / seek / statusが同じ換算を使うよう、timebaseはここで一度だけ確定する。
+    const auto timebase = core::CheckedOutputTimebase::createQualified(
+        static_cast<std::int64_t>(config.output.frameRate.numerator),
+        static_cast<std::int64_t>(config.output.frameRate.denominator), audio::kInternalSampleRate);
+    if (!timebase) {
+        return Result<void>::failure(makeError(PreviewErrorCategory::UnsupportedCapability,
+                                               PreviewOperation::Initialize,
+                                               "qualified output timebaseを構築できません"));
+    }
 
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -750,6 +848,7 @@ Result<void> PreviewEngine::initialize(const PreviewEngineConfig& config,
         }
         impl_->dispatcher = std::move(dispatcher);
         impl_->configuredFrameRate = rate.value();
+        impl_->timebase = timebase.value();
         impl_->telemetrySnapshot.status.state = impl_->machine.state();
     }
     Result<void> posted =
@@ -763,6 +862,7 @@ Result<void> PreviewEngine::initialize(const PreviewEngineConfig& config,
         ++impl_->sinkGeneration;
         impl_->dispatchScheduled = false;
         impl_->telemetrySnapshot = PreviewTelemetry{};
+        impl_->timebase.reset();
         return posted;
     }
     return Result<void>::success();
@@ -814,66 +914,136 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
             makeError(PreviewErrorCategory::InvalidState, PreviewOperation::AddSource,
                       "source registrationはReadyPausedでのみ受理します"));
     }
-    if (descriptor.audioEnabled) {
-        return Result<PreviewSourceId>::failure(
-            makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
-                      "P5-CではaudioEnabled sourceをsupportしません"));
-    }
-    if (!descriptor.videoEnabled) {
-        return Result<PreviewSourceId>::failure(
-            makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
-                      "P5-CではvideoEnabled sourceだけをsupportします"));
-    }
     if (!impl_->nativeDeviceAttached || !impl_->compositor || !impl_->renderDevice->valid()) {
         return Result<PreviewSourceId>::failure(
             makeError(PreviewErrorCategory::InvalidState, PreviewOperation::AddSource,
                       "native render deviceの準備前にsourceを登録できません"));
     }
-    if (impl_->publicVideoSource) {
+    if (descriptor.videoEnabled && impl_->publicVideoSource) {
         return Result<PreviewSourceId>::failure(
             makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
-                      "P5-C product wiringはvideo sourceを1件だけ受理します"));
+                      "P5-D product wiringはvideo sourceを1件だけ受理します"));
     }
-
-    const gpu::SourceId internalSource = impl_->sourceRegistry.registerSource();
-    auto worker = std::make_unique<gpu::SourceDecodeWorker>(internalSource, *impl_->renderDevice,
-                                                            impl_->readbacks, 6);
-    std::string openError;
-    const auto utf8Path = descriptor.mediaPath.u8string();
-    const std::string path(reinterpret_cast<const char*>(utf8Path.data()), utf8Path.size());
-    if (!worker->start(path, openError)) {
-        worker->stop();
-        impl_->sourceRegistry.unregisterSource(internalSource);
-        ++impl_->telemetrySnapshot.decodeFailureCount;
-        return Result<PreviewSourceId>::failure(
-            makeError(PreviewErrorCategory::DecodeFailure, PreviewOperation::AddSource,
-                      "D3D11VA video sourceをopenできません: " + openError));
+    if (descriptor.audioEnabled) {
+        if (impl_->capability.maxQualifiedActiveAudioSources == 0) {
+            return Result<PreviewSourceId>::failure(
+                makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
+                          "audio sourceはqualified capabilityに含まれていません"));
+        }
+        if (impl_->publicAudioSource) {
+            return Result<PreviewSourceId>::failure(
+                makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
+                          "P5-D product wiringはactive audio sourceを1件だけ受理します"));
+        }
     }
-
-    const gpu::SourceDecoderSnapshot opened = worker->snapshot();
-    Result<void> supportedRate = internal::validateSourceFrameRate(
-        opened.info.frameRate.num, opened.info.frameRate.den, impl_->configuredFrameRate);
-    if (!supportedRate) {
-        worker->stop();
-        impl_->sourceRegistry.unregisterSource(internalSource);
-        return Result<PreviewSourceId>::failure(supportedRate.error());
-    }
-
     if (impl_->nextPublicSourceId == 0) {
-        worker->stop();
-        impl_->sourceRegistry.unregisterSource(internalSource);
         return Result<PreviewSourceId>::failure(makeError(PreviewErrorCategory::InvalidSource,
                                                           PreviewOperation::AddSource,
                                                           "PreviewSourceIdがoverflowしました"));
     }
+
+    const auto utf8Path = descriptor.mediaPath.u8string();
+    const std::string path(reinterpret_cast<const char*>(utf8Path.data()), utf8Path.size());
+
+    // video registration。失敗時はsource tableとregistryを呼び出し前へ戻す。
+    gpu::SourceId internalVideo{};
+    std::unique_ptr<gpu::SourceDecodeWorker> newVideoWorker;
+    if (descriptor.videoEnabled) {
+        internalVideo = impl_->sourceRegistry.registerSource();
+        newVideoWorker = std::make_unique<gpu::SourceDecodeWorker>(
+            internalVideo, *impl_->renderDevice, impl_->readbacks, 6);
+        std::string openError;
+        if (!newVideoWorker->start(path, openError)) {
+            newVideoWorker->stop();
+            impl_->sourceRegistry.unregisterSource(internalVideo);
+            ++impl_->telemetrySnapshot.decodeFailureCount;
+            return Result<PreviewSourceId>::failure(
+                makeError(PreviewErrorCategory::DecodeFailure, PreviewOperation::AddSource,
+                          "D3D11VA video sourceをopenできません: " + openError));
+        }
+        const gpu::SourceDecoderSnapshot opened = newVideoWorker->snapshot();
+        Result<void> supportedRate = internal::validateSourceFrameRate(
+            opened.info.frameRate.num, opened.info.frameRate.den, impl_->configuredFrameRate);
+        if (!supportedRate) {
+            newVideoWorker->stop();
+            impl_->sourceRegistry.unregisterSource(internalVideo);
+            return Result<PreviewSourceId>::failure(supportedRate.error());
+        }
+    }
+
+    // audio registration。sinkはworkerのqueueとclockを参照するため、この順で組む。
+    std::shared_ptr<audio::AudioMasterClock> newAudioClock;
+    std::shared_ptr<audio::AudioDecodeWorker> newAudioWorker;
+    std::shared_ptr<audio::WasapiAudioSink> newAudioSink;
+    audio::SourceId internalAudio{};
+    if (descriptor.audioEnabled) {
+        const auto rollbackVideo = [&] {
+            if (!newVideoWorker)
+                return;
+            newVideoWorker->stop();
+            impl_->sourceRegistry.unregisterSource(internalVideo);
+        };
+        internalAudio = audio::SourceId{impl_->nextPublicSourceId};
+        newAudioClock = std::make_shared<audio::AudioMasterClock>();
+        newAudioWorker = std::make_shared<audio::AudioDecodeWorker>(internalAudio);
+        std::string audioError;
+        if (!newAudioWorker->start(path, audioError)) {
+            newAudioWorker->stop();
+            rollbackVideo();
+            ++impl_->telemetrySnapshot.decodeFailureCount;
+            return Result<PreviewSourceId>::failure(
+                makeError(PreviewErrorCategory::DecodeFailure, PreviewOperation::AddSource,
+                          "audio sourceをopenできません: " + audioError));
+        }
+        // decode workerは内部PCM domainへ正規化する。qualifiedでない domain を
+        // 暗黙のresample/channel変換で成功へ変えず、ここでfail-closedにする。
+        Result<void> domain = internal::validateQualifiedAudioDomain(
+            audio::kInternalSampleRate, audio::kInternalChannels, "flt");
+        if (!domain) {
+            newAudioWorker->stop();
+            rollbackVideo();
+            return Result<PreviewSourceId>::failure(domain.error());
+        }
+        newAudioSink =
+            std::make_shared<audio::WasapiAudioSink>(newAudioWorker->queue(), *newAudioClock);
+        if (!newAudioSink->open(audioError)) {
+            newAudioSink->stop();
+            newAudioWorker->stop();
+            rollbackVideo();
+            ++impl_->audioDeviceFailureCount;
+            return Result<PreviewSourceId>::failure(
+                makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::AddSource,
+                          "WASAPI shared event-driven endpointをopenできません: " + audioError));
+        }
+    }
+
     const PreviewSourceId published{impl_->nextPublicSourceId++};
-    impl_->internalVideoSource = internalSource;
-    impl_->publicVideoSource = published;
-    impl_->eligibleSources.emplace(published.value, internal::EligibleSource{true});
-    impl_->videoWorker = std::move(worker);
-    impl_->workerJoined = false;
-    impl_->deviceReleased = false;
-    impl_->telemetrySnapshot.currentSourceQueueDepth = 0;
+    if (descriptor.videoEnabled) {
+        impl_->internalVideoSource = internalVideo;
+        impl_->publicVideoSource = published;
+        impl_->videoWorker = std::move(newVideoWorker);
+        impl_->workerJoined = false;
+        impl_->deviceReleased = false;
+        impl_->telemetrySnapshot.currentSourceQueueDepth = 0;
+    }
+    if (descriptor.audioEnabled) {
+        impl_->internalAudioSource = internalAudio;
+        impl_->publicAudioSource = published;
+        impl_->audioClock = std::move(newAudioClock);
+        impl_->audioWorker = std::move(newAudioWorker);
+        impl_->audioSink = std::move(newAudioSink);
+        impl_->audioSinkJoined = false;
+        impl_->audioWorkerJoined = false;
+        impl_->resumeAudioSample = 0;
+        const audio::WasapiSnapshot endpoint = impl_->audioSink->snapshot();
+        impl_->deviceSnapshot.audioSampleRate =
+            static_cast<std::uint32_t>(endpoint.deviceFormat.sampleRate);
+        impl_->deviceSnapshot.audioChannelCount =
+            static_cast<std::uint32_t>(endpoint.deviceFormat.channels);
+    }
+    impl_->eligibleSources.emplace(
+        published.value,
+        internal::EligibleSource{descriptor.videoEnabled, descriptor.audioEnabled});
     return Result<PreviewSourceId>::success(published);
 }
 
@@ -919,6 +1089,9 @@ PreviewEngine::submitComposition(std::shared_ptr<const CompositionSnapshot> snap
 }
 
 Result<void> PreviewEngine::play() {
+    std::shared_ptr<audio::AudioDecodeWorker> audioWorker;
+    std::shared_ptr<audio::WasapiAudioSink> audioSink;
+    std::int64_t startSample = 0;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         Result<void> affinity = impl_->requireControlThread(PreviewOperation::Play);
@@ -931,10 +1104,50 @@ Result<void> PreviewEngine::play() {
             return invalidState(PreviewOperation::Play,
                                 "playには登録済みvideo sourceとaccepted compositionが必要です");
         }
+        audioWorker = impl_->audioWorker;
+        audioSink = impl_->audioSink;
+        startSample = impl_->resumeAudioSample;
+    }
+
+    // audio decode preroll と WASAPI start は engine lockを保持したまま待たない。
+    // control methodは同一threadからしか呼べないため、この窓でstateは動かない。
+    if (audioWorker && audioSink) {
+        audioWorker->play();
+        if (!audioWorker->queue().waitForSamples(audio::kAudioPrerollSamples,
+                                                 audio::kPrerollTimeoutMs)) {
+            audioWorker->pause();
+            std::lock_guard<std::mutex> lock(impl_->mutex);
+            ++impl_->audioDeviceFailureCount;
+            return Result<void>::failure(
+                makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::Play,
+                          "audio prerollを満たせないままplayを開始できません"));
+        }
+        std::string error;
+        if (!audioSink->play(startSample, audioWorker->snapshot().sourceGeneration, error)) {
+            audioWorker->pause();
+            std::lock_guard<std::mutex> lock(impl_->mutex);
+            ++impl_->audioDeviceFailureCount;
+            return Result<void>::failure(makeError(PreviewErrorCategory::AudioFailure,
+                                                   PreviewOperation::Play,
+                                                   "WASAPI renderingを開始できません: " + error));
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
         Result<void> played = impl_->machine.play();
-        if (!played)
+        if (!played) {
+            if (audioWorker)
+                audioWorker->pause();
+            if (audioSink) {
+                std::string ignored;
+                audioSink->pause(ignored);
+            }
             return played;
+        }
         impl_->schedulerEnabled = true;
+        // audio sourceが登録されている場合だけ`IAudioClock`がmasterになる。
+        impl_->audioMasterActive = impl_->audioSink != nullptr && impl_->audioClock != nullptr;
         impl_->schedulerStart = std::chrono::steady_clock::now();
         impl_->schedulerBaseFrame = impl_->telemetrySnapshot.presentedFrameCount == 0
                                         ? 0
@@ -948,6 +1161,8 @@ Result<void> PreviewEngine::play() {
 }
 
 Result<void> PreviewEngine::pause() {
+    std::shared_ptr<audio::AudioDecodeWorker> audioWorker;
+    std::shared_ptr<audio::WasapiAudioSink> audioSink;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         Result<void> affinity = impl_->requireControlThread(PreviewOperation::Pause);
@@ -959,11 +1174,40 @@ Result<void> PreviewEngine::pause() {
         if (!paused)
             return paused;
         impl_->schedulerEnabled = false;
+        impl_->audioMasterActive = false;
         if (impl_->videoWorker)
             impl_->videoWorker->pause();
+        audioWorker = impl_->audioWorker;
+        audioSink = impl_->audioSink;
         impl_->telemetrySnapshot.status.state = PreviewEngineState::ReadyPaused;
     }
+
+    std::optional<PreviewError> audioFailure;
+    if (audioSink) {
+        std::string error;
+        if (!audioSink->pause(error)) {
+            audioFailure = makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::Pause,
+                                     "WASAPI renderingを停止できません: " + error);
+        }
+    }
+    if (audioWorker)
+        audioWorker->pause();
+
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (audioFailure)
+            ++impl_->audioDeviceFailureCount;
+        // resume時のmedia positionは、audio clockが確定した値だけを使う。
+        if (impl_->audioClock)
+            impl_->resumeAudioSample = impl_->audioClock->snapshot().mediaSamplePosition;
+    }
+    // state machineは既にReadyPausedへ遷移しているため、audio sink失敗時も
+    // state eventを落とさない。errorはそのうえで返す。
     impl_->notify(internal::StateChangedEvent{PreviewEngineState::ReadyPaused});
+    if (audioFailure) {
+        impl_->notify(internal::ErrorOccurredEvent{*audioFailure});
+        return Result<void>::failure(*audioFailure);
+    }
     return Result<void>::success();
 }
 
@@ -1025,6 +1269,7 @@ Result<void> PreviewEngine::requestShutdown() {
         }
         after = impl_->machine.state();
         impl_->schedulerEnabled = false;
+        impl_->audioMasterActive = false;
         if (impl_->videoWorker)
             impl_->videoWorker->pause();
         if (impl_->nativeDeviceAttached)
@@ -1258,105 +1503,129 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                           "render targetまたはproduct runtimeが未準備です"));
         }
 
-        const std::int64_t target = engine.impl_->schedulerTarget(std::chrono::steady_clock::now());
-        if (target <= engine.impl_->lastSchedulerTarget)
-            return Result<RenderFrameResult>::success(result);
-        const std::uint64_t skipped =
-            internal::skippedSchedulerFrameCount(engine.impl_->lastSchedulerTarget, target);
-        const std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
-        if (skipped > maximum - engine.impl_->telemetrySnapshot.droppedFrameCount)
-            engine.impl_->telemetrySnapshot.droppedFrameCount = maximum;
-        else
-            engine.impl_->telemetrySnapshot.droppedFrameCount += skipped;
-        engine.impl_->lastSchedulerTarget = target;
+        // audio masterが成立しない場合、QPC/steady_clockへ退避せずfatalとして表面化する。
+        const auto scheduled =
+            engine.impl_->schedulerTargetLocked(std::chrono::steady_clock::now());
+        if (!scheduled.valid)
+            fatal = scheduled.error;
+        else {
+            const std::int64_t target = scheduled.frame;
+            if (target <= engine.impl_->lastSchedulerTarget)
+                return Result<RenderFrameResult>::success(result);
+            const std::uint64_t skipped =
+                internal::skippedSchedulerFrameCount(engine.impl_->lastSchedulerTarget, target);
+            const std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
+            if (skipped > maximum - engine.impl_->telemetrySnapshot.droppedFrameCount)
+                engine.impl_->telemetrySnapshot.droppedFrameCount = maximum;
+            else
+                engine.impl_->telemetrySnapshot.droppedFrameCount += skipped;
+            engine.impl_->lastSchedulerTarget = target;
 
-        gpu::SourceFrameBuffer& buffer = engine.impl_->videoWorker->buffer();
-        buffer.discardBefore(target);
-        gpu::DecodedGpuFrame decoded;
-        if (!buffer.takeExact(target, decoded)) {
-            const gpu::SourceDecoderSnapshot worker = engine.impl_->videoWorker->snapshot();
-            if (worker.fatal) {
-                PreviewError failure = makeError(
-                    PreviewErrorCategory::DecodeFailure, PreviewOperation::RenderDeviceAttach,
-                    worker.lastError.empty()
-                        ? "video decode workerがfatal終了しました"
-                        : "video decode workerがfatal終了しました: " + worker.lastError);
-                failure.severity = PreviewErrorSeverity::FatalToSession;
-                failure.source = engine.impl_->publicVideoSource;
-                fatal = std::move(failure);
-                decoderFatal = true;
-            } else if (worker.eof) {
-                Result<void> shutdown = engine.impl_->machine.requestShutdown();
-                if (shutdown) {
-                    engine.impl_->schedulerEnabled = false;
-                    engine.impl_->startWorkerShutdown();
-                    engine.impl_->telemetrySnapshot.status.state = PreviewEngineState::ShuttingDown;
-                    playbackEnded = true;
+            gpu::SourceFrameBuffer& buffer = engine.impl_->videoWorker->buffer();
+            buffer.discardBefore(target);
+            gpu::DecodedGpuFrame decoded;
+            if (!buffer.takeExact(target, decoded)) {
+                const gpu::SourceDecoderSnapshot worker = engine.impl_->videoWorker->snapshot();
+                if (worker.fatal) {
+                    PreviewError failure = makeError(
+                        PreviewErrorCategory::DecodeFailure, PreviewOperation::RenderDeviceAttach,
+                        worker.lastError.empty()
+                            ? "video decode workerがfatal終了しました"
+                            : "video decode workerがfatal終了しました: " + worker.lastError);
+                    failure.severity = PreviewErrorSeverity::FatalToSession;
+                    failure.source = engine.impl_->publicVideoSource;
+                    fatal = std::move(failure);
+                    decoderFatal = true;
+                } else if (worker.eof) {
+                    Result<void> shutdown = engine.impl_->machine.requestShutdown();
+                    if (shutdown) {
+                        engine.impl_->schedulerEnabled = false;
+                        engine.impl_->startWorkerShutdown();
+                        engine.impl_->telemetrySnapshot.status.state =
+                            PreviewEngineState::ShuttingDown;
+                        playbackEnded = true;
+                    }
+                } else {
+                    if (engine.impl_->telemetrySnapshot.droppedFrameCount !=
+                        std::numeric_limits<std::uint64_t>::max()) {
+                        ++engine.impl_->telemetrySnapshot.droppedFrameCount;
+                    }
+                    engine.impl_->telemetrySnapshot.currentSourceQueueDepth =
+                        static_cast<std::uint32_t>(buffer.depth());
                 }
+            } else if (decoded.sourceId != engine.impl_->internalVideoSource ||
+                       !engine.impl_->sourceRegistry.contains(decoded.sourceId)) {
+                PreviewError error = makeError(PreviewErrorCategory::DecodeFailure,
+                                               PreviewOperation::RenderDeviceAttach,
+                                               "decode frameのsource identityが一致しません");
+                error.severity = PreviewErrorSeverity::FatalToSession;
+                fatal = error;
             } else {
-                if (engine.impl_->telemetrySnapshot.droppedFrameCount !=
-                    std::numeric_limits<std::uint64_t>::max()) {
-                    ++engine.impl_->telemetrySnapshot.droppedFrameCount;
+                const auto token = engine.impl_->compositionState.latestAcceptedToken();
+                const auto snapshot = engine.impl_->compositionState.latestAcceptedSnapshot();
+                if (!token || !snapshot || snapshot->layers.size() != 1) {
+                    return Result<RenderFrameResult>::failure(
+                        makeError(PreviewErrorCategory::CompositionFailure,
+                                  PreviewOperation::RenderDeviceAttach,
+                                  "accepted single-layer compositionが見つかりません"));
                 }
-                engine.impl_->telemetrySnapshot.currentSourceQueueDepth =
-                    static_cast<std::uint32_t>(buffer.depth());
-            }
-        } else if (decoded.sourceId != engine.impl_->internalVideoSource ||
-                   !engine.impl_->sourceRegistry.contains(decoded.sourceId)) {
-            PreviewError error =
-                makeError(PreviewErrorCategory::DecodeFailure, PreviewOperation::RenderDeviceAttach,
-                          "decode frameのsource identityが一致しません");
-            error.severity = PreviewErrorSeverity::FatalToSession;
-            fatal = error;
-        } else {
-            const auto token = engine.impl_->compositionState.latestAcceptedToken();
-            const auto snapshot = engine.impl_->compositionState.latestAcceptedSnapshot();
-            if (!token || !snapshot || snapshot->layers.size() != 1) {
-                return Result<RenderFrameResult>::failure(makeError(
-                    PreviewErrorCategory::CompositionFailure, PreviewOperation::RenderDeviceAttach,
-                    "accepted single-layer compositionが見つかりません"));
-            }
-            const PreviewCompositionLayer& sourceLayer = snapshot->layers.front();
-            gpu::CompositionLayerFrame layer;
-            layer.frame = std::move(decoded);
-            layer.destination = {sourceLayer.destination.x, sourceLayer.destination.y,
-                                 sourceLayer.destination.width, sourceLayer.destination.height};
-            layer.sourceUv = {sourceLayer.sourceRect.x, sourceLayer.sourceRect.y,
-                              sourceLayer.sourceRect.width, sourceLayer.sourceRect.height};
-            layer.opacity = sourceLayer.opacity;
-            gpu::ComposedFrame composed;
-            composed.outputFrameNumber = target;
-            composed.compositionEpoch = {token->revision};
-            composed.compositionState = {token->id.value};
-            composed.layers.push_back(std::move(layer));
-            gpu::ExternalCompositionTarget targetView{
-                static_cast<ID3D11RenderTargetView*>(renderTargetView), width, height};
-            std::string error;
-            if (!engine.impl_->compositor->composeSingleLayerToTarget(composed, targetView,
-                                                                      error)) {
-                PreviewError failure = makeError(
-                    PreviewErrorCategory::DeviceFailure, PreviewOperation::RenderDeviceAttach,
-                    "single-layer GPU compositionに失敗しました: " + error);
-                failure.severity = PreviewErrorSeverity::FatalToSession;
-                fatal = failure;
-            } else {
-                buffer.noteDisplayed(target);
-                engine.impl_->compositionState.markPresented(*token);
-                engine.impl_->distinctPresentedFrames.note(target);
-                ++engine.impl_->presentationSequence;
-                ++engine.impl_->telemetrySnapshot.presentedFrameCount;
-                engine.impl_->telemetrySnapshot.currentSourceQueueDepth =
-                    static_cast<std::uint32_t>(buffer.depth());
-                const auto& counters = engine.impl_->compositor->counters();
-                engine.impl_->telemetrySnapshot.gpuRetirementCurrentDepth =
-                    static_cast<std::uint32_t>(counters.retirementDepthAfterDrain);
-                engine.impl_->telemetrySnapshot.gpuRetirementPeakDepth =
-                    static_cast<std::uint32_t>(counters.retirementDepthPeak);
-                engine.impl_->telemetrySnapshot.status.position = {target};
-                engine.impl_->telemetrySnapshot.status.lastPresentedComposition = *token;
-                result.presented = true;
-                result.sourceFrame = target;
-                result.frame = {engine.impl_->presentationSequence, {target}, *token, 1};
+                if (engine.impl_->audioMasterActive && engine.impl_->audioWorker) {
+                    const audio::AudioDecoderSnapshot decoder =
+                        engine.impl_->audioWorker->snapshot();
+                    if (!(decoder.sourceGeneration ==
+                          engine.impl_->audioWorker->queue().generation())) {
+                        // audio generationが揃わないframeをlatest/staleで代用しない。
+                        ++engine.impl_->audioGenerationMismatchCount;
+                        ++engine.impl_->staleSubstitutionCount;
+                        return Result<RenderFrameResult>::success(result);
+                    }
+                }
+                const PreviewCompositionLayer& sourceLayer = snapshot->layers.front();
+                gpu::CompositionLayerFrame layer;
+                layer.frame = std::move(decoded);
+                layer.destination = {sourceLayer.destination.x, sourceLayer.destination.y,
+                                     sourceLayer.destination.width, sourceLayer.destination.height};
+                layer.sourceUv = {sourceLayer.sourceRect.x, sourceLayer.sourceRect.y,
+                                  sourceLayer.sourceRect.width, sourceLayer.sourceRect.height};
+                layer.opacity = sourceLayer.opacity;
+                gpu::ComposedFrame composed;
+                composed.outputFrameNumber = target;
+                composed.compositionEpoch = {token->revision};
+                composed.compositionState = {token->id.value};
+                composed.layers.push_back(std::move(layer));
+                gpu::ExternalCompositionTarget targetView{
+                    static_cast<ID3D11RenderTargetView*>(renderTargetView), width, height};
+                std::string error;
+                if (!engine.impl_->compositor->composeSingleLayerToTarget(composed, targetView,
+                                                                          error)) {
+                    PreviewError failure = makeError(
+                        PreviewErrorCategory::DeviceFailure, PreviewOperation::RenderDeviceAttach,
+                        "single-layer GPU compositionに失敗しました: " + error);
+                    failure.severity = PreviewErrorSeverity::FatalToSession;
+                    fatal = failure;
+                } else {
+                    buffer.noteDisplayed(target);
+                    engine.impl_->compositionState.markPresented(*token);
+                    engine.impl_->distinctPresentedFrames.note(target);
+                    ++engine.impl_->presentationSequence;
+                    ++engine.impl_->telemetrySnapshot.presentedFrameCount;
+                    engine.impl_->telemetrySnapshot.currentSourceQueueDepth =
+                        static_cast<std::uint32_t>(buffer.depth());
+                    const auto& counters = engine.impl_->compositor->counters();
+                    engine.impl_->telemetrySnapshot.gpuRetirementCurrentDepth =
+                        static_cast<std::uint32_t>(counters.retirementDepthAfterDrain);
+                    engine.impl_->telemetrySnapshot.gpuRetirementPeakDepth =
+                        static_cast<std::uint32_t>(counters.retirementDepthPeak);
+                    if (engine.impl_->audioWorker) {
+                        engine.impl_->telemetrySnapshot.audioUnderflowCount =
+                            engine.impl_->audioWorker->queue().snapshot().underflowCount;
+                    }
+                    engine.impl_->telemetrySnapshot.status.position = {target};
+                    engine.impl_->telemetrySnapshot.status.lastPresentedComposition = *token;
+                    result.presented = true;
+                    result.sourceFrame = target;
+                    result.frame = {engine.impl_->presentationSequence, {target}, *token, 1};
+                }
             }
         }
 
@@ -1368,6 +1637,7 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                     ++engine.impl_->telemetrySnapshot.decodeFailureCount;
                 }
                 engine.impl_->schedulerEnabled = false;
+                engine.impl_->audioMasterActive = false;
                 if (engine.impl_->videoWorker)
                     engine.impl_->videoWorker->pause();
                 engine.impl_->startWorkerShutdown();
@@ -1422,7 +1692,9 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
                              "runtime teardownはShuttingDownでのみ実行できます")
                     .error());
         }
-        if (!engine.impl_->renderTeardownRequested || !engine.impl_->workerJoined)
+        // audio sink / audio worker のjoinを確認できなければrender teardownへ進まない。
+        if (!engine.impl_->renderTeardownRequested || !engine.impl_->workerJoined ||
+            !engine.impl_->audioSinkJoined || !engine.impl_->audioWorkerJoined)
             return Result<bool>::success(false);
 
         std::string error;
@@ -1475,9 +1747,34 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
             else
                 engine.impl_->finalRuntimeDiagnostics.deviceLostCount += mismatchCount;
         }
+        if (engine.impl_->audioWorker) {
+            const audio::AudioQueueSnapshot queue = engine.impl_->audioWorker->queue().snapshot();
+            engine.impl_->telemetrySnapshot.audioUnderflowCount = queue.underflowCount;
+            engine.impl_->finalRuntimeDiagnostics.audioUnderflowCount = queue.underflowCount;
+        }
+        if (engine.impl_->audioSink) {
+            engine.impl_->finalRuntimeDiagnostics.audioDeviceFailureCount =
+                engine.impl_->audioSink->snapshot().deviceFailureCount +
+                engine.impl_->audioDeviceFailureCount;
+        } else {
+            engine.impl_->finalRuntimeDiagnostics.audioDeviceFailureCount =
+                engine.impl_->audioDeviceFailureCount;
+        }
+        engine.impl_->finalRuntimeDiagnostics.audioMasterProjectionFailureCount =
+            engine.impl_->audioMasterProjectionFailureCount;
+        engine.impl_->finalRuntimeDiagnostics.audioGenerationMismatchCount =
+            engine.impl_->audioGenerationMismatchCount;
+        engine.impl_->finalRuntimeDiagnostics.audioSinkJoined = engine.impl_->audioSinkJoined;
+        engine.impl_->finalRuntimeDiagnostics.audioWorkerJoined = engine.impl_->audioWorkerJoined;
+        engine.impl_->finalRuntimeDiagnostics.registeredAudioSourceCount =
+            engine.impl_->publicAudioSource ? 1U : 0U;
         if (drained) {
             engine.impl_->compositor.reset();
             engine.impl_->videoWorker.reset();
+            // audio sink は queue/clock を参照するため、参照する側から解放する。
+            engine.impl_->audioSink.reset();
+            engine.impl_->audioWorker.reset();
+            engine.impl_->audioClock.reset();
             if (engine.impl_->internalVideoSource.value != 0)
                 engine.impl_->sourceRegistry.unregisterSource(engine.impl_->internalVideoSource);
             engine.impl_->renderDevice->release();
@@ -1696,6 +1993,19 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
     result.distinctPresentedSourceFrameCount = engine.impl_->distinctPresentedFrames.count();
     result.staleSubstitutionCount = engine.impl_->staleSubstitutionCount;
     result.lifecycleViolationCount = engine.impl_->lifecycleViolationCount;
+    result.audioMasterActive = engine.impl_->audioMasterActive;
+    result.audioSinkJoined = engine.impl_->audioSinkJoined;
+    result.audioWorkerJoined = engine.impl_->audioWorkerJoined;
+    result.registeredAudioSourceCount = engine.impl_->publicAudioSource ? 1U : 0U;
+    result.audioMasterProjectionFailureCount = engine.impl_->audioMasterProjectionFailureCount;
+    result.audioGenerationMismatchCount = engine.impl_->audioGenerationMismatchCount;
+    result.audioDeviceFailureCount = engine.impl_->audioDeviceFailureCount;
+    if (engine.impl_->audioWorker) {
+        result.audioUnderflowCount = engine.impl_->audioWorker->queue().snapshot().underflowCount;
+    }
+    if (engine.impl_->audioSink) {
+        result.audioDeviceFailureCount += engine.impl_->audioSink->snapshot().deviceFailureCount;
+    }
     result.fullCpuReadbackCount =
         static_cast<std::uint64_t>(engine.impl_->readbacks.fullFrameReadbacks());
     result.deviceLostCount = std::max(result.deviceLostCount, engine.impl_->deviceLostCount);
@@ -1724,6 +2034,32 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
         result.fullFrameGpuCopyCount = static_cast<std::uint64_t>(counters.fullFrameGpuCopyCount);
     }
     return result;
+}
+
+Result<void> PreviewRenderPort::injectAudioClockStallForTest(PreviewEngine& engine) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    if (!engine.impl_->audioSink || !engine.impl_->audioClock) {
+        return invalidState(PreviewOperation::Play,
+                            "audio sourceが未登録のためaudio clock stallを注入できません");
+    }
+    engine.impl_->audioClockStallInjected = true;
+    return Result<void>::success();
+}
+
+Result<void> PreviewRenderPort::injectAudioSinkFatalForTest(PreviewEngine& engine,
+                                                            std::string detail) {
+    PreviewError error = makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::Play,
+                                   std::move(detail), PreviewErrorSeverity::FatalToSession);
+    {
+        std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+        if (!engine.impl_->audioSink) {
+            return invalidState(PreviewOperation::Play,
+                                "audio sourceが未登録のためaudio fatalを注入できません");
+        }
+        error.source = engine.impl_->publicAudioSource;
+        ++engine.impl_->audioDeviceFailureCount;
+    }
+    return injectFatal(engine, error);
 }
 
 void PreviewRenderPort::enqueueEventForTest(PreviewEngine& engine, PreviewEvent event) {

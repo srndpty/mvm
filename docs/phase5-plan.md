@@ -252,6 +252,56 @@ audio_sample(frame) = output_time(frame) * configured_sample_rate
 - QPC fallback count 0
 - audio sink/worker/video worker join ordering
 
+### 9.4 Sub-slice分割
+
+P5-Dは一度に閉じない。§9.1のscopeを次の4 sliceへ分け、各sliceが単独で§14 gateを満たす。
+
+| slice | 範囲 | 状態 |
+| --- | --- | --- |
+| P5-D1 | `CheckedOutputTimebase`による換算authorityの一本化 | 済 |
+| P5-D2 | audio source登録、`AudioDecodeWorker` / `WasapiAudioSink` / `AudioMasterClock`のengine所有、audio-master `play()` / `pause()`、shutdown ordering拡張 | 済 |
+| P5-D3 | exact `seek()`、audio/video generation alignment、actual requested frameによるseek completion | 未 |
+| P5-D4 | P5-D closure (capability確定、frozen P3 regression再走、§9.3全項目の突き合わせ) | 未 |
+
+#### P5-D1 exit criteria
+
+- frame / media time / audio sampleの有理数変換がoverflow checkedであること
+- scheduler、seek、statusが同じ換算へ委譲していること
+- test期待値を実装helperから生成していないこと
+
+#### P5-D2 exit criteria
+
+- `audioEnabled == true`のsourceを受理し、2件目を`UnsupportedCapability`で拒否する
+- 製品`play()` / `pause()`が`IAudioClock`をmasterとして動作する
+- audio master projectionが成立しない場合にQPC masterへ退避せず、`AudioFailure`として
+  fail-closedにする (projection失敗が記録され、`Playing`へ戻らない)
+- shutdown orderingが`DisableSchedulers -> StopAudioSink -> StopAudioDecodeWorker ->
+  StopVideoWorkers -> ... -> VerifyJoins -> RequestRenderTeardown`である
+- audio sink / audio workerのjoinを確認できなければrender teardownを要求しない
+- `PreviewCapabilities`がqualified audio domain (48000 Hz / stereo / float32 / 1 source) を報告する
+- video-only経路 (P5-C) のregressionを変えない
+
+#### P5-D3 exit criteria
+
+- `seek()`のreturnがrequest acceptanceであり、completionと分離されている
+- seek completionがactual requested frameのpresentationであること
+- decode readyだけではseek completeにしないnegative testがあること
+- stale generationのframeを提示しないこと
+
+#### P5-D4 exit criteria
+
+- §9.3の全項目に対応するtestが存在し、対象0件のgroupが無いこと
+- frozen P3-C-2 regressionが変更前semanticsを維持していること
+
+### 9.5 P5-Dで扱わないもの
+
+audio endpointのidentity / friendly nameは`PreviewDeviceInfo`のdevice metadataであり、
+§12 (P5-G) で閉じる。P5-Dが`PreviewDeviceInfo`へ載せるのはendpoint formatまでとする。
+
+WASAPI出力段のdevice mix formatへの変換は、P3で検証済みの明示的な出力段変換であり、
+§9.2が禁じている「暗黙のfallback」ではない。qualified domainの判定はinternal PCM domain
+(48000 Hz / stereo / float32) に対して行う。
+
 ## 10. P5-E — Product composition
 
 ### 10.1 Scope

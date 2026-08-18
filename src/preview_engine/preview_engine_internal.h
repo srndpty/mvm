@@ -78,6 +78,7 @@ private:
 
 struct EligibleSource {
     bool videoEnabled = false;
+    bool audioEnabled = false;
 };
 
 struct RenderFrameResult {
@@ -106,6 +107,17 @@ struct P5CRuntimeDiagnostics {
     std::uint64_t fullFrameGpuCopyCount = 0;
     std::uint64_t softwareFallbackCount = 0;
     std::uint64_t gpuCompositionPassCount = 0;
+    // P5-D2: audio-master transportの成立を、暗黙fallbackなしで確認するための診断。
+    bool audioMasterActive = false;
+    bool audioSinkJoined = true;
+    bool audioWorkerJoined = true;
+    std::uint64_t registeredAudioSourceCount = 0;
+    // QPC masterへ退避した回数ではない。audio master projectionが成立せず
+    // fail-closedにした回数である。製品経路にQPC fallbackは存在しない。
+    std::uint64_t audioMasterProjectionFailureCount = 0;
+    std::uint64_t audioUnderflowCount = 0;
+    std::uint64_t audioGenerationMismatchCount = 0;
+    std::uint64_t audioDeviceFailureCount = 0;
 };
 
 class CompositionAcceptanceState {
@@ -140,6 +152,10 @@ private:
 
 Result<void> validateSourceFrameRate(long long sourceNumerator, long long sourceDenominator,
                                      PreviewFrameRate outputFrameRate);
+// 製品がqualifiedとして検証済みのinternal PCM domainは48000 Hz / stereo / float32だけである。
+// これ以外を暗黙のresample/channel変換で成功へ変えない (preview-engine-contract.md §5)。
+Result<void> validateQualifiedAudioDomain(int sampleRate, int channels,
+                                          const std::string& sampleFormat);
 std::uint64_t skippedSchedulerFrameCount(std::int64_t previousTarget, std::int64_t currentTarget);
 
 class PreviewRenderPort {
@@ -169,6 +185,10 @@ public:
     static Result<void> injectGpuDrainFailureForTest(PreviewEngine& engine);
     static Result<void> injectDecoderFatalForTest(PreviewEngine& engine, std::string detail);
     static Result<void> injectDecoderEofForTest(PreviewEngine& engine);
+    // audio clockがmasterとして成立しない状況を、QPCへ退避せずfail-closedにできるか
+    // 検査するためのinternal seam。
+    static Result<void> injectAudioClockStallForTest(PreviewEngine& engine);
+    static Result<void> injectAudioSinkFatalForTest(PreviewEngine& engine, std::string detail);
     static P5CRuntimeDiagnostics runtimeDiagnostics(const PreviewEngine& engine);
 
     // bounded mailboxのfailure semanticsをbackend接続前に検査するinternal test seam。

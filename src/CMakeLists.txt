@@ -23,7 +23,10 @@ add_library(mvm_preview_engine STATIC
     preview_engine/preview_engine.cpp
 )
 target_include_directories(mvm_preview_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(mvm_preview_engine PRIVATE mvm_gpu_preview mvm::warnings)
+# P5-D2: audio-master transportをproduct engineへ接続する。public headerには
+# WASAPI/FFmpeg/D3D11の型を出さないため、依存はすべてPRIVATEで閉じる。
+target_link_libraries(mvm_preview_engine PRIVATE
+    mvm_gpu_preview mvm::audio_preview mvm::core mvm::warnings)
 add_library(mvm::preview_engine ALIAS mvm_preview_engine)
 
 # --- MLT adapter ------------------------------------------------------------

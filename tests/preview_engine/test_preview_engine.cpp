@@ -175,9 +175,13 @@ void frameRateAndDescriptorValidation() {
     auto equivalentRateDispatcher = std::make_shared<ManualDispatcher>();
     require(equivalentRateEngine.initialize({{{120, 2}}}, equivalentRateDispatcher),
             "60/1と等価な120/2をinitializeで受理しませんでした");
+    // P5-D2でaudio-master transportを接続したため、qualified audio sourceは1件になった。
+    // 等価rationalの受理がcapabilityを書き換えないことを、ここで固定する。
     require(equivalentRateEngine.capabilities().qualifiedOutputFrameRate ==
                     PreviewFrameRate{60, 1} &&
-                equivalentRateEngine.capabilities().maxQualifiedActiveAudioSources == 0,
+                equivalentRateEngine.capabilities().maxQualifiedActiveAudioSources == 1 &&
+                equivalentRateEngine.capabilities().qualifiedAudioSampleRate == 48000 &&
+                equivalentRateEngine.capabilities().qualifiedAudioChannelCount == 2,
             "等価rationalの受理で公開capabilityを変更しました");
     require(equivalentRateEngine.requestShutdown(),
             "等価rational regression testのshutdownに失敗しました");
@@ -482,10 +486,10 @@ void engineFacadeAndEvents() {
     const PreviewCapabilities productCapabilities = engine.capabilities();
     require(productCapabilities.maxQualifiedActiveVideoSources == 1 &&
                 productCapabilities.maxQualifiedCompositionLayers == 1 &&
-                productCapabilities.maxQualifiedActiveAudioSources == 0 &&
-                productCapabilities.qualifiedAudioSampleRate == 0 &&
-                productCapabilities.qualifiedAudioChannelCount == 0,
-            "公開capabilityがP5-C product wiringの実装上限と一致しません");
+                productCapabilities.maxQualifiedActiveAudioSources == 1 &&
+                productCapabilities.qualifiedAudioSampleRate == 48000 &&
+                productCapabilities.qualifiedAudioChannelCount == 2,
+            "公開capabilityがP5-D product wiringの実装上限と一致しません");
     require(engine.status().state == PreviewEngineState::WaitingForRenderDevice,
             "logical initialize stateが違います");
     require(engine.attachEventSink(sink), "sink attachに失敗しました");
@@ -853,9 +857,12 @@ void p5cControlAndRenderNegatives() {
                    "wrong-thread native attachを受理しました");
 
     require(PreviewRenderPort::attachLogicalDevice(engine), "logical test seamに失敗しました");
-    requireFailure(engine.addSource({"movie.mp4", true, true}),
-                   PreviewErrorCategory::UnsupportedCapability,
-                   "audioEnabled sourceを受理しました");
+    // P5-D2でaudioEnabled sourceは受理対象になったが、native render device
+    // (と WASAPI endpoint) の準備前は video と同じくfail-closedで拒否する。
+    requireFailure(engine.addSource({"movie.mp4", true, true}), PreviewErrorCategory::InvalidState,
+                   "native device準備前のaudioEnabled sourceを受理しました");
+    requireFailure(engine.addSource({"voice.wav", false, true}), PreviewErrorCategory::InvalidState,
+                   "native device準備前のaudio-only sourceを受理しました");
     requireFailure(engine.submitComposition(std::make_shared<const CompositionSnapshot>()),
                    PreviewErrorCategory::CompositionFailure, "empty compositionを受理しました");
     requireFailure(engine.submitComposition(snapshot({layer(99)})),
@@ -897,9 +904,78 @@ void unsafeDestructionProcess() {
     require(engine.initialize(qualifiedConfig(), dispatcher), "initializeに失敗しました");
 }
 
+// P5-D2: audio-master transportの公開contract。期待値はproduct helperを呼ばず
+// 独立したliteralで与える。
+void p5dAudioDomainAndCapabilities() {
+    // qualified audio domainは48000 Hz / stereo / float32だけである。
+    require(validateQualifiedAudioDomain(48000, 2, "flt"),
+            "qualified audio domainを受理しませんでした");
+    requireFailure(validateQualifiedAudioDomain(44100, 2, "flt"),
+                   PreviewErrorCategory::UnsupportedCapability,
+                   "44100 Hzを暗黙のresampleで受理しました");
+    requireFailure(validateQualifiedAudioDomain(96000, 2, "flt"),
+                   PreviewErrorCategory::UnsupportedCapability,
+                   "96000 Hzを暗黙のresampleで受理しました");
+    requireFailure(validateQualifiedAudioDomain(48000, 1, "flt"),
+                   PreviewErrorCategory::UnsupportedCapability,
+                   "monoを暗黙のchannel変換で受理しました");
+    requireFailure(validateQualifiedAudioDomain(48000, 6, "flt"),
+                   PreviewErrorCategory::UnsupportedCapability,
+                   "5.1chを暗黙のdownmixで受理しました");
+    requireFailure(validateQualifiedAudioDomain(48000, 2, "s16"),
+                   PreviewErrorCategory::UnsupportedCapability,
+                   "s16を暗黙のformat変換で受理しました");
+    requireFailure(validateQualifiedAudioDomain(0, 0, ""),
+                   PreviewErrorCategory::UnsupportedCapability,
+                   "未確定のaudio domainを受理しました");
+
+    // audio統合後もcapabilityは実体を報告する。
+    PreviewEngine engine;
+    auto dispatcher = std::make_shared<ManualDispatcher>();
+    require(engine.initialize({{{60, 1}}}, dispatcher), "initializeに失敗しました");
+    const PreviewCapabilities capabilities = engine.capabilities();
+    require(capabilities.maxQualifiedActiveAudioSources == 1,
+            "qualified audio source数が1として公開されていません");
+    require(capabilities.qualifiedAudioSampleRate == 48000,
+            "qualified audio sample rateが48000として公開されていません");
+    require(capabilities.qualifiedAudioChannelCount == 2,
+            "qualified audio channel数が2として公開されていません");
+    require(!capabilities.deviceRecoverySupported,
+            "device recoveryをsupport済みとして公開しました");
+
+    // render device attach前はaudio sourceもfail-closedで拒否する。
+    requireFailure(engine.addSource({"movie.mp4", false, true}), PreviewErrorCategory::InvalidState,
+                   "device attach前にaudio sourceを受理しました");
+    // audio sourceを登録していないengineでは、audio seamも成立しない。
+    requireFailure(PreviewRenderPort::injectAudioClockStallForTest(engine),
+                   PreviewErrorCategory::InvalidState,
+                   "audio未登録engineでclock stallを注入できてしまいました");
+
+    const P5CRuntimeDiagnostics diagnostics = PreviewRenderPort::runtimeDiagnostics(engine);
+    require(!diagnostics.audioMasterActive, "audio未登録なのにaudio masterがactiveです");
+    require(diagnostics.registeredAudioSourceCount == 0,
+            "audio未登録なのにaudio source数が0ではありません");
+    require(diagnostics.audioMasterProjectionFailureCount == 0,
+            "初期状態でaudio master projection失敗が記録されています");
+    require(diagnostics.audioUnderflowCount == 0, "初期状態でunderflowが記録されています");
+
+    require(engine.requestShutdown(), "shutdownに失敗しました");
+    dispatcher->runAll();
+    require(engine.status().state == PreviewEngineState::Shutdown,
+            "terminal Shutdownへ到達しませんでした");
+    // teardown後もaudio診断はfail-closedのまま (joinを未確認にしない)。
+    const P5CRuntimeDiagnostics terminal = PreviewRenderPort::runtimeDiagnostics(engine);
+    require(terminal.audioSinkJoined && terminal.audioWorkerJoined,
+            "audio未登録のteardownでjoin未確認を報告しました");
+    require(terminal.audioMasterProjectionFailureCount == 0,
+            "shutdownまでにaudio master projection失敗が発生しました");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
+    // crashしたtestを特定できるよう、PASS行をbufferに溜めない。
+    std::cout << std::unitbuf;
     if (argc == 2 && std::string(argv[1]) == "--unsafe-destructor") {
         unsafeDestructionProcess();
         return 0;
@@ -923,6 +999,7 @@ int main(int argc, char** argv) {
         {"P5-C control / render negatives", p5cControlAndRenderNegatives},
         {"bounded distinct frame counter", distinctFrameCounterIsBounded},
         {"scheduler skipped frame count", schedulerSkippedFramesAreCounted},
+        {"P5-D audio domain / capabilities", p5dAudioDomainAndCapabilities},
     };
 
     try {

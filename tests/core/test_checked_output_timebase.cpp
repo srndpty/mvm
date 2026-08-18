@@ -112,6 +112,48 @@ void limitsAndOverflow() {
                    "canonical rationalの最終結果overflowを拒否しませんでした");
 }
 
+// wall-clock nanosecond -> output frame。期待値は実装helperを呼ばず、
+// floor(ns * numerator / (denominator * 1e9)) を独立したliteralとして与える。
+void wallClockNanosecondMapping() {
+    const auto qualified = CheckedOutputTimebase::createQualified(60, 1, 48000);
+    require(static_cast<bool>(qualified), "qualified timebaseを構築できません");
+    const CheckedOutputTimebase& timebase = qualified.value();
+
+    const auto zero = timebase.outputFrameForNanoseconds(0);
+    require(zero && zero.value() == 0, "0nsがframe 0になりません");
+    // 1 frame = 1/60 s = 16666666.666... ns。境界の手前は0のまま。
+    const auto beforeFirst = timebase.outputFrameForNanoseconds(16666666);
+    require(beforeFirst && beforeFirst.value() == 0, "16666666nsがframe 0になりません");
+    const auto atFirst = timebase.outputFrameForNanoseconds(16666667);
+    require(atFirst && atFirst.value() == 1, "16666667nsがframe 1になりません");
+    const auto oneSecond = timebase.outputFrameForNanoseconds(1000000000);
+    require(oneSecond && oneSecond.value() == 60, "1秒がframe 60になりません");
+    const auto beforeOneSecond = timebase.outputFrameForNanoseconds(999999999);
+    require(beforeOneSecond && beforeOneSecond.value() == 59, "999999999nsがframe 59になりません");
+    const auto tenSeconds = timebase.outputFrameForNanoseconds(10000000000LL);
+    require(tenSeconds && tenSeconds.value() == 600, "10秒がframe 600になりません");
+
+    // 負の経過時間は数学的floorであり、0方向へ丸めない。
+    const auto negativeExact = timebase.outputFrameForNanoseconds(-1000000000);
+    require(negativeExact && negativeExact.value() == -60, "-1秒がframe -60になりません");
+    const auto negativePartial = timebase.outputFrameForNanoseconds(-1);
+    require(negativePartial && negativePartial.value() == -1, "-1nsが数学的floorの-1になりません");
+
+    // 24000/1001 (23.976fps) も同じ換算で扱えること。
+    // floor(1000000000 * 24000 / (1001 * 1e9)) = floor(23.976...) = 23
+    const auto ntsc = CheckedOutputTimebase::create(24000, 1001, 48000);
+    require(static_cast<bool>(ntsc), "24000/1001 timebaseを構築できません");
+    const auto ntscOneSecond = ntsc.value().outputFrameForNanoseconds(1000000000);
+    require(ntscOneSecond && ntscOneSecond.value() == 23, "23.976fpsの1秒がframe 23になりません");
+
+    const auto maximum = std::numeric_limits<std::int64_t>::max();
+    const auto wide = CheckedOutputTimebase::create(maximum, 1, 48000);
+    require(static_cast<bool>(wide), "nanosecond overflow test構成を生成できません");
+    const auto overflowed = wide.value().outputFrameForNanoseconds(maximum);
+    require(!overflowed && overflowed.error == OutputTimebaseError::ResultOverflow,
+            "nanosecond換算の最終結果overflowを拒否しませんでした");
+}
+
 } // namespace
 
 int main() {
@@ -119,6 +161,7 @@ int main() {
         configurationAndCanonicalization();
         qualifiedMappingAndRounding();
         limitsAndOverflow();
+        wallClockNanosecondMapping();
         std::cout << "PASS: checked output timebase contract\n";
         return 0;
     } catch (const std::exception& error) {
