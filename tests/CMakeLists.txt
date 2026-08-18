@@ -831,13 +831,15 @@ if(MVM_ENABLE_QT)
     mvm_add_p5d_product_test(preview_engine_p5d_audio_master_smoke)
     mvm_add_p5d_product_test(preview_engine_p5d_audio_clock_fail_closed
         ARGS --fault-audio-clock)
-    mvm_add_p5d_product_test(preview_engine_p5d_audio_sink_fatal ARGS --fault-audio-sink)
+    mvm_add_p5d_product_test(preview_engine_p5d_audio_sink_runtime_fault
+        ARGS --fault-audio-sink)
+    mvm_add_p5d_product_test(preview_engine_p5d_pause_fail_closed ARGS --fault-audio-pause)
 
     # 対象0件のtest群を「全部通った」と報告させない (AGENTS.md)。
     list(LENGTH _mvm_p5d_product_tests _mvm_p5d_product_registered)
-    if(NOT _mvm_p5d_product_registered EQUAL 3)
+    if(NOT _mvm_p5d_product_registered EQUAL 4)
         message(FATAL_ERROR
-            "[mvm] P5-D product testの登録数が不正です: ${_mvm_p5d_product_registered}/3")
+            "[mvm] P5-D product testの登録数が不正です: ${_mvm_p5d_product_registered}/4")
     endif()
 endif()
 

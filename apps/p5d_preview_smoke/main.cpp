@@ -67,7 +67,7 @@ public:
 };
 
 enum class Stage { WaitDevice, WaitInitial, PauseHold, WaitResume, WaitShutdown };
-enum class Fault { None, AudioClockStall, AudioSinkFatal };
+enum class Fault { None, AudioClockStall, AudioSinkFatal, AudioPauseFault };
 
 } // namespace
 
@@ -78,7 +78,8 @@ int main(int argc, char** argv) {
     const QStringList arguments = app.arguments();
     if (arguments.size() < 2 || arguments.size() > 3) {
         std::fprintf(stderr, "使い方: mvm_p5d_preview_smoke <fixture-path> "
-                             "[--fault-audio-clock|--fault-audio-sink]\n");
+                             "[--fault-audio-clock|--fault-audio-sink"
+                             "|--fault-audio-pause]\n");
         return 2;
     }
     Fault fault = Fault::None;
@@ -87,6 +88,8 @@ int main(int argc, char** argv) {
             fault = Fault::AudioClockStall;
         else if (arguments[2] == "--fault-audio-sink")
             fault = Fault::AudioSinkFatal;
+        else if (arguments[2] == "--fault-audio-pause")
+            fault = Fault::AudioPauseFault;
         else
             return 2;
     }
@@ -210,6 +213,31 @@ int main(int argc, char** argv) {
                 app.quit();
                 return;
             }
+            if (fault == Fault::AudioPauseFault) {
+                // sink pauseが失敗したのに`ReadyPaused`を公開しないことを検査する。
+                if (!mvm::preview::internal::PreviewRenderPort::injectAudioSinkPauseFaultForTest(
+                        *engine)) {
+                    exitCode = 13;
+                    app.quit();
+                    return;
+                }
+                const auto paused = engine->pause();
+                const auto afterPause = engine->status().state;
+                if (paused ||
+                    paused.error().category != mvm::preview::PreviewErrorCategory::AudioFailure ||
+                    paused.error().severity !=
+                        mvm::preview::PreviewErrorSeverity::FatalToSession ||
+                    afterPause == mvm::preview::PreviewEngineState::ReadyPaused) {
+                    std::fprintf(stderr,
+                                 "sink pause失敗時にReadyPausedを公開しました (state=%d)\n",
+                                 static_cast<int>(afterPause));
+                    exitCode = 14;
+                    app.quit();
+                    return;
+                }
+                stage = Stage::WaitShutdown;
+                return;
+            }
             if (fault != Fault::None) {
                 const bool injected =
                     fault == Fault::AudioClockStall
@@ -218,8 +246,7 @@ int main(int argc, char** argv) {
                                   injectAudioClockStallForTest(*engine))
                         : static_cast<bool>(
                               mvm::preview::internal::PreviewRenderPort::
-                                  injectAudioSinkFatalForTest(*engine,
-                                                              "P5-D injected audio fatal"));
+                                  injectAudioSinkRenderFaultForTest(*engine));
                 if (!injected) {
                     exitCode = 13;
                     app.quit();
@@ -234,8 +261,19 @@ int main(int argc, char** argv) {
                 app.quit();
                 return;
             }
-            pausePresentedCount = telemetry.presentedFrameCount;
-            pausePosition = status.position.outputFrame;
+            // pauseが成功を返した以上、公開stateはReadyPausedでなければならない。
+            if (engine->status().state != mvm::preview::PreviewEngineState::ReadyPaused) {
+                std::fprintf(stderr, "pause成功後のstateがReadyPausedではありません\n");
+                exitCode = 6;
+                app.quit();
+                return;
+            }
+            // pause前に取得したsnapshotをcheckpointにすると、取得からscheduler停止
+            // までにrender threadが1 frame提示しただけで正しい実装でもFAILする。
+            // pause成功後の実測値をcheckpointにする。
+            const auto pausedTelemetry = engine->telemetry();
+            pausePresentedCount = pausedTelemetry.presentedFrameCount;
+            pausePosition = pausedTelemetry.status.position.outputFrame;
             stage = Stage::PauseHold;
             stageStarted = now;
             return;
@@ -303,7 +341,16 @@ int main(int argc, char** argv) {
                  sink->errors.front().severity ==
                      mvm::preview::PreviewErrorSeverity::FatalToSession &&
                  (fault != Fault::AudioClockStall ||
-                  diagnostics.audioMasterProjectionFailureCount >= 1));
+                  diagnostics.audioMasterProjectionFailureCount >= 1) &&
+                 // sink faultは完成errorの注入ではなく、sink自身のdevice failureを
+                 // product側が検知して昇格した結果でなければならない。
+                 (fault != Fault::AudioPauseFault ||
+                  (diagnostics.audioDeviceFailureCount >= 1 &&
+                   sink->errors.front().detail.find("pause fault") != std::string::npos)) &&
+                 (fault != Fault::AudioSinkFatal ||
+                  (diagnostics.audioDeviceFailureCount >= 1 &&
+                   diagnostics.audioMasterProjectionFailureCount == 0 &&
+                   sink->errors.front().detail.find("runtime failure") != std::string::npos)));
             const bool cleanRunPass =
                 failureFault ||
                 (diagnostics.audioMasterProjectionFailureCount == 0 &&
@@ -317,8 +364,24 @@ int main(int argc, char** argv) {
                  activeDiagnostics.audioSessionVolume ==
                      mvm::audio::kVerificationSessionVolume);
 
+            // 最終状態だけでなく、contract §12 の停止順序そのものを固定する。
+            using mvm::preview::internal::ShutdownStep;
+            const std::vector<ShutdownStep> expectedSequence{
+                ShutdownStep::DisableSchedulers,      ShutdownStep::StopAudioSink,
+                ShutdownStep::StopAudioDecodeWorker,  ShutdownStep::StopVideoWorkers,
+                ShutdownStep::VerifyJoins,            ShutdownStep::RequestRenderTeardown,
+                ShutdownStep::FiniteGpuRetirementDrain,
+                ShutdownStep::ReleaseRenderTargetDevice,
+                ShutdownStep::PublishShutdownComplete};
+            const bool shutdownOrderPass = diagnostics.shutdownSequence == expectedSequence;
+            if (!shutdownOrderPass) {
+                std::fprintf(stderr, "shutdown orderingがcontract §12と一致しません (steps=%zu)\n",
+                             diagnostics.shutdownSequence.size());
+            }
+
             const bool pass =
-                expectedTerminal && audioFaultPass && cleanRunPass && !sink->sequenceViolation &&
+                expectedTerminal && audioFaultPass && cleanRunPass && shutdownOrderPass &&
+                !sink->sequenceViolation &&
                 !diagnostics.audioMasterActive && diagnostics.audioSinkJoined &&
                 diagnostics.audioWorkerJoined && diagnostics.workerJoined &&
                 diagnostics.renderTeardownComplete && diagnostics.deviceReleased &&

@@ -275,10 +275,21 @@ P5-Dは一度に閉じない。§9.1のscopeを次の4 sliceへ分け、各slice
 - 製品`play()` / `pause()`が`IAudioClock`をmasterとして動作する
 - audio master projectionが成立しない場合にQPC masterへ退避せず、`AudioFailure`として
   fail-closedにする (projection失敗が記録され、`Playing`へ戻らない)
+- **`pause()`はaudio sinkの停止を確認するまで`ReadyPaused`をcommitしない。** sink停止に
+  失敗した場合は`FatalToSession`として`ShuttingDown -> Error`へ落とす。
+  「videoは停止したがaudioが鳴り続けている」状態を`ReadyPaused`として公開しない
+- **audio sink自身のruntime failureをproduct側が検知して`AudioFailure` /
+  `FatalToSession`へ昇格する。** negative testは完成errorをengineへ注入するのではなく、
+  `WasapiAudioSink`にdevice failureを起こさせ、通常のpolling経路を通すこと
 - shutdown orderingが`DisableSchedulers -> StopAudioSink -> StopAudioDecodeWorker ->
-  StopVideoWorkers -> ... -> VerifyJoins -> RequestRenderTeardown`である
+  StopVideoWorkers -> VerifyJoins -> RequestRenderTeardown ->
+  FiniteGpuRetirementDrain -> ReleaseRenderTarget/Device -> PublishShutdownComplete`である。
+  **最終状態だけでなく、実行されたstepの順序そのものをassertionで固定する**
+  (`P5CRuntimeDiagnostics::shutdownSequence`)
 - audio sink / audio workerのjoinを確認できなければrender teardownを要求しない
 - `PreviewCapabilities`がqualified audio domain (48000 Hz / stereo / float32 / 1 source) を報告する
+- qualified audio domainの検査に期待値そのものを渡さない。engine configから導出した実際の値を
+  使い、加えてpreroll後に`AudioFrameQueue`のinvalid rejectが0であることでworkerの実出力を確認する
 - video-only経路 (P5-C) のregressionを変えない
 
 #### P5-D3 exit criteria

@@ -59,6 +59,12 @@ public:
     bool resetForSeek(std::string& error);
     void stop();
     WasapiSnapshot snapshot() const;
+    // render loop に実際の device failure を起こさせる test seam。
+    // 完成した error を外から渡すのではなく、通常の recordFailure() 経路を通す。
+    void injectRenderFaultForTest();
+    // pause() を実際に失敗させる test seam。product側が「止められないまま
+    // ReadyPaused を公開しない」ことを検査するために使う。
+    void injectPauseFaultForTest();
 
 private:
     void renderLoop();
@@ -92,6 +98,8 @@ private:
     std::atomic<bool> acceptingCommands_{true};
     std::atomic<bool> threadRunning_{false};
     std::atomic<bool> playing_{false};
+    std::atomic<bool> renderFaultInjected_{false};
+    std::atomic<bool> pauseFaultInjected_{false};
     std::atomic<std::uint64_t> generation_{0};
     bool comInitialized_ = false;
     bool endpointPrefillRequired_ = true;

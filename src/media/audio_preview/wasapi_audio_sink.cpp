@@ -327,6 +327,12 @@ bool WasapiAudioSink::pause(std::string& error) {
             return false;
         }
     }
+    if (pauseFaultInjected_.load(std::memory_order_acquire)) {
+        error = "injected WASAPI pause fault (test)";
+        std::lock_guard lock(mutex_);
+        ++metrics_.deviceFailureCount;
+        return false;
+    }
     if (!playing_)
         return true;
     UINT64 devicePosition = 0;
@@ -442,6 +448,11 @@ bool WasapiAudioSink::renderAvailable() {
     // playing=true を見た callback が reset 後へ PCM を書かないよう再検査する。
     if (!playing_)
         return true;
+    if (renderFaultInjected_.load(std::memory_order_acquire)) {
+        // 実際の WASAPI 失敗と同じ経路で停止させる。
+        recordFailure("injected WASAPI render fault (test)");
+        return false;
+    }
     UINT32 padding = 0;
     HRESULT hr = client_->GetCurrentPadding(&padding);
     if (FAILED(hr) || padding > bufferFrames_) {
@@ -509,6 +520,14 @@ bool WasapiAudioSink::renderAvailable() {
     }
     clock_.update(position, Qpc100ns{qpcPosition}, expected);
     return true;
+}
+
+void WasapiAudioSink::injectRenderFaultForTest() {
+    renderFaultInjected_.store(true, std::memory_order_release);
+}
+
+void WasapiAudioSink::injectPauseFaultForTest() {
+    pauseFaultInjected_.store(true, std::memory_order_release);
 }
 
 void WasapiAudioSink::recordFailure(const std::string& error) {

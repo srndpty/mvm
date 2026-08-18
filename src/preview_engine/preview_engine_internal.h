@@ -9,6 +9,7 @@
 #include <optional>
 #include <unordered_map>
 #include <variant>
+#include <vector>
 
 namespace mvm::preview::internal {
 
@@ -87,6 +88,20 @@ struct RenderFrameResult {
     std::int64_t sourceFrame = -1;
 };
 
+// preview-engine-contract.md §12 が固定するshutdown orderingを、最終状態ではなく
+// 順序そのものとして検査するためのstep識別子。
+enum class ShutdownStep {
+    DisableSchedulers,
+    StopAudioSink,
+    StopAudioDecodeWorker,
+    StopVideoWorkers,
+    VerifyJoins,
+    RequestRenderTeardown,
+    FiniteGpuRetirementDrain,
+    ReleaseRenderTargetDevice,
+    PublishShutdownComplete,
+};
+
 struct P5CRuntimeDiagnostics {
     bool nativeDeviceAttached = false;
     bool d3d11vaActive = false;
@@ -121,6 +136,8 @@ struct P5CRuntimeDiagnostics {
     // endpointへ実際に適用されたsession volume。要求しただけで適用されて
     // いない状態をPASSにしないために報告する。
     float audioSessionVolume = 1.0F;
+    // 実際に実行されたshutdown stepの順序 (重複なし、実行順)。
+    std::vector<ShutdownStep> shutdownSequence;
 };
 
 class CompositionAcceptanceState {
@@ -194,7 +211,10 @@ public:
     // 出さない。addSource()でWASAPI endpointをopenする前に設定する必要がある。
     static Result<void> setVerificationAudioVolume(PreviewEngine& engine, float volume);
     static Result<void> injectAudioClockStallForTest(PreviewEngine& engine);
-    static Result<void> injectAudioSinkFatalForTest(PreviewEngine& engine, std::string detail);
+    // sink自身にdevice failureを起こさせ、product側のpolling/昇格経路を検査する。
+    // 完成したerrorをengineへ直接注入しないこと。
+    static Result<void> injectAudioSinkRenderFaultForTest(PreviewEngine& engine);
+    static Result<void> injectAudioSinkPauseFaultForTest(PreviewEngine& engine);
     static P5CRuntimeDiagnostics runtimeDiagnostics(const PreviewEngine& engine);
 
     // bounded mailboxのfailure semanticsをbackend接続前に検査するinternal test seam。
