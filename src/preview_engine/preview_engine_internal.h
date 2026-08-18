@@ -118,6 +118,9 @@ struct P5CRuntimeDiagnostics {
     std::uint64_t audioUnderflowCount = 0;
     std::uint64_t audioGenerationMismatchCount = 0;
     std::uint64_t audioDeviceFailureCount = 0;
+    // endpointへ実際に適用されたsession volume。要求しただけで適用されて
+    // いない状態をPASSにしないために報告する。
+    float audioSessionVolume = 1.0F;
 };
 
 class CompositionAcceptanceState {
@@ -187,6 +190,9 @@ public:
     static Result<void> injectDecoderEofForTest(PreviewEngine& engine);
     // audio clockがmasterとして成立しない状況を、QPCへ退避せずfail-closedにできるか
     // 検査するためのinternal seam。
+    // 検証アプリが endpoint session volume を下げるためのseam。public APIには
+    // 出さない。addSource()でWASAPI endpointをopenする前に設定する必要がある。
+    static Result<void> setVerificationAudioVolume(PreviewEngine& engine, float volume);
     static Result<void> injectAudioClockStallForTest(PreviewEngine& engine);
     static Result<void> injectAudioSinkFatalForTest(PreviewEngine& engine, std::string detail);
     static P5CRuntimeDiagnostics runtimeDiagnostics(const PreviewEngine& engine);

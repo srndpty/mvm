@@ -39,6 +39,7 @@ struct WasapiSnapshot {
     std::uint64_t audioRenderThreadJoinLeak = 0;
     std::uint64_t audioDeviceReleaseBeforeJoin = 0;
     std::uint64_t audioLifecycleViolation = 0;
+    float sessionVolume = 1.0F;
     std::string lastError;
 };
 
@@ -49,7 +50,10 @@ public:
     WasapiAudioSink(const WasapiAudioSink&) = delete;
     WasapiAudioSink& operator=(const WasapiAudioSink&) = delete;
 
-    bool open(std::string& error);
+    // sessionVolume は Windows の per-process endpoint session volume である。
+    // 既定は unity で、その場合は一切設定しない (既存の挙動を変えない)。
+    // 非 unity を要求して適用できなかった場合は、黙って全音量で鳴らさず失敗する。
+    bool open(std::string& error, float sessionVolume = 1.0F);
     bool play(std::int64_t mediaStartSample, SourceGeneration generation, std::string& error);
     bool pause(std::string& error);
     bool resetForSeek(std::string& error);
@@ -64,6 +68,8 @@ private:
     bool resetClient(std::string& error);
     void recordFailure(const std::string& error);
     void releaseDevice();
+    // mutex_ を呼び出し側が保持している前提。open() の失敗経路から使う。
+    void releaseDeviceLocked();
 
     AudioFrameQueue& queue_;
     AudioMasterClock& clock_;

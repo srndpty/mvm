@@ -203,7 +203,7 @@ bool P4CompositionController::openPipelines() {
     if (!workerA_->start(config_.sourceA.toUtf8().constData(), error) ||
         !workerB_->start(config_.sourceB.toUtf8().constData(), error) ||
         !audioWorker_->start(config_.sourceA.toUtf8().constData(), error) ||
-        !audioSink_->open(error)) {
+        !audioSink_->open(error, audio::kVerificationSessionVolume)) {
         startShutdown(QString::fromStdString(error), true);
         return false;
     }

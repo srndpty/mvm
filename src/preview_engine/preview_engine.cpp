@@ -506,6 +506,8 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     std::uint64_t audioGenerationMismatchCount = 0;
     std::uint64_t audioDeviceFailureCount = 0;
     bool audioClockStallInjected = false;
+    // 製品既定は unity。検証アプリだけが下げる。
+    float audioSessionVolume = 1.0F;
 
     std::optional<std::thread::id> renderThread;
     void* nativeDeviceIdentity = nullptr;
@@ -1006,7 +1008,7 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
         }
         newAudioSink =
             std::make_shared<audio::WasapiAudioSink>(newAudioWorker->queue(), *newAudioClock);
-        if (!newAudioSink->open(audioError)) {
+        if (!newAudioSink->open(audioError, impl_->audioSessionVolume)) {
             newAudioSink->stop();
             newAudioWorker->stop();
             rollbackVideo();
@@ -1753,9 +1755,10 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
             engine.impl_->finalRuntimeDiagnostics.audioUnderflowCount = queue.underflowCount;
         }
         if (engine.impl_->audioSink) {
+            const audio::WasapiSnapshot endpoint = engine.impl_->audioSink->snapshot();
             engine.impl_->finalRuntimeDiagnostics.audioDeviceFailureCount =
-                engine.impl_->audioSink->snapshot().deviceFailureCount +
-                engine.impl_->audioDeviceFailureCount;
+                endpoint.deviceFailureCount + engine.impl_->audioDeviceFailureCount;
+            engine.impl_->finalRuntimeDiagnostics.audioSessionVolume = endpoint.sessionVolume;
         } else {
             engine.impl_->finalRuntimeDiagnostics.audioDeviceFailureCount =
                 engine.impl_->audioDeviceFailureCount;
@@ -2004,7 +2007,9 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
         result.audioUnderflowCount = engine.impl_->audioWorker->queue().snapshot().underflowCount;
     }
     if (engine.impl_->audioSink) {
-        result.audioDeviceFailureCount += engine.impl_->audioSink->snapshot().deviceFailureCount;
+        const audio::WasapiSnapshot endpoint = engine.impl_->audioSink->snapshot();
+        result.audioDeviceFailureCount += endpoint.deviceFailureCount;
+        result.audioSessionVolume = endpoint.sessionVolume;
     }
     result.fullCpuReadbackCount =
         static_cast<std::uint64_t>(engine.impl_->readbacks.fullFrameReadbacks());
@@ -2034,6 +2039,22 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
         result.fullFrameGpuCopyCount = static_cast<std::uint64_t>(counters.fullFrameGpuCopyCount);
     }
     return result;
+}
+
+Result<void> PreviewRenderPort::setVerificationAudioVolume(PreviewEngine& engine, float volume) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    if (!(volume >= 0.0F) || volume > 1.0F) {
+        return Result<void>::failure(makeError(PreviewErrorCategory::UnsupportedCapability,
+                                               PreviewOperation::Initialize,
+                                               "session volumeは0.0〜1.0で指定してください"));
+    }
+    if (engine.impl_->audioSink) {
+        // endpointのopen後に変えても適用されない。黙って無視しない。
+        return invalidState(PreviewOperation::Initialize,
+                            "audio source登録後にsession volumeを変更できません");
+    }
+    engine.impl_->audioSessionVolume = volume;
+    return Result<void>::success();
 }
 
 Result<void> PreviewRenderPort::injectAudioClockStallForTest(PreviewEngine& engine) {

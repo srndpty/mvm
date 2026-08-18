@@ -4,6 +4,7 @@
 // ならない (preview-engine-contract.md §11)。このsmokeは WASAPI / IAudioClock を
 // masterにした状態でだけ成立する性質を確認する。
 #include "app/preview/preview_engine_rhi_item.h"
+#include "media/audio_preview/audio_types.h"
 #include "preview_engine/preview_engine.h"
 #include "preview_engine/preview_engine_internal.h"
 
@@ -95,6 +96,12 @@ int main(int argc, char** argv) {
     auto sink = std::make_shared<SmokeSink>();
     if (!engine->initialize({{{60, 1}}}, dispatcher) || !engine->attachEventSink(sink))
         return 3;
+    // fixtureに1 kHz markerが入っているため、検証時は endpoint session volume を下げる。
+    if (!mvm::preview::internal::PreviewRenderPort::setVerificationAudioVolume(
+            *engine, mvm::audio::kVerificationSessionVolume)) {
+        std::fprintf(stderr, "検証用session volumeを設定できません\n");
+        return 3;
+    }
 
     // audio統合後もqualified capabilityを実体として公開していること。
     const auto capabilities = engine->capabilities();
@@ -305,8 +312,10 @@ int main(int argc, char** argv) {
                  sink->errors.empty() && terminalTelemetry.presentedFrameCount >= 32 &&
                  activeDiagnostics.audioMasterActive &&
                  activeDiagnostics.registeredAudioSourceCount == 1 &&
-                 activeDiagnostics.d3d11vaActive &&
-                 activeDiagnostics.decodeRenderSameDevice);
+                 activeDiagnostics.d3d11vaActive && activeDiagnostics.decodeRenderSameDevice &&
+                 // 要求しただけでなく endpoint へ適用されたことまで確認する。
+                 activeDiagnostics.audioSessionVolume ==
+                     mvm::audio::kVerificationSessionVolume);
 
             const bool pass =
                 expectedTerminal && audioFaultPass && cleanRunPass && !sink->sequenceViolation &&

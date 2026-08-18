@@ -19,6 +19,13 @@ inline constexpr std::int64_t kQueueTargetSamples = 12000;
 inline constexpr std::int64_t kAudioPrerollSamples = 4800;
 inline constexpr std::int64_t kNoAudioPts = INT64_MIN;
 
+// 検証アプリ (spike / smoke) が使う既定の endpoint session volume。
+// P3 fixture には 1 kHz / amplitude 0.8 の marker 音が入っており、既定音量で
+// CTest を回すと驚くほど大きい。これは Windows の per-process session volume
+// であり、PCM そのものは変えないため、計測値・marker 判定には影響しない。
+// 製品既定は unity のままとし、この値を使うのは検証アプリだけである。
+inline constexpr float kVerificationSessionVolume = 0.15F;
+
 struct SourceId {
     std::uint64_t value = 0;
     friend bool operator==(SourceId, SourceId) = default;
