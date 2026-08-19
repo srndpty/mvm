@@ -167,6 +167,10 @@ int main(int argc, char** argv) {
     std::uint64_t decodeFailureCountBeforeFault = 0;
     std::weak_ptr<mvm::preview::PreviewEngine> detachedEngine;
     std::uint64_t idleRenderPassCount = 0;
+    std::uint64_t idleProbeRenderPassCount = 0;
+    std::uint64_t idleProbeDroppedFrameCount = 0;
+    bool idleBaselineLatched = false;
+    std::chrono::steady_clock::time_point quiescedAt{};
     std::uint64_t eofDroppedFrameCount = 0;
     std::int64_t pausePosition = -1;
     mvm::preview::internal::P5CRuntimeDiagnostics activeDiagnostics;
@@ -187,13 +191,26 @@ int main(int argc, char** argv) {
         if (stage == Stage::WaitEngineRelease) {
             if (!detachedEngine.expired())
                 return;
-            idleRenderPassCount = renderPassCount.load(std::memory_order_relaxed);
+            idleBaselineLatched = false;
+            idleProbeRenderPassCount = renderPassCount.load(std::memory_order_relaxed);
             stage = Stage::WaitRenderIdle;
             stageStarted = now;
             return;
         }
         if (stage == Stage::WaitRenderIdle) {
-            if (now - stageStarted < std::chrono::milliseconds(300))
+            const std::uint64_t sampled = renderPassCount.load(std::memory_order_relaxed);
+            if (!idleBaselineLatched) {
+                // in-flightのrender passが片付くまでbaselineを固定しない。
+                if (sampled != idleProbeRenderPassCount) {
+                    idleProbeRenderPassCount = sampled;
+                    return;
+                }
+                idleRenderPassCount = sampled;
+                idleBaselineLatched = true;
+                quiescedAt = now;
+                return;
+            }
+            if (now - quiescedAt < std::chrono::milliseconds(300))
                 return;
             const bool idle = renderPassCount.load(std::memory_order_relaxed) ==
                               idleRenderPassCount;
@@ -213,7 +230,22 @@ int main(int argc, char** argv) {
             return;
         }
         if (stage == Stage::WaitEofIdle) {
-            if (now - stageStarted < std::chrono::milliseconds(300))
+            const std::uint64_t sampledPasses = renderPassCount.load(std::memory_order_relaxed);
+            const std::uint64_t sampledDropped = engine->telemetry().droppedFrameCount;
+            if (!idleBaselineLatched) {
+                if (sampledPasses != idleProbeRenderPassCount ||
+                    sampledDropped != idleProbeDroppedFrameCount) {
+                    idleProbeRenderPassCount = sampledPasses;
+                    idleProbeDroppedFrameCount = sampledDropped;
+                    return;
+                }
+                idleRenderPassCount = sampledPasses;
+                eofDroppedFrameCount = sampledDropped;
+                idleBaselineLatched = true;
+                quiescedAt = now;
+                return;
+            }
+            if (now - quiescedAt < std::chrono::milliseconds(300))
                 return;
             const auto eofTelemetry = engine->telemetry();
             const auto eofDiagnostics =
@@ -436,8 +468,9 @@ int main(int argc, char** argv) {
                     app.quit();
                     return;
                 }
-                eofDroppedFrameCount = telemetry.droppedFrameCount;
-                idleRenderPassCount = renderPassCount.load(std::memory_order_relaxed);
+                idleBaselineLatched = false;
+                idleProbeRenderPassCount = renderPassCount.load(std::memory_order_relaxed);
+                idleProbeDroppedFrameCount = telemetry.droppedFrameCount;
                 stage = Stage::WaitEofIdle;
                 stageStarted = now;
                 return;
