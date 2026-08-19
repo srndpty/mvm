@@ -1,5 +1,7 @@
 #include "p4_composition_controller.h"
 
+#include <cstdio>
+
 #include "media/audio_preview/audio_video_scheduler.h"
 
 #include <QCryptographicHash>
@@ -460,8 +462,12 @@ void P4CompositionController::startShutdown(const QString& reason, bool failure)
         return;
     shutdownReason_ = reason;
     displayEnvironmentEnd_ = captureDisplayEnvironment();
-    if (failure)
+    if (failure) {
         exitCode_ = 3;
+        // 理由を metrics JSON の detail にしか残さないと、CTest の
+        // --output-on-failure では「無言で落ちた」ようにしか見えない。
+        std::fprintf(stderr, "[p4] shutdown (failure): %s\n", reason.toUtf8().constData());
+    }
 
     // 順序は docs/phase4-plan.md §7 に freeze されている。ここへ手書きせず
     // runFrozenShutdownSequence へ委ねる。worker join 前に render teardown を

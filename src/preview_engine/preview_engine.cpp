@@ -32,6 +32,8 @@ namespace {
 static_assert(
     std::is_same_v<audio::AudioChunk::PcmSample, float>,
     "internal PCM domainはfloat32である。変更する場合はqualified audio domainも見直すこと");
+static_assert(sizeof(audio::AudioChunk::PcmSample) == 4,
+              "internal PCM domainのsampleは32 bitである");
 
 PreviewError makeError(PreviewErrorCategory category, PreviewOperation operation,
                        std::string detail,
@@ -516,6 +518,16 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     std::vector<internal::ShutdownStep> shutdownSequence;
     bool renderVisibleWorkersDetached = false;
 
+    // detach後のowner。renderから到達できるfieldではない。
+    struct DetachedWorkers {
+        std::unique_ptr<gpu::SourceDecodeWorker> videoWorker;
+        std::shared_ptr<audio::WasapiAudioSink> audioSink;
+        std::shared_ptr<audio::AudioDecodeWorker> audioWorker;
+        std::shared_ptr<audio::AudioMasterClock> audioClock;
+    };
+
+    DetachedWorkers detachedWorkers;
+
     // 実行順をそのまま積む。重複を畳むと、誤った再実行や並べ替えがexact比較を
     // すり抜けるため、畳まずに残したうえでviolationとして数える。
     void noteShutdownStepLocked(internal::ShutdownStep step) {
@@ -526,10 +538,29 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         shutdownSequence.push_back(step);
     }
 
-    // renderから見えるworker参照を切る。ここを通るまでrender teardownへ進まない。
+    // renderから到達できるfieldを実際に空にする。bookkeepingだけでは
+    // 「detach済みと言いながら参照が残っている」状態になるため、ownershipを
+    // shutdown専用のholderへ移す。ここを通るまでrender teardownへ進まない。
     void detachRenderVisibleWorkerRefsLocked() {
+        detachedWorkers.videoWorker = std::move(videoWorker);
+        detachedWorkers.audioSink = std::move(audioSink);
+        detachedWorkers.audioWorker = std::move(audioWorker);
+        detachedWorkers.audioClock = std::move(audioClock);
         renderVisibleWorkersDetached = true;
         noteShutdownStepLocked(internal::ShutdownStep::DetachRenderVisibleWorkerRefs);
+    }
+
+    // diagnostics/teardownはdetach後も実体を参照する。render pathはこれを使わない。
+    gpu::SourceDecodeWorker* videoWorkerForTeardown() const {
+        return videoWorker ? videoWorker.get() : detachedWorkers.videoWorker.get();
+    }
+
+    audio::AudioDecodeWorker* audioWorkerForTeardown() const {
+        return audioWorker ? audioWorker.get() : detachedWorkers.audioWorker.get();
+    }
+
+    audio::WasapiAudioSink* audioSinkForTeardown() const {
+        return audioSink ? audioSink.get() : detachedWorkers.audioSink.get();
     }
 
     // 製品既定は unity。検証アプリだけが下げる。
@@ -1181,8 +1212,19 @@ Result<void> PreviewEngine::play() {
         audioWorker->play();
         if (!audioWorker->queue().waitForSamples(audio::kAudioPrerollSamples,
                                                  audio::kPrerollTimeoutMs)) {
+            // 全chunkがdomain不一致でrejectされた場合もprerollは埋まらない。
+            // transport failureとして丸めず、authorityを見分けて分類する。
+            const audio::AudioQueueSnapshot timedOut = audioWorker->queue().snapshot();
             audioWorker->pause();
             std::lock_guard<std::mutex> lock(impl_->mutex);
+            if (timedOut.invalidRejectCount != 0) {
+                ++impl_->audioDomainRejectCount;
+                return Result<void>::failure(makeError(
+                    PreviewErrorCategory::UnsupportedCapability, PreviewOperation::Play,
+                    "audio decode出力がqualified PCM domainと一致せずprerollを満たせません "
+                    "(invalid reject=" +
+                        std::to_string(timedOut.invalidRejectCount) + ")"));
+            }
             ++impl_->audioTransportFailureCount;
             return Result<void>::failure(
                 makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::Play,
@@ -1792,13 +1834,20 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
                              "runtime teardownはShuttingDownでのみ実行できます")
                     .error());
         }
-        // audio sink / audio worker のjoinを確認できなければrender teardownへ進まない。
         // render可視worker参照のdetachと、audio sink / audio worker / video workerの
         // joinを確認できなければrender teardownへ進まない (contract §12)。
         if (!engine.impl_->renderTeardownRequested || !engine.impl_->renderVisibleWorkersDetached ||
             !engine.impl_->workerJoined || !engine.impl_->audioSinkJoined ||
             !engine.impl_->audioWorkerJoined)
             return Result<bool>::success(false);
+
+        // detach済みと記録しながらrender可視fieldに参照が残っている状態を成功にしない。
+        // これが無いと`DetachRenderVisibleWorkerRefs`はbookkeepingだけで通ってしまう。
+        // renderがまだ参照し得るresourceは解放せず、GPU完了未確認と同じ扱いにする。
+        const bool detachViolation = engine.impl_->videoWorker || engine.impl_->audioSink ||
+                                     engine.impl_->audioWorker || engine.impl_->audioClock;
+        if (detachViolation)
+            ++engine.impl_->lifecycleViolationCount;
 
         std::string error;
         bool drained = true;
@@ -1821,11 +1870,14 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
                 drained = drainStatus == gpu::GpuCompositorShutdownStatus::Complete;
             }
         }
+        if (detachViolation)
+            drained = false;
         if (!drained) {
-            PreviewError failure =
-                makeError(PreviewErrorCategory::ShutdownFailure, PreviewOperation::Shutdown,
-                          error.empty() ? "GPU retirement drainのtest faultを検出しました"
-                                        : "GPU retirement drainに失敗しました: " + error);
+            PreviewError failure = makeError(
+                PreviewErrorCategory::ShutdownFailure, PreviewOperation::Shutdown,
+                detachViolation ? "detach済みと記録されているのにrender可視worker参照が残っています"
+                : error.empty() ? "GPU retirement drainのtest faultを検出しました"
+                                : "GPU retirement drainに失敗しました: " + error);
             failure.severity = PreviewErrorSeverity::FatalToSession;
             Result<void> recorded = engine.impl_->machine.recordFatal(failure);
             if (recorded)
@@ -1846,22 +1898,22 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
                 static_cast<std::uint64_t>(counters.fullFrameGpuCopyCount);
         }
         engine.impl_->finalRuntimeDiagnostics.deviceLostCount = engine.impl_->deviceLostCount;
-        if (engine.impl_->videoWorker) {
-            const auto mismatchCount = static_cast<std::uint64_t>(
-                engine.impl_->videoWorker->snapshot().deviceMismatchCount);
+        if (gpu::SourceDecodeWorker* teardownVideo = engine.impl_->videoWorkerForTeardown()) {
+            const auto mismatchCount =
+                static_cast<std::uint64_t>(teardownVideo->snapshot().deviceMismatchCount);
             const std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
             if (mismatchCount > maximum - engine.impl_->finalRuntimeDiagnostics.deviceLostCount)
                 engine.impl_->finalRuntimeDiagnostics.deviceLostCount = maximum;
             else
                 engine.impl_->finalRuntimeDiagnostics.deviceLostCount += mismatchCount;
         }
-        if (engine.impl_->audioWorker) {
-            const audio::AudioQueueSnapshot queue = engine.impl_->audioWorker->queue().snapshot();
+        if (audio::AudioDecodeWorker* teardownAudio = engine.impl_->audioWorkerForTeardown()) {
+            const audio::AudioQueueSnapshot queue = teardownAudio->queue().snapshot();
             engine.impl_->telemetrySnapshot.audioUnderflowCount = queue.underflowCount;
             engine.impl_->finalRuntimeDiagnostics.audioUnderflowCount = queue.underflowCount;
         }
-        if (engine.impl_->audioSink) {
-            const audio::WasapiSnapshot endpoint = engine.impl_->audioSink->snapshot();
+        if (audio::WasapiAudioSink* teardownSink = engine.impl_->audioSinkForTeardown()) {
+            const audio::WasapiSnapshot endpoint = teardownSink->snapshot();
             // sink snapshotがdevice failureのauthority。engine側counterを足さない。
             engine.impl_->finalRuntimeDiagnostics.audioSinkDeviceFailureCount =
                 endpoint.deviceFailureCount;
@@ -1875,6 +1927,8 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
             engine.impl_->audioMasterProjectionFailureCount;
         engine.impl_->finalRuntimeDiagnostics.audioGenerationMismatchCount =
             engine.impl_->audioGenerationMismatchCount;
+        engine.impl_->finalRuntimeDiagnostics.renderVisibleWorkersDetached =
+            engine.impl_->renderVisibleWorkersDetached;
         engine.impl_->finalRuntimeDiagnostics.audioSinkJoined = engine.impl_->audioSinkJoined;
         engine.impl_->finalRuntimeDiagnostics.audioWorkerJoined = engine.impl_->audioWorkerJoined;
         engine.impl_->finalRuntimeDiagnostics.registeredAudioSourceCount =
@@ -1882,10 +1936,14 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
         if (drained) {
             engine.impl_->compositor.reset();
             engine.impl_->videoWorker.reset();
+            engine.impl_->detachedWorkers.videoWorker.reset();
             // audio sink は queue/clock を参照するため、参照する側から解放する。
             engine.impl_->audioSink.reset();
             engine.impl_->audioWorker.reset();
             engine.impl_->audioClock.reset();
+            engine.impl_->detachedWorkers.audioSink.reset();
+            engine.impl_->detachedWorkers.audioWorker.reset();
+            engine.impl_->detachedWorkers.audioClock.reset();
             if (engine.impl_->internalVideoSource.value != 0)
                 engine.impl_->sourceRegistry.unregisterSource(engine.impl_->internalVideoSource);
             engine.impl_->renderDevice->release();
@@ -1904,7 +1962,11 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
             static auto* retainedDevices = new std::vector<std::unique_ptr<gpu::SharedD3D11Device>>;
             std::lock_guard<std::mutex> quarantineLock(*quarantineMutex);
             retainedCompositors->push_back(std::move(engine.impl_->compositor));
-            retainedWorkers->push_back(std::move(engine.impl_->videoWorker));
+            if (engine.impl_->detachedWorkers.videoWorker)
+                retainedWorkers->push_back(std::move(engine.impl_->detachedWorkers.videoWorker));
+            retainedWorkers->push_back(engine.impl_->videoWorker
+                                           ? std::move(engine.impl_->videoWorker)
+                                           : std::move(engine.impl_->detachedWorkers.videoWorker));
             retainedDevices->push_back(std::move(engine.impl_->renderDevice));
             engine.impl_->nativeDeviceAttached = false;
         }
@@ -2109,6 +2171,7 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
     result.lifecycleViolationCount = engine.impl_->lifecycleViolationCount;
     result.shutdownSequence = engine.impl_->shutdownSequence;
     result.audioMasterActive = engine.impl_->audioMasterActive;
+    result.renderVisibleWorkersDetached = engine.impl_->renderVisibleWorkersDetached;
     result.audioSinkJoined = engine.impl_->audioSinkJoined;
     result.audioWorkerJoined = engine.impl_->audioWorkerJoined;
     result.registeredAudioSourceCount = engine.impl_->publicAudioSource ? 1U : 0U;
@@ -2116,20 +2179,20 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
     result.audioGenerationMismatchCount = engine.impl_->audioGenerationMismatchCount;
     result.audioTransportFailureCount = engine.impl_->audioTransportFailureCount;
     result.audioDomainRejectCount = engine.impl_->audioDomainRejectCount;
-    if (engine.impl_->audioWorker) {
-        result.audioUnderflowCount = engine.impl_->audioWorker->queue().snapshot().underflowCount;
+    if (audio::AudioDecodeWorker* diagAudio = engine.impl_->audioWorkerForTeardown()) {
+        result.audioUnderflowCount = diagAudio->queue().snapshot().underflowCount;
     }
-    if (engine.impl_->audioSink) {
-        // teardown後はsinkが解放済みなので、確定済みのfinal値をそのまま残す。
-        const audio::WasapiSnapshot endpoint = engine.impl_->audioSink->snapshot();
+    if (audio::WasapiAudioSink* diagSink = engine.impl_->audioSinkForTeardown()) {
+        // 解放後はfinal snapshotが確定値を持つため、そのまま残す。
+        const audio::WasapiSnapshot endpoint = diagSink->snapshot();
         result.audioSinkDeviceFailureCount = endpoint.deviceFailureCount;
         result.audioSessionVolume = endpoint.sessionVolume;
     }
     result.fullCpuReadbackCount =
         static_cast<std::uint64_t>(engine.impl_->readbacks.fullFrameReadbacks());
     result.deviceLostCount = std::max(result.deviceLostCount, engine.impl_->deviceLostCount);
-    if (engine.impl_->videoWorker) {
-        const gpu::SourceDecoderSnapshot decoder = engine.impl_->videoWorker->snapshot();
+    if (gpu::SourceDecodeWorker* diagVideo = engine.impl_->videoWorkerForTeardown()) {
+        const gpu::SourceDecoderSnapshot decoder = diagVideo->snapshot();
         result.d3d11vaActive = decoder.open && decoder.softwareFrameRejectCount == 0;
         result.decodeRenderSameDevice =
             decoder.decodeDevicePointer ==

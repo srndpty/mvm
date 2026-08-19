@@ -402,7 +402,8 @@ int main(int argc, char** argv) {
             const bool pass =
                 expectedTerminal && audioFaultPass && cleanRunPass && shutdownOrderPass &&
                 !sink->sequenceViolation &&
-                !diagnostics.audioMasterActive && diagnostics.audioSinkJoined &&
+                !diagnostics.audioMasterActive && diagnostics.renderVisibleWorkersDetached &&
+                diagnostics.audioSinkJoined &&
                 diagnostics.audioWorkerJoined && diagnostics.workerJoined &&
                 diagnostics.renderTeardownComplete && diagnostics.deviceReleased &&
                 !diagnostics.unsafeGpuResourcesRetained &&

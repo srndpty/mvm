@@ -291,7 +291,9 @@ P5-Dは一度に閉じない。§9.1のscopeを次の4 sliceへ分け、各slice
 - `DetachRenderVisibleWorkerRefs`はledgerの飾りではなく実挙動である。
   detachを確認するまでrender teardownへ進まない
 - audio sink / audio workerのjoinを確認できなければrender teardownを要求しない
-- `PreviewCapabilities`がqualified audio domain (48000 Hz / stereo / float32 / 1 source) を報告する
+- `PreviewCapabilities`は48000 Hz / stereo / 1 active audio sourceを報告する。
+  sample formatのfloat32はcapabilityの報告項目ではなく、`AudioChunk::PcmSample`の
+  型不変条件 (`static_assert`) として保証する
 - qualified audio domainの検査に期待値そのものを渡さない。
   sample rate / channel数は`AudioFrameQueue`が実際に受理したchunkの観測値
   (`observedSampleRate` / `observedChannels`) を使い、preroll後に検査する。
