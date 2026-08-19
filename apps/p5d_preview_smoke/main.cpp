@@ -37,6 +37,17 @@ private:
 class SmokeSink final : public mvm::preview::PreviewEventSink {
 public:
     void stateChanged(mvm::preview::PreviewEngineState state) override {
+        // terminalへ入った後にactive stateを公開してはならない。state mutationと
+        // event挿入が原子的でないと、ShuttingDownの後にstaleなPlayingが並ぶ。
+        const bool active = state == mvm::preview::PreviewEngineState::Playing ||
+                            state == mvm::preview::PreviewEngineState::ReadyPaused ||
+                            state == mvm::preview::PreviewEngineState::Seeking;
+        if (enteredTerminal && active)
+            stateOrderViolation = true;
+        if (state == mvm::preview::PreviewEngineState::ShuttingDown ||
+            state == mvm::preview::PreviewEngineState::Shutdown ||
+            state == mvm::preview::PreviewEngineState::Error)
+            enteredTerminal = true;
         terminal = state;
         states.push_back(state);
     }
@@ -77,6 +88,8 @@ public:
     std::int64_t lastPosition = -1;
     bool sequenceViolation = false;
     bool positionRegression = false;
+    bool enteredTerminal = false;
+    bool stateOrderViolation = false;
 };
 
 enum class Stage { WaitDevice, WaitInitial, PauseHold, SeekWait, SeekSettle,
@@ -770,7 +783,8 @@ int main(int argc, char** argv) {
             }
 
             const bool pass =
-                expectedTerminal && audioFaultPass && cleanRunPass && seekPass && seekStallPass && seekPlayingPass &&
+                expectedTerminal && !sink->stateOrderViolation && audioFaultPass &&
+                cleanRunPass && seekPass && seekStallPass && seekPlayingPass &&
                 seekResumeFaultPass && seekGenerationPass && seekBarrierPass &&
                 seekShutdownRacePass && shutdownOrderPass &&
                 !sink->sequenceViolation &&

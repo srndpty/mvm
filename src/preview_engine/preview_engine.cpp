@@ -985,19 +985,25 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         }
     }
 
-    Result<void> enqueue(internal::PreviewEvent event) {
-        std::shared_ptr<PreviewEventDispatcher> targetDispatcher;
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            Result<void> pushed = mailbox.push(std::move(event));
-            if (!pushed) {
-                return pushed;
-            }
-            if (!dispatchScheduled && dispatcher) {
-                dispatchScheduled = true;
-                targetDispatcher = dispatcher;
-            }
+    // mutexを保持したままmailboxへ挿入する。dispatcher postは行わない。
+    // state mutationと同じcritical sectionに載せることで、machineの遷移順と
+    // mailboxのFIFO順が必ず一致する。分けると、commit後・enqueue前に別threadが
+    // stateを進め、stale stateのeventが後から積まれる。
+    Result<void> enqueueLocked(internal::PreviewEvent event,
+                               std::shared_ptr<PreviewEventDispatcher>& pendingDispatch) {
+        Result<void> pushed = mailbox.push(std::move(event));
+        if (!pushed) {
+            return pushed;
         }
+        if (!dispatchScheduled && dispatcher) {
+            dispatchScheduled = true;
+            pendingDispatch = dispatcher;
+        }
+        return Result<void>::success();
+    }
+
+    // mutexを解放してから呼ぶ。dispatcherへの投函だけを行う。
+    Result<void> postDispatch(const std::shared_ptr<PreviewEventDispatcher>& targetDispatcher) {
         if (targetDispatcher) {
             const std::weak_ptr<Impl> weak = shared_from_this();
             bool posted = false;
@@ -1021,9 +1027,38 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         return Result<void>::success();
     }
 
+    Result<void> enqueue(internal::PreviewEvent event) {
+        std::shared_ptr<PreviewEventDispatcher> pendingDispatch;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            Result<void> pushed = enqueueLocked(std::move(event), pendingDispatch);
+            if (!pushed) {
+                return pushed;
+            }
+        }
+        return postDispatch(pendingDispatch);
+    }
+
     void notify(internal::PreviewEvent event) {
         Result<void> notified = enqueue(std::move(event));
         if (!notified) {
+            noteEventDeliveryFailure();
+        }
+    }
+
+    // mutex保持中に呼ぶ。失敗はlocked counterへ直接記録する。
+    void notifyLocked(internal::PreviewEvent event,
+                      std::shared_ptr<PreviewEventDispatcher>& pendingDispatch) {
+        Result<void> pushed = enqueueLocked(std::move(event), pendingDispatch);
+        if (!pushed) {
+            noteEventDeliveryFailureLocked();
+        }
+    }
+
+    void flushDispatch(const std::shared_ptr<PreviewEventDispatcher>& pendingDispatch) {
+        if (!pendingDispatch)
+            return;
+        if (!postDispatch(pendingDispatch)) {
             noteEventDeliveryFailure();
         }
     }
@@ -1658,6 +1693,7 @@ PreviewDeviceInfo PreviewEngine::deviceInfo() const {
 }
 
 Result<void> PreviewEngine::requestShutdown() {
+    std::shared_ptr<PreviewEventDispatcher> pendingDispatch;
     PreviewEngineState before;
     PreviewEngineState after;
     bool completeWithoutRuntime = false;
@@ -1688,10 +1724,13 @@ Result<void> PreviewEngine::requestShutdown() {
             startDetachedTeardown = true;
         }
         impl_->telemetrySnapshot.status.state = after;
+        if (before != after) {
+            // stateの遷移とeventの挿入を分けると、commit後・enqueue前に
+            // render threadがstale stateのeventを先に積み得る。
+            impl_->notifyLocked(internal::StateChangedEvent{after}, pendingDispatch);
+        }
     }
-    if (before != after) {
-        impl_->notify(internal::StateChangedEvent{after});
-    }
+    impl_->flushDispatch(pendingDispatch);
     if (completeWithoutRuntime)
         return internal::PreviewRenderPort::completeTeardown(*this);
     if (startDetachedTeardown) {
@@ -1892,6 +1931,7 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
     bool seeking = false;
     bool seekResumePlaying = false;
     bool seekAwaitingResume = false;
+    std::shared_ptr<PreviewEventDispatcher> seekDispatch;
     std::int64_t seekResumeSample = 0;
     audio::SourceGeneration seekResumeAudioGeneration{};
     std::optional<PreviewEngineState> seekCompletedState;
@@ -2126,6 +2166,10 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                                 engine.impl_->telemetrySnapshot.status.state =
                                     engine.impl_->machine.state();
                                 seekCompletedState = engine.impl_->machine.state();
+                                // paused originのseekも、commitとeventの挿入を
+                                // 同じcritical sectionに収める。
+                                engine.impl_->notifyLocked(StateChangedEvent{*seekCompletedState},
+                                                           seekDispatch);
                             }
                         }
                     }
@@ -2204,6 +2248,11 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                     engine.impl_->schedulerStart = std::chrono::steady_clock::now();
                     engine.impl_->telemetrySnapshot.status.state = engine.impl_->machine.state();
                     seekCompletedState = engine.impl_->machine.state();
+                    // Playingのcommitと同じcritical sectionでeventを積む。
+                    // 分けるとcommit後にrequestShutdown()が割り込み、
+                    // ShuttingDownの後にstaleなPlayingが並ぶ。
+                    engine.impl_->notifyLocked(StateChangedEvent{*seekCompletedState},
+                                               seekDispatch);
                 }
             }
             if (!cancelledByShutdown && resumeFailure) {
@@ -2226,9 +2275,8 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
             return Result<RenderFrameResult>::failure(*resumeFailure);
         }
     }
-    if (seekCompletedState) {
-        engine.impl_->notify(StateChangedEvent{*seekCompletedState});
-    }
+    // state eventはcommitと同じcritical sectionで積んである。ここでは投函だけ。
+    engine.impl_->flushDispatch(seekDispatch);
 
     if (result.presented) {
         engine.impl_->notify(PositionChangedEvent{result.frame.position});
