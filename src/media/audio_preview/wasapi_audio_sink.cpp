@@ -71,7 +71,12 @@ WasapiAudioSink::~WasapiAudioSink() {
     stop();
 }
 
-bool WasapiAudioSink::open(std::string& error) {
+bool WasapiAudioSink::open(std::string& error, float sessionVolume) {
+    // caller error は COM/endpoint に触る前に弾く。
+    if (!(sessionVolume >= 0.0F) || sessionVolume > 1.0F) {
+        error = "session volume は 0.0〜1.0 の範囲で指定してください";
+        return false;
+    }
     std::lock_guard lock(mutex_);
     if (metrics_.open) {
         error = "WASAPI endpoint は既に open されています";
@@ -87,33 +92,33 @@ bool WasapiAudioSink::open(std::string& error) {
                           reinterpret_cast<void**>(&enumerator_));
     if (FAILED(hr) || !enumerator_) {
         error = "既定 audio endpoint enumerator を作成できません: " + hresultText(hr);
-        releaseDevice();
+        releaseDeviceLocked();
         return false;
     }
     hr = enumerator_->GetDefaultAudioEndpoint(eRender, eConsole, &device_);
     if (FAILED(hr) || !device_) {
         error = "既定 render endpoint を取得できません: " + hresultText(hr);
-        releaseDevice();
+        releaseDeviceLocked();
         return false;
     }
     hr = device_->Activate(IID_IAudioClient, CLSCTX_ALL, nullptr,
                            reinterpret_cast<void**>(&client_));
     if (FAILED(hr) || !client_) {
         error = "IAudioClient を取得できません: " + hresultText(hr);
-        releaseDevice();
+        releaseDeviceLocked();
         return false;
     }
     hr = client_->GetMixFormat(&mixFormat_);
     if (FAILED(hr) || !mixFormat_) {
         error = "endpoint mix format を取得できません: " + hresultText(hr);
-        releaseDevice();
+        releaseDeviceLocked();
         return false;
     }
     const AVSampleFormat deviceSampleFormat = sampleFormat(mixFormat_);
     if (deviceSampleFormat == AV_SAMPLE_FMT_NONE || mixFormat_->nChannels <= 0 ||
         mixFormat_->nSamplesPerSec == 0) {
         error = "endpoint mix format は未対応です（16/32-bit integer または float32 が必要）";
-        releaseDevice();
+        releaseDeviceLocked();
         return false;
     }
     constexpr REFERENCE_TIME requestedDuration = 1000000; // shared event-driven 100 ms
@@ -121,14 +126,34 @@ bool WasapiAudioSink::open(std::string& error) {
                              requestedDuration, 0, mixFormat_, nullptr);
     if (FAILED(hr)) {
         error = "WASAPI shared event-driven 初期化に失敗しました: " + hresultText(hr);
-        releaseDevice();
+        releaseDeviceLocked();
         return false;
+    }
+    if (sessionVolume != 1.0F) {
+        ISimpleAudioVolume* sessionVolumeControl = nullptr;
+        hr = client_->GetService(IID_ISimpleAudioVolume,
+                                 reinterpret_cast<void**>(&sessionVolumeControl));
+        if (FAILED(hr) || !sessionVolumeControl) {
+            error = "endpoint session volume を取得できません: " + hresultText(hr);
+            releaseDeviceLocked();
+            return false;
+        }
+        hr = sessionVolumeControl->SetMasterVolume(sessionVolume, nullptr);
+        releaseCom(sessionVolumeControl);
+        if (FAILED(hr)) {
+            // 適用できないまま全音量で再生しない。
+            error = "endpoint session volume を設定できません: " + hresultText(hr);
+            releaseDeviceLocked();
+            return false;
+        }
+        // open() 入口で mutex_ を保持済みのため、ここで再取得しない。
+        metrics_.sessionVolume = sessionVolume;
     }
     audioEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!audioEvent_ || !stopEvent_) {
         error = "audio render event を作成できません";
-        releaseDevice();
+        releaseDeviceLocked();
         return false;
     }
     if (FAILED(hr = client_->SetEventHandle(static_cast<HANDLE>(audioEvent_))) ||
@@ -138,7 +163,7 @@ bool WasapiAudioSink::open(std::string& error) {
         FAILED(hr =
                    client_->GetService(IID_IAudioClock, reinterpret_cast<void**>(&deviceClock_)))) {
         error = "WASAPI render/clock service を初期化できません: " + hresultText(hr);
-        releaseDevice();
+        releaseDeviceLocked();
         return false;
     }
     AVChannelLayout inputLayout = AV_CHANNEL_LAYOUT_STEREO;
@@ -150,7 +175,7 @@ bool WasapiAudioSink::open(std::string& error) {
     av_channel_layout_uninit(&outputLayout);
     if (result < 0 || !outputResampler_ || swr_init(outputResampler_) < 0) {
         error = "endpoint 用 resampler を初期化できません";
-        releaseDevice();
+        releaseDeviceLocked();
         return false;
     }
     sourceScratchSamples_ =
@@ -302,6 +327,12 @@ bool WasapiAudioSink::pause(std::string& error) {
             return false;
         }
     }
+    if (pauseFaultInjected_.load(std::memory_order_acquire)) {
+        error = "injected WASAPI pause fault (test)";
+        std::lock_guard lock(mutex_);
+        ++metrics_.deviceFailureCount;
+        return false;
+    }
     if (!playing_)
         return true;
     UINT64 devicePosition = 0;
@@ -417,6 +448,11 @@ bool WasapiAudioSink::renderAvailable() {
     // playing=true を見た callback が reset 後へ PCM を書かないよう再検査する。
     if (!playing_)
         return true;
+    if (renderFaultInjected_.load(std::memory_order_acquire)) {
+        // 実際の WASAPI 失敗と同じ経路で停止させる。
+        recordFailure("injected WASAPI render fault (test)");
+        return false;
+    }
     UINT32 padding = 0;
     HRESULT hr = client_->GetCurrentPadding(&padding);
     if (FAILED(hr) || padding > bufferFrames_) {
@@ -486,6 +522,14 @@ bool WasapiAudioSink::renderAvailable() {
     return true;
 }
 
+void WasapiAudioSink::injectRenderFaultForTest() {
+    renderFaultInjected_.store(true, std::memory_order_release);
+}
+
+void WasapiAudioSink::injectPauseFaultForTest() {
+    pauseFaultInjected_.store(true, std::memory_order_release);
+}
+
 void WasapiAudioSink::recordFailure(const std::string& error) {
     std::lock_guard lock(mutex_);
     ++metrics_.deviceFailureCount;
@@ -500,8 +544,14 @@ WasapiSnapshot WasapiAudioSink::snapshot() const {
 }
 
 void WasapiAudioSink::releaseDevice() {
+    std::lock_guard lock(mutex_);
+    releaseDeviceLocked();
+}
+
+// mutex_ は呼び出し側が保持している。ここで再取得すると非再帰 mutex で
+// deadlock するため、この関数の中では絶対に mutex_ を取らない。
+void WasapiAudioSink::releaseDeviceLocked() {
     if (thread_.joinable()) {
-        std::lock_guard lock(mutex_);
         ++metrics_.audioDeviceReleaseBeforeJoin;
         return;
     }
@@ -527,7 +577,6 @@ void WasapiAudioSink::releaseDevice() {
         CoUninitialize();
         comInitialized_ = false;
     }
-    std::lock_guard lock(mutex_);
     metrics_.open = false;
 }
 

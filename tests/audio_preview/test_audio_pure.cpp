@@ -2,11 +2,13 @@
 #include "media/audio_preview/audio_clock.h"
 #include "media/audio_preview/audio_frame_queue.h"
 #include "media/audio_preview/audio_video_scheduler.h"
+#include "media/audio_preview/wasapi_audio_sink.h"
 
 #include <array>
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <string>
 
 using namespace mvm::audio;
 
@@ -157,6 +159,29 @@ int main() {
     check(acceptsVideoMasterSource(VideoMasterSource::AudioDeviceClock) &&
               !acceptsVideoMasterSource(VideoMasterSource::Qpc),
           "QPC master fallback attempt を拒否する negative test");
+
+    // endpoint session volume。範囲外の要求はCOM/endpointへ触る前に弾き、
+    // 「設定できなかったので全音量で鳴らす」へ縮退させない。
+    // 期待値は実装helperを呼ばず、契約 (0.0〜1.0) から直接与える。
+    {
+        AudioFrameQueue volumeQueue({1}, {1});
+        AudioMasterClock volumeClock;
+        WasapiAudioSink volumeSink(volumeQueue, volumeClock);
+        std::string volumeError;
+        check(!volumeSink.open(volumeError, 1.5F) && !volumeError.empty(),
+              "1.0超のsession volumeを拒否する negative test");
+        volumeError.clear();
+        check(!volumeSink.open(volumeError, -0.1F) && !volumeError.empty(),
+              "負のsession volumeを拒否する negative test");
+        volumeError.clear();
+        check(!volumeSink.open(volumeError, std::numeric_limits<float>::quiet_NaN()) &&
+                  !volumeError.empty(),
+              "NaNのsession volumeを拒否する negative test");
+        check(kVerificationSessionVolume > 0.0F && kVerificationSessionVolume < 1.0F,
+              "検証用session volumeがunity未満の有効値である");
+        check(volumeSink.snapshot().sessionVolume == 1.0F,
+              "open失敗時にsession volumeを適用済みとして記録しない negative test");
+    }
 
     if (failures == 0)
         std::cout << "PASS: audio queue/clock contract\n";

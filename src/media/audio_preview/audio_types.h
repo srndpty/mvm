@@ -19,6 +19,13 @@ inline constexpr std::int64_t kQueueTargetSamples = 12000;
 inline constexpr std::int64_t kAudioPrerollSamples = 4800;
 inline constexpr std::int64_t kNoAudioPts = INT64_MIN;
 
+// 検証アプリ (spike / smoke) が使う既定の endpoint session volume。
+// P3 fixture には 1 kHz / amplitude 0.8 の marker 音が入っており、既定音量で
+// CTest を回すと驚くほど大きい。これは Windows の per-process session volume
+// であり、PCM そのものは変えないため、計測値・marker 判定には影響しない。
+// 製品既定は unity のままとし、この値を使うのは検証アプリだけである。
+inline constexpr float kVerificationSessionVolume = 0.15F;
+
 struct SourceId {
     std::uint64_t value = 0;
     friend bool operator==(SourceId, SourceId) = default;
@@ -44,6 +51,9 @@ struct Rational {
 };
 
 struct AudioChunk {
+    // internal PCM domain の sample 型。qualified domain の "float32" はこの型が根拠。
+    using PcmSample = float;
+
     SourceId sourceId{};
     SourceGeneration sourceGeneration{};
     AudioResourceEpoch resourceEpoch{};
@@ -53,7 +63,7 @@ struct AudioChunk {
     Rational timeBase{};
     int sampleRate = 0;
     int channels = 0;
-    std::shared_ptr<std::vector<float>> pcm;
+    std::shared_ptr<std::vector<PcmSample>> pcm;
     std::size_t offsetSamples = 0;
 
     bool valid() const {

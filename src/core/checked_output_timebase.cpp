@@ -151,6 +151,20 @@ CheckedOutputTimebase::outputFrame(std::int64_t audioSample) const {
 }
 
 OutputTimebaseResult<std::int64_t>
+CheckedOutputTimebase::outputFrameForNanoseconds(std::int64_t nanoseconds) const {
+    constexpr WideInteger kNanosecondsPerSecond = 1000000000;
+    WideInteger numerator = 0;
+    WideInteger denominator = 0;
+    if (!checkedMultiply(static_cast<WideInteger>(nanoseconds), frameRateNumerator_, numerator) ||
+        !checkedMultiply(static_cast<WideInteger>(frameRateDenominator_), kNanosecondsPerSecond,
+                         denominator)) {
+        return OutputTimebaseResult<std::int64_t>::failure(
+            OutputTimebaseError::IntermediateOverflow);
+    }
+    return narrow(mathematicalFloor(numerator, denominator));
+}
+
+OutputTimebaseResult<std::int64_t>
 CheckedOutputTimebase::seekTargetSample(std::int64_t outputFrame) const {
     return firstAudioSample(outputFrame);
 }

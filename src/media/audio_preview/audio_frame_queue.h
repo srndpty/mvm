@@ -30,6 +30,9 @@ struct AudioQueueSnapshot {
     std::uint64_t staleGenerationRejectCount = 0;
     std::uint64_t futureGenerationRejectCount = 0;
     std::uint64_t invalidRejectCount = 0;
+    // 実際に受理した chunk の PCM domain (未受理なら 0)。期待値ではなく観測値。
+    int observedSampleRate = 0;
+    int observedChannels = 0;
 };
 
 struct AudioConsumeResult {

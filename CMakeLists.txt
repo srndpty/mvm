@@ -120,6 +120,7 @@ if(MVM_ENABLE_QT)
     add_subdirectory(apps/p3_av_sync_spike)
     add_subdirectory(apps/p4_composition_spike)
     add_subdirectory(apps/p5c_preview_smoke)
+    add_subdirectory(apps/p5d_preview_smoke)
 endif()
 
 include(CTest)

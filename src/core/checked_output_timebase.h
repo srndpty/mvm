@@ -63,6 +63,10 @@ public:
     OutputTimebaseResult<std::int64_t> firstAudioSample(std::int64_t outputFrame) const;
     OutputTimebaseResult<std::int64_t> outputFrame(std::int64_t audioSample) const;
 
+    // wall-clock経過nanosecondからoutput frameを導出する。audio masterが無い経路
+    // (P5-C video-only)も独自の有理数演算を持たず、この換算へ委譲する。
+    OutputTimebaseResult<std::int64_t> outputFrameForNanoseconds(std::int64_t nanoseconds) const;
+
     // seek、scheduler、statusは別の式を持たず、上記の同じ演算へ委譲する。
     OutputTimebaseResult<std::int64_t> seekTargetSample(std::int64_t outputFrame) const;
     OutputTimebaseResult<std::int64_t> schedulerOutputFrame(std::int64_t audioSample) const;

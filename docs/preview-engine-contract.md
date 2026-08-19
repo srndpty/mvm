@@ -486,6 +486,8 @@ P5-Cはvideo-onlyの最初のvertical sliceである。P5-Cが提供するpause�
 主張しない。
 
 P5-Dで次を統合した時点から、製品`play()`、`pause()`、`seek()`はauthoritativeなP3-C-2 semanticsを持つ。
+P5-Dはsub-sliceへ分割している (phase5-plan.md §9.4)。P5-D2完了時点でauthoritativeになるのは
+`play()`と`pause()`だけであり、`seek()`はP5-D3まで`UnsupportedCapability`のままである。
 
 - audio decode
 - WASAPI shared event-driven sink

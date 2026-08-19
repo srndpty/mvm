@@ -39,6 +39,7 @@ struct WasapiSnapshot {
     std::uint64_t audioRenderThreadJoinLeak = 0;
     std::uint64_t audioDeviceReleaseBeforeJoin = 0;
     std::uint64_t audioLifecycleViolation = 0;
+    float sessionVolume = 1.0F;
     std::string lastError;
 };
 
@@ -49,12 +50,21 @@ public:
     WasapiAudioSink(const WasapiAudioSink&) = delete;
     WasapiAudioSink& operator=(const WasapiAudioSink&) = delete;
 
-    bool open(std::string& error);
+    // sessionVolume は Windows の per-process endpoint session volume である。
+    // 既定は unity で、その場合は一切設定しない (既存の挙動を変えない)。
+    // 非 unity を要求して適用できなかった場合は、黙って全音量で鳴らさず失敗する。
+    bool open(std::string& error, float sessionVolume = 1.0F);
     bool play(std::int64_t mediaStartSample, SourceGeneration generation, std::string& error);
     bool pause(std::string& error);
     bool resetForSeek(std::string& error);
     void stop();
     WasapiSnapshot snapshot() const;
+    // render loop に実際の device failure を起こさせる test seam。
+    // 完成した error を外から渡すのではなく、通常の recordFailure() 経路を通す。
+    void injectRenderFaultForTest();
+    // pause() を実際に失敗させる test seam。product側が「止められないまま
+    // ReadyPaused を公開しない」ことを検査するために使う。
+    void injectPauseFaultForTest();
 
 private:
     void renderLoop();
@@ -64,6 +74,8 @@ private:
     bool resetClient(std::string& error);
     void recordFailure(const std::string& error);
     void releaseDevice();
+    // mutex_ を呼び出し側が保持している前提。open() の失敗経路から使う。
+    void releaseDeviceLocked();
 
     AudioFrameQueue& queue_;
     AudioMasterClock& clock_;
@@ -86,6 +98,8 @@ private:
     std::atomic<bool> acceptingCommands_{true};
     std::atomic<bool> threadRunning_{false};
     std::atomic<bool> playing_{false};
+    std::atomic<bool> renderFaultInjected_{false};
+    std::atomic<bool> pauseFaultInjected_{false};
     std::atomic<std::uint64_t> generation_{0};
     bool comInitialized_ = false;
     bool endpointPrefillRequired_ = true;

@@ -153,7 +153,7 @@ bool startPipeline(const Args& args, AudioDecodeWorker& worker, AudioMasterClock
                    WasapiAudioSink& sink, std::string& error) {
     if (!worker.start(args.source, error))
         return false;
-    if (!sink.open(error))
+    if (!sink.open(error, kVerificationSessionVolume))
         return false;
     worker.play();
     return sink.play(0, worker.snapshot().sourceGeneration, error);

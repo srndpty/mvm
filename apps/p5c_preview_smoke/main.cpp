@@ -244,14 +244,17 @@ int main(int argc, char** argv) {
                 fixtureInfo.dir().filePath("manifest.json").toStdWString();
             const auto missingResult = engine->addSource({missing, true, false});
             const auto noVideoResult = engine->addSource({noVideo, true, false});
-            const auto audioResult = engine->addSource({arguments[1].toStdWString(), true, true});
-            if (missingResult || noVideoResult || audioResult ||
+            // P5-D2でaudio sourceは受理されるようになったため、ここでの負例は
+            // 「存在しないpathのaudio source」に置き換える。P5-C smokeはvideo-only
+            // 経路の回帰であり、audio masterは p5d smoke 側で検証する。
+            const auto missingAudioResult = engine->addSource({missing, false, true});
+            if (missingResult || noVideoResult || missingAudioResult ||
                 missingResult.error().category !=
                     mvm::preview::PreviewErrorCategory::DecodeFailure ||
                 noVideoResult.error().category !=
                     mvm::preview::PreviewErrorCategory::DecodeFailure ||
-                audioResult.error().category !=
-                    mvm::preview::PreviewErrorCategory::UnsupportedCapability) {
+                missingAudioResult.error().category !=
+                    mvm::preview::PreviewErrorCategory::DecodeFailure) {
                 exitCode = 11;
                 app.quit();
                 return;
