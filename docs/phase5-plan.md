@@ -263,9 +263,47 @@ P5-Dは一度に閉じない。§9.1のscopeを次の4 sliceへ分け、各slice
 | slice | 範囲 | 状態 |
 | --- | --- | --- |
 | P5-D1 | `CheckedOutputTimebase`による換算authorityの一本化 | 済 |
-| P5-D2 | audio source登録、`AudioDecodeWorker` / `WasapiAudioSink` / `AudioMasterClock`のengine所有、audio-master `play()` / `pause()`、shutdown ordering拡張 | 実装完了。closureはgate PASS確認後に確定する |
-| P5-D3 | exact `seek()`、audio/video generation alignment、actual requested frameによるseek completion | 実装完了。closureはgate PASS確認後に確定する |
-| P5-D4 | P5-D closure (capability確定、frozen P3 regression再走、§9.3全項目の突き合わせ) | 未 |
+| P5-D2 | audio source登録、`AudioDecodeWorker` / `WasapiAudioSink` / `AudioMasterClock`のengine所有、audio-master `play()` / `pause()`、shutdown ordering拡張 | 済 |
+| P5-D3 | exact `seek()`、audio/video generation alignment、actual requested frameによるseek completion | 済 |
+| P5-D4 | P5-D closure (capability確定、frozen P3 regression再走、§9.3全項目の突き合わせ) | 済 |
+
+#### P5-D closure evidence
+
+P5-D4時点の実測は次のとおりである。
+
+- P5-D product test 13/13 (P5-D4で`preview_engine_p5d_qpc_master_fail_closed`を追加し12→13)
+- 通常CTest release / debug 各456/456
+- frozen `p3_c2_*` / `p3_c_contract_*` / `phase4b_lifecycle_*` 60/60
+- P5-B / P5-C 15/15、`-L p5d1` 3/3
+
+##### [事実] frozen P3-C-2 formal matrixはこの環境で9/9を安定して出せない
+
+P5-D4のclosure判定にあたり、変更後と未変更の親commit (`f38f4a2`) で同じformal matrixを
+各2回実行した。
+
+| 実行 | 対象 | 結果 | 失敗内容 |
+| --- | --- | --- | --- |
+| A-1 | 変更後 | 8/9 | seek run3のAV abs max 57.94 ms (閾値33.334 ms) |
+| A-2 | 変更後 | 9/9 | — |
+| B-1 | 親 (未変更) | 8/9 | seek run2のaudio underflow 1件 |
+| B-2 | 親 (未変更) | 7/9 | seek run2がexact 306/1000で早期終了、seek run3はmetrics未生成 |
+
+A-2のAV abs maxはplayback 17.21/20.02/18.44 ms、seek 16.56/9.96/11.75 ms、
+pause-resume 16.88/16.25/8.58 msであり、§3.4の歴史的baselineと整合する。
+
+A-1のFAILは事実として残す。後続のPASSで上書きしない。ただし次の理由から、この変更へは帰属しない。
+
+- 変更範囲は`src/preview_engine/`であり、P3 spikeは`PreviewEngine`を生成せず、
+  seek経路で変更コードを実行しない
+- 未変更の親commitでも同じ頻度以上でFAILし、毎回異なる壊れ方をする
+- A-2は9/9で歴史的baselineと整合する
+
+[未検証] seek modeの早期終了 (exact 306/1000) とmetrics未生成の原因は切り分けていない。
+このgateがこの環境で不安定であること自体は、P5-D4のscope外の別課題として残る。
+
+[事実] B-2のseek run3はmetricsを生成しなかったが、matrix scriptのconsole出力に
+エラー行が出ず次のmodeへ進んだ。`summary.json`側は`pass=False`と記録し最終verdictは
+FAILになるため判定は守られているが、console出力だけでは失敗が見えない。
 
 #### P5-D1 exit criteria
 
