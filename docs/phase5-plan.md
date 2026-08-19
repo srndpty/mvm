@@ -291,6 +291,11 @@ P5-D4のclosure判定にあたり、変更後と未変更の親commit (`f38f4a2`
 A-2のAV abs maxはplayback 17.21/20.02/18.44 ms、seek 16.56/9.96/11.75 ms、
 pause-resume 16.88/16.25/8.58 msであり、§3.4の歴史的baselineと整合する。
 
+closure確定後、clean worktreeの`c57aea7`で`formal_verdict == PASS`を取得した
+(9/9、`provenance_unchanged == true`)。AV abs maxはplayback 16.98/16.94/17.06 ms、
+seek 11.85/10.02/10.27 ms、pause-resume 15.17/17.06/12.94 msで、いずれも
+§3.4の歴史的baselineと整合する。これがP5-D closureのprovenance付きevidenceである。
+
 A-1のFAILは事実として残す。後続のPASSで上書きしない。ただし次の理由から、この変更へは帰属しない。
 
 - 変更範囲は`src/preview_engine/`であり、P3 spikeは`PreviewEngine`を生成せず、
