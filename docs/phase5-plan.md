@@ -260,7 +260,7 @@ P5-Dは一度に閉じない。§9.1のscopeを次の4 sliceへ分け、各slice
 | --- | --- | --- |
 | P5-D1 | `CheckedOutputTimebase`による換算authorityの一本化 | 済 |
 | P5-D2 | audio source登録、`AudioDecodeWorker` / `WasapiAudioSink` / `AudioMasterClock`のengine所有、audio-master `play()` / `pause()`、shutdown ordering拡張 | 実装完了。closureはgate PASS確認後に確定する |
-| P5-D3 | exact `seek()`、audio/video generation alignment、actual requested frameによるseek completion | 未 |
+| P5-D3 | exact `seek()`、audio/video generation alignment、actual requested frameによるseek completion | 実装完了。closureはgate PASS確認後に確定する |
 | P5-D4 | P5-D closure (capability確定、frozen P3 regression再走、§9.3全項目の突き合わせ) | 未 |
 
 #### P5-D1 exit criteria
@@ -312,6 +312,12 @@ P5-Dは一度に閉じない。§9.1のscopeを次の4 sliceへ分け、各slice
 - seek completionがactual requested frameのpresentationであること
 - decode readyだけではseek completeにしないnegative testがあること
 - stale generationのframeを提示しないこと
+- `seek()`は引数検査をsource/compositionの有無より先に行い、呼び出し側の誤りを
+  stateの都合で別のerrorへすり替えない
+- seek completionの判定はrender pathで行うため、`Seeking`でもrender callbackを回す
+- audioを伴うseekでは、endpointをpause -> `resetForSeek` してからrequestを発行する。
+  片側だけrequestが受理された状態はidentity整合を保証できないため`SeekFailure`で
+  fail-closedにする
 
 #### P5-D4 exit criteria
 

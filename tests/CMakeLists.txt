@@ -803,6 +803,13 @@ if(MVM_ENABLE_QT)
     mvm_add_p5c_product_test(preview_engine_p5c_decoder_eof
         ARGS --decoder-eof)
 
+    # wall-clockでrender idleを測るtestは、count採取時点でin-flightだったrender pass
+    # が後から完了すると偽陽性になる。並列実行のCPU競合で実際に表面化した。
+    # 検査は弱めず、これらだけ他と同時に走らせない。
+    set_tests_properties(preview_engine_p5c_engine_lifetime_detach
+                         preview_engine_p5c_decoder_eof
+                         PROPERTIES RUN_SERIAL TRUE)
+
     list(LENGTH _mvm_p5c_product_tests _mvm_p5c_product_registered)
     if(NOT _mvm_p5c_product_registered EQUAL 9)
         message(FATAL_ERROR
@@ -838,12 +845,17 @@ if(MVM_ENABLE_QT)
     # terminal state / quarantine / shutdown sequence を固定する。
     # destruction order自体のregression testではない。
     mvm_add_p5d_product_test(preview_engine_p5d_gpu_drain_with_audio ARGS --fault-gpu-drain)
+    # P5-D3: exact seek。requestの受理と completion を分けて固定する。
+    mvm_add_p5d_product_test(preview_engine_p5d_exact_seek_paused ARGS --seek-paused)
+    # decode readyだけでcompleteにしないことを検出する negative test。
+    mvm_add_p5d_product_test(preview_engine_p5d_seek_presentation_fail_closed
+        ARGS --fault-seek-presentation)
 
     # 対象0件のtest群を「全部通った」と報告させない (AGENTS.md)。
     list(LENGTH _mvm_p5d_product_tests _mvm_p5d_product_registered)
-    if(NOT _mvm_p5d_product_registered EQUAL 5)
+    if(NOT _mvm_p5d_product_registered EQUAL 7)
         message(FATAL_ERROR
-            "[mvm] P5-D product testの登録数が不正です: ${_mvm_p5d_product_registered}/5")
+            "[mvm] P5-D product testの登録数が不正です: ${_mvm_p5d_product_registered}/7")
     endif()
 endif()
 
@@ -1771,3 +1783,32 @@ add_test(NAME lint_layer_isolation_negative
 add_test(NAME lint_layer_isolation_control
     COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/lint.ps1"
             -Path "${CMAKE_SOURCE_DIR}/tests/lint-negative/layer-good" -AsLayer gpu_preview)
+
+# --- workstation テストの排他制御 -------------------------------------------
+# workstation ラベルは「この開発機の実 GPU / audio endpoint / display を使う」
+# という意味である。並列実行 (ctest -j) では、これらが同時に走ると
+# device を奪い合って偽の失敗になる。実測で -j8 のとき 3 回に 1 回落ちた。
+#
+# 直列実行では RESOURCE_LOCK は何も変えない。並列にしたときだけ、
+# workstation テスト同士が 1 件ずつ走るようになる。
+#
+# 個々の add_test へ手で書かず、ラベルから機械的に付ける。手書きすると
+# 新しい workstation テストを足したときに付け忘れ、並列で偶発的に落ちる。
+get_property(_mvm_all_tests DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" PROPERTY TESTS)
+set(_mvm_workstation_exclusive 0)
+foreach(_mvm_test IN LISTS _mvm_all_tests)
+    get_test_property(${_mvm_test} LABELS _mvm_test_labels)
+    if(_mvm_test_labels AND "workstation" IN_LIST _mvm_test_labels)
+        set_tests_properties(${_mvm_test} PROPERTIES RESOURCE_LOCK mvm_workstation)
+        math(EXPR _mvm_workstation_exclusive "${_mvm_workstation_exclusive} + 1")
+    endif()
+endforeach()
+
+# 0 件なら「ラベルの付け方が変わったのに誰も気づいていない」状態である。
+# 並列実行が黙って危険になるため、configure を失敗させる。
+if(_mvm_workstation_exclusive EQUAL 0)
+    message(FATAL_ERROR
+        "[mvm] workstation ラベルのテストが 0 件です。RESOURCE_LOCK を付けられません")
+endif()
+message(STATUS
+    "[mvm] workstation テスト ${_mvm_workstation_exclusive} 件へ RESOURCE_LOCK を設定しました")

@@ -85,7 +85,10 @@ protected:
             return;
         if (detectDeviceLost())
             return;
-        if (state != preview::PreviewEngineState::Playing)
+        // seek completionは「要求frameをactual render targetへ提示できたこと」で
+        // 判定されるため、Seekingでもrender pathを回す必要がある。
+        if (state != preview::PreviewEngineState::Playing &&
+            state != preview::PreviewEngineState::Seeking)
             return;
         if (!ensureRtv(colorTexture()))
             return;

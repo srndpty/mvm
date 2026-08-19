@@ -148,6 +148,18 @@ struct P5CRuntimeDiagnostics {
     std::vector<ShutdownStep> shutdownSequence;
     // renderから見えるworker参照を切ったか (contract §12 DetachRenderVisibleWorkerRefs)。
     bool renderVisibleWorkersDetached = false;
+
+    // P5-D3: exact seek。request acceptanceとcompletionを別々に数える。
+    // completionはactual requested frameを提示した回数だけ増える。
+    std::uint64_t seekRequestCount = 0;
+    std::uint64_t seekDecodeReadyCount = 0;
+    std::uint64_t seekCompletedCount = 0;
+    // decode readyだけでcompleteにしていないことの証拠。decode ready後、
+    // exact frameを提示できずに待った render callback の回数。
+    std::uint64_t seekAwaitingPresentationCount = 0;
+    std::uint64_t seekStaleGenerationRejectCount = 0;
+    std::int64_t lastSeekTargetFrame = -1;
+    std::int64_t lastSeekPresentedFrame = -1;
 };
 
 class CompositionAcceptanceState {
@@ -220,6 +232,9 @@ public:
     // 検証アプリが endpoint session volume を下げるためのseam。public APIには
     // 出さない。addSource()でWASAPI endpointをopenする前に設定する必要がある。
     static Result<void> setVerificationAudioVolume(PreviewEngine& engine, float volume);
+    // decode readyだけでseek completeにしていないことを検査するseam。
+    // decodeは完了させたまま、exact frameの提示だけを成立させなくする。
+    static Result<void> injectSeekPresentationStallForTest(PreviewEngine& engine);
     static Result<void> injectAudioClockStallForTest(PreviewEngine& engine);
     // sink自身にdevice failureを起こさせ、product側のpolling/昇格経路を検査する。
     // 完成したerrorをengineへ直接注入しないこと。

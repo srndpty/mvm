@@ -310,10 +310,11 @@ int main(int argc, char** argv) {
             auto snapshot = std::make_shared<mvm::preview::CompositionSnapshot>();
             snapshot->layers.push_back({source.value(), {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
             auto composition = engine->submitComposition(snapshot);
-            const auto seek = engine->seek({0});
+            // P5-D3でseekは受理対象になった。P5-C smokeはvideo-only経路の回帰なので
+            // seekは行わず、引数検査がfail-closedであることだけを確認する。
+            const auto seek = engine->seek({-1});
             if (!composition || seek ||
-                seek.error().category !=
-                    mvm::preview::PreviewErrorCategory::UnsupportedCapability ||
+                seek.error().category != mvm::preview::PreviewErrorCategory::SeekFailure ||
                 !engine->play()) {
                 exitCode = 5;
                 app.quit();
