@@ -1940,6 +1940,8 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
     bool seeking = false;
     bool seekResumePlaying = false;
     bool seekAwaitingResume = false;
+    bool fatalPublished = false;
+    std::shared_ptr<PreviewEventDispatcher> fatalDispatch;
     std::shared_ptr<PreviewEventDispatcher> seekDispatch;
     std::int64_t seekResumeSample = 0;
     audio::SourceGeneration seekResumeAudioGeneration{};
@@ -2201,12 +2203,21 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                 engine.impl_->telemetrySnapshot.status.state = PreviewEngineState::ShuttingDown;
                 engine.impl_->telemetrySnapshot.status.lastError =
                     engine.impl_->machine.lastError();
+                // seek resume failureと同じ理由で、commitとeventの挿入を分けない。
+                engine.impl_->notifyLocked(ErrorOccurredEvent{*fatal}, fatalDispatch);
+                engine.impl_->notifyLocked(StateChangedEvent{PreviewEngineState::ShuttingDown},
+                                           fatalDispatch);
+                fatalPublished = true;
             }
         }
     }
     if (fatal) {
-        engine.impl_->notify(ErrorOccurredEvent{*fatal});
-        engine.impl_->notify(StateChangedEvent{PreviewEngineState::ShuttingDown});
+        if (fatalPublished) {
+            engine.impl_->flushDispatch(fatalDispatch);
+        } else {
+            engine.impl_->notify(ErrorOccurredEvent{*fatal});
+            engine.impl_->notify(StateChangedEvent{PreviewEngineState::ShuttingDown});
+        }
         return Result<RenderFrameResult>::failure(*fatal);
     }
     if (playbackEnded)
@@ -2274,13 +2285,18 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                     engine.impl_->telemetrySnapshot.status.lastError =
                         engine.impl_->machine.lastError();
                 }
+                // startWorkerShutdown()はこのlock中に開始しているため、unlock直後から
+                // shutdown workerがteardownを進めterminal eventを積み得る。
+                // ShuttingDownのcommitとeventの挿入を同じlock区間に収める。
+                engine.impl_->notifyLocked(ErrorOccurredEvent{*resumeFailure}, seekDispatch);
+                engine.impl_->notifyLocked(StateChangedEvent{PreviewEngineState::ShuttingDown},
+                                           seekDispatch);
             }
         }
         if (cancelledByShutdown)
             return Result<RenderFrameResult>::success(result);
         if (resumeFailure) {
-            engine.impl_->notify(ErrorOccurredEvent{*resumeFailure});
-            engine.impl_->notify(StateChangedEvent{PreviewEngineState::ShuttingDown});
+            engine.impl_->flushDispatch(seekDispatch);
             return Result<RenderFrameResult>::failure(*resumeFailure);
         }
     }

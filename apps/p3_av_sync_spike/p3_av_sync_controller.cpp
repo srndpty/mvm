@@ -1,5 +1,7 @@
 #include "p3_av_sync_controller.h"
 
+#include <cstdio>
+
 #include "media/audio_preview/audio_video_scheduler.h"
 #include "media/gpu_preview/exact_frame_pairer.h"
 #include "media/gpu_preview/qpc_clock.h"
@@ -601,8 +603,12 @@ void P3AvSyncController::startShutdown(const QString& reason, bool failure) {
     shutdownReason_ = reason;
     if (config_.formalContractC2)
         displayEnvironmentEnd_ = captureDisplayEnvironment();
-    if (failure)
+    if (failure) {
         exitCode_ = 3;
+        // 理由を metrics JSON にしか残さないと、CTest の --output-on-failure では
+        // 無言で落ちたようにしか見えない。P4 spike と同じ扱いに揃える。
+        std::fprintf(stderr, "[p3] shutdown (failure): %s\n", reason.toUtf8().constData());
+    }
     state_->audioMasterSchedulerEnabled.store(false, std::memory_order_release);
     state_->playbackSchedulerEnabled.store(false, std::memory_order_release);
     state_->audioMasterPendingSeekFrame.store(-1, std::memory_order_release);
