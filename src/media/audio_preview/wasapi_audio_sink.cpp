@@ -198,6 +198,12 @@ bool WasapiAudioSink::open(std::string& error, float sessionVolume) {
 
 bool WasapiAudioSink::play(std::int64_t mediaStartSample, SourceGeneration generation,
                            std::string& error) {
+    if (playFaultInjected_.load(std::memory_order_acquire)) {
+        error = "injected WASAPI play fault (test)";
+        std::lock_guard lock(mutex_);
+        ++metrics_.deviceFailureCount;
+        return false;
+    }
     {
         std::lock_guard lock(mutex_);
         if (!acceptingCommands_ || !metrics_.open) {
@@ -524,6 +530,10 @@ bool WasapiAudioSink::renderAvailable() {
 
 void WasapiAudioSink::injectRenderFaultForTest() {
     renderFaultInjected_.store(true, std::memory_order_release);
+}
+
+void WasapiAudioSink::injectPlayFaultForTest() {
+    playFaultInjected_.store(true, std::memory_order_release);
 }
 
 void WasapiAudioSink::injectPauseFaultForTest() {

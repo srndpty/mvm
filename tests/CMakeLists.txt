@@ -850,12 +850,20 @@ if(MVM_ENABLE_QT)
     # decode readyだけでcompleteにしないことを検出する negative test。
     mvm_add_p5d_product_test(preview_engine_p5d_seek_presentation_fail_closed
         ARGS --fault-seek-presentation)
+    # Playing originのseekは、transportを再開できて初めてPlayingへ戻る。
+    mvm_add_p5d_product_test(preview_engine_p5d_exact_seek_playing ARGS --seek-playing)
+    # resume失敗時にPlayingを一度も公開しないこと。
+    mvm_add_p5d_product_test(preview_engine_p5d_seek_resume_fail_closed
+        ARGS --fault-seek-resume)
+    # seek completionで得たaudio generationをengineがenforceしていること。
+    mvm_add_p5d_product_test(preview_engine_p5d_seek_audio_generation_fail_closed
+        ARGS --fault-seek-audio-generation)
 
     # 対象0件のtest群を「全部通った」と報告させない (AGENTS.md)。
     list(LENGTH _mvm_p5d_product_tests _mvm_p5d_product_registered)
-    if(NOT _mvm_p5d_product_registered EQUAL 7)
+    if(NOT _mvm_p5d_product_registered EQUAL 10)
         message(FATAL_ERROR
-            "[mvm] P5-D product testの登録数が不正です: ${_mvm_p5d_product_registered}/7")
+            "[mvm] P5-D product testの登録数が不正です: ${_mvm_p5d_product_registered}/10")
     endif()
 endif()
 

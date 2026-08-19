@@ -235,6 +235,11 @@ public:
     // decode readyだけでseek completeにしていないことを検査するseam。
     // decodeは完了させたまま、exact frameの提示だけを成立させなくする。
     static Result<void> injectSeekPresentationStallForTest(PreviewEngine& engine);
+    // seek completionで得たaudio generationをengineが実際にenforceしているか
+    // 検査するseam。要求generationが決して揃わない状況を作る。
+    static Result<void> injectSeekAudioGenerationMismatchForTest(PreviewEngine& engine);
+    // seek後のtransport復帰でWASAPI playを失敗させるseam。
+    static Result<void> injectAudioSinkPlayFaultForTest(PreviewEngine& engine);
     static Result<void> injectAudioClockStallForTest(PreviewEngine& engine);
     // sink自身にdevice failureを起こさせ、product側のpolling/昇格経路を検査する。
     // 完成したerrorをengineへ直接注入しないこと。

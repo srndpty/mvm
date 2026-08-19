@@ -516,6 +516,7 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     std::uint64_t audioDomainRejectCount = 0;
     bool audioClockStallInjected = false;
     bool seekPresentationStallInjected = false;
+    bool seekAudioGenerationMismatchInjected = false;
     std::vector<internal::ShutdownStep> shutdownSequence;
     bool renderVisibleWorkersDetached = false;
 
@@ -1880,7 +1881,9 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
     bool playbackEnded = false;
     bool seeking = false;
     bool seekResumePlaying = false;
+    bool seekAwaitingResume = false;
     std::int64_t seekResumeSample = 0;
+    audio::SourceGeneration seekResumeAudioGeneration{};
     std::optional<PreviewEngineState> seekCompletedState;
     std::shared_ptr<audio::AudioDecodeWorker> seekAudioWorker;
     std::shared_ptr<audio::WasapiAudioSink> seekAudioSink;
@@ -2008,9 +2011,28 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                     !(decoded.sourceGeneration ==
                       engine.impl_->pendingSeek.expectedVideoGeneration)) {
                     // seek後のgenerationと揃わないframeをold/latestで代用しない。
+                    // ここはsubstitutionではなくrejectなので、禁止fallbackの
+                    // counterである staleSubstitutionCount は増やさない。
                     ++engine.impl_->seekStaleGenerationRejectCount;
-                    ++engine.impl_->staleSubstitutionCount;
                     return Result<RenderFrameResult>::success(result);
+                }
+                if (seeking && engine.impl_->audioWorker &&
+                    engine.impl_->pendingSeek.expectedAudioGeneration.value != 0) {
+                    // seek completionで得たaudio identityをそのままauthorityにする。
+                    // decoderとqueueの双方が揃うまで提示しない。
+                    const audio::AudioDecoderSnapshot decoder =
+                        engine.impl_->audioWorker->snapshot();
+                    const audio::SourceGeneration expected =
+                        engine.impl_->seekAudioGenerationMismatchInjected
+                            ? audio::SourceGeneration{engine.impl_->pendingSeek
+                                                          .expectedAudioGeneration.value +
+                                                      1}
+                            : engine.impl_->pendingSeek.expectedAudioGeneration;
+                    if (!(decoder.sourceGeneration == expected) ||
+                        !(engine.impl_->audioWorker->queue().generation() == expected)) {
+                        ++engine.impl_->seekStaleGenerationRejectCount;
+                        return Result<RenderFrameResult>::success(result);
+                    }
                 }
                 if (engine.impl_->audioMasterActive && engine.impl_->audioWorker) {
                     const audio::AudioDecoderSnapshot decoder =
@@ -2074,19 +2096,27 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                         engine.impl_->lastSeekPresentedFrame = target;
                         seekResumePlaying = engine.impl_->pendingSeek.resumePlaying;
                         seekResumeSample = engine.impl_->pendingSeek.audioSample;
+                        seekResumeAudioGeneration =
+                            engine.impl_->pendingSeek.expectedAudioGeneration;
                         engine.impl_->pendingSeek = PreviewEngine::Impl::PendingSeek{};
-                        Result<void> completed = engine.impl_->machine.completeSeek();
-                        if (!completed) {
-                            fatal = completed.error();
+                        engine.impl_->lastSchedulerTarget = target;
+                        engine.impl_->schedulerBaseFrame = target + 1;
+                        engine.impl_->resumeAudioSample = seekResumeSample;
+                        seekAudioWorker = engine.impl_->audioWorker;
+                        seekAudioSink = engine.impl_->audioSink;
+                        if (seekResumePlaying) {
+                            // transportを再開できる前に`Playing`を公開しない。
+                            // stateはSeekingのまま保持し、resume成功後にcommitする。
+                            seekAwaitingResume = true;
                         } else {
-                            engine.impl_->lastSchedulerTarget = target;
-                            engine.impl_->schedulerBaseFrame = target + 1;
-                            engine.impl_->resumeAudioSample = seekResumeSample;
-                            engine.impl_->telemetrySnapshot.status.state =
-                                engine.impl_->machine.state();
-                            seekCompletedState = engine.impl_->machine.state();
-                            seekAudioWorker = engine.impl_->audioWorker;
-                            seekAudioSink = engine.impl_->audioSink;
+                            Result<void> completed = engine.impl_->machine.completeSeek();
+                            if (!completed) {
+                                fatal = completed.error();
+                            } else {
+                                engine.impl_->telemetrySnapshot.status.state =
+                                    engine.impl_->machine.state();
+                                seekCompletedState = engine.impl_->machine.state();
+                            }
                         }
                     }
                 }
@@ -2120,27 +2150,37 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
         engine.impl_->notify(StateChangedEvent{PreviewEngineState::ShuttingDown});
 
     // seek完了後のtransport復帰。engine lockを保持したままaudioを触らない。
-    if (seekCompletedState) {
+    // Playing originのseekは、ここが成功するまで`Playing`を公開しない。
+    if (seekAwaitingResume) {
         std::optional<PreviewError> resumeFailure;
-        if (seekResumePlaying) {
-            if (seekAudioWorker && seekAudioSink) {
-                seekAudioWorker->play();
-                std::string error;
-                if (!seekAudioSink->play(seekResumeSample,
-                                         seekAudioWorker->snapshot().sourceGeneration, error)) {
-                    seekAudioWorker->pause();
-                    resumeFailure =
-                        makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::Seek,
-                                  "seek後にWASAPI renderingを再開できません: " + error,
-                                  PreviewErrorSeverity::FatalToSession);
-                }
+        if (seekAudioWorker && seekAudioSink) {
+            seekAudioWorker->play();
+            std::string error;
+            // seek completionが返したidentityをそのまま運ぶ。
+            if (!seekAudioSink->play(seekResumeSample, seekResumeAudioGeneration, error)) {
+                seekAudioWorker->pause();
+                resumeFailure =
+                    makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::Seek,
+                              "seek後にWASAPI renderingを再開できません: " + error,
+                              PreviewErrorSeverity::FatalToSession);
             }
-            if (!resumeFailure) {
-                std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+        }
+        if (!resumeFailure) {
+            std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+            Result<void> completed = engine.impl_->machine.completeSeek();
+            if (!completed) {
+                resumeFailure = completed.error();
+            } else {
+                // seek()でpauseしたvideo decodeも再開する。ここを忘れるとbufferが
+                // 補充されず、Playingに戻ってもframeを提示できない。
+                if (engine.impl_->videoWorker)
+                    engine.impl_->videoWorker->play();
                 engine.impl_->schedulerEnabled = true;
                 engine.impl_->audioMasterActive =
                     engine.impl_->audioSink != nullptr && engine.impl_->audioClock != nullptr;
                 engine.impl_->schedulerStart = std::chrono::steady_clock::now();
+                engine.impl_->telemetrySnapshot.status.state = engine.impl_->machine.state();
+                seekCompletedState = engine.impl_->machine.state();
             }
         }
         if (resumeFailure) {
@@ -2160,6 +2200,8 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
             engine.impl_->notify(StateChangedEvent{PreviewEngineState::ShuttingDown});
             return Result<RenderFrameResult>::failure(*resumeFailure);
         }
+    }
+    if (seekCompletedState) {
         engine.impl_->notify(StateChangedEvent{*seekCompletedState});
     }
 
@@ -2623,6 +2665,26 @@ Result<void> PreviewRenderPort::injectAudioSinkPauseFaultForTest(PreviewEngine& 
                             "audio sourceが未登録のためsink pause faultを注入できません");
     }
     engine.impl_->audioSink->injectPauseFaultForTest();
+    return Result<void>::success();
+}
+
+Result<void> PreviewRenderPort::injectAudioSinkPlayFaultForTest(PreviewEngine& engine) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    if (!engine.impl_->audioSink) {
+        return invalidState(PreviewOperation::Seek,
+                            "audio sourceが未登録のためplay faultを注入できません");
+    }
+    engine.impl_->audioSink->injectPlayFaultForTest();
+    return Result<void>::success();
+}
+
+Result<void> PreviewRenderPort::injectSeekAudioGenerationMismatchForTest(PreviewEngine& engine) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    if (!engine.impl_->audioWorker) {
+        return invalidState(PreviewOperation::Seek,
+                            "audio sourceが未登録のためgeneration mismatchを注入できません");
+    }
+    engine.impl_->seekAudioGenerationMismatchInjected = true;
     return Result<void>::success();
 }
 

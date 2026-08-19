@@ -36,7 +36,19 @@ private:
 
 class SmokeSink final : public mvm::preview::PreviewEventSink {
 public:
-    void stateChanged(mvm::preview::PreviewEngineState state) override { terminal = state; }
+    void stateChanged(mvm::preview::PreviewEngineState state) override {
+        terminal = state;
+        states.push_back(state);
+    }
+
+    // 「一度もPlayingを公開していない」ことを検査するために全遷移を残す。
+    bool sawStateAfter(std::size_t from, mvm::preview::PreviewEngineState wanted) const {
+        for (std::size_t i = from; i < states.size(); ++i) {
+            if (states[i] == wanted)
+                return true;
+        }
+        return false;
+    }
 
     void positionChanged(mvm::preview::PreviewPosition position) override {
         if (lastPosition >= 0 && position.outputFrame < lastPosition)
@@ -57,6 +69,7 @@ public:
 
     void deviceChanged(mvm::preview::PreviewDeviceInfo) override {}
 
+    std::vector<mvm::preview::PreviewEngineState> states;
     std::vector<mvm::preview::PreviewError> errors;
     mvm::preview::PreviewEngineState terminal = mvm::preview::PreviewEngineState::Uninitialized;
     std::uint64_t presented = 0;
@@ -71,7 +84,8 @@ enum class Stage { WaitDevice, WaitInitial, PauseHold, SeekWait, SeekSettle,
 // fixture 65 秒 / 60 fps。先頭からも末尾からも十分離れた frame を選ぶ。
 constexpr std::int64_t kSeekTargetFrame = 900;
 
-enum class Fault { None, AudioClockStall, AudioSinkFatal, AudioPauseFault, GpuDrain, SeekPaused, SeekPresentationStall };
+enum class Fault { None, AudioClockStall, AudioSinkFatal, AudioPauseFault, GpuDrain, SeekPaused, SeekPresentationStall, SeekPlaying,
+                   SeekResumeFault, SeekAudioGenerationStall };
 
 } // namespace
 
@@ -83,7 +97,8 @@ int main(int argc, char** argv) {
     if (arguments.size() < 2 || arguments.size() > 3) {
         std::fprintf(stderr, "使い方: mvm_p5d_preview_smoke <fixture-path> "
                              "[--fault-audio-clock|--fault-audio-sink"
-                             "|--fault-audio-pause|--fault-gpu-drain|--seek-paused|--fault-seek-presentation]\n");
+                             "|--fault-audio-pause|--fault-gpu-drain|--seek-paused|--seek-playing|--fault-seek-presentation"
+                             "|--fault-seek-resume|--fault-seek-audio-generation]\n");
         return 2;
     }
     Fault fault = Fault::None;
@@ -100,6 +115,12 @@ int main(int argc, char** argv) {
             fault = Fault::SeekPaused;
         else if (arguments[2] == "--fault-seek-presentation")
             fault = Fault::SeekPresentationStall;
+        else if (arguments[2] == "--seek-playing")
+            fault = Fault::SeekPlaying;
+        else if (arguments[2] == "--fault-seek-resume")
+            fault = Fault::SeekResumeFault;
+        else if (arguments[2] == "--fault-seek-audio-generation")
+            fault = Fault::SeekAudioGenerationStall;
         else
             return 2;
     }
@@ -139,6 +160,7 @@ int main(int argc, char** argv) {
     std::uint64_t pausePresentedCount = 0;
     std::uint64_t seekPresentedCount = 0;
     std::int64_t seekPosition = -1;
+    std::size_t seekStateBaseline = 0;
     std::int64_t pausePosition = -1;
     mvm::preview::internal::P5CRuntimeDiagnostics activeDiagnostics;
     const auto started = std::chrono::steady_clock::now();
@@ -150,7 +172,18 @@ int main(int argc, char** argv) {
     QObject::connect(&timer, &QTimer::timeout, &app, [&] {
         const auto now = std::chrono::steady_clock::now();
         if (now - started > std::chrono::seconds(40)) {
-            std::fprintf(stderr, "P5-D smokeが40秒以内に完了しませんでした\n");
+            const auto stuck =
+                mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+            std::fprintf(stderr,
+                         "P5-D smokeが40秒以内に完了しませんでした "
+                         "(stage=%d state=%d requests=%llu decodeReady=%llu completed=%llu "
+                         "awaiting=%llu staleReject=%llu)\n",
+                         static_cast<int>(stage), static_cast<int>(engine->status().state),
+                         static_cast<unsigned long long>(stuck.seekRequestCount),
+                         static_cast<unsigned long long>(stuck.seekDecodeReadyCount),
+                         static_cast<unsigned long long>(stuck.seekCompletedCount),
+                         static_cast<unsigned long long>(stuck.seekAwaitingPresentationCount),
+                         static_cast<unsigned long long>(stuck.seekStaleGenerationRejectCount));
             exitCode = 10;
             app.quit();
             return;
@@ -220,6 +253,41 @@ int main(int argc, char** argv) {
             return;
         }
 
+        if (stage == Stage::WaitInitial && telemetry.presentedFrameCount >= 20 &&
+            (fault == Fault::SeekPlaying || fault == Fault::SeekResumeFault ||
+             fault == Fault::SeekAudioGenerationStall)) {
+            // Playingのままseekする。resume成功までPlayingを公開しないことを検査する。
+            activeDiagnostics =
+                mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+            if (fault == Fault::SeekResumeFault) {
+                // seek後のresumeでWASAPI playを失敗させる。
+                if (!mvm::preview::internal::PreviewRenderPort::injectAudioSinkPlayFaultForTest(
+                        *engine)) {
+                    exitCode = 35;
+                    app.quit();
+                    return;
+                }
+            }
+            if (fault == Fault::SeekAudioGenerationStall &&
+                !mvm::preview::internal::PreviewRenderPort::
+                    injectSeekAudioGenerationMismatchForTest(*engine)) {
+                exitCode = 36;
+                app.quit();
+                return;
+            }
+            seekStateBaseline = sink->states.size();
+            const auto requested = engine->seek({kSeekTargetFrame});
+            if (!requested || engine->status().state !=
+                                  mvm::preview::PreviewEngineState::Seeking) {
+                std::fprintf(stderr, "Playingからのseek requestが受理されませんでした\n");
+                exitCode = 37;
+                app.quit();
+                return;
+            }
+            stage = Stage::SeekWait;
+            stageStarted = now;
+            return;
+        }
         if (stage == Stage::WaitInitial && telemetry.presentedFrameCount >= 20) {
             activeDiagnostics =
                 mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
@@ -271,7 +339,8 @@ int main(int argc, char** argv) {
             }
             // SeekPausedはfault注入ではなく、pause -> exact seek の正常経路である。
             if (fault != Fault::None && fault != Fault::SeekPaused &&
-                fault != Fault::SeekPresentationStall) {
+                fault != Fault::SeekPresentationStall && fault != Fault::SeekPlaying &&
+                fault != Fault::SeekResumeFault && fault != Fault::SeekAudioGenerationStall) {
                 const bool injected =
                     fault == Fault::AudioClockStall
                         ? static_cast<bool>(
@@ -315,6 +384,27 @@ int main(int argc, char** argv) {
         if (stage == Stage::SeekWait) {
             const auto seekDiag =
                 mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+            if (fault == Fault::SeekResumeFault || fault == Fault::SeekAudioGenerationStall) {
+                if (status.state == mvm::preview::PreviewEngineState::Seeking)
+                    return;
+                stage = Stage::WaitShutdown;
+                return;
+            }
+            if (fault == Fault::SeekPlaying) {
+                if (status.state == mvm::preview::PreviewEngineState::Seeking)
+                    return;
+                if (status.state != mvm::preview::PreviewEngineState::Playing) {
+                    std::fprintf(stderr, "Playing originのseek後にPlayingへ戻りません (state=%d)\n",
+                                 static_cast<int>(status.state));
+                    exitCode = 38;
+                    app.quit();
+                    return;
+                }
+                stage = Stage::WaitResume;
+                stageStarted = now;
+                pausePresentedCount = engine->telemetry().presentedFrameCount;
+                return;
+            }
             if (fault == Fault::SeekPresentationStall) {
                 if (status.state == mvm::preview::PreviewEngineState::Seeking)
                     return;
@@ -445,7 +535,7 @@ int main(int argc, char** argv) {
         if (stage == Stage::WaitShutdown &&
             (status.state == mvm::preview::PreviewEngineState::Shutdown ||
              status.state == mvm::preview::PreviewEngineState::Error)) {
-            const bool failureFault = fault != Fault::None && fault != Fault::SeekPaused;
+            const bool failureFault = fault != Fault::None && fault != Fault::SeekPaused && fault != Fault::SeekPlaying;
             // presentation stallはSeekFailureでterminal Errorになる。
             if (failureFault && sink->errors.empty())
                 return;
@@ -453,6 +543,11 @@ int main(int argc, char** argv) {
             const bool gpuDrainFault = fault == Fault::GpuDrain;
             const bool seekVariant = fault == Fault::SeekPaused;
             const bool seekStallVariant = fault == Fault::SeekPresentationStall;
+            const bool seekPlayingVariant = fault == Fault::SeekPlaying;
+            const bool seekResumeFaultVariant = fault == Fault::SeekResumeFault;
+            const bool seekGenerationVariant = fault == Fault::SeekAudioGenerationStall;
+            const bool seekFailClosedVariant =
+                seekStallVariant || seekResumeFaultVariant || seekGenerationVariant;
             const auto terminalTelemetry = engine->telemetry();
             const auto diagnostics =
                 mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
@@ -464,7 +559,7 @@ int main(int argc, char** argv) {
             // 続けない (projection失敗が記録され、Playingへ戻らない)。
             // seek presentation stallはSeekFailureであり、audio failureではない。
             const bool audioFaultPass =
-                !failureFault || gpuDrainFault || seekStallVariant ||
+                !failureFault || gpuDrainFault || seekStallVariant || seekGenerationVariant ||
                 (sink->errors.size() == 1 &&
                  sink->errors.front().category ==
                      mvm::preview::PreviewErrorCategory::AudioFailure &&
@@ -513,8 +608,35 @@ int main(int argc, char** argv) {
                      mvm::preview::PreviewErrorCategory::SeekFailure &&
                  sink->errors.front().severity ==
                      mvm::preview::PreviewErrorSeverity::FatalToSession);
+            // Playing originのseekは、resume成功後にだけPlayingへ戻る。
+            const bool seekPlayingPass =
+                !seekPlayingVariant ||
+                (diagnostics.seekRequestCount == 1 && diagnostics.seekCompletedCount == 1 &&
+                 diagnostics.lastSeekPresentedFrame == kSeekTargetFrame && sink->errors.empty());
+            // resume失敗時は`Playing`を一度も公開せず、AudioFailureで落ちる。
+            const bool seekResumeFaultPass =
+                !seekResumeFaultVariant ||
+                (diagnostics.seekCompletedCount == 1 &&
+                 !sink->sawStateAfter(seekStateBaseline,
+                                      mvm::preview::PreviewEngineState::Playing) &&
+                 sink->errors.size() == 1 &&
+                 sink->errors.front().category ==
+                     mvm::preview::PreviewErrorCategory::AudioFailure &&
+                 sink->errors.front().severity ==
+                     mvm::preview::PreviewErrorSeverity::FatalToSession);
+            // audio generationが揃わない限り提示せず、deadlineでfail-closedにする。
+            const bool seekGenerationPass =
+                !seekGenerationVariant ||
+                (diagnostics.seekDecodeReadyCount == 1 && diagnostics.seekCompletedCount == 0 &&
+                 diagnostics.seekStaleGenerationRejectCount >= 1 &&
+                 diagnostics.staleSubstitutionCount == 0 &&
+                 !sink->sawStateAfter(seekStateBaseline,
+                                      mvm::preview::PreviewEngineState::Playing) &&
+                 sink->errors.size() == 1 &&
+                 sink->errors.front().category ==
+                     mvm::preview::PreviewErrorCategory::SeekFailure);
             const bool cleanRunPass =
-                failureFault || seekVariant || seekStallVariant ||
+                failureFault || seekVariant || seekFailClosedVariant || seekPlayingVariant ||
                 (diagnostics.audioMasterProjectionFailureCount == 0 &&
                  diagnostics.audioGenerationMismatchCount == 0 &&
                  diagnostics.audioSinkDeviceFailureCount == 0 &&
@@ -560,7 +682,8 @@ int main(int argc, char** argv) {
             }
 
             const bool pass =
-                expectedTerminal && audioFaultPass && cleanRunPass && seekPass && seekStallPass && shutdownOrderPass &&
+                expectedTerminal && audioFaultPass && cleanRunPass && seekPass && seekStallPass && seekPlayingPass &&
+                seekResumeFaultPass && seekGenerationPass && shutdownOrderPass &&
                 !sink->sequenceViolation &&
                 !diagnostics.audioMasterActive && diagnostics.renderVisibleWorkersDetached &&
                 diagnostics.audioSinkJoined && diagnostics.audioWorkerJoined &&

@@ -40,3 +40,7 @@ tmp/
 # ablation の派生 scenario は build/<preset>/ablation/scenarios にだけ置く。
 # 以前は bench/scenarios へ書いており、派生物が Git に入ってしまった。
 bench/scenarios/abl-*.json
+
+# CTest が repo root で実行されたときに作る runtime artifact。
+# 成果物ではないので追跡しない (build tree 内の Testing/ は対象外)。
+/Testing/
