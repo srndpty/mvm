@@ -2177,38 +2177,36 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                               PreviewErrorSeverity::FatalToSession);
             }
         }
+        // shutdownの再確認とcompleteSeek()/recordFatal()を1つのcritical sectionに
+        // 収める。分けると「Seekingを確認 -> requestShutdown -> completeSeek」で
+        // 正常なshutdownがInvalidState経由でErrorへ化ける窓が残る。
+        bool cancelledByShutdown = false;
         {
-            // resume中にrequestShutdown()がcommitされている場合がある。これは
-            // seek failureではなくshutdownによるcancellationなので、
-            // completeSeek()もrecordFatal()も行わない。正常なshutdownを
-            // Errorへ書き換えない。
             std::lock_guard<std::mutex> lock(engine.impl_->mutex);
             if (engine.impl_->machine.state() != PreviewEngineState::Seeking) {
+                // resume中にrequestShutdown()がcommitされていた。これはseek failure
+                // ではなくshutdownによるcancellationなので、completeSeek()も
+                // recordFatal()も行わない。resumeが失敗していても同じである。
                 ++engine.impl_->seekCancelledByShutdownCount;
-                return Result<RenderFrameResult>::success(result);
+                cancelledByShutdown = true;
+            } else if (!resumeFailure) {
+                Result<void> completed = engine.impl_->machine.completeSeek();
+                if (!completed) {
+                    resumeFailure = completed.error();
+                } else {
+                    // seek()でpauseしたvideo decodeも再開する。ここを忘れるとbufferが
+                    // 補充されず、Playingに戻ってもframeを提示できない。
+                    if (engine.impl_->videoWorker)
+                        engine.impl_->videoWorker->play();
+                    engine.impl_->schedulerEnabled = true;
+                    engine.impl_->audioMasterActive =
+                        engine.impl_->audioSink != nullptr && engine.impl_->audioClock != nullptr;
+                    engine.impl_->schedulerStart = std::chrono::steady_clock::now();
+                    engine.impl_->telemetrySnapshot.status.state = engine.impl_->machine.state();
+                    seekCompletedState = engine.impl_->machine.state();
+                }
             }
-        }
-        if (!resumeFailure) {
-            std::lock_guard<std::mutex> lock(engine.impl_->mutex);
-            Result<void> completed = engine.impl_->machine.completeSeek();
-            if (!completed) {
-                resumeFailure = completed.error();
-            } else {
-                // seek()でpauseしたvideo decodeも再開する。ここを忘れるとbufferが
-                // 補充されず、Playingに戻ってもframeを提示できない。
-                if (engine.impl_->videoWorker)
-                    engine.impl_->videoWorker->play();
-                engine.impl_->schedulerEnabled = true;
-                engine.impl_->audioMasterActive =
-                    engine.impl_->audioSink != nullptr && engine.impl_->audioClock != nullptr;
-                engine.impl_->schedulerStart = std::chrono::steady_clock::now();
-                engine.impl_->telemetrySnapshot.status.state = engine.impl_->machine.state();
-                seekCompletedState = engine.impl_->machine.state();
-            }
-        }
-        if (resumeFailure) {
-            {
-                std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+            if (!cancelledByShutdown && resumeFailure) {
                 ++engine.impl_->audioTransportFailureCount;
                 if (engine.impl_->machine.recordFatal(*resumeFailure)) {
                     engine.impl_->schedulerEnabled = false;
@@ -2219,6 +2217,10 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                         engine.impl_->machine.lastError();
                 }
             }
+        }
+        if (cancelledByShutdown)
+            return Result<RenderFrameResult>::success(result);
+        if (resumeFailure) {
             engine.impl_->notify(ErrorOccurredEvent{*resumeFailure});
             engine.impl_->notify(StateChangedEvent{PreviewEngineState::ShuttingDown});
             return Result<RenderFrameResult>::failure(*resumeFailure);

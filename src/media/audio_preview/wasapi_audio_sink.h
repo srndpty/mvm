@@ -66,7 +66,7 @@ public:
     // ReadyPaused を公開しない」ことを検査するために使う。
     void injectPauseFaultForTest();
     void injectPlayFaultForTest();
-    // play() の pre-roll 直後で決定論的に停止させる test barrier。
+    // play() の pre-roll 直前で決定論的に停止させる test barrier。
     // shutdown/resume の interleaving を再現可能に固定するために使う。
     void armPlayBarrierForTest();
     bool waitPlayBarrierEnteredForTest(int timeoutMs);
