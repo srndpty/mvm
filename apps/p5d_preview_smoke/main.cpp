@@ -125,7 +125,7 @@ constexpr std::int64_t kSeekTargetFrame = 900;
 
 enum class Fault { None, AudioClockStall, AudioSinkFatal, AudioPauseFault, GpuDrain, SeekPaused, SeekPresentationStall, SeekPlaying,
                    SeekResumeFault, SeekAudioGenerationStall,
-                   SeekResumeBarrier, SeekShutdownRace };
+                   SeekResumeBarrier, SeekShutdownRace, QpcMasterFallback };
 
 } // namespace
 
@@ -139,7 +139,8 @@ int main(int argc, char** argv) {
                              "[--fault-audio-clock|--fault-audio-sink"
                              "|--fault-audio-pause|--fault-gpu-drain|--seek-paused|--seek-playing|--fault-seek-presentation"
                              "|--fault-seek-resume|--fault-seek-audio-generation"
-                             "|--seek-resume-barrier|--seek-shutdown-race]\n");
+                             "|--seek-resume-barrier|--seek-shutdown-race"
+                             "|--fault-qpc-master]\n");
         return 2;
     }
     Fault fault = Fault::None;
@@ -166,6 +167,8 @@ int main(int argc, char** argv) {
             fault = Fault::SeekResumeBarrier;
         else if (arguments[2] == "--seek-shutdown-race")
             fault = Fault::SeekShutdownRace;
+        else if (arguments[2] == "--fault-qpc-master")
+            fault = Fault::QpcMasterFallback;
         else
             return 2;
     }
@@ -395,14 +398,23 @@ int main(int argc, char** argv) {
                 fault != Fault::SeekPresentationStall && fault != Fault::SeekPlaying &&
                 fault != Fault::SeekResumeFault && fault != Fault::SeekAudioGenerationStall &&
                 fault != Fault::SeekResumeBarrier && fault != Fault::SeekShutdownRace) {
-                const bool injected =
-                    fault == Fault::AudioClockStall
-                        ? static_cast<bool>(
-                              mvm::preview::internal::PreviewRenderPort::
-                                  injectAudioClockStallForTest(*engine))
-                        : static_cast<bool>(
-                              mvm::preview::internal::PreviewRenderPort::
-                                  injectAudioSinkRenderFaultForTest(*engine));
+                bool injected = false;
+                if (fault == Fault::AudioClockStall) {
+                    injected = static_cast<bool>(
+                        mvm::preview::internal::PreviewRenderPort::injectAudioClockStallForTest(
+                            *engine));
+                } else if (fault == Fault::QpcMasterFallback) {
+                    // audio master成立中にmaster選択だけを誤らせる。完成したerrorは
+                    // 注入しない。通常のscheduler経路がQPC退避を捕まえられなければ、
+                    // wall-clockで再生が続いてこのtestは緑になってしまう。
+                    injected = static_cast<bool>(
+                        mvm::preview::internal::PreviewRenderPort::
+                            injectVideoMasterQpcFallbackForTest(*engine));
+                } else {
+                    injected = static_cast<bool>(
+                        mvm::preview::internal::PreviewRenderPort::
+                            injectAudioSinkRenderFaultForTest(*engine));
+                }
                 if (!injected) {
                     exitCode = 13;
                     app.quit();
@@ -660,6 +672,7 @@ int main(int argc, char** argv) {
             const bool seekGenerationVariant = fault == Fault::SeekAudioGenerationStall;
             const bool seekBarrierVariant = fault == Fault::SeekResumeBarrier;
             const bool seekShutdownRaceVariant = fault == Fault::SeekShutdownRace;
+            const bool qpcMasterVariant = fault == Fault::QpcMasterFallback;
             const bool seekFailClosedVariant =
                 seekStallVariant || seekResumeFaultVariant || seekGenerationVariant;
             const auto terminalTelemetry = engine->telemetry();
@@ -704,6 +717,22 @@ int main(int argc, char** argv) {
                   (diagnostics.audioSinkDeviceFailureCount == 0 &&
                    diagnostics.audioTransportFailureCount == 0 &&
                    diagnostics.audioDomainRejectCount == 0)));
+            // phase5-plan.md §9.3「QPC fallback count 0」。audio source登録中に
+            // QPC masterが選ばれたら、退避せずAudioFailureで落ちること。
+            // counterのauthorityを混ぜない (projection失敗でもsink failureでもない)。
+            const bool qpcMasterPass =
+                !qpcMasterVariant ||
+                (diagnostics.videoMasterQpcFallbackCount >= 1 &&
+                 diagnostics.audioMasterProjectionFailureCount == 0 &&
+                 diagnostics.audioSinkDeviceFailureCount == 0 &&
+                 diagnostics.audioTransportFailureCount == 0 &&
+                 diagnostics.audioDomainRejectCount == 0 &&
+                 diagnostics.seekRequestCount == 0 && diagnostics.seekCompletedCount == 0 &&
+                 sink->errors.size() == 1 &&
+                 sink->errors.front().category ==
+                     mvm::preview::PreviewErrorCategory::AudioFailure &&
+                 sink->errors.front().severity ==
+                     mvm::preview::PreviewErrorSeverity::FatalToSession);
             const bool seekPass =
                 !seekVariant ||
                 (diagnostics.seekRequestCount == 1 && diagnostics.seekCompletedCount == 1 &&
@@ -812,7 +841,9 @@ int main(int argc, char** argv) {
                 expectedTerminal && !sink->stateOrderViolation && audioFaultPass &&
                 cleanRunPass && seekPass && seekStallPass && seekPlayingPass &&
                 seekResumeFaultPass && seekGenerationPass && seekBarrierPass &&
-                seekShutdownRacePass && shutdownOrderPass &&
+                seekShutdownRacePass && qpcMasterPass && shutdownOrderPass &&
+                // QPC退避を意図的に注入したrun以外では、製品経路は常に0でなければならない。
+                (qpcMasterVariant || diagnostics.videoMasterQpcFallbackCount == 0) &&
                 !sink->sequenceViolation &&
                 !diagnostics.audioMasterActive && diagnostics.renderVisibleWorkersDetached &&
                 diagnostics.audioSinkJoined && diagnostics.audioWorkerJoined &&

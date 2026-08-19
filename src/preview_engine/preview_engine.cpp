@@ -1,6 +1,7 @@
 #include "core/checked_output_timebase.h"
 #include "media/audio_preview/audio_clock.h"
 #include "media/audio_preview/audio_decode_worker.h"
+#include "media/audio_preview/audio_video_scheduler.h"
 #include "media/audio_preview/wasapi_audio_sink.h"
 #include "media/gpu_preview/composed_frame.h"
 #include "media/gpu_preview/d3d11_shared_device.h"
@@ -519,7 +520,10 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     std::uint64_t audioGenerationMismatchCount = 0;
     std::uint64_t audioTransportFailureCount = 0;
     std::uint64_t audioDomainRejectCount = 0;
+    // audio source登録中にQPC/wall-clock masterが選ばれた回数。製品経路では常に0である。
+    std::uint64_t videoMasterQpcFallbackCount = 0;
     bool audioClockStallInjected = false;
+    bool videoMasterQpcFallbackInjected = false;
     bool seekPresentationStallInjected = false;
     bool seekAudioGenerationMismatchInjected = false;
     std::vector<internal::ShutdownStep> shutdownSequence;
@@ -657,8 +661,9 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         PreviewError error;
     };
 
-    // output frameのmasterはaudio source登録時のみ`IAudioClock`である。projectionが
-    // 成立しない場合はQPC/steady_clockへ退避せず、`AudioFailure`として表面化する。
+    // output frameのmasterは`audio::acceptsVideoMasterSource()`だけが決める。判定を
+    // ここで再実装しない。projectionが成立しない場合はQPC/steady_clockへ退避せず、
+    // `AudioFailure`として表面化する。
     // frame換算そのものは`CheckedOutputTimebase`へ一本化し、ここで再実装しない。
     SchedulerTarget schedulerTargetLocked(std::chrono::steady_clock::time_point now) {
         SchedulerTarget result;
@@ -669,7 +674,25 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
             return result;
         }
 
-        if (audioMasterActive) {
+        // この関数はstateが`Playing`かつscheduler有効なときだけ呼ばれる。したがって
+        // audio sourceを登録していればmasterはaudio device clockでなければならない。
+        // ここでwall-clockが選ばれることは暗黙fallbackであり、成功へ変えない。
+        const audio::VideoMasterSource masterSource =
+            (audioMasterActive && !videoMasterQpcFallbackInjected)
+                ? audio::VideoMasterSource::AudioDeviceClock
+                : audio::VideoMasterSource::Qpc;
+        const bool masterAccepted = audio::acceptsVideoMasterSource(masterSource);
+        if (publicAudioSource && !masterAccepted) {
+            ++videoMasterQpcFallbackCount;
+            result.error =
+                makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::RenderDeviceAttach,
+                          "audio source登録中にQPC masterへ退避しようとしました",
+                          PreviewErrorSeverity::FatalToSession);
+            result.error.source = publicAudioSource;
+            return result;
+        }
+
+        if (masterAccepted) {
             const auto audioFailure = [&](std::string detail) {
                 result.error = makeError(PreviewErrorCategory::AudioFailure,
                                          PreviewOperation::RenderDeviceAttach, std::move(detail),
@@ -708,7 +731,9 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
             return result;
         }
 
-        // audio sourceが無いvideo-only経路 (P5-C) だけがwall-clockを使う。
+        // audio sourceが無いvideo-only経路 (P5-C) だけがwall-clockを使う。ここには
+        // audio clockが存在しないのでwall-clockがqualified masterであり、退避ではない。
+        // したがって`videoMasterQpcFallbackCount`は増やさない。
         const auto elapsed =
             std::chrono::duration_cast<std::chrono::nanoseconds>(now - schedulerStart).count();
         const auto maximum = std::numeric_limits<std::int64_t>::max();
@@ -2432,6 +2457,8 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
             engine.impl_->audioDomainRejectCount;
         engine.impl_->finalRuntimeDiagnostics.audioMasterProjectionFailureCount =
             engine.impl_->audioMasterProjectionFailureCount;
+        engine.impl_->finalRuntimeDiagnostics.videoMasterQpcFallbackCount =
+            engine.impl_->videoMasterQpcFallbackCount;
         engine.impl_->finalRuntimeDiagnostics.audioGenerationMismatchCount =
             engine.impl_->audioGenerationMismatchCount;
         engine.impl_->finalRuntimeDiagnostics.renderVisibleWorkersDetached =
@@ -2691,6 +2718,7 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
     result.audioWorkerJoined = engine.impl_->audioWorkerJoined;
     result.registeredAudioSourceCount = engine.impl_->publicAudioSource ? 1U : 0U;
     result.audioMasterProjectionFailureCount = engine.impl_->audioMasterProjectionFailureCount;
+    result.videoMasterQpcFallbackCount = engine.impl_->videoMasterQpcFallbackCount;
     result.audioGenerationMismatchCount = engine.impl_->audioGenerationMismatchCount;
     result.seekRequestCount = engine.impl_->seekRequestCount;
     result.seekDecodeReadyCount = engine.impl_->seekDecodeReadyCount;
@@ -2837,6 +2865,18 @@ Result<void> PreviewRenderPort::injectAudioClockStallForTest(PreviewEngine& engi
                             "audio sourceが未登録のためaudio clock stallを注入できません");
     }
     engine.impl_->audioClockStallInjected = true;
+    return Result<void>::success();
+}
+
+Result<void> PreviewRenderPort::injectVideoMasterQpcFallbackForTest(PreviewEngine& engine) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    if (!engine.impl_->publicAudioSource) {
+        return invalidState(PreviewOperation::Play,
+                            "audio sourceが未登録のためQPC master退避を注入できません");
+    }
+    // 完成したerrorを注入しない。master選択だけを誤らせ、product側の検査が
+    // 実際にQPC退避を捕まえるかどうかを通常のscheduler経路で確かめる。
+    engine.impl_->videoMasterQpcFallbackInjected = true;
     return Result<void>::success();
 }
 

@@ -129,8 +129,14 @@ struct P5CRuntimeDiagnostics {
     bool audioWorkerJoined = true;
     std::uint64_t registeredAudioSourceCount = 0;
     // QPC masterへ退避した回数ではない。audio master projectionが成立せず
-    // fail-closedにした回数である。製品経路にQPC fallbackは存在しない。
+    // fail-closedにした回数である。退避そのものは別counterで数える。
     std::uint64_t audioMasterProjectionFailureCount = 0;
+    // audio source登録中にQPC/wall-clock masterが選ばれた回数
+    // (phase5-plan.md §9.3「QPC fallback count 0」)。
+    // 製品経路では常に0であり、1以上になった時点で`AudioFailure`としてfail-closedにする。
+    // audio sourceが無いvideo-only経路 (P5-C) のwall-clockはqualified masterであり、
+    // 退避ではないのでここには数えない。
+    std::uint64_t videoMasterQpcFallbackCount = 0;
     std::uint64_t audioUnderflowCount = 0;
     std::uint64_t audioGenerationMismatchCount = 0;
     // failure authorityを混ぜない。
@@ -249,6 +255,9 @@ public:
     static bool waitAudioPlayBarrierEnteredForTest(PreviewEngine& engine, int timeoutMs);
     static void releaseAudioPlayBarrierForTest(PreviewEngine& engine);
     static Result<void> injectAudioClockStallForTest(PreviewEngine& engine);
+    // audio master成立中に誤ってQPC masterが選ばれる回帰を再現するseam。
+    // master選択だけを誤らせる。この検査が無ければwall-clockで再生が続いてPASSしてしまう。
+    static Result<void> injectVideoMasterQpcFallbackForTest(PreviewEngine& engine);
     // sink自身にdevice failureを起こさせ、product側のpolling/昇格経路を検査する。
     // 完成したerrorをengineへ直接注入しないこと。
     static Result<void> injectAudioSinkRenderFaultForTest(PreviewEngine& engine);

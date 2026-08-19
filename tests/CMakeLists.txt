@@ -862,12 +862,15 @@ if(MVM_ENABLE_QT)
     mvm_add_p5d_product_test(preview_engine_p5d_seek_resume_barrier ARGS --seek-resume-barrier)
     # resume 中の requestShutdown() は cancellation であり、Error にしない。
     mvm_add_p5d_product_test(preview_engine_p5d_seek_shutdown_race ARGS --seek-shutdown-race)
+    # P5-D4: phase5-plan.md §9.3「QPC fallback count 0」。他の11本は counter == 0 を
+    # 要求する positive 側であり、これはその検査が効いていることを示す negative 側である。
+    mvm_add_p5d_product_test(preview_engine_p5d_qpc_master_fail_closed ARGS --fault-qpc-master)
 
     # 対象0件のtest群を「全部通った」と報告させない (AGENTS.md)。
     list(LENGTH _mvm_p5d_product_tests _mvm_p5d_product_registered)
-    if(NOT _mvm_p5d_product_registered EQUAL 12)
+    if(NOT _mvm_p5d_product_registered EQUAL 13)
         message(FATAL_ERROR
-            "[mvm] P5-D product testの登録数が不正です: ${_mvm_p5d_product_registered}/12")
+            "[mvm] P5-D product testの登録数が不正です: ${_mvm_p5d_product_registered}/13")
     endif()
 endif()
 
