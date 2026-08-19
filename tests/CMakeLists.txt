@@ -834,12 +834,14 @@ if(MVM_ENABLE_QT)
     mvm_add_p5d_product_test(preview_engine_p5d_audio_sink_runtime_fault
         ARGS --fault-audio-sink)
     mvm_add_p5d_product_test(preview_engine_p5d_pause_fail_closed ARGS --fault-audio-pause)
+    # audio登録済みでGPU drainを失敗させ、quarantine (異常teardown) 経路を通す。
+    mvm_add_p5d_product_test(preview_engine_p5d_gpu_drain_with_audio ARGS --fault-gpu-drain)
 
     # 対象0件のtest群を「全部通った」と報告させない (AGENTS.md)。
     list(LENGTH _mvm_p5d_product_tests _mvm_p5d_product_registered)
-    if(NOT _mvm_p5d_product_registered EQUAL 4)
+    if(NOT _mvm_p5d_product_registered EQUAL 5)
         message(FATAL_ERROR
-            "[mvm] P5-D product testの登録数が不正です: ${_mvm_p5d_product_registered}/4")
+            "[mvm] P5-D product testの登録数が不正です: ${_mvm_p5d_product_registered}/5")
     endif()
 endif()
 

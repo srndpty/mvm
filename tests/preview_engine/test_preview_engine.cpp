@@ -943,6 +943,16 @@ void p5dAudioDomainAndCapabilities() {
     require(!capabilities.deviceRecoverySupported,
             "device recoveryをsupport済みとして公開しました");
 
+    // descriptor validatorだけでなく、addSource()経路でも空descriptorを拒否する。
+    // video/audioのどちらも無効なsourceにpublic IDを発行しない。
+    requireFailure(engine.addSource({"movie.mp4", false, false}),
+                   PreviewErrorCategory::InvalidSource,
+                   "video/audioともに無効なsourceをaddSourceが受理しました");
+    requireFailure(engine.addSource({"", false, false}), PreviewErrorCategory::InvalidSource,
+                   "空pathかつvideo/audio無効のsourceをaddSourceが受理しました");
+    requireFailure(engine.addSource({}), PreviewErrorCategory::InvalidSource,
+                   "既定構築descriptorをaddSourceが受理しました");
+
     // render device attach前はaudio sourceもfail-closedで拒否する。
     requireFailure(engine.addSource({"movie.mp4", false, true}), PreviewErrorCategory::InvalidState,
                    "device attach前にaudio sourceを受理しました");

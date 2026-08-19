@@ -67,7 +67,7 @@ public:
 };
 
 enum class Stage { WaitDevice, WaitInitial, PauseHold, WaitResume, WaitShutdown };
-enum class Fault { None, AudioClockStall, AudioSinkFatal, AudioPauseFault };
+enum class Fault { None, AudioClockStall, AudioSinkFatal, AudioPauseFault, GpuDrain };
 
 } // namespace
 
@@ -79,7 +79,7 @@ int main(int argc, char** argv) {
     if (arguments.size() < 2 || arguments.size() > 3) {
         std::fprintf(stderr, "使い方: mvm_p5d_preview_smoke <fixture-path> "
                              "[--fault-audio-clock|--fault-audio-sink"
-                             "|--fault-audio-pause]\n");
+                             "|--fault-audio-pause|--fault-gpu-drain]\n");
         return 2;
     }
     Fault fault = Fault::None;
@@ -90,6 +90,8 @@ int main(int argc, char** argv) {
             fault = Fault::AudioSinkFatal;
         else if (arguments[2] == "--fault-audio-pause")
             fault = Fault::AudioPauseFault;
+        else if (arguments[2] == "--fault-gpu-drain")
+            fault = Fault::GpuDrain;
         else
             return 2;
     }
@@ -238,6 +240,19 @@ int main(int argc, char** argv) {
                 stage = Stage::WaitShutdown;
                 return;
             }
+            if (fault == Fault::GpuDrain) {
+                // audio登録済みでGPU drainを失敗させ、quarantine経路 (異常teardown)
+                // を通す。detached audio ownerの破棄順が壊れているとここで落ちる。
+                if (!mvm::preview::internal::PreviewRenderPort::injectGpuDrainFailureForTest(
+                        *engine) ||
+                    !engine->requestShutdown()) {
+                    exitCode = 13;
+                    app.quit();
+                    return;
+                }
+                stage = Stage::WaitShutdown;
+                return;
+            }
             if (fault != Fault::None) {
                 const bool injected =
                     fault == Fault::AudioClockStall
@@ -324,6 +339,8 @@ int main(int argc, char** argv) {
             const bool failureFault = fault != Fault::None;
             if (failureFault && sink->errors.empty())
                 return;
+            // GPU drain faultはShutdownFailureであり、audio failureではない。
+            const bool gpuDrainFault = fault == Fault::GpuDrain;
             const auto terminalTelemetry = engine->telemetry();
             const auto diagnostics =
                 mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
@@ -334,7 +351,7 @@ int main(int argc, char** argv) {
             // audio failureはAudioFailureとしてfatalに出る。QPCへ退避して再生を
             // 続けない (projection失敗が記録され、Playingへ戻らない)。
             const bool audioFaultPass =
-                !failureFault ||
+                !failureFault || gpuDrainFault ||
                 (sink->errors.size() == 1 &&
                  sink->errors.front().category ==
                      mvm::preview::PreviewErrorCategory::AudioFailure &&
@@ -382,6 +399,16 @@ int main(int argc, char** argv) {
 
             // 最終状態だけでなく、contract §12 の停止順序そのものを固定する。
             using mvm::preview::internal::ShutdownStep;
+            const std::vector<ShutdownStep> expectedGpuDrainSequence{
+                ShutdownStep::DisableSchedulers,
+                ShutdownStep::StopAudioSink,
+                ShutdownStep::StopAudioDecodeWorker,
+                ShutdownStep::StopVideoWorkers,
+                ShutdownStep::DetachRenderVisibleWorkerRefs,
+                ShutdownStep::VerifyJoins,
+                ShutdownStep::RequestRenderTeardown,
+                ShutdownStep::FiniteGpuRetirementDrain,
+                ShutdownStep::PublishShutdownComplete};
             const std::vector<ShutdownStep> expectedSequence{
                 ShutdownStep::DisableSchedulers,
                 ShutdownStep::StopAudioSink,
@@ -393,7 +420,9 @@ int main(int argc, char** argv) {
                 ShutdownStep::FiniteGpuRetirementDrain,
                 ShutdownStep::ReleaseRenderTargetDevice,
                 ShutdownStep::PublishShutdownComplete};
-            const bool shutdownOrderPass = diagnostics.shutdownSequence == expectedSequence;
+            const bool shutdownOrderPass =
+                diagnostics.shutdownSequence ==
+                (gpuDrainFault ? expectedGpuDrainSequence : expectedSequence);
             if (!shutdownOrderPass) {
                 std::fprintf(stderr, "shutdown orderingがcontract §12と一致しません (steps=%zu)\n",
                              diagnostics.shutdownSequence.size());
@@ -403,10 +432,18 @@ int main(int argc, char** argv) {
                 expectedTerminal && audioFaultPass && cleanRunPass && shutdownOrderPass &&
                 !sink->sequenceViolation &&
                 !diagnostics.audioMasterActive && diagnostics.renderVisibleWorkersDetached &&
-                diagnostics.audioSinkJoined &&
-                diagnostics.audioWorkerJoined && diagnostics.workerJoined &&
-                diagnostics.renderTeardownComplete && diagnostics.deviceReleased &&
-                !diagnostics.unsafeGpuResourcesRetained &&
+                diagnostics.audioSinkJoined && diagnostics.audioWorkerJoined &&
+                diagnostics.workerJoined &&
+                // GPU完了を確認できない場合はresourceを解放せずquarantineする。
+                (gpuDrainFault ? !diagnostics.renderTeardownComplete &&
+                                     !diagnostics.deviceReleased &&
+                                     diagnostics.unsafeGpuResourcesRetained &&
+                                     sink->errors.size() == 1 &&
+                                     sink->errors.front().category ==
+                                         mvm::preview::PreviewErrorCategory::ShutdownFailure
+                               : diagnostics.renderTeardownComplete &&
+                                     diagnostics.deviceReleased &&
+                                     !diagnostics.unsafeGpuResourcesRetained) &&
                 diagnostics.staleSubstitutionCount == 0 &&
                 diagnostics.lifecycleViolationCount == 0 &&
                 diagnostics.fullCpuReadbackCount == 0 &&

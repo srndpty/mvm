@@ -519,11 +519,29 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     bool renderVisibleWorkersDetached = false;
 
     // detach後のowner。renderから到達できるfieldではない。
+    // memberは宣言の逆順で破棄される。`WasapiAudioSink`はqueue (worker所有) と
+    // clockをreferenceで保持し、destructorから`stop()` -> `clock_.stop()`を呼ぶ。
+    // したがってsinkが最後に壊れるとuse-after-freeになる。正常teardownの明示reset順
+    // (sink -> worker -> clock) と一致するよう、宣言はその逆順に並べる。
+    // `Impl`本体のaudio memberも同じ理由で clock -> worker -> sink の順に宣言している。
     struct DetachedWorkers {
         std::unique_ptr<gpu::SourceDecodeWorker> videoWorker;
-        std::shared_ptr<audio::WasapiAudioSink> audioSink;
-        std::shared_ptr<audio::AudioDecodeWorker> audioWorker;
         std::shared_ptr<audio::AudioMasterClock> audioClock;
+        std::shared_ptr<audio::AudioDecodeWorker> audioWorker;
+        std::shared_ptr<audio::WasapiAudioSink> audioSink;
+
+        // 宣言順という規約に依存すると、将来の並べ替えで無言のuse-after-freeへ
+        // 戻り得る (このUAFはcrashしないため、testでも捕まえられない)。
+        // 依存の逆順をdestructorで固定し、宣言順に関係なく安全にする。
+        ~DetachedWorkers() {
+            audioSink.reset();
+            audioWorker.reset();
+            audioClock.reset();
+        }
+
+        DetachedWorkers() = default;
+        DetachedWorkers(const DetachedWorkers&) = delete;
+        DetachedWorkers& operator=(const DetachedWorkers&) = delete;
     };
 
     DetachedWorkers detachedWorkers;
@@ -1962,12 +1980,20 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
             static auto* retainedDevices = new std::vector<std::unique_ptr<gpu::SharedD3D11Device>>;
             std::lock_guard<std::mutex> quarantineLock(*quarantineMutex);
             retainedCompositors->push_back(std::move(engine.impl_->compositor));
+            // detach済みかどうかでownerが変わる。両方見るが、空のentryは積まない。
+            if (engine.impl_->videoWorker)
+                retainedWorkers->push_back(std::move(engine.impl_->videoWorker));
             if (engine.impl_->detachedWorkers.videoWorker)
                 retainedWorkers->push_back(std::move(engine.impl_->detachedWorkers.videoWorker));
-            retainedWorkers->push_back(engine.impl_->videoWorker
-                                           ? std::move(engine.impl_->videoWorker)
-                                           : std::move(engine.impl_->detachedWorkers.videoWorker));
             retainedDevices->push_back(std::move(engine.impl_->renderDevice));
+            // audio sink/worker/clockはjoin確認済みで、GPU completionに紐づかない。
+            // holderの破棄順に頼らず、依存の逆順で明示的に解放する。
+            engine.impl_->audioSink.reset();
+            engine.impl_->audioWorker.reset();
+            engine.impl_->audioClock.reset();
+            engine.impl_->detachedWorkers.audioSink.reset();
+            engine.impl_->detachedWorkers.audioWorker.reset();
+            engine.impl_->detachedWorkers.audioClock.reset();
             engine.impl_->nativeDeviceAttached = false;
         }
         engine.impl_->finalRuntimeDiagnostics.workerJoined = engine.impl_->workerJoined;
