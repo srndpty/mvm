@@ -946,6 +946,17 @@ void p5dAudioDomainAndCapabilities() {
             "qualified audio channel数が2として公開されていません");
     require(!capabilities.deviceRecoverySupported,
             "device recoveryをsupport済みとして公開しました");
+    // P5-D4 capability確定。P5-Dで閉じたenvelopeをliteralで固定する。
+    // active source数とlayer数は別capabilityとして検査する (contract §21)。
+    require(capabilities.maxQualifiedActiveVideoSources == 1,
+            "qualified active video source数が1として公開されていません");
+    require(capabilities.maxQualifiedCompositionLayers == 1,
+            "qualified composition layer数が1として公開されていません");
+    require(!capabilities.duplicateSourceLayersSupported,
+            "同一sourceの複数layer配置をsupport済みとして公開しました");
+    require(capabilities.qualifiedOutputFrameRate.numerator == 60 &&
+                capabilities.qualifiedOutputFrameRate.denominator == 1,
+            "qualified output frame rateが60/1として公開されていません");
 
     // descriptor validatorだけでなく、addSource()経路でも空descriptorを拒否する。
     // video/audioのどちらも無効なsourceにpublic IDを発行しない。
@@ -964,6 +975,9 @@ void p5dAudioDomainAndCapabilities() {
     requireFailure(PreviewRenderPort::injectAudioClockStallForTest(engine),
                    PreviewErrorCategory::InvalidState,
                    "audio未登録engineでclock stallを注入できてしまいました");
+    requireFailure(PreviewRenderPort::injectVideoMasterQpcFallbackForTest(engine),
+                   PreviewErrorCategory::InvalidState,
+                   "audio未登録engineでQPC master退避を注入できてしまいました");
 
     const P5CRuntimeDiagnostics diagnostics = PreviewRenderPort::runtimeDiagnostics(engine);
     require(!diagnostics.audioMasterActive, "audio未登録なのにaudio masterがactiveです");
@@ -971,6 +985,8 @@ void p5dAudioDomainAndCapabilities() {
             "audio未登録なのにaudio source数が0ではありません");
     require(diagnostics.audioMasterProjectionFailureCount == 0,
             "初期状態でaudio master projection失敗が記録されています");
+    require(diagnostics.videoMasterQpcFallbackCount == 0,
+            "初期状態でQPC master退避が記録されています");
     require(diagnostics.audioUnderflowCount == 0, "初期状態でunderflowが記録されています");
 
     require(engine.requestShutdown(), "shutdownに失敗しました");

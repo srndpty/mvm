@@ -306,9 +306,12 @@ ID、各rectangle field、opacityの差を独立した期待値で検査する�
 - API typeは二layerへhard-codeしない
 - `PreviewCapabilities::maxQualifiedActiveVideoSources`と
   `PreviewCapabilities::maxQualifiedCompositionLayers`を別fieldとして報告する
-- P5-C product wiringの現在値は`maxQualifiedActiveVideoSources == 1`、
-  `maxQualifiedCompositionLayers == 1`、`maxQualifiedActiveAudioSources == 0`である
-- audio source未対応中はqualified audio sample rate/channel countも0として報告する
+- P5-D closure時点のproduct wiringの現在値は`maxQualifiedActiveVideoSources == 1`、
+  `maxQualifiedCompositionLayers == 1`、`maxQualifiedActiveAudioSources == 1`である
+- qualified audio domainは48000 Hz / stereoとして報告する。sample formatのfloat32は
+  capabilityの報告項目ではなく`AudioChunk::PcmSample`の型不変条件で保証する (§5)
+- `qualifiedOutputFrameRate`は`60/1`、`duplicateSourceLayersSupported`と
+  `deviceRecoverySupported`はいずれもfalseである
 - capabilityを超えるsnapshotはaccept前に`UnsupportedCapability`で拒否する
 - 将来のqualificationはsnapshot formatを変えずにcapabilityを増やせる
 
@@ -486,8 +489,12 @@ P5-Cはvideo-onlyの最初のvertical sliceである。P5-Cが提供するpause�
 主張しない。
 
 P5-Dで次を統合した時点から、製品`play()`、`pause()`、`seek()`はauthoritativeなP3-C-2 semanticsを持つ。
-P5-Dはsub-sliceへ分割している (phase5-plan.md §9.4)。P5-D2完了時点でauthoritativeになるのは
-`play()`と`pause()`だけであり、`seek()`はP5-D3まで`UnsupportedCapability`のままである。
+P5-Dはsub-sliceへ分割している (phase5-plan.md §9.4)。P5-D3で`seek()`を統合したため、P5-D closure
+時点では`play()`、`pause()`、`seek()`のすべてがauthoritativeである。
+
+`seek()`は引数検査をsource/compositionの有無より先に行う。呼び出し側の誤り (負のframe等) は
+stateに関わらず`SeekFailure`であり、accepted compositionが無い状態でのseekは`InvalidState`である。
+呼び出し側の誤りをstateの都合で別のerrorへすり替えない。
 
 - audio decode
 - WASAPI shared event-driven sink
@@ -680,6 +687,13 @@ COM pointerをpublic identityとして要求しない。必要なnative codeはb
 - stale/latest frame reuse
 - old composition reuse
 - automatic device reopen
+
+video output frameのmaster選択は`audio::acceptsVideoMasterSource()`に一本化し、product schedulerが
+判定を再実装しない。active audio sourceを登録している間にQPC/wall-clock masterが選ばれた場合は、
+その時点でscheduleを止め、`AudioFailure` / `FatalToSession`としてfail-closedにする。退避回数は
+`videoMasterQpcFallbackCount`として報告し、audio master projectionの失敗回数
+(`audioMasterProjectionFailureCount`) と合算しない。audio sourceを登録していないvideo-only経路
+(P5-C) のwall-clockはqualified masterであり、退避ではないのでこのcounterには数えない。
 
 device lostを検出したらerrorをrecordし、transportを停止して`ShuttingDown`へ遷移する。worker joinと
 GPU/device resourceのsafe teardown完了後にだけterminal `Error`を公開する。自動reopen/recoveryは将来

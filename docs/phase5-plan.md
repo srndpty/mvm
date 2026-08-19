@@ -249,7 +249,11 @@ audio_sample(frame) = output_time(frame) * configured_sample_rate
 - seek request acceptanceとcompletionの分離
 - decode readyだけではseek completeにならないnegative test
 - stale generation提示拒否
-- QPC fallback count 0
+- QPC fallback count 0。product schedulerのmaster選択を`acceptsVideoMasterSource()`へ一本化し、
+  active audio source登録中の退避を`videoMasterQpcFallbackCount`として数える。positive側は
+  P5-D product test全件で0を要求し、negative側は退避を注入して`AudioFailure`で
+  fail-closedになることを確認する。spike側の`measurement_video_qpc_master_fallback_count`を
+  product testの根拠へ読み替えない
 - audio sink/worker/video worker join ordering
 
 ### 9.4 Sub-slice分割
@@ -323,6 +327,13 @@ P5-Dは一度に閉じない。§9.1のscopeを次の4 sliceへ分け、各slice
 
 - §9.3の全項目に対応するtestが存在し、対象0件のgroupが無いこと
 - frozen P3-C-2 regressionが変更前semanticsを維持していること
+- product schedulerのvideo master選択が`audio::acceptsVideoMasterSource()`へ委譲されていること。
+  判定helperをtestからだけ呼び、product経路が別の判定を持つ状態を成立とみなさない
+- `PreviewCapabilities`の確定値 (`maxQualifiedActiveVideoSources == 1`、
+  `maxQualifiedCompositionLayers == 1`、`maxQualifiedActiveAudioSources == 1`、
+  `qualifiedOutputFrameRate == 60/1`、48000 Hz / stereo、
+  `duplicateSourceLayersSupported == false`、`deviceRecoverySupported == false`) を
+  independent literalで固定し、docsの記述を実装と一致させること
 
 ### 9.5 P5-Dで扱わないもの
 
