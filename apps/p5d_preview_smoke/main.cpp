@@ -44,12 +44,38 @@ public:
                             state == mvm::preview::PreviewEngineState::Seeking;
         if (enteredTerminal && active)
             stateOrderViolation = true;
+        // terminal以外でも、state machine上あり得ない遷移は検出する。
+        if (!states.empty() && !isLegalTransition(states.back(), state))
+            stateOrderViolation = true;
         if (state == mvm::preview::PreviewEngineState::ShuttingDown ||
             state == mvm::preview::PreviewEngineState::Shutdown ||
             state == mvm::preview::PreviewEngineState::Error)
             enteredTerminal = true;
         terminal = state;
         states.push_back(state);
+    }
+
+    // preview-engine-contract.md §10 の state machine で許される遷移だけを通す。
+    static bool isLegalTransition(mvm::preview::PreviewEngineState from,
+                                  mvm::preview::PreviewEngineState to) {
+        using State = mvm::preview::PreviewEngineState;
+        switch (from) {
+        case State::WaitingForRenderDevice:
+            return to == State::ReadyPaused || to == State::ShuttingDown;
+        case State::ReadyPaused:
+            return to == State::Playing || to == State::Seeking || to == State::ShuttingDown;
+        case State::Playing:
+            return to == State::ReadyPaused || to == State::Seeking || to == State::ShuttingDown;
+        case State::Seeking:
+            return to == State::Playing || to == State::ReadyPaused || to == State::ShuttingDown;
+        case State::ShuttingDown:
+            return to == State::Shutdown || to == State::Error;
+        case State::Uninitialized:
+        case State::Shutdown:
+        case State::Error:
+            break;
+        }
+        return false;
     }
 
     // 「一度もPlayingを公開していない」ことを検査するために全遷移を残す。

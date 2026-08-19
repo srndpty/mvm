@@ -1596,8 +1596,8 @@ Result<void> PreviewEngine::seek(PreviewPosition target) {
             audioPrepared = false;
     }
 
-    PreviewEngineState published = PreviewEngineState::Seeking;
     std::optional<PreviewError> fatal;
+    std::shared_ptr<PreviewEventDispatcher> pendingDispatch;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         if (!audioPrepared) {
@@ -1612,6 +1612,9 @@ Result<void> PreviewEngine::seek(PreviewPosition target) {
                 impl_->telemetrySnapshot.status.state = PreviewEngineState::ShuttingDown;
                 impl_->telemetrySnapshot.status.lastError = impl_->machine.lastError();
             }
+            impl_->notifyLocked(internal::ErrorOccurredEvent{failure}, pendingDispatch);
+            impl_->notifyLocked(internal::StateChangedEvent{PreviewEngineState::ShuttingDown},
+                                pendingDispatch);
             fatal = failure;
         } else {
             Result<void> moved = impl_->machine.seek();
@@ -1639,6 +1642,9 @@ Result<void> PreviewEngine::seek(PreviewPosition target) {
                     impl_->telemetrySnapshot.status.lastError = impl_->machine.lastError();
                 }
                 impl_->pendingSeek = Impl::PendingSeek{};
+                impl_->notifyLocked(internal::ErrorOccurredEvent{failure}, pendingDispatch);
+                impl_->notifyLocked(internal::StateChangedEvent{PreviewEngineState::ShuttingDown},
+                                    pendingDispatch);
                 fatal = failure;
             } else {
                 Impl::PendingSeek& pending = impl_->pendingSeek;
@@ -1654,16 +1660,19 @@ Result<void> PreviewEngine::seek(PreviewPosition target) {
                 ++impl_->seekRequestCount;
                 impl_->lastSeekTargetFrame = target.outputFrame;
                 impl_->telemetrySnapshot.status.state = PreviewEngineState::Seeking;
+                // request acceptanceが確定した成功branchでだけ`Seeking`を公開する。
+                // unlock後に積むと、render threadが先にseekを完了/失敗させた場合に
+                // stale eventが後ろへ並ぶ。
+                impl_->notifyLocked(internal::StateChangedEvent{PreviewEngineState::Seeking},
+                                    pendingDispatch);
             }
         }
     }
 
+    impl_->flushDispatch(pendingDispatch);
     if (fatal) {
-        impl_->notify(internal::ErrorOccurredEvent{*fatal});
-        impl_->notify(internal::StateChangedEvent{PreviewEngineState::ShuttingDown});
         return Result<void>::failure(*fatal);
     }
-    impl_->notify(internal::StateChangedEvent{published});
     return Result<void>::success();
 }
 
