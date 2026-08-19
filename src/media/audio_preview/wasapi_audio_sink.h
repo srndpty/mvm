@@ -65,6 +65,12 @@ public:
     // pause() を実際に失敗させる test seam。product側が「止められないまま
     // ReadyPaused を公開しない」ことを検査するために使う。
     void injectPauseFaultForTest();
+    void injectPlayFaultForTest();
+    // play() の pre-roll 直前で決定論的に停止させる test barrier。
+    // shutdown/resume の interleaving を再現可能に固定するために使う。
+    void armPlayBarrierForTest();
+    bool waitPlayBarrierEnteredForTest(int timeoutMs);
+    void releasePlayBarrierForTest();
 
 private:
     void renderLoop();
@@ -100,6 +106,11 @@ private:
     std::atomic<bool> playing_{false};
     std::atomic<bool> renderFaultInjected_{false};
     std::atomic<bool> pauseFaultInjected_{false};
+    std::atomic<bool> playFaultInjected_{false};
+    std::mutex barrierMutex_;
+    std::condition_variable barrierChanged_;
+    bool playBarrierArmed_ = false;
+    bool playBarrierEntered_ = false;
     std::atomic<std::uint64_t> generation_{0};
     bool comInitialized_ = false;
     bool endpointPrefillRequired_ = true;

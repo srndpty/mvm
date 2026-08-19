@@ -872,8 +872,12 @@ void p5cControlAndRenderNegatives() {
                    "P5-Cでtwo-layer product submissionを受理しました");
     requireFailure(engine.pause(), PreviewErrorCategory::InvalidState,
                    "Playing以外のpauseを受理しました");
-    requireFailure(engine.seek({0}), PreviewErrorCategory::UnsupportedCapability,
-                   "P5-Cでseekを受理しました");
+    // P5-D3でseekは受理対象になった。ただし引数検査はsource/compositionの有無より
+    // 先に行い、呼び出し側の誤りをstateの都合で別errorへすり替えない。
+    requireFailure(engine.seek({-1}), PreviewErrorCategory::SeekFailure,
+                   "負のoutputFrameへのseekを受理しました");
+    requireFailure(engine.seek({0}), PreviewErrorCategory::InvalidState,
+                   "source/compositionなしのseekを受理しました");
     require(engine.requestShutdown(), "shutdown requestに失敗しました");
     require(PreviewRenderPort::completeTeardown(engine), "teardown completionに失敗しました");
 }

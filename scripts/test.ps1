@@ -19,6 +19,14 @@
 .PARAMETER Preset
     ucrt64-release / ucrt64-debug / both (既定)
 
+.PARAMETER Jobs
+    ctest の並列実行数 (既定 8)。1 を指定すると直列に戻る。
+
+    workstation ラベル (実 GPU / audio endpoint / display を使うテスト) は
+    RESOURCE_LOCK により、並列度に関わらず 1 件ずつ実行される。
+    それ以外は並列に走る。実測 (この開発機、非 workstation 379 件):
+    直列 7 分 20 秒 / -j4 122 秒 / -j8 83 秒 / -j16 66 秒。
+
 .PARAMETER Performance
     performance ラベルのテストも実行する。release のみ。
 
@@ -30,11 +38,16 @@
     pwsh scripts/test.ps1
     pwsh scripts/test.ps1 -Preset ucrt64-release -Performance
     pwsh scripts/test.ps1 -Preset ucrt64-release -Stability
+    pwsh scripts/test.ps1 -Preset ucrt64-release -Portable   # 反復用の最短経路
+    pwsh scripts/test.ps1 -Jobs 1                            # 直列に戻す
 #>
 [CmdletBinding()]
 param(
     [ValidateSet('ucrt64-release', 'ucrt64-debug', 'both')]
     [string]$Preset = 'both',
+
+    [ValidateRange(1, 256)]
+    [int]$Jobs = 8,
 
     [switch]$Performance,
     [switch]$Stability,
@@ -47,6 +60,8 @@ Set-StrictMode -Version Latest
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $CTest    = Join-Path $Ucrt64 'bin\ctest.exe'
+# 関数内から参照するため script scope へ明示的に写す。
+$CTestJobs = $Jobs
 
 $presets = if ($Preset -eq 'both') { @('ucrt64-release', 'ucrt64-debug') } else { @($Preset) }
 
@@ -118,7 +133,8 @@ function Invoke-CTestGroup {
     # 終了コードは script スコープの変数で受け渡す。
     # Tee-Object -Variable は 2 回目以降の呼び出しで空になることがあった。
     # 一旦すべて受け取ってから自分で表示する。
-    $outLines = & $script:CTest --output-on-failure @CTestArgs 2>&1
+    # 並列実行しても要約行の書式は変わらないため、件数照合はそのまま使える。
+    $outLines = & $script:CTest --output-on-failure -j $script:CTestJobs @CTestArgs 2>&1
     $code = $LASTEXITCODE
     $outLines | ForEach-Object { Write-Host "$_" }
 

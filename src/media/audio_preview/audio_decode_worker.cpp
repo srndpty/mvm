@@ -125,6 +125,9 @@ bool AudioDecodeWorker::start(const std::string& utf8Path, std::string& error) {
 void AudioDecodeWorker::play() {
     {
         std::lock_guard lock(mutex_);
+        // stop 済みの worker を playing へ戻さない。
+        if (!running_.load(std::memory_order_acquire))
+            return;
         playing_ = true;
         metrics_.playing = true;
     }
