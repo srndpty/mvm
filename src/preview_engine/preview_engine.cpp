@@ -467,6 +467,11 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     }
 
     mutable std::mutex mutex;
+    // audio transport command (play/pause/stop) を直列化する専用mutex。
+    // engine mutexとは別物で、engine mutexを保持したまま取らない。
+    // これが無いと、seek resumeのplay()とshutdownのstop()が交錯し、
+    // stop済みのworker/sinkをplayが復活させ得る。
+    std::mutex audioTransportMutex;
     internal::PreviewStateMachine machine;
     internal::EventMailbox mailbox{32};
     std::shared_ptr<PreviewEventDispatcher> dispatcher;
@@ -609,6 +614,7 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     std::uint64_t seekCompletedCount = 0;
     std::uint64_t seekAwaitingPresentationCount = 0;
     std::uint64_t seekStaleGenerationRejectCount = 0;
+    std::uint64_t seekCancelledByShutdownCount = 0;
     std::int64_t lastSeekTargetFrame = -1;
     std::int64_t lastSeekPresentedFrame = -1;
 
@@ -753,6 +759,8 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
             }
             std::string ignored;
             if (audioEndpoint) {
+                // seek resumeのplay()と交錯させない。engine mutexは保持しない。
+                std::lock_guard<std::mutex> transport(self->audioTransportMutex);
                 audioEndpoint->pause(ignored);
                 audioEndpoint->stop();
             }
@@ -760,8 +768,10 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                 std::lock_guard<std::mutex> lock(self->mutex);
                 self->noteShutdownStepLocked(internal::ShutdownStep::StopAudioSink);
             }
-            if (audioDecoder)
+            if (audioDecoder) {
+                std::lock_guard<std::mutex> transport(self->audioTransportMutex);
                 audioDecoder->stop();
+            }
             {
                 std::lock_guard<std::mutex> lock(self->mutex);
                 self->noteShutdownStepLocked(internal::ShutdownStep::StopAudioDecodeWorker);
@@ -2154,6 +2164,8 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
     if (seekAwaitingResume) {
         std::optional<PreviewError> resumeFailure;
         if (seekAudioWorker && seekAudioSink) {
+            // shutdownのstop()と直列化する。engine mutexは保持しない。
+            std::lock_guard<std::mutex> transport(engine.impl_->audioTransportMutex);
             seekAudioWorker->play();
             std::string error;
             // seek completionが返したidentityをそのまま運ぶ。
@@ -2163,6 +2175,17 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                     makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::Seek,
                               "seek後にWASAPI renderingを再開できません: " + error,
                               PreviewErrorSeverity::FatalToSession);
+            }
+        }
+        {
+            // resume中にrequestShutdown()がcommitされている場合がある。これは
+            // seek failureではなくshutdownによるcancellationなので、
+            // completeSeek()もrecordFatal()も行わない。正常なshutdownを
+            // Errorへ書き換えない。
+            std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+            if (engine.impl_->machine.state() != PreviewEngineState::Seeking) {
+                ++engine.impl_->seekCancelledByShutdownCount;
+                return Result<RenderFrameResult>::success(result);
             }
         }
         if (!resumeFailure) {
@@ -2599,6 +2622,7 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
     result.seekCompletedCount = engine.impl_->seekCompletedCount;
     result.seekAwaitingPresentationCount = engine.impl_->seekAwaitingPresentationCount;
     result.seekStaleGenerationRejectCount = engine.impl_->seekStaleGenerationRejectCount;
+    result.seekCancelledByShutdownCount = engine.impl_->seekCancelledByShutdownCount;
     result.lastSeekTargetFrame = engine.impl_->lastSeekTargetFrame;
     result.lastSeekPresentedFrame = engine.impl_->lastSeekPresentedFrame;
     result.audioTransportFailureCount = engine.impl_->audioTransportFailureCount;
@@ -2666,6 +2690,39 @@ Result<void> PreviewRenderPort::injectAudioSinkPauseFaultForTest(PreviewEngine& 
     }
     engine.impl_->audioSink->injectPauseFaultForTest();
     return Result<void>::success();
+}
+
+Result<void> PreviewRenderPort::armAudioPlayBarrierForTest(PreviewEngine& engine) {
+    std::shared_ptr<audio::WasapiAudioSink> sink;
+    {
+        std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+        sink = engine.impl_->audioSink;
+    }
+    if (!sink) {
+        return invalidState(PreviewOperation::Seek,
+                            "audio sourceが未登録のためplay barrierを設定できません");
+    }
+    sink->armPlayBarrierForTest();
+    return Result<void>::success();
+}
+
+bool PreviewRenderPort::waitAudioPlayBarrierEnteredForTest(PreviewEngine& engine, int timeoutMs) {
+    std::shared_ptr<audio::WasapiAudioSink> sink;
+    {
+        std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+        sink = engine.impl_->audioSink;
+    }
+    return sink != nullptr && sink->waitPlayBarrierEnteredForTest(timeoutMs);
+}
+
+void PreviewRenderPort::releaseAudioPlayBarrierForTest(PreviewEngine& engine) {
+    std::shared_ptr<audio::WasapiAudioSink> sink;
+    {
+        std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+        sink = engine.impl_->audioSink;
+    }
+    if (sink)
+        sink->releasePlayBarrierForTest();
 }
 
 Result<void> PreviewRenderPort::injectAudioSinkPlayFaultForTest(PreviewEngine& engine) {

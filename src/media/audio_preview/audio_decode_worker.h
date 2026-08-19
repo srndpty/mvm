@@ -68,6 +68,8 @@ public:
     AudioDecodeWorker& operator=(const AudioDecodeWorker&) = delete;
 
     bool start(const std::string& utf8Path, std::string& error);
+    // stopped worker を playing へ戻さない。shutdown と競合しても
+    // 再生状態が復活しないようにする。
     void play();
     void pause();
     void stop();

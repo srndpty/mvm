@@ -158,6 +158,9 @@ struct P5CRuntimeDiagnostics {
     // exact frameを提示できずに待った render callback の回数。
     std::uint64_t seekAwaitingPresentationCount = 0;
     std::uint64_t seekStaleGenerationRejectCount = 0;
+    // shutdown が先に commit されたため seek resume を中止した回数。
+    // seek failure ではないので Error にはしない。
+    std::uint64_t seekCancelledByShutdownCount = 0;
     std::int64_t lastSeekTargetFrame = -1;
     std::int64_t lastSeekPresentedFrame = -1;
 };
@@ -240,6 +243,11 @@ public:
     static Result<void> injectSeekAudioGenerationMismatchForTest(PreviewEngine& engine);
     // seek後のtransport復帰でWASAPI playを失敗させるseam。
     static Result<void> injectAudioSinkPlayFaultForTest(PreviewEngine& engine);
+    // seek resume の play() を決定論的に止める barrier。resume 中の state と
+    // shutdown との interleaving を再現可能に固定する。
+    static Result<void> armAudioPlayBarrierForTest(PreviewEngine& engine);
+    static bool waitAudioPlayBarrierEnteredForTest(PreviewEngine& engine, int timeoutMs);
+    static void releaseAudioPlayBarrierForTest(PreviewEngine& engine);
     static Result<void> injectAudioClockStallForTest(PreviewEngine& engine);
     // sink自身にdevice failureを起こさせ、product側のpolling/昇格経路を検査する。
     // 完成したerrorをengineへ直接注入しないこと。

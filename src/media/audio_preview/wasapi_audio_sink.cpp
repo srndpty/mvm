@@ -211,6 +211,16 @@ bool WasapiAudioSink::play(std::int64_t mediaStartSample, SourceGeneration gener
             return false;
         }
     }
+    {
+        // barrier は pre-roll の前に入る。ここで止めている間に shutdown を
+        // 走らせることで、interleaving を決定論的に再現できる。
+        std::unique_lock barrierLock(barrierMutex_);
+        if (playBarrierArmed_) {
+            playBarrierEntered_ = true;
+            barrierChanged_.notify_all();
+            barrierChanged_.wait(barrierLock, [this] { return !playBarrierArmed_; });
+        }
+    }
     if (!queue_.waitForSamples(kAudioPrerollSamples, kPrerollTimeoutMs)) {
         error = "固定 100 ms の audio pre-roll を 5000 ms 以内に満たせません";
         return false;
@@ -218,6 +228,15 @@ bool WasapiAudioSink::play(std::int64_t mediaStartSample, SourceGeneration gener
     if (playing_)
         return true;
     std::lock_guard clientLock(clientMutex_);
+    {
+        // pre-roll 待ちの間に stop() が走り得る。clientMutex_ を取った後に
+        // 再検査しないと、停止済み endpoint を再生状態へ戻してしまう。
+        std::lock_guard lock(mutex_);
+        if (!acceptingCommands_ || !metrics_.open) {
+            error = "WASAPI endpoint は play を受理できません (stop 済み)";
+            return false;
+        }
+    }
     const bool didPrefill = endpointPrefillRequired_;
     if (endpointPrefillRequired_) {
         if (!prefillEndpoint(mediaStartSample, generation, error)) {
@@ -530,6 +549,26 @@ bool WasapiAudioSink::renderAvailable() {
 
 void WasapiAudioSink::injectRenderFaultForTest() {
     renderFaultInjected_.store(true, std::memory_order_release);
+}
+
+void WasapiAudioSink::armPlayBarrierForTest() {
+    std::lock_guard lock(barrierMutex_);
+    playBarrierArmed_ = true;
+    playBarrierEntered_ = false;
+}
+
+bool WasapiAudioSink::waitPlayBarrierEnteredForTest(int timeoutMs) {
+    std::unique_lock lock(barrierMutex_);
+    return barrierChanged_.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                                    [this] { return playBarrierEntered_; });
+}
+
+void WasapiAudioSink::releasePlayBarrierForTest() {
+    {
+        std::lock_guard lock(barrierMutex_);
+        playBarrierArmed_ = false;
+    }
+    barrierChanged_.notify_all();
 }
 
 void WasapiAudioSink::injectPlayFaultForTest() {

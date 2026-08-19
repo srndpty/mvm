@@ -858,12 +858,16 @@ if(MVM_ENABLE_QT)
     # seek completionで得たaudio generationをengineがenforceしていること。
     mvm_add_p5d_product_test(preview_engine_p5d_seek_audio_generation_fail_closed
         ARGS --fault-seek-audio-generation)
+    # resume を barrier で止めている間、Playing を公開しないこと。
+    mvm_add_p5d_product_test(preview_engine_p5d_seek_resume_barrier ARGS --seek-resume-barrier)
+    # resume 中の requestShutdown() は cancellation であり、Error にしない。
+    mvm_add_p5d_product_test(preview_engine_p5d_seek_shutdown_race ARGS --seek-shutdown-race)
 
     # 対象0件のtest群を「全部通った」と報告させない (AGENTS.md)。
     list(LENGTH _mvm_p5d_product_tests _mvm_p5d_product_registered)
-    if(NOT _mvm_p5d_product_registered EQUAL 10)
+    if(NOT _mvm_p5d_product_registered EQUAL 12)
         message(FATAL_ERROR
-            "[mvm] P5-D product testの登録数が不正です: ${_mvm_p5d_product_registered}/10")
+            "[mvm] P5-D product testの登録数が不正です: ${_mvm_p5d_product_registered}/12")
     endif()
 endif()
 
