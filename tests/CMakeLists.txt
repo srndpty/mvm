@@ -834,7 +834,9 @@ if(MVM_ENABLE_QT)
     mvm_add_p5d_product_test(preview_engine_p5d_audio_sink_runtime_fault
         ARGS --fault-audio-sink)
     mvm_add_p5d_product_test(preview_engine_p5d_pause_fail_closed ARGS --fault-audio-pause)
-    # audio登録済みでGPU drainを失敗させ、quarantine (異常teardown) 経路を通す。
+    # audio登録済みでGPU drainを失敗させ、quarantine (異常teardown) 経路の
+    # terminal state / quarantine / shutdown sequence を固定する。
+    # destruction order自体のregression testではない。
     mvm_add_p5d_product_test(preview_engine_p5d_gpu_drain_with_audio ARGS --fault-gpu-drain)
 
     # 対象0件のtest群を「全部通った」と報告させない (AGENTS.md)。

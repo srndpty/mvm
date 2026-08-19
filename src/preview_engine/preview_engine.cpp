@@ -740,6 +740,7 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
             }
             if (worker)
                 worker->stop();
+            bool joinsVerified = false;
             {
                 std::lock_guard<std::mutex> lock(self->mutex);
                 self->noteShutdownStepLocked(internal::ShutdownStep::StopVideoWorkers);
@@ -750,8 +751,22 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                     audioDecoder == nullptr || audioDecoder->snapshot().joined;
                 self->workerJoined = worker == nullptr || worker->joined();
                 self->noteShutdownStepLocked(internal::ShutdownStep::VerifyJoins);
-                self->renderTeardownRequested =
+                joinsVerified =
                     self->workerJoined && self->audioSinkJoined && self->audioWorkerJoined;
+            }
+
+            // RequestRenderTeardownをpublishすると、render threadがdetached audioを
+            // 解放し得る。その前にshutdown thread側のstrong ownerを必ず落とす。
+            // detachedWorkersが所有しているので、ここでresetしても実体は生存する。
+            audioEndpoint.reset();
+            audioDecoder.reset();
+            // videoWorkerはdetachedWorkersが所有しており、この生ポインタは
+            // teardown後にdanglingになる。publish前に手放す。
+            worker = nullptr;
+
+            {
+                std::lock_guard<std::mutex> lock(self->mutex);
+                self->renderTeardownRequested = joinsVerified;
                 if (!self->renderTeardownRequested)
                     ++self->lifecycleViolationCount;
                 else

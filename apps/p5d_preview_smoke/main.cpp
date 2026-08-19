@@ -241,8 +241,10 @@ int main(int argc, char** argv) {
                 return;
             }
             if (fault == Fault::GpuDrain) {
-                // audio登録済みでGPU drainを失敗させ、quarantine経路 (異常teardown)
-                // を通す。detached audio ownerの破棄順が壊れているとここで落ちる。
+                // audio登録済みでGPU drainを失敗させ、quarantine経路 (異常teardown) の
+                // terminal state / resource quarantine / shutdown sequenceを固定する。
+                // `DetachedWorkers`のdestruction orderそのものを検出するtestではない
+                // (このUAFは無音で、testでは捕まえられないため構造で担保している)。
                 if (!mvm::preview::internal::PreviewRenderPort::injectGpuDrainFailureForTest(
                         *engine) ||
                     !engine->requestShutdown()) {
