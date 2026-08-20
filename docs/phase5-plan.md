@@ -442,8 +442,17 @@ P5-Dと同様に一度に閉じない。§10.1のscopeを次の4 sliceへ分け�
 | --- | --- | --- |
 | P5-E1 | video sourceのinternal multi-source所有化、`CompositorCoordinator`をcomposition epochのauthorityとするproduct配線、`ExactFramePairer`のN一般化 (capabilityは1/1のまま) | 実装完了。closureはgate PASS確認後に確定する |
 | P5-E2 | `removeSource()`、active/pending composition参照中のremoval拒否、audio authorityの返却 | 実装完了。closureはgate PASS確認後に確定する |
-| P5-E3 | capabilityを`maxQualifiedActiveVideoSources == 2` / `maxQualifiedCompositionLayers == 2`へ引き上げ、多層render経路、per-source seek generation、`apps/p5e_preview_smoke` | 未 |
+| P5-E3 | capabilityを`maxQualifiedActiveVideoSources == 2` / `maxQualifiedCompositionLayers == 2`へ引き上げ、多層render経路、per-source seek generation、`apps/p5e_preview_smoke` | 実装完了。release/debug ordinary CTest 472/472 PASS。closureはP5-E4で確定する |
 | P5-E4 | P5-E closure (§10.2全項目の突き合わせ、frozen P2/P3-C-2/P4 regression再走、三文書更新) | 未 |
+
+#### P5-E3 exit criteria
+
+- capabilityがvideo source / composition layerを独立に`2 / 2`と報告し、3件目を拒否すること
+- 二source / 二layerをexact pairで提示し、`PresentedFrameInfo`へ実際のaccepted tokenとlayer数を載せること
+- exact pairが不足した場合にold/latest frameへ代用せず、提示数が増えないこと
+- seek request/completion/generationをsourceごとに追跡し、全sourceが揃うまでcompleteにしないこと
+- AからBへ提示を切り替えた後、参照が外れたAを削除でき、削除済みAの再参照を拒否すること
+- P5-E product test 17/17、P5-C regression 11/11、P5-D regression 13/13がPASSすること
 
 #### P5-E2 exit criteria
 
@@ -466,8 +475,8 @@ P5-Dと同様に一度に閉じない。§10.1のscopeを次の4 sliceへ分け�
 - video workerのraw pointerをengine lockを持たない窓へ持ち出さないこと。
   shutdownがownershipを`detachedWorkers`へ移すため、danglingになり得る
 - 削除した`PreviewSourceId`を同一session内で再利用しないこと
-- capabilityが1 video sourceのうちは「参照が外れたvideo sourceの削除」に到達できないため、
-  A -> B差し替え後の削除はP5-E3のproduct testで閉じること。
+- capabilityが1 video sourceのE2時点では「参照が外れたvideo sourceの削除」に到達できなかったため、
+  A -> B差し替え後の削除はP5-E3のproduct testで閉じた。
   参照判定そのものはunitで固定すること
 
 #### P5-E1 exit criteria

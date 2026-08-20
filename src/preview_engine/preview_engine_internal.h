@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <deque>
+#include <map>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -114,6 +115,9 @@ struct P5CRuntimeDiagnostics {
     bool deviceReleased = true;
     bool unsafeGpuResourcesRetained = false;
     std::uint64_t registeredVideoSourceCount = 0;
+    // public source IDごとの現在のdecode generation。per-source provenanceを
+    // product testが実測するためのinternal診断であり、public APIには出さない。
+    std::map<std::uint64_t, std::uint64_t> videoSourceGenerations;
     std::uint64_t distinctPresentedSourceFrameCount = 0;
     std::uint64_t staleSubstitutionCount = 0;
     // P5-E1: supersedeされたcomposition epochのframeを提示しなかった回数。
@@ -168,6 +172,9 @@ struct P5CRuntimeDiagnostics {
     // P5-D3: exact seek。request acceptanceとcompletionを別々に数える。
     // completionはactual requested frameを提示した回数だけ増える。
     std::uint64_t seekRequestCount = 0;
+    // engineのN-way request loopで個別workerがAcceptedを返した総数。
+    // partial request failureが先頭で空振りしていないことを識別する。
+    std::uint64_t seekVideoRequestAcceptedCount = 0;
     std::uint64_t seekDecodeReadyCount = 0;
     std::uint64_t seekCompletedCount = 0;
     // decode readyだけでcompleteにしていないことの証拠。decode ready後、
@@ -290,6 +297,13 @@ public:
     // completionしないことを検査する。
     static Result<void> injectSeekVideoGenerationMismatchForTest(PreviewEngine& engine,
                                                                  PreviewSourceId source);
+    // 指定sourceのseek mailboxだけをbusyにし、engineのN-way request loopで
+    // 先行source受理後に後続sourceが拒否される経路を作る。
+    static Result<void> armVideoSeekRequestForTest(PreviewEngine& engine, PreviewSourceId source,
+                                                   PreviewPosition target);
+    // layer-count product negativeで3 distinct sourceを登録するため、source上限だけを
+    // ReadyPausedかつsource未登録時に変更する。layer上限は2のまま保持する。
+    static Result<void> setVideoSourceLimitForTest(PreviewEngine& engine, std::uint32_t limit);
     // seek completionで得たaudio generationをengineが実際にenforceしているか
     // 検査するseam。要求generationが決して揃わない状況を作る。
     static Result<void> injectSeekAudioGenerationMismatchForTest(PreviewEngine& engine);

@@ -909,6 +909,8 @@ if(MVM_ENABLE_QT)
     mvm_add_p5e_product_test(preview_engine_p5e_seek_two_source ARGS --seek-two-source)
     mvm_add_p5e_product_test(preview_engine_p5e_seek_partial_generation_fail_closed
         ARGS --fault-seek-partial-generation)
+    mvm_add_p5e_product_test(preview_engine_p5e_seek_partial_request_fail_closed
+        ARGS --fault-seek-partial-request)
     # compose成立後・提示前にcomposition epoch authorityだけを進め、
     # `validateForDisplay()`が製品経路で効いていることを固定する。
     # この負例が無いと、render pathからvalidateForDisplay()を削除しても
@@ -939,9 +941,9 @@ if(MVM_ENABLE_QT)
         ARGS --remove-fatal-event-order)
 
     list(LENGTH _mvm_p5e_product_tests _mvm_p5e_product_registered)
-    if(NOT _mvm_p5e_product_registered EQUAL 16)
+    if(NOT _mvm_p5e_product_registered EQUAL 17)
         message(FATAL_ERROR
-            "[mvm] P5-E product testの登録数が不正です: ${_mvm_p5e_product_registered}/16")
+            "[mvm] P5-E product testの登録数が不正です: ${_mvm_p5e_product_registered}/17")
     endif()
 endif()
 

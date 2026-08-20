@@ -895,6 +895,7 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
 
     PendingSeek pendingSeek;
     std::uint64_t seekRequestCount = 0;
+    std::uint64_t seekVideoRequestAcceptedCount = 0;
     std::uint64_t seekDecodeReadyCount = 0;
     std::uint64_t seekCompletedCount = 0;
     std::uint64_t seekAwaitingPresentationCount = 0;
@@ -2090,6 +2091,7 @@ Result<void> PreviewEngine::seek(PreviewPosition target) {
                     rejectedVideoSource = PreviewSourceId{publicId};
                     break;
                 }
+                ++impl_->seekVideoRequestAcceptedCount;
                 impl_->pendingSeek.videoTickets.emplace(publicId, ticket);
             }
             audio::AudioSeekRequestResult audioRequest = audio::AudioSeekRequestResult::Accepted;
@@ -3265,6 +3267,12 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
     result.deviceReleased = engine.impl_->deviceReleased;
     result.unsafeGpuResourcesRetained = engine.impl_->unsafeGpuResourcesRetained;
     result.registeredVideoSourceCount = engine.impl_->sourceRegistry.registeredSourceCount();
+    for (const auto& [publicId, entry] : engine.impl_->videoSources) {
+        if (entry.worker) {
+            result.videoSourceGenerations.emplace(publicId,
+                                                  entry.worker->snapshot().sourceGeneration.value);
+        }
+    }
     result.distinctPresentedSourceFrameCount = engine.impl_->distinctPresentedFrames.count();
     result.staleSubstitutionCount = engine.impl_->staleSubstitutionCount;
     result.staleCompositionEpochRejectCount = engine.impl_->staleCompositionEpochRejectCount;
@@ -3280,6 +3288,7 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
     result.videoMasterQpcFallbackCount = engine.impl_->videoMasterQpcFallbackCount;
     result.audioGenerationMismatchCount = engine.impl_->audioGenerationMismatchCount;
     result.seekRequestCount = engine.impl_->seekRequestCount;
+    result.seekVideoRequestAcceptedCount = engine.impl_->seekVideoRequestAcceptedCount;
     result.seekDecodeReadyCount = engine.impl_->seekDecodeReadyCount;
     result.seekCompletedCount = engine.impl_->seekCompletedCount;
     result.seekAwaitingPresentationCount = engine.impl_->seekAwaitingPresentationCount;
@@ -3497,6 +3506,38 @@ Result<void> PreviewRenderPort::injectSeekVideoGenerationMismatchForTest(Preview
                       "generation mismatch対象のvideo sourceが未登録です"));
     }
     engine.impl_->seekVideoGenerationMismatchInjected = source;
+    return Result<void>::success();
+}
+
+Result<void> PreviewRenderPort::armVideoSeekRequestForTest(PreviewEngine& engine,
+                                                           PreviewSourceId source,
+                                                           PreviewPosition target) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    const auto entry = engine.impl_->videoSources.find(source.value);
+    if (entry == engine.impl_->videoSources.end() || !entry->second.worker) {
+        return Result<void>::failure(makeError(PreviewErrorCategory::InvalidSource,
+                                               PreviewOperation::Seek,
+                                               "seek request対象のvideo sourceが未登録です"));
+    }
+    gpu::SeekTicket ticket;
+    std::string error;
+    if (entry->second.worker->requestSeek(target.outputFrame, ticket, error) !=
+        gpu::SeekRequestResult::Accepted) {
+        return invalidState(PreviewOperation::Seek,
+                            "video sourceのseek mailboxをbusyにできません: " + error);
+    }
+    return Result<void>::success();
+}
+
+Result<void> PreviewRenderPort::setVideoSourceLimitForTest(PreviewEngine& engine,
+                                                           std::uint32_t limit) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    if (engine.impl_->machine.state() != PreviewEngineState::ReadyPaused ||
+        !engine.impl_->videoSources.empty() || limit < 1) {
+        return invalidState(PreviewOperation::AddSource,
+                            "video source上限はReadyPausedかつsource未登録時に設定してください");
+    }
+    engine.impl_->capability.maxQualifiedActiveVideoSources = limit;
     return Result<void>::success();
 }
 

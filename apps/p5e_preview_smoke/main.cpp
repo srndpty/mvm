@@ -70,12 +70,14 @@ public:
 
 enum class Stage {
     WaitDevice,
+    WaitPrepareSeek,
     WaitInitial,
     WaitRecovered,
     WaitResume,
     WaitReplacement,
     WaitMissingPair,
     WaitSeek,
+    WaitSeekContinued,
     WaitShutdown
 };
 enum class Fault {
@@ -88,6 +90,7 @@ enum class Fault {
     RemoveReleasedSource,
     SeekTwoSource,
     SeekPartialGeneration,
+    SeekPartialRequest,
     StaleCompositionEpoch,
     RemoveUnreferencedSource,
     RemoveReferencedSource,
@@ -101,7 +104,8 @@ bool usesTwoVideoSources(Fault fault) {
     return fault == Fault::None || fault == Fault::ExceedSourceCount ||
            fault == Fault::ExceedLayerCount || fault == Fault::DuplicateSourceLayer ||
            fault == Fault::MissingPair || fault == Fault::RemoveReleasedSource ||
-           fault == Fault::SeekTwoSource || fault == Fault::SeekPartialGeneration;
+           fault == Fault::SeekTwoSource || fault == Fault::SeekPartialGeneration ||
+           fault == Fault::SeekPartialRequest;
 }
 
 // audio sourceを伴うremoval faultかどうか。
@@ -127,7 +131,7 @@ int main(int argc, char** argv) {
                              "[--single-layer|--exceed-source-count|--exceed-layer-count"
                              "|--duplicate-source-layer|--fault-missing-pair"
                              "|--remove-released-source|--seek-two-source"
-                             "|--fault-seek-partial-generation"
+                             "|--fault-seek-partial-generation|--fault-seek-partial-request"
                              "|--fault-stale-composition-epoch|--remove-unreferenced-source"
                              "|--remove-referenced-source|--remove-audio-source"
                              "|--fault-remove-audio-stop|--remove-shutdown-race"
@@ -152,6 +156,8 @@ int main(int argc, char** argv) {
             fault = Fault::SeekTwoSource;
         else if (arguments[3] == "--fault-seek-partial-generation")
             fault = Fault::SeekPartialGeneration;
+        else if (arguments[3] == "--fault-seek-partial-request")
+            fault = Fault::SeekPartialRequest;
         else if (arguments[3] == "--fault-stale-composition-epoch")
             fault = Fault::StaleCompositionEpoch;
         else if (arguments[3] == "--remove-unreferenced-source")
@@ -214,12 +220,17 @@ int main(int argc, char** argv) {
     std::int64_t rejectedFrame = -1;
     mvm::preview::PreviewSourceId videoSource{};
     mvm::preview::PreviewSourceId videoSourceB{};
+    mvm::preview::PreviewSourceId videoSourceC{};
     mvm::preview::PreviewSourceId firstSource{};
     mvm::preview::PreviewSourceId audioSource{};
     std::uint64_t presentedAtPause = 0;
     std::chrono::steady_clock::time_point modeStarted;
     bool missingPairSettled = false;
     bool removalChecked = false;
+    bool partialRequestFailureValid = false;
+    std::uint64_t seekRequestsBeforeTwoSource = 0;
+    std::uint64_t seekCompletedBeforeTwoSource = 0;
+    std::uint64_t presentedAfterSeek = 0;
     mvm::preview::internal::P5CRuntimeDiagnostics afterRemoval;
     mvm::preview::internal::P5CRuntimeDiagnostics activeDiagnostics;
     const auto started = std::chrono::steady_clock::now();
@@ -243,6 +254,14 @@ int main(int argc, char** argv) {
             mvm::preview::PreviewSourceDescriptor descriptor;
             descriptor.mediaPath = arguments[1].toStdWString();
             descriptor.videoEnabled = true;
+
+            if (fault == Fault::ExceedLayerCount &&
+                !mvm::preview::internal::PreviewRenderPort::setVideoSourceLimitForTest(*engine,
+                                                                                       3)) {
+                exitCode = 49;
+                app.quit();
+                return;
+            }
 
             if (fault == Fault::RemoveUnreferencedSource) {
                 // composition から参照される前の source は解放できる。
@@ -290,6 +309,22 @@ int main(int argc, char** argv) {
                 app.quit();
                 return;
             }
+            if (fault == Fault::SeekTwoSource) {
+                auto aOnly = std::make_shared<mvm::preview::CompositionSnapshot>();
+                aOnly->layers.push_back(
+                    {videoSource, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
+                const auto aOnlyToken = engine->submitComposition(aOnly);
+                if (!aOnlyToken || aOnlyToken.value().id.value != 1 ||
+                    aOnlyToken.value().revision != 1 || !engine->seek({60})) {
+                    std::fprintf(stderr, "A-only paused seekを開始できません\n");
+                    exitCode = 50;
+                    app.quit();
+                    return;
+                }
+                accepted = aOnlyToken.value();
+                stage = Stage::WaitPrepareSeek;
+                return;
+            }
             if (usesTwoVideoSources(fault)) {
                 mvm::preview::PreviewSourceDescriptor descriptorB;
                 descriptorB.mediaPath = arguments[2].toStdWString();
@@ -312,6 +347,17 @@ int main(int argc, char** argv) {
                         app.quit();
                         return;
                     }
+                }
+                if (fault == Fault::ExceedLayerCount) {
+                    const auto third = engine->addSource(descriptorB);
+                    if (!third) {
+                        std::fprintf(stderr, "三つ目のsource open失敗: %s\n",
+                                     third.error().detail.c_str());
+                        exitCode = 51;
+                        app.quit();
+                        return;
+                    }
+                    videoSourceC = third.value();
                 }
             }
             if (needsAudioSource(fault)) {
@@ -353,7 +399,7 @@ int main(int argc, char** argv) {
             if (fault == Fault::ExceedLayerCount) {
                 auto excessive = std::make_shared<mvm::preview::CompositionSnapshot>(*snapshot);
                 excessive->layers.push_back(
-                    {videoSource, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
+                    {videoSourceC, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
                 const auto rejected = engine->submitComposition(excessive);
                 if (rejected || rejected.error().category !=
                                     mvm::preview::PreviewErrorCategory::UnsupportedCapability) {
@@ -402,6 +448,59 @@ int main(int argc, char** argv) {
             stage = Stage::WaitInitial;
             return;
         }
+        if (stage == Stage::WaitPrepareSeek) {
+            const auto prepared =
+                mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+            if (status.state != mvm::preview::PreviewEngineState::ReadyPaused ||
+                prepared.seekCompletedCount != 1) {
+                return;
+            }
+            const auto generationA = prepared.videoSourceGenerations.find(videoSource.value);
+            if (generationA == prepared.videoSourceGenerations.end()) {
+                exitCode = 52;
+                app.quit();
+                return;
+            }
+
+            mvm::preview::PreviewSourceDescriptor descriptorB;
+            descriptorB.mediaPath = arguments[2].toStdWString();
+            descriptorB.videoEnabled = true;
+            const auto second = engine->addSource(descriptorB);
+            if (!second) {
+                exitCode = 53;
+                app.quit();
+                return;
+            }
+            videoSourceB = second.value();
+            const auto divergent =
+                mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+            const auto currentA = divergent.videoSourceGenerations.find(videoSource.value);
+            const auto generationB = divergent.videoSourceGenerations.find(videoSourceB.value);
+            if (currentA == divergent.videoSourceGenerations.end() ||
+                generationB == divergent.videoSourceGenerations.end() ||
+                currentA->second != generationA->second || currentA->second == generationB->second) {
+                std::fprintf(stderr, "A/Bのseek前generationが分岐していません\n");
+                exitCode = 54;
+                app.quit();
+                return;
+            }
+
+            auto twoSource = std::make_shared<mvm::preview::CompositionSnapshot>();
+            twoSource->layers.push_back(
+                {videoSource, {0, 0, 0.5F, 1}, {0, 0, 1, 1}, 1.0F});
+            twoSource->layers.push_back(
+                {videoSourceB, {0.5F, 0, 0.5F, 1}, {0, 0, 1, 1}, 1.0F});
+            const auto composition = engine->submitComposition(twoSource);
+            if (!composition || composition.value().id.value != 2 ||
+                composition.value().revision != 2 || !engine->play()) {
+                exitCode = 55;
+                app.quit();
+                return;
+            }
+            accepted = composition.value();
+            stage = Stage::WaitInitial;
+            return;
+        }
         if (stage == Stage::WaitInitial && telemetry.presentedFrameCount >= 12) {
             if (fault == Fault::MissingPair) {
                 if (!mvm::preview::internal::PreviewRenderPort::suspendVideoSourceForTest(
@@ -428,14 +527,42 @@ int main(int argc, char** argv) {
                 stage = Stage::WaitReplacement;
                 return;
             }
-            if (fault == Fault::SeekTwoSource || fault == Fault::SeekPartialGeneration) {
+            if (fault == Fault::SeekTwoSource || fault == Fault::SeekPartialGeneration ||
+                fault == Fault::SeekPartialRequest) {
                 activeDiagnostics =
                     mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+                seekRequestsBeforeTwoSource = activeDiagnostics.seekRequestCount;
+                seekCompletedBeforeTwoSource = activeDiagnostics.seekCompletedCount;
                 if (fault == Fault::SeekPartialGeneration &&
                     !mvm::preview::internal::PreviewRenderPort::
                         injectSeekVideoGenerationMismatchForTest(*engine, videoSourceB)) {
                     exitCode = 38;
                     app.quit();
+                    return;
+                }
+                if (fault == Fault::SeekPartialRequest) {
+                    if (!mvm::preview::internal::PreviewRenderPort::armVideoSeekRequestForTest(
+                            *engine, videoSourceB, {240})) {
+                        exitCode = 56;
+                        app.quit();
+                        return;
+                    }
+                    const auto rejected = engine->seek({120});
+                    partialRequestFailureValid =
+                        !rejected &&
+                        rejected.error().category ==
+                            mvm::preview::PreviewErrorCategory::SeekFailure &&
+                        rejected.error().operation == mvm::preview::PreviewOperation::Seek &&
+                        rejected.error().severity ==
+                            mvm::preview::PreviewErrorSeverity::FatalToSession &&
+                        rejected.error().source == videoSourceB;
+                    if (!partialRequestFailureValid) {
+                        std::fprintf(stderr, "一部だけ受理されたseek requestを拒否できません\n");
+                        exitCode = 57;
+                        app.quit();
+                        return;
+                    }
+                    stage = Stage::WaitShutdown;
                     return;
                 }
                 if (!engine->seek({120})) {
@@ -822,7 +949,16 @@ int main(int argc, char** argv) {
             if (fault == Fault::SeekPartialGeneration) {
                 if (status.state != mvm::preview::PreviewEngineState::Error)
                     return;
-                if (seekDiagnostics.seekCompletedCount != 0 ||
+                const bool classified = status.lastError &&
+                                        status.lastError->category ==
+                                            mvm::preview::PreviewErrorCategory::SeekFailure &&
+                                        status.lastError->operation ==
+                                            mvm::preview::PreviewOperation::Seek &&
+                                        status.lastError->severity ==
+                                            mvm::preview::PreviewErrorSeverity::FatalToSession;
+                if (!classified || seekDiagnostics.seekRequestCount != 1 ||
+                    seekDiagnostics.seekDecodeReadyCount != 1 ||
+                    seekDiagnostics.seekCompletedCount != 0 ||
                     seekDiagnostics.seekStaleGenerationRejectCount == 0) {
                     std::fprintf(stderr, "片側generation不一致のseekを完了扱いしました\n");
                     exitCode = 45;
@@ -832,7 +968,10 @@ int main(int argc, char** argv) {
                 stage = Stage::WaitShutdown;
                 return;
             }
-            if (seekDiagnostics.seekCompletedCount == 0)
+            if (seekDiagnostics.seekRequestCount != seekRequestsBeforeTwoSource + 1 ||
+                seekDiagnostics.seekCompletedCount != seekCompletedBeforeTwoSource + 1 ||
+                status.state != mvm::preview::PreviewEngineState::Playing ||
+                seekDiagnostics.seekCancelledByShutdownCount != 0)
                 return;
             if (seekDiagnostics.lastSeekPresentedFrame != 120 ||
                 !status.lastPresentedComposition || *status.lastPresentedComposition != accepted) {
@@ -841,8 +980,19 @@ int main(int argc, char** argv) {
                 app.quit();
                 return;
             }
-            activeDiagnostics = seekDiagnostics;
-            if (!engine->requestShutdown()) {
+            presentedAfterSeek = telemetry.presentedFrameCount;
+            stage = Stage::WaitSeekContinued;
+            return;
+        }
+        if (stage == Stage::WaitSeekContinued) {
+            if (status.state != mvm::preview::PreviewEngineState::Playing ||
+                telemetry.presentedFrameCount < presentedAfterSeek + 8) {
+                return;
+            }
+            activeDiagnostics =
+                mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+            if (activeDiagnostics.seekCancelledByShutdownCount != 0 ||
+                !engine->requestShutdown()) {
                 exitCode = 47;
                 app.quit();
                 return;
@@ -928,7 +1078,8 @@ int main(int argc, char** argv) {
             const bool fatalFault = fault == Fault::RemoveAudioStopFailure ||
                                     fault == Fault::RemoveShutdownRace ||
                                     fault == Fault::RemoveFatalEventOrder ||
-                                    fault == Fault::SeekPartialGeneration;
+                                    fault == Fault::SeekPartialGeneration ||
+                                    fault == Fault::SeekPartialRequest;
             // event streamの順序を固定する。ShuttingDownはErrorより前に出る。
             // state commitとmailbox insertionをlinearizeしていないと、先に進んだ
             // teardownのErrorがShuttingDownを追い越し得る。
@@ -976,8 +1127,24 @@ int main(int argc, char** argv) {
                               mvm::preview::PreviewErrorCategory::DeviceFailure &&
                           diagnostics.audioTransportFailureCount == 0
                 : fault == Fault::SeekPartialGeneration
-                    ? diagnostics.seekCompletedCount == 0 &&
+                    ? sink->errors.size() == 1 &&
+                          sink->errors.front().category ==
+                              mvm::preview::PreviewErrorCategory::SeekFailure &&
+                          sink->errors.front().operation == mvm::preview::PreviewOperation::Seek &&
+                          sink->errors.front().severity ==
+                              mvm::preview::PreviewErrorSeverity::FatalToSession &&
+                          diagnostics.seekRequestCount == 1 &&
+                          diagnostics.seekDecodeReadyCount == 1 &&
+                          diagnostics.seekCompletedCount == 0 &&
                           diagnostics.seekStaleGenerationRejectCount > 0
+                : fault == Fault::SeekPartialRequest
+                    ? partialRequestFailureValid && sink->errors.size() == 1 &&
+                          sink->errors.front().category ==
+                              mvm::preview::PreviewErrorCategory::SeekFailure &&
+                          sink->errors.front().source == videoSourceB &&
+                          diagnostics.seekVideoRequestAcceptedCount == 1 &&
+                          diagnostics.seekRequestCount == 0 &&
+                          diagnostics.seekCompletedCount == 0
                     : sink->errors.empty();
             const bool removalFault =
                 fault == Fault::RemoveUnreferencedSource ||
@@ -1003,7 +1170,9 @@ int main(int argc, char** argv) {
             const std::uint32_t expectedLayerCount =
                 fault == Fault::RemoveReleasedSource || !usesTwoVideoSources(fault) ? 1U : 2U;
             const std::uint64_t expectedVideoSourceCount =
-                fault == Fault::RemoveReleasedSource ? 1U : usesTwoVideoSources(fault) ? 2U : 1U;
+                fault == Fault::RemoveReleasedSource
+                    ? 1U
+                    : fault == Fault::ExceedLayerCount ? 3U : usesTwoVideoSources(fault) ? 2U : 1U;
             const bool pass =
                 status.state == (fatalFault ? mvm::preview::PreviewEngineState::Error
                                             : mvm::preview::PreviewEngineState::Shutdown) &&
