@@ -1,0 +1,78 @@
+{
+  "schema": "mvm-p5-e4-attribution-prefix-1",
+  "authority": "DIAGNOSTIC_ONLY",
+  "formal_pass_authority": false,
+  "formal_verdict": "NOT_RUN",
+  "profile": "SEEK-PREFIX",
+  "exact_formal_arguments": {
+    "warmup_seconds": 5,
+    "measurement_seconds": 60,
+    "seed": 20260808,
+    "seek_count": 1000,
+    "display_timeout_ms": 3000,
+    "contract": "P3-C-2"
+  },
+  "expected_processes": 4,
+  "completed_processes": 4,
+  "complete": true,
+  "all_process_contracts_pass": false,
+  "provenance_unchanged": true,
+  "start_provenance": {
+    "git_commit": "9793c13a5699752e25975102da44b11a8e999e0b",
+    "dirty_worktree": false,
+    "executable_sha256": "a5687ca3d370c5fd10f66b06b21d49c093484afec1a1ea06b9cc23166810f355",
+    "fixture_a_sha256": "d398114c38806f39670df51dfabb0095d462cbc35286ea1467901d4007cf0308",
+    "fixture_b_sha256": "fe7cd1a45d101d363cb3930497601efd41dd55fd36c194acf8f24e3e4728b479"
+  },
+  "end_provenance": {
+    "git_commit": "9793c13a5699752e25975102da44b11a8e999e0b",
+    "dirty_worktree": false,
+    "executable_sha256": "a5687ca3d370c5fd10f66b06b21d49c093484afec1a1ea06b9cc23166810f355"
+  },
+  "runs": [
+    {
+      "mode": "playback",
+      "run": 1,
+      "raw_path": "bench\\results\\scratch\\p5-e4-attr-q2b-9793c13-b5e4c12-20260821\\SEEK-PREFIX\\attempt-3\\parent\\playback-run1.json",
+      "process_exit_code": 4,
+      "contract_exit_code": 1,
+      "pass": false,
+      "attribution_snapshot_contract_valid": true,
+      "first_audio_underflow_snapshot": null,
+      "first_clock_regression_snapshot": null
+    },
+    {
+      "mode": "playback",
+      "run": 2,
+      "raw_path": "bench\\results\\scratch\\p5-e4-attr-q2b-9793c13-b5e4c12-20260821\\SEEK-PREFIX\\attempt-3\\parent\\playback-run2.json",
+      "process_exit_code": 4,
+      "contract_exit_code": 1,
+      "pass": false,
+      "attribution_snapshot_contract_valid": true,
+      "first_audio_underflow_snapshot": null,
+      "first_clock_regression_snapshot": null
+    },
+    {
+      "mode": "playback",
+      "run": 3,
+      "raw_path": "bench\\results\\scratch\\p5-e4-attr-q2b-9793c13-b5e4c12-20260821\\SEEK-PREFIX\\attempt-3\\parent\\playback-run3.json",
+      "process_exit_code": 4,
+      "contract_exit_code": 1,
+      "pass": false,
+      "attribution_snapshot_contract_valid": true,
+      "first_audio_underflow_snapshot": null,
+      "first_clock_regression_snapshot": null
+    },
+    {
+      "mode": "seek",
+      "run": 1,
+      "raw_path": "bench\\results\\scratch\\p5-e4-attr-q2b-9793c13-b5e4c12-20260821\\SEEK-PREFIX\\attempt-3\\parent\\seek-run1.json",
+      "process_exit_code": 4,
+      "contract_exit_code": 1,
+      "pass": false,
+      "attribution_snapshot_contract_valid": true,
+      "first_audio_underflow_snapshot": null,
+      "first_clock_regression_snapshot": null
+    }
+  ]
+}

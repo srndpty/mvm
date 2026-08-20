@@ -1,0 +1,465 @@
+{
+    "adapter": "NVIDIA GeForce RTX 4090",
+    "application_av_delta_abs_ms": {
+        "count": 36,
+        "max": 12.958333333333334,
+        "min": 1.9166666666666667,
+        "p50": 12.645833333333334,
+        "p95": 12.895833333333334,
+        "p99": 12.958333333333334
+    },
+    "application_av_delta_ms": {
+        "count": 36,
+        "max": -1.9166666666666667,
+        "min": -12.958333333333334,
+        "p50": -12.645833333333334,
+        "p95": -5.625,
+        "values": [
+            -5.625,
+            -1.9166666666666667,
+            -12.3125,
+            -12.291666666666666,
+            -12.291666666666666,
+            -12.5,
+            -12.645833333333334,
+            -12.4375,
+            -12.583333333333334,
+            -12.4375,
+            -12.416666666666666,
+            -12.4375,
+            -12.645833333333334,
+            -12.708333333333334,
+            -12.6875,
+            -12.666666666666666,
+            -12.604166666666666,
+            -12.708333333333334,
+            -12.770833333333334,
+            -12.895833333333334,
+            -12.604166666666666,
+            -12.625,
+            -12.625,
+            -12.666666666666666,
+            -12.8125,
+            -12.625,
+            -12.854166666666666,
+            -12.729166666666666,
+            -12.666666666666666,
+            -12.645833333333334,
+            -12.875,
+            -12.729166666666666,
+            -12.895833333333334,
+            -12.958333333333334,
+            -12.8125,
+            -12.75
+        ]
+    },
+    "application_av_projection_failure_count": 0,
+    "audio_decode_thread_join_leak": 0,
+    "audio_endpoint_channels": 2,
+    "audio_endpoint_sample_format": "flt",
+    "audio_endpoint_sample_rate": 48000,
+    "audio_master_only": true,
+    "audio_render_thread_join_leak": 0,
+    "clock_anchor_media_sample": 0,
+    "configured_audio_preroll_ms": 100,
+    "configured_video_preroll_frames": 8,
+    "contract_version": "P3-C-2",
+    "cpu_full_frame_readback_count": 0,
+    "detail": "GPU teardown timeout",
+    "device_lost_count": 0,
+    "display_environment_end": {
+        "available_geometry_height": 1872,
+        "available_geometry_width": 1200,
+        "compositor_surface_logical_height": 1080,
+        "compositor_surface_logical_width": 1920,
+        "device_pixel_ratio": 1,
+        "native_window_client_height": 0,
+        "native_window_client_width": 0,
+        "native_window_outer_height": 28,
+        "native_window_outer_width": 160,
+        "rhi_target_pixel_height": 1080,
+        "rhi_target_pixel_width": 1920,
+        "screen_geometry_height": 1920,
+        "screen_geometry_width": 1200,
+        "screen_name": "DELL U2412M",
+        "screen_orientation": "portrait",
+        "window_logical_height": 1080,
+        "window_logical_width": 1920
+    },
+    "display_environment_start": {
+        "available_geometry_height": 1152,
+        "available_geometry_width": 1920,
+        "compositor_surface_logical_height": 1080,
+        "compositor_surface_logical_width": 1920,
+        "device_pixel_ratio": 1,
+        "native_window_client_height": 1080,
+        "native_window_client_width": 1920,
+        "native_window_outer_height": 1119,
+        "native_window_outer_width": 1936,
+        "rhi_target_pixel_height": 1080,
+        "rhi_target_pixel_width": 1920,
+        "screen_geometry_height": 1200,
+        "screen_geometry_width": 1920,
+        "screen_name": "DELL U2412M",
+        "screen_orientation": "landscape",
+        "window_logical_height": 1080,
+        "window_logical_width": 1920
+    },
+    "display_target_preflight_pass": true,
+    "drop_rate": 0.99,
+    "effective_video_fps": 0.6,
+    "endpoint_first_media_sample": 0,
+    "endpoint_prefill_frames": 4800,
+    "final_report_after_teardown": false,
+    "first_audio_underflow_snapshot": null,
+    "first_clock_regression_snapshot": null,
+    "formal_verdict": "NOT_RUN",
+    "formal_workload_started": true,
+    "full_frame_gpu_copy_count": 0,
+    "integrated_seek_busy_acceptance_count": 0,
+    "integrated_seek_exact": 0,
+    "integrated_seek_generation_mismatch_count": 0,
+    "integrated_seek_requested": 0,
+    "integrated_seek_stale_completion_count": 0,
+    "integrated_seek_timeout_count": 0,
+    "lifecycle_violation_count": 0,
+    "measurement_audio_clock_query_failure_count": 0,
+    "measurement_audio_end_sample": 2880000,
+    "measurement_audio_overflow_count": 0,
+    "measurement_audio_start_sample": 0,
+    "measurement_audio_underflow_count": 0,
+    "measurement_clock_regression_count": 0,
+    "measurement_display_records": [
+        {
+            "application_av_delta_ms": -5.625,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302316842319,
+            "frame": 0
+        },
+        {
+            "application_av_delta_ms": -1.9166666666666667,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302317071658,
+            "frame": 1
+        },
+        {
+            "application_av_delta_ms": -12.3125,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302317342207,
+            "frame": 2
+        },
+        {
+            "application_av_delta_ms": -12.291666666666666,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302317508614,
+            "frame": 3
+        },
+        {
+            "application_av_delta_ms": -12.291666666666666,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302317675528,
+            "frame": 4
+        },
+        {
+            "application_av_delta_ms": -12.5,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302317844237,
+            "frame": 5
+        },
+        {
+            "application_av_delta_ms": -12.645833333333334,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302318012136,
+            "frame": 6
+        },
+        {
+            "application_av_delta_ms": -12.4375,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302318176700,
+            "frame": 7
+        },
+        {
+            "application_av_delta_ms": -12.583333333333334,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302318345023,
+            "frame": 8
+        },
+        {
+            "application_av_delta_ms": -12.4375,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302318510098,
+            "frame": 9
+        },
+        {
+            "application_av_delta_ms": -12.416666666666666,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302318676418,
+            "frame": 10
+        },
+        {
+            "application_av_delta_ms": -12.4375,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302318843593,
+            "frame": 11
+        },
+        {
+            "application_av_delta_ms": -12.645833333333334,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302319012221,
+            "frame": 12
+        },
+        {
+            "application_av_delta_ms": -12.708333333333334,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302319179319,
+            "frame": 13
+        },
+        {
+            "application_av_delta_ms": -12.6875,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302319346015,
+            "frame": 14
+        },
+        {
+            "application_av_delta_ms": -12.666666666666666,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302319512541,
+            "frame": 15
+        },
+        {
+            "application_av_delta_ms": -12.604166666666666,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302319678359,
+            "frame": 16
+        },
+        {
+            "application_av_delta_ms": -12.708333333333334,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302319846002,
+            "frame": 17
+        },
+        {
+            "application_av_delta_ms": -12.770833333333334,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302320013501,
+            "frame": 18
+        },
+        {
+            "application_av_delta_ms": -12.895833333333334,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302320181393,
+            "frame": 19
+        },
+        {
+            "application_av_delta_ms": -12.604166666666666,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302320345059,
+            "frame": 20
+        },
+        {
+            "application_av_delta_ms": -12.625,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302320511887,
+            "frame": 21
+        },
+        {
+            "application_av_delta_ms": -12.625,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302320678638,
+            "frame": 22
+        },
+        {
+            "application_av_delta_ms": -12.666666666666666,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302320845649,
+            "frame": 23
+        },
+        {
+            "application_av_delta_ms": -12.8125,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302321013854,
+            "frame": 24
+        },
+        {
+            "application_av_delta_ms": -12.625,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302321178692,
+            "frame": 25
+        },
+        {
+            "application_av_delta_ms": -12.854166666666666,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302321347586,
+            "frame": 26
+        },
+        {
+            "application_av_delta_ms": -12.729166666666666,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302321513010,
+            "frame": 27
+        },
+        {
+            "application_av_delta_ms": -12.666666666666666,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302321679114,
+            "frame": 28
+        },
+        {
+            "application_av_delta_ms": -12.645833333333334,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302321845772,
+            "frame": 29
+        },
+        {
+            "application_av_delta_ms": -12.875,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302322014573,
+            "frame": 30
+        },
+        {
+            "application_av_delta_ms": -12.729166666666666,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302322179475,
+            "frame": 31
+        },
+        {
+            "application_av_delta_ms": -12.895833333333334,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302322347979,
+            "frame": 32
+        },
+        {
+            "application_av_delta_ms": -12.958333333333334,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302322515210,
+            "frame": 33
+        },
+        {
+            "application_av_delta_ms": -12.8125,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302322680513,
+            "frame": 34
+        },
+        {
+            "application_av_delta_ms": -12.75,
+            "application_av_projection_valid": true,
+            "display_record_qpc": 302322846776,
+            "frame": 35
+        }
+    ],
+    "measurement_duplicate_display_identity_count": 0,
+    "measurement_marker_mismatch_count": 0,
+    "measurement_mixed_generation_count": 0,
+    "measurement_mixed_pair_count": 0,
+    "measurement_non_increasing_display_count": 0,
+    "measurement_pair_wait_count": 0,
+    "measurement_seconds": 60,
+    "measurement_stale_composition_epoch_count": 0,
+    "measurement_stale_discard_a": 0,
+    "measurement_stale_discard_b": 0,
+    "measurement_target_superseded_count": 0,
+    "measurement_video_ahead_violation_count": 0,
+    "measurement_video_displayed_unique_count": 36,
+    "measurement_video_first_frame": 0,
+    "measurement_video_last_frame": 35,
+    "measurement_video_qpc_master_fallback_count": 0,
+    "measurement_video_skipped_frame_count": 3564,
+    "mode": "playback",
+    "observed_audio_stop_sample": 2880477,
+    "pass": false,
+    "pause_clock_frozen": false,
+    "pause_generation_stable": false,
+    "pause_video_advance_zero": false,
+    "phase": "P3-C",
+    "requested_output_height": 1080,
+    "requested_output_width": 1920,
+    "required_measurement_samples": 2880000,
+    "required_video_frames": 3600,
+    "schema": "mvm-p3-formal-2",
+    "seek_first_display_application_av_delta_ms": {
+        "count": 2,
+        "max": -1.25,
+        "min": -5.625,
+        "p50": -5.625,
+        "p95": -1.25,
+        "values": [
+            -1.25,
+            -5.625
+        ]
+    },
+    "seek_request_to_first_display_ms": {
+        "count": 2,
+        "max": 84.2315,
+        "min": 68.47319999999999,
+        "p50": 68.47319999999999,
+        "p95": 84.2315,
+        "values": [
+            68.47319999999999,
+            84.2315
+        ]
+    },
+    "seek_timeout_diagnostic": "",
+    "seek_timeout_stage_evidence": {
+        "all_media_ready_qpc": 302316623121,
+        "audio": {
+            "first_ready_sample": 0,
+            "ready_generation": 3,
+            "ready_qpc": 302316503283,
+            "requested_generation": 3
+        },
+        "requested_audio_sample": 0,
+        "requested_frame": 0,
+        "seek_request_qpc": 302316000004,
+        "source_a": {
+            "ready_generation": 4,
+            "ready_qpc": 302316014556,
+            "requested_generation": 4
+        },
+        "source_b": {
+            "ready_generation": 4,
+            "ready_qpc": 302316012696,
+            "requested_generation": 4
+        }
+    },
+    "seeks": [
+        {
+            "all_media_ready_ms": 36.3366,
+            "audio_generation": 2,
+            "audio_ready_ms": 0.232,
+            "first_audio_sample": 0,
+            "first_display_application_av_delta_ms": -1.25,
+            "first_display_application_av_projection_valid": true,
+            "first_displayed_video_frame": 0,
+            "request_to_first_display_ms": 68.47319999999999,
+            "requested_audio_sample": 0,
+            "requested_frame": 0,
+            "resume_to_display_ms": 15.141,
+            "video_a_ready_ms": 26.7358,
+            "video_b_ready_ms": 27.7267,
+            "video_generation_a": 3,
+            "video_generation_b": 3
+        },
+        {
+            "all_media_ready_ms": 62.311699999999995,
+            "audio_generation": 3,
+            "audio_ready_ms": 0.1604,
+            "first_audio_sample": 0,
+            "first_display_application_av_delta_ms": -5.625,
+            "first_display_application_av_projection_valid": true,
+            "first_displayed_video_frame": 0,
+            "request_to_first_display_ms": 84.2315,
+            "requested_audio_sample": 0,
+            "requested_frame": 0,
+            "resume_to_display_ms": 7.3902,
+            "video_a_ready_ms": 1.4552,
+            "video_b_ready_ms": 1.267,
+            "video_generation_a": 4,
+            "video_generation_b": 4
+        }
+    ],
+    "software_video_fallback_count": 0,
+    "teardown_success": false,
+    "video_worker_a_joined": true,
+    "video_worker_b_joined": true,
+    "warmup_seconds": 5
+}

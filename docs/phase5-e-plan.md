@@ -657,6 +657,15 @@ artifactは
 [`bench/results/p5-e4-attr-q2-b5e4c12-9793c13/`](../bench/results/p5-e4-attr-q2-b5e4c12-9793c13/README.md)
 に保存した。prefix結果はformal PASS authorityではなく、P5-E closureはBLOCKEDのままである。
 
+### ATTR-Q2B — counterbalanced order
+
+Q2と同じdiagnostic SHA / executableを再利用し、parent→headへ順序反転した最初のcampaignは、
+attempt 1のparent全4 processとhead playback 3本の後にdisplayがlandscape 1920x1200から
+portrait 1200x1920へ変化した。以後71 processはdisplay preflightでworkload開始前に拒否されたため、
+このcampaignはorder attributionに使用しない。invalid evidenceは
+[`bench/results/p5-e4-attr-q2b-invalid-display-9793c13-b5e4c12/`](../bench/results/p5-e4-attr-q2b-invalid-display-9793c13-b5e4c12/README.md)
+へ分離し、将来の有効runで上書きしない。landscape 1920x1200復帰後に新しいartifact rootで再実行する。
+
 ---
 
 ## 7. 検証手順

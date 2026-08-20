@@ -8,6 +8,7 @@ param(
     [Parameter(Mandatory)][string]$HeadDiagnosticSha,
     [Parameter(Mandatory)][string]$ParentDiagnosticSha,
     [Parameter(Mandatory)][string]$PatchIdentity,
+    [ValidateSet('HeadParent','ParentHead')][string]$CohortOrder = 'HeadParent',
     [string]$SourceA,
     [string]$SourceB
 )
@@ -54,6 +55,9 @@ foreach ($cohort in $cohorts) {
     foreach ($required in @($cohort.executable, $cohort.runner, $SourceA, $SourceB)) {
         if (-not (Test-Path -LiteralPath $required)) { throw "ATTR-Q2必須fileがありません: $required" }
     }
+}
+if ($CohortOrder -eq 'ParentHead') {
+    [array]::Reverse($cohorts)
 }
 
 New-Item -ItemType Directory -Path $OutputDirectory | Out-Null
@@ -114,7 +118,11 @@ $pairedSummary = [ordered]@{
     authority='DIAGNOSTIC_ONLY'
     formal_pass_authority=$false
     formal_verdict='NOT_RUN'
-    ordering='profile -> attempt 1..3 -> head then parent'
+    ordering=$(if ($CohortOrder -eq 'ParentHead') {
+        'profile -> attempt 1..3 -> parent then head'
+    } else {
+        'profile -> attempt 1..3 -> head then parent'
+    })
     expected_prefix_runs=12
     completed_prefix_runs=$records.Count
     patch_identity=$PatchIdentity
