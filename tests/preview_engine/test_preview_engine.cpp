@@ -411,12 +411,14 @@ void compositionIdentityAndCapabilities() {
     const auto b =
         state.submit(snapshot({layer(1, {0.0F, 0.0F, 0.5F, 1.0F})}), sources, capabilities);
     require(b && b.value() == AcceptedComposition{{2}, 2}, "field差でnew tokenを発行しません");
-    state.markPresented(acceptedA.value());
+    state.markPresented(acceptedA.value(), a);
     const auto newA = state.submit(snapshot({layer(1)}), sources, capabilities);
     require(newA && newA.value() == AcceptedComposition{{3}, 3},
             "presented A/latest B/submit Aでold tokenを再利用しました");
     require(state.lastPresentedToken() == acceptedA.value(),
             "desired acceptanceがlast presentedを変更しました");
+    require(state.lastPresentedSnapshot() && *state.lastPresentedSnapshot() == *a,
+            "last presented snapshotがpresented tokenと対応していません");
 
     CompositionAcceptanceState rejected;
     requireFailure(
@@ -882,6 +884,86 @@ void p5cControlAndRenderNegatives() {
     require(PreviewRenderPort::completeTeardown(engine), "teardown completionに失敗しました");
 }
 
+// P5-E2: source removal guard。参照が外れていないsourceを削除させない。
+// engineの経路 (native device必須) はp5e product testが駆動する。ここでは
+// acceptance stateが「参照が外れたか」をどう判定するかを固定する。
+void p5eCompositionSourceReferences() {
+    std::unordered_map<std::uint64_t, EligibleSource> sources;
+    sources.emplace(1, EligibleSource{true, false});
+    sources.emplace(2, EligibleSource{true, false});
+    PreviewCapabilities capabilities;
+    capabilities.maxQualifiedActiveVideoSources = 2;
+    capabilities.maxQualifiedCompositionLayers = 2;
+
+    CompositionAcceptanceState state;
+    require(!state.referencesSource({1}), "compositionが無い状態で参照ありと判定しました");
+
+    const auto a = snapshot({layer(1)});
+    const auto acceptedA = state.submit(a, sources, capabilities);
+    require(acceptedA, "source Aのcompositionをacceptできません");
+    // acceptedだが未提示 = pending。この時点でAの参照は外れていない。
+    require(state.referencesSource({1}), "pending compositionの参照を見落としました");
+    require(!state.referencesSource({2}), "参照していないsourceを参照ありと判定しました");
+
+    state.markPresented(acceptedA.value(), a);
+    require(state.referencesSource({1}), "active compositionの参照を見落としました");
+
+    // Bへ差し替えてacceptしただけでは、まだAを提示中である。
+    // ここでAを解放可能と判定すると、提示中のsourceを削除できてしまう。
+    const auto b = snapshot({layer(2)});
+    const auto acceptedB = state.submit(b, sources, capabilities);
+    require(acceptedB, "source Bのcompositionをacceptできません");
+    require(state.referencesSource({1}),
+            "acceptしただけでactive compositionの参照が外れたと判定しました");
+    require(state.referencesSource({2}), "新しいpending compositionの参照を見落としました");
+
+    // Bを実際に提示して初めてAの参照が外れる。
+    state.markPresented(acceptedB.value(), b);
+    require(!state.referencesSource({1}), "提示完了後もAの参照が残っていると判定しました");
+    require(state.referencesSource({2}), "提示中のBを参照なしと判定しました");
+
+    // opacity 0のlayerも参照である。描画に寄与しないことと、
+    // sourceが解放可能であることは別問題である。
+    CompositionAcceptanceState transparent;
+    auto invisible = snapshot({layer(1)});
+    const_cast<CompositionSnapshot&>(*invisible).layers[0].opacity = 0.0F;
+    require(transparent.submit(invisible, sources, capabilities),
+            "opacity 0のcompositionをacceptできません");
+    require(transparent.referencesSource({1}), "opacity 0のlayerを参照から外しました");
+}
+
+// P5-E2: engineの`removeSource()`のうち、native deviceを必要としない検査。
+void p5eRemoveSourceNegatives() {
+    PreviewEngine engine;
+    auto dispatcher = std::make_shared<ManualDispatcher>();
+    require(engine.initialize(qualifiedConfig(), dispatcher), "initializeに失敗しました");
+    // ReadyPaused以外はstateで拒否する。
+    requireFailure(engine.removeSource({1}), PreviewErrorCategory::InvalidState,
+                   "ReadyPaused前のremoveSourceを受理しました");
+
+    require(PreviewRenderPort::bindRenderThread(engine), "render thread bindに失敗しました");
+    require(PreviewRenderPort::attachLogicalDevice(engine), "logical test seamに失敗しました");
+    require(engine.status().state == PreviewEngineState::ReadyPaused,
+            "logical attach後のstateが違います");
+    // 未登録IDは`InvalidSource`。stateの都合で別のerrorへすり替えない。
+    requireFailure(engine.removeSource({1}), PreviewErrorCategory::InvalidSource,
+                   "未登録のPreviewSourceIdを受理しました");
+    requireFailure(engine.removeSource({0}), PreviewErrorCategory::InvalidSource,
+                   "0番のPreviewSourceIdを受理しました");
+
+    std::optional<Result<void>> wrongThreadRemove;
+    std::thread wrongThread([&] { wrongThreadRemove.emplace(engine.removeSource({1})); });
+    wrongThread.join();
+    require(wrongThreadRemove.has_value(), "wrong-thread remove resultがありません");
+    requireFailure(*wrongThreadRemove, PreviewErrorCategory::InvalidState,
+                   "control thread以外からのremoveSourceを受理しました");
+
+    require(engine.requestShutdown(), "shutdown requestに失敗しました");
+    requireFailure(engine.removeSource({1}), PreviewErrorCategory::InvalidState,
+                   "ShuttingDown中のremoveSourceを受理しました");
+    require(PreviewRenderPort::completeTeardown(engine), "teardown completionに失敗しました");
+}
+
 void distinctFrameCounterIsBounded() {
     DistinctFrameCounter counter;
     require(counter.count() == 0, "distinct frame counterの初期値が0ではありません");
@@ -1030,6 +1112,8 @@ int main(int argc, char** argv) {
         {"bounded distinct frame counter", distinctFrameCounterIsBounded},
         {"scheduler skipped frame count", schedulerSkippedFramesAreCounted},
         {"P5-D audio domain / capabilities", p5dAudioDomainAndCapabilities},
+        {"P5-E composition source references", p5eCompositionSourceReferences},
+        {"P5-E removeSource negatives", p5eRemoveSourceNegatives},
     };
 
     try {

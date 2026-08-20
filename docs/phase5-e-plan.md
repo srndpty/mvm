@@ -1,6 +1,6 @@
 # P5-E 実装プラン — Product composition (二source / 二layer)
 
-- 状態: **P5-E1 実装完了 / E2〜E4 未着手**
+- 状態: **P5-E1 / P5-E2 実装完了 / E3〜E4 未着手**
 - 親計画: [Phase 5 計画](phase5-plan.md) §10
 - 製品契約: [PreviewEngine 製品契約](preview-engine-contract.md)
 - 起点commit: `2de8e2d` (P5-D closure merge)
@@ -30,10 +30,14 @@ P5-E で閉じるのは次である。
    `ExactPairingCounters` のセマンティクスは温存し、frozen P2/P4 テストを不変に保つ。
    engine は 1 層でも 2 層でも同じ実装を通る (AGENTS.md の DRY)。
 3. **`CompositorCoordinator` を composition epoch の権威にする**。engine は accepted token が
-   変わるたびに `adoptCompositionSnapshot()` で atomic 採用し、`validateForDisplay()` で
+   変わるたびに `adoptCompositionRuntimeSnapshot()` で atomic 採用し、`validateForDisplay()` で
    stale epoch 提示阻止を製品経路にも効かせる。public には従来どおり `AcceptedComposition`
    だけを出す (`ResourceEpoch` / `SourceGeneration` / `CompositionEpoch` の owner を混ぜない
    — phase5-plan §4)。
+   なお E1 の実装では、当初案の `adoptCompositionSnapshot()` + `configure()` では
+   参照 source 集合が変わるたびに coordinator instance を作り直すことになり epoch lineage が
+   切れるため、`adoptCompositionRuntimeSnapshot(state, layout, generations)` を新設した
+   (§3「E1 実装結果」4 を参照)。
 
 ---
 
@@ -50,7 +54,7 @@ P5-E で閉じるのは次である。
 | render 経路 | `preview_engine.cpp:2041-2200` | `takeExact` 単数 → `layers.size() != 1` ガード → `layers.front()` → `composeSingleLayerToTarget` → `activeLayerCount` を 1 固定 |
 | seek | `preview_engine.cpp:610, 875, 2096` | `pendingSeek.expectedVideoGeneration` が単数 |
 | `ExactFramePairer` | `src/media/gpu_preview/exact_frame_pairer.{h,cpp}` | 2 source 固定。**engine から未使用** |
-| `CompositorCoordinator` | `src/media/gpu_preview/compositor_coordinator.{h,cpp}` | `LayerLayout` は N 対応。`adoptCompositionSnapshot` / `validateForDisplay` 実装済み。**engine から未使用** |
+| `CompositorCoordinator` | `src/media/gpu_preview/compositor_coordinator.{h,cpp}` | `LayerLayout` は N 対応。`adoptCompositionSnapshot` / `validateForDisplay` 実装済み。**E1 開始時点では engine から未使用** (E1 で `adoptCompositionRuntimeSnapshot` を足して配線済み) |
 | `GpuCompositor` | `src/media/gpu_preview/gpu_compositor.cpp:194-217` | 内部は N 層。入口 `composeProductToTarget(frame, target, expectedLayerCount, ...)` に層数を渡すだけ |
 | `PresentedFrameInfo` | `src/preview_engine/preview_types.h:74-80` | 既に `AcceptedComposition composition` と `activeLayerCount` を保持 |
 | fixture | `tests/assets/p3_audio/` | A=`p3_av_h264_aac.mp4` (1080p60 h264 + 48k stereo aac)、B=`p3_video_hevc_b.mp4` (1080p60 hevc, audio 無し)。**両方 60/1 で二source に使える** |
@@ -105,11 +109,13 @@ capability は `1/1` のまま。**外形的な挙動を変えない refactor sl
    - `Impl` に `std::unique_ptr<gpu::CompositorCoordinator> coordinator` と
      `std::unique_ptr<gpu::ExactFramePairer> pairer` を持たせる
    - accepted token が前回 compose 時と変わったら
-     `coordinator->adoptCompositionSnapshot(CompositionStateId{token->id.value}, layout)` を呼ぶ。
+     `coordinator->adoptCompositionRuntimeSnapshot(CompositionStateId{token->id.value}, layout,
+     generations)` を呼ぶ (当初案の `adoptCompositionSnapshot()` + `configure()` から差し替えた。
+     理由は §3「E1 実装結果」4)。
      `layout[i].zOrder = static_cast<int>(i)` とし、**`CompositionSnapshot::layers` の vector 順が
      背面→前面の z 順である**ことを契約として明記する (public API に zOrder field は増やさない)
-   - source generation は `coordinator->setSourceGeneration(internal, worker->buffer().generation())`
-     で同期する
+   - source generation は同じ `adoptCompositionRuntimeSnapshot()` へ渡して同期する。
+     generation だけが動いた場合 epoch は進まない
    - `composed.compositionEpoch` / `compositionState` の直書き (`2144-2145`) を撤去し、
      `coordinator->compose()` が入れた値をそのまま使う
    - 提示直前に `coordinator->validateForDisplay(composed)` を通し、`StaleEpoch` なら提示しない
@@ -289,17 +295,76 @@ capability は `1/1` のまま。
 
 ### テスト (E2)
 
-- positive: 登録 → composition を submit せずに remove → 成功、`registeredVideoSourceCount` が減る
-- positive: A を参照する composition を submit → B を submit (A の参照が外れる) → 提示 → A を remove 成功
-- negative: active composition が参照中の source を remove → `InvalidState`
-- negative: pending (accepted 未提示) composition が参照中の source を remove → `InvalidState`
-- negative: unknown / 既に削除済み ID → `InvalidSource`
-- negative: `Playing` / `Seeking` 中の remove → `InvalidState`
-- positive: audio source の remove 後に `audioMasterActive == false`、
-  `PreviewStatus` が audio 無しを報告する
-- negative: remove 失敗時に source table / composition token / revision が一切変わらない
-- product test: `apps/p5d_preview_smoke` に `--remove-audio-source` を追加するのではなく、
-  E3 で新設する `apps/p5e_preview_smoke` へまとめる (E2 は unit + 既存 regression で閉じる)
+unit (`tests/preview_engine/test_preview_engine.cpp`):
+
+- `p5eCompositionSourceReferences()` — acceptance state の参照判定
+  - composition 無しで参照なし
+  - pending (accepted 未提示) が参照を保持する
+  - active (last presented) が参照を保持する
+  - **A を提示中に B を accept しただけでは A の参照は外れない**
+  - B を実際に提示して初めて A の参照が外れる
+  - opacity 0 の layer も参照である (描画に寄与しないことと解放可能性は別)
+- `p5eRemoveSourceNegatives()` — engine 経路のうち native device を要さない検査
+  - `ReadyPaused` 以外 / `ShuttingDown` 中は `InvalidState`
+  - 未登録 ID・0 番 ID は `InvalidSource`
+  - control thread 以外からの呼び出しは `InvalidState`
+
+product (`apps/p5e_preview_smoke`、`-L p5e`):
+
+- `--remove-unreferenced-source` — composition 提出前の source を remove 成功、
+  `registeredVideoSourceCount` が 1 → 0、二重削除は `InvalidSource`、再登録して再生継続
+- `--remove-referenced-source` — `Playing` 中の remove が `InvalidState`、
+  pause 後も active/pending composition が参照中なら `InvalidState`、
+  未登録 ID は `InvalidSource`
+- `--remove-audio-source` — authoritative audio source を安全に解放すると
+  `registeredAudioSourceCount == 0` / `audioMasterActive == false` になり、
+  wall-clock master で再生を継続できる。解放は failure ではないので
+  `audioTransportFailureCount` / `audioSinkDeviceFailureCount` /
+  `audioDomainRejectCount` / `videoMasterQpcFallbackCount` はいずれも 0 のまま
+
+### E2 実装結果 (実測)
+
+- ordinary CTest **全件 PASS**。P5-E product test は 2 → 5 本
+- P5-C 9 本 / P5-D 13 本は無変更で PASS
+
+計画から変えた点と、その理由を記録する。
+
+1. **capability 1/1 では「参照が外れた video source の削除」に到達できない。**
+   当初計画の
+   「A を参照する composition を submit → B を submit → 提示 → A を remove 成功」は
+   video source が 2 件必要である。`maxQualifiedActiveVideoSources == 1` のうちは、
+   composition を submit した時点でその source の参照は二度と外れない
+   (差し替え先の source が存在せず、empty snapshot は `CompositionFailure` で拒否される)。
+   したがって **E2 で到達できる削除成功は次の 2 経路だけ**である。
+   - composition から一度も参照されていない video source の削除
+   - composition へ参加しない audio source の削除
+
+   A → B 差し替え後の削除は capability 2 を前提とするので **P5-E3 の product test へ回す**。
+   参照判定そのもの (A 提示中に B を accept しただけでは外れない) は unit で固定してある。
+
+2. **`markPresented()` に snapshot を渡す形へ変えた。**
+   removal guard は active composition の参照集合を必要とするが、
+   `CompositionAcceptanceState` は last presented の **token** しか持っていなかった。
+   `latestAcceptedSnapshot_` から暗黙に拾うと、A 提示中に B を accept した時点で
+   A の参照が外れたと誤判定する。呼び出し側が token と snapshot を対で渡す形にした。
+
+3. **removal は「検査 → lock 解放して停止 → 再取得して commit」の 3 段にした。**
+   audio transport の停止は engine mutex を保持したまま行えない
+   (`audioTransportMutex` との取得順が固定されているため)。
+   停止中に fatal が入った場合は removal を commit せず `InvalidState` を返し、
+   実体の teardown は shutdown 経路へ委ねる。
+   停止段階では ownership を移さないので、この窓で shutdown が走っても
+   同じ実体を stop/join できる。
+   audio sink を停止できなかった場合は `pause()` と同じく
+   `AudioFailure` / `FatalToSession` で `ShuttingDown -> Error` へ落とす
+   (鳴り続けている endpoint の owner を居なくしない)。
+
+4. **negative が空振りでないことを mutation で確認した。**
+
+   | mutation | 結果 |
+   | --- | --- |
+   | `referencesSource()` の呼び出しを削除 | `remove_referenced_source` / `remove_audio_source` が FAIL |
+   | `referencesSource()` から active (last presented) 側の判定を削除 | `preview_engine_p5b_unit` が FAIL |
 
 ---
 
@@ -337,26 +402,25 @@ capability は `1/1` のまま。
      `seekAwaitingPresentationCount` を増やして待つ
    - `seekStaleGenerationRejectCount` の意味は不変 (substitution ではなく reject)
 
-6. 検証アプリ `apps/p5e_preview_smoke` を新設する (`apps/p5d_preview_smoke` と同型、
-   ルート `CMakeLists.txt` へ `add_subdirectory`)。fixture A + B を二 source 登録し、
-   二層 composition を提示する。fault 引数:
+6. 検証アプリ `apps/p5e_preview_smoke` を拡張する (E1 で新設済み)。
+   fixture A + B を二 source 登録し、二層 composition を提示する経路を足す。fault 引数:
    - `(なし)` — 二source / 二層 smoke
    - `--single-layer` — 1 層 regression が同じ経路で通ること
    - `--exceed-source-count` — 3 source 目を `UnsupportedCapability` で拒否
    - `--exceed-layer-count` — 3 層を `UnsupportedCapability` で拒否
    - `--duplicate-source-layer` — 同一 source を 2 層へ配置して `UnsupportedCapability`
    - `--fault-missing-pair` — 片側 source の供給を止め、**old/latest frame で代用せず提示しない**
-   - `--fault-stale-epoch` — supersede された epoch の frame を提示しない
-   - `--remove-referenced-source` — active/pending 参照中の remove が `InvalidState`
+   - `--remove-released-source` — A を参照する composition を B へ差し替えて提示し、
+     参照が外れた A を remove できること (capability 2 が要るため E2 から繰り越し)
    - `--seek-two-source` — 二 source exact seek の completion
    - `--fault-seek-partial-generation` — 片側だけ generation が揃った状態で complete にしない
 
-7. `tests/CMakeLists.txt` に `mvm_add_p5e_product_test` マクロを追加する
-   (`760-812` の P5-C / `816-874` の P5-D と同型)。fixture wrapper は
+7. `tests/CMakeLists.txt` の `mvm_add_p5e_product_test` マクロ (E1 で追加済み) へ
+   二 source 用の test を足す。fixture wrapper は
    `scripts/run-with-required-fixture.ps1` を再利用し、A と B の**両方**を必須にする
    (wrapper が単一 `-RequiredFile` なので、複数対応へ拡張するか wrapper を 2 段掛けにする。
    拡張する場合は `tests/preview_engine/check-required-fixture-wrapper.ps1` の契約テストも更新する)。
-   末尾に**登録数の literal 検査** (`EQUAL 10`) を置き、対象 0 件を成功にしない。
+   末尾の**登録数の literal 検査**を実数へ更新し、対象 0 件を成功にしない。
 
 ### テスト (E3)
 
@@ -408,7 +472,7 @@ pwsh scripts/build.ps1
 pwsh scripts/test.ps1                      # ordinary CTest (release/debug)
 ctest --test-dir build/release -L p5c      # P5-C regression (9 本)
 ctest --test-dir build/release -L p5d      # P5-D regression (13 本)
-ctest --test-dir build/release -L p5e      # P5-E product test (E3 以降 / 10 本)
+ctest --test-dir build/release -L p5e      # P5-E product test (E2 時点 5 本)
 pwsh scripts/lint.ps1
 ```
 

@@ -186,13 +186,23 @@ public:
            const std::unordered_map<std::uint64_t, EligibleSource>& sources,
            const PreviewCapabilities& capabilities);
 
-    void markPresented(AcceptedComposition composition);
+    // 提示したtokenと、そのtokenが指すsnapshotを対で記録する。
+    // snapshotを取り違えるとremoval guardが「参照が外れた」と誤判定するため、
+    // 呼び出し側が両方を明示的に渡す。
+    void markPresented(AcceptedComposition composition,
+                       std::shared_ptr<const CompositionSnapshot> snapshot);
     std::optional<AcceptedComposition> latestAcceptedToken() const;
     std::optional<AcceptedComposition> lastPresentedToken() const;
     const std::shared_ptr<const CompositionSnapshot>& latestAcceptedSnapshot() const;
+    const std::shared_ptr<const CompositionSnapshot>& lastPresentedSnapshot() const;
+    // active (last presented) または pending (accepted済みで未提示) のcompositionが
+    // このsourceを参照しているか。参照が外れていないsourceのremovalを拒否するために使う
+    // (preview-engine-contract.md §6)。
+    bool referencesSource(PreviewSourceId source) const;
 
 private:
     std::shared_ptr<const CompositionSnapshot> latestAcceptedSnapshot_;
+    std::shared_ptr<const CompositionSnapshot> lastPresentedSnapshot_;
     std::optional<AcceptedComposition> latestAcceptedToken_;
     std::optional<AcceptedComposition> lastPresentedToken_;
     std::uint64_t nextId_ = 1;

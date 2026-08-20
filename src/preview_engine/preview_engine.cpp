@@ -423,8 +423,10 @@ CompositionAcceptanceState::submit(const std::shared_ptr<const CompositionSnapsh
     return Result<AcceptedComposition>::success(accepted);
 }
 
-void CompositionAcceptanceState::markPresented(AcceptedComposition composition) {
+void CompositionAcceptanceState::markPresented(
+    AcceptedComposition composition, std::shared_ptr<const CompositionSnapshot> snapshot) {
     lastPresentedToken_ = composition;
+    lastPresentedSnapshot_ = std::move(snapshot);
 }
 
 void DistinctFrameCounter::note(std::int64_t frame) {
@@ -450,6 +452,26 @@ std::optional<AcceptedComposition> CompositionAcceptanceState::lastPresentedToke
 const std::shared_ptr<const CompositionSnapshot>&
 CompositionAcceptanceState::latestAcceptedSnapshot() const {
     return latestAcceptedSnapshot_;
+}
+
+const std::shared_ptr<const CompositionSnapshot>&
+CompositionAcceptanceState::lastPresentedSnapshot() const {
+    return lastPresentedSnapshot_;
+}
+
+bool CompositionAcceptanceState::referencesSource(PreviewSourceId source) const {
+    const auto references = [source](const std::shared_ptr<const CompositionSnapshot>& snapshot) {
+        if (!snapshot)
+            return false;
+        for (const PreviewCompositionLayer& layer : snapshot->layers) {
+            if (layer.source == source)
+                return true;
+        }
+        return false;
+    };
+    // pendingとactiveの両方を見る。提示済みのcompositionを差し替えただけでは、
+    // 実際に新しいcompositionを提示するまで古い参照は外れていない。
+    return references(latestAcceptedSnapshot_) || references(lastPresentedSnapshot_);
 }
 
 } // namespace internal
@@ -1562,19 +1584,135 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
     return Result<PreviewSourceId>::success(published);
 }
 
-Result<void> PreviewEngine::removeSource(PreviewSourceId) {
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    Result<void> affinity = impl_->requireControlThread(PreviewOperation::RemoveSource);
-    if (!affinity) {
-        return affinity;
+Result<void> PreviewEngine::removeSource(PreviewSourceId source) {
+    // audio transportの停止はengine mutexを保持したまま行わない
+    // (audioTransportMutexとの取得順を固定するため)。したがって
+    // 「検査 -> lock解放して停止 -> 再取得してcommit」の3段で行う。
+    std::shared_ptr<audio::AudioDecodeWorker> audioWorker;
+    std::shared_ptr<audio::WasapiAudioSink> audioSink;
+    gpu::SourceDecodeWorker* videoWorker = nullptr;
+    bool removingAudio = false;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        Result<void> affinity = impl_->requireControlThread(PreviewOperation::RemoveSource);
+        if (!affinity) {
+            return affinity;
+        }
+        if (impl_->machine.state() != PreviewEngineState::ReadyPaused) {
+            return invalidState(PreviewOperation::RemoveSource,
+                                "source removalはReadyPausedでのみ受理します");
+        }
+        if (impl_->eligibleSources.find(source.value) == impl_->eligibleSources.end()) {
+            return Result<void>::failure(makeError(PreviewErrorCategory::InvalidSource,
+                                                   PreviewOperation::RemoveSource,
+                                                   "未登録のPreviewSourceIdです"));
+        }
+        if (impl_->pendingSeek.active) {
+            return invalidState(PreviewOperation::RemoveSource,
+                                "seek進行中のsourceは削除できません");
+        }
+        // active (last presented) またはpending (accepted済みで未提示) のcomposition
+        // が参照しているsourceは削除しない (preview-engine-contract.md §6)。
+        if (impl_->compositionState.referencesSource(source)) {
+            return invalidState(
+                PreviewOperation::RemoveSource,
+                "activeまたはpending compositionが参照しているsourceは削除できません");
+        }
+
+        const auto entry = impl_->videoSources.find(source.value);
+        if (entry != impl_->videoSources.end() && entry->second.worker)
+            videoWorker = entry->second.worker.get();
+        removingAudio = impl_->publicAudioSource && *impl_->publicAudioSource == source;
+        if (removingAudio) {
+            audioWorker = impl_->audioWorker;
+            audioSink = impl_->audioSink;
+            // schedulerがまだaudio clockをmasterとして参照しないようにする。
+            // ReadyPausedなのでscheduler自体は止まっているが、authorityの
+            // 取り下げをstopより先に確定させる。
+            impl_->audioMasterActive = false;
+        }
     }
-    if (impl_->machine.state() != PreviewEngineState::ReadyPaused) {
-        return invalidState(PreviewOperation::RemoveSource,
-                            "source removalはReadyPausedでのみ受理します");
+
+    // ここではownershipを移していない。engine側のfieldは生きたままなので、
+    // この窓でfatalが起きてもshutdown経路が同じ実体をstop/joinできる。
+    std::string audioError;
+    bool audioStopped = true;
+    if (audioSink || audioWorker) {
+        // shutdown ordering (contract §12) と同じ順で止める: sink -> worker -> clock。
+        std::lock_guard<std::mutex> transport(impl_->audioTransportMutex);
+        if (audioSink) {
+            audioStopped = audioSink->pause(audioError);
+            audioSink->stop();
+        }
+        if (audioWorker)
+            audioWorker->stop();
     }
-    return Result<void>::failure(makeError(PreviewErrorCategory::UnsupportedCapability,
-                                           PreviewOperation::RemoveSource,
-                                           "P5-Bではsource tableを接続していません"));
+    if (videoWorker)
+        videoWorker->stop();
+
+    std::optional<PreviewError> fatal;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (impl_->machine.state() != PreviewEngineState::ReadyPaused) {
+            // 停止中にfatalが入った。removalはcommitせず、teardownに実体を委ねる。
+            return invalidState(PreviewOperation::RemoveSource,
+                                "removal中にstateが変化したため削除を確定しません");
+        }
+        if (!audioStopped) {
+            // audioを止められないまま登録解除すると、鳴り続けているendpointの
+            // ownerが居なくなる。pause()と同じくsession-fatalとして扱う。
+            ++impl_->audioTransportFailureCount;
+            PreviewError failure =
+                makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::RemoveSource,
+                          "WASAPI renderingを停止できません: " + audioError,
+                          PreviewErrorSeverity::FatalToSession);
+            failure.source = source;
+            Result<void> recorded = impl_->machine.recordFatal(failure);
+            if (!recorded)
+                return recorded;
+            fatal = failure;
+            impl_->startWorkerShutdown();
+            impl_->telemetrySnapshot.status.state = PreviewEngineState::ShuttingDown;
+            impl_->telemetrySnapshot.status.lastError = impl_->machine.lastError();
+        } else {
+            const auto entry = impl_->videoSources.find(source.value);
+            if (entry != impl_->videoSources.end()) {
+                if (entry->second.internal.value != 0)
+                    impl_->sourceRegistry.unregisterSource(entry->second.internal);
+                impl_->videoSources.erase(entry);
+                // pairerはbufferをraw pointerで握る。source集合が変わったので
+                // 必ず組み直す。coordinatorはepoch lineageのownerなので作り直さない。
+                impl_->pairer.reset();
+                impl_->coordinatorSources.clear();
+                if (impl_->videoSources.empty()) {
+                    impl_->workerJoined = true;
+                    impl_->telemetrySnapshot.currentSourceQueueDepth = 0;
+                }
+            }
+            if (removingAudio) {
+                // authoritative audio sourceを安全に削除したのでaudio authorityを
+                // 空へ戻す (preview-engine-contract.md §6)。宣言の逆順で解放する。
+                impl_->audioSink.reset();
+                impl_->audioWorker.reset();
+                impl_->audioClock.reset();
+                impl_->publicAudioSource.reset();
+                impl_->internalAudioSource = audio::SourceId{};
+                impl_->resumeAudioSample = 0;
+                impl_->audioSinkJoined = true;
+                impl_->audioWorkerJoined = true;
+                impl_->deviceSnapshot.audioSampleRate = 0;
+                impl_->deviceSnapshot.audioChannelCount = 0;
+            }
+            impl_->eligibleSources.erase(source.value);
+        }
+    }
+
+    if (fatal) {
+        impl_->notify(internal::ErrorOccurredEvent{*fatal});
+        impl_->notify(internal::StateChangedEvent{PreviewEngineState::ShuttingDown});
+        return Result<void>::failure(*fatal);
+    }
+    return Result<void>::success();
 }
 
 Result<AcceptedComposition>
@@ -2440,7 +2578,7 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                     } else {
                         for (gpu::SourceDecodeWorker* worker : workers)
                             worker->buffer().noteDisplayed(target);
-                        engine.impl_->compositionState.markPresented(*token);
+                        engine.impl_->compositionState.markPresented(*token, snapshot);
                         engine.impl_->distinctPresentedFrames.note(target);
                         ++engine.impl_->presentationSequence;
                         ++engine.impl_->telemetrySnapshot.presentedFrameCount;

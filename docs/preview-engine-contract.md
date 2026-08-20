@@ -160,6 +160,18 @@ source removalは、active compositionまたはacceptedだが未提示のpending
 削除である。authoritative audio sourceを`ReadyPaused`で安全に削除した場合はaudio authorityを空へ戻す。
 再生中の一般的なdynamic removalは将来の独立contractとする。
 
+参照が外れる時点は「新しいcompositionをacceptした時点」ではなく「新しいcompositionを実際に提示した
+時点」である。提示中のcompositionを差し替えてacceptしただけでは、古いcompositionがまだ画面に出ている
+ため参照は外れていない。
+
+removalが受理される前提は次のとおりである。engine stateが`ReadyPaused`であること、seekが進行中でない
+こと、`PreviewSourceId`が登録済みであることを、この順で検査する。未登録IDは`InvalidSource`であり、
+stateの都合で別のerrorへすり替えない。
+
+authoritative audio sourceのremovalでaudio sinkを停止できない場合は、鳴り続けているendpointのowner
+が居なくなるため`AudioFailure` / `FatalToSession`として`ShuttingDown -> Error`へ落とす。audio authority
+を空へ戻すこと自体はfailureではないので、audio failure counterへ数えない。
+
 ## 7. Immutable composition contract
 
 callerはimmutableなcomposition contentを提出する。callerはpublic revisionを採番しない。

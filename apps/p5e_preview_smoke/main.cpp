@@ -4,6 +4,13 @@
 // 「product render path が `CompositorCoordinator` を composition epoch の
 // authority として通っていること」である。二 source / 二 layer は P5-E3 で足す。
 //
+// `--remove-*` は P5-E2 の source removal guard を製品経路で固定する。
+// capability が 1 video source のうちは、composition を submit した時点で
+// その source の参照は二度と外れない (差し替え先の source が存在しない) ので、
+// **video source の削除成功は composition 提出前にしか到達しない**。
+// 「参照が外れた source を削除できる」完全な経路 (A -> B へ差し替えてから A を削除)
+// は capability 2 が要る P5-E3 で足す。
+//
 // 特に `--fault-stale-composition-epoch` は、compose 成立後・提示前に
 // `CompositionEpoch` だけを進め、`validateForDisplay()` が製品経路で実際に
 // 効いていることを固定する。固定するのは reject branch を踏んだことだけではなく、
@@ -63,8 +70,14 @@ public:
     bool sequenceViolation = false;
 };
 
-enum class Stage { WaitDevice, WaitInitial, WaitRecovered, WaitShutdown };
-enum class Fault { None, StaleCompositionEpoch };
+enum class Stage { WaitDevice, WaitInitial, WaitRecovered, WaitResume, WaitShutdown };
+enum class Fault {
+    None,
+    StaleCompositionEpoch,
+    RemoveUnreferencedSource,
+    RemoveReferencedSource,
+    RemoveAudioSource
+};
 
 } // namespace
 
@@ -75,13 +88,20 @@ int main(int argc, char** argv) {
     const QStringList arguments = app.arguments();
     if (arguments.size() < 2 || arguments.size() > 3) {
         std::fprintf(stderr, "使い方: mvm_p5e_preview_smoke <fixture-a-path> "
-                             "[--fault-stale-composition-epoch]\n");
+                             "[--fault-stale-composition-epoch|--remove-unreferenced-source"
+                             "|--remove-referenced-source|--remove-audio-source]\n");
         return 2;
     }
     Fault fault = Fault::None;
     if (arguments.size() == 3) {
         if (arguments[2] == "--fault-stale-composition-epoch")
             fault = Fault::StaleCompositionEpoch;
+        else if (arguments[2] == "--remove-unreferenced-source")
+            fault = Fault::RemoveUnreferencedSource;
+        else if (arguments[2] == "--remove-referenced-source")
+            fault = Fault::RemoveReferencedSource;
+        else if (arguments[2] == "--remove-audio-source")
+            fault = Fault::RemoveAudioSource;
         else
             return 2;
     }
@@ -113,6 +133,11 @@ int main(int argc, char** argv) {
     mvm::preview::AcceptedComposition accepted;
     std::uint64_t presentedAtInjection = 0;
     std::int64_t rejectedFrame = -1;
+    mvm::preview::PreviewSourceId videoSource{};
+    mvm::preview::PreviewSourceId audioSource{};
+    std::uint64_t presentedAtPause = 0;
+    bool removalChecked = false;
+    mvm::preview::internal::P5CRuntimeDiagnostics afterRemoval;
     mvm::preview::internal::P5CRuntimeDiagnostics activeDiagnostics;
     const auto started = std::chrono::steady_clock::now();
     int exitCode = 0;
@@ -135,12 +160,60 @@ int main(int argc, char** argv) {
             mvm::preview::PreviewSourceDescriptor descriptor;
             descriptor.mediaPath = arguments[1].toStdWString();
             descriptor.videoEnabled = true;
+
+            if (fault == Fault::RemoveUnreferencedSource) {
+                // composition から参照される前の source は解放できる。
+                // 削除 -> 再登録で ID が使い回されないことも同時に固定する。
+                const auto first = engine->addSource(descriptor);
+                if (!first) {
+                    std::fprintf(stderr, "初回source open失敗: %s\n",
+                                 first.error().detail.c_str());
+                    exitCode = 4;
+                    app.quit();
+                    return;
+                }
+                const auto beforeRemoval =
+                    mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+                const auto removed = engine->removeSource(first.value());
+                const auto afterFirstRemoval =
+                    mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+                // 二重削除は`InvalidSource`。削除済みIDを黙って成功にしない。
+                const auto again = engine->removeSource(first.value());
+                if (!removed || beforeRemoval.registeredVideoSourceCount != 1 ||
+                    afterFirstRemoval.registeredVideoSourceCount != 0 || again ||
+                    again.error().category != mvm::preview::PreviewErrorCategory::InvalidSource) {
+                    std::fprintf(stderr, "未参照sourceのremovalが期待どおりではありません\n");
+                    exitCode = 14;
+                    app.quit();
+                    return;
+                }
+                removalChecked = true;
+            }
+
             auto source = engine->addSource(descriptor);
             if (!source) {
                 std::fprintf(stderr, "source open失敗: %s\n", source.error().detail.c_str());
                 exitCode = 4;
                 app.quit();
                 return;
+            }
+            videoSource = source.value();
+            if (fault == Fault::RemoveAudioSource) {
+                // audio-onlyのsourceはcompositionへ参加しないので、video再生中でも
+                // 参照は外れている。authoritative audio sourceの解放経路を固定する。
+                mvm::preview::PreviewSourceDescriptor audioDescriptor;
+                audioDescriptor.mediaPath = arguments[1].toStdWString();
+                audioDescriptor.videoEnabled = false;
+                audioDescriptor.audioEnabled = true;
+                const auto audio = engine->addSource(audioDescriptor);
+                if (!audio) {
+                    std::fprintf(stderr, "audio source open失敗: %s\n",
+                                 audio.error().detail.c_str());
+                    exitCode = 15;
+                    app.quit();
+                    return;
+                }
+                audioSource = audio.value();
             }
             // composition runtimeが未構成の間はepoch advance seamも成立しない。
             // seam自体がfail-closedであることをここで固定する。
@@ -166,6 +239,59 @@ int main(int argc, char** argv) {
             return;
         }
         if (stage == Stage::WaitInitial && telemetry.presentedFrameCount >= 12) {
+            if (fault == Fault::RemoveReferencedSource || fault == Fault::RemoveAudioSource) {
+                // removalはReadyPausedでのみ受理する。Playing中の拒否も同時に固定する。
+                const auto whilePlaying = engine->removeSource(videoSource);
+                if (whilePlaying || whilePlaying.error().category !=
+                                        mvm::preview::PreviewErrorCategory::InvalidState) {
+                    std::fprintf(stderr, "Playing中のremoveSourceを受理しました\n");
+                    exitCode = 16;
+                    app.quit();
+                    return;
+                }
+                if (!engine->pause()) {
+                    exitCode = 17;
+                    app.quit();
+                    return;
+                }
+                presentedAtPause = engine->telemetry().presentedFrameCount;
+
+                // 未登録IDは`InvalidSource`。stateの都合で別errorへすり替えない。
+                const auto unknown = engine->removeSource({videoSource.value + 100});
+                // active / pending compositionが参照しているsourceは解放できない。
+                const auto referenced = engine->removeSource(videoSource);
+                if (unknown ||
+                    unknown.error().category !=
+                        mvm::preview::PreviewErrorCategory::InvalidSource ||
+                    referenced || referenced.error().category !=
+                                      mvm::preview::PreviewErrorCategory::InvalidState) {
+                    std::fprintf(stderr, "参照中sourceのremoval guardが効いていません\n");
+                    exitCode = 18;
+                    app.quit();
+                    return;
+                }
+                if (fault == Fault::RemoveAudioSource) {
+                    const auto removedAudio = engine->removeSource(audioSource);
+                    afterRemoval =
+                        mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+                    if (!removedAudio || afterRemoval.registeredAudioSourceCount != 0 ||
+                        afterRemoval.audioMasterActive) {
+                        std::fprintf(stderr, "audio authorityを空へ戻せていません\n");
+                        exitCode = 19;
+                        app.quit();
+                        return;
+                    }
+                }
+                removalChecked = true;
+                // 解放後もsessionは継続できる。audioを外した場合はwall-clock masterへ戻る。
+                if (!engine->play()) {
+                    exitCode = 20;
+                    app.quit();
+                    return;
+                }
+                stage = Stage::WaitResume;
+                return;
+            }
             if (fault == Fault::StaleCompositionEpoch) {
                 presentedAtInjection = telemetry.presentedFrameCount;
                 if (!mvm::preview::internal::PreviewRenderPort::
@@ -181,6 +307,19 @@ int main(int argc, char** argv) {
                 mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
             if (!engine->requestShutdown()) {
                 exitCode = 6;
+                app.quit();
+                return;
+            }
+            stage = Stage::WaitShutdown;
+            return;
+        }
+        if (stage == Stage::WaitResume) {
+            if (telemetry.presentedFrameCount < presentedAtPause + 8)
+                return;
+            activeDiagnostics =
+                mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+            if (!engine->requestShutdown()) {
+                exitCode = 21;
                 app.quit();
                 return;
             }
@@ -247,8 +386,22 @@ int main(int argc, char** argv) {
                     : diagnostics.staleCompositionEpochRejectCount == 0 &&
                           diagnostics.lifecycleViolationCount == 0 &&
                           diagnostics.lastStaleCompositionRejectedFrame == -1;
+            const bool removalPass =
+                (fault == Fault::None || fault == Fault::StaleCompositionEpoch)
+                    ? !removalChecked
+                    : removalChecked &&
+                          (fault != Fault::RemoveAudioSource ||
+                           (diagnostics.registeredAudioSourceCount == 0 &&
+                            !diagnostics.audioMasterActive &&
+                            // audio解放はfailureではない。counterを汚さない。
+                            diagnostics.audioTransportFailureCount == 0 &&
+                            diagnostics.audioSinkDeviceFailureCount == 0 &&
+                            diagnostics.audioDomainRejectCount == 0 &&
+                            // video-only経路のwall-clockはqualified masterであり退避ではない。
+                            diagnostics.videoMasterQpcFallbackCount == 0));
             const bool pass =
                 status.state == mvm::preview::PreviewEngineState::Shutdown && staleEpochPass &&
+                removalPass &&
                 sink->errors.empty() && !sink->sequenceViolation && !sink->frames.empty() &&
                 // PresentedFrameInfoはactual accepted tokenとactual layer数を運ぶ。
                 sink->frames.back().composition == accepted &&
@@ -268,6 +421,7 @@ int main(int argc, char** argv) {
             std::printf("{\"verdict\":\"%s\",\"presented\":%llu,"
                         "\"stale_composition_epoch_rejects\":%llu,"
                         "\"rejected_frame\":%lld,\"rejected_frame_presented\":%s,"
+                        "\"removal_checked\":%s,\"audio_sources\":%llu,"
                         "\"lifecycle_violations\":%llu,\"errors\":%zu,\"terminal\":%d}\n",
                         pass ? "PASS" : "FAIL",
                         static_cast<unsigned long long>(terminalTelemetry.presentedFrameCount),
@@ -275,6 +429,8 @@ int main(int argc, char** argv) {
                             diagnostics.staleCompositionEpochRejectCount),
                         static_cast<long long>(diagnostics.lastStaleCompositionRejectedFrame),
                         rejectedFramePresented ? "true" : "false",
+                        removalChecked ? "true" : "false",
+                        static_cast<unsigned long long>(diagnostics.registeredAudioSourceCount),
                         static_cast<unsigned long long>(diagnostics.lifecycleViolationCount),
                         sink->errors.size(), static_cast<int>(status.state));
             exitCode = pass ? 0 : 9;

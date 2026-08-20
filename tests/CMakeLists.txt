@@ -901,11 +901,20 @@ if(MVM_ENABLE_QT)
     # 既存testが赤くならない。
     mvm_add_p5e_product_test(preview_engine_p5e_stale_composition_epoch
         ARGS --fault-stale-composition-epoch)
+    # P5-E2: source removal guard。capabilityが1 video sourceのうちは、composition
+    # 提出後にその参照が外れることはないので、削除成功は提出前の経路だけが到達可能。
+    mvm_add_p5e_product_test(preview_engine_p5e_remove_unreferenced_source
+        ARGS --remove-unreferenced-source)
+    mvm_add_p5e_product_test(preview_engine_p5e_remove_referenced_source
+        ARGS --remove-referenced-source)
+    # authoritative audio sourceを安全に解放するとaudio authorityが空へ戻る。
+    mvm_add_p5e_product_test(preview_engine_p5e_remove_audio_source
+        ARGS --remove-audio-source)
 
     list(LENGTH _mvm_p5e_product_tests _mvm_p5e_product_registered)
-    if(NOT _mvm_p5e_product_registered EQUAL 2)
+    if(NOT _mvm_p5e_product_registered EQUAL 5)
         message(FATAL_ERROR
-            "[mvm] P5-E product testの登録数が不正です: ${_mvm_p5e_product_registered}/2")
+            "[mvm] P5-E product testの登録数が不正です: ${_mvm_p5e_product_registered}/5")
     endif()
 endif()
 
