@@ -132,7 +132,11 @@ capability は `1/1` のまま。**外形的な挙動を変えない refactor sl
   `adoptCompositionRuntimeSnapshot()` の epoch lineage を固定する。
   source 集合が循環しても epoch が単調増加すること、generation の追随では epoch を
   進めないこと、supersede された `ComposedFrame` が `StaleEpoch` になること、
-  invalid state / 空 layout / generation 巻き戻しを reject すること
+  invalid state / 空 layout / 同一 state id の別 layout / 追跡中 source の generation
+  巻き戻しを reject すること、および regression 拒否が追跡中 source に限る
+  (追跡対象から外れた source は歴史的 floor を持たない) こと
+- 新 positive: `advanceCompositionEpochForTest()` が epoch だけをちょうど 1 進め、
+  state / generation を変えないこと
 - 新 negative: `ExactFramePairer` の construction preflight (empty / null /
   同一 buffer 重複 / 同一 `SourceId` の別 buffer) と、invalid pairer の
   `tryPair()` が buffer を触らず `Rejected` を返すこと
@@ -167,18 +171,37 @@ capability は `1/1` のまま。**外形的な挙動を変えない refactor sl
 3. **`validateForDisplay()` は製品経路の negative test 付きで配線した。**
    render path は compose -> validate -> draw を同じ engine lock 内で行うため、
    通常実行だけではこの branch を踏めない。
-   そこで `PreviewRenderPort::injectCompositionEpochAdvanceForTest()` を追加し、
-   **完成した error を注入するのではなく、compose 成立後・validate 前に
-   composition epoch authority だけを 1 つ進めて通常の validate 経路を通す**。
-   `apps/p5e_preview_smoke --fault-stale-composition-epoch` がこれを駆動し、
-   `staleCompositionEpochRejectCount == 1` と `lifecycleViolationCount == 1`、
-   および reject が fatal ではなく skip であること (提示が再開して Shutdown へ到達すること) を
-   固定する。reject を lifecycle violation としても数えるのは、この経路が
-   通常運転で踏まれてはならないためである。
+   そこで `CompositorCoordinator::advanceCompositionEpochForTest()` (state / layout /
+   generation を一切変えず `CompositionEpoch` だけを 1 進める test 専用 API) と、
+   それを compose 成立後・validate 前に一度だけ呼ぶ
+   `PreviewRenderPort::injectCompositionEpochAdvanceForTest()` を足した。
+   **完成した error を注入するのではなく、supersede だけを再現して通常の
+   validate 経路を通す。**
 
-   この負例が空振りでないことは mutation で確認した。render path から
-   `validateForDisplay()` の分岐を外すと `preview_engine_p5e_stale_composition_epoch`
-   が FAIL する (reject が 0 のまま提示が進み続ける)。
+   固定するのは「reject branch を踏んだこと」だけではない。exit criterion の本体は
+   「stale epoch の frame を**提示しない**」なので、拒否した output frame の identity を
+   `P5CRuntimeDiagnostics::lastStaleCompositionRejectedFrame` に残し、
+   `apps/p5e_preview_smoke --fault-stale-composition-epoch` が次を assert する。
+
+   ```text
+   staleCompositionEpochRejectCount == 1
+   lifecycleViolationCount == 1
+   lastStaleCompositionRejectedFrame == N (>= 0)
+   sink の PresentedFrameInfo に position == N が存在しない
+   position > N の提示が存在する (reject は fatal ではなく skip)
+   最終 state は Shutdown、error 無し
+   ```
+
+   この負例が空振りでないことは 2 通りの mutation で確認した。
+
+   | mutation | 結果 |
+   | --- | --- |
+   | `validateForDisplay()` の分岐自体を無効化 | FAIL (reject が 0 のまま提示が進み続ける) |
+   | counter は数えるが `if (rejected) return` を削除 | FAIL (`rejected_frame_presented: true`) |
+
+   後者は counter / lifecycle violation / 最終 state / last accepted token がすべて
+   正常値のまま stale frame を描画する mutation であり、frame identity を見ていなければ
+   PASS してしまう。
 
 4. **coordinator を session 中に作り直さない。**
    `CompositorCoordinator::configure()` は layout と generations を 1:1 で要求し
@@ -189,9 +212,16 @@ capability は `1/1` のまま。**外形的な挙動を変えない refactor sl
    coordinator へ `adoptCompositionRuntimeSnapshot(state, layout, generations)` を足した。
    これは source 集合ごと atomic に置換しつつ、**resolved composition state が
    実際に変わったときだけ epoch をちょうど 1 進める**。generation だけが動いた場合は
-   NoOp として追随のみ行い、generation の巻き戻しと、同一 `CompositionStateId` が
-   別 layout を指す要求は fail-closed で拒否する
-   (後者を通すと state id が composition identity を表さなくなる)。
+   NoOp として追随のみ行い、同一 `CompositionStateId` が別 layout を指す要求は
+   fail-closed で拒否する (通すと state id が composition identity を表さなくなる)。
+
+   generation の巻き戻し拒否の範囲は **「現在追跡中の source」に限る**。
+   layout から外れた source の generation は保持しないので、
+   一度外れてから戻ってきた source に対する歴史的な floor は持たない
+   (`A gen 10 -> B -> A gen 9` は受理される)。
+   `SourceGeneration` の owner は source 側であり、coordinator へ寄せないための
+   意図的な線引きである。header / docs の表現もこの範囲に合わせてあり、
+   `testCompositionRuntimeSnapshotAdoption()` がこの境界を期待値として固定している。
    engine は coordinator を lazily 一度だけ生成し、`addSource()` / detach では
    pairer だけを作り直す。
 

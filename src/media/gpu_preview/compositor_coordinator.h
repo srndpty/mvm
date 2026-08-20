@@ -63,13 +63,22 @@ public:
     //
     //  - `CompositionEpoch`はresolved composition stateが実際に変わったときだけ
     //    ちょうど1進む。generationだけが動いた場合は進めない
-    //  - generationのregressionはfail-closedで拒否する
+    //  - **現在追跡中のsource**に対するgenerationのregressionをfail-closedで拒否する。
+    //    layoutから外れて追跡対象でなくなったsourceのgenerationは保持しないので、
+    //    一度外れてから戻ってきたsourceに対する歴史的なfloorは持たない。
+    //    `SourceGeneration`のownerはあくまでsource側であり、coordinatorへ
+    //    寄せないための意図的な線引きである
+    //  - 同一`CompositionStateId`が別layoutを指す要求は拒否する
     //  - まだconfigureされていないinstanceに対しても最初の採用として成立する
     CompositionStateAdoptionResult
     adoptCompositionRuntimeSnapshot(CompositionStateId requestedState,
                                     std::vector<LayerLayout> requestedLayout,
                                     std::map<SourceId, SourceGeneration> requestedGenerations);
     bool setSourceGeneration(SourceId source, SourceGeneration generation);
+    // test専用。state / layout / generationを一切変えず`CompositionEpoch`だけを
+    // 1進める。composition transitionを起こさずにsupersedeだけを再現する。
+    // overflow時はfalseを返し、epochを進めない。
+    bool advanceCompositionEpochForTest();
     SourceGeneration sourceGeneration(SourceId source) const;
     CompositionEpoch compositionEpoch() const;
     CompositionStateId compositionState() const;

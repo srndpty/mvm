@@ -4,10 +4,11 @@
 // 「product render path が `CompositorCoordinator` を composition epoch の
 // authority として通っていること」である。二 source / 二 layer は P5-E3 で足す。
 //
-// 特に `--fault-stale-composition-epoch` は、compose 成立後・提示前に epoch
-// authority だけを進め、`validateForDisplay()` が製品経路で実際に効いている
-// ことを固定する。この負例が無いと、render path から `validateForDisplay()` を
-// 削除しても既存 test が赤くならない。
+// 特に `--fault-stale-composition-epoch` は、compose 成立後・提示前に
+// `CompositionEpoch` だけを進め、`validateForDisplay()` が製品経路で実際に
+// 効いていることを固定する。固定するのは reject branch を踏んだことだけではなく、
+// **その output frame を実際に提示しなかったこと**である。counter だけでは
+// 「reject を数えたうえでそのまま描画する」bug を検出できない。
 #include "app/preview/preview_engine_rhi_item.h"
 #include "preview_engine/preview_engine.h"
 #include "preview_engine/preview_engine_internal.h"
@@ -111,6 +112,7 @@ int main(int argc, char** argv) {
     Stage stage = Stage::WaitDevice;
     mvm::preview::AcceptedComposition accepted;
     std::uint64_t presentedAtInjection = 0;
+    std::int64_t rejectedFrame = -1;
     mvm::preview::internal::P5CRuntimeDiagnostics activeDiagnostics;
     const auto started = std::chrono::steady_clock::now();
     int exitCode = 0;
@@ -205,6 +207,13 @@ int main(int argc, char** argv) {
             if (telemetry.presentedFrameCount < presentedAtInjection + 8)
                 return;
             activeDiagnostics = probe;
+            rejectedFrame = probe.lastStaleCompositionRejectedFrame;
+            if (rejectedFrame < 0) {
+                std::fprintf(stderr, "拒否したoutput frameを記録していません\n");
+                exitCode = 13;
+                app.quit();
+                return;
+            }
             if (!engine->requestShutdown()) {
                 exitCode = 7;
                 app.quit();
@@ -219,12 +228,25 @@ int main(int argc, char** argv) {
             const auto terminalTelemetry = engine->telemetry();
             const auto diagnostics =
                 mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+            // 拒否したframeが実際に提示されていないことを、frame identityで確認する。
+            // rejectを数えたうえでそのまま描画するbugは、counterだけでは通ってしまう。
+            bool rejectedFramePresented = false;
+            bool resumedAfterRejectedFrame = false;
+            for (const auto& presented : sink->frames) {
+                if (presented.position.outputFrame == rejectedFrame)
+                    rejectedFramePresented = true;
+                if (presented.position.outputFrame > rejectedFrame)
+                    resumedAfterRejectedFrame = true;
+            }
             const bool staleEpochPass =
                 fault == Fault::StaleCompositionEpoch
                     ? diagnostics.staleCompositionEpochRejectCount == 1 &&
-                          diagnostics.lifecycleViolationCount == 1
+                          diagnostics.lifecycleViolationCount == 1 && rejectedFrame >= 0 &&
+                          diagnostics.lastStaleCompositionRejectedFrame == rejectedFrame &&
+                          !rejectedFramePresented && resumedAfterRejectedFrame
                     : diagnostics.staleCompositionEpochRejectCount == 0 &&
-                          diagnostics.lifecycleViolationCount == 0;
+                          diagnostics.lifecycleViolationCount == 0 &&
+                          diagnostics.lastStaleCompositionRejectedFrame == -1;
             const bool pass =
                 status.state == mvm::preview::PreviewEngineState::Shutdown && staleEpochPass &&
                 sink->errors.empty() && !sink->sequenceViolation && !sink->frames.empty() &&
@@ -245,11 +267,14 @@ int main(int argc, char** argv) {
                 terminalTelemetry.eventDeliveryFailureCount == 0;
             std::printf("{\"verdict\":\"%s\",\"presented\":%llu,"
                         "\"stale_composition_epoch_rejects\":%llu,"
+                        "\"rejected_frame\":%lld,\"rejected_frame_presented\":%s,"
                         "\"lifecycle_violations\":%llu,\"errors\":%zu,\"terminal\":%d}\n",
                         pass ? "PASS" : "FAIL",
                         static_cast<unsigned long long>(terminalTelemetry.presentedFrameCount),
                         static_cast<unsigned long long>(
                             diagnostics.staleCompositionEpochRejectCount),
+                        static_cast<long long>(diagnostics.lastStaleCompositionRejectedFrame),
+                        rejectedFramePresented ? "true" : "false",
                         static_cast<unsigned long long>(diagnostics.lifecycleViolationCount),
                         sink->errors.size(), static_cast<int>(status.state));
             exitCode = pass ? 0 : 9;

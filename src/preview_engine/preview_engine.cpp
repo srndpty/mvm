@@ -526,9 +526,10 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     // pairerを組んだときの参照source (public ID昇順)。
     std::vector<std::uint64_t> coordinatorSources;
     std::uint64_t staleCompositionEpochRejectCount = 0;
+    std::int64_t lastStaleCompositionRejectedFrame = -1;
     // 提示直前のstale epoch拒否を製品経路で検査するためのtest seam。
     // 完成したerrorを注入するのではなく、compose後・validate前に
-    // epoch authorityだけを進める。
+    // `CompositionEpoch`だけを進める。
     bool compositionEpochAdvanceInjected = false;
 
     std::uint64_t nextPublicSourceId = 1;
@@ -780,26 +781,11 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
 
     // 提示直前のstale epoch拒否を製品経路で踏ませるためのtest seam。
     // 完成したerrorを注入するのではなく、compose後・validate前に
-    // composition stateを一つ進め、通常のvalidate経路を通す。
-    // 次のrender callbackで実際のtokenへ戻るので、engineは自己回復する。
-    bool advanceCompositionEpochForTestLocked(const AcceptedComposition& token,
-                                              const CompositionSnapshot& snapshot) {
-        if (!coordinator)
-            return false;
-        const auto layout = buildLayoutLocked(snapshot);
-        if (!layout)
-            return false;
-        std::map<gpu::SourceId, gpu::SourceGeneration> generations;
-        for (std::uint64_t publicId : coordinatorSources) {
-            const auto entry = videoSources.find(publicId);
-            if (entry == videoSources.end() || !entry->second.worker)
-                return false;
-            generations.emplace(entry->second.internal,
-                                entry->second.worker->buffer().generation());
-        }
-        return coordinator->adoptCompositionRuntimeSnapshot(
-                   gpu::CompositionStateId{token.id.value + 1}, *layout, std::move(generations)) ==
-               gpu::CompositionStateAdoptionResult::Adopted;
+    // `CompositionEpoch`だけを1つ進める。composition state / layout / generationは
+    // 触らないので、engineから見たcompositionは何も変わらない。
+    // 進めたepochは次のcompose以降そのまま使われるので、engineは自己回復する。
+    bool advanceCompositionEpochForTestLocked() {
+        return coordinator && coordinator->advanceCompositionEpochForTest();
     }
 
     audio::AudioDecodeWorker* audioWorkerForTeardown() const {
@@ -2408,8 +2394,7 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                         // supersedeを製品経路で再現する。ここで進めた epoch は
                         // 直後の validateForDisplay が必ず弾く。
                         engine.impl_->compositionEpochAdvanceInjected = false;
-                        if (!engine.impl_->advanceCompositionEpochForTestLocked(*token,
-                                                                                *snapshot)) {
+                        if (!engine.impl_->advanceCompositionEpochForTestLocked()) {
                             PreviewError failure =
                                 makeError(PreviewErrorCategory::CompositionFailure,
                                           PreviewOperation::RenderDeviceAttach,
@@ -2429,6 +2414,9 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                         // したがってrejectはlifecycle violationとしても数える。
                         ++engine.impl_->staleCompositionEpochRejectCount;
                         ++engine.impl_->lifecycleViolationCount;
+                        // 拒否したframe identityを残す。counterだけでは
+                        // 「数えたうえでそのまま描画した」bugを観測できない。
+                        engine.impl_->lastStaleCompositionRejectedFrame = target;
                         rejected = true;
                     }
 
@@ -2732,6 +2720,8 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
         engine.impl_->finalRuntimeDiagnostics.deviceLostCount = engine.impl_->deviceLostCount;
         engine.impl_->finalRuntimeDiagnostics.staleCompositionEpochRejectCount =
             engine.impl_->staleCompositionEpochRejectCount;
+        engine.impl_->finalRuntimeDiagnostics.lastStaleCompositionRejectedFrame =
+            engine.impl_->lastStaleCompositionRejectedFrame;
         for (gpu::SourceDecodeWorker* teardownVideo : engine.impl_->videoWorkersForTeardown()) {
             const auto mismatchCount =
                 static_cast<std::uint64_t>(teardownVideo->snapshot().deviceMismatchCount);
@@ -3036,6 +3026,7 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
     result.distinctPresentedSourceFrameCount = engine.impl_->distinctPresentedFrames.count();
     result.staleSubstitutionCount = engine.impl_->staleSubstitutionCount;
     result.staleCompositionEpochRejectCount = engine.impl_->staleCompositionEpochRejectCount;
+    result.lastStaleCompositionRejectedFrame = engine.impl_->lastStaleCompositionRejectedFrame;
     result.lifecycleViolationCount = engine.impl_->lifecycleViolationCount;
     result.shutdownSequence = engine.impl_->shutdownSequence;
     result.audioMasterActive = engine.impl_->audioMasterActive;

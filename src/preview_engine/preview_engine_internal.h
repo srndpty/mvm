@@ -117,6 +117,11 @@ struct P5CRuntimeDiagnostics {
     // P5-E1: supersedeされたcomposition epochのframeを提示しなかった回数。
     // `CompositorCoordinator::validateForDisplay()`が権威である。
     std::uint64_t staleCompositionEpochRejectCount = 0;
+    // 直近でstale composition epochとして拒否したoutput frame番号。未発生なら-1。
+    // 「rejectのbranchを踏んだ」ことだけでなく「そのframeを提示しなかった」ことを
+    // 観測できるようにするためのidentityである。counterだけでは、rejectを数えた
+    // 直後にそのまま描画してしまうbugを検出できない。
+    std::int64_t lastStaleCompositionRejectedFrame = -1;
     std::uint64_t untrackedSubmissionCount = 0;
     std::uint64_t earlyPayloadReleaseCount = 0;
     std::uint64_t retirementTimeoutCount = 0;
@@ -248,7 +253,9 @@ public:
     // decodeは完了させたまま、exact frameの提示だけを成立させなくする。
     // 提示直前のstale composition epoch拒否を製品経路で検査するseam。
     // 完成したerrorをengineへ注入するのではなく、compose成立後・validate前に
-    // composition epoch authorityだけを1つ進め、通常のvalidate経路を通す。
+    // `CompositionEpoch`だけを1つ進め、通常のvalidate経路を通す。
+    // composition state / layout / generationは触らないので、engineから見た
+    // compositionは何も変わらない。supersedeだけを再現する。
     static Result<void> injectCompositionEpochAdvanceForTest(PreviewEngine& engine);
     static Result<void> injectSeekPresentationStallForTest(PreviewEngine& engine);
     // seek completionで得たaudio generationをengineが実際にenforceしているか

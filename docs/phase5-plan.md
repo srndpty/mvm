@@ -453,8 +453,10 @@ P5-Dと同様に一度に閉じない。§10.1のscopeを次の4 sliceへ分け�
 - coordinatorをsession中に作り直さないこと。参照source集合が変わるcomposition transitionも
   同一instanceで採用し、`CompositionEpoch`が単調増加すること。
   instanceごとに別のepoch namespaceを作らない
-- 提示直前のstale composition epoch拒否が、製品経路のnegative testで固定されていること
-  (compose成立後・validate前にepoch authorityだけを進めるseamを通す)
+- 提示直前のstale composition epoch拒否が、製品経路のnegative testで固定されていること。
+  compose成立後・validate前に`CompositionEpoch`だけを進めるseamを通し、
+  **rejectを数えたことだけでなく、そのoutput frameを提示しなかったこと**を
+  frame identityで固定する (counterだけでは「数えたうえで描画する」bugを検出できない)
 - product compositionのexpected layer数のauthorityがaccepted snapshotであること
   (compose結果を自分自身と比較しない)
 - `ExactFramePairer`と`SourceFrameBuffer`のexact取得がN sourceへ一般化され、既存2 source

@@ -1024,6 +1024,29 @@ void testCompositionRuntimeSnapshotAdoption() {
               CompositionStateAdoptionResult::Rejected,
           "同一 state id / 別 layout を拒否");
     check(coordinator.compositionEpoch() == CompositionEpoch{4}, "reject で epoch を進めない");
+
+    // regression 拒否の範囲は「現在追跡中の source」である。layout から外れた
+    // source の generation は保持しないので、歴史的な floor は持たない。
+    // `SourceGeneration` の owner は source 側であり、coordinator へ寄せない。
+    // 契約をこの範囲に狭めてあることを、期待値として明示的に固定する。
+    check(coordinator.sourceGeneration(a) == SourceGeneration{0},
+          "layout から外れた source の generation は保持しない");
+    check(coordinator.adoptCompositionRuntimeSnapshot(CompositionStateId{6}, layoutA, {{a, {1}}}) ==
+              CompositionStateAdoptionResult::Adopted,
+          "追跡対象から外れていた source は過去の generation と比較しない");
+    check(coordinator.adoptCompositionRuntimeSnapshot(CompositionStateId{7}, layoutA, {{a, {0}}}) ==
+              CompositionStateAdoptionResult::Rejected,
+          "再び追跡対象になった後の regression は拒否する");
+
+    // test 専用の epoch 前進。state / layout / generation を一切変えずに
+    // supersede だけを再現する。製品経路の stale epoch 拒否を踏ませるために使う。
+    const CompositionEpoch beforeAdvance = coordinator.compositionEpoch();
+    const CompositionStateId beforeState = coordinator.compositionState();
+    check(coordinator.advanceCompositionEpochForTest(), "epoch だけを進められる");
+    check(coordinator.compositionEpoch().value == beforeAdvance.value + 1,
+          "epoch はちょうど 1 進む");
+    check(coordinator.compositionState() == beforeState, "state は変えない");
+    check(coordinator.sourceGeneration(a) == SourceGeneration{1}, "generation も変えない");
 }
 
 // --------------------------------------------------------------------------

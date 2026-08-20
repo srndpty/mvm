@@ -103,7 +103,9 @@ CompositionStateAdoptionResult CompositorCoordinator::adoptCompositionRuntimeSna
     if (!requestedState.valid() || !validLayout(requestedLayout, requestedGenerations))
         return CompositionStateAdoptionResult::Rejected;
 
-    // 既に知っているsourceのgenerationが巻き戻る要求は受理しない。
+    // 現在追跡中のsourceのgenerationが巻き戻る要求は受理しない。
+    // layoutから外れたsourceのgenerationは保持しないので、歴史的なfloorは持たない
+    // (`SourceGeneration`のownerはsource側である)。
     for (const auto& [source, generation] : requestedGenerations) {
         const auto known = generations_.find(source);
         if (known != generations_.end() && generation < known->second)
@@ -133,6 +135,14 @@ CompositionStateAdoptionResult CompositorCoordinator::adoptCompositionRuntimeSna
     configured_ = true;
     ++epoch_.value;
     return CompositionStateAdoptionResult::Adopted;
+}
+
+bool CompositorCoordinator::advanceCompositionEpochForTest() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!configured_ || epoch_.value == std::numeric_limits<unsigned long long>::max())
+        return false;
+    ++epoch_.value;
+    return true;
 }
 
 bool CompositorCoordinator::setSourceGeneration(SourceId source, SourceGeneration generation) {
