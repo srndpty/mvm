@@ -42,6 +42,8 @@ public:
 
     Result<void> push(PreviewEvent event);
     std::optional<PreviewEvent> pop();
+    // 挿入順のまま複製する。test seam専用。
+    std::vector<PreviewEvent> snapshot() const;
     std::size_t size() const;
     std::size_t capacity() const;
     bool empty() const;
@@ -186,13 +188,23 @@ public:
            const std::unordered_map<std::uint64_t, EligibleSource>& sources,
            const PreviewCapabilities& capabilities);
 
-    void markPresented(AcceptedComposition composition);
+    // 提示したtokenと、そのtokenが指すsnapshotを対で記録する。
+    // snapshotを取り違えるとremoval guardが「参照が外れた」と誤判定するため、
+    // 呼び出し側が両方を明示的に渡す。
+    void markPresented(AcceptedComposition composition,
+                       std::shared_ptr<const CompositionSnapshot> snapshot);
     std::optional<AcceptedComposition> latestAcceptedToken() const;
     std::optional<AcceptedComposition> lastPresentedToken() const;
     const std::shared_ptr<const CompositionSnapshot>& latestAcceptedSnapshot() const;
+    const std::shared_ptr<const CompositionSnapshot>& lastPresentedSnapshot() const;
+    // active (last presented) または pending (accepted済みで未提示) のcompositionが
+    // このsourceを参照しているか。参照が外れていないsourceのremovalを拒否するために使う
+    // (preview-engine-contract.md §6)。
+    bool referencesSource(PreviewSourceId source) const;
 
 private:
     std::shared_ptr<const CompositionSnapshot> latestAcceptedSnapshot_;
+    std::shared_ptr<const CompositionSnapshot> lastPresentedSnapshot_;
     std::optional<AcceptedComposition> latestAcceptedToken_;
     std::optional<AcceptedComposition> lastPresentedToken_;
     std::uint64_t nextId_ = 1;
@@ -257,6 +269,19 @@ public:
     // composition state / layout / generationは触らないので、engineから見た
     // compositionは何も変わらない。supersedeだけを再現する。
     static Result<void> injectCompositionEpochAdvanceForTest(PreviewEngine& engine);
+    // `removeSource()`のaudio停止フェーズ (engine lockを持たない窓) を決定論的に
+    // 止めるbarrier。この窓でfatalが入った場合にremovalをcommitしないことを
+    // 再現可能に固定する。
+    static Result<void> armSourceRemovalBarrierForTest(PreviewEngine& engine);
+    static bool waitSourceRemovalBarrierEnteredForTest(PreviewEngine& engine, int timeoutMs);
+    static void releaseSourceRemovalBarrierForTest(PreviewEngine& engine);
+    // fatalをcommitしてunlockした直後、dispatchをflushする前で止めるbarrier。
+    // この窓でteardownが先にterminalへ進んでもevent順序が逆転しないことを
+    // 決定論的に検査する。state commitとmailbox insertionのlinearizabilityの
+    // authorityであり、これが無いとorderingの回帰を捕まえられない。
+    static Result<void> armFatalPublishBarrierForTest(PreviewEngine& engine);
+    static bool waitFatalPublishBarrierEnteredForTest(PreviewEngine& engine, int timeoutMs);
+    static void releaseFatalPublishBarrierForTest(PreviewEngine& engine);
     static Result<void> injectSeekPresentationStallForTest(PreviewEngine& engine);
     // seek completionで得たaudio generationをengineが実際にenforceしているか
     // 検査するseam。要求generationが決して揃わない状況を作る。
@@ -281,6 +306,12 @@ public:
     // bounded mailboxのfailure semanticsをbackend接続前に検査するinternal test seam。
     static void enqueueEventForTest(PreviewEngine& engine, PreviewEvent event);
     static std::size_t mailboxSizeForTest(const PreviewEngine& engine);
+    // mailboxへ挿入済みのeventを挿入順で返すtest seam。
+    // 「state commitとmailbox insertionがlinearizeされているか」は、
+    // sinkへのdeliveryでは観測できない。terminal到達後のpending eventは
+    // contractどおり破棄されるため、正しい実装でも配信されないからである。
+    // したがってinsertion順そのものを観測する。
+    static std::vector<PreviewEvent> mailboxEventsForTest(const PreviewEngine& engine);
 };
 
 } // namespace mvm::preview::internal

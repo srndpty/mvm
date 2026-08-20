@@ -441,9 +441,34 @@ P5-Dと同様に一度に閉じない。§10.1のscopeを次の4 sliceへ分け�
 | slice | 範囲 | 状態 |
 | --- | --- | --- |
 | P5-E1 | video sourceのinternal multi-source所有化、`CompositorCoordinator`をcomposition epochのauthorityとするproduct配線、`ExactFramePairer`のN一般化 (capabilityは1/1のまま) | 実装完了。closureはgate PASS確認後に確定する |
-| P5-E2 | `removeSource()`、active/pending composition参照中のremoval拒否、audio authorityの返却 | 未 |
+| P5-E2 | `removeSource()`、active/pending composition参照中のremoval拒否、audio authorityの返却 | 実装完了。closureはgate PASS確認後に確定する |
 | P5-E3 | capabilityを`maxQualifiedActiveVideoSources == 2` / `maxQualifiedCompositionLayers == 2`へ引き上げ、多層render経路、per-source seek generation、`apps/p5e_preview_smoke` | 未 |
 | P5-E4 | P5-E closure (§10.2全項目の突き合わせ、frozen P2/P3-C-2/P4 regression再走、三文書更新) | 未 |
+
+#### P5-E2 exit criteria
+
+- `removeSource()`がactiveまたはpending compositionの参照するsourceを`InvalidState`で拒否すること。
+  **提示中のcompositionを差し替えてacceptしただけでは参照は外れない**
+- 未登録/削除済みの`PreviewSourceId`を`InvalidSource`で拒否し、stateの都合で別errorへすり替えないこと
+- `ReadyPaused`以外、seek進行中、control thread以外からのremovalを拒否すること
+- authoritative audio sourceを安全に削除した場合にaudio authorityが空へ戻り、
+  wall-clock masterで再生を継続できること。解放をfailure counterへ数えないこと
+- audio transportの停止をengine mutex保持中に行わないこと。停止中にfatalが入った場合は
+  removalをcommitせず、実体のteardownをshutdown経路へ委ねること
+- audio sinkを停止できない場合は`AudioFailure` / `FatalToSession`として
+  `ShuttingDown -> Error`へ落とすこと
+- removal fatalのstate commitとmailbox insertionが同じcritical sectionでlinearizeされていること。
+  terminal到達後のpending eventはcontractどおり破棄されるため、この性質はsinkへのdeliveryでは
+  観測できない。**mailbox insertion順そのもの**をnegative testのauthorityにすること。
+  「commit時点で挿入済みか」だけでは、terminal `Error`が先頭に入った順序を許してしまう。
+  terminal到達後にもう一度観測し、
+  `ErrorOccurred(RemoveSource) < ShuttingDown < Error`まで要求すること
+- video workerのraw pointerをengine lockを持たない窓へ持ち出さないこと。
+  shutdownがownershipを`detachedWorkers`へ移すため、danglingになり得る
+- 削除した`PreviewSourceId`を同一session内で再利用しないこと
+- capabilityが1 video sourceのうちは「参照が外れたvideo sourceの削除」に到達できないため、
+  A -> B差し替え後の削除はP5-E3のproduct testで閉じること。
+  参照判定そのものはunitで固定すること
 
 #### P5-E1 exit criteria
 

@@ -901,11 +901,33 @@ if(MVM_ENABLE_QT)
     # 既存testが赤くならない。
     mvm_add_p5e_product_test(preview_engine_p5e_stale_composition_epoch
         ARGS --fault-stale-composition-epoch)
+    # P5-E2: source removal guard。capabilityが1 video sourceのうちは、composition
+    # 提出後にその参照が外れることはないので、削除成功は提出前の経路だけが到達可能。
+    mvm_add_p5e_product_test(preview_engine_p5e_remove_unreferenced_source
+        ARGS --remove-unreferenced-source)
+    mvm_add_p5e_product_test(preview_engine_p5e_remove_referenced_source
+        ARGS --remove-referenced-source)
+    # authoritative audio sourceを安全に解放するとaudio authorityが空へ戻る。
+    mvm_add_p5e_product_test(preview_engine_p5e_remove_audio_source
+        ARGS --remove-audio-source)
+    # audio sinkを停止できないままsourceを登録解除すると、鳴り続けているendpointの
+    # ownerが居なくなる。sink自身にstopを失敗させ、通常のremoval経路を通す。
+    mvm_add_p5e_product_test(preview_engine_p5e_remove_audio_stop_fail_closed
+        ARGS --fault-remove-audio-stop)
+    # audio停止フェーズ (engine lockを持たない窓) でfatalが入った場合、
+    # removalをcommitしないというtransaction semanticsのauthority。
+    mvm_add_p5e_product_test(preview_engine_p5e_remove_shutdown_race
+        ARGS --remove-shutdown-race)
+    # removal fatalのstate commitとevent挿入をlinearizeしていることのauthority。
+    # commit直後・flush前で止め、その間にteardownを終端まで進めても
+    # ShuttingDownがErrorを追い越されないことを決定論的に固定する。
+    mvm_add_p5e_product_test(preview_engine_p5e_remove_fatal_event_order
+        ARGS --remove-fatal-event-order)
 
     list(LENGTH _mvm_p5e_product_tests _mvm_p5e_product_registered)
-    if(NOT _mvm_p5e_product_registered EQUAL 2)
+    if(NOT _mvm_p5e_product_registered EQUAL 8)
         message(FATAL_ERROR
-            "[mvm] P5-E product testの登録数が不正です: ${_mvm_p5e_product_registered}/2")
+            "[mvm] P5-E product testの登録数が不正です: ${_mvm_p5e_product_registered}/8")
     endif()
 endif()
 
