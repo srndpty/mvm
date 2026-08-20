@@ -601,6 +601,43 @@ product (`apps/p5e_preview_smoke`、`-L p5e`、8 本):
 - 製品契約§6/§7/§7.4を、実装済みremove範囲、layersの背面→前面順、closure capability `2/2/1`
   へ更新した
 
+### ATTR-Q1 — first-failure runtime attribution
+
+P3-C-2 regressionの修正候補を試す前に、既存の判定と実行条件を変えず、最初のfailureだけを
+固定PODへ記録する診断を追加する。これは原因帰属のための計装であり、formal PASS authorityではない。
+
+- audio underflowは発生QPC、mode/engine state/seek identity、要求sample範囲、同じqueue lock内の
+  consume前・実消費・consume後sample数、source generation、audio master sample位置を記録する
+- clock regressionは最初の発生箇所を`SchedulerProjectionInvalid`、`SchedulerDecision`、
+  `DisplayProjectionInvalid`の3値で区別し、直前frame、候補frame、raw audio sample、scheduler target、
+  current displayed、generation、seek/pause-resume contextを記録する
+- どちらも0→writer→publishedの一方向stateで最初の1件だけを公開する。2件目で上書きせず、
+  未発生時はJSONのsnapshotを`null`にする
+- buffer/preroll、counter、failure条件、retry、clamp、threshold、run数、warmup/measurement、seed、
+  checkerは変更しない
+
+正式matrixのprefix順序を再現する診断runnerは次の2 profileだけを持つ。
+
+```powershell
+pwsh scripts/p5-e4-attribution-prefix.ps1 -Profile SEEK-PREFIX `
+  -OutputDirectory <new-evidence-directory>
+pwsh scripts/p5-e4-attribution-prefix.ps1 -Profile PAUSE-PREFIX `
+  -OutputDirectory <new-evidence-directory>
+```
+
+- `SEEK-PREFIX`: playback×3の後にseek×1
+- `PAUSE-PREFIX`: playback×3、seek×3の後にpause-resume×3
+- 全processはwarmup 5秒、measurement 60秒、seed `20260808`、seek 1000回、display timeout
+  3000ms、`--formal-contract-c2`を固定し、各rawへ既存checkerを実行する
+- runner summaryは`authority = DIAGNOSTIC_ONLY`、`formal_pass_authority = false`、
+  `formal_verdict = NOT_RUN`を常に記録する。prefixの全PASSをP3-C-2 formal PASSへ読み替えない
+- output directoryが既に存在する場合は上書きせず失敗する。historical FAIL cohort
+  `bench/results/p5-e4-closure-bb65ea5/`はimmutableのまま保持する
+
+比較は同一計装を載せた`bb65ea5`由来と`06182a2`由来のclean exact SHAで行う。まずsnapshotから
+failure siteと直前状態を特定し、その後にだけproduction fix候補を決める。診断中のprefix runや
+failing mode反復は帰属材料であり、fix後のclosureには元のfull matrixを無変更で再走する。
+
 ---
 
 ## 7. 検証手順

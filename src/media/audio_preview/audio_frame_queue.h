@@ -40,6 +40,8 @@ struct AudioConsumeResult {
     std::int64_t audioSamples = 0;
     std::int64_t firstSample = -1;
     std::int64_t lastSampleExclusive = -1;
+    std::int64_t queuedSamplesBeforeConsume = 0;
+    std::int64_t queuedSamplesAfterConsume = 0;
 };
 
 class AudioFrameQueue final {

@@ -84,6 +84,7 @@ private:
     bool pollFirstDisplay();
     void captureSeekTimeoutStageEvidence();
     DisplayEnvironmentSnapshot captureDisplayEnvironment() const;
+    void setPhase(Phase phase);
     void startShutdown(const QString& reason, bool failure);
     bool writeMetrics() const;
 

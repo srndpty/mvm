@@ -20,6 +20,17 @@ namespace {
 constexpr int kMarkerBandWidth = mvm::marker::kCellSize * mvm::marker::kCellCount;
 constexpr int kMarkerBandHeight = mvm::marker::kCellSize;
 
+void captureClockRegression(const std::shared_ptr<CompositorSpikeState>& state,
+                            audio::ClockRegressionSite site, long long occurrenceQpc,
+                            long long previousFrame, long long candidateFrame,
+                            long long rawAudioMasterSamplePosition, long long schedulerTargetFrame,
+                            long long currentDisplayedFrame, std::uint64_t sourceGeneration) {
+    state->runtimeAttribution.firstClockRegression.capture(
+        {site, occurrenceQpc, state->runtimeAttribution.context.snapshot(), previousFrame,
+         candidateFrame, rawAudioMasterSamplePosition, schedulerTargetFrame, currentDisplayedFrame,
+         sourceGeneration});
+}
+
 class CompositorRhiRenderer final : public QQuickRhiItemRenderer {
 public:
     CompositorRhiRenderer(std::shared_ptr<CompositorSpikeState> state,
@@ -138,8 +149,17 @@ protected:
                 master && converted ? audio::projectAtQpc100ns(clockSnapshot, now100ns, expected)
                                     : audio::AudioClockProjection{};
             if (!projection.valid) {
-                if (state_->audioMasterSchedulerEnabled.load(std::memory_order_acquire))
+                if (state_->audioMasterSchedulerEnabled.load(std::memory_order_acquire)) {
+                    const long long lastDisplayed =
+                        state_->audioMasterLastDisplayed.load(std::memory_order_acquire);
+                    const long long lastRequested =
+                        state_->audioMasterLastRequested.load(std::memory_order_acquire);
+                    captureClockRegression(
+                        state_, audio::ClockRegressionSite::SchedulerProjectionInvalid,
+                        projectionQpc, lastDisplayed, -1, clockSnapshot.mediaSamplePosition,
+                        lastRequested, lastDisplayed, expected.value);
                     state_->videoClockRegressionCount.fetch_add(1, std::memory_order_relaxed);
+                }
                 return;
             }
             const long long formalEnd =
@@ -179,6 +199,10 @@ protected:
             }
             if (decision.action == audio::AudioVideoScheduleAction::ClockRegression ||
                 decision.action == audio::AudioVideoScheduleAction::Invalid) {
+                captureClockRegression(state_, audio::ClockRegressionSite::SchedulerDecision,
+                                       projectionQpc, lastDisplayed, decision.targetFrame,
+                                       projection.mediaSample, decision.targetFrame, lastDisplayed,
+                                       expected.value);
                 state_->videoClockRegressionCount.fetch_add(1, std::memory_order_relaxed);
                 return;
             }
@@ -376,6 +400,8 @@ protected:
         bool displayProjectionValid = false;
         double displayDeltaMs = 0.0;
         if (audioMasterEnabled) {
+            const long long previousDisplayed =
+                state_->audioMasterLastDisplayed.load(std::memory_order_acquire);
             state_->audioMasterLastDisplayed.store(output, std::memory_order_release);
             audio::Qpc100ns displayed100ns;
             const auto master = state_->audioMasterClock;
@@ -389,8 +415,14 @@ protected:
                     ? audio::projectAtQpc100ns(displayClockSnapshot, displayed100ns, expected)
                     : audio::AudioClockProjection{};
             if (!projection.valid) {
-                if (state_->audioMasterSchedulerEnabled.load(std::memory_order_acquire))
+                if (state_->audioMasterSchedulerEnabled.load(std::memory_order_acquire)) {
+                    captureClockRegression(
+                        state_, audio::ClockRegressionSite::DisplayProjectionInvalid, displayedQpc,
+                        previousDisplayed, output, displayClockSnapshot.mediaSamplePosition,
+                        state_->audioMasterLastRequested.load(std::memory_order_acquire), output,
+                        expected.value);
                     state_->videoClockRegressionCount.fetch_add(1, std::memory_order_relaxed);
+                }
             } else {
                 const long long videoSample = output * audio::kSamplesPerVideoFrame;
                 const double deltaMs = static_cast<double>(videoSample - projection.mediaSample) *

@@ -72,10 +72,13 @@ bool AudioFrameQueue::waitForSamples(std::int64_t requiredSamples, int timeoutMs
 
 AudioConsumeResult AudioFrameQueue::consume(float* destination, std::int64_t samples,
                                             SourceGeneration expectedGeneration) {
-    AudioConsumeResult result{samples, 0, -1, -1};
+    AudioConsumeResult result;
+    result.requestedSamples = samples;
     if (!destination || samples <= 0)
         return result;
     std::lock_guard lock(mutex_);
+    result.queuedSamplesBeforeConsume = metrics_.queuedSamples;
+    result.queuedSamplesAfterConsume = metrics_.queuedSamples;
     if (expectedGeneration != generation_)
         return result;
     while (result.audioSamples < samples && !chunks_.empty()) {
@@ -103,6 +106,7 @@ AudioConsumeResult AudioFrameQueue::consume(float* destination, std::int64_t sam
             ++metrics_.popCount;
         }
     }
+    result.queuedSamplesAfterConsume = metrics_.queuedSamples;
     metrics_.queuedDurationMs = toMs(metrics_.queuedSamples);
     changed_.notify_all();
     return result;

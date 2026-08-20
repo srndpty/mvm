@@ -2,6 +2,7 @@
 #include "media/audio_preview/audio_clock.h"
 #include "media/audio_preview/audio_frame_queue.h"
 #include "media/audio_preview/audio_video_scheduler.h"
+#include "media/audio_preview/runtime_attribution.h"
 #include "media/audio_preview/wasapi_audio_sink.h"
 
 #include <array>
@@ -50,6 +51,8 @@ int main() {
     check(consumed.audioSamples == 4 && consumed.firstSample == 0 &&
               consumed.lastSampleExclusive == 4,
           "partial consume の sample identity を保つ");
+    check(consumed.queuedSamplesBeforeConsume == 6 && consumed.queuedSamplesAfterConsume == 2,
+          "consume と同じqueue lock内でbefore/afterを記録する");
     check(queue.setGeneration({2}), "generation を前進できる");
     check(queue.push(chunk(1, 6, 2)) == AudioQueuePushResult::RejectedStaleGeneration,
           "旧 generation を拒否する negative test");
@@ -159,6 +162,40 @@ int main() {
     check(acceptsVideoMasterSource(VideoMasterSource::AudioDeviceClock) &&
               !acceptsVideoMasterSource(VideoMasterSource::Qpc),
           "QPC master fallback attempt を拒否する negative test");
+
+    FirstFailureCapture<AudioUnderflowFirstSnapshot> firstUnderflow;
+    check(!firstUnderflow.snapshot().has_value(), "failure未発生時はsnapshotを公開しない");
+    AudioUnderflowFirstSnapshot underflowA;
+    underflowA.occurrenceQpc = 100;
+    underflowA.requestedSampleStart = 48000;
+    underflowA.actuallyConsumedSamples = 128;
+    AudioUnderflowFirstSnapshot underflowB = underflowA;
+    underflowB.occurrenceQpc = 200;
+    underflowB.actuallyConsumedSamples = 0;
+    check(firstUnderflow.capture(underflowA), "最初のunderflow snapshotをpublishする");
+    check(!firstUnderflow.capture(underflowB),
+          "2回目のunderflow snapshotによる上書きを拒否する negative test");
+    const auto publishedUnderflow = firstUnderflow.snapshot();
+    check(publishedUnderflow && publishedUnderflow->occurrenceQpc == 100 &&
+              publishedUnderflow->actuallyConsumedSamples == 128,
+          "最初のunderflow値を保持する");
+
+    FirstFailureCapture<ClockRegressionFirstSnapshot> firstClockRegression;
+    ClockRegressionFirstSnapshot clockRegressionA;
+    clockRegressionA.site = ClockRegressionSite::SchedulerDecision;
+    clockRegressionA.previousFrame = 42;
+    ClockRegressionFirstSnapshot clockRegressionB = clockRegressionA;
+    clockRegressionB.site = ClockRegressionSite::DisplayProjectionInvalid;
+    clockRegressionB.previousFrame = 99;
+    check(firstClockRegression.capture(clockRegressionA),
+          "最初のclock regression snapshotをpublishする");
+    check(!firstClockRegression.capture(clockRegressionB),
+          "2回目のclock regression snapshotによる上書きを拒否する negative test");
+    const auto publishedClockRegression = firstClockRegression.snapshot();
+    check(publishedClockRegression &&
+              publishedClockRegression->site == ClockRegressionSite::SchedulerDecision &&
+              publishedClockRegression->previousFrame == 42,
+          "最初のclock regression siteと値を保持する");
 
     // endpoint session volume。範囲外の要求はCOM/endpointへ触る前に弾き、
     // 「設定できなかったので全音量で鳴らす」へ縮退させない。

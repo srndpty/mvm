@@ -2,6 +2,7 @@
 #define MVM_APP_PREVIEW_COMPOSITOR_RHI_ITEM_H
 
 #include "media/audio_preview/audio_clock.h"
+#include "media/audio_preview/runtime_attribution.h"
 #include "media/gpu_preview/composition_display_ledger.h"
 #include "media/gpu_preview/compositor_coordinator.h"
 #include "media/gpu_preview/gpu_compositor.h"
@@ -165,6 +166,8 @@ struct CompositorSpikeState {
     std::atomic<long long> videoQpcMasterFallbackCount{0};
     std::atomic<bool> audioMasterMarkerProbePending{false};
     P3SeekRenderDiagnostics p3SeekDiagnostics;
+    // P5-E4 ATTR-Q1。最初のfailureだけをlock-free publishし、判定には使わない。
+    audio::RuntimeAttributionState runtimeAttribution;
 
     // Phase 4 / B。driver は measurement 開始前に GUI thread が publish し、
     // 以後は変更しない。phase4Enabled の release/acquire が publish を見せる。

@@ -62,6 +62,11 @@ const char* sampleFormatName(AVSampleFormat format) {
     const char* name = av_get_sample_fmt_name(format);
     return name ? name : "unknown";
 }
+
+std::int64_t currentQpc() {
+    LARGE_INTEGER value{};
+    return QueryPerformanceCounter(&value) ? value.QuadPart : 0;
+}
 } // namespace
 
 WasapiAudioSink::WasapiAudioSink(AudioFrameQueue& queue, AudioMasterClock& clock)
@@ -340,6 +345,7 @@ bool WasapiAudioSink::prefillEndpoint(std::int64_t mediaStartSample, SourceGener
             metrics_.firstConsumedSample = consumed.firstSample;
         metrics_.lastConsumedSampleExclusive = consumed.lastSampleExclusive;
     }
+    nextRequestedSample_ = consumed.lastSampleExclusive;
     return true;
 }
 
@@ -501,10 +507,20 @@ bool WasapiAudioSink::renderAvailable() {
               sourceScratch_.begin() + static_cast<std::size_t>(sourceNeeded) * kInternalChannels,
               0.0f);
     const SourceGeneration expected{generation_.load()};
+    const std::int64_t requestedSampleStart = nextRequestedSample_;
     const AudioConsumeResult consumed =
         queue_.consume(sourceScratch_.data(), sourceNeeded, expected);
-    if (consumed.audioSamples < sourceNeeded)
+    nextRequestedSample_ = requestedSampleStart < 0 ? -1 : requestedSampleStart + sourceNeeded;
+    if (consumed.audioSamples < sourceNeeded) {
         queue_.noteUnderflow(sourceNeeded - consumed.audioSamples);
+        if (attribution_) {
+            const auto clock = clock_.snapshot();
+            attribution_->firstAudioUnderflow.capture(
+                {currentQpc(), attribution_->context.snapshot(), requestedSampleStart, sourceNeeded,
+                 consumed.queuedSamplesBeforeConsume, consumed.audioSamples,
+                 consumed.queuedSamplesAfterConsume, expected.value, clock.mediaSamplePosition});
+        }
+    }
     const std::uint8_t* input[] = {reinterpret_cast<const std::uint8_t*>(sourceScratch_.data())};
     std::uint8_t* output[] = {deviceBuffer};
     const int converted =

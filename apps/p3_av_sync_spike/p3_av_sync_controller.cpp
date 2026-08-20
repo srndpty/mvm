@@ -131,6 +131,86 @@ QJsonObject displayEnvironmentJson(const DisplayEnvironmentSnapshot& value) {
             {"native_window_client_width", value.nativeWindowClientWidth},
             {"native_window_client_height", value.nativeWindowClientHeight}};
 }
+
+audio::RuntimeAttributionMode attributionMode(P3AvMode mode) {
+    switch (mode) {
+    case P3AvMode::Playback: return audio::RuntimeAttributionMode::Playback;
+    case P3AvMode::Seek: return audio::RuntimeAttributionMode::Seek;
+    case P3AvMode::PauseResume: return audio::RuntimeAttributionMode::PauseResume;
+    }
+    return audio::RuntimeAttributionMode::Unknown;
+}
+
+QString attributionModeName(audio::RuntimeAttributionMode mode) {
+    switch (mode) {
+    case audio::RuntimeAttributionMode::Playback: return QStringLiteral("playback");
+    case audio::RuntimeAttributionMode::Seek: return QStringLiteral("seek");
+    case audio::RuntimeAttributionMode::PauseResume: return QStringLiteral("pause-resume");
+    case audio::RuntimeAttributionMode::Unknown: break;
+    }
+    return QStringLiteral("unknown");
+}
+
+QString clockRegressionSiteName(audio::ClockRegressionSite site) {
+    switch (site) {
+    case audio::ClockRegressionSite::SchedulerProjectionInvalid:
+        return QStringLiteral("SchedulerProjectionInvalid");
+    case audio::ClockRegressionSite::SchedulerDecision:
+        return QStringLiteral("SchedulerDecision");
+    case audio::ClockRegressionSite::DisplayProjectionInvalid:
+        return QStringLiteral("DisplayProjectionInvalid");
+    case audio::ClockRegressionSite::Unknown: break;
+    }
+    return QStringLiteral("Unknown");
+}
+
+QJsonObject attributionContextJson(const audio::RuntimeAttributionContextSnapshot& value) {
+    return {{"mode", attributionModeName(value.mode)},
+            {"engine_state", value.engineState},
+            {"seek_ordinal", value.seekOrdinal},
+            {"current_seek_target", value.currentSeekTarget},
+            {"seek_pending", value.seekPending},
+            {"decode_ready", value.decodeReady},
+            {"requested_frame_presented", value.requestedFramePresented},
+            {"pause_resume_cycle_ordinal", value.pauseResumeCycleOrdinal},
+            {"resume_start_qpc", value.resumeStartQpc}};
+}
+
+QJsonValue firstAudioUnderflowJson(const audio::RuntimeAttributionState& state) {
+    const auto value = state.firstAudioUnderflow.snapshot();
+    if (!value)
+        return QJsonValue::Null;
+    return QJsonObject{{"occurrence_qpc", value->occurrenceQpc},
+                       {"context", attributionContextJson(value->context)},
+                       {"requested_sample_start", value->requestedSampleStart},
+                       {"requested_sample_count", value->requestedSampleCount},
+                       {"queued_samples_before_consume", value->queuedSamplesBeforeConsume},
+                       {"actually_consumed_samples", value->actuallyConsumedSamples},
+                       {"queued_samples_after_consume", value->queuedSamplesAfterConsume},
+                       {"source_generation", static_cast<qint64>(value->sourceGeneration)},
+                       {"audio_master_sample_position", value->audioMasterSamplePosition}};
+}
+
+QJsonValue firstClockRegressionJson(const audio::RuntimeAttributionState& state) {
+    const auto value = state.firstClockRegression.snapshot();
+    if (!value)
+        return QJsonValue::Null;
+    const double resumeElapsedMs =
+        value->context.resumeStartQpc > 0 && value->occurrenceQpc >= value->context.resumeStartQpc
+            ? qpcMs(value->context.resumeStartQpc, value->occurrenceQpc)
+            : -1.0;
+    return QJsonObject{{"site", clockRegressionSiteName(value->site)},
+                       {"occurrence_qpc", value->occurrenceQpc},
+                       {"context", attributionContextJson(value->context)},
+                       {"previous_frame", value->previousFrame},
+                       {"candidate_frame", value->candidateFrame},
+                       {"raw_audio_master_sample_position",
+                        value->rawAudioMasterSamplePosition},
+                       {"scheduler_target_frame", value->schedulerTargetFrame},
+                       {"current_displayed_frame", value->currentDisplayedFrame},
+                       {"source_generation", static_cast<qint64>(value->sourceGeneration)},
+                       {"resume_elapsed_ms", resumeElapsedMs}};
+}
 } // namespace
 
 P3AvSyncController::P3AvSyncController(P3AvConfig config, QObject* parent)
@@ -140,11 +220,22 @@ P3AvSyncController::P3AvSyncController(P3AvConfig config, QObject* parent)
     connect(&timer_, &QTimer::timeout, this, &P3AvSyncController::tick);
 }
 
+void P3AvSyncController::setPhase(Phase phase) {
+    phase_ = phase;
+    if (state_)
+        state_->runtimeAttribution.context.engineState.store(static_cast<int>(phase),
+                                                             std::memory_order_release);
+}
+
 void P3AvSyncController::attach(CompositorRhiItem* item) {
     item_ = item;
     state_ = item->state();
     audioClock_ = std::make_shared<audio::AudioMasterClock>();
     state_->audioMasterClock = audioClock_;
+    state_->runtimeAttribution.context.mode.store(static_cast<int>(attributionMode(config_.mode)),
+                                                  std::memory_order_release);
+    state_->runtimeAttribution.context.engineState.store(static_cast<int>(phase_),
+                                                         std::memory_order_release);
     phaseTimer_.start();
     timer_.start();
 }
@@ -197,6 +288,7 @@ bool P3AvSyncController::openPipelines() {
                                                         state_->readbacks, 16);
     audioWorker_ = std::make_shared<audio::AudioDecodeWorker>(audio::SourceId{1});
     audioSink_ = std::make_shared<audio::WasapiAudioSink>(audioWorker_->queue(), *audioClock_);
+    audioSink_->setRuntimeAttribution(&state_->runtimeAttribution);
     std::string error;
     if (!workerA_->start(config_.sourceA.toUtf8().constData(), error) ||
         !workerB_->start(config_.sourceB.toUtf8().constData(), error) ||
@@ -237,6 +329,13 @@ bool P3AvSyncController::openPipelines() {
 }
 
 bool P3AvSyncController::startAtFrame(long long targetFrame, bool measurementStart) {
+    auto& attribution = state_->runtimeAttribution.context;
+    attribution.seekOrdinal.store(static_cast<std::int64_t>(seeks_.size() + 1),
+                                  std::memory_order_release);
+    attribution.currentSeekTarget.store(targetFrame, std::memory_order_release);
+    attribution.seekPending.store(true, std::memory_order_release);
+    attribution.decodeReady.store(false, std::memory_order_release);
+    attribution.requestedFramePresented.store(false, std::memory_order_release);
     state_->audioMasterSchedulerEnabled.store(false, std::memory_order_release);
     state_->playbackSchedulerEnabled.store(false, std::memory_order_release);
     state_->audioMasterPendingSeekFrame.store(-1, std::memory_order_release);
@@ -343,6 +442,7 @@ bool P3AvSyncController::startAtFrame(long long targetFrame, bool measurementSta
         return false;
     }
     const long long allReadyQpc = gpu::qpcTicks();
+    attribution.decodeReady.store(true, std::memory_order_release);
     seekTimeoutStageEvidence_ = {
         {"seek_request_qpc", requestStartQpc_},
         {"requested_frame", targetFrame},
@@ -466,9 +566,10 @@ bool P3AvSyncController::startAtFrame(long long targetFrame, bool measurementSta
     state_->audioMasterLastRequested.store(-1, std::memory_order_release);
     state_->audioMasterMarkerProbePending.store(true, std::memory_order_release);
     state_->audioMasterPendingSeekFrame.store(targetFrame, std::memory_order_release);
+    attribution.engineState.store(static_cast<int>(Phase::WaitDisplay), std::memory_order_release);
     state_->audioMasterSchedulerEnabled.store(true, std::memory_order_release);
     phaseTimer_.restart();
-    phase_ = Phase::WaitDisplay;
+    setPhase(Phase::WaitDisplay);
     item_->update();
     return true;
 }
@@ -496,6 +597,9 @@ bool P3AvSyncController::pollFirstDisplay() {
                       true);
         return false;
     }
+    state_->runtimeAttribution.context.requestedFramePresented.store(true,
+                                                                     std::memory_order_release);
+    state_->runtimeAttribution.context.seekPending.store(false, std::memory_order_release);
     return true;
 }
 
@@ -631,7 +735,7 @@ void P3AvSyncController::startShutdown(const QString& reason, bool failure) {
     }
     item_->requestTeardown();
     phaseTimer_.restart();
-    phase_ = Phase::ShutdownWait;
+    setPhase(Phase::ShutdownWait);
 }
 
 void P3AvSyncController::tick() {
@@ -649,7 +753,7 @@ void P3AvSyncController::tick() {
     case Phase::WaitDevice:
         if (state_->deviceReady.load(std::memory_order_acquire)) {
             phaseTimer_.restart();
-            phase_ = config_.formalContractC2 ? Phase::DisplayPreflight : Phase::Start;
+            setPhase(config_.formalContractC2 ? Phase::DisplayPreflight : Phase::Start);
         }
         else if (phaseTimer_.elapsed() > 10000)
             startShutdown(QStringLiteral("Qt/D3D11 device ready timeout"), true);
@@ -668,7 +772,7 @@ void P3AvSyncController::tick() {
         }
         displayPreflightPassed_ = true;
         formalWorkloadStarted_ = true;
-        phase_ = Phase::Start;
+        setPhase(Phase::Start);
         break;
     }
     case Phase::Start:
@@ -692,10 +796,10 @@ void P3AvSyncController::tick() {
             runTimer_.restart();
             if (config_.formalContract && config_.mode == P3AvMode::Playback &&
                 !warmupResetComplete_)
-                phase_ = Phase::Warmup;
+                setPhase(Phase::Warmup);
             else
-                phase_ =
-                    config_.mode == P3AvMode::PauseResume ? Phase::PauseStart : Phase::Playback;
+                setPhase(config_.mode == P3AvMode::PauseResume ? Phase::PauseStart
+                                                               : Phase::Playback);
         }
         break;
     case Phase::Warmup: {
@@ -724,6 +828,8 @@ void P3AvSyncController::tick() {
         break;
     case Phase::PauseStart:
         if (runTimer_.elapsed() >= 2000) {
+            state_->runtimeAttribution.context.pauseResumeCycleOrdinal.fetch_add(
+                1, std::memory_order_acq_rel);
             state_->audioMasterSchedulerEnabled.store(false, std::memory_order_release);
             workerA_->pause();
             workerB_->pause();
@@ -739,7 +845,7 @@ void P3AvSyncController::tick() {
             pauseGeneration_ = static_cast<long long>(state_->audioMasterGeneration.load());
             pauseQpcFallback_ = state_->videoQpcMasterFallbackCount.load();
             phaseTimer_.restart();
-            phase_ = Phase::PauseWait;
+            setPhase(Phase::PauseWait);
         }
         break;
     case Phase::PauseWait:
@@ -764,9 +870,13 @@ void P3AvSyncController::tick() {
                 startShutdown(QString::fromStdString(error), true);
                 break;
             }
+            auto& attribution = state_->runtimeAttribution.context;
+            attribution.resumeStartQpc.store(gpu::qpcTicks(), std::memory_order_release);
+            attribution.engineState.store(static_cast<int>(Phase::ResumePlayback),
+                                          std::memory_order_release);
             state_->audioMasterSchedulerEnabled.store(true, std::memory_order_release);
             runTimer_.restart();
-            phase_ = Phase::ResumePlayback;
+            setPhase(Phase::ResumePlayback);
         }
         break;
     case Phase::ResumePlayback:
@@ -780,14 +890,14 @@ void P3AvSyncController::tick() {
         if (state_->teardownComplete.load(std::memory_order_acquire)) {
             if (!writeMetrics())
                 exitCode_ = 4;
-            phase_ = Phase::Done;
+            setPhase(Phase::Done);
             timer_.stop();
             Q_EMIT finished();
         } else if (phaseTimer_.elapsed() > 10000) {
             exitCode_ = 3;
             shutdownReason_ = QStringLiteral("GPU teardown timeout");
             writeMetrics();
-            phase_ = Phase::Done;
+            setPhase(Phase::Done);
             timer_.stop();
             Q_EMIT finished();
         }
@@ -1027,6 +1137,10 @@ bool P3AvSyncController::writeMetrics() const {
             {"audio_endpoint_sample_rate", sink.deviceFormat.sampleRate},
             {"audio_endpoint_channels", sink.deviceFormat.channels},
             {"audio_endpoint_sample_format", QString::fromStdString(sink.deviceFormat.sampleFormat)}};
+        root.insert("first_audio_underflow_snapshot",
+                    firstAudioUnderflowJson(state_->runtimeAttribution));
+        root.insert("first_clock_regression_snapshot",
+                    firstClockRegressionJson(state_->runtimeAttribution));
         if (config_.formalContractC2) {
             root.insert("requested_output_width", 1920);
             root.insert("requested_output_height", 1080);
