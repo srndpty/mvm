@@ -638,6 +638,25 @@ pwsh scripts/p5-e4-attribution-prefix.ps1 -Profile PAUSE-PREFIX `
 failure siteと直前状態を特定し、その後にだけproduction fix候補を決める。診断中のprefix runや
 failing mode反復は帰属材料であり、fix後のclosureには元のfull matrixを無変更で再走する。
 
+### ATTR-Q2 — paired prefix reproduction
+
+ATTR-Q1を変更せず、`bb65ea5`由来`b5e4c12`と`06182a2`由来`9793c13`へ同一patch
+(`f301d8bb5fbb030845a480e2d9f982fcb943dd68`)を適用した。head→parentの順で
+`SEEK-PREFIX`と`PAUSE-PREFIX`を各3 paired attempts実行し、12/12 prefix、78/78 processを完了した。
+
+- head: underflow 0、clock regression 0。seek AV abs max 59.146msのFAILが1件
+- parent: underflow 3、clock regression 0。3件ともseek ordinal 523、target 3892、generation 524、
+  `WaitDisplay`、decode-ready / seek-pending / not-presented、queue 288/consumed 288/requested 480で一致
+- parentには別にGPU teardown timeout 1件とpause中video advance 1件があった
+- hardware/display provenanceは全processで不変
+
+historical headのunderflow/clock regressionは再現せず、underflowはparent側だけで決定的に再現した。
+したがってproduction selective revert候補は現時点ではなしとする。必要な次段はfixではなく、
+seek 523付近のqueue supply margin、seek AV first-threshold、pause video first-advanceの追加診断である。
+artifactは
+[`bench/results/p5-e4-attr-q2-b5e4c12-9793c13/`](../bench/results/p5-e4-attr-q2-b5e4c12-9793c13/README.md)
+に保存した。prefix結果はformal PASS authorityではなく、P5-E closureはBLOCKEDのままである。
+
 ---
 
 ## 7. 検証手順
