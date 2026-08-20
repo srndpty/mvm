@@ -1,6 +1,6 @@
 # P5-E 実装プラン — Product composition (二source / 二layer)
 
-- 状態: **P5-E1 / P5-E2 / P5-E3 / P5-E4 完了 (P5-E closure)**
+- 状態: **P5-E1 / P5-E2 / P5-E3 完了 / P5-E4 実装済み・closure未確定 (P3-C-2再監査FAIL)**
 - 親計画: [Phase 5 計画](phase5-plan.md) §10
 - 製品契約: [PreviewEngine 製品契約](preview-engine-contract.md)
 - 起点commit: `2de8e2d` (P5-D closure merge)
@@ -565,9 +565,12 @@ product (`apps/p5e_preview_smoke`、`-L p5e`、8 本):
 2. frozen regression の再走。P5-E は GPU composition hot path
    (`GpuCompositor` 入口 / `SourceFrameBuffer` / `ExactFramePairer` / `CompositorCoordinator`) を
    触るため、§15 の「共有 hot path を変更する場合は closure gate を明示する」に該当する。
-   - `check-p2-contract.ps1` (P2-D5-1) — 二 source exact pairing の frozen 契約
-   - `check-p4-formal-contract.ps1` — composition catalog / reference
-   - `check-p3-c2-contract.ps1` — audio-master seek (E3 の seek 変更に対する帰属確認)
+   - `p2-matrix.ps1` — 二source exact pairingを複数runし、各runで
+     `check-p2-contract.ps1` (P2-D5-1) を実行する
+   - `run-p4-formal-matrix.ps1` — composition catalog / referenceを複数runし、各runで
+     `check-p4-formal-contract.ps1`を実行する
+   - `p3-c2-matrix.ps1` — audio-master seekを複数runし、各runで
+     `check-p3-c2-contract.ps1`を実行する (E3 のseek変更に対する帰属確認)
    FAIL が出た場合は **P5-D4 と同じ手順**で、変更後と未変更の親 commit の双方を複数回実行して
    帰属を判定し、後続 PASS で歴史的 FAIL を上書きしない。
 3. docs 更新。
@@ -584,8 +587,14 @@ product (`apps/p5e_preview_smoke`、`-L p5e`、8 本):
   CTest configure時のliteral件数検査により、P5-E groupは0件ではなく**17件**であることも固定した
 - ordinary CTestはucrt64-release **473/473 PASS**、ucrt64-debug **473/473 PASS**
 - product regressionはP5-E **17/17 PASS**、P5-C **11/11 PASS**、P5-D **13/13 PASS**
-- clean detached worktree (`bb65ea5`) でformal matrixを再走し、P2 **6/6 PASS**、P4 **3/3 PASS**、
-  P3-C-2 **9/9 PASS**。全matrixで開始/終了clean、provenance不変、各contract checkerがPASSした
+- clean detached worktree (`bb65ea5`) でformal matrixを再走し、P2 **6/6 PASS**、P4 **3/3 PASS**
+- P3-C-2再監査では、`bb65ea5`のformal matrix 2回がそれぞれ**8/9 PASS、1/9 FAIL**、
+  未変更の第一親`06182a2`のformal matrix 2回がともに**9/9 PASS**だった。変更後のFAILはattempt 1の
+  seek run 1とattempt 2のpause-resume run 3であり、rawを別directoryに保持して後続PASSで上書きしない。
+  この帰属を解消するまでP5-E closureは未確定とする
+- 全raw/summaryとSHA-256 manifestは
+  [`bench/results/p5-e4-closure-bb65ea5/`](../bench/results/p5-e4-closure-bb65ea5/README.md)
+  に保存した
 - `--seek-two-source`はseek完了後にもA/Bのper-source generation divergenceをassertする。
   Aのcompletion generationをBへコピーするmutationを、fixtureのseek時generation増分に依存せず落とす
 - 製品契約§6/§7/§7.4を、実装済みremove範囲、layersの背面→前面順、closure capability `2/2/1`

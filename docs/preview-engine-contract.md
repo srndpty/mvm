@@ -160,7 +160,7 @@ source removalは、active compositionまたはacceptedだが未提示のpending
 削除である。authoritative audio sourceを`ReadyPaused`で安全に削除した場合はaudio authorityを空へ戻す。
 再生中の一般的なdynamic removalは将来の独立contractとする。
 
-P5-E closure時点で、参照が外れたvideo sourceの削除、未参照video sourceの削除、およびauthoritative
+P5-E3 implementation時点で、参照が外れたvideo sourceの削除、未参照video sourceの削除、およびauthoritative
 audio sourceの安全な削除とaudio authorityの返却をproduct経路へ実装済みである。active/pending参照中、
 seek進行中、`ReadyPaused`以外、未登録/削除済みIDは上記contractに従ってfail-closedで拒否する。
 
@@ -325,7 +325,7 @@ ID、各rectangle field、opacityの差を独立した期待値で検査する�
 - API typeは二layerへhard-codeしない
 - `PreviewCapabilities::maxQualifiedActiveVideoSources`と
   `PreviewCapabilities::maxQualifiedCompositionLayers`を別fieldとして報告する
-- P5-E closure時点のproduct wiringの現在値は`maxQualifiedActiveVideoSources == 2`、
+- P5-E3 implementation時点のproduct wiringの現在値は`maxQualifiedActiveVideoSources == 2`、
   `maxQualifiedCompositionLayers == 2`、`maxQualifiedActiveAudioSources == 1`である
 - qualified audio domainは48000 Hz / stereoとして報告する。sample formatのfloat32は
   capabilityの報告項目ではなく`AudioChunk::PcmSample`の型不変条件で保証する (§5)
@@ -340,8 +340,9 @@ sourceはvideo compositionへ参加できない。同一sourceを複数layerへ�
 されていないため、初期capabilityでは`UnsupportedCapability`で拒否する。将来qualificationしてもpublic
 snapshot formatを変更する必要はない。
 
-P5-Eで二source/二layerのproduct wiringとqualificationを完了し、video source/layer capabilityを
-それぞれ2へ引き上げた。これは任意N source/layerを利用可能またはformal qualifiedとする主張ではない。
+P5-E3で二source/二layerのproduct wiringを実装し、video source/layer capabilityをそれぞれ2へ
+引き上げた。P5-E closureのfrozen regressionは別途完了を要求し、capability値だけをformal closureの
+証拠にしない。これは任意N source/layerを利用可能またはformal qualifiedとする主張ではない。
 型が将来の値を表現できることを、現在利用可能な能力として報告しない。
 
 ### 7.5 Composition validation order

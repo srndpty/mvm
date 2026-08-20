@@ -1,0 +1,142 @@
+{
+  "schema": "mvm-p3-matrix-summary-2",
+  "contract_version": "P3-C-2",
+  "formal_verdict": "FAIL",
+  "dry_run": false,
+  "expected_processes": 9,
+  "completed_processes": 9,
+  "start_provenance": {
+    "git_commit": "bb65ea50aeadc88901743a03b8a55d3758a6a16a",
+    "dirty_worktree": false,
+    "git_status_porcelain": [],
+    "fixture_a_sha256": "d398114c38806f39670df51dfabb0095d462cbc35286ea1467901d4007cf0308",
+    "fixture_b_sha256": "fe7cd1a45d101d363cb3930497601efd41dd55fd36c194acf8f24e3e4728b479",
+    "executable_sha256": "932d4391de53c0b1c01c58dceb69d05e69a63bf22e933d4a4eb332fc44ead4a2",
+    "contract_version": "P3-C-2",
+    "gpu_adapter": "NVIDIA GeForce RTX 4090",
+    "audio_endpoint": {
+      "sample_rate": 48000,
+      "channels": 2,
+      "sample_format": "flt"
+    }
+  },
+  "end_provenance": {
+    "git_commit": "bb65ea50aeadc88901743a03b8a55d3758a6a16a",
+    "dirty_worktree": false,
+    "git_status_porcelain": [],
+    "fixture_a_sha256": "d398114c38806f39670df51dfabb0095d462cbc35286ea1467901d4007cf0308",
+    "fixture_b_sha256": "fe7cd1a45d101d363cb3930497601efd41dd55fd36c194acf8f24e3e4728b479",
+    "executable_sha256": "932d4391de53c0b1c01c58dceb69d05e69a63bf22e933d4a4eb332fc44ead4a2",
+    "contract_version": "P3-C-2",
+    "gpu_adapter": "NVIDIA GeForce RTX 4090",
+    "audio_endpoint": {
+      "sample_rate": 48000,
+      "channels": 2,
+      "sample_format": "flt"
+    }
+  },
+  "provenance_unchanged": true,
+  "hardware_provenance_unchanged": true,
+  "display_environment_provenance_unchanged": true,
+  "display_environment": {
+    "available_geometry_height": 1152,
+    "available_geometry_width": 1920,
+    "compositor_surface_logical_height": 1080,
+    "compositor_surface_logical_width": 1920,
+    "device_pixel_ratio": 1,
+    "native_window_client_height": 1080,
+    "native_window_client_width": 1920,
+    "native_window_outer_height": 1119,
+    "native_window_outer_width": 1936,
+    "rhi_target_pixel_height": 1080,
+    "rhi_target_pixel_width": 1920,
+    "screen_geometry_height": 1200,
+    "screen_geometry_width": 1920,
+    "screen_name": "DELL U2412M",
+    "screen_orientation": "landscape",
+    "window_logical_height": 1080,
+    "window_logical_width": 1920
+  },
+  "adapter": "NVIDIA GeForce RTX 4090",
+  "audio_endpoint": {
+    "sample_rate": 48000,
+    "channels": 2,
+    "sample_format": "flt"
+  },
+  "runs": [
+    {
+      "mode": "playback",
+      "run": 1,
+      "raw_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-closure-bb65ea5\\p3-c2\\playback-run1.json",
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "pass": true
+    },
+    {
+      "mode": "playback",
+      "run": 2,
+      "raw_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-closure-bb65ea5\\p3-c2\\playback-run2.json",
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "pass": true
+    },
+    {
+      "mode": "playback",
+      "run": 3,
+      "raw_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-closure-bb65ea5\\p3-c2\\playback-run3.json",
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "pass": true
+    },
+    {
+      "mode": "seek",
+      "run": 1,
+      "raw_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-closure-bb65ea5\\p3-c2\\seek-run1.json",
+      "process_exit_code": 4,
+      "contract_exit_code": 1,
+      "pass": false
+    },
+    {
+      "mode": "seek",
+      "run": 2,
+      "raw_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-closure-bb65ea5\\p3-c2\\seek-run2.json",
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "pass": true
+    },
+    {
+      "mode": "seek",
+      "run": 3,
+      "raw_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-closure-bb65ea5\\p3-c2\\seek-run3.json",
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "pass": true
+    },
+    {
+      "mode": "pause-resume",
+      "run": 1,
+      "raw_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-closure-bb65ea5\\p3-c2\\pause-resume-run1.json",
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "pass": true
+    },
+    {
+      "mode": "pause-resume",
+      "run": 2,
+      "raw_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-closure-bb65ea5\\p3-c2\\pause-resume-run2.json",
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "pass": true
+    },
+    {
+      "mode": "pause-resume",
+      "run": 3,
+      "raw_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-closure-bb65ea5\\p3-c2\\pause-resume-run3.json",
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "pass": true
+    }
+  ],
+  "all_runs_pass": false,
+  "p3_c_pass": false
+}

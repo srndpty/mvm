@@ -1,0 +1,111 @@
+{
+  "schema": "mvm-p2-matrix-summary-1",
+  "formal_contract_version": "P2-D5-1",
+  "dry_run": false,
+  "git_commit": "bb65ea50aeadc88901743a03b8a55d3758a6a16a",
+  "dirty_worktree": false,
+  "git_status_porcelain": [],
+  "git_diff_stat": "",
+  "provenance_unchanged_during_matrix": true,
+  "source_a": "C:\\dev\\soft\\mvm-p5e4-frozen\\tests\\assets\\benchmark\\v1080p60_h264.mp4",
+  "source_b": "C:\\dev\\soft\\mvm-p5e4-frozen\\tests\\assets\\benchmark\\v1080p60_hevc.mp4",
+  "adapter": "NVIDIA GeForce RTX 4090",
+  "playback_runs": [
+    {
+      "run": 1,
+      "raw_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-closure-bb65ea5\\p2\\playback-run1.json",
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "pass": true,
+      "effective_fps": 59.29962691887153,
+      "drop_rate": 0.01138888888888889
+    },
+    {
+      "run": 2,
+      "raw_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-closure-bb65ea5\\p2\\playback-run2.json",
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "pass": true,
+      "effective_fps": 59.19995540725453,
+      "drop_rate": 0.013055555555555556
+    },
+    {
+      "run": 3,
+      "raw_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-closure-bb65ea5\\p2\\playback-run3.json",
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "pass": true,
+      "effective_fps": 59.4834459552688,
+      "drop_rate": 0.008333333333333333
+    }
+  ],
+  "seek_runs": [
+    {
+      "run": 1,
+      "raw_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-closure-bb65ea5\\p2\\seek-run1.json",
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "pass": true,
+      "p95_ms": 42.6044,
+      "observed_max_ms": 86.9327,
+      "parallel_dispatch_valid_count": 1000,
+      "execution_overlap_count": 1000,
+      "execution_nonoverlap_count": 0
+    },
+    {
+      "run": 2,
+      "raw_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-closure-bb65ea5\\p2\\seek-run2.json",
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "pass": true,
+      "p95_ms": 42.5748,
+      "observed_max_ms": 96.2454,
+      "parallel_dispatch_valid_count": 1000,
+      "execution_overlap_count": 998,
+      "execution_nonoverlap_count": 2
+    },
+    {
+      "run": 3,
+      "raw_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-closure-bb65ea5\\p2\\seek-run3.json",
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "pass": true,
+      "p95_ms": 44.8618,
+      "observed_max_ms": 92.4362,
+      "parallel_dispatch_valid_count": 1000,
+      "execution_overlap_count": 1000,
+      "execution_nonoverlap_count": 0
+    }
+  ],
+  "min_effective_fps": 59.19995540725453,
+  "max_drop_rate": 0.013055555555555556,
+  "per_run_p95": [
+    42.6044,
+    42.5748,
+    44.8618
+  ],
+  "per_run_observed_max": [
+    86.9327,
+    96.2454,
+    92.4362
+  ],
+  "global_observed_max": 96.2454,
+  "marker_mismatch_total": 0,
+  "probe_mismatch_total": 0,
+  "mixed_frame_total": 0,
+  "mixed_generation_total": 0,
+  "stale_epoch_total": 0,
+  "cpu_full_frame_readback_total": 0,
+  "full_frame_gpu_copy_total": 0,
+  "untracked_submission_total": 0,
+  "completion_failure_total": 0,
+  "early_release_total": 0,
+  "retirement_timeout_total": 0,
+  "retirement_after_drain_total": 0,
+  "device_lost_total": 0,
+  "lifecycle_violation_total": 0,
+  "all_playback_runs_pass": true,
+  "all_seek_runs_pass": true,
+  "dry_run_harness_pass": false,
+  "p2_pass": true
+}

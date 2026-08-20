@@ -443,9 +443,9 @@ P5-Dと同様に一度に閉じない。§10.1のscopeを次の4 sliceへ分け�
 | P5-E1 | video sourceのinternal multi-source所有化、`CompositorCoordinator`をcomposition epochのauthorityとするproduct配線、`ExactFramePairer`のN一般化 (capabilityは1/1のまま) | 済 |
 | P5-E2 | `removeSource()`、active/pending composition参照中のremoval拒否、audio authorityの返却 | 済 |
 | P5-E3 | capabilityを`maxQualifiedActiveVideoSources == 2` / `maxQualifiedCompositionLayers == 2`へ引き上げ、多層render経路、per-source seek generation、`apps/p5e_preview_smoke` | 済 |
-| P5-E4 | P5-E closure (§10.2全項目の突き合わせ、frozen P2/P3-C-2/P4 regression再走、三文書更新) | 済 |
+| P5-E4 | P5-E closure (§10.2全項目の突き合わせ、frozen P2/P3-C-2/P4 regression再走、三文書更新) | **未確定**。P3-C-2再監査で変更後commitにFAILを再現し、未変更親はPASSしたため帰属確認または修正が必要 |
 
-#### P5-E closure evidence
+#### P5-E closure evidence audit (未確定)
 
 §10.2と実テストの対応は次のとおりである。表内のunit名は
 `tests/preview_engine/test_preview_engine.cpp`、product名はCTest名を指す。
@@ -470,8 +470,16 @@ closure実測は次のとおりである。
 
 - ordinary CTest: ucrt64-release **473/473 PASS**、ucrt64-debug **473/473 PASS**
 - product regression: P5-E **17/17 PASS**、P5-C **11/11 PASS**、P5-D **13/13 PASS**
-- frozen regression: clean detached worktree (`bb65ea5`) でP2 **6/6 PASS**、P4 **3/3 PASS**、
-  P3-C-2 **9/9 PASS**。各matrixのcontract checker、開始/終了clean検査、provenance不変検査もPASSした
+- frozen regression: clean detached worktree (`bb65ea5`) でP2 **6/6 PASS**、P4 **3/3 PASS**。
+  各matrixのcontract checker、開始/終了clean検査、provenance不変検査もPASSした
+- P3-C-2再監査: `bb65ea5`のformal matrix 2回はそれぞれ**8/9 PASS、1/9 FAIL**。
+  未変更の第一親`06182a2`のformal matrix 2回はともに**9/9 PASS**だった。変更後attempt 1は
+  seek run 1がprocess exit 4、attempt 2はpause-resume run 3がprocess exit 4であり、後続PASSで
+  上書きせずrawを保持した。したがってP3-C-2 gateとP5-E closureは現時点で未確定とする
+
+一次証拠は[`bench/results/p5-e4-closure-bb65ea5/`](../bench/results/p5-e4-closure-bb65ea5/README.md)
+に保存する。P2/P4、変更後P3-C-2 2回、未変更親P3-C-2 2回の全raw/summary、および
+[`manifest.sha256`](../bench/results/p5-e4-closure-bb65ea5/manifest.sha256)をauthorityとする。
 
 frozen runのcommitにはP5-EのGPU composition hot pathがすべて含まれる。二source seek完了後にも
 A/Bのper-source generationが異なることをproduct testで再assertし、completion generationを別sourceへ
@@ -482,7 +490,8 @@ A/Bのper-source generationが異なることをproduct testで再assertし、co
 
 - §10.2の全要求が上表のpositive/negative testへ対応し、P5-E test groupが17件存在すること
 - ordinary/P5-C/P5-D/P5-E gateがすべてPASSすること
-- clean worktreeでP2/P4/P3-C-2 frozen contractがすべてPASSし、P5-E変更へのregression帰属が無いこと
+- clean worktreeでP2/P4/P3-C-2 frozen contractがすべてPASSし、P5-E変更へのregression帰属が無いこと。
+  **P3-C-2再監査が未達のため、この項目は未充足**
 - 製品契約のcapability、layer order、source removal semanticsが実装済み範囲と一致すること
 
 #### P5-E3 exit criteria

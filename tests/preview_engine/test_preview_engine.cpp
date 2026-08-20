@@ -500,7 +500,8 @@ void compositionStructuralEqualityLiterals() {
 void compositionIdentityAndCapabilities() {
     const auto sources = twoSources();
     PreviewCapabilities capabilities;
-    // acceptance algorithm自体の2層順序・distinct source検査用。product公開値は1層。
+    // P5-E closureのproduct capability 2/2と同じenvelopeで、
+    // acceptance identity、order、distinct-source semanticsを固定する。
     capabilities.maxQualifiedActiveVideoSources = 2;
     capabilities.maxQualifiedCompositionLayers = 2;
     CompositionAcceptanceState state;
