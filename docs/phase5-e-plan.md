@@ -1,6 +1,6 @@
 # P5-E 実装プラン — Product composition (二source / 二layer)
 
-- 状態: **P5-E1 / P5-E2 / P5-E3 実装完了 / E4 未着手**
+- 状態: **P5-E1 / P5-E2 / P5-E3 / P5-E4 完了 (P5-E closure)**
 - 親計画: [Phase 5 計画](phase5-plan.md) §10
 - 製品契約: [PreviewEngine 製品契約](preview-engine-contract.md)
 - 起点commit: `2de8e2d` (P5-D closure merge)
@@ -578,6 +578,19 @@ product (`apps/p5e_preview_smoke`、`-L p5e`、8 本):
    - 同 §7 に **layers の vector 順 = 背面→前面の z 順** を明記する
    - 同 §6 に removeSource の実装済み範囲 (audio authority の返却を含む) を追記する
 
+### E4 実装結果 (実測)
+
+- `docs/phase5-plan.md` §10.2の全要求をunit/product testへ突き合わせ、対応表を§10へ追加した。
+  CTest configure時のliteral件数検査により、P5-E groupは0件ではなく**17件**であることも固定した
+- ordinary CTestはucrt64-release **473/473 PASS**、ucrt64-debug **473/473 PASS**
+- product regressionはP5-E **17/17 PASS**、P5-C **11/11 PASS**、P5-D **13/13 PASS**
+- clean detached worktree (`bb65ea5`) でformal matrixを再走し、P2 **6/6 PASS**、P4 **3/3 PASS**、
+  P3-C-2 **9/9 PASS**。全matrixで開始/終了clean、provenance不変、各contract checkerがPASSした
+- `--seek-two-source`はseek完了後にもA/Bのper-source generation divergenceをassertする。
+  Aのcompletion generationをBへコピーするmutationを、fixtureのseek時generation増分に依存せず落とす
+- 製品契約§6/§7/§7.4を、実装済みremove範囲、layersの背面→前面順、closure capability `2/2/1`
+  へ更新した
+
 ---
 
 ## 7. 検証手順
@@ -585,18 +598,18 @@ product (`apps/p5e_preview_smoke`、`-L p5e`、8 本):
 ```powershell
 pwsh scripts/build.ps1
 pwsh scripts/test.ps1                      # ordinary CTest (release/debug)
-ctest --test-dir build/release -L p5c      # P5-C regression (9 本)
-ctest --test-dir build/release -L p5d      # P5-D regression (13 本)
-ctest --test-dir build/release -L p5e      # P5-E product test (E2 時点 8 本)
+ctest --test-dir build/ucrt64-release -L p5c # P5-C regression (11 本)
+ctest --test-dir build/ucrt64-release -L p5d # P5-D regression (13 本)
+ctest --test-dir build/ucrt64-release -L p5e # P5-E product test (17 本)
 pwsh scripts/lint.ps1
 ```
 
 frozen regression (E4 のみ、clean worktree で実行する):
 
 ```powershell
-pwsh scripts/check-p2-contract.ps1
-pwsh scripts/check-p4-formal-contract.ps1
-pwsh scripts/check-p3-c2-contract.ps1
+pwsh scripts/p2-matrix.ps1
+pwsh scripts/run-p4-formal-matrix.ps1
+pwsh scripts/p3-c2-matrix.ps1
 ```
 
 各 slice の完了条件 (`docs/phase5-plan.md` §14 gate):
@@ -619,5 +632,6 @@ pwsh scripts/check-p3-c2-contract.ps1
 - fixture A は 271 MB / fixture B は 66 MB で、二 source 同時 decode は VRAM とデコード帯域を
   要求する。product test の `TIMEOUT` は P5-D の 60 秒より長め (90 秒) を初期値にし、
   実測後に締める。
-- `apps/p5c_preview_smoke` / `apps/p5d_preview_smoke` は**変更しない**。P5-E の検証は新設の
-  `apps/p5e_preview_smoke` へ閉じ込め、既存 slice の regression を汚さない。
+- P5-E固有の二source/二layer検証は`apps/p5e_preview_smoke`へ閉じ込める。
+  `apps/p5c_preview_smoke`はE3 capability `2/2`への最小追随として、二source目の受理後に削除して
+  一layer検証を継続する。`apps/p5d_preview_smoke`のtransport semanticsは変更しない。

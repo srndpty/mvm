@@ -391,6 +391,110 @@ void compositionDomains() {
         requireFailure(state.submit(snapshot({layer(1, {}, {}, opacity)}), sources, capabilities),
                        PreviewErrorCategory::CompositionFailure, "invalid opacityをacceptしました");
     }
+
+    // 各fieldを独立に壊す。代表fieldだけの検査では、他fieldの有限性検査漏れを検出できない。
+    for (int field = 0; field < 4; ++field) {
+        for (float value : {nan, inf, -inf}) {
+            PreviewNormalizedRect rect;
+            switch (field) {
+            case 0:
+                rect.x = value;
+                break;
+            case 1:
+                rect.y = value;
+                break;
+            case 2:
+                rect.width = value;
+                break;
+            default:
+                rect.height = value;
+                break;
+            }
+            CompositionAcceptanceState destinationState;
+            requireFailure(
+                destinationState.submit(snapshot({layer(1, rect)}), sources, capabilities),
+                PreviewErrorCategory::CompositionFailure,
+                "destinationの非有限fieldをacceptしました");
+            CompositionAcceptanceState sourceRectState;
+            requireFailure(
+                sourceRectState.submit(snapshot({layer(1, {}, rect)}), sources, capabilities),
+                PreviewErrorCategory::CompositionFailure,
+                "sourceRectの非有限fieldをacceptしました");
+        }
+    }
+}
+
+void compositionStructuralEqualityLiterals() {
+    const auto sources = twoSources();
+    PreviewCapabilities capabilities;
+    capabilities.maxQualifiedActiveVideoSources = 2;
+    capabilities.maxQualifiedCompositionLayers = 2;
+
+    const PreviewNormalizedRect baseRect{0.1F, 0.1F, 0.5F, 0.5F};
+    const auto expectDifferent = [&](std::shared_ptr<const CompositionSnapshot> first,
+                                     std::shared_ptr<const CompositionSnapshot> second,
+                                     const char* message) {
+        CompositionAcceptanceState state;
+        const auto acceptedFirst = state.submit(std::move(first), sources, capabilities);
+        const auto acceptedSecond = state.submit(std::move(second), sources, capabilities);
+        require(acceptedFirst && acceptedFirst.value() == AcceptedComposition{{1}, 1},
+                "構造比較の基準tokenがliteralと違います");
+        require(acceptedSecond && acceptedSecond.value() == AcceptedComposition{{2}, 2}, message);
+    };
+
+    expectDifferent(snapshot({layer(1, baseRect)}),
+                    snapshot({layer(1, baseRect), layer(2, baseRect)}),
+                    "layer count差を構造比較していません");
+    expectDifferent(snapshot({layer(1, baseRect), layer(2, baseRect)}),
+                    snapshot({layer(2, baseRect), layer(1, baseRect)}),
+                    "layer order差を構造比較していません");
+    expectDifferent(snapshot({layer(1, baseRect)}), snapshot({layer(2, baseRect)}),
+                    "source ID差を構造比較していません");
+
+    for (int field = 0; field < 4; ++field) {
+        PreviewNormalizedRect changed = baseRect;
+        switch (field) {
+        case 0:
+            changed.x = 0.2F;
+            break;
+        case 1:
+            changed.y = 0.2F;
+            break;
+        case 2:
+            changed.width = 0.4F;
+            break;
+        default:
+            changed.height = 0.4F;
+            break;
+        }
+        expectDifferent(snapshot({layer(1, baseRect)}), snapshot({layer(1, changed)}),
+                        "destination field差を構造比較していません");
+        expectDifferent(snapshot({layer(1, {}, baseRect)}), snapshot({layer(1, {}, changed)}),
+                        "sourceRect field差を構造比較していません");
+    }
+    expectDifferent(snapshot({layer(1, baseRect, baseRect, 0.75F)}),
+                    snapshot({layer(1, baseRect, baseRect, 0.5F)}),
+                    "opacity差を構造比較していません");
+
+    const std::vector<std::shared_ptr<const CompositionSnapshot>> invalidSnapshots{
+        snapshot({layer(1, {-0.1F, 0.0F, 1.0F, 1.0F})}),
+        snapshot({layer(1, {}, {0.0F, 0.0F, 0.0F, 1.0F})}), snapshot({layer(1, {}, {}, 1.1F)}),
+        snapshot({})};
+    for (const auto& invalid : invalidSnapshots) {
+        CompositionAcceptanceState state;
+        const auto accepted = state.submit(snapshot({layer(1)}), sources, capabilities);
+        require(accepted && accepted.value() == AcceptedComposition{{1}, 1},
+                "reject不変条件の基準tokenがliteralと違います");
+        requireFailure(state.submit(invalid, sources, capabilities),
+                       PreviewErrorCategory::CompositionFailure,
+                       "invalid compositionをacceptしました");
+        const auto noOp = state.submit(snapshot({layer(1)}), sources, capabilities);
+        require(noOp && noOp.value() == AcceptedComposition{{1}, 1},
+                "rejectがlatest desiredまたはtokenを変更しました");
+        const auto changed = state.submit(snapshot({layer(1, baseRect)}), sources, capabilities);
+        require(changed && changed.value() == AcceptedComposition{{2}, 2},
+                "rejectがIDまたはrevisionを消費しました");
+    }
 }
 
 void compositionIdentityAndCapabilities() {
@@ -1100,6 +1204,7 @@ int main(int argc, char** argv) {
         {"event mailbox", mailboxOrderingAndBounds},
         {"composition domain", compositionDomains},
         {"composition identity", compositionIdentityAndCapabilities},
+        {"composition structural equality literals", compositionStructuralEqualityLiterals},
         {"engine façade / events", engineFacadeAndEvents},
         {"event ownership / fatal", eventOwnershipAndFatalPath},
         {"constructor thread authority", constructorThreadAuthority},

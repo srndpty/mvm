@@ -160,6 +160,10 @@ source removalは、active compositionまたはacceptedだが未提示のpending
 削除である。authoritative audio sourceを`ReadyPaused`で安全に削除した場合はaudio authorityを空へ戻す。
 再生中の一般的なdynamic removalは将来の独立contractとする。
 
+P5-E closure時点で、参照が外れたvideo sourceの削除、未参照video sourceの削除、およびauthoritative
+audio sourceの安全な削除とaudio authorityの返却をproduct経路へ実装済みである。active/pending参照中、
+seek進行中、`ReadyPaused`以外、未登録/削除済みIDは上記contractに従ってfail-closedで拒否する。
+
 参照が外れる時点は「新しいcompositionをacceptした時点」ではなく「新しいcompositionを実際に提示した
 時点」である。提示中のcompositionを差し替えてacceptしただけでは、古いcompositionがまだ画面に出ている
 ため参照は外れていない。
@@ -208,8 +212,8 @@ struct AcceptedComposition {
 };
 ```
 
-layer vectorの先頭をback、末尾をfrontとして描画順を定義する。同順位という概念を持たず、vector順で
-決定論的にする。現在のcontractが扱うpropertyはsource reference、destination rectangle、source
+`CompositionSnapshot::layers`のvector順を背面から前面へのz順とし、先頭をback、末尾をfrontとして
+描画順を定義する。同順位という概念を持たず、index昇順で決定論的に重ねる。現在のcontractが扱うpropertyはsource reference、destination rectangle、source
 rectangle、opacity、layer orderだけである。
 
 transition、keyframe、effect graph、S0/S1/S2/S3、formal boundary、fixture catalog、Phase 4 schedule
@@ -321,8 +325,8 @@ ID、各rectangle field、opacityの差を独立した期待値で検査する�
 - API typeは二layerへhard-codeしない
 - `PreviewCapabilities::maxQualifiedActiveVideoSources`と
   `PreviewCapabilities::maxQualifiedCompositionLayers`を別fieldとして報告する
-- P5-D closure時点のproduct wiringの現在値は`maxQualifiedActiveVideoSources == 1`、
-  `maxQualifiedCompositionLayers == 1`、`maxQualifiedActiveAudioSources == 1`である
+- P5-E closure時点のproduct wiringの現在値は`maxQualifiedActiveVideoSources == 2`、
+  `maxQualifiedCompositionLayers == 2`、`maxQualifiedActiveAudioSources == 1`である
 - qualified audio domainは48000 Hz / stereoとして報告する。sample formatのfloat32は
   capabilityの報告項目ではなく`AudioChunk::PcmSample`の型不変条件で保証する (§5)
 - `qualifiedOutputFrameRate`は`60/1`、`duplicateSourceLayersSupported`と
@@ -336,7 +340,8 @@ sourceはvideo compositionへ参加できない。同一sourceを複数layerへ�
 されていないため、初期capabilityでは`UnsupportedCapability`で拒否する。将来qualificationしてもpublic
 snapshot formatを変更する必要はない。
 
-二source/二layerはP5-Eでproduct wiringとformal qualificationを完了した後にcapabilityを引き上げる。
+P5-Eで二source/二layerのproduct wiringとqualificationを完了し、video source/layer capabilityを
+それぞれ2へ引き上げた。これは任意N source/layerを利用可能またはformal qualifiedとする主張ではない。
 型が将来の値を表現できることを、現在利用可能な能力として報告しない。
 
 ### 7.5 Composition validation order
