@@ -309,7 +309,7 @@ unit (`tests/preview_engine/test_preview_engine.cpp`):
   - 未登録 ID・0 番 ID は `InvalidSource`
   - control thread 以外からの呼び出しは `InvalidState`
 
-product (`apps/p5e_preview_smoke`、`-L p5e`):
+product (`apps/p5e_preview_smoke`、`-L p5e`、8 本):
 
 - `--remove-unreferenced-source` — composition 提出前の source を remove 成功、
   `registeredVideoSourceCount` が 1 → 0、二重削除は `InvalidSource`、再登録して再生継続
@@ -321,6 +321,16 @@ product (`apps/p5e_preview_smoke`、`-L p5e`):
   wall-clock master で再生を継続できる。解放は failure ではないので
   `audioTransportFailureCount` / `audioSinkDeviceFailureCount` /
   `audioDomainRejectCount` / `videoMasterQpcFallbackCount` はいずれも 0 のまま
+- `--fault-remove-audio-stop` — sink 自身に stop を失敗させ、通常の removal 経路を通す。
+  `AudioFailure` / `RemoveSource` / `FatalToSession` を返し、removal は commit されず
+  (`registeredAudioSourceCount == 1`)、`ShuttingDown -> Error` へ落ちる。
+  `audioTransportFailureCount` はちょうど 1
+- `--remove-shutdown-race` — audio 停止フェーズ (engine lock を持たない窓) を barrier で
+  止め、その間に別 thread から fatal を入れる。`removeSource()` は `InvalidState` を返し、
+  removal は commit されない。`lifecycleViolationCount == 0` (二重 stop や ordering 違反なし)
+- `--remove-fatal-event-order` — removal fatal を commit して unlock した直後・flush 前で
+  止め、その間に teardown を終端まで進める。**その瞬間の mailbox insertion 順**を観測し、
+  `ErrorOccurred` -> `StateChanged(ShuttingDown)` が既に入っていることを固定する
 
 ### E2 実装結果 (実測)
 
@@ -365,6 +375,39 @@ product (`apps/p5e_preview_smoke`、`-L p5e`):
    | --- | --- |
    | `referencesSource()` の呼び出しを削除 | `remove_referenced_source` / `remove_audio_source` が FAIL |
    | `referencesSource()` から active (last presented) 側の判定を削除 | `preview_engine_p5b_unit` が FAIL |
+   | audio stop 失敗を無視して commit する | `remove_audio_stop_fail_closed` が FAIL |
+   | 停止中の state 変化を無視して commit する | `remove_shutdown_race` が FAIL |
+   | state commit と mailbox insertion を分離する | `remove_fatal_event_order` が FAIL (3/3) |
+
+5. **fatal event の順序は「commit と同じ critical section で mailbox へ入れる」ことで閉じた。**
+   当初は `recordFatal()` まで commit してから unlock し、その後 `notify()` していた。
+   これは P5-D3 で一度潰したものと同型で、次の逆転が可能だった。
+
+   ```text
+   remove:   lock / recordFatal -> ShuttingDown / startWorkerShutdown / unlock
+   teardown: terminal transition -> Error / enqueue Error
+   remove:   notify ErrorOccurred / notify ShuttingDown   // stale
+   ```
+
+   `pendingDispatch` を使い、`recordFatal()` と同じ critical section 内で
+   `notifyLocked()` まで行い、unlock 後は `flushDispatch()` だけにした。
+
+   **この性質は sink への delivery では観測できない。** terminal 到達後の pending event は
+   contract どおり破棄されるため、正しい実装でも配信されない (実測で確認した)。
+   そこで `mailboxEventsForTest()` を足し、**commit 直後・flush 前の mailbox insertion 順**
+   そのものを観測する形にした。これが linearizability の authority である。
+
+6. **video worker の raw pointer を lock gap 越しに持ち出さない。**
+   phase 1 で `worker.get()` を取り出して phase 2 の後に使うと、その窓で shutdown が勝った
+   場合に ownership が `detachedWorkers` へ移り、raw pointer が dangling になり得る
+   (audio は `shared_ptr` を local に持つので lifetime が安定していた)。
+   phase 3 で table から引き直し、engine lock を保持したまま stop まで行う。
+   `ReadyPaused` の worker は既に pause 済みなので join は短く、この窓の render path は
+   早期 return するだけである。
+
+7. **削除した public ID を再登録で使い回さないことを assert した。**
+   コメントだけで主張していたので、`--remove-unreferenced-source` に
+   `first.value() != source.value()` の検査を足し、contract §6 にも明記した。
 
 ---
 
@@ -472,7 +515,7 @@ pwsh scripts/build.ps1
 pwsh scripts/test.ps1                      # ordinary CTest (release/debug)
 ctest --test-dir build/release -L p5c      # P5-C regression (9 本)
 ctest --test-dir build/release -L p5d      # P5-D regression (13 本)
-ctest --test-dir build/release -L p5e      # P5-E product test (E2 時点 5 本)
+ctest --test-dir build/release -L p5e      # P5-E product test (E2 時点 8 本)
 pwsh scripts/lint.ps1
 ```
 

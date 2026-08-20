@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <limits>
 #include <map>
@@ -178,6 +179,10 @@ std::uint64_t skippedSchedulerFrameCount(std::int64_t previousTarget, std::int64
 }
 
 EventMailbox::EventMailbox(std::size_t capacity) : capacity_(capacity) {}
+
+std::vector<PreviewEvent> EventMailbox::snapshot() const {
+    return {events_.begin(), events_.end()};
+}
 
 bool EventMailbox::isTerminal(const PreviewEvent& event) const {
     const auto* state = std::get_if<StateChangedEvent>(&event);
@@ -553,6 +558,62 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     // 完成したerrorを注入するのではなく、compose後・validate前に
     // `CompositionEpoch`だけを進める。
     bool compositionEpochAdvanceInjected = false;
+
+    // engine lockを持たない窓をtestから決定論的に止めるbarrier。
+    // engine mutexとは別のmutexで守る (止める窓ではengine lockを持っていない)。
+    struct TestBarrier {
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool armed = false;
+        bool entered = false;
+        bool released = false;
+
+        bool arm() {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (armed)
+                return false;
+            armed = true;
+            entered = false;
+            released = false;
+            return true;
+        }
+
+        // armされていなければ何もしない。既定値では一切動作を変えない。
+        void enter() {
+            std::unique_lock<std::mutex> lock(mutex);
+            if (!armed)
+                return;
+            entered = true;
+            changed.notify_all();
+            changed.wait(lock, [this] { return released; });
+            armed = false;
+            entered = false;
+            released = false;
+        }
+
+        bool waitEntered(int timeoutMs) {
+            std::unique_lock<std::mutex> lock(mutex);
+            return changed.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                                    [this] { return entered; });
+        }
+
+        void release() {
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                released = true;
+            }
+            changed.notify_all();
+        }
+    };
+
+    // `removeSource()`のaudio停止フェーズ (engine lockを持たない窓)。
+    TestBarrier removalBarrier;
+    // fatalをcommitしてunlockした直後、dispatchをflushする前の窓。
+    // state commitとmailbox insertionがlinearizeされていれば、この窓で
+    // teardownが先にterminalへ進んでもevent順序は逆転しない。
+    TestBarrier fatalPublishBarrier;
+
+    void enterSourceRemovalBarrierForTest() { removalBarrier.enter(); }
 
     std::uint64_t nextPublicSourceId = 1;
     PreviewFrameRate configuredFrameRate{60, 1};
@@ -1586,11 +1647,19 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
 
 Result<void> PreviewEngine::removeSource(PreviewSourceId source) {
     // audio transportの停止はengine mutexを保持したまま行わない
-    // (audioTransportMutexとの取得順を固定するため)。したがって
-    // 「検査 -> lock解放して停止 -> 再取得してcommit」の3段で行う。
+    // (audioTransportMutexとの取得順を固定するため)。したがって次の3 phaseで行う。
+    //
+    //   phase 1: engine lock。検査してaudioのshared refだけを取り出す
+    //   phase 2: lock無し。audio transportを停止する
+    //   phase 3: engine lock。stateを再検証し、video workerを引き直して停止しcommitする
+    //
+    // phase 1でvideo workerのraw pointerを持ち出さない。phase 2の窓でshutdownが
+    // 勝つとownershipが`detachedWorkers`へ移り、raw pointerがdanglingになり得る。
+    // phase 3でtableから引き直し、engine lockを保持したまま停止まで行う。
+    // ReadyPausedのworkerは既にpause済みなのでjoinは短く、この窓でrender pathは
+    // 早期returnするだけである。
     std::shared_ptr<audio::AudioDecodeWorker> audioWorker;
     std::shared_ptr<audio::WasapiAudioSink> audioSink;
-    gpu::SourceDecodeWorker* videoWorker = nullptr;
     bool removingAudio = false;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -1619,9 +1688,6 @@ Result<void> PreviewEngine::removeSource(PreviewSourceId source) {
                 "activeまたはpending compositionが参照しているsourceは削除できません");
         }
 
-        const auto entry = impl_->videoSources.find(source.value);
-        if (entry != impl_->videoSources.end() && entry->second.worker)
-            videoWorker = entry->second.worker.get();
         removingAudio = impl_->publicAudioSource && *impl_->publicAudioSource == source;
         if (removingAudio) {
             audioWorker = impl_->audioWorker;
@@ -1633,8 +1699,8 @@ Result<void> PreviewEngine::removeSource(PreviewSourceId source) {
         }
     }
 
-    // ここではownershipを移していない。engine側のfieldは生きたままなので、
-    // この窓でfatalが起きてもshutdown経路が同じ実体をstop/joinできる。
+    // ownershipは移していない。engine側のfieldは生きたままなので、この窓で
+    // fatalが起きてもshutdown経路が同じ実体をstop/joinできる。
     std::string audioError;
     bool audioStopped = true;
     if (audioSink || audioWorker) {
@@ -1647,14 +1713,17 @@ Result<void> PreviewEngine::removeSource(PreviewSourceId source) {
         if (audioWorker)
             audioWorker->stop();
     }
-    if (videoWorker)
-        videoWorker->stop();
+    // transport lockを解放してからbarrierへ入る。保持したまま止まるとshutdown
+    // threadがtransport lockで待ち、raceを再現できないままdeadlockする。
+    impl_->removalBarrier.enter();
 
+    std::shared_ptr<PreviewEventDispatcher> pendingDispatch;
     std::optional<PreviewError> fatal;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         if (impl_->machine.state() != PreviewEngineState::ReadyPaused) {
-            // 停止中にfatalが入った。removalはcommitせず、teardownに実体を委ねる。
+            // 停止中にfatal/state変化が入った。removalはcommitせず、
+            // 実体のteardownはshutdown経路へ委ねる。
             return invalidState(PreviewOperation::RemoveSource,
                                 "removal中にstateが変化したため削除を確定しません");
         }
@@ -1674,9 +1743,18 @@ Result<void> PreviewEngine::removeSource(PreviewSourceId source) {
             impl_->startWorkerShutdown();
             impl_->telemetrySnapshot.status.state = PreviewEngineState::ShuttingDown;
             impl_->telemetrySnapshot.status.lastError = impl_->machine.lastError();
+            // state commitとmailbox insertionを同じcritical sectionでlinearizeする。
+            // unlock後にnotifyすると、先に進んだteardownの`Error`より後ろへ
+            // `ShuttingDown`が入り、event streamの順序が逆転し得る。
+            impl_->notifyLocked(internal::ErrorOccurredEvent{failure}, pendingDispatch);
+            impl_->notifyLocked(internal::StateChangedEvent{PreviewEngineState::ShuttingDown},
+                                pendingDispatch);
         } else {
+            // phase 1では持ち出していない。tableから引き直す。
             const auto entry = impl_->videoSources.find(source.value);
             if (entry != impl_->videoSources.end()) {
+                if (entry->second.worker)
+                    entry->second.worker->stop();
                 if (entry->second.internal.value != 0)
                     impl_->sourceRegistry.unregisterSource(entry->second.internal);
                 impl_->videoSources.erase(entry);
@@ -1708,8 +1786,10 @@ Result<void> PreviewEngine::removeSource(PreviewSourceId source) {
     }
 
     if (fatal) {
-        impl_->notify(internal::ErrorOccurredEvent{*fatal});
-        impl_->notify(internal::StateChangedEvent{PreviewEngineState::ShuttingDown});
+        // unlock済みでflush前。ここで止めてもevent順序が壊れないことが、
+        // state commitとmailbox insertionをlinearizeしたことの検査になる。
+        impl_->fatalPublishBarrier.enter();
+        impl_->flushDispatch(pendingDispatch);
         return Result<void>::failure(*fatal);
     }
     return Result<void>::success();
@@ -3325,6 +3405,40 @@ Result<void> PreviewRenderPort::injectCompositionEpochAdvanceForTest(PreviewEngi
     return Result<void>::success();
 }
 
+Result<void> PreviewRenderPort::armSourceRemovalBarrierForTest(PreviewEngine& engine) {
+    if (!engine.impl_->removalBarrier.arm()) {
+        return invalidState(PreviewOperation::RemoveSource,
+                            "source removal barrierは既に設定されています");
+    }
+    return Result<void>::success();
+}
+
+bool PreviewRenderPort::waitSourceRemovalBarrierEnteredForTest(PreviewEngine& engine,
+                                                               int timeoutMs) {
+    return engine.impl_->removalBarrier.waitEntered(timeoutMs);
+}
+
+void PreviewRenderPort::releaseSourceRemovalBarrierForTest(PreviewEngine& engine) {
+    engine.impl_->removalBarrier.release();
+}
+
+Result<void> PreviewRenderPort::armFatalPublishBarrierForTest(PreviewEngine& engine) {
+    if (!engine.impl_->fatalPublishBarrier.arm()) {
+        return invalidState(PreviewOperation::RemoveSource,
+                            "fatal publish barrierは既に設定されています");
+    }
+    return Result<void>::success();
+}
+
+bool PreviewRenderPort::waitFatalPublishBarrierEnteredForTest(PreviewEngine& engine,
+                                                              int timeoutMs) {
+    return engine.impl_->fatalPublishBarrier.waitEntered(timeoutMs);
+}
+
+void PreviewRenderPort::releaseFatalPublishBarrierForTest(PreviewEngine& engine) {
+    engine.impl_->fatalPublishBarrier.release();
+}
+
 Result<void> PreviewRenderPort::injectSeekPresentationStallForTest(PreviewEngine& engine) {
     std::lock_guard<std::mutex> lock(engine.impl_->mutex);
     if (!engine.impl_->hasVideoWorkerLocked()) {
@@ -3371,6 +3485,11 @@ Result<void> PreviewRenderPort::injectAudioSinkRenderFaultForTest(PreviewEngine&
 
 void PreviewRenderPort::enqueueEventForTest(PreviewEngine& engine, PreviewEvent event) {
     engine.impl_->notify(std::move(event));
+}
+
+std::vector<PreviewEvent> PreviewRenderPort::mailboxEventsForTest(const PreviewEngine& engine) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    return engine.impl_->mailbox.snapshot();
 }
 
 std::size_t PreviewRenderPort::mailboxSizeForTest(const PreviewEngine& engine) {

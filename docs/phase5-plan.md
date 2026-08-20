@@ -457,6 +457,12 @@ P5-Dと同様に一度に閉じない。§10.1のscopeを次の4 sliceへ分け�
   removalをcommitせず、実体のteardownをshutdown経路へ委ねること
 - audio sinkを停止できない場合は`AudioFailure` / `FatalToSession`として
   `ShuttingDown -> Error`へ落とすこと
+- removal fatalのstate commitとmailbox insertionが同じcritical sectionでlinearizeされていること。
+  terminal到達後のpending eventはcontractどおり破棄されるため、この性質はsinkへのdeliveryでは
+  観測できない。**mailbox insertion順そのもの**をnegative testのauthorityにすること
+- video workerのraw pointerをengine lockを持たない窓へ持ち出さないこと。
+  shutdownがownershipを`detachedWorkers`へ移すため、danglingになり得る
+- 削除した`PreviewSourceId`を同一session内で再利用しないこと
 - capabilityが1 video sourceのうちは「参照が外れたvideo sourceの削除」に到達できないため、
   A -> B差し替え後の削除はP5-E3のproduct testで閉じること。
   参照判定そのものはunitで固定すること

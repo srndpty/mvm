@@ -23,6 +23,8 @@
 #include <chrono>
 #include <cstdio>
 #include <memory>
+#include <thread>
+#include <variant>
 #include <vector>
 
 #include <QCryptographicHash>
@@ -49,7 +51,7 @@ private:
 
 class SmokeSink final : public mvm::preview::PreviewEventSink {
 public:
-    void stateChanged(mvm::preview::PreviewEngineState) override {}
+    void stateChanged(mvm::preview::PreviewEngineState state) override { states.push_back(state); }
 
     void positionChanged(mvm::preview::PreviewPosition) override {}
 
@@ -67,6 +69,7 @@ public:
 
     std::vector<mvm::preview::PresentedFrameInfo> frames;
     std::vector<mvm::preview::PreviewError> errors;
+    std::vector<mvm::preview::PreviewEngineState> states;
     bool sequenceViolation = false;
 };
 
@@ -76,8 +79,22 @@ enum class Fault {
     StaleCompositionEpoch,
     RemoveUnreferencedSource,
     RemoveReferencedSource,
-    RemoveAudioSource
+    RemoveAudioSource,
+    RemoveAudioStopFailure,
+    RemoveShutdownRace,
+    RemoveFatalEventOrder
 };
+
+// audio sourceを伴うremoval faultかどうか。
+bool needsAudioSource(Fault fault) {
+    return fault == Fault::RemoveAudioSource || fault == Fault::RemoveAudioStopFailure ||
+           fault == Fault::RemoveShutdownRace || fault == Fault::RemoveFatalEventOrder;
+}
+
+// pauseしてからremoval検査を行うfaultかどうか。
+bool checksRemovalAfterPause(Fault fault) {
+    return fault == Fault::RemoveReferencedSource || needsAudioSource(fault);
+}
 
 } // namespace
 
@@ -89,7 +106,9 @@ int main(int argc, char** argv) {
     if (arguments.size() < 2 || arguments.size() > 3) {
         std::fprintf(stderr, "使い方: mvm_p5e_preview_smoke <fixture-a-path> "
                              "[--fault-stale-composition-epoch|--remove-unreferenced-source"
-                             "|--remove-referenced-source|--remove-audio-source]\n");
+                             "|--remove-referenced-source|--remove-audio-source"
+                             "|--fault-remove-audio-stop|--remove-shutdown-race"
+                             "|--remove-fatal-event-order]\n");
         return 2;
     }
     Fault fault = Fault::None;
@@ -102,6 +121,12 @@ int main(int argc, char** argv) {
             fault = Fault::RemoveReferencedSource;
         else if (arguments[2] == "--remove-audio-source")
             fault = Fault::RemoveAudioSource;
+        else if (arguments[2] == "--fault-remove-audio-stop")
+            fault = Fault::RemoveAudioStopFailure;
+        else if (arguments[2] == "--remove-shutdown-race")
+            fault = Fault::RemoveShutdownRace;
+        else if (arguments[2] == "--remove-fatal-event-order")
+            fault = Fault::RemoveFatalEventOrder;
         else
             return 2;
     }
@@ -134,6 +159,7 @@ int main(int argc, char** argv) {
     std::uint64_t presentedAtInjection = 0;
     std::int64_t rejectedFrame = -1;
     mvm::preview::PreviewSourceId videoSource{};
+    mvm::preview::PreviewSourceId firstSource{};
     mvm::preview::PreviewSourceId audioSource{};
     std::uint64_t presentedAtPause = 0;
     bool removalChecked = false;
@@ -172,6 +198,7 @@ int main(int argc, char** argv) {
                     app.quit();
                     return;
                 }
+                firstSource = first.value();
                 const auto beforeRemoval =
                     mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
                 const auto removed = engine->removeSource(first.value());
@@ -198,7 +225,15 @@ int main(int argc, char** argv) {
                 return;
             }
             videoSource = source.value();
-            if (fault == Fault::RemoveAudioSource) {
+            if (fault == Fault::RemoveUnreferencedSource && firstSource == videoSource) {
+                // 削除したpublic IDを再登録で使い回さない。使い回すと、古い参照が
+                // 別のsourceへ黙って結び付く (preview-engine-contract.md §6)。
+                std::fprintf(stderr, "削除済みのPreviewSourceIdを再利用しました\n");
+                exitCode = 22;
+                app.quit();
+                return;
+            }
+            if (needsAudioSource(fault)) {
                 // audio-onlyのsourceはcompositionへ参加しないので、video再生中でも
                 // 参照は外れている。authoritative audio sourceの解放経路を固定する。
                 mvm::preview::PreviewSourceDescriptor audioDescriptor;
@@ -239,7 +274,7 @@ int main(int argc, char** argv) {
             return;
         }
         if (stage == Stage::WaitInitial && telemetry.presentedFrameCount >= 12) {
-            if (fault == Fault::RemoveReferencedSource || fault == Fault::RemoveAudioSource) {
+            if (checksRemovalAfterPause(fault)) {
                 // removalはReadyPausedでのみ受理する。Playing中の拒否も同時に固定する。
                 const auto whilePlaying = engine->removeSource(videoSource);
                 if (whilePlaying || whilePlaying.error().category !=
@@ -255,6 +290,10 @@ int main(int argc, char** argv) {
                     return;
                 }
                 presentedAtPause = engine->telemetry().presentedFrameCount;
+                // fault経路はここから先でterminalへ落ちる。active runtimeの証拠は
+                // 落ちる前に採る (teardown後のdiagnosticsでは device が解放済み)。
+                activeDiagnostics =
+                    mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
 
                 // 未登録IDは`InvalidSource`。stateの都合で別errorへすり替えない。
                 const auto unknown = engine->removeSource({videoSource.value + 100});
@@ -281,6 +320,170 @@ int main(int argc, char** argv) {
                         app.quit();
                         return;
                     }
+                }
+                if (fault == Fault::RemoveAudioStopFailure) {
+                    // 完成したerrorをengineへ注入するのではなく、sink自身に
+                    // stopを失敗させて通常のremoval経路を通す。
+                    if (!mvm::preview::internal::PreviewRenderPort::
+                            injectAudioSinkPauseFaultForTest(*engine)) {
+                        exitCode = 23;
+                        app.quit();
+                        return;
+                    }
+                    const auto removedAudio = engine->removeSource(audioSource);
+                    afterRemoval =
+                        mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+                    // 停止できなかったのでremovalはcommitしない。
+                    if (removedAudio ||
+                        removedAudio.error().category !=
+                            mvm::preview::PreviewErrorCategory::AudioFailure ||
+                        removedAudio.error().severity !=
+                            mvm::preview::PreviewErrorSeverity::FatalToSession ||
+                        removedAudio.error().operation !=
+                            mvm::preview::PreviewOperation::RemoveSource ||
+                        afterRemoval.registeredAudioSourceCount != 1) {
+                        std::fprintf(stderr, "audio stop失敗をfail-closedにできていません\n");
+                        exitCode = 24;
+                        app.quit();
+                        return;
+                    }
+                    removalChecked = true;
+                    stage = Stage::WaitShutdown;
+                    return;
+                }
+                if (fault == Fault::RemoveFatalEventOrder) {
+                    // removal fatalをcommitしてunlockした直後で止め、その間に
+                    // teardownを終端(Error)まで進める。state commitとmailbox
+                    // insertionがlinearizeされていれば、ShuttingDownはErrorより
+                    // 前に入る。分離していると逆転する。
+                    if (!mvm::preview::internal::PreviewRenderPort::
+                            injectAudioSinkPauseFaultForTest(*engine) ||
+                        !mvm::preview::internal::PreviewRenderPort::armFatalPublishBarrierForTest(
+                            *engine)) {
+                        exitCode = 27;
+                        app.quit();
+                        return;
+                    }
+                    bool reachedTerminal = false;
+                    bool linearizedAtCommit = false;
+                    std::thread racer([&] {
+                        if (!mvm::preview::internal::PreviewRenderPort::
+                                waitFatalPublishBarrierEnteredForTest(*engine, 5000)) {
+                            mvm::preview::internal::PreviewRenderPort::
+                                releaseFatalPublishBarrierForTest(*engine);
+                            return;
+                        }
+                        // unlock直後・flush前の時点で、removalのeventが既にmailboxへ
+                        // 入っていること。空なら state commit と mailbox insertion が
+                        // 分離しており、後続の terminal event に追い越される。
+                        {
+                            const auto queued = mvm::preview::internal::PreviewRenderPort::
+                                mailboxEventsForTest(*engine);
+                            std::size_t errorIndex = queued.size();
+                            std::size_t shuttingDownIndex = queued.size();
+                            for (std::size_t i = 0; i < queued.size(); ++i) {
+                                if (std::holds_alternative<
+                                        mvm::preview::internal::ErrorOccurredEvent>(queued[i]) &&
+                                    errorIndex == queued.size()) {
+                                    errorIndex = i;
+                                }
+                                const auto* queuedState =
+                                    std::get_if<mvm::preview::internal::StateChangedEvent>(
+                                        &queued[i]);
+                                if (queuedState != nullptr &&
+                                    queuedState->state ==
+                                        mvm::preview::PreviewEngineState::ShuttingDown &&
+                                    shuttingDownIndex == queued.size()) {
+                                    shuttingDownIndex = i;
+                                }
+                            }
+                            linearizedAtCommit = errorIndex < queued.size() &&
+                                                 shuttingDownIndex < queued.size() &&
+                                                 errorIndex < shuttingDownIndex;
+                        }
+                        // render threadがteardownを終端まで進めるのを待つ。
+                        // main threadはremoveSource()の中で止まっているが、
+                        // event順序はmailbox insertion順で決まる。
+                        const auto deadline =
+                            std::chrono::steady_clock::now() + std::chrono::seconds(5);
+                        while (std::chrono::steady_clock::now() < deadline) {
+                            if (engine->status().state ==
+                                mvm::preview::PreviewEngineState::Error) {
+                                reachedTerminal = true;
+                                break;
+                            }
+                            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                        }
+                        mvm::preview::internal::PreviewRenderPort::
+                            releaseFatalPublishBarrierForTest(*engine);
+                    });
+                    const auto removedAudio = engine->removeSource(audioSource);
+                    racer.join();
+                    afterRemoval =
+                        mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+                    if (!reachedTerminal || removedAudio ||
+                        removedAudio.error().category !=
+                            mvm::preview::PreviewErrorCategory::AudioFailure ||
+                        afterRemoval.registeredAudioSourceCount != 1) {
+                        std::fprintf(stderr, "fatal publish barrierの前提が成立しません\n");
+                        exitCode = 28;
+                        app.quit();
+                        return;
+                    }
+                    if (!linearizedAtCommit) {
+                        std::fprintf(stderr,
+                                     "state commitとmailbox insertionが分離しています\n");
+                        exitCode = 29;
+                        app.quit();
+                        return;
+                    }
+                    removalChecked = true;
+                    stage = Stage::WaitShutdown;
+                    return;
+                }
+                if (fault == Fault::RemoveShutdownRace) {
+                    // audio停止フェーズ (engine lockを持たない窓) で止め、
+                    // その間に別threadからfatalを入れる。removalはcommitされない。
+                    if (!mvm::preview::internal::PreviewRenderPort::
+                            armSourceRemovalBarrierForTest(*engine)) {
+                        exitCode = 25;
+                        app.quit();
+                        return;
+                    }
+                    bool raced = false;
+                    std::thread racer([&] {
+                        if (!mvm::preview::internal::PreviewRenderPort::
+                                waitSourceRemovalBarrierEnteredForTest(*engine, 5000)) {
+                            mvm::preview::internal::PreviewRenderPort::
+                                releaseSourceRemovalBarrierForTest(*engine);
+                            return;
+                        }
+                        mvm::preview::PreviewError error;
+                        error.category = mvm::preview::PreviewErrorCategory::DeviceFailure;
+                        error.severity = mvm::preview::PreviewErrorSeverity::FatalToSession;
+                        error.operation = mvm::preview::PreviewOperation::RenderDeviceAttach;
+                        error.detail = "P5-E removal race injected fatal";
+                        raced = static_cast<bool>(
+                            mvm::preview::internal::PreviewRenderPort::injectFatal(*engine, error));
+                        mvm::preview::internal::PreviewRenderPort::
+                            releaseSourceRemovalBarrierForTest(*engine);
+                    });
+                    const auto removedAudio = engine->removeSource(audioSource);
+                    racer.join();
+                    afterRemoval =
+                        mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+                    if (!raced || removedAudio ||
+                        removedAudio.error().category !=
+                            mvm::preview::PreviewErrorCategory::InvalidState ||
+                        afterRemoval.registeredAudioSourceCount != 1) {
+                        std::fprintf(stderr, "removal中のstate変化でcommitを止めていません\n");
+                        exitCode = 26;
+                        app.quit();
+                        return;
+                    }
+                    removalChecked = true;
+                    stage = Stage::WaitShutdown;
+                    return;
                 }
                 removalChecked = true;
                 // 解放後もsessionは継続できる。audioを外した場合はwall-clock masterへ戻る。
@@ -386,6 +589,58 @@ int main(int argc, char** argv) {
                     : diagnostics.staleCompositionEpochRejectCount == 0 &&
                           diagnostics.lifecycleViolationCount == 0 &&
                           diagnostics.lastStaleCompositionRejectedFrame == -1;
+
+            // fatalを伴うfaultはterminal Errorで終わる。
+            const bool fatalFault = fault == Fault::RemoveAudioStopFailure ||
+                                    fault == Fault::RemoveShutdownRace ||
+                                    fault == Fault::RemoveFatalEventOrder;
+            // event streamの順序を固定する。ShuttingDownはErrorより前に出る。
+            // state commitとmailbox insertionをlinearizeしていないと、先に進んだ
+            // teardownのErrorがShuttingDownを追い越し得る。
+            std::size_t shuttingDownIndex = sink->states.size();
+            std::size_t errorIndex = sink->states.size();
+            for (std::size_t i = 0; i < sink->states.size(); ++i) {
+                if (sink->states[i] == mvm::preview::PreviewEngineState::ShuttingDown &&
+                    shuttingDownIndex == sink->states.size()) {
+                    shuttingDownIndex = i;
+                }
+                if (sink->states[i] == mvm::preview::PreviewEngineState::Error &&
+                    errorIndex == sink->states.size()) {
+                    errorIndex = i;
+                }
+            }
+            // terminal到達後のpending eventはcontractどおり破棄されるため、
+            // 「ShuttingDownがsinkへ届くこと」をfatal fault一般には要求できない。
+            // 届いた場合の順序だけを要求し、linearizabilityそのものは
+            // mailbox insertion順で別途固定する。
+            const bool stateOrderPass =
+                fatalFault ? (shuttingDownIndex == sink->states.size() ||
+                              errorIndex == sink->states.size() ||
+                              shuttingDownIndex < errorIndex)
+                           : errorIndex == sink->states.size();
+            const bool fatalPass =
+                fault == Fault::RemoveFatalEventOrder
+                    // barrierでmain threadを止めている間にterminalへ到達するため、
+                    // pending eventはcontractどおり破棄され得る。ここで固定するのは
+                    // counter authorityであり、deliveryではない。
+                    ? diagnostics.audioTransportFailureCount == 1
+                : fault == Fault::RemoveAudioStopFailure
+                    // sink停止失敗はtransport failureとして1件だけ数える。
+                    ? sink->errors.size() == 1 &&
+                          sink->errors.front().category ==
+                              mvm::preview::PreviewErrorCategory::AudioFailure &&
+                          sink->errors.front().operation ==
+                              mvm::preview::PreviewOperation::RemoveSource &&
+                          sink->errors.front().severity ==
+                              mvm::preview::PreviewErrorSeverity::FatalToSession &&
+                          diagnostics.audioTransportFailureCount == 1
+                : fault == Fault::RemoveShutdownRace
+                    // raceで止めたのはremovalであり、removal自体はfailureではない。
+                    ? sink->errors.size() == 1 &&
+                          sink->errors.front().category ==
+                              mvm::preview::PreviewErrorCategory::DeviceFailure &&
+                          diagnostics.audioTransportFailureCount == 0
+                    : sink->errors.empty();
             const bool removalPass =
                 (fault == Fault::None || fault == Fault::StaleCompositionEpoch)
                     ? !removalChecked
@@ -398,11 +653,15 @@ int main(int argc, char** argv) {
                             diagnostics.audioSinkDeviceFailureCount == 0 &&
                             diagnostics.audioDomainRejectCount == 0 &&
                             // video-only経路のwall-clockはqualified masterであり退避ではない。
-                            diagnostics.videoMasterQpcFallbackCount == 0));
+                            diagnostics.videoMasterQpcFallbackCount == 0)) &&
+                          // 中断されたremovalはcommitされない。
+                          (!fatalFault || (afterRemoval.registeredAudioSourceCount == 1 &&
+                                           diagnostics.registeredAudioSourceCount == 1));
             const bool pass =
-                status.state == mvm::preview::PreviewEngineState::Shutdown && staleEpochPass &&
-                removalPass &&
-                sink->errors.empty() && !sink->sequenceViolation && !sink->frames.empty() &&
+                status.state == (fatalFault ? mvm::preview::PreviewEngineState::Error
+                                            : mvm::preview::PreviewEngineState::Shutdown) &&
+                staleEpochPass && removalPass && fatalPass && stateOrderPass &&
+                !sink->sequenceViolation && !sink->frames.empty() &&
                 // PresentedFrameInfoはactual accepted tokenとactual layer数を運ぶ。
                 sink->frames.back().composition == accepted &&
                 sink->frames.back().activeLayerCount == 1 &&
@@ -417,11 +676,15 @@ int main(int argc, char** argv) {
                 diagnostics.retirementTimeoutCount == 0 && diagnostics.workerJoined &&
                 diagnostics.renderTeardownComplete && diagnostics.deviceReleased &&
                 !diagnostics.unsafeGpuResourcesRetained &&
+                // 中断されたremovalが二重stopやordering violationを起こしていないこと。
+                (fault == Fault::StaleCompositionEpoch ||
+                 diagnostics.lifecycleViolationCount == 0) &&
                 terminalTelemetry.eventDeliveryFailureCount == 0;
             std::printf("{\"verdict\":\"%s\",\"presented\":%llu,"
                         "\"stale_composition_epoch_rejects\":%llu,"
                         "\"rejected_frame\":%lld,\"rejected_frame_presented\":%s,"
                         "\"removal_checked\":%s,\"audio_sources\":%llu,"
+                        "\"state_order_ok\":%s,"
                         "\"lifecycle_violations\":%llu,\"errors\":%zu,\"terminal\":%d}\n",
                         pass ? "PASS" : "FAIL",
                         static_cast<unsigned long long>(terminalTelemetry.presentedFrameCount),
@@ -431,6 +694,7 @@ int main(int argc, char** argv) {
                         rejectedFramePresented ? "true" : "false",
                         removalChecked ? "true" : "false",
                         static_cast<unsigned long long>(diagnostics.registeredAudioSourceCount),
+                        stateOrderPass ? "true" : "false",
                         static_cast<unsigned long long>(diagnostics.lifecycleViolationCount),
                         sink->errors.size(), static_cast<int>(status.state));
             exitCode = pass ? 0 : 9;

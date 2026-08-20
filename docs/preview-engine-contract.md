@@ -164,6 +164,9 @@ source removalは、active compositionまたはacceptedだが未提示のpending
 時点」である。提示中のcompositionを差し替えてacceptしただけでは、古いcompositionがまだ画面に出ている
 ため参照は外れていない。
 
+削除した`PreviewSourceId`は同一session内で再利用しない。再利用すると、削除前のIDを保持していた
+呼び出し側の参照が別のsourceへ黙って結び付く。
+
 removalが受理される前提は次のとおりである。engine stateが`ReadyPaused`であること、seekが進行中でない
 こと、`PreviewSourceId`が登録済みであることを、この順で検査する。未登録IDは`InvalidSource`であり、
 stateの都合で別のerrorへすり替えない。

@@ -910,11 +910,24 @@ if(MVM_ENABLE_QT)
     # authoritative audio sourceを安全に解放するとaudio authorityが空へ戻る。
     mvm_add_p5e_product_test(preview_engine_p5e_remove_audio_source
         ARGS --remove-audio-source)
+    # audio sinkを停止できないままsourceを登録解除すると、鳴り続けているendpointの
+    # ownerが居なくなる。sink自身にstopを失敗させ、通常のremoval経路を通す。
+    mvm_add_p5e_product_test(preview_engine_p5e_remove_audio_stop_fail_closed
+        ARGS --fault-remove-audio-stop)
+    # audio停止フェーズ (engine lockを持たない窓) でfatalが入った場合、
+    # removalをcommitしないというtransaction semanticsのauthority。
+    mvm_add_p5e_product_test(preview_engine_p5e_remove_shutdown_race
+        ARGS --remove-shutdown-race)
+    # removal fatalのstate commitとevent挿入をlinearizeしていることのauthority。
+    # commit直後・flush前で止め、その間にteardownを終端まで進めても
+    # ShuttingDownがErrorを追い越されないことを決定論的に固定する。
+    mvm_add_p5e_product_test(preview_engine_p5e_remove_fatal_event_order
+        ARGS --remove-fatal-event-order)
 
     list(LENGTH _mvm_p5e_product_tests _mvm_p5e_product_registered)
-    if(NOT _mvm_p5e_product_registered EQUAL 5)
+    if(NOT _mvm_p5e_product_registered EQUAL 8)
         message(FATAL_ERROR
-            "[mvm] P5-E product testの登録数が不正です: ${_mvm_p5e_product_registered}/5")
+            "[mvm] P5-E product testの登録数が不正です: ${_mvm_p5e_product_registered}/8")
     endif()
 endif()
 
