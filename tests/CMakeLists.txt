@@ -872,6 +872,41 @@ if(MVM_ENABLE_QT)
         message(FATAL_ERROR
             "[mvm] P5-D product testの登録数が不正です: ${_mvm_p5d_product_registered}/13")
     endif()
+
+    # --- Phase 5 / P5-E: product composition --------------------------------
+    # P5-E1時点のcapabilityは1 source / 1 layerのままである。ここで固定するのは
+    # product render pathが`CompositorCoordinator`をcomposition epochのauthorityと
+    # して通っていることであり、二source/二layerはP5-E3で足す。
+    set(_mvm_p5e_product_tests)
+    macro(mvm_add_p5e_product_test name)
+        cmake_parse_arguments(T "" "" "ARGS" ${ARGN})
+        set(_command
+            "${MVM_PWSH}" -NoProfile -File "${_p5c_fixture_wrapper}"
+            -RequiredFile "${_p5c_fixture_a}" -Hint "${_p5c_fixture_hint}"
+            -Exe "$<TARGET_FILE:mvm_p5e_preview_smoke>")
+        if(T_ARGS)
+            list(JOIN T_ARGS "|" _child_args)
+            list(APPEND _command -ChildArgs "${_child_args}")
+        endif()
+        mvm_add_test(${name} COMMAND ${_command}
+            PROPERTIES LABELS p5e TIMEOUT 60)
+        set_tests_properties(${name} PROPERTIES LABELS "p5e;workstation")
+        list(APPEND _mvm_p5e_product_tests ${name})
+    endmacro()
+
+    mvm_add_p5e_product_test(preview_engine_p5e_product_smoke)
+    # compose成立後・提示前にcomposition epoch authorityだけを進め、
+    # `validateForDisplay()`が製品経路で効いていることを固定する。
+    # この負例が無いと、render pathからvalidateForDisplay()を削除しても
+    # 既存testが赤くならない。
+    mvm_add_p5e_product_test(preview_engine_p5e_stale_composition_epoch
+        ARGS --fault-stale-composition-epoch)
+
+    list(LENGTH _mvm_p5e_product_tests _mvm_p5e_product_registered)
+    if(NOT _mvm_p5e_product_registered EQUAL 2)
+        message(FATAL_ERROR
+            "[mvm] P5-E product testの登録数が不正です: ${_mvm_p5e_product_registered}/2")
+    endif()
 endif()
 
 add_executable(mvm_test_gpu_pure gpu_preview/test_gpu_pure.cpp)

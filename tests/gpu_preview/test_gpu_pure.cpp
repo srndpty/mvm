@@ -938,6 +938,272 @@ void testP2SourceAndComposition() {
 }
 
 // --------------------------------------------------------------------------
+// P5-E1: source 集合ごと入れ替わる composition transition
+// --------------------------------------------------------------------------
+// `configure()` は layout と generations を 1:1 で要求し一度きりなので、
+// 参照 source 集合が変わるたびに instance を作り直すと CompositionEpoch の
+// lineage が切れる。同一 instance のまま採用できることを固定する。
+void testCompositionRuntimeSnapshotAdoption() {
+    std::fprintf(stderr, "[P5-E1 composition runtime snapshot adoption]\n");
+
+    SourceRegistry registry;
+    const SourceId a = registry.registerSource();
+    const SourceId b = registry.registerSource();
+
+    CompositorCoordinator coordinator;
+    check(coordinator.compositionEpoch() == CompositionEpoch{0}, "未採用の epoch は 0");
+
+    const std::vector<LayerLayout> layoutA = {{a, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0f, 0}};
+    check(coordinator.adoptCompositionRuntimeSnapshot(CompositionStateId{1}, layoutA, {{a, {1}}}) ==
+              CompositionStateAdoptionResult::Adopted,
+          "未 configure の instance でも最初の採用が成立する");
+    check(coordinator.compositionEpoch() == CompositionEpoch{1}, "最初の採用で epoch は 1");
+
+    check(coordinator.adoptCompositionRuntimeSnapshot(CompositionStateId{1}, layoutA, {{a, {1}}}) ==
+              CompositionStateAdoptionResult::NoOp,
+          "同一 state / layout / generations は no-op");
+    check(coordinator.compositionEpoch() == CompositionEpoch{1}, "no-op で epoch を進めない");
+
+    // generation だけが動いた場合、epoch は composition identity の owner なので進めない。
+    check(coordinator.adoptCompositionRuntimeSnapshot(CompositionStateId{1}, layoutA, {{a, {2}}}) ==
+              CompositionStateAdoptionResult::NoOp,
+          "generation の追随だけでは state を変えない");
+    check(coordinator.compositionEpoch() == CompositionEpoch{1},
+          "generation の追随で epoch を進めない");
+    check(coordinator.sourceGeneration(a) == SourceGeneration{2}, "generation は追随している");
+
+    // source 集合ごと差し替える。ここが instance 作り直しに逃げていた経路である。
+    const std::vector<LayerLayout> layoutB = {{b, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0f, 0}};
+    check(coordinator.adoptCompositionRuntimeSnapshot(CompositionStateId{2}, layoutB, {{b, {5}}}) ==
+              CompositionStateAdoptionResult::Adopted,
+          "source 集合ごとの差し替えを同一 instance で採用する");
+    check(coordinator.compositionEpoch() == CompositionEpoch{2},
+          "source 集合の差し替えで epoch はちょうど 1 進む");
+    check(coordinator.compositionState() == CompositionStateId{2}, "state も同時に切り替わる");
+
+    // source 集合が循環しても epoch は巻き戻らない。instance を作り直していると
+    // ここで epoch が再利用され、古い ComposedFrame と衝突し得た。
+    check(coordinator.adoptCompositionRuntimeSnapshot(CompositionStateId{3}, layoutA, {{a, {2}}}) ==
+              CompositionStateAdoptionResult::Adopted,
+          "source 集合が元へ戻る transition も採用する");
+    check(coordinator.compositionEpoch() == CompositionEpoch{3}, "循環しても epoch は単調増加");
+
+    // 採用済み epoch の frame は、その後の transition で stale として弾かれる。
+    auto fa = makeFrame(70, 2);
+    fa.sourceId = a;
+    ComposedFrame composed;
+    check(coordinator.compose(70, {fa}, composed) == CompositionResult::Accepted, "採用して合成");
+    check(composed.compositionEpoch == CompositionEpoch{3}, "合成 frame は現行 epoch を持つ");
+    check(coordinator.validateForDisplay(composed) == CompositionResult::Accepted,
+          "transition 前は提示できる");
+    check(coordinator.adoptCompositionRuntimeSnapshot(CompositionStateId{4}, layoutB, {{b, {5}}}) ==
+              CompositionStateAdoptionResult::Adopted,
+          "supersede する transition を採用");
+    check(coordinator.validateForDisplay(composed) == CompositionResult::StaleEpoch,
+          "supersede された frame を提示させない");
+
+    // fail-closed: invalid state / layout と generation の巻き戻し。
+    check(coordinator.adoptCompositionRuntimeSnapshot(CompositionStateId{0}, layoutB, {{b, {5}}}) ==
+              CompositionStateAdoptionResult::Rejected,
+          "invalid な CompositionStateId を拒否");
+    check(coordinator.adoptCompositionRuntimeSnapshot(CompositionStateId{5}, layoutB, {{a, {2}}}) ==
+              CompositionStateAdoptionResult::Rejected,
+          "layout が参照しない generations を拒否");
+    check(coordinator.adoptCompositionRuntimeSnapshot(CompositionStateId{5}, {}, {}) ==
+              CompositionStateAdoptionResult::Rejected,
+          "空 layout を拒否");
+    check(coordinator.adoptCompositionRuntimeSnapshot(CompositionStateId{5}, layoutB, {{b, {4}}}) ==
+              CompositionStateAdoptionResult::Rejected,
+          "generation の巻き戻しを fail-closed で拒否");
+    // 同じ state id が別の layout を指すことは許さない。ここを通すと
+    // CompositionStateId が composition identity を表さなくなる。
+    auto differentLayoutSameState = layoutB;
+    differentLayoutSameState[0].opacity = 0.5f;
+    check(coordinator.adoptCompositionRuntimeSnapshot(CompositionStateId{4},
+                                                      differentLayoutSameState, {{b, {5}}}) ==
+              CompositionStateAdoptionResult::Rejected,
+          "同一 state id / 別 layout を拒否");
+    check(coordinator.compositionEpoch() == CompositionEpoch{4}, "reject で epoch を進めない");
+
+    // regression 拒否の範囲は「現在追跡中の source」である。layout から外れた
+    // source の generation は保持しないので、歴史的な floor は持たない。
+    // `SourceGeneration` の owner は source 側であり、coordinator へ寄せない。
+    // 契約をこの範囲に狭めてあることを、期待値として明示的に固定する。
+    check(coordinator.sourceGeneration(a) == SourceGeneration{0},
+          "layout から外れた source の generation は保持しない");
+    check(coordinator.adoptCompositionRuntimeSnapshot(CompositionStateId{6}, layoutA, {{a, {1}}}) ==
+              CompositionStateAdoptionResult::Adopted,
+          "追跡対象から外れていた source は過去の generation と比較しない");
+    check(coordinator.adoptCompositionRuntimeSnapshot(CompositionStateId{7}, layoutA, {{a, {0}}}) ==
+              CompositionStateAdoptionResult::Rejected,
+          "再び追跡対象になった後の regression は拒否する");
+
+    // test 専用の epoch 前進。state / layout / generation を一切変えずに
+    // supersede だけを再現する。製品経路の stale epoch 拒否を踏ませるために使う。
+    const CompositionEpoch beforeAdvance = coordinator.compositionEpoch();
+    const CompositionStateId beforeState = coordinator.compositionState();
+    check(coordinator.advanceCompositionEpochForTest(), "epoch だけを進められる");
+    check(coordinator.compositionEpoch().value == beforeAdvance.value + 1,
+          "epoch はちょうど 1 進む");
+    check(coordinator.compositionState() == beforeState, "state は変えない");
+    check(coordinator.sourceGeneration(a) == SourceGeneration{1}, "generation も変えない");
+}
+
+// --------------------------------------------------------------------------
+// P5-E1: exact pairing の N source 一般化
+// --------------------------------------------------------------------------
+// 2 source の既存契約は testP2SourceAndComposition が固定している。ここでは
+// 1 source と 3 source、および「一つでも一致しなければどれも消費しない」
+// transaction 不変条件を検査する。
+void testExactPairingNSource() {
+    std::fprintf(stderr, "[P5-E1 exact pairing / N source]\n");
+
+    SourceRegistry registry;
+    const SourceId a = registry.registerSource();
+    const SourceId b = registry.registerSource();
+    const SourceId c = registry.registerSource();
+
+    { // 1 source。layer 数で経路を分けないので、単層でも同じ pairer を通る。
+        SourceFrameBuffer only(a, SourceGeneration{1}, 4);
+        auto stale = makeFrame(4, 1);
+        stale.sourceId = a;
+        auto exact = makeFrame(5, 1);
+        exact.sourceId = a;
+        check(only.submitFrame(stale) == SubmitResult::Accepted, "1 source: stale 候補を追加");
+        check(only.submitFrame(exact) == SubmitResult::Accepted, "1 source: exact 候補を追加");
+
+        CompositorCoordinator coordinator;
+        check(coordinator.configure({{a, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0f, 0}}, {{a, {1}}}) ==
+                  ConfigureResult::Configured,
+              "1 source layout を構成");
+        ExactFramePairer pairer(std::vector<SourceFrameBuffer*>{&only}, coordinator);
+        checkEq(static_cast<long long>(pairer.sourceCount()), 1, "pairer の source 数は 1");
+        ComposedFrame composed;
+        check(pairer.tryPair(5, composed) == PairResult::Paired, "1 source でも exact pair を形成");
+        checkEq(static_cast<long long>(composed.layers.size()), 1, "1 source の layer は 1 枚");
+        checkEq(pairer.counters().staleDiscardCounts[0], 1,
+                "1 source: stale discard を index で計数");
+        checkEq(pairer.counters().staleADiscardCount, 1,
+                "1 source: 既存 counter 名も index 0 を指す");
+
+        auto future = makeFrame(9, 1);
+        future.sourceId = a;
+        check(only.submitFrame(future) == SubmitResult::Accepted, "1 source: future frame を追加");
+        check(pairer.tryPair(6, composed) == PairResult::MissingA,
+              "1 source の欠落は MissingA として報告する");
+        SourceFrameIdentity kept;
+        check(only.peekFrontIdentity(kept) && kept.frameNumber == 9,
+              "1 source: future frame を消費しない");
+    }
+
+    { // 3 source。全部一致で pair し、一つでも違えばどれも消費しない。
+        SourceFrameBuffer bufA(a, SourceGeneration{1}, 4);
+        SourceFrameBuffer bufB(b, SourceGeneration{1}, 4);
+        SourceFrameBuffer bufC(c, SourceGeneration{1}, 4);
+        const auto submit = [](SourceFrameBuffer& buffer, SourceId source, long long frame) {
+            auto value = makeFrame(frame, 1);
+            value.sourceId = source;
+            check(buffer.submitFrame(value) == SubmitResult::Accepted, "3 source: frame を追加");
+        };
+        submit(bufA, a, 30);
+        submit(bufB, b, 30);
+        submit(bufC, c, 30);
+
+        CompositorCoordinator coordinator;
+        const std::vector<LayerLayout> layout = {
+            {a, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0f, 0},
+            {b, {0, 0, 0.5f, 0.5f}, {0, 0, 1, 1}, 0.5f, 1},
+            {c, {0.5f, 0.5f, 0.5f, 0.5f}, {0, 0, 1, 1}, 0.25f, 2},
+        };
+        check(coordinator.configure(layout, {{a, {1}}, {b, {1}}, {c, {1}}}) ==
+                  ConfigureResult::Configured,
+              "3 source layout を構成");
+        ExactFramePairer pairer(std::vector<SourceFrameBuffer*>{&bufA, &bufB, &bufC}, coordinator);
+        ComposedFrame composed;
+        check(pairer.tryPair(30, composed) == PairResult::Paired, "3 source の exact pair を形成");
+        checkEq(static_cast<long long>(composed.layers.size()), 3, "3 source の layer は 3 枚");
+
+        // C だけ要求 frame と違う状態を作る。A/B が消費されないことが核心である。
+        submit(bufA, a, 31);
+        submit(bufB, b, 31);
+        submit(bufC, c, 32);
+        check(pairer.tryPair(31, composed) == PairResult::MissingB,
+              "index 0 以外の欠落は MissingB として報告する");
+        checkEq(static_cast<long long>(bufA.depth()), 1, "pair 不成立で A を消費しない");
+        checkEq(static_cast<long long>(bufB.depth()), 1, "pair 不成立で B を消費しない");
+        checkEq(static_cast<long long>(bufC.depth()), 1, "pair 不成立で C を消費しない");
+        checkEq(pairer.counters().missingCounts[2], 1, "欠落した index を特定して計数");
+        checkEq(pairer.counters().missingCounts[0], 0, "欠落していない index は数えない");
+    }
+
+    { // pairer の construction preflight。tryPair() は takeExactAll() へ到達する
+      // 前に buffer を dereference するので、入口で弾けなければ防御が効かない。
+        SourceFrameBuffer bufA(a, SourceGeneration{1}, 4);
+        SourceFrameBuffer alias(a, SourceGeneration{1}, 4); // 同一 SourceId の別 instance
+        CompositorCoordinator coordinator;
+        check(coordinator.configure({{a, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0f, 0}}, {{a, {1}}}) ==
+                  ConfigureResult::Configured,
+              "preflight 用 layout を構成");
+        ComposedFrame composed;
+
+        ExactFramePairer empty(std::vector<SourceFrameBuffer*>{}, coordinator);
+        check(!empty.valid(), "空の source 集合を invalid とする");
+        check(empty.tryPair(0, composed) == PairResult::Rejected,
+              "invalid pairer は Rejected を返す");
+
+        ExactFramePairer withNull(std::vector<SourceFrameBuffer*>{&bufA, nullptr}, coordinator);
+        check(!withNull.valid(), "null buffer を invalid とする");
+        check(withNull.tryPair(0, composed) == PairResult::Rejected,
+              "null を含む pairer は dereference せず Rejected");
+
+        ExactFramePairer duplicated(std::vector<SourceFrameBuffer*>{&bufA, &bufA}, coordinator);
+        check(!duplicated.valid(), "同一 buffer の重複を invalid とする");
+
+        ExactFramePairer sameId(std::vector<SourceFrameBuffer*>{&bufA, &alias}, coordinator);
+        check(!sameId.valid(), "同一 SourceId の別 buffer を invalid とする");
+
+        ExactFramePairer good(std::vector<SourceFrameBuffer*>{&bufA}, coordinator);
+        check(good.valid(), "正常な buffer 集合は valid");
+    }
+
+    { // takeExactAll の transaction 不変条件と、呼び出し順に依存しないこと。
+        SourceFrameBuffer bufA(a, SourceGeneration{1}, 4);
+        SourceFrameBuffer bufB(b, SourceGeneration{1}, 4);
+        SourceFrameBuffer bufC(c, SourceGeneration{1}, 4);
+        const auto submit = [](SourceFrameBuffer& buffer, SourceId source, long long frame) {
+            auto value = makeFrame(frame, 1);
+            value.sourceId = source;
+            check(buffer.submitFrame(value) == SubmitResult::Accepted,
+                  "takeExactAll: frame を追加");
+        };
+        submit(bufA, a, 40);
+        submit(bufB, b, 40);
+        submit(bufC, c, 41);
+
+        std::vector<DecodedGpuFrame> taken;
+        check(!SourceFrameBuffer::takeExactAll({&bufA, &bufB, &bufC}, 40, taken),
+              "一つでも不一致なら commit しない");
+        check(taken.empty(), "失敗時は出力を空にする");
+        checkEq(static_cast<long long>(bufA.depth()), 1, "失敗時に A を消費しない");
+        checkEq(static_cast<long long>(bufB.depth()), 1, "失敗時に B を消費しない");
+        checkEq(static_cast<long long>(bufC.depth()), 1, "失敗時に C を消費しない");
+
+        check(!SourceFrameBuffer::takeExactAll({&bufA, &bufA}, 40, taken),
+              "同一 buffer の重複を拒否する");
+        check(!SourceFrameBuffer::takeExactAll({&bufA, nullptr}, 40, taken),
+              "null buffer を拒否する");
+        check(!SourceFrameBuffer::takeExactAll({}, 40, taken), "空の source 集合を拒否する");
+
+        // lock 順は SourceId 昇順で固定されるので、渡す順序を変えても結果は同じ。
+        check(SourceFrameBuffer::takeExactAll({&bufB, &bufA}, 40, taken),
+              "渡す順序を変えても exact take は成立する");
+        checkEq(static_cast<long long>(taken.size()), 2, "取得数は要求数と一致");
+        check(taken[0].sourceId == b && taken[1].sourceId == a,
+              "出力順は引数順であり lock 順ではない");
+    }
+}
+
+// --------------------------------------------------------------------------
 // event query の serial state machine (P1.2 §4)
 // --------------------------------------------------------------------------
 // **実 GPU では再現させにくい経路**なので、純粋な状態機械として検査する。
@@ -1363,6 +1629,8 @@ int main() {
     testCompletionFatalStopsRendering();
     testSourceLifecycle();
     testCompositionAdoptionEpoch();
+    testCompositionRuntimeSnapshotAdoption();
+    testExactPairingNSource();
     testP2SourceAndComposition();
     testEventQueryLedger();
     testGenerationContract();

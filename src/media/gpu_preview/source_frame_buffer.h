@@ -8,6 +8,7 @@
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <vector>
 
 namespace mvm::gpu {
 
@@ -31,11 +32,23 @@ public:
     long long displayedFrameNumber() const override;
     GenerationUpdateResult setGeneration(SourceGeneration generation);
     SourceGeneration generation() const;
+
+    // 構築時に固定される identity。lock を取らずに読んでよい。
+    SourceId sourceId() const { return source_; }
+
     bool take(DecodedGpuFrame& frame);
     bool peekFrontIdentity(SourceFrameIdentity& identity) const;
     bool takeExact(long long frameNumber, DecodedGpuFrame& frame);
-    // 2 source の front を単一 transaction で取得する。両方が requested と
-    // 一致する場合だけ commit し、一方でも変化していればどちらも残す。
+    // N source の front を単一 transaction で取得する。全 source が requested と
+    // 一致する場合だけ commit し、一つでも変化していればどれも残す。
+    // 全 buffer の mutex を SourceId 昇順で保持してから判定するため、
+    // 呼び出し順に依らず deadlock しない。
+    // `sources` に null または同一 buffer が重複して含まれる場合は false を返す。
+    // 成功時 `frames` は `sources` と同じ順序で埋まる。
+    static bool takeExactAll(const std::vector<SourceFrameBuffer*>& sources, long long frameNumber,
+                             std::vector<DecodedGpuFrame>& frames);
+    // 2 source 版。`takeExactAll` へ委譲する薄い wrapper であり、
+    // P1〜P4 の frozen 呼び出し側のために残す。
     static bool takeExactPair(SourceFrameBuffer& a, SourceFrameBuffer& b, long long frameNumber,
                               DecodedGpuFrame& frameA, DecodedGpuFrame& frameB);
     size_t discardBefore(long long frameNumber);

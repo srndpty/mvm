@@ -191,6 +191,18 @@ bool GpuCompositor::composeSingleLayerToTarget(const ComposedFrame& frame,
                                   "single-layer product compositionはexactly 1 layer必須です", err);
 }
 
+bool GpuCompositor::composeLayersToTarget(const ComposedFrame& frame,
+                                          const ExternalCompositionTarget& target,
+                                          size_t expectedLayerCount, std::string& err) {
+    if (expectedLayerCount == 0) {
+        err = "product compositionは1 layer以上必須です";
+        ++counters_.compositionRequestedCount;
+        return false;
+    }
+    return composeProductToTarget(frame, target, expectedLayerCount,
+                                  "product compositionのlayer数が要求と一致しません", err);
+}
+
 bool GpuCompositor::composeProductToTarget(const ComposedFrame& frame,
                                            const ExternalCompositionTarget& target,
                                            size_t expectedLayerCount, const char* layerCountError,

@@ -69,6 +69,12 @@ public:
     // arbitrary-Nや既存2-layer product/formal契約の代替にはしない。
     bool composeSingleLayerToTarget(const ComposedFrame& frame,
                                     const ExternalCompositionTarget& target, std::string& err);
+    // P5-E1: product composition経路。呼び出し側がqualified capabilityで検証済みの
+    // layer数を明示し、その数と一致しない`ComposedFrame`を拒否する。
+    // 層数を暗黙に受け入れないことで、composition acceptanceとGPU描画の
+    // 食い違いを黙って通さない。
+    bool composeLayersToTarget(const ComposedFrame& frame, const ExternalCompositionTarget& target,
+                               size_t expectedLayerCount, std::string& err);
     bool composeToTarget(const ComposedFrame& frame, const ExternalCompositionTarget& target,
                          std::string& err);
     // P2-D3診断専用。1または2 layerを許可し、formal契約には使用しない。

@@ -1,0 +1,444 @@
+# P5-E 実装プラン — Product composition (二source / 二layer)
+
+- 状態: **P5-E1 実装完了 / E2〜E4 未着手**
+- 親計画: [Phase 5 計画](phase5-plan.md) §10
+- 製品契約: [PreviewEngine 製品契約](preview-engine-contract.md)
+- 起点commit: `2de8e2d` (P5-D closure merge)
+
+## 1. 背景
+
+P5-D は `docs/phase5-plan.md` §9.4 の D1〜D4 がすべて「済」となり、`feature/p5-d4` が
+`main` へ merge 済みである。Phase 5 の slice 順 (§6) に従い、次は **P5-E — Product composition**
+(`docs/phase5-plan.md` §10) である。
+
+現状の `PreviewEngine` は「video source 1 件 / composition layer 1 層」の product wiring で止まっている。
+型 (`CompositionSnapshot`) と acceptance algorithm (`CompositionAcceptanceState::submit`) は既に N 層へ
+一般化済みだが、その外側 — source 所有、render 経路、capability — が単数固定である。
+
+P5-E で閉じるのは次である。
+
+- `PreviewSourceId` → `gpu::SourceId` / `audio::SourceId` mapping の複数化
+- `removeSource()` の実装 (active/pending composition 参照中は `InvalidState` で拒否)
+- `CompositorCoordinator` / `ExactFramePairer` の product boundary への配線
+- `maxQualifiedActiveVideoSources == 2` / `maxQualifiedCompositionLayers == 2` の独立報告
+- 多層 render 経路と `PresentedFrameInfo` への actual accepted token / actual layer count 固定
+
+### 1.1 決定事項
+
+1. **4 sub-slice へ分割する** (E1〜E4)。各 slice が単独で §14 gate を満たす。
+2. **`ExactFramePairer` を N 対応へ一般化する**。既存 2 引数コンストラクタと `PairResult` /
+   `ExactPairingCounters` のセマンティクスは温存し、frozen P2/P4 テストを不変に保つ。
+   engine は 1 層でも 2 層でも同じ実装を通る (AGENTS.md の DRY)。
+3. **`CompositorCoordinator` を composition epoch の権威にする**。engine は accepted token が
+   変わるたびに `adoptCompositionSnapshot()` で atomic 採用し、`validateForDisplay()` で
+   stale epoch 提示阻止を製品経路にも効かせる。public には従来どおり `AcceptedComposition`
+   だけを出す (`ResourceEpoch` / `SourceGeneration` / `CompositionEpoch` の owner を混ぜない
+   — phase5-plan §4)。
+
+---
+
+## 2. 現状の要点 (調査結果)
+
+| 対象 | 場所 | 状態 |
+| --- | --- | --- |
+| acceptance algorithm | `src/preview_engine/preview_engine.cpp:352-421` | 契約 §7.5 の 12 段を実装済み。**N 層に一般化済みで capability 値だけで挙動が決まる** |
+| 1 層 hard-code | `preview_engine.cpp:1378-1382` | `layers.size() > 1` を `UnsupportedCapability` で拒否 |
+| capability 初期化 | `preview_engine.cpp:483-490` | video/layer は既定値 1 のまま |
+| video source 1 件制限 | `preview_engine.cpp:1218-1222` | `publicVideoSource` が既にあれば拒否 |
+| video source 所有 | `preview_engine.cpp:499-504` | `publicVideoSource` / `internalVideoSource` / `videoWorker` が単数 optional。参照 53 箇所 |
+| `removeSource()` | `preview_engine.cpp:1350-1363` | 未実装。常に `UnsupportedCapability` |
+| render 経路 | `preview_engine.cpp:2041-2200` | `takeExact` 単数 → `layers.size() != 1` ガード → `layers.front()` → `composeSingleLayerToTarget` → `activeLayerCount` を 1 固定 |
+| seek | `preview_engine.cpp:610, 875, 2096` | `pendingSeek.expectedVideoGeneration` が単数 |
+| `ExactFramePairer` | `src/media/gpu_preview/exact_frame_pairer.{h,cpp}` | 2 source 固定。**engine から未使用** |
+| `CompositorCoordinator` | `src/media/gpu_preview/compositor_coordinator.{h,cpp}` | `LayerLayout` は N 対応。`adoptCompositionSnapshot` / `validateForDisplay` 実装済み。**engine から未使用** |
+| `GpuCompositor` | `src/media/gpu_preview/gpu_compositor.cpp:194-217` | 内部は N 層。入口 `composeProductToTarget(frame, target, expectedLayerCount, ...)` に層数を渡すだけ |
+| `PresentedFrameInfo` | `src/preview_engine/preview_types.h:74-80` | 既に `AcceptedComposition composition` と `activeLayerCount` を保持 |
+| fixture | `tests/assets/p3_audio/` | A=`p3_av_h264_aac.mp4` (1080p60 h264 + 48k stereo aac)、B=`p3_video_hevc_b.mp4` (1080p60 hevc, audio 無し)。**両方 60/1 で二source に使える** |
+
+---
+
+## 3. P5-E1 — internal multi-source ownership + 1-layer product wiring
+
+capability は `1/1` のまま。**外形的な挙動を変えない refactor slice**であり、P5-C / P5-D の
+既存 regression がそのまま通ることが主要な gate である。
+
+### 変更内容
+
+1. `preview_engine.cpp` の `Impl` (499-504) に video source table を導入する。
+
+   ```cpp
+   struct VideoSourceEntry {
+       gpu::SourceId internal{};
+       std::unique_ptr<gpu::SourceDecodeWorker> worker;
+   };
+   std::map<std::uint64_t, VideoSourceEntry> videoSources; // key = PreviewSourceId.value
+   ```
+
+   挿入順ではなく `PreviewSourceId` 昇順で決定論的に走査する (`std::map`)。
+   `publicVideoSource` / `internalVideoSource` / `videoWorker` を撤去し、53 箇所の参照を
+   table 経由へ置き換える。特に:
+   - `addSource` commit (`1320-1346`) — entry の emplace
+   - `play()` (`1402`) / `seek()` (`1584`) の前提チェック — 「video source が 1 件以上」へ
+   - fatal 時の source 付与 (`853`, `2054`) — frame の `sourceId` から public ID を逆引き
+   - identity 検査 (`2080-2081`) — `videoSources` に存在する internal ID か
+   - shutdown (`2481-2482`) — 全 entry を stop / unregister。順序は `PreviewSourceId` 昇順で固定
+
+2. `internal::PreviewRenderPort` / `P5CRuntimeDiagnostics` の `registeredVideoSourceCount` を
+   table の size から出す (現状も同名 field があるので報告経路は不変)。
+
+3. `ExactFramePairer` を N 対応へ一般化する (`src/media/gpu_preview/exact_frame_pairer.{h,cpp}`)。
+   - 新コンストラクタ `ExactFramePairer(std::vector<SourceFrameBuffer*> sources, CompositorCoordinator&)`
+   - 既存の `(SourceFrameBuffer& a, SourceFrameBuffer& b, CompositorCoordinator&)` は
+     新コンストラクタへ委譲するだけにし、frozen テストの include/呼び出しを変えない
+   - `tryPair` は全 buffer に対し `discardBefore` → `peekFrontIdentity` → missing 判定 →
+     exact take → `coordinator_.compose()` を行う。**`missingACount` / `missingBCount` は
+     index 0 / 1 に対応させ、既存 2 source 時のカウント結果を bit 単位で保つ**
+   - `SourceFrameBuffer::takeExactPair` (2 固定) を N 化する必要がある。
+     `takeExactAll(std::vector<SourceFrameBuffer*>&, long long, std::vector<DecodedGpuFrame>&)` を
+     `source_frame_buffer.{h,cpp}` へ追加し、`takeExactPair` はそれへ委譲する。
+     **全 buffer の mutex を決定論的順序 (アドレス順ではなく `SourceId` 昇順) で一括 lock し、
+     全部が requested と一致した場合だけ commit する** (現行 `takeExactPair` の
+     「一方でも違えばどちらも残す」不変条件を N へ拡張する)
+
+4. engine の render 経路 (`preview_engine.cpp:2041-2150`) を coordinator 経由へ差し替える。
+   capability は 1/1 なので実際に通るのは 1 layer だが、経路そのものは N 用に書く。
+   - `Impl` に `std::unique_ptr<gpu::CompositorCoordinator> coordinator` と
+     `std::unique_ptr<gpu::ExactFramePairer> pairer` を持たせる
+   - accepted token が前回 compose 時と変わったら
+     `coordinator->adoptCompositionSnapshot(CompositionStateId{token->id.value}, layout)` を呼ぶ。
+     `layout[i].zOrder = static_cast<int>(i)` とし、**`CompositionSnapshot::layers` の vector 順が
+     背面→前面の z 順である**ことを契約として明記する (public API に zOrder field は増やさない)
+   - source generation は `coordinator->setSourceGeneration(internal, worker->buffer().generation())`
+     で同期する
+   - `composed.compositionEpoch` / `compositionState` の直書き (`2144-2145`) を撤去し、
+     `coordinator->compose()` が入れた値をそのまま使う
+   - 提示直前に `coordinator->validateForDisplay(composed)` を通し、`StaleEpoch` なら提示しない
+   - `GpuCompositor` へは新設の `composeLayersToTarget(frame, target, expectedLayerCount, err)`
+     (= `composeProductToTarget` を public 化した product API) を呼ぶ。
+     `composeToTarget` (2 固定・診断契約) は流用しない
+   - `result.frame` の `activeLayerCount` を `composed.layers.size()` から取る
+
+### テスト (E1)
+
+- 新 positive: `tests/gpu_preview/test_gpu_pure.cpp` の `testExactPairingNSource()` に
+  N 化 `ExactFramePairer` / `takeExactAll` の 1 source / 3 source ケース。
+  既存 2 source ケース (`testP2SourceAndComposition`) は**変更していない**
+- 新 negative: `takeExactAll` が一つでも不一致なら**どの buffer も消費しない** (depth 不変を assert)。
+  この検査が無ければ partial consume がそのまま通る
+- 新 negative: `takeExactAll` が同一 buffer の重複、null、空集合を拒否する
+- 新 positive: buffer を渡す順序を変えても exact take が成立し、出力順は引数順である
+  (lock 順は `SourceId` 昇順で固定されるため呼び出し順に依存しない)
+- 新 positive/negative: `testCompositionRuntimeSnapshotAdoption()` が
+  `adoptCompositionRuntimeSnapshot()` の epoch lineage を固定する。
+  source 集合が循環しても epoch が単調増加すること、generation の追随では epoch を
+  進めないこと、supersede された `ComposedFrame` が `StaleEpoch` になること、
+  invalid state / 空 layout / 同一 state id の別 layout / 追跡中 source の generation
+  巻き戻しを reject すること、および regression 拒否が追跡中 source に限る
+  (追跡対象から外れた source は歴史的 floor を持たない) こと
+- 新 positive: `advanceCompositionEpochForTest()` が epoch だけをちょうど 1 進め、
+  state / generation を変えないこと
+- 新 negative: `ExactFramePairer` の construction preflight (empty / null /
+  同一 buffer 重複 / 同一 `SourceId` の別 buffer) と、invalid pairer の
+  `tryPair()` が buffer を触らず `Rejected` を返すこと
+- 新 negative: `composeLayersToTarget()` の layer 数不一致 (expected=1 / 2 layer、
+  expected=2 / 1 layer、expected=0)
+- 新 product negative: `preview_engine_p5e_stale_composition_epoch`
+  (`apps/p5e_preview_smoke --fault-stale-composition-epoch`)
+- 新 product positive: `preview_engine_p5e_product_smoke`
+- targeted: `mvm_test_gpu_pure`, `mvm_test_preview_engine`, `p2_gpu_compositor_offscreen`
+- regression: 既存 P5-C 9 本 / P5-D 13 本の product test が**無変更で PASS** すること
+
+### E1 実装結果 (実測)
+
+- ordinary CTest **456/456 PASS** (ucrt64-release)。P5-C 9 本 / P5-D 13 本を含む
+- 既存 P5-C / P5-D の product test は**一行も変更していない**。capability が `1/1` のままで
+  外形的な受理能力を変えていないことの証拠である
+
+計画から変えた点と、その理由を記録する。
+
+1. **`takeExactPair` を拡張せず `takeExactAll` を新設した。**
+   `takeExactPair` は frozen な P1〜P4 呼び出し側が使う 2 source API である。
+   signature を変えずに `takeExactAll` へ委譲させることで、既存の呼び出しと
+   「一方でも変化していればどちらも残す」不変条件をそのまま保った。
+   lock 順は引数順ではなく `SourceId` 昇順に固定してある。同じ buffer 集合を
+   別順で渡したときに deadlock しないことが N source では必須になる。
+
+2. **`ExactFramePairer` の counter は 2 source の意味を保ったまま index 版を足した。**
+   `missingACount` / `staleADiscardCount` は index 0、`missingBCount` /
+   `staleBDiscardCount` は index 1 を指し続ける。frozen test の期待値を動かさない。
+   source が 1 本のときの欠落は `MissingBoth` を表現できないので `MissingA` を返す。
+
+3. **`validateForDisplay()` は製品経路の negative test 付きで配線した。**
+   render path は compose -> validate -> draw を同じ engine lock 内で行うため、
+   通常実行だけではこの branch を踏めない。
+   そこで `CompositorCoordinator::advanceCompositionEpochForTest()` (state / layout /
+   generation を一切変えず `CompositionEpoch` だけを 1 進める test 専用 API) と、
+   それを compose 成立後・validate 前に一度だけ呼ぶ
+   `PreviewRenderPort::injectCompositionEpochAdvanceForTest()` を足した。
+   **完成した error を注入するのではなく、supersede だけを再現して通常の
+   validate 経路を通す。**
+
+   固定するのは「reject branch を踏んだこと」だけではない。exit criterion の本体は
+   「stale epoch の frame を**提示しない**」なので、拒否した output frame の identity を
+   `P5CRuntimeDiagnostics::lastStaleCompositionRejectedFrame` に残し、
+   `apps/p5e_preview_smoke --fault-stale-composition-epoch` が次を assert する。
+
+   ```text
+   staleCompositionEpochRejectCount == 1
+   lifecycleViolationCount == 1
+   lastStaleCompositionRejectedFrame == N (>= 0)
+   sink の PresentedFrameInfo に position == N が存在しない
+   position > N の提示が存在する (reject は fatal ではなく skip)
+   最終 state は Shutdown、error 無し
+   ```
+
+   この負例が空振りでないことは 2 通りの mutation で確認した。
+
+   | mutation | 結果 |
+   | --- | --- |
+   | `validateForDisplay()` の分岐自体を無効化 | FAIL (reject が 0 のまま提示が進み続ける) |
+   | counter は数えるが `if (rejected) return` を削除 | FAIL (`rejected_frame_presented: true`) |
+
+   後者は counter / lifecycle violation / 最終 state / last accepted token がすべて
+   正常値のまま stale frame を描画する mutation であり、frame identity を見ていなければ
+   PASS してしまう。
+
+4. **coordinator を session 中に作り直さない。**
+   `CompositorCoordinator::configure()` は layout と generations を 1:1 で要求し
+   一度きりなので、参照 source 集合が変わるたびに instance を作り直すと
+   epoch が instance ごとの別 namespace になり、lineage が切れる
+   (source 集合が循環すると古い `ComposedFrame` と新 owner の epoch が衝突し得る)。
+   engine 側に `nextCompositionEpoch` を持たせると owner が二重化するので、
+   coordinator へ `adoptCompositionRuntimeSnapshot(state, layout, generations)` を足した。
+   これは source 集合ごと atomic に置換しつつ、**resolved composition state が
+   実際に変わったときだけ epoch をちょうど 1 進める**。generation だけが動いた場合は
+   NoOp として追随のみ行い、同一 `CompositionStateId` が別 layout を指す要求は
+   fail-closed で拒否する (通すと state id が composition identity を表さなくなる)。
+
+   generation の巻き戻し拒否の範囲は **「現在追跡中の source」に限る**。
+   layout から外れた source の generation は保持しないので、
+   一度外れてから戻ってきた source に対する歴史的な floor は持たない
+   (`A gen 10 -> B -> A gen 9` は受理される)。
+   `SourceGeneration` の owner は source 側であり、coordinator へ寄せないための
+   意図的な線引きである。header / docs の表現もこの範囲に合わせてあり、
+   `testCompositionRuntimeSnapshotAdoption()` がこの境界を期待値として固定している。
+   engine は coordinator を lazily 一度だけ生成し、`addSource()` / detach では
+   pairer だけを作り直す。
+
+5. **`expectedLayerCount` の authority を accepted snapshot に置いた。**
+   `composed.layers.size()` を渡すと `size() == size()` の tautology になる。
+   product caller は `snapshot->layers.size()` を渡す。
+   `tests/gpu_preview/test_p2_gpu_compositor.cpp` に expected=1 / 2 layer、
+   expected=2 / 1 layer、expected=0 の negative を足して、この検査の空洞化を防いだ。
+
+6. **`ExactFramePairer` の N constructor に preflight を入れた。**
+   `tryPair()` は `takeExactAll()` へ到達する前に `discardBefore()` /
+   `peekFrontIdentity()` で dereference するので、`takeExactAll()` 側の防御だけでは
+   効かない。construction 時に empty / null / 同一 buffer の重複 /
+   同一 `SourceId` の別 buffer を弾き、invalid な pairer の `tryPair()` は
+   buffer を一切触らずに `Rejected` を返す。engine は `valid()` を確認できなければ
+   `CompositionFailure` で fail-closed にする。
+   `takeExactAll()` の lock 順 tie-break も、無関係な pointer の `<` (未規定) から
+   `std::less<SourceFrameBuffer*>` へ変えた。
+
+7. **`seekStaleGenerationRejectCount` の authority を seek 経路に限定した。**
+   pairer 由来の `StaleGeneration` / `FutureGeneration` を無条件にこの counter へ
+   足すと、seek 以外で起きた reject が seek の証拠に混ざる。
+   generation が動くのは seek のときだけなので、それ以外は単なる drop として数える。
+
+8. **`GpuCompositor::composeToTarget` (2 層固定・診断契約) は流用していない。**
+   product 用に `composeLayersToTarget(frame, target, expectedLayerCount, err)` を新設し、
+   呼び出し側が capability で検証済みの層数を明示する形にした。
+   層数を暗黙に受け入れないので、composition acceptance と GPU 描画の食い違いが
+   黙って通らない。
+
+---
+
+## 4. P5-E2 — removeSource()
+
+capability は `1/1` のまま。
+
+### 変更内容
+
+1. `internal::CompositionAcceptanceState` (`preview_engine_internal.h:174-192`) に参照集合の
+   照会 API を足す。
+
+   ```cpp
+   bool referencesSource(PreviewSourceId source) const; // latestAcceptedSnapshot_ と
+                                                        // lastPresented 対応 snapshot の両方を見る
+   ```
+
+   `lastPresentedToken_` に対応する snapshot を保持していないため、`markPresented()` で
+   `lastPresentedSnapshot_` も併せて保持するよう変更する。
+
+2. `PreviewEngine::removeSource` (`preview_engine.cpp:1350-1363`) を実装する。
+   契約 `docs/preview-engine-contract.md:158-161` の順で検査する。
+   1. control thread affinity (既存)
+   2. `ReadyPaused` であること (既存)
+   3. 未知の `PreviewSourceId` は `InvalidSource`
+   4. active (last presented) または pending (latest accepted) composition が参照していれば
+      **`InvalidState`** で拒否
+   5. seek 進行中 (`pendingSeek.active`) なら `InvalidState`
+   6. commit: video entry を `stop()` → `sourceRegistry.unregisterSource()` →
+      `videoSources.erase()`、`eligibleSources.erase()`、coordinator の source generation を落とす
+   7. authoritative audio source を削除した場合は audio sink → worker → clock の順で停止し、
+      **audio authority を空へ戻す** (`audioMasterActive = false`、`publicAudioSource` を空に)。
+      停止順序は shutdown ordering (`contract §12`) と同じ helper へ委譲し、二重実装しない
+   8. 削除で video source が 0 になった場合は wall-clock master へ戻る。これは P5-C の
+      qualified master であり `videoMasterQpcFallbackCount` には数えない
+
+### テスト (E2)
+
+- positive: 登録 → composition を submit せずに remove → 成功、`registeredVideoSourceCount` が減る
+- positive: A を参照する composition を submit → B を submit (A の参照が外れる) → 提示 → A を remove 成功
+- negative: active composition が参照中の source を remove → `InvalidState`
+- negative: pending (accepted 未提示) composition が参照中の source を remove → `InvalidState`
+- negative: unknown / 既に削除済み ID → `InvalidSource`
+- negative: `Playing` / `Seeking` 中の remove → `InvalidState`
+- positive: audio source の remove 後に `audioMasterActive == false`、
+  `PreviewStatus` が audio 無しを報告する
+- negative: remove 失敗時に source table / composition token / revision が一切変わらない
+- product test: `apps/p5d_preview_smoke` に `--remove-audio-source` を追加するのではなく、
+  E3 で新設する `apps/p5e_preview_smoke` へまとめる (E2 は unit + 既存 regression で閉じる)
+
+---
+
+## 5. P5-E3 — capability 2/2 + 多層 render + per-source seek generation
+
+### 変更内容
+
+1. capability を引き上げる (`preview_engine.cpp:483-490`)。
+
+   ```cpp
+   value.maxQualifiedActiveVideoSources = 2;
+   value.maxQualifiedCompositionLayers = 2;   // 別 field として独立に報告する
+   value.duplicateSourceLayersSupported = false; // 初期 capability では拒否のまま
+   ```
+
+2. `submitComposition` の 1 層ガード (`1378-1382`) を削除し、capability 検査に一本化する。
+
+3. `addSource` の video 1 件制限 (`1218-1222`) を
+   `videoSources.size() >= capability.maxQualifiedActiveVideoSources` の検査へ置き換える。
+   エラーメッセージは capability 値を含めた日本語にし、slice 名を埋め込まない。
+
+4. 多層 render 経路 (E1 で N 用に書いた経路をそのまま使う)。
+   - pairer に渡す buffer 集合は **accepted snapshot が参照する distinct source 集合**から作る。
+     snapshot が変わったら pairer を作り直す
+   - 提示成功時に全 buffer へ `noteDisplayed(target)`
+   - `currentSourceQueueDepth` は「参照中 source の最大 depth」とし、意味を doc comment に書く
+   - `activeLayerCount` は `composed.layers.size()`
+
+5. seek の per-source generation 化 (`Impl::PendingSeek`, `preview_engine.cpp:610, 875, 2096`)。
+   - `gpu::SourceGeneration expectedVideoGeneration` → `std::map<std::uint64_t, gpu::SourceGeneration>`
+   - seek request 発行 (`1651`) を全 video worker へ。**一つでも request が受理されなければ
+     `SeekFailure` で fail-closed** にする (P5-D3 の「片側だけ受理された状態を許さない」を N へ拡張)
+   - seek completion は**全 source が期待 generation の exact frame を出し、
+     それを実際に提示できた時点**でのみ成立する。いずれかが未達なら
+     `seekAwaitingPresentationCount` を増やして待つ
+   - `seekStaleGenerationRejectCount` の意味は不変 (substitution ではなく reject)
+
+6. 検証アプリ `apps/p5e_preview_smoke` を新設する (`apps/p5d_preview_smoke` と同型、
+   ルート `CMakeLists.txt` へ `add_subdirectory`)。fixture A + B を二 source 登録し、
+   二層 composition を提示する。fault 引数:
+   - `(なし)` — 二source / 二層 smoke
+   - `--single-layer` — 1 層 regression が同じ経路で通ること
+   - `--exceed-source-count` — 3 source 目を `UnsupportedCapability` で拒否
+   - `--exceed-layer-count` — 3 層を `UnsupportedCapability` で拒否
+   - `--duplicate-source-layer` — 同一 source を 2 層へ配置して `UnsupportedCapability`
+   - `--fault-missing-pair` — 片側 source の供給を止め、**old/latest frame で代用せず提示しない**
+   - `--fault-stale-epoch` — supersede された epoch の frame を提示しない
+   - `--remove-referenced-source` — active/pending 参照中の remove が `InvalidState`
+   - `--seek-two-source` — 二 source exact seek の completion
+   - `--fault-seek-partial-generation` — 片側だけ generation が揃った状態で complete にしない
+
+7. `tests/CMakeLists.txt` に `mvm_add_p5e_product_test` マクロを追加する
+   (`760-812` の P5-C / `816-874` の P5-D と同型)。fixture wrapper は
+   `scripts/run-with-required-fixture.ps1` を再利用し、A と B の**両方**を必須にする
+   (wrapper が単一 `-RequiredFile` なので、複数対応へ拡張するか wrapper を 2 段掛けにする。
+   拡張する場合は `tests/preview_engine/check-required-fixture-wrapper.ps1` の契約テストも更新する)。
+   末尾に**登録数の literal 検査** (`EQUAL 10`) を置き、対象 0 件を成功にしない。
+
+### テスト (E3)
+
+`docs/phase5-plan.md` §10.2 の各項目に対応させる。既存 unit テストの更新:
+
+- `tests/preview_engine/test_preview_engine.cpp:870-872` — 「two-layer submission を拒否」を
+  **受理**へ反転する
+- 同 `951-956` — `maxQualifiedActiveVideoSources == 1` / `maxQualifiedCompositionLayers == 1` の
+  literal を `2` へ更新
+- `compositionIdentityAndCapabilities()` (`396-478`) は既に手動 capability 2/2 で
+  token 採番・no-op 再利用・supersede・reject 時 revision 不変・duplicate source・
+  count 超過を網羅しているため、**engine 公開経路でも同じ期待値が出ることを確認する
+  テストを追加**する (validator を呼ばず独立 literal から検査 — plan §10.2 末尾の要求)
+- 新規: `PresentedFrameInfo` が actual accepted token と actual layer count を持つこと
+- 新規 negative: exact pair 不足時に old/latest frame を使わない
+- 新規 negative: stale composition epoch を提示しない
+- 新規 negative: unknown / removed source を参照する snapshot を拒否
+
+---
+
+## 6. P5-E4 — closure
+
+`docs/phase5-plan.md` §9.4 の P5-D4 と同じ形で閉じる。
+
+1. §10.2 の全項目に対応するテストが存在し、**対象 0 件の group が無い**ことを突き合わせる。
+   突き合わせ表を `docs/phase5-plan.md` §10 へ追記する。
+2. frozen regression の再走。P5-E は GPU composition hot path
+   (`GpuCompositor` 入口 / `SourceFrameBuffer` / `ExactFramePairer` / `CompositorCoordinator`) を
+   触るため、§15 の「共有 hot path を変更する場合は closure gate を明示する」に該当する。
+   - `check-p2-contract.ps1` (P2-D5-1) — 二 source exact pairing の frozen 契約
+   - `check-p4-formal-contract.ps1` — composition catalog / reference
+   - `check-p3-c2-contract.ps1` — audio-master seek (E3 の seek 変更に対する帰属確認)
+   FAIL が出た場合は **P5-D4 と同じ手順**で、変更後と未変更の親 commit の双方を複数回実行して
+   帰属を判定し、後続 PASS で歴史的 FAIL を上書きしない。
+3. docs 更新。
+   - `docs/phase5-plan.md` §10 に sub-slice 表と各 exit criteria を追記し、P5-E を「済」にする
+   - `docs/preview-engine-contract.md` §7.4 の「P5-D closure 時点の現在値は
+     `maxQualifiedActiveVideoSources == 1` …」を P5-E closure 時点の `2 / 2 / 1` へ更新し、
+     末尾の「二source/二layer は P5-E で … capability を引き上げる」を実績記述へ書き換える
+   - 同 §7 に **layers の vector 順 = 背面→前面の z 順** を明記する
+   - 同 §6 に removeSource の実装済み範囲 (audio authority の返却を含む) を追記する
+
+---
+
+## 7. 検証手順
+
+```powershell
+pwsh scripts/build.ps1
+pwsh scripts/test.ps1                      # ordinary CTest (release/debug)
+ctest --test-dir build/release -L p5c      # P5-C regression (9 本)
+ctest --test-dir build/release -L p5d      # P5-D regression (13 本)
+ctest --test-dir build/release -L p5e      # P5-E product test (E3 以降 / 10 本)
+pwsh scripts/lint.ps1
+```
+
+frozen regression (E4 のみ、clean worktree で実行する):
+
+```powershell
+pwsh scripts/check-p2-contract.ps1
+pwsh scripts/check-p4-formal-contract.ps1
+pwsh scripts/check-p3-c2-contract.ps1
+```
+
+各 slice の完了条件 (`docs/phase5-plan.md` §14 gate):
+
+1. 新しい positive test
+2. その検査が無ければ落ちる negative / fail-closed test
+3. 変更 component に対応する targeted test
+4. ordinary CTest
+5. closure risk に応じた frozen regression (E4 で実施)
+
+---
+
+## 8. 注意点
+
+- `docs/phase5-plan.md` §17: 「source count、resolution、DPR、audio count、adapter の現行 envelope を
+  permanent API limit と書かない」。エラーメッセージへ `P5-E` のような slice 名や `2` の literal を
+  埋め込まず、capability 値を参照した文言にする。
+- 同 §17: 「test expectation を production helper から生成しない」。composition validator や
+  `CheckedOutputTimebase` を呼んで期待値を作らない。
+- fixture A は 271 MB / fixture B は 66 MB で、二 source 同時 decode は VRAM とデコード帯域を
+  要求する。product test の `TIMEOUT` は P5-D の 60 秒より長め (90 秒) を初期値にし、
+  実測後に締める。
+- `apps/p5c_preview_smoke` / `apps/p5d_preview_smoke` は**変更しない**。P5-E の検証は新設の
+  `apps/p5e_preview_smoke` へ閉じ込め、既存 slice の regression を汚さない。

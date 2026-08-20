@@ -4,7 +4,9 @@
 #include "media/audio_preview/audio_video_scheduler.h"
 #include "media/audio_preview/wasapi_audio_sink.h"
 #include "media/gpu_preview/composed_frame.h"
+#include "media/gpu_preview/compositor_coordinator.h"
 #include "media/gpu_preview/d3d11_shared_device.h"
+#include "media/gpu_preview/exact_frame_pairer.h"
 #include "media/gpu_preview/gpu_compositor.h"
 #include "media/gpu_preview/readback_counter.h"
 #include "media/gpu_preview/source_decode_worker.h"
@@ -16,6 +18,7 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <numeric>
 #include <set>
@@ -496,12 +499,39 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         std::make_unique<gpu::SharedD3D11Device>();
     gpu::SourceRegistry sourceRegistry;
     gpu::ReadbackCounters readbacks;
-    std::unique_ptr<gpu::SourceDecodeWorker> videoWorker;
     std::unique_ptr<gpu::GpuCompositor> compositor;
     std::unordered_map<std::uint64_t, internal::EligibleSource> eligibleSources;
     internal::CompositionAcceptanceState compositionState;
-    std::optional<PreviewSourceId> publicVideoSource;
-    gpu::SourceId internalVideoSource{};
+
+    // P5-E1: video sourceのownership。単数fieldではなくtableで持つ。
+    // `std::map`にしているのは走査順を`PreviewSourceId`昇順で決定論的に
+    // 固定するためであり、hashの都合でshutdown orderが揺れないようにする。
+    struct VideoSourceEntry {
+        gpu::SourceId internal{};
+        std::unique_ptr<gpu::SourceDecodeWorker> worker;
+    };
+
+    std::map<std::uint64_t, VideoSourceEntry> videoSources;
+
+    // P5-E1: compositionのepoch authority。engineは`CompositionEpoch`を
+    // 直書きせず、coordinatorが採番した値をそのまま運ぶ。
+    // **session中に作り直さない。** 作り直すとinstanceごとに別のepoch
+    // namespaceができ、古い`ComposedFrame`のepochと衝突し得る。
+    // 参照source集合が変わるcomposition transitionは
+    // `adoptCompositionRuntimeSnapshot()`で同一instanceのまま採用する。
+    std::unique_ptr<gpu::CompositorCoordinator> coordinator;
+    // pairerはbufferをraw pointerで握るので、こちらは参照source集合が
+    // 変わるたびに作り直す。epoch authorityではない。
+    std::unique_ptr<gpu::ExactFramePairer> pairer;
+    // pairerを組んだときの参照source (public ID昇順)。
+    std::vector<std::uint64_t> coordinatorSources;
+    std::uint64_t staleCompositionEpochRejectCount = 0;
+    std::int64_t lastStaleCompositionRejectedFrame = -1;
+    // 提示直前のstale epoch拒否を製品経路で検査するためのtest seam。
+    // 完成したerrorを注入するのではなく、compose後・validate前に
+    // `CompositionEpoch`だけを進める。
+    bool compositionEpochAdvanceInjected = false;
+
     std::uint64_t nextPublicSourceId = 1;
     PreviewFrameRate configuredFrameRate{60, 1};
 
@@ -536,7 +566,7 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     // (sink -> worker -> clock) と一致するよう、宣言はその逆順に並べる。
     // `Impl`本体のaudio memberも同じ理由で clock -> worker -> sink の順に宣言している。
     struct DetachedWorkers {
-        std::unique_ptr<gpu::SourceDecodeWorker> videoWorker;
+        std::vector<std::unique_ptr<gpu::SourceDecodeWorker>> videoWorkers;
         std::shared_ptr<audio::AudioMasterClock> audioClock;
         std::shared_ptr<audio::AudioDecodeWorker> audioWorker;
         std::shared_ptr<audio::WasapiAudioSink> audioSink;
@@ -571,7 +601,15 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     // 「detach済みと言いながら参照が残っている」状態になるため、ownershipを
     // shutdown専用のholderへ移す。ここを通るまでrender teardownへ進まない。
     void detachRenderVisibleWorkerRefsLocked() {
-        detachedWorkers.videoWorker = std::move(videoWorker);
+        for (auto& [publicId, entry] : videoSources) {
+            (void)publicId;
+            if (entry.worker)
+                detachedWorkers.videoWorkers.push_back(std::move(entry.worker));
+        }
+        // pairerはbufferをraw pointerで握っている。worker本体より先に手放す。
+        // coordinatorはpointerを持たず、epoch lineageのownerなので残す。
+        pairer.reset();
+        coordinatorSources.clear();
         detachedWorkers.audioSink = std::move(audioSink);
         detachedWorkers.audioWorker = std::move(audioWorker);
         detachedWorkers.audioClock = std::move(audioClock);
@@ -580,8 +618,174 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     }
 
     // diagnostics/teardownはdetach後も実体を参照する。render pathはこれを使わない。
-    gpu::SourceDecodeWorker* videoWorkerForTeardown() const {
-        return videoWorker ? videoWorker.get() : detachedWorkers.videoWorker.get();
+    // 走査順は`PreviewSourceId`昇順 -> detach順で決定論的である。
+    std::vector<gpu::SourceDecodeWorker*> videoWorkersForTeardown() const {
+        std::vector<gpu::SourceDecodeWorker*> workers;
+        for (const auto& [publicId, entry] : videoSources) {
+            (void)publicId;
+            if (entry.worker)
+                workers.push_back(entry.worker.get());
+        }
+        for (const auto& detached : detachedWorkers.videoWorkers) {
+            if (detached)
+                workers.push_back(detached.get());
+        }
+        return workers;
+    }
+
+    // render pathから見えるworkerだけを返す。detach後は空になる。
+    std::vector<gpu::SourceDecodeWorker*> videoWorkersLocked() const {
+        std::vector<gpu::SourceDecodeWorker*> workers;
+        for (const auto& [publicId, entry] : videoSources) {
+            (void)publicId;
+            if (entry.worker)
+                workers.push_back(entry.worker.get());
+        }
+        return workers;
+    }
+
+    bool hasVideoWorkerLocked() const {
+        for (const auto& [publicId, entry] : videoSources) {
+            (void)publicId;
+            if (entry.worker)
+                return true;
+        }
+        return false;
+    }
+
+    // internal `gpu::SourceId`からpublic IDを逆引きする。errorのsource付与に使う。
+    std::optional<PreviewSourceId> publicIdForInternalLocked(gpu::SourceId internal) const {
+        for (const auto& [publicId, entry] : videoSources) {
+            if (entry.internal == internal)
+                return PreviewSourceId{publicId};
+        }
+        return std::nullopt;
+    }
+
+    // video sourceが1件だけである前提の呼び出し側が使う。P5-E3で参照snapshot
+    // 由来の集合へ置き換える。
+    std::optional<PreviewSourceId> soleVideoSourceLocked() const {
+        if (videoSources.size() != 1)
+            return std::nullopt;
+        return PreviewSourceId{videoSources.begin()->first};
+    }
+
+    // coordinatorへconfigure済みの参照sourceに対応するworkerを、pairerへ渡した
+    // bufferと同じ順序で返す。
+    std::vector<gpu::SourceDecodeWorker*> referencedVideoWorkersLocked() const {
+        std::vector<gpu::SourceDecodeWorker*> workers;
+        for (std::uint64_t publicId : coordinatorSources) {
+            const auto entry = videoSources.find(publicId);
+            if (entry != videoSources.end() && entry->second.worker)
+                workers.push_back(entry->second.worker.get());
+        }
+        return workers;
+    }
+
+    // composeしたframeのsource identityが、engineが登録しているものと一致するか。
+    // pairerは自前のbufferしか触らないので構造的には満たされるが、identityの
+    // 取り違えは過去に実際に起きた失敗なので製品経路でも検査する。
+    bool composedIdentityValidLocked(const gpu::ComposedFrame& composed) const {
+        for (const auto& layer : composed.layers) {
+            if (!sourceRegistry.contains(layer.frame.sourceId))
+                return false;
+            if (!publicIdForInternalLocked(layer.frame.sourceId))
+                return false;
+        }
+        return !composed.layers.empty();
+    }
+
+    // accepted snapshotをcoordinatorのlayoutへ写す。
+    // `CompositionSnapshot::layers`のvector順が背面 -> 前面のz順である
+    // (preview-engine-contract.md §7)。public APIへzOrder fieldを増やさない。
+    // 未登録sourceを含む場合はnulloptを返す。
+    std::optional<std::vector<gpu::LayerLayout>>
+    buildLayoutLocked(const CompositionSnapshot& snapshot) const {
+        std::vector<gpu::LayerLayout> layout;
+        layout.reserve(snapshot.layers.size());
+        for (std::size_t i = 0; i < snapshot.layers.size(); ++i) {
+            const PreviewCompositionLayer& layer = snapshot.layers[i];
+            const auto entry = videoSources.find(layer.source.value);
+            if (entry == videoSources.end() || !entry->second.worker)
+                return std::nullopt;
+            gpu::LayerLayout mapped;
+            mapped.sourceId = entry->second.internal;
+            mapped.destination = {layer.destination.x, layer.destination.y, layer.destination.width,
+                                  layer.destination.height};
+            mapped.sourceUv = {layer.sourceRect.x, layer.sourceRect.y, layer.sourceRect.width,
+                               layer.sourceRect.height};
+            mapped.opacity = layer.opacity;
+            mapped.zOrder = static_cast<int>(i);
+            layout.push_back(mapped);
+        }
+        return layout;
+    }
+
+    // accepted tokenとsnapshotをcompositionのruntime authorityへ反映する。
+    // coordinatorはsession中に作り直さない。source集合ごと変わるtransitionも
+    // `adoptCompositionRuntimeSnapshot()`で同一instanceのまま採用するので、
+    // `CompositionEpoch`のlineageが切れない。
+    // 戻り値は「fatalにすべきerror」。
+    std::optional<PreviewError> syncCompositionRuntimeLocked(const AcceptedComposition& token,
+                                                             const CompositionSnapshot& snapshot) {
+        const auto compositionFailure = [](std::string detail) {
+            return makeError(PreviewErrorCategory::CompositionFailure,
+                             PreviewOperation::RenderDeviceAttach, std::move(detail),
+                             PreviewErrorSeverity::FatalToSession);
+        };
+
+        const auto layout = buildLayoutLocked(snapshot);
+        if (!layout)
+            return compositionFailure("accepted compositionが未登録sourceを参照しています");
+
+        std::vector<std::uint64_t> referenced;
+        for (const auto& layer : snapshot.layers) {
+            if (std::find(referenced.begin(), referenced.end(), layer.source.value) ==
+                referenced.end()) {
+                referenced.push_back(layer.source.value);
+            }
+        }
+        std::sort(referenced.begin(), referenced.end());
+
+        std::map<gpu::SourceId, gpu::SourceGeneration> generations;
+        std::vector<gpu::SourceFrameBuffer*> buffers;
+        for (std::uint64_t publicId : referenced) {
+            const auto entry = videoSources.find(publicId);
+            if (entry == videoSources.end() || !entry->second.worker)
+                return compositionFailure("accepted compositionが未登録sourceを参照しています");
+            gpu::SourceFrameBuffer& buffer = entry->second.worker->buffer();
+            generations.emplace(entry->second.internal, buffer.generation());
+            buffers.push_back(&buffer);
+        }
+
+        if (!coordinator)
+            coordinator = std::make_unique<gpu::CompositorCoordinator>();
+        if (coordinator->adoptCompositionRuntimeSnapshot(gpu::CompositionStateId{token.id.value},
+                                                         *layout, std::move(generations)) ==
+            gpu::CompositionStateAdoptionResult::Rejected) {
+            return compositionFailure("composition snapshotをcoordinatorへ適用できません");
+        }
+
+        if (!pairer || referenced != coordinatorSources) {
+            // 参照source集合が変わった。pairerだけを組み直す。
+            pairer.reset();
+            auto rebuilt =
+                std::make_unique<gpu::ExactFramePairer>(std::move(buffers), *coordinator);
+            if (!rebuilt->valid())
+                return compositionFailure("composition参照sourceのbuffer集合が不正です");
+            pairer = std::move(rebuilt);
+            coordinatorSources = std::move(referenced);
+        }
+        return std::nullopt;
+    }
+
+    // 提示直前のstale epoch拒否を製品経路で踏ませるためのtest seam。
+    // 完成したerrorを注入するのではなく、compose後・validate前に
+    // `CompositionEpoch`だけを1つ進める。composition state / layout / generationは
+    // 触らないので、engineから見たcompositionは何も変わらない。
+    // 進めたepochは次のcompose以降そのまま使われるので、engineは自己回復する。
+    bool advanceCompositionEpochForTestLocked() {
+        return coordinator && coordinator->advanceCompositionEpochForTest();
     }
 
     audio::AudioDecodeWorker* audioWorkerForTeardown() const {
@@ -759,7 +963,9 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         noteShutdownStepLocked(internal::ShutdownStep::DisableSchedulers);
         audioSinkJoined = audioSink == nullptr;
         audioWorkerJoined = audioWorker == nullptr;
-        workerJoined = videoWorker == nullptr || videoWorker->joined();
+        workerJoined = true;
+        for (gpu::SourceDecodeWorker* worker : videoWorkersLocked())
+            workerJoined = workerJoined && worker->joined();
         renderTeardownRequested = workerJoined && audioSinkJoined && audioWorkerJoined;
         if (renderTeardownRequested) {
             // 停止対象が無い場合もstepの順序は同じ形で残す。
@@ -775,12 +981,12 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         shutdownThread = std::thread([self] {
             std::shared_ptr<audio::WasapiAudioSink> audioEndpoint;
             std::shared_ptr<audio::AudioDecodeWorker> audioDecoder;
-            gpu::SourceDecodeWorker* worker = nullptr;
+            std::vector<gpu::SourceDecodeWorker*> workers;
             {
                 std::lock_guard<std::mutex> lock(self->mutex);
                 audioEndpoint = self->audioSink;
                 audioDecoder = self->audioWorker;
-                worker = self->videoWorker.get();
+                workers = self->videoWorkersLocked();
             }
             std::string ignored;
             if (audioEndpoint) {
@@ -801,7 +1007,7 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                 std::lock_guard<std::mutex> lock(self->mutex);
                 self->noteShutdownStepLocked(internal::ShutdownStep::StopAudioDecodeWorker);
             }
-            if (worker)
+            for (gpu::SourceDecodeWorker* worker : workers)
                 worker->stop();
             bool joinsVerified = false;
             {
@@ -812,7 +1018,9 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                     audioEndpoint == nullptr || audioEndpoint->snapshot().joined;
                 self->audioWorkerJoined =
                     audioDecoder == nullptr || audioDecoder->snapshot().joined;
-                self->workerJoined = worker == nullptr || worker->joined();
+                self->workerJoined = true;
+                for (gpu::SourceDecodeWorker* worker : workers)
+                    self->workerJoined = self->workerJoined && worker->joined();
                 self->noteShutdownStepLocked(internal::ShutdownStep::VerifyJoins);
                 joinsVerified =
                     self->workerJoined && self->audioSinkJoined && self->audioWorkerJoined;
@@ -823,9 +1031,9 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
             // detachedWorkersが所有しているので、ここでresetしても実体は生存する。
             audioEndpoint.reset();
             audioDecoder.reset();
-            // videoWorkerはdetachedWorkersが所有しており、この生ポインタは
+            // video workerはdetachedWorkersが所有しており、この生ポインタは
             // teardown後にdanglingになる。publish前に手放す。
-            worker = nullptr;
+            workers.clear();
 
             {
                 std::lock_guard<std::mutex> lock(self->mutex);
@@ -850,15 +1058,17 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
             PreviewError failure =
                 makeError(PreviewErrorCategory::SeekFailure, PreviewOperation::Seek,
                           std::move(detail), PreviewErrorSeverity::FatalToSession);
-            failure.source = publicVideoSource;
+            failure.source = soleVideoSourceLocked();
             return failure;
         };
 
         if (!pending.decodeReady) {
-            if (!pending.videoReady && videoWorker) {
+            gpu::SourceDecodeWorker* seekVideoWorker =
+                videoSources.empty() ? nullptr : videoSources.begin()->second.worker.get();
+            if (!pending.videoReady && seekVideoWorker) {
                 gpu::SeekCompletion completion;
                 const gpu::SeekWaitResult result =
-                    videoWorker->waitSeek(pending.videoTicket, 0, completion);
+                    seekVideoWorker->waitSeek(pending.videoTicket, 0, completion);
                 if (result == gpu::SeekWaitResult::StaleTicket)
                     return seekFailure("video seek completionのticketが一致しません");
                 if (result == gpu::SeekWaitResult::Ready) {
@@ -1215,10 +1425,12 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
             makeError(PreviewErrorCategory::InvalidState, PreviewOperation::AddSource,
                       "native render deviceの準備前にsourceを登録できません"));
     }
-    if (descriptor.videoEnabled && impl_->publicVideoSource) {
+    if (descriptor.videoEnabled &&
+        impl_->videoSources.size() >= impl_->capability.maxQualifiedActiveVideoSources) {
         return Result<PreviewSourceId>::failure(
             makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
-                      "P5-D product wiringはvideo sourceを1件だけ受理します"));
+                      "qualified active video source数を超えています (上限=" +
+                          std::to_string(impl_->capability.maxQualifiedActiveVideoSources) + ")"));
     }
     if (descriptor.audioEnabled) {
         if (impl_->capability.maxQualifiedActiveAudioSources == 0) {
@@ -1319,9 +1531,12 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
 
     const PreviewSourceId published{impl_->nextPublicSourceId++};
     if (descriptor.videoEnabled) {
-        impl_->internalVideoSource = internalVideo;
-        impl_->publicVideoSource = published;
-        impl_->videoWorker = std::move(newVideoWorker);
+        impl_->videoSources.emplace(published.value, PreviewEngine::Impl::VideoSourceEntry{
+                                                         internalVideo, std::move(newVideoWorker)});
+        // source集合が変わったのでpairerは次のcomposeで組み直す。
+        // coordinatorはepoch lineageのownerなので作り直さない。
+        impl_->pairer.reset();
+        impl_->coordinatorSources.clear();
         impl_->workerJoined = false;
         impl_->deviceReleased = false;
         impl_->telemetrySnapshot.currentSourceQueueDepth = 0;
@@ -1399,8 +1614,7 @@ Result<void> PreviewEngine::play() {
             return affinity;
         if (impl_->machine.state() != PreviewEngineState::ReadyPaused)
             return invalidState(PreviewOperation::Play, "playを受理できないstateです");
-        if (!impl_->videoWorker || !impl_->publicVideoSource ||
-            !impl_->compositionState.latestAcceptedToken()) {
+        if (!impl_->hasVideoWorkerLocked() || !impl_->compositionState.latestAcceptedToken()) {
             return invalidState(PreviewOperation::Play,
                                 "playには登録済みvideo sourceとaccepted compositionが必要です");
         }
@@ -1482,7 +1696,8 @@ Result<void> PreviewEngine::play() {
                                         ? 0
                                         : impl_->telemetrySnapshot.status.position.outputFrame + 1;
         impl_->lastSchedulerTarget = impl_->schedulerBaseFrame - 1;
-        impl_->videoWorker->play();
+        for (gpu::SourceDecodeWorker* worker : impl_->videoWorkersLocked())
+            worker->play();
         impl_->telemetrySnapshot.status.state = PreviewEngineState::Playing;
     }
     impl_->notify(internal::StateChangedEvent{PreviewEngineState::Playing});
@@ -1504,8 +1719,8 @@ Result<void> PreviewEngine::pause() {
         // ただしtransport stateはまだcommitしない (sink停止を確認するまでPlayingのまま)。
         impl_->schedulerEnabled = false;
         impl_->audioMasterActive = false;
-        if (impl_->videoWorker)
-            impl_->videoWorker->pause();
+        for (gpu::SourceDecodeWorker* worker : impl_->videoWorkersLocked())
+            worker->pause();
         audioWorker = impl_->audioWorker;
         audioSink = impl_->audioSink;
     }
@@ -1581,8 +1796,7 @@ Result<void> PreviewEngine::seek(PreviewPosition target) {
                                                    PreviewOperation::Seek,
                                                    "負のoutputFrameへはseekできません"));
         }
-        if (!impl_->videoWorker || !impl_->publicVideoSource ||
-            !impl_->compositionState.latestAcceptedToken()) {
+        if (!impl_->hasVideoWorkerLocked() || !impl_->compositionState.latestAcceptedToken()) {
             return invalidState(PreviewOperation::Seek,
                                 "seekには登録済みvideo sourceとaccepted compositionが必要です");
         }
@@ -1604,7 +1818,8 @@ Result<void> PreviewEngine::seek(PreviewPosition target) {
         // transportを止めてからrequestする。動作中のschedulerとseekを競合させない。
         impl_->schedulerEnabled = false;
         impl_->audioMasterActive = false;
-        impl_->videoWorker->pause();
+        for (gpu::SourceDecodeWorker* worker : impl_->videoWorkersLocked())
+            worker->pause();
     }
 
     // audioの停止とendpoint resetはengine lockを保持したまま行わない。
@@ -1647,7 +1862,10 @@ Result<void> PreviewEngine::seek(PreviewPosition target) {
                 return moved;
 
             std::string requestError;
-            const gpu::SeekRequestResult videoRequest = impl_->videoWorker->requestSeek(
+            // P5-E1時点のcapabilityはvideo source 1件である。per-source generationの
+            // 一般化はP5-E3で行う。
+            const std::vector<gpu::SourceDecodeWorker*> seekWorkers = impl_->videoWorkersLocked();
+            const gpu::SeekRequestResult videoRequest = seekWorkers.front()->requestSeek(
                 target.outputFrame, impl_->pendingSeek.videoTicket, requestError);
             audio::AudioSeekRequestResult audioRequest = audio::AudioSeekRequestResult::Accepted;
             if (audioWorker) {
@@ -1746,8 +1964,8 @@ Result<void> PreviewEngine::requestShutdown() {
         after = impl_->machine.state();
         impl_->schedulerEnabled = false;
         impl_->audioMasterActive = false;
-        if (impl_->videoWorker)
-            impl_->videoWorker->pause();
+        for (gpu::SourceDecodeWorker* worker : impl_->videoWorkersLocked())
+            worker->pause();
         if (impl_->nativeDeviceAttached)
             impl_->startWorkerShutdown();
         completeWithoutRuntime =
@@ -1988,8 +2206,8 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
             (renderState != PreviewEngineState::Playing || !engine.impl_->schedulerEnabled)) {
             return Result<RenderFrameResult>::success(result);
         }
-        if (!renderTargetView || width <= 0 || height <= 0 || !engine.impl_->videoWorker ||
-            !engine.impl_->compositor) {
+        if (!renderTargetView || width <= 0 || height <= 0 ||
+            !engine.impl_->hasVideoWorkerLocked() || !engine.impl_->compositor) {
             return Result<RenderFrameResult>::failure(
                 makeError(PreviewErrorCategory::InvalidState, PreviewOperation::RenderDeviceAttach,
                           "render targetまたはproduct runtimeが未準備です"));
@@ -2039,173 +2257,242 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
             engine.impl_->lastSchedulerTarget = target;
         }
         if (proceed) {
-            gpu::SourceFrameBuffer& buffer = engine.impl_->videoWorker->buffer();
-            buffer.discardBefore(target);
-            gpu::DecodedGpuFrame decoded;
-            if (!buffer.takeExact(target, decoded)) {
-                const gpu::SourceDecoderSnapshot worker = engine.impl_->videoWorker->snapshot();
-                if (worker.fatal) {
-                    PreviewError failure = makeError(
-                        PreviewErrorCategory::DecodeFailure, PreviewOperation::RenderDeviceAttach,
-                        worker.lastError.empty()
-                            ? "video decode workerがfatal終了しました"
-                            : "video decode workerがfatal終了しました: " + worker.lastError);
-                    failure.severity = PreviewErrorSeverity::FatalToSession;
-                    failure.source = engine.impl_->publicVideoSource;
-                    fatal = std::move(failure);
-                    decoderFatal = true;
-                } else if (worker.eof) {
-                    Result<void> shutdown = engine.impl_->machine.requestShutdown();
-                    if (shutdown) {
-                        engine.impl_->schedulerEnabled = false;
-                        engine.impl_->startWorkerShutdown();
-                        engine.impl_->telemetrySnapshot.status.state =
-                            PreviewEngineState::ShuttingDown;
-                        playbackEnded = true;
-                    }
-                } else if (seeking) {
-                    // decode readyでもexact frameをまだ提示できていない。
-                    // ここでcompleteにしないことがseek contractの核心である。
-                    ++engine.impl_->seekAwaitingPresentationCount;
-                    engine.impl_->telemetrySnapshot.currentSourceQueueDepth =
-                        static_cast<std::uint32_t>(buffer.depth());
-                } else {
-                    if (engine.impl_->telemetrySnapshot.droppedFrameCount !=
-                        std::numeric_limits<std::uint64_t>::max()) {
-                        ++engine.impl_->telemetrySnapshot.droppedFrameCount;
-                    }
-                    engine.impl_->telemetrySnapshot.currentSourceQueueDepth =
-                        static_cast<std::uint32_t>(buffer.depth());
-                }
-            } else if (decoded.sourceId != engine.impl_->internalVideoSource ||
-                       !engine.impl_->sourceRegistry.contains(decoded.sourceId)) {
-                PreviewError error = makeError(PreviewErrorCategory::DecodeFailure,
-                                               PreviewOperation::RenderDeviceAttach,
-                                               "decode frameのsource identityが一致しません");
-                error.severity = PreviewErrorSeverity::FatalToSession;
-                fatal = error;
+            // compositionのruntime authorityを先に確定させる。layoutとstateが
+            // 決まっていないとexact pairingの対象sourceも決まらない。
+            const auto token = engine.impl_->compositionState.latestAcceptedToken();
+            const auto snapshot = engine.impl_->compositionState.latestAcceptedSnapshot();
+            if (!token || !snapshot || snapshot->layers.empty()) {
+                return Result<RenderFrameResult>::failure(makeError(
+                    PreviewErrorCategory::CompositionFailure, PreviewOperation::RenderDeviceAttach,
+                    "accepted compositionが見つかりません"));
+            }
+            if (std::optional<PreviewError> syncFailure =
+                    engine.impl_->syncCompositionRuntimeLocked(*token, *snapshot)) {
+                fatal = std::move(*syncFailure);
             } else {
-                const auto token = engine.impl_->compositionState.latestAcceptedToken();
-                const auto snapshot = engine.impl_->compositionState.latestAcceptedSnapshot();
-                if (!token || !snapshot || snapshot->layers.size() != 1) {
-                    return Result<RenderFrameResult>::failure(
-                        makeError(PreviewErrorCategory::CompositionFailure,
-                                  PreviewOperation::RenderDeviceAttach,
-                                  "accepted single-layer compositionが見つかりません"));
-                }
-                if (seeking && engine.impl_->pendingSeek.expectedVideoGeneration.value != 0 &&
-                    !(decoded.sourceGeneration ==
-                      engine.impl_->pendingSeek.expectedVideoGeneration)) {
-                    // seek後のgenerationと揃わないframeをold/latestで代用しない。
+                gpu::ExactFramePairer& pairer = *engine.impl_->pairer;
+                const std::vector<gpu::SourceDecodeWorker*> workers =
+                    engine.impl_->referencedVideoWorkersLocked();
+                const auto queueDepth = [&workers]() -> std::uint32_t {
+                    std::size_t deepest = 0;
+                    for (gpu::SourceDecodeWorker* worker : workers)
+                        deepest = std::max(deepest, worker->buffer().depth());
+                    return static_cast<std::uint32_t>(deepest);
+                };
+
+                gpu::ComposedFrame composed;
+                const gpu::PairResult paired = pairer.tryPair(target, composed);
+                if (paired == gpu::PairResult::StaleGeneration ||
+                    paired == gpu::PairResult::FutureGeneration) {
+                    // generationが揃わないframeをold/latestで代用しない。
                     // ここはsubstitutionではなくrejectなので、禁止fallbackの
                     // counterである staleSubstitutionCount は増やさない。
-                    ++engine.impl_->seekStaleGenerationRejectCount;
-                    return Result<RenderFrameResult>::success(result);
-                }
-                if (seeking && engine.impl_->audioWorker &&
-                    engine.impl_->pendingSeek.expectedAudioGeneration.value != 0) {
-                    // seek completionで得たaudio identityをそのままauthorityにする。
-                    // decoderとqueueの双方が揃うまで提示しない。
-                    const audio::AudioDecoderSnapshot decoder =
-                        engine.impl_->audioWorker->snapshot();
-                    const audio::SourceGeneration expected =
-                        engine.impl_->seekAudioGenerationMismatchInjected
-                            ? audio::SourceGeneration{engine.impl_->pendingSeek
-                                                          .expectedAudioGeneration.value +
-                                                      1}
-                            : engine.impl_->pendingSeek.expectedAudioGeneration;
-                    if (!(decoder.sourceGeneration == expected) ||
-                        !(engine.impl_->audioWorker->queue().generation() == expected)) {
+                    // generationが動くのはseekのときだけなので、counterの
+                    // authorityもseek経路に限る。それ以外で起きたなら
+                    // 単なるdropとして数え、seekの証拠に混ぜない。
+                    if (seeking)
                         ++engine.impl_->seekStaleGenerationRejectCount;
-                        return Result<RenderFrameResult>::success(result);
+                    else if (engine.impl_->telemetrySnapshot.droppedFrameCount !=
+                             std::numeric_limits<std::uint64_t>::max())
+                        ++engine.impl_->telemetrySnapshot.droppedFrameCount;
+                    engine.impl_->telemetrySnapshot.currentSourceQueueDepth = queueDepth();
+                } else if (paired != gpu::PairResult::Paired) {
+                    bool anyFatal = false;
+                    bool anyEof = false;
+                    std::string fatalDetail;
+                    std::optional<PreviewSourceId> fatalSource;
+                    for (gpu::SourceDecodeWorker* worker : workers) {
+                        const gpu::SourceDecoderSnapshot state = worker->snapshot();
+                        if (state.fatal && !anyFatal) {
+                            anyFatal = true;
+                            fatalDetail = state.lastError;
+                            fatalSource = engine.impl_->publicIdForInternalLocked(state.sourceId);
+                        }
+                        anyEof = anyEof || state.eof;
                     }
-                }
-                if (engine.impl_->audioMasterActive && engine.impl_->audioWorker) {
-                    const audio::AudioDecoderSnapshot decoder =
-                        engine.impl_->audioWorker->snapshot();
-                    if (!(decoder.sourceGeneration ==
-                          engine.impl_->audioWorker->queue().generation())) {
-                        // audio generationが揃わないframeをlatest/staleで代用しない。
-                        ++engine.impl_->audioGenerationMismatchCount;
-                        ++engine.impl_->staleSubstitutionCount;
-                        return Result<RenderFrameResult>::success(result);
+                    if (anyFatal) {
+                        PreviewError failure = makeError(
+                            PreviewErrorCategory::DecodeFailure,
+                            PreviewOperation::RenderDeviceAttach,
+                            fatalDetail.empty()
+                                ? "video decode workerがfatal終了しました"
+                                : "video decode workerがfatal終了しました: " + fatalDetail);
+                        failure.severity = PreviewErrorSeverity::FatalToSession;
+                        failure.source = fatalSource;
+                        fatal = std::move(failure);
+                        decoderFatal = true;
+                    } else if (anyEof) {
+                        Result<void> shutdown = engine.impl_->machine.requestShutdown();
+                        if (shutdown) {
+                            engine.impl_->schedulerEnabled = false;
+                            engine.impl_->startWorkerShutdown();
+                            engine.impl_->telemetrySnapshot.status.state =
+                                PreviewEngineState::ShuttingDown;
+                            playbackEnded = true;
+                        }
+                    } else if (seeking) {
+                        // decode readyでもexact frameをまだ提示できていない。
+                        // ここでcompleteにしないことがseek contractの核心である。
+                        ++engine.impl_->seekAwaitingPresentationCount;
+                        engine.impl_->telemetrySnapshot.currentSourceQueueDepth = queueDepth();
+                    } else {
+                        if (engine.impl_->telemetrySnapshot.droppedFrameCount !=
+                            std::numeric_limits<std::uint64_t>::max()) {
+                            ++engine.impl_->telemetrySnapshot.droppedFrameCount;
+                        }
+                        engine.impl_->telemetrySnapshot.currentSourceQueueDepth = queueDepth();
                     }
-                }
-                const PreviewCompositionLayer& sourceLayer = snapshot->layers.front();
-                gpu::CompositionLayerFrame layer;
-                layer.frame = std::move(decoded);
-                layer.destination = {sourceLayer.destination.x, sourceLayer.destination.y,
-                                     sourceLayer.destination.width, sourceLayer.destination.height};
-                layer.sourceUv = {sourceLayer.sourceRect.x, sourceLayer.sourceRect.y,
-                                  sourceLayer.sourceRect.width, sourceLayer.sourceRect.height};
-                layer.opacity = sourceLayer.opacity;
-                gpu::ComposedFrame composed;
-                composed.outputFrameNumber = target;
-                composed.compositionEpoch = {token->revision};
-                composed.compositionState = {token->id.value};
-                composed.layers.push_back(std::move(layer));
-                gpu::ExternalCompositionTarget targetView{
-                    static_cast<ID3D11RenderTargetView*>(renderTargetView), width, height};
-                std::string error;
-                if (!engine.impl_->compositor->composeSingleLayerToTarget(composed, targetView,
-                                                                          error)) {
-                    PreviewError failure = makeError(
-                        PreviewErrorCategory::DeviceFailure, PreviewOperation::RenderDeviceAttach,
-                        "single-layer GPU compositionに失敗しました: " + error);
-                    failure.severity = PreviewErrorSeverity::FatalToSession;
-                    fatal = failure;
+                } else if (!engine.impl_->composedIdentityValidLocked(composed)) {
+                    PreviewError error = makeError(PreviewErrorCategory::DecodeFailure,
+                                                   PreviewOperation::RenderDeviceAttach,
+                                                   "decode frameのsource identityが一致しません");
+                    error.severity = PreviewErrorSeverity::FatalToSession;
+                    fatal = error;
                 } else {
-                    buffer.noteDisplayed(target);
-                    engine.impl_->compositionState.markPresented(*token);
-                    engine.impl_->distinctPresentedFrames.note(target);
-                    ++engine.impl_->presentationSequence;
-                    ++engine.impl_->telemetrySnapshot.presentedFrameCount;
-                    engine.impl_->telemetrySnapshot.currentSourceQueueDepth =
-                        static_cast<std::uint32_t>(buffer.depth());
-                    const auto& counters = engine.impl_->compositor->counters();
-                    engine.impl_->telemetrySnapshot.gpuRetirementCurrentDepth =
-                        static_cast<std::uint32_t>(counters.retirementDepthAfterDrain);
-                    engine.impl_->telemetrySnapshot.gpuRetirementPeakDepth =
-                        static_cast<std::uint32_t>(counters.retirementDepthPeak);
-                    if (engine.impl_->audioWorker) {
-                        engine.impl_->telemetrySnapshot.audioUnderflowCount =
-                            engine.impl_->audioWorker->queue().snapshot().underflowCount;
+                    bool rejected = false;
+                    if (seeking && engine.impl_->pendingSeek.expectedVideoGeneration.value != 0) {
+                        for (const auto& layer : composed.layers) {
+                            if (!(layer.frame.sourceGeneration ==
+                                  engine.impl_->pendingSeek.expectedVideoGeneration)) {
+                                rejected = true;
+                                break;
+                            }
+                        }
+                        if (rejected)
+                            ++engine.impl_->seekStaleGenerationRejectCount;
                     }
-                    engine.impl_->telemetrySnapshot.status.position = {target};
-                    engine.impl_->telemetrySnapshot.status.lastPresentedComposition = *token;
-                    result.presented = true;
-                    result.sourceFrame = target;
-                    result.frame = {engine.impl_->presentationSequence, {target}, *token, 1};
-                    if (seeking) {
-                        // actual requested frameを提示できた時点だけがseek completionである。
-                        ++engine.impl_->seekCompletedCount;
-                        engine.impl_->lastSeekPresentedFrame = target;
-                        seekResumePlaying = engine.impl_->pendingSeek.resumePlaying;
-                        seekResumeSample = engine.impl_->pendingSeek.audioSample;
-                        seekResumeAudioGeneration =
-                            engine.impl_->pendingSeek.expectedAudioGeneration;
-                        engine.impl_->pendingSeek = PreviewEngine::Impl::PendingSeek{};
-                        engine.impl_->lastSchedulerTarget = target;
-                        engine.impl_->schedulerBaseFrame = target + 1;
-                        engine.impl_->resumeAudioSample = seekResumeSample;
-                        seekAudioWorker = engine.impl_->audioWorker;
-                        seekAudioSink = engine.impl_->audioSink;
-                        if (seekResumePlaying) {
-                            // transportを再開できる前に`Playing`を公開しない。
-                            // stateはSeekingのまま保持し、resume成功後にcommitする。
-                            seekAwaitingResume = true;
-                        } else {
-                            Result<void> completed = engine.impl_->machine.completeSeek();
-                            if (!completed) {
-                                fatal = completed.error();
+                    if (!rejected && seeking && engine.impl_->audioWorker &&
+                        engine.impl_->pendingSeek.expectedAudioGeneration.value != 0) {
+                        // seek completionで得たaudio identityをそのままauthorityにする。
+                        // decoderとqueueの双方が揃うまで提示しない。
+                        const audio::AudioDecoderSnapshot decoder =
+                            engine.impl_->audioWorker->snapshot();
+                        const audio::SourceGeneration expected =
+                            engine.impl_->seekAudioGenerationMismatchInjected
+                                ? audio::SourceGeneration{engine.impl_->pendingSeek
+                                                              .expectedAudioGeneration.value +
+                                                          1}
+                                : engine.impl_->pendingSeek.expectedAudioGeneration;
+                        if (!(decoder.sourceGeneration == expected) ||
+                            !(engine.impl_->audioWorker->queue().generation() == expected)) {
+                            ++engine.impl_->seekStaleGenerationRejectCount;
+                            rejected = true;
+                        }
+                    }
+                    if (!rejected && engine.impl_->audioMasterActive && engine.impl_->audioWorker) {
+                        const audio::AudioDecoderSnapshot decoder =
+                            engine.impl_->audioWorker->snapshot();
+                        if (!(decoder.sourceGeneration ==
+                              engine.impl_->audioWorker->queue().generation())) {
+                            // audio generationが揃わないframeをlatest/staleで代用しない。
+                            ++engine.impl_->audioGenerationMismatchCount;
+                            ++engine.impl_->staleSubstitutionCount;
+                            rejected = true;
+                        }
+                    }
+                    if (!rejected && engine.impl_->compositionEpochAdvanceInjected) {
+                        // supersedeを製品経路で再現する。ここで進めた epoch は
+                        // 直後の validateForDisplay が必ず弾く。
+                        engine.impl_->compositionEpochAdvanceInjected = false;
+                        if (!engine.impl_->advanceCompositionEpochForTestLocked()) {
+                            PreviewError failure =
+                                makeError(PreviewErrorCategory::CompositionFailure,
+                                          PreviewOperation::RenderDeviceAttach,
+                                          "composition epoch advance seamが成立しませんでした",
+                                          PreviewErrorSeverity::FatalToSession);
+                            fatal = failure;
+                            rejected = true;
+                        }
+                    }
+                    if (!rejected && engine.impl_->coordinator->validateForDisplay(composed) !=
+                                         gpu::CompositionResult::Accepted) {
+                        // 提示直前のre-validation。supersedeされたcomposition epochや
+                        // generationのframeをGPUへ出さない。
+                        // 現在のrender pathはcompose -> validate -> drawを同じ
+                        // engine lock内で行うため、ここが反応するのは
+                        // compositionのownerが壊れている場合だけである。
+                        // したがってrejectはlifecycle violationとしても数える。
+                        ++engine.impl_->staleCompositionEpochRejectCount;
+                        ++engine.impl_->lifecycleViolationCount;
+                        // 拒否したframe identityを残す。counterだけでは
+                        // 「数えたうえでそのまま描画した」bugを観測できない。
+                        engine.impl_->lastStaleCompositionRejectedFrame = target;
+                        rejected = true;
+                    }
+
+                    if (rejected)
+                        return Result<RenderFrameResult>::success(result);
+
+                    gpu::ExternalCompositionTarget targetView{
+                        static_cast<ID3D11RenderTargetView*>(renderTargetView), width, height};
+                    std::string error;
+                    // 期待layer数のauthorityはaccepted snapshotであり、
+                    // compose結果そのものではない。自己参照にすると層数の
+                    // boundary checkがtautologyになる。
+                    const std::size_t expectedLayerCount = snapshot->layers.size();
+                    if (!engine.impl_->compositor->composeLayersToTarget(
+                            composed, targetView, expectedLayerCount, error)) {
+                        PreviewError failure = makeError(PreviewErrorCategory::DeviceFailure,
+                                                         PreviewOperation::RenderDeviceAttach,
+                                                         "GPU compositionに失敗しました: " + error);
+                        failure.severity = PreviewErrorSeverity::FatalToSession;
+                        fatal = failure;
+                    } else {
+                        for (gpu::SourceDecodeWorker* worker : workers)
+                            worker->buffer().noteDisplayed(target);
+                        engine.impl_->compositionState.markPresented(*token);
+                        engine.impl_->distinctPresentedFrames.note(target);
+                        ++engine.impl_->presentationSequence;
+                        ++engine.impl_->telemetrySnapshot.presentedFrameCount;
+                        engine.impl_->telemetrySnapshot.currentSourceQueueDepth = queueDepth();
+                        const auto& counters = engine.impl_->compositor->counters();
+                        engine.impl_->telemetrySnapshot.gpuRetirementCurrentDepth =
+                            static_cast<std::uint32_t>(counters.retirementDepthAfterDrain);
+                        engine.impl_->telemetrySnapshot.gpuRetirementPeakDepth =
+                            static_cast<std::uint32_t>(counters.retirementDepthPeak);
+                        if (engine.impl_->audioWorker) {
+                            engine.impl_->telemetrySnapshot.audioUnderflowCount =
+                                engine.impl_->audioWorker->queue().snapshot().underflowCount;
+                        }
+                        engine.impl_->telemetrySnapshot.status.position = {target};
+                        engine.impl_->telemetrySnapshot.status.lastPresentedComposition = *token;
+                        result.presented = true;
+                        result.sourceFrame = target;
+                        result.frame = {engine.impl_->presentationSequence,
+                                        {target},
+                                        *token,
+                                        static_cast<std::uint32_t>(composed.layers.size())};
+                        if (seeking) {
+                            // actual requested frameを提示できた時点だけがseek completionである。
+                            ++engine.impl_->seekCompletedCount;
+                            engine.impl_->lastSeekPresentedFrame = target;
+                            seekResumePlaying = engine.impl_->pendingSeek.resumePlaying;
+                            seekResumeSample = engine.impl_->pendingSeek.audioSample;
+                            seekResumeAudioGeneration =
+                                engine.impl_->pendingSeek.expectedAudioGeneration;
+                            engine.impl_->pendingSeek = PreviewEngine::Impl::PendingSeek{};
+                            engine.impl_->lastSchedulerTarget = target;
+                            engine.impl_->schedulerBaseFrame = target + 1;
+                            engine.impl_->resumeAudioSample = seekResumeSample;
+                            seekAudioWorker = engine.impl_->audioWorker;
+                            seekAudioSink = engine.impl_->audioSink;
+                            if (seekResumePlaying) {
+                                // transportを再開できる前に`Playing`を公開しない。
+                                // stateはSeekingのまま保持し、resume成功後にcommitする。
+                                seekAwaitingResume = true;
                             } else {
-                                engine.impl_->telemetrySnapshot.status.state =
-                                    engine.impl_->machine.state();
-                                seekCompletedState = engine.impl_->machine.state();
-                                // paused originのseekも、commitとeventの挿入を
-                                // 同じcritical sectionに収める。
-                                engine.impl_->notifyLocked(StateChangedEvent{*seekCompletedState},
-                                                           seekDispatch);
+                                Result<void> completed = engine.impl_->machine.completeSeek();
+                                if (!completed) {
+                                    fatal = completed.error();
+                                } else {
+                                    engine.impl_->telemetrySnapshot.status.state =
+                                        engine.impl_->machine.state();
+                                    seekCompletedState = engine.impl_->machine.state();
+                                    // paused originのseekも、commitとeventの挿入を
+                                    // 同じcritical sectionに収める。
+                                    engine.impl_->notifyLocked(
+                                        StateChangedEvent{*seekCompletedState}, seekDispatch);
+                                }
                             }
                         }
                     }
@@ -2222,8 +2509,8 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                 }
                 engine.impl_->schedulerEnabled = false;
                 engine.impl_->audioMasterActive = false;
-                if (engine.impl_->videoWorker)
-                    engine.impl_->videoWorker->pause();
+                for (gpu::SourceDecodeWorker* worker : engine.impl_->videoWorkersLocked())
+                    worker->pause();
                 engine.impl_->startWorkerShutdown();
                 engine.impl_->telemetrySnapshot.status.state = PreviewEngineState::ShuttingDown;
                 engine.impl_->telemetrySnapshot.status.lastError =
@@ -2285,8 +2572,8 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                 } else {
                     // seek()でpauseしたvideo decodeも再開する。ここを忘れるとbufferが
                     // 補充されず、Playingに戻ってもframeを提示できない。
-                    if (engine.impl_->videoWorker)
-                        engine.impl_->videoWorker->play();
+                    for (gpu::SourceDecodeWorker* worker : engine.impl_->videoWorkersLocked())
+                        worker->play();
                     engine.impl_->schedulerEnabled = true;
                     engine.impl_->audioMasterActive =
                         engine.impl_->audioSink != nullptr && engine.impl_->audioClock != nullptr;
@@ -2376,8 +2663,9 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
         // detach済みと記録しながらrender可視fieldに参照が残っている状態を成功にしない。
         // これが無いと`DetachRenderVisibleWorkerRefs`はbookkeepingだけで通ってしまう。
         // renderがまだ参照し得るresourceは解放せず、GPU完了未確認と同じ扱いにする。
-        const bool detachViolation = engine.impl_->videoWorker || engine.impl_->audioSink ||
-                                     engine.impl_->audioWorker || engine.impl_->audioClock;
+        const bool detachViolation = engine.impl_->hasVideoWorkerLocked() || engine.impl_->pairer ||
+                                     engine.impl_->audioSink || engine.impl_->audioWorker ||
+                                     engine.impl_->audioClock;
         if (detachViolation)
             ++engine.impl_->lifecycleViolationCount;
 
@@ -2430,7 +2718,11 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
                 static_cast<std::uint64_t>(counters.fullFrameGpuCopyCount);
         }
         engine.impl_->finalRuntimeDiagnostics.deviceLostCount = engine.impl_->deviceLostCount;
-        if (gpu::SourceDecodeWorker* teardownVideo = engine.impl_->videoWorkerForTeardown()) {
+        engine.impl_->finalRuntimeDiagnostics.staleCompositionEpochRejectCount =
+            engine.impl_->staleCompositionEpochRejectCount;
+        engine.impl_->finalRuntimeDiagnostics.lastStaleCompositionRejectedFrame =
+            engine.impl_->lastStaleCompositionRejectedFrame;
+        for (gpu::SourceDecodeWorker* teardownVideo : engine.impl_->videoWorkersForTeardown()) {
             const auto mismatchCount =
                 static_cast<std::uint64_t>(teardownVideo->snapshot().deviceMismatchCount);
             const std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
@@ -2469,8 +2761,15 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
             engine.impl_->publicAudioSource ? 1U : 0U;
         if (drained) {
             engine.impl_->compositor.reset();
-            engine.impl_->videoWorker.reset();
-            engine.impl_->detachedWorkers.videoWorker.reset();
+            // pairerはbufferをraw pointerで握る。worker本体より先に手放す。
+            engine.impl_->pairer.reset();
+            engine.impl_->coordinator.reset();
+            engine.impl_->coordinatorSources.clear();
+            for (auto& [publicId, entry] : engine.impl_->videoSources) {
+                (void)publicId;
+                entry.worker.reset();
+            }
+            engine.impl_->detachedWorkers.videoWorkers.clear();
             // audio sink は queue/clock を参照するため、参照する側から解放する。
             engine.impl_->audioSink.reset();
             engine.impl_->audioWorker.reset();
@@ -2478,8 +2777,13 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
             engine.impl_->detachedWorkers.audioSink.reset();
             engine.impl_->detachedWorkers.audioWorker.reset();
             engine.impl_->detachedWorkers.audioClock.reset();
-            if (engine.impl_->internalVideoSource.value != 0)
-                engine.impl_->sourceRegistry.unregisterSource(engine.impl_->internalVideoSource);
+            // unregisterは`PreviewSourceId`昇順で決定論的に行う。
+            for (const auto& [publicId, entry] : engine.impl_->videoSources) {
+                (void)publicId;
+                if (entry.internal.value != 0)
+                    engine.impl_->sourceRegistry.unregisterSource(entry.internal);
+            }
+            engine.impl_->videoSources.clear();
             engine.impl_->renderDevice->release();
             engine.impl_->noteShutdownStepLocked(internal::ShutdownStep::ReleaseRenderTargetDevice);
             engine.impl_->nativeDeviceAttached = false;
@@ -2497,10 +2801,19 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
             std::lock_guard<std::mutex> quarantineLock(*quarantineMutex);
             retainedCompositors->push_back(std::move(engine.impl_->compositor));
             // detach済みかどうかでownerが変わる。両方見るが、空のentryは積まない。
-            if (engine.impl_->videoWorker)
-                retainedWorkers->push_back(std::move(engine.impl_->videoWorker));
-            if (engine.impl_->detachedWorkers.videoWorker)
-                retainedWorkers->push_back(std::move(engine.impl_->detachedWorkers.videoWorker));
+            engine.impl_->pairer.reset();
+            engine.impl_->coordinator.reset();
+            engine.impl_->coordinatorSources.clear();
+            for (auto& [publicId, entry] : engine.impl_->videoSources) {
+                (void)publicId;
+                if (entry.worker)
+                    retainedWorkers->push_back(std::move(entry.worker));
+            }
+            for (auto& detached : engine.impl_->detachedWorkers.videoWorkers) {
+                if (detached)
+                    retainedWorkers->push_back(std::move(detached));
+            }
+            engine.impl_->detachedWorkers.videoWorkers.clear();
             retainedDevices->push_back(std::move(engine.impl_->renderDevice));
             // audio sink/worker/clockはjoin確認済みで、GPU completionに紐づかない。
             // holderの破棄順に頼らず、依存の逆順で明示的に解放する。
@@ -2604,8 +2917,8 @@ Result<void> PreviewRenderPort::injectFatal(PreviewEngine& engine, PreviewError 
         engine.impl_->telemetrySnapshot.status.state = PreviewEngineState::ShuttingDown;
         engine.impl_->telemetrySnapshot.status.lastError = engine.impl_->machine.lastError();
         engine.impl_->schedulerEnabled = false;
-        if (engine.impl_->videoWorker)
-            engine.impl_->videoWorker->pause();
+        for (gpu::SourceDecodeWorker* worker : engine.impl_->videoWorkersLocked())
+            worker->pause();
         if (engine.impl_->nativeDeviceAttached)
             engine.impl_->startWorkerShutdown();
     }
@@ -2679,23 +2992,25 @@ Result<void> PreviewRenderPort::injectGpuDrainFailureForTest(PreviewEngine& engi
 Result<void> PreviewRenderPort::injectDecoderFatalForTest(PreviewEngine& engine,
                                                           std::string detail) {
     std::lock_guard<std::mutex> lock(engine.impl_->mutex);
-    if (!engine.impl_->videoWorker ||
-        engine.impl_->machine.state() != PreviewEngineState::Playing) {
+    const std::vector<gpu::SourceDecodeWorker*> workers = engine.impl_->videoWorkersLocked();
+    if (workers.empty() || engine.impl_->machine.state() != PreviewEngineState::Playing) {
         return invalidState(PreviewOperation::RenderDeviceAttach,
                             "decoder fatal faultは再生中のvideo workerにのみ設定できます");
     }
-    engine.impl_->videoWorker->injectFatalForTest(detail);
+    // faultは先頭sourceだけに入れる。全sourceへ入れると「1本の失敗が
+    // session全体をfatalにする」ことの検査にならない。
+    workers.front()->injectFatalForTest(detail);
     return Result<void>::success();
 }
 
 Result<void> PreviewRenderPort::injectDecoderEofForTest(PreviewEngine& engine) {
     std::lock_guard<std::mutex> lock(engine.impl_->mutex);
-    if (!engine.impl_->videoWorker ||
-        engine.impl_->machine.state() != PreviewEngineState::Playing) {
+    const std::vector<gpu::SourceDecodeWorker*> workers = engine.impl_->videoWorkersLocked();
+    if (workers.empty() || engine.impl_->machine.state() != PreviewEngineState::Playing) {
         return invalidState(PreviewOperation::RenderDeviceAttach,
                             "decoder EOF faultは再生中のvideo workerにのみ設定できます");
     }
-    engine.impl_->videoWorker->injectEofForTest();
+    workers.front()->injectEofForTest();
     return Result<void>::success();
 }
 
@@ -2710,6 +3025,8 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
     result.registeredVideoSourceCount = engine.impl_->sourceRegistry.registeredSourceCount();
     result.distinctPresentedSourceFrameCount = engine.impl_->distinctPresentedFrames.count();
     result.staleSubstitutionCount = engine.impl_->staleSubstitutionCount;
+    result.staleCompositionEpochRejectCount = engine.impl_->staleCompositionEpochRejectCount;
+    result.lastStaleCompositionRejectedFrame = engine.impl_->lastStaleCompositionRejectedFrame;
     result.lifecycleViolationCount = engine.impl_->lifecycleViolationCount;
     result.shutdownSequence = engine.impl_->shutdownSequence;
     result.audioMasterActive = engine.impl_->audioMasterActive;
@@ -2742,13 +3059,25 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
     result.fullCpuReadbackCount =
         static_cast<std::uint64_t>(engine.impl_->readbacks.fullFrameReadbacks());
     result.deviceLostCount = std::max(result.deviceLostCount, engine.impl_->deviceLostCount);
-    if (gpu::SourceDecodeWorker* diagVideo = engine.impl_->videoWorkerForTeardown()) {
+    // 全video sourceを畳んで報告する。1本でもsoftware decodeやdevice mismatchを
+    // 起こしていれば、それがそのまま診断値になる。
+    const std::vector<gpu::SourceDecodeWorker*> diagVideos =
+        engine.impl_->videoWorkersForTeardown();
+    if (!diagVideos.empty()) {
+        result.d3d11vaActive = true;
+        result.decodeRenderSameDevice = true;
+        result.softwareFallbackCount = 0;
+    }
+    for (gpu::SourceDecodeWorker* diagVideo : diagVideos) {
         const gpu::SourceDecoderSnapshot decoder = diagVideo->snapshot();
-        result.d3d11vaActive = decoder.open && decoder.softwareFrameRejectCount == 0;
+        result.d3d11vaActive =
+            result.d3d11vaActive && decoder.open && decoder.softwareFrameRejectCount == 0;
         result.decodeRenderSameDevice =
+            result.decodeRenderSameDevice &&
             decoder.decodeDevicePointer ==
-            reinterpret_cast<std::uintptr_t>(engine.impl_->renderDevice->device());
-        result.softwareFallbackCount = static_cast<std::uint64_t>(decoder.softwareFrameRejectCount);
+                reinterpret_cast<std::uintptr_t>(engine.impl_->renderDevice->device());
+        result.softwareFallbackCount +=
+            static_cast<std::uint64_t>(decoder.softwareFrameRejectCount);
         const auto mismatchCount = static_cast<std::uint64_t>(decoder.deviceMismatchCount);
         const std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
         if (mismatchCount > maximum - result.deviceLostCount)
@@ -2848,9 +3177,19 @@ Result<void> PreviewRenderPort::injectSeekAudioGenerationMismatchForTest(Preview
     return Result<void>::success();
 }
 
+Result<void> PreviewRenderPort::injectCompositionEpochAdvanceForTest(PreviewEngine& engine) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    if (!engine.impl_->coordinator || !engine.impl_->pairer) {
+        return invalidState(PreviewOperation::SubmitComposition,
+                            "composition runtimeが未構成のためepoch advanceを注入できません");
+    }
+    engine.impl_->compositionEpochAdvanceInjected = true;
+    return Result<void>::success();
+}
+
 Result<void> PreviewRenderPort::injectSeekPresentationStallForTest(PreviewEngine& engine) {
     std::lock_guard<std::mutex> lock(engine.impl_->mutex);
-    if (!engine.impl_->videoWorker) {
+    if (!engine.impl_->hasVideoWorkerLocked()) {
         return invalidState(PreviewOperation::Seek,
                             "video sourceが未登録のためseek stallを注入できません");
     }

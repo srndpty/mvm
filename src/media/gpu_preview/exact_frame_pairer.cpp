@@ -2,39 +2,80 @@
 
 namespace mvm::gpu {
 
-PairResult ExactFramePairer::tryPair(long long outputFrameNumber, ComposedFrame& out) {
-    counters_.staleADiscardCount +=
-        static_cast<long long>(sourceA_.discardBefore(outputFrameNumber));
-    counters_.staleBDiscardCount +=
-        static_cast<long long>(sourceB_.discardBefore(outputFrameNumber));
-
-    SourceFrameIdentity identityA;
-    SourceFrameIdentity identityB;
-    const bool hasA = sourceA_.peekFrontIdentity(identityA);
-    const bool hasB = sourceB_.peekFrontIdentity(identityB);
-    const bool missingA = hasA && identityA.frameNumber > outputFrameNumber;
-    const bool missingB = hasB && identityB.frameNumber > outputFrameNumber;
-
-    if (missingA || missingB) {
-        if (missingA)
-            ++counters_.missingACount;
-        if (missingB)
-            ++counters_.missingBCount;
-        if (missingA && missingB)
-            return PairResult::MissingBoth;
-        return missingA ? PairResult::MissingA : PairResult::MissingB;
+bool ExactFramePairer::preflight(const std::vector<SourceFrameBuffer*>& sources) {
+    if (sources.empty())
+        return false;
+    for (size_t i = 0; i < sources.size(); ++i) {
+        if (sources[i] == nullptr)
+            return false;
+        for (size_t j = 0; j < i; ++j) {
+            if (sources[i] == sources[j])
+                return false;
+            // 別 instance でも SourceId が衝突すると coordinator が layout と
+            // frame を対応付けられない。ここで fail-closed にする。
+            if (sources[i]->sourceId() == sources[j]->sourceId())
+                return false;
+        }
     }
-    if (!hasA || !hasB)
+    return true;
+}
+
+PairResult ExactFramePairer::tryPair(long long outputFrameNumber, ComposedFrame& out) {
+    if (!valid_)
+        return PairResult::Rejected;
+
+    for (size_t i = 0; i < sources_.size(); ++i) {
+        const auto discarded =
+            static_cast<long long>(sources_[i]->discardBefore(outputFrameNumber));
+        counters_.staleDiscardCounts[i] += discarded;
+        if (i == 0)
+            counters_.staleADiscardCount += discarded;
+        else if (i == 1)
+            counters_.staleBDiscardCount += discarded;
+    }
+
+    bool anyMissing = false;
+    bool allMissing = true;
+    bool anyEmpty = false;
+    bool firstSourceMissing = false;
+    for (size_t i = 0; i < sources_.size(); ++i) {
+        SourceFrameIdentity identity;
+        const bool has = sources_[i]->peekFrontIdentity(identity);
+        if (!has)
+            anyEmpty = true;
+        // front が要求 frame より先へ進んでいる = この frame はもう来ない。
+        const bool missing = has && identity.frameNumber > outputFrameNumber;
+        if (missing) {
+            anyMissing = true;
+            if (i == 0)
+                firstSourceMissing = true;
+            ++counters_.missingCounts[i];
+            if (i == 0)
+                ++counters_.missingACount;
+            else if (i == 1)
+                ++counters_.missingBCount;
+        } else {
+            allMissing = false;
+        }
+    }
+
+    if (anyMissing) {
+        // 2 source 契約の報告をそのまま保つ。source が 1 本の場合、
+        // 「両方欠落」は表現できないので MissingA を返す。
+        if (allMissing && sources_.size() >= 2)
+            return PairResult::MissingBoth;
+        return firstSourceMissing ? PairResult::MissingA : PairResult::MissingB;
+    }
+    if (anyEmpty)
         return PairResult::WaitingForSource;
 
-    DecodedGpuFrame frameA;
-    DecodedGpuFrame frameB;
-    if (!SourceFrameBuffer::takeExactPair(sourceA_, sourceB_, outputFrameNumber, frameA, frameB)) {
+    std::vector<DecodedGpuFrame> frames;
+    if (!SourceFrameBuffer::takeExactAll(sources_, outputFrameNumber, frames)) {
         ++counters_.mixedFrameRejected;
         return PairResult::MixedFrame;
     }
 
-    const CompositionResult result = coordinator_.compose(outputFrameNumber, {frameA, frameB}, out);
+    const CompositionResult result = coordinator_.compose(outputFrameNumber, frames, out);
     switch (result) {
     case CompositionResult::Accepted:
         ++counters_.pairedCount;
