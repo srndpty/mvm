@@ -759,6 +759,7 @@ set_tests_properties(preview_engine_p5c_native_attach PROPERTIES
     LABELS "p5c;workstation")
 
 set(_p5c_fixture_a "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_av_h264_aac.mp4")
+set(_p5e_fixture_b "${CMAKE_SOURCE_DIR}/tests/assets/p3_audio/p3_video_hevc_b.mp4")
 set(_p5c_fixture_hint "pwsh scripts/make-p3-fixture.ps1")
 set(_p5c_fixture_wrapper "${CMAKE_SOURCE_DIR}/scripts/run-with-required-fixture.ps1")
 
@@ -874,27 +875,42 @@ if(MVM_ENABLE_QT)
     endif()
 
     # --- Phase 5 / P5-E: product composition --------------------------------
-    # P5-E1時点のcapabilityは1 source / 1 layerのままである。ここで固定するのは
-    # product render pathが`CompositorCoordinator`をcomposition epochのauthorityと
-    # して通っていることであり、二source/二layerはP5-E3で足す。
+    # P5-E3: capability 2/2、多層render、per-source seek generation。
     set(_mvm_p5e_product_tests)
     macro(mvm_add_p5e_product_test name)
         cmake_parse_arguments(T "" "" "ARGS" ${ARGN})
         set(_command
             "${MVM_PWSH}" -NoProfile -File "${_p5c_fixture_wrapper}"
-            -RequiredFile "${_p5c_fixture_a}" -Hint "${_p5c_fixture_hint}"
+            -RequiredFile "${_p5c_fixture_a}" -AdditionalRequiredFile "${_p5e_fixture_b}"
+            -Hint "${_p5c_fixture_hint}"
             -Exe "$<TARGET_FILE:mvm_p5e_preview_smoke>")
         if(T_ARGS)
             list(JOIN T_ARGS "|" _child_args)
             list(APPEND _command -ChildArgs "${_child_args}")
         endif()
         mvm_add_test(${name} COMMAND ${_command}
-            PROPERTIES LABELS p5e TIMEOUT 60)
+            PROPERTIES LABELS p5e TIMEOUT 90)
         set_tests_properties(${name} PROPERTIES LABELS "p5e;workstation")
         list(APPEND _mvm_p5e_product_tests ${name})
     endmacro()
 
     mvm_add_p5e_product_test(preview_engine_p5e_product_smoke)
+    mvm_add_p5e_product_test(preview_engine_p5e_single_layer ARGS --single-layer)
+    mvm_add_p5e_product_test(preview_engine_p5e_exceed_source_count
+        ARGS --exceed-source-count)
+    mvm_add_p5e_product_test(preview_engine_p5e_exceed_layer_count
+        ARGS --exceed-layer-count)
+    mvm_add_p5e_product_test(preview_engine_p5e_duplicate_source_layer
+        ARGS --duplicate-source-layer)
+    mvm_add_p5e_product_test(preview_engine_p5e_missing_pair_fail_closed
+        ARGS --fault-missing-pair)
+    mvm_add_p5e_product_test(preview_engine_p5e_remove_released_source
+        ARGS --remove-released-source)
+    mvm_add_p5e_product_test(preview_engine_p5e_seek_two_source ARGS --seek-two-source)
+    mvm_add_p5e_product_test(preview_engine_p5e_seek_partial_generation_fail_closed
+        ARGS --fault-seek-partial-generation)
+    mvm_add_p5e_product_test(preview_engine_p5e_seek_partial_request_fail_closed
+        ARGS --fault-seek-partial-request)
     # compose成立後・提示前にcomposition epoch authorityだけを進め、
     # `validateForDisplay()`が製品経路で効いていることを固定する。
     # この負例が無いと、render pathからvalidateForDisplay()を削除しても
@@ -925,9 +941,9 @@ if(MVM_ENABLE_QT)
         ARGS --remove-fatal-event-order)
 
     list(LENGTH _mvm_p5e_product_tests _mvm_p5e_product_registered)
-    if(NOT _mvm_p5e_product_registered EQUAL 8)
+    if(NOT _mvm_p5e_product_registered EQUAL 17)
         message(FATAL_ERROR
-            "[mvm] P5-E product testの登録数が不正です: ${_mvm_p5e_product_registered}/8")
+            "[mvm] P5-E product testの登録数が不正です: ${_mvm_p5e_product_registered}/17")
     endif()
 endif()
 

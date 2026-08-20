@@ -166,6 +166,7 @@ struct PreviewTelemetry {
     std::uint64_t audioUnderflowCount = 0;
     std::uint64_t decodeFailureCount = 0;
     std::uint64_t eventDeliveryFailureCount = 0;
+    // 現在のaccepted compositionが参照するvideo source群の最大queue depth。
     std::uint32_t currentSourceQueueDepth = 0;
     std::uint32_t gpuRetirementCurrentDepth = 0;
     std::uint32_t gpuRetirementPeakDepth = 0;

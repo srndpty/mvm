@@ -4,7 +4,8 @@
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][string]$RequiredFile,
+    [Parameter(Mandatory)][string[]]$RequiredFile,
+    [string[]]$AdditionalRequiredFile = @(),
     [Parameter(Mandatory)][string]$Hint,
     [string]$Exe = '',
     [string]$ChildArgs = '',
@@ -14,14 +15,17 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-if (-not (Test-Path -LiteralPath $RequiredFile -PathType Leaf)) {
-    Write-Host "必須fixtureがありません: $RequiredFile" -ForegroundColor Red
-    Write-Host "生成コマンド: $Hint" -ForegroundColor Red
-    exit 2
+$requiredFiles = @($RequiredFile) + @($AdditionalRequiredFile)
+foreach ($file in $requiredFiles) {
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+        Write-Host "必須fixtureがありません: $file" -ForegroundColor Red
+        Write-Host "生成コマンド: $Hint" -ForegroundColor Red
+        exit 2
+    }
 }
 
 if ($ProbeOnly) {
-    Write-Host "必須fixtureを確認しました: $RequiredFile"
+    Write-Host "必須fixtureを確認しました: $($requiredFiles -join ', ')"
     exit 0
 }
 
@@ -31,5 +35,5 @@ if (-not $Exe -or -not (Test-Path -LiteralPath $Exe -PathType Leaf)) {
 }
 
 $argv = @($ChildArgs -split '\|' | Where-Object { $_ -ne '' })
-& $Exe $RequiredFile @argv
+& $Exe $requiredFiles @argv
 exit $LASTEXITCODE

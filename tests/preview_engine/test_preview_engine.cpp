@@ -486,12 +486,12 @@ void engineFacadeAndEvents() {
     sink->engine = &engine;
     require(engine.initialize(qualifiedConfig(), dispatcher), "engine initializeに失敗しました");
     const PreviewCapabilities productCapabilities = engine.capabilities();
-    require(productCapabilities.maxQualifiedActiveVideoSources == 1 &&
-                productCapabilities.maxQualifiedCompositionLayers == 1 &&
+    require(productCapabilities.maxQualifiedActiveVideoSources == 2 &&
+                productCapabilities.maxQualifiedCompositionLayers == 2 &&
                 productCapabilities.maxQualifiedActiveAudioSources == 1 &&
                 productCapabilities.qualifiedAudioSampleRate == 48000 &&
                 productCapabilities.qualifiedAudioChannelCount == 2,
-            "公開capabilityがP5-D product wiringの実装上限と一致しません");
+            "公開capabilityがP5-E3 product wiringの実装上限と一致しません");
     require(engine.status().state == PreviewEngineState::WaitingForRenderDevice,
             "logical initialize stateが違います");
     require(engine.attachEventSink(sink), "sink attachに失敗しました");
@@ -870,8 +870,8 @@ void p5cControlAndRenderNegatives() {
     requireFailure(engine.submitComposition(snapshot({layer(99)})),
                    PreviewErrorCategory::InvalidSource, "unknown sourceを受理しました");
     requireFailure(engine.submitComposition(snapshot({layer(1), layer(2)})),
-                   PreviewErrorCategory::UnsupportedCapability,
-                   "P5-Cでtwo-layer product submissionを受理しました");
+                   PreviewErrorCategory::InvalidSource,
+                   "未登録sourceを含むtwo-layer submissionを受理しました");
     requireFailure(engine.pause(), PreviewErrorCategory::InvalidState,
                    "Playing以外のpauseを受理しました");
     // P5-D3でseekは受理対象になった。ただし引数検査はsource/compositionの有無より
@@ -1028,12 +1028,12 @@ void p5dAudioDomainAndCapabilities() {
             "qualified audio channel数が2として公開されていません");
     require(!capabilities.deviceRecoverySupported,
             "device recoveryをsupport済みとして公開しました");
-    // P5-D4 capability確定。P5-Dで閉じたenvelopeをliteralで固定する。
+    // P5-E3 capability確定。active source数とlayer数は独立したliteralで固定する。
     // active source数とlayer数は別capabilityとして検査する (contract §21)。
-    require(capabilities.maxQualifiedActiveVideoSources == 1,
-            "qualified active video source数が1として公開されていません");
-    require(capabilities.maxQualifiedCompositionLayers == 1,
-            "qualified composition layer数が1として公開されていません");
+    require(capabilities.maxQualifiedActiveVideoSources == 2,
+            "qualified active video source数が2として公開されていません");
+    require(capabilities.maxQualifiedCompositionLayers == 2,
+            "qualified composition layer数が2として公開されていません");
     require(!capabilities.duplicateSourceLayersSupported,
             "同一sourceの複数layer配置をsupport済みとして公開しました");
     require(capabilities.qualifiedOutputFrameRate.numerator == 60 &&

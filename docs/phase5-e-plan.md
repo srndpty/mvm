@@ -1,6 +1,6 @@
 # P5-E 実装プラン — Product composition (二source / 二layer)
 
-- 状態: **P5-E1 / P5-E2 実装完了 / E3〜E4 未着手**
+- 状態: **P5-E1 / P5-E2 / P5-E3 実装完了 / E4 未着手**
 - 親計画: [Phase 5 計画](phase5-plan.md) §10
 - 製品契約: [PreviewEngine 製品契約](preview-engine-contract.md)
 - 起点commit: `2de8e2d` (P5-D closure merge)
@@ -498,6 +498,61 @@ product (`apps/p5e_preview_smoke`、`-L p5e`、8 本):
 - 新規 negative: exact pair 不足時に old/latest frame を使わない
 - 新規 negative: stale composition epoch を提示しない
 - 新規 negative: unknown / removed source を参照する snapshot を拒否
+
+### E3 実装結果 (実測)
+
+- ordinary CTest は ucrt64-release **473/473 PASS**、ucrt64-debug **473/473 PASS**
+- P5-E product test は **17/17 PASS**。二source / 二layer、1-layer regression、
+  source/layer上限、duplicate source layer拒否、exact pair不足、参照解放後のremove、
+  二source exact seek、片側generation不一致、N-way seek requestの部分受理を個別のtestとして登録した
+- P5-C regression **11/11 PASS**、P5-D regression **13/13 PASS**
+- full build (`pwsh scripts/build.ps1`) PASS
+
+計画から変えた点と、その理由を記録する。
+
+1. **P5-C smokeの「2 source目は拒否」をE3 capabilityへ追随させた。**
+   §8では`apps/p5c_preview_smoke`を変更しないとしていたが、実リポジトリのP5-C smokeは
+   2 source目が`UnsupportedCapability`になることを直接assertしていた。この期待値は
+   `maxQualifiedActiveVideoSources == 2`への引き上げと両立しない。P5-Cの1-layer render検査は
+   変えず、2 source目の受理を確認後、composition提出前に`removeSource()`で解放してから
+   従来の1-source経路を続ける形へ最小限追随させた。
+
+2. **複数fixtureのpreflightはwrapper自身を配列対応にした。**
+   `run-with-required-fixture.ps1`へ`AdditionalRequiredFile`を追加し、A/Bを一度に検査してから
+   子processへ同じ順序で渡す。contract testには「先頭が存在しても後続が欠如すればexit 2」
+   となるnegativeを追加した。wrapperを二段にして外側だけ通る状態を作らないためである。
+
+3. **pair不足と片側generation不一致は完成済みerrorを注入していない。**
+   pair不足は対象workerをpauseしてbufferをclearし、停止直前のin-flight decodeが収束した後の
+   提示数が増えないことを検査する。generation負例は片側sourceの期待generationだけをずらし、
+   通常のper-source照合とdeadline経路を通して`seekCompletedCount == 0`を固定する。
+
+4. **seek request/completionのidentityをpublic source IDごとのmapへ移した。**
+   全video workerへrequestを発行し、一つでも拒否された場合はsession-fatalとする。
+   completionは全workerのexact frameとgenerationが揃うまでdecode-readyにせず、提示時にも
+   composed layerのinternal IDをpublic IDへ逆引きしてsourceごとの期待generationと照合する。
+
+5. **implementation reviewで指摘されたmulti-source seekの観測穴を閉じた。**
+   `--seek-two-source`はA-only paused seekでAのgenerationだけを先に進め、B登録後に
+   `A generation != B generation`を診断値からassertする。その状態で二source seekを行い、
+   requested frame提示だけでなく`Playing`復帰、`seekCancelledByShutdownCount == 0`、復帰後8 frameの
+   継続提示まで待ってからshutdownする。これによりAのcompletion generationをBへコピーする実装や、
+   resume前shutdownを正常完了扱いする実装は通らない。
+
+6. **N-way seek requestの部分受理を独立したnegativeで固定した。**
+   `--fault-seek-partial-request`はBのseek mailboxだけを事前にbusyにし、public ID順でAが
+   Acceptedになった後にBを`RejectedBusy`へする。`SeekFailure / Seek / FatalToSession`、error source B、
+   engine loopのaccepted数1、seek completion 0、全worker join、lifecycle violation 0を要求する。
+
+7. **layer count negativeをduplicate policyから独立させた。**
+   test seamでsource上限だけを3へ広げ、layer上限2とduplicate=falseは維持する。
+   A/B/Cの3 distinct sourceによる3-layer snapshotをproduct APIへ提出するため、layer-count checkを
+   削除してもduplicate拒否へ流れて同じcategoryでPASSすることはない。
+
+8. **partial-generation fatalのroot causeを固定した。**
+   terminal `Error`だけでなく、`SeekFailure / Seek / FatalToSession`と
+   `seekRequestCount == 1`、`seekDecodeReadyCount == 1`、`seekCompletedCount == 0`、
+   generation reject 1件以上を要求する。無関係なfatalによるterminal到達ではPASSしない。
 
 ---
 

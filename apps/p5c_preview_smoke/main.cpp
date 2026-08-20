@@ -302,6 +302,11 @@ int main(int argc, char** argv) {
                 return;
             }
             const auto second = engine->addSource(descriptor);
+            // P5-E3でvideo source capabilityは2へ進んだ。P5-Cの1-layer経路を
+            // 維持するため、二つ目が受理されたことを確認して未参照のまま解放する。
+            const auto removedSecond = second ? engine->removeSource(second.value())
+                                              : mvm::preview::Result<void>::failure(
+                                                    second.error());
             const auto empty =
                 engine->submitComposition(std::make_shared<mvm::preview::CompositionSnapshot>());
             auto unknownSnapshot = std::make_shared<mvm::preview::CompositionSnapshot>();
@@ -314,10 +319,8 @@ int main(int argc, char** argv) {
             const auto twoLayer = engine->submitComposition(twoLayerSnapshot);
             const auto playWithoutComposition = engine->play();
             const auto pauseOutsidePlaying = engine->pause();
-            if (second || empty || unknown || twoLayer || playWithoutComposition ||
-                pauseOutsidePlaying ||
-                second.error().category !=
-                    mvm::preview::PreviewErrorCategory::UnsupportedCapability ||
+            if (!second || !removedSecond || empty || unknown || twoLayer ||
+                playWithoutComposition || pauseOutsidePlaying ||
                 empty.error().category != mvm::preview::PreviewErrorCategory::CompositionFailure ||
                 unknown.error().category != mvm::preview::PreviewErrorCategory::InvalidSource ||
                 twoLayer.error().category !=

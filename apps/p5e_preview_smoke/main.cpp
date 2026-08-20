@@ -1,15 +1,10 @@
 // P5-E product composition の検証アプリ。
-//
-// P5-E1 時点では capability が 1/1 のままなので、ここで固定するのは
-// 「product render path が `CompositorCoordinator` を composition epoch の
-// authority として通っていること」である。二 source / 二 layer は P5-E3 で足す。
+// P5-E3では二source / 二layer、per-source seek generation、capability境界を
+// product公開経路から固定する。
 //
 // `--remove-*` は P5-E2 の source removal guard を製品経路で固定する。
-// capability が 1 video source のうちは、composition を submit した時点で
-// その source の参照は二度と外れない (差し替え先の source が存在しない) ので、
-// **video source の削除成功は composition 提出前にしか到達しない**。
-// 「参照が外れた source を削除できる」完全な経路 (A -> B へ差し替えてから A を削除)
-// は capability 2 が要る P5-E3 で足す。
+// `--remove-released-source`はAからBへ実際に提示を切り替えた後でAを解放し、
+// active/pending参照guardが単なる登録有無判定ではないことを固定する。
 //
 // 特に `--fault-stale-composition-epoch` は、compose 成立後・提示前に
 // `CompositionEpoch` だけを進め、`validateForDisplay()` が製品経路で実際に
@@ -73,9 +68,29 @@ public:
     bool sequenceViolation = false;
 };
 
-enum class Stage { WaitDevice, WaitInitial, WaitRecovered, WaitResume, WaitShutdown };
+enum class Stage {
+    WaitDevice,
+    WaitPrepareSeek,
+    WaitInitial,
+    WaitRecovered,
+    WaitResume,
+    WaitReplacement,
+    WaitMissingPair,
+    WaitSeek,
+    WaitSeekContinued,
+    WaitShutdown
+};
 enum class Fault {
     None,
+    SingleLayer,
+    ExceedSourceCount,
+    ExceedLayerCount,
+    DuplicateSourceLayer,
+    MissingPair,
+    RemoveReleasedSource,
+    SeekTwoSource,
+    SeekPartialGeneration,
+    SeekPartialRequest,
     StaleCompositionEpoch,
     RemoveUnreferencedSource,
     RemoveReferencedSource,
@@ -84,6 +99,14 @@ enum class Fault {
     RemoveShutdownRace,
     RemoveFatalEventOrder
 };
+
+bool usesTwoVideoSources(Fault fault) {
+    return fault == Fault::None || fault == Fault::ExceedSourceCount ||
+           fault == Fault::ExceedLayerCount || fault == Fault::DuplicateSourceLayer ||
+           fault == Fault::MissingPair || fault == Fault::RemoveReleasedSource ||
+           fault == Fault::SeekTwoSource || fault == Fault::SeekPartialGeneration ||
+           fault == Fault::SeekPartialRequest;
+}
 
 // audio sourceを伴うremoval faultかどうか。
 bool needsAudioSource(Fault fault) {
@@ -103,39 +126,69 @@ int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     app.setQuitOnLastWindowClosed(false);
     const QStringList arguments = app.arguments();
-    if (arguments.size() < 2 || arguments.size() > 3) {
-        std::fprintf(stderr, "使い方: mvm_p5e_preview_smoke <fixture-a-path> "
-                             "[--fault-stale-composition-epoch|--remove-unreferenced-source"
+    if (arguments.size() < 3 || arguments.size() > 4) {
+        std::fprintf(stderr, "使い方: mvm_p5e_preview_smoke <fixture-a-path> <fixture-b-path> "
+                             "[--single-layer|--exceed-source-count|--exceed-layer-count"
+                             "|--duplicate-source-layer|--fault-missing-pair"
+                             "|--remove-released-source|--seek-two-source"
+                             "|--fault-seek-partial-generation|--fault-seek-partial-request"
+                             "|--fault-stale-composition-epoch|--remove-unreferenced-source"
                              "|--remove-referenced-source|--remove-audio-source"
                              "|--fault-remove-audio-stop|--remove-shutdown-race"
                              "|--remove-fatal-event-order]\n");
         return 2;
     }
     Fault fault = Fault::None;
-    if (arguments.size() == 3) {
-        if (arguments[2] == "--fault-stale-composition-epoch")
+    if (arguments.size() == 4) {
+        if (arguments[3] == "--single-layer")
+            fault = Fault::SingleLayer;
+        else if (arguments[3] == "--exceed-source-count")
+            fault = Fault::ExceedSourceCount;
+        else if (arguments[3] == "--exceed-layer-count")
+            fault = Fault::ExceedLayerCount;
+        else if (arguments[3] == "--duplicate-source-layer")
+            fault = Fault::DuplicateSourceLayer;
+        else if (arguments[3] == "--fault-missing-pair")
+            fault = Fault::MissingPair;
+        else if (arguments[3] == "--remove-released-source")
+            fault = Fault::RemoveReleasedSource;
+        else if (arguments[3] == "--seek-two-source")
+            fault = Fault::SeekTwoSource;
+        else if (arguments[3] == "--fault-seek-partial-generation")
+            fault = Fault::SeekPartialGeneration;
+        else if (arguments[3] == "--fault-seek-partial-request")
+            fault = Fault::SeekPartialRequest;
+        else if (arguments[3] == "--fault-stale-composition-epoch")
             fault = Fault::StaleCompositionEpoch;
-        else if (arguments[2] == "--remove-unreferenced-source")
+        else if (arguments[3] == "--remove-unreferenced-source")
             fault = Fault::RemoveUnreferencedSource;
-        else if (arguments[2] == "--remove-referenced-source")
+        else if (arguments[3] == "--remove-referenced-source")
             fault = Fault::RemoveReferencedSource;
-        else if (arguments[2] == "--remove-audio-source")
+        else if (arguments[3] == "--remove-audio-source")
             fault = Fault::RemoveAudioSource;
-        else if (arguments[2] == "--fault-remove-audio-stop")
+        else if (arguments[3] == "--fault-remove-audio-stop")
             fault = Fault::RemoveAudioStopFailure;
-        else if (arguments[2] == "--remove-shutdown-race")
+        else if (arguments[3] == "--remove-shutdown-race")
             fault = Fault::RemoveShutdownRace;
-        else if (arguments[2] == "--remove-fatal-event-order")
+        else if (arguments[3] == "--remove-fatal-event-order")
             fault = Fault::RemoveFatalEventOrder;
         else
             return 2;
     }
     QFile fixture(arguments[1]);
+    QFile fixtureB(arguments[2]);
     QCryptographicHash fixtureHash(QCryptographicHash::Sha256);
     if (!fixture.open(QIODevice::ReadOnly) || !fixtureHash.addData(&fixture) ||
         fixtureHash.result().toHex() !=
             "d398114c38806f39670df51dfabb0095d462cbc35286ea1467901d4007cf0308") {
         std::fprintf(stderr, "fixture AのSHA-256がauthoritative値と一致しません\n");
+        return 2;
+    }
+    QCryptographicHash fixtureBHash(QCryptographicHash::Sha256);
+    if (!fixtureB.open(QIODevice::ReadOnly) || !fixtureBHash.addData(&fixtureB) ||
+        fixtureBHash.result().toHex() !=
+            "fe7cd1a45d101d363cb3930497601efd41dd55fd36c194acf8f24e3e4728b479") {
+        std::fprintf(stderr, "fixture BのSHA-256がauthoritative値と一致しません\n");
         return 2;
     }
 
@@ -144,6 +197,13 @@ int main(int argc, char** argv) {
     auto sink = std::make_shared<SmokeSink>();
     if (!engine->initialize({{{60, 1}}}, dispatcher) || !engine->attachEventSink(sink))
         return 3;
+    const auto capabilities = engine->capabilities();
+    if (capabilities.maxQualifiedActiveVideoSources != 2 ||
+        capabilities.maxQualifiedCompositionLayers != 2 ||
+        capabilities.duplicateSourceLayersSupported) {
+        std::fprintf(stderr, "P5-E3 capabilityが2/2/duplicate=falseではありません\n");
+        return 3;
+    }
 
     QQuickWindow window;
     window.setWidth(1920);
@@ -159,10 +219,18 @@ int main(int argc, char** argv) {
     std::uint64_t presentedAtInjection = 0;
     std::int64_t rejectedFrame = -1;
     mvm::preview::PreviewSourceId videoSource{};
+    mvm::preview::PreviewSourceId videoSourceB{};
+    mvm::preview::PreviewSourceId videoSourceC{};
     mvm::preview::PreviewSourceId firstSource{};
     mvm::preview::PreviewSourceId audioSource{};
     std::uint64_t presentedAtPause = 0;
+    std::chrono::steady_clock::time_point modeStarted;
+    bool missingPairSettled = false;
     bool removalChecked = false;
+    bool partialRequestFailureValid = false;
+    std::uint64_t seekRequestsBeforeTwoSource = 0;
+    std::uint64_t seekCompletedBeforeTwoSource = 0;
+    std::uint64_t presentedAfterSeek = 0;
     mvm::preview::internal::P5CRuntimeDiagnostics afterRemoval;
     mvm::preview::internal::P5CRuntimeDiagnostics activeDiagnostics;
     const auto started = std::chrono::steady_clock::now();
@@ -186,6 +254,14 @@ int main(int argc, char** argv) {
             mvm::preview::PreviewSourceDescriptor descriptor;
             descriptor.mediaPath = arguments[1].toStdWString();
             descriptor.videoEnabled = true;
+
+            if (fault == Fault::ExceedLayerCount &&
+                !mvm::preview::internal::PreviewRenderPort::setVideoSourceLimitForTest(*engine,
+                                                                                       3)) {
+                exitCode = 49;
+                app.quit();
+                return;
+            }
 
             if (fault == Fault::RemoveUnreferencedSource) {
                 // composition から参照される前の source は解放できる。
@@ -233,6 +309,57 @@ int main(int argc, char** argv) {
                 app.quit();
                 return;
             }
+            if (fault == Fault::SeekTwoSource) {
+                auto aOnly = std::make_shared<mvm::preview::CompositionSnapshot>();
+                aOnly->layers.push_back(
+                    {videoSource, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
+                const auto aOnlyToken = engine->submitComposition(aOnly);
+                if (!aOnlyToken || aOnlyToken.value().id.value != 1 ||
+                    aOnlyToken.value().revision != 1 || !engine->seek({60})) {
+                    std::fprintf(stderr, "A-only paused seekを開始できません\n");
+                    exitCode = 50;
+                    app.quit();
+                    return;
+                }
+                accepted = aOnlyToken.value();
+                stage = Stage::WaitPrepareSeek;
+                return;
+            }
+            if (usesTwoVideoSources(fault)) {
+                mvm::preview::PreviewSourceDescriptor descriptorB;
+                descriptorB.mediaPath = arguments[2].toStdWString();
+                descriptorB.videoEnabled = true;
+                const auto second = engine->addSource(descriptorB);
+                if (!second) {
+                    std::fprintf(stderr, "二つ目のsource open失敗: %s\n",
+                                 second.error().detail.c_str());
+                    exitCode = 31;
+                    app.quit();
+                    return;
+                }
+                videoSourceB = second.value();
+                if (fault == Fault::ExceedSourceCount) {
+                    const auto third = engine->addSource(descriptor);
+                    if (third || third.error().category !=
+                                     mvm::preview::PreviewErrorCategory::UnsupportedCapability) {
+                        std::fprintf(stderr, "capabilityを超えるvideo sourceを受理しました\n");
+                        exitCode = 32;
+                        app.quit();
+                        return;
+                    }
+                }
+                if (fault == Fault::ExceedLayerCount) {
+                    const auto third = engine->addSource(descriptorB);
+                    if (!third) {
+                        std::fprintf(stderr, "三つ目のsource open失敗: %s\n",
+                                     third.error().detail.c_str());
+                        exitCode = 51;
+                        app.quit();
+                        return;
+                    }
+                    videoSourceC = third.value();
+                }
+            }
             if (needsAudioSource(fault)) {
                 // audio-onlyのsourceはcompositionへ参加しないので、video再生中でも
                 // 参照は外れている。authoritative audio sourceの解放経路を固定する。
@@ -262,9 +389,57 @@ int main(int argc, char** argv) {
                 return;
             }
             auto snapshot = std::make_shared<mvm::preview::CompositionSnapshot>();
-            snapshot->layers.push_back({source.value(), {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
+            snapshot->layers.push_back(
+                {source.value(), {0, 0, usesTwoVideoSources(fault) ? 0.5F : 1.0F, 1},
+                 {0, 0, 1, 1}, 1.0F});
+            if (usesTwoVideoSources(fault)) {
+                snapshot->layers.push_back(
+                    {videoSourceB, {0.5F, 0, 0.5F, 1}, {0, 0, 1, 1}, 1.0F});
+            }
+            if (fault == Fault::ExceedLayerCount) {
+                auto excessive = std::make_shared<mvm::preview::CompositionSnapshot>(*snapshot);
+                excessive->layers.push_back(
+                    {videoSourceC, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
+                const auto rejected = engine->submitComposition(excessive);
+                if (rejected || rejected.error().category !=
+                                    mvm::preview::PreviewErrorCategory::UnsupportedCapability) {
+                    std::fprintf(stderr, "capabilityを超えるlayer数を受理しました\n");
+                    exitCode = 33;
+                    app.quit();
+                    return;
+                }
+            }
+            if (fault == Fault::DuplicateSourceLayer) {
+                auto duplicate = std::make_shared<mvm::preview::CompositionSnapshot>();
+                duplicate->layers.push_back(
+                    {videoSource, {0, 0, 0.5F, 1}, {0, 0, 1, 1}, 1.0F});
+                duplicate->layers.push_back(
+                    {videoSource, {0.5F, 0, 0.5F, 1}, {0, 0, 1, 1}, 1.0F});
+                const auto rejected = engine->submitComposition(duplicate);
+                if (rejected || rejected.error().category !=
+                                    mvm::preview::PreviewErrorCategory::UnsupportedCapability) {
+                    std::fprintf(stderr, "同一sourceの重複layerを受理しました\n");
+                    exitCode = 34;
+                    app.quit();
+                    return;
+                }
+            }
+            auto unknown = std::make_shared<mvm::preview::CompositionSnapshot>();
+            unknown->layers.push_back(
+                {{videoSourceB.value + 1000}, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
+            const auto unknownResult = engine->submitComposition(unknown);
+            if (unknownResult || unknownResult.error().category !=
+                                     mvm::preview::PreviewErrorCategory::InvalidSource) {
+                std::fprintf(stderr, "未登録sourceを含むcompositionを受理しました\n");
+                exitCode = 35;
+                app.quit();
+                return;
+            }
             auto composition = engine->submitComposition(snapshot);
-            if (!composition || !engine->play()) {
+            const auto noOp = engine->submitComposition(snapshot);
+            if (!composition || !noOp || noOp.value() != composition.value() ||
+                composition.value().id.value != 1 || composition.value().revision != 1 ||
+                !engine->play()) {
                 exitCode = 5;
                 app.quit();
                 return;
@@ -273,7 +448,132 @@ int main(int argc, char** argv) {
             stage = Stage::WaitInitial;
             return;
         }
+        if (stage == Stage::WaitPrepareSeek) {
+            const auto prepared =
+                mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+            if (status.state != mvm::preview::PreviewEngineState::ReadyPaused ||
+                prepared.seekCompletedCount != 1) {
+                return;
+            }
+            const auto generationA = prepared.videoSourceGenerations.find(videoSource.value);
+            if (generationA == prepared.videoSourceGenerations.end()) {
+                exitCode = 52;
+                app.quit();
+                return;
+            }
+
+            mvm::preview::PreviewSourceDescriptor descriptorB;
+            descriptorB.mediaPath = arguments[2].toStdWString();
+            descriptorB.videoEnabled = true;
+            const auto second = engine->addSource(descriptorB);
+            if (!second) {
+                exitCode = 53;
+                app.quit();
+                return;
+            }
+            videoSourceB = second.value();
+            const auto divergent =
+                mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+            const auto currentA = divergent.videoSourceGenerations.find(videoSource.value);
+            const auto generationB = divergent.videoSourceGenerations.find(videoSourceB.value);
+            if (currentA == divergent.videoSourceGenerations.end() ||
+                generationB == divergent.videoSourceGenerations.end() ||
+                currentA->second != generationA->second || currentA->second == generationB->second) {
+                std::fprintf(stderr, "A/Bのseek前generationが分岐していません\n");
+                exitCode = 54;
+                app.quit();
+                return;
+            }
+
+            auto twoSource = std::make_shared<mvm::preview::CompositionSnapshot>();
+            twoSource->layers.push_back(
+                {videoSource, {0, 0, 0.5F, 1}, {0, 0, 1, 1}, 1.0F});
+            twoSource->layers.push_back(
+                {videoSourceB, {0.5F, 0, 0.5F, 1}, {0, 0, 1, 1}, 1.0F});
+            const auto composition = engine->submitComposition(twoSource);
+            if (!composition || composition.value().id.value != 2 ||
+                composition.value().revision != 2 || !engine->play()) {
+                exitCode = 55;
+                app.quit();
+                return;
+            }
+            accepted = composition.value();
+            stage = Stage::WaitInitial;
+            return;
+        }
         if (stage == Stage::WaitInitial && telemetry.presentedFrameCount >= 12) {
+            if (fault == Fault::MissingPair) {
+                if (!mvm::preview::internal::PreviewRenderPort::suspendVideoSourceForTest(
+                        *engine, videoSourceB)) {
+                    exitCode = 36;
+                    app.quit();
+                    return;
+                }
+                modeStarted = now;
+                stage = Stage::WaitMissingPair;
+                return;
+            }
+            if (fault == Fault::RemoveReleasedSource) {
+                auto replacement = std::make_shared<mvm::preview::CompositionSnapshot>();
+                replacement->layers.push_back(
+                    {videoSourceB, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
+                const auto replacementToken = engine->submitComposition(replacement);
+                if (!replacementToken) {
+                    exitCode = 37;
+                    app.quit();
+                    return;
+                }
+                accepted = replacementToken.value();
+                stage = Stage::WaitReplacement;
+                return;
+            }
+            if (fault == Fault::SeekTwoSource || fault == Fault::SeekPartialGeneration ||
+                fault == Fault::SeekPartialRequest) {
+                activeDiagnostics =
+                    mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+                seekRequestsBeforeTwoSource = activeDiagnostics.seekRequestCount;
+                seekCompletedBeforeTwoSource = activeDiagnostics.seekCompletedCount;
+                if (fault == Fault::SeekPartialGeneration &&
+                    !mvm::preview::internal::PreviewRenderPort::
+                        injectSeekVideoGenerationMismatchForTest(*engine, videoSourceB)) {
+                    exitCode = 38;
+                    app.quit();
+                    return;
+                }
+                if (fault == Fault::SeekPartialRequest) {
+                    if (!mvm::preview::internal::PreviewRenderPort::armVideoSeekRequestForTest(
+                            *engine, videoSourceB, {240})) {
+                        exitCode = 56;
+                        app.quit();
+                        return;
+                    }
+                    const auto rejected = engine->seek({120});
+                    partialRequestFailureValid =
+                        !rejected &&
+                        rejected.error().category ==
+                            mvm::preview::PreviewErrorCategory::SeekFailure &&
+                        rejected.error().operation == mvm::preview::PreviewOperation::Seek &&
+                        rejected.error().severity ==
+                            mvm::preview::PreviewErrorSeverity::FatalToSession &&
+                        rejected.error().source == videoSourceB;
+                    if (!partialRequestFailureValid) {
+                        std::fprintf(stderr, "一部だけ受理されたseek requestを拒否できません\n");
+                        exitCode = 57;
+                        app.quit();
+                        return;
+                    }
+                    stage = Stage::WaitShutdown;
+                    return;
+                }
+                if (!engine->seek({120})) {
+                    exitCode = 39;
+                    app.quit();
+                    return;
+                }
+                modeStarted = now;
+                stage = Stage::WaitSeek;
+                return;
+            }
             if (checksRemovalAfterPause(fault)) {
                 // removalはReadyPausedでのみ受理する。Playing中の拒否も同時に固定する。
                 const auto whilePlaying = engine->removeSource(videoSource);
@@ -577,6 +877,129 @@ int main(int argc, char** argv) {
             stage = Stage::WaitShutdown;
             return;
         }
+        if (stage == Stage::WaitReplacement) {
+            if (!status.lastPresentedComposition || *status.lastPresentedComposition != accepted)
+                return;
+            if (!engine->pause()) {
+                exitCode = 40;
+                app.quit();
+                return;
+            }
+            const auto removed = engine->removeSource(videoSource);
+            auto removedSnapshot = std::make_shared<mvm::preview::CompositionSnapshot>();
+            removedSnapshot->layers.push_back(
+                {videoSource, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
+            const auto rejected = engine->submitComposition(removedSnapshot);
+            if (!removed || rejected ||
+                rejected.error().category != mvm::preview::PreviewErrorCategory::InvalidSource) {
+                std::fprintf(stderr, "参照解放後のsource removalが成立しません\n");
+                exitCode = 41;
+                app.quit();
+                return;
+            }
+            removalChecked = true;
+            activeDiagnostics =
+                mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+            if (!engine->requestShutdown()) {
+                exitCode = 42;
+                app.quit();
+                return;
+            }
+            stage = Stage::WaitShutdown;
+            return;
+        }
+        if (stage == Stage::WaitMissingPair) {
+            // pause直前にdecode中だった1 frameがbufferへ到着し得る。workerが
+            // pauseを観測する時間を置いて再度clearし、その後を観測窓にする。
+            if (!missingPairSettled && now - modeStarted >= std::chrono::milliseconds(250)) {
+                if (!mvm::preview::internal::PreviewRenderPort::suspendVideoSourceForTest(
+                        *engine, videoSourceB)) {
+                    exitCode = 48;
+                    app.quit();
+                    return;
+                }
+                presentedAtInjection = engine->telemetry().presentedFrameCount;
+                modeStarted = now;
+                missingPairSettled = true;
+                return;
+            }
+            if (!missingPairSettled)
+                return;
+            if (now - modeStarted < std::chrono::milliseconds(500))
+                return;
+            if (telemetry.presentedFrameCount != presentedAtInjection) {
+                std::fprintf(stderr, "exact pair不足時にframeを代用して提示しました\n");
+                exitCode = 43;
+                app.quit();
+                return;
+            }
+            activeDiagnostics =
+                mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+            if (!engine->requestShutdown()) {
+                exitCode = 44;
+                app.quit();
+                return;
+            }
+            stage = Stage::WaitShutdown;
+            return;
+        }
+        if (stage == Stage::WaitSeek) {
+            const auto seekDiagnostics =
+                mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+            if (fault == Fault::SeekPartialGeneration) {
+                if (status.state != mvm::preview::PreviewEngineState::Error)
+                    return;
+                const bool classified = status.lastError &&
+                                        status.lastError->category ==
+                                            mvm::preview::PreviewErrorCategory::SeekFailure &&
+                                        status.lastError->operation ==
+                                            mvm::preview::PreviewOperation::Seek &&
+                                        status.lastError->severity ==
+                                            mvm::preview::PreviewErrorSeverity::FatalToSession;
+                if (!classified || seekDiagnostics.seekRequestCount != 1 ||
+                    seekDiagnostics.seekDecodeReadyCount != 1 ||
+                    seekDiagnostics.seekCompletedCount != 0 ||
+                    seekDiagnostics.seekStaleGenerationRejectCount == 0) {
+                    std::fprintf(stderr, "片側generation不一致のseekを完了扱いしました\n");
+                    exitCode = 45;
+                    app.quit();
+                    return;
+                }
+                stage = Stage::WaitShutdown;
+                return;
+            }
+            if (seekDiagnostics.seekRequestCount != seekRequestsBeforeTwoSource + 1 ||
+                seekDiagnostics.seekCompletedCount != seekCompletedBeforeTwoSource + 1 ||
+                status.state != mvm::preview::PreviewEngineState::Playing ||
+                seekDiagnostics.seekCancelledByShutdownCount != 0)
+                return;
+            if (seekDiagnostics.lastSeekPresentedFrame != 120 ||
+                !status.lastPresentedComposition || *status.lastPresentedComposition != accepted) {
+                std::fprintf(stderr, "二source exact seekのcompletionが不正です\n");
+                exitCode = 46;
+                app.quit();
+                return;
+            }
+            presentedAfterSeek = telemetry.presentedFrameCount;
+            stage = Stage::WaitSeekContinued;
+            return;
+        }
+        if (stage == Stage::WaitSeekContinued) {
+            if (status.state != mvm::preview::PreviewEngineState::Playing ||
+                telemetry.presentedFrameCount < presentedAfterSeek + 8) {
+                return;
+            }
+            activeDiagnostics =
+                mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+            if (activeDiagnostics.seekCancelledByShutdownCount != 0 ||
+                !engine->requestShutdown()) {
+                exitCode = 47;
+                app.quit();
+                return;
+            }
+            stage = Stage::WaitShutdown;
+            return;
+        }
         if (stage == Stage::WaitResume) {
             if (telemetry.presentedFrameCount < presentedAtPause + 8)
                 return;
@@ -654,7 +1077,9 @@ int main(int argc, char** argv) {
             // fatalを伴うfaultはterminal Errorで終わる。
             const bool fatalFault = fault == Fault::RemoveAudioStopFailure ||
                                     fault == Fault::RemoveShutdownRace ||
-                                    fault == Fault::RemoveFatalEventOrder;
+                                    fault == Fault::RemoveFatalEventOrder ||
+                                    fault == Fault::SeekPartialGeneration ||
+                                    fault == Fault::SeekPartialRequest;
             // event streamの順序を固定する。ShuttingDownはErrorより前に出る。
             // state commitとmailbox insertionをlinearizeしていないと、先に進んだ
             // teardownのErrorがShuttingDownを追い越し得る。
@@ -701,9 +1126,37 @@ int main(int argc, char** argv) {
                           sink->errors.front().category ==
                               mvm::preview::PreviewErrorCategory::DeviceFailure &&
                           diagnostics.audioTransportFailureCount == 0
+                : fault == Fault::SeekPartialGeneration
+                    ? sink->errors.size() == 1 &&
+                          sink->errors.front().category ==
+                              mvm::preview::PreviewErrorCategory::SeekFailure &&
+                          sink->errors.front().operation == mvm::preview::PreviewOperation::Seek &&
+                          sink->errors.front().severity ==
+                              mvm::preview::PreviewErrorSeverity::FatalToSession &&
+                          diagnostics.seekRequestCount == 1 &&
+                          diagnostics.seekDecodeReadyCount == 1 &&
+                          diagnostics.seekCompletedCount == 0 &&
+                          diagnostics.seekStaleGenerationRejectCount > 0
+                : fault == Fault::SeekPartialRequest
+                    ? partialRequestFailureValid && sink->errors.size() == 1 &&
+                          sink->errors.front().category ==
+                              mvm::preview::PreviewErrorCategory::SeekFailure &&
+                          sink->errors.front().operation ==
+                              mvm::preview::PreviewOperation::Seek &&
+                          sink->errors.front().severity ==
+                              mvm::preview::PreviewErrorSeverity::FatalToSession &&
+                          sink->errors.front().source == videoSourceB &&
+                          diagnostics.seekVideoRequestAcceptedCount == 1 &&
+                          diagnostics.seekRequestCount == 0 &&
+                          diagnostics.seekCompletedCount == 0
                     : sink->errors.empty();
+            const bool removalFault =
+                fault == Fault::RemoveUnreferencedSource ||
+                fault == Fault::RemoveReferencedSource || fault == Fault::RemoveAudioSource ||
+                fault == Fault::RemoveAudioStopFailure || fault == Fault::RemoveShutdownRace ||
+                fault == Fault::RemoveFatalEventOrder || fault == Fault::RemoveReleasedSource;
             const bool removalPass =
-                (fault == Fault::None || fault == Fault::StaleCompositionEpoch)
+                !removalFault
                     ? !removalChecked
                     : removalChecked &&
                           (fault != Fault::RemoveAudioSource ||
@@ -718,6 +1171,12 @@ int main(int argc, char** argv) {
                           // 中断されたremovalはcommitされない。
                           (!fatalFault || (afterRemoval.registeredAudioSourceCount == 1 &&
                                            diagnostics.registeredAudioSourceCount == 1));
+            const std::uint32_t expectedLayerCount =
+                fault == Fault::RemoveReleasedSource || !usesTwoVideoSources(fault) ? 1U : 2U;
+            const std::uint64_t expectedVideoSourceCount =
+                fault == Fault::RemoveReleasedSource
+                    ? 1U
+                    : fault == Fault::ExceedLayerCount ? 3U : usesTwoVideoSources(fault) ? 2U : 1U;
             const bool pass =
                 status.state == (fatalFault ? mvm::preview::PreviewEngineState::Error
                                             : mvm::preview::PreviewEngineState::Shutdown) &&
@@ -725,11 +1184,11 @@ int main(int argc, char** argv) {
                 !sink->sequenceViolation && !sink->frames.empty() &&
                 // PresentedFrameInfoはactual accepted tokenとactual layer数を運ぶ。
                 sink->frames.back().composition == accepted &&
-                sink->frames.back().activeLayerCount == 1 &&
+                sink->frames.back().activeLayerCount == expectedLayerCount &&
                 diagnostics.distinctPresentedSourceFrameCount >= 12 &&
                 activeDiagnostics.nativeDeviceAttached && activeDiagnostics.d3d11vaActive &&
                 activeDiagnostics.decodeRenderSameDevice &&
-                activeDiagnostics.registeredVideoSourceCount == 1 &&
+                activeDiagnostics.registeredVideoSourceCount == expectedVideoSourceCount &&
                 diagnostics.fullCpuReadbackCount == 0 && diagnostics.fullFrameGpuCopyCount == 0 &&
                 diagnostics.softwareFallbackCount == 0 && diagnostics.staleSubstitutionCount == 0 &&
                 diagnostics.untrackedSubmissionCount == 0 &&
