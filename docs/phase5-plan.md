@@ -474,8 +474,9 @@ closure実測は次のとおりである。
   各matrixのcontract checker、開始/終了clean検査、provenance不変検査もPASSした
 - P3-C-2再監査: `bb65ea5`のformal matrix 2回はそれぞれ**8/9 PASS、1/9 FAIL**。
   未変更の第一親`06182a2`のformal matrix 2回はともに**9/9 PASS**だった。変更後attempt 1は
-  seek run 1がprocess exit 4、attempt 2はpause-resume run 3がprocess exit 4であり、後続PASSで
-  上書きせずrawを保持した。したがってP3-C-2 gateとP5-E closureは現時点で未確定とする
+  seek run 1がaudio underflow 1件でprocess exit 4、attempt 2はpause-resume run 3がclock regression
+  1件でprocess exit 4であり、後続PASSで上書きせずrawを保持した。したがってP3-C-2 gateと
+  P5-E closureは現時点で未確定とする
 
 一次証拠は[`bench/results/p5-e4-closure-bb65ea5/`](../bench/results/p5-e4-closure-bb65ea5/README.md)
 に保存する。P2/P4、変更後P3-C-2 2回、未変更親P3-C-2 2回の全raw/summary、および

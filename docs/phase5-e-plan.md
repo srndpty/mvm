@@ -590,8 +590,9 @@ product (`apps/p5e_preview_smoke`、`-L p5e`、8 本):
 - clean detached worktree (`bb65ea5`) でformal matrixを再走し、P2 **6/6 PASS**、P4 **3/3 PASS**
 - P3-C-2再監査では、`bb65ea5`のformal matrix 2回がそれぞれ**8/9 PASS、1/9 FAIL**、
   未変更の第一親`06182a2`のformal matrix 2回がともに**9/9 PASS**だった。変更後のFAILはattempt 1の
-  seek run 1とattempt 2のpause-resume run 3であり、rawを別directoryに保持して後続PASSで上書きしない。
-  この帰属を解消するまでP5-E closureは未確定とする
+  seek run 1におけるaudio underflow 1件と、attempt 2のpause-resume run 3におけるclock regression
+  1件である。rawを別directoryに保持して後続PASSで上書きしない。この帰属を解消するまで
+  P5-E closureは未確定とする
 - 全raw/summaryとSHA-256 manifestは
   [`bench/results/p5-e4-closure-bb65ea5/`](../bench/results/p5-e4-closure-bb65ea5/README.md)
   に保存した

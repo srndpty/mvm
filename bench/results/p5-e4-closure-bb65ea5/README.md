@@ -13,11 +13,13 @@
 | --- | --- | --- | --- |
 | P2 | `bb65ea5` | 6/6 PASS | `p2/summary.json` |
 | P4 | `bb65ea5` | 3/3 PASS | `p4/summary.json` |
-| P3-C-2 attempt 1 | `bb65ea5` | 8/9 PASS、seek run 1がexit 4 | `p3-c2/summary.json` |
-| P3-C-2 attempt 2 | `bb65ea5` | 8/9 PASS、pause-resume run 3がexit 4 | `p3-c2-bb65ea5-attempt2/summary.json` |
+| P3-C-2 attempt 1 | `bb65ea5` | 8/9 PASS、seek run 1がaudio underflow 1件でexit 4 | `p3-c2/summary.json` |
+| P3-C-2 attempt 2 | `bb65ea5` | 8/9 PASS、pause-resume run 3がclock regression 1件でexit 4 | `p3-c2-bb65ea5-attempt2/summary.json` |
 | P3-C-2 parent attempt 1 | `06182a2` | 9/9 PASS | `p3-c2-parent-06182a2-attempt1/summary.json` |
 | P3-C-2 parent attempt 2 | `06182a2` | 9/9 PASS | `p3-c2-parent-06182a2-attempt2/summary.json` |
 
 P3-C-2の変更後FAILを後続結果で上書きしていない。変更後2回にFAILがあり、未変更親2回がPASSしたため、
 このartifactだけからP5-E closure PASSとは判定しない。帰属確認または修正後に新しいartifact rootで
 formal matrixを再実行する。
+
+predicateのfield比較とmode限定診断は`ATTRIBUTION.md`に記録する。
