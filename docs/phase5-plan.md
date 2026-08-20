@@ -459,7 +459,10 @@ P5-Dと同様に一度に閉じない。§10.1のscopeを次の4 sliceへ分け�
   `ShuttingDown -> Error`へ落とすこと
 - removal fatalのstate commitとmailbox insertionが同じcritical sectionでlinearizeされていること。
   terminal到達後のpending eventはcontractどおり破棄されるため、この性質はsinkへのdeliveryでは
-  観測できない。**mailbox insertion順そのもの**をnegative testのauthorityにすること
+  観測できない。**mailbox insertion順そのもの**をnegative testのauthorityにすること。
+  「commit時点で挿入済みか」だけでは、terminal `Error`が先頭に入った順序を許してしまう。
+  terminal到達後にもう一度観測し、
+  `ErrorOccurred(RemoveSource) < ShuttingDown < Error`まで要求すること
 - video workerのraw pointerをengine lockを持たない窓へ持ち出さないこと。
   shutdownがownershipを`detachedWorkers`へ移すため、danglingになり得る
 - 削除した`PreviewSourceId`を同一session内で再利用しないこと

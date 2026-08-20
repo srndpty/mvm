@@ -321,7 +321,9 @@ product (`apps/p5e_preview_smoke`、`-L p5e`、8 本):
   wall-clock master で再生を継続できる。解放は failure ではないので
   `audioTransportFailureCount` / `audioSinkDeviceFailureCount` /
   `audioDomainRejectCount` / `videoMasterQpcFallbackCount` はいずれも 0 のまま
-- `--fault-remove-audio-stop` — sink 自身に stop を失敗させ、通常の removal 経路を通す。
+- `--fault-remove-audio-stop` — audio transport の pause/stop sequence のうち、
+  fallible な `pause()` を sink 自身に失敗させ、通常の removal 経路を通す
+  (`stop()` は後続でそのまま呼ぶ)。
   `AudioFailure` / `RemoveSource` / `FatalToSession` を返し、removal は commit されず
   (`registeredAudioSourceCount == 1`)、`ShuttingDown -> Error` へ落ちる。
   `audioTransportFailureCount` はちょうど 1
@@ -329,12 +331,21 @@ product (`apps/p5e_preview_smoke`、`-L p5e`、8 本):
   止め、その間に別 thread から fatal を入れる。`removeSource()` は `InvalidState` を返し、
   removal は commit されない。`lifecycleViolationCount == 0` (二重 stop や ordering 違反なし)
 - `--remove-fatal-event-order` — removal fatal を commit して unlock した直後・flush 前で
-  止め、その間に teardown を終端まで進める。**その瞬間の mailbox insertion 順**を観測し、
-  `ErrorOccurred` -> `StateChanged(ShuttingDown)` が既に入っていることを固定する
+  止め、その間に teardown を終端まで進める。mailbox insertion 順を**二段で**観測する。
+  - stage 1 (barrier 侵入直後): removal 由来の `ErrorOccurred` -> `StateChanged(ShuttingDown)`
+    が既に入っていること
+  - stage 2 (terminal 到達後・barrier release 前): terminal `Error` が入ってもなお
+    `ErrorOccurred(RemoveSource)` < `ShuttingDown` < `Error` であること
+
+  `ErrorOccurred` は「最初の 1 件」ではなく `operation == RemoveSource` /
+  `category == AudioFailure` / `source == audioSource` で識別する。
+  stage 1 だけでは `[Error, ErrorOccurred, ShuttingDown]`
+  (teardown が先に terminal を commit した元バグの順序) が通ってしまうため、
+  stage 2 がこの negative の本体である。
 
 ### E2 実装結果 (実測)
 
-- ordinary CTest **全件 PASS**。P5-E product test は 2 → 5 本
+- ordinary CTest **全件 PASS**。P5-E product test は E1 の 2 本 → E2 初版 5 本 → 現在 8 本
 - P5-C 9 本 / P5-D 13 本は無変更で PASS
 
 計画から変えた点と、その理由を記録する。
@@ -377,7 +388,13 @@ product (`apps/p5e_preview_smoke`、`-L p5e`、8 本):
    | `referencesSource()` から active (last presented) 側の判定を削除 | `preview_engine_p5b_unit` が FAIL |
    | audio stop 失敗を無視して commit する | `remove_audio_stop_fail_closed` が FAIL |
    | 停止中の state 変化を無視して commit する | `remove_shutdown_race` が FAIL |
-   | state commit と mailbox insertion を分離する | `remove_fatal_event_order` が FAIL (3/3) |
+   | state commit と mailbox insertion を分離する | `remove_fatal_event_order` stage 1 が FAIL (3/3) |
+   | 同上 + stage 1 を無効化して stage 2 だけを残す | `remove_fatal_event_order` stage 2 が FAIL (3/3) |
+
+   2 行目は stage 2 が独立した authority を持つことの確認である。
+   stage 1 は「commit 時点で挿入済みか」しか見ないので、
+   `[Error, ErrorOccurred, ShuttingDown]` のように terminal が先頭へ来た順序は
+   stage 2 でしか捕まえられない。
 
 5. **fatal event の順序は「commit と同じ critical section で mailbox へ入れる」ことで閉じた。**
    当初は `recordFatal()` まで commit してから unlock し、その後 `notify()` していた。

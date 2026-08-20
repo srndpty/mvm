@@ -322,8 +322,9 @@ int main(int argc, char** argv) {
                     }
                 }
                 if (fault == Fault::RemoveAudioStopFailure) {
-                    // 完成したerrorをengineへ注入するのではなく、sink自身に
-                    // stopを失敗させて通常のremoval経路を通す。
+                    // 完成したerrorをengineへ注入するのではなく、audio transportの
+                    // pause/stop sequenceのうちfallibleな`pause()`をsink自身に
+                    // 失敗させ、通常のremoval経路を通す。
                     if (!mvm::preview::internal::PreviewRenderPort::
                             injectAudioSinkPauseFaultForTest(*engine)) {
                         exitCode = 23;
@@ -354,8 +355,9 @@ int main(int argc, char** argv) {
                 if (fault == Fault::RemoveFatalEventOrder) {
                     // removal fatalをcommitしてunlockした直後で止め、その間に
                     // teardownを終端(Error)まで進める。state commitとmailbox
-                    // insertionがlinearizeされていれば、ShuttingDownはErrorより
-                    // 前に入る。分離していると逆転する。
+                    // insertionがlinearizeされていれば、mailbox insertion順は
+                    //   removal ErrorOccurred < ShuttingDown < terminal Error
+                    // になる。分離しているとShuttingDownがErrorに追い越される。
                     if (!mvm::preview::internal::PreviewRenderPort::
                             injectAudioSinkPauseFaultForTest(*engine) ||
                         !mvm::preview::internal::PreviewRenderPort::armFatalPublishBarrierForTest(
@@ -366,6 +368,44 @@ int main(int argc, char** argv) {
                     }
                     bool reachedTerminal = false;
                     bool linearizedAtCommit = false;
+                    bool orderedAcrossTerminal = false;
+                    // mailbox snapshotから3つのeventのinsertion位置を取る。
+                    // ErrorOccurredは「最初の1件」ではなくremoval由来のものだけを
+                    // 識別する。別要因のerrorが先に入っていても誤判定しない。
+                    const auto orderIndices = [&](const std::vector<
+                                                      mvm::preview::internal::PreviewEvent>& queued,
+                                                  std::size_t& removeErrorIndex,
+                                                  std::size_t& shuttingDownIndex,
+                                                  std::size_t& terminalErrorIndex) {
+                        removeErrorIndex = queued.size();
+                        shuttingDownIndex = queued.size();
+                        terminalErrorIndex = queued.size();
+                        for (std::size_t i = 0; i < queued.size(); ++i) {
+                            const auto* occurred =
+                                std::get_if<mvm::preview::internal::ErrorOccurredEvent>(&queued[i]);
+                            if (occurred != nullptr && removeErrorIndex == queued.size() &&
+                                occurred->error.operation ==
+                                    mvm::preview::PreviewOperation::RemoveSource &&
+                                occurred->error.category ==
+                                    mvm::preview::PreviewErrorCategory::AudioFailure &&
+                                occurred->error.source && *occurred->error.source == audioSource) {
+                                removeErrorIndex = i;
+                            }
+                            const auto* queuedState =
+                                std::get_if<mvm::preview::internal::StateChangedEvent>(&queued[i]);
+                            if (queuedState == nullptr)
+                                continue;
+                            if (queuedState->state ==
+                                    mvm::preview::PreviewEngineState::ShuttingDown &&
+                                shuttingDownIndex == queued.size()) {
+                                shuttingDownIndex = i;
+                            }
+                            if (queuedState->state == mvm::preview::PreviewEngineState::Error &&
+                                terminalErrorIndex == queued.size()) {
+                                terminalErrorIndex = i;
+                            }
+                        }
+                    };
                     std::thread racer([&] {
                         if (!mvm::preview::internal::PreviewRenderPort::
                                 waitFatalPublishBarrierEnteredForTest(*engine, 5000)) {
@@ -373,33 +413,20 @@ int main(int argc, char** argv) {
                                 releaseFatalPublishBarrierForTest(*engine);
                             return;
                         }
-                        // unlock直後・flush前の時点で、removalのeventが既にmailboxへ
+                        // (1) unlock直後・flush前の時点で、removalのeventが既にmailboxへ
                         // 入っていること。空なら state commit と mailbox insertion が
                         // 分離しており、後続の terminal event に追い越される。
                         {
                             const auto queued = mvm::preview::internal::PreviewRenderPort::
                                 mailboxEventsForTest(*engine);
-                            std::size_t errorIndex = queued.size();
-                            std::size_t shuttingDownIndex = queued.size();
-                            for (std::size_t i = 0; i < queued.size(); ++i) {
-                                if (std::holds_alternative<
-                                        mvm::preview::internal::ErrorOccurredEvent>(queued[i]) &&
-                                    errorIndex == queued.size()) {
-                                    errorIndex = i;
-                                }
-                                const auto* queuedState =
-                                    std::get_if<mvm::preview::internal::StateChangedEvent>(
-                                        &queued[i]);
-                                if (queuedState != nullptr &&
-                                    queuedState->state ==
-                                        mvm::preview::PreviewEngineState::ShuttingDown &&
-                                    shuttingDownIndex == queued.size()) {
-                                    shuttingDownIndex = i;
-                                }
-                            }
-                            linearizedAtCommit = errorIndex < queued.size() &&
+                            std::size_t removeErrorIndex = 0;
+                            std::size_t shuttingDownIndex = 0;
+                            std::size_t terminalErrorIndex = 0;
+                            orderIndices(queued, removeErrorIndex, shuttingDownIndex,
+                                         terminalErrorIndex);
+                            linearizedAtCommit = removeErrorIndex < queued.size() &&
                                                  shuttingDownIndex < queued.size() &&
-                                                 errorIndex < shuttingDownIndex;
+                                                 removeErrorIndex < shuttingDownIndex;
                         }
                         // render threadがteardownを終端まで進めるのを待つ。
                         // main threadはremoveSource()の中で止まっているが、
@@ -413,6 +440,32 @@ int main(int argc, char** argv) {
                                 break;
                             }
                             std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                        }
+                        // (2) terminal到達後・barrier release前にもう一度観測する。
+                        // ここが本題である。terminal `Error` がmailboxへ入ってもなお
+                        //   removal ErrorOccurred < ShuttingDown < terminal Error
+                        // でなければ、`ShuttingDown`はstaleとして追い越されている。
+                        // (1)だけでは、Errorが先頭に入ったmailboxでも通ってしまう。
+                        if (reachedTerminal) {
+                            const auto terminalDeadline =
+                                std::chrono::steady_clock::now() + std::chrono::seconds(5);
+                            while (std::chrono::steady_clock::now() < terminalDeadline) {
+                                const auto queued = mvm::preview::internal::PreviewRenderPort::
+                                    mailboxEventsForTest(*engine);
+                                std::size_t removeErrorIndex = 0;
+                                std::size_t shuttingDownIndex = 0;
+                                std::size_t terminalErrorIndex = 0;
+                                orderIndices(queued, removeErrorIndex, shuttingDownIndex,
+                                             terminalErrorIndex);
+                                if (terminalErrorIndex == queued.size()) {
+                                    // state machineはErrorだがeventがまだ積まれていない。
+                                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                                    continue;
+                                }
+                                orderedAcrossTerminal = removeErrorIndex < shuttingDownIndex &&
+                                                        shuttingDownIndex < terminalErrorIndex;
+                                break;
+                            }
                         }
                         mvm::preview::internal::PreviewRenderPort::
                             releaseFatalPublishBarrierForTest(*engine);
@@ -434,6 +487,14 @@ int main(int argc, char** argv) {
                         std::fprintf(stderr,
                                      "state commitとmailbox insertionが分離しています\n");
                         exitCode = 29;
+                        app.quit();
+                        return;
+                    }
+                    if (!orderedAcrossTerminal) {
+                        std::fprintf(
+                            stderr,
+                            "ShuttingDownがterminal Errorに追い越されています\n");
+                        exitCode = 30;
                         app.quit();
                         return;
                     }
