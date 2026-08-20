@@ -114,6 +114,9 @@ struct P5CRuntimeDiagnostics {
     std::uint64_t registeredVideoSourceCount = 0;
     std::uint64_t distinctPresentedSourceFrameCount = 0;
     std::uint64_t staleSubstitutionCount = 0;
+    // P5-E1: supersedeされたcomposition epochのframeを提示しなかった回数。
+    // `CompositorCoordinator::validateForDisplay()`が権威である。
+    std::uint64_t staleCompositionEpochRejectCount = 0;
     std::uint64_t untrackedSubmissionCount = 0;
     std::uint64_t earlyPayloadReleaseCount = 0;
     std::uint64_t retirementTimeoutCount = 0;

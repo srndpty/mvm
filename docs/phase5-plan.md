@@ -433,6 +433,30 @@ API typeは二layerへhard-codeしない。runtime capabilityは
 - exact pair不足時にold/latest frameを使わないnegative test
 - stale composition epochを提示しないnegative test
 
+### 10.3 Sub-slice分割
+
+P5-Dと同様に一度に閉じない。§10.1のscopeを次の4 sliceへ分け、各sliceが単独で§14 gateを満たす。
+詳細な実装計画は[P5-E 実装プラン](phase5-e-plan.md)にある。
+
+| slice | 範囲 | 状態 |
+| --- | --- | --- |
+| P5-E1 | video sourceのinternal multi-source所有化、`CompositorCoordinator`をcomposition epochのauthorityとするproduct配線、`ExactFramePairer`のN一般化 (capabilityは1/1のまま) | 実装中 |
+| P5-E2 | `removeSource()`、active/pending composition参照中のremoval拒否、audio authorityの返却 | 未 |
+| P5-E3 | capabilityを`maxQualifiedActiveVideoSources == 2` / `maxQualifiedCompositionLayers == 2`へ引き上げ、多層render経路、per-source seek generation、`apps/p5e_preview_smoke` | 未 |
+| P5-E4 | P5-E closure (§10.2全項目の突き合わせ、frozen P2/P3-C-2/P4 regression再走、三文書更新) | 未 |
+
+#### P5-E1 exit criteria
+
+- video sourceのownershipが単数fieldではなく`PreviewSourceId`昇順で決定論的に走査できるtableであること
+- product render経路が`CompositorCoordinator`を経由し、`CompositionEpoch`のownerがcoordinatorに
+  一本化されていること (engineが`compositionEpoch`を直書きしない)
+- `ExactFramePairer`と`SourceFrameBuffer`のexact取得がN sourceへ一般化され、既存2 source
+  semanticsとcounterが変わらないこと
+- 一つでも要求frame numberと一致しなければどのbufferも消費しないtransaction不変条件がN sourceで
+  成立すること
+- `PreviewCapabilities`は`1/1`のままで、外形的な受理能力を変えないこと
+- P5-C / P5-D product testが無変更でPASSすること
+
 ## 11. P5-F — Product event and Qt/QML surface
 
 ### 11.1 Scope

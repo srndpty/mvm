@@ -1,5 +1,6 @@
 #include "media/gpu_preview/source_frame_buffer.h"
 
+#include <algorithm>
 #include <chrono>
 
 namespace mvm::gpu {
@@ -81,21 +82,60 @@ bool SourceFrameBuffer::takeExact(long long frameNumber, DecodedGpuFrame& frame)
     return true;
 }
 
+bool SourceFrameBuffer::takeExactAll(const std::vector<SourceFrameBuffer*>& sources,
+                                     long long frameNumber, std::vector<DecodedGpuFrame>& frames) {
+    frames.clear();
+    if (sources.empty())
+        return false;
+    for (SourceFrameBuffer* source : sources) {
+        if (source == nullptr)
+            return false;
+    }
+
+    // lock順をSourceId昇順で固定する。呼び出し側の並びに依存させると、
+    // 同じbuffer集合を別順で渡したときにdeadlockし得る。
+    // SourceIdは登録時に一意なので、tie-breakは重複検出のためだけに置く。
+    std::vector<SourceFrameBuffer*> ordered = sources;
+    std::sort(ordered.begin(), ordered.end(), [](SourceFrameBuffer* a, SourceFrameBuffer* b) {
+        if (!(a->source_ == b->source_))
+            return a->source_ < b->source_;
+        return a < b;
+    });
+    for (size_t i = 1; i < ordered.size(); ++i) {
+        if (ordered[i - 1] == ordered[i])
+            return false; // 同一bufferの重複はself-deadlockになる
+    }
+
+    std::vector<std::unique_lock<std::mutex>> locks;
+    locks.reserve(ordered.size());
+    for (SourceFrameBuffer* source : ordered)
+        locks.emplace_back(source->mutex_);
+
+    // 全sourceのfrontが一致するまでは一つも消費しない。partial consumeを許すと
+    // 片側だけ進んだbufferがexact pairを永久に成立させなくなる。
+    for (SourceFrameBuffer* source : ordered) {
+        if (source->frames_.empty() || source->frames_.front().frameNumber != frameNumber)
+            return false;
+    }
+
+    frames.reserve(sources.size());
+    for (SourceFrameBuffer* source : sources) {
+        frames.push_back(std::move(source->frames_.front()));
+        source->frames_.pop_front();
+    }
+    // composition drawより先にdecode workerを起こすと、shared D3D11 context lockを
+    // workerが奪いdeadlineを遅らせる。空き通知はactual display後のnoteDisplayedで行う。
+    return true;
+}
+
 bool SourceFrameBuffer::takeExactPair(SourceFrameBuffer& a, SourceFrameBuffer& b,
                                       long long frameNumber, DecodedGpuFrame& frameA,
                                       DecodedGpuFrame& frameB) {
-    if (&a == &b)
+    std::vector<DecodedGpuFrame> frames;
+    if (!takeExactAll({&a, &b}, frameNumber, frames))
         return false;
-    std::scoped_lock lock(a.mutex_, b.mutex_);
-    if (a.frames_.empty() || b.frames_.empty() || a.frames_.front().frameNumber != frameNumber ||
-        b.frames_.front().frameNumber != frameNumber)
-        return false;
-    frameA = std::move(a.frames_.front());
-    frameB = std::move(b.frames_.front());
-    a.frames_.pop_front();
-    b.frames_.pop_front();
-    // composition drawより先にdecode workerを起こすと、shared D3D11 context lockを
-    // workerが奪いdeadlineを遅らせる。空き通知はactual display後のnoteDisplayedで行う。
+    frameA = std::move(frames[0]);
+    frameB = std::move(frames[1]);
     return true;
 }
 

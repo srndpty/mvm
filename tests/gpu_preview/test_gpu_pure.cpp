@@ -938,6 +938,130 @@ void testP2SourceAndComposition() {
 }
 
 // --------------------------------------------------------------------------
+// P5-E1: exact pairing の N source 一般化
+// --------------------------------------------------------------------------
+// 2 source の既存契約は testP2SourceAndComposition が固定している。ここでは
+// 1 source と 3 source、および「一つでも一致しなければどれも消費しない」
+// transaction 不変条件を検査する。
+void testExactPairingNSource() {
+    std::fprintf(stderr, "[P5-E1 exact pairing / N source]\n");
+
+    SourceRegistry registry;
+    const SourceId a = registry.registerSource();
+    const SourceId b = registry.registerSource();
+    const SourceId c = registry.registerSource();
+
+    { // 1 source。layer 数で経路を分けないので、単層でも同じ pairer を通る。
+        SourceFrameBuffer only(a, SourceGeneration{1}, 4);
+        auto stale = makeFrame(4, 1);
+        stale.sourceId = a;
+        auto exact = makeFrame(5, 1);
+        exact.sourceId = a;
+        check(only.submitFrame(stale) == SubmitResult::Accepted, "1 source: stale 候補を追加");
+        check(only.submitFrame(exact) == SubmitResult::Accepted, "1 source: exact 候補を追加");
+
+        CompositorCoordinator coordinator;
+        check(coordinator.configure({{a, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0f, 0}}, {{a, {1}}}) ==
+                  ConfigureResult::Configured,
+              "1 source layout を構成");
+        ExactFramePairer pairer(std::vector<SourceFrameBuffer*>{&only}, coordinator);
+        checkEq(static_cast<long long>(pairer.sourceCount()), 1, "pairer の source 数は 1");
+        ComposedFrame composed;
+        check(pairer.tryPair(5, composed) == PairResult::Paired, "1 source でも exact pair を形成");
+        checkEq(static_cast<long long>(composed.layers.size()), 1, "1 source の layer は 1 枚");
+        checkEq(pairer.counters().staleDiscardCounts[0], 1,
+                "1 source: stale discard を index で計数");
+        checkEq(pairer.counters().staleADiscardCount, 1,
+                "1 source: 既存 counter 名も index 0 を指す");
+
+        auto future = makeFrame(9, 1);
+        future.sourceId = a;
+        check(only.submitFrame(future) == SubmitResult::Accepted, "1 source: future frame を追加");
+        check(pairer.tryPair(6, composed) == PairResult::MissingA,
+              "1 source の欠落は MissingA として報告する");
+        SourceFrameIdentity kept;
+        check(only.peekFrontIdentity(kept) && kept.frameNumber == 9,
+              "1 source: future frame を消費しない");
+    }
+
+    { // 3 source。全部一致で pair し、一つでも違えばどれも消費しない。
+        SourceFrameBuffer bufA(a, SourceGeneration{1}, 4);
+        SourceFrameBuffer bufB(b, SourceGeneration{1}, 4);
+        SourceFrameBuffer bufC(c, SourceGeneration{1}, 4);
+        const auto submit = [](SourceFrameBuffer& buffer, SourceId source, long long frame) {
+            auto value = makeFrame(frame, 1);
+            value.sourceId = source;
+            check(buffer.submitFrame(value) == SubmitResult::Accepted, "3 source: frame を追加");
+        };
+        submit(bufA, a, 30);
+        submit(bufB, b, 30);
+        submit(bufC, c, 30);
+
+        CompositorCoordinator coordinator;
+        const std::vector<LayerLayout> layout = {
+            {a, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0f, 0},
+            {b, {0, 0, 0.5f, 0.5f}, {0, 0, 1, 1}, 0.5f, 1},
+            {c, {0.5f, 0.5f, 0.5f, 0.5f}, {0, 0, 1, 1}, 0.25f, 2},
+        };
+        check(coordinator.configure(layout, {{a, {1}}, {b, {1}}, {c, {1}}}) ==
+                  ConfigureResult::Configured,
+              "3 source layout を構成");
+        ExactFramePairer pairer(std::vector<SourceFrameBuffer*>{&bufA, &bufB, &bufC}, coordinator);
+        ComposedFrame composed;
+        check(pairer.tryPair(30, composed) == PairResult::Paired, "3 source の exact pair を形成");
+        checkEq(static_cast<long long>(composed.layers.size()), 3, "3 source の layer は 3 枚");
+
+        // C だけ要求 frame と違う状態を作る。A/B が消費されないことが核心である。
+        submit(bufA, a, 31);
+        submit(bufB, b, 31);
+        submit(bufC, c, 32);
+        check(pairer.tryPair(31, composed) == PairResult::MissingB,
+              "index 0 以外の欠落は MissingB として報告する");
+        checkEq(static_cast<long long>(bufA.depth()), 1, "pair 不成立で A を消費しない");
+        checkEq(static_cast<long long>(bufB.depth()), 1, "pair 不成立で B を消費しない");
+        checkEq(static_cast<long long>(bufC.depth()), 1, "pair 不成立で C を消費しない");
+        checkEq(pairer.counters().missingCounts[2], 1, "欠落した index を特定して計数");
+        checkEq(pairer.counters().missingCounts[0], 0, "欠落していない index は数えない");
+    }
+
+    { // takeExactAll の transaction 不変条件と、呼び出し順に依存しないこと。
+        SourceFrameBuffer bufA(a, SourceGeneration{1}, 4);
+        SourceFrameBuffer bufB(b, SourceGeneration{1}, 4);
+        SourceFrameBuffer bufC(c, SourceGeneration{1}, 4);
+        const auto submit = [](SourceFrameBuffer& buffer, SourceId source, long long frame) {
+            auto value = makeFrame(frame, 1);
+            value.sourceId = source;
+            check(buffer.submitFrame(value) == SubmitResult::Accepted,
+                  "takeExactAll: frame を追加");
+        };
+        submit(bufA, a, 40);
+        submit(bufB, b, 40);
+        submit(bufC, c, 41);
+
+        std::vector<DecodedGpuFrame> taken;
+        check(!SourceFrameBuffer::takeExactAll({&bufA, &bufB, &bufC}, 40, taken),
+              "一つでも不一致なら commit しない");
+        check(taken.empty(), "失敗時は出力を空にする");
+        checkEq(static_cast<long long>(bufA.depth()), 1, "失敗時に A を消費しない");
+        checkEq(static_cast<long long>(bufB.depth()), 1, "失敗時に B を消費しない");
+        checkEq(static_cast<long long>(bufC.depth()), 1, "失敗時に C を消費しない");
+
+        check(!SourceFrameBuffer::takeExactAll({&bufA, &bufA}, 40, taken),
+              "同一 buffer の重複を拒否する");
+        check(!SourceFrameBuffer::takeExactAll({&bufA, nullptr}, 40, taken),
+              "null buffer を拒否する");
+        check(!SourceFrameBuffer::takeExactAll({}, 40, taken), "空の source 集合を拒否する");
+
+        // lock 順は SourceId 昇順で固定されるので、渡す順序を変えても結果は同じ。
+        check(SourceFrameBuffer::takeExactAll({&bufB, &bufA}, 40, taken),
+              "渡す順序を変えても exact take は成立する");
+        checkEq(static_cast<long long>(taken.size()), 2, "取得数は要求数と一致");
+        check(taken[0].sourceId == b && taken[1].sourceId == a,
+              "出力順は引数順であり lock 順ではない");
+    }
+}
+
+// --------------------------------------------------------------------------
 // event query の serial state machine (P1.2 §4)
 // --------------------------------------------------------------------------
 // **実 GPU では再現させにくい経路**なので、純粋な状態機械として検査する。
@@ -1363,6 +1487,7 @@ int main() {
     testCompletionFatalStopsRendering();
     testSourceLifecycle();
     testCompositionAdoptionEpoch();
+    testExactPairingNSource();
     testP2SourceAndComposition();
     testEventQueryLedger();
     testGenerationContract();
