@@ -246,6 +246,10 @@ public:
     static Result<void> setVerificationAudioVolume(PreviewEngine& engine, float volume);
     // decode readyだけでseek completeにしていないことを検査するseam。
     // decodeは完了させたまま、exact frameの提示だけを成立させなくする。
+    // 提示直前のstale composition epoch拒否を製品経路で検査するseam。
+    // 完成したerrorをengineへ注入するのではなく、compose成立後・validate前に
+    // composition epoch authorityだけを1つ進め、通常のvalidate経路を通す。
+    static Result<void> injectCompositionEpochAdvanceForTest(PreviewEngine& engine);
     static Result<void> injectSeekPresentationStallForTest(PreviewEngine& engine);
     // seek completionで得たaudio generationをengineが実際にenforceしているか
     // 検査するseam。要求generationが決して揃わない状況を作る。

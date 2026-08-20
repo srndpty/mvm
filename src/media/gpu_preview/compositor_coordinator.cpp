@@ -96,6 +96,45 @@ CompositorCoordinator::adoptCompositionSnapshot(CompositionStateId requestedStat
     return CompositionStateAdoptionResult::Adopted;
 }
 
+CompositionStateAdoptionResult CompositorCoordinator::adoptCompositionRuntimeSnapshot(
+    CompositionStateId requestedState, std::vector<LayerLayout> requestedLayout,
+    std::map<SourceId, SourceGeneration> requestedGenerations) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!requestedState.valid() || !validLayout(requestedLayout, requestedGenerations))
+        return CompositionStateAdoptionResult::Rejected;
+
+    // 既に知っているsourceのgenerationが巻き戻る要求は受理しない。
+    for (const auto& [source, generation] : requestedGenerations) {
+        const auto known = generations_.find(source);
+        if (known != generations_.end() && generation < known->second)
+            return CompositionStateAdoptionResult::Rejected;
+    }
+
+    if (configured_ && requestedState == state_ && !sameLayouts(requestedLayout, layout_)) {
+        // 同じ`CompositionStateId`が別のlayoutを指すことは許さない。
+        // ここを通すとstate idがcomposition identityを表さなくなる。
+        return CompositionStateAdoptionResult::Rejected;
+    }
+    const bool sameState =
+        configured_ && requestedState == state_ && sameLayouts(requestedLayout, layout_);
+    if (sameState) {
+        // resolved composition stateは変わっていない。generationの追随だけ行い
+        // epochは進めない。epochはcomposition identityのownerであって、
+        // source generationのownerではない。
+        generations_ = std::move(requestedGenerations);
+        return CompositionStateAdoptionResult::NoOp;
+    }
+    if (epoch_.value == std::numeric_limits<unsigned long long>::max())
+        return CompositionStateAdoptionResult::Rejected;
+
+    state_ = requestedState;
+    layout_ = std::move(requestedLayout);
+    generations_ = std::move(requestedGenerations);
+    configured_ = true;
+    ++epoch_.value;
+    return CompositionStateAdoptionResult::Adopted;
+}
+
 bool CompositorCoordinator::setSourceGeneration(SourceId source, SourceGeneration generation) {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto it = generations_.find(source);

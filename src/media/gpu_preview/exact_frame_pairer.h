@@ -44,6 +44,7 @@ class ExactFramePairer {
 public:
     ExactFramePairer(std::vector<SourceFrameBuffer*> sources, CompositorCoordinator& coordinator)
         : sources_(std::move(sources)), coordinator_(coordinator) {
+        valid_ = preflight(sources_);
         counters_.missingCounts.assign(sources_.size(), 0);
         counters_.staleDiscardCounts.assign(sources_.size(), 0);
     }
@@ -53,6 +54,10 @@ public:
                      CompositorCoordinator& coordinator)
         : ExactFramePairer(std::vector<SourceFrameBuffer*>{&sourceA, &sourceB}, coordinator) {}
 
+    // buffer 集合が構築時点で使える形かどうか。false の pairer は
+    // `tryPair()` が必ず `Rejected` を返し、buffer を一切触らない。
+    bool valid() const { return valid_; }
+
     PairResult tryPair(long long outputFrameNumber, ComposedFrame& out);
 
     size_t sourceCount() const { return sources_.size(); }
@@ -60,9 +65,15 @@ public:
     const ExactPairingCounters& counters() const { return counters_; }
 
 private:
+    // empty / null / 同一 buffer の重複 / 同一 SourceId の別 buffer を弾く。
+    // `tryPair()` は `takeExactAll()` へ到達する前に dereference するので、
+    // この検査を buffer 集合の入口で行わないと防御が効かない。
+    static bool preflight(const std::vector<SourceFrameBuffer*>& sources);
+
     std::vector<SourceFrameBuffer*> sources_;
     CompositorCoordinator& coordinator_;
     ExactPairingCounters counters_;
+    bool valid_ = false;
 };
 
 } // namespace mvm::gpu

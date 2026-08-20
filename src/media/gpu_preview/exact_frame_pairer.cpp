@@ -2,8 +2,26 @@
 
 namespace mvm::gpu {
 
+bool ExactFramePairer::preflight(const std::vector<SourceFrameBuffer*>& sources) {
+    if (sources.empty())
+        return false;
+    for (size_t i = 0; i < sources.size(); ++i) {
+        if (sources[i] == nullptr)
+            return false;
+        for (size_t j = 0; j < i; ++j) {
+            if (sources[i] == sources[j])
+                return false;
+            // 別 instance でも SourceId が衝突すると coordinator が layout と
+            // frame を対応付けられない。ここで fail-closed にする。
+            if (sources[i]->sourceId() == sources[j]->sourceId())
+                return false;
+        }
+    }
+    return true;
+}
+
 PairResult ExactFramePairer::tryPair(long long outputFrameNumber, ComposedFrame& out) {
-    if (sources_.empty())
+    if (!valid_)
         return PairResult::Rejected;
 
     for (size_t i = 0; i < sources_.size(); ++i) {

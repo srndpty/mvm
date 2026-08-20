@@ -56,6 +56,19 @@ public:
     CompositionStateAdoptionResult
     adoptCompositionSnapshot(CompositionStateId requestedState,
                              std::vector<LayerLayout> requestedLayout);
+    // source集合ごと入れ替わるcomposition transitionを、同一instanceのまま
+    // atomicに採用する。`configure()`はlayoutとgenerationsを1:1で要求し
+    // 一度きりなので、これが無いと参照source集合が変わるたびにinstanceを
+    // 作り直すことになり、CompositionEpochのlineageが切れる。
+    //
+    //  - `CompositionEpoch`はresolved composition stateが実際に変わったときだけ
+    //    ちょうど1進む。generationだけが動いた場合は進めない
+    //  - generationのregressionはfail-closedで拒否する
+    //  - まだconfigureされていないinstanceに対しても最初の採用として成立する
+    CompositionStateAdoptionResult
+    adoptCompositionRuntimeSnapshot(CompositionStateId requestedState,
+                                    std::vector<LayerLayout> requestedLayout,
+                                    std::map<SourceId, SourceGeneration> requestedGenerations);
     bool setSourceGeneration(SourceId source, SourceGeneration generation);
     SourceGeneration sourceGeneration(SourceId source) const;
     CompositionEpoch compositionEpoch() const;

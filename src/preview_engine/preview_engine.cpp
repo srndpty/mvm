@@ -515,13 +515,21 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
 
     // P5-E1: compositionのepoch authority。engineは`CompositionEpoch`を
     // 直書きせず、coordinatorが採番した値をそのまま運ぶ。
-    // `CompositorCoordinator::configure()`はlayoutとgenerationsを1:1で要求し
-    // 一度きりなので、参照source集合が変わったときだけ作り直す。
+    // **session中に作り直さない。** 作り直すとinstanceごとに別のepoch
+    // namespaceができ、古い`ComposedFrame`のepochと衝突し得る。
+    // 参照source集合が変わるcomposition transitionは
+    // `adoptCompositionRuntimeSnapshot()`で同一instanceのまま採用する。
     std::unique_ptr<gpu::CompositorCoordinator> coordinator;
+    // pairerはbufferをraw pointerで握るので、こちらは参照source集合が
+    // 変わるたびに作り直す。epoch authorityではない。
     std::unique_ptr<gpu::ExactFramePairer> pairer;
-    // coordinatorをconfigureしたときの参照source (public ID昇順)。
+    // pairerを組んだときの参照source (public ID昇順)。
     std::vector<std::uint64_t> coordinatorSources;
     std::uint64_t staleCompositionEpochRejectCount = 0;
+    // 提示直前のstale epoch拒否を製品経路で検査するためのtest seam。
+    // 完成したerrorを注入するのではなく、compose後・validate前に
+    // epoch authorityだけを進める。
+    bool compositionEpochAdvanceInjected = false;
 
     std::uint64_t nextPublicSourceId = 1;
     PreviewFrameRate configuredFrameRate{60, 1};
@@ -598,9 +606,8 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                 detachedWorkers.videoWorkers.push_back(std::move(entry.worker));
         }
         // pairerはbufferをraw pointerで握っている。worker本体より先に手放す。
-        // coordinatorSourcesも空にして、再開時に必ず組み直させる。
+        // coordinatorはpointerを持たず、epoch lineageのownerなので残す。
         pairer.reset();
-        coordinator.reset();
         coordinatorSources.clear();
         detachedWorkers.audioSink = std::move(audioSink);
         detachedWorkers.audioWorker = std::move(audioWorker);
@@ -714,8 +721,9 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     }
 
     // accepted tokenとsnapshotをcompositionのruntime authorityへ反映する。
-    // `CompositorCoordinator::configure()`はlayoutとgenerationsを1:1で要求し
-    // 一度きりなので、参照source集合が変わったときだけ作り直す。
+    // coordinatorはsession中に作り直さない。source集合ごと変わるtransitionも
+    // `adoptCompositionRuntimeSnapshot()`で同一instanceのまま採用するので、
+    // `CompositionEpoch`のlineageが切れない。
     // 戻り値は「fatalにすべきerror」。
     std::optional<PreviewError> syncCompositionRuntimeLocked(const AcceptedComposition& token,
                                                              const CompositionSnapshot& snapshot) {
@@ -738,46 +746,60 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         }
         std::sort(referenced.begin(), referenced.end());
 
-        if (!coordinator || referenced != coordinatorSources) {
-            // 参照source集合が変わった。configureは一度きりなので組み直す。
-            std::map<gpu::SourceId, gpu::SourceGeneration> generations;
-            std::vector<gpu::SourceFrameBuffer*> buffers;
-            for (std::uint64_t publicId : referenced) {
-                const auto entry = videoSources.find(publicId);
-                if (entry == videoSources.end() || !entry->second.worker)
-                    return compositionFailure("accepted compositionが未登録sourceを参照しています");
-                gpu::SourceFrameBuffer& buffer = entry->second.worker->buffer();
-                generations.emplace(entry->second.internal, buffer.generation());
-                buffers.push_back(&buffer);
-            }
-            auto rebuilt = std::make_unique<gpu::CompositorCoordinator>();
-            if (rebuilt->configure(*layout, generations) != gpu::ConfigureResult::Configured)
-                return compositionFailure("composition layoutをcoordinatorへ適用できません");
-            if (rebuilt->adoptCompositionState(gpu::CompositionStateId{token.id.value}) ==
-                gpu::CompositionStateAdoptionResult::Rejected) {
-                return compositionFailure("composition stateをcoordinatorへ適用できません");
-            }
-            pairer.reset();
-            coordinator = std::move(rebuilt);
-            pairer = std::make_unique<gpu::ExactFramePairer>(std::move(buffers), *coordinator);
-            coordinatorSources = std::move(referenced);
-            return std::nullopt;
-        }
-
-        // source集合は同じ。generationを追随させてからlayout/stateを原子的に採用する。
-        for (std::uint64_t publicId : coordinatorSources) {
+        std::map<gpu::SourceId, gpu::SourceGeneration> generations;
+        std::vector<gpu::SourceFrameBuffer*> buffers;
+        for (std::uint64_t publicId : referenced) {
             const auto entry = videoSources.find(publicId);
             if (entry == videoSources.end() || !entry->second.worker)
                 return compositionFailure("accepted compositionが未登録sourceを参照しています");
-            coordinator->setSourceGeneration(entry->second.internal,
-                                             entry->second.worker->buffer().generation());
+            gpu::SourceFrameBuffer& buffer = entry->second.worker->buffer();
+            generations.emplace(entry->second.internal, buffer.generation());
+            buffers.push_back(&buffer);
         }
-        if (coordinator->adoptCompositionSnapshot(gpu::CompositionStateId{token.id.value},
-                                                  *layout) ==
+
+        if (!coordinator)
+            coordinator = std::make_unique<gpu::CompositorCoordinator>();
+        if (coordinator->adoptCompositionRuntimeSnapshot(gpu::CompositionStateId{token.id.value},
+                                                         *layout, std::move(generations)) ==
             gpu::CompositionStateAdoptionResult::Rejected) {
             return compositionFailure("composition snapshotをcoordinatorへ適用できません");
         }
+
+        if (!pairer || referenced != coordinatorSources) {
+            // 参照source集合が変わった。pairerだけを組み直す。
+            pairer.reset();
+            auto rebuilt =
+                std::make_unique<gpu::ExactFramePairer>(std::move(buffers), *coordinator);
+            if (!rebuilt->valid())
+                return compositionFailure("composition参照sourceのbuffer集合が不正です");
+            pairer = std::move(rebuilt);
+            coordinatorSources = std::move(referenced);
+        }
         return std::nullopt;
+    }
+
+    // 提示直前のstale epoch拒否を製品経路で踏ませるためのtest seam。
+    // 完成したerrorを注入するのではなく、compose後・validate前に
+    // composition stateを一つ進め、通常のvalidate経路を通す。
+    // 次のrender callbackで実際のtokenへ戻るので、engineは自己回復する。
+    bool advanceCompositionEpochForTestLocked(const AcceptedComposition& token,
+                                              const CompositionSnapshot& snapshot) {
+        if (!coordinator)
+            return false;
+        const auto layout = buildLayoutLocked(snapshot);
+        if (!layout)
+            return false;
+        std::map<gpu::SourceId, gpu::SourceGeneration> generations;
+        for (std::uint64_t publicId : coordinatorSources) {
+            const auto entry = videoSources.find(publicId);
+            if (entry == videoSources.end() || !entry->second.worker)
+                return false;
+            generations.emplace(entry->second.internal,
+                                entry->second.worker->buffer().generation());
+        }
+        return coordinator->adoptCompositionRuntimeSnapshot(
+                   gpu::CompositionStateId{token.id.value + 1}, *layout, std::move(generations)) ==
+               gpu::CompositionStateAdoptionResult::Adopted;
     }
 
     audio::AudioDecodeWorker* audioWorkerForTeardown() const {
@@ -1525,9 +1547,9 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
     if (descriptor.videoEnabled) {
         impl_->videoSources.emplace(published.value, PreviewEngine::Impl::VideoSourceEntry{
                                                          internalVideo, std::move(newVideoWorker)});
-        // source集合が変わったのでcoordinator/pairerは次のcomposeで組み直す。
+        // source集合が変わったのでpairerは次のcomposeで組み直す。
+        // coordinatorはepoch lineageのownerなので作り直さない。
         impl_->pairer.reset();
-        impl_->coordinator.reset();
         impl_->coordinatorSources.clear();
         impl_->workerJoined = false;
         impl_->deviceReleased = false;
@@ -2382,6 +2404,21 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                             rejected = true;
                         }
                     }
+                    if (!rejected && engine.impl_->compositionEpochAdvanceInjected) {
+                        // supersedeを製品経路で再現する。ここで進めた epoch は
+                        // 直後の validateForDisplay が必ず弾く。
+                        engine.impl_->compositionEpochAdvanceInjected = false;
+                        if (!engine.impl_->advanceCompositionEpochForTestLocked(*token,
+                                                                                *snapshot)) {
+                            PreviewError failure =
+                                makeError(PreviewErrorCategory::CompositionFailure,
+                                          PreviewOperation::RenderDeviceAttach,
+                                          "composition epoch advance seamが成立しませんでした",
+                                          PreviewErrorSeverity::FatalToSession);
+                            fatal = failure;
+                            rejected = true;
+                        }
+                    }
                     if (!rejected && engine.impl_->coordinator->validateForDisplay(composed) !=
                                          gpu::CompositionResult::Accepted) {
                         // 提示直前のre-validation。supersedeされたcomposition epochや
@@ -2401,9 +2438,12 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                     gpu::ExternalCompositionTarget targetView{
                         static_cast<ID3D11RenderTargetView*>(renderTargetView), width, height};
                     std::string error;
-                    const std::size_t layerCount = composed.layers.size();
-                    if (!engine.impl_->compositor->composeLayersToTarget(composed, targetView,
-                                                                         layerCount, error)) {
+                    // 期待layer数のauthorityはaccepted snapshotであり、
+                    // compose結果そのものではない。自己参照にすると層数の
+                    // boundary checkがtautologyになる。
+                    const std::size_t expectedLayerCount = snapshot->layers.size();
+                    if (!engine.impl_->compositor->composeLayersToTarget(
+                            composed, targetView, expectedLayerCount, error)) {
                         PreviewError failure = makeError(PreviewErrorCategory::DeviceFailure,
                                                          PreviewOperation::RenderDeviceAttach,
                                                          "GPU compositionに失敗しました: " + error);
@@ -2433,7 +2473,7 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                         result.frame = {engine.impl_->presentationSequence,
                                         {target},
                                         *token,
-                                        static_cast<std::uint32_t>(layerCount)};
+                                        static_cast<std::uint32_t>(composed.layers.size())};
                         if (seeking) {
                             // actual requested frameを提示できた時点だけがseek completionである。
                             ++engine.impl_->seekCompletedCount;
@@ -3143,6 +3183,16 @@ Result<void> PreviewRenderPort::injectSeekAudioGenerationMismatchForTest(Preview
                             "audio sourceが未登録のためgeneration mismatchを注入できません");
     }
     engine.impl_->seekAudioGenerationMismatchInjected = true;
+    return Result<void>::success();
+}
+
+Result<void> PreviewRenderPort::injectCompositionEpochAdvanceForTest(PreviewEngine& engine) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    if (!engine.impl_->coordinator || !engine.impl_->pairer) {
+        return invalidState(PreviewOperation::SubmitComposition,
+                            "composition runtimeが未構成のためepoch advanceを注入できません");
+    }
+    engine.impl_->compositionEpochAdvanceInjected = true;
     return Result<void>::success();
 }
 

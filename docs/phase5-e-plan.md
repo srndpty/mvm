@@ -1,6 +1,6 @@
 # P5-E 実装プラン — Product composition (二source / 二layer)
 
-- 状態: **実装中 (P5-E1)**
+- 状態: **P5-E1 実装完了 / E2〜E4 未着手**
 - 親計画: [Phase 5 計画](phase5-plan.md) §10
 - 製品契約: [PreviewEngine 製品契約](preview-engine-contract.md)
 - 起点commit: `2de8e2d` (P5-D closure merge)
@@ -120,14 +120,107 @@ capability は `1/1` のまま。**外形的な挙動を変えない refactor sl
 
 ### テスト (E1)
 
-- 新 positive: `tests/gpu_preview/test_gpu_pure.cpp` に N 化 `ExactFramePairer` / `takeExactAll` の
-  1 source / 3 source ケース。既存 2 source ケースは**変更しない**
+- 新 positive: `tests/gpu_preview/test_gpu_pure.cpp` の `testExactPairingNSource()` に
+  N 化 `ExactFramePairer` / `takeExactAll` の 1 source / 3 source ケース。
+  既存 2 source ケース (`testP2SourceAndComposition`) は**変更していない**
 - 新 negative: `takeExactAll` が一つでも不一致なら**どの buffer も消費しない** (depth 不変を assert)。
   この検査が無ければ partial consume がそのまま通る
-- 新 negative: engine 経路で stale composition epoch を提示しない
-  (`P5CRuntimeDiagnostics` に `staleCompositionEpochRejectCount` を追加して観測)
-- targeted: `mvm_test_gpu_pure`, `mvm_test_preview_engine`
+- 新 negative: `takeExactAll` が同一 buffer の重複、null、空集合を拒否する
+- 新 positive: buffer を渡す順序を変えても exact take が成立し、出力順は引数順である
+  (lock 順は `SourceId` 昇順で固定されるため呼び出し順に依存しない)
+- 新 positive/negative: `testCompositionRuntimeSnapshotAdoption()` が
+  `adoptCompositionRuntimeSnapshot()` の epoch lineage を固定する。
+  source 集合が循環しても epoch が単調増加すること、generation の追随では epoch を
+  進めないこと、supersede された `ComposedFrame` が `StaleEpoch` になること、
+  invalid state / 空 layout / generation 巻き戻しを reject すること
+- 新 negative: `ExactFramePairer` の construction preflight (empty / null /
+  同一 buffer 重複 / 同一 `SourceId` の別 buffer) と、invalid pairer の
+  `tryPair()` が buffer を触らず `Rejected` を返すこと
+- 新 negative: `composeLayersToTarget()` の layer 数不一致 (expected=1 / 2 layer、
+  expected=2 / 1 layer、expected=0)
+- 新 product negative: `preview_engine_p5e_stale_composition_epoch`
+  (`apps/p5e_preview_smoke --fault-stale-composition-epoch`)
+- 新 product positive: `preview_engine_p5e_product_smoke`
+- targeted: `mvm_test_gpu_pure`, `mvm_test_preview_engine`, `p2_gpu_compositor_offscreen`
 - regression: 既存 P5-C 9 本 / P5-D 13 本の product test が**無変更で PASS** すること
+
+### E1 実装結果 (実測)
+
+- ordinary CTest **456/456 PASS** (ucrt64-release)。P5-C 9 本 / P5-D 13 本を含む
+- 既存 P5-C / P5-D の product test は**一行も変更していない**。capability が `1/1` のままで
+  外形的な受理能力を変えていないことの証拠である
+
+計画から変えた点と、その理由を記録する。
+
+1. **`takeExactPair` を拡張せず `takeExactAll` を新設した。**
+   `takeExactPair` は frozen な P1〜P4 呼び出し側が使う 2 source API である。
+   signature を変えずに `takeExactAll` へ委譲させることで、既存の呼び出しと
+   「一方でも変化していればどちらも残す」不変条件をそのまま保った。
+   lock 順は引数順ではなく `SourceId` 昇順に固定してある。同じ buffer 集合を
+   別順で渡したときに deadlock しないことが N source では必須になる。
+
+2. **`ExactFramePairer` の counter は 2 source の意味を保ったまま index 版を足した。**
+   `missingACount` / `staleADiscardCount` は index 0、`missingBCount` /
+   `staleBDiscardCount` は index 1 を指し続ける。frozen test の期待値を動かさない。
+   source が 1 本のときの欠落は `MissingBoth` を表現できないので `MissingA` を返す。
+
+3. **`validateForDisplay()` は製品経路の negative test 付きで配線した。**
+   render path は compose -> validate -> draw を同じ engine lock 内で行うため、
+   通常実行だけではこの branch を踏めない。
+   そこで `PreviewRenderPort::injectCompositionEpochAdvanceForTest()` を追加し、
+   **完成した error を注入するのではなく、compose 成立後・validate 前に
+   composition epoch authority だけを 1 つ進めて通常の validate 経路を通す**。
+   `apps/p5e_preview_smoke --fault-stale-composition-epoch` がこれを駆動し、
+   `staleCompositionEpochRejectCount == 1` と `lifecycleViolationCount == 1`、
+   および reject が fatal ではなく skip であること (提示が再開して Shutdown へ到達すること) を
+   固定する。reject を lifecycle violation としても数えるのは、この経路が
+   通常運転で踏まれてはならないためである。
+
+   この負例が空振りでないことは mutation で確認した。render path から
+   `validateForDisplay()` の分岐を外すと `preview_engine_p5e_stale_composition_epoch`
+   が FAIL する (reject が 0 のまま提示が進み続ける)。
+
+4. **coordinator を session 中に作り直さない。**
+   `CompositorCoordinator::configure()` は layout と generations を 1:1 で要求し
+   一度きりなので、参照 source 集合が変わるたびに instance を作り直すと
+   epoch が instance ごとの別 namespace になり、lineage が切れる
+   (source 集合が循環すると古い `ComposedFrame` と新 owner の epoch が衝突し得る)。
+   engine 側に `nextCompositionEpoch` を持たせると owner が二重化するので、
+   coordinator へ `adoptCompositionRuntimeSnapshot(state, layout, generations)` を足した。
+   これは source 集合ごと atomic に置換しつつ、**resolved composition state が
+   実際に変わったときだけ epoch をちょうど 1 進める**。generation だけが動いた場合は
+   NoOp として追随のみ行い、generation の巻き戻しと、同一 `CompositionStateId` が
+   別 layout を指す要求は fail-closed で拒否する
+   (後者を通すと state id が composition identity を表さなくなる)。
+   engine は coordinator を lazily 一度だけ生成し、`addSource()` / detach では
+   pairer だけを作り直す。
+
+5. **`expectedLayerCount` の authority を accepted snapshot に置いた。**
+   `composed.layers.size()` を渡すと `size() == size()` の tautology になる。
+   product caller は `snapshot->layers.size()` を渡す。
+   `tests/gpu_preview/test_p2_gpu_compositor.cpp` に expected=1 / 2 layer、
+   expected=2 / 1 layer、expected=0 の negative を足して、この検査の空洞化を防いだ。
+
+6. **`ExactFramePairer` の N constructor に preflight を入れた。**
+   `tryPair()` は `takeExactAll()` へ到達する前に `discardBefore()` /
+   `peekFrontIdentity()` で dereference するので、`takeExactAll()` 側の防御だけでは
+   効かない。construction 時に empty / null / 同一 buffer の重複 /
+   同一 `SourceId` の別 buffer を弾き、invalid な pairer の `tryPair()` は
+   buffer を一切触らずに `Rejected` を返す。engine は `valid()` を確認できなければ
+   `CompositionFailure` で fail-closed にする。
+   `takeExactAll()` の lock 順 tie-break も、無関係な pointer の `<` (未規定) から
+   `std::less<SourceFrameBuffer*>` へ変えた。
+
+7. **`seekStaleGenerationRejectCount` の authority を seek 経路に限定した。**
+   pairer 由来の `StaleGeneration` / `FutureGeneration` を無条件にこの counter へ
+   足すと、seek 以外で起きた reject が seek の証拠に混ざる。
+   generation が動くのは seek のときだけなので、それ以外は単なる drop として数える。
+
+8. **`GpuCompositor::composeToTarget` (2 層固定・診断契約) は流用していない。**
+   product 用に `composeLayersToTarget(frame, target, expectedLayerCount, err)` を新設し、
+   呼び出し側が capability で検証済みの層数を明示する形にした。
+   層数を暗黙に受け入れないので、composition acceptance と GPU 描画の食い違いが
+   黙って通らない。
 
 ---
 

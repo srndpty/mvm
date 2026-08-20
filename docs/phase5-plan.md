@@ -440,7 +440,7 @@ P5-Dと同様に一度に閉じない。§10.1のscopeを次の4 sliceへ分け�
 
 | slice | 範囲 | 状態 |
 | --- | --- | --- |
-| P5-E1 | video sourceのinternal multi-source所有化、`CompositorCoordinator`をcomposition epochのauthorityとするproduct配線、`ExactFramePairer`のN一般化 (capabilityは1/1のまま) | 実装中 |
+| P5-E1 | video sourceのinternal multi-source所有化、`CompositorCoordinator`をcomposition epochのauthorityとするproduct配線、`ExactFramePairer`のN一般化 (capabilityは1/1のまま) | 実装完了。closureはgate PASS確認後に確定する |
 | P5-E2 | `removeSource()`、active/pending composition参照中のremoval拒否、audio authorityの返却 | 未 |
 | P5-E3 | capabilityを`maxQualifiedActiveVideoSources == 2` / `maxQualifiedCompositionLayers == 2`へ引き上げ、多層render経路、per-source seek generation、`apps/p5e_preview_smoke` | 未 |
 | P5-E4 | P5-E closure (§10.2全項目の突き合わせ、frozen P2/P3-C-2/P4 regression再走、三文書更新) | 未 |
@@ -450,6 +450,13 @@ P5-Dと同様に一度に閉じない。§10.1のscopeを次の4 sliceへ分け�
 - video sourceのownershipが単数fieldではなく`PreviewSourceId`昇順で決定論的に走査できるtableであること
 - product render経路が`CompositorCoordinator`を経由し、`CompositionEpoch`のownerがcoordinatorに
   一本化されていること (engineが`compositionEpoch`を直書きしない)
+- coordinatorをsession中に作り直さないこと。参照source集合が変わるcomposition transitionも
+  同一instanceで採用し、`CompositionEpoch`が単調増加すること。
+  instanceごとに別のepoch namespaceを作らない
+- 提示直前のstale composition epoch拒否が、製品経路のnegative testで固定されていること
+  (compose成立後・validate前にepoch authorityだけを進めるseamを通す)
+- product compositionのexpected layer数のauthorityがaccepted snapshotであること
+  (compose結果を自分自身と比較しない)
 - `ExactFramePairer`と`SourceFrameBuffer`のexact取得がN sourceへ一般化され、既存2 source
   semanticsとcounterが変わらないこと
 - 一つでも要求frame numberと一致しなければどのbufferも消費しないtransaction不変条件がN sourceで

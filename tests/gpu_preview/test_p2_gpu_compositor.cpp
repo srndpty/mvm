@@ -229,6 +229,28 @@ bool runSingleLayerProductCases(OwnedDevice& owned, ReadbackCounters& readbacks,
     }
     err.clear();
 
+    // P5-E1: product APIは呼び出し側が渡したexpected layer数と
+    // `ComposedFrame`が一致しない場合に拒否する。expectedはaccepted snapshotに
+    // 由来する独立authorityであり、compose結果そのものではない。
+    // ここで層数を食い違わせておかないと、この検査は容易に自己参照で空洞化する。
+    ComposedFrame twoLayers = singleLayerComposition(frame);
+    twoLayers.layers.push_back(twoLayers.layers.front());
+    if (compositor.composeLayersToTarget(twoLayers, external, 1, err)) {
+        err = "expected=1に対する2 layer compositionを拒否しませんでした";
+        return false;
+    }
+    err.clear();
+    if (compositor.composeLayersToTarget(singleLayerComposition(frame), external, 2, err)) {
+        err = "expected=2に対する1 layer compositionを拒否しませんでした";
+        return false;
+    }
+    err.clear();
+    if (compositor.composeLayersToTarget(singleLayerComposition(frame), external, 0, err)) {
+        err = "expected=0のproduct compositionを拒否しませんでした";
+        return false;
+    }
+    err.clear();
+
     const float black[4] = {0, 0, 0, 1};
     {
         std::lock_guard<D3D11Lock> lock(owned.shared.lock());

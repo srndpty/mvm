@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <functional>
 
 namespace mvm::gpu {
 
@@ -99,7 +100,8 @@ bool SourceFrameBuffer::takeExactAll(const std::vector<SourceFrameBuffer*>& sour
     std::sort(ordered.begin(), ordered.end(), [](SourceFrameBuffer* a, SourceFrameBuffer* b) {
         if (!(a->source_ == b->source_))
             return a->source_ < b->source_;
-        return a < b;
+        // 無関係な pointer の `<` は未規定。全順序が保証される std::less を使う。
+        return std::less<SourceFrameBuffer*>{}(a, b);
     });
     for (size_t i = 1; i < ordered.size(); ++i) {
         if (ordered[i - 1] == ordered[i])

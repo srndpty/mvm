@@ -32,6 +32,10 @@ public:
     long long displayedFrameNumber() const override;
     GenerationUpdateResult setGeneration(SourceGeneration generation);
     SourceGeneration generation() const;
+
+    // 構築時に固定される identity。lock を取らずに読んでよい。
+    SourceId sourceId() const { return source_; }
+
     bool take(DecodedGpuFrame& frame);
     bool peekFrontIdentity(SourceFrameIdentity& identity) const;
     bool takeExact(long long frameNumber, DecodedGpuFrame& frame);
