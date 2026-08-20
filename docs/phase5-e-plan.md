@@ -501,7 +501,7 @@ product (`apps/p5e_preview_smoke`、`-L p5e`、8 本):
 
 ### E3 実装結果 (実測)
 
-- ordinary CTest は ucrt64-release **472/472 PASS**、ucrt64-debug **472/472 PASS**
+- ordinary CTest は ucrt64-release **473/473 PASS**、ucrt64-debug **473/473 PASS**
 - P5-E product test は **17/17 PASS**。二source / 二layer、1-layer regression、
   source/layer上限、duplicate source layer拒否、exact pair不足、参照解放後のremove、
   二source exact seek、片側generation不一致、N-way seek requestの部分受理を個別のtestとして登録した

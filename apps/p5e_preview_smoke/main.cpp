@@ -1141,6 +1141,10 @@ int main(int argc, char** argv) {
                     ? partialRequestFailureValid && sink->errors.size() == 1 &&
                           sink->errors.front().category ==
                               mvm::preview::PreviewErrorCategory::SeekFailure &&
+                          sink->errors.front().operation ==
+                              mvm::preview::PreviewOperation::Seek &&
+                          sink->errors.front().severity ==
+                              mvm::preview::PreviewErrorSeverity::FatalToSession &&
                           sink->errors.front().source == videoSourceB &&
                           diagnostics.seekVideoRequestAcceptedCount == 1 &&
                           diagnostics.seekRequestCount == 0 &&

@@ -442,7 +442,7 @@ P5-Dと同様に一度に閉じない。§10.1のscopeを次の4 sliceへ分け�
 | --- | --- | --- |
 | P5-E1 | video sourceのinternal multi-source所有化、`CompositorCoordinator`をcomposition epochのauthorityとするproduct配線、`ExactFramePairer`のN一般化 (capabilityは1/1のまま) | 実装完了。closureはgate PASS確認後に確定する |
 | P5-E2 | `removeSource()`、active/pending composition参照中のremoval拒否、audio authorityの返却 | 実装完了。closureはgate PASS確認後に確定する |
-| P5-E3 | capabilityを`maxQualifiedActiveVideoSources == 2` / `maxQualifiedCompositionLayers == 2`へ引き上げ、多層render経路、per-source seek generation、`apps/p5e_preview_smoke` | 実装完了。release/debug ordinary CTest 472/472 PASS。closureはP5-E4で確定する |
+| P5-E3 | capabilityを`maxQualifiedActiveVideoSources == 2` / `maxQualifiedCompositionLayers == 2`へ引き上げ、多層render経路、per-source seek generation、`apps/p5e_preview_smoke` | 実装完了。release/debug ordinary CTest 473/473 PASS。closureはP5-E4で確定する |
 | P5-E4 | P5-E closure (§10.2全項目の突き合わせ、frozen P2/P3-C-2/P4 regression再走、三文書更新) | 未 |
 
 #### P5-E3 exit criteria
