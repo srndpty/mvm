@@ -512,6 +512,8 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     bool dispatchScheduled = false;
     PreviewCapabilities capability = [] {
         PreviewCapabilities value;
+        value.maxQualifiedActiveVideoSources = 2;
+        value.maxQualifiedCompositionLayers = 2;
         // P5-D2でaudio-master transportを接続したため、qualified audio domainを公開する。
         value.maxQualifiedActiveAudioSources = 1;
         value.qualifiedAudioSampleRate = audio::kInternalSampleRate;
@@ -639,6 +641,7 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     bool videoMasterQpcFallbackInjected = false;
     bool seekPresentationStallInjected = false;
     bool seekAudioGenerationMismatchInjected = false;
+    std::optional<PreviewSourceId> seekVideoGenerationMismatchInjected;
     std::vector<internal::ShutdownStep> shutdownSequence;
     bool renderVisibleWorkersDetached = false;
 
@@ -743,14 +746,6 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                 return PreviewSourceId{publicId};
         }
         return std::nullopt;
-    }
-
-    // video sourceが1件だけである前提の呼び出し側が使う。P5-E3で参照snapshot
-    // 由来の集合へ置き換える。
-    std::optional<PreviewSourceId> soleVideoSourceLocked() const {
-        if (videoSources.size() != 1)
-            return std::nullopt;
-        return PreviewSourceId{videoSources.begin()->first};
     }
 
     // coordinatorへconfigure済みの参照sourceに対応するworkerを、pairerへ渡した
@@ -888,13 +883,12 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         bool active = false;
         PreviewPosition target;
         std::int64_t audioSample = 0;
-        gpu::SeekTicket videoTicket;
+        std::map<std::uint64_t, gpu::SeekTicket> videoTickets;
         audio::AudioSeekTicket audioTicket;
-        bool videoReady = false;
         bool audioReady = false;
         bool decodeReady = false;
         bool resumePlaying = false;
-        gpu::SourceGeneration expectedVideoGeneration{};
+        std::map<std::uint64_t, gpu::SourceGeneration> expectedVideoGenerations;
         audio::SourceGeneration expectedAudioGeneration{};
         std::chrono::steady_clock::time_point deadline;
     };
@@ -1137,36 +1131,44 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         if (!pending.active)
             return std::nullopt;
 
-        const auto seekFailure = [&](std::string detail) {
+        const auto seekFailure = [&](std::string detail,
+                                     std::optional<PreviewSourceId> source = std::nullopt) {
             PreviewError failure =
                 makeError(PreviewErrorCategory::SeekFailure, PreviewOperation::Seek,
                           std::move(detail), PreviewErrorSeverity::FatalToSession);
-            failure.source = soleVideoSourceLocked();
+            failure.source = source;
             return failure;
         };
 
         if (!pending.decodeReady) {
-            gpu::SourceDecodeWorker* seekVideoWorker =
-                videoSources.empty() ? nullptr : videoSources.begin()->second.worker.get();
-            if (!pending.videoReady && seekVideoWorker) {
+            for (const auto& [publicId, entry] : videoSources) {
+                if (!entry.worker || pending.expectedVideoGenerations.contains(publicId))
+                    continue;
+                const auto ticket = pending.videoTickets.find(publicId);
+                if (ticket == pending.videoTickets.end()) {
+                    return seekFailure("video seek ticketがsourceごとに記録されていません",
+                                       PreviewSourceId{publicId});
+                }
                 gpu::SeekCompletion completion;
                 const gpu::SeekWaitResult result =
-                    seekVideoWorker->waitSeek(pending.videoTicket, 0, completion);
+                    entry.worker->waitSeek(ticket->second, 0, completion);
                 if (result == gpu::SeekWaitResult::StaleTicket)
-                    return seekFailure("video seek completionのticketが一致しません");
+                    return seekFailure("video seek completionのticketが一致しません",
+                                       PreviewSourceId{publicId});
                 if (result == gpu::SeekWaitResult::Ready) {
                     if (completion.status != gpu::SeekCompletionStatus::Completed) {
-                        return seekFailure("video seekが完了しませんでした: " + completion.error);
+                        return seekFailure("video seekが完了しませんでした: " + completion.error,
+                                           PreviewSourceId{publicId});
                     }
                     // decodeしたframeが要求と違えばexact seekではない。
                     if (completion.decodedFrameNumber != pending.target.outputFrame) {
                         return seekFailure(
                             "video seekがrequested frameを返しませんでした (requested=" +
-                            std::to_string(pending.target.outputFrame) +
-                            ", decoded=" + std::to_string(completion.decodedFrameNumber) + ")");
+                                std::to_string(pending.target.outputFrame) +
+                                ", decoded=" + std::to_string(completion.decodedFrameNumber) + ")",
+                            PreviewSourceId{publicId});
                     }
-                    pending.expectedVideoGeneration = completion.sourceGeneration;
-                    pending.videoReady = true;
+                    pending.expectedVideoGenerations.emplace(publicId, completion.sourceGeneration);
                 }
             }
             if (!pending.audioReady && audioWorker) {
@@ -1188,7 +1190,8 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                     pending.audioReady = true;
                 }
             }
-            if (pending.videoReady && pending.audioReady) {
+            if (pending.expectedVideoGenerations.size() == videoSources.size() &&
+                pending.audioReady) {
                 pending.decodeReady = true;
                 ++seekDecodeReadyCount;
             }
@@ -1808,11 +1811,6 @@ PreviewEngine::submitComposition(std::shared_ptr<const CompositionSnapshot> snap
             makeError(PreviewErrorCategory::InvalidState, PreviewOperation::SubmitComposition,
                       "composition submissionを受理できないstateです"));
     }
-    if (snapshot && snapshot->layers.size() > 1) {
-        return Result<AcceptedComposition>::failure(makeError(
-            PreviewErrorCategory::UnsupportedCapability, PreviewOperation::SubmitComposition,
-            "P5-C product wiringはexactly 1 layerだけを受理します"));
-    }
     Result<AcceptedComposition> accepted =
         impl_->compositionState.submit(snapshot, impl_->eligibleSources, impl_->capability);
     if (!accepted)
@@ -2080,23 +2078,32 @@ Result<void> PreviewEngine::seek(PreviewPosition target) {
                 return moved;
 
             std::string requestError;
-            // P5-E1時点のcapabilityはvideo source 1件である。per-source generationの
-            // 一般化はP5-E3で行う。
-            const std::vector<gpu::SourceDecodeWorker*> seekWorkers = impl_->videoWorkersLocked();
-            const gpu::SeekRequestResult videoRequest = seekWorkers.front()->requestSeek(
-                target.outputFrame, impl_->pendingSeek.videoTicket, requestError);
+            bool videoRequestsAccepted = true;
+            std::optional<PreviewSourceId> rejectedVideoSource;
+            impl_->pendingSeek.videoTickets.clear();
+            for (const auto& [publicId, entry] : impl_->videoSources) {
+                gpu::SeekTicket ticket;
+                const gpu::SeekRequestResult request =
+                    entry.worker->requestSeek(target.outputFrame, ticket, requestError);
+                if (request != gpu::SeekRequestResult::Accepted) {
+                    videoRequestsAccepted = false;
+                    rejectedVideoSource = PreviewSourceId{publicId};
+                    break;
+                }
+                impl_->pendingSeek.videoTickets.emplace(publicId, ticket);
+            }
             audio::AudioSeekRequestResult audioRequest = audio::AudioSeekRequestResult::Accepted;
             if (audioWorker) {
                 audioRequest = audioWorker->requestSeek(audioSample, impl_->pendingSeek.audioTicket,
                                                         requestError);
             }
-            if (videoRequest != gpu::SeekRequestResult::Accepted ||
-                audioRequest != audio::AudioSeekRequestResult::Accepted) {
-                // 片側だけ発行された状態ではidentity整合を保証できない。
+            if (!videoRequestsAccepted || audioRequest != audio::AudioSeekRequestResult::Accepted) {
+                // 一つでも未受理なら、source間のidentity整合を保証できない。
                 PreviewError failure =
                     makeError(PreviewErrorCategory::SeekFailure, PreviewOperation::Seek,
                               "seek requestが受理されませんでした: " + requestError,
                               PreviewErrorSeverity::FatalToSession);
+                failure.source = rejectedVideoSource;
                 if (impl_->machine.recordFatal(failure)) {
                     impl_->startWorkerShutdown();
                     impl_->telemetrySnapshot.status.state = PreviewEngineState::ShuttingDown;
@@ -2112,7 +2119,7 @@ Result<void> PreviewEngine::seek(PreviewPosition target) {
                 pending.active = true;
                 pending.target = target;
                 pending.audioSample = audioSample;
-                pending.videoReady = false;
+                pending.expectedVideoGenerations.clear();
                 pending.audioReady = audioWorker == nullptr;
                 pending.decodeReady = false;
                 pending.resumePlaying = resumePlaying;
@@ -2568,10 +2575,27 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                     fatal = error;
                 } else {
                     bool rejected = false;
-                    if (seeking && engine.impl_->pendingSeek.expectedVideoGeneration.value != 0) {
+                    if (seeking && !engine.impl_->pendingSeek.expectedVideoGenerations.empty()) {
                         for (const auto& layer : composed.layers) {
-                            if (!(layer.frame.sourceGeneration ==
-                                  engine.impl_->pendingSeek.expectedVideoGeneration)) {
+                            const auto publicSource =
+                                engine.impl_->publicIdForInternalLocked(layer.frame.sourceId);
+                            const auto expected =
+                                publicSource
+                                    ? engine.impl_->pendingSeek.expectedVideoGenerations.find(
+                                          publicSource->value)
+                                    : engine.impl_->pendingSeek.expectedVideoGenerations.end();
+                            gpu::SourceGeneration required =
+                                expected == engine.impl_->pendingSeek.expectedVideoGenerations.end()
+                                    ? gpu::SourceGeneration{}
+                                    : expected->second;
+                            if (publicSource &&
+                                engine.impl_->seekVideoGenerationMismatchInjected == publicSource) {
+                                ++required.value;
+                            }
+                            if (!publicSource ||
+                                expected ==
+                                    engine.impl_->pendingSeek.expectedVideoGenerations.end() ||
+                                !(layer.frame.sourceGeneration == required)) {
                                 rejected = true;
                                 break;
                             }
@@ -3446,6 +3470,33 @@ Result<void> PreviewRenderPort::injectSeekPresentationStallForTest(PreviewEngine
                             "video sourceが未登録のためseek stallを注入できません");
     }
     engine.impl_->seekPresentationStallInjected = true;
+    return Result<void>::success();
+}
+
+Result<void> PreviewRenderPort::suspendVideoSourceForTest(PreviewEngine& engine,
+                                                          PreviewSourceId source) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    const auto entry = engine.impl_->videoSources.find(source.value);
+    if (entry == engine.impl_->videoSources.end() || !entry->second.worker) {
+        return Result<void>::failure(makeError(PreviewErrorCategory::InvalidSource,
+                                               PreviewOperation::RenderDeviceAttach,
+                                               "停止対象のvideo sourceが登録されていません"));
+    }
+    entry->second.worker->pause();
+    entry->second.worker->buffer().clear();
+    return Result<void>::success();
+}
+
+Result<void> PreviewRenderPort::injectSeekVideoGenerationMismatchForTest(PreviewEngine& engine,
+                                                                         PreviewSourceId source) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    const auto entry = engine.impl_->videoSources.find(source.value);
+    if (entry == engine.impl_->videoSources.end() || !entry->second.worker) {
+        return Result<void>::failure(
+            makeError(PreviewErrorCategory::InvalidSource, PreviewOperation::Seek,
+                      "generation mismatch対象のvideo sourceが未登録です"));
+    }
+    engine.impl_->seekVideoGenerationMismatchInjected = source;
     return Result<void>::success();
 }
 

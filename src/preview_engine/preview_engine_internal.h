@@ -283,6 +283,13 @@ public:
     static bool waitFatalPublishBarrierEnteredForTest(PreviewEngine& engine, int timeoutMs);
     static void releaseFatalPublishBarrierForTest(PreviewEngine& engine);
     static Result<void> injectSeekPresentationStallForTest(PreviewEngine& engine);
+    // 指定sourceだけの供給を止めてbufferを空にし、exact pair不足時に
+    // old/latest frameへ代用しないことを製品経路で検査する。
+    static Result<void> suspendVideoSourceForTest(PreviewEngine& engine, PreviewSourceId source);
+    // 指定sourceだけseek期待generationをずらし、全sourceが揃うまで
+    // completionしないことを検査する。
+    static Result<void> injectSeekVideoGenerationMismatchForTest(PreviewEngine& engine,
+                                                                 PreviewSourceId source);
     // seek completionで得たaudio generationをengineが実際にenforceしているか
     // 検査するseam。要求generationが決して揃わない状況を作る。
     static Result<void> injectSeekAudioGenerationMismatchForTest(PreviewEngine& engine);
