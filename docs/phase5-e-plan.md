@@ -846,6 +846,20 @@ Playbackからのshutdown enter、metrics生成、terminal teardownを満たし�
 mutationは同一UCRT64環境で15秒timeoutとなり、negativeがpoll欠落を検出することを確認した。poll復元後の
 既存playback / seek / pause-resumeを含むtargeted integrationは4/4 PASSだった。
 
+clean production candidate `b0103ba54dbc5da355279e8e4db712c451661886`でcanonical P3-C-2を
+独立2 campaignとして再qualificationした。campaign Aは9/9 PASSで、git / executable / fixture /
+hardware / display provenanceも不変だった。stop ruleに従ってcampaign Bへ進み、playback 3/3 PASS後の
+seek run 1がprocess exit 4、producer pass=false、measurement audio underflow 1でFAILしたため、4/9で
+停止した。final closure suiteは実行しない。
+
+failureはseek ordinal 523、target frame 3892、requested sample start 3,119,840、request 480、
+queue before 288、consumed 288、shortage 192 samplesだった。これはATTR-Q2 parent cohortと同一identityで、
+device failure countは0、1000/1000 seeks、teardown、provenanceは正常だった。したがってQUAL-F1のasync
+WASAPI fail-close regressionとは分類しないが、canonical formal FAILとしてP5-E closureをBLOCKする。
+A PASSとB FAILは
+[`bench/results/p5-e4-qual-f1-b0103ba/`](../bench/results/p5-e4-qual-f1-b0103ba/README.md)
+へ分離保存し、再実行で上書きしない。
+
 ---
 
 ## 7. 検証手順
