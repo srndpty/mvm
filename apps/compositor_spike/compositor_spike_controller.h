@@ -12,6 +12,23 @@
 
 namespace mvm::app {
 
+struct DwmPresentationTimingSnapshot {
+    bool available = false;
+    unsigned int refreshNumerator = 0;
+    unsigned int refreshDenominator = 0;
+    unsigned int composeNumerator = 0;
+    unsigned int composeDenominator = 0;
+    bool displayConfigAvailable = false;
+    bool displayConfigSingleActiveFallback = false;
+    unsigned int displayConfigActivePathCount = 0;
+    unsigned int displayRefreshNumerator = 0;
+    unsigned int displayRefreshDenominator = 0;
+    long long qpcVBlank = 0;
+    long long qpcRefreshPeriod = 0;
+    unsigned long long refreshCount = 0;
+    unsigned long long frameDisplayedCount = 0;
+};
+
 enum class CompositorMode { Playback, Seek, Layout };
 
 struct CompositorSpikeConfig {
@@ -29,6 +46,7 @@ struct CompositorSpikeConfig {
     bool formalPreflight = false;
     bool diagnosticTiming = false;
     bool schedulerPhaseRing = false;
+    bool presentationOpportunityRing = false;
     CompositorDiagnosticCase diagnosticCase = CompositorDiagnosticCase::None;
 };
 
@@ -135,6 +153,8 @@ private:
     int layoutMismatch_ = 0;
     bool seekLockTimingActive_ = false;
     QString shutdownReason_;
+    DwmPresentationTimingSnapshot dwmTimingStart_;
+    DwmPresentationTimingSnapshot dwmTimingStop_;
 };
 
 } // namespace mvm::app

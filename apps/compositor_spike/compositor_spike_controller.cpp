@@ -8,13 +8,103 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSaveFile>
+#include <QQuickWindow>
+
+#include <dwmapi.h>
 
 #include <algorithm>
 #include <cmath>
 #include <random>
+#include <unordered_set>
 
 namespace mvm::app {
 namespace {
+DwmPresentationTimingSnapshot captureDwmTiming(QQuickWindow* window) {
+    DwmPresentationTimingSnapshot result;
+    if (!window)
+        return result;
+    DWM_TIMING_INFO timing{};
+    timing.cbSize = sizeof(timing);
+    const auto hwnd = reinterpret_cast<HWND>(window->winId());
+    if (FAILED(DwmGetCompositionTimingInfo(hwnd, &timing))) {
+        timing = {};
+        timing.cbSize = sizeof(timing);
+        if (FAILED(DwmGetCompositionTimingInfo(nullptr, &timing)))
+            return result;
+    }
+    result.available = true;
+    result.refreshNumerator = timing.rateRefresh.uiNumerator;
+    result.refreshDenominator = timing.rateRefresh.uiDenominator;
+    result.composeNumerator = timing.rateCompose.uiNumerator;
+    result.composeDenominator = timing.rateCompose.uiDenominator;
+    result.qpcVBlank = static_cast<long long>(timing.qpcVBlank);
+    result.qpcRefreshPeriod = static_cast<long long>(timing.qpcRefreshPeriod);
+    result.refreshCount = timing.cRefresh;
+    result.frameDisplayedCount = timing.cFrameDisplayed;
+    UINT32 pathCount = 0;
+    UINT32 modeCount = 0;
+    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount) == ERROR_SUCCESS) {
+        std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
+        std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
+        if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(), &modeCount,
+                               modes.data(), nullptr) == ERROR_SUCCESS) {
+            paths.resize(pathCount);
+            result.displayConfigActivePathCount = pathCount;
+            MONITORINFOEXW monitorInfo{};
+            monitorInfo.cbSize = sizeof(monitorInfo);
+            const HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            const QString monitorDevice = GetMonitorInfoW(monitor, &monitorInfo)
+                                              ? QString::fromWCharArray(monitorInfo.szDevice)
+                                              : QString{};
+            for (const auto& path : paths) {
+                DISPLAYCONFIG_SOURCE_DEVICE_NAME sourceName{};
+                sourceName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+                sourceName.header.size = sizeof(sourceName);
+                sourceName.header.adapterId = path.sourceInfo.adapterId;
+                sourceName.header.id = path.sourceInfo.id;
+                const LONG sourceNameStatus = DisplayConfigGetDeviceInfo(&sourceName.header);
+                const QString gdiName = QString::fromWCharArray(sourceName.viewGdiDeviceName);
+                if (sourceNameStatus != ERROR_SUCCESS ||
+                    gdiName.compare(monitorDevice, Qt::CaseInsensitive) != 0)
+                    continue;
+                result.displayConfigAvailable = path.targetInfo.refreshRate.Numerator > 0 &&
+                                                path.targetInfo.refreshRate.Denominator > 0;
+                result.displayRefreshNumerator = path.targetInfo.refreshRate.Numerator;
+                result.displayRefreshDenominator = path.targetInfo.refreshRate.Denominator;
+                break;
+            }
+            if (!result.displayConfigAvailable && paths.size() == 1) {
+                const auto& refresh = paths.front().targetInfo.refreshRate;
+                result.displayConfigAvailable = refresh.Numerator > 0 && refresh.Denominator > 0;
+                result.displayConfigSingleActiveFallback = result.displayConfigAvailable;
+                result.displayRefreshNumerator = refresh.Numerator;
+                result.displayRefreshDenominator = refresh.Denominator;
+            }
+        }
+    }
+    return result;
+}
+
+QJsonObject dwmTimingJson(const DwmPresentationTimingSnapshot& value) {
+    return {{"available", value.available},
+            {"refresh_numerator", static_cast<qint64>(value.refreshNumerator)},
+            {"refresh_denominator", static_cast<qint64>(value.refreshDenominator)},
+            {"compose_numerator", static_cast<qint64>(value.composeNumerator)},
+            {"compose_denominator", static_cast<qint64>(value.composeDenominator)},
+            {"display_config_available", value.displayConfigAvailable},
+            {"display_config_single_active_fallback", value.displayConfigSingleActiveFallback},
+            {"display_config_active_path_count",
+             static_cast<qint64>(value.displayConfigActivePathCount)},
+            {"display_refresh_numerator",
+             static_cast<qint64>(value.displayRefreshNumerator)},
+            {"display_refresh_denominator",
+             static_cast<qint64>(value.displayRefreshDenominator)},
+            {"qpc_vblank", value.qpcVBlank},
+            {"qpc_refresh_period", value.qpcRefreshPeriod},
+            {"refresh_count", static_cast<qint64>(value.refreshCount)},
+            {"frame_displayed_count", static_cast<qint64>(value.frameDisplayedCount)}};
+}
+
 std::vector<gpu::LayerLayout> layoutFor(size_t index) {
     const bool topLeft = index == 1 || index == 2;
     const float opacity = index < 2 ? 0.75f : 0.5f;
@@ -157,6 +247,8 @@ void CompositorSpikeController::attach(CompositorRhiItem* item) {
     state_->diagnosticCase.store(config_.diagnosticCase, std::memory_order_release);
     state_->schedulerPhaseRingEnabled.store(config_.schedulerPhaseRing,
                                             std::memory_order_release);
+    state_->presentationOpportunityEnabled.store(config_.presentationOpportunityRing,
+                                                 std::memory_order_release);
     phaseTimer_.start();
     timer_.start();
 }
@@ -389,6 +481,8 @@ bool CompositorSpikeController::resetPlaybackForMeasurement() {
 }
 
 void CompositorSpikeController::requestMeasurementStart() {
+    if (config_.presentationOpportunityRing)
+        dwmTimingStart_ = captureDwmTiming(item_ ? item_->window() : nullptr);
     state_->measurementFirstOutputFrame.store(-1, std::memory_order_release);
     state_->measurementDurationQpc.store(
         static_cast<long long>(gpu::qpcFrequency()) * config_.measureSeconds,
@@ -525,6 +619,8 @@ void CompositorSpikeController::tick() {
                 gpu::qpcMsBetween(measurementStart_.qpc, measurementStop_.qpc) / 1000.0;
             measurementStopA_ = workerA_ ? workerA_->snapshot() : gpu::SourceDecoderSnapshot{};
             measurementStopB_ = workerB_ ? workerB_->snapshot() : gpu::SourceDecoderSnapshot{};
+            if (config_.presentationOpportunityRing)
+                dwmTimingStop_ = captureDwmTiming(item_ ? item_->window() : nullptr);
             beginShutdown(QStringLiteral("playback measurement完了"), false);
         } else {
             item_->update();
@@ -961,6 +1057,52 @@ bool CompositorSpikeController::writeMetrics() {
         {"unobserved_boundary_deadline_count", unobservedBoundaryDeadlineCount},
         {"phase_pairs", schedulerPhasePairJson},
         {"records", schedulerPhaseRecordJson}};
+    const auto presentationRenders = config_.presentationOpportunityRing
+                                         ? state_->presentationOpportunityRing.renderSnapshot()
+                                         : std::vector<gpu::PresentationRenderRecord>{};
+    const auto presentationSwaps = config_.presentationOpportunityRing
+                                       ? state_->presentationOpportunityRing.swapSnapshot()
+                                       : std::vector<gpu::PresentationSwapRecord>{};
+    QJsonArray presentationRenderJson;
+    for (const auto& record : presentationRenders) {
+        presentationRenderJson.append(
+            QJsonObject{{"callback_begin_qpc", record.callbackBeginQpc},
+                        {"render_end_qpc", record.renderEndQpc},
+                        {"render_ordinal", record.renderOrdinal},
+                        {"selected_output_frame", record.selectedOutputFrame},
+                        {"submitted_output_frame", record.submittedOutputFrame},
+                        {"scheduler_skipped_deadline_count",
+                         record.schedulerSkippedDeadlineCount},
+                        {"repeated", record.repeated}});
+    }
+    QJsonArray presentationSwapJson;
+    std::unordered_set<long long> uniquePresentedFrames;
+    for (const auto& record : presentationSwaps) {
+        presentationSwapJson.append(
+            QJsonObject{{"swap_qpc", record.swapQpc},
+                        {"swap_ordinal", record.swapOrdinal},
+                        {"completed_render_ordinal", record.completedRenderOrdinal},
+                        {"submitted_render_ordinal", record.submittedRenderOrdinal},
+                        {"presented_output_frame", record.presentedOutputFrame}});
+        if (record.presentedOutputFrame >= 0)
+            uniquePresentedFrames.insert(record.presentedOutputFrame);
+    }
+    QJsonObject presentationOpportunity{
+        {"enabled", config_.presentationOpportunityRing},
+        {"measurement_start_qpc",
+         state_->measurementStartQpc.load(std::memory_order_acquire)},
+        {"measurement_end_qpc_exclusive",
+         state_->measurementEndQpc.load(std::memory_order_acquire)},
+        {"qpc_frequency", qpcFrequency},
+        {"render_record_count", static_cast<qint64>(presentationRenders.size())},
+        {"swap_record_count", static_cast<qint64>(presentationSwaps.size())},
+        {"unique_presented_frame_count", static_cast<qint64>(uniquePresentedFrames.size())},
+        {"render_overflow_count", state_->presentationOpportunityRing.renderOverflowCount()},
+        {"swap_overflow_count", state_->presentationOpportunityRing.swapOverflowCount()},
+        {"dwm_timing_start", dwmTimingJson(dwmTimingStart_)},
+        {"dwm_timing_stop", dwmTimingJson(dwmTimingStop_)},
+        {"render_records", presentationRenderJson},
+        {"swap_records", presentationSwapJson}};
     const QString mode = config_.mode == CompositorMode::Playback
                              ? QStringLiteral("playback")
                              : config_.mode == CompositorMode::Seek ? QStringLiteral("seek")
@@ -1125,6 +1267,10 @@ bool CompositorSpikeController::writeMetrics() {
     if (config_.schedulerPhaseRing) {
         o.insert("diagnostic_scheduler_phase_ring", true);
         o.insert("scheduler_phase_attribution", schedulerPhaseAttribution);
+    }
+    if (config_.presentationOpportunityRing) {
+        o.insert("diagnostic_presentation_opportunity_ring", true);
+        o.insert("presentation_opportunity", presentationOpportunity);
     }
     o.insert("effective_pair_rate", measureElapsedSeconds_ > 0
                                         ? static_cast<double>(measurement.displayed) /

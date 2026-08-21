@@ -27,6 +27,7 @@
 #include "media/gpu_preview/measurement_preroll.h"
 #include "media/gpu_preview/nv12_converter.h"
 #include "media/gpu_preview/output_scheduler.h"
+#include "media/gpu_preview/presentation_opportunity_attribution.h"
 #include "media/gpu_preview/readback_counter.h"
 #include "media/gpu_preview/scheduler_phase_attribution.h"
 #include "media/gpu_preview/source_decode_worker.h"
@@ -1499,6 +1500,30 @@ void testSchedulerPhaseAttribution() {
     checkEq(ring.overflowCount(), 2, "overflowを黙って成功にしない");
 }
 
+void testPresentationOpportunityRing() {
+    std::fprintf(stderr, "[presentation opportunity ring]\n");
+    static_assert(std::is_trivially_copyable_v<PresentationRenderRecord>);
+    static_assert(std::is_trivially_copyable_v<PresentationSwapRecord>);
+    PresentationOpportunityRing ring;
+    ring.reset();
+    ring.captureRender({100, 120, 0, 0, 0, 0, false});
+    ring.captureSwap({130, 0, 0, 0, 0});
+    const auto renders = ring.renderSnapshot();
+    const auto swaps = ring.swapSnapshot();
+    checkEq(static_cast<long long>(renders.size()), 1, "render recordをrelease publishする");
+    checkEq(static_cast<long long>(swaps.size()), 1, "swap recordをrelease publishする");
+    checkEq(renders[0].submittedOutputFrame, 0, "submitted frame identityを保持する");
+    checkEq(swaps[0].completedRenderOrdinal, 0, "swapとrender ordinalを対応付ける");
+
+    ring.reset();
+    for (std::size_t index = 0; index < kPresentationRenderRingCapacity + 1; ++index)
+        ring.captureRender({});
+    for (std::size_t index = 0; index < kPresentationSwapRingCapacity + 2; ++index)
+        ring.captureSwap({});
+    checkEq(ring.renderOverflowCount(), 1, "render overflowを黙って成功にしない");
+    checkEq(ring.swapOverflowCount(), 2, "swap overflowを黙って成功にしない");
+}
+
 void testSourceSeekMailbox() {
     std::fprintf(stderr, "[source seek mailbox]\n");
     SourceSeekMailbox mailbox;
@@ -1695,6 +1720,7 @@ int main() {
     testCompositionDisplayLedger();
     testOutputScheduler();
     testSchedulerPhaseAttribution();
+    testPresentationOpportunityRing();
     testSourceSeekMailbox();
     testMeasurementPreroll();
     testHwFormatSelection();

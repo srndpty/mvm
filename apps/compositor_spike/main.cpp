@@ -20,6 +20,7 @@ void usage() {
                  "  --formal-preflight\n"
                  "  --diagnostic-timing --diagnostic-case a|b|c|d\n"
                  "  --scheduler-phase-ring\n"
+                 "  --presentation-opportunity-ring\n"
                  "  --gpu-completion fence|event_query --mode playback|seek|layout\n");
 }
 
@@ -55,6 +56,8 @@ bool parse(const QStringList& args, CompositorSpikeConfig& config) {
         } else if (arg == "--formal-preflight") config.formalPreflight = true;
         else if (arg == "--diagnostic-timing") config.diagnosticTiming = true;
         else if (arg == "--scheduler-phase-ring") config.schedulerPhaseRing = true;
+        else if (arg == "--presentation-opportunity-ring")
+            config.presentationOpportunityRing = true;
         else if (arg == "--diagnostic-case") {
             const QString v = value().toLower();
             if (v == "a") config.diagnosticCase = CompositorDiagnosticCase::SingleDecode;
@@ -91,6 +94,10 @@ int main(int argc, char** argv) {
     if (!surface)
         return 5;
     surface->setPreferredCompletionBackend(config.completion);
+    if (config.presentationOpportunityRing) {
+        QObject::connect(window, &QQuickWindow::frameSwapped, surface,
+                         &CompositorRhiItem::recordFrameSwapped, Qt::DirectConnection);
+    }
     controller.attach(surface);
     QObject::connect(&controller, &CompositorSpikeController::finished, &app,
                      [&] { app.exit(controller.exitCode()); });

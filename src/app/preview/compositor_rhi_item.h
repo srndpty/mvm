@@ -7,6 +7,7 @@
 #include "media/gpu_preview/compositor_coordinator.h"
 #include "media/gpu_preview/gpu_compositor.h"
 #include "media/gpu_preview/phase4_composition_driver.h"
+#include "media/gpu_preview/presentation_opportunity_attribution.h"
 #include "media/gpu_preview/scheduler_phase_attribution.h"
 #include "media/gpu_preview/source_decode_worker.h"
 #include "media/gpu_preview/transition_probe.h"
@@ -244,6 +245,14 @@ struct CompositorSpikeState {
     // measurement停止後にcontrollerがsnapshot/JSON化する。
     std::atomic<bool> schedulerPhaseRingEnabled{false};
     gpu::SchedulerPhaseRing schedulerPhaseRing;
+    std::atomic<bool> presentationOpportunityEnabled{false};
+    std::atomic<bool> presentationCaptureActive{false};
+    gpu::PresentationOpportunityRing presentationOpportunityRing;
+    std::atomic<long long> latestCompletedRenderOrdinal{-1};
+    std::atomic<long long> latestSubmittedRenderOrdinal{-1};
+    std::atomic<long long> latestSubmittedOutputFrame{-1};
+    std::atomic<long long> presentationSwapOrdinal{0};
+    std::atomic<long long> measurementStartQpc{0};
     gpu::ComposedFrame diagnosticFixedFrame;
     CompositorMarkerProbe markerProbe;
     std::atomic<long long> markerAChecked{0};
@@ -284,6 +293,7 @@ public:
     }
 
     void requestTeardown();
+    void recordFrameSwapped();
 
 protected:
     QQuickRhiItemRenderer* createRenderer() override;

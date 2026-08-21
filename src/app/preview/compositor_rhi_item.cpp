@@ -31,6 +31,53 @@ void captureClockRegression(const std::shared_ptr<CompositorSpikeState>& state,
          sourceGeneration});
 }
 
+class PresentationRenderCapture {
+public:
+    PresentationRenderCapture(CompositorSpikeState* state, bool enabled, long long callbackBeginQpc,
+                              long long renderOrdinal)
+        : state_(state), enabled_(enabled), callbackBeginQpc_(callbackBeginQpc),
+          renderOrdinal_(renderOrdinal) {}
+
+    ~PresentationRenderCapture() {
+        if (!enabled_)
+            return;
+        state_->presentationOpportunityRing.captureRender(
+            {callbackBeginQpc_, gpu::qpcTicks(), renderOrdinal_, selectedOutputFrame_,
+             submittedOutputFrame_, skippedDeadlineCount_, repeated_});
+        if (submittedOutputFrame_ >= 0) {
+            state_->latestSubmittedOutputFrame.store(submittedOutputFrame_,
+                                                     std::memory_order_relaxed);
+            state_->latestSubmittedRenderOrdinal.store(renderOrdinal_, std::memory_order_release);
+        }
+        state_->latestCompletedRenderOrdinal.store(renderOrdinal_, std::memory_order_release);
+    }
+
+    void setDecision(long long selectedOutputFrame, long long skippedDeadlineCount, bool repeated) {
+        if (!enabled_)
+            return;
+        selectedOutputFrame_ = selectedOutputFrame;
+        skippedDeadlineCount_ = skippedDeadlineCount;
+        repeated_ = repeated;
+    }
+
+    void markSubmitted(long long outputFrame) {
+        if (!enabled_)
+            return;
+        submittedOutputFrame_ = outputFrame;
+        repeated_ = false;
+    }
+
+private:
+    CompositorSpikeState* state_ = nullptr;
+    bool enabled_ = false;
+    long long callbackBeginQpc_ = 0;
+    long long renderOrdinal_ = -1;
+    long long selectedOutputFrame_ = -1;
+    long long submittedOutputFrame_ = -1;
+    long long skippedDeadlineCount_ = 0;
+    bool repeated_ = true;
+};
+
 class CompositorRhiRenderer final : public QQuickRhiItemRenderer {
 public:
     CompositorRhiRenderer(std::shared_ptr<CompositorSpikeState> state,
@@ -108,6 +155,13 @@ protected:
         if (captureMeasurementBoundary(callbackBegin))
             return;
         state_->presentCallbackCount.fetch_add(1, std::memory_order_relaxed);
+        const bool presentationCaptureActive =
+            presentationOpportunityEnabled_ &&
+            state_->presentationCaptureActive.load(std::memory_order_relaxed);
+        const long long presentationRenderOrdinal =
+            presentationCaptureActive ? presentationRenderOrdinal_++ : -1;
+        PresentationRenderCapture presentationCapture(state_.get(), presentationCaptureActive,
+                                                      callbackBegin, presentationRenderOrdinal);
         if (state_->diagnosticTimingEnabled.load(std::memory_order_acquire)) {
             if (previousDiagnosticCallbackQpc_ != 0) {
                 std::lock_guard<std::mutex> lock(state_->diagnosticTimingMutex);
@@ -257,6 +311,8 @@ protected:
         }
         const bool needsB = diagnosticCase != CompositorDiagnosticCase::SingleDecode;
         const bool repeatedThisCallback = !a || (needsB && !b) || output < 0;
+        presentationCapture.setDecision(output, schedulerDecision.skippedDeadlineCount,
+                                        repeatedThisCallback);
         if (schedulerDecisionObserved && schedulerPhaseRingEnabled &&
             state_->measurementIntervalActive.load(std::memory_order_relaxed)) {
             state_->schedulerPhaseRing.capture(
@@ -475,6 +531,7 @@ protected:
                 {output, displayedQpc, displayProjectionValid, displayDeltaMs});
         }
         state_->displayedCompositionCount.fetch_add(1, std::memory_order_relaxed);
+        presentationCapture.markSubmitted(output);
         if (state_->measurementIntervalActive.load(std::memory_order_acquire)) {
             long long unset = -1;
             state_->measurementFirstOutputFrame.compare_exchange_strong(unset, output,
@@ -584,6 +641,7 @@ private:
             state_->playbackSchedulerEnabled.store(false, std::memory_order_release);
             state_->requestedOutput.store(-1, std::memory_order_release);
             state_->measurementIntervalActive.store(false, std::memory_order_release);
+            state_->presentationCaptureActive.store(false, std::memory_order_release);
             state_->measurementResetCaptured.store(true, std::memory_order_release);
             return true;
         }
@@ -599,6 +657,7 @@ private:
                 state_->scheduledOutputCount.fetch_add(closed, std::memory_order_relaxed);
                 noteDrop(gpu::OutputDropReason::SchedulerDeadline, closed);
             }
+            state_->presentationCaptureActive.store(false, std::memory_order_release);
             state_->playbackSchedulerEnabled.store(false, std::memory_order_release);
             state_->diagnosticTimingEnabled.store(false, std::memory_order_release);
             state_->diagnosticLockTiming = state_->device.lock().endDiagnostics();
@@ -620,6 +679,18 @@ private:
                 state_->schedulerPhaseRingEnabled.load(std::memory_order_acquire);
             if (schedulerPhaseRingEnabled_)
                 state_->schedulerPhaseRing.reset();
+            presentationOpportunityEnabled_ =
+                state_->presentationOpportunityEnabled.load(std::memory_order_acquire);
+            presentationRenderOrdinal_ = 0;
+            if (presentationOpportunityEnabled_) {
+                state_->presentationOpportunityRing.reset();
+                state_->latestCompletedRenderOrdinal.store(-1, std::memory_order_relaxed);
+                state_->latestSubmittedRenderOrdinal.store(-1, std::memory_order_relaxed);
+                state_->latestSubmittedOutputFrame.store(-1, std::memory_order_relaxed);
+                state_->presentationSwapOrdinal.store(0, std::memory_order_relaxed);
+                state_->measurementStartQpc.store(callbackBegin, std::memory_order_release);
+                state_->presentationCaptureActive.store(true, std::memory_order_release);
+            }
             state_->measurementEndQpc.store(callbackBegin + duration, std::memory_order_release);
             state_->measurementIntervalActive.store(true, std::memory_order_release);
             if (state_->diagnosticCase.load(std::memory_order_acquire) !=
@@ -901,6 +972,8 @@ private:
     long long previousDiagnosticCallbackQpc_ = 0;
     long long previousSchedulerPhaseCallbackQpc_ = 0;
     bool schedulerPhaseRingEnabled_ = false;
+    bool presentationOpportunityEnabled_ = false;
+    long long presentationRenderOrdinal_ = 0;
     TeardownStage teardownStage_ = TeardownStage::NotStarted;
 };
 
@@ -914,6 +987,20 @@ CompositorRhiItem::CompositorRhiItem(QQuickItem* parent)
 void CompositorRhiItem::requestTeardown() {
     state_->teardownRequested.store(true, std::memory_order_release);
     update();
+}
+
+void CompositorRhiItem::recordFrameSwapped() {
+    if (!state_->presentationCaptureActive.load(std::memory_order_acquire))
+        return;
+    const long long completed =
+        state_->latestCompletedRenderOrdinal.load(std::memory_order_acquire);
+    const long long submitted =
+        state_->latestSubmittedRenderOrdinal.load(std::memory_order_acquire);
+    const long long frame = state_->latestSubmittedOutputFrame.load(std::memory_order_relaxed);
+    const long long ordinal =
+        state_->presentationSwapOrdinal.fetch_add(1, std::memory_order_relaxed);
+    state_->presentationOpportunityRing.captureSwap(
+        {gpu::qpcTicks(), ordinal, completed, submitted, frame});
 }
 
 QQuickRhiItemRenderer* CompositorRhiItem::createRenderer() {
