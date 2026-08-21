@@ -1,0 +1,36 @@
+{
+  "schema": "mvm.p5-e4-p2-q6-opportunity-ordinal-campaign.v1",
+  "authority": "diagnostic_only_not_closure_evidence",
+  "tested_sha": "0b5463b56f35d393ca4eb4489e30ed21b73a5cc4",
+  "q5_evidence": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-p2-q5-2be57c6",
+  "q5_manifest_sha256": "8f3da8f001345f138ac231227f05eae6238ea5b61a865e379eca6f43c509727d",
+  "replay_executable_sha256": "5d8341d8c59e7ce987099b55d7b608ccc7ee0a17e92a49c222a0aff6d63301d9",
+  "unit_executable_sha256": "4fab9dfd5db5dbaadf8bdb198532966cafaf98a25fe6940c58c2e13ff38fe33b",
+  "production_scheduler_changed": false,
+  "formal_checker_changed": false,
+  "threshold_changed": false,
+  "synthetic_scenarios_passed": 15,
+  "proof_pass": true,
+  "runs": [
+    {
+      "run": 1,
+      "replay_sha256": "7b4fccc3e45c74fa13e25227ab511c6cd8d33d954116be19bd1e6b706d59b93f",
+      "displayed": 3582,
+      "true_dropped": 18,
+      "repeated": 14,
+      "cadence_and_domain_loss": 5,
+      "q5_true_loss_at_synthetic_skip_sites": 7,
+      "other_ordinal_gap_source_loss": 6
+    },
+    {
+      "run": 2,
+      "replay_sha256": "77cb3edcfe75b4f8d9f9b48ea5acbc97e43a7ffaee4f1c8d91e87e414b49c18e",
+      "displayed": 3585,
+      "true_dropped": 15,
+      "repeated": 12,
+      "cadence_and_domain_loss": 3,
+      "q5_true_loss_at_synthetic_skip_sites": 3,
+      "other_ordinal_gap_source_loss": 9
+    }
+  ]
+}
