@@ -860,6 +860,28 @@ A PASSとB FAILは
 [`bench/results/p5-e4-qual-f1-b0103ba/`](../bench/results/p5-e4-qual-f1-b0103ba/README.md)
 へ分離保存し、再実行で上書きしない。
 
+### ATTR-Q3-A1 — seek 523 EOF-tail attribution
+
+QUAL-F1を変更せず、diagnostic SHA `abed99cff80844a26ac1858b8df30f0c6fd045e7`でcanonical
+seek domain末尾のtarget 3890 / 3891 / 3892を各3回固定指定した。固定target seamは診断専用であり、
+canonical seed、1000-seek workload、threshold、pre-roll、buffer、counter、checkerは変更しない。
+
+target 3890と3891は各3/3でunderflowなし、target 3892は3/3で同一underflowを再現した。3892では
+decoder EOF=true、actual decoded audio end=3,120,128 samples exclusive、requested start=3,119,840、
+request=480、queue末尾=3,120,128、consumed=288だった。よって
+`actualAudioEndExclusive - requestedStart == 288 == actuallyConsumed`が成立する。直前consume traceも
+480 samplesずつ消費してqueue残量が1,728、1,248、768、288へ減る過程を記録した。これはproducer
+starvationやqueue accounting discontinuityではなく、供給可能PCM自体がendpoint requestより192
+samples短い**EOF-tail不足**である。
+
+repo指定のUCRT64 ffprobeによる独立走査でも、最終audio frameのPTS 3,119,104 + 1,024 samplesから
+同じ3,120,128 samples exclusiveを確認した。diagnostic campaignはformal PASS authorityではなく、
+formal seek-domain、natural EOFのunderflow分類、audio-start/display marginのどれを修正するかは未決定とする。
+したがって`QUAL-F1 implementation: PASS / requalification: FAIL / P5-E closure: BLOCKED`を維持する。
+raw、summary、provenance、SHA-256 manifestは
+[`bench/results/p5-e4-attr-q3-a1-abed99c/`](../bench/results/p5-e4-attr-q3-a1-abed99c/README.md)
+へ保存し、後続runで上書きしない。
+
 ---
 
 ## 7. 検証手順
