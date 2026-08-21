@@ -57,17 +57,11 @@ $identity = [ordered]@{
 }
 
 function Write-Summary {
-    $phase = 0L
-    $gap = 0L
-    $unpaired = 0L
-    $boundary = 0L
-    foreach ($run in $runs) {
-        $phase += [long]$run.phase_pair_deadline_count
-        $gap += [long]$run.long_callback_gap_deadline_count
-        $unpaired += [long]$run.unpaired_skip_deadline_count
-        $boundary += [long]$run.unobserved_boundary_deadline_count
-    }
-    $total = $phase + $gap + $unpaired + $boundary
+    $phase = ($runs | Measure-Object -Property phase_pair_deadline_count -Sum).Sum
+    $gap = ($runs | Measure-Object -Property long_callback_gap_deadline_count -Sum).Sum
+    $unpaired = ($runs | Measure-Object -Property unpaired_skip_deadline_count -Sum).Sum
+    $boundary = ($runs | Measure-Object -Property unobserved_boundary_deadline_count -Sum).Sum
+    $total = [long]$phase + [long]$gap + [long]$unpaired + [long]$boundary
     $dominant = if ($total -eq 0) { 'NO_DEADLINE_DROP' } elseif ($phase -gt $gap -and $phase -gt $unpaired -and $phase -gt $boundary) {
         'PHASE_PAIR'
     } elseif ($gap -gt $phase -and $gap -gt $unpaired -and $gap -gt $boundary) {
