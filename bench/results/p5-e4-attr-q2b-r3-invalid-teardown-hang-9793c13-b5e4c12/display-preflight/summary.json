@@ -1,0 +1,47 @@
+{
+  "schema": "mvm-p5-e4-display-preflight-1",
+  "authority": "DIAGNOSTIC_GATE_ONLY",
+  "workload_started": false,
+  "passed": true,
+  "expected_samples": 5,
+  "attempted_samples": 5,
+  "completed_samples": 5,
+  "interval_seconds": 2,
+  "timeout_ms": 3000,
+  "probe_executable": "build/ucrt64-release/bin/mvm_display_preflight_probe.exe",
+  "probe_executable_sha256": "17cd158e166b2a310254f54f83c718171c24a230181659cecf0bb0f05f2ef4e9",
+  "checker": "C:\\dev\\soft\\mvm\\scripts\\check-p5-e4-display-preflight.ps1",
+  "checker_sha256": "35ae2772e2ec93877fd3e2052133ebdae8ce34a66a292ed032bc0e84666236c2",
+  "checker_exit_code": 0,
+  "git_commit": "24fcf6e48f5dd379791e355b5d68e6206cf51621",
+  "dirty_worktree": false,
+  "git_status_porcelain": [],
+  "clean_git_required": true,
+  "runs": [
+    {
+      "sample": 1,
+      "path": "bench\\results\\scratch\\p5-e4-attr-q2b-r3-9793c13-b5e4c12-20260821\\display-preflight\\probe-1.json",
+      "process_exit_code": 0
+    },
+    {
+      "sample": 2,
+      "path": "bench\\results\\scratch\\p5-e4-attr-q2b-r3-9793c13-b5e4c12-20260821\\display-preflight\\probe-2.json",
+      "process_exit_code": 0
+    },
+    {
+      "sample": 3,
+      "path": "bench\\results\\scratch\\p5-e4-attr-q2b-r3-9793c13-b5e4c12-20260821\\display-preflight\\probe-3.json",
+      "process_exit_code": 0
+    },
+    {
+      "sample": 4,
+      "path": "bench\\results\\scratch\\p5-e4-attr-q2b-r3-9793c13-b5e4c12-20260821\\display-preflight\\probe-4.json",
+      "process_exit_code": 0
+    },
+    {
+      "sample": 5,
+      "path": "bench\\results\\scratch\\p5-e4-attr-q2b-r3-9793c13-b5e4c12-20260821\\display-preflight\\probe-5.json",
+      "process_exit_code": 0
+    }
+  ]
+}

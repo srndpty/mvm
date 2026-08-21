@@ -716,6 +716,18 @@ Q2B retryを終了して`ATTR-Q2C — Display Provenance Instability`へ移る�
 failureならidentityを保存してretryを終了する。R3確定前にQ3-A、selective revert、link/timing ablationへ
 進まない。
 
+R3実測ではdisplay-only preflightが5/5 PASSし、`DELL U2412M`、landscape、screen 1920x1200、
+available 1920x1152、DPR 1、RHI target 1920x1080で連続一致した。formal P→H campaign開始後、parent
+playback run 1 / 2は既存checker PASSだったが、run 3がrawを生成せず12.71分残存した。command lineで
+campaign所属を確認したprocess treeだけを停止し、campaignをprotocol failureでINVALIDとした。final rawが
+無いため内部の正確な停止stageは未確定であり、未観測のteardown fieldを補完しない。artifactは
+[`bench/results/p5-e4-attr-q2b-r3-invalid-teardown-hang-9793c13-b5e4c12/`](../bench/results/p5-e4-attr-q2b-r3-invalid-teardown-hang-9793c13-b5e4c12/README.md)
+へ保存した。
+
+事前に定めたstop ruleにより、Q2B retryはR3で終了する。R3はorder attribution authorityを持たず、
+Q2/Q2Bの4分類は未確定のままである。次はparent teardown/protocol hangの停止stageを切り分ける。
+Q3-A、selective revert、link/timing ablationへはまだ進まない。
+
 ---
 
 ## 7. 検証手順

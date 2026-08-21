@@ -1,0 +1,30 @@
+{
+  "schema": "mvm-p5-e4-attribution-abort-1",
+  "authority": "DIAGNOSTIC_ONLY",
+  "formal_pass_authority": false,
+  "formal_verdict": "NOT_RUN",
+  "campaign": "ATTR-Q2B-R3",
+  "ordering": "parent then head",
+  "workload_started": true,
+  "expected_prefix_runs": 12,
+  "completed_prefix_runs": 0,
+  "expected_processes": 78,
+  "completed_processes": 2,
+  "display_preflight_passed": true,
+  "display_preflight_samples": 5,
+  "failure": {
+    "profile": "SEEK-PREFIX",
+    "attempt": 1,
+    "cohort": "parent",
+    "mode": "playback",
+    "run": 3,
+    "process_id": 42380,
+    "process_start_local": "2026-08-21T12:56:13+09:00",
+    "observed_elapsed_minutes": 12.71,
+    "responding": true,
+    "raw_json_created": false,
+    "classification": "teardown-or-protocol-hang",
+    "internal_stage": "unknown"
+  },
+  "stop_rule": "Q2B retry stopped after protocol failure"
+}
