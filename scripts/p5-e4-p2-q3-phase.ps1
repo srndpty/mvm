@@ -104,7 +104,7 @@ function Write-Summary {
 Copy-Item -LiteralPath $PSCommandPath -Destination (Join-Path $OutputDirectory 'runner.ps1')
 for ($index = 1; $index -le $MaxRuns; ++$index) {
     if ((Invoke-GitText @('rev-parse', 'HEAD')) -ne $testedSha -or
-        (Invoke-GitText @('status', '--porcelain'))) {
+        (Invoke-GitText @('status', '--porcelain', '--untracked-files=no'))) {
         throw 'campaign中にsource provenanceが変化しました'
     }
     if ((Get-Sha256 $Executable) -ne $identity.executable.sha256) {
