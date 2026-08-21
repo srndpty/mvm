@@ -728,6 +728,20 @@ campaign所属を確認したprocess treeだけを停止し、campaignをprotoco
 Q2/Q2Bの4分類は未確定のままである。次はparent teardown/protocol hangの停止stageを切り分ける。
 Q3-A、selective revert、link/timing ablationへはまだ進まない。
 
+### ATTR-Q3-T0 — shutdown / protocol hang stage attribution
+
+Q2B retryは終了し、parent formal-playback process hangの内部停止stageを診断する。optional
+`--shutdown-stage-journal <jsonl>`指定時だけ、shutdown開始からfinished emission / event-loop returnまでの
+blocking boundaryと`writeMetrics()`のsnapshot / mutex / `QSaveFile`境界をJSONLへ追記する。各entryは
+sequence、QPC、process/thread ID、stageを持ち、Windows write-throughと`FlushFileBuffers`でdurableにする。
+option未指定時のproduction behavior、timeout、buffer / pre-roll、threshold、counter、checkerは変更しない。
+
+外部watchdogはparent clean exact diagnostic SHAでformalと同じplayback workloadを最大10回反復し、
+180秒を超えたprocessについてjournal最終entry、thread snapshot、可能ならProcDump full dumpを保存する。
+停止対象はwatchdog自身が起動したPID配下だけとする。hangを再現できなければT0未確定、journalが無ければ
+fail-closedとし、少なくとも1つのblocking call / event-loop / metrics-write boundaryへ帰属できた場合だけ
+T0の出口を満たす。
+
 ---
 
 ## 7. 検証手順
