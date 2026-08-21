@@ -953,6 +953,28 @@ target_link_libraries(mvm_test_gpu_pure PRIVATE mvm::gpu_preview mvm::warnings)
 # 依存 DLL が解決できず 0xC0000135 で落ちる (実際に落ちた)。
 mvm_add_test(gpu_pure_unit COMMAND mvm_test_gpu_pure)
 
+# P2-Q4はproduction schedulerを変更せず、offline modelの契約を先に固定する。
+add_executable(mvm_test_p2_render_opportunity
+    harness/test_p2_render_opportunity_replay.cpp
+    harness/p2_render_opportunity_replay.cpp
+)
+target_include_directories(mvm_test_p2_render_opportunity PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/harness)
+target_link_libraries(mvm_test_p2_render_opportunity PRIVATE mvm::warnings)
+mvm_add_test(p2_render_opportunity_unit COMMAND mvm_test_p2_render_opportunity)
+
+if(MVM_ENABLE_QT)
+    add_executable(mvm_p2_scheduler_replay
+        harness/p2_scheduler_replay.cpp
+        harness/p2_render_opportunity_replay.cpp
+    )
+    target_include_directories(mvm_p2_scheduler_replay PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/harness)
+    target_link_libraries(mvm_p2_scheduler_replay PRIVATE
+        mvm::gpu_preview
+        Qt6::Core
+        mvm::warnings
+    )
+endif()
+
 add_executable(mvm_test_source_frame_buffer_interruptible_wait
     gpu_preview/test_source_frame_buffer_interruptible_wait.cpp)
 target_link_libraries(mvm_test_source_frame_buffer_interruptible_wait PRIVATE
