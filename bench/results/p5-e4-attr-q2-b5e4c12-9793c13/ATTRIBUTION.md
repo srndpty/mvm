@@ -7,17 +7,17 @@ first-failure snapshotはすべて`null`だった。
 
 parentでは3回のseek underflowが次の同一境界で再現した。
 
-| field | attempt 1 seek run 2 | attempt 2 seek run 1 | attempt 3 seek run 3 |
-| --- | ---: | ---: | ---: |
-| seek ordinal | 523 | 523 | 523 |
-| target frame | 3892 | 3892 | 3892 |
-| source generation | 524 | 524 | 524 |
-| engine state | 3 (`WaitDisplay`) | 3 | 3 |
-| decode ready / seek pending / presented | true / true / false | 同左 | 同左 |
-| requested sample start / count | 3119840 / 480 | 同左 | 同左 |
-| queue before / consumed / after | 288 / 288 / 0 | 同左 | 同左 |
-| shortage | 192 samples (4ms) | 同左 | 同左 |
-| audio master sample | 3114063 | 3114082 | 3114064 |
+| field                                   | attempt 1 seek run 2 | attempt 2 seek run 1 | attempt 3 seek run 3 |
+| --------------------------------------- | -------------------: | -------------------: | -------------------: |
+| seek ordinal                            |                  523 |                  523 |                  523 |
+| target frame                            |                 3892 |                 3892 |                 3892 |
+| source generation                       |                  524 |                  524 |                  524 |
+| engine state                            |    3 (`WaitDisplay`) |                    3 |                    3 |
+| decode ready / seek pending / presented |  true / true / false |                 同左 |                 同左 |
+| requested sample start / count          |        3119840 / 480 |                 同左 |                 同左 |
+| queue before / consumed / after         |        288 / 288 / 0 |                 同左 |                 同左 |
+| shortage                                |    192 samples (4ms) |                 同左 |                 同左 |
+| audio master sample                     |              3114063 |              3114082 |              3114064 |
 
 underflowはrequest前、flush/preroll中、通常再生中ではなく、exact decode completion後かつ
 requested-frame presentation前の`WaitDisplay`で起きた。target sample 3113600に対して、endpointが

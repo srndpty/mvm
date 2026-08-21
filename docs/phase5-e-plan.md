@@ -666,6 +666,24 @@ portrait 1200x1920へ変化した。以後71 processはdisplay preflightでworkl
 [`bench/results/p5-e4-attr-q2b-invalid-display-9793c13-b5e4c12/`](../bench/results/p5-e4-attr-q2b-invalid-display-9793c13-b5e4c12/README.md)
 へ分離し、将来の有効runで上書きしない。landscape 1920x1200復帰後に新しいartifact rootで再実行する。
 
+landscape復帰後の最初の再実行は、parent playback run 2が約12分終了せず、当該repo processだけを
+停止した時点でrawが欠落したため中止した。不完全artifactは
+[`bench/results/p5-e4-attr-q2b-invalid-teardown-hang-9793c13-b5e4c12/`](../bench/results/p5-e4-attr-q2b-invalid-teardown-hang-9793c13-b5e4c12/README.md)
+へ分離した。
+
+次の再実行は12/12 prefix、78/78 processを完了した。hardware、display geometry / orientation / DPR /
+RHI targetは不変だったが、`screen_name`だけが2 processで`\\.\DISPLAY1`から`DELL U2412M`へ一時的に
+変化し、直後に戻った。既存contractが`screen_name`も不変条件とするため、このcampaignもQ2B
+attributionには使用しない。head / parentともordinal 523を含むaudio underflowは0、clock regressionも0
+だった。別にparent pause-resume 1件で`pause_video_advance_zero=false`とAV projection failure 1件を
+観測したが、invalid campaign内の症状として扱う。artifactは
+[`bench/results/p5-e4-attr-q2b-invalid-screen-name-9793c13-b5e4c12/`](../bench/results/p5-e4-attr-q2b-invalid-screen-name-9793c13-b5e4c12/README.md)
+へ分離した。
+
+したがってcounterbalanced orderの4分類はまだ未確定であり、production selective revertやQ3-Aへは
+進めない。次回も同じdiagnostic SHA / executable / fixture / P→H順序を使い、新しいartifact rootで
+display provenance不変のcampaignを採取する。
+
 ---
 
 ## 7. 検証手順
