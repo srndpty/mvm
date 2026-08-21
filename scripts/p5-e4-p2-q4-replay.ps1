@@ -21,6 +21,7 @@ $Q3Root = (Resolve-Path -LiteralPath $Q3Root).Path
 $ReplayExecutable = (Resolve-Path -LiteralPath $ReplayExecutable).Path
 $unitExecutable = (Resolve-Path -LiteralPath $unitExecutable).Path
 if (Test-Path -LiteralPath $OutputDirectory) { throw "既存artifactを上書きしません: $OutputDirectory" }
+$env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
 
 function Get-Sha256([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
