@@ -1021,6 +1021,39 @@ authorityと一般counterexampleを確立したが、candidate semanticsの採�
 追加proofする。P5-E closureは**BLOCKED**を維持する。結果は
 [`bench/results/p5-e4-p2-q4-75fdb09/`](../bench/results/p5-e4-p2-q4-75fdb09/README.md)へ保存する。
 
+### P2-Q5 — presentation opportunity authority proof
+
+Q4 evidenceとP2-D5-1 historical FAILを変更せず、diagnostic flag時だけQt `frameSwapped` hookと
+render completionを別々の8192件fixed ringへ記録した。render hot pathではallocation、mutex、file I/O、
+loggingを追加しない。render ordinal、selected/submitted frame、post-render QPCをswap ordinal、最後に
+submittedされたframe identityへ関連付ける。flagなしではsignal connectionと追加raw fieldを作らない。
+
+presentation clock authorityは対象windowのmonitorを`MonitorFromWindow`で特定し、`QueryDisplayConfig`の
+active pathからexact refresh rationalを取得した。DWM composition timingのrefresh rational、VBlank QPC、
+refresh periodもmeasurement開始前／停止後に保存する。実測したmodeは整数59 Hzではなく、両runとも
+`59950/1000 = 59.95 Hz`だった。
+
+clean diagnostic SHA `2be57c6fdd94a402d9251abbd55feccc14b6c33b`、executable SHA-256
+`45c9063868581a7bb7a1b1908913d68d0565e4034c60aebd9d3b0aae5dfe4262`でformal playback条件を
+反復し、run 2でPASS/FAILが揃ったためstop ruleに従って終了した。run 1はcallback / render / swapが
+3596 / 3596 / 3596、actual presentation opportunities 3597、unique presented frames 3532、synthetic
+deadline drop 68でformal PASSだった。run 2は3598 / 3598 / 3598、opportunities 3597、unique frames
+3510、synthetic drop 90でformal FAILだった。全ring overflowは0、render/scheduler/swap identity対応は
+完全で、`AMBIGUOUS=0`だった。
+
+各skip時の隣接swap QPCをexact display refreshへ投影し、60 fps media opportunity間隔に対して本当に
+present機会を失ったか分類した。合計158 synthetic deadline dropsのうち
+`FALSE_DEADLINE_SKIP=148 (93.7%) / TRUE_OPPORTUNITY_LOSS=10 (6.3%) / AMBIGUOUS=0`だった。
+Q3で支配した`UNPAIRED_SKIP`型に限っても101件中94件がfalse、7件がtrueだった。特にformal FAILの
+run 2は90 drop中87件がfalseで、actual loss対応は3件だけだった。
+
+したがって、現行counterはactual presentation opportunity lossではなくcallback begin QPCとsynthetic
+60.000 Hz deadlineのcrossingを主に測っていることが実present authorityから確認できた。
+`FALSE_DEADLINE_SKIP`支配の出口を満たすため、次はhistorical P2-D5-1 FAILを保持したまま、threshold 2%を
+変えずにP2-D5-2 contract correctionとscheduler/harness fixを設計する。Q5 diagnostic PASSをclosureへ
+流用せず、P5-E closureは**BLOCKED**を維持する。raw、classification、summary、manifestは
+[`bench/results/p5-e4-p2-q5-2be57c6/`](../bench/results/p5-e4-p2-q5-2be57c6/README.md)へ保存する。
+
 ---
 
 ## 7. 検証手順
