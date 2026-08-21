@@ -923,6 +923,31 @@ manifestは
 [`bench/results/p5-e4-qual-f2-31eda0d/`](../bench/results/p5-e4-qual-f2-31eda0d/README.md)
 へ保存し、後続runで上書きしない。
 
+### P2-Q1 — deadline drop attribution
+
+QUAL-F2 final closureのP2 FAILについて、historical rawを先に比較した。`bb65ea5`のplayback 3 runは
+deadline drop 30～47、QUAL-F2 run 1は105だった。一方decoded A/Bは全runで各3,583、present callbackも
+3,597～3,598であり、QUAL-F2 runではrepeated presentが103へ増えた。decode供給量ではなく、presentation
+deadline付近のtiming差をleadとした。
+
+Q1-Aでは`31eda0d`と`bb65ea5`をdetached clean worktreeから同一recipeでlink map付きbuildした。
+archive member setは35対35で一致し、audio object 5件は両方の最終PEへlinkされていた。candidate `.text`は
+4,384 bytes大きく、controller `tick()`、coordinator `compose()`、RHI `render()`のRVAは同一だったが、
+GPU issue / output schedulerは`+0x3c0`移動した。binary/layout差は存在するが、この比較だけでは因果を
+確定できなかった。
+
+Q1-Bはformalと同じP2 playback条件を保ち、`C1→B1→B2→C2→C3→B3→B4→C4→C5→B5`で5 paired
+attemptsを実行した。candidateは4/5 checker PASS、deadline drop min / median / max / meanが
+38 / 62 / 73 / 57.2、baselineは3/5 PASS、51 / 68 / 77 / 66.4だった。両cohortに2%超のFAILがあり、
+baseline平均はcandidateより悪かった。全10 runのdecoded A/Bは各3,583、callbackは3,596～3,598で、
+deadline dropとrepeated presentが連動した。
+
+したがってcandidate固有production regressionへのattributionは不成立で、selective revertへ進まない。
+OS / GPU / Qt render-loop schedulingの外部timingを次のleadとする。このpaired campaignは診断専用であり、
+formal PASSへ流用しない。P5-E closureは**BLOCKED**を維持する。raw、summary、binary/link evidenceは
+[`bench/results/p5-e4-p2-q1-31eda0d-vs-bb65ea5/`](../bench/results/p5-e4-p2-q1-31eda0d-vs-bb65ea5/README.md)
+へ保存した。
+
 ---
 
 ## 7. 検証手順

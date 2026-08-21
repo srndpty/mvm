@@ -1,0 +1,65 @@
+{
+  "schema": "mvm.p5-e4-p2-q1-binary.v1",
+  "authority": "diagnostic_only_not_closure_evidence",
+  "candidate": {
+    "source_sha": "31eda0d8d080dcf4b1680149d85b8293f618cd57",
+    "executable_sha256": "78cde287e6a91a6413adf90723eea87c36bae9471b7fff87e8879aa822bd283a",
+    "executable_size": 26359975,
+    "text_size": 626736,
+    "text_sha256": "273ef3d76b2df29b212e11dd9ba959e136002c15957b765f67ca61bd75665af0",
+    "map_sha256": "2e9332eeed3857add5f699190b7ba2b77df6b058f6cc48d93c1b335c43fb190d"
+  },
+  "baseline": {
+    "source_sha": "bb65ea50aeadc88901743a03b8a55d3758a6a16a",
+    "executable_sha256": "891161bea4231fce707cb40efb9f98dc5113fe7cba3e81dc012a13d95578001c",
+    "executable_size": 26249819,
+    "text_size": 622352,
+    "text_sha256": "aca8ae20a2b2b586b5974122ee2bd3d214e2da73d605bc90d14e26f3883760af",
+    "map_sha256": "a62e4b2aca9297eaf6c63a720a6e20437fe3d416ff1c5bb19f6c4d05715abbab"
+  },
+  "archive_members": {
+    "candidate_count": 35,
+    "baseline_count": 35,
+    "set_difference_count": 0,
+    "linked_audio_members": [
+      "audio_clock.cpp.obj",
+      "audio_decode_worker.cpp.obj",
+      "audio_frame_queue.cpp.obj",
+      "audio_video_scheduler.cpp.obj",
+      "wasapi_audio_sink.cpp.obj"
+    ]
+  },
+  "hot_symbols": [
+    {
+      "symbol": "CompositorSpikeController::tick()",
+      "candidate_rva": "0x12020",
+      "baseline_rva": "0x12020",
+      "delta": 0
+    },
+    {
+      "symbol": "CompositorCoordinator::compose(...) ",
+      "candidate_rva": "0x1abd0",
+      "baseline_rva": "0x1abd0",
+      "delta": 0
+    },
+    {
+      "symbol": "CompositorRhiRenderer::render(QRhiCommandBuffer*)",
+      "candidate_rva": "0x33740",
+      "baseline_rva": "0x33740",
+      "delta": 0
+    },
+    {
+      "symbol": "GpuCompositor::issueComposition(...) ",
+      "candidate_rva": "0x64e70",
+      "baseline_rva": "0x64ab0",
+      "delta": 960
+    },
+    {
+      "symbol": "OutputScheduler60Hz::takeDueBefore(...) ",
+      "candidate_rva": "0x68430",
+      "baseline_rva": "0x68070",
+      "delta": 960
+    }
+  ],
+  "finding": "音声変更objectは両PEへリンクされ、candidateの.textは4384 bytes増え、一部後段hot symbolは960 bytes移動した。一方controller tick、compose、RHI renderのRVAは同一であり、binary/layout差だけではdeadline dropの因果を確定できない。"
+}
