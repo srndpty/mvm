@@ -1,0 +1,7 @@
+		51773 Events were lost in this trace.  Data may be unreliable.
+		This is usually caused by insufficient disk bandwidth for ETW logging.
+		Please try increasing the minimum and maximum number of buffers and/or
+		the buffer size.  Doubling these values would be a good first attempt.
+		Please note, though, that this action increases the amount of memory
+		reserved for ETW buffers, increasing memory pressure on your scenario.
+		See "xperf -help start" for the associated command line options.

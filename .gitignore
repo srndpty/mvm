@@ -29,6 +29,9 @@ CMakeUserPresets.json
 # Benchmark resultsはcommitし、scratchと巨大なfull dumpだけを追跡しない
 /bench/results/scratch/
 /bench/results/**/*.dmp
+# ETW trace本体は巨大なのでlocal preservationとし、summaryとSHA-256だけをcommitする
+/bench/results/**/*.etl
+/bench/results/**/trace.etl.NGENPDB/
 
 # Editor / OS
 .vs/

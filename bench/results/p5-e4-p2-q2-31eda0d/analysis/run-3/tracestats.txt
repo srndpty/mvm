@@ -1,0 +1,1012 @@
+
+Classic EventGuid                        TotalCount       TotalSize  Name
+======================================   ========== ===============  =======================================
+                                           84012678      1642183646  <All>
+
+
+{01853a65-418f-4f36-aefc-dc0f1d2fd235}          584          123036  SysConfig
+
+    Type Level Version                        Count       TotalSize  Name
+    ---- ----- -------                   ---------- ---------------  ---------------------------------------
+    0x0a  0x00 0x0003                             1             828  SysConfig: CPUs                         
+    0x0b  0x00 0x0002                             3            1704  SysConfig: Physical Disks               
+    0x0c  0x00 0x0002                             3             336  SysConfig: Logical Disks                
+    0x0d  0x00 0x0002                             5            1542  SysConfig: Network Cards                
+    0x0e  0x00 0x0002                             4           10336  SysConfig: Video Adapters               
+    0x0f  0x00 0x0003                           297           37768  SysConfig: Services                     
+    0x10  0x00 0x0002                             1               8  SysConfig: Power Management             
+    0x12  0x00 0x0002                             1              98  SysConfig: Optical Media                
+    0x13  0x00 0x0002                             3              24  SysConfig [Provider]                    
+    0x15  0x00 0x0003                            11            1348  SysConfig: IRQs                         
+    0x16  0x00 0x0005                           206           53606  SysConfig: PnP Devices                  
+    0x18  0x00 0x0002                             1              20  SysConfig: NUMA Nodes                   
+    0x19  0x00 0x0002                             1              78  SysConfig: Platform                     
+    0x1a  0x00 0x0002                             1              12  SysConfig: Processor Group Configuration
+    0x1b  0x00 0x0002                             1             132  SysConfig: Processor Mapping            
+    0x1c  0x00 0x0002                             1               8  SysConfig: Display DPI                  
+    0x1d  0x00 0x0002                             1               4  SysConfig: Code Integrity               
+    0x1e  0x00 0x0002                             1              16  SysConfig: Machine Id                   
+    0x1f  0x00 0x0002                             6            1356  SysConfig [Provider]                    
+    0x21  0x00 0x0002                             1              16  SysConfig [Provider]                    
+    0x22  0x00 0x0002                             1              80  SysConfig [Provider]                    
+    0x23  0x00 0x0002                            32           13696  SysConfig [Provider]                    
+    0x24  0x00 0x0002                             1               4  SysConfig [Provider]                    
+    0x25  0x00 0x0002                             1              16  SysConfig [Provider]                    
+
+
+{2cb15d1d-5fc1-11d2-abe1-00a0c911f518}        60694        10652440  Image
+
+    Type Level Version                        Count       TotalSize  Name
+    ---- ----- -------                   ---------- ---------------  ---------------------------------------
+    0x02  0x00 0x0003                          6896         1146928  Image: Unload                           
+    0x03  0x00 0x0003                         23386         4168904  Image: Start Rundown                    
+    0x04  0x00 0x0003                         23450         4179284  Image: End Rundown                      
+    0x0a  0x00 0x0003                          6960         1157308  Image: Load                             
+    0x21  0x00 0x0002                             1               8  Image: Kernel Base                      
+    0x22  0x00 0x0002                             1               8  Image [Provider]                        
+
+
+{3d6fa8d0-fe05-11d0-9dda-00c04fd7ba7c}         3673          958224  Process
+
+    Type Level Version                        Count       TotalSize  Name
+    ---- ----- -------                   ---------- ---------------  ---------------------------------------
+    0x01  0x00 0x0004                           353           98291  Process: Create                         
+    0x02  0x00 0x0004                           351           92204  Process: Delete                         
+    0x03  0x00 0x0004                           427          288078  Process: Start Rundown                  
+    0x04  0x00 0x0004                           429          290037  Process: End Rundown                    
+    0x0b  0x00 0x0002                           351            1404  Process: Terminate                      
+    0x20  0x00 0x0002                           351           36504  Process: PerfCounters: End              
+    0x21  0x00 0x0002                           429           44616  Process: PerfCounters: Rundown          
+    0x27  0x00 0x0005                           982          107090  Process: Zombie                         
+
+
+{3d6fa8d1-fe05-11d0-9dda-00c04fd7ba7c}      7299968       150252168  Thread
+
+    Type Level Version                        Count       TotalSize  Name
+    ---- ----- -------                   ---------- ---------------  ---------------------------------------
+    0x01  0x00 0x0003                          3313          245162  Thread: Create                          
+    0x02  0x00 0x0003                          2987          249356  Thread: Delete                          
+    0x03  0x00 0x0003                          9936          917142  Thread: Start Rundown                   
+    0x04  0x00 0x0003                         10300          944552  Thread: End Rundown                     
+    0x24  0x00 0x0005                       4407502       123410056  Thread: CSwitch                         
+    0x30  0x00 0x0003                         29697          237576  Thread: SetPriority                     
+    0x31  0x00 0x0003                         34403          275224  Thread: SetBasePriority                 
+    0x32  0x00 0x0002                       2444385        19555080  Thread: ReadyThread                     
+    0x33  0x00 0x0003                           865            6920  Thread: Set Page Priority               
+    0x34  0x00 0x0003                            35             280  Thread: Set I/O Priority                
+    0x46  0x00 0x0003                        177131         2125572  Thread: Set Ideal Processor             
+    0x47  0x00 0x0003                        176737         2120844  Thread: Set User Ideal Processor        
+    0x48  0x00 0x0002                          2677          164404  Thread: Set Name                        
+
+
+{3d6fa8d3-fe05-11d0-9dda-00c04fd7ba7c}      1696474        31859980  PageFault
+
+    Type Level Version                        Count       TotalSize  Name
+    ---- ----- -------                   ---------- ---------------  ---------------------------------------
+    0x0a  0x00 0x0002                        903384        14454144  PageFault: Transition                   
+    0x0b  0x00 0x0002                        713418        11414688  PageFault: Demand Zero                  
+    0x0c  0x00 0x0002                         30651          490416  PageFault: Copy on Write                
+    0x0d  0x00 0x0002                          8579          137264  PageFault: Guard Page                   
+    0x0e  0x00 0x0002                          6348          101568  PageFault: Hard Page Fault              
+    0x0f  0x00 0x0002                         27291          436656  PageFault [Provider]                    
+    0x20  0x00 0x0002                           217            8680  Hardfault                               
+    0x70  0x00 0x0003                           155           32240  Memory: MemInfo                         
+    0x73  0x00 0x0002                          6120          244800  StoreFault: InMemory                    
+    0x7c  0x00 0x0002                             1              32  Memory: MMStat                          
+    0x7d  0x00 0x0004                           310         4539492  Memory: MemInfoExWS                     
+
+
+{3d6fa8d4-fe05-11d0-9dda-00c04fd7ba7c}        18870          624480  DiskIo
+
+    Type Level Version                        Count       TotalSize  Name
+    ---- ----- -------                   ---------- ---------------  ---------------------------------------
+    0x0a  0x00 0x0003                           504           26208  DiskIo: Read                            
+    0x0b  0x00 0x0003                          9235          480220  DiskIo: Write                           
+    0x0c  0x00 0x0003                           420            5040  DiskIo: Read Init                       
+    0x0d  0x00 0x0003                          7718           92616  DiskIo: Write Init                      
+    0x0e  0x00 0x0003                           530           14840  DiskIo: Flush                           
+    0x0f  0x00 0x0003                           463            5556  DiskIo: Flush Init                      
+
+
+{68fdd900-4a3e-11d1-84f4-0000f80464e3}           19            1068  EventTrace
+
+    Type Level Version                        Count       TotalSize  Name
+    ---- ----- -------                   ---------- ---------------  ---------------------------------------
+    0x00  0x00 0x0002                             1             332  EventTrace: Header                      
+    0x05  0x00 0x0002                             4             144  EventTrace: Group Masks                 
+    0x08  0x00 0x0002                             3               0  EventTrace: Rundown Complete            
+    0x20  0x00 0x0002                             3             108  EventTrace: Group Masks End             
+    0x40  0x00 0x0002                             2              58  EventTrace: DbgId (RSDS)                
+    0x42  0x00 0x0002                             1              40  EventTrace: Build Lab                   
+    0x43  0x00 0x0002                             1             194  EventTrace: Binary Path                 
+    0x50  0x00 0x0002                             4             192  EventTrace: Partition Info              
+
+
+{90cbdc39-4a3e-11d1-84f4-0000f80464e3}       105390        25220216  FileIo
+
+    Type Level Version                        Count       TotalSize  Name
+    ---- ----- -------                   ---------- ---------------  ---------------------------------------
+    0x20  0x00 0x0002                           826          178794  Filename: Create                        
+    0x23  0x00 0x0002                           597          151826  Filename: Delete                        
+    0x24  0x00 0x0002                        103967        24889596  Filename: Rundown                       
+
+
+{9b79ee91-b5fd-41c0-a243-4248e266e9d0}           58           53750  SysConfigEx
+
+    Type Level Version                        Count       TotalSize  Name
+    ---- ----- -------                   ---------- ---------------  ---------------------------------------
+    0x20  0x00 0x0000                             1             126  SysConfigEx: BuildInfo                  
+    0x21  0x00 0x0000                             1              64  SysConfigEx: SystemPaths                
+    0x22  0x00 0x0000                             2             100  SysConfigEx: UnknownVolume              
+    0x23  0x00 0x0000                            14             716  SysConfigEx: VolumeMapping              
+    0x24  0x00 0x0000                            39           52728  SysConfigEx: NetworkInterface           
+    0x25  0x00 0x0000                             1              16  SysConfigEx [Provider]                  
+
+
+{b3e675d7-2554-4f18-830b-2762732560de}       241765         9513288  ImageId
+
+    Type Level Version                        Count       TotalSize  Name
+    ---- ----- -------                   ---------- ---------------  ---------------------------------------
+    0x00  0x00 0x0002                         60686         3240232  ImageId: Info                           
+    0x20  0x00 0x0002                           590            7080  DbgId: None                             
+    0x22  0x00 0x0002                          1044           57468  DbgId: DBG                              
+    0x24  0x00 0x0002                         58270         2862176  DbgId: RSDS                             
+    0x25  0x00 0x0002                          3234          437986  DbgId: ILRSDS                           
+    0x26  0x00 0x0002                         58816         1176320  DbgId: Portable PDB                     
+    0x27  0x00 0x0001                             8             288  DbgId: Embedded PDB                     
+    0x28  0x00 0x0001                         56124          673488  DbgId: Deterministic                    
+    0x29  0x00 0x0001                             3             746  DbgId: Error                            
+    0x40  0x00 0x0000                          2990         1057504  ImageId: FileVersion                    
+
+
+{bbccf6c1-6cd1-48c4-80ff-839482e37671}          758          966314  EventMetadata
+
+    Type Level Version                        Count       TotalSize  Name
+    ---- ----- -------                   ---------- ---------------  ---------------------------------------
+    0x20  0x00 0x0000                           607          826504  Event Metadata: Event Info              
+    0x21  0x00 0x0000                           151          139810  Event Metadata: Map Info                
+
+
+{ce1dbfb4-137e-4da6-87b0-3f59aa102cbc}     64857468       397432364  Perfinfo
+
+    Type Level Version                        Count       TotalSize  Name
+    ---- ----- -------                   ---------- ---------------  ---------------------------------------
+    0x22  0x00 0x0000                             6             132  Mark                                    
+    0x2e  0x00 0x0002                        195282         3124512  Sampled Profile                         
+    0x32  0x00 0x0002                         83357         2000568  Message Signaled Interrupt              
+    0x33  0x00 0x0002                      32173266       257386128  SysCall: Enter                          
+    0x34  0x00 0x0002                      31981814       127927256  SysCall: Exit                           
+    0x43  0x00 0x0002                        100604         2012080  Interrupt                               
+    0x44  0x00 0x0002                        298056         4768896  Dpc                                     
+    0x45  0x00 0x0002                          1512           24192  TimerDpc                                
+    0x49  0x00 0x0003                             1              24  Sampled Profile Freq: Start Rundown     
+    0x4a  0x00 0x0003                             1              24  Sampled Profile Freq: End Rundown       
+    0x60  0x00 0x0002                         11754           94032  WDF: Interrupt                          
+    0x62  0x00 0x0002                         11815           94520  WDF: Dpc                                
+
+
+{def2fe46-7bd6-4b80-bd94-f57fe20d0ce3}      9725321      1014492336  StackWalk
+
+    Type Level Version                        Count       TotalSize  Name
+    ---- ----- -------                   ---------- ---------------  ---------------------------------------
+    0x20  0x00 0x0002                       9725321      1014492336  Stack Walk                              
+
+
+{e43445e0-0903-48c3-b878-ff0fccebdd04}         1633           26384  Power
+
+    Type Level Version                        Count       TotalSize  Name
+    ---- ----- -------                   ---------- ---------------  ---------------------------------------
+    0x33  0x00 0x0002                            32             768  Power: Perf State Change                
+    0x35  0x00 0x0002                          1601           25616  Power: Idle State Change                
+
+
+{ed54dff8-c409-4cf6-bf83-05e1e61a09c4}            3            7598  WinSATAssessment
+
+    Type Level Version                        Count       TotalSize  Name
+    ---- ----- -------                   ---------- ---------------  ---------------------------------------
+    0x21  0x00 0x0000                             1             405  WinSAT: WinSPR Compressed Info          
+    0x23  0x00 0x0000                             1             642  WinSAT: Metrics Compressed Info         
+    0x25  0x00 0x0000                             1            6551  WinSAT: SystemConfig Compressed Info    
+
+
+Crimson ProviderId                                                  TotalCount       TotalSize  Name
+======================================                              ========== ===============  ===============================================================
+                                                                       6484274       354946766  <All>
+
+
+{0a002690-3839-4e3a-b3b6-96d8df868d99}                                   46606         2623038  Microsoft-Antimalware-Engine
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0003 0x0002 0x00   0x00    0x00    0x04  0x0000000000000000            1             316  Microsoft-Antimalware-Engine/GenericMessageTask/win:Info        
+    0x0004 0x0003 0x00   0x00    0x00    0x04  0x0000000000000000            1              72  Microsoft-Antimalware-Engine/VersionTask/win:Info               
+    0x0005 0x0004 0x01   0x01    0x00    0x04  0x0000000000000000          346          110164  Microsoft-Antimalware-Engine/StreamScanRequestTask/win:Start    
+    0x0006 0x0004 0x02   0x01    0x00    0x04  0x0000000000000000          346          110164  Microsoft-Antimalware-Engine/StreamScanRequestTask/win:Stop     
+    0x0007 0x0005 0x00   0x00    0x00    0x04  0x0000000000000000          325           60633  Microsoft-Antimalware-Engine/SkippedFileTask/win:Info           
+    0x000b 0x0006 0x0d   0x00    0x00    0x04  0x0000000000000000         6751          771900  Microsoft-Antimalware-Engine/BehaviorMonitorTask/BmModuleLoad   
+    0x000f 0x0006 0x11   0x00    0x00    0x04  0x0000000000000000           93           19742  Microsoft-Antimalware-Engine/BehaviorMonitorTask/BmFileDelete   
+    0x0010 0x0006 0x12   0x00    0x00    0x04  0x0000000000000000           36           20906  Microsoft-Antimalware-Engine/BehaviorMonitorTask/BmFileRename   
+    0x001a 0x0006 0x1c   0x00    0x00    0x04  0x0000000000000000          344            1376  Microsoft-Antimalware-Engine/BehaviorMonitorTask/BmProcessTerminate
+    0x0024 0x0007 0x23   0x00    0x00    0x04  0x0000000000000000         1148          115306  Microsoft-Antimalware-Engine/CacheTask/MOACLookup               
+    0x0026 0x0007 0x26   0x00    0x00    0x04  0x0000000000000000          111           11720  Microsoft-Antimalware-Engine/CacheTask/CacheLookup              
+    0x002b 0x0009 0x2b   0x01    0x00    0x04  0x0000000000000000          359           69538  Microsoft-Antimalware-Engine/ExpensiveOperationTask/ExpensiveOperationBegin
+    0x002c 0x000a 0x2c   0x00    0x00    0x04  0x0000000000000000          628           18028  Microsoft-Antimalware-Engine/MetaStoreTask/MetaStoreAction      
+    0x002d 0x000a 0x2d   0x00    0x00    0x04  0x0000000000000000            4              64  Microsoft-Antimalware-Engine/MetaStoreTask/MetaStoreMaintenance 
+    0x0035 0x0006 0x35   0x00    0x00    0x04  0x0000000000000000          641           10256  Microsoft-Antimalware-Engine/BehaviorMonitorTask/BmOpenProcess  
+    0x003b 0x0002 0x00   0x00    0x00    0x04  0x0000000000000000          468           38635  Microsoft-Antimalware-Engine/GenericMessageTask/win:Info        
+    0x003c 0x0006 0x3c   0x00    0x00    0x04  0x0000000000000000         3828          102912  Microsoft-Antimalware-Engine/BehaviorMonitorTask/BmEtw          
+    0x003d 0x0006 0x3d   0x00    0x00    0x04  0x0000000000000000            4            1096  Microsoft-Antimalware-Engine/BehaviorMonitorTask/BmFolderCreate 
+    0x003e 0x0006 0x3e   0x00    0x00    0x04  0x0000000000000000            5              20  Microsoft-Antimalware-Engine/BehaviorMonitorTask/BmScavengerTask
+    0x0043 0x0009 0x43   0x01    0x00    0x04  0x0000000000000000          359           75282  Microsoft-Antimalware-Engine/ExpensiveOperationTask/ExpensiveOperationEnd
+    0x0046 0x0006 0x44   0x00    0x00    0x04  0x0000000000000000          347          110466  Microsoft-Antimalware-Engine/BehaviorMonitorTask/BmProcessCreate
+    0x0047 0x0006 0x45   0x00    0x00    0x04  0x0000000000000000          141           33068  Microsoft-Antimalware-Engine/BehaviorMonitorTask/BmFileCreateEx 
+    0x0048 0x0006 0x46   0x00    0x00    0x04  0x0000000000000000          182           41728  Microsoft-Antimalware-Engine/BehaviorMonitorTask/BmFileChangeEx 
+    0x0049 0x0006 0x47   0x02    0x00    0x04  0x0000000000000000          691          110888  Microsoft-Antimalware-Engine/BehaviorMonitorTask/ProcessMonitorFlags
+    0x005f 0x0006 0x4e   0x00    0x00    0x04  0x0000000000000010            2             510  Microsoft-Antimalware-Engine/BehaviorMonitorTask/BmFileOverwrite
+    0x0067 0x0006 0x51   0x00    0x00    0x04  0x0000000000000000           27            6858  Microsoft-Antimalware-Engine/BehaviorMonitorTask/BmFileSequentialRead
+    0x0068 0x0006 0x52   0x00    0x00    0x04  0x0000000000000000          780          106750  Microsoft-Antimalware-Engine/BehaviorMonitorTask/BmInternal     
+    0x0069 0x0006 0x53   0x00    0x00    0x04  0x0000000000000000           24            7428  Microsoft-Antimalware-Engine/BehaviorMonitorTask/BmRegistry     
+    0x006d 0x0006 0x56   0x00    0x00    0x04  0x0000000000000000          357           46180  Microsoft-Antimalware-Engine/BehaviorMonitorTask/BmProcessContextStart
+    0x006e 0x0006 0x57   0x00    0x00    0x04  0x0000000000000000          311            6220  Microsoft-Antimalware-Engine/BehaviorMonitorTask/BmProcessContextStop
+    0x006f 0x0006 0x58   0x00    0x00    0x04  0x0000000000000000        13973          223568  Microsoft-Antimalware-Engine/BehaviorMonitorTask/BmNotificationHandleStart
+    0x0070 0x0006 0x59   0x00    0x00    0x04  0x0000000000000000        13973          391244  Microsoft-Antimalware-Engine/BehaviorMonitorTask/BmNotificationHandleStop
+
+
+{0f67e49f-fe51-4e9f-b490-6f2948cc6027}                                  295730        13834234  Microsoft-Windows-Kernel-Processor-Power
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x000c 0x000c 0x00   0x04    0x00    0x05  0x0000000000000002       166016         8466816  Microsoft-Windows-Kernel-Processor-Power/RecordedUtility/win:Info
+    0x000e 0x000e 0x00   0x01    0x00    0x04  0x0000000000000003         1823           27345  Microsoft-Windows-Kernel-Processor-Power/ParkCore/win:Info      
+    0x000f 0x000f 0x00   0x00    0x00    0x04  0x0000000000000003         1817           19987  Microsoft-Windows-Kernel-Processor-Power/UnparkCore/win:Info    
+    0x0010 0x000b 0x02   0x00    0x00    0x05  0x0000000000000002         5202           41616  Microsoft-Windows-Kernel-Processor-Power/PerfCheck/win:Stop     
+    0x0013 0x0011 0x00   0x02    0x00    0x04  0x0000000000000006           32           32992  Microsoft-Windows-Kernel-Processor-Power/IdleAccountingRundown/win:Info
+    0x0014 0x0012 0x00   0x00    0x00    0x04  0x0000000000000006           32             480  Microsoft-Windows-Kernel-Processor-Power/ProcessorFirmwareRundown/win:Info
+    0x0016 0x0014 0x00   0x00    0x00    0x04  0x0000000000000006           32             384  Microsoft-Windows-Kernel-Processor-Power/PTStateDomainFirmwareRundown/win:Info
+    0x0017 0x0004 0x00   0x00    0x00    0x04  0x0000000000000006           32             544  Microsoft-Windows-Kernel-Processor-Power/Summary/win:Info       
+    0x002b 0x001d 0x00   0x00    0x00    0x04  0x0000000000000006           32            1536  Microsoft-Windows-Kernel-Processor-Power/BiosPStatesRundown/win:Info
+    0x002c 0x001e 0x00   0x00    0x00    0x04  0x0000000000000006           32            1696  Microsoft-Windows-Kernel-Processor-Power/BiosCStatesRundown/win:Info
+    0x002d 0x001f 0x00   0x00    0x00    0x04  0x0000000000000006           32            1312  Microsoft-Windows-Kernel-Processor-Power/BiosTStatesRundown/win:Info
+    0x0033 0x0024 0x00   0x00    0x00    0x04  0x000000000000000a            1               8  Microsoft-Windows-Kernel-Processor-Power/LogicalProcessorIdlingRundown/win:Info
+    0x0034 0x0025 0x00   0x00    0x00    0x04  0x0000000000000002           14              56  Microsoft-Windows-Kernel-Processor-Power/LatencySensitivityHint/win:Info
+    0x0035 0x0026 0x00   0x02    0x00    0x05  0x0000000000000002         5188         2822272  Microsoft-Windows-Kernel-Processor-Power/ParkNodeRecordedStats/win:Info
+    0x0038 0x002f 0x00   0x00    0x00    0x04  0x0000000000000006           32             992  Microsoft-Windows-Kernel-Processor-Power/Summary2/win:Info      
+    0x003c 0x0029 0x00   0x01    0x00    0x04  0x0000000000000002           32             640  Microsoft-Windows-Kernel-Processor-Power/PepQueryCapabilities/win:Info
+    0x0040 0x002c 0x00   0x09    0x00    0x04  0x0000000000000082           32            2496  Microsoft-Windows-Kernel-Processor-Power/ProcessorPerformanceRundown/win:Info
+    0x0041 0x002d 0x00   0x03    0x00    0x04  0x0000000000000002            1              36  Microsoft-Windows-Kernel-Processor-Power/ParkNodeRundown/win:Info
+    0x0043 0x0030 0x00   0x02    0x00    0x04  0x0000000000000002           32            4640  Microsoft-Windows-Kernel-Processor-Power/ProcessorIdleRundown/win:Info
+    0x0044 0x0031 0x00   0x02    0x00    0x04  0x0000000000000083           32             608  Microsoft-Windows-Kernel-Processor-Power/ProcessorIdRundown/win:Info
+    0x0046 0x0032 0x00   0x00    0x00    0x04  0x0000000000000012            1               4  Microsoft-Windows-Kernel-Processor-Power/PepGetPlatformIdleStates/win:Info
+    0x0047 0x000b 0x22   0x00    0x00    0x05  0x0000000000000002            1               8  Microsoft-Windows-Kernel-Processor-Power/PerfCheck/FailedStart  
+    0x0052 0x003d 0x00   0x00    0x00    0x04  0x0000000000000010            1             212  Microsoft-Windows-Kernel-Processor-Power/PlatformAccountingBucketIntervalsRundown/win:Info
+    0x0059 0x0044 0x00   0x05    0x00    0x04  0x0000000000000002            1              58  Microsoft-Windows-Kernel-Processor-Power/StaticPolicyRundown/win:Info
+    0x0062 0x004d 0x00   0x00    0x00    0x04  0x0000000000000012            1               4  Microsoft-Windows-Kernel-Processor-Power/CoordinatedIdleRundown/win:Info
+    0x0064 0x000b 0x01   0x00    0x00    0x05  0x0000000000000002         5202          104040  Microsoft-Windows-Kernel-Processor-Power/PerfCheck/win:Start    
+    0x0067 0x0051 0x00   0x00    0x00    0x04  0x0000000000000064           14            1054  Microsoft-Windows-Kernel-Processor-Power/ProfileRundown/win:Info
+    0x006a 0x0054 0x00   0x00    0x00    0x04  0x0000000000000064          180            9094  Microsoft-Windows-Kernel-Processor-Power/ProfileSettingRundown/win:Info
+    0x006b 0x0055 0x00   0x00    0x00    0x04  0x0000000000000064            1               4  Microsoft-Windows-Kernel-Processor-Power/ProfileStatusRundown/win:Info
+    0x006f 0x0059 0x00   0x02    0x00    0x04  0x0000000000000080        62571         1188849  Microsoft-Windows-Kernel-Processor-Power/DeliveredPerfChange/win:Info
+    0x0078 0x0062 0x00   0x01    0x00    0x04  0x0000000000000002            1              44  Microsoft-Windows-Kernel-Processor-Power/HeterogeneousPoliciesRundown/win:Info
+    0x007e 0x0068 0x00   0x00    0x00    0x04  0x0000000000000082            1              12  Microsoft-Windows-Kernel-Processor-Power/QosSupportRundown/win:Info
+    0x0095 0x007e 0x00   0x01    0x00    0x04  0x0000000000000083           32             640  Microsoft-Windows-Kernel-Processor-Power/PerfDomainRundown/win:Info
+    0x00ab 0x0093 0x00   0x00    0x00    0x04  0x0000000000000200           36            2538  Microsoft-Windows-Kernel-Processor-Power/HardwareDebugRegisterRundown/win:Info
+    0x00ac 0x0094 0x00   0x00    0x00    0x04  0x0000000000000200          283           13647  Microsoft-Windows-Kernel-Processor-Power/HardwareDebugParameterRundown/win:Info
+    0x00ad 0x0095 0x00   0x00    0x00    0x04  0x0000000000000200         4463           71408  Microsoft-Windows-Kernel-Processor-Power/HardwareDebugRegisterValueChange/win:Info
+    0x00b4 0x009c 0x00   0x00    0x00    0x04  0x0000000000000002            1            1296  Microsoft-Windows-Kernel-Processor-Power/WpsDynamicTableRundown/win:Info
+    0x00b6 0x009e 0x00   0x00    0x00    0x04  0x0000000000000002            1            1424  Microsoft-Windows-Kernel-Processor-Power/WpsOrderValueTableRundown/win:Info
+    0x00b8 0x00a0 0x00   0x00    0x00    0x04  0x0000000000000002        26010          208080  Microsoft-Windows-Kernel-Processor-Power/HeteroFavoredCoreRotationChanged/win:Info
+    0x00b9 0x00a1 0x00   0x02    0x00    0x04  0x0000000000000002         5188          446168  Microsoft-Windows-Kernel-Processor-Power/HeteroWpsActiveWorkloadClass/win:Info
+    0x00ba 0x00a2 0x00   0x02    0x00    0x04  0x0000000000000002         5188          114136  Microsoft-Windows-Kernel-Processor-Power/HeteroParkingSelectionCount/win:Info
+    0x00bd 0x00a5 0x00   0x00    0x00    0x04  0x0000000000000002          601           79332  Microsoft-Windows-Kernel-Processor-Power/SoftParkingRankListChanged/win:Info
+    0x00c0 0x00a8 0x00   0x01    0x00    0x04  0x0000000000000002         5188          140076  Microsoft-Windows-Kernel-Processor-Power/ParkingCountSelection/win:Info
+    0x00c1 0x00a9 0x00   0x01    0x00    0x04  0x0000000000000002           56            2856  Microsoft-Windows-Kernel-Processor-Power/MultiCoreHeteroSetRundown/win:Info
+    0x00c4 0x00ac 0x00   0x00    0x00    0x04  0x0000000000000002            1              32  Microsoft-Windows-Kernel-Processor-Power/WpsDynamicUpdateReasonRundown/win:Info
+    0x00c5 0x00ad 0x00   0x00    0x00    0x04  0x0000000000000002            1             334  Microsoft-Windows-Kernel-Processor-Power/WpsDynamicUpdateReasonBitIndexMapRundown/win:Info
+    0x00c6 0x00ae 0x00   0x00    0x00    0x05  0x0000000000000100            1               2  Microsoft-Windows-Kernel-Processor-Power/ProcessorEnergyEsuRundown/win:Info
+    0x00c7 0x00af 0x00   0x00    0x00    0x05  0x0000000000000100            1              34  Microsoft-Windows-Kernel-Processor-Power/EnergyEstimationFrequencyRundown/win:Info
+    0x00cb 0x00b3 0x00   0x01    0x00    0x04  0x0000000000000002           32           12736  Microsoft-Windows-Kernel-Processor-Power/QosClassPerfSelectionRundown/win:Info
+    0x00d4 0x009b 0x00   0x01    0x00    0x04  0x0000000000000002          224            9632  Microsoft-Windows-Kernel-Processor-Power/QosClassPolicyRundown/win:Info
+    0x00d6 0x00bc 0x00   0x01    0x00    0x04  0x0000000000000002            1              16  Microsoft-Windows-Kernel-Processor-Power/RestrictionRundown/win:Info
+    0x00e0 0x00c5 0x00   0x00    0x00    0x04  0x0000000000000002            1               8  Microsoft-Windows-Kernel-Processor-Power/HighPerfSoftParkLatencyRundown/win:Info
+
+
+{2a274310-42d5-4019-b816-e4b8c7abe95c}                                       2            1800  Microsoft-Windows-ReadyBoostDriver
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0014 0x0013 0x00   0x01    0x10    0x04  0x8000000000000010            2            1800  Microsoft-Windows-ReadyBoostDriver/GlobalStats/win:Info         
+
+
+{331c3b3a-2005-44c2-ac5e-77220c37d6b4}                                  791150         8967876  Microsoft-Windows-Kernel-Power
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x003f 0x0045 0x00   0x02    0x10    0x04  0x4000000000004004        14349         2708360  Microsoft-Windows-Kernel-Power/SystemTimeResolutionChange/win:Info
+    0x005c 0x0059 0x00   0x01    0x10    0x04  0x4000000000000404            2             404  Microsoft-Windows-Kernel-Power/CreatePowerRequest/win:Info      
+    0x005d 0x005a 0x00   0x01    0x10    0x04  0x4000000000000404            6             192  Microsoft-Windows-Kernel-Power/ChangePowerRequest/win:Info      
+    0x005e 0x005b 0x00   0x00    0x10    0x04  0x4000000000000404            3              24  Microsoft-Windows-Kernel-Power/ClosePowerRequest/win:Info       
+    0x0060 0x005d 0x00   0x01    0x10    0x04  0x4000000000004004            1              24  Microsoft-Windows-Kernel-Power/SystemTimeResolutionRundown/win:Info
+    0x0061 0x005e 0x00   0x01    0x10    0x04  0x4000000000004004            2             344  Microsoft-Windows-Kernel-Power/SystemTimeResolutionRequestRundown/win:Info
+    0x0063 0x0060 0x00   0x01    0x10    0x04  0x4000000000000404           13            2214  Microsoft-Windows-Kernel-Power/PowerRequestRundown/win:Info     
+    0x0068 0x0063 0x00   0x00    0x10    0x04  0x4000000000000404            3              48  Microsoft-Windows-Kernel-Power/SleepDisableReasonRundown/win:Info
+    0x006a 0x0065 0x00   0x00    0x10    0x04  0x4000000000000404            1               4  Microsoft-Windows-Kernel-Power/AcDcStateRundown/win:Info        
+    0x006e 0x0068 0x00   0x00    0x10    0x04  0x4000000000000004           61           17576  Microsoft-Windows-Kernel-Power/SystemTimerResolutionStackRundown/win:Info
+    0x0084 0x0096 0x00   0x00    0x10    0x04  0x4000000000000404            1               4  Microsoft-Windows-Kernel-Power/FirmwarePlatformRoleRundown/win:Info
+    0x0088 0x0097 0x00   0x00    0x10    0x04  0x4000000000000004          205           25939  Microsoft-Windows-Kernel-Power/DeviceRundown/win:Info           
+    0x0092 0x00b1 0x01   0x00    0x10    0x04  0x4000000000000004            2              64  Microsoft-Windows-Kernel-Power/PowerSettingCallback/win:Start   
+    0x0093 0x00b1 0x02   0x00    0x10    0x04  0x4000000000000004            2              48  Microsoft-Windows-Kernel-Power/PowerSettingCallback/win:Stop    
+    0x00af 0x00cd 0x00   0x00    0x10    0x04  0x4000000000000004            1               8  Microsoft-Windows-Kernel-Power/StandbyConnectivityRundown/win:Info
+    0x00b0 0x00ce 0x00   0x00    0x10    0x04  0x4000000000000004            5              40  Microsoft-Windows-Kernel-Power/CsComplianceRundown/win:Info     
+    0x00b5 0x00d7 0x00   0x00    0x10    0x04  0x4000000000000004            2               8  Microsoft-Windows-Kernel-Power/DeepSleepSetConstraint/win:Info  
+    0x00b6 0x00d8 0x00   0x00    0x10    0x04  0x4000000000000004            2               8  Microsoft-Windows-Kernel-Power/DeepSleepClearConstraint/win:Info
+    0x00b7 0x00d9 0x00   0x00    0x10    0x04  0x4000000000000004            1              14  Microsoft-Windows-Kernel-Power/DeepSleepConstraintRundown/win:Info
+    0x00be 0x0115 0x00   0x00    0x10    0x04  0x4000000000004004            1               8  Microsoft-Windows-Kernel-Power/TimerResolutionRequestIgnoreChange/win:Info
+    0x01f9 0x0099 0x00   0x00    0x10    0x04  0x4000000000000004            1               4  Microsoft-Windows-Kernel-Power/SystemLatencyRundown/win:Info    
+    0x01fd 0x00a0 0x00   0x00    0x10    0x04  0x4000000000000404            1               1  Microsoft-Windows-Kernel-Power/DynamicTickStatusRundown/win:Info
+    0x020f 0x00e2 0x00   0x00    0x10    0x04  0x4000000000000004           56             896  Microsoft-Windows-Kernel-Power/PowerStateEventRundown/win:Info  
+    0x021d 0x00f0 0x00   0x01    0x10    0x04  0x4000000000000004            3              36  Microsoft-Windows-Kernel-Power/SIdleUpdateNotificationWorker/win:Info
+    0x0225 0x00fb 0x00   0x00    0x10    0x04  0x4000000000000004            3              36  Microsoft-Windows-Kernel-Power/SystemIdleAssessment/win:Info    
+    0x0226 0x00fc 0x00   0x00    0x10    0x04  0x4000000000000004           12             240  Microsoft-Windows-Kernel-Power/SystemIdleEventAssessment/win:Info
+    0x0227 0x00fd 0x00   0x00    0x10    0x04  0x4000000000000004            1               4  Microsoft-Windows-Kernel-Power/SystemIdleRundown/win:Info       
+    0x022d 0x0103 0x00   0x00    0x10    0x04  0x4000000000000004       776404         6211232  Microsoft-Windows-Kernel-Power/SystemTimeResolutionKernelChangeInternal/win:Info
+    0x0245 0x011c 0x00   0x00    0x10    0x04  0x4000000000000004            3              48  Microsoft-Windows-Kernel-Power/Win32kCallout/win:Info           
+    0x0246 0x011c 0x00   0x00    0x10    0x04  0x4000000000000004            3              48  Microsoft-Windows-Kernel-Power/Win32kCallout/win:Info           
+
+
+{36b6f488-aad7-48c2-afe3-d4ec2c8b46fa}                                     250             452  Microsoft-Windows-Performance-Recorder-Control
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0068 0x0066 0x01   0x00    0x00    0x04  0x0000000000010000          102               0  Microsoft-Windows-Performance-Recorder-Control/Perf_LoadProfileFromString/win:Start
+    0x0069 0x0066 0x02   0x00    0x00    0x04  0x0000000000010000          102               0  Microsoft-Windows-Performance-Recorder-Control/Perf_LoadProfileFromString/win:Stop
+    0x006a 0x0067 0x01   0x00    0x00    0x04  0x0000000000010000            8               0  Microsoft-Windows-Performance-Recorder-Control/Perf_AddProfileToCollection/win:Start
+    0x006d 0x0067 0x02   0x00    0x00    0x04  0x0000000000010000            8               0  Microsoft-Windows-Performance-Recorder-Control/Perf_AddProfileToCollection/win:Stop
+    0x0072 0x006c 0x01   0x00    0x10    0x04  0x8000000000010000            8             320  Microsoft-Windows-Performance-Recorder-Control/Perf_LoadTraceMergePropertiesFromFile/win:Start
+    0x0073 0x006c 0x02   0x00    0x00    0x04  0x0000000000010000            8               0  Microsoft-Windows-Performance-Recorder-Control/Perf_LoadTraceMergePropertiesFromFile/win:Stop
+    0x0079 0x006e 0x02   0x00    0x00    0x04  0x0000000000010000            1               0  Microsoft-Windows-Performance-Recorder-Control/Perf_StartProfiles/win:Stop
+    0x0080 0x0072 0x01   0x00    0x00    0x04  0x0000000000010000            1             132  Microsoft-Windows-Performance-Recorder-Control/Perf_StopProfiles/win:Start
+    0x0082 0x0073 0x01   0x00    0x00    0x04  0x0000000000010000            5               0  Microsoft-Windows-Performance-Recorder-Control/Perf_QueryProfiles/win:Start
+    0x0083 0x0073 0x02   0x00    0x00    0x04  0x0000000000010000            5               0  Microsoft-Windows-Performance-Recorder-Control/Perf_QueryProfiles/win:Stop
+    0x008a 0x0077 0x01   0x00    0x00    0x04  0x0000000000010000            1               0  Microsoft-Windows-Performance-Recorder-Control/Perf_ControlProgressHandlerBegin/win:Start
+    0x008b 0x0077 0x02   0x00    0x00    0x04  0x0000000000010000            1               0  Microsoft-Windows-Performance-Recorder-Control/Perf_ControlProgressHandlerBegin/win:Stop
+
+
+{49c2c27c-fe2d-40bf-8c4e-c3fb518037e7}                                    3833          418854  Microsoft-Windows-Search-Core
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0013 0x000a 0x00   0x00    0x10    0x04  0x8000000000200008          433          108854  Microsoft-Windows-Search-Core/USN_Notify/win:Info               
+    0x0015 0x000b 0x00   0x00    0x10    0x04  0x8000000000200008           12             954  Microsoft-Windows-Search-Core/USN_Notify_Filtered/win:Info      
+    0x004d 0x0032 0x00   0x00    0x10    0x04  0x8000000000000400            1               8  Microsoft-Windows-Search-Core/Gatherer_AdviseStatus/win:Info    
+    0x00a9 0x0070 0x00   0x00    0x10    0x04  0x8000000000000408            1               0  Microsoft-Windows-Search-Core/RobotThread_BeforeGetNewTransaction/win:Info
+    0x00cc 0x008b 0x01   0x00    0x10    0x04  0x8000000000020000          400           67932  Microsoft-Windows-Search-Core/CSearchCrawlScopeManager_IncludedInCrawlScope/win:Start
+    0x00cd 0x008b 0x02   0x00    0x10    0x04  0x8000000000020000          400            3200  Microsoft-Windows-Search-Core/CSearchCrawlScopeManager_IncludedInCrawlScope/win:Stop
+    0x00e0 0x0095 0x01   0x00    0x10    0x04  0x8000000000020000          400           67932  Microsoft-Windows-Search-Core/CSearchCrawlScopeManager_IncludedInCrawlScopeEx/win:Start
+    0x00e1 0x0095 0x02   0x00    0x10    0x04  0x8000000000020000          400            4800  Microsoft-Windows-Search-Core/CSearchCrawlScopeManager_IncludedInCrawlScopeEx/win:Stop
+    0x0103 0x00d1 0x00   0x00    0x10    0x04  0x8000000000000408          433           95872  Microsoft-Windows-Search-Core/Gatherer_OnDataChange_Track_Url/win:Info
+    0x0142 0x0102 0x00   0x00    0x10    0x04  0x8000000000000004          565           69302  Microsoft-Windows-Search-Core/ETWLogging/win:Info               
+    0x016b 0x011c 0x01   0x00    0x10    0x04  0x8000000000000410          394               0  Microsoft-Windows-Search-Core/FileChangeTracker_ProcessUSN/win:Start
+    0x016c 0x011c 0x02   0x00    0x10    0x04  0x8000000000000410          394               0  Microsoft-Windows-Search-Core/FileChangeTracker_ProcessUSN/win:Stop
+
+
+{57277741-3638-4a4b-bdba-0ac6e45da56c}                                   17944         1371548  Microsoft-JScript
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0003 0x0003 0x0f   0x00    0x00    0x04  0x0000000000000004            4               0  Microsoft-JScript/MethodRundown/DCEndInit                       
+    0x0004 0x0003 0x0d   0x00    0x00    0x04  0x0000000000000004            4               0  Microsoft-JScript/MethodRundown/DCEndComplete                   
+    0x0006 0x0003 0x0b   0x00    0x00    0x04  0x0000000000000004         4064          385452  Microsoft-JScript/MethodRundown/MethodDCEnd                     
+    0x0008 0x0004 0x0b   0x00    0x00    0x04  0x0000000000000004            4              24  Microsoft-JScript/ScriptContextRundown/ScriptContextDCEnd       
+    0x0009 0x0001 0x0a   0x00    0x00    0x04  0x0000000000000001        13858          984520  Microsoft-JScript/MethodRuntime/MethodLoad                      
+    0x0028 0x0004 0x0d   0x00    0x00    0x04  0x0000000000000004           10            1552  Microsoft-JScript/ScriptContextRundown/SourceDCEnd              
+
+
+{6ad52b32-d609-4be9-ae07-ce8dae937e39}                                  416128        23461838  Microsoft-Windows-RPC
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0001 0x0001 0x02   0x01    0x10    0x02  0x8000000000000000         1716          204952  Microsoft-Windows-RPC/RpcClientCall/win:Stop                    
+    0x0005 0x0001 0x01   0x01    0x11    0x04  0x4000000000000000       103545        11197982  Microsoft-Windows-RPC/RpcClientCall/win:Start                   
+    0x0006 0x0002 0x01   0x01    0x11    0x04  0x4000000000000000       103566        11202524  Microsoft-Windows-RPC/RpcServerCall/win:Start                   
+    0x0007 0x0001 0x02   0x01    0x11    0x04  0x4000000000000000       103536          414144  Microsoft-Windows-RPC/RpcClientCall/win:Stop                    
+    0x0008 0x0002 0x02   0x01    0x11    0x04  0x4000000000000000       103566          414264  Microsoft-Windows-RPC/RpcServerCall/win:Stop                    
+    0x000e 0x0004 0x01   0x01    0x11    0x04  0x4000000000000000          116           23800  Microsoft-Windows-RPC/FunctionTrace/win:Start                   
+    0x000f 0x0004 0x02   0x01    0x11    0x04  0x4000000000000000           69            2760  Microsoft-Windows-RPC/FunctionTrace/win:Stop                    
+    0x0010 0x0004 0x01   0x01    0x11    0x04  0x4000000000000000           14            1412  Microsoft-Windows-RPC/FunctionTrace/win:Start                   
+
+
+{751ef305-6c6e-4fed-b847-02ef79d26aef}                                    1434           23304  Microsoft-Antimalware-Service
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0014 0x000d 0x00   0x00    0x00    0x04  0x0000000000000000          815           13040  Microsoft-Antimalware-Service/MOAC_CacheHit/win:Info            
+    0x0015 0x000e 0x00   0x00    0x00    0x04  0x0000000000000000          617            9872  Microsoft-Antimalware-Service/MOAC_CacheMiss/win:Info           
+    0x001c 0x0015 0x00   0x01    0x00    0x04  0x0000000000000000            2             392  Microsoft-Antimalware-Service/ServiceVersion/win:Info           
+
+
+{802ec45a-1e99-4b83-9920-87c98277ba9d}                                 3049759        48029534  Microsoft-Windows-DxgKrnl
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0011 0x000b 0x00   0x00    0x11    0x00  0x4000000008000001         4695          262920  Microsoft-Windows-DxgKrnl/VSyncDPC/win:Info                     
+    0x0012 0x000c 0x01   0x00    0x11    0x00  0x4000000000000001        61060          732720  Microsoft-Windows-DxgKrnl/WorkerThread/win:Start                
+    0x0013 0x000c 0x02   0x00    0x11    0x00  0x4000000000000001        61060          732720  Microsoft-Windows-DxgKrnl/WorkerThread/win:Stop                 
+    0x0015 0x000e 0x00   0x02    0x11    0x00  0x4000000000000001          269            8608  Microsoft-Windows-DxgKrnl/ChangePriority/win:Info               
+    0x0016 0x000f 0x00   0x00    0x11    0x00  0x4000000000000001        60856          730272  Microsoft-Windows-DxgKrnl/AttemptPreemption/win:Info            
+    0x001a 0x0012 0x03   0x00    0x11    0x00  0x4000000000000840            2             452  Microsoft-Windows-DxgKrnl/Adapter/win:DC_Start                  
+    0x001b 0x0013 0x01   0x02    0x11    0x00  0x4000000000000840            1              60  Microsoft-Windows-DxgKrnl/Device/win:Start                      
+    0x001c 0x0013 0x02   0x02    0x11    0x00  0x4000000000000840            1              60  Microsoft-Windows-DxgKrnl/Device/win:Stop                       
+    0x001d 0x0013 0x03   0x02    0x11    0x00  0x4000000000000840           59            3540  Microsoft-Windows-DxgKrnl/Device/win:DC_Start                   
+    0x001e 0x0014 0x01   0x00    0x11    0x00  0x4000000000000840            5             320  Microsoft-Windows-DxgKrnl/Context/win:Start                     
+    0x001f 0x0014 0x02   0x00    0x11    0x00  0x4000000000000840            5             320  Microsoft-Windows-DxgKrnl/Context/win:Stop                      
+    0x0020 0x0014 0x03   0x00    0x11    0x00  0x4000000000000840          171           10944  Microsoft-Windows-DxgKrnl/Context/win:DC_Start                  
+    0x0021 0x0015 0x01   0x03    0x11    0x00  0x4000000000000040         1643          239878  Microsoft-Windows-DxgKrnl/AdapterAllocation/win:Start           
+    0x0022 0x0015 0x02   0x03    0x11    0x00  0x4000000000000040         1600          233600  Microsoft-Windows-DxgKrnl/AdapterAllocation/win:Stop            
+    0x0023 0x0015 0x03   0x03    0x11    0x00  0x4000000000000040         8666         1265236  Microsoft-Windows-DxgKrnl/AdapterAllocation/win:DC_Start        
+    0x0024 0x0016 0x01   0x02    0x11    0x00  0x4000000000000040         1698          169800  Microsoft-Windows-DxgKrnl/DeviceAllocation/win:Start            
+    0x0025 0x0016 0x02   0x02    0x11    0x00  0x4000000000000040         1658          165800  Microsoft-Windows-DxgKrnl/DeviceAllocation/win:Stop             
+    0x0026 0x0016 0x03   0x02    0x11    0x00  0x4000000000000040         8954          895400  Microsoft-Windows-DxgKrnl/DeviceAllocation/win:DC_Start         
+    0x0027 0x0017 0x00   0x00    0x11    0x00  0x4000000000000040         1343           10744  Microsoft-Windows-DxgKrnl/TerminateAllocation/win:Info          
+    0x002b 0x001b 0x00   0x00    0x11    0x00  0x4000000000000004          167            7324  Microsoft-Windows-DxgKrnl/ReferenceAllocations/win:Info         
+    0x002d 0x001c 0x00   0x00    0x11    0x00  0x4000000000000010          167            3340  Microsoft-Windows-DxgKrnl/PatchLocationList/win:Info            
+    0x0032 0x001f 0x00   0x00    0x11    0x00  0x4000000000000040         1227           53988  Microsoft-Windows-DxgKrnl/MemoryTransfer/win:Info               
+    0x0037 0x0023 0x00   0x00    0x11    0x00  0x4000000000000040          540           23760  Microsoft-Windows-DxgKrnl/PagingOpDiscard/win:Info              
+    0x0043 0x002d 0x01   0x00    0x11    0x00  0x4000000000000001         1697           74668  Microsoft-Windows-DxgKrnl/ReserveResource/win:Start             
+    0x0044 0x002d 0x02   0x00    0x11    0x00  0x4000000000000001         1697            6788  Microsoft-Windows-DxgKrnl/ReserveResource/win:Stop              
+    0x0047 0x002f 0x00   0x02    0x11    0x00  0x4000000000000001         2286           27432  Microsoft-Windows-DxgKrnl/AllocationFault/win:Info              
+    0x0048 0x0030 0x00   0x00    0x11    0x00  0x4000000000000001         1603           12824  Microsoft-Windows-DxgKrnl/MarkAllocation/win:Info               
+    0x0049 0x0031 0x00   0x02    0x11    0x00  0x4000000000000001         2350           18800  Microsoft-Windows-DxgKrnl/PageInAllocation/win:Info             
+    0x004a 0x0032 0x00   0x00    0x11    0x00  0x4000000000000001          776            6208  Microsoft-Windows-DxgKrnl/EvictAllocation/win:Info              
+    0x004b 0x0033 0x00   0x00    0x11    0x00  0x4000000000000001            4              80  Microsoft-Windows-DxgKrnl/Unreset/win:Info                      
+    0x004c 0x0034 0x01   0x00    0x11    0x00  0x4000000000000001            8             448  Microsoft-Windows-DxgKrnl/AddDmaBuffer/win:Start                
+    0x004e 0x0035 0x00   0x01    0x11    0x00  0x4000000000000001            5             305  Microsoft-Windows-DxgKrnl/ReportSegment/win:Info                
+    0x0050 0x0037 0x00   0x00    0x11    0x00  0x4000000000000001         4591          238732  Microsoft-Windows-DxgKrnl/ReportCommittedAllocation/win:Info    
+    0x0054 0x003c 0x01   0x00    0x11    0x00  0x4000000000000001          140            5040  Microsoft-Windows-DxgKrnl/SynchronizationMutex/win:Start        
+    0x0056 0x003c 0x02   0x00    0x11    0x00  0x4000000000000001          141            5076  Microsoft-Windows-DxgKrnl/SynchronizationMutex/win:Stop         
+    0x0057 0x003c 0x03   0x00    0x11    0x00  0x4000000000000001         4273          153828  Microsoft-Windows-DxgKrnl/SynchronizationMutex/win:DC_Start     
+    0x005c 0x003e 0x01   0x00    0x11    0x00  0x4000000000000001           10             400  Microsoft-Windows-DxgKrnl/Fence/win:Start                       
+    0x005e 0x003e 0x02   0x00    0x11    0x00  0x4000000000000001            9             360  Microsoft-Windows-DxgKrnl/Fence/win:Stop                        
+    0x005f 0x003e 0x03   0x00    0x11    0x00  0x4000000000000001           61            2440  Microsoft-Windows-DxgKrnl/Fence/win:DC_Start                    
+    0x0066 0x0041 0x00   0x00    0x11    0x00  0x4000000002040001            4             224  Microsoft-Windows-DxgKrnl/SetDisplayMode/win:Info               
+    0x0067 0x0042 0x00   0x00    0x11    0x00  0x4000000000000001          336            1344  Microsoft-Windows-DxgKrnl/BlockThread/win:Info                  
+    0x0069 0x0044 0x01   0x00    0x11    0x00  0x4000000000000002       827278         3309112  Microsoft-Windows-DxgKrnl/Profiler/win:Start                    
+    0x006a 0x0044 0x02   0x00    0x11    0x00  0x4000000000000002       827276         3309104  Microsoft-Windows-DxgKrnl/Profiler/win:Stop                     
+    0x006b 0x0045 0x01   0x00    0x11    0x00  0x4000000000000002          187            8976  Microsoft-Windows-DxgKrnl/ExtendedProfiler/win:Start            
+    0x006c 0x0045 0x02   0x00    0x11    0x00  0x4000000000000002          187            8976  Microsoft-Windows-DxgKrnl/ExtendedProfiler/win:Stop             
+    0x006d 0x0046 0x00   0x00    0x11    0x00  0x4000000000000001         1894           45456  Microsoft-Windows-DxgKrnl/SetPointerPosition/win:Info           
+    0x006e 0x0047 0x00   0x01    0x11    0x00  0x4000000008000001            2            4208  Microsoft-Windows-DxgKrnl/DpiReportAdapter/win:Info             
+    0x007a 0x0063 0x01   0x00    0x11    0x00  0x4000000000000001            5              60  Microsoft-Windows-DxgKrnl/DpiDispatchCreate/win:Start           
+    0x007b 0x0063 0x02   0x00    0x11    0x00  0x4000000000000001            5              60  Microsoft-Windows-DxgKrnl/DpiDispatchCreate/win:Stop            
+    0x007c 0x0064 0x01   0x00    0x11    0x00  0x4000000000000001           10             120  Microsoft-Windows-DxgKrnl/DpiDispatchClose/win:Start            
+    0x007d 0x0064 0x02   0x00    0x11    0x00  0x4000000000000001           10             120  Microsoft-Windows-DxgKrnl/DpiDispatchClose/win:Stop             
+    0x0084 0x0051 0x01   0x00    0x11    0x00  0x4000000000000001            4             344  Microsoft-Windows-DxgKrnl/DpiDispatchInternalIoctl/win:Start    
+    0x0085 0x0051 0x02   0x00    0x11    0x00  0x4000000000000001            4              48  Microsoft-Windows-DxgKrnl/DpiDispatchInternalIoctl/win:Stop     
+    0x00a4 0x0065 0x02   0x00    0x11    0x00  0x4000000000000001            1              16  Microsoft-Windows-DxgKrnl/EtwVersion/win:Stop                   
+    0x00a9 0x0004 0x00   0x00    0x11    0x00  0x4000000000000001        32645          261160  Microsoft-Windows-DxgKrnl/Render/win:Info                       
+    0x00aa 0x0005 0x00   0x00    0x11    0x00  0x4000000000000001          167            1336  Microsoft-Windows-DxgKrnl/RenderKm/win:Info                     
+    0x00ab 0x0006 0x01   0x02    0x11    0x00  0x4000000008000001          285           13680  Microsoft-Windows-DxgKrnl/PresentHistory/win:Start              
+    0x00ac 0x0006 0x00   0x02    0x11    0x00  0x4000000008000001         6896          331008  Microsoft-Windows-DxgKrnl/PresentHistory/win:Info               
+    0x00ad 0x0006 0x02   0x02    0x11    0x00  0x4000000000000001         6222          298656  Microsoft-Windows-DxgKrnl/PresentHistory/win:Stop               
+    0x00af 0x0008 0x01   0x01    0x11    0x00  0x4000000000000001        42042         1849848  Microsoft-Windows-DxgKrnl/DmaPacket/win:Start                   
+    0x00b0 0x0008 0x02   0x00    0x11    0x00  0x4000000000000001        42042         1177176  Microsoft-Windows-DxgKrnl/DmaPacket/win:Stop                    
+    0x00b1 0x0008 0x00   0x01    0x11    0x00  0x4000000000000001        42042         2186184  Microsoft-Windows-DxgKrnl/DmaPacket/win:Info                    
+    0x00b2 0x0009 0x01   0x01    0x11    0x00  0x4000000000000001        45331         2719860  Microsoft-Windows-DxgKrnl/QueuePacket/win:Start                 
+    0x00b3 0x0009 0x00   0x00    0x11    0x00  0x4000000000000001       117133         1874128  Microsoft-Windows-DxgKrnl/QueuePacket/win:Info                  
+    0x00b4 0x0009 0x02   0x01    0x11    0x00  0x4000000000000001       101924         3261568  Microsoft-Windows-DxgKrnl/QueuePacket/win:Stop                  
+    0x00b5 0x000a 0x00   0x00    0x11    0x00  0x4000000000000001         4695           93900  Microsoft-Windows-DxgKrnl/VSyncInterrupt/win:Info               
+    0x00b6 0x0069 0x00   0x00    0x11    0x00  0x4000000000000001       279170         3350040  Microsoft-Windows-DxgKrnl/GetDeviceState/win:Info               
+    0x00b8 0x006b 0x00   0x01    0x11    0x00  0x4000000008000001         6043          265892  Microsoft-Windows-DxgKrnl/Present/win:Info                      
+    0x00ba 0x006d 0x01   0x00    0x11    0x00  0x4000000000000001           50             450  Microsoft-Windows-DxgKrnl/OfferAllocation/win:Start             
+    0x00bb 0x006d 0x00   0x00    0x11    0x00  0x4000000000000001           50             400  Microsoft-Windows-DxgKrnl/OfferAllocation/win:Info              
+    0x00bc 0x006d 0x02   0x00    0x11    0x00  0x4000000000000001           31             248  Microsoft-Windows-DxgKrnl/OfferAllocation/win:Stop              
+    0x00bd 0x006e 0x00   0x00    0x11    0x00  0x4000000000000001           41             410  Microsoft-Windows-DxgKrnl/ReportOfferAllocation/win:Info        
+    0x00be 0x006f 0x00   0x00    0x11    0x00  0x4000000000000001           50             500  Microsoft-Windows-DxgKrnl/ReclaimAllocation/win:Info            
+    0x00bf 0x0070 0x00   0x00    0x11    0x00  0x4000000000000001            8              64  Microsoft-Windows-DxgKrnl/DiscardAllocation/win:Info            
+    0x00d7 0x007e 0x01   0x02    0x11    0x00  0x4000000008000001         5936          783776  Microsoft-Windows-DxgKrnl/PresentHistoryDetailed/win:Start      
+    0x00e3 0x0083 0x03   0x00    0x11    0x00  0x4000000000000001            4              80  Microsoft-Windows-DxgKrnl/ReportCommittedGlobalAllocation/win:DC_Start
+    0x00e6 0x0084 0x00   0x01    0x11    0x00  0x4000000000000001        16764          670688  Microsoft-Windows-DxgKrnl/SignalSynchronizationObject2/win:Info 
+    0x00e7 0x0085 0x00   0x00    0x11    0x00  0x4000000000000001        16695          467460  Microsoft-Windows-DxgKrnl/WaitForSynchronizationObject2/win:Info
+    0x00ee 0x0086 0x00   0x00    0x11    0x00  0x4000000000000001        16067          257072  Microsoft-Windows-DxgKrnl/UnwaitQueuePacket/win:Info            
+    0x00ef 0x0087 0x00   0x00    0x11    0x00  0x4000000000000001          118            1888  Microsoft-Windows-DxgKrnl/ChangeInProcessPriority/win:Info      
+    0x00f2 0x0089 0x00   0x00    0x11    0x00  0x4000000000000001          676           13520  Microsoft-Windows-DxgKrnl/ResetBackingStore/win:Info            
+    0x00f4 0x0009 0x01   0x02    0x11    0x00  0x4000000000000001        11987          575376  Microsoft-Windows-DxgKrnl/QueuePacket/win:Start                 
+    0x00f5 0x0009 0x01   0x03    0x11    0x00  0x4000000000000001        44603         2318876  Microsoft-Windows-DxgKrnl/QueuePacket/win:Start                 
+    0x00fa 0x008d 0x00   0x00    0x11    0x00  0x4000000000000001           51            1540  Microsoft-Windows-DxgKrnl/NodeMetadata/win:Info                 
+    0x00fb 0x008e 0x00   0x02    0x11    0x00  0x4000000000000001         1112           35584  Microsoft-Windows-DxgKrnl/PresentMultiPlaneOverlay/win:Info     
+    0x00fc 0x008f 0x00   0x00    0x11    0x00  0x4000000008000001         1129          108384  Microsoft-Windows-DxgKrnl/FlipMultiPlaneOverlay/win:Info        
+    0x0103 0x0090 0x00   0x03    0x11    0x00  0x4000000008000001         1803          216360  Microsoft-Windows-DxgKrnl/MMIOFlipMultiPlaneOverlay/win:Info    
+    0x010a 0x0097 0x00   0x03    0x11    0x00  0x4000000008000001          674           56616  Microsoft-Windows-DxgKrnl/IndependentFlip/win:Info              
+    0x010b 0x0098 0x00   0x01    0x11    0x00  0x4000000000000001            7             336  Microsoft-Windows-DxgKrnl/IndependentFlipTransition/win:Info    
+    0x0111 0x009f 0x00   0x04    0x11    0x00  0x4000000008000001         4695          934508  Microsoft-Windows-DxgKrnl/VSyncDPCMultiPlane/win:Info           
+    0x0112 0x00a0 0x00   0x00    0x11    0x00  0x4000000000000001         3121           62420  Microsoft-Windows-DxgKrnl/TotalBytesResidentInSegment/win:Info  
+    0x0113 0x00a1 0x00   0x00    0x11    0x00  0x4000000000000001            2              40  Microsoft-Windows-DxgKrnl/Brightness/win:Info                   
+    0x0114 0x00a2 0x00   0x00    0x11    0x00  0x4000000000000001            2              40  Microsoft-Windows-DxgKrnl/BacklightOptimizationLevel/win:Info   
+    0x0115 0x00a3 0x01   0x00    0x11    0x00  0x4000000000000001           72             576  Microsoft-Windows-DxgKrnl/VidMmDereferenceObjectAsync/win:Start 
+    0x0116 0x00a3 0x02   0x00    0x11    0x00  0x4000000000000001           72             576  Microsoft-Windows-DxgKrnl/VidMmDereferenceObjectAsync/win:Stop  
+    0x0119 0x00a5 0x01   0x00    0x11    0x00  0x4000000000000001         6291           50328  Microsoft-Windows-DxgKrnl/PagingPreparation/win:Start           
+    0x011a 0x00a5 0x02   0x00    0x11    0x00  0x4000000000000001         6291           50328  Microsoft-Windows-DxgKrnl/PagingPreparation/win:Stop            
+    0x011f 0x00a6 0x00   0x00    0x11    0x00  0x4000000000000001            9             324  Microsoft-Windows-DxgKrnl/CddStandardAllocation/win:Info        
+    0x0120 0x00a7 0x01   0x00    0x11    0x00  0x4000000000000040         8951          250628  Microsoft-Windows-DxgKrnl/ProcessAllocationDetails/win:Start    
+    0x0121 0x00a7 0x02   0x00    0x11    0x00  0x4000000000000040          303            8484  Microsoft-Windows-DxgKrnl/ProcessAllocationDetails/win:Stop     
+    0x0122 0x00a8 0x01   0x00    0x11    0x00  0x4000000000000001           28            1120  Microsoft-Windows-DxgKrnl/MonitoredFence/win:Start              
+    0x0124 0x00a8 0x02   0x00    0x11    0x00  0x4000000000000001           27            1080  Microsoft-Windows-DxgKrnl/MonitoredFence/win:Stop               
+    0x0125 0x00a8 0x03   0x00    0x11    0x00  0x4000000000000001          601           24040  Microsoft-Windows-DxgKrnl/MonitoredFence/win:DC_Start           
+    0x0126 0x00a9 0x00   0x01    0x11    0x00  0x4000000000000001        27819         1426872  Microsoft-Windows-DxgKrnl/SignalSynchronizationObjectFromGpu/win:Info
+    0x0127 0x00aa 0x00   0x00    0x11    0x00  0x4000000000000001        19200          537600  Microsoft-Windows-DxgKrnl/WaitForSynchronizationObjectFromGpu/win:Info
+    0x0129 0x00ac 0x00   0x00    0x11    0x00  0x4000000000000001           16             640  Microsoft-Windows-DxgKrnl/WaitForSynchronizationObjectFromCpu/win:Info
+    0x012a 0x00af 0x00   0x00    0x11    0x00  0x4000000000000001           17             612  Microsoft-Windows-DxgKrnl/CreateSyncPoint/win:Info              
+    0x012b 0x00b0 0x00   0x00    0x11    0x00  0x4000000000000001           17             272  Microsoft-Windows-DxgKrnl/RetireSyncPoint/win:Info              
+    0x012c 0x00b1 0x00   0x01    0x11    0x00  0x4000000000000001         1412           56480  Microsoft-Windows-DxgKrnl/UnwaitCpuWaiter/win:Info              
+    0x0131 0x00cb 0x00   0x01    0x11    0x00  0x4000000000000004         6869          219808  Microsoft-Windows-DxgKrnl/ReferenceWrittenPrimaries/win:Info    
+    0x0133 0x00ce 0x00   0x01    0x11    0x00  0x4000000000000040          679           46172  Microsoft-Windows-DxgKrnl/PagingOpVirtualFill/win:Info          
+    0x0134 0x00cf 0x00   0x00    0x11    0x00  0x4000000000000040            8             448  Microsoft-Windows-DxgKrnl/PagingOpInitContextResource/win:Info  
+    0x0135 0x00d0 0x00   0x01    0x11    0x00  0x4000000000000040         9334         1082744  Microsoft-Windows-DxgKrnl/PagingOpUpdatePageTable/win:Info      
+    0x0136 0x00d1 0x00   0x00    0x11    0x00  0x4000000000000040         5542          354688  Microsoft-Windows-DxgKrnl/PagingOpFlushTlb/win:Info             
+    0x0138 0x00d3 0x00   0x00    0x11    0x00  0x4000000000000040           54            2376  Microsoft-Windows-DxgKrnl/PagingOpNotifyResidency/win:Info      
+    0x0139 0x00d8 0x00   0x00    0x11    0x00  0x4000000000000040          681           13620  Microsoft-Windows-DxgKrnl/PagingOpSysmemCommit/win:Info         
+    0x013a 0x00d9 0x00   0x00    0x11    0x00  0x4000000000000040          572           11440  Microsoft-Windows-DxgKrnl/PagingOpSysmemUncommit/win:Info       
+    0x013e 0x0413 0x00   0x00    0x11    0x00  0x4000000000000001         4730           94600  Microsoft-Windows-DxgKrnl/DWMVsyncCountWait/win:Info            
+    0x013f 0x0414 0x00   0x00    0x11    0x00  0x4000000000000001         4695           93900  Microsoft-Windows-DxgKrnl/DWMVsyncSignal/win:Info               
+    0x0140 0x00ad 0x00   0x00    0x11    0x00  0x4000000000000004         1725           20700  Microsoft-Windows-DxgKrnl/VidMmMakeResident/win:Info            
+    0x0141 0x00ae 0x00   0x00    0x11    0x00  0x4000000000000004          484            5808  Microsoft-Windows-DxgKrnl/VidMmEvict/win:Info                   
+    0x0142 0x00b2 0x01   0x01    0x11    0x00  0x4000000000000001         3541          169968  Microsoft-Windows-DxgKrnl/PagingQueuePacket/win:Start           
+    0x0143 0x00b2 0x01   0x01    0x11    0x00  0x4000000000000001         1369           54760  Microsoft-Windows-DxgKrnl/PagingQueuePacket/win:Start           
+    0x0144 0x00b2 0x00   0x00    0x11    0x00  0x4000000000000001         4910          117840  Microsoft-Windows-DxgKrnl/PagingQueuePacket/win:Info            
+    0x0145 0x00b2 0x02   0x00    0x11    0x00  0x4000000000000001         4910          157120  Microsoft-Windows-DxgKrnl/PagingQueuePacket/win:Stop            
+    0x0149 0x0416 0x00   0x00    0x11    0x00  0x4000000000000001           26             312  Microsoft-Windows-DxgKrnl/SetProcessStatus/win:Info             
+    0x0152 0x00b8 0x01   0x00    0x11    0x00  0x4000000008000004         1588           38112  Microsoft-Windows-DxgKrnl/MakeResident/win:Start                
+    0x0153 0x00b8 0x02   0x00    0x11    0x00  0x4000000008000004         1588           31760  Microsoft-Windows-DxgKrnl/MakeResident/win:Stop                 
+    0x0155 0x0019 0x00   0x00    0x11    0x00  0x4000000000000001        33806          270448  Microsoft-Windows-DxgKrnl/Unlock/win:Info                       
+    0x0158 0x0045 0x00   0x00    0x11    0x00  0x4000000000000002          184            8832  Microsoft-Windows-DxgKrnl/ExtendedProfiler/win:Info             
+    0x0162 0x00c3 0x00   0x00    0x11    0x00  0x4000000000000001            1              20  Microsoft-Windows-DxgKrnl/YieldStartAdapter/win:Info            
+    0x0163 0x00c4 0x00   0x00    0x11    0x00  0x4000000000000001            1              28  Microsoft-Windows-DxgKrnl/YieldStartNode/win:Info               
+    0x0164 0x00c5 0x00   0x00    0x11    0x00  0x4000000000000001            1              12  Microsoft-Windows-DxgKrnl/YieldStopNode/win:Info                
+    0x0165 0x00c6 0x00   0x00    0x11    0x00  0x4000000000000001            1               8  Microsoft-Windows-DxgKrnl/YieldSetExpirationTimer/win:Info      
+    0x0166 0x00c7 0x00   0x00    0x11    0x00  0x4000000000000001            1               8  Microsoft-Windows-DxgKrnl/YieldCancelExpirationTimer/win:Info   
+    0x0167 0x00c8 0x00   0x00    0x11    0x00  0x4000000000000001         2122           93368  Microsoft-Windows-DxgKrnl/YieldConditionEvaluation/win:Info     
+    0x0168 0x00c9 0x00   0x00    0x11    0x00  0x4000000000000001            4              64  Microsoft-Windows-DxgKrnl/FlushScheduler/win:Info               
+    0x016c 0x00d6 0x00   0x00    0x11    0x00  0x4000000000000004         2880          980904  Microsoft-Windows-DxgKrnl/LockAllocationBackingStore/win:Info   
+    0x016d 0x00d7 0x00   0x00    0x11    0x00  0x4000000000000004          572            4576  Microsoft-Windows-DxgKrnl/UnlockAllocationBackingStore/win:Info 
+    0x016e 0x00da 0x00   0x00    0x11    0x00  0x4000000000000004           76            2660  Microsoft-Windows-DxgKrnl/VidMmProcessBudgetChange/win:Info     
+    0x016f 0x00db 0x00   0x00    0x11    0x00  0x4000000000000004         2718           84258  Microsoft-Windows-DxgKrnl/VidMmProcessUsageChange/win:Info      
+    0x0173 0x00df 0x00   0x00    0x11    0x00  0x4000000000000004         4081          126511  Microsoft-Windows-DxgKrnl/VidMmProcessCommitmentChange/win:Info 
+    0x0175 0x00e1 0x00   0x00    0x11    0x00  0x4000000000000040           52             832  Microsoft-Windows-DxgKrnl/TransferAllocationOwnership/win:Info  
+    0x0176 0x00ad 0x03   0x00    0x11    0x00  0x4000000000000004         2053           24636  Microsoft-Windows-DxgKrnl/VidMmMakeResident/win:DC_Start        
+    0x0182 0x00ea 0x00   0x08    0x11    0x00  0x4000000000000001         1786          207380  Microsoft-Windows-DxgKrnl/MMIOFlipMultiPlaneOverlay3/win:Info   
+    0x0187 0x00ed 0x03   0x00    0x11    0x00  0x4000000000000001         1689           33780  Microsoft-Windows-DxgKrnl/ReportMarkedGlobalAllocation/win:DC_Start
+    0x01a0 0x00f9 0x00   0x00    0x11    0x00  0x4000000000000001           15            1260  Microsoft-Windows-DxgKrnl/DisplayConfigPlaneChange/win:Info     
+    0x01ac 0x0100 0x00   0x00    0x11    0x00  0x4000000000000001            1              24  Microsoft-Windows-DxgKrnl/FlushPresentReferencesAndDisableOverlays/win:Info
+    0x01ad 0x0101 0x00   0x00    0x11    0x00  0x4000000000000001            1              12  Microsoft-Windows-DxgKrnl/ResumeSchedulerForVidPnSource/win:Info
+    0x01b1 0x0105 0x00   0x01    0x11    0x00  0x4000000000000840          123            3936  Microsoft-Windows-DxgKrnl/AssociateDxgSchedulerObject/win:Info  
+    0x01b5 0x0108 0x00   0x00    0x11    0x00  0x4000000000000001         1799           44904  Microsoft-Windows-DxgKrnl/MMIOFlipMultiPlaneOverlayDirtyRect/win:Info
+    0x01cd 0x0115 0x00   0x00    0x11    0x00  0x4000000000000001          167            3340  Microsoft-Windows-DxgKrnl/RenderGdi/win:Info                    
+    0x01ce 0x0116 0x00   0x00    0x11    0x00  0x4000000000000001          677           13540  Microsoft-Windows-DxgKrnl/SignalSynchronizationObjectImmediate/win:Info
+    0x01d2 0x0119 0x00   0x00    0x11    0x00  0x4000000000000001          332            9296  Microsoft-Windows-DxgKrnl/RenderGdiAlloc/win:Info               
+    0x01d4 0x011b 0x00   0x01    0x11    0x00  0x4000000000000200            8             480  Microsoft-Windows-DxgKrnl/NodePerfData/win:Info                 
+    0x01d7 0x011d 0x01   0x00    0x11    0x00  0x4000000000000001          282            6768  Microsoft-Windows-DxgKrnl/Process/win:Start                     
+    0x01d9 0x011d 0x02   0x00    0x11    0x00  0x4000000000000001          280            6720  Microsoft-Windows-DxgKrnl/Process/win:Stop                      
+    0x01dc 0x0121 0x01   0x00    0x11    0x00  0x4000000000000001            1              40  Microsoft-Windows-DxgKrnl/VirtualGpu/win:Start                  
+    0x01eb 0x011d 0x03   0x00    0x11    0x00  0x4000000000000001          337            8088  Microsoft-Windows-DxgKrnl/Process/win:DC_Start                  
+    0x01ec 0x011d 0x03   0x00    0x11    0x00  0x4000000000000001            1              66  Microsoft-Windows-DxgKrnl/Process/win:DC_Start                  
+    0x01ed 0x011f 0x03   0x00    0x11    0x00  0x4000000000000001            1              40  Microsoft-Windows-DxgKrnl/VirtualMachine/win:DC_Start           
+    0x01f0 0x0130 0x00   0x00    0x11    0x00  0x4000000000000001        10343           82744  Microsoft-Windows-DxgKrnl/WaitForVerticalBlankEventInternal/win:Info
+    0x01f6 0x0136 0x00   0x01    0x00    0x00  0x0000000000000001        10858          521184  Microsoft-Windows-DxgKrnl/VSyncSmoothenedTime/win:Info          
+    0x01fb 0x013b 0x00   0x00    0x00    0x00  0x0000000000000001         5429          152012  Microsoft-Windows-DxgKrnl/VSyncSmoothenedPeriod/win:Info        
+    0x0202 0x0120 0x00   0x00    0x11    0x00  0x4000000008000001        31759          508144  Microsoft-Windows-DxgKrnl/VSyncWaiterChange/win:Info            
+    0x0204 0x0143 0x00   0x00    0x11    0x00  0x4000000008000001            4             144  Microsoft-Windows-DxgKrnl/PendingFlipsForThisEntry/win:Info     
+    0x0207 0x0122 0x00   0x00    0x11    0x00  0x4000000000000001            6             120  Microsoft-Windows-DxgKrnl/AdapterFeatureState/win:Info          
+    0x020b 0x0148 0x00   0x00    0x00    0x00  0x0000000000000004          337            6740  Microsoft-Windows-DxgKrnl/CommitPageTable/win:Info              
+    0x020c 0x0149 0x00   0x00    0x00    0x00  0x0000000000000004          312            2496  Microsoft-Windows-DxgKrnl/EvictPageTable/win:Info               
+    0x020d 0x014a 0x00   0x00    0x11    0x00  0x4000000000000001          554            8864  Microsoft-Windows-DxgKrnl/PrimaryAllocationBusy/win:Info        
+    0x020f 0x014c 0x01   0x00    0x11    0x00  0x4000000000000001         1789           35780  Microsoft-Windows-DxgKrnl/DdiSetVidPnMultiPlaneOverlay3/win:Start
+    0x0210 0x014c 0x02   0x00    0x11    0x00  0x4000000000000001         1789           35780  Microsoft-Windows-DxgKrnl/DdiSetVidPnMultiPlaneOverlay3/win:Stop
+    0x0214 0x014f 0x01   0x00    0x11    0x00  0x4000000000000001            4             112  Microsoft-Windows-DxgKrnl/VidMmPagingQueue/win:Start            
+    0x0227 0x015e 0x00   0x00    0x11    0x00  0x4000000008000001        16752          536064  Microsoft-Windows-DxgKrnl/VidSchSignalSyncObjectsFromGpuImmediate/win:Info
+    0x0228 0x015f 0x00   0x00    0x11    0x00  0x4000000008000001        43681         2271300  Microsoft-Windows-DxgKrnl/VidSchiCompleteSignalCommmand/win:Info
+    0x042d 0x00d4 0x00   0x02    0x11    0x00  0x4000000000000001          174            5568  Microsoft-Windows-DxgKrnl/ReportSyncObject/win:Info             
+    0x042e 0x00d4 0x01   0x02    0x11    0x00  0x4000000000000001          469           15008  Microsoft-Windows-DxgKrnl/ReportSyncObject/win:Start            
+    0x0476 0x0462 0x00   0x02    0x11    0x00  0x4000000000000001            1              24  Microsoft-Windows-DxgKrnl/BltQueueWakeReason/win:Info           
+
+
+{8c416c79-d49b-4f01-a467-e56d3aa8234c}                                   69441         2190614  Microsoft-Windows-Win32k
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0001 0x0001 0x00   0x00    0x10    0x04  0x8000000000001000          482            5784  Microsoft-Windows-Win32k/WindowUpdate/win:Info                  
+    0x0002 0x0002 0x00   0x00    0x10    0x04  0x8000000000002000           11              88  Microsoft-Windows-Win32k/FocusChange/win:Info                   
+    0x000c 0x000c 0x00   0x00    0x12    0x04  0x2000000000008000            3              30  Microsoft-Windows-Win32k/DisplayReqChange/win:Info              
+    0x0012 0x0012 0x00   0x00    0x10    0x04  0x8000000000001000            1              16  Microsoft-Windows-Win32k/SwapChainBind/win:Info                 
+    0x0014 0x0015 0x00   0x00    0x12    0x04  0x2000000000008000           78            2184  Microsoft-Windows-Win32k/IdleStatusTracing/win:Info             
+    0x0019 0x0019 0x00   0x00    0x10    0x04  0x8000000000020000            1              16  Microsoft-Windows-Win32k/UserActive/win:Info                    
+    0x001a 0x001a 0x00   0x00    0x10    0x04  0x8000000000020000           11             132  Microsoft-Windows-Win32k/FocusedProcessChange/win:Info          
+    0x001b 0x001b 0x00   0x00    0x10    0x04  0x8000000000001000            9             144  Microsoft-Windows-Win32k/DwmSpriteCreate/win:Info               
+    0x001c 0x001c 0x00   0x00    0x10    0x04  0x8000000000001000            9             144  Microsoft-Windows-Win32k/DwmSpriteDestroy/win:Info              
+    0x001d 0x001d 0x00   0x00    0x10    0x04  0x8000000000001000           18             216  Microsoft-Windows-Win32k/LogicalSurfCreate/win:Info             
+    0x001e 0x001e 0x00   0x00    0x10    0x04  0x8000000000001000           18             216  Microsoft-Windows-Win32k/LogicalSurfDestroy/win:Info            
+    0x001f 0x001f 0x00   0x00    0x10    0x04  0x8000000000001000            9             144  Microsoft-Windows-Win32k/LogicalSurfPhysSurfBind/win:Info       
+    0x0020 0x0020 0x00   0x00    0x10    0x04  0x8000000000001000            9             144  Microsoft-Windows-Win32k/LogicalSurfPhysSurfUnbind/win:Info     
+    0x0024 0x0024 0x00   0x00    0x10    0x04  0x8000000000080000         1260           25200  Microsoft-Windows-Win32k/ThreadInfoRundown/win:Info             
+    0x002d 0x002d 0x00   0x00    0x10    0x04  0x8000000000200000          479            9580  Microsoft-Windows-Win32k/ThreadExit/win:Info                    
+    0x0031 0x0031 0x00   0x00    0x10    0x04  0x8000000000001000           18             288  Microsoft-Windows-Win32k/DwmSpriteLogicalSurfBind/win:Info      
+    0x0032 0x0032 0x00   0x00    0x10    0x04  0x8000000000001000           18             288  Microsoft-Windows-Win32k/DwmSpriteLogicalSurfUnBind/win:Info    
+    0x0033 0x0033 0x00   0x00    0x10    0x04  0x8000000000001000            9             144  Microsoft-Windows-Win32k/LogicalSurfEnableDirtyNotification/win:Info
+    0x0034 0x0034 0x00   0x00    0x10    0x04  0x8000000000001000           34             816  Microsoft-Windows-Win32k/PhysicalSurfCreate/win:Info            
+    0x0035 0x0035 0x00   0x00    0x10    0x04  0x8000000000001000          364           17456  Microsoft-Windows-Win32k/ModifyRgn/win:Info                     
+    0x0054 0x004c 0x01   0x00    0x15    0x04  0x0400000000200000          282               0  Microsoft-Windows-Win32k/GUIProcess/win:Start                   
+    0x0055 0x004c 0x02   0x00    0x15    0x04  0x0400000000200000          280               0  Microsoft-Windows-Win32k/GUIProcess/win:Stop                    
+    0x0056 0x004d 0x01   0x00    0x15    0x04  0x0400000000200000          506               0  Microsoft-Windows-Win32k/GUIThread/win:Start                    
+    0x0057 0x004d 0x02   0x00    0x15    0x04  0x0400000000200000          479               0  Microsoft-Windows-Win32k/GUIThread/win:Stop                     
+    0x0097 0x006b 0x00   0x00    0x10    0x04  0x8000000400001000         1041           20820  Microsoft-Windows-Win32k/DCompCommitBatch/win:Info              
+    0x00a2 0x006f 0x00   0x00    0x10    0x04  0x8000000400001000         1054            8432  Microsoft-Windows-Win32k/DCompGetBatch/win:Info                 
+    0x00b5 0x007f 0x00   0x00    0x10    0x04  0x8000000000001000          178            4272  Microsoft-Windows-Win32k/DirtyRectUpdate/win:Info               
+    0x00c9 0x008a 0x00   0x01    0x10    0x04  0x8000000400001000         5758          322448  Microsoft-Windows-Win32k/TokenCompositionSurfaceObject/win:Info 
+    0x00ca 0x008b 0x00   0x00    0x10    0x04  0x8000000400001000         5074           60888  Microsoft-Windows-Win32k/CompositionSurfaceObjectUpdate/win:Info
+    0x012d 0x012d 0x00   0x01    0x10    0x04  0x8000000000001000        24205         1355480  Microsoft-Windows-Win32k/TokenStateChanged/win:Info             
+    0x0190 0x0190 0x00   0x00    0x10    0x04  0x8000000000001000          676           24336  Microsoft-Windows-Win32k/DCompDeferBatch/win:Info               
+    0x019c 0x019c 0x00   0x00    0x10    0x04  0x8000000000001000         4728           75648  Microsoft-Windows-Win32k/DCompBeginFrame/win:Info               
+    0x019d 0x019d 0x00   0x00    0x10    0x04  0x8000000000001000          667           16008  Microsoft-Windows-Win32k/TokenIndependentFlipSkipComplete/win:Info
+    0x01bc 0x01b0 0x00   0x00    0x10    0x04  0x8000000400001000          378            7560  Microsoft-Windows-Win32k/DCompResourcePropertyUpdate/win:Info   
+    0x01bd 0x01b1 0x00   0x00    0x10    0x04  0x8000000400001000        15314          183768  Microsoft-Windows-Win32k/DCompCommandType/win:Info              
+    0x01be 0x01b2 0x00   0x00    0x10    0x04  0x8000000400001000         5977           47816  Microsoft-Windows-Win32k/DCompCommandsInBatch/win:Info          
+    0x01e7 0x01e7 0x00   0x00    0x10    0x04  0x8001100000040000            3             108  Microsoft-Windows-Win32k/CompositionTargetGlitch/win:Info       
+
+
+{8e92deef-5e17-413b-b927-59b2f06a3cfc}                                   13818          723536  Microsoft-Antimalware-RTP
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0016 0x0014 0x00   0x00    0x00    0x04  0x0000000000000000        13472          646658  Microsoft-Antimalware-RTP/RTPPriority/win:Info                  
+    0x001b 0x0017 0x00   0x00    0x00    0x04  0x0000000000000000          346           76878  Microsoft-Antimalware-RTP/RTPFileScanResult/win:Info            
+
+
+{9e9bba3c-2e38-40cb-99f4-9e8281425164}                                  311166         5639529  Microsoft-Windows-Dwm-Core
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0006 0x0009 0x01   0x00    0x10    0x04  0x8000000000000008         4730               0  Microsoft-Windows-Dwm-Core/SCHEDULE_WFVB/win:Start              
+    0x0007 0x0009 0x02   0x00    0x10    0x04  0x8000000000000008         4730           37840  Microsoft-Windows-Dwm-Core/SCHEDULE_WFVB/win:Stop               
+    0x0008 0x000a 0x01   0x00    0x10    0x04  0x8000000000000008         4730               0  Microsoft-Windows-Dwm-Core/SCHEDULE_WFW/win:Start               
+    0x0009 0x000a 0x02   0x00    0x10    0x04  0x8000000000000008         4730           94600  Microsoft-Windows-Dwm-Core/SCHEDULE_WFW/win:Stop                
+    0x000a 0x000b 0x01   0x00    0x10    0x04  0x8000000000000080         4730               0  Microsoft-Windows-Dwm-Core/SCHEDULE_PROCESS_FRAME/win:Start     
+    0x000c 0x000b 0x02   0x00    0x10    0x04  0x8000000000000080         4730               0  Microsoft-Windows-Dwm-Core/SCHEDULE_PROCESS_FRAME/win:Stop      
+    0x000d 0x000c 0x01   0x00    0x10    0x04  0x8000000000000080         4730               0  Microsoft-Windows-Dwm-Core/SCHEDULE_RENDER/win:Start            
+    0x000e 0x000c 0x02   0x00    0x10    0x04  0x8000000000000080         4730           18920  Microsoft-Windows-Dwm-Core/SCHEDULE_RENDER/win:Stop             
+    0x000f 0x000d 0x01   0x00    0x10    0x04  0x8000000000000080         4730          170280  Microsoft-Windows-Dwm-Core/SCHEDULE_PRESENT/win:Start           
+    0x0010 0x000d 0x02   0x00    0x10    0x04  0x8000000000000080         4730               0  Microsoft-Windows-Dwm-Core/SCHEDULE_PRESENT/win:Stop            
+    0x001d 0x00ed 0x01   0x00    0x10    0x05  0x8000000000000001           81            1296  Microsoft-Windows-Dwm-Core/ETWGUID_PUSH_INTERNAL_LAYER_EVENT/win:Start
+    0x001e 0x00ed 0x02   0x00    0x10    0x05  0x8000000000000001           81            1296  Microsoft-Windows-Dwm-Core/ETWGUID_PUSH_INTERNAL_LAYER_EVENT/win:Stop
+    0x001f 0x00ee 0x01   0x00    0x10    0x05  0x8000000000000001           81               0  Microsoft-Windows-Dwm-Core/ETWGUID_POP_INTERNAL_LAYER_EVENT/win:Start
+    0x0020 0x00ee 0x02   0x00    0x10    0x05  0x8000000000000001           81               0  Microsoft-Windows-Dwm-Core/ETWGUID_POP_INTERNAL_LAYER_EVENT/win:Stop
+    0x0021 0x0016 0x00   0x00    0x10    0x04  0x8000000000000001           14             224  Microsoft-Windows-Dwm-Core/ETWGUID_BITMAPCOPYEVENT/win:Info     
+    0x0022 0x0017 0x01   0x00    0x10    0x05  0x8000000000000001          406               0  Microsoft-Windows-Dwm-Core/ETWGUID_COPYFRONTTOBACKBUFFEREVENT/win:Start
+    0x0023 0x0017 0x02   0x00    0x10    0x05  0x8000000000000001          406            3248  Microsoft-Windows-Dwm-Core/ETWGUID_COPYFRONTTOBACKBUFFEREVENT/win:Stop
+    0x0028 0x001b 0x01   0x00    0x10    0x05  0x8000000000000001          178            2848  Microsoft-Windows-Dwm-Core/ETWGUID_CLEAREVENT/win:Start         
+    0x0029 0x001b 0x02   0x00    0x10    0x05  0x8000000000000001          178               0  Microsoft-Windows-Dwm-Core/ETWGUID_CLEAREVENT/win:Stop          
+    0x002a 0x001c 0x00   0x00    0x10    0x04  0x8000000000000001         1189           28536  Microsoft-Windows-Dwm-Core/ETWGUID_DIRTYREGIONEVENT/win:Info    
+    0x002b 0x001d 0x01   0x00    0x10    0x04  0x8000000000000001         4788           57456  Microsoft-Windows-Dwm-Core/ETWGUID_OCCLUSIONEVENT/win:Start     
+    0x002c 0x001d 0x00   0x00    0x10    0x05  0x8000000000000001         5937          142488  Microsoft-Windows-Dwm-Core/ETWGUID_OCCLUSIONEVENT/win:Info      
+    0x002d 0x001d 0x02   0x00    0x10    0x04  0x8000000000000001         4788           57456  Microsoft-Windows-Dwm-Core/ETWGUID_OCCLUSIONEVENT/win:Stop      
+    0x0031 0x0020 0x01   0x00    0x10    0x05  0x8000000000000001         3386           27088  Microsoft-Windows-Dwm-Core/ETWGUID_DRAWEVENT/win:Start          
+    0x0032 0x0020 0x00   0x00    0x10    0x05  0x8000000000000001         1117           17872  Microsoft-Windows-Dwm-Core/ETWGUID_DRAWEVENT/win:Info           
+    0x0033 0x0020 0x02   0x00    0x10    0x05  0x8000000000000001         3386           27088  Microsoft-Windows-Dwm-Core/ETWGUID_DRAWEVENT/win:Stop           
+    0x0036 0x0022 0x01   0x00    0x10    0x05  0x8000000000000001         4730           37840  Microsoft-Windows-Dwm-Core/MILEVENT_MEDIA_UCE_PROCESSQUEUEEVENT/win:Start
+    0x0037 0x0022 0x00   0x00    0x10    0x05  0x8000000000000001         1054            8432  Microsoft-Windows-Dwm-Core/MILEVENT_MEDIA_UCE_PROCESSQUEUEEVENT/win:Info
+    0x0038 0x0022 0x02   0x00    0x10    0x05  0x8000000000000001         4730           37840  Microsoft-Windows-Dwm-Core/MILEVENT_MEDIA_UCE_PROCESSQUEUEEVENT/win:Stop
+    0x0039 0x0023 0x01   0x00    0x10    0x04  0x8000000000000008         4291           51492  Microsoft-Windows-Dwm-Core/MILEVENT_MEDIA_UCE_PRECOMPUTEEVENT/win:Start
+    0x003a 0x0023 0x02   0x00    0x10    0x04  0x8000000000000001         4291           34328  Microsoft-Windows-Dwm-Core/MILEVENT_MEDIA_UCE_PRECOMPUTEEVENT/win:Stop
+    0x003b 0x0024 0x01   0x00    0x10    0x04  0x8000000000000001         1111           17776  Microsoft-Windows-Dwm-Core/MILEVENT_MEDIA_UCE_RENDEREVENT/win:Start
+    0x003c 0x0024 0x02   0x00    0x10    0x04  0x8000000000000001         1111            8888  Microsoft-Windows-Dwm-Core/MILEVENT_MEDIA_UCE_RENDEREVENT/win:Stop
+    0x003f 0x0026 0x01   0x00    0x10    0x05  0x8000000000000001         4730               0  Microsoft-Windows-Dwm-Core/MILEVENT_MEDIA_UCE_PROCESSPRESENTHISTORY/win:Start
+    0x0040 0x003f 0x00   0x00    0x10    0x05  0x8000000000000001         4730           37840  Microsoft-Windows-Dwm-Core/MILEVENT_MEDIA_UCE_PROCESSPRESENTHISTORY_GetPresentHistory/win:Info
+    0x0041 0x0026 0x02   0x00    0x10    0x05  0x8000000000000001         4730           37840  Microsoft-Windows-Dwm-Core/MILEVENT_MEDIA_UCE_PROCESSPRESENTHISTORY/win:Stop
+    0x0042 0x0027 0x01   0x00    0x10    0x04  0x8000000000000001         4730               0  Microsoft-Windows-Dwm-Core/MILEVENT_MEDIA_UCE_CHECKDEVICESTATE/win:Start
+    0x0044 0x0027 0x02   0x00    0x10    0x04  0x8000000000000001         4730               0  Microsoft-Windows-Dwm-Core/MILEVENT_MEDIA_UCE_CHECKDEVICESTATE/win:Stop
+    0x004f 0x0002 0x01   0x00    0x10    0x04  0x8000000000000080         4730               0  Microsoft-Windows-Dwm-Core/SCHEDULE_VBLANK_LOOP/win:Start       
+    0x0050 0x0002 0x02   0x00    0x10    0x04  0x8000000000000080         4730               0  Microsoft-Windows-Dwm-Core/SCHEDULE_VBLANK_LOOP/win:Stop        
+    0x0053 0x0031 0x00   0x00    0x10    0x04  0x8000000000000001            9             144  Microsoft-Windows-Dwm-Core/GDISPRITE_LOGICALSURFACE_ASSOCIATION/win:Info
+    0x0054 0x0032 0x00   0x00    0x10    0x04  0x8000000000000001            9             216  Microsoft-Windows-Dwm-Core/WINDOWNODE_GDISPRITE_ASSOCIATION/win:Info
+    0x0057 0x0035 0x00   0x00    0x10    0x04  0x8000000000000080          178            6632  Microsoft-Windows-Dwm-Core/SCHEDULE_PRESENTHISTORYTOKEN_GDI/win:Info
+    0x0064 0x003e 0x00   0x00    0x10    0x04  0x8000000000000001            8             320  Microsoft-Windows-Dwm-Core/BIND_GDISPRITEBITMAP_FIRST_TOKEN/win:Info
+    0x0070 0x0043 0x01   0x00    0x10    0x04  0x8000000000000001         4730               0  Microsoft-Windows-Dwm-Core/UCE_PROCESSANIMATERESOURCES/win:Start
+    0x0071 0x0043 0x02   0x00    0x10    0x04  0x8000000000000001         4730               0  Microsoft-Windows-Dwm-Core/UCE_PROCESSANIMATERESOURCES/win:Stop 
+    0x0085 0x0051 0x00   0x00    0x10    0x05  0x8000000000210000         1061           29708  Microsoft-Windows-Dwm-Core/DCOMPEVENT_RESOURCE/win:Info         
+    0x0087 0x0053 0x00   0x00    0x10    0x05  0x8000000000000100        14190          454080  Microsoft-Windows-Dwm-Core/DCOMPEVENT_ANIMATION_UPDATE_VALUE/win:Info
+    0x0099 0x0065 0x01   0x00    0x10    0x05  0x8000000000000001           47             376  Microsoft-Windows-Dwm-Core/OPEN_SHARED_TEXTURE_EVENT/win:Start  
+    0x009a 0x0065 0x02   0x00    0x10    0x05  0x8000000000000001           47               0  Microsoft-Windows-Dwm-Core/OPEN_SHARED_TEXTURE_EVENT/win:Stop   
+    0x009d 0x0067 0x01   0x00    0x10    0x05  0x8000000000000001           17               0  Microsoft-Windows-Dwm-Core/PROCESS_COMPOSITION_SURFACE_UPDATE_EVENT/win:Start
+    0x009e 0x0067 0x02   0x00    0x10    0x05  0x8000000000000001           17               0  Microsoft-Windows-Dwm-Core/PROCESS_COMPOSITION_SURFACE_UPDATE_EVENT/win:Stop
+    0x00a3 0x00ef 0x01   0x00    0x10    0x05  0x8000000000000001          163            2608  Microsoft-Windows-Dwm-Core/ETWGUID_PUSH_EXTERNAL_LAYER_EVENT/win:Start
+    0x00a4 0x00ef 0x02   0x00    0x10    0x05  0x8000000000000001          163            2608  Microsoft-Windows-Dwm-Core/ETWGUID_PUSH_EXTERNAL_LAYER_EVENT/win:Stop
+    0x00a5 0x00f0 0x01   0x00    0x10    0x05  0x8000000000000001          163               0  Microsoft-Windows-Dwm-Core/ETWGUID_POP_EXTERNAL_LAYER_EVENT/win:Start
+    0x00a6 0x00f0 0x02   0x00    0x10    0x05  0x8000000000000001          163               0  Microsoft-Windows-Dwm-Core/ETWGUID_POP_EXTERNAL_LAYER_EVENT/win:Stop
+    0x00b4 0x0072 0x01   0x00    0x10    0x05  0x8000000000010000         1169           42453  Microsoft-Windows-Dwm-Core/ETWGUID_DRAWING_CONTEXT_FRAME/win:Start
+    0x00b5 0x0072 0x02   0x00    0x10    0x05  0x8000000000010000         1169               0  Microsoft-Windows-Dwm-Core/ETWGUID_DRAWING_CONTEXT_FRAME/win:Stop
+    0x00b6 0x0073 0x00   0x00    0x10    0x05  0x8000000000010000        12335         1295175  Microsoft-Windows-Dwm-Core/ETWGUID_DRAWING_CONTEXT_STATE/win:Info
+    0x00b7 0x0074 0x00   0x00    0x10    0x05  0x8000000000010000          905           36200  Microsoft-Windows-Dwm-Core/ETWGUID_COMPOSITION_SURFACE_DRAW/win:Info
+    0x00b9 0x0076 0x00   0x00    0x10    0x05  0x8000000000010000           58            2784  Microsoft-Windows-Dwm-Core/ETWGUID_CVI_UPDATE/win:Info          
+    0x00c0 0x007d 0x01   0x00    0x10    0x04  0x8000000000000002         4730           18920  Microsoft-Windows-Dwm-Core/SCHEDULE_CLEAR_D2D_CACHES/win:Start  
+    0x00c1 0x007d 0x02   0x00    0x10    0x04  0x8000000000000002         4730           18920  Microsoft-Windows-Dwm-Core/SCHEDULE_CLEAR_D2D_CACHES/win:Stop   
+    0x00c2 0x007e 0x01   0x00    0x10    0x05  0x8000000000000001         4730               0  Microsoft-Windows-Dwm-Core/MILEVENT_MEDIA_UCE_PROCESSSURFACEUPDATES/win:Start
+    0x00c3 0x007e 0x02   0x00    0x10    0x05  0x8000000000000001         4730           37840  Microsoft-Windows-Dwm-Core/MILEVENT_MEDIA_UCE_PROCESSSURFACEUPDATES/win:Stop
+    0x00c4 0x007f 0x00   0x00    0x10    0x04  0x8000000000000080         5502          506184  Microsoft-Windows-Dwm-Core/SCHEDULE_SURFACEUPDATE/win:Info      
+    0x00c5 0x0080 0x00   0x00    0x10    0x05  0x8000000000000001         1189           33292  Microsoft-Windows-Dwm-Core/ETWGUID_RENDEROPT_DISCARDVIEWEVENT/win:Info
+    0x00cd 0x0087 0x01   0x00    0x10    0x04  0x8000000000000002         1111               0  Microsoft-Windows-Dwm-Core/RENDER_CVIPASS/win:Start             
+    0x00ce 0x0087 0x02   0x00    0x10    0x04  0x8000000000000002         1111               0  Microsoft-Windows-Dwm-Core/RENDER_CVIPASS/win:Stop              
+    0x00d8 0x008f 0x00   0x00    0x10    0x05  0x8000000000000200         1664          139776  Microsoft-Windows-Dwm-Core/OVERLAY_RECORDCANDIDATE/win:Info     
+    0x00d9 0x0090 0x00   0x00    0x10    0x05  0x8000000000000200          471            5652  Microsoft-Windows-Dwm-Core/OVERLAY_CHECKOCCLUSION/win:Info      
+    0x00da 0x0091 0x01   0x00    0x10    0x05  0x8000000000000200            9              72  Microsoft-Windows-Dwm-Core/OVERLAY_CHECKSUPPORT/win:Start       
+    0x00db 0x0091 0x00   0x00    0x10    0x05  0x8000000000000200           18            1296  Microsoft-Windows-Dwm-Core/OVERLAY_CHECKSUPPORT/win:Info        
+    0x00dc 0x0091 0x02   0x00    0x10    0x05  0x8000000000000200            9              36  Microsoft-Windows-Dwm-Core/OVERLAY_CHECKSUPPORT/win:Stop        
+    0x00dd 0x0092 0x01   0x00    0x10    0x05  0x8000000000000200         4730           37840  Microsoft-Windows-Dwm-Core/OVERLAY_CANDIDATECOLLECTION/win:Start
+    0x00de 0x0092 0x02   0x00    0x10    0x05  0x8000000000000200         4730           18920  Microsoft-Windows-Dwm-Core/OVERLAY_CANDIDATECOLLECTION/win:Stop 
+    0x00df 0x0093 0x01   0x00    0x10    0x05  0x8000000000000200         1112            4448  Microsoft-Windows-Dwm-Core/OVERLAY_PRESENT/win:Start            
+    0x00e0 0x0093 0x00   0x00    0x10    0x05  0x8000000000000200         1129           90320  Microsoft-Windows-Dwm-Core/OVERLAY_PRESENT/win:Info             
+    0x00e1 0x0093 0x02   0x00    0x10    0x05  0x8000000000000200         1112               0  Microsoft-Windows-Dwm-Core/OVERLAY_PRESENT/win:Stop             
+    0x00eb 0x009b 0x00   0x00    0x10    0x05  0x8000000000010000          423           13536  Microsoft-Windows-Dwm-Core/ETWGUID_PRIMITIVE_GROUP_DRAW/win:Info
+    0x00ec 0x009c 0x00   0x00    0x10    0x05  0x8000000000000001          533            2132  Microsoft-Windows-Dwm-Core/ETWGUID_D2DLAYERCREATEREASON/win:Info
+    0x00f7 0x00a6 0x00   0x00    0x10    0x05  0x8000000000000001           13             468  Microsoft-Windows-Dwm-Core/ETWGUID_SETINDEPENDENTFLIPINFO/win:Info
+    0x00f8 0x00a7 0x00   0x00    0x10    0x05  0x8000000000010000          423            5076  Microsoft-Windows-Dwm-Core/ETWGUID_PRIMITIVE_GROUP_SELF_OCCLUSION_INFO/win:Info
+    0x0109 0x00b5 0x00   0x01    0x10    0x05  0x8000000000010000          378            7560  Microsoft-Windows-Dwm-Core/DCOMPEVENT_PRIMITIVEGROUP_UPDATE/win:Info
+    0x0121 0x00cd 0x00   0x00    0x10    0x05  0x8000000000000200         1664           66560  Microsoft-Windows-Dwm-Core/DISPLAYSURFACE_SWAPCHAINCANDIDATE/win:Info
+    0x0122 0x00ce 0x00   0x00    0x10    0x05  0x8000000000000200          501            6012  Microsoft-Windows-Dwm-Core/DISPLAYSURFACE_REJECTCANDIDATE/win:Info
+    0x0123 0x00cf 0x00   0x00    0x10    0x05  0x8000000000000200         1664          173056  Microsoft-Windows-Dwm-Core/DISPLAYSURFACE_CANDIDATEATTRIBUTES/win:Info
+    0x0137 0x00e2 0x00   0x00    0x10    0x04  0x8000000000000001         4730          245960  Microsoft-Windows-Dwm-Core/ENDFRAME_DRAWLIST_BATCH_STATS/win:Info
+    0x0139 0x00e4 0x00   0x00    0x10    0x04  0x8000000000000001         4730           37840  Microsoft-Windows-Dwm-Core/ENDFRAME_PRIMITIVE_GROUP_STATS/win:Info
+    0x013a 0x00e5 0x00   0x00    0x10    0x04  0x8000000000000001         4730           56760  Microsoft-Windows-Dwm-Core/ENDFRAME_TESSELLATED_PRIMITIVES_STATS/win:Info
+    0x013b 0x00e6 0x00   0x00    0x10    0x04  0x8000000000000001         4730           37840  Microsoft-Windows-Dwm-Core/ENDFRAME_HW_DRAWLIST_CACHE_STATS/win:Info
+    0x013c 0x00e7 0x00   0x00    0x10    0x04  0x8000000000000001         4730           37840  Microsoft-Windows-Dwm-Core/ENDFRAME_WARP_DRAWLIST_CACHE_STATS/win:Info
+    0x013d 0x00e8 0x01   0x00    0x10    0x04  0x8000000000000001         4730               0  Microsoft-Windows-Dwm-Core/PROCESS_EXPRESSIONS/win:Start        
+    0x013e 0x00e8 0x02   0x00    0x10    0x04  0x8000000000000001         4730               0  Microsoft-Windows-Dwm-Core/PROCESS_EXPRESSIONS/win:Stop         
+    0x0142 0x00eb 0x00   0x00    0x10    0x04  0x8000000000000030         5102          122448  Microsoft-Windows-Dwm-Core/CHANNELANIMATIONS_ACTIVE/win:Info    
+    0x0143 0x00ec 0x00   0x00    0x10    0x04  0x8000000000000020          539            6468  Microsoft-Windows-Dwm-Core/CHANNELBATCHES_PROCESSED/win:Info    
+    0x014d 0x00f3 0x00   0x00    0x10    0x05  0x8000000000010000        11007          352269  Microsoft-Windows-Dwm-Core/ETWGUID_VISUAL_RENDERCONTENT/win:Info
+    0x014e 0x00f4 0x00   0x00    0x10    0x05  0x8000000000010000         6977          195356  Microsoft-Windows-Dwm-Core/ETWGUID_DIRTY_ADDRECT/win:Info       
+    0x015f 0x0104 0x01   0x00    0x10    0x05  0x8000000000000001            1               0  Microsoft-Windows-Dwm-Core/SHADERS_D3DSHADER_LINK/win:Start     
+    0x0160 0x0104 0x02   0x00    0x10    0x05  0x8000000000000001            1               0  Microsoft-Windows-Dwm-Core/SHADERS_D3DSHADER_LINK/win:Stop      
+    0x0161 0x0104 0x00   0x00    0x10    0x05  0x8000000000000001            1              32  Microsoft-Windows-Dwm-Core/SHADERS_D3DSHADER_LINK/win:Info      
+    0x0162 0x0106 0x01   0x00    0x10    0x05  0x8000000000000001            1               4  Microsoft-Windows-Dwm-Core/SHADERS_D3DSHADER_CREATE/win:Start   
+    0x0163 0x0106 0x02   0x00    0x10    0x05  0x8000000000000001            1               4  Microsoft-Windows-Dwm-Core/SHADERS_D3DSHADER_CREATE/win:Stop    
+    0x0173 0x0110 0x00   0x00    0x10    0x05  0x8000000000000001         4730           18920  Microsoft-Windows-Dwm-Core/COMMANDS_COUNT/win:Info              
+    0x0181 0x011b 0x00   0x00    0x10    0x04  0x8000000000000080         6402           25608  Microsoft-Windows-Dwm-Core/SCHEDULED_COMPOSITION_REASON/win:Info
+    0x0183 0x011d 0x00   0x00    0x10    0x04  0x8000000000000020         4730          192500  Microsoft-Windows-Dwm-Core/PROCESS_ATTRIBUTION/win:Info         
+    0x0184 0x011e 0x00   0x00    0x10    0x05  0x8000000000000020        10322           82576  Microsoft-Windows-Dwm-Core/COMMAND_PROCESSED_ONBEHALF/win:Info  
+    0x01c2 0x0153 0x00   0x00    0x10    0x04  0x8000000000000041            6              24  Microsoft-Windows-Dwm-Core/RENDERTARGET_RENDERSKIPPED/win:Info  
+    0x01c3 0x0154 0x00   0x00    0x10    0x04  0x8000000000000009         4730           37840  Microsoft-Windows-Dwm-Core/CurrentFrameId/win:Info              
+    0x01ca 0x0159 0x01   0x00    0x10    0x04  0x8000000000000201           22             352  Microsoft-Windows-Dwm-Core/CompSurfInfo_Binding/win:Start       
+    0x01cb 0x0159 0x02   0x00    0x10    0x04  0x8000000000000201           22             264  Microsoft-Windows-Dwm-Core/CompSurfInfo_Binding/win:Stop        
+    0x01cc 0x015a 0x01   0x00    0x10    0x04  0x8000000000000201           22             440  Microsoft-Windows-Dwm-Core/CompSurfInfo_ForceUpdateRealization/win:Start
+    0x01cd 0x015a 0x02   0x00    0x10    0x04  0x8000000000000201           22              88  Microsoft-Windows-Dwm-Core/CompSurfInfo_ForceUpdateRealization/win:Stop
+    0x01d3 0x0160 0x00   0x00    0x10    0x04  0x8000000000000001            5             360  Microsoft-Windows-Dwm-Core/Windowed_Dx_Flip_Consumed/win:Info   
+    0x01d4 0x0161 0x00   0x00    0x10    0x04  0x8000000000000001         1111           71104  Microsoft-Windows-Dwm-Core/Dx_Flip_Consumed/win:Info            
+    0x01d8 0x0165 0x00   0x00    0x10    0x04  0x8000000000000020         4730           94600  Microsoft-Windows-Dwm-Core/CHANNELANIMATIONS_REPEATFOREVER_KEYFRAMEANIMATION/win:Info
+
+
+{a669021c-c450-4609-a035-5af59af4df18}                                  579272       132795362  Microsoft-Windows-DotNETRuntimeRundown
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0090 0x0001 0x28   0x01    0x00    0x04  0x0000000000000030       132066        46202492  Microsoft-Windows-DotNETRuntimeRundown/CLRMethodRundown/MethodDCEndVerbose
+    0x0090 0x0001 0x28   0x02    0x00    0x04  0x0000000000000030       157918        48045456  Microsoft-Windows-DotNETRuntimeRundown/CLRMethodRundown/MethodDCEndVerbose
+    0x0092 0x0001 0x0f   0x01    0x00    0x04  0x0000000000020038           36              72  Microsoft-Windows-DotNETRuntimeRundown/CLRMethodRundown/DCEndComplete
+    0x0094 0x0001 0x11   0x01    0x00    0x04  0x0000000000020038           36              72  Microsoft-Windows-DotNETRuntimeRundown/CLRMethodRundown/DCEndInit
+    0x0096 0x0001 0x2a   0x00    0x00    0x05  0x0000000000020000         1558          139630  Microsoft-Windows-DotNETRuntimeRundown/CLRMethodRundown/MethodDCEndILToNativeMap
+    0x0096 0x0001 0x2a   0x01    0x00    0x05  0x0000000000020000       277344        35402864  <Unknown>                                                       
+    0x0098 0x0002 0x2f   0x01    0x00    0x04  0x0000000000000008         3412          637340  Microsoft-Windows-DotNETRuntimeRundown/CLRLoaderRundown/DomainModuleDCEnd
+    0x009a 0x0002 0x24   0x02    0x00    0x04  0x0000000020000008         3414         1614840  Microsoft-Windows-DotNETRuntimeRundown/CLRLoaderRundown/ModuleDCEnd
+    0x009c 0x0002 0x28   0x01    0x00    0x04  0x0000000000000008         3414          745732  Microsoft-Windows-DotNETRuntimeRundown/CLRLoaderRundown/AssemblyDCEnd
+    0x009e 0x0002 0x2c   0x01    0x00    0x04  0x0000000000000008           38            1340  Microsoft-Windows-DotNETRuntimeRundown/CLRLoaderRundown/AppDomainDCEnd
+    0x00bb 0x0013 0x01   0x00    0x00    0x04  0x0000000000000000           36            5524  Microsoft-Windows-DotNETRuntimeRundown/CLRRuntimeInformationRundown/win:Start
+
+
+{a688ee40-d8d9-4736-b6f9-6b74935ba3b1}                                  342525        13701000  <Unknown>
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0001 0x0001 0x01   0x00    0x10    0x00  0x8000000000000001        89897         3595880  <Unknown>                                                       
+    0x0002 0x0001 0x03   0x00    0x10    0x00  0x8000000000000001       163026         6521040  <Unknown>                                                       
+    0x0003 0x0001 0x02   0x00    0x10    0x00  0x8000000000000001        89602         3584080  <Unknown>                                                       
+
+
+{b675ec37-bdb6-4648-bc92-f3fdc74d3ca2}                                  129235               0  Microsoft-Windows-Kernel-EventTracing
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0012 0x0006 0x18   0x00    0x00    0x04  0x0000000000000000       129235               0  Microsoft-Windows-Kernel-EventTracing/ETW_TASK_STACK_TRACE/ETW_OPCODE_USER_MODE_STACK_TRACE
+
+
+{b7a19fcd-15ba-41ba-a3d7-dc352d5f79ba}                                       2             152  Microsoft-Windows-Performance-Recorder-Context
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0064 0x0000 0x00   0x00    0x00    0x00  0x0000000000000000            2             152  Microsoft-Windows-Performance-Recorder-Context//win:Info        
+
+
+{bf406804-6afa-46e7-8a48-6c357e1d6d61}                                       3             120  Microsoft-Windows-COMRuntime
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0002 0x0002 0x00   0x00    0x10    0x04  0x4000000000000002            3             120  Microsoft-Windows-COMRuntime/ComCallDelay/win:Info              
+
+
+{c44219d0-f344-11df-a5e2-b307dfd72085}                                   74783         2521604  Microsoft-Windows-DirectComposition
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0002 0x0002 0x01   0x00    0x10    0x05  0x8000000000000005          475           15200  Microsoft-Windows-DirectComposition/BEGIN_DRAW/win:Start        
+    0x0010 0x0009 0x00   0x00    0x10    0x05  0x8000000000000006           13             416  Microsoft-Windows-DirectComposition/ATLAS_ALLOCATE/win:Info     
+    0x0011 0x000a 0x00   0x00    0x10    0x05  0x8000000000000006           15             120  Microsoft-Windows-DirectComposition/ATLAS_FREE/win:Info         
+    0x0012 0x000b 0x00   0x00    0x10    0x05  0x8000000000000006          116            3712  Microsoft-Windows-DirectComposition/ATLAS_ENTRY_ALLOCATE/win:Info
+    0x0013 0x000c 0x00   0x00    0x10    0x05  0x8000000000000006          115            3680  Microsoft-Windows-DirectComposition/ATLAS_ENTRY_FREE/win:Info   
+    0x0014 0x000d 0x00   0x00    0x10    0x05  0x8000000000000006          609           14616  Microsoft-Windows-DirectComposition/ATLAS_UTILIZATION/win:Info  
+    0x0019 0x0011 0x00   0x00    0x10    0x05  0x8000000000000006        18915          378300  Microsoft-Windows-DirectComposition/DEVICE_COMMIT/win:Info      
+    0x001a 0x0012 0x00   0x00    0x10    0x05  0x8000000000000006          475           13300  Microsoft-Windows-DirectComposition/ATLAS_USE_INFO/win:Info     
+    0x001b 0x0013 0x00   0x00    0x10    0x05  0x8000000000000006          475            3800  Microsoft-Windows-DirectComposition/ATLAS_ENTRY_MARK_FOR_DISPOSE/win:Info
+    0x001c 0x0014 0x00   0x00    0x10    0x05  0x8000000000000006          474            3792  Microsoft-Windows-DirectComposition/ATLAS_ENTRY_MARK_AVAILABLE/win:Info
+    0x001d 0x0015 0x00   0x00    0x10    0x05  0x8000000000000006          359           11488  Microsoft-Windows-DirectComposition/ATLAS_ENTRY_REUSE/win:Info  
+    0x0026 0x001c 0x00   0x00    0x10    0x05  0x8000000000000006        14534         1744080  Microsoft-Windows-DirectComposition/CAP_ALLOCATION_STATS/win:Info
+    0x002c 0x0020 0x01   0x00    0x10    0x05  0x8000000000000006        18915          151320  Microsoft-Windows-DirectComposition/CAP_MAXIMUM/win:Start       
+    0x002d 0x0020 0x02   0x00    0x10    0x05  0x8000000000000006        18915          151320  Microsoft-Windows-DirectComposition/CAP_MAXIMUM/win:Stop        
+    0x0035 0x0028 0x00   0x00    0x10    0x05  0x8000000000000040          378           26460  Microsoft-Windows-DirectComposition/PRIMITIVE_GROUP_UPDATE/win:Info
+
+
+{ca11c036-0102-4a2d-a6ad-f03cfed5d3c9}                                   13268          209915  Microsoft-Windows-DXGI
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0001 0x0001 0x01   0x00    0x10    0x00  0x8000000000000001           13             312  Microsoft-Windows-DXGI/Factory/win:Start                        
+    0x0002 0x0001 0x02   0x00    0x10    0x00  0x8000000000000001           13             312  Microsoft-Windows-DXGI/Factory/win:Stop                         
+    0x0003 0x0001 0x03   0x00    0x10    0x00  0x8000000000000001           98            2324  Microsoft-Windows-DXGI/Factory/win:DC_Start                     
+    0x0004 0x0003 0x01   0x00    0x10    0x00  0x8000000000000001           20             640  Microsoft-Windows-DXGI/Adapter/win:Start                        
+    0x0005 0x0003 0x02   0x00    0x10    0x00  0x8000000000000001           20             640  Microsoft-Windows-DXGI/Adapter/win:Stop                         
+    0x0006 0x0003 0x03   0x00    0x10    0x00  0x8000000000000001           99            3108  Microsoft-Windows-DXGI/Adapter/win:DC_Start                     
+    0x0007 0x0004 0x01   0x00    0x10    0x00  0x8000000000000001           21             966  Microsoft-Windows-DXGI/Output/win:Start                         
+    0x0008 0x0004 0x02   0x00    0x10    0x00  0x8000000000000001           21             966  Microsoft-Windows-DXGI/Output/win:Stop                          
+    0x0009 0x0004 0x03   0x00    0x10    0x00  0x8000000000000001           45            2062  Microsoft-Windows-DXGI/Output/win:DC_Start                      
+    0x000a 0x0002 0x01   0x00    0x10    0x00  0x8000000000000001            5            1302  Microsoft-Windows-DXGI/SwapChain/win:Start                      
+    0x000b 0x0002 0x02   0x00    0x10    0x00  0x8000000000000001            5            1278  Microsoft-Windows-DXGI/SwapChain/win:Stop                       
+    0x000c 0x0002 0x03   0x00    0x10    0x00  0x8000000000000001           10            2436  Microsoft-Windows-DXGI/SwapChain/win:DC_Start                   
+    0x0028 0x000b 0x01   0x00    0x10    0x00  0x8000000000000002           82             328  Microsoft-Windows-DXGI/Profile/win:Start                        
+    0x0029 0x000b 0x02   0x00    0x10    0x00  0x8000000000000002           69             276  Microsoft-Windows-DXGI/Profile/win:Stop                         
+    0x002a 0x0009 0x01   0x00    0x10    0x00  0x8000000000000002         5751          138024  Microsoft-Windows-DXGI/Present/win:Start                        
+    0x002b 0x0009 0x02   0x00    0x10    0x00  0x8000000000000002         5751           23004  Microsoft-Windows-DXGI/Present/win:Stop                         
+    0x002d 0x0005 0x01   0x00    0x10    0x00  0x8000000000000002            4             608  Microsoft-Windows-DXGI/ResizeBuffers/win:Start                  
+    0x002e 0x0005 0x02   0x00    0x10    0x00  0x8000000000000002            4             624  Microsoft-Windows-DXGI/ResizeBuffers/win:Stop                   
+    0x0035 0x000c 0x00   0x00    0x10    0x00  0x8000000000000002            9             108  Microsoft-Windows-DXGI/DWMRedirection/win:Info                  
+    0x003b 0x000f 0x00   0x00    0x10    0x00  0x8000000000000002            9             288  Microsoft-Windows-DXGI/GetMultiplaneOverlayCaps/win:Info        
+    0x003f 0x0013 0x00   0x00    0x10    0x00  0x8000000000000002            9             180  Microsoft-Windows-DXGI/CreateDirectFlipResource/win:Info        
+    0x0045 0x0019 0x00   0x00    0x10    0x00  0x8000000000000002          802            9624  Microsoft-Windows-DXGI/SetColorSpace1/win:Info                  
+    0x0046 0x001a 0x00   0x00    0x10    0x00  0x8000000000000006          376           19796  Microsoft-Windows-DXGI/JournalEntry/win:Info                    
+    0x0047 0x001b 0x00   0x00    0x10    0x00  0x8000000000000002            9             281  Microsoft-Windows-DXGI/BindBackBuffersToDwm/win:Info            
+    0x0048 0x001c 0x00   0x00    0x10    0x00  0x8000000000000002            9             108  Microsoft-Windows-DXGI/UnBindBackBuffersFromDwm/win:Info        
+    0x0049 0x0001 0x00   0x00    0x10    0x00  0x8000000000000002           13             312  Microsoft-Windows-DXGI/Factory/win:Info                         
+    0x004d 0x01e6 0x00   0x00    0x10    0x00  0x8000000000000002            1               8  Microsoft-Windows-DXGI/DynamicSwitch/win:Info                   
+
+
+{ce8dee0b-d539-4000-b0f8-77bed049c590}                                     437           24457  Microsoft-Windows-UserModePowerService
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0001 0x0001 0x00   0x00    0x10    0x04  0x8000000000000000            1               4  Microsoft-Windows-UserModePowerService/RundownPlatformRole/win:Info
+    0x0002 0x0002 0x00   0x00    0x10    0x04  0x8000000000000000            1              16  Microsoft-Windows-UserModePowerService/RundownPowerScheme/win:Info
+    0x0003 0x0003 0x00   0x01    0x10    0x04  0x8000000000000000          183            9552  Microsoft-Windows-UserModePowerService/RundownAcPowerSetting/win:Info
+    0x0004 0x0004 0x00   0x01    0x10    0x04  0x8000000000000000          183            9552  Microsoft-Windows-UserModePowerService/RundownDcPowerSetting/win:Info
+    0x000a 0x0008 0x00   0x00    0x10    0x04  0x8000000000000000            1               4  Microsoft-Windows-UserModePowerService/RundownBrightnessCapability/win:Info
+    0x000b 0x0009 0x00   0x00    0x10    0x04  0x8000000000000000            1               4  Microsoft-Windows-UserModePowerService/RundownPowerSource/win:Info
+    0x000f 0x000d 0x00   0x00    0x10    0x04  0x8000000000000000            1              12  Microsoft-Windows-UserModePowerService/RundownOverrideConfiguration/win:Info
+    0x0010 0x000e 0x00   0x01    0x10    0x04  0x8000000000000000            8             640  Microsoft-Windows-UserModePowerService/RundownOverridePowerSetting/win:Info
+    0x0011 0x000f 0x00   0x01    0x10    0x04  0x8000000000000000           46            4048  Microsoft-Windows-UserModePowerService/RundownPowerProfileSetting/win:Info
+    0x001b 0x0017 0x00   0x00    0x10    0x04  0x8000000000000004            1              25  Microsoft-Windows-UserModePowerService/RundownSmartUserPresenceState/win:Info
+    0x0031 0x0023 0x00   0x01    0x10    0x04  0x8000000000000000            6             432  Microsoft-Windows-UserModePowerService/RundownOverlaySchemePowerSetting/win:Info
+    0x0032 0x0024 0x00   0x01    0x10    0x04  0x8000000000000000            2              40  Microsoft-Windows-UserModePowerService/RundownActualOverlayPowerScheme/win:Info
+    0x0034 0x0026 0x00   0x00    0x10    0x04  0x8000000000000000            1              16  Microsoft-Windows-UserModePowerService/RundownEffectiveOverlayPowerScheme/win:Info
+    0x0035 0x0027 0x00   0x00    0x10    0x04  0x8000000000000000            1               4  Microsoft-Windows-UserModePowerService/RundownOverlaySuspendReason/win:Info
+    0x003e 0x002d 0x00   0x00    0x10    0x04  0x8000000000000004            1             108  Microsoft-Windows-UserModePowerService/SmartSuspendRundown/win:Info
+
+
+{cfeb0608-330e-4410-b00d-56d8da9986e6}                                    9884          329366  Microsoft-Antimalware-AMFilter
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0003 0x0003 0x00   0x00    0x00    0x05  0x0000000000000004         6621           52968  Microsoft-Antimalware-AMFilter/AMFilter_CacheHit/win:Info       
+    0x0006 0x0006 0x00   0x00    0x00    0x04  0x0000000000000010            4               0  Microsoft-Antimalware-AMFilter/AMFilter_SeqReadFlag/win:Info    
+    0x0007 0x0007 0x00   0x00    0x00    0x04  0x0000000000000008         1037           39412  Microsoft-Antimalware-AMFilter/AMFilter_TrustedProcess/win:Info 
+    0x0008 0x0008 0x00   0x00    0x00    0x04  0x0000000000000002         1038           90934  Microsoft-Antimalware-AMFilter/AMFilter_ProcessContext/win:Info 
+    0x0009 0x0009 0x00   0x00    0x00    0x04  0x0000000000000001          346           69390  Microsoft-Antimalware-AMFilter/AMFilter_FileScan/win:Info       
+    0x000a 0x000a 0x00   0x00    0x00    0x05  0x0000000000000020          492            3936  Microsoft-Antimalware-AMFilter/AMFilter_DeleteStreamContext/win:Info
+    0x000b 0x000b 0x00   0x00    0x00    0x04  0x0000000000000001          346           72726  Microsoft-Antimalware-AMFilter/AMFilter_FileScanResult/win:Info 
+
+
+{d49918cf-9489-4bf1-9d7b-014d864cf71f}                                      31            6994  Microsoft-Windows-ProcessStateManager
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0001 0x0064 0x00   0x00    0x10    0x04  0x8000000000000001           29            6564  Microsoft-Windows-ProcessStateManager/StateChange/win:Info      
+    0x0067 0x0069 0x04   0x00    0x00    0x04  0x0000000000000010            2             430  Microsoft-Windows-ProcessStateManager/ProcessRegister/win:DC_Stop
+
+
+{d8975f88-7ddb-4ed0-91bf-3adf48c48e0c}                                       8             516  Microsoft-Windows-RPCSS
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0002 0x0000 0x00   0x01    0x10    0x04  0x8000000000000200            2             136  Microsoft-Windows-RPCSS//                                       
+    0x0003 0x0000 0x00   0x01    0x10    0x04  0x8000000000000400            6             380  Microsoft-Windows-RPCSS//                                       
+
+
+{db6f6ddb-ac77-4e88-8253-819df9bbf140}                                   20086         1343409  Microsoft-Windows-Direct3D11
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0001 0x0001 0x00   0x00    0x10    0x00  0x8000000000000001         5731          437291  Microsoft-Windows-Direct3D11/Name/win:Info                      
+    0x0002 0x0001 0x03   0x00    0x10    0x00  0x8000000000000001         1182           59400  Microsoft-Windows-Direct3D11/Name/win:DC_Start                  
+    0x0003 0x0002 0x01   0x00    0x10    0x00  0x8000000000000002            1              80  Microsoft-Windows-Direct3D11/Device/win:Start                   
+    0x0004 0x0002 0x02   0x00    0x10    0x00  0x8000000000000002            1              80  Microsoft-Windows-Direct3D11/Device/win:Stop                    
+    0x0005 0x0002 0x03   0x00    0x10    0x00  0x8000000000000002           47            3680  Microsoft-Windows-Direct3D11/Device/win:DC_Start                
+    0x0006 0x0004 0x01   0x00    0x10    0x00  0x8000000000000004          136           13056  Microsoft-Windows-Direct3D11/Buffer/win:Start                   
+    0x0007 0x0004 0x02   0x00    0x10    0x00  0x8000000000000004          121           11616  Microsoft-Windows-Direct3D11/Buffer/win:Stop                    
+    0x0008 0x0004 0x03   0x00    0x10    0x00  0x8000000000000004         2226          213056  Microsoft-Windows-Direct3D11/Buffer/win:DC_Start                
+    0x000c 0x0006 0x01   0x00    0x10    0x00  0x8000000000000004         1662          159552  Microsoft-Windows-Direct3D11/Texture2D/win:Start                
+    0x000d 0x0006 0x02   0x00    0x10    0x00  0x8000000000000004         1369          131424  Microsoft-Windows-Direct3D11/Texture2D/win:Stop                 
+    0x000e 0x0006 0x03   0x00    0x10    0x00  0x8000000000000004         1427          135680  Microsoft-Windows-Direct3D11/Texture2D/win:DC_Start             
+    0x0012 0x0006 0x00   0x00    0x10    0x00  0x8000000000000004         5735          165992  Microsoft-Windows-Direct3D11/Texture2D/win:Info                 
+    0x0014 0x0008 0x01   0x00    0x12    0x00  0x2000000000000002            1               0  Microsoft-Windows-Direct3D11/D3D11CoreCreateDevice/win:Start    
+    0x0015 0x0008 0x02   0x00    0x12    0x00  0x2000000000000002            1               0  Microsoft-Windows-Direct3D11/D3D11CoreCreateDevice/win:Stop     
+    0x0016 0x0009 0x01   0x00    0x12    0x00  0x2000000000000002            1               0  Microsoft-Windows-Direct3D11/KMDDeviceCreate/win:Start          
+    0x0017 0x0009 0x02   0x00    0x12    0x00  0x2000000000000002            1               0  Microsoft-Windows-Direct3D11/KMDDeviceCreate/win:Stop           
+    0x0018 0x000a 0x01   0x00    0x12    0x00  0x2000000000000002            1               0  Microsoft-Windows-Direct3D11/UMDDeviceCreate/win:Start          
+    0x0019 0x000a 0x02   0x00    0x12    0x00  0x2000000000000002            1               0  Microsoft-Windows-Direct3D11/UMDDeviceCreate/win:Stop           
+    0x001f 0x0010 0x01   0x00    0x12    0x00  0x2000000000000002            1               0  Microsoft-Windows-Direct3D11/UMD10CreateDevice/win:Start        
+    0x0020 0x0010 0x02   0x00    0x12    0x00  0x2000000000000002            1               0  Microsoft-Windows-Direct3D11/UMD10CreateDevice/win:Stop         
+    0x0021 0x0011 0x01   0x00    0x12    0x00  0x2000000000000002            1               0  Microsoft-Windows-Direct3D11/UMDOpenAdapter/win:Start           
+    0x0022 0x0011 0x02   0x00    0x12    0x00  0x2000000000000002            1               0  Microsoft-Windows-Direct3D11/UMDOpenAdapter/win:Stop            
+    0x071c 0x03c1 0x00   0x00    0x11    0x00  0x4000000000000802          395           11556  Microsoft-Windows-Direct3D11/JournalEntry/win:Info              
+    0x071d 0x03c2 0x00   0x00    0x11    0x00  0x4000000000000004           43             946  Microsoft-Windows-Direct3D11/IDXGIResource_CreateSharedHandle/win:Info
+
+
+{e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}                                  297471        96727354  Microsoft-Windows-DotNETRuntime
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x008f 0x0009 0x25   0x01    0x00    0x04  0x0000000000000030            1             222  Microsoft-Windows-DotNETRuntime/CLRMethod/MethodLoadVerbose     
+    0x008f 0x0009 0x25   0x02    0x00    0x04  0x0000000000000030          145           40186  Microsoft-Windows-DotNETRuntime/CLRMethod/MethodLoadVerbose     
+    0x0090 0x0009 0x26   0x01    0x00    0x04  0x0000000000000030       132104        46214880  Microsoft-Windows-DotNETRuntime/CLRMethod/MethodUnloadVerbose   
+    0x0090 0x0009 0x26   0x02    0x00    0x04  0x0000000000000030       157917        48045284  Microsoft-Windows-DotNETRuntime/CLRMethod/MethodUnloadVerbose   
+    0x0091 0x0009 0x2a   0x01    0x00    0x05  0x0000000000000010          146           37496  Microsoft-Windows-DotNETRuntime/CLRMethod/MethodJittingStarted  
+    0x0092 0x0009 0x67   0x00    0x00    0x05  0x0000000000000010          146            6716  <Unknown>                                                       
+    0x0099 0x000a 0x22   0x02    0x00    0x04  0x0000000020000008         3414         1614840  Microsoft-Windows-DotNETRuntime/CLRLoader/ModuleUnload          
+    0x009b 0x000a 0x26   0x01    0x00    0x04  0x0000000000000008         3414          745732  Microsoft-Windows-DotNETRuntime/CLRLoader/AssemblyUnload        
+    0x009d 0x000a 0x2a   0x01    0x00    0x04  0x0000000000000008           38            1340  Microsoft-Windows-DotNETRuntime/CLRLoader/AppDomainUnload       
+    0x00be 0x0009 0x57   0x01    0x00    0x05  0x0000000000020000          146           20658  <Unknown>                                                       
+
+
+{e6835967-e0d2-41fb-bcec-58387404e25a}                                       8             360  Microsoft-Windows-BrokerInfrastructure
+
+    Id     Task   Opcode Version Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------ ------ ------- ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x0003 0x0065 0x00   0x00    0x10    0x04  0x8000000000000001            1              40  Microsoft-Windows-BrokerInfrastructure/BackgroundTaskProxy/win:Info
+    0x0007 0x0066 0x01   0x00    0x10    0x04  0x8000000000000001            1              20  Microsoft-Windows-BrokerInfrastructure/TriggerSignal/win:Start  
+    0x0008 0x0066 0x02   0x00    0x10    0x04  0x8000000000000001            1              20  Microsoft-Windows-BrokerInfrastructure/TriggerSignal/win:Stop   
+    0x0012 0x0064 0x6c   0x00    0x10    0x04  0x8000000000000001            4             224  Microsoft-Windows-BrokerInfrastructure/BackgroundTask/TaskUnbuffered
+    0x0014 0x0064 0x6e   0x00    0x10    0x04  0x8000000000000001            1              56  Microsoft-Windows-BrokerInfrastructure/BackgroundTask/TaskUnregistered
+
+
+TraceLogging ProviderId                       TotalCount       TotalSize  Name
+======================================        ========== ===============  ===============================================================
+                                                    1274           96558  <All>
+
+
+{43ac453b-97cd-4b51-4376-db7c9bb963ac}               196           20032  Microsoft.Windows.DiagTrack
+
+    Opcode Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x00   0x0b    0x05  0x0000000c00000002            2            2158  MatchEngine_ScenarioCompleted_4                                 
+    0x00   0x0b    0x00  0x00000000ffffffff          194           17874  ResultMacro_LogError                                            
+
+
+{57277741-3638-4a4b-bdba-0ac6e45da56c}              1078           76526  V8.js
+
+    Opcode Channel Level Keyword                   Count       TotalSize  Name
+    ------ ------- ----- ------------------   ---------- ---------------  ---------------------------------------------------------------
+    0x01   0x0b    0x04  0x0000000000000001            2             100  MethodLoad                                                      
+    0x01   0x0b    0x04  0x0000000000000001           20           10476  SourceDCStart                                                   
+    0x01   0x0b    0x04  0x0000000000000001         1056           65950  MethodDCStart                                                   
+

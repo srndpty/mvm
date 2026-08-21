@@ -1,0 +1,40 @@
+{
+  "schema": "mvm.p5-e4-p2-q2-analysis.v1",
+  "authority": "diagnostic_only_not_closure_evidence",
+  "campaign_result": "all_runs_passed_under_etw",
+  "attribution_exit_met": false,
+  "runs": {
+    "total": 6,
+    "contract_pass": 6,
+    "contract_fail": 0,
+    "etl_integrity_valid": 5,
+    "etl_event_loss": 1,
+    "event_loss_run": 6,
+    "event_loss_count": 51773
+  },
+  "q2_metrics": {
+    "deadline_drop_values": [6, 33, 39, 47, 23, 30],
+    "deadline_drop_min": 6,
+    "deadline_drop_max": 47,
+    "deadline_drop_mean": 29.6666666666667,
+    "repeated_present_mean": 27.5,
+    "effective_fps_mean": 59.4892993676359
+  },
+  "q1_candidate_reference": {
+    "deadline_drop_values": [38, 47, 73, 62, 66],
+    "deadline_drop_mean": 57.2,
+    "repeated_present_mean": 54.6,
+    "effective_fps_mean": 59.030205780591885,
+    "contract_pass": 4,
+    "runs": 5
+  },
+  "provenance_invariants": {
+    "display_refresh_hz": 59,
+    "gpu_driver_version": "32.0.15.9186",
+    "ac_line_status": 1,
+    "power_plan": "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c (高パフォーマンス)",
+    "changed_between_run_boundaries": false
+  },
+  "classification": "ETW下でFAILを採取できず、PASS/FAIL scheduling attributionは不成立。Q1比でdeadline dropとrepeated presentがともに低下しており、heavy WPR profileのtrace perturbationを除外できない。run 6はevent lossのため詳細ETW解析対象外とする。",
+  "next": "production code、threshold、scheduler policyを変更せず、より低摂動のexternal observationへ進む"
+}

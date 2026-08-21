@@ -948,6 +948,24 @@ formal PASSへ流用しない。P5-E closureは**BLOCKED**を維持する。raw�
 [`bench/results/p5-e4-p2-q1-31eda0d-vs-bb65ea5/`](../bench/results/p5-e4-p2-q1-31eda0d-vs-bb65ea5/README.md)
 へ保存した。
 
+### P2-Q2 — same-binary pass/fail scheduling attribution
+
+Q1でcandidate固有regressionが支持されなかったため、`31eda0d`の同一code imageを固定し、formal P2
+playback条件を変更せず、process外部からWPR GeneralProfile / GPU / DesktopCompositionを採取した。
+Q1実走後のsection抽出が元PEを再書き込みしていたためQ1 full-file hashは再利用不能だが、Q1と同一の
+`.text` SHA-256を確認したPEをQ2用pathへ固定し、全runで同じfull-file SHA-256を検証した。
+
+最大6 runまでFAILは発生せず、6/6 checker PASSだった。deadline dropは6 / 33 / 39 / 47 / 23 / 30、
+平均29.7で、repeated present平均は27.5だった。Q1 candidateの平均57.2 / 54.6より両counterがともに
+低下した。display refresh 59 Hz、GPU driver、AC状態、power planは全runの開始／終了で不変だった。
+
+xperf trace integrityはrun 1～5が正常、run 6は51,773 events lostのため詳細解析対象外とした。FAIL traceが
+ないため、render thread deschedule / DPC・ISR / GPU・Present waitのPASS/FAIL attribution出口は未達である。
+heavy WPR profileのtrace perturbationを除外できないため、この6 PASSはformal evidenceへ流用しない。
+production code、threshold、scheduler policyを変更せず、より低摂動のexternal observationへ進む。
+P5-E closureは**BLOCKED**を維持する。raw、provenance、ETL hash、tracestatsは
+[`bench/results/p5-e4-p2-q2-31eda0d/`](../bench/results/p5-e4-p2-q2-31eda0d/README.md)へ保存した。
+
 ---
 
 ## 7. 検証手順
