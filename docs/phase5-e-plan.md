@@ -1,6 +1,6 @@
 # P5-E 実装プラン — Product composition (二source / 二layer)
 
-- 状態: **P5-E1 / P5-E2 / P5-E3 完了 / P5-E4 実装済み・closure未確定 (P3-C-2再監査FAIL)**
+- 状態: **P5-E1 / P5-E2 / P5-E3 完了 / P5-E4実装済み・closure BLOCKED (QUAL-F2後P2 FAIL)**
 - 親計画: [Phase 5 計画](phase5-plan.md) §10
 - 製品契約: [PreviewEngine 製品契約](preview-engine-contract.md)
 - 起点commit: `2de8e2d` (P5-D closure merge)
@@ -901,6 +901,27 @@ threshold、formal checkerは変更しない。
 fixed-target integrationだけは、exact display後もaudio callbackを観測する診断専用100 ms holdを使用する。
 通常経路では0 msであり、canonical matrixのphase遷移やtimingを変更しない。total terminal silence量は
 callback数に依存するため固定せず、first terminal shortageのidentityだけを検査する。
+
+#### QUAL-F2実装・再qualification結果
+
+clean production candidate `31eda0d8d080dcf4b1680149d85b8293f618cd57`で、current generationの
+decoder drain EOFだけをqueueへpublishし、要求sampleからterminal endまで連続するsuffixだけを
+`TerminalEof`へ分類した。WASAPIは従来どおりsilenceを出力するがunderflowを増やさず、terminal
+silence callback/sampleを別counterへ記録する。EOS未確定、EOS前gap、stale generation、generation
+resetのnegativeを含むqueue unitと雑なEOF-flag mutationを通した。
+
+fixed target 3890 / 3891 / 3892は各3/3 PASSだった。3892は全3回でunderflow 0、exact identityを維持し、
+first terminal shortageはPCM 288 / silence 192 / end 3,120,128で一致した。canonical P3-C-2は独立
+campaign A/Bがともに9/9 PASSし、全provenanceも不変だった。ordinary CTestはrelease/debugともに
+477/477 PASSである。よって`QUAL-F2 implementation: PASS / P3-C-2 requalification: PASS`とする。
+
+ただしfinal closure suiteのP2 playback run 1はeffective 58.2343 fps、deadline drop 105、drop rate
+2.9167%でformal FAILとなった。marker/probe/mixed/stale/device/lifecycle errorは0、teardownは成功した。
+QUAL-F2差分にP2 compositor / gpu preview source変更はなくcausal attributionは未成立だが、formal FAILを
+無効化しない。stop ruleによりP4 matrixは未実行で、P5-E closureは**BLOCKED**のままとする。raw、summary、
+manifestは
+[`bench/results/p5-e4-qual-f2-31eda0d/`](../bench/results/p5-e4-qual-f2-31eda0d/README.md)
+へ保存し、後続runで上書きしない。
 
 ---
 
