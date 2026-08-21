@@ -27,6 +27,7 @@ struct P3AvConfig {
     bool formalContract = false;
     bool formalContractC2 = false;
     int warmupSeconds = 5;
+    bool injectRenderFaultAfterPlaying = false;
 };
 
 class P3AvSyncController final : public QObject {
@@ -134,6 +135,9 @@ private:
     DisplayEnvironmentSnapshot displayEnvironmentEnd_;
     bool displayPreflightPassed_ = false;
     bool formalWorkloadStarted_ = false;
+    bool renderFaultInjectedAfterPlaying_ = false;
+    bool shutdownEntered_ = false;
+    bool shutdownEnteredFromPlayback_ = false;
 };
 
 } // namespace mvm::app

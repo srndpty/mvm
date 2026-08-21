@@ -704,6 +704,8 @@ void P3AvSyncController::captureSeekTimeoutStageEvidence() {
 void P3AvSyncController::startShutdown(const QString& reason, bool failure) {
     if (phase_ == Phase::ShutdownWait || phase_ == Phase::Done)
         return;
+    shutdownEntered_ = true;
+    shutdownEnteredFromPlayback_ = phase_ == Phase::Playback;
     shutdownReason_ = reason;
     if (config_.formalContractC2)
         displayEnvironmentEnd_ = captureDisplayEnvironment();
@@ -748,6 +750,21 @@ void P3AvSyncController::tick() {
             reason = state_->fatalReason;
         }
         startShutdown(QString::fromStdString(reason), true);
+    }
+    if (audioSink_ && phase_ != Phase::ShutdownWait && phase_ != Phase::Done) {
+        const auto sink = audioSink_->snapshot();
+        if (sink.deviceFailureCount != 0) {
+            startShutdown(QStringLiteral("WASAPI runtime failure: ") +
+                              QString::fromStdString(sink.lastError),
+                          true);
+            return;
+        }
+        if (config_.injectRenderFaultAfterPlaying && !renderFaultInjectedAfterPlaying_ &&
+            phase_ == Phase::Playback && sink.running) {
+            // T0と同じrender thread -> recordFailure()経路を、再生開始後にだけ発火させる。
+            renderFaultInjectedAfterPlaying_ = true;
+            audioSink_->injectRenderFaultForTest();
+        }
     }
     switch (phase_) {
     case Phase::WaitDevice:
@@ -1039,7 +1056,8 @@ bool P3AvSyncController::writeMetrics() const {
             state_->lifecycleOrderViolationCount.load() == 0 &&
             state_->readbacks.fullFrameReadbacks() == 0 &&
             compositor.fullFrameGpuCopyCount == 0 && a.softwareFrameRejectCount == 0 &&
-            b.softwareFrameRejectCount == 0 && sink.audioRenderThreadJoinLeak == 0 &&
+            b.softwareFrameRejectCount == 0 && sink.deviceFailureCount == 0 &&
+            sink.audioRenderThreadJoinLeak == 0 &&
             audioDecoder.audioDecodeThreadJoinLeak == 0 && a.joined && b.joined && sink.joined &&
             audioDecoder.joined && displayCorrectness &&
             (config_.mode != P3AvMode::PauseResume ||
@@ -1127,6 +1145,12 @@ bool P3AvSyncController::writeMetrics() const {
             {"lifecycle_violation_count", state_->lifecycleOrderViolationCount.load()},
             {"audio_render_thread_join_leak",
              static_cast<qint64>(sink.audioRenderThreadJoinLeak)},
+            {"audio_device_failure_count", static_cast<qint64>(sink.deviceFailureCount)},
+            {"audio_device_last_error", QString::fromStdString(sink.lastError)},
+            {"audio_sink_joined", sink.joined},
+            {"shutdown_enter_observed", shutdownEntered_},
+            {"shutdown_entered_from_playback", shutdownEnteredFromPlayback_},
+            {"test_render_fault_injected_after_playing", renderFaultInjectedAfterPlaying_},
             {"audio_decode_thread_join_leak",
              static_cast<qint64>(audioDecoder.audioDecodeThreadJoinLeak)},
             {"video_worker_a_joined", a.joined},
@@ -1241,6 +1265,12 @@ bool P3AvSyncController::writeMetrics() const {
         {"pause_generation_stable", pauseGenerationStable_},
         {"device_lost_count", state_->deviceLostCount.load()},
         {"audio_render_thread_join_leak", static_cast<qint64>(sink.audioRenderThreadJoinLeak)},
+        {"audio_device_failure_count", static_cast<qint64>(sink.deviceFailureCount)},
+        {"audio_device_last_error", QString::fromStdString(sink.lastError)},
+        {"audio_sink_joined", sink.joined},
+        {"shutdown_enter_observed", shutdownEntered_},
+        {"shutdown_entered_from_playback", shutdownEnteredFromPlayback_},
+        {"test_render_fault_injected_after_playing", renderFaultInjectedAfterPlaying_},
         {"audio_decode_thread_join_leak", static_cast<qint64>(audioDecoder.audioDecodeThreadJoinLeak)},
         {"video_worker_a_joined", a.joined},
         {"video_worker_b_joined", b.joined},

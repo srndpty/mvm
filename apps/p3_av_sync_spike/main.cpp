@@ -15,7 +15,8 @@ void usage() {
     std::fprintf(stderr,
                  "使い方: mvm_p3_av_sync_spike --source-a <path> --source-b <path> "
                  "--metrics <json> --mode playback|seek|pause-resume [options]\n"
-                 "  --formal-contract | --formal-contract-c2\n");
+                 "  --formal-contract | --formal-contract-c2\n"
+                 "  --inject-render-fault-after-playing (test専用)\n");
 }
 
 bool parse(const QStringList& args, P3AvConfig& config) {
@@ -30,6 +31,8 @@ bool parse(const QStringList& args, P3AvConfig& config) {
         else if (key == "--seed") config.seed = value().toUInt();
         else if (key == "--display-timeout-ms") config.displayTimeoutMs = value().toInt();
         else if (key == "--warmup-seconds") config.warmupSeconds = value().toInt();
+        else if (key == "--inject-render-fault-after-playing")
+            config.injectRenderFaultAfterPlaying = true;
         else if (key == "--formal-contract") config.formalContract = true;
         else if (key == "--formal-contract-c2") {
             config.formalContract = true;

@@ -824,6 +824,28 @@ vptr、pointer先objectの値でも相互確認した。この制約を含む解
 へ保存した。959 MBのdump本体はlocal preservationとしGitから除外するが、T0 manifestのSHA-256は保持する。
 既存dumpだけでT2出口を満たしたため、追加workload、live attach、atomic probeは実施しない。
 
+T2後のscope correctionとして、これはPreviewEngine product runtime全体の欠陥ではなく、P3 frozen-gate
+controller固有のfailure propagation欠落とする。PreviewEngine本体は既に
+`WasapiSnapshot.deviceFailureCount != 0`を`audioFailure(...)`へ伝播している。historical bb65ea5 FAILは
+保存するが、E3 causal regression attributionは成立していない。
+
+### QUAL-F1 — P3 async audio failure fail-close
+
+`P3AvSyncController`はactive phaseのphase switch前に既存sink snapshotの`deviceFailureCount`と
+`lastError`をpollし、非同期WASAPI failureをfailure shutdownへ伝播する。sinkの`recordFailure()`、
+counter、retry / reopen、clock、buffer / pre-roll、formal threshold / checkerのsemanticsは変更しない。
+`ShutdownWait` / `Done`では再検出を行わず、terminal teardown pollingを継続する。
+
+negative integrationはsinkがplayingになった後に既存`injectRenderFaultForTest()`を発火し、render thread、
+`recordFailure()`、sink snapshot、controller tick、failure shutdownというT0と同じcausal pathを通す。
+bounded process exit、device failure identity、formal pass=false、Playbackからのshutdown enter、metrics生成、
+terminal teardownを固定する。controller側pollを削除するmutationではtimeoutすることを確認する。
+
+実測ではnegativeは1.79秒でprocess exit 4、`deviceFailureCount=1`、injected failure identity、
+Playbackからのshutdown enter、metrics生成、terminal teardownを満たした。controller側pollだけを削除した
+mutationは同一UCRT64環境で15秒timeoutとなり、negativeがpoll欠落を検出することを確認した。poll復元後の
+既存playback / seek / pause-resumeを含むtargeted integrationは4/4 PASSだった。
+
 ---
 
 ## 7. 検証手順

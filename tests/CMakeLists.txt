@@ -1295,6 +1295,13 @@ if(TARGET mvm_p3_av_sync_spike AND EXISTS "${MVM_P3_AUDIO_FIXTURE}" AND
             --metrics "${CMAKE_CURRENT_BINARY_DIR}/p3-b-seek-short.json"
             --mode seek --seek-count 4
         PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 300)
+    mvm_add_test(p3_async_audio_failure_fail_close
+        COMMAND pwsh -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/audio_preview/test-p3-async-audio-failure.ps1"
+            -Executable "$<TARGET_FILE:mvm_p3_av_sync_spike>"
+            -SourceA "${MVM_P3_AUDIO_FIXTURE}" -SourceB "${MVM_P3_B_VIDEO_FIXTURE}"
+            -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/p3-async-audio-failure"
+        PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120)
 else()
     message(STATUS
         "[mvm] P3-B fixture 未生成のため integration は未登録です。\n"
