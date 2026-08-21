@@ -1184,6 +1184,16 @@ target_link_libraries(mvm_test_display_target_contract PRIVATE mvm::preview_qt m
 mvm_add_test(p3_c2_display_target_preflight_unit
     COMMAND mvm_test_display_target_contract)
 
+foreach(_p5e_preflight_case Good NegativeScreenName)
+    string(TOLOWER "${_p5e_preflight_case}" _p5e_preflight_case_name)
+    mvm_add_test(p5_e4_display_preflight_${_p5e_preflight_case_name}
+        COMMAND pwsh -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/audio_preview/test-p5-e4-display-preflight.ps1"
+            -Case ${_p5e_preflight_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p5-e4-display-preflight.ps1"
+            -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/p5-e4-display-preflight-${_p5e_preflight_case_name}")
+endforeach()
+
 foreach(_p3_case Good NegativeCounter)
     string(TOLOWER "${_p3_case}" _p3_case_name)
     mvm_add_test(p3_a_contract_${_p3_case_name}

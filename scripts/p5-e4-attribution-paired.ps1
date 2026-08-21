@@ -9,6 +9,9 @@ param(
     [Parameter(Mandatory)][string]$ParentDiagnosticSha,
     [Parameter(Mandatory)][string]$PatchIdentity,
     [ValidateSet('HeadParent','ParentHead')][string]$CohortOrder = 'HeadParent',
+    [string]$DisplayPreflightExecutable,
+    [ValidateRange(2,20)][int]$DisplayPreflightSamples = 5,
+    [ValidateRange(0,10)][int]$DisplayPreflightIntervalSeconds = 2,
     [string]$SourceA,
     [string]$SourceB
 )
@@ -59,8 +62,66 @@ foreach ($cohort in $cohorts) {
 if ($CohortOrder -eq 'ParentHead') {
     [array]::Reverse($cohorts)
 }
+$provenance = @($cohorts | ForEach-Object {
+    [ordered]@{cohort=$_.name;base_sha=$_.base;diagnostic_sha=$_.diagnostic
+        patch_identity=$PatchIdentity
+        executable_path=$_.executable
+        executable_sha256=(Get-FileHash -LiteralPath $_.executable -Algorithm SHA256).Hash.ToLowerInvariant()
+        fixture_a_sha256=(Get-FileHash -LiteralPath $SourceA -Algorithm SHA256).Hash.ToLowerInvariant()
+        fixture_b_sha256=(Get-FileHash -LiteralPath $SourceB -Algorithm SHA256).Hash.ToLowerInvariant()}
+})
 
 New-Item -ItemType Directory -Path $OutputDirectory | Out-Null
+function Write-ArtifactManifest {
+    $manifestPath = Join-Path $OutputDirectory 'manifest.sha256'
+    $rootPath = (Resolve-Path $OutputDirectory).Path
+    $manifest = Get-ChildItem -LiteralPath $rootPath -File -Recurse |
+        Where-Object {$_.FullName -ne $manifestPath} | Sort-Object FullName | ForEach-Object {
+            $relative = [System.IO.Path]::GetRelativePath($rootPath, $_.FullName).Replace('\','/')
+            "$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $relative"
+        }
+    $manifest | Set-Content -LiteralPath $manifestPath -Encoding utf8
+    return $manifestPath
+}
+$displayPreflight = $null
+if ($DisplayPreflightExecutable) {
+    $displayPreflightRunner = Join-Path $PSScriptRoot 'p5-e4-display-preflight.ps1'
+    $displayPreflightDirectory = Join-Path $OutputDirectory 'display-preflight'
+    & pwsh -NoProfile -File $displayPreflightRunner -Executable $DisplayPreflightExecutable `
+        -OutputDirectory $displayPreflightDirectory -Samples $DisplayPreflightSamples `
+        -IntervalSeconds $DisplayPreflightIntervalSeconds -TimeoutMs 3000 -RequireCleanGit
+    $displayPreflightExit = $LASTEXITCODE
+    $displayPreflightSummaryPath = Join-Path $displayPreflightDirectory 'summary.json'
+    $displayPreflight = if (Test-Path -LiteralPath $displayPreflightSummaryPath) {
+        Get-Content -Raw -LiteralPath $displayPreflightSummaryPath | ConvertFrom-Json
+    } else { $null }
+    if ($displayPreflightExit -ne 0 -or -not $displayPreflight -or -not $displayPreflight.passed) {
+        $preflightFailureSummary = [ordered]@{
+            schema='mvm-p5-e4-attribution-paired-1'
+            authority='DIAGNOSTIC_ONLY'
+            formal_pass_authority=$false
+            formal_verdict='NOT_RUN'
+            ordering=$(if ($CohortOrder -eq 'ParentHead') {
+                'profile -> attempt 1..3 -> parent then head'
+            } else {
+                'profile -> attempt 1..3 -> head then parent'
+            })
+            expected_prefix_runs=12
+            completed_prefix_runs=0
+            workload_started=$false
+            patch_identity=$PatchIdentity
+            provenance=$provenance
+            display_preflight=$displayPreflight
+            prefix_runs=@()
+            failures=@()
+        }
+        $preflightFailureSummary | ConvertTo-Json -Depth 20 |
+            Set-Content -LiteralPath (Join-Path $OutputDirectory 'paired-summary.json') -Encoding utf8
+        $null = Write-ArtifactManifest
+        Write-Host 'ATTR-Q2B display provenance preflightが不合格のためworkloadを開始しません' -ForegroundColor Red
+        exit 4
+    }
+}
 $records = [System.Collections.Generic.List[object]]::new()
 foreach ($prefixProfile in @('SEEK-PREFIX','PAUSE-PREFIX')) {
     foreach ($attempt in 1..3) {
@@ -105,14 +166,6 @@ foreach ($record in $records) {
 }
 $uniqueHardware = @($hardwareSignatures | Select-Object -Unique)
 $uniqueDisplay = @($displaySignatures | Select-Object -Unique)
-$provenance = @($cohorts | ForEach-Object {
-    [ordered]@{cohort=$_.name;base_sha=$_.base;diagnostic_sha=$_.diagnostic
-        patch_identity=$PatchIdentity
-        executable_path=$_.executable
-        executable_sha256=(Get-FileHash -LiteralPath $_.executable -Algorithm SHA256).Hash.ToLowerInvariant()
-        fixture_a_sha256=(Get-FileHash -LiteralPath $SourceA -Algorithm SHA256).Hash.ToLowerInvariant()
-        fixture_b_sha256=(Get-FileHash -LiteralPath $SourceB -Algorithm SHA256).Hash.ToLowerInvariant()}
-})
 $pairedSummary = [ordered]@{
     schema='mvm-p5-e4-attribution-paired-1'
     authority='DIAGNOSTIC_ONLY'
@@ -123,8 +176,10 @@ $pairedSummary = [ordered]@{
     } else {
         'profile -> attempt 1..3 -> head then parent'
     })
+    display_preflight=$displayPreflight
     expected_prefix_runs=12
     completed_prefix_runs=$records.Count
+    workload_started=($records.Count -gt 0)
     patch_identity=$PatchIdentity
     provenance=$provenance
     hardware_provenance_signatures=$uniqueHardware
@@ -139,14 +194,7 @@ $pairedSummary = [ordered]@{
 $pairedSummaryPath = Join-Path $OutputDirectory 'paired-summary.json'
 $pairedSummary | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $pairedSummaryPath -Encoding utf8
 
-$manifestPath = Join-Path $OutputDirectory 'manifest.sha256'
-$rootPath = (Resolve-Path $OutputDirectory).Path
-$manifest = Get-ChildItem -LiteralPath $rootPath -File -Recurse |
-    Where-Object {$_.FullName -ne $manifestPath} | Sort-Object FullName | ForEach-Object {
-        $relative = [System.IO.Path]::GetRelativePath($rootPath, $_.FullName).Replace('\','/')
-        "$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $relative"
-    }
-$manifest | Set-Content -LiteralPath $manifestPath -Encoding utf8
+$manifestPath = Write-ArtifactManifest
 Write-Host "ATTR-Q2 paired summary: $pairedSummaryPath"
 Write-Host "ATTR-Q2 SHA-256 manifest: $manifestPath"
 if ($records.Count -ne 12 -or $uniqueHardware.Count -ne 1 -or $uniqueDisplay.Count -ne 1) { exit 4 }

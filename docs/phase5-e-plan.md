@@ -684,6 +684,38 @@ attributionには使用しない。head / parentともordinal 523を含むaudio 
 進めない。次回も同じdiagnostic SHA / executable / fixture / P→H順序を使い、新しいartifact rootで
 display provenance不変のcampaignを採取する。
 
+#### ATTR-Q2B-R3 — counterbalanced retry
+
+Q2Bの再採取はR3の1 campaignだけとする。formal workload開始前にdisplay-only probeを5回、2秒間隔で
+実行し、約10秒にわたり次の現行P3-C-2 display signatureが連続一致した場合だけP→H campaignへ進む。
+
+- `screen_name`、orientation、screen geometry、available geometry、DPR
+- QQuickWindow / CompositorSurface logical size
+- actual RHI target pixel size
+
+probeは`CompositorRhiItem`だけを初期化し、media decode、WASAPI endpoint/session、formal checkerを
+起動しない。probe executable / checkerのSHA-256、git commit / dirty state、各sample JSONをartifactへ
+保存する。gate実装を含むmain worktreeと両diagnostic worktreeがclean exact SHAでなければ、probeも
+formal workloadも開始せずfail-closedする。`screen_name`をcanonicalizeしたり不変条件から外したりしない。
+
+```powershell
+pwsh scripts/p5-e4-attribution-paired.ps1 `
+  -HeadWorktree tmp/attr-q2-bb65 `
+  -ParentWorktree tmp/attr-q2-parent `
+  -OutputDirectory <new-r3-artifact-root> `
+  -HeadBaseSha bb65ea5 -ParentBaseSha 06182a2 `
+  -HeadDiagnosticSha b5e4c12d19009da98bcdbc58cd745b974d6515ea `
+  -ParentDiagnosticSha 9793c13a5699752e25975102da44b11a8e999e0b `
+  -PatchIdentity f301d8bb5fbb030845a480e2d9f982fcb943dd68 `
+  -CohortOrder ParentHead `
+  -DisplayPreflightExecutable build/ucrt64-release/bin/mvm_display_preflight_probe.exe
+```
+
+R3がprovenance-validならQ2とのorder comparisonを確定する。R3も`screen_name`だけでINVALIDなら
+Q2B retryを終了して`ATTR-Q2C — Display Provenance Instability`へ移る。teardown hang等の別protocol
+failureならidentityを保存してretryを終了する。R3確定前にQ3-A、selective revert、link/timing ablationへ
+進まない。
+
 ---
 
 ## 7. 検証手順
