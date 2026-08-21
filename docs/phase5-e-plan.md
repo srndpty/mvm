@@ -993,6 +993,34 @@ actual render opportunityを失った場合とsynthetic 60 Hz境界を跨いだ�
 semanticsの修正設計へ進む。P5-E closureは**BLOCKED**を維持する。raw、checker、summary、manifestは
 [`bench/results/p5-e4-p2-q3-c800536/`](../bench/results/p5-e4-p2-q3-c800536/README.md)へ保存する。
 
+### P2-Q4 — render opportunity contract proof
+
+Q3 historical evidenceとP2-D5-1のFAILを変更せず、production runtimeへ接続しないpure/offline replayを
+作成した。current replayは既存`OutputScheduler60Hz::takeDueBefore()`をQ3 ringの`scheduler_now_qpc`へ
+適用し、callbackごとのdue / skipped count / output frameに加えてscheduled / displayed / deadline drop /
+repeated / first frameをrawと照合する。Q3ではdue後のsource不足repeatが0件だったため、ringだけで
+displayedとrepeatedも欠損なく再現できる。
+
+candidateはnominal 60 Hz deadline間のmidpointで時間軸を非重複slotへ分割し、midpoint tieを後続slotへ
+決定的に割り当てる。exact 60 Hz、slot内jitter、callback 1本欠落、multi-slot gap、duplicate callback、
+midpoint tie、measurement end、burst callbackの8 synthetic scenarioを固定した。1本欠落はexactly 1 drop、
+3本欠落は3 dropとなり、duplicate / burstで欠落を隠せないことを確認した。threshold 2%はoffline proofの
+exit criteriaに使用していない。
+
+clean diagnostic SHA `75fdb09`でQ3の5 traceをreplayし、current algorithmは5/5でrawを完全再現した。
+candidateも全runでscheduled=3600、frame 0開始、identity strictly increasing、measurement `[start,end)`を
+満たした。しかしdropはrunごとに`95→98 / 104→109 / 105→91 / 101→70 / 49→44`で、合計も
+`454→412`に留まった。run 1 / 2では悪化しており、static nearest-slotはQ3 aliasingを安定して除去せず、
+「actual missing opportunityに相当する少数drop」へ収束しない。
+
+したがってnearest-slot候補によるP2-D5-2 contract correctionは**提案しない**。Q4はcurrent replay
+authorityと一般counterexampleを確立したが、candidate semanticsの採用根拠は未成立である。
+`OutputScheduler60Hz`のruntime利用は`CompositorRhiItem`のvideo-master branchで、P3 audio-master時計とは
+別だが、採用候補が成立するまでproduction componentの変更範囲は決めない。minimal ETWへも戻らず、次は
+固定synthetic deadlineへの最近傍量子化ではなく、実際のrender callback opportunity列からlossを定義できるかを
+追加proofする。P5-E closureは**BLOCKED**を維持する。結果は
+[`bench/results/p5-e4-p2-q4-75fdb09/`](../bench/results/p5-e4-p2-q4-75fdb09/README.md)へ保存する。
+
 ---
 
 ## 7. 検証手順

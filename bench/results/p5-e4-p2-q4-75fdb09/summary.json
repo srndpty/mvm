@@ -1,0 +1,182 @@
+{
+  "schema": "mvm.p5-e4-p2-q4-campaign.v1",
+  "authority": "diagnostic_only_not_closure_evidence",
+  "tested_sha": "75fdb093c76adba950fd85e2af38b10755af90c7",
+  "q3_evidence_root": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-p2-q3-c800536",
+  "identity": {
+    "replay_executable_sha256": "1f6140017282342489a1329d629098bdc3996f7164952aa3227f39d2aff29388",
+    "unit_executable_sha256": "c54614a40b5d4da16943e18059944503f7c7858a4f0443de80e8274a07678c85",
+    "runner_sha256": "424f28c180a7afbb88ed2a7e15365819b4f1b0ebb40503eba7308821e19464b8",
+    "q3_manifest_sha256": "87b16beb9ec41931306958de63a2aa03c41bf1ccc981ab640117d4cebc196776"
+  },
+  "exit_criteria": {
+    "current_replay_exact_count": 5,
+    "required_current_replay_exact_count": 5,
+    "candidate_invariant_count": 5,
+    "required_candidate_invariant_count": 5,
+    "synthetic_scenarios_passed": 8,
+    "threshold_is_exit_criterion": false
+  },
+  "aggregate": {
+    "current_deadline_drop": 454,
+    "candidate_deadline_drop": 412,
+    "candidate_repeated": 385
+  },
+  "runs": [
+    {
+      "run": 1,
+      "input": "run-1/playback.json",
+      "input_sha256": "f515f5e1d1a61a4ffcddd674b79627224cf98b2973d41542ffec17f03a8fb889",
+      "output": "run-1.json",
+      "output_sha256": "74abe0b653363fdd3385709c6ff4620afc6f59e93dd9ffbf6ec6996f3c829ac5",
+      "current": {
+        "deadline_drop": 95,
+        "decision_exact": true,
+        "displayed": 3505,
+        "exact": true,
+        "first_output_frame": 0,
+        "frame_identity_strictly_increasing": true,
+        "last_output_frame": 3599,
+        "no_non_scheduler_repeat": true,
+        "repeated": 91,
+        "scheduled": 3600
+      },
+      "candidate": {
+        "deadline_drop": 98,
+        "displayed": 3502,
+        "first_output_frame": 0,
+        "frame_identity_strictly_increasing": true,
+        "frame_zero_started": true,
+        "invariants_pass": true,
+        "last_output_frame": 3599,
+        "measurement_range_respected": true,
+        "repeated": 94,
+        "scheduled": 3600
+      }
+    },
+    {
+      "run": 2,
+      "input": "run-2/playback.json",
+      "input_sha256": "ef540505352f75911c6b9fdc77a41026c1ae217e04c03cd704ab29688f17b1ab",
+      "output": "run-2.json",
+      "output_sha256": "00cb85350169b55c4ba5f3186232ec9a1309b2a5d0d7e52fc1d8d27de191dd71",
+      "current": {
+        "deadline_drop": 104,
+        "decision_exact": true,
+        "displayed": 3496,
+        "exact": true,
+        "first_output_frame": 0,
+        "frame_identity_strictly_increasing": true,
+        "last_output_frame": 3599,
+        "no_non_scheduler_repeat": true,
+        "repeated": 95,
+        "scheduled": 3600
+      },
+      "candidate": {
+        "deadline_drop": 109,
+        "displayed": 3491,
+        "first_output_frame": 0,
+        "frame_identity_strictly_increasing": true,
+        "frame_zero_started": true,
+        "invariants_pass": true,
+        "last_output_frame": 3599,
+        "measurement_range_respected": true,
+        "repeated": 100,
+        "scheduled": 3600
+      }
+    },
+    {
+      "run": 3,
+      "input": "run-3/playback.json",
+      "input_sha256": "ade4ef63320541ae5a2ad04b236cbf577bb5e7a7c786fa9669d5ad458e7622f5",
+      "output": "run-3.json",
+      "output_sha256": "506c0733043157448542134c5d8c42394bb3ff2a1d9ab75d20681b149a7a69d4",
+      "current": {
+        "deadline_drop": 105,
+        "decision_exact": true,
+        "displayed": 3495,
+        "exact": true,
+        "first_output_frame": 0,
+        "frame_identity_strictly_increasing": true,
+        "last_output_frame": 3599,
+        "no_non_scheduler_repeat": true,
+        "repeated": 103,
+        "scheduled": 3600
+      },
+      "candidate": {
+        "deadline_drop": 91,
+        "displayed": 3509,
+        "first_output_frame": 0,
+        "frame_identity_strictly_increasing": true,
+        "frame_zero_started": true,
+        "invariants_pass": true,
+        "last_output_frame": 3599,
+        "measurement_range_respected": true,
+        "repeated": 89,
+        "scheduled": 3600
+      }
+    },
+    {
+      "run": 4,
+      "input": "run-4/playback.json",
+      "input_sha256": "1872729fb31895c50e0ba1bf515035c61b7f849065a4d935ca278c722de005ca",
+      "output": "run-4.json",
+      "output_sha256": "aa8c85dc25723bfd1fe3766b181e7d33e1901575c2e2a539fd65a6b314d3e06c",
+      "current": {
+        "deadline_drop": 101,
+        "decision_exact": true,
+        "displayed": 3499,
+        "exact": true,
+        "first_output_frame": 0,
+        "frame_identity_strictly_increasing": true,
+        "last_output_frame": 3599,
+        "no_non_scheduler_repeat": true,
+        "repeated": 97,
+        "scheduled": 3600
+      },
+      "candidate": {
+        "deadline_drop": 70,
+        "displayed": 3530,
+        "first_output_frame": 0,
+        "frame_identity_strictly_increasing": true,
+        "frame_zero_started": true,
+        "invariants_pass": true,
+        "last_output_frame": 3599,
+        "measurement_range_respected": true,
+        "repeated": 66,
+        "scheduled": 3600
+      }
+    },
+    {
+      "run": 5,
+      "input": "run-5/playback.json",
+      "input_sha256": "4bd70dd3e63c0a881f364e2d775f5753a18f48c2f9f10543c0e236430cfd6eac",
+      "output": "run-5.json",
+      "output_sha256": "20f1baa320089f040b6c358f7027b4eee43f4a4a87d7e8f7235d20413a79ba4d",
+      "current": {
+        "deadline_drop": 49,
+        "decision_exact": true,
+        "displayed": 3551,
+        "exact": true,
+        "first_output_frame": 0,
+        "frame_identity_strictly_increasing": true,
+        "last_output_frame": 3599,
+        "no_non_scheduler_repeat": true,
+        "repeated": 41,
+        "scheduled": 3600
+      },
+      "candidate": {
+        "deadline_drop": 44,
+        "displayed": 3556,
+        "first_output_frame": 0,
+        "frame_identity_strictly_increasing": true,
+        "frame_zero_started": true,
+        "invariants_pass": true,
+        "last_output_frame": 3599,
+        "measurement_range_respected": true,
+        "repeated": 36,
+        "scheduled": 3600
+      }
+    }
+  ]
+}
