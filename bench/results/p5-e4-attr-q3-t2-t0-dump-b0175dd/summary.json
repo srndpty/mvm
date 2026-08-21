@@ -1,0 +1,63 @@
+{
+  "schema": "mvm-p5-e4-t2-summary-1",
+  "authority": "DIAGNOSTIC_ONLY",
+  "formal_pass_authority": false,
+  "formal_verdict": "NOT_RUN",
+  "objective": "T0 full dumpの低摂動liveness帰属",
+  "t0_diagnostic_source_sha": "b0175dd781dffd741f238c5ee623f3bd81284c32",
+  "t0_executable_sha256_recorded": "cdd0352d12618479c12a168908d5d57f4edf3f8bda06f53ce4853d005adeb1e2",
+  "dump_path": "../p5-e4-attr-q3-t0-parent-b0175dd-r1/run-1/hung-process.dmp",
+  "dump_sha256": "85be6e3470365488cfda3a0e65248f8ff251dc09654eeb787f6fda304401d7e5",
+  "debugger": "Microsoft Windows Debugger 10.0.29617.1000 AMD64",
+  "same_source_rebuild": {
+    "sha256": "0d9eab2ad2003a16fd98ecfc8c7b69fbbd6d6ef6f24908785a9adf10f4e414c9",
+    "matches_t0_executable": false,
+    "image_size_matches_dump": true,
+    "usage": "DWARF/RVA layout reference only"
+  },
+  "classification": "playback_clock_stall",
+  "attribution_found": true,
+  "controller": {
+    "phase_value": 5,
+    "phase": "Playback",
+    "warmup_reset_complete": true,
+    "main_thread_boundary": "Qt event dispatcher wait",
+    "shutdown_started": false
+  },
+  "audio_clock": {
+    "running": true,
+    "generation": 3,
+    "media_sample_position": 951850,
+    "media_seconds": 19.8302083333333,
+    "required_samples": 2880000,
+    "required_seconds": 60
+  },
+  "wasapi_sink": {
+    "open": true,
+    "metrics_running": false,
+    "joined": false,
+    "audio_rendered_samples": 1204800,
+    "last_consumed_sample_exclusive": 958560,
+    "endpoint_prefill_frames": 4800,
+    "device_failure_count": 1,
+    "last_error": "WASAPI padding を取得できません: HRESULT 0x88890004",
+    "hresult": "0x88890004",
+    "hresult_name": "AUDCLNT_E_DEVICE_INVALIDATED",
+    "accepting_commands": true,
+    "thread_running_flag": true,
+    "playing": false,
+    "render_loop_stack_present": false
+  },
+  "causal_chain": [
+    "GetCurrentPadding failed with AUDCLNT_E_DEVICE_INVALIDATED",
+    "recordFailure stopped sink metrics and playback",
+    "renderLoop exited",
+    "audio master clock stopped at 19.830208 seconds",
+    "controller remained in Playback waiting for 60-second sample threshold"
+  ],
+  "product_liveness_defect": "非同期WASAPI device failureがcontrollerのfatal/termination pathへ伝播しない",
+  "e3_causal_attribution": "NOT_ESTABLISHED",
+  "additional_workload_run": false,
+  "additional_probe": false,
+  "closure_status": "BLOCKED"
+}

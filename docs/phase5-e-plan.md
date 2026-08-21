@@ -666,6 +666,9 @@ portrait 1200x1920へ変化した。以後71 processはdisplay preflightでworkl
 [`bench/results/p5-e4-attr-q2b-invalid-display-9793c13-b5e4c12/`](../bench/results/p5-e4-attr-q2b-invalid-display-9793c13-b5e4c12/README.md)
 へ分離し、将来の有効runで上書きしない。landscape 1920x1200復帰後に新しいartifact rootで再実行する。
 
+operatorはこのcampaign中に外部displayを物理的に再接続していた。display provenance変化の有力な
+環境要因ではあるが、historical campaignのINVALID判定は変更せず、production attributionにも使わない。
+
 landscape復帰後の最初の再実行は、parent playback run 2が約12分終了せず、当該repo processだけを
 停止した時点でrawが欠落したため中止した。不完全artifactは
 [`bench/results/p5-e4-attr-q2b-invalid-teardown-hang-9793c13-b5e4c12/`](../bench/results/p5-e4-attr-q2b-invalid-teardown-hang-9793c13-b5e4c12/README.md)
@@ -782,6 +785,44 @@ checker PASSだった。3 campaign合計30/30でhangは再現せず、全manifes
 
 したがってT1の6分類は**未確定**であり、T1の出口は未達である。30回の正常診断runはT0のhistorical hangを
 無効化せず、formal closure evidenceにも使用しない。P5-E closureはBLOCKEDのままとする。
+
+### ATTR-Q3-T2 — T0 full dumpの低摂動解析
+
+T1反復は1秒heartbeat 20/20、5秒heartbeat 10/10の正常終了で打ち切った。これはhang解消やformal
+closureの証拠ではなく、in-process durable sidecarによるprobe effectの可能性も残す。新しい計装を足す前に、
+T0の既存full dumpをWindows Debugger 10.0.29617.1000でread-only解析した。
+
+`~* k`ではmain threadが`NtUserMsgWaitForMultipleObjectsEx`からQt event dispatcher / event loop、
+`QCoreApplication::exec()`へ至る通常待機だった。video decode worker 2本とaudio decode worker 1本は
+condition variable待ち、QSG render threadは`QRhi::beginFrame()`配下のwaitで、CPU spinは無かった。
+一方、全68 threadに`WasapiAudioSink::renderLoop()`は存在しなかった。
+
+dump内objectをread-onlyで確認すると、controllerはphase 5 (`Playback`)、warmup reset済みだった。
+audio master clockはrunning=trueのまま951,850 samples (19.830208秒)で停止し、formalの終了条件
+2,880,000 samples (60秒)へ未到達だった。WASAPI sinkはopen=true、running=false、joined=false、
+device failure count 1で、次のerrorを保持していた。
+
+```text
+WASAPI padding を取得できません: HRESULT 0x88890004
+```
+
+Windows SDK / MSYS2 UCRT64 headerでは`0x88890004`は`AUDCLNT_E_DEVICE_INVALIDATED`である。
+`renderAvailable()`は`GetCurrentPadding()`失敗時に`recordFailure()`を呼んでfalseを返し、render loopは
+終了する。`recordFailure()`はsinkのplaying / runningをfalseにするがcontrollerのfatal stateへ伝播しない。
+formal Playbackの`tick()`はsink failureを検査せず、停止したclockがrequired samplesへ到達するのを待つ。
+
+したがってT0 hangは**Playback clock stall**へ帰属し、causal chainは
+`endpoint invalidation → render thread終了 → clock停止 → controllerがPlaybackで無期限待機`と確定した。
+shutdown、GPU teardown、metrics writeのblocking hangではない。endpoint invalidationの外因やE3 changeへの
+causal attributionは未成立だが、非同期WASAPI failureをtermination pathへ伝播しないshared-path liveness
+defectは成立する。P5-E closureは引き続きBLOCKEDとする。
+
+元のT0 executableは保存されていない。同じsource SHAからの参照rebuildはImageSizeが一致したが、
+SHA-256は元の記録値と不一致なのでexact binaryとは扱わない。RVA / layoutはformal config列、controller
+vptr、pointer先objectの値でも相互確認した。この制約を含む解析ログとsummaryは
+[`bench/results/p5-e4-attr-q3-t2-t0-dump-b0175dd/`](../bench/results/p5-e4-attr-q3-t2-t0-dump-b0175dd/ATTRIBUTION.md)
+へ保存した。959 MBのdump本体はlocal preservationとしGitから除外するが、T0 manifestのSHA-256は保持する。
+既存dumpだけでT2出口を満たしたため、追加workload、live attach、atomic probeは実施しない。
 
 ---
 

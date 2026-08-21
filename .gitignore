@@ -26,8 +26,9 @@ CMakeUserPresets.json
 /third_party/pkgs/*
 !/third_party/pkgs/README.md
 
-# Benchmark results are committed; scratch files are not
+# Benchmark resultsはcommitし、scratchと巨大なfull dumpだけを追跡しない
 /bench/results/scratch/
+/bench/results/**/*.dmp
 
 # Editor / OS
 .vs/
@@ -44,4 +45,3 @@ bench/scenarios/abl-*.json
 # CTest が repo root で実行されたときに作る runtime artifact。
 # 成果物ではないので追跡しない (build tree 内の Testing/ は対象外)。
 /Testing/
-bench/results/

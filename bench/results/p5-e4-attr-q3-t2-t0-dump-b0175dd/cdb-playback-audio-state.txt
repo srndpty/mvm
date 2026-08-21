@@ -1,0 +1,125 @@
+
+************* Path validation summary **************
+Response                         Time (ms)     Location
+Deferred                                       cache*C:\dev\soft\mvm\tmp\windbg-symbols
+Opened log file 'C:\dev\soft\mvm\bench\results\p5-e4-attr-q3-t2-t0-dump-b0175dd\cdb-playback-audio-state.txt'
+
+************* Preparing the environment for Debugger Extensions Gallery repositories **************
+   ExtensionRepository : Implicit
+   UseExperimentalFeatureForNugetShare : true
+   AllowNugetExeUpdate : true
+   NonInteractiveNuget : true
+   AllowNugetMSCredentialProviderInstall : true
+   AllowParallelInitializationOfLocalRepositories : true
+
+   -- Configuring repositories
+      ----> Repository : LocalInstalled, Enabled: true
+      ----> Repository : UserExtensions, Enabled: true
+
+>>>>>>>>>>>>> Preparing the environment for Debugger Extensions Gallery repositories completed, duration 0.000 seconds
+
+************* Waiting for Debugger Extensions Gallery to Initialize **************
+
+>>>>>>>>>>>>> Waiting for Debugger Extensions Gallery to Initialize completed, duration 0.031 seconds
+   ----> Repository : UserExtensions, Enabled: true, Packages count: 0
+   ----> Repository : LocalInstalled, Enabled: true, Packages count: 46
+
+Microsoft (R) Windows Debugger Version 10.0.29617.1000 AMD64
+Copyright (c) Microsoft Corporation. All rights reserved.
+
+
+Loading Dump File [C:\dev\soft\mvm\bench\results\p5-e4-attr-q3-t0-parent-b0175dd-r1\run-1\hung-process.dmp]
+User Mini Dump File with Full Memory : Only application data is available
+
+Comment: '
+*** "C:\ProgramData\chocolatey\lib\sysinternals\tools\procdump64.exe" -accepteula -ma 44460 C:\dev\soft\mvm\bench\results\p5-e4-attr-q3-t0-parent-b0175dd-r1\run-1\hung-process.dmp
+*** Manual dump'
+
+************* Path validation summary **************
+Response                         Time (ms)     Location
+Deferred                                       cache*C:\dev\soft\mvm\tmp\windbg-symbols
+Symbol search path is: cache*C:\dev\soft\mvm\tmp\windbg-symbols
+Executable search path is: 
+Windows 10 Version 26200 MP (32 procs) Free x64
+Product: WinNt, suite: SingleUserTS Personal
+Edition build lab: 26100.1.amd64fre.ge_release.240331-1435
+Debug session time: Fri Aug 21 15:33:45.000 2026 (UTC + 9:00)
+System Uptime: 0 days 21:17:06.223
+Process Uptime: 0 days 0:03:02.000
+.NatVis script successfully loaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\atlmfc.natvis'
+NatVis script successfully loaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\concurrency.natvis'
+NatVis script successfully loaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\cpp_rest.natvis'
+NatVis script successfully loaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\ObjectiveC.natvis'
+NatVis script successfully loaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\stl.natvis'
+NatVis script successfully loaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\Windows.Data.Json.natvis'
+NatVis script successfully loaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\Windows.Devices.Geolocation.natvis'
+NatVis script successfully loaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\Windows.Devices.Sensors.natvis'
+NatVis script successfully loaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\Windows.Media.natvis'
+NatVis script successfully loaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\windows.natvis'
+NatVis script successfully loaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\winrt.natvis'
+...............................................................
+................................................................
+................................................................
+.......................................................
+Loading unloaded module list
+..........
+
++------------------------------------------------------------------------+
+| This target supports Hardware-enforced Stack Protection. A HW based    |
+| "Shadow Stack" may be available to assist in debugging and analysis.   |
+| See aka.ms/userhsp for more info.                                      |
+|                                                                        |
+| dps @ssp                                                               |
+|                                                                        |
++------------------------------------------------------------------------+
+
+For analysis of this file, run !analyze -v
+win32u!NtUserMsgWaitForMultipleObjectsEx+0x14:
+00007ffc`8332ae84 c3              ret
+0:000> .echo controller; dd 0000002c`081ff848 L2; db 0000002c`081ff8fc L4; .echo audio_clock_object_0000019d323fd700; dq 0000019d`323fd730 L10; db 0000019d`323fd758 L8; .echo wasapi_sink_object_0000019d737078f0; db 0000019d`73707910 L10; dq 0000019d`73707940 L13; dq 0000019d`73707988 L4; dq 0000019d`737079b0 L4; dq 0000019d`737079b8 L4; db 0000019d`73707a40 L10; da poi(0000019d`737079b0); q
+controller
+0000002c`081ff848  00000005 00000000
+0000002c`081ff8fc  01 7f 00 00                                      ....
+audio_clock_object_0000019d323fd700
+0000019d`323fd730  00000000`00743150 00000000`0005dc00
+0000019d`323fd740  000000b2`0b829e61 00000000`000e862a
+0000019d`323fd750  4033d488`88888889 00000000`00000001
+0000019d`323fd760  00000000`00000003 00000000`00000000
+0000019d`323fd770  00000000`00000000 00000000`00000000
+0000019d`323fd780  8294833d`6f7600a1 80000b3d`e58a2edd
+0000019d`323fd790  00007ffc`1b93db30 00000000`00000000
+0000019d`323fd7a0  00007ffc`1b93db30 00000000`00000000
+0000019d`323fd758  01 00 00 00 00 00 00 00                          ........
+wasapi_sink_object_0000019d737078f0
+0000019d`73707910  01 00 00 00 00 00 00 00-80 bb 00 00 02 00 00 00  ................
+0000019d`73707940  00000000`00126240 00000000`00000000
+0000019d`73707950  00000000`00000000 00000000`000ea060
+0000019d`73707960  00000000`000012c0 00000000`00000000
+0000019d`73707970  00000000`00000000 00000000`00000000
+0000019d`73707980  00000000`00000000 00000000`00000001
+0000019d`73707990  00000000`00000000 00000000`00000000
+0000019d`737079a0  00000000`00000000 00000000`3e19999a
+0000019d`737079b0  0000019d`7d9ea0c0 00000000`0000003b
+0000019d`737079c0  00000000`0000003b 00000000`00000000
+0000019d`737079d0  0000019d`32090c80
+0000019d`73707988  00000000`00000001 00000000`00000000
+0000019d`73707998  00000000`00000000 00000000`00000000
+0000019d`737079b0  0000019d`7d9ea0c0 00000000`0000003b
+0000019d`737079c0  00000000`0000003b 00000000`00000000
+0000019d`737079b8  00000000`0000003b 00000000`0000003b
+0000019d`737079c8  00000000`00000000 0000019d`32090c80
+0000019d`73707a40  01 01 00 00 00 00 00 00-a0 04 03 7b 9d 01 00 00  ...........{....
+0000019d`7d9ea0c0  "WASAPI padding ................."
+0000019d`7d9ea0e0  ".......: HRESULT 0x88890004"
+quit:
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\atlmfc.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\concurrency.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\cpp_rest.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\ObjectiveC.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\stl.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\Windows.Data.Json.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\Windows.Devices.Geolocation.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\Windows.Devices.Sensors.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\Windows.Media.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\windows.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\winrt.natvis'

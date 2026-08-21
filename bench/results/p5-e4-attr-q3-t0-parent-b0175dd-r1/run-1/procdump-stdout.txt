@@ -1,0 +1,6 @@
+[15:33:44]Dump 1 info: Available space: 882971975680
+[15:33:44]Dump 1 initiated: C:\dev\soft\mvm\bench\results\p5-e4-attr-q3-t0-parent-b0175dd-r1\run-1\hung-process.dmp
+[15:33:45]Dump 1 writing: Estimated dump file size is 937 MB.
+[15:33:49]Dump 1 complete: 937 MB written in 4.2 seconds
+[15:33:49]Dump count reached.
+

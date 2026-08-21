@@ -1,0 +1,273 @@
+
+************* Path validation summary **************
+Response                         Time (ms)     Location
+Deferred                                       cache*C:\dev\soft\mvm\tmp\windbg-symbols
+Opened log file 'C:\dev\soft\mvm\bench\results\p5-e4-attr-q3-t2-t0-dump-b0175dd\cdb-hang-analysis-lean.txt'
+
+************* Preparing the environment for Debugger Extensions Gallery repositories **************
+   ExtensionRepository : Implicit
+   UseExperimentalFeatureForNugetShare : true
+   AllowNugetExeUpdate : true
+   NonInteractiveNuget : true
+   AllowNugetMSCredentialProviderInstall : true
+   AllowParallelInitializationOfLocalRepositories : true
+
+   -- Configuring repositories
+      ----> Repository : LocalInstalled, Enabled: true
+      ----> Repository : UserExtensions, Enabled: true
+
+>>>>>>>>>>>>> Preparing the environment for Debugger Extensions Gallery repositories completed, duration 0.000 seconds
+
+************* Waiting for Debugger Extensions Gallery to Initialize **************
+
+>>>>>>>>>>>>> Waiting for Debugger Extensions Gallery to Initialize completed, duration 0.016 seconds
+   ----> Repository : UserExtensions, Enabled: true, Packages count: 0
+   ----> Repository : LocalInstalled, Enabled: true, Packages count: 46
+
+Microsoft (R) Windows Debugger Version 10.0.29617.1000 AMD64
+Copyright (c) Microsoft Corporation. All rights reserved.
+
+
+Loading Dump File [C:\dev\soft\mvm\bench\results\p5-e4-attr-q3-t0-parent-b0175dd-r1\run-1\hung-process.dmp]
+User Mini Dump File with Full Memory : Only application data is available
+
+Comment: '
+*** "C:\ProgramData\chocolatey\lib\sysinternals\tools\procdump64.exe" -accepteula -ma 44460 C:\dev\soft\mvm\bench\results\p5-e4-attr-q3-t0-parent-b0175dd-r1\run-1\hung-process.dmp
+*** Manual dump'
+
+************* Path validation summary **************
+Response                         Time (ms)     Location
+Deferred                                       cache*C:\dev\soft\mvm\tmp\windbg-symbols
+Symbol search path is: cache*C:\dev\soft\mvm\tmp\windbg-symbols
+Executable search path is: 
+Windows 10 Version 26200 MP (32 procs) Free x64
+Product: WinNt, suite: SingleUserTS Personal
+Edition build lab: 26100.1.amd64fre.ge_release.240331-1435
+Debug session time: Fri Aug 21 15:33:45.000 2026 (UTC + 9:00)
+System Uptime: 0 days 21:17:06.223
+Process Uptime: 0 days 0:03:02.000
+.NatVis script successfully loaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\atlmfc.natvis'
+NatVis script successfully loaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\concurrency.natvis'
+NatVis script successfully loaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\cpp_rest.natvis'
+NatVis script successfully loaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\ObjectiveC.natvis'
+NatVis script successfully loaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\stl.natvis'
+NatVis script successfully loaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\Windows.Data.Json.natvis'
+NatVis script successfully loaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\Windows.Devices.Geolocation.natvis'
+NatVis script successfully loaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\Windows.Devices.Sensors.natvis'
+NatVis script successfully loaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\Windows.Media.natvis'
+NatVis script successfully loaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\windows.natvis'
+NatVis script successfully loaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\winrt.natvis'
+...............................................................
+................................................................
+................................................................
+.......................................................
+Loading unloaded module list
+..........
+
++------------------------------------------------------------------------+
+| This target supports Hardware-enforced Stack Protection. A HW based    |
+| "Shadow Stack" may be available to assist in debugging and analysis.   |
+| See aka.ms/userhsp for more info.                                      |
+|                                                                        |
+| dps @ssp                                                               |
+|                                                                        |
++------------------------------------------------------------------------+
+
+For analysis of this file, run !analyze -v
+win32u!NtUserMsgWaitForMultipleObjectsEx+0x14:
+00007ffc`8332ae84 c3              ret
+0:000> !analyze -hang -v; lmvm mvm_p3_av_sync_spike; q
+................................................................
+................................................................
+................................................................
+.......................................................
+Loading unloaded module list
+..........
+
+************* Symbol Loading Error Summary **************
+Module name            Error
+Qt6Core                The system cannot find the file specified
+
+You can troubleshoot most symbol related issues by turning on symbol loading diagnostics (!sym noisy) and repeating the command that caused symbols to be loaded.
+You should also verify that your symbol search path (.sympath) is correct.
+*******************************************************************************
+*                                                                             *
+*                        Exception Analysis                                   *
+*                                                                             *
+*******************************************************************************
+
+Unable to load image C:\dev\soft\mvm\tmp\attr-q2-parent\build\ucrt64-release\bin\mvm_p3_av_sync_spike.exe, Win32 error 0n2
+
+KEY_VALUES_STRING: 1
+
+    Key  : Analysis.CPU.mSec
+    Value: 1421
+
+    Key  : Analysis.Elapsed.mSec
+    Value: 1552
+
+    Key  : Analysis.IO.Other.Mb
+    Value: 0
+
+    Key  : Analysis.IO.Read.Mb
+    Value: 1
+
+    Key  : Analysis.IO.Write.Mb
+    Value: 0
+
+    Key  : Analysis.Init.CPU.mSec
+    Value: 109
+
+    Key  : Analysis.Init.Elapsed.mSec
+    Value: 634
+
+    Key  : Analysis.Memory.CommitPeak.Mb
+    Value: 186
+
+    Key  : Analysis.Version.DbgEng
+    Value: 10.0.29617.1000
+
+    Key  : Analysis.Version.Description
+    Value: 10.2604.29.1 amd64fre
+
+    Key  : Analysis.Version.Ext
+    Value: 1.2604.29.1
+
+    Key  : Failure.Bucket
+    Value: APPLICATION_HANG_cfffffff_win32u.dll!NtUserMsgWaitForMultipleObjectsEx
+
+    Key  : Failure.Exception.Code
+    Value: 0xcfffffff
+
+    Key  : Failure.Hash
+    Value: {d44568b7-4ea6-d9b8-71f9-5e0773589878}
+
+    Key  : Failure.ProblemClass.Primary
+    Value: APPLICATION_FAULT
+
+    Key  : Faulting.IP.Type
+    Value: Null
+
+    Key  : Timeline.OS.Boot.DeltaSec
+    Value: 76626
+
+    Key  : Timeline.Process.Start.DeltaSec
+    Value: 182
+
+    Key  : WER.OS.Branch
+    Value: ge_release
+
+    Key  : WER.OS.Version
+    Value: 10.0.26100.1
+
+
+FILE_IN_CAB:  hung-process.dmp
+
+COMMENT:  
+*** "C:\ProgramData\chocolatey\lib\sysinternals\tools\procdump64.exe" -accepteula -ma 44460 C:\dev\soft\mvm\bench\results\p5-e4-attr-q3-t0-parent-b0175dd-r1\run-1\hung-process.dmp
+*** Manual dump
+
+NTGLOBALFLAG:  0
+
+APPLICATION_VERIFIER_FLAGS:  0
+
+CONTEXT:  (.cxr;r)
+.cxr;r
+rax=00000000000014de rbx=0000019d2f03c4f0 rcx=0000000000000000
+rdx=0000000000000000 rsi=0000019d2f031f28 rdi=0000000000000001
+rip=00007ffc8332ae84 rsp=0000002c081fc1e8 rbp=00000000000000a4
+ r8=00000000ffffffff  r9=0000000000001cff r10=0000000000000000
+r11=0000000000000000 r12=0000019d2f03c584 r13=0000019d31097900
+r14=00007ffc846636e0 r15=0000002c081fc2e8
+iopl=0         nv up ei pl zr na pe nc
+cs=0033  ss=002b  ds=002b  es=002b  fs=0053  gs=002b             efl=00000246
+win32u!NtUserMsgWaitForMultipleObjectsEx+0x14:
+00007ffc`8332ae84 c3              ret
+
+EXCEPTION_RECORD:  (.exr -1)
+.exr -1
+ExceptionAddress: 0000000000000000
+   ExceptionCode: 80000003 (Break instruction exception)
+  ExceptionFlags: 00000000
+NumberParameters: 0
+
+FAULTING_THREAD:  6e74
+
+PROCESS_NAME:  mvm_p3_av_sync_spike.exe
+
+WATSON_BKT_EVENT:  AppHang
+
+BLOCKING_THREAD:  6e74
+
+ERROR_CODE: (NTSTATUS) 0xcfffffff - <Unable to get error code text>
+
+EXCEPTION_CODE_STR:  cfffffff
+
+DERIVED_WAIT_CHAIN:  
+
+Dl Eid Cid     WaitType
+-- --- ------- --------------------------
+   0   adac.6e74 (null)                 
+
+WAIT_CHAIN_COMMAND:  ~0s;k;;
+
+STACK_TEXT:  
+0000002c`081fc1e8 00007ffb`ec5cdd1a     : 0000019d`2f03c4f0 00000000`000000a4 00000000`00000000 00000000`00000828 : win32u!NtUserMsgWaitForMultipleObjectsEx+0x14
+0000002c`081fc1f0 00007ffb`eb74a2a9     : 0000019d`32455460 0000002c`081ff490 0000019d`324554dc 00000000`00000080 : Qt6Core!ZN21QEventDispatcherWin3213processEventsE6QFlagsIN10QEventLoop17ProcessEventsFlagEE+0x5fa
+0000002c`081ff380 00007ffb`ec3da063     : 0000002c`081ff490 00000000`00000000 0000002c`081ff720 00007ffb`ec51f170 : Qt6Gui!ZN26QWindowsGuiEventDispatcher13processEventsE6QFlagsIN10QEventLoop17ProcessEventsFlagEE+0x19
+0000002c`081ff3c0 00007ffb`ec3d7454     : 0000019d`00000002 0000019d`00000002 0000019d`2f03ad70 00000000`00000001 : Qt6Core!ZN10QEventLoop4execE6QFlagsINS_17ProcessEventsFlagEE+0x243
+0000002c`081ff470 00007ff7`de2f86f2     : 0000019d`2f0de350 00007ff7`00000000 0000019d`00000000 0000019d`00000001 : Qt6Core!ZN16QCoreApplication4execEv+0xa4
+0000002c`081ff4e0 00007ff7`de26115a     : 00007ff7`00000016 00000000`00000002 00007ffc`83b99e20 00007ff7`de2d5ae0 : mvm_p3_av_sync_spike!Z39qml_register_types_mvm_p3_av_sync_spikev+0x833f2
+0000002c`081ffb60 00007ffc`852fccb7     : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : mvm_p3_av_sync_spike+0x115a
+0000002c`081ffc00 00007ffc`85fcad6c     : 00000000`00000000 00000000`00000000 000004f0`fffffb30 000004d0`fffffb30 : kernel32!BaseThreadInitThunk+0x17
+0000002c`081ffc30 00000000`00000000     : 00000000`00000000 00000000`00000000 00000000`00000000 00000000`00000000 : ntdll!RtlUserThreadStart+0x2c
+
+
+STACK_COMMAND: ~0s; .ecxr ; kb
+
+SYMBOL_NAME:  win32u!NtUserMsgWaitForMultipleObjectsEx+14
+
+MODULE_NAME: win32u
+
+IMAGE_NAME:  win32u.dll
+
+FAILURE_BUCKET_ID:  APPLICATION_HANG_cfffffff_win32u.dll!NtUserMsgWaitForMultipleObjectsEx
+
+OS_VERSION:  10.0.26100.1
+
+BUILDLAB_STR:  ge_release
+
+OSPLATFORM_TYPE:  x64
+
+OSNAME:  Windows 10
+
+IMAGE_VERSION:  6.2.26100.9168
+
+FAILURE_ID_HASH:  {d44568b7-4ea6-d9b8-71f9-5e0773589878}
+
+Followup:     MachineOwner
+---------
+
+start             end                 module name
+00007ff7`de260000 00007ff7`dfb3b000   mvm_p3_av_sync_spike   (export symbols)       mvm_p3_av_sync_spike.exe
+    Loaded symbol image file: mvm_p3_av_sync_spike.exe
+    Image path: C:\dev\soft\mvm\tmp\attr-q2-parent\build\ucrt64-release\bin\mvm_p3_av_sync_spike.exe
+    Image name: mvm_p3_av_sync_spike.exe
+    Timestamp:        Fri Aug 21 14:47:00 2026 (6A87E654)
+    CheckSum:         01956FF0
+    ImageSize:        018DB000
+    Mapping Form:     Loaded
+    Translations:     0000.04b0 0000.04e4 0409.04b0 0409.04e4
+    Information from resource tables:
+quit:
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\atlmfc.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\concurrency.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\cpp_rest.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\ObjectiveC.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\stl.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\Windows.Data.Json.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\Windows.Devices.Geolocation.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\Windows.Devices.Sensors.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\Windows.Media.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\windows.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\winrt.natvis'
