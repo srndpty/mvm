@@ -966,6 +966,33 @@ production code、threshold、scheduler policyを変更せず、より低摂動�
 P5-E closureは**BLOCKED**を維持する。raw、provenance、ETL hash、tracestatsは
 [`bench/results/p5-e4-p2-q2-31eda0d/`](../bench/results/p5-e4-p2-q2-31eda0d/README.md)へ保存した。
 
+### P2-Q3 — scheduler phase aliasing attribution
+
+heavy ETWの摂動を避けるため、`31eda0d`由来のdiagnostic buildへ8192件の固定長POD ringを追加した。
+render callbackではallocation、mutex、file I/O、loggingを行わず、single writerがcallback QPC、
+scheduler deadline state、due / skip / output decisionだけを記録する。分類とJSON化はmeasurement停止後に行う。
+production scheduler policy、threshold、formal checkerは変更していない。
+
+clean diagnostic SHA `c800536caa12c90e1718c3db0aa0ab0368263486`から同一executable
+（SHA-256 `327fb722ddb9bbbccace8190496eeb9af872c04807cb55df25a6f21c281a22f4`）を使い、
+formal playbackと同じ5秒warmup / 60秒measurement / fence条件を反復した。5 run目でPASS/FAILの
+両方が揃い、stop ruleに従って終了した。run 1～4はdrop 95 / 104 / 105 / 101、drop rate
+2.6389%～2.9167%でFAIL、run 5はdrop 49、1.3611%でPASSだった。全runでprocess exit 0、ring
+record数とpresent callback数は一致し、overflow 0、454 deadline dropの全件を分類できた。
+
+集計は`PHASE_PAIR=155 (34.1%) / LONG_CALLBACK_GAP=15 (3.3%) / UNPAIRED_SKIP=284 (62.6%)`だった。
+strictなPHASE_PAIR支配ではなく、UNPAIRED_SKIPが支配した。284件はすべて直前callbackがdue=trueで、
+直前deadlineを既に通過していた。callback intervalは16.686～33.259 ms（median 19.343 ms）、直前の
+latenessはmedian 15.429 ms、次callbackがskip境界を越えた量はmedian 0.806 msだった。したがって
+33.333 ms以上のcallback消失が主因ではなく、late callbackの次も1周期より遅れてsynthetic deadlineを
+わずかに跨ぐ`due → skip` transitionが主因である。PHASE_PAIRと合わせると454件中439件 (96.7%)が
+2 slot未満のcallback cadence / phase transitionであり、minimal ETWへ進む根拠は支持されない。
+
+このcampaignはdiagnostic-onlyで、run 5のPASSをclosure evidenceへ流用しない。次はthresholdを緩めず、
+actual render opportunityを失った場合とsynthetic 60 Hz境界を跨いだ場合を分離するP2 scheduler / harness
+semanticsの修正設計へ進む。P5-E closureは**BLOCKED**を維持する。raw、checker、summary、manifestは
+[`bench/results/p5-e4-p2-q3-c800536/`](../bench/results/p5-e4-p2-q3-c800536/README.md)へ保存する。
+
 ---
 
 ## 7. 検証手順

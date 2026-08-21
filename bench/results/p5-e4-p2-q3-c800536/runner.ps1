@@ -72,12 +72,8 @@ function Write-Summary {
         'PHASE_PAIR'
     } elseif ($gap -gt $phase -and $gap -gt $unpaired -and $gap -gt $boundary) {
         'LONG_CALLBACK_GAP'
-    } elseif ($unpaired -gt $phase -and $unpaired -gt $gap -and $unpaired -gt $boundary) {
-        'UNPAIRED_SKIP'
-    } elseif ($boundary -gt $phase -and $boundary -gt $gap -and $boundary -gt $unpaired) {
-        'UNOBSERVED_BOUNDARY'
     } else {
-        'MIXED'
+        'MIXED_OR_UNPAIRED'
     }
     [ordered]@{
         schema = 'mvm.p5-e4-p2-q3-phase.v1'
