@@ -742,6 +742,47 @@ option未指定時のproduction behavior、timeout、buffer / pre-roll、thresho
 fail-closedとし、少なくとも1つのblocking call / event-loop / metrics-write boundaryへ帰属できた場合だけ
 T0の出口を満たす。
 
+#### ATTR-Q3-T0 実測結果
+
+parent diagnostic SHA `b0175dd781dffd741f238c5ee623f3bd81284c32` の1回目で180秒watchdogが
+発火した。durable journalは`main.event_loop.exec.before`までの3件で、`shutdown.enter`、metrics生成、
+finished emission、event-loop returnには到達しなかった。main threadは`Wait / UserRequest`だったため、
+hangはshutdown内のworker stop / mutex / GPU teardown / metrics-writeではなく、shutdown開始前の
+event-loop / `tick()`領域へ帰属した。T0の出口は満たすが、この証拠だけではtimer未発火、clock stall、
+event-loop starvationを区別しない。
+
+full dumpは保存できたが、この環境にWindows dump debuggerはなく、MSYS2 GDBは
+`file format not recognized`としてWindows full dumpを認識しなかった。T0 artifactは
+[`bench/results/p5-e4-attr-q3-t0-parent-b0175dd-r1/`](../bench/results/p5-e4-attr-q3-t0-parent-b0175dd-r1/summary.json)
+に保存し、manifest 10件を再検証して不一致0件だった。
+
+### ATTR-Q3-T1 — phase / audio-clock liveness attribution
+
+T0 artifactを変更せず、optional `--liveness-sidecar <jsonl>`指定時だけ次をdurable JSONLへ記録する。
+
+- timer開始と`tick()` first-entry / exit
+- 全phase transition
+- `openPipelines()`と`startAtFrame()`のenter / exit
+- phase、audio clock、audio queue、decoder、WASAPI sinkの周期heartbeat
+
+外部watchdogは、timer未発火、pipeline blocking、initial-start blocking、Warmup clock stall、
+Playback clock stall、event-loop starvationの6分類を一本化したclassifierでfail-closedに判定する。
+classifierのsynthetic testは6/6 PASS、target build、clang-format / architecture lint、短縮smokeを通過した。
+option未指定時のproduction behavior、formal threshold / timeout、buffer / pre-roll、counter、checkerは
+変更しない。
+
+1秒heartbeatのclean diagnostic SHA `c85492440bd86607674dc1c13c4b980914ed0e04` は、独立した2 campaignで
+各10/10 process exit 0かつP3-C-2 checker PASSだった。durable flushのtiming介入を減らすため、許可範囲内の
+5秒heartbeatへ変更したclean diagnostic SHA `736c7510acd0c8b74d491c767d0ad4cdc4ef5fc5` も10/10 process exit 0かつ
+checker PASSだった。3 campaign合計30/30でhangは再現せず、全manifestは各52件、不一致0件だった。
+
+- [`T1 R1`](../bench/results/p5-e4-attr-q3-t1-parent-c854924-r1/summary.json)
+- [`T1 R2`](../bench/results/p5-e4-attr-q3-t1-parent-c854924-r2/summary.json)
+- [`T1 R3`](../bench/results/p5-e4-attr-q3-t1-parent-736c751-r3/summary.json)
+
+したがってT1の6分類は**未確定**であり、T1の出口は未達である。30回の正常診断runはT0のhistorical hangを
+無効化せず、formal closure evidenceにも使用しない。P5-E closureはBLOCKEDのままとする。
+
 ---
 
 ## 7. 検証手順
