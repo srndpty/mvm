@@ -39,6 +39,14 @@ function Get-A1Classification {
     return 'UNRESOLVED'
 }
 
+function Get-OptionalProperty {
+    param([object]$Object, [string]$Name)
+    if ($null -eq $Object) { return $null }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+
 if ($SelfTest) {
     $base = [pscustomobject]@{
         measurement_audio_underflow_count = 1
@@ -108,8 +116,8 @@ foreach ($target in $Targets) {
             actual_audio_end_exclusive = $(if ($snapshot) {$snapshot.context.actual_audio_end_exclusive} elseif ($raw) {$raw.actual_audio_end_exclusive} else {-1})
             audio_decoder_eof = $(if ($snapshot) {$snapshot.context.audio_decoder_eof} elseif ($raw) {$raw.audio_decoder_eof} else {$false})
             first_audio_underflow_snapshot = $snapshot
-            display_provenance = $(if ($raw) {$raw.display_provenance} else {$null})
-            hardware_provenance = $(if ($raw) {$raw.hardware_provenance} else {$null})
+            display_provenance = Get-OptionalProperty $raw 'display_provenance'
+            hardware_provenance = Get-OptionalProperty $raw 'hardware_provenance'
         })
     }
 }
