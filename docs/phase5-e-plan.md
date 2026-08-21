@@ -898,6 +898,10 @@ stop、restartは旧EOS authorityを破棄し、decoderがcurrent generationの�
 target 3892はcanonical seek domainに残し、seed、target generator、WASAPI buffer、100 ms pre-roll、
 threshold、formal checkerは変更しない。
 
+fixed-target integrationだけは、exact display後もaudio callbackを観測する診断専用100 ms holdを使用する。
+通常経路では0 msであり、canonical matrixのphase遷移やtimingを変更しない。total terminal silence量は
+callback数に依存するため固定せず、first terminal shortageのidentityだけを検査する。
+
 ---
 
 ## 7. 検証手順

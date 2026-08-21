@@ -34,7 +34,7 @@ foreach ($target in @(3890, 3891, 3892)) {
         & $Executable --source-a $SourceA --source-b $SourceB --metrics $rawPath `
             --mode seek --duration-seconds 60 --warmup-seconds 5 --seek-count 1 `
             --seed 20260808 --display-timeout-ms 3000 --formal-contract-c2 `
-            --diagnostic-fixed-seek-target $target
+            --diagnostic-fixed-seek-target $target --diagnostic-post-display-hold-ms 100
         $processExit = $LASTEXITCODE
         $raw = if (Test-Path -LiteralPath $rawPath) {
             Get-Content -Raw -LiteralPath $rawPath | ConvertFrom-Json

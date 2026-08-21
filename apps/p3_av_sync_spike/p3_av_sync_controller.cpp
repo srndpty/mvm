@@ -864,6 +864,11 @@ void P3AvSyncController::tick() {
         if (!pollFirstDisplay())
             break;
         if (config_.mode == P3AvMode::Seek) {
+            if (config_.diagnosticPostDisplayHoldMs > 0) {
+                phaseTimer_.restart();
+                setPhase(Phase::DiagnosticPostDisplayHold);
+                break;
+            }
             ++seekIndex_;
             if (seekIndex_ >= seekTargets_.size())
                 startShutdown(QStringLiteral("integrated seek 完了"), false);
@@ -878,6 +883,15 @@ void P3AvSyncController::tick() {
                 setPhase(config_.mode == P3AvMode::PauseResume ? Phase::PauseStart
                                                                : Phase::Playback);
         }
+        break;
+    case Phase::DiagnosticPostDisplayHold:
+        if (phaseTimer_.elapsed() < config_.diagnosticPostDisplayHoldMs)
+            break;
+        ++seekIndex_;
+        if (seekIndex_ >= seekTargets_.size())
+            startShutdown(QStringLiteral("diagnostic fixed seek 完了"), false);
+        else
+            startAtFrame(seekTargets_[seekIndex_]);
         break;
     case Phase::Warmup: {
         const auto clock = audioClock_->snapshot();

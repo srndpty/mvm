@@ -29,6 +29,7 @@ struct P3AvConfig {
     int warmupSeconds = 5;
     bool injectRenderFaultAfterPlaying = false;
     long long diagnosticFixedSeekTarget = -1;
+    int diagnosticPostDisplayHoldMs = 0;
 };
 
 class P3AvSyncController final : public QObject {
@@ -42,7 +43,8 @@ Q_SIGNALS:
     void finished();
 
 private:
-    enum class Phase { WaitDevice, DisplayPreflight, Start, WaitDisplay, Warmup, Playback, PauseStart, PauseWait,
+    enum class Phase { WaitDevice, DisplayPreflight, Start, WaitDisplay,
+                       DiagnosticPostDisplayHold, Warmup, Playback, PauseStart, PauseWait,
                        ResumePlayback, ShutdownWait, Done };
     struct SeekRecord {
         long long requestedFrame = -1;

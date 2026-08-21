@@ -17,7 +17,8 @@ void usage() {
                  "--metrics <json> --mode playback|seek|pause-resume [options]\n"
                  "  --formal-contract | --formal-contract-c2\n"
                  "  --inject-render-fault-after-playing (test専用)\n"
-                 "  --diagnostic-fixed-seek-target <frame> (診断専用)\n");
+                 "  --diagnostic-fixed-seek-target <frame> (診断専用)\n"
+                 "  --diagnostic-post-display-hold-ms <ms> (診断専用)\n");
 }
 
 bool parse(const QStringList& args, P3AvConfig& config) {
@@ -40,6 +41,12 @@ bool parse(const QStringList& args, P3AvConfig& config) {
             if (!ok || config.diagnosticFixedSeekTarget < 0)
                 return false;
         }
+        else if (key == "--diagnostic-post-display-hold-ms") {
+            bool ok = false;
+            config.diagnosticPostDisplayHoldMs = value().toInt(&ok);
+            if (!ok || config.diagnosticPostDisplayHoldMs < 0)
+                return false;
+        }
         else if (key == "--formal-contract") config.formalContract = true;
         else if (key == "--formal-contract-c2") {
             config.formalContract = true;
@@ -58,7 +65,8 @@ bool parse(const QStringList& args, P3AvConfig& config) {
     return !config.sourceA.isEmpty() && !config.sourceB.isEmpty() &&
            !config.metricsPath.isEmpty() && config.durationSeconds > 0 && config.seekCount > 0 &&
            config.displayTimeoutMs > 0 && config.warmupSeconds >= 0 &&
-           (config.diagnosticFixedSeekTarget < 0 || config.mode == P3AvMode::Seek);
+           (config.diagnosticFixedSeekTarget < 0 || config.mode == P3AvMode::Seek) &&
+           (config.diagnosticPostDisplayHoldMs == 0 || config.diagnosticFixedSeekTarget >= 0);
 }
 } // namespace
 
