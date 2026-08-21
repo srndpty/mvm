@@ -259,10 +259,16 @@ bool AudioDecodeWorker::decodeOne(AudioChunk& chunk, std::string& error) {
             return true;
         }
         if (result == AVERROR_EOF) {
-            std::lock_guard lock(mutex_);
-            metrics_.eof = true;
+            std::int64_t actualDecodedEnd = -1;
+            {
+                std::lock_guard lock(mutex_);
+                metrics_.eof = true;
+                actualDecodedEnd = metrics_.actualLastDecodedSampleExclusive;
+            }
             if (attribution_)
                 attribution_->context.audioDecoderEof.store(true, std::memory_order_release);
+            if (!queue_.markEndOfStream(generation_, actualDecodedEnd))
+                error = "current generationのaudio EOF authorityを確定できません";
             return false;
         }
         if (result != AVERROR(EAGAIN)) {

@@ -570,6 +570,8 @@ bool P3AvSyncController::startAtFrame(long long targetFrame, bool measurementSta
             state_->audioClockVideoStaleDiscardA.load(),
             state_->audioClockVideoStaleDiscardB.load(),
             static_cast<long long>(queue.underflowCount),
+            static_cast<long long>(queue.terminalEofSilenceCallbackCount),
+            static_cast<long long>(queue.terminalEofSilenceSamples),
             static_cast<long long>(queue.overflowRejectCount),
             state_->markerAMismatch.load(),
             state_->markerBMismatch.load(),
@@ -1080,6 +1082,12 @@ bool P3AvSyncController::writeMetrics() const {
                                seeks_.size() == static_cast<size_t>(config_.seekCount);
         const long long underflow = delta(static_cast<long long>(queue.underflowCount),
                                           measurementBaseline_.underflow);
+        const long long terminalEofSilenceCallbacks =
+            delta(static_cast<long long>(queue.terminalEofSilenceCallbackCount),
+                  measurementBaseline_.terminalEofSilenceCallbacks);
+        const long long terminalEofSilenceSamples =
+            delta(static_cast<long long>(queue.terminalEofSilenceSamples),
+                  measurementBaseline_.terminalEofSilenceSamples);
         const long long overflow = delta(static_cast<long long>(queue.overflowRejectCount),
                                          measurementBaseline_.overflow);
         const long long markerMismatch =
@@ -1163,6 +1171,16 @@ bool P3AvSyncController::writeMetrics() const {
             {"measurement_stale_discard_b",
              delta(state_->audioClockVideoStaleDiscardB.load(), measurementBaseline_.staleB)},
             {"measurement_audio_underflow_count", underflow},
+            {"measurement_terminal_eof_silence_callback_count", terminalEofSilenceCallbacks},
+            {"measurement_terminal_eof_silence_samples", terminalEofSilenceSamples},
+            {"first_terminal_eof_requested_start", queue.firstTerminalEofRequestedStart},
+            {"first_terminal_eof_requested_count", queue.firstTerminalEofRequestedCount},
+            {"first_terminal_eof_audio_samples", queue.firstTerminalEofAudioSamples},
+            {"first_terminal_eof_silence_samples", queue.firstTerminalEofSilenceSamples},
+            {"first_terminal_eof_end_sample_exclusive",
+             queue.firstTerminalEofEndSampleExclusive},
+            {"first_terminal_eof_generation",
+             static_cast<qint64>(queue.firstTerminalEofGeneration)},
             {"measurement_audio_overflow_count", overflow},
             {"measurement_marker_mismatch_count", markerMismatch},
             {"measurement_mixed_pair_count", mixedPair},
@@ -1305,6 +1323,15 @@ bool P3AvSyncController::writeMetrics() const {
         {"clock_anchor_device_position", static_cast<qint64>(sink.clockAnchorDevicePosition)},
         {"audio_rendered_samples", static_cast<qint64>(sink.audioRenderedSamples)},
         {"audio_underflow_count", static_cast<qint64>(queue.underflowCount)},
+        {"terminal_eof_silence_callback_count",
+         static_cast<qint64>(queue.terminalEofSilenceCallbackCount)},
+        {"terminal_eof_silence_samples", static_cast<qint64>(queue.terminalEofSilenceSamples)},
+        {"first_terminal_eof_requested_start", queue.firstTerminalEofRequestedStart},
+        {"first_terminal_eof_requested_count", queue.firstTerminalEofRequestedCount},
+        {"first_terminal_eof_audio_samples", queue.firstTerminalEofAudioSamples},
+        {"first_terminal_eof_silence_samples", queue.firstTerminalEofSilenceSamples},
+        {"first_terminal_eof_end_sample_exclusive", queue.firstTerminalEofEndSampleExclusive},
+        {"first_terminal_eof_generation", static_cast<qint64>(queue.firstTerminalEofGeneration)},
         {"audio_overflow_count", static_cast<qint64>(queue.overflowRejectCount)},
         {"video_displayed_count", state_->displayedCompositionCount.load()},
         {"video_catchup_skip_count", state_->audioClockVideoCatchupSkipCount.load()},

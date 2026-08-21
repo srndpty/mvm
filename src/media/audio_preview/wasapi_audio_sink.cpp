@@ -318,7 +318,7 @@ bool WasapiAudioSink::prefillEndpoint(std::int64_t mediaStartSample, SourceGener
                  static_cast<int>(av_rescale_rnd(bufferFrames_, kInternalSampleRate,
                                                  mixFormat_->nSamplesPerSec, AV_ROUND_UP)));
     const AudioConsumeResult consumed =
-        queue_.consume(sourceScratch_.data(), sourceNeeded, generation);
+        queue_.consume(sourceScratch_.data(), mediaStartSample, sourceNeeded, generation);
     if (consumed.audioSamples != sourceNeeded || consumed.firstSample != mediaStartSample) {
         renderClient_->ReleaseBuffer(bufferFrames_, AUDCLNT_BUFFERFLAGS_SILENT);
         error = "endpoint prefill は requested media sample 由来の PCM を満たせません";
@@ -515,7 +515,7 @@ bool WasapiAudioSink::renderAvailable() {
     const SourceGeneration expected{generation_.load()};
     const std::int64_t requestedSampleStart = nextRequestedSample_;
     const AudioConsumeResult consumed =
-        queue_.consume(sourceScratch_.data(), sourceNeeded, expected);
+        queue_.consume(sourceScratch_.data(), requestedSampleStart, sourceNeeded, expected);
     const AudioConsumeTraceEntry trace{currentQpc(),
                                        requestedSampleStart,
                                        sourceNeeded,
@@ -528,7 +528,7 @@ bool WasapiAudioSink::renderAvailable() {
     recentConsumeTraceNext_ = (recentConsumeTraceNext_ + 1) % kAudioConsumeTraceCapacity;
     recentConsumeTraceCount_ = std::min(recentConsumeTraceCount_ + 1, kAudioConsumeTraceCapacity);
     nextRequestedSample_ = requestedSampleStart < 0 ? -1 : requestedSampleStart + sourceNeeded;
-    if (consumed.audioSamples < sourceNeeded) {
+    if (consumed.shortageKind == AudioShortageKind::Starvation) {
         queue_.noteUnderflow(sourceNeeded - consumed.audioSamples);
         if (attribution_) {
             const auto clock = clock_.snapshot();

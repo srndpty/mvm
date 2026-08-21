@@ -882,6 +882,22 @@ raw、summary、provenance、SHA-256 manifestは
 [`bench/results/p5-e4-attr-q3-a1-abed99c/`](../bench/results/p5-e4-attr-q3-a1-abed99c/README.md)
 へ保存し、後続runで上書きしない。
 
+### QUAL-F2 — generation-scoped audio EOF classification
+
+QUAL-F2では次をproduct contractとする。
+
+- **Audio underflow**: current generationの有効なaudio PCM domain内で、endpointが要求したsampleを
+  供給できなかったこと。
+- **Terminal EOF silence**: current generationについてdecoderがdrain後に確定したauthoritative
+  decoded endへ連続して到達し、その後の要求suffixをsilenceで満たすこと。underflowには数えない。
+- EOS未確定、generation不一致、stale generationのEOS、EOSより前のgapはterminal silenceとせず、
+  starvationとしてfail-closedに扱う。
+
+`AudioFrameQueue`がgenerationとterminal sample exclusiveを一体で所有する。seekによるgeneration前進、
+stop、restartは旧EOS authorityを破棄し、decoderがcurrent generationの実EOFを観測した場合だけ再確定する。
+target 3892はcanonical seek domainに残し、seed、target generator、WASAPI buffer、100 ms pre-roll、
+threshold、formal checkerは変更しない。
+
 ---
 
 ## 7. 検証手順

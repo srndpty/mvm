@@ -47,7 +47,7 @@ int main() {
           "overflow を暗黙 drop せず拒否する");
 
     std::array<float, 8> output{};
-    const auto consumed = queue.consume(output.data(), 4, {1});
+    const auto consumed = queue.consume(output.data(), 0, 4, {1});
     check(consumed.audioSamples == 4 && consumed.firstSample == 0 &&
               consumed.lastSampleExclusive == 4,
           "partial consume の sample identity を保つ");
@@ -61,13 +61,71 @@ int main() {
     check(queue.push(chunk(3, 6, 2)) == AudioQueuePushResult::RejectedFutureGeneration,
           "future generation を拒否する negative test");
     check(!queue.setGeneration({1}), "generation regression を拒否する negative test");
-    const auto emptyGeneration = queue.consume(output.data(), 1, {1});
-    check(emptyGeneration.queueLastAvailableSampleExclusive == -1,
-          "generation不一致をqueue末尾として報告しない negative test");
+    const auto emptyGeneration = queue.consume(output.data(), 0, 1, {1});
+    check(emptyGeneration.queueLastAvailableSampleExclusive == -1 &&
+              emptyGeneration.shortageKind == AudioShortageKind::Starvation,
+          "generation不一致をqueue末尾やterminal silenceとして扱わない negative test");
     const auto queueMetrics = queue.snapshot();
     check(queueMetrics.overflowRejectCount == 1 && queueMetrics.staleGenerationRejectCount == 1 &&
               queueMetrics.futureGenerationRejectCount == 1,
           "reject counter が空振りせず増える");
+
+    {
+        constexpr std::int64_t requestStart = 3'119'840;
+        constexpr std::int64_t terminalEnd = 3'120'128;
+        std::array<float, 480 * kInternalChannels> tailOutput{};
+        AudioFrameQueue eofTail({1}, {524});
+        check(eofTail.push(chunk(524, requestStart, 288)) == AudioQueuePushResult::Accepted &&
+                  eofTail.markEndOfStream({524}, terminalEnd),
+              "current generationのdecoded EOFを確定する");
+        const auto tail = eofTail.consume(tailOutput.data(), requestStart, 480, {524});
+        const auto tailMetrics = eofTail.snapshot();
+        check(tail.audioSamples == 288 && tail.silenceSamples == 192 &&
+                  tail.shortageKind == AudioShortageKind::TerminalEof &&
+                  tail.terminalEndSampleExclusive == terminalEnd &&
+                  tailMetrics.underflowCount == 0 &&
+                  tailMetrics.terminalEofSilenceCallbackCount == 1 &&
+                  tailMetrics.terminalEofSilenceSamples == 192,
+              "288 PCM + authoritative EOFを192 sampleのterminal silenceへ分類する");
+    }
+    {
+        std::array<float, 480 * kInternalChannels> tailOutput{};
+        AudioFrameQueue unknownEof({1}, {524});
+        check(unknownEof.push(chunk(524, 1000, 288)) == AudioQueuePushResult::Accepted,
+              "EOS未確定testのPCMを受理する");
+        const auto shortage = unknownEof.consume(tailOutput.data(), 1000, 480, {524});
+        check(shortage.shortageKind == AudioShortageKind::Starvation &&
+                  shortage.silenceSamples == 192 &&
+                  unknownEof.snapshot().terminalEofSilenceCallbackCount == 0,
+              "EOS未確定の不足をterminal silenceにしない negative test");
+    }
+    {
+        std::array<float, 480 * kInternalChannels> tailOutput{};
+        AudioFrameQueue gapBeforeEof({1}, {524});
+        check(gapBeforeEof.push(chunk(524, 1000, 288)) == AudioQueuePushResult::Accepted &&
+                  gapBeforeEof.markEndOfStream({524}, 1480),
+              "EOS手前gap testのauthorityを設定する");
+        const auto shortage = gapBeforeEof.consume(tailOutput.data(), 1000, 480, {524});
+        check(shortage.shortageKind == AudioShortageKind::Starvation &&
+                  gapBeforeEof.snapshot().terminalEofSilenceCallbackCount == 0,
+              "queue末尾からEOSまでのgapを救済しない negative mutation test");
+    }
+    {
+        std::array<float, 480 * kInternalChannels> tailOutput{};
+        AudioFrameQueue generationEof({1}, {523});
+        check(generationEof.markEndOfStream({523}, 1288), "旧generationのEOSを設定する");
+        check(generationEof.setGeneration({524}), "EOS設定後にgenerationを前進する");
+        auto reset = generationEof.snapshot();
+        check(!reset.endOfStreamKnown && reset.endOfStreamSampleExclusive == -1,
+              "setGeneration後はEOS authorityを未確定へ戻す");
+        check(!generationEof.markEndOfStream({523}, 1288),
+              "stale generationのEOS publishを拒否する negative test");
+        check(generationEof.push(chunk(524, 1000, 288)) == AudioQueuePushResult::Accepted,
+              "新generationのPCMを受理する");
+        const auto shortage = generationEof.consume(tailOutput.data(), 1000, 480, {524});
+        check(shortage.shortageKind == AudioShortageKind::Starvation,
+              "旧generation EOSで新generation不足を合法化しない negative test");
+    }
 
     AudioMasterClock clock;
     check(clock.start({48000, 1000, {7}, 10000000, {2}}), "clock anchor を受理する");

@@ -68,6 +68,8 @@ private:
         long long staleA = 0;
         long long staleB = 0;
         long long underflow = 0;
+        long long terminalEofSilenceCallbacks = 0;
+        long long terminalEofSilenceSamples = 0;
         long long overflow = 0;
         long long markerAMismatch = 0;
         long long markerBMismatch = 0;
