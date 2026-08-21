@@ -279,7 +279,7 @@ int main(int argc, char** argv) {
             }
             std::vector<float> window(480 * kInternalChannels);
             const auto consumed =
-                worker.queue().consume(window.data(), 480, completion.seekGeneration);
+                worker.queue().consume(window.data(), target, 480, completion.seekGeneration);
             float peak = 0.0f;
             for (float value : window)
                 peak = std::max(peak, std::abs(value));
