@@ -116,8 +116,16 @@ foreach ($target in $Targets) {
             actual_audio_end_exclusive = $(if ($snapshot) {$snapshot.context.actual_audio_end_exclusive} elseif ($raw) {$raw.actual_audio_end_exclusive} else {-1})
             audio_decoder_eof = $(if ($snapshot) {$snapshot.context.audio_decoder_eof} elseif ($raw) {$raw.audio_decoder_eof} else {$false})
             first_audio_underflow_snapshot = $snapshot
-            display_provenance = Get-OptionalProperty $raw 'display_provenance'
-            hardware_provenance = Get-OptionalProperty $raw 'hardware_provenance'
+            display_provenance = $(if ($raw) {[ordered]@{
+                start = Get-OptionalProperty $raw 'display_environment_start'
+                end = Get-OptionalProperty $raw 'display_environment_end'
+            }} else {$null})
+            hardware_provenance = $(if ($raw) {[ordered]@{
+                adapter = Get-OptionalProperty $raw 'adapter'
+                audio_endpoint_sample_rate = Get-OptionalProperty $raw 'audio_endpoint_sample_rate'
+                audio_endpoint_channels = Get-OptionalProperty $raw 'audio_endpoint_channels'
+                audio_endpoint_sample_format = Get-OptionalProperty $raw 'audio_endpoint_sample_format'
+            }} else {$null})
         })
     }
 }
