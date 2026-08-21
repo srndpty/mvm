@@ -7,6 +7,7 @@
 #include "media/gpu_preview/compositor_coordinator.h"
 #include "media/gpu_preview/gpu_compositor.h"
 #include "media/gpu_preview/phase4_composition_driver.h"
+#include "media/gpu_preview/scheduler_phase_attribution.h"
 #include "media/gpu_preview/source_decode_worker.h"
 #include "media/gpu_preview/transition_probe.h"
 
@@ -239,6 +240,10 @@ struct CompositorSpikeState {
     std::vector<CompositorDiagnosticRenderSample> diagnosticRenderSamples;
     std::vector<double> diagnosticRenderCallbackIntervalUs;
     gpu::D3D11LockTimingSnapshot diagnosticLockTiming;
+    // P2-Q3診断専用。render threadは固定arrayへ単一writerで記録するだけで、
+    // measurement停止後にcontrollerがsnapshot/JSON化する。
+    std::atomic<bool> schedulerPhaseRingEnabled{false};
+    gpu::SchedulerPhaseRing schedulerPhaseRing;
     gpu::ComposedFrame diagnosticFixedFrame;
     CompositorMarkerProbe markerProbe;
     std::atomic<long long> markerAChecked{0};

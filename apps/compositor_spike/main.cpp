@@ -19,6 +19,7 @@ void usage() {
                  "  --seek-count <n> --display-timeout-ms <n>\n"
                  "  --formal-preflight\n"
                  "  --diagnostic-timing --diagnostic-case a|b|c|d\n"
+                 "  --scheduler-phase-ring\n"
                  "  --gpu-completion fence|event_query --mode playback|seek|layout\n");
 }
 
@@ -53,6 +54,7 @@ bool parse(const QStringList& args, CompositorSpikeConfig& config) {
                 return false;
         } else if (arg == "--formal-preflight") config.formalPreflight = true;
         else if (arg == "--diagnostic-timing") config.diagnosticTiming = true;
+        else if (arg == "--scheduler-phase-ring") config.schedulerPhaseRing = true;
         else if (arg == "--diagnostic-case") {
             const QString v = value().toLower();
             if (v == "a") config.diagnosticCase = CompositorDiagnosticCase::SingleDecode;

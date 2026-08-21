@@ -132,6 +132,11 @@ protected:
         const CompositorDiagnosticCase diagnosticCase =
             state_->diagnosticCase.load(std::memory_order_acquire);
         long long schedulerDeadlineQpc = callbackBegin;
+        long long schedulerNowQpc = callbackBegin;
+        gpu::OutputScheduleState schedulerStateBefore;
+        gpu::OutputScheduleDecision schedulerDecision;
+        bool schedulerDecisionObserved = false;
+        const bool schedulerPhaseRingEnabled = schedulerPhaseRingEnabled_;
         long long output = state_->requestedOutput.exchange(-1);
         const bool audioMasterEnabled =
             state_->audioMasterSchedulerEnabled.load(std::memory_order_acquire);
@@ -233,20 +238,38 @@ protected:
             }
             const long long measurementEnd =
                 state_->measurementEndQpc.load(std::memory_order_acquire);
-            const gpu::OutputScheduleDecision decision =
-                state_->measurementIntervalActive.load(std::memory_order_acquire)
-                    ? scheduler_.takeDueBefore(now, measurementEnd)
-                    : scheduler_.takeDue(now);
-            if (decision.due) {
-                output = decision.output.outputFrameNumber;
-                schedulerDeadlineQpc = decision.output.deadlineQpc;
-                state_->scheduledOutputCount.fetch_add(decision.skippedDeadlineCount + 1,
+            if (schedulerPhaseRingEnabled) {
+                schedulerNowQpc = now;
+                schedulerStateBefore = scheduler_.state();
+                schedulerDecisionObserved = true;
+            }
+            schedulerDecision = state_->measurementIntervalActive.load(std::memory_order_acquire)
+                                    ? scheduler_.takeDueBefore(now, measurementEnd)
+                                    : scheduler_.takeDue(now);
+            if (schedulerDecision.due) {
+                output = schedulerDecision.output.outputFrameNumber;
+                schedulerDeadlineQpc = schedulerDecision.output.deadlineQpc;
+                state_->scheduledOutputCount.fetch_add(schedulerDecision.skippedDeadlineCount + 1,
                                                        std::memory_order_relaxed);
-                noteDrop(gpu::OutputDropReason::SchedulerDeadline, decision.skippedDeadlineCount);
+                noteDrop(gpu::OutputDropReason::SchedulerDeadline,
+                         schedulerDecision.skippedDeadlineCount);
             }
         }
         const bool needsB = diagnosticCase != CompositorDiagnosticCase::SingleDecode;
-        if (!a || (needsB && !b) || output < 0) {
+        const bool repeatedThisCallback = !a || (needsB && !b) || output < 0;
+        if (schedulerDecisionObserved && schedulerPhaseRingEnabled &&
+            state_->measurementIntervalActive.load(std::memory_order_relaxed)) {
+            state_->schedulerPhaseRing.capture(
+                {callbackBegin, previousSchedulerPhaseCallbackQpc_, schedulerNowQpc,
+                 schedulerStateBefore.nextFrame, schedulerStateBefore.nextDeadlineQpc,
+                 schedulerStateBefore.nextNextDeadlineQpc,
+                 schedulerNowQpc - schedulerStateBefore.nextDeadlineQpc, schedulerDecision.due,
+                 schedulerDecision.skippedDeadlineCount,
+                 schedulerDecision.due ? schedulerDecision.output.outputFrameNumber : -1,
+                 repeatedThisCallback});
+            previousSchedulerPhaseCallbackQpc_ = callbackBegin;
+        }
+        if (repeatedThisCallback) {
             state_->repeatedPresentCount.fetch_add(1, std::memory_order_relaxed);
             return;
         }
@@ -592,6 +615,11 @@ private:
                 state_->measurementDurationQpc.load(std::memory_order_acquire);
             scheduler_.start(callbackBegin, static_cast<long long>(gpu::qpcFrequency()));
             schedulerStarted_ = true;
+            previousSchedulerPhaseCallbackQpc_ = 0;
+            schedulerPhaseRingEnabled_ =
+                state_->schedulerPhaseRingEnabled.load(std::memory_order_acquire);
+            if (schedulerPhaseRingEnabled_)
+                state_->schedulerPhaseRing.reset();
             state_->measurementEndQpc.store(callbackBegin + duration, std::memory_order_release);
             state_->measurementIntervalActive.store(true, std::memory_order_release);
             if (state_->diagnosticCase.load(std::memory_order_acquire) !=
@@ -871,6 +899,8 @@ private:
     gpu::OutputScheduler60Hz scheduler_;
     bool schedulerStarted_ = false;
     long long previousDiagnosticCallbackQpc_ = 0;
+    long long previousSchedulerPhaseCallbackQpc_ = 0;
+    bool schedulerPhaseRingEnabled_ = false;
     TeardownStage teardownStage_ = TeardownStage::NotStarted;
 };
 

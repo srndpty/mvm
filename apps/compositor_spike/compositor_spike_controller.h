@@ -28,6 +28,7 @@ struct CompositorSpikeConfig {
     QString testFault;
     bool formalPreflight = false;
     bool diagnosticTiming = false;
+    bool schedulerPhaseRing = false;
     CompositorDiagnosticCase diagnosticCase = CompositorDiagnosticCase::None;
 };
 

@@ -28,6 +28,7 @@
 #include "media/gpu_preview/nv12_converter.h"
 #include "media/gpu_preview/output_scheduler.h"
 #include "media/gpu_preview/readback_counter.h"
+#include "media/gpu_preview/scheduler_phase_attribution.h"
 #include "media/gpu_preview/source_decode_worker.h"
 #include "media/gpu_preview/source_frame_buffer.h"
 #include "media/gpu_preview/source_registry.h"
@@ -37,6 +38,7 @@
 #include <cstdio>
 #include <string>
 #include <thread>
+#include <type_traits>
 
 using namespace mvm::gpu;
 
@@ -1386,6 +1388,10 @@ void testOutputScheduler() {
     std::fprintf(stderr, "[output scheduler]\n");
     OutputScheduler60Hz scheduler;
     scheduler.start(1000, 60000);
+    const auto initialState = scheduler.state();
+    checkEq(initialState.nextFrame, 0, "診断snapshotのnext frame");
+    checkEq(initialState.nextDeadlineQpc, 1000, "診断snapshotのnext deadline");
+    checkEq(initialState.nextNextDeadlineQpc, 2000, "診断snapshotのnext-next deadline");
     checkEq(scheduler.next().deadlineQpc, 1000, "frame 0 deadline");
     checkEq(scheduler.next().deadlineQpc, 2000, "frame 1 deadline");
     scheduler.start(1000, 60000);
@@ -1440,6 +1446,57 @@ void testOutputScheduler() {
         OutputScheduler60Hz::classifyDeadline(PairResult::Paired, CompositionResult::StaleEpoch) ==
             OutputDropReason::StaleCompositionEpoch,
         "stale epoch分類");
+}
+
+void testSchedulerPhaseAttribution() {
+    std::fprintf(stderr, "[scheduler phase attribution]\n");
+    static_assert(std::is_trivially_copyable_v<SchedulerPhaseRecord>);
+    constexpr long long frequency = 60000;
+    const std::vector<SchedulerPhaseRecord> records{
+        {1900, 0, 1900, 1, 2000, 3000, -100, false, 0, -1, true},
+        {3001, 1900, 3001, 1, 2000, 3000, 1001, true, 1, 2, false},
+        {4000, 3001, 4000, 3, 4000, 5000, 0, true, 0, 3, false},
+        {6100, 4000, 6100, 4, 5000, 6000, 1100, true, 2, 6, false},
+        {7000, 6100, 7000, 7, 7000, 8000, 0, true, 0, 7, false},
+        {8100, 7000, 8100, 8, 8000, 9000, 100, true, 1, 9, false},
+    };
+    const auto summary = classifySchedulerPhase(records, frequency);
+    checkEq(summary.skipEventCount, 3, "skip callback eventを数える");
+    checkEq(summary.classifiedDeadlineCount, 4, "skip deadline単位で集計する");
+    checkEq(summary.phasePairDeadlineCount, 1, "直前not-dueをPHASE_PAIRへ分類する");
+    checkEq(summary.longCallbackGapDeadlineCount, 2,
+            "2 nominal slot以上のgapをLONG_CALLBACK_GAPへ分類する");
+    checkEq(summary.unpairedSkipDeadlineCount, 1, "残りをUNPAIRED_SKIPへ分類する");
+    check(summary.classifications[0] == SchedulerPhaseClassification::None,
+          "skipなしのrecordを分類しない");
+    check(summary.classifications[1] == SchedulerPhaseClassification::PhasePair,
+          "recordごとのPHASE_PAIR分類を返す");
+    check(summary.classifications[3] == SchedulerPhaseClassification::LongCallbackGap,
+          "recordごとのLONG_CALLBACK_GAP分類を返す");
+    check(summary.classifications[5] == SchedulerPhaseClassification::UnpairedSkip,
+          "recordごとのUNPAIRED_SKIP分類を返す");
+    checkEq(static_cast<long long>(summary.phasePairs.size()), 1,
+            "PHASE_PAIR sampleを一件保持する");
+    checkNear(summary.phasePairs[0].previousEarlyUs, 1666.6667, 0.001,
+              "previous callbackのdeadline手前量を保持する");
+    checkNear(summary.phasePairs[0].currentLateUs, 16.6667, 0.001,
+              "current callbackのskipped deadline超過量を保持する");
+    checkNear(summary.phasePairs[0].callbackIntervalUs, 18350.0, 0.001,
+              "PHASE_PAIR callback間隔を保持する");
+
+    SchedulerPhaseRing ring;
+    ring.reset();
+    ring.capture(records[0]);
+    ring.capture(records[1]);
+    const auto snapshot = ring.snapshot();
+    checkEq(static_cast<long long>(snapshot.size()), 2, "release publish済みrecordだけ読む");
+    checkEq(snapshot[1].decisionSkippedDeadlineCount, 1, "POD record値を保持する");
+    ring.reset();
+    for (std::size_t index = 0; index < kSchedulerPhaseRingCapacity + 2; ++index)
+        ring.capture(records[0]);
+    checkEq(static_cast<long long>(ring.publishedCount()),
+            static_cast<long long>(kSchedulerPhaseRingCapacity), "固定ring容量を越えて書かない");
+    checkEq(ring.overflowCount(), 2, "overflowを黙って成功にしない");
 }
 
 void testSourceSeekMailbox() {
@@ -1637,6 +1694,7 @@ int main() {
     testRetirementQueue();
     testCompositionDisplayLedger();
     testOutputScheduler();
+    testSchedulerPhaseAttribution();
     testSourceSeekMailbox();
     testMeasurementPreroll();
     testHwFormatSelection();

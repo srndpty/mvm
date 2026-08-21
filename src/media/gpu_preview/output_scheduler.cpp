@@ -82,6 +82,13 @@ long long OutputScheduler60Hz::closeBefore(long long endQpcExclusive) {
     return closed;
 }
 
+OutputScheduleState OutputScheduler60Hz::state() const {
+    if (frequency_ <= 0)
+        return {};
+    auto deadlineFor = [this](long long frame) { return startQpc_ + (frame * frequency_) / 60; };
+    return {nextFrame_, deadlineFor(nextFrame_), deadlineFor(nextFrame_ + 1)};
+}
+
 OutputDropReason OutputScheduler60Hz::classifyDeadline(PairResult pairResult,
                                                        CompositionResult compositionResult) {
     if (compositionResult == CompositionResult::StaleEpoch)

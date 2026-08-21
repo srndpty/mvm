@@ -155,6 +155,8 @@ void CompositorSpikeController::attach(CompositorRhiItem* item) {
     item_ = item;
     state_ = item->state();
     state_->diagnosticCase.store(config_.diagnosticCase, std::memory_order_release);
+    state_->schedulerPhaseRingEnabled.store(config_.schedulerPhaseRing,
+                                            std::memory_order_release);
     phaseTimer_.start();
     timer_.start();
 }
@@ -901,6 +903,64 @@ bool CompositorSpikeController::writeMetrics() {
         {"decode_ready_to_display_ms",
          distribution(seekDecodeReadyToDisplayMs_, "values_ms")},
         {"request_to_display_ms", distribution(seekDisplayedMs_, "values_ms")}};
+    const auto schedulerPhaseRecords = config_.schedulerPhaseRing
+                                           ? state_->schedulerPhaseRing.snapshot()
+                                           : std::vector<gpu::SchedulerPhaseRecord>{};
+    const long long qpcFrequency = static_cast<long long>(gpu::qpcFrequency());
+    const auto schedulerPhaseSummary =
+        gpu::classifySchedulerPhase(schedulerPhaseRecords, qpcFrequency);
+    QJsonArray schedulerPhaseRecordJson;
+    for (size_t index = 0; index < schedulerPhaseRecords.size(); ++index) {
+        const auto& record = schedulerPhaseRecords[index];
+        const auto classification = schedulerPhaseSummary.classifications[index];
+        schedulerPhaseRecordJson.append(
+            QJsonObject{{"index", static_cast<qint64>(index)},
+                        {"callback_qpc", record.callbackQpc},
+                        {"previous_callback_qpc", record.previousCallbackQpc},
+                        {"scheduler_now_qpc", record.schedulerNowQpc},
+                        {"scheduler_next_frame_before", record.nextFrameBefore},
+                        {"next_deadline_qpc", record.nextDeadlineQpc},
+                        {"next_next_deadline_qpc", record.nextNextDeadlineQpc},
+                        {"now_minus_next_deadline_qpc", record.nowMinusNextDeadlineQpc},
+                        {"decision_due", record.decisionDue},
+                        {"decision_skipped_deadline_count",
+                         record.decisionSkippedDeadlineCount},
+                        {"decision_output_frame", record.decisionOutputFrame},
+                        {"repeated_this_callback", record.repeatedThisCallback},
+                        {"skip_classification",
+                         classification == gpu::SchedulerPhaseClassification::None
+                             ? QString{}
+                             : QString::fromLatin1(gpu::toString(classification))}});
+    }
+    QJsonArray schedulerPhasePairJson;
+    for (const auto& pair : schedulerPhaseSummary.phasePairs) {
+        schedulerPhasePairJson.append(
+            QJsonObject{{"previous_record_index",
+                         static_cast<qint64>(pair.previousRecordIndex)},
+                        {"current_record_index", static_cast<qint64>(pair.currentRecordIndex)},
+                        {"skipped_deadline_count", pair.skippedDeadlineCount},
+                        {"previous_early_us", pair.previousEarlyUs},
+                        {"current_late_us", pair.currentLateUs},
+                        {"callback_interval_us", pair.callbackIntervalUs}});
+    }
+    const long long unobservedBoundaryDeadlineCount =
+        std::max(0LL, measurement.dropSchedulerDeadline -
+                          schedulerPhaseSummary.classifiedDeadlineCount);
+    QJsonObject schedulerPhaseAttribution{
+        {"enabled", config_.schedulerPhaseRing},
+        {"capacity", static_cast<qint64>(gpu::kSchedulerPhaseRingCapacity)},
+        {"record_count", static_cast<qint64>(schedulerPhaseRecords.size())},
+        {"overflow_count", state_->schedulerPhaseRing.overflowCount()},
+        {"qpc_frequency", qpcFrequency},
+        {"skip_event_count", schedulerPhaseSummary.skipEventCount},
+        {"classified_deadline_count", schedulerPhaseSummary.classifiedDeadlineCount},
+        {"phase_pair_deadline_count", schedulerPhaseSummary.phasePairDeadlineCount},
+        {"long_callback_gap_deadline_count",
+         schedulerPhaseSummary.longCallbackGapDeadlineCount},
+        {"unpaired_skip_deadline_count", schedulerPhaseSummary.unpairedSkipDeadlineCount},
+        {"unobserved_boundary_deadline_count", unobservedBoundaryDeadlineCount},
+        {"phase_pairs", schedulerPhasePairJson},
+        {"records", schedulerPhaseRecordJson}};
     const QString mode = config_.mode == CompositorMode::Playback
                              ? QStringLiteral("playback")
                              : config_.mode == CompositorMode::Seek ? QStringLiteral("seek")
@@ -1062,6 +1122,10 @@ bool CompositorSpikeController::writeMetrics() {
         measurementStopB_.backpressureWaitCount - measurementStartB_.backpressureWaitCount;
     o.insert("diagnostic_case", diagnosticCaseName(config_.diagnosticCase));
     o.insert("diagnostic_timing", config_.diagnosticTiming);
+    if (config_.schedulerPhaseRing) {
+        o.insert("diagnostic_scheduler_phase_ring", true);
+        o.insert("scheduler_phase_attribution", schedulerPhaseAttribution);
+    }
     o.insert("effective_pair_rate", measureElapsedSeconds_ > 0
                                         ? static_cast<double>(measurement.displayed) /
                                               measureElapsedSeconds_
