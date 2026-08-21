@@ -81,6 +81,12 @@ AudioConsumeResult AudioFrameQueue::consume(float* destination, std::int64_t sam
     result.queuedSamplesAfterConsume = metrics_.queuedSamples;
     if (expectedGeneration != generation_)
         return result;
+    for (auto chunk = chunks_.rbegin(); chunk != chunks_.rend(); ++chunk) {
+        if (chunk->sourceGeneration == generation_) {
+            result.queueLastAvailableSampleExclusive = chunk->startSample + chunk->sampleCount;
+            break;
+        }
+    }
     while (result.audioSamples < samples && !chunks_.empty()) {
         AudioChunk& chunk = chunks_.front();
         if (chunk.sourceGeneration != generation_) {

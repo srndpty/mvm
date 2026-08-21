@@ -1,6 +1,7 @@
 #ifndef MVM_AUDIO_PREVIEW_RUNTIME_ATTRIBUTION_H
 #define MVM_AUDIO_PREVIEW_RUNTIME_ATTRIBUTION_H
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <optional>
@@ -27,6 +28,13 @@ struct RuntimeAttributionContextSnapshot {
     bool requestedFramePresented = false;
     std::int64_t pauseResumeCycleOrdinal = 0;
     std::int64_t resumeStartQpc = 0;
+    std::int64_t audioMasterVideoFrameCount = -1;
+    std::int64_t canonicalLastSeekTarget = -1;
+    std::int64_t currentSeekTargetSample = -1;
+    bool audioDecoderEof = false;
+    std::int64_t actualAudioEndExclusive = -1;
+    std::int64_t audioStartQpc = 0;
+    std::int64_t firstExactVideoDisplayQpc = 0;
 };
 
 class RuntimeAttributionContext final {
@@ -40,7 +48,14 @@ public:
                 decodeReady.load(std::memory_order_acquire),
                 requestedFramePresented.load(std::memory_order_acquire),
                 pauseResumeCycleOrdinal.load(std::memory_order_acquire),
-                resumeStartQpc.load(std::memory_order_acquire)};
+                resumeStartQpc.load(std::memory_order_acquire),
+                audioMasterVideoFrameCount.load(std::memory_order_acquire),
+                canonicalLastSeekTarget.load(std::memory_order_acquire),
+                currentSeekTargetSample.load(std::memory_order_acquire),
+                audioDecoderEof.load(std::memory_order_acquire),
+                actualAudioEndExclusive.load(std::memory_order_acquire),
+                audioStartQpc.load(std::memory_order_acquire),
+                firstExactVideoDisplayQpc.load(std::memory_order_acquire)};
     }
 
     std::atomic<int> mode{static_cast<int>(RuntimeAttributionMode::Unknown)};
@@ -52,7 +67,27 @@ public:
     std::atomic<bool> requestedFramePresented{false};
     std::atomic<std::int64_t> pauseResumeCycleOrdinal{0};
     std::atomic<std::int64_t> resumeStartQpc{0};
+    std::atomic<std::int64_t> audioMasterVideoFrameCount{-1};
+    std::atomic<std::int64_t> canonicalLastSeekTarget{-1};
+    std::atomic<std::int64_t> currentSeekTargetSample{-1};
+    std::atomic<bool> audioDecoderEof{false};
+    std::atomic<std::int64_t> actualAudioEndExclusive{-1};
+    std::atomic<std::int64_t> audioStartQpc{0};
+    std::atomic<std::int64_t> firstExactVideoDisplayQpc{0};
 };
+
+struct AudioConsumeTraceEntry {
+    std::int64_t occurrenceQpc = 0;
+    std::int64_t requestedSampleStart = -1;
+    std::int64_t requestedSampleCount = 0;
+    std::int64_t queuedSamplesBeforeConsume = 0;
+    std::int64_t actuallyConsumedSamples = 0;
+    std::int64_t queuedSamplesAfterConsume = 0;
+    std::int64_t queueLastAvailableSampleExclusive = -1;
+    std::uint64_t sourceGeneration = 0;
+};
+
+inline constexpr std::size_t kAudioConsumeTraceCapacity = 8;
 
 struct AudioUnderflowFirstSnapshot {
     std::int64_t occurrenceQpc = 0;
@@ -64,6 +99,10 @@ struct AudioUnderflowFirstSnapshot {
     std::int64_t queuedSamplesAfterConsume = 0;
     std::uint64_t sourceGeneration = 0;
     std::int64_t audioMasterSamplePosition = -1;
+    std::int64_t queueLastAvailableSampleExclusive = -1;
+    unsigned int endpointBufferFrames = 0;
+    std::array<AudioConsumeTraceEntry, kAudioConsumeTraceCapacity> consumeTrace{};
+    std::size_t consumeTraceCount = 0;
 };
 
 struct ClockRegressionFirstSnapshot {
@@ -113,6 +152,7 @@ struct RuntimeAttributionState {
 
 static_assert(std::is_trivially_copyable_v<RuntimeAttributionContextSnapshot>);
 static_assert(std::is_trivially_copyable_v<AudioUnderflowFirstSnapshot>);
+static_assert(std::is_trivially_copyable_v<AudioConsumeTraceEntry>);
 static_assert(std::is_trivially_copyable_v<ClockRegressionFirstSnapshot>);
 
 } // namespace mvm::audio

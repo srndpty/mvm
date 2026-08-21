@@ -173,22 +173,58 @@ QJsonObject attributionContextJson(const audio::RuntimeAttributionContextSnapsho
             {"decode_ready", value.decodeReady},
             {"requested_frame_presented", value.requestedFramePresented},
             {"pause_resume_cycle_ordinal", value.pauseResumeCycleOrdinal},
-            {"resume_start_qpc", value.resumeStartQpc}};
+            {"resume_start_qpc", value.resumeStartQpc},
+            {"audio_master_video_frame_count", value.audioMasterVideoFrameCount},
+            {"canonical_last_seek_target", value.canonicalLastSeekTarget},
+            {"current_seek_target_sample", value.currentSeekTargetSample},
+            {"audio_decoder_eof", value.audioDecoderEof},
+            {"actual_audio_end_exclusive", value.actualAudioEndExclusive},
+            {"audio_start_qpc", value.audioStartQpc},
+            {"first_exact_video_display_qpc", value.firstExactVideoDisplayQpc}};
+}
+
+QJsonObject audioConsumeTraceJson(const audio::AudioConsumeTraceEntry& value) {
+    return {{"occurrence_qpc", value.occurrenceQpc},
+            {"requested_sample_start", value.requestedSampleStart},
+            {"requested_sample_count", value.requestedSampleCount},
+            {"queued_samples_before_consume", value.queuedSamplesBeforeConsume},
+            {"actually_consumed_samples", value.actuallyConsumedSamples},
+            {"queued_samples_after_consume", value.queuedSamplesAfterConsume},
+            {"queue_last_available_sample_exclusive", value.queueLastAvailableSampleExclusive},
+            {"source_generation", static_cast<qint64>(value.sourceGeneration)}};
 }
 
 QJsonValue firstAudioUnderflowJson(const audio::RuntimeAttributionState& state) {
     const auto value = state.firstAudioUnderflow.snapshot();
     if (!value)
         return QJsonValue::Null;
-    return QJsonObject{{"occurrence_qpc", value->occurrenceQpc},
-                       {"context", attributionContextJson(value->context)},
-                       {"requested_sample_start", value->requestedSampleStart},
-                       {"requested_sample_count", value->requestedSampleCount},
-                       {"queued_samples_before_consume", value->queuedSamplesBeforeConsume},
-                       {"actually_consumed_samples", value->actuallyConsumedSamples},
-                       {"queued_samples_after_consume", value->queuedSamplesAfterConsume},
-                       {"source_generation", static_cast<qint64>(value->sourceGeneration)},
-                       {"audio_master_sample_position", value->audioMasterSamplePosition}};
+    QJsonArray trace;
+    for (std::size_t index = 0; index < value->consumeTraceCount; ++index)
+        trace.append(audioConsumeTraceJson(value->consumeTrace[index]));
+    const double audioStartToUnderflowMs =
+        value->context.audioStartQpc > 0 && value->occurrenceQpc >= value->context.audioStartQpc
+            ? qpcMs(value->context.audioStartQpc, value->occurrenceQpc)
+            : -1.0;
+    const double audioStartToFirstDisplayMs =
+        value->context.audioStartQpc > 0 &&
+                value->context.firstExactVideoDisplayQpc >= value->context.audioStartQpc
+            ? qpcMs(value->context.audioStartQpc, value->context.firstExactVideoDisplayQpc)
+            : -1.0;
+    return QJsonObject{
+        {"occurrence_qpc", value->occurrenceQpc},
+        {"context", attributionContextJson(value->context)},
+        {"requested_sample_start", value->requestedSampleStart},
+        {"requested_sample_count", value->requestedSampleCount},
+        {"queued_samples_before_consume", value->queuedSamplesBeforeConsume},
+        {"actually_consumed_samples", value->actuallyConsumedSamples},
+        {"queued_samples_after_consume", value->queuedSamplesAfterConsume},
+        {"queue_last_available_sample_exclusive", value->queueLastAvailableSampleExclusive},
+        {"source_generation", static_cast<qint64>(value->sourceGeneration)},
+        {"audio_master_sample_position", value->audioMasterSamplePosition},
+        {"endpoint_buffer_frames", static_cast<int>(value->endpointBufferFrames)},
+        {"audio_start_to_underflow_ms", audioStartToUnderflowMs},
+        {"audio_start_to_first_exact_video_display_ms", audioStartToFirstDisplayMs},
+        {"consume_trace", trace}};
 }
 
 QJsonValue firstClockRegressionJson(const audio::RuntimeAttributionState& state) {
@@ -289,6 +325,7 @@ bool P3AvSyncController::openPipelines() {
     audioWorker_ = std::make_shared<audio::AudioDecodeWorker>(audio::SourceId{1});
     audioSink_ = std::make_shared<audio::WasapiAudioSink>(audioWorker_->queue(), *audioClock_);
     audioSink_->setRuntimeAttribution(&state_->runtimeAttribution);
+    audioWorker_->setRuntimeAttribution(&state_->runtimeAttribution);
     std::string error;
     if (!workerA_->start(config_.sourceA.toUtf8().constData(), error) ||
         !workerB_->start(config_.sourceB.toUtf8().constData(), error) ||
@@ -313,15 +350,30 @@ bool P3AvSyncController::openPipelines() {
         constexpr long long kRequiredVideoPreroll = 8;
         const long long lastTarget =
             state_->audioMasterVideoFrameCount.load() - kRequiredVideoPreroll;
+        canonicalLastSeekTarget_ = lastTarget;
+        state_->runtimeAttribution.context.audioMasterVideoFrameCount.store(
+            state_->audioMasterVideoFrameCount.load(), std::memory_order_release);
+        state_->runtimeAttribution.context.canonicalLastSeekTarget.store(lastTarget,
+                                                                         std::memory_order_release);
         if (lastTarget < 0) {
             startShutdown(QStringLiteral("8 frame pre-roll を確保できる seek target がありません"),
                           true);
             return false;
         }
-        std::mt19937 random(config_.seed);
-        std::uniform_int_distribution<long long> target(0, lastTarget);
-        for (int index = 0; index < config_.seekCount; ++index)
-            seekTargets_.push_back(target(random));
+        if (config_.diagnosticFixedSeekTarget >= 0) {
+            if (config_.diagnosticFixedSeekTarget > lastTarget) {
+                startShutdown(QStringLiteral("diagnostic fixed seek target がcanonical domain外です"),
+                              true);
+                return false;
+            }
+            seekTargets_.assign(static_cast<std::size_t>(config_.seekCount),
+                                config_.diagnosticFixedSeekTarget);
+        } else {
+            std::mt19937 random(config_.seed);
+            std::uniform_int_distribution<long long> target(0, lastTarget);
+            for (int index = 0; index < config_.seekCount; ++index)
+                seekTargets_.push_back(target(random));
+        }
     } else {
         seekTargets_.push_back(0);
     }
@@ -333,9 +385,13 @@ bool P3AvSyncController::startAtFrame(long long targetFrame, bool measurementSta
     attribution.seekOrdinal.store(static_cast<std::int64_t>(seeks_.size() + 1),
                                   std::memory_order_release);
     attribution.currentSeekTarget.store(targetFrame, std::memory_order_release);
+    attribution.currentSeekTargetSample.store(targetFrame * audio::kSamplesPerVideoFrame,
+                                              std::memory_order_release);
     attribution.seekPending.store(true, std::memory_order_release);
     attribution.decodeReady.store(false, std::memory_order_release);
     attribution.requestedFramePresented.store(false, std::memory_order_release);
+    attribution.audioStartQpc.store(0, std::memory_order_release);
+    attribution.firstExactVideoDisplayQpc.store(0, std::memory_order_release);
     state_->audioMasterSchedulerEnabled.store(false, std::memory_order_release);
     state_->playbackSchedulerEnabled.store(false, std::memory_order_release);
     state_->audioMasterPendingSeekFrame.store(-1, std::memory_order_release);
@@ -590,6 +646,8 @@ bool P3AvSyncController::pollFirstDisplay() {
     record.requestToFirstVideoMs = qpcMs(requestStartQpc_, display.displayRecordQpc);
     record.firstDisplayApplicationAvProjectionValid = display.applicationAvProjectionValid;
     record.firstDisplayApplicationAvDeltaMs = display.applicationAvDeltaMs;
+    state_->runtimeAttribution.context.firstExactVideoDisplayQpc.store(
+        display.displayRecordQpc, std::memory_order_release);
     state_->p3SeekDiagnostics.active.store(false, std::memory_order_release);
     if (record.firstAudioSample != record.requestedAudioSample ||
         record.firstDisplayedVideoFrame != record.requestedFrame) {
@@ -1120,7 +1178,13 @@ bool P3AvSyncController::writeMetrics() const {
             {"application_av_projection_failure_count",
              static_cast<qint64>(measurementDisplays.size() - measurementDeltas.size())},
             {"endpoint_prefill_frames", static_cast<qint64>(sink.endpointPrefillFrames)},
+            {"endpoint_buffer_frames", static_cast<int>(sink.endpointBufferFrames)},
             {"endpoint_first_media_sample", sink.endpointFirstMediaSample},
+            {"audio_decoder_eof", audioDecoder.eof},
+            {"actual_audio_end_exclusive", audioDecoder.actualLastDecodedSampleExclusive},
+            {"audio_master_video_frame_count", state_->audioMasterVideoFrameCount.load()},
+            {"canonical_last_seek_target", canonicalLastSeekTarget_},
+            {"diagnostic_fixed_seek_target", config_.diagnosticFixedSeekTarget},
             {"clock_anchor_media_sample", sink.clockAnchorMediaSample},
             {"integrated_seek_requested", config_.mode == P3AvMode::Seek ? config_.seekCount : 0},
             {"integrated_seek_exact",
@@ -1229,7 +1293,13 @@ bool P3AvSyncController::writeMetrics() const {
         {"video_preroll_frames", 8},
         {"audio_preroll_ms", audio::kAudioPrerollMs},
         {"endpoint_prefill_frames", static_cast<qint64>(sink.endpointPrefillFrames)},
+        {"endpoint_buffer_frames", static_cast<int>(sink.endpointBufferFrames)},
         {"endpoint_first_media_sample", sink.endpointFirstMediaSample},
+        {"audio_decoder_eof", audioDecoder.eof},
+        {"actual_audio_end_exclusive", audioDecoder.actualLastDecodedSampleExclusive},
+        {"audio_master_video_frame_count", state_->audioMasterVideoFrameCount.load()},
+        {"canonical_last_seek_target", canonicalLastSeekTarget_},
+        {"diagnostic_fixed_seek_target", config_.diagnosticFixedSeekTarget},
         {"endpoint_start_device_position", static_cast<qint64>(sink.endpointStartDevicePosition)},
         {"clock_anchor_media_sample", sink.clockAnchorMediaSample},
         {"clock_anchor_device_position", static_cast<qint64>(sink.clockAnchorDevicePosition)},
@@ -1275,6 +1345,8 @@ bool P3AvSyncController::writeMetrics() const {
         {"video_worker_a_joined", a.joined},
         {"video_worker_b_joined", b.joined},
         {"lifecycle_violation_count", state_->lifecycleOrderViolationCount.load()}};
+    root.insert("first_audio_underflow_snapshot",
+                firstAudioUnderflowJson(state_->runtimeAttribution));
     QSaveFile file(config_.metricsPath);
     if (!file.open(QIODevice::WriteOnly))
         return false;

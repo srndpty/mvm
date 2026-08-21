@@ -1194,6 +1194,10 @@ foreach(_p5e_preflight_case Good NegativeScreenName)
             -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/p5-e4-display-preflight-${_p5e_preflight_case_name}")
 endforeach()
 
+mvm_add_test(p5_e4_a1_classifier_unit
+    COMMAND pwsh -NoProfile -File
+        "${CMAKE_SOURCE_DIR}/scripts/p5-e4-a1-eof-tail.ps1" -SelfTest)
+
 foreach(_p3_case Good NegativeCounter)
     string(TOLOWER "${_p3_case}" _p3_case_name)
     mvm_add_test(p3_a_contract_${_p3_case_name}

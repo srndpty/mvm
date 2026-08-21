@@ -53,12 +53,17 @@ int main() {
           "partial consume の sample identity を保つ");
     check(consumed.queuedSamplesBeforeConsume == 6 && consumed.queuedSamplesAfterConsume == 2,
           "consume と同じqueue lock内でbefore/afterを記録する");
+    check(consumed.queueLastAvailableSampleExclusive == 6,
+          "consume時点のqueue末尾sample exclusiveを記録する");
     check(queue.setGeneration({2}), "generation を前進できる");
     check(queue.push(chunk(1, 6, 2)) == AudioQueuePushResult::RejectedStaleGeneration,
           "旧 generation を拒否する negative test");
     check(queue.push(chunk(3, 6, 2)) == AudioQueuePushResult::RejectedFutureGeneration,
           "future generation を拒否する negative test");
     check(!queue.setGeneration({1}), "generation regression を拒否する negative test");
+    const auto emptyGeneration = queue.consume(output.data(), 1, {1});
+    check(emptyGeneration.queueLastAvailableSampleExclusive == -1,
+          "generation不一致をqueue末尾として報告しない negative test");
     const auto queueMetrics = queue.snapshot();
     check(queueMetrics.overflowRejectCount == 1 && queueMetrics.staleGenerationRejectCount == 1 &&
               queueMetrics.futureGenerationRejectCount == 1,
@@ -169,6 +174,10 @@ int main() {
     underflowA.occurrenceQpc = 100;
     underflowA.requestedSampleStart = 48000;
     underflowA.actuallyConsumedSamples = 128;
+    underflowA.queueLastAvailableSampleExclusive = 48128;
+    underflowA.endpointBufferFrames = 960;
+    underflowA.consumeTraceCount = 1;
+    underflowA.consumeTrace[0].requestedSampleStart = 48000;
     AudioUnderflowFirstSnapshot underflowB = underflowA;
     underflowB.occurrenceQpc = 200;
     underflowB.actuallyConsumedSamples = 0;
@@ -177,7 +186,11 @@ int main() {
           "2回目のunderflow snapshotによる上書きを拒否する negative test");
     const auto publishedUnderflow = firstUnderflow.snapshot();
     check(publishedUnderflow && publishedUnderflow->occurrenceQpc == 100 &&
-              publishedUnderflow->actuallyConsumedSamples == 128,
+              publishedUnderflow->actuallyConsumedSamples == 128 &&
+              publishedUnderflow->queueLastAvailableSampleExclusive == 48128 &&
+              publishedUnderflow->endpointBufferFrames == 960 &&
+              publishedUnderflow->consumeTraceCount == 1 &&
+              publishedUnderflow->consumeTrace[0].requestedSampleStart == 48000,
           "最初のunderflow値を保持する");
 
     FirstFailureCapture<ClockRegressionFirstSnapshot> firstClockRegression;

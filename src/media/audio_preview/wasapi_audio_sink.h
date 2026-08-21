@@ -5,6 +5,7 @@
 #include "media/audio_preview/audio_frame_queue.h"
 #include "media/audio_preview/runtime_attribution.h"
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -32,6 +33,7 @@ struct WasapiSnapshot {
     std::int64_t playStartFirstConsumedSample = -1;
     std::int64_t lastConsumedSampleExclusive = -1;
     std::uint64_t endpointPrefillFrames = 0;
+    unsigned int endpointBufferFrames = 0;
     std::int64_t endpointFirstMediaSample = -1;
     std::uint64_t endpointStartDevicePosition = 0;
     std::int64_t clockAnchorMediaSample = -1;
@@ -121,6 +123,9 @@ private:
     bool endpointPrefillRequired_ = true;
     std::int64_t nextRequestedSample_ = -1;
     RuntimeAttributionState* attribution_ = nullptr;
+    std::array<AudioConsumeTraceEntry, kAudioConsumeTraceCapacity> recentConsumeTrace_{};
+    std::size_t recentConsumeTraceCount_ = 0;
+    std::size_t recentConsumeTraceNext_ = 0;
 };
 
 } // namespace mvm::audio

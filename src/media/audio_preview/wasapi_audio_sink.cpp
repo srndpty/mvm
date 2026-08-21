@@ -191,6 +191,7 @@ bool WasapiAudioSink::open(std::string& error, float sessionVolume) {
     metrics_.deviceFormat = AudioFormatInfo{static_cast<int>(mixFormat_->nSamplesPerSec),
                                             static_cast<int>(mixFormat_->nChannels),
                                             sampleFormatName(deviceSampleFormat)};
+    metrics_.endpointBufferFrames = bufferFrames_;
     metrics_.open = true;
     metrics_.joined = false;
     acceptingCommands_ = true;
@@ -284,6 +285,8 @@ bool WasapiAudioSink::play(std::int64_t mediaStartSample, SourceGeneration gener
         return false;
     }
     playing_ = true;
+    if (attribution_)
+        attribution_->context.audioStartQpc.store(currentQpc(), std::memory_order_release);
     {
         std::lock_guard lock(mutex_);
         if (didPrefill) {
@@ -422,6 +425,9 @@ bool WasapiAudioSink::resetForSeek(std::string& error) {
         return false;
     }
     endpointPrefillRequired_ = true;
+    recentConsumeTrace_ = {};
+    recentConsumeTraceCount_ = 0;
+    recentConsumeTraceNext_ = 0;
     {
         std::lock_guard lock(mutex_);
         metrics_.endpointPrefillFrames = 0;
@@ -510,15 +516,42 @@ bool WasapiAudioSink::renderAvailable() {
     const std::int64_t requestedSampleStart = nextRequestedSample_;
     const AudioConsumeResult consumed =
         queue_.consume(sourceScratch_.data(), sourceNeeded, expected);
+    const AudioConsumeTraceEntry trace{currentQpc(),
+                                       requestedSampleStart,
+                                       sourceNeeded,
+                                       consumed.queuedSamplesBeforeConsume,
+                                       consumed.audioSamples,
+                                       consumed.queuedSamplesAfterConsume,
+                                       consumed.queueLastAvailableSampleExclusive,
+                                       expected.value};
+    recentConsumeTrace_[recentConsumeTraceNext_] = trace;
+    recentConsumeTraceNext_ = (recentConsumeTraceNext_ + 1) % kAudioConsumeTraceCapacity;
+    recentConsumeTraceCount_ = std::min(recentConsumeTraceCount_ + 1, kAudioConsumeTraceCapacity);
     nextRequestedSample_ = requestedSampleStart < 0 ? -1 : requestedSampleStart + sourceNeeded;
     if (consumed.audioSamples < sourceNeeded) {
         queue_.noteUnderflow(sourceNeeded - consumed.audioSamples);
         if (attribution_) {
             const auto clock = clock_.snapshot();
-            attribution_->firstAudioUnderflow.capture(
-                {currentQpc(), attribution_->context.snapshot(), requestedSampleStart, sourceNeeded,
-                 consumed.queuedSamplesBeforeConsume, consumed.audioSamples,
-                 consumed.queuedSamplesAfterConsume, expected.value, clock.mediaSamplePosition});
+            AudioUnderflowFirstSnapshot snapshot;
+            snapshot.occurrenceQpc = trace.occurrenceQpc;
+            snapshot.context = attribution_->context.snapshot();
+            snapshot.requestedSampleStart = requestedSampleStart;
+            snapshot.requestedSampleCount = sourceNeeded;
+            snapshot.queuedSamplesBeforeConsume = consumed.queuedSamplesBeforeConsume;
+            snapshot.actuallyConsumedSamples = consumed.audioSamples;
+            snapshot.queuedSamplesAfterConsume = consumed.queuedSamplesAfterConsume;
+            snapshot.sourceGeneration = expected.value;
+            snapshot.audioMasterSamplePosition = clock.mediaSamplePosition;
+            snapshot.queueLastAvailableSampleExclusive = consumed.queueLastAvailableSampleExclusive;
+            snapshot.endpointBufferFrames = bufferFrames_;
+            snapshot.consumeTraceCount = recentConsumeTraceCount_;
+            const std::size_t first =
+                (recentConsumeTraceNext_ + kAudioConsumeTraceCapacity - recentConsumeTraceCount_) %
+                kAudioConsumeTraceCapacity;
+            for (std::size_t index = 0; index < recentConsumeTraceCount_; ++index)
+                snapshot.consumeTrace[index] =
+                    recentConsumeTrace_[(first + index) % kAudioConsumeTraceCapacity];
+            attribution_->firstAudioUnderflow.capture(snapshot);
         }
     }
     const std::uint8_t* input[] = {reinterpret_cast<const std::uint8_t*>(sourceScratch_.data())};
