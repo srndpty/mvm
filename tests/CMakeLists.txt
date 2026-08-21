@@ -962,6 +962,16 @@ target_include_directories(mvm_test_p2_render_opportunity PRIVATE ${CMAKE_CURREN
 target_link_libraries(mvm_test_p2_render_opportunity PRIVATE mvm::warnings)
 mvm_add_test(p2_render_opportunity_unit COMMAND mvm_test_p2_render_opportunity)
 
+# P2-Q6はactual presentation opportunity ordinalからsource domainを閉じる
+# pure/offline proofであり、production schedulerへは接続しない。
+add_executable(mvm_test_p2_opportunity_ordinal
+    harness/test_p2_opportunity_ordinal_replay.cpp
+    harness/p2_opportunity_ordinal_replay.cpp
+)
+target_include_directories(mvm_test_p2_opportunity_ordinal PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/harness)
+target_link_libraries(mvm_test_p2_opportunity_ordinal PRIVATE mvm::warnings)
+mvm_add_test(p2_opportunity_ordinal_unit COMMAND mvm_test_p2_opportunity_ordinal)
+
 if(MVM_ENABLE_QT)
     add_executable(mvm_p2_scheduler_replay
         harness/p2_scheduler_replay.cpp
@@ -973,6 +983,14 @@ if(MVM_ENABLE_QT)
         Qt6::Core
         mvm::warnings
     )
+
+    add_executable(mvm_p2_opportunity_ordinal_replay
+        harness/p2_opportunity_ordinal_replay_cli.cpp
+        harness/p2_opportunity_ordinal_replay.cpp
+    )
+    target_include_directories(mvm_p2_opportunity_ordinal_replay
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/harness)
+    target_link_libraries(mvm_p2_opportunity_ordinal_replay PRIVATE Qt6::Core mvm::warnings)
 endif()
 
 add_executable(mvm_test_source_frame_buffer_interruptible_wait

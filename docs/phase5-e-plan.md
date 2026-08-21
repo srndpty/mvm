@@ -1054,6 +1054,49 @@ run 2は90 drop中87件がfalseで、actual loss対応は3件だけだった。
 流用せず、P5-E closureは**BLOCKED**を維持する。raw、classification、summary、manifestは
 [`bench/results/p5-e4-p2-q5-2be57c6/`](../bench/results/p5-e4-p2-q5-2be57c6/README.md)へ保存する。
 
+### P2-Q6 — opportunity-ordinal scheduler proof
+
+Q5 evidenceとP2-D5-1 historical FAILを変更せず、productionへ接続しないpure/offline schedulerを
+追加した。actual swap間隔を開始時と終了時で不変なexact refresh rationalへ整数演算で投影し、最初の
+swapをopportunity ordinal 0として以後のordinalを構成する。source targetは
+`floor(ordinal * sourceFpsNumerator * refreshDenominator /
+(sourceFpsDenominator * refreshNumerator))`で決める。同じtargetはrepeat、targetが2以上進む場合は
+中間source frameをtrue drop、frame 3600以降はsource domain外として表示しない。
+
+60 / 59.95 / 120 / 30 Hz、actual opportunity 1件欠落、連続2件欠落、duplicate / burst、measurement
+start / end境界の15 scenarioを固定した。refresh rational変更、DWM authority欠損・discontinuity、
+render↔swap対応欠損、midpoint ambiguity、ordinal regressionは救済せずfail-closedにする。15/15がPASSし、
+既存Q4 unitと合わせて2/2 CTestがPASSした。threshold 2%はproofのexit criteriaに使用していない。
+
+Q5のimmutable 2 traceをreplayした結果、run 1は`displayed=3582 / trueDropped=18 / repeated=14`、
+run 2は`3585 / 15 / 12`となった。両runでframe 0開始、unique frame strictly increasing、frame 3600
+非表示、`displayed + trueDropped = 3600`を満たした。Q5の`TRUE_OPPORTUNITY_LOSS`は現行synthetic
+skip発生地点だけを分類した値なので、Q6の全ledger accountingとは直接同値ではない。差は次の恒等式で
+全数を説明した。
+
+```text
+Q6 trueDropped
+  = complete ordinal列に固有のcadence/domain loss
+  + Q5 TRUE_OPPORTUNITY_LOSS at synthetic skip sites
+  + synthetic skip地点以外のordinal gap source loss
+
+run 1: 18 = 5 + 7 + 6
+run 2: 15 = 3 + 3 + 9
+```
+
+したがってQ6 proofは成立し、P2-D5-2 contract correctionを提案できる。D5-2はP2 formal playback
+harness固有のpresentation-opportunity schedulerとし、P3 audio-masterを含む共有時計へ波及させない。
+historical P2-D5-1 FAILは再分類せず、D5-2でもdrop threshold 2%を維持する。ただし本sectionは
+offline proofであり、D5-2 runtime / checkerはまだ未実装、P5-E closureは**BLOCKED**のままである。
+clean checkpoint後の再現とimmutable artifact生成には次を使う。
+
+```powershell
+pwsh scripts/build.ps1 -Target mvm_test_p2_opportunity_ordinal
+pwsh scripts/build.ps1 -Target mvm_p2_opportunity_ordinal_replay
+pwsh scripts/p5-e4-p2-q6-opportunity.ps1 `
+  -OutputDirectory bench/results/p5-e4-p2-q6-<clean-sha>
+```
+
 ---
 
 ## 7. 検証手順
