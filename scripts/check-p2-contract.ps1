@@ -49,24 +49,6 @@ function Require-Authority($Value, [long]$RefreshNumerator, [long]$RefreshDenomi
     return [pscustomobject]@{ count=$count; qpc=$qpc }
 }
 
-function Rounded-Intervals([long]$DeltaQpc, [long]$RefreshNumerator,
-                           [long]$RefreshDenominator, [long]$QpcFrequency,
-                           [string]$Prefix) {
-    if ($DeltaQpc -le 0) {
-        Add-Failure "$Prefix のQPC差分は正数である必要があります"
-        return -1L
-    }
-    $scaled = [decimal]$DeltaQpc * [decimal]$RefreshNumerator
-    $divisor = [decimal]$QpcFrequency * [decimal]$RefreshDenominator
-    $quotient = [long][decimal]::Floor($scaled / $divisor)
-    $remainder = $scaled - ([decimal]$quotient * $divisor)
-    if ($remainder -eq $divisor - $remainder) {
-        Add-Failure "$Prefix はrefresh midpointで曖昧です"
-        return -1L
-    }
-    return $quotient + $(if ($remainder -gt $divisor - $remainder) { 1L } else { 0L })
-}
-
 try {
     $raw = Get-Content -LiteralPath $Json -Raw -Encoding utf8 | ConvertFrom-Json
 } catch {
@@ -187,7 +169,12 @@ if ($Mode -eq 'Playback') {
     $refreshDenominator = Require-Property $raw 'formal_refresh_denominator'
     $sourceFpsNumerator = Require-Property $raw 'formal_source_fps_numerator'
     $sourceFpsDenominator = Require-Property $raw 'formal_source_fps_denominator'
+    # QPCはopportunity序数の根拠ではないが、continuity cross-checkの基準として
+    # 記録されている必要がある。
     $qpcFrequency = [long](Require-Property $raw 'formal_qpc_frequency')
+    if ($qpcFrequency -le 0) {
+        Add-Failure "formal_qpc_frequencyは正数である必要があります (actual=$qpcFrequency)"
+    }
     Require-Equal $sourceFpsNumerator 60 'formal_source_fps_numerator'
     Require-Equal $sourceFpsDenominator 1 'formal_source_fps_denominator'
     if ($null -eq $refreshNumerator -or [long]$refreshNumerator -le 0) {
@@ -197,11 +184,21 @@ if ($Mode -eq 'Playback') {
         Add-Failure "formal_refresh_denominatorは正数である必要があります (actual=$refreshDenominator)"
     }
 
-    # producer summaryを信じず、raw opportunity ledgerから全accountingを再計算する。
+    # producer summaryを信じず、raw opportunity ledgerとDWM authority sampleから
+    # 全accountingを独立に再計算する。opportunity序数の根拠はrefresh countだけで、
+    # QPC差分をopportunity間隔へ丸める規則は契約に持ち込まない。
+    Require-Equal (Require-Property $raw 'formal_opportunity_anchored') $true `
+        'formal_opportunity_anchored'
+    $origin = [long](Require-Property $raw 'formal_opportunity_origin_refresh_count')
+    if ($origin -le 0) {
+        Add-Failure "formal_opportunity_origin_refresh_countは正数である必要があります (actual=$origin)"
+    }
     $ledger = @(Require-Property $raw 'formal_opportunity_ledger')
     if ($ledger.Count -eq 0) { Add-Failure 'formal_opportunity_ledgerが空です' }
     $previousActualOrdinal = -1L
     $previousSwapQpc = 0L
+    $previousRenderOrdinal = -1L
+    $previousSwapOrdinal = -1L
     $previousPostAuthority = $null
     $previousUnique = -1L
     $displayedUnique = 0L
@@ -209,11 +206,13 @@ if ($Mode -eq 'Playback') {
     $gapTrueDrop = 0L
     $forwardReconciliationCount = 0L
     $lostOpportunityCount = 0L
+    $supersededTotal = 0L
+    $swappedCompositions = 0L
     $firstForward = $null
     for ($index = 0; $index -lt $ledger.Count; ++$index) {
         $record = $ledger[$index]
         $prefix = "formal_opportunity_ledger[$index]"
-        $lastCommitted = [long](Require-Property $record 'last_committed_opportunity_ordinal')
+        $lastFinalized = [long](Require-Property $record 'last_finalized_opportunity_ordinal')
         $predicted = [long](Require-Property $record 'predicted_opportunity_ordinal')
         $actual = [long](Require-Property $record 'actual_opportunity_ordinal')
         $renderBeginQpc = [long](Require-Property $record 'render_begin_qpc')
@@ -229,37 +228,35 @@ if ($Mode -eq 'Playback') {
         $recordedRepeat = [bool](Require-Property $record 'repeat')
         $recordedDrop = [long](Require-Property $record 'true_drop_before_this_opportunity')
         $recordedLost = [long](Require-Property $record 'lost_opportunity_count')
+        $superseded = [long](Require-Property $record 'superseded_candidate_count')
+        $recordedForward = [bool](Require-Property $record 'forward_reconciliation')
         $classification = Require-Property $record 'classification'
         $pre = Require-Authority (Require-Property $record 'pre_render_authority') `
             $refreshNumerator $refreshDenominator "$prefix.pre_render_authority"
         $post = Require-Authority (Require-Property $record 'post_swap_authority') `
             $refreshNumerator $refreshDenominator "$prefix.post_swap_authority"
 
-        Require-Equal $lastCommitted $previousActualOrdinal `
-            "$prefix.last_committed_opportunity_ordinal"
-        Require-Equal $renderOrdinal $index "$prefix.render_ordinal"
-        Require-Equal $swapOrdinal $index "$prefix.swap_ordinal"
+        Require-Equal $lastFinalized $previousActualOrdinal `
+            "$prefix.last_finalized_opportunity_ordinal"
+        if ($superseded -lt 0) { Add-Failure "$prefix.superseded_candidate_countが負です" }
+        # 同一opportunity内の複数swapはledger 1件へ畳まれる。swap ordinalは
+        # supersedeされたcandidateを含めて連続でなければならない。
+        Require-Equal $swapOrdinal ($previousSwapOrdinal + 1 + $superseded) "$prefix.swap_ordinal"
+        if ($renderOrdinal -le $previousRenderOrdinal) {
+            Add-Failure "$prefix.render_ordinalが前recordから前進していません"
+        }
         if ($renderBeginQpc -le 0 -or $renderEndQpc -lt $renderBeginQpc -or
-            $swapQpc -lt $renderEndQpc) {
+            $swapQpc -lt $renderEndQpc -or $swapQpc -le $previousSwapQpc) {
             Add-Failure "$prefix のrender/swap QPC順序が不正です"
         }
-        $recalculatedPredicted = 0L
-        $recalculatedActual = 0L
-        if ($index -gt 0) {
-            $renderIntervals = Rounded-Intervals ($renderBeginQpc - $previousSwapQpc) `
-                $refreshNumerator $refreshDenominator $qpcFrequency "$prefix predicted"
-            if ($renderIntervals -eq 0) { $renderIntervals = 1 }
-            $recalculatedPredicted = $previousActualOrdinal + $renderIntervals
-            $swapIntervals = Rounded-Intervals ($swapQpc - $previousSwapQpc) `
-                $refreshNumerator $refreshDenominator $qpcFrequency "$prefix actual"
-            if ($swapIntervals -le 0) {
-                Add-Failure "$prefix actual intervalは正数である必要があります"
-            }
-            $recalculatedActual = $previousActualOrdinal + $swapIntervals
-        }
+        # ordinalはrefresh count authorityだけから再計算する。
+        $recalculatedActual = $post.count - $origin
+        $recalculatedPredicted = if ($index -eq 0) { 0L } else { $pre.count - $origin + 1L }
         Require-Equal $predicted $recalculatedPredicted "$prefix.predicted_opportunity_ordinal"
         Require-Equal $actual $recalculatedActual "$prefix.actual_opportunity_ordinal"
-        if ($actual -lt $predicted) { Add-Failure "$prefix でactual<predictedを検出しました" }
+        if ($actual -le $previousActualOrdinal) {
+            Add-Failure "$prefix でopportunity ordinalが前進していません"
+        }
         Require-Equal $recordNumerator $refreshNumerator "$prefix.refresh_numerator"
         Require-Equal $recordDenominator $refreshDenominator "$prefix.refresh_denominator"
         Require-Equal (Require-Property $record 'authority_continuous') $true `
@@ -292,8 +289,9 @@ if ($Mode -eq 'Playback') {
             $presented -lt 0 -or $presented -ge [long]$requiredFrames) {
             Add-Failure "$prefix のrendered source frameがsource domain外です"
         }
+        # finalizeされたのはlatest candidateであり、その描画frameはそのcandidateの
+        # predicted ordinalのtargetでなければならない。
         Require-Equal $presented $predictedSource "$prefix.presented_source_frame"
-        if ($presented -gt $expected) { Add-Failure "$prefix presentedがactual targetを越えました" }
         $isRepeat = $presented -eq $previousUnique
         Require-Equal $recordedRepeat $isRepeat "$prefix.repeat"
         $trueDropBefore = if ($isRepeat) { 0L } else { $presented - $previousUnique - 1L }
@@ -308,22 +306,27 @@ if ($Mode -eq 'Playback') {
             $gapTrueDrop += $trueDropBefore
             $previousUnique = $presented
         }
-        $lost = $actual - $predicted
+        $lost = if ($index -eq 0) { $actual } else { $actual - $previousActualOrdinal - 1L }
         Require-Equal $recordedLost $lost "$prefix.lost_opportunity_count"
+        Require-Equal $recordedForward ($actual -gt $predicted) "$prefix.forward_reconciliation"
         $expectedClassification = if ($lost -gt 0) { 'FORWARD_OPPORTUNITY_LOSS' } else { 'EXACT' }
         Require-Equal $classification $expectedClassification "$prefix.classification"
-        if ($lost -gt 0) {
-            ++$forwardReconciliationCount
-            $lostOpportunityCount += $lost
-            if ($null -eq $firstForward) { $firstForward = $record }
-        }
+        if ($actual -gt $predicted) { ++$forwardReconciliationCount }
+        $lostOpportunityCount += $lost
+        if ($lost -gt 0 -and $null -eq $firstForward) { $firstForward = $record }
+        $supersededTotal += $superseded
+        $swappedCompositions += 1 + $superseded
         $previousActualOrdinal = $actual
         $previousSwapQpc = $swapQpc
+        $previousRenderOrdinal = $renderOrdinal
+        $previousSwapOrdinal = $swapOrdinal
         $previousPostAuthority = $post
     }
     $tailTrueDrop = [long]$requiredFrames - $previousUnique - 1L
     if ($tailTrueDrop -lt 0) { Add-Failure 'tail_true_dropが負になりました' }
     $trueDrop = $gapTrueDrop + $tailTrueDrop
+    Require-Equal (Require-Property $raw 'formal_finalized_opportunity_count') $ledger.Count `
+        'formal_finalized_opportunity_count'
     Require-Equal (Require-Property $raw 'formal_displayed_unique_count') $displayedUnique `
         'formal_displayed_unique_count'
     Require-Equal (Require-Property $raw 'formal_repeated_opportunity_count') $repeated `
@@ -337,6 +340,10 @@ if ($Mode -eq 'Playback') {
         $forwardReconciliationCount 'formal_forward_reconciliation_count'
     Require-Equal (Require-Property $raw 'formal_lost_opportunity_count') `
         $lostOpportunityCount 'formal_lost_opportunity_count'
+    Require-Equal (Require-Property $raw 'formal_superseded_candidate_count') `
+        $supersededTotal 'formal_superseded_candidate_count'
+    Require-Equal (Require-Property $raw 'formal_swapped_composition_count') `
+        $swappedCompositions 'formal_swapped_composition_count'
     $firstEvent = Require-Property $raw 'formal_first_reconciliation_event'
     Require-Equal (Require-Property $firstEvent 'captured') ($null -ne $firstForward) `
         'formal_first_reconciliation_event.captured'
@@ -354,7 +361,9 @@ if ($Mode -eq 'Playback') {
     Require-Zero $raw 'measurement_drop_scheduler_deadline'
     if ($null -ne $scheduled) { Require-Equal ([long]$scheduled) ([long]$requiredFrames) `
             'measurement_scheduled_output_count' }
-    if ($null -ne $displayed) { Require-Equal ([long]$displayed) $displayedUnique `
+    # displayed compositionはswapされたcompositionであり、finalizeされた
+    # presentation opportunityともunique source frameとも同義ではない。
+    if ($null -ne $displayed) { Require-Equal ([long]$displayed) $swappedCompositions `
             'measurement_displayed_composition_count' }
     if ($null -ne $dropped) { Require-Equal ([long]$dropped) $trueDrop `
             'measurement_dropped_output_count' }

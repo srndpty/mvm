@@ -132,7 +132,7 @@ QJsonObject presentationFirstEventJson(const gpu::PresentationOpportunityFirstEv
             {"classification",
              QString::fromLatin1(
                  gpu::presentationOpportunityClassificationName(value.classification))},
-            {"last_committed_opportunity_ordinal", value.lastCommittedOpportunityOrdinal},
+            {"last_finalized_opportunity_ordinal", value.lastFinalizedOpportunityOrdinal},
             {"predicted_opportunity_ordinal", value.predictedOpportunityOrdinal},
             {"actual_opportunity_ordinal", value.actualOpportunityOrdinal},
             {"render_begin_qpc", value.renderBeginQpc},
@@ -1235,8 +1235,8 @@ bool CompositorSpikeController::writeMetrics() {
     QJsonArray formalOpportunityLedger;
     for (const auto& record : formalOpportunitySnapshot.records) {
         formalOpportunityLedger.append(
-            QJsonObject{{"last_committed_opportunity_ordinal",
-                         record.lastCommittedOpportunityOrdinal},
+            QJsonObject{{"last_finalized_opportunity_ordinal",
+                         record.lastFinalizedOpportunityOrdinal},
                         {"predicted_opportunity_ordinal",
                          record.predictedOpportunityOrdinal},
                         {"actual_opportunity_ordinal", record.actualOpportunityOrdinal},
@@ -1258,6 +1258,8 @@ bool CompositorSpikeController::writeMetrics() {
                         {"repeat", record.repeat},
                         {"true_drop_before_this_opportunity", record.trueDropBefore},
                         {"lost_opportunity_count", record.lostOpportunityCount},
+                        {"superseded_candidate_count", record.supersededCandidateCount},
+                        {"forward_reconciliation", record.forwardReconciliation},
                         {"classification",
                          QString::fromLatin1(gpu::presentationOpportunityClassificationName(
                              record.classification))}});
@@ -1391,6 +1393,15 @@ bool CompositorSpikeController::writeMetrics() {
                    formalOpportunitySnapshot.forwardReconciliationCount},
                   {"formal_lost_opportunity_count",
                    formalOpportunitySnapshot.lostOpportunityCount},
+                  {"formal_superseded_candidate_count",
+                   formalOpportunitySnapshot.supersededCandidateCount},
+                  {"formal_swapped_composition_count",
+                   formalOpportunitySnapshot.swappedCompositionCount},
+                  {"formal_finalized_opportunity_count",
+                   static_cast<qint64>(formalOpportunitySnapshot.records.size())},
+                  {"formal_opportunity_anchored", formalOpportunitySnapshot.anchored},
+                  {"formal_opportunity_origin_refresh_count",
+                   static_cast<qint64>(formalOpportunitySnapshot.originRefreshCount)},
                   {"formal_first_reconciliation_event",
                    presentationFirstEventJson(formalOpportunitySnapshot.firstEvent)},
                   {"diagnostic_synthetic_deadline_drop_count",

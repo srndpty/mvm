@@ -1180,6 +1180,64 @@ pwsh scripts/test.ps1
 pwsh scripts/lint.ps1
 ```
 
+### P2-D5-2 / F2 — Refresh-Count Anchored Opportunity Commit
+
+[事実] clean production SHA `5ebedc2f`から再buildし、worktree外
+`p2-d5-2-formal-5ebedc2-20260822-142634`へcanonical P2 matrixを`-StopOnFailure`で実行した。
+Playback run 1が`process_exit_code=3` / `contract_exit_code=3`で停止し、run 2/3とSeek 3 runは実行していない。
+`provenance_unchanged_during_matrix=true`、`dirty_worktree=false`、`p2_pass=false`である。runtime blockerは
+`formal_opportunity_error=AMBIGUOUS_OPPORTUNITY`、`formal_opportunity_authority_valid=false`で、7本目の
+compositionで中断した。ledgerは6件、`displayed_composition_count=7`だった。直前recordはordinal 6の
+`FORWARD_OPPORTUNITY_LOSS`（authority continuous、render 82,734 tick、swap間隔281,619 tick = 1.688 refresh）で、
+次のswapが半refresh未満で着地した。このrunは**P2-D5-2 formal FAIL**として不変保存し、F2以後のPASSで
+書き換えない。
+
+F1の残存bugは、opportunity序数を`roundedRefreshIntervals(swapQpc - lastSwapQpc)`でinterval毎に丸めた点にある。
+`round(1.688)=2`、`round(<0.5)=0`となり、refresh phaseの残差がinterval毎の丸めで捨てられる。これは
+presentation authorityの喪失ではなく、Q6が正常scenarioとして証明済みのduplicate / burstとも整合しない。
+
+F2ではQ5のDWM refresh count / VBlank mappingをpure helper
+`src/media/gpu_preview/presentation_refresh_authority.h` へ抽出し、opportunity序数の一次authorityを
+refresh countにする。`ordinal = refreshCount - originRefreshCount`であり、丸めも独自の`+1`規則も持たない。
+originは最初のswapのpost-swap refresh countで固定する。QPCはrender/swapのcontinuity cross-checkと
+diagnosticsに限定し、序数の根拠にはしない。
+
+`frameSwapped`ごとに即finalizeせず、refresh opportunityごとにpending latest candidateを保持する。
+
+```text
+actual > pending   直前pendingをlatest candidateでfinalizeし、間のopportunityをlossとしてaccountする
+actual == pending  同一opportunity内の追加swap。ambiguousではなくsupersedeとして最新candidateを保持する
+actual < pending   regression fatal
+authority discontinuity / render↔swap pairing不明   fatal
+```
+
+pre-render予測も`lastSwapQpc + T`ではなくpre-render DWM authorityから作る
+（`predicted = (preRenderRefreshCount - origin) + 1`、最初のrenderのみopportunity 0）。measurement endでは
+pending opportunityをfinalizeしてからtail accountingへ入る。counterは
+`swapped composition` / `finalized opportunity` / `unique displayed source frame`を分離し、
+`frameSwapped` countとformal `displayed`を同義にしない。
+
+ledgerとsummaryには`last_finalized_opportunity_ordinal`、`superseded_candidate_count`、
+`forward_reconciliation`、`formal_opportunity_origin_refresh_count`、`formal_swapped_composition_count`、
+`formal_finalized_opportunity_count`、`formal_superseded_candidate_count`を追加する。checkerはproducer
+summaryを信じず、記録されたrefresh count sampleとoriginだけからpredicted / actual ordinalを再計算し、
+swap ordinalの連続性を`previous + 1 + superseded`で検査し、supersede、loss、repeat、source gap、tailを
+独立に再計算する。checkerからは丸め規則（`Rounded-Intervals`）を削除した。
+
+D5-2 Playbackでは`measurement_displayed_composition_count`をswapped composition数と等値で検査する。
+59.95 Hz / 60 fpsではopportunityごとにtargetが必ず前進するためrepeatは発生せず、描画しないcallbackの
+swapが混ざればこの等式が崩れてfail-closedになる。repeatやduplicate callbackが実測で現れた場合は
+契約違反として扱い、等式を緩めない。
+
+[事実] 今回観測した`1.688T → <0.5T`列をdeterministic regressionとして固定した。同一refresh countの
+2 swapがordinalを前進させないこと、latest candidateのみをfinalizeすること、refresh count `+1` / `+N`、
+count regression、qpcVBlank discontinuity、refresh rational変更、render/swap pairing欠落、swap ordinal
+飛び、measurement endのpending finalizeを`mvm_test_presentation_opportunity_scheduler`で検査する。
+checker側は`SupersededGood`を対照群とし、`NegativeOpportunitySupersededSwapOrdinal`（同一opportunityを
+新ordinal扱い）、`NegativeOpportunityFirstCandidate`（first candidate保持）、
+`NegativeOpportunityDisplayedCount`（displayedをfinalized opportunity数と同義化）、
+`NegativeOpportunityOrigin`（origin ずらし）で1 fieldずつ壊して検出を確認する。
+
 ---
 
 ## 7. 検証手順

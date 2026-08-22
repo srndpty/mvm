@@ -247,14 +247,9 @@ protected:
 
             output = formalDecision.targetFrame;
             formalOpportunityRepeat = formalDecision.repeat || formalDecision.duplicateCallback;
-            if (!formalOpportunityRepeat) {
-                state_->scheduledOutputCount.fetch_add(1 + formalDecision.trueDropBefore,
-                                                       std::memory_order_relaxed);
-                state_->formalOpportunityTrueDropCount.fetch_add(formalDecision.trueDropBefore,
-                                                                 std::memory_order_relaxed);
-                state_->droppedOutputCount.fetch_add(formalDecision.trueDropBefore,
-                                                     std::memory_order_relaxed);
-            }
+            // scheduled/dropped accountingはrender時点では確定しない。同一
+            // opportunity内のswapがsupersedeされ得るため、closeでfinalize済み
+            // ledgerからまとめて数える。
         } else if (output < 0 && audioMasterEnabled) {
             const auto master = state_->audioMasterClock;
             const auto clockSnapshot = master ? master->snapshot() : audio::AudioClockSnapshot{};
@@ -758,11 +753,14 @@ private:
                         fail(std::string("P2-D5-2 opportunity close失敗: ") +
                              gpu::presentationOpportunityErrorName(snapshot.error));
                     } else {
-                        state_->formalOpportunityTrueDropCount.fetch_add(snapshot.tailTrueDrop,
+                        // finalize済みopportunityのsource domain accountingだけを
+                        // measurement counterへ反映する。
+                        state_->formalOpportunityTrueDropCount.fetch_add(snapshot.trueDrop,
                                                                          std::memory_order_relaxed);
-                        state_->droppedOutputCount.fetch_add(snapshot.tailTrueDrop,
+                        state_->droppedOutputCount.fetch_add(snapshot.trueDrop,
                                                              std::memory_order_relaxed);
-                        state_->scheduledOutputCount.fetch_add(snapshot.tailTrueDrop,
+                        state_->scheduledOutputCount.fetch_add(snapshot.displayedUnique +
+                                                                   snapshot.trueDrop,
                                                                std::memory_order_relaxed);
                     }
                     const long long shadowClosed = scheduler_.closeBefore(
@@ -800,8 +798,7 @@ private:
                     1,
                     state_->formalRefreshNumerator.load(std::memory_order_relaxed),
                     state_->formalRefreshDenominator.load(std::memory_order_relaxed),
-                    static_cast<long long>(gpu::qpcFrequency()),
-                    true};
+                    static_cast<long long>(gpu::qpcFrequency())};
                 bool started = false;
                 {
                     std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);

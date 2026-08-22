@@ -37,29 +37,43 @@ PresentationOpportunityDecision PresentationOpportunityScheduler::selectForRende
         fail(PresentationOpportunityError::InvalidConfiguration);
         return {};
     }
-    if (pending_) {
+    if (pendingRender_) {
         auto duplicate = pendingDecision_;
         duplicate.duplicateCallback = true;
         return duplicate;
     }
+    if (!presentationAuthorityUsable(preRenderAuthority, config_.refreshNumerator,
+                                     config_.refreshDenominator) ||
+        !presentationAuthorityMonotonic(lastAuthority_, preRenderAuthority)) {
+        captureFirstEvent(PresentationOpportunityClassification::AuthorityDiscontinuity, -1, -1, 0,
+                          preRenderAuthority, -1, false);
+        fail(PresentationOpportunityError::AuthorityDiscontinuity);
+        return {};
+    }
+    // QPCはordinal authorityではない。continuityのcross-checkにだけ使う。
+    if (callbackQpc < lastSwapQpc_) {
+        captureFirstEvent(PresentationOpportunityClassification::Regression, -1, -1, 0,
+                          preRenderAuthority, -1, false);
+        fail(PresentationOpportunityError::OpportunityRegression);
+        return {};
+    }
 
+    // 最初のrenderはmeasurement先頭のopportunity 0を狙う。以降はpre-render
+    // authorityが示す完了済みrefreshの「次」を狙う。丸めは一切入れない。
     long long ordinal = 0;
-    if (lastOpportunityOrdinal_ >= 0) {
-        long long intervals = 0;
-        if (callbackQpc <= lastSwapQpc_ ||
-            !roundedRefreshIntervals(callbackQpc - lastSwapQpc_, intervals)) {
-            fail(PresentationOpportunityError::AmbiguousOpportunity);
+    if (anchored_) {
+        long long completed = 0;
+        if (!presentationOpportunityOrdinal(originRefreshCount_, preRenderAuthority, completed)) {
+            captureFirstEvent(PresentationOpportunityClassification::AuthorityDiscontinuity, -1, -1,
+                              0, preRenderAuthority, -1, false);
+            fail(PresentationOpportunityError::AuthorityDiscontinuity);
             return {};
         }
-        // 通常のthreaded render loopでは次callbackが直前swap直後に始まる。
-        // 完了済みauthorityから見た「次」は最低1 opportunity先である。
-        if (intervals == 0)
-            intervals = 1;
-        if (intervals > std::numeric_limits<long long>::max() - lastOpportunityOrdinal_) {
+        if (completed >= std::numeric_limits<long long>::max()) {
             fail(PresentationOpportunityError::ArithmeticOverflow);
             return {};
         }
-        ordinal = lastOpportunityOrdinal_ + intervals;
+        ordinal = completed + 1;
     }
 
     long long target = -1;
@@ -71,7 +85,7 @@ PresentationOpportunityDecision PresentationOpportunityScheduler::selectForRende
     decision.valid = true;
     decision.opportunityOrdinal = ordinal;
     decision.targetFrame = target;
-    decision.lastCommittedOpportunityOrdinal = lastOpportunityOrdinal_;
+    decision.lastFinalizedOpportunityOrdinal = lastFinalizedOrdinal_;
     decision.renderBeginQpc = callbackQpc;
     decision.renderOrdinal = renderOrdinal;
     decision.preRenderAuthority = preRenderAuthority;
@@ -81,13 +95,9 @@ PresentationOpportunityDecision PresentationOpportunityScheduler::selectForRende
         return decision;
     }
     decision.repeat = target == lastUniqueFrame_;
-    decision.trueDropBefore = decision.repeat ? 0 : target - lastUniqueFrame_ - 1;
-    if (decision.trueDropBefore < 0) {
-        fail(PresentationOpportunityError::OpportunityRegression);
-        return {};
-    }
+    lastAuthority_ = preRenderAuthority;
     pendingDecision_ = decision;
-    pending_ = true;
+    pendingRender_ = true;
     pendingRenderCompleted_ = false;
     pendingRenderEndQpc_ = 0;
     pendingRenderedSourceFrame_ = -1;
@@ -97,7 +107,7 @@ PresentationOpportunityDecision PresentationOpportunityScheduler::selectForRende
 bool PresentationOpportunityScheduler::markRenderComplete(long long renderEndQpc,
                                                           long long renderedSourceFrame,
                                                           long long renderOrdinal) {
-    if (!started_ || closed_ || error_ != PresentationOpportunityError::None || !pending_) {
+    if (!started_ || closed_ || error_ != PresentationOpportunityError::None || !pendingRender_) {
         captureFirstEvent(PresentationOpportunityClassification::PairingDefect, -1, -1, 0, {}, -1,
                           false);
         return fail(PresentationOpportunityError::RenderWithoutSwap);
@@ -125,7 +135,7 @@ bool PresentationOpportunityScheduler::commitSwap(
     long long swapOrdinal) {
     if (!started_ || closed_ || error_ != PresentationOpportunityError::None)
         return fail(PresentationOpportunityError::InvalidConfiguration);
-    if (!pending_) {
+    if (!pendingRender_) {
         captureFirstEvent(PresentationOpportunityClassification::PairingDefect, -1, -1, swapQpc,
                           postSwapAuthority, swapOrdinal, false);
         return fail(PresentationOpportunityError::SwapWithoutRender);
@@ -135,102 +145,90 @@ bool PresentationOpportunityScheduler::commitSwap(
                           postSwapAuthority, swapOrdinal, false);
         return fail(PresentationOpportunityError::RenderNotCompleted);
     }
-    if (swapQpc <= 0 || (lastSwapQpc_ > 0 && swapQpc <= lastSwapQpc_)) {
+    // QPCはcontinuityのcross-checkであり、opportunity序数の根拠にはしない。
+    if (swapQpc <= 0 || swapQpc < pendingRenderEndQpc_ ||
+        (lastSwapQpc_ > 0 && swapQpc <= lastSwapQpc_)) {
         captureFirstEvent(PresentationOpportunityClassification::Regression, -1, -1, swapQpc,
                           postSwapAuthority, swapOrdinal, false);
         return fail(PresentationOpportunityError::OpportunityRegression);
     }
-    if ((pendingDecision_.renderOrdinal >= 0 &&
-         pendingDecision_.renderOrdinal != lastRenderOrdinal_ + 1) ||
-        (swapOrdinal >= 0 && swapOrdinal != lastSwapOrdinal_ + 1)) {
+    if (pendingDecision_.renderOrdinal >= 0 &&
+        pendingDecision_.renderOrdinal != lastRenderOrdinal_ + 1) {
+        captureFirstEvent(PresentationOpportunityClassification::PairingDefect, -1, -1, swapQpc,
+                          postSwapAuthority, swapOrdinal, false);
+        return fail(PresentationOpportunityError::RenderOrdinalMismatch);
+    }
+    if (swapOrdinal >= 0 && swapOrdinal != lastSwapOrdinal_ + 1) {
         captureFirstEvent(PresentationOpportunityClassification::PairingDefect, -1, -1, swapQpc,
                           postSwapAuthority, swapOrdinal, false);
         return fail(PresentationOpportunityError::SwapOrdinalMismatch);
     }
-
-    long long actualOrdinal = 0;
-    if (lastOpportunityOrdinal_ >= 0) {
-        long long intervals = 0;
-        if (!roundedRefreshIntervals(swapQpc - lastSwapQpc_, intervals) || intervals <= 0) {
-            captureFirstEvent(PresentationOpportunityClassification::PairingDefect, -1, -1, swapQpc,
-                              postSwapAuthority, swapOrdinal, false);
-            return fail(PresentationOpportunityError::AmbiguousOpportunity);
-        }
-        if (intervals > std::numeric_limits<long long>::max() - lastOpportunityOrdinal_)
-            return fail(PresentationOpportunityError::ArithmeticOverflow);
-        actualOrdinal = lastOpportunityOrdinal_ + intervals;
-    }
-    long long actualTarget = -1;
-    if (!targetFor(actualOrdinal, actualTarget))
-        return fail(PresentationOpportunityError::ArithmeticOverflow);
-    const bool continuous =
-        authorityContinuous(pendingDecision_.preRenderAuthority, postSwapAuthority);
-    if (!continuous) {
-        captureFirstEvent(PresentationOpportunityClassification::AuthorityDiscontinuity,
-                          actualOrdinal, actualTarget, swapQpc, postSwapAuthority, swapOrdinal,
-                          false);
+    if (!presentationAuthorityUsable(postSwapAuthority, config_.refreshNumerator,
+                                     config_.refreshDenominator) ||
+        !presentationAuthorityMonotonic(pendingDecision_.preRenderAuthority, postSwapAuthority) ||
+        !presentationAuthorityMonotonic(lastAuthority_, postSwapAuthority)) {
+        captureFirstEvent(PresentationOpportunityClassification::AuthorityDiscontinuity, -1, -1,
+                          swapQpc, postSwapAuthority, swapOrdinal, false);
         return fail(PresentationOpportunityError::AuthorityDiscontinuity);
     }
-    if (actualOrdinal < pendingDecision_.opportunityOrdinal) {
-        captureFirstEvent(PresentationOpportunityClassification::Regression, actualOrdinal,
-                          actualTarget, swapQpc, postSwapAuthority, swapOrdinal, true);
-        return fail(PresentationOpportunityError::OpportunityRegression);
+
+    // opportunity序数はrefresh count authorityだけから決める。最初のswapの
+    // post-swap refresh countをopportunity 0のoriginとして固定する。
+    if (!anchored_) {
+        originRefreshCount_ = postSwapAuthority.refreshCount;
+        anchored_ = true;
     }
-    if (pendingRenderedSourceFrame_ > actualTarget) {
-        captureFirstEvent(PresentationOpportunityClassification::PairingDefect, actualOrdinal,
-                          actualTarget, swapQpc, postSwapAuthority, swapOrdinal, true);
-        return fail(PresentationOpportunityError::PresentedFrameMismatch);
+    long long actualOrdinal = 0;
+    if (!presentationOpportunityOrdinal(originRefreshCount_, postSwapAuthority, actualOrdinal)) {
+        captureFirstEvent(PresentationOpportunityClassification::AuthorityDiscontinuity, -1, -1,
+                          swapQpc, postSwapAuthority, swapOrdinal, false);
+        return fail(PresentationOpportunityError::AuthorityDiscontinuity);
     }
 
-    const bool repeat = pendingRenderedSourceFrame_ == lastUniqueFrame_;
-    const long long trueDropBefore =
-        repeat ? 0 : pendingRenderedSourceFrame_ - lastUniqueFrame_ - 1;
-    if (trueDropBefore < 0)
-        return fail(PresentationOpportunityError::OpportunityRegression);
-    const long long lostOpportunities = actualOrdinal - pendingDecision_.opportunityOrdinal;
-    const auto classification = lostOpportunities > 0
-                                    ? PresentationOpportunityClassification::ForwardOpportunityLoss
-                                    : PresentationOpportunityClassification::Exact;
-    if (lostOpportunities > 0) {
-        ++forwardReconciliationCount_;
-        lostOpportunityCount_ += lostOpportunities;
-        captureFirstEvent(classification, actualOrdinal, actualTarget, swapQpc, postSwapAuthority,
-                          swapOrdinal, true);
-    }
+    Candidate candidate;
+    candidate.predictedOpportunityOrdinal = pendingDecision_.opportunityOrdinal;
+    candidate.predictedSourceFrame = pendingDecision_.targetFrame;
+    candidate.presentedSourceFrame = pendingRenderedSourceFrame_;
+    candidate.renderBeginQpc = pendingDecision_.renderBeginQpc;
+    candidate.renderEndQpc = pendingRenderEndQpc_;
+    candidate.swapQpc = swapQpc;
+    candidate.renderOrdinal = pendingDecision_.renderOrdinal;
+    candidate.swapOrdinal = swapOrdinal;
+    candidate.preRenderAuthority = pendingDecision_.preRenderAuthority;
+    candidate.postSwapAuthority = postSwapAuthority;
 
-    records_.push_back({lastOpportunityOrdinal_,
-                        pendingDecision_.opportunityOrdinal,
-                        actualOrdinal,
-                        pendingDecision_.renderBeginQpc,
-                        pendingRenderEndQpc_,
-                        swapQpc,
-                        pendingDecision_.renderOrdinal,
-                        swapOrdinal,
-                        config_.refreshNumerator,
-                        config_.refreshDenominator,
-                        pendingDecision_.preRenderAuthority,
-                        postSwapAuthority,
-                        continuous,
-                        pendingDecision_.targetFrame,
-                        actualTarget,
-                        pendingRenderedSourceFrame_,
-                        repeat,
-                        trueDropBefore,
-                        lostOpportunities,
-                        classification});
-    if (repeat) {
-        ++repeated_;
+    if (!pendingOpportunity_) {
+        pendingOpportunity_ = true;
+        pendingOpportunityOrdinal_ = actualOrdinal;
+        pendingSupersededCount_ = 0;
+        pendingCandidate_ = candidate;
+    } else if (actualOrdinal > pendingOpportunityOrdinal_) {
+        // opportunityが前進した。直前pendingをlatest candidateでfinalizeし、
+        // 間のopportunityはfinalize側でlossとしてaccountする。
+        if (!finalizePendingOpportunity())
+            return false;
+        pendingOpportunity_ = true;
+        pendingOpportunityOrdinal_ = actualOrdinal;
+        pendingSupersededCount_ = 0;
+        pendingCandidate_ = candidate;
+    } else if (actualOrdinal == pendingOpportunityOrdinal_) {
+        // 同一presentation opportunity内の追加swap。ambiguousではなく、
+        // latest candidateが前candidateをsupersedeする。
+        ++pendingSupersededCount_;
+        ++supersededCandidateCount_;
+        pendingCandidate_ = candidate;
     } else {
-        ++displayedUnique_;
-        gapTrueDrop_ += trueDropBefore;
-        lastUniqueFrame_ = pendingRenderedSourceFrame_;
+        captureFirstEvent(PresentationOpportunityClassification::Regression, actualOrdinal, -1,
+                          swapQpc, postSwapAuthority, swapOrdinal, true);
+        return fail(PresentationOpportunityError::OpportunityRegression);
     }
-    lastOpportunityOrdinal_ = actualOrdinal;
+
+    ++swappedCompositionCount_;
     lastSwapQpc_ = swapQpc;
     lastRenderOrdinal_ = pendingDecision_.renderOrdinal;
     lastSwapOrdinal_ = swapOrdinal;
-    lastPostSwapAuthority_ = postSwapAuthority;
-    pending_ = false;
+    lastAuthority_ = postSwapAuthority;
+    pendingRender_ = false;
     pendingDecision_ = {};
     pendingRenderCompleted_ = false;
     pendingRenderEndQpc_ = 0;
@@ -238,14 +236,104 @@ bool PresentationOpportunityScheduler::commitSwap(
     return true;
 }
 
+bool PresentationOpportunityScheduler::finalizePendingOpportunity() {
+    const Candidate candidate = pendingCandidate_;
+    const long long ordinal = pendingOpportunityOrdinal_;
+    long long expectedTarget = -1;
+    if (!targetFor(ordinal, expectedTarget))
+        return fail(PresentationOpportunityError::ArithmeticOverflow);
+    if (candidate.presentedSourceFrame < 0 ||
+        candidate.presentedSourceFrame >= config_.requiredFrameCount) {
+        captureFirstEvent(PresentationOpportunityClassification::PairingDefect, ordinal,
+                          expectedTarget, candidate.swapQpc, candidate.postSwapAuthority,
+                          candidate.swapOrdinal, true);
+        return fail(PresentationOpportunityError::PresentedFrameMismatch);
+    }
+    const bool repeat = candidate.presentedSourceFrame == lastUniqueFrame_;
+    const long long trueDropBefore =
+        repeat ? 0 : candidate.presentedSourceFrame - lastUniqueFrame_ - 1;
+    if (trueDropBefore < 0)
+        return fail(PresentationOpportunityError::OpportunityRegression);
+    const long long lostOpportunities =
+        lastFinalizedOrdinal_ >= 0 ? ordinal - lastFinalizedOrdinal_ - 1 : ordinal;
+    if (lostOpportunities < 0)
+        return fail(PresentationOpportunityError::OpportunityRegression);
+    const bool forward = candidate.predictedOpportunityOrdinal >= 0 &&
+                         ordinal > candidate.predictedOpportunityOrdinal;
+    const auto classification = lostOpportunities > 0
+                                    ? PresentationOpportunityClassification::ForwardOpportunityLoss
+                                    : PresentationOpportunityClassification::Exact;
+    if (classification == PresentationOpportunityClassification::ForwardOpportunityLoss &&
+        !firstEvent_.captured) {
+        firstEvent_ = {true,
+                       classification,
+                       lastFinalizedOrdinal_,
+                       candidate.predictedOpportunityOrdinal,
+                       ordinal,
+                       candidate.renderBeginQpc,
+                       candidate.renderEndQpc,
+                       candidate.swapQpc,
+                       candidate.preRenderAuthority,
+                       candidate.postSwapAuthority,
+                       candidate.predictedSourceFrame,
+                       expectedTarget,
+                       candidate.presentedSourceFrame,
+                       candidate.renderOrdinal,
+                       candidate.swapOrdinal,
+                       true};
+    }
+
+    records_.push_back({lastFinalizedOrdinal_,
+                        candidate.predictedOpportunityOrdinal,
+                        ordinal,
+                        candidate.renderBeginQpc,
+                        candidate.renderEndQpc,
+                        candidate.swapQpc,
+                        candidate.renderOrdinal,
+                        candidate.swapOrdinal,
+                        config_.refreshNumerator,
+                        config_.refreshDenominator,
+                        candidate.preRenderAuthority,
+                        candidate.postSwapAuthority,
+                        true,
+                        candidate.predictedSourceFrame,
+                        expectedTarget,
+                        candidate.presentedSourceFrame,
+                        repeat,
+                        trueDropBefore,
+                        lostOpportunities,
+                        pendingSupersededCount_,
+                        forward,
+                        classification});
+    if (repeat) {
+        ++repeated_;
+    } else {
+        ++displayedUnique_;
+        gapTrueDrop_ += trueDropBefore;
+        lastUniqueFrame_ = candidate.presentedSourceFrame;
+    }
+    if (forward)
+        ++forwardReconciliationCount_;
+    lostOpportunityCount_ += lostOpportunities;
+    lastFinalizedOrdinal_ = ordinal;
+    pendingOpportunity_ = false;
+    pendingOpportunityOrdinal_ = -1;
+    pendingSupersededCount_ = 0;
+    pendingCandidate_ = {};
+    return true;
+}
+
 bool PresentationOpportunityScheduler::close() {
     if (!started_ || closed_ || error_ != PresentationOpportunityError::None)
         return fail(PresentationOpportunityError::InvalidConfiguration);
-    if (pending_) {
+    if (pendingRender_) {
         captureFirstEvent(PresentationOpportunityClassification::PairingDefect, -1, -1, 0, {}, -1,
                           false);
         return fail(PresentationOpportunityError::RenderWithoutSwap);
     }
+    // measurement endではpending opportunityをfinalizeしてからtailを数える。
+    if (pendingOpportunity_ && !finalizePendingOpportunity())
+        return false;
     tailTrueDrop_ = config_.requiredFrameCount - lastUniqueFrame_ - 1;
     if (tailTrueDrop_ < 0)
         return fail(PresentationOpportunityError::OpportunityRegression);
@@ -257,15 +345,19 @@ PresentationOpportunitySnapshot PresentationOpportunityScheduler::snapshot() con
     return {started_ && error_ == PresentationOpportunityError::None,
             closed_,
             error_,
+            anchored_,
+            originRefreshCount_,
             displayedUnique_,
             repeated_,
             gapTrueDrop_,
             tailTrueDrop_,
             gapTrueDrop_ + tailTrueDrop_,
-            lastOpportunityOrdinal_,
+            lastFinalizedOrdinal_,
             lastUniqueFrame_,
             forwardReconciliationCount_,
             lostOpportunityCount_,
+            supersededCandidateCount_,
+            swappedCompositionCount_,
             firstEvent_,
             records_};
 }
@@ -285,40 +377,6 @@ bool PresentationOpportunityScheduler::targetFor(long long ordinal, long long& t
            denominator > 0 && ((target = numerator / denominator), true);
 }
 
-bool PresentationOpportunityScheduler::roundedRefreshIntervals(long long deltaQpc,
-                                                               long long& intervals) const {
-    long long scaled = 0;
-    long long divisor = 0;
-    if (!checkedMultiply(deltaQpc, config_.refreshNumerator, scaled) ||
-        !checkedMultiply(config_.qpcFrequency, config_.refreshDenominator, divisor) || divisor <= 0)
-        return false;
-    const long long quotient = scaled / divisor;
-    const long long remainder = scaled % divisor;
-    // exactly半周期はどちらのopportunityか一意に決められない。
-    if (remainder == divisor - remainder)
-        return false;
-    intervals = quotient + (remainder > divisor - remainder ? 1 : 0);
-    return true;
-}
-
-bool PresentationOpportunityScheduler::authorityContinuous(
-    const PresentationAuthoritySample& pre, const PresentationAuthoritySample& post) const {
-    if (!config_.requireAuthoritySamples)
-        return true;
-    const auto valid = [&](const PresentationAuthoritySample& value) {
-        return value.available && value.refreshCount > 0 && value.qpcVBlank > 0 &&
-               value.refreshNumerator == config_.refreshNumerator &&
-               value.refreshDenominator == config_.refreshDenominator;
-    };
-    if (!valid(pre) || !valid(post) || post.refreshCount < pre.refreshCount ||
-        post.qpcVBlank < pre.qpcVBlank)
-        return false;
-    if (lastOpportunityOrdinal_ >= 0 && (pre.refreshCount < lastPostSwapAuthority_.refreshCount ||
-                                         pre.qpcVBlank < lastPostSwapAuthority_.qpcVBlank))
-        return false;
-    return true;
-}
-
 void PresentationOpportunityScheduler::captureFirstEvent(
     PresentationOpportunityClassification classification, long long actualOrdinal,
     long long actualTarget, long long swapQpc, const PresentationAuthoritySample& post,
@@ -327,8 +385,8 @@ void PresentationOpportunityScheduler::captureFirstEvent(
         return;
     firstEvent_ = {true,
                    classification,
-                   pendingDecision_.valid ? pendingDecision_.lastCommittedOpportunityOrdinal
-                                          : lastOpportunityOrdinal_,
+                   pendingDecision_.valid ? pendingDecision_.lastFinalizedOpportunityOrdinal
+                                          : lastFinalizedOrdinal_,
                    pendingDecision_.opportunityOrdinal,
                    actualOrdinal,
                    pendingDecision_.renderBeginQpc,
@@ -352,8 +410,6 @@ const char* presentationOpportunityErrorName(PresentationOpportunityError error)
         return "INVALID_CONFIGURATION";
     case PresentationOpportunityError::ArithmeticOverflow:
         return "ARITHMETIC_OVERFLOW";
-    case PresentationOpportunityError::AmbiguousOpportunity:
-        return "AMBIGUOUS_OPPORTUNITY";
     case PresentationOpportunityError::OpportunityRegression:
         return "OPPORTUNITY_REGRESSION";
     case PresentationOpportunityError::AuthorityDiscontinuity:

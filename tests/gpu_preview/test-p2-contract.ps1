@@ -16,7 +16,10 @@ param(
         'NegativeOpportunityLedgerMutation', 'NegativeOpportunityOrdinalGapIgnored',
         'NegativeOpportunityRefreshChange', 'NegativeOpportunityAuthority',
         'NegativeOpportunityTail', 'ReconciledGood',
-        'NegativeForwardDropIgnored', 'NegativeMeasurementDelta')][string]$Case,
+        'NegativeForwardDropIgnored', 'NegativeMeasurementDelta',
+        'SupersededGood', 'NegativeOpportunitySupersededSwapOrdinal',
+        'NegativeOpportunityFirstCandidate', 'NegativeOpportunityDisplayedCount',
+        'NegativeOpportunityOrigin')][string]$Case,
     [Parameter(Mandatory)][string]$Checker,
     [Parameter(Mandatory)][string]$Output
 )
@@ -129,67 +132,114 @@ if ($Case -in $formalSeekCases) {
         }
     })
 }
-$raw.formal_opportunity_ledger = @(0..([int]$raw.required_measurement_frame_count - 1) |
-    ForEach-Object {
-        [ordered]@{
-            last_committed_opportunity_ordinal=$_ - 1
-            predicted_opportunity_ordinal=$_; actual_opportunity_ordinal=$_
-            render_begin_qpc=if ($_ -eq 0) { 900 } else { $_ * 1000 + 1 }
-            render_end_qpc=if ($_ -eq 0) { 950 } else { $_ * 1000 + 2 }
-            presentation_swap_qpc=($_ + 1) * 1000
-            render_ordinal=$_; swap_ordinal=$_
-            refresh_numerator=60; refresh_denominator=1
-            pre_render_authority=[ordered]@{ available=$true; refresh_count=100 + $_
-                qpc_vblank=500 + $_ * 10; refresh_numerator=60; refresh_denominator=1 }
-            post_swap_authority=[ordered]@{ available=$true; refresh_count=101 + $_
-                qpc_vblank=505 + $_ * 10; refresh_numerator=60; refresh_denominator=1 }
-            authority_continuous=$true; predicted_source_frame=$_
-            expected_source_frame=$_; presented_source_frame=$_
-            repeat=$false; true_drop_before_this_opportunity=0
-            lost_opportunity_count=0; classification='EXACT'
-        }
-    })
+function New-P2OpportunityAuthority([long]$RefreshCount) {
+    return [ordered]@{ available=$true; refresh_count=$RefreshCount
+        qpc_vblank=$RefreshCount * 10; refresh_numerator=60; refresh_denominator=1 }
+}
+
+# opportunity ledgerのfixture。序数はrefresh count originからの差だけで決まる。
+function New-P2OpportunityRecord([long]$Ordinal, [long]$SwapOrdinal, [long]$Predicted,
+                                 [long]$Presented, [long]$Expected, [long]$LastFinalized,
+                                 [long]$Superseded, [long]$Lost, [long]$TrueDropBefore,
+                                 [bool]$Repeat, [long]$PreCount, [long]$PostCount) {
+    return [ordered]@{
+        last_finalized_opportunity_ordinal=$LastFinalized
+        predicted_opportunity_ordinal=$Predicted; actual_opportunity_ordinal=$Ordinal
+        render_begin_qpc=$SwapOrdinal * 1000 + 1
+        render_end_qpc=$SwapOrdinal * 1000 + 2
+        presentation_swap_qpc=($SwapOrdinal + 1) * 1000
+        render_ordinal=$SwapOrdinal; swap_ordinal=$SwapOrdinal
+        refresh_numerator=60; refresh_denominator=1
+        pre_render_authority=New-P2OpportunityAuthority $PreCount
+        post_swap_authority=New-P2OpportunityAuthority $PostCount
+        authority_continuous=$true; predicted_source_frame=$Predicted
+        expected_source_frame=$Expected; presented_source_frame=$Presented
+        repeat=$Repeat; true_drop_before_this_opportunity=$TrueDropBefore
+        lost_opportunity_count=$Lost; superseded_candidate_count=$Superseded
+        forward_reconciliation=($Ordinal -gt $Predicted); classification=$(
+            if ($Lost -gt 0) { 'FORWARD_OPPORTUNITY_LOSS' } else { 'EXACT' })
+    }
+}
+
+$origin = 101
+$raw.formal_opportunity_anchored = $true
+$raw.formal_opportunity_origin_refresh_count = $origin
+$frameCount = [int]$raw.required_measurement_frame_count
+$raw.formal_opportunity_ledger = @(0..($frameCount - 1) | ForEach-Object {
+    New-P2OpportunityRecord $_ $_ $_ $_ $_ ($_ - 1) 0 0 0 $false (100 + $_) (101 + $_)
+})
+$raw.formal_finalized_opportunity_count = $frameCount
+$raw.formal_swapped_composition_count = $frameCount
+$raw.formal_superseded_candidate_count = 0
+
 if ($Case -in @('ReconciledGood', 'NegativeForwardDropIgnored')) {
-    $raw.formal_opportunity_ledger = @($raw.formal_opportunity_ledger | Select-Object -First 119)
-    for ($index = 57; $index -lt $raw.formal_opportunity_ledger.Count; ++$index) {
-        $record = $raw.formal_opportunity_ledger[$index]
-        if ($index -eq 57) {
-            $record.actual_opportunity_ordinal = 58
-            $record.expected_source_frame = 58
-            $record.presentation_swap_qpc = 59000
-            $record.lost_opportunity_count = 1
-            $record.classification = 'FORWARD_OPPORTUNITY_LOSS'
+    # opportunity 57がswapされずに失われ、次のswapがopportunity 58へ着地する。
+    $records = [System.Collections.Generic.List[object]]::new()
+    foreach ($index in 0..118) {
+        if ($index -lt 57) {
+            $records.Add((New-P2OpportunityRecord $index $index $index $index $index `
+                ($index - 1) 0 0 0 $false (100 + $index) (101 + $index)))
+        } elseif ($index -eq 57) {
+            $records.Add((New-P2OpportunityRecord 58 57 57 57 58 56 0 1 0 $false 157 159))
         } else {
             $ordinal = $index + 1
-            $record.last_committed_opportunity_ordinal = $ordinal - 1
-            $record.predicted_opportunity_ordinal = $ordinal
-            $record.actual_opportunity_ordinal = $ordinal
-            $record.render_begin_qpc = ($index + 1) * 1000 + 1
-            $record.render_end_qpc = ($index + 1) * 1000 + 2
-            $record.presentation_swap_qpc = ($index + 2) * 1000
-            $record.predicted_source_frame = $ordinal
-            $record.expected_source_frame = $ordinal
-            $record.presented_source_frame = $ordinal
-            if ($index -eq 58) { $record.true_drop_before_this_opportunity = 1 }
+            $drop = if ($index -eq 58) { 1 } else { 0 }
+            $records.Add((New-P2OpportunityRecord $ordinal $index $ordinal $ordinal $ordinal `
+                ($ordinal - 1) 0 0 $drop $false (101 + $index) (102 + $index)))
         }
     }
-    $first = $raw.formal_opportunity_ledger[57]
+    $raw.formal_opportunity_ledger = @($records)
     $raw.formal_displayed_unique_count = 119
     $raw.formal_gap_true_drop_count = 1
     $raw.formal_true_opportunity_drop_count = 1
     $raw.formal_forward_reconciliation_count = 1
     $raw.formal_lost_opportunity_count = 1
+    $raw.formal_finalized_opportunity_count = 119
+    $raw.formal_swapped_composition_count = 119
     $raw.measurement_displayed_composition_count = 119
     $raw.measurement_gpu_submission_count = 119
     $raw.measurement_layer_draw_count = 238
     $raw.measurement_logical_clear_count = 119
     $raw.measurement_dropped_output_count = 1
+    $first = $raw.formal_opportunity_ledger[57]
     $raw.formal_first_reconciliation_event = [ordered]@{
         captured=$true; classification='FORWARD_OPPORTUNITY_LOSS'
         predicted_opportunity_ordinal=$first.predicted_opportunity_ordinal
         actual_opportunity_ordinal=$first.actual_opportunity_ordinal
     }
 }
+$supersededCases = @(
+    'SupersededGood', 'NegativeOpportunitySupersededSwapOrdinal',
+    'NegativeOpportunityFirstCandidate', 'NegativeOpportunityDisplayedCount',
+    'NegativeOpportunityOrigin'
+)
+if ($Case -in $supersededCases) {
+    # opportunity 57の内側で2 swapが起き、latest candidateがfinalizeされる。
+    $records = [System.Collections.Generic.List[object]]::new()
+    foreach ($index in 0..118) {
+        if ($index -lt 57) {
+            $records.Add((New-P2OpportunityRecord $index $index $index $index $index `
+                ($index - 1) 0 0 0 $false (100 + $index) (101 + $index)))
+        } elseif ($index -eq 57) {
+            $records.Add((New-P2OpportunityRecord 57 58 58 58 57 56 1 0 1 $false 158 158))
+        } else {
+            $repeat = $index -eq 58
+            $records.Add((New-P2OpportunityRecord $index ($index + 1) $index $index $index `
+                ($index - 1) 0 0 0 $repeat (100 + $index) (101 + $index)))
+        }
+    }
+    $raw.formal_opportunity_ledger = @($records)
+    $raw.formal_displayed_unique_count = 118
+    $raw.formal_repeated_opportunity_count = 1
+    $raw.formal_gap_true_drop_count = 1
+    $raw.tail_true_drop = 1
+    $raw.formal_true_opportunity_drop_count = 2
+    $raw.formal_finalized_opportunity_count = 119
+    $raw.formal_swapped_composition_count = 120
+    $raw.formal_superseded_candidate_count = 1
+    $raw.measurement_dropped_output_count = 2
+}
+
 switch ($Case) {
     # 実装と同じ式を共有せず、各caseで1 fieldだけを壊してcheckerの効力を確認する。
     'NegativeInvariant' { $raw.measurement_layer_draw_count = 239 }
@@ -251,6 +301,17 @@ switch ($Case) {
         $raw.formal_opportunity_ledger[58].true_drop_before_this_opportunity = 0
     }
     'NegativeMeasurementDelta' { $raw.measurement_present_callback_count = -1 }
+    # 同一opportunity内のswapを独立opportunityとして数えたmutation。
+    'NegativeOpportunitySupersededSwapOrdinal' {
+        $raw.formal_opportunity_ledger[57].superseded_candidate_count = 0
+    }
+    # supersedeでlatest candidateではなくfirst candidateを残したmutation。
+    'NegativeOpportunityFirstCandidate' {
+        $raw.formal_opportunity_ledger[57].presented_source_frame = 57
+    }
+    # displayed compositionをfinalize済みopportunity数と同義にしたmutation。
+    'NegativeOpportunityDisplayedCount' { $raw.measurement_displayed_composition_count = 119 }
+    'NegativeOpportunityOrigin' { $raw.formal_opportunity_origin_refresh_count = 102 }
 }
 $raw | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $Output -Encoding utf8
 $formal = $Case -in $formalCases
@@ -264,7 +325,7 @@ if ($formal) {
 $actual = $LASTEXITCODE
 $expected = if ($Case -in @(
     'Good', 'FormalGood', 'SeekGood', 'SeekExecutionNonoverlapGood', 'FormalSeekGood',
-    'ReconciledGood')) { 0 } else { 3 }
+    'ReconciledGood', 'SupersededGood')) { 0 } else { 3 }
 if ($actual -ne $expected) {
     throw "$Case contract testの終了codeが違います: expected=$expected actual=$actual"
 }
