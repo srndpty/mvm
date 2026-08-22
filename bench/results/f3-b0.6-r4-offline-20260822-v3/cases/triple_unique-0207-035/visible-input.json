@@ -1,0 +1,39 @@
+{
+  "schema": "mvm-p2-r4-visible-input-1",
+  "case_id": "triple_unique-0207-035",
+  "sync_interval": 1,
+  "measurement_start_qpc": 1766093896164,
+  "measurement_end_qpc_exclusive": 1766094396311,
+  "vblank_samples": [
+    {
+      "ordinal": 210,
+      "qpc": 1766093896164
+    },
+    {
+      "ordinal": 211,
+      "qpc": 1766094062694
+    },
+    {
+      "ordinal": 212,
+      "qpc": 1766094230176
+    },
+    {
+      "ordinal": 213,
+      "qpc": 1766094396311
+    }
+  ],
+  "callbacks": [
+    {
+      "submission_index": 207,
+      "synthetic_callback_qpc": 1766094230177
+    },
+    {
+      "submission_index": 208,
+      "synthetic_callback_qpc": 1766094230178
+    },
+    {
+      "submission_index": 209,
+      "synthetic_callback_qpc": 1766094230179
+    }
+  ]
+}

@@ -50,6 +50,18 @@ target_compile_definitions(mvm_bench PRIVATE
 
 # --- テスト -----------------------------------------------------------------
 
+# F3-B0.6-R4: hidden oracle非依存のexact offline mapper。
+add_executable(mvm_p2_offline_mapping harness/p2_offline_mapping_cli.cpp)
+target_link_libraries(mvm_p2_offline_mapping PRIVATE mvm::core Qt6::Core mvm::warnings)
+
+add_executable(mvm_test_presentation_opportunity_mapper
+    gpu_preview/test_presentation_opportunity_mapper.cpp)
+target_link_libraries(mvm_test_presentation_opportunity_mapper PRIVATE mvm::core mvm::warnings)
+add_test(NAME p2_presentation_opportunity_mapper_pure
+    COMMAND mvm_test_presentation_opportunity_mapper)
+set_tests_properties(p2_presentation_opportunity_mapper_pure PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}")
+
 set(MVM_SMOKE_DIR "${CMAKE_SOURCE_DIR}/tests/assets/smoke")
 set(MVM_SMOKE_MANIFEST "${MVM_SMOKE_DIR}/manifest.json")
 set(MVM_JP_DIR "${MVM_SMOKE_DIR}/素材/日本語 テスト/第1回　微分積分＆演習")
@@ -79,6 +91,17 @@ if(NOT MVM_PWSH)
     message(FATAL_ERROR
         "pwsh が見つかりません。negative test の終了コード照合に必要です。")
 endif()
+
+foreach(_p2_r4_visible_case Good NegativeOriginalCallback NegativeSyntheticDelay
+        NegativeExpectedClass NegativeDisplayed)
+    string(TOLOWER "${_p2_r4_visible_case}" _p2_r4_visible_name)
+    mvm_add_test(p2_r4_visible_input_${_p2_r4_visible_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-r4-visible-input-contract.ps1"
+            -Case ${_p2_r4_visible_case}
+            -Exe "$<TARGET_FILE:mvm_p2_offline_mapping>"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-r4-visible-${_p2_r4_visible_name}")
+endforeach()
 
 # ARGS に ';' を含む引数 (--map や --require-proxy-ids) を渡す場合は
 # **'@SEMI@' と書く。** ここで ';' へ戻す。
@@ -1456,6 +1479,112 @@ target_link_libraries(mvm_test_presentation_opportunity_scheduler
     PRIVATE mvm::gpu_preview mvm::warnings)
 mvm_add_test(p2_presentation_opportunity_scheduler
     COMMAND mvm_test_presentation_opportunity_scheduler)
+
+# P2-D5-2/F3のwindow output VBlank authorityをGPU非依存のpure helperで固定する。
+add_executable(mvm_test_window_output_vblank_authority
+    gpu_preview/test_window_output_vblank_authority.cpp)
+target_link_libraries(mvm_test_window_output_vblank_authority
+    PRIVATE mvm::gpu_preview mvm::warnings)
+mvm_add_test(p2_window_output_vblank_authority
+    COMMAND mvm_test_window_output_vblank_authority)
+
+# P2-D5-2/F3-A: window output VBlank authority probeのcontract。
+# 対照群と、1 fieldだけを壊したnegativeで固定する。DWM composition clockが
+# window outputと一致しない場合でもprobeが通ること (diagnostic-only) も含む。
+foreach(_p2_vblank_case Good NegativeProbeFail NegativeOutputChanged NegativeSequenceStatus
+        NegativeLongInterval NegativeWaitFailure NegativeRingOverflow
+        NegativeCadenceDeviation NegativeDeviationRecalculation
+        DwmClockMismatchIsDiagnosticOnly)
+    string(TOLOWER "${_p2_vblank_case}" _p2_vblank_name)
+    mvm_add_test(p2_vblank_authority_checker_${_p2_vblank_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-vblank-authority-contract.ps1"
+            -Case ${_p2_vblank_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-vblank-authority.ps1"
+            -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-vblank-${_p2_vblank_name}.json")
+endforeach()
+
+# P2-D5-2/F3-B0: swap↔physical VBlankのshadow mapping contract。
+foreach(_p2_shadow_case Good SupersedeGood NegativeAmbiguousSwap NegativeObserverGap
+        NegativeAfterLast NegativeBeforeFirst NegativeShortInterval NegativeLongInterval
+        NegativeCumulativeDrift NegativeNormalPriority NegativeOutputChanged
+        NegativeSampleCount)
+    string(TOLOWER "${_p2_shadow_case}" _p2_shadow_name)
+    mvm_add_test(p2_vblank_shadow_checker_${_p2_shadow_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-vblank-shadow-contract.ps1"
+            -Case ${_p2_shadow_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-vblank-shadow.ps1"
+            -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-vblank-shadow-${_p2_shadow_name}.json")
+endforeach()
+
+# 実displayとDXGI outputを要求するため workstation label を付ける。
+if(TARGET mvm_p2_vblank_authority_probe)
+    add_test(NAME p2_vblank_authority_probe_live
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/run-p2-vblank-authority-probe.ps1"
+            -Exe "$<TARGET_FILE:mvm_p2_vblank_authority_probe>"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-vblank-authority.ps1"
+            -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-vblank-authority-probe-live.json"
+            -DurationMs 4000)
+    set_tests_properties(p2_vblank_authority_probe_live PROPERTIES
+        ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+        LABELS "p2;workstation" RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120)
+endif()
+
+# P2-D5-2/F3-B0.6-R1: Present IDをjoin keyにする完全oracle contract。
+# producerの真偽値だけに依存せず、submission列・statistics列・offline delayを再計算する。
+foreach(_p2_oracle_case Good NegativeSubmittedGap NegativeObservedGap NegativeFinalDrain
+        NegativePollInterval NegativeOfflineDelay NegativeEarlyMapper NegativeDiscardClaim)
+    string(TOLOWER "${_p2_oracle_case}" _p2_oracle_name)
+    mvm_add_test(p2_present_id_oracle_checker_${_p2_oracle_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-present-id-oracle-contract.ps1"
+            -Case ${_p2_oracle_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-present-id-oracle.ps1"
+            -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-present-id-oracle-${_p2_oracle_name}.json")
+endforeach()
+
+if(TARGET mvm_p2_present_identity_probe)
+    add_test(NAME p2_present_id_oracle_live
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/run-p2-present-id-oracle.ps1"
+            -Exe "$<TARGET_FILE:mvm_p2_present_identity_probe>"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-present-id-oracle.ps1"
+            -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-present-id-oracle-live.json"
+            -Presents 900)
+    set_tests_properties(p2_present_id_oracle_live PROPERTIES
+        ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+        LABELS "p2;workstation" RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 180)
+endif()
+
+# P2-D5-2/F3-B0.6-R2: ETW event historyとapp swap sequenceのexact join contract。
+foreach(_p2_etw_oracle_case Good NegativeCount NegativeOrder NegativeSwapChain
+        NegativeSyncInterval NegativeWindow NegativeLostEvent NegativeRawQpc NegativeBoundary
+        NegativePhysicalAuthority CollisionNotObservedGood)
+    string(TOLOWER "${_p2_etw_oracle_case}" _p2_etw_oracle_name)
+    mvm_add_test(p2_etw_present_history_checker_${_p2_etw_oracle_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-etw-present-history-contract.ps1"
+            -Case ${_p2_etw_oracle_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-etw-present-history.ps1"
+            -VBlankChecker "${CMAKE_SOURCE_DIR}/scripts/check-p2-vblank-shadow.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-etw-oracle-${_p2_etw_oracle_name}")
+endforeach()
+
+# F3-B0.6-R3: corpus constructionをmapperから独立にfail-closed検査する。
+foreach(_p2_r3_case Good NegativeOracleOpportunity NegativeDelayTouchesDisplayed
+        NegativeRecordOrder NegativeVBlankDeleted NegativeCollisionClaim)
+    string(TOLOWER "${_p2_r3_case}" _p2_r3_name)
+    mvm_add_test(p2_etw_synthetic_corpus_checker_${_p2_r3_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-etw-synthetic-corpus-contract.ps1"
+            -Case ${_p2_r3_case}
+            -CorpusChecker "${CMAKE_SOURCE_DIR}/scripts/check-p2-etw-synthetic-corpus.ps1"
+            -OracleChecker "${CMAKE_SOURCE_DIR}/scripts/check-p2-etw-present-history.ps1"
+            -VBlankChecker "${CMAKE_SOURCE_DIR}/scripts/check-p2-vblank-shadow.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-r3-${_p2_r3_name}")
+endforeach()
 
 # P2-D5-1 formal checkerはGPU非依存の対照群と、1 fieldだけを壊したnegativeで固定する。
 foreach(_p2_contract_case Good FormalGood NegativeInvariant NegativeSameDevice NegativeOutputSize

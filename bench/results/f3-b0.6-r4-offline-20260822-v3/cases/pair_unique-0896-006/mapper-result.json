@@ -1,0 +1,12 @@
+{
+    "admissibility_relation": "VISIBLE_PREFIX: opportunity_start_qpc <= synthetic_callback_qpc",
+    "assignment": [
+        899,
+        900
+    ],
+    "case_id": "pair_unique-0896-006",
+    "hidden_oracle_accessed": false,
+    "saturated_solution_count": 1,
+    "schema": "mvm-p2-r4-mapper-result-1",
+    "solution_class": "UNIQUE"
+}

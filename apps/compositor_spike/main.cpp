@@ -56,6 +56,7 @@ bool parse(const QStringList& args, CompositorSpikeConfig& config) {
         } else if (arg == "--formal-preflight") config.formalPreflight = true;
         else if (arg == "--diagnostic-timing") config.diagnosticTiming = true;
         else if (arg == "--scheduler-phase-ring") config.schedulerPhaseRing = true;
+        else if (arg == "--vblank-observer") config.vblankObserver = true;
         else if (arg == "--presentation-opportunity-ring")
             config.presentationOpportunityRing = true;
         else if (arg == "--diagnostic-case") {

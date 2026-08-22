@@ -3,6 +3,7 @@
 
 #include "app/preview/compositor_rhi_item.h"
 #include "core/mvm_parallel_dispatch.h"
+#include "media/gpu_preview/window_output_vblank_observer.h"
 
 #include <QElapsedTimer>
 #include <QObject>
@@ -47,6 +48,7 @@ struct CompositorSpikeConfig {
     bool diagnosticTiming = false;
     bool schedulerPhaseRing = false;
     bool presentationOpportunityRing = false;
+    bool vblankObserver = false;
     CompositorDiagnosticCase diagnosticCase = CompositorDiagnosticCase::None;
 };
 
@@ -159,6 +161,13 @@ private:
     QString shutdownReason_;
     DwmPresentationTimingSnapshot dwmTimingStart_;
     DwmPresentationTimingSnapshot dwmTimingStop_;
+    // F3-B0 shadow: physical VBlank observerはformal authorityへは接続せず、
+    // 対応証明のためのrawとしてだけ採取する。
+    gpu::WindowOutputVBlankObserver vblankObserver_;
+    gpu::WindowOutputIdentity vblankIdentityStart_{};
+    gpu::WindowOutputIdentity vblankIdentityEnd_{};
+    bool vblankObserverStarted_ = false;
+    std::string vblankObserverError_;
     long long formalAuthorityLastPollQpc_ = 0;
 };
 

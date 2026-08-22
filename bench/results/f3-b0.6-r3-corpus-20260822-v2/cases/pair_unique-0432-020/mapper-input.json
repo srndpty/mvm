@@ -1,0 +1,43 @@
+{
+  "schema": "mvm-p2-r3-mapper-input-1",
+  "case_id": "pair_unique-0432-020",
+  "sync_interval": 1,
+  "qpc_frequency": 10000000,
+  "source_app_sha256": "9cfc6022b3d426c78250d990926d4b5572b118e98977c60490f33dfbf81fe9cc",
+  "source_etw_sha256": "4abc197c2a4c77ecf7aa8bf82c31e80abf3945c89f34234c49fcc0c60ba03535",
+  "construction_model": "STRICT_MONOTONE_INJECTIVE_OVER_VISIBLE_OPPORTUNITIES",
+  "mapper_visible_opportunity_count": 2,
+  "vblank_samples": [
+    {
+      "source_sample_index": 435,
+      "ordinal": 435,
+      "qpc": 1766131425483
+    },
+    {
+      "source_sample_index": 436,
+      "ordinal": 436,
+      "qpc": 1766131593763
+    },
+    {
+      "source_sample_index": 437,
+      "ordinal": 437,
+      "qpc": 1766131760652
+    }
+  ],
+  "records": [
+    {
+      "submission_index": 432,
+      "original_callback_qpc": 1766131097037,
+      "synthetic_callback_qpc": 1766131593764,
+      "synthetic_delay_ticks": 496727,
+      "synthetic_callback_bracket": 436
+    },
+    {
+      "submission_index": 433,
+      "original_callback_qpc": 1766131264107,
+      "synthetic_callback_qpc": 1766131593765,
+      "synthetic_delay_ticks": 329658,
+      "synthetic_callback_bracket": 436
+    }
+  ]
+}

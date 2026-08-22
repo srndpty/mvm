@@ -1,0 +1,46 @@
+{
+  "schema": "mvm-p2-r3-hidden-oracle-1",
+  "case_id": "one_bracket_late_ambiguous-0449-041",
+  "expected_solution_class": "AMBIGUOUS",
+  "expected_solution_count": 3,
+  "family": "ONE_BRACKET_LATE_AMBIGUOUS",
+  "position": "MEASUREMENT_MIDDLE",
+  "source_record_start": 449,
+  "source_record_count": 2,
+  "source_vblank_start_index": 452,
+  "source_vblank_sample_count": 4,
+  "target_synthetic_bracket": 454,
+  "oracle_fields_excluded_from_mapper_input": true,
+  "records": [
+    {
+      "submission_index": 449,
+      "status": "DISPLAYED",
+      "present_ids": [],
+      "displayed": [
+        {
+          "frame_type": "NotSet",
+          "qpc": 1766134262266,
+          "opportunity_ordinal": 452,
+          "residual_scaled_numerator": -67988500,
+          "residual_scaled_denominator": 59950
+        }
+      ],
+      "actual_physical_opportunity_ordinal": 452
+    },
+    {
+      "submission_index": 450,
+      "status": "DISPLAYED",
+      "present_ids": [],
+      "displayed": [
+        {
+          "frame_type": "NotSet",
+          "qpc": 1766134429081,
+          "opportunity_ordinal": 453,
+          "residual_scaled_numerator": -67429250,
+          "residual_scaled_denominator": 59950
+        }
+      ],
+      "actual_physical_opportunity_ordinal": 453
+    }
+  ]
+}

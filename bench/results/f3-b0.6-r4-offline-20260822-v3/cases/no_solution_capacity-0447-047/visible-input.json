@@ -1,0 +1,35 @@
+{
+  "schema": "mvm-p2-r4-visible-input-1",
+  "case_id": "no_solution_capacity-0447-047",
+  "sync_interval": 1,
+  "measurement_start_qpc": 1766134095949,
+  "measurement_end_qpc_exclusive": 1766134429585,
+  "vblank_samples": [
+    {
+      "ordinal": 451,
+      "qpc": 1766134095949
+    },
+    {
+      "ordinal": 452,
+      "qpc": 1766134262529
+    },
+    {
+      "ordinal": 453,
+      "qpc": 1766134429585
+    }
+  ],
+  "callbacks": [
+    {
+      "submission_index": 447,
+      "synthetic_callback_qpc": 1766134262530
+    },
+    {
+      "submission_index": 448,
+      "synthetic_callback_qpc": 1766134262531
+    },
+    {
+      "submission_index": 449,
+      "synthetic_callback_qpc": 1766134262532
+    }
+  ]
+}

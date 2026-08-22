@@ -1,0 +1,10 @@
+{
+    "admissibility_relation": "VISIBLE_PREFIX: opportunity_start_qpc <= synthetic_callback_qpc",
+    "assignment": [
+    ],
+    "case_id": "one_bracket_late_ambiguous-0896-042",
+    "hidden_oracle_accessed": false,
+    "saturated_solution_count": 2,
+    "schema": "mvm-p2-r4-mapper-result-1",
+    "solution_class": "AMBIGUOUS"
+}

@@ -119,6 +119,22 @@ QJsonObject dwmTimingJson(const DwmPresentationTimingSnapshot& value) {
             {"frame_displayed_count", static_cast<qint64>(value.frameDisplayedCount)}};
 }
 
+QJsonObject windowOutputJson(const gpu::WindowOutputIdentity& value) {
+    return {{"available", value.available},
+            {"monitor_handle", QString::number(value.monitorHandle)},
+            {"output_index", static_cast<qint64>(value.outputIndex)},
+            {"adapter_luid_low", static_cast<qint64>(value.adapterLuidLow)},
+            {"adapter_luid_high", static_cast<qint64>(value.adapterLuidHigh)},
+            {"gdi_device_name", QString::fromStdString(value.gdiDeviceName)},
+            {"output_device_name", QString::fromStdString(value.outputDeviceName)},
+            {"refresh_numerator", value.refreshNumerator},
+            {"refresh_denominator", value.refreshDenominator},
+            {"desktop_left", value.desktopLeft},
+            {"desktop_top", value.desktopTop},
+            {"desktop_right", value.desktopRight},
+            {"desktop_bottom", value.desktopBottom}};
+}
+
 QJsonObject presentationAuthorityJson(const gpu::PresentationAuthoritySample& value) {
     return {{"available", value.available},
             {"refresh_count", static_cast<qint64>(value.refreshCount)},
@@ -553,6 +569,22 @@ void CompositorSpikeController::requestMeasurementStart() {
         state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire);
     if (config_.presentationOpportunityRing || formalOpportunity)
         dwmTimingStart_ = captureDwmTiming(item_ ? item_->window() : nullptr);
+    if (config_.vblankObserver && !vblankObserverStarted_) {
+        auto* window = item_ ? item_->window() : nullptr;
+        void* hwnd = window ? reinterpret_cast<void*>(window->winId()) : nullptr;
+        const auto resolved = gpu::resolveWindowOutput(hwnd);
+        vblankIdentityStart_ = resolved.identity;
+        if (!resolved.ok) {
+            vblankObserverError_ = resolved.error;
+            beginShutdown(QStringLiteral("window output VBlank authorityを解決できません"), true);
+            return;
+        }
+        if (!vblankObserver_.start(hwnd, vblankObserverError_)) {
+            beginShutdown(QStringLiteral("window output VBlank observerを開始できません"), true);
+            return;
+        }
+        vblankObserverStarted_ = true;
+    }
     if (formalOpportunity) {
         if (!validDwmAuthority(dwmTimingStart_)) {
             beginShutdown(QStringLiteral("P2-D5-2 presentation authorityを開始できません"), true);
@@ -726,6 +758,22 @@ void CompositorSpikeController::tick() {
                 state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire);
             if (config_.presentationOpportunityRing || formalOpportunity)
                 dwmTimingStop_ = captureDwmTiming(item_ ? item_->window() : nullptr);
+            if (vblankObserverStarted_) {
+                // measurement窓を延長せず、observerだけbounded drainして最後の
+                // in-window swapのupper bracketを取得する。
+                const long long drainDeadline =
+                    gpu::qpcTicks() + static_cast<long long>(gpu::qpcFrequency()) / 10;
+                const std::size_t before = vblankObserver_.ring().publishedCount();
+                while (vblankObserver_.ring().publishedCount() <= before + 1 &&
+                       gpu::qpcTicks() < drainDeadline) {
+                }
+                vblankObserver_.stop();
+                vblankIdentityEnd_ =
+                    gpu::resolveWindowOutput(item_ && item_->window()
+                                                 ? reinterpret_cast<void*>(item_->window()->winId())
+                                                 : nullptr)
+                        .identity;
+            }
             const bool authorityStable =
                 !formalOpportunity || sameDwmAuthority(dwmTimingStart_, dwmTimingStop_);
             beginShutdown(authorityStable
@@ -1297,8 +1345,61 @@ bool CompositorSpikeController::writeMetrics() {
         if (record.presentedOutputFrame >= 0)
             uniquePresentedFrames.insert(record.presentedOutputFrame);
     }
+    // F3-B0 shadow evidence: physical VBlank列とidentity。formal logicへは
+    // 一切入力しない。
+    const auto vblankSamples = config_.vblankObserver
+                                   ? vblankObserver_.ring().snapshot()
+                                   : std::vector<gpu::VBlankObservation>{};
+    QJsonArray vblankSampleJson;
+    for (const auto& sample : vblankSamples)
+        vblankSampleJson.append(QJsonObject{{"ordinal", sample.ordinal}, {"qpc", sample.qpc}});
+    gpu::VBlankIntervalReport vblankIntervals;
+    const bool vblankIntervalsOk =
+        !vblankSamples.empty() &&
+        gpu::vblankIntervalReport(vblankSamples.data(), vblankSamples.size(),
+                                  vblankIdentityStart_.refreshNumerator,
+                                  vblankIdentityStart_.refreshDenominator, qpcFrequency,
+                                  vblankIntervals);
+    const auto vblankSequence =
+        gpu::vblankSequenceStatus(vblankSamples.data(), vblankSamples.size());
+    const char* vblankSequenceName = "UNKNOWN";
+    switch (vblankSequence) {
+    case gpu::VBlankSequenceStatus::Ok: vblankSequenceName = "OK"; break;
+    case gpu::VBlankSequenceStatus::Empty: vblankSequenceName = "EMPTY"; break;
+    case gpu::VBlankSequenceStatus::Invalid: vblankSequenceName = "INVALID"; break;
+    case gpu::VBlankSequenceStatus::OrdinalRegression:
+        vblankSequenceName = "ORDINAL_REGRESSION";
+        break;
+    case gpu::VBlankSequenceStatus::OrdinalGap: vblankSequenceName = "ORDINAL_GAP"; break;
+    case gpu::VBlankSequenceStatus::QpcRegression: vblankSequenceName = "QPC_REGRESSION"; break;
+    }
+    const QJsonObject physicalVBlank{
+        {"enabled", config_.vblankObserver},
+        {"observer_started", vblankObserverStarted_},
+        {"observer_error", QString::fromStdString(vblankObserverError_)},
+        {"time_critical_priority", vblankObserver_.timeCriticalPriority()},
+        {"window_output_start", windowOutputJson(vblankIdentityStart_)},
+        {"window_output_end", windowOutputJson(vblankIdentityEnd_)},
+        {"window_output_stable",
+         gpu::sameWindowOutput(vblankIdentityStart_, vblankIdentityEnd_)},
+        {"sample_count", static_cast<qint64>(vblankSamples.size())},
+        {"ring_overflow_count", vblankObserver_.ring().overflowCount()},
+        {"wait_failure_count", vblankObserver_.waitFailureCount()},
+        {"sequence_status", QString::fromLatin1(vblankSequenceName)},
+        {"interval_report_ok", vblankIntervalsOk},
+        {"interval_count", vblankIntervals.intervalCount},
+        {"long_interval_count", vblankIntervals.longIntervalCount},
+        {"short_interval_count", vblankIntervals.shortIntervalCount},
+        {"max_interval_qpc", vblankIntervals.maxIntervalQpc},
+        {"min_interval_qpc", vblankIntervals.minIntervalQpc},
+        {"nominal_period_qpc", vblankIntervals.nominalPeriodQpc},
+        {"cumulative_deviation_numerator", vblankIntervals.cumulativeDeviationNumerator},
+        {"cumulative_tolerance_unit", vblankIntervals.cumulativeToleranceUnit},
+        {"cumulative_consistent", vblankIntervals.cumulativeConsistent},
+        {"samples", vblankSampleJson}};
     QJsonObject presentationOpportunity{
         {"enabled", config_.presentationOpportunityRing},
+        {"physical_vblank", physicalVBlank},
         {"measurement_start_qpc",
          state_->measurementStartQpc.load(std::memory_order_acquire)},
         {"measurement_end_qpc_exclusive",

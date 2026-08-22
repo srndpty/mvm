@@ -1238,6 +1238,355 @@ checker側は`SupersededGood`を対照群とし、`NegativeOpportunitySuperseded
 `NegativeOpportunityDisplayedCount`（displayedをfinalized opportunity数と同義化）、
 `NegativeOpportunityOrigin`（origin ずらし）で1 fieldずつ壊して検出を確認する。
 
+### P2-D5-2 / F3 — Window-Output VBlank Authority
+
+[事実] clean production SHA `906c5ed5` (A2) から、worktree外の新規root
+`p2-d5-2-formal-906c5ed-20260822-160910`へcanonical P2 matrixを`-StopOnFailure`で実行した。
+Playback run 1が`contract_exit_code=3`で停止し、run 2/3とSeek 3 runは実行していない。
+`provenance_unchanged_during_matrix=true`、`p2_pass=false`である。**runtime blockerは無い**。
+`formal_opportunity_error=NONE`、`formal_opportunity_authority_valid=true`、finalized
+opportunity 1743件、superseded 0、repeat 0、`displayed unique + true drop = 1743 + 1857 = 3600`
+で、checkerは1743 record全てのordinal・source target・repeat・loss・swap ordinal連続性・tailを
+記録済みrefresh count sampleとoriginだけから独立再計算し、producerと一致した。唯一のcontract
+失敗は`drop_rate=0.5158`である。このrunは**P2-D5-2 formal FAIL**として不変保存し、F3以後のPASSで
+書き換えない。
+
+原因はF2のauthority binding誤りである。measurement 29.107秒に対しswapは1743本 (平均間隔16.68 ms、
+59.98 presentations/s) と健全だったが、序数に使う`DwmGetCompositionTimingInfo(NULL)`の`cRefresh`は
+同区間で3595 tick進み、約123.7 Hzだった。ordinal→source frameの写像は
+QueryDisplayConfigの59950/1000のままなので、1 swapごとに序数もtargetも約2進み、3600 frameのsource
+domainが29秒で尽きた。序数のauthority (DWM composition clock) とrateのauthority (windowが載る
+monitorのdisplay mode) が別物だった、という配線の欠陥である。
+
+Option 1 (DWMの`cRefresh`と`rateRefresh`をセットで使う) は採らない。数学的には自己整合するが、契約が
+測る対象が「このwindowが実際に表示できたpresentation opportunity」から「DWM compositor clockの全tickに
+このwindowが新frameを出したか」へ変わる。またWindows 8.1以降`DwmGetCompositionTimingInfo`のhwndは
+NULL必須で、window固有のmonitor timingは取得できない。したがってDWM cRefresh / rateRefreshは
+**diagnostic-onlyへ降格**する。
+
+F3ではformal authorityを次の三点へ一本化する。
+
+```text
+display identity : windowのHMONITORに一致するDXGI output
+rate authority   : その同じoutputのQueryDisplayConfig exact rational
+ordinal authority: その同じoutputのphysical VBlank sequence
+```
+
+#### F3-A: authority probe
+
+schedulerを変更する前に、production-connectedなdiagnostic probe
+`apps/p2_vblank_authority_probe`を先に入れた。windowのHMONITORからDXGI outputを特定し、同じoutput
+専用threadで`IDXGIOutput::WaitForVBlank`を回してVBlank sequenceだけをfixed ringへ記録する。
+判定はwindow output側だけで行い、DWMの値は併記するだけで使わない。
+
+pure helperは`src/media/gpu_preview/window_output_vblank_authority.h`に置いた。VBlank列の単調性、
+preflight cadence整合 (観測VBlank数と 経過QPC×rational の差が1 VBlank以内)、swapを
+`V_k.qpc <= swapQpc < V_(k+1).qpc`で一意にbracketする関数を含む。上側VBlank未観測のswapは
+解決しない (`AfterLast`)。
+
+[事実] 60秒のprobeを2条件で取得した。observer threadが通常優先度のときは3595 sample、
+観測59.8986 Hz、公称周期の1.5倍以上へ伸びたintervalが12本、最短interval 47570 tick (0.29周期) で、
+`WaitForVBlank`のwake遅れによる取りこぼしが起きていた。ordinalは自前counterなので連続性検査では
+検出できず、interval側でのみ検出できる。observer threadを`THREAD_PRIORITY_TIME_CRITICAL`にすると
+3598 sample、3597 interval、観測**59.9502 Hz**、長すぎるinterval 0本、interval範囲は
+163038〜171428 tick (公称166805 tickの0.977〜1.028倍) となり、60秒窓全体でも
+QueryDisplayConfig rationalと1 VBlank以内で一致した。
+
+[事実] 同じprobe実行でのDWM composition clockは、idle windowで`cRefresh`が5秒に1 tick
+(約0.0167〜0.2 Hz) しか進まなかった。A2 formal run中は約123.7 Hzだった。すなわちDWMの`cRefresh`は
+window outputのVBlank数ではなく、composition活動量で変わる。59.95 Hzとは両極 (0.02 Hz / 123.7 Hz)
+で乖離しており、formal ordinal authorityには使えないことが実測で確定した。
+
+probeのauthority-validity条件は次の通りで、新しい性能thresholdは導入していない。
+
+```text
+VBlank sequence status = OK
+observer ring overflow = 0 / WaitForVBlank failure = 0
+公称周期の1.5倍以上のinterval = 0
+preflight窓 (120 VBlank) のcadenceがrationalと1 VBlank以内で一致
+window output identity (HMONITOR / DXGI output / adapter LUID / GDI名 / rational /
+desktop座標) がstart-endで不変
+```
+
+full窓のcadence差はpanel実cadenceと公称値の差を含むためdiagnosticとして併記する。
+
+checkerは`scripts/check-p2-vblank-authority.ps1`で、producerの真偽値を信じずpreflight窓のdeviationと
+toleranceを生の観測値から再計算する。contract testは対照群と、1 fieldだけを壊した8 negative
+(probe_pass、output identity変更、sequence status、long interval、wait failure、ring overflow、
+約123.7 Hz cadence、deviation再計算不一致) に加えて、**DWM clockがwindow outputと乖離していても
+probeは通る**ことを固定する`DwmClockMismatchIsDiagnosticOnly`を持つ。
+
+#### F3-B0: shadow mapping proof
+
+F3-Aが証明したのはobserverのcount/cadenceがwindow outputのrationalと一致することであり、
+個々のswapがどのphysical VBlank opportunityへ属するかまでは示していない。`WaitForVBlank`の
+return時刻はhardware VBlankそのものではなくthreadが実行された時刻なので、production scheduling
+を変更する前にshadow modeで対応を証明する。
+
+compositor spikeへ`--vblank-observer`を追加し、measurement開始時にwindow outputを解決して
+observerを起動、measurement停止後はwindowを延長せずobserverだけbounded drain (最大100 ms) して
+最後のin-window swapのupper bracketを取得してから停止する。physical VBlank列はformal logicへ
+一切入力せず、raw JSONの`presentation_opportunity.physical_vblank`として保存するだけである。
+
+[事実] 60秒のshadow runを3本独立に取得した。3本とも
+`time_critical_priority=true`、`window_output_stable=true`、`sequence_status=OK`、ring overflow 0、
+wait failure 0、公称周期の1.5倍以上のinterval 0本、0.5倍未満のinterval 0本、累積progressionは
+rationalと1 VBlank以内 (最大でも0.011 VBlank / 60秒) だった。
+
+```text
+run1  VBlank 3605  swap 3597  mapped 3591  same_opportunity 6
+run2  VBlank 3604  swap 3596  mapped 3594  same_opportunity 2
+run3  VBlank 3604  swap 3593  mapped 3588  same_opportunity 5
+
+全run  ambiguous 0  observer_gap 0  before_first 0  after_last 0
+```
+
+全swapが`V_k <= swapQpc < V_(k+1)`で一意に解決した。`same_opportunity`は同一physical VBlank内の
+追加swapであり、F2で実装済みのpending/latest-candidate semanticsが扱う対象である。
+`after_last=0`はbounded drainが機能していることを示す。
+
+authority validityはF3-Aの`>=1.5T`に加えて`<0.5T`も無効とする。通常優先度で観測した0.29Tのような
+short intervalは、直前のwakeが遅れて隣接VBlankと断定できないことの証拠だからである。これは性能
+thresholdではなくmidpoint criterionである。あわせてorigin基準の累積discrepancyも記録する。
+self-counterはmissed VBlankを自分では知れないため、intervalと累積の双方を残す。
+
+#### F3-B0.6-R1: Complete Present-ID Oracle
+
+[事実] 既存のpresent identity probeは900回の成功Presentに対して742件程度の
+`GetFrameStatistics` transitionしか採取できていなかった。`GetFrameStatistics`は最後のrender frameの
+統計を返すため、この差だけから未観測Presentを`FLIP_DISCARD`によるdiscardへ帰属できない。
+従来artifactは不完全なoracleとして保持し、mapperの成否判定には使わない。
+
+[回避策] swap chain条件は`FLIP_DISCARD / BufferCount 3 / SyncInterval 1`のまま変えず、成功した各
+`Present(1, 0)`の直後に`GetLastPresentCount`を取得する。raw recordは
+`submission_index / present_id / render_end_qpc / present_return_qpc`を持ち、Present IDがexact `+1`で
+連続することを要求する。
+
+statistics samplerはF3-Aと同じphysical VBlank observerのring transitionで駆動し、各VBlank後に
+公称周期の3/4を
+上限とするbounded high-rate pollで`PresentCount / PresentRefreshCount / SyncRefreshCount /
+SyncQPCTime / poll_qpc`の全transitionを記録する。poll間隔が0.5周期以上、PresentCountの飛び、disjoint、
+最終submitted Present IDまでのdrain未完了は`ORACLE_SAMPLING_GAP`としてrunをINVALIDにする。
+`DwmFlush` fallbackは最初のrunでは使わない。
+
+oracle-validityはsubmitted Present ID列と、同じID範囲のstatistics transition列が同順序・同件数で
+一致し、最後の`PresentCount`が最後のsubmitted IDと一致した場合に限る。checkerはproducerの集計値を
+信じずraw二列から再計算する。notification delayの0 / 0.1T / 0.3T / 0.8T / 1.2Tはlive processへ
+入れず、Present完了後に`notify_qpc = present_return_qpc + synthetic_delay`としてJSON上だけで生成する。
+
+[exit] 完全oracleが取得できるまでは`mapper proof = NOT YET EVALUABLE`、
+`FLIP_DISCARD frame discard claim = NOT ESTABLISHED`、F3-B1は未開始、P2-D5-2はBLOCKEDとする。
+完全oracle取得後も`submission order + delayed notify QPC + physical VBlank ring`だけで900/900 exact identityを
+再構成できない場合はmonotone/backfill heuristicを追加せず棄却し、Qt actual Present IDをformal harnessへ
+露出する経路を検討する。`FLIP_SEQUENTIAL / BufferCount 2 / MaximumFrameLatency 1`は完全oracle取得不能時の
+secondary controlにのみ使う。
+
+[事実] `mvm_p2_present_identity_probe`のrelease build後、上記primary条件で900 Present live runを
+実行した。全submissionのPresent IDはexact `+1`だったが、checkerはstatistics transition不足、
+sampler自身のphysical VBlank trigger gap、poll interval超過、final drain未完了を検出し、runを
+`ORACLE_SAMPLING_GAP / INVALID`にした。値はraw JSONからcheckerが再計算し、文書へ転記しない。
+再現手順は`ctest --test-dir build/ucrt64-release -R '^p2_present_id_oracle_live$'
+--output-on-failure`である。
+
+[事実] Hardware Flip Queue向けの`DwmFlush` oracle-only fallbackも900 Presentで試したが、checkerは
+transition不足を検出してINVALIDにした。fallbackはsamplingを完全化せず、primary runの既定値には
+していない。
+
+[exit] したがって現在もmapper proofは評価不能であり、未観測Presentをdiscardへ帰属しない。
+F3-B1は未開始、P2-D5-2はBLOCKEDのままとする。live runnerは同名artifactがある場合、次run前に
+timestamp付きcopyを作り、不完全artifactも上書きで失わない。
+
+#### F3-B0.6-R2: ETW Present-History Oracle
+
+[事実] R1で使った`GetFrameStatistics`は最後のrender frameを返すsnapshot APIであり、全Presentの
+event historyではない。primaryと`DwmFlush` fallbackの双方で完全列を取得できなかったため、R1 artifactを
+不変保存し、このpolling samplerの追加調整を打ち切る。これはmapperの失敗ではなくoracle acquisitionの
+失敗である。
+
+[回避策] PresentMon v2.3.1のPresentDataをcommit
+`717c5bf14e80a4a06b70cd16415ae8d40a7ce201`へ固定し、通常CSVを介さずETLから
+`PresentStartTime / ProcessId / ThreadId / SwapChainAddress / Hwnd / SyncInterval / PresentFlags /
+Displayed[] / PresentIds`をraw JSONへ出すdiagnostic-only decoderを導入する。`Displayed`のQPCは丸めず
+そのまま保存し、空列は`UNPRESENTED`、非空列の先頭は初回opportunity、残りはphysical repeatとする。
+
+最初の対象はself-created probeではなくactual Qt compositor shadowとする。app側は既存の
+`frameSwapped QPC / swap ordinal / source frame identity / measurement window / physical VBlank ring`を
+保存する。target PID、measurement window、swapchainで絞った後のjoinはcountと順序のexact一致だけを
+許可する。nearest timestampによる個別対応や欠落救済は行わない。target swapchainが一意、sequenceが
+連続、全`SyncInterval == 1`、ETW lost eventとPresentData ring overflowが0の場合だけ次へ進む。
+
+`DisplayedQPC`は最初の120 physical VBlank sampleからexact refresh rationalでphase/originをfreezeし、
+measurement全体を最寄りのphysical opportunity ordinalへ投影する。ちょうど半周期のboundary ambiguity、
+観測範囲外、physical VBlank authority不成立はrun全体をINVALIDにする。app swapのVBlank bracketは
+collision evidenceの分類にだけ使い、oracle opportunityの算出には使わない。
+
+checkerは`scripts/check-p2-etw-present-history.ps1`へ一本化し、先に既存の
+`check-p2-vblank-shadow.ps1`を呼ぶ。collision有無の対照群2件に加え、count、sequence、swapchain、window、SyncInterval、ETW lost、
+raw QPC欠落、boundary ambiguity、physical authorityを各1箇所だけ壊した
+9 negativeでfail-closedを固定する。runnerは同条件の未計測baselineとWPR計測runのswap cadence比を
+diagnosticに残すが、新しい性能thresholdにはしない。
+
+[exit] R2のexit criteriaは、app/ETW exact count、sequence/order mismatch 0、ETW lost 0、raw
+`DisplayedQPC`取得、physical ordinal ambiguity 0、およびactual Qtのsame-bracket collisionを少なくとも
+1件解決することである。offline synthetic delayを使う場合もlive processへdelayを入れず、同型のidentityを
+別artifactで証明する。oracle-valid traceが得られるまでmapperは変更せず、
+`mapper proof = NOT YET EVALUABLE`、F3-B1未開始、P2-D5-2 BLOCKEDを維持する。PresentMonでもcomplete
+historyを取得できない場合はheuristicを足さず、Qt D3D11 QRhi backendの`Present`直前・直後とserialを
+露出するdiagnostic-only hookへ切り替える。
+
+再現手順は次の通り。runnerは既存directoryを上書きせず、ETL、app raw、PresentData raw、oracle、
+hash manifestを同じartifact rootへ保存する。
+
+```powershell
+pwsh scripts/bootstrap-p2-etw-decoder.ps1
+pwsh scripts/build.ps1 -Target mvm_compositor_spike
+# 管理者PowerShellで実行
+pwsh scripts/p2-etw-present-history.ps1 -OutputDirectory bench/results/f3-b0.6-r2-<timestamp>
+```
+
+現在の状態:
+
+```text
+F3-B0.6-R1 GetFrameStatistics oracle : INVALID / path exhausted
+F3-B0.6 mapper proof                 : NOT YET EVALUABLE
+F3-B0.6-R2 ETW oracle               : ORACLE_VALID / COLLISION_NOT_OBSERVED
+F3-B1                               : NOT STARTED
+P2-D5-2                             : BLOCKED
+```
+
+#### F3-B0.6-R3: Oracle-backed Synthetic Collision Corpus
+
+[事実] 15秒actual Qt artifact `bench/results/f3-b0.6-r2-20260822-1919`は、更新後のR2 checkerで
+`ORACLE_VALID / COLLISION_NOT_OBSERVED`となった。app swapとETW Presentは900/900 exact join、全recordの
+raw `DisplayedQPC`をphysical opportunityへ一意に投影でき、ETW lostとPresentData overflowは0である。
+oracle validityとcollision観測を別fieldへ分離し、自然collisionが無いことだけで完全oracleをINVALIDと
+呼ばない。元artifactの`summary.json`は軸分離前の粗い`ORACLE_INVALID`表記なので書き換えず保存し、
+R3の`source-oracle.json`と`corpus-index.json`をhash付き再分類evidenceとする。
+
+[事実] 同じ環境の60秒artifactはETW lostが非0なので`ETW_LONG_TRACE_CAPACITY_INVALID`として保存し、
+oracleやcorpus sourceには再利用しない。app側rawにもsame-bracket pairは無かったため、長時間ETW再採取と
+WPR profile調整は打ち切った。
+
+[回避策] `scripts/make-p2-etw-synthetic-corpus.ps1`は15秒artifactのmanifest、app JSON、ETW JSONの
+SHA-256を固定し、hash不一致またはR2 oracle再検査失敗時は生成しない。synthetic変更はcallback QPCだけに
+限定し、各caseを次の2ファイルへ分離する。
+
+```text
+mapper-input.json:
+  submission index / original callback QPC / synthetic callback QPC / delay ticks
+  synthetic callback bracket / SyncInterval / sourceから切り出した連続VBlank列
+
+hidden-oracle.json:
+  PresentIds / raw DisplayedQPC[] / displayed status / actual physical opportunity
+  expected construction solution class
+```
+
+mapper inputには`present_ids / displayed / actual_physical_opportunity_ordinal /
+expected_solution_class`を出さない。sourceのPresentData `PresentIds` vectorは対象900件すべて空だったため、
+値を補完・推測せず空列のまま不変保存する。submission identityはexact sequence join、display identityは
+raw `DisplayedQPC`で保持する。
+
+[事実] `bench/results/f3-b0.6-r3-corpus-20260822-v2`へ52 caseを機械生成した。pair collision、triple
+collision、measurement start/middle/end、1 bracket late、visible opportunity容量による`UNIQUE /
+NO_SOLUTION / AMBIGUOUS`を含む。source oracleにactual presentation gapは無いためgap caseは生成せず、
+その理由を`corpus-index.json`へ記録した。
+
+R3のsolution classはmapper結論ではなく、各caseが公開する連続VBlank sliceをopportunity universeとした
+construction propertyである。N個のordered recordからM個のvisible opportunityへのstrict monotone・
+injective・order-preserving assignmentをcheckerが列挙し、0件を`NO_SOLUTION`、1件を`UNIQUE`、複数を
+`AMBIGUOUS`とする。R4はこの期待値を入力せずraw mapper-visible JSONだけから独立に判定する。
+
+checker `scripts/check-p2-etw-synthetic-corpus.ps1`はsource R2 oracleを毎回再生成し、source hash、hidden
+oracle identity、callback order、`synthetic-original == delay`、連続VBlank slice、collision bracket、
+solution classを再計算する。対照群と、oracle opportunity変更、delayをDisplayed側にも適用、record順序交換、
+VBlank削除、実際にはsame bracketでないcollision claimの5 mutationをcontract testで固定した。
+
+[exit] R3 corpus checkerはPASSしたがmapperはまだ実装・評価していない。次はF3-B0.6-R4だけを開始し、
+mapperへは`mapper-input.json`だけを渡す。R4で合法解が複数ならbackfill heuristicを採用せず、
+production-observable情報だけではexact identityを一意復元できないと結論し、Qt D3D11 Present serial hookへ
+切り替える。
+
+```text
+F3-B0.6-R1 GetFrameStatistics oracle : INVALID / path exhausted
+F3-B0.6-R2 ETW oracle                 : ORACLE_VALID / COLLISION_NOT_OBSERVED
+F3-B0.6-R3 synthetic corpus           : PASS
+F3-B0.6-R4 offline mapper proof       : NEXT
+F3-B1                                 : NOT STARTED
+P2-D5-2                               : BLOCKED
+```
+
+再現手順:
+
+```powershell
+pwsh scripts/make-p2-etw-synthetic-corpus.ps1 `
+  -OutputDirectory bench/results/f3-b0.6-r3-corpus-<timestamp>
+pwsh scripts/check-p2-etw-synthetic-corpus.ps1 `
+  -CorpusDirectory bench/results/f3-b0.6-r3-corpus-<timestamp>
+```
+
+#### F3-B0.6-R4: Offline Mapping Proof
+
+R4のadmissibility relationはhidden oracleを開く前に次で固定した。
+
+```text
+VISIBLE_PREFIX: opportunity_start_qpc <= synthetic_callback_qpc
+```
+
+各recordが使えるのは、R3が公開する有限な連続VBlank slice内でcallback時点までに開始した
+opportunityの全prefixである。これはcallbackがdisplay後に遅延し得るというB0/B0.5の仮説に基づく。
+`k`または`k-1`のようなoracle適合windowは作らない。mapper-visible入力はsynthetic callback QPC、
+submission order、physical VBlank sequence、measurement boundary、`SyncInterval == 1`だけを持つ。
+`DisplayedQPC`、ETW actual opportunity、PresentIds、original callback QPC、synthetic delay、期待solution
+classはstrict schemaで拒否する。
+
+mapperはstrict monotone / injective / order-preserving assignmentの個数をexact DPで数え、0 / 1 / 2以上へ
+saturateする。結果はそれぞれ`NO_SOLUTION / UNIQUE / AMBIGUOUS`であり、複数解から代表解を選ばない。
+pure testはrecord 1〜3件、opportunity 1〜5件の全candidate matrixを独立brute forceと照合する。
+opportunity再利用、first-solution採用、`<=`から`<`へのboundary変更、future opportunity混入、callback
+並べ替えのmutation、およびmapper-visible JSONへのoracle / delay field漏洩をnegative testで固定した。
+
+[事実] `bench/results/f3-b0.6-r4-offline-20260822-v3`でR3の52 caseをmapper-visible JSONへ投影し、
+全mapper実行が完了した後にcheckerだけがhash固定済みhidden oracleを開いた。solution classは
+`UNIQUE 36 / AMBIGUOUS 8 / NO_SOLUTION 8`で期待値と完全一致した。UNIQUE 36 caseの84 recordは
+assignmentしたphysical opportunity ordinalがETW oracleと84/84完全一致した。pure/property、mutation、
+漏洩拒否のtargeted CTestは6/6通過した。
+
+[exit] R4 offline mapper proofは**PASS**である。backfill heuristicやQt Present serial hookへの切替条件には
+該当しない。次はF3-B1 runtime wiringへ進む。ただしsource traceは900/900がDisplayedであり、
+`UNPRESENTED`のidentityは証明していない。production runtimeへはまだ接続していないため、
+P2-D5-2はBLOCKEDのままである。
+
+```text
+F3-B0.6-R1 GetFrameStatistics oracle : INVALID / path exhausted
+F3-B0.6-R2 ETW oracle                 : ORACLE_VALID / COLLISION_NOT_OBSERVED
+F3-B0.6-R3 synthetic corpus           : PASS
+F3-B0.6-R4 offline mapper proof       : PASS (36 / 8 / 8, UNIQUE 84/84 exact)
+F3-B1 runtime wiring                  : NEXT
+P2-D5-2                               : BLOCKED
+```
+
+再現手順:
+
+```powershell
+pwsh scripts/run-p2-r4-offline-proof.ps1 `
+  -OutputDirectory bench/results/f3-b0.6-r4-offline-<timestamp>
+pwsh scripts/check-p2-r4-offline-proof.ps1 `
+  -CorpusDirectory bench/results/f3-b0.6-r3-corpus-20260822-v2 `
+  -RunDirectory bench/results/f3-b0.6-r4-offline-<timestamp>
+ctest --test-dir build/ucrt64-release --output-on-failure `
+  -R '^p2_(presentation_opportunity_mapper_pure|r4_visible_input_)'
+```
+
+observer threadは`THREAD_PRIORITY_TIME_CRITICAL`への昇格に失敗した場合、normal priorityへ黙って
+fallbackせず`AUTHORITY_UNAVAILABLE`として起動失敗にする。observer threadは
+`WaitForVBlank` → fixed-ring write 以外を行わない。
+
+checkerは`scripts/check-p2-vblank-shadow.ps1`で、producerの集計を信じずraw VBlank sampleと
+swap recordからinterval、累積deviation、swap→opportunity mappingを独立再計算する。contract testは
+対照群2件 (通常cadence / supersede) と、ambiguous swap、observer gap、after-last、before-first、
+short interval、long interval、cumulative drift、normal priority、output change、sample count不一致の
+10 negativeで固定する。
+
 ---
 
 ## 7. 検証手順
