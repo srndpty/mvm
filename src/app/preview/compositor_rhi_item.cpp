@@ -91,6 +91,41 @@ private:
     bool repeated_ = true;
 };
 
+class NativePresentTokenCapture {
+public:
+    NativePresentTokenCapture(const std::shared_ptr<CompositorSpikeState>& state,
+                              const MvmNativePresentCompositionToken& lastToken,
+                              std::uint64_t tokenSerial)
+        : state_(state), token_(lastToken),
+          active_(state->nativePresentCaptureActive.load(std::memory_order_acquire)) {
+        if (active_ && token_.outputFrameNumber >= 0) {
+            token_.tokenSerial = tokenSerial;
+            valid_ = true;
+        }
+    }
+
+    ~NativePresentTokenCapture() {
+        if (!active_)
+            return;
+        const auto hook = state_->nativePresentHook;
+        if (!valid_ || !hook || !hook->setCompositionToken(token_))
+            state_->nativePresentTokenSetFailureCount.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    bool setFrame(const gpu::ComposedFrame& frame, std::uint64_t tokenSerial) {
+        valid_ = makeNativePresentCompositionToken(frame, tokenSerial, token_);
+        return valid_;
+    }
+
+    const MvmNativePresentCompositionToken& token() const { return token_; }
+
+private:
+    std::shared_ptr<CompositorSpikeState> state_;
+    MvmNativePresentCompositionToken token_{};
+    bool active_ = false;
+    bool valid_ = false;
+};
+
 class CompositorRhiRenderer final : public QQuickRhiItemRenderer {
 public:
     CompositorRhiRenderer(std::shared_ptr<CompositorSpikeState> state,
@@ -163,6 +198,9 @@ protected:
         if (!state_->deviceReady.load(std::memory_order_acquire) ||
             state_->fatal.load(std::memory_order_acquire))
             return;
+        const std::uint64_t nativeTokenSerial = ++nativePresentTokenSerial_;
+        NativePresentTokenCapture nativePresentToken(state_, lastNativePresentToken_,
+                                                     nativeTokenSerial);
         // pipelineをopenする前のP3-C-2 preflightでもactual targetを検査できるよう、
         // frame pairの有無に依存せずQRhi textureの実pixel sizeを公開する。
         if (auto* texture = colorTexture()) {
@@ -530,6 +568,13 @@ protected:
             return;
         }
         const long long submissionQpc = gpu::qpcTicks();
+        if (state_->nativePresentCaptureActive.load(std::memory_order_acquire)) {
+            if (!nativePresentToken.setFrame(frame, nativeTokenSerial)) {
+                fail("native Present composition tokenを構築できません");
+                return;
+            }
+            lastNativePresentToken_ = nativePresentToken.token();
+        }
         if (state_->p3SeekDiagnostics.active.load(std::memory_order_acquire) &&
             output == state_->p3SeekDiagnostics.expectedFrame.load(std::memory_order_relaxed))
             state_->p3SeekDiagnostics.gpuComposeSubmittedQpc.store(submissionQpc,
@@ -739,6 +784,16 @@ private:
         const bool stopRequested =
             state_->measurementStopRequested.exchange(false, std::memory_order_acq_rel);
         if (intervalEnded || stopRequested) {
+            if (state_->nativePresentCaptureActive.exchange(false, std::memory_order_acq_rel)) {
+                std::string hookError;
+                if (!state_->nativePresentHook ||
+                    !state_->nativePresentHook->endCapture(hookError) ||
+                    !state_->nativePresentHook->authorityValid() ||
+                    state_->nativePresentTokenSetFailureCount.load(std::memory_order_relaxed) !=
+                        0) {
+                    fail(hookError.empty() ? "native Present authorityが不成立です" : hookError);
+                }
+            }
             if (state_->measurementIntervalActive.exchange(false, std::memory_order_acq_rel)) {
                 if (state_->formalOpportunityCaptureActive.exchange(false,
                                                                     std::memory_order_acq_rel)) {
@@ -835,6 +890,16 @@ private:
                 state_->presentationCaptureActive.store(true, std::memory_order_release);
             }
             state_->measurementEndQpc.store(callbackBegin + duration, std::memory_order_release);
+            if (state_->nativePresentHookEnabled.load(std::memory_order_acquire)) {
+                std::string hookError;
+                state_->nativePresentTokenSetFailureCount.store(0, std::memory_order_relaxed);
+                if (!state_->nativePresentHook ||
+                    !state_->nativePresentHook->beginCapture(hookError)) {
+                    fail(hookError.empty() ? "native Present hookを開始できません" : hookError);
+                    return true;
+                }
+                state_->nativePresentCaptureActive.store(true, std::memory_order_release);
+            }
             state_->measurementIntervalActive.store(true, std::memory_order_release);
             if (state_->diagnosticCase.load(std::memory_order_acquire) !=
                 CompositorDiagnosticCase::None) {
@@ -857,6 +922,9 @@ private:
         }
         return false;
     }
+
+    MvmNativePresentCompositionToken lastNativePresentToken_{};
+    std::uint64_t nativePresentTokenSerial_ = 0;
 
     void noteDrop(gpu::OutputDropReason reason, long long count = 1) {
         if (count <= 0)

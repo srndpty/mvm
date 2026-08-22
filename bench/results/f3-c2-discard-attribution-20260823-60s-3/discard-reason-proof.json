@@ -1,0 +1,25 @@
+{
+  "schema": "mvm-p2-c2-discard-reason-proof-1",
+  "proof_status": "PASS",
+  "authority": "diagnostic_only",
+  "formal_counter_authority_changed": false,
+  "present_record_count": 3596,
+  "presented_count": 535,
+  "discarded_count": 3061,
+  "discard_reason_count": 3061,
+  "unknown_discard_reason_count": 0,
+  "native_token_join_exact_count": 3596,
+  "etw_events_lost": 0,
+  "etw_buffers_lost": 0,
+  "present_event_overflow_count": 0,
+  "reason_histogram": {
+    "BACK_TO_BACK_FLIP_SUPERSEDED": 0,
+    "WIN32K_TOKEN_NOT_IN_FRAME": 0,
+    "DEPENDENT_PRESENT_SUPERSEDED": 2551,
+    "DO_NOT_SEQUENCE": 0,
+    "NOT_VISIBLE": 0,
+    "BLIT_CANCEL": 0,
+    "OTHER_EXPLICIT_DISCARD": 0,
+    "EARLIER_SWAPCHAIN_PRESENT_SUPERSEDED": 510
+  }
+}

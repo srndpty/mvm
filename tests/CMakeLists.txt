@@ -62,6 +62,14 @@ add_test(NAME p2_presentation_opportunity_mapper_pure
 set_tests_properties(p2_presentation_opportunity_mapper_pure PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}")
 
+add_executable(mvm_test_native_present_hook_token
+    gpu_preview/test_native_present_hook_token.cpp)
+target_link_libraries(mvm_test_native_present_hook_token PRIVATE mvm::preview_qt mvm::warnings)
+add_test(NAME p2_c0_native_present_hook_token
+    COMMAND mvm_test_native_present_hook_token)
+set_tests_properties(p2_c0_native_present_hook_token PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}")
+
 set(MVM_SMOKE_DIR "${CMAKE_SOURCE_DIR}/tests/assets/smoke")
 set(MVM_SMOKE_MANIFEST "${MVM_SMOKE_DIR}/manifest.json")
 set(MVM_JP_DIR "${MVM_SMOKE_DIR}/素材/日本語 テスト/第1回　微分積分＆演習")
@@ -101,6 +109,75 @@ foreach(_p2_r4_visible_case Good NegativeOriginalCallback NegativeSyntheticDelay
             -Case ${_p2_r4_visible_case}
             -Exe "$<TARGET_FILE:mvm_p2_offline_mapping>"
             -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-r4-visible-${_p2_r4_visible_name}")
+endforeach()
+
+foreach(_p2_b1_shadow_case Good NegativeEarlyCommit NegativeFirstSolution
+        NegativeFormalAuthority NegativePhysicalDoubleCount NegativeSourceAccounting
+        NegativeCandidateWindow ExpectedNoSolutionFailure)
+    string(TOLOWER "${_p2_b1_shadow_case}" _p2_b1_shadow_name)
+    mvm_add_test(p2_b1_shadow_${_p2_b1_shadow_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-b1-shadow-contract.ps1"
+            -Case ${_p2_b1_shadow_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-b1-shadow.ps1"
+            -FailureChecker "${CMAKE_SOURCE_DIR}/scripts/check-p2-b1-shadow-failure.ps1"
+            -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-b1-shadow-${_p2_b1_shadow_name}.json")
+endforeach()
+
+foreach(_p2_c0_native_case Good NegativeMissingToken NegativeDuplicateSerial
+        NegativeTokenMismatch NegativePresentFlags)
+    string(TOLOWER "${_p2_c0_native_case}" _p2_c0_native_name)
+    mvm_add_test(p2_c0_native_hook_${_p2_c0_native_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c0-native-hook-contract.ps1"
+            -Case ${_p2_c0_native_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c0-native-hook.ps1"
+            -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-c0-native-${_p2_c0_native_name}.json")
+endforeach()
+
+foreach(_p2_c0_etw_case Good GoodDiscarded GoodBoundaryStraddle NegativeUnknown NegativeLost
+        NegativeOrder NegativeOutsideInterval NegativeCount)
+    string(TOLOWER "${_p2_c0_etw_case}" _p2_c0_etw_name)
+    mvm_add_test(p2_c0_native_etw_${_p2_c0_etw_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c0-native-etw-contract.ps1"
+            -Case ${_p2_c0_etw_case}
+            -Fixture "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c0-native-hook-contract.ps1"
+            -NativeChecker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c0-native-hook.ps1"
+            -EtwChecker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c0-native-etw.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c0-etw-${_p2_c0_etw_name}")
+endforeach()
+
+foreach(_p2_c1_case Good NegativeUnknown NegativeLost NegativeFrameRange
+        NegativeOpportunityOrder NegativeDisplayedPayload)
+    string(TOLOWER "${_p2_c1_case}" _p2_c1_name)
+    mvm_add_test(p2_c1_display_authority_${_p2_c1_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c1-display-authority-contract.ps1"
+            -Case ${_p2_c1_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c1-display-authority.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c1-display-${_p2_c1_name}")
+endforeach()
+
+foreach(_p2_c2_case Good NegativeUnknown NegativeIdentity NegativePayload NegativeOrder)
+    string(TOLOWER "${_p2_c2_case}" _p2_c2_name)
+    mvm_add_test(p2_c2_display_discard_attribution_${_p2_c2_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c2-display-discard-attribution-contract.ps1"
+            -Case ${_p2_c2_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c2-display-discard-attribution.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c2-attribution-${_p2_c2_name}")
+endforeach()
+
+foreach(_p2_c2_reason_case Good NegativeZeroDiscard NegativeUnknownReason NegativeMissingReason
+        NegativePresentedReason NegativeMissingDiagnosticField)
+    string(TOLOWER "${_p2_c2_reason_case}" _p2_c2_reason_name)
+    mvm_add_test(p2_c2_discard_reason_${_p2_c2_reason_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c2-discard-reason-contract.ps1"
+            -Case ${_p2_c2_reason_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c2-discard-reasons.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c2-reason-${_p2_c2_reason_name}")
 endforeach()
 
 # ARGS に ';' を含む引数 (--map や --require-proxy-ids) を渡す場合は

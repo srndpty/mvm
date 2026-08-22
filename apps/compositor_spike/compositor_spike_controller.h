@@ -3,6 +3,7 @@
 
 #include "app/preview/compositor_rhi_item.h"
 #include "core/mvm_parallel_dispatch.h"
+#include "core/presentation_opportunity_mapper.h"
 #include "media/gpu_preview/window_output_vblank_observer.h"
 
 #include <QElapsedTimer>
@@ -31,6 +32,7 @@ struct DwmPresentationTimingSnapshot {
 };
 
 enum class CompositorMode { Playback, Seek, Layout };
+enum class NativePresentHookMode { Disabled, OffControl, OnDiagnostic };
 
 struct CompositorSpikeConfig {
     QString sourceA;
@@ -49,6 +51,8 @@ struct CompositorSpikeConfig {
     bool schedulerPhaseRing = false;
     bool presentationOpportunityRing = false;
     bool vblankObserver = false;
+    bool incrementalMapperShadow = false;
+    NativePresentHookMode nativePresentHook = NativePresentHookMode::Disabled;
     CompositorDiagnosticCase diagnosticCase = CompositorDiagnosticCase::None;
 };
 
@@ -98,6 +102,20 @@ private:
     void beginShutdown(const QString& reason, bool failure);
     void performShutdown();
     bool writeMetrics();
+    bool pollIncrementalMapperShadow(bool finalizing);
+
+    struct IncrementalMapperTransition {
+        const char* eventType = "NONE";
+        long long qpc = 0;
+        long long vblankOrdinal = -1;
+        long long swapOrdinal = -1;
+        long long sourceFrame = -1;
+        core::MappingSolutionClass solutionClass = core::MappingSolutionClass::NoSolution;
+        bool hasClosedRecords = false;
+        std::size_t closedRecordCount = 0;
+        std::size_t commitWatermark = 0;
+        core::IncrementalMappingError error = core::IncrementalMappingError::None;
+    };
 
     CompositorSpikeConfig config_;
     CompositorRhiItem* item_ = nullptr;
@@ -159,6 +177,7 @@ private:
     int layoutMismatch_ = 0;
     bool seekLockTimingActive_ = false;
     QString shutdownReason_;
+    QString startupError_;
     DwmPresentationTimingSnapshot dwmTimingStart_;
     DwmPresentationTimingSnapshot dwmTimingStop_;
     // F3-B0 shadow: physical VBlank observerはformal authorityへは接続せず、
@@ -168,6 +187,18 @@ private:
     gpu::WindowOutputIdentity vblankIdentityEnd_{};
     bool vblankObserverStarted_ = false;
     std::string vblankObserverError_;
+    core::IncrementalOpportunityMapper incrementalMapperShadow_{1};
+    std::size_t incrementalVblankRead_ = 0;
+    std::size_t incrementalSwapRead_ = 0;
+    gpu::VBlankObservation incrementalLastBeforeStart_{};
+    gpu::VBlankObservation incrementalDomainBoundary_{};
+    bool incrementalMapperOriginSelected_ = false;
+    bool incrementalMapperDomainClosed_ = false;
+    bool incrementalMapperFinalized_ = false;
+    bool incrementalMapperPass_ = false;
+    std::string incrementalMapperError_;
+    std::vector<IncrementalMapperTransition> incrementalMapperTransitions_;
+    std::vector<long long> incrementalCommitQpc_;
     long long formalAuthorityLastPollQpc_ = 0;
 };
 

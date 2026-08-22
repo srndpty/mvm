@@ -1,0 +1,18 @@
+{
+  "schema": "mvm-p2-c2-display-discard-attribution-run-1",
+  "status": "PASS",
+  "authority": "diagnostic_offline_proof",
+  "formal_counter_authority_changed": false,
+  "source_artifact_reacquired": false,
+  "present_record_count": 3597,
+  "presented_count": 1358,
+  "discarded_count": 2239,
+  "physical_gap_accounting_exact": true,
+  "source_frame_is_exact_physical_timeline": false,
+  "source_vblank_delta_mismatch_count": 10,
+  "source_identities": {
+    "oracle_sha256": "2bb7ed65c0a1c5a1b9beb3066bcd8c6a3f4a69f6a453729f06ba93c5d73cb1f7",
+    "oracle_manifest_sha256": "d91e4f464a7fb5c9f9ccd7287b0b687177d7ae9af0e7c0d444427e9f3780a764",
+    "checker_sha256": "fe064b6818d18280df9ce5fb63fcf8c9daf3161497b7b34d0a5fe7708ea8b24c"
+  }
+}

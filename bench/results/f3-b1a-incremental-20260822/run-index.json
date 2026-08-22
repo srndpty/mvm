@@ -1,0 +1,377 @@
+{
+  "schema": "mvm-p2-b1a-incremental-run-1",
+  "authority": "diagnostic_only",
+  "b1a_status": "GENERATED_NOT_YET_CHECKED",
+  "case_count": 52,
+  "r4_run_sha256": "df466fe9f2dab794d3d012c7e126ecde9d9560d9911114b0b98b4227b14f168a",
+  "r4_proof_sha256": "fa1b010a74ac2be7fd58eb1e19a09e7a35b32f11428a8e6f2fe48c35eee8f5ac",
+  "mapper_executable_sha256": "4c7a5351a6bee234c11b4ee46cd4316fdfffc62ecaa4f7ab3c731c3f6345f30f",
+  "admissibility_relation": "VISIBLE_PREFIX: opportunity_start_qpc <= synthetic_callback_qpc",
+  "replay_order": "QPC_ASCENDING_VBLANK_BEFORE_CALLBACK_ON_TIE",
+  "cases": [
+    {
+      "case_id": "pair_unique-0000-000",
+      "r4_visible_input": "cases/pair_unique-0000-000/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0000-000/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0000-000/incremental-result.json",
+      "incremental_result_sha256": "90e5a6f38324c2a351bbc1a5864ad04d03efe476a5e332d4c2214c776e1730e7"
+    },
+    {
+      "case_id": "pair_unique-0001-001",
+      "r4_visible_input": "cases/pair_unique-0001-001/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0001-001/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0001-001/incremental-result.json",
+      "incremental_result_sha256": "4877e6d53db1f4898141c12aa696e96aa2d6d485c04d70a96334a15cc8b4f581"
+    },
+    {
+      "case_id": "pair_unique-0002-002",
+      "r4_visible_input": "cases/pair_unique-0002-002/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0002-002/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0002-002/incremental-result.json",
+      "incremental_result_sha256": "1ee8fe3def03f6db1805cb26fefd9145a0cb7377d94bb61e738002b8b248c58a"
+    },
+    {
+      "case_id": "pair_unique-0447-003",
+      "r4_visible_input": "cases/pair_unique-0447-003/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0447-003/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0447-003/incremental-result.json",
+      "incremental_result_sha256": "646df185b6111f65cc7e3aebccd19c58d5947f7f12be9782bd0e061a6f5ed308"
+    },
+    {
+      "case_id": "pair_unique-0448-004",
+      "r4_visible_input": "cases/pair_unique-0448-004/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0448-004/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0448-004/incremental-result.json",
+      "incremental_result_sha256": "a9b2812ccbe685048f70d81253179137b08c1a35805315960a6aecf3b7c748fb"
+    },
+    {
+      "case_id": "pair_unique-0449-005",
+      "r4_visible_input": "cases/pair_unique-0449-005/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0449-005/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0449-005/incremental-result.json",
+      "incremental_result_sha256": "2102fff5489b5267502f7eed9540484615fb56e7774285828b4bb8e7d060185d"
+    },
+    {
+      "case_id": "pair_unique-0896-006",
+      "r4_visible_input": "cases/pair_unique-0896-006/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0896-006/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0896-006/incremental-result.json",
+      "incremental_result_sha256": "b294e1c75324af26ea63314ab3b78885141559979b562ad5ab43d75977257909"
+    },
+    {
+      "case_id": "pair_unique-0897-007",
+      "r4_visible_input": "cases/pair_unique-0897-007/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0897-007/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0897-007/incremental-result.json",
+      "incremental_result_sha256": "398e394d2b7ec6996097ab3ebf1e32186e77726dd447279326870f2faab27abf"
+    },
+    {
+      "case_id": "pair_unique-0898-008",
+      "r4_visible_input": "cases/pair_unique-0898-008/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0898-008/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0898-008/incremental-result.json",
+      "incremental_result_sha256": "182a2b6d2de567fbcc36f0363f68abbefc84b7c987780dd37f2c71116e7b437e"
+    },
+    {
+      "case_id": "pair_unique-0036-009",
+      "r4_visible_input": "cases/pair_unique-0036-009/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0036-009/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0036-009/incremental-result.json",
+      "incremental_result_sha256": "1dcc8bde1ae0ff2a8b39996f4c2d49acc03bd81ec795b258e054c0d9fac555f1"
+    },
+    {
+      "case_id": "pair_unique-0072-010",
+      "r4_visible_input": "cases/pair_unique-0072-010/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0072-010/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0072-010/incremental-result.json",
+      "incremental_result_sha256": "a8cfbfed409bd0f5d5b6e95a845e2f8c29e0a32df19905e916bdcd2870b4bee7"
+    },
+    {
+      "case_id": "pair_unique-0108-011",
+      "r4_visible_input": "cases/pair_unique-0108-011/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0108-011/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0108-011/incremental-result.json",
+      "incremental_result_sha256": "a9bfb656a11f29865421afbb108e6f114201d084fe7a76e988525ec3e05c760f"
+    },
+    {
+      "case_id": "pair_unique-0144-012",
+      "r4_visible_input": "cases/pair_unique-0144-012/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0144-012/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0144-012/incremental-result.json",
+      "incremental_result_sha256": "9e7031c68f0d5562873b8bd0325bac9d5d3f30a52e45578e68db678251bce635"
+    },
+    {
+      "case_id": "pair_unique-0180-013",
+      "r4_visible_input": "cases/pair_unique-0180-013/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0180-013/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0180-013/incremental-result.json",
+      "incremental_result_sha256": "ee9cc2f6c68c2235f7c7c46e1a24d886f76821516bac62b9f3e25bff58d6a11b"
+    },
+    {
+      "case_id": "pair_unique-0216-014",
+      "r4_visible_input": "cases/pair_unique-0216-014/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0216-014/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0216-014/incremental-result.json",
+      "incremental_result_sha256": "890ea368f1cef843e51bcad504c796d9f14f6ce9577008a648ccaa22c264288e"
+    },
+    {
+      "case_id": "pair_unique-0252-015",
+      "r4_visible_input": "cases/pair_unique-0252-015/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0252-015/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0252-015/incremental-result.json",
+      "incremental_result_sha256": "1d5be83eb3b6db52a2f64b57afe5ff32c4c0e20549f84788dfc253fd11b9a8d4"
+    },
+    {
+      "case_id": "pair_unique-0288-016",
+      "r4_visible_input": "cases/pair_unique-0288-016/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0288-016/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0288-016/incremental-result.json",
+      "incremental_result_sha256": "ccc8082a718705e5a09fe5542f28b9d13af656064d36694d210f36d25dba7168"
+    },
+    {
+      "case_id": "pair_unique-0324-017",
+      "r4_visible_input": "cases/pair_unique-0324-017/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0324-017/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0324-017/incremental-result.json",
+      "incremental_result_sha256": "439220a3324b4952aeb7b13279d81c981db73aaea88732c11b9f5747b0c7c758"
+    },
+    {
+      "case_id": "pair_unique-0360-018",
+      "r4_visible_input": "cases/pair_unique-0360-018/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0360-018/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0360-018/incremental-result.json",
+      "incremental_result_sha256": "d0a84be243572674a96514358c00c0fd4376d9b8cef3018aabd1c4f9feba201f"
+    },
+    {
+      "case_id": "pair_unique-0396-019",
+      "r4_visible_input": "cases/pair_unique-0396-019/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0396-019/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0396-019/incremental-result.json",
+      "incremental_result_sha256": "f37b57e36b89f8fa25a86ff3853a871bef29e1b19a694c3c1537d08416f4f87a"
+    },
+    {
+      "case_id": "pair_unique-0432-020",
+      "r4_visible_input": "cases/pair_unique-0432-020/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0432-020/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0432-020/incremental-result.json",
+      "incremental_result_sha256": "89b7ac9d9bfd4e03e2678697ea1bc089376bfe9fc311eb77aa2a9e4fe9329deb"
+    },
+    {
+      "case_id": "pair_unique-0468-021",
+      "r4_visible_input": "cases/pair_unique-0468-021/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0468-021/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0468-021/incremental-result.json",
+      "incremental_result_sha256": "93475593ffe2f938d5b6987a27e63d6c373f6c7b14d08a63507132c29424f169"
+    },
+    {
+      "case_id": "pair_unique-0504-022",
+      "r4_visible_input": "cases/pair_unique-0504-022/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0504-022/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0504-022/incremental-result.json",
+      "incremental_result_sha256": "cf47cb47e985f191971674592ec8bfd34f4e4992bb3b46f65a9138db5325b500"
+    },
+    {
+      "case_id": "pair_unique-0540-023",
+      "r4_visible_input": "cases/pair_unique-0540-023/visible-input.json",
+      "r4_offline_result": "cases/pair_unique-0540-023/mapper-result.json",
+      "incremental_result": "cases/pair_unique-0540-023/incremental-result.json",
+      "incremental_result_sha256": "b87c4289116a3dbf1876cd50d1bf78145122e2d5018ce6c60b69798af9dc463d"
+    },
+    {
+      "case_id": "triple_unique-0000-024",
+      "r4_visible_input": "cases/triple_unique-0000-024/visible-input.json",
+      "r4_offline_result": "cases/triple_unique-0000-024/mapper-result.json",
+      "incremental_result": "cases/triple_unique-0000-024/incremental-result.json",
+      "incremental_result_sha256": "5b116bdd3834e746655085dfa0e03307b5cfb22d0cefc771dbb60b0f865cdc8d"
+    },
+    {
+      "case_id": "triple_unique-0001-025",
+      "r4_visible_input": "cases/triple_unique-0001-025/visible-input.json",
+      "r4_offline_result": "cases/triple_unique-0001-025/mapper-result.json",
+      "incremental_result": "cases/triple_unique-0001-025/incremental-result.json",
+      "incremental_result_sha256": "a820190297af9767d71ce58f4c082b1019723da1458b0a01d734511a14dd7832"
+    },
+    {
+      "case_id": "triple_unique-0002-026",
+      "r4_visible_input": "cases/triple_unique-0002-026/visible-input.json",
+      "r4_offline_result": "cases/triple_unique-0002-026/mapper-result.json",
+      "incremental_result": "cases/triple_unique-0002-026/incremental-result.json",
+      "incremental_result_sha256": "e705625c6ef108ac8c0bd82fd4d8515209fb80f35e271c83d5d6b6eb7eba3036"
+    },
+    {
+      "case_id": "triple_unique-0447-027",
+      "r4_visible_input": "cases/triple_unique-0447-027/visible-input.json",
+      "r4_offline_result": "cases/triple_unique-0447-027/mapper-result.json",
+      "incremental_result": "cases/triple_unique-0447-027/incremental-result.json",
+      "incremental_result_sha256": "79294a610d3b785c52ab6f1ef72677b13d7e79ef64588bfe3a17f930ad4e98c3"
+    },
+    {
+      "case_id": "triple_unique-0448-028",
+      "r4_visible_input": "cases/triple_unique-0448-028/visible-input.json",
+      "r4_offline_result": "cases/triple_unique-0448-028/mapper-result.json",
+      "incremental_result": "cases/triple_unique-0448-028/incremental-result.json",
+      "incremental_result_sha256": "35253bf312e68066e8fe2e2445c9e24f9f60169929e6140d728b8df2f530f237"
+    },
+    {
+      "case_id": "triple_unique-0449-029",
+      "r4_visible_input": "cases/triple_unique-0449-029/visible-input.json",
+      "r4_offline_result": "cases/triple_unique-0449-029/mapper-result.json",
+      "incremental_result": "cases/triple_unique-0449-029/incremental-result.json",
+      "incremental_result_sha256": "a2ac3e880013c382789db2d5f79db5a9df14508712e4727f9eae2ce97ee17d35"
+    },
+    {
+      "case_id": "triple_unique-0895-030",
+      "r4_visible_input": "cases/triple_unique-0895-030/visible-input.json",
+      "r4_offline_result": "cases/triple_unique-0895-030/mapper-result.json",
+      "incremental_result": "cases/triple_unique-0895-030/incremental-result.json",
+      "incremental_result_sha256": "3cfdf2c6e76ab7a49845a72b6024d611861a002da7f954ea1530f6e0befa78a5"
+    },
+    {
+      "case_id": "triple_unique-0896-031",
+      "r4_visible_input": "cases/triple_unique-0896-031/visible-input.json",
+      "r4_offline_result": "cases/triple_unique-0896-031/mapper-result.json",
+      "incremental_result": "cases/triple_unique-0896-031/incremental-result.json",
+      "incremental_result_sha256": "54206badfed6c43d622a51a08461e454437eaa32a557467a5fd1083d1a10f241"
+    },
+    {
+      "case_id": "triple_unique-0897-032",
+      "r4_visible_input": "cases/triple_unique-0897-032/visible-input.json",
+      "r4_offline_result": "cases/triple_unique-0897-032/mapper-result.json",
+      "incremental_result": "cases/triple_unique-0897-032/incremental-result.json",
+      "incremental_result_sha256": "45b84aa5bd630c12a66255fc1f6f69baa81c90d246639630c4ec4961eba0a7a3"
+    },
+    {
+      "case_id": "triple_unique-0069-033",
+      "r4_visible_input": "cases/triple_unique-0069-033/visible-input.json",
+      "r4_offline_result": "cases/triple_unique-0069-033/mapper-result.json",
+      "incremental_result": "cases/triple_unique-0069-033/incremental-result.json",
+      "incremental_result_sha256": "5eb27914ce77d3b7d344c12203e798cc8872ab51601bf53cf8c4faca4d8e0527"
+    },
+    {
+      "case_id": "triple_unique-0138-034",
+      "r4_visible_input": "cases/triple_unique-0138-034/visible-input.json",
+      "r4_offline_result": "cases/triple_unique-0138-034/mapper-result.json",
+      "incremental_result": "cases/triple_unique-0138-034/incremental-result.json",
+      "incremental_result_sha256": "0c48dde8d291322e6394c75cf3748fa561f96454a066fb8f2601ed37d0cd1b79"
+    },
+    {
+      "case_id": "triple_unique-0207-035",
+      "r4_visible_input": "cases/triple_unique-0207-035/visible-input.json",
+      "r4_offline_result": "cases/triple_unique-0207-035/mapper-result.json",
+      "incremental_result": "cases/triple_unique-0207-035/incremental-result.json",
+      "incremental_result_sha256": "feeec05952cd55f1b992b79e7860fb6ca85012a897044e591f4dca93ca1f2329"
+    },
+    {
+      "case_id": "one_bracket_late_ambiguous-0000-036",
+      "r4_visible_input": "cases/one_bracket_late_ambiguous-0000-036/visible-input.json",
+      "r4_offline_result": "cases/one_bracket_late_ambiguous-0000-036/mapper-result.json",
+      "incremental_result": "cases/one_bracket_late_ambiguous-0000-036/incremental-result.json",
+      "incremental_result_sha256": "80393af5c33918526aab9b2f6f7563183bc1cb7824b67a64e6ac555012880b61"
+    },
+    {
+      "case_id": "one_bracket_late_ambiguous-0001-037",
+      "r4_visible_input": "cases/one_bracket_late_ambiguous-0001-037/visible-input.json",
+      "r4_offline_result": "cases/one_bracket_late_ambiguous-0001-037/mapper-result.json",
+      "incremental_result": "cases/one_bracket_late_ambiguous-0001-037/incremental-result.json",
+      "incremental_result_sha256": "e1423bbb55f631645ba49d90ca2a91e9bb36aabd4c43e7ddbfe25e2ee16593d0"
+    },
+    {
+      "case_id": "one_bracket_late_ambiguous-0002-038",
+      "r4_visible_input": "cases/one_bracket_late_ambiguous-0002-038/visible-input.json",
+      "r4_offline_result": "cases/one_bracket_late_ambiguous-0002-038/mapper-result.json",
+      "incremental_result": "cases/one_bracket_late_ambiguous-0002-038/incremental-result.json",
+      "incremental_result_sha256": "3b08523f9cd760ff519524be9a60e2b37055a82098c0c549cd01e48dba24675d"
+    },
+    {
+      "case_id": "one_bracket_late_ambiguous-0447-039",
+      "r4_visible_input": "cases/one_bracket_late_ambiguous-0447-039/visible-input.json",
+      "r4_offline_result": "cases/one_bracket_late_ambiguous-0447-039/mapper-result.json",
+      "incremental_result": "cases/one_bracket_late_ambiguous-0447-039/incremental-result.json",
+      "incremental_result_sha256": "01616f7537f08ee14c3d6aba830fda4c87454f2834c7ea6f59858b9a9d2c119e"
+    },
+    {
+      "case_id": "one_bracket_late_ambiguous-0448-040",
+      "r4_visible_input": "cases/one_bracket_late_ambiguous-0448-040/visible-input.json",
+      "r4_offline_result": "cases/one_bracket_late_ambiguous-0448-040/mapper-result.json",
+      "incremental_result": "cases/one_bracket_late_ambiguous-0448-040/incremental-result.json",
+      "incremental_result_sha256": "7ca33cd6c41475ee6d5749a5fdf197214efa9486f5a96d60f89dcde18a7444bf"
+    },
+    {
+      "case_id": "one_bracket_late_ambiguous-0449-041",
+      "r4_visible_input": "cases/one_bracket_late_ambiguous-0449-041/visible-input.json",
+      "r4_offline_result": "cases/one_bracket_late_ambiguous-0449-041/mapper-result.json",
+      "incremental_result": "cases/one_bracket_late_ambiguous-0449-041/incremental-result.json",
+      "incremental_result_sha256": "300b95bf62dbfa08acd9dbcead2fa172a4c0503a5e809c9f1d52d91ebee0ac8e"
+    },
+    {
+      "case_id": "one_bracket_late_ambiguous-0896-042",
+      "r4_visible_input": "cases/one_bracket_late_ambiguous-0896-042/visible-input.json",
+      "r4_offline_result": "cases/one_bracket_late_ambiguous-0896-042/mapper-result.json",
+      "incremental_result": "cases/one_bracket_late_ambiguous-0896-042/incremental-result.json",
+      "incremental_result_sha256": "8982aae932acbb1c8cae24e2843f37b8266f9db84f39aa346aae04fa532ec9c5"
+    },
+    {
+      "case_id": "one_bracket_late_ambiguous-0897-043",
+      "r4_visible_input": "cases/one_bracket_late_ambiguous-0897-043/visible-input.json",
+      "r4_offline_result": "cases/one_bracket_late_ambiguous-0897-043/mapper-result.json",
+      "incremental_result": "cases/one_bracket_late_ambiguous-0897-043/incremental-result.json",
+      "incremental_result_sha256": "c39159699360a161f4d5bc4b56b600282405b1e38455ff848a91180a03714dcc"
+    },
+    {
+      "case_id": "no_solution_capacity-0000-044",
+      "r4_visible_input": "cases/no_solution_capacity-0000-044/visible-input.json",
+      "r4_offline_result": "cases/no_solution_capacity-0000-044/mapper-result.json",
+      "incremental_result": "cases/no_solution_capacity-0000-044/incremental-result.json",
+      "incremental_result_sha256": "129ee22f42cb45cef31b70fb9c0b84fe9f1dbb38d06cec944f914984a0c4db42"
+    },
+    {
+      "case_id": "no_solution_capacity-0001-045",
+      "r4_visible_input": "cases/no_solution_capacity-0001-045/visible-input.json",
+      "r4_offline_result": "cases/no_solution_capacity-0001-045/mapper-result.json",
+      "incremental_result": "cases/no_solution_capacity-0001-045/incremental-result.json",
+      "incremental_result_sha256": "bb48214827c504e29067edad9a93870c8f92c5de27425b2acff9a3e3458d4b4f"
+    },
+    {
+      "case_id": "no_solution_capacity-0002-046",
+      "r4_visible_input": "cases/no_solution_capacity-0002-046/visible-input.json",
+      "r4_offline_result": "cases/no_solution_capacity-0002-046/mapper-result.json",
+      "incremental_result": "cases/no_solution_capacity-0002-046/incremental-result.json",
+      "incremental_result_sha256": "6de226bfe84c25bd63c62de3597d492cdb60c25a9a7bc39c94776b0fefa85c5a"
+    },
+    {
+      "case_id": "no_solution_capacity-0447-047",
+      "r4_visible_input": "cases/no_solution_capacity-0447-047/visible-input.json",
+      "r4_offline_result": "cases/no_solution_capacity-0447-047/mapper-result.json",
+      "incremental_result": "cases/no_solution_capacity-0447-047/incremental-result.json",
+      "incremental_result_sha256": "572501fed8ae223a53ab7a7183447cff561b33cfaffabbfbe1c22282344ce614"
+    },
+    {
+      "case_id": "no_solution_capacity-0448-048",
+      "r4_visible_input": "cases/no_solution_capacity-0448-048/visible-input.json",
+      "r4_offline_result": "cases/no_solution_capacity-0448-048/mapper-result.json",
+      "incremental_result": "cases/no_solution_capacity-0448-048/incremental-result.json",
+      "incremental_result_sha256": "3f93a4e99526bee806c9cfefbca3aa810196c6659774da31c391392ab2779c67"
+    },
+    {
+      "case_id": "no_solution_capacity-0449-049",
+      "r4_visible_input": "cases/no_solution_capacity-0449-049/visible-input.json",
+      "r4_offline_result": "cases/no_solution_capacity-0449-049/mapper-result.json",
+      "incremental_result": "cases/no_solution_capacity-0449-049/incremental-result.json",
+      "incremental_result_sha256": "1ccd1b0ba2ab427a599777dc9f2c541c99d3e77ba90697f8c606bc8f0cc63d5e"
+    },
+    {
+      "case_id": "no_solution_capacity-0895-050",
+      "r4_visible_input": "cases/no_solution_capacity-0895-050/visible-input.json",
+      "r4_offline_result": "cases/no_solution_capacity-0895-050/mapper-result.json",
+      "incremental_result": "cases/no_solution_capacity-0895-050/incremental-result.json",
+      "incremental_result_sha256": "a1592399fe6971d9f1d733548a230bd0fecc3fa3c1f085a3cbcaed31723bfe08"
+    },
+    {
+      "case_id": "no_solution_capacity-0896-051",
+      "r4_visible_input": "cases/no_solution_capacity-0896-051/visible-input.json",
+      "r4_offline_result": "cases/no_solution_capacity-0896-051/mapper-result.json",
+      "incremental_result": "cases/no_solution_capacity-0896-051/incremental-result.json",
+      "incremental_result_sha256": "ecceb1f7ca478c196e4e97844488e6af47fe602a194abb2e112d1c054cd0ae3a"
+    }
+  ]
+}

@@ -1,0 +1,111 @@
+{
+    "admissibility_relation": "VISIBLE_PREFIX: opportunity_start_qpc <= synthetic_callback_qpc",
+    "case_id": "pair_unique-0072-010",
+    "commit_watermark": 2,
+    "events": [
+        {
+            "closed_record_count": 0,
+            "commit_watermark": 0,
+            "committed_assignment": [
+            ],
+            "event_type": "VBLANK",
+            "has_closed_records": false,
+            "mapper_error": "NONE",
+            "newly_committed": [
+            ],
+            "observed_callback_count": 0,
+            "qpc": 1766071377507,
+            "saturated_solution_count": 0,
+            "solution_class": "NOT_EVALUATED"
+        },
+        {
+            "closed_record_count": 0,
+            "commit_watermark": 0,
+            "committed_assignment": [
+            ],
+            "event_type": "VBLANK",
+            "has_closed_records": false,
+            "mapper_error": "NONE",
+            "newly_committed": [
+            ],
+            "observed_callback_count": 0,
+            "qpc": 1766071544402,
+            "saturated_solution_count": 0,
+            "solution_class": "NOT_EVALUATED"
+        },
+        {
+            "closed_record_count": 0,
+            "commit_watermark": 0,
+            "committed_assignment": [
+            ],
+            "event_type": "CALLBACK",
+            "has_closed_records": false,
+            "mapper_error": "NONE",
+            "newly_committed": [
+            ],
+            "observed_callback_count": 1,
+            "qpc": 1766071544403,
+            "saturated_solution_count": 0,
+            "solution_class": "NOT_EVALUATED"
+        },
+        {
+            "closed_record_count": 0,
+            "commit_watermark": 0,
+            "committed_assignment": [
+            ],
+            "event_type": "CALLBACK",
+            "has_closed_records": false,
+            "mapper_error": "NONE",
+            "newly_committed": [
+            ],
+            "observed_callback_count": 2,
+            "qpc": 1766071544404,
+            "saturated_solution_count": 0,
+            "solution_class": "NOT_EVALUATED"
+        },
+        {
+            "closed_record_count": 2,
+            "commit_watermark": 2,
+            "committed_assignment": [
+                75,
+                76
+            ],
+            "event_type": "VBLANK",
+            "has_closed_records": true,
+            "mapper_error": "NONE",
+            "newly_committed": [
+                75,
+                76
+            ],
+            "observed_callback_count": 2,
+            "qpc": 1766071710972,
+            "saturated_solution_count": 1,
+            "solution_class": "UNIQUE"
+        },
+        {
+            "closed_record_count": 2,
+            "commit_watermark": 2,
+            "committed_assignment": [
+                75,
+                76
+            ],
+            "event_type": "END",
+            "has_closed_records": true,
+            "mapper_error": "NONE",
+            "newly_committed": [
+            ],
+            "observed_callback_count": 2,
+            "qpc": 1766071710972,
+            "saturated_solution_count": 1,
+            "solution_class": "UNIQUE"
+        }
+    ],
+    "final_assignment": [
+        75,
+        76
+    ],
+    "hidden_oracle_accessed": false,
+    "mapper_error": "NONE",
+    "schema": "mvm-p2-b1a-incremental-result-1",
+    "solution_class": "UNIQUE"
+}

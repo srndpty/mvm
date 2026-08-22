@@ -1,0 +1,36 @@
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory=$true)][ValidateSet('off','on')][string]$HookMode,
+    [Parameter(Mandatory=$true)][string]$Executable,
+    [Parameter(Mandatory=$true)][string]$PatchedQtBin,
+    [Parameter(Mandatory=$true)][string]$SourceA,
+    [Parameter(Mandatory=$true)][string]$SourceB,
+    [Parameter(Mandatory=$true)][string]$Metrics,
+    [Parameter(Mandatory=$true)][int]$WarmupSeconds,
+    [Parameter(Mandatory=$true)][int]$MeasureSeconds,
+    [string]$PidFile
+)
+$ErrorActionPreference='Stop'
+foreach($path in @($Executable,$PatchedQtBin,$SourceA,$SourceB)){
+    if(-not(Test-Path -LiteralPath $path)){throw "C0 run必須pathがありません: $path"}
+}
+Remove-Item Env:QSG_NO_VSYNC -ErrorAction SilentlyContinue
+$env:PATH="$PatchedQtBin;C:\msys64\ucrt64\bin;$env:PATH"
+$env:QT_PLUGIN_PATH=(Join-Path (Split-Path -Parent $PatchedQtBin) 'plugins')
+$env:QML_IMPORT_PATH='C:\msys64\ucrt64\share\qt6\qml'
+$arguments=@('--source-a',$SourceA,'--source-b',$SourceB,'--metrics',$Metrics,
+    '--warmup-seconds',[string]$WarmupSeconds,'--measure-seconds',[string]$MeasureSeconds,
+    '--seed','20260808','--seek-count','1000','--display-timeout-ms','2000',
+    '--gpu-completion','fence','--mode','playback','--vblank-observer',
+    '--presentation-opportunity-ring','--native-present-hook',$HookMode)
+$startInfo=[Diagnostics.ProcessStartInfo]::new()
+$startInfo.FileName=$Executable
+$startInfo.UseShellExecute=$false
+foreach($argument in $arguments){$startInfo.ArgumentList.Add($argument)}
+$process=[Diagnostics.Process]::Start($startInfo)
+if($null-eq$process){throw 'C0 compositor processを起動できませんでした'}
+if(-not[string]::IsNullOrWhiteSpace($PidFile)){
+    [string]$process.Id|Set-Content -LiteralPath $PidFile -Encoding ascii
+}
+$process.WaitForExit()
+exit $process.ExitCode

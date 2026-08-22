@@ -20,6 +20,9 @@ struct MappingSolution {
     // 0 / 1 / 2。2は「2個以上」へのsaturation。
     std::uint8_t saturatedSolutionCount = 0;
     std::vector<std::int64_t> assignment;
+    // 全合法解で同じassignmentを持つrecord 0からの連続prefix。
+    // AMBIGUOUSでも、このprefixだけはfuture callbackに依存せずcommitできる。
+    std::vector<std::int64_t> consensusPrefix;
 };
 
 struct MapperVBlankSample {
@@ -47,6 +50,48 @@ bool buildObservableCandidateMatrix(const ObservableMappingInput& input,
 // 複数解から代表解を選ばず、assignmentはUNIQUEの場合だけ返す。
 MappingSolution solveOpportunityMapping(const OpportunityCandidateMatrix& input);
 
+enum class IncrementalMappingError {
+    None,
+    InvalidInput,
+    NoSolution,
+    AmbiguousMapping,
+    UnclosedCallback,
+    CommitRegression,
+};
+
+struct IncrementalMappingSnapshot {
+    bool hasClosedRecords = false;
+    MappingSolutionClass solutionClass = MappingSolutionClass::NoSolution;
+    std::uint8_t saturatedSolutionCount = 0;
+    std::size_t observedCallbackCount = 0;
+    std::size_t closedRecordCount = 0;
+    std::vector<std::int64_t> committedAssignment;
+    IncrementalMappingError error = IncrementalMappingError::None;
+    bool finalized = false;
+};
+
+// live eventをQPC順に受け取り、次のVBlank到着でcallbackのcandidate domainを閉じる。
+// 既にcommitしたconsensus prefixは、未来のopportunityが過去callbackの候補に
+// ならないVISIBLE_PREFIXの性質により変更されない。
+class IncrementalOpportunityMapper {
+public:
+    explicit IncrementalOpportunityMapper(int syncInterval = 1);
+
+    bool observeVBlank(MapperVBlankSample sample);
+    bool observeCallback(std::int64_t qpc);
+    bool finish();
+    const IncrementalMappingSnapshot& snapshot() const;
+
+private:
+    bool update(bool finalizing);
+
+    int syncInterval_ = 0;
+    std::vector<MapperVBlankSample> vblankSamples_;
+    std::vector<std::int64_t> callbackQpc_;
+    IncrementalMappingSnapshot snapshot_;
+};
+
 const char* mappingSolutionClassName(MappingSolutionClass value);
+const char* incrementalMappingErrorName(IncrementalMappingError value);
 
 } // namespace mvm::core

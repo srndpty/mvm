@@ -1,5 +1,6 @@
 #include "core/presentation_opportunity_mapper.h"
 
+#include <cstddef>
 #include <cstdio>
 
 #include <QCoreApplication>
@@ -44,21 +45,57 @@ long long integer(const QJsonObject& object, const char* name) {
     return object.value(QLatin1String(name)).toVariant().toLongLong();
 }
 
+QJsonArray ordinalArray(const std::vector<std::int64_t>& values) {
+    QJsonArray result;
+    for (const auto value : values)
+        result.append(value);
+    return result;
+}
+
+QJsonObject incrementalEvent(const char* type, std::int64_t qpc,
+                             const mvm::core::IncrementalMappingSnapshot& snapshot,
+                             std::size_t previousCommitCount) {
+    std::vector<std::int64_t> newlyCommitted;
+    if (snapshot.committedAssignment.size() > previousCommitCount) {
+        newlyCommitted.assign(snapshot.committedAssignment.begin() +
+                                  static_cast<std::ptrdiff_t>(previousCommitCount),
+                              snapshot.committedAssignment.end());
+    }
+    return {
+        {"event_type", type},
+        {"qpc", qpc},
+        {"has_closed_records", snapshot.hasClosedRecords},
+        {"solution_class", snapshot.hasClosedRecords
+                               ? mvm::core::mappingSolutionClassName(snapshot.solutionClass)
+                               : "NOT_EVALUATED"},
+        {"saturated_solution_count", snapshot.saturatedSolutionCount},
+        {"observed_callback_count", static_cast<qint64>(snapshot.observedCallbackCount)},
+        {"closed_record_count", static_cast<qint64>(snapshot.closedRecordCount)},
+        {"commit_watermark", static_cast<qint64>(snapshot.committedAssignment.size())},
+        {"committed_assignment", ordinalArray(snapshot.committedAssignment)},
+        {"newly_committed", ordinalArray(newlyCommitted)},
+        {"mapper_error", mvm::core::incrementalMappingErrorName(snapshot.error)},
+    };
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     QString inputPath;
     QString outputPath;
+    bool incremental = false;
     const auto args = app.arguments();
     for (int index = 1; index < args.size(); ++index) {
         if (args[index] == QStringLiteral("--input") && index + 1 < args.size())
             inputPath = args[++index];
         else if (args[index] == QStringLiteral("--output") && index + 1 < args.size())
             outputPath = args[++index];
+        else if (args[index] == QStringLiteral("--incremental"))
+            incremental = true;
         else {
             std::fprintf(stderr, "使い方: mvm_p2_offline_mapping --input <visible JSON> "
-                                 "--output <result JSON>\n");
+                                 "--output <result JSON> [--incremental]\n");
             return 2;
         }
     }
@@ -111,15 +148,80 @@ int main(int argc, char** argv) {
         return 3;
     }
     const auto result = mvm::core::solveOpportunityMapping(candidates);
-    QJsonArray assignment;
-    for (const auto ordinal : result.assignment)
-        assignment.append(ordinal);
+    if (incremental) {
+        mvm::core::IncrementalOpportunityMapper mapper(mappingInput.syncInterval);
+        QJsonArray events;
+        std::size_t vblank = 0;
+        std::size_t callback = 0;
+        std::size_t previousCommitCount = 0;
+        while (vblank < mappingInput.vblankSamples.size() ||
+               callback < mappingInput.callbackQpc.size()) {
+            const bool takeVBlank =
+                vblank < mappingInput.vblankSamples.size() &&
+                (callback >= mappingInput.callbackQpc.size() ||
+                 mappingInput.vblankSamples[vblank].qpc <= mappingInput.callbackQpc[callback]);
+            bool accepted = false;
+            const char* type = nullptr;
+            std::int64_t qpc = -1;
+            if (takeVBlank) {
+                type = "VBLANK";
+                qpc = mappingInput.vblankSamples[vblank].qpc;
+                accepted = mapper.observeVBlank(mappingInput.vblankSamples[vblank++]);
+            } else {
+                type = "CALLBACK";
+                qpc = mappingInput.callbackQpc[callback];
+                accepted = mapper.observeCallback(mappingInput.callbackQpc[callback++]);
+            }
+            events.append(incrementalEvent(type, qpc, mapper.snapshot(), previousCommitCount));
+            previousCommitCount = mapper.snapshot().committedAssignment.size();
+            if (!accepted)
+                break;
+        }
+        if (mapper.snapshot().error == mvm::core::IncrementalMappingError::None) {
+            const auto endQpc = mappingInput.vblankSamples.back().qpc;
+            mapper.finish();
+            events.append(incrementalEvent("END", endQpc, mapper.snapshot(), previousCommitCount));
+        }
+
+        const auto error = mapper.snapshot().error;
+        const bool expectedTerminal = error == mvm::core::IncrementalMappingError::None ||
+                                      error == mvm::core::IncrementalMappingError::NoSolution ||
+                                      error == mvm::core::IncrementalMappingError::AmbiguousMapping;
+        const auto finalClass = error == mvm::core::IncrementalMappingError::NoSolution
+                                    ? mvm::core::MappingSolutionClass::NoSolution
+                                : error == mvm::core::IncrementalMappingError::AmbiguousMapping
+                                    ? mvm::core::MappingSolutionClass::Ambiguous
+                                    : mapper.snapshot().solutionClass;
+        const QJsonObject output{
+            {"schema", "mvm-p2-b1a-incremental-result-1"},
+            {"case_id", input.value("case_id")},
+            {"solution_class", mvm::core::mappingSolutionClassName(finalClass)},
+            {"final_assignment", ordinalArray(mapper.snapshot().committedAssignment)},
+            {"commit_watermark", static_cast<qint64>(mapper.snapshot().committedAssignment.size())},
+            {"mapper_error", mvm::core::incrementalMappingErrorName(error)},
+            {"events", events},
+            {"admissibility_relation",
+             "VISIBLE_PREFIX: opportunity_start_qpc <= synthetic_callback_qpc"},
+            {"hidden_oracle_accessed", false},
+        };
+        if (!expectedTerminal) {
+            std::fprintf(stderr, "incremental mapperが契約外errorで停止しました: %s\n",
+                         mvm::core::incrementalMappingErrorName(error));
+            return 5;
+        }
+        if (!writeObject(outputPath, output)) {
+            std::fprintf(stderr, "incremental mapper結果を書き込めません\n");
+            return 4;
+        }
+        return 0;
+    }
+
     const QJsonObject output{
         {"schema", "mvm-p2-r4-mapper-result-1"},
         {"case_id", input.value("case_id")},
         {"solution_class", mvm::core::mappingSolutionClassName(result.solutionClass)},
         {"saturated_solution_count", result.saturatedSolutionCount},
-        {"assignment", assignment},
+        {"assignment", ordinalArray(result.assignment)},
         {"admissibility_relation",
          "VISIBLE_PREFIX: opportunity_start_qpc <= synthetic_callback_qpc"},
         {"hidden_oracle_accessed", false},

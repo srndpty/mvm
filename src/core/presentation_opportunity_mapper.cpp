@@ -86,6 +86,38 @@ MappingSolution solveOpportunityMapping(const OpportunityCandidateMatrix& input)
     result.saturatedSolutionCount = at(recordCount, opportunityCount);
     if (result.saturatedSolutionCount == 0)
         return result;
+
+    std::vector<std::uint8_t> suffix((recordCount + 1) * (opportunityCount + 1), 0);
+    const auto suffixAt = [opportunityCount, &suffix](std::size_t record,
+                                                      std::size_t opportunity) -> std::uint8_t& {
+        return suffix[record * (opportunityCount + 1) + opportunity];
+    };
+    for (std::size_t opportunity = 0; opportunity <= opportunityCount; ++opportunity)
+        suffixAt(recordCount, opportunity) = 1;
+    for (auto record = recordCount; record-- > 0;) {
+        for (auto opportunity = opportunityCount; opportunity-- > 0;) {
+            const auto skipped = suffixAt(record, opportunity + 1);
+            const std::uint8_t selected = candidate(input, record, opportunity)
+                                              ? suffixAt(record + 1, opportunity + 1)
+                                              : std::uint8_t{0};
+            suffixAt(record, opportunity) = saturatedAdd(skipped, selected);
+        }
+    }
+
+    for (std::size_t record = 0; record < recordCount; ++record) {
+        std::size_t feasibleCount = 0;
+        std::int64_t consensus = -1;
+        for (std::size_t opportunity = 0; opportunity < opportunityCount; ++opportunity) {
+            if (candidate(input, record, opportunity) && at(record, opportunity) != 0 &&
+                suffixAt(record + 1, opportunity + 1) != 0) {
+                ++feasibleCount;
+                consensus = input.opportunityOrdinals[opportunity];
+            }
+        }
+        if (feasibleCount != 1)
+            break;
+        result.consensusPrefix.push_back(consensus);
+    }
     if (result.saturatedSolutionCount >= 2) {
         result.solutionClass = MappingSolutionClass::Ambiguous;
         return result;
@@ -118,6 +150,105 @@ MappingSolution solveOpportunityMapping(const OpportunityCandidateMatrix& input)
     return result;
 }
 
+IncrementalOpportunityMapper::IncrementalOpportunityMapper(int syncInterval)
+    : syncInterval_(syncInterval) {
+    if (syncInterval_ != 1)
+        snapshot_.error = IncrementalMappingError::InvalidInput;
+}
+
+bool IncrementalOpportunityMapper::observeVBlank(MapperVBlankSample sample) {
+    if (snapshot_.finalized || snapshot_.error != IncrementalMappingError::None || sample.qpc < 0 ||
+        (!vblankSamples_.empty() && (sample.ordinal != vblankSamples_.back().ordinal + 1 ||
+                                     sample.qpc <= vblankSamples_.back().qpc))) {
+        if (snapshot_.error == IncrementalMappingError::None)
+            snapshot_.error = IncrementalMappingError::InvalidInput;
+        return false;
+    }
+    vblankSamples_.push_back(sample);
+    return update(false);
+}
+
+bool IncrementalOpportunityMapper::observeCallback(std::int64_t qpc) {
+    if (snapshot_.finalized || snapshot_.error != IncrementalMappingError::None || qpc < 0 ||
+        (!callbackQpc_.empty() && qpc <= callbackQpc_.back())) {
+        if (snapshot_.error == IncrementalMappingError::None)
+            snapshot_.error = IncrementalMappingError::InvalidInput;
+        return false;
+    }
+    callbackQpc_.push_back(qpc);
+    snapshot_.observedCallbackCount = callbackQpc_.size();
+    return update(false);
+}
+
+bool IncrementalOpportunityMapper::finish() {
+    if (snapshot_.finalized || snapshot_.error != IncrementalMappingError::None)
+        return false;
+    snapshot_.finalized = true;
+    return update(true);
+}
+
+const IncrementalMappingSnapshot& IncrementalOpportunityMapper::snapshot() const {
+    return snapshot_;
+}
+
+bool IncrementalOpportunityMapper::update(bool finalizing) {
+    snapshot_.observedCallbackCount = callbackQpc_.size();
+    if (vblankSamples_.size() < 2 || callbackQpc_.empty()) {
+        if (finalizing && !callbackQpc_.empty())
+            snapshot_.error = IncrementalMappingError::UnclosedCallback;
+        return snapshot_.error == IncrementalMappingError::None;
+    }
+
+    const auto boundaryQpc = vblankSamples_.back().qpc;
+    const auto closedEnd = std::lower_bound(callbackQpc_.begin(), callbackQpc_.end(), boundaryQpc);
+    const auto closedCount = static_cast<std::size_t>(closedEnd - callbackQpc_.begin());
+    snapshot_.closedRecordCount = closedCount;
+    snapshot_.hasClosedRecords = closedCount != 0;
+    if (closedCount == 0) {
+        if (finalizing)
+            snapshot_.error = IncrementalMappingError::UnclosedCallback;
+        return snapshot_.error == IncrementalMappingError::None;
+    }
+
+    ObservableMappingInput input;
+    input.measurementStartQpc = vblankSamples_.front().qpc;
+    input.measurementEndQpcExclusive = boundaryQpc;
+    input.syncInterval = syncInterval_;
+    input.vblankSamples = vblankSamples_;
+    input.callbackQpc.assign(callbackQpc_.begin(), closedEnd);
+    OpportunityCandidateMatrix candidates;
+    if (!buildObservableCandidateMatrix(input, candidates)) {
+        snapshot_.error = IncrementalMappingError::InvalidInput;
+        return false;
+    }
+    const auto solution = solveOpportunityMapping(candidates);
+    snapshot_.solutionClass = solution.solutionClass;
+    snapshot_.saturatedSolutionCount = solution.saturatedSolutionCount;
+    if (solution.solutionClass == MappingSolutionClass::NoSolution) {
+        snapshot_.error = IncrementalMappingError::NoSolution;
+        return false;
+    }
+    if (solution.consensusPrefix.size() < snapshot_.committedAssignment.size() ||
+        !std::equal(snapshot_.committedAssignment.begin(), snapshot_.committedAssignment.end(),
+                    solution.consensusPrefix.begin())) {
+        snapshot_.error = IncrementalMappingError::CommitRegression;
+        return false;
+    }
+    snapshot_.committedAssignment = solution.consensusPrefix;
+
+    if (!finalizing)
+        return true;
+    if (closedCount != callbackQpc_.size()) {
+        snapshot_.error = IncrementalMappingError::UnclosedCallback;
+        return false;
+    }
+    if (solution.solutionClass == MappingSolutionClass::Ambiguous) {
+        snapshot_.error = IncrementalMappingError::AmbiguousMapping;
+        return false;
+    }
+    return true;
+}
+
 const char* mappingSolutionClassName(MappingSolutionClass value) {
     switch (value) {
     case MappingSolutionClass::NoSolution:
@@ -128,6 +259,24 @@ const char* mappingSolutionClassName(MappingSolutionClass value) {
         return "AMBIGUOUS";
     }
     return "NO_SOLUTION";
+}
+
+const char* incrementalMappingErrorName(IncrementalMappingError value) {
+    switch (value) {
+    case IncrementalMappingError::None:
+        return "NONE";
+    case IncrementalMappingError::InvalidInput:
+        return "INVALID_INPUT";
+    case IncrementalMappingError::NoSolution:
+        return "NO_SOLUTION";
+    case IncrementalMappingError::AmbiguousMapping:
+        return "AMBIGUOUS_MAPPING";
+    case IncrementalMappingError::UnclosedCallback:
+        return "UNCLOSED_CALLBACK";
+    case IncrementalMappingError::CommitRegression:
+        return "COMMIT_REGRESSION";
+    }
+    return "INVALID_INPUT";
 }
 
 } // namespace mvm::core

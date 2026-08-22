@@ -48,6 +48,13 @@ std::vector<VBlankObservation> VBlankRing::snapshot() const {
     return {samples_.begin(), samples_.begin() + static_cast<std::ptrdiff_t>(count)};
 }
 
+bool VBlankRing::read(std::size_t index, VBlankObservation& value) const {
+    if (index >= publishedCount())
+        return false;
+    value = samples_[index];
+    return true;
+}
+
 std::size_t VBlankRing::publishedCount() const {
     return std::min(count_.load(std::memory_order_acquire), samples_.size());
 }

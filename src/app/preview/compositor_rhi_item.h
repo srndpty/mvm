@@ -1,6 +1,7 @@
 #ifndef MVM_APP_PREVIEW_COMPOSITOR_RHI_ITEM_H
 #define MVM_APP_PREVIEW_COMPOSITOR_RHI_ITEM_H
 
+#include "app/preview/native_present_hook.h"
 #include "media/audio_preview/audio_clock.h"
 #include "media/audio_preview/runtime_attribution.h"
 #include "media/gpu_preview/composition_display_ledger.h"
@@ -249,6 +250,10 @@ struct CompositorSpikeState {
     std::atomic<bool> presentationOpportunityEnabled{false};
     std::atomic<bool> presentationCaptureActive{false};
     gpu::PresentationOpportunityRing presentationOpportunityRing;
+    std::shared_ptr<NativePresentHook> nativePresentHook;
+    std::atomic<bool> nativePresentHookEnabled{false};
+    std::atomic<bool> nativePresentCaptureActive{false};
+    std::atomic<long long> nativePresentTokenSetFailureCount{0};
     std::atomic<long long> latestCompletedRenderOrdinal{-1};
     std::atomic<long long> latestSubmittedRenderOrdinal{-1};
     std::atomic<long long> latestSubmittedOutputFrame{-1};

@@ -1,0 +1,19 @@
+{
+  "schema": "mvm-p2-c0-native-etw-recheck-1",
+  "source_artifact": "C:\\dev\\soft\\mvm\\bench\\results\\f3-c0-r2-canonical-live-20260823-60s-1",
+  "source_manifest_verified": true,
+  "recheck_status": "PASS",
+  "measurement_domain": "present_enter_qpc >= start && present_return_qpc < end",
+  "measurement_record_count": 3597,
+  "boundary_straddling_native_count": 1,
+  "boundary_straddling_etw_count": 0,
+  "presented_count": 1358,
+  "discarded_count": 2239,
+  "incomplete_unknown_count": 0,
+  "lost_count": 0,
+  "source_identities": {
+    "app_sha256": "f98ab99fca2d1cb4b45b26eafe21d60f908cb16c546cde6b53e91d2d1e13dae8",
+    "etw_sha256": "cdc66092af354df2a49c37c6c75d6af7d2a4cb5730d8aa61782df424f50cf9ef",
+    "manifest_sha256": "395d2394879b06db3e9c132bfc94884a9da9bb4a5fcbb51ccf10f64c6ab3823f"
+  }
+}

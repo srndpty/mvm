@@ -1,0 +1,145 @@
+{
+    "admissibility_relation": "VISIBLE_PREFIX: opportunity_start_qpc <= synthetic_callback_qpc",
+    "case_id": "triple_unique-0069-033",
+    "commit_watermark": 3,
+    "events": [
+        {
+            "closed_record_count": 0,
+            "commit_watermark": 0,
+            "committed_assignment": [
+            ],
+            "event_type": "VBLANK",
+            "has_closed_records": false,
+            "mapper_error": "NONE",
+            "newly_committed": [
+            ],
+            "observed_callback_count": 0,
+            "qpc": 1766070875535,
+            "saturated_solution_count": 0,
+            "solution_class": "NOT_EVALUATED"
+        },
+        {
+            "closed_record_count": 0,
+            "commit_watermark": 0,
+            "committed_assignment": [
+            ],
+            "event_type": "VBLANK",
+            "has_closed_records": false,
+            "mapper_error": "NONE",
+            "newly_committed": [
+            ],
+            "observed_callback_count": 0,
+            "qpc": 1766071042264,
+            "saturated_solution_count": 0,
+            "solution_class": "NOT_EVALUATED"
+        },
+        {
+            "closed_record_count": 0,
+            "commit_watermark": 0,
+            "committed_assignment": [
+            ],
+            "event_type": "VBLANK",
+            "has_closed_records": false,
+            "mapper_error": "NONE",
+            "newly_committed": [
+            ],
+            "observed_callback_count": 0,
+            "qpc": 1766071210612,
+            "saturated_solution_count": 0,
+            "solution_class": "NOT_EVALUATED"
+        },
+        {
+            "closed_record_count": 0,
+            "commit_watermark": 0,
+            "committed_assignment": [
+            ],
+            "event_type": "CALLBACK",
+            "has_closed_records": false,
+            "mapper_error": "NONE",
+            "newly_committed": [
+            ],
+            "observed_callback_count": 1,
+            "qpc": 1766071210613,
+            "saturated_solution_count": 0,
+            "solution_class": "NOT_EVALUATED"
+        },
+        {
+            "closed_record_count": 0,
+            "commit_watermark": 0,
+            "committed_assignment": [
+            ],
+            "event_type": "CALLBACK",
+            "has_closed_records": false,
+            "mapper_error": "NONE",
+            "newly_committed": [
+            ],
+            "observed_callback_count": 2,
+            "qpc": 1766071210614,
+            "saturated_solution_count": 0,
+            "solution_class": "NOT_EVALUATED"
+        },
+        {
+            "closed_record_count": 0,
+            "commit_watermark": 0,
+            "committed_assignment": [
+            ],
+            "event_type": "CALLBACK",
+            "has_closed_records": false,
+            "mapper_error": "NONE",
+            "newly_committed": [
+            ],
+            "observed_callback_count": 3,
+            "qpc": 1766071210615,
+            "saturated_solution_count": 0,
+            "solution_class": "NOT_EVALUATED"
+        },
+        {
+            "closed_record_count": 3,
+            "commit_watermark": 3,
+            "committed_assignment": [
+                72,
+                73,
+                74
+            ],
+            "event_type": "VBLANK",
+            "has_closed_records": true,
+            "mapper_error": "NONE",
+            "newly_committed": [
+                72,
+                73,
+                74
+            ],
+            "observed_callback_count": 3,
+            "qpc": 1766071377507,
+            "saturated_solution_count": 1,
+            "solution_class": "UNIQUE"
+        },
+        {
+            "closed_record_count": 3,
+            "commit_watermark": 3,
+            "committed_assignment": [
+                72,
+                73,
+                74
+            ],
+            "event_type": "END",
+            "has_closed_records": true,
+            "mapper_error": "NONE",
+            "newly_committed": [
+            ],
+            "observed_callback_count": 3,
+            "qpc": 1766071377507,
+            "saturated_solution_count": 1,
+            "solution_class": "UNIQUE"
+        }
+    ],
+    "final_assignment": [
+        72,
+        73,
+        74
+    ],
+    "hidden_oracle_accessed": false,
+    "mapper_error": "NONE",
+    "schema": "mvm-p2-b1a-incremental-result-1",
+    "solution_class": "UNIQUE"
+}

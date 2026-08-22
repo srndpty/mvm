@@ -16,6 +16,7 @@
 #include <cmath>
 #include <random>
 #include <unordered_set>
+#include <utility>
 
 namespace mvm::app {
 namespace {
@@ -221,6 +222,18 @@ QString diagnosticCaseName(CompositorDiagnosticCase value) {
     return QStringLiteral("none");
 }
 
+QString nativePresentHookModeName(NativePresentHookMode value) {
+    switch (value) {
+    case NativePresentHookMode::Disabled:
+        return QStringLiteral("disabled");
+    case NativePresentHookMode::OffControl:
+        return QStringLiteral("off");
+    case NativePresentHookMode::OnDiagnostic:
+        return QStringLiteral("on");
+    }
+    return QStringLiteral("disabled");
+}
+
 QString seekDiagnosticText(const char* source, const gpu::SourceDecodeWorker& worker) {
     const auto value = worker.seekDiagnosticSnapshot();
     return QStringLiteral("source=%1 phase=%2 requestId=%3 target=%4 phaseEnterQpc=%5 "
@@ -326,6 +339,18 @@ void CompositorSpikeController::attach(CompositorRhiItem* item) {
                                             std::memory_order_release);
     state_->presentationOpportunityEnabled.store(config_.presentationOpportunityRing,
                                                  std::memory_order_release);
+    if (config_.nativePresentHook != NativePresentHookMode::Disabled) {
+        auto nativeHook = std::make_shared<NativePresentHook>();
+        std::string error;
+        if (!nativeHook->load(error)) {
+            startupError_ = QString::fromStdString(error);
+        } else {
+            state_->nativePresentHook = std::move(nativeHook);
+            state_->nativePresentHookEnabled.store(
+                config_.nativePresentHook == NativePresentHookMode::OnDiagnostic,
+                std::memory_order_release);
+        }
+    }
     state_->formalOpportunitySchedulerEnabled.store(
         config_.formalPreflight && config_.mode == CompositorMode::Playback &&
             config_.diagnosticCase == CompositorDiagnosticCase::None,
@@ -565,6 +590,33 @@ void CompositorSpikeController::requestMeasurementStart() {
     measurementStartCaptured_ = false;
     measurementStopCaptured_ = false;
     measurementAvailable_ = false;
+    if (config_.incrementalMapperShadow) {
+        auto* window = item_ ? item_->window() : nullptr;
+        const bool d3d11 = window && window->rendererInterface() &&
+                           window->rendererInterface()->graphicsApi() ==
+                               QSGRendererInterface::Direct3D11;
+        if (!window || QString::fromLatin1(qVersion()) != QStringLiteral("6.11.1") ||
+            window->requestedFormat().swapInterval() != 1 ||
+            qEnvironmentVariableIsSet("QSG_NO_VSYNC") || !d3d11) {
+            beginShutdown(QStringLiteral("Qt D3D11 Present preconditionを固定できません"), true);
+            return;
+        }
+        incrementalMapperShadow_ = core::IncrementalOpportunityMapper(1);
+        incrementalVblankRead_ = 0;
+        incrementalSwapRead_ = 0;
+        incrementalLastBeforeStart_ = {};
+        incrementalDomainBoundary_ = {};
+        incrementalMapperOriginSelected_ = false;
+        incrementalMapperDomainClosed_ = false;
+        incrementalMapperFinalized_ = false;
+        incrementalMapperPass_ = false;
+        incrementalMapperError_.clear();
+        incrementalMapperTransitions_.clear();
+        incrementalMapperTransitions_.reserve(gpu::kVBlankRingCapacity +
+                                              gpu::kPresentationSwapRingCapacity);
+        incrementalCommitQpc_.clear();
+        incrementalCommitQpc_.reserve(gpu::kPresentationSwapRingCapacity);
+    }
     const bool formalOpportunity =
         state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire);
     if (config_.presentationOpportunityRing || formalOpportunity)
@@ -610,9 +662,122 @@ void CompositorSpikeController::requestMeasurementStart() {
     item_->update();
 }
 
+bool CompositorSpikeController::pollIncrementalMapperShadow(bool finalizing) {
+    if (!config_.incrementalMapperShadow)
+        return true;
+    if (!state_ || incrementalMapperFinalized_ || !incrementalMapperError_.empty())
+        return incrementalMapperPass_;
+
+    const long long measurementStart = state_->measurementStartQpc.load(std::memory_order_acquire);
+    const long long measurementEnd = state_->measurementEndQpc.load(std::memory_order_acquire);
+    if (measurementStart <= 0 || measurementEnd <= measurementStart)
+        return !finalizing;
+
+    const auto appendTransition = [this](const char* eventType, long long qpc,
+                                         long long vblankOrdinal, long long swapOrdinal,
+                                         long long sourceFrame) {
+        const auto& snapshot = incrementalMapperShadow_.snapshot();
+        while (incrementalCommitQpc_.size() < snapshot.committedAssignment.size())
+            incrementalCommitQpc_.push_back(qpc);
+        incrementalMapperTransitions_.push_back(
+            {eventType, qpc, vblankOrdinal, swapOrdinal, sourceFrame, snapshot.solutionClass,
+             snapshot.hasClosedRecords, snapshot.closedRecordCount,
+             snapshot.committedAssignment.size(), snapshot.error});
+    };
+    const auto selectOrigin = [this, &appendTransition]() {
+        if (incrementalMapperOriginSelected_)
+            return true;
+        if (incrementalLastBeforeStart_.qpc <= 0) {
+            incrementalMapperError_ = "BEFORE_FIRST_VBLANK";
+            return false;
+        }
+        const bool accepted = incrementalMapperShadow_.observeVBlank(
+            {incrementalLastBeforeStart_.ordinal, incrementalLastBeforeStart_.qpc});
+        appendTransition("ORIGIN", incrementalLastBeforeStart_.qpc,
+                         incrementalLastBeforeStart_.ordinal, -1, -1);
+        incrementalMapperOriginSelected_ = accepted;
+        if (!accepted)
+            incrementalMapperError_ = core::incrementalMappingErrorName(
+                incrementalMapperShadow_.snapshot().error);
+        return accepted;
+    };
+
+    while (true) {
+        gpu::VBlankObservation vblank;
+        gpu::PresentationSwapRecord swap;
+        const bool haveVblank = vblankObserver_.ring().read(incrementalVblankRead_, vblank);
+        const bool haveSwap = state_->presentationOpportunityRing.readSwap(incrementalSwapRead_, swap);
+        if (!haveVblank && !haveSwap)
+            break;
+        const bool takeVblank =
+            haveVblank && (!haveSwap || vblank.qpc <= swap.swapQpc);
+        bool accepted = true;
+        if (takeVblank) {
+            ++incrementalVblankRead_;
+            if (vblank.qpc <= measurementStart && !incrementalMapperOriginSelected_) {
+                incrementalLastBeforeStart_ = vblank;
+                continue;
+            }
+            if (incrementalMapperDomainClosed_)
+                continue;
+            if (!selectOrigin())
+                return false;
+            accepted = incrementalMapperShadow_.observeVBlank({vblank.ordinal, vblank.qpc});
+            if (vblank.qpc >= measurementEnd) {
+                incrementalMapperDomainClosed_ = true;
+                incrementalDomainBoundary_ = vblank;
+            }
+            appendTransition("VBLANK", vblank.qpc, vblank.ordinal, -1, -1);
+        } else {
+            ++incrementalSwapRead_;
+            if (swap.swapQpc < measurementStart || swap.swapQpc >= measurementEnd) {
+                incrementalMapperError_ = "SWAP_OUTSIDE_MEASUREMENT";
+                return false;
+            }
+            if (!selectOrigin())
+                return false;
+            accepted = incrementalMapperShadow_.observeCallback(swap.swapQpc);
+            appendTransition("CALLBACK", swap.swapQpc, -1, swap.swapOrdinal,
+                             swap.presentedOutputFrame);
+        }
+        if (!accepted) {
+            incrementalMapperError_ =
+                core::incrementalMappingErrorName(incrementalMapperShadow_.snapshot().error);
+            return false;
+        }
+    }
+
+    if (!finalizing)
+        return true;
+    incrementalMapperFinalized_ = true;
+    if (!incrementalMapperOriginSelected_ || !incrementalMapperDomainClosed_) {
+        incrementalMapperError_ = "MEASUREMENT_DOMAIN_NOT_CLOSED";
+        return false;
+    }
+    const bool resolved = incrementalMapperShadow_.finish();
+    appendTransition("END", incrementalDomainBoundary_.qpc, incrementalDomainBoundary_.ordinal,
+                     -1, -1);
+    if (!resolved) {
+        incrementalMapperError_ =
+            core::incrementalMappingErrorName(incrementalMapperShadow_.snapshot().error);
+        return false;
+    }
+    const auto& snapshot = incrementalMapperShadow_.snapshot();
+    incrementalMapperPass_ = snapshot.solutionClass == core::MappingSolutionClass::Unique &&
+                             snapshot.committedAssignment.size() == incrementalSwapRead_;
+    if (!incrementalMapperPass_)
+        incrementalMapperError_ = "UNRESOLVED_MAPPING";
+    return incrementalMapperPass_;
+}
+
 void CompositorSpikeController::tick() {
     if (!item_ || phase_ == Phase::Done)
         return;
+    if (!startupError_.isEmpty()) {
+        const QString error = std::exchange(startupError_, {});
+        beginShutdown(error, true);
+        return;
+    }
     if (state_->fatal.load() && phase_ != Phase::ShutdownWait &&
         phase_ != Phase::FatalMeasureStopWait) {
         QString reason;
@@ -720,6 +885,7 @@ void CompositorSpikeController::tick() {
             item_->update();
         }
     } else if (phase_ == Phase::Measure) {
+        pollIncrementalMapperShadow(false);
         const long long nowQpc = gpu::qpcTicks();
         const bool formalOpportunity =
             state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire);
@@ -774,12 +940,17 @@ void CompositorSpikeController::tick() {
                                                  : nullptr)
                         .identity;
             }
+            const bool incrementalMapperResolved = pollIncrementalMapperShadow(true);
             const bool authorityStable =
                 !formalOpportunity || sameDwmAuthority(dwmTimingStart_, dwmTimingStop_);
-            beginShutdown(authorityStable
-                              ? QStringLiteral("playback measurement完了")
-                              : QStringLiteral("P2-D5-2 refresh/DWM authorityが途中で変化しました"),
-                          !authorityStable);
+            const bool measurementSucceeded = authorityStable && incrementalMapperResolved;
+            beginShutdown(
+                measurementSucceeded
+                    ? QStringLiteral("playback measurement完了")
+                : !authorityStable
+                    ? QStringLiteral("P2-D5-2 refresh/DWM authorityが途中で変化しました")
+                    : QStringLiteral("incremental presentation mapperを一意に解決できません"),
+                !measurementSucceeded);
         } else {
             item_->update();
         }
@@ -1397,6 +1568,127 @@ bool CompositorSpikeController::writeMetrics() {
         {"cumulative_tolerance_unit", vblankIntervals.cumulativeToleranceUnit},
         {"cumulative_consistent", vblankIntervals.cumulativeConsistent},
         {"samples", vblankSampleJson}};
+    QJsonArray incrementalTransitionJson;
+    for (const auto& transition : incrementalMapperTransitions_) {
+        incrementalTransitionJson.append(
+            QJsonObject{{"event_type", transition.eventType},
+                        {"qpc", transition.qpc},
+                        {"vblank_ordinal", transition.vblankOrdinal},
+                        {"swap_ordinal", transition.swapOrdinal},
+                        {"source_frame", transition.sourceFrame},
+                        {"has_closed_records", transition.hasClosedRecords},
+                        {"current_solution_class",
+                         QString::fromLatin1(
+                             core::mappingSolutionClassName(transition.solutionClass))},
+                        {"closed_record_count",
+                         static_cast<qint64>(transition.closedRecordCount)},
+                        {"commit_watermark", static_cast<qint64>(transition.commitWatermark)},
+                        {"mapper_error", QString::fromLatin1(
+                                             core::incrementalMappingErrorName(transition.error))}});
+    }
+    const auto& incrementalSnapshot = incrementalMapperShadow_.snapshot();
+    QJsonArray incrementalRecordJson;
+    long long lostPhysicalOpportunities = 0;
+    long long previousMappedOpportunity = -1;
+    std::size_t candidateSample = 0;
+    while (candidateSample < vblankSamples.size() &&
+           vblankSamples[candidateSample].ordinal < incrementalLastBeforeStart_.ordinal)
+        ++candidateSample;
+    std::size_t candidateLast = candidateSample;
+    for (std::size_t index = 0; index < presentationSwaps.size(); ++index) {
+        const auto& swap = presentationSwaps[index];
+        while (candidateLast + 1 < vblankSamples.size() &&
+               vblankSamples[candidateLast + 1].qpc <= swap.swapQpc)
+            ++candidateLast;
+        const long long mapped = index < incrementalSnapshot.committedAssignment.size()
+                                     ? incrementalSnapshot.committedAssignment[index]
+                                     : -1;
+        if (previousMappedOpportunity >= 0 && mapped > previousMappedOpportunity + 1)
+            lostPhysicalOpportunities += mapped - previousMappedOpportunity - 1;
+        if (mapped >= 0)
+            previousMappedOpportunity = mapped;
+        incrementalRecordJson.append(
+            QJsonObject{{"swap_ordinal", swap.swapOrdinal},
+                        {"swap_qpc", swap.swapQpc},
+                        {"source_frame", swap.presentedOutputFrame},
+                        {"candidate_first_opportunity_ordinal",
+                         incrementalMapperOriginSelected_ ? incrementalLastBeforeStart_.ordinal
+                                                          : -1},
+                        {"candidate_last_opportunity_ordinal",
+                         candidateLast < vblankSamples.size()
+                             ? vblankSamples[candidateLast].ordinal
+                             : -1},
+                        {"committed", mapped >= 0},
+                        {"commit_qpc", index < incrementalCommitQpc_.size()
+                                           ? incrementalCommitQpc_[index]
+                                           : 0},
+                        {"final_mapped_opportunity", mapped}});
+    }
+    std::vector<long long> sortedPresentedFrames(uniquePresentedFrames.begin(),
+                                                 uniquePresentedFrames.end());
+    std::sort(sortedPresentedFrames.begin(), sortedPresentedFrames.end());
+    long long sourceFrameGapDrops = 0;
+    long long nextSourceFrame = 0;
+    for (const auto frame : sortedPresentedFrames) {
+        if (frame >= nextSourceFrame) {
+            sourceFrameGapDrops += frame - nextSourceFrame;
+            nextSourceFrame = frame + 1;
+        }
+    }
+    const long long tailSourceFrameDrops =
+        std::max(0LL, requiredMeasurementFrameCount_ - nextSourceFrame);
+    const bool sourceFrameAccountingExact =
+        static_cast<long long>(uniquePresentedFrames.size()) + sourceFrameGapDrops +
+            tailSourceFrameDrops ==
+        requiredMeasurementFrameCount_;
+    const QJsonObject incrementalMapperShadow{
+        {"enabled", config_.incrementalMapperShadow},
+        {"shadow_only", true},
+        {"formal_counter_authority_changed", false},
+        {"admissibility_relation",
+         "VISIBLE_PREFIX: opportunity_start_qpc <= callback_qpc"},
+        {"sync_interval_precondition", 1},
+        {"qt_runtime_version", QString::fromLatin1(qVersion())},
+        {"qt_source_tag", "v6.11.1"},
+        {"qtbase_source_commit", "59c81a3c2247b821b9b84b4eb8d939b77e07e276"},
+        {"qtdeclarative_source_commit", "a02bed441965ee1f18f856352c7d5ee5ba35d795"},
+        {"qt_d3d11_source_path", "qtbase/src/gui/rhi/qrhid3d11.cpp"},
+        {"qt_quick_source_path",
+         "qtdeclarative/src/quick/scenegraph/qsgthreadedrenderloop.cpp"},
+        {"requested_swap_interval",
+         item_ && item_->window() ? item_->window()->requestedFormat().swapInterval() : -1},
+        {"qsg_no_vsync_environment_set", qEnvironmentVariableIsSet("QSG_NO_VSYNC")},
+        {"d3d11_backend_forced", true},
+        {"present_sync_interval", 1},
+        {"present_flags", 0},
+        {"dxgi_present_restart_used", false},
+        {"tearing_path_used", false},
+        {"finalized", incrementalMapperFinalized_},
+        {"mapper_pass", incrementalMapperPass_},
+        {"mapper_error", QString::fromStdString(incrementalMapperError_)},
+        {"final_solution_class",
+         QString::fromLatin1(core::mappingSolutionClassName(incrementalSnapshot.solutionClass))},
+        {"observed_swap_count", static_cast<qint64>(incrementalSwapRead_)},
+        {"closed_record_count", static_cast<qint64>(incrementalSnapshot.closedRecordCount)},
+        {"commit_watermark",
+         static_cast<qint64>(incrementalSnapshot.committedAssignment.size())},
+        {"origin_vblank_ordinal", incrementalMapperOriginSelected_
+                                      ? incrementalLastBeforeStart_.ordinal
+                                      : -1},
+        {"origin_vblank_qpc",
+         incrementalMapperOriginSelected_ ? incrementalLastBeforeStart_.qpc : 0},
+        {"measurement_domain_closed", incrementalMapperDomainClosed_},
+        {"domain_boundary_vblank_ordinal",
+         incrementalMapperDomainClosed_ ? incrementalDomainBoundary_.ordinal : -1},
+        {"domain_boundary_vblank_qpc",
+         incrementalMapperDomainClosed_ ? incrementalDomainBoundary_.qpc : 0},
+        {"lost_physical_opportunity_count", lostPhysicalOpportunities},
+        {"displayed_unique_source_frames", static_cast<qint64>(uniquePresentedFrames.size())},
+        {"source_frame_gap_drops", sourceFrameGapDrops},
+        {"tail_source_frame_drops", tailSourceFrameDrops},
+        {"source_frame_accounting_exact", sourceFrameAccountingExact},
+        {"transitions", incrementalTransitionJson},
+        {"records", incrementalRecordJson}};
     QJsonObject presentationOpportunity{
         {"enabled", config_.presentationOpportunityRing},
         {"physical_vblank", physicalVBlank},
@@ -1413,7 +1705,78 @@ bool CompositorSpikeController::writeMetrics() {
         {"dwm_timing_start", dwmTimingJson(dwmTimingStart_)},
         {"dwm_timing_stop", dwmTimingJson(dwmTimingStop_)},
         {"render_records", presentationRenderJson},
-        {"swap_records", presentationSwapJson}};
+        {"swap_records", presentationSwapJson},
+        {"incremental_mapper_shadow", incrementalMapperShadow}};
+    const NativePresentHookSnapshot nativePresentSnapshot =
+        state_->nativePresentHook ? state_->nativePresentHook->snapshot()
+                                  : NativePresentHookSnapshot{};
+    QJsonArray nativePresentRecords;
+    for (const auto& record : nativePresentSnapshot.records) {
+        QJsonArray sources;
+        for (std::uint32_t index = 0; index < record.token.sourceCount; ++index) {
+            const auto& source = record.token.sources[index];
+            sources.append(QJsonObject{
+                {"source_id", QString::number(source.sourceId)},
+                {"source_generation", QString::number(source.sourceGeneration)},
+                {"resource_epoch", QString::number(source.resourceEpoch)},
+                {"frame_number", source.frameNumber},
+            });
+        }
+        nativePresentRecords.append(QJsonObject{
+            {"present_serial", QString::number(record.presentSerial)},
+            {"swapchain_identity", QString::number(record.swapchainIdentity)},
+            {"thread_id", static_cast<qint64>(record.threadId)},
+            {"present_enter_qpc", record.presentEnterQpc},
+            {"present_return_qpc", record.presentReturnQpc},
+            {"hresult", static_cast<qint64>(record.hresult)},
+            {"sync_interval", static_cast<qint64>(record.syncInterval)},
+            {"present_flags", static_cast<qint64>(record.presentFlags)},
+            {"token_present", record.tokenPresent != 0},
+            {"composition_token",
+             QJsonObject{{"token_serial", QString::number(record.token.tokenSerial)},
+                         {"composition_epoch",
+                          QString::number(record.token.compositionEpoch)},
+                         {"composition_state",
+                          QString::number(record.token.compositionState)},
+                         {"output_frame", record.token.outputFrameNumber},
+                         {"source_count", static_cast<qint64>(record.token.sourceCount)},
+                         {"sources", sources}}},
+        });
+    }
+    const bool nativePresentAuthorityPass =
+        config_.nativePresentHook == NativePresentHookMode::OnDiagnostic &&
+        state_->nativePresentHook && state_->nativePresentHook->authorityValid() &&
+        state_->nativePresentTokenSetFailureCount.load(std::memory_order_relaxed) == 0 &&
+        !nativePresentSnapshot.records.empty();
+    const QJsonObject nativePresentHook{
+        {"requested_mode", nativePresentHookModeName(config_.nativePresentHook)},
+        {"available", nativePresentSnapshot.available},
+        {"hook_enabled", config_.nativePresentHook == NativePresentHookMode::OnDiagnostic},
+        {"capture_started", nativePresentSnapshot.captureStarted},
+        {"capture_stopped", nativePresentSnapshot.captureStopped},
+        {"shadow_only", true},
+        {"formal_counter_authority_changed", false},
+        {"authority_pass", nativePresentAuthorityPass},
+        {"record_count", static_cast<qint64>(nativePresentSnapshot.records.size())},
+        {"overflow_count", static_cast<qint64>(nativePresentSnapshot.overflowCount)},
+        {"missing_token_count", static_cast<qint64>(nativePresentSnapshot.missingTokenCount)},
+        {"duplicate_token_count",
+         static_cast<qint64>(nativePresentSnapshot.duplicateTokenCount)},
+        {"stale_token_count", static_cast<qint64>(nativePresentSnapshot.staleTokenCount)},
+        {"token_set_failure_count",
+         state_->nativePresentTokenSetFailureCount.load(std::memory_order_relaxed)},
+        {"failed_present_count",
+         static_cast<qint64>(nativePresentSnapshot.failedPresentCount)},
+        {"authority_failure", nativePresentSnapshot.authorityFailure},
+        {"qt_upstream_tag", "v6.11.1"},
+        {"qt_upstream_commit", "59c81a3c2247b821b9b84b4eb8d939b77e07e276"},
+        {"qt_source_path", "qtbase/src/gui/rhi/qrhid3d11.cpp"},
+        {"hot_path_allocation", false},
+        {"hot_path_mutex", false},
+        {"hot_path_io", false},
+        {"hot_path_logging", false},
+        {"records", nativePresentRecords},
+    };
     const QString mode = config_.mode == CompositorMode::Playback
                              ? QStringLiteral("playback")
                              : config_.mode == CompositorMode::Seek ? QStringLiteral("seek")
@@ -1432,6 +1795,7 @@ bool CompositorSpikeController::writeMetrics() {
                   {"formal_contract_version", "P2-D5-2"},
                   {"mode", mode},
                   {"formal_preflight", config_.formalPreflight},
+                  {"process_id", static_cast<qint64>(GetCurrentProcessId())},
                   {"process_exit_code", exitCode_},
                   {"configured_seed", static_cast<qint64>(config_.seed)},
                   {"configured_warmup_seconds", config_.warmupSeconds},
@@ -1648,6 +2012,8 @@ bool CompositorSpikeController::writeMetrics() {
         o.insert("diagnostic_presentation_opportunity_ring", true);
         o.insert("presentation_opportunity", presentationOpportunity);
     }
+    if (config_.nativePresentHook != NativePresentHookMode::Disabled)
+        o.insert("native_present_hook", nativePresentHook);
     o.insert("effective_pair_rate", measureElapsedSeconds_ > 0
                                         ? static_cast<double>(measurement.displayed) /
                                               measureElapsedSeconds_

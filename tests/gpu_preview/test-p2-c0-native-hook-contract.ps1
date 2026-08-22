@@ -1,0 +1,67 @@
+param(
+    [Parameter(Mandatory=$true)][ValidateSet(
+        'Good','NegativeMissingToken','NegativeDuplicateSerial','NegativeTokenMismatch',
+        'NegativePresentFlags')][string]$Case,
+    [Parameter(Mandatory=$true)][string]$Checker,
+    [Parameter(Mandatory=$true)][string]$Output
+)
+$ErrorActionPreference='Stop'
+$qpcFrequency=10000000;$refreshNumerator=59950;$refreshDenominator=1000
+$period=[int64][Math]::Floor(($qpcFrequency*$refreshDenominator)/$refreshNumerator)
+$baseQpc=1000000;$sampleCount=240
+$samples=@(0..($sampleCount-1)|ForEach-Object{[ordered]@{
+    ordinal=$_;qpc=$baseQpc+[int64][Math]::Round(($_*[double]$qpcFrequency*$refreshDenominator)/$refreshNumerator)}})
+$swapCount=238
+$swaps=@(0..($swapCount-1)|ForEach-Object{[ordered]@{
+    swap_qpc=$samples[$_].qpc+500;swap_ordinal=$_;completed_render_ordinal=$_
+    submitted_render_ordinal=$_;presented_output_frame=$_}})
+$native=@(0..($swapCount-1)|ForEach-Object{
+    $enter=$samples[$_].qpc+100
+    [ordered]@{
+        present_serial=[string]($_+10);swapchain_identity='4096';thread_id=77
+        present_enter_qpc=$enter;present_return_qpc=$enter+50;hresult=0
+        sync_interval=1;present_flags=0;token_present=$true
+        composition_token=[ordered]@{
+            token_serial=[string]($_+20);composition_epoch='1';composition_state='1'
+            output_frame=$_;source_count=2;sources=@(
+                [ordered]@{source_id='1';source_generation='1';resource_epoch='1';frame_number=$_},
+                [ordered]@{source_id='2';source_generation='1';resource_epoch='1';frame_number=$_})}}})
+switch($Case){
+    'NegativeMissingToken'{$native[10].token_present=$false}
+    'NegativeDuplicateSerial'{$native[10].present_serial=$native[9].present_serial}
+    'NegativeTokenMismatch'{$native[10].composition_token.output_frame=11}
+    'NegativePresentFlags'{$native[10].present_flags=1}
+}
+$identity=[ordered]@{
+    available=$true;monitor_handle='65537';output_index=0;adapter_luid_low=59807;adapter_luid_high=0
+    gdi_device_name='\\.\DISPLAY1';output_device_name='\\.\DISPLAY1'
+    refresh_numerator=$refreshNumerator;refresh_denominator=$refreshDenominator
+    desktop_left=0;desktop_top=0;desktop_right=1920;desktop_bottom=1200}
+$physical=[ordered]@{
+    enabled=$true;observer_started=$true;observer_error='';time_critical_priority=$true
+    window_output_start=$identity;window_output_end=$identity;window_output_stable=$true
+    sample_count=$samples.Count;ring_overflow_count=0;wait_failure_count=0;sequence_status='OK'
+    interval_report_ok=$true;interval_count=$samples.Count-1;long_interval_count=0;short_interval_count=0
+    max_interval_qpc=$period;min_interval_qpc=$period;nominal_period_qpc=$period
+    cumulative_deviation_numerator=0;cumulative_tolerance_unit=$qpcFrequency*$refreshDenominator
+    cumulative_consistent=$true;samples=$samples}
+$hook=[ordered]@{
+    requested_mode='on';available=$true;hook_enabled=$true;capture_started=$true
+    capture_stopped=$true;shadow_only=$true;formal_counter_authority_changed=$false
+    authority_pass=$true;record_count=$native.Count;overflow_count=0;missing_token_count=0
+    duplicate_token_count=0;stale_token_count=0;token_set_failure_count=0
+    failed_present_count=0;authority_failure=$false;qt_upstream_tag='v6.11.1'
+    qt_upstream_commit='59c81a3c2247b821b9b84b4eb8d939b77e07e276';records=$native}
+$raw=[ordered]@{
+    schema='mvm-p2-formal-2';process_exit_code=0
+    presentation_opportunity=[ordered]@{
+        enabled=$true;qpc_frequency=$qpcFrequency
+        measurement_start_qpc=$samples[0].qpc;measurement_end_qpc_exclusive=$samples[238].qpc
+        render_record_count=$swapCount;swap_record_count=$swapCount;swap_overflow_count=0
+        render_overflow_count=0;physical_vblank=$physical;swap_records=$swaps}
+    native_present_hook=$hook}
+$raw|ConvertTo-Json -Depth 12|Set-Content -LiteralPath $Output -Encoding utf8
+& pwsh -NoProfile -File $Checker -Json $Output -HookMode on -ProcessExitCode 0 *> $null
+$actual=$LASTEXITCODE;$expected=if($Case-eq'Good'){0}else{1}
+if($actual-ne$expected){throw "$Case C0 native hook contract exitが不正です: expected=$expected actual=$actual"}
+Write-Host "C0 native hook $Case test: PASS"

@@ -1,0 +1,29 @@
+{
+  "schema": "mvm-p2-c0-native-etw-run-1",
+  "authority": "diagnostic_only",
+  "acquisition_mode": "TargetedLive",
+  "c0_status": "FAIL",
+  "formal_counter_authority_changed": false,
+  "hook_off_rate": 59.93333333333333,
+  "hook_on_rate": 60.0,
+  "hook_on_off_ratio": 1.0011123470522805,
+  "traced_rate": 59.93333333333333,
+  "trace_on_ratio": 0.9988888888888888,
+  "target_process_id": 29616,
+  "decoder_exit_code": 0,
+  "checker_exit_code": 1,
+  "unpresented_count": 812,
+  "native_present_count": 899,
+  "identities": {
+    "executable_sha256": "a359797558352ddf26c5850bfb41f6144e3bd8a35448d5a4833a2405c4f328e3",
+    "decoder_sha256": "1d0e86e4c8075144b4ebf1681db524ace7f16f3e26cd72a63697d556f68346b7",
+    "source_a_sha256": "4282e53bbab814962410e4bc99ee0ae6015aeb11b39c65076d15879c6180cbe4",
+    "source_b_sha256": "ea528d0c1739d85e40521af2f16c3d6e3a5aee6df68ebeedda424302ad70ffc1",
+    "qt_upstream_commit": "59c81a3c2247b821b9b84b4eb8d939b77e07e276",
+    "qt_patch_sha256": "104f7f469ceba56f3e6440b9d72dc16d5d9af77467eb0dbbdb65783784f34851",
+    "qt_gui_dll_sha256": "f72ffdfad91c7689fd1ade84515632dfc34593744cb07a59af9ef91d7224cf0b",
+    "qt_core_dll_sha256": "1c8044491acbb5dee3df9850557d4a425c980b808bd0b4112d2ffb3a9cdbcff1",
+    "etl_sha256": null,
+    "raw_etw_json_sha256": "a611c226cfb32dd9f924cca8f8c433266ffad2a9ca164f0fb1321a94ffff3d6e"
+  }
+}

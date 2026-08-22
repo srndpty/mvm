@@ -1,0 +1,144 @@
+diff --git a/src/gui/rhi/qrhid3d11.cpp b/src/gui/rhi/qrhid3d11.cpp
+index e6a567a6..d3c13b8d 100644
+--- a/src/gui/rhi/qrhid3d11.cpp
++++ b/src/gui/rhi/qrhid3d11.cpp
+@@ -9,9 +9,128 @@
+ #include <QtCore/qcryptographichash.h>
+ #include <QtCore/private/qsystemerror_p.h>
+ #include "qrhid3dhelpers_p.h"
++#include <app/preview/native_present_hook_abi.h>
+ 
+ #include <cstdio>
+ 
++namespace {
++
++MvmNativePresentRing *mvmPresentRing = nullptr;
++volatile LONG64 mvmPresentSerial = 0;
++thread_local MvmNativePresentCompositionToken mvmPendingToken{};
++thread_local bool mvmPendingTokenValid = false;
++
++struct MvmPresentCapture {
++    MvmNativePresentRing *ring = nullptr;
++    MvmNativePresentRecord *record = nullptr;
++};
++
++MvmPresentCapture mvmBeginPresentCapture(IDXGISwapChain *swapChain, UINT syncInterval,
++                                         UINT presentFlags)
++{
++    MvmNativePresentRing *ring = mvmPresentRing;
++    if (!ring || ring->enabled == 0)
++        return {};
++    if (ring->recordCount >= ring->capacity) {
++        ++ring->overflowCount;
++        ring->authorityFailure = 1;
++        mvmPendingTokenValid = false;
++        return { ring, nullptr };
++    }
++    MvmNativePresentRecord *record = &ring->records[ring->recordCount];
++    *record = {};
++    record->presentSerial = static_cast<std::uint64_t>(InterlockedIncrement64(&mvmPresentSerial));
++    record->swapchainIdentity = reinterpret_cast<std::uint64_t>(swapChain);
++    record->threadId = GetCurrentThreadId();
++    record->syncInterval = syncInterval;
++    record->presentFlags = presentFlags;
++    LARGE_INTEGER enter{};
++    QueryPerformanceCounter(&enter);
++    record->presentEnterQpc = enter.QuadPart;
++    if (mvmPendingTokenValid) {
++        record->tokenPresent = 1;
++        record->token = mvmPendingToken;
++        mvmPendingTokenValid = false;
++    } else {
++        ++ring->missingTokenCount;
++        ring->authorityFailure = 1;
++    }
++    return { ring, record };
++}
++
++void mvmEndPresentCapture(MvmPresentCapture capture, HRESULT result)
++{
++    if (!capture.ring || !capture.record)
++        return;
++    LARGE_INTEGER returned{};
++    QueryPerformanceCounter(&returned);
++    capture.record->presentReturnQpc = returned.QuadPart;
++    capture.record->hresult = static_cast<std::int32_t>(result);
++    if (FAILED(result)) {
++        ++capture.ring->failedPresentCount;
++        capture.ring->authorityFailure = 1;
++    }
++    ++capture.ring->recordCount;
++}
++
++} // namespace
++
++extern "C" Q_DECL_EXPORT std::uint32_t mvm_qt_d3d11_present_hook_abi_version()
++{
++    return MVM_NATIVE_PRESENT_HOOK_ABI_VERSION;
++}
++
++extern "C" Q_DECL_EXPORT int mvm_qt_d3d11_present_hook_begin(MvmNativePresentRing *ring)
++{
++    if (!ring || ring->abiVersion != MVM_NATIVE_PRESENT_HOOK_ABI_VERSION
++        || ring->capacity != MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY || mvmPresentRing)
++        return 0;
++    ring->enabled = 0;
++    ring->recordCount = 0;
++    ring->overflowCount = 0;
++    ring->missingTokenCount = 0;
++    ring->duplicateTokenCount = 0;
++    ring->staleTokenCount = 0;
++    ring->failedPresentCount = 0;
++    ring->authorityFailure = 0;
++    mvmPendingToken = {};
++    mvmPendingTokenValid = false;
++    mvmPresentRing = ring;
++    ring->enabled = 1;
++    return 1;
++}
++
++extern "C" Q_DECL_EXPORT int mvm_qt_d3d11_present_hook_set_token(
++        const MvmNativePresentCompositionToken *token)
++{
++    MvmNativePresentRing *ring = mvmPresentRing;
++    if (!ring || ring->enabled == 0 || !token)
++        return 0;
++    if (mvmPendingTokenValid) {
++        ++ring->duplicateTokenCount;
++        ring->authorityFailure = 1;
++        return 0;
++    }
++    mvmPendingToken = *token;
++    mvmPendingTokenValid = true;
++    return 1;
++}
++
++extern "C" Q_DECL_EXPORT int mvm_qt_d3d11_present_hook_end()
++{
++    MvmNativePresentRing *ring = mvmPresentRing;
++    if (!ring || ring->enabled == 0)
++        return 0;
++    ring->enabled = 0;
++    if (mvmPendingTokenValid) {
++        ++ring->staleTokenCount;
++        ring->authorityFailure = 1;
++        mvmPendingTokenValid = false;
++    }
++    mvmPresentRing = nullptr;
++    return 1;
++}
++
+ QT_BEGIN_NAMESPACE
+ 
+ using namespace Qt::StringLiterals;
+@@ -1538,7 +1657,10 @@ QRhi::FrameOpResult QRhiD3D11::endFrame(QRhiSwapChain *swapChain, QRhi::EndFrame
+             qWarning("Failed to present: IDXGISwapChain is unavailable");
+             return QRhi::FrameOpError;
+         }
++        const MvmPresentCapture mvmCapture = mvmBeginPresentCapture(
++                swapChainD->swapChain, swapChainD->swapInterval, presentFlags);
+         HRESULT hr = swapChainD->swapChain->Present(swapChainD->swapInterval, presentFlags);
++        mvmEndPresentCapture(mvmCapture, hr);
+         if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
+             qWarning("Device loss detected in Present()");
+             deviceLost = true;

@@ -16,22 +16,26 @@ void check(bool condition, const char* message) {
     }
 }
 
-int bruteForce(const mvm::core::OpportunityCandidateMatrix& input) {
-    int count = 0;
+std::vector<std::vector<long long>> bruteForce(const mvm::core::OpportunityCandidateMatrix& input) {
+    std::vector<std::vector<long long>> solutions;
+    std::vector<long long> assignment;
     const auto opportunityCount = input.opportunityOrdinals.size();
     std::function<void(std::size_t, std::size_t)> visit = [&](std::size_t record,
                                                               std::size_t nextOpportunity) {
         if (record == input.recordCount) {
-            ++count;
+            solutions.push_back(assignment);
             return;
         }
         for (auto opportunity = nextOpportunity; opportunity < opportunityCount; ++opportunity) {
-            if (input.admissible[record * opportunityCount + opportunity] != 0)
+            if (input.admissible[record * opportunityCount + opportunity] != 0) {
+                assignment.push_back(input.opportunityOrdinals[opportunity]);
                 visit(record + 1, opportunity + 1);
+                assignment.pop_back();
+            }
         }
     };
     visit(0, 0);
-    return count;
+    return solutions;
 }
 
 mvm::core::MappingSolutionClass expectedClass(int count) {
@@ -40,6 +44,21 @@ mvm::core::MappingSolutionClass expectedClass(int count) {
     if (count == 1)
         return mvm::core::MappingSolutionClass::Unique;
     return mvm::core::MappingSolutionClass::Ambiguous;
+}
+
+std::vector<long long> bruteConsensusPrefix(const std::vector<std::vector<long long>>& solutions) {
+    std::vector<long long> result;
+    if (solutions.empty())
+        return result;
+    for (std::size_t record = 0; record < solutions.front().size(); ++record) {
+        const auto expected = solutions.front()[record];
+        if (std::any_of(solutions.begin(), solutions.end(), [record, expected](const auto& value) {
+                return value[record] != expected;
+            }))
+            break;
+        result.push_back(expected);
+    }
+    return result;
 }
 
 void exhaustiveCandidateMatrices() {
@@ -58,10 +77,12 @@ void exhaustiveCandidateMatrices() {
                     input.admissible[bit] = (mask >> bit) & 1;
                 const auto brute = bruteForce(input);
                 const auto actual = mvm::core::solveOpportunityMapping(input);
-                check(actual.solutionClass == expectedClass(brute),
+                check(actual.solutionClass == expectedClass(static_cast<int>(brute.size())),
                       "DP classがbrute forceと不一致です");
-                check(actual.saturatedSolutionCount == std::min(2, brute),
+                check(actual.saturatedSolutionCount == std::min<std::size_t>(2, brute.size()),
                       "DP solution count saturationが不一致です");
+                check(actual.consensusPrefix == bruteConsensusPrefix(brute),
+                      "consensus prefixがbrute forceと不一致です");
                 if (actual.solutionClass == mvm::core::MappingSolutionClass::Unique) {
                     check(actual.assignment.size() == records,
                           "UNIQUE assignmentのrecord数が不一致です");
@@ -151,12 +172,49 @@ void mutationGuards() {
           "future opportunityを混入するwindow-widen mutationを検出できません");
 }
 
+void incrementalWatermark() {
+    mvm::core::IncrementalOpportunityMapper mapper;
+    check(mapper.observeVBlank({10, 100}), "最初のVBlankを受理できません");
+    check(mapper.observeCallback(150), "最初のcallbackを受理できません");
+    check(mapper.observeVBlank({11, 200}), "callback domainを閉じられません");
+    check(mapper.snapshot().committedAssignment == std::vector<long long>({10}),
+          "一意なconsensus prefixをcommitしていません");
+    check(mapper.observeVBlank({12, 300}), "次のVBlankを受理できません");
+    check(mapper.observeCallback(350), "曖昧なcallbackを受理できません");
+    check(mapper.observeVBlank({13, 400}), "曖昧なcallback domainを閉じられません");
+    check(mapper.snapshot().solutionClass == mvm::core::MappingSolutionClass::Ambiguous,
+          "複数解をAMBIGUOUSとして保持していません");
+    check(mapper.snapshot().committedAssignment == std::vector<long long>({10}),
+          "future callbackがcommit watermarkを変更しました");
+    check(!mapper.finish() &&
+              mapper.snapshot().error == mvm::core::IncrementalMappingError::AmbiguousMapping,
+          "measurement endのAMBIGUOUSをfail-closedにしていません");
+
+    mvm::core::IncrementalOpportunityMapper noEarlyFirst;
+    check(noEarlyFirst.observeVBlank({20, 100}), "mutation fixtureのVBlank 0が不正です");
+    check(noEarlyFirst.observeVBlank({21, 200}), "mutation fixtureのVBlank 1が不正です");
+    check(noEarlyFirst.observeCallback(250), "mutation fixtureのcallbackが不正です");
+    check(noEarlyFirst.observeVBlank({22, 300}), "mutation fixtureのdomainを閉じられません");
+    check(noEarlyFirst.snapshot().solutionClass == mvm::core::MappingSolutionClass::Ambiguous &&
+              noEarlyFirst.snapshot().committedAssignment.empty(),
+          "ambiguous prefixのfirst solutionを早期commitしています");
+
+    mvm::core::IncrementalOpportunityMapper noSolution;
+    check(noSolution.observeVBlank({30, 100}), "NO_SOLUTION fixtureのVBlank 0が不正です");
+    check(noSolution.observeCallback(150), "NO_SOLUTION fixtureのcallback 0が不正です");
+    check(noSolution.observeCallback(160), "NO_SOLUTION fixtureのcallback 1が不正です");
+    check(!noSolution.observeVBlank({31, 200}) &&
+              noSolution.snapshot().error == mvm::core::IncrementalMappingError::NoSolution,
+          "NO_SOLUTIONを確定時点でfail-closedにしていません");
+}
+
 } // namespace
 
 int main() {
     exhaustiveCandidateMatrices();
     observableRelation();
     mutationGuards();
+    incrementalWatermark();
     if (failures == 0)
         std::printf("presentation opportunity mapper: PASS\n");
     return failures == 0 ? 0 : 1;

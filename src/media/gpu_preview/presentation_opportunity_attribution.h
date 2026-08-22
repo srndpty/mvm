@@ -38,6 +38,7 @@ public:
     void captureSwap(const PresentationSwapRecord& record);
     std::vector<PresentationRenderRecord> renderSnapshot() const;
     std::vector<PresentationSwapRecord> swapSnapshot() const;
+    bool readSwap(std::size_t index, PresentationSwapRecord& record) const;
     std::size_t renderPublishedCount() const;
     std::size_t swapPublishedCount() const;
     long long renderOverflowCount() const;

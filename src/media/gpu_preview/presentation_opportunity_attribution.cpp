@@ -41,6 +41,14 @@ std::vector<PresentationSwapRecord> PresentationOpportunityRing::swapSnapshot() 
     return {swaps_.begin(), swaps_.begin() + static_cast<std::ptrdiff_t>(count)};
 }
 
+bool PresentationOpportunityRing::readSwap(std::size_t index,
+                                           PresentationSwapRecord& record) const {
+    if (index >= swapPublishedCount())
+        return false;
+    record = swaps_[index];
+    return true;
+}
+
 std::size_t PresentationOpportunityRing::renderPublishedCount() const {
     return std::min(renderCount_.load(std::memory_order_acquire), renders_.size());
 }

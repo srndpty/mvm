@@ -5,8 +5,10 @@
 #include <QQmlApplicationEngine>
 #include <QQuickWindow>
 #include <QSGRendererInterface>
+#include <QSurfaceFormat>
 
 #include <cstdio>
+#include <cstring>
 
 using namespace mvm::app;
 
@@ -21,6 +23,8 @@ void usage() {
                  "  --diagnostic-timing --diagnostic-case a|b|c|d\n"
                  "  --scheduler-phase-ring\n"
                  "  --presentation-opportunity-ring\n"
+                 "  --incremental-mapper-shadow\n"
+                 "  --native-present-hook off|on\n"
                  "  --gpu-completion fence|event_query --mode playback|seek|layout\n");
 }
 
@@ -59,6 +63,14 @@ bool parse(const QStringList& args, CompositorSpikeConfig& config) {
         else if (arg == "--vblank-observer") config.vblankObserver = true;
         else if (arg == "--presentation-opportunity-ring")
             config.presentationOpportunityRing = true;
+        else if (arg == "--incremental-mapper-shadow")
+            config.incrementalMapperShadow = true;
+        else if (arg == "--native-present-hook") {
+            const QString v = value().toLower();
+            if (v == "off") config.nativePresentHook = NativePresentHookMode::OffControl;
+            else if (v == "on") config.nativePresentHook = NativePresentHookMode::OnDiagnostic;
+            else return false;
+        }
         else if (arg == "--diagnostic-case") {
             const QString v = value().toLower();
             if (v == "a") config.diagnosticCase = CompositorDiagnosticCase::SingleDecode;
@@ -70,13 +82,38 @@ bool parse(const QStringList& args, CompositorSpikeConfig& config) {
         }
         else return false;
     }
+    const bool mapperDependencies = !config.incrementalMapperShadow ||
+                                    (config.presentationOpportunityRing && config.vblankObserver &&
+                                     config.mode == CompositorMode::Playback);
+    const bool nativePresentDependencies =
+        config.nativePresentHook == NativePresentHookMode::Disabled ||
+        (config.presentationOpportunityRing && config.vblankObserver &&
+         config.mode == CompositorMode::Playback);
     return !config.sourceA.isEmpty() && !config.sourceB.isEmpty() &&
            !config.metricsPath.isEmpty() && config.warmupSeconds >= 0 &&
-           config.measureSeconds > 0 && config.seekCount > 0 && config.displayTimeoutMs > 0;
+           config.measureSeconds > 0 && config.seekCount > 0 && config.displayTimeoutMs > 0 &&
+           mapperDependencies && nativePresentDependencies;
 }
 } // namespace
 
 int main(int argc, char** argv) {
+    bool mapperShadowRequested = false;
+    bool nativePresentHookRequested = false;
+    for (int index = 1; index < argc; ++index)
+        if (std::strcmp(argv[index], "--incremental-mapper-shadow") == 0)
+            mapperShadowRequested = true;
+        else if (std::strcmp(argv[index], "--native-present-hook") == 0)
+            nativePresentHookRequested = true;
+    if ((mapperShadowRequested || nativePresentHookRequested) &&
+        qEnvironmentVariableIsSet("QSG_NO_VSYNC")) {
+        std::fprintf(stderr, "formal presentation pathではQSG_NO_VSYNCを使用できません\n");
+        return 6;
+    }
+    if (mapperShadowRequested || nativePresentHookRequested) {
+        auto surfaceFormat = QSurfaceFormat::defaultFormat();
+        surfaceFormat.setSwapInterval(1);
+        QSurfaceFormat::setDefaultFormat(surfaceFormat);
+    }
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
     QGuiApplication app(argc, argv);
     CompositorSpikeConfig config;

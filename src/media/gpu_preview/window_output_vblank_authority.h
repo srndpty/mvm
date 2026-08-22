@@ -47,6 +47,7 @@ public:
     void reset();
     void capture(const VBlankObservation& value);
     std::vector<VBlankObservation> snapshot() const;
+    bool read(std::size_t index, VBlankObservation& value) const;
     std::size_t publishedCount() const;
     long long overflowCount() const;
 

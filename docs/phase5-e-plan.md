@@ -1577,6 +1577,308 @@ ctest --test-dir build/ucrt64-release --output-on-failure `
   -R '^p2_(presentation_opportunity_mapper_pure|r4_visible_input_)'
 ```
 
+#### F3-B1: Incremental Runtime Wiring
+
+B1はoffline solverをそのままruntimeへ持ち込まず、B1a incremental equivalenceとB1b live shadowの
+2段階に分けた。admissibility relationはR4から変更せず、`VISIBLE_PREFIX`だけを使う。incremental
+mapperは全合法解が共有する連続prefixだけをcommitし、次のVBlankを観測して閉じたcallbackだけを
+判定対象にする。合法解0件は`NO_SOLUTION`、measurement終了時に複数解が残る場合は
+`AMBIGUOUS_MAPPING`としてfail-closedにする。first solution、backfill、window拡張は行わない。
+
+[事実] B1aは`bench/results/f3-b1a-incremental-20260822`でR3の52 caseをevent-by-event replayした。
+最終classは`UNIQUE 36 / AMBIGUOUS 8 / NO_SOLUTION 8`、UNIQUEのidentityは84/84 exact、
+commit regressionは0件だった。各event時点の全合法解をcheckerが独立brute forceし、実装のcommitが
+consensus prefixだけであることを検査した。first-solutionを早期commitするmutationは拒否した。
+
+[事実] Qt 6.11.1のsource preconditionはtagとpeeled commitを固定して確認した。
+[`qrhid3d11.cpp`](https://github.com/qt/qtbase/blob/v6.11.1/src/gui/rhi/qrhid3d11.cpp)
+（qtbase `59c81a3c2247b821b9b84b4eb8d939b77e07e276`）は通常経路を
+`Present(swapInterval, presentFlags)`、`presentFlags = 0`とし、tearing flagは`swapInterval == 0`の
+場合だけ設定する。[`qsgthreadedrenderloop.cpp`](https://github.com/qt/qtdeclarative/blob/v6.11.1/src/quick/scenegraph/qsgthreadedrenderloop.cpp)
+（qtdeclarative `a02bed441965ee1f18f856352c7d5ee5ba35d795`）はsurface formatの
+`swapInterval == 0`の場合だけ`NoVSync`を設定する。B1b runnerはruntime Qt 6.11.1、D3D11、
+requested swap interval 1、`QSG_NO_VSYNC`未設定、Present flags 0、`DXGI_PRESENT_RESTART`なし、
+tearingなしを開始時に検査し、不一致なら計測前に失敗する。
+
+[事実] 5秒のlive smokeではB1b shadow checkerがPASSした。しかし正式な非ETW 60秒 x 3 runの
+`bench/results/f3-b1b-shadow-60s-20260822-v2`はrun 1で停止した。既存のphysical checkerは
+`mapped=3592 / same_opportunity=6 / observer_gap=0 / ambiguous=0 / vblank_samples=3604`を独立再計算し、
+physical authority自体はPASSした。一方、incremental mapperはterminal VBlankでclosed record 1593件に
+対しvisible opportunityが1592件しかなく、直前のVBlank domain内にcallbackが2件あったため、injective
+assignmentが存在せず`NO_SOLUTION`になった。process exitは3、formal counter authorityは変更していない。
+
+[exit] B1aは**PASS**だが、public `frameSwapped` callbackとphysical VBlankを`VISIBLE_PREFIX`で対応付ける
+B1b runtime mapping仮説は**FAIL / path exhausted**である。短いsmokeの成功で60秒の反例を上書きしない。
+relationのwindow拡張やbackfillは行わず、残り2 runを停止した。shadow gateを通らなかったため15秒ETW
+再採取は実行しない。F3-B1のformal promotion、P2-D5-2、P5-EはBLOCKEDのままとし、次はQt D3D11
+Present側でserial/timestampを直接採るnative hookを独立した診断・formal harnessとして検討する。
+`UNPRESENTED` identityは引き続き未証明である。
+
+```text
+F3-B1a incremental equivalence       : PASS (36 / 8 / 8, UNIQUE 84/84 exact)
+Qt 6.11.1 source/runtime precondition : PASS
+F3-B1b 60s non-ETW shadow             : FAIL / PUBLIC_FRAMESWAPPED_PATH_EXHAUSTED
+F3-B1b 15s ETW                        : NOT RUN (shadow gate failed)
+F3-B1 overall                         : FAIL / hypothesis rejected
+P2-D5-2                               : BLOCKED
+P5-E                                  : BLOCKED
+next                                  : native Qt D3D11 Present serial/timestamp hook
+```
+
+再現手順:
+
+```powershell
+pwsh scripts/run-p2-b1a-incremental-proof.ps1 `
+  -OutputDirectory bench/results/f3-b1a-incremental-<timestamp>
+pwsh scripts/check-p2-b1a-incremental-proof.ps1 `
+  -CorpusDirectory bench/results/f3-b0.6-r3-corpus-20260822-v2 `
+  -R4Directory bench/results/f3-b0.6-r4-offline-20260822-v3 `
+  -RunDirectory bench/results/f3-b1a-incremental-<timestamp>
+pwsh scripts/check-p2-b1-shadow-failure.ps1 `
+  -Json bench/results/f3-b1b-shadow-60s-20260822-v2/run-1.json `
+  -ProcessExitCode 3
+```
+
+#### F3-C0: Native D3D11 Present Serial Authority Proof
+
+B1のpublic `frameSwapped` observableはimmutable failure evidenceとして凍結する。R4は証明対象にした
+observable modelについて有効であり、PASSを取り消さない。live Qt callback streamがそのmodelを満たさない
+ことが判明したため、R4 relationのwindow拡張、backfill、first-solution採用は行わない。
+
+C0はQt 6.11.1 D3D11 QRhiのactual `IDXGISwapChain::Present()` call siteだけをdiagnostic patchする。
+hookは既定無効で、明示したmeasurement区間だけ有効にする。hot pathはQPC、process-local serial、
+thread-local token consume、固定POD ring writeだけを行い、allocation、mutex、I/O、logging、
+FrameStatistics polling、DwmFlush、ETW decodeを置かない。Present attemptごとにswapchain identity、thread id、
+enter/return QPC、HRESULT、SyncInterval、flagsを採り、successful Presentとcomposition tokenを1:1にする。
+missing / duplicate / stale token、failed Present、ring overflowはいずれもauthority failureである。
+
+composition tokenはrender thread上のexact `ComposedFrame`から作り、token serial、composition epoch/state、
+output frame、A/Bのsource id / generation / resource epoch / frame numberを固定する。sourceはID順に正規化し、
+最大2件の固定ABIとする。QtGuiとの接続はcold pathでexportを一度だけ解決し、hook OFFを指定した場合も
+patched binaryとABI versionが一致しなければ失敗する。formal counter authorityはまだ変更しない。
+
+[事実] upstream QtBase `v6.11.1` / `59c81a3c2247b821b9b84b4eb8d939b77e07e276`へ
+`qt-patches/qtbase-6.11.1/0001-mvm-native-present-hook.patch`を適用し、workspace内の独立buildで
+QtCore、QtGui、qwindows pluginを構築した。patch SHA256は
+`104f7f469ceba56f3e6440b9d72dc16d5d9af77467eb0dbbdb65783784f34851`、QtGui.dll SHA256は
+`f72ffdfad91c7689fd1ade84515632dfc34593744cb07a59af9ef91d7224cf0b`である。既存の
+`C:\msys64\ucrt64`は変更していない。QtGuiの4 exportと、固定patchがupstreamへreverse-applyできることを
+機械で確認した。
+
+[事実] 同じpatched binaryによる2秒controlでは、hook OFFがcomposition 120 / swap 120 / native record 0、
+hook ONがcomposition 120 / swap 120 / successful native Present 120 / exact token 120だった。ONは
+Present serialとtoken serialが全件strict +1、swapchain/thread identity各1件、SyncInterval 1、flags 0、
+HRESULT 0で、overflow / missing / duplicate / stale / token-set failureはすべて0だった。producer summaryを
+信じずraw recordを再計算するhook/ETW contract testは11/11通過した。
+
+[事実] 管理者PowerShellからC0-Aの15秒ETW cross-checkを2回採取した。artifactは
+`bench/results/f3-c0-native-etw-20260822-2`と
+`bench/results/f3-c0-native-etw-20260822-3`である。両runともhook OFF/ON contract、native
+Presentとswapのexact count、およびWPR有無のcadence controlは成立した。一方、両ETLで
+`EventsLost != 0`かつ`BuffersLost != 0`となり、checkerはexact joinより前にfail-closedした。各raw値、
+binary/source/Qt/ETL identity、checker結果はそれぞれの`summary.json`と`manifest.sha256`から再計算・検証する。
+欠損列の部分照合、対象process外の欠損という推定、nearest-QPC救済は行わない。
+
+[回避策] 同じ`GeneralProfile / GPU / DesktopComposition`による15秒WPR再採取は2回で打ち切る。
+system-wide heavy WPRとは別に、固定PresentMon commitの`PMTraceSession::Start`が提供するcanonical
+provider / event-ID filteringをそのまま使う`CanonicalPresentMonLive` acquisitionをrunnerとdecoderへ
+追加した。実アプリPIDはwrapperが起動直後に別fileへ書き、
+metricsのPIDとexact一致を要求する。decoderのsession ready後だけ測定を継続し、停止時にsession自身の
+`EventsLost / BuffersLost`を取得する。既存offline ETL decodeとWPR failure artifactは変更しない。
+手選別provider集合は実装していない。canonical live runでprovider closure、buffer loss、開始・終了境界を
+独立に証明できるまでは、display completion oracleをPASSへ変更しない。
+
+[事実] 最初のtargeted live artifact
+`bench/results/f3-c0-native-live-etw-20260822-1`はETW loss 0とnative/ETW exact joinを満たしたが、
+trace runだけがPID取得用の別process起動経路を通り、hook OFF/ON controlとGUI起動条件が一致していなかった。
+このrunの`UNPRESENTED`判定を製品経路の結論には使わず、`RUNNER_CONTROL_INVALID`として不変保存する。
+wrapperは全runを同じ`ProcessStartInfo`経路へ統一し、PID fileの有無だけを差分にした。1秒controlで
+OFF/ONともswap 60、ONのnative record 60、PID fileとmetrics PIDの一致を確認した。
+
+[事実] 起動経路統一後のtargeted live artifact
+`bench/results/f3-c0-native-live-etw-20260822-2`は、ETW event/buffer lost、PresentData overflow、
+native/ETW count・order・interval mismatchがすべて0で、composition tokenを全measurement recordへexact
+joinできた。したがってoracle acquisitionは`ORACLE_VALID`である。一方、measurement内のsuccessful native
+Present 899件のうちDisplayedQPCを持つのは87件、`UNPRESENTED`は812件だった。hook ON/OFFとtrace ONの
+cadence controlも成立している。このhistorical checker FAILとJSONは書き換えず保存する。
+
+#### F3-C0-R2: PresentMon Final-State Closure Audit
+
+[事実] `scripts/audit-p2-c0-final-state-closure.ps1`は上記historical artifactのmanifestを先に検証し、
+measurement 899件を`FinalState`と`DisplayedQPC`で再分類した。結果はPresented 87、explicit Discarded
+812、Unknown相当0であり、empty `Displayed` 812件を一律`UNPRESENTED`と呼んだhistorical labelは
+semantically overbroadだった。一方、historical rawには`IsCompleted / IsLost / PresentMode /
+SeenDxgkPresent / SeenWin32KEvents / SeenInFrameEvent / WaitForFlipEvent / WaitForMPOFlipEvent`が無いため、
+このartifact単独のfull display-completion closureは`NOT_YET_VALIDATED`とする。audit artifactは
+`bench/results/f3-c0-r2-final-state-audit-20260823`であり、source hashとmanifestを固定した。
+
+[回避策] decoder rawへ上記completion fieldと、`PRESENTED / DISCARDED / INCOMPLETE_UNKNOWN / LOST`の
+fail-closed分類を追加した。`PRESENTED`は`FinalState == Presented && Displayed nonempty && IsCompleted`、
+`DISCARDED`はexplicit `FinalState == Discarded && Displayed empty && IsCompleted`だけを許す。`IsLost`は
+常に`LOST`、残りは`INCOMPLETE_UNKNOWN`とする。checkerはproducer分類を独立再計算し、UnknownまたはLostを
+1件でも含むrunを拒否する。explicit Discardedはclosure failureとはせず、native Present単独authorityの
+棄却根拠として別fieldへ出す。Presented対照、Discarded対照、Unknown/Lost negativeを含むcontractで固定する。
+
+[事実] completion raw拡張後のcanonical 5秒artifact
+`bench/results/f3-c0-r2-canonical-live-20260823-1`は、pinned PresentMonのprovider fingerprintとevent-ID
+filtering、app/collector PID一致、native/ETW count・order・interval exact、composition-token join exactを
+満たした。measurement 300件はPresented 32 / explicit Discarded 268へ全件閉じ、Unknown、Lost、未完了、
+ETW event/buffer lost、PresentData overflowはすべて0だった。hook ON/OFF比とtrace/control比も1.0である。
+したがって5秒display-completion closureはPASSとして固定する。全recordがPresentedであることはexit criteria
+にしていない。次は同じcanonical sessionを15秒へ伸ばし、closureとcapacityを再確認する。
+
+[事実] canonical 15秒artifact
+`bench/results/f3-c0-r2-canonical-live-20260823-15s-1`もprovider fingerprint、event-ID filtering、PID、
+native/ETW/token 900件のcount・order・interval exact joinを満たした。Presented 725 + explicit Discarded
+175で全measurement recordへ閉じ、Unknown、Lost、未完了、ETW event/buffer lost、PresentData overflowは
+すべて0だった。hook ON/OFF比とtrace/control比はいずれも約1.001である。15秒closure/capacityもPASSとして
+固定し、次は同じcanonical sessionの60秒capacityだけを評価する。
+
+[事実] canonical 60秒artifact
+`bench/results/f3-c0-r2-canonical-live-20260823-60s-1`はETW event/buffer lost、PresentData overflowが
+0で、cadence controlも成立した。historical checkerはnative 3598 / ETW 3597のcount差1でFAILしたが、
+missingはserial 3598の末尾1件だけだった。このnative Presentは固定measurement end直前にenterし、returnが
+endを約0.2ms越えたboundary-straddling recordである。hook停止は次render callback先頭なので、このrecordが
+native ringだけに残ることをproducer codeとraw QPCの双方で確認した。
+
+[回避策] measurement domainを`present_enter_qpc >= start && present_return_qpc < end`へ固定し、開始・終了を
+またぐnative/ETW recordは本体から推定削除せず別countへ分離する。境界対照をcontract testへ追加した。
+元artifactとhistorical FAILは書き換えず、manifest検証後のsidecar
+`bench/results/f3-c0-r2-canonical-live-20260823-60s-boundary-recheck`で再判定した。domain内3597件は
+Presented 1358 + explicit Discarded 2239へ全件閉じ、Unknown/Lost 0である。したがってcanonical 60秒の
+semantic closureとcapacityはPASSとして固定する。
+
+#### F3-C1: Native Present + ETW Display Authority Proof
+
+[事実] `scripts/check-p2-c1-display-authority.ps1`はC0-R2 oracleからPresented recordだけを取り出し、
+composition tokenのoutput frame identity、DisplayedQPC、physical opportunity ordinalをexactに結合する。
+Discarded record数をdropへ直接足さず、Presented source-frame identityのunique列からgapとtailを一度だけ
+計算する。60秒artifactではPresented record 1358、unique source frame 1355、repeat 3、gap 2244、tail 1で、
+`displayed_unique_source_frames 1355 + formal_source_frame_drops 2245 == 3600`が成立した。proof artifactは
+`bench/results/f3-c1-display-authority-proof-20260823`である。Unknown、Lost、domain外frame、opportunity逆行、
+Discardedへのdisplay payloadを壊すnegativeを含む6/6 contract testが通過した。
+
+[exit] F3-C1 offline identity/accounting proofはPASSである。これはnative hook + canonical PresentMonが
+composition identityからactual display outcomeへのdiagnostic authorityになれることを示す。ただし
+`formal_counter_authority_changed == false`であり、runtime/formal harnessへの配線はまだ行っていない。
+60秒source domainのdrop rateは`2245 / 3600 = 62.3611%`であり、2%閾値を変更せずFAIL証拠として固定する。
+submission contractへの変更、frameSwapped mapper復活は行わない。原因帰属なしにruntime/formal wiringへ
+進まず、次はF3-C2 display discard attributionを独立gateとして実施する。P2-D5-2はBLOCKEDのままである。
+
+#### F3-C2: Display Discard Attribution
+
+[事実] C2-Aは新規採取を行わず、C0-R2 60秒sidecar oracleのmanifestを検証して全3597 Presentを
+native serial、composition token、source frame、FinalState、PresentMode、DisplayedQPC、physical VBlank、
+PresentStart、SeenDxgk/Win32K/InFrameと結合した。Presented 1358件から1357区間の時系列を再構成すると、
+`intervening Discarded == physical VBlank delta - 1`は1357/1357でexactだった。source frame deltaとphysical
+VBlank deltaは1347/1357で一致し、10区間はsource frameのrepeat/skipにより不一致だった。したがって物理表示の
+保持gapはDiscarded列で厳密に説明できるが、source frame番号を物理表示timelineそのものとは扱えない。artifactは
+`bench/results/f3-c2-display-discard-attribution-20260823`で、positive 1件とUnknown、identity欠落、payload混入、
+VBlank逆行のnegative 4件が通過した。historical rawに無いReadyTime、TimeInPresent、QueueSubmitSequence、
+Win32KPresentCount/BindId、Present-History tokenはnullを捏造せずavailability=falseとして記録した。
+
+[回避策] C2-B用にpinned PresentMon `v2.3.1` / `717c5bf14e80a4a06b70cd16415ae8d40a7ce201`へ
+classification-only診断patchを用意した。patchはPresentMon内の実際の6つのDiscarded確定分岐でのみ
+`BACK_TO_BACK_FLIP_SUPERSEDED`、`WIN32K_TOKEN_NOT_IN_FRAME`、`DEPENDENT_PRESENT_SUPERSEDED`、
+`DO_NOT_SEQUENCE`、`NOT_VISIBLE`、`BLIT_CANCEL`を記録する。事後QPC推定は行わず、provider、tracking、
+FinalState、completion順序は変更しない。decoderは上記historical不足fieldとdiscard reasonをrawへ出し、checkerは
+全native/token join exact、Unknown/Lost 0、ETW event/buffer loss 0、overflow 0、Discarded件数とreason件数の
+一致、unknown reason 0をfail-closedで要求する。診断decoderのbuildは成功した。この時点では15秒canonical
+C2-B採取は未実行であり、formal counter authorityは変更していない。
+
+[事実] 最初のC2-B 15秒artifact
+`bench/results/f3-c2-discard-attribution-20260823-15s-1`は、native/ETW/token 900件のexact join、
+Presented 900、Unknown/Lost 0、ETW loss/overflow 0、cadence 60fpsを満たしたが、Discardedは0件だった。
+raw measurement外を含むtarget process全1217件もPresentedであり、reasonは全件`NONE`だった。旧checkerは
+`discarded_count 0 == reason_count 0`としてPASSを出したが、これは原因帰属を1件も検証しない空振りである。
+artifactと旧PASS labelは書き換えず保存し、C2-B evidenceとしては`EVIDENCE_EMPTY / NOT EVALUABLE`へ
+位置付ける。checkerへDiscarded 0件のnegativeを追加し、以後は同じ空振りをfail-closedで拒否する。
+
+[事実] 次のC2-B 60秒artifact
+`bench/results/f3-c2-discard-attribution-20260823-60s-1`はnative/ETW/token 3595件をexact joinし、
+Presented 1345、Discarded 2246、Unknown 4、Lost 0、ETW loss/overflow 0を記録した。Unknown 4件は末尾ではなく
+measurement開始約6.9～7.1秒に集中し、全件`IsCompleted=true / FinalState=Unknown / Composed_Flip /
+SeenInFrame=true`だった。したがってsession drain不足ではなく、C2-B closureはFAILとして保存する。
+確定済みDiscarded 2246件のreasonは全件`DEPENDENT_PRESENT_SUPERSEDED`で、他reasonは0件だった。ただし
+Unknown 4件を除外した分布なので、closure PASSまでは最終分布として固定しない。
+
+[事実] pinned PresentMon sourceでは、後続Presentedを完了するときに同一process/swapchainの先行Presentを走査し、
+先行Presentの`FinalState`がUnknownでもそのまま`CompletePresent(p2)`する経路がある。上記4件の状態はこの経路の
+出力と一致する。これは既存6箇所の`FinalState=Discarded`だけを列挙した診断patchが漏らした実コード上の
+supersede経路である。
+
+[回避策] 同経路で`FinalState == Unknown`の先行Presentだけを
+`EARLIER_SWAPCHAIN_PRESENT_SUPERSEDED`として記録し、Discardedへ閉じてから既存どおりCompleteする。
+tracking構造、完了対象、完了順序は変更しない。既にPresentedまたはDiscardedのrecordは変更しない。
+元60秒artifactは書き換えず、更新decoderによる新規runでのみclosureを再評価する。
+
+[事実] 更新後の次の60秒artifact
+`bench/results/f3-c2-discard-attribution-20260823-60s-2`はnative/ETW 3594件をexact joinし、
+Presented 1120、Discarded 2474、Unknown/Lost 0、ETW loss/overflow 0だった。しかしDiscarded 6件だけ
+reasonが`NONE`で、checkerは最初の該当recordでfail-closedした。残る2468件は
+`DEPENDENT_PRESENT_SUPERSEDED` 2467件、`EARLIER_SWAPCHAIN_PRESENT_SUPERSEDED` 1件である。
+
+[事実] reason未確定6件は全てtarget processのComposed Flipだった。raw全体ではDWM側Hardware Legacy Flipに
+`EARLIER_SWAPCHAIN_PRESENT_SUPERSEDED`が7件あり、PresentMon sourceはDWM親Presentからdependentへ
+`FinalState`と`Displayed`をコピーしていたが、診断追加fieldの`FinalDiscardReason`はコピーしていなかった。
+
+[回避策] state/display provenanceと同じ分岐で`FinalDiscardReason`も親からdependentへコピーする。
+新しい事後分類は追加せず、親がPresentedなら`NONE`、Discardedなら親の確定reasonをそのまま伝播する。
+元60秒artifactはFAILのまま保持し、更新decoderによる新規runでexact reason accountingを再評価する。
+
+[事実] provenance伝播補正後の60秒artifact
+`bench/results/f3-c2-discard-attribution-20260823-60s-3`はnative/ETW/token 3596件をexact joinし、
+Presented 535、Discarded 3061へ全件閉じた。Unknown、Lost、ETW event/buffer loss、PresentData overflow、
+unknown discard reasonは全て0で、Discarded count 3061とreason count 3061がexact一致した。reason分布は
+`DEPENDENT_PRESENT_SUPERSEDED` 2551件（83.34%）、
+`EARLIER_SWAPCHAIN_PRESENT_SUPERSEDED` 510件（16.66%）で、その他reasonは0件だった。Presented 535件の
+reasonは全件`NONE`である。root/canonical双方のmanifest、decoder/patch hashも再検証して一致した。
+
+[exit] F3-C2-Aでは介在Discarded数とphysical VBlank保持gapが1357/1357 exactであり、F3-C2-Bでは
+全Discardedがqueue/supersede系reasonへ1:1に閉じた。したがって大量dropはvisibility/occlusionやETW欠損ではなく、
+obsolete dependent/earlier Presentが後続表示までにsupersedeされる経路に支配されている。F3-C2はPASSとして
+固定し、結果分岐Aに従って次を`F3-C3 — Display-paced Submission Fix`とする。ただしこのcheckpointでは
+runtime/formal counter wiring、2% threshold、submission contractをまだ変更せず、P2-D5-2はBLOCKEDを維持する。
+
+```text
+F3-B1 overall                         : FAIL / PUBLIC_FRAMESWAPPED_PATH_EXHAUSTED
+F3-C0 native hook implementation      : PASS
+F3-C0 hook OFF/ON smoke               : PASS (120/120 token exact)
+F3-C0-A heavy WPR                     : ETW_CAPACITY_INVALID / WPR_PATH_EXHAUSTED
+native successful Present authority   : REJECTED
+TargetedLive native/ETW submission    : PASS
+TargetedLive display completion       : HISTORICAL LABEL SUPERSEDED
+historical TargetedLive checker       : FAIL / PRESERVED
+812 actual UNPRESENTED                : NOT YET ESTABLISHED
+F3-C0-R2 canonical 5s closure         : PASS (300/300 CLOSED)
+F3-C0-R2 canonical 15s closure        : PASS (900/900 CLOSED)
+F3-C0-R2 canonical 60s capacity       : PASS (3597/3597 CLOSED + 1 BOUNDARY)
+F3-C1 offline identity/accounting     : PASS (1355 + 2245 == 3600)
+F3-C1 runtime/formal wiring           : NOT STARTED
+F3-C2-A offline physical gap proof    : PASS (1357/1357 exact; source mismatch 10)
+F3-C2-B first 15s reason run          : EVIDENCE_EMPTY (0 discarded; old vacuous PASS preserved)
+F3-C2-B 60s-1                         : FAIL / UNKNOWN 4 (preserved)
+F3-C2-B 60s-2                         : FAIL / REASON NONE 6 (preserved)
+F3-C2-B 60s-3 reason closure          : PASS (3061/3061, unknown 0)
+F3-C2 overall                         : PASS / QUEUE_SUPERSEDE DOMINANT
+F3-C3 Display-paced Submission Fix    : NEXT / NOT STARTED
+P2-D5-2                               : BLOCKED
+```
+
+再現手順:
+
+```powershell
+pwsh scripts/prepare-p2-c0-qt-source.ps1
+pwsh scripts/build-p2-c0-patched-qt.ps1 -Jobs 4
+pwsh scripts/build-p2-etw-decoder.ps1
+
+# ここからは管理者PowerShellで実行する。
+pwsh scripts/p2-c2-discard-attribution.ps1 `
+  -OutputDirectory bench/results/f3-c2-discard-attribution-<timestamp> `
+  -MeasureSeconds 60 `
+  -TimeoutSeconds 300
+```
+
 observer threadは`THREAD_PRIORITY_TIME_CRITICAL`への昇格に失敗した場合、normal priorityへ黙って
 fallbackせず`AUTHORITY_UNAVAILABLE`として起動失敗にする。observer threadは
 `WaitForVBlank` → fixed-ring write 以外を行わない。

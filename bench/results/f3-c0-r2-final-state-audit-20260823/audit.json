@@ -1,0 +1,33 @@
+{
+  "schema": "mvm-p2-c0-r2-historical-final-state-audit-1",
+  "source_artifact": "C:\\dev\\soft\\mvm\\bench\\results\\f3-c0-native-live-etw-20260822-2",
+  "source_manifest_verified": true,
+  "historical_checker_verdict": "FAIL",
+  "historical_unpresented_label_semantically_overbroad": true,
+  "native_etw_submission_join": "PASS",
+  "measurement_record_count": 899,
+  "final_state_counts": {
+    "presented": 87,
+    "discarded": 812,
+    "incomplete_unknown": 0
+  },
+  "completion_fields_available": false,
+  "unavailable_completion_fields": [
+    "is_completed",
+    "is_lost",
+    "present_mode",
+    "seen_dxgk_present",
+    "seen_win32k_events",
+    "seen_in_frame_event",
+    "wait_for_flip_event",
+    "wait_for_mpo_flip_event"
+  ],
+  "display_completion_oracle": "NOT_YET_VALIDATED",
+  "later_attribution": "全empty Displayedはexplicit Discardedだが、historical rawにIsLost等が無いためfull closureは未検証",
+  "source_identities": {
+    "app_sha256": "5106a3c3223c5dd76b15592fdefa621467fdc3f11da7098dfa2575e8189eabfb",
+    "etw_sha256": "a611c226cfb32dd9f924cca8f8c433266ffad2a9ca164f0fb1321a94ffff3d6e",
+    "summary_sha256": "4b472008beefd520c4a6cdde489b1d99890a5629a3d30522269c8fedac347305",
+    "manifest_sha256": "d4a12faaf83ea9d31d20bb0179d6da1bd6fded4e3dd83e3defc5dc59c72f39ae"
+  }
+}
