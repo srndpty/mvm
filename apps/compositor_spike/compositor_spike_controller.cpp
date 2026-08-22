@@ -119,6 +119,35 @@ QJsonObject dwmTimingJson(const DwmPresentationTimingSnapshot& value) {
             {"frame_displayed_count", static_cast<qint64>(value.frameDisplayedCount)}};
 }
 
+QJsonObject presentationAuthorityJson(const gpu::PresentationAuthoritySample& value) {
+    return {{"available", value.available},
+            {"refresh_count", static_cast<qint64>(value.refreshCount)},
+            {"qpc_vblank", value.qpcVBlank},
+            {"refresh_numerator", value.refreshNumerator},
+            {"refresh_denominator", value.refreshDenominator}};
+}
+
+QJsonObject presentationFirstEventJson(const gpu::PresentationOpportunityFirstEvent& value) {
+    return {{"captured", value.captured},
+            {"classification",
+             QString::fromLatin1(
+                 gpu::presentationOpportunityClassificationName(value.classification))},
+            {"last_committed_opportunity_ordinal", value.lastCommittedOpportunityOrdinal},
+            {"predicted_opportunity_ordinal", value.predictedOpportunityOrdinal},
+            {"actual_opportunity_ordinal", value.actualOpportunityOrdinal},
+            {"render_begin_qpc", value.renderBeginQpc},
+            {"render_end_qpc", value.renderEndQpc},
+            {"presentation_swap_qpc", value.swapQpc},
+            {"pre_render_authority", presentationAuthorityJson(value.preRenderAuthority)},
+            {"post_swap_authority", presentationAuthorityJson(value.postSwapAuthority)},
+            {"predicted_source_frame", value.predictedSourceFrame},
+            {"actual_target_source_frame", value.actualTargetFrame},
+            {"rendered_source_frame", value.renderedSourceFrame},
+            {"render_ordinal", value.renderOrdinal},
+            {"swap_ordinal", value.swapOrdinal},
+            {"authority_continuous", value.authorityContinuous}};
+}
+
 std::vector<gpu::LayerLayout> layoutFor(size_t index) {
     const bool topLeft = index == 1 || index == 2;
     const float opacity = index < 2 ? 0.75f : 0.5f;
@@ -245,6 +274,24 @@ CompositorMeasurementCounters subtract(const CompositorMeasurementCounters& end,
     MVM_DELTA(untrackedSubmission);
 #undef MVM_DELTA
     return out;
+}
+
+bool nonnegative(const CompositorMeasurementCounters& value) {
+#define MVM_NONNEGATIVE(field) (value.field >= 0)
+    return MVM_NONNEGATIVE(qpc) && MVM_NONNEGATIVE(compositionRequested) &&
+           MVM_NONNEGATIVE(compositionDrawn) && MVM_NONNEGATIVE(gpuSubmission) &&
+           MVM_NONNEGATIVE(layerDraw) && MVM_NONNEGATIVE(logicalClear) &&
+           MVM_NONNEGATIVE(scheduled) && MVM_NONNEGATIVE(displayed) &&
+           MVM_NONNEGATIVE(dropped) && MVM_NONNEGATIVE(missingPair) &&
+           MVM_NONNEGATIVE(sourceAEof) && MVM_NONNEGATIVE(sourceBEof) &&
+           MVM_NONNEGATIVE(dropSchedulerDeadline) && MVM_NONNEGATIVE(dropMissingSourceA) &&
+           MVM_NONNEGATIVE(dropMissingSourceB) && MVM_NONNEGATIVE(dropMissingBoth) &&
+           MVM_NONNEGATIVE(dropStaleGeneration) && MVM_NONNEGATIVE(dropFutureGeneration) &&
+           MVM_NONNEGATIVE(dropStaleCompositionEpoch) && MVM_NONNEGATIVE(dropRenderFailure) &&
+           MVM_NONNEGATIVE(presentCallback) && MVM_NONNEGATIVE(repeatedPresent) &&
+           MVM_NONNEGATIVE(partialGpuIssueFailure) &&
+           MVM_NONNEGATIVE(completionPollFailure) && MVM_NONNEGATIVE(untrackedSubmission);
+#undef MVM_NONNEGATIVE
 }
 } // namespace
 
@@ -499,6 +546,9 @@ bool CompositorSpikeController::resetPlaybackForMeasurement() {
 }
 
 void CompositorSpikeController::requestMeasurementStart() {
+    measurementStartCaptured_ = false;
+    measurementStopCaptured_ = false;
+    measurementAvailable_ = false;
     const bool formalOpportunity =
         state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire);
     if (config_.presentationOpportunityRing || formalOpportunity)
@@ -531,7 +581,8 @@ void CompositorSpikeController::requestMeasurementStart() {
 void CompositorSpikeController::tick() {
     if (!item_ || phase_ == Phase::Done)
         return;
-    if (state_->fatal.load() && phase_ != Phase::ShutdownWait) {
+    if (state_->fatal.load() && phase_ != Phase::ShutdownWait &&
+        phase_ != Phase::FatalMeasureStopWait) {
         QString reason;
         {
             std::lock_guard<std::mutex> lock(state_->errorMutex);
@@ -629,6 +680,7 @@ void CompositorSpikeController::tick() {
         if (state_->measurementStartCaptured.load(std::memory_order_acquire)) {
             std::lock_guard<std::mutex> lock(state_->measurementMutex);
             measurementStart_ = state_->measurementStart;
+            measurementStartCaptured_ = true;
             measurementStartA_ = workerA_ ? workerA_->snapshot() : gpu::SourceDecoderSnapshot{};
             measurementStartB_ = workerB_ ? workerB_->snapshot() : gpu::SourceDecoderSnapshot{};
             phase_ = Phase::Measure;
@@ -663,6 +715,9 @@ void CompositorSpikeController::tick() {
                 std::lock_guard<std::mutex> lock(state_->measurementMutex);
                 measurementStop_ = state_->measurementStop;
             }
+            measurementStopCaptured_ = true;
+            measurementAvailable_ = measurementStartCaptured_ &&
+                                    measurementStop_.qpc >= measurementStart_.qpc;
             measureElapsedSeconds_ =
                 gpu::qpcMsBetween(measurementStart_.qpc, measurementStop_.qpc) / 1000.0;
             measurementStopA_ = workerA_ ? workerA_->snapshot() : gpu::SourceDecoderSnapshot{};
@@ -677,6 +732,31 @@ void CompositorSpikeController::tick() {
                               ? QStringLiteral("playback measurement完了")
                               : QStringLiteral("P2-D5-2 refresh/DWM authorityが途中で変化しました"),
                           !authorityStable);
+        } else {
+            item_->update();
+        }
+    } else if (phase_ == Phase::FatalMeasureStopWait) {
+        if (state_->measurementStopCaptured.load(std::memory_order_acquire)) {
+            {
+                std::lock_guard<std::mutex> lock(state_->measurementMutex);
+                if (state_->measurementStartCaptured.load(std::memory_order_acquire)) {
+                    measurementStart_ = state_->measurementStart;
+                    measurementStartCaptured_ = true;
+                }
+                measurementStop_ = state_->measurementStop;
+            }
+            measurementStopCaptured_ = true;
+            measurementAvailable_ = measurementStartCaptured_ &&
+                                    measurementStop_.qpc >= measurementStart_.qpc;
+            if (measurementAvailable_)
+                measureElapsedSeconds_ =
+                    gpu::qpcMsBetween(measurementStart_.qpc, measurementStop_.qpc) / 1000.0;
+            measurementStopA_ = workerA_ ? workerA_->snapshot() : gpu::SourceDecoderSnapshot{};
+            measurementStopB_ = workerB_ ? workerB_->snapshot() : gpu::SourceDecoderSnapshot{};
+            dwmTimingStop_ = captureDwmTiming(item_ ? item_->window() : nullptr);
+            performShutdown();
+        } else if (phaseTimer_.elapsed() >= config_.displayTimeoutMs) {
+            performShutdown();
         } else {
             item_->update();
         }
@@ -892,11 +972,43 @@ void CompositorSpikeController::pollLayoutChange() {
 }
 
 void CompositorSpikeController::beginShutdown(const QString& reason, bool failure) {
-    if (phase_ == Phase::ShutdownWait || phase_ == Phase::Done)
+    if (phase_ == Phase::ShutdownWait || phase_ == Phase::FatalMeasureStopWait ||
+        phase_ == Phase::Done)
         return;
     shutdownReason_ = reason;
     if (failure)
         exitCode_ = 3;
+    if (config_.mode == CompositorMode::Playback && !measurementStopCaptured_ &&
+        state_->measurementStopCaptured.load(std::memory_order_acquire)) {
+        {
+            std::lock_guard<std::mutex> lock(state_->measurementMutex);
+            if (state_->measurementStartCaptured.load(std::memory_order_acquire)) {
+                measurementStart_ = state_->measurementStart;
+                measurementStartCaptured_ = true;
+            }
+            measurementStop_ = state_->measurementStop;
+        }
+        measurementStopCaptured_ = true;
+        measurementAvailable_ = measurementStartCaptured_ &&
+                                measurementStop_.qpc >= measurementStart_.qpc;
+        if (measurementAvailable_)
+            measureElapsedSeconds_ =
+                gpu::qpcMsBetween(measurementStart_.qpc, measurementStop_.qpc) / 1000.0;
+    }
+    if (config_.mode == CompositorMode::Playback &&
+        !state_->measurementStopCaptured.load(std::memory_order_acquire) &&
+        (state_->measurementStartCaptured.load(std::memory_order_acquire) ||
+         state_->measurementIntervalActive.load(std::memory_order_acquire))) {
+        state_->measurementStopRequested.store(true, std::memory_order_release);
+        phase_ = Phase::FatalMeasureStopWait;
+        phaseTimer_.restart();
+        item_->update();
+        return;
+    }
+    performShutdown();
+}
+
+void CompositorSpikeController::performShutdown() {
     if (seekLockTimingActive_) {
         state_->diagnosticLockTiming = state_->device.lock().endDiagnostics();
         seekLockTimingActive_ = false;
@@ -921,7 +1033,10 @@ bool CompositorSpikeController::writeMetrics() {
     const auto& c = state_->compositor.counters();
     CompositorMeasurementCounters measurement;
     if (config_.mode == CompositorMode::Playback) {
-        measurement = subtract(measurementStop_, measurementStart_);
+        if (measurementAvailable_) {
+            measurement = subtract(measurementStop_, measurementStart_);
+            measurementAvailable_ = nonnegative(measurement);
+        }
     } else {
         measurement.compositionRequested = c.compositionRequestedCount;
         measurement.compositionDrawn = c.compositionDrawnCount;
@@ -1120,14 +1235,32 @@ bool CompositorSpikeController::writeMetrics() {
     QJsonArray formalOpportunityLedger;
     for (const auto& record : formalOpportunitySnapshot.records) {
         formalOpportunityLedger.append(
-            QJsonObject{{"opportunity_ordinal", record.opportunityOrdinal},
+            QJsonObject{{"last_committed_opportunity_ordinal",
+                         record.lastCommittedOpportunityOrdinal},
+                        {"predicted_opportunity_ordinal",
+                         record.predictedOpportunityOrdinal},
+                        {"actual_opportunity_ordinal", record.actualOpportunityOrdinal},
+                        {"render_begin_qpc", record.renderBeginQpc},
+                        {"render_end_qpc", record.renderEndQpc},
                         {"presentation_swap_qpc", record.swapQpc},
+                        {"render_ordinal", record.renderOrdinal},
+                        {"swap_ordinal", record.swapOrdinal},
                         {"refresh_numerator", record.refreshNumerator},
                         {"refresh_denominator", record.refreshDenominator},
+                        {"pre_render_authority",
+                         presentationAuthorityJson(record.preRenderAuthority)},
+                        {"post_swap_authority",
+                         presentationAuthorityJson(record.postSwapAuthority)},
+                        {"authority_continuous", record.authorityContinuous},
+                        {"predicted_source_frame", record.predictedSourceFrame},
                         {"expected_source_frame", record.expectedSourceFrame},
                         {"presented_source_frame", record.presentedSourceFrame},
                         {"repeat", record.repeat},
-                        {"true_drop_before_this_opportunity", record.trueDropBefore}});
+                        {"true_drop_before_this_opportunity", record.trueDropBefore},
+                        {"lost_opportunity_count", record.lostOpportunityCount},
+                        {"classification",
+                         QString::fromLatin1(gpu::presentationOpportunityClassificationName(
+                             record.classification))}});
     }
     const bool formalRefreshStable =
         !state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire) ||
@@ -1182,6 +1315,15 @@ bool CompositorSpikeController::writeMetrics() {
                              ? QStringLiteral("playback")
                              : config_.mode == CompositorMode::Seek ? QStringLiteral("seek")
                                                                     : QStringLiteral("layout");
+    const bool measurementDeltaAvailable =
+        config_.mode != CompositorMode::Playback || measurementAvailable_;
+    const auto measurementJson = [measurementDeltaAvailable](long long value) {
+        return measurementDeltaAvailable ? QJsonValue(static_cast<qint64>(value))
+                                         : QJsonValue(QJsonValue::Null);
+    };
+    const auto measurementDoubleJson = [measurementDeltaAvailable](double value) {
+        return measurementDeltaAvailable ? QJsonValue(value) : QJsonValue(QJsonValue::Null);
+    };
     QJsonObject o{{"schema", config_.diagnosticTiming ? "mvm-p2-diagnostic-1"
                                                        : "mvm-p2-formal-2"},
                   {"formal_contract_version", "P2-D5-2"},
@@ -1203,7 +1345,11 @@ bool CompositorSpikeController::writeMetrics() {
                   {"source_b_frame_count", sourceBFrameCount_},
                   {"required_measurement_frame_count", requiredMeasurementFrameCount_},
                   {"source_coverage_ok", sourceCoverageOk_},
-                  {"measurement_elapsed_seconds", measureElapsedSeconds_},
+                  {"measurement_started", measurementStartCaptured_},
+                  {"measurement_stop_captured", measurementStopCaptured_},
+                  {"measurement_available", measurementAvailable_},
+                  {"measurement_elapsed_seconds",
+                   measurementDoubleJson(measureElapsedSeconds_)},
                   {"same_device_a", a.decodeDevicePointer == state_->nativeDevicePointer.load()},
                   {"same_device_b", b.decodeDevicePointer == state_->nativeDevicePointer.load()},
                   {"actual_output_width", state_->actualOutputWidth.load()},
@@ -1212,14 +1358,17 @@ bool CompositorSpikeController::writeMetrics() {
                    QString::fromStdString(state_->actualGpuCompletionBackend)},
                   {"adapter_a", QString::fromStdString(a.adapter.description)},
                   {"adapter_b", QString::fromStdString(b.adapter.description)},
-                  {"effective_fps", measureElapsedSeconds_ > 0
-                                        ? static_cast<double>(measurement.displayed) /
-                                              measureElapsedSeconds_
-                                        : 0},
-                  {"drop_rate", measurement.scheduled > 0
-                                    ? static_cast<double>(measurement.dropped) /
-                                          static_cast<double>(measurement.scheduled)
-                                    : 0},
+                  {"effective_fps",
+                   measurementDoubleJson(measureElapsedSeconds_ > 0
+                                             ? static_cast<double>(measurement.displayed) /
+                                                   measureElapsedSeconds_
+                                             : 0)},
+                  {"drop_rate",
+                   measurementDoubleJson(
+                       measurement.scheduled > 0
+                           ? static_cast<double>(measurement.dropped) /
+                                 static_cast<double>(measurement.scheduled)
+                           : 0)},
                   {"formal_opportunity_authority_valid",
                    formalOpportunitySnapshot.valid && formalOpportunitySnapshot.closed &&
                        formalRefreshStable},
@@ -1232,49 +1381,67 @@ bool CompositorSpikeController::writeMetrics() {
                    state_->formalRefreshDenominator.load(std::memory_order_relaxed)},
                   {"formal_source_fps_numerator", 60},
                   {"formal_source_fps_denominator", 1},
+                  {"formal_qpc_frequency", qpcFrequency},
                   {"formal_displayed_unique_count", formalOpportunitySnapshot.displayedUnique},
                   {"formal_repeated_opportunity_count", formalOpportunitySnapshot.repeated},
                   {"formal_gap_true_drop_count", formalOpportunitySnapshot.gapTrueDrop},
                   {"tail_true_drop", formalOpportunitySnapshot.tailTrueDrop},
                   {"formal_true_opportunity_drop_count", formalOpportunitySnapshot.trueDrop},
+                  {"formal_forward_reconciliation_count",
+                   formalOpportunitySnapshot.forwardReconciliationCount},
+                  {"formal_lost_opportunity_count",
+                   formalOpportunitySnapshot.lostOpportunityCount},
+                  {"formal_first_reconciliation_event",
+                   presentationFirstEventJson(formalOpportunitySnapshot.firstEvent)},
                   {"diagnostic_synthetic_deadline_drop_count",
                    state_->diagnosticSyntheticDeadlineDropCount.load(
                        std::memory_order_relaxed)},
                   {"formal_opportunity_ledger", formalOpportunityLedger},
                   {"measurement_composition_requested_count",
-                   measurement.compositionRequested},
-                  {"measurement_composition_drawn_count", measurement.compositionDrawn},
-                  {"measurement_gpu_submission_count", measurement.gpuSubmission},
-                  {"measurement_layer_draw_count", measurement.layerDraw},
-                  {"measurement_logical_clear_count", measurement.logicalClear},
-                  {"measurement_scheduled_output_count", measurement.scheduled},
-                  {"measurement_displayed_composition_count", measurement.displayed},
-                  {"measurement_dropped_output_count", measurement.dropped},
-                  {"measurement_missing_pair_count", measurement.missingPair},
-                  {"measurement_source_a_eof_count", measurement.sourceAEof},
-                  {"measurement_source_b_eof_count", measurement.sourceBEof},
+                   measurementJson(measurement.compositionRequested)},
+                  {"measurement_composition_drawn_count",
+                   measurementJson(measurement.compositionDrawn)},
+                  {"measurement_gpu_submission_count",
+                   measurementJson(measurement.gpuSubmission)},
+                  {"measurement_layer_draw_count", measurementJson(measurement.layerDraw)},
+                  {"measurement_logical_clear_count", measurementJson(measurement.logicalClear)},
+                  {"measurement_scheduled_output_count", measurementJson(measurement.scheduled)},
+                  {"measurement_displayed_composition_count",
+                   measurementJson(measurement.displayed)},
+                  {"measurement_dropped_output_count", measurementJson(measurement.dropped)},
+                  {"measurement_missing_pair_count", measurementJson(measurement.missingPair)},
+                  {"measurement_source_a_eof_count", measurementJson(measurement.sourceAEof)},
+                  {"measurement_source_b_eof_count", measurementJson(measurement.sourceBEof)},
                   {"measurement_first_output_frame",
-                   state_->measurementFirstOutputFrame.load()},
+                   measurementJson(state_->measurementFirstOutputFrame.load())},
                   {"measurement_drop_scheduler_deadline",
-                   measurement.dropSchedulerDeadline},
-                  {"measurement_drop_missing_source_a", measurement.dropMissingSourceA},
-                  {"measurement_drop_missing_source_b", measurement.dropMissingSourceB},
-                  {"measurement_drop_missing_both", measurement.dropMissingBoth},
-                  {"measurement_drop_stale_generation", measurement.dropStaleGeneration},
-                  {"measurement_drop_future_generation", measurement.dropFutureGeneration},
+                   measurementJson(measurement.dropSchedulerDeadline)},
+                  {"measurement_drop_missing_source_a",
+                   measurementJson(measurement.dropMissingSourceA)},
+                  {"measurement_drop_missing_source_b",
+                   measurementJson(measurement.dropMissingSourceB)},
+                  {"measurement_drop_missing_both",
+                   measurementJson(measurement.dropMissingBoth)},
+                  {"measurement_drop_stale_generation",
+                   measurementJson(measurement.dropStaleGeneration)},
+                  {"measurement_drop_future_generation",
+                   measurementJson(measurement.dropFutureGeneration)},
                   {"measurement_drop_stale_composition_epoch",
-                   measurement.dropStaleCompositionEpoch},
-                  {"measurement_drop_render_failure", measurement.dropRenderFailure},
-                  {"measurement_present_callback_count", measurement.presentCallback},
-                  {"measurement_repeated_present_count", measurement.repeatedPresent},
+                   measurementJson(measurement.dropStaleCompositionEpoch)},
+                  {"measurement_drop_render_failure",
+                   measurementJson(measurement.dropRenderFailure)},
+                  {"measurement_present_callback_count",
+                   measurementJson(measurement.presentCallback)},
+                  {"measurement_repeated_present_count",
+                   measurementJson(measurement.repeatedPresent)},
                   {"measurement_partial_gpu_issue_failure_count",
-                   measurement.partialGpuIssueFailure},
+                   measurementJson(measurement.partialGpuIssueFailure)},
                   {"measurement_completion_poll_failure_count",
-                   measurement.completionPollFailure},
+                   measurementJson(measurement.completionPollFailure)},
                   {"measurement_untracked_submission_count",
-                   measurement.untrackedSubmission},
-                  {"scheduled_output_count", measurement.scheduled},
-                  {"displayed_composition_count", measurement.displayed},
+                   measurementJson(measurement.untrackedSubmission)},
+                  {"scheduled_output_count", measurementJson(measurement.scheduled)},
+                  {"displayed_composition_count", measurementJson(measurement.displayed)},
                   {"decoded_a_count", a.decodedFrameCount},
                   {"decoded_b_count", b.decodedFrameCount},
                   {"source_a_software_frame_reject_count", a.softwareFrameRejectCount},
@@ -1282,16 +1449,17 @@ bool CompositorSpikeController::writeMetrics() {
                   {"software_fallback_count",
                    a.softwareFrameRejectCount + b.softwareFrameRejectCount},
                   {"worker_join_leak_count", (!a.joined ? 1 : 0) + (!b.joined ? 1 : 0)},
-                  {"paired_count", measurement.compositionRequested},
-                  {"composition_submitted_count", measurement.gpuSubmission},
-                  {"composition_displayed_count", measurement.displayed},
-                  {"present_callback_count", measurement.presentCallback},
-                  {"dropped_output_count", measurement.dropped},
-                  {"scheduler_deadline_drop_count", measurement.dropSchedulerDeadline},
+                  {"paired_count", measurementJson(measurement.compositionRequested)},
+                  {"composition_submitted_count", measurementJson(measurement.gpuSubmission)},
+                  {"composition_displayed_count", measurementJson(measurement.displayed)},
+                  {"present_callback_count", measurementJson(measurement.presentCallback)},
+                  {"dropped_output_count", measurementJson(measurement.dropped)},
+                  {"scheduler_deadline_drop_count",
+                   measurementJson(measurement.dropSchedulerDeadline)},
                   {"missing_pair_drop_count", state_->missingPairDropCount.load()},
                   {"missing_source_a_drop_count", state_->missingSourceADropCount.load()},
                   {"missing_source_b_drop_count", state_->missingSourceBDropCount.load()},
-                  {"repeated_present_count", measurement.repeatedPresent},
+                  {"repeated_present_count", measurementJson(measurement.repeatedPresent)},
                   {"pending_pair_count", static_cast<qint64>(a.bufferDepth + b.bufferDepth)},
                   {"retired_not_completed", static_cast<qint64>(c.retirementDepthAfterDrain)},
                   {"mixed_source_frame_count", state_->coordinator.mixedSourceFrameCount()},

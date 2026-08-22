@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <dwmapi.h>
 #include <rhi/qrhi.h>
 #include <rhi/qrhi_platform.h>
 #include <tuple>
@@ -19,6 +20,18 @@ namespace {
 
 constexpr int kMarkerBandWidth = mvm::marker::kCellSize * mvm::marker::kCellCount;
 constexpr int kMarkerBandHeight = mvm::marker::kCellSize;
+
+gpu::PresentationAuthoritySample
+capturePresentationAuthority(const std::shared_ptr<CompositorSpikeState>& state) {
+    DWM_TIMING_INFO timing{};
+    timing.cbSize = sizeof(timing);
+    if (FAILED(DwmGetCompositionTimingInfo(nullptr, &timing)))
+        return {};
+    return {true, static_cast<std::uint64_t>(timing.cRefresh),
+            static_cast<long long>(timing.qpcVBlank),
+            state->formalRefreshNumerator.load(std::memory_order_relaxed),
+            state->formalRefreshDenominator.load(std::memory_order_relaxed)};
+}
 
 void captureClockRegression(const std::shared_ptr<CompositorSpikeState>& state,
                             audio::ClockRegressionSite site, long long occurrenceQpc,
@@ -143,6 +156,10 @@ protected:
         // P1と同じくrender threadから次のframeを要求する。GUI timerだけでは
         // scene graph requestがcoalesceされ、60Hz output deadlineを取りこぼす。
         update();
+        // fatal後もmeasurement stop要求だけはrender threadで採取する。
+        // 先にreturnすると停止snapshotが未採取のままshutdownへ進んでしまう。
+        if (captureMeasurementBoundary(callbackBegin))
+            return;
         if (!state_->deviceReady.load(std::memory_order_acquire) ||
             state_->fatal.load(std::memory_order_acquire))
             return;
@@ -152,8 +169,6 @@ protected:
             const QSize targetSize = texture->pixelSize();
             state_->publishActualOutputSize(targetSize.width(), targetSize.height());
         }
-        if (captureMeasurementBoundary(callbackBegin))
-            return;
         state_->presentCallbackCount.fetch_add(1, std::memory_order_relaxed);
         const bool presentationCaptureActive =
             presentationOpportunityEnabled_ &&
@@ -197,12 +212,15 @@ protected:
         const bool formalOpportunityActive =
             state_->formalOpportunityCaptureActive.load(std::memory_order_acquire);
         bool formalOpportunityRepeat = false;
+        bool formalDecisionObserved = false;
+        gpu::PresentationOpportunityDecision formalDecision;
         if (output < 0 && formalOpportunityActive) {
-            gpu::PresentationOpportunityDecision formalDecision;
             gpu::PresentationOpportunityError formalError = gpu::PresentationOpportunityError::None;
             {
                 std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
-                formalDecision = state_->formalOpportunityScheduler.selectForRender(callbackBegin);
+                formalDecision = state_->formalOpportunityScheduler.selectForRender(
+                    callbackBegin, capturePresentationAuthority(state_),
+                    formalOpportunityRenderOrdinal_);
                 formalError = state_->formalOpportunityScheduler.error();
             }
             if (!formalDecision.valid) {
@@ -214,6 +232,9 @@ protected:
                 state_->formalOpportunityDomainReached.store(true, std::memory_order_release);
                 return;
             }
+            formalDecisionObserved = true;
+            if (!formalDecision.duplicateCallback)
+                ++formalOpportunityRenderOrdinal_;
 
             // D5-1 synthetic deadline schedulerはshadow diagnosticとしてだけ進める。
             // このdecisionをframe selectionやformal drop判定へ使ってはいけない。
@@ -368,6 +389,21 @@ protected:
         }
         if (repeatedThisCallback) {
             state_->repeatedPresentCount.fetch_add(1, std::memory_order_relaxed);
+            if (formalDecisionObserved && !formalDecision.duplicateCallback) {
+                const long long presented =
+                    state_->formalOpportunityPresentedFrame.load(std::memory_order_acquire);
+                bool completed = false;
+                gpu::PresentationOpportunityError error = gpu::PresentationOpportunityError::None;
+                {
+                    std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+                    completed = state_->formalOpportunityScheduler.markRenderComplete(
+                        gpu::qpcTicks(), presented, formalDecision.renderOrdinal);
+                    error = state_->formalOpportunityScheduler.error();
+                }
+                if (!completed)
+                    fail(std::string("P2-D5-2 render完了記録失敗: ") +
+                         gpu::presentationOpportunityErrorName(error));
+            }
             return;
         }
 
@@ -573,8 +609,22 @@ protected:
         }
         state_->displayedCompositionCount.fetch_add(1, std::memory_order_relaxed);
         presentationCapture.markSubmitted(output);
-        if (formalOpportunityActive)
+        if (formalDecisionObserved) {
             state_->formalOpportunityPresentedFrame.store(output, std::memory_order_release);
+            bool completed = false;
+            gpu::PresentationOpportunityError error = gpu::PresentationOpportunityError::None;
+            {
+                std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+                completed = state_->formalOpportunityScheduler.markRenderComplete(
+                    displayedQpc, output, formalDecision.renderOrdinal);
+                error = state_->formalOpportunityScheduler.error();
+            }
+            if (!completed) {
+                fail(std::string("P2-D5-2 render完了記録失敗: ") +
+                     gpu::presentationOpportunityErrorName(error));
+                return;
+            }
+        }
         if (state_->measurementIntervalActive.load(std::memory_order_acquire)) {
             long long unset = -1;
             state_->measurementFirstOutputFrame.compare_exchange_strong(unset, output,
@@ -750,7 +800,8 @@ private:
                     1,
                     state_->formalRefreshNumerator.load(std::memory_order_relaxed),
                     state_->formalRefreshDenominator.load(std::memory_order_relaxed),
-                    static_cast<long long>(gpu::qpcFrequency())};
+                    static_cast<long long>(gpu::qpcFrequency()),
+                    true};
                 bool started = false;
                 {
                     std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
@@ -761,11 +812,13 @@ private:
                     return true;
                 }
                 state_->formalOpportunityPresentedFrame.store(-1, std::memory_order_relaxed);
+                state_->formalOpportunitySwapOrdinal.store(0, std::memory_order_relaxed);
                 state_->formalOpportunityTrueDropCount.store(0, std::memory_order_relaxed);
                 state_->diagnosticSyntheticDeadlineDropCount.store(0, std::memory_order_relaxed);
                 state_->formalOpportunityDomainReached.store(false, std::memory_order_relaxed);
                 state_->formalOpportunityIgnoreNextSwap.store(true, std::memory_order_release);
                 state_->formalOpportunityCaptureActive.store(true, std::memory_order_release);
+                formalOpportunityRenderOrdinal_ = 0;
             }
             previousSchedulerPhaseCallbackQpc_ = 0;
             schedulerPhaseRingEnabled_ =
@@ -1067,6 +1120,7 @@ private:
     bool schedulerPhaseRingEnabled_ = false;
     bool presentationOpportunityEnabled_ = false;
     long long presentationRenderOrdinal_ = 0;
+    long long formalOpportunityRenderOrdinal_ = 0;
     TeardownStage teardownStage_ = TeardownStage::NotStarted;
 };
 
@@ -1089,13 +1143,14 @@ void CompositorRhiItem::recordFrameSwapped() {
         !state_->formalOpportunityDomainReached.load(std::memory_order_acquire) &&
         state_->formalOpportunityCaptureActive.load(std::memory_order_acquire)) {
         const long long swapQpc = gpu::qpcTicks();
-        const long long presented =
-            state_->formalOpportunityPresentedFrame.load(std::memory_order_acquire);
+        const long long swapOrdinal =
+            state_->formalOpportunitySwapOrdinal.fetch_add(1, std::memory_order_relaxed);
         bool committed = false;
         gpu::PresentationOpportunityError error = gpu::PresentationOpportunityError::None;
         {
             std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
-            committed = state_->formalOpportunityScheduler.commitSwap(swapQpc, presented);
+            committed = state_->formalOpportunityScheduler.commitSwap(
+                swapQpc, capturePresentationAuthority(state_), swapOrdinal);
             error = state_->formalOpportunityScheduler.error();
         }
         if (!committed) {

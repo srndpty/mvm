@@ -193,6 +193,13 @@ foreach(i RANGE ${_bad_last})
         PROPERTIES REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_h264.mp4")
 endforeach()
 
+mvm_add_test(p2_formal_output_path_contract
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-formal-output-path.ps1"
+        -Guard "${CMAKE_SOURCE_DIR}/scripts/formal-output-path.ps1"
+        -RepositoryRoot "${CMAKE_SOURCE_DIR}"
+        -GitExe "${GIT_EXECUTABLE}")
+
 # --- 破損・退化素材の negative test -----------------------------------------
 # これらが成功扱いされないことを確認する。
 #
@@ -1464,7 +1471,8 @@ foreach(_p2_contract_case Good FormalGood NegativeInvariant NegativeSameDevice N
         NegativeParallelDispatchSample NegativeBRequestResult
         NegativeDispatchAfterFirstReady NegativeOpportunityLedgerMutation
         NegativeOpportunityOrdinalGapIgnored NegativeOpportunityRefreshChange
-        NegativeOpportunityAuthority NegativeOpportunityTail)
+        NegativeOpportunityAuthority NegativeOpportunityTail ReconciledGood
+        NegativeForwardDropIgnored NegativeMeasurementDelta)
     string(TOLOWER "${_p2_contract_case}" _p2_contract_name)
     mvm_add_test(p2_formal_checker_${_p2_contract_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File

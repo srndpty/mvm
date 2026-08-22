@@ -138,7 +138,7 @@ if(MVM_ENABLE_QT)
     target_include_directories(mvm_preview_qt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(mvm_preview_qt
         PUBLIC  mvm::gpu_preview mvm::audio_preview mvm::preview_engine Qt6::Quick Qt6::Gui
-        PRIVATE Qt6::GuiPrivate mvm::warnings
+        PRIVATE Qt6::GuiPrivate mvm::warnings dwmapi
     )
     add_library(mvm::preview_qt ALIAS mvm_preview_qt)
 endif()

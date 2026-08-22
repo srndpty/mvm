@@ -1127,6 +1127,59 @@ isolation / PSScriptAnalyzerもPASSした。
 これは経路検証でありformal closure evidenceではない。clean production SHAのP2 6/6とfinal closure suiteは
 まだ未実行なので、P5-E closureは引き続き**BLOCKED**である。
 
+### P2-D5-2 / F1 — Causal Opportunity Reconciliation
+
+`3b6818a`を対象に取得した`bench/results/p2-d5-2-formal-3b6818a/`は、出力artifact自身が
+worktree provenanceを変更したため、formal authorityとしては **acquisition: PROTOCOL_INVALID** とする。
+一方、Playback run 1でcommitted ordinal 102の後に観測した`RENDER_SWAP_MISMATCH`はruntime
+implementation blockerであり、無効化も後続runによる上書きもしない。この履歴artifactはevidence-only
+commit `dbc167a`で固定済みである。Playback run 2/3、Seek、closureは実行していない。
+
+F1ではrender時点のpredicted ordinalをtentativeとし、swap到着時のactual ordinalを因果authorityとして
+reconcileする。`actual == predicted`はexact commit、`actual > predicted`かつDWM authorityが連続している
+場合はforward opportunity lossとしてcommitし、lost opportunityを記録してactualから次状態をrebaseする。
+render済みsource frameはpredicted targetのままledgerへ記録し、次のunique presentationまたはtailで未表示の
+source-domain gapをtrue dropへaccountする。`actual < predicted`、DWM discontinuity、render/swap pairing不明は
+fail-closed fatalを維持する。
+
+raw ledgerとfirst-eventにはlast committed / predicted / actual ordinal、render begin/end / swap QPC、
+pre-render / post-swap DWM refresh count・qpcVBlank・refresh rational、predicted / actual target / rendered
+source frame、render / swap ordinal、authority continuityを保存する。checkerはsummaryを信頼せず、QPCから
+predicted/actual ordinalを再計算し、forward loss、source-domain gap、repeat、tailを独立に検査する。
+
+fatal中のmeasurementはteardown前にrender threadへstop snapshotを要求して採取する。開始・停止の有無と
+利用可能性を明示し、取得済み差分が負ならartifactを利用可能と扱わない。負値の0 clampは行わない。
+non-dry formalのOutputDirectoryはgit worktree配下を拒否し、既定値もOSの一時directory配下とする。
+
+F1 implementation reviewとbounded diagnostic liveが完了するまで再formalは行わない。diagnosticの出口は
+`actual>predicted + continuous`、regression、authority discontinuity、pairing defectのいずれかへ一意化し、
+その後にclean production SHAから外部artifact rootでPlayback run 1から再取得する。
+
+[事実] 2026-08-22にformal matrixではないbounded Playback diagnosticをworktree外へ4本取得した。
+測定時間は2秒、3秒、3秒、10秒で、ledgerはそれぞれ118、179、179、599 recordだった。全runで
+`formal_opportunity_error=NONE`、`formal_forward_reconciliation_count=0`、
+`formal_first_reconciliation_event.classification=NONE`、measurement stop snapshot利用可能、dry-run checker
+PASSだった。historical blocker位置のordinal 102を全runで越えたが、今回のbounded windowではdivergence
+自体を再現しなかったため、A〜Dのmismatch分類は発生していない。これはformal evidenceではなく、旧fatal
+条件を除去したruntime pathの経路確認に限る。
+
+[事実] `completion_fatal` negativeではmeasurement開始後にexit 3となり、stop snapshotは採取済み、
+`measurement_available=true`、elapsed 0.0333572秒、全measurement count差分は非負だった。未開始または
+snapshot不成立時のdelta fieldは0へclampせずJSON `null`として出力する。
+
+[事実] runnerのnon-formal dry-runはPlayback 1/1、Seek 1/1、各contract、matrix中のsource fingerprint
+不変をすべて満たし、`dry_run_harness_pass=true`、`p2_pass=false`だった。F1対象のpure/checker/output-path
+contractは44/44、ordinary suiteはRelease 489/489、Debug 489/489、lint・architecture・layer isolation・
+PSScriptAnalyzerがPASSした。再現には次を使う。
+
+```powershell
+pwsh scripts/p2-matrix.ps1 -DryRun -StopOnFailure -OutputDirectory build/p2-f1-matrix-dry
+ctest --test-dir build/ucrt64-release -R "p2_(presentation_opportunity_scheduler|formal_checker|formal_output_path)"
+ctest --test-dir build/ucrt64-release -R compositor_qt_completion_fatal_fail_closed
+pwsh scripts/test.ps1
+pwsh scripts/lint.ps1
+```
+
 ---
 
 ## 7. 検証手順

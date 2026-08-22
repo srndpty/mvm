@@ -261,6 +261,7 @@ struct CompositorSpikeState {
     std::atomic<bool> formalOpportunityIgnoreNextSwap{false};
     std::atomic<bool> formalOpportunityDomainReached{false};
     std::atomic<long long> formalOpportunityPresentedFrame{-1};
+    std::atomic<long long> formalOpportunitySwapOrdinal{0};
     std::atomic<long long> formalOpportunityTrueDropCount{0};
     std::atomic<long long> diagnosticSyntheticDeadlineDropCount{0};
     std::atomic<long long> formalRefreshNumerator{0};

@@ -79,8 +79,8 @@ private:
     enum class Phase { WaitDevice, MarkerStart, MarkerWait, OutputPreflightWait, Warmup,
                        MeasurementResetStart, MeasurementResetWait, MeasurementPrimeStart,
                        MeasurementPrimeWait, MeasureStartWait, Measure,
-                       MeasureStopWait, SeekStart, SeekDecodeWait, SeekDisplayWait, LayoutStart,
-                       LayoutWait, ShutdownWait, Done };
+                       MeasureStopWait, FatalMeasureStopWait, SeekStart, SeekDecodeWait,
+                       SeekDisplayWait, LayoutStart, LayoutWait, ShutdownWait, Done };
     void tick();
     bool startWorkers();
     void startMarkerProbe();
@@ -94,6 +94,7 @@ private:
     void startLayoutChange();
     void pollLayoutChange();
     void beginShutdown(const QString& reason, bool failure);
+    void performShutdown();
     bool writeMetrics();
 
     CompositorSpikeConfig config_;
@@ -112,6 +113,9 @@ private:
     gpu::SourceDecoderSnapshot measurementStopA_;
     gpu::SourceDecoderSnapshot measurementStopB_;
     double measureElapsedSeconds_ = 0;
+    bool measurementStartCaptured_ = false;
+    bool measurementStopCaptured_ = false;
+    bool measurementAvailable_ = false;
     long long sourceAFrameCount_ = -1;
     long long sourceBFrameCount_ = -1;
     long long requiredMeasurementFrameCount_ = 0;

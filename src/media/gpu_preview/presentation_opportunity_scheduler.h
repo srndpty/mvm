@@ -11,10 +11,30 @@ enum class PresentationOpportunityError {
     ArithmeticOverflow,
     AmbiguousOpportunity,
     OpportunityRegression,
+    AuthorityDiscontinuity,
     RenderWithoutSwap,
     SwapWithoutRender,
-    RenderSwapMismatch,
+    RenderNotCompleted,
+    RenderOrdinalMismatch,
+    SwapOrdinalMismatch,
     PresentedFrameMismatch,
+};
+
+enum class PresentationOpportunityClassification {
+    None,
+    Exact,
+    ForwardOpportunityLoss,
+    Regression,
+    AuthorityDiscontinuity,
+    PairingDefect,
+};
+
+struct PresentationAuthoritySample {
+    bool available = false;
+    unsigned long long refreshCount = 0;
+    long long qpcVBlank = 0;
+    long long refreshNumerator = 0;
+    long long refreshDenominator = 0;
 };
 
 struct PresentationOpportunityConfig {
@@ -24,6 +44,7 @@ struct PresentationOpportunityConfig {
     long long refreshNumerator = 0;
     long long refreshDenominator = 0;
     long long qpcFrequency = 0;
+    bool requireAuthoritySamples = false;
 };
 
 struct PresentationOpportunityDecision {
@@ -34,17 +55,54 @@ struct PresentationOpportunityDecision {
     long long opportunityOrdinal = -1;
     long long targetFrame = -1;
     long long trueDropBefore = 0;
+    long long lastCommittedOpportunityOrdinal = -1;
+    long long renderBeginQpc = 0;
+    long long renderOrdinal = -1;
+    PresentationAuthoritySample preRenderAuthority;
 };
 
 struct PresentationOpportunityLedgerRecord {
-    long long opportunityOrdinal = -1;
+    long long lastCommittedOpportunityOrdinal = -1;
+    long long predictedOpportunityOrdinal = -1;
+    long long actualOpportunityOrdinal = -1;
+    long long renderBeginQpc = 0;
+    long long renderEndQpc = 0;
     long long swapQpc = 0;
+    long long renderOrdinal = -1;
+    long long swapOrdinal = -1;
     long long refreshNumerator = 0;
     long long refreshDenominator = 0;
+    PresentationAuthoritySample preRenderAuthority;
+    PresentationAuthoritySample postSwapAuthority;
+    bool authorityContinuous = false;
+    long long predictedSourceFrame = -1;
     long long expectedSourceFrame = -1;
     long long presentedSourceFrame = -1;
     bool repeat = false;
     long long trueDropBefore = 0;
+    long long lostOpportunityCount = 0;
+    PresentationOpportunityClassification classification =
+        PresentationOpportunityClassification::None;
+};
+
+struct PresentationOpportunityFirstEvent {
+    bool captured = false;
+    PresentationOpportunityClassification classification =
+        PresentationOpportunityClassification::None;
+    long long lastCommittedOpportunityOrdinal = -1;
+    long long predictedOpportunityOrdinal = -1;
+    long long actualOpportunityOrdinal = -1;
+    long long renderBeginQpc = 0;
+    long long renderEndQpc = 0;
+    long long swapQpc = 0;
+    PresentationAuthoritySample preRenderAuthority;
+    PresentationAuthoritySample postSwapAuthority;
+    long long predictedSourceFrame = -1;
+    long long actualTargetFrame = -1;
+    long long renderedSourceFrame = -1;
+    long long renderOrdinal = -1;
+    long long swapOrdinal = -1;
+    bool authorityContinuous = false;
 };
 
 struct PresentationOpportunitySnapshot {
@@ -58,6 +116,9 @@ struct PresentationOpportunitySnapshot {
     long long trueDrop = 0;
     long long lastOpportunityOrdinal = -1;
     long long lastUniqueFrame = -1;
+    long long forwardReconciliationCount = 0;
+    long long lostOpportunityCount = 0;
+    PresentationOpportunityFirstEvent firstEvent;
     std::vector<PresentationOpportunityLedgerRecord> records;
 };
 
@@ -67,8 +128,14 @@ struct PresentationOpportunitySnapshot {
 class PresentationOpportunityScheduler {
 public:
     bool start(const PresentationOpportunityConfig& config);
-    PresentationOpportunityDecision selectForRender(long long callbackQpc);
-    bool commitSwap(long long swapQpc, long long presentedSourceFrame);
+    PresentationOpportunityDecision
+    selectForRender(long long callbackQpc,
+                    const PresentationAuthoritySample& preRenderAuthority = {},
+                    long long renderOrdinal = -1);
+    bool markRenderComplete(long long renderEndQpc, long long renderedSourceFrame,
+                            long long renderOrdinal);
+    bool commitSwap(long long swapQpc, const PresentationAuthoritySample& postSwapAuthority = {},
+                    long long swapOrdinal = -1);
     bool close();
     PresentationOpportunitySnapshot snapshot() const;
 
@@ -82,6 +149,12 @@ private:
     bool fail(PresentationOpportunityError error);
     bool targetFor(long long ordinal, long long& target) const;
     bool roundedRefreshIntervals(long long deltaQpc, long long& intervals) const;
+    bool authorityContinuous(const PresentationAuthoritySample& pre,
+                             const PresentationAuthoritySample& post) const;
+    void captureFirstEvent(PresentationOpportunityClassification classification,
+                           long long actualOrdinal, long long actualTarget, long long swapQpc,
+                           const PresentationAuthoritySample& post, long long swapOrdinal,
+                           bool continuous);
 
     PresentationOpportunityConfig config_{};
     PresentationOpportunityError error_ = PresentationOpportunityError::None;
@@ -92,15 +165,26 @@ private:
     long long lastSwapQpc_ = 0;
     long long lastOpportunityOrdinal_ = -1;
     long long lastUniqueFrame_ = -1;
+    long long lastRenderOrdinal_ = -1;
+    long long lastSwapOrdinal_ = -1;
+    PresentationAuthoritySample lastPostSwapAuthority_{};
     PresentationOpportunityDecision pendingDecision_{};
+    bool pendingRenderCompleted_ = false;
+    long long pendingRenderEndQpc_ = 0;
+    long long pendingRenderedSourceFrame_ = -1;
     long long displayedUnique_ = 0;
     long long repeated_ = 0;
     long long gapTrueDrop_ = 0;
     long long tailTrueDrop_ = 0;
+    long long forwardReconciliationCount_ = 0;
+    long long lostOpportunityCount_ = 0;
+    PresentationOpportunityFirstEvent firstEvent_{};
     std::vector<PresentationOpportunityLedgerRecord> records_;
 };
 
 const char* presentationOpportunityErrorName(PresentationOpportunityError error);
+const char*
+presentationOpportunityClassificationName(PresentationOpportunityClassification classification);
 
 } // namespace mvm::gpu
 
