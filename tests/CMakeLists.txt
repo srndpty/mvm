@@ -111,6 +111,18 @@ foreach(_p2_r4_visible_case Good NegativeOriginalCallback NegativeSyntheticDelay
             -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-r4-visible-${_p2_r4_visible_name}")
 endforeach()
 
+foreach(_p2_c3_a2_lifecycle_case IN ITEMS Good MissingWaiting Order ParentMismatch Lost EarlierIncomplete)
+    string(TOLOWER "${_p2_c3_a2_lifecycle_case}" _p2_c3_a2_lifecycle_name)
+    add_test(
+        NAME p2_c3_a2_lifecycle_contract_${_p2_c3_a2_lifecycle_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a2-lifecycle-contract.ps1"
+            -Case "${_p2_c3_a2_lifecycle_case}"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c3-a2-lifecycle.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a2-lifecycle-${_p2_c3_a2_lifecycle_name}")
+    set_tests_properties(p2_c3_a2_lifecycle_contract_${_p2_c3_a2_lifecycle_name} PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 foreach(_p2_b1_shadow_case Good NegativeEarlyCommit NegativeFirstSolution
         NegativeFormalAuthority NegativePhysicalDoubleCount NegativeSourceAccounting
         NegativeCandidateWindow ExpectedNoSolutionFailure)
@@ -189,6 +201,16 @@ foreach(_p2_c3_case GoodControl GoodDwmFlush GoodFrameLatency1 NegativeMissingBa
             -Case ${_p2_c3_case}
             -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c3-submission-backpressure.ps1"
             -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-backpressure-${_p2_c3_name}")
+endforeach()
+
+foreach(_p2_c3_a2_case Good NegativeModeMissing NegativeBatchZero NegativeLost NegativeOrder)
+    string(TOLOWER "${_p2_c3_a2_case}" _p2_c3_a2_name)
+    mvm_add_test(p2_c3_a2_offline_${_p2_c3_a2_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a2-offline-contract.ps1"
+            -Case ${_p2_c3_a2_case}
+            -Analyzer "${CMAKE_SOURCE_DIR}/scripts/p2-c3-a2-offline-attribution.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a2-${_p2_c3_a2_name}")
 endforeach()
 
 # ARGS に ';' を含む引数 (--map や --require-proxy-ids) を渡す場合は

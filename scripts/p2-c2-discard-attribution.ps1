@@ -13,11 +13,14 @@ function Hash([string]$Path){(Get-FileHash -LiteralPath $Path -Algorithm SHA256)
 $repo=Split-Path -Parent $PSScriptRoot
 $runner=Join-Path $PSScriptRoot 'p2-c0-native-etw.ps1';$checker=Join-Path $PSScriptRoot 'check-p2-c2-discard-reasons.ps1'
 $provenance=Join-Path $repo 'build\p2-etw-decoder\provenance.json';$patch=Join-Path $repo 'presentmon-patches\2.3.1\0001-mvm-discard-reason-diagnostic.patch'
-foreach($path in @($runner,$checker,$Decoder,$provenance,$patch)){if(-not(Test-Path -LiteralPath $path)){throw "F3-C2必須pathがありません: $path"}}
+$lifecyclePatch=Join-Path $repo 'presentmon-patches\2.3.1\0002-mvm-dependency-lifecycle-diagnostic.patch'
+foreach($path in @($runner,$checker,$Decoder,$provenance,$patch,$lifecyclePatch)){if(-not(Test-Path -LiteralPath $path)){throw "F3-C2必須pathがありません: $path"}}
 $decoderIdentity=Get-Content -LiteralPath $provenance -Raw -Encoding utf8|ConvertFrom-Json
-if([string]$decoderIdentity.schema-ne'mvm-p2-etw-decoder-build-2'){throw 'F3-C2診断decoderがbuildされていません'}
+if([string]$decoderIdentity.schema-ne'mvm-p2-etw-decoder-build-3'){throw 'F3-C2/A2診断decoderがbuildされていません'}
 $patchHash=Hash $patch
+$lifecyclePatchHash=Hash $lifecyclePatch
 if([string]$decoderIdentity.discard_reason_patch_sha256-ne$patchHash){throw 'F3-C2診断patchとdecoder provenanceが一致しません'}
+if([string]$decoderIdentity.dependency_lifecycle_patch_sha256-ne$lifecyclePatchHash){throw 'F3-C3-A2診断patchとdecoder provenanceが一致しません'}
 if(Test-Path -LiteralPath $OutputDirectory){throw "既存F3-C2 artifactを上書きしません: $OutputDirectory"}
 New-Item -ItemType Directory -Path $OutputDirectory|Out-Null
 $OutputDirectory=(Resolve-Path -LiteralPath $OutputDirectory).Path
@@ -36,7 +39,7 @@ $result=Get-Content -LiteralPath $proof -Raw -Encoding utf8|ConvertFrom-Json
     discarded_count=[int64]$result.discarded_count;discard_reason_count=[int64]$result.discard_reason_count
     unknown_discard_reason_count=[int64]$result.unknown_discard_reason_count
     reason_histogram=$result.reason_histogram
-    identities=[ordered]@{decoder_sha256=Hash $Decoder;discard_reason_patch_sha256=$patchHash;checker_sha256=Hash $checker;canonical_manifest_sha256=Hash (Join-Path $canonical 'manifest.sha256')}
+    identities=[ordered]@{decoder_sha256=Hash $Decoder;discard_reason_patch_sha256=$patchHash;dependency_lifecycle_patch_sha256=$lifecyclePatchHash;checker_sha256=Hash $checker;canonical_manifest_sha256=Hash (Join-Path $canonical 'manifest.sha256')}
 }|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $OutputDirectory 'summary.json') -Encoding utf8
 $manifest=Join-Path $OutputDirectory 'manifest.sha256'
 Get-ChildItem -LiteralPath $OutputDirectory -File|Where-Object{$_.FullName-ne$manifest}|Sort-Object Name|ForEach-Object{"$(Hash $_.FullName)  $($_.Name)"}|Set-Content -LiteralPath $manifest -Encoding ascii

@@ -1,0 +1,193 @@
+diff --git a/PresentData/PresentMonTraceConsumer.cpp b/PresentData/PresentMonTraceConsumer.cpp
+index 20ba49d..35f03fd 100644
+--- a/PresentData/PresentMonTraceConsumer.cpp
++++ b/PresentData/PresentMonTraceConsumer.cpp
+@@ -143,6 +143,14 @@ PresentEvent::PresentEvent()
+     , FinalState(PresentResult::Unknown)
+     , FinalDiscardReason(DiscardReason::None)
+     , DependencyBatchPresentStartTime(0)
++    , WaitingForDwmQpc(0)
++    , AttachedToDwmParentQpc(0)
++    , AttachedDwmParentPresentStartTime(0)
++    , DwmParentDisplayedQpc(0)
++    , DwmParentCompletionQpc(0)
++    , DependentFinalizedQpc(0)
++    , EarlierSupersededByPresentStartTime(0)
++    , EarlierSupersededQpc(0)
+     , InputType(InputDeviceType::None)
+ 
+     , SupportsTearing(false)
+@@ -220,6 +228,14 @@ PresentEvent::PresentEvent(uint32_t fid)
+     , FinalState(PresentResult::Unknown)
+     , FinalDiscardReason(DiscardReason::None)
+     , DependencyBatchPresentStartTime(0)
++    , WaitingForDwmQpc(0)
++    , AttachedToDwmParentQpc(0)
++    , AttachedDwmParentPresentStartTime(0)
++    , DwmParentDisplayedQpc(0)
++    , DwmParentCompletionQpc(0)
++    , DependentFinalizedQpc(0)
++    , EarlierSupersededByPresentStartTime(0)
++    , EarlierSupersededQpc(0)
+     , InputType(InputDeviceType::None)
+ 
+     , SupportsTearing(false)
+@@ -308,6 +324,7 @@ void PMTraceConsumer::HandleD3D9Event(EVENT_RECORD* pEventRecord)
+ void PMTraceConsumer::HandleDXGIEvent(EVENT_RECORD* pEventRecord)
+ {
+     auto const& hdr = pEventRecord->EventHeader;
++    mDiagnosticCurrentEventQpc = hdr.TimeStamp.QuadPart;
+     switch (hdr.EventDescriptor.Id) {
+     case Microsoft_Windows_DXGI::Present_Start::Id:
+     case Microsoft_Windows_DXGI::PresentMultiplaneOverlay_Start::Id:
+@@ -472,6 +489,8 @@ std::shared_ptr<PresentEvent> PMTraceConsumer::HandleDxgkFlip(EVENT_HEADER const
+ 
+         for (auto& p : mPresentsWaitingForDWM) {
+             p->PresentInDwmWaitingStruct = false;
++            p->AttachedToDwmParentQpc = hdr.TimeStamp.QuadPart;
++            p->AttachedDwmParentPresentStartTime = presentEvent->PresentStartTime;
+         }
+         std::swap(presentEvent->DependentPresents, mPresentsWaitingForDWM);
+     }
+@@ -753,8 +772,7 @@ void PMTraceConsumer::HandleDxgkPresentHistory(
+     case PresentMode::Composed_Copy_CPU_GDI:
+         if (tokenData == 0) {
+             // This is the best we can do, we won't be able to tell how many frames are actually displayed.
+-            mPresentsWaitingForDWM.emplace_back(presentEvent);
+-            presentEvent->PresentInDwmWaitingStruct = true;
++            AddPresentWaitingForDwm(presentEvent, hdr.TimeStamp.QuadPart);
+         } else {
+             DebugAssert(mPresentByDxgkPresentHistoryTokenData.find(tokenData) == mPresentByDxgkPresentHistoryTokenData.end());
+             mPresentByDxgkPresentHistoryTokenData[tokenData] = presentEvent;
+@@ -790,8 +808,7 @@ void PMTraceConsumer::HandleDxgkPresentHistoryInfo(EVENT_HEADER const& hdr, uint
+     // Composed presents are currently ignored.
+     if (//eventIter->second->PresentMode == PresentMode::Composed_Composition_Atlas ||
+         (eventIter->second->PresentMode == PresentMode::Composed_Flip && !eventIter->second->SeenWin32KEvents)) {
+-        mPresentsWaitingForDWM.emplace_back(eventIter->second);
+-        eventIter->second->PresentInDwmWaitingStruct = true;
++        AddPresentWaitingForDwm(eventIter->second, hdr.TimeStamp.QuadPart);
+     }
+ 
+     if (eventIter->second->PresentMode == PresentMode::Composed_Copy_GPU_GDI) {
+@@ -807,6 +824,7 @@ void PMTraceConsumer::HandleDxgkPresentHistoryInfo(EVENT_HEADER const& hdr, uint
+ void PMTraceConsumer::HandleDXGKEvent(EVENT_RECORD* pEventRecord)
+ {
+     auto const& hdr = pEventRecord->EventHeader;
++    mDiagnosticCurrentEventQpc = hdr.TimeStamp.QuadPart;
+ 
+     if (hdr.EventDescriptor.Id == Microsoft_Windows_DxgKrnl::PresentHistory_Start::Id ||
+        (hdr.EventDescriptor.Id == Microsoft_Windows_DxgKrnl::PresentHistoryDetailed_Start::Id && mTrackDisplay)) {
+@@ -1501,6 +1519,7 @@ std::size_t PMTraceConsumer::Win32KPresentHistoryTokenHash::operator()(PMTraceCo
+ void PMTraceConsumer::HandleWin32kEvent(EVENT_RECORD* pEventRecord)
+ {
+     auto const& hdr = pEventRecord->EventHeader;
++    mDiagnosticCurrentEventQpc = hdr.TimeStamp.QuadPart;
+ 
+     if (mTrackDisplay) {
+         switch (hdr.EventDescriptor.Id) {
+@@ -1766,6 +1785,7 @@ void PMTraceConsumer::HandleWin32kEvent(EVENT_RECORD* pEventRecord)
+ void PMTraceConsumer::HandleDWMEvent(EVENT_RECORD* pEventRecord)
+ {
+     auto const& hdr = pEventRecord->EventHeader;
++    mDiagnosticCurrentEventQpc = hdr.TimeStamp.QuadPart;
+     switch (hdr.EventDescriptor.Id) {
+     case Microsoft_Windows_Dwm_Core::MILEVENT_MEDIA_UCE_PROCESSPRESENTHISTORY_GetPresentHistory_Info::Id:
+         // Move all the latest in-progress Composed_Copy from each window into
+@@ -1776,8 +1796,7 @@ void PMTraceConsumer::HandleDWMEvent(EVENT_RECORD* pEventRecord)
+             if (present->PresentMode == PresentMode::Composed_Copy_GPU_GDI ||
+                 present->PresentMode == PresentMode::Composed_Copy_CPU_GDI) {
+                 VerboseTraceBeforeModifyingPresent(present.get());
+-                mPresentsWaitingForDWM.emplace_back(present);
+-                present->PresentInDwmWaitingStruct = true;
++                AddPresentWaitingForDwm(present, hdr.TimeStamp.QuadPart);
+             }
+         }
+         mLastPresentByWindow.clear();
+@@ -1858,8 +1877,7 @@ void PMTraceConsumer::HandleDWMEvent(EVENT_RECORD* pEventRecord)
+         auto eventIter = mPresentByWin32KPresentHistoryToken.find(key);
+         if (eventIter != mPresentByWin32KPresentHistoryToken.end() && eventIter->second->SeenInFrameEvent) {
+             VerboseTraceBeforeModifyingPresent(eventIter->second.get());
+-            mPresentsWaitingForDWM.emplace_back(eventIter->second);
+-            eventIter->second->PresentInDwmWaitingStruct = true;
++            AddPresentWaitingForDwm(eventIter->second, hdr.TimeStamp.QuadPart);
+         }
+         break;
+     }
+@@ -1901,6 +1919,14 @@ void PMTraceConsumer::RemovePresentFromSubmitSequenceIdTracking(std::shared_ptr<
+     }
+ }
+ 
++void PMTraceConsumer::AddPresentWaitingForDwm(std::shared_ptr<PresentEvent> const& present, uint64_t qpc)
++{
++    mPresentsWaitingForDWM.emplace_back(present);
++    present->PresentInDwmWaitingStruct = true;
++    if (present->WaitingForDwmQpc == 0)
++        present->WaitingForDwmQpc = qpc;
++}
++
+ // Remove the present from all temporary tracking structures.
+ void PMTraceConsumer::StopTrackingPresent(std::shared_ptr<PresentEvent> const& p)
+ {
+@@ -2066,6 +2092,8 @@ void PMTraceConsumer::CompletePresent(std::shared_ptr<PresentEvent> const& p)
+     // Mark the present as completed.
+     VerboseTraceBeforeModifyingPresent(p.get());
+     p->IsCompleted = true;
++    if (p->DependentFinalizedQpc == 0)
++        p->DependentFinalizedQpc = mDiagnosticCurrentEventQpc;
+ 
+     // It is possible for a present to be displayed or discarded before Present_Stop.  If this
+     // happens, we stop tracking the present (except for mPresentByThreadId which is required by
+@@ -2105,6 +2133,8 @@ void PMTraceConsumer::CompletePresent(std::shared_ptr<PresentEvent> const& p)
+                 auto p2 = *ii;
+                 if (!p2->IsCompleted) {
+                     p2->DependencyBatchPresentStartTime = p->PresentStartTime;
++                    p2->DwmParentCompletionQpc = mDiagnosticCurrentEventQpc;
++                    p2->DwmParentDisplayedQpc = p->Displayed.empty() ? 0 : p->Displayed.front().second;
+                     if ((p2->PresentMode == PresentMode::Composed_Flip ||
+                          p2->PresentMode == PresentMode::Composed_Copy_GPU_GDI ||
+                          p2->PresentMode == PresentMode::Composed_Copy_CPU_GDI) &&
+@@ -2148,6 +2178,8 @@ void PMTraceConsumer::CompletePresent(std::shared_ptr<PresentEvent> const& p)
+ 
+             if (p2->SwapChainAddress == p->SwapChainAddress) {
+                 p2->DependencyBatchPresentStartTime = p->PresentStartTime;
++                p2->EarlierSupersededByPresentStartTime = p->PresentStartTime;
++                p2->EarlierSupersededQpc = mDiagnosticCurrentEventQpc;
+                 if (p->IsLost) {
+                     VerboseTraceBeforeModifyingPresent(p2.get());
+                     p2->IsLost = true;
+diff --git a/PresentData/PresentMonTraceConsumer.hpp b/PresentData/PresentMonTraceConsumer.hpp
+index 112fb86..d2846cf 100644
+--- a/PresentData/PresentMonTraceConsumer.hpp
++++ b/PresentData/PresentMonTraceConsumer.hpp
+@@ -266,6 +266,14 @@ struct PresentEvent {
+     PresentResult FinalState;
+     DiscardReason FinalDiscardReason;
+     uint64_t DependencyBatchPresentStartTime;
++    uint64_t WaitingForDwmQpc;
++    uint64_t AttachedToDwmParentQpc;
++    uint64_t AttachedDwmParentPresentStartTime;
++    uint64_t DwmParentDisplayedQpc;
++    uint64_t DwmParentCompletionQpc;
++    uint64_t DependentFinalizedQpc;
++    uint64_t EarlierSupersededByPresentStartTime;
++    uint64_t EarlierSupersededQpc;
+     InputDeviceType InputType;
+     bool SupportsTearing;
+     bool WaitForFlipEvent;
+@@ -400,6 +408,7 @@ struct PMTraceConsumer
+     std::deque<std::shared_ptr<PresentEvent>> mPresentsWaitingForDWM;
+     uint32_t DwmProcessId = 0;
+     uint32_t DwmPresentThreadId = 0;
++    uint64_t mDiagnosticCurrentEventQpc = 0;
+ 
+     // Storage for passing present path tracking id to Handle...() functions.
+     #ifdef TRACK_PRESENT_PATHS
+@@ -565,6 +574,7 @@ struct PMTraceConsumer
+     void TrackPresent(std::shared_ptr<PresentEvent> present, OrderedPresents* presentsByThisProcess);
+     void StopTrackingPresent(std::shared_ptr<PresentEvent> const& present);
+     void RemovePresentFromSubmitSequenceIdTracking(std::shared_ptr<PresentEvent> const& present);
++    void AddPresentWaitingForDwm(std::shared_ptr<PresentEvent> const& present, uint64_t qpc);
+ 
+     void RuntimePresentStart(Runtime runtime, EVENT_HEADER const& hdr, uint64_t swapchainAddr, uint32_t dxgiPresentFlags, int32_t syncInterval);
+     void RuntimePresentStop(Runtime runtime, EVENT_HEADER const& hdr, uint32_t result);
+

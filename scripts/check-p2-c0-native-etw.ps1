@@ -125,6 +125,14 @@ for($index=0;$index-lt$native.Count;++$index){
         completion_class=$classification;final_state=[string]$present.final_state
         discard_reason=$discardReason
         dependency_batch_present_start_qpc=Field-OrNull $present 'dependency_batch_present_start_qpc'
+        waiting_for_dwm_qpc=Field-OrNull $present 'waiting_for_dwm_qpc'
+        attached_to_dwm_parent_qpc=Field-OrNull $present 'attached_to_dwm_parent_qpc'
+        attached_dwm_parent_present_start_qpc=Field-OrNull $present 'attached_dwm_parent_present_start_qpc'
+        dwm_parent_displayed_qpc=Field-OrNull $present 'dwm_parent_displayed_qpc'
+        dwm_parent_completion_qpc=Field-OrNull $present 'dwm_parent_completion_qpc'
+        dependent_finalized_qpc=Field-OrNull $present 'dependent_finalized_qpc'
+        earlier_superseded_by_present_start_qpc=Field-OrNull $present 'earlier_superseded_by_present_start_qpc'
+        earlier_superseded_qpc=Field-OrNull $present 'earlier_superseded_qpc'
         is_completed=[bool]$present.is_completed;is_lost=[bool]$present.is_lost
         present_mode=[string]$present.present_mode
         seen_dxgk_present=[bool]$present.seen_dxgk_present
@@ -161,6 +169,7 @@ $result=[ordered]@{
     incomplete_unknown_count=$incompleteCount;lost_count=$lostCount
     etw_events_lost=0;etw_buffers_lost=0;present_event_overflow_count=0
     discard_reason_diagnostic=[bool]((Field-OrNull $etw 'discard_reason_diagnostic')-eq$true)
+    dependency_lifecycle_diagnostic=[bool]((Field-OrNull $etw 'dependency_lifecycle_diagnostic')-eq$true)
     records=$records
 }
 $result|ConvertTo-Json -Depth 12|Set-Content -LiteralPath $Output -Encoding utf8

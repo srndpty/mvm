@@ -1,0 +1,3959 @@
+{
+  "schema": "mvm-p2-c3-a2-offline-run-1",
+  "authority": "diagnostic_offline",
+  "run": 1,
+  "position": 3,
+  "submission_mode": "DWM_FLUSH_AFTER_PRESENT",
+  "present_count": 900,
+  "presented_count": 120,
+  "discarded_count": 780,
+  "present_mode_histogram": {
+    "Composed_Flip": 900
+  },
+  "present_mode_completion": {
+    "Composed_Flip": {
+      "presented": 120,
+      "discarded": 780
+    }
+  },
+  "present_mode_transition_count": 0,
+  "present_mode_transitions": [],
+  "dependency_batch_count": 133,
+  "dependency_batch_size": {
+    "p50": 1,
+    "p95": 9,
+    "max": 308
+  },
+  "app_identity_batch_count": 12,
+  "non_app_parent_candidate_batch_count": 121,
+  "parent_display_available_batch_count": 132,
+  "parent_display_group_count": 120,
+  "duplicate_parent_display_batch_identity_count": 12,
+  "large_parent_display_group_count": 12,
+  "large_parent_display_gap_comparable_count": 12,
+  "large_parent_display_gap_mismatch_count": 0,
+  "parent_completion_qpc_available_batch_count": 0,
+  "physical_source_gap_pair_count": 119,
+  "physical_source_gap_exact_count": 119,
+  "physical_source_gap_mismatch_count": 0,
+  "physical_source_gap_mismatches": [],
+  "displayed_source_span": 840,
+  "displayed_physical_vblank_span": 840,
+  "displayed_source_physical_span_difference": 0,
+  "lifecycle_field_availability": {
+    "app_present_qpc": true,
+    "waiting_for_dwm_qpc": false,
+    "attached_to_parent_qpc": false,
+    "parent_identity": true,
+    "parent_displayed_qpc": true,
+    "parent_completion_qpc": false,
+    "dependent_finalized_qpc": false
+  },
+  "batches": [
+    {
+      "batch_identity_qpc": 2169388790020,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "1",
+      "first_app_present_qpc": 2169388433790,
+      "last_app_present_serial": "1",
+      "last_app_present_qpc": 2169388433790,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169388790020,
+      "parent_present_start_vblank_ordinal": 3,
+      "parent_displayed_qpc": 2169388928658,
+      "parent_displayed_vblank_ordinal": 4,
+      "parent_display_vblank_delta": null,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169388956351,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "2",
+      "first_app_present_qpc": 2169388623332,
+      "last_app_present_serial": "2",
+      "last_app_present_qpc": 2169388623332,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169388956351,
+      "parent_present_start_vblank_ordinal": 4,
+      "parent_displayed_qpc": 2169389097228,
+      "parent_displayed_vblank_ordinal": 5,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169389126086,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "3",
+      "first_app_present_qpc": 2169388793746,
+      "last_app_present_serial": "3",
+      "last_app_present_qpc": 2169388793746,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169389126086,
+      "parent_present_start_vblank_ordinal": 5,
+      "parent_displayed_qpc": 2169389262202,
+      "parent_displayed_vblank_ordinal": 6,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169389291882,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "4",
+      "first_app_present_qpc": 2169388963607,
+      "last_app_present_serial": "4",
+      "last_app_present_qpc": 2169388963607,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169389291882,
+      "parent_present_start_vblank_ordinal": 6,
+      "parent_displayed_qpc": 2169389430782,
+      "parent_displayed_vblank_ordinal": 7,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169389463744,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "5",
+      "first_app_present_qpc": 2169389135697,
+      "last_app_present_serial": "5",
+      "last_app_present_qpc": 2169389135697,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169389463744,
+      "parent_present_start_vblank_ordinal": 7,
+      "parent_displayed_qpc": 2169389597511,
+      "parent_displayed_vblank_ordinal": 8,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169389627082,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "6",
+      "first_app_present_qpc": 2169389300303,
+      "last_app_present_serial": "6",
+      "last_app_present_qpc": 2169389300303,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169389627082,
+      "parent_present_start_vblank_ordinal": 8,
+      "parent_displayed_qpc": 2169389762623,
+      "parent_displayed_vblank_ordinal": 9,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169389792475,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "7",
+      "first_app_present_qpc": 2169389467979,
+      "last_app_present_serial": "7",
+      "last_app_present_qpc": 2169389467979,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169389792475,
+      "parent_present_start_vblank_ordinal": 9,
+      "parent_displayed_qpc": 2169389929368,
+      "parent_displayed_vblank_ordinal": 10,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169389957356,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "8",
+      "first_app_present_qpc": 2169389631785,
+      "last_app_present_serial": "8",
+      "last_app_present_qpc": 2169389631785,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169389957356,
+      "parent_present_start_vblank_ordinal": 10,
+      "parent_displayed_qpc": 2169390097946,
+      "parent_displayed_vblank_ordinal": 11,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169390126538,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "9",
+      "first_app_present_qpc": 2169389796078,
+      "last_app_present_serial": "9",
+      "last_app_present_qpc": 2169389796078,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169390126538,
+      "parent_present_start_vblank_ordinal": 11,
+      "parent_displayed_qpc": 2169390264707,
+      "parent_displayed_vblank_ordinal": 12,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169390293356,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "10",
+      "first_app_present_qpc": 2169389962173,
+      "last_app_present_serial": "10",
+      "last_app_present_qpc": 2169389962173,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169390293356,
+      "parent_present_start_vblank_ordinal": 12,
+      "parent_displayed_qpc": 2169390431470,
+      "parent_displayed_vblank_ordinal": 13,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169390459908,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "11",
+      "first_app_present_qpc": 2169390130172,
+      "last_app_present_serial": "11",
+      "last_app_present_qpc": 2169390130172,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169390459908,
+      "parent_present_start_vblank_ordinal": 13,
+      "parent_displayed_qpc": 2169390596563,
+      "parent_displayed_vblank_ordinal": 14,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169390623855,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "12",
+      "first_app_present_qpc": 2169390296958,
+      "last_app_present_serial": "12",
+      "last_app_present_qpc": 2169390296958,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169390623855,
+      "parent_present_start_vblank_ordinal": 14,
+      "parent_displayed_qpc": 2169390763344,
+      "parent_displayed_vblank_ordinal": 15,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169390789989,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "13",
+      "first_app_present_qpc": 2169390463381,
+      "last_app_present_serial": "13",
+      "last_app_present_qpc": 2169390463381,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169390789989,
+      "parent_present_start_vblank_ordinal": 15,
+      "parent_displayed_qpc": 2169390931947,
+      "parent_displayed_vblank_ordinal": 16,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169390960206,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "14",
+      "first_app_present_qpc": 2169390639544,
+      "last_app_present_serial": "14",
+      "last_app_present_qpc": 2169390639544,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169390960206,
+      "parent_present_start_vblank_ordinal": 16,
+      "parent_displayed_qpc": 2169391098691,
+      "parent_displayed_vblank_ordinal": 17,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169391127481,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "15",
+      "first_app_present_qpc": 2169390793404,
+      "last_app_present_serial": "15",
+      "last_app_present_qpc": 2169390793404,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169391127481,
+      "parent_present_start_vblank_ordinal": 17,
+      "parent_displayed_qpc": 2169391263869,
+      "parent_displayed_vblank_ordinal": 18,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169391293609,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "16",
+      "first_app_present_qpc": 2169390963881,
+      "last_app_present_serial": "16",
+      "last_app_present_qpc": 2169390963881,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169391293609,
+      "parent_present_start_vblank_ordinal": 18,
+      "parent_displayed_qpc": 2169391432357,
+      "parent_displayed_vblank_ordinal": 19,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169391461135,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "17",
+      "first_app_present_qpc": 2169391135213,
+      "last_app_present_serial": "17",
+      "last_app_present_qpc": 2169391135213,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169391461135,
+      "parent_present_start_vblank_ordinal": 19,
+      "parent_displayed_qpc": 2169391599064,
+      "parent_displayed_vblank_ordinal": 20,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169391626833,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "18",
+      "first_app_present_qpc": 2169391297991,
+      "last_app_present_serial": "18",
+      "last_app_present_qpc": 2169391297991,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169391626833,
+      "parent_present_start_vblank_ordinal": 20,
+      "parent_displayed_qpc": 2169391764332,
+      "parent_displayed_vblank_ordinal": 21,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169391794472,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "19",
+      "first_app_present_qpc": 2169391464977,
+      "last_app_present_serial": "19",
+      "last_app_present_qpc": 2169391464977,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169391794472,
+      "parent_present_start_vblank_ordinal": 21,
+      "parent_displayed_qpc": 2169391931117,
+      "parent_displayed_vblank_ordinal": 22,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169391959972,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "20",
+      "first_app_present_qpc": 2169391644871,
+      "last_app_present_serial": "20",
+      "last_app_present_qpc": 2169391644871,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169391959972,
+      "parent_present_start_vblank_ordinal": 22,
+      "parent_displayed_qpc": 2169392099565,
+      "parent_displayed_vblank_ordinal": 23,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169392127202,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "21",
+      "first_app_present_qpc": 2169391798483,
+      "last_app_present_serial": "21",
+      "last_app_present_qpc": 2169391798483,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169392127202,
+      "parent_present_start_vblank_ordinal": 23,
+      "parent_displayed_qpc": 2169392266314,
+      "parent_displayed_vblank_ordinal": 24,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169392294601,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "22",
+      "first_app_present_qpc": 2169391967023,
+      "last_app_present_serial": "22",
+      "last_app_present_qpc": 2169391967023,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169392294601,
+      "parent_present_start_vblank_ordinal": 24,
+      "parent_displayed_qpc": 2169392431392,
+      "parent_displayed_vblank_ordinal": 25,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169392458362,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "23",
+      "first_app_present_qpc": 2169392131004,
+      "last_app_present_serial": "23",
+      "last_app_present_qpc": 2169392131004,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169392458362,
+      "parent_present_start_vblank_ordinal": 25,
+      "parent_displayed_qpc": 2169392598242,
+      "parent_displayed_vblank_ordinal": 26,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169392625251,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "24",
+      "first_app_present_qpc": 2169392297727,
+      "last_app_present_serial": "24",
+      "last_app_present_qpc": 2169392297727,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169392625251,
+      "parent_present_start_vblank_ordinal": 26,
+      "parent_displayed_qpc": 2169392766777,
+      "parent_displayed_vblank_ordinal": 27,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169392795819,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "25",
+      "first_app_present_qpc": 2169392512020,
+      "last_app_present_serial": "25",
+      "last_app_present_qpc": 2169392512020,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169392795819,
+      "parent_present_start_vblank_ordinal": 27,
+      "parent_displayed_qpc": 2169392933561,
+      "parent_displayed_vblank_ordinal": 28,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169392799255,
+      "identity_kind": "MATCHES_APP_PRESENT",
+      "first_app_present_serial": "26",
+      "first_app_present_qpc": 2169392650034,
+      "last_app_present_serial": "26",
+      "last_app_present_qpc": 2169392650034,
+      "dependent_count": 1,
+      "presented_count": 0,
+      "discarded_count": 1,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169392799255,
+      "parent_present_start_vblank_ordinal": 27,
+      "parent_displayed_qpc": 2169393265645,
+      "parent_displayed_vblank_ordinal": 30,
+      "parent_display_vblank_delta": 2,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 4,
+      "last_app_to_parent_display_vblanks": 4
+    },
+    {
+      "batch_identity_qpc": 2169393131314,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "27",
+      "first_app_present_qpc": 2169392799255,
+      "last_app_present_serial": "27",
+      "last_app_present_qpc": 2169392799255,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169393131314,
+      "parent_present_start_vblank_ordinal": 29,
+      "parent_displayed_qpc": 2169393265645,
+      "parent_displayed_vblank_ordinal": 30,
+      "parent_display_vblank_delta": 0,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169393296820,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "28",
+      "first_app_present_qpc": 2169392966003,
+      "last_app_present_serial": "28",
+      "last_app_present_qpc": 2169392966003,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169393296820,
+      "parent_present_start_vblank_ordinal": 30,
+      "parent_displayed_qpc": 2169393434179,
+      "parent_displayed_vblank_ordinal": 31,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169393461317,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "29",
+      "first_app_present_qpc": 2169393134807,
+      "last_app_present_serial": "29",
+      "last_app_present_qpc": 2169393134807,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169393461317,
+      "parent_present_start_vblank_ordinal": 31,
+      "parent_displayed_qpc": 2169393600924,
+      "parent_displayed_vblank_ordinal": 32,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169393626558,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "30",
+      "first_app_present_qpc": 2169393310271,
+      "last_app_present_serial": "30",
+      "last_app_present_qpc": 2169393310271,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169393626558,
+      "parent_present_start_vblank_ordinal": 32,
+      "parent_displayed_qpc": 2169393767773,
+      "parent_displayed_vblank_ordinal": 33,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169393795470,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "31",
+      "first_app_present_qpc": 2169393465356,
+      "last_app_present_serial": "31",
+      "last_app_present_qpc": 2169393465356,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169393795470,
+      "parent_present_start_vblank_ordinal": 33,
+      "parent_displayed_qpc": 2169393932708,
+      "parent_displayed_vblank_ordinal": 34,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169393959822,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "32",
+      "first_app_present_qpc": 2169393635720,
+      "last_app_present_serial": "32",
+      "last_app_present_qpc": 2169393635720,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169393959822,
+      "parent_present_start_vblank_ordinal": 34,
+      "parent_displayed_qpc": 2169394101351,
+      "parent_displayed_vblank_ordinal": 35,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169394129499,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "33",
+      "first_app_present_qpc": 2169393801892,
+      "last_app_present_serial": "33",
+      "last_app_present_qpc": 2169393801892,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169394129499,
+      "parent_present_start_vblank_ordinal": 35,
+      "parent_displayed_qpc": 2169394266352,
+      "parent_displayed_vblank_ordinal": 36,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169394297293,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "34",
+      "first_app_present_qpc": 2169393966702,
+      "last_app_present_serial": "34",
+      "last_app_present_qpc": 2169393966702,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169394297293,
+      "parent_present_start_vblank_ordinal": 36,
+      "parent_displayed_qpc": 2169394435000,
+      "parent_displayed_vblank_ordinal": 37,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169394464050,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "35",
+      "first_app_present_qpc": 2169394133075,
+      "last_app_present_serial": "35",
+      "last_app_present_qpc": 2169394133075,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169394464050,
+      "parent_present_start_vblank_ordinal": 37,
+      "parent_displayed_qpc": 2169394601656,
+      "parent_displayed_vblank_ordinal": 38,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169394629940,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "36",
+      "first_app_present_qpc": 2169394301142,
+      "last_app_present_serial": "36",
+      "last_app_present_qpc": 2169394301142,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169394629940,
+      "parent_present_start_vblank_ordinal": 38,
+      "parent_displayed_qpc": 2169394768626,
+      "parent_displayed_vblank_ordinal": 39,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169394800507,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "37",
+      "first_app_present_qpc": 2169394472146,
+      "last_app_present_serial": "37",
+      "last_app_present_qpc": 2169394472146,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169394800507,
+      "parent_present_start_vblank_ordinal": 39,
+      "parent_displayed_qpc": 2169394935165,
+      "parent_displayed_vblank_ordinal": 40,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169394964174,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "38",
+      "first_app_present_qpc": 2169394633622,
+      "last_app_present_serial": "38",
+      "last_app_present_qpc": 2169394633622,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169394964174,
+      "parent_present_start_vblank_ordinal": 40,
+      "parent_displayed_qpc": 2169395102046,
+      "parent_displayed_vblank_ordinal": 41,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169398463506,
+      "identity_kind": "MATCHES_APP_PRESENT",
+      "first_app_present_serial": "39",
+      "first_app_present_qpc": 2169394804049,
+      "last_app_present_serial": "60",
+      "last_app_present_qpc": 2169398295886,
+      "dependent_count": 22,
+      "presented_count": 0,
+      "discarded_count": 22,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169398463506,
+      "parent_present_start_vblank_ordinal": 61,
+      "parent_displayed_qpc": 2169398938703,
+      "parent_displayed_vblank_ordinal": 64,
+      "parent_display_vblank_delta": 23,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 25,
+      "last_app_to_parent_display_vblanks": 4
+    },
+    {
+      "batch_identity_qpc": 2169398800077,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "61",
+      "first_app_present_qpc": 2169398463506,
+      "last_app_present_serial": "61",
+      "last_app_present_qpc": 2169398463506,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169398800077,
+      "parent_present_start_vblank_ordinal": 63,
+      "parent_displayed_qpc": 2169398938703,
+      "parent_displayed_vblank_ordinal": 64,
+      "parent_display_vblank_delta": 0,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169398970771,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "62",
+      "first_app_present_qpc": 2169398637711,
+      "last_app_present_serial": "62",
+      "last_app_present_qpc": 2169398637711,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169398970771,
+      "parent_present_start_vblank_ordinal": 64,
+      "parent_displayed_qpc": 2169399105588,
+      "parent_displayed_vblank_ordinal": 65,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169399136907,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "63",
+      "first_app_present_qpc": 2169398803550,
+      "last_app_present_serial": "63",
+      "last_app_present_qpc": 2169398803550,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169399136907,
+      "parent_present_start_vblank_ordinal": 65,
+      "parent_displayed_qpc": 2169399270565,
+      "parent_displayed_vblank_ordinal": 66,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169399302937,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "64",
+      "first_app_present_qpc": 2169398974937,
+      "last_app_present_serial": "64",
+      "last_app_present_qpc": 2169398974937,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169399302937,
+      "parent_present_start_vblank_ordinal": 66,
+      "parent_displayed_qpc": 2169399437413,
+      "parent_displayed_vblank_ordinal": 67,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169399466667,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "65",
+      "first_app_present_qpc": 2169399140431,
+      "last_app_present_serial": "65",
+      "last_app_present_qpc": 2169399140431,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169399466667,
+      "parent_present_start_vblank_ordinal": 67,
+      "parent_displayed_qpc": 2169399605930,
+      "parent_displayed_vblank_ordinal": 68,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169399634185,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "66",
+      "first_app_present_qpc": 2169399316724,
+      "last_app_present_serial": "66",
+      "last_app_present_qpc": 2169399316724,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169399634185,
+      "parent_present_start_vblank_ordinal": 68,
+      "parent_displayed_qpc": 2169399770964,
+      "parent_displayed_vblank_ordinal": 69,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169399802884,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "67",
+      "first_app_present_qpc": 2169399470212,
+      "last_app_present_serial": "67",
+      "last_app_present_qpc": 2169399470212,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169399802884,
+      "parent_present_start_vblank_ordinal": 69,
+      "parent_displayed_qpc": 2169399937702,
+      "parent_displayed_vblank_ordinal": 70,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169399968275,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "68",
+      "first_app_present_qpc": 2169399643634,
+      "last_app_present_serial": "68",
+      "last_app_present_qpc": 2169399643634,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169399968275,
+      "parent_present_start_vblank_ordinal": 70,
+      "parent_displayed_qpc": 2169400105520,
+      "parent_displayed_vblank_ordinal": 71,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169400134454,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "69",
+      "first_app_present_qpc": 2169399806866,
+      "last_app_present_serial": "69",
+      "last_app_present_qpc": 2169399806866,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169400134454,
+      "parent_present_start_vblank_ordinal": 71,
+      "parent_displayed_qpc": 2169400271279,
+      "parent_displayed_vblank_ordinal": 72,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169400302584,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "70",
+      "first_app_present_qpc": 2169399971532,
+      "last_app_present_serial": "70",
+      "last_app_present_qpc": 2169399971532,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169400302584,
+      "parent_present_start_vblank_ordinal": 72,
+      "parent_displayed_qpc": 2169400438093,
+      "parent_displayed_vblank_ordinal": 73,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169400465949,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "71",
+      "first_app_present_qpc": 2169400138002,
+      "last_app_present_serial": "71",
+      "last_app_present_qpc": 2169400138002,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169400465949,
+      "parent_present_start_vblank_ordinal": 73,
+      "parent_displayed_qpc": 2169400606729,
+      "parent_displayed_vblank_ordinal": 74,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169400637088,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "72",
+      "first_app_present_qpc": 2169400306293,
+      "last_app_present_serial": "72",
+      "last_app_present_qpc": 2169400306293,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169400637088,
+      "parent_present_start_vblank_ordinal": 74,
+      "parent_displayed_qpc": 2169400773496,
+      "parent_displayed_vblank_ordinal": 75,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169400802387,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "73",
+      "first_app_present_qpc": 2169400469310,
+      "last_app_present_serial": "73",
+      "last_app_present_qpc": 2169400469310,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169400802387,
+      "parent_present_start_vblank_ordinal": 75,
+      "parent_displayed_qpc": 2169400940271,
+      "parent_displayed_vblank_ordinal": 76,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169400969395,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "74",
+      "first_app_present_qpc": 2169400640376,
+      "last_app_present_serial": "74",
+      "last_app_present_qpc": 2169400640376,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169400969395,
+      "parent_present_start_vblank_ordinal": 76,
+      "parent_displayed_qpc": 2169401105421,
+      "parent_displayed_vblank_ordinal": 77,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169401134192,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "75",
+      "first_app_present_qpc": 2169400805758,
+      "last_app_present_serial": "75",
+      "last_app_present_qpc": 2169400805758,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169401134192,
+      "parent_present_start_vblank_ordinal": 77,
+      "parent_displayed_qpc": 2169401272171,
+      "parent_displayed_vblank_ordinal": 78,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169401305202,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "76",
+      "first_app_present_qpc": 2169400972896,
+      "last_app_present_serial": "76",
+      "last_app_present_qpc": 2169400972896,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169401305202,
+      "parent_present_start_vblank_ordinal": 78,
+      "parent_displayed_qpc": 2169401439038,
+      "parent_displayed_vblank_ordinal": 79,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169401467228,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "77",
+      "first_app_present_qpc": 2169401142034,
+      "last_app_present_serial": "77",
+      "last_app_present_qpc": 2169401142034,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169401467228,
+      "parent_present_start_vblank_ordinal": 79,
+      "parent_displayed_qpc": 2169401607581,
+      "parent_displayed_vblank_ordinal": 80,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169401636245,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "78",
+      "first_app_present_qpc": 2169401308878,
+      "last_app_present_serial": "78",
+      "last_app_present_qpc": 2169401308878,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169401636245,
+      "parent_present_start_vblank_ordinal": 80,
+      "parent_displayed_qpc": 2169401774415,
+      "parent_displayed_vblank_ordinal": 81,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169401803180,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "79",
+      "first_app_present_qpc": 2169401474969,
+      "last_app_present_serial": "79",
+      "last_app_present_qpc": 2169401474969,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169401803180,
+      "parent_present_start_vblank_ordinal": 81,
+      "parent_displayed_qpc": 2169401939321,
+      "parent_displayed_vblank_ordinal": 82,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169401965790,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "80",
+      "first_app_present_qpc": 2169401639592,
+      "last_app_present_serial": "80",
+      "last_app_present_qpc": 2169401639592,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169401965790,
+      "parent_present_start_vblank_ordinal": 82,
+      "parent_displayed_qpc": 2169402106159,
+      "parent_displayed_vblank_ordinal": 83,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169402132999,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "81",
+      "first_app_present_qpc": 2169401810709,
+      "last_app_present_serial": "81",
+      "last_app_present_qpc": 2169401810709,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169402132999,
+      "parent_present_start_vblank_ordinal": 83,
+      "parent_displayed_qpc": 2169402274797,
+      "parent_displayed_vblank_ordinal": 84,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169402302624,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "82",
+      "first_app_present_qpc": 2169401968922,
+      "last_app_present_serial": "82",
+      "last_app_present_qpc": 2169401968922,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169402302624,
+      "parent_present_start_vblank_ordinal": 84,
+      "parent_displayed_qpc": 2169402439717,
+      "parent_displayed_vblank_ordinal": 85,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169433668115,
+      "identity_kind": "MATCHES_APP_PRESENT",
+      "first_app_present_serial": "83",
+      "first_app_present_qpc": 2169402139808,
+      "last_app_present_serial": "271",
+      "last_app_present_qpc": 2169433488900,
+      "dependent_count": 189,
+      "presented_count": 0,
+      "discarded_count": 189,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169433668115,
+      "parent_present_start_vblank_ordinal": 272,
+      "parent_displayed_qpc": 2169434134448,
+      "parent_displayed_vblank_ordinal": 275,
+      "parent_display_vblank_delta": 190,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 192,
+      "last_app_to_parent_display_vblanks": 4
+    },
+    {
+      "batch_identity_qpc": 2169433990729,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "272",
+      "first_app_present_qpc": 2169433668115,
+      "last_app_present_serial": "272",
+      "last_app_present_qpc": 2169433668115,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169433990729,
+      "parent_present_start_vblank_ordinal": 274,
+      "parent_displayed_qpc": 2169434134448,
+      "parent_displayed_vblank_ordinal": 275,
+      "parent_display_vblank_delta": 0,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169434158274,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "273",
+      "first_app_present_qpc": 2169433820742,
+      "last_app_present_serial": "273",
+      "last_app_present_qpc": 2169433820742,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169434158274,
+      "parent_present_start_vblank_ordinal": 275,
+      "parent_displayed_qpc": 2169434301210,
+      "parent_displayed_vblank_ordinal": 276,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169434325870,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "274",
+      "first_app_present_qpc": 2169433993750,
+      "last_app_present_serial": "274",
+      "last_app_present_qpc": 2169433993750,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169434325870,
+      "parent_present_start_vblank_ordinal": 276,
+      "parent_displayed_qpc": 2169434466126,
+      "parent_displayed_vblank_ordinal": 277,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169434488631,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "275",
+      "first_app_present_qpc": 2169434164738,
+      "last_app_present_serial": "275",
+      "last_app_present_qpc": 2169434164738,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169434488631,
+      "parent_present_start_vblank_ordinal": 277,
+      "parent_displayed_qpc": 2169434634812,
+      "parent_displayed_vblank_ordinal": 278,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169434660932,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "276",
+      "first_app_present_qpc": 2169434328762,
+      "last_app_present_serial": "276",
+      "last_app_present_qpc": 2169434328762,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169434660932,
+      "parent_present_start_vblank_ordinal": 278,
+      "parent_displayed_qpc": 2169434801545,
+      "parent_displayed_vblank_ordinal": 279,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169434823938,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "277",
+      "first_app_present_qpc": 2169434491641,
+      "last_app_present_serial": "277",
+      "last_app_present_qpc": 2169434491641,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169434823938,
+      "parent_present_start_vblank_ordinal": 279,
+      "parent_displayed_qpc": 2169434968430,
+      "parent_displayed_vblank_ordinal": 280,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169434991850,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "278",
+      "first_app_present_qpc": 2169434664672,
+      "last_app_present_serial": "278",
+      "last_app_present_qpc": 2169434664672,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169434991850,
+      "parent_present_start_vblank_ordinal": 280,
+      "parent_displayed_qpc": 2169435133986,
+      "parent_displayed_vblank_ordinal": 281,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169435155991,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "279",
+      "first_app_present_qpc": 2169434826679,
+      "last_app_present_serial": "279",
+      "last_app_present_qpc": 2169434826679,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169435155991,
+      "parent_present_start_vblank_ordinal": 281,
+      "parent_displayed_qpc": 2169435301985,
+      "parent_displayed_vblank_ordinal": 282,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169435324426,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "280",
+      "first_app_present_qpc": 2169434998044,
+      "last_app_present_serial": "280",
+      "last_app_present_qpc": 2169434998044,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169435324426,
+      "parent_present_start_vblank_ordinal": 282,
+      "parent_displayed_qpc": 2169435466965,
+      "parent_displayed_vblank_ordinal": 283,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169435489453,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "281",
+      "first_app_present_qpc": 2169435158543,
+      "last_app_present_serial": "281",
+      "last_app_present_qpc": 2169435158543,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169435489453,
+      "parent_present_start_vblank_ordinal": 283,
+      "parent_displayed_qpc": 2169435633907,
+      "parent_displayed_vblank_ordinal": 284,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169435661498,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "282",
+      "first_app_present_qpc": 2169435327267,
+      "last_app_present_serial": "282",
+      "last_app_present_qpc": 2169435327267,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169435661498,
+      "parent_present_start_vblank_ordinal": 284,
+      "parent_displayed_qpc": 2169435802457,
+      "parent_displayed_vblank_ordinal": 285,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169435828603,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "283",
+      "first_app_present_qpc": 2169435492621,
+      "last_app_present_serial": "283",
+      "last_app_present_qpc": 2169435492621,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169435828603,
+      "parent_present_start_vblank_ordinal": 285,
+      "parent_displayed_qpc": 2169435969235,
+      "parent_displayed_vblank_ordinal": 286,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169435996596,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "284",
+      "first_app_present_qpc": 2169435666332,
+      "last_app_present_serial": "284",
+      "last_app_present_qpc": 2169435666332,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169435996596,
+      "parent_present_start_vblank_ordinal": 286,
+      "parent_displayed_qpc": 2169436135994,
+      "parent_displayed_vblank_ordinal": 287,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169436160499,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "285",
+      "first_app_present_qpc": 2169435831707,
+      "last_app_present_serial": "285",
+      "last_app_present_qpc": 2169435831707,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169436160499,
+      "parent_present_start_vblank_ordinal": 287,
+      "parent_displayed_qpc": 2169436302704,
+      "parent_displayed_vblank_ordinal": 288,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169436327980,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "286",
+      "first_app_present_qpc": 2169436000199,
+      "last_app_present_serial": "286",
+      "last_app_present_qpc": 2169436000199,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169436327980,
+      "parent_present_start_vblank_ordinal": 288,
+      "parent_displayed_qpc": 2169436467799,
+      "parent_displayed_vblank_ordinal": 289,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169436489793,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "287",
+      "first_app_present_qpc": 2169436163736,
+      "last_app_present_serial": "287",
+      "last_app_present_qpc": 2169436163736,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169436489793,
+      "parent_present_start_vblank_ordinal": 289,
+      "parent_displayed_qpc": 2169436636465,
+      "parent_displayed_vblank_ordinal": 290,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169436661753,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "288",
+      "first_app_present_qpc": 2169436330836,
+      "last_app_present_serial": "288",
+      "last_app_present_qpc": 2169436330836,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169436661753,
+      "parent_present_start_vblank_ordinal": 290,
+      "parent_displayed_qpc": 2169436803270,
+      "parent_displayed_vblank_ordinal": 291,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169436826025,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "289",
+      "first_app_present_qpc": 2169436492359,
+      "last_app_present_serial": "289",
+      "last_app_present_qpc": 2169436492359,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169436826025,
+      "parent_present_start_vblank_ordinal": 291,
+      "parent_displayed_qpc": 2169436970050,
+      "parent_displayed_vblank_ordinal": 292,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169436992504,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "290",
+      "first_app_present_qpc": 2169436673404,
+      "last_app_present_serial": "290",
+      "last_app_present_qpc": 2169436673404,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169436992504,
+      "parent_present_start_vblank_ordinal": 292,
+      "parent_displayed_qpc": 2169437135084,
+      "parent_displayed_vblank_ordinal": 293,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169437162918,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "291",
+      "first_app_present_qpc": 2169436828850,
+      "last_app_present_serial": "291",
+      "last_app_present_qpc": 2169436828850,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169437162918,
+      "parent_present_start_vblank_ordinal": 293,
+      "parent_displayed_qpc": 2169437303709,
+      "parent_displayed_vblank_ordinal": 294,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169437325868,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "292",
+      "first_app_present_qpc": 2169436995675,
+      "last_app_present_serial": "292",
+      "last_app_present_qpc": 2169436995675,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169437325868,
+      "parent_present_start_vblank_ordinal": 294,
+      "parent_displayed_qpc": 2169437468631,
+      "parent_displayed_vblank_ordinal": 295,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169437490515,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "293",
+      "first_app_present_qpc": 2169437171161,
+      "last_app_present_serial": "293",
+      "last_app_present_qpc": 2169437171161,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169437490515,
+      "parent_present_start_vblank_ordinal": 295,
+      "parent_displayed_qpc": 2169437637117,
+      "parent_displayed_vblank_ordinal": 296,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169488699863,
+      "identity_kind": "MATCHES_APP_PRESENT",
+      "first_app_present_serial": "294",
+      "first_app_present_qpc": 2169437328540,
+      "last_app_present_serial": "601",
+      "last_app_present_qpc": 2169488532412,
+      "dependent_count": 308,
+      "presented_count": 0,
+      "discarded_count": 308,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169488699863,
+      "parent_present_start_vblank_ordinal": 602,
+      "parent_displayed_qpc": 2169489178136,
+      "parent_displayed_vblank_ordinal": 605,
+      "parent_display_vblank_delta": 309,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 311,
+      "last_app_to_parent_display_vblanks": 4
+    },
+    {
+      "batch_identity_qpc": 2169489084343,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "602",
+      "first_app_present_qpc": 2169488699863,
+      "last_app_present_serial": "602",
+      "last_app_present_qpc": 2169488699863,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169489084343,
+      "parent_present_start_vblank_ordinal": 604,
+      "parent_displayed_qpc": 2169489178136,
+      "parent_displayed_vblank_ordinal": 605,
+      "parent_display_vblank_delta": 0,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169489094497,
+      "identity_kind": "MATCHES_APP_PRESENT",
+      "first_app_present_serial": "603",
+      "first_app_present_qpc": 2169488862463,
+      "last_app_present_serial": "603",
+      "last_app_present_qpc": 2169488862463,
+      "dependent_count": 1,
+      "presented_count": 0,
+      "discarded_count": 1,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169489094497,
+      "parent_present_start_vblank_ordinal": 604,
+      "parent_displayed_qpc": 2169489513336,
+      "parent_displayed_vblank_ordinal": 607,
+      "parent_display_vblank_delta": 2,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 4,
+      "last_app_to_parent_display_vblanks": 4
+    },
+    {
+      "batch_identity_qpc": 2169489375976,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "604",
+      "first_app_present_qpc": 2169489094497,
+      "last_app_present_serial": "604",
+      "last_app_present_qpc": 2169489094497,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169489375976,
+      "parent_present_start_vblank_ordinal": 606,
+      "parent_displayed_qpc": 2169489513336,
+      "parent_displayed_vblank_ordinal": 607,
+      "parent_display_vblank_delta": 0,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169489545201,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "605",
+      "first_app_present_qpc": 2169489208855,
+      "last_app_present_serial": "605",
+      "last_app_present_qpc": 2169489208855,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169489545201,
+      "parent_present_start_vblank_ordinal": 607,
+      "parent_displayed_qpc": 2169489678516,
+      "parent_displayed_vblank_ordinal": 608,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169489713992,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "606",
+      "first_app_present_qpc": 2169489382831,
+      "last_app_present_serial": "606",
+      "last_app_present_qpc": 2169489382831,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169489713992,
+      "parent_present_start_vblank_ordinal": 608,
+      "parent_displayed_qpc": 2169489846897,
+      "parent_displayed_vblank_ordinal": 609,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169490072707,
+      "identity_kind": "MATCHES_APP_PRESENT",
+      "first_app_present_serial": "607",
+      "first_app_present_qpc": 2169489548656,
+      "last_app_present_serial": "609",
+      "last_app_present_qpc": 2169489928947,
+      "dependent_count": 3,
+      "presented_count": 0,
+      "discarded_count": 3,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169490072707,
+      "parent_present_start_vblank_ordinal": 610,
+      "parent_displayed_qpc": 2169490512430,
+      "parent_displayed_vblank_ordinal": 613,
+      "parent_display_vblank_delta": 4,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 6,
+      "last_app_to_parent_display_vblanks": 4
+    },
+    {
+      "batch_identity_qpc": 2169490406693,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "610",
+      "first_app_present_qpc": 2169490072707,
+      "last_app_present_serial": "610",
+      "last_app_present_qpc": 2169490072707,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169490406693,
+      "parent_present_start_vblank_ordinal": 612,
+      "parent_displayed_qpc": 2169490512430,
+      "parent_displayed_vblank_ordinal": 613,
+      "parent_display_vblank_delta": 0,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169490561653,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "611",
+      "first_app_present_qpc": 2169490231766,
+      "last_app_present_serial": "611",
+      "last_app_present_qpc": 2169490231766,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169490561653,
+      "parent_present_start_vblank_ordinal": 613,
+      "parent_displayed_qpc": 2169490679223,
+      "parent_displayed_vblank_ordinal": 614,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169490735732,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "612",
+      "first_app_present_qpc": 2169490411079,
+      "last_app_present_serial": "612",
+      "last_app_present_qpc": 2169490411079,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169490735732,
+      "parent_present_start_vblank_ordinal": 614,
+      "parent_displayed_qpc": 2169490846748,
+      "parent_displayed_vblank_ordinal": 615,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169490890518,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "613",
+      "first_app_present_qpc": 2169490568076,
+      "last_app_present_serial": "613",
+      "last_app_present_qpc": 2169490568076,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169490890518,
+      "parent_present_start_vblank_ordinal": 615,
+      "parent_displayed_qpc": 2169491012831,
+      "parent_displayed_vblank_ordinal": 616,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169491067642,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "614",
+      "first_app_present_qpc": 2169490738992,
+      "last_app_present_serial": "614",
+      "last_app_present_qpc": 2169490738992,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169491067642,
+      "parent_present_start_vblank_ordinal": 616,
+      "parent_displayed_qpc": 2169491179826,
+      "parent_displayed_vblank_ordinal": 617,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169491221350,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "615",
+      "first_app_present_qpc": 2169490893360,
+      "last_app_present_serial": "615",
+      "last_app_present_qpc": 2169490893360,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169491221350,
+      "parent_present_start_vblank_ordinal": 617,
+      "parent_displayed_qpc": 2169491348291,
+      "parent_displayed_vblank_ordinal": 618,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169491402035,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "616",
+      "first_app_present_qpc": 2169491070940,
+      "last_app_present_serial": "616",
+      "last_app_present_qpc": 2169491070940,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169491402035,
+      "parent_present_start_vblank_ordinal": 618,
+      "parent_displayed_qpc": 2169491513766,
+      "parent_displayed_vblank_ordinal": 619,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169491552596,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "617",
+      "first_app_present_qpc": 2169491223981,
+      "last_app_present_serial": "617",
+      "last_app_present_qpc": 2169491223981,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169491552596,
+      "parent_present_start_vblank_ordinal": 619,
+      "parent_displayed_qpc": 2169491681936,
+      "parent_displayed_vblank_ordinal": 620,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169491734731,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "618",
+      "first_app_present_qpc": 2169491405476,
+      "last_app_present_serial": "618",
+      "last_app_present_qpc": 2169491405476,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169491734731,
+      "parent_present_start_vblank_ordinal": 620,
+      "parent_displayed_qpc": 2169491847352,
+      "parent_displayed_vblank_ordinal": 621,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169491896227,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "619",
+      "first_app_present_qpc": 2169491555521,
+      "last_app_present_serial": "619",
+      "last_app_present_qpc": 2169491555521,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169491896227,
+      "parent_present_start_vblank_ordinal": 621,
+      "parent_displayed_qpc": 2169492013700,
+      "parent_displayed_vblank_ordinal": 622,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169492073591,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "620",
+      "first_app_present_qpc": 2169491747421,
+      "last_app_present_serial": "620",
+      "last_app_present_qpc": 2169491747421,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169492073591,
+      "parent_present_start_vblank_ordinal": 622,
+      "parent_displayed_qpc": 2169492182268,
+      "parent_displayed_vblank_ordinal": 623,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169492232872,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "621",
+      "first_app_present_qpc": 2169491899674,
+      "last_app_present_serial": "621",
+      "last_app_present_qpc": 2169491899674,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169492232872,
+      "parent_present_start_vblank_ordinal": 623,
+      "parent_displayed_qpc": 2169492349013,
+      "parent_displayed_vblank_ordinal": 624,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169492404686,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "622",
+      "first_app_present_qpc": 2169492078300,
+      "last_app_present_serial": "622",
+      "last_app_present_qpc": 2169492078300,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169492404686,
+      "parent_present_start_vblank_ordinal": 624,
+      "parent_displayed_qpc": 2169492514063,
+      "parent_displayed_vblank_ordinal": 625,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169492558742,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "623",
+      "first_app_present_qpc": 2169492236787,
+      "last_app_present_serial": "623",
+      "last_app_present_qpc": 2169492236787,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169492558742,
+      "parent_present_start_vblank_ordinal": 625,
+      "parent_displayed_qpc": 2169492682694,
+      "parent_displayed_vblank_ordinal": 626,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169492726727,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "624",
+      "first_app_present_qpc": 2169492407613,
+      "last_app_present_serial": "624",
+      "last_app_present_qpc": 2169492407613,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169492726727,
+      "parent_present_start_vblank_ordinal": 626,
+      "parent_displayed_qpc": 2169492847701,
+      "parent_displayed_vblank_ordinal": 627,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169492894179,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "625",
+      "first_app_present_qpc": 2169492562247,
+      "last_app_present_serial": "625",
+      "last_app_present_qpc": 2169492562247,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169492894179,
+      "parent_present_start_vblank_ordinal": 627,
+      "parent_displayed_qpc": 2169493014473,
+      "parent_displayed_vblank_ordinal": 628,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169493051744,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "626",
+      "first_app_present_qpc": 2169492730134,
+      "last_app_present_serial": "626",
+      "last_app_present_qpc": 2169492730134,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169493051744,
+      "parent_present_start_vblank_ordinal": 628,
+      "parent_displayed_qpc": 2169493181760,
+      "parent_displayed_vblank_ordinal": 629,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169493217921,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "627",
+      "first_app_present_qpc": 2169492897538,
+      "last_app_present_serial": "627",
+      "last_app_present_qpc": 2169492897538,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169493217921,
+      "parent_present_start_vblank_ordinal": 629,
+      "parent_displayed_qpc": 2169493348092,
+      "parent_displayed_vblank_ordinal": 630,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169493391532,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "628",
+      "first_app_present_qpc": 2169493054314,
+      "last_app_present_serial": "628",
+      "last_app_present_qpc": 2169493054314,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169493391532,
+      "parent_present_start_vblank_ordinal": 630,
+      "parent_displayed_qpc": 2169493514834,
+      "parent_displayed_vblank_ordinal": 631,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169493535579,
+      "identity_kind": "MATCHES_APP_PRESENT",
+      "first_app_present_serial": "629",
+      "first_app_present_qpc": 2169493220548,
+      "last_app_present_serial": "630",
+      "last_app_present_qpc": 2169493394588,
+      "dependent_count": 2,
+      "presented_count": 0,
+      "discarded_count": 2,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169493535579,
+      "parent_present_start_vblank_ordinal": 631,
+      "parent_displayed_qpc": 2169494015282,
+      "parent_displayed_vblank_ordinal": 634,
+      "parent_display_vblank_delta": 3,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 5,
+      "last_app_to_parent_display_vblanks": 4
+    },
+    {
+      "batch_identity_qpc": 2169493887690,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "631",
+      "first_app_present_qpc": 2169493535579,
+      "last_app_present_serial": "631",
+      "last_app_present_qpc": 2169493535579,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169493887690,
+      "parent_present_start_vblank_ordinal": 633,
+      "parent_displayed_qpc": 2169494015282,
+      "parent_displayed_vblank_ordinal": 634,
+      "parent_display_vblank_delta": 0,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169520229417,
+      "identity_kind": "MATCHES_APP_PRESENT",
+      "first_app_present_serial": "632",
+      "first_app_present_qpc": 2169493708723,
+      "last_app_present_serial": "790",
+      "last_app_present_qpc": 2169520063039,
+      "dependent_count": 159,
+      "presented_count": 0,
+      "discarded_count": 159,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169520229417,
+      "parent_present_start_vblank_ordinal": 791,
+      "parent_displayed_qpc": 2169520705815,
+      "parent_displayed_vblank_ordinal": 794,
+      "parent_display_vblank_delta": 160,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 162,
+      "last_app_to_parent_display_vblanks": 4
+    },
+    {
+      "batch_identity_qpc": 2169520563923,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "791",
+      "first_app_present_qpc": 2169520229417,
+      "last_app_present_serial": "791",
+      "last_app_present_qpc": 2169520229417,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169520563923,
+      "parent_present_start_vblank_ordinal": 793,
+      "parent_displayed_qpc": 2169520705815,
+      "parent_displayed_vblank_ordinal": 794,
+      "parent_display_vblank_delta": 0,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169521896547,
+      "identity_kind": "MATCHES_APP_PRESENT",
+      "first_app_present_serial": "792",
+      "first_app_present_qpc": 2169520397530,
+      "last_app_present_serial": "800",
+      "last_app_present_qpc": 2169521728880,
+      "dependent_count": 9,
+      "presented_count": 0,
+      "discarded_count": 9,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169521896547,
+      "parent_present_start_vblank_ordinal": 801,
+      "parent_displayed_qpc": 2169522373633,
+      "parent_displayed_vblank_ordinal": 804,
+      "parent_display_vblank_delta": 0,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 12,
+      "last_app_to_parent_display_vblanks": 4
+    },
+    {
+      "batch_identity_qpc": 2169522234570,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "801",
+      "first_app_present_qpc": 2169521896547,
+      "last_app_present_serial": "801",
+      "last_app_present_qpc": 2169521896547,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169522234570,
+      "parent_present_start_vblank_ordinal": 803,
+      "parent_displayed_qpc": 2169522373633,
+      "parent_displayed_vblank_ordinal": 804,
+      "parent_display_vblank_delta": 10,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169522237326,
+      "identity_kind": "MATCHES_APP_PRESENT",
+      "first_app_present_serial": "802",
+      "first_app_present_qpc": 2169522064626,
+      "last_app_present_serial": "802",
+      "last_app_present_qpc": 2169522064626,
+      "dependent_count": 1,
+      "presented_count": 0,
+      "discarded_count": 1,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169522237326,
+      "parent_present_start_vblank_ordinal": 803,
+      "parent_displayed_qpc": 2169522707157,
+      "parent_displayed_vblank_ordinal": 806,
+      "parent_display_vblank_delta": 2,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 4,
+      "last_app_to_parent_display_vblanks": 4
+    },
+    {
+      "batch_identity_qpc": 2169522565590,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "803",
+      "first_app_present_qpc": 2169522237326,
+      "last_app_present_serial": "803",
+      "last_app_present_qpc": 2169522237326,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169522565590,
+      "parent_present_start_vblank_ordinal": 805,
+      "parent_displayed_qpc": 2169522707157,
+      "parent_displayed_vblank_ordinal": 806,
+      "parent_display_vblank_delta": 0,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169522733712,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "804",
+      "first_app_present_qpc": 2169522395840,
+      "last_app_present_serial": "804",
+      "last_app_present_qpc": 2169522395840,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169522733712,
+      "parent_present_start_vblank_ordinal": 806,
+      "parent_displayed_qpc": 2169522874282,
+      "parent_displayed_vblank_ordinal": 807,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169522899944,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "805",
+      "first_app_present_qpc": 2169522568798,
+      "last_app_present_serial": "805",
+      "last_app_present_qpc": 2169522568798,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169522899944,
+      "parent_present_start_vblank_ordinal": 807,
+      "parent_displayed_qpc": 2169523039779,
+      "parent_displayed_vblank_ordinal": 808,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169523066525,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "806",
+      "first_app_present_qpc": 2169522736792,
+      "last_app_present_serial": "806",
+      "last_app_present_qpc": 2169522736792,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169523066525,
+      "parent_present_start_vblank_ordinal": 808,
+      "parent_displayed_qpc": 2169523206142,
+      "parent_displayed_vblank_ordinal": 809,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169523231818,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "807",
+      "first_app_present_qpc": 2169522903260,
+      "last_app_present_serial": "807",
+      "last_app_present_qpc": 2169522903260,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169523231818,
+      "parent_present_start_vblank_ordinal": 809,
+      "parent_displayed_qpc": 2169523374781,
+      "parent_displayed_vblank_ordinal": 810,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169523404283,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "808",
+      "first_app_present_qpc": 2169523073174,
+      "last_app_present_serial": "808",
+      "last_app_present_qpc": 2169523073174,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169523404283,
+      "parent_present_start_vblank_ordinal": 810,
+      "parent_displayed_qpc": 2169523539698,
+      "parent_displayed_vblank_ordinal": 811,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169523566676,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "809",
+      "first_app_present_qpc": 2169523234688,
+      "last_app_present_serial": "809",
+      "last_app_present_qpc": 2169523234688,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169523566676,
+      "parent_present_start_vblank_ordinal": 811,
+      "parent_displayed_qpc": 2169523706546,
+      "parent_displayed_vblank_ordinal": 812,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169523733502,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "810",
+      "first_app_present_qpc": 2169523407847,
+      "last_app_present_serial": "810",
+      "last_app_present_qpc": 2169523407847,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169523733502,
+      "parent_present_start_vblank_ordinal": 812,
+      "parent_displayed_qpc": 2169523873287,
+      "parent_displayed_vblank_ordinal": 813,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169523899704,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "811",
+      "first_app_present_qpc": 2169523569537,
+      "last_app_present_serial": "811",
+      "last_app_present_qpc": 2169523569537,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169523899704,
+      "parent_present_start_vblank_ordinal": 813,
+      "parent_displayed_qpc": 2169524040223,
+      "parent_displayed_vblank_ordinal": 814,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169524064883,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "812",
+      "first_app_present_qpc": 2169523736410,
+      "last_app_present_serial": "812",
+      "last_app_present_qpc": 2169523736410,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169524064883,
+      "parent_present_start_vblank_ordinal": 814,
+      "parent_displayed_qpc": 2169524208732,
+      "parent_displayed_vblank_ordinal": 815,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169526737220,
+      "identity_kind": "MATCHES_APP_PRESENT",
+      "first_app_present_serial": "813",
+      "first_app_present_qpc": 2169523905725,
+      "last_app_present_serial": "829",
+      "last_app_present_qpc": 2169526569197,
+      "dependent_count": 17,
+      "presented_count": 0,
+      "discarded_count": 17,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169526737220,
+      "parent_present_start_vblank_ordinal": 830,
+      "parent_displayed_qpc": 2169527211116,
+      "parent_displayed_vblank_ordinal": 833,
+      "parent_display_vblank_delta": 18,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 20,
+      "last_app_to_parent_display_vblanks": 4
+    },
+    {
+      "batch_identity_qpc": 2169527068078,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "830",
+      "first_app_present_qpc": 2169526737220,
+      "last_app_present_serial": "830",
+      "last_app_present_qpc": 2169526737220,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169527068078,
+      "parent_present_start_vblank_ordinal": 832,
+      "parent_displayed_qpc": 2169527211116,
+      "parent_displayed_vblank_ordinal": 833,
+      "parent_display_vblank_delta": 0,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169528401212,
+      "identity_kind": "MATCHES_APP_PRESENT",
+      "first_app_present_serial": "831",
+      "first_app_present_qpc": 2169526905410,
+      "last_app_present_serial": "839",
+      "last_app_present_qpc": 2169528238554,
+      "dependent_count": 9,
+      "presented_count": 0,
+      "discarded_count": 9,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169528401212,
+      "parent_present_start_vblank_ordinal": 840,
+      "parent_displayed_qpc": 2169528879298,
+      "parent_displayed_vblank_ordinal": 843,
+      "parent_display_vblank_delta": 0,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 12,
+      "last_app_to_parent_display_vblanks": 4
+    },
+    {
+      "batch_identity_qpc": 2169528742222,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "840",
+      "first_app_present_qpc": 2169528401212,
+      "last_app_present_serial": "840",
+      "last_app_present_qpc": 2169528401212,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169528742222,
+      "parent_present_start_vblank_ordinal": 842,
+      "parent_displayed_qpc": 2169528879298,
+      "parent_displayed_vblank_ordinal": 843,
+      "parent_display_vblank_delta": 10,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169528906207,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "841",
+      "first_app_present_qpc": 2169528573909,
+      "last_app_present_serial": "841",
+      "last_app_present_qpc": 2169528573909,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169528906207,
+      "parent_present_start_vblank_ordinal": 843,
+      "parent_displayed_qpc": 2169529044218,
+      "parent_displayed_vblank_ordinal": 844,
+      "parent_display_vblank_delta": 1,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2169539446445,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "842",
+      "first_app_present_qpc": 2169528745542,
+      "last_app_present_serial": "900",
+      "last_app_present_qpc": 2169538406208,
+      "dependent_count": 59,
+      "presented_count": 0,
+      "discarded_count": 59,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2169539446445,
+      "parent_present_start_vblank_ordinal": null,
+      "parent_displayed_qpc": null,
+      "parent_displayed_vblank_ordinal": null,
+      "parent_display_vblank_delta": null,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": null,
+      "last_app_to_parent_display_vblanks": null
+    }
+  ],
+  "parent_display_groups": [
+    {
+      "displayed_vblank_ordinal": 4,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": null,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 5,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 6,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 7,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 8,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 9,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 10,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 11,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 12,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 13,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 14,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 15,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 16,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 17,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 18,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 19,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 20,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 21,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 22,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 23,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 24,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 25,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 26,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 27,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 28,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 30,
+      "batch_identity_count": 2,
+      "dependent_count": 2,
+      "previous_display_vblank_delta": 2,
+      "dependent_count_matches_display_gap_within_one": true
+    },
+    {
+      "displayed_vblank_ordinal": 31,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 32,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 33,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 34,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 35,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 36,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 37,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 38,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 39,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 40,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 41,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 64,
+      "batch_identity_count": 2,
+      "dependent_count": 23,
+      "previous_display_vblank_delta": 23,
+      "dependent_count_matches_display_gap_within_one": true
+    },
+    {
+      "displayed_vblank_ordinal": 65,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 66,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 67,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 68,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 69,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 70,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 71,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 72,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 73,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 74,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 75,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 76,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 77,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 78,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 79,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 80,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 81,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 82,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 83,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 84,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 85,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 275,
+      "batch_identity_count": 2,
+      "dependent_count": 190,
+      "previous_display_vblank_delta": 190,
+      "dependent_count_matches_display_gap_within_one": true
+    },
+    {
+      "displayed_vblank_ordinal": 276,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 277,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 278,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 279,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 280,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 281,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 282,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 283,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 284,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 285,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 286,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 287,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 288,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 289,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 290,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 291,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 292,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 293,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 294,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 295,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 296,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 605,
+      "batch_identity_count": 2,
+      "dependent_count": 309,
+      "previous_display_vblank_delta": 309,
+      "dependent_count_matches_display_gap_within_one": true
+    },
+    {
+      "displayed_vblank_ordinal": 607,
+      "batch_identity_count": 2,
+      "dependent_count": 2,
+      "previous_display_vblank_delta": 2,
+      "dependent_count_matches_display_gap_within_one": true
+    },
+    {
+      "displayed_vblank_ordinal": 608,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 609,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 613,
+      "batch_identity_count": 2,
+      "dependent_count": 4,
+      "previous_display_vblank_delta": 4,
+      "dependent_count_matches_display_gap_within_one": true
+    },
+    {
+      "displayed_vblank_ordinal": 614,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 615,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 616,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 617,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 618,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 619,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 620,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 621,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 622,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 623,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 624,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 625,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 626,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 627,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 628,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 629,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 630,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 631,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 634,
+      "batch_identity_count": 2,
+      "dependent_count": 3,
+      "previous_display_vblank_delta": 3,
+      "dependent_count_matches_display_gap_within_one": true
+    },
+    {
+      "displayed_vblank_ordinal": 794,
+      "batch_identity_count": 2,
+      "dependent_count": 160,
+      "previous_display_vblank_delta": 160,
+      "dependent_count_matches_display_gap_within_one": true
+    },
+    {
+      "displayed_vblank_ordinal": 804,
+      "batch_identity_count": 2,
+      "dependent_count": 10,
+      "previous_display_vblank_delta": 10,
+      "dependent_count_matches_display_gap_within_one": true
+    },
+    {
+      "displayed_vblank_ordinal": 806,
+      "batch_identity_count": 2,
+      "dependent_count": 2,
+      "previous_display_vblank_delta": 2,
+      "dependent_count_matches_display_gap_within_one": true
+    },
+    {
+      "displayed_vblank_ordinal": 807,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 808,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 809,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 810,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 811,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 812,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 813,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 814,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 815,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    },
+    {
+      "displayed_vblank_ordinal": 833,
+      "batch_identity_count": 2,
+      "dependent_count": 18,
+      "previous_display_vblank_delta": 18,
+      "dependent_count_matches_display_gap_within_one": true
+    },
+    {
+      "displayed_vblank_ordinal": 843,
+      "batch_identity_count": 2,
+      "dependent_count": 10,
+      "previous_display_vblank_delta": 10,
+      "dependent_count_matches_display_gap_within_one": true
+    },
+    {
+      "displayed_vblank_ordinal": 844,
+      "batch_identity_count": 1,
+      "dependent_count": 1,
+      "previous_display_vblank_delta": 1,
+      "dependent_count_matches_display_gap_within_one": null
+    }
+  ],
+  "identities": {
+    "oracle_sha256": "0117adcb23a9f90892793fd0e8a00fbef96424d1ca20e9c319dd8d5b26ea35cf",
+    "app_sha256": "71bdaed2aca940696a98bf43242cf7faaa8b659473e6f33ac8a9e88083ed6d0c"
+  }
+}

@@ -1950,6 +1950,58 @@ pwsh scripts/p2-c3-submission-backpressure.ps1 `
   -OutputDirectory bench/results/f3-c3-<summary>
 ```
 
+#### F3-C3-A2: DWM Dependency Regime / Completion-Phase Attribution
+
+[事実] checkpoint済み9 runを先にoffline再解析した。artifactは
+`bench/results/f3-c3-a2-offline-attribution-20260823-7`で、summary SHA-256は
+`39be446ff02aa3a1f70571731c5dbeba09254d9466882c7b2313d7b07943bc2e`である。9/9、計8095 Presentを
+個別に再計算し、観測PresentModeは全件`Composed_Flip`、mode transitionは0だった。したがって
+高Presented runと低Presented runの差をPresentMode遷移では説明できない。physical/source gap pairは
+2352件中2343件exact、9件は局所的な±1 compensationだった。累積spanを比較できる8 runは全て±1以内だった。
+大きなparent display groupは207件、うち206件でphysical display deltaとdependent countが±1以内だった。
+
+[回避策] 既存rawにはWAITING、parent attach、parent completion、dependent finalizationのtimestampが無かったため、
+pinned PresentMon v2.3.1へbehavior-neutralな第2診断patch
+`presentmon-patches/2.3.1/0002-mvm-dependency-lifecycle-diagnostic.patch`を追加した。記録対象は
+`APP_PRESENT → WAITING_FOR_DWM → ATTACHED_TO_DWM_PARENT → PARENT_DISPLAY/COMPLETION → DEPENDENT_FINALIZED`と
+earlier supersede linkageだけである。DwmFlush、maximum frame latency、waitable object、固定sleep、schedulerは
+変更していない。第1patchの`DependencyBatchPresentStartTime`はearlier-swapchain再帰で上書きされ得るため、
+actual DWM parent identityは新しい`AttachedDwmParentPresentStartTime`をauthorityとする。
+
+[事実] CONTROL-only 60秒CanonicalPresentMonLiveを
+`bench/results/f3-c3-a2-control-lifecycle-20260823-60s-1`へ1本採取した。最終集計は`attribution-2`、
+summary SHA-256は`a4e34530c213b5b321eaa60190d4197e74dca48bc7158200001cf91b0304414e`である。
+native/ETW 3597/3597、Presented 104、Discarded 3493、Unknown/Lost、ETW event/buffer loss、PresentData overflowは
+全て0だった。全3597件が`Composed_Flip`でtransitionは0、actual DWM parent batchは111件、観測maxは2421だった。
+110 dependentのbatchは直前parent displayから110 physical VBlank後、2421 dependentのbatchは2421 VBlank後に
+display/completionした。direct parent path 3589件ではparent display/completionとdependent finalizationのQPCが
+exact closureし、残るearlier-only 8件もsuperseding QPCとfinalizationが一致した。これは同一presentation regime内の
+大batchがDWM parent consumption/display gapそのものに
+一致する直接証拠である。
+
+[事実] 同じ60秒runのdisplayed source/physical gapは103 pair中88 exact、15 mismatch、累積span差は2だった。
+局所的な+1/-1 compensationが多いが、2421-gapではsource gap 2422 / physical gap 2420だった。したがってこのrun単独で
+source identity gapの完全一致は主張しない。一方、parent identityとparent display QPCから独立に得た110/110、
+2421/2421のclosureはこの不一致に依存しない。
+
+[exit] 分岐は`B_DWM_CONSUMPTION_STALL`である。PresentMode transition支配(A)は棄却し、parent displayが正常なのに
+dependencyだけ巨大なauthority contradiction(C)でもない。app Presentは約60/sであり、同一opportunityへのmultiple
+submissionを示すDの証拠もない。F3-C3-B production admission fixへは進まず、次を
+`F3-C3-A3 — DWM Consumption Stall Attribution`とする。P2-D5-2はBLOCKED、formal runtime authority wiringと
+2% thresholdは未変更のまま維持する。
+
+再現手順（offline解析は通常PowerShell、採取は管理者PowerShell）:
+
+```powershell
+pwsh scripts/p2-c3-a2-offline-attribution.ps1 `
+  -SourceDirectories @('<C3-A run1>', '<C3-A run2>', '<C3-A run3>') `
+  -OutputDirectory '<offline output>'
+
+pwsh scripts/build-p2-etw-decoder.ps1
+pwsh scripts/p2-c3-a2-control-lifecycle.ps1 `
+  -OutputDirectory '<A2 output>' -MeasureSeconds 60 -TimeoutSeconds 180
+```
+
 ---
 
 ## 7. 検証手順

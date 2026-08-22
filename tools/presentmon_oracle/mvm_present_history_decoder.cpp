@@ -154,6 +154,7 @@ int writeOutput(const wchar_t* outputPath, unsigned long targetPid, long long qp
                  consumer.mFilteredEvents ? "true" : "false");
     std::fprintf(file, "  \"raw_displayed_qpc\": true,\n");
     std::fprintf(file, "  \"discard_reason_diagnostic\": true,\n");
+    std::fprintf(file, "  \"dependency_lifecycle_diagnostic\": true,\n");
     std::fprintf(file, "  \"qpc_frequency\": %lld,\n", qpcFrequency);
     std::fprintf(file, "  \"target_process_id\": %lu,\n", targetPid);
     std::fprintf(file, "  \"etw_events_lost\": %lu,\n", etwEventsLost);
@@ -177,6 +178,14 @@ int writeOutput(const wchar_t* outputPath, unsigned long targetPid, long long qp
                      "\"present_flags\": %u, \"final_state\": \"%s\", "
                      "\"discard_reason\": \"%s\", "
                      "\"dependency_batch_present_start_qpc\": %llu, "
+                     "\"waiting_for_dwm_qpc\": %llu, "
+                     "\"attached_to_dwm_parent_qpc\": %llu, "
+                     "\"attached_dwm_parent_present_start_qpc\": %llu, "
+                     "\"dwm_parent_displayed_qpc\": %llu, "
+                     "\"dwm_parent_completion_qpc\": %llu, "
+                     "\"dependent_finalized_qpc\": %llu, "
+                     "\"earlier_superseded_by_present_start_qpc\": %llu, "
+                     "\"earlier_superseded_qpc\": %llu, "
                      "\"completion_class\": \"%s\", "
                      "\"is_completed\": %s, "
                      "\"is_lost\": %s, \"present_mode\": \"%s\", "
@@ -195,6 +204,14 @@ int writeOutput(const wchar_t* outputPath, unsigned long targetPid, long long qp
                      event.PresentFlags, resultName(event.FinalState),
                      discardReasonName(event.FinalDiscardReason),
                      static_cast<unsigned long long>(event.DependencyBatchPresentStartTime),
+                     static_cast<unsigned long long>(event.WaitingForDwmQpc),
+                     static_cast<unsigned long long>(event.AttachedToDwmParentQpc),
+                     static_cast<unsigned long long>(event.AttachedDwmParentPresentStartTime),
+                     static_cast<unsigned long long>(event.DwmParentDisplayedQpc),
+                     static_cast<unsigned long long>(event.DwmParentCompletionQpc),
+                     static_cast<unsigned long long>(event.DependentFinalizedQpc),
+                     static_cast<unsigned long long>(event.EarlierSupersededByPresentStartTime),
+                     static_cast<unsigned long long>(event.EarlierSupersededQpc),
                      completionClass(event),
                      event.IsCompleted ? "true" : "false", event.IsLost ? "true" : "false",
                      presentModeName(event.PresentMode), event.SeenDxgkPresent ? "true" : "false",
