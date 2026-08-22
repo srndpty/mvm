@@ -1,0 +1,1426 @@
+{
+    "actual_gpu_completion_backend": "fence",
+    "actual_output_height": 1080,
+    "actual_output_width": 1920,
+    "actual_target_probe_checked_count": 4,
+    "actual_target_probe_mismatch": 0,
+    "adapter_a": "NVIDIA GeForce RTX 4090",
+    "adapter_b": "NVIDIA GeForce RTX 4090",
+    "completion_poll_failure_count": 0,
+    "compose_after_fatal_rejected_count": 0,
+    "composition_displayed_count": -301,
+    "composition_submitted_count": -301,
+    "configured_measure_seconds": 60,
+    "configured_measurement_preroll_frames": 8,
+    "configured_seed": 20260808,
+    "configured_seek_count": 1000,
+    "configured_warmup_seconds": 5,
+    "cpu_full_frame_readback_count": 0,
+    "d3d11_lock_timings": {
+        "decoder_a_d3d11_lock_wait_us": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_us": [
+            ]
+        },
+        "decoder_b_d3d11_lock_wait_us": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_us": [
+            ]
+        },
+        "render_d3d11_lock_wait_us": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_us": [
+            ]
+        }
+    },
+    "deadline_drop_rate": 0,
+    "decoded_a_count": 552,
+    "decoded_b_count": 549,
+    "device_lost_count": 0,
+    "diagnostic_case": "none",
+    "diagnostic_synthetic_deadline_drop_count": 0,
+    "diagnostic_timing": false,
+    "displayed_composition_count": -301,
+    "drop_rate": 0,
+    "dropped_output_count": 0,
+    "dual_seek_decode_ready_ms": [
+    ],
+    "dual_seek_displayed_ms": [
+    ],
+    "dual_seek_displayed_observed_max_ms": -1,
+    "dual_seek_displayed_p95_ms": -1,
+    "effective_fps": 0,
+    "effective_pair_rate": 0,
+    "execution_nonoverlap_count": 0,
+    "execution_overlap_count": 0,
+    "final_report_written_after_teardown": true,
+    "formal_contract_version": "P2-D5-2",
+    "formal_displayed_unique_count": 103,
+    "formal_gap_true_drop_count": 0,
+    "formal_opportunity_authority_valid": false,
+    "formal_opportunity_error": "RENDER_SWAP_MISMATCH",
+    "formal_opportunity_ledger": [
+        {
+            "expected_source_frame": 0,
+            "opportunity_ordinal": 0,
+            "presentation_swap_qpc": 1488683002188,
+            "presented_source_frame": 0,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 1,
+            "opportunity_ordinal": 1,
+            "presentation_swap_qpc": 1488683186207,
+            "presented_source_frame": 1,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 2,
+            "opportunity_ordinal": 2,
+            "presentation_swap_qpc": 1488683349563,
+            "presented_source_frame": 2,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 3,
+            "opportunity_ordinal": 3,
+            "presentation_swap_qpc": 1488683520070,
+            "presented_source_frame": 3,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 4,
+            "opportunity_ordinal": 4,
+            "presentation_swap_qpc": 1488683679491,
+            "presented_source_frame": 4,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 5,
+            "opportunity_ordinal": 5,
+            "presentation_swap_qpc": 1488683845270,
+            "presented_source_frame": 5,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 6,
+            "opportunity_ordinal": 6,
+            "presentation_swap_qpc": 1488684017733,
+            "presented_source_frame": 6,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 7,
+            "opportunity_ordinal": 7,
+            "presentation_swap_qpc": 1488684186199,
+            "presented_source_frame": 7,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 8,
+            "opportunity_ordinal": 8,
+            "presentation_swap_qpc": 1488684339209,
+            "presented_source_frame": 8,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 9,
+            "opportunity_ordinal": 9,
+            "presentation_swap_qpc": 1488684506951,
+            "presented_source_frame": 9,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 10,
+            "opportunity_ordinal": 10,
+            "presentation_swap_qpc": 1488684672332,
+            "presented_source_frame": 10,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 11,
+            "opportunity_ordinal": 11,
+            "presentation_swap_qpc": 1488684840411,
+            "presented_source_frame": 11,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 12,
+            "opportunity_ordinal": 12,
+            "presentation_swap_qpc": 1488685007161,
+            "presented_source_frame": 12,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 13,
+            "opportunity_ordinal": 13,
+            "presentation_swap_qpc": 1488685171888,
+            "presented_source_frame": 13,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 14,
+            "opportunity_ordinal": 14,
+            "presentation_swap_qpc": 1488685342045,
+            "presented_source_frame": 14,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 15,
+            "opportunity_ordinal": 15,
+            "presentation_swap_qpc": 1488685508966,
+            "presented_source_frame": 15,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 16,
+            "opportunity_ordinal": 16,
+            "presentation_swap_qpc": 1488685686949,
+            "presented_source_frame": 16,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 17,
+            "opportunity_ordinal": 17,
+            "presentation_swap_qpc": 1488685860199,
+            "presented_source_frame": 17,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 18,
+            "opportunity_ordinal": 18,
+            "presentation_swap_qpc": 1488686032722,
+            "presented_source_frame": 18,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 19,
+            "opportunity_ordinal": 19,
+            "presentation_swap_qpc": 1488686208321,
+            "presented_source_frame": 19,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 20,
+            "opportunity_ordinal": 20,
+            "presentation_swap_qpc": 1488686365082,
+            "presented_source_frame": 20,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 21,
+            "opportunity_ordinal": 21,
+            "presentation_swap_qpc": 1488686529812,
+            "presented_source_frame": 21,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 22,
+            "opportunity_ordinal": 22,
+            "presentation_swap_qpc": 1488686686690,
+            "presented_source_frame": 22,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 23,
+            "opportunity_ordinal": 23,
+            "presentation_swap_qpc": 1488686848565,
+            "presented_source_frame": 23,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 24,
+            "opportunity_ordinal": 24,
+            "presentation_swap_qpc": 1488687023610,
+            "presented_source_frame": 24,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 25,
+            "opportunity_ordinal": 25,
+            "presentation_swap_qpc": 1488687178947,
+            "presented_source_frame": 25,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 26,
+            "opportunity_ordinal": 26,
+            "presentation_swap_qpc": 1488687351749,
+            "presented_source_frame": 26,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 27,
+            "opportunity_ordinal": 27,
+            "presentation_swap_qpc": 1488687518896,
+            "presented_source_frame": 27,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 28,
+            "opportunity_ordinal": 28,
+            "presentation_swap_qpc": 1488687684042,
+            "presented_source_frame": 28,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 29,
+            "opportunity_ordinal": 29,
+            "presentation_swap_qpc": 1488687852891,
+            "presented_source_frame": 29,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 30,
+            "opportunity_ordinal": 30,
+            "presentation_swap_qpc": 1488688058063,
+            "presented_source_frame": 30,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 31,
+            "opportunity_ordinal": 31,
+            "presentation_swap_qpc": 1488688243488,
+            "presented_source_frame": 31,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 32,
+            "opportunity_ordinal": 32,
+            "presentation_swap_qpc": 1488688367976,
+            "presented_source_frame": 32,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 33,
+            "opportunity_ordinal": 33,
+            "presentation_swap_qpc": 1488688523232,
+            "presented_source_frame": 33,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 34,
+            "opportunity_ordinal": 34,
+            "presentation_swap_qpc": 1488688688923,
+            "presented_source_frame": 34,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 35,
+            "opportunity_ordinal": 35,
+            "presentation_swap_qpc": 1488688850538,
+            "presented_source_frame": 35,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 36,
+            "opportunity_ordinal": 36,
+            "presentation_swap_qpc": 1488689023948,
+            "presented_source_frame": 36,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 37,
+            "opportunity_ordinal": 37,
+            "presentation_swap_qpc": 1488689174724,
+            "presented_source_frame": 37,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 38,
+            "opportunity_ordinal": 38,
+            "presentation_swap_qpc": 1488689344375,
+            "presented_source_frame": 38,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 39,
+            "opportunity_ordinal": 39,
+            "presentation_swap_qpc": 1488689513097,
+            "presented_source_frame": 39,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 40,
+            "opportunity_ordinal": 40,
+            "presentation_swap_qpc": 1488689680655,
+            "presented_source_frame": 40,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 41,
+            "opportunity_ordinal": 41,
+            "presentation_swap_qpc": 1488689850361,
+            "presented_source_frame": 41,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 42,
+            "opportunity_ordinal": 42,
+            "presentation_swap_qpc": 1488690015601,
+            "presented_source_frame": 42,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 43,
+            "opportunity_ordinal": 43,
+            "presentation_swap_qpc": 1488690187872,
+            "presented_source_frame": 43,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 44,
+            "opportunity_ordinal": 44,
+            "presentation_swap_qpc": 1488690357827,
+            "presented_source_frame": 44,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 45,
+            "opportunity_ordinal": 45,
+            "presentation_swap_qpc": 1488690524419,
+            "presented_source_frame": 45,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 46,
+            "opportunity_ordinal": 46,
+            "presentation_swap_qpc": 1488690691548,
+            "presented_source_frame": 46,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 47,
+            "opportunity_ordinal": 47,
+            "presentation_swap_qpc": 1488690876830,
+            "presented_source_frame": 47,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 48,
+            "opportunity_ordinal": 48,
+            "presentation_swap_qpc": 1488691011652,
+            "presented_source_frame": 48,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 49,
+            "opportunity_ordinal": 49,
+            "presentation_swap_qpc": 1488691201668,
+            "presented_source_frame": 49,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 50,
+            "opportunity_ordinal": 50,
+            "presentation_swap_qpc": 1488691364621,
+            "presented_source_frame": 50,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 51,
+            "opportunity_ordinal": 51,
+            "presentation_swap_qpc": 1488691521450,
+            "presented_source_frame": 51,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 52,
+            "opportunity_ordinal": 52,
+            "presentation_swap_qpc": 1488691690482,
+            "presented_source_frame": 52,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 53,
+            "opportunity_ordinal": 53,
+            "presentation_swap_qpc": 1488691856015,
+            "presented_source_frame": 53,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 54,
+            "opportunity_ordinal": 54,
+            "presentation_swap_qpc": 1488692029859,
+            "presented_source_frame": 54,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 55,
+            "opportunity_ordinal": 55,
+            "presentation_swap_qpc": 1488692186677,
+            "presented_source_frame": 55,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 56,
+            "opportunity_ordinal": 56,
+            "presentation_swap_qpc": 1488692368807,
+            "presented_source_frame": 56,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 57,
+            "opportunity_ordinal": 57,
+            "presentation_swap_qpc": 1488692521360,
+            "presented_source_frame": 57,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 58,
+            "opportunity_ordinal": 58,
+            "presentation_swap_qpc": 1488692689886,
+            "presented_source_frame": 58,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 59,
+            "opportunity_ordinal": 59,
+            "presentation_swap_qpc": 1488692856559,
+            "presented_source_frame": 59,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 60,
+            "opportunity_ordinal": 60,
+            "presentation_swap_qpc": 1488693019979,
+            "presented_source_frame": 60,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 61,
+            "opportunity_ordinal": 61,
+            "presentation_swap_qpc": 1488693177931,
+            "presented_source_frame": 61,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 62,
+            "opportunity_ordinal": 62,
+            "presentation_swap_qpc": 1488693346107,
+            "presented_source_frame": 62,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 63,
+            "opportunity_ordinal": 63,
+            "presentation_swap_qpc": 1488693530410,
+            "presented_source_frame": 63,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 64,
+            "opportunity_ordinal": 64,
+            "presentation_swap_qpc": 1488693692643,
+            "presented_source_frame": 64,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 65,
+            "opportunity_ordinal": 65,
+            "presentation_swap_qpc": 1488693858020,
+            "presented_source_frame": 65,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 66,
+            "opportunity_ordinal": 66,
+            "presentation_swap_qpc": 1488694030290,
+            "presented_source_frame": 66,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 67,
+            "opportunity_ordinal": 67,
+            "presentation_swap_qpc": 1488694189081,
+            "presented_source_frame": 67,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 68,
+            "opportunity_ordinal": 68,
+            "presentation_swap_qpc": 1488694353040,
+            "presented_source_frame": 68,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 69,
+            "opportunity_ordinal": 69,
+            "presentation_swap_qpc": 1488694530120,
+            "presented_source_frame": 69,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 70,
+            "opportunity_ordinal": 70,
+            "presentation_swap_qpc": 1488694689870,
+            "presented_source_frame": 70,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 71,
+            "opportunity_ordinal": 71,
+            "presentation_swap_qpc": 1488694873082,
+            "presented_source_frame": 71,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 72,
+            "opportunity_ordinal": 72,
+            "presentation_swap_qpc": 1488695029318,
+            "presented_source_frame": 72,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 73,
+            "opportunity_ordinal": 73,
+            "presentation_swap_qpc": 1488695194013,
+            "presented_source_frame": 73,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 74,
+            "opportunity_ordinal": 74,
+            "presentation_swap_qpc": 1488695360673,
+            "presented_source_frame": 74,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 75,
+            "opportunity_ordinal": 75,
+            "presentation_swap_qpc": 1488695528171,
+            "presented_source_frame": 75,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 76,
+            "opportunity_ordinal": 76,
+            "presentation_swap_qpc": 1488695693408,
+            "presented_source_frame": 76,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 77,
+            "opportunity_ordinal": 77,
+            "presentation_swap_qpc": 1488695869741,
+            "presented_source_frame": 77,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 78,
+            "opportunity_ordinal": 78,
+            "presentation_swap_qpc": 1488696034796,
+            "presented_source_frame": 78,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 79,
+            "opportunity_ordinal": 79,
+            "presentation_swap_qpc": 1488696201367,
+            "presented_source_frame": 79,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 80,
+            "opportunity_ordinal": 80,
+            "presentation_swap_qpc": 1488696366118,
+            "presented_source_frame": 80,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 81,
+            "opportunity_ordinal": 81,
+            "presentation_swap_qpc": 1488696546580,
+            "presented_source_frame": 81,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 82,
+            "opportunity_ordinal": 82,
+            "presentation_swap_qpc": 1488696695990,
+            "presented_source_frame": 82,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 83,
+            "opportunity_ordinal": 83,
+            "presentation_swap_qpc": 1488696862990,
+            "presented_source_frame": 83,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 84,
+            "opportunity_ordinal": 84,
+            "presentation_swap_qpc": 1488697026058,
+            "presented_source_frame": 84,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 85,
+            "opportunity_ordinal": 85,
+            "presentation_swap_qpc": 1488697194347,
+            "presented_source_frame": 85,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 86,
+            "opportunity_ordinal": 86,
+            "presentation_swap_qpc": 1488697360281,
+            "presented_source_frame": 86,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 87,
+            "opportunity_ordinal": 87,
+            "presentation_swap_qpc": 1488697536110,
+            "presented_source_frame": 87,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 88,
+            "opportunity_ordinal": 88,
+            "presentation_swap_qpc": 1488697699199,
+            "presented_source_frame": 88,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 89,
+            "opportunity_ordinal": 89,
+            "presentation_swap_qpc": 1488697874085,
+            "presented_source_frame": 89,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 90,
+            "opportunity_ordinal": 90,
+            "presentation_swap_qpc": 1488698030046,
+            "presented_source_frame": 90,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 91,
+            "opportunity_ordinal": 91,
+            "presentation_swap_qpc": 1488698183639,
+            "presented_source_frame": 91,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 92,
+            "opportunity_ordinal": 92,
+            "presentation_swap_qpc": 1488698382518,
+            "presented_source_frame": 92,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 93,
+            "opportunity_ordinal": 93,
+            "presentation_swap_qpc": 1488698526216,
+            "presented_source_frame": 93,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 94,
+            "opportunity_ordinal": 94,
+            "presentation_swap_qpc": 1488698696740,
+            "presented_source_frame": 94,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 95,
+            "opportunity_ordinal": 95,
+            "presentation_swap_qpc": 1488698862353,
+            "presented_source_frame": 95,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 96,
+            "opportunity_ordinal": 96,
+            "presentation_swap_qpc": 1488699027088,
+            "presented_source_frame": 96,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 97,
+            "opportunity_ordinal": 97,
+            "presentation_swap_qpc": 1488699193188,
+            "presented_source_frame": 97,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 98,
+            "opportunity_ordinal": 98,
+            "presentation_swap_qpc": 1488699363157,
+            "presented_source_frame": 98,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 99,
+            "opportunity_ordinal": 99,
+            "presentation_swap_qpc": 1488699530031,
+            "presented_source_frame": 99,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 100,
+            "opportunity_ordinal": 100,
+            "presentation_swap_qpc": 1488699714548,
+            "presented_source_frame": 100,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 101,
+            "opportunity_ordinal": 101,
+            "presentation_swap_qpc": 1488699872493,
+            "presented_source_frame": 101,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        },
+        {
+            "expected_source_frame": 102,
+            "opportunity_ordinal": 102,
+            "presentation_swap_qpc": 1488700034022,
+            "presented_source_frame": 102,
+            "refresh_denominator": 1000,
+            "refresh_numerator": 59950,
+            "repeat": false,
+            "true_drop_before_this_opportunity": 0
+        }
+    ],
+    "formal_preflight": true,
+    "formal_refresh_denominator": 1000,
+    "formal_refresh_numerator": 59950,
+    "formal_repeated_opportunity_count": 0,
+    "formal_source_fps_denominator": 1,
+    "formal_source_fps_numerator": 60,
+    "formal_true_opportunity_drop_count": 0,
+    "full_frame_gpu_copy_count": 0,
+    "gpu_passes_per_composition": 0,
+    "gpu_submission_count": 405,
+    "layout_epoch_mismatch": 0,
+    "lifecycle_order_violation_count": 0,
+    "logical_clear_count": -301,
+    "marker_a_checked_count": 7,
+    "marker_a_mismatch": 0,
+    "marker_b_checked_count": 7,
+    "marker_b_mismatch": 0,
+    "marker_band_readback_count": 14,
+    "measurement_buffer_depth_a_end": 0,
+    "measurement_buffer_depth_a_start": 16,
+    "measurement_buffer_depth_b_end": 0,
+    "measurement_buffer_depth_b_start": 16,
+    "measurement_completion_poll_failure_count": 0,
+    "measurement_composition_drawn_count": -301,
+    "measurement_composition_requested_count": -301,
+    "measurement_decoded_a_count": -449,
+    "measurement_decoded_b_count": -446,
+    "measurement_displayed_composition_count": -301,
+    "measurement_drop_future_generation": 0,
+    "measurement_drop_missing_both": 0,
+    "measurement_drop_missing_source_a": 0,
+    "measurement_drop_missing_source_b": 0,
+    "measurement_drop_render_failure": 0,
+    "measurement_drop_scheduler_deadline": 0,
+    "measurement_drop_stale_composition_epoch": 0,
+    "measurement_drop_stale_generation": 0,
+    "measurement_dropped_output_count": 0,
+    "measurement_elapsed_seconds": 0,
+    "measurement_first_output_frame": 0,
+    "measurement_gpu_submission_count": -301,
+    "measurement_layer_draw_count": -602,
+    "measurement_logical_clear_count": -301,
+    "measurement_missing_pair_count": 0,
+    "measurement_partial_gpu_issue_failure_count": 0,
+    "measurement_preroll_depth_a": 16,
+    "measurement_preroll_depth_b": 16,
+    "measurement_preroll_front_a": 0,
+    "measurement_preroll_front_b": 0,
+    "measurement_preroll_ok": true,
+    "measurement_present_callback_count": -341,
+    "measurement_repeated_present_count": -40,
+    "measurement_scheduled_output_count": -301,
+    "measurement_source_a_eof_count": 0,
+    "measurement_source_b_eof_count": 0,
+    "measurement_untracked_submission_count": 0,
+    "measurement_wait_for_space_a_count": 0,
+    "measurement_wait_for_space_b_count": 0,
+    "missing_pair_drop_count": 0,
+    "missing_source_a_drop_count": 0,
+    "missing_source_b_drop_count": 0,
+    "mixed_generation_count": 0,
+    "mixed_source_frame_count": 0,
+    "mode": "playback",
+    "output_probe_readback_count": 4,
+    "paired_count": -301,
+    "parallel_dispatch_valid_count": 0,
+    "partial_gpu_issue_failure_count": 0,
+    "payloads_released_before_completion": 0,
+    "pending_pair_count": 0,
+    "present_callback_count": -341,
+    "process_exit_code": 3,
+    "render_stage_timings": {
+        "buffer_depth_a": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values": [
+            ]
+        },
+        "buffer_depth_b": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values": [
+            ]
+        },
+        "completion_poll_us": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_us": [
+            ]
+        },
+        "composition_issue_us": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_us": [
+            ]
+        },
+        "composition_prepare_us": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_us": [
+            ]
+        },
+        "pair_us": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_us": [
+            ]
+        },
+        "qt_external_us": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_us": [
+            ]
+        },
+        "render_callback_interval_us": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_us": [
+            ]
+        },
+        "render_callback_total_us": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_us": [
+            ]
+        },
+        "scheduler_to_pair_us": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_us": [
+            ]
+        }
+    },
+    "repeated_present_count": -40,
+    "required_measurement_frame_count": 3600,
+    "retired_not_completed": 0,
+    "retirement_depth_after_drain": 0,
+    "retirement_depth_peak": 2,
+    "retirement_timeout_count": 0,
+    "same_device_a": true,
+    "same_device_b": true,
+    "scheduled_output_count": -301,
+    "scheduler_deadline_drop_count": 0,
+    "schema": "mvm-p2-formal-2",
+    "seek_busy_acceptance_count": 0,
+    "seek_completion_publish_reject_count": 0,
+    "seek_completion_request_mismatch_count": 0,
+    "seek_completion_stopped_superseded_count": 0,
+    "seek_concurrency_samples": [
+    ],
+    "seek_display_mismatch": 0,
+    "seek_stage_timings": {
+        "both_ready_to_pair_ms": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_ms": [
+            ]
+        },
+        "decode_ready_to_display_ms": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_ms": [
+            ]
+        },
+        "decode_ready_to_pair_ms": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_ms": [
+            ]
+        },
+        "dual_decode_ready_ms": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_ms": [
+            ]
+        },
+        "pair_to_submission_ms": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_ms": [
+            ]
+        },
+        "request_to_display_ms": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_ms": [
+            ]
+        },
+        "seek_a_ms": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_ms": [
+            ]
+        },
+        "seek_a_request_to_ready_ms": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_ms": [
+            ]
+        },
+        "seek_b_ms": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_ms": [
+            ]
+        },
+        "seek_b_request_to_ready_ms": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_ms": [
+            ]
+        },
+        "submission_to_display_record_ms": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_ms": [
+            ]
+        }
+    },
+    "seek_stale_completion_count": 0,
+    "seek_timeout_count": 0,
+    "shutdown_reason": "P2-D5-2 render↔swap authority失敗: RENDER_SWAP_MISMATCH",
+    "software_fallback_count": 0,
+    "source_a_frame_count": 3600,
+    "source_a_software_frame_reject_count": 0,
+    "source_b_frame_count": 3600,
+    "source_b_software_frame_reject_count": 0,
+    "source_coverage_ok": true,
+    "stale_composition_epoch_count": 0,
+    "tail_true_drop": 0,
+    "teardown_success": true,
+    "untracked_submission_count": 0,
+    "worker_join_leak_count": 0
+}
