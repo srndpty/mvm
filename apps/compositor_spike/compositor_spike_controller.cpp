@@ -85,6 +85,20 @@ DwmPresentationTimingSnapshot captureDwmTiming(QQuickWindow* window) {
     return result;
 }
 
+bool validDwmAuthority(const DwmPresentationTimingSnapshot& value) {
+    return value.available && value.displayConfigAvailable &&
+           value.displayRefreshNumerator > 0 && value.displayRefreshDenominator > 0 &&
+           value.qpcVBlank > 0;
+}
+
+bool sameDwmAuthority(const DwmPresentationTimingSnapshot& start,
+                      const DwmPresentationTimingSnapshot& current) {
+    return validDwmAuthority(start) && validDwmAuthority(current) &&
+           start.displayRefreshNumerator == current.displayRefreshNumerator &&
+           start.displayRefreshDenominator == current.displayRefreshDenominator &&
+           current.qpcVBlank >= start.qpcVBlank && current.refreshCount >= start.refreshCount;
+}
+
 QJsonObject dwmTimingJson(const DwmPresentationTimingSnapshot& value) {
     return {{"available", value.available},
             {"refresh_numerator", static_cast<qint64>(value.refreshNumerator)},
@@ -249,6 +263,10 @@ void CompositorSpikeController::attach(CompositorRhiItem* item) {
                                             std::memory_order_release);
     state_->presentationOpportunityEnabled.store(config_.presentationOpportunityRing,
                                                  std::memory_order_release);
+    state_->formalOpportunitySchedulerEnabled.store(
+        config_.formalPreflight && config_.mode == CompositorMode::Playback &&
+            config_.diagnosticCase == CompositorDiagnosticCase::None,
+        std::memory_order_release);
     phaseTimer_.start();
     timer_.start();
 }
@@ -481,8 +499,23 @@ bool CompositorSpikeController::resetPlaybackForMeasurement() {
 }
 
 void CompositorSpikeController::requestMeasurementStart() {
-    if (config_.presentationOpportunityRing)
+    const bool formalOpportunity =
+        state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire);
+    if (config_.presentationOpportunityRing || formalOpportunity)
         dwmTimingStart_ = captureDwmTiming(item_ ? item_->window() : nullptr);
+    if (formalOpportunity) {
+        if (!validDwmAuthority(dwmTimingStart_)) {
+            beginShutdown(QStringLiteral("P2-D5-2 presentation authorityを開始できません"), true);
+            return;
+        }
+        state_->formalRefreshNumerator.store(dwmTimingStart_.displayRefreshNumerator,
+                                             std::memory_order_relaxed);
+        state_->formalRefreshDenominator.store(dwmTimingStart_.displayRefreshDenominator,
+                                               std::memory_order_relaxed);
+        state_->formalRequiredFrameCount.store(requiredMeasurementFrameCount_,
+                                               std::memory_order_release);
+        formalAuthorityLastPollQpc_ = gpu::qpcTicks();
+    }
     state_->measurementFirstOutputFrame.store(-1, std::memory_order_release);
     state_->measurementDurationQpc.store(
         static_cast<long long>(gpu::qpcFrequency()) * config_.measureSeconds,
@@ -602,13 +635,28 @@ void CompositorSpikeController::tick() {
         } else {
             item_->update();
         }
-    } else if (phase_ == Phase::Measure &&
-               gpu::qpcMsBetween(measurementStart_.qpc, gpu::qpcTicks()) >=
-                   config_.measureSeconds * 1000.0) {
-        state_->measurementStopRequested.store(true, std::memory_order_release);
-        state_->measurementStopCaptured.store(false, std::memory_order_release);
-        phase_ = Phase::MeasureStopWait;
-        item_->update();
+    } else if (phase_ == Phase::Measure) {
+        const long long nowQpc = gpu::qpcTicks();
+        const bool formalOpportunity =
+            state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire);
+        const long long pollInterval = static_cast<long long>(gpu::qpcFrequency()) / 4;
+        if (formalOpportunity && nowQpc - formalAuthorityLastPollQpc_ >= pollInterval) {
+            const auto current = captureDwmTiming(item_ ? item_->window() : nullptr);
+            formalAuthorityLastPollQpc_ = nowQpc;
+            if (!sameDwmAuthority(dwmTimingStart_, current)) {
+                beginShutdown(
+                    QStringLiteral("P2-D5-2 refresh/DWM authorityが測定中に変化しました"), true);
+                return;
+            }
+        }
+        if (state_->formalOpportunityDomainReached.load(std::memory_order_acquire) ||
+            gpu::qpcMsBetween(measurementStart_.qpc, nowQpc) >=
+                config_.measureSeconds * 1000.0) {
+            state_->measurementStopRequested.store(true, std::memory_order_release);
+            state_->measurementStopCaptured.store(false, std::memory_order_release);
+            phase_ = Phase::MeasureStopWait;
+            item_->update();
+        }
     } else if (phase_ == Phase::MeasureStopWait) {
         if (state_->measurementStopCaptured.load(std::memory_order_acquire)) {
             {
@@ -619,9 +667,16 @@ void CompositorSpikeController::tick() {
                 gpu::qpcMsBetween(measurementStart_.qpc, measurementStop_.qpc) / 1000.0;
             measurementStopA_ = workerA_ ? workerA_->snapshot() : gpu::SourceDecoderSnapshot{};
             measurementStopB_ = workerB_ ? workerB_->snapshot() : gpu::SourceDecoderSnapshot{};
-            if (config_.presentationOpportunityRing)
+            const bool formalOpportunity =
+                state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire);
+            if (config_.presentationOpportunityRing || formalOpportunity)
                 dwmTimingStop_ = captureDwmTiming(item_ ? item_->window() : nullptr);
-            beginShutdown(QStringLiteral("playback measurement完了"), false);
+            const bool authorityStable =
+                !formalOpportunity || sameDwmAuthority(dwmTimingStart_, dwmTimingStop_);
+            beginShutdown(authorityStable
+                              ? QStringLiteral("playback measurement完了")
+                              : QStringLiteral("P2-D5-2 refresh/DWM authorityが途中で変化しました"),
+                          !authorityStable);
         } else {
             item_->update();
         }
@@ -1057,6 +1112,26 @@ bool CompositorSpikeController::writeMetrics() {
         {"unobserved_boundary_deadline_count", unobservedBoundaryDeadlineCount},
         {"phase_pairs", schedulerPhasePairJson},
         {"records", schedulerPhaseRecordJson}};
+    gpu::PresentationOpportunitySnapshot formalOpportunitySnapshot;
+    if (state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire)) {
+        std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+        formalOpportunitySnapshot = state_->formalOpportunityScheduler.snapshot();
+    }
+    QJsonArray formalOpportunityLedger;
+    for (const auto& record : formalOpportunitySnapshot.records) {
+        formalOpportunityLedger.append(
+            QJsonObject{{"opportunity_ordinal", record.opportunityOrdinal},
+                        {"presentation_swap_qpc", record.swapQpc},
+                        {"refresh_numerator", record.refreshNumerator},
+                        {"refresh_denominator", record.refreshDenominator},
+                        {"expected_source_frame", record.expectedSourceFrame},
+                        {"presented_source_frame", record.presentedSourceFrame},
+                        {"repeat", record.repeat},
+                        {"true_drop_before_this_opportunity", record.trueDropBefore}});
+    }
+    const bool formalRefreshStable =
+        !state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire) ||
+        sameDwmAuthority(dwmTimingStart_, dwmTimingStop_);
     const auto presentationRenders = config_.presentationOpportunityRing
                                          ? state_->presentationOpportunityRing.renderSnapshot()
                                          : std::vector<gpu::PresentationRenderRecord>{};
@@ -1108,8 +1183,8 @@ bool CompositorSpikeController::writeMetrics() {
                              : config_.mode == CompositorMode::Seek ? QStringLiteral("seek")
                                                                     : QStringLiteral("layout");
     QJsonObject o{{"schema", config_.diagnosticTiming ? "mvm-p2-diagnostic-1"
-                                                       : "mvm-p2-formal-1"},
-                  {"formal_contract_version", "P2-D5-1"},
+                                                       : "mvm-p2-formal-2"},
+                  {"formal_contract_version", "P2-D5-2"},
                   {"mode", mode},
                   {"formal_preflight", config_.formalPreflight},
                   {"process_exit_code", exitCode_},
@@ -1145,6 +1220,27 @@ bool CompositorSpikeController::writeMetrics() {
                                     ? static_cast<double>(measurement.dropped) /
                                           static_cast<double>(measurement.scheduled)
                                     : 0},
+                  {"formal_opportunity_authority_valid",
+                   formalOpportunitySnapshot.valid && formalOpportunitySnapshot.closed &&
+                       formalRefreshStable},
+                  {"formal_opportunity_error",
+                   QString::fromLatin1(gpu::presentationOpportunityErrorName(
+                       formalOpportunitySnapshot.error))},
+                  {"formal_refresh_numerator",
+                   state_->formalRefreshNumerator.load(std::memory_order_relaxed)},
+                  {"formal_refresh_denominator",
+                   state_->formalRefreshDenominator.load(std::memory_order_relaxed)},
+                  {"formal_source_fps_numerator", 60},
+                  {"formal_source_fps_denominator", 1},
+                  {"formal_displayed_unique_count", formalOpportunitySnapshot.displayedUnique},
+                  {"formal_repeated_opportunity_count", formalOpportunitySnapshot.repeated},
+                  {"formal_gap_true_drop_count", formalOpportunitySnapshot.gapTrueDrop},
+                  {"tail_true_drop", formalOpportunitySnapshot.tailTrueDrop},
+                  {"formal_true_opportunity_drop_count", formalOpportunitySnapshot.trueDrop},
+                  {"diagnostic_synthetic_deadline_drop_count",
+                   state_->diagnosticSyntheticDeadlineDropCount.load(
+                       std::memory_order_relaxed)},
+                  {"formal_opportunity_ledger", formalOpportunityLedger},
                   {"measurement_composition_requested_count",
                    measurement.compositionRequested},
                   {"measurement_composition_drawn_count", measurement.compositionDrawn},

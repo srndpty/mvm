@@ -94,7 +94,9 @@ int main(int argc, char** argv) {
     if (!surface)
         return 5;
     surface->setPreferredCompletionBackend(config.completion);
-    if (config.presentationOpportunityRing) {
+    if (config.presentationOpportunityRing ||
+        (config.formalPreflight && config.mode == CompositorMode::Playback &&
+         config.diagnosticCase == CompositorDiagnosticCase::None)) {
         QObject::connect(window, &QQuickWindow::frameSwapped, surface,
                          &CompositorRhiItem::recordFrameSwapped, Qt::DirectConnection);
     }

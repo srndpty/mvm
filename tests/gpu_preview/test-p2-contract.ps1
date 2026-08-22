@@ -12,14 +12,17 @@ param(
         'NegativeSeekStoppedSuperseded', 'NegativeSeekConcurrencyCount',
         'SeekExecutionNonoverlapGood', 'FormalSeekGood',
         'NegativeParallelDispatchCount', 'NegativeParallelDispatchSample',
-        'NegativeBRequestResult', 'NegativeDispatchAfterFirstReady')][string]$Case,
+        'NegativeBRequestResult', 'NegativeDispatchAfterFirstReady',
+        'NegativeOpportunityLedgerMutation', 'NegativeOpportunityOrdinalGapIgnored',
+        'NegativeOpportunityRefreshChange', 'NegativeOpportunityAuthority',
+        'NegativeOpportunityTail')][string]$Case,
     [Parameter(Mandatory)][string]$Checker,
     [Parameter(Mandatory)][string]$Output
 )
 $ErrorActionPreference = 'Stop'
 
 $raw = [ordered]@{
-    schema='mvm-p2-formal-1'; formal_contract_version='P2-D5-1'; mode='playback'
+    schema='mvm-p2-formal-2'; formal_contract_version='P2-D5-2'; mode='playback'
     formal_preflight=$true; process_exit_code=0
     same_device_a=$true; same_device_b=$true
     actual_output_width=1920; actual_output_height=1080
@@ -49,6 +52,13 @@ $raw = [ordered]@{
     measurement_drop_stale_composition_epoch=0; measurement_drop_render_failure=0
     measurement_untracked_submission_count=0; measurement_completion_poll_failure_count=0
     measurement_partial_gpu_issue_failure_count=0; effective_fps=60.0; drop_rate=0.0
+    formal_opportunity_authority_valid=$true; formal_opportunity_error='NONE'
+    formal_refresh_numerator=60; formal_refresh_denominator=1
+    formal_source_fps_numerator=60; formal_source_fps_denominator=1
+    formal_displayed_unique_count=120; formal_repeated_opportunity_count=0
+    formal_gap_true_drop_count=0; tail_true_drop=0
+    formal_true_opportunity_drop_count=0
+    diagnostic_synthetic_deadline_drop_count=0
     dual_seek_displayed_ms=@(1.0) * 16; dual_seek_decode_ready_ms=@(0.5) * 16
     dual_seek_displayed_p95_ms=1.0; dual_seek_displayed_observed_max_ms=1.0
     seek_display_mismatch=0; seek_timeout_count=0; untracked_submission_count=0
@@ -94,6 +104,7 @@ if ($Case -in $formalCases) {
     $raw.measurement_gpu_submission_count = 3600
     $raw.measurement_layer_draw_count = 7200
     $raw.measurement_logical_clear_count = 3600
+    $raw.formal_displayed_unique_count = 3600
 }
 if ($Case -in $formalSeekCases) {
     $raw.dual_seek_displayed_ms = @(1.0) * 1000
@@ -111,6 +122,15 @@ if ($Case -in $formalSeekCases) {
         }
     })
 }
+$raw.formal_opportunity_ledger = @(0..([int]$raw.required_measurement_frame_count - 1) |
+    ForEach-Object {
+        [ordered]@{
+            opportunity_ordinal=$_; presentation_swap_qpc=1000 + $_
+            refresh_numerator=60; refresh_denominator=1
+            expected_source_frame=$_; presented_source_frame=$_
+            repeat=$false; true_drop_before_this_opportunity=0
+        }
+    })
 switch ($Case) {
     # 実装と同じ式を共有せず、各caseで1 fieldだけを壊してcheckerの効力を確認する。
     'NegativeInvariant' { $raw.measurement_layer_draw_count = 239 }
@@ -156,6 +176,18 @@ switch ($Case) {
     'NegativeDispatchAfterFirstReady' {
         $raw.seek_concurrency_samples[7].dispatch_complete_qpc = 107
     }
+    'NegativeOpportunityLedgerMutation' {
+        $raw.formal_opportunity_ledger[57].presented_source_frame = 999
+    }
+    'NegativeOpportunityOrdinalGapIgnored' {
+        $raw.formal_opportunity_ledger[57].opportunity_ordinal = 58
+    }
+    'NegativeOpportunityRefreshChange' {
+        $raw.formal_opportunity_ledger[57].refresh_numerator = 59950
+        $raw.formal_opportunity_ledger[57].refresh_denominator = 1000
+    }
+    'NegativeOpportunityAuthority' { $raw.formal_opportunity_authority_valid = $false }
+    'NegativeOpportunityTail' { $raw.tail_true_drop = 1 }
 }
 $raw | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $Output -Encoding utf8
 $formal = $Case -in $formalCases

@@ -91,6 +91,7 @@ add_library(mvm_gpu_preview STATIC
     media/gpu_preview/output_scheduler.cpp
     media/gpu_preview/scheduler_phase_attribution.cpp
     media/gpu_preview/presentation_opportunity_attribution.cpp
+    media/gpu_preview/presentation_opportunity_scheduler.cpp
 )
 target_include_directories(mvm_gpu_preview PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_gpu_preview

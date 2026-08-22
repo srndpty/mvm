@@ -1086,8 +1086,8 @@ run 2: 15 = 3 + 3 + 9
 
 したがってQ6 proofは成立し、P2-D5-2 contract correctionを提案できる。D5-2はP2 formal playback
 harness固有のpresentation-opportunity schedulerとし、P3 audio-masterを含む共有時計へ波及させない。
-historical P2-D5-1 FAILは再分類せず、D5-2でもdrop threshold 2%を維持する。ただし本sectionは
-offline proofであり、D5-2 runtime / checkerはまだ未実装、P5-E closureは**BLOCKED**のままである。
+historical P2-D5-1 FAILは再分類せず、D5-2でもdrop threshold 2%を維持する。このQ6 checkpoint時点では
+offline proofのみであり、D5-2 runtime / checkerは未実装、P5-E closureは**BLOCKED**のままである。
 clean checkpoint後の再現とimmutable artifact生成には次を使う。
 
 ```powershell
@@ -1096,6 +1096,36 @@ pwsh scripts/build.ps1 -Target mvm_p2_opportunity_ordinal_replay
 pwsh scripts/p5-e4-p2-q6-opportunity.ps1 `
   -OutputDirectory bench/results/p5-e4-p2-q6-<clean-sha>
 ```
+
+### P2-D5-2 — presentation-opportunity formal contract / harness fix
+
+Q6 clean SHA `0b5463b56f35d393ca4eb4489e30ed21b73a5cc4`からrunnerを再実行し、synthetic
+15/15、Q5 trace 2/2 PASSをmanifest付きartifactとして
+[`bench/results/p5-e4-p2-q6-0b5463b/`](../bench/results/p5-e4-p2-q6-0b5463b/README.md)へ固定した。
+このevidence-only commitとD5-2実装は分離している。
+
+D5-2ではraw schemaを`mvm-p2-formal-2`、contractを`P2-D5-2`へ更新する。formal Playback専用の
+`PresentationOpportunityScheduler`は、直前に完了したswap QPCとexact display refresh rationalだけから
+次のopportunity ordinalをrender前に決定する。`frameSwapped`でactual ordinalとrender対象を照合してから
+ledgerへcommitするため、未来のswapを使うretrospective再分類ではない。shared `OutputScheduler60Hz`と
+P3 audio-master schedulerは変更しない。旧synthetic deadline schedulerはframe selectionから外し、
+`diagnostic_synthetic_deadline_drop_count`としてのみ残す。
+
+raw ledgerの各recordにはopportunity ordinal、swap QPC、refresh rational、expected/presented source frame、
+repeat、直前gapのtrue dropを保存する。checkerはproducer summaryを信じず、整数rational mapping、unique、
+repeat、gap、tail、`displayedUnique + trueDrop == required domain`、2% thresholdをrawから再計算する。
+render↔swap欠落・不一致、ordinal/QPC regression、midpoint ambiguity、overflow、refresh/DWM authority変更は
+contract/runtime failureとしてfail-closedにする。historical P2-D5-1 FAILはD5-2 PASSへ再分類しない。
+
+pure schedulerは60 / 59.95 / 120 / 30 Hz、単一・連続opportunity欠落、duplicate callback、tail、
+correspondence欠落・不一致、regression、overflowの12分類を検査し、12/12 PASSした。checkerはraw ledger
+1件のpresented frame改竄、ordinal gap無視、refresh改竄、authority failure、tail改竄をnegativeとして持つ。
+targeted live dry-runは59950/1000 HzでPlayback / Seek各1/1 PASSだった。Playbackはledger 119件、
+`unique=119 / trueDrop=1 / tail=1 / scheduled=120`でauthority `NONE`、domain conservationが成立した。
+current worktreeでordinary CTestはRelease 485/485、Debug 485/485が通過し、lint / architecture / layer
+isolation / PSScriptAnalyzerもPASSした。
+これは経路検証でありformal closure evidenceではない。clean production SHAのP2 6/6とfinal closure suiteは
+まだ未実行なので、P5-E closureは引き続き**BLOCKED**である。
 
 ---
 

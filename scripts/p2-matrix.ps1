@@ -14,7 +14,7 @@ $repo = Split-Path -Parent $PSScriptRoot
 $build = Join-Path $repo 'build\ucrt64-release'
 $exe = Join-Path $build 'bin\mvm_compositor_spike.exe'
 $checker = Join-Path $PSScriptRoot 'check-p2-contract.ps1'
-if (-not $OutputDirectory) { $OutputDirectory = Join-Path $build 'p2-matrix-d5' }
+if (-not $OutputDirectory) { $OutputDirectory = Join-Path $build 'p2-matrix-d5-2' }
 if (-not $SourceA) { $SourceA = Join-Path $repo 'tests\assets\benchmark\v1080p60_h264.mp4' }
 if (-not $SourceB) { $SourceB = Join-Path $repo 'tests\assets\benchmark\v1080p60_hevc.mp4' }
 foreach ($required in @($exe, $checker, $SourceA, $SourceB)) {
@@ -147,7 +147,7 @@ $allSeek = $seekEntries.Count -eq $runCount -and
     @($seekEntries | Where-Object { -not $_.pass }).Count -eq 0
 $summary = [ordered]@{
     schema = 'mvm-p2-matrix-summary-1'
-    formal_contract_version = 'P2-D5-1'
+    formal_contract_version = 'P2-D5-2'
     dry_run = [bool]$DryRun
     git_commit = $startProvenance.git_commit
     dirty_worktree = $startProvenance.dirty_worktree
@@ -161,7 +161,11 @@ $summary = [ordered]@{
         [ordered]@{ run=$_.run; raw_path=$_.raw_path; process_exit_code=$_.process_exit_code
             contract_exit_code=$_.contract_exit_code; pass=$_.pass
             effective_fps=if ($_.raw) {$_.raw.effective_fps} else {$null}
-            drop_rate=if ($_.raw) {$_.raw.drop_rate} else {$null} }
+            drop_rate=if ($_.raw) {$_.raw.drop_rate} else {$null}
+            formal_true_opportunity_drop_count=if ($_.raw) {
+                $_.raw.formal_true_opportunity_drop_count } else {$null}
+            diagnostic_synthetic_deadline_drop_count=if ($_.raw) {
+                $_.raw.diagnostic_synthetic_deadline_drop_count } else {$null} }
     })
     seek_runs = @($seekEntries | ForEach-Object {
         [ordered]@{ run=$_.run; raw_path=$_.raw_path; process_exit_code=$_.process_exit_code

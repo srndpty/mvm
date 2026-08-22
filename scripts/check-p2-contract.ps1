@@ -42,8 +42,8 @@ try {
     exit 2
 }
 
-Require-Equal (Require-Property $raw 'schema') 'mvm-p2-formal-1' 'schema'
-Require-Equal (Require-Property $raw 'formal_contract_version') 'P2-D5-1' 'formal_contract_version'
+Require-Equal (Require-Property $raw 'schema') 'mvm-p2-formal-2' 'schema'
+Require-Equal (Require-Property $raw 'formal_contract_version') 'P2-D5-2' 'formal_contract_version'
 Require-Equal (Require-Property $raw 'mode') $Mode.ToLowerInvariant() 'mode'
 Require-Equal (Require-Property $raw 'process_exit_code') 0 'JSON process_exit_code'
 Require-Equal $ProcessExitCode 0 '実process exit code'
@@ -119,25 +119,103 @@ if ($Mode -eq 'Playback') {
     $submission = Require-Property $raw 'measurement_gpu_submission_count'
     $layers = Require-Property $raw 'measurement_layer_draw_count'
     $clears = Require-Property $raw 'measurement_logical_clear_count'
-    $reasons = @(
-        'measurement_drop_scheduler_deadline',
-        'measurement_drop_missing_source_a',
-        'measurement_drop_missing_source_b',
-        'measurement_drop_missing_both',
-        'measurement_drop_stale_generation',
-        'measurement_drop_future_generation',
-        'measurement_drop_stale_composition_epoch',
-        'measurement_drop_render_failure'
-    )
-    $reasonSum = 0L
-    foreach ($name in $reasons) {
-        $value = Require-Property $raw $name
-        if ($null -ne $value) { $reasonSum += [long]$value }
+    Require-Equal (Require-Property $raw 'formal_opportunity_authority_valid') $true `
+        'formal_opportunity_authority_valid'
+    Require-Equal (Require-Property $raw 'formal_opportunity_error') 'NONE' `
+        'formal_opportunity_error'
+    $refreshNumerator = Require-Property $raw 'formal_refresh_numerator'
+    $refreshDenominator = Require-Property $raw 'formal_refresh_denominator'
+    $sourceFpsNumerator = Require-Property $raw 'formal_source_fps_numerator'
+    $sourceFpsDenominator = Require-Property $raw 'formal_source_fps_denominator'
+    Require-Equal $sourceFpsNumerator 60 'formal_source_fps_numerator'
+    Require-Equal $sourceFpsDenominator 1 'formal_source_fps_denominator'
+    if ($null -eq $refreshNumerator -or [long]$refreshNumerator -le 0) {
+        Add-Failure "formal_refresh_numeratorは正数である必要があります (actual=$refreshNumerator)"
     }
-    if ($null -ne $scheduled -and $null -ne $displayed -and $null -ne $dropped) {
-        Require-Equal ([long]$scheduled) ([long]$displayed + [long]$dropped) 'scheduled == displayed + dropped'
-        Require-Equal $reasonSum ([long]$dropped) 'drop reason sum == dropped'
+    if ($null -eq $refreshDenominator -or [long]$refreshDenominator -le 0) {
+        Add-Failure "formal_refresh_denominatorは正数である必要があります (actual=$refreshDenominator)"
     }
+
+    # producer summaryを信じず、raw opportunity ledgerから全accountingを再計算する。
+    $ledger = @(Require-Property $raw 'formal_opportunity_ledger')
+    if ($ledger.Count -eq 0) { Add-Failure 'formal_opportunity_ledgerが空です' }
+    $previousOrdinal = -1L
+    $previousSwapQpc = 0L
+    $previousUnique = -1L
+    $displayedUnique = 0L
+    $repeated = 0L
+    $gapTrueDrop = 0L
+    for ($index = 0; $index -lt $ledger.Count; ++$index) {
+        $record = $ledger[$index]
+        $prefix = "formal_opportunity_ledger[$index]"
+        $ordinal = [long](Require-Property $record 'opportunity_ordinal')
+        $swapQpc = [long](Require-Property $record 'presentation_swap_qpc')
+        $recordNumerator = [long](Require-Property $record 'refresh_numerator')
+        $recordDenominator = [long](Require-Property $record 'refresh_denominator')
+        $expected = [long](Require-Property $record 'expected_source_frame')
+        $presented = [long](Require-Property $record 'presented_source_frame')
+        $recordedRepeat = [bool](Require-Property $record 'repeat')
+        $recordedDrop = [long](Require-Property $record 'true_drop_before_this_opportunity')
+
+        if ($index -eq 0) { Require-Equal $ordinal 0 "$prefix.opportunity_ordinal" }
+        elseif ($ordinal -le $previousOrdinal) {
+            Add-Failure "$prefix.opportunity_ordinalが単調増加ではありません"
+        }
+        if ($swapQpc -le $previousSwapQpc) {
+            Add-Failure "$prefix.presentation_swap_qpcが単調増加ではありません"
+        }
+        Require-Equal $recordNumerator $refreshNumerator "$prefix.refresh_numerator"
+        Require-Equal $recordDenominator $refreshDenominator "$prefix.refresh_denominator"
+        if ([long]$refreshNumerator -gt 0 -and [long]$refreshDenominator -gt 0) {
+            $recalculatedTarget = [long][decimal]::Floor(
+                ([decimal]$ordinal * [decimal]$sourceFpsNumerator *
+                    [decimal]$refreshDenominator) /
+                    ([decimal]$sourceFpsDenominator * [decimal]$refreshNumerator))
+            Require-Equal $expected $recalculatedTarget "$prefix.expected_source_frame"
+        }
+        if ($expected -lt 0 -or $expected -ge [long]$requiredFrames) {
+            Add-Failure "$prefix.expected_source_frameがsource domain外です (actual=$expected)"
+        }
+        Require-Equal $presented $expected "$prefix.presented_source_frame"
+        $isRepeat = $expected -eq $previousUnique
+        Require-Equal $recordedRepeat $isRepeat "$prefix.repeat"
+        $trueDropBefore = if ($isRepeat) { 0L } else { $expected - $previousUnique - 1L }
+        if ($trueDropBefore -lt 0) {
+            Add-Failure "$prefixでtarget regressionを検出しました"
+        }
+        Require-Equal $recordedDrop $trueDropBefore `
+            "$prefix.true_drop_before_this_opportunity"
+        if ($isRepeat) { ++$repeated }
+        else {
+            ++$displayedUnique
+            $gapTrueDrop += $trueDropBefore
+            $previousUnique = $expected
+        }
+        $previousOrdinal = $ordinal
+        $previousSwapQpc = $swapQpc
+    }
+    $tailTrueDrop = [long]$requiredFrames - $previousUnique - 1L
+    if ($tailTrueDrop -lt 0) { Add-Failure 'tail_true_dropが負になりました' }
+    $trueDrop = $gapTrueDrop + $tailTrueDrop
+    Require-Equal (Require-Property $raw 'formal_displayed_unique_count') $displayedUnique `
+        'formal_displayed_unique_count'
+    Require-Equal (Require-Property $raw 'formal_repeated_opportunity_count') $repeated `
+        'formal_repeated_opportunity_count'
+    Require-Equal (Require-Property $raw 'formal_gap_true_drop_count') $gapTrueDrop `
+        'formal_gap_true_drop_count'
+    Require-Equal (Require-Property $raw 'tail_true_drop') $tailTrueDrop 'tail_true_drop'
+    Require-Equal (Require-Property $raw 'formal_true_opportunity_drop_count') $trueDrop `
+        'formal_true_opportunity_drop_count'
+    Require-Property $raw 'diagnostic_synthetic_deadline_drop_count' | Out-Null
+    Require-Zero $raw 'measurement_drop_scheduler_deadline'
+    if ($null -ne $scheduled) { Require-Equal ([long]$scheduled) ([long]$requiredFrames) `
+            'measurement_scheduled_output_count' }
+    if ($null -ne $displayed) { Require-Equal ([long]$displayed) $displayedUnique `
+            'measurement_displayed_composition_count' }
+    if ($null -ne $dropped) { Require-Equal ([long]$dropped) $trueDrop `
+            'measurement_dropped_output_count' }
+    Require-Equal ($displayedUnique + $trueDrop) ([long]$requiredFrames) `
+        'displayedUnique + trueDrop == required domain'
     if ($null -ne $submission -and $null -ne $displayed) {
         Require-Equal ([long]$submission) ([long]$displayed) 'gpu submission == displayed'
     }
@@ -161,7 +239,6 @@ if ($Mode -eq 'Playback') {
     Require-Zero $raw 'measurement_completion_poll_failure_count'
     Require-Zero $raw 'measurement_partial_gpu_issue_failure_count'
     if (-not $DryRun) {
-        Require-Equal $scheduled 3600 'measurement_scheduled_output_count'
         Require-Equal (Require-Property $raw 'measurement_first_output_frame') 0 `
             'measurement_first_output_frame'
         $fps = Require-Property $raw 'effective_fps'
@@ -171,6 +248,11 @@ if ($Mode -eq 'Playback') {
         }
         if ($null -ne $dropRate -and [double]$dropRate -gt 0.02) {
             Add-Failure "drop_rateは0.02以下が必要です (actual=$dropRate)"
+        }
+        $recalculatedDropRate = [double]$trueDrop / [double]$requiredFrames
+        if ($null -ne $dropRate -and
+            [math]::Abs([double]$dropRate - $recalculatedDropRate) -gt 1e-12) {
+            Add-Failure "drop_rateがledger再計算と一致しません (actual=$dropRate recalculated=$recalculatedDropRate)"
         }
     }
 } else {

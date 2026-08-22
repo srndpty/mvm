@@ -155,6 +155,7 @@ private:
     QString shutdownReason_;
     DwmPresentationTimingSnapshot dwmTimingStart_;
     DwmPresentationTimingSnapshot dwmTimingStop_;
+    long long formalAuthorityLastPollQpc_ = 0;
 };
 
 } // namespace mvm::app

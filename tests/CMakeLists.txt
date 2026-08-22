@@ -1442,6 +1442,14 @@ target_include_directories(mvm_test_parallel_dispatch_order PRIVATE "${CMAKE_SOU
 target_link_libraries(mvm_test_parallel_dispatch_order PRIVATE mvm::warnings)
 mvm_add_test(p2_parallel_dispatch_order COMMAND mvm_test_parallel_dispatch_order)
 
+# P2-D5-2のcausal opportunity schedulerをGPU非依存で固定する。
+add_executable(mvm_test_presentation_opportunity_scheduler
+    gpu_preview/test_presentation_opportunity_scheduler.cpp)
+target_link_libraries(mvm_test_presentation_opportunity_scheduler
+    PRIVATE mvm::gpu_preview mvm::warnings)
+mvm_add_test(p2_presentation_opportunity_scheduler
+    COMMAND mvm_test_presentation_opportunity_scheduler)
+
 # P2-D5-1 formal checkerはGPU非依存の対照群と、1 fieldだけを壊したnegativeで固定する。
 foreach(_p2_contract_case Good FormalGood NegativeInvariant NegativeSameDevice NegativeOutputSize
         NegativeBackend NegativeSeed NegativeFormalTiming NegativeScheduledHigh
@@ -1454,7 +1462,9 @@ foreach(_p2_contract_case Good FormalGood NegativeInvariant NegativeSameDevice N
         NegativeSeekConcurrencyCount SeekExecutionNonoverlapGood
         FormalSeekGood NegativeParallelDispatchCount
         NegativeParallelDispatchSample NegativeBRequestResult
-        NegativeDispatchAfterFirstReady)
+        NegativeDispatchAfterFirstReady NegativeOpportunityLedgerMutation
+        NegativeOpportunityOrdinalGapIgnored NegativeOpportunityRefreshChange
+        NegativeOpportunityAuthority NegativeOpportunityTail)
     string(TOLOWER "${_p2_contract_case}" _p2_contract_name)
     mvm_add_test(p2_formal_checker_${_p2_contract_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File

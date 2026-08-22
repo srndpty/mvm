@@ -8,6 +8,7 @@
 #include "media/gpu_preview/gpu_compositor.h"
 #include "media/gpu_preview/phase4_composition_driver.h"
 #include "media/gpu_preview/presentation_opportunity_attribution.h"
+#include "media/gpu_preview/presentation_opportunity_scheduler.h"
 #include "media/gpu_preview/scheduler_phase_attribution.h"
 #include "media/gpu_preview/source_decode_worker.h"
 #include "media/gpu_preview/transition_probe.h"
@@ -253,6 +254,20 @@ struct CompositorSpikeState {
     std::atomic<long long> latestSubmittedOutputFrame{-1};
     std::atomic<long long> presentationSwapOrdinal{0};
     std::atomic<long long> measurementStartQpc{0};
+    // P2-D5-2 formal Playback専用。scheduler本体とledgerはrender/swap callback間で
+    // 同じlockにより直列化し、共有OutputScheduler60Hzから完全に分離する。
+    std::atomic<bool> formalOpportunitySchedulerEnabled{false};
+    std::atomic<bool> formalOpportunityCaptureActive{false};
+    std::atomic<bool> formalOpportunityIgnoreNextSwap{false};
+    std::atomic<bool> formalOpportunityDomainReached{false};
+    std::atomic<long long> formalOpportunityPresentedFrame{-1};
+    std::atomic<long long> formalOpportunityTrueDropCount{0};
+    std::atomic<long long> diagnosticSyntheticDeadlineDropCount{0};
+    std::atomic<long long> formalRefreshNumerator{0};
+    std::atomic<long long> formalRefreshDenominator{0};
+    std::atomic<long long> formalRequiredFrameCount{0};
+    std::mutex formalOpportunityMutex;
+    gpu::PresentationOpportunityScheduler formalOpportunityScheduler;
     gpu::ComposedFrame diagnosticFixedFrame;
     CompositorMarkerProbe markerProbe;
     std::atomic<long long> markerAChecked{0};
