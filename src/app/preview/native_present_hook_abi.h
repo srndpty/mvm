@@ -9,7 +9,7 @@
 
 #include <cstdint>
 
-inline constexpr std::uint32_t MVM_NATIVE_PRESENT_HOOK_ABI_VERSION = 1;
+inline constexpr std::uint32_t MVM_NATIVE_PRESENT_HOOK_ABI_VERSION = 2;
 inline constexpr std::uint32_t MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY = 8192;
 inline constexpr std::uint32_t MVM_NATIVE_PRESENT_HOOK_MAX_SOURCES = 2;
 
@@ -55,8 +55,19 @@ struct MvmNativePresentRing {
     std::uint32_t staleTokenCount = 0;
     std::uint32_t failedPresentCount = 0;
     std::uint32_t authorityFailure = 0;
-    std::uint32_t reserved[6]{};
+    std::uint32_t submissionMode = 0;
+    std::uint32_t configuredMaximumFrameLatency = 0;
+    std::uint32_t swapchainMaximumFrameLatency = 0;
+    std::uint32_t frameLatencyWaitableObjectAvailable = 0;
+    std::uint32_t dwmFlushCallCount = 0;
+    std::uint32_t dwmFlushFailureCount = 0;
     MvmNativePresentRecord records[MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY]{};
+};
+
+enum : std::uint32_t {
+    MVM_SUBMISSION_MODE_CONTROL = 0,
+    MVM_SUBMISSION_MODE_DWM_FLUSH_AFTER_PRESENT = 1,
+    MVM_SUBMISSION_MODE_FRAME_LATENCY_1 = 2,
 };
 
 using MvmNativePresentHookAbiVersionFn = std::uint32_t (*)();

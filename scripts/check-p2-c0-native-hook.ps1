@@ -22,7 +22,7 @@ Equal ([bool]$hook.formal_counter_authority_changed) $false 'formal authority'
 Equal ([string]$hook.qt_upstream_tag) 'v6.11.1' 'Qt tag'
 Equal ([string]$hook.qt_upstream_commit) '59c81a3c2247b821b9b84b4eb8d939b77e07e276' 'Qt commit'
 foreach($field in @('overflow_count','missing_token_count','duplicate_token_count','stale_token_count',
-                     'token_set_failure_count','failed_present_count')){
+                     'token_set_failure_count','failed_present_count','dwm_flush_failure_count')){
     Equal ([int64]$hook.$field) 0 $field
 }
 $records=@($hook.records)
@@ -40,6 +40,14 @@ Equal ([bool]$hook.capture_started) $true 'ON capture_started'
 Equal ([bool]$hook.capture_stopped) $true 'ON capture_stopped'
 Equal ([bool]$hook.authority_pass) $true 'ON authority_pass'
 Equal ([bool]$hook.authority_failure) $false 'ON authority_failure'
+$submissionMode=[int]$hook.submission_mode
+if($submissionMode-notin@(0,1,2)){Fail "submission modeが不正です: $submissionMode"}
+Equal ([bool]$hook.frame_latency_waitable_object_available) $true 'frame latency waitable object'
+$expectedLatency=if($submissionMode-eq2){1}else{2}
+Equal ([int]$hook.configured_maximum_frame_latency) $expectedLatency 'configured maximum frame latency'
+Equal ([int]$hook.swapchain_maximum_frame_latency) $expectedLatency 'swapchain maximum frame latency'
+$expectedFlush=if($submissionMode-eq1){$records.Count}else{0}
+Equal ([int64]$hook.dwm_flush_call_count) $expectedFlush 'DwmFlush call count'
 $swaps=@($raw.presentation_opportunity.swap_records)
 Equal $records.Count $swaps.Count 'successful Present/swap count'
 if($records.Count-lt2){Fail 'native Present recordが不足しています'}

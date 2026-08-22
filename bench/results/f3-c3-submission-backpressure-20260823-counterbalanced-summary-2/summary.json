@@ -1,0 +1,213 @@
+{
+  "schema": "mvm-p2-c3-submission-backpressure-counterbalanced-summary-1",
+  "status": "PASS",
+  "authority": "diagnostic_only",
+  "formal_counter_authority_changed": false,
+  "formal_drop_threshold_changed": false,
+  "counterbalancing": "THREE_CYCLIC_ORDERS_EACH_MODE_EACH_POSITION_ONCE",
+  "sources": [
+    {
+      "run": 1,
+      "directory": "C:\\dev\\soft\\mvm\\bench\\results\\f3-c3-submission-backpressure-20260823-15s-1",
+      "summary_sha256": "b099975cd1656ddd5290a6fd236b620b0cdbae8f60c511d0a5da4243d359a484",
+      "execution_order": [
+        "CONTROL",
+        "FRAME_LATENCY_1",
+        "DWM_FLUSH_AFTER_PRESENT"
+      ]
+    },
+    {
+      "run": 2,
+      "directory": "C:\\dev\\soft\\mvm\\bench\\results\\f3-c3-submission-backpressure-20260823-15s-2",
+      "summary_sha256": "b82b1f25f6c0ba1ad23106bfb8d49f3b0f3e8fd992eafc6e8a8fb4abc380e808",
+      "execution_order": [
+        "FRAME_LATENCY_1",
+        "DWM_FLUSH_AFTER_PRESENT",
+        "CONTROL"
+      ]
+    },
+    {
+      "run": 3,
+      "directory": "C:\\dev\\soft\\mvm\\bench\\results\\f3-c3-submission-backpressure-20260823-15s-3",
+      "summary_sha256": "178c89e84d88d1032cb73ad5eb76ec9f15ebabe2f21c792bf6784a4035527891",
+      "execution_order": [
+        "DWM_FLUSH_AFTER_PRESENT",
+        "CONTROL",
+        "FRAME_LATENCY_1"
+      ]
+    }
+  ],
+  "aggregates": [
+    {
+      "mode": "CONTROL",
+      "run_count": 3,
+      "positions": [
+        1,
+        2,
+        3
+      ],
+      "native_present_count": 2700,
+      "presented_count": 724,
+      "discarded_count": 1976,
+      "presented_fraction": 0.26814814814814814,
+      "discarded_fraction": 0.7318518518518519,
+      "dependent_superseded_count": 1971,
+      "earlier_superseded_count": 5,
+      "displayed_unique_source_frames": 723,
+      "formal_source_frame_drops": 1977,
+      "dependency_batch_p95_per_run": [
+        741,
+        35,
+        1
+      ],
+      "dependency_batch_observed_max": 741,
+      "per_run": [
+        {
+          "run": 1,
+          "position": 1,
+          "native": 900,
+          "presented": 1,
+          "discarded": 899,
+          "batch_p95": 741,
+          "batch_max": 741,
+          "formal_source_drops": 899
+        },
+        {
+          "run": 2,
+          "position": 3,
+          "native": 900,
+          "presented": 47,
+          "discarded": 853,
+          "batch_p95": 35,
+          "batch_max": 169,
+          "formal_source_drops": 853
+        },
+        {
+          "run": 3,
+          "position": 2,
+          "native": 900,
+          "presented": 676,
+          "discarded": 224,
+          "batch_p95": 1,
+          "batch_max": 20,
+          "formal_source_drops": 225
+        }
+      ]
+    },
+    {
+      "mode": "FRAME_LATENCY_1",
+      "run_count": 3,
+      "positions": [
+        1,
+        2,
+        3
+      ],
+      "native_present_count": 2696,
+      "presented_count": 479,
+      "discarded_count": 2217,
+      "presented_fraction": 0.17767062314540058,
+      "discarded_fraction": 0.8223293768545994,
+      "dependent_superseded_count": 2170,
+      "earlier_superseded_count": 47,
+      "displayed_unique_source_frames": 477,
+      "formal_source_frame_drops": 2223,
+      "dependency_batch_p95_per_run": [
+        1,
+        13,
+        13
+      ],
+      "dependency_batch_observed_max": 278,
+      "per_run": [
+        {
+          "run": 1,
+          "position": 2,
+          "native": 896,
+          "presented": 207,
+          "discarded": 689,
+          "batch_p95": 1,
+          "batch_max": 214,
+          "formal_source_drops": 693
+        },
+        {
+          "run": 2,
+          "position": 1,
+          "native": 900,
+          "presented": 129,
+          "discarded": 771,
+          "batch_p95": 13,
+          "batch_max": 278,
+          "formal_source_drops": 773
+        },
+        {
+          "run": 3,
+          "position": 3,
+          "native": 900,
+          "presented": 143,
+          "discarded": 757,
+          "batch_p95": 13,
+          "batch_max": 237,
+          "formal_source_drops": 757
+        }
+      ]
+    },
+    {
+      "mode": "DWM_FLUSH_AFTER_PRESENT",
+      "run_count": 3,
+      "positions": [
+        1,
+        2,
+        3
+      ],
+      "native_present_count": 2699,
+      "presented_count": 1158,
+      "discarded_count": 1541,
+      "presented_fraction": 0.4290477954798073,
+      "discarded_fraction": 0.5709522045201927,
+      "dependent_superseded_count": 1536,
+      "earlier_superseded_count": 5,
+      "displayed_unique_source_frames": 1158,
+      "formal_source_frame_drops": 1542,
+      "dependency_batch_p95_per_run": [
+        9,
+        16,
+        1
+      ],
+      "dependency_batch_observed_max": 308,
+      "per_run": [
+        {
+          "run": 1,
+          "position": 3,
+          "native": 900,
+          "presented": 120,
+          "discarded": 780,
+          "batch_p95": 9,
+          "batch_max": 308,
+          "formal_source_drops": 780
+        },
+        {
+          "run": 2,
+          "position": 2,
+          "native": 900,
+          "presented": 139,
+          "discarded": 761,
+          "batch_p95": 16,
+          "batch_max": 102,
+          "formal_source_drops": 761
+        },
+        {
+          "run": 3,
+          "position": 1,
+          "native": 899,
+          "presented": 899,
+          "discarded": 0,
+          "batch_p95": 1,
+          "batch_max": 1,
+          "formal_source_drops": 1
+        }
+      ]
+    }
+  ],
+  "identities": {
+    "checker_sha256": "cefbdd1954a097a04bd18c176780ba85bfda01a67a9e5536a2e03314d4c1ad1f"
+  }
+}

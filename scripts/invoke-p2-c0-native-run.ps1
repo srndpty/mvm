@@ -8,6 +8,8 @@ param(
     [Parameter(Mandatory=$true)][string]$Metrics,
     [Parameter(Mandatory=$true)][int]$WarmupSeconds,
     [Parameter(Mandatory=$true)][int]$MeasureSeconds,
+    [ValidateSet('CONTROL','DWM_FLUSH_AFTER_PRESENT','FRAME_LATENCY_1')]
+    [string]$SubmissionMode='CONTROL',
     [string]$PidFile
 )
 $ErrorActionPreference='Stop'
@@ -15,6 +17,8 @@ foreach($path in @($Executable,$PatchedQtBin,$SourceA,$SourceB)){
     if(-not(Test-Path -LiteralPath $path)){throw "C0 run必須pathがありません: $path"}
 }
 Remove-Item Env:QSG_NO_VSYNC -ErrorAction SilentlyContinue
+$env:MVM_P2_C3_SUBMISSION_MODE=$SubmissionMode
+$env:QT_D3D_MAX_FRAME_LATENCY=$(if($SubmissionMode-eq'FRAME_LATENCY_1'){'1'}else{'2'})
 $env:PATH="$PatchedQtBin;C:\msys64\ucrt64\bin;$env:PATH"
 $env:QT_PLUGIN_PATH=(Join-Path (Split-Path -Parent $PatchedQtBin) 'plugins')
 $env:QML_IMPORT_PATH='C:\msys64\ucrt64\share\qt6\qml'

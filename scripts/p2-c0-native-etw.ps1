@@ -6,6 +6,8 @@ param(
     [string]$PatchedQtBin=(Join-Path (Split-Path -Parent $PSScriptRoot) 'build\qtbase-c0\bin'),
     [ValidateSet('CanonicalPresentMonLive','TargetedLive','Wpr')]
     [string]$AcquisitionMode='CanonicalPresentMonLive',
+    [ValidateSet('CONTROL','DWM_FLUSH_AFTER_PRESENT','FRAME_LATENCY_1')]
+    [string]$SubmissionMode='CONTROL',
     [ValidateRange(1,300)][int]$WarmupSeconds=5,
     [ValidateRange(1,300)][int]$MeasureSeconds=15,
     [ValidateRange(30,600)][int]$TimeoutSeconds=180
@@ -45,7 +47,8 @@ function Start-Compositor([string]$Mode,[string]$Metrics,[string]$Stdout,[string
     $arguments=@('-NoProfile','-File',$runWrapper,'-HookMode',$Mode,
         '-Executable',$Executable,'-PatchedQtBin',$PatchedQtBin,
         '-SourceA',$sourceA,'-SourceB',$sourceB,'-Metrics',$Metrics,
-        '-WarmupSeconds',[string]$RunWarmup,'-MeasureSeconds',[string]$RunMeasure)
+        '-WarmupSeconds',[string]$RunWarmup,'-MeasureSeconds',[string]$RunMeasure,
+        '-SubmissionMode',$SubmissionMode)
     if(-not[string]::IsNullOrWhiteSpace($PidFile)){$arguments+=@('-PidFile',$PidFile)}
     return Start-Process -FilePath 'pwsh' -ArgumentList $arguments `
         -PassThru -WindowStyle Hidden -RedirectStandardOutput $Stdout -RedirectStandardError $Stderr
@@ -163,6 +166,7 @@ $qtProvenance=Get-Content -LiteralPath $provenance -Raw -Encoding utf8|ConvertFr
 [ordered]@{
     schema='mvm-p2-c0-native-etw-run-1';authority='diagnostic_only'
     acquisition_mode=$AcquisitionMode
+    submission_mode=$SubmissionMode
     c0_r2_status=$(if($checkerExit-eq0){'PASS'}else{'FAIL'})
     oracle_status=$(if($oracleRaw){$oracleRaw.oracle_status}else{'INVALID'})
     display_completion_status=$(if($oracleRaw){$oracleRaw.display_completion_status}else{'NOT_EVALUABLE'})

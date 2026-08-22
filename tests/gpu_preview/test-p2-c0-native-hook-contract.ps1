@@ -50,7 +50,10 @@ $hook=[ordered]@{
     capture_stopped=$true;shadow_only=$true;formal_counter_authority_changed=$false
     authority_pass=$true;record_count=$native.Count;overflow_count=0;missing_token_count=0
     duplicate_token_count=0;stale_token_count=0;token_set_failure_count=0
-    failed_present_count=0;authority_failure=$false;qt_upstream_tag='v6.11.1'
+    failed_present_count=0;authority_failure=$false;submission_mode=0
+    configured_maximum_frame_latency=2;swapchain_maximum_frame_latency=2
+    frame_latency_waitable_object_available=$true;dwm_flush_call_count=0
+    dwm_flush_failure_count=0;qt_upstream_tag='v6.11.1'
     qt_upstream_commit='59c81a3c2247b821b9b84b4eb8d939b77e07e276';records=$native}
 $raw=[ordered]@{
     schema='mvm-p2-formal-2';process_exit_code=0

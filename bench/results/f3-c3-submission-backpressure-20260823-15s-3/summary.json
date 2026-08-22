@@ -1,0 +1,171 @@
+{
+  "schema": "mvm-p2-c3-submission-backpressure-run-2",
+  "status": "PASS",
+  "authority": "diagnostic_only",
+  "formal_counter_authority_changed": false,
+  "formal_drop_threshold_changed": false,
+  "measure_seconds": 15,
+  "execution_order": [
+    "DWM_FLUSH_AFTER_PRESENT",
+    "CONTROL",
+    "FRAME_LATENCY_1"
+  ],
+  "counterbalancing": "ORDER_EXPLICIT",
+  "results": [
+    {
+      "schema": "mvm-p2-c3-submission-backpressure-proof-2",
+      "proof_status": "PASS",
+      "authority": "diagnostic_only",
+      "formal_counter_authority_changed": false,
+      "submission_mode": "DWM_FLUSH_AFTER_PRESENT",
+      "native_present_count": 899,
+      "presented_count": 899,
+      "discarded_count": 0,
+      "discard_reason_histogram": {
+        "BACK_TO_BACK_FLIP_SUPERSEDED": 0,
+        "WIN32K_TOKEN_NOT_IN_FRAME": 0,
+        "DEPENDENT_PRESENT_SUPERSEDED": 0,
+        "DO_NOT_SEQUENCE": 0,
+        "NOT_VISIBLE": 0,
+        "BLIT_CANCEL": 0,
+        "OTHER_EXPLICIT_DISCARD": 0,
+        "EARLIER_SWAPCHAIN_PRESENT_SUPERSEDED": 0
+      },
+      "unknown_lost_overflow_count": 0,
+      "source_domain_size": 900,
+      "displayed_unique_source_frame_count": 899,
+      "source_frame_gap_drops": 1,
+      "tail_source_frame_drops": 0,
+      "formal_source_frame_drops": 1,
+      "source_frame_accounting_exact": true,
+      "present_cadence_per_second": 59.93333333333333,
+      "physical_vblank_cadence_per_second": 59.94976382213592,
+      "dependency_batch_count": 899,
+      "dependency_batch_unattributed_supersede_count": 0,
+      "dependency_batch_size": {
+        "p50": 1,
+        "p95": 1,
+        "max": 1,
+        "histogram": {
+          "1": 899
+        }
+      },
+      "composition_token_join_exact_count": 899,
+      "etw_events_lost": 0,
+      "etw_buffers_lost": 0,
+      "present_event_overflow_count": 0
+    },
+    {
+      "schema": "mvm-p2-c3-submission-backpressure-proof-2",
+      "proof_status": "PASS",
+      "authority": "diagnostic_only",
+      "formal_counter_authority_changed": false,
+      "submission_mode": "CONTROL",
+      "native_present_count": 900,
+      "presented_count": 676,
+      "discarded_count": 224,
+      "discard_reason_histogram": {
+        "BACK_TO_BACK_FLIP_SUPERSEDED": 0,
+        "WIN32K_TOKEN_NOT_IN_FRAME": 0,
+        "DEPENDENT_PRESENT_SUPERSEDED": 219,
+        "DO_NOT_SEQUENCE": 0,
+        "NOT_VISIBLE": 0,
+        "BLIT_CANCEL": 0,
+        "OTHER_EXPLICIT_DISCARD": 0,
+        "EARLIER_SWAPCHAIN_PRESENT_SUPERSEDED": 5
+      },
+      "unknown_lost_overflow_count": 0,
+      "source_domain_size": 900,
+      "displayed_unique_source_frame_count": 675,
+      "source_frame_gap_drops": 217,
+      "tail_source_frame_drops": 8,
+      "formal_source_frame_drops": 225,
+      "source_frame_accounting_exact": true,
+      "present_cadence_per_second": 60.0,
+      "physical_vblank_cadence_per_second": 59.950388310628725,
+      "dependency_batch_count": 701,
+      "dependency_batch_unattributed_supersede_count": 0,
+      "dependency_batch_size": {
+        "p50": 1,
+        "p95": 1,
+        "max": 20,
+        "histogram": {
+          "1": 678,
+          "2": 3,
+          "3": 2,
+          "5": 1,
+          "6": 1,
+          "8": 3,
+          "11": 2,
+          "12": 4,
+          "13": 5,
+          "20": 2
+        }
+      },
+      "composition_token_join_exact_count": 900,
+      "etw_events_lost": 0,
+      "etw_buffers_lost": 0,
+      "present_event_overflow_count": 0
+    },
+    {
+      "schema": "mvm-p2-c3-submission-backpressure-proof-2",
+      "proof_status": "PASS",
+      "authority": "diagnostic_only",
+      "formal_counter_authority_changed": false,
+      "submission_mode": "FRAME_LATENCY_1",
+      "native_present_count": 900,
+      "presented_count": 143,
+      "discarded_count": 757,
+      "discard_reason_histogram": {
+        "BACK_TO_BACK_FLIP_SUPERSEDED": 0,
+        "WIN32K_TOKEN_NOT_IN_FRAME": 0,
+        "DEPENDENT_PRESENT_SUPERSEDED": 751,
+        "DO_NOT_SEQUENCE": 0,
+        "NOT_VISIBLE": 0,
+        "BLIT_CANCEL": 0,
+        "OTHER_EXPLICIT_DISCARD": 0,
+        "EARLIER_SWAPCHAIN_PRESENT_SUPERSEDED": 6
+      },
+      "unknown_lost_overflow_count": 0,
+      "source_domain_size": 900,
+      "displayed_unique_source_frame_count": 143,
+      "source_frame_gap_drops": 731,
+      "tail_source_frame_drops": 26,
+      "formal_source_frame_drops": 757,
+      "source_frame_accounting_exact": true,
+      "present_cadence_per_second": 60.0,
+      "physical_vblank_cadence_per_second": 59.95028255573957,
+      "dependency_batch_count": 169,
+      "dependency_batch_unattributed_supersede_count": 0,
+      "dependency_batch_size": {
+        "p50": 1,
+        "p95": 13,
+        "max": 237,
+        "histogram": {
+          "1": 143,
+          "2": 1,
+          "4": 1,
+          "8": 1,
+          "9": 1,
+          "11": 3,
+          "12": 7,
+          "13": 5,
+          "14": 3,
+          "26": 1,
+          "48": 1,
+          "199": 1,
+          "237": 1
+        }
+      },
+      "composition_token_join_exact_count": 900,
+      "etw_events_lost": 0,
+      "etw_buffers_lost": 0,
+      "present_event_overflow_count": 0
+    }
+  ],
+  "identities": {
+    "decoder_sha256": "9456652c0bd8c58132bf139c30e776cedf456f4228dba5816a26274561bebb62",
+    "runner_sha256": "4463fd41c6764a4c01450e652cc7424798204aeac8128b781198d33efb7ea1e3",
+    "checker_sha256": "cefbdd1954a097a04bd18c176780ba85bfda01a67a9e5536a2e03314d4c1ad1f"
+  }
+}

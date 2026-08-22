@@ -87,6 +87,13 @@ NativePresentHookSnapshot NativePresentHook::snapshot() const {
         result.duplicateTokenCount = ring_->duplicateTokenCount;
         result.staleTokenCount = ring_->staleTokenCount;
         result.failedPresentCount = ring_->failedPresentCount;
+        result.submissionMode = ring_->submissionMode;
+        result.configuredMaximumFrameLatency = ring_->configuredMaximumFrameLatency;
+        result.swapchainMaximumFrameLatency = ring_->swapchainMaximumFrameLatency;
+        result.frameLatencyWaitableObjectAvailable =
+            ring_->frameLatencyWaitableObjectAvailable != 0;
+        result.dwmFlushCallCount = ring_->dwmFlushCallCount;
+        result.dwmFlushFailureCount = ring_->dwmFlushFailureCount;
         result.authorityFailure = ring_->authorityFailure != 0;
         const auto count = std::min(ring_->recordCount, ring_->capacity);
         result.records.assign(ring_->records, ring_->records + count);

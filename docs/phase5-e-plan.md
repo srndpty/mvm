@@ -1889,6 +1889,67 @@ swap recordからinterval、累積deviation、swap→opportunity mappingを独�
 short interval、long interval、cumulative drift、normal priority、output change、sample count不一致の
 10 negativeで固定する。
 
+#### F3-C3-A: Submission Backpressure Causal Proof
+
+[回避策] production scheduler、formal counter wiring、2% thresholdを変更せず、patched Qtのnative Present
+hookへdiagnostic-onlyの3 modeを追加した。`CONTROL`はQt 6.11.1既定と同じmaximum frame latency 2、
+`DWM_FLUSH_AFTER_PRESENT`はsuccessful Present後に`DwmFlush()`を1回呼ぶpositive control、
+`FRAME_LATENCY_1`はQt既存の`DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT`、
+`SetMaximumFrameLatency(1)`、`beginFrame()`でのwaitable object待機を使う。各runはswapchainから実際の
+maximum latencyとwaitable flagを読み戻し、DwmFlush call/failure数もnative Present件数へexact closureする。
+固定sleep、VBlank grace、scheduler deadlineは変更していない。
+
+[回避策] PresentMon診断patchへ`DependencyBatchPresentStartTime`を追加した。DWM親Presentがdependentを
+完了する分岐と、後続Presentが同一swapchainの先行Presentを完了する分岐でbatch identityを記録する。
+checkerはsupersede reason全件にnonzero batch identityを要求し、batch size histogram、p50/p95、観測maxを
+producer集計に依存せずoracle recordから再計算する。
+
+[事実] 最初の循環順序artifact
+`bench/results/f3-c3-submission-backpressure-20260823-15s-1`では、初版C3 checkerがdisplayed frame間の
+内部gapだけを数え、先頭gapとtailを含めていなかった。raw CanonicalPresentMonLive、native/token/ETW join、
+discard reason、dependency batchは有効だが、初版`source_gap_drop_count`はC1 accountingとして不完全である。
+元artifactは書き換えず保存した。checkerをC1と同じ`leading/internal gap + tail`へ修正し、全source domainで
+`displayed unique + formal source drops == 900`を要求するnegative付きcontractへ更新した。
+
+[事実] 時間順バイアスを分離するため、各modeが先頭・中央・末尾へ1回ずつ現れる3循環順序を各15秒で採取し、
+修正checkerで9/9を再検査した。集計artifactは
+`bench/results/f3-c3-submission-backpressure-20260823-counterbalanced-summary-2`、summary SHA-256は
+`10c5616854aef22f5812de77d8b47d684bc1909e638982826cd2c99376508ea0`である。全runでnative/token/ETW exact、
+Unknown/Lost、ETW event/buffer loss、PresentData overflow、unattributed supersede、DwmFlush failureは0だった。
+
+| mode | Presented / native (3 run) | Discarded | dependency / earlier | batch p95 (各run) | 観測max | displayed unique / formal source drop |
+| --- | ---: | ---: | ---: | --- | ---: | ---: |
+| `CONTROL` | 724 / 2700 | 1976 | 1971 / 5 | 741, 35, 1 | 741 | 723 / 1977 |
+| `FRAME_LATENCY_1` | 479 / 2696 | 2217 | 2170 / 47 | 1, 13, 13 | 278 | 477 / 2223 |
+| `DWM_FLUSH_AFTER_PRESENT` | 1158 / 2699 | 1541 | 1536 / 5 | 9, 16, 1 | 308 | 1158 / 1542 |
+
+[事実] mode内のrun差は介入差より大きい。`CONTROL`のPresentedは順に1、47、676、
+`FRAME_LATENCY_1`は207、129、143、`DWM_FLUSH_AFTER_PRESENT`は120、139、899だった。
+DwmFlushの899/899は単独ではpositive responseに見えるが、同じmodeの他2runは120/900と139/900であり、
+再現しない。latency 1もbatch p95を小さくするrunはあるが、全3runのDiscardedはCONTROLより多い。
+
+[exit] backpressureがbatch構造へ影響することは観測したが、`DwmFlush`またはlatency 1によってsupersedeが
+一貫して消えるcausal proofは得られなかった。したがってA/B/Cのいずれにも進まず、F3-C3-B production
+scheduler実装を停止する。結果は`CAUSAL_PROOF_NOT_ESTABLISHED / ORDER_TIME_CONFOUND`とし、次は既存ETWの
+DWM dependency completion phaseと大batch発生時点をphysical VBlankへ帰属する。P2-D5-2はBLOCKED、
+formal runtime authority wiringと2% thresholdは未変更のまま維持する。
+
+再現手順（管理者PowerShell）:
+
+```powershell
+pwsh scripts/p2-c3-submission-backpressure.ps1 `
+  -OutputDirectory bench/results/f3-c3-<run1> -Order CONTROL_FRAME_DWM
+pwsh scripts/p2-c3-submission-backpressure.ps1 `
+  -OutputDirectory bench/results/f3-c3-<run2> -Order FRAME_DWM_CONTROL
+pwsh scripts/p2-c3-submission-backpressure.ps1 `
+  -OutputDirectory bench/results/f3-c3-<run3> -Order DWM_CONTROL_FRAME
+
+& scripts/summarize-p2-c3-submission-backpressure.ps1 `
+  -SourceDirectories @('bench/results/f3-c3-<run1>', 'bench/results/f3-c3-<run2>',
+                       'bench/results/f3-c3-<run3>') `
+  -OutputDirectory bench/results/f3-c3-<summary>
+```
+
 ---
 
 ## 7. 検証手順

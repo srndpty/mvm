@@ -19,6 +19,12 @@ struct NativePresentHookSnapshot {
     std::uint32_t duplicateTokenCount = 0;
     std::uint32_t staleTokenCount = 0;
     std::uint32_t failedPresentCount = 0;
+    std::uint32_t submissionMode = 0;
+    std::uint32_t configuredMaximumFrameLatency = 0;
+    std::uint32_t swapchainMaximumFrameLatency = 0;
+    bool frameLatencyWaitableObjectAvailable = false;
+    std::uint32_t dwmFlushCallCount = 0;
+    std::uint32_t dwmFlushFailureCount = 0;
     bool authorityFailure = false;
     std::vector<MvmNativePresentRecord> records;
 };

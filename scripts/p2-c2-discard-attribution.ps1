@@ -3,6 +3,8 @@ param(
     [Parameter(Mandatory=$true)][string]$OutputDirectory,
     [ValidateRange(1,300)][int]$MeasureSeconds=15,
     [ValidateRange(30,600)][int]$TimeoutSeconds=180,
+    [ValidateSet('CONTROL','DWM_FLUSH_AFTER_PRESENT','FRAME_LATENCY_1')]
+    [string]$SubmissionMode='CONTROL',
     [string]$Decoder=(Join-Path (Split-Path -Parent $PSScriptRoot) 'build\p2-etw-decoder\mvm_present_history_decoder.exe')
 )
 $ErrorActionPreference='Stop'
@@ -20,7 +22,8 @@ if(Test-Path -LiteralPath $OutputDirectory){throw "既存F3-C2 artifactを上書
 New-Item -ItemType Directory -Path $OutputDirectory|Out-Null
 $OutputDirectory=(Resolve-Path -LiteralPath $OutputDirectory).Path
 $canonical=Join-Path $OutputDirectory 'canonical'
-& pwsh -NoProfile -File $runner -OutputDirectory $canonical -Decoder $Decoder -MeasureSeconds $MeasureSeconds -TimeoutSeconds $TimeoutSeconds
+& pwsh -NoProfile -File $runner -OutputDirectory $canonical -Decoder $Decoder `
+    -MeasureSeconds $MeasureSeconds -TimeoutSeconds $TimeoutSeconds -SubmissionMode $SubmissionMode
 if($LASTEXITCODE-ne0){throw "F3-C2 canonical runが失敗しました: $LASTEXITCODE"}
 $proof=Join-Path $OutputDirectory 'discard-reason-proof.json'
 & pwsh -NoProfile -File $checker -OracleJson (Join-Path $canonical 'oracle.json') -Output $proof

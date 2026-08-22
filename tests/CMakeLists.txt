@@ -180,6 +180,17 @@ foreach(_p2_c2_reason_case Good NegativeZeroDiscard NegativeUnknownReason Negati
             -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c2-reason-${_p2_c2_reason_name}")
 endforeach()
 
+foreach(_p2_c3_case GoodControl GoodDwmFlush GoodFrameLatency1 NegativeMissingBatch
+        NegativeWrongLatency NegativeFlushCount)
+    string(TOLOWER "${_p2_c3_case}" _p2_c3_name)
+    mvm_add_test(p2_c3_submission_backpressure_${_p2_c3_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-submission-backpressure-contract.ps1"
+            -Case ${_p2_c3_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c3-submission-backpressure.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-backpressure-${_p2_c3_name}")
+endforeach()
+
 # ARGS に ';' を含む引数 (--map や --require-proxy-ids) を渡す場合は
 # **'@SEMI@' と書く。** ここで ';' へ戻す。
 # CMake の引数はリストなので、'\;' でエスケープしても関数へ渡す時点で

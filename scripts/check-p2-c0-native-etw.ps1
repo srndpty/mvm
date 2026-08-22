@@ -124,6 +124,7 @@ for($index=0;$index-lt$native.Count;++$index){
         enter_bracket_ordinal=Bracket $enter;return_bracket_ordinal=Bracket $returned
         completion_class=$classification;final_state=[string]$present.final_state
         discard_reason=$discardReason
+        dependency_batch_present_start_qpc=Field-OrNull $present 'dependency_batch_present_start_qpc'
         is_completed=[bool]$present.is_completed;is_lost=[bool]$present.is_lost
         present_mode=[string]$present.present_mode
         seen_dxgk_present=[bool]$present.seen_dxgk_present

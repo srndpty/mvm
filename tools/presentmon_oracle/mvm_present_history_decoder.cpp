@@ -175,7 +175,9 @@ int writeOutput(const wchar_t* outputPath, unsigned long targetPid, long long qp
                      "\"swap_chain_address\": \"0x%llx\", "
                      "\"window_handle\": \"0x%llx\", \"sync_interval\": %d, "
                      "\"present_flags\": %u, \"final_state\": \"%s\", "
-                     "\"discard_reason\": \"%s\", \"completion_class\": \"%s\", "
+                     "\"discard_reason\": \"%s\", "
+                     "\"dependency_batch_present_start_qpc\": %llu, "
+                     "\"completion_class\": \"%s\", "
                      "\"is_completed\": %s, "
                      "\"is_lost\": %s, \"present_mode\": \"%s\", "
                      "\"seen_dxgk_present\": %s, \"seen_win32k_events\": %s, "
@@ -191,7 +193,9 @@ int writeOutput(const wchar_t* outputPath, unsigned long targetPid, long long qp
                      event.ThreadId, static_cast<unsigned long long>(event.SwapChainAddress),
                      static_cast<unsigned long long>(event.Hwnd), event.SyncInterval,
                      event.PresentFlags, resultName(event.FinalState),
-                     discardReasonName(event.FinalDiscardReason), completionClass(event),
+                     discardReasonName(event.FinalDiscardReason),
+                     static_cast<unsigned long long>(event.DependencyBatchPresentStartTime),
+                     completionClass(event),
                      event.IsCompleted ? "true" : "false", event.IsLost ? "true" : "false",
                      presentModeName(event.PresentMode), event.SeenDxgkPresent ? "true" : "false",
                      event.SeenWin32KEvents ? "true" : "false",
