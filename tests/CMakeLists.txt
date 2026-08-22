@@ -111,6 +111,17 @@ foreach(_p2_r4_visible_case Good NegativeOriginalCallback NegativeSyntheticDelay
             -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-r4-visible-${_p2_r4_visible_name}")
 endforeach()
 
+foreach(_p2_c3_a3_t0_case IN ITEMS Good ParentMissing ReadyZero DisplayMismatch DwmLost MultipleDwmPid LifecycleOrder)
+    string(TOLOWER "${_p2_c3_a3_t0_case}" _p2_c3_a3_t0_name)
+    mvm_add_test(p2_c3_a3_t0_contract_${_p2_c3_a3_t0_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t0-contract.ps1"
+            -Case "${_p2_c3_a3_t0_case}"
+            -Analyzer "${CMAKE_SOURCE_DIR}/scripts/p2-c3-a3-t0-stall-localization.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t0-${_p2_c3_a3_t0_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 foreach(_p2_c3_a2_lifecycle_case IN ITEMS Good MissingWaiting Order ParentMismatch Lost EarlierIncomplete)
     string(TOLOWER "${_p2_c3_a2_lifecycle_case}" _p2_c3_a2_lifecycle_name)
     add_test(

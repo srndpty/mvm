@@ -2002,6 +2002,48 @@ pwsh scripts/p2-c3-a2-control-lifecycle.ps1 `
   -OutputDirectory '<A2 output>' -MeasureSeconds 60 -TimeoutSeconds 180
 ```
 
+#### F3-C3-A3-T0: DWM Stall Stage Localization
+
+[事実] F3-C3-A2 PASS evidenceはuser-managed commit `89a729a`でcheckpointした。A3-T0では再採取せず、
+既存CONTROL-only 60秒の`present-history-raw.json`、`oracle.json`、physical VBlank sampleだけを再解析した。
+artifactは`bench/results/f3-c3-a3-t0-stall-localization-20260823-3`、summary SHA-256は
+`55407e3aa702bdee9bb5275c41302431935a7298d450dbafabfc24647dfed323`である。
+
+[事実] actual parent PresentStart identityとのexact matchから、DWM parent生成processはPID 2436へ一意に帰属した。
+target lifecycle 3597件のactual parentは111件で全てraw parentへ一致した。measurement内ではtarget attach parent 110件、
+DWM process全体のPresentは116件（Presented 110、Discarded 6、Lost 0）で、target非attach DWM Presentは6件だった。
+したがってrawはtarget-attached系列とDWM-wide系列を独立比較でき、T0に必要なReadyTimeも保持していた。
+
+[事実] previous target parentをmeasurement内に持つlarge batch 2件は、次のexact closureになった。
+
+| dependent count | parent PresentStart gap | parent Display gap | interval内の全DWM PresentStart | Start→Ready | Start→Displayed | Start→completion |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 110 | 110 VBlank | 110 VBlank | 1（現parentのみ） | 1.5050 ms | 14.0511 ms / 1 VBlank | 14.0515 ms |
+| 2421 | 2421 VBlank | 2421 VBlank | 1（現parentのみ） | 1.6409 ms | 12.8005 ms / 1 VBlank | 12.8010 ms |
+
+観測max 2421のinterval中に、targetへattachされない別DWM PresentStartは0件だった。したがって長大gapは
+「parent PresentStartは存在するがDisplayedだけ遅い」scanout stallではなく、また「DWM-wide Presentは進むが
+mvmだけattachされない」eligibility分岐でもない。観測されたDWM PresentStart系列そのものが2421 VBlank空いている。
+最初の847 batchはmeasurement内にprevious target parentが無いため、境界caseとしてこのpair判定から除外した。
+
+[回避策] A2の`DWM_CONSUMPTION_STALL`はDWM threadのCPU/GPU hangを意味する名前として使わない。証明範囲は
+「mvm Composed_FlipがDWM parent display/completionへ長期間取り込まれず、同じ期間に観測DWM PresentStart系列も
+生成されない」である。visibility、occlusion、dirty-stateによるcomposition/wake suppressionでも説明できるため、
+原因はまだ確定しない。
+
+[exit] T0 verdictは`DWM_WIDE_PARENT_PRESENTSTART_GAP`である。次は
+`F3-C3-A3-T1 — Visibility/Occlusion/Dirty-State Causal Proof`とし、window stateをrunnerで固定した
+`VISIBLE_UNOCCLUDED` / `FULLY_OCCLUDED`比較へ進む。C3-B production scheduler、formal runtime wiring、
+2% thresholdは変更せず、P2-D5-2はBLOCKEDのまま維持する。GPU queue / submit-to-scanout attributionへは進まない。
+
+再現手順:
+
+```powershell
+pwsh scripts/p2-c3-a3-t0-stall-localization.ps1 `
+  -CanonicalDirectory bench/results/f3-c3-a2-control-lifecycle-20260823-60s-1/canonical `
+  -OutputDirectory '<A3-T0 output>'
+```
+
 ---
 
 ## 7. 検証手順
