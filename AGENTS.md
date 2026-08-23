@@ -398,6 +398,10 @@ swapchain の値は Qt の設定や環境変数から再構成せず、実際に
 
 ## PowerShell の自動変数を変数名に使わない
 
+`$input` に加えて `$profile` も実際に踏んだ（IDE の PSScriptAnalyzer が検出）。
+`$profile` は PowerShell profile path の自動変数である。
+
+
 `$input` は PowerShell の**自動変数**で、pipeline / stdin の enumerator に
 束縛される。これを自前の変数名として使うと、stdin が開いたままの pipe である
 環境（ctest の test process など）で enumerator の materialize が EOF 待ちに

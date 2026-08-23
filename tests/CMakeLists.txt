@@ -173,7 +173,13 @@ foreach(_p2_c3_a3_t2_summary_case IN ITEMS TargetDoesNotWake NegativeControl Inv
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
-foreach(_p2_d5_2_formal_v2_case IN ITEMS Good GoodPhysicalSurplus AuthorityInvalidPropagated NegativeRetiredReason NegativeRuntimeOverride NegativeUnknownOutcome NegativeVblankSequence NegativeVblankObserver NegativeBoundaryNotBracketed NegativeOutputChanged NegativeEtwLoss NegativeRingOverflow NegativePresentedFrameMismatch NegativeIdentityI1 NegativeIdentityI2 NegativeIdentityI3 NegativeIdentityI4 NegativeIdentityI5 NegativeIdentityI6 NegativeIdentityI9 NegativeContractVersion)
+mvm_add_test(p2_d5_2_formal_architecture_prew2
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-formal-architecture-contract.ps1"
+        -Phase PreW2 -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+
+foreach(_p2_d5_2_formal_v2_case IN ITEMS Good GoodPhysicalSurplus GoodBoundaryCohortDivergence AuthorityInvalidPropagated NegativeRetiredReason NegativeRetiredOpportunityRegression NegativeRuntimeOverride NegativeUnknownOutcome NegativeVblankSequence NegativeVblankObserver NegativeBoundaryNotBracketed NegativeOutputChanged NegativeEtwLoss NegativeRingOverflow NegativePresentedFrameMismatch NegativeMultiPresentedOrdinal NegativeIdentityE1 NegativeIdentityE2 NegativeIdentityP1 NegativeIdentityP2 NegativeIdentityP3 NegativeIdentityP4 NegativeIdentityU1 NegativeIdentityS1 NegativeIdentityS2 NegativeContractVersion)
     string(TOLOWER "${_p2_d5_2_formal_v2_case}" _p2_d5_2_formal_v2_name)
     mvm_add_test(p2_d5_2_formal_v2_${_p2_d5_2_formal_v2_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File

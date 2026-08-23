@@ -7,11 +7,7 @@ param(
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 # fail-close は performance FAIL ではない。authority invalid として区別する。
-$script:Reason=$null
-function Fail([string]$Reason,[string]$Message){
-    if($null-eq$script:Reason){$script:Reason=$Reason}
-    throw ("{0}: {1}" -f $Reason,$Message)
-}
+function Fail([string]$Reason,[string]$Message){throw ("{0}: {1}" -f $Reason,$Message)}
 function Require($Object,[string]$Name,[string]$Reason='ACCOUNTING_IDENTITY_VIOLATION'){
     if($null-eq$Object-or-not($Object.PSObject.Properties.Name-contains$Name)){
         Fail $Reason "v2 canonical fieldがありません: $Name"
@@ -26,11 +22,12 @@ $validReasons=@(
     'DISPLAYED_QPC_MISSING','PHYSICAL_DISPLAY_IDENTITY_AMBIGUOUS',
     'PHYSICAL_VBLANK_SEQUENCE_BREAK','PHYSICAL_VBLANK_OBSERVER_INVALID',
     'PHYSICAL_VBLANK_BOUNDARY_NOT_BRACKETED','OUTPUT_OR_MODE_CHANGED',
-    'PRESENTED_FRAME_MISMATCH','ETW_LOSS','RING_OVERFLOW',
+    'PRESENTED_FRAME_MISMATCH','INTENT_IDENTITY_AMBIGUOUS','ETW_LOSS','RING_OVERFLOW',
     'ACCOUNTING_IDENTITY_VIOLATION','RUNTIME_AUTHORITY_OVERRIDE')
 # W0.5-A で legacy frameSwapped invariant と証明済み。v2 に出現してはならない。
+# OPPORTUNITY_REGRESSION は swapQpc 由来のものが legacy であるため含める。
 $retiredReasons=@('RENDER_SWAP_MISMATCH','RENDER_WITHOUT_SWAP','SWAP_WITHOUT_RENDER',
-                  'RENDER_NOT_COMPLETED','SWAP_ORDINAL_MISMATCH')
+                  'RENDER_NOT_COMPLETED','SWAP_ORDINAL_MISMATCH','OPPORTUNITY_REGRESSION')
 
 if(-not(Test-Path -LiteralPath $Json)){Fail 'ACCOUNTING_IDENTITY_VIOLATION' "formal jsonがありません: $Json"}
 $formal=Get-Content -LiteralPath $Json -Raw -Encoding utf8|ConvertFrom-Json
@@ -58,12 +55,14 @@ if($declaredValid-and$declaredError-ne'NONE'){
 }
 if(-not$declaredValid){
     if($declaredError-eq'NONE'){Fail 'ACCOUNTING_IDENTITY_VIOLATION' 'authority invalidなのにerrorがNONEです'}
-    # fail-closeしたrunはperformanceを評価しない。
+    # fail-close した run は performance を評価しない。
+    # performance_pass / drop_rate は null。false にすると threshold 超過の
+    # 正式な performance FAIL と区別できなくなる。
     $result=[ordered]@{
         schema='mvm-p2-d5-2-formal-v2-proof-1';status='AUTHORITY_INVALID'
         formal_contract_version='P2-D5-2-v2';authority='formal'
         formal_authority_valid=$false;formal_authority_error=$declaredError
-        performance_evaluated=$false
+        performance_evaluated=$false;performance_pass=$null;drop_rate=$null
     }
     if(-not[string]::IsNullOrWhiteSpace($Output)){
         $result|ConvertTo-Json -Depth 6|Set-Content -LiteralPath $Output -Encoding utf8
@@ -87,12 +86,12 @@ if(-not[bool](Require $vblank 'cumulative_consistent' 'PHYSICAL_VBLANK_OBSERVER_
     Fail 'PHYSICAL_VBLANK_OBSERVER_INVALID' 'cumulative consistencyが成立していません'
 }
 if(-not[bool](Require $vblank 'ordinal_consecutive' 'PHYSICAL_VBLANK_SEQUENCE_BREAK')){
-    Fail 'PHYSICAL_VBLANK_SEQUENCE_BREAK' 'ordinalがstrictly consecutiveではありません'
+    Fail 'PHYSICAL_VBLANK_SEQUENCE_BREAK' 'physical_vblank_ordinalがstrictly consecutiveではありません'
 }
 if(-not[bool](Require $formal 'formal_physical_output_stable' 'OUTPUT_OR_MODE_CHANGED')){
     Fail 'OUTPUT_OR_MODE_CHANGED' 'adapter/output/refresh rationalが変化しました'
 }
-# 両端のbracketが無いとtailのexact accountingが閉じない。
+# 両端の bracket が無いと tail の exact accounting が閉じない。
 if(-not[bool](Require $formal 'formal_physical_vblank_boundary_bracketed' 'PHYSICAL_VBLANK_BOUNDARY_NOT_BRACKETED')){
     Fail 'PHYSICAL_VBLANK_BOUNDARY_NOT_BRACKETED' 'measurement両端がbracketされていません'
 }
@@ -109,19 +108,30 @@ if((I64 (Require $formal 'present_event_overflow_count' 'RING_OVERFLOW'))-ne0){
 if((I64 (Require $formal 'formal_presented_frame_mismatch_count' 'PRESENTED_FRAME_MISMATCH'))-ne0){
     Fail 'PRESENTED_FRAME_MISMATCH' 'predicted targetFrameとrendered source frameが一致しません'
 }
+# 1 physical ordinal に 2件以上の Presented event が map されたら曖昧。
+if((I64 (Require $formal 'formal_physical_ordinal_multi_presented_count' 'PHYSICAL_DISPLAY_IDENTITY_AMBIGUOUS'))-ne0){
+    Fail 'PHYSICAL_DISPLAY_IDENTITY_AMBIGUOUS' '同一physical ordinalへ複数のPresented eventがmapされています'
+}
 
-# --- accounting identities ---
+# --- Layer 1A: workload intent ---
 $required=I64 (Require $formal 'formal_required_intent_count')
+$satisfied=I64 (Require $formal 'formal_satisfied_intent_count' 'INTENT_IDENTITY_AMBIGUOUS')
+# --- Layer 1B: physical opportunity ---
 $physical=I64 (Require $formal 'formal_physical_opportunity_count')
+# --- Layer 2: PresentEvent outcome cohort ---
 $native=I64 (Require $formal 'formal_successful_native_present_count')
 $events=I64 (Require $formal 'formal_present_event_count')
-$displayed=I64 (Require $formal 'formal_displayed_count')
-$discarded=I64 (Require $formal 'formal_discarded_count')
+$presentedEvents=I64 (Require $formal 'formal_presented_event_count')
+$discardedEvents=I64 (Require $formal 'formal_discarded_event_count')
 $unknown=I64 (Require $formal 'formal_present_outcome_unknown_count')
+# --- Layer 3: measurement physical domain occupancy ---
+$inDomainPresented=I64 (Require $formal 'formal_in_domain_presented_event_count')
+$filled=I64 (Require $formal 'formal_filled_physical_opportunity_count')
 $unique=I64 (Require $formal 'formal_displayed_unique_physical_count')
 $repeated=I64 (Require $formal 'formal_repeated_physical_count')
 $unfilled=I64 (Require $formal 'formal_physical_unfilled_count')
 $tailUnfilled=I64 (Require $formal 'formal_tail_physical_unfilled_count')
+# --- intent vs physical ---
 $overhang=I64 (Require $formal 'formal_intent_overhang_count')
 $surplus=I64 (Require $formal 'formal_intent_surplus_count')
 $trueDrop=I64 (Require $formal 'formal_true_drop_count')
@@ -129,26 +139,54 @@ $trueDrop=I64 (Require $formal 'formal_true_drop_count')
 if($required-le0){Fail 'ACCOUNTING_IDENTITY_VIOLATION' 'required_intent_countが正ではありません'}
 if($physical-lt0){Fail 'ACCOUNTING_IDENTITY_VIOLATION' 'physical_opportunity_countが負です'}
 if($unknown-ne0){Fail 'PRESENT_OUTCOME_UNKNOWN' "terminalでないPresent outcomeがあります: $unknown"}
-# I1
-if($displayed+$unfilled-ne$physical){Fail 'ACCOUNTING_IDENTITY_VIOLATION' 'I1違反: displayed + unfilled != physical_opportunity'}
-# I2
-if($unique+$repeated-ne$displayed){Fail 'ACCOUNTING_IDENTITY_VIOLATION' 'I2違反: unique + repeated != displayed'}
-# I3
-if($displayed+$discarded+$unknown-ne$events){Fail 'ACCOUNTING_IDENTITY_VIOLATION' 'I3違反: displayed + discarded + unknown != present_event_count'}
-# I4  token -> native Present -> PresentEvent の 1:1
-if($native-ne$events){Fail 'PRESENT_EVENT_MISSING' 'I4違反: successful native Present数とPresentEvent数が一致しません'}
-# I5
-$uniqueUpper=[Math]::Min($required,$physical)
-if($unique-lt0-or$unique-gt$uniqueUpper){Fail 'ACCOUNTING_IDENTITY_VIOLATION' "I5違反: displayed_unique_physicalが範囲外です ($unique > $uniqueUpper)"}
-# I6
-if($tailUnfilled-lt0-or$tailUnfilled-gt$unfilled){Fail 'ACCOUNTING_IDENTITY_VIOLATION' 'I6違反: tail_unfilledがunfilledを超えています'}
-# I7 / I8
-if($overhang-ne[Math]::Max($required-$physical,0)){Fail 'ACCOUNTING_IDENTITY_VIOLATION' 'I7違反: intent_overhangの定義と一致しません'}
-if($surplus-ne[Math]::Max($physical-$required,0)){Fail 'ACCOUNTING_IDENTITY_VIOLATION' 'I8違反: intent_surplusの定義と一致しません'}
-# I9
-if($trueDrop-ne[Math]::Max($required-$unique,0)){Fail 'ACCOUNTING_IDENTITY_VIOLATION' 'I9違反: true_dropの定義と一致しません'}
-# I10
-if($overhang-ne0-and$surplus-ne0){Fail 'ACCOUNTING_IDENTITY_VIOLATION' 'I10違反: overhangとsurplusが同時に非0です'}
+
+# E: Layer 2 PresentEvent cohort
+if($presentedEvents+$discardedEvents+$unknown-ne$events){
+    Fail 'ACCOUNTING_IDENTITY_VIOLATION' 'E1違反: presented + discarded + unknown != present_event_count'
+}
+if($native-ne$events){
+    Fail 'PRESENT_EVENT_MISSING' 'E2違反: successful native Present数とPresentEvent数が一致しません'
+}
+
+# P: Layer 3 measurement physical domain occupancy
+# Layer 2 cohort と Layer 3 domain は別集合である。両者の大小関係は要求しない。
+# (measurement前submitでdomain内Displayed / domain外Displayedの双方が存在しうる)
+if($filled+$unfilled-ne$physical){
+    Fail 'ACCOUNTING_IDENTITY_VIOLATION' 'P1違反: filled + unfilled != physical_opportunity_count'
+}
+if($unique+$repeated-ne$filled){
+    Fail 'ACCOUNTING_IDENTITY_VIOLATION' 'P2違反: unique + repeated != filled_physical_opportunity_count'
+}
+# 1 ordinal あたり 0 or 1 の Presented event を要求済みなので同値になる。
+if($inDomainPresented-ne$filled){
+    Fail 'PHYSICAL_DISPLAY_IDENTITY_AMBIGUOUS' 'P3違反: in-domain Presented eventとfilled physical opportunityが一致しません'
+}
+# U: physical 側の observational bound。required では縛らない。
+if($unique-lt0-or$unique-gt$physical){
+    Fail 'ACCOUNTING_IDENTITY_VIOLATION' "U1違反: displayed_unique_physicalがphysical opportunityを超えています ($unique > $physical)"
+}
+if($tailUnfilled-lt0-or$tailUnfilled-gt$unfilled){
+    Fail 'ACCOUNTING_IDENTITY_VIOLATION' 'P4違反: tail_unfilledがunfilledを超えています'
+}
+
+# S: Layer 1A intent identity へ exact に閉じたもの
+if($satisfied-lt0-or$satisfied-gt$required){
+    Fail 'INTENT_IDENTITY_AMBIGUOUS' "S1違反: satisfied_intent_countが範囲外です ($satisfied / $required)"
+}
+if($trueDrop-ne$required-$satisfied){
+    Fail 'ACCOUNTING_IDENTITY_VIOLATION' 'S2違反: true_drop != required_intent - satisfied_intent'
+}
+
+# X: intent と physical の関係
+if($overhang-ne[Math]::Max($required-$physical,0)){
+    Fail 'ACCOUNTING_IDENTITY_VIOLATION' 'X1違反: intent_overhangの定義と一致しません'
+}
+if($surplus-ne[Math]::Max($physical-$required,0)){
+    Fail 'ACCOUNTING_IDENTITY_VIOLATION' 'X2違反: intent_surplusの定義と一致しません'
+}
+if($overhang-ne0-and$surplus-ne0){
+    Fail 'ACCOUNTING_IDENTITY_VIOLATION' 'X3違反: overhangとsurplusが同時に非0です'
+}
 
 $dropRate=[double]$trueDrop/[double]$required
 $result=[ordered]@{
@@ -157,10 +195,15 @@ $result=[ordered]@{
     formal_authority_valid=$true;formal_authority_error='NONE'
     formal_runtime_authority_override=$false
     performance_evaluated=$true
-    # threshold自体は変更しない。評価はW3で行う。
+    # threshold 自体は変更しない。評価は W3 で行う。
     formal_required_intent_count=$required
+    formal_satisfied_intent_count=$satisfied
     formal_physical_opportunity_count=$physical
-    formal_displayed_count=$displayed
+    formal_present_event_count=$events
+    formal_presented_event_count=$presentedEvents
+    formal_discarded_event_count=$discardedEvents
+    formal_in_domain_presented_event_count=$inDomainPresented
+    formal_filled_physical_opportunity_count=$filled
     formal_displayed_unique_physical_count=$unique
     formal_repeated_physical_count=$repeated
     formal_physical_unfilled_count=$unfilled
@@ -174,5 +217,5 @@ $result=[ordered]@{
 if(-not[string]::IsNullOrWhiteSpace($Output)){
     $result|ConvertTo-Json -Depth 6|Set-Content -LiteralPath $Output -Encoding utf8
 }
-Write-Host ("P2-D5-2 formal v2: PASS required={0} physical={1} unique={2} trueDrop={3} dropRate={4:P3}" -f `
-    $required,$physical,$unique,$trueDrop,$dropRate)
+Write-Host ("P2-D5-2 formal v2: PASS required={0} satisfied={1} physical={2} filled={3} trueDrop={4} dropRate={5:P3}" -f `
+    $required,$satisfied,$physical,$filled,$trueDrop,$dropRate)

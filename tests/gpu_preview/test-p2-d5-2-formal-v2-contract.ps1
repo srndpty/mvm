@@ -1,13 +1,17 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)]
-    [ValidateSet('Good','GoodPhysicalSurplus','AuthorityInvalidPropagated',
-                 'NegativeRetiredReason','NegativeRuntimeOverride','NegativeUnknownOutcome',
+    [ValidateSet('Good','GoodPhysicalSurplus','GoodBoundaryCohortDivergence',
+                 'AuthorityInvalidPropagated',
+                 'NegativeRetiredReason','NegativeRetiredOpportunityRegression',
+                 'NegativeRuntimeOverride','NegativeUnknownOutcome',
                  'NegativeVblankSequence','NegativeVblankObserver','NegativeBoundaryNotBracketed',
                  'NegativeOutputChanged','NegativeEtwLoss','NegativeRingOverflow',
-                 'NegativePresentedFrameMismatch','NegativeIdentityI1','NegativeIdentityI2',
-                 'NegativeIdentityI3','NegativeIdentityI4','NegativeIdentityI5',
-                 'NegativeIdentityI6','NegativeIdentityI9','NegativeContractVersion')]
+                 'NegativePresentedFrameMismatch','NegativeMultiPresentedOrdinal',
+                 'NegativeIdentityE1','NegativeIdentityE2','NegativeIdentityP1',
+                 'NegativeIdentityP2','NegativeIdentityP3','NegativeIdentityP4',
+                 'NegativeIdentityU1','NegativeIdentityS1','NegativeIdentityS2',
+                 'NegativeContractVersion')]
     [string]$Case,
     [Parameter(Mandatory=$true)][string]$Checker,
     [Parameter(Mandatory=$true)][string]$Directory
@@ -17,15 +21,20 @@ Set-StrictMode -Version Latest
 if(Test-Path -LiteralPath $Directory){Remove-Item -LiteralPath $Directory -Recurse -Force}
 New-Item -ItemType Directory -Path $Directory|Out-Null
 
-# 基準は required=3600, physical=3600, displayed=3590 (unique 3580 / repeated 10),
-# unfilled=10 (うち tail 4), discarded=5。
-$required=3600;$physical=3600;$displayed=3590;$unique=3580;$repeated=10
-$unfilled=$physical-$displayed;$tailUnfilled=4;$discarded=5;$unknown=0
-$events=$displayed+$discarded+$unknown;$native=$events
+# 基準: required=3600, physical=3600
+# Layer 2 cohort   present_event=3595 (presented 3590 / discarded 5 / unknown 0)
+# Layer 3 domain   filled=3590 (unique 3580 / repeated 10), unfilled=10 (tail 4)
+# Layer 1A bridge  satisfied_intent=3580
+$required=3600;$satisfied=3580;$physical=3600
+$presentedEvents=3590;$discardedEvents=5;$unknown=0
+$events=$presentedEvents+$discardedEvents+$unknown;$native=$events
+$inDomainPresented=3590;$filled=3590;$unique=3580;$repeated=10
+$unfilled=$physical-$filled;$tailUnfilled=4
 $overhang=[Math]::Max($required-$physical,0)
 $surplus=[Math]::Max($physical-$required,0)
-$trueDrop=[Math]::Max($required-$unique,0)
-$contractVersion='P2-D5-2-v2';$profile='P2-D5-2-v2';$override=$false
+$trueDrop=$required-$satisfied
+$multiPresented=0
+$contractVersion='P2-D5-2-v2';$authorityProfile='P2-D5-2-v2';$override=$false
 $authorityValid=$true;$authorityError='NONE'
 $mismatch=0;$etwEvents=0;$etwBuffers=0;$ringOverflow=0
 $sequence='OK';$overflowCount=0;$waitFailure=0;$longInterval=0;$shortInterval=0
@@ -33,14 +42,25 @@ $cumulative=$true;$ordinalConsecutive=$true;$outputStable=$true;$bracketed=$true
 
 switch($Case){
     'GoodPhysicalSurplus'{
-        # 60.05Hz などで physical が required を上回るケース。
-        $physical=3603;$displayed=3590;$unfilled=$physical-$displayed
+        # 60.05Hz 等で physical が required を上回る。unique は required を超えてよい。
+        $physical=3603;$filled=3603;$unique=3603;$repeated=0
+        $inDomainPresented=$filled;$unfilled=$physical-$filled;$tailUnfilled=0
+        $satisfied=3600;$trueDrop=$required-$satisfied
         $surplus=[Math]::Max($physical-$required,0);$overhang=0
+        $presentedEvents=3603;$events=$presentedEvents+$discardedEvents+$unknown;$native=$events
+    }
+    'GoodBoundaryCohortDivergence'{
+        # Layer2 cohort と Layer3 domain は別集合。大小関係を要求しない。
+        # measurement前submitでdomain内Displayed 8件、domain外Displayed 6件。
+        $presentedEvents=3584          # cohort 側は domain 外 Displayed を含む
+        $events=$presentedEvents+$discardedEvents+$unknown;$native=$events
+        $inDomainPresented=3590;$filled=3590   # domain 側は前段 submit 分を含む
     }
     'AuthorityInvalidPropagated'{$authorityValid=$false;$authorityError='PRESENT_EVENT_AMBIGUOUS'}
     'NegativeRetiredReason'     {$authorityValid=$false;$authorityError='RENDER_SWAP_MISMATCH'}
+    'NegativeRetiredOpportunityRegression'{$authorityValid=$false;$authorityError='OPPORTUNITY_REGRESSION'}
     'NegativeRuntimeOverride'   {$override=$true}
-    'NegativeUnknownOutcome'    {$unknown=3;$events=$displayed+$discarded+$unknown;$native=$events}
+    'NegativeUnknownOutcome'    {$unknown=3;$events=$presentedEvents+$discardedEvents+$unknown;$native=$events}
     'NegativeVblankSequence'    {$sequence='BREAK'}
     'NegativeVblankObserver'    {$longInterval=1}
     'NegativeBoundaryNotBracketed'{$bracketed=$false}
@@ -48,19 +68,22 @@ switch($Case){
     'NegativeEtwLoss'           {$etwEvents=1}
     'NegativeRingOverflow'      {$ringOverflow=1}
     'NegativePresentedFrameMismatch'{$mismatch=2}
-    'NegativeIdentityI1'        {$unfilled=$unfilled+1}
-    'NegativeIdentityI2'        {$repeated=$repeated+1}
-    'NegativeIdentityI3'        {$events=$events+1;$native=$events}
-    'NegativeIdentityI4'        {$native=$events+1}
-    'NegativeIdentityI5'        {$unique=$required+1}
-    'NegativeIdentityI6'        {$tailUnfilled=$unfilled+1}
-    'NegativeIdentityI9'        {$trueDrop=$trueDrop+1}
+    'NegativeMultiPresentedOrdinal'{$multiPresented=1}
+    'NegativeIdentityE1'        {$events=$events+1;$native=$events}
+    'NegativeIdentityE2'        {$native=$events+1}
+    'NegativeIdentityP1'        {$unfilled=$unfilled+1}
+    'NegativeIdentityP2'        {$repeated=$repeated+1}
+    'NegativeIdentityP3'        {$inDomainPresented=$filled+1}
+    'NegativeIdentityP4'        {$tailUnfilled=$unfilled+1}
+    'NegativeIdentityU1'        {$unique=$physical+1;$repeated=$filled-$unique}
+    'NegativeIdentityS1'        {$satisfied=$required+1;$trueDrop=$required-$satisfied}
+    'NegativeIdentityS2'        {$trueDrop=$trueDrop+1}
     'NegativeContractVersion'   {$contractVersion='P2-D5-2'}
 }
 
 $formal=[ordered]@{
     formal_contract_version=$contractVersion
-    formal_authority_profile=$profile
+    formal_authority_profile=$authorityProfile
     formal_runtime_authority_override=$override
     formal_authority_valid=$authorityValid
     formal_authority_error=$authorityError
@@ -76,13 +99,17 @@ $formal=[ordered]@{
     etw_events_lost=$etwEvents;etw_buffers_lost=$etwBuffers
     present_event_overflow_count=$ringOverflow
     formal_presented_frame_mismatch_count=$mismatch
+    formal_physical_ordinal_multi_presented_count=$multiPresented
     formal_required_intent_count=$required
+    formal_satisfied_intent_count=$satisfied
     formal_physical_opportunity_count=$physical
     formal_successful_native_present_count=$native
     formal_present_event_count=$events
-    formal_displayed_count=$displayed
-    formal_discarded_count=$discarded
+    formal_presented_event_count=$presentedEvents
+    formal_discarded_event_count=$discardedEvents
     formal_present_outcome_unknown_count=$unknown
+    formal_in_domain_presented_event_count=$inDomainPresented
+    formal_filled_physical_opportunity_count=$filled
     formal_displayed_unique_physical_count=$unique
     formal_repeated_physical_count=$repeated
     formal_physical_unfilled_count=$unfilled
@@ -95,36 +122,42 @@ $formalPath=Join-Path $Directory 'formal.json'
 $formal|ConvertTo-Json -Depth 6|Set-Content -LiteralPath $formalPath -Encoding utf8
 
 $output=Join-Path $Directory 'proof.json'
-$stderrPath=Join-Path $Directory 'checker.txt'
+$checkerLog=Join-Path $Directory 'checker.txt'
 $failed=$false
 try{
-    & pwsh -NoProfile -File $Checker -Json $formalPath -Output $output *> $stderrPath
+    & pwsh -NoProfile -File $Checker -Json $formalPath -Output $output *> $checkerLog
     if($LASTEXITCODE-ne0){$failed=$true}
 }catch{$failed=$true}
-$checkerText=if(Test-Path -LiteralPath $stderrPath){Get-Content -LiteralPath $stderrPath -Raw}else{''}
+$checkerText=if(Test-Path -LiteralPath $checkerLog){Get-Content -LiteralPath $checkerLog -Raw}else{''}
 
 $expectedReason=switch($Case){
-    'NegativeRetiredReason'         {'RUNTIME_AUTHORITY_OVERRIDE'}
-    'NegativeRuntimeOverride'       {'RUNTIME_AUTHORITY_OVERRIDE'}
-    'NegativeContractVersion'       {'RUNTIME_AUTHORITY_OVERRIDE'}
-    'NegativeUnknownOutcome'        {'PRESENT_OUTCOME_UNKNOWN'}
-    'NegativeVblankSequence'        {'PHYSICAL_VBLANK_SEQUENCE_BREAK'}
-    'NegativeVblankObserver'        {'PHYSICAL_VBLANK_OBSERVER_INVALID'}
-    'NegativeBoundaryNotBracketed'  {'PHYSICAL_VBLANK_BOUNDARY_NOT_BRACKETED'}
-    'NegativeOutputChanged'         {'OUTPUT_OR_MODE_CHANGED'}
-    'NegativeEtwLoss'               {'ETW_LOSS'}
-    'NegativeRingOverflow'          {'RING_OVERFLOW'}
-    'NegativePresentedFrameMismatch'{'PRESENTED_FRAME_MISMATCH'}
-    'NegativeIdentityI4'            {'PRESENT_EVENT_MISSING'}
-    default                         {$null}
-}
-if($Case-like'NegativeIdentityI*'-and$null-eq$expectedReason){
-    $expectedReason='ACCOUNTING_IDENTITY_VIOLATION'
+    'NegativeRetiredReason'               {'RUNTIME_AUTHORITY_OVERRIDE'}
+    'NegativeRetiredOpportunityRegression'{'RUNTIME_AUTHORITY_OVERRIDE'}
+    'NegativeRuntimeOverride'             {'RUNTIME_AUTHORITY_OVERRIDE'}
+    'NegativeContractVersion'             {'RUNTIME_AUTHORITY_OVERRIDE'}
+    'NegativeUnknownOutcome'              {'PRESENT_OUTCOME_UNKNOWN'}
+    'NegativeVblankSequence'              {'PHYSICAL_VBLANK_SEQUENCE_BREAK'}
+    'NegativeVblankObserver'              {'PHYSICAL_VBLANK_OBSERVER_INVALID'}
+    'NegativeBoundaryNotBracketed'        {'PHYSICAL_VBLANK_BOUNDARY_NOT_BRACKETED'}
+    'NegativeOutputChanged'               {'OUTPUT_OR_MODE_CHANGED'}
+    'NegativeEtwLoss'                     {'ETW_LOSS'}
+    'NegativeRingOverflow'                {'RING_OVERFLOW'}
+    'NegativePresentedFrameMismatch'      {'PRESENTED_FRAME_MISMATCH'}
+    'NegativeMultiPresentedOrdinal'       {'PHYSICAL_DISPLAY_IDENTITY_AMBIGUOUS'}
+    'NegativeIdentityE2'                  {'PRESENT_EVENT_MISSING'}
+    'NegativeIdentityP3'                  {'PHYSICAL_DISPLAY_IDENTITY_AMBIGUOUS'}
+    'NegativeIdentityS1'                  {'INTENT_IDENTITY_AMBIGUOUS'}
+    'NegativeIdentityE1'                  {'ACCOUNTING_IDENTITY_VIOLATION'}
+    'NegativeIdentityP1'                  {'ACCOUNTING_IDENTITY_VIOLATION'}
+    'NegativeIdentityP2'                  {'ACCOUNTING_IDENTITY_VIOLATION'}
+    'NegativeIdentityP4'                  {'ACCOUNTING_IDENTITY_VIOLATION'}
+    'NegativeIdentityU1'                  {'ACCOUNTING_IDENTITY_VIOLATION'}
+    'NegativeIdentityS2'                  {'ACCOUNTING_IDENTITY_VIOLATION'}
+    default                               {$null}
 }
 
 if($null-ne$expectedReason){
     if(-not$failed){throw "negative caseが違反を検出できませんでした: $Case"}
-    # reason が固有に発火していることを要求する。
     if($checkerText-notmatch [regex]::Escape($expectedReason)){
         throw "期待した fail-close reason が出ていません: expected=$expectedReason"
     }
@@ -136,6 +169,9 @@ $proof=Get-Content -LiteralPath $output -Raw -Encoding utf8|ConvertFrom-Json
 if($Case-eq'AuthorityInvalidPropagated'){
     if([string]$proof.status-ne'AUTHORITY_INVALID'){throw "statusが不正です: $($proof.status)"}
     if([bool]$proof.performance_evaluated){throw 'authority invalidなのにperformanceを評価しました'}
+    # performance_pass / drop_rate は null。false にすると threshold 超過と混同する。
+    if($null-ne$proof.performance_pass){throw 'performance_passがnullではありません'}
+    if($null-ne$proof.drop_rate){throw 'drop_rateがnullではありません'}
     if([string]$proof.formal_authority_error-ne'PRESENT_EVENT_AMBIGUOUS'){throw 'errorが伝播していません'}
     Write-Host "P2-D5-2 formal v2 contract: PASS ($Case -> AUTHORITY_INVALID)"
     exit 0
@@ -144,8 +180,16 @@ if([string]$proof.status-ne'PASS'){throw "statusがPASSではありません: $(
 if(-not[bool]$proof.performance_evaluated){throw 'performanceが評価されていません'}
 if([long]$proof.formal_true_drop_count-ne$trueDrop){throw 'true_dropが一致しません'}
 if($Case-eq'GoodPhysicalSurplus'){
-    # physical > required でも I9 は required 基準で閉じる。
     if([long]$proof.formal_intent_surplus_count-le0){throw 'intent_surplusが記録されていません'}
     if([long]$proof.formal_intent_overhang_count-ne0){throw 'overhangが0ではありません'}
+    # unique が required を超えても契約違反にしない。
+    if([long]$proof.formal_displayed_unique_physical_count-le[long]$proof.formal_required_intent_count){
+        throw 'physical surplus caseでuniqueがrequiredを超えていません'
+    }
+}
+if($Case-eq'GoodBoundaryCohortDivergence'){
+    if([long]$proof.formal_presented_event_count-ge[long]$proof.formal_in_domain_presented_event_count){
+        throw 'cohort divergenceが再現していません'
+    }
 }
 Write-Host "P2-D5-2 formal v2 contract: PASS ($Case)"
