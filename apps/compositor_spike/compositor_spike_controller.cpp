@@ -1,6 +1,7 @@
 #include "compositor_spike_controller.h"
 
 #include "media/gpu_preview/measurement_preroll.h"
+#include "media/gpu_preview/physical_vblank_domain.h"
 #include "media/gpu_preview/qpc_clock.h"
 
 #include <QFile>
@@ -1576,6 +1577,72 @@ bool CompositorSpikeController::writeMetrics() {
         {"cumulative_tolerance_unit", vblankIntervals.cumulativeToleranceUnit},
         {"cumulative_consistent", vblankIntervals.cumulativeConsistent},
         {"samples", vblankSampleJson}};
+    // P2-D5-2-W2-A shadow。measurement窓に対するphysical VBlank domainを
+    // exactに構築する。legacy formal scheduler / counters / shutdown / threshold
+    // へは一切入力しない。measurement窓のauthorityは既存formal measurement
+    // lifecycleであり、collector側で独自のendを作らない。
+    const long long shadowMeasurementStartQpc =
+        state_->measurementStartQpc.load(std::memory_order_acquire);
+    const long long shadowMeasurementEndQpc =
+        state_->measurementEndQpc.load(std::memory_order_acquire);
+    gpu::PhysicalVBlankDomainInput domainInput;
+    domainInput.samples = vblankSamples.data();
+    domainInput.sampleCount = vblankSamples.size();
+    domainInput.measurementStartQpc = shadowMeasurementStartQpc;
+    domainInput.measurementEndQpc = shadowMeasurementEndQpc;
+    domainInput.refreshNumerator = vblankIdentityStart_.refreshNumerator;
+    domainInput.refreshDenominator = vblankIdentityStart_.refreshDenominator;
+    domainInput.qpcFrequency = qpcFrequency;
+    domainInput.ringOverflowCount = vblankObserver_.ring().overflowCount();
+    domainInput.waitFailureCount = vblankObserver_.waitFailureCount();
+    domainInput.observerStarted = vblankObserverStarted_;
+    domainInput.timeCriticalPriority = vblankObserver_.timeCriticalPriority();
+    domainInput.outputStable = gpu::sameWindowOutput(vblankIdentityStart_, vblankIdentityEnd_);
+    // Layer 1A は shadow 出力のためだけに渡す。physical count との一致は
+    // 要求せず、verdict にも接続しない。
+    domainInput.requiredIntentCount = requiredMeasurementFrameCount_;
+    gpu::PhysicalVBlankDomain vblankDomain;
+    gpu::buildPhysicalVBlankDomain(domainInput, vblankDomain);
+    const QJsonObject physicalVBlankDomainShadow{
+        {"shadow_only", true},
+        {"formal_counter_authority_changed", false},
+        // performance semantics へは接続しない。required と physical の差を
+        // drop と判定しない。
+        {"performance_semantics_connected", false},
+        {"measurement_window_authority", "formal measurement lifecycle"},
+        {"physical_opportunity_authority", "window output physical VBlank observer"},
+        {"domain_relation", "measurement_start_qpc <= vblank.qpc < measurement_end_qpc"},
+        {"measurement_start_qpc", vblankDomain.measurementStartQpc},
+        {"measurement_end_qpc_exclusive", vblankDomain.measurementEndQpc},
+        {"predecessor_valid", vblankDomain.predecessorValid},
+        {"predecessor_ordinal", vblankDomain.predecessor.ordinal},
+        {"predecessor_qpc", vblankDomain.predecessor.qpc},
+        {"successor_valid", vblankDomain.successorValid},
+        {"successor_ordinal", vblankDomain.successor.ordinal},
+        {"successor_qpc", vblankDomain.successor.qpc},
+        {"origin_ordinal", vblankDomain.originOrdinal},
+        {"origin_qpc", vblankDomain.originQpc},
+        {"last_ordinal", vblankDomain.lastOrdinal},
+        {"last_qpc", vblankDomain.lastQpc},
+        {"physical_opportunity_count", vblankDomain.physicalOpportunityCount},
+        {"sequence_status", QString::fromLatin1(vblankSequenceName)},
+        {"long_interval_count", vblankDomain.longIntervalCount},
+        {"short_interval_count", vblankDomain.shortIntervalCount},
+        {"ring_overflow_count", vblankDomain.ringOverflowCount},
+        {"wait_failure_count", vblankDomain.waitFailureCount},
+        {"cumulative_consistent", vblankDomain.cumulativeConsistent},
+        {"output_stable", vblankDomain.outputStable},
+        {"boundary_bracketed", vblankDomain.boundaryBracketed},
+        {"shadow_authority_valid", vblankDomain.shadowAuthorityValid},
+        {"shadow_authority_error",
+         QString::fromLatin1(gpu::physicalVBlankDomainErrorName(vblankDomain.shadowAuthorityError))},
+        // W1 で freeze した v2 canonical reason 語彙への射影。
+        {"shadow_authority_canonical_reason",
+         QString::fromLatin1(
+             gpu::physicalVBlankDomainCanonicalReason(vblankDomain.shadowAuthorityError))},
+        {"required_intent_count", vblankDomain.requiredIntentCount},
+        {"intent_overhang_count", vblankDomain.intentOverhangCount},
+        {"intent_surplus_count", vblankDomain.intentSurplusCount}};
     QJsonArray incrementalTransitionJson;
     for (const auto& transition : incrementalMapperTransitions_) {
         incrementalTransitionJson.append(
@@ -1700,6 +1767,7 @@ bool CompositorSpikeController::writeMetrics() {
     QJsonObject presentationOpportunity{
         {"enabled", config_.presentationOpportunityRing},
         {"physical_vblank", physicalVBlank},
+        {"physical_vblank_domain_shadow", physicalVBlankDomainShadow},
         {"measurement_start_qpc",
          state_->measurementStartQpc.load(std::memory_order_acquire)},
         {"measurement_end_qpc_exclusive",

@@ -190,6 +190,20 @@ foreach(_p2_d5_2_formal_v2_case IN ITEMS Good GoodPhysicalSurplus GoodBoundaryCo
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
+# P2-D5-2-W2-A: physical VBlank domain shadowのexecutable contract。
+# shadow only であること、boundaryがhalf-openで閉じること、required_intent_countと
+# physical countの差をverdictにしないことを固定する。
+foreach(_p2_d5_2_w2a_case IN ITEMS Good GoodSuccessorAfterEnd GoodEmptyDomain GoodPhysicalOverhang GoodPhysicalSurplus AuthorityInvalidStall AuthorityInvalidWindow NegativeNotShadowOnly NegativeCounterAuthorityChanged NegativePerformanceConnected NegativeWindowAuthority NegativeOpportunityAuthority NegativeDomainRelation NegativePerformanceField NegativeRetiredReason NegativeUnknownReason NegativeCanonicalMapping NegativeValidWithError NegativeInvalidWithoutError NegativeSequenceStatus NegativeLongInterval NegativeShortInterval NegativeRingOverflow NegativeWaitFailure NegativeCumulative NegativeOutputChanged NegativeBoundaryNotBracketed NegativePredecessorInDomain NegativeSuccessorBeforeEnd NegativeIdentityD1 NegativeIdentityD2 NegativeIdentityD3 NegativeIdentityD4 NegativeEmptyDomainOrigin NegativeEmptyDomainBracket NegativeIdentityX1 NegativeIdentityX2 NegativeIdentityX3)
+    string(TOLOWER "${_p2_d5_2_w2a_case}" _p2_d5_2_w2a_name)
+    mvm_add_test(p2_d5_2_w2a_physical_domain_${_p2_d5_2_w2a_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2a-physical-domain-contract.ps1"
+            -Case "${_p2_d5_2_w2a_case}"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2a-physical-domain.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2a-${_p2_d5_2_w2a_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
     string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)
     mvm_add_test(p2_c3_a3_t2_d1b2_evaluability_${_p2_c3_a3_t2_d1b2e_name}
@@ -1775,6 +1789,15 @@ target_link_libraries(mvm_test_window_output_vblank_authority
     PRIVATE mvm::gpu_preview mvm::warnings)
 mvm_add_test(p2_window_output_vblank_authority
     COMMAND mvm_test_window_output_vblank_authority)
+
+# P2-D5-2-W2-A: measurement窓に対するphysical VBlank domainのexact構築。
+# boundary / property / mutationをGPU非依存で固定する。
+add_executable(mvm_test_physical_vblank_domain
+    gpu_preview/test_physical_vblank_domain.cpp)
+target_link_libraries(mvm_test_physical_vblank_domain
+    PRIVATE mvm::gpu_preview mvm::warnings)
+mvm_add_test(p2_d5_2_w2a_physical_vblank_domain
+    COMMAND mvm_test_physical_vblank_domain)
 
 # P2-D5-2/F3-A: window output VBlank authority probeのcontract。
 # 対照群と、1 fieldだけを壊したnegativeで固定する。DWM composition clockが
