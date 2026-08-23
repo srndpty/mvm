@@ -44,17 +44,24 @@ constexpr std::size_t kVBlankRingCapacity = 32768;
 // mutex、logging、file I/Oを行わない。
 class VBlankRing {
 public:
+    // count / overflow は reset で 0 に戻る。publishSerial は戻さない。
     void reset();
     void capture(const VBlankObservation& value);
     std::vector<VBlankObservation> snapshot() const;
     bool read(std::size_t index, VBlankObservation& value) const;
     std::size_t publishedCount() const;
     long long overflowCount() const;
+    // P2-D5-2-W2-A.1。ring lifetime を通じて単調増加し、reset でも戻らない
+    // publish serial。「ring が空でない」ではなく「ある時点より後に新しく
+    // publish された」を判定するために使う。start/stop を再利用しても
+    // stale sample を新しい sample と誤認しない。
+    unsigned long long publishSerial() const;
 
 private:
     std::array<VBlankObservation, kVBlankRingCapacity> samples_{};
     std::atomic<std::size_t> count_{0};
     std::atomic<long long> overflow_{0};
+    std::atomic<unsigned long long> publishSerial_{0};
 };
 
 enum class VBlankSequenceStatus {

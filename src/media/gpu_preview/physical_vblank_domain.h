@@ -30,6 +30,12 @@ enum class PhysicalVBlankDomainError {
     SequenceBreak,
     // adapter / output / HMONITOR / refresh rationalが変化した。
     OutputOrModeChanged,
+    // W2-A.1。measurement窓が開く前にphysical VBlankを1本も観測できなかった。
+    // acquisition liveness timeoutであり performance thresholdではない。
+    PrerollTimeout,
+    // preroll sampleは取れたがmeasurement_start_qpcより前ではない。
+    // 下側boundaryのwitnessとして成立していない。
+    PrerollNotBeforeStart,
     // domain前のpredecessorかend以上のsuccessorが無い。
     BoundaryNotBracketed,
     // 隣接VBlankと断定できないinterval、または累積ずれ。
@@ -59,6 +65,12 @@ struct PhysicalVBlankDomainInput {
     bool observerStarted = false;
     bool timeCriticalPriority = false;
     bool outputStable = false;
+    // W2-A.1 lower boundary preroll。observer start後に新しくpublishされた
+    // sampleを1件確認してからmeasurement窓を開いたことの証拠。
+    bool prerollCompleted = false;
+    bool prerollTimedOut = false;
+    VBlankObservation prerollSample{};
+    long long prerollWaitElapsedQpc = 0;
     // Layer 1A。shadow出力のためだけに受け取る。physical countとの一致は
     // 要求せず、verdictにも接続しない。
     long long requiredIntentCount = 0;
@@ -89,6 +101,10 @@ struct PhysicalVBlankDomain {
     bool cumulativeConsistent = false;
     bool outputStable = false;
     bool boundaryBracketed = false;
+    bool prerollCompleted = false;
+    bool prerollTimedOut = false;
+    VBlankObservation prerollSample{};
+    long long prerollWaitElapsedQpc = 0;
 
     bool shadowAuthorityValid = false;
     PhysicalVBlankDomainError shadowAuthorityError = PhysicalVBlankDomainError::None;

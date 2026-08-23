@@ -179,6 +179,13 @@ mvm_add_test(p2_d5_2_formal_architecture_prew2
         -Phase PreW2 -SourceRoot "${CMAKE_SOURCE_DIR}"
     PROPERTIES LABELS "gpu_preview")
 
+# P2-D5-2-W2-A.1: observer start -> 新規sample確認 -> measurement arm の順序不変量。
+mvm_add_test(p2_d5_2_formal_architecture_w2a1
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-formal-architecture-contract.ps1"
+        -Phase W2A1 -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+
 foreach(_p2_d5_2_formal_v2_case IN ITEMS Good GoodPhysicalSurplus GoodBoundaryCohortDivergence AuthorityInvalidPropagated NegativeRetiredReason NegativeRetiredOpportunityRegression NegativeRuntimeOverride NegativeUnknownOutcome NegativeVblankSequence NegativeVblankObserver NegativeBoundaryNotBracketed NegativeOutputChanged NegativeEtwLoss NegativeRingOverflow NegativePresentedFrameMismatch NegativeMultiPresentedOrdinal NegativeIdentityE1 NegativeIdentityE2 NegativeIdentityP1 NegativeIdentityP2 NegativeIdentityP3 NegativeIdentityP4 NegativeIdentityU1 NegativeIdentityS1 NegativeIdentityS2 NegativeIdentityN1 NegativeContractVersion GoodSourceHalfRate GoodForeignIntentAtBoundary NegativeIntentMissing NegativeIntentAmbiguous NegativeIntentOutOfDomain NegativeIntentDuplicateDisplay)
     string(TOLOWER "${_p2_d5_2_formal_v2_case}" _p2_d5_2_formal_v2_name)
     mvm_add_test(p2_d5_2_formal_v2_${_p2_d5_2_formal_v2_name}
@@ -193,7 +200,7 @@ endforeach()
 # P2-D5-2-W2-A: physical VBlank domain shadowのexecutable contract。
 # shadow only であること、boundaryがhalf-openで閉じること、required_intent_countと
 # physical countの差をverdictにしないことを固定する。
-foreach(_p2_d5_2_w2a_case IN ITEMS Good GoodSuccessorAfterEnd GoodEmptyDomain GoodPhysicalOverhang GoodPhysicalSurplus AuthorityInvalidStall AuthorityInvalidWindow NegativeNotShadowOnly NegativeCounterAuthorityChanged NegativePerformanceConnected NegativeWindowAuthority NegativeOpportunityAuthority NegativeDomainRelation NegativePerformanceField NegativeRetiredReason NegativeUnknownReason NegativeCanonicalMapping NegativeValidWithError NegativeInvalidWithoutError NegativeSequenceStatus NegativeLongInterval NegativeShortInterval NegativeRingOverflow NegativeWaitFailure NegativeCumulative NegativeOutputChanged NegativeBoundaryNotBracketed NegativePredecessorInDomain NegativeSuccessorBeforeEnd NegativeIdentityD1 NegativeIdentityD2 NegativeIdentityD3 NegativeIdentityD4 NegativeEmptyDomainOrigin NegativeEmptyDomainBracket NegativeIdentityX1 NegativeIdentityX2 NegativeIdentityX3)
+foreach(_p2_d5_2_w2a_case IN ITEMS Good GoodSuccessorAfterEnd GoodEmptyDomain GoodPhysicalOverhang GoodPhysicalSurplus AuthorityInvalidStall AuthorityInvalidWindow NegativeNotShadowOnly NegativeCounterAuthorityChanged NegativePerformanceConnected NegativeWindowAuthority NegativeOpportunityAuthority NegativeDomainRelation NegativePerformanceField NegativeRetiredReason NegativeUnknownReason NegativeCanonicalMapping NegativeValidWithError NegativeInvalidWithoutError NegativeSequenceStatus NegativeLongInterval NegativeShortInterval NegativeRingOverflow NegativeWaitFailure NegativeCumulative NegativeOutputChanged NegativeBoundaryNotBracketed NegativePredecessorInDomain NegativeSuccessorBeforeEnd NegativeIdentityD1 NegativeIdentityD2 NegativeIdentityD3 NegativeIdentityD4 NegativeEmptyDomainOrigin NegativeEmptyDomainBracket NegativeIdentityX1 NegativeIdentityX2 NegativeIdentityX3 AuthorityInvalidPrerollTimeout NegativePrerollNotCompleted NegativePrerollTimeoutFlag NegativePrerollNotBeforeStart NegativePrerollAtStart GoodPrerollOrdinalNonZero)
     string(TOLOWER "${_p2_d5_2_w2a_case}" _p2_d5_2_w2a_name)
     mvm_add_test(p2_d5_2_w2a_physical_domain_${_p2_d5_2_w2a_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File

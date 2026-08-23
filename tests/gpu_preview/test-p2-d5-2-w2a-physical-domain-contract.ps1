@@ -14,7 +14,10 @@ param(
                  'NegativePredecessorInDomain','NegativeSuccessorBeforeEnd',
                  'NegativeIdentityD1','NegativeIdentityD2','NegativeIdentityD3',
                  'NegativeIdentityD4','NegativeEmptyDomainOrigin','NegativeEmptyDomainBracket',
-                 'NegativeIdentityX1','NegativeIdentityX2','NegativeIdentityX3')]
+                 'NegativeIdentityX1','NegativeIdentityX2','NegativeIdentityX3',
+                 'AuthorityInvalidPrerollTimeout','NegativePrerollNotCompleted',
+                 'NegativePrerollTimeoutFlag','NegativePrerollNotBeforeStart',
+                 'NegativePrerollAtStart','GoodPrerollOrdinalNonZero')]
     [string]$Case,
     [Parameter(Mandatory=$true)][string]$Checker,
     [Parameter(Mandatory=$true)][string]$Directory
@@ -43,6 +46,9 @@ $sequence='OK';$longInterval=0;$shortInterval=0;$ringOverflow=0;$waitFailure=0
 $cumulative=$true;$outputStable=$true;$bracketed=$true
 $predValid=$true;$succValid=$true
 $valid=$true;$reason='NONE';$canonical='NONE'
+# W2-A.1。下側bracketの witness。ordinalではなくqpcが不変量。
+$prerollCompleted=$true;$prerollTimeout=$false
+$prerollOrdinal=$predOrdinal;$prerollQpc=$predQpc;$prerollWait=12345
 $shadowOnly=$true;$counterAuthorityChanged=$false;$performanceConnected=$false
 $windowAuthority='formal measurement lifecycle'
 $opportunityAuthority='window output physical VBlank observer'
@@ -123,6 +129,19 @@ switch($Case){
     'NegativeIdentityX1'             {$required=3610}
     'NegativeIdentityX2'             {$required=3590}
     'NegativeIdentityX3'             {$required=3600}
+    'AuthorityInvalidPrerollTimeout'{
+        $valid=$false;$reason='PHYSICAL_VBLANK_PREROLL_TIMEOUT'
+        $canonical='PHYSICAL_VBLANK_OBSERVER_INVALID'
+        $prerollCompleted=$false;$prerollTimeout=$true;$prerollQpc=0;$prerollOrdinal=-1
+    }
+    # validを主張しながらprerollが成立していないartifactは受理しない。
+    'NegativePrerollNotCompleted'    {$prerollCompleted=$false}
+    'NegativePrerollTimeoutFlag'     {$prerollTimeout=$true}
+    'NegativePrerollNotBeforeStart'  {$prerollQpc=$originQpc+$period}
+    # half-open。start と完全一致した preroll sample は下側witnessにならない。
+    'NegativePrerollAtStart'         {$prerollQpc=$start}
+    # 確認する不変量はordinalが0かどうかではない。
+    'GoodPrerollOrdinalNonZero'      {$prerollOrdinal=$predOrdinal;$prerollQpc=$predQpc-$period}
 }
 
 $overhang=[Math]::Max($required-$physical,0)
@@ -142,6 +161,11 @@ $shadow=[ordered]@{
     domain_relation=$domainRelation
     measurement_start_qpc=$start
     measurement_end_qpc_exclusive=$end
+    prestart_vblank_preroll_completed=$prerollCompleted
+    prestart_vblank_preroll_timeout=$prerollTimeout
+    prestart_vblank_sample_ordinal=$prerollOrdinal
+    prestart_vblank_sample_qpc=$prerollQpc
+    prestart_wait_elapsed_qpc=$prerollWait
     predecessor_valid=$predValid
     predecessor_ordinal=$predOrdinal
     predecessor_qpc=$predQpc
@@ -221,6 +245,10 @@ $expectedReason=switch($Case){
     'NegativeIdentityX1'             {'PHYSICAL_VBLANK_DOMAIN_IDENTITY_VIOLATION'}
     'NegativeIdentityX2'             {'PHYSICAL_VBLANK_DOMAIN_IDENTITY_VIOLATION'}
     'NegativeIdentityX3'             {'PHYSICAL_VBLANK_DOMAIN_IDENTITY_VIOLATION'}
+    'NegativePrerollNotCompleted'    {'PHYSICAL_VBLANK_PREROLL_TIMEOUT'}
+    'NegativePrerollTimeoutFlag'     {'PHYSICAL_VBLANK_PREROLL_TIMEOUT'}
+    'NegativePrerollNotBeforeStart'  {'PHYSICAL_VBLANK_PREROLL_NOT_BEFORE_START'}
+    'NegativePrerollAtStart'         {'PHYSICAL_VBLANK_PREROLL_NOT_BEFORE_START'}
     default                          {$null}
 }
 
@@ -259,6 +287,11 @@ if($Case-eq'GoodPhysicalSurplus'){
 if($Case-eq'GoodEmptyDomain'){
     if([long]$proof.physical_opportunity_count-ne0){throw '空domainになっていません'}
     if(-not[bool]$proof.boundary_bracketed){throw '空domainでbracketが成立していません'}
+}
+if($Case-eq'GoodPrerollOrdinalNonZero'){
+    if([long]$proof.prestart_vblank_sample_qpc-ge[long]$proof.measurement_start_qpc){
+        throw 'preroll sampleがmeasurement_start_qpcより前ではありません'
+    }
 }
 if($Case-eq'Good'){
     # half-open。end と完全一致した VBlank は successor 側に置かれる。

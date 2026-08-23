@@ -595,6 +595,10 @@ bool CompositorSpikeController::resetPlaybackForMeasurement() {
     return true;
 }
 
+// W2-A.1 acquisition liveness timeout。60Hzなら約30 VBlank分の余裕がある。
+// performance thresholdではない。observer start timeoutと同じ桁に揃えている。
+constexpr long long kVBlankPrerollTimeoutMs = 500;
+
 void CompositorSpikeController::requestMeasurementStart() {
     measurementStartCaptured_ = false;
     measurementStopCaptured_ = false;
@@ -640,11 +644,30 @@ void CompositorSpikeController::requestMeasurementStart() {
             beginShutdown(QStringLiteral("window output VBlank authorityを解決できません"), true);
             return;
         }
+        // W2-A.1。baselineはstartより前に取る。ring reset後に新しくpublishされた
+        // sampleだけをprerollとして受理するため、stale sampleは満たさない。
+        const unsigned long long prerollBaseline = vblankObserver_.ring().publishSerial();
         if (!vblankObserver_.start(hwnd, vblankObserverError_)) {
             beginShutdown(QStringLiteral("window output VBlank observerを開始できません"), true);
             return;
         }
         vblankObserverStarted_ = true;
+        // W2-A.1 lower boundary preroll。measurement窓を開く前にphysical VBlankを
+        // 1本観測しておかないと、domainの下側bracket (predecessor) が
+        // 「observerの最初のwakeがrender callbackより先に返ったか」というraceに
+        // なる。timeoutはacquisition liveness timeoutであってperformance
+        // thresholdではない。timeoutしたらmeasurementを開始しない。
+        if (!vblankObserver_.prerollNewSample(prerollBaseline, kVBlankPrerollTimeoutMs,
+                                              vblankPreroll_)) {
+            vblankObserverError_ =
+                vblankPreroll_.timedOut
+                    ? "measurement開始前にphysical VBlankを観測できません "
+                      "(PHYSICAL_VBLANK_PREROLL_TIMEOUT)"
+                    : "physical VBlank observerがpreroll中に停止しました";
+            beginShutdown(QStringLiteral("physical VBlank lower boundary prerollに失敗しました"),
+                          true);
+            return;
+        }
     }
     if (formalOpportunity) {
         if (!validDwmAuthority(dwmTimingStart_)) {
@@ -1588,6 +1611,10 @@ bool CompositorSpikeController::writeMetrics() {
     domainInput.observerStarted = vblankObserverStarted_;
     domainInput.timeCriticalPriority = vblankObserver_.timeCriticalPriority();
     domainInput.outputStable = gpu::sameWindowOutput(vblankIdentityStart_, vblankIdentityEnd_);
+    domainInput.prerollCompleted = vblankPreroll_.completed;
+    domainInput.prerollTimedOut = vblankPreroll_.timedOut;
+    domainInput.prerollSample = vblankPreroll_.sample;
+    domainInput.prerollWaitElapsedQpc = vblankPreroll_.waitElapsedQpc;
     // Layer 1A は shadow 出力のためだけに渡す。physical count との一致は
     // 要求せず、verdict にも接続しない。
     domainInput.requiredIntentCount = requiredMeasurementFrameCount_;
@@ -1604,6 +1631,14 @@ bool CompositorSpikeController::writeMetrics() {
         {"domain_relation", "measurement_start_qpc <= vblank.qpc < measurement_end_qpc"},
         {"measurement_start_qpc", vblankDomain.measurementStartQpc},
         {"measurement_end_qpc_exclusive", vblankDomain.measurementEndQpc},
+        // W2-A.1。下側boundaryがraceではなく構造的に保証されたことのprovenance。
+        // 確認する不変量はordinalが0かどうかではなく
+        // preroll sample.qpc < measurement_start_qpc である。
+        {"prestart_vblank_preroll_completed", vblankDomain.prerollCompleted},
+        {"prestart_vblank_preroll_timeout", vblankDomain.prerollTimedOut},
+        {"prestart_vblank_sample_ordinal", vblankDomain.prerollSample.ordinal},
+        {"prestart_vblank_sample_qpc", vblankDomain.prerollSample.qpc},
+        {"prestart_wait_elapsed_qpc", vblankDomain.prerollWaitElapsedQpc},
         {"predecessor_valid", vblankDomain.predecessorValid},
         {"predecessor_ordinal", vblankDomain.predecessor.ordinal},
         {"predecessor_qpc", vblankDomain.predecessor.qpc},

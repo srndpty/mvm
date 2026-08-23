@@ -84,6 +84,13 @@ for($run=1;$run-le$Runs;++$run){
         cumulative_consistent=[bool]$shadow.cumulative_consistent
         output_stable=[bool]$shadow.output_stable
         boundary_bracketed=[bool]$shadow.boundary_bracketed
+        prestart_vblank_preroll_completed=[bool]$shadow.prestart_vblank_preroll_completed
+        prestart_vblank_preroll_timeout=[bool]$shadow.prestart_vblank_preroll_timeout
+        prestart_vblank_sample_ordinal=[int64]$shadow.prestart_vblank_sample_ordinal
+        prestart_vblank_sample_qpc=[int64]$shadow.prestart_vblank_sample_qpc
+        prestart_wait_elapsed_qpc=[int64]$shadow.prestart_wait_elapsed_qpc
+        # 確認する不変量はordinalではなくこれ。
+        preroll_sample_before_measurement_start=([int64]$shadow.prestart_vblank_sample_qpc-lt[int64]$shadow.measurement_start_qpc)
     }
     if($checkerExit-ne0-or-not[bool]$shadow.shadow_authority_valid){
         $matrixPass=$false

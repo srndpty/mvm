@@ -188,6 +188,40 @@ bool WindowOutputVBlankObserver::start(void* windowHandle, std::string& error) {
     return false;
 }
 
+bool WindowOutputVBlankObserver::prerollNewSample(unsigned long long baselineSerial,
+                                                 long long timeoutMs,
+                                                 VBlankPrerollResult& result) {
+    result = {};
+    const long long begin = qpcTicks();
+    const long long budget =
+        timeoutMs > 0 ? (static_cast<long long>(qpcFrequency()) * timeoutMs) / 1000 : 0;
+    const long long deadline = begin + budget;
+    for (;;) {
+        if (ring_.publishSerial() > baselineSerial) {
+            VBlankObservation sample{};
+            // reset 後の先頭 sample が preroll sample。
+            if (ring_.read(0, sample)) {
+                result.sample = sample;
+                result.completed = true;
+                result.waitElapsedQpc = qpcTicks() - begin;
+                return true;
+            }
+        }
+        // observer が死んでいるなら待っても sample は来ない。timeout ではない。
+        if (!running_.load(std::memory_order_acquire) ||
+            waitFailures_.load(std::memory_order_acquire) != 0) {
+            result.waitElapsedQpc = qpcTicks() - begin;
+            return false;
+        }
+        if (qpcTicks() >= deadline) {
+            result.timedOut = true;
+            result.waitElapsedQpc = qpcTicks() - begin;
+            return false;
+        }
+        Sleep(1);
+    }
+}
+
 void WindowOutputVBlankObserver::stop() {
     stopRequested_.store(true, std::memory_order_release);
     if (thread_.joinable())

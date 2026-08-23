@@ -270,6 +270,27 @@ void ringPublishesInOrder() {
           "ringが単調なVBlank列を保てていません");
 }
 
+// W2-A.1。publish serialはringのlifetimeを通じて単調で、resetでも戻らない。
+// これが無いと「reset前のstale sampleが1件あるからprerollできている」という
+// 誤判定が起こりうる。count / overflow はresetで0に戻ることも同時に固定する。
+void publishSerialIsMonotonicAcrossReset() {
+    mvm::gpu::VBlankRing ring;
+    ring.reset();
+    check(ring.publishSerial() == 0, "初期publish serialが0ではありません");
+    for (long long index = 0; index < 10; ++index)
+        ring.capture({index, 1000 + index * 10});
+    const auto beforeReset = ring.publishSerial();
+    check(beforeReset == 10, "publish serialがcapture数と一致しません");
+    ring.reset();
+    check(ring.publishedCount() == 0, "resetでcountが0に戻っていません");
+    check(ring.overflowCount() == 0, "resetでoverflowが0に戻っていません");
+    check(ring.publishSerial() == beforeReset, "resetでpublish serialが戻っています");
+    ring.capture({0, 5000});
+    check(ring.publishSerial() == beforeReset + 1, "reset後のcaptureでserialが進みません");
+    // baseline(reset前) との比較で「新しくpublishされた」を判定できる。
+    check(ring.publishSerial() > beforeReset, "baseline比較でprerollを判定できません");
+}
+
 } // namespace
 
 int main() {
@@ -281,6 +302,7 @@ int main() {
     shadowMappingClassifiesEverySwap();
     dwmClockDoesNotAffectWindowOpportunity();
     ringPublishesInOrder();
+    publishSerialIsMonotonicAcrossReset();
     std::fprintf(stderr, "P2-D5-2/F3 window output VBlank authority: 失敗 %d件\n", failures);
     return failures == 0 ? 0 : 1;
 }

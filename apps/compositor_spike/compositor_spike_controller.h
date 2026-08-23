@@ -187,6 +187,8 @@ private:
     gpu::WindowOutputIdentity vblankIdentityStart_{};
     gpu::WindowOutputIdentity vblankIdentityEnd_{};
     bool vblankObserverStarted_ = false;
+    // P2-D5-2-W2-A.1 lower boundary preroll。shadow-only provenance。
+    gpu::VBlankPrerollResult vblankPreroll_{};
     std::string vblankObserverError_;
     core::IncrementalOpportunityMapper incrementalMapperShadow_{1};
     std::size_t incrementalVblankRead_ = 0;

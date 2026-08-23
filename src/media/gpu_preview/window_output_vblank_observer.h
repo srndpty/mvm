@@ -9,6 +9,18 @@
 
 namespace mvm::gpu {
 
+// P2-D5-2-W2-A.1。measurement 窓が開く前に physical VBlank を1本観測したことの
+// 証拠。これが無いと domain の下側 bracket (predecessor) が
+// 「observer の最初の wake が render callback より先に返ったか」という race に
+// なる。
+struct VBlankPrerollResult {
+    bool completed = false;
+    // acquisition liveness timeout。performance threshold ではない。
+    bool timedOut = false;
+    VBlankObservation sample{};
+    long long waitElapsedQpc = 0;
+};
+
 struct WindowOutputResolveResult {
     bool ok = false;
     WindowOutputIdentity identity;
@@ -36,6 +48,15 @@ public:
     long long waitFailureCount() const { return waitFailures_.load(std::memory_order_acquire); }
 
     bool running() const { return running_.load(std::memory_order_acquire); }
+
+    // baselineSerial より後に新しく publish された sample を1件だけ bounded に
+    // 待つ。ring が空でないことではなく publish serial の前進で判定するので、
+    // start/stop 再利用時に stale sample を受理しない。
+    // timeoutMs は acquisition liveness timeout であり performance threshold では
+    // ない。timeout した場合は false を返す。呼び出し側は measurement を開始して
+    // はならない。
+    bool prerollNewSample(unsigned long long baselineSerial, long long timeoutMs,
+                          VBlankPrerollResult& result);
 
     // TIME_CRITICALを取れなかった場合、normal priorityへ黙ってfallbackしない。
     bool timeCriticalPriority() const {

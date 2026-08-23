@@ -15,6 +15,9 @@ const char* physicalVBlankDomainErrorName(PhysicalVBlankDomainError error) {
     case PhysicalVBlankDomainError::WaitFailure: return "PHYSICAL_VBLANK_WAIT_FAILURE";
     case PhysicalVBlankDomainError::SequenceBreak: return "PHYSICAL_VBLANK_SEQUENCE_BREAK";
     case PhysicalVBlankDomainError::OutputOrModeChanged: return "OUTPUT_OR_MODE_CHANGED";
+    case PhysicalVBlankDomainError::PrerollTimeout: return "PHYSICAL_VBLANK_PREROLL_TIMEOUT";
+    case PhysicalVBlankDomainError::PrerollNotBeforeStart:
+        return "PHYSICAL_VBLANK_PREROLL_NOT_BEFORE_START";
     case PhysicalVBlankDomainError::BoundaryNotBracketed:
         return "PHYSICAL_VBLANK_BOUNDARY_NOT_BRACKETED";
     case PhysicalVBlankDomainError::ObserverStall: return "PHYSICAL_VBLANK_OBSERVER_STALL";
@@ -31,6 +34,8 @@ const char* physicalVBlankDomainCanonicalReason(PhysicalVBlankDomainError error)
     case PhysicalVBlankDomainError::ObserverUnavailable:
     case PhysicalVBlankDomainError::RingOverflow:
     case PhysicalVBlankDomainError::WaitFailure:
+    case PhysicalVBlankDomainError::PrerollTimeout:
+    case PhysicalVBlankDomainError::PrerollNotBeforeStart:
     case PhysicalVBlankDomainError::ObserverStall: return "PHYSICAL_VBLANK_OBSERVER_INVALID";
     case PhysicalVBlankDomainError::SequenceBreak: return "PHYSICAL_VBLANK_SEQUENCE_BREAK";
     case PhysicalVBlankDomainError::OutputOrModeChanged: return "OUTPUT_OR_MODE_CHANGED";
@@ -57,6 +62,10 @@ bool buildPhysicalVBlankDomain(const PhysicalVBlankDomainInput& input, PhysicalV
     out.ringOverflowCount = input.ringOverflowCount;
     out.waitFailureCount = input.waitFailureCount;
     out.outputStable = input.outputStable;
+    out.prerollCompleted = input.prerollCompleted;
+    out.prerollTimedOut = input.prerollTimedOut;
+    out.prerollSample = input.prerollSample;
+    out.prerollWaitElapsedQpc = input.prerollWaitElapsedQpc;
     // Layer 1A の入力は正常化しない。負値を0へ丸めると「そう入力された」事実が
     // 消える。Layer 1A の validity は後段が判定する。
     out.requiredIntentCount = input.requiredIntentCount;
@@ -74,6 +83,14 @@ bool buildPhysicalVBlankDomain(const PhysicalVBlankDomainInput& input, PhysicalV
     if (!input.observerStarted || !input.timeCriticalPriority || !input.samples ||
         input.sampleCount == 0 || input.refreshNumerator <= 0 || input.refreshDenominator <= 0)
         return fail(out, PhysicalVBlankDomainError::ObserverUnavailable);
+
+    // W2-A.1。measurement窓が開く前にphysical VBlankを1本観測していること。
+    // これが無いと下側bracketは「observerの最初のwakeがrender callbackより先に
+    // 返ったか」というraceになる。
+    if (!input.prerollCompleted)
+        return fail(out, PhysicalVBlankDomainError::PrerollTimeout);
+    if (input.prerollSample.qpc <= 0 || input.prerollSample.qpc >= input.measurementStartQpc)
+        return fail(out, PhysicalVBlankDomainError::PrerollNotBeforeStart);
 
     out.sequenceStatus = vblankSequenceStatus(input.samples, input.sampleCount);
     if (input.ringOverflowCount != 0)

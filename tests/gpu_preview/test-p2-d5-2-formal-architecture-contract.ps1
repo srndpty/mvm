@@ -2,7 +2,8 @@
 param(
     # PreW2  : W2 wiring 前の baseline。legacy path が存在することを記録する。
     # PostW2 : W2 wiring 後。legacy path が v2 canonical から消えたことを固定する。
-    [Parameter(Mandatory=$true)][ValidateSet('PreW2','PostW2')][string]$Phase,
+    # W2A1   : lower boundary preroll の順序不変量。
+    [Parameter(Mandatory=$true)][ValidateSet('PreW2','W2A1','PostW2')][string]$Phase,
     [Parameter(Mandatory=$true)][string]$SourceRoot
 )
 $ErrorActionPreference='Stop'
@@ -16,6 +17,37 @@ function Read-Source([string]$Relative){
 function Remove-Comments([string]$Text){
     $withoutBlock=[regex]::Replace($Text,'/\*.*?\*/','',[System.Text.RegularExpressions.RegexOptions]::Singleline)
     return [regex]::Replace($withoutBlock,'(?m)//.*$','')
+}
+if($Phase-eq'W2A1'){
+    # W2-A.1。measurement窓を開く前に、observer startとその後の新規sample確認が
+    # この順序で起きることを静的に固定する。順序が崩れると下側bracketは
+    # race に戻る。
+    $controller=Remove-Comments (Read-Source 'apps/compositor_spike/compositor_spike_controller.cpp')
+    $index=$controller.IndexOf('void CompositorSpikeController::requestMeasurementStart()')
+    if($index-lt0){Fail 'requestMeasurementStartが見つかりません'}
+    $body=$controller.Substring($index)
+    $baseline=$body.IndexOf('ring().publishSerial()')
+    $start=$body.IndexOf('vblankObserver_.start(')
+    $preroll=$body.IndexOf('prerollNewSample(')
+    $arm=$body.IndexOf('measurementStartRequested.store(true')
+    if($baseline-lt0){Fail 'W2A1違反: preroll baseline serialを取得していません'}
+    if($start-lt0){Fail 'W2A1違反: VBlank observerをstartしていません'}
+    if($preroll-lt0){Fail 'W2A1違反: prerollNewSampleを呼んでいません'}
+    if($arm-lt0){Fail 'W2A1違反: measurementStartRequestedをarmしていません'}
+    # baseline は start より前でなければ stale sample を受理しうる。
+    if($baseline-gt$start){Fail 'W2A1違反: baseline serialがobserver startより後です'}
+    if($start-gt$preroll){Fail 'W2A1違反: prerollがobserver startより前です'}
+    if($preroll-gt$arm){Fail 'W2A1違反: measurement armがprerollより前です'}
+    # timeout時にそのままarmしていないこと。preroll失敗経路がreturnで閉じている。
+    $failurePath=$body.Substring($preroll,$arm-$preroll)
+    if($failurePath-notmatch 'beginShutdown'){
+        Fail 'W2A1違反: preroll失敗時にfail-closeしていません'
+    }
+    if($failurePath-notmatch 'return;'){
+        Fail 'W2A1違反: preroll失敗時にmeasurementを開始しない経路がありません'
+    }
+    Write-Host 'P2-D5-2 formal architecture: PASS (W2A1 lower boundary preroll order)'
+    exit 0
 }
 $item=Remove-Comments (Read-Source 'src/app/preview/compositor_rhi_item.cpp')
 $scheduler=Remove-Comments (Read-Source 'src/media/gpu_preview/presentation_opportunity_scheduler.h')

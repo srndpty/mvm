@@ -29,6 +29,8 @@ bool sameWindowOutput(const WindowOutputIdentity& left, const WindowOutputIdenti
 }
 
 void VBlankRing::reset() {
+    // publishSerial_ は意図的に戻さない。W2-A.1 の preroll が reset 前の sample を
+    // 「新しく publish された」と誤認しないための invariant。
     overflow_.store(0, std::memory_order_relaxed);
     count_.store(0, std::memory_order_release);
 }
@@ -41,6 +43,7 @@ void VBlankRing::capture(const VBlankObservation& value) {
     }
     samples_[index] = value;
     count_.store(index + 1, std::memory_order_release);
+    publishSerial_.fetch_add(1, std::memory_order_release);
 }
 
 std::vector<VBlankObservation> VBlankRing::snapshot() const {
@@ -61,6 +64,10 @@ std::size_t VBlankRing::publishedCount() const {
 
 long long VBlankRing::overflowCount() const {
     return overflow_.load(std::memory_order_acquire);
+}
+
+unsigned long long VBlankRing::publishSerial() const {
+    return publishSerial_.load(std::memory_order_acquire);
 }
 
 VBlankSequenceStatus vblankSequenceStatus(const VBlankObservation* samples, std::size_t count) {

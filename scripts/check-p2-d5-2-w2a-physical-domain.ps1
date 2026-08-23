@@ -30,6 +30,8 @@ $w2aReasons=@{
     'PHYSICAL_VBLANK_RING_OVERFLOW'             = 'PHYSICAL_VBLANK_OBSERVER_INVALID'
     'PHYSICAL_VBLANK_WAIT_FAILURE'              = 'PHYSICAL_VBLANK_OBSERVER_INVALID'
     'PHYSICAL_VBLANK_OBSERVER_STALL'            = 'PHYSICAL_VBLANK_OBSERVER_INVALID'
+    'PHYSICAL_VBLANK_PREROLL_TIMEOUT'           = 'PHYSICAL_VBLANK_OBSERVER_INVALID'
+    'PHYSICAL_VBLANK_PREROLL_NOT_BEFORE_START'  = 'PHYSICAL_VBLANK_OBSERVER_INVALID'
     'PHYSICAL_VBLANK_SEQUENCE_BREAK'            = 'PHYSICAL_VBLANK_SEQUENCE_BREAK'
     'OUTPUT_OR_MODE_CHANGED'                    = 'OUTPUT_OR_MODE_CHANGED'
     'PHYSICAL_VBLANK_BOUNDARY_NOT_BRACKETED'    = 'PHYSICAL_VBLANK_BOUNDARY_NOT_BRACKETED'
@@ -160,6 +162,24 @@ if($start-le0-or$end-le$start){
     Fail 'RUNTIME_AUTHORITY_OVERRIDE' 'measurement窓が確定していません'
 }
 
+# --- W2-A.1 lower boundary preroll ---
+# 下側bracketがraceではなく構造的に保証されたこと。確認する不変量は
+# ordinalが0かどうかではなく preroll sample.qpc < measurement_start_qpc である。
+if(-not[bool](Require $shadow 'prestart_vblank_preroll_completed' 'PHYSICAL_VBLANK_PREROLL_TIMEOUT')){
+    Fail 'PHYSICAL_VBLANK_PREROLL_TIMEOUT' 'measurement開始前のphysical VBlank prerollが成立していません'
+}
+if([bool](Require $shadow 'prestart_vblank_preroll_timeout' 'PHYSICAL_VBLANK_PREROLL_TIMEOUT')){
+    Fail 'PHYSICAL_VBLANK_PREROLL_TIMEOUT' 'preroll timeoutなのにvalidを主張しています'
+}
+$prerollQpc=I64 (Require $shadow 'prestart_vblank_sample_qpc' 'PHYSICAL_VBLANK_PREROLL_NOT_BEFORE_START')
+if($prerollQpc-le0-or$prerollQpc-ge$start){
+    Fail 'PHYSICAL_VBLANK_PREROLL_NOT_BEFORE_START' `
+        "preroll sampleがmeasurement_start_qpcより前ではありません ($prerollQpc >= $start)"
+}
+$prerollOrdinal=I64 (Require $shadow 'prestart_vblank_sample_ordinal')
+$prerollWait=I64 (Require $shadow 'prestart_wait_elapsed_qpc')
+if($prerollWait-lt0){Fail 'PHYSICAL_VBLANK_PREROLL_TIMEOUT' 'preroll wait時間が負です'}
+
 $predOrdinal=I64 (Require $shadow 'predecessor_ordinal')
 $predQpc=I64 (Require $shadow 'predecessor_qpc')
 $succOrdinal=I64 (Require $shadow 'successor_ordinal')
@@ -236,6 +256,11 @@ $result=[ordered]@{
     intent_overhang_count=$overhang
     intent_surplus_count=$surplus
     boundary_bracketed=$true
+    prestart_vblank_preroll_completed=$true
+    prestart_vblank_preroll_timeout=$false
+    prestart_vblank_sample_ordinal=$prerollOrdinal
+    prestart_vblank_sample_qpc=$prerollQpc
+    prestart_wait_elapsed_qpc=$prerollWait
     retired_reasons_absent=$true
 }
 if(-not[string]::IsNullOrWhiteSpace($Output)){

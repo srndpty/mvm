@@ -239,7 +239,22 @@ W2-A shadow の確認に混ぜない。measurement lifecycle と VBlank observer
 verdict: PHYSICAL_VBLANK_DOMAIN_SHADOW_EXACT
 ```
 
-### 既知の残課題 — 下側 bracket は現状 race で成立している
+### W2-A.1 適用後の再取得
+
+```text
+3/3  shadow_authority_valid = true / error = NONE
+     prestart_vblank_preroll_completed = true, timeout = false
+     preroll sample.qpc < measurement_start_qpc  (3/3)
+     preroll wait = 65k / 90k / 100k QPC tick (= 6.5 / 9.0 / 10.0 ms)
+     pred 1 -> origin 2 .. last 300 -> succ 301,  physical = 299
+```
+
+preroll sample は V0、実際の predecessor は V1 になった。preroll sample が
+そのまま predecessor である必要はない。**preroll sample.qpc < 窓を arm した時刻
+<= measurement_start_qpc** なので、ring には必ず start より前の sample が
+存在する。これで下側 bracket は race ではなく構造的に保証される。
+
+### 【解消済み】下側 bracket が race で成立していた問題
 
 `requestMeasurementStart()` が VBlank observer を start し、その直後の render
 callback が `measurementStartQpc` を stamp する。つまり predecessor は
@@ -248,15 +263,67 @@ callback が `measurementStartQpc` を stamp する。つまり predecessor は
 **observer の最初の 1 本がそのまま下側 bracket になっている**（余裕は 247〜956
 QPC tick）。
 
-W2-A の domain logic 自体は正しいが、長時間 formal acquisition (W2-D/E) では
-この race を構造的に潰しておきたい。候補:
+W2-A.1 でこれを解消した。
+
+---
+
+## 6.1 W2-A.1 — Lower Boundary Preroll
+
+physical VBlank authority を要求する acquisition path に限り、次の順序を固定した。
+**通常 product path の measurement start semantics は変更していない。**
 
 ```text
-observer start 後、ring が 1 sample 以上 publish するまで bounded wait してから
-measurementStartRequested を arm する
-    (stop 側の bounded drain と対称。legacy scheduler / counters / shutdown /
-     threshold には触れない)
+baseline = ring.publishSerial()      <- observer start より前に取る
+observer start                        (ring reset。publishSerial は戻さない)
+publishSerial > baseline を bounded wait
+measurementStartRequested を arm
+render callback が measurementStartQpc を stamp
 ```
+
+`ring が空でない` ではなく **monotonic publish serial の前進**で判定する。
+`VBlankRing::reset()` は count / overflow を 0 に戻すが `publishSerial` は戻さない
+ので、start/stop 再利用時に reset 前の stale sample を「新しく publish された」と
+誤認しない。この reset invariant は
+`publishSerialIsMonotonicAcrossReset` で固定している。
+
+timeout は **acquisition liveness timeout** であり performance threshold ではない
+(500 ms = 60 Hz で約 30 VBlank 分。observer start timeout と同じ桁)。timeout 時は
+**measurement を開始せず** `beginShutdown` で fail-close する。
+
+追加 reason (canonical 射影はどちらも `PHYSICAL_VBLANK_OBSERVER_INVALID`):
+
+```text
+PHYSICAL_VBLANK_PREROLL_TIMEOUT           preroll が成立しなかった
+PHYSICAL_VBLANK_PREROLL_NOT_BEFORE_START  preroll sample.qpc >= measurement_start_qpc
+```
+
+precedence 上は ObserverUnavailable の直後、sequence 判定より前に置く。
+
+追加 shadow field (shadow-only provenance):
+
+```text
+prestart_vblank_preroll_completed
+prestart_vblank_preroll_timeout
+prestart_vblank_sample_ordinal
+prestart_vblank_sample_qpc
+prestart_wait_elapsed_qpc
+```
+
+**確認する不変量は ordinal が 0 かどうかではなく
+`prestart_vblank_sample_qpc < measurement_start_qpc`** である
+(`GoodPrerollOrdinalNonZero` で固定)。
+
+architecture invariant は
+`test-p2-d5-2-formal-architecture-contract.ps1 -Phase W2A1` が静的に固定する。
+
+```text
+baseline serial 取得  ->  observer start  ->  prerollNewSample  ->  measurement arm
+preroll 失敗経路は beginShutdown + return で閉じている
+```
+
+W2-A.1 適用後、下側 bracket が落ちうるのは
+**渡された sample 列から preroll sample が失われた場合だけ**になった
+(`boundaryNotBracketed` の no-predecessor case はこの形で表現している)。
 
 ---
 

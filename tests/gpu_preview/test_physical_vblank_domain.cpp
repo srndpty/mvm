@@ -56,6 +56,11 @@ PhysicalVBlankDomainInput baseInput(const std::vector<VBlankObservation>& sample
     input.observerStarted = true;
     input.timeCriticalPriority = true;
     input.outputStable = true;
+    // W2-A.1。既定はprerollがmeasurement窓の前に成立している状態。
+    input.prerollCompleted = true;
+    input.prerollTimedOut = false;
+    input.prerollSample = {kFirstOrdinal, kBaseQpc};
+    input.prerollWaitElapsedQpc = 1234;
     input.requiredIntentCount = 0;
     return input;
 }
@@ -151,8 +156,10 @@ void emptyDomainStillBracketed() {
 void boundaryNotBracketed() {
     const auto samples = vblanks(40);
     {
-        // 窓の開始が最初のsampleより前。predecessorが存在しない。
+        // preroll sampleはあるが、渡されたsample列にそれが含まれていない
+        // (先頭が欠けた snapshot)。W2-A.1後に下側bracketが落ちるのはこの場合だけ。
         auto input = baseInput(samples, kBaseQpc - 1000, qpcAt(20));
+        input.prerollSample = {kFirstOrdinal - 1, kBaseQpc - kPeriod};
         PhysicalVBlankDomain domain;
         check(!buildPhysicalVBlankDomain(input, domain), "no predecessor: validになっている");
         check(domain.shadowAuthorityError == PhysicalVBlankDomainError::BoundaryNotBracketed,
@@ -318,6 +325,60 @@ void requiredIntentCountIsNotNormalized() {
     check(domain.requiredIntentCount == -1, "raw required: 入力値が保存されていない");
 }
 
+// W2-A.1。measurement窓を開く前にphysical VBlankを1本観測していなければ、
+// 下側bracketはraceでしか成立しない。fail-closeする。
+void lowerBoundaryPreroll() {
+    const auto samples = vblanks(200);
+    {
+        auto input = baseInput(samples, qpcAt(10), qpcAt(110));
+        input.prerollCompleted = false;
+        input.prerollTimedOut = true;
+        input.prerollSample = {};
+        PhysicalVBlankDomain domain;
+        check(!buildPhysicalVBlankDomain(input, domain), "preroll timeout: validになっている");
+        check(domain.shadowAuthorityError == PhysicalVBlankDomainError::PrerollTimeout,
+              "preroll timeout: reasonが不正 " + named(domain.shadowAuthorityError));
+        check(domain.prerollTimedOut, "preroll timeout: timeout flagが伝播していない");
+    }
+    {
+        // observerが死んだ場合。timeoutではないがprerollは成立していない。
+        auto input = baseInput(samples, qpcAt(10), qpcAt(110));
+        input.prerollCompleted = false;
+        input.prerollTimedOut = false;
+        PhysicalVBlankDomain domain;
+        check(!buildPhysicalVBlankDomain(input, domain), "preroll dead: validになっている");
+        check(domain.shadowAuthorityError == PhysicalVBlankDomainError::PrerollTimeout,
+              "preroll dead: reasonが不正 " + named(domain.shadowAuthorityError));
+    }
+    {
+        // preroll sampleがmeasurement_start_qpc以降。下側witnessになっていない。
+        auto input = baseInput(samples, qpcAt(10), qpcAt(110));
+        input.prerollSample = {kFirstOrdinal + 10, qpcAt(10)};
+        PhysicalVBlankDomain domain;
+        check(!buildPhysicalVBlankDomain(input, domain), "preroll not before: validになっている");
+        check(domain.shadowAuthorityError == PhysicalVBlankDomainError::PrerollNotBeforeStart,
+              "preroll not before: reasonが不正 " + named(domain.shadowAuthorityError));
+    }
+    {
+        auto input = baseInput(samples, qpcAt(10), qpcAt(110));
+        input.prerollSample = {kFirstOrdinal, 0}; // sampleが空
+        PhysicalVBlankDomain domain;
+        check(!buildPhysicalVBlankDomain(input, domain), "preroll empty: validになっている");
+        check(domain.shadowAuthorityError == PhysicalVBlankDomainError::PrerollNotBeforeStart,
+              "preroll empty: reasonが不正 " + named(domain.shadowAuthorityError));
+    }
+    {
+        // 確認したい不変量はordinalが0かどうかではなくqpc < start である。
+        auto input = baseInput(samples, qpcAt(10), qpcAt(110));
+        input.prerollSample = {kFirstOrdinal + 9, qpcAt(9)};
+        PhysicalVBlankDomain domain;
+        check(buildPhysicalVBlankDomain(input, domain),
+              "preroll ordinal非0: validではない " + named(domain.shadowAuthorityError));
+        check(domain.prerollSample.qpc < domain.measurementStartQpc,
+              "preroll ordinal非0: preroll sampleがstartより前ではない");
+    }
+}
+
 // 窓のauthorityはmeasurement lifecycle側にある。collectorは独自のendを作らない。
 void measurementWindowAuthority() {
     const auto samples = vblanks(60);
@@ -397,6 +458,8 @@ void canonicalReasonProjection() {
                                              PhysicalVBlankDomainError::WaitFailure,
                                              PhysicalVBlankDomainError::SequenceBreak,
                                              PhysicalVBlankDomainError::OutputOrModeChanged,
+                                             PhysicalVBlankDomainError::PrerollTimeout,
+                                             PhysicalVBlankDomainError::PrerollNotBeforeStart,
                                              PhysicalVBlankDomainError::BoundaryNotBracketed,
                                              PhysicalVBlankDomainError::ObserverStall};
     const std::vector<std::string> canonical{"NONE",
@@ -428,6 +491,7 @@ int main() {
     sequenceBreak();
     observerCounters();
     malformedSampleInput();
+    lowerBoundaryPreroll();
     requiredIntentCountIsNotNormalized();
     measurementWindowAuthority();
     intentCountIsNotAVerdict();
