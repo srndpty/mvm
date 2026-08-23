@@ -4,6 +4,7 @@
 #include "app/preview/native_present_hook_abi.h"
 #include "media/gpu_preview/composed_frame.h"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -48,6 +49,8 @@ public:
                                               std::uint64_t serial = 0);
     bool endCapture(std::string& error);
     bool authorityValid() const;
+    // patched Qtが記録した実IDXGISwapChainポインタ。0はrecord未取得。
+    std::uint64_t latestSwapchainIdentity() const;
     NativePresentHookSnapshot snapshot() const;
 
 private:

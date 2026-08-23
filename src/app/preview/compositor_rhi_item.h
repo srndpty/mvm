@@ -2,6 +2,7 @@
 #define MVM_APP_PREVIEW_COMPOSITOR_RHI_ITEM_H
 
 #include "app/preview/native_present_hook.h"
+#include "app/preview/presentation_eligibility_preflight.h"
 #include "media/audio_preview/audio_clock.h"
 #include "media/audio_preview/runtime_attribution.h"
 #include "media/gpu_preview/composition_display_ledger.h"
@@ -255,6 +256,12 @@ struct CompositorSpikeState {
     std::atomic<bool> nativePresentCaptureActive{false};
     // F3-C3-A3-T2診断専用。compositor最終出力の2x2 pixelだけを毎frame変える。
     std::atomic<bool> diagnosticTargetPixelToggle{false};
+    // F3-C3-A3-T2-D1-B0 diagnostic-only。presentation pathのauthorityではない。
+    std::atomic<bool> eligibilityPreflightRequested{false};
+    std::atomic<bool> eligibilityPreflightCaptured{false};
+    std::atomic<unsigned long long> eligibilityPreflightWindow{0};
+    std::mutex eligibilityPreflightMutex;
+    PresentationEligibilityPreflight eligibilityPreflight;
     std::atomic<long long> nativePresentTokenSetFailureCount{0};
     std::atomic<long long> latestCompletedRenderOrdinal{-1};
     std::atomic<long long> latestSubmittedRenderOrdinal{-1};

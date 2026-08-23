@@ -135,6 +135,7 @@ if(MVM_ENABLE_QT)
     add_library(mvm_preview_qt STATIC
         app/preview/display_target_contract.cpp
         app/preview/native_present_hook.cpp
+        app/preview/presentation_eligibility_preflight.cpp
         app/preview/preview_rhi_item.cpp
         app/preview/compositor_rhi_item.cpp
         app/preview/preview_engine_rhi_item.cpp

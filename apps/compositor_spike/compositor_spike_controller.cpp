@@ -341,6 +341,12 @@ void CompositorSpikeController::attach(CompositorRhiItem* item) {
                                                  std::memory_order_release);
     state_->diagnosticTargetPixelToggle.store(config_.diagnosticTargetPixelToggle,
                                               std::memory_order_release);
+    // F3-C3-A3-T2-D1-B0 diagnostic-only preflight。production semanticsは変えない。
+    state_->eligibilityPreflightRequested.store(true, std::memory_order_release);
+    if (item->window() != nullptr) {
+        state_->eligibilityPreflightWindow.store(
+            static_cast<unsigned long long>(item->window()->winId()), std::memory_order_relaxed);
+    }
     if (config_.nativePresentHook != NativePresentHookMode::Disabled) {
         auto nativeHook = std::make_shared<NativePresentHook>();
         std::string error;
@@ -2053,6 +2059,85 @@ bool CompositorSpikeController::writeMetrics() {
                    ? QJsonValue(QString::fromUtf8(qgetenv(name)))
                    : QJsonValue(QJsonValue::Null);
     };
+    {
+        PresentationEligibilityPreflight preflight;
+        const bool captured =
+            state_ && state_->eligibilityPreflightCaptured.load(std::memory_order_acquire);
+        if (captured) {
+            std::lock_guard<std::mutex> lock(state_->eligibilityPreflightMutex);
+            preflight = state_->eligibilityPreflight;
+        }
+        const auto hex = [](std::uint64_t value) {
+            return QStringLiteral("0x%1").arg(static_cast<qulonglong>(value), 0, 16);
+        };
+        QJsonObject swapchain{
+            {"available", preflight.swapchain_desc_available},
+            {"identity", hex(preflight.swapchain_identity)},
+            {"width", static_cast<qint64>(preflight.width)},
+            {"height", static_cast<qint64>(preflight.height)},
+            {"format", static_cast<qint64>(preflight.format)},
+            {"stereo", preflight.stereo},
+            {"sample_count", static_cast<qint64>(preflight.sample_count)},
+            {"sample_quality", static_cast<qint64>(preflight.sample_quality)},
+            {"buffer_usage", static_cast<qint64>(preflight.buffer_usage)},
+            {"buffer_count", static_cast<qint64>(preflight.buffer_count)},
+            {"scaling", static_cast<qint64>(preflight.scaling)},
+            {"swap_effect", static_cast<qint64>(preflight.swap_effect)},
+            {"alpha_mode", static_cast<qint64>(preflight.alpha_mode)},
+            {"flags", static_cast<qint64>(preflight.flags)},
+            {"frame_latency_waitable_object", preflight.frame_latency_waitable_object},
+            {"maximum_frame_latency_available", preflight.maximum_frame_latency_available},
+            {"maximum_frame_latency", static_cast<qint64>(preflight.maximum_frame_latency)}};
+        QJsonObject adapter{
+            {"available", preflight.adapter_available},
+            {"luid_low", static_cast<qint64>(preflight.adapter_luid_low)},
+            {"luid_high", static_cast<qint64>(preflight.adapter_luid_high)},
+            {"description", QString::fromStdString(preflight.adapter_description)}};
+        QJsonObject output{
+            {"available", preflight.output_available},
+            {"monitor_handle", hex(preflight.monitor_handle)},
+            {"device_name", QString::fromStdString(preflight.output_device_name)},
+            {"desktop_left", preflight.desktop_left},
+            {"desktop_top", preflight.desktop_top},
+            {"desktop_right", preflight.desktop_right},
+            {"desktop_bottom", preflight.desktop_bottom},
+            {"attached_to_desktop", preflight.attached_to_desktop}};
+        QJsonObject window{
+            {"available", preflight.window_available},
+            {"handle", hex(preflight.window_handle)},
+            {"style", static_cast<qint64>(preflight.window_style)},
+            {"ex_style", static_cast<qint64>(preflight.window_ex_style)},
+            {"cloaked_available", preflight.cloaked_available},
+            {"cloaked", static_cast<qint64>(preflight.cloaked)},
+            {"window_left", preflight.window_left},
+            {"window_top", preflight.window_top},
+            {"window_right", preflight.window_right},
+            {"window_bottom", preflight.window_bottom},
+            {"client_width", preflight.client_width},
+            {"client_height", preflight.client_height}};
+        // capability は eligibility の説明変数であり、その Present が
+        // independent flip / MPO されたという証拠ではない。actual presentation path は
+        // PresentMon/ETW 側の PresentMode / DisplayedQPC provenance で判定する。
+        QJsonObject capability{
+            {"tearing_support_available", preflight.tearing_support_available},
+            {"tearing_supported", preflight.tearing_supported},
+            {"hardware_composition_support_available",
+             preflight.hardware_composition_support_available},
+            {"hardware_composition_support_flags",
+             static_cast<qint64>(preflight.hardware_composition_support_flags)}};
+        o.insert("presentation_eligibility_preflight",
+                 QJsonObject{
+                     {"schema", "mvm-p2-c3-a3-t2-d1b0-eligibility-preflight-1"},
+                     {"authority", "diagnostic_only"},
+                     {"is_presentation_path_authority", false},
+                     {"captured", preflight.captured},
+                     {"error", QString::fromStdString(preflight.error)},
+                     {"swapchain", swapchain},
+                     {"adapter", adapter},
+                     {"output", output},
+                     {"window", window},
+                     {"capability", capability}});
+    }
     o.insert("t2_preflight",
              QJsonObject{
                  {"target_hwnd",

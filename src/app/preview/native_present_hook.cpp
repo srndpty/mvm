@@ -118,6 +118,15 @@ NativePresentHookSnapshot NativePresentHook::snapshot() const {
     return result;
 }
 
+std::uint64_t NativePresentHook::latestSwapchainIdentity() const {
+    if (!available_ || ring_ == nullptr)
+        return 0;
+    const auto count = std::min(ring_->recordCount, ring_->capacity);
+    if (count == 0)
+        return 0;
+    return ring_->records[count - 1].swapchainIdentity;
+}
+
 bool makeNativePresentCompositionToken(const gpu::ComposedFrame& frame, std::uint64_t tokenSerial,
                                        MvmNativePresentCompositionToken& token) {
     if (tokenSerial == 0 || frame.outputFrameNumber < 0 || frame.layers.empty() ||

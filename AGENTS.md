@@ -367,6 +367,35 @@ composition token
   `attached_dwm_parent_present_start_qpc` を持たない。StrictMode で読み、
   欠損時は `DISPLAYED_PATH_UNRESOLVED` として fail-close する。
 
+## capability と actual presentation path を混ぜない
+
+`presentation_eligibility_preflight` は diagnostic-only の説明変数であり、
+presentation path の authority ではない。
+
+```text
+capability (eligibility 説明変数)
+    DXGI_SWAP_CHAIN_DESC1 実値
+    hardware composition support flags
+    tearing support
+    adapter / output identity
+    window style / cloaked / geometry
+
+observed runtime (actual presentation path の authority)
+    PresentMode
+    FinalState
+    DisplayedQPC とその provenance
+    DWM parent identity
+```
+
+hardware composition capable であることは、その Present が independent flip /
+MPO されたことを意味しない。schema 上も別 object に分け、
+`is_presentation_path_authority=false` を固定する。
+
+swapchain の値は Qt の設定や環境変数から再構成せず、実際に作成済みの
+`IDXGISwapChain` から `GetDesc1()` で取る。patched Qt が記録する
+`swapchainIdentity` は実ポインタであり、swapchain を所有する render thread の
+`frameSwapped` 契機で一度だけ読む。
+
 ## Windows / CMake / Ninja ビルド運用
 
 このリポジトリでは MSYS2 UCRT64 の CMake/Ninja ビルドが長時間かかることがある。

@@ -173,6 +173,28 @@ foreach(_p2_c3_a3_t2_summary_case IN ITEMS TargetDoesNotWake NegativeControl Inv
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
+foreach(_p2_c3_a3_t2_d1b0_case IN ITEMS Good NegativeNotCaptured NegativeClaimsAuthority NegativeMissingSwapchainField NegativeCapabilityContaminated NegativeZeroIdentity)
+    string(TOLOWER "${_p2_c3_a3_t2_d1b0_case}" _p2_c3_a3_t2_d1b0_name)
+    mvm_add_test(p2_c3_a3_t2_d1b0_preflight_${_p2_c3_a3_t2_d1b0_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t2-d1b0-preflight-contract.ps1"
+            -Case "${_p2_c3_a3_t2_d1b0_case}"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c3-a3-t2-d1b0-preflight.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t2-d1b0-${_p2_c3_a3_t2_d1b0_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+foreach(_p2_c3_a3_t2_d1b1_case IN ITEMS ReproducesBadRegime BothArmsGoodIndependent ComposedBothArms OrderTimeConfound StaticConfigDiffers NegativeUserInput NegativeEtwLoss)
+    string(TOLOWER "${_p2_c3_a3_t2_d1b1_case}" _p2_c3_a3_t2_d1b1_name)
+    mvm_add_test(p2_c3_a3_t2_d1b1_probe_${_p2_c3_a3_t2_d1b1_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t2-d1b1-probe-contract.ps1"
+            -Case "${_p2_c3_a3_t2_d1b1_case}"
+            -Summarizer "${CMAKE_SOURCE_DIR}/scripts/summarize-p2-c3-a3-t2-d1b1.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t2-d1b1-${_p2_c3_a3_t2_d1b1_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 foreach(_p2_c3_a3_t2_d1a_case IN ITEMS ComposedNotFailure BadWithoutGoodComposed NoBadRegime ParentFieldUnavailable ModeClassBoundary NegativeMissingPresentMode)
     string(TOLOWER "${_p2_c3_a3_t2_d1a_case}" _p2_c3_a3_t2_d1a_name)
     mvm_add_test(p2_c3_a3_t2_d1a_regime_${_p2_c3_a3_t2_d1a_name}

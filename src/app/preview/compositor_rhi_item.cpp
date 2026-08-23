@@ -1268,6 +1268,26 @@ void CompositorRhiItem::requestTeardown() {
 }
 
 void CompositorRhiItem::recordFrameSwapped() {
+    // F3-C3-A3-T2-D1-B0: diagnostic-only。presentation pathのauthorityではない。
+    if (state_->eligibilityPreflightRequested.load(std::memory_order_acquire) &&
+        !state_->eligibilityPreflightCaptured.load(std::memory_order_acquire)) {
+        auto hook = state_->nativePresentHook;
+        const std::uint64_t identity = hook ? hook->latestSwapchainIdentity() : 0;
+        if (identity != 0) {
+            auto preflight = capturePresentationEligibilityPreflight(
+                identity, state_->nativeDevicePointer.load(std::memory_order_relaxed) != 0
+                              ? reinterpret_cast<void*>(
+                                    state_->nativeDevicePointer.load(std::memory_order_relaxed))
+                              : nullptr,
+                reinterpret_cast<void*>(state_->eligibilityPreflightWindow.load(
+                    std::memory_order_relaxed)));
+            {
+                std::lock_guard<std::mutex> lock(state_->eligibilityPreflightMutex);
+                state_->eligibilityPreflight = preflight;
+            }
+            state_->eligibilityPreflightCaptured.store(true, std::memory_order_release);
+        }
+    }
     const bool ignoredFormalBoundarySwap =
         state_->formalOpportunityIgnoreNextSwap.exchange(false, std::memory_order_acq_rel);
     if (!ignoredFormalBoundarySwap &&
