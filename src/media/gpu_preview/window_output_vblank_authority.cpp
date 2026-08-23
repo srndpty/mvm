@@ -83,6 +83,18 @@ VBlankSequenceStatus vblankSequenceStatus(const VBlankObservation* samples, std:
     return VBlankSequenceStatus::Ok;
 }
 
+const char* vblankSequenceStatusName(VBlankSequenceStatus status) {
+    switch (status) {
+    case VBlankSequenceStatus::Ok: return "OK";
+    case VBlankSequenceStatus::Empty: return "EMPTY";
+    case VBlankSequenceStatus::Invalid: return "INVALID";
+    case VBlankSequenceStatus::OrdinalRegression: return "ORDINAL_REGRESSION";
+    case VBlankSequenceStatus::OrdinalGap: return "ORDINAL_GAP";
+    case VBlankSequenceStatus::QpcRegression: return "QPC_REGRESSION";
+    }
+    return "UNKNOWN";
+}
+
 bool vblankCadenceConsistent(const VBlankObservation* samples, std::size_t count,
                              long long refreshNumerator, long long refreshDenominator,
                              long long qpcFrequency, VBlankCadenceResult& result) {

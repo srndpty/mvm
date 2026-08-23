@@ -211,7 +211,56 @@ warmup 中の observer hiccup を domain authority の判定に混ぜない
 
 ---
 
-## 6. 次
+## 6. live shadow acquisition (W2-A-LIVE)
+
+`scripts/p2-d5-2-w2a-live-shadow.ps1`
+
+```text
+3 run x (warmup 3s + measure 5s)
+formal-preflight        使わない
+incremental mapper      使わない
+performance evaluation  行わない
+```
+
+legacy formal path は `RENDER_SWAP_MISMATCH` 系で早期 shutdown し得るため、
+W2-A shadow の確認に混ぜない。measurement lifecycle と VBlank observer が同じ
+実経路を使う短い non-formal acquisition で足りる。
+
+結果 (`bench/results/p2-d5-2-w2a-live/`, artifact は commit しない):
+
+```text
+3/3  shadow_authority_valid = true / error = NONE
+     sequence_status OK, long/short/overflow/wait = 0
+     cumulative_consistent, output_stable, boundary_bracketed = true
+     predecessor.qpc < start / successor.qpc >= end
+     physical = 299, ordinal 算術 exact (1..299, pred 0, succ 300)
+     required = 300 -> intent_overhang = 1  (verdict にしない)
+
+verdict: PHYSICAL_VBLANK_DOMAIN_SHADOW_EXACT
+```
+
+### 既知の残課題 — 下側 bracket は現状 race で成立している
+
+`requestMeasurementStart()` が VBlank observer を start し、その直後の render
+callback が `measurementStartQpc` を stamp する。つまり predecessor は
+「observer の最初の `WaitForVBlank` が render callback より先に返った」ときだけ
+存在する。上の 3 run はいずれも `predecessor_ordinal = 0` であり、
+**observer の最初の 1 本がそのまま下側 bracket になっている**（余裕は 247〜956
+QPC tick）。
+
+W2-A の domain logic 自体は正しいが、長時間 formal acquisition (W2-D/E) では
+この race を構造的に潰しておきたい。候補:
+
+```text
+observer start 後、ring が 1 sample 以上 publish するまで bounded wait してから
+measurementStartRequested を arm する
+    (stop 側の bounded drain と対称。legacy scheduler / counters / shutdown /
+     threshold には触れない)
+```
+
+---
+
+## 7. 次
 
 ```text
 W2-A  physical VBlank domain                              <- 本段階

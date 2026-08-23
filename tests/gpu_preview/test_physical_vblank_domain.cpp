@@ -284,6 +284,40 @@ void observerCounters() {
     }
 }
 
+// malformed inputでsample列をdereferenceしない。sequence判定より前に
+// pointer/countをfail-closeする。
+void malformedSampleInput() {
+    const auto samples = vblanks(60);
+    {
+        auto input = baseInput(samples, qpcAt(10), qpcAt(50));
+        input.samples = nullptr;
+        input.sampleCount = 1; // pointerがnullなのにcountが正、という壊れた入力
+        PhysicalVBlankDomain domain;
+        check(!buildPhysicalVBlankDomain(input, domain), "null+1: validになっている");
+        check(domain.shadowAuthorityError == PhysicalVBlankDomainError::ObserverUnavailable,
+              "null+1: reasonが不正 " + named(domain.shadowAuthorityError));
+    }
+    {
+        auto input = baseInput(samples, qpcAt(10), qpcAt(50));
+        input.samples = nullptr;
+        input.sampleCount = 0;
+        PhysicalVBlankDomain domain;
+        check(!buildPhysicalVBlankDomain(input, domain), "null+0: validになっている");
+        check(domain.shadowAuthorityError == PhysicalVBlankDomainError::ObserverUnavailable,
+              "null+0: reasonが不正 " + named(domain.shadowAuthorityError));
+    }
+}
+
+// Layer 1A の入力は正常化しない。負値を0へ丸めて事実を隠さない。
+void requiredIntentCountIsNotNormalized() {
+    const auto samples = vblanks(200);
+    auto input = baseInput(samples, qpcAt(10), qpcAt(110));
+    input.requiredIntentCount = -1;
+    PhysicalVBlankDomain domain;
+    check(buildPhysicalVBlankDomain(input, domain), "raw required: validではない");
+    check(domain.requiredIntentCount == -1, "raw required: 入力値が保存されていない");
+}
+
 // 窓のauthorityはmeasurement lifecycle側にある。collectorは独自のendを作らない。
 void measurementWindowAuthority() {
     const auto samples = vblanks(60);
@@ -393,6 +427,8 @@ int main() {
     stallOutsideBracketIsIgnored();
     sequenceBreak();
     observerCounters();
+    malformedSampleInput();
+    requiredIntentCountIsNotNormalized();
     measurementWindowAuthority();
     intentCountIsNotAVerdict();
     sweepProperty();

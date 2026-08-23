@@ -57,8 +57,9 @@ bool buildPhysicalVBlankDomain(const PhysicalVBlankDomainInput& input, PhysicalV
     out.ringOverflowCount = input.ringOverflowCount;
     out.waitFailureCount = input.waitFailureCount;
     out.outputStable = input.outputStable;
-    out.requiredIntentCount = std::max(0LL, input.requiredIntentCount);
-    out.sequenceStatus = vblankSequenceStatus(input.samples, input.sampleCount);
+    // Layer 1A の入力は正常化しない。負値を0へ丸めると「そう入力された」事実が
+    // 消える。Layer 1A の validity は後段が判定する。
+    out.requiredIntentCount = input.requiredIntentCount;
 
     // measurement窓が確定していなければdomainは定義されない。collectorが独自の
     // endを作って埋めることはしない。
@@ -67,11 +68,14 @@ bool buildPhysicalVBlankDomain(const PhysicalVBlankDomainInput& input, PhysicalV
     if (input.qpcFrequency <= 0)
         return fail(out, PhysicalVBlankDomainError::MeasurementWindowInvalid);
 
-    // refresh rational は window output identity の一部であり、observer path が
-    // 解決できていなければ physical opportunity authority が成立していない。
+    // sample列に触れる前にpointer/countをfail-closeする。refresh rationalは
+    // window output identityの一部であり、observer pathが解決できていなければ
+    // physical opportunity authorityが成立していない。
     if (!input.observerStarted || !input.timeCriticalPriority || !input.samples ||
         input.sampleCount == 0 || input.refreshNumerator <= 0 || input.refreshDenominator <= 0)
         return fail(out, PhysicalVBlankDomainError::ObserverUnavailable);
+
+    out.sequenceStatus = vblankSequenceStatus(input.samples, input.sampleCount);
     if (input.ringOverflowCount != 0)
         return fail(out, PhysicalVBlankDomainError::RingOverflow);
     if (input.waitFailureCount != 0)
@@ -110,7 +114,8 @@ bool buildPhysicalVBlankDomain(const PhysicalVBlankDomainInput& input, PhysicalV
         out.lastQpc = input.samples[end - 1].qpc;
     }
     // Layer 1A と Layer 1B の差。shadow出力のみ。verdictには接続しない。
-    out.intentOverhangCount = std::max(0LL, out.requiredIntentCount - out.physicalOpportunityCount);
+    out.intentOverhangCount =
+        std::max(0LL, out.requiredIntentCount - out.physicalOpportunityCount);
     out.intentSurplusCount = std::max(0LL, out.physicalOpportunityCount - out.requiredIntentCount);
 
     if (!out.boundaryBracketed)

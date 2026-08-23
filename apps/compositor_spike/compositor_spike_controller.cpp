@@ -1542,17 +1542,7 @@ bool CompositorSpikeController::writeMetrics() {
                                   vblankIntervals);
     const auto vblankSequence =
         gpu::vblankSequenceStatus(vblankSamples.data(), vblankSamples.size());
-    const char* vblankSequenceName = "UNKNOWN";
-    switch (vblankSequence) {
-    case gpu::VBlankSequenceStatus::Ok: vblankSequenceName = "OK"; break;
-    case gpu::VBlankSequenceStatus::Empty: vblankSequenceName = "EMPTY"; break;
-    case gpu::VBlankSequenceStatus::Invalid: vblankSequenceName = "INVALID"; break;
-    case gpu::VBlankSequenceStatus::OrdinalRegression:
-        vblankSequenceName = "ORDINAL_REGRESSION";
-        break;
-    case gpu::VBlankSequenceStatus::OrdinalGap: vblankSequenceName = "ORDINAL_GAP"; break;
-    case gpu::VBlankSequenceStatus::QpcRegression: vblankSequenceName = "QPC_REGRESSION"; break;
-    }
+    const char* vblankSequenceName = gpu::vblankSequenceStatusName(vblankSequence);
     const QJsonObject physicalVBlank{
         {"enabled", config_.vblankObserver},
         {"observer_started", vblankObserverStarted_},
@@ -1625,7 +1615,10 @@ bool CompositorSpikeController::writeMetrics() {
         {"last_ordinal", vblankDomain.lastOrdinal},
         {"last_qpc", vblankDomain.lastQpc},
         {"physical_opportunity_count", vblankDomain.physicalOpportunityCount},
-        {"sequence_status", QString::fromLatin1(vblankSequenceName)},
+        // shadow artifact は builder が判定した state だけを serialize する。
+        // 外側で別に計算した値を混ぜると二重 producer になる。
+        {"sequence_status",
+         QString::fromLatin1(gpu::vblankSequenceStatusName(vblankDomain.sequenceStatus))},
         {"long_interval_count", vblankDomain.longIntervalCount},
         {"short_interval_count", vblankDomain.shortIntervalCount},
         {"ring_overflow_count", vblankDomain.ringOverflowCount},

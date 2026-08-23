@@ -69,6 +69,8 @@ enum class VBlankSequenceStatus {
 // observerが取りこぼしなく単調に記録できているかを検査する。
 VBlankSequenceStatus vblankSequenceStatus(const VBlankObservation* samples, std::size_t count);
 
+const char* vblankSequenceStatusName(VBlankSequenceStatus status);
+
 struct VBlankCadenceResult {
     bool consistent = false;
     long long observedIntervals = 0;
