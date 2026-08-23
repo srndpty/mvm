@@ -33,6 +33,11 @@ target_link_libraries(mvm_test_proxy_resolver PRIVATE mvm::warnings)
 add_test(NAME proxy_resolver_unit COMMAND mvm_test_proxy_resolver)
 set_tests_properties(scrub_coalescer_threaded PROPERTIES TIMEOUT 120)
 
+# F3-C3-A3-T1専用。production appにwindow-state診断を混ぜない。
+add_executable(mvm_p2_window_state_controller harness/p2_window_state_controller.cpp)
+target_link_libraries(mvm_p2_window_state_controller PRIVATE dwmapi user32 gdi32 mvm::warnings)
+target_link_options(mvm_p2_window_state_controller PRIVATE -municode)
+
 target_link_libraries(mvm_bench PRIVATE
     psapi
     mvm::mlt
@@ -119,6 +124,30 @@ foreach(_p2_c3_a3_t0_case IN ITEMS Good ParentMissing ReadyZero DisplayMismatch 
             -Case "${_p2_c3_a3_t0_case}"
             -Analyzer "${CMAKE_SOURCE_DIR}/scripts/p2-c3-a3-t0-stall-localization.ps1"
             -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t0-${_p2_c3_a3_t0_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+foreach(_p2_c3_a3_t1_condition_case IN ITEMS GoodVisible GoodOccluded GoodDirty NegativeVisibility
+        NegativeCloak NegativeCoverage NegativeUnexpected NegativeRectChange NegativeDirtyTicks NegativeDwmIdentity
+        NegativeEtwLoss)
+    string(TOLOWER "${_p2_c3_a3_t1_condition_case}" _p2_c3_a3_t1_condition_name)
+    mvm_add_test(p2_c3_a3_t1_condition_${_p2_c3_a3_t1_condition_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t1-condition-contract.ps1"
+            -Case "${_p2_c3_a3_t1_condition_case}"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c3-a3-t1-condition.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t1-condition-${_p2_c3_a3_t1_condition_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+foreach(_p2_c3_a3_t1_summary_case IN ITEMS Visibility Dirty Rejected OrderConfound NegativeOrder)
+    string(TOLOWER "${_p2_c3_a3_t1_summary_case}" _p2_c3_a3_t1_summary_name)
+    mvm_add_test(p2_c3_a3_t1_summary_${_p2_c3_a3_t1_summary_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t1-summary-contract.ps1"
+            -Case "${_p2_c3_a3_t1_summary_case}"
+            -Summarizer "${CMAKE_SOURCE_DIR}/scripts/summarize-p2-c3-a3-t1.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t1-summary-${_p2_c3_a3_t1_summary_name}"
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 

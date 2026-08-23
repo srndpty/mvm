@@ -2044,6 +2044,58 @@ pwsh scripts/p2-c3-a3-t0-stall-localization.ps1 `
   -OutputDirectory '<A3-T0 output>'
 ```
 
+#### F3-C3-A3-T1: Visibility/Occlusion/Dirty-State Causal Proof
+
+[事実] T0 PASS evidenceはuser-managed commit `001c066`でcheckpointされた。T1ではCONTROL、
+patched Qt、CanonicalPresentMonLiveを変更せず、15秒measurementを3循環で計9回採取した。
+artifactは`bench/results/f3-c3-a3-t1-visibility-matrix-20260823-15s-1`、`matrix-proof.json`の
+SHA-256は`d160f34e2c158da6c266af361bc5ce6cc34359014cebd06068ed6d94cd15ec9b`である。
+
+[事実] runnerは各runでtarget HWND、visible、iconic、topmost、DWMWA_CLOAKED、window/client rect、
+HMONITOR、foreground HWND、occluder HWND/rect、指定・非指定intersectionを10 Hzでraw記録した。
+measurement内sampleは8 runが150件、1 runが149件で、全9 runでvisible=true、iconic=false、
+cloaked=0、monitor/window/client rect一定、unexpected intersection=0だった。VISIBLE/DIRTYの指定被覆率は
+0%、OCCLUDEDは100%だった。DIRTY companionは15秒に923〜932回更新し、mvm scheduler/render pathは
+変更していない。
+
+[事実] 一次authorityをDWM-wide PresentStart cadenceとdependency batchとし、Presentedはdownstream consequenceとした。
+30 VBlank以上のgapとlarge batch、またはmeasurement内PresentStart/target parentが0〜1件の場合を
+diagnostic `LARGE_SUPPRESSION`と事前分類した。結果は次のとおりである。`0/0`はgapが0ではなく、
+PresentStartが0〜1件でpairを作れない`SPARSE_ZERO_OR_ONE`を表す。
+
+| condition / set(position) | DWM PresentStart | DWM gap p95/max | target parent | batch p95/max | Presented/Discarded | class |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| VISIBLE 1(1) | 329 | 7/86 | 310 | 6/85 | 295/605 | LARGE_SUPPRESSION |
+| VISIBLE 2(3) | 1 | 0/0 | 1 | 505/505 | 1/899 | LARGE_SUPPRESSION |
+| VISIBLE 3(2) | 55 | 60/294 | 50 | 128/293 | 46/854 | LARGE_SUPPRESSION |
+| OCCLUDED 1(2) | 78 | 32/33 | 78 | 31/32 | 78/822 | LARGE_SUPPRESSION |
+| OCCLUDED 2(1) | 91 | 44/217 | 86 | 35/216 | 82/818 | LARGE_SUPPRESSION |
+| OCCLUDED 3(3) | 0 | 0/0 | 0 | 900/900 | 0/900 | LARGE_SUPPRESSION |
+| DIRTY 1(3) | 890 | 1/3 | 882 | 1/3 | 879/21 | REGULAR |
+| DIRTY 2(2) | 872 | 1/2 | 870 | 1/1 | 871/29 | REGULAR |
+| DIRTY 3(1) | 891 | 1/3 | 879 | 1/3 | 871/29 | REGULAR |
+
+[事実] VISIBLEとOCCLUDEDは各positionですべて`LARGE_SUPPRESSION`、DIRTYは各positionですべて
+`REGULAR`だった。したがって時間順序ではなく条件に追従し、matrix verdictは
+`DIRTY_WAKE_SUPPRESSION`である。VISIBLEだけではgapが消えないため、formal harness visibility defect分岐は
+棄却した。最終checkerで9個のraw authorityを再解析し、DWM count/gap max、batch max、Presentedが
+matrix summaryと全件一致することも確認した。
+
+[推測] 外部companionのdamageが定常的なDWM composition wakeを発生させ、mvmの既存Presentを
+定常的にparentへ取り込ませたと考えるのが観測と一致する。ただしQt Quick/QRhiの
+damage propagationのどの段階が欠けるかはまだ読み分けていない。
+
+[exit] T1はPASS / `DIRTY_WAKE_SUPPRESSION`とする。次は`F3-C3-A3-T2 — Dirty Propagation Attribution`とし、
+Qt Quick / QRhi側のdamage/wake propagationを追う。C3-B production scheduler、formal runtime wiring、2% thresholdは
+未変更、P2-D5-2はBLOCKEDのままとする。
+
+再現手順（管理者PowerShell）:
+
+```powershell
+pwsh scripts/p2-c3-a3-t1-matrix.ps1 `
+  -OutputDirectory '<A3-T1 output>' -WarmupSeconds 12 -MeasureSeconds 15 -TimeoutSeconds 180
+```
+
 ---
 
 ## 7. 検証手順

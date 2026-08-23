@@ -1,0 +1,92 @@
+{
+  "schema": "mvm-p2-c3-a3-t1-matrix-runs-1",
+  "status": "PASS",
+  "authority": "diagnostic_only",
+  "formal_counter_authority_changed": false,
+  "formal_drop_threshold_changed": false,
+  "production_scheduler_changed": false,
+  "warmup_seconds": 12,
+  "measure_seconds": 15,
+  "cyclic_orders": [
+    [
+      "VISIBLE_UNOCCLUDED",
+      "FULLY_OCCLUDED",
+      "VISIBLE_UNOCCLUDED_FORCE_DIRTY"
+    ],
+    [
+      "FULLY_OCCLUDED",
+      "VISIBLE_UNOCCLUDED_FORCE_DIRTY",
+      "VISIBLE_UNOCCLUDED"
+    ],
+    [
+      "VISIBLE_UNOCCLUDED_FORCE_DIRTY",
+      "VISIBLE_UNOCCLUDED",
+      "FULLY_OCCLUDED"
+    ]
+  ],
+  "runs": [
+    {
+      "set": 1,
+      "position": 1,
+      "mode": "VISIBLE_UNOCCLUDED",
+      "directory": "set-1-position-1-visible",
+      "summary_sha256": "e6c0d8d10e948e17e75c91d547ee001be9e567be8f60687a8ce3fbdcfc676623"
+    },
+    {
+      "set": 1,
+      "position": 2,
+      "mode": "FULLY_OCCLUDED",
+      "directory": "set-1-position-2-occluded",
+      "summary_sha256": "e301ea110cd32a42ae263d824c7e758b76693e4487b5bf5f41a80edcaec0b2e2"
+    },
+    {
+      "set": 1,
+      "position": 3,
+      "mode": "VISIBLE_UNOCCLUDED_FORCE_DIRTY",
+      "directory": "set-1-position-3-dirty",
+      "summary_sha256": "07727a70892ea914671ada8f256d1990a3b695c128ee8c49c67ea2c11b721816"
+    },
+    {
+      "set": 2,
+      "position": 1,
+      "mode": "FULLY_OCCLUDED",
+      "directory": "set-2-position-1-occluded",
+      "summary_sha256": "d00ef9646558e659c1d2556fea4d90c782588c72ea65813b71e870fda3b44187"
+    },
+    {
+      "set": 2,
+      "position": 2,
+      "mode": "VISIBLE_UNOCCLUDED_FORCE_DIRTY",
+      "directory": "set-2-position-2-dirty",
+      "summary_sha256": "c3c2bed48b736804d46556094795ab56b66b6c6d808a8f5e9c689f81320002f4"
+    },
+    {
+      "set": 2,
+      "position": 3,
+      "mode": "VISIBLE_UNOCCLUDED",
+      "directory": "set-2-position-3-visible",
+      "summary_sha256": "ceddb80703f0291e0a99fd35a1b470c647b1c24cae5006ee3b555e151eb023fb"
+    },
+    {
+      "set": 3,
+      "position": 1,
+      "mode": "VISIBLE_UNOCCLUDED_FORCE_DIRTY",
+      "directory": "set-3-position-1-dirty",
+      "summary_sha256": "99e50de2d2d3ce82ef981a934d73c0b0a97ffc6fecef8071848af9b285f647dd"
+    },
+    {
+      "set": 3,
+      "position": 2,
+      "mode": "VISIBLE_UNOCCLUDED",
+      "directory": "set-3-position-2-visible",
+      "summary_sha256": "b84d204fc6487afff530442ce672e20425a23d67e9fd784c31440368195e64a6"
+    },
+    {
+      "set": 3,
+      "position": 3,
+      "mode": "FULLY_OCCLUDED",
+      "directory": "set-3-position-3-occluded",
+      "summary_sha256": "676e7b7eddfb7cc7045c580914f20cea6862adaa7b12abf9ac9a2898ffbf4b8f"
+    }
+  ]
+}

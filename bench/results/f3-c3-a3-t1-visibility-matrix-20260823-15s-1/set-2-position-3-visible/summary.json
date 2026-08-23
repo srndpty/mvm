@@ -1,0 +1,81 @@
+{
+  "schema": "mvm-p2-c3-a3-t1-condition-run-1",
+  "status": "PASS",
+  "authority": "diagnostic_only",
+  "mode": "VISIBLE_UNOCCLUDED",
+  "formal_counter_authority_changed": false,
+  "formal_drop_threshold_changed": false,
+  "production_scheduler_changed": false,
+  "warmup_seconds": 12,
+  "measure_seconds": 15,
+  "proof": {
+    "schema": "mvm-p2-c3-a3-t1-condition-proof-1",
+    "status": "PASS",
+    "authority": "diagnostic_only",
+    "mode": "VISIBLE_UNOCCLUDED",
+    "formal_counter_authority_changed": false,
+    "formal_drop_threshold_changed": false,
+    "production_scheduler_changed": false,
+    "window_state": {
+      "target_hwnd": "0x460e2c",
+      "sample_count": 150,
+      "monitor": "0x10001",
+      "client_rect": "243,186,1523,906",
+      "window_rect": "240,160,1526,909",
+      "visible": true,
+      "iconic": false,
+      "topmost": true,
+      "cloaked": 0,
+      "foreground_target_sample_count": 0,
+      "foreground_target_fraction": 0,
+      "designated_coverage": 0.0,
+      "unexpected_intersection_area_max": 0,
+      "dirty_tick_delta": 0
+    },
+    "dwm_process_id": 2436,
+    "dwm_identity_method": "ACTUAL_PARENT_EXACT",
+    "measurement_seconds": 15.0,
+    "dwm_wide_present_start_count": 1,
+    "dwm_wide_present_starts_per_second": 0.06666666666666667,
+    "dwm_wide_cadence_observation": "SPARSE_ZERO_OR_ONE",
+    "dwm_wide_unresolved_completion_count": 0,
+    "dwm_wide_present_start_gap": {
+      "p50": 0,
+      "p95": 0,
+      "max": 0
+    },
+    "target_attached_parent_count": 1,
+    "target_attached_parents_per_second": 0.06666666666666667,
+    "target_parent_present_start_gap": {
+      "p50": 0,
+      "p95": 0,
+      "max": 0
+    },
+    "native_present_count": 900,
+    "presented_count": 1,
+    "discarded_count": 899,
+    "dependent_superseded_count": 899,
+    "earlier_superseded_count": 0,
+    "dependency_batch_count": 3,
+    "dependency_batch_size": {
+      "p50": 394,
+      "p95": 505,
+      "max": 505,
+      "histogram": {
+        "1": 1,
+        "394": 1,
+        "505": 1
+      }
+    }
+  },
+  "identities": {
+    "controller_sha256": "d1cb6807951df197e32775cb917e6b50d050f8ef21f029f28646bb75d9bd5247",
+    "canonical_runner_sha256": "4463fd41c6764a4c01450e652cc7424798204aeac8128b781198d33efb7ea1e3",
+    "submission_checker_sha256": "cefbdd1954a097a04bd18c176780ba85bfda01a67a9e5536a2e03314d4c1ad1f",
+    "condition_checker_sha256": "bff928cfedb97bf94ecd5dba8b44d72a67f78173a66f5873c4104032d9a2d484",
+    "canonical_manifest_sha256": "6da4d07632ad223402f8c22aa5585a2f75e5f56fb0954c10be0eeb99e0319ee7",
+    "window_state_raw_sha256": "b06099337c3606b00c73bb661d88ec6baee589ae672962fe0947d73fdc896467",
+    "submission_proof_sha256": "58c0cc36f0b3b4ae5af872b359bbac3214aeb0d5bbfd4175004ca035b0f40dc3",
+    "condition_proof_sha256": "27660b51862260d52619e6857d745e44da21807c0feafdfa69dea3e0a28d303b"
+  }
+}

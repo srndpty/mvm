@@ -1,0 +1,84 @@
+{
+  "schema": "mvm-p2-c3-a3-t1-condition-run-1",
+  "status": "PASS",
+  "authority": "diagnostic_only",
+  "mode": "VISIBLE_UNOCCLUDED",
+  "formal_counter_authority_changed": false,
+  "formal_drop_threshold_changed": false,
+  "production_scheduler_changed": false,
+  "warmup_seconds": 12,
+  "measure_seconds": 15,
+  "proof": {
+    "schema": "mvm-p2-c3-a3-t1-condition-proof-1",
+    "status": "PASS",
+    "authority": "diagnostic_only",
+    "mode": "VISIBLE_UNOCCLUDED",
+    "formal_counter_authority_changed": false,
+    "formal_drop_threshold_changed": false,
+    "production_scheduler_changed": false,
+    "window_state": {
+      "target_hwnd": "0x340e14",
+      "sample_count": 149,
+      "monitor": "0x10001",
+      "client_rect": "243,186,1523,906",
+      "window_rect": "240,160,1526,909",
+      "visible": true,
+      "iconic": false,
+      "topmost": true,
+      "cloaked": 0,
+      "foreground_target_sample_count": 23,
+      "foreground_target_fraction": 0.15436241610738255,
+      "designated_coverage": 0.0,
+      "unexpected_intersection_area_max": 0,
+      "dirty_tick_delta": 0
+    },
+    "dwm_process_id": 2436,
+    "dwm_identity_method": "ACTUAL_PARENT_EXACT",
+    "measurement_seconds": 15.0,
+    "dwm_wide_present_start_count": 55,
+    "dwm_wide_present_starts_per_second": 3.6666666666666665,
+    "dwm_wide_cadence_observation": "GAPS_OBSERVED",
+    "dwm_wide_unresolved_completion_count": 1,
+    "dwm_wide_present_start_gap": {
+      "p50": 1,
+      "p95": 60,
+      "max": 294
+    },
+    "target_attached_parent_count": 50,
+    "target_attached_parents_per_second": 3.3333333333333335,
+    "target_parent_present_start_gap": {
+      "p50": 1,
+      "p95": 62,
+      "max": 294
+    },
+    "native_present_count": 900,
+    "presented_count": 46,
+    "discarded_count": 854,
+    "dependent_superseded_count": 790,
+    "earlier_superseded_count": 64,
+    "dependency_batch_count": 54,
+    "dependency_batch_size": {
+      "p50": 1,
+      "p95": 128,
+      "max": 293,
+      "histogram": {
+        "1": 49,
+        "62": 1,
+        "77": 1,
+        "128": 1,
+        "291": 1,
+        "293": 1
+      }
+    }
+  },
+  "identities": {
+    "controller_sha256": "d1cb6807951df197e32775cb917e6b50d050f8ef21f029f28646bb75d9bd5247",
+    "canonical_runner_sha256": "4463fd41c6764a4c01450e652cc7424798204aeac8128b781198d33efb7ea1e3",
+    "submission_checker_sha256": "cefbdd1954a097a04bd18c176780ba85bfda01a67a9e5536a2e03314d4c1ad1f",
+    "condition_checker_sha256": "bff928cfedb97bf94ecd5dba8b44d72a67f78173a66f5873c4104032d9a2d484",
+    "canonical_manifest_sha256": "feb6a0865d67c49a677ab1a3895db45b3cc6f8e2d4bb173b346ce74afc7e9672",
+    "window_state_raw_sha256": "d20ce154d379720586c4185bc2868fb2c3af5d91536f91eb0bfbb83e3ac7aa6e",
+    "submission_proof_sha256": "3a3abb344db36224d5dc81bc76857cb359692f663ddd6e31fbc4da000ab58f99",
+    "condition_proof_sha256": "586943ae563d48d4f6f9c9ba965c768d540f147077116314f2422f336c1f7c6f"
+  }
+}
