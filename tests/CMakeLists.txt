@@ -173,6 +173,17 @@ foreach(_p2_c3_a3_t2_summary_case IN ITEMS TargetDoesNotWake NegativeControl Inv
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
+foreach(_p2_d5_2_formal_v2_case IN ITEMS Good GoodPhysicalSurplus AuthorityInvalidPropagated NegativeRetiredReason NegativeRuntimeOverride NegativeUnknownOutcome NegativeVblankSequence NegativeVblankObserver NegativeBoundaryNotBracketed NegativeOutputChanged NegativeEtwLoss NegativeRingOverflow NegativePresentedFrameMismatch NegativeIdentityI1 NegativeIdentityI2 NegativeIdentityI3 NegativeIdentityI4 NegativeIdentityI5 NegativeIdentityI6 NegativeIdentityI9 NegativeContractVersion)
+    string(TOLOWER "${_p2_d5_2_formal_v2_case}" _p2_d5_2_formal_v2_name)
+    mvm_add_test(p2_d5_2_formal_v2_${_p2_d5_2_formal_v2_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-formal-v2-contract.ps1"
+            -Case "${_p2_d5_2_formal_v2_case}"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-formal-v2.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-formal-v2-${_p2_d5_2_formal_v2_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
     string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)
     mvm_add_test(p2_c3_a3_t2_d1b2_evaluability_${_p2_c3_a3_t2_d1b2e_name}
