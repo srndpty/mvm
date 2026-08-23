@@ -173,6 +173,17 @@ foreach(_p2_c3_a3_t2_summary_case IN ITEMS TargetDoesNotWake NegativeControl Inv
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
+foreach(_p2_c3_a3_t2_d1a_case IN ITEMS ComposedNotFailure BadWithoutGoodComposed NoBadRegime ParentFieldUnavailable ModeClassBoundary NegativeMissingPresentMode)
+    string(TOLOWER "${_p2_c3_a3_t2_d1a_case}" _p2_c3_a3_t2_d1a_name)
+    mvm_add_test(p2_c3_a3_t2_d1a_regime_${_p2_c3_a3_t2_d1a_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t2-d1a-regime-contract.ps1"
+            -Case "${_p2_c3_a3_t2_d1a_case}"
+            -Inventory "${CMAKE_SOURCE_DIR}/scripts/inventory-p2-c3-a3-t2-d1a-regime.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t2-d1a-${_p2_c3_a3_t2_d1a_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 foreach(_p2_c3_a3_t2_d0_case IN ITEMS IndependentOfDwm ExternalTransition UnknownPresentPath LegacySchemaUnresolved InsufficientGroups NegativeEtwLoss)
     string(TOLOWER "${_p2_c3_a3_t2_d0_case}" _p2_c3_a3_t2_d0_name)
     mvm_add_test(p2_c3_a3_t2_d0_presentation_path_${_p2_c3_a3_t2_d0_name}
