@@ -55,7 +55,7 @@ $sequence=@(@('A','DISABLED'),@('B','CONTROL'),@('B','CONTROL'),@('A','DISABLED'
 for($i=0;$i-lt$sequence.Count;++$i){
     $arm=$sequence[$i][0];$mode=$sequence[$i][1]
     $isA=$arm-eq'A'
-    $presentMode=$independent;$displayed=100;$flags=64;$input=$false;$lost=0;$parent=0
+    $presentMode=$independent;$displayed=100;$flags=64;$userInput=$false;$lost=0;$parent=0
     switch($Case){
         'ReproducesBadRegime'{
             if($isA){$presentMode=$composed;$displayed=5;$parent=10}
@@ -71,10 +71,10 @@ for($i=0;$i-lt$sequence.Count;++$i){
         'StaticConfigDiffers'{
             if($isA){$flags=0}
         }
-        'NegativeUserInput'{if($i-eq2){$input=$true}}
+        'NegativeUserInput'{if($i-eq2){$userInput=$true}}
         'NegativeEtwLoss'{if($i-eq1){$lost=1}}
     }
-    $runs+=New-Probe ($i+1) $arm $mode $presentMode $displayed $flags $input $lost $parent
+    $runs+=New-Probe ($i+1) $arm $mode $presentMode $displayed $flags $userInput $lost $parent
 }
 [ordered]@{schema='mvm-p2-c3-a3-t2-d1b1-probe-runs-1';status='PASS';runs=$runs}|
     ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $Directory 'probe-runs.json') -Encoding utf8

@@ -2,7 +2,9 @@
 param(
     [Parameter(Mandatory=$true)][string]$OutputDirectory,
     [ValidateRange(1,4)][int]$RepeatsPerCondition=1,
-    [ValidateRange(12,300)][int]$WarmupSeconds=14,
+    [ValidateRange(12,300)][int]$WarmupSeconds=26,
+    [ValidateRange(200,60000)][int]$PreCleanMs=2000,
+    [ValidateRange(200,60000)][int]$OverlapMs=3000,
     [ValidateRange(1,300)][int]$MeasureSeconds=5,
     [ValidateRange(30,600)][int]$TimeoutSeconds=180
 )
@@ -16,6 +18,14 @@ $identity=[Security.Principal.WindowsIdentity]::GetCurrent();$principal=[Securit
 if(-not$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw 'F3-C3-A3-T2-D1-B3a probe採取には管理者権限が必要です'}
 foreach($path in @($runner,$preflightChecker,$summarizer)){
     if(-not(Test-Path -LiteralPath $path)){throw "D1-B3a必須scriptがありません: $path"}
+}
+# controllerはsettleに約9秒使ってからreadyになる。phaseはその後に始まるため、
+# PRE_CLEAN+OVERLAPがapp warmup内で完結することを事前に要求する。
+$controllerSettleSeconds=9
+$phaseSeconds=($PreCleanMs+$OverlapMs)/1000.0
+$requiredWarmup=$controllerSettleSeconds+$phaseSeconds+4
+if($WarmupSeconds-lt$requiredWarmup){
+    throw ("OVERLAP phaseがmeasurementへ食い込みます。WarmupSecondsを{0}以上にしてください (現在 {1})" -f [math]::Ceiling($requiredWarmup),$WarmupSeconds)
 }
 if(Test-Path -LiteralPath $OutputDirectory){throw "既存D1-B3a artifactを上書きしません: $OutputDirectory"}
 New-Item -ItemType Directory -Path $OutputDirectory|Out-Null
@@ -49,7 +59,8 @@ for($index=0;$index-lt$sequence.Count;++$index){
     Write-Host "F3-C3-A3-T2-D1-B3a probe: $($index+1)/$($sequence.Count) condition=$condition"
     & pwsh -NoProfile -File $runner -OutputDirectory $directory -Mode $mode `
         -DirtyPropagationMode 'DISABLED' -WarmupSeconds $WarmupSeconds `
-        -MeasureSeconds $MeasureSeconds -TimeoutSeconds $TimeoutSeconds
+        -MeasureSeconds $MeasureSeconds -TimeoutSeconds $TimeoutSeconds `
+        -PreCleanMs $PreCleanMs -OverlapMs $OverlapMs
     if($LASTEXITCODE-ne0){throw "D1-B3a probe runが失敗しました: $name"}
     $app=Join-Path $directory 'canonical\traced-app.json'
     $preflightProof=Join-Path $directory 'preflight-proof.json'

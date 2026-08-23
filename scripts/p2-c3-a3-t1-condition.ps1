@@ -9,6 +9,8 @@ param(
     [ValidateRange(12,300)][int]$WarmupSeconds=12,
     [ValidateRange(1,300)][int]$MeasureSeconds=15,
     [ValidateRange(30,600)][int]$TimeoutSeconds=180,
+    [ValidateRange(200,60000)][int]$PreCleanMs=2000,
+    [ValidateRange(200,60000)][int]$OverlapMs=3000,
     [ValidateSet('DISABLED','CONTROL','TARGET_RHIITEM_PIXEL_TOGGLE')]
     [string]$DirtyPropagationMode='DISABLED',
     [string]$Controller=(Join-Path (Split-Path -Parent $PSScriptRoot) 'build\ucrt64-release\bin\mvm_p2_window_state_controller.exe')
@@ -49,7 +51,8 @@ try{
     if($targetPid-le0){throw "target PIDが不正です: $targetPid"}
     $env:PATH="C:\msys64\ucrt64\bin;$env:PATH"
     $controllerArguments=@('--process-id',[string]$targetPid,'--mode',$Mode,'--output',$stateJson,
-        '--ready-file',$readyFile,'--stop-file',$stopFile)
+        '--ready-file',$readyFile,'--stop-file',$stopFile,
+        '--pre-clean-ms',[string]$PreCleanMs,'--overlap-ms',[string]$OverlapMs)
     $controllerProcess=Start-Process -FilePath $Controller -ArgumentList $controllerArguments -PassThru -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $OutputDirectory 'window-state-stdout.txt') `
         -RedirectStandardError (Join-Path $OutputDirectory 'window-state-stderr.txt')

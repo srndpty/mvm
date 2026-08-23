@@ -381,6 +381,9 @@ int wmain(int argc, wchar_t** argv) {
     wchar_t const* outputPath = nullptr;
     wchar_t const* readyPath = nullptr;
     wchar_t const* stopPath = nullptr;
+    // phase長は呼び出し側が制御する。overlapはapp warmup内で完結しなければならない。
+    unsigned long preCleanMs = 2000;
+    unsigned long overlapMs = 3000;
     for (int index = 1; index < argc; ++index) {
         if (std::wcscmp(argv[index], L"--process-id") == 0 && index + 1 < argc)
             parseUnsigned(argv[++index], processId);
@@ -392,6 +395,10 @@ int wmain(int argc, wchar_t** argv) {
             readyPath = argv[++index];
         else if (std::wcscmp(argv[index], L"--stop-file") == 0 && index + 1 < argc)
             stopPath = argv[++index];
+        else if (std::wcscmp(argv[index], L"--pre-clean-ms") == 0 && index + 1 < argc)
+            parseUnsigned(argv[++index], preCleanMs);
+        else if (std::wcscmp(argv[index], L"--overlap-ms") == 0 && index + 1 < argc)
+            parseUnsigned(argv[++index], overlapMs);
     }
     Mode mode{};
     if (modeValue != nullptr && std::wcscmp(modeValue, L"VISIBLE_UNOCCLUDED") == 0)
@@ -507,10 +514,10 @@ int wmain(int argc, wchar_t** argv) {
     };
     recordPhase(phase);
     auto const phaseStart = std::chrono::steady_clock::now();
-    // OVERLAP_THEN_REMOVE: PRE_CLEAN 2s -> OVERLAP 3s -> POST_REMOVE。
+    // OVERLAP_THEN_REMOVE: PRE_CLEAN -> OVERLAP -> POST_REMOVE。
     // いずれもappのwarmup内に収め、measurementはclean stateで行う。
-    auto const overlapBegin = phaseStart + std::chrono::seconds(2);
-    auto const overlapEnd = overlapBegin + std::chrono::seconds(3);
+    auto const overlapBegin = phaseStart + std::chrono::milliseconds(preCleanMs);
+    auto const overlapEnd = overlapBegin + std::chrono::milliseconds(overlapMs);
     unsigned long const occluderProcessId = GetCurrentProcessId();
     std::uint64_t targetDamageCount = 0;
     std::uint64_t targetDamageFailureCount = 0;

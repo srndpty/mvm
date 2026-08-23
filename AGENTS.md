@@ -396,19 +396,22 @@ swapchain の値は Qt の設定や環境変数から再構成せず、実際に
 `swapchainIdentity` は実ポインタであり、swapchain を所有する render thread の
 `frameSwapped` 契機で一度だけ読む。
 
-## PowerShell contract test の断続的 timeout（未解決）
+## PowerShell の自動変数を変数名に使わない
 
-`p2_c3_a3_t2_d1b1_probe_*` が ctest の長いバッチ実行中に 2 回 timeout した。
-単体実行 0.9 秒、家族単位(20件)実行 18 秒、full `p2_c3`(101件) でも再現しない。
-timeout 時は子 pwsh が CPU 0.6 秒で idle のまま残る。
+`$input` は PowerShell の**自動変数**で、pipeline / stdin の enumerator に
+束縛される。これを自前の変数名として使うと、stdin が開いたままの pipe である
+環境（ctest の test process など）で enumerator の materialize が EOF 待ちに
+なり、**プロセスが無限にハングする**。
 
-**根本原因は未特定である。** 一過性と決めつけないこと。
+実際に `p2_c3_a3_t2_d1b1_probe_*` が ctest のバッチ実行で毎回 timeout した。
+単体実行や小さいバッチでは再現せず、当初「一過性」と誤診した。
+`$input` を `$userInput` へ改名して解消（106/106 PASS、timeout 0）。
 
+- `$input` `$args` `$_` `$PSItem` `$matches` `$error` `$host` `$this` 等を
+  変数名にしない。
 - ctest 実行時は `--timeout` を付け、hang を無限待ちにしない。
-- timeout が出たら残留 pwsh を PID 指定で止め、再実行して再現性を確認する。
-  machine-wide な `Stop-Process -Name pwsh` は禁止（他プロジェクトを巻き込む）。
-- 再現したら contract test 側ではなく、pwsh 子プロセス生成の集中
-  (gpu_preview だけで 90 件が子 pwsh を起動する) を疑う。
+- timeout が出たら「一過性」と断定せず、残留 process を PID 指定で止めて
+  再現性を確認する。machine-wide な `Stop-Process -Name pwsh` は禁止。
 
 ## Windows / CMake / Ninja ビルド運用
 
