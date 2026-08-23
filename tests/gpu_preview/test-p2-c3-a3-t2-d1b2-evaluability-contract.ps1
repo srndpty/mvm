@@ -17,8 +17,9 @@ $abiDirectory=Join-Path $repository 'src\app\preview'
 New-Item -ItemType Directory -Path $abiDirectory -Force|Out-Null
 function Resolve-Git(){
     # ctestのtest環境ではPATHにgitが無いことがある。既知の場所へfallbackする。
-    $command=Get-Command git -CommandType Application -ErrorAction SilentlyContinue
-    if($null-ne$command){return $command.Source}
+    # PATHに複数のgitがあるとGet-Commandは複数返す。必ず1件へ絞る。
+    $command=@(Get-Command git -CommandType Application -ErrorAction SilentlyContinue)|Select-Object -First 1
+    if($null-ne$command){return [string]$command.Source}
     foreach($candidate in @((Join-Path $env:ProgramFiles 'Git\cmd\git.exe'),
                             (Join-Path $env:ProgramFiles 'Git\mingw64\bin\git.exe'),
                             'C:\msys64\usr\bin\git.exe')){
