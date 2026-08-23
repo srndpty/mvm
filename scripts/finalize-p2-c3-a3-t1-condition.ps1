@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory=$true)][string]$OutputDirectory,
     [Parameter(Mandatory=$true)]
-    [ValidateSet('VISIBLE_UNOCCLUDED','FULLY_OCCLUDED','VISIBLE_UNOCCLUDED_FORCE_DIRTY')]
+    [ValidateSet('VISIBLE_UNOCCLUDED','FULLY_OCCLUDED','VISIBLE_UNOCCLUDED_FORCE_DIRTY',
+     'VISIBLE_UNOCCLUDED_TARGET_INVALIDATE','VISIBLE_UNOCCLUDED_TARGET_REDRAW_NOW')]
     [string]$Mode,
     [ValidateRange(12,300)][int]$WarmupSeconds,
     [ValidateRange(1,300)][int]$MeasureSeconds,

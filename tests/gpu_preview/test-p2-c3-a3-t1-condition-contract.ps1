@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory=$true)]
     [ValidateSet('GoodVisible','GoodOccluded','GoodDirty','NegativeVisibility','NegativeCloak',
         'NegativeCoverage','NegativeUnexpected','NegativeRectChange','NegativeDirtyTicks','NegativeDwmIdentity',
-        'NegativeEtwLoss')]
+        'NegativeEtwLoss','GoodTargetInvalidate','GoodTargetRedrawNow','NegativeUserInput','NegativeTargetDamage')]
     [string]$Case,
     [Parameter(Mandatory=$true)][string]$Checker,
     [Parameter(Mandatory=$true)][string]$Directory
@@ -12,7 +12,11 @@ Set-StrictMode -Version Latest
 if(Test-Path -LiteralPath $Directory){Remove-Item -LiteralPath $Directory -Recurse -Force}
 New-Item -ItemType Directory -Path $Directory|Out-Null
 $canonical=Join-Path $Directory 'canonical';New-Item -ItemType Directory -Path $canonical|Out-Null
-$mode=if($Case-eq'GoodOccluded'-or$Case-eq'NegativeCoverage'){'FULLY_OCCLUDED'}elseif($Case-eq'GoodDirty'-or$Case-eq'NegativeDirtyTicks'){'VISIBLE_UNOCCLUDED_FORCE_DIRTY'}else{'VISIBLE_UNOCCLUDED'}
+$mode=if($Case-eq'GoodOccluded'-or$Case-eq'NegativeCoverage'){'FULLY_OCCLUDED'}
+      elseif($Case-eq'GoodDirty'-or$Case-eq'NegativeDirtyTicks'){'VISIBLE_UNOCCLUDED_FORCE_DIRTY'}
+      elseif($Case-eq'GoodTargetInvalidate'-or$Case-eq'NegativeTargetDamage'){'VISIBLE_UNOCCLUDED_TARGET_INVALIDATE'}
+      elseif($Case-eq'GoodTargetRedrawNow'){'VISIBLE_UNOCCLUDED_TARGET_REDRAW_NOW'}
+      else{'VISIBLE_UNOCCLUDED'}
 $vblankSamples=@(1..1200|ForEach-Object{[ordered]@{ordinal=$_; qpc=$_}})
 $app=[ordered]@{presentation_opportunity=[ordered]@{
     measurement_start_qpc=100;measurement_end_qpc_exclusive=1100;qpc_frequency=1000
@@ -33,15 +37,18 @@ if($Case-eq'NegativeDwmIdentity'){$rawEvents[100].process_id=201}
 $raw=[ordered]@{schema='mvm-p2-etw-present-history-1';target_process_id=100;etw_events_lost=0;etw_buffers_lost=0;present_event_overflow_count=0;events=$rawEvents}
 if($Case-eq'NegativeEtwLoss'){$raw.etw_events_lost=1}
 $oracle=[ordered]@{oracle_status='ORACLE_VALID';display_completion_status='CLOSED';incomplete_unknown_count=0;lost_count=0;etw_events_lost=0;etw_buffers_lost=0;present_event_overflow_count=0;records=$records}
+$targetDamageModes=@('VISIBLE_UNOCCLUDED_TARGET_INVALIDATE','VISIBLE_UNOCCLUDED_TARGET_REDRAW_NOW')
 $samples=@()
 for($index=0;$index-lt10;++$index){
     $dirtyTick=if($mode-eq'VISIBLE_UNOCCLUDED_FORCE_DIRTY'){$index*10}else{0}
+    $damageTick=if($targetDamageModes-contains$mode){$index*10}else{0}
     $samples+=[ordered]@{
         qpc=100+$index*100;target_hwnd='0x1234';visible=$true;iconic=$false;topmost=$true;cloaked=0
         window_rect=[ordered]@{left=10;top=10;right=116;bottom=139};client_rect=[ordered]@{left=13;top=36;right=113;bottom=136}
         monitor='0x1';foreground_hwnd='0x1234';occluder_hwnd=$(if($mode-eq'FULLY_OCCLUDED'){'0x5678'}else{'0x0'})
         occluder_rect=[ordered]@{left=13;top=36;right=113;bottom=136};client_area=10000
         designated_intersection_area=$(if($mode-eq'FULLY_OCCLUDED'){10000}else{0});unexpected_intersection_area=0;dirty_tick_count=$dirtyTick
+        target_damage_count=$damageTick;target_update_region_present=$($damageTick-gt0);last_input_tick=4242
     }
 }
 switch($Case){
@@ -51,8 +58,13 @@ switch($Case){
     'NegativeUnexpected'{$samples[4].unexpected_intersection_area=1}
     'NegativeRectChange'{$samples[4].window_rect.left=11}
     'NegativeDirtyTicks'{foreach($sample in $samples){$sample.dirty_tick_count=0}}
+    'NegativeUserInput'{$samples[4].last_input_tick=9999}
+    'NegativeTargetDamage'{foreach($sample in $samples){$sample.target_damage_count=0}}
 }
-$state=[ordered]@{schema='mvm-p2-c3-a3-t1-window-state-1';mode=$mode;target_process_id=100;qpc_frequency=1000;target_hwnd='0x1234';occluder_hwnd=$(if($mode-eq'FULLY_OCCLUDED'){'0x5678'}else{'0x0'});dirty_companion_hwnd=$(if($mode-eq'VISIBLE_UNOCCLUDED_FORCE_DIRTY'){'0x9abc'}else{'0x0'});dirty_tick_count=[long]$samples[-1].dirty_tick_count;samples=$samples}
+$state=[ordered]@{schema='mvm-p2-c3-a3-t1-window-state-1';mode=$mode;target_process_id=100;qpc_frequency=1000;target_hwnd='0x1234';occluder_hwnd=$(if($mode-eq'FULLY_OCCLUDED'){'0x5678'}else{'0x0'});dirty_companion_hwnd=$(if($mode-eq'VISIBLE_UNOCCLUDED_FORCE_DIRTY'){'0x9abc'}else{'0x0'});dirty_tick_count=[long]$samples[-1].dirty_tick_count
+    target_damage_count=[long]$samples[-1].target_damage_count;target_damage_failure_count=0
+    target_update_region_observed_count=@($samples|Where-Object{[bool]$_.target_update_region_present}).Count
+    last_input_tick_at_ready=4242;samples=$samples}
 $submission=[ordered]@{schema='mvm-p2-c3-submission-backpressure-proof-2';proof_status='PASS';submission_mode='CONTROL';native_present_count=10;presented_count=10;discarded_count=0;discard_reason_histogram=[ordered]@{DEPENDENT_PRESENT_SUPERSEDED=0;EARLIER_SWAPCHAIN_PRESENT_SUPERSEDED=0};dependency_batch_count=$(if($fallback){0}else{10});dependency_batch_size=[ordered]@{p50=$(if($fallback){0}else{1});p95=$(if($fallback){0}else{1});max=$(if($fallback){0}else{1});histogram=[ordered]@{}}}
 $app|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $canonical 'traced-app.json') -Encoding utf8
 $raw|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $canonical 'present-history-raw.json') -Encoding utf8

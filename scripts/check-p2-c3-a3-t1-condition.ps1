@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory=$true)][string]$WindowStateJson,
     [Parameter(Mandatory=$true)][string]$SubmissionProofJson,
     [Parameter(Mandatory=$true)]
-    [ValidateSet('VISIBLE_UNOCCLUDED','FULLY_OCCLUDED','VISIBLE_UNOCCLUDED_FORCE_DIRTY')]
+    [ValidateSet('VISIBLE_UNOCCLUDED','FULLY_OCCLUDED','VISIBLE_UNOCCLUDED_FORCE_DIRTY',
+     'VISIBLE_UNOCCLUDED_TARGET_INVALIDATE','VISIBLE_UNOCCLUDED_TARGET_REDRAW_NOW')]
     [string]$ExpectedMode,
     [Parameter(Mandatory=$true)][string]$Output
 )
@@ -63,6 +64,17 @@ $foregroundTargetCount=@($samples|Where-Object{[string]$_.foreground_hwnd-eq$tar
 if($ExpectedMode-eq'VISIBLE_UNOCCLUDED_FORCE_DIRTY'){
     if([string]$state.dirty_companion_hwnd-eq'0x0'-or$dirtyTicks-lt[Math]::Floor($elapsed*40)){Fail "FORCE_DIRTY tickが不足しています: $dirtyTicks"}
 }elseif([string]$state.dirty_companion_hwnd-ne'0x0'-or$dirtyTicks-ne0){Fail '非DIRTY条件でdirty companionが動作しています'}
+# F3-C3-A3-T2-C: target HWND damage注入の実施量と、注入していない条件での不作為を固定する。
+$targetDamageModes=@('VISIBLE_UNOCCLUDED_TARGET_INVALIDATE','VISIBLE_UNOCCLUDED_TARGET_REDRAW_NOW')
+$targetDamageDelta=[long]$samples[-1].target_damage_count-[long]$samples[0].target_damage_count
+$updateRegionSamples=@($samples|Where-Object{[bool]$_.target_update_region_present}).Count
+if($targetDamageModes-contains$ExpectedMode){
+    if([long]$state.target_damage_failure_count-ne0){Fail "target HWND damage注入が失敗しています: $([long]$state.target_damage_failure_count)"}
+    if($targetDamageDelta-lt[Math]::Floor($elapsed*40)){Fail "target HWND damage注入が不足しています: $targetDamageDelta"}
+}elseif($targetDamageDelta-ne0-or[long]$state.target_damage_count-ne0){Fail '非TARGET_DAMAGE条件でtarget HWND damageが注入されています'}
+# AGENTS.md interactive measurement protocol: measurement中のユーザー入力はPROTOCOL_INVALID。
+$inputTicks=@($samples|Select-Object -ExpandProperty last_input_tick -Unique)
+if($inputTicks.Count-ne1){Fail "PROTOCOL_INVALID: measurement中にユーザー入力が発生しました (last_input_tick変化 $($inputTicks.Count) 種)"}
 $vblankSamples=@($app.presentation_opportunity.physical_vblank.samples)
 $identity=$app.presentation_opportunity.physical_vblank.window_output_start
 $numerator=[long]$identity.refresh_numerator;$denominator=[long]$identity.refresh_denominator
@@ -110,6 +122,11 @@ $result=[ordered]@{
         foreground_target_sample_count=$foregroundTargetCount;foreground_target_fraction=$foregroundTargetCount/$samples.Count
         designated_coverage=$(if($ExpectedMode-eq'FULLY_OCCLUDED'){1.0}else{0.0})
         unexpected_intersection_area_max=0;dirty_tick_delta=$dirtyTicks
+        target_damage_delta=$targetDamageDelta
+        target_damage_failure_count=[long]$state.target_damage_failure_count
+        target_update_region_sample_count=$updateRegionSamples
+        target_update_region_fraction=$updateRegionSamples/$samples.Count
+        user_input_detected=$false;last_input_tick=[long]$inputTicks[0]
     }
     dwm_process_id=$dwmPid;dwm_identity_method=$dwmIdentityMethod;measurement_seconds=$elapsed
     dwm_wide_present_start_count=$dwmEvents.Count;dwm_wide_present_starts_per_second=$dwmEvents.Count/$elapsed

@@ -13,7 +13,7 @@
 
 namespace {
 
-enum class Mode { Visible, Occluded, ForceDirty };
+enum class Mode { Visible, Occluded, ForceDirty, TargetInvalidate, TargetRedrawNow };
 
 struct RectValue {
     long left = 0;
@@ -43,6 +43,13 @@ struct Sample {
     unsigned long largestUnexpectedProcessId = 0;
     RectValue largestUnexpectedRect;
     std::uint64_t dirtyTickCount = 0;
+    // F3-C3-A3-T2-C: target HWNDへdiagnostic-onlyのdamageを注入した回数と、
+    // 直後にupdate regionが観測できたかどうか。mvm render pathには何も足さない。
+    std::uint64_t targetDamageCount = 0;
+    bool targetUpdateRegionPresent = false;
+    // AGENTS.md interactive measurement protocol: measurement中のユーザー入力を
+    // 記録し、checker側でPROTOCOL_INVALIDへfail-closeさせる。
+    unsigned long lastInputTick = 0;
 };
 
 struct OcclusionInfo {
@@ -225,15 +232,27 @@ HWND createCompanion(HINSTANCE instance, RECT const& rect) {
     return hwnd;
 }
 
+unsigned long lastInputTick() {
+    LASTINPUTINFO info{};
+    info.cbSize = sizeof(info);
+    return GetLastInputInfo(&info) ? info.dwTime : 0;
+}
+
 bool writeJson(wchar_t const* outputPath, Mode mode, unsigned long processId,
                std::int64_t qpcFrequency, HWND target, HWND occluder, HWND dirty,
-               std::uint64_t dirtyTickCount, std::vector<Sample> const& samples) {
+               std::uint64_t dirtyTickCount, std::uint64_t targetDamageCount,
+               std::uint64_t targetDamageFailureCount,
+               std::uint64_t targetUpdateRegionObservedCount, unsigned long readyInputTick,
+               std::vector<Sample> const& samples) {
     FILE* file = nullptr;
     if (_wfopen_s(&file, outputPath, L"wb") != 0 || file == nullptr)
         return false;
-    auto const modeName = mode == Mode::Visible    ? "VISIBLE_UNOCCLUDED"
-                          : mode == Mode::Occluded ? "FULLY_OCCLUDED"
-                                                   : "VISIBLE_UNOCCLUDED_FORCE_DIRTY";
+    auto const modeName =
+        mode == Mode::Visible            ? "VISIBLE_UNOCCLUDED"
+        : mode == Mode::Occluded         ? "FULLY_OCCLUDED"
+        : mode == Mode::ForceDirty       ? "VISIBLE_UNOCCLUDED_FORCE_DIRTY"
+        : mode == Mode::TargetInvalidate ? "VISIBLE_UNOCCLUDED_TARGET_INVALIDATE"
+                                         : "VISIBLE_UNOCCLUDED_TARGET_REDRAW_NOW";
     std::fprintf(file, "{\n  \"schema\": \"mvm-p2-c3-a3-t1-window-state-1\",\n");
     std::fprintf(file, "  \"mode\": \"%s\",\n", modeName);
     std::fprintf(file, "  \"target_process_id\": %lu,\n", processId);
@@ -246,6 +265,13 @@ bool writeJson(wchar_t const* outputPath, Mode mode, unsigned long processId,
                  static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(dirty)));
     std::fprintf(file, "  \"dirty_tick_count\": %llu,\n",
                  static_cast<unsigned long long>(dirtyTickCount));
+    std::fprintf(file, "  \"target_damage_count\": %llu,\n",
+                 static_cast<unsigned long long>(targetDamageCount));
+    std::fprintf(file, "  \"target_damage_failure_count\": %llu,\n",
+                 static_cast<unsigned long long>(targetDamageFailureCount));
+    std::fprintf(file, "  \"target_update_region_observed_count\": %llu,\n",
+                 static_cast<unsigned long long>(targetUpdateRegionObservedCount));
+    std::fprintf(file, "  \"last_input_tick_at_ready\": %lu,\n", readyInputTick);
     std::fprintf(file, "  \"samples\": [");
     for (std::size_t index = 0; index < samples.size(); ++index) {
         auto const& sample = samples[index];
@@ -286,8 +312,12 @@ bool writeJson(wchar_t const* outputPath, Mode mode, unsigned long processId,
                      static_cast<unsigned long long>(sample.largestUnexpectedHwnd),
                      sample.largestUnexpectedProcessId);
         printRect("largest_unexpected_rect", sample.largestUnexpectedRect);
-        std::fprintf(file, ", \"dirty_tick_count\": %llu}",
-                     static_cast<unsigned long long>(sample.dirtyTickCount));
+        std::fprintf(file,
+                     ", \"dirty_tick_count\": %llu, \"target_damage_count\": %llu, "
+                     "\"target_update_region_present\": %s, \"last_input_tick\": %lu}",
+                     static_cast<unsigned long long>(sample.dirtyTickCount),
+                     static_cast<unsigned long long>(sample.targetDamageCount),
+                     sample.targetUpdateRegionPresent ? "true" : "false", sample.lastInputTick);
     }
     std::fprintf(file, "]\n}\n");
     std::fclose(file);
@@ -329,6 +359,12 @@ int wmain(int argc, wchar_t** argv) {
         mode = Mode::Occluded;
     else if (modeValue != nullptr && std::wcscmp(modeValue, L"VISIBLE_UNOCCLUDED_FORCE_DIRTY") == 0)
         mode = Mode::ForceDirty;
+    else if (modeValue != nullptr &&
+             std::wcscmp(modeValue, L"VISIBLE_UNOCCLUDED_TARGET_INVALIDATE") == 0)
+        mode = Mode::TargetInvalidate;
+    else if (modeValue != nullptr &&
+             std::wcscmp(modeValue, L"VISIBLE_UNOCCLUDED_TARGET_REDRAW_NOW") == 0)
+        mode = Mode::TargetRedrawNow;
     else {
         std::fwprintf(stderr, L"window state modeが不正です\n");
         return 2;
@@ -392,6 +428,7 @@ int wmain(int argc, wchar_t** argv) {
             return 3;
         }
     }
+    auto const readyInputTick = lastInputTick();
     if (!writeReadyFile(readyPath)) {
         std::fwprintf(stderr, L"ready fileを作成できません\n");
         return 4;
@@ -401,8 +438,13 @@ int wmain(int argc, wchar_t** argv) {
     QueryPerformanceFrequency(&frequency);
     std::vector<Sample> samples;
     std::uint64_t dirtyTickCount = 0;
+    std::uint64_t targetDamageCount = 0;
+    std::uint64_t targetDamageFailureCount = 0;
+    std::uint64_t targetUpdateRegionObservedCount = 0;
+    bool targetUpdateRegionPresent = false;
     auto nextSample = std::chrono::steady_clock::now();
     auto nextDirty = nextSample;
+    auto nextTargetDamage = nextSample;
     MSG message{};
     while (!fileExists(stopPath)) {
         while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
@@ -416,6 +458,30 @@ int wmain(int argc, wchar_t** argv) {
             RedrawWindow(dirty, nullptr, nullptr,
                          RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
             nextDirty += std::chrono::milliseconds(16);
+        }
+        if ((mode == Mode::TargetInvalidate || mode == Mode::TargetRedrawNow) &&
+            now >= nextTargetDamage) {
+            // client座標の小矩形だけを対象にする。output pixelsは変更しない。
+            RECT const damage{0, 0, 8, 8};
+            BOOL issued = FALSE;
+            if (mode == Mode::TargetInvalidate) {
+                // update regionを設定するだけ。paint処理までは進めない。
+                issued = InvalidateRect(target, &damage, FALSE);
+            } else {
+                // invalidate + 同期的なpaint処理まで進める positive control。
+                issued = RedrawWindow(target, &damage, nullptr,
+                                      RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE |
+                                          RDW_NOCHILDREN);
+            }
+            if (issued)
+                ++targetDamageCount;
+            else
+                ++targetDamageFailureCount;
+            RECT updateRect{};
+            targetUpdateRegionPresent = GetUpdateRect(target, &updateRect, FALSE) != FALSE;
+            if (targetUpdateRegionPresent)
+                ++targetUpdateRegionObservedCount;
+            nextTargetDamage += std::chrono::milliseconds(16);
         }
         if (now >= nextSample) {
             if (!IsWindow(target))
@@ -452,6 +518,9 @@ int wmain(int argc, wchar_t** argv) {
             sample.largestUnexpectedProcessId = unexpected.largestProcessId;
             sample.largestUnexpectedRect = valueOf(unexpected.largestRect);
             sample.dirtyTickCount = dirtyTickCount;
+            sample.targetDamageCount = targetDamageCount;
+            sample.targetUpdateRegionPresent = targetUpdateRegionPresent;
+            sample.lastInputTick = lastInputTick();
             samples.push_back(sample);
             nextSample += std::chrono::milliseconds(100);
         }
@@ -461,8 +530,10 @@ int wmain(int argc, wchar_t** argv) {
         DestroyWindow(occluder);
     if (dirty != nullptr)
         DestroyWindow(dirty);
-    if (samples.empty() || !writeJson(outputPath, mode, processId, frequency.QuadPart, target,
-                                      occluder, dirty, dirtyTickCount, samples)) {
+    if (samples.empty() ||
+        !writeJson(outputPath, mode, processId, frequency.QuadPart, target, occluder, dirty,
+                   dirtyTickCount, targetDamageCount, targetDamageFailureCount,
+                   targetUpdateRegionObservedCount, readyInputTick, samples)) {
         std::fwprintf(stderr, L"window state JSONを作成できません\n");
         return 4;
     }

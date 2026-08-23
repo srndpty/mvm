@@ -55,6 +55,7 @@ foreach($run in $runs){
         dwm_present_start_count=[long]$dwm.dwm_wide_present_start_count
         dwm_gap_p95=[long]$dwm.dwm_wide_present_start_gap.p95;dwm_gap_max=[long]$dwm.dwm_wide_present_start_gap.max
         target_parent_count=[long]$dwm.target_attached_parent_count
+        dependency_batch_evaluable=[long]$dwm.target_attached_parent_count-gt0
         batch_p95=[long]$dwm.dependency_batch_size.p95;batch_max=[long]$dwm.dependency_batch_size.max
         presented=[long]$dwm.presented_count;discarded=[long]$dwm.discarded_count
     }
@@ -78,7 +79,14 @@ $byPosition=[ordered]@{};foreach($position in 1..3){$byPosition[[string]$positio
 [ordered]@{
     schema='mvm-p2-c3-a3-t2-matrix-proof-1';status='PASS';authority='diagnostic_only';verdict=$verdict;next_action=$nextAction
     formal_counter_authority_changed=$false;formal_drop_threshold_changed=$false;production_scheduler_changed=$false
-    diagnostic_large_gap_threshold_vblanks=30;primary_authority='DWM_WIDE_PRESENTSTART_PLUS_DEPENDENCY_BATCH';presented_role='DOWNSTREAM_EVIDENCE'
+    diagnostic_large_gap_threshold_vblanks=30
+    primary_authority='DWM_WIDE_PRESENTSTART'
+    secondary_authority='DEPENDENCY_BATCH_WHERE_OBSERVABLE'
+    presented_role='DOWNSTREAM_EVIDENCE'
+    # target attached parentが0のrunではdependency batchは評価不能であり、
+    # batch_p95/batch_maxの0は「観測されたzero」ではなくnot evaluableの0表現である。
+    dependency_batch_evaluable_run_count=@($rows|Where-Object dependency_batch_evaluable).Count
+    dependency_batch_zero_means_not_evaluable=@($rows|Where-Object dependency_batch_evaluable).Count-eq0
     runtime_provenance_exact=$true;by_condition=$byCondition;by_position=$byPosition
 }|ConvertTo-Json -Depth 10|Set-Content -LiteralPath $Output -Encoding utf8
 Write-Host "F3-C3-A3-T2-B summary: PASS verdict=$verdict"

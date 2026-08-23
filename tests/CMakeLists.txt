@@ -129,7 +129,7 @@ endforeach()
 
 foreach(_p2_c3_a3_t1_condition_case IN ITEMS GoodVisible GoodOccluded GoodDirty NegativeVisibility
         NegativeCloak NegativeCoverage NegativeUnexpected NegativeRectChange NegativeDirtyTicks NegativeDwmIdentity
-        NegativeEtwLoss)
+        NegativeEtwLoss GoodTargetInvalidate GoodTargetRedrawNow NegativeUserInput NegativeTargetDamage)
     string(TOLOWER "${_p2_c3_a3_t1_condition_case}" _p2_c3_a3_t1_condition_name)
     mvm_add_test(p2_c3_a3_t1_condition_${_p2_c3_a3_t1_condition_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File
@@ -170,6 +170,17 @@ foreach(_p2_c3_a3_t2_summary_case IN ITEMS TargetDoesNotWake NegativeControl Inv
             -Case "${_p2_c3_a3_t2_summary_case}"
             -Summarizer "${CMAKE_SOURCE_DIR}/scripts/summarize-p2-c3-a3-t2.ps1"
             -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t2-summary-${_p2_c3_a3_t2_summary_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+foreach(_p2_c3_a3_t2_c_case IN ITEMS C1InvalidationWakes C1ForcedRedrawRequired C1RegimeInvalid C1OrderConfound C2PaintProcessingWakes C2RedirectionSuspect C2RegimeInvalid NegativeUpdateChainVolume NegativeRuntime NegativeUserInput NegativeDamageCadence)
+    string(TOLOWER "${_p2_c3_a3_t2_c_case}" _p2_c3_a3_t2_c_name)
+    mvm_add_test(p2_c3_a3_t2_c_summary_${_p2_c3_a3_t2_c_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t2-c-summary-contract.ps1"
+            -Case "${_p2_c3_a3_t2_c_case}"
+            -Summarizer "${CMAKE_SOURCE_DIR}/scripts/summarize-p2-c3-a3-t2-c.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t2-c-summary-${_p2_c3_a3_t2_c_name}"
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 

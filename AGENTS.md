@@ -298,6 +298,32 @@ render thread の `initialize()` が GUI thread の設定を追い越した run 
 regression は `tests/gpu_preview/test-p2-c3-a3-t2-startup-order-contract.ps1`、
 起動反復の gate は `scripts/p2-c3-a3-t2-startup-smoke.ps1` で固定している。
 
+## HWND damage probe の段階
+
+`InvalidateRect` は update region を設定するだけで、`WM_PAINT` や DWM の
+damage processing が起きるとは限らない。したがって「InvalidateRect が効かない」
+だけで redirection path を疑ってはならない。必ず次の3段を経由する。
+
+```text
+1. TARGET_HWND_INVALIDATE   InvalidateRect(hwnd, &rect, FALSE)
+2. TARGET_HWND_REDRAW_NOW   RedrawWindow(..., RDW_INVALIDATE|RDW_UPDATENOW|
+                                              RDW_NOERASE|RDW_NOCHILDREN)
+3. TARGET_REDIRECTION_PATH_SUSPECT
+```
+
+1 が suppression でも 2 へ進む。2 が REGULAR なら Win32/QPA → DWM の
+damage-processing boundary への attribution であり、2 でも suppression かつ
+`EXTERNAL_DIRTY` のみ REGULAR のときに初めて 3 へ進む。
+
+両者が実際に別物であることは controller 側で確認できる。`InvalidateRect` の
+直後は update region が残り、`RedrawWindow(UPDATENOW)` の直後は消費されている。
+`target_update_region_observed_count` がこの区別を記録する。
+
+`RDW_UPDATENOW` は Qt 側の event processing を刺激しうる。HWND damage だけを
+注入した比較であり続けることを確かめるため、T2-C でも T2-A の update-chain
+closure を全条件で再検査し、`native_present_count` の条件間 spread が 2% を
+超えた run は `UPDATE_CHAIN_VOLUME_DIVERGENT` として解釈を限定する。
+
 ## Windows / CMake / Ninja ビルド運用
 
 このリポジトリでは MSYS2 UCRT64 の CMake/Ninja ビルドが長時間かかることがある。
