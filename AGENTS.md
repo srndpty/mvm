@@ -413,6 +413,42 @@ swapchain の値は Qt の設定や環境変数から再構成せず、実際に
 - timeout が出たら「一過性」と断定せず、残留 process を PID 指定で止めて
   再現性を確認する。machine-wide な `Stop-Process -Name pwsh` は禁止。
 
+## ctest の test 環境は PATH が細い
+
+ctest が起動する test process の PATH には `git` や UCRT64 の tool が
+入っていないことがある。開発シェルでは通るのに ctest でだけ落ちる。
+
+- test / script から外部 tool を呼ぶなら `Get-Command` で解決し、
+  見つからなければ既知の install 先へ fallback してから明示 path で呼ぶ。
+- 解決できないときは fail-closed にする（暗黙に PATH 依存で通さない）。
+- ctest 実行時は `--timeout` を付ける。
+
+## historical archaeology の停止条件
+
+過去 run の root cause 追跡は、次のいずれかに達したら止めて
+current runtime の formal authority wiring へ戻る。
+
+```text
+EXACT_HISTORICAL_RUNTIME_UNAVAILABLE
+    かつ
+REBUILD_PROBE_NOT_EVALUABLE
+```
+
+`REBUILD_PROBE_NOT_EVALUABLE` は、observer を両 arm へ同等に適用できない場合に
+宣言する。F3-C3-A3-T2-D1-B2 では native present hook の ABI が v2/v3 で
+非互換であり、historical Qt6Gui も残っていなかった。
+
+このとき historical 観測は不変保存したうえで次を確定させる。
+
+```text
+historical BAD         preserved
+current reproducibility NOT ESTABLISHED
+historical cause        NOT ESTABLISHED
+```
+
+**historical root cause の完全解明を closure の前提にしない。**
+再現しない過去不具合のために production change を発明しない。
+
 ## Windows / CMake / Ninja ビルド運用
 
 このリポジトリでは MSYS2 UCRT64 の CMake/Ninja ビルドが長時間かかることがある。

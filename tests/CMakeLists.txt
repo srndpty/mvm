@@ -173,6 +173,17 @@ foreach(_p2_c3_a3_t2_summary_case IN ITEMS TargetDoesNotWake NegativeControl Inv
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
+foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
+    string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)
+    mvm_add_test(p2_c3_a3_t2_d1b2_evaluability_${_p2_c3_a3_t2_d1b2e_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t2-d1b2-evaluability-contract.ps1"
+            -Case "${_p2_c3_a3_t2_d1b2e_case}"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c3-a3-t2-d1b2-rebuild-evaluability.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t2-d1b2e-${_p2_c3_a3_t2_d1b2e_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 foreach(_p2_c3_a3_t2_d1b2_case IN ITEMS ExactAvailable ExeMissing QtGuiMissing UnchangedFromCurrent RebuildIsNotExact NegativeMissingIdentities)
     string(TOLOWER "${_p2_c3_a3_t2_d1b2_case}" _p2_c3_a3_t2_d1b2_name)
     mvm_add_test(p2_c3_a3_t2_d1b2_reconstruction_${_p2_c3_a3_t2_d1b2_name}
