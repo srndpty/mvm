@@ -396,6 +396,20 @@ swapchain の値は Qt の設定や環境変数から再構成せず、実際に
 `swapchainIdentity` は実ポインタであり、swapchain を所有する render thread の
 `frameSwapped` 契機で一度だけ読む。
 
+## PowerShell contract test の断続的 timeout（未解決）
+
+`p2_c3_a3_t2_d1b1_probe_*` が ctest の長いバッチ実行中に 2 回 timeout した。
+単体実行 0.9 秒、家族単位(20件)実行 18 秒、full `p2_c3`(101件) でも再現しない。
+timeout 時は子 pwsh が CPU 0.6 秒で idle のまま残る。
+
+**根本原因は未特定である。** 一過性と決めつけないこと。
+
+- ctest 実行時は `--timeout` を付け、hang を無限待ちにしない。
+- timeout が出たら残留 pwsh を PID 指定で止め、再実行して再現性を確認する。
+  machine-wide な `Stop-Process -Name pwsh` は禁止（他プロジェクトを巻き込む）。
+- 再現したら contract test 側ではなく、pwsh 子プロセス生成の集中
+  (gpu_preview だけで 90 件が子 pwsh を起動する) を疑う。
+
 ## Windows / CMake / Ninja ビルド運用
 
 このリポジトリでは MSYS2 UCRT64 の CMake/Ninja ビルドが長時間かかることがある。

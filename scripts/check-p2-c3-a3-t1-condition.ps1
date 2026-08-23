@@ -5,7 +5,8 @@ param(
     [Parameter(Mandatory=$true)][string]$SubmissionProofJson,
     [Parameter(Mandatory=$true)]
     [ValidateSet('VISIBLE_UNOCCLUDED','FULLY_OCCLUDED','VISIBLE_UNOCCLUDED_FORCE_DIRTY',
-     'VISIBLE_UNOCCLUDED_TARGET_INVALIDATE','VISIBLE_UNOCCLUDED_TARGET_REDRAW_NOW')]
+     'VISIBLE_UNOCCLUDED_TARGET_INVALIDATE','VISIBLE_UNOCCLUDED_TARGET_REDRAW_NOW',
+     'FOREIGN_WINDOW_OVERLAP','OVERLAP_THEN_REMOVE')]
     [string]$ExpectedMode,
     [Parameter(Mandatory=$true)][string]$Output
 )
@@ -52,6 +53,14 @@ foreach($sample in $samples){
     if([long]$sample.client_area-le0-or[long]$sample.unexpected_intersection_area-ne0){Fail 'client areaまたはunexpected occlusionが不正です'}
     if($ExpectedMode-eq'FULLY_OCCLUDED'){
         if([string]$sample.occluder_hwnd-eq'0x0'-or[long]$sample.designated_intersection_area-ne[long]$sample.client_area){Fail 'FULLY_OCCLUDED被覆率が100%ではありません'}
+    }elseif($ExpectedMode-eq'FOREIGN_WINDOW_OVERLAP'){
+        # 矩形交差だけでなく、foreign HWNDが実際にtargetより上にあることを要求する。
+        if([string]$sample.occluder_hwnd-eq'0x0'){Fail 'FOREIGN_WINDOW_OVERLAPにoccluderがありません'}
+        if([long]$sample.designated_intersection_area-ne[long]$state.designated_expected_area){Fail "designated coverageが期待値と一致しません: $([long]$sample.designated_intersection_area)"}
+        if(-not[bool]$sample.designated_above_target){Fail 'designated occluderがtargetより上にありません'}
+    }elseif($ExpectedMode-eq'OVERLAP_THEN_REMOVE'){
+        # measurementはclean stateであることを要求する。overlapはwarmup内で完結させる。
+        if([long]$sample.designated_intersection_area-ne0-or[bool]$sample.designated_above_target){Fail 'OVERLAP_THEN_REMOVEのmeasurementがcleanではありません'}
     }elseif([string]$sample.occluder_hwnd-ne'0x0'-or[long]$sample.designated_intersection_area-ne0){Fail 'VISIBLE条件にdesignated occlusionがあります'}
 }
 $targetIds=@($samples|Select-Object -ExpandProperty target_hwnd -Unique)
@@ -65,6 +74,18 @@ if($ExpectedMode-eq'VISIBLE_UNOCCLUDED_FORCE_DIRTY'){
     if([string]$state.dirty_companion_hwnd-eq'0x0'-or$dirtyTicks-lt[Math]::Floor($elapsed*40)){Fail "FORCE_DIRTY tickが不足しています: $dirtyTicks"}
 }elseif([string]$state.dirty_companion_hwnd-ne'0x0'-or$dirtyTicks-ne0){Fail '非DIRTY条件でdirty companionが動作しています'}
 # F3-C3-A3-T2-C: target HWND damage注入の実施量と、注入していない条件での不作為を固定する。
+$overlapModes=@('FOREIGN_WINDOW_OVERLAP','OVERLAP_THEN_REMOVE')
+if($overlapModes-contains$ExpectedMode){
+    if([long]$state.occluder_process_id-le0-or[long]$state.occluder_process_id-eq[long]$state.target_process_id){Fail 'foreign occluderが別processではありません'}
+    if([long]$state.designated_expected_area-le0){Fail 'designated expected areaが設定されていません'}
+    $phaseNames=@($state.phase_boundaries|ForEach-Object{[string]$_.phase})
+    if($ExpectedMode-eq'OVERLAP_THEN_REMOVE'-and($phaseNames-join'->')-ne'PRE_CLEAN->OVERLAP->POST_REMOVE'){
+        Fail "phase遷移が不正です: $($phaseNames -join '->')"
+    }
+    if($ExpectedMode-eq'FOREIGN_WINDOW_OVERLAP'-and($phaseNames-join'->')-ne'OVERLAP'){
+        Fail "phase遷移が不正です: $($phaseNames -join '->')"
+    }
+}
 $targetDamageModes=@('VISIBLE_UNOCCLUDED_TARGET_INVALIDATE','VISIBLE_UNOCCLUDED_TARGET_REDRAW_NOW')
 $targetDamageDelta=[long]$samples[-1].target_damage_count-[long]$samples[0].target_damage_count
 # 注入失敗はmeasurement window内のみを見る。teardown中の失敗でrunを落とさない。
@@ -122,7 +143,10 @@ $result=[ordered]@{
         client_rect=[string]$clientRects[0];window_rect=[string]$windowRects[0]
         visible=$true;iconic=$false;topmost=$true;cloaked=0
         foreground_target_sample_count=$foregroundTargetCount;foreground_target_fraction=$foregroundTargetCount/$samples.Count
-        designated_coverage=$(if($ExpectedMode-eq'FULLY_OCCLUDED'){1.0}else{0.0})
+        designated_coverage=$(if($ExpectedMode-eq'FULLY_OCCLUDED'){1.0}elseif($ExpectedMode-eq'FOREIGN_WINDOW_OVERLAP'){[double]$state.designated_expected_area/[long]$samples[0].client_area}else{0.0})
+        designated_expected_area=$(if($state.PSObject.Properties.Name-contains'designated_expected_area'){[long]$state.designated_expected_area}else{0})
+        occluder_process_id=$(if($state.PSObject.Properties.Name-contains'occluder_process_id'){[long]$state.occluder_process_id}else{0})
+        phase_sequence=$(if($state.PSObject.Properties.Name-contains'phase_boundaries'){(@($state.phase_boundaries|ForEach-Object{[string]$_.phase}) -join '->')}else{''})
         unexpected_intersection_area_max=0;dirty_tick_delta=$dirtyTicks
         target_damage_delta=$targetDamageDelta
         target_damage_failure_count=$targetDamageFailureDelta

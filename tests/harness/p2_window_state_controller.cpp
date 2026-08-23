@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <cwchar>
 #include <dwmapi.h>
@@ -13,7 +14,14 @@
 
 namespace {
 
-enum class Mode { Visible, Occluded, ForceDirty, TargetInvalidate, TargetRedrawNow };
+enum class Mode { Visible, Occluded, ForceDirty, TargetInvalidate, TargetRedrawNow,
+                  ForeignOverlap, OverlapThenRemove };
+
+// F3-C3-A3-T2-D1-B3a: phaseごとにPresentを分類できるよう境界QPCを記録する。
+struct PhaseBoundary {
+    char const* name = "";
+    std::int64_t qpc = 0;
+};
 
 struct RectValue {
     long left = 0;
@@ -53,6 +61,9 @@ struct Sample {
     // AGENTS.md interactive measurement protocol: measurement中のユーザー入力を
     // 記録し、checker側でPROTOCOL_INVALIDへfail-closeさせる。
     unsigned long lastInputTick = 0;
+    char const* phase = "PRE_CLEAN";
+    // 矩形交差だけでなく、designated occluderが実際にtargetより上にあることを要求する。
+    bool designatedAboveTarget = false;
 };
 
 struct OcclusionInfo {
@@ -165,6 +176,17 @@ unsigned long cloakedState(HWND hwnd) {
     return cloaked;
 }
 
+bool isAboveTarget(HWND target, HWND candidate) {
+    if (target == nullptr || candidate == nullptr)
+        return false;
+    for (auto current = GetWindow(target, GW_HWNDPREV); current != nullptr;
+         current = GetWindow(current, GW_HWNDPREV)) {
+        if (current == candidate)
+            return true;
+    }
+    return false;
+}
+
 OcclusionInfo unexpectedOcclusion(HWND target, unsigned long targetProcessId, HWND designated,
                                   HWND dirty, RECT const& client) {
     OcclusionInfo result{};
@@ -246,7 +268,8 @@ bool writeJson(wchar_t const* outputPath, Mode mode, unsigned long processId,
                std::uint64_t dirtyTickCount, std::uint64_t targetDamageCount,
                std::uint64_t targetDamageFailureCount,
                std::uint64_t targetUpdateRegionObservedCount, unsigned long readyInputTick,
-               std::vector<Sample> const& samples) {
+               unsigned long occluderProcessId, std::int64_t designatedExpectedArea,
+               std::vector<PhaseBoundary> const& phases, std::vector<Sample> const& samples) {
     FILE* file = nullptr;
     if (_wfopen_s(&file, outputPath, L"wb") != 0 || file == nullptr)
         return false;
@@ -255,7 +278,9 @@ bool writeJson(wchar_t const* outputPath, Mode mode, unsigned long processId,
         : mode == Mode::Occluded         ? "FULLY_OCCLUDED"
         : mode == Mode::ForceDirty       ? "VISIBLE_UNOCCLUDED_FORCE_DIRTY"
         : mode == Mode::TargetInvalidate ? "VISIBLE_UNOCCLUDED_TARGET_INVALIDATE"
-                                         : "VISIBLE_UNOCCLUDED_TARGET_REDRAW_NOW";
+        : mode == Mode::TargetRedrawNow  ? "VISIBLE_UNOCCLUDED_TARGET_REDRAW_NOW"
+        : mode == Mode::ForeignOverlap   ? "FOREIGN_WINDOW_OVERLAP"
+                                         : "OVERLAP_THEN_REMOVE";
     std::fprintf(file, "{\n  \"schema\": \"mvm-p2-c3-a3-t1-window-state-1\",\n");
     std::fprintf(file, "  \"mode\": \"%s\",\n", modeName);
     std::fprintf(file, "  \"target_process_id\": %lu,\n", processId);
@@ -275,6 +300,15 @@ bool writeJson(wchar_t const* outputPath, Mode mode, unsigned long processId,
     std::fprintf(file, "  \"target_update_region_observed_count\": %llu,\n",
                  static_cast<unsigned long long>(targetUpdateRegionObservedCount));
     std::fprintf(file, "  \"last_input_tick_at_ready\": %lu,\n", readyInputTick);
+    std::fprintf(file, "  \"occluder_process_id\": %lu,\n", occluderProcessId);
+    std::fprintf(file, "  \"designated_expected_area\": %lld,\n",
+                 static_cast<long long>(designatedExpectedArea));
+    std::fprintf(file, "  \"phase_boundaries\": [");
+    for (std::size_t index = 0; index < phases.size(); ++index) {
+        std::fprintf(file, "%s{\"phase\": \"%s\", \"qpc\": %lld}", index == 0 ? "" : ", ",
+                     phases[index].name, static_cast<long long>(phases[index].qpc));
+    }
+    std::fprintf(file, "],\n");
     std::fprintf(file, "  \"samples\": [");
     for (std::size_t index = 0; index < samples.size(); ++index) {
         auto const& sample = samples[index];
@@ -318,11 +352,13 @@ bool writeJson(wchar_t const* outputPath, Mode mode, unsigned long processId,
         std::fprintf(file,
                      ", \"dirty_tick_count\": %llu, \"target_damage_count\": %llu, "
                      "\"target_damage_failure_count\": %llu, "
-                     "\"target_update_region_present\": %s, \"last_input_tick\": %lu}",
+                     "\"target_update_region_present\": %s, \"last_input_tick\": %lu, "
+                     "\"phase\": \"%s\", \"designated_above_target\": %s}",
                      static_cast<unsigned long long>(sample.dirtyTickCount),
                      static_cast<unsigned long long>(sample.targetDamageCount),
                      static_cast<unsigned long long>(sample.targetDamageFailureCount),
-                     sample.targetUpdateRegionPresent ? "true" : "false", sample.lastInputTick);
+                     sample.targetUpdateRegionPresent ? "true" : "false", sample.lastInputTick,
+                     sample.phase, sample.designatedAboveTarget ? "true" : "false");
     }
     std::fprintf(file, "]\n}\n");
     std::fclose(file);
@@ -370,6 +406,10 @@ int wmain(int argc, wchar_t** argv) {
     else if (modeValue != nullptr &&
              std::wcscmp(modeValue, L"VISIBLE_UNOCCLUDED_TARGET_REDRAW_NOW") == 0)
         mode = Mode::TargetRedrawNow;
+    else if (modeValue != nullptr && std::wcscmp(modeValue, L"FOREIGN_WINDOW_OVERLAP") == 0)
+        mode = Mode::ForeignOverlap;
+    else if (modeValue != nullptr && std::wcscmp(modeValue, L"OVERLAP_THEN_REMOVE") == 0)
+        mode = Mode::OverlapThenRemove;
     else {
         std::fwprintf(stderr, L"window state modeが不正です\n");
         return 2;
@@ -414,6 +454,14 @@ int wmain(int argc, wchar_t** argv) {
     }
     HWND occluder = nullptr;
     HWND dirty = nullptr;
+    // FOREIGN_WINDOW_OVERLAP / OVERLAP_THEN_REMOVE の designated rect。
+    // client右側25%をopaqueに覆う。全面被覆はFULLY_OCCLUDEDと区別する。
+    RECT const overlapRect{client.right - (client.right - client.left) / 4, client.top,
+                           client.right, client.bottom};
+    std::int64_t const designatedExpectedArea =
+        (mode == Mode::ForeignOverlap || mode == Mode::OverlapThenRemove)
+            ? intersectionArea(client, overlapRect)
+            : (mode == Mode::Occluded ? area(client) : 0);
     if (mode == Mode::Occluded) {
         occluder = createCompanion(instance, client);
         if (occluder == nullptr) {
@@ -433,6 +481,13 @@ int wmain(int argc, wchar_t** argv) {
             return 3;
         }
     }
+    if (mode == Mode::ForeignOverlap) {
+        occluder = createCompanion(instance, overlapRect);
+        if (occluder == nullptr) {
+            std::fwprintf(stderr, L"foreign overlap windowを作成できません\n");
+            return 3;
+        }
+    }
     auto const readyInputTick = lastInputTick();
     if (!writeReadyFile(readyPath)) {
         std::fwprintf(stderr, L"ready fileを作成できません\n");
@@ -443,6 +498,20 @@ int wmain(int argc, wchar_t** argv) {
     QueryPerformanceFrequency(&frequency);
     std::vector<Sample> samples;
     std::uint64_t dirtyTickCount = 0;
+    std::vector<PhaseBoundary> phases;
+    char const* phase = (mode == Mode::ForeignOverlap) ? "OVERLAP" : "PRE_CLEAN";
+    auto const recordPhase = [&phases](char const* name) {
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+        phases.push_back(PhaseBoundary{name, now.QuadPart});
+    };
+    recordPhase(phase);
+    auto const phaseStart = std::chrono::steady_clock::now();
+    // OVERLAP_THEN_REMOVE: PRE_CLEAN 2s -> OVERLAP 3s -> POST_REMOVE。
+    // いずれもappのwarmup内に収め、measurementはclean stateで行う。
+    auto const overlapBegin = phaseStart + std::chrono::seconds(2);
+    auto const overlapEnd = overlapBegin + std::chrono::seconds(3);
+    unsigned long const occluderProcessId = GetCurrentProcessId();
     std::uint64_t targetDamageCount = 0;
     std::uint64_t targetDamageFailureCount = 0;
     std::uint64_t targetUpdateRegionObservedCount = 0;
@@ -457,6 +526,23 @@ int wmain(int argc, wchar_t** argv) {
             DispatchMessageW(&message);
         }
         auto const now = std::chrono::steady_clock::now();
+        if (mode == Mode::OverlapThenRemove) {
+            if (occluder == nullptr && std::strcmp(phase, "PRE_CLEAN") == 0 &&
+                now >= overlapBegin) {
+                occluder = createCompanion(instance, overlapRect);
+                if (occluder == nullptr) {
+                    std::fwprintf(stderr, L"overlap windowを作成できません\n");
+                    return 3;
+                }
+                phase = "OVERLAP";
+                recordPhase(phase);
+            } else if (occluder != nullptr && now >= overlapEnd) {
+                DestroyWindow(occluder);
+                occluder = nullptr;
+                phase = "POST_REMOVE";
+                recordPhase(phase);
+            }
+        }
         if (dirty != nullptr && now >= nextDirty) {
             ++dirtyTickCount;
             SetWindowLongPtrW(dirty, GWLP_USERDATA, static_cast<LONG_PTR>(dirtyTickCount & 1ULL));
@@ -527,6 +613,8 @@ int wmain(int argc, wchar_t** argv) {
             sample.targetDamageFailureCount = targetDamageFailureCount;
             sample.targetUpdateRegionPresent = targetUpdateRegionPresent;
             sample.lastInputTick = lastInputTick();
+            sample.phase = phase;
+            sample.designatedAboveTarget = isAboveTarget(target, occluder);
             samples.push_back(sample);
             nextSample += std::chrono::milliseconds(100);
         }
@@ -539,7 +627,8 @@ int wmain(int argc, wchar_t** argv) {
     if (samples.empty() ||
         !writeJson(outputPath, mode, processId, frequency.QuadPart, target, occluder, dirty,
                    dirtyTickCount, targetDamageCount, targetDamageFailureCount,
-                   targetUpdateRegionObservedCount, readyInputTick, samples)) {
+                   targetUpdateRegionObservedCount, readyInputTick, occluderProcessId,
+                   designatedExpectedArea, phases, samples)) {
         std::fwprintf(stderr, L"window state JSONを作成できません\n");
         return 4;
     }

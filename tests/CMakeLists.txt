@@ -173,6 +173,17 @@ foreach(_p2_c3_a3_t2_summary_case IN ITEMS TargetDoesNotWake NegativeControl Inv
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
+foreach(_p2_c3_a3_t2_d1b3a_case IN ITEMS OverlapReproducesBad IndependentLossNotSufficient OverlapNoPathChange StickyAfterRemove RecoveredAfterRemove NegativeUserInput NegativeEtwLoss)
+    string(TOLOWER "${_p2_c3_a3_t2_d1b3a_case}" _p2_c3_a3_t2_d1b3a_name)
+    mvm_add_test(p2_c3_a3_t2_d1b3a_overlap_${_p2_c3_a3_t2_d1b3a_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t2-d1b3a-overlap-contract.ps1"
+            -Case "${_p2_c3_a3_t2_d1b3a_case}"
+            -Summarizer "${CMAKE_SOURCE_DIR}/scripts/summarize-p2-c3-a3-t2-d1b3a.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t2-d1b3a-${_p2_c3_a3_t2_d1b3a_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 foreach(_p2_c3_a3_t2_d1b0_case IN ITEMS Good NegativeNotCaptured NegativeClaimsAuthority NegativeMissingSwapchainField NegativeCapabilityContaminated NegativeZeroIdentity)
     string(TOLOWER "${_p2_c3_a3_t2_d1b0_case}" _p2_c3_a3_t2_d1b0_name)
     mvm_add_test(p2_c3_a3_t2_d1b0_preflight_${_p2_c3_a3_t2_d1b0_name}

@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory=$true)][string]$OutputDirectory,
     [Parameter(Mandatory=$true)]
     [ValidateSet('VISIBLE_UNOCCLUDED','FULLY_OCCLUDED','VISIBLE_UNOCCLUDED_FORCE_DIRTY',
-     'VISIBLE_UNOCCLUDED_TARGET_INVALIDATE','VISIBLE_UNOCCLUDED_TARGET_REDRAW_NOW')]
+     'VISIBLE_UNOCCLUDED_TARGET_INVALIDATE','VISIBLE_UNOCCLUDED_TARGET_REDRAW_NOW',
+     'FOREIGN_WINDOW_OVERLAP','OVERLAP_THEN_REMOVE')]
     [string]$Mode,
     [ValidateRange(12,300)][int]$WarmupSeconds,
     [ValidateRange(1,300)][int]$MeasureSeconds,
