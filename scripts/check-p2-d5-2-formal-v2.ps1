@@ -22,7 +22,8 @@ $validReasons=@(
     'DISPLAYED_QPC_MISSING','PHYSICAL_DISPLAY_IDENTITY_AMBIGUOUS',
     'PHYSICAL_VBLANK_SEQUENCE_BREAK','PHYSICAL_VBLANK_OBSERVER_INVALID',
     'PHYSICAL_VBLANK_BOUNDARY_NOT_BRACKETED','OUTPUT_OR_MODE_CHANGED',
-    'PRESENTED_FRAME_MISMATCH','INTENT_IDENTITY_AMBIGUOUS','ETW_LOSS','RING_OVERFLOW',
+    'PRESENTED_FRAME_MISMATCH','INTENT_IDENTITY_MISSING','INTENT_IDENTITY_AMBIGUOUS',
+    'INTENT_ORDINAL_OUT_OF_DOMAIN','INTENT_DUPLICATE_DISPLAY','ETW_LOSS','RING_OVERFLOW',
     'ACCOUNTING_IDENTITY_VIOLATION','RUNTIME_AUTHORITY_OVERRIDE')
 # W0.5-A で legacy frameSwapped invariant と証明済み。v2 に出現してはならない。
 # OPPORTUNITY_REGRESSION は swapQpc 由来のものが legacy であるため含める。
@@ -113,9 +114,32 @@ if((I64 (Require $formal 'formal_physical_ordinal_multi_presented_count' 'PHYSIC
     Fail 'PHYSICAL_DISPLAY_IDENTITY_AMBIGUOUS' '同一physical ordinalへ複数のPresented eventがmapされています'
 }
 
+# --- intent identity closure (W1.2) ---
+# satisfied_intent_count を算術上の自由変数にしない。exact identity chain
+#   intent_ordinal -> scheduler decision/targetFrame -> rendered source
+#   -> composition token -> successful native Present -> exact PresentEvent
+#   -> DisplayedQPC -> in-domain physical_vblank_ordinal
+# が閉じた distinct intent_ordinal の cardinality として定義する。
+if((I64 (Require $formal 'formal_intent_identity_missing_count' 'INTENT_IDENTITY_MISSING'))-ne0){
+    Fail 'INTENT_IDENTITY_MISSING' '観測されたdisplayにintent identityがありません'
+}
+if((I64 (Require $formal 'formal_intent_identity_ambiguous_count' 'INTENT_IDENTITY_AMBIGUOUS'))-ne0){
+    Fail 'INTENT_IDENTITY_AMBIGUOUS' 'display candidateのintent identityが曖昧です'
+}
+if((I64 (Require $formal 'formal_intent_ordinal_out_of_domain_count' 'INTENT_ORDINAL_OUT_OF_DOMAIN'))-ne0){
+    Fail 'INTENT_ORDINAL_OUT_OF_DOMAIN' 'intent_ordinalがintent domainの外です'
+}
+# 1 intent_ordinal に対する in-domain Presented outcome は高々1件。
+if((I64 (Require $formal 'formal_intent_duplicate_display_count' 'INTENT_DUPLICATE_DISPLAY'))-ne0){
+    Fail 'INTENT_DUPLICATE_DISPLAY' '同一intent_ordinalが複数回in-domain表示されています'
+}
+
 # --- Layer 1A: workload intent ---
 $required=I64 (Require $formal 'formal_required_intent_count')
 $satisfied=I64 (Require $formal 'formal_satisfied_intent_count' 'INTENT_IDENTITY_AMBIGUOUS')
+# 前 measurement 由来の intent を持つ in-domain Presented event。
+# physical opportunity は埋めるが今回の intent satisfaction には寄与しない。
+$foreignIntent=I64 (Require $formal 'formal_in_domain_presented_foreign_intent_count')
 # --- Layer 1B: physical opportunity ---
 $physical=I64 (Require $formal 'formal_physical_opportunity_count')
 # --- Layer 2: PresentEvent outcome cohort ---
@@ -169,9 +193,18 @@ if($tailUnfilled-lt0-or$tailUnfilled-gt$unfilled){
     Fail 'ACCOUNTING_IDENTITY_VIOLATION' 'P4違反: tail_unfilledがunfilledを超えています'
 }
 
-# S: Layer 1A intent identity へ exact に閉じたもの
+# S1: satisfied_intent_count 自体が intent domain 内にあること。
 if($satisfied-lt0-or$satisfied-gt$required){
     Fail 'INTENT_IDENTITY_AMBIGUOUS' "S1違反: satisfied_intent_countが範囲外です ($satisfied / $required)"
+}
+
+# N: intent satisfaction を Layer 3 occupancy に対して閉じる。
+# in-domain の Presented event は「今回 intent を満たしたもの」か
+# 「前 measurement 由来の intent を持つもの」かのいずれか。
+# duplicate display は 0 を要求済みなので 1:1 で数えられる。
+if($foreignIntent-lt0){Fail 'ACCOUNTING_IDENTITY_VIOLATION' 'foreign intent countが負です'}
+if($satisfied+$foreignIntent-ne$inDomainPresented){
+    Fail 'ACCOUNTING_IDENTITY_VIOLATION' 'N1違反: satisfied_intent + foreign_intent != in_domain_presented_event_count'
 }
 if($trueDrop-ne$required-$satisfied){
     Fail 'ACCOUNTING_IDENTITY_VIOLATION' 'S2違反: true_drop != required_intent - satisfied_intent'
@@ -198,6 +231,10 @@ $result=[ordered]@{
     # threshold 自体は変更しない。評価は W3 で行う。
     formal_required_intent_count=$required
     formal_satisfied_intent_count=$satisfied
+    # scheduled intent に in-domain display が無いのは performance drop であり
+    # authority invalid ではない。
+    formal_unsatisfied_intent_count=($required-$satisfied)
+    formal_in_domain_presented_foreign_intent_count=$foreignIntent
     formal_physical_opportunity_count=$physical
     formal_present_event_count=$events
     formal_presented_event_count=$presentedEvents

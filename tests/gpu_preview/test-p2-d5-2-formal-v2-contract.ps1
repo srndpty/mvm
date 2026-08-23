@@ -11,7 +11,10 @@ param(
                  'NegativeIdentityE1','NegativeIdentityE2','NegativeIdentityP1',
                  'NegativeIdentityP2','NegativeIdentityP3','NegativeIdentityP4',
                  'NegativeIdentityU1','NegativeIdentityS1','NegativeIdentityS2',
-                 'NegativeContractVersion')]
+                 'NegativeIdentityN1','NegativeContractVersion',
+                 'GoodSourceHalfRate','GoodForeignIntentAtBoundary',
+                 'NegativeIntentMissing','NegativeIntentAmbiguous',
+                 'NegativeIntentOutOfDomain','NegativeIntentDuplicateDisplay')]
     [string]$Case,
     [Parameter(Mandatory=$true)][string]$Checker,
     [Parameter(Mandatory=$true)][string]$Directory
@@ -24,8 +27,8 @@ New-Item -ItemType Directory -Path $Directory|Out-Null
 # 基準: required=3600, physical=3600
 # Layer 2 cohort   present_event=3595 (presented 3590 / discarded 5 / unknown 0)
 # Layer 3 domain   filled=3590 (unique 3580 / repeated 10), unfilled=10 (tail 4)
-# Layer 1A bridge  satisfied_intent=3580
-$required=3600;$satisfied=3580;$physical=3600
+# Layer 1A bridge  satisfied_intent=3590 (foreign intent 0), true_drop=10
+$required=3600;$satisfied=3590;$physical=3600
 $presentedEvents=3590;$discardedEvents=5;$unknown=0
 $events=$presentedEvents+$discardedEvents+$unknown;$native=$events
 $inDomainPresented=3590;$filled=3590;$unique=3580;$repeated=10
@@ -34,6 +37,7 @@ $overhang=[Math]::Max($required-$physical,0)
 $surplus=[Math]::Max($physical-$required,0)
 $trueDrop=$required-$satisfied
 $multiPresented=0
+$foreignIntent=0;$intentMissing=0;$intentAmbiguous=0;$intentOutOfDomain=0;$intentDuplicate=0
 $contractVersion='P2-D5-2-v2';$authorityProfile='P2-D5-2-v2';$override=$false
 $authorityValid=$true;$authorityError='NONE'
 $mismatch=0;$etwEvents=0;$etwBuffers=0;$ringOverflow=0
@@ -45,7 +49,7 @@ switch($Case){
         # 60.05Hz 等で physical が required を上回る。unique は required を超えてよい。
         $physical=3603;$filled=3603;$unique=3603;$repeated=0
         $inDomainPresented=$filled;$unfilled=$physical-$filled;$tailUnfilled=0
-        $satisfied=3600;$trueDrop=$required-$satisfied
+        $satisfied=3600;$foreignIntent=3;$trueDrop=$required-$satisfied
         $surplus=[Math]::Max($physical-$required,0);$overhang=0
         $presentedEvents=3603;$events=$presentedEvents+$discardedEvents+$unknown;$native=$events
     }
@@ -79,6 +83,22 @@ switch($Case){
     'NegativeIdentityS1'        {$satisfied=$required+1;$trueDrop=$required-$satisfied}
     'NegativeIdentityS2'        {$trueDrop=$trueDrop+1}
     'NegativeContractVersion'   {$contractVersion='P2-D5-2'}
+    'GoodSourceHalfRate'{
+        # 30fps source を 60Hz で表示。distinct intent 2つが同一 source frame を
+        # 正しく表示する。satisfied_intent と unique_physical は一致しない。
+        $unique=1795;$repeated=$filled-$unique
+    }
+    'GoodForeignIntentAtBoundary'{
+        # 前 measurement 由来 intent の in-domain Presented event が 12 件。
+        # physical opportunity は埋めるが intent satisfaction には寄与しない。
+        $foreignIntent=12;$satisfied=$inDomainPresented-$foreignIntent
+        $trueDrop=$required-$satisfied
+    }
+    'NegativeIntentMissing'        {$intentMissing=1}
+    'NegativeIntentAmbiguous'      {$intentAmbiguous=1}
+    'NegativeIntentOutOfDomain'    {$intentOutOfDomain=1}
+    'NegativeIntentDuplicateDisplay'{$intentDuplicate=1}
+    'NegativeIdentityN1'           {$foreignIntent=5}
 }
 
 $formal=[ordered]@{
@@ -102,6 +122,11 @@ $formal=[ordered]@{
     formal_physical_ordinal_multi_presented_count=$multiPresented
     formal_required_intent_count=$required
     formal_satisfied_intent_count=$satisfied
+    formal_in_domain_presented_foreign_intent_count=$foreignIntent
+    formal_intent_identity_missing_count=$intentMissing
+    formal_intent_identity_ambiguous_count=$intentAmbiguous
+    formal_intent_ordinal_out_of_domain_count=$intentOutOfDomain
+    formal_intent_duplicate_display_count=$intentDuplicate
     formal_physical_opportunity_count=$physical
     formal_successful_native_present_count=$native
     formal_present_event_count=$events
@@ -147,6 +172,11 @@ $expectedReason=switch($Case){
     'NegativeIdentityE2'                  {'PRESENT_EVENT_MISSING'}
     'NegativeIdentityP3'                  {'PHYSICAL_DISPLAY_IDENTITY_AMBIGUOUS'}
     'NegativeIdentityS1'                  {'INTENT_IDENTITY_AMBIGUOUS'}
+    'NegativeIdentityN1'                  {'ACCOUNTING_IDENTITY_VIOLATION'}
+    'NegativeIntentMissing'               {'INTENT_IDENTITY_MISSING'}
+    'NegativeIntentAmbiguous'             {'INTENT_IDENTITY_AMBIGUOUS'}
+    'NegativeIntentOutOfDomain'           {'INTENT_ORDINAL_OUT_OF_DOMAIN'}
+    'NegativeIntentDuplicateDisplay'      {'INTENT_DUPLICATE_DISPLAY'}
     'NegativeIdentityE1'                  {'ACCOUNTING_IDENTITY_VIOLATION'}
     'NegativeIdentityP1'                  {'ACCOUNTING_IDENTITY_VIOLATION'}
     'NegativeIdentityP2'                  {'ACCOUNTING_IDENTITY_VIOLATION'}
@@ -185,6 +215,20 @@ if($Case-eq'GoodPhysicalSurplus'){
     # unique が required を超えても契約違反にしない。
     if([long]$proof.formal_displayed_unique_physical_count-le[long]$proof.formal_required_intent_count){
         throw 'physical surplus caseでuniqueがrequiredを超えていません'
+    }
+}
+if($Case-eq'GoodSourceHalfRate'){
+    # source-frame uniqueness と intent satisfaction を同一視しない。
+    if([long]$proof.formal_satisfied_intent_count-le[long]$proof.formal_displayed_unique_physical_count){
+        throw 'satisfied_intentがunique_physicalを上回っていません'
+    }
+}
+if($Case-eq'GoodForeignIntentAtBoundary'){
+    if([long]$proof.formal_in_domain_presented_foreign_intent_count-le0){
+        throw 'foreign intentが記録されていません'
+    }
+    if([long]$proof.formal_satisfied_intent_count-ge[long]$proof.formal_in_domain_presented_event_count){
+        throw 'foreign intent分がsatisfiedから除かれていません'
     }
 }
 if($Case-eq'GoodBoundaryCohortDivergence'){

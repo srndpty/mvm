@@ -12,7 +12,21 @@ executable contract:
 
 ---
 
-## 0. 改訂 (W1.1)
+## 0. 改訂 (W1.1 / W1.2)
+
+### W1.2 — intent satisfaction identity closure
+
+`formal_satisfied_intent_count` の producer contract を固定した (3.6)。
+exact identity chain、source uniqueness との非同一視、
+authority invalid と performance drop の区別、N1 identity、
+および **ABI v4 bump の必要性**を確定した。
+
+`"filled" means occupied by an exact target PresentedEvent` である。
+`formal_filled_physical_opportunity_count` は「その VBlank に何らかの画像が
+あった」ではなく「その physical ordinal に新しい target PresentedEvent が
+対応した」を意味する。
+
+### W1.1
 
 W1 レビューで P1 が2件あり、次を修正した。
 
@@ -180,11 +194,106 @@ measurement start 前に submit / DisplayedQPC が domain 内
     -> Layer 3 domain に入るが Layer 2 cohort に入らない
 ```
 
-### 3.6 Layer 1A ↔ Layer 3 の bridge
+### 3.6 Layer 1A ↔ Layer 3 の bridge — intent satisfaction identity (W1.2)
+
+`formal_satisfied_intent_count` を算術上の自由変数にしない。**producer contract**
+として次の exact identity chain が閉じることを要求する。
+
+```text
+intent_ordinal
+  -> scheduler decision / expected targetFrame
+  -> actual rendered source            (PresentedFrameMismatch で保証)
+  -> composition token
+  -> successful native Present         (native_present_serial)
+  -> exact PresentEvent
+  -> DisplayedQPC
+  -> in-domain physical_vblank_ordinal
+```
+
+```text
+formal_satisfied_intent_count
+    = measurement intent domain 内で上記 chain が閉じ、かつ in-domain physical
+      opportunity に表示された distinct intent_ordinal の個数
+```
+
+**source frame uniqueness と intent satisfaction を同一視しない。**
+30fps source を 60Hz で表示する場合、
+
+```text
+intent 100 -> source frame 50
+intent 101 -> source frame 50
+```
+
+の2つの distinct intent が同一 source frame を正しく表示しうる。このとき
+
+```text
+displayed_unique_physical_count = 1
+satisfied_intent_count          = 2
+```
+
+でも矛盾しない（`GoodSourceHalfRate` で固定）。
+
+#### authority invalid と performance drop の区別
+
+```text
+scheduled intent に in-domain Presented outcome が無い
+    -> performance drop（authority invalid ではない）
+
+観測された display の intent identity が欠損 / 曖昧
+    -> authority invalid
+```
+
+#### 追加 field
+
+| field | 意味 |
+|---|---|
+| `formal_intent_identity_missing_count` | display に intent identity が無い。**0 必須** |
+| `formal_intent_identity_ambiguous_count` | intent identity が曖昧。**0 必須** |
+| `formal_intent_ordinal_out_of_domain_count` | intent_ordinal が domain 外。**0 必須** |
+| `formal_intent_duplicate_display_count` | 同一 intent が複数回 in-domain 表示。**0 必須** |
+| `formal_in_domain_presented_foreign_intent_count` | 前 measurement 由来 intent の in-domain Presented event |
+| `formal_unsatisfied_intent_count` | `required - satisfied`。performance drop |
+
+#### N1 identity
+
+```text
+N1  satisfied_intent_count + in_domain_presented_foreign_intent_count
+      == in_domain_presented_event_count
+```
+
+これにより Layer 3 occupancy と intent satisfaction が閉じる。
+3集合（Layer 2 cohort / Layer 3 occupancy / Layer 1A satisfaction）は
+互いに異なってよい。
+
+```text
+measurement 前 submit / DisplayedQPC domain 内 / intent は前 measurement 由来
+    -> physical opportunity は埋めるが satisfied には寄与しない
+
+intent は今回 domain 内 / Present は end 前 / DisplayedQPC は domain 外
+    -> Layer 2 では Presented だが satisfied ではない
+```
+
+#### ABI v4 が必要（W2 前提）
+
+現行 ABI v3 の `MvmNativePresentCompositionToken` は
+`tokenSerial / compositionEpoch / compositionState / outputFrameNumber /
+sources[] / propagationSerial` のみで、**intent identity を持たない**。
+
+```text
+token.outputFrameNumber = frame.outputFrameNumber
+formal 有効時は output = formalDecision.targetFrame   ← source frame 番号
+```
+
+`targetFrame` は source frame 番号なので、30fps source では 2つの distinct
+intent が同一値を持つ。したがって **`outputFrameNumber` は intent を同定できない**。
+
+**source frame 番号や QPC から intent を推測してはならない。**
+W2 で `intentOrdinal`（および必要なら `schedulerDecisionId`）を token へ
+明示追加し、**native present hook ABI を v4 へ bump する**。
+v2/v3 の mismatch を hard reject する既存設計をそのまま使う。
 
 | field | 定義 |
 |---|---|
-| `formal_satisfied_intent_count` | intent domain `[0, required_intent_count)` のうち Layer 3 まで exact identity が閉じた数 |
 | `formal_intent_overhang_count` | `max(required_intent_count - physical_opportunity_count, 0)` |
 | `formal_intent_surplus_count` | `max(physical_opportunity_count - required_intent_count, 0)` |
 | `formal_true_drop_count` | `required_intent_count - satisfied_intent_count` |
@@ -235,6 +344,8 @@ P4  0 <= tail_physical_unfilled_count <= physical_unfilled_count
 U1  0 <= displayed_unique_physical_count <= physical_opportunity_count
 
 S1  0 <= satisfied_intent_count <= required_intent_count
+N1  satisfied_intent_count + in_domain_presented_foreign_intent_count
+      == in_domain_presented_event_count
 S2  true_drop_count == required_intent_count - satisfied_intent_count
 
 X1  intent_overhang_count == max(required_intent_count - physical_opportunity_count, 0)
@@ -272,7 +383,10 @@ PHYSICAL_VBLANK_OBSERVER_INVALID
 PHYSICAL_VBLANK_BOUNDARY_NOT_BRACKETED
 OUTPUT_OR_MODE_CHANGED
 PRESENTED_FRAME_MISMATCH
+INTENT_IDENTITY_MISSING
 INTENT_IDENTITY_AMBIGUOUS
+INTENT_ORDINAL_OUT_OF_DOMAIN
+INTENT_DUPLICATE_DISPLAY
 ETW_LOSS
 RING_OVERFLOW
 ACCOUNTING_IDENTITY_VIOLATION
