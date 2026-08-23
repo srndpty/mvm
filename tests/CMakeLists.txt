@@ -173,6 +173,17 @@ foreach(_p2_c3_a3_t2_summary_case IN ITEMS TargetDoesNotWake NegativeControl Inv
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
+foreach(_p2_c3_a3_t2_d0_case IN ITEMS IndependentOfDwm ExternalTransition UnknownPresentPath LegacySchemaUnresolved InsufficientGroups NegativeEtwLoss)
+    string(TOLOWER "${_p2_c3_a3_t2_d0_case}" _p2_c3_a3_t2_d0_name)
+    mvm_add_test(p2_c3_a3_t2_d0_presentation_path_${_p2_c3_a3_t2_d0_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t2-d0-presentation-path-contract.ps1"
+            -Case "${_p2_c3_a3_t2_d0_case}"
+            -Analyzer "${CMAKE_SOURCE_DIR}/scripts/analyze-p2-c3-a3-t2-d0-presentation-path.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t2-d0-${_p2_c3_a3_t2_d0_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 foreach(_p2_c3_a3_t2_c_case IN ITEMS C1InvalidationWakes C1ForcedRedrawRequired C1RegimeInvalid C1OrderConfound C2PaintProcessingWakes C2RedirectionSuspect C2RegimeInvalid NegativeUpdateChainVolume NegativeRuntime NegativeUserInput NegativeDamageCadence)
     string(TOLOWER "${_p2_c3_a3_t2_c_case}" _p2_c3_a3_t2_c_name)
     mvm_add_test(p2_c3_a3_t2_c_summary_${_p2_c3_a3_t2_c_name}

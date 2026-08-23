@@ -324,6 +324,49 @@ damage-processing boundary への attribution であり、2 でも suppression �
 closure を全条件で再検査し、`native_present_count` の条件間 spread が 2% を
 超えた run は `UPDATE_CHAIN_VOLUME_DIVERGENT` として解釈を限定する。
 
+## DWM PresentStart を display authority にしない
+
+**DWM Present cadence は app display cadence ではない。**
+DWM PresentStart が 0 件でも、app は 900/900 displayed でありうる。
+
+F3-C3-A3-T2-D0 で、T2-B / T2-C1 / T2-C2 の 27 run すべて
+(`EXTERNAL_DIRTY` 9 run を含む) が次だった。
+
+```text
+present_mode   Hardware_Composed_Independent_Flip  900/900
+DWM parent     0
+FinalState     Presented 900
+DisplayedQPC   900   provenance: InFrame+Win32k+DxgkPresent
+                     (DwmParentDisplayed なし)
+DWM-wide PresentStart  0 〜 885 (条件により変動するが display path は不変)
+```
+
+independent flip 中は DWM がスリープでき、app のフレームは直接 display へ出る。
+外部 window の damage でだけ DWM が起きるのは期待挙動であって欠陥ではない。
+逆に、大量 Discard を示した historical run では DWM parent が
+3598/3598 付きながら displayed は 104 件しかなかった。
+**DWM が最も活発な run が最も壊滅的に discard している。**
+
+したがって次を守る。
+
+- `target_attached_parent_count` や DWM PresentStart 数を
+  physical-display authority にしない。
+- display の最終 authority は次の順で閉じる。
+
+```text
+composition token
+  -> native Present identity
+  -> PresentMon app PresentEvent
+  -> FinalState / DisplayedQPC
+  -> physical display identity
+```
+
+- 「DWM wake が少ない = 表示 drop」と読まない。presentation path
+  (independent / composed) を先に排除してから display を論じる。
+- raw の field 欠損を 0 とみなさない。旧 acquisition schema は
+  `attached_dwm_parent_present_start_qpc` を持たない。StrictMode で読み、
+  欠損時は `DISPLAYED_PATH_UNRESOLVED` として fail-close する。
+
 ## Windows / CMake / Ninja ビルド運用
 
 このリポジトリでは MSYS2 UCRT64 の CMake/Ninja ビルドが長時間かかることがある。
