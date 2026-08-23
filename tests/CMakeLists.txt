@@ -151,6 +151,17 @@ foreach(_p2_c3_a3_t1_summary_case IN ITEMS Visibility Dirty Rejected OrderConfou
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
+foreach(_p2_c3_a3_t2_case IN ITEMS Good NegativeMissingStage NegativePreflight)
+    string(TOLOWER "${_p2_c3_a3_t2_case}" _p2_c3_a3_t2_name)
+    mvm_add_test(p2_c3_a3_t2_update_chain_${_p2_c3_a3_t2_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t2-update-chain-contract.ps1"
+            -Case "${_p2_c3_a3_t2_case}"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c3-a3-t2-update-chain.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t2-update-chain-${_p2_c3_a3_t2_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 foreach(_p2_c3_a2_lifecycle_case IN ITEMS Good MissingWaiting Order ParentMismatch Lost EarlierIncomplete)
     string(TOLOWER "${_p2_c3_a2_lifecycle_case}" _p2_c3_a2_lifecycle_name)
     add_test(

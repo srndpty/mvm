@@ -27,6 +27,7 @@ CMakeUserPresets.json
 !/third_party/pkgs/README.md
 # F3-C0 Qt diagnostic build用のupstream checkout。固定差分はqt-patches/を追跡する。
 /third_party/qtbase-v6.11.1/
+/third_party/qtdeclarative-v6.11.1/
 
 # Benchmark resultsはcommitし、scratchと巨大なfull dumpだけを追跡しない
 /bench/results/scratch/

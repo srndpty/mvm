@@ -26,6 +26,10 @@ struct NativePresentHookSnapshot {
     std::uint32_t dwmFlushCallCount = 0;
     std::uint32_t dwmFlushFailureCount = 0;
     bool authorityFailure = false;
+    std::uint32_t dirtyPropagationOverflowCount = 0;
+    std::uint32_t dirtyPropagationDuplicateStageCount = 0;
+    std::uint64_t dirtyPropagationStageCounts[MVM_DIRTY_STAGE_COUNT]{};
+    std::vector<MvmDirtyPropagationRecord> dirtyPropagationRecords;
     std::vector<MvmNativePresentRecord> records;
 };
 
@@ -40,6 +44,8 @@ public:
     bool load(std::string& error);
     bool beginCapture(std::string& error);
     bool setCompositionToken(const MvmNativePresentCompositionToken& token);
+    std::uint64_t recordDirtyPropagationStage(MvmDirtyPropagationStage stage,
+                                              std::uint64_t serial = 0);
     bool endCapture(std::string& error);
     bool authorityValid() const;
     NativePresentHookSnapshot snapshot() const;
@@ -49,6 +55,8 @@ private:
     MvmNativePresentHookBeginFn begin_ = nullptr;
     MvmNativePresentHookSetTokenFn setToken_ = nullptr;
     MvmNativePresentHookEndFn end_ = nullptr;
+    MvmDirtyPropagationBeginFn dirtyBegin_ = nullptr;
+    MvmDirtyPropagationStageFn dirtyStage_ = nullptr;
     std::unique_ptr<MvmNativePresentRing> ring_;
     bool available_ = false;
     bool captureStarted_ = false;

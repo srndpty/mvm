@@ -253,6 +253,8 @@ struct CompositorSpikeState {
     std::shared_ptr<NativePresentHook> nativePresentHook;
     std::atomic<bool> nativePresentHookEnabled{false};
     std::atomic<bool> nativePresentCaptureActive{false};
+    // F3-C3-A3-T2診断専用。compositor最終出力の2x2 pixelだけを毎frame変える。
+    std::atomic<bool> diagnosticTargetPixelToggle{false};
     std::atomic<long long> nativePresentTokenSetFailureCount{0};
     std::atomic<long long> latestCompletedRenderOrdinal{-1};
     std::atomic<long long> latestSubmittedRenderOrdinal{-1};

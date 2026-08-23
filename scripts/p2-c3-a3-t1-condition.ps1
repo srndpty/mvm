@@ -7,6 +7,8 @@ param(
     [ValidateRange(12,300)][int]$WarmupSeconds=12,
     [ValidateRange(1,300)][int]$MeasureSeconds=15,
     [ValidateRange(30,600)][int]$TimeoutSeconds=180,
+    [ValidateSet('DISABLED','CONTROL','TARGET_RHIITEM_PIXEL_TOGGLE')]
+    [string]$DirtyPropagationMode='DISABLED',
     [string]$Controller=(Join-Path (Split-Path -Parent $PSScriptRoot) 'build\ucrt64-release\bin\mvm_p2_window_state_controller.exe')
 )
 $ErrorActionPreference='Stop'
@@ -25,6 +27,7 @@ $OutputDirectory=(Resolve-Path -LiteralPath $OutputDirectory).Path
 $canonical=Join-Path $OutputDirectory 'canonical'
 $runnerArguments=@('-NoProfile','-File',$canonicalRunner,'-OutputDirectory',$canonical,
     '-AcquisitionMode','CanonicalPresentMonLive','-SubmissionMode','CONTROL',
+    '-DirtyPropagationMode',$DirtyPropagationMode,
     '-WarmupSeconds',[string]$WarmupSeconds,'-MeasureSeconds',[string]$MeasureSeconds,
     '-TimeoutSeconds',[string]$TimeoutSeconds)
 $runnerProcess=Start-Process -FilePath 'pwsh' -ArgumentList $runnerArguments -PassThru -WindowStyle Hidden `
@@ -69,6 +72,7 @@ try{
 if($runnerProcess.ExitCode-ne0){throw "canonical runnerが失敗しました: $($runnerProcess.ExitCode)"}
 if($controllerExit-ne0-or-not(Test-Path -LiteralPath $stateJson)){throw "window-state controllerが失敗しました: $controllerExit"}
 & pwsh -NoProfile -File $finalizer -OutputDirectory $OutputDirectory -Mode $Mode `
-    -WarmupSeconds $WarmupSeconds -MeasureSeconds $MeasureSeconds -Controller $Controller
+    -WarmupSeconds $WarmupSeconds -MeasureSeconds $MeasureSeconds -Controller $Controller `
+    -DirtyPropagationMode $DirtyPropagationMode
 if($LASTEXITCODE-ne0){throw 'T1 condition finalizeが失敗しました'}
 Write-Host "F3-C3-A3-T1 condition run: PASS mode=$Mode ($OutputDirectory)"

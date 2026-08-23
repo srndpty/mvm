@@ -25,6 +25,7 @@ void usage() {
                  "  --presentation-opportunity-ring\n"
                  "  --incremental-mapper-shadow\n"
                  "  --native-present-hook off|on\n"
+                 "  --target-rhiitem-pixel-toggle\n"
                  "  --gpu-completion fence|event_query --mode playback|seek|layout\n");
 }
 
@@ -71,6 +72,8 @@ bool parse(const QStringList& args, CompositorSpikeConfig& config) {
             else if (v == "on") config.nativePresentHook = NativePresentHookMode::OnDiagnostic;
             else return false;
         }
+        else if (arg == "--target-rhiitem-pixel-toggle")
+            config.diagnosticTargetPixelToggle = true;
         else if (arg == "--diagnostic-case") {
             const QString v = value().toLower();
             if (v == "a") config.diagnosticCase = CompositorDiagnosticCase::SingleDecode;

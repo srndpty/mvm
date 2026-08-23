@@ -33,7 +33,9 @@ bool NativePresentHook::load(std::string& error) {
     setToken_ =
         resolve<MvmNativePresentHookSetTokenFn>(qtGui, "mvm_qt_d3d11_present_hook_set_token");
     end_ = resolve<MvmNativePresentHookEndFn>(qtGui, "mvm_qt_d3d11_present_hook_end");
-    if (!abiVersion_ || !begin_ || !setToken_ || !end_) {
+    dirtyBegin_ = resolve<MvmDirtyPropagationBeginFn>(qtGui, "mvm_qt_dirty_propagation_begin");
+    dirtyStage_ = resolve<MvmDirtyPropagationStageFn>(qtGui, "mvm_qt_dirty_propagation_stage");
+    if (!abiVersion_ || !begin_ || !setToken_ || !end_ || !dirtyBegin_ || !dirtyStage_) {
         error = "Qt6Gui.dllにF3-C0 native Present hook exportがありません";
         return false;
     }
@@ -58,6 +60,13 @@ bool NativePresentHook::beginCapture(std::string& error) {
 
 bool NativePresentHook::setCompositionToken(const MvmNativePresentCompositionToken& token) {
     return captureStarted_ && !captureStopped_ && setToken_ && setToken_(&token) != 0;
+}
+
+std::uint64_t NativePresentHook::recordDirtyPropagationStage(MvmDirtyPropagationStage stage,
+                                                             std::uint64_t serial) {
+    return captureStarted_ && !captureStopped_ && dirtyStage_
+               ? dirtyStage_(static_cast<std::uint32_t>(stage), serial)
+               : 0;
 }
 
 bool NativePresentHook::endCapture(std::string& error) {
@@ -95,6 +104,14 @@ NativePresentHookSnapshot NativePresentHook::snapshot() const {
         result.dwmFlushCallCount = ring_->dwmFlushCallCount;
         result.dwmFlushFailureCount = ring_->dwmFlushFailureCount;
         result.authorityFailure = ring_->authorityFailure != 0;
+        result.dirtyPropagationOverflowCount = ring_->dirtyPropagationOverflowCount;
+        result.dirtyPropagationDuplicateStageCount = ring_->dirtyPropagationDuplicateStageCount;
+        std::copy(std::begin(ring_->dirtyPropagationStageCounts),
+                  std::end(ring_->dirtyPropagationStageCounts),
+                  std::begin(result.dirtyPropagationStageCounts));
+        const auto dirtyCount = std::min(ring_->dirtyPropagationRecordCount, ring_->capacity);
+        result.dirtyPropagationRecords.assign(ring_->dirtyPropagationRecords,
+                                              ring_->dirtyPropagationRecords + dirtyCount);
         const auto count = std::min(ring_->recordCount, ring_->capacity);
         result.records.assign(ring_->records, ring_->records + count);
     }

@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <d3d11_1.h>
 #include <dwmapi.h>
 #include <rhi/qrhi.h>
 #include <rhi/qrhi_platform.h>
@@ -95,11 +96,12 @@ class NativePresentTokenCapture {
 public:
     NativePresentTokenCapture(const std::shared_ptr<CompositorSpikeState>& state,
                               const MvmNativePresentCompositionToken& lastToken,
-                              std::uint64_t tokenSerial)
-        : state_(state), token_(lastToken),
+                              std::uint64_t tokenSerial, std::uint64_t propagationSerial)
+        : state_(state), token_(lastToken), propagationSerial_(propagationSerial),
           active_(state->nativePresentCaptureActive.load(std::memory_order_acquire)) {
         if (active_ && token_.outputFrameNumber >= 0) {
             token_.tokenSerial = tokenSerial;
+            token_.propagationSerial = propagationSerial_;
             valid_ = true;
         }
     }
@@ -114,6 +116,7 @@ public:
 
     bool setFrame(const gpu::ComposedFrame& frame, std::uint64_t tokenSerial) {
         valid_ = makeNativePresentCompositionToken(frame, tokenSerial, token_);
+        token_.propagationSerial = propagationSerial_;
         return valid_;
     }
 
@@ -122,6 +125,7 @@ public:
 private:
     std::shared_ptr<CompositorSpikeState> state_;
     MvmNativePresentCompositionToken token_{};
+    std::uint64_t propagationSerial_ = 0;
     bool active_ = false;
     bool valid_ = false;
 };
@@ -132,7 +136,10 @@ public:
                           gpu::GpuCompletionBackend backend)
         : state_(std::move(state)), backend_(backend) {}
 
-    ~CompositorRhiRenderer() override { releaseRtv(); }
+    ~CompositorRhiRenderer() override {
+        releaseRtv();
+        releaseDiagnosticContext();
+    }
 
 protected:
     void initialize(QRhiCommandBuffer*) override {
@@ -165,6 +172,14 @@ protected:
         }
         nativeDevice_ = h->dev;
         nativeContext_ = h->context;
+        if (state_->diagnosticTargetPixelToggle.load(std::memory_order_acquire)) {
+            const HRESULT contextResult = static_cast<ID3D11DeviceContext*>(h->context)
+                                              ->QueryInterface(IID_PPV_ARGS(&nativeContext1_));
+            if (FAILED(contextResult) || !nativeContext1_) {
+                fail("TARGET_RHIITEM_PIXEL_TOGGLEにD3D11.1 contextが必要です");
+                return;
+            }
+        }
         state_->actualGpuCompletionBackend = gpu::toString(state_->compositor.completionBackend());
         state_->transitionProbeReady.store(true, std::memory_order_release);
         state_->nativeDevicePointer.store(reinterpret_cast<unsigned long long>(h->dev),
@@ -188,6 +203,10 @@ protected:
                 update();
             return;
         }
+        const auto nativeHook = state_->nativePresentHook;
+        const std::uint64_t propagationSerial =
+            nativeHook ? nativeHook->recordDirtyPropagationStage(MVM_DIRTY_STAGE_COMPOSITOR_RENDER)
+                       : 0;
         // P1と同じくrender threadから次のframeを要求する。GUI timerだけでは
         // scene graph requestがcoalesceされ、60Hz output deadlineを取りこぼす。
         update();
@@ -200,7 +219,7 @@ protected:
             return;
         const std::uint64_t nativeTokenSerial = ++nativePresentTokenSerial_;
         NativePresentTokenCapture nativePresentToken(state_, lastNativePresentToken_,
-                                                     nativeTokenSerial);
+                                                     nativeTokenSerial, propagationSerial);
         // pipelineをopenする前のP3-C-2 preflightでもactual targetを検査できるよう、
         // frame pairの有無に依存せずQRhi textureの実pixel sizeを公開する。
         if (auto* texture = colorTexture()) {
@@ -422,6 +441,16 @@ protected:
         }
         if (repeatedThisCallback) {
             state_->repeatedPresentCount.fetch_add(1, std::memory_order_relaxed);
+            if (state_->diagnosticTargetPixelToggle.load(std::memory_order_acquire)) {
+                std::string markerError;
+                if (!ensureRtv(colorTexture(), markerError)) {
+                    fail(markerError);
+                    return;
+                }
+                cb->beginExternal();
+                issueTargetPixelToggle(nativeTokenSerial, nativeHook, propagationSerial);
+                cb->endExternal();
+            }
             if (formalDecisionObserved && !formalDecision.duplicateCallback) {
                 const long long presented =
                     state_->formalOpportunityPresentedFrame.load(std::memory_order_acquire);
@@ -554,6 +583,9 @@ protected:
                                                 compositorTiming, err)
                                           : state_->compositor.composeToTarget(
                                                 frame, {rtv_, size.width(), size.height()}, err));
+        if (ok && state_->diagnosticTargetPixelToggle.load(std::memory_order_acquire)) {
+            issueTargetPixelToggle(nativeTokenSerial, nativeHook, propagationSerial);
+        }
         if (ok && !diagnostic && state_->p3MeasurementActive.load(std::memory_order_acquire) &&
             state_->phase4Enabled.load(std::memory_order_acquire))
             ok = issueTransitionProbes(frame, size, err);
@@ -687,6 +719,18 @@ protected:
     }
 
 private:
+    void issueTargetPixelToggle(std::uint64_t tokenSerial,
+                                const std::shared_ptr<NativePresentHook>& nativeHook,
+                                std::uint64_t propagationSerial) {
+        const float marker = (tokenSerial & 1U) != 0 ? 1.0f : 0.0f;
+        const float color[4]{marker, 1.0f - marker, marker, 1.0f};
+        const D3D11_RECT rect{0, 0, 2, 2};
+        nativeContext1_->ClearView(rtv_, color, &rect, 1);
+        if (nativeHook)
+            nativeHook->recordDirtyPropagationStage(MVM_DIRTY_STAGE_TARGET_PIXEL_TOGGLE,
+                                                    propagationSerial);
+    }
+
     bool normalizePhase4VisibleUv(gpu::ComposedFrame& frame, std::string& err) const {
         // D3D11VAのallocationはlogical heightより大きいことがある（実fixtureは
         // 1920x1080に対して1920x1088）。catalogのfull visible UVをphysical
@@ -1092,6 +1136,12 @@ private:
         rtvTexture_ = nullptr;
     }
 
+    void releaseDiagnosticContext() {
+        if (nativeContext1_)
+            nativeContext1_->Release();
+        nativeContext1_ = nullptr;
+    }
+
     enum class TeardownStage { NotStarted, ProbeDrain, CompositorDrain, Failed, Complete };
 
     // true は次のrender callbackでpollを継続することを表す。ここでは待たない。
@@ -1164,6 +1214,7 @@ private:
             }
         }
         releaseRtv();
+        releaseDiagnosticContext();
         state_->device.release();
         nativeDevice_ = nativeContext_ = nullptr;
         state_->deviceReady.store(false, std::memory_order_release);
@@ -1176,6 +1227,7 @@ private:
     gpu::GpuCompletionBackend backend_;
     void* nativeDevice_ = nullptr;
     void* nativeContext_ = nullptr;
+    ID3D11DeviceContext1* nativeContext1_ = nullptr;
     ID3D11Texture2D* rtvTexture_ = nullptr;
     ID3D11RenderTargetView* rtv_ = nullptr;
     gpu::OutputScheduler60Hz scheduler_;

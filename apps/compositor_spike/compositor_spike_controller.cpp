@@ -339,6 +339,8 @@ void CompositorSpikeController::attach(CompositorRhiItem* item) {
                                             std::memory_order_release);
     state_->presentationOpportunityEnabled.store(config_.presentationOpportunityRing,
                                                  std::memory_order_release);
+    state_->diagnosticTargetPixelToggle.store(config_.diagnosticTargetPixelToggle,
+                                              std::memory_order_release);
     if (config_.nativePresentHook != NativePresentHookMode::Disabled) {
         auto nativeHook = std::make_shared<NativePresentHook>();
         std::string error;
@@ -1731,9 +1733,12 @@ bool CompositorSpikeController::writeMetrics() {
             {"hresult", static_cast<qint64>(record.hresult)},
             {"sync_interval", static_cast<qint64>(record.syncInterval)},
             {"present_flags", static_cast<qint64>(record.presentFlags)},
+            {"propagation_serial", QString::number(record.propagationSerial)},
             {"token_present", record.tokenPresent != 0},
             {"composition_token",
              QJsonObject{{"token_serial", QString::number(record.token.tokenSerial)},
+                         {"propagation_serial",
+                          QString::number(record.token.propagationSerial)},
                          {"composition_epoch",
                           QString::number(record.token.compositionEpoch)},
                          {"composition_state",
@@ -1741,6 +1746,28 @@ bool CompositorSpikeController::writeMetrics() {
                          {"output_frame", record.token.outputFrameNumber},
                          {"source_count", static_cast<qint64>(record.token.sourceCount)},
                          {"sources", sources}}},
+        });
+    }
+    static constexpr const char* dirtyStageNames[MVM_DIRTY_STAGE_COUNT]{
+        "renderer_update", "node_schedule_update", "window_update", "node_render",
+        "compositor_render", "composition_token", "dirty_material", "texture_changed",
+        "qsg_main_render", "rhi_end_frame", "successful_present", "target_pixel_toggle"};
+    QJsonObject dirtyStageCounts;
+    for (std::uint32_t stage = 0; stage < MVM_DIRTY_STAGE_COUNT; ++stage)
+        dirtyStageCounts.insert(dirtyStageNames[stage],
+                                QString::number(nativePresentSnapshot
+                                                    .dirtyPropagationStageCounts[stage]));
+    QJsonArray dirtyPropagationRecords;
+    for (const auto& record : nativePresentSnapshot.dirtyPropagationRecords) {
+        QJsonObject stages;
+        for (std::uint32_t stage = 0; stage < MVM_DIRTY_STAGE_COUNT; ++stage)
+            stages.insert(dirtyStageNames[stage], record.stageQpc[stage]);
+        dirtyPropagationRecords.append(QJsonObject{
+            {"propagation_serial", QString::number(record.propagationSerial)},
+            {"composition_token_serial", QString::number(record.compositionTokenSerial)},
+            {"present_serial", QString::number(record.presentSerial)},
+            {"output_frame", record.outputFrameNumber},
+            {"stage_qpc", stages},
         });
     }
     const bool nativePresentAuthorityPass =
@@ -1779,6 +1806,18 @@ bool CompositorSpikeController::writeMetrics() {
         {"dwm_flush_failure_count",
          static_cast<qint64>(nativePresentSnapshot.dwmFlushFailureCount)},
         {"authority_failure", nativePresentSnapshot.authorityFailure},
+        {"dirty_propagation",
+         QJsonObject{
+             {"schema", "mvm-p2-c3-a3-t2-dirty-propagation-1"},
+             {"record_count",
+              static_cast<qint64>(nativePresentSnapshot.dirtyPropagationRecords.size())},
+             {"overflow_count",
+              static_cast<qint64>(nativePresentSnapshot.dirtyPropagationOverflowCount)},
+             {"duplicate_stage_count",
+              static_cast<qint64>(nativePresentSnapshot.dirtyPropagationDuplicateStageCount)},
+             {"stage_counts", dirtyStageCounts},
+             {"records", dirtyPropagationRecords},
+         }},
         {"qt_upstream_tag", "v6.11.1"},
         {"qt_upstream_commit", "59c81a3c2247b821b9b84b4eb8d939b77e07e276"},
         {"qt_source_path", "qtbase/src/gui/rhi/qrhid3d11.cpp"},
@@ -1812,6 +1851,8 @@ bool CompositorSpikeController::writeMetrics() {
                   {"configured_warmup_seconds", config_.warmupSeconds},
                   {"configured_measure_seconds", config_.measureSeconds},
                   {"configured_seek_count", config_.seekCount},
+                  {"diagnostic_target_rhiitem_pixel_toggle",
+                   config_.diagnosticTargetPixelToggle},
                   {"configured_measurement_preroll_frames",
                    static_cast<qint64>(gpu::kMeasurementPrerollFrames)},
                   {"measurement_preroll_ok", measurementPrerollOk_},
@@ -2005,6 +2046,30 @@ bool CompositorSpikeController::writeMetrics() {
                   {"partial_gpu_issue_failure_count", c.partialGpuIssueFailureCount},
                   {"compose_after_fatal_rejected_count", c.composeAfterFatalRejectedCount},
                   {"shutdown_reason", shutdownReason_}};
+    const HWND targetHwnd =
+        item_ && item_->window() ? reinterpret_cast<HWND>(item_->window()->winId()) : nullptr;
+    const auto rawEnvironment = [](const char* name) -> QJsonValue {
+        return qEnvironmentVariableIsSet(name)
+                   ? QJsonValue(QString::fromUtf8(qgetenv(name)))
+                   : QJsonValue(QJsonValue::Null);
+    };
+    o.insert("t2_preflight",
+             QJsonObject{
+                 {"target_hwnd",
+                  QStringLiteral("0x%1").arg(
+                      static_cast<qulonglong>(reinterpret_cast<std::uintptr_t>(targetHwnd)), 0,
+                      16)},
+                 {"gwl_exstyle_raw",
+                  targetHwnd ? QString::number(static_cast<qulonglong>(
+                                                   GetWindowLongPtrW(targetHwnd, GWL_EXSTYLE)))
+                             : QString()},
+                 {"QT_QPA_DISABLE_REDIRECTION_SURFACE",
+                  rawEnvironment("QT_QPA_DISABLE_REDIRECTION_SURFACE")},
+                 {"QT_D3D_NO_FLIP", rawEnvironment("QT_D3D_NO_FLIP")},
+                 {"QT_D3D_MAX_FRAME_LATENCY",
+                  rawEnvironment("QT_D3D_MAX_FRAME_LATENCY")},
+                 {"QSG_NO_VSYNC", rawEnvironment("QSG_NO_VSYNC")},
+             });
     const long long decodedADelta =
         measurementStopA_.decodedFrameCount - measurementStartA_.decodedFrameCount;
     const long long decodedBDelta =

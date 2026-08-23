@@ -53,6 +53,7 @@ struct CompositorSpikeConfig {
     bool vblankObserver = false;
     bool incrementalMapperShadow = false;
     NativePresentHookMode nativePresentHook = NativePresentHookMode::Disabled;
+    bool diagnosticTargetPixelToggle = false;
     CompositorDiagnosticCase diagnosticCase = CompositorDiagnosticCase::None;
 };
 

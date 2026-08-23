@@ -4,10 +4,13 @@ param(
     [string]$Executable=(Join-Path (Split-Path -Parent $PSScriptRoot) 'build\ucrt64-release\bin\mvm_compositor_spike.exe'),
     [string]$Decoder=(Join-Path (Split-Path -Parent $PSScriptRoot) 'build\p2-etw-decoder\mvm_present_history_decoder.exe'),
     [string]$PatchedQtBin=(Join-Path (Split-Path -Parent $PSScriptRoot) 'build\qtbase-c0\bin'),
+    [string]$PatchedQtQuickBin=(Join-Path (Split-Path -Parent $PSScriptRoot) 'build\qtquick-t2-runtime'),
     [ValidateSet('CanonicalPresentMonLive','TargetedLive','Wpr')]
     [string]$AcquisitionMode='CanonicalPresentMonLive',
     [ValidateSet('CONTROL','DWM_FLUSH_AFTER_PRESENT','FRAME_LATENCY_1')]
     [string]$SubmissionMode='CONTROL',
+    [ValidateSet('DISABLED','CONTROL','TARGET_RHIITEM_PIXEL_TOGGLE')]
+    [string]$DirtyPropagationMode='DISABLED',
     [ValidateRange(1,300)][int]$WarmupSeconds=5,
     [ValidateRange(1,300)][int]$MeasureSeconds=15,
     [ValidateRange(30,600)][int]$TimeoutSeconds=180
@@ -23,6 +26,8 @@ $etwChecker=Join-Path $PSScriptRoot 'check-p2-c0-native-etw.ps1'
 $runWrapper=Join-Path $PSScriptRoot 'invoke-p2-c0-native-run.ps1'
 $provenance=Join-Path $repo 'build\qtbase-c0\mvm-c0-provenance.json'
 $patch=Join-Path $repo 'qt-patches\qtbase-6.11.1\0001-mvm-native-present-hook.patch'
+$t2Patch=Join-Path $repo 'qt-patches\qtbase-6.11.1\0002-mvm-dirty-propagation-hook.patch'
+$quickPatch=Join-Path $repo 'qt-patches\qtdeclarative-6.11.1\0001-mvm-dirty-propagation-hook.patch'
 $qtGui=Join-Path $PatchedQtBin 'Qt6Gui.dll';$qtCore=Join-Path $PatchedQtBin 'Qt6Core.dll'
 $qtPluginPath=Join-Path (Split-Path -Parent $PatchedQtBin) 'plugins'
 $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
@@ -33,6 +38,11 @@ if(-not$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrato
 foreach($path in @($Executable,$Decoder,$PatchedQtBin,$sourceA,$sourceB,$nativeChecker,$etwChecker,$runWrapper,
                     $provenance,$patch,$qtGui,$qtCore,$qtPluginPath)){
     if(-not(Test-Path -LiteralPath $path)){throw "F3-C0必須pathがありません: $path"}
+}
+if($DirtyPropagationMode-ne'DISABLED'){
+    foreach($path in @($PatchedQtQuickBin,$t2Patch,$quickPatch,(Join-Path $PatchedQtQuickBin 'Qt6Quick.dll'))){
+        if(-not(Test-Path -LiteralPath $path)){throw "T2必須pathがありません: $path"}
+    }
 }
 if(Test-Path -LiteralPath $OutputDirectory){throw "既存C0 artifactを上書きしません: $OutputDirectory"}
 New-Item -ItemType Directory -Path $OutputDirectory|Out-Null
@@ -48,7 +58,8 @@ function Start-Compositor([string]$Mode,[string]$Metrics,[string]$Stdout,[string
         '-Executable',$Executable,'-PatchedQtBin',$PatchedQtBin,
         '-SourceA',$sourceA,'-SourceB',$sourceB,'-Metrics',$Metrics,
         '-WarmupSeconds',[string]$RunWarmup,'-MeasureSeconds',[string]$RunMeasure,
-        '-SubmissionMode',$SubmissionMode)
+        '-SubmissionMode',$SubmissionMode,'-DirtyPropagationMode',$DirtyPropagationMode)
+    if($DirtyPropagationMode-ne'DISABLED'){$arguments+=@('-PatchedQtQuickBin',$PatchedQtQuickBin)}
     if(-not[string]::IsNullOrWhiteSpace($PidFile)){$arguments+=@('-PidFile',$PidFile)}
     return Start-Process -FilePath 'pwsh' -ArgumentList $arguments `
         -PassThru -WindowStyle Hidden -RedirectStandardOutput $Stdout -RedirectStandardError $Stderr
@@ -167,6 +178,7 @@ $qtProvenance=Get-Content -LiteralPath $provenance -Raw -Encoding utf8|ConvertFr
     schema='mvm-p2-c0-native-etw-run-1';authority='diagnostic_only'
     acquisition_mode=$AcquisitionMode
     submission_mode=$SubmissionMode
+    dirty_propagation_mode=$DirtyPropagationMode
     c0_r2_status=$(if($checkerExit-eq0){'PASS'}else{'FAIL'})
     oracle_status=$(if($oracleRaw){$oracleRaw.oracle_status}else{'INVALID'})
     display_completion_status=$(if($oracleRaw){$oracleRaw.display_completion_status}else{'NOT_EVALUABLE'})
@@ -188,6 +200,10 @@ $qtProvenance=Get-Content -LiteralPath $provenance -Raw -Encoding utf8|ConvertFr
         source_a_sha256=Hash $sourceA;source_b_sha256=Hash $sourceB
         qt_upstream_commit=$qtProvenance.qt_upstream_commit
         qt_patch_sha256=Hash $patch;qt_gui_dll_sha256=Hash $qtGui;qt_core_dll_sha256=Hash $qtCore
+        t2_qtbase_patch_sha256=$(if($DirtyPropagationMode-ne'DISABLED'){Hash $t2Patch}else{$null})
+        t2_qtdeclarative_patch_sha256=$(if($DirtyPropagationMode-ne'DISABLED'){Hash $quickPatch}else{$null})
+        t2_qt_quick_dll_sha256=$(if($DirtyPropagationMode-ne'DISABLED'){Hash (Join-Path $PatchedQtQuickBin 'Qt6Quick.dll')}else{$null})
+        qtdeclarative_upstream_commit=$(if($DirtyPropagationMode-ne'DISABLED'){$qtProvenance.qtdeclarative_upstream_commit}else{$null})
         etl_sha256=$(if(Test-Path -LiteralPath $etl){Hash $etl}else{$null})
         raw_etw_json_sha256=Hash $etwJson
     }

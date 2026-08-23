@@ -2089,11 +2089,86 @@ damage propagationのどの段階が欠けるかはまだ読み分けていな�
 Qt Quick / QRhi側のdamage/wake propagationを追う。C3-B production scheduler、formal runtime wiring、2% thresholdは
 未変更、P2-D5-2はBLOCKEDのままとする。
 
+[事実] T1のtargeted proof/contractsはPASSだが、ordinary full suiteは627/628でFAILである。
+失敗は`p2_present_id_oracle_live`の`ORACLE_SAMPLING_GAP` 1件であり、dirty suppressionとの整合は
+diagnostic observationに留める。T1 PASSへ読み替えず、次の状態をcheckpointとする。
+
+```text
+T1 proof / targeted contracts : PASS
+ordinary full suite           : FAIL 627/628
+  p2_present_id_oracle_live   : ORACLE_SAMPLING_GAP
+```
+
 再現手順（管理者PowerShell）:
 
 ```powershell
 pwsh scripts/p2-c3-a3-t1-matrix.ps1 `
   -OutputDirectory '<A3-T1 output>' -WarmupSeconds 12 -MeasureSeconds 15 -TimeoutSeconds 180
+```
+
+#### F3-C3-A3-T2: Dirty Propagation Attribution
+
+[事実] T2-Aではdiagnostic-onlyのQt 6.11.1 patchを追加し、各
+`QQuickRhiItemRenderer::update()`へpropagation serialを割り当てた。同じserialでrenderer update、
+node schedule、`QQuickWindow::update()`、node render、`CompositorRhiRenderer::render()`、composition token、
+`DirtyMaterial`、`textureChanged()`、QSG main render、QRhi endFrame、successful native Presentを固定POD ringへ記録する。
+hot pathにallocation、mutex、I/O、logは追加していない。QtBaseはcommit
+`59c81a3c2247b821b9b84b4eb8d939b77e07e276`、QtDeclarativeはcommit
+`a02bed441965ee1f18f856352c7d5ee5ba35d795`へ固定した。
+
+[事実] 最初のCONTROL
+`bench/results/f3-c3-a3-t2-update-chain-control-20260823-1-invalid-runtime-contamination.json`は、QtQuickをpatched QtBase build treeへ
+再リンクしたためPresentが58/15.209秒へ低下し、T1の約900/15秒を再現しなかった。runtime contaminationとして
+INVALIDにした。QtQuick hookをQt6Gui exportの一度だけの動的解決へ変更し、Qt6Quick.dllだけを通常MSYS2 Qt runtimeへ
+差し込む構成に分離した。
+
+[事実] 最終runtimeで再採取・hash固定したCONTROL
+`bench/results/f3-c3-a3-t2-update-chain-control-20260823-3-checkpoint.json`は15.012秒でPresent=900、
+render callback=900、propagation record=900だった。measurement end境界は、stopを検出したrenderの
+`NODE_RENDER/COMPOSITOR_RENDER`までを持つ1件と、そのrenderが要求した
+`UPDATE/SCHEDULE/WINDOW_UPDATE`までを持つ1件で固定された。境界2件を除く898件は、全11段階のQPC順序、
+composition token serial、Present serialが一対一でexact closureした。したがって`UPDATE_CHAIN_BREAK`は棄却する。
+
+[事実] raw preflightはtarget `GWL_EXSTYLE=256 (0x100)`、
+`QT_QPA_DISABLE_REDIRECTION_SURFACE`未設定、`QT_D3D_NO_FLIP`未設定、
+`QT_D3D_MAX_FRAME_LATENCY=2`、`QSG_NO_VSYNC`未設定だった。少なくともこのCONTROLでは
+`WS_EX_NOREDIRECTIONBITMAP (0x00200000)`は付いていない。
+
+[事実] T2-Bの`TARGET_RHIITEM_PIXEL_TOGGLE`は最終offscreen RTVの2x2 pixelをcallback serialの偶奇で
+切り替えるだけで、scheduler、source target、Present cadenceを変更しない。最初のrun
+`bench/results/f3-c3-a3-t2-update-chain-target-pixel-20260823-1-invalid-marker-gap.json`ではrepeat callback 1件に
+markerが無くINVALIDとした。repeatでも同じRTVへmarkerを発行するよう検査を閉じ、再採取
+`bench/results/f3-c3-a3-t2-update-chain-target-pixel-20260823-3-checkpoint.json`は15.013秒でPresent=900、
+marker=898、exact closure=898、effective fps=59.750だった。CONTROLのeffective fps=59.884であり、
+diagnostic markerによりPresent cadenceが崩れていない。
+
+[未検証] DWM parent cadenceを必要とするCONTROL / TARGET_PIXEL / EXTERNAL_DIRTY比較は、現在のWindows tokenが
+非管理者でETW runnerのpreflightに拒否されたため未採取である。したがって
+`TARGET_CONTENT_DIRTY_REQUIRED`、`TARGET_DWM_DAMAGE_SIGNAL_MISSING`、`TARGET_REDIRECTION_PATH_SUSPECT`の
+いずれにもまだ分類しない。T2 exitは未達、P2-D5-2はBLOCKED、C3-B production scheduler、formal runtime wiring、
+2% thresholdは未変更である。
+
+再現手順（update chain、管理者権限不要）:
+
+```powershell
+pwsh scripts/invoke-p2-c0-native-run.ps1 `
+  -HookMode on -Executable build/ucrt64-release/bin/mvm_compositor_spike.exe `
+  -PatchedQtBin build/qtbase-c0/bin -PatchedQtQuickBin build/qtquick-t2-runtime `
+  -SourceA tests/assets/benchmark/v1080p60_h264.mp4 `
+  -SourceB tests/assets/benchmark/v1080p60_hevc.mp4 `
+  -Metrics '<app.json>' -WarmupSeconds 12 -MeasureSeconds 15 `
+  -SubmissionMode CONTROL -DirtyPropagationMode CONTROL
+pwsh scripts/check-p2-c3-a3-t2-update-chain.ps1 `
+  -AppJson '<app.json>' -ExpectedMode CONTROL -Output '<proof.json>'
+```
+
+次の採取（管理者PowerShell）:
+
+```powershell
+pwsh scripts/p2-c0-native-etw.ps1 `
+  -OutputDirectory '<T2 CONTROL output>' -AcquisitionMode CanonicalPresentMonLive `
+  -SubmissionMode CONTROL -DirtyPropagationMode CONTROL `
+  -WarmupSeconds 12 -MeasureSeconds 15 -TimeoutSeconds 180
 ```
 
 ---

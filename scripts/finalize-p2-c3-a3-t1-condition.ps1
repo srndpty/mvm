@@ -6,6 +6,8 @@ param(
     [string]$Mode,
     [ValidateRange(12,300)][int]$WarmupSeconds,
     [ValidateRange(1,300)][int]$MeasureSeconds,
+    [ValidateSet('DISABLED','CONTROL','TARGET_RHIITEM_PIXEL_TOGGLE')]
+    [string]$DirtyPropagationMode='DISABLED',
     [string]$Controller=(Join-Path (Split-Path -Parent $PSScriptRoot) 'build\ucrt64-release\bin\mvm_p2_window_state_controller.exe')
 )
 $ErrorActionPreference='Stop'
@@ -33,6 +35,7 @@ if($LASTEXITCODE-ne0){throw 'window-state/DWM condition proofが失敗しまし�
 $proof=Get-Content -LiteralPath $conditionProof -Raw -Encoding utf8|ConvertFrom-Json
 [ordered]@{
     schema='mvm-p2-c3-a3-t1-condition-run-1';status='PASS';authority='diagnostic_only';mode=$Mode
+    dirty_propagation_mode=$DirtyPropagationMode
     formal_counter_authority_changed=$false;formal_drop_threshold_changed=$false;production_scheduler_changed=$false
     warmup_seconds=$WarmupSeconds;measure_seconds=$MeasureSeconds;proof=$proof
     identities=[ordered]@{
