@@ -142,6 +142,9 @@ int main(int argc, char** argv) {
                          &CompositorRhiItem::recordFrameSwapped, Qt::DirectConnection);
     }
     controller.attach(surface);
+    // Main.qmlはvisible:falseで生成される。configが全て確定した後にだけ
+    // render threadを起動させ、initialize()がattach()を追い越す順序を排除する。
+    window->setVisible(true);
     QObject::connect(&controller, &CompositorSpikeController::finished, &app,
                      [&] { app.exit(controller.exitCode()); });
     return app.exec();

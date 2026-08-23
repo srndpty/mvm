@@ -162,6 +162,28 @@ foreach(_p2_c3_a3_t2_case IN ITEMS Good NegativeMissingStage NegativePreflight)
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
+foreach(_p2_c3_a3_t2_summary_case IN ITEMS TargetDoesNotWake NegativeControl InvalidPositive OrderConfound NegativeRuntime)
+    string(TOLOWER "${_p2_c3_a3_t2_summary_case}" _p2_c3_a3_t2_summary_name)
+    mvm_add_test(p2_c3_a3_t2_summary_${_p2_c3_a3_t2_summary_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t2-summary-contract.ps1"
+            -Case "${_p2_c3_a3_t2_summary_case}"
+            -Summarizer "${CMAKE_SOURCE_DIR}/scripts/summarize-p2-c3-a3-t2.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t2-summary-${_p2_c3_a3_t2_summary_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+foreach(_p2_c3_a3_t2_startup_case IN ITEMS Good NegativeFlagGatedContext NegativeMissingNullGuard NegativeVisibleAtLoad NegativeShowBeforeAttach)
+    string(TOLOWER "${_p2_c3_a3_t2_startup_case}" _p2_c3_a3_t2_startup_name)
+    mvm_add_test(p2_c3_a3_t2_startup_order_${_p2_c3_a3_t2_startup_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t2-startup-order-contract.ps1"
+            -Case "${_p2_c3_a3_t2_startup_case}"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t2-startup-order-${_p2_c3_a3_t2_startup_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 foreach(_p2_c3_a2_lifecycle_case IN ITEMS Good MissingWaiting Order ParentMismatch Lost EarlierIncomplete)
     string(TOLOWER "${_p2_c3_a2_lifecycle_case}" _p2_c3_a2_lifecycle_name)
     add_test(

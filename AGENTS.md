@@ -234,6 +234,70 @@ Python worker、エフェクト UI、キーフレーム編集、レンダーキ�
 | `WILL_FAIL` で negative test | クラッシュでも合格になる                           | `scripts/expect-exit.ps1` で終了コードを厳密に照合                        |
 | 対象 0 件のテスト群          | 「全部通った」と報告される                         | `-N` で件数を数え、0 件なら失敗にする                                     |
 
+## Interactive measurement protocol
+
+Performance / ETW / DWM / GPU presentation / window-state acquisition を
+ユーザーに実行してもらう場合、実行コマンドを提示する前に必ず
+ユーザー操作の可否を明示する。
+
+表記は次のいずれかとする。
+
+- **操作可**: measurement 中も通常の PC 操作をしてよい。
+- **操作制限あり**: 禁止する操作、理由、必要時間を具体的に示す。
+- **操作停止必須**: measurement 中は対象 desktop へ入力しない。想定所要時間を必ず示す。
+
+操作が測定結果へ影響し得るにもかかわらず、無案内で取得を依頼してはならない。
+コマンドを渡すときは冒頭に必ず次の形式の banner を置く。
+
+```text
+【操作停止必須：約12分】
+この測定は desktop damage が DWM wake に影響するため、
+実行中は Alt+Tab、window 移動、他アプリ操作、動画再生をしないでください。
+```
+
+特に DWM / presentation / occlusion / dirty / VBlank / ETW を扱う取得では、
+window overlap だけでなく Alt+Tab、window move/resize、他アプリの描画、
+notification、動画再生等の desktop damage が結果を変え得るものとして扱う。
+F3-C3-A3-T1 で `EXTERNAL_DIRTY` だけが DWM wake regime を激変させることが
+3/3 で causal に出ている。mvm と無関係な別 window の damage で足りる。
+
+ユーザー操作または desktop 状態が protocol 条件を破った run は
+性能 FAIL として扱わず `PROTOCOL_INVALID` とする。
+historical artifact は削除・上書きしない。
+
+可能な限り runner 自身でも次を記録し fail-close する。
+
+- target geometry / visibility / iconic / cloaked
+- foreground change
+- user input occurrence（`GetLastInputInfo`）
+- unexpected window overlap
+- acquisition/session collision
+
+ただし**入力が無くても別アプリが勝手に描画すれば external dirty は起きる**。
+別モニタへ逃がすだけでも不十分（T1 が示したのは DWM-wide effect のため）。
+この種の run は同じ PC で 10〜15 分操作を止めるか、別の物理マシンで作業する。
+
+retry-until-success が scheduler timing や測定対象の状態で cohort を
+条件付ける可能性がある場合、自動 retry で有効 run を選別してはならない。
+起動失敗が特定条件にのみ存在する場合は選別ではなく原因を先に直す。
+
+## 起動時 configuration の確定順序
+
+`QQmlApplicationEngine::load()` は QML の `visible: true` を通じて
+render thread を起動しうる。したがって `load()` の後に config を書き込むと、
+render thread の `initialize()` が GUI thread の設定を追い越した run だけ
+別の構成で走る。
+
+- render 側から読む設定は `load()` より前に確定させるか、
+  window を `visible: false` で生成し設定確定後に明示的に可視化する。
+- render 側の capability 取得を、後から変更される diagnostic flag に
+  依存させない。使用可否は使用箇所で fail-close する。
+
+この race は F3-C3-A3-T2-B で `TARGET_RHIITEM_PIXEL_TOGGLE` 条件だけを
+確率的に 0xC0000005 で落とし、causal matrix の cohort を条件付けた。
+regression は `tests/gpu_preview/test-p2-c3-a3-t2-startup-order-contract.ps1`、
+起動反復の gate は `scripts/p2-c3-a3-t2-startup-smoke.ps1` で固定している。
+
 ## Windows / CMake / Ninja ビルド運用
 
 このリポジトリでは MSYS2 UCRT64 の CMake/Ninja ビルドが長時間かかることがある。

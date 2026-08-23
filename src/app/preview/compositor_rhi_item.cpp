@@ -172,14 +172,14 @@ protected:
         }
         nativeDevice_ = h->dev;
         nativeContext_ = h->context;
-        if (state_->diagnosticTargetPixelToggle.load(std::memory_order_acquire)) {
-            const HRESULT contextResult = static_cast<ID3D11DeviceContext*>(h->context)
-                                              ->QueryInterface(IID_PPV_ARGS(&nativeContext1_));
-            if (FAILED(contextResult) || !nativeContext1_) {
-                fail("TARGET_RHIITEM_PIXEL_TOGGLEにD3D11.1 contextが必要です");
-                return;
-            }
-        }
+        // diagnosticTargetPixelToggleはattach()がGUI threadで後から立てるため、ここで
+        // flagを見るとinitialize()がattach()より先に走ったrunだけnativeContext1_がnullの
+        // まま残り、render()のmarker発行がnull derefになる。capabilityの取得はflagと無関係
+        // に常に行い、使用可否はissueTargetPixelToggle側でfail-closeする。
+        const HRESULT contextResult = static_cast<ID3D11DeviceContext*>(h->context)
+                                          ->QueryInterface(IID_PPV_ARGS(&nativeContext1_));
+        if (FAILED(contextResult))
+            nativeContext1_ = nullptr;
         state_->actualGpuCompletionBackend = gpu::toString(state_->compositor.completionBackend());
         state_->transitionProbeReady.store(true, std::memory_order_release);
         state_->nativeDevicePointer.store(reinterpret_cast<unsigned long long>(h->dev),
@@ -448,8 +448,13 @@ protected:
                     return;
                 }
                 cb->beginExternal();
-                issueTargetPixelToggle(nativeTokenSerial, nativeHook, propagationSerial);
+                const bool markerOk = issueTargetPixelToggle(nativeTokenSerial, nativeHook,
+                                                             propagationSerial, markerError);
                 cb->endExternal();
+                if (!markerOk) {
+                    fail(markerError);
+                    return;
+                }
             }
             if (formalDecisionObserved && !formalDecision.duplicateCallback) {
                 const long long presented =
@@ -583,8 +588,10 @@ protected:
                                                 compositorTiming, err)
                                           : state_->compositor.composeToTarget(
                                                 frame, {rtv_, size.width(), size.height()}, err));
+        bool markerFailed = false;
         if (ok && state_->diagnosticTargetPixelToggle.load(std::memory_order_acquire)) {
-            issueTargetPixelToggle(nativeTokenSerial, nativeHook, propagationSerial);
+            ok = issueTargetPixelToggle(nativeTokenSerial, nativeHook, propagationSerial, err);
+            markerFailed = !ok;
         }
         if (ok && !diagnostic && state_->p3MeasurementActive.load(std::memory_order_acquire) &&
             state_->phase4Enabled.load(std::memory_order_acquire))
@@ -595,7 +602,9 @@ protected:
         if (!ok) {
             state_->renderFailureCount.fetch_add(1, std::memory_order_relaxed);
             noteDrop(gpu::OutputDropReason::RenderFailure);
-            if (state_->compositor.fatal())
+            if (markerFailed)
+                fail(err);
+            else if (state_->compositor.fatal())
                 fail(state_->compositor.fatalReason());
             return;
         }
@@ -719,9 +728,13 @@ protected:
     }
 
 private:
-    void issueTargetPixelToggle(std::uint64_t tokenSerial,
+    bool issueTargetPixelToggle(std::uint64_t tokenSerial,
                                 const std::shared_ptr<NativePresentHook>& nativeHook,
-                                std::uint64_t propagationSerial) {
+                                std::uint64_t propagationSerial, std::string& err) {
+        if (!nativeContext1_) {
+            err = "TARGET_RHIITEM_PIXEL_TOGGLEにD3D11.1 contextが必要です";
+            return false;
+        }
         const float marker = (tokenSerial & 1U) != 0 ? 1.0f : 0.0f;
         const float color[4]{marker, 1.0f - marker, marker, 1.0f};
         const D3D11_RECT rect{0, 0, 2, 2};
@@ -729,6 +742,7 @@ private:
         if (nativeHook)
             nativeHook->recordDirtyPropagationStage(MVM_DIRTY_STAGE_TARGET_PIXEL_TOGGLE,
                                                     propagationSerial);
+        return true;
     }
 
     bool normalizePhase4VisibleUv(gpu::ComposedFrame& frame, std::string& err) const {
