@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory=$true)]
     [ValidateSet('GoodVisible','GoodOccluded','GoodDirty','NegativeVisibility','NegativeCloak',
         'NegativeCoverage','NegativeUnexpected','NegativeRectChange','NegativeDirtyTicks','NegativeDwmIdentity',
-        'NegativeEtwLoss','GoodTargetInvalidate','GoodTargetRedrawNow','NegativeUserInput','NegativeTargetDamage')]
+        'NegativeEtwLoss','GoodTargetInvalidate','GoodTargetRedrawNow','NegativeUserInput','NegativeTargetDamage',
+        'NegativeDamageFailure')]
     [string]$Case,
     [Parameter(Mandatory=$true)][string]$Checker,
     [Parameter(Mandatory=$true)][string]$Directory
@@ -14,7 +15,7 @@ New-Item -ItemType Directory -Path $Directory|Out-Null
 $canonical=Join-Path $Directory 'canonical';New-Item -ItemType Directory -Path $canonical|Out-Null
 $mode=if($Case-eq'GoodOccluded'-or$Case-eq'NegativeCoverage'){'FULLY_OCCLUDED'}
       elseif($Case-eq'GoodDirty'-or$Case-eq'NegativeDirtyTicks'){'VISIBLE_UNOCCLUDED_FORCE_DIRTY'}
-      elseif($Case-eq'GoodTargetInvalidate'-or$Case-eq'NegativeTargetDamage'){'VISIBLE_UNOCCLUDED_TARGET_INVALIDATE'}
+      elseif($Case-eq'GoodTargetInvalidate'-or$Case-eq'NegativeTargetDamage'-or$Case-eq'NegativeDamageFailure'){'VISIBLE_UNOCCLUDED_TARGET_INVALIDATE'}
       elseif($Case-eq'GoodTargetRedrawNow'){'VISIBLE_UNOCCLUDED_TARGET_REDRAW_NOW'}
       else{'VISIBLE_UNOCCLUDED'}
 $vblankSamples=@(1..1200|ForEach-Object{[ordered]@{ordinal=$_; qpc=$_}})
@@ -48,7 +49,8 @@ for($index=0;$index-lt10;++$index){
         monitor='0x1';foreground_hwnd='0x1234';occluder_hwnd=$(if($mode-eq'FULLY_OCCLUDED'){'0x5678'}else{'0x0'})
         occluder_rect=[ordered]@{left=13;top=36;right=113;bottom=136};client_area=10000
         designated_intersection_area=$(if($mode-eq'FULLY_OCCLUDED'){10000}else{0});unexpected_intersection_area=0;dirty_tick_count=$dirtyTick
-        target_damage_count=$damageTick;target_update_region_present=$($damageTick-gt0);last_input_tick=4242
+        target_damage_count=$damageTick;target_damage_failure_count=0
+        target_update_region_present=$($damageTick-gt0);last_input_tick=4242
     }
 }
 switch($Case){
@@ -60,6 +62,7 @@ switch($Case){
     'NegativeDirtyTicks'{foreach($sample in $samples){$sample.dirty_tick_count=0}}
     'NegativeUserInput'{$samples[4].last_input_tick=9999}
     'NegativeTargetDamage'{foreach($sample in $samples){$sample.target_damage_count=0}}
+    'NegativeDamageFailure'{$samples[9].target_damage_failure_count=1}
 }
 $state=[ordered]@{schema='mvm-p2-c3-a3-t1-window-state-1';mode=$mode;target_process_id=100;qpc_frequency=1000;target_hwnd='0x1234';occluder_hwnd=$(if($mode-eq'FULLY_OCCLUDED'){'0x5678'}else{'0x0'});dirty_companion_hwnd=$(if($mode-eq'VISIBLE_UNOCCLUDED_FORCE_DIRTY'){'0x9abc'}else{'0x0'});dirty_tick_count=[long]$samples[-1].dirty_tick_count
     target_damage_count=[long]$samples[-1].target_damage_count;target_damage_failure_count=0

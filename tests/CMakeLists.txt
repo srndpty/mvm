@@ -129,7 +129,7 @@ endforeach()
 
 foreach(_p2_c3_a3_t1_condition_case IN ITEMS GoodVisible GoodOccluded GoodDirty NegativeVisibility
         NegativeCloak NegativeCoverage NegativeUnexpected NegativeRectChange NegativeDirtyTicks NegativeDwmIdentity
-        NegativeEtwLoss GoodTargetInvalidate GoodTargetRedrawNow NegativeUserInput NegativeTargetDamage)
+        NegativeEtwLoss GoodTargetInvalidate GoodTargetRedrawNow NegativeUserInput NegativeTargetDamage NegativeDamageFailure)
     string(TOLOWER "${_p2_c3_a3_t1_condition_case}" _p2_c3_a3_t1_condition_name)
     mvm_add_test(p2_c3_a3_t1_condition_${_p2_c3_a3_t1_condition_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File

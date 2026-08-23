@@ -46,6 +46,9 @@ struct Sample {
     // F3-C3-A3-T2-C: target HWNDへdiagnostic-onlyのdamageを注入した回数と、
     // 直後にupdate regionが観測できたかどうか。mvm render pathには何も足さない。
     std::uint64_t targetDamageCount = 0;
+    // measurement window内の失敗だけをfail-closeさせるため、累積値をsampleに持たせる。
+    // teardown中のRedrawWindow失敗でrun全体を落とさない。
+    std::uint64_t targetDamageFailureCount = 0;
     bool targetUpdateRegionPresent = false;
     // AGENTS.md interactive measurement protocol: measurement中のユーザー入力を
     // 記録し、checker側でPROTOCOL_INVALIDへfail-closeさせる。
@@ -314,9 +317,11 @@ bool writeJson(wchar_t const* outputPath, Mode mode, unsigned long processId,
         printRect("largest_unexpected_rect", sample.largestUnexpectedRect);
         std::fprintf(file,
                      ", \"dirty_tick_count\": %llu, \"target_damage_count\": %llu, "
+                     "\"target_damage_failure_count\": %llu, "
                      "\"target_update_region_present\": %s, \"last_input_tick\": %lu}",
                      static_cast<unsigned long long>(sample.dirtyTickCount),
                      static_cast<unsigned long long>(sample.targetDamageCount),
+                     static_cast<unsigned long long>(sample.targetDamageFailureCount),
                      sample.targetUpdateRegionPresent ? "true" : "false", sample.lastInputTick);
     }
     std::fprintf(file, "]\n}\n");
@@ -460,7 +465,7 @@ int wmain(int argc, wchar_t** argv) {
             nextDirty += std::chrono::milliseconds(16);
         }
         if ((mode == Mode::TargetInvalidate || mode == Mode::TargetRedrawNow) &&
-            now >= nextTargetDamage) {
+            now >= nextTargetDamage && IsWindow(target)) {
             // client座標の小矩形だけを対象にする。output pixelsは変更しない。
             RECT const damage{0, 0, 8, 8};
             BOOL issued = FALSE;
@@ -519,6 +524,7 @@ int wmain(int argc, wchar_t** argv) {
             sample.largestUnexpectedRect = valueOf(unexpected.largestRect);
             sample.dirtyTickCount = dirtyTickCount;
             sample.targetDamageCount = targetDamageCount;
+            sample.targetDamageFailureCount = targetDamageFailureCount;
             sample.targetUpdateRegionPresent = targetUpdateRegionPresent;
             sample.lastInputTick = lastInputTick();
             samples.push_back(sample);

@@ -67,9 +67,11 @@ if($ExpectedMode-eq'VISIBLE_UNOCCLUDED_FORCE_DIRTY'){
 # F3-C3-A3-T2-C: target HWND damage注入の実施量と、注入していない条件での不作為を固定する。
 $targetDamageModes=@('VISIBLE_UNOCCLUDED_TARGET_INVALIDATE','VISIBLE_UNOCCLUDED_TARGET_REDRAW_NOW')
 $targetDamageDelta=[long]$samples[-1].target_damage_count-[long]$samples[0].target_damage_count
+# 注入失敗はmeasurement window内のみを見る。teardown中の失敗でrunを落とさない。
+$targetDamageFailureDelta=[long]$samples[-1].target_damage_failure_count-[long]$samples[0].target_damage_failure_count
 $updateRegionSamples=@($samples|Where-Object{[bool]$_.target_update_region_present}).Count
 if($targetDamageModes-contains$ExpectedMode){
-    if([long]$state.target_damage_failure_count-ne0){Fail "target HWND damage注入が失敗しています: $([long]$state.target_damage_failure_count)"}
+    if($targetDamageFailureDelta-ne0){Fail "measurement中にtarget HWND damage注入が失敗しています: $targetDamageFailureDelta"}
     if($targetDamageDelta-lt[Math]::Floor($elapsed*40)){Fail "target HWND damage注入が不足しています: $targetDamageDelta"}
 }elseif($targetDamageDelta-ne0-or[long]$state.target_damage_count-ne0){Fail '非TARGET_DAMAGE条件でtarget HWND damageが注入されています'}
 # AGENTS.md interactive measurement protocol: measurement中のユーザー入力はPROTOCOL_INVALID。
@@ -123,7 +125,8 @@ $result=[ordered]@{
         designated_coverage=$(if($ExpectedMode-eq'FULLY_OCCLUDED'){1.0}else{0.0})
         unexpected_intersection_area_max=0;dirty_tick_delta=$dirtyTicks
         target_damage_delta=$targetDamageDelta
-        target_damage_failure_count=[long]$state.target_damage_failure_count
+        target_damage_failure_count=$targetDamageFailureDelta
+        target_damage_failure_count_total=[long]$state.target_damage_failure_count
         target_update_region_sample_count=$updateRegionSamples
         target_update_region_fraction=$updateRegionSamples/$samples.Count
         user_input_detected=$false;last_input_tick=[long]$inputTicks[0]
