@@ -17,6 +17,9 @@ if($runner-match "candidates\|Where-Object[\s\S]{0,200}display_relation"){
     throw 'Presented candidateをdisplay relationでmapping前に除外しています'
 }
 Require $runner 'candidate_count_identity' 'inventory/C1 candidate count identityがありません'
+Require $runner 'SupportChecker[\s\S]+physical_mapping_support_envelope_shadow' 'C1.1 mapping support authorityをconsumeしていません'
+Require $runner "PredecessorOrdinal \(\[int64\]\(Need \`$mappingSupport 'predecessor_ordinal'\)\)" 'C1 mapping lower supportがC1.1 provenanceではありません'
+Require $runner "SuccessorOrdinal \(\[int64\]\(Need \`$mappingSupport 'successor_ordinal'\)\)" 'C1 mapping upper supportがC1.1 provenanceではありません'
 Require $runner 'sealed_input_sha256' 'sealed input SHA-256 objectがありません'
 foreach($hashField in @('traced_app','present_history_raw','upstream_inventory_proof')){
     Require $runner ("{0}=\(\(Get-FileHash" -f $hashField) "$hashField SHA-256がありません"

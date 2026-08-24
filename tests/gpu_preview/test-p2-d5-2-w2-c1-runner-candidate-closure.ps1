@@ -31,6 +31,16 @@ $app=[ordered]@{
         physical_vblank_domain_shadow=[ordered]@{
             predecessor_ordinal=0;successor_ordinal=3;origin_ordinal=1;last_ordinal=2
         }
+        physical_mapping_support_envelope_shadow=[ordered]@{
+            schema='mvm-p2-d5-2-w2-c11-physical-mapping-support-envelope-1';shadow_only=$true
+            performance_semantics_connected=$false;intent_satisfaction_connected=$false
+            capture_begin_qpc=150;capture_close_qpc=350;producer_teardown_completed=$true;postroll_boundary_qpc=375
+            predecessor_valid=$true;predecessor_ordinal=0;predecessor_qpc=100
+            successor_valid=$true;successor_ordinal=3;successor_qpc=400
+            postroll_wait_completed=$true;postroll_wait_timeout=$false;postroll_wait_elapsed_qpc=1
+            lower_closed_before_candidate_capture=$true;upper_closed_after_candidate_capture_and_teardown=$true
+            ring_overflow_count=0;wait_failure_count=0;output_stable=$true;authority_valid=$true
+        }
     }
     native_present_hook=[ordered]@{intent_scope_provenance=[ordered]@{authority_pass=$true}}
 }

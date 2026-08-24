@@ -116,6 +116,8 @@ private:
     bool resetPlaybackForMeasurement();
     void requestMeasurementStart();
     void armMeasurementAfterCaptureEnvelopeOpen();
+    bool startVBlankObserverWithPreroll();
+    bool closeVBlankMappingSupportAfterTeardown();
     void startSeek();
     void pollSeekDecode();
     void pollSeekDisplay();
@@ -208,10 +210,15 @@ private:
     gpu::WindowOutputIdentity vblankIdentityStart_{};
     gpu::WindowOutputIdentity vblankIdentityEnd_{};
     bool vblankObserverStarted_ = false;
+    bool vblankObserverRunning_ = false;
     // P2-D5-2-W2-A.1 lower boundary preroll。shadow-only provenance。
     gpu::VBlankPrerollResult vblankPreroll_{};
     // P2-D5-2-W2-C0.1 upper boundary closure。measurement endはこの待機で変更しない。
     gpu::VBlankSuccessorResult vblankSuccessor_{};
+    // W2-C1.1。candidate capture全体を包含するmapping supportの上側witness。
+    gpu::VBlankSuccessorResult vblankMappingSupportPostroll_{};
+    long long vblankMappingSupportPostrollBoundaryQpc_ = 0;
+    bool vblankMappingSupportTeardownCompleted_ = false;
     long long frozenMeasurementEndQpc_ = 0;
     bool captureEnvelopeCloseFailure_ = false;
     QString captureEnvelopeCloseReason_;

@@ -5,7 +5,9 @@ param(
         'GoodDisplayedOutsideDomain','GoodExactBoundaries','GoodCausalCellProperty','NegativeMissingDisplayedQpc',
         'NegativeMultipleDisplayedQpc','NegativeNoPhysicalMapping',
         'NegativeAmbiguousPhysicalMapping','NegativeDuplicatePresentedPhysicalOrdinal',
-        'NegativePhysicalAuthority','NegativeEtwLoss','NegativeMappingProvenanceMutation')][string]$Case,
+        'NegativePhysicalAuthority','NegativeEtwLoss','NegativeMissingNativeExact',
+        'NegativeMissingIntentExact','NegativeMissingIntentScopeExact',
+        'NegativeMappingProvenanceMutation')][string]$Case,
     [Parameter(Mandatory=$true)][string]$Core
 )
 $ErrorActionPreference='Stop'
@@ -16,6 +18,7 @@ function Candidate([int64]$Sequence,$Displayed,[string]$Scope='CURRENT_MEASUREME
         etw_sequence=$Sequence;native_present_serial=[string](100+$Sequence)
         composition_token_serial=[string](200+$Sequence);intent_ordinal=[string]$Sequence
         intent_scope=$Scope;layer2_cohort_member=$Layer2
+        native_exact=$true;intent_exact=$true;intent_scope_exact=$true
     }
     if($null-ne$Displayed){$value.displayed_qpc=$Displayed}
     return [pscustomobject]$value
@@ -55,6 +58,18 @@ switch($Case){
     }
     'NegativePhysicalAuthority'{$physicalValid=$false;$expectedBlocker='PHYSICAL_AUTHORITY_INVALID'}
     'NegativeEtwLoss'{$etwLost=1;$expectedBlocker='ETW_AUTHORITY_INVALID'}
+    'NegativeMissingNativeExact'{
+        $candidates[0].PSObject.Properties.Remove('native_exact')
+        $expectedBlocker='UPSTREAM_CANDIDATE_AUTHORITY_INVALID'
+    }
+    'NegativeMissingIntentExact'{
+        $candidates[0].PSObject.Properties.Remove('intent_exact')
+        $expectedBlocker='UPSTREAM_CANDIDATE_AUTHORITY_INVALID'
+    }
+    'NegativeMissingIntentScopeExact'{
+        $candidates[0].PSObject.Properties.Remove('intent_scope_exact')
+        $expectedBlocker='UPSTREAM_CANDIDATE_AUTHORITY_INVALID'
+    }
 }
 $actual=Invoke-MvmDisplayedQpcPhysicalMapping -Candidates $candidates -Samples $samples `
     -PredecessorOrdinal $predecessor -SuccessorOrdinal $successor -OriginOrdinal $origin -LastOrdinal $last `

@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory=$true)][string]$Output,
     [string]$Inventory=(Join-Path $PSScriptRoot 'inventory-p2-d5-2-w2-c0-display-candidates.ps1'),
     [string]$PhysicalChecker=(Join-Path $PSScriptRoot 'check-p2-d5-2-w2a-physical-domain.ps1'),
-    [string]$EnvelopeChecker=(Join-Path $PSScriptRoot 'check-p2-d5-2-w2-c01-capture-envelope.ps1')
+    [string]$EnvelopeChecker=(Join-Path $PSScriptRoot 'check-p2-d5-2-w2-c01-capture-envelope.ps1'),
+    [string]$SupportChecker=(Join-Path $PSScriptRoot 'check-p2-d5-2-w2-c11-physical-support-envelope.ps1')
 )
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
@@ -13,7 +14,7 @@ function Need($Object,[string]$Name){
     if($null-eq$Object-or$Object.PSObject.Properties.Name-notcontains$Name){Fail "必須fieldがありません: $Name"}
     return $Object.$Name
 }
-foreach($path in @($C011Directory,$Inventory,$PhysicalChecker,$EnvelopeChecker)){
+foreach($path in @($C011Directory,$Inventory,$PhysicalChecker,$EnvelopeChecker,$SupportChecker)){
     if(-not(Test-Path -LiteralPath $path)){Fail "W2-C1必須pathがありません: $path"}
 }
 . (Join-Path $PSScriptRoot 'p2-d5-2-w2-c1-mapping-core.ps1')
@@ -46,21 +47,25 @@ for($run=1;$run-le$runCount;++$run){
     $envelopeProof=Join-Path $outputDirectory "w2-c1-run-$run-envelope-proof.json"
     & pwsh -NoProfile -File $EnvelopeChecker -InputJson $appPath -Output $envelopeProof *> $null
     $envelopeValid=$LASTEXITCODE-eq0
+    $supportProof=Join-Path $outputDirectory "w2-c1-run-$run-mapping-support-proof.json"
+    & pwsh -NoProfile -File $SupportChecker -InputJson $appPath -Output $supportProof *> $null
+    $supportValid=$LASTEXITCODE-eq0
     $app=Get-Content -LiteralPath $appPath -Raw -Encoding utf8|ConvertFrom-Json
     $etw=Get-Content -LiteralPath $etwPath -Raw -Encoding utf8|ConvertFrom-Json
     $opportunity=Need $app 'presentation_opportunity';$physical=Need $opportunity 'physical_vblank'
     $shadow=Need $opportunity 'physical_vblank_domain_shadow'
+    $mappingSupport=Need $opportunity 'physical_mapping_support_envelope_shadow'
     $scope=Need (Need $app 'native_present_hook') 'intent_scope_provenance'
     $runInventory=$inventoryProof.runs[$run-1]
     # Presented candidateをrelationで事前除外しない。closed support外はcoreで
     # 0-solutionとなり、evidenceから消さずにfail-closeする。
     $presentedCandidates=@($runInventory.candidates)
-    $upstreamValid=$physicalValid-and$envelopeValid-and[bool](Need $runInventory 'coverage_complete')-and
+    $upstreamValid=$physicalValid-and$envelopeValid-and$supportValid-and[bool](Need $runInventory 'coverage_complete')-and
         [bool](Need $runInventory 'intent_scope_exact')-and[bool](Need $scope 'authority_pass')
     $mapping=Invoke-MvmDisplayedQpcPhysicalMapping -Candidates $presentedCandidates `
         -Samples @(Need $physical 'samples') `
-        -PredecessorOrdinal ([int64](Need $shadow 'predecessor_ordinal')) `
-        -SuccessorOrdinal ([int64](Need $shadow 'successor_ordinal')) `
+        -PredecessorOrdinal ([int64](Need $mappingSupport 'predecessor_ordinal')) `
+        -SuccessorOrdinal ([int64](Need $mappingSupport 'successor_ordinal')) `
         -OriginOrdinal ([int64](Need $shadow 'origin_ordinal')) `
         -LastOrdinal ([int64](Need $shadow 'last_ordinal')) `
         -PhysicalAuthorityValid $upstreamValid `
@@ -71,6 +76,7 @@ for($run=1;$run-le$runCount;++$run){
     $mapping.run=$run
     $mapping.upstream_authority_valid=$upstreamValid
     $mapping.capture_envelope_valid=$envelopeValid
+    $mapping.physical_mapping_support_envelope_valid=$supportValid
     $mapping.physical_authority_valid=$physicalValid
     $mapping.intent_scope_exact=[bool]$runInventory.intent_scope_exact
     $mapping.inventory_presented_candidate_count=@($runInventory.candidates).Count
@@ -89,11 +95,13 @@ for($run=1;$run-le$runCount;++$run){
 }
 $globalBlockerList=@($globalBlockers.Keys|Sort-Object)
 $presented=0L;$mapped=0L;$inDomain=0L;$outDomain=0L;$missing=0L;$ambiguous=0L;$duplicate=0L
+$upstreamInvalid=0L
 foreach($runResult in $runResults){
     $presented+=[int64]$runResult.presented_candidate_count;$mapped+=[int64]$runResult.mapped_exact_count
     $inDomain+=[int64]$runResult.in_domain_presented_event_count;$outDomain+=[int64]$runResult.out_of_domain_presented_event_count
     $missing+=[int64]$runResult.missing_mapping_count;$ambiguous+=[int64]$runResult.ambiguous_mapping_count
     $duplicate+=[int64]$runResult.duplicate_physical_ordinal_count
+    $upstreamInvalid+=[int64]$runResult.upstream_candidate_authority_invalid_count
 }
 $result=[ordered]@{
     schema='mvm-p2-d5-2-w2-c1-displayed-physical-mapping-1';stage='P2-D5-2-W2-C1'
@@ -107,6 +115,7 @@ $result=[ordered]@{
     in_domain_presented_event_count=$inDomain;out_of_domain_presented_event_count=$outDomain
     missing_mapping_count=$missing;ambiguous_mapping_count=$ambiguous
     duplicate_physical_ordinal_count=$duplicate
+    upstream_candidate_authority_invalid_count=$upstreamInvalid
     upstream_inventory_proof_sha256=((Get-FileHash -LiteralPath $upstreamProof -Algorithm SHA256).Hash.ToLowerInvariant())
     mapping_exact=$globalBlockerList.Count-eq0;blockers=$globalBlockerList;runs=$runResults
     verdict=$(if($globalBlockerList.Count-eq0){'DISPLAYED_QPC_PHYSICAL_VBLANK_ORDINAL_EXACT'}else{'DISPLAYED_QPC_PHYSICAL_VBLANK_ORDINAL_INVALID'})

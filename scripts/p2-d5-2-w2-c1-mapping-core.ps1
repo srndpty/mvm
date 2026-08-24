@@ -31,7 +31,9 @@ function Invoke-MvmDisplayedQpcPhysicalMapping {
         $upstreamFields=@('native_exact','intent_exact','intent_scope_exact')
         $upstreamExact=$true
         foreach($field in $upstreamFields){
-            if($candidate.PSObject.Properties.Name-contains$field-and-not[bool]$candidate.$field){$upstreamExact=$false}
+            if($candidate.PSObject.Properties.Name-notcontains$field-or-not[bool]$candidate.$field){
+                $upstreamExact=$false
+            }
         }
         if(-not$upstreamExact){++$upstreamInvalid}
         $displayed=@(Get-MvmFieldValues $candidate 'displayed_qpc')
@@ -40,12 +42,12 @@ function Invoke-MvmDisplayedQpcPhysicalMapping {
             $qpc=[int64]$displayed[0]
             for($index=0;$index-lt$support.Count;++$index){
                 $sample=$support[$index];$sampleQpc=[int64]$sample.qpc
-                $matches=$qpc-eq$sampleQpc
-                if(-not$matches-and$index-gt0){
+                $cellMatches=$qpc-eq$sampleQpc
+                if(-not$cellMatches-and$index-gt0){
                     $previousQpc=[int64]$support[$index-1].qpc
-                    $matches=$previousQpc-lt$qpc-and$qpc-lt$sampleQpc
+                    $cellMatches=$previousQpc-lt$qpc-and$qpc-lt$sampleQpc
                 }
-                if($matches){$solutions+=,$sample}
+                if($cellMatches){$solutions+=,$sample}
             }
         }else{++$cardinalityInvalid}
         $solutionCount=$solutions.Count;$exact=$displayed.Count-eq1-and$solutionCount-eq1

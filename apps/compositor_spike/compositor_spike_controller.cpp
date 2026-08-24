@@ -365,6 +365,14 @@ void CompositorSpikeController::attach(CompositorRhiItem* item) {
             config_.diagnosticCase == CompositorDiagnosticCase::None && config_.vblankObserver &&
             config_.nativePresentHook == NativePresentHookMode::OnDiagnostic,
         std::memory_order_release);
+    // W2-C1.1。Main.qmlはまだvisible:falseであり、target Presentは始まっていない。
+    // この順序でphysical observer/prerollを成立させ、ETW session内のstartup
+    // Presented candidateもlower supportから脱落させない。
+    if (state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire) &&
+        !startVBlankObserverWithPreroll()) {
+        startupError_ = QStringLiteral("physical VBlank startup supportを開始できません: %1")
+                            .arg(QString::fromStdString(vblankObserverError_));
+    }
     phaseTimer_.start();
     timer_.start();
 }
@@ -597,11 +605,71 @@ bool CompositorSpikeController::resetPlaybackForMeasurement() {
 constexpr long long kVBlankPrerollTimeoutMs = 500;
 constexpr long long kVBlankSuccessorLivenessMs = 500;
 
+bool CompositorSpikeController::startVBlankObserverWithPreroll() {
+    if (!config_.vblankObserver || vblankObserverStarted_)
+        return true;
+    auto* window = item_ ? item_->window() : nullptr;
+    void* vblankHwnd = window ? reinterpret_cast<void*>(window->winId()) : nullptr;
+    const auto resolved = gpu::resolveWindowOutput(vblankHwnd);
+    vblankIdentityStart_ = resolved.identity;
+    if (!resolved.ok) {
+        vblankObserverError_ = resolved.error;
+        return false;
+    }
+    // ring reset後にpublishされた実sampleだけをlower witnessとして受理する。
+    const unsigned long long prerollBaseline = vblankObserver_.ring().publishSerial();
+    if (!vblankObserver_.start(vblankHwnd, vblankObserverError_)) {
+        return false;
+    }
+    vblankObserverStarted_ = true;
+    vblankObserverRunning_ = true;
+    if (!vblankObserver_.prerollNewSample(prerollBaseline, kVBlankPrerollTimeoutMs,
+                                          vblankPreroll_)) {
+        vblankObserverError_ = vblankPreroll_.timedOut
+                                   ? "capture開始前にphysical VBlankを観測できません "
+                                     "(PHYSICAL_VBLANK_PREROLL_TIMEOUT)"
+                                   : "physical VBlank observerがpreroll中に停止しました";
+        return false;
+    }
+    return true;
+}
+
+bool CompositorSpikeController::closeVBlankMappingSupportAfterTeardown() {
+    if (!vblankObserverRunning_)
+        return true;
+    bool supportClosed = true;
+    if (state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire)) {
+        // producer/render teardownが完了した時点をfreezeし、その後の実sampleを
+        // upper witnessにする。frame数・QPC tolerance・queue depthは推測しない。
+        vblankMappingSupportTeardownCompleted_ = true;
+        vblankMappingSupportPostrollBoundaryQpc_ = gpu::qpcTicks();
+        if (!vblankObserver_.waitForSuccessor(vblankMappingSupportPostrollBoundaryQpc_,
+                                              kVBlankSuccessorLivenessMs,
+                                              vblankMappingSupportPostroll_)) {
+            vblankObserverError_ =
+                vblankMappingSupportPostroll_.timedOut
+                    ? "PHYSICAL_MAPPING_SUPPORT_POSTROLL_TIMEOUT"
+                    : "physical VBlank observerがmapping postroll中に停止しました";
+            supportClosed = false;
+        }
+    }
+    vblankObserver_.stop();
+    vblankObserverRunning_ = false;
+    vblankIdentityEnd_ =
+        gpu::resolveWindowOutput(
+            item_ && item_->window() ? reinterpret_cast<void*>(item_->window()->winId()) : nullptr)
+            .identity;
+    return supportClosed;
+}
+
 void CompositorSpikeController::requestMeasurementStart() {
     measurementStartCaptured_ = false;
     measurementStopCaptured_ = false;
     measurementAvailable_ = false;
     vblankSuccessor_ = {};
+    vblankMappingSupportPostroll_ = {};
+    vblankMappingSupportPostrollBoundaryQpc_ = 0;
+    vblankMappingSupportTeardownCompleted_ = false;
     frozenMeasurementEndQpc_ = 0;
     captureEnvelopeCloseFailure_ = false;
     captureEnvelopeCloseReason_.clear();
@@ -636,19 +704,6 @@ void CompositorSpikeController::requestMeasurementStart() {
         state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire);
     if (config_.presentationOpportunityRing || formalOpportunity)
         dwmTimingStart_ = captureDwmTiming(item_ ? item_->window() : nullptr);
-    void* vblankHwnd = nullptr;
-    gpu::WindowOutputResolveResult resolved;
-    if (config_.vblankObserver && !vblankObserverStarted_) {
-        auto* window = item_ ? item_->window() : nullptr;
-        vblankHwnd = window ? reinterpret_cast<void*>(window->winId()) : nullptr;
-        resolved = gpu::resolveWindowOutput(vblankHwnd);
-        vblankIdentityStart_ = resolved.identity;
-        if (!resolved.ok) {
-            vblankObserverError_ = resolved.error;
-            beginShutdown(QStringLiteral("window output VBlank authorityを解決できません"), true);
-            return;
-        }
-    }
     if (formalOpportunity) {
         if (!validDwmAuthority(dwmTimingStart_)) {
             beginShutdown(QStringLiteral("P2-D5-2 presentation authorityを開始できません"), true);
@@ -662,9 +717,13 @@ void CompositorSpikeController::requestMeasurementStart() {
                                                std::memory_order_release);
         formalAuthorityLastPollQpc_ = gpu::qpcTicks();
     }
-    // W2-C0.1。formal producerの構成確定後、observer/preroll/measurement armより
-    // 前にcapture envelopeを開く。1 tickやqueue depthの推測には依存しない。
+    // W2-C1.1。candidate producerを開く前にphysical observerと実preroll
+    // witnessを成立させる。これによりlower supportをQPC heuristicなしで閉じる。
     if (state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire)) {
+        if (!startVBlankObserverWithPreroll()) {
+            beginShutdown(QStringLiteral("physical VBlank mapping supportを開始できません"), true);
+            return;
+        }
         state_->nativePresentEnvelopeStarted.store(false, std::memory_order_release);
         state_->nativePresentEnvelopeStopped.store(false, std::memory_order_release);
         state_->nativePresentEnvelopeStopRequested.store(false, std::memory_order_release);
@@ -678,39 +737,9 @@ void CompositorSpikeController::requestMeasurementStart() {
 }
 
 void CompositorSpikeController::armMeasurementAfterCaptureEnvelopeOpen() {
-    if (config_.vblankObserver && !vblankObserverStarted_) {
-        auto* window = item_ ? item_->window() : nullptr;
-        void* vblankHwnd = window ? reinterpret_cast<void*>(window->winId()) : nullptr;
-        const auto resolved = gpu::resolveWindowOutput(vblankHwnd);
-        vblankIdentityStart_ = resolved.identity;
-        if (!resolved.ok) {
-            vblankObserverError_ = resolved.error;
-            beginShutdown(QStringLiteral("window output VBlank authorityを解決できません"), true);
-            return;
-        }
-        // W2-A.1。baselineはstartより前に取る。ring reset後に新しくpublishされた
-        // sampleだけをprerollとして受理するため、stale sampleは満たさない。
-        const unsigned long long prerollBaseline = vblankObserver_.ring().publishSerial();
-        if (!vblankObserver_.start(vblankHwnd, vblankObserverError_)) {
-            beginShutdown(QStringLiteral("window output VBlank observerを開始できません"), true);
-            return;
-        }
-        vblankObserverStarted_ = true;
-        // W2-A.1 lower boundary preroll。measurement窓を開く前にphysical VBlankを
-        // 1本観測しておかないと、domainの下側bracket (predecessor) が
-        // 「observerの最初のwakeがrender callbackより先に返ったか」というraceに
-        // なる。timeoutはacquisition liveness timeoutであってperformance
-        // thresholdではない。timeoutしたらmeasurementを開始しない。
-        if (!vblankObserver_.prerollNewSample(prerollBaseline, kVBlankPrerollTimeoutMs,
-                                              vblankPreroll_)) {
-            vblankObserverError_ = vblankPreroll_.timedOut
-                                       ? "measurement開始前にphysical VBlankを観測できません "
-                                         "(PHYSICAL_VBLANK_PREROLL_TIMEOUT)"
-                                       : "physical VBlank observerがpreroll中に停止しました";
-            beginShutdown(QStringLiteral("physical VBlank lower boundary prerollに失敗しました"),
-                          true);
-            return;
-        }
+    if (!startVBlankObserverWithPreroll()) {
+        beginShutdown(QStringLiteral("physical VBlank lower boundary prerollに失敗しました"), true);
+        return;
     }
     state_->measurementFirstOutputFrame.store(-1, std::memory_order_release);
     state_->measurementDurationQpc.store(static_cast<long long>(gpu::qpcFrequency()) *
@@ -1028,6 +1057,7 @@ void CompositorSpikeController::tick() {
             }
             if (vblankObserverStarted_) {
                 vblankObserver_.stop();
+                vblankObserverRunning_ = false;
                 vblankIdentityEnd_ =
                     gpu::resolveWindowOutput(item_ && item_->window()
                                                  ? reinterpret_cast<void*>(item_->window()->winId())
@@ -1049,14 +1079,8 @@ void CompositorSpikeController::tick() {
         }
     } else if (phase_ == Phase::CaptureEnvelopeStopWait) {
         if (state_->nativePresentEnvelopeStopped.load(std::memory_order_acquire)) {
-            if (vblankObserverStarted_) {
-                vblankObserver_.stop();
-                vblankIdentityEnd_ =
-                    gpu::resolveWindowOutput(item_ && item_->window()
-                                                 ? reinterpret_cast<void*>(item_->window()->winId())
-                                                 : nullptr)
-                        .identity;
-            }
+            // W2-C1.1ではobserverをここで止めない。candidate capture closure後も
+            // render teardownとpostroll実sampleまで採取を継続する。
             if (captureEnvelopeCloseFailure_) {
                 beginShutdown(captureEnvelopeCloseReason_, true);
                 return;
@@ -1153,6 +1177,8 @@ void CompositorSpikeController::tick() {
     } else if (phase_ == Phase::ShutdownWait) {
         item_->update();
         if (state_->teardownComplete.load()) {
+            if (!closeVBlankMappingSupportAfterTeardown())
+                exitCode_ = 6;
             if (!writeMetrics())
                 exitCode_ = 6;
             phase_ = Phase::Done;
@@ -1794,6 +1820,52 @@ bool CompositorSpikeController::writeMetrics() {
         {"required_intent_count", vblankDomain.requiredIntentCount},
         {"intent_overhang_count", vblankDomain.intentOverhangCount},
         {"intent_surplus_count", vblankDomain.intentSurplusCount}};
+    // W2-C1.1。measurement domainとは独立した、Presented candidate mapping用の
+    // closed physical support。lower/upperはいずれも実VBlank sampleで固定する。
+    const long long mappingCaptureBeginQpc =
+        state_->nativePresentEnvelopeBeginQpc.load(std::memory_order_acquire);
+    const long long mappingCaptureCloseQpc =
+        state_->nativePresentEnvelopeCloseQpc.load(std::memory_order_acquire);
+    const bool mappingSupportLowerClosed = vblankPreroll_.completed && !vblankPreroll_.timedOut &&
+                                           mappingCaptureBeginQpc > 0 &&
+                                           vblankPreroll_.sample.qpc < mappingCaptureBeginQpc;
+    const bool mappingSupportUpperClosed =
+        vblankMappingSupportTeardownCompleted_ && vblankMappingSupportPostroll_.completed &&
+        !vblankMappingSupportPostroll_.timedOut && mappingCaptureCloseQpc > 0 &&
+        mappingCaptureCloseQpc <= vblankMappingSupportPostrollBoundaryQpc_ &&
+        vblankMappingSupportPostrollBoundaryQpc_ <= vblankMappingSupportPostroll_.sample.qpc;
+    const bool mappingSupportAuthorityValid =
+        state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire) &&
+        mappingSupportLowerClosed && mappingSupportUpperClosed &&
+        vblankPreroll_.sample.ordinal <= vblankMappingSupportPostroll_.sample.ordinal &&
+        vblankObserver_.ring().overflowCount() == 0 && vblankObserver_.waitFailureCount() == 0 &&
+        gpu::sameWindowOutput(vblankIdentityStart_, vblankIdentityEnd_);
+    const QJsonObject physicalMappingSupportEnvelopeShadow{
+        {"schema", "mvm-p2-d5-2-w2-c11-physical-mapping-support-envelope-1"},
+        {"shadow_only", true},
+        {"performance_semantics_connected", false},
+        {"intent_satisfaction_connected", false},
+        {"candidate_boundary_authority", "native Present capture lifecycle"},
+        {"physical_boundary_authority", "window output physical VBlank observer"},
+        {"capture_begin_qpc", mappingCaptureBeginQpc},
+        {"capture_close_qpc", mappingCaptureCloseQpc},
+        {"producer_teardown_completed", vblankMappingSupportTeardownCompleted_},
+        {"postroll_boundary_qpc", vblankMappingSupportPostrollBoundaryQpc_},
+        {"predecessor_valid", mappingSupportLowerClosed},
+        {"predecessor_ordinal", vblankPreroll_.sample.ordinal},
+        {"predecessor_qpc", vblankPreroll_.sample.qpc},
+        {"successor_valid", mappingSupportUpperClosed},
+        {"successor_ordinal", vblankMappingSupportPostroll_.sample.ordinal},
+        {"successor_qpc", vblankMappingSupportPostroll_.sample.qpc},
+        {"postroll_wait_completed", vblankMappingSupportPostroll_.completed},
+        {"postroll_wait_timeout", vblankMappingSupportPostroll_.timedOut},
+        {"postroll_wait_elapsed_qpc", vblankMappingSupportPostroll_.waitElapsedQpc},
+        {"lower_closed_before_candidate_capture", mappingSupportLowerClosed},
+        {"upper_closed_after_candidate_capture_and_teardown", mappingSupportUpperClosed},
+        {"ring_overflow_count", static_cast<qint64>(vblankObserver_.ring().overflowCount())},
+        {"wait_failure_count", static_cast<qint64>(vblankObserver_.waitFailureCount())},
+        {"output_stable", gpu::sameWindowOutput(vblankIdentityStart_, vblankIdentityEnd_)},
+        {"authority_valid", mappingSupportAuthorityValid}};
     QJsonArray incrementalTransitionJson;
     for (const auto& transition : incrementalMapperTransitions_) {
         incrementalTransitionJson.append(QJsonObject{
@@ -1907,6 +1979,7 @@ bool CompositorSpikeController::writeMetrics() {
         {"enabled", config_.presentationOpportunityRing},
         {"physical_vblank", physicalVBlank},
         {"physical_vblank_domain_shadow", physicalVBlankDomainShadow},
+        {"physical_mapping_support_envelope_shadow", physicalMappingSupportEnvelopeShadow},
         {"measurement_start_qpc", state_->measurementStartQpc.load(std::memory_order_acquire)},
         {"measurement_end_qpc_exclusive",
          state_->measurementEndQpc.load(std::memory_order_acquire)},
