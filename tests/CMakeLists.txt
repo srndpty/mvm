@@ -336,6 +336,24 @@ mvm_add_test(p2_d5_2_w2c12_upstream_population_architecture
         -SourceRoot "${CMAKE_SOURCE_DIR}"
     PROPERTIES LABELS "gpu_preview")
 
+# P2-D5-2-W2-C1.3: B2 Presented exact setをC1 formal input authorityへ切り替える。
+foreach(_p2_d5_2_w2c13_case IN ITEMS Good NegativeB2PresentedDropped NegativeExtraFormalCandidate NegativeB2CandidateMissingC0Join NegativeB2CandidateAmbiguousC0Join NegativeB2FormalUpstreamInvalid NegativeObservedPopulationDropped)
+    string(TOLOWER "${_p2_d5_2_w2c13_case}" _p2_d5_2_w2c13_name)
+    mvm_add_test(p2_d5_2_w2c13_formal_population_${_p2_d5_2_w2c13_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c13-formal-population-contract.ps1"
+            -Case "${_p2_d5_2_w2c13_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-c13-formal-population-core.ps1"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-c13-formal-population.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c13-${_p2_d5_2_w2c13_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+mvm_add_test(p2_d5_2_w2c13_formal_population_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c13-formal-population-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+
 foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
     string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)
     mvm_add_test(p2_c3_a3_t2_d1b2_evaluability_${_p2_c3_a3_t2_d1b2e_name}

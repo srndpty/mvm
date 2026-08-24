@@ -48,6 +48,11 @@ $etw=[ordered]@{etw_events_lost=0;etw_buffers_lost=0;present_event_overflow_coun
 $inventory|ConvertTo-Json -Depth 10|Set-Content -LiteralPath (Join-Path $Directory 'stub-inventory.json') -Encoding utf8
 $app|ConvertTo-Json -Depth 10|Set-Content -LiteralPath (Join-Path $runDirectory 'traced-app.json') -Encoding utf8
 $etw|ConvertTo-Json -Depth 6|Set-Content -LiteralPath (Join-Path $runDirectory 'present-history-raw.json') -Encoding utf8
+$terminal=[ordered]@{
+    schema='mvm-p2-d5-2-w2-b2-terminal-shadow-1';verdict='NATIVE_PRESENT_TERMINAL_OUTCOME_EXACT'
+    records=@([ordered]@{final_state='Presented';etw_sequence=7;displayed_qpc=@($displayed)})
+}
+$terminal|ConvertTo-Json -Depth 6|Set-Content -LiteralPath (Join-Path $runDirectory 'terminal-shadow.json') -Encoding utf8
 $inventoryStub=Join-Path $Directory 'inventory-stub.ps1'
 @'
 param([string]$B2LiveDirectory,[string]$Output,[switch]$RequireCoverageComplete)
@@ -75,7 +80,7 @@ if($result.presented_candidate_count-ne1-or$result.runs[0].presented_candidate_c
     throw "$Case candidateが保持されたままmissing mappingとしてrejectされません"
 }
 $hash=$result.runs[0].sealed_input_sha256
-foreach($field in @('traced_app','present_history_raw','upstream_inventory_proof')){
+foreach($field in @('traced_app','present_history_raw','b2_terminal_shadow','upstream_inventory_proof')){
     if([string]::IsNullOrWhiteSpace([string]$hash.$field)-or[string]$hash.$field-notmatch'^[0-9a-f]{64}$'){
         throw "$Case sealed input hashが不正です: $field"
     }

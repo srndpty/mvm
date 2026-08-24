@@ -12,11 +12,14 @@ foreach($field in @('present_start_qpc','present_return_qpc','layer2_membership'
     Require $core ("mapping_uses_{0}=\`$false" -f $field) "$field 非推論契約がありません"
 }
 Require $runner 'Inventory[\s\S]+-RequireCoverageComplete' 'C0.1.1 coverage authorityを再検証していません'
-Require $runner '\$presentedCandidates=@\(\$runInventory\.candidates\)' 'inventory Presented candidate全件をmappingへ渡していません'
-if($runner-match "candidates\|Where-Object[\s\S]{0,200}display_relation"){
-    throw 'Presented candidateをdisplay relationでmapping前に除外しています'
+Require $runner 'Invoke-MvmC13FormalPresentedPopulation[\s\S]+-B2TerminalRecords' 'B2 Presented authorityからformal populationを定義していません'
+Require $runner '\$presentedCandidates=@\(\$formalPopulation\.formal_candidates\)' 'B2 exact set join結果をformal mappingへ渡していません'
+Require $runner '\$observedCandidates=@\(\$runInventory\.candidates\)' 'observed Presented populationを保持していません'
+Require $runner 'observed_physical_mapping_diagnostic' 'observed physical mapping diagnosticを保持していません'
+Require $runner 'candidate_count_identity' 'B2/C1 formal candidate count identityがありません'
+if($runner-match "candidates\|Where-Object[\s\S]{0,200}(display_relation|upstream_exact)"){
+    throw 'display relation/upstream exactでformal membershipを定義しています'
 }
-Require $runner 'candidate_count_identity' 'inventory/C1 candidate count identityがありません'
 Require $runner 'SupportChecker[\s\S]+physical_mapping_support_envelope_shadow' 'C1.1 mapping support authorityをconsumeしていません'
 Require $runner "PredecessorOrdinal \(\[int64\]\(Need \`$mappingSupport 'predecessor_ordinal'\)\)" 'C1 mapping lower supportがC1.1 provenanceではありません'
 Require $runner "SuccessorOrdinal \(\[int64\]\(Need \`$mappingSupport 'successor_ordinal'\)\)" 'C1 mapping upper supportがC1.1 provenanceではありません'
