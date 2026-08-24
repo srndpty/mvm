@@ -318,6 +318,24 @@ mvm_add_test(p2_d5_2_w2c11_support_envelope_architecture
         -SourceRoot "${CMAKE_SOURCE_DIR}"
     PROPERTIES LABELS "gpu_preview")
 
+# P2-D5-2-W2-C1.2: C0.1.1 Presented全母集団のupstream provenanceを診断する。
+foreach(_p2_d5_2_w2c12_case IN ITEMS GoodOutsideCapture GoodWithinCaptureRegression NegativeMappingCandidateDropped NegativeProofRecordDropped NegativeCaptureRelationMutation)
+    string(TOLOWER "${_p2_d5_2_w2c12_case}" _p2_d5_2_w2c12_name)
+    mvm_add_test(p2_d5_2_w2c12_upstream_population_${_p2_d5_2_w2c12_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c12-upstream-population-contract.ps1"
+            -Case "${_p2_d5_2_w2c12_case}"
+            -Inventory "${CMAKE_SOURCE_DIR}/scripts/inventory-p2-d5-2-w2-c12-upstream-presented-population.ps1"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-c12-upstream-presented-population.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c12-${_p2_d5_2_w2c12_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+mvm_add_test(p2_d5_2_w2c12_upstream_population_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c12-upstream-population-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+
 foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
     string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)
     mvm_add_test(p2_c3_a3_t2_d1b2_evaluability_${_p2_c3_a3_t2_d1b2e_name}
