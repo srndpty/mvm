@@ -146,6 +146,7 @@ $result=[ordered]@{
     mapping_rule=$script:MvmDisplayedMappingRule
     mapping_support='CLOSED_PREDECESSOR_TO_SUCCESSOR'
     domain_membership_evaluated_after_mapping=$true
+    sealed_mapping_replay_supported=$true
     shadow_only=$true;performance_accounting_connected=$false;intent_satisfaction_connected=$false
     frame_swapped_formal_authority_changed=$false;abi_version=4
     run_count=$runCount;presented_candidate_count=$presented;mapped_exact_count=$mapped
