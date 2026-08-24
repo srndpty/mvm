@@ -224,6 +224,20 @@ foreach(_p2_d5_2_w2b1_case IN ITEMS GoodFormal GoodNonFormal NegativeAppV3QtV4 N
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
+# P2-D5-2-W2-B2: B1 native intentからPresentEvent terminal outcomeまでのshadow exact closure。
+# Layer 2 cohortはnative submissionで固定し、DisplayedQPCのphysical mappingと性能集計は接続しない。
+foreach(_p2_d5_2_w2b2_case IN ITEMS GoodPresented GoodDiscarded GoodDisplayedOutsideMeasurementDomain NegativeMissingPresentEvent NegativeDuplicatePresentEvent NegativeAmbiguousCandidate NegativeSequenceDiscontinuity NegativeThreadMismatch NegativeSyncIntervalMismatch NegativePresentFlagsMismatch NegativePresentStartOutsideNativeInterval NegativeSwapchainMismatch NegativeIntentJoinMutation NegativeFinalStateUnknown NegativeTerminalMissing NegativePresentedWithoutDisplayedQpc NegativeEtwLost NegativeEtwBufferLoss NegativeNativePresentCountMismatch NegativeNativePresentDuplicate)
+    string(TOLOWER "${_p2_d5_2_w2b2_case}" _p2_d5_2_w2b2_name)
+    mvm_add_test(p2_d5_2_w2b2_terminal_shadow_${_p2_d5_2_w2b2_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-b2-terminal-shadow-contract.ps1"
+            -Case "${_p2_d5_2_w2b2_case}"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-b2-terminal-shadow.ps1"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2b2-${_p2_d5_2_w2b2_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
     string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)
     mvm_add_test(p2_c3_a3_t2_d1b2_evaluability_${_p2_c3_a3_t2_d1b2e_name}

@@ -13,7 +13,8 @@ param(
     [string]$SubmissionMode='CONTROL',
     [ValidateSet('DISABLED','CONTROL','TARGET_RHIITEM_PIXEL_TOGGLE')]
     [string]$DirtyPropagationMode='DISABLED',
-    [string]$PidFile
+    [string]$PidFile,
+    [switch]$FormalPreflight
 )
 $ErrorActionPreference='Stop'
 foreach($path in @($Executable,$PatchedQtBin,$SourceA,$SourceB)){
@@ -33,6 +34,7 @@ $arguments=@('--source-a',$SourceA,'--source-b',$SourceB,'--metrics',$Metrics,
     '--seed','20260808','--seek-count','1000','--display-timeout-ms','2000',
     '--gpu-completion','fence','--mode','playback','--vblank-observer',
     '--presentation-opportunity-ring','--native-present-hook',$HookMode)
+if($FormalPreflight){$arguments+='--formal-preflight'}
 if($DirtyPropagationMode-eq'TARGET_RHIITEM_PIXEL_TOGGLE'){
     $arguments+='--target-rhiitem-pixel-toggle'
 }

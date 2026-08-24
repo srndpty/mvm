@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory=$true)][string]$EtwJson,
     [Parameter(Mandatory=$true)][string]$Output,
     [string]$NativeChecker=(Join-Path $PSScriptRoot 'check-p2-c0-native-hook.ps1'),
-    [int]$ProcessExitCode=0
+    [int]$ProcessExitCode=0,
+    [string]$JoinAuthority=(Join-Path $PSScriptRoot 'p2-native-present-event-exact-join.ps1')
 )
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
@@ -30,37 +31,11 @@ $measurementStart=[int64]$opportunity.measurement_start_qpc
 $measurementEnd=[int64]$opportunity.measurement_end_qpc_exclusive
 if($measurementStart-le0-or$measurementEnd-le$measurementStart){Fail 'measurement windowが不正です'}
 Equal ([int64]$etw.qpc_frequency) ([int64]$opportunity.qpc_frequency) 'QPC frequency'
-$nativeAll=@($hook.records);if($nativeAll.Count-lt2){Fail 'native Present recordが不足しています'}
-$boundaryNative=@($nativeAll|Where-Object{
-    [int64]$_.present_enter_qpc-lt$measurementStart-or
-    [int64]$_.present_return_qpc-ge$measurementEnd
-})
-$native=@($nativeAll|Where-Object{
-    [int64]$_.present_enter_qpc-ge$measurementStart-and
-    [int64]$_.present_return_qpc-lt$measurementEnd
-})
-if($native.Count-lt2){Fail 'measurement内で完結したnative Present recordが不足しています'}
-$targetPid=[int64]$etw.target_process_id
-$nativeSwapchain=[uint64]$nativeAll[0].swapchain_identity
-$events=@($etw.events|Where-Object{
-    [int64]$_.process_id-eq$targetPid-and[int64]$_.present_start_qpc-ge$measurementStart-and
-    [int64]$_.present_start_qpc-lt$measurementEnd
-})
-$allWindowPresents=@($events|Where-Object{
-    $address=[string]$_.swap_chain_address
-    $parsed=if($address.StartsWith('0x')){[Convert]::ToUInt64($address.Substring(2),16)}else{[uint64]$address}
-    $parsed-eq$nativeSwapchain
-}|Sort-Object {[int64]$_.present_start_qpc})
-$boundaryEtw=@($allWindowPresents|Where-Object{
-    $qpc=[int64]$_.present_start_qpc
-    @($boundaryNative|Where-Object{$qpc-ge[int64]$_.present_enter_qpc-and$qpc-le[int64]$_.present_return_qpc}).Count-gt0
-})
-$presents=@($allWindowPresents|Where-Object{
-    $qpc=[int64]$_.present_start_qpc
-    @($boundaryNative|Where-Object{$qpc-ge[int64]$_.present_enter_qpc-and$qpc-le[int64]$_.present_return_qpc}).Count-eq0
-})
-Equal $presents.Count $native.Count 'native successful Present/ETW target Present count'
-$sequenceBase=[int64]$presents[0].sequence_index
+. $JoinAuthority
+$exactJoin=Invoke-MvmNativePresentEventExactJoin -App $app -Etw $etw
+$native=@($exactJoin.native);$presents=@($exactJoin.events)
+$targetPid=[int64]$exactJoin.target_process_id;$nativeSwapchain=[uint64]$exactJoin.target_swapchain_identity
+$boundaryNativeCount=[int]$exactJoin.boundary_native_count;$boundaryEtwCount=[int]$exactJoin.boundary_event_count
 $samples=@($opportunity.physical_vblank.samples)
 if($samples.Count-lt120){Fail 'physical VBlank sampleが120件未満です'}
 $qpcFrequency=[int64]$opportunity.qpc_frequency
@@ -86,12 +61,7 @@ function Bracket([int64]$Qpc){
 $records=@();$presentedCount=0;$discardedCount=0;$incompleteCount=0;$lostCount=0
 for($index=0;$index-lt$native.Count;++$index){
     $present=$presents[$index];$record=$native[$index]
-    Equal ([int64]$present.sequence_index) ($sequenceBase+$index) "ETW sequence[$index]"
-    Equal ([int64]$present.thread_id) ([int64]$record.thread_id) "thread id[$index]"
-    Equal ([int64]$present.sync_interval) ([int64]$record.sync_interval) "SyncInterval[$index]"
-    Equal ([int64]$present.present_flags) ([int64]$record.present_flags) "PresentFlags[$index]"
     $start=[int64]$present.present_start_qpc;$enter=[int64]$record.present_enter_qpc;$returned=[int64]$record.present_return_qpc
-    if($start-lt$enter-or$start-gt$returned){Fail "ETW PresentStartがnative enter/return interval外です: $index"}
     foreach($field in @('completion_class','is_completed','is_lost','present_mode',
             'seen_dxgk_present','seen_win32k_events','seen_in_frame_event',
             'wait_for_flip_event','wait_for_mpo_flip_event')){
@@ -160,8 +130,8 @@ $result=[ordered]@{
     exit_reason=$(if($lostCount-ne0){'PRESENTMON_LOST'}elseif($incompleteCount-ne0){'DISPLAY_COMPLETION_INCOMPLETE'}else{'NONE'})
     target_process_id=$targetPid;target_swapchain_identity=[string]$nativeSwapchain
     native_present_count=$native.Count;etw_present_count=$presents.Count
-    boundary_straddling_native_count=$boundaryNative.Count
-    boundary_straddling_etw_count=$boundaryEtw.Count
+    boundary_straddling_native_count=$boundaryNativeCount
+    boundary_straddling_etw_count=$boundaryEtwCount
     measurement_domain='present_enter_qpc >= start && present_return_qpc < end'
     count_mismatch=0;order_mismatch=0;interval_mismatch=0
     composition_token_join_exact_count=$native.Count
