@@ -26,8 +26,14 @@ function Invoke-MvmDisplayedQpcPhysicalMapping {
     $support=@($Samples|Where-Object{
         [int64]$_.ordinal-ge$PredecessorOrdinal-and[int64]$_.ordinal-le$SuccessorOrdinal
     }|Sort-Object {[int64]$_.ordinal})
-    $records=@();$missing=0;$ambiguous=0;$cardinalityInvalid=0
+    $records=@();$missing=0;$ambiguous=0;$cardinalityInvalid=0;$upstreamInvalid=0
     foreach($candidate in $Candidates){
+        $upstreamFields=@('native_exact','intent_exact','intent_scope_exact')
+        $upstreamExact=$true
+        foreach($field in $upstreamFields){
+            if($candidate.PSObject.Properties.Name-contains$field-and-not[bool]$candidate.$field){$upstreamExact=$false}
+        }
+        if(-not$upstreamExact){++$upstreamInvalid}
         $displayed=@(Get-MvmFieldValues $candidate 'displayed_qpc')
         $solutions=@()
         if($displayed.Count-eq1){
@@ -62,6 +68,7 @@ function Invoke-MvmDisplayedQpcPhysicalMapping {
             in_measurement_physical_domain=$inDomain
             mapping_solution_count=$solutionCount
             mapping_exact=$exact
+            upstream_candidate_exact=$upstreamExact
             layer2_cohort_member=[bool]$candidate.layer2_cohort_member
         }
     }
@@ -74,6 +81,7 @@ function Invoke-MvmDisplayedQpcPhysicalMapping {
     if(-not$PhysicalAuthorityValid){$blockers+='PHYSICAL_AUTHORITY_INVALID'}
     if($EtwEventsLost-ne0-or$EtwBuffersLost-ne0-or$PresentEventOverflowCount-ne0){$blockers+='ETW_AUTHORITY_INVALID'}
     if($cardinalityInvalid-ne0){$blockers+='DISPLAYED_QPC_CARDINALITY_INVALID'}
+    if($upstreamInvalid-ne0){$blockers+='UPSTREAM_CANDIDATE_AUTHORITY_INVALID'}
     if($missing-ne0){$blockers+='PHYSICAL_MAPPING_MISSING'}
     if($ambiguous-ne0){$blockers+='PHYSICAL_MAPPING_AMBIGUOUS'}
     if($duplicateOrdinalCount-ne0){$blockers+='DUPLICATE_PRESENTED_PHYSICAL_ORDINAL'}
@@ -97,6 +105,7 @@ function Invoke-MvmDisplayedQpcPhysicalMapping {
         ambiguous_mapping_count=$ambiguous
         duplicate_physical_ordinal_count=$duplicateOrdinalCount
         displayed_qpc_cardinality_invalid_count=$cardinalityInvalid
+        upstream_candidate_authority_invalid_count=$upstreamInvalid
         mapping_exact=$blockers.Count-eq0
         blockers=$blockers
         records=$records

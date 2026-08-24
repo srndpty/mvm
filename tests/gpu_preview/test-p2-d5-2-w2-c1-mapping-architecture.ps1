@@ -11,9 +11,16 @@ Require $core "mapping_filters_measurement_window_before_mapping=\`$false" 'mapp
 foreach($field in @('present_start_qpc','present_return_qpc','layer2_membership','intent_scope','source_frame')){
     Require $core ("mapping_uses_{0}=\`$false" -f $field) "$field 非推論契約がありません"
 }
-Require $runner "display_relation-eq'WITHIN_PREDECESSOR_SUCCESSOR_ENVELOPE'" 'closed predecessor/successor supportを使っていません'
 Require $runner 'Inventory[\s\S]+-RequireCoverageComplete' 'C0.1.1 coverage authorityを再検証していません'
-Require $runner "native_exact'[\s\S]+intent_exact'[\s\S]+intent_scope_exact'" 'native/intent/scope exact authorityを必須にしていません'
+Require $runner '\$presentedCandidates=@\(\$runInventory\.candidates\)' 'inventory Presented candidate全件をmappingへ渡していません'
+if($runner-match "candidates\|Where-Object[\s\S]{0,200}display_relation"){
+    throw 'Presented candidateをdisplay relationでmapping前に除外しています'
+}
+Require $runner 'candidate_count_identity' 'inventory/C1 candidate count identityがありません'
+Require $runner 'sealed_input_sha256' 'sealed input SHA-256 objectがありません'
+foreach($hashField in @('traced_app','present_history_raw','upstream_inventory_proof')){
+    Require $runner ("{0}=\(\(Get-FileHash" -f $hashField) "$hashField SHA-256がありません"
+}
 Require $runner 'performance_accounting_connected=\$false;intent_satisfaction_connected=\$false' 'C1がaccounting/satisfactionへ接続されています'
 if($core-match'nearest|tolerance' -and
    $core-notmatch'mapping_uses_nearest_qpc=\$false[\s\S]+mapping_uses_arbitrary_tolerance=\$false'){

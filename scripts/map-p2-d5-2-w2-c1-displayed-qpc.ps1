@@ -52,16 +52,12 @@ for($run=1;$run-le$runCount;++$run){
     $shadow=Need $opportunity 'physical_vblank_domain_shadow'
     $scope=Need (Need $app 'native_present_hook') 'intent_scope_provenance'
     $runInventory=$inventoryProof.runs[$run-1]
-    $supportCandidates=@($runInventory.candidates|Where-Object{
-        [string]$_.display_relation-eq'WITHIN_PREDECESSOR_SUCCESSOR_ENVELOPE'
-    })
-    foreach($candidate in $supportCandidates){
-        if(-not[bool](Need $candidate 'native_exact')-or-not[bool](Need $candidate 'intent_exact')-or
-           -not[bool](Need $candidate 'intent_scope_exact')){Fail "run $run upstream candidate authorityが不成立です"}
-    }
+    # Presented candidateをrelationで事前除外しない。closed support外はcoreで
+    # 0-solutionとなり、evidenceから消さずにfail-closeする。
+    $presentedCandidates=@($runInventory.candidates)
     $upstreamValid=$physicalValid-and$envelopeValid-and[bool](Need $runInventory 'coverage_complete')-and
         [bool](Need $runInventory 'intent_scope_exact')-and[bool](Need $scope 'authority_pass')
-    $mapping=Invoke-MvmDisplayedQpcPhysicalMapping -Candidates $supportCandidates `
+    $mapping=Invoke-MvmDisplayedQpcPhysicalMapping -Candidates $presentedCandidates `
         -Samples @(Need $physical 'samples') `
         -PredecessorOrdinal ([int64](Need $shadow 'predecessor_ordinal')) `
         -SuccessorOrdinal ([int64](Need $shadow 'successor_ordinal')) `
@@ -77,6 +73,18 @@ for($run=1;$run-le$runCount;++$run){
     $mapping.capture_envelope_valid=$envelopeValid
     $mapping.physical_authority_valid=$physicalValid
     $mapping.intent_scope_exact=[bool]$runInventory.intent_scope_exact
+    $mapping.inventory_presented_candidate_count=@($runInventory.candidates).Count
+    $mapping.candidate_count_identity=$mapping.presented_candidate_count-eq@($runInventory.candidates).Count
+    $mapping.sealed_input_sha256=[ordered]@{
+        traced_app=((Get-FileHash -LiteralPath $appPath -Algorithm SHA256).Hash.ToLowerInvariant())
+        present_history_raw=((Get-FileHash -LiteralPath $etwPath -Algorithm SHA256).Hash.ToLowerInvariant())
+        upstream_inventory_proof=((Get-FileHash -LiteralPath $upstreamProof -Algorithm SHA256).Hash.ToLowerInvariant())
+    }
+    if(-not$mapping.candidate_count_identity){
+        $mapping.blockers+=,'CANDIDATE_COUNT_IDENTITY_MISMATCH'
+        $mapping.mapping_exact=$false
+        $globalBlockers['CANDIDATE_COUNT_IDENTITY_MISMATCH']=$true
+    }
     $runResults+=,$mapping
 }
 $globalBlockerList=@($globalBlockers.Keys|Sort-Object)
@@ -99,6 +107,7 @@ $result=[ordered]@{
     in_domain_presented_event_count=$inDomain;out_of_domain_presented_event_count=$outDomain
     missing_mapping_count=$missing;ambiguous_mapping_count=$ambiguous
     duplicate_physical_ordinal_count=$duplicate
+    upstream_inventory_proof_sha256=((Get-FileHash -LiteralPath $upstreamProof -Algorithm SHA256).Hash.ToLowerInvariant())
     mapping_exact=$globalBlockerList.Count-eq0;blockers=$globalBlockerList;runs=$runResults
     verdict=$(if($globalBlockerList.Count-eq0){'DISPLAYED_QPC_PHYSICAL_VBLANK_ORDINAL_EXACT'}else{'DISPLAYED_QPC_PHYSICAL_VBLANK_ORDINAL_INVALID'})
 }

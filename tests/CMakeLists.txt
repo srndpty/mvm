@@ -282,6 +282,16 @@ mvm_add_test(p2_d5_2_w2c1_mapping_architecture
         "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c1-mapping-architecture.ps1"
         -SourceRoot "${CMAKE_SOURCE_DIR}"
     PROPERTIES LABELS "gpu_preview")
+foreach(_p2_d5_2_w2c1_runner_case IN ITEMS NegativePresentedBeforePredecessorNotDropped NegativePresentedAfterSuccessorNotDropped)
+    string(TOLOWER "${_p2_d5_2_w2c1_runner_case}" _p2_d5_2_w2c1_runner_name)
+    mvm_add_test(p2_d5_2_w2c1_runner_${_p2_d5_2_w2c1_runner_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c1-runner-candidate-closure.ps1"
+            -Case "${_p2_d5_2_w2c1_runner_case}"
+            -Runner "${CMAKE_SOURCE_DIR}/scripts/map-p2-d5-2-w2-c1-displayed-qpc.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c1-runner-${_p2_d5_2_w2c1_runner_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
 
 foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
     string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)
