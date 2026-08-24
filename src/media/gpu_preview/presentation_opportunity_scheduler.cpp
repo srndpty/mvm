@@ -17,7 +17,8 @@ bool checkedMultiply(long long left, long long right, long long& result) {
 
 bool PresentationOpportunityScheduler::start(const PresentationOpportunityConfig& config) {
     *this = {};
-    if (config.requiredFrameCount <= 0 || config.sourceFpsNumerator <= 0 ||
+    if (config.requiredFrameCount <= 0 || config.sourceFrameOffset < 0 ||
+        config.sourceFrameOffset >= config.requiredFrameCount || config.sourceFpsNumerator <= 0 ||
         config.sourceFpsDenominator <= 0 || config.refreshNumerator <= 0 ||
         config.refreshDenominator <= 0 || config.qpcFrequency <= 0)
         return fail(PresentationOpportunityError::InvalidConfiguration);
@@ -371,10 +372,16 @@ bool PresentationOpportunityScheduler::fail(PresentationOpportunityError error) 
 bool PresentationOpportunityScheduler::targetFor(long long ordinal, long long& target) const {
     long long numerator = 0;
     long long denominator = 0;
-    return checkedMultiply(ordinal, config_.sourceFpsNumerator, numerator) &&
-           checkedMultiply(numerator, config_.refreshDenominator, numerator) &&
-           checkedMultiply(config_.sourceFpsDenominator, config_.refreshNumerator, denominator) &&
-           denominator > 0 && ((target = numerator / denominator), true);
+    if (!checkedMultiply(ordinal, config_.sourceFpsNumerator, numerator) ||
+        !checkedMultiply(numerator, config_.refreshDenominator, numerator) ||
+        !checkedMultiply(config_.sourceFpsDenominator, config_.refreshNumerator, denominator) ||
+        denominator <= 0)
+        return false;
+    const long long relativeTarget = numerator / denominator;
+    if (relativeTarget > std::numeric_limits<long long>::max() - config_.sourceFrameOffset)
+        return false;
+    target = config_.sourceFrameOffset + relativeTarget;
+    return true;
 }
 
 void PresentationOpportunityScheduler::captureFirstEvent(

@@ -12,7 +12,12 @@ function Need($Object,[string]$Name){
     if($null-eq$Object-or$Object.PSObject.Properties.Name-notcontains$Name){Fail "必須fieldがありません: $Name"}
     return $Object.$Name
 }
-function Display-Relation([int64]$Qpc,[int64]$OriginQpc,[int64]$LastQpc){
+function Display-Relation([int64]$Qpc,[bool]$BoundariesValid,[int64]$PredecessorQpc,[int64]$SuccessorQpc,[int64]$OriginQpc,[int64]$LastQpc){
+    if($BoundariesValid){
+        if($Qpc-lt$PredecessorQpc){return 'BEFORE_PREDECESSOR'}
+        if($Qpc-le$SuccessorQpc){return 'WITHIN_PREDECESSOR_SUCCESSOR_ENVELOPE'}
+        return 'AFTER_SUCCESSOR'
+    }
     if($Qpc-lt$OriginQpc){return 'BEFORE_ORIGIN'}
     if($Qpc-le$LastQpc){return 'WITHIN_OBSERVED_MEMBER_ENVELOPE'}
     return 'AFTER_LAST_SAMPLE_UNRESOLVED'
@@ -55,7 +60,14 @@ for($run=1;$run-le$runCount;++$run){
     $domainMembers=@($samples|Where-Object{[int64]$_.qpc-ge$measurementStart-and[int64]$_.qpc-lt$measurementEnd})
     if($domainMembers.Count-ne[int](Need $shadow 'physical_opportunity_count')){Fail "run $run physical domain member件数がshadowと一致しません"}
     $originQpc=[int64](Need $shadow 'origin_qpc');$lastQpc=[int64](Need $shadow 'last_qpc')
-    $nativeAll=@(Need (Need $app 'native_present_hook') 'records')
+    $predecessorValid=[bool](Need $shadow 'predecessor_valid')
+    $successorValid=[bool](Need $shadow 'successor_valid')
+    $boundariesValid=$predecessorValid-and$successorValid
+    $predecessorQpc=[int64](Need $shadow 'predecessor_qpc')
+    $successorQpc=[int64](Need $shadow 'successor_qpc')
+    $nativeHook=Need $app 'native_present_hook'
+    $hasCaptureEnvelope=$nativeHook.PSObject.Properties.Name-contains'capture_envelope_records'
+    $nativeAll=@($(if($hasCaptureEnvelope){Need $nativeHook 'capture_envelope_records'}else{Need $nativeHook 'records'}))
     $intentAll=@($app.native_present_hook.intent_identity_transport.records)
     $intentByPresent=@{}
     foreach($intent in $intentAll){$serial=[string](Need $intent 'native_present_serial');if($intentByPresent.ContainsKey($serial)){Fail "run $run B1 serialが重複しています: $serial"};$intentByPresent[$serial]=$intent}
@@ -66,6 +78,9 @@ for($run=1;$run-le$runCount;++$run){
     $presentedCandidates=@();$presentedEventSequences=@{};$multipleDisplayed=0;$observedMissingNative=0;$observedMissingIntent=0
     $observedForeignExact=0;$outsidePresentedCount=0
     $relationCounts=[ordered]@{
+        BEFORE_PREDECESSOR=0
+        WITHIN_PREDECESSOR_SUCCESSOR_ENVELOPE=0
+        AFTER_SUCCESSOR=0
         BEFORE_ORIGIN=0
         WITHIN_OBSERVED_MEMBER_ENVELOPE=0
         AFTER_LAST_SAMPLE_UNRESOLVED=0
@@ -86,7 +101,16 @@ for($run=1;$run-le$runCount;++$run){
         $intentExact=$false;$intentOrdinal=$null;$nativeSerial=$null
         if($nativeExact){
             $nativeSerial=[string]$nativeCandidates[0].present_serial
-            if($intentByPresent.ContainsKey($nativeSerial)){
+            if($hasCaptureEnvelope){
+                $nativeRecord=$nativeCandidates[0]
+                $token=Need $nativeRecord 'composition_token'
+                $intentExact=[bool](Need $nativeRecord 'token_present')-and
+                    [bool](Need $nativeRecord 'intent_ordinal_valid')-and
+                    [bool](Need $token 'intent_ordinal_valid')-and
+                    [string](Need $nativeRecord 'intent_ordinal')-eq[string](Need $token 'intent_ordinal')-and
+                    [string](Need $token 'token_serial')-ne'0'
+                if($intentExact){$intentOrdinal=[string]$nativeRecord.intent_ordinal}
+            }elseif($intentByPresent.ContainsKey($nativeSerial)){
                 $intent=$intentByPresent[$nativeSerial]
                 $tokenSerial=[string]$nativeCandidates[0].composition_token.token_serial
                 $intentExact=$tokenSerial-eq[string]$intent.native_present_embedded_token_serial-and
@@ -99,9 +123,10 @@ for($run=1;$run-le$runCount;++$run){
         if(-not$inLayer2){++$outsidePresentedCount}
         foreach($display in $displayed){
             $displayQpc=[int64](Need $display 'qpc')
-            $relation=Display-Relation $displayQpc $originQpc $lastQpc
+            $relation=Display-Relation $displayQpc $boundariesValid $predecessorQpc $successorQpc $originQpc $lastQpc
             $relationCounts[$relation]=[int]$relationCounts[$relation]+1
-            if($relation-eq'WITHIN_OBSERVED_MEMBER_ENVELOPE'){
+            $coverageCandidate=$relation-eq$(if($boundariesValid){'WITHIN_PREDECESSOR_SUCCESSOR_ENVELOPE'}else{'WITHIN_OBSERVED_MEMBER_ENVELOPE'})
+            if($coverageCandidate){
                 if(-not$nativeExact){++$observedMissingNative}
                 elseif(-not$intentExact){++$observedMissingIntent}
                 elseif(-not$inLayer2){++$observedForeignExact}
@@ -121,11 +146,18 @@ for($run=1;$run-le$runCount;++$run){
     if($multipleDisplayed-ne0){$blockers+='PRESENTED_DISPLAYED_QPC_CARDINALITY_UNRESOLVED'}
     if($observedMissingNative-ne0){$blockers+='OBSERVED_DOMAIN_PRESENTED_NATIVE_JOIN_MISSING'}
     if($observedMissingIntent-ne0){$blockers+='OBSERVED_DOMAIN_PRESENTED_INTENT_JOIN_MISSING'}
+    if($hasCaptureEnvelope){
+        $envelope=Need $nativeHook 'capture_envelope'
+        if(-not[bool](Need $envelope 'authority_pass')){$blockers+='CAPTURE_ENVELOPE_AUTHORITY_INVALID'}
+        if([int64](Need $envelope 'overflow_count')-ne0){$blockers+='CAPTURE_ENVELOPE_OVERFLOW'}
+    }
     foreach($blocker in $blockers){$globalBlockers[$blocker]=$true}
     $runResults+=[ordered]@{
         run=$run;physical_shadow_valid=[bool]$shadow.shadow_authority_valid
         physical_shadow_reason=[string]$shadow.shadow_authority_canonical_reason
-        predecessor_valid=[bool]$shadow.predecessor_valid;successor_valid=[bool]$shadow.successor_valid
+        predecessor_valid=$predecessorValid;successor_valid=$successorValid
+        coverage_envelope_authority=$(if($boundariesValid){'PREDECESSOR_TO_SUCCESSOR_CONSERVATIVE_SUPERSET'}else{'OBSERVED_MEMBERS_DIAGNOSTIC_ONLY'})
+        coverage_predecessor_qpc=$predecessorQpc;coverage_successor_qpc=$successorQpc
         physical_domain_member_count=$domainMembers.Count;origin_qpc=$originQpc;last_qpc=$lastQpc
         all_target_present_event_count=$allTargetEvents.Count;available_native_present_count=$nativeAll.Count
         layer2_cohort_count=@($join.joined).Count;boundary_native_count=@($join.boundary_native).Count

@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][ValidateSet(
-        'GoodForeignBoundary','NegativeMissingNative','NegativePhysicalAuthority')][string]$Case,
+        'GoodForeignBoundary','NegativeMissingNative','NegativeMissingIntent',
+        'NegativePhysicalAuthority')][string]$Case,
     [Parameter(Mandatory=$true)][string]$Inventory,
     [Parameter(Mandatory=$true)][string]$Directory
 )
@@ -23,7 +24,7 @@ $intent=@(0..2|ForEach-Object{[ordered]@{
 $shadow=[ordered]@{
     shadow_authority_valid=$true;shadow_authority_canonical_reason='NONE'
     physical_opportunity_count=3;origin_qpc=100;last_qpc=300
-    predecessor_valid=$true;successor_valid=$true
+    predecessor_valid=$true;predecessor_qpc=90;successor_valid=$true;successor_qpc=400
 }
 $app=[ordered]@{
     process_id=1234
@@ -45,6 +46,9 @@ $events=@(
     [ordered]@{sequence_index=12;present_start_qpc=230;process_id=1234;thread_id=77;swap_chain_address='0x1000';sync_interval=1;present_flags=0;final_state='Presented';displayed=@([ordered]@{qpc=250})})
 if($Case-eq'NegativeMissingNative'){
     $events+=,[ordered]@{sequence_index=13;present_start_qpc=270;process_id=1234;thread_id=77;swap_chain_address='0x1000';sync_interval=1;present_flags=0;final_state='Presented';displayed=@([ordered]@{qpc=280})}
+}
+if($Case-eq'NegativeMissingIntent'){
+    $intent[1].native_present_intent_valid=$false
 }
 if($Case-eq'NegativePhysicalAuthority'){
     $shadow.shadow_authority_valid=$false;$shadow.shadow_authority_canonical_reason='PHYSICAL_VBLANK_BOUNDARY_NOT_BRACKETED'

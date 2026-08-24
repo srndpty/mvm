@@ -16,6 +16,8 @@
 #include <tuple>
 #include <vector>
 
+#include <QScopeGuard>
+
 namespace mvm::app {
 namespace {
 
@@ -221,7 +223,14 @@ protected:
                        : 0;
         // P1と同じくrender threadから次のframeを要求する。GUI timerだけでは
         // scene graph requestがcoalesceされ、60Hz output deadlineを取りこぼす。
-        update();
+        // W2-C0.1 envelope drain中は新しいPresentを生まない。scope exit時点で
+        // measurement stop済みかを判定するため、pastSourceDomain callback自身が
+        // 次の無intent callbackを予約することもない。
+        [[maybe_unused]] const auto nextFrameRequest = qScopeGuard([this] {
+            if (!state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire) ||
+                !state_->measurementStopCaptured.load(std::memory_order_acquire))
+                update();
+        });
         // fatal後もmeasurement stop要求だけはrender threadで採取する。
         // 先にreturnすると停止snapshotが未採取のままshutdownへ進んでしまう。
         if (captureMeasurementBoundary(callbackBegin))
@@ -303,8 +312,37 @@ protected:
                 fail("P2-D5-2 formal intent ordinalをcomposition tokenへ設定できません");
                 return;
             }
+            if (state_->formalOpportunityEnvelopePrerollActive.load(std::memory_order_acquire)) {
+                if (!formalDecision.duplicateCallback) {
+                    const long long repeatedFrame = lastNativePresentToken_.outputFrameNumber;
+                    bool completed = false;
+                    gpu::PresentationOpportunityError error =
+                        gpu::PresentationOpportunityError::None;
+                    if (repeatedFrame >= 0) {
+                        std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+                        completed = state_->formalOpportunityScheduler.markRenderComplete(
+                            gpu::qpcTicks(), repeatedFrame, formalDecision.renderOrdinal);
+                        error = state_->formalOpportunityScheduler.error();
+                    }
+                    if (!completed) {
+                        fail(std::string("P2-D5-2 lower envelope render完了記録失敗: ") +
+                             gpu::presentationOpportunityErrorName(error));
+                        return;
+                    }
+                    state_->formalOpportunityPresentedFrame.store(repeatedFrame,
+                                                                  std::memory_order_release);
+                    ++formalOpportunityRenderOrdinal_;
+                }
+                // lower envelopeではintentだけを生成し、source selection、formal
+                // counter、measurement schedulerへは接続しない。
+                return;
+            }
             if (formalDecision.pastSourceDomain) {
                 state_->formalOpportunityDomainReached.store(true, std::memory_order_release);
+                // W2-C0.1。scheduler-produced pastSourceDomain intentを持つこのcallbackで
+                // measurementを閉じる。controllerからstop用の追加Presentを作らない。
+                if (state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire))
+                    finishMeasurement(callbackBegin);
                 return;
             }
             formalDecisionObserved = true;
@@ -627,11 +665,14 @@ protected:
             return;
         }
         const long long submissionQpc = gpu::qpcTicks();
-        if (state_->nativePresentCaptureActive.load(std::memory_order_acquire)) {
-            if (!nativePresentToken.setFrame(frame, nativeTokenSerial)) {
+        if (!nativePresentToken.setFrame(frame, nativeTokenSerial)) {
+            if (state_->nativePresentCaptureActive.load(std::memory_order_acquire)) {
                 fail("native Present composition tokenを構築できません");
                 return;
             }
+        } else {
+            // capture開始前にも最後の実compositionを保持し、lower envelopeの
+            // scheduler-produced intentを架空frameへ結び付けない。
             lastNativePresentToken_ = nativePresentToken.token();
         }
         if (state_->p3SeekDiagnostics.active.load(std::memory_order_acquire) &&
@@ -845,7 +886,121 @@ private:
                 c.untrackedSubmissionCount};
     }
 
+    bool startFormalOpportunityScheduler(bool envelopePreroll = false) {
+        const long long repeatedFrame = lastNativePresentToken_.outputFrameNumber;
+        if (envelopePreroll && repeatedFrame < 0)
+            return false;
+        const gpu::PresentationOpportunityConfig config{
+            envelopePreroll ? repeatedFrame + 1
+                            : state_->formalRequiredFrameCount.load(std::memory_order_acquire),
+            envelopePreroll ? repeatedFrame : 0,
+            envelopePreroll ? 1 : 60,
+            1,
+            state_->formalRefreshNumerator.load(std::memory_order_relaxed),
+            state_->formalRefreshDenominator.load(std::memory_order_relaxed),
+            static_cast<long long>(gpu::qpcFrequency())};
+        std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+        return state_->formalOpportunityScheduler.start(config);
+    }
+
+    void finishMeasurement(long long callbackBegin) {
+        const bool retainNativeEnvelope =
+            state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire) &&
+            !state_->fatal.load(std::memory_order_acquire);
+        if (!retainNativeEnvelope &&
+            state_->nativePresentCaptureActive.exchange(false, std::memory_order_acq_rel)) {
+            std::string hookError;
+            if (!state_->nativePresentHook || !state_->nativePresentHook->endCapture(hookError) ||
+                !state_->nativePresentHook->authorityValid() ||
+                state_->nativePresentTokenSetFailureCount.load(std::memory_order_relaxed) != 0) {
+                fail(hookError.empty() ? "native Present authorityが不成立です" : hookError);
+            }
+        }
+        if (state_->measurementIntervalActive.exchange(false, std::memory_order_acq_rel)) {
+            if (state_->formalOpportunityCaptureActive.exchange(false, std::memory_order_acq_rel)) {
+                bool closed = false;
+                gpu::PresentationOpportunitySnapshot snapshot;
+                {
+                    std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+                    closed = state_->formalOpportunityScheduler.close();
+                    snapshot = state_->formalOpportunityScheduler.snapshot();
+                }
+                if (!closed) {
+                    fail(std::string("P2-D5-2 opportunity close失敗: ") +
+                         gpu::presentationOpportunityErrorName(snapshot.error));
+                } else {
+                    state_->formalOpportunityTrueDropCount.fetch_add(snapshot.trueDrop,
+                                                                     std::memory_order_relaxed);
+                    state_->droppedOutputCount.fetch_add(snapshot.trueDrop,
+                                                         std::memory_order_relaxed);
+                    state_->scheduledOutputCount.fetch_add(
+                        snapshot.displayedUnique + snapshot.trueDrop, std::memory_order_relaxed);
+                }
+                const long long shadowClosed = scheduler_.closeBefore(
+                    state_->measurementEndQpc.load(std::memory_order_acquire));
+                state_->diagnosticSyntheticDeadlineDropCount.fetch_add(shadowClosed,
+                                                                       std::memory_order_relaxed);
+            } else {
+                const long long closed = scheduler_.closeBefore(
+                    state_->measurementEndQpc.load(std::memory_order_acquire));
+                state_->scheduledOutputCount.fetch_add(closed, std::memory_order_relaxed);
+                noteDrop(gpu::OutputDropReason::SchedulerDeadline, closed);
+            }
+        }
+        state_->presentationCaptureActive.store(false, std::memory_order_release);
+        state_->playbackSchedulerEnabled.store(false, std::memory_order_release);
+        state_->diagnosticTimingEnabled.store(false, std::memory_order_release);
+        state_->diagnosticLockTiming = state_->device.lock().endDiagnostics();
+        {
+            std::lock_guard<std::mutex> lock(state_->measurementMutex);
+            state_->measurementStop = measurementCounters();
+            state_->measurementStop.qpc = callbackBegin;
+        }
+        state_->measurementStopCaptured.store(true, std::memory_order_release);
+    }
+
     bool captureMeasurementBoundary(long long callbackBegin) {
+        if (state_->nativePresentEnvelopeStartRequested.exchange(false,
+                                                                 std::memory_order_acq_rel)) {
+            std::string hookError;
+            state_->nativePresentTokenSetFailureCount.store(0, std::memory_order_relaxed);
+            if (!state_->nativePresentHook || !state_->nativePresentHook->beginCapture(hookError)) {
+                fail(hookError.empty() ? "native Present capture envelopeを開始できません"
+                                       : hookError);
+                return true;
+            }
+            state_->nativePresentEnvelopeBeginQpc.store(gpu::qpcTicks(), std::memory_order_release);
+            state_->nativePresentCaptureActive.store(true, std::memory_order_release);
+            if (state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire)) {
+                if (!startFormalOpportunityScheduler(true)) {
+                    fail("P2-D5-2 lower envelope intent producerを開始できません");
+                    return true;
+                }
+                formalOpportunityRenderOrdinal_ = 0;
+                state_->formalOpportunityEnvelopePrerollCompleted.store(false,
+                                                                        std::memory_order_release);
+                state_->formalOpportunityEnvelopePrerollStarted.store(true,
+                                                                      std::memory_order_release);
+                state_->formalOpportunityEnvelopePrerollActive.store(true,
+                                                                     std::memory_order_release);
+                state_->formalOpportunityCaptureActive.store(true, std::memory_order_release);
+            }
+            state_->nativePresentEnvelopeStarted.store(true, std::memory_order_release);
+        }
+        if (state_->nativePresentEnvelopeStopRequested.exchange(false, std::memory_order_acq_rel)) {
+            if (state_->nativePresentCaptureActive.exchange(false, std::memory_order_acq_rel)) {
+                std::string hookError;
+                if (!state_->nativePresentHook ||
+                    !state_->nativePresentHook->endCapture(hookError) ||
+                    !state_->nativePresentHook->captureEnvelopeTransportValid()) {
+                    fail(hookError.empty() ? "native Present capture envelope authorityが不成立です"
+                                           : hookError);
+                }
+            }
+            state_->nativePresentEnvelopeCloseQpc.store(gpu::qpcTicks(), std::memory_order_release);
+            state_->nativePresentEnvelopeStopped.store(true, std::memory_order_release);
+            return true;
+        }
         if (state_->measurementResetRequested.exchange(false, std::memory_order_acq_rel)) {
             state_->playbackSchedulerEnabled.store(false, std::memory_order_release);
             state_->requestedOutput.store(-1, std::memory_order_release);
@@ -860,61 +1015,7 @@ private:
         const bool stopRequested =
             state_->measurementStopRequested.exchange(false, std::memory_order_acq_rel);
         if (intervalEnded || stopRequested) {
-            if (state_->nativePresentCaptureActive.exchange(false, std::memory_order_acq_rel)) {
-                std::string hookError;
-                if (!state_->nativePresentHook ||
-                    !state_->nativePresentHook->endCapture(hookError) ||
-                    !state_->nativePresentHook->authorityValid() ||
-                    state_->nativePresentTokenSetFailureCount.load(std::memory_order_relaxed) !=
-                        0) {
-                    fail(hookError.empty() ? "native Present authorityが不成立です" : hookError);
-                }
-            }
-            if (state_->measurementIntervalActive.exchange(false, std::memory_order_acq_rel)) {
-                if (state_->formalOpportunityCaptureActive.exchange(false,
-                                                                    std::memory_order_acq_rel)) {
-                    bool closed = false;
-                    gpu::PresentationOpportunitySnapshot snapshot;
-                    {
-                        std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
-                        closed = state_->formalOpportunityScheduler.close();
-                        snapshot = state_->formalOpportunityScheduler.snapshot();
-                    }
-                    if (!closed) {
-                        fail(std::string("P2-D5-2 opportunity close失敗: ") +
-                             gpu::presentationOpportunityErrorName(snapshot.error));
-                    } else {
-                        // finalize済みopportunityのsource domain accountingだけを
-                        // measurement counterへ反映する。
-                        state_->formalOpportunityTrueDropCount.fetch_add(snapshot.trueDrop,
-                                                                         std::memory_order_relaxed);
-                        state_->droppedOutputCount.fetch_add(snapshot.trueDrop,
-                                                             std::memory_order_relaxed);
-                        state_->scheduledOutputCount.fetch_add(snapshot.displayedUnique +
-                                                                   snapshot.trueDrop,
-                                                               std::memory_order_relaxed);
-                    }
-                    const long long shadowClosed = scheduler_.closeBefore(
-                        state_->measurementEndQpc.load(std::memory_order_acquire));
-                    state_->diagnosticSyntheticDeadlineDropCount.fetch_add(
-                        shadowClosed, std::memory_order_relaxed);
-                } else {
-                    const long long closed = scheduler_.closeBefore(
-                        state_->measurementEndQpc.load(std::memory_order_acquire));
-                    state_->scheduledOutputCount.fetch_add(closed, std::memory_order_relaxed);
-                    noteDrop(gpu::OutputDropReason::SchedulerDeadline, closed);
-                }
-            }
-            state_->presentationCaptureActive.store(false, std::memory_order_release);
-            state_->playbackSchedulerEnabled.store(false, std::memory_order_release);
-            state_->diagnosticTimingEnabled.store(false, std::memory_order_release);
-            state_->diagnosticLockTiming = state_->device.lock().endDiagnostics();
-            {
-                std::lock_guard<std::mutex> lock(state_->measurementMutex);
-                state_->measurementStop = measurementCounters();
-                state_->measurementStop.qpc = callbackBegin;
-            }
-            state_->measurementStopCaptured.store(true, std::memory_order_release);
+            finishMeasurement(callbackBegin);
             return true;
         }
         if (state_->measurementStartRequested.exchange(false, std::memory_order_acq_rel)) {
@@ -923,19 +1024,18 @@ private:
             scheduler_.start(callbackBegin, static_cast<long long>(gpu::qpcFrequency()));
             schedulerStarted_ = true;
             if (state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire)) {
-                const gpu::PresentationOpportunityConfig config{
-                    state_->formalRequiredFrameCount.load(std::memory_order_acquire),
-                    60,
-                    1,
-                    state_->formalRefreshNumerator.load(std::memory_order_relaxed),
-                    state_->formalRefreshDenominator.load(std::memory_order_relaxed),
-                    static_cast<long long>(gpu::qpcFrequency())};
-                bool started = false;
-                {
+                if (state_->formalOpportunityEnvelopePrerollActive.exchange(
+                        false, std::memory_order_acq_rel)) {
                     std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
-                    started = state_->formalOpportunityScheduler.start(config);
+                    if (!state_->formalOpportunityScheduler.close()) {
+                        fail("P2-D5-2 lower envelope intent producerを停止できません");
+                        return true;
+                    }
+                    state_->formalOpportunityEnvelopePrerollCompleted.store(
+                        true, std::memory_order_release);
                 }
-                if (!started) {
+                state_->formalOpportunityCaptureActive.store(false, std::memory_order_release);
+                if (!startFormalOpportunityScheduler()) {
                     fail("P2-D5-2 opportunity schedulerを開始できません");
                     return true;
                 }
@@ -967,14 +1067,21 @@ private:
             }
             state_->measurementEndQpc.store(callbackBegin + duration, std::memory_order_release);
             if (state_->nativePresentHookEnabled.load(std::memory_order_acquire)) {
-                std::string hookError;
-                state_->nativePresentTokenSetFailureCount.store(0, std::memory_order_relaxed);
-                if (!state_->nativePresentHook ||
-                    !state_->nativePresentHook->beginCapture(hookError)) {
-                    fail(hookError.empty() ? "native Present hookを開始できません" : hookError);
-                    return true;
+                if (state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire)) {
+                    if (!state_->nativePresentCaptureActive.load(std::memory_order_acquire)) {
+                        fail("native Present capture envelopeがmeasurement arm前に開いていません");
+                        return true;
+                    }
+                } else {
+                    std::string hookError;
+                    state_->nativePresentTokenSetFailureCount.store(0, std::memory_order_relaxed);
+                    if (!state_->nativePresentHook ||
+                        !state_->nativePresentHook->beginCapture(hookError)) {
+                        fail(hookError.empty() ? "native Present hookを開始できません" : hookError);
+                        return true;
+                    }
+                    state_->nativePresentCaptureActive.store(true, std::memory_order_release);
                 }
-                state_->nativePresentCaptureActive.store(true, std::memory_order_release);
             }
             state_->measurementIntervalActive.store(true, std::memory_order_release);
             if (state_->diagnosticCase.load(std::memory_order_acquire) !=
@@ -1293,12 +1400,13 @@ void CompositorRhiItem::recordFrameSwapped() {
         const std::uint64_t identity = hook ? hook->latestSwapchainIdentity() : 0;
         if (identity != 0) {
             auto preflight = capturePresentationEligibilityPreflight(
-                identity, state_->nativeDevicePointer.load(std::memory_order_relaxed) != 0
-                              ? reinterpret_cast<void*>(
-                                    state_->nativeDevicePointer.load(std::memory_order_relaxed))
-                              : nullptr,
-                reinterpret_cast<void*>(state_->eligibilityPreflightWindow.load(
-                    std::memory_order_relaxed)));
+                identity,
+                state_->nativeDevicePointer.load(std::memory_order_relaxed) != 0
+                    ? reinterpret_cast<void*>(
+                          state_->nativeDevicePointer.load(std::memory_order_relaxed))
+                    : nullptr,
+                reinterpret_cast<void*>(
+                    state_->eligibilityPreflightWindow.load(std::memory_order_relaxed)));
             {
                 std::lock_guard<std::mutex> lock(state_->eligibilityPreflightMutex);
                 state_->eligibilityPreflight = preflight;

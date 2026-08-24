@@ -6,11 +6,11 @@
 #include "core/presentation_opportunity_mapper.h"
 #include "media/gpu_preview/window_output_vblank_observer.h"
 
+#include <vector>
+
 #include <QElapsedTimer>
 #include <QObject>
 #include <QTimer>
-
-#include <vector>
 
 namespace mvm::app {
 
@@ -62,6 +62,7 @@ class CompositorSpikeController final : public QObject {
 public:
     explicit CompositorSpikeController(CompositorSpikeConfig config, QObject* parent = nullptr);
     void attach(CompositorRhiItem* item);
+
     int exitCode() const { return exitCode_; }
 
 Q_SIGNALS:
@@ -83,11 +84,30 @@ private:
         gpu::SeekRequestResult bRequestResult = gpu::SeekRequestResult::RejectedInvalid;
         bool dispatchOrderValid = false;
     };
-    enum class Phase { WaitDevice, MarkerStart, MarkerWait, OutputPreflightWait, Warmup,
-                       MeasurementResetStart, MeasurementResetWait, MeasurementPrimeStart,
-                       MeasurementPrimeWait, MeasureStartWait, Measure,
-                       MeasureStopWait, FatalMeasureStopWait, SeekStart, SeekDecodeWait,
-                       SeekDisplayWait, LayoutStart, LayoutWait, ShutdownWait, Done };
+    enum class Phase {
+        WaitDevice,
+        MarkerStart,
+        MarkerWait,
+        OutputPreflightWait,
+        Warmup,
+        MeasurementResetStart,
+        MeasurementResetWait,
+        MeasurementPrimeStart,
+        MeasurementPrimeWait,
+        CaptureEnvelopeStartWait,
+        MeasureStartWait,
+        Measure,
+        MeasureStopWait,
+        CaptureEnvelopeStopWait,
+        FatalMeasureStopWait,
+        SeekStart,
+        SeekDecodeWait,
+        SeekDisplayWait,
+        LayoutStart,
+        LayoutWait,
+        ShutdownWait,
+        Done
+    };
     void tick();
     bool startWorkers();
     void startMarkerProbe();
@@ -95,6 +115,7 @@ private:
     bool resetAfterMarkerPreflight();
     bool resetPlaybackForMeasurement();
     void requestMeasurementStart();
+    void armMeasurementAfterCaptureEnvelopeOpen();
     void startSeek();
     void pollSeekDecode();
     void pollSeekDisplay();
@@ -189,6 +210,11 @@ private:
     bool vblankObserverStarted_ = false;
     // P2-D5-2-W2-A.1 lower boundary preroll。shadow-only provenance。
     gpu::VBlankPrerollResult vblankPreroll_{};
+    // P2-D5-2-W2-C0.1 upper boundary closure。measurement endはこの待機で変更しない。
+    gpu::VBlankSuccessorResult vblankSuccessor_{};
+    long long frozenMeasurementEndQpc_ = 0;
+    bool captureEnvelopeCloseFailure_ = false;
+    QString captureEnvelopeCloseReason_;
     std::string vblankObserverError_;
     core::IncrementalOpportunityMapper incrementalMapperShadow_{1};
     std::size_t incrementalVblankRead_ = 0;

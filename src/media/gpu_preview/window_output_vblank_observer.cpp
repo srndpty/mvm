@@ -189,8 +189,8 @@ bool WindowOutputVBlankObserver::start(void* windowHandle, std::string& error) {
 }
 
 bool WindowOutputVBlankObserver::prerollNewSample(unsigned long long baselineSerial,
-                                                 long long timeoutMs,
-                                                 VBlankPrerollResult& result) {
+                                                  long long timeoutMs,
+                                                  VBlankPrerollResult& result) {
     result = {};
     const long long begin = qpcTicks();
     const long long budget =
@@ -208,6 +208,45 @@ bool WindowOutputVBlankObserver::prerollNewSample(unsigned long long baselineSer
             }
         }
         // observer が死んでいるなら待っても sample は来ない。timeout ではない。
+        if (!running_.load(std::memory_order_acquire) ||
+            waitFailures_.load(std::memory_order_acquire) != 0) {
+            result.waitElapsedQpc = qpcTicks() - begin;
+            return false;
+        }
+        if (qpcTicks() >= deadline) {
+            result.timedOut = true;
+            result.waitElapsedQpc = qpcTicks() - begin;
+            return false;
+        }
+        Sleep(1);
+    }
+}
+
+bool WindowOutputVBlankObserver::waitForSuccessor(long long frozenMeasurementEndQpc,
+                                                  long long timeoutMs,
+                                                  VBlankSuccessorResult& result) {
+    result = {};
+    result.frozenMeasurementEndQpc = frozenMeasurementEndQpc;
+    if (frozenMeasurementEndQpc <= 0 || timeoutMs <= 0)
+        return false;
+    const long long begin = qpcTicks();
+    const long long budget = (static_cast<long long>(qpcFrequency()) * timeoutMs) / 1000;
+    const long long deadline = begin + budget;
+    std::size_t readIndex = 0;
+    for (;;) {
+        const std::size_t published = ring_.publishedCount();
+        while (readIndex < published) {
+            VBlankObservation sample{};
+            if (!ring_.read(readIndex, sample))
+                return false;
+            ++readIndex;
+            if (sample.qpc >= frozenMeasurementEndQpc) {
+                result.sample = sample;
+                result.completed = true;
+                result.waitElapsedQpc = qpcTicks() - begin;
+                return true;
+            }
+        }
         if (!running_.load(std::memory_order_acquire) ||
             waitFailures_.load(std::memory_order_acquire) != 0) {
             result.waitElapsedQpc = qpcTicks() - begin;

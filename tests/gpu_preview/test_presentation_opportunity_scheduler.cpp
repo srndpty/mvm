@@ -24,7 +24,7 @@ Scheduler scheduler(long long refreshNumerator, long long refreshDenominator,
                     long long requiredFrameCount = 3600) {
     Scheduler value;
     check(value.start(
-              {requiredFrameCount, 60, 1, refreshNumerator, refreshDenominator, kQpcFrequency}),
+              {requiredFrameCount, 0, 60, 1, refreshNumerator, refreshDenominator, kQpcFrequency}),
           "schedulerを開始できません");
     return value;
 }
@@ -341,11 +341,24 @@ void measurementEndFinalizesPending() {
 
 void overflowIsClosed() {
     Scheduler overflow;
-    overflow.start({3600, std::numeric_limits<long long>::max(), 1, 60, 3, 20});
+    overflow.start({3600, 0, std::numeric_limits<long long>::max(), 1, 60, 3, 20});
     Driver driver{&overflow, 0, 0, 60, 3};
     check(driver.present(100, 101, 1, 5, 10), "overflow testの初回commitに失敗しました");
     check(!driver.select(101, 11).valid && overflow.error() == Error::ArithmeticOverflow,
           "target arithmetic overflowを拒否しません");
+}
+
+void sourceFrameOffsetIsExact() {
+    Scheduler value;
+    check(value.start({61, 60, 1, 1, 60, 1, kQpcFrequency}),
+          "source offset schedulerを開始できません");
+    Driver driver{&value};
+    const auto first = driver.select(100, 1);
+    check(first.valid && first.targetFrame == 60,
+          "source offsetがscheduler targetへ反映されていません");
+    check(value.markRenderComplete(5, 60, first.renderOrdinal) &&
+              value.commitSwap(10, authority(101), 0),
+          "source offset targetをexact commitできません");
 }
 
 } // namespace
@@ -360,6 +373,7 @@ int main() {
     duplicateCallbackDoesNotCreateOpportunity();
     measurementEndFinalizesPending();
     overflowIsClosed();
+    sourceFrameOffsetIsExact();
     std::fprintf(stderr, "P2-D5-2/F2 presentation opportunity scheduler: 失敗 %d件\n", failures);
     return failures == 0 ? 0 : 1;
 }

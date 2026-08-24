@@ -51,6 +51,9 @@ public:
                                               std::uint64_t serial = 0);
     bool endCapture(std::string& error);
     bool authorityValid() const;
+    // W2-C0.1 capture supersetではdomain外prestart Presentのtoken欠損を
+    // candidate-level gateへ委ねる。ring loss/duplicate/stale/failedは許容しない。
+    bool captureEnvelopeTransportValid() const;
     // patched Qtが記録した実IDXGISwapChainポインタ。0はrecord未取得。
     std::uint64_t latestSwapchainIdentity() const;
     NativePresentHookSnapshot snapshot() const;

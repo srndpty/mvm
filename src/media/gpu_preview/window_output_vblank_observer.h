@@ -21,6 +21,17 @@ struct VBlankPrerollResult {
     long long waitElapsedQpc = 0;
 };
 
+// P2-D5-2-W2-C0.1。frozen measurement end の上側を閉じる physical VBlank。
+// sample 数の増加ではなく sample.qpc >= frozenMeasurementEndQpc を証拠にする。
+struct VBlankSuccessorResult {
+    bool completed = false;
+    // acquisition liveness timeout。performance threshold ではない。
+    bool timedOut = false;
+    long long frozenMeasurementEndQpc = 0;
+    VBlankObservation sample{};
+    long long waitElapsedQpc = 0;
+};
+
 struct WindowOutputResolveResult {
     bool ok = false;
     WindowOutputIdentity identity;
@@ -57,6 +68,11 @@ public:
     // はならない。
     bool prerollNewSample(unsigned long long baselineSerial, long long timeoutMs,
                           VBlankPrerollResult& result);
+
+    // frozenMeasurementEndQpc 以上の最初の published sample を bounded に待つ。
+    // measurement end 自体は変更しない。timeout または observer failure は false。
+    bool waitForSuccessor(long long frozenMeasurementEndQpc, long long timeoutMs,
+                          VBlankSuccessorResult& result);
 
     // TIME_CRITICALを取れなかった場合、normal priorityへ黙ってfallbackしない。
     bool timeCriticalPriority() const {

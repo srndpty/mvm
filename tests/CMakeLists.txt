@@ -239,7 +239,7 @@ foreach(_p2_d5_2_w2b2_case IN ITEMS GoodPresented GoodDiscarded GoodDisplayedOut
 endforeach()
 
 # P2-D5-2-W2-C0: Layer 2 cohort外を含むdisplay candidate coverage inventory。
-foreach(_p2_d5_2_w2c0_case IN ITEMS GoodForeignBoundary NegativeMissingNative NegativePhysicalAuthority)
+foreach(_p2_d5_2_w2c0_case IN ITEMS GoodForeignBoundary NegativeMissingNative NegativeMissingIntent NegativePhysicalAuthority)
     string(TOLOWER "${_p2_d5_2_w2c0_case}" _p2_d5_2_w2c0_name)
     mvm_add_test(p2_d5_2_w2c0_display_candidate_inventory_${_p2_d5_2_w2c0_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File
@@ -249,6 +249,23 @@ foreach(_p2_d5_2_w2c0_case IN ITEMS GoodForeignBoundary NegativeMissingNative Ne
             -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c0-${_p2_d5_2_w2c0_name}"
         PROPERTIES LABELS "gpu_preview")
 endforeach()
+
+# P2-D5-2-W2-C0.1: measurement窓を変えずにnative/physical capture envelopeを閉じる。
+foreach(_p2_d5_2_w2c01_case IN ITEMS Good NegativeStartAfterArm NegativeEndMutation NegativeSuccessorBeforeEnd NegativeCloseBeforeSuccessor NegativeSuccessorTimeout NegativeWindowExtended)
+    string(TOLOWER "${_p2_d5_2_w2c01_case}" _p2_d5_2_w2c01_name)
+    mvm_add_test(p2_d5_2_w2c01_capture_envelope_${_p2_d5_2_w2c01_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c01-capture-envelope-contract.ps1"
+            -Case "${_p2_d5_2_w2c01_case}"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-c01-capture-envelope.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c01-${_p2_d5_2_w2c01_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+mvm_add_test(p2_d5_2_w2c01_capture_envelope_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c01-capture-envelope-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
 
 foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
     string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)

@@ -32,6 +32,9 @@ enum class PresentationOpportunityClassification {
 
 struct PresentationOpportunityConfig {
     long long requiredFrameCount = 0;
+    // acquisition prerollなど、既存frame domain内の途中をscheduler target 0として
+    // 扱う場合の加算offset。formal measurementは常に0。
+    long long sourceFrameOffset = 0;
     long long sourceFpsNumerator = 0;
     long long sourceFpsDenominator = 0;
     long long refreshNumerator = 0;

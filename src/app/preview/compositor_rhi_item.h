@@ -254,6 +254,16 @@ struct CompositorSpikeState {
     std::shared_ptr<NativePresentHook> nativePresentHook;
     std::atomic<bool> nativePresentHookEnabled{false};
     std::atomic<bool> nativePresentCaptureActive{false};
+    // W2-C0.1 formal acquisition専用。B1/B2のmeasurement投影とは別に、
+    // preroll前からphysical successor確認後までnative captureを保持する。
+    std::atomic<bool> nativePresentCaptureEnvelopeEnabled{false};
+    std::atomic<bool> nativePresentEnvelopeStartRequested{false};
+    std::atomic<bool> nativePresentEnvelopeStarted{false};
+    std::atomic<bool> nativePresentEnvelopeStopRequested{false};
+    std::atomic<bool> nativePresentEnvelopeStopped{false};
+    std::atomic<long long> nativePresentEnvelopeBeginQpc{0};
+    std::atomic<long long> nativePresentEnvelopeCloseQpc{0};
+    std::atomic<long long> measurementArmQpc{0};
     // F3-C3-A3-T2診断専用。compositor最終出力の2x2 pixelだけを毎frame変える。
     std::atomic<bool> diagnosticTargetPixelToggle{false};
     // F3-C3-A3-T2-D1-B0 diagnostic-only。presentation pathのauthorityではない。
@@ -272,6 +282,11 @@ struct CompositorSpikeState {
     // 同じlockにより直列化し、共有OutputScheduler60Hzから完全に分離する。
     std::atomic<bool> formalOpportunitySchedulerEnabled{false};
     std::atomic<bool> formalOpportunityCaptureActive{false};
+    // W2-C0.1 lower envelope専用。同じscheduler実装をmeasurement前だけ別runで使い、
+    // B1 scope開始時にclose/restartする。source selection/counterへは接続しない。
+    std::atomic<bool> formalOpportunityEnvelopePrerollActive{false};
+    std::atomic<bool> formalOpportunityEnvelopePrerollStarted{false};
+    std::atomic<bool> formalOpportunityEnvelopePrerollCompleted{false};
     std::atomic<bool> formalOpportunityIgnoreNextSwap{false};
     std::atomic<bool> formalOpportunityDomainReached{false};
     std::atomic<long long> formalOpportunityPresentedFrame{-1};

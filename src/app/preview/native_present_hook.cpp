@@ -90,6 +90,12 @@ bool NativePresentHook::authorityValid() const {
            ring_->failedPresentCount == 0;
 }
 
+bool NativePresentHook::captureEnvelopeTransportValid() const {
+    return available_ && layoutHandshakeAccepted_ && ring_ && captureStarted_ && captureStopped_ &&
+           ring_->overflowCount == 0 && ring_->duplicateTokenCount == 0 &&
+           ring_->staleTokenCount == 0 && ring_->failedPresentCount == 0;
+}
+
 NativePresentHookSnapshot NativePresentHook::snapshot() const {
     NativePresentHookSnapshot result;
     result.available = available_;
