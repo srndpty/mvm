@@ -56,6 +56,9 @@ for($run=1;$run-le$Runs;++$run){
     $results+=[ordered]@{
         run=$run;metrics="run-$run.json";metrics_sha256=Hash $metrics
         process_exit_code=$process.ExitCode;abi_version=[int]$transport.abi_version
+        qt_abi_version_observed=[int]$transport.qt_abi_version_observed
+        layout_handshake_accepted=[bool]$transport.layout_handshake_accepted
+        layout_signature=[string]$transport.layout_signature
         record_count=[int]$transport.record_count;formal_mode=[bool]$transport.formal_mode
         transport_exact=[bool]$transport.transport_exact;verdict=[string]$transport.verdict
     }

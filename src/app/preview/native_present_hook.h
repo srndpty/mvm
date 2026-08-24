@@ -13,6 +13,8 @@ namespace mvm::app {
 
 struct NativePresentHookSnapshot {
     bool available = false;
+    std::uint32_t observedQtAbiVersion = 0;
+    bool layoutHandshakeAccepted = false;
     bool captureStarted = false;
     bool captureStopped = false;
     std::uint32_t overflowCount = 0;
@@ -62,6 +64,8 @@ private:
     MvmDirtyPropagationStageFn dirtyStage_ = nullptr;
     std::unique_ptr<MvmNativePresentRing> ring_;
     bool available_ = false;
+    std::uint32_t observedQtAbiVersion_ = 0;
+    bool layoutHandshakeAccepted_ = false;
     bool captureStarted_ = false;
     bool captureStopped_ = false;
 };

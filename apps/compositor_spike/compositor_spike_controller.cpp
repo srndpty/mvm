@@ -1820,7 +1820,7 @@ bool CompositorSpikeController::writeMetrics() {
     std::unordered_set<std::uint64_t> compositionTokenSerials;
     const bool formalIntentMode =
         state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire);
-    bool intentIdentityTransportExact = !nativePresentSnapshot.records.empty();
+    bool everyIntentIdentityRecordExact = !nativePresentSnapshot.records.empty();
     for (const auto& record : nativePresentSnapshot.records) {
         const bool presentSerialUnique =
             record.presentSerial != 0 && nativePresentSerials.insert(record.presentSerial).second;
@@ -1831,14 +1831,13 @@ bool CompositorSpikeController::writeMetrics() {
                                    record.intentOrdinal == record.token.intentOrdinal;
         const bool modeValid = formalIntentMode ? record.token.intentOrdinalValid == 1
                                                 : record.token.intentOrdinalValid == 0;
-        intentIdentityTransportExact = intentIdentityTransportExact && presentSerialUnique &&
-                                       tokenSerialUnique && identityExact && modeValid;
+        everyIntentIdentityRecordExact = everyIntentIdentityRecordExact && presentSerialUnique &&
+                                         tokenSerialUnique && identityExact && modeValid;
         intentIdentityLedger.append(QJsonObject{
-            {"composition_token_serial", QString::number(record.token.tokenSerial)},
+            {"native_present_embedded_token_serial", QString::number(record.token.tokenSerial)},
             {"composition_token_intent_ordinal", QString::number(record.token.intentOrdinal)},
             {"composition_token_intent_valid", record.token.intentOrdinalValid != 0},
             {"native_present_serial", QString::number(record.presentSerial)},
-            {"native_present_token_serial", QString::number(record.token.tokenSerial)},
             {"native_present_intent_ordinal", QString::number(record.intentOrdinal)},
             {"native_present_intent_valid", record.intentOrdinalValid != 0},
         });
@@ -1904,14 +1903,24 @@ bool CompositorSpikeController::writeMetrics() {
     }
     const bool nativePresentAuthorityPass =
         config_.nativePresentHook == NativePresentHookMode::OnDiagnostic &&
-        state_->nativePresentHook && state_->nativePresentHook->authorityValid() &&
+        state_->nativePresentHook && nativePresentSnapshot.available &&
+        nativePresentSnapshot.captureStarted && nativePresentSnapshot.captureStopped &&
+        nativePresentSnapshot.observedQtAbiVersion == MVM_NATIVE_PRESENT_HOOK_ABI_VERSION &&
+        nativePresentSnapshot.layoutHandshakeAccepted &&
+        state_->nativePresentHook->authorityValid() &&
         state_->nativePresentTokenSetFailureCount.load(std::memory_order_relaxed) == 0 &&
         !nativePresentSnapshot.records.empty();
+    const bool intentIdentityTransportExact =
+        nativePresentAuthorityPass && everyIntentIdentityRecordExact;
     const QJsonObject nativePresentHook{
         {"abi_version", static_cast<qint64>(MVM_NATIVE_PRESENT_HOOK_ABI_VERSION)},
         {"composition_token_size",
          static_cast<qint64>(sizeof(MvmNativePresentCompositionToken))},
         {"native_present_record_size", static_cast<qint64>(sizeof(MvmNativePresentRecord))},
+        {"layout_signature", QString::number(mvmNativePresentHookLayoutSignature())},
+        {"qt_abi_version_observed",
+         static_cast<qint64>(nativePresentSnapshot.observedQtAbiVersion)},
+        {"layout_handshake_accepted", nativePresentSnapshot.layoutHandshakeAccepted},
         {"requested_mode", nativePresentHookModeName(config_.nativePresentHook)},
         {"available", nativePresentSnapshot.available},
         {"hook_enabled", config_.nativePresentHook == NativePresentHookMode::OnDiagnostic},
@@ -1944,14 +1953,17 @@ bool CompositorSpikeController::writeMetrics() {
         {"authority_failure", nativePresentSnapshot.authorityFailure},
         {"intent_identity_transport",
          QJsonObject{
-             {"schema", "mvm-p2-d5-2-w2-b1-intent-identity-transport-1"},
+             {"schema", "mvm-p2-d5-2-w2-b1-intent-identity-transport-2"},
              {"abi_version", static_cast<qint64>(MVM_NATIVE_PRESENT_HOOK_ABI_VERSION)},
              {"app_abi_version", static_cast<qint64>(MVM_NATIVE_PRESENT_HOOK_ABI_VERSION)},
-             {"qt_abi_version", static_cast<qint64>(MVM_NATIVE_PRESENT_HOOK_ABI_VERSION)},
+             {"qt_abi_version_observed",
+              static_cast<qint64>(nativePresentSnapshot.observedQtAbiVersion)},
+             {"layout_handshake_accepted", nativePresentSnapshot.layoutHandshakeAccepted},
              {"composition_token_size",
               static_cast<qint64>(sizeof(MvmNativePresentCompositionToken))},
              {"native_present_record_size",
               static_cast<qint64>(sizeof(MvmNativePresentRecord))},
+             {"layout_signature", QString::number(mvmNativePresentHookLayoutSignature())},
              {"shadow_only", true},
              {"performance_accounting_connected", false},
              {"formal_mode", formalIntentMode},

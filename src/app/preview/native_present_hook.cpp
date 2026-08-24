@@ -39,8 +39,9 @@ bool NativePresentHook::load(std::string& error) {
         error = "Qt6Gui.dllにF3-C0 native Present hook exportがありません";
         return false;
     }
+    observedQtAbiVersion_ = abiVersion_();
     if (!mvmNativePresentHookAbiVersionsCompatible(MVM_NATIVE_PRESENT_HOOK_ABI_VERSION,
-                                                   abiVersion_())) {
+                                                   observedQtAbiVersion_)) {
         error = "Qt6Gui.dllのnative Present hook ABI versionが一致しません";
         return false;
     }
@@ -50,10 +51,12 @@ bool NativePresentHook::load(std::string& error) {
 }
 
 bool NativePresentHook::beginCapture(std::string& error) {
+    layoutHandshakeAccepted_ = false;
     if (!available_ || !ring_ || captureStarted_ || !begin_ || begin_(ring_.get()) == 0) {
         error = "native Present hook captureを開始できません";
         return false;
     }
+    layoutHandshakeAccepted_ = true;
     captureStarted_ = true;
     captureStopped_ = false;
     return true;
@@ -89,6 +92,8 @@ bool NativePresentHook::authorityValid() const {
 NativePresentHookSnapshot NativePresentHook::snapshot() const {
     NativePresentHookSnapshot result;
     result.available = available_;
+    result.observedQtAbiVersion = observedQtAbiVersion_;
+    result.layoutHandshakeAccepted = layoutHandshakeAccepted_;
     result.captureStarted = captureStarted_;
     result.captureStopped = captureStopped_;
     if (ring_) {

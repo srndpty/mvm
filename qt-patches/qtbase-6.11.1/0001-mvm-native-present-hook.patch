@@ -131,7 +131,7 @@ index e6a567a6..d3c13b8d 100644
 +{
 +    if (!ring || !mvmNativePresentHookLayoutCompatible(
 +                ring->abiVersion, ring->capacity, ring->compositionTokenSize,
-+                ring->presentRecordSize) || mvmPresentRing)
++                ring->presentRecordSize, ring->layoutSignature) || mvmPresentRing)
 +        return 0;
 +    ring->enabled = 0;
 +    ring->recordCount = 0;

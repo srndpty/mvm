@@ -7,6 +7,7 @@
 #ifndef MVM_APP_PREVIEW_NATIVE_PRESENT_HOOK_ABI_H
 #define MVM_APP_PREVIEW_NATIVE_PRESENT_HOOK_ABI_H
 
+#include <cstddef>
 #include <cstdint>
 
 inline constexpr std::uint32_t MVM_NATIVE_PRESENT_HOOK_ABI_VERSION = 4;
@@ -50,6 +51,42 @@ struct MvmNativePresentRecord {
     MvmNativePresentCompositionToken token{};
 };
 
+inline constexpr std::uint64_t mvmNativePresentLayoutMix(std::uint64_t signature,
+                                                         std::uint64_t value) {
+    return (signature ^ value) * 1099511628211ULL;
+}
+
+inline constexpr std::uint64_t mvmNativePresentHookLayoutSignature() {
+    std::uint64_t signature = 1469598103934665603ULL;
+    signature = mvmNativePresentLayoutMix(signature, sizeof(MvmNativePresentCompositionToken));
+    signature = mvmNativePresentLayoutMix(signature, alignof(MvmNativePresentCompositionToken));
+    signature = mvmNativePresentLayoutMix(signature,
+                                          offsetof(MvmNativePresentCompositionToken, tokenSerial));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentCompositionToken, intentOrdinal));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentCompositionToken, intentOrdinalValid));
+    signature = mvmNativePresentLayoutMix(signature,
+                                          offsetof(MvmNativePresentCompositionToken, sourceCount));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentCompositionToken, propagationSerial));
+    signature =
+        mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentCompositionToken, sources));
+    signature = mvmNativePresentLayoutMix(signature, sizeof(MvmNativePresentRecord));
+    signature = mvmNativePresentLayoutMix(signature, alignof(MvmNativePresentRecord));
+    signature =
+        mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRecord, presentSerial));
+    signature =
+        mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRecord, tokenPresent));
+    signature =
+        mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRecord, propagationSerial));
+    signature =
+        mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRecord, intentOrdinal));
+    signature =
+        mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRecord, intentOrdinalValid));
+    return mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRecord, token));
+}
+
 enum MvmDirtyPropagationStage : std::uint32_t {
     MVM_DIRTY_STAGE_RENDERER_UPDATE = 0,
     MVM_DIRTY_STAGE_NODE_SCHEDULE_UPDATE,
@@ -79,6 +116,7 @@ struct MvmNativePresentRing {
     std::uint32_t capacity = MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY;
     std::uint32_t compositionTokenSize = sizeof(MvmNativePresentCompositionToken);
     std::uint32_t presentRecordSize = sizeof(MvmNativePresentRecord);
+    std::uint64_t layoutSignature = mvmNativePresentHookLayoutSignature();
     std::uint32_t enabled = 0;
     std::uint32_t recordCount = 0;
     std::uint32_t overflowCount = 0;
@@ -111,12 +149,14 @@ inline constexpr bool mvmNativePresentHookAbiVersionsCompatible(std::uint32_t ap
 inline constexpr bool mvmNativePresentHookLayoutCompatible(std::uint32_t abiVersion,
                                                            std::uint32_t capacity,
                                                            std::uint32_t compositionTokenSize,
-                                                           std::uint32_t presentRecordSize) {
+                                                           std::uint32_t presentRecordSize,
+                                                           std::uint64_t layoutSignature) {
     return mvmNativePresentHookAbiVersionsCompatible(abiVersion,
                                                      MVM_NATIVE_PRESENT_HOOK_ABI_VERSION) &&
            capacity == MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY &&
            compositionTokenSize == sizeof(MvmNativePresentCompositionToken) &&
-           presentRecordSize == sizeof(MvmNativePresentRecord);
+           presentRecordSize == sizeof(MvmNativePresentRecord) &&
+           layoutSignature == mvmNativePresentHookLayoutSignature();
 }
 
 enum : std::uint32_t {
