@@ -49,7 +49,7 @@ for($run=1;$run-le$Runs;++$run){
     if($process.ExitCode-ne0-or-not(Test-Path -LiteralPath $metrics)){
         throw "W2-B1 live run $run が失敗しました (exit=$($process.ExitCode))"
     }
-    & pwsh -NoProfile -File $checker -Json $metrics -SourceRoot $repo
+    & pwsh -NoProfile -File $checker -Json $metrics -SourceRoot $repo -RequireFormalMode
     if($LASTEXITCODE-ne0){throw "W2-B1 live run $run のtransport checkerが失敗しました"}
     $raw=Get-Content -LiteralPath $metrics -Raw -Encoding utf8|ConvertFrom-Json
     $transport=$raw.native_present_hook.intent_identity_transport

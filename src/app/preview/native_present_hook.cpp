@@ -46,6 +46,7 @@ bool NativePresentHook::load(std::string& error) {
         return false;
     }
     ring_ = std::make_unique<MvmNativePresentRing>();
+    ring_->layoutSignature = mvmNativePresentHookLayoutSignature();
     available_ = true;
     return true;
 }

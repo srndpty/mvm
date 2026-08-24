@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$Json,
-    [Parameter(Mandatory=$true)][string]$SourceRoot
+    [Parameter(Mandatory=$true)][string]$SourceRoot,
+    [switch]$RequireFormalMode
 )
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
@@ -49,6 +50,14 @@ if($qtPatch-notmatch'record->intentOrdinalValid\s*=\s*mvmPendingToken\.intentOrd
 if($qtPatch-notmatch'mvmNativePresentHookLayoutCompatible'){Fail 'Qt beginがlayoutをhard rejectしません'}
 if($abi-notmatch'mvmNativePresentHookLayoutSignature'){Fail 'ABI layout signatureがありません'}
 Equal ([regex]::Matches($controller,'formalOpportunitySchedulerEnabled\.store\s*\(').Count) 1 'formal mode設定回数'
+if($controller-notmatch'formalOpportunitySchedulerEnabled\.store\s*\(\s*config_\.formalPreflight\s*&&\s*config_\.mode\s*==\s*CompositorMode::Playback\s*&&\s*config_\.diagnosticCase\s*==\s*CompositorDiagnosticCase::None\s*,'){
+    Fail 'formal modeの唯一のstoreがformal preflight activation条件ではありません'
+}
+foreach($ringField in @('enabled','overflowCount','missingTokenCount','authorityFailure','records')){
+    if($abi-notmatch("offsetof\(MvmNativePresentRing,\s*"+$ringField+'\)')){
+        Fail "ring layout signatureに$ringField のoffsetがありません"
+    }
+}
 
 $raw=Get-Content -LiteralPath $Json -Raw -Encoding utf8|ConvertFrom-Json
 $hook=$raw.native_present_hook
@@ -83,6 +92,7 @@ $records=@($transport.records)
 Equal $records.Count ([int]$transport.record_count) 'ledger record count'
 if($records.Count-eq0){Fail 'intent identity ledgerが空です'}
 $formal=[bool]$transport.formal_mode
+if($RequireFormalMode-and-not$formal){Fail 'W2-B1 formal acquisitionでformal_mode=falseです'}
 $presentSerials=@{};$tokenSerials=@{}
 for($index=0;$index-lt$records.Count;++$index){
     $record=$records[$index]

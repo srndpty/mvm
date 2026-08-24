@@ -56,7 +56,7 @@ inline constexpr std::uint64_t mvmNativePresentLayoutMix(std::uint64_t signature
     return (signature ^ value) * 1099511628211ULL;
 }
 
-inline constexpr std::uint64_t mvmNativePresentHookLayoutSignature() {
+inline constexpr std::uint64_t mvmNativePresentTokenRecordLayoutSignature() {
     std::uint64_t signature = 1469598103934665603ULL;
     signature = mvmNativePresentLayoutMix(signature, sizeof(MvmNativePresentCompositionToken));
     signature = mvmNativePresentLayoutMix(signature, alignof(MvmNativePresentCompositionToken));
@@ -116,7 +116,8 @@ struct MvmNativePresentRing {
     std::uint32_t capacity = MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY;
     std::uint32_t compositionTokenSize = sizeof(MvmNativePresentCompositionToken);
     std::uint32_t presentRecordSize = sizeof(MvmNativePresentRecord);
-    std::uint64_t layoutSignature = mvmNativePresentHookLayoutSignature();
+    // MvmNativePresentRing自身の定義完了後にapp側が設定する。0のままならQtは拒否する。
+    std::uint64_t layoutSignature = 0;
     std::uint32_t enabled = 0;
     std::uint32_t recordCount = 0;
     std::uint32_t overflowCount = 0;
@@ -139,6 +140,38 @@ struct MvmNativePresentRing {
     MvmDirtyPropagationRecord dirtyPropagationRecords[MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY]{};
     MvmNativePresentRecord records[MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY]{};
 };
+
+inline constexpr std::uint64_t mvmNativePresentHookLayoutSignature() {
+    std::uint64_t signature = mvmNativePresentTokenRecordLayoutSignature();
+    signature = mvmNativePresentLayoutMix(signature, sizeof(MvmNativePresentRing));
+    signature = mvmNativePresentLayoutMix(signature, alignof(MvmNativePresentRing));
+    signature = mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, abiVersion));
+    signature = mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, capacity));
+    signature =
+        mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, compositionTokenSize));
+    signature =
+        mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, presentRecordSize));
+    signature =
+        mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, layoutSignature));
+    signature = mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, enabled));
+    signature = mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, recordCount));
+    signature = mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, overflowCount));
+    signature =
+        mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, missingTokenCount));
+    signature =
+        mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, duplicateTokenCount));
+    signature =
+        mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, staleTokenCount));
+    signature =
+        mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, failedPresentCount));
+    signature =
+        mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, authorityFailure));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentRing, dirtyPropagationStageCounts));
+    signature = mvmNativePresentLayoutMix(signature,
+                                          offsetof(MvmNativePresentRing, dirtyPropagationRecords));
+    return mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, records));
+}
 
 inline constexpr bool mvmNativePresentHookAbiVersionsCompatible(std::uint32_t appVersion,
                                                                 std::uint32_t qtVersion) {

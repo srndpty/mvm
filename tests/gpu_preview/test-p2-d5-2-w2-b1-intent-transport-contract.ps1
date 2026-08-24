@@ -7,13 +7,15 @@ param(
         'NegativeDuplicateEmbeddedTokenSerial','NegativeDuplicateNativeSerial',
         'NegativeNonFormalFabricated','NegativeRingOverflow','NegativeMissingToken',
         'NegativeTokenSetFailure','NegativeAuthorityFailure','NegativeHookUnavailable',
-        'NegativeLayoutHandshake','NegativeSecondProducer')][string]$Case,
+        'NegativeLayoutHandshake','NegativeSecondProducer',
+        'NegativeRequiredFormalModeFalse')][string]$Case,
     [Parameter(Mandatory=$true)][string]$Checker,
     [Parameter(Mandatory=$true)][string]$SourceRoot,
     [Parameter(Mandatory=$true)][string]$Output
 )
 $ErrorActionPreference='Stop'
-$formal=$Case-ne'GoodNonFormal'-and$Case-ne'NegativeNonFormalFabricated'
+$formal=$Case-ne'GoodNonFormal'-and$Case-ne'NegativeNonFormalFabricated'-and
+        $Case-ne'NegativeRequiredFormalModeFalse'
 $records=@(0..2|ForEach-Object{
     [ordered]@{
         native_present_embedded_token_serial=[string](100+$_)
@@ -42,6 +44,7 @@ $hook=[ordered]@{
     intent_identity_transport=$transport
 }
 $checkerSourceRoot=$SourceRoot
+$requireFormalMode=$Case-eq'NegativeRequiredFormalModeFalse'
 switch($Case){
     'NegativeAppV3QtV4'{$transport.app_abi_version=3}
     'NegativeAppV4QtV3'{$transport.qt_abi_version_observed=3;$hook.qt_abi_version_observed=3}
@@ -78,7 +81,12 @@ switch($Case){
     }
 }
 [ordered]@{native_present_hook=$hook}|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $Output -Encoding utf8
-& pwsh -NoProfile -File $Checker -Json $Output -SourceRoot $checkerSourceRoot *> $null
+if($requireFormalMode){
+    & pwsh -NoProfile -File $Checker -Json $Output -SourceRoot $checkerSourceRoot `
+        -RequireFormalMode *> $null
+}else{
+    & pwsh -NoProfile -File $Checker -Json $Output -SourceRoot $checkerSourceRoot *> $null
+}
 $actual=$LASTEXITCODE
 $expected=if($Case-in@('GoodFormal','GoodNonFormal')){0}else{1}
 if($actual-ne$expected){throw "$Case W2-B1 contract exitが不正です: expected=$expected actual=$actual"}

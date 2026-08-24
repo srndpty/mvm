@@ -212,7 +212,7 @@ foreach(_p2_d5_2_w2a_case IN ITEMS Good GoodSuccessorAfterEnd GoodEmptyDomain Go
 endforeach()
 
 # P2-D5-2-W2-B1: scheduler intent identityのABI v4 exact-copy transport。
-foreach(_p2_d5_2_w2b1_case IN ITEMS GoodFormal GoodNonFormal NegativeAppV3QtV4 NegativeAppV4QtV3 NegativeTokenLayout NegativeRecordLayout NegativeLayoutSignature NegativeFormalInvalid NegativeOrdinalMutation NegativeValidityMutation NegativeDuplicateEmbeddedTokenSerial NegativeDuplicateNativeSerial NegativeNonFormalFabricated NegativeRingOverflow NegativeMissingToken NegativeTokenSetFailure NegativeAuthorityFailure NegativeHookUnavailable NegativeLayoutHandshake NegativeSecondProducer)
+foreach(_p2_d5_2_w2b1_case IN ITEMS GoodFormal GoodNonFormal NegativeAppV3QtV4 NegativeAppV4QtV3 NegativeTokenLayout NegativeRecordLayout NegativeLayoutSignature NegativeFormalInvalid NegativeOrdinalMutation NegativeValidityMutation NegativeDuplicateEmbeddedTokenSerial NegativeDuplicateNativeSerial NegativeNonFormalFabricated NegativeRingOverflow NegativeMissingToken NegativeTokenSetFailure NegativeAuthorityFailure NegativeHookUnavailable NegativeLayoutHandshake NegativeSecondProducer NegativeRequiredFormalModeFalse)
     string(TOLOWER "${_p2_d5_2_w2b1_case}" _p2_d5_2_w2b1_name)
     mvm_add_test(p2_d5_2_w2b1_intent_transport_${_p2_d5_2_w2b1_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File
