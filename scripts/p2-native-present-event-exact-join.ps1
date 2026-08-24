@@ -45,12 +45,14 @@ function Invoke-MvmNativePresentEventExactJoin {
     if($App.PSObject.Properties.Name-contains'process_id'-and[int64]$App.process_id-ne$targetPid){
         Fail-Join 'app/PresentMon target PIDが一致しません'
     }
-    $windowEvents=@(Need-Join $Etw 'events'|Where-Object{
+    $allTargetEvents=@(Need-Join $Etw 'events'|Where-Object{
         [int64](Need-Join $_ 'process_id')-eq$targetPid-and
-        [int64](Need-Join $_ 'present_start_qpc')-ge$measurementStart-and
-        [int64](Need-Join $_ 'present_start_qpc')-lt$measurementEnd-and
         (Parse-Swapchain (Need-Join $_ 'swap_chain_address'))-eq$nativeSwapchain
     }|Sort-Object{[int64]$_.present_start_qpc})
+    $windowEvents=@($allTargetEvents|Where-Object{
+        [int64](Need-Join $_ 'present_start_qpc')-ge$measurementStart-and
+        [int64](Need-Join $_ 'present_start_qpc')-lt$measurementEnd
+    })
     $boundaryEvents=@($windowEvents|Where-Object{
         $qpc=[int64]$_.present_start_qpc
         @($boundaryNative|Where-Object{
@@ -111,6 +113,21 @@ function Invoke-MvmNativePresentEventExactJoin {
     }
     if($consumed.Count-ne$events.Count){Fail-Join '未消費のtarget PresentEventがあります'}
 
+    $boundaryJoinDiagnostics=@();$boundaryJoined=@()
+    foreach($record in $boundaryNative){
+        $enter=[int64](Need-Join $record 'present_enter_qpc');$returned=[int64](Need-Join $record 'present_return_qpc')
+        $candidates=@($allTargetEvents|Where-Object{
+            $start=[int64](Need-Join $_ 'present_start_qpc')
+            $start-ge$enter-and$start-le$returned-and
+            [int64](Need-Join $_ 'thread_id')-eq[int64](Need-Join $record 'thread_id')-and
+            [int64](Need-Join $_ 'sync_interval')-eq[int64](Need-Join $record 'sync_interval')-and
+            [int64](Need-Join $_ 'present_flags')-eq[int64](Need-Join $record 'present_flags')
+        })
+        $diagnostic=[pscustomobject]@{native=$record;candidate_count=$candidates.Count;present_event=$(if($candidates.Count-eq1){$candidates[0]}else{$null})}
+        $boundaryJoinDiagnostics+=$diagnostic
+        if($candidates.Count-eq1){$boundaryJoined+=$diagnostic}
+    }
+
     return [pscustomobject]@{
         cohort_inclusion_authority='present_enter_qpc >= measurement_start_qpc && present_return_qpc < measurement_end_qpc_exclusive'
         target_process_id=$targetPid
@@ -120,6 +137,18 @@ function Invoke-MvmNativePresentEventExactJoin {
         native=$native
         events=$events
         joined=$joined
+        all_target_events=$allTargetEvents
+        measurement_window_target_events=$windowEvents
+        outside_cohort_events=@($nonBoundaryEvents|Where-Object{
+            $qpc=[int64]$_.present_start_qpc
+            @($native|Where-Object{
+                $qpc-ge[int64]$_.present_enter_qpc-and$qpc-le[int64]$_.present_return_qpc
+            }).Count-eq0
+        })
+        boundary_native=$boundaryNative
+        boundary_events=$boundaryEvents
+        boundary_joined=$boundaryJoined
+        boundary_join_diagnostics=$boundaryJoinDiagnostics
         boundary_native_count=$boundaryNative.Count
         boundary_event_count=$boundaryEvents.Count
         outside_native_cohort_event_count=$outsideNativeCohortCount

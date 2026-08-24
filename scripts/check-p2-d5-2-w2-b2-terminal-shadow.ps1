@@ -27,12 +27,22 @@ foreach($field in @('etw_events_lost','etw_buffers_lost','present_event_overflow
 $join=Invoke-MvmNativePresentEventExactJoin -App $app -Etw $etw
 $transport=Need (Need $app.native_present_hook 'intent_identity_transport') 'records'
 $intentRecords=@($transport)
-Equal $intentRecords.Count $join.native.Count 'B1/native Layer 2 cohort件数'
+$nativeAll=@(Need $app.native_present_hook 'records')
+Equal $intentRecords.Count $nativeAll.Count 'B1/available native Present件数'
 $intentByPresent=@{}
 foreach($record in $intentRecords){
     $key=[string](Need $record 'native_present_serial')
     if($intentByPresent.ContainsKey($key)){Fail "B1 native Present serialが重複しています: $key"}
     $intentByPresent[$key]=$record
+}
+for($index=0;$index-lt$nativeAll.Count;++$index){
+    $nativeRecord=$nativeAll[$index];$presentSerial=[string](Need $nativeRecord 'present_serial')
+    if(-not$intentByPresent.ContainsKey($presentSerial)){Fail "available native Presentに対応するB1 intent recordがありません: $presentSerial"}
+    $intentRecord=$intentByPresent[$presentSerial];$token=Need $nativeRecord 'composition_token'
+    Equal ([string](Need $token 'token_serial')) ([string](Need $intentRecord 'native_present_embedded_token_serial')) "available token serial provenance[$index]"
+    Equal ([uint64](Need $nativeRecord 'intent_ordinal')) ([uint64](Need $intentRecord 'native_present_intent_ordinal')) "available intent ordinal provenance[$index]"
+    Equal ([bool](Need $nativeRecord 'intent_ordinal_valid')) ([bool](Need $intentRecord 'native_present_intent_valid')) "available intent validity provenance[$index]"
+    Equal ([bool]$nativeRecord.intent_ordinal_valid) $true "available formal intent validity[$index]"
 }
 
 $entries=@();$presented=0;$discarded=0;$unknown=0

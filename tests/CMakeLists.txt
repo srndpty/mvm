@@ -238,6 +238,18 @@ foreach(_p2_d5_2_w2b2_case IN ITEMS GoodPresented GoodDiscarded GoodDisplayedOut
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
+# P2-D5-2-W2-C0: Layer 2 cohort外を含むdisplay candidate coverage inventory。
+foreach(_p2_d5_2_w2c0_case IN ITEMS GoodForeignBoundary NegativeMissingNative NegativePhysicalAuthority)
+    string(TOLOWER "${_p2_d5_2_w2c0_case}" _p2_d5_2_w2c0_name)
+    mvm_add_test(p2_d5_2_w2c0_display_candidate_inventory_${_p2_d5_2_w2c0_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c0-display-candidate-inventory-contract.ps1"
+            -Case "${_p2_d5_2_w2c0_case}"
+            -Inventory "${CMAKE_SOURCE_DIR}/scripts/inventory-p2-d5-2-w2-c0-display-candidates.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c0-${_p2_d5_2_w2c0_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
     string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)
     mvm_add_test(p2_c3_a3_t2_d1b2_evaluability_${_p2_c3_a3_t2_d1b2e_name}
