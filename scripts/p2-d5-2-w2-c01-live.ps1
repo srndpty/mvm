@@ -29,15 +29,23 @@ $inventoryPath=Join-Path $OutputDirectory 'display-candidate-inventory.json'
     -RequireCoverageComplete
 if($LASTEXITCODE-ne0){throw 'C0.1 display candidate coverage gateが失敗しました'}
 $coverage=Get-Content -LiteralPath $inventoryPath -Raw -Encoding utf8|ConvertFrom-Json
+if(-not[bool]$coverage.intent_scope_exact-or[int64]$coverage.missing_scope_count-ne0-or
+   [int64]$coverage.ambiguous_scope_count-ne0-or[int64]$coverage.mutated_scope_count-ne0){
+    throw 'C0.1.1 intent scope provenance gateが失敗しました'
+}
 $summary=[ordered]@{
-    schema='mvm-p2-d5-2-w2-c01-live-1';stage='P2-D5-2-W2-C0.1'
+    schema='mvm-p2-d5-2-w2-c011-live-1';stage='P2-D5-2-W2-C0.1.1'
     acquisition_mode='CanonicalPresentMonLive';runs=$Runs
     warmup_seconds=$WarmupSeconds;measure_seconds=$MeasureSeconds
     b1_b2_semantics_unchanged=$true;measurement_window_extended=$false
     capture_envelope_checks=$checks
     coverage_complete=[bool]$coverage.coverage_complete
+    intent_scope_exact=[bool]$coverage.intent_scope_exact
+    missing_scope_count=[int64]$coverage.missing_scope_count
+    ambiguous_scope_count=[int64]$coverage.ambiguous_scope_count
+    mutated_scope_count=[int64]$coverage.mutated_scope_count
     foreign_intent_minimum_required=0
     verdict=$(if([bool]$coverage.coverage_complete){'DISPLAY_DOMAIN_CANDIDATE_COVERAGE_COMPLETE'}else{'DISPLAY_DOMAIN_CANDIDATE_COVERAGE_INCOMPLETE'})
 }
 $summary|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $OutputDirectory 'w2-c01-live-summary.json') -Encoding utf8
-Write-Host "P2-D5-2 W2-C0.1 live: PASS ($Runs/$Runs) $($summary.verdict)"
+Write-Host "P2-D5-2 W2-C0.1.1 live: PASS ($Runs/$Runs) $($summary.verdict)"

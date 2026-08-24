@@ -127,6 +127,8 @@ public:
         return true;
     }
 
+    std::uint64_t tokenSerial() const { return token_.tokenSerial; }
+
     bool setFrame(const gpu::ComposedFrame& frame, std::uint64_t tokenSerial) {
         valid_ = makeNativePresentCompositionToken(frame, tokenSerial, token_.intentOrdinal,
                                                    token_.intentOrdinalValid != 0, token_);
@@ -308,11 +310,27 @@ protected:
             }
             // scheduler decisionがintent identityの唯一のproducerである。
             // pastSourceDomainもvalid decisionなので、returnより前にtransportする。
+            const bool foreignPreMeasurement =
+                state_->formalOpportunityEnvelopePrerollActive.load(std::memory_order_acquire);
             if (!nativePresentToken.setFormalIntentOrdinal(formalDecision.opportunityOrdinal)) {
                 fail("P2-D5-2 formal intent ordinalをcomposition tokenへ設定できません");
                 return;
             }
-            if (state_->formalOpportunityEnvelopePrerollActive.load(std::memory_order_acquire)) {
+            if (nativePresentToken.tokenSerial() == 0) {
+                fail("P2-D5-2 intent scopeに有効なtoken serialがありません");
+                return;
+            }
+            {
+                // scheduler decisionがordinalとscopeの唯一のproducerである。
+                // native recordとのjoin keyはABI v4既存のtoken serialだけを使う。
+                std::lock_guard<std::mutex> lock(state_->nativePresentIntentScopeMutex);
+                state_->nativePresentIntentScopeLedger.push_back(
+                    {nativePresentToken.tokenSerial(),
+                     static_cast<std::uint64_t>(formalDecision.opportunityOrdinal),
+                     foreignPreMeasurement ? NativePresentIntentScope::ForeignPreMeasurement
+                                           : NativePresentIntentScope::CurrentMeasurement});
+            }
+            if (foreignPreMeasurement) {
                 if (!formalDecision.duplicateCallback) {
                     const long long repeatedFrame = lastNativePresentToken_.outputFrameNumber;
                     bool completed = false;
@@ -970,6 +988,10 @@ private:
                 return true;
             }
             state_->nativePresentEnvelopeBeginQpc.store(gpu::qpcTicks(), std::memory_order_release);
+            {
+                std::lock_guard<std::mutex> lock(state_->nativePresentIntentScopeMutex);
+                state_->nativePresentIntentScopeLedger.clear();
+            }
             state_->nativePresentCaptureActive.store(true, std::memory_order_release);
             if (state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire)) {
                 if (!startFormalOpportunityScheduler(true)) {

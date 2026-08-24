@@ -69,6 +69,9 @@ for($run=1;$run-le$runCount;++$run){
     $hasCaptureEnvelope=$nativeHook.PSObject.Properties.Name-contains'capture_envelope_records'
     $nativeAll=@($(if($hasCaptureEnvelope){Need $nativeHook 'capture_envelope_records'}else{Need $nativeHook 'records'}))
     $intentAll=@($app.native_present_hook.intent_identity_transport.records)
+    $hasIntentScope=$nativeHook.PSObject.Properties.Name-contains'intent_scope_provenance'
+    $intentScopeAuthority=$(if($hasIntentScope){Need $nativeHook 'intent_scope_provenance'}else{$null})
+    $scopeAll=@($(if($hasIntentScope){Need $intentScopeAuthority 'records'}else{@()}))
     $intentByPresent=@{}
     foreach($intent in $intentAll){$serial=[string](Need $intent 'native_present_serial');if($intentByPresent.ContainsKey($serial)){Fail "run $run B1 serialが重複しています: $serial"};$intentByPresent[$serial]=$intent}
     $cohortSequence=@{}
@@ -76,7 +79,8 @@ for($run=1;$run-le$runCount;++$run){
 
     $allTargetEvents=@($join.all_target_events)
     $presentedCandidates=@();$presentedEventSequences=@{};$multipleDisplayed=0;$observedMissingNative=0;$observedMissingIntent=0
-    $observedForeignExact=0;$outsidePresentedCount=0
+    $observedForeignExact=0;$observedCurrentExact=0;$outsidePresentedCount=0
+    $observedMissingScope=0;$observedAmbiguousScope=0;$observedMutatedScope=0
     $relationCounts=[ordered]@{
         BEFORE_PREDECESSOR=0
         WITHIN_PREDECESSOR_SUCCESSOR_ENVELOPE=0
@@ -98,7 +102,8 @@ for($run=1;$run-le$runCount;++$run){
             [int64]$_.present_flags-eq[int64]$presentEvent.present_flags
         })
         $nativeExact=$nativeCandidates.Count-eq1
-        $intentExact=$false;$intentOrdinal=$null;$nativeSerial=$null
+        $intentExact=$false;$intentOrdinal=$null;$nativeSerial=$null;$tokenSerial=$null
+        $intentScope=$null;$intentScopeExact=$false;$scopeFailure='NONE'
         if($nativeExact){
             $nativeSerial=[string]$nativeCandidates[0].present_serial
             if($hasCaptureEnvelope){
@@ -110,6 +115,7 @@ for($run=1;$run-le$runCount;++$run){
                     [string](Need $nativeRecord 'intent_ordinal')-eq[string](Need $token 'intent_ordinal')-and
                     [string](Need $token 'token_serial')-ne'0'
                 if($intentExact){$intentOrdinal=[string]$nativeRecord.intent_ordinal}
+                $tokenSerial=[string]$token.token_serial
             }elseif($intentByPresent.ContainsKey($nativeSerial)){
                 $intent=$intentByPresent[$nativeSerial]
                 $tokenSerial=[string]$nativeCandidates[0].composition_token.token_serial
@@ -117,6 +123,28 @@ for($run=1;$run-le$runCount;++$run){
                     [string]$nativeCandidates[0].intent_ordinal-eq[string]$intent.native_present_intent_ordinal-and
                     [bool]$nativeCandidates[0].intent_ordinal_valid-and[bool]$intent.native_present_intent_valid
                 if($intentExact){$intentOrdinal=[string]$intent.native_present_intent_ordinal}
+            }
+        }
+        if($intentExact){
+            $scopeCandidates=@($scopeAll|Where-Object{[string]$_.token_serial-eq$tokenSerial})
+            if($scopeCandidates.Count-eq0){
+                $scopeFailure='MISSING'
+            }elseif($scopeCandidates.Count-ne1){
+                $scopeFailure='AMBIGUOUS'
+            }elseif(-not($nativeCandidates[0].PSObject.Properties.Name-contains'intent_scope_provenance')){
+                $scopeFailure='MISSING'
+            }else{
+                $embeddedScope=$nativeCandidates[0].intent_scope_provenance
+                $candidateScope=[string](Need $scopeCandidates[0] 'intent_scope')
+                $candidateOrdinal=[string](Need $scopeCandidates[0] 'intent_ordinal')
+                $scopeKnown=$candidateScope-in@('CURRENT_MEASUREMENT','FOREIGN_PRE_MEASUREMENT')
+                $intentScopeExact=$scopeKnown-and[bool](Need $embeddedScope 'exact')-and
+                    [int](Need $embeddedScope 'match_count')-eq1-and
+                    [string](Need $embeddedScope 'token_serial')-eq$tokenSerial-and
+                    [string](Need $embeddedScope 'intent_ordinal')-eq$intentOrdinal-and
+                    [string](Need $embeddedScope 'intent_scope')-eq$candidateScope-and
+                    $candidateOrdinal-eq$intentOrdinal
+                if($intentScopeExact){$intentScope=$candidateScope}else{$scopeFailure='MUTATION'}
             }
         }
         $inLayer2=$cohortSequence.ContainsKey([string]$presentEvent.sequence_index)
@@ -129,7 +157,12 @@ for($run=1;$run-le$runCount;++$run){
             if($coverageCandidate){
                 if(-not$nativeExact){++$observedMissingNative}
                 elseif(-not$intentExact){++$observedMissingIntent}
-                elseif(-not$inLayer2){++$observedForeignExact}
+                elseif(-not$intentScopeExact){
+                    if($scopeFailure-eq'AMBIGUOUS'){++$observedAmbiguousScope}
+                    elseif($scopeFailure-eq'MUTATION'){++$observedMutatedScope}
+                    else{++$observedMissingScope}
+                }elseif($intentScope-eq'FOREIGN_PRE_MEASUREMENT'){++$observedForeignExact}
+                elseif($intentScope-eq'CURRENT_MEASUREMENT'){++$observedCurrentExact}
             }
             $presentedCandidates+=[ordered]@{
                 etw_sequence=[int64]$presentEvent.sequence_index
@@ -137,6 +170,8 @@ for($run=1;$run-le$runCount;++$run){
                 layer2_cohort_member=$inLayer2;native_candidate_count=$nativeCandidates.Count
                 native_exact=$nativeExact;native_present_serial=$nativeSerial
                 intent_exact=$intentExact;intent_ordinal=$intentOrdinal
+                intent_scope_exact=$intentScopeExact;intent_scope=$intentScope
+                intent_scope_failure=$scopeFailure
             }
         }
     }
@@ -146,6 +181,12 @@ for($run=1;$run-le$runCount;++$run){
     if($multipleDisplayed-ne0){$blockers+='PRESENTED_DISPLAYED_QPC_CARDINALITY_UNRESOLVED'}
     if($observedMissingNative-ne0){$blockers+='OBSERVED_DOMAIN_PRESENTED_NATIVE_JOIN_MISSING'}
     if($observedMissingIntent-ne0){$blockers+='OBSERVED_DOMAIN_PRESENTED_INTENT_JOIN_MISSING'}
+    if($observedMissingScope-ne0){$blockers+='OBSERVED_DOMAIN_PRESENTED_INTENT_SCOPE_MISSING'}
+    if($observedAmbiguousScope-ne0){$blockers+='OBSERVED_DOMAIN_PRESENTED_INTENT_SCOPE_AMBIGUOUS'}
+    if($observedMutatedScope-ne0){$blockers+='OBSERVED_DOMAIN_PRESENTED_INTENT_SCOPE_MUTATED'}
+    if(-not$hasIntentScope-or-not[bool](Need $intentScopeAuthority 'authority_pass')){
+        $blockers+='INTENT_SCOPE_PROVENANCE_AUTHORITY_INVALID'
+    }
     if($hasCaptureEnvelope){
         $envelope=Need $nativeHook 'capture_envelope'
         if(-not[bool](Need $envelope 'authority_pass')){$blockers+='CAPTURE_ENVELOPE_AUTHORITY_INVALID'}
@@ -169,19 +210,35 @@ for($run=1;$run-le$runCount;++$run){
         outside_layer2_presented_event_count=$outsidePresentedCount
         observed_domain_missing_native_count=$observedMissingNative
         observed_domain_missing_intent_count=$observedMissingIntent
+        observed_domain_missing_scope_count=$observedMissingScope
+        observed_domain_ambiguous_scope_count=$observedAmbiguousScope
+        observed_domain_mutated_scope_count=$observedMutatedScope
+        observed_domain_current_intent_exact_count=$observedCurrentExact
         observed_domain_foreign_intent_exact_count=$observedForeignExact
+        intent_scope_exact=$observedMissingScope-eq0-and$observedAmbiguousScope-eq0-and$observedMutatedScope-eq0-and$hasIntentScope-and[bool]$intentScopeAuthority.authority_pass
         coverage_complete=$blockers.Count-eq0;blockers=$blockers;candidates=$presentedCandidates
     }
 }
 $globalBlockerList=@($globalBlockers.Keys|Sort-Object)
 $coverageComplete=$globalBlockerList.Count-eq0
+$missingScopeTotal=0L;$ambiguousScopeTotal=0L;$mutatedScopeTotal=0L
+foreach($runResult in $runResults){
+    $missingScopeTotal+=[int64]$runResult.observed_domain_missing_scope_count
+    $ambiguousScopeTotal+=[int64]$runResult.observed_domain_ambiguous_scope_count
+    $mutatedScopeTotal+=[int64]$runResult.observed_domain_mutated_scope_count
+}
 $result=[ordered]@{
-    schema='mvm-p2-d5-2-w2-c0-display-candidate-inventory-1';stage='P2-D5-2-W2-C0'
+    schema='mvm-p2-d5-2-w2-c0-display-candidate-inventory-2';stage='P2-D5-2-W2-C0.1.1'
     source_b2_live_directory=(Resolve-Path -LiteralPath $B2LiveDirectory).Path
     layer2_join_semantics_unchanged=$true
     physical_mapping_connected=$false;intent_satisfaction_connected=$false
     performance_accounting_connected=$false
-    run_count=$runCount;coverage_complete=$coverageComplete;blockers=$globalBlockerList
+    run_count=$runCount;coverage_complete=$coverageComplete
+    intent_scope_exact=$coverageComplete-and@($runResults|Where-Object{-not[bool]$_.intent_scope_exact}).Count-eq0
+    missing_scope_count=$missingScopeTotal
+    ambiguous_scope_count=$ambiguousScopeTotal
+    mutated_scope_count=$mutatedScopeTotal
+    blockers=$globalBlockerList
     verdict=$(if($coverageComplete){'DISPLAY_DOMAIN_CANDIDATE_COVERAGE_COMPLETE'}else{'DISPLAY_DOMAIN_CANDIDATE_COVERAGE_INCOMPLETE'})
     runs=$runResults
 }

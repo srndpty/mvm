@@ -8,6 +8,7 @@
 #include <cmath>
 #include <dwmapi.h>
 #include <random>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -1926,6 +1927,48 @@ bool CompositorSpikeController::writeMetrics() {
     QJsonArray nativePresentRecords;
     QJsonArray captureEnvelopeRecords;
     QJsonArray intentIdentityLedger;
+    QJsonArray intentScopeLedgerJson;
+    std::vector<NativePresentIntentScopeRecord> intentScopeLedger;
+    {
+        std::lock_guard<std::mutex> lock(state_->nativePresentIntentScopeMutex);
+        intentScopeLedger = state_->nativePresentIntentScopeLedger;
+    }
+    std::unordered_map<std::uint64_t, std::vector<NativePresentIntentScopeRecord>>
+        intentScopeByToken;
+    for (const auto& record : intentScopeLedger) {
+        intentScopeByToken[record.tokenSerial].push_back(record);
+        intentScopeLedgerJson.append(QJsonObject{
+            {"token_serial", QString::number(record.tokenSerial)},
+            {"intent_ordinal", QString::number(record.intentOrdinal)},
+            {"intent_scope", nativePresentIntentScopeName(record.scope)},
+        });
+    }
+    long long intentScopeMissingCount = 0;
+    long long intentScopeAmbiguousCount = 0;
+    long long intentScopeMutationCount = 0;
+    std::unordered_set<std::uint64_t> nativeIntentTokenSerials;
+    for (const auto& record : nativePresentSnapshot.records) {
+        if (record.tokenPresent == 0 || record.intentOrdinalValid == 0)
+            continue;
+        nativeIntentTokenSerials.insert(record.token.tokenSerial);
+        const auto found = intentScopeByToken.find(record.token.tokenSerial);
+        if (found == intentScopeByToken.end()) {
+            ++intentScopeMissingCount;
+        } else if (found->second.size() != 1) {
+            ++intentScopeAmbiguousCount;
+        } else if (found->second.front().intentOrdinal != record.intentOrdinal) {
+            ++intentScopeMutationCount;
+        }
+    }
+    long long intentScopeUnmatchedCount = 0;
+    for (const auto& [tokenSerial, records] : intentScopeByToken) {
+        if (tokenSerial == 0 || nativeIntentTokenSerials.count(tokenSerial) == 0)
+            intentScopeUnmatchedCount += static_cast<long long>(records.size());
+    }
+    const bool intentScopeAuthorityPass =
+        !intentScopeLedger.empty() && intentScopeMissingCount == 0 &&
+        intentScopeAmbiguousCount == 0 && intentScopeMutationCount == 0 &&
+        intentScopeUnmatchedCount == 0;
     std::unordered_set<std::uint64_t> nativePresentSerials;
     std::unordered_set<std::uint64_t> compositionTokenSerials;
     const bool formalIntentMode =
@@ -1936,7 +1979,8 @@ bool CompositorSpikeController::writeMetrics() {
     const long long b1MeasurementStartQpc =
         state_->measurementStartQpc.load(std::memory_order_acquire);
     const long long b1MeasurementEndQpc = state_->measurementEndQpc.load(std::memory_order_acquire);
-    const auto nativePresentRecordJson = [](const MvmNativePresentRecord& record) {
+    const auto nativePresentRecordJson = [&intentScopeByToken](
+                                             const MvmNativePresentRecord& record) {
         QJsonArray sources;
         for (std::uint32_t index = 0; index < record.token.sourceCount; ++index) {
             const auto& source = record.token.sources[index];
@@ -1946,6 +1990,21 @@ bool CompositorSpikeController::writeMetrics() {
                 {"resource_epoch", QString::number(source.resourceEpoch)},
                 {"frame_number", source.frameNumber},
             });
+        }
+        QJsonObject intentScope{{"token_serial", QString::number(record.token.tokenSerial)},
+                                {"intent_ordinal", QString::number(record.intentOrdinal)},
+                                {"intent_scope", "UNRESOLVED"},
+                                {"match_count", 0},
+                                {"exact", false}};
+        const auto scope = intentScopeByToken.find(record.token.tokenSerial);
+        if (scope != intentScopeByToken.end()) {
+            intentScope["match_count"] = static_cast<qint64>(scope->second.size());
+            if (scope->second.size() == 1) {
+                const auto& producer = scope->second.front();
+                intentScope["intent_ordinal"] = QString::number(producer.intentOrdinal);
+                intentScope["intent_scope"] = nativePresentIntentScopeName(producer.scope);
+                intentScope["exact"] = producer.intentOrdinal == record.intentOrdinal;
+            }
         }
         return QJsonObject{
             {"present_serial", QString::number(record.presentSerial)},
@@ -1970,6 +2029,7 @@ bool CompositorSpikeController::writeMetrics() {
                          {"intent_ordinal_valid", record.token.intentOrdinalValid != 0},
                          {"source_count", static_cast<qint64>(record.token.sourceCount)},
                          {"sources", sources}}},
+            {"intent_scope_provenance", intentScope},
         };
     };
     bool everyIntentIdentityRecordExact = true;
@@ -2126,9 +2186,27 @@ bool CompositorSpikeController::writeMetrics() {
              {"token_set_failure_count",
               state_->nativePresentTokenSetFailureCount.load(std::memory_order_relaxed)},
              {"authority_pass", nativePresentAuthorityPass && captureEnvelopeLowerClosed &&
-                                    frozenMeasurementWindowUnchanged && captureEnvelopeUpperClosed},
+                                    frozenMeasurementWindowUnchanged &&
+                                    captureEnvelopeUpperClosed && intentScopeAuthorityPass},
          }},
         {"capture_envelope_records", captureEnvelopeRecords},
+        {"intent_scope_provenance",
+         QJsonObject{
+             {"schema", "mvm-p2-d5-2-w2-c011-intent-scope-provenance-1"},
+             {"shadow_only", true},
+             {"abi_version_unchanged", true},
+             {"join_key", "composition_token.token_serial"},
+             {"scope_derived_from_present_qpc", false},
+             {"scope_derived_from_source_frame", false},
+             {"scope_derived_from_layer2_membership", false},
+             {"record_count", static_cast<qint64>(intentScopeLedgerJson.size())},
+             {"missing_scope_count", intentScopeMissingCount},
+             {"ambiguous_scope_count", intentScopeAmbiguousCount},
+             {"mutation_count", intentScopeMutationCount},
+             {"unmatched_scope_count", intentScopeUnmatchedCount},
+             {"authority_pass", intentScopeAuthorityPass},
+             {"records", intentScopeLedgerJson},
+         }},
         {"intent_identity_transport",
          QJsonObject{
              {"schema", "mvm-p2-d5-2-w2-b1-intent-identity-transport-2"},

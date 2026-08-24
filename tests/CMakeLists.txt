@@ -239,7 +239,7 @@ foreach(_p2_d5_2_w2b2_case IN ITEMS GoodPresented GoodDiscarded GoodDisplayedOut
 endforeach()
 
 # P2-D5-2-W2-C0: Layer 2 cohort外を含むdisplay candidate coverage inventory。
-foreach(_p2_d5_2_w2c0_case IN ITEMS GoodForeignBoundary NegativeMissingNative NegativeMissingIntent NegativePhysicalAuthority)
+foreach(_p2_d5_2_w2c0_case IN ITEMS GoodForeignBoundary GoodLowerForeignOrdinalCollision GoodUpperCurrentStraddlesEnd NegativeMissingNative NegativeMissingIntent NegativePhysicalAuthority NegativeIntentScopeMissing NegativeIntentScopeAmbiguous NegativeIntentScopeMutation)
     string(TOLOWER "${_p2_d5_2_w2c0_case}" _p2_d5_2_w2c0_name)
     mvm_add_test(p2_d5_2_w2c0_display_candidate_inventory_${_p2_d5_2_w2c0_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File

@@ -16,8 +16,10 @@
 #include "media/gpu_preview/transition_probe.h"
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
+#include <vector>
 
 #include <QQuickRhiItem>
 
@@ -90,6 +92,27 @@ struct ActualTargetPixelSize {
     int width = 0;
     int height = 0;
 };
+
+enum class NativePresentIntentScope {
+    ForeignPreMeasurement = 0,
+    CurrentMeasurement = 1,
+};
+
+struct NativePresentIntentScopeRecord {
+    std::uint64_t tokenSerial = 0;
+    std::uint64_t intentOrdinal = 0;
+    NativePresentIntentScope scope = NativePresentIntentScope::ForeignPreMeasurement;
+};
+
+inline const char* nativePresentIntentScopeName(NativePresentIntentScope scope) {
+    switch (scope) {
+    case NativePresentIntentScope::ForeignPreMeasurement:
+        return "FOREIGN_PRE_MEASUREMENT";
+    case NativePresentIntentScope::CurrentMeasurement:
+        return "CURRENT_MEASUREMENT";
+    }
+    return "UNKNOWN";
+}
 
 // P3 integrated seek timeout時にrender threadの到達stageを凍結する診断値。
 // 判定やscheduler動作には使わない。
@@ -264,6 +287,10 @@ struct CompositorSpikeState {
     std::atomic<long long> nativePresentEnvelopeBeginQpc{0};
     std::atomic<long long> nativePresentEnvelopeCloseQpc{0};
     std::atomic<long long> measurementArmQpc{0};
+    // W2-C0.1.1 shadow-only。scheduler decisionの生成時点でscopeを固定し、
+    // QPC、source frame、Layer2 cohortからは復元しない。
+    std::mutex nativePresentIntentScopeMutex;
+    std::vector<NativePresentIntentScopeRecord> nativePresentIntentScopeLedger;
     // F3-C3-A3-T2診断専用。compositor最終出力の2x2 pixelだけを毎frame変える。
     std::atomic<bool> diagnosticTargetPixelToggle{false};
     // F3-C3-A3-T2-D1-B0 diagnostic-only。presentation pathのauthorityではない。
