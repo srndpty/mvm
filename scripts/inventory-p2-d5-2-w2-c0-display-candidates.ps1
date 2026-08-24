@@ -169,6 +169,7 @@ for($run=1;$run-le$runCount;++$run){
                 present_start_qpc=$startQpc;displayed_qpc=$displayQpc;display_relation=$relation
                 layer2_cohort_member=$inLayer2;native_candidate_count=$nativeCandidates.Count
                 native_exact=$nativeExact;native_present_serial=$nativeSerial
+                composition_token_serial=$tokenSerial
                 intent_exact=$intentExact;intent_ordinal=$intentOrdinal
                 intent_scope_exact=$intentScopeExact;intent_scope=$intentScope
                 intent_scope_failure=$scopeFailure

@@ -267,6 +267,22 @@ mvm_add_test(p2_d5_2_w2c01_capture_envelope_architecture
         -SourceRoot "${CMAKE_SOURCE_DIR}"
     PROPERTIES LABELS "gpu_preview")
 
+# P2-D5-2-W2-C1: DisplayedQPCをphysical VBlank causal cellへshadow-only mappingする。
+foreach(_p2_d5_2_w2c1_case IN ITEMS GoodInDomain GoodForeignIntentDisplayedInDomain GoodUpperCurrentStraddlesEnd GoodDisplayedOutsideDomain GoodExactBoundaries GoodCausalCellProperty NegativeMissingDisplayedQpc NegativeMultipleDisplayedQpc NegativeNoPhysicalMapping NegativeAmbiguousPhysicalMapping NegativeDuplicatePresentedPhysicalOrdinal NegativePhysicalAuthority NegativeEtwLoss NegativeMappingProvenanceMutation)
+    string(TOLOWER "${_p2_d5_2_w2c1_case}" _p2_d5_2_w2c1_name)
+    mvm_add_test(p2_d5_2_w2c1_displayed_mapping_${_p2_d5_2_w2c1_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c1-displayed-mapping-contract.ps1"
+            -Case "${_p2_d5_2_w2c1_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-c1-mapping-core.ps1"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+mvm_add_test(p2_d5_2_w2c1_mapping_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c1-mapping-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+
 foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
     string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)
     mvm_add_test(p2_c3_a3_t2_d1b2_evaluability_${_p2_c3_a3_t2_d1b2e_name}
