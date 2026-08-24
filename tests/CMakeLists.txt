@@ -211,6 +211,19 @@ foreach(_p2_d5_2_w2a_case IN ITEMS Good GoodSuccessorAfterEnd GoodEmptyDomain Go
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
+# P2-D5-2-W2-B1: scheduler intent identityのABI v4 exact-copy transport。
+foreach(_p2_d5_2_w2b1_case IN ITEMS GoodFormal GoodNonFormal NegativeAppV3QtV4 NegativeAppV4QtV3 NegativeTokenLayout NegativeRecordLayout NegativeFormalInvalid NegativeOrdinalMutation NegativeValidityMutation NegativeTokenSerialMutation NegativeDuplicateNativeSerial NegativeNonFormalFabricated)
+    string(TOLOWER "${_p2_d5_2_w2b1_case}" _p2_d5_2_w2b1_name)
+    mvm_add_test(p2_d5_2_w2b1_intent_transport_${_p2_d5_2_w2b1_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-b1-intent-transport-contract.ps1"
+            -Case "${_p2_d5_2_w2b1_case}"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-b1-intent-transport.ps1"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2b1-${_p2_d5_2_w2b1_name}.json"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
     string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)
     mvm_add_test(p2_c3_a3_t2_d1b2_evaluability_${_p2_c3_a3_t2_d1b2e_name}

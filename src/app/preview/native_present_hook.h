@@ -67,6 +67,7 @@ private:
 };
 
 bool makeNativePresentCompositionToken(const gpu::ComposedFrame& frame, std::uint64_t tokenSerial,
+                                       std::uint64_t intentOrdinal, bool intentOrdinalValid,
                                        MvmNativePresentCompositionToken& token);
 
 } // namespace mvm::app

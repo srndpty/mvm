@@ -1,0 +1,54 @@
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory=$true)][ValidateSet(
+        'GoodFormal','GoodNonFormal','NegativeAppV3QtV4','NegativeAppV4QtV3',
+        'NegativeTokenLayout','NegativeRecordLayout','NegativeFormalInvalid',
+        'NegativeOrdinalMutation','NegativeValidityMutation','NegativeTokenSerialMutation',
+        'NegativeDuplicateNativeSerial','NegativeNonFormalFabricated')][string]$Case,
+    [Parameter(Mandatory=$true)][string]$Checker,
+    [Parameter(Mandatory=$true)][string]$SourceRoot,
+    [Parameter(Mandatory=$true)][string]$Output
+)
+$ErrorActionPreference='Stop'
+$formal=$Case-ne'GoodNonFormal'-and$Case-ne'NegativeNonFormalFabricated'
+$records=@(0..2|ForEach-Object{
+    [ordered]@{
+        composition_token_serial=[string](100+$_)
+        composition_token_intent_ordinal=[string]$_
+        composition_token_intent_valid=$formal
+        native_present_serial=[string](200+$_)
+        native_present_token_serial=[string](100+$_)
+        native_present_intent_ordinal=[string]$_
+        native_present_intent_valid=$formal
+    }
+})
+$transport=[ordered]@{
+    schema='mvm-p2-d5-2-w2-b1-intent-identity-transport-1'
+    abi_version=4;app_abi_version=4;qt_abi_version=4
+    composition_token_size=120;native_present_record_size=200
+    shadow_only=$true;performance_accounting_connected=$false;formal_mode=$formal
+    record_count=$records.Count;transport_exact=$true
+    verdict='INTENT_IDENTITY_ABI_V4_TRANSPORT_EXACT';records=$records
+}
+$hook=[ordered]@{
+    abi_version=4;composition_token_size=120;native_present_record_size=200
+    intent_identity_transport=$transport
+}
+switch($Case){
+    'NegativeAppV3QtV4'{$transport.app_abi_version=3}
+    'NegativeAppV4QtV3'{$transport.qt_abi_version=3}
+    'NegativeTokenLayout'{$transport.composition_token_size=119}
+    'NegativeRecordLayout'{$transport.native_present_record_size=201}
+    'NegativeFormalInvalid'{$records[1].composition_token_intent_valid=$false;$records[1].native_present_intent_valid=$false}
+    'NegativeOrdinalMutation'{$records[1].native_present_intent_ordinal='99'}
+    'NegativeValidityMutation'{$records[1].native_present_intent_valid=$false}
+    'NegativeTokenSerialMutation'{$records[1].native_present_token_serial='999'}
+    'NegativeDuplicateNativeSerial'{$records[1].native_present_serial=$records[0].native_present_serial}
+    'NegativeNonFormalFabricated'{$records[1].composition_token_intent_valid=$true;$records[1].native_present_intent_valid=$true}
+}
+[ordered]@{native_present_hook=$hook}|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $Output -Encoding utf8
+& pwsh -NoProfile -File $Checker -Json $Output -SourceRoot $SourceRoot *> $null
+$actual=$LASTEXITCODE
+$expected=if($Case-in@('GoodFormal','GoodNonFormal')){0}else{1}
+if($actual-ne$expected){throw "$Case W2-B1 contract exitが不正です: expected=$expected actual=$actual"}
+Write-Host "W2-B1 $Case contract: PASS"

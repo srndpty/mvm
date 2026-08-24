@@ -39,7 +39,8 @@ bool NativePresentHook::load(std::string& error) {
         error = "Qt6Gui.dllにF3-C0 native Present hook exportがありません";
         return false;
     }
-    if (abiVersion_() != MVM_NATIVE_PRESENT_HOOK_ABI_VERSION) {
+    if (!mvmNativePresentHookAbiVersionsCompatible(MVM_NATIVE_PRESENT_HOOK_ABI_VERSION,
+                                                   abiVersion_())) {
         error = "Qt6Gui.dllのnative Present hook ABI versionが一致しません";
         return false;
     }
@@ -128,6 +129,7 @@ std::uint64_t NativePresentHook::latestSwapchainIdentity() const {
 }
 
 bool makeNativePresentCompositionToken(const gpu::ComposedFrame& frame, std::uint64_t tokenSerial,
+                                       std::uint64_t intentOrdinal, bool intentOrdinalValid,
                                        MvmNativePresentCompositionToken& token) {
     if (tokenSerial == 0 || frame.outputFrameNumber < 0 || frame.layers.empty() ||
         frame.layers.size() > MVM_NATIVE_PRESENT_HOOK_MAX_SOURCES)
@@ -137,6 +139,8 @@ bool makeNativePresentCompositionToken(const gpu::ComposedFrame& frame, std::uin
     token.compositionEpoch = frame.compositionEpoch.value;
     token.compositionState = frame.compositionState.value;
     token.outputFrameNumber = frame.outputFrameNumber;
+    token.intentOrdinal = intentOrdinal;
+    token.intentOrdinalValid = intentOrdinalValid ? 1U : 0U;
     token.sourceCount = static_cast<std::uint32_t>(frame.layers.size());
     for (std::size_t index = 0; index < frame.layers.size(); ++index) {
         const auto identity = gpu::identityOf(frame.layers[index].frame);

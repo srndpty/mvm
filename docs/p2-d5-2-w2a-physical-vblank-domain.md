@@ -297,6 +297,10 @@ PHYSICAL_VBLANK_PREROLL_TIMEOUT           preroll が成立しなかった
 PHYSICAL_VBLANK_PREROLL_NOT_BEFORE_START  preroll sample.qpc >= measurement_start_qpc
 ```
 
+`PHYSICAL_VBLANK_PREROLL_TIMEOUT` は stage reason 名であり、
+`prestart_vblank_preroll_timeout=true` を必ず意味するものではない。
+observer の停止などを含む、preroll 成立不能全般をこの stage reason で表す。
+
 precedence 上は ObserverUnavailable の直後、sequence 判定より前に置く。
 
 追加 shadow field (shadow-only provenance):

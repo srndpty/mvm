@@ -2,7 +2,7 @@ diff --git a/src/gui/rhi/qrhid3d11.cpp b/src/gui/rhi/qrhid3d11.cpp
 index e6a567a6..d3c13b8d 100644
 --- a/src/gui/rhi/qrhid3d11.cpp
 +++ b/src/gui/rhi/qrhid3d11.cpp
-@@ -9,9 +9,194 @@
+@@ -9,9 +9,197 @@
  #include <QtCore/qcryptographichash.h>
  #include <QtCore/private/qsystemerror_p.h>
  #include "qrhid3dhelpers_p.h"
@@ -87,6 +87,8 @@ index e6a567a6..d3c13b8d 100644
 +    if (mvmPendingTokenValid) {
 +        record->tokenPresent = 1;
 +        record->token = mvmPendingToken;
++        record->intentOrdinal = mvmPendingToken.intentOrdinal;
++        record->intentOrdinalValid = mvmPendingToken.intentOrdinalValid;
 +        mvmPendingTokenValid = false;
 +    } else {
 +        ++ring->missingTokenCount;
@@ -127,8 +129,9 @@ index e6a567a6..d3c13b8d 100644
 +
 +extern "C" Q_DECL_EXPORT int mvm_qt_d3d11_present_hook_begin(MvmNativePresentRing *ring)
 +{
-+    if (!ring || ring->abiVersion != MVM_NATIVE_PRESENT_HOOK_ABI_VERSION
-+        || ring->capacity != MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY || mvmPresentRing)
++    if (!ring || !mvmNativePresentHookLayoutCompatible(
++                ring->abiVersion, ring->capacity, ring->compositionTokenSize,
++                ring->presentRecordSize) || mvmPresentRing)
 +        return 0;
 +    ring->enabled = 0;
 +    ring->recordCount = 0;
@@ -197,7 +200,7 @@ index e6a567a6..d3c13b8d 100644
  QT_BEGIN_NAMESPACE
  
  using namespace Qt::StringLiterals;
-@@ -1538,7 +1723,10 @@ QRhi::FrameOpResult QRhiD3D11::endFrame(QRhiSwapChain *swapChain, QRhi::EndFrame
+@@ -1538,7 +1726,10 @@ QRhi::FrameOpResult QRhiD3D11::endFrame(QRhiSwapChain *swapChain, QRhi::EndFrame
              qWarning("Failed to present: IDXGISwapChain is unavailable");
              return QRhi::FrameOpError;
          }

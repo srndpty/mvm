@@ -53,14 +53,16 @@ diff --git a/src/gui/rhi/qrhid3d11.cpp b/src/gui/rhi/qrhid3d11.cpp
 +
  std::uint32_t mvmSubmissionMode()
  {
-@@ -95,5 +138,6 @@ MvmPresentCapture mvmBeginPresentCapture(IDXGISwapChain *swapChain, UINT syncInt
+@@ -97,7 +140,8 @@ MvmPresentCapture mvmBeginPresentCapture(IDXGISwapChain *swapChain, UINT syncInt
      if (mvmPendingTokenValid) {
          record->tokenPresent = 1;
          record->token = mvmPendingToken;
+         record->intentOrdinal = mvmPendingToken.intentOrdinal;
+         record->intentOrdinalValid = mvmPendingToken.intentOrdinalValid;
 +        record->propagationSerial = mvmPendingToken.propagationSerial;
          mvmPendingTokenValid = false;
      } else {
-@@ -128,5 +172,14 @@ void mvmEndPresentCapture(MvmPresentCapture capture, HRESULT result)
+@@ -130,5 +174,14 @@ void mvmEndPresentCapture(MvmPresentCapture capture, HRESULT result)
              capture.ring->authorityFailure = 1;
          }
      }
@@ -75,7 +77,7 @@ diff --git a/src/gui/rhi/qrhid3d11.cpp b/src/gui/rhi/qrhid3d11.cpp
 +    }
      ++capture.ring->recordCount;
  }
-@@ -140,5 +193,16 @@ extern "C" Q_DECL_EXPORT std::uint32_t mvm_qt_d3d11_present_hook_abi_version()
+@@ -142,5 +195,16 @@ extern "C" Q_DECL_EXPORT std::uint32_t mvm_qt_d3d11_present_hook_abi_version()
      return MVM_NATIVE_PRESENT_HOOK_ABI_VERSION;
  }
  
@@ -92,7 +94,7 @@ diff --git a/src/gui/rhi/qrhid3d11.cpp b/src/gui/rhi/qrhid3d11.cpp
 +
  extern "C" Q_DECL_EXPORT int mvm_qt_d3d11_present_hook_begin(MvmNativePresentRing *ring)
  {
-@@ -166,4 +231,13 @@ extern "C" Q_DECL_EXPORT int mvm_qt_d3d11_present_hook_begin(MvmNativePresentR
+@@ -169,4 +234,13 @@ extern "C" Q_DECL_EXPORT int mvm_qt_d3d11_present_hook_begin(MvmNativePresentR
      ring->frameLatencyWaitableObjectAvailable = 0;
      ring->dwmFlushCallCount = 0;
      ring->dwmFlushFailureCount = 0;
@@ -106,7 +108,7 @@ diff --git a/src/gui/rhi/qrhid3d11.cpp b/src/gui/rhi/qrhid3d11.cpp
 +    mvmPropagationSerial = 0;
 +    mvmCurrentPropagationSerial = 0;
      mvmSwapChainDiagnosticsCaptured = false;
-@@ -202,4 +277,12 @@ extern "C" Q_DECL_EXPORT int mvm_qt_d3d11_present_hook_set_token(
+@@ -205,4 +280,12 @@ extern "C" Q_DECL_EXPORT int mvm_qt_d3d11_present_hook_set_token(
          return 0;
      }
      mvmPendingToken = *token;
@@ -119,7 +121,7 @@ diff --git a/src/gui/rhi/qrhid3d11.cpp b/src/gui/rhi/qrhid3d11.cpp
 +        record->outputFrameNumber = token->outputFrameNumber;
 +    }
      mvmPendingTokenValid = true;
-@@ -1728,4 +1812,5 @@ QRhi::FrameOpResult QRhiD3D11::endFrame(QRhiSwapChain *swapChain, QRhi::EndFrame
+@@ -1731,4 +1815,5 @@ QRhi::FrameOpResult QRhiD3D11::endFrame(QRhiSwapChain *swapChain, QRhi::EndFrame
              qWarning("Failed to present: IDXGISwapChain is unavailable");
              return QRhi::FrameOpError;
          }

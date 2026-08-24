@@ -1815,7 +1815,33 @@ bool CompositorSpikeController::writeMetrics() {
         state_->nativePresentHook ? state_->nativePresentHook->snapshot()
                                   : NativePresentHookSnapshot{};
     QJsonArray nativePresentRecords;
+    QJsonArray intentIdentityLedger;
+    std::unordered_set<std::uint64_t> nativePresentSerials;
+    std::unordered_set<std::uint64_t> compositionTokenSerials;
+    const bool formalIntentMode =
+        state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire);
+    bool intentIdentityTransportExact = !nativePresentSnapshot.records.empty();
     for (const auto& record : nativePresentSnapshot.records) {
+        const bool presentSerialUnique =
+            record.presentSerial != 0 && nativePresentSerials.insert(record.presentSerial).second;
+        const bool tokenSerialUnique = record.token.tokenSerial != 0 &&
+                                       compositionTokenSerials.insert(record.token.tokenSerial)
+                                           .second;
+        const bool identityExact = record.intentOrdinalValid == record.token.intentOrdinalValid &&
+                                   record.intentOrdinal == record.token.intentOrdinal;
+        const bool modeValid = formalIntentMode ? record.token.intentOrdinalValid == 1
+                                                : record.token.intentOrdinalValid == 0;
+        intentIdentityTransportExact = intentIdentityTransportExact && presentSerialUnique &&
+                                       tokenSerialUnique && identityExact && modeValid;
+        intentIdentityLedger.append(QJsonObject{
+            {"composition_token_serial", QString::number(record.token.tokenSerial)},
+            {"composition_token_intent_ordinal", QString::number(record.token.intentOrdinal)},
+            {"composition_token_intent_valid", record.token.intentOrdinalValid != 0},
+            {"native_present_serial", QString::number(record.presentSerial)},
+            {"native_present_token_serial", QString::number(record.token.tokenSerial)},
+            {"native_present_intent_ordinal", QString::number(record.intentOrdinal)},
+            {"native_present_intent_valid", record.intentOrdinalValid != 0},
+        });
         QJsonArray sources;
         for (std::uint32_t index = 0; index < record.token.sourceCount; ++index) {
             const auto& source = record.token.sources[index];
@@ -1836,6 +1862,8 @@ bool CompositorSpikeController::writeMetrics() {
             {"sync_interval", static_cast<qint64>(record.syncInterval)},
             {"present_flags", static_cast<qint64>(record.presentFlags)},
             {"propagation_serial", QString::number(record.propagationSerial)},
+            {"intent_ordinal", QString::number(record.intentOrdinal)},
+            {"intent_ordinal_valid", record.intentOrdinalValid != 0},
             {"token_present", record.tokenPresent != 0},
             {"composition_token",
              QJsonObject{{"token_serial", QString::number(record.token.tokenSerial)},
@@ -1846,6 +1874,8 @@ bool CompositorSpikeController::writeMetrics() {
                          {"composition_state",
                           QString::number(record.token.compositionState)},
                          {"output_frame", record.token.outputFrameNumber},
+                         {"intent_ordinal", QString::number(record.token.intentOrdinal)},
+                         {"intent_ordinal_valid", record.token.intentOrdinalValid != 0},
                          {"source_count", static_cast<qint64>(record.token.sourceCount)},
                          {"sources", sources}}},
         });
@@ -1878,6 +1908,10 @@ bool CompositorSpikeController::writeMetrics() {
         state_->nativePresentTokenSetFailureCount.load(std::memory_order_relaxed) == 0 &&
         !nativePresentSnapshot.records.empty();
     const QJsonObject nativePresentHook{
+        {"abi_version", static_cast<qint64>(MVM_NATIVE_PRESENT_HOOK_ABI_VERSION)},
+        {"composition_token_size",
+         static_cast<qint64>(sizeof(MvmNativePresentCompositionToken))},
+        {"native_present_record_size", static_cast<qint64>(sizeof(MvmNativePresentRecord))},
         {"requested_mode", nativePresentHookModeName(config_.nativePresentHook)},
         {"available", nativePresentSnapshot.available},
         {"hook_enabled", config_.nativePresentHook == NativePresentHookMode::OnDiagnostic},
@@ -1908,6 +1942,26 @@ bool CompositorSpikeController::writeMetrics() {
         {"dwm_flush_failure_count",
          static_cast<qint64>(nativePresentSnapshot.dwmFlushFailureCount)},
         {"authority_failure", nativePresentSnapshot.authorityFailure},
+        {"intent_identity_transport",
+         QJsonObject{
+             {"schema", "mvm-p2-d5-2-w2-b1-intent-identity-transport-1"},
+             {"abi_version", static_cast<qint64>(MVM_NATIVE_PRESENT_HOOK_ABI_VERSION)},
+             {"app_abi_version", static_cast<qint64>(MVM_NATIVE_PRESENT_HOOK_ABI_VERSION)},
+             {"qt_abi_version", static_cast<qint64>(MVM_NATIVE_PRESENT_HOOK_ABI_VERSION)},
+             {"composition_token_size",
+              static_cast<qint64>(sizeof(MvmNativePresentCompositionToken))},
+             {"native_present_record_size",
+              static_cast<qint64>(sizeof(MvmNativePresentRecord))},
+             {"shadow_only", true},
+             {"performance_accounting_connected", false},
+             {"formal_mode", formalIntentMode},
+             {"record_count", static_cast<qint64>(intentIdentityLedger.size())},
+             {"transport_exact", intentIdentityTransportExact},
+             {"verdict", intentIdentityTransportExact
+                             ? "INTENT_IDENTITY_ABI_V4_TRANSPORT_EXACT"
+                             : "INTENT_IDENTITY_ABI_V4_TRANSPORT_INVALID"},
+             {"records", intentIdentityLedger},
+         }},
         {"dirty_propagation",
          QJsonObject{
              {"schema", "mvm-p2-c3-a3-t2-dirty-propagation-1"},

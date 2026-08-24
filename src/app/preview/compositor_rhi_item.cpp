@@ -99,6 +99,9 @@ public:
                               std::uint64_t tokenSerial, std::uint64_t propagationSerial)
         : state_(state), token_(lastToken), propagationSerial_(propagationSerial),
           active_(state->nativePresentCaptureActive.load(std::memory_order_acquire)) {
+        // non-formal callbackへ直前のformal identityを持ち越さない。
+        token_.intentOrdinal = 0;
+        token_.intentOrdinalValid = 0;
         if (active_ && token_.outputFrameNumber >= 0) {
             token_.tokenSerial = tokenSerial;
             token_.propagationSerial = propagationSerial_;
@@ -114,8 +117,17 @@ public:
             state_->nativePresentTokenSetFailureCount.fetch_add(1, std::memory_order_relaxed);
     }
 
+    bool setFormalIntentOrdinal(long long intentOrdinal) {
+        if (intentOrdinal < 0)
+            return false;
+        token_.intentOrdinal = static_cast<std::uint64_t>(intentOrdinal);
+        token_.intentOrdinalValid = 1;
+        return true;
+    }
+
     bool setFrame(const gpu::ComposedFrame& frame, std::uint64_t tokenSerial) {
-        valid_ = makeNativePresentCompositionToken(frame, tokenSerial, token_);
+        valid_ = makeNativePresentCompositionToken(frame, tokenSerial, token_.intentOrdinal,
+                                                   token_.intentOrdinalValid != 0, token_);
         token_.propagationSerial = propagationSerial_;
         return valid_;
     }
@@ -283,6 +295,12 @@ protected:
             if (!formalDecision.valid) {
                 fail(std::string("P2-D5-2 opportunity select失敗: ") +
                      gpu::presentationOpportunityErrorName(formalError));
+                return;
+            }
+            // scheduler decisionがintent identityの唯一のproducerである。
+            // pastSourceDomainもvalid decisionなので、returnより前にtransportする。
+            if (!nativePresentToken.setFormalIntentOrdinal(formalDecision.opportunityOrdinal)) {
+                fail("P2-D5-2 formal intent ordinalをcomposition tokenへ設定できません");
                 return;
             }
             if (formalDecision.pastSourceDomain) {

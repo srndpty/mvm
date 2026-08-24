@@ -9,7 +9,7 @@
 
 #include <cstdint>
 
-inline constexpr std::uint32_t MVM_NATIVE_PRESENT_HOOK_ABI_VERSION = 3;
+inline constexpr std::uint32_t MVM_NATIVE_PRESENT_HOOK_ABI_VERSION = 4;
 inline constexpr std::uint32_t MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY = 8192;
 inline constexpr std::uint32_t MVM_NATIVE_PRESENT_HOOK_MAX_SOURCES = 2;
 
@@ -25,8 +25,9 @@ struct MvmNativePresentCompositionToken {
     std::uint64_t compositionEpoch = 0;
     std::uint64_t compositionState = 0;
     std::int64_t outputFrameNumber = -1;
+    std::uint64_t intentOrdinal = 0;
+    std::uint32_t intentOrdinalValid = 0;
     std::uint32_t sourceCount = 0;
-    std::uint32_t reserved = 0;
     std::uint64_t propagationSerial = 0;
     MvmNativePresentSourceIdentity sources[MVM_NATIVE_PRESENT_HOOK_MAX_SOURCES]{};
 };
@@ -43,6 +44,9 @@ struct MvmNativePresentRecord {
     std::uint32_t tokenPresent = 0;
     std::uint32_t reserved = 0;
     std::uint64_t propagationSerial = 0;
+    std::uint64_t intentOrdinal = 0;
+    std::uint32_t intentOrdinalValid = 0;
+    std::uint32_t reservedIntent = 0;
     MvmNativePresentCompositionToken token{};
 };
 
@@ -73,6 +77,8 @@ struct MvmDirtyPropagationRecord {
 struct MvmNativePresentRing {
     std::uint32_t abiVersion = MVM_NATIVE_PRESENT_HOOK_ABI_VERSION;
     std::uint32_t capacity = MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY;
+    std::uint32_t compositionTokenSize = sizeof(MvmNativePresentCompositionToken);
+    std::uint32_t presentRecordSize = sizeof(MvmNativePresentRecord);
     std::uint32_t enabled = 0;
     std::uint32_t recordCount = 0;
     std::uint32_t overflowCount = 0;
@@ -95,6 +101,23 @@ struct MvmNativePresentRing {
     MvmDirtyPropagationRecord dirtyPropagationRecords[MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY]{};
     MvmNativePresentRecord records[MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY]{};
 };
+
+inline constexpr bool mvmNativePresentHookAbiVersionsCompatible(std::uint32_t appVersion,
+                                                                std::uint32_t qtVersion) {
+    return appVersion == MVM_NATIVE_PRESENT_HOOK_ABI_VERSION &&
+           qtVersion == MVM_NATIVE_PRESENT_HOOK_ABI_VERSION;
+}
+
+inline constexpr bool mvmNativePresentHookLayoutCompatible(std::uint32_t abiVersion,
+                                                           std::uint32_t capacity,
+                                                           std::uint32_t compositionTokenSize,
+                                                           std::uint32_t presentRecordSize) {
+    return mvmNativePresentHookAbiVersionsCompatible(abiVersion,
+                                                     MVM_NATIVE_PRESENT_HOOK_ABI_VERSION) &&
+           capacity == MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY &&
+           compositionTokenSize == sizeof(MvmNativePresentCompositionToken) &&
+           presentRecordSize == sizeof(MvmNativePresentRecord);
+}
 
 enum : std::uint32_t {
     MVM_SUBMISSION_MODE_CONTROL = 0,
