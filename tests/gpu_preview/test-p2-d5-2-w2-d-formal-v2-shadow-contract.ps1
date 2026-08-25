@@ -2,9 +2,9 @@
 param(
     [Parameter(Mandatory=$true)][ValidateSet(
         'GoodExactIntegration','GoodForeignPresentedInDomain','GoodLayer1ACountDiffersFromLayer1B',
-        'GoodOutOfDomainPresented','GoodEmptyPhysicalDomain',
+        'GoodOutOfDomainPresented','GoodEmptyPhysicalDomain','GoodForeignOrdinalOverlapsRequiredSet',
         'NegativeRequiredIntentSetMutation','NegativeSatisfiedIntentMutation','NegativePhysicalOrdinalMutation',
-        'NegativeForeignCurrentMutation','NegativeScopeMutation','NegativeFinalStateMutation',
+        'NegativeScopeMutation','NegativeFinalStateMutation',
         'NegativeMissingCompositionToken','NegativeMissingNativePresentSerial','NegativeMissingPhysicalOrdinal',
         'NegativeDuplicateExactEventKey','NegativeEmptyRequiredSet','NegativeDuplicateRequiredIntent',
         'NegativePhysicalDomainCardinalityMutation','NegativeFilledExceedsPhysicalOpportunity')][string]$Case,
@@ -35,6 +35,11 @@ switch($Case){
     'GoodForeignPresentedInDomain'{
         $records=@($first,(New-Record '12|120' '900' 'FOREIGN_PRE_MEASUREMENT' 12 120 3 $true 'Presented' '102' '12'))
     }
+    'GoodForeignOrdinalOverlapsRequiredSet'{
+        # FOREIGN ordinal が required set と数値的に重なるのは正当である。
+        # scope が異なる別 identity なので侵入ではない。
+        $records=@($first,(New-Record '12|120' '1' 'FOREIGN_PRE_MEASUREMENT' 12 120 3 $true 'Presented' '102' '12'))
+    }
     'GoodLayer1ACountDiffersFromLayer1B'{$physicalCount=[int64]10;$origin=[int64]1;$last=[int64]10}
     'GoodOutOfDomainPresented'{
         $records=@($first,(New-Record '12|120' '1' 'CURRENT_MEASUREMENT' 12 120 9 $false))
@@ -46,9 +51,6 @@ switch($Case){
     }
     'NegativePhysicalOrdinalMutation'{
         $records=@($first,(New-Record '12|120' '1' 'CURRENT_MEASUREMENT' 12 120 2 $true 'Presented' '102' '12'))
-    }
-    'NegativeForeignCurrentMutation'{
-        $records=@($first,(New-Record '12|120' '1' 'FOREIGN_PRE_MEASUREMENT' 12 120 3 $true 'Presented' '102' '12'))
     }
     'NegativeScopeMutation'{$records[1].intent_scope='MEASUREMENT'}
     'NegativeFinalStateMutation'{$records[1].final_state='Discarded'}
@@ -71,7 +73,6 @@ $expectedBlockers=@(switch($Case){
     'NegativeRequiredIntentSetMutation'{@('CURRENT_INTENT_OUTSIDE_REQUIRED_INTENT_SET')}
     'NegativeSatisfiedIntentMutation'{@('DUPLICATE_SATISFIED_INTENT')}
     'NegativePhysicalOrdinalMutation'{@('MULTIPLE_FORMAL_PRESENTED_PER_PHYSICAL_ORDINAL','FILLED_PHYSICAL_OPPORTUNITY_IDENTITY_VIOLATION')}
-    'NegativeForeignCurrentMutation'{@('FOREIGN_INTENT_INSIDE_REQUIRED_INTENT_SET')}
     'NegativeScopeMutation'{@('INTENT_SCOPE_INVALID')}
     'NegativeFinalStateMutation'{@('FORMAL_V2_FINAL_STATE_NOT_PRESENTED')}
     'NegativeMissingCompositionToken'{@('FORMAL_V2_CHAIN_PROVENANCE_MISSING')}
@@ -96,6 +97,7 @@ if(-not[bool]$integration.integration_exact){throw "$Case が不成立です: $(
 # Good 系は accounting を fixture 側の期待値と突き合わせる。
 $expectedCounts=switch($Case){
     'GoodForeignPresentedInDomain'{@{required=3;satisfied=1;unsatisfied=2;inDomain=2;foreign=1;filled=2;physical=3}}
+    'GoodForeignOrdinalOverlapsRequiredSet'{@{required=3;satisfied=1;unsatisfied=2;inDomain=2;foreign=1;filled=2;physical=3}}
     'GoodLayer1ACountDiffersFromLayer1B'{@{required=3;satisfied=2;unsatisfied=1;inDomain=2;foreign=0;filled=2;physical=10}}
     'GoodOutOfDomainPresented'{@{required=3;satisfied=1;unsatisfied=2;inDomain=1;foreign=0;filled=1;physical=3}}
     'GoodEmptyPhysicalDomain'{@{required=3;satisfied=0;unsatisfied=3;inDomain=0;foreign=0;filled=0;physical=0}}

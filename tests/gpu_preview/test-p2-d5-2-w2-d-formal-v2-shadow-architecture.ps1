@@ -45,7 +45,7 @@ foreach($splice in @(
 }
 
 # W2-D固有のfail-close。
-foreach($blocker in @('CURRENT_INTENT_OUTSIDE_REQUIRED_INTENT_SET','FOREIGN_INTENT_INSIDE_REQUIRED_INTENT_SET',
+foreach($blocker in @('CURRENT_INTENT_OUTSIDE_REQUIRED_INTENT_SET',
     'DUPLICATE_SATISFIED_INTENT','MULTIPLE_FORMAL_PRESENTED_PER_PHYSICAL_ORDINAL',
     'FORMAL_V2_CHAIN_PROVENANCE_MISSING','FORMAL_V2_FINAL_STATE_NOT_PRESENTED',
     'LAYER1A_REQUIRED_ACCOUNTING_IDENTITY_VIOLATION','PRESENTED_ACCOUNTING_IDENTITY_VIOLATION',
@@ -53,6 +53,13 @@ foreach($blocker in @('CURRENT_INTENT_OUTSIDE_REQUIRED_INTENT_SET','FOREIGN_INTE
     Require $core $blocker "W2-D fail-closeがありません: $blocker"
 }
 Require $fromAuthorities 'C2_LEDGER_INTEGRATION_DIVERGENCE' 'C2 ledgerとの一致をfail-closeしていません'
+
+# required intent membership は scope-aware であること。FOREIGN ordinal が required set と
+# 数値的に重なるのは別 identity の共存であり、侵入ではない。
+Require $core '\$membership=\$scope-eq''CURRENT_MEASUREMENT''-and\$ordinalInRequiredSet' `
+    'required intent membershipがscope-awareではありません'
+Deny $core 'FOREIGN_INTENT_INSIDE_REQUIRED_INTENT_SET' `
+    'FOREIGN ordinalとrequired setの数値重なりをblockerにしています'
 
 # noncanonical shadowであることの固定。
 foreach($flag in @('shadow_only=\$true','canonical_authority=\$false','performance_threshold_evaluated=\$false',

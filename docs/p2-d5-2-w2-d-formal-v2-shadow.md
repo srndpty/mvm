@@ -35,6 +35,7 @@ identity にも record field にも入れない。
 exact_event_key
 intent_ordinal
 intent_scope
+ordinal_in_required_intent_set
 required_intent_membership
 composition_token_serial
 native_present_serial
@@ -45,6 +46,32 @@ physical_vblank_ordinal
 in_measurement_physical_domain
 intent_satisfied
 ```
+
+### required intent membership は scope-aware である
+
+`required_intent_ordinals` は **CURRENT required intent identity の集合**である。
+`FOREIGN_PRE_MEASUREMENT` は scope が異なる別 identity なので、
+
+```text
+CURRENT_MEASUREMENT     / ordinal = 0
+FOREIGN_PRE_MEASUREMENT / ordinal = 0
+```
+
+は同じ run に共存できる。FOREIGN ordinal の数値が required set と重なっても
+「required current intent の中に foreign が侵入した」ことにはならないため、
+これを blocker にしない。producer evidence にも FOREIGN ordinal `0` と
+CURRENT ordinal `0` が同じ run に存在した実例がある。
+
+したがって membership は次のように分けている。
+
+```text
+ordinal_in_required_intent_set  ordinal 単体の set membership (診断用)
+required_intent_membership      scope == CURRENT_MEASUREMENT かつ ordinal ∈ required set
+intent_satisfied                in-domain かつ required_intent_membership
+```
+
+`CURRENT_INTENT_OUTSIDE_REQUIRED_INTENT_SET` は CURRENT 側にだけ課す。
+`GoodForeignOrdinalOverlapsRequiredSet` が この契約を直接固定している。
 
 `composition_token_serial` / `native_present_serial` は C1 candidate 側と
 B2 terminal 側の双方から取り、値が割れていれば transport splice として
@@ -209,8 +236,10 @@ NegativeAggregateMutation           aggregate の改変
 
 `p2_d5_2_w2d_formal_v2_shadow_*` は integration core 単体の fail-close を固定している
 (required set mutation / satisfaction mutation / physical ordinal mutation /
-foreign-current mutation / scope mutation / final state mutation / chain provenance 欠落 /
+scope mutation / final state mutation / chain provenance 欠落 /
 duplicate event key / physical domain cardinality / filled > opportunity)。
+positive 側では `GoodForeignOrdinalOverlapsRequiredSet` が
+FOREIGN / CURRENT の scope 分離を固定している。
 
 同じ source frame が複数 intent を満たす fixture は C2 で固定済みである。W2-D では
 source frame を identity key に含めないことを architecture test で確認するに留める。

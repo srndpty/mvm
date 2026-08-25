@@ -41,7 +41,7 @@ function Invoke-MvmDFormalV2ShadowIntegration {
     if($requiredSet.Count-eq0){$blockers['REQUIRED_INTENT_SET_EMPTY']=$true}
 
     $records=@();$provenanceMissing=0L;$scopeInvalid=0L;$finalStateInvalid=0L
-    $outsideRequired=0L;$foreignInsideRequired=0L
+    $outsideRequired=0L
     foreach($sourceRecord in $FormalPresentedRecords){
         $key=Get-MvmDValue $sourceRecord 'exact_event_key'
         $ordinalValue=Get-MvmDValue $sourceRecord 'intent_ordinal'
@@ -63,15 +63,19 @@ function Invoke-MvmDFormalV2ShadowIntegration {
         if((-not(Test-MvmDBlank $finalState))-and$finalState-ne'Presented'){$finalStateInvalid+=1}
 
         $ordinal=$(if(Test-MvmDBlank $ordinalValue){$null}else{[string]([uint64]$ordinalValue)})
-        $membership=$(if($null-eq$ordinal){$false}else{$requiredSet.ContainsKey($ordinal)})
-        if($scope-eq'CURRENT_MEASUREMENT'-and$null-ne$ordinal-and-not$membership){$outsideRequired+=1}
-        if($scope-eq'FOREIGN_PRE_MEASUREMENT'-and$membership){$foreignInsideRequired+=1}
-        $satisfied=$inDomain-and$scope-eq'CURRENT_MEASUREMENT'-and$membership-and-not$chainMissing
+        # required_intent_ordinals は CURRENT required intent identity の集合である。
+        # FOREIGN は scope が異なる別 identity なので、ordinal の数値が required set と
+        # 重なっても侵入ではない。membership は scope-aware に判定する。
+        $ordinalInRequiredSet=$null-ne$ordinal-and$requiredSet.ContainsKey($ordinal)
+        $membership=$scope-eq'CURRENT_MEASUREMENT'-and$ordinalInRequiredSet
+        if($scope-eq'CURRENT_MEASUREMENT'-and$null-ne$ordinal-and-not$ordinalInRequiredSet){$outsideRequired+=1}
+        $satisfied=$inDomain-and$membership-and-not$chainMissing
 
         $records+=,[pscustomobject][ordered]@{
             exact_event_key=$(if(Test-MvmDBlank $key){$null}else{[string]$key})
             intent_ordinal=$ordinal
             intent_scope=$(if(Test-MvmDBlank $scope){$null}else{$scope})
+            ordinal_in_required_intent_set=$ordinalInRequiredSet
             required_intent_membership=$membership
             composition_token_serial=$(if(Test-MvmDBlank $tokenSerial){$null}else{[string]$tokenSerial})
             native_present_serial=$(if(Test-MvmDBlank $nativeSerial){$null}else{[string]$nativeSerial})
@@ -120,7 +124,6 @@ function Invoke-MvmDFormalV2ShadowIntegration {
     if($scopeInvalid-ne0){$blockers['INTENT_SCOPE_INVALID']=$true}
     if($finalStateInvalid-ne0){$blockers['FORMAL_V2_FINAL_STATE_NOT_PRESENTED']=$true}
     if($outsideRequired-ne0){$blockers['CURRENT_INTENT_OUTSIDE_REQUIRED_INTENT_SET']=$true}
-    if($foreignInsideRequired-ne0){$blockers['FOREIGN_INTENT_INSIDE_REQUIRED_INTENT_SET']=$true}
     if($duplicateSatisfied-ne0){$blockers['DUPLICATE_SATISFIED_INTENT']=$true}
     if($physicalDuplicate-ne0){$blockers['MULTIPLE_FORMAL_PRESENTED_PER_PHYSICAL_ORDINAL']=$true}
     if(-not$layer1aExact){$blockers['LAYER1A_REQUIRED_ACCOUNTING_IDENTITY_VIOLATION']=$true}
@@ -148,7 +151,6 @@ function Invoke-MvmDFormalV2ShadowIntegration {
         filled_physical_opportunity_count=$filled
         duplicate_satisfied_intent_count=$duplicateSatisfied
         current_intent_outside_required_intent_set_count=$outsideRequired
-        foreign_intent_inside_required_intent_set_count=$foreignInsideRequired
         formal_v2_chain_provenance_missing_count=$provenanceMissing
         intent_scope_invalid_count=$scopeInvalid
         final_state_not_presented_count=$finalStateInvalid
