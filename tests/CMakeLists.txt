@@ -486,6 +486,40 @@ mvm_add_test(p2_d5_2_w2d_authority_mixing
         -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2d-authority-mixing"
     PROPERTIES LABELS "gpu_preview")
 
+# P2-D5-2-W2-E: canonical presentation authority を formal-v2 exact chain へ切り替え、
+# legacy frameSwapped / DWM path を diagnostic へ降格する。performance verdict は W3。
+foreach(_p2_d5_2_w2e_case IN ITEMS GoodCanonicalCutover GoodLegacyDiagnosticsRemainPresent NegativeShadowProofNotExact NegativeShadowVerdictInvalid NegativeHistoricalVerdictMutation NegativeLegacyAuthorityStillEnabled NegativeLegacyMetricFeedsCanonicalVerdict NegativeLegacyMetricUnclassified NegativeLegacyDiagnosticsDeleted NegativeCanonicalSourceFrameIdentity NegativeCanonicalNearestQpcFallback NegativeCanonicalRecordSourceFrameField)
+    string(TOLOWER "${_p2_d5_2_w2e_case}" _p2_d5_2_w2e_name)
+    mvm_add_test(p2_d5_2_w2e_canonical_authority_${_p2_d5_2_w2e_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-e-canonical-authority-contract.ps1"
+            -Case "${_p2_d5_2_w2e_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-e-canonical-authority-core.ps1"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+foreach(_p2_d5_2_w2e_retire_case IN ITEMS GoodRetired GoodLegacyDiagnosticsRemainPresent NegativeCanonicalPerformanceAnnotated NegativeUnclassifiedSite NegativeThresholdReintroduced NegativeDispositionMissing NegativeDispositionWrong NegativeLegacyDiagnosticDeleted)
+    string(TOLOWER "${_p2_d5_2_w2e_retire_case}" _p2_d5_2_w2e_retire_name)
+    mvm_add_test(p2_d5_2_w2e_retirement_${_p2_d5_2_w2e_retire_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-e-retirement-inventory.ps1"
+            -Case "${_p2_d5_2_w2e_retire_case}"
+            -Inventory "${CMAKE_SOURCE_DIR}/scripts/inventory-p2-d5-2-w2-e-legacy-authority.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2e-retirement-${_p2_d5_2_w2e_retire_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+mvm_add_test(p2_d5_2_w2e_canonical_authority_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-e-canonical-authority-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+# repository の実際の canonical checker に legacy 依存が残っていないこと。
+mvm_add_test(p2_d5_2_w2e_repository_retirement
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_SOURCE_DIR}/scripts/inventory-p2-d5-2-w2-e-legacy-authority.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+        -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2e-repository-retirement.json"
+    PROPERTIES LABELS "gpu_preview")
+
 foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
     string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)
     mvm_add_test(p2_c3_a3_t2_d1b2_evaluability_${_p2_c3_a3_t2_d1b2e_name}

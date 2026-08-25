@@ -8,6 +8,15 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# P2-D5-2-W2-E canonical authority disposition (machine-readable)。
+# W2-E retirement inventory がこの宣言を読む。値を変えるときは
+# scripts/inventory-p2-d5-2-w2-e-legacy-authority.ps1 の契約も一緒に見ること。
+$MvmPresentationAuthorityDisposition = [ordered]@{
+    presentation_authority        = 'FORMAL_V2'
+    legacy_presentation_metrics   = 'DIAGNOSTIC'
+    canonical_performance_verdict = 'DEFERRED_TO_W3'
+}
+
 $failures = [System.Collections.Generic.List[string]]::new()
 
 function Add-Failure([string]$Message) {
@@ -396,15 +405,16 @@ if ($Mode -eq 'Playback') {
             'measurement_first_output_frame'
         $fps = Require-Property $raw 'effective_fps'
         $dropRate = Require-Property $raw 'drop_rate'
-        if ($null -ne $fps -and [double]$fps -lt 55) {
-            Add-Failure "effective_fpsは55以上が必要です (actual=$fps)"
-        }
-        if ($null -ne $dropRate -and [double]$dropRate -gt 0.02) {
-            Add-Failure "drop_rateは0.02以下が必要です (actual=$dropRate)"
-        }
+        # P2-D5-2-W2-E: effective_fps / drop_rate は legacy frameSwapped ledger 由来である。
+        # canonical presentation authority は formal-v2 exact chain へ移したため、
+        # threshold 判定はここでは行わない。値は diagnostic として残し報告する。
+        # canonical performance verdict は W3 の formal-v2 fresh acquisition で出す。
+        Write-Host ("[W2-E] legacy presentation metrics (diagnostic, non-authoritative): " +
+            "effective_fps=$fps drop_rate=$dropRate")
         $recalculatedDropRate = [double]$trueDrop / [double]$requiredFrames
         if ($null -ne $dropRate -and
             [math]::Abs([double]$dropRate - $recalculatedDropRate) -gt 1e-12) {
+            # W2-E: DIAGNOSTIC_INTEGRITY
             Add-Failure "drop_rateがledger再計算と一致しません (actual=$dropRate recalculated=$recalculatedDropRate)"
         }
     }
@@ -517,5 +527,9 @@ if ($failures.Count -ne 0) {
 }
 
 $kind = if ($DryRun) { 'dry-run harness' } else { 'formal' }
+Write-Host ("[W2-E] presentation_authority={0} legacy_presentation_metrics={1} canonical_performance_verdict={2}" -f
+    $MvmPresentationAuthorityDisposition.presentation_authority,
+    $MvmPresentationAuthorityDisposition.legacy_presentation_metrics,
+    $MvmPresentationAuthorityDisposition.canonical_performance_verdict)
 Write-Host "P2 $kind contract: PASS ($Mode)"
 exit 0

@@ -4,6 +4,14 @@ param([Parameter(Mandatory)][string]$Json)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# P2-D5-2-W2-E canonical authority disposition (machine-readable)。
+# W2-E retirement inventory がこの宣言を読む。
+$MvmPresentationAuthorityDisposition = [ordered]@{
+    presentation_authority        = 'FORMAL_V2'
+    legacy_presentation_metrics   = 'DIAGNOSTIC'
+    canonical_performance_verdict = 'DEFERRED_TO_W3'
+}
+
 function Fail([string]$Message) { throw "Phase 4 formal contract: $Message" }
 function Prop([object]$Object, [string]$Name) {
     if ($null -eq $Object) { Fail "$Name の親objectがnullです" }
@@ -124,9 +132,13 @@ try {
         (Int $raw 'measurement_video_skipped_frame_count') -ne $skipped -or
         (Int $raw 'measurement_non_increasing_display_count') -ne 0) { Fail 'producer display summaryが再計算値と違います' }
     $fps=$unique/60.0; $drop=$skipped/3600.0
+    # W2-E: DIAGNOSTIC_INTEGRITY (recorded値とledger再計算値の一致検査であり threshold 判定ではない)
     Close (Num $raw 'effective_video_fps') $fps 'effective_video_fps'; Close (Num $raw 'drop_rate') $drop 'drop_rate'
-    if ($fps -lt 55.0) { Fail 'recomputed effective fpsが55未満です' }
-    if ($drop -gt 0.02) { Fail 'recomputed drop rateが2%を超えています' }
+    # P2-D5-2-W2-E: display ledger 由来の fps / drop は legacy presentation authority である。
+    # canonical presentation authority を formal-v2 exact chain へ移したため threshold 判定を
+    # ここでは行わない。値は diagnostic として残し報告する。canonical performance verdict は W3。
+    Write-Host ("[W2-E] legacy presentation metrics (diagnostic, non-authoritative): " +
+        ("effective_video_fps={0:N3} drop_rate={1:N6}" -f $fps,$drop))
     $sorted=@($deltas | Sort-Object); $signedSorted=@($signedDeltas | Sort-Object)
     $rank=[Math]::Ceiling($sorted.Count*0.95)-1
     $p95=[double]$sorted[$rank]; $max=[double]$sorted[-1]
@@ -231,6 +243,10 @@ try {
     [void](Str $raw 'adapter')
     if((Int $raw 'audio_endpoint_sample_rate')-ne48000 -or (Int $raw 'audio_endpoint_channels')-ne2 -or
         (Str $raw 'audio_endpoint_sample_format')-ne'flt'){Fail 'audio endpointがP3-C-2 exact 48kHz/stereo/fltではありません'}
+    Write-Host ("[W2-E] presentation_authority={0} legacy_presentation_metrics={1} canonical_performance_verdict={2}" -f
+        $MvmPresentationAuthorityDisposition.presentation_authority,
+        $MvmPresentationAuthorityDisposition.legacy_presentation_metrics,
+        $MvmPresentationAuthorityDisposition.canonical_performance_verdict)
     Write-Host ("[p4-formal] CHECKER PASS fps={0:N3} drop={1:P3} av_p95={2:N3}ms av_max={3:N3}ms probes=10" -f $fps,$drop,$p95,$max)
     exit 0
 } catch { Write-Host "[p4-formal] FAIL $($_.Exception.Message)"; exit 3 }
