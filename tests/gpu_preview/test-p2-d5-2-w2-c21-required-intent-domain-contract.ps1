@@ -2,7 +2,10 @@
 param(
     [Parameter(Mandatory=$true)][ValidateSet('GoodExactSet','GoodDistinctDecisionsSameOrdinal',
         'NegativeMissingRequiredSet','NegativeDuplicateRequiredSet','NegativeCountSetMismatch',
-        'NegativeMissingDecisionQpc','NegativeAmbiguousFormalReverseJoin')][string]$Case,
+        'NegativeRequiredSetMissingMembership','NegativeMembershipExtraOutsideRequiredSet',
+        'NegativeMissingDecisionQpc','NegativeBoundaryRelationMutation',
+        'NegativeMissingMeasurementStartQpc','NegativeMissingMeasurementEndQpc',
+        'NegativeAmbiguousFormalReverseJoin')][string]$Case,
     [Parameter(Mandatory=$true)][string]$Core
 )
 $ErrorActionPreference='Stop'
@@ -36,10 +39,21 @@ switch($Case){
     'NegativeMissingRequiredSet'{$scope.PSObject.Properties.Remove('required_intent_ordinals');$scope.required_intent_set_exact=$false}
     'NegativeDuplicateRequiredSet'{$scope.required_intent_ordinals=@('10','10')}
     'NegativeCountSetMismatch'{$required=3}
+    'NegativeRequiredSetMissingMembership'{$scope.records[1].required_current_membership=$false}
+    'NegativeMembershipExtraOutsideRequiredSet'{
+        $scope.records+=,(Decision '3' '12')
+        $native+=,(Native '3' '12')
+        $formal+=,(Formal '3' '12' 3)
+    }
     'NegativeMissingDecisionQpc'{$scope.records[0].decision_qpc=$null;$scope.records[0].decision_qpc_exact=$false}
+    'NegativeBoundaryRelationMutation'{$scope.records[0].measurement_boundary_relation='POST_MEASUREMENT'}
+    'NegativeMissingMeasurementStartQpc'{}
+    'NegativeMissingMeasurementEndQpc'{}
     'NegativeAmbiguousFormalReverseJoin'{$formal+=,(Formal '1' '10' 3)}
 }
 $envelope=[pscustomobject]@{measurement_arm_qpc=900;measurement_start_qpc=1000;frozen_measurement_end_qpc=2000}
+if($Case-eq'NegativeMissingMeasurementStartQpc'){$envelope.PSObject.Properties.Remove('measurement_start_qpc')}
+if($Case-eq'NegativeMissingMeasurementEndQpc'){$envelope.PSObject.Properties.Remove('frozen_measurement_end_qpc')}
 $result=Invoke-MvmC21RunInventory -IntentScopeAuthority $scope -NativePresentRecords $native `
     -FormalPresentedCandidates $formal -RequiredIntentCount $required -CaptureEnvelope $envelope
 $good=$Case.StartsWith('Good')
@@ -55,7 +69,12 @@ if($good){
         'NegativeMissingRequiredSet'{'REQUIRED_INTENT_MEMBERSHIP_PROVENANCE_MISSING'}
         'NegativeDuplicateRequiredSet'{'REQUIRED_SCHEDULER_INTENT_SET_DUPLICATE'}
         'NegativeCountSetMismatch'{'REQUIRED_INTENT_COUNT_SET_CARDINALITY_MISMATCH'}
+        'NegativeRequiredSetMissingMembership'{'REQUIRED_SET_DECISION_MEMBERSHIP_SET_MISMATCH'}
+        'NegativeMembershipExtraOutsideRequiredSet'{'REQUIRED_SET_DECISION_MEMBERSHIP_SET_MISMATCH'}
         'NegativeMissingDecisionQpc'{'SCHEDULER_DECISION_QPC_PROVENANCE_MISSING'}
+        'NegativeBoundaryRelationMutation'{'MEASUREMENT_BOUNDARY_RELATION_MISMATCH'}
+        'NegativeMissingMeasurementStartQpc'{'MEASUREMENT_START_QPC_MISSING'}
+        'NegativeMissingMeasurementEndQpc'{'MEASUREMENT_END_QPC_MISSING'}
         'NegativeAmbiguousFormalReverseJoin'{'FORMAL_PRESENTED_REVERSE_ATTRIBUTION_INVALID'}
     }
     if($expected-notin@($result.blockers)){throw "期待blockerがありません: $expected"}

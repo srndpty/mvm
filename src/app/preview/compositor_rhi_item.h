@@ -98,10 +98,24 @@ enum class NativePresentIntentScope {
     CurrentMeasurement = 1,
 };
 
+enum class MeasurementBoundaryRelation {
+    Unresolved = 0,
+    PreMeasurementArm,
+    ArmedPreMeasurement,
+    WithinCurrentMeasurement,
+    PostMeasurement,
+};
+
 struct NativePresentIntentScopeRecord {
     std::uint64_t tokenSerial = 0;
     std::uint64_t intentOrdinal = 0;
     NativePresentIntentScope scope = NativePresentIntentScope::ForeignPreMeasurement;
+    long long decisionQpc = 0;
+    bool decisionQpcExact = false;
+    bool requiredCurrentMembership = false;
+    bool requiredCurrentMembershipExact = false;
+    MeasurementBoundaryRelation measurementBoundaryRelation =
+        MeasurementBoundaryRelation::Unresolved;
 };
 
 inline const char* nativePresentIntentScopeName(NativePresentIntentScope scope) {
@@ -112,6 +126,22 @@ inline const char* nativePresentIntentScopeName(NativePresentIntentScope scope) 
         return "CURRENT_MEASUREMENT";
     }
     return "UNKNOWN";
+}
+
+inline const char* measurementBoundaryRelationName(MeasurementBoundaryRelation relation) {
+    switch (relation) {
+    case MeasurementBoundaryRelation::PreMeasurementArm:
+        return "PRE_MEASUREMENT_ARM";
+    case MeasurementBoundaryRelation::ArmedPreMeasurement:
+        return "ARMED_PRE_MEASUREMENT";
+    case MeasurementBoundaryRelation::WithinCurrentMeasurement:
+        return "WITHIN_CURRENT_MEASUREMENT";
+    case MeasurementBoundaryRelation::PostMeasurement:
+        return "POST_MEASUREMENT";
+    case MeasurementBoundaryRelation::Unresolved:
+        break;
+    }
+    return "UNRESOLVED_WITHOUT_EXACT_BOUNDARY_QPC";
 }
 
 // P3 integrated seek timeout時にrender threadの到達stageを凍結する診断値。

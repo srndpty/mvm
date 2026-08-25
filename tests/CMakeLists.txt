@@ -405,7 +405,7 @@ mvm_add_test(p2_d5_2_w2c2_checker_integration
     PROPERTIES LABELS "gpu_preview")
 
 # P2-D5-2-W2-C2.1: scheduler sole producerからrequired intent identity setを確定する。
-foreach(_p2_d5_2_w2c21_case IN ITEMS GoodExactSet GoodDistinctDecisionsSameOrdinal NegativeMissingRequiredSet NegativeDuplicateRequiredSet NegativeCountSetMismatch NegativeMissingDecisionQpc NegativeAmbiguousFormalReverseJoin)
+foreach(_p2_d5_2_w2c21_case IN ITEMS GoodExactSet GoodDistinctDecisionsSameOrdinal NegativeMissingRequiredSet NegativeDuplicateRequiredSet NegativeCountSetMismatch NegativeRequiredSetMissingMembership NegativeMembershipExtraOutsideRequiredSet NegativeMissingDecisionQpc NegativeBoundaryRelationMutation NegativeMissingMeasurementStartQpc NegativeMissingMeasurementEndQpc NegativeAmbiguousFormalReverseJoin)
     string(TOLOWER "${_p2_d5_2_w2c21_case}" _p2_d5_2_w2c21_name)
     mvm_add_test(p2_d5_2_w2c21_required_intent_domain_${_p2_d5_2_w2c21_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File

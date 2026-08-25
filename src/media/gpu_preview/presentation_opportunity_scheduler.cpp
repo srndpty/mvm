@@ -27,6 +27,9 @@ bool PresentationOpportunityScheduler::start(const PresentationOpportunityConfig
         return fail(PresentationOpportunityError::ArithmeticOverflow);
     config_ = config;
     records_.reserve(static_cast<std::size_t>(config.requiredFrameCount * 2));
+    requiredIntentOrdinals_.reserve(static_cast<std::size_t>(config.requiredFrameCount));
+    for (long long ordinal = 0; ordinal < config.requiredFrameCount; ++ordinal)
+        requiredIntentOrdinals_.push_back(ordinal);
     started_ = true;
     return true;
 }
@@ -85,6 +88,8 @@ PresentationOpportunityDecision PresentationOpportunityScheduler::selectForRende
     PresentationOpportunityDecision decision;
     decision.valid = true;
     decision.opportunityOrdinal = ordinal;
+    decision.requiredIntentMembership = ordinal >= 0 && ordinal < config_.requiredFrameCount;
+    decision.requiredIntentMembershipExact = true;
     decision.targetFrame = target;
     decision.lastFinalizedOpportunityOrdinal = lastFinalizedOrdinal_;
     decision.renderBeginQpc = callbackQpc;
@@ -360,7 +365,9 @@ PresentationOpportunitySnapshot PresentationOpportunityScheduler::snapshot() con
             supersededCandidateCount_,
             swappedCompositionCount_,
             firstEvent_,
-            records_};
+            records_,
+            started_ && error_ == PresentationOpportunityError::None,
+            requiredIntentOrdinals_};
 }
 
 bool PresentationOpportunityScheduler::fail(PresentationOpportunityError error) {

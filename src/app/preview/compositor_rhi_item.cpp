@@ -312,6 +312,24 @@ protected:
             // pastSourceDomainもvalid decisionなので、returnより前にtransportする。
             const bool foreignPreMeasurement =
                 state_->formalOpportunityEnvelopePrerollActive.load(std::memory_order_acquire);
+            MeasurementBoundaryRelation boundaryRelation = MeasurementBoundaryRelation::Unresolved;
+            if (foreignPreMeasurement) {
+                boundaryRelation = MeasurementBoundaryRelation::PreMeasurementArm;
+            } else {
+                const long long armQpc = state_->measurementArmQpc.load(std::memory_order_acquire);
+                const long long startQpc =
+                    state_->measurementStartQpc.load(std::memory_order_acquire);
+                const long long endQpc = state_->measurementEndQpc.load(std::memory_order_acquire);
+                if (armQpc > 0 && armQpc <= startQpc && startQpc < endQpc) {
+                    boundaryRelation = callbackBegin < armQpc
+                                           ? MeasurementBoundaryRelation::PreMeasurementArm
+                                       : callbackBegin < startQpc
+                                           ? MeasurementBoundaryRelation::ArmedPreMeasurement
+                                       : callbackBegin < endQpc
+                                           ? MeasurementBoundaryRelation::WithinCurrentMeasurement
+                                           : MeasurementBoundaryRelation::PostMeasurement;
+                }
+            }
             if (!nativePresentToken.setFormalIntentOrdinal(formalDecision.opportunityOrdinal)) {
                 fail("P2-D5-2 formal intent ordinalをcomposition tokenへ設定できません");
                 return;
@@ -328,7 +346,10 @@ protected:
                     {nativePresentToken.tokenSerial(),
                      static_cast<std::uint64_t>(formalDecision.opportunityOrdinal),
                      foreignPreMeasurement ? NativePresentIntentScope::ForeignPreMeasurement
-                                           : NativePresentIntentScope::CurrentMeasurement});
+                                           : NativePresentIntentScope::CurrentMeasurement,
+                     callbackBegin, true,
+                     !foreignPreMeasurement && formalDecision.requiredIntentMembership,
+                     formalDecision.requiredIntentMembershipExact, boundaryRelation});
             }
             if (foreignPreMeasurement) {
                 if (!formalDecision.duplicateCallback) {

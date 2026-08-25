@@ -2,8 +2,8 @@
 
 ## 目的
 
-`required_measurement_frame_count`から`[0, count)`を生成せず、scheduler sole producerが
-記録したrequired current intent identity setを確定する。producer、historical C2、
+`required_measurement_frame_count`からchecker側で`[0, count)`を生成せず、scheduler sole
+producerが記録したrequired current intent identity setを確定する。historical C2と
 performance accountingは変更しない。
 
 入力はC1 checkpoint `5034bfcd41dd9f5c860827a9594b604be5db7446`と、
@@ -79,3 +79,69 @@ build/p2-d5-2-w2-c21-required-intent-domain-fresh-2-20260825-r3.json
 
 inventoryとcheckerはいずれもartifactを書き出し／再生成照合した後、authority gapにより
 非0で終了する。historical C2 artifactは変更していない。
+
+## C2.1 hardeningとC2.2 instrumentation
+
+[事実] checkerは、decision ledgerから次を独立再集計する。
+
+```text
+exact_required_membership_ordinal_set
+  = distinct(decision.opportunity_ordinal
+             where required_current_membership == true
+               and required_current_membership_exact == true)
+```
+
+この集合と`required_intent_ordinals` exact setの集合一致を必須とする。同一ordinalの
+distinct decisionは許容し、集合比較では1 identityとして扱う。missing membershipと
+required set外membershipは`REQUIRED_SET_DECISION_MEMBERSHIP_SET_MISMATCH`でfail-closeする。
+
+[事実] `measurement_arm_qpc`、`measurement_start_qpc`、
+`frozen_measurement_end_qpc`をrequired fieldとし、checkerが各`decision_qpc`を
+`PRE_MEASUREMENT_ARM`、`ARMED_PRE_MEASUREMENT`、`WITHIN_CURRENT_MEASUREMENT`、
+`POST_MEASUREMENT`へ再分類する。producer記録値はconsistency witnessであり、再分類値との
+不一致は`MEASUREMENT_BOUNDARY_RELATION_MISMATCH`でfail-closeする。
+
+[事実] scheduler start時点でrequired intent setを生成し、Presented populationや成功した
+decision populationからは生成しない。各decisionではQPC、required membership、そのexact
+flag、producer-side boundary relationをshadow-only ledgerへ記録する。native Present hook ABI、
+performance accounting、frameSwapped retirementは変更していない。
+
+[事実] C2.1とschedulerの対象testは15/15、C1/C2回帰は63/63通過した。
+
+[事実] instrumentation後のfresh 3-runを次へ新規取得した。historical artifactは
+上書きしていない。
+
+```text
+build/p2-d5-2-w2-c011-fresh-3-20260825-c21
+```
+
+C0.1.1 candidate coverageは3/3 PASS、C1 mappingとsealed replayも3/3 PASSだった。
+C1 formal Presentedは444件、observed diagnostic populationは889件である。
+
+[事実] C2.1 checkerの再集計結果は各runで同じだった。
+
+```text
+required_intent_ordinals exact set       {0, ..., 299} (300)
+exact required membership ordinal set                 146
+required set missing membership ordinals              154
+membership outside required set                         0
+CURRENT decisions                                      148
+CURRENT distinct ordinals                              147
+CURRENT duplicate ordinal extra                          1
+CURRENT min / max                                  0 / 301
+boundary QPC exact                                    true
+boundary relation mismatch                               0
+```
+
+ordinal `0`はFOREIGN 1 decisionに加え、membership true/exactのCURRENT 2 decisionsを
+持つ。ordinal `301`はCURRENTだがmembership false/exactである。ただしrequired setと
+membership setのidentityが閉じていないため、この観測だけでproducer/boundary bugを
+確定しない。
+
+[exit] blockerは`REQUIRED_SET_DECISION_MEMBERSHIP_SET_MISMATCH`のみで、verdictは
+`REQUIRED_INTENT_DOMAIN_AUTHORITY_UNRESOLVED`。Branch A/Bはいずれも未確立である。
+
+```text
+build/p2-d5-2-w2-c14-mapping-replay-fresh-3-20260825-c21.json
+build/p2-d5-2-w2-c21-required-intent-domain-fresh-3-20260825-c21.json
+```

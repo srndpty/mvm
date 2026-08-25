@@ -2001,6 +2001,9 @@ bool CompositorSpikeController::writeMetrics() {
     QJsonArray captureEnvelopeRecords;
     QJsonArray intentIdentityLedger;
     QJsonArray intentScopeLedgerJson;
+    QJsonArray requiredIntentOrdinalsJson;
+    for (const long long ordinal : formalOpportunitySnapshot.requiredIntentOrdinals)
+        requiredIntentOrdinalsJson.append(QString::number(ordinal));
     std::vector<NativePresentIntentScopeRecord> intentScopeLedger;
     {
         std::lock_guard<std::mutex> lock(state_->nativePresentIntentScopeMutex);
@@ -2014,6 +2017,12 @@ bool CompositorSpikeController::writeMetrics() {
             {"token_serial", QString::number(record.tokenSerial)},
             {"intent_ordinal", QString::number(record.intentOrdinal)},
             {"intent_scope", nativePresentIntentScopeName(record.scope)},
+            {"decision_qpc", record.decisionQpc},
+            {"decision_qpc_exact", record.decisionQpcExact},
+            {"required_current_membership", record.requiredCurrentMembership},
+            {"required_current_membership_exact", record.requiredCurrentMembershipExact},
+            {"measurement_boundary_relation",
+             measurementBoundaryRelationName(record.measurementBoundaryRelation)},
         });
     }
     long long intentScopeMissingCount = 0;
@@ -2265,13 +2274,17 @@ bool CompositorSpikeController::writeMetrics() {
         {"capture_envelope_records", captureEnvelopeRecords},
         {"intent_scope_provenance",
          QJsonObject{
-             {"schema", "mvm-p2-d5-2-w2-c011-intent-scope-provenance-1"},
+             {"schema", "mvm-p2-d5-2-w2-c21-intent-authority-provenance-2"},
              {"shadow_only", true},
              {"abi_version_unchanged", true},
              {"join_key", "composition_token.token_serial"},
              {"scope_derived_from_present_qpc", false},
              {"scope_derived_from_source_frame", false},
              {"scope_derived_from_layer2_membership", false},
+             {"required_intent_set_producer", "formal opportunity scheduler start"},
+             {"required_intent_set_derived_from_presented", false},
+             {"required_intent_set_exact", formalOpportunitySnapshot.requiredIntentSetExact},
+             {"required_intent_ordinals", requiredIntentOrdinalsJson},
              {"record_count", static_cast<qint64>(intentScopeLedgerJson.size())},
              {"missing_scope_count", intentScopeMissingCount},
              {"ambiguous_scope_count", intentScopeAmbiguousCount},

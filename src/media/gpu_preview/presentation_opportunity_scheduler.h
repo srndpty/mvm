@@ -47,6 +47,8 @@ struct PresentationOpportunityDecision {
     bool duplicateCallback = false;
     bool repeat = false;
     bool pastSourceDomain = false;
+    bool requiredIntentMembership = false;
+    bool requiredIntentMembershipExact = false;
     long long opportunityOrdinal = -1;
     long long targetFrame = -1;
     long long lastFinalizedOpportunityOrdinal = -1;
@@ -123,6 +125,8 @@ struct PresentationOpportunitySnapshot {
     long long swappedCompositionCount = 0;
     PresentationOpportunityFirstEvent firstEvent;
     std::vector<PresentationOpportunityLedgerRecord> records;
+    bool requiredIntentSetExact = false;
+    std::vector<long long> requiredIntentOrdinals;
 };
 
 // P2-D5-2/F2 formal Playback専用。presentation opportunityの序数はDWM refresh
@@ -207,6 +211,7 @@ private:
     long long swappedCompositionCount_ = 0;
     PresentationOpportunityFirstEvent firstEvent_{};
     std::vector<PresentationOpportunityLedgerRecord> records_;
+    std::vector<long long> requiredIntentOrdinals_;
 };
 
 const char* presentationOpportunityErrorName(PresentationOpportunityError error);

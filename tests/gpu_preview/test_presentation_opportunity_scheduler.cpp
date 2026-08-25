@@ -361,6 +361,20 @@ void sourceFrameOffsetIsExact() {
           "source offset targetをexact commitできません");
 }
 
+void requiredIntentAuthorityIsProducedAtStart() {
+    auto value = scheduler(60, 1, 3);
+    const auto initial = value.snapshot();
+    check(initial.requiredIntentSetExact && initial.requiredIntentOrdinals.size() == 3 &&
+              initial.requiredIntentOrdinals[0] == 0 && initial.requiredIntentOrdinals[1] == 1 &&
+              initial.requiredIntentOrdinals[2] == 2,
+          "required intent setをscheduler start時点でexactに生成していません");
+    Driver driver{&value};
+    const auto current = driver.select(100, 1);
+    check(current.valid && current.requiredIntentMembershipExact &&
+              current.requiredIntentMembership,
+          "required set内decisionのmembershipがexactではありません");
+}
+
 } // namespace
 
 int main() {
@@ -374,6 +388,7 @@ int main() {
     measurementEndFinalizesPending();
     overflowIsClosed();
     sourceFrameOffsetIsExact();
+    requiredIntentAuthorityIsProducedAtStart();
     std::fprintf(stderr, "P2-D5-2/F2 presentation opportunity scheduler: 失敗 %d件\n", failures);
     return failures == 0 ? 0 : 1;
 }

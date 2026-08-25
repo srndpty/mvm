@@ -50,7 +50,9 @@ function Invoke-MvmC21ProofFromSealedC1 {
         run_count=$runs.Count
         required_intent_identity_authority_exact=@($runs|Where-Object{-not[bool]$_.required_scheduler_intent_set_exact}).Count-eq0
         required_count_set_identity_exact=@($runs|Where-Object{-not[bool]$_.required_count_equals_exact_set_cardinality}).Count-eq0
+        required_set_membership_identity_exact=@($runs|Where-Object{-not[bool]$_.required_set_equals_exact_membership_set}).Count-eq0
         scheduler_decision_qpc_exact=@($runs|Where-Object{'SCHEDULER_DECISION_QPC_PROVENANCE_MISSING'-in@($_.blockers)}).Count-eq0
+        measurement_boundary_qpc_exact=@($runs|Where-Object{-not[bool]$_.measurement_boundary_qpc_exact}).Count-eq0
         measurement_boundary_relation_exact=@($runs|Where-Object{'MEASUREMENT_BOUNDARY_RELATION_UNRESOLVED'-in@($_.blockers)}).Count-eq0
         presented_population_used_to_derive_required_set=$false
         source_frame_identity_used=$false
