@@ -133,6 +133,11 @@ multiple Presented per physical ordinal         0
 build/p2-d5-2-w2-c2-intent-satisfaction-fresh-7-20260825-c24.json
 ```
 
-[exit] fresh-7 C2 ledgerは`INTENT_SATISFACTION_LEDGER_EXACT`。W2-C2 closure候補である。
+[事実] closure review後、membership provenance検査をduplicate suppressionより先へ移し、
+C2.4 checkerでsuppression reasonとeligibilityをproducer semanticsへexact-bindした。fresh-7を
+再取得せずoffline再検証し、C1、C2.1、C2.4、C2 checkerはすべてPASSした。C2 ledger値と
+accounting identityは変化していない。
+
+[exit] fresh-7 C2 ledgerは`INTENT_SATISFACTION_LEDGER_EXACT`。W2-C2はPASS / CLOSED。
 required 900件のうち462件はPresentedされておらずunsatisfiedのままであり、C2ではdrop rate、
 fps、threshold、canonical PASS/FAILを評価していない。

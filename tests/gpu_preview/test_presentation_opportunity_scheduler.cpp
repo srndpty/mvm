@@ -400,6 +400,10 @@ void formalIntentTransportPolicyIsExact() {
     check(mvm::gpu::formalIntentTransportDisposition(false, decision) ==
               TransportDisposition::InvalidMembershipProvenance,
           "membership provenance欠損をfail-closeしません");
+    decision.duplicateCallback = true;
+    check(mvm::gpu::formalIntentTransportDisposition(false, decision) ==
+              TransportDisposition::InvalidMembershipProvenance,
+          "NegativeDuplicateWithMissingMembershipProvenance: duplicate suppressionがmembership provenance欠損を隠しました");
 }
 
 } // namespace

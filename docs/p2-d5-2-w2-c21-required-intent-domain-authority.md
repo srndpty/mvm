@@ -273,3 +273,28 @@ build/p2-d5-2-w2-c21-required-intent-domain-fresh-7-20260825-c24.json
 ```
 
 [exit] C2.4 product fixとfresh authority再確認はPASS。性能thresholdは評価していない。
+
+### C2.4 closure hardening
+
+[事実] `formalIntentTransportDisposition()`はmembership provenanceを最初に検査する。
+`duplicate_callback=true`でも`required_current_membership_exact=false`ならsuppressionへ進まず、
+`INVALID_MEMBERSHIP_PROVENANCE`としてfail-closeする。優先順位は次で固定した。
+
+```text
+membership exactでない                 -> INVALID_MEMBERSHIP_PROVENANCE
+duplicate callback                      -> SUPPRESS_DUPLICATE_CALLBACK
+currentかつrequired membership外        -> SUPPRESS_OUTSIDE_REQUIRED_SET
+otherwise                               -> TRANSPORT
+```
+
+[事実] C2.4 checkerは450 producer recordsすべてについて上記policyを独立再計算し、recorded
+dispositionと`formal_transport_eligible == (expected == TRANSPORT)`を照合した。fresh-7は
+3/3 PASSし、aggregateはTRANSPORT 444、duplicate suppression 3、outside suppression 3だった。
+membership欠損を伴うduplicate、suppression reason間mutation 2方向、eligibility mutationを
+negative testで固定した。
+
+```text
+build/p2-d5-2-w2-c24-formal-transport-fresh-7-20260825-r2.json
+```
+
+[exit] C2.4 product behavior / checker closureはPASS / CLOSED。

@@ -82,10 +82,10 @@ inline const char* formalIntentTransportDispositionName(
 inline FormalIntentTransportDisposition
 formalIntentTransportDisposition(bool foreignPreMeasurement,
                                  const PresentationOpportunityDecision& decision) {
-    if (decision.duplicateCallback)
-        return FormalIntentTransportDisposition::SuppressDuplicateCallback;
     if (!decision.requiredIntentMembershipExact)
         return FormalIntentTransportDisposition::InvalidMembershipProvenance;
+    if (decision.duplicateCallback)
+        return FormalIntentTransportDisposition::SuppressDuplicateCallback;
     if (!foreignPreMeasurement && !decision.requiredIntentMembership)
         return FormalIntentTransportDisposition::SuppressOutsideRequiredSet;
     return FormalIntentTransportDisposition::Transport;

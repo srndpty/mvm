@@ -441,6 +441,15 @@ foreach(_p2_d5_2_w2c23_case IN ITEMS GoodExact NegativeMissingSemantics Negative
             -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c23-${_p2_d5_2_w2c23_name}"
         PROPERTIES LABELS "gpu_preview")
 endforeach()
+foreach(_p2_d5_2_w2c24_case IN ITEMS Good NegativeDuplicateWithMissingMembershipProvenance NegativeDuplicateDispositionSwappedToOutside NegativeOutsideDispositionSwappedToDuplicate NegativeEligibilityMutation)
+    string(TOLOWER "${_p2_d5_2_w2c24_case}" _p2_d5_2_w2c24_name)
+    mvm_add_test(p2_d5_2_w2c24_formal_transport_${_p2_d5_2_w2c24_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c24-formal-transport-contract.ps1"
+            -Case "${_p2_d5_2_w2c24_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-c24-formal-transport-core.ps1"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
 mvm_add_test(p2_d5_2_w2c24_formal_transport_architecture
     COMMAND "${MVM_PWSH}" -NoProfile -File
         "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c24-formal-transport-architecture.ps1"
