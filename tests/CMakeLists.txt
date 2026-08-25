@@ -456,6 +456,36 @@ mvm_add_test(p2_d5_2_w2c24_formal_transport_architecture
         -SourceRoot "${CMAKE_SOURCE_DIR}"
     PROPERTIES LABELS "gpu_preview")
 
+# P2-D5-2-W2-D: W2-A/A.1, B1, B2, C1, C2.1, C2 の closed authority を
+# noncanonical formal-v2 shadow artifact へ統合する。canonical cutoverではない。
+foreach(_p2_d5_2_w2d_case IN ITEMS GoodExactIntegration GoodForeignPresentedInDomain GoodLayer1ACountDiffersFromLayer1B GoodOutOfDomainPresented GoodEmptyPhysicalDomain NegativeRequiredIntentSetMutation NegativeSatisfiedIntentMutation NegativePhysicalOrdinalMutation NegativeForeignCurrentMutation NegativeScopeMutation NegativeFinalStateMutation NegativeMissingCompositionToken NegativeMissingNativePresentSerial NegativeMissingPhysicalOrdinal NegativeDuplicateExactEventKey NegativeEmptyRequiredSet NegativeDuplicateRequiredIntent NegativePhysicalDomainCardinalityMutation NegativeFilledExceedsPhysicalOpportunity)
+    string(TOLOWER "${_p2_d5_2_w2d_case}" _p2_d5_2_w2d_name)
+    mvm_add_test(p2_d5_2_w2d_formal_v2_shadow_${_p2_d5_2_w2d_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-d-formal-v2-shadow-contract.ps1"
+            -Case "${_p2_d5_2_w2d_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-d-formal-v2-shadow-core.ps1"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+mvm_add_test(p2_d5_2_w2d_formal_v2_shadow_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-d-formal-v2-shadow-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+mvm_add_test(p2_d5_2_w2d_authority_mixing
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-d-authority-mixing.ps1"
+        -C13Fixture "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c13-formal-population-contract.ps1"
+        -C13Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-c13-formal-population-core.ps1"
+        -C1Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-c14-sealed-mapping-replay.ps1"
+        -C2Builder "${CMAKE_SOURCE_DIR}/scripts/build-p2-d5-2-w2-c2-intent-satisfaction-ledger.ps1"
+        -C2Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-c2-intent-satisfaction-ledger.ps1"
+        -Builder "${CMAKE_SOURCE_DIR}/scripts/build-p2-d5-2-w2-d-formal-v2-shadow.ps1"
+        -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-d-formal-v2-shadow.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+        -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2d-authority-mixing"
+    PROPERTIES LABELS "gpu_preview")
+
 foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
     string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)
     mvm_add_test(p2_c3_a3_t2_d1b2_evaluability_${_p2_c3_a3_t2_d1b2e_name}
