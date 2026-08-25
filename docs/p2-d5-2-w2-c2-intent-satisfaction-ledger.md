@@ -7,11 +7,11 @@ C2 runner / checker は最初に C1.4 checker を実行し、次に sealed C0 in
 B2 terminal records、physical VBlank samplesからformal Presented集合とphysical mappingを
 再生する。C1 artifactのrecord値だけをコピーしない。
 
-この初期実装はLayer 1Aの`required_measurement_frame_count`から`[0, count)`を
-構成した。Presentedされたintentのmin/maxからは復元していないが、countは
-cardinality authorityであってidentity set authorityではない。W2-C2.1でこのgapを
-検出したため、以下のfresh-2結果は**provisional count-derived domain解釈下の
-historical diagnostic**として保存する。
+初期実装はLayer 1Aの`required_measurement_frame_count`から`[0, count)`を構成していた。
+W2-C2.1でこのgapを検出したため、以下のfresh-2結果は**provisional count-derived
+domain解釈下のhistorical diagnostic**として保存する。現行runner / checkerはC2.1
+checkerを先に実行し、C2.1 artifactの`required_scheduler_intent_ordinals` exact setを
+直接consumeする。Presented min/maxまたはcountからidentity setを復元しない。
 
 ## recordとaccounting
 
@@ -90,7 +90,8 @@ threshold、fps、canonical PASS/FAIL、frameSwapped retirementには接続し�
 
 ```powershell
 pwsh scripts/build-p2-d5-2-w2-c2-intent-satisfaction-ledger.ps1 `
-  -C1Proof build/p2-d5-2-w2-c14-mapping-replay-fresh-2-20260825.json `
+  -C1Proof build/p2-d5-2-w2-c14-mapping-replay-fresh-7-20260825-c24.json `
+  -C21Proof build/p2-d5-2-w2-c21-required-intent-domain-fresh-7-20260825-c24.json `
   -Output build/p2-d5-2-w2-c2-intent-satisfaction-<new-name>.json
 
 ctest --test-dir build/ucrt64-release `
@@ -98,3 +99,40 @@ ctest --test-dir build/ucrt64-release `
 ```
 
 fresh-2へのrunner終了コードは、上記blockerを検出するため非0になる。artifactはfail前に保存する。
+
+## C2.4後 fresh-7 closure候補
+
+[事実] C2.4後のfresh-7 sealed C1と、同じC1を参照するC2.1 exact required setから
+C2 ledgerを再構築した。runner / checkerの双方がC1.4とC2.1 checkerを独立に再実行し、
+C2.1と別C1のhashを組み合わせた入力はnegative integrationでrejectする。
+
+```text
+formal Presented                              438 (146 x 3 run)
+required current intents                      900 (300 x 3 run)
+in-domain Presented                           438
+satisfied current intents                     438
+in-domain foreign Presented                     0
+filled physical opportunities                 438
+duplicate current intent satisfaction           0
+current intent outside exact required set       0
+missing / ambiguous intent provenance           0 / 0
+multiple Presented per physical ordinal         0
+```
+
+[事実] recordsから再集計した次のidentityは両方成立した。
+
+```text
+438 satisfied + 0 foreign = 438 in-domain formal Presented
+438 filled = 438 unique in-domain formal Presented physical ordinals
+```
+
+後者はC1 one-formal-Presented-per-physical-ordinal成立時のderived identityであり、
+一般契約へ拡張しない。
+
+```text
+build/p2-d5-2-w2-c2-intent-satisfaction-fresh-7-20260825-c24.json
+```
+
+[exit] fresh-7 C2 ledgerは`INTENT_SATISFACTION_LEDGER_EXACT`。W2-C2 closure候補である。
+required 900件のうち462件はPresentedされておらずunsatisfiedのままであり、C2ではdrop rate、
+fps、threshold、canonical PASS/FAILを評価していない。

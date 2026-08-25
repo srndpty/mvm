@@ -308,8 +308,9 @@ protected:
                      gpu::presentationOpportunityErrorName(formalError));
                 return;
             }
-            // scheduler decisionがintent identityの唯一のproducerである。
-            // pastSourceDomainもvalid decisionなので、returnより前にtransportする。
+            // scheduler decisionがintent identityの唯一のproducerである。duplicate callbackと
+            // current required set外decisionはvalid decisionのまま、formal
+            // transportだけを抑止する。
             const bool foreignPreMeasurement =
                 state_->formalOpportunityEnvelopePrerollActive.load(std::memory_order_acquire);
             MeasurementBoundaryRelation boundaryRelation = MeasurementBoundaryRelation::Unresolved;
@@ -329,6 +330,60 @@ protected:
                                            ? MeasurementBoundaryRelation::WithinCurrentMeasurement
                                            : MeasurementBoundaryRelation::PostMeasurement;
                 }
+            }
+            const auto transportDisposition =
+                gpu::formalIntentTransportDisposition(foreignPreMeasurement, formalDecision);
+            const auto recordSuppressedNonFormal = [&] {
+                if (nativePresentToken.tokenSerial() == 0) {
+                    fail("P2-D5-2 suppressed transportに有効なtoken serialがありません");
+                    return false;
+                }
+                std::lock_guard<std::mutex> lock(state_->nativePresentIntentScopeMutex);
+                state_->nativePresentIntentScopeLedger.push_back(
+                    {nativePresentToken.tokenSerial(),
+                     static_cast<std::uint64_t>(formalDecision.opportunityOrdinal),
+                     foreignPreMeasurement ? NativePresentIntentScope::ForeignPreMeasurement
+                                           : NativePresentIntentScope::CurrentMeasurement,
+                     callbackBegin,
+                     true,
+                     formalDecision.requiredIntentMembership,
+                     formalDecision.requiredIntentMembershipExact,
+                     boundaryRelation,
+                     true,
+                     formalDecision.duplicateCallback,
+                     formalDecision.repeat,
+                     formalDecision.pastSourceDomain,
+                     formalDecision.targetFrame,
+                     formalDecision.lastFinalizedOpportunityOrdinal,
+                     formalDecision.renderBeginQpc,
+                     transportDisposition});
+                return true;
+            };
+            if (transportDisposition ==
+                gpu::FormalIntentTransportDisposition::InvalidMembershipProvenance) {
+                fail("P2-D5-2 formal intent membership provenanceが不正です");
+                return;
+            }
+            if (transportDisposition ==
+                gpu::FormalIntentTransportDisposition::SuppressDuplicateCallback) {
+                if (!recordSuppressedNonFormal())
+                    return;
+                state_->formalDuplicateTransportSuppressedCount.fetch_add(
+                    1, std::memory_order_relaxed);
+                return;
+            }
+            if (transportDisposition ==
+                gpu::FormalIntentTransportDisposition::SuppressOutsideRequiredSet) {
+                if (!recordSuppressedNonFormal())
+                    return;
+                state_->formalOutsideRequiredTransportSuppressedCount.fetch_add(
+                    1, std::memory_order_relaxed);
+                if (formalDecision.pastSourceDomain) {
+                    state_->formalOpportunityDomainReached.store(true, std::memory_order_release);
+                    if (state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire))
+                        finishMeasurement(callbackBegin);
+                }
+                return;
             }
             if (!nativePresentToken.setFormalIntentOrdinal(formalDecision.opportunityOrdinal)) {
                 fail("P2-D5-2 formal intent ordinalをcomposition tokenへ設定できません");
@@ -356,26 +411,22 @@ protected:
                      formalDecision.renderBeginQpc});
             }
             if (foreignPreMeasurement) {
-                if (!formalDecision.duplicateCallback) {
-                    const long long repeatedFrame = lastNativePresentToken_.outputFrameNumber;
-                    bool completed = false;
-                    gpu::PresentationOpportunityError error =
-                        gpu::PresentationOpportunityError::None;
-                    if (repeatedFrame >= 0) {
-                        std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
-                        completed = state_->formalOpportunityScheduler.markRenderComplete(
-                            gpu::qpcTicks(), repeatedFrame, formalDecision.renderOrdinal);
-                        error = state_->formalOpportunityScheduler.error();
-                    }
-                    if (!completed) {
-                        fail(std::string("P2-D5-2 lower envelope render完了記録失敗: ") +
-                             gpu::presentationOpportunityErrorName(error));
-                        return;
-                    }
-                    state_->formalOpportunityPresentedFrame.store(repeatedFrame,
-                                                                  std::memory_order_release);
-                    ++formalOpportunityRenderOrdinal_;
+                const long long repeatedFrame = lastNativePresentToken_.outputFrameNumber;
+                bool completed = false;
+                gpu::PresentationOpportunityError error = gpu::PresentationOpportunityError::None;
+                if (repeatedFrame >= 0) {
+                    std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+                    completed = state_->formalOpportunityScheduler.markRenderComplete(
+                        gpu::qpcTicks(), repeatedFrame, formalDecision.renderOrdinal);
                 }
+                if (!completed) {
+                    fail(std::string("P2-D5-2 lower envelope render完了記録失敗: ") +
+                         gpu::presentationOpportunityErrorName(error));
+                    return;
+                }
+                state_->formalOpportunityPresentedFrame.store(repeatedFrame,
+                                                              std::memory_order_release);
+                ++formalOpportunityRenderOrdinal_;
                 // lower envelopeではintentだけを生成し、source selection、formal
                 // counter、measurement schedulerへは接続しない。
                 return;
@@ -1089,6 +1140,9 @@ private:
                 state_->formalOpportunityPresentedFrame.store(-1, std::memory_order_relaxed);
                 state_->formalOpportunitySwapOrdinal.store(0, std::memory_order_relaxed);
                 state_->formalOpportunityTrueDropCount.store(0, std::memory_order_relaxed);
+                state_->formalDuplicateTransportSuppressedCount.store(0, std::memory_order_relaxed);
+                state_->formalOutsideRequiredTransportSuppressedCount.store(
+                    0, std::memory_order_relaxed);
                 state_->diagnosticSyntheticDeadlineDropCount.store(0, std::memory_order_relaxed);
                 state_->formalOpportunityDomainReached.store(false, std::memory_order_relaxed);
                 state_->formalOpportunityIgnoreNextSwap.store(true, std::memory_order_release);

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory=$true)][ValidateSet('Good','NegativeB2PresentedDropped','NegativeExtraFormalCandidate','NegativeB2CandidateMissingC0Join','NegativeB2CandidateAmbiguousC0Join','NegativeB2FormalUpstreamInvalid','NegativeObservedPopulationDropped','NegativeFormalMappedOrdinalMutation','NegativeObservedMappedOrdinalMutation','NegativeTracedAppHashMutation','NegativePresentHistoryRawHashMutation','NegativeMappingSupportBoundaryMutation')][string]$Case,
+    [Parameter(Mandatory=$true)][ValidateSet('Good','GoodSuppressedNonFormal','NegativeB2FormalEligibilityMissing','NegativeB2PresentedDropped','NegativeExtraFormalCandidate','NegativeB2CandidateMissingC0Join','NegativeB2CandidateAmbiguousC0Join','NegativeB2FormalUpstreamInvalid','NegativeObservedPopulationDropped','NegativeFormalMappedOrdinalMutation','NegativeObservedMappedOrdinalMutation','NegativeTracedAppHashMutation','NegativePresentHistoryRawHashMutation','NegativeMappingSupportBoundaryMutation')][string]$Case,
     [Parameter(Mandatory=$true)][string]$Core,
     [Parameter(Mandatory=$true)][string]$Checker,
     [Parameter(Mandatory=$true)][string]$Directory
@@ -19,7 +19,30 @@ $nonformalCandidate=[pscustomobject][ordered]@{
     intent_exact=$false;intent_scope_exact=$false;native_present_serial=$null;intent_ordinal=$null
     intent_scope=$null;layer2_cohort_member=$false
 }
-$terminal=[pscustomobject][ordered]@{final_state='Presented';etw_sequence=2;displayed_qpc=@(210)}
+$terminal=[pscustomobject][ordered]@{final_state='Presented';etw_sequence=2;displayed_qpc=@(210);formal_transport_eligible=$true}
+if($Case-eq'GoodSuppressedNonFormal'){
+    $suppressedTerminal=[pscustomobject][ordered]@{
+        final_state='Presented';etw_sequence=1;displayed_qpc=@(90);formal_transport_eligible=$false
+    }
+    $population=Invoke-MvmC13FormalPresentedPopulation `
+        -ObservedCandidates @($formalCandidate,$nonformalCandidate) `
+        -B2TerminalRecords @($terminal,$suppressedTerminal)
+    if(-not[bool]$population.authority_valid-or[int]$population.b2_formal_presented_count-ne1-or
+       [int]$population.nonformal_observed_presented_count-ne1){
+        throw 'suppressed non-formal Presentをformal populationから除外できません'
+    }
+    Write-Output "W2-C1.3 contract $Case`: PASS";exit 0
+}
+if($Case-eq'NegativeB2FormalEligibilityMissing'){
+    $terminal.PSObject.Properties.Remove('formal_transport_eligible')
+    $population=Invoke-MvmC13FormalPresentedPopulation `
+        -ObservedCandidates @($formalCandidate,$nonformalCandidate) -B2TerminalRecords @($terminal)
+    if([bool]$population.authority_valid-or
+       'B2_FORMAL_ELIGIBILITY_MISSING'-notin@($population.blockers)){
+        throw 'B2 formal eligibility欠損をrejectしません'
+    }
+    Write-Output "W2-C1.3 contract $Case`: PASS";exit 0
+}
 if($Case-eq'NegativeB2CandidateMissingC0Join'){
     $population=Invoke-MvmC13FormalPresentedPopulation -ObservedCandidates @($nonformalCandidate) -B2TerminalRecords @($terminal)
     if([bool]$population.authority_valid-or[int]$population.b2_formal_missing_c0_candidate_count-ne1-or
@@ -91,7 +114,7 @@ $proof=[ordered]@{
 $sourceDirectory=Join-Path $Directory 'sealed-source';$sourceRun=Join-Path $sourceDirectory 'run-1'
 if(-not(Test-Path -LiteralPath $sourceRun)){New-Item -ItemType Directory -Path $sourceRun|Out-Null}
 $terminalPath=Join-Path $sourceRun 'terminal-shadow.json'
-@{records=@(@{final_state='Presented';etw_sequence=2;displayed_qpc=@(210)})}|ConvertTo-Json -Depth 6|
+@{records=@(@{final_state='Presented';etw_sequence=2;displayed_qpc=@(210);formal_transport_eligible=$true})}|ConvertTo-Json -Depth 6|
     Set-Content -LiteralPath $terminalPath -Encoding utf8
 $upstreamPath=Join-Path $Directory 'sealed-c011.json'
 @{runs=@(@{candidates=@($nonformalCandidate,$formalCandidate)})}|ConvertTo-Json -Depth 8|

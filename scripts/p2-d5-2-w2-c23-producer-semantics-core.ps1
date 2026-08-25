@@ -39,6 +39,12 @@ function Invoke-MvmC23ProducerSemanticsAttribution {
             [bool]$ordinal301[0].past_source_domain-and
             $ordinal301[0].checker_derived_measurement_boundary_relation-eq'WITHIN_CURRENT_MEASUREMENT'-and
             [int64]$ordinal301[0].formal_presented_count-eq1
+        if(-not$zeroDuplicateAttributed){
+            $blockers['ORDINAL_ZERO_DUPLICATE_CALLBACK_ATTRIBUTION_INVALID']=$true
+        }
+        if(-not$outsideScopeAttributed){
+            $blockers['ORDINAL_301_SCOPE_MEMBERSHIP_ATTRIBUTION_INVALID']=$true
+        }
         $runs+=,[ordered]@{
             run=[int]$sourceRun.run
             ordinal_zero_current_decision_count=$zero.Count

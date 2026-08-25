@@ -42,10 +42,15 @@ for($index=0;$index-lt$nativeAll.Count;++$index){
     Equal ([string](Need $token 'token_serial')) ([string](Need $intentRecord 'native_present_embedded_token_serial')) "available token serial provenance[$index]"
     Equal ([uint64](Need $nativeRecord 'intent_ordinal')) ([uint64](Need $intentRecord 'native_present_intent_ordinal')) "available intent ordinal provenance[$index]"
     Equal ([bool](Need $nativeRecord 'intent_ordinal_valid')) ([bool](Need $intentRecord 'native_present_intent_valid')) "available intent validity provenance[$index]"
-    Equal ([bool]$nativeRecord.intent_ordinal_valid) $true "available formal intent validity[$index]"
+    $formalEligible=[bool](Need $intentRecord 'formal_transport_eligible')
+    if($formalEligible){Equal ([bool]$nativeRecord.intent_ordinal_valid) $true "available formal intent validity[$index]"}
+    else{
+        Equal ([bool]$nativeRecord.intent_ordinal_valid) $false "suppressed native intent validity[$index]"
+        Equal ([bool](Need $intentRecord 'suppression_exact')) $true "suppression witness[$index]"
+    }
 }
 
-$entries=@();$presented=0;$discarded=0;$unknown=0
+$entries=@();$presented=0;$discarded=0;$unknown=0;$formalPresented=0
 for($index=0;$index-lt$join.joined.Count;++$index){
     $native=$join.joined[$index].native;$presentEvent=$join.joined[$index].present_event
     $presentSerial=[string](Need $native 'present_serial')
@@ -55,7 +60,12 @@ for($index=0;$index-lt$join.joined.Count;++$index){
     Equal ([string](Need $token 'token_serial')) ([string](Need $intent 'native_present_embedded_token_serial')) "token serial provenance[$index]"
     Equal ([uint64](Need $native 'intent_ordinal')) ([uint64](Need $intent 'native_present_intent_ordinal')) "intent ordinal provenance[$index]"
     Equal ([bool](Need $native 'intent_ordinal_valid')) ([bool](Need $intent 'native_present_intent_valid')) "intent validity provenance[$index]"
-    Equal ([bool]$native.intent_ordinal_valid) $true "formal intent validity[$index]"
+    $formalEligible=[bool](Need $intent 'formal_transport_eligible')
+    if($formalEligible){Equal ([bool]$native.intent_ordinal_valid) $true "formal intent validity[$index]"}
+    else{
+        Equal ([bool]$native.intent_ordinal_valid) $false "suppressed intent validity[$index]"
+        Equal ([bool](Need $intent 'suppression_exact')) $true "suppression witness[$index]"
+    }
 
     foreach($field in @('final_state','is_completed','is_lost','displayed')){[void](Need $presentEvent $field)}
     $displayed=@($presentEvent.displayed)
@@ -64,11 +74,15 @@ for($index=0;$index-lt$join.joined.Count;++$index){
         elseif([string]$presentEvent.final_state-eq'Discarded'-and$displayed.Count-eq0){'DISCARDED'}
         else{'UNKNOWN'}
     switch($outcome){'PRESENTED'{++$presented}'DISCARDED'{++$discarded}default{++$unknown}}
+    if($outcome-eq'PRESENTED'-and$formalEligible){++$formalPresented}
     $entries+=[ordered]@{
         native_present_serial=$presentSerial
         embedded_token_serial=[string](Need $token 'token_serial')
         intent_ordinal=[string](Need $native 'intent_ordinal')
         intent_ordinal_valid=[bool](Need $native 'intent_ordinal_valid')
+        formal_transport_eligible=$formalEligible
+        suppression_exact=[bool](Need $intent 'suppression_exact')
+        transport_disposition=[string](Need $intent 'transport_disposition')
         native_enter_qpc=[int64](Need $native 'present_enter_qpc')
         native_return_qpc=[int64](Need $native 'present_return_qpc')
         native_thread_id=[int64](Need $native 'thread_id')
@@ -102,6 +116,7 @@ $result=[ordered]@{
     target_process_id=$join.target_process_id;target_swapchain_identity=$join.target_swapchain_identity
     successful_native_present_count=$nativeCount;present_event_count=$eventCount
     exact_join_count=$entries.Count;presented_event_count=$presented
+    formal_presented_event_count=$formalPresented
     discarded_event_count=$discarded;unknown_event_count=$unknown
     etw_events_lost=0;etw_buffers_lost=0;present_event_overflow_count=0
     boundary_native_count=$join.boundary_native_count;boundary_event_count=$join.boundary_event_count
@@ -116,6 +131,7 @@ if(-not[string]::IsNullOrWhiteSpace($CandidateLedger)){
     Equal ([string](Need $candidate 'schema')) $result.schema 'candidate schema'
     $candidateRecords=@(Need $candidate 'records');Equal $candidateRecords.Count $entries.Count 'candidate record count'
     $fields=@('native_present_serial','embedded_token_serial','intent_ordinal','intent_ordinal_valid',
+        'formal_transport_eligible','suppression_exact','transport_disposition',
         'native_enter_qpc','native_return_qpc','native_thread_id','native_sync_interval','native_present_flags',
         'native_swapchain','etw_sequence','etw_present_start_qpc','etw_thread_id','etw_sync_interval',
         'etw_present_flags','etw_swapchain','final_state','terminal_outcome')

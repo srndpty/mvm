@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][ValidateSet(
-        'GoodPresented','GoodDiscarded','GoodDisplayedOutsideMeasurementDomain',
+        'GoodPresented','GoodDiscarded','GoodDisplayedOutsideMeasurementDomain','GoodSuppressedPresented',
         'NegativeMissingPresentEvent','NegativeDuplicatePresentEvent','NegativeAmbiguousCandidate',
         'NegativeSequenceDiscontinuity','NegativeThreadMismatch','NegativeSyncIntervalMismatch',
         'NegativePresentFlagsMismatch','NegativePresentStartOutsideNativeInterval',
@@ -38,6 +38,8 @@ $transportRecords=@(0..2|ForEach-Object{
         composition_token_intent_ordinal=[string](10+$_);composition_token_intent_valid=$true
         native_present_serial=[string](1+$_);native_present_intent_ordinal=[string](10+$_)
         native_present_intent_valid=$true
+        formal_transport_eligible=$true;suppression_exact=$false
+        transport_disposition='TRANSPORT'
     }
 })
 $transport=[ordered]@{
@@ -77,6 +79,18 @@ $etw=[ordered]@{
 }
 
 switch($Case){
+    'GoodSuppressedPresented'{
+        $native[1].intent_ordinal='0';$native[1].intent_ordinal_valid=$false
+        $native[1].composition_token.intent_ordinal='0'
+        $native[1].composition_token.intent_ordinal_valid=$false
+        $transportRecords[1].composition_token_intent_ordinal='0'
+        $transportRecords[1].native_present_intent_ordinal='0'
+        $transportRecords[1].composition_token_intent_valid=$false
+        $transportRecords[1].native_present_intent_valid=$false
+        $transportRecords[1].formal_transport_eligible=$false
+        $transportRecords[1].suppression_exact=$true
+        $transportRecords[1].transport_disposition='SUPPRESS_DUPLICATE_CALLBACK'
+    }
     'GoodDiscarded'{$events[1].final_state='Discarded';$events[1].displayed=@()}
     'GoodDisplayedOutsideMeasurementDomain'{$events[1].displayed[0].qpc=999999}
     'NegativeMissingPresentEvent'{$etw.events=@($events|Select-Object -SkipLast 1)}
@@ -116,7 +130,7 @@ if($Case-eq'NegativeIntentJoinMutation'){
         -SourceRoot $SourceRoot *> $null
 }
 $actual=$LASTEXITCODE
-$good=$Case-in@('GoodPresented','GoodDiscarded','GoodDisplayedOutsideMeasurementDomain')
+$good=$Case-in@('GoodPresented','GoodDiscarded','GoodDisplayedOutsideMeasurementDomain','GoodSuppressedPresented')
 $expected=if($good){0}else{1}
 if($actual-ne$expected){throw "$Case W2-B2 contract exitが不正です: expected=$expected actual=$actual"}
 if($good){
@@ -124,6 +138,10 @@ if($good){
     if($result.verdict-ne'NATIVE_PRESENT_TERMINAL_OUTCOME_EXACT'-or
        [bool]$result.physical_mapping_connected-or[bool]$result.performance_accounting_connected){
         throw "$Case W2-B2 shadow artifactが不正です"
+    }
+    if($Case-eq'GoodSuppressedPresented'-and
+       ([int]$result.presented_event_count-ne3-or[int]$result.formal_presented_event_count-ne2)){
+        throw 'suppressed Presentをformal Presentedへ算入しています'
     }
 }
 Write-Output "W2-B2 $Case contract: PASS"

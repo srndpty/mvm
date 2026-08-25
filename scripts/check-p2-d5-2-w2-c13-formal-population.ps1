@@ -89,7 +89,9 @@ for($runIndex=0;$runIndex-lt$proofRuns.Count;++$runIndex){
     if($terminalHash-ne[string](Need $sealedHashes 'b2_terminal_shadow')){Fail "run $($run.run) sealed B2 hashが一致しません"}
     $terminal=Get-Content -LiteralPath $terminalPath -Raw -Encoding utf8|ConvertFrom-Json
     $sourceFormalKeys=@{}
-    foreach($terminalRecord in @($terminal.records|Where-Object{[string]$_.final_state-eq'Presented'})){
+    foreach($terminalRecord in @($terminal.records|Where-Object{
+        [string]$_.final_state-eq'Presented'-and[bool](Need $_ 'formal_transport_eligible')
+    })){
         $displayed=@(Need $terminalRecord 'displayed_qpc')
         if($displayed.Count-ne1){Fail "run $($run.run) sealed B2 DisplayedQPC cardinalityが不正です"}
         $key="$([int64](Need $terminalRecord 'etw_sequence'))|$([int64]$displayed[0])"

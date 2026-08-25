@@ -17,7 +17,10 @@ $etwPath=Join-Path $runDirectory 'present-history-raw.json';$ledgerPath=Join-Pat
 $output=Join-Path $Directory 'inventory.json'
 
 function ScopeJoin([string]$Token,[string]$Ordinal,[string]$Scope){
-    [ordered]@{token_serial=$Token;intent_ordinal=$Ordinal;intent_scope=$Scope;match_count=1;exact=$true}
+    [ordered]@{
+        token_serial=$Token;intent_ordinal=$Ordinal;intent_scope=$Scope;match_count=1;exact=$true
+        formal_transport_eligible=$true;transport_disposition='TRANSPORT'
+    }
 }
 function NativeRecord([string]$Present,[int64]$Enter,[int64]$Return,[string]$Token,[string]$Ordinal,[string]$Scope){
     [ordered]@{

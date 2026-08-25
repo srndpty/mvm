@@ -1,14 +1,15 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][ValidateSet(
-        'GoodFormal','GoodNonFormal','NegativeAppV3QtV4','NegativeAppV4QtV3',
+        'GoodFormal','GoodNonFormal','GoodSuppressedFormal','NegativeAppV3QtV4','NegativeAppV4QtV3',
         'NegativeTokenLayout','NegativeRecordLayout','NegativeLayoutSignature',
         'NegativeFormalInvalid','NegativeOrdinalMutation','NegativeValidityMutation',
         'NegativeDuplicateEmbeddedTokenSerial','NegativeDuplicateNativeSerial',
         'NegativeNonFormalFabricated','NegativeRingOverflow','NegativeMissingToken',
         'NegativeTokenSetFailure','NegativeAuthorityFailure','NegativeHookUnavailable',
         'NegativeLayoutHandshake','NegativeSecondProducer',
-        'NegativeRequiredFormalModeFalse')][string]$Case,
+        'NegativeRequiredFormalModeFalse','NegativeSuppressionWithoutWitness',
+        'NegativeSuppressionTransportDisposition')][string]$Case,
     [Parameter(Mandatory=$true)][string]$Checker,
     [Parameter(Mandatory=$true)][string]$SourceRoot,
     [Parameter(Mandatory=$true)][string]$Output
@@ -24,6 +25,9 @@ $records=@(0..2|ForEach-Object{
         native_present_serial=[string](200+$_)
         native_present_intent_ordinal=[string]$_
         native_present_intent_valid=$formal
+        formal_transport_eligible=$formal
+        suppression_exact=$false
+        transport_disposition='TRANSPORT'
     }
 })
 $transport=[ordered]@{
@@ -46,6 +50,11 @@ $hook=[ordered]@{
 $checkerSourceRoot=$SourceRoot
 $requireFormalMode=$Case-eq'NegativeRequiredFormalModeFalse'
 switch($Case){
+    'GoodSuppressedFormal'{
+        $records[1].composition_token_intent_valid=$false;$records[1].native_present_intent_valid=$false
+        $records[1].formal_transport_eligible=$false;$records[1].suppression_exact=$true
+        $records[1].transport_disposition='SUPPRESS_DUPLICATE_CALLBACK'
+    }
     'NegativeAppV3QtV4'{$transport.app_abi_version=3}
     'NegativeAppV4QtV3'{$transport.qt_abi_version_observed=3;$hook.qt_abi_version_observed=3}
     'NegativeTokenLayout'{$transport.composition_token_size=119}
@@ -79,6 +88,16 @@ switch($Case){
         $sourceText=$sourceText.Replace($needle,"$needle; nativePresentToken.setFormalIntentOrdinal(output)")
         Set-Content -LiteralPath $rendererPath -Value $sourceText -Encoding utf8
     }
+    'NegativeSuppressionWithoutWitness'{
+        $records[1].composition_token_intent_valid=$false;$records[1].native_present_intent_valid=$false
+        $records[1].formal_transport_eligible=$false;$records[1].suppression_exact=$false
+        $records[1].transport_disposition='SUPPRESS_DUPLICATE_CALLBACK'
+    }
+    'NegativeSuppressionTransportDisposition'{
+        $records[1].composition_token_intent_valid=$false;$records[1].native_present_intent_valid=$false
+        $records[1].formal_transport_eligible=$false;$records[1].suppression_exact=$true
+        $records[1].transport_disposition='TRANSPORT'
+    }
 }
 [ordered]@{native_present_hook=$hook}|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $Output -Encoding utf8
 if($requireFormalMode){
@@ -88,6 +107,6 @@ if($requireFormalMode){
     & pwsh -NoProfile -File $Checker -Json $Output -SourceRoot $checkerSourceRoot *> $null
 }
 $actual=$LASTEXITCODE
-$expected=if($Case-in@('GoodFormal','GoodNonFormal')){0}else{1}
+$expected=if($Case-in@('GoodFormal','GoodNonFormal','GoodSuppressedFormal')){0}else{1}
 if($actual-ne$expected){throw "$Case W2-B1 contract exitが不正です: expected=$expected actual=$actual"}
 Write-Host "W2-B1 $Case contract: PASS"

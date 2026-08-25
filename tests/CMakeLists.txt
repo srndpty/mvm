@@ -212,7 +212,7 @@ foreach(_p2_d5_2_w2a_case IN ITEMS Good GoodSuccessorAfterEnd GoodEmptyDomain Go
 endforeach()
 
 # P2-D5-2-W2-B1: scheduler intent identityのABI v4 exact-copy transport。
-foreach(_p2_d5_2_w2b1_case IN ITEMS GoodFormal GoodNonFormal NegativeAppV3QtV4 NegativeAppV4QtV3 NegativeTokenLayout NegativeRecordLayout NegativeLayoutSignature NegativeFormalInvalid NegativeOrdinalMutation NegativeValidityMutation NegativeDuplicateEmbeddedTokenSerial NegativeDuplicateNativeSerial NegativeNonFormalFabricated NegativeRingOverflow NegativeMissingToken NegativeTokenSetFailure NegativeAuthorityFailure NegativeHookUnavailable NegativeLayoutHandshake NegativeSecondProducer NegativeRequiredFormalModeFalse)
+foreach(_p2_d5_2_w2b1_case IN ITEMS GoodFormal GoodNonFormal GoodSuppressedFormal NegativeAppV3QtV4 NegativeAppV4QtV3 NegativeTokenLayout NegativeRecordLayout NegativeLayoutSignature NegativeFormalInvalid NegativeOrdinalMutation NegativeValidityMutation NegativeDuplicateEmbeddedTokenSerial NegativeDuplicateNativeSerial NegativeNonFormalFabricated NegativeRingOverflow NegativeMissingToken NegativeTokenSetFailure NegativeAuthorityFailure NegativeHookUnavailable NegativeLayoutHandshake NegativeSecondProducer NegativeRequiredFormalModeFalse NegativeSuppressionWithoutWitness NegativeSuppressionTransportDisposition)
     string(TOLOWER "${_p2_d5_2_w2b1_case}" _p2_d5_2_w2b1_name)
     mvm_add_test(p2_d5_2_w2b1_intent_transport_${_p2_d5_2_w2b1_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File
@@ -226,7 +226,7 @@ endforeach()
 
 # P2-D5-2-W2-B2: B1 native intentからPresentEvent terminal outcomeまでのshadow exact closure。
 # Layer 2 cohortはnative submissionで固定し、DisplayedQPCのphysical mappingと性能集計は接続しない。
-foreach(_p2_d5_2_w2b2_case IN ITEMS GoodPresented GoodDiscarded GoodDisplayedOutsideMeasurementDomain NegativeMissingPresentEvent NegativeDuplicatePresentEvent NegativeAmbiguousCandidate NegativeSequenceDiscontinuity NegativeThreadMismatch NegativeSyncIntervalMismatch NegativePresentFlagsMismatch NegativePresentStartOutsideNativeInterval NegativeSwapchainMismatch NegativeIntentJoinMutation NegativeFinalStateUnknown NegativeTerminalMissing NegativePresentedWithoutDisplayedQpc NegativeEtwLost NegativeEtwBufferLoss NegativeNativePresentCountMismatch NegativeNativePresentDuplicate)
+foreach(_p2_d5_2_w2b2_case IN ITEMS GoodPresented GoodDiscarded GoodDisplayedOutsideMeasurementDomain GoodSuppressedPresented NegativeMissingPresentEvent NegativeDuplicatePresentEvent NegativeAmbiguousCandidate NegativeSequenceDiscontinuity NegativeThreadMismatch NegativeSyncIntervalMismatch NegativePresentFlagsMismatch NegativePresentStartOutsideNativeInterval NegativeSwapchainMismatch NegativeIntentJoinMutation NegativeFinalStateUnknown NegativeTerminalMissing NegativePresentedWithoutDisplayedQpc NegativeEtwLost NegativeEtwBufferLoss NegativeNativePresentCountMismatch NegativeNativePresentDuplicate)
     string(TOLOWER "${_p2_d5_2_w2b2_case}" _p2_d5_2_w2b2_name)
     mvm_add_test(p2_d5_2_w2b2_terminal_shadow_${_p2_d5_2_w2b2_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File
@@ -337,7 +337,7 @@ mvm_add_test(p2_d5_2_w2c12_upstream_population_architecture
     PROPERTIES LABELS "gpu_preview")
 
 # P2-D5-2-W2-C1.3: B2 Presented exact setをC1 formal input authorityへ切り替える。
-foreach(_p2_d5_2_w2c13_case IN ITEMS Good NegativeB2PresentedDropped NegativeExtraFormalCandidate NegativeB2CandidateMissingC0Join NegativeB2CandidateAmbiguousC0Join NegativeB2FormalUpstreamInvalid NegativeObservedPopulationDropped)
+foreach(_p2_d5_2_w2c13_case IN ITEMS Good GoodSuppressedNonFormal NegativeB2FormalEligibilityMissing NegativeB2PresentedDropped NegativeExtraFormalCandidate NegativeB2CandidateMissingC0Join NegativeB2CandidateAmbiguousC0Join NegativeB2FormalUpstreamInvalid NegativeObservedPopulationDropped)
     string(TOLOWER "${_p2_d5_2_w2c13_case}" _p2_d5_2_w2c13_name)
     mvm_add_test(p2_d5_2_w2c13_formal_population_${_p2_d5_2_w2c13_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File
@@ -431,7 +431,7 @@ mvm_add_test(p2_d5_2_w2c21_checker_integration
     PROPERTIES LABELS "gpu_preview")
 
 # P2-D5-2-W2-C2.3: duplicate ordinal 0とoutside-required ordinal 301のproducer semanticsを固定する。
-foreach(_p2_d5_2_w2c23_case IN ITEMS GoodExact NegativeMissingSemantics NegativeAmbiguousReverse)
+foreach(_p2_d5_2_w2c23_case IN ITEMS GoodExact NegativeMissingSemantics NegativeAmbiguousReverse NegativeZeroNotDuplicateCallback NegativeZeroSingleDecision NegativeZeroSharedToken Negative301MembershipTrue Negative301PastSourceDomainFalse Negative301NoFormalPresented)
     string(TOLOWER "${_p2_d5_2_w2c23_case}" _p2_d5_2_w2c23_name)
     mvm_add_test(p2_d5_2_w2c23_producer_semantics_${_p2_d5_2_w2c23_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File
@@ -441,6 +441,11 @@ foreach(_p2_d5_2_w2c23_case IN ITEMS GoodExact NegativeMissingSemantics Negative
             -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c23-${_p2_d5_2_w2c23_name}"
         PROPERTIES LABELS "gpu_preview")
 endforeach()
+mvm_add_test(p2_d5_2_w2c24_formal_transport_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c24-formal-transport-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
 
 foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
     string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)

@@ -208,3 +208,68 @@ build/p2-d5-2-w2-c14-mapping-replay-fresh-4-20260825-c23.json
 build/p2-d5-2-w2-c21-required-intent-domain-fresh-4-20260825-c23.json
 build/p2-d5-2-w2-c23-producer-semantics-fresh-4-20260825.json
 ```
+
+### C2.3 checker hardening
+
+[事実] attribution booleanがfalseでも`authority_exact=true`になり得たfalse-PASS holeを閉じた。
+
+```text
+ORDINAL_ZERO_DUPLICATE_CALLBACK_ATTRIBUTION_INVALID
+ORDINAL_301_SCOPE_MEMBERSHIP_ATTRIBUTION_INVALID
+```
+
+をauthority blockerへ追加し、zero decision欠落、duplicate flag mutation、shared token、301の
+membership/past-source/formal Presented mutationをnegative testで固定した。追加後のfresh-4
+sealed offline replayも`PRODUCER_SEMANTICS_ATTRIBUTION_EXACT`だった。
+
+```text
+build/p2-d5-2-w2-c23-producer-semantics-fresh-4-20260825-r2.json
+```
+
+[exit] C2.3 attribution evidenceとchecker closureはPASS / CLOSED。
+
+## W2-C2.4 product fix
+
+[事実] scheduler decision自体は変更せず、formal token発行前にtransport dispositionを判定する。
+
+```text
+duplicate_callback == true
+  -> formal transportを抑止
+
+!foreign_pre_measurement && required_current_membership == false
+  -> formal transportを抑止
+  -> past_source_domainなら従来どおりmeasurement closeを実行
+```
+
+`FOREIGN_PRE_MEASUREMENT`はmembership falseでも従来どおりtransportする。membership exactness
+欠損はfail-closeする。抑止件数はduplicate/outside-requiredを別counterで記録する。
+
+[事実] 最初のfresh再取得ではformal ledgerだけを減らし、開始済みQt render cycle由来の
+native Presentへinvalid intent tokenを残したため、B1が`transport_exact=false`として正しく
+rejectした。このrunは採用していない。
+
+[事実] suppression decisionをtoken serialへexactに束縛し、producer scopeはCURRENT/FOREIGNの
+元値を保持したまま、`formal_transport_eligible=false`を直交fieldとして追加した。native
+Present terminal outcome自体は観測母集団へ残るが、C1 formal Presented membershipには入らない。
+suppression witness欠損、disposition mutation、B2 formal eligibility欠損をnegative testで固定した。
+
+[事実] 修正後のfresh-7を3 run取得した。各runは次を満たした。
+
+```text
+native Present records                       148
+duplicate callback suppression witness         1
+outside-required suppression witness           1
+formal Presented                              146
+transport_exact                              true
+```
+
+C0.1.1、C1 sealed replay、C2.1はすべてPASSした。C1は`438 / 895`
+formal / observed Presented、C2.1はBranch Aを再確立した。
+
+```text
+build/p2-d5-2-w2-c011-fresh-7-20260825-c24
+build/p2-d5-2-w2-c14-mapping-replay-fresh-7-20260825-c24.json
+build/p2-d5-2-w2-c21-required-intent-domain-fresh-7-20260825-c24.json
+```
+
+[exit] C2.4 product fixとfresh authority再確認はPASS。性能thresholdは評価していない。

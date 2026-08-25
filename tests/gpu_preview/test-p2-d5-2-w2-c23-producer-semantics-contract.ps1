@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory=$true)][ValidateSet('GoodExact','NegativeMissingSemantics','NegativeAmbiguousReverse')][string]$Case,
+    [Parameter(Mandatory=$true)][ValidateSet('GoodExact','NegativeMissingSemantics','NegativeAmbiguousReverse',
+        'NegativeZeroNotDuplicateCallback','NegativeZeroSingleDecision','NegativeZeroSharedToken',
+        'Negative301MembershipTrue','Negative301PastSourceDomainFalse','Negative301NoFormalPresented')][string]$Case,
     [Parameter(Mandatory=$true)][string]$Core,
     [Parameter(Mandatory=$true)][string]$Directory
 )
@@ -27,6 +29,19 @@ function Decision([int]$Sequence,[string]$Ordinal,[bool]$Duplicate,[bool]$Past,[
 $decisions=@((Decision 0 '0' $false $false '1'),(Decision 1 '0' $true $false '2'),(Decision 2 '301' $false $true '3'))
 if($Case-eq'NegativeMissingSemantics'){$decisions[1].producer_semantics_exact=$false}
 if($Case-eq'NegativeAmbiguousReverse'){$decisions[1].formal_presented_reverse_attribution_exact=$false}
+if($Case-eq'NegativeZeroNotDuplicateCallback'){$decisions[1].duplicate_callback=$false}
+if($Case-eq'NegativeZeroSingleDecision'){$decisions=@($decisions[0],$decisions[2])}
+if($Case-eq'NegativeZeroSharedToken'){
+    $decisions[1].token_serial=$decisions[0].token_serial
+    $decisions[1].native_present_serial=$decisions[0].native_present_serial
+    $decisions[1].formal_presented_event_keys=$decisions[0].formal_presented_event_keys
+}
+if($Case-eq'Negative301MembershipTrue'){$decisions[2].required_current_membership=$true}
+if($Case-eq'Negative301PastSourceDomainFalse'){$decisions[2].past_source_domain=$false}
+if($Case-eq'Negative301NoFormalPresented'){
+    $decisions[2].formal_presented_count=0
+    $decisions[2].formal_presented_event_keys=@()
+}
 $source=[pscustomobject][ordered]@{authority_exact=$true;branch_a_established=$true;runs=@([pscustomobject][ordered]@{run=1;decisions=$decisions})}
 $source|ConvertTo-Json -Depth 12|Set-Content -LiteralPath $sourcePath -Encoding utf8
 $result=Invoke-MvmC23ProducerSemanticsAttribution -C21ProofObject $source -C21ProofPath $sourcePath
@@ -35,7 +50,10 @@ if($Case-eq'GoodExact'){
        -not[bool]$result.ordinal_301_scope_membership_conflict_attribution_exact){throw '正当なC2.3 attributionを拒否しました'}
 }else{
     if([bool]$result.authority_exact){throw "不完全なC2.3 attributionを受理しました: $Case"}
-    $expected=$(if($Case-eq'NegativeMissingSemantics'){'PRODUCER_SEMANTICS_PROVENANCE_MISSING'}else{'TARGET_REVERSE_ATTRIBUTION_INVALID'})
+    $expected=$(if($Case-eq'NegativeMissingSemantics'){'PRODUCER_SEMANTICS_PROVENANCE_MISSING'}
+        elseif($Case-eq'NegativeAmbiguousReverse'){'TARGET_REVERSE_ATTRIBUTION_INVALID'}
+        elseif($Case.StartsWith('NegativeZero')){'ORDINAL_ZERO_DUPLICATE_CALLBACK_ATTRIBUTION_INVALID'}
+        else{'ORDINAL_301_SCOPE_MEMBERSHIP_ATTRIBUTION_INVALID'})
     if($expected-notin@($result.blockers)){throw "期待blockerがありません: $expected"}
 }
 Write-Output "W2-C2.3 contract $Case`: PASS"

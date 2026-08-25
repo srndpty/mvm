@@ -123,6 +123,8 @@ struct NativePresentIntentScopeRecord {
     long long targetFrame = -1;
     long long lastFinalizedOpportunityOrdinal = -1;
     long long renderBeginQpc = 0;
+    gpu::FormalIntentTransportDisposition transportDisposition =
+        gpu::FormalIntentTransportDisposition::Transport;
 };
 
 inline const char* nativePresentIntentScopeName(NativePresentIntentScope scope) {
@@ -356,6 +358,8 @@ struct CompositorSpikeState {
     std::atomic<long long> formalOpportunityPresentedFrame{-1};
     std::atomic<long long> formalOpportunitySwapOrdinal{0};
     std::atomic<long long> formalOpportunityTrueDropCount{0};
+    std::atomic<long long> formalDuplicateTransportSuppressedCount{0};
+    std::atomic<long long> formalOutsideRequiredTransportSuppressedCount{0};
     std::atomic<long long> diagnosticSyntheticDeadlineDropCount{0};
     std::atomic<long long> formalRefreshNumerator{0};
     std::atomic<long long> formalRefreshDenominator{0};

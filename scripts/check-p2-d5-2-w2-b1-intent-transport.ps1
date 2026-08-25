@@ -8,6 +8,10 @@ $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 $sourceDirectory=$SourceRoot
 function Fail([string]$Message){throw $Message}
+function Need($Object,[string]$Name){
+    if($null-eq$Object-or$Object.PSObject.Properties.Name-notcontains$Name){Fail "必須fieldがありません: $Name"}
+    return $Object.$Name
+}
 function Equal($Actual,$Expected,[string]$Name){
     if($Actual-ne$Expected){Fail "$Name が一致しません (expected=$Expected actual=$Actual)"}
 }
@@ -107,7 +111,16 @@ for($index=0;$index-lt$records.Count;++$index){
     Equal (U64 $record.native_present_intent_ordinal "native intent ordinal[$index]") `
           (U64 $record.composition_token_intent_ordinal "token intent ordinal[$index]") `
           "intent ordinal exact copy[$index]"
-    if($formal-and-not$tokenValid){Fail "formal tokenのintent identityがinvalidです: $index"}
+    $formalEligible=[bool](Need $record 'formal_transport_eligible')
+    $suppressionExact=[bool](Need $record 'suppression_exact')
+    $disposition=[string](Need $record 'transport_disposition')
+    if($formal-and$formalEligible-and-not$tokenValid){Fail "formal tokenのintent identityがinvalidです: $index"}
+    if($formal-and-not$formalEligible){
+        if($tokenValid-or-not$suppressionExact-or
+           $disposition-notin@('SUPPRESS_DUPLICATE_CALLBACK','SUPPRESS_OUTSIDE_REQUIRED_SET')){
+            Fail "non-formal suppression witnessが不正です: $index"
+        }
+    }
     if(-not$formal-and$tokenValid){Fail "non-formal pathに架空のintent identityがあります: $index"}
 }
 Equal ([bool]$transport.transport_exact) $true 'transport_exact'

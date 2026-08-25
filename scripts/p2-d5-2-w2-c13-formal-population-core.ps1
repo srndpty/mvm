@@ -22,6 +22,11 @@ function Invoke-MvmC13FormalPresentedPopulation {
     $b2ByKey=@{};$b2PresentedCount=0
     foreach($terminalRecord in $B2TerminalRecords){
         if([string]$terminalRecord.final_state-ne'Presented'){continue}
+        if($terminalRecord.PSObject.Properties.Name-notcontains'formal_transport_eligible'){
+            $blockers['B2_FORMAL_ELIGIBILITY_MISSING']=$true
+            continue
+        }
+        if(-not[bool]$terminalRecord.formal_transport_eligible){continue}
         $b2PresentedCount+=1
         $displayed=@($terminalRecord.displayed_qpc)
         if($displayed.Count-ne1){$blockers['B2_PRESENTED_DISPLAYED_QPC_CARDINALITY_INVALID']=$true;continue}

@@ -2030,14 +2030,35 @@ bool CompositorSpikeController::writeMetrics() {
             {"target_frame", record.targetFrame},
             {"last_finalized_opportunity_ordinal", record.lastFinalizedOpportunityOrdinal},
             {"render_begin_qpc", record.renderBeginQpc},
+            {"formal_transport_eligible",
+             record.transportDisposition == gpu::FormalIntentTransportDisposition::Transport},
+            {"transport_disposition",
+             gpu::formalIntentTransportDispositionName(record.transportDisposition)},
         });
     }
+    const auto scopeRecordMatchesNative = [](const NativePresentIntentScopeRecord& producer,
+                                             const MvmNativePresentRecord& native) {
+        if (producer.transportDisposition !=
+            gpu::FormalIntentTransportDisposition::Transport) {
+            const bool suppressionExact =
+                producer.transportDisposition ==
+                    gpu::FormalIntentTransportDisposition::SuppressDuplicateCallback ||
+                producer.transportDisposition ==
+                    gpu::FormalIntentTransportDisposition::SuppressOutsideRequiredSet;
+            return suppressionExact && native.intentOrdinalValid == 0 &&
+                   native.token.intentOrdinalValid == 0;
+        }
+        return producer.transportDisposition ==
+                   gpu::FormalIntentTransportDisposition::Transport &&
+               native.intentOrdinalValid == 1 && native.token.intentOrdinalValid == 1 &&
+               producer.intentOrdinal == native.intentOrdinal;
+    };
     long long intentScopeMissingCount = 0;
     long long intentScopeAmbiguousCount = 0;
     long long intentScopeMutationCount = 0;
     std::unordered_set<std::uint64_t> nativeIntentTokenSerials;
     for (const auto& record : nativePresentSnapshot.records) {
-        if (record.tokenPresent == 0 || record.intentOrdinalValid == 0)
+        if (record.tokenPresent == 0)
             continue;
         nativeIntentTokenSerials.insert(record.token.tokenSerial);
         const auto found = intentScopeByToken.find(record.token.tokenSerial);
@@ -2045,7 +2066,7 @@ bool CompositorSpikeController::writeMetrics() {
             ++intentScopeMissingCount;
         } else if (found->second.size() != 1) {
             ++intentScopeAmbiguousCount;
-        } else if (found->second.front().intentOrdinal != record.intentOrdinal) {
+        } else if (!scopeRecordMatchesNative(found->second.front(), record)) {
             ++intentScopeMutationCount;
         }
     }
@@ -2068,7 +2089,7 @@ bool CompositorSpikeController::writeMetrics() {
     const long long b1MeasurementStartQpc =
         state_->measurementStartQpc.load(std::memory_order_acquire);
     const long long b1MeasurementEndQpc = state_->measurementEndQpc.load(std::memory_order_acquire);
-    const auto nativePresentRecordJson = [&intentScopeByToken](
+    const auto nativePresentRecordJson = [&intentScopeByToken, &scopeRecordMatchesNative](
                                              const MvmNativePresentRecord& record) {
         QJsonArray sources;
         for (std::uint32_t index = 0; index < record.token.sourceCount; ++index) {
@@ -2084,7 +2105,9 @@ bool CompositorSpikeController::writeMetrics() {
                                 {"intent_ordinal", QString::number(record.intentOrdinal)},
                                 {"intent_scope", "UNRESOLVED"},
                                 {"match_count", 0},
-                                {"exact", false}};
+                                {"exact", false},
+                                {"formal_transport_eligible", false},
+                                {"transport_disposition", "UNRESOLVED"}};
         const auto scope = intentScopeByToken.find(record.token.tokenSerial);
         if (scope != intentScopeByToken.end()) {
             intentScope["match_count"] = static_cast<qint64>(scope->second.size());
@@ -2092,7 +2115,12 @@ bool CompositorSpikeController::writeMetrics() {
                 const auto& producer = scope->second.front();
                 intentScope["intent_ordinal"] = QString::number(producer.intentOrdinal);
                 intentScope["intent_scope"] = nativePresentIntentScopeName(producer.scope);
-                intentScope["exact"] = producer.intentOrdinal == record.intentOrdinal;
+                intentScope["exact"] = scopeRecordMatchesNative(producer, record);
+                intentScope["formal_transport_eligible"] =
+                    producer.transportDisposition ==
+                    gpu::FormalIntentTransportDisposition::Transport;
+                intentScope["transport_disposition"] =
+                    gpu::formalIntentTransportDispositionName(producer.transportDisposition);
             }
         }
         return QJsonObject{
@@ -2136,8 +2164,15 @@ bool CompositorSpikeController::writeMetrics() {
             compositionTokenSerials.insert(record.token.tokenSerial).second;
         const bool identityExact = record.intentOrdinalValid == record.token.intentOrdinalValid &&
                                    record.intentOrdinal == record.token.intentOrdinal;
-        const bool modeValid = formalIntentMode ? record.token.intentOrdinalValid == 1
-                                                : record.token.intentOrdinalValid == 0;
+        const auto scope = intentScopeByToken.find(record.token.tokenSerial);
+        const bool exactScope = scope != intentScopeByToken.end() && scope->second.size() == 1 &&
+                                scopeRecordMatchesNative(scope->second.front(), record);
+        const bool suppressed =
+            exactScope && scope->second.front().transportDisposition !=
+                              gpu::FormalIntentTransportDisposition::Transport;
+        const bool modeValid = formalIntentMode
+                                   ? (record.token.intentOrdinalValid == 1 || suppressed)
+                                   : record.token.intentOrdinalValid == 0;
         everyIntentIdentityRecordExact = everyIntentIdentityRecordExact && presentSerialUnique &&
                                          tokenSerialUnique && identityExact && modeValid;
         if (record.tokenPresent == 0)
@@ -2153,6 +2188,13 @@ bool CompositorSpikeController::writeMetrics() {
             {"native_present_serial", QString::number(record.presentSerial)},
             {"native_present_intent_ordinal", QString::number(record.intentOrdinal)},
             {"native_present_intent_valid", record.intentOrdinalValid != 0},
+            {"formal_transport_eligible", exactScope && !suppressed},
+            {"suppression_exact", suppressed},
+            {"transport_disposition",
+             exactScope
+                 ? gpu::formalIntentTransportDispositionName(
+                       scope->second.front().transportDisposition)
+                 : "UNRESOLVED"},
         });
         nativePresentRecords.append(nativePresentRecordJson(record));
     }
@@ -2292,6 +2334,11 @@ bool CompositorSpikeController::writeMetrics() {
              {"required_intent_set_derived_from_presented", false},
              {"required_intent_set_exact", formalOpportunitySnapshot.requiredIntentSetExact},
              {"required_intent_ordinals", requiredIntentOrdinalsJson},
+             {"duplicate_transport_suppressed_count",
+              state_->formalDuplicateTransportSuppressedCount.load(std::memory_order_relaxed)},
+             {"outside_required_transport_suppressed_count",
+              state_->formalOutsideRequiredTransportSuppressedCount.load(
+                  std::memory_order_relaxed)},
              {"record_count", static_cast<qint64>(intentScopeLedgerJson.size())},
              {"missing_scope_count", intentScopeMissingCount},
              {"ambiguous_scope_count", intentScopeAmbiguousCount},

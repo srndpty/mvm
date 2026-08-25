@@ -79,7 +79,7 @@ for($run=1;$run-le$runCount;++$run){
 
     $allTargetEvents=@($join.all_target_events)
     $presentedCandidates=@();$presentedEventSequences=@{};$multipleDisplayed=0;$observedMissingNative=0;$observedMissingIntent=0
-    $observedForeignExact=0;$observedCurrentExact=0;$outsidePresentedCount=0
+    $observedForeignExact=0;$observedCurrentExact=0;$observedSuppressedExact=0;$outsidePresentedCount=0
     $observedMissingScope=0;$observedAmbiguousScope=0;$observedMutatedScope=0
     $relationCounts=[ordered]@{
         BEFORE_PREDECESSOR=0
@@ -103,6 +103,7 @@ for($run=1;$run-le$runCount;++$run){
         })
         $nativeExact=$nativeCandidates.Count-eq1
         $intentExact=$false;$intentOrdinal=$null;$nativeSerial=$null;$tokenSerial=$null
+        $suppressedNonFormalExact=$false;$transportDisposition='UNRESOLVED'
         $intentScope=$null;$intentScopeExact=$false;$scopeFailure='NONE'
         if($nativeExact){
             $nativeSerial=[string]$nativeCandidates[0].present_serial
@@ -116,6 +117,14 @@ for($run=1;$run-le$runCount;++$run){
                     [string](Need $token 'token_serial')-ne'0'
                 if($intentExact){$intentOrdinal=[string]$nativeRecord.intent_ordinal}
                 $tokenSerial=[string]$token.token_serial
+                $embeddedScope=Need $nativeRecord 'intent_scope_provenance'
+                $transportDisposition=[string](Need $embeddedScope 'transport_disposition')
+                $suppressedNonFormalExact=[bool](Need $nativeRecord 'token_present')-and
+                    -not[bool](Need $nativeRecord 'intent_ordinal_valid')-and
+                    -not[bool](Need $token 'intent_ordinal_valid')-and
+                    [bool](Need $embeddedScope 'exact')-and
+                    -not[bool](Need $embeddedScope 'formal_transport_eligible')-and
+                    $transportDisposition-in@('SUPPRESS_DUPLICATE_CALLBACK','SUPPRESS_OUTSIDE_REQUIRED_SET')
             }elseif($intentByPresent.ContainsKey($nativeSerial)){
                 $intent=$intentByPresent[$nativeSerial]
                 $tokenSerial=[string]$nativeCandidates[0].composition_token.token_serial
@@ -156,6 +165,7 @@ for($run=1;$run-le$runCount;++$run){
             $coverageCandidate=$relation-eq$(if($boundariesValid){'WITHIN_PREDECESSOR_SUCCESSOR_ENVELOPE'}else{'WITHIN_OBSERVED_MEMBER_ENVELOPE'})
             if($coverageCandidate){
                 if(-not$nativeExact){++$observedMissingNative}
+                elseif($suppressedNonFormalExact){++$observedSuppressedExact}
                 elseif(-not$intentExact){++$observedMissingIntent}
                 elseif(-not$intentScopeExact){
                     if($scopeFailure-eq'AMBIGUOUS'){++$observedAmbiguousScope}
@@ -173,6 +183,9 @@ for($run=1;$run-le$runCount;++$run){
                 intent_exact=$intentExact;intent_ordinal=$intentOrdinal
                 intent_scope_exact=$intentScopeExact;intent_scope=$intentScope
                 intent_scope_failure=$scopeFailure
+                formal_transport_eligible=-not$suppressedNonFormalExact
+                suppressed_nonformal_exact=$suppressedNonFormalExact
+                transport_disposition=$transportDisposition
             }
         }
     }
@@ -216,6 +229,7 @@ for($run=1;$run-le$runCount;++$run){
         observed_domain_mutated_scope_count=$observedMutatedScope
         observed_domain_current_intent_exact_count=$observedCurrentExact
         observed_domain_foreign_intent_exact_count=$observedForeignExact
+        observed_domain_suppressed_nonformal_exact_count=$observedSuppressedExact
         intent_scope_exact=$observedMissingScope-eq0-and$observedAmbiguousScope-eq0-and$observedMutatedScope-eq0-and$hasIntentScope-and[bool]$intentScopeAuthority.authority_pass
         coverage_complete=$blockers.Count-eq0;blockers=$blockers;candidates=$presentedCandidates
     }

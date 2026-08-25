@@ -14,15 +14,32 @@ function Invoke-MvmC2ProofFromSealedC1 {
     param(
         [Parameter(Mandatory=$true)]$C1ProofObject,
         [Parameter(Mandatory=$true)][string]$C1ProofPath,
+        [Parameter(Mandatory=$true)]$C21ProofObject,
+        [Parameter(Mandatory=$true)][string]$C21ProofPath,
         [Parameter(Mandatory=$true)][string]$C1CheckpointSha
     )
+    if(-not[bool](Get-MvmC2Required $C21ProofObject 'authority_exact')){
+        throw 'C2.1 required intent authorityがexactではありません'
+    }
+    $c1Hash=(Get-FileHash -LiteralPath $C1ProofPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if([string](Get-MvmC2Required $C21ProofObject 'source_c1_proof_sha256')-ne$c1Hash){
+        throw 'C2.1が参照するC1 proofが一致しません'
+    }
     $sourceDirectory=[string](Get-MvmC2Required $C1ProofObject 'source_c011_directory')
     $upstreamPath=[string](Get-MvmC2Required $C1ProofObject 'source_upstream_inventory_proof')
     $upstream=Get-Content -LiteralPath $upstreamPath -Raw -Encoding utf8|ConvertFrom-Json
     $runResults=@();$globalBlockers=@{}
     $proofRuns=@(Get-MvmC2Required $C1ProofObject 'runs')
+    $c21Runs=@(Get-MvmC2Required $C21ProofObject 'runs')
+    if($c21Runs.Count-ne$proofRuns.Count){throw 'C1 / C2.1 run countが一致しません'}
     for($runIndex=0;$runIndex-lt$proofRuns.Count;++$runIndex){
         $c1Run=$proofRuns[$runIndex];$run=[int](Get-MvmC2Required $c1Run 'run')
+        $c21Run=$c21Runs[$runIndex]
+        if([int](Get-MvmC2Required $c21Run 'run')-ne$run-or
+           -not[bool](Get-MvmC2Required $c21Run 'authority_exact')-or
+           -not[bool](Get-MvmC2Required $c21Run 'required_scheduler_intent_set_exact')){
+            throw "run $run C2.1 required intent authorityが不成立です"
+        }
         $runDirectory=Join-Path $sourceDirectory "run-$run"
         $appPath=Join-Path $runDirectory 'traced-app.json'
         $rawPath=Join-Path $runDirectory 'present-history-raw.json'
@@ -74,17 +91,16 @@ function Invoke-MvmC2ProofFromSealedC1 {
                 in_measurement_physical_domain=[bool](Get-MvmC2Required $mappingRecord 'in_measurement_physical_domain')
             }
         }
-        $requiredCount=[int64](Get-MvmC2Required $app 'required_measurement_frame_count')
-        if($requiredCount-le0){throw "run $run Layer 1A required intent countが不正です"}
-        if([int64](Get-MvmC2Required $shadow 'required_intent_count')-ne$requiredCount){
-            throw "run $run Layer 1A required intent authority copyが一致しません"
+        $requiredOrdinals=@(Get-MvmC2Required $c21Run 'required_scheduler_intent_ordinals')
+        if($requiredOrdinals.Count-ne[int](Get-MvmC2Required $c21Run 'required_scheduler_intent_set_cardinality')){
+            throw "run $run C2.1 required intent set cardinalityが一致しません"
         }
-        $requiredOrdinals=@();for($ordinal=0L;$ordinal-lt$requiredCount;++$ordinal){$requiredOrdinals+=,[string]$ordinal}
         $ledger=Invoke-MvmC2IntentSatisfactionLedger -FormalPresentedRecords $c2Input `
             -RequiredCurrentIntentOrdinals $requiredOrdinals
         $ledger.run=$run
-        $ledger.layer1a_required_intent_count_source='traced-app.json:required_measurement_frame_count'
-        $ledger.layer1a_required_intent_domain_rule='0 <= intent_ordinal < required_measurement_frame_count'
+        $ledger.layer1a_required_intent_count_source='C2.1:required_scheduler_intent_ordinals'
+        $ledger.layer1a_required_intent_domain_rule='EXACT_SET_MEMBERSHIP'
+        $ledger.source_c21_run=$run
         $ledger.required_domain_derived_from_presented_min_max=$false
         $ledger.sealed_source_sha256=[ordered]@{
             traced_app=(Get-FileHash -LiteralPath $appPath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -115,11 +131,13 @@ function Invoke-MvmC2ProofFromSealedC1 {
         schema='mvm-p2-d5-2-w2-c2-intent-satisfaction-ledger-1';stage='P2-D5-2-W2-C2'
         c1_checkpoint_sha=$C1CheckpointSha
         source_c1_proof=(Resolve-Path -LiteralPath $C1ProofPath).Path
-        source_c1_proof_sha256=(Get-FileHash -LiteralPath $C1ProofPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        source_c1_proof_sha256=$c1Hash
+        source_c21_proof=(Resolve-Path -LiteralPath $C21ProofPath).Path
+        source_c21_proof_sha256=(Get-FileHash -LiteralPath $C21ProofPath -Algorithm SHA256).Hash.ToLowerInvariant()
         c1_authority_consumed='C1_SEALED_FORMAL_POPULATION_AND_PHYSICAL_MAPPING_REPLAY'
         formal_presented_population='C1_FORMAL_PRESENTED_ONLY'
         observed_diagnostic_population_consumed=$false
-        required_intent_authority='LAYER_1A_SCHEDULER_REQUIRED_INTENT_DOMAIN'
+        required_intent_authority='C2.1_EXACT_SCHEDULER_REQUIRED_INTENT_SET'
         required_domain_derived_from_presented_min_max=$false
         source_frame_identity_used=$false
         performance_threshold_evaluated=$false
@@ -145,7 +163,7 @@ function Invoke-MvmC2ProofFromSealedC1 {
 function Assert-MvmC2Proof {
     [CmdletBinding()]
     param([Parameter(Mandatory=$true)]$Expected,[Parameter(Mandatory=$true)]$Actual)
-    $fields=@('schema','stage','c1_checkpoint_sha','source_c1_proof_sha256','c1_authority_consumed',
+    $fields=@('schema','stage','c1_checkpoint_sha','source_c1_proof_sha256','source_c21_proof_sha256','c1_authority_consumed',
         'formal_presented_population','observed_diagnostic_population_consumed','required_intent_authority',
         'required_domain_derived_from_presented_min_max','source_frame_identity_used',
         'performance_threshold_evaluated','canonical_verdict_evaluated','frame_swapped_retirement_changed',
@@ -166,7 +184,7 @@ function Assert-MvmC2Proof {
     $expectedRuns=@($Expected.runs);$actualRuns=@($Actual.runs)
     if($expectedRuns.Count-ne$actualRuns.Count){throw 'C2 proof run数が一致しません'}
     for($index=0;$index-lt$expectedRuns.Count;++$index){
-        foreach($field in @('run','layer1a_required_intent_count_source','layer1a_required_intent_domain_rule',
+        foreach($field in @('run','source_c21_run','layer1a_required_intent_count_source','layer1a_required_intent_domain_rule',
             'required_domain_derived_from_presented_min_max')){
             if([string](Get-MvmC2Property $expectedRuns[$index] $field)-ne
                [string](Get-MvmC2Property $actualRuns[$index] $field)){

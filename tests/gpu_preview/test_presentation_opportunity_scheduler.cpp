@@ -17,6 +17,7 @@ void check(bool condition, const char* message) {
 using Scheduler = mvm::gpu::PresentationOpportunityScheduler;
 using Error = mvm::gpu::PresentationOpportunityError;
 using Classification = mvm::gpu::PresentationOpportunityClassification;
+using TransportDisposition = mvm::gpu::FormalIntentTransportDisposition;
 
 constexpr long long kQpcFrequency = 600;
 
@@ -375,6 +376,32 @@ void requiredIntentAuthorityIsProducedAtStart() {
           "required set内decisionのmembershipがexactではありません");
 }
 
+void formalIntentTransportPolicyIsExact() {
+    mvm::gpu::PresentationOpportunityDecision decision;
+    decision.valid = true;
+    decision.requiredIntentMembership = true;
+    decision.requiredIntentMembershipExact = true;
+    check(mvm::gpu::formalIntentTransportDisposition(false, decision) ==
+              TransportDisposition::Transport,
+          "required current decisionのformal transportを拒否しました");
+    decision.duplicateCallback = true;
+    check(mvm::gpu::formalIntentTransportDisposition(false, decision) ==
+              TransportDisposition::SuppressDuplicateCallback,
+          "duplicate callbackをformal transportへ通しました");
+    decision.duplicateCallback = false;
+    decision.requiredIntentMembership = false;
+    check(mvm::gpu::formalIntentTransportDisposition(false, decision) ==
+              TransportDisposition::SuppressOutsideRequiredSet,
+          "required set外decisionをformal transportへ通しました");
+    check(mvm::gpu::formalIntentTransportDisposition(true, decision) ==
+              TransportDisposition::Transport,
+          "pre-measurement foreign intentをrequired membershipで拒否しました");
+    decision.requiredIntentMembershipExact = false;
+    check(mvm::gpu::formalIntentTransportDisposition(false, decision) ==
+              TransportDisposition::InvalidMembershipProvenance,
+          "membership provenance欠損をfail-closeしません");
+}
+
 } // namespace
 
 int main() {
@@ -389,6 +416,7 @@ int main() {
     overflowIsClosed();
     sourceFrameOffsetIsExact();
     requiredIntentAuthorityIsProducedAtStart();
+    formalIntentTransportPolicyIsExact();
     std::fprintf(stderr, "P2-D5-2/F2 presentation opportunity scheduler: 失敗 %d件\n", failures);
     return failures == 0 ? 0 : 1;
 }

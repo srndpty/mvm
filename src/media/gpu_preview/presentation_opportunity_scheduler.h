@@ -57,6 +57,40 @@ struct PresentationOpportunityDecision {
     PresentationAuthoritySample preRenderAuthority;
 };
 
+enum class FormalIntentTransportDisposition {
+    Transport = 0,
+    SuppressDuplicateCallback,
+    SuppressOutsideRequiredSet,
+    InvalidMembershipProvenance,
+};
+
+inline const char* formalIntentTransportDispositionName(
+    FormalIntentTransportDisposition disposition) {
+    switch (disposition) {
+    case FormalIntentTransportDisposition::Transport:
+        return "TRANSPORT";
+    case FormalIntentTransportDisposition::SuppressDuplicateCallback:
+        return "SUPPRESS_DUPLICATE_CALLBACK";
+    case FormalIntentTransportDisposition::SuppressOutsideRequiredSet:
+        return "SUPPRESS_OUTSIDE_REQUIRED_SET";
+    case FormalIntentTransportDisposition::InvalidMembershipProvenance:
+        return "INVALID_MEMBERSHIP_PROVENANCE";
+    }
+    return "UNKNOWN";
+}
+
+inline FormalIntentTransportDisposition
+formalIntentTransportDisposition(bool foreignPreMeasurement,
+                                 const PresentationOpportunityDecision& decision) {
+    if (decision.duplicateCallback)
+        return FormalIntentTransportDisposition::SuppressDuplicateCallback;
+    if (!decision.requiredIntentMembershipExact)
+        return FormalIntentTransportDisposition::InvalidMembershipProvenance;
+    if (!foreignPreMeasurement && !decision.requiredIntentMembership)
+        return FormalIntentTransportDisposition::SuppressOutsideRequiredSet;
+    return FormalIntentTransportDisposition::Transport;
+}
+
 // finalizeされた1 presentation opportunity。同一opportunity内で複数swapが起きた
 // 場合に記録されるのはlatest candidateで、置き換えられたcandidate数は
 // supersededCandidateCountへ残る。
