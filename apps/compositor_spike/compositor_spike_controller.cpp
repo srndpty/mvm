@@ -2023,6 +2023,13 @@ bool CompositorSpikeController::writeMetrics() {
             {"required_current_membership_exact", record.requiredCurrentMembershipExact},
             {"measurement_boundary_relation",
              measurementBoundaryRelationName(record.measurementBoundaryRelation)},
+            {"producer_semantics_exact", record.producerSemanticsExact},
+            {"duplicate_callback", record.duplicateCallback},
+            {"repeat", record.repeat},
+            {"past_source_domain", record.pastSourceDomain},
+            {"target_frame", record.targetFrame},
+            {"last_finalized_opportunity_ordinal", record.lastFinalizedOpportunityOrdinal},
+            {"render_begin_qpc", record.renderBeginQpc},
         });
     }
     long long intentScopeMissingCount = 0;
@@ -2274,7 +2281,7 @@ bool CompositorSpikeController::writeMetrics() {
         {"capture_envelope_records", captureEnvelopeRecords},
         {"intent_scope_provenance",
          QJsonObject{
-             {"schema", "mvm-p2-d5-2-w2-c21-intent-authority-provenance-2"},
+             {"schema", "mvm-p2-d5-2-w2-c23-intent-authority-provenance-3"},
              {"shadow_only", true},
              {"abi_version_unchanged", true},
              {"join_key", "composition_token.token_serial"},

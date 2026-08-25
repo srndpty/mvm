@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][ValidateSet('GoodExactSet','GoodDistinctDecisionsSameOrdinal',
+        'GoodRequiredIntentWithoutDecision',
         'NegativeMissingRequiredSet','NegativeDuplicateRequiredSet','NegativeCountSetMismatch',
         'NegativeRequiredSetMissingMembership','NegativeMembershipExtraOutsideRequiredSet',
         'NegativeMissingDecisionQpc','NegativeBoundaryRelationMutation',
@@ -36,6 +37,13 @@ switch($Case){
         $native=@((Native '1' '10'),(Native '2' '10'),(Native '3' '11'))
         $formal=@((Formal '1' '10' 1),(Formal '2' '10' 2),(Formal '3' '11' 3))
     }
+    'GoodRequiredIntentWithoutDecision'{
+        $scope.required_intent_ordinals=@('10','11','12')
+        $scope.records=@((Decision '1' '10'),(Decision '3' '12'))
+        $native=@((Native '1' '10'),(Native '3' '12'))
+        $formal=@((Formal '1' '10' 1),(Formal '3' '12' 3))
+        $required=3
+    }
     'NegativeMissingRequiredSet'{$scope.PSObject.Properties.Remove('required_intent_ordinals');$scope.required_intent_set_exact=$false}
     'NegativeDuplicateRequiredSet'{$scope.required_intent_ordinals=@('10','10')}
     'NegativeCountSetMismatch'{$required=3}
@@ -69,8 +77,8 @@ if($good){
         'NegativeMissingRequiredSet'{'REQUIRED_INTENT_MEMBERSHIP_PROVENANCE_MISSING'}
         'NegativeDuplicateRequiredSet'{'REQUIRED_SCHEDULER_INTENT_SET_DUPLICATE'}
         'NegativeCountSetMismatch'{'REQUIRED_INTENT_COUNT_SET_CARDINALITY_MISMATCH'}
-        'NegativeRequiredSetMissingMembership'{'REQUIRED_SET_DECISION_MEMBERSHIP_SET_MISMATCH'}
-        'NegativeMembershipExtraOutsideRequiredSet'{'REQUIRED_SET_DECISION_MEMBERSHIP_SET_MISMATCH'}
+        'NegativeRequiredSetMissingMembership'{'DECISION_REQUIRED_MEMBERSHIP_MISMATCH'}
+        'NegativeMembershipExtraOutsideRequiredSet'{'DECISION_REQUIRED_MEMBERSHIP_MISMATCH'}
         'NegativeMissingDecisionQpc'{'SCHEDULER_DECISION_QPC_PROVENANCE_MISSING'}
         'NegativeBoundaryRelationMutation'{'MEASUREMENT_BOUNDARY_RELATION_MISMATCH'}
         'NegativeMissingMeasurementStartQpc'{'MEASUREMENT_START_QPC_MISSING'}

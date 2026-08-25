@@ -116,6 +116,13 @@ struct NativePresentIntentScopeRecord {
     bool requiredCurrentMembershipExact = false;
     MeasurementBoundaryRelation measurementBoundaryRelation =
         MeasurementBoundaryRelation::Unresolved;
+    bool producerSemanticsExact = false;
+    bool duplicateCallback = false;
+    bool repeat = false;
+    bool pastSourceDomain = false;
+    long long targetFrame = -1;
+    long long lastFinalizedOpportunityOrdinal = -1;
+    long long renderBeginQpc = 0;
 };
 
 inline const char* nativePresentIntentScopeName(NativePresentIntentScope scope) {

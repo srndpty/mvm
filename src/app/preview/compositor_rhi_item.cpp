@@ -349,7 +349,11 @@ protected:
                                            : NativePresentIntentScope::CurrentMeasurement,
                      callbackBegin, true,
                      !foreignPreMeasurement && formalDecision.requiredIntentMembership,
-                     formalDecision.requiredIntentMembershipExact, boundaryRelation});
+                     formalDecision.requiredIntentMembershipExact, boundaryRelation, true,
+                     formalDecision.duplicateCallback, formalDecision.repeat,
+                     formalDecision.pastSourceDomain, formalDecision.targetFrame,
+                     formalDecision.lastFinalizedOpportunityOrdinal,
+                     formalDecision.renderBeginQpc});
             }
             if (foreignPreMeasurement) {
                 if (!formalDecision.duplicateCallback) {

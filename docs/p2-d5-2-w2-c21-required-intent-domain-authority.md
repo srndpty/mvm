@@ -82,18 +82,21 @@ inventoryとcheckerはいずれもartifactを書き出し／再生成照合し�
 
 ## C2.1 hardeningとC2.2 instrumentation
 
-[事実] checkerは、decision ledgerから次を独立再集計する。
+[事実] Layer 1A plan authorityの`required_intent_ordinals`と、実際に
+`selectForRender`が生成したscheduler decision populationは別母集団である。required intentに
+decisionが無いことはauthority欠損ではなく、後段でunsatisfiedになり得る測定事実である。
+
+checkerは各decisionについて次だけを要求する。
 
 ```text
-exact_required_membership_ordinal_set
-  = distinct(decision.opportunity_ordinal
-             where required_current_membership == true
-               and required_current_membership_exact == true)
+required_current_membership
+  == (intent_scope == CURRENT_MEASUREMENT
+      && opportunity_ordinal in required_intent_ordinals)
+required_current_membership_exact == true
 ```
 
-この集合と`required_intent_ordinals` exact setの集合一致を必須とする。同一ordinalの
-distinct decisionは許容し、集合比較では1 identityとして扱う。missing membershipと
-required set外membershipは`REQUIRED_SET_DECISION_MEMBERSHIP_SET_MISMATCH`でfail-closeする。
+不一致は`DECISION_REQUIRED_MEMBERSHIP_MISMATCH`でfail-closeする。required plan setと
+observed decision membership setの集合一致は要求しない。
 
 [事実] `measurement_arm_qpc`、`measurement_start_qpc`、
 `frozen_measurement_end_qpc`をrequired fieldとし、checkerが各`decision_qpc`を
@@ -106,7 +109,8 @@ decision populationからは生成しない。各decisionではQPC、required me
 flag、producer-side boundary relationをshadow-only ledgerへ記録する。native Present hook ABI、
 performance accounting、frameSwapped retirementは変更していない。
 
-[事実] C2.1とschedulerの対象testは15/15、C1/C2回帰は63/63通過した。
+[事実] `GoodRequiredIntentWithoutDecision`を追加し、required setに存在するidentityの
+decisionが無くてもauthorityが成立することを固定した。C2.1対象testは15/15通過した。
 
 [事実] instrumentation後のfresh 3-runを次へ新規取得した。historical artifactは
 上書きしていない。
@@ -134,14 +138,73 @@ boundary relation mismatch                               0
 ```
 
 ordinal `0`はFOREIGN 1 decisionに加え、membership true/exactのCURRENT 2 decisionsを
-持つ。ordinal `301`はCURRENTだがmembership false/exactである。ただしrequired setと
-membership setのidentityが閉じていないため、この観測だけでproducer/boundary bugを
-確定しない。
+持つ。ordinal `301`はCURRENTだがmembership false/exactである。
 
-[exit] blockerは`REQUIRED_SET_DECISION_MEMBERSHIP_SET_MISMATCH`のみで、verdictは
-`REQUIRED_INTENT_DOMAIN_AUTHORITY_UNRESOLVED`。Branch A/Bはいずれも未確立である。
+[exit] 修正後のcheckerによるsealed offline replayは
+`REQUIRED_INTENT_DOMAIN_AUTHORITY_EXACT`。producer required setは全runでexactかつ
+`{0,...,299}`、decision membershipとboundary relationも全recordで一致した。
+Branch Aは確立、Branch Bは棄却した。
 
 ```text
 build/p2-d5-2-w2-c14-mapping-replay-fresh-3-20260825-c21.json
-build/p2-d5-2-w2-c21-required-intent-domain-fresh-3-20260825-c21.json
+build/p2-d5-2-w2-c21-required-intent-domain-fresh-3-20260825-c21-r3.json
+```
+
+## W2-C2.3 producer semantics attribution
+
+[事実] product semanticsを変更せず、各scheduler decisionへ次のshadow-only診断fieldを
+追加した。
+
+```text
+duplicate_callback
+repeat
+past_source_domain
+target_frame
+last_finalized_opportunity_ordinal
+render_begin_qpc
+```
+
+[事実] 追加fieldを含むfresh-4を3 run取得し、C0.1.1、C1 sealed replay、C2.1は
+すべて3/3 PASSした。C1 formal Presentedは444件、observed diagnosticは892件だった。
+
+ordinal `0`は全runで次の同一構造だった。
+
+```text
+decision sequence 2: duplicate_callback=false, render_begin_qpc=A
+decision sequence 3: duplicate_callback=true,  render_begin_qpc=A
+                     decision_qpcはsequence 2とdistinct
+```
+
+両decisionはmembership true、repeat false、past_source_domain false、target_frame 0で、
+distinct token、distinct native Present、distinct formal Presentedへ各1件ずつ到達した。
+したがってduplicate callbackを新しいintentとして生成したのではなく、pending decisionを
+duplicate callbackへ返した後、そのduplicateを別transportとしてformal Presentedまで通した
+ことがexactに確定した。
+
+ordinal `301`も全runで次の同一構造だった。
+
+```text
+intent_scope                         CURRENT_MEASUREMENT
+required_current_membership          false / exact
+checker-derived boundary relation    WITHIN_CURRENT_MEASUREMENT
+duplicate_callback                   false
+repeat                               false
+past_source_domain                   true
+target_frame                         301
+last_finalized_opportunity_ordinal   297
+formal Presented                     1
+```
+
+rendererのscope producerはprerollかどうかだけでFOREIGN/CURRENTを決めており、required
+membershipと`past_source_domain`をscopeへ反映しない。このためrequired set外decision 301が
+CURRENTとしてtransportされたproducer semantics conflictがexactに確定した。
+
+[exit] C2.3 artifactとsealed checkerは`PRODUCER_SEMANTICS_ATTRIBUTION_EXACT`。product fix、
+performance integration、commit/pushは実施していない。
+
+```text
+build/p2-d5-2-w2-c011-fresh-4-20260825-c23
+build/p2-d5-2-w2-c14-mapping-replay-fresh-4-20260825-c23.json
+build/p2-d5-2-w2-c21-required-intent-domain-fresh-4-20260825-c23.json
+build/p2-d5-2-w2-c23-producer-semantics-fresh-4-20260825.json
 ```

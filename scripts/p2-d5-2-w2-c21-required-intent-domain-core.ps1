@@ -33,6 +33,11 @@ function Invoke-MvmC21RunInventory {
     if(-not$requiredSetPresent-or-not$requiredSetExact){$blockers['REQUIRED_INTENT_MEMBERSHIP_PROVENANCE_MISSING']=$true}
     if($requiredDuplicate-ne0){$blockers['REQUIRED_SCHEDULER_INTENT_SET_DUPLICATE']=$true}
     if($requiredSetExact-and$requiredDistinct.Count-ne$RequiredIntentCount){$blockers['REQUIRED_INTENT_COUNT_SET_CARDINALITY_MISMATCH']=$true}
+    $requiredKeys=@{};foreach($value in $requiredDistinct){$requiredKeys[[string]$value]=$true}
+    $zeroBasedCountKeys=@{};for($ordinalIndex=0L;$ordinalIndex-lt$RequiredIntentCount;++$ordinalIndex){$zeroBasedCountKeys[[string]$ordinalIndex]=$true}
+    $requiredIsZeroBasedCountDomain=$requiredIdentityExact-and
+        @($requiredKeys.Keys|Where-Object{-not$zeroBasedCountKeys.ContainsKey($_)}).Count-eq0-and
+        @($zeroBasedCountKeys.Keys|Where-Object{-not$requiredKeys.ContainsKey($_)}).Count-eq0
 
     $armValue=Get-MvmC21Value $CaptureEnvelope 'measurement_arm_qpc'
     $startValue=Get-MvmC21Value $CaptureEnvelope 'measurement_start_qpc'
@@ -71,7 +76,11 @@ function Invoke-MvmC21RunInventory {
         $decisionQpcExact=[bool](Get-MvmC21Value $scopeRecord 'decision_qpc_exact')
         $membership=Get-MvmC21Value $scopeRecord 'required_current_membership'
         $membershipExact=[bool](Get-MvmC21Value $scopeRecord 'required_current_membership_exact')
+        $expectedMembership=$scope-eq'CURRENT_MEASUREMENT'-and$requiredKeys.ContainsKey($ordinal)
+        $membershipConsistent=$membershipExact-and$null-ne$membership-and
+            [bool]$membership-eq$expectedMembership
         $boundaryRelation=[string](Get-MvmC21Value $scopeRecord 'measurement_boundary_relation')
+        $producerSemanticsExact=[bool](Get-MvmC21Value $scopeRecord 'producer_semantics_exact')
         if([string]::IsNullOrWhiteSpace($boundaryRelation)){$boundaryRelation='UNRESOLVED_WITHOUT_DECISION_QPC_OR_MEMBERSHIP'}
         $derivedRelation='UNRESOLVED_WITHOUT_EXACT_BOUNDARY_QPC'
         if($decisionQpcExact-and$null-ne$decisionQpc-and$boundaryQpcExact){
@@ -101,12 +110,21 @@ function Invoke-MvmC21RunInventory {
             producer_scope=$scope
             required_current_membership=$(if($null-ne$membership){[bool]$membership}else{$null})
             required_current_membership_exact=$membershipExact
+            checker_derived_required_current_membership=$expectedMembership
+            required_current_membership_consistent=$membershipConsistent
             measurement_arm_qpc=$armQpc
             measurement_start_qpc=$startQpc
             measurement_end_qpc_exclusive=$endQpc
             measurement_boundary_relation=$boundaryRelation
             checker_derived_measurement_boundary_relation=$derivedRelation
             measurement_boundary_relation_consistent=$boundaryConsistent
+            producer_semantics_exact=$producerSemanticsExact
+            duplicate_callback=$(if($producerSemanticsExact){[bool](Get-MvmC21Value $scopeRecord 'duplicate_callback')}else{$null})
+            repeat=$(if($producerSemanticsExact){[bool](Get-MvmC21Value $scopeRecord 'repeat')}else{$null})
+            past_source_domain=$(if($producerSemanticsExact){[bool](Get-MvmC21Value $scopeRecord 'past_source_domain')}else{$null})
+            target_frame=$(if($producerSemanticsExact){[int64](Get-MvmC21Value $scopeRecord 'target_frame')}else{$null})
+            last_finalized_opportunity_ordinal=$(if($producerSemanticsExact){[int64](Get-MvmC21Value $scopeRecord 'last_finalized_opportunity_ordinal')}else{$null})
+            render_begin_qpc=$(if($producerSemanticsExact){[int64](Get-MvmC21Value $scopeRecord 'render_begin_qpc')}else{$null})
             token_serial=$token
             composition_token_transport_observed=$nativeMatches.Count-ne0
             composition_token_transport_match_count=$nativeMatches.Count
@@ -138,6 +156,13 @@ function Invoke-MvmC21RunInventory {
     if(@($decisionRecords|Where-Object{-not[bool]$_.required_current_membership_exact}).Count-ne0){
         $blockers['DECISION_REQUIRED_MEMBERSHIP_PROVENANCE_MISSING']=$true
     }
+    $membershipMismatchRecords=@($decisionRecords|Where-Object{
+        [bool]$_.required_current_membership_exact-and
+        -not[bool]$_.required_current_membership_consistent
+    })
+    if($membershipMismatchRecords.Count-ne0){
+        $blockers['DECISION_REQUIRED_MEMBERSHIP_MISMATCH']=$true
+    }
     if(-not$boundaryQpcExact-or@($decisionRecords|Where-Object{-not[bool]$_.measurement_boundary_relation_consistent}).Count-ne0){
         $blockers['MEASUREMENT_BOUNDARY_RELATION_UNRESOLVED']=$true
     }
@@ -149,14 +174,10 @@ function Invoke-MvmC21RunInventory {
     $exactMembershipOrdinals=@($decisionRecords|Where-Object{
         [bool]$_.required_current_membership_exact-and[bool]$_.required_current_membership
     }|ForEach-Object{[string]([uint64]$_.opportunity_ordinal)}|Sort-Object -Unique)
-    $requiredKeys=@{};foreach($value in $requiredDistinct){$requiredKeys[[string]$value]=$true}
     $membershipKeys=@{};foreach($value in $exactMembershipOrdinals){$membershipKeys[[string]$value]=$true}
     $missingMembership=@($requiredKeys.Keys|Where-Object{-not$membershipKeys.ContainsKey($_)}|Sort-Object{[uint64]$_})
     $extraMembership=@($membershipKeys.Keys|Where-Object{-not$requiredKeys.ContainsKey($_)}|Sort-Object{[uint64]$_})
-    $setMembershipExact=$requiredIdentityExact-and$missingMembership.Count-eq0-and$extraMembership.Count-eq0
-    if($requiredSetExact-and($missingMembership.Count-ne0-or$extraMembership.Count-ne0)){
-        $blockers['REQUIRED_SET_DECISION_MEMBERSHIP_SET_MISMATCH']=$true
-    }
+    $setMembershipEqual=$requiredIdentityExact-and$missingMembership.Count-eq0-and$extraMembership.Count-eq0
     if(@($decisionRecords|Where-Object{-not[bool]$_.formal_presented_reverse_attribution_exact}).Count-ne0){
         $blockers['FORMAL_PRESENTED_REVERSE_ATTRIBUTION_INVALID']=$true
     }
@@ -172,12 +193,26 @@ function Invoke-MvmC21RunInventory {
         required_scheduler_intent_set_cardinality=$(if($requiredSetPresent){$requiredDistinct.Count}else{$null})
         required_scheduler_intent_set_duplicate_count=$requiredDuplicate
         required_count_equals_exact_set_cardinality=$requiredIdentityExact
+        required_scheduler_intent_set_is_zero_based_count_domain=$requiredIsZeroBasedCountDomain
         exact_required_membership_ordinal_set=$exactMembershipOrdinals
         required_set_missing_membership_ordinals=$missingMembership
         membership_outside_required_set_ordinals=$extraMembership
         required_set_missing_membership_count=$missingMembership.Count
         membership_outside_required_set_count=$extraMembership.Count
-        required_set_equals_exact_membership_set=$setMembershipExact
+        required_set_equals_exact_membership_set=$setMembershipEqual
+        required_set_decision_population_equality_required=$false
+        decision_required_membership_mismatch_count=$membershipMismatchRecords.Count
+        decision_required_membership_mismatches=@($membershipMismatchRecords|ForEach-Object{
+            [pscustomobject][ordered]@{
+                scheduler_decision_sequence=$_.scheduler_decision_sequence
+                opportunity_ordinal=$_.opportunity_ordinal
+                producer_scope=$_.producer_scope
+                recorded_membership=$_.required_current_membership
+                checker_derived_membership=$_.checker_derived_required_current_membership
+            }
+        })
+        decision_required_membership_consistent=$membershipMismatchRecords.Count-eq0-and
+            @($decisionRecords|Where-Object{-not[bool]$_.required_current_membership_exact}).Count-eq0
         measurement_boundary_qpc_exact=$boundaryQpcExact
         producer_current_decision_count=$currentRecords.Count
         producer_current_distinct_ordinal_count=$currentDistinct.Count
@@ -191,7 +226,7 @@ function Invoke-MvmC21RunInventory {
         nearest_qpc_or_tolerance_used=$false
         producer_changed=$false
         historical_c2_artifact_changed=$false
-        authority_exact=$blockerList.Count-eq0-and$setMembershipExact-and$boundaryQpcExact
+        authority_exact=$blockerList.Count-eq0-and$boundaryQpcExact
         blockers=$blockerList
         decisions=$decisionRecords
         diagnostic_reverse_attribution=@($decisionRecords|Where-Object{[bool]$_.diagnostic_target})

@@ -405,7 +405,7 @@ mvm_add_test(p2_d5_2_w2c2_checker_integration
     PROPERTIES LABELS "gpu_preview")
 
 # P2-D5-2-W2-C2.1: scheduler sole producerからrequired intent identity setを確定する。
-foreach(_p2_d5_2_w2c21_case IN ITEMS GoodExactSet GoodDistinctDecisionsSameOrdinal NegativeMissingRequiredSet NegativeDuplicateRequiredSet NegativeCountSetMismatch NegativeRequiredSetMissingMembership NegativeMembershipExtraOutsideRequiredSet NegativeMissingDecisionQpc NegativeBoundaryRelationMutation NegativeMissingMeasurementStartQpc NegativeMissingMeasurementEndQpc NegativeAmbiguousFormalReverseJoin)
+foreach(_p2_d5_2_w2c21_case IN ITEMS GoodExactSet GoodDistinctDecisionsSameOrdinal GoodRequiredIntentWithoutDecision NegativeMissingRequiredSet NegativeDuplicateRequiredSet NegativeCountSetMismatch NegativeRequiredSetMissingMembership NegativeMembershipExtraOutsideRequiredSet NegativeMissingDecisionQpc NegativeBoundaryRelationMutation NegativeMissingMeasurementStartQpc NegativeMissingMeasurementEndQpc NegativeAmbiguousFormalReverseJoin)
     string(TOLOWER "${_p2_d5_2_w2c21_case}" _p2_d5_2_w2c21_name)
     mvm_add_test(p2_d5_2_w2c21_required_intent_domain_${_p2_d5_2_w2c21_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File
@@ -429,6 +429,18 @@ mvm_add_test(p2_d5_2_w2c21_checker_integration
         -C21Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-c21-required-intent-domain.ps1"
         -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c21-checker-integration"
     PROPERTIES LABELS "gpu_preview")
+
+# P2-D5-2-W2-C2.3: duplicate ordinal 0とoutside-required ordinal 301のproducer semanticsを固定する。
+foreach(_p2_d5_2_w2c23_case IN ITEMS GoodExact NegativeMissingSemantics NegativeAmbiguousReverse)
+    string(TOLOWER "${_p2_d5_2_w2c23_case}" _p2_d5_2_w2c23_name)
+    mvm_add_test(p2_d5_2_w2c23_producer_semantics_${_p2_d5_2_w2c23_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c23-producer-semantics-contract.ps1"
+            -Case "${_p2_d5_2_w2c23_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-c23-producer-semantics-core.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c23-${_p2_d5_2_w2c23_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
 
 foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
     string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)

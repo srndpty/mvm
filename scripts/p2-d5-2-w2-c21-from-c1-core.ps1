@@ -39,6 +39,12 @@ function Invoke-MvmC21ProofFromSealedC1 {
         $runs+=,$inventory
     }
     $blockerList=@($globalBlockers.Keys|Sort-Object)
+    $authorityExact=$blockerList.Count-eq0
+    $requiredSetCanonical=@($runs|ForEach-Object{@($_.required_scheduler_intent_ordinals|ForEach-Object{[string]$_}|Sort-Object{[uint64]$_})-join','})
+    $requiredSetStable=$requiredSetCanonical.Count-ne0-and@($requiredSetCanonical|Select-Object -Unique).Count-eq1
+    $branchA=$authorityExact-and$requiredSetStable-and
+        @($runs|Where-Object{-not[bool]$_.required_scheduler_intent_set_is_zero_based_count_domain}).Count-eq0
+    $branchB=$authorityExact-and$requiredSetStable-and-not$branchA
     return [ordered]@{
         schema='mvm-p2-d5-2-w2-c21-required-intent-domain-authority-1'
         stage='P2-D5-2-W2-C2.1'
@@ -50,7 +56,9 @@ function Invoke-MvmC21ProofFromSealedC1 {
         run_count=$runs.Count
         required_intent_identity_authority_exact=@($runs|Where-Object{-not[bool]$_.required_scheduler_intent_set_exact}).Count-eq0
         required_count_set_identity_exact=@($runs|Where-Object{-not[bool]$_.required_count_equals_exact_set_cardinality}).Count-eq0
-        required_set_membership_identity_exact=@($runs|Where-Object{-not[bool]$_.required_set_equals_exact_membership_set}).Count-eq0
+        required_set_decision_population_equality_required=$false
+        decision_membership_consistency_exact=@($runs|Where-Object{-not[bool]$_.decision_required_membership_consistent}).Count-eq0
+        required_intent_set_stable_across_runs=$requiredSetStable
         scheduler_decision_qpc_exact=@($runs|Where-Object{'SCHEDULER_DECISION_QPC_PROVENANCE_MISSING'-in@($_.blockers)}).Count-eq0
         measurement_boundary_qpc_exact=@($runs|Where-Object{-not[bool]$_.measurement_boundary_qpc_exact}).Count-eq0
         measurement_boundary_relation_exact=@($runs|Where-Object{'MEASUREMENT_BOUNDARY_RELATION_UNRESOLVED'-in@($_.blockers)}).Count-eq0
@@ -60,9 +68,9 @@ function Invoke-MvmC21ProofFromSealedC1 {
         producer_changed=$false
         c2_ledger_changed=$false
         performance_integration_evaluated=$false
-        branch_a_established=$false
-        branch_b_established=$false
-        authority_exact=$blockerList.Count-eq0
+        branch_a_established=$branchA
+        branch_b_established=$branchB
+        authority_exact=$authorityExact
         blockers=$blockerList
         runs=$runs
         verdict=$(if($blockerList.Count-eq0){'REQUIRED_INTENT_DOMAIN_AUTHORITY_EXACT'}else{'REQUIRED_INTENT_DOMAIN_AUTHORITY_UNRESOLVED'})
