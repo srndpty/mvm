@@ -23,6 +23,17 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# P2-D5-2-W2-E canonical authority disposition (machine-readable)。
+# W2-E retirement inventory がこの宣言を読む。legacy presentation metric
+# (effective_fps / drop_rate / effective_video_fps) を参照するが、
+# canonical performance verdict は出さないことを宣言する。
+$MvmPresentationAuthorityDisposition = [ordered]@{
+    presentation_authority        = 'FORMAL_V2'
+    legacy_presentation_metrics   = 'DIAGNOSTIC'
+    canonical_performance_verdict = 'DEFERRED_TO_W3'
+}
+[void]$MvmPresentationAuthorityDisposition
+
 if (-not (Test-Path $Json)) {
     Write-Error "JSON がありません: $Json"
     exit 1
@@ -180,6 +191,7 @@ Assert-That ($d.invalid_rejected -eq 0) "不正な frame が $($d.invalid_reject
 if ($d.measure_elapsed_ms -gt 0) {
     $expected = $d.displayed_frames / ($d.measure_elapsed_ms / 1000.0)
     $diff = [math]::Abs($expected - $d.effective_fps)
+    # W2-E: DIAGNOSTIC_INTEGRITY
     Assert-That ($diff -lt 0.01) `
         "effective_fps が displayed/elapsed と一致しない (JSON=$($d.effective_fps) 再計算=$expected)"
 }

@@ -510,7 +510,7 @@ foreach(_p2_d5_2_w2e_case IN ITEMS GoodCanonicalCutover GoodLegacyDiagnosticsRem
             -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-e-canonical-authority-core.ps1"
         PROPERTIES LABELS "gpu_preview")
 endforeach()
-foreach(_p2_d5_2_w2e_retire_case IN ITEMS GoodRetired GoodLegacyDiagnosticsRemainPresent NegativeCanonicalPerformanceAnnotated NegativeUnclassifiedSite NegativeThresholdReintroduced NegativeDispositionMissing NegativeDispositionWrong NegativeLegacyDiagnosticDeleted NegativeUnregisteredCheckerWithLegacyThreshold)
+foreach(_p2_d5_2_w2e_retire_case IN ITEMS GoodRetired GoodLegacyDiagnosticsRemainPresent NegativeCanonicalPerformanceAnnotated NegativeUnclassifiedSite NegativeThresholdReintroduced NegativeDispositionMissing NegativeDispositionWrong NegativeLegacyDiagnosticDeleted NegativeUnregisteredCheckerWithLegacyThreshold NegativeUnregisteredCheckerWithMultilineLegacyThreshold NegativeDeclaredCheckerWithMultilineLegacyThreshold NegativeDeclaredCheckerWithAliasedLegacyThreshold)
     string(TOLOWER "${_p2_d5_2_w2e_retire_case}" _p2_d5_2_w2e_retire_name)
     mvm_add_test(p2_d5_2_w2e_retirement_${_p2_d5_2_w2e_retire_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File

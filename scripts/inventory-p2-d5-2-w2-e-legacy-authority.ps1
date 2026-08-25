@@ -22,27 +22,29 @@ Set-StrictMode -Version Latest
 #                          「記録値が再計算値と一致するか」しか主張しないため、
 #                          presentation authority を主張していない。残してよい。
 #
-# canonical checker 側は disposition を machine-readable に宣言し、legacy metric を
-# 参照する失敗地点には注記を置く。注記の無い失敗地点は UNCLASSIFIED として
-# fail-close する。これにより「新しい fps threshold FAIL をうっかり足す」ことを防ぐ。
-#
 # 走査対象を列挙で固定すると、登録されていない checker に threshold を足すだけで
-# false-PASS できてしまう。そのため対象は scripts/check-*.ps1 から discovery する。
-# legacy metric を失敗判定に使う checker は、登録の有無に関係なくすべて分類対象になる。
+# false-PASS できる。そのため対象は scripts/check-*.ps1 から discovery する。
+#
+# さらに failure site の検出を「metric名とFAILが同一行にある」に頼ると、
+#
+#     $fps = Require-Property $raw 'effective_fps'
+#     $minimum = 55
+#     if ($fps -lt $minimum) { Fail '...' }
+#
+# のように行が分かれた瞬間にすり抜ける。行 regex を増やすのではなく PowerShell AST を
+# 使い、legacy metric から taint を伝播させて判定式を追う。
+# 加えて file-level fallback として、legacy metric を参照し失敗しうる checker が
+# authority disposition を宣言していなければ、site 検出の結果に関係なく fail-close する。
 
 function Fail([string]$Message){throw $Message}
 
 # legacy presentation authority に属する performance metric 名。
 $legacyPerformanceMetrics=@('effective_fps','drop_rate','effective_video_fps')
-# 失敗を発生させる呼び出し。checker 内の fail helper も含める
-# (Close / Require-Equal / Require-Zero は不一致で FAIL する)。
-$failureEmitters=@('Add-Failure','Fail ','Close ','Require-Equal ','Require-Zero ')
 $expectedDisposition=[ordered]@{
     presentation_authority='FORMAL_V2'
     legacy_presentation_metrics='DIAGNOSTIC'
     canonical_performance_verdict='DEFERRED_TO_W3'
 }
-# 走査対象は discovery する。ハードコードした列挙は使わない。
 # legacy presentation authority を produce しているが verdict を出さない場所。
 # diagnostic として存在してよいことを positive に記録する。
 $legacyDiagnosticSources=@(
@@ -51,6 +53,57 @@ $legacyDiagnosticSources=@(
 
 function Remove-PowerShellComments([string]$Text){
     return [regex]::Replace($Text,'(?m)#.*$','')
+}
+
+# node の配下に legacy metric literal または taint 済み変数への参照があるか。
+function Test-MvmELegacyReference($Node,[hashtable]$Tainted,[string[]]$Metrics){
+    if($null-eq$Node){return $false}
+    $text=Remove-PowerShellComments $Node.Extent.Text
+    foreach($metric in $Metrics){if($text-match[regex]::Escape($metric)){return $true}}
+    foreach($variable in @($Node.FindAll({param($n)
+        $n-is[System.Management.Automation.Language.VariableExpressionAst]},$true))){
+        if($Tainted.ContainsKey($variable.VariablePath.UserPath)){return $true}
+    }
+    return $false
+}
+
+# 失敗を発生させうる node。checker ごとの fail helper 名は揃っていないため、
+# 名前規約 (*Fail* / Close / Require-* / Assert-*) と throw / 非0 exit を拾う。
+function Get-MvmEFailureEmitters($Ast){
+    $emitters=@()
+    foreach($command in @($Ast.FindAll({param($n)
+        $n-is[System.Management.Automation.Language.CommandAst]},$true))){
+        $name=$command.GetCommandName()
+        if([string]::IsNullOrWhiteSpace($name)){continue}
+        if($name-match'Fail'-or$name-eq'Close'-or$name-match'^(Require|Assert)-'){
+            $emitters+=,$command
+        }
+    }
+    $emitters+=@($Ast.FindAll({param($n)
+        $n-is[System.Management.Automation.Language.ThrowStatementAst]},$true))
+    foreach($exitStatement in @($Ast.FindAll({param($n)
+        $n-is[System.Management.Automation.Language.ExitStatementAst]},$true))){
+        if($null-ne$exitStatement.Pipeline-and$exitStatement.Pipeline.Extent.Text-match'^\s*[1-9]'){
+            $emitters+=,$exitStatement
+        }
+    }
+    return $emitters
+}
+
+# emitter を囲む if の条件をすべて遡る。入れ子の外側が legacy 依存なら、
+# 内側の条件が clean でもその判定は legacy 由来である。
+function Test-MvmEDecisionUsesLegacy($Node,[hashtable]$Tainted,[string[]]$Metrics){
+    if(Test-MvmELegacyReference $Node $Tainted $Metrics){return $true}
+    $current=$Node.Parent
+    while($null-ne$current){
+        if($current-is[System.Management.Automation.Language.IfStatementAst]){
+            foreach($clause in $current.Clauses){
+                if(Test-MvmELegacyReference $clause.Item1 $Tainted $Metrics){return $true}
+            }
+        }
+        $current=$current.Parent
+    }
+    return $false
 }
 
 $scriptDirectory=Join-Path $SourceRoot 'scripts'
@@ -65,42 +118,57 @@ foreach($file in $discovered){
     $path=$file.FullName
     $text=Get-Content -LiteralPath $path -Raw -Encoding utf8
     $lines=@($text-split"`r?`n")
+    $strippedText=Remove-PowerShellComments $text
 
-    # legacy performance metric を参照する失敗地点の分類。
+    # legacy metric を一切参照しない checker は presentation authority の当事者ではない。
+    $referencesLegacy=@($legacyPerformanceMetrics|
+        Where-Object{$strippedText-match[regex]::Escape($_)}).Count-ne0
+    if(-not$referencesLegacy){continue}
+
+    $tokens=$null;$parseErrors=$null
+    $ast=[System.Management.Automation.Language.Parser]::ParseFile($path,[ref]$tokens,[ref]$parseErrors)
+    if($null-ne$parseErrors-and$parseErrors.Count-ne0){
+        Fail "$relative をAST解析できません (parse error $($parseErrors.Count)件)"
+    }
+
+    # legacy metric から taint を伝播させる。alias 経由の判定を追うため
+    # 変化が無くなるまで繰り返す。
+    $assignments=@($ast.FindAll({param($n)
+        $n-is[System.Management.Automation.Language.AssignmentStatementAst]},$true))
+    $tainted=@{}
+    do{
+        $changed=$false
+        foreach($assignment in $assignments){
+            if($assignment.Left-isnot[System.Management.Automation.Language.VariableExpressionAst]){continue}
+            $name=$assignment.Left.VariablePath.UserPath
+            if($tainted.ContainsKey($name)){continue}
+            if(Test-MvmELegacyReference $assignment.Right $tainted $legacyPerformanceMetrics){
+                $tainted[$name]=$true;$changed=$true
+            }
+        }
+    }while($changed)
+
+    $emitters=@(Get-MvmEFailureEmitters $ast)
     $sites=@()
-    for($index=0;$index-lt$lines.Count;++$index){
-        $line=$lines[$index]
-        $code=Remove-PowerShellComments $line
-        $emits=$false
-        foreach($emitter in $failureEmitters){if($code-match[regex]::Escape($emitter)){$emits=$true}}
-        if(-not$emits){continue}
-        $metrics=@($legacyPerformanceMetrics|Where-Object{$code-match[regex]::Escape($_)})
-        if($metrics.Count-eq0){continue}
+    foreach($emitter in $emitters){
+        if(-not(Test-MvmEDecisionUsesLegacy $emitter $tainted $legacyPerformanceMetrics)){continue}
+        $line=$emitter.Extent.StartLineNumber
         # 注記は同じ行か直前の行に置く。
-        $annotationScope=$line
-        if($index-gt0){$annotationScope=$lines[$index-1]+"`n"+$line}
+        $annotationScope=$lines[$line-1]
+        if($line-gt1){$annotationScope=$lines[$line-2]+"`n"+$annotationScope}
         $classification='UNCLASSIFIED'
         if($annotationScope-match'W2-E:\s*DIAGNOSTIC_INTEGRITY'){$classification='DIAGNOSTIC_INTEGRITY'}
         elseif($annotationScope-match'W2-E:\s*CANONICAL_PERFORMANCE'){$classification='CANONICAL_PERFORMANCE'}
-        switch($classification){
-            'CANONICAL_PERFORMANCE'{$canonicalCount+=1}
-            'DIAGNOSTIC_INTEGRITY'{$diagnosticCount+=1}
-            default{$unclassifiedCount+=1}
-        }
         $sites+=,[ordered]@{
-            line=$index+1
-            metrics=@($metrics)
+            line=$line
             classification=$classification
-            statement=$code.Trim()
+            statement=(Remove-PowerShellComments $emitter.Extent.Text).Trim()
         }
     }
 
-    # legacy metric を失敗判定に使っていない checker は presentation authority の
-    # 当事者ではない。走査対象からは外すが、discovery したことは数える。
-    if($sites.Count-eq0){continue}
-
-    # legacy metric を使う checker は disposition を宣言していなければならない。
-    # 宣言が無ければ UNCLASSIFIED として fail-close する。登録漏れで通り抜けない。
+    # file-level fallback。legacy metric を参照し、かつ失敗しうる checker は
+    # site 検出の結果に関係なく authority disposition を宣言していなければならない。
+    # 未登録 checker のすり抜けはここで止まる。
     $disposition=[ordered]@{}
     $declared=$true
     foreach($field in @($expectedDisposition.Keys)){
@@ -109,46 +177,39 @@ foreach($file in $discovered){
         if(-not$match.Success){$declared=$false;break}
         $disposition[$field]=$match.Groups[1].Value
     }
-    if(-not$declared){
+    if(-not$declared-and$emitters.Count-ne0){
         $undeclaredCheckers+=$relative
-        $unclassifiedCount+=$sites.Count
+        $unclassifiedCount+=[Math]::Max($sites.Count,1)
+        $canonicalCount+=1
         $checkers+=,[ordered]@{
             checker=$relative
             sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
             disposition=$null
             authority_disposition_declared=$false
-            legacy_performance_threshold_reaches_verdict=$true
+            failure_emitter_count=$emitters.Count
             legacy_metric_failure_sites=$sites
         }
-        $canonicalCount+=1
         continue
     }
+    if(-not$declared){continue}
     foreach($field in @($expectedDisposition.Keys)){
         if([string]$disposition[$field]-ne[string]$expectedDisposition[$field]){
             Fail "$relative のauthority dispositionがW2-E契約と一致しません: $field=$($disposition[$field])"
         }
     }
-
-    # threshold 定数が失敗地点へ到達していないこと。W2-E 前の形へ戻ると引っかかる。
-    $thresholdReintroduced=$false
-    foreach($index in 0..($lines.Count-1)){
-        $code=Remove-PowerShellComments $lines[$index]
-        if($code-notmatch'(?i)(fps|drop)'){continue}
-        if($code-notmatch'-lt\s*55|-gt\s*0\.02|<\s*55\.0|>\s*0\.02'){continue}
-        $emits=$false
-        $scope=$code
-        if($index+1-lt$lines.Count){$scope=$code+"`n"+(Remove-PowerShellComments $lines[$index+1])}
-        foreach($emitter in $failureEmitters){if($scope-match[regex]::Escape($emitter)){$emits=$true}}
-        if($emits){$thresholdReintroduced=$true}
+    foreach($site in $sites){
+        switch([string]$site.classification){
+            'CANONICAL_PERFORMANCE'{$canonicalCount+=1}
+            'DIAGNOSTIC_INTEGRITY'{$diagnosticCount+=1}
+            default{$unclassifiedCount+=1}
+        }
     }
-    if($thresholdReintroduced){$canonicalCount+=1}
-
     $checkers+=,[ordered]@{
         checker=$relative
         sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
         disposition=$disposition
         authority_disposition_declared=$true
-        legacy_performance_threshold_reaches_verdict=$thresholdReintroduced
+        failure_emitter_count=$emitters.Count
         legacy_metric_failure_sites=$sites
     }
 }
@@ -174,11 +235,12 @@ if(-not$diagnosticsRetained){$blockers['LEGACY_DIAGNOSTIC_SOURCE_MISSING']=$true
 $blockerList=@($blockers.Keys|Sort-Object)
 
 $result=[ordered]@{
-    schema='mvm-p2-d5-2-w2-e-legacy-authority-retirement-1';stage='P2-D5-2-W2-E.2'
+    schema='mvm-p2-d5-2-w2-e-legacy-authority-retirement-2';stage='P2-D5-2-W2-E.2'
     presentation_authority_schema='FORMAL_V2'
     legacy_presentation_authority='FRAME_SWAPPED_AND_DISPLAY_LEDGER'
     retirement_means_deletion=$false
     checker_discovery='scripts/check-*.ps1'
+    failure_site_analysis='POWERSHELL_AST_WITH_LEGACY_METRIC_TAINT'
     discovered_checker_count=$discovered.Count
     legacy_metric_consumer_count=$checkers.Count
     authority_undeclared_checkers=@($undeclaredCheckers)
@@ -203,5 +265,5 @@ if(-not[string]::IsNullOrWhiteSpace($Output)){
     $result|ConvertTo-Json -Depth 12|Set-Content -LiteralPath $Output -Encoding utf8
 }
 if(-not[bool]$result.retirement_exact){Fail "W2-E.2 retirementが不成立です: $($blockerList-join', ')"}
-Write-Output ("P2-D5-2 W2-E.2 legacy authority retirement: PASS (canonical={0} diagnostic={1})" -f `
-    $canonicalCount,$diagnosticCount)
+Write-Output ("P2-D5-2 W2-E.2 legacy authority retirement: PASS (consumers={0} canonical={1} diagnostic={2})" -f `
+    $checkers.Count,$canonicalCount,$diagnosticCount)

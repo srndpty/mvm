@@ -70,6 +70,14 @@ Require $inventory "Get-ChildItem[^
 Deny $inventory '\$canonicalCheckers\s*=\s*@\(' 'inventoryが走査対象をハードコードしています'
 Require $inventory 'LEGACY_METRIC_CHECKER_AUTHORITY_UNDECLARED' `
     'disposition未宣言のlegacy metric consumerをfail-closeしていません'
+# failure siteの検出を同一行regexに頼ると、metric参照とFAILが別行に分かれた時点で
+# すり抜ける。ASTとtaint伝播で判定式まで追っていることを固定する。
+Require $inventory "failure_site_analysis='POWERSHELL_AST_WITH_LEGACY_METRIC_TAINT'" `
+    'failure site検出方式が宣言されていません'
+Require $inventory 'Parser\]::ParseFile' 'inventoryがASTを使っていません'
+Require $inventory 'AssignmentStatementAst[\s\S]+while\(\$changed\)' `
+    'legacy metricのtaintを固定点まで伝播させていません'
+Require $inventory 'IfStatementAst[\s\S]+Clauses' 'emitterを囲む判定式を追っていません'
 
 # --- canonical checker 側が cutover を宣言していること ---
 foreach($relative in @('scripts/check-p2-contract.ps1','scripts/check-p3-c-contract.ps1',

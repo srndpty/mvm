@@ -12,6 +12,17 @@ param(
 )
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
+
+# P2-D5-2-W2-E canonical authority disposition (machine-readable)。
+# W2-E retirement inventory がこの宣言を読む。legacy presentation metric
+# (effective_fps / drop_rate / effective_video_fps) を参照するが、
+# canonical performance verdict は出さないことを宣言する。
+$MvmPresentationAuthorityDisposition = [ordered]@{
+    presentation_authority        = 'FORMAL_V2'
+    legacy_presentation_metrics   = 'DIAGNOSTIC'
+    canonical_performance_verdict = 'DEFERRED_TO_W3'
+}
+[void]$MvmPresentationAuthorityDisposition
 function Fail([string]$Message){throw $Message}
 if(-not(Test-Path -LiteralPath $Proof)){Fail "W2-D proofがありません: $Proof"}
 $actual=Get-Content -LiteralPath $Proof -Raw -Encoding utf8|ConvertFrom-Json

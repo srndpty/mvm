@@ -403,7 +403,9 @@ if ($Mode -eq 'Playback') {
     if (-not $DryRun) {
         Require-Equal (Require-Property $raw 'measurement_first_output_frame') 0 `
             'measurement_first_output_frame'
+        # W2-E: DIAGNOSTIC_INTEGRITY
         $fps = Require-Property $raw 'effective_fps'
+        # W2-E: DIAGNOSTIC_INTEGRITY
         $dropRate = Require-Property $raw 'drop_rate'
         # P2-D5-2-W2-E: effective_fps / drop_rate は legacy frameSwapped ledger 由来である。
         # canonical presentation authority は formal-v2 exact chain へ移したため、

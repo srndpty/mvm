@@ -93,14 +93,42 @@ DIAGNOSTIC_INTEGRITY   diagnostic ledger が自己整合であることの検査
 
 走査対象を列挙で固定すると、登録されていない checker に threshold を足すだけで
 false-PASS できてしまう。そのため対象は `scripts/check-*.ps1` から **discovery** する
-(現在 45 件)。legacy metric を失敗判定に使う checker は、登録の有無に関係なく
-すべて分類対象になる。
+(現在 45 件、うち legacy metric consumer は 10 件)。
 
 ```text
-legacy metric を失敗判定に使う checker
+legacy metric を参照し、かつ失敗しうる checker
   ├─ disposition 宣言あり → failure site を分類
   └─ disposition 宣言なし → LEGACY_METRIC_CHECKER_AUTHORITY_UNDECLARED / fail-close
 ```
+
+### failure site は AST + taint で追う
+
+site の検出を「metric 名と FAIL が同一物理行にある」に頼ると、行が分かれた瞬間に
+すり抜ける。
+
+```powershell
+$fps = Require-Property $raw 'effective_fps'   # ここに FAIL は無い
+$minimumFps = 55
+if ($fps -lt $minimumFps) {
+    Fail 'fps too low'                         # ここに metric 名は無い
+}
+```
+
+そのため行 regex を増やすのではなく PowerShell AST を使う。
+
+```text
+1. scripts/check-*.ps1 を Parser::ParseFile で AST 化する (parse error は fail-close)
+2. legacy metric literal を参照する代入から変数 taint を固定点まで伝播させる
+   $value = ... 'drop_rate' ...  →  $bad = $value -gt $limit  →  if ($bad) { Fail }
+3. failure emitter (*Fail* / Close / Require-* / Assert-* / throw / 非0 exit) を集める
+4. emitter 自身、または emitter を囲むすべての if 条件が legacy を参照していれば
+   failure site とする (入れ子の外側が legacy 依存なら内側が clean でも site)
+5. 注記が無ければ UNCLASSIFIED / fail-close
+```
+
+file-level fallback も併用する。legacy metric を参照し失敗しうる checker が
+disposition を宣言していなければ、site 検出の結果に関係なく reject する。
+未登録 checker のすり抜けはここで止まる。
 
 canonical checker は disposition を machine-readable に宣言し、legacy metric を参照する
 失敗地点には注記を置く。注記の無い地点は `UNCLASSIFIED` として fail-close する。
@@ -139,18 +167,31 @@ check-p4-formal-contract.ps1 effective_video_fps / drop_rate が記録値と再�
 
 ```text
 checker_discovery                        scripts/check-*.ps1
+failure_site_analysis                    POWERSHELL_AST_WITH_LEGACY_METRIC_TAINT
 discovered_checker_count                 45
-legacy_metric_consumer_count             2
+legacy_metric_consumer_count             10
 legacy_metric_canonical_decision_count   0
-legacy_metric_diagnostic_integrity_count 2
+legacy_metric_diagnostic_integrity_count 7
 legacy_metric_unclassified_count         0
 authority_undeclared_checkers            (なし)
 legacy_diagnostics_retained              true
 verdict  LEGACY_PRESENTATION_AUTHORITY_RETIRED
 ```
 
-`check-p3-c-contract.ps1` は threshold 判定を落とした結果、legacy metric を
-失敗判定に使わなくなったため consumer から外れている。
+AST 化により、同一行 regex では見えていなかった site も検出された。いずれも
+再計算一致検査か field 存在検査であり `DIAGNOSTIC_INTEGRITY` である。
+
+```text
+check-p1-contract.ps1        effective_fps が displayed/elapsed と一致するか
+check-p2-contract.ps1        effective_fps / drop_rate の field 存在、drop_rate の再計算一致
+check-p4-formal-contract.ps1 effective_video_fps / drop_rate の記録値と再計算値の一致
+check-p4-smoke-contract.ps1  producer fps/drop が ledger 再計算値と一致するか
+```
+
+`check-p1-contract.ps1` は自身の doc に「fps / seek の閾値判定は含まない」と
+明記しており、threshold gate ではない。
+
+legacy metric を参照する 10 checker すべてに disposition 宣言を入れた。
 
 legacy diagnostic source は消していない。次を positive に記録している。
 
@@ -227,11 +268,20 @@ NegativeDispositionWrong                legacy metric を CANONICAL と宣言
 NegativeLegacyDiagnosticDeleted         legacy diagnostic source を削除
 NegativeUnregisteredCheckerWithLegacyThreshold
                                         未登録checkerにfps thresholdを追加
+NegativeUnregisteredCheckerWithMultilineLegacyThreshold
+                                        metric参照とFAILが別行の未登録checker
+NegativeDeclaredCheckerWithMultilineLegacyThreshold
+                                        disposition宣言済みで複数行threshold
+NegativeDeclaredCheckerWithAliasedLegacyThreshold
+                                        disposition宣言済みでalias 2段経由のthreshold
 ```
 
-最後の 1 件が discovery の穴を直接固定する。合成 source root に
-`check-extra.ps1` を置き `if ($effective_fps -lt 55) { Fail ... }` を入れると、
-disposition 宣言が無いため `LEGACY_METRIC_CHECKER_AUTHORITY_UNDECLARED` で reject される。
+後半 4 件が discovery と site 検出の穴を直接固定する。とくに
+`NegativeDeclaredChecker*` は disposition を宣言しているため file-level fallback では
+止まらない。test は artifact の blocker を読み、
+`LEGACY_METRIC_FAILURE_SITE_UNCLASSIFIED` で捕まっていること、かつ
+`LEGACY_METRIC_CHECKER_AUTHORITY_UNDECLARED` で**は**捕まっていないことを確認する。
+これで AST + taint の site 検出が fallback とは独立に効いていることを証明する。
 
 positive として `GoodLegacyDiagnosticsRemainPresent` を両方に置いている。
 旧 frameSwapped / DWM 値が残っていても `authoritative=false` /
