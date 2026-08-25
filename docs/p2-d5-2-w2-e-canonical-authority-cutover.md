@@ -89,6 +89,19 @@ DIAGNOSTIC_INTEGRITY   diagnostic ledger が自己整合であることの検査
                        presentation authority を主張していない。残してよい。
 ```
 
+### 走査対象は discovery する
+
+走査対象を列挙で固定すると、登録されていない checker に threshold を足すだけで
+false-PASS できてしまう。そのため対象は `scripts/check-*.ps1` から **discovery** する
+(現在 45 件)。legacy metric を失敗判定に使う checker は、登録の有無に関係なく
+すべて分類対象になる。
+
+```text
+legacy metric を失敗判定に使う checker
+  ├─ disposition 宣言あり → failure site を分類
+  └─ disposition 宣言なし → LEGACY_METRIC_CHECKER_AUTHORITY_UNDECLARED / fail-close
+```
+
 canonical checker は disposition を machine-readable に宣言し、legacy metric を参照する
 失敗地点には注記を置く。注記の無い地点は `UNCLASSIFIED` として fail-close する。
 これにより「新しい fps threshold FAIL をうっかり足す」ことを防げる。
@@ -103,9 +116,14 @@ $MvmPresentationAuthorityDisposition = [ordered]@{
 
 ### 実際に降格した canonical decision
 
+discovery を入れた結果、当初列挙していた 2 checker の外にもう 1 件見つかった。
+`check-p3-c-contract.ps1` は同じ display ledger 由来の fps / drop で canonical FAIL を
+出しており、列挙固定のままなら false-PASS していた。
+
 | 場所 | 変更前 | 変更後 |
 | --- | --- | --- |
 | [check-p2-contract.ps1](../scripts/check-p2-contract.ps1) | `effective_fps>=55` / `drop_rate<=0.02` を `Add-Failure` | 値を diagnostic として報告するのみ |
+| [check-p3-c-contract.ps1](../scripts/check-p3-c-contract.ps1) | `effective_video_fps<55.0` / `drop_rate>0.02` を `Fail` | 同上 |
 | [check-p4-formal-contract.ps1](../scripts/check-p4-formal-contract.ps1) | `fps<55.0` / `drop>0.02` を `Fail` | 同上 |
 
 残した `DIAGNOSTIC_INTEGRITY` は 2 件である。
@@ -120,13 +138,19 @@ check-p4-formal-contract.ps1 effective_video_fps / drop_rate が記録値と再�
 ### inventory 結果 (repository 実測)
 
 ```text
-canonical_checker_count                  2
+checker_discovery                        scripts/check-*.ps1
+discovered_checker_count                 45
+legacy_metric_consumer_count             2
 legacy_metric_canonical_decision_count   0
 legacy_metric_diagnostic_integrity_count 2
 legacy_metric_unclassified_count         0
+authority_undeclared_checkers            (なし)
 legacy_diagnostics_retained              true
 verdict  LEGACY_PRESENTATION_AUTHORITY_RETIRED
 ```
+
+`check-p3-c-contract.ps1` は threshold 判定を落とした結果、legacy metric を
+失敗判定に使わなくなったため consumer から外れている。
 
 legacy diagnostic source は消していない。次を positive に記録している。
 
@@ -201,7 +225,13 @@ NegativeThresholdReintroduced           fps<55 の FAIL を再導入
 NegativeDispositionMissing              disposition 宣言なし
 NegativeDispositionWrong                legacy metric を CANONICAL と宣言
 NegativeLegacyDiagnosticDeleted         legacy diagnostic source を削除
+NegativeUnregisteredCheckerWithLegacyThreshold
+                                        未登録checkerにfps thresholdを追加
 ```
+
+最後の 1 件が discovery の穴を直接固定する。合成 source root に
+`check-extra.ps1` を置き `if ($effective_fps -lt 55) { Fail ... }` を入れると、
+disposition 宣言が無いため `LEGACY_METRIC_CHECKER_AUTHORITY_UNDECLARED` で reject される。
 
 positive として `GoodLegacyDiagnosticsRemainPresent` を両方に置いている。
 旧 frameSwapped / DWM 値が残っていても `authoritative=false` /

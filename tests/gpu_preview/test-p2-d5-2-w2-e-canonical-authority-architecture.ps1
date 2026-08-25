@@ -64,9 +64,16 @@ foreach($blocker in @('FORMAL_V2_SHADOW_NOT_EXACT','HISTORICAL_VERDICT_REWRITTEN
 Require $core 'retirement_means_deletion=\$false' 'retirementをdeletionとして扱っています'
 Require $inventory 'retirement_means_deletion=\$false' 'inventoryがretirementをdeletionとして扱っています'
 Require $inventory 'legacy_diagnostic_sources' 'legacy diagnosticの残存をpositiveに記録していません'
+# 走査対象を列挙で固定すると、未登録checkerにthresholdを足すだけでfalse-PASSできる。
+Require $inventory "Get-ChildItem[^
+]*'check-\*\.ps1'" 'inventoryが走査対象をdiscoveryしていません'
+Deny $inventory '\$canonicalCheckers\s*=\s*@\(' 'inventoryが走査対象をハードコードしています'
+Require $inventory 'LEGACY_METRIC_CHECKER_AUTHORITY_UNDECLARED' `
+    'disposition未宣言のlegacy metric consumerをfail-closeしていません'
 
 # --- canonical checker 側が cutover を宣言していること ---
-foreach($relative in @('scripts/check-p2-contract.ps1','scripts/check-p4-formal-contract.ps1')){
+foreach($relative in @('scripts/check-p2-contract.ps1','scripts/check-p3-c-contract.ps1',
+                       'scripts/check-p4-formal-contract.ps1')){
     $canonicalChecker=Read-Script $relative
     Require $canonicalChecker "presentation_authority\s*=\s*'FORMAL_V2'" "$relative がFORMAL_V2 authorityを宣言していません"
     Require $canonicalChecker "legacy_presentation_metrics\s*=\s*'DIAGNOSTIC'" "$relative がlegacy metricをdiagnosticと宣言していません"

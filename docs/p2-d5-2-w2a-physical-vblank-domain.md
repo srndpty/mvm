@@ -357,3 +357,66 @@ identity であり 30fps→60Hz では非単射なので、**QPC / source frame 
 fallback は作らない**。sentinel が必要なら `intentOrdinalValid`（または明確な
 invalid sentinel）を定義し、formal mode では valid 必須、non-formal では無視と
 する。ABI は v4 へ bump し、mismatch は hard reject する。
+
+## W2-A.1 architecture guard の修復 (W3 前 precondition)
+
+[事実] preroll 処理が `requestMeasurementStart()` から
+`startVBlankObserverWithPreroll()` helper へ切り出された後、
+`p2_d5_2_formal_architecture_w2a1` が FAIL していた。guard が
+`requestMeasurementStart()` 本文だけを文字列走査しており、helper extraction に
+追従できていなかった。
+
+[事実] 実装側の不変量は成立したままである。したがって W2-A.1 の historical PASS は
+覆さない。修復対象は guard 側であり、product / runtime code は変更していない。
+
+### 現在の guard が固定している内容
+
+call graph を一段追う。「ファイル全体で `publishSerial` が先に出現する」では
+PASS させない (無関係な別関数の publish でも通ってしまうため)。
+
+```text
+(1) startVBlankObserverWithPreroll()
+      ring().publishSerial()  <  vblankObserver_.start(  <  prerollNewSample(
+      preroll 失敗時に return false
+
+(2) prerollNewSample( の呼び出しは 1 箇所だけ
+      helper の外に別 preroll 経路があると素通りできる
+
+(3) requestMeasurementStart()
+      measurementStartRequested を直接 arm しない
+      capture envelope を開く前に preroll helper を呼ぶ
+
+(4) measurementStartRequested.store(true は 1 箇所だけで、
+    armMeasurementAfterCaptureEnvelopeOpen() 内の
+      startVBlankObserverWithPreroll()  <  arm
+    かつ両者の間の失敗経路が beginShutdown + return; で閉じている
+```
+
+### guard の mutation test
+
+architecture guard は実装構造の変更で静かに死ぬ。実際に一度死んでいたので、
+guard 自身を mutation test で守る。実 source の変異コピーを合成 source root に
+置き、guard が破れを検出することを固定する (`p2_d5_2_w2a1_preroll_guard_*`)。
+
+```text
+Good                                未変異はPASS
+NegativeBaselineAfterStart          baseline serialをobserver startより後に取る
+NegativeHelperDoesNotFailClose      preroll失敗でもhelperがtrueを返す
+NegativeDuplicatePrerollCall        helper外に2つ目のpreroll経路を作る
+NegativeArmBypassesPrerollPath      preroll helperを通らないarm経路を作る
+NegativeEnvelopeOpensBeforePreroll  producerを開いてからprerollする
+NegativeDuplicateArm                armが2箇所になる
+NegativeArmBeforePreroll            armをpreroll helper呼び出しより前へ移す
+NegativeNoShutdownOnFailure         preroll失敗をfail-closeしない
+```
+
+[exit] guard は 9 件すべてを検出する。fresh acquisition は不要だった
+(checker / guard のみの変更であり、binary は変わっていない)。
+
+### 残っている弱点
+
+`prerollNewSample` 自体の state transition を直接検証する unit test は無い。
+`WindowOutputVBlankObserver::ring_` が private で `ring()` が const 参照を返すため、
+ring へ sample を publish する test seam が無く、product header の変更が必要になる。
+architecture guard + mutation test で「順序が実装から消えたら落ちる」ことは
+固定できているが、`baselineSerial` 前進判定そのものの単体検証は未実施である。

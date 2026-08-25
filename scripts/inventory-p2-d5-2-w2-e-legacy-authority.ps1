@@ -25,6 +25,10 @@ Set-StrictMode -Version Latest
 # canonical checker 側は disposition を machine-readable に宣言し、legacy metric を
 # 参照する失敗地点には注記を置く。注記の無い失敗地点は UNCLASSIFIED として
 # fail-close する。これにより「新しい fps threshold FAIL をうっかり足す」ことを防ぐ。
+#
+# 走査対象を列挙で固定すると、登録されていない checker に threshold を足すだけで
+# false-PASS できてしまう。そのため対象は scripts/check-*.ps1 から discovery する。
+# legacy metric を失敗判定に使う checker は、登録の有無に関係なくすべて分類対象になる。
 
 function Fail([string]$Message){throw $Message}
 
@@ -38,8 +42,7 @@ $expectedDisposition=[ordered]@{
     legacy_presentation_metrics='DIAGNOSTIC'
     canonical_performance_verdict='DEFERRED_TO_W3'
 }
-# canonical verdict を出す checker。ここに legacy 依存が残っていないことを示す。
-$canonicalCheckers=@('scripts/check-p2-contract.ps1','scripts/check-p4-formal-contract.ps1')
+# 走査対象は discovery する。ハードコードした列挙は使わない。
 # legacy presentation authority を produce しているが verdict を出さない場所。
 # diagnostic として存在してよいことを positive に記録する。
 $legacyDiagnosticSources=@(
@@ -50,24 +53,18 @@ function Remove-PowerShellComments([string]$Text){
     return [regex]::Replace($Text,'(?m)#.*$','')
 }
 
+$scriptDirectory=Join-Path $SourceRoot 'scripts'
+if(-not(Test-Path -LiteralPath $scriptDirectory)){Fail "scripts directoryがありません: $scriptDirectory"}
+$discovered=@(Get-ChildItem -LiteralPath $scriptDirectory -Filter 'check-*.ps1' -File|Sort-Object Name)
+if($discovered.Count-eq0){Fail 'checkerを1件もdiscoveryできませんでした'}
+
 $checkers=@();$canonicalCount=0L;$diagnosticCount=0L;$unclassifiedCount=0L
-foreach($relative in $canonicalCheckers){
-    $path=Join-Path $SourceRoot $relative
-    if(-not(Test-Path -LiteralPath $path)){Fail "canonical checkerがありません: $relative"}
+$undeclaredCheckers=@()
+foreach($file in $discovered){
+    $relative='scripts/'+$file.Name
+    $path=$file.FullName
     $text=Get-Content -LiteralPath $path -Raw -Encoding utf8
     $lines=@($text-split"`r?`n")
-
-    # disposition 宣言。checker 自身が「legacy metricはdiagnosticである」と宣言する。
-    $disposition=[ordered]@{}
-    foreach($field in @($expectedDisposition.Keys)){
-        $pattern=[regex]::Escape($field)+"\s*=\s*'([^']+)'"
-        $match=[regex]::Match($text,$pattern)
-        if(-not$match.Success){Fail "$relative にauthority disposition宣言がありません: $field"}
-        $disposition[$field]=$match.Groups[1].Value
-        if($match.Groups[1].Value-ne[string]$expectedDisposition[$field]){
-            Fail "$relative のauthority dispositionがW2-E契約と一致しません: $field=$($match.Groups[1].Value)"
-        }
-    }
 
     # legacy performance metric を参照する失敗地点の分類。
     $sites=@()
@@ -98,6 +95,40 @@ foreach($relative in $canonicalCheckers){
         }
     }
 
+    # legacy metric を失敗判定に使っていない checker は presentation authority の
+    # 当事者ではない。走査対象からは外すが、discovery したことは数える。
+    if($sites.Count-eq0){continue}
+
+    # legacy metric を使う checker は disposition を宣言していなければならない。
+    # 宣言が無ければ UNCLASSIFIED として fail-close する。登録漏れで通り抜けない。
+    $disposition=[ordered]@{}
+    $declared=$true
+    foreach($field in @($expectedDisposition.Keys)){
+        $pattern=[regex]::Escape($field)+"\s*=\s*'([^']+)'"
+        $match=[regex]::Match($text,$pattern)
+        if(-not$match.Success){$declared=$false;break}
+        $disposition[$field]=$match.Groups[1].Value
+    }
+    if(-not$declared){
+        $undeclaredCheckers+=$relative
+        $unclassifiedCount+=$sites.Count
+        $checkers+=,[ordered]@{
+            checker=$relative
+            sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            disposition=$null
+            authority_disposition_declared=$false
+            legacy_performance_threshold_reaches_verdict=$true
+            legacy_metric_failure_sites=$sites
+        }
+        $canonicalCount+=1
+        continue
+    }
+    foreach($field in @($expectedDisposition.Keys)){
+        if([string]$disposition[$field]-ne[string]$expectedDisposition[$field]){
+            Fail "$relative のauthority dispositionがW2-E契約と一致しません: $field=$($disposition[$field])"
+        }
+    }
+
     # threshold 定数が失敗地点へ到達していないこと。W2-E 前の形へ戻ると引っかかる。
     $thresholdReintroduced=$false
     foreach($index in 0..($lines.Count-1)){
@@ -116,6 +147,7 @@ foreach($relative in $canonicalCheckers){
         checker=$relative
         sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
         disposition=$disposition
+        authority_disposition_declared=$true
         legacy_performance_threshold_reaches_verdict=$thresholdReintroduced
         legacy_metric_failure_sites=$sites
     }
@@ -136,6 +168,7 @@ $diagnosticsRetained=@($diagnosticSources|Where-Object{[bool]$_.present}).Count-
 
 $blockers=@{}
 if($canonicalCount-ne0){$blockers['LEGACY_METRIC_FEEDS_CANONICAL_VERDICT']=$true}
+if($undeclaredCheckers.Count-ne0){$blockers['LEGACY_METRIC_CHECKER_AUTHORITY_UNDECLARED']=$true}
 if($unclassifiedCount-ne0){$blockers['LEGACY_METRIC_FAILURE_SITE_UNCLASSIFIED']=$true}
 if(-not$diagnosticsRetained){$blockers['LEGACY_DIAGNOSTIC_SOURCE_MISSING']=$true}
 $blockerList=@($blockers.Keys|Sort-Object)
@@ -145,6 +178,10 @@ $result=[ordered]@{
     presentation_authority_schema='FORMAL_V2'
     legacy_presentation_authority='FRAME_SWAPPED_AND_DISPLAY_LEDGER'
     retirement_means_deletion=$false
+    checker_discovery='scripts/check-*.ps1'
+    discovered_checker_count=$discovered.Count
+    legacy_metric_consumer_count=$checkers.Count
+    authority_undeclared_checkers=@($undeclaredCheckers)
     canonical_checker_count=$checkers.Count
     legacy_metric_canonical_decision_count=$canonicalCount
     legacy_metric_diagnostic_integrity_count=$diagnosticCount

@@ -4,7 +4,7 @@ param(
         'GoodRetired','GoodLegacyDiagnosticsRemainPresent',
         'NegativeCanonicalPerformanceAnnotated','NegativeUnclassifiedSite',
         'NegativeThresholdReintroduced','NegativeDispositionMissing','NegativeDispositionWrong',
-        'NegativeLegacyDiagnosticDeleted')][string]$Case,
+        'NegativeLegacyDiagnosticDeleted','NegativeUnregisteredCheckerWithLegacyThreshold')][string]$Case,
     [Parameter(Mandatory=$true)][string]$Inventory,
     [Parameter(Mandatory=$true)][string]$Directory
 )
@@ -60,6 +60,15 @@ switch($Case){
 $checkerBody=$disposition+"`n"+$site+"`nWrite-Host 'fixture canonical checker'`n"
 foreach($name in @('check-p2-contract.ps1','check-p4-formal-contract.ps1')){
     $checkerBody|Set-Content -LiteralPath (Join-Path $root "scripts/$name") -Encoding utf8
+}
+
+# 走査対象を列挙で固定していれば、登録されていない checker に threshold を足すだけで
+# false-PASS できてしまう。discovery でその穴が閉じていることを固定する。
+if($Case-eq'NegativeUnregisteredCheckerWithLegacyThreshold'){
+    @'
+# disposition宣言を持たない未登録checker
+if ($effective_fps -lt 55) { Fail 'effective_fpsが55未満です' }
+'@|Set-Content -LiteralPath (Join-Path $root 'scripts/check-extra.ps1') -Encoding utf8
 }
 
 # retirement = deletion ではない。legacy diagnostic source は残っていてよい。

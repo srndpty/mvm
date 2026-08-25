@@ -186,6 +186,19 @@ mvm_add_test(p2_d5_2_formal_architecture_w2a1
         -Phase W2A1 -SourceRoot "${CMAKE_SOURCE_DIR}"
     PROPERTIES LABELS "gpu_preview")
 
+# W2-A.1 guard の mutation test。guard が実装構造の変更で空振りしていないことを固定する。
+foreach(_p2_d5_2_w2a1_case IN ITEMS Good NegativeBaselineAfterStart NegativeHelperDoesNotFailClose NegativeDuplicatePrerollCall NegativeArmBypassesPrerollPath NegativeEnvelopeOpensBeforePreroll NegativeDuplicateArm NegativeArmBeforePreroll NegativeNoShutdownOnFailure)
+    string(TOLOWER "${_p2_d5_2_w2a1_case}" _p2_d5_2_w2a1_name)
+    mvm_add_test(p2_d5_2_w2a1_preroll_guard_${_p2_d5_2_w2a1_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2a1-preroll-guard.ps1"
+            -Case "${_p2_d5_2_w2a1_case}"
+            -Contract "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-formal-architecture-contract.ps1"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2a1-guard-${_p2_d5_2_w2a1_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 foreach(_p2_d5_2_formal_v2_case IN ITEMS Good GoodPhysicalSurplus GoodBoundaryCohortDivergence AuthorityInvalidPropagated NegativeRetiredReason NegativeRetiredOpportunityRegression NegativeRuntimeOverride NegativeUnknownOutcome NegativeVblankSequence NegativeVblankObserver NegativeBoundaryNotBracketed NegativeOutputChanged NegativeEtwLoss NegativeRingOverflow NegativePresentedFrameMismatch NegativeMultiPresentedOrdinal NegativeIdentityE1 NegativeIdentityE2 NegativeIdentityP1 NegativeIdentityP2 NegativeIdentityP3 NegativeIdentityP4 NegativeIdentityU1 NegativeIdentityS1 NegativeIdentityS2 NegativeIdentityN1 NegativeContractVersion GoodSourceHalfRate GoodForeignIntentAtBoundary NegativeIntentMissing NegativeIntentAmbiguous NegativeIntentOutOfDomain NegativeIntentDuplicateDisplay)
     string(TOLOWER "${_p2_d5_2_formal_v2_case}" _p2_d5_2_formal_v2_name)
     mvm_add_test(p2_d5_2_formal_v2_${_p2_d5_2_formal_v2_name}
@@ -497,7 +510,7 @@ foreach(_p2_d5_2_w2e_case IN ITEMS GoodCanonicalCutover GoodLegacyDiagnosticsRem
             -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-e-canonical-authority-core.ps1"
         PROPERTIES LABELS "gpu_preview")
 endforeach()
-foreach(_p2_d5_2_w2e_retire_case IN ITEMS GoodRetired GoodLegacyDiagnosticsRemainPresent NegativeCanonicalPerformanceAnnotated NegativeUnclassifiedSite NegativeThresholdReintroduced NegativeDispositionMissing NegativeDispositionWrong NegativeLegacyDiagnosticDeleted)
+foreach(_p2_d5_2_w2e_retire_case IN ITEMS GoodRetired GoodLegacyDiagnosticsRemainPresent NegativeCanonicalPerformanceAnnotated NegativeUnclassifiedSite NegativeThresholdReintroduced NegativeDispositionMissing NegativeDispositionWrong NegativeLegacyDiagnosticDeleted NegativeUnregisteredCheckerWithLegacyThreshold)
     string(TOLOWER "${_p2_d5_2_w2e_retire_case}" _p2_d5_2_w2e_retire_name)
     mvm_add_test(p2_d5_2_w2e_retirement_${_p2_d5_2_w2e_retire_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File
@@ -1908,7 +1921,7 @@ endforeach()
 
 set(_p3c_contract_cases
     Good
-    NegativeFps NegativeDrop NegativeAvP95 NegativeAvMax NegativeAvCount
+    LegacyFpsDiagnostic LegacyDropDiagnostic NegativeAvP95 NegativeAvMax NegativeAvCount
     NegativeScheduledAccounting NegativeFirstFrame NegativeAudioStartSample
     NegativeUnderflow NegativeOverflow NegativeMarker NegativeMixedPair
     NegativeGeneration NegativeAhead NegativeClockRegression NegativeQpcFallback

@@ -9,6 +9,14 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# P2-D5-2-W2-E canonical authority disposition (machine-readable)。
+# W2-E retirement inventory がこの宣言を読む。
+$MvmPresentationAuthorityDisposition = [ordered]@{
+    presentation_authority        = 'FORMAL_V2'
+    legacy_presentation_metrics   = 'DIAGNOSTIC'
+    canonical_performance_verdict = 'DEFERRED_TO_W3'
+}
+
 function Fail([string]$Message) { throw "P3-C contract: $Message" }
 function Property([object]$Object, [string]$Name) {
     $property = $Object.PSObject.Properties[$Name]
@@ -154,8 +162,12 @@ if ($actualMode -eq 'playback') {
     $raw = Check-Distribution (Property $data 'application_av_delta_ms') $displayed $true 'application_av_delta_ms'
     Check-AbsoluteSummary (Property $data 'application_av_delta_abs_ms') $raw 'application_av_delta_abs_ms'
     if ((Integer $data 'application_av_projection_failure_count') -ne 0) { Fail 'AV projection failure があります' }
-    if ((Number $data 'effective_video_fps') -lt 55.0) { Fail 'effective video fps が 55 未満です' }
-    if ((Number $data 'drop_rate') -gt 0.02) { Fail 'drop rate が 0.02 を超えています' }
+    # P2-D5-2-W2-E: effective_video_fps / drop_rate は legacy presentation authority
+    # (display ledger) 由来である。canonical presentation authority を formal-v2 exact
+    # chain へ移したため threshold 判定はここでは行わない。値は diagnostic として残す。
+    # canonical performance verdict は W3 の formal-v2 fresh acquisition で出す。
+    Write-Host ("[W2-E] legacy presentation metrics (diagnostic, non-authoritative): " +
+        ("effective_video_fps={0} drop_rate={1}" -f (Number $data 'effective_video_fps'),(Number $data 'drop_rate')))
     if ($raw.AbsP95 -gt 20.000) { Fail 'application AV abs p95 が 20.000ms を超えています' }
     if ($raw.AbsMax -gt 33.334) { Fail 'application AV abs max が 33.334ms を超えています' }
 }
@@ -194,4 +206,8 @@ elseif ($actualMode -eq 'pause-resume') {
 }
 else { Fail "未知の mode です: $actualMode" }
 
+Write-Host ("[W2-E] presentation_authority={0} legacy_presentation_metrics={1} canonical_performance_verdict={2}" -f
+    $MvmPresentationAuthorityDisposition.presentation_authority,
+    $MvmPresentationAuthorityDisposition.legacy_presentation_metrics,
+    $MvmPresentationAuthorityDisposition.canonical_performance_verdict)
 Write-Host "PASS: P3-C-1 contract ($actualMode$(if ($DryRun) {', DryRun'}))" -ForegroundColor Green
