@@ -7,9 +7,11 @@ C2 runner / checker は最初に C1.4 checker を実行し、次に sealed C0 in
 B2 terminal records、physical VBlank samplesからformal Presented集合とphysical mappingを
 再生する。C1 artifactのrecord値だけをコピーしない。
 
-required current intent domainはLayer 1Aの
-`traced-app.json:required_measurement_frame_count`から独立に`[0, count)`として構成する。
-Presentedされたintentのmin/maxからは復元しない。
+この初期実装はLayer 1Aの`required_measurement_frame_count`から`[0, count)`を
+構成した。Presentedされたintentのmin/maxからは復元していないが、countは
+cardinality authorityであってidentity set authorityではない。W2-C2.1でこのgapを
+検出したため、以下のfresh-2結果は**provisional count-derived domain解釈下の
+historical diagnostic**として保存する。
 
 ## recordとaccounting
 
@@ -66,8 +68,9 @@ missing / ambiguous intent provenance      0 / 0
 multiple Presented per physical ordinal    0
 ```
 
-[事実] 各runに`CURRENT_MEASUREMENT intent_ordinal=0`のin-domain Presentedが2件あり、
-各runにrequired domain外の`CURRENT_MEASUREMENT intent_ordinal=301`が1件あった。
+[事実] provisional `[0, 300)`解釈では、各runに
+`CURRENT_MEASUREMENT intent_ordinal=0`のin-domain Presentedが2件あり、各runに
+domain外と分類される`CURRENT_MEASUREMENT intent_ordinal=301`が1件あった。
 
 [exit] C2 ledgerは次のblockerで`INTENT_SATISFACTION_LEDGER_INVALID`となり、
 closure候補ではない。
@@ -78,7 +81,9 @@ CURRENT_INTENT_OUTSIDE_REQUIRED_DOMAIN
 INTENT_SATISFACTION_ACCOUNTING_IDENTITY_VIOLATION
 ```
 
-physical fill identityは成立している。N1は`368 + 0 != 374`のため不成立である。
+physical fill identityは成立している。provisional解釈下のN1は
+`368 + 0 != 374`のため不成立である。6件を確定root causeとは扱わない。
+required intent identity authorityが確定するまでA/B分岐は未確定である。
 threshold、fps、canonical PASS/FAIL、frameSwapped retirementには接続していない。
 
 ## 再現

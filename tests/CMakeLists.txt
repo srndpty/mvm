@@ -404,6 +404,32 @@ mvm_add_test(p2_d5_2_w2c2_checker_integration
         -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c2-checker-integration"
     PROPERTIES LABELS "gpu_preview")
 
+# P2-D5-2-W2-C2.1: scheduler sole producerからrequired intent identity setを確定する。
+foreach(_p2_d5_2_w2c21_case IN ITEMS GoodExactSet GoodDistinctDecisionsSameOrdinal NegativeMissingRequiredSet NegativeDuplicateRequiredSet NegativeCountSetMismatch NegativeMissingDecisionQpc NegativeAmbiguousFormalReverseJoin)
+    string(TOLOWER "${_p2_d5_2_w2c21_case}" _p2_d5_2_w2c21_name)
+    mvm_add_test(p2_d5_2_w2c21_required_intent_domain_${_p2_d5_2_w2c21_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c21-required-intent-domain-contract.ps1"
+            -Case "${_p2_d5_2_w2c21_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-c21-required-intent-domain-core.ps1"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+mvm_add_test(p2_d5_2_w2c21_required_intent_domain_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c21-required-intent-domain-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+mvm_add_test(p2_d5_2_w2c21_checker_integration
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c21-checker-integration.ps1"
+        -C13Fixture "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c13-formal-population-contract.ps1"
+        -C13Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-c13-formal-population-core.ps1"
+        -C1Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-c14-sealed-mapping-replay.ps1"
+        -Inventory "${CMAKE_SOURCE_DIR}/scripts/inventory-p2-d5-2-w2-c21-required-intent-domain.ps1"
+        -C21Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-c21-required-intent-domain.ps1"
+        -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c21-checker-integration"
+    PROPERTIES LABELS "gpu_preview")
+
 foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
     string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)
     mvm_add_test(p2_c3_a3_t2_d1b2_evaluability_${_p2_c3_a3_t2_d1b2e_name}
