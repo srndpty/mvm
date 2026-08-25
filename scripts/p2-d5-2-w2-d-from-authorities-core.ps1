@@ -223,7 +223,8 @@ function Invoke-MvmDFormalV2ProofFromSealedAuthorities {
                 [bool](Get-MvmDRequired $support 'authority_valid')) `
             -EtwEventsLost ([int64](Get-MvmDRequired $raw 'etw_events_lost')) `
             -EtwBuffersLost ([int64](Get-MvmDRequired $raw 'etw_buffers_lost')) `
-            -PresentEventOverflowCount ([int64](Get-MvmDRequired $raw 'present_event_overflow_count'))
+            -PresentEventOverflowCount ([int64](Get-MvmDRequired $raw 'present_event_overflow_count')) `
+            -RequireAllCandidatesInsideSupport $true
         if(-not[bool]$replayed.mapping_exact){throw "run $run sealed C1 physical mappingを再生できません"}
 
         # B2 terminal 側の FinalState / transport identity。identity key は

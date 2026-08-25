@@ -17,7 +17,7 @@ function Compare-ReplayedMapping([int]$Run,[string]$Population,$Replay,$Artifact
         $key="$([int64](Need $record 'etw_sequence'))|$([int64](Need $record 'displayed_qpc'))"
         if(-not$artifactByKey.ContainsKey($key)){Fail "run $Run $Population replay keyがartifactにありません: $key"}
         $artifactRecord=$artifactByKey[$key]
-        foreach($field in @('physical_vblank_ordinal','physical_vblank_qpc','mapping_solution_count','mapping_exact','in_measurement_physical_domain')){
+        foreach($field in @('physical_vblank_ordinal','physical_vblank_qpc','mapping_solution_count','mapping_exact','in_measurement_physical_domain','mapping_support_relation','physical_vblank_mapping_required')){
             if([string](Need $record $field)-ne[string](Need $artifactRecord $field)){
                 Fail "run $Run $Population replay結果が一致しません: $key / $field"
             }
@@ -119,7 +119,8 @@ for($runIndex=0;$runIndex-lt$proofRuns.Count;++$runIndex){
         -PhysicalAuthorityValid $physicalAuthorityValid `
         -EtwEventsLost ([int64](Need $raw 'etw_events_lost')) `
         -EtwBuffersLost ([int64](Need $raw 'etw_buffers_lost')) `
-        -PresentEventOverflowCount ([int64](Need $raw 'present_event_overflow_count'))
+        -PresentEventOverflowCount ([int64](Need $raw 'present_event_overflow_count')) `
+        -RequireAllCandidatesInsideSupport $true
     $replayedObserved=Invoke-MvmDisplayedQpcPhysicalMapping -Candidates $sourceObservedCandidates `
         -Samples @(Need $physical 'samples') `
         -PredecessorOrdinal ([int64](Need $support 'predecessor_ordinal')) `
@@ -130,11 +131,20 @@ for($runIndex=0;$runIndex-lt$proofRuns.Count;++$runIndex){
         -EtwEventsLost ([int64](Need $raw 'etw_events_lost')) `
         -EtwBuffersLost ([int64](Need $raw 'etw_buffers_lost')) `
         -PresentEventOverflowCount ([int64](Need $raw 'present_event_overflow_count'))
+    # mapping authority の定義域は exact mapping support である。support 外の observed
+    # candidate には mapping を要求しない。ただし formal / in-domain が support 外に
+    # 出ていたら INVALID のままにする。判定は artifact ではなく sealed sample から再構築する。
     if(-not[bool]$replayedFormal.mapping_exact-or
        [int64]$replayedFormal.mapped_exact_count-ne@($replayedPopulation.formal_candidates).Count-or
-       [int64]$replayedObserved.mapped_exact_count-ne$sourceObservedCandidates.Count-or
+       [int64]$replayedFormal.outside_mapping_support_count-ne0-or
+       [int64]$replayedObserved.mapped_exact_count-ne[int64]$replayedObserved.inside_mapping_support_count-or
        [int64]$replayedObserved.missing_mapping_count-ne0-or[int64]$replayedObserved.ambiguous_mapping_count-ne0-or
+       [int64]$replayedObserved.in_domain_outside_mapping_support_count-ne0-or
        [int64]$replayedObserved.duplicate_physical_ordinal_count-ne0){Fail "run $($run.run) sealed mapping replayが不成立です"}
+    if(([int64]$replayedObserved.inside_mapping_support_count+
+        [int64]$replayedObserved.outside_mapping_support_count)-ne$sourceObservedCandidates.Count){
+        Fail "run $($run.run) observed candidateのsupport分類が総数と一致しません"
+    }
     $replayedFormalObject=$replayedFormal|ConvertTo-Json -Depth 10|ConvertFrom-Json
     $replayedObservedObject=$replayedObserved|ConvertTo-Json -Depth 10|ConvertFrom-Json
     Compare-ReplayedMapping -Run ([int]$run.run) -Population 'formal' -Replay $replayedFormalObject -ArtifactRecords @(Need $run 'records')
@@ -156,7 +166,17 @@ for($runIndex=0;$runIndex-lt$proofRuns.Count;++$runIndex){
         $key="$([int64](Need $record 'etw_sequence'))|$([int64](Need $record 'displayed_qpc'))"
         if($observedMappingKeys.ContainsKey($key)){Fail "run $($run.run) observed mapping keyが重複しています: $key"}
         $observedMappingKeys[$key]=$true
-        if(-not[bool](Need $record 'mapping_exact')){Fail "run $($run.run) observed physical mappingがexactではありません: $key"}
+        # support 内の candidate にだけ mapping を要求する。support 外は
+        # mapping_required=false であり、それ自体は authority 違反ではない。
+        if([bool](Need $record 'physical_vblank_mapping_required')){
+            if(-not[bool](Need $record 'mapping_exact')){Fail "run $($run.run) observed physical mappingがexactではありません: $key"}
+        }else{
+            if([bool](Need $record 'mapping_exact')){Fail "run $($run.run) support外recordがmapping_exactを主張しています: $key"}
+            if([bool](Need $record 'in_measurement_physical_domain')){Fail "run $($run.run) support外recordがin-domainを主張しています: $key"}
+            if([string](Need $record 'mapping_support_relation')-notin@('BEFORE_PREDECESSOR','AFTER_SUCCESSOR')){
+                Fail "run $($run.run) support外recordのrelationが不正です: $key"
+            }
+        }
     }
     if($observedMappingKeys.Count-ne$observedKeys.Count-or@($observedKeys.Keys|Where-Object{-not$observedMappingKeys.ContainsKey($_)}).Count-ne0){
         Fail "run $($run.run) observed / diagnostic mapping key setが一致しません"
@@ -176,7 +196,9 @@ for($runIndex=0;$runIndex-lt$proofRuns.Count;++$runIndex){
        $runFormal-ne[int64](Need $population 'c1_formal_input_count')-or$formalMembershipCount-ne$runFormal-or
        $runFormal-ne[int64](Need $run 'presented_candidate_count')-or$runFormal-ne[int64](Need $run 'mapped_exact_count')-or
        $runObserved-ne[int64](Need $observedMapping 'presented_candidate_count')-or
-       $runObserved-ne[int64](Need $observedMapping 'mapped_exact_count')-or
+       [int64](Need $observedMapping 'mapped_exact_count')-ne[int64](Need $observedMapping 'inside_mapping_support_count')-or
+       [int64](Need $observedMapping 'in_domain_outside_mapping_support_count')-ne0-or
+       [int64](Need $run 'outside_mapping_support_count')-ne0-or
        [int64](Need $observedMapping 'missing_mapping_count')-ne0-or
        [int64](Need $observedMapping 'ambiguous_mapping_count')-ne0-or
        [int64](Need $observedMapping 'duplicate_physical_ordinal_count')-ne0-or
@@ -198,8 +220,25 @@ foreach($identity in @(
     @('observed_presented_count',$observed),@('formal_presented_count',$formal),
     @('nonformal_observed_presented_count',$nonformal),@('upstream_invalid_nonformal_count',$invalidNonformal),
     @('upstream_exact_nonformal_count',$exactNonformal),@('presented_candidate_count',$formal),
-    @('mapped_exact_count',$formal),@('observed_physical_mapped_exact_count',$observed))){
+    @('mapped_exact_count',$formal))){
     if([int64](Need $proofObject $identity[0])-ne[int64]$identity[1]){Fail "W2-C1.3 aggregateが不正です: $($identity[0])"}
+}
+foreach($supportIdentity in @('formal_outside_mapping_support_count','in_domain_outside_mapping_support_count')){
+    if([int64](Need $proofObject $supportIdentity)-ne0){
+        Fail "W2-C1.3 support外authorityが不成立です: $supportIdentity"
+    }
+}
+if([string](Need $proofObject 'mapping_support_domain')-ne'CLOSED_SUPPORT_SAMPLE_QPC_INTERVAL'){
+    Fail 'W2-C1.3 mapping support定義域が宣言されていません'
+}
+if(([int64](Need $proofObject 'observed_inside_mapping_support_count')+
+    [int64](Need $proofObject 'observed_outside_mapping_support_count'))-ne$observed){
+    Fail 'W2-C1.3 observed candidateのsupport分類が総数と一致しません'
+}
+if(([int64](Need $proofObject 'outside_mapping_support_head_count')+
+    [int64](Need $proofObject 'outside_mapping_support_tail_count'))-ne
+   [int64](Need $proofObject 'observed_outside_mapping_support_count')){
+    Fail 'W2-C1.3 support外のhead/tail内訳が一致しません'
 }
 if($observed-ne($formal+$nonformal)-or$nonformal-ne($invalidNonformal+$exactNonformal)-or
    [int64](Need $proofObject 'observed_physical_missing_count')-ne0-or

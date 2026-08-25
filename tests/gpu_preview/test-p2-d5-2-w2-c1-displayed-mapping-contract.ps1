@@ -2,8 +2,12 @@
 param(
     [Parameter(Mandatory=$true)][ValidateSet(
         'GoodInDomain','GoodForeignIntentDisplayedInDomain','GoodUpperCurrentStraddlesEnd',
-        'GoodDisplayedOutsideDomain','GoodExactBoundaries','GoodCausalCellProperty','NegativeMissingDisplayedQpc',
-        'NegativeMultipleDisplayedQpc','NegativeNoPhysicalMapping',
+        'GoodDisplayedOutsideDomain','GoodExactBoundaries','GoodCausalCellProperty',
+        'GoodHeadOutsideSupportNonFormal','GoodTailOutsideSupportNonFormal','GoodTailInsideSupportByMargin',
+        'NegativeMissingDisplayedQpc','NegativeMultipleDisplayedQpc',
+        'NegativeFormalPresentedOutsideSupportHead','NegativeFormalPresentedOutsideSupportTail',
+        'NegativeInDomainPresentedOutsideSupport','NegativeInsideSupportMissingMappingMarkedOutside',
+        'NegativeOutsideSupportTailCountMutation','NegativeSuccessorMutationMakesCandidateInside',
         'NegativeAmbiguousPhysicalMapping','NegativeDuplicatePresentedPhysicalOrdinal',
         'NegativePhysicalAuthority','NegativeEtwLoss','NegativeMissingNativeExact',
         'NegativeMissingIntentExact','NegativeMissingIntentScopeExact',
@@ -28,6 +32,9 @@ $samples=@(
     [pscustomobject]@{ordinal=2;qpc=300},[pscustomobject]@{ordinal=3;qpc=400})
 $candidates=@(Candidate 1 150);$physicalValid=$true;$etwLost=0;$expectedBlocker=$null
 $predecessor=0L;$successor=3L;$origin=1L;$last=2L
+# exact mapping support は support sample の [first.qpc, last.qpc] = [100, 400]。
+# support 外を許すのは formal でなく in-domain でもない場合だけである。
+$requireInsideSupport=$false
 switch($Case){
     'GoodForeignIntentDisplayedInDomain'{$candidates=@(Candidate 1 150 'FOREIGN_PRE_MEASUREMENT' $false)}
     'GoodUpperCurrentStraddlesEnd'{$candidates=@(Candidate 1 250 'CURRENT_MEASUREMENT' $false)}
@@ -46,7 +53,23 @@ switch($Case){
     }
     'NegativeMissingDisplayedQpc'{$candidates=@(Candidate 1 $null);$expectedBlocker='DISPLAYED_QPC_CARDINALITY_INVALID'}
     'NegativeMultipleDisplayedQpc'{$candidates=@(Candidate 1 @(150,160));$expectedBlocker='DISPLAYED_QPC_CARDINALITY_INVALID'}
-    'NegativeNoPhysicalMapping'{$candidates=@(Candidate 1 50);$expectedBlocker='PHYSICAL_MAPPING_MISSING'}
+    # support 外 (head/tail) は mapping を要求しない。non-formal かつ out-of-domain なら PASS。
+    'GoodHeadOutsideSupportNonFormal'{$candidates=@(Candidate 1 50)}
+    'GoodTailOutsideSupportNonFormal'{$candidates=@(Candidate 1 500)}
+    # fresh-7 型: successor のわずか内側は mapping required のまま exact であること。
+    'GoodTailInsideSupportByMargin'{$candidates=@(Candidate 1 400)}
+    'NegativeFormalPresentedOutsideSupportHead'{
+        $candidates=@(Candidate 1 50);$requireInsideSupport=$true
+        $expectedBlocker='FORMAL_PRESENTED_OUTSIDE_MAPPING_SUPPORT'
+    }
+    'NegativeFormalPresentedOutsideSupportTail'{
+        $candidates=@(Candidate 1 500);$requireInsideSupport=$true
+        $expectedBlocker='FORMAL_PRESENTED_OUTSIDE_MAPPING_SUPPORT'
+    }
+    'NegativeInDomainPresentedOutsideSupport'{$candidates=@(Candidate 1 500)}
+    'NegativeInsideSupportMissingMappingMarkedOutside'{$candidates=@(Candidate 1 150)}
+    'NegativeOutsideSupportTailCountMutation'{$candidates=@(Candidate 1 500)}
+    'NegativeSuccessorMutationMakesCandidateInside'{$candidates=@(Candidate 1 500)}
     'NegativeAmbiguousPhysicalMapping'{
         $samples=@([pscustomobject]@{ordinal=0;qpc=100},[pscustomobject]@{ordinal=1;qpc=200},
             [pscustomobject]@{ordinal=2;qpc=200},[pscustomobject]@{ordinal=3;qpc=400})
@@ -73,7 +96,39 @@ switch($Case){
 }
 $actual=Invoke-MvmDisplayedQpcPhysicalMapping -Candidates $candidates -Samples $samples `
     -PredecessorOrdinal $predecessor -SuccessorOrdinal $successor -OriginOrdinal $origin -LastOrdinal $last `
-    -PhysicalAuthorityValid $physicalValid -EtwEventsLost $etwLost
+    -PhysicalAuthorityValid $physicalValid -EtwEventsLost $etwLost `
+    -RequireAllCandidatesInsideSupport $requireInsideSupport
+# artifact の outside 判定を信用せず、sealed sample からの再構築と一致させる。
+$supportMutations=@{
+    'NegativeInDomainPresentedOutsideSupport'={param($m)$m.records[0].in_measurement_physical_domain=$true}
+    'NegativeInsideSupportMissingMappingMarkedOutside'={param($m)
+        $m.records[0].mapping_support_relation='AFTER_SUCCESSOR'
+        $m.records[0].physical_vblank_mapping_required=$false}
+    'NegativeOutsideSupportTailCountMutation'={param($m)$m.outside_mapping_support_tail_count=0}
+}
+if($supportMutations.ContainsKey($Case)){
+    $mutated=$actual|ConvertTo-Json -Depth 10|ConvertFrom-Json
+    & $supportMutations[$Case] $mutated
+    $rejected=$false
+    try{Assert-MvmDisplayedQpcPhysicalMapping -Expected $actual -Actual $mutated}catch{$rejected=$true}
+    if(-not$rejected){throw "$Case が受理されました"}
+    Write-Output "W2-C1 mapping contract $Case : PASS";exit 0
+}
+if($Case-eq'NegativeSuccessorMutationMakesCandidateInside'){
+    # successor を伸ばして support 外 candidate を内側へ入れ替えた replay は
+    # sealed support からの再構築と一致しない。
+    $widened=Invoke-MvmDisplayedQpcPhysicalMapping -Candidates $candidates `
+        -Samples (@($samples)+@([pscustomobject]@{ordinal=4;qpc=600})) `
+        -PredecessorOrdinal $predecessor -SuccessorOrdinal 4 -OriginOrdinal $origin -LastOrdinal $last `
+        -PhysicalAuthorityValid $physicalValid -EtwEventsLost $etwLost
+    if([string]$widened.records[0].mapping_support_relation-ne'INSIDE_SUPPORT'){
+        throw 'successor拡張でcandidateが内側になっていません'
+    }
+    $rejected=$false
+    try{Assert-MvmDisplayedQpcPhysicalMapping -Expected $actual -Actual ($widened|ConvertTo-Json -Depth 10|ConvertFrom-Json)}catch{$rejected=$true}
+    if(-not$rejected){throw 'successor mutationが受理されました'}
+    Write-Output "W2-C1 mapping contract $Case : PASS";exit 0
+}
 if($Case-eq'NegativeMappingProvenanceMutation'){
     $mutated=$actual|ConvertTo-Json -Depth 10|ConvertFrom-Json
     $mutated.records[0].physical_vblank_provenance='MUTATED'
@@ -84,8 +139,20 @@ if($Case-eq'NegativeMappingProvenanceMutation'){
     if([bool]$actual.mapping_exact-or$expectedBlocker-notin@($actual.blockers)){
         throw "$Case がfail-closeされませんでした: $(@($actual.blockers)-join',')"
     }
+}elseif($Case-in@('GoodHeadOutsideSupportNonFormal','GoodTailOutsideSupportNonFormal')){
+    if(-not[bool]$actual.mapping_exact){throw "$Case がfail-closeされました: $(@($actual.blockers)-join',')"}
+    $record=$actual.records[0]
+    $expectedRelation=$(if($Case-eq'GoodHeadOutsideSupportNonFormal'){'BEFORE_PREDECESSOR'}else{'AFTER_SUCCESSOR'})
+    if([string]$record.mapping_support_relation-ne$expectedRelation){throw "$Case のrelationが不正です"}
+    if([bool]$record.physical_vblank_mapping_required){throw "$Case でmappingを要求しています"}
+    if([bool]$record.mapping_exact-or[bool]$record.in_measurement_physical_domain){throw "$Case のrecordが不正です"}
+    if($actual.outside_mapping_support_count-ne1){throw "$Case のoutside countが不正です"}
+    if($actual.in_domain_outside_mapping_support_count-ne0){throw "$Case のin-domain outside countが不正です"}
+    if($actual.missing_mapping_count-ne0){throw "$Case でsupport外にmissingを数えています"}
+    Write-Output "W2-C1 mapping contract $Case : PASS";exit 0
 }else{
     if(-not[bool]$actual.mapping_exact-or$actual.mapped_exact_count-ne$candidates.Count){throw "$Case exact mappingが成立しません"}
+    if($actual.outside_mapping_support_count-ne0){throw "$Case でsupport内candidateをoutside扱いしています"}
     switch($Case){
         'GoodInDomain'{if($actual.in_domain_presented_event_count-ne1){throw 'in-domain mappingが不正です'}}
         'GoodForeignIntentDisplayedInDomain'{if(-not$actual.records[0].in_measurement_physical_domain-or$actual.records[0].intent_scope-ne'FOREIGN_PRE_MEASUREMENT'){throw 'foreign physical fill候補が保持されません'}}

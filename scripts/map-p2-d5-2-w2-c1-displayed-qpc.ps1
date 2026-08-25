@@ -82,7 +82,8 @@ for($run=1;$run-le$runCount;++$run){
         -PhysicalAuthorityValid $upstreamValid `
         -EtwEventsLost ([int64](Need $etw 'etw_events_lost')) `
         -EtwBuffersLost ([int64](Need $etw 'etw_buffers_lost')) `
-        -PresentEventOverflowCount ([int64](Need $etw 'present_event_overflow_count'))
+        -PresentEventOverflowCount ([int64](Need $etw 'present_event_overflow_count')) `
+        -RequireAllCandidatesInsideSupport $true
     $observedMapping=Invoke-MvmDisplayedQpcPhysicalMapping -Candidates $observedCandidates `
         -Samples @(Need $physical 'samples') `
         -PredecessorOrdinal ([int64](Need $mappingSupport 'predecessor_ordinal')) `
@@ -124,6 +125,8 @@ $globalBlockerList=@($globalBlockers.Keys|Sort-Object)
 $presented=0L;$mapped=0L;$inDomain=0L;$outDomain=0L;$missing=0L;$ambiguous=0L;$duplicate=0L
 $upstreamInvalid=0L;$observedPresented=0L;$nonformalObserved=0L;$invalidNonformal=0L;$exactNonformal=0L
 $observedMapped=0L;$observedMissing=0L;$observedAmbiguous=0L;$observedDuplicate=0L
+$observedInside=0L;$observedOutside=0L;$observedOutsideHead=0L;$observedOutsideTail=0L
+$formalOutside=0L;$inDomainOutside=0L
 foreach($runResult in $runResults){
     $presented+=[int64]$runResult.presented_candidate_count;$mapped+=[int64]$runResult.mapped_exact_count
     $inDomain+=[int64]$runResult.in_domain_presented_event_count;$outDomain+=[int64]$runResult.out_of_domain_presented_event_count
@@ -138,6 +141,13 @@ foreach($runResult in $runResults){
     $observedMissing+=[int64]$runResult.observed_physical_mapping_diagnostic.missing_mapping_count
     $observedAmbiguous+=[int64]$runResult.observed_physical_mapping_diagnostic.ambiguous_mapping_count
     $observedDuplicate+=[int64]$runResult.observed_physical_mapping_diagnostic.duplicate_physical_ordinal_count
+    $observedInside+=[int64]$runResult.observed_physical_mapping_diagnostic.inside_mapping_support_count
+    $observedOutside+=[int64]$runResult.observed_physical_mapping_diagnostic.outside_mapping_support_count
+    $observedOutsideHead+=[int64]$runResult.observed_physical_mapping_diagnostic.outside_mapping_support_head_count
+    $observedOutsideTail+=[int64]$runResult.observed_physical_mapping_diagnostic.outside_mapping_support_tail_count
+    $inDomainOutside+=[int64]$runResult.observed_physical_mapping_diagnostic.in_domain_outside_mapping_support_count
+    $formalOutside+=[int64]$runResult.outside_mapping_support_count
+    $inDomainOutside+=[int64]$runResult.in_domain_outside_mapping_support_count
 }
 $result=[ordered]@{
     schema='mvm-p2-d5-2-w2-c1-displayed-physical-mapping-2';stage='P2-D5-2-W2-C1.3'
@@ -156,6 +166,15 @@ $result=[ordered]@{
     observed_physical_mapped_exact_count=$observedMapped
     observed_physical_missing_count=$observedMissing;observed_physical_ambiguous_count=$observedAmbiguous
     observed_physical_duplicate_ordinal_count=$observedDuplicate
+    # mapping authority の定義域は exact mapping support である。support 外の
+    # observed candidate には mapping を要求しないが、捨てずに記録する。
+    mapping_support_domain='CLOSED_SUPPORT_SAMPLE_QPC_INTERVAL'
+    observed_inside_mapping_support_count=$observedInside
+    observed_outside_mapping_support_count=$observedOutside
+    outside_mapping_support_head_count=$observedOutsideHead
+    outside_mapping_support_tail_count=$observedOutsideTail
+    formal_outside_mapping_support_count=$formalOutside
+    in_domain_outside_mapping_support_count=$inDomainOutside
     formal_population_authority='B2_TERMINAL_FINAL_STATE_PRESENTED_EXACT_EVENT_SET'
     formal_population_authority_valid=@($runResults|Where-Object{-not[bool]$_.formal_population_authority.authority_valid}).Count-eq0
     in_domain_presented_event_count=$inDomain;out_of_domain_presented_event_count=$outDomain

@@ -65,7 +65,8 @@ function Invoke-MvmC2ProofFromSealedC1 {
                 [bool](Get-MvmC2Required $support 'authority_valid')) `
             -EtwEventsLost ([int64](Get-MvmC2Required $raw 'etw_events_lost')) `
             -EtwBuffersLost ([int64](Get-MvmC2Required $raw 'etw_buffers_lost')) `
-            -PresentEventOverflowCount ([int64](Get-MvmC2Required $raw 'present_event_overflow_count'))
+            -PresentEventOverflowCount ([int64](Get-MvmC2Required $raw 'present_event_overflow_count')) `
+            -RequireAllCandidatesInsideSupport $true
         if(-not[bool]$replayed.mapping_exact){throw "run $run sealed C1 physical mappingを再生できません"}
         $formalByKey=@{}
         foreach($formalRecord in @($population.formal_records)){
