@@ -32,6 +32,12 @@ target_include_directories(mvm_test_proxy_resolver PRIVATE ${CMAKE_CURRENT_SOURC
 target_link_libraries(mvm_test_proxy_resolver PRIVATE mvm::warnings)
 add_test(NAME proxy_resolver_unit COMMAND mvm_test_proxy_resolver)
 set_tests_properties(scrub_coalescer_threaded PROPERTIES TIMEOUT 120)
+# W3-P0-B: これらは mvm_add_test より前に定義されているため PATH が付かず、
+# ホストの C:\Program Files\Git\mingw64\bin\libstdc++-6.dll を先に拾って
+# STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139) で落ちる。UCRT64 へ統一する規約
+# (AGENTS.md「ホストの版へフォールバックしない」) どおり PATH を明示する。
+set_tests_properties(scrub_coalescer_unit scrub_coalescer_threaded proxy_resolver_unit
+    PROPERTIES ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}")
 
 # F3-C3-A3-T1専用。production appにwindow-state診断を混ぜない。
 add_executable(mvm_p2_window_state_controller harness/p2_window_state_controller.cpp)
