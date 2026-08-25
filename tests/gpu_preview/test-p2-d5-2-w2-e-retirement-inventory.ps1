@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][ValidateSet(
-        'GoodRetired','GoodLegacyDiagnosticsRemainPresent',
+        'GoodRetired','GoodLegacyDiagnosticsRemainPresent','GoodCanonicalMetricNameNotLegacy',
         'NegativeCanonicalPerformanceAnnotated','NegativeUnclassifiedSite',
         'NegativeThresholdReintroduced','NegativeDispositionMissing','NegativeDispositionWrong',
         'NegativeLegacyDiagnosticDeleted','NegativeUnregisteredCheckerWithLegacyThreshold',
@@ -98,6 +98,17 @@ $minimumFps = 55
 if ($fps -lt $minimumFps) {
     Fail 'legacy fps failure'
 }
+'@
+    }
+    'GoodCanonicalMetricNameNotLegacy'{
+        # canonical_effective_fps / canonical_drop_rate は formal-v2 側の別 metric である。
+        # 部分一致で legacy 扱いすると、W3 の canonical metric まで誤検出する。
+        $extraChecker=@'
+# disposition宣言を持たないがlegacy metricは参照していないchecker
+$canonical_effective_fps = 60.0
+$canonical_drop_rate = 0.0
+if ($canonical_effective_fps -lt 55) { Fail 'canonical fps' }
+if ($canonical_drop_rate -gt 0.02) { Fail 'canonical drop' }
 '@
     }
     'NegativeDeclaredCheckerWithAliasedLegacyThreshold'{

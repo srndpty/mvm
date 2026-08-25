@@ -39,7 +39,12 @@ Set-StrictMode -Version Latest
 function Fail([string]$Message){throw $Message}
 
 # legacy presentation authority に属する performance metric 名。
+# 部分一致にすると canonical_effective_fps / canonical_drop_rate のような
+# formal-v2 側の別 metric まで legacy 扱いになる。identifier 境界で照合する。
 $legacyPerformanceMetrics=@('effective_fps','drop_rate','effective_video_fps')
+function Get-MvmELegacyMetricPattern([string]$Metric){
+    return '(?<![A-Za-z0-9_])'+[regex]::Escape($Metric)+'(?![A-Za-z0-9_])'
+}
 $expectedDisposition=[ordered]@{
     presentation_authority='FORMAL_V2'
     legacy_presentation_metrics='DIAGNOSTIC'
@@ -59,7 +64,7 @@ function Remove-PowerShellComments([string]$Text){
 function Test-MvmELegacyReference($Node,[hashtable]$Tainted,[string[]]$Metrics){
     if($null-eq$Node){return $false}
     $text=Remove-PowerShellComments $Node.Extent.Text
-    foreach($metric in $Metrics){if($text-match[regex]::Escape($metric)){return $true}}
+    foreach($metric in $Metrics){if($text-match(Get-MvmELegacyMetricPattern $metric)){return $true}}
     foreach($variable in @($Node.FindAll({param($n)
         $n-is[System.Management.Automation.Language.VariableExpressionAst]},$true))){
         if($Tainted.ContainsKey($variable.VariablePath.UserPath)){return $true}
@@ -122,7 +127,7 @@ foreach($file in $discovered){
 
     # legacy metric を一切参照しない checker は presentation authority の当事者ではない。
     $referencesLegacy=@($legacyPerformanceMetrics|
-        Where-Object{$strippedText-match[regex]::Escape($_)}).Count-ne0
+        Where-Object{$strippedText-match(Get-MvmELegacyMetricPattern $_)}).Count-ne0
     if(-not$referencesLegacy){continue}
 
     $tokens=$null;$parseErrors=$null

@@ -516,7 +516,7 @@ foreach(_p2_d5_2_w2e_case IN ITEMS GoodCanonicalCutover GoodLegacyDiagnosticsRem
             -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-e-canonical-authority-core.ps1"
         PROPERTIES LABELS "gpu_preview")
 endforeach()
-foreach(_p2_d5_2_w2e_retire_case IN ITEMS GoodRetired GoodLegacyDiagnosticsRemainPresent NegativeCanonicalPerformanceAnnotated NegativeUnclassifiedSite NegativeThresholdReintroduced NegativeDispositionMissing NegativeDispositionWrong NegativeLegacyDiagnosticDeleted NegativeUnregisteredCheckerWithLegacyThreshold NegativeUnregisteredCheckerWithMultilineLegacyThreshold NegativeDeclaredCheckerWithMultilineLegacyThreshold NegativeDeclaredCheckerWithAliasedLegacyThreshold)
+foreach(_p2_d5_2_w2e_retire_case IN ITEMS GoodRetired GoodLegacyDiagnosticsRemainPresent GoodCanonicalMetricNameNotLegacy NegativeCanonicalPerformanceAnnotated NegativeUnclassifiedSite NegativeThresholdReintroduced NegativeDispositionMissing NegativeDispositionWrong NegativeLegacyDiagnosticDeleted NegativeUnregisteredCheckerWithLegacyThreshold NegativeUnregisteredCheckerWithMultilineLegacyThreshold NegativeDeclaredCheckerWithMultilineLegacyThreshold NegativeDeclaredCheckerWithAliasedLegacyThreshold)
     string(TOLOWER "${_p2_d5_2_w2e_retire_case}" _p2_d5_2_w2e_retire_name)
     mvm_add_test(p2_d5_2_w2e_retirement_${_p2_d5_2_w2e_retire_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File
@@ -537,6 +537,23 @@ mvm_add_test(p2_d5_2_w2e_repository_retirement
         "${CMAKE_SOURCE_DIR}/scripts/inventory-p2-d5-2-w2-e-legacy-authority.ps1"
         -SourceRoot "${CMAKE_SOURCE_DIR}"
         -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2e-repository-retirement.json"
+    PROPERTIES LABELS "gpu_preview")
+
+# P2-D5-2-W3: canonical performance verdict。W2-E が W3 へ保留した評価をここで解禁する。
+# 段を分け、acquisition / authority / accounting が INVALID なら performance へ進まない。
+foreach(_p2_d5_2_w3_case IN ITEMS GoodCanonicalPass GoodCanonicalFail GoodLayer1ALayer1BDifference NegativeAcquisitionCheckpointMismatch NegativeAcquisitionCheckpointMissing NegativeAcquisitionNotFresh NegativeAcquisitionWorktreeDirty NegativeAcquisitionBinaryProvenanceMissing NegativeAcquisitionCoverageIncomplete NegativeAcquisitionIntentScopeNotExact NegativeCanonicalAuthorityNotFormalV2 NegativeCanonicalCutoverNotExact NegativeLegacyAuthorityStillCanonical NegativeLegacyMetricFeedsCanonicalVerdict NegativeCanonicalChainIdentityInvalid NegativeShadowNotExact NegativeAccountingIdentityViolation NegativeAccountingSumViolation NegativeMeasurementWindowInvalid NegativeMeasurementWindowCountMismatch NegativeQpcFrequencyInconsistent)
+    string(TOLOWER "${_p2_d5_2_w3_case}" _p2_d5_2_w3_name)
+    mvm_add_test(p2_d5_2_w3_canonical_performance_${_p2_d5_2_w3_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w3-canonical-performance-contract.ps1"
+            -Case "${_p2_d5_2_w3_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w3-canonical-performance-core.ps1"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+mvm_add_test(p2_d5_2_w3_canonical_performance_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w3-canonical-performance-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
     PROPERTIES LABELS "gpu_preview")
 
 foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
