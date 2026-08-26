@@ -556,6 +556,20 @@ mvm_add_test(p2_d5_2_w3_canonical_performance_architecture
         -SourceRoot "${CMAKE_SOURCE_DIR}"
     PROPERTIES LABELS "gpu_preview")
 
+# P2-D5-2-W4-A: unsatisfied intentがchainのどこで失われたかをexactに分類する。
+# 原因判定はしない。母集団はexact required current intent setのみで、
+# 1 intent identityにつきちょうど1 bucketへ入る。
+foreach(_p2_d5_2_w4a_case IN ITEMS GoodExactPartition GoodNoPrimaryDecision GoodDownstreamLossBuckets NegativeRequiredIntentMissingFromAllBuckets NegativeRequiredIntentInTwoBuckets NegativeMultiplePrimaryDecision NegativeDuplicateCallbackCountedAsDrop NegativeOutsideRequiredCountedAsDrop NegativeMissingSetMutation NegativeSatisfiedSetMutation NegativeAggregateOnlyForgery)
+    string(TOLOWER "${_p2_d5_2_w4a_case}" _p2_d5_2_w4a_name)
+    mvm_add_test(p2_d5_2_w4a_intent_attribution_${_p2_d5_2_w4a_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w4-a-intent-attribution-contract.ps1"
+            -Case "${_p2_d5_2_w4a_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w4-a-intent-attribution-core.ps1"
+            -SharedReplay "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w4-a-shared-replay.ps1"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
     string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)
     mvm_add_test(p2_c3_a3_t2_d1b2_evaluability_${_p2_c3_a3_t2_d1b2e_name}
