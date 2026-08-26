@@ -54,7 +54,13 @@ function Invoke-MvmW4BProducerSemantics {
         # W4-A が集合差から確定した missing set。ここで作り直さない。
         [Parameter(Mandatory=$true)][AllowEmptyCollection()][array]$MissingOrdinals,
         # producer の scheduler decision ledger。
-        [Parameter(Mandatory=$true)][AllowEmptyCollection()][array]$DecisionRecords
+        [Parameter(Mandatory=$true)][AllowEmptyCollection()][array]$DecisionRecords,
+        # canonical physical measurement window (W2-A)。decision stream から推定しない。
+        [Parameter(Mandatory=$true)][int64]$MeasurementStartQpc,
+        [Parameter(Mandatory=$true)][int64]$MeasurementEndQpcExclusive,
+        [Parameter(Mandatory=$true)][int64]$QpcFrequency,
+        # legacy elapsed は correlation として記録するだけで authority にしない。
+        [double]$LegacyMeasurementElapsedSeconds=0
     )
     $blockers=@{}
     $requiredSet=@{}
@@ -193,6 +199,48 @@ function Invoke-MvmW4BProducerSemantics {
     if([int64]$eventCounts['ISOLATED_MISSING']-ne[int64]$intentCounts['ISOLATED_MISSING']){
         $blockers['ISOLATED_EVENT_INTENT_IDENTITY_VIOLATION']=$true
     }
+    # --- run-level time-domain diagnostic ---
+    # measurement window は producer から作らない。W2-A physical authority を受け取る。
+    $primarySorted=@($primaryByOrdinal.Values|Sort-Object{[int64](Get-MvmW4BValue $_ 'decision_qpc')})
+    $timeDomain=$null
+    if($primarySorted.Count-ge2-and$QpcFrequency-gt0-and$MeasurementEndQpcExclusive-gt$MeasurementStartQpc){
+        $firstQpc=[int64](Get-MvmW4BValue $primarySorted[0] 'decision_qpc')
+        $lastQpc=[int64](Get-MvmW4BValue $primarySorted[-1] 'decision_qpc')
+        $spanQpc=$lastQpc-$firstQpc
+        $spanSeconds=[double]$spanQpc/[double]$QpcFrequency
+        $windowSeconds=[double]($MeasurementEndQpcExclusive-$MeasurementStartQpc)/[double]$QpcFrequency
+        # decision が N 件なら interval は N-1 個である。N / span にしない。
+        $cadence=$(if($spanSeconds-gt0){[double]($primarySorted.Count-1)/$spanSeconds}else{$null})
+        $trailingMissing=0L
+        foreach($ordinal in $requiredSorted){
+            if($missingSet.ContainsKey([string]$ordinal)){$trailingMissing+=1}else{$trailingMissing=0}
+        }
+        $timeDomain=[ordered]@{
+            primary_decision_first_qpc=$firstQpc
+            primary_decision_last_qpc=$lastQpc
+            primary_decision_active_span_qpc=$spanQpc
+            primary_decision_active_span_seconds=$spanSeconds
+            primary_decision_count=$primarySorted.Count
+            primary_decision_interdecision_cadence_hz=$cadence
+            measurement_window_seconds=$windowSeconds
+            primary_decision_active_span_fraction=$(if($windowSeconds-gt0){$spanSeconds/$windowSeconds}else{$null})
+            head_without_primary_decision_seconds=[double]($firstQpc-$MeasurementStartQpc)/[double]$QpcFrequency
+            tail_without_primary_decision_seconds=[double]($MeasurementEndQpcExclusive-$lastQpc)/[double]$QpcFrequency
+            first_primary_intent_ordinal=[string]([uint64](Get-MvmW4BValue $primarySorted[0] 'intent_ordinal'))
+            last_primary_intent_ordinal=[string]([uint64](Get-MvmW4BValue $primarySorted[-1] 'intent_ordinal'))
+            first_required_intent_ordinal=$(if($requiredSorted.Count-gt0){[string]$requiredSorted[0]}else{$null})
+            last_required_intent_ordinal=$(if($requiredSorted.Count-gt0){[string]$requiredSorted[-1]}else{$null})
+            trailing_missing_required_intent_count=$trailingMissing
+            # legacy elapsed は correlation。authority にはしない。
+            legacy_measurement_elapsed_seconds_diagnostic=$LegacyMeasurementElapsedSeconds
+            producer_active_span_matches_legacy_elapsed=(
+                [Math]::Abs($spanSeconds-$LegacyMeasurementElapsedSeconds)-lt0.001)
+            legacy_measurement_elapsed_used_as_authority=$false
+            decision_span_used_as_measurement_window=$false
+        }
+    }else{
+        $blockers['TIME_DOMAIN_AUTHORITY_UNAVAILABLE']=$true
+    }
     $blockerList=@($blockers.Keys|Sort-Object)
 
     # --- isolated vs double の transition table ---
@@ -202,8 +250,8 @@ function Invoke-MvmW4BProducerSemantics {
         foreach($field in @('primary_decision_intent_ordinal_delta','decision_qpc_delta',
             'render_begin_qpc_delta','target_frame_delta','last_finalized_opportunity_ordinal_delta')){
             $distribution=@{}
-            foreach($event in $subset){
-                $key=[string]$event.transition.$field
+            foreach($transitionEvent in $subset){
+                $key=[string]$transitionEvent.transition.$field
                 $distribution[$key]=[int64](& {if($distribution.ContainsKey($key)){$distribution[$key]}else{0}})+1
             }
             # 分布が大きい QPC delta は代表値だけを持つ。
@@ -245,6 +293,8 @@ function Invoke-MvmW4BProducerSemantics {
         cohort_event_sum=$eventSum
         cohort_intent_sum=$intentSum
         interval_duplicate_callback_total=$intervalDuplicateTotal
+        run_level_time_domain_diagnostic_present=($null-ne$timeDomain)
+        time_domain_diagnostic=$timeDomain
         isolated_transition_summary=(Get-MvmW4BTransitionSummary $events 'ISOLATED_MISSING')
         double_transition_summary=(Get-MvmW4BTransitionSummary $events 'DOUBLE_MISSING_BOUNDARY')
         attribution_exact=$blockerList.Count-eq0

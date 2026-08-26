@@ -221,6 +221,106 @@ interval_diagnostics:
 
 **missing ordinal 自身には producer semantic field を置かない。**
 
+## run-level time-domain diagnostic (amendment)
+
+event-local transition (isolated vs double) と直交する、**producer decision stream 全体の
+exact な時間構造**も W4-B に残す。これは補助統計ではなく producer semantics attribution の
+一部である。
+
+### measurement window を producer から作らない
+
+W4-B core は decision stream から measurement window を推定してはならない。W3 で確立済みの
+**W2-A physical measurement window** を upstream authority から受け取るだけにする。
+
+```text
+producer 由来:
+  first / last primary decision QPC
+
+physical authority 由来 (W2-A):
+  measurement_start_qpc
+  measurement_end_qpc_exclusive
+  qpc_frequency
+```
+
+この 2 ソースを分けて bind し、次を計算する。
+
+```text
+head gap = first_decision_qpc - measurement_start_qpc
+tail gap = measurement_end_qpc_exclusive - last_decision_qpc
+```
+
+### field
+
+```text
+primary_decision_first_qpc
+primary_decision_last_qpc
+primary_decision_active_span_qpc
+primary_decision_active_span_seconds
+
+primary_decision_count
+primary_decision_interdecision_cadence_hz
+
+measurement_window_seconds
+primary_decision_active_span_fraction
+
+head_without_primary_decision_seconds
+tail_without_primary_decision_seconds
+
+first_primary_intent_ordinal
+last_primary_intent_ordinal
+first_required_intent_ordinal
+last_required_intent_ordinal
+trailing_missing_required_intent_count
+```
+
+### cadence の式を freeze する
+
+decision が `N` 件なら interval は `N-1` 個である。`N / span` では意味がずれる。
+
+```text
+cadence_hz = (N - 1) / ((last_decision_qpc - first_decision_qpc) / qpc_frequency)
+```
+
+### legacy elapsed との一致は correlation であって authority ではない
+
+`measurement_elapsed_seconds` は W2-E で diagnostic へ降格済みである。今回 producer active
+span と一致したことは強い裏付けだが、**canonical 時間 authority へ復帰させない**。
+
+```text
+legacy_measurement_elapsed_seconds_diagnostic
+producer_active_span_matches_legacy_elapsed
+legacy_measurement_elapsed_used_as_authority = false
+```
+
+### 2 種類の diagnostic をまだ因果で結ばない
+
+```text
+A. ordinal-domain      required / primary ordinal domain、count、missing、tail-edge
+B. time-domain         active span、canonical window、fraction、tail gap、cadence
+```
+
+W4-B closure で言えるのはここまでである。
+
+```text
+primary decisions は約 60Hz で継続的に発行されたが、その decision stream は
+canonical 60s window の約半分で終了している。
+各 decision 間で intent ordinal はおおむね +2 進んでいる。
+```
+
+次は **root-cause statement なので W4-B では言わない**。
+
+```text
+ordinal を +2 したから 29 秒で required domain を使い切って停止した
+```
+
+### 追加 flag
+
+```text
+run_level_time_domain_diagnostic_present     = true
+legacy_measurement_elapsed_used_as_authority = false
+decision_span_used_as_measurement_window     = false
+```
+
 ## provenance と handoff boundary
 
 W4-B は **W4-A proof を直接 consume し、その SHA を bind** する。W4-A は missing set を集合差から
@@ -249,6 +349,11 @@ W4-A checker 再実行
 8.  missing 側 field の補間・nearest-QPC・推定は禁止
 9.  isolated vs double の transition table を artifact に保存
 10. causal / root-cause verdict はまだ出さない
+11. run-level primary-decision time-domain summary は exact producer QPC と
+    canonical physical window だけから再構築する
+12. time-domain summary は diagnostic only である
+    root-cause verdict を出さない / legacy elapsed を authority にしない /
+    missing 側の timestamp を推定しない
 ```
 
 ## negative
@@ -262,6 +367,9 @@ NegativeNearestDecisionQpcUsed                  nearest QPCでの代用
 NegativeCrossRunNeighborSplice                  run境界をまたぐ近傍接続
 NegativeRootCauseDeclared                       root_cause_determined=true の注入
 NegativeAggregateOnlyTransitionForgery          transition tableのaggregateだけ偽造
+NegativeDecisionSpanUsedAsMeasurementWindow    decision spanをmeasurement windowにする
+NegativeLegacyElapsedPromotedToAuthority       legacy elapsedを時間authorityへ昇格
+NegativeTailGapMutation                        tail gapの改変 (sealed QPCから再計算してreject)
 ```
 
 ## この後に来る可能性のある W4-C
