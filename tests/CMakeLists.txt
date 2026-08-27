@@ -570,6 +570,19 @@ foreach(_p2_d5_2_w4a_case IN ITEMS GoodExactPartition GoodNoPrimaryDecision Good
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
+# P2-D5-2-W4-B: isolated missing と double-missing boundary の producer-side exact
+# semantic transition を識別する。root cause は出さない。
+foreach(_p2_d5_2_w4b_case IN ITEMS GoodIsolatedAndDouble GoodEdgeCohorts GoodLongerMissingRun NegativeMissingSetSplice NegativeIsolatedClassifiedAsDouble NegativeDoubleEventCountMutation NegativeMissingOrdinalInterpolatedProducerField NegativeNearestDecisionQpcUsed NegativeCrossRunNeighborSplice NegativeRootCauseDeclared NegativeAggregateOnlyTransitionForgery NegativeDecisionSpanUsedAsMeasurementWindow NegativeLegacyElapsedPromotedToAuthority NegativeTailGapMutation)
+    string(TOLOWER "${_p2_d5_2_w4b_case}" _p2_d5_2_w4b_name)
+    mvm_add_test(p2_d5_2_w4b_producer_semantics_${_p2_d5_2_w4b_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w4-b-producer-semantics-contract.ps1"
+            -Case "${_p2_d5_2_w4b_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w4-b-producer-semantics-core.ps1"
+            -SharedReplay "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w4-b-shared-replay.ps1"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
     string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)
     mvm_add_test(p2_c3_a3_t2_d1b2_evaluability_${_p2_c3_a3_t2_d1b2e_name}

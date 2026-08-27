@@ -36,9 +36,15 @@ if($Case-eq'NegativeRelationMutation'){
 }else{
     if($LASTEXITCODE-ne0){throw 'support gap inventoryが失敗しました'}
     $actual=Get-Content -LiteralPath $output -Raw -Encoding utf8|ConvertFrom-Json
-    if(-not[bool]$actual.support_gap_diagnosis_exact-or$actual.missing_mapping_count-ne2-or
+    # C1 の support-domain contract 修正後、missing_mapping_count は support 内だけを数える。
+    # support 外 (qpc 50 / 450) は head/tail として分類され missing にはならない。
+    if(-not[bool]$actual.support_gap_diagnosis_exact-or$actual.missing_mapping_count-ne0-or
        $actual.before_physical_support_count-ne1-or$actual.after_physical_support_count-ne1-or
        $actual.inside_support_unmapped_count-ne0-or$actual.runs[0].within_support_mapped_exact_count-ne1-or
+       $actual.runs[0].outside_mapping_support_head_count-ne1-or
+       $actual.runs[0].outside_mapping_support_tail_count-ne1-or
+       -not[bool]$actual.outside_support_classification_agrees-or
+       -not[bool]$actual.inside_support_missing_is_zero-or
        $actual.verdict-ne'PHYSICAL_MAPPING_SUPPORT_ENVELOPE_INCOMPLETE'){
         throw 'support gap exact diagnosisが不正です'
     }

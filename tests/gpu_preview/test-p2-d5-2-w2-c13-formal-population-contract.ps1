@@ -80,9 +80,14 @@ $proof=[ordered]@{
     presented_candidate_count=1;mapped_exact_count=1
     observed_physical_mapped_exact_count=2;observed_physical_missing_count=0
     observed_physical_ambiguous_count=0;observed_physical_duplicate_ordinal_count=0
+    mapping_support_domain='CLOSED_SUPPORT_SAMPLE_QPC_INTERVAL'
+    observed_inside_mapping_support_count=2;observed_outside_mapping_support_count=0
+    outside_mapping_support_head_count=0;outside_mapping_support_tail_count=0
+    formal_outside_mapping_support_count=0;in_domain_outside_mapping_support_count=0
     runs=@([ordered]@{
         run=1
         presented_candidate_count=1;mapped_exact_count=1
+        outside_mapping_support_count=0;in_domain_outside_mapping_support_count=0
         formal_population_authority=[ordered]@{
             formal_membership_authority='B2_TERMINAL_FINAL_STATE_PRESENTED_EXACT_EVENT_SET'
             formal_membership_uses_upstream_exact=$false;formal_membership_uses_display_relation=$false
@@ -103,12 +108,15 @@ $proof=[ordered]@{
         }
         records=@([ordered]@{
             etw_sequence=2;displayed_qpc=210;physical_vblank_ordinal=3;physical_vblank_qpc=300
+            mapping_support_relation='INSIDE_SUPPORT';physical_vblank_mapping_required=$true
             mapping_solution_count=1;mapping_exact=$true;in_measurement_physical_domain=$true})
         observed_physical_mapping_diagnostic=[ordered]@{
             presented_candidate_count=2;mapped_exact_count=2;missing_mapping_count=0
-            ambiguous_mapping_count=0;duplicate_physical_ordinal_count=0;records=@(
-            [ordered]@{etw_sequence=1;displayed_qpc=90;physical_vblank_ordinal=1;physical_vblank_qpc=100;mapping_solution_count=1;mapping_exact=$true;in_measurement_physical_domain=$true},
-            [ordered]@{etw_sequence=2;displayed_qpc=210;physical_vblank_ordinal=3;physical_vblank_qpc=300;mapping_solution_count=1;mapping_exact=$true;in_measurement_physical_domain=$true})}
+            ambiguous_mapping_count=0;duplicate_physical_ordinal_count=0
+            inside_mapping_support_count=2;in_domain_outside_mapping_support_count=0
+            records=@(
+            [ordered]@{etw_sequence=1;displayed_qpc=90;physical_vblank_ordinal=1;physical_vblank_qpc=100;mapping_support_relation='INSIDE_SUPPORT';physical_vblank_mapping_required=$true;mapping_solution_count=1;mapping_exact=$true;in_measurement_physical_domain=$true},
+            [ordered]@{etw_sequence=2;displayed_qpc=210;physical_vblank_ordinal=3;physical_vblank_qpc=300;mapping_support_relation='INSIDE_SUPPORT';physical_vblank_mapping_required=$true;mapping_solution_count=1;mapping_exact=$true;in_measurement_physical_domain=$true})}
     })
 }
 $sourceDirectory=Join-Path $Directory 'sealed-source';$sourceRun=Join-Path $sourceDirectory 'run-1'

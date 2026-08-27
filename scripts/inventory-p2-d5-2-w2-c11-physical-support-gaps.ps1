@@ -22,7 +22,8 @@ if(-not(Test-Path -LiteralPath $InventoryProof)){Fail "C0.1.1 inventory proofが
 $inventory=Get-Content -LiteralPath $InventoryProof -Raw -Encoding utf8|ConvertFrom-Json
 $runCount=[int](Need $inventory 'run_count')
 if($runCount-le0-or@($inventory.runs).Count-ne$runCount){Fail 'inventory run数が不正です'}
-$runProofs=@();$totalCandidates=0L;$totalMapped=0L;$totalMissing=0L
+$runProofs=@();$totalCandidates=0L;$totalMapped=0L;$totalOutsideHead=0;$totalOutsideTail=0
+$totalMissing=0L
 $totalLower=0L;$totalUpper=0L;$totalInside=0L;$totalAmbiguous=0L;$allDiagnosed=$true
 for($run=1;$run-le$runCount;++$run){
     $appPath=Join-Path (Join-Path $C011Directory "run-$run") 'traced-app.json'
@@ -74,7 +75,13 @@ for($run=1;$run-le$runCount;++$run){
         }
     }
     $missing=[int]$mapping.missing_mapping_count;$ambiguous=[int]$mapping.ambiguous_mapping_count
-    $diagnosed=$missing-eq($lower+$upper)-and$inside-eq0-and$ambiguous-eq0-and
+    # C1 の support-domain contract 修正後、missing_mapping_count は support 内だけを数える。
+    # support 外は outside_mapping_support_head/tail_count として分類される。
+    # C1.1 が独立に出した lower/upper 分類と core の support 分類を突き合わせる。
+    $coreHead=[int]$mapping.outside_mapping_support_head_count
+    $coreTail=[int]$mapping.outside_mapping_support_tail_count
+    $diagnosed=$missing-eq$inside-and$inside-eq0-and$ambiguous-eq0-and
+        $coreHead-eq$lower-and$coreTail-eq$upper-and
         $withinMapped-eq$withinCount-and$relationExact
     if(-not$diagnosed){$allDiagnosed=$false}
     $displayQpcs=@($candidates|ForEach-Object{[int64](Need $_ 'displayed_qpc')})
@@ -91,6 +98,8 @@ for($run=1;$run-le$runCount;++$run){
         successor_ordinal=$successorOrdinal;successor_qpc=$successorQpc
         mapped_exact_count=[int]$mapping.mapped_exact_count
         missing_mapping_count=$missing;ambiguous_mapping_count=$ambiguous
+        outside_mapping_support_head_count=$coreHead
+        outside_mapping_support_tail_count=$coreTail
         lower_support_insufficient_count=$lower;upper_support_insufficient_count=$upper
         inside_support_unmapped_count=$inside
         within_support_candidate_count=$withinCount;within_support_mapped_exact_count=$withinMapped
@@ -100,8 +109,11 @@ for($run=1;$run-le$runCount;++$run){
     }
     $totalCandidates+=$candidates.Count;$totalMapped+=[int64]$mapping.mapped_exact_count
     $totalMissing+=$missing;$totalLower+=$lower;$totalUpper+=$upper;$totalInside+=$inside;$totalAmbiguous+=$ambiguous
+    $totalOutsideHead+=$coreHead;$totalOutsideTail+=$coreTail
 }
-$incomplete=$allDiagnosed-and$totalMissing-gt0
+# support envelope が不完全である、とは「support 外へ出た candidate がある」ことである。
+# C1 の contract 修正後、それは missing ではなく outside_mapping_support_* に現れる。
+$incomplete=$allDiagnosed-and($totalOutsideHead+$totalOutsideTail)-gt0
 $result=[ordered]@{
     schema='mvm-p2-d5-2-w2-c11-physical-support-gap-inventory-1'
     stage='P2-D5-2-W2-C1.1';source_c011_directory=(Resolve-Path -LiteralPath $C011Directory).Path
@@ -110,7 +122,12 @@ $result=[ordered]@{
     missing_mapping_count=$totalMissing;ambiguous_mapping_count=$totalAmbiguous
     before_physical_support_count=$totalLower;after_physical_support_count=$totalUpper
     inside_support_unmapped_count=$totalInside
-    missing_equals_outside_support_count=$totalMissing-eq($totalLower+$totalUpper)
+    outside_mapping_support_head_count=$totalOutsideHead
+    outside_mapping_support_tail_count=$totalOutsideTail
+    # C1.1 が独立に出した lower/upper 分類と core の support 分類が一致すること。
+    outside_support_classification_agrees=(
+        $totalOutsideHead-eq$totalLower-and$totalOutsideTail-eq$totalUpper)
+    inside_support_missing_is_zero=($totalMissing-eq0-and$totalInside-eq0)
     support_gap_diagnosis_exact=$allDiagnosed
     sealed_acquisition_mapping_valid=$false
     verdict=$(if($incomplete){'PHYSICAL_MAPPING_SUPPORT_ENVELOPE_INCOMPLETE'}else{'PHYSICAL_MAPPING_SUPPORT_GAP_DIAGNOSIS_INVALID'})

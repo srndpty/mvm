@@ -66,6 +66,59 @@ foreach($run in @($actual.runs)){
     }
 }
 
+# time-domain も artifact aggregate を信用しない。sealed producer QPC と
+# W2-A physical window から active_span / cadence / head / tail / fraction / legacy delta を
+# 独立再計算する。
+$w4a=Get-Content -LiteralPath $w4aPath -Raw -Encoding utf8|ConvertFrom-Json
+$cohortDirectory=[string]$w4a.source_cohort_directory
+foreach($run in @($actual.runs)){
+    $runNumber=[int]$run.run
+    $appPath=Join-Path (Join-Path $cohortDirectory "run-$runNumber") 'traced-app.json'
+    if(-not(Test-Path -LiteralPath $appPath)){Fail "run $runNumber のtraced-appがありません: $appPath"}
+    $app=Get-Content -LiteralPath $appPath -Raw -Encoding utf8|ConvertFrom-Json
+    $shadow=$app.presentation_opportunity.physical_vblank_domain_shadow
+    $frequency=[int64]$app.formal_qpc_frequency
+    $startQpc=[int64]$shadow.measurement_start_qpc
+    $endQpc=[int64]$shadow.measurement_end_qpc_exclusive
+    $requiredSet=@{}
+    foreach($ordinal in @(($w4a.runs|Where-Object{[int]$_.run-eq$runNumber}).required_intent_ordinals)){
+        $requiredSet[[string]([uint64]$ordinal)]=$true
+    }
+    $primaryQpc=@()
+    foreach($decision in @($app.native_present_hook.intent_scope_provenance.records)){
+        if([string]$decision.intent_scope-ne'CURRENT_MEASUREMENT'){continue}
+        if(-not[bool]$decision.required_current_membership_exact){continue}
+        if([bool]$decision.duplicate_callback){continue}
+        if(-not[bool]$decision.required_current_membership){continue}
+        if(-not$requiredSet.ContainsKey([string]([uint64]$decision.intent_ordinal))){continue}
+        $primaryQpc+=,[int64]$decision.decision_qpc
+    }
+    $primaryQpc=@($primaryQpc|Sort-Object)
+    if($primaryQpc.Count-lt2){Fail "run $runNumber のprimary decisionが2件未満です"}
+    $time=$run.time_domain_diagnostic
+    $spanQpc=$primaryQpc[-1]-$primaryQpc[0]
+    $spanSeconds=[double]$spanQpc/[double]$frequency
+    $expectedTime=[ordered]@{
+        primary_decision_first_qpc=$primaryQpc[0]
+        primary_decision_last_qpc=$primaryQpc[-1]
+        primary_decision_active_span_qpc=$spanQpc
+        primary_decision_active_span_seconds=$spanSeconds
+        primary_decision_count=$primaryQpc.Count
+        primary_decision_interdecision_cadence_hz=([double]($primaryQpc.Count-1)/$spanSeconds)
+        measurement_window_seconds=([double]($endQpc-$startQpc)/[double]$frequency)
+        head_without_primary_decision_seconds=([double]($primaryQpc[0]-$startQpc)/[double]$frequency)
+        tail_without_primary_decision_seconds=([double]($endQpc-$primaryQpc[-1])/[double]$frequency)
+        legacy_elapsed_minus_producer_span_seconds=([double]$app.measurement_elapsed_seconds-$spanSeconds)
+    }
+    $expectedTime['primary_decision_active_span_fraction']=
+        $spanSeconds/[double]$expectedTime.measurement_window_seconds
+    foreach($field in @($expectedTime.Keys)){
+        if([string]$time.$field-ne[string]$expectedTime[$field]){
+            Fail "run $runNumber のtime-domainがsealed sourceからの再計算と一致しません: $field"
+        }
+    }
+}
+
 if([string]::IsNullOrWhiteSpace($WorkDirectory)){
     $WorkDirectory=Join-Path (Split-Path -Parent (Resolve-Path -LiteralPath $Proof).Path) `
         ((Split-Path -Leaf $Proof)+'.w4b-check')
