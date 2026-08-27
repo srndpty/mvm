@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$SourceRoot,
-    [ValidateSet('Good','NegativePostWorktree','NegativePostSource','NegativePostQtGui','NegativePostQtQuick','NegativeWarmupMismatch','NegativeExit6Teardown','NegativeExit6Metrics','NegativeExit6Mapping','NegativeTeardownStageState','NegativeTeardownStageReport')]
+    [ValidateSet('Good','NegativePostWorktree','NegativePostSource','NegativePostQtGui','NegativePostQtQuick','NegativeWarmupMismatch','NegativeExit6Teardown','NegativeExit6Metrics','NegativeExit6Mapping','NegativeTeardownStageState','NegativeTeardownStageReport','NegativeTeardownWindowUpdate')]
     [string]$Case='Good'
 )
 $ErrorActionPreference='Stop'
@@ -39,6 +39,7 @@ function Assert-TeardownStageDiagnostics([string]$Header,[string]$Renderer,[stri
     Require $Header 'enum class RenderTeardownDiagnosticStage' 'render teardown stage enumがありません'
     Require $Renderer 'teardownDiagnosticStage\.compare_exchange_strong' 'teardown要求をrender callbackへexact joinしていません'
     Require $Renderer 'teardownDiagnosticStage\.store\(RenderTeardownDiagnosticStage::CompositorDrain' 'compositor drain stageを記録していません'
+    Require $Renderer 'requestTeardown\(\)[\s\S]+if \(window\(\)\)[\s\S]+window\(\)->update\(\)' 'teardown要求がwindow frameを起動しません'
     Require $Controller 'teardownDiagnosticStageName\(diagnosticStage\)' 'teardown timeoutが停止stageを出力しません'
 }
 $mutatedRunner=$runner
@@ -56,6 +57,7 @@ switch($Case){
     'NegativeExit6Mapping' {$mutatedController=$mutatedController.Replace('W4-C2_DIAGNOSTIC_EXIT6_CLOSE_MAPPING_FAILURE','W4-C2_DIAGNOSTIC_EXIT6_UNKNOWN')}
     'NegativeTeardownStageState' {$mutatedRenderer=$mutatedRenderer.Replace('RenderTeardownDiagnosticStage::CompositorDrain','RenderTeardownDiagnosticStage::RenderCallbackObserved')}
     'NegativeTeardownStageReport' {$mutatedController=$mutatedController.Replace('teardownDiagnosticStageName(diagnosticStage)','"UNOBSERVED"')}
+    'NegativeTeardownWindowUpdate' {$mutatedRenderer=$mutatedRenderer.Replace('window()->update();','update();')}
 }
 if($Case-eq'Good'){
     Assert-ProvenancePostChecks $mutatedRunner

@@ -145,3 +145,17 @@ formal_capture = FAILED_CLOSED
 root_cause_of_exit_6 = NOT_ESTABLISHED
 W4_C_LINK_A_TO_B = NOT_ESTABLISHED
 ```
+
+停止stage診断では次をexactに観測した。
+
+```text
+stage = REQUESTED
+worker_a_joined = 1
+worker_b_joined = 1
+render callback after teardown request = 0
+```
+
+worker join待ちやGPU drainではなく、measurement/capture gate close後のteardown要求がrender callbackへ
+配送されていない。shutdown限定の回避策として`requestTeardown()`からitemと所有windowの両方へ
+`update()`を要求する。この変更はmeasurement counter、scheduler decision、capture gate closeより後であり、
+W4-CのLink A→B authorityには使わない。

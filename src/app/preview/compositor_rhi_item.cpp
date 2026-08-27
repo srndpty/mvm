@@ -17,6 +17,7 @@
 #include <vector>
 
 #include <QScopeGuard>
+#include <QQuickWindow>
 
 namespace mvm::app {
 namespace {
@@ -1526,6 +1527,10 @@ void CompositorRhiItem::requestTeardown() {
                                           std::memory_order_release);
     state_->teardownRequested.store(true, std::memory_order_release);
     update();
+    // measurement/capture gateのclose後はitem-level updateだけではscene graph frameが
+    // 起動しない場合がある。teardown callbackを確実に配送するためwindowも起床させる。
+    if (window())
+        window()->update();
 }
 
 void CompositorRhiItem::recordFrameSwapped() {
