@@ -3,6 +3,9 @@ param(
     [Parameter(Mandatory=$true)][string]$Checker,
     [Parameter(Mandatory=$true)][string]$Directory,
     [ValidateSet('Good','GoodLosingExplicitStopPublication','GoodExactInt64BoundaryDivision',
+        'GoodObservedOrdinalGapPattern','NegativeRequiredMembershipReplayMutation',
+        'NegativeRequiredMembershipExactMissing','NegativeC2LedgerPerformanceAuthorityPromotion',
+        'NegativeC2LedgerRecordCountMismatch','NegativeC2LedgerPhysicalAuthorityPromotion',
         'NegativeTerminalMembershipFalse','NegativeTerminalPreStateMismatch',
         'NegativeStateContinuityBreak','NegativeMissingReplayField','NegativeMissingStopWitness',
         'NegativeDuplicateWitness','NegativeTerminalInvocationJoinMutation',
@@ -37,9 +40,11 @@ function Copy-State($State){
 }
 function New-Invocation([int]$Serial,[int64]$Ordinal,[string]$Result,[string]$Reason,
                         [int64]$Target,[bool]$Past,[int64]$Required){
+    # C2 ledgerのstate規約: 1 invocation内でlast finalizedは変化しない。
+    # primaryはpending renderを立て、terminalはpast_source_domainを立てる。
     $pre=Copy-State $script:state
     $post=Copy-State $script:state
-    $post.last_finalized_opportunity_ordinal=($Ordinal-1)
+    if($Result-eq'PRIMARY_DECISION'){$post.pending_render=$true}
     $post.past_source_domain=$Past
     $script:state=Copy-State $post
     return [ordered]@{
@@ -57,7 +62,7 @@ function New-Invocation([int]$Serial,[int64]$Ordinal,[string]$Result,[string]$Re
         past_source_domain=$Past
         required_intent_membership=($Ordinal-ge0-and$Ordinal-lt$Required)
         required_intent_membership_exact=$true
-        last_finalized_opportunity_ordinal=($Ordinal-1)
+        last_finalized_opportunity_ordinal=$pre.last_finalized_opportunity_ordinal
         formal_transport_disposition=$(if($Ordinal-lt$Required){'TRANSPORT'}
                                        else{'SUPPRESS_OUTSIDE_REQUIRED_SET'})
         formal_transport_disposition_exact=$true
@@ -68,7 +73,9 @@ function New-Invocation([int]$Serial,[int64]$Ordinal,[string]$Result,[string]$Re
 function Build-Records([object]$Config,[int64[]]$Ordinals){
     $built=@()
     $required=[int64]$Config.required_frame_count
+    $serial=0
     foreach($ordinal in $Ordinals){
+        ++$serial
         $numerator=[int64]$ordinal*[int64]$Config.source_fps_numerator*
                    [int64]$Config.refresh_denominator
         $denominator=[int64]$Config.source_fps_denominator*[int64]$Config.refresh_numerator
@@ -76,7 +83,7 @@ function Build-Records([object]$Config,[int64[]]$Ordinals){
         $target=[int64]$Config.source_frame_offset+
                 [System.Math]::DivRem($numerator,$denominator,[ref]$remainder)
         $past=$target-ge$required
-        $built+=,(New-Invocation ([int]$ordinal) $ordinal `
+        $built+=,(New-Invocation $serial $ordinal `
             $(if($past){'OUTSIDE_SOURCE_DOMAIN_DECISION'}else{'PRIMARY_DECISION'}) `
             $(if($past){'PAST_SOURCE_DOMAIN'}else{'PRIMARY'}) $target $past $required)
     }
@@ -89,6 +96,13 @@ if($Case-eq'GoodExactInt64BoundaryDivision'){
         source_fps_denominator=3;refresh_numerator=1;refresh_denominator=1
         required_frame_count=[int64]6004799503160662}
     $records=Build-Records $schedulerConfig @([int64]1,[int64]2)
+}elseif($Case-eq'GoodObservedOrdinalGapPattern'){
+    # 実観測形状: invocation serialは連続でも、completed refresh authorityから来る
+    # intent ordinalは +2 / +3 で進む。ordinalのauthorityはrefresh countだけ。
+    $schedulerConfig=[ordered]@{
+        source_frame_offset=0;source_fps_numerator=60;source_fps_denominator=1
+        refresh_numerator=30;refresh_denominator=1;required_frame_count=20}
+    $records=Build-Records $schedulerConfig @([int64]1,[int64]3,[int64]5,[int64]8,[int64]10)
 }else{
     $records=Build-Records $schedulerConfig @([int64]1,[int64]2,[int64]3,[int64]4,[int64]5)
 }
@@ -143,6 +157,21 @@ $expectPass=$false
 switch($Case){
     'Good' {$expectPass=$true}
     'GoodExactInt64BoundaryDivision' {$expectPass=$true}
+    'GoodObservedOrdinalGapPattern' {$expectPass=$true}
+    'NegativeRequiredMembershipReplayMutation' {
+        # ordinalとconfigは正しいまま、membershipだけrecord/witness両方で捏造する。
+        $terminal=$artifact.formal_scheduler_invocation_ledger.records[$records.Count-1]
+        $second=$artifact.formal_scheduler_invocation_ledger.records[1]
+        $second.required_intent_membership=(-not[bool]$second.required_intent_membership)}
+    'NegativeRequiredMembershipExactMissing' {
+        $artifact.formal_scheduler_invocation_ledger.records[1].required_intent_membership_exact=
+            $false}
+    'NegativeC2LedgerPerformanceAuthorityPromotion' {
+        $artifact.formal_scheduler_invocation_ledger.canonical_performance_authority=$true}
+    'NegativeC2LedgerRecordCountMismatch' {
+        $artifact.formal_scheduler_invocation_ledger.record_count=($records.Count+1)}
+    'NegativeC2LedgerPhysicalAuthorityPromotion' {
+        $artifact.formal_scheduler_invocation_ledger.physical_mapping_support_authority=$true}
     'NegativeTerminalMembershipFalse' {
         # source domain外になった時点でrequired intent domainも尽きているcapture。
         # 壊れてはいないが、W4-C3 closureの対象workloadではない。

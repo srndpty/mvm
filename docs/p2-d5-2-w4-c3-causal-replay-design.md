@@ -604,7 +604,11 @@ replay authorityに使うfieldはすべてpresenceを明示検査する。欠落
 ## checker（step 4）
 
 `scripts/check-p2-d5-2-w4-c3-causal-replay.ps1`はartifactの保存済みfieldだけを検証し、
-witnessもcauseも再構築しない。verdictの分類は機械的に固定する。
+witnessもcauseも再構築しない。C2 ledger自身のauthority envelope（diagnostic/performance分離、
+physical mapping authority非昇格、record count、capture gate raw QPC）は、条件を複製せず
+既存の`check-p2-d5-2-w4-c2-invocation-ledger.ps1`をprerequisiteとして同じJSONへ再実行して
+担保する。required-intent membershipもC0定義`0 <= ordinal < required_frame_count`から
+ordinalでreplayし、`required_intent_membership_exact`を要求する。verdictの分類は機械的に固定する。
 
 ```text
 W4_C3_PARTIAL

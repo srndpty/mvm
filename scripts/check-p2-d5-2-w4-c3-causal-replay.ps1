@@ -255,11 +255,23 @@ try{
         if($replayedPast-ne[bool]$record.past_source_domain){
             Fail-Incompatible "past_source_domain replayが一致しません: serial=$serial"
         }
+        # required-intent membershipもC0定義からordinalで再生する。
+        $null=Need $record 'required_intent_membership_exact' $context
+        if(-not[bool]$record.required_intent_membership_exact){
+            Fail-Incompatible "required intent membershipがexactではありません: serial=$serial"
+        }
+        $replayedMembership=($ordinal-ge0-and$ordinal-lt[int64]$config.required_frame_count)
+        if($replayedMembership-ne[bool]$record.required_intent_membership){
+            Fail-Incompatible "required intent membership replayが一致しません: serial=$serial"
+        }
         ++$replayedCount
         if($result-eq'OUTSIDE_SOURCE_DOMAIN_DECISION'){
             if($terminalIndex-ge0){Fail-Incompatible 'source-domain terminalが複数あります'}
             if(-not$replayedPast){
                 Fail-Incompatible "terminal predicateがreplayで成立しません: serial=$serial"
+            }
+            if(-not$replayedMembership){
+                Fail-Incompatible 'terminalのrequired intent membership replayがtrueではありません'
             }
             if($null-eq$previousValid){
                 Fail-Partial 'terminal直前のvalid decisionがありません'
@@ -287,7 +299,18 @@ try{
         Fail-Incompatible 'joined terminalとreplay terminalが別recordです'
     }
 
-    # ---- 7. flag / publication serialはdiagnostic表示のみ ----
+    # ---- 7. C2 ledger authority envelope ----
+    # C2 ledger自身のauthority envelopeは既存C2 checkerをprerequisiteとして再実行する。
+    # C3側へ条件を複製してdriftさせない。
+    $c2Checker=Join-Path $PSScriptRoot 'check-p2-d5-2-w4-c2-invocation-ledger.ps1'
+    if(-not(Test-Path -LiteralPath $c2Checker)){Fail-Partial 'W4-C2 checkerが見つかりません'}
+    $c2Output=& pwsh -NoProfile -File $c2Checker -Json $Json 2>&1
+    if($LASTEXITCODE-ne0){
+        $c2Message=(($c2Output|Out-String).Trim()-split"`n"|Select-Object -Last 1).Trim()
+        Fail-Incompatible ("W4-C2 invocation ledger prerequisiteが失敗しました: {0}" -f $c2Message)
+    }
+
+    # ---- 8. flag / publication serialはdiagnostic表示のみ ----
     $diagnostic=[ordered]@{
         pre_explicit_stop_requested=[bool]$pre.explicit_stop_requested
         pre_fatal_latched=[bool]$pre.fatal_latched
