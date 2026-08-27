@@ -15,13 +15,15 @@ W4-C3 instrumentationもdiagnostic-onlyであり、canonical performance authori
 amend 1: alternative stop publication ordering serial
 amend 2: ordinal -> target -> past_source_domain predicate replay
 amend 3: publication serial memory ordering / replay scope / overflow semantics
+amend 4: single atomic stop-cause arbitration（alternative exclusion authority）
 ```
 
 amend 1は`pre.explicit_stop_requested=false`だけでは別threadからのpublicationとのinterleavingを
 排除できない欠陥を閉じる。amend 2はLink A→Bのordinalとterminal branchの間に残っていたedgeを
 exact replayで埋める。amend 3はamend 1のserialをC++ memory modelとpublication site先頭という
-実装契約まで下ろし、amend 2のreplay範囲とoverflow semanticsの曖昧さを消す。いずれかを満たさない
-captureは`W4_C3_PARTIAL`とする。
+実装契約まで下ろし、amend 2のreplay範囲とoverflow semanticsの曖昧さを消す。amend 4は
+alternative stop exclusionのauthorityをserial観測から単一atomicのCAS ownershipへ移す。いずれかを
+満たさないcaptureは`W4_C3_PARTIAL`とする。
 
 ## 追加する唯一の stop witness
 
@@ -29,7 +31,7 @@ stop witnessのwriterはrender threadの`finishMeasurement()`だけとする。c
 QPCからcauseを再構築してはならない。
 
 ```text
-schema = mvm-p2-d5-2-w4-c3-stop-witness-2
+schema = mvm-p2-d5-2-w4-c3-stop-witness-3
 
 cause:
   DOMAIN_TERMINAL
@@ -42,6 +44,11 @@ scheduler_result                  # DOMAIN_TERMINALではOUTSIDE_SOURCE_DOMAIN_D
 scheduler_reason                  # DOMAIN_TERMINALではPAST_SOURCE_DOMAIN
 terminal_past_source_domain
 terminal_required_intent_membership
+
+stop_arbitration:
+  previous                        # DOMAIN_TERMINAL成立時はNONE
+  claimed                         # DOMAIN_TERMINAL
+  claim_succeeded
 
 measurement_start:
   explicit_stop_publish_serial
@@ -102,13 +109,23 @@ fatal_publish_serial           monotonic, writer-side
 
 ```text
 publish siteはflag storeより前にserialをfetch_add(1)する
-serial incrementはclassified publication siteのfirst externally visible operationである
+serial incrementはarbitration claim直後、flag storeとside effectより前に置く
 serialはmeasurement期間中resetしない
 reader（stop witness）はserialを読むだけで、publicationを再構築しない
 ```
 
-flagより先にserialを進めるので、readerがserialの不変を観測したwindowでは、そのwindow内で
-publicationが開始してもいない。
+serialの主張範囲（amend 4で確定）:
+
+```text
+serial equalityは ordering / inventory diagnostic であり、
+alternative-stop exclusion authorityではない
+```
+
+`seq_cst`は全`seq_cst` operationへ単一のtotal orderを与えるが、そのSC orderは異なるthreadの
+wall-clock上の「開始した/していない」ではない。controller threadの`fetch_add`とrender threadの
+`load`の間にsynchronizationがない以上、serial equalityだけから「その区間にalternative publicationが
+物理的に開始していない」とは主張しない。exclusion authorityはamend 4のCAS arbitrationが持ち、
+serial equalityはその補強証拠として扱う。
 
 ### memory ordering（instrumentation前にfreeze）
 
@@ -136,17 +153,20 @@ at_gate_close serial
 を並べる方が証拠として単純である。release/acquireへ緩めるなら、その argument自体をこの契約へ
 追記してからでなければならない。
 
-「publication開始」の定義はserial incrementそのものとする。したがって次を禁止する。
+「publication開始」の定義はamend 4のarbitration claimとし、serial incrementはその直後に置く。
+したがって次を禁止する。
 
 ```cpp
-// NG: serial incrementより前に外部可視なstop side effectがある
+// NG: arbitration claim / serial incrementより前に外部可視なstop side effectがある
 someStopSideEffect();
+stopCause.compare_exchange_strong(expected, EXPLICIT_STOP, std::memory_order_seq_cst);
 serial.fetch_add(1, std::memory_order_seq_cst);
 flag.store(true, std::memory_order_release);
 ```
 
-architecture testで、classified publication siteが`memory_order_seq_cst`のfetch_addで始まり、
-その前に外部可視なstop side effectを持たないことを検査する。
+architecture testで、classified publication siteが`memory_order_seq_cst`のarbitration claimで
+始まり、serial incrementがそれに続き、いずれより前に外部可視なstop side effectを持たないことを
+検査する。
 
 ### measurement_start snapshotの位置
 
@@ -182,6 +202,80 @@ at_gate_close.fatal_publish_serial         == measurement_start.fatal_publish_se
 これが成立すればmeasurement中に先行explicit stop publicationもfatal publicationも無い。
 `planned_window_end`は`callbackBegin >= measurementEndQpc`という純粋なexact predicateなので
 serialを持たない。
+
+## amend 4: single atomic stop-cause arbitration
+
+alternative stop exclusionのauthorityはserial観測ではなく、単一atomicのownership claimとする。
+
+```text
+StopArbitration =
+    NONE
+    DOMAIN_TERMINAL
+    PLANNED_WINDOW_END
+    EXPLICIT_STOP
+    FATAL
+```
+
+classified publication siteは、外部可視なstop side effectより前にこのatomicへclaimする。
+
+```cpp
+// explicit stop publication site
+auto expected = StopArbitration::None;
+const bool claimed = stopCause_.compare_exchange_strong(
+    expected, StopArbitration::ExplicitStop, std::memory_order_seq_cst);
+
+// DOMAIN_TERMINAL（render thread, terminal branch）
+auto expected = StopArbitration::None;
+const bool claimed = stopCause_.compare_exchange_strong(
+    expected, StopArbitration::DomainTerminal, std::memory_order_seq_cst);
+```
+
+publication siteの順序は次に固定する。
+
+```text
+arbitration claim (CAS, seq_cst)
+        v
+publication serial fetch_add
+        v
+flag store / その他のstop side effect
+```
+
+terminal callbackでのclaim成功そのものが、この単一atomicのmodification order上で
+
+```text
+それ以前にEXPLICIT_STOP / FATAL / PLANNED_WINDOW_ENDがstop ownershipを獲得していない
+```
+
+というbranch-exact arbitration witnessになる。timing/visibilityの議論を経由しない。
+
+claimに失敗したsiteは推測せず、結果をそのまま記録する。
+
+```text
+claim_succeeded = false
+previous        = 実際に勝っていたcause（例: DOMAIN_TERMINAL）
+```
+
+これによりexplicit stopが「先行していた」のか「後から来て負けた」のかが識別される。後着の
+EXPLICIT_STOPは`LOST_TO_DOMAIN_TERMINAL`として扱い、root cause判定を汚さない。
+
+役割分担:
+
+```text
+stop arbitration atomic  = causal authority（alternative exclusion）
+publication serials      = independent ordering / inventory diagnostic
+```
+
+DOMAIN_TERMINAL closure条件へ次を追加する。
+
+```text
+stop_arbitration.previous = NONE
+stop_arbitration.claimed = DOMAIN_TERMINAL
+stop_arbitration.claim_succeeded = true
+```
+
+`NegativeExplicitStopPublishedBetweenPreAndGateClose`のfixtureは、先に
+`NONE -> EXPLICIT_STOP`のclaimを成功させてからDOMAIN_TERMINAL claimを試し、後者が失敗して
+root cause PASSにならないことをcheckerへ要求する。
 
 ## exact join
 
@@ -332,6 +426,9 @@ pre.capture_gate_open = true
 pre.explicit_stop_requested = false
 pre.planned_window_end_reached = false
 pre.fatal_latched = false
+stop_arbitration.previous = NONE
+stop_arbitration.claimed = DOMAIN_TERMINAL
+stop_arbitration.claim_succeeded = true
 pre.explicit_stop_publish_serial == at_gate_close.explicit_stop_publish_serial
 pre.fatal_publish_serial == at_gate_close.fatal_publish_serial
 at_gate_close.explicit_stop_publish_serial == measurement_start.explicit_stop_publish_serial
@@ -380,7 +477,9 @@ NegativeCaptureGateExchangeMutation
 NegativeExplicitStopPreexisting
 NegativeExplicitStopPublishedBetweenPreAndGateClose
 NegativeStopPublishSerialRelaxedOrdering
-NegativeStopSideEffectBeforeSerialIncrement
+NegativeAlternativeStopWinsArbitration
+NegativeDomainTerminalClaimWithoutNonePrestate
+NegativeStopSideEffectBeforeArbitrationClaim
 NegativePlannedWindowEndPreexisting
 NegativeFatalPreexisting
 NegativePostTerminalInvocation
@@ -395,9 +494,12 @@ NegativePerformanceAuthorityPromotion
 explicit stopがpublishされたcaptureを拒否し、raceによるfalse root-cause PASSを直接防ぐ。
 `NegativeTerminalTargetPredicateMutation`はterminalの`target_frame`または
 `past_source_domain`を改変したcaptureをreplay不一致として拒否する。
-`NegativeStopPublishSerialRelaxedOrdering`と`NegativeStopSideEffectBeforeSerialIncrement`は
-architecture testとして、publication siteのserialが`seq_cst`でないもの、およびserial increment
-より前に外部可視なstop side effectを置いたものを拒否する。
+`NegativeStopPublishSerialRelaxedOrdering`と`NegativeStopSideEffectBeforeArbitrationClaim`は
+architecture testとして、publication siteのserial/claimが`seq_cst`でないもの、およびarbitration
+claimより前に外部可視なstop side effectを置いたものを拒否する。
+`NegativeAlternativeStopWinsArbitration`はEXPLICIT_STOP/FATALがarbitrationに勝ったcaptureで
+root cause PASSを出させず、`NegativeDomainTerminalClaimWithoutNonePrestate`は
+`previous != NONE`のまま DOMAIN_TERMINAL をclaimedとして記録したcaptureを拒否する。
 
 ## 実装順序
 
@@ -408,10 +510,12 @@ W4-C3 before implementation
   amend 3: publication serial memory ordering            [固定済み]
   amend 3: replay対象 = valid decision invocation         [固定済み]
   amend 3: producerと同じoverflow semantics               [固定済み]
+  amend 4: single atomic stop-cause arbitration           [固定済み]
 
 then
   1. scheduler_config emit
-  2. publication serial instrumentation（seq_cst / site先頭）
+  2. stop arbitration atomic + publication serial instrumentation
+     （claim seq_cst / site先頭、serialはclaim直後）
   3. stop witness v2
   4. checker / replay
   5. negatives（architecture testを含む）

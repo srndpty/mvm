@@ -4,6 +4,7 @@ param(
     [ValidateSet('Good','NegativeCauseEnum','NegativeExactJoin','NegativeAlternativeStop',
         'NegativeStopPublishSerial','NegativeTargetPredicateReplay','NegativeSerialMemoryOrder',
         'NegativeSerialSitePrecedence','NegativeReplayScope','NegativeOverflowSemantics',
+        'NegativeArbitrationAuthority','NegativeArbitrationClaimPrestate','NegativeSerialAsAuthority',
         'NegativeAuthority')]
     [string]$Case='Good'
 )
@@ -17,7 +18,10 @@ switch($Case){
     'NegativeStopPublishSerial' {$contractText=$contractText.Replace('pre.explicit_stop_publish_serial == at_gate_close.explicit_stop_publish_serial','pre.explicit_stop_publish_serial <= at_gate_close.explicit_stop_publish_serial')}
     'NegativeTargetPredicateReplay' {$contractText=$contractText.Replace('past_source_domain = target >= required_frame_count','past_source_domain = target > required_frame_count')}
     'NegativeSerialMemoryOrder' {$contractText=$contractText.Replace('publish_serial.fetch_add(1, std::memory_order_seq_cst)','publish_serial.fetch_add(1, std::memory_order_relaxed)')}
-    'NegativeSerialSitePrecedence' {$contractText=$contractText.Replace('serial incrementはclassified publication siteのfirst externally visible operationである','serial incrementはclassified publication siteのどこかで行う')}
+    'NegativeSerialSitePrecedence' {$contractText=$contractText.Replace('serial incrementはarbitration claim直後、flag storeとside effectより前に置く','serial incrementはclassified publication siteのどこかで行う')}
+    'NegativeArbitrationAuthority' {$contractText=$contractText.Replace('stop_arbitration.claim_succeeded = true','stop_arbitration.claim_succeeded = false')}
+    'NegativeArbitrationClaimPrestate' {$contractText=$contractText.Replace('stop_arbitration.previous = NONE','stop_arbitration.previous = EXPLICIT_STOP')}
+    'NegativeSerialAsAuthority' {$contractText=$contractText.Replace('alternative-stop exclusion authorityではない','alternative-stop exclusion authorityである')}
     'NegativeReplayScope' {$contractText=$contractText.Replace('replay対象はvalid decision invocationに限る。','replay対象は全invocationとする。')}
     'NegativeOverflowSemantics' {$contractText=$contractText.Replace('producerと同じchecked multiply / add precondition','checkerは多倍長整数で評価してよい')}
     'NegativeAuthority' {$contractText=$contractText.Replace('canonical performance authorityへ昇格しない','canonical performance authorityへ昇格する')}
@@ -46,13 +50,21 @@ try{
     Require 'publish_serial\.fetch_add\(1, std::memory_order_seq_cst\)' 'publication serialのseq_cst writer orderingがありません'
     Require 'publish_serial\.load\(std::memory_order_seq_cst\)' 'publication serialのseq_cst reader orderingがありません'
     Deny 'publish_serial\.fetch_add\(1, std::memory_order_relaxed\)' 'publication serialへrelaxed orderingが混入しています'
-    Require 'serial incrementはclassified publication siteのfirst externally visible operationである' 'serial incrementのsite先頭規約がありません'
+    Require 'serial incrementはarbitration claim直後、flag storeとside effectより前に置く' 'serial incrementのsite内順序規約がありません'
+    Require 'StopArbitration =[\s\S]+NONE[\s\S]+DOMAIN_TERMINAL[\s\S]+PLANNED_WINDOW_END[\s\S]+EXPLICIT_STOP[\s\S]+FATAL' 'stop arbitration enumがありません'
+    Require 'compare_exchange_strong\([\s\S]+std::memory_order_seq_cst\)' 'arbitration claimのCAS契約がありません'
+    Require 'arbitration claim \(CAS, seq_cst\)[\s\S]+publication serial fetch_add[\s\S]+flag store' 'publication siteのclaim/serial/flag順序が固定されていません'
+    Require 'stop_arbitration\.previous = NONE[\s\S]*stop_arbitration\.claimed = DOMAIN_TERMINAL[\s\S]*stop_arbitration\.claim_succeeded = true' 'DOMAIN_TERMINAL arbitration closure条件がありません'
+    Require 'stop arbitration atomic  = causal authority' 'exclusion authorityがarbitration atomicへ固定されていません'
+    Require 'alternative-stop exclusion authorityではない' 'serial equalityがexclusion authorityから外されていません'
+    Require 'NegativeAlternativeStopWinsArbitration' 'arbitration敗北時のnegativeがありません'
+    Require 'NegativeDomainTerminalClaimWithoutNonePrestate' 'claim prestate negativeがありません'
+    Require 'NegativeStopSideEffectBeforeArbitrationClaim' 'side-effect precedence negativeがありません'
     Require 'measurement-start authority established[\s\S]+snapshot alternative-publication serials[\s\S]+formal measurement capture open' 'measurement_start snapshotの位置が固定されていません'
     Require 'replay対象はvalid decision invocationに限る' 'replay対象がvalid decision invocationへ限定されていません'
     Require 'INVALID_FATAL[\s\S]+target/past_source_domainを捏造・補完しない' 'INVALID_FATAL時のreplay制限がありません'
     Require 'producerと同じchecked multiply / add precondition' 'producerと同じoverflow preconditionが要求されていません'
     Require 'NegativeStopPublishSerialRelaxedOrdering' 'relaxed ordering negativeがありません'
-    Require 'NegativeStopSideEffectBeforeSerialIncrement' 'side-effect precedence negativeがありません'
     Require 'NegativeExplicitStopPublishedBetweenPreAndGateClose' 'publication race negativeがありません'
     Require 'NegativeTerminalTargetPredicateMutation' 'terminal predicate mutation negativeがありません'
     Require 'canonical performance authorityへ昇格しない' 'C3 diagnosticがperformance authorityから分離されていません'
