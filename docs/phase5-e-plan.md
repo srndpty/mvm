@@ -651,16 +651,24 @@ VBlank observerをcurrent NULL DWM / actual scheduler ordinalと同一fresh capt
 [B1設計契約](p2-d5-2-b1-target-output-physical-authority-attribution.md)をfreezeした。instrumentation、negative
 test、capture、production behavior変更はまだ行っていない。
 
-B1はB0のHWND→HMONITOR→DXGI output→DisplayConfig identityを再利用し、observerは専用threadのままとする。
-render callbackは`WaitForVBlank()`を呼ばない。scheduler invocation serial、composition token、native Present、
-physical authorityの既存exact chainと、連続する実VBlank 2本が作る厳密な半開区間だけをjoinに使う。
-nearest-QPC、cadence toleranceによる一致救済、counter clamp、QPC interpolation、sequential ordinal `+1`、
-threshold変更、required-set縮小は禁止した。
+B1 amendmentでobserver sampleの命令位置を再監査した。sample QPCは`WaitForVBlank()`成功return後にobserver
+threadが`QueryPerformanceCounter()`を実行した時刻であり、physical VBlank boundary timestampではない。
+したがってcallback QPCを隣接observer wake QPCへhalf-open bracketしてcompleted physical ordinalを得る初版contractを
+撤回した。nearest-QPC、cadence tolerance、midpoint、interpolationで救済しない。
 
-fresh 3/3の全比較点で`delta NULL == delta intent`かつ`delta target_vblank != delta intent`となり、target-output
-physical ordinalによる`completed + 1 -> ordinal -> target -> predicates` shadowがactual terminal serialで
-premature intersectionを消し、frozen measurement endまで完全な場合だけproduction correction designへ進む。
-output migration、observer gap/regression/failure/overflow、publication ambiguity、join/coverage欠損はfail-closeする。
+current scheduler originはfirst committed swapの`frameSwapped` callback中に取得したpost-swap NULL DWM counterで
+確立する。初版のfirst committed Presentをdisplayed physical ordinalへ後からjoinするoriginは別causal boundaryで
+あるため、これも撤回した。pre-renderと同じfirst post-swap causal sample pointの双方でtarget-output counterを
+直接得るsupported authorityが確立するまで、physical joinとshadow replayは`NOT EVALUABLE`である。
+
+delta contractも「全点でtarget deltaがintent deltaと不一致」から、NULL sequenceのactual sequenceへの全点exact
+一致、exact common domain上のtarget physical sequence非同一性（少なくとも1点差）、full shadow causal outcome
+differenceへ修正した。現行observerでは後二者を評価できないため、現在のverdictはcandidate rejectionではなく
+`TARGET_OUTPUT_PHYSICAL_NOT_EVALUABLE`である。
+
+output migration、observer failure/overflow/regression、publication ambiguity、causal-boundary/join/coverage欠損は
+fail-closeする。render callbackの`WaitForVBlank()`、QPC heuristic、counter clamp、sequential ordinal `+1`、
+threshold変更、required-set縮小は禁止したままである。
 `past_source_domain && required_intent_membership`をsuccessful completionにしないinvariantは継続してfreeze済みで、
 代替product behaviorは未選択である。P5-E4は引き続きBLOCKEDである。
 
