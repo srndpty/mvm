@@ -1085,7 +1085,8 @@ private:
 
     void finishMeasurement(long long callbackBegin, StopArbitration cause,
                            const StopClaimResult& claim,
-                           const StopWitnessTerminalFacts& terminal = {}) {
+                           const StopWitnessTerminalFacts& terminal = {},
+                           bool claimFromPublicationRecord = false, bool claimRecorded = true) {
         // W4-C3 stop witness v3。pre snapshotはfinishMeasurement entry時点。
         CompositorStopWitness witness;
         witness.cause = cause;
@@ -1094,6 +1095,8 @@ private:
         witness.arbitrationClaimed = cause;
         witness.arbitrationPrevious = claim.previous;
         witness.arbitrationClaimSucceeded = claim.succeeded;
+        witness.claimFromPublicationRecord = claimFromPublicationRecord;
+        witness.claimRecorded = claimRecorded;
         witness.measurementStartState =
             state_->measurementStartArbitrationState.load(std::memory_order_seq_cst);
         witness.resetCountDuringMeasurement =
@@ -1260,13 +1263,28 @@ private:
         if (intervalEnded || stopRequested) {
             // W4-C3 amend 4。planned window endはここが publication site。
             // explicit stopはcontroller siteでclaim済みなので再claimしない。
-            // その場合claim fieldはthis siteでは未取得のまま残し、後から再構築しない。
-            const StopArbitration cause =
-                intervalEnded ? StopArbitration::PlannedWindowEnd : StopArbitration::ExplicitStop;
+            // explicit stopはpublication siteで確定したclaim recordをexactに引き継ぐ。
+            StopArbitration cause = StopArbitration::PlannedWindowEnd;
             StopClaimResult claim;
-            if (intervalEnded)
+            bool claimFromPublicationRecord = false;
+            bool claimRecorded = false;
+            if (intervalEnded) {
                 claim = claimStopCause(*state_, StopArbitration::PlannedWindowEnd);
-            finishMeasurement(callbackBegin, cause, claim);
+                claimRecorded = true;
+            } else {
+                cause = StopArbitration::ExplicitStop;
+                const StopPublicationRecord published = readStopClaimRecord(*state_);
+                if (published.valid) {
+                    cause = published.claimed;
+                    claim.previous = published.previous;
+                    claim.succeeded = published.succeeded;
+                    claim.publishSerial = published.publishSerial;
+                    claimFromPublicationRecord = true;
+                    claimRecorded = true;
+                }
+            }
+            finishMeasurement(callbackBegin, cause, claim, {}, claimFromPublicationRecord,
+                              claimRecorded);
             return true;
         }
         if (state_->measurementStartRequested.exchange(false, std::memory_order_acq_rel)) {

@@ -159,6 +159,16 @@ struct StopClaimResult {
     unsigned long long publishSerial = 0;
 };
 
+// W4-C3。publication siteで確定したclaim結果を、consumer側へexactに運ぶ。
+// consumerがstopArbitration.load()から逆算しないためのrecordである。
+struct StopPublicationRecord {
+    bool valid = false;
+    StopArbitration claimed = StopArbitration::None;
+    StopArbitration previous = StopArbitration::None;
+    bool succeeded = false;
+    unsigned long long publishSerial = 0;
+};
+
 // W4-C3 stop witness v3。terminal callbackで確定した事実だけを運ぶ。
 // checkerもcontrollerもQPCやledger末尾からこれらを再構築してはならない。
 struct StopWitnessTerminalFacts {
@@ -181,6 +191,9 @@ struct CompositorStopWitness {
     bool arbitrationClaimSucceeded = false;
     StopArbitration measurementStartState = StopArbitration::None;
     unsigned long long resetCountDuringMeasurement = 0;
+    // claim結果の出所。THIS_CALL_SITE / PUBLICATION_RECORD / NONE。
+    bool claimFromPublicationRecord = false;
+    bool claimRecorded = false;
 
     // publication serial（補強diagnostic）
     unsigned long long measurementStartExplicitStopPublishSerial = 0;
@@ -502,6 +515,8 @@ struct CompositorSpikeState {
     std::atomic<unsigned long long> losingStopClaimCount{0};
     std::mutex stopWitnessMutex;
     CompositorStopWitness stopWitness;
+    std::mutex stopPublicationMutex;
+    StopPublicationRecord stopPublicationRecord;
     // measurement-start authority pointで撮るsnapshot。reset直後ではない。
     std::atomic<StopArbitration> measurementStartArbitrationState{StopArbitration::None};
     std::atomic<unsigned long long> measurementStartExplicitStopPublishSerial{0};
@@ -538,6 +553,20 @@ inline StopClaimResult claimStopCause(CompositorSpikeState& state, StopArbitrati
     return result;
 }
 
+// W4-C3。publication siteのclaim結果をそのまま保存する。flag storeより前に呼ぶ。
+inline void publishStopClaimRecord(CompositorSpikeState& state, StopArbitration cause,
+                                   const StopClaimResult& claim) {
+    std::lock_guard<std::mutex> lock(state.stopPublicationMutex);
+    state.stopPublicationRecord = StopPublicationRecord{true, cause, claim.previous,
+                                                        claim.succeeded, claim.publishSerial};
+}
+
+// consumer（render thread）はこのrecordだけを読む。stateからの逆算をしない。
+inline StopPublicationRecord readStopClaimRecord(CompositorSpikeState& state) {
+    std::lock_guard<std::mutex> lock(state.stopPublicationMutex);
+    return state.stopPublicationRecord;
+}
+
 // W4-C3 amend 4。lifecycle reset siteはこの1箇所だけ。measurement中の呼出しは
 // contract違反としてcountされ、closure条件(reset_count_during_measurement=0)を破る。
 inline void resetStopArbitrationForMeasurement(CompositorSpikeState& state) {
@@ -546,6 +575,10 @@ inline void resetStopArbitrationForMeasurement(CompositorSpikeState& state) {
         state.stopArbitrationResetDuringMeasurementCount.fetch_add(1, std::memory_order_seq_cst);
     state.stopArbitration.store(StopArbitration::None, std::memory_order_seq_cst);
     state.stopArbitrationResetCount.fetch_add(1, std::memory_order_seq_cst);
+    {
+        std::lock_guard<std::mutex> lock(state.stopPublicationMutex);
+        state.stopPublicationRecord = StopPublicationRecord{};
+    }
 }
 
 class CompositorRhiItem : public QQuickRhiItem {

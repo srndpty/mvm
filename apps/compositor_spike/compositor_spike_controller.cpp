@@ -1139,6 +1139,8 @@ void CompositorSpikeController::tick() {
                 // W4-C3 amend 4。stop side effectより前にownershipをclaimする。
                 const StopClaimResult claim = claimStopCause(*state_, StopArbitration::ExplicitStop);
                 explicitStopClaim_ = claim;
+                // consumerがwitnessへ入れるclaim結果をこのpublication siteで確定させる。
+                publishStopClaimRecord(*state_, StopArbitration::ExplicitStop, claim);
                 state_->measurementStopRequested.store(true, std::memory_order_release);
                 state_->measurementStopCaptured.store(false, std::memory_order_release);
                 item_->update();
@@ -1591,6 +1593,7 @@ void CompositorSpikeController::beginShutdown(const QString& reason, bool failur
          state_->measurementIntervalActive.load(std::memory_order_acquire))) {
         // W4-C3 amend 4。fatal shutdown由来のstopもownershipをclaimしてから発行する。
         fatalStopClaim_ = claimStopCause(*state_, StopArbitration::Fatal);
+        publishStopClaimRecord(*state_, StopArbitration::Fatal, fatalStopClaim_);
         state_->measurementStopRequested.store(true, std::memory_order_release);
         phase_ = Phase::FatalMeasureStopWait;
         phaseTimer_.restart();
@@ -2264,6 +2267,13 @@ bool CompositorSpikeController::writeMetrics() {
                  {"previous", QString::fromLatin1(stopArbitrationName(witness.arbitrationPrevious))},
                  {"claimed", QString::fromLatin1(stopArbitrationName(witness.arbitrationClaimed))},
                  {"claim_succeeded", witness.arbitrationClaimSucceeded},
+                 {"claim_recorded", witness.claimRecorded},
+                 {"claim_source",
+                  QString::fromLatin1(witness.claimRecorded
+                                          ? (witness.claimFromPublicationRecord
+                                                 ? "PUBLICATION_RECORD"
+                                                 : "THIS_CALL_SITE")
+                                          : "NONE")},
                  {"measurement_start_state",
                   QString::fromLatin1(stopArbitrationName(witness.measurementStartState))},
                  {"reset_count_during_measurement",

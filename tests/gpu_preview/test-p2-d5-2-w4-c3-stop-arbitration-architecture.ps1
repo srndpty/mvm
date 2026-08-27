@@ -10,7 +10,9 @@ param(
         'NegativeSecondArbitrationResetWriterInHeader','NegativeMissingWitnessEmit',
         'NegativeSecondWitnessOverwrite','NegativeWitnessCauseReconstructed',
         'NegativeClaimResultNotTransported','NegativeMeasurementStartSnapshotAtReset',
-        'NegativeWitnessCapturedBeforePayloadPublish','NegativeCaptureGateExchangeReturnIgnored')]
+        'NegativeWitnessCapturedBeforePayloadPublish','NegativeCaptureGateExchangeReturnIgnored',
+        'NegativeExplicitStopClaimDefaulted','NegativeExplicitStopClaimReconstructedFromWinner',
+        'NegativeExplicitStopClaimRecordNotPublished')]
     [string]$Case='Good'
 )
 $ErrorActionPreference='Stop'
@@ -42,6 +44,8 @@ switch($Case){
         $controller=$controller.Replace((Lf @'
                 const StopClaimResult claim = claimStopCause(*state_, StopArbitration::ExplicitStop);
                 explicitStopClaim_ = claim;
+                // consumerがwitnessへ入れるclaim結果をこのpublication siteで確定させる。
+                publishStopClaimRecord(*state_, StopArbitration::ExplicitStop, claim);
                 state_->measurementStopRequested.store(true, std::memory_order_release);
 '@),(Lf @'
                 state_->measurementStopRequested.store(true, std::memory_order_release);
@@ -49,6 +53,7 @@ switch($Case){
     'NegativeUnclaimedFatalWriter' {
         $controller=$controller.Replace((Lf @'
         fatalStopClaim_ = claimStopCause(*state_, StopArbitration::Fatal);
+        publishStopClaimRecord(*state_, StopArbitration::Fatal, fatalStopClaim_);
         state_->measurementStopRequested.store(true, std::memory_order_release);
 '@),(Lf @'
         state_->measurementStopRequested.store(true, std::memory_order_release);
@@ -111,6 +116,37 @@ switch($Case){
                 state_->stopWitnessCaptured.store(true, std::memory_order_release);
                 state_->stopWitness = witness;
 '@))}
+    'NegativeExplicitStopClaimDefaulted' {
+        $renderer=$renderer.Replace((Lf @'
+                const StopPublicationRecord published = readStopClaimRecord(*state_);
+                if (published.valid) {
+                    cause = published.claimed;
+                    claim.previous = published.previous;
+                    claim.succeeded = published.succeeded;
+                    claim.publishSerial = published.publishSerial;
+                    claimFromPublicationRecord = true;
+                    claimRecorded = true;
+                }
+'@),'')}
+    'NegativeExplicitStopClaimReconstructedFromWinner' {
+        $renderer=$renderer.Replace((Lf @'
+                const StopPublicationRecord published = readStopClaimRecord(*state_);
+                if (published.valid) {
+                    cause = published.claimed;
+                    claim.previous = published.previous;
+                    claim.succeeded = published.succeeded;
+'@),(Lf @'
+                const StopPublicationRecord published = StopPublicationRecord{};
+                if (true) {
+                    cause = StopArbitration::ExplicitStop;
+                    claim.previous = StopArbitration::None;
+                    claim.succeeded =
+                        state_->stopArbitration.load(std::memory_order_seq_cst) == cause;
+'@))}
+    'NegativeExplicitStopClaimRecordNotPublished' {
+        $controller=$controller.Replace((Lf @'
+                publishStopClaimRecord(*state_, StopArbitration::ExplicitStop, claim);
+'@),'')}
     'NegativeCaptureGateExchangeReturnIgnored' {
         $renderer=$renderer.Replace((Lf @'
             witness.captureGateExchangeClosed = captureGateWasOpen;
@@ -176,15 +212,15 @@ try{
     Deny $controller 'stopArbitration\.compare_exchange_strong' 'helper外のinline CASがあります'
 
     # classified publication siteが全てclaimを通る
-    Require $controller 'claimStopCause\(\*state_, StopArbitration::ExplicitStop\);[\s\S]{0,200}measurementStopRequested\.store\(true' 'explicit stop writerがclaimを通りません'
-    Require $controller 'claimStopCause\(\*state_, StopArbitration::Fatal\);[\s\S]{0,200}measurementStopRequested\.store\(true' 'fatal shutdown由来のstop writerがclaimを通りません'
+    Require $controller 'claimStopCause\(\*state_, StopArbitration::ExplicitStop\);[\s\S]{0,400}measurementStopRequested\.store\(true' 'explicit stop writerがclaimを通りません'
+    Require $controller 'claimStopCause\(\*state_, StopArbitration::Fatal\);[\s\S]{0,400}measurementStopRequested\.store\(true' 'fatal shutdown由来のstop writerがclaimを通りません'
     Require $renderer 'claimStopCause\(\*state_, StopArbitration::Fatal\);[\s\S]{0,400}fatal\.store\(true' 'fatal latch siteがclaimを通りません'
     $domainReachedStores=([regex]::Matches($renderer,'formalOpportunityDomainReached\.store\(true')).Count
     $claimedDomainReached=([regex]::Matches($renderer,'claimStopCause\(\*state_, StopArbitration::DomainTerminal\);\s*state_->formalOpportunityDomainReached\.store\(true')).Count
     if($domainReachedStores-eq0-or$claimedDomainReached-ne$domainReachedStores){
         throw "DOMAIN_TERMINAL claimがside effectより前にないsiteがあります: claimed=$claimedDomainReached stores=$domainReachedStores"
     }
-    Require $renderer 'claimStopCause\(\*state_, StopArbitration::PlannedWindowEnd\);[\s\S]{0,300}finishMeasurement\(callbackBegin, cause, claim\)' 'planned window end siteがclaimを通りません'
+    Require $renderer 'claimStopCause\(\*state_, StopArbitration::PlannedWindowEnd\);[\s\S]{0,900}finishMeasurement\(callbackBegin, cause, claim,' 'planned window end siteがclaimを通りません'
     $terminalClaims=([regex]::Matches($renderer,'claimStopCause\(\*state_, StopArbitration::DomainTerminal\)')).Count
     if($terminalClaims-ne2){throw "terminal branchのclaim siteが2箇所ではありません: $terminalClaims"}
     $fatalStores=([regex]::Matches($renderer,'fatal\.store\(true')).Count
@@ -207,9 +243,18 @@ try{
     Require $renderer 'scheduler_\.start\(callbackBegin[\s\S]{0,400}measurementStartArbitrationState\.store[\s\S]{0,3000}formalOpportunityCaptureActive\.store\(true' 'measurement-start snapshotがauthority pointで撮られていません'
     Require $renderer 'witness\.gateCloseExplicitStopPublishSerial =[\s\S]{0,500}formalOpportunityCaptureActive\.exchange\(false' 'at_gate_close serialがcapture gate exchange直前で撮られていません'
     Require $controller 'mvm-p2-d5-2-w4-c3-stop-witness-3' 'stop witness schemaがemitされません'
-    Require $controller 'stopArbitrationName\(witness\.arbitrationPrevious\)[\s\S]{0,400}claim_succeeded[\s\S]{0,400}reset_count_during_measurement' 'arbitration fieldがwitness由来で出力されていません'
+    Require $controller 'stopArbitrationName\(witness\.arbitrationPrevious\)[\s\S]{0,400}claim_succeeded[\s\S]{0,900}reset_count_during_measurement' 'arbitration fieldがwitness由来で出力されていません'
     Deny $controller 'stopArbitrationName\(\s*state_->stopArbitration\.load' 'controllerがarbitration stateからcauseを再構築しています'
     Deny $renderer 'witness\.arbitrationClaimSucceeded =\s*state_->stopArbitration\.load' 'claim結果をstateから逆算しています'
+
+    # explicit stop consumptionはpublication siteのclaim recordをexactに引き継ぐ
+    Require $rendererHeader 'inline void publishStopClaimRecord\(CompositorSpikeState& state, StopArbitration cause,' 'publication claim recordのwriter helperがありません'
+    Require $rendererHeader 'inline StopPublicationRecord readStopClaimRecord\(CompositorSpikeState& state\)' 'publication claim recordのreader helperがありません'
+    Require $rendererHeader 'stopPublicationRecord = StopPublicationRecord\{\};' 'lifecycle resetでclaim recordが消えません'
+    Require $controller 'publishStopClaimRecord\(\*state_, StopArbitration::ExplicitStop, claim\);[\s\S]{0,200}measurementStopRequested\.store\(true' 'explicit stop publication siteがclaim recordを残しません'
+    Require $controller 'publishStopClaimRecord\(\*state_, StopArbitration::Fatal, fatalStopClaim_\);[\s\S]{0,200}measurementStopRequested\.store\(true' 'fatal stop publication siteがclaim recordを残しません'
+    Require $renderer 'const StopPublicationRecord published = readStopClaimRecord\(\*state_\);[\s\S]{0,400}claim\.succeeded = published\.succeeded;' 'explicit stop consumptionがclaim recordを引き継いでいません'
+    Deny $renderer 'claim\.succeeded =\s*state_->stopArbitration\.load' 'claim結果をwinner stateから逆算しています'
 
     # amend 2: replay入力はscheduler instance config
     Require $schedulerHeader 'PresentationOpportunityConfig config;' 'snapshotがscheduler instance configを持ちません'
