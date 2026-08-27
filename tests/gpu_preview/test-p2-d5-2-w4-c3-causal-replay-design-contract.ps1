@@ -2,7 +2,9 @@
 param(
     [Parameter(Mandatory=$true)][string]$Contract,
     [ValidateSet('Good','NegativeCauseEnum','NegativeExactJoin','NegativeAlternativeStop',
-        'NegativeStopPublishSerial','NegativeTargetPredicateReplay','NegativeAuthority')]
+        'NegativeStopPublishSerial','NegativeTargetPredicateReplay','NegativeSerialMemoryOrder',
+        'NegativeSerialSitePrecedence','NegativeReplayScope','NegativeOverflowSemantics',
+        'NegativeAuthority')]
     [string]$Case='Good'
 )
 $ErrorActionPreference='Stop'
@@ -14,6 +16,10 @@ switch($Case){
     'NegativeAlternativeStop' {$contractText=$contractText.Replace('pre.explicit_stop_requested = false','pre.explicit_stop_requested = true')}
     'NegativeStopPublishSerial' {$contractText=$contractText.Replace('pre.explicit_stop_publish_serial == at_gate_close.explicit_stop_publish_serial','pre.explicit_stop_publish_serial <= at_gate_close.explicit_stop_publish_serial')}
     'NegativeTargetPredicateReplay' {$contractText=$contractText.Replace('past_source_domain = target >= required_frame_count','past_source_domain = target > required_frame_count')}
+    'NegativeSerialMemoryOrder' {$contractText=$contractText.Replace('publish_serial.fetch_add(1, std::memory_order_seq_cst)','publish_serial.fetch_add(1, std::memory_order_relaxed)')}
+    'NegativeSerialSitePrecedence' {$contractText=$contractText.Replace('serial incrementはclassified publication siteのfirst externally visible operationである','serial incrementはclassified publication siteのどこかで行う')}
+    'NegativeReplayScope' {$contractText=$contractText.Replace('replay対象はvalid decision invocationに限る。','replay対象は全invocationとする。')}
+    'NegativeOverflowSemantics' {$contractText=$contractText.Replace('producerと同じchecked multiply / add precondition','checkerは多倍長整数で評価してよい')}
     'NegativeAuthority' {$contractText=$contractText.Replace('canonical performance authorityへ昇格しない','canonical performance authorityへ昇格する')}
 }
 function Require([string]$Pattern,[string]$Message){
@@ -37,6 +43,16 @@ try{
     Require 'replayed_target_frame +== recorded target_frame' 'target replayのexact一致条件がありません'
     Require 'replayed_past_source_domain +== recorded past_source_domain' 'past_source_domain replayのexact一致条件がありません'
     Require 'terminal直前decisionのpast_source_domain = false' 'terminal直前decisionのpredicate条件がありません'
+    Require 'publish_serial\.fetch_add\(1, std::memory_order_seq_cst\)' 'publication serialのseq_cst writer orderingがありません'
+    Require 'publish_serial\.load\(std::memory_order_seq_cst\)' 'publication serialのseq_cst reader orderingがありません'
+    Deny 'publish_serial\.fetch_add\(1, std::memory_order_relaxed\)' 'publication serialへrelaxed orderingが混入しています'
+    Require 'serial incrementはclassified publication siteのfirst externally visible operationである' 'serial incrementのsite先頭規約がありません'
+    Require 'measurement-start authority established[\s\S]+snapshot alternative-publication serials[\s\S]+formal measurement capture open' 'measurement_start snapshotの位置が固定されていません'
+    Require 'replay対象はvalid decision invocationに限る' 'replay対象がvalid decision invocationへ限定されていません'
+    Require 'INVALID_FATAL[\s\S]+target/past_source_domainを捏造・補完しない' 'INVALID_FATAL時のreplay制限がありません'
+    Require 'producerと同じchecked multiply / add precondition' 'producerと同じoverflow preconditionが要求されていません'
+    Require 'NegativeStopPublishSerialRelaxedOrdering' 'relaxed ordering negativeがありません'
+    Require 'NegativeStopSideEffectBeforeSerialIncrement' 'side-effect precedence negativeがありません'
     Require 'NegativeExplicitStopPublishedBetweenPreAndGateClose' 'publication race negativeがありません'
     Require 'NegativeTerminalTargetPredicateMutation' 'terminal predicate mutation negativeがありません'
     Require 'canonical performance authorityへ昇格しない' 'C3 diagnosticがperformance authorityから分離されていません'

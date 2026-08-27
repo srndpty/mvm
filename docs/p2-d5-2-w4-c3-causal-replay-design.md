@@ -14,11 +14,14 @@ W4-C3 instrumentationもdiagnostic-onlyであり、canonical performance authori
 ```text
 amend 1: alternative stop publication ordering serial
 amend 2: ordinal -> target -> past_source_domain predicate replay
+amend 3: publication serial memory ordering / replay scope / overflow semantics
 ```
 
 amend 1は`pre.explicit_stop_requested=false`だけでは別threadからのpublicationとのinterleavingを
 排除できない欠陥を閉じる。amend 2はLink A→Bのordinalとterminal branchの間に残っていたedgeを
-exact replayで埋める。両者を満たさないcaptureは`W4_C3_PARTIAL`とする。
+exact replayで埋める。amend 3はamend 1のserialをC++ memory modelとpublication site先頭という
+実装契約まで下ろし、amend 2のreplay範囲とoverflow semanticsの曖昧さを消す。いずれかを満たさない
+captureは`W4_C3_PARTIAL`とする。
 
 ## 追加する唯一の stop witness
 
@@ -99,12 +102,67 @@ fatal_publish_serial           monotonic, writer-side
 
 ```text
 publish siteはflag storeより前にserialをfetch_add(1)する
+serial incrementはclassified publication siteのfirst externally visible operationである
 serialはmeasurement期間中resetしない
 reader（stop witness）はserialを読むだけで、publicationを再構築しない
 ```
 
 flagより先にserialを進めるので、readerがserialの不変を観測したwindowでは、そのwindow内で
 publicationが開始してもいない。
+
+### memory ordering（instrumentation前にfreeze）
+
+serialはdiagnostic counterではなくnegative causal witnessなので、C++ memory modelまで固定する。
+
+```text
+writer:
+  publish_serial.fetch_add(1, std::memory_order_seq_cst)
+  その後にflag publication（既存のrelease store等）
+
+reader（stop witness）:
+  publish_serial.load(std::memory_order_seq_cst)
+```
+
+`relaxed`および`acquire/release`だけのserial ordering は W4-C3 では採らない。W4-C3は診断専用で
+publication siteは低頻度なので、未観測incrementを排除するhappens-before/coherence argumentを
+書き下すより、`seq_cst`で単一のSC total order上に
+
+```text
+measurement_start serial
+pre serial
+at_gate_close serial
+```
+
+を並べる方が証拠として単純である。release/acquireへ緩めるなら、その argument自体をこの契約へ
+追記してからでなければならない。
+
+「publication開始」の定義はserial incrementそのものとする。したがって次を禁止する。
+
+```cpp
+// NG: serial incrementより前に外部可視なstop side effectがある
+someStopSideEffect();
+serial.fetch_add(1, std::memory_order_seq_cst);
+flag.store(true, std::memory_order_release);
+```
+
+architecture testで、classified publication siteが`memory_order_seq_cst`のfetch_addで始まり、
+その前に外部可視なstop side effectを持たないことを検査する。
+
+### measurement_start snapshotの位置
+
+`measurement_start`のserialは「measurement中の適当な時点」ではなく、次の一点へbranch-exactに
+固定する。
+
+```text
+measurement-start authority established
+        v
+snapshot alternative-publication serials   <- measurement_start
+        v
+formal measurement capture open / activate
+```
+
+この順序でsnapshotするので、`at_gate_close serial == measurement_start serial`が
+measurement interval全体でalternative publicationなしを意味する。
 
 DOMAIN_TERMINAL closure条件へ次を追加する。
 
@@ -181,12 +239,40 @@ target =
 past_source_domain = target >= required_frame_count
 ```
 
-C2 invocationの各decisionについて次を要求する。
+replay対象はvalid decision invocationに限る。
 
 ```text
-replayed_target_frame        == recorded target_frame
-replayed_past_source_domain  == recorded past_source_domain
+PRIMARY_DECISION
+DUPLICATE_DECISION
+OUTSIDE_SOURCE_DOMAIN_DECISION
+
+  replayed_target_frame        == recorded target_frame
+  replayed_past_source_domain  == recorded past_source_domain
+
+INVALID_FATAL
+
+  target arithmetic成立前に終わり得るので、replay可能な入力までだけ検証する
+  branch-exact fatal reasonとの一致を要求する
+  target/past_source_domainを捏造・補完しない
 ```
+
+今回のformal captureは`INVALID_FATAL=0`なので実測verdictは変わらないが、negative fixtureで
+replay範囲が曖昧にならないようここで固定する。
+
+### overflow semantics
+
+checkerはproducerと同じ整数semanticsを再現する。
+
+```text
+producerと同じoperand domain（64-bit signed）
+producerと同じchecked multiply / add precondition
+producerと同じ切り捨て除算
+```
+
+`ordinal * source_fps_numerator * refresh_denominator`の中間積がproducer側でchecked
+arithmeticである以上、checkerがPowerShell/.NETの多倍長やdoubleへ逃げて「計算できたからPASS」と
+してはならない。producerがoverflowで`INVALID_FATAL`へ落ちる入力は、checkerでも同じ
+overflow判定に落ちなければならない。
 
 terminalでは加えて次を要求する。
 
@@ -257,8 +343,8 @@ action.measurement_stop_published = true
 post.capture_gate_open = false
 post-terminal scheduler invocation count = 0
 INVALID_FATAL count = 0
-replayed_target_frame == recorded target_frame（全invocation）
-replayed_past_source_domain == recorded past_source_domain（全invocation）
+replayed_target_frame == recorded target_frame（全valid decision invocation）
+replayed_past_source_domain == recorded past_source_domain（全valid decision invocation）
 terminal直前decisionのpast_source_domain = false
 ```
 
@@ -293,6 +379,8 @@ NegativeCaptureGatePreMutation
 NegativeCaptureGateExchangeMutation
 NegativeExplicitStopPreexisting
 NegativeExplicitStopPublishedBetweenPreAndGateClose
+NegativeStopPublishSerialRelaxedOrdering
+NegativeStopSideEffectBeforeSerialIncrement
 NegativePlannedWindowEndPreexisting
 NegativeFatalPreexisting
 NegativePostTerminalInvocation
@@ -307,6 +395,9 @@ NegativePerformanceAuthorityPromotion
 explicit stopがpublishされたcaptureを拒否し、raceによるfalse root-cause PASSを直接防ぐ。
 `NegativeTerminalTargetPredicateMutation`はterminalの`target_frame`または
 `past_source_domain`を改変したcaptureをreplay不一致として拒否する。
+`NegativeStopPublishSerialRelaxedOrdering`と`NegativeStopSideEffectBeforeSerialIncrement`は
+architecture testとして、publication siteのserialが`seq_cst`でないもの、およびserial increment
+より前に外部可視なstop side effectを置いたものを拒否する。
 
 ## 実装順序
 
@@ -314,10 +405,16 @@ explicit stopがpublishされたcaptureを拒否し、raceによるfalse root-ca
 W4-C3 before implementation
   amend 1: alternative stop publication ordering serial   [固定済み]
   amend 2: ordinal -> target -> past_source_domain replay [固定済み]
+  amend 3: publication serial memory ordering            [固定済み]
+  amend 3: replay対象 = valid decision invocation         [固定済み]
+  amend 3: producerと同じoverflow semantics               [固定済み]
 
 then
-  stop witness instrumentation
-  negative tests
-  diagnostic-only fresh capture
-  exact causal replay
+  1. scheduler_config emit
+  2. publication serial instrumentation（seq_cst / site先頭）
+  3. stop witness v2
+  4. checker / replay
+  5. negatives（architecture testを含む）
+  6. diagnostic-only fresh capture
+  7. exact causal replay
 ```
