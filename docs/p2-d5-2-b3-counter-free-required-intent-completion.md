@@ -485,6 +485,15 @@ swapchain identity mismatch / HRESULT mismatch / duplicate commit)、lifecycle
 (envelope外reserve / reservation id 0 / 二重reserve / render完了なしのPresent / reservationなしのswap /
 native Present未結合のswap / envelope内swapchain migration)を個別に落とす。
 
+ABI v5化に伴い、W2-B2 terminal shadow contractのfixtureも`abi_version=5`へ更新した。
+同fixtureはB1 transport checkerへ委譲するため、更新しないとGood 4件と`NegativeIntentJoinMutation`が落ちる。
+
+ordinary CTest (ucrt64-release、`-LE 'performance|stability'`) は**1196/1200 PASS**である。
+残り4件は本sliceより前 (`379c274`のclean worktree) でも同じく失敗する既存failureであり、
+`p2_c3_a3_t2_startup_order` negative 3件 (contract ps1がCRLF、対象sourceがLFのためmutation anchorが
+一致しない) と`p2_present_id_oracle_live` (本機で2026-08-23以降の全runが`ORACLE_SAMPLING_GAP`) である。
+どちらも本sliceでは修正していない。
+
 architecture guardは`AGENTS.md`の規約どおりmutation testを併設した。実sourceの変異コピーに対し、
 receipt ABIの削除、receipt serialのglobal counter由来化、one-shot exportの削除、consume省略、
 app側receipt取得APIの削除、exact record lookupの削除、commit順序のbypass、reservation identityの

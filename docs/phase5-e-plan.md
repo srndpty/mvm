@@ -730,7 +730,12 @@ candidate Bのうちjoin provenanceだけを確定するsliceを実装した。�
 - native present hook ABIは**v4 -> v5**。receipt構造体とreceipt loss counter 3種を追加し、
   W2-B1 transport negativeを`NegativeAppV4QtV5` / `NegativeAppV5QtV4`へ更新した
 - targeted testはjoin unit test、source-level architecture guard、guard自身のmutation test
-  (Good + negative 12) の**15件**。ordinary CTestは ucrt64-release **TESTCOUNT**
+  (Good + negative 12) の**15件**。ordinary CTest (ucrt64-release、`-LE 'performance|stability'`) は
+  **1196/1200 PASS**。残り4件は本sliceより前 (`379c274`のclean worktree) でも同じく失敗する既存failureであり、
+  `p2_c3_a3_t2_startup_order` negative 3件 (contract ps1がCRLF、対象sourceがLFのためmutation anchorが一致しない) と
+  `p2_present_id_oracle_live` (本機で2026-08-23以降全runが`ORACLE_SAMPLING_GAP`) である
+- ABI v5化でW2-B2 terminal shadow contractのfixtureも`abi_version=5`へ更新した
+  (同fixtureはB1 transport checkerへ委譲するため、更新しないとGood 4件とNegativeIntentJoinMutationが落ちる)
 - required-intent queue semantics、ordinal issuance、W2/W3 historical authority、
   FinalState satisfaction、threshold、required setは未変更である
 
