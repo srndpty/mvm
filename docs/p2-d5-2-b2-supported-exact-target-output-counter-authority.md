@@ -170,8 +170,10 @@ defectを覆す試行も行わない。
 ## 7. Production correction handoff
 
 production correctionはtarget-output pre-render counter置換系統を終了し、別系統
-`B3 Counter-free Required-intent Completion Correction`へ切り替える。B3はまだdesign未開始であり、ここでは
-behaviorを選ばない。最低限、次を入力contractとして渡す。
+`B3 Counter-free Required-intent Completion Correction`へ切り替える。後続の
+[B3 corrective design](p2-d5-2-b3-counter-free-required-intent-completion.md)では、immutable required-intent
+queueのreserve / render-complete / qualified commit-dequeueを第一候補として選定した。B2からは最低限、次を
+入力contractとして渡す。
 
 ```text
 past_source_domain && required_intent_membership
@@ -233,7 +235,7 @@ B2 candidate implementation         NOT STARTED / NOT AUTHORIZED
 B2 capture                          NOT STARTED / NOT REQUIRED
 exact target-output counter         UNAVAILABLE
 B1 shadow replay                    NOT EVALUABLE
-next production design lineage      B3 COUNTER-FREE CORRECTION
+next production design lineage      B3 COUNTER-FREE CORRECTION / DESIGN CLOSED
 production behavior                 UNCHANGED
 canonical W3 verdict                UNCHANGED / FAIL
 P5-E4                               BLOCKED

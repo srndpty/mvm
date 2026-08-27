@@ -503,13 +503,16 @@ canonical performance authorityへ昇格しないため、W3の`CANONICAL_PERFOR
 - 同一checkpointのP4 formal 3/3
 - 全raw / summary / provenance / SHA-256 manifestと三文書の最終整合監査
 
-現在のblockerは、root causeの未確定ではなく、確定したcausal chainに対するproduction correctionが
-未設計・未実装で、canonical P2 PASSがまだ存在しないことである。B2 static inventoryではsupportedな
+現在のblockerは、root causeやcorrective designの未確定ではなく、確定したcausal chainに対するproduction
+correctionが未実装で、canonical P2 PASSがまだ存在しないことである。B2 static inventoryではsupportedな
 same-causal-point target-output completed counterが無く、`EXACT_TARGET_OUTPUT_COUNTER_AUTHORITY_UNAVAILABLE`で
-閉じた。target-output counter置換を修正前提にせず、次はcounter-free required-intent completion correctionを
-設計する。W4-C3がscope外としたcounterfactualな`+1` sequenceを未検証のまま修正根拠にしない。closureの実行順は
-counter-free P2 corrective contract・negative固定、実装とtargeted gate、ordinary/product regression、
-P2 correctnessとcanonical performance、P3-C-2、P4、artifact/docs auditとする。
+閉じた。後続B3 designではexternal counterを使わず、immutable required-intent queueをreserveし、同一tokenの
+render completeとsuccessful native Present / frameSwapped commitがexact joinされた時だけ1件dequeueする案を
+第一候補として固定した。callback index、QPC、source frame、previous ordinal単独をidentity authorityにせず、
+W4-C3がscope外としたcounterfactualなsequential `+1`を修正根拠にしない。`[0,N)`と未発行tailを保存し、
+normal completion ownerをplanned measurement endだけに限定する。production implementationとnegative gateは
+まだ未実行である。closureの実行順はcounter-free P2 corrective implementation・targeted negative、
+ordinary/product regression、P2 correctnessとcanonical performance、P3-C-2、P4、artifact/docs auditとする。
 
 #### P5-E4 exit criteria
 
