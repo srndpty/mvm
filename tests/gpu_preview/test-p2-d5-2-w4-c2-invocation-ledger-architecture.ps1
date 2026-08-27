@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$SourceRoot,
-    [ValidateSet('Good','NegativePostWorktree','NegativePostSource','NegativePostQtGui','NegativePostQtQuick','NegativeWarmupMismatch','NegativeExit6Teardown','NegativeExit6Metrics','NegativeExit6Mapping','NegativeTeardownStageState','NegativeTeardownStageReport','NegativeTerminalExitState','NegativeTerminalExitReport','NegativeEnvelopeStopRenderExitBarrier','NegativePostEnvelopeTeardownBridge','NegativeC2PhysicalSuccessorWait','NegativeC2PhysicalObserverStart')]
+    [ValidateSet('Good','NegativePostWorktree','NegativePostSource','NegativePostQtGui','NegativePostQtQuick','NegativeWarmupMismatch','NegativeExit6Teardown','NegativeExit6Metrics','NegativeExit6Mapping','NegativeTeardownStageState','NegativeTeardownStageReport','NegativeTerminalExitState','NegativeTerminalExitReport','NegativeEnvelopeStopRenderExitBarrier','NegativePostEnvelopeTeardownBridge','NegativeC2PhysicalSuccessorWait','NegativeC2PhysicalObserverStart','NegativeDiagnosticPhaseTrace')]
     [string]$Case='Good'
 )
 $ErrorActionPreference='Stop'
@@ -48,6 +48,7 @@ function Assert-TeardownStageDiagnostics([string]$Header,[string]$Renderer,[stri
     Require $Controller 'if \(!config_\.formalSchedulerInvocationLedger\) \{[\s\S]{0,900}waitForSuccessor' 'W4-C2がphysical VBlank successorを待ち得ます'
     Require $Controller 'startVBlankObserverWithPreroll\(\)[\s\S]{0,300}if \(config_\.formalSchedulerInvocationLedger\)[\s\S]{0,100}return true;' 'W4-C2がphysical VBlank observerを開始し得ます'
     Require $Renderer 'teardownRequested\.load[\s\S]{0,900}nativePresentEnvelopeStopped\.load[\s\S]{0,400}update\(\);[\s\S]{0,100}return;' 'post-envelope callbackがschedulerより前でteardownへbridgeされません'
+    Require $Controller 'W4-C2_DIAGNOSTIC_PHASE: %s[\s\S]{0,150}fflush\(stderr\)' 'timeout前のcontroller phaseが永続化されません'
 }
 $mutatedRunner=$runner
 $mutatedHeader=$rendererHeader
@@ -70,6 +71,7 @@ switch($Case){
     'NegativePostEnvelopeTeardownBridge' {$mutatedRenderer=$mutatedRenderer.Replace('state_->nativePresentEnvelopeStopped.load(std::memory_order_acquire) &&','false &&')}
     'NegativeC2PhysicalSuccessorWait' {$mutatedController=$mutatedController.Replace('if (!config_.formalSchedulerInvocationLedger) {','if (true) {')}
     'NegativeC2PhysicalObserverStart' {$mutatedController=$mutatedController.Replace('if (config_.formalSchedulerInvocationLedger)','if (false)')}
+    'NegativeDiagnosticPhaseTrace' {$mutatedController=$mutatedController.Replace('W4-C2_DIAGNOSTIC_PHASE: %s','W4-C2_DIAGNOSTIC_PHASE_REMOVED: %s')}
 }
 if($Case-eq'Good'){
     Assert-ProvenancePostChecks $mutatedRunner

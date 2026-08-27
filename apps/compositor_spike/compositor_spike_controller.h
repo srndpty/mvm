@@ -109,6 +109,8 @@ private:
         ShutdownWait,
         Done
     };
+    static const char* phaseName(Phase phase);
+    void reportDiagnosticPhase();
     void tick();
     bool startWorkers();
     void startMarkerProbe();
@@ -150,6 +152,7 @@ private:
     QTimer timer_;
     QElapsedTimer phaseTimer_;
     Phase phase_ = Phase::WaitDevice;
+    Phase lastReportedDiagnosticPhase_ = Phase::Done;
     int exitCode_ = 0;
     CompositorMeasurementCounters measurementStart_;
     CompositorMeasurementCounters measurementStop_;

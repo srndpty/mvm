@@ -189,3 +189,13 @@ Link A→Bやexplicit stop順序の判定はC3まで行わない。
 successor判定を外した最初のrunは、observer threadの停止joinで120秒timeoutした。physical mapping
 authorityを持たないC2でobserverを開始してから無視する設計自体が不適切なので、C2 modeではobserverを
 起動しない。DWM completed-refresh scheduler authorityとnative envelopeは引き続き有効である。
+
+observer非起動後の最初の60秒runも120秒timeoutし、metricsとstderrを生成しなかった。既存診断は
+shutdown到達後しか出力しないため、このartifactだけでは停止phaseを識別できない。同じ長時間runの
+再試行は行わず、C2 modeに限りcontroller phase遷移をstderrへ一度ずつflushする診断を追加した。
+
+```text
+build/p2-d5-2-w4-c2-no-physical-observer-smoke-20260827-d7e9629
+classification = DIAGNOSTIC_TIMEOUT_PHASE_NOT_OBSERVABLE
+formal cohort inclusion = false
+```

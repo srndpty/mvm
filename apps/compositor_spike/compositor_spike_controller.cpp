@@ -932,9 +932,68 @@ bool CompositorSpikeController::pollIncrementalMapperShadow(bool finalizing) {
     return incrementalMapperPass_;
 }
 
+const char* CompositorSpikeController::phaseName(Phase phase) {
+    switch (phase) {
+    case Phase::WaitDevice:
+        return "WAIT_DEVICE";
+    case Phase::MarkerStart:
+        return "MARKER_START";
+    case Phase::MarkerWait:
+        return "MARKER_WAIT";
+    case Phase::OutputPreflightWait:
+        return "OUTPUT_PREFLIGHT_WAIT";
+    case Phase::Warmup:
+        return "WARMUP";
+    case Phase::MeasurementResetStart:
+        return "MEASUREMENT_RESET_START";
+    case Phase::MeasurementResetWait:
+        return "MEASUREMENT_RESET_WAIT";
+    case Phase::MeasurementPrimeStart:
+        return "MEASUREMENT_PRIME_START";
+    case Phase::MeasurementPrimeWait:
+        return "MEASUREMENT_PRIME_WAIT";
+    case Phase::CaptureEnvelopeStartWait:
+        return "CAPTURE_ENVELOPE_START_WAIT";
+    case Phase::MeasureStartWait:
+        return "MEASURE_START_WAIT";
+    case Phase::Measure:
+        return "MEASURE";
+    case Phase::MeasureStopWait:
+        return "MEASURE_STOP_WAIT";
+    case Phase::CaptureEnvelopeStopWait:
+        return "CAPTURE_ENVELOPE_STOP_WAIT";
+    case Phase::FatalMeasureStopWait:
+        return "FATAL_MEASURE_STOP_WAIT";
+    case Phase::SeekStart:
+        return "SEEK_START";
+    case Phase::SeekDecodeWait:
+        return "SEEK_DECODE_WAIT";
+    case Phase::SeekDisplayWait:
+        return "SEEK_DISPLAY_WAIT";
+    case Phase::LayoutStart:
+        return "LAYOUT_START";
+    case Phase::LayoutWait:
+        return "LAYOUT_WAIT";
+    case Phase::ShutdownWait:
+        return "SHUTDOWN_WAIT";
+    case Phase::Done:
+        return "DONE";
+    }
+    return "UNKNOWN";
+}
+
+void CompositorSpikeController::reportDiagnosticPhase() {
+    if (!config_.formalSchedulerInvocationLedger || phase_ == lastReportedDiagnosticPhase_)
+        return;
+    std::fprintf(stderr, "W4-C2_DIAGNOSTIC_PHASE: %s\n", phaseName(phase_));
+    std::fflush(stderr);
+    lastReportedDiagnosticPhase_ = phase_;
+}
+
 void CompositorSpikeController::tick() {
     if (!item_ || phase_ == Phase::Done)
         return;
+    reportDiagnosticPhase();
     if (!startupError_.isEmpty()) {
         const QString error = std::exchange(startupError_, {});
         beginShutdown(error, true);
