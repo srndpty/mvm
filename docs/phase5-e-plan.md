@@ -644,6 +644,26 @@ successful measurement completionにしないproduct invariantと、`required_in
 `source_frame_count`のauthority分離も同設計へ固定した。代替product behaviorは未実装であり、
 P5-E4は引き続きBLOCKEDである。
 
+#### P2-D5-2 B1 — Target-output Physical Authority Attribution design
+
+B0でHWND-bound DWM counterをstatic rejectionしたため、次の候補として既存target `IDXGIOutput` physical
+VBlank observerをcurrent NULL DWM / actual scheduler ordinalと同一fresh captureで比較する
+[B1設計契約](p2-d5-2-b1-target-output-physical-authority-attribution.md)をfreezeした。instrumentation、negative
+test、capture、production behavior変更はまだ行っていない。
+
+B1はB0のHWND→HMONITOR→DXGI output→DisplayConfig identityを再利用し、observerは専用threadのままとする。
+render callbackは`WaitForVBlank()`を呼ばない。scheduler invocation serial、composition token、native Present、
+physical authorityの既存exact chainと、連続する実VBlank 2本が作る厳密な半開区間だけをjoinに使う。
+nearest-QPC、cadence toleranceによる一致救済、counter clamp、QPC interpolation、sequential ordinal `+1`、
+threshold変更、required-set縮小は禁止した。
+
+fresh 3/3の全比較点で`delta NULL == delta intent`かつ`delta target_vblank != delta intent`となり、target-output
+physical ordinalによる`completed + 1 -> ordinal -> target -> predicates` shadowがactual terminal serialで
+premature intersectionを消し、frozen measurement endまで完全な場合だけproduction correction designへ進む。
+output migration、observer gap/regression/failure/overflow、publication ambiguity、join/coverage欠損はfail-closeする。
+`past_source_domain && required_intent_membership`をsuccessful completionにしないinvariantは継続してfreeze済みで、
+代替product behaviorは未選択である。P5-E4は引き続きBLOCKEDである。
+
 ### E4 実装結果 (実測)
 
 - `docs/phase5-plan.md` §10.2の全要求をunit/product testへ突き合わせ、対応表を§10へ追加した。
