@@ -4,6 +4,17 @@ param([Parameter(Mandatory)][string]$Json)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# P2-D5-2-W2-E canonical authority disposition (machine-readable)。
+# W2-E retirement inventory がこの宣言を読む。legacy presentation metric
+# (effective_fps / drop_rate / effective_video_fps) を参照するが、
+# canonical performance verdict は出さないことを宣言する。
+$MvmPresentationAuthorityDisposition = [ordered]@{
+    presentation_authority        = 'FORMAL_V2'
+    legacy_presentation_metrics   = 'DIAGNOSTIC'
+    canonical_performance_verdict = 'DEFERRED_TO_W3'
+}
+[void]$MvmPresentationAuthorityDisposition
+
 function Contract-Fail([string]$Message) { throw "Phase 4 smoke contract: $Message" }
 function Property([object]$Object, [string]$Name) {
     if ($null -eq $Object) { Contract-Fail "$Name の親objectがnullです" }
@@ -184,6 +195,7 @@ try {
     $recomputedDrop = $skipped / 600.0
     if ([Math]::Abs((Number $raw 'effective_video_fps') - $recomputedFps) -gt 0.000000001 -or
         [Math]::Abs((Number $raw 'drop_rate') - $recomputedDrop) -gt 0.000000001) {
+        # W2-E: DIAGNOSTIC_INTEGRITY
         Contract-Fail 'producer fps/dropがledger再計算値と違います'
     }
     if ($rawAvAbs.Count -ne $unique) { Contract-Fail 'raw A/V sample件数がdisplay件数と違います' }

@@ -1,0 +1,43 @@
+{
+  "schema": "mvm-p2-r3-mapper-input-1",
+  "case_id": "pair_unique-0000-000",
+  "sync_interval": 1,
+  "qpc_frequency": 10000000,
+  "source_app_sha256": "9cfc6022b3d426c78250d990926d4b5572b118e98977c60490f33dfbf81fe9cc",
+  "source_etw_sha256": "4abc197c2a4c77ecf7aa8bf82c31e80abf3945c89f34234c49fcc0c60ba03535",
+  "construction_model": "STRICT_MONOTONE_INJECTIVE_OVER_VISIBLE_OPPORTUNITIES",
+  "mapper_visible_opportunity_count": 2,
+  "vblank_samples": [
+    {
+      "source_sample_index": 3,
+      "ordinal": 3,
+      "qpc": 1766059365882
+    },
+    {
+      "source_sample_index": 4,
+      "ordinal": 4,
+      "qpc": 1766059532954
+    },
+    {
+      "source_sample_index": 5,
+      "ordinal": 5,
+      "qpc": 1766059701106
+    }
+  ],
+  "records": [
+    {
+      "submission_index": 0,
+      "original_callback_qpc": 1766059035291,
+      "synthetic_callback_qpc": 1766059532955,
+      "synthetic_delay_ticks": 497664,
+      "synthetic_callback_bracket": 4
+    },
+    {
+      "submission_index": 1,
+      "original_callback_qpc": 1766059202345,
+      "synthetic_callback_qpc": 1766059532956,
+      "synthetic_delay_ticks": 330611,
+      "synthetic_callback_bracket": 4
+    }
+  ]
+}

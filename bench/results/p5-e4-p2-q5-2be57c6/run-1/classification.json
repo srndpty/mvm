@@ -1,0 +1,691 @@
+{
+  "authority_valid": true,
+  "refresh_numerator": 59950,
+  "refresh_denominator": 1000,
+  "refresh_hz": 59.95,
+  "callback_count": 3596,
+  "render_record_count": 3596,
+  "swap_record_count": 3596,
+  "present_opportunity_count": 3597,
+  "actual_unique_presented_frame_count": 3532,
+  "current_synthetic_deadline_drop_count": 68,
+  "false_deadline_skip_count": 61,
+  "true_opportunity_loss_count": 7,
+  "ambiguous_count": 0,
+  "actual_loss_units_at_skip_events": 8,
+  "unpaired_false_deadline_skip_count": 42,
+  "unpaired_true_opportunity_loss_count": 4,
+  "unpaired_ambiguous_count": 0,
+  "events": [
+    {
+      "render_ordinal": 16,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 172606,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132305874021,
+      "current_swap_qpc": 1132306046627
+    },
+    {
+      "render_ordinal": 19,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 179586,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132306365164,
+      "current_swap_qpc": 1132306544750
+    },
+    {
+      "render_ordinal": 27,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 179075,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132307701147,
+      "current_swap_qpc": 1132307880222
+    },
+    {
+      "render_ordinal": 40,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 186796,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132309870096,
+      "current_swap_qpc": 1132310056892
+    },
+    {
+      "render_ordinal": 259,
+      "skipped": 1,
+      "classification": "TRUE_OPPORTUNITY_LOSS",
+      "swap_delta_qpc": 540410,
+      "physical_refresh_delta": 3,
+      "actual_lost_opportunities": 2,
+      "previous_swap_qpc": 1132346414181,
+      "current_swap_qpc": 1132346954591
+    },
+    {
+      "render_ordinal": 294,
+      "skipped": 2,
+      "classification": "TRUE_OPPORTUNITY_LOSS",
+      "swap_delta_qpc": 553708,
+      "physical_refresh_delta": 3,
+      "actual_lost_opportunities": 2,
+      "previous_swap_qpc": 1132352416157,
+      "current_swap_qpc": 1132352969865
+    },
+    {
+      "render_ordinal": 779,
+      "skipped": 1,
+      "classification": "TRUE_OPPORTUNITY_LOSS",
+      "swap_delta_qpc": 389105,
+      "physical_refresh_delta": 2,
+      "actual_lost_opportunities": 1,
+      "previous_swap_qpc": 1132433473359,
+      "current_swap_qpc": 1132433862464
+    },
+    {
+      "render_ordinal": 1063,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 183514,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132480858130,
+      "current_swap_qpc": 1132481041644
+    },
+    {
+      "render_ordinal": 1070,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 173415,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132482030819,
+      "current_swap_qpc": 1132482204234
+    },
+    {
+      "render_ordinal": 1088,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 178441,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132485032544,
+      "current_swap_qpc": 1132485210985
+    },
+    {
+      "render_ordinal": 1128,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 201787,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132491694386,
+      "current_swap_qpc": 1132491896173
+    },
+    {
+      "render_ordinal": 1137,
+      "skipped": 1,
+      "classification": "TRUE_OPPORTUNITY_LOSS",
+      "swap_delta_qpc": 271067,
+      "physical_refresh_delta": 2,
+      "actual_lost_opportunities": 1,
+      "previous_swap_qpc": 1132493201792,
+      "current_swap_qpc": 1132493472859
+    },
+    {
+      "render_ordinal": 1144,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 170690,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132494367893,
+      "current_swap_qpc": 1132494538583
+    },
+    {
+      "render_ordinal": 1153,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 172660,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132495865339,
+      "current_swap_qpc": 1132496037999
+    },
+    {
+      "render_ordinal": 1158,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 180357,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132496696077,
+      "current_swap_qpc": 1132496876434
+    },
+    {
+      "render_ordinal": 1164,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 203189,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132497694246,
+      "current_swap_qpc": 1132497897435
+    },
+    {
+      "render_ordinal": 1170,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 173405,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132498701863,
+      "current_swap_qpc": 1132498875268
+    },
+    {
+      "render_ordinal": 1172,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 175885,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132499036241,
+      "current_swap_qpc": 1132499212126
+    },
+    {
+      "render_ordinal": 1174,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 234246,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132499365399,
+      "current_swap_qpc": 1132499599645
+    },
+    {
+      "render_ordinal": 1178,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 168161,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132500036486,
+      "current_swap_qpc": 1132500204647
+    },
+    {
+      "render_ordinal": 1181,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 170961,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132500538669,
+      "current_swap_qpc": 1132500709630
+    },
+    {
+      "render_ordinal": 1185,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 173061,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132501199189,
+      "current_swap_qpc": 1132501372250
+    },
+    {
+      "render_ordinal": 1188,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 170653,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132501701057,
+      "current_swap_qpc": 1132501871710
+    },
+    {
+      "render_ordinal": 1194,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 224004,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132502703381,
+      "current_swap_qpc": 1132502927385
+    },
+    {
+      "render_ordinal": 1210,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 174967,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132505374368,
+      "current_swap_qpc": 1132505549335
+    },
+    {
+      "render_ordinal": 1226,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 182615,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132508031935,
+      "current_swap_qpc": 1132508214550
+    },
+    {
+      "render_ordinal": 1234,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 219796,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132509368986,
+      "current_swap_qpc": 1132509588782
+    },
+    {
+      "render_ordinal": 1239,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 190003,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132510198435,
+      "current_swap_qpc": 1132510388438
+    },
+    {
+      "render_ordinal": 2180,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 198243,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132667180736,
+      "current_swap_qpc": 1132667378979
+    },
+    {
+      "render_ordinal": 2193,
+      "skipped": 1,
+      "classification": "TRUE_OPPORTUNITY_LOSS",
+      "swap_delta_qpc": 264571,
+      "physical_refresh_delta": 2,
+      "actual_lost_opportunities": 1,
+      "previous_swap_qpc": 1132669336706,
+      "current_swap_qpc": 1132669601277
+    },
+    {
+      "render_ordinal": 2239,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 187602,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132677018323,
+      "current_swap_qpc": 1132677205925
+    },
+    {
+      "render_ordinal": 2299,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 165663,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132687054230,
+      "current_swap_qpc": 1132687219893
+    },
+    {
+      "render_ordinal": 2330,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 241441,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132692200600,
+      "current_swap_qpc": 1132692442041
+    },
+    {
+      "render_ordinal": 2339,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 176008,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132693695269,
+      "current_swap_qpc": 1132693871277
+    },
+    {
+      "render_ordinal": 2347,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 180547,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132695031733,
+      "current_swap_qpc": 1132695212280
+    },
+    {
+      "render_ordinal": 2350,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 244623,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132695532145,
+      "current_swap_qpc": 1132695776768
+    },
+    {
+      "render_ordinal": 2355,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 173817,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132696364800,
+      "current_swap_qpc": 1132696538617
+    },
+    {
+      "render_ordinal": 2357,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 176410,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132696697946,
+      "current_swap_qpc": 1132696874356
+    },
+    {
+      "render_ordinal": 2370,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 175306,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132698865860,
+      "current_swap_qpc": 1132699041166
+    },
+    {
+      "render_ordinal": 2376,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 174965,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132699868253,
+      "current_swap_qpc": 1132700043218
+    },
+    {
+      "render_ordinal": 2378,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 182214,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132700189585,
+      "current_swap_qpc": 1132700371799
+    },
+    {
+      "render_ordinal": 2380,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 180357,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132700534389,
+      "current_swap_qpc": 1132700714746
+    },
+    {
+      "render_ordinal": 2386,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 174904,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132701530539,
+      "current_swap_qpc": 1132701705443
+    },
+    {
+      "render_ordinal": 2395,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 167818,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132703036835,
+      "current_swap_qpc": 1132703204653
+    },
+    {
+      "render_ordinal": 2398,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 184913,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132703534772,
+      "current_swap_qpc": 1132703719685
+    },
+    {
+      "render_ordinal": 2401,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 169633,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132704035112,
+      "current_swap_qpc": 1132704204745
+    },
+    {
+      "render_ordinal": 2410,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 187409,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132705530078,
+      "current_swap_qpc": 1132705717487
+    },
+    {
+      "render_ordinal": 2420,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 185119,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132707194290,
+      "current_swap_qpc": 1132707379409
+    },
+    {
+      "render_ordinal": 2440,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 185502,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132710535525,
+      "current_swap_qpc": 1132710721027
+    },
+    {
+      "render_ordinal": 3426,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 219574,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132875010627,
+      "current_swap_qpc": 1132875230201
+    },
+    {
+      "render_ordinal": 3438,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 206288,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132877012739,
+      "current_swap_qpc": 1132877219027
+    },
+    {
+      "render_ordinal": 3486,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 185577,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132885021806,
+      "current_swap_qpc": 1132885207383
+    },
+    {
+      "render_ordinal": 3498,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 175462,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132887050283,
+      "current_swap_qpc": 1132887225745
+    },
+    {
+      "render_ordinal": 3523,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 247155,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132891197375,
+      "current_swap_qpc": 1132891444530
+    },
+    {
+      "render_ordinal": 3527,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 175480,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132891862677,
+      "current_swap_qpc": 1132892038157
+    },
+    {
+      "render_ordinal": 3529,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 185110,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132892189846,
+      "current_swap_qpc": 1132892374956
+    },
+    {
+      "render_ordinal": 3533,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 220932,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132892861059,
+      "current_swap_qpc": 1132893081991
+    },
+    {
+      "render_ordinal": 3546,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 183699,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132895028717,
+      "current_swap_qpc": 1132895212416
+    },
+    {
+      "render_ordinal": 3550,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 244084,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132895698891,
+      "current_swap_qpc": 1132895942975
+    },
+    {
+      "render_ordinal": 3567,
+      "skipped": 1,
+      "classification": "TRUE_OPPORTUNITY_LOSS",
+      "swap_delta_qpc": 252504,
+      "physical_refresh_delta": 2,
+      "actual_lost_opportunities": 1,
+      "previous_swap_qpc": 1132898532938,
+      "current_swap_qpc": 1132898785442
+    },
+    {
+      "render_ordinal": 3571,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 172874,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132899202365,
+      "current_swap_qpc": 1132899375239
+    },
+    {
+      "render_ordinal": 3576,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 181184,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132900034936,
+      "current_swap_qpc": 1132900216120
+    },
+    {
+      "render_ordinal": 3579,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 172297,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132900534823,
+      "current_swap_qpc": 1132900707120
+    },
+    {
+      "render_ordinal": 3584,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 173026,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132901368464,
+      "current_swap_qpc": 1132901541490
+    },
+    {
+      "render_ordinal": 3586,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 176051,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132901701298,
+      "current_swap_qpc": 1132901877349
+    },
+    {
+      "render_ordinal": 3588,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 191554,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132902023063,
+      "current_swap_qpc": 1132902214617
+    },
+    {
+      "render_ordinal": 3594,
+      "skipped": 1,
+      "classification": "FALSE_DEADLINE_SKIP",
+      "swap_delta_qpc": 173636,
+      "physical_refresh_delta": 1,
+      "actual_lost_opportunities": 0,
+      "previous_swap_qpc": 1132903035331,
+      "current_swap_qpc": 1132903208967
+    }
+  ]
+}

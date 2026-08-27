@@ -3,16 +3,36 @@
 
 #include "app/preview/compositor_rhi_item.h"
 #include "core/mvm_parallel_dispatch.h"
+#include "core/presentation_opportunity_mapper.h"
+#include "media/gpu_preview/window_output_vblank_observer.h"
+
+#include <vector>
 
 #include <QElapsedTimer>
 #include <QObject>
 #include <QTimer>
 
-#include <vector>
-
 namespace mvm::app {
 
+struct DwmPresentationTimingSnapshot {
+    bool available = false;
+    unsigned int refreshNumerator = 0;
+    unsigned int refreshDenominator = 0;
+    unsigned int composeNumerator = 0;
+    unsigned int composeDenominator = 0;
+    bool displayConfigAvailable = false;
+    bool displayConfigSingleActiveFallback = false;
+    unsigned int displayConfigActivePathCount = 0;
+    unsigned int displayRefreshNumerator = 0;
+    unsigned int displayRefreshDenominator = 0;
+    long long qpcVBlank = 0;
+    long long qpcRefreshPeriod = 0;
+    unsigned long long refreshCount = 0;
+    unsigned long long frameDisplayedCount = 0;
+};
+
 enum class CompositorMode { Playback, Seek, Layout };
+enum class NativePresentHookMode { Disabled, OffControl, OnDiagnostic };
 
 struct CompositorSpikeConfig {
     QString sourceA;
@@ -28,6 +48,13 @@ struct CompositorSpikeConfig {
     QString testFault;
     bool formalPreflight = false;
     bool diagnosticTiming = false;
+    bool schedulerPhaseRing = false;
+    bool presentationOpportunityRing = false;
+    bool formalSchedulerInvocationLedger = false;
+    bool vblankObserver = false;
+    bool incrementalMapperShadow = false;
+    NativePresentHookMode nativePresentHook = NativePresentHookMode::Disabled;
+    bool diagnosticTargetPixelToggle = false;
     CompositorDiagnosticCase diagnosticCase = CompositorDiagnosticCase::None;
 };
 
@@ -36,6 +63,7 @@ class CompositorSpikeController final : public QObject {
 public:
     explicit CompositorSpikeController(CompositorSpikeConfig config, QObject* parent = nullptr);
     void attach(CompositorRhiItem* item);
+
     int exitCode() const { return exitCode_; }
 
 Q_SIGNALS:
@@ -57,11 +85,32 @@ private:
         gpu::SeekRequestResult bRequestResult = gpu::SeekRequestResult::RejectedInvalid;
         bool dispatchOrderValid = false;
     };
-    enum class Phase { WaitDevice, MarkerStart, MarkerWait, OutputPreflightWait, Warmup,
-                       MeasurementResetStart, MeasurementResetWait, MeasurementPrimeStart,
-                       MeasurementPrimeWait, MeasureStartWait, Measure,
-                       MeasureStopWait, SeekStart, SeekDecodeWait, SeekDisplayWait, LayoutStart,
-                       LayoutWait, ShutdownWait, Done };
+    enum class Phase {
+        WaitDevice,
+        MarkerStart,
+        MarkerWait,
+        OutputPreflightWait,
+        Warmup,
+        MeasurementResetStart,
+        MeasurementResetWait,
+        MeasurementPrimeStart,
+        MeasurementPrimeWait,
+        CaptureEnvelopeStartWait,
+        MeasureStartWait,
+        Measure,
+        MeasureStopWait,
+        CaptureEnvelopeStopWait,
+        FatalMeasureStopWait,
+        SeekStart,
+        SeekDecodeWait,
+        SeekDisplayWait,
+        LayoutStart,
+        LayoutWait,
+        ShutdownWait,
+        Done
+    };
+    static const char* phaseName(Phase phase);
+    void reportDiagnosticPhase();
     void tick();
     bool startWorkers();
     void startMarkerProbe();
@@ -69,13 +118,31 @@ private:
     bool resetAfterMarkerPreflight();
     bool resetPlaybackForMeasurement();
     void requestMeasurementStart();
+    void armMeasurementAfterCaptureEnvelopeOpen();
+    bool startVBlankObserverWithPreroll();
+    bool closeVBlankMappingSupportAfterTeardown();
     void startSeek();
     void pollSeekDecode();
     void pollSeekDisplay();
     void startLayoutChange();
     void pollLayoutChange();
     void beginShutdown(const QString& reason, bool failure);
+    void performShutdown();
     bool writeMetrics();
+    bool pollIncrementalMapperShadow(bool finalizing);
+
+    struct IncrementalMapperTransition {
+        const char* eventType = "NONE";
+        long long qpc = 0;
+        long long vblankOrdinal = -1;
+        long long swapOrdinal = -1;
+        long long sourceFrame = -1;
+        core::MappingSolutionClass solutionClass = core::MappingSolutionClass::NoSolution;
+        bool hasClosedRecords = false;
+        std::size_t closedRecordCount = 0;
+        std::size_t commitWatermark = 0;
+        core::IncrementalMappingError error = core::IncrementalMappingError::None;
+    };
 
     CompositorSpikeConfig config_;
     CompositorRhiItem* item_ = nullptr;
@@ -85,6 +152,7 @@ private:
     QTimer timer_;
     QElapsedTimer phaseTimer_;
     Phase phase_ = Phase::WaitDevice;
+    Phase lastReportedDiagnosticPhase_ = Phase::Done;
     int exitCode_ = 0;
     CompositorMeasurementCounters measurementStart_;
     CompositorMeasurementCounters measurementStop_;
@@ -93,6 +161,12 @@ private:
     gpu::SourceDecoderSnapshot measurementStopA_;
     gpu::SourceDecoderSnapshot measurementStopB_;
     double measureElapsedSeconds_ = 0;
+    bool measurementStartCaptured_ = false;
+    bool measurementStopCaptured_ = false;
+    bool measurementAvailable_ = false;
+    // W4-C3 amend 4。controller側publication siteのclaim結果。ownershipは変えない。
+    StopClaimResult explicitStopClaim_;
+    StopClaimResult fatalStopClaim_;
     long long sourceAFrameCount_ = -1;
     long long sourceBFrameCount_ = -1;
     long long requiredMeasurementFrameCount_ = 0;
@@ -134,6 +208,41 @@ private:
     int layoutMismatch_ = 0;
     bool seekLockTimingActive_ = false;
     QString shutdownReason_;
+    QString startupError_;
+    DwmPresentationTimingSnapshot dwmTimingStart_;
+    DwmPresentationTimingSnapshot dwmTimingStop_;
+    // F3-B0 shadow: physical VBlank observerはformal authorityへは接続せず、
+    // 対応証明のためのrawとしてだけ採取する。
+    gpu::WindowOutputVBlankObserver vblankObserver_;
+    gpu::WindowOutputIdentity vblankIdentityStart_{};
+    gpu::WindowOutputIdentity vblankIdentityEnd_{};
+    bool vblankObserverStarted_ = false;
+    bool vblankObserverRunning_ = false;
+    // P2-D5-2-W2-A.1 lower boundary preroll。shadow-only provenance。
+    gpu::VBlankPrerollResult vblankPreroll_{};
+    // P2-D5-2-W2-C0.1 upper boundary closure。measurement endはこの待機で変更しない。
+    gpu::VBlankSuccessorResult vblankSuccessor_{};
+    // W2-C1.1。candidate capture全体を包含するmapping supportの上側witness。
+    gpu::VBlankSuccessorResult vblankMappingSupportPostroll_{};
+    long long vblankMappingSupportPostrollBoundaryQpc_ = 0;
+    bool vblankMappingSupportTeardownCompleted_ = false;
+    long long frozenMeasurementEndQpc_ = 0;
+    bool captureEnvelopeCloseFailure_ = false;
+    QString captureEnvelopeCloseReason_;
+    std::string vblankObserverError_;
+    core::IncrementalOpportunityMapper incrementalMapperShadow_{1};
+    std::size_t incrementalVblankRead_ = 0;
+    std::size_t incrementalSwapRead_ = 0;
+    gpu::VBlankObservation incrementalLastBeforeStart_{};
+    gpu::VBlankObservation incrementalDomainBoundary_{};
+    bool incrementalMapperOriginSelected_ = false;
+    bool incrementalMapperDomainClosed_ = false;
+    bool incrementalMapperFinalized_ = false;
+    bool incrementalMapperPass_ = false;
+    std::string incrementalMapperError_;
+    std::vector<IncrementalMapperTransition> incrementalMapperTransitions_;
+    std::vector<long long> incrementalCommitQpc_;
+    long long formalAuthorityLastPollQpc_ = 0;
 };
 
 } // namespace mvm::app

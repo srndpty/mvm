@@ -1,0 +1,27 @@
+{
+  "schema": "mvm-p2-c2-discard-attribution-run-1",
+  "status": "PASS",
+  "authority": "diagnostic_only",
+  "formal_counter_authority_changed": false,
+  "measure_seconds": 15,
+  "present_record_count": 900,
+  "presented_count": 900,
+  "discarded_count": 0,
+  "discard_reason_count": 0,
+  "unknown_discard_reason_count": 0,
+  "reason_histogram": {
+    "BACK_TO_BACK_FLIP_SUPERSEDED": 0,
+    "WIN32K_TOKEN_NOT_IN_FRAME": 0,
+    "DEPENDENT_PRESENT_SUPERSEDED": 0,
+    "DO_NOT_SEQUENCE": 0,
+    "NOT_VISIBLE": 0,
+    "BLIT_CANCEL": 0,
+    "OTHER_EXPLICIT_DISCARD": 0
+  },
+  "identities": {
+    "decoder_sha256": "70ca8c2afde139a3f4bcb715013d7455cf9992a9e2d253a92404849cbc38454d",
+    "discard_reason_patch_sha256": "9f3555c1e80125e46b00673594e85b82138bf8a7beca3fe3c788b1fdd5c75dde",
+    "checker_sha256": "6480a344d3b339c2de825cc58479717db0169d1658215fecbb134d2c0f194327",
+    "canonical_manifest_sha256": "7acf958c74c48dd85a12a8c9230b458771ceffdc053ba655fc51c37de7c148ef"
+  }
+}

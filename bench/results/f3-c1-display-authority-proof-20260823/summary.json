@@ -1,0 +1,17 @@
+{
+  "schema": "mvm-p2-c1-display-authority-run-1",
+  "status": "PASS",
+  "authority": "diagnostic_offline_proof",
+  "formal_counter_authority_changed": false,
+  "source_domain_size": 3600,
+  "displayed_unique_source_frames": 1355,
+  "formal_source_frame_drops": 2245,
+  "source_frame_accounting_exact": true,
+  "source_identities": {
+    "app_sha256": "f98ab99fca2d1cb4b45b26eafe21d60f908cb16c546cde6b53e91d2d1e13dae8",
+    "oracle_sha256": "2bb7ed65c0a1c5a1b9beb3066bcd8c6a3f4a69f6a453729f06ba93c5d73cb1f7",
+    "source_manifest_sha256": "395d2394879b06db3e9c132bfc94884a9da9bb4a5fcbb51ccf10f64c6ab3823f",
+    "oracle_manifest_sha256": "d91e4f464a7fb5c9f9ccd7287b0b687177d7ae9af0e7c0d444427e9f3780a764",
+    "checker_sha256": "6f82a482f682a3598924b60d1834e3c748e0079a835423c44a1f28b0c261f1ef"
+  }
+}

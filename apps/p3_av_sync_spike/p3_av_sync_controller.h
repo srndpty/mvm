@@ -27,6 +27,9 @@ struct P3AvConfig {
     bool formalContract = false;
     bool formalContractC2 = false;
     int warmupSeconds = 5;
+    bool injectRenderFaultAfterPlaying = false;
+    long long diagnosticFixedSeekTarget = -1;
+    int diagnosticPostDisplayHoldMs = 0;
 };
 
 class P3AvSyncController final : public QObject {
@@ -40,7 +43,8 @@ Q_SIGNALS:
     void finished();
 
 private:
-    enum class Phase { WaitDevice, DisplayPreflight, Start, WaitDisplay, Warmup, Playback, PauseStart, PauseWait,
+    enum class Phase { WaitDevice, DisplayPreflight, Start, WaitDisplay,
+                       DiagnosticPostDisplayHold, Warmup, Playback, PauseStart, PauseWait,
                        ResumePlayback, ShutdownWait, Done };
     struct SeekRecord {
         long long requestedFrame = -1;
@@ -66,6 +70,8 @@ private:
         long long staleA = 0;
         long long staleB = 0;
         long long underflow = 0;
+        long long terminalEofSilenceCallbacks = 0;
+        long long terminalEofSilenceSamples = 0;
         long long overflow = 0;
         long long markerAMismatch = 0;
         long long markerBMismatch = 0;
@@ -84,6 +90,7 @@ private:
     bool pollFirstDisplay();
     void captureSeekTimeoutStageEvidence();
     DisplayEnvironmentSnapshot captureDisplayEnvironment() const;
+    void setPhase(Phase phase);
     void startShutdown(const QString& reason, bool failure);
     bool writeMetrics() const;
 
@@ -133,6 +140,10 @@ private:
     DisplayEnvironmentSnapshot displayEnvironmentEnd_;
     bool displayPreflightPassed_ = false;
     bool formalWorkloadStarted_ = false;
+    bool renderFaultInjectedAfterPlaying_ = false;
+    bool shutdownEntered_ = false;
+    bool shutdownEnteredFromPlayback_ = false;
+    long long canonicalLastSeekTarget_ = -1;
 };
 
 } // namespace mvm::app

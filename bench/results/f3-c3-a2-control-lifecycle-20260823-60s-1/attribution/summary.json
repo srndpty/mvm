@@ -1,0 +1,41 @@
+{
+  "schema": "mvm-p2-c3-a2-lifecycle-summary-1",
+  "status": "PASS",
+  "authority": "diagnostic_only",
+  "acquisition_mode": "CanonicalPresentMonLive",
+  "submission_mode": "CONTROL",
+  "measurement_seconds": 60.0,
+  "formal_counter_authority_changed": false,
+  "formal_drop_threshold_changed": false,
+  "production_scheduler_changed": false,
+  "present_modes": [
+    {
+      "mode": "Composed_Flip",
+      "count": 3597
+    }
+  ],
+  "present_mode_transition_count": 0,
+  "presented_count": 104,
+  "discarded_count": 3493,
+  "dependency_batch_count": 111,
+  "max_dependency_batch_size": 2421,
+  "displayed_parent_count": 105,
+  "large_parent_gap_proof_count": 2,
+  "legacy_dependency_identity_overwrite_count": 3493,
+  "source_physical_gap_pair_count": 103,
+  "source_physical_gap_exact_count": 88,
+  "source_physical_gap_mismatch_count": 15,
+  "branch": "B_DWM_CONSUMPTION_STALL",
+  "next": "F3-C3-A3_DWM_CONSUMPTION_STALL_ATTRIBUTION",
+  "identities": {
+    "canonical_summary_sha256": "12e33f3dd9852112de19142bb29c14f114688c2ab8733520104da59270a6bd26",
+    "canonical_manifest_sha256": "1a0f210025791abd2c135125326cc6c080469f1544c6be8fa993a0e9fef0172b",
+    "app_json_sha256": "e98d631db45ab833e5502b7e86d3fd74bf3d57e269bbf8640928fab8e75c893f",
+    "oracle_json_sha256": "ef8e774b40bff8fc817bf6aff8850b96dfec67465c5b4a3e22d1bd6cc51e50c9",
+    "lifecycle_proof_sha256": "841136641c236c33d642a15d7aed5234f021051f3189814ffd50084b8f081f14",
+    "decoder_provenance_sha256": "b906aacc8831d99f03be8ca64bab350172ce04e92db22e26a9e578ab2680085e",
+    "discard_reason_patch_sha256": "fe8a3709bfd276dfc9d37953a9da86c93425a1ae5b1f54bf129edab295b52b6f",
+    "dependency_lifecycle_patch_sha256": "51779f312bfb1d8fb607948d2505e81b342e7597bd2a734bf3433ddf41e07d71",
+    "checker_sha256": "ce3179351bcc5c78d7e87e7c0219d239417c7e68aa04dd0e75c888aa6cf23e86"
+  }
+}

@@ -1,0 +1,129 @@
+diff --git a/src/gui/rhi/qrhid3d11.cpp b/src/gui/rhi/qrhid3d11.cpp
+--- a/src/gui/rhi/qrhid3d11.cpp
++++ b/src/gui/rhi/qrhid3d11.cpp
+@@ -22,8 +23,51 @@ volatile LONG64 mvmPresentSerial = 0;
+ thread_local MvmNativePresentCompositionToken mvmPendingToken{};
+ thread_local bool mvmPendingTokenValid = false;
++thread_local std::uint64_t mvmCurrentPropagationSerial = 0;
++volatile LONG64 mvmPropagationSerial = 0;
+ using MvmDwmFlushFn = HRESULT (WINAPI *)();
+ MvmDwmFlushFn mvmDwmFlush = nullptr;
+ bool mvmSwapChainDiagnosticsCaptured = false;
+ 
++std::uint64_t mvmRecordDirtyPropagationStage(std::uint32_t stage, std::uint64_t serial)
++{
++    MvmNativePresentRing *ring = mvmPresentRing;
++    if (!ring || ring->enabled == 0 || stage >= MVM_DIRTY_STAGE_COUNT)
++        return 0;
++    if (stage == MVM_DIRTY_STAGE_RENDERER_UPDATE && serial == 0)
++        serial = static_cast<std::uint64_t>(InterlockedIncrement64(&mvmPropagationSerial));
++    if (serial == 0)
++        serial = mvmCurrentPropagationSerial;
++    if (serial == 0)
++        return 0;
++    if (stage == MVM_DIRTY_STAGE_NODE_RENDER)
++        mvmCurrentPropagationSerial = serial;
++    const std::uint64_t index = serial - 1;
++    if (index >= ring->capacity) {
++        ++ring->dirtyPropagationOverflowCount;
++        ring->authorityFailure = 1;
++        return 0;
++    }
++    MvmDirtyPropagationRecord *record = &ring->dirtyPropagationRecords[index];
++    if (record->propagationSerial == 0) {
++        record->propagationSerial = serial;
++        ring->dirtyPropagationRecordCount = qMax(
++                ring->dirtyPropagationRecordCount, static_cast<std::uint32_t>(index + 1));
++    } else if (record->propagationSerial != serial) {
++        ++ring->dirtyPropagationOverflowCount;
++        ring->authorityFailure = 1;
++        return 0;
++    }
++    if (record->stageQpc[stage] != 0) {
++        ++ring->dirtyPropagationDuplicateStageCount;
++        ring->authorityFailure = 1;
++        return serial;
++    }
++    LARGE_INTEGER now{};
++    QueryPerformanceCounter(&now);
++    record->stageQpc[stage] = now.QuadPart;
++    ++ring->dirtyPropagationStageCounts[stage];
++    return serial;
++}
++
+ std::uint32_t mvmSubmissionMode()
+ {
+@@ -97,7 +140,8 @@ MvmPresentCapture mvmBeginPresentCapture(IDXGISwapChain *swapChain, UINT syncInt
+     if (mvmPendingTokenValid) {
+         record->tokenPresent = 1;
+         record->token = mvmPendingToken;
+         record->intentOrdinal = mvmPendingToken.intentOrdinal;
+         record->intentOrdinalValid = mvmPendingToken.intentOrdinalValid;
++        record->propagationSerial = mvmPendingToken.propagationSerial;
+         mvmPendingTokenValid = false;
+     } else {
+@@ -130,5 +174,14 @@ void mvmEndPresentCapture(MvmPresentCapture capture, HRESULT result)
+             capture.ring->authorityFailure = 1;
+         }
+     }
++    if (SUCCEEDED(result)) {
++        const std::uint64_t serial = mvmRecordDirtyPropagationStage(
++                MVM_DIRTY_STAGE_SUCCESSFUL_PRESENT, capture.record->propagationSerial);
++        if (serial != 0) {
++            MvmDirtyPropagationRecord *record =
++                    &capture.ring->dirtyPropagationRecords[serial - 1];
++            record->presentSerial = capture.record->presentSerial;
++        }
++    }
+     ++capture.ring->recordCount;
+ }
+@@ -142,5 +195,16 @@ extern "C" Q_DECL_EXPORT std::uint32_t mvm_qt_d3d11_present_hook_abi_version()
+     return MVM_NATIVE_PRESENT_HOOK_ABI_VERSION;
+ }
+ 
++extern "C" Q_DECL_EXPORT std::uint64_t mvm_qt_dirty_propagation_begin()
++{
++    return mvmRecordDirtyPropagationStage(MVM_DIRTY_STAGE_RENDERER_UPDATE, 0);
++}
++
++extern "C" Q_DECL_EXPORT std::uint64_t mvm_qt_dirty_propagation_stage(
++        std::uint32_t stage, std::uint64_t serial)
++{
++    return mvmRecordDirtyPropagationStage(stage, serial);
++}
++
+ extern "C" Q_DECL_EXPORT int mvm_qt_d3d11_present_hook_begin(MvmNativePresentRing *ring)
+ {
+@@ -169,4 +234,13 @@ extern "C" Q_DECL_EXPORT int mvm_qt_d3d11_present_hook_begin(MvmNativePresentR
+     ring->frameLatencyWaitableObjectAvailable = 0;
+     ring->dwmFlushCallCount = 0;
+     ring->dwmFlushFailureCount = 0;
++    ring->dirtyPropagationRecordCount = 0;
++    ring->dirtyPropagationOverflowCount = 0;
++    ring->dirtyPropagationDuplicateStageCount = 0;
++    std::memset(ring->dirtyPropagationStageCounts, 0,
++                sizeof(ring->dirtyPropagationStageCounts));
++    for (MvmDirtyPropagationRecord &record : ring->dirtyPropagationRecords)
++        record = {};
++    mvmPropagationSerial = 0;
++    mvmCurrentPropagationSerial = 0;
+     mvmSwapChainDiagnosticsCaptured = false;
+@@ -205,4 +280,12 @@ extern "C" Q_DECL_EXPORT int mvm_qt_d3d11_present_hook_set_token(
+         return 0;
+     }
+     mvmPendingToken = *token;
++    const std::uint64_t propagationSerial = mvmRecordDirtyPropagationStage(
++            MVM_DIRTY_STAGE_COMPOSITION_TOKEN, token->propagationSerial);
++    if (propagationSerial != 0) {
++        MvmDirtyPropagationRecord *record =
++                &ring->dirtyPropagationRecords[propagationSerial - 1];
++        record->compositionTokenSerial = token->tokenSerial;
++        record->outputFrameNumber = token->outputFrameNumber;
++    }
+     mvmPendingTokenValid = true;
+@@ -1731,4 +1815,5 @@ QRhi::FrameOpResult QRhiD3D11::endFrame(QRhiSwapChain *swapChain, QRhi::EndFrame
+             qWarning("Failed to present: IDXGISwapChain is unavailable");
+             return QRhi::FrameOpError;
+         }
++        mvmRecordDirtyPropagationStage(MVM_DIRTY_STAGE_RHI_END_FRAME, 0);
+         const MvmPresentCapture mvmCapture = mvmBeginPresentCapture(

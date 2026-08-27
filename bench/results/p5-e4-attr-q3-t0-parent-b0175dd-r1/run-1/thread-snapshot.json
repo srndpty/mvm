@@ -1,0 +1,410 @@
+[
+  {
+    "id": 28276,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 1640.625
+  },
+  {
+    "id": 30828,
+    "thread_state": "Wait",
+    "wait_reason": "Unknown",
+    "total_processor_time_ms": 984.375
+  },
+  {
+    "id": 31924,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 45044,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 12424,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 19092,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 1203.125
+  },
+  {
+    "id": 18760,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 203.125
+  },
+  {
+    "id": 31168,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 44768,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 31.25
+  },
+  {
+    "id": 6972,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 39476,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 35508,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 19240,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 33604,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 39052,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 35296,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 22032,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 19056,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 38348,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 8620,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 8500,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 31148,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 45808,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 16992,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 18784,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 39660,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 2812.5
+  },
+  {
+    "id": 31640,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 34692,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 32832,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 4568,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 33592,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 43560,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 2472,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 30772,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 43056,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 31880,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 42356,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 41192,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 8860,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 42832,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 27632,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 13212,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 14256,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 40952,
+    "thread_state": "Wait",
+    "wait_reason": "ExecutionDelay",
+    "total_processor_time_ms": 62.5
+  },
+  {
+    "id": 43660,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 45224,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 578.125
+  },
+  {
+    "id": 45604,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 687.5
+  },
+  {
+    "id": 43132,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 609.375
+  },
+  {
+    "id": 45500,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 62.5
+  },
+  {
+    "id": 25164,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 16128,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 15572,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 28324,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 22360,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 36736,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 35832,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 45200,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 42496,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 37104,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 31156,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 27156,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 35716,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 14304,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 41620,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 41920,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 6060,
+    "thread_state": "Wait",
+    "wait_reason": "UserRequest",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 21788,
+    "thread_state": "Wait",
+    "wait_reason": "EventPairLow",
+    "total_processor_time_ms": 0.0
+  },
+  {
+    "id": 13392,
+    "thread_state": "Wait",
+    "wait_reason": "EventPairLow",
+    "total_processor_time_ms": 0.0
+  }
+]

@@ -1,0 +1,62 @@
+{
+  "schema": "mvm-p2-c3-a3-t2-update-chain-checkpoint-1",
+  "status": "PASS",
+  "authority": "diagnostic_only",
+  "expected_mode": "TARGET_PIXEL",
+  "proof": {
+    "schema": "mvm-p2-c3-a3-t2-update-chain-proof-1",
+    "status": "PASS",
+    "authority": "diagnostic_only",
+    "verdict": "UPDATE_CHAIN_EXACT",
+    "target_pixel_toggle": true,
+    "propagation_record_count": 900,
+    "exact_closed_count": 898,
+    "native_present_count": 900,
+    "measurement_present_callback_count": 900,
+    "measurement_elapsed_seconds": 15.0125854,
+    "effective_fps": 59.749868267194,
+    "render_cutoff_count": 1,
+    "schedule_cutoff_count": 1,
+    "measurement_end_boundary": "RENDER_CUTOFF_THEN_SCHEDULE_CUTOFF",
+    "stage_counts": {
+      "composition_token": "898",
+      "compositor_render": "899",
+      "dirty_material": "898",
+      "node_render": "899",
+      "node_schedule_update": "900",
+      "qsg_main_render": "898",
+      "renderer_update": "900",
+      "rhi_end_frame": "898",
+      "successful_present": "898",
+      "target_pixel_toggle": "898",
+      "texture_changed": "898",
+      "window_update": "900"
+    },
+    "preflight": {
+      "QSG_NO_VSYNC": null,
+      "QT_D3D_MAX_FRAME_LATENCY": "2",
+      "QT_D3D_NO_FLIP": null,
+      "QT_QPA_DISABLE_REDIRECTION_SURFACE": null,
+      "gwl_exstyle_raw": "256",
+      "target_hwnd": "0x101538"
+    },
+    "formal_counter_authority_changed": false,
+    "formal_drop_threshold_changed": false,
+    "production_scheduler_changed": false
+  },
+  "identities": {
+    "app_json_sha256": "2cb88fb8227233b0bebb48db1441fe4748ae8688eba04176cccff4f99069de2c",
+    "proof_json_sha256": "6f8cc1d847101482d7f89b0555e5473d3ba2ded263fe067a0e9e71f363aab36f",
+    "executable_sha256": "779cc7ba2dcb25797965839dc3e3f4792ca90c51f3d332ea65648e695a9f19d7",
+    "qt_gui_dll_sha256": "57b313425abf8f1ed122a939df1a59d0f64054f298a999f4e1c1e102623f003e",
+    "qt_quick_dll_sha256": "f2b0572c66c71719e8be4f5bed15c208c29de6ea771f7b3eb78f2afe9af79841",
+    "checker_sha256": "fb1a993b30cbb936f17b7414fed678b5e132e8a7d2fa411deac5a7192fe84e53",
+    "qtbase_patch_sha256": "7ff8c00536de74c1c3ad6938ad4812baa213aa212b1e07a621dc8b2e07ef4159",
+    "qtdeclarative_patch_sha256": "f70665ef4aaa6d423999e89bb411bea766de8b4bf39300a204ad6378c8e06306",
+    "qtbase_upstream_commit": "59c81a3c2247b821b9b84b4eb8d939b77e07e276",
+    "qtdeclarative_upstream_commit": "a02bed441965ee1f18f856352c7d5ee5ba35d795"
+  },
+  "formal_counter_authority_changed": false,
+  "formal_drop_threshold_changed": false,
+  "production_scheduler_changed": false
+}

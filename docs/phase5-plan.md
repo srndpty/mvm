@@ -440,10 +440,60 @@ P5-Dと同様に一度に閉じない。§10.1のscopeを次の4 sliceへ分け�
 
 | slice | 範囲 | 状態 |
 | --- | --- | --- |
-| P5-E1 | video sourceのinternal multi-source所有化、`CompositorCoordinator`をcomposition epochのauthorityとするproduct配線、`ExactFramePairer`のN一般化 (capabilityは1/1のまま) | 実装完了。closureはgate PASS確認後に確定する |
-| P5-E2 | `removeSource()`、active/pending composition参照中のremoval拒否、audio authorityの返却 | 実装完了。closureはgate PASS確認後に確定する |
-| P5-E3 | capabilityを`maxQualifiedActiveVideoSources == 2` / `maxQualifiedCompositionLayers == 2`へ引き上げ、多層render経路、per-source seek generation、`apps/p5e_preview_smoke` | 実装完了。release/debug ordinary CTest 473/473 PASS。closureはP5-E4で確定する |
-| P5-E4 | P5-E closure (§10.2全項目の突き合わせ、frozen P2/P3-C-2/P4 regression再走、三文書更新) | 未 |
+| P5-E1 | video sourceのinternal multi-source所有化、`CompositorCoordinator`をcomposition epochのauthorityとするproduct配線、`ExactFramePairer`のN一般化 (capabilityは1/1のまま) | 済 |
+| P5-E2 | `removeSource()`、active/pending composition参照中のremoval拒否、audio authorityの返却 | 済 |
+| P5-E3 | capabilityを`maxQualifiedActiveVideoSources == 2` / `maxQualifiedCompositionLayers == 2`へ引き上げ、多層render経路、per-source seek generation、`apps/p5e_preview_smoke` | 済 |
+| P5-E4 | P5-E closure (§10.2全項目の突き合わせ、frozen P2/P3-C-2/P4 regression再走、三文書更新) | **未確定**。P3-C-2再監査で変更後commitにFAILを再現し、未変更親はPASSしたため帰属確認または修正が必要 |
+
+#### P5-E closure evidence audit (未確定)
+
+§10.2と実テストの対応は次のとおりである。表内のunit名は
+`tests/preview_engine/test_preview_engine.cpp`、product名はCTest名を指す。
+
+| §10.2要求 | authorityとなるテスト |
+| --- | --- |
+| 一/二layer受理、actual token/layer数 | `preview_engine_p5e_single_layer`、`preview_engine_p5e_product_smoke` |
+| latest desired no-op、A/B/Aのnew token、supersede token非再利用、変更時だけ`revision + 1` | unit `composition identity` |
+| reject時にID/revision/latest desiredを変更しない、empty snapshot拒否 | unit `composition identity`、`composition domain` |
+| active video source上限とlayer上限を独立に拒否 | `preview_engine_p5e_exceed_source_count`、`preview_engine_p5e_exceed_layer_count`。後者は3 distinct sourceを使いduplicate拒否と分離する |
+| duplicate source layer拒否 | unit `composition identity`、`preview_engine_p5e_duplicate_source_layer` |
+| layer count/order/source ID/rect全field/opacityの構造比較 | unit `composition identity`、`composition structural equality literals` |
+| rectのfull/interior/edge受理、境界外・NaN・正負Infinity拒否 | unit `composition domain`。destination/sourceRectを別々に全case検査する |
+| opacityの0/1/interior受理、範囲外・NaN・正負Infinity拒否、opacity 0を構造/capability countへ含める | unit `composition domain`、`composition identity`、`P5-E composition source references` |
+| `-0.0` canonicalizationとproduction validator非依存の期待値 | unit `composition identity`、`composition structural equality literals`。後者は独立literalをauthorityにする |
+| unknown/removed source拒否、active/pending参照中のremove拒否 | unit `P5-E composition source references`、`P5-E removeSource negatives`、`preview_engine_p5e_remove_released_source`、`preview_engine_p5e_remove_referenced_source` |
+| exact pair不足時にold/latestを代用しない | unit `testExactPairingNSource()`、`preview_engine_p5e_missing_pair_fail_closed` |
+| stale composition epochを提示しない | `preview_engine_p5e_stale_composition_epoch` |
+
+CTest configure時にP5-E product test数をliteral **17** と照合するため、対象0件や登録漏れを成功にしない。
+closure実測は次のとおりである。
+
+- ordinary CTest: ucrt64-release **473/473 PASS**、ucrt64-debug **473/473 PASS**
+- product regression: P5-E **17/17 PASS**、P5-C **11/11 PASS**、P5-D **13/13 PASS**
+- frozen regression: clean detached worktree (`bb65ea5`) でP2 **6/6 PASS**、P4 **3/3 PASS**。
+  各matrixのcontract checker、開始/終了clean検査、provenance不変検査もPASSした
+- P3-C-2再監査: `bb65ea5`のformal matrix 2回はそれぞれ**8/9 PASS、1/9 FAIL**。
+  未変更の第一親`06182a2`のformal matrix 2回はともに**9/9 PASS**だった。変更後attempt 1は
+  seek run 1がaudio underflow 1件でprocess exit 4、attempt 2はpause-resume run 3がclock regression
+  1件でprocess exit 4であり、後続PASSで上書きせずrawを保持した。したがってP3-C-2 gateと
+  P5-E closureは現時点で未確定とする
+
+一次証拠は[`bench/results/p5-e4-closure-bb65ea5/`](../bench/results/p5-e4-closure-bb65ea5/README.md)
+に保存する。P2/P4、変更後P3-C-2 2回、未変更親P3-C-2 2回の全raw/summary、および
+[`manifest.sha256`](../bench/results/p5-e4-closure-bb65ea5/manifest.sha256)をauthorityとする。
+
+frozen runのcommitにはP5-EのGPU composition hot pathがすべて含まれる。二source seek完了後にも
+A/Bのper-source generationが異なることをproduct testで再assertし、completion generationを別sourceへ
+コピーするmutationをfixture固有のseek増分に依存せず検出する。この追加はsmoke testだけであり、frozen
+対象のproduction hot pathを変更しない。
+
+#### P5-E4 exit criteria
+
+- §10.2の全要求が上表のpositive/negative testへ対応し、P5-E test groupが17件存在すること
+- ordinary/P5-C/P5-D/P5-E gateがすべてPASSすること
+- clean worktreeでP2/P4/P3-C-2 frozen contractがすべてPASSし、P5-E変更へのregression帰属が無いこと。
+  **P3-C-2再監査が未達のため、この項目は未充足**
+- 製品契約のcapability、layer order、source removal semanticsが実装済み範囲と一致すること
 
 #### P5-E3 exit criteria
 

@@ -1,0 +1,62 @@
+{
+  "schema": "mvm-p2-c3-a2-offline-summary-1",
+  "status": "PASS",
+  "authority": "diagnostic_offline",
+  "formal_counter_authority_changed": false,
+  "formal_drop_threshold_changed": false,
+  "production_scheduler_changed": false,
+  "source_runs": [
+    {
+      "run": 1,
+      "directory": "C:\\dev\\soft\\mvm\\bench\\results\\f3-c3-submission-backpressure-20260823-15s-1",
+      "summary_sha256": "b099975cd1656ddd5290a6fd236b620b0cdbae8f60c511d0a5da4243d359a484",
+      "execution_order": [
+        "CONTROL",
+        "FRAME_LATENCY_1",
+        "DWM_FLUSH_AFTER_PRESENT"
+      ]
+    },
+    {
+      "run": 2,
+      "directory": "C:\\dev\\soft\\mvm\\bench\\results\\f3-c3-submission-backpressure-20260823-15s-2",
+      "summary_sha256": "b82b1f25f6c0ba1ad23106bfb8d49f3b0f3e8fd992eafc6e8a8fb4abc380e808",
+      "execution_order": [
+        "FRAME_LATENCY_1",
+        "DWM_FLUSH_AFTER_PRESENT",
+        "CONTROL"
+      ]
+    },
+    {
+      "run": 3,
+      "directory": "C:\\dev\\soft\\mvm\\bench\\results\\f3-c3-submission-backpressure-20260823-15s-3",
+      "summary_sha256": "178c89e84d88d1032cb73ad5eb76ec9f15ebabe2f21c792bf6784a4035527891",
+      "execution_order": [
+        "DWM_FLUSH_AFTER_PRESENT",
+        "CONTROL",
+        "FRAME_LATENCY_1"
+      ]
+    }
+  ],
+  "run_count": 9,
+  "observed_present_modes": [
+    "Composed_Flip"
+  ],
+  "present_mode_transition_count": 0,
+  "all_runs_single_present_mode": true,
+  "physical_source_gap_pair_count": 2352,
+  "physical_source_gap_exact_count": 2343,
+  "physical_source_gap_mismatch_count": 9,
+  "large_parent_display_group_count": 207,
+  "large_parent_display_gap_comparable_count": 206,
+  "large_parent_display_gap_mismatch_count": 1,
+  "displayed_source_physical_span_comparable_run_count": 8,
+  "full_dependency_lifecycle_reconstructable": false,
+  "missing_lifecycle_fields": [
+    "waiting_for_dwm_qpc",
+    "attached_to_parent_qpc",
+    "parent_completion_qpc",
+    "dependent_finalized_qpc"
+  ],
+  "offline_exit": "LIFECYCLE_INSTRUMENTATION_REQUIRED",
+  "preliminary_branch": "B_DWM_PARENT_DISPLAY_GAP_WITHIN_SINGLE_COMPOSED_FLIP_REGIME"
+}

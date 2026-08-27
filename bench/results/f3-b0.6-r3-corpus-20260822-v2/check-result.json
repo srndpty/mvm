@@ -1,0 +1,14 @@
+{
+  "schema": "mvm-p2-r3-corpus-check-1",
+  "corpus_status": "PASS",
+  "mapper_proof_status": "NOT_YET_EVALUABLE",
+  "mapper_changed": false,
+  "case_count": 52,
+  "solution_class_counts": {
+    "UNIQUE": 36,
+    "NO_SOLUTION": 8,
+    "AMBIGUOUS": 8
+  },
+  "source_oracle_status": "ORACLE_VALID",
+  "source_collision_status": "COLLISION_NOT_OBSERVED"
+}

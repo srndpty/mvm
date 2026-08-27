@@ -2,6 +2,7 @@
 #define MVM_AUDIO_PREVIEW_AUDIO_DECODE_WORKER_H
 
 #include "media/audio_preview/audio_frame_queue.h"
+#include "media/audio_preview/runtime_attribution.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -44,6 +45,7 @@ struct AudioDecoderSnapshot {
     bool playing = false;
     bool joined = true;
     bool eof = false;
+    std::int64_t actualLastDecodedSampleExclusive = -1;
     bool fatal = false;
     AudioFormatInfo sourceFormat;
     SourceId sourceId{};
@@ -78,6 +80,8 @@ public:
     AudioSeekWaitResult waitSeek(const AudioSeekTicket& ticket, int timeoutMs,
                                  AudioSeekCompletion& completion);
     AudioDecoderSnapshot snapshot() const;
+
+    void setRuntimeAttribution(RuntimeAttributionState* attribution) { attribution_ = attribution; }
 
     AudioFrameQueue& queue() { return queue_; }
 
@@ -116,6 +120,7 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> playing_{false};
     std::atomic<bool> joined_{true};
+    RuntimeAttributionState* attribution_ = nullptr;
 };
 
 } // namespace mvm::audio

@@ -1,0 +1,1398 @@
+{
+  "schema": "mvm.p5-e4-p2-q3-phase.v1",
+  "authority": "diagnostic_only_not_closure_evidence",
+  "identity": {
+    "tested_sha": "c800536caa12c90e1718c3db0aa0ab0368263486",
+    "executable": {
+      "sha256": "327fb722ddb9bbbccace8190496eeb9af872c04807cb55df25a6f21c281a22f4",
+      "path": "C:\\dev\\soft\\mvm\\build\\ucrt64-release\\bin\\mvm_compositor_spike.exe"
+    },
+    "checker": {
+      "sha256": "83e9e812c61b6c7cf611a08ccdd12fac4126367b2dcd580269f068f04e85f381",
+      "path": "C:\\dev\\soft\\mvm\\scripts\\check-p2-contract.ps1"
+    },
+    "source_a": {
+      "sha256": "4282e53bbab814962410e4bc99ee0ae6015aeb11b39c65076d15879c6180cbe4",
+      "path": "C:\\dev\\soft\\mvm\\tests\\assets\\benchmark\\v1080p60_h264.mp4"
+    },
+    "source_b": {
+      "sha256": "ea528d0c1739d85e40521af2f16c3d6e3a5aee6df68ebeedda424302ad70ffc1",
+      "path": "C:\\dev\\soft\\mvm\\tests\\assets\\benchmark\\v1080p60_hevc.mp4"
+    },
+    "runner": {
+      "sha256": "d1c1501cd01fe8cbd70eff2a96e71ccbef1915d868a54d7cb65493e3a9661310",
+      "path": "C:\\dev\\soft\\mvm\\scripts\\p5-e4-p2-q3-phase.ps1"
+    }
+  },
+  "conditions": {
+    "mode": "playback",
+    "warmup_seconds": 5,
+    "measure_seconds": 60,
+    "seed": 20260808,
+    "seek_count": 1000,
+    "display_timeout_ms": 2000,
+    "gpu_completion": "fence",
+    "formal_preflight": true,
+    "diagnostic_timing": false,
+    "scheduler_phase_ring": true,
+    "ring_capacity": 8192
+  },
+  "stop_rule": "最大8 run。PASS 1本とFAIL 1本を採取した時点で停止",
+  "pass_seen": true,
+  "fail_seen": true,
+  "aggregate": {
+    "phase_pair_deadline_count": 155,
+    "long_callback_gap_deadline_count": 15,
+    "unpaired_skip_deadline_count": 284,
+    "unobserved_boundary_deadline_count": 0,
+    "total_deadline_count": 454,
+    "dominant_classification": "MIXED_OR_UNPAIRED"
+  },
+  "runs": [
+    {
+      "run": 1,
+      "process_exit_code": 0,
+      "timed_out": false,
+      "checker_exit_code": 3,
+      "contract_pass": false,
+      "raw_file": "run-1/playback.json",
+      "raw_sha256": "f515f5e1d1a61a4ffcddd674b79627224cf98b2973d41542ffec17f03a8fb889",
+      "deadline_drop_count": 95,
+      "deadline_drop_rate": 0.02638888888888889,
+      "present_callback_count": 3596,
+      "repeated_present_count": 91,
+      "ring_record_count": 3596,
+      "ring_overflow_count": 0,
+      "phase_pair_deadline_count": 33,
+      "long_callback_gap_deadline_count": 2,
+      "unpaired_skip_deadline_count": 60,
+      "unobserved_boundary_deadline_count": 0,
+      "phase_pair_samples": [
+        {
+          "callback_interval_us": 17948.4,
+          "current_late_us": 378,
+          "current_record_index": 2,
+          "previous_early_us": 906.1,
+          "previous_record_index": 1,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 16919.1,
+          "current_late_us": 150.8,
+          "current_record_index": 9,
+          "previous_early_us": 102.7,
+          "previous_record_index": 8,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17229.5,
+          "current_late_us": 240.9,
+          "current_record_index": 12,
+          "previous_early_us": 319.8,
+          "previous_record_index": 11,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18348.3,
+          "current_late_us": 1021.3,
+          "current_record_index": 35,
+          "previous_early_us": 664.1,
+          "previous_record_index": 34,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18256.9,
+          "current_late_us": 815.4,
+          "current_record_index": 39,
+          "previous_early_us": 775.6,
+          "previous_record_index": 38,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18615.2,
+          "current_late_us": 1699.7,
+          "current_record_index": 59,
+          "previous_early_us": 248,
+          "previous_record_index": 58,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18317.4,
+          "current_late_us": 1452.1,
+          "current_record_index": 62,
+          "previous_early_us": 197.6,
+          "previous_record_index": 61,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18384.9,
+          "current_late_us": 1503.7,
+          "current_record_index": 64,
+          "previous_early_us": 216.1,
+          "previous_record_index": 63,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 19851.3,
+          "current_late_us": 2840.5,
+          "current_record_index": 67,
+          "previous_early_us": 344.8,
+          "previous_record_index": 66,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18115.6,
+          "current_late_us": 1099.1,
+          "current_record_index": 69,
+          "previous_early_us": 351.3,
+          "previous_record_index": 68,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18605.8,
+          "current_late_us": 1938.5,
+          "current_record_index": 79,
+          "previous_early_us": 1.3,
+          "previous_record_index": 78,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 21863.8,
+          "current_late_us": 4677.6,
+          "current_record_index": 1190,
+          "previous_early_us": 519.2,
+          "previous_record_index": 1189,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 30853.8,
+          "current_late_us": 14099.3,
+          "current_record_index": 1209,
+          "previous_early_us": 88.5,
+          "previous_record_index": 1208,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18337.4,
+          "current_late_us": 1437.8,
+          "current_record_index": 1219,
+          "previous_early_us": 233.6,
+          "previous_record_index": 1218,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17927.4,
+          "current_late_us": 470.9,
+          "current_record_index": 1224,
+          "previous_early_us": 791.5,
+          "previous_record_index": 1223,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17810.2,
+          "current_late_us": 960.1,
+          "current_record_index": 1226,
+          "previous_early_us": 183.7,
+          "previous_record_index": 1225,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18014.1,
+          "current_late_us": 702.1,
+          "current_record_index": 1238,
+          "previous_early_us": 647.8,
+          "previous_record_index": 1237,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18038.6,
+          "current_late_us": 819.2,
+          "current_record_index": 1245,
+          "previous_early_us": 561.4,
+          "previous_record_index": 1244,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17706.3,
+          "current_late_us": 365.7,
+          "current_record_index": 1252,
+          "previous_early_us": 673.2,
+          "previous_record_index": 1251,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18909.6,
+          "current_late_us": 2210.6,
+          "current_record_index": 1277,
+          "previous_early_us": 33.4,
+          "previous_record_index": 1276,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 16782.8,
+          "current_late_us": 26.6,
+          "current_record_index": 1284,
+          "previous_early_us": 92.4,
+          "previous_record_index": 1283,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 20364,
+          "current_late_us": 2126.6,
+          "current_record_index": 2380,
+          "previous_early_us": 1568.8,
+          "previous_record_index": 2379,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17848.1,
+          "current_late_us": 238.8,
+          "current_record_index": 2390,
+          "previous_early_us": 941.8,
+          "previous_record_index": 2389,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17160.1,
+          "current_late_us": 413.9,
+          "current_record_index": 2424,
+          "previous_early_us": 80,
+          "previous_record_index": 2423,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17623.1,
+          "current_late_us": 301.4,
+          "current_record_index": 2430,
+          "previous_early_us": 657.1,
+          "previous_record_index": 2429,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 16955.4,
+          "current_late_us": 184.3,
+          "current_record_index": 2438,
+          "previous_early_us": 104.9,
+          "previous_record_index": 2437,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17728.2,
+          "current_late_us": 127.1,
+          "current_record_index": 2440,
+          "previous_early_us": 740.1,
+          "previous_record_index": 2439,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18006.9,
+          "current_late_us": 710.4,
+          "current_record_index": 2446,
+          "previous_early_us": 631.7,
+          "previous_record_index": 2445,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17809.1,
+          "current_late_us": 1067.3,
+          "current_record_index": 2451,
+          "previous_early_us": 76.3,
+          "previous_record_index": 2450,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18094.6,
+          "current_late_us": 1026,
+          "current_record_index": 2455,
+          "previous_early_us": 401.3,
+          "previous_record_index": 2454,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17176.4,
+          "current_late_us": 225.3,
+          "current_record_index": 2457,
+          "previous_early_us": 284.7,
+          "previous_record_index": 2456,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17459.7,
+          "current_late_us": 149,
+          "current_record_index": 2464,
+          "previous_early_us": 646.2,
+          "previous_record_index": 2463,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 19629.7,
+          "current_late_us": 1852.1,
+          "current_record_index": 3546,
+          "previous_early_us": 1110.8,
+          "previous_record_index": 3545,
+          "skipped_deadline_count": 1
+        }
+      ]
+    },
+    {
+      "run": 2,
+      "process_exit_code": 0,
+      "timed_out": false,
+      "checker_exit_code": 3,
+      "contract_pass": false,
+      "raw_file": "run-2/playback.json",
+      "raw_sha256": "ef540505352f75911c6b9fdc77a41026c1ae217e04c03cd704ab29688f17b1ab",
+      "deadline_drop_count": 104,
+      "deadline_drop_rate": 0.028888888888888888,
+      "present_callback_count": 3591,
+      "repeated_present_count": 95,
+      "ring_record_count": 3591,
+      "ring_overflow_count": 0,
+      "phase_pair_deadline_count": 27,
+      "long_callback_gap_deadline_count": 4,
+      "unpaired_skip_deadline_count": 73,
+      "unobserved_boundary_deadline_count": 0,
+      "phase_pair_samples": [
+        {
+          "callback_interval_us": 19091.7,
+          "current_late_us": 1003.7,
+          "current_record_index": 1056,
+          "previous_early_us": 1423.8,
+          "previous_record_index": 1055,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18133.5,
+          "current_late_us": 672.1,
+          "current_record_index": 1068,
+          "previous_early_us": 795.9,
+          "previous_record_index": 1067,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17114.2,
+          "current_late_us": 270.8,
+          "current_record_index": 1074,
+          "previous_early_us": 176.8,
+          "previous_record_index": 1073,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17135.6,
+          "current_late_us": 216.2,
+          "current_record_index": 1180,
+          "previous_early_us": 254,
+          "previous_record_index": 1179,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 16759.6,
+          "current_late_us": 41.9,
+          "current_record_index": 1183,
+          "previous_early_us": 51.3,
+          "previous_record_index": 1182,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 16921.4,
+          "current_late_us": 9.2,
+          "current_record_index": 1185,
+          "previous_early_us": 244.1,
+          "previous_record_index": 1184,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18030.2,
+          "current_late_us": 151.5,
+          "current_record_index": 2307,
+          "previous_early_us": 1212.9,
+          "previous_record_index": 2306,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17671.6,
+          "current_late_us": 813.5,
+          "current_record_index": 2313,
+          "previous_early_us": 191.6,
+          "previous_record_index": 2312,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18510.6,
+          "current_late_us": 722.5,
+          "current_record_index": 2315,
+          "previous_early_us": 1124.6,
+          "previous_record_index": 2314,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 16946.5,
+          "current_late_us": 271.6,
+          "current_record_index": 2325,
+          "previous_early_us": 10.3,
+          "previous_record_index": 2324,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17450.4,
+          "current_late_us": 763.2,
+          "current_record_index": 2331,
+          "previous_early_us": 21.3,
+          "previous_record_index": 2330,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18743.9,
+          "current_late_us": 2052.4,
+          "current_record_index": 2335,
+          "previous_early_us": 24.4,
+          "previous_record_index": 2334,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17171.9,
+          "current_late_us": 237.3,
+          "current_record_index": 2347,
+          "previous_early_us": 269.1,
+          "previous_record_index": 2346,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17971.6,
+          "current_late_us": 879.4,
+          "current_record_index": 2359,
+          "previous_early_us": 427.4,
+          "previous_record_index": 2358,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17274.1,
+          "current_late_us": 491.5,
+          "current_record_index": 2373,
+          "previous_early_us": 116.6,
+          "previous_record_index": 2372,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17876.4,
+          "current_late_us": 700.8,
+          "current_record_index": 2375,
+          "previous_early_us": 513.3,
+          "previous_record_index": 2374,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17112.3,
+          "current_late_us": 16.3,
+          "current_record_index": 2381,
+          "previous_early_us": 429.9,
+          "previous_record_index": 2380,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18380.2,
+          "current_late_us": 1446.6,
+          "current_record_index": 2393,
+          "previous_early_us": 268.8,
+          "previous_record_index": 2392,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 16943.7,
+          "current_late_us": 102,
+          "current_record_index": 3515,
+          "previous_early_us": 175,
+          "previous_record_index": 3514,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 16845.8,
+          "current_late_us": 60.6,
+          "current_record_index": 3537,
+          "previous_early_us": 118,
+          "previous_record_index": 3536,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17231,
+          "current_late_us": 70,
+          "current_record_index": 3540,
+          "previous_early_us": 495.1,
+          "previous_record_index": 3539,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17231.6,
+          "current_late_us": 332.2,
+          "current_record_index": 3542,
+          "previous_early_us": 234,
+          "previous_record_index": 3541,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17905.7,
+          "current_late_us": 349.6,
+          "current_record_index": 3546,
+          "previous_early_us": 890.2,
+          "previous_record_index": 3545,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17370.8,
+          "current_late_us": 540.4,
+          "current_record_index": 3555,
+          "previous_early_us": 165.2,
+          "previous_record_index": 3554,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18369,
+          "current_late_us": 840.1,
+          "current_record_index": 3558,
+          "previous_early_us": 864,
+          "previous_record_index": 3557,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 21574.1,
+          "current_late_us": 4340.1,
+          "current_record_index": 3567,
+          "previous_early_us": 567.4,
+          "previous_record_index": 3566,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17206.1,
+          "current_late_us": 330.1,
+          "current_record_index": 3575,
+          "previous_early_us": 209.4,
+          "previous_record_index": 3574,
+          "skipped_deadline_count": 1
+        }
+      ]
+    },
+    {
+      "run": 3,
+      "process_exit_code": 0,
+      "timed_out": false,
+      "checker_exit_code": 3,
+      "contract_pass": false,
+      "raw_file": "run-3/playback.json",
+      "raw_sha256": "ade4ef63320541ae5a2ad04b236cbf577bb5e7a7c786fa9669d5ad458e7622f5",
+      "deadline_drop_count": 105,
+      "deadline_drop_rate": 0.029166666666666667,
+      "present_callback_count": 3598,
+      "repeated_present_count": 103,
+      "ring_record_count": 3598,
+      "ring_overflow_count": 0,
+      "phase_pair_deadline_count": 37,
+      "long_callback_gap_deadline_count": 3,
+      "unpaired_skip_deadline_count": 65,
+      "unobserved_boundary_deadline_count": 0,
+      "phase_pair_samples": [
+        {
+          "callback_interval_us": 18067.8,
+          "current_late_us": 125.8,
+          "current_record_index": 23,
+          "previous_early_us": 1275.7,
+          "previous_record_index": 22,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 16695.3,
+          "current_late_us": 6.1,
+          "current_record_index": 25,
+          "previous_early_us": 23.1,
+          "previous_record_index": 24,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17231.6,
+          "current_late_us": 476.5,
+          "current_record_index": 32,
+          "previous_early_us": 87.4,
+          "previous_record_index": 31,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18243.7,
+          "current_late_us": 677.6,
+          "current_record_index": 35,
+          "previous_early_us": 901.8,
+          "previous_record_index": 34,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17362.8,
+          "current_late_us": 88.8,
+          "current_record_index": 39,
+          "previous_early_us": 608.4,
+          "previous_record_index": 38,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17251.1,
+          "current_late_us": 285,
+          "current_record_index": 43,
+          "previous_early_us": 300,
+          "previous_record_index": 42,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17395.2,
+          "current_late_us": 196.5,
+          "current_record_index": 59,
+          "previous_early_us": 532.9,
+          "previous_record_index": 58,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18294.4,
+          "current_late_us": 1151.5,
+          "current_record_index": 77,
+          "previous_early_us": 476.4,
+          "previous_record_index": 76,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17675.4,
+          "current_late_us": 152.4,
+          "current_record_index": 80,
+          "previous_early_us": 857.4,
+          "previous_record_index": 79,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17975.4,
+          "current_late_us": 764.9,
+          "current_record_index": 84,
+          "previous_early_us": 544.2,
+          "previous_record_index": 83,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 19808.5,
+          "current_late_us": 3022.3,
+          "current_record_index": 114,
+          "previous_early_us": 119,
+          "previous_record_index": 113,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17810.5,
+          "current_late_us": 822.8,
+          "current_record_index": 119,
+          "previous_early_us": 321.2,
+          "previous_record_index": 118,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 23629.4,
+          "current_late_us": 5177.9,
+          "current_record_index": 1202,
+          "previous_early_us": 1783.9,
+          "previous_record_index": 1201,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17782.2,
+          "current_late_us": 652.1,
+          "current_record_index": 1230,
+          "previous_early_us": 464.2,
+          "previous_record_index": 1229,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 20588,
+          "current_late_us": 3868,
+          "current_record_index": 1232,
+          "previous_early_us": 55.3,
+          "previous_record_index": 1231,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18272.4,
+          "current_late_us": 749.5,
+          "current_record_index": 1254,
+          "previous_early_us": 857.4,
+          "previous_record_index": 1253,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17740.3,
+          "current_late_us": 134.3,
+          "current_record_index": 1266,
+          "previous_early_us": 939.2,
+          "previous_record_index": 1265,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17845.8,
+          "current_late_us": 18.5,
+          "current_record_index": 1269,
+          "previous_early_us": 1161.4,
+          "previous_record_index": 1268,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17536.1,
+          "current_late_us": 33.9,
+          "current_record_index": 1274,
+          "previous_early_us": 836.2,
+          "previous_record_index": 1273,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17440.1,
+          "current_late_us": 410.1,
+          "current_record_index": 1279,
+          "previous_early_us": 362.7,
+          "previous_record_index": 1278,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17487.6,
+          "current_late_us": 519.6,
+          "current_record_index": 1281,
+          "previous_early_us": 302.1,
+          "previous_record_index": 1280,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 22816.8,
+          "current_late_us": 5511,
+          "current_record_index": 1305,
+          "previous_early_us": 640.6,
+          "previous_record_index": 1304,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17607,
+          "current_late_us": 794.2,
+          "current_record_index": 1307,
+          "previous_early_us": 146.4,
+          "previous_record_index": 1306,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 16869.3,
+          "current_late_us": 5.6,
+          "current_record_index": 1323,
+          "previous_early_us": 201,
+          "previous_record_index": 1322,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17615,
+          "current_late_us": 897.1,
+          "current_record_index": 1334,
+          "previous_early_us": 52.4,
+          "previous_record_index": 1333,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 20412.4,
+          "current_late_us": 1597.8,
+          "current_record_index": 2388,
+          "previous_early_us": 2149.8,
+          "previous_record_index": 2387,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 19542.3,
+          "current_late_us": 2613.7,
+          "current_record_index": 2433,
+          "previous_early_us": 262.4,
+          "previous_record_index": 2432,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17436.6,
+          "current_late_us": 690.2,
+          "current_record_index": 2460,
+          "previous_early_us": 80.5,
+          "previous_record_index": 2459,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18119.7,
+          "current_late_us": 256.4,
+          "current_record_index": 2462,
+          "previous_early_us": 1197.3,
+          "previous_record_index": 2461,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17012.4,
+          "current_late_us": 168.8,
+          "current_record_index": 2476,
+          "previous_early_us": 177,
+          "previous_record_index": 2475,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 19923.5,
+          "current_late_us": 2233.7,
+          "current_record_index": 2485,
+          "previous_early_us": 1024.5,
+          "previous_record_index": 2484,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17965.9,
+          "current_late_us": 440.2,
+          "current_record_index": 2494,
+          "previous_early_us": 857.9,
+          "previous_record_index": 2493,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17417.1,
+          "current_late_us": 682.5,
+          "current_record_index": 2511,
+          "previous_early_us": 70,
+          "previous_record_index": 2510,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 21187.3,
+          "current_late_us": 4121.6,
+          "current_record_index": 2516,
+          "previous_early_us": 399.4,
+          "previous_record_index": 2515,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18644.2,
+          "current_late_us": 1735.3,
+          "current_record_index": 2523,
+          "previous_early_us": 241.5,
+          "previous_record_index": 2522,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17992.1,
+          "current_late_us": 1240.5,
+          "current_record_index": 2538,
+          "previous_early_us": 85.7,
+          "previous_record_index": 2537,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18455.9,
+          "current_late_us": 1770.2,
+          "current_record_index": 2541,
+          "previous_early_us": 17,
+          "previous_record_index": 2540,
+          "skipped_deadline_count": 1
+        }
+      ]
+    },
+    {
+      "run": 4,
+      "process_exit_code": 0,
+      "timed_out": false,
+      "checker_exit_code": 3,
+      "contract_pass": false,
+      "raw_file": "run-4/playback.json",
+      "raw_sha256": "1872729fb31895c50e0ba1bf515035c61b7f849065a4d935ca278c722de005ca",
+      "deadline_drop_count": 101,
+      "deadline_drop_rate": 0.028055555555555556,
+      "present_callback_count": 3596,
+      "repeated_present_count": 97,
+      "ring_record_count": 3596,
+      "ring_overflow_count": 0,
+      "phase_pair_deadline_count": 41,
+      "long_callback_gap_deadline_count": 0,
+      "unpaired_skip_deadline_count": 60,
+      "unobserved_boundary_deadline_count": 0,
+      "phase_pair_samples": [
+        {
+          "callback_interval_us": 18642.2,
+          "current_late_us": 234.3,
+          "current_record_index": 1093,
+          "previous_early_us": 1744.2,
+          "previous_record_index": 1092,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17711.1,
+          "current_late_us": 410.3,
+          "current_record_index": 1102,
+          "previous_early_us": 634.5,
+          "previous_record_index": 1101,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17601.6,
+          "current_late_us": 932.1,
+          "current_record_index": 1118,
+          "previous_early_us": 4.1,
+          "previous_record_index": 1117,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17931.5,
+          "current_late_us": 1015.8,
+          "current_record_index": 1125,
+          "previous_early_us": 249.8,
+          "previous_record_index": 1124,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 16848.1,
+          "current_late_us": 74.1,
+          "current_record_index": 1128,
+          "previous_early_us": 106.8,
+          "previous_record_index": 1127,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17763.4,
+          "current_late_us": 227.3,
+          "current_record_index": 1146,
+          "previous_early_us": 870.4,
+          "previous_record_index": 1145,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17684.8,
+          "current_late_us": 477,
+          "current_record_index": 1158,
+          "previous_early_us": 542.3,
+          "previous_record_index": 1157,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17741.5,
+          "current_late_us": 795.9,
+          "current_record_index": 1163,
+          "previous_early_us": 281.6,
+          "previous_record_index": 1162,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18919,
+          "current_late_us": 1913.7,
+          "current_record_index": 1172,
+          "previous_early_us": 337.2,
+          "previous_record_index": 1171,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 19314.7,
+          "current_late_us": 2112.4,
+          "current_record_index": 1176,
+          "previous_early_us": 535.3,
+          "previous_record_index": 1175,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18079.9,
+          "current_late_us": 1265.1,
+          "current_record_index": 1181,
+          "previous_early_us": 148.4,
+          "previous_record_index": 1180,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18192,
+          "current_late_us": 1323.2,
+          "current_record_index": 1190,
+          "previous_early_us": 203.2,
+          "previous_record_index": 1189,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18100.8,
+          "current_late_us": 1352.8,
+          "current_record_index": 1193,
+          "previous_early_us": 81.2,
+          "previous_record_index": 1192,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 21818.4,
+          "current_late_us": 4968.2,
+          "current_record_index": 1204,
+          "previous_early_us": 185.5,
+          "previous_record_index": 1203,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 21828.9,
+          "current_late_us": 2113.7,
+          "current_record_index": 2120,
+          "previous_early_us": 3048.8,
+          "previous_record_index": 2119,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17610.7,
+          "current_late_us": 381.8,
+          "current_record_index": 2312,
+          "previous_early_us": 561.9,
+          "previous_record_index": 2311,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18670.8,
+          "current_late_us": 637.7,
+          "current_record_index": 2314,
+          "previous_early_us": 1368.8,
+          "previous_record_index": 2313,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18401.4,
+          "current_late_us": 315.7,
+          "current_record_index": 2321,
+          "previous_early_us": 1419.2,
+          "previous_record_index": 2320,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17412.1,
+          "current_late_us": 364.8,
+          "current_record_index": 2329,
+          "previous_early_us": 380.1,
+          "previous_record_index": 2328,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18408.1,
+          "current_late_us": 425.7,
+          "current_record_index": 2331,
+          "previous_early_us": 1315.8,
+          "previous_record_index": 2330,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 20097.2,
+          "current_late_us": 2393.4,
+          "current_record_index": 2334,
+          "previous_early_us": 1036.3,
+          "previous_record_index": 2333,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18603.8,
+          "current_late_us": 833.3,
+          "current_record_index": 2348,
+          "previous_early_us": 1106.5,
+          "previous_record_index": 2347,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18737,
+          "current_late_us": 1325.7,
+          "current_record_index": 2357,
+          "previous_early_us": 747.2,
+          "previous_record_index": 2356,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18063.2,
+          "current_late_us": 1076.8,
+          "current_record_index": 2391,
+          "previous_early_us": 321.7,
+          "previous_record_index": 2390,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 19633.8,
+          "current_late_us": 2603,
+          "current_record_index": 2398,
+          "previous_early_us": 365.7,
+          "previous_record_index": 2397,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17802.1,
+          "current_late_us": 1000,
+          "current_record_index": 2401,
+          "previous_early_us": 134.5,
+          "previous_record_index": 2400,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 19376.5,
+          "current_late_us": 2703.2,
+          "current_record_index": 3505,
+          "previous_early_us": 7,
+          "previous_record_index": 3504,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18952.8,
+          "current_late_us": 750.4,
+          "current_record_index": 3513,
+          "previous_early_us": 1538.1,
+          "previous_record_index": 3512,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18231.6,
+          "current_late_us": 349.1,
+          "current_record_index": 3527,
+          "previous_early_us": 1203.5,
+          "previous_record_index": 3526,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 16797.5,
+          "current_late_us": 104.5,
+          "current_record_index": 3544,
+          "previous_early_us": 26.2,
+          "previous_record_index": 3543,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17058.7,
+          "current_late_us": 322.4,
+          "current_record_index": 3546,
+          "previous_early_us": 70.7,
+          "previous_record_index": 3545,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17066,
+          "current_late_us": 365.9,
+          "current_record_index": 3549,
+          "previous_early_us": 33.8,
+          "previous_record_index": 3548,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17700.8,
+          "current_late_us": 254.6,
+          "current_record_index": 3553,
+          "previous_early_us": 780.1,
+          "previous_record_index": 3552,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 22353.7,
+          "current_late_us": 4853.6,
+          "current_record_index": 3555,
+          "previous_early_us": 835,
+          "previous_record_index": 3554,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17726.7,
+          "current_late_us": 1043,
+          "current_record_index": 3557,
+          "previous_early_us": 19,
+          "previous_record_index": 3556,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18036.1,
+          "current_late_us": 717.5,
+          "current_record_index": 3565,
+          "previous_early_us": 650.2,
+          "previous_record_index": 3564,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18046.5,
+          "current_late_us": 544,
+          "current_record_index": 3573,
+          "previous_early_us": 838.8,
+          "previous_record_index": 3572,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18251,
+          "current_late_us": 969.4,
+          "current_record_index": 3576,
+          "previous_early_us": 616.2,
+          "previous_record_index": 3575,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18269.8,
+          "current_late_us": 995.9,
+          "current_record_index": 3578,
+          "previous_early_us": 608.1,
+          "previous_record_index": 3577,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17225,
+          "current_late_us": 274.3,
+          "current_record_index": 3587,
+          "previous_early_us": 283.7,
+          "previous_record_index": 3586,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18546.5,
+          "current_late_us": 1735.8,
+          "current_record_index": 3590,
+          "previous_early_us": 143.4,
+          "previous_record_index": 3589,
+          "skipped_deadline_count": 1
+        }
+      ]
+    },
+    {
+      "run": 5,
+      "process_exit_code": 0,
+      "timed_out": false,
+      "checker_exit_code": 0,
+      "contract_pass": true,
+      "raw_file": "run-5/playback.json",
+      "raw_sha256": "4bd70dd3e63c0a881f364e2d775f5753a18f48c2f9f10543c0e236430cfd6eac",
+      "deadline_drop_count": 49,
+      "deadline_drop_rate": 0.01361111111111111,
+      "present_callback_count": 3592,
+      "repeated_present_count": 41,
+      "ring_record_count": 3592,
+      "ring_overflow_count": 0,
+      "phase_pair_deadline_count": 17,
+      "long_callback_gap_deadline_count": 6,
+      "unpaired_skip_deadline_count": 26,
+      "unobserved_boundary_deadline_count": 0,
+      "phase_pair_samples": [
+        {
+          "callback_interval_us": 18217.9,
+          "current_late_us": 125.1,
+          "current_record_index": 4,
+          "previous_early_us": 1427.6,
+          "previous_record_index": 3,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18261.9,
+          "current_late_us": 166.5,
+          "current_record_index": 6,
+          "previous_early_us": 1429.1,
+          "previous_record_index": 5,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17081.8,
+          "current_late_us": 34.8,
+          "current_record_index": 16,
+          "previous_early_us": 382,
+          "previous_record_index": 15,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17344.5,
+          "current_late_us": 145.8,
+          "current_record_index": 24,
+          "previous_early_us": 531,
+          "previous_record_index": 23,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 16757.9,
+          "current_late_us": 34.6,
+          "current_record_index": 26,
+          "previous_early_us": 56.9,
+          "previous_record_index": 25,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18283.5,
+          "current_late_us": 825.4,
+          "current_record_index": 31,
+          "previous_early_us": 791.7,
+          "previous_record_index": 30,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17251.4,
+          "current_late_us": 3.1,
+          "current_record_index": 54,
+          "previous_early_us": 580.7,
+          "previous_record_index": 53,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 21154.2,
+          "current_late_us": 3845.3,
+          "current_record_index": 64,
+          "previous_early_us": 644.5,
+          "previous_record_index": 63,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17879.4,
+          "current_late_us": 628.5,
+          "current_record_index": 66,
+          "previous_early_us": 586.5,
+          "previous_record_index": 65,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 19481.1,
+          "current_late_us": 2626,
+          "current_record_index": 85,
+          "previous_early_us": 243.3,
+          "previous_record_index": 84,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17952.7,
+          "current_late_us": 1116.1,
+          "current_record_index": 92,
+          "previous_early_us": 170.7,
+          "previous_record_index": 91,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 16979.6,
+          "current_late_us": 24.7,
+          "current_record_index": 98,
+          "previous_early_us": 287,
+          "previous_record_index": 97,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 18077.3,
+          "current_late_us": 1389.8,
+          "current_record_index": 100,
+          "previous_early_us": 20.6,
+          "previous_record_index": 99,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 17341,
+          "current_late_us": 648.9,
+          "current_record_index": 1327,
+          "previous_early_us": 26,
+          "previous_record_index": 1326,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 16739.9,
+          "current_late_us": 45.5,
+          "current_record_index": 2519,
+          "previous_early_us": 27,
+          "previous_record_index": 2518,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 16688.4,
+          "current_late_us": 14.8,
+          "current_record_index": 2521,
+          "previous_early_us": 8.2,
+          "previous_record_index": 2520,
+          "skipped_deadline_count": 1
+        },
+        {
+          "callback_interval_us": 16745.3,
+          "current_late_us": 39.5,
+          "current_record_index": 2524,
+          "previous_early_us": 30.7,
+          "previous_record_index": 2523,
+          "skipped_deadline_count": 1
+        }
+      ]
+    }
+  ]
+}

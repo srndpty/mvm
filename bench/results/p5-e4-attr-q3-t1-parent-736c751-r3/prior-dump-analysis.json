@@ -1,0 +1,9 @@
+{
+  "schema": "mvm-p5-e4-t1-prior-dump-analysis-1",
+  "dump_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t0-parent-b0175dd-r1\\run-1\\hung-process.dmp",
+  "dump_sha256": "85be6e3470365488cfda3a0e65248f8ff251dc09654eeb787f6fda304401d7e5",
+  "debugger": "C:\\msys64\\ucrt64\\bin\\gdb.exe",
+  "command": "gdb -q -batch -ex \"info threads\" -ex \"thread apply all bt\" <exe> <dump>",
+  "blocking_frame_determined": false,
+  "result": "Windows full dumpをGDBがcore dumpとして認識しない (file format not recognized)"
+}

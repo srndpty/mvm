@@ -1,0 +1,63 @@
+{
+  "schema": "mvm-p2-c3-a3-t1-condition-proof-1",
+  "status": "PASS",
+  "authority": "diagnostic_only",
+  "mode": "VISIBLE_UNOCCLUDED",
+  "formal_counter_authority_changed": false,
+  "formal_drop_threshold_changed": false,
+  "production_scheduler_changed": false,
+  "window_state": {
+    "target_hwnd": "0x340e14",
+    "sample_count": 149,
+    "monitor": "0x10001",
+    "client_rect": "243,186,1523,906",
+    "window_rect": "240,160,1526,909",
+    "visible": true,
+    "iconic": false,
+    "topmost": true,
+    "cloaked": 0,
+    "foreground_target_sample_count": 23,
+    "foreground_target_fraction": 0.15436241610738255,
+    "designated_coverage": 0.0,
+    "unexpected_intersection_area_max": 0,
+    "dirty_tick_delta": 0
+  },
+  "dwm_process_id": 2436,
+  "dwm_identity_method": "ACTUAL_PARENT_EXACT",
+  "measurement_seconds": 15.0,
+  "dwm_wide_present_start_count": 55,
+  "dwm_wide_present_starts_per_second": 3.6666666666666665,
+  "dwm_wide_cadence_observation": "GAPS_OBSERVED",
+  "dwm_wide_unresolved_completion_count": 1,
+  "dwm_wide_present_start_gap": {
+    "p50": 1,
+    "p95": 60,
+    "max": 294
+  },
+  "target_attached_parent_count": 50,
+  "target_attached_parents_per_second": 3.3333333333333335,
+  "target_parent_present_start_gap": {
+    "p50": 1,
+    "p95": 62,
+    "max": 294
+  },
+  "native_present_count": 900,
+  "presented_count": 46,
+  "discarded_count": 854,
+  "dependent_superseded_count": 790,
+  "earlier_superseded_count": 64,
+  "dependency_batch_count": 54,
+  "dependency_batch_size": {
+    "p50": 1,
+    "p95": 128,
+    "max": 293,
+    "histogram": {
+      "1": 49,
+      "62": 1,
+      "77": 1,
+      "128": 1,
+      "291": 1,
+      "293": 1
+    }
+  }
+}

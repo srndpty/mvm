@@ -18,6 +18,8 @@ enum class AudioQueuePushResult {
     RejectedStopped
 };
 
+enum class AudioShortageKind { None, Starvation, TerminalEof };
+
 struct AudioQueueSnapshot {
     std::uint64_t pushCount = 0;
     std::uint64_t popCount = 0;
@@ -26,6 +28,17 @@ struct AudioQueueSnapshot {
     double highWatermarkMs = 0.0;
     std::uint64_t underflowCount = 0;
     std::uint64_t underflowSamples = 0;
+    std::uint64_t terminalEofSilenceCallbackCount = 0;
+    std::uint64_t terminalEofSilenceSamples = 0;
+    bool endOfStreamKnown = false;
+    std::int64_t endOfStreamSampleExclusive = -1;
+    std::uint64_t endOfStreamGeneration = 0;
+    std::int64_t firstTerminalEofRequestedStart = -1;
+    std::int64_t firstTerminalEofRequestedCount = 0;
+    std::int64_t firstTerminalEofAudioSamples = 0;
+    std::int64_t firstTerminalEofSilenceSamples = 0;
+    std::int64_t firstTerminalEofEndSampleExclusive = -1;
+    std::uint64_t firstTerminalEofGeneration = 0;
     std::uint64_t overflowRejectCount = 0;
     std::uint64_t staleGenerationRejectCount = 0;
     std::uint64_t futureGenerationRejectCount = 0;
@@ -40,6 +53,12 @@ struct AudioConsumeResult {
     std::int64_t audioSamples = 0;
     std::int64_t firstSample = -1;
     std::int64_t lastSampleExclusive = -1;
+    std::int64_t queuedSamplesBeforeConsume = 0;
+    std::int64_t queuedSamplesAfterConsume = 0;
+    std::int64_t queueLastAvailableSampleExclusive = -1;
+    std::int64_t silenceSamples = 0;
+    AudioShortageKind shortageKind = AudioShortageKind::None;
+    std::int64_t terminalEndSampleExclusive = -1;
 };
 
 class AudioFrameQueue final {
@@ -51,8 +70,9 @@ public:
     bool waitForSpace(std::int64_t requiredSamples, int timeoutMs);
     bool waitUntilBelow(std::int64_t samples, int timeoutMs);
     bool waitForSamples(std::int64_t requiredSamples, int timeoutMs);
-    AudioConsumeResult consume(float* destination, std::int64_t samples,
-                               SourceGeneration expectedGeneration);
+    AudioConsumeResult consume(float* destination, std::int64_t requestedSampleStart,
+                               std::int64_t samples, SourceGeneration expectedGeneration);
+    bool markEndOfStream(SourceGeneration generation, std::int64_t endSampleExclusive);
     bool setGeneration(SourceGeneration generation);
     void noteUnderflow(std::int64_t samples);
     void stop();
@@ -68,6 +88,8 @@ private:
     std::condition_variable changed_;
     std::deque<AudioChunk> chunks_;
     AudioQueueSnapshot metrics_;
+    bool endOfStreamKnown_ = false;
+    std::int64_t endOfStreamSampleExclusive_ = -1;
     bool stopped_ = false;
 };
 

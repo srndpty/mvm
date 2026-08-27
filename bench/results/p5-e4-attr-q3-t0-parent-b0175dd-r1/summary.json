@@ -1,0 +1,81 @@
+{
+  "schema": "mvm-p5-e4-t0-summary-1",
+  "authority": "DIAGNOSTIC_ONLY",
+  "formal_pass_authority": false,
+  "formal_verdict": "NOT_RUN",
+  "objective": "parent formal-playback shutdown/protocol hang stage attribution",
+  "expected_diagnostic_sha": "b0175dd781dffd741f238c5ee623f3bd81284c32",
+  "actual_diagnostic_sha": "b0175dd781dffd741f238c5ee623f3bd81284c32",
+  "executable_path": "C:\\dev\\soft\\mvm\\tmp\\attr-q2-parent\\build\\ucrt64-release\\bin\\mvm_p3_av_sync_spike.exe",
+  "executable_sha256": "cdd0352d12618479c12a168908d5d57f4edf3f8bda06f53ce4853d005adeb1e2",
+  "fixture_a_sha256": "d398114c38806f39670df51dfabb0095d462cbc35286ea1467901d4007cf0308",
+  "fixture_b_sha256": "fe7cd1a45d101d363cb3930497601efd41dd55fd36c194acf8f24e3e4728b479",
+  "watchdog_script_sha256": "43bfb1e5e23b9992aac65921473cad729fe138cbbba342e3b8ca0a4c781139d1",
+  "exact_formal_arguments": {
+    "mode": "playback",
+    "warmup_seconds": 5,
+    "measurement_seconds": 60,
+    "seed": 20260808,
+    "seek_count": 1000,
+    "display_timeout_ms": 3000,
+    "contract": "P3-C-2"
+  },
+  "watchdog_seconds": 180,
+  "requested_repetitions": 10,
+  "completed_runs": 1,
+  "hang_found": true,
+  "attribution_found": true,
+  "runs": [
+    {
+      "run": 1,
+      "completed": false,
+      "process_exit_code": null,
+      "contract_exit_code": -1,
+      "metrics_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t0-parent-b0175dd-r1\\run-1\\metrics.json",
+      "journal_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t0-parent-b0175dd-r1\\run-1\\stage-journal.jsonl",
+      "journal_entry_count": 3,
+      "last_stage": {
+        "process_id": 44460,
+        "qpc": 764447306853,
+        "schema": "mvm-p5-e4-t0-stage-1",
+        "sequence": 2,
+        "stage": "main.event_loop.exec.before",
+        "thread_id": 28276
+      },
+      "watchdog": {
+        "schema": "mvm-p5-e4-t0-watchdog-timeout-1",
+        "timeout_seconds": 180,
+        "process_id": 44460,
+        "process_start_local": "2026-08-21T15:30:43.1806438+09:00",
+        "elapsed_seconds": 186.927,
+        "target_process_tree": [
+          {
+            "ProcessId": 44460,
+            "ParentProcessId": 32932,
+            "Name": "mvm_p3_av_sync_spike.exe",
+            "CommandLine": "\"C:\\dev\\soft\\mvm\\tmp\\attr-q2-parent\\build\\ucrt64-release\\bin\\mvm_p3_av_sync_spike.exe\" --source-a C:\\dev\\soft\\mvm\\tests\\assets\\p3_audio\\p3_av_h264_aac.mp4 --source-b C:\\dev\\soft\\mvm\\tests\\assets\\p3_audio\\p3_video_hevc_b.mp4 --metrics C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t0-parent-b0175dd-r1\\run-1\\metrics.json --mode playback --duration-seconds 60 --warmup-seconds 5 --seek-count 1000 --seed 20260808 --display-timeout-ms 3000 --formal-contract-c2 --shutdown-stage-journal C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t0-parent-b0175dd-r1\\run-1\\stage-journal.jsonl"
+          },
+          {
+            "ProcessId": 35948,
+            "ParentProcessId": 44460,
+            "Name": "conhost.exe",
+            "CommandLine": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4"
+          }
+        ],
+        "last_stage": {
+          "process_id": 44460,
+          "qpc": 764447306853,
+          "schema": "mvm-p5-e4-t0-stage-1",
+          "sequence": 2,
+          "stage": "main.event_loop.exec.before",
+          "thread_id": 28276
+        },
+        "journal_entry_count": 3,
+        "thread_snapshot_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t0-parent-b0175dd-r1\\run-1\\thread-snapshot.json",
+        "dump_tool": "C:\\ProgramData\\chocolatey\\bin\\procdump64.exe",
+        "dump_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t0-parent-b0175dd-r1\\run-1\\hung-process.dmp",
+        "dump_exit_code": 1
+      }
+    }
+  ]
+}

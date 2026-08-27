@@ -1,0 +1,4 @@
+F3-C0 native hook OFF contract: PASS
+F3-C0 native hook ON contract: PASS records=900
+F3-C0 native/ETW closure: PASS records=900 PRESENTED=46 DISCARDED=854
+F3-C0 native Present ETW oracle: PASS (C:\dev\soft\mvm\bench\results\f3-c3-a3-t1-visibility-matrix-20260823-15s-1\set-3-position-2-visible\canonical)

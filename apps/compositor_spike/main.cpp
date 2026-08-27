@@ -5,21 +5,28 @@
 #include <QQmlApplicationEngine>
 #include <QQuickWindow>
 #include <QSGRendererInterface>
+#include <QSurfaceFormat>
 
 #include <cstdio>
+#include <cstring>
 
 using namespace mvm::app;
 
 namespace {
 void usage() {
-    std::fprintf(stderr,
-                 "使い方: mvm_compositor_spike --source-a <path> --source-b <path> "
-                 "--metrics <json> [options]\n"
-                 "  --warmup-seconds <n> --measure-seconds <n> --seed <n>\n"
-                 "  --seek-count <n> --display-timeout-ms <n>\n"
-                 "  --formal-preflight\n"
-                 "  --diagnostic-timing --diagnostic-case a|b|c|d\n"
-                 "  --gpu-completion fence|event_query --mode playback|seek|layout\n");
+    std::fprintf(stderr, "使い方: mvm_compositor_spike --source-a <path> --source-b <path> "
+                         "--metrics <json> [options]\n"
+                         "  --warmup-seconds <n> --measure-seconds <n> --seed <n>\n"
+                         "  --seek-count <n> --display-timeout-ms <n>\n"
+                         "  --formal-preflight\n"
+                         "  --diagnostic-timing --diagnostic-case a|b|c|d\n"
+                         "  --scheduler-phase-ring\n"
+                         "  --presentation-opportunity-ring\n"
+                         "  --w4-c2-scheduler-invocation-ledger\n"
+                         "  --incremental-mapper-shadow\n"
+                         "  --native-present-hook off|on\n"
+                         "  --target-rhiitem-pixel-toggle\n"
+                         "  --gpu-completion fence|event_query --mode playback|seek|layout\n");
 }
 
 bool parse(const QStringList& args, CompositorSpikeConfig& config) {
@@ -53,6 +60,22 @@ bool parse(const QStringList& args, CompositorSpikeConfig& config) {
                 return false;
         } else if (arg == "--formal-preflight") config.formalPreflight = true;
         else if (arg == "--diagnostic-timing") config.diagnosticTiming = true;
+        else if (arg == "--scheduler-phase-ring") config.schedulerPhaseRing = true;
+        else if (arg == "--vblank-observer") config.vblankObserver = true;
+        else if (arg == "--presentation-opportunity-ring")
+            config.presentationOpportunityRing = true;
+        else if (arg == "--w4-c2-scheduler-invocation-ledger")
+            config.formalSchedulerInvocationLedger = true;
+        else if (arg == "--incremental-mapper-shadow")
+            config.incrementalMapperShadow = true;
+        else if (arg == "--native-present-hook") {
+            const QString v = value().toLower();
+            if (v == "off") config.nativePresentHook = NativePresentHookMode::OffControl;
+            else if (v == "on") config.nativePresentHook = NativePresentHookMode::OnDiagnostic;
+            else return false;
+        }
+        else if (arg == "--target-rhiitem-pixel-toggle")
+            config.diagnosticTargetPixelToggle = true;
         else if (arg == "--diagnostic-case") {
             const QString v = value().toLower();
             if (v == "a") config.diagnosticCase = CompositorDiagnosticCase::SingleDecode;
@@ -64,13 +87,41 @@ bool parse(const QStringList& args, CompositorSpikeConfig& config) {
         }
         else return false;
     }
+    const bool mapperDependencies = !config.incrementalMapperShadow ||
+                                    (config.presentationOpportunityRing && config.vblankObserver &&
+                                     config.mode == CompositorMode::Playback);
+    const bool nativePresentDependencies =
+        config.nativePresentHook == NativePresentHookMode::Disabled ||
+        (config.presentationOpportunityRing && config.vblankObserver &&
+         config.mode == CompositorMode::Playback);
+    const bool invocationLedgerDependencies =
+        !config.formalSchedulerInvocationLedger ||
+        (config.formalPreflight && config.mode == CompositorMode::Playback);
     return !config.sourceA.isEmpty() && !config.sourceB.isEmpty() &&
            !config.metricsPath.isEmpty() && config.warmupSeconds >= 0 &&
-           config.measureSeconds > 0 && config.seekCount > 0 && config.displayTimeoutMs > 0;
+           config.measureSeconds > 0 && config.seekCount > 0 && config.displayTimeoutMs > 0 &&
+           mapperDependencies && nativePresentDependencies && invocationLedgerDependencies;
 }
 } // namespace
 
 int main(int argc, char** argv) {
+    bool mapperShadowRequested = false;
+    bool nativePresentHookRequested = false;
+    for (int index = 1; index < argc; ++index)
+        if (std::strcmp(argv[index], "--incremental-mapper-shadow") == 0)
+            mapperShadowRequested = true;
+        else if (std::strcmp(argv[index], "--native-present-hook") == 0)
+            nativePresentHookRequested = true;
+    if ((mapperShadowRequested || nativePresentHookRequested) &&
+        qEnvironmentVariableIsSet("QSG_NO_VSYNC")) {
+        std::fprintf(stderr, "formal presentation pathではQSG_NO_VSYNCを使用できません\n");
+        return 6;
+    }
+    if (mapperShadowRequested || nativePresentHookRequested) {
+        auto surfaceFormat = QSurfaceFormat::defaultFormat();
+        surfaceFormat.setSwapInterval(1);
+        QSurfaceFormat::setDefaultFormat(surfaceFormat);
+    }
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
     QGuiApplication app(argc, argv);
     CompositorSpikeConfig config;
@@ -89,7 +140,16 @@ int main(int argc, char** argv) {
     if (!surface)
         return 5;
     surface->setPreferredCompletionBackend(config.completion);
+    if (config.presentationOpportunityRing ||
+        (config.formalPreflight && config.mode == CompositorMode::Playback &&
+         config.diagnosticCase == CompositorDiagnosticCase::None)) {
+        QObject::connect(window, &QQuickWindow::frameSwapped, surface,
+                         &CompositorRhiItem::recordFrameSwapped, Qt::DirectConnection);
+    }
     controller.attach(surface);
+    // Main.qmlはvisible:falseで生成される。configが全て確定した後にだけ
+    // render threadを起動させ、initialize()がattach()を追い越す順序を排除する。
+    window->setVisible(true);
     QObject::connect(&controller, &CompositorSpikeController::finished, &app,
                      [&] { app.exit(controller.exitCode()); });
     return app.exec();

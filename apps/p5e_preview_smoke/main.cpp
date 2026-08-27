@@ -991,6 +991,18 @@ int main(int argc, char** argv) {
             }
             activeDiagnostics =
                 mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+            const auto generationA =
+                activeDiagnostics.videoSourceGenerations.find(videoSource.value);
+            const auto generationB =
+                activeDiagnostics.videoSourceGenerations.find(videoSourceB.value);
+            if (generationA == activeDiagnostics.videoSourceGenerations.end() ||
+                generationB == activeDiagnostics.videoSourceGenerations.end() ||
+                generationA->second == generationB->second) {
+                std::fprintf(stderr, "二source seek完了後のA/B generationが分岐していません\n");
+                exitCode = 58;
+                app.quit();
+                return;
+            }
             if (activeDiagnostics.seekCancelledByShutdownCount != 0 ||
                 !engine->requestShutdown()) {
                 exitCode = 47;

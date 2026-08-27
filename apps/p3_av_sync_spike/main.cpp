@@ -15,7 +15,10 @@ void usage() {
     std::fprintf(stderr,
                  "使い方: mvm_p3_av_sync_spike --source-a <path> --source-b <path> "
                  "--metrics <json> --mode playback|seek|pause-resume [options]\n"
-                 "  --formal-contract | --formal-contract-c2\n");
+                 "  --formal-contract | --formal-contract-c2\n"
+                 "  --inject-render-fault-after-playing (test専用)\n"
+                 "  --diagnostic-fixed-seek-target <frame> (診断専用)\n"
+                 "  --diagnostic-post-display-hold-ms <ms> (診断専用)\n");
 }
 
 bool parse(const QStringList& args, P3AvConfig& config) {
@@ -30,6 +33,20 @@ bool parse(const QStringList& args, P3AvConfig& config) {
         else if (key == "--seed") config.seed = value().toUInt();
         else if (key == "--display-timeout-ms") config.displayTimeoutMs = value().toInt();
         else if (key == "--warmup-seconds") config.warmupSeconds = value().toInt();
+        else if (key == "--inject-render-fault-after-playing")
+            config.injectRenderFaultAfterPlaying = true;
+        else if (key == "--diagnostic-fixed-seek-target") {
+            bool ok = false;
+            config.diagnosticFixedSeekTarget = value().toLongLong(&ok);
+            if (!ok || config.diagnosticFixedSeekTarget < 0)
+                return false;
+        }
+        else if (key == "--diagnostic-post-display-hold-ms") {
+            bool ok = false;
+            config.diagnosticPostDisplayHoldMs = value().toInt(&ok);
+            if (!ok || config.diagnosticPostDisplayHoldMs < 0)
+                return false;
+        }
         else if (key == "--formal-contract") config.formalContract = true;
         else if (key == "--formal-contract-c2") {
             config.formalContract = true;
@@ -47,7 +64,9 @@ bool parse(const QStringList& args, P3AvConfig& config) {
     }
     return !config.sourceA.isEmpty() && !config.sourceB.isEmpty() &&
            !config.metricsPath.isEmpty() && config.durationSeconds > 0 && config.seekCount > 0 &&
-           config.displayTimeoutMs > 0 && config.warmupSeconds >= 0;
+           config.displayTimeoutMs > 0 && config.warmupSeconds >= 0 &&
+           (config.diagnosticFixedSeekTarget < 0 || config.mode == P3AvMode::Seek) &&
+           (config.diagnosticPostDisplayHoldMs == 0 || config.diagnosticFixedSeekTarget >= 0);
 }
 } // namespace
 

@@ -108,14 +108,17 @@ function Pause([double]$Av = -10.0) {
 $mode = if ($Case -like 'NegativeSeek*' -or $Case -like 'Seek*') {'seek'} `
     elseif ($Case -like 'NegativePause*') {'pause-resume'} else {'playback'}
 $record = switch ($mode) {'seek' {Seek} 'pause-resume' {Pause} default {Playback}}
-$expectPass = $Case -eq 'Good'
+$legacyPerformanceDiagnosticCases=@('LegacyFpsDiagnostic','LegacyDropDiagnostic')
+$expectPass = $Case -eq 'Good' -or $Case -in $legacyPerformanceDiagnosticCases
 switch ($Case) {
     'Good' {
         $values=[double[]](@(1..57 | ForEach-Object {-20.000}) + @(-33.334,-33.334,-33.334))
         $record=Playback $values
     }
-    'NegativeFps' {$record.effective_video_fps=54.999}
-    'NegativeDrop' {$record.drop_rate=0.020001}
+    # P2-D5-2-W2-E: fps / drop は legacy presentation authority 由来の diagnostic へ降格した。
+    # threshold を割っても canonical FAIL にはならず、診断値として記録されるだけである。
+    'LegacyFpsDiagnostic' {$record.effective_video_fps=54.999}
+    'LegacyDropDiagnostic' {$record.drop_rate=0.020001}
     'NegativeAvP95' {$record=Playback ([double[]](1..60 | ForEach-Object {-20.001}))}
     'NegativeAvMax' {
         $values=[double[]](@(1..57 | ForEach-Object {-10.0}) + @(-33.335,-33.335,-33.335))
@@ -152,10 +155,20 @@ $json = Join-Path $OutputDir "$Case.json"
 $text = $record | ConvertTo-Json -Depth 12
 if ($Case -eq 'NegativeNaN') { $text = $text.Replace('"__NAN__"','NaN') }
 Set-Content -LiteralPath $json -Value $text -Encoding utf8
-& pwsh -NoProfile -File $Checker -Json $json -Mode $mode -DryRun
+$output = & pwsh -NoProfile -File $Checker -Json $json -Mode $mode -DryRun
 $actualPass = $LASTEXITCODE -eq 0
+$output | ForEach-Object { Write-Host $_ }
 if ($actualPass -ne $expectPass) {
     Write-Error "P3-C checker case が期待と不一致です: $Case (pass=$actualPass)"
+}
+if ($Case -in $legacyPerformanceDiagnosticCases) {
+    $text = @($output) -join "`n"
+    if ($text -notmatch '\[W2-E\] legacy presentation metrics \(diagnostic, non-authoritative\)') {
+        Write-Error "case=$Case で legacy metric が diagnostic として報告されていません"
+    }
+    if ($text -notmatch 'canonical_performance_verdict=DEFERRED_TO_W3') {
+        Write-Error "case=$Case で canonical performance verdict が W3 へ保留されていません"
+    }
 }
 if ($Case -eq 'Good') {
     # seek latency p95/max と seek AV p95/max の PASS 側境界を同じ positive test で固定する。

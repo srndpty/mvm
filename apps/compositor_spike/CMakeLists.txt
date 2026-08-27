@@ -17,6 +17,7 @@ target_link_libraries(mvm_compositor_spike PRIVATE
     Qt6::Gui
     Qt6::Qml
     Qt6::Quick
+    dwmapi
     mvm::warnings
 )
 set_target_properties(mvm_compositor_spike PROPERTIES WIN32_EXECUTABLE OFF)

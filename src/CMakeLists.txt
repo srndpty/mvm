@@ -4,6 +4,7 @@
 # --- pure core --------------------------------------------------------------
 add_library(mvm_core STATIC
     core/checked_output_timebase.cpp
+    core/presentation_opportunity_mapper.cpp
 )
 target_include_directories(mvm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_core PRIVATE mvm::warnings)
@@ -89,6 +90,13 @@ add_library(mvm_gpu_preview STATIC
     media/gpu_preview/transition_probe_reference.cpp
     media/gpu_preview/visible_uv.cpp
     media/gpu_preview/output_scheduler.cpp
+    media/gpu_preview/scheduler_phase_attribution.cpp
+    media/gpu_preview/presentation_opportunity_attribution.cpp
+    media/gpu_preview/presentation_opportunity_scheduler.cpp
+    media/gpu_preview/presentation_refresh_authority.cpp
+    media/gpu_preview/window_output_vblank_authority.cpp
+    media/gpu_preview/window_output_vblank_observer.cpp
+    media/gpu_preview/physical_vblank_domain.cpp
 )
 target_include_directories(mvm_gpu_preview PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_gpu_preview
@@ -127,6 +135,8 @@ if(MVM_ENABLE_QT)
     # 決めたのと同じ規則を QRhi に対して適用する (docs/phase1-plan.md §7)。
     add_library(mvm_preview_qt STATIC
         app/preview/display_target_contract.cpp
+        app/preview/native_present_hook.cpp
+        app/preview/presentation_eligibility_preflight.cpp
         app/preview/preview_rhi_item.cpp
         app/preview/compositor_rhi_item.cpp
         app/preview/preview_engine_rhi_item.cpp
@@ -135,7 +145,7 @@ if(MVM_ENABLE_QT)
     target_include_directories(mvm_preview_qt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(mvm_preview_qt
         PUBLIC  mvm::gpu_preview mvm::audio_preview mvm::preview_engine Qt6::Quick Qt6::Gui
-        PRIVATE Qt6::GuiPrivate mvm::warnings
+        PRIVATE Qt6::GuiPrivate mvm::warnings dwmapi
     )
     add_library(mvm::preview_qt ALIAS mvm_preview_qt)
 endif()

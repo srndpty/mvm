@@ -1,0 +1,252 @@
+{
+  "schema": "mvm-p5-e4-t1-summary-1",
+  "authority": "DIAGNOSTIC_ONLY",
+  "formal_pass_authority": false,
+  "formal_verdict": "NOT_RUN",
+  "objective": "parent formal-playback phase/audio-clock liveness attribution",
+  "expected_diagnostic_sha": "c85492440bd86607674dc1c13c4b980914ed0e04",
+  "actual_diagnostic_sha": "c85492440bd86607674dc1c13c4b980914ed0e04",
+  "executable_path": "C:\\dev\\soft\\mvm\\tmp\\attr-q2-parent\\build\\ucrt64-release\\bin\\mvm_p3_av_sync_spike.exe",
+  "executable_sha256": "c45da1a1192d97171153295bf26bacceeec156996a30c8350a8c08251d4c9813",
+  "fixture_a_sha256": "d398114c38806f39670df51dfabb0095d462cbc35286ea1467901d4007cf0308",
+  "fixture_b_sha256": "fe7cd1a45d101d363cb3930497601efd41dd55fd36c194acf8f24e3e4728b479",
+  "watchdog_script_sha256": "45731a0a4fd49747c4e63f50bb3605ce175e36b8097a364463c09622a67b1472",
+  "classifier_script_sha256": "4a4805ba7afbdf087432a807e62b7b71bde1a9617864f41cb075faaebeb8595f",
+  "prior_dump_analysis": {
+    "schema": "mvm-p5-e4-t1-prior-dump-analysis-1",
+    "dump_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t0-parent-b0175dd-r1\\run-1\\hung-process.dmp",
+    "dump_sha256": "85be6e3470365488cfda3a0e65248f8ff251dc09654eeb787f6fda304401d7e5",
+    "debugger": "C:\\msys64\\ucrt64\\bin\\gdb.exe",
+    "command": "gdb -q -batch -ex \"info threads\" -ex \"thread apply all bt\" <exe> <dump>",
+    "blocking_frame_determined": false,
+    "result": "Windows full dumpをGDBがcore dumpとして認識しない (file format not recognized)"
+  },
+  "exact_formal_arguments": {
+    "mode": "playback",
+    "warmup_seconds": 5,
+    "measurement_seconds": 60,
+    "seed": 20260808,
+    "seek_count": 1000,
+    "display_timeout_ms": 3000,
+    "contract": "P3-C-2"
+  },
+  "heartbeat_interval_ms": 1000,
+  "watchdog_seconds": 180,
+  "requested_repetitions": 10,
+  "completed_runs": 10,
+  "hang_found": false,
+  "attribution_found": false,
+  "classification": null,
+  "runs": [
+    {
+      "run": 1,
+      "completed": true,
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "metrics_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-1\\metrics.json",
+      "journal_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-1\\stage-journal.jsonl",
+      "sidecar_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-1\\liveness-sidecar.jsonl",
+      "sidecar_entry_count": 146,
+      "last_sidecar_entry": {
+        "event": "phase.transition",
+        "from": "ShutdownWait",
+        "process_id": 33068,
+        "qpc": 801649059491,
+        "schema": "mvm-p5-e4-t1-liveness-1",
+        "sequence": 145,
+        "thread_id": 39652,
+        "to": "Done"
+      },
+      "watchdog": null
+    },
+    {
+      "run": 2,
+      "completed": true,
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "metrics_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-2\\metrics.json",
+      "journal_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-2\\stage-journal.jsonl",
+      "sidecar_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-2\\liveness-sidecar.jsonl",
+      "sidecar_entry_count": 146,
+      "last_sidecar_entry": {
+        "event": "phase.transition",
+        "from": "ShutdownWait",
+        "process_id": 40148,
+        "qpc": 802327512328,
+        "schema": "mvm-p5-e4-t1-liveness-1",
+        "sequence": 145,
+        "thread_id": 17012,
+        "to": "Done"
+      },
+      "watchdog": null
+    },
+    {
+      "run": 3,
+      "completed": true,
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "metrics_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-3\\metrics.json",
+      "journal_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-3\\stage-journal.jsonl",
+      "sidecar_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-3\\liveness-sidecar.jsonl",
+      "sidecar_entry_count": 146,
+      "last_sidecar_entry": {
+        "event": "phase.transition",
+        "from": "ShutdownWait",
+        "process_id": 5228,
+        "qpc": 803006051433,
+        "schema": "mvm-p5-e4-t1-liveness-1",
+        "sequence": 145,
+        "thread_id": 44796,
+        "to": "Done"
+      },
+      "watchdog": null
+    },
+    {
+      "run": 4,
+      "completed": true,
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "metrics_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-4\\metrics.json",
+      "journal_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-4\\stage-journal.jsonl",
+      "sidecar_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-4\\liveness-sidecar.jsonl",
+      "sidecar_entry_count": 146,
+      "last_sidecar_entry": {
+        "event": "phase.transition",
+        "from": "ShutdownWait",
+        "process_id": 31168,
+        "qpc": 803685663553,
+        "schema": "mvm-p5-e4-t1-liveness-1",
+        "sequence": 145,
+        "thread_id": 19712,
+        "to": "Done"
+      },
+      "watchdog": null
+    },
+    {
+      "run": 5,
+      "completed": true,
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "metrics_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-5\\metrics.json",
+      "journal_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-5\\stage-journal.jsonl",
+      "sidecar_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-5\\liveness-sidecar.jsonl",
+      "sidecar_entry_count": 146,
+      "last_sidecar_entry": {
+        "event": "phase.transition",
+        "from": "ShutdownWait",
+        "process_id": 44104,
+        "qpc": 804364258480,
+        "schema": "mvm-p5-e4-t1-liveness-1",
+        "sequence": 145,
+        "thread_id": 37880,
+        "to": "Done"
+      },
+      "watchdog": null
+    },
+    {
+      "run": 6,
+      "completed": true,
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "metrics_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-6\\metrics.json",
+      "journal_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-6\\stage-journal.jsonl",
+      "sidecar_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-6\\liveness-sidecar.jsonl",
+      "sidecar_entry_count": 146,
+      "last_sidecar_entry": {
+        "event": "phase.transition",
+        "from": "ShutdownWait",
+        "process_id": 40872,
+        "qpc": 805041732796,
+        "schema": "mvm-p5-e4-t1-liveness-1",
+        "sequence": 145,
+        "thread_id": 37584,
+        "to": "Done"
+      },
+      "watchdog": null
+    },
+    {
+      "run": 7,
+      "completed": true,
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "metrics_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-7\\metrics.json",
+      "journal_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-7\\stage-journal.jsonl",
+      "sidecar_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-7\\liveness-sidecar.jsonl",
+      "sidecar_entry_count": 146,
+      "last_sidecar_entry": {
+        "event": "phase.transition",
+        "from": "ShutdownWait",
+        "process_id": 19312,
+        "qpc": 805719899086,
+        "schema": "mvm-p5-e4-t1-liveness-1",
+        "sequence": 145,
+        "thread_id": 44176,
+        "to": "Done"
+      },
+      "watchdog": null
+    },
+    {
+      "run": 8,
+      "completed": true,
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "metrics_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-8\\metrics.json",
+      "journal_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-8\\stage-journal.jsonl",
+      "sidecar_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-8\\liveness-sidecar.jsonl",
+      "sidecar_entry_count": 146,
+      "last_sidecar_entry": {
+        "event": "phase.transition",
+        "from": "ShutdownWait",
+        "process_id": 45184,
+        "qpc": 806397929026,
+        "schema": "mvm-p5-e4-t1-liveness-1",
+        "sequence": 145,
+        "thread_id": 20648,
+        "to": "Done"
+      },
+      "watchdog": null
+    },
+    {
+      "run": 9,
+      "completed": true,
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "metrics_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-9\\metrics.json",
+      "journal_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-9\\stage-journal.jsonl",
+      "sidecar_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-9\\liveness-sidecar.jsonl",
+      "sidecar_entry_count": 146,
+      "last_sidecar_entry": {
+        "event": "phase.transition",
+        "from": "ShutdownWait",
+        "process_id": 45948,
+        "qpc": 807075749244,
+        "schema": "mvm-p5-e4-t1-liveness-1",
+        "sequence": 145,
+        "thread_id": 41040,
+        "to": "Done"
+      },
+      "watchdog": null
+    },
+    {
+      "run": 10,
+      "completed": true,
+      "process_exit_code": 0,
+      "contract_exit_code": 0,
+      "metrics_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-10\\metrics.json",
+      "journal_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-10\\stage-journal.jsonl",
+      "sidecar_path": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-attr-q3-t1-parent-c854924-r2\\run-10\\liveness-sidecar.jsonl",
+      "sidecar_entry_count": 146,
+      "last_sidecar_entry": {
+        "event": "phase.transition",
+        "from": "ShutdownWait",
+        "process_id": 23040,
+        "qpc": 807754005039,
+        "schema": "mvm-p5-e4-t1-liveness-1",
+        "sequence": 145,
+        "thread_id": 4504,
+        "to": "Done"
+      },
+      "watchdog": null
+    }
+  ]
+}

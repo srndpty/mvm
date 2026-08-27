@@ -1,0 +1,382 @@
+{
+    "actual_gpu_completion_backend": "fence",
+    "actual_output_height": 1080,
+    "actual_output_width": 1920,
+    "actual_target_probe_checked_count": 4,
+    "actual_target_probe_mismatch": 0,
+    "adapter_a": "NVIDIA GeForce RTX 4090",
+    "adapter_b": "NVIDIA GeForce RTX 4090",
+    "completion_poll_failure_count": 0,
+    "compose_after_fatal_rejected_count": 0,
+    "composition_displayed_count": 3549,
+    "composition_submitted_count": 3549,
+    "configured_measure_seconds": 60,
+    "configured_measurement_preroll_frames": 8,
+    "configured_seed": 20260808,
+    "configured_seek_count": 1000,
+    "configured_warmup_seconds": 5,
+    "cpu_full_frame_readback_count": 0,
+    "d3d11_lock_timings": {
+        "decoder_a_d3d11_lock_wait_us": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_us": [
+            ]
+        },
+        "decoder_b_d3d11_lock_wait_us": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_us": [
+            ]
+        },
+        "render_d3d11_lock_wait_us": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_us": [
+            ]
+        }
+    },
+    "deadline_drop_rate": 0.014166666666666666,
+    "decoded_a_count": 4033,
+    "decoded_b_count": 4030,
+    "device_lost_count": 0,
+    "diagnostic_case": "none",
+    "diagnostic_timing": false,
+    "displayed_composition_count": 3549,
+    "drop_rate": 0.014166666666666666,
+    "dropped_output_count": 51,
+    "dual_seek_decode_ready_ms": [
+    ],
+    "dual_seek_displayed_ms": [
+    ],
+    "dual_seek_displayed_observed_max_ms": -1,
+    "dual_seek_displayed_p95_ms": -1,
+    "effective_fps": 59.135305172341205,
+    "effective_pair_rate": 59.135305172341205,
+    "execution_nonoverlap_count": 0,
+    "execution_overlap_count": 0,
+    "final_report_written_after_teardown": true,
+    "formal_contract_version": "P2-D5-1",
+    "formal_preflight": true,
+    "full_frame_gpu_copy_count": 0,
+    "gpu_passes_per_composition": 1,
+    "gpu_submission_count": 3851,
+    "layout_epoch_mismatch": 0,
+    "lifecycle_order_violation_count": 0,
+    "logical_clear_count": 3549,
+    "marker_a_checked_count": 7,
+    "marker_a_mismatch": 0,
+    "marker_b_checked_count": 7,
+    "marker_b_mismatch": 0,
+    "marker_band_readback_count": 14,
+    "measurement_buffer_depth_a_end": 0,
+    "measurement_buffer_depth_a_start": 16,
+    "measurement_buffer_depth_b_end": 0,
+    "measurement_buffer_depth_b_start": 16,
+    "measurement_completion_poll_failure_count": 0,
+    "measurement_composition_drawn_count": 3549,
+    "measurement_composition_requested_count": 3549,
+    "measurement_decoded_a_count": 3583,
+    "measurement_decoded_b_count": 3583,
+    "measurement_displayed_composition_count": 3549,
+    "measurement_drop_future_generation": 0,
+    "measurement_drop_missing_both": 0,
+    "measurement_drop_missing_source_a": 0,
+    "measurement_drop_missing_source_b": 0,
+    "measurement_drop_render_failure": 0,
+    "measurement_drop_scheduler_deadline": 51,
+    "measurement_drop_stale_composition_epoch": 0,
+    "measurement_drop_stale_generation": 0,
+    "measurement_dropped_output_count": 51,
+    "measurement_elapsed_seconds": 60.0149097,
+    "measurement_first_output_frame": 0,
+    "measurement_gpu_submission_count": 3549,
+    "measurement_layer_draw_count": 7098,
+    "measurement_logical_clear_count": 3549,
+    "measurement_missing_pair_count": 0,
+    "measurement_partial_gpu_issue_failure_count": 0,
+    "measurement_preroll_depth_a": 16,
+    "measurement_preroll_depth_b": 11,
+    "measurement_preroll_front_a": 0,
+    "measurement_preroll_front_b": 0,
+    "measurement_preroll_ok": true,
+    "measurement_present_callback_count": 3598,
+    "measurement_repeated_present_count": 49,
+    "measurement_scheduled_output_count": 3600,
+    "measurement_source_a_eof_count": 0,
+    "measurement_source_b_eof_count": 0,
+    "measurement_untracked_submission_count": 0,
+    "measurement_wait_for_space_a_count": 0,
+    "measurement_wait_for_space_b_count": 0,
+    "missing_pair_drop_count": 0,
+    "missing_source_a_drop_count": 0,
+    "missing_source_b_drop_count": 0,
+    "mixed_generation_count": 0,
+    "mixed_source_frame_count": 0,
+    "mode": "playback",
+    "output_probe_readback_count": 4,
+    "paired_count": 3549,
+    "parallel_dispatch_valid_count": 0,
+    "partial_gpu_issue_failure_count": 0,
+    "payloads_released_before_completion": 0,
+    "pending_pair_count": 0,
+    "present_callback_count": 3598,
+    "process_exit_code": 0,
+    "render_stage_timings": {
+        "buffer_depth_a": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values": [
+            ]
+        },
+        "buffer_depth_b": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values": [
+            ]
+        },
+        "completion_poll_us": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_us": [
+            ]
+        },
+        "composition_issue_us": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_us": [
+            ]
+        },
+        "composition_prepare_us": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_us": [
+            ]
+        },
+        "pair_us": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_us": [
+            ]
+        },
+        "qt_external_us": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_us": [
+            ]
+        },
+        "render_callback_interval_us": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_us": [
+            ]
+        },
+        "render_callback_total_us": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_us": [
+            ]
+        },
+        "scheduler_to_pair_us": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_us": [
+            ]
+        }
+    },
+    "repeated_present_count": 49,
+    "required_measurement_frame_count": 3600,
+    "retired_not_completed": 0,
+    "retirement_depth_after_drain": 0,
+    "retirement_depth_peak": 2,
+    "retirement_timeout_count": 0,
+    "same_device_a": true,
+    "same_device_b": true,
+    "scheduled_output_count": 3600,
+    "scheduler_deadline_drop_count": 51,
+    "schema": "mvm-p2-formal-1",
+    "seek_busy_acceptance_count": 0,
+    "seek_completion_publish_reject_count": 0,
+    "seek_completion_request_mismatch_count": 0,
+    "seek_completion_stopped_superseded_count": 0,
+    "seek_concurrency_samples": [
+    ],
+    "seek_display_mismatch": 0,
+    "seek_stage_timings": {
+        "both_ready_to_pair_ms": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_ms": [
+            ]
+        },
+        "decode_ready_to_display_ms": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_ms": [
+            ]
+        },
+        "decode_ready_to_pair_ms": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_ms": [
+            ]
+        },
+        "dual_decode_ready_ms": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_ms": [
+            ]
+        },
+        "pair_to_submission_ms": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_ms": [
+            ]
+        },
+        "request_to_display_ms": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_ms": [
+            ]
+        },
+        "seek_a_ms": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_ms": [
+            ]
+        },
+        "seek_a_request_to_ready_ms": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_ms": [
+            ]
+        },
+        "seek_b_ms": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_ms": [
+            ]
+        },
+        "seek_b_request_to_ready_ms": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_ms": [
+            ]
+        },
+        "submission_to_display_record_ms": {
+            "count": 0,
+            "max": -1,
+            "mean": -1,
+            "p50": -1,
+            "p95": -1,
+            "p99": -1,
+            "values_ms": [
+            ]
+        }
+    },
+    "seek_stale_completion_count": 0,
+    "seek_timeout_count": 0,
+    "shutdown_reason": "playback measurement完了",
+    "software_fallback_count": 0,
+    "source_a_frame_count": 3600,
+    "source_a_software_frame_reject_count": 0,
+    "source_b_frame_count": 3600,
+    "source_b_software_frame_reject_count": 0,
+    "source_coverage_ok": true,
+    "stale_composition_epoch_count": 0,
+    "teardown_success": true,
+    "untracked_submission_count": 0,
+    "worker_join_leak_count": 0
+}

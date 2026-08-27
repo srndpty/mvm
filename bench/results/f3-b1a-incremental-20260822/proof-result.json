@@ -1,0 +1,15 @@
+{
+  "schema": "mvm-p2-b1a-incremental-proof-1",
+  "b1a_status": "PASS",
+  "case_count": 52,
+  "solution_class_counts": {
+    "AMBIGUOUS": 8,
+    "UNIQUE": 36,
+    "NO_SOLUTION": 8
+  },
+  "unique_identity_exact_record_count": 84,
+  "consensus_commit_event_count": 36,
+  "commit_regression_count": 0,
+  "first_solution_early_commit_allowed": false,
+  "next": "F3-B1B_LIVE_SHADOW_WIRING"
+}

@@ -3,7 +3,9 @@
 
 #include "media/audio_preview/audio_clock.h"
 #include "media/audio_preview/audio_frame_queue.h"
+#include "media/audio_preview/runtime_attribution.h"
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -31,6 +33,7 @@ struct WasapiSnapshot {
     std::int64_t playStartFirstConsumedSample = -1;
     std::int64_t lastConsumedSampleExclusive = -1;
     std::uint64_t endpointPrefillFrames = 0;
+    unsigned int endpointBufferFrames = 0;
     std::int64_t endpointFirstMediaSample = -1;
     std::uint64_t endpointStartDevicePosition = 0;
     std::int64_t clockAnchorMediaSample = -1;
@@ -59,6 +62,10 @@ public:
     bool resetForSeek(std::string& error);
     void stop();
     WasapiSnapshot snapshot() const;
+
+    // P3 ATTR-Q1診断専用。呼び出し側がsinkより長く所有する固定POD stateを渡す。
+    void setRuntimeAttribution(RuntimeAttributionState* attribution) { attribution_ = attribution; }
+
     // render loop に実際の device failure を起こさせる test seam。
     // 完成した error を外から渡すのではなく、通常の recordFailure() 経路を通す。
     void injectRenderFaultForTest();
@@ -114,6 +121,11 @@ private:
     std::atomic<std::uint64_t> generation_{0};
     bool comInitialized_ = false;
     bool endpointPrefillRequired_ = true;
+    std::int64_t nextRequestedSample_ = -1;
+    RuntimeAttributionState* attribution_ = nullptr;
+    std::array<AudioConsumeTraceEntry, kAudioConsumeTraceCapacity> recentConsumeTrace_{};
+    std::size_t recentConsumeTraceCount_ = 0;
+    std::size_t recentConsumeTraceNext_ = 0;
 };
 
 } // namespace mvm::audio

@@ -1,0 +1,136 @@
+{
+  "schema": "mvm-p2-c3-a2-offline-run-1",
+  "authority": "diagnostic_offline",
+  "run": 1,
+  "position": 1,
+  "submission_mode": "CONTROL",
+  "present_count": 900,
+  "presented_count": 1,
+  "discarded_count": 899,
+  "present_mode_histogram": {
+    "Composed_Flip": 900
+  },
+  "present_mode_completion": {
+    "Composed_Flip": {
+      "presented": 1,
+      "discarded": 899
+    }
+  },
+  "present_mode_transition_count": 0,
+  "present_mode_transitions": [],
+  "dependency_batch_count": 3,
+  "dependency_batch_size": {
+    "p50": 158,
+    "p95": 741,
+    "max": 741
+  },
+  "app_identity_batch_count": 1,
+  "non_app_parent_candidate_batch_count": 2,
+  "parent_display_available_batch_count": 2,
+  "parent_display_group_count": 1,
+  "duplicate_parent_display_batch_identity_count": 1,
+  "large_parent_display_group_count": 0,
+  "large_parent_display_gap_comparable_count": 0,
+  "large_parent_display_gap_mismatch_count": 0,
+  "parent_completion_qpc_available_batch_count": 0,
+  "physical_source_gap_pair_count": 0,
+  "physical_source_gap_exact_count": 0,
+  "physical_source_gap_mismatch_count": 0,
+  "physical_source_gap_mismatches": [],
+  "displayed_source_span": 0,
+  "displayed_physical_vblank_span": 0,
+  "displayed_source_physical_span_difference": 0,
+  "lifecycle_field_availability": {
+    "app_present_qpc": true,
+    "waiting_for_dwm_qpc": false,
+    "attached_to_parent_qpc": false,
+    "parent_identity": true,
+    "parent_displayed_qpc": true,
+    "parent_completion_qpc": false,
+    "dependent_finalized_qpc": false
+  },
+  "batches": [
+    {
+      "batch_identity_qpc": 2167987791464,
+      "identity_kind": "MATCHES_APP_PRESENT",
+      "first_app_present_serial": "1",
+      "first_app_present_qpc": 2167864178375,
+      "last_app_present_serial": "741",
+      "last_app_present_qpc": 2167987622585,
+      "dependent_count": 741,
+      "presented_count": 0,
+      "discarded_count": 741,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2167987791464,
+      "parent_present_start_vblank_ordinal": 742,
+      "parent_displayed_qpc": 2167988273967,
+      "parent_displayed_vblank_ordinal": 745,
+      "parent_display_vblank_delta": null,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 744,
+      "last_app_to_parent_display_vblanks": 4
+    },
+    {
+      "batch_identity_qpc": 2167988158436,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "742",
+      "first_app_present_qpc": 2167987791464,
+      "last_app_present_serial": "742",
+      "last_app_present_qpc": 2167987791464,
+      "dependent_count": 1,
+      "presented_count": 1,
+      "discarded_count": 0,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2167988158436,
+      "parent_present_start_vblank_ordinal": 744,
+      "parent_displayed_qpc": 2167988273967,
+      "parent_displayed_vblank_ordinal": 745,
+      "parent_display_vblank_delta": 0,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": 3,
+      "last_app_to_parent_display_vblanks": 3
+    },
+    {
+      "batch_identity_qpc": 2168015583826,
+      "identity_kind": "NON_APP_PARENT_CANDIDATE",
+      "first_app_present_serial": "743",
+      "first_app_present_qpc": 2167987952546,
+      "last_app_present_serial": "900",
+      "last_app_present_qpc": 2168014146083,
+      "dependent_count": 158,
+      "presented_count": 0,
+      "discarded_count": 158,
+      "present_modes": [
+        "Composed_Flip"
+      ],
+      "parent_present_start_qpc": 2168015583826,
+      "parent_present_start_vblank_ordinal": null,
+      "parent_displayed_qpc": null,
+      "parent_displayed_vblank_ordinal": null,
+      "parent_display_vblank_delta": null,
+      "parent_completion_qpc": null,
+      "parent_completion_qpc_available": false,
+      "first_app_to_parent_display_vblanks": null,
+      "last_app_to_parent_display_vblanks": null
+    }
+  ],
+  "parent_display_groups": [
+    {
+      "displayed_vblank_ordinal": 745,
+      "batch_identity_count": 2,
+      "dependent_count": 742,
+      "previous_display_vblank_delta": null,
+      "dependent_count_matches_display_gap_within_one": null
+    }
+  ],
+  "identities": {
+    "oracle_sha256": "9d55f4b182b75cc9748995140b3351c68c7ae5409a87a38c15a18c4afecad51f",
+    "app_sha256": "f2e0f7d41080d29a113f24d081f9e9dcc412da4fe2a40c8bf9468a8a5e7f545b"
+  }
+}

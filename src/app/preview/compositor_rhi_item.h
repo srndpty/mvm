@@ -1,17 +1,25 @@
 #ifndef MVM_APP_PREVIEW_COMPOSITOR_RHI_ITEM_H
 #define MVM_APP_PREVIEW_COMPOSITOR_RHI_ITEM_H
 
+#include "app/preview/native_present_hook.h"
+#include "app/preview/presentation_eligibility_preflight.h"
 #include "media/audio_preview/audio_clock.h"
+#include "media/audio_preview/runtime_attribution.h"
 #include "media/gpu_preview/composition_display_ledger.h"
 #include "media/gpu_preview/compositor_coordinator.h"
 #include "media/gpu_preview/gpu_compositor.h"
 #include "media/gpu_preview/phase4_composition_driver.h"
+#include "media/gpu_preview/presentation_opportunity_attribution.h"
+#include "media/gpu_preview/presentation_opportunity_scheduler.h"
+#include "media/gpu_preview/scheduler_phase_attribution.h"
 #include "media/gpu_preview/source_decode_worker.h"
 #include "media/gpu_preview/transition_probe.h"
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
+#include <vector>
 
 #include <QQuickRhiItem>
 
@@ -85,6 +93,186 @@ struct ActualTargetPixelSize {
     int height = 0;
 };
 
+enum class NativePresentIntentScope {
+    ForeignPreMeasurement = 0,
+    CurrentMeasurement = 1,
+};
+
+enum class MeasurementBoundaryRelation {
+    Unresolved = 0,
+    PreMeasurementArm,
+    ArmedPreMeasurement,
+    WithinCurrentMeasurement,
+    PostMeasurement,
+};
+
+enum class RenderTeardownDiagnosticStage {
+    NotRequested = 0,
+    Requested,
+    RenderCallbackObserved,
+    WorkerJoinPending,
+    ProbeDrain,
+    CompositorDrain,
+    Failed,
+    Complete,
+};
+
+enum class TerminalRenderExitDiagnosticStage {
+    NotObserved = 0,
+    FinishMeasurementEntered,
+    FinishMeasurementReturned,
+    PresentationCaptureDestructorComplete,
+    NativeTokenDestructorEntered,
+    NativeTokenDestructorComplete,
+    RenderCallbackExited,
+};
+
+// P2-D5-2 W4-C3 amend 4。measurementを止め得るcauseのownershipを単一atomicで裁定する。
+// CAS winnerだけがcausal authorityであり、flagやserialはownershipを与えない。
+enum class StopArbitration {
+    None = 0,
+    DomainTerminal,
+    PlannedWindowEnd,
+    ExplicitStop,
+    Fatal,
+};
+
+inline const char* stopArbitrationName(StopArbitration cause) {
+    switch (cause) {
+    case StopArbitration::None:
+        return "NONE";
+    case StopArbitration::DomainTerminal:
+        return "DOMAIN_TERMINAL";
+    case StopArbitration::PlannedWindowEnd:
+        return "PLANNED_WINDOW_END";
+    case StopArbitration::ExplicitStop:
+        return "EXPLICIT_STOP";
+    case StopArbitration::Fatal:
+        return "FATAL";
+    }
+    return "UNKNOWN";
+}
+
+struct StopClaimResult {
+    bool succeeded = false;
+    StopArbitration previous = StopArbitration::None;
+    unsigned long long publishSerial = 0;
+};
+
+// W4-C3。publication siteで確定したclaim結果を、consumer側へexactに運ぶ。
+// consumerがstopArbitration.load()から逆算しないためのrecordである。
+struct StopPublicationRecord {
+    bool valid = false;
+    StopArbitration claimed = StopArbitration::None;
+    StopArbitration previous = StopArbitration::None;
+    bool succeeded = false;
+    unsigned long long publishSerial = 0;
+};
+
+// pending stop requestとそのrecordは同じprotocolで運ぶ。
+struct StopRequestConsumption {
+    bool requested = false;
+    StopPublicationRecord record;
+};
+
+// W4-C3 stop witness v3。terminal callbackで確定した事実だけを運ぶ。
+// checkerもcontrollerもQPCやledger末尾からこれらを再構築してはならない。
+struct StopWitnessTerminalFacts {
+    unsigned long long schedulerInvocationSerial = 0;
+    long long intentOrdinal = -1;
+    long long targetFrame = -1;
+    bool pastSourceDomain = false;
+    bool requiredIntentMembership = false;
+    bool formalOpportunityDomainReachedPublished = false;
+};
+
+struct CompositorStopWitness {
+    StopArbitration cause = StopArbitration::None;
+    long long renderCallbackBeginQpc = 0;
+    StopWitnessTerminalFacts terminal;
+
+    // arbitration。call siteのclaim結果をそのまま保存する。
+    StopArbitration arbitrationPrevious = StopArbitration::None;
+    StopArbitration arbitrationClaimed = StopArbitration::None;
+    bool arbitrationClaimSucceeded = false;
+    StopArbitration measurementStartState = StopArbitration::None;
+    unsigned long long resetCountDuringMeasurement = 0;
+    // claim結果の出所。THIS_CALL_SITE / PUBLICATION_RECORD / NONE。
+    bool claimFromPublicationRecord = false;
+    bool claimRecorded = false;
+
+    // publication serial（補強diagnostic）
+    unsigned long long measurementStartExplicitStopPublishSerial = 0;
+    unsigned long long measurementStartFatalPublishSerial = 0;
+    unsigned long long preExplicitStopPublishSerial = 0;
+    unsigned long long preFatalPublishSerial = 0;
+    bool gateCloseSnapshotCaptured = false;
+    unsigned long long gateCloseExplicitStopPublishSerial = 0;
+    unsigned long long gateCloseFatalPublishSerial = 0;
+
+    // pre
+    bool preCaptureGateOpen = false;
+    bool preExplicitStopRequested = false;
+    bool prePlannedWindowEndReached = false;
+    bool preFatalLatched = false;
+
+    // action
+    bool finishMeasurementEntered = false;
+    bool captureGateExchangeClosed = false;
+    bool measurementStopPublished = false;
+
+    // post
+    bool postCaptureGateOpen = false;
+    long long measurementStopQpc = 0;
+};
+
+struct NativePresentIntentScopeRecord {
+    std::uint64_t tokenSerial = 0;
+    std::uint64_t intentOrdinal = 0;
+    NativePresentIntentScope scope = NativePresentIntentScope::ForeignPreMeasurement;
+    long long decisionQpc = 0;
+    bool decisionQpcExact = false;
+    bool requiredCurrentMembership = false;
+    bool requiredCurrentMembershipExact = false;
+    MeasurementBoundaryRelation measurementBoundaryRelation =
+        MeasurementBoundaryRelation::Unresolved;
+    bool producerSemanticsExact = false;
+    bool duplicateCallback = false;
+    bool repeat = false;
+    bool pastSourceDomain = false;
+    long long targetFrame = -1;
+    long long lastFinalizedOpportunityOrdinal = -1;
+    long long renderBeginQpc = 0;
+    gpu::FormalIntentTransportDisposition transportDisposition =
+        gpu::FormalIntentTransportDisposition::Transport;
+};
+
+inline const char* nativePresentIntentScopeName(NativePresentIntentScope scope) {
+    switch (scope) {
+    case NativePresentIntentScope::ForeignPreMeasurement:
+        return "FOREIGN_PRE_MEASUREMENT";
+    case NativePresentIntentScope::CurrentMeasurement:
+        return "CURRENT_MEASUREMENT";
+    }
+    return "UNKNOWN";
+}
+
+inline const char* measurementBoundaryRelationName(MeasurementBoundaryRelation relation) {
+    switch (relation) {
+    case MeasurementBoundaryRelation::PreMeasurementArm:
+        return "PRE_MEASUREMENT_ARM";
+    case MeasurementBoundaryRelation::ArmedPreMeasurement:
+        return "ARMED_PRE_MEASUREMENT";
+    case MeasurementBoundaryRelation::WithinCurrentMeasurement:
+        return "WITHIN_CURRENT_MEASUREMENT";
+    case MeasurementBoundaryRelation::PostMeasurement:
+        return "POST_MEASUREMENT";
+    case MeasurementBoundaryRelation::Unresolved:
+        break;
+    }
+    return "UNRESOLVED_WITHOUT_EXACT_BOUNDARY_QPC";
+}
+
 // P3 integrated seek timeout時にrender threadの到達stageを凍結する診断値。
 // 判定やscheduler動作には使わない。
 struct P3SeekRenderDiagnostics {
@@ -145,6 +333,12 @@ struct CompositorSpikeState {
     std::atomic<bool> fatal{false};
     std::atomic<bool> teardownRequested{false};
     std::atomic<bool> teardownComplete{false};
+    std::atomic<RenderTeardownDiagnosticStage> teardownDiagnosticStage{
+        RenderTeardownDiagnosticStage::NotRequested};
+    std::atomic<bool> renderCallbackActive{false};
+    std::atomic<bool> terminalRenderExitTracking{false};
+    std::atomic<TerminalRenderExitDiagnosticStage> terminalRenderExitDiagnosticStage{
+        TerminalRenderExitDiagnosticStage::NotObserved};
     std::atomic<bool> playbackSchedulerEnabled{false};
     // P3-B 専用。P2 の QPC scheduler とは同時に有効にしない。
     std::shared_ptr<audio::AudioMasterClock> audioMasterClock;
@@ -165,6 +359,8 @@ struct CompositorSpikeState {
     std::atomic<long long> videoQpcMasterFallbackCount{0};
     std::atomic<bool> audioMasterMarkerProbePending{false};
     P3SeekRenderDiagnostics p3SeekDiagnostics;
+    // P5-E4 ATTR-Q1。最初のfailureだけをlock-free publishし、判定には使わない。
+    audio::RuntimeAttributionState runtimeAttribution;
 
     // Phase 4 / B。driver は measurement 開始前に GUI thread が publish し、
     // 以後は変更しない。phase4Enabled の release/acquire が publish を見せる。
@@ -236,6 +432,67 @@ struct CompositorSpikeState {
     std::vector<CompositorDiagnosticRenderSample> diagnosticRenderSamples;
     std::vector<double> diagnosticRenderCallbackIntervalUs;
     gpu::D3D11LockTimingSnapshot diagnosticLockTiming;
+    // P2-Q3診断専用。render threadは固定arrayへ単一writerで記録するだけで、
+    // measurement停止後にcontrollerがsnapshot/JSON化する。
+    std::atomic<bool> schedulerPhaseRingEnabled{false};
+    gpu::SchedulerPhaseRing schedulerPhaseRing;
+    std::atomic<bool> presentationOpportunityEnabled{false};
+    std::atomic<bool> presentationCaptureActive{false};
+    gpu::PresentationOpportunityRing presentationOpportunityRing;
+    std::shared_ptr<NativePresentHook> nativePresentHook;
+    std::atomic<bool> nativePresentHookEnabled{false};
+    std::atomic<bool> nativePresentCaptureActive{false};
+    // W2-C0.1 formal acquisition専用。B1/B2のmeasurement投影とは別に、
+    // preroll前からphysical successor確認後までnative captureを保持する。
+    std::atomic<bool> nativePresentCaptureEnvelopeEnabled{false};
+    std::atomic<bool> nativePresentEnvelopeStartRequested{false};
+    std::atomic<bool> nativePresentEnvelopeStarted{false};
+    std::atomic<bool> nativePresentEnvelopeStopRequested{false};
+    std::atomic<bool> nativePresentEnvelopeStopped{false};
+    std::atomic<long long> nativePresentEnvelopeBeginQpc{0};
+    std::atomic<long long> nativePresentEnvelopeCloseQpc{0};
+    std::atomic<long long> measurementArmQpc{0};
+    // W2-C0.1.1 shadow-only。scheduler decisionの生成時点でscopeを固定し、
+    // QPC、source frame、Layer2 cohortからは復元しない。
+    std::mutex nativePresentIntentScopeMutex;
+    std::vector<NativePresentIntentScopeRecord> nativePresentIntentScopeLedger;
+    // F3-C3-A3-T2診断専用。compositor最終出力の2x2 pixelだけを毎frame変える。
+    std::atomic<bool> diagnosticTargetPixelToggle{false};
+    // F3-C3-A3-T2-D1-B0 diagnostic-only。presentation pathのauthorityではない。
+    std::atomic<bool> eligibilityPreflightRequested{false};
+    std::atomic<bool> eligibilityPreflightCaptured{false};
+    std::atomic<unsigned long long> eligibilityPreflightWindow{0};
+    std::mutex eligibilityPreflightMutex;
+    PresentationEligibilityPreflight eligibilityPreflight;
+    std::atomic<long long> nativePresentTokenSetFailureCount{0};
+    std::atomic<long long> latestCompletedRenderOrdinal{-1};
+    std::atomic<long long> latestSubmittedRenderOrdinal{-1};
+    std::atomic<long long> latestSubmittedOutputFrame{-1};
+    std::atomic<long long> presentationSwapOrdinal{0};
+    std::atomic<long long> measurementStartQpc{0};
+    // P2-D5-2 formal Playback専用。scheduler本体とledgerはrender/swap callback間で
+    // 同じlockにより直列化し、共有OutputScheduler60Hzから完全に分離する。
+    std::atomic<bool> formalOpportunitySchedulerEnabled{false};
+    std::atomic<bool> formalSchedulerInvocationLedgerEnabled{false};
+    std::atomic<bool> formalOpportunityCaptureActive{false};
+    // W2-C0.1 lower envelope専用。同じscheduler実装をmeasurement前だけ別runで使い、
+    // B1 scope開始時にclose/restartする。source selection/counterへは接続しない。
+    std::atomic<bool> formalOpportunityEnvelopePrerollActive{false};
+    std::atomic<bool> formalOpportunityEnvelopePrerollStarted{false};
+    std::atomic<bool> formalOpportunityEnvelopePrerollCompleted{false};
+    std::atomic<bool> formalOpportunityIgnoreNextSwap{false};
+    std::atomic<bool> formalOpportunityDomainReached{false};
+    std::atomic<long long> formalOpportunityPresentedFrame{-1};
+    std::atomic<long long> formalOpportunitySwapOrdinal{0};
+    std::atomic<long long> formalOpportunityTrueDropCount{0};
+    std::atomic<long long> formalDuplicateTransportSuppressedCount{0};
+    std::atomic<long long> formalOutsideRequiredTransportSuppressedCount{0};
+    std::atomic<long long> diagnosticSyntheticDeadlineDropCount{0};
+    std::atomic<long long> formalRefreshNumerator{0};
+    std::atomic<long long> formalRefreshDenominator{0};
+    std::atomic<long long> formalRequiredFrameCount{0};
+    std::mutex formalOpportunityMutex;
+    gpu::PresentationOpportunityScheduler formalOpportunityScheduler;
     gpu::ComposedFrame diagnosticFixedFrame;
     CompositorMarkerProbe markerProbe;
     std::atomic<long long> markerAChecked{0};
@@ -251,6 +508,26 @@ struct CompositorSpikeState {
     std::atomic<bool> measurementStartCaptured{false};
     std::atomic<bool> measurementStopRequested{false};
     std::atomic<bool> measurementStopCaptured{false};
+    // W4-C3 amend 4。stop causeのownership。measurement epochごとにreset siteは1箇所だけ。
+    std::atomic<StopArbitration> stopArbitration{StopArbitration::None};
+    std::atomic<unsigned long long> stopArbitrationResetCount{0};
+    std::atomic<unsigned long long> stopArbitrationResetDuringMeasurementCount{0};
+    // W4-C3 amend 1/3。補強diagnosticであり、alternative exclusion authorityではない。
+    std::atomic<unsigned long long> explicitStopPublishSerial{0};
+    std::atomic<unsigned long long> fatalPublishSerial{0};
+    // W4-C3 stop witness v3。winner witnessはwrite-once、後着claimは別counterへ落とす。
+    std::atomic<bool> stopWitnessCaptured{false};
+    std::atomic<unsigned long long> stopWitnessDuplicateCount{0};
+    std::atomic<unsigned long long> losingStopClaimCount{0};
+    std::mutex stopWitnessMutex;
+    CompositorStopWitness stopWitness;
+    std::mutex stopPublicationMutex;
+    StopPublicationRecord stopPublicationRecord;
+    std::atomic<unsigned long long> coalescedStopPublicationCount{0};
+    // measurement-start authority pointで撮るsnapshot。reset直後ではない。
+    std::atomic<StopArbitration> measurementStartArbitrationState{StopArbitration::None};
+    std::atomic<unsigned long long> measurementStartExplicitStopPublishSerial{0};
+    std::atomic<unsigned long long> measurementStartFatalPublishSerial{0};
     std::atomic<long long> measurementDurationQpc{0};
     std::atomic<long long> measurementEndQpc{0};
     std::atomic<bool> measurementIntervalActive{false};
@@ -264,6 +541,69 @@ struct CompositorSpikeState {
     std::string fatalReason;
 };
 
+// W4-C3 amend 4。classified stop publication siteはこのhelperだけを通る。
+// 順序はarbitration claim -> publication serial -> 既存flag/side effectで固定する。
+inline StopClaimResult claimStopCause(CompositorSpikeState& state, StopArbitration cause) {
+    StopClaimResult result;
+    StopArbitration expected = StopArbitration::None;
+    result.succeeded =
+        state.stopArbitration.compare_exchange_strong(expected, cause, std::memory_order_seq_cst);
+    result.previous = expected;
+    if (cause == StopArbitration::ExplicitStop)
+        result.publishSerial =
+            state.explicitStopPublishSerial.fetch_add(1, std::memory_order_seq_cst) + 1;
+    else if (cause == StopArbitration::Fatal)
+        result.publishSerial = state.fatalPublishSerial.fetch_add(1, std::memory_order_seq_cst) + 1;
+    // claim failureはownershipを変えない。loserは別counterへ落とすだけ。
+    if (!result.succeeded)
+        state.losingStopClaimCount.fetch_add(1, std::memory_order_seq_cst);
+    return result;
+}
+
+// W4-C3。stop request flagとそのclaim recordは単一のpublication protocolで扱う。
+// pending requestのrecordは後着publicationで上書きしない。
+inline void publishStopRequest(CompositorSpikeState& state, StopArbitration cause,
+                               const StopClaimResult& claim) {
+    std::lock_guard<std::mutex> lock(state.stopPublicationMutex);
+    if (state.measurementStopRequested.load(std::memory_order_acquire)) {
+        // 既にpending requestがある。recordは最初のpublicationのまま保持する。
+        state.coalescedStopPublicationCount.fetch_add(1, std::memory_order_seq_cst);
+        return;
+    }
+    state.stopPublicationRecord = StopPublicationRecord{true, cause, claim.previous,
+                                                        claim.succeeded, claim.publishSerial};
+    state.measurementStopRequested.store(true, std::memory_order_release);
+}
+
+// consumer（render thread）はflagとrecordを同じlock下で受け取る。
+// stateからclaim結果を逆算しない。
+inline StopRequestConsumption consumeStopRequest(CompositorSpikeState& state) {
+    std::lock_guard<std::mutex> lock(state.stopPublicationMutex);
+    StopRequestConsumption consumption;
+    if (!state.measurementStopRequested.exchange(false, std::memory_order_acq_rel))
+        return consumption;
+    consumption.requested = true;
+    consumption.record = state.stopPublicationRecord;
+    state.stopPublicationRecord = StopPublicationRecord{};
+    return consumption;
+}
+
+// W4-C3 amend 4。lifecycle reset siteはこの1箇所だけ。measurement中の呼出しは
+// contract違反としてcountされ、closure条件(reset_count_during_measurement=0)を破る。
+inline void resetStopArbitrationForMeasurement(CompositorSpikeState& state) {
+    if (state.measurementIntervalActive.load(std::memory_order_seq_cst) ||
+        state.measurementStartCaptured.load(std::memory_order_seq_cst))
+        state.stopArbitrationResetDuringMeasurementCount.fetch_add(1, std::memory_order_seq_cst);
+    state.stopArbitration.store(StopArbitration::None, std::memory_order_seq_cst);
+    state.stopArbitrationResetCount.fetch_add(1, std::memory_order_seq_cst);
+    {
+        // pending stop requestとrecordは同じlock下でepoch初期化する。
+        std::lock_guard<std::mutex> lock(state.stopPublicationMutex);
+        state.stopPublicationRecord = StopPublicationRecord{};
+        state.measurementStopRequested.store(false, std::memory_order_release);
+    }
+}
+
 class CompositorRhiItem : public QQuickRhiItem {
     Q_OBJECT
 public:
@@ -276,6 +616,7 @@ public:
     }
 
     void requestTeardown();
+    void recordFrameSwapped();
 
 protected:
     QQuickRhiItemRenderer* createRenderer() override;

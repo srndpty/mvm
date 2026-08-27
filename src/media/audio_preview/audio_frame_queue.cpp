@@ -33,6 +33,10 @@ AudioQueuePushResult AudioFrameQueue::push(AudioChunk chunk) {
         ++metrics_.futureGenerationRejectCount;
         return AudioQueuePushResult::RejectedFutureGeneration;
     }
+    if (endOfStreamKnown_) {
+        ++metrics_.invalidRejectCount;
+        return AudioQueuePushResult::RejectedInvalid;
+    }
     if (chunk.sampleCount > hardMaxSamples_ - metrics_.queuedSamples) {
         ++metrics_.overflowRejectCount;
         return AudioQueuePushResult::RejectedOverflow;
@@ -70,14 +74,28 @@ bool AudioFrameQueue::waitForSamples(std::int64_t requiredSamples, int timeoutMs
            !stopped_ && metrics_.queuedSamples >= requiredSamples;
 }
 
-AudioConsumeResult AudioFrameQueue::consume(float* destination, std::int64_t samples,
+AudioConsumeResult AudioFrameQueue::consume(float* destination, std::int64_t requestedSampleStart,
+                                            std::int64_t samples,
                                             SourceGeneration expectedGeneration) {
-    AudioConsumeResult result{samples, 0, -1, -1};
-    if (!destination || samples <= 0)
+    AudioConsumeResult result;
+    result.requestedSamples = samples;
+    if (!destination || requestedSampleStart < 0 || samples <= 0)
         return result;
     std::lock_guard lock(mutex_);
-    if (expectedGeneration != generation_)
+    result.queuedSamplesBeforeConsume = metrics_.queuedSamples;
+    result.queuedSamplesAfterConsume = metrics_.queuedSamples;
+    if (expectedGeneration != generation_) {
+        result.silenceSamples = samples;
+        result.shortageKind = AudioShortageKind::Starvation;
         return result;
+    }
+    for (auto chunk = chunks_.rbegin(); chunk != chunks_.rend(); ++chunk) {
+        if (chunk->sourceGeneration == generation_) {
+            result.queueLastAvailableSampleExclusive = chunk->startSample + chunk->sampleCount;
+            break;
+        }
+    }
+    bool continuousFromRequestedStart = true;
     while (result.audioSamples < samples && !chunks_.empty()) {
         AudioChunk& chunk = chunks_.front();
         if (chunk.sourceGeneration != generation_) {
@@ -85,6 +103,10 @@ AudioConsumeResult AudioFrameQueue::consume(float* destination, std::int64_t sam
             ++metrics_.staleGenerationRejectCount;
             chunks_.pop_front();
             continue;
+        }
+        if (chunk.startSample != requestedSampleStart + result.audioSamples) {
+            continuousFromRequestedStart = false;
+            break;
         }
         const std::int64_t take = std::min(samples - result.audioSamples, chunk.sampleCount);
         if (result.firstSample < 0)
@@ -103,9 +125,60 @@ AudioConsumeResult AudioFrameQueue::consume(float* destination, std::int64_t sam
             ++metrics_.popCount;
         }
     }
+    result.queuedSamplesAfterConsume = metrics_.queuedSamples;
+    result.silenceSamples = samples - result.audioSamples;
+    if (result.silenceSamples > 0) {
+        const std::int64_t requestedEnd = requestedSampleStart + samples;
+        const bool beginsAtOrAfterEnd = endOfStreamKnown_ &&
+                                        requestedSampleStart >= endOfStreamSampleExclusive_ &&
+                                        result.audioSamples == 0 && metrics_.queuedSamples == 0;
+        const bool continuouslyReachesEnd =
+            endOfStreamKnown_ && requestedSampleStart < endOfStreamSampleExclusive_ &&
+            requestedEnd > endOfStreamSampleExclusive_ && continuousFromRequestedStart &&
+            result.firstSample == requestedSampleStart &&
+            result.lastSampleExclusive == endOfStreamSampleExclusive_ &&
+            result.audioSamples == endOfStreamSampleExclusive_ - requestedSampleStart;
+        if (beginsAtOrAfterEnd || continuouslyReachesEnd) {
+            result.shortageKind = AudioShortageKind::TerminalEof;
+            result.terminalEndSampleExclusive = endOfStreamSampleExclusive_;
+            ++metrics_.terminalEofSilenceCallbackCount;
+            metrics_.terminalEofSilenceSamples += static_cast<std::uint64_t>(result.silenceSamples);
+            if (metrics_.firstTerminalEofRequestedStart < 0) {
+                metrics_.firstTerminalEofRequestedStart = requestedSampleStart;
+                metrics_.firstTerminalEofRequestedCount = samples;
+                metrics_.firstTerminalEofAudioSamples = result.audioSamples;
+                metrics_.firstTerminalEofSilenceSamples = result.silenceSamples;
+                metrics_.firstTerminalEofEndSampleExclusive = endOfStreamSampleExclusive_;
+                metrics_.firstTerminalEofGeneration = generation_.value;
+            }
+        } else {
+            result.shortageKind = AudioShortageKind::Starvation;
+        }
+    }
     metrics_.queuedDurationMs = toMs(metrics_.queuedSamples);
     changed_.notify_all();
     return result;
+}
+
+bool AudioFrameQueue::markEndOfStream(SourceGeneration generation,
+                                      std::int64_t endSampleExclusive) {
+    std::lock_guard lock(mutex_);
+    if (generation != generation_ || endSampleExclusive < 0)
+        return false;
+    for (const auto& chunk : chunks_) {
+        if (chunk.sourceGeneration != generation_ ||
+            chunk.startSample + chunk.sampleCount > endSampleExclusive)
+            return false;
+    }
+    if (endOfStreamKnown_)
+        return endOfStreamSampleExclusive_ == endSampleExclusive;
+    endOfStreamKnown_ = true;
+    endOfStreamSampleExclusive_ = endSampleExclusive;
+    metrics_.endOfStreamKnown = true;
+    metrics_.endOfStreamSampleExclusive = endSampleExclusive;
+    metrics_.endOfStreamGeneration = generation.value;
+    changed_.notify_all();
+    return true;
 }
 
 bool AudioFrameQueue::setGeneration(SourceGeneration generation) {
@@ -115,6 +188,11 @@ bool AudioFrameQueue::setGeneration(SourceGeneration generation) {
     if (generation == generation_)
         return true;
     generation_ = generation;
+    endOfStreamKnown_ = false;
+    endOfStreamSampleExclusive_ = -1;
+    metrics_.endOfStreamKnown = false;
+    metrics_.endOfStreamSampleExclusive = -1;
+    metrics_.endOfStreamGeneration = 0;
     chunks_.clear();
     metrics_.queuedSamples = 0;
     metrics_.queuedDurationMs = 0.0;
@@ -136,6 +214,11 @@ void AudioFrameQueue::stop() {
     chunks_.clear();
     metrics_.queuedSamples = 0;
     metrics_.queuedDurationMs = 0.0;
+    endOfStreamKnown_ = false;
+    endOfStreamSampleExclusive_ = -1;
+    metrics_.endOfStreamKnown = false;
+    metrics_.endOfStreamSampleExclusive = -1;
+    metrics_.endOfStreamGeneration = 0;
     changed_.notify_all();
 }
 
@@ -145,6 +228,11 @@ void AudioFrameQueue::restart() {
     chunks_.clear();
     metrics_.queuedSamples = 0;
     metrics_.queuedDurationMs = 0.0;
+    endOfStreamKnown_ = false;
+    endOfStreamSampleExclusive_ = -1;
+    metrics_.endOfStreamKnown = false;
+    metrics_.endOfStreamSampleExclusive = -1;
+    metrics_.endOfStreamGeneration = 0;
     changed_.notify_all();
 }
 

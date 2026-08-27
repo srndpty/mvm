@@ -1,0 +1,36 @@
+{
+  "schema": "mvm-p2-etw-present-history-run-1",
+  "authority": "diagnostic_only",
+  "oracle_status": "ORACLE_INVALID",
+  "mapper_proof_status": "NOT_YET_EVALUABLE",
+  "mapper_changed": false,
+  "presentmon_commit": "717c5bf14e80a4a06b70cd16415ae8d40a7ce201",
+  "process_id": 42164,
+  "decoder_exit_code": 0,
+  "checker_exit_code": 1,
+  "conditions": {
+    "warmup_seconds": 5,
+    "measure_seconds": 15,
+    "seed": 20260808,
+    "sync_interval_required": 1,
+    "wpr_profiles": [
+      "GeneralProfile",
+      "GPU",
+      "DesktopComposition"
+    ]
+  },
+  "cadence_diagnostic": {
+    "traced_swaps_per_second": 60.0,
+    "baseline_swaps_per_second": 60.0,
+    "ratio": 1.0,
+    "extreme_change": false
+  },
+  "identities": {
+    "executable_sha256": "c9b86facb56b9fbddb93fdce90c5243f6120e811cbea5b4ff91d4f0519deccaf",
+    "decoder_sha256": "59b227b6ab29341faca2564684783024cb2199f20f77511520ac93041d2d4288",
+    "source_a_sha256": "4282e53bbab814962410e4bc99ee0ae6015aeb11b39c65076d15879c6180cbe4",
+    "source_b_sha256": "ea528d0c1739d85e40521af2f16c3d6e3a5aee6df68ebeedda424302ad70ffc1",
+    "etl_sha256": "61edebf85f4b03b3dcd8d680fbacb8ba5ddd5b72197a1f70c24533666a1bff9a",
+    "raw_etw_json_sha256": "4abc197c2a4c77ecf7aa8bf82c31e80abf3945c89f34234c49fcc0c60ba03535"
+  }
+}

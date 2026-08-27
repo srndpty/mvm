@@ -1,0 +1,16 @@
+{
+  "schema": "mvm-p2-r4-proof-1",
+  "r4_status": "PASS",
+  "mapper_proof_status": "PASS",
+  "admissibility_relation": "VISIBLE_PREFIX: opportunity_start_qpc <= synthetic_callback_qpc",
+  "case_count": 52,
+  "solution_class_counts": {
+    "NO_SOLUTION": 8,
+    "UNIQUE": 36,
+    "AMBIGUOUS": 8
+  },
+  "unique_identity_exact_record_count": 84,
+  "hidden_oracle_was_absent_from_mapper_input": true,
+  "unpresented_scope": "NOT_PROVEN_SOURCE_CORPUS_900_OF_900_DISPLAYED",
+  "next": "F3-B1_RUNTIME_WIRING"
+}

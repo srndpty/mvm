@@ -1,0 +1,143 @@
+diff --git a/src/quick/items/qquickrhiitem.cpp b/src/quick/items/qquickrhiitem.cpp
+index d2cd3f52..9e235df8 100644
+--- a/src/quick/items/qquickrhiitem.cpp
++++ b/src/quick/items/qquickrhiitem.cpp
+@@ -4,8 +4,24 @@
+ 
+ #include "qquickrhiitem_p.h"
+ 
++#include <windows.h>
++
+ QT_BEGIN_NAMESPACE
+ 
++std::uint64_t mvmQuickDirtyPropagationBegin()
++{
++    static const auto fn = reinterpret_cast<MvmDirtyPropagationBeginFn>(
++            GetProcAddress(GetModuleHandleW(L"Qt6Gui.dll"), "mvm_qt_dirty_propagation_begin"));
++    return fn ? fn() : 0;
++}
++
++std::uint64_t mvmQuickDirtyPropagationStage(std::uint32_t stage, std::uint64_t serial)
++{
++    static const auto fn = reinterpret_cast<MvmDirtyPropagationStageFn>(
++            GetProcAddress(GetModuleHandleW(L"Qt6Gui.dll"), "mvm_qt_dirty_propagation_stage"));
++    return fn ? fn(stage, serial) : 0;
++}
++
+ /*!
+     \class QQuickRhiItem
+     \inmodule QtQuick
+@@ -398,10 +414,18 @@ void QQuickRhiItemNode::render()
+         return;
+ 
+     m_renderPending = false;
++    const std::uint64_t propagationSerial = m_pendingPropagationSerial;
++    m_pendingPropagationSerial = 0;
++    if (propagationSerial != 0)
++        mvmQuickDirtyPropagationStage(MVM_DIRTY_STAGE_NODE_RENDER, propagationSerial);
+     m_renderer->render(cb);
+ 
+     markDirty(QSGNode::DirtyMaterial);
++    if (propagationSerial != 0)
++        mvmQuickDirtyPropagationStage(MVM_DIRTY_STAGE_DIRTY_MATERIAL, propagationSerial);
+     emit textureChanged();
++    if (propagationSerial != 0)
++        mvmQuickDirtyPropagationStage(MVM_DIRTY_STAGE_TEXTURE_CHANGED, propagationSerial);
+ }
+ 
+ /*!
+@@ -929,8 +953,10 @@ QQuickRhiItemRenderer::~QQuickRhiItemRenderer()
+  */
+ void QQuickRhiItemRenderer::update()
+ {
+-    if (node)
+-        node->scheduleUpdate();
++    if (node) {
++        const std::uint64_t propagationSerial = mvmQuickDirtyPropagationBegin();
++        node->scheduleUpdate(propagationSerial);
++    }
+ }
+ 
+ /*!
+diff --git a/src/quick/items/qquickrhiitem_p.h b/src/quick/items/qquickrhiitem_p.h
+index 0bbfa451..1fdd54c4 100644
+--- a/src/quick/items/qquickrhiitem_p.h
++++ b/src/quick/items/qquickrhiitem_p.h
+@@ -21,9 +21,13 @@
+ #include <QtQuick/QSGSimpleTextureNode>
+ #include <QtQuick/private/qquickitem_p.h>
+ #include <rhi/qrhi.h>
++#include <app/preview/native_present_hook_abi.h>
+ 
+ QT_BEGIN_NAMESPACE
+ 
++std::uint64_t mvmQuickDirtyPropagationBegin();
++std::uint64_t mvmQuickDirtyPropagationStage(std::uint32_t stage, std::uint64_t serial);
++
+ class QQuickRhiItemNode : public QSGTextureProvider, public QSGSimpleTextureNode
+ {
+     Q_OBJECT
+@@ -43,9 +47,16 @@ public:
+         return m_rhi && m_sgTexture;
+     }
+ 
+-    void scheduleUpdate()
++    void scheduleUpdate(std::uint64_t propagationSerial = 0)
+     {
++        if (propagationSerial != 0) {
++            m_pendingPropagationSerial = propagationSerial;
++            mvmQuickDirtyPropagationStage(MVM_DIRTY_STAGE_NODE_SCHEDULE_UPDATE,
++                                          propagationSerial);
++        }
+         m_renderPending = true;
++        if (propagationSerial != 0)
++            mvmQuickDirtyPropagationStage(MVM_DIRTY_STAGE_WINDOW_UPDATE, propagationSerial);
+         m_window->update(); // ensure getting to beforeRendering() at some point
+     }
+ 
+@@ -65,6 +76,7 @@ public:
+     qreal m_dpr = 0.0f;
+     QRhi *m_rhi = nullptr;
+     bool m_renderPending = true;
++    std::uint64_t m_pendingPropagationSerial = 0;
+     std::unique_ptr<QSGTexture> m_sgTexture;
+     std::unique_ptr<QQuickRhiItemRenderer> m_renderer;
+     QRhiTexture *m_colorTexture = nullptr;
+diff --git a/src/quick/items/qquickwindow.cpp b/src/quick/items/qquickwindow.cpp
+index a8bbb722..c8bd42f3 100644
+--- a/src/quick/items/qquickwindow.cpp
++++ b/src/quick/items/qquickwindow.cpp
+@@ -4,6 +4,9 @@
+ 
+ #include "qquickwindow.h"
+ #include "qquickwindow_p.h"
++#include <app/preview/native_present_hook_abi.h>
++
++#include <windows.h>
+ 
+ #include "qquickitem.h"
+ #include "qquickitem_p.h"
+@@ -61,6 +64,15 @@
+ #include <utility>
+ #include <mutex>
+ 
++namespace {
++std::uint64_t mvmQuickWindowDirtyPropagationStage(std::uint32_t stage, std::uint64_t serial)
++{
++    static const auto fn = reinterpret_cast<MvmDirtyPropagationStageFn>(
++            GetProcAddress(GetModuleHandleW(L"Qt6Gui.dll"), "mvm_qt_dirty_propagation_stage"));
++    return fn ? fn(stage, serial) : 0;
++}
++}
++
+ QT_BEGIN_NAMESPACE
+ 
+ Q_STATIC_LOGGING_CATEGORY(lcDirty, "qt.quick.dirty")
+@@ -691,6 +703,7 @@ void QQuickWindowPrivate::renderSceneGraph()
+     const QRectF rect(QPointF(0, 0), pixelSize / devicePixelRatio);
+     renderer->setProjectionMatrixToRect(rect, matrixFlags, rhi && !rhi->isYUpInNDC());
+ 
++    mvmQuickWindowDirtyPropagationStage(MVM_DIRTY_STAGE_QSG_MAIN_RENDER, 0);
+     context->renderNextFrame(renderer);
+ 
+     emit q->afterRendering();

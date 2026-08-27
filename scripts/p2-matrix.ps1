@@ -14,7 +14,17 @@ $repo = Split-Path -Parent $PSScriptRoot
 $build = Join-Path $repo 'build\ucrt64-release'
 $exe = Join-Path $build 'bin\mvm_compositor_spike.exe'
 $checker = Join-Path $PSScriptRoot 'check-p2-contract.ps1'
-if (-not $OutputDirectory) { $OutputDirectory = Join-Path $build 'p2-matrix-d5' }
+$outputGuard = Join-Path $PSScriptRoot 'formal-output-path.ps1'
+. $outputGuard
+if (-not $OutputDirectory) {
+    $OutputDirectory = if ($DryRun) {
+        Join-Path $build 'p2-matrix-d5-2'
+    } else {
+        $sha = (& git -C $repo rev-parse --short HEAD).Trim()
+        Join-Path ([IO.Path]::GetTempPath()) "mvm-p2-d5-2-formal-$sha"
+    }
+}
+$OutputDirectory = Assert-P2FormalOutputDirectory $OutputDirectory $repo ([bool]$DryRun)
 if (-not $SourceA) { $SourceA = Join-Path $repo 'tests\assets\benchmark\v1080p60_h264.mp4' }
 if (-not $SourceB) { $SourceB = Join-Path $repo 'tests\assets\benchmark\v1080p60_hevc.mp4' }
 foreach ($required in @($exe, $checker, $SourceA, $SourceB)) {
@@ -30,39 +40,7 @@ $measure = if ($DryRun) { 2 } else { 60 }
 $seekCount = if ($DryRun) { 16 } else { 1000 }
 $displayTimeoutMs = 2000
 
-function Git-Text([string[]]$Arguments) {
-    $value = & git @Arguments 2>$null
-    if ($LASTEXITCODE -ne 0) { throw "git $($Arguments -join ' ') に失敗しました" }
-    return ($value -join "`n")
-}
-
-function Get-Provenance {
-    $status = Git-Text @('status', '--porcelain')
-    $diff = Git-Text @('diff', '--no-ext-diff')
-    $cachedDiff = Git-Text @('diff', '--cached', '--no-ext-diff')
-    $untrackedText = Git-Text @('ls-files', '--others', '--exclude-standard')
-    $untracked = @($untrackedText -split "`r?`n" | Where-Object { $_ })
-    $untrackedHashes = @($untracked | ForEach-Object {
-        $absolute = Join-Path $repo $_
-        "$_=$((Get-FileHash -LiteralPath $absolute -Algorithm SHA256).Hash.ToLowerInvariant())"
-    })
-    $fingerprintText = @(
-        (Git-Text @('rev-parse', 'HEAD')), $status, $diff, $cachedDiff,
-        ($untrackedHashes -join "`n")
-    ) -join "`n--P2-PROVENANCE--`n"
-    $bytes = [Text.Encoding]::UTF8.GetBytes($fingerprintText)
-    $hash = [Convert]::ToHexString(
-        [Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
-    return [ordered]@{
-        git_commit = Git-Text @('rev-parse', 'HEAD')
-        dirty_worktree = -not [string]::IsNullOrWhiteSpace($status)
-        git_status_porcelain = @($status -split "`n" | Where-Object { $_ })
-        git_diff_stat = Git-Text @('diff', '--stat')
-        source_fingerprint_sha256 = $hash
-    }
-}
-
-$startProvenance = Get-Provenance
+$startProvenance = Get-P2Provenance $repo
 if (-not $DryRun -and $startProvenance.dirty_worktree) {
     throw 'P2 formal matrixはclean worktreeでのみ実行できます。変更をcommitしてから再実行してください'
 }
@@ -119,11 +97,14 @@ foreach ($mode in @('Playback', 'Seek')) {
     if ($stop) { break }
     foreach ($index in 1..$runCount) {
         $passed = Invoke-P2Run $mode $index
-        if (-not $passed -and $StopOnFailure) { $stop = $true; break }
+        if (-not $passed -and ($StopOnFailure -or -not $DryRun)) {
+            $stop = $true
+            break
+        }
     }
 }
 
-$endProvenance = Get-Provenance
+$endProvenance = Get-P2Provenance $repo
 $provenanceUnchanged = $startProvenance.git_commit -eq $endProvenance.git_commit -and
     $startProvenance.source_fingerprint_sha256 -eq $endProvenance.source_fingerprint_sha256
 if (-not $provenanceUnchanged) { $matrixFailed = $true }
@@ -147,7 +128,7 @@ $allSeek = $seekEntries.Count -eq $runCount -and
     @($seekEntries | Where-Object { -not $_.pass }).Count -eq 0
 $summary = [ordered]@{
     schema = 'mvm-p2-matrix-summary-1'
-    formal_contract_version = 'P2-D5-1'
+    formal_contract_version = 'P2-D5-2'
     dry_run = [bool]$DryRun
     git_commit = $startProvenance.git_commit
     dirty_worktree = $startProvenance.dirty_worktree
@@ -161,7 +142,11 @@ $summary = [ordered]@{
         [ordered]@{ run=$_.run; raw_path=$_.raw_path; process_exit_code=$_.process_exit_code
             contract_exit_code=$_.contract_exit_code; pass=$_.pass
             effective_fps=if ($_.raw) {$_.raw.effective_fps} else {$null}
-            drop_rate=if ($_.raw) {$_.raw.drop_rate} else {$null} }
+            drop_rate=if ($_.raw) {$_.raw.drop_rate} else {$null}
+            formal_true_opportunity_drop_count=if ($_.raw) {
+                $_.raw.formal_true_opportunity_drop_count } else {$null}
+            diagnostic_synthetic_deadline_drop_count=if ($_.raw) {
+                $_.raw.diagnostic_synthetic_deadline_drop_count } else {$null} }
     })
     seek_runs = @($seekEntries | ForEach-Object {
         [ordered]@{ run=$_.run; raw_path=$_.raw_path; process_exit_code=$_.process_exit_code

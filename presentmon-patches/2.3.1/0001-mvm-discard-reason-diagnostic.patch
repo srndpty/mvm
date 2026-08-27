@@ -1,0 +1,120 @@
+diff --git a/PresentData/PresentMonTraceConsumer.hpp b/PresentData/PresentMonTraceConsumer.hpp
+--- a/PresentData/PresentMonTraceConsumer.hpp
++++ b/PresentData/PresentMonTraceConsumer.hpp
+@@ -103,6 +103,18 @@ enum class PresentResult {
+     Discarded = 2,
+ };
+ 
++enum class DiscardReason {
++    None = 0,
++    BackToBackFlipSuperseded = 1,
++    Win32KTokenNotInFrame = 2,
++    DependentPresentSuperseded = 3,
++    DoNotSequence = 4,
++    NotVisible = 5,
++    BlitCancel = 6,
++    OtherExplicitDiscard = 7,
++    EarlierSwapChainPresentSuperseded = 8,
++};
++
+ enum class Runtime {
+     Other = 0,
+     DXGI = 1,
+@@ -250,6 +262,8 @@ struct PresentEvent {
+     Runtime Runtime;            // Whether PresentStart originated from D3D9, DXGI, or DXGK.
+     PresentMode PresentMode;
+     PresentResult FinalState;
++    DiscardReason FinalDiscardReason;
++    uint64_t DependencyBatchPresentStartTime;
+     InputDeviceType InputType;
+     bool SupportsTearing;
+     bool WaitForFlipEvent;
+diff --git a/PresentData/PresentMonTraceConsumer.cpp b/PresentData/PresentMonTraceConsumer.cpp
+--- a/PresentData/PresentMonTraceConsumer.cpp
++++ b/PresentData/PresentMonTraceConsumer.cpp
+@@ -141,6 +141,8 @@ PresentEvent::PresentEvent()
+     , Runtime(Runtime::Other)
+     , PresentMode(PresentMode::Unknown)
+     , FinalState(PresentResult::Unknown)
++    , FinalDiscardReason(DiscardReason::None)
++    , DependencyBatchPresentStartTime(0)
+     , InputType(InputDeviceType::None)
+ 
+     , SupportsTearing(false)
+@@ -216,6 +218,8 @@ PresentEvent::PresentEvent(uint32_t fid)
+     , Runtime(Runtime::Other)
+     , PresentMode(PresentMode::Unknown)
+     , FinalState(PresentResult::Unknown)
++    , FinalDiscardReason(DiscardReason::None)
++    , DependencyBatchPresentStartTime(0)
+     , InputType(InputDeviceType::None)
+ 
+     , SupportsTearing(false)
+@@ -1137,6 +1141,7 @@ void PMTraceConsumer::HandleDxgkEvent(EVENT_RECORD* pEventRecord)
+             auto present = FindPresentByThreadId(hdr.ThreadId);
+             if (present != nullptr) {
+                 VerboseTraceBeforeModifyingPresent(present.get());
++                present->FinalDiscardReason = DiscardReason::BlitCancel;
+                 present->FinalState = PresentResult::Discarded;
+ 
+                 CompletePresent(present);
+@@ -1609,5 +1614,6 @@ void PMTraceConsumer::HandleWin32kEvent(EVENT_RECORD* pEventRecord)
+                         // the frame already doesn’t have valid ScreenTime. 
+                         if (!HasScreenTime(prevPresent)) {
++                            prevPresent->FinalDiscardReason = DiscardReason::BackToBackFlipSuperseded;
+                             prevPresent->FinalState = PresentResult::Discarded;
+                         }
+ 
+@@ -1624,5 +1630,6 @@ void PMTraceConsumer::HandleWin32kEvent(EVENT_RECORD* pEventRecord)
+                     (presentEvent->PresentFlags & DXGI_PRESENT_DO_NOT_SEQUENCE) != 0) {
+                     VerboseTraceBeforeModifyingPresent(presentEvent.get());
++                    presentEvent->FinalDiscardReason = DiscardReason::DoNotSequence;
+                     presentEvent->FinalState = PresentResult::Discarded;
+                     RemovePresentFromSubmitSequenceIdTracking(presentEvent);
+                 }
+@@ -1647,6 +1654,7 @@ void PMTraceConsumer::HandleWin32kEvent(EVENT_RECORD* pEventRecord)
+ 
+                 if (!presentEvent->SeenInFrameEvent && presentEvent->FinalState == PresentResult::Unknown) {
+                     VerboseTraceBeforeModifyingPresent(presentEvent.get());
++                    presentEvent->FinalDiscardReason = DiscardReason::Win32KTokenNotInFrame;
+                     presentEvent->FinalState = PresentResult::Discarded;
+                     CompletePresent(presentEvent);
+                 } else if (presentEvent->PresentMode != PresentMode::Composed_Flip) {
+@@ -2099,11 +2107,14 @@ void PMTraceConsumer::CompletePresent(std::shared_ptr<PresentEvent> const& p)
++                    p2->DependencyBatchPresentStartTime = p->PresentStartTime;
+                     if ((p2->PresentMode == PresentMode::Composed_Flip ||
+                          p2->PresentMode == PresentMode::Composed_Copy_GPU_GDI ||
+                          p2->PresentMode == PresentMode::Composed_Copy_CPU_GDI) &&
+                         !completedComposedFlipHwnds.emplace(p2->Hwnd).second) {
+                         VerboseTraceBeforeModifyingPresent(p2.get());
++                        p2->FinalDiscardReason = DiscardReason::DependentPresentSuperseded;
+                         p2->FinalState = PresentResult::Discarded;
+                         p2->Displayed.clear();
+                     } else if (p2->FinalState != PresentResult::Discarded) {
+                         VerboseTraceBeforeModifyingPresent(p2.get());
++                        p2->FinalDiscardReason = p->FinalDiscardReason;
+                         p2->FinalState = p->FinalState;
+                         p2->Displayed = p->Displayed;
+@@ -2138,8 +2149,14 @@ void PMTraceConsumer::CompletePresent(std::shared_ptr<PresentEvent> const& p)
+             if (p2->SwapChainAddress == p->SwapChainAddress) {
++                p2->DependencyBatchPresentStartTime = p->PresentStartTime;
+                 if (p->IsLost) {
+                     VerboseTraceBeforeModifyingPresent(p2.get());
+                     p2->IsLost = true;
+                 }
+ 
++                if (p2->FinalState == PresentResult::Unknown) {
++                    VerboseTraceBeforeModifyingPresent(p2.get());
++                    p2->FinalDiscardReason = DiscardReason::EarlierSwapChainPresentSuperseded;
++                    p2->FinalState = PresentResult::Discarded;
++                }
+                 CompletePresent(p2);
+             }
+@@ -2560,6 +2577,7 @@ void PMTraceConsumer::HandlePresentStop(EVENT_RECORD* pEventRecord)
+     }
+ 
+     if (!visible) {
++        present->FinalDiscardReason = DiscardReason::NotVisible;
+         present->FinalState = PresentResult::Discarded;
+         CompletePresent(present);
+         return;

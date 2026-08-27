@@ -1,5 +1,6 @@
 #include "media/audio_preview/audio_decode_worker.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <windows.h>
@@ -243,12 +244,31 @@ bool AudioDecodeWorker::decodeOne(AudioChunk& chunk, std::string& error) {
                      kInternalChannels,
                      std::move(pcm),
                      0};
+            const std::int64_t decodedEnd = chunk.startSample + chunk.sampleCount;
+            std::int64_t actualDecodedEnd = decodedEnd;
+            {
+                std::lock_guard lock(mutex_);
+                metrics_.actualLastDecodedSampleExclusive =
+                    std::max(metrics_.actualLastDecodedSampleExclusive, decodedEnd);
+                actualDecodedEnd = metrics_.actualLastDecodedSampleExclusive;
+            }
+            if (attribution_)
+                attribution_->context.actualAudioEndExclusive.store(actualDecodedEnd,
+                                                                    std::memory_order_release);
             av_frame_unref(frame_);
             return true;
         }
         if (result == AVERROR_EOF) {
-            std::lock_guard lock(mutex_);
-            metrics_.eof = true;
+            std::int64_t actualDecodedEnd = -1;
+            {
+                std::lock_guard lock(mutex_);
+                metrics_.eof = true;
+                actualDecodedEnd = metrics_.actualLastDecodedSampleExclusive;
+            }
+            if (attribution_)
+                attribution_->context.audioDecoderEof.store(true, std::memory_order_release);
+            if (!queue_.markEndOfStream(generation_, actualDecodedEnd))
+                error = "current generationのaudio EOF authorityを確定できません";
             return false;
         }
         if (result != AVERROR(EAGAIN)) {
@@ -312,6 +332,11 @@ AudioSeekCompletion AudioDecodeWorker::executeSeek(const AudioSeekTicket& ticket
         std::lock_guard lock(mutex_);
         metrics_.sourceGeneration = generation_;
         metrics_.eof = false;
+        metrics_.actualLastDecodedSampleExclusive = -1;
+    }
+    if (attribution_) {
+        attribution_->context.audioDecoderEof.store(false, std::memory_order_release);
+        attribution_->context.actualAudioEndExclusive.store(-1, std::memory_order_release);
     }
     for (;;) {
         AudioChunk chunk;

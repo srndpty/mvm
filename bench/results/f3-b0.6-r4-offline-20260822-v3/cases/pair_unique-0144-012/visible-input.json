@@ -1,0 +1,31 @@
+{
+  "schema": "mvm-p2-r4-visible-input-1",
+  "case_id": "pair_unique-0144-012",
+  "sync_interval": 1,
+  "measurement_start_qpc": 1766083387674,
+  "measurement_end_qpc_exclusive": 1766083720917,
+  "vblank_samples": [
+    {
+      "ordinal": 147,
+      "qpc": 1766083387674
+    },
+    {
+      "ordinal": 148,
+      "qpc": 1766083554620
+    },
+    {
+      "ordinal": 149,
+      "qpc": 1766083720917
+    }
+  ],
+  "callbacks": [
+    {
+      "submission_index": 144,
+      "synthetic_callback_qpc": 1766083554621
+    },
+    {
+      "submission_index": 145,
+      "synthetic_callback_qpc": 1766083554622
+    }
+  ]
+}

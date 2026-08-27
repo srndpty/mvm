@@ -1,0 +1,26 @@
+{
+  "schema": "mvm-p2-b1-shadow-matrix-1",
+  "b1_shadow_status": "FAIL",
+  "authority": "diagnostic_only",
+  "requested_run_count": 3,
+  "completed_run_count": 1,
+  "stop_on_first_failure": true,
+  "failure": "NO_SOLUTION_INJECTIVE_CAPACITY_EXHAUSTED",
+  "warmup_seconds": 5,
+  "measure_seconds": 60,
+  "formal_counter_authority_changed": false,
+  "runs": [
+    {
+      "run": 1,
+      "metrics": "run-1.json",
+      "metrics_sha256": "3ab2fe8637ca5aa186a39ccdd4f5f49b46ec6fae39deafc301f2740d482b37d6",
+      "process_exit_code": 3,
+      "mapper_pass": false,
+      "mapper_error": "NO_SOLUTION",
+      "final_solution_class": "NO_SOLUTION",
+      "observed_swap_count": 1593,
+      "closed_record_count": 1593,
+      "commit_watermark": 1591
+    }
+  ]
+}

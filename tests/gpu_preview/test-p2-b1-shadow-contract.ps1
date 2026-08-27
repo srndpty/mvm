@@ -1,0 +1,130 @@
+param(
+    [Parameter(Mandatory=$true)][ValidateSet(
+        'Good','NegativeEarlyCommit','NegativeFirstSolution','NegativeFormalAuthority',
+        'NegativePhysicalDoubleCount','NegativeSourceAccounting','NegativeCandidateWindow',
+        'ExpectedNoSolutionFailure')][string]$Case,
+    [Parameter(Mandatory=$true)][string]$Checker,
+    [string]$FailureChecker,
+    [Parameter(Mandatory=$true)][string]$Output
+)
+$ErrorActionPreference='Stop'
+$qpcFrequency=10000000;$refreshNumerator=59950;$refreshDenominator=1000
+$period=[int64][Math]::Floor(($qpcFrequency*$refreshDenominator)/$refreshNumerator)
+$baseQpc=1000000;$sampleCount=240
+$samples=@(0..($sampleCount-1)|ForEach-Object{[ordered]@{
+    ordinal=$_;qpc=$baseQpc+[int64][Math]::Round(($_*[double]$qpcFrequency*$refreshDenominator)/$refreshNumerator)}})
+$swapCount=238
+$swaps=@(0..($swapCount-1)|ForEach-Object{[ordered]@{
+    swap_qpc=$samples[$_].qpc+[int64]($period/3);swap_ordinal=$_
+    completed_render_ordinal=$_;submitted_render_ordinal=$_;presented_output_frame=$_}})
+$records=@(0..($swapCount-1)|ForEach-Object{[ordered]@{
+    swap_ordinal=$_;swap_qpc=$swaps[$_].swap_qpc;source_frame=$_
+    candidate_first_opportunity_ordinal=0;candidate_last_opportunity_ordinal=$_
+    committed=$true;commit_qpc=$samples[$_+1].qpc;final_mapped_opportunity=$_}})
+$identity=[ordered]@{
+    available=$true;monitor_handle='65537';output_index=0;adapter_luid_low=59807;adapter_luid_high=0
+    gdi_device_name='\\.\DISPLAY1';output_device_name='\\.\DISPLAY1'
+    refresh_numerator=$refreshNumerator;refresh_denominator=$refreshDenominator
+    desktop_left=0;desktop_top=0;desktop_right=1920;desktop_bottom=1200}
+$vblank=[ordered]@{
+    enabled=$true;observer_started=$true;observer_error='';time_critical_priority=$true
+    window_output_start=$identity;window_output_end=$identity;window_output_stable=$true
+    sample_count=$samples.Count;ring_overflow_count=0;wait_failure_count=0;sequence_status='OK'
+    interval_report_ok=$true;interval_count=$samples.Count-1;long_interval_count=0;short_interval_count=0
+    max_interval_qpc=$period;min_interval_qpc=$period;nominal_period_qpc=$period
+    cumulative_deviation_numerator=0;cumulative_tolerance_unit=$qpcFrequency*$refreshDenominator
+    cumulative_consistent=$true;samples=$samples}
+$mapper=[ordered]@{
+    enabled=$true;shadow_only=$true;formal_counter_authority_changed=$false
+    admissibility_relation='VISIBLE_PREFIX: opportunity_start_qpc <= callback_qpc'
+    sync_interval_precondition=1;qt_runtime_version='6.11.1';qt_source_tag='v6.11.1'
+    qtbase_source_commit='59c81a3c2247b821b9b84b4eb8d939b77e07e276'
+    qtdeclarative_source_commit='a02bed441965ee1f18f856352c7d5ee5ba35d795'
+    qt_d3d11_source_path='qtbase/src/gui/rhi/qrhid3d11.cpp'
+    qt_quick_source_path='qtdeclarative/src/quick/scenegraph/qsgthreadedrenderloop.cpp'
+    requested_swap_interval=1;qsg_no_vsync_environment_set=$false;d3d11_backend_forced=$true
+    present_sync_interval=1;present_flags=0;dxgi_present_restart_used=$false;tearing_path_used=$false
+    finalized=$true;mapper_pass=$true;mapper_error=''
+    final_solution_class='UNIQUE';observed_swap_count=$swapCount;closed_record_count=$swapCount
+    commit_watermark=$swapCount;origin_vblank_ordinal=0;origin_vblank_qpc=$samples[0].qpc
+    measurement_domain_closed=$true;domain_boundary_vblank_ordinal=238
+    domain_boundary_vblank_qpc=$samples[238].qpc;lost_physical_opportunity_count=0
+    displayed_unique_source_frames=$swapCount;source_frame_gap_drops=0;tail_source_frame_drops=0
+    source_frame_accounting_exact=$true
+    transitions=@([ordered]@{event_type='END';qpc=$samples[238].qpc;vblank_ordinal=238
+        swap_ordinal=-1;source_frame=-1;has_closed_records=$true;current_solution_class='UNIQUE'
+        closed_record_count=$swapCount;commit_watermark=$swapCount;mapper_error='NONE'})
+    records=$records}
+$measurementEnd=$samples[238].qpc
+switch($Case){
+    'NegativeEarlyCommit'{$mapper.records[10].commit_qpc=$mapper.records[10].swap_qpc}
+    'NegativeFirstSolution'{
+        $measurementEnd=$samples[239].qpc
+        $swaps[-1].swap_qpc=$samples[238].qpc+[int64]($period/3)
+        $records[-1].swap_qpc=$swaps[-1].swap_qpc
+        $records[-1].candidate_last_opportunity_ordinal=238
+        $records[-1].commit_qpc=$samples[239].qpc
+    }
+    'NegativeFormalAuthority'{$mapper.formal_counter_authority_changed=$true}
+    'NegativePhysicalDoubleCount'{$mapper.lost_physical_opportunity_count=1}
+    'NegativeSourceAccounting'{$mapper.source_frame_gap_drops=1}
+    'NegativeCandidateWindow'{$mapper.records[10].candidate_last_opportunity_ordinal=11}
+    'ExpectedNoSolutionFailure'{
+        if([string]::IsNullOrWhiteSpace($FailureChecker)){throw 'FailureCheckerが必要です'}
+        $swapCount=239
+        $lastSwap=[ordered]@{
+            swap_qpc=$samples[237].qpc+[int64](2*$period/3);swap_ordinal=238
+            completed_render_ordinal=238;submitted_render_ordinal=238;presented_output_frame=238}
+        $swaps+=,$lastSwap
+        $mapper.records+=,[ordered]@{
+            swap_ordinal=238;swap_qpc=$lastSwap.swap_qpc;source_frame=238
+            candidate_first_opportunity_ordinal=0;candidate_last_opportunity_ordinal=237
+            committed=$false;commit_qpc=0;final_mapped_opportunity=-1}
+        $mapper.finalized=$false;$mapper.mapper_pass=$false;$mapper.mapper_error='NO_SOLUTION'
+        $mapper.final_solution_class='NO_SOLUTION';$mapper.observed_swap_count=239
+        $mapper.closed_record_count=239;$mapper.commit_watermark=237
+        $mapper.measurement_domain_closed=$false;$mapper.domain_boundary_vblank_ordinal=-1
+        $mapper.domain_boundary_vblank_qpc=0;$mapper.displayed_unique_source_frames=239
+        $mapper.transitions=@(
+            [ordered]@{event_type='ORIGIN';qpc=$samples[0].qpc;vblank_ordinal=0
+                swap_ordinal=-1;source_frame=-1;has_closed_records=$false
+                current_solution_class='UNIQUE';closed_record_count=0;commit_watermark=0
+                mapper_error='NONE'},
+            [ordered]@{event_type='VBLANK';qpc=$samples[237].qpc;vblank_ordinal=237
+                swap_ordinal=-1;source_frame=-1;has_closed_records=$true
+                current_solution_class='UNIQUE';closed_record_count=237;commit_watermark=237
+                mapper_error='NONE'},
+            [ordered]@{event_type='CALLBACK';qpc=$swaps[237].swap_qpc;vblank_ordinal=-1
+                swap_ordinal=237;source_frame=237;has_closed_records=$false
+                current_solution_class='UNIQUE';closed_record_count=237;commit_watermark=237
+                mapper_error='NONE'},
+            [ordered]@{event_type='CALLBACK';qpc=$lastSwap.swap_qpc;vblank_ordinal=-1
+                swap_ordinal=238;source_frame=238;has_closed_records=$false
+                current_solution_class='UNIQUE';closed_record_count=237;commit_watermark=237
+                mapper_error='NONE'},
+            [ordered]@{event_type='VBLANK';qpc=$samples[238].qpc;vblank_ordinal=238
+                swap_ordinal=-1;source_frame=-1;has_closed_records=$true
+                current_solution_class='NO_SOLUTION';closed_record_count=239;commit_watermark=237
+                mapper_error='NO_SOLUTION'})
+    }
+}
+$raw=[ordered]@{
+    schema='mvm-p2-formal-2';process_exit_code=0;required_measurement_frame_count=$swapCount
+    presentation_opportunity=[ordered]@{
+        enabled=$true;qpc_frequency=$qpcFrequency
+        measurement_start_qpc=$samples[0].qpc+100;measurement_end_qpc_exclusive=$measurementEnd
+        render_record_count=$swapCount;swap_record_count=$swapCount;swap_overflow_count=0
+        render_overflow_count=0;physical_vblank=$vblank;swap_records=$swaps
+        incremental_mapper_shadow=$mapper}}
+$raw|ConvertTo-Json -Depth 12|Set-Content -LiteralPath $Output -Encoding utf8
+if($Case-eq'ExpectedNoSolutionFailure'){
+    $raw.process_exit_code=3
+    $raw|ConvertTo-Json -Depth 12|Set-Content -LiteralPath $Output -Encoding utf8
+    & pwsh -NoProfile -File $FailureChecker -Json $Output -ProcessExitCode 3 *> $null
+    $actual=$LASTEXITCODE;$expected=0
+}else{
+    & pwsh -NoProfile -File $Checker -Json $Output -ProcessExitCode 0 *> $null
+    $actual=$LASTEXITCODE;$expected=if($Case-eq'Good'){0}else{1}
+}
+if($actual-ne$expected){throw "$Case B1 shadow contract exitが不正です: expected=$expected actual=$actual"}
+Write-Host "B1 shadow $Case test: PASS"

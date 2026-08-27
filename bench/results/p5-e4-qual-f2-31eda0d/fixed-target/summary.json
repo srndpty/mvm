@@ -1,0 +1,122 @@
+{
+  "schema": "mvm-p5-e4-qual-f2-fixed-target-1",
+  "authority": "TARGETED_INTEGRATION_ONLY",
+  "formal_pass_authority": false,
+  "formal_verdict": "NOT_RUN",
+  "production_sha": "31eda0d8d080dcf4b1680149d85b8293f618cd57",
+  "executable_sha256": "22b241db17d7460208a0f74ca064b1044fa0861b7b91c6f4b913f2323e8136d2",
+  "fixture_a_sha256": "d398114c38806f39670df51dfabb0095d462cbc35286ea1467901d4007cf0308",
+  "fixture_b_sha256": "fe7cd1a45d101d363cb3930497601efd41dd55fd36c194acf8f24e3e4728b479",
+  "all_runs_pass": true,
+  "provenance_unchanged": true,
+  "runs": [
+    {
+      "target": 3890,
+      "attempt": 1,
+      "raw_path": "build\\qual-f2-fixed-31eda0d\\target-3890-attempt-1.json",
+      "process_exit_code": 0,
+      "pass": true,
+      "exact_identity_pass": true,
+      "terminal_eof_contract_pass": true,
+      "underflow_count": 0,
+      "terminal_eof_silence_callbacks": 8,
+      "terminal_eof_silence_samples": 3392
+    },
+    {
+      "target": 3890,
+      "attempt": 2,
+      "raw_path": "build\\qual-f2-fixed-31eda0d\\target-3890-attempt-2.json",
+      "process_exit_code": 0,
+      "pass": true,
+      "exact_identity_pass": true,
+      "terminal_eof_contract_pass": true,
+      "underflow_count": 0,
+      "terminal_eof_silence_callbacks": 8,
+      "terminal_eof_silence_samples": 3392
+    },
+    {
+      "target": 3890,
+      "attempt": 3,
+      "raw_path": "build\\qual-f2-fixed-31eda0d\\target-3890-attempt-3.json",
+      "process_exit_code": 0,
+      "pass": true,
+      "exact_identity_pass": true,
+      "terminal_eof_contract_pass": true,
+      "underflow_count": 0,
+      "terminal_eof_silence_callbacks": 9,
+      "terminal_eof_silence_samples": 3872
+    },
+    {
+      "target": 3891,
+      "attempt": 1,
+      "raw_path": "build\\qual-f2-fixed-31eda0d\\target-3891-attempt-1.json",
+      "process_exit_code": 0,
+      "pass": true,
+      "exact_identity_pass": true,
+      "terminal_eof_contract_pass": true,
+      "underflow_count": 0,
+      "terminal_eof_silence_callbacks": 8,
+      "terminal_eof_silence_samples": 3712
+    },
+    {
+      "target": 3891,
+      "attempt": 2,
+      "raw_path": "build\\qual-f2-fixed-31eda0d\\target-3891-attempt-2.json",
+      "process_exit_code": 0,
+      "pass": true,
+      "exact_identity_pass": true,
+      "terminal_eof_contract_pass": true,
+      "underflow_count": 0,
+      "terminal_eof_silence_callbacks": 11,
+      "terminal_eof_silence_samples": 5152
+    },
+    {
+      "target": 3891,
+      "attempt": 3,
+      "raw_path": "build\\qual-f2-fixed-31eda0d\\target-3891-attempt-3.json",
+      "process_exit_code": 0,
+      "pass": true,
+      "exact_identity_pass": true,
+      "terminal_eof_contract_pass": true,
+      "underflow_count": 0,
+      "terminal_eof_silence_callbacks": 8,
+      "terminal_eof_silence_samples": 3712
+    },
+    {
+      "target": 3892,
+      "attempt": 1,
+      "raw_path": "build\\qual-f2-fixed-31eda0d\\target-3892-attempt-1.json",
+      "process_exit_code": 0,
+      "pass": true,
+      "exact_identity_pass": true,
+      "terminal_eof_contract_pass": true,
+      "underflow_count": 0,
+      "terminal_eof_silence_callbacks": 12,
+      "terminal_eof_silence_samples": 5472
+    },
+    {
+      "target": 3892,
+      "attempt": 2,
+      "raw_path": "build\\qual-f2-fixed-31eda0d\\target-3892-attempt-2.json",
+      "process_exit_code": 0,
+      "pass": true,
+      "exact_identity_pass": true,
+      "terminal_eof_contract_pass": true,
+      "underflow_count": 0,
+      "terminal_eof_silence_callbacks": 14,
+      "terminal_eof_silence_samples": 6432
+    },
+    {
+      "target": 3892,
+      "attempt": 3,
+      "raw_path": "build\\qual-f2-fixed-31eda0d\\target-3892-attempt-3.json",
+      "process_exit_code": 0,
+      "pass": true,
+      "exact_identity_pass": true,
+      "terminal_eof_contract_pass": true,
+      "underflow_count": 0,
+      "terminal_eof_silence_callbacks": 11,
+      "terminal_eof_silence_samples": 4992
+    }
+  ]
+}

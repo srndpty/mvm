@@ -62,6 +62,11 @@ const char* sampleFormatName(AVSampleFormat format) {
     const char* name = av_get_sample_fmt_name(format);
     return name ? name : "unknown";
 }
+
+std::int64_t currentQpc() {
+    LARGE_INTEGER value{};
+    return QueryPerformanceCounter(&value) ? value.QuadPart : 0;
+}
 } // namespace
 
 WasapiAudioSink::WasapiAudioSink(AudioFrameQueue& queue, AudioMasterClock& clock)
@@ -186,6 +191,7 @@ bool WasapiAudioSink::open(std::string& error, float sessionVolume) {
     metrics_.deviceFormat = AudioFormatInfo{static_cast<int>(mixFormat_->nSamplesPerSec),
                                             static_cast<int>(mixFormat_->nChannels),
                                             sampleFormatName(deviceSampleFormat)};
+    metrics_.endpointBufferFrames = bufferFrames_;
     metrics_.open = true;
     metrics_.joined = false;
     acceptingCommands_ = true;
@@ -279,6 +285,8 @@ bool WasapiAudioSink::play(std::int64_t mediaStartSample, SourceGeneration gener
         return false;
     }
     playing_ = true;
+    if (attribution_)
+        attribution_->context.audioStartQpc.store(currentQpc(), std::memory_order_release);
     {
         std::lock_guard lock(mutex_);
         if (didPrefill) {
@@ -310,7 +318,7 @@ bool WasapiAudioSink::prefillEndpoint(std::int64_t mediaStartSample, SourceGener
                  static_cast<int>(av_rescale_rnd(bufferFrames_, kInternalSampleRate,
                                                  mixFormat_->nSamplesPerSec, AV_ROUND_UP)));
     const AudioConsumeResult consumed =
-        queue_.consume(sourceScratch_.data(), sourceNeeded, generation);
+        queue_.consume(sourceScratch_.data(), mediaStartSample, sourceNeeded, generation);
     if (consumed.audioSamples != sourceNeeded || consumed.firstSample != mediaStartSample) {
         renderClient_->ReleaseBuffer(bufferFrames_, AUDCLNT_BUFFERFLAGS_SILENT);
         error = "endpoint prefill は requested media sample 由来の PCM を満たせません";
@@ -340,6 +348,7 @@ bool WasapiAudioSink::prefillEndpoint(std::int64_t mediaStartSample, SourceGener
             metrics_.firstConsumedSample = consumed.firstSample;
         metrics_.lastConsumedSampleExclusive = consumed.lastSampleExclusive;
     }
+    nextRequestedSample_ = consumed.lastSampleExclusive;
     return true;
 }
 
@@ -416,6 +425,9 @@ bool WasapiAudioSink::resetForSeek(std::string& error) {
         return false;
     }
     endpointPrefillRequired_ = true;
+    recentConsumeTrace_ = {};
+    recentConsumeTraceCount_ = 0;
+    recentConsumeTraceNext_ = 0;
     {
         std::lock_guard lock(mutex_);
         metrics_.endpointPrefillFrames = 0;
@@ -501,10 +513,47 @@ bool WasapiAudioSink::renderAvailable() {
               sourceScratch_.begin() + static_cast<std::size_t>(sourceNeeded) * kInternalChannels,
               0.0f);
     const SourceGeneration expected{generation_.load()};
+    const std::int64_t requestedSampleStart = nextRequestedSample_;
     const AudioConsumeResult consumed =
-        queue_.consume(sourceScratch_.data(), sourceNeeded, expected);
-    if (consumed.audioSamples < sourceNeeded)
+        queue_.consume(sourceScratch_.data(), requestedSampleStart, sourceNeeded, expected);
+    const AudioConsumeTraceEntry trace{currentQpc(),
+                                       requestedSampleStart,
+                                       sourceNeeded,
+                                       consumed.queuedSamplesBeforeConsume,
+                                       consumed.audioSamples,
+                                       consumed.queuedSamplesAfterConsume,
+                                       consumed.queueLastAvailableSampleExclusive,
+                                       expected.value};
+    recentConsumeTrace_[recentConsumeTraceNext_] = trace;
+    recentConsumeTraceNext_ = (recentConsumeTraceNext_ + 1) % kAudioConsumeTraceCapacity;
+    recentConsumeTraceCount_ = std::min(recentConsumeTraceCount_ + 1, kAudioConsumeTraceCapacity);
+    nextRequestedSample_ = requestedSampleStart < 0 ? -1 : requestedSampleStart + sourceNeeded;
+    if (consumed.shortageKind == AudioShortageKind::Starvation) {
         queue_.noteUnderflow(sourceNeeded - consumed.audioSamples);
+        if (attribution_) {
+            const auto clock = clock_.snapshot();
+            AudioUnderflowFirstSnapshot snapshot;
+            snapshot.occurrenceQpc = trace.occurrenceQpc;
+            snapshot.context = attribution_->context.snapshot();
+            snapshot.requestedSampleStart = requestedSampleStart;
+            snapshot.requestedSampleCount = sourceNeeded;
+            snapshot.queuedSamplesBeforeConsume = consumed.queuedSamplesBeforeConsume;
+            snapshot.actuallyConsumedSamples = consumed.audioSamples;
+            snapshot.queuedSamplesAfterConsume = consumed.queuedSamplesAfterConsume;
+            snapshot.sourceGeneration = expected.value;
+            snapshot.audioMasterSamplePosition = clock.mediaSamplePosition;
+            snapshot.queueLastAvailableSampleExclusive = consumed.queueLastAvailableSampleExclusive;
+            snapshot.endpointBufferFrames = bufferFrames_;
+            snapshot.consumeTraceCount = recentConsumeTraceCount_;
+            const std::size_t first =
+                (recentConsumeTraceNext_ + kAudioConsumeTraceCapacity - recentConsumeTraceCount_) %
+                kAudioConsumeTraceCapacity;
+            for (std::size_t index = 0; index < recentConsumeTraceCount_; ++index)
+                snapshot.consumeTrace[index] =
+                    recentConsumeTrace_[(first + index) % kAudioConsumeTraceCapacity];
+            attribution_->firstAudioUnderflow.capture(snapshot);
+        }
+    }
     const std::uint8_t* input[] = {reinterpret_cast<const std::uint8_t*>(sourceScratch_.data())};
     std::uint8_t* output[] = {deviceBuffer};
     const int converted =

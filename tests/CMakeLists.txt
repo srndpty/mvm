@@ -32,6 +32,17 @@ target_include_directories(mvm_test_proxy_resolver PRIVATE ${CMAKE_CURRENT_SOURC
 target_link_libraries(mvm_test_proxy_resolver PRIVATE mvm::warnings)
 add_test(NAME proxy_resolver_unit COMMAND mvm_test_proxy_resolver)
 set_tests_properties(scrub_coalescer_threaded PROPERTIES TIMEOUT 120)
+# W3-P0-B: これらは mvm_add_test より前に定義されているため PATH が付かず、
+# ホストの C:\Program Files\Git\mingw64\bin\libstdc++-6.dll を先に拾って
+# STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139) で落ちる。UCRT64 へ統一する規約
+# (AGENTS.md「ホストの版へフォールバックしない」) どおり PATH を明示する。
+set_tests_properties(scrub_coalescer_unit scrub_coalescer_threaded proxy_resolver_unit
+    PROPERTIES ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}")
+
+# F3-C3-A3-T1専用。production appにwindow-state診断を混ぜない。
+add_executable(mvm_p2_window_state_controller harness/p2_window_state_controller.cpp)
+target_link_libraries(mvm_p2_window_state_controller PRIVATE dwmapi user32 gdi32 mvm::warnings)
+target_link_options(mvm_p2_window_state_controller PRIVATE -municode)
 
 target_link_libraries(mvm_bench PRIVATE
     psapi
@@ -49,6 +60,26 @@ target_compile_definitions(mvm_bench PRIVATE
 )
 
 # --- テスト -----------------------------------------------------------------
+
+# F3-B0.6-R4: hidden oracle非依存のexact offline mapper。
+add_executable(mvm_p2_offline_mapping harness/p2_offline_mapping_cli.cpp)
+target_link_libraries(mvm_p2_offline_mapping PRIVATE mvm::core Qt6::Core mvm::warnings)
+
+add_executable(mvm_test_presentation_opportunity_mapper
+    gpu_preview/test_presentation_opportunity_mapper.cpp)
+target_link_libraries(mvm_test_presentation_opportunity_mapper PRIVATE mvm::core mvm::warnings)
+add_test(NAME p2_presentation_opportunity_mapper_pure
+    COMMAND mvm_test_presentation_opportunity_mapper)
+set_tests_properties(p2_presentation_opportunity_mapper_pure PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}")
+
+add_executable(mvm_test_native_present_hook_token
+    gpu_preview/test_native_present_hook_token.cpp)
+target_link_libraries(mvm_test_native_present_hook_token PRIVATE mvm::preview_qt mvm::warnings)
+add_test(NAME p2_c0_native_present_hook_token
+    COMMAND mvm_test_native_present_hook_token)
+set_tests_properties(p2_c0_native_present_hook_token PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}")
 
 set(MVM_SMOKE_DIR "${CMAKE_SOURCE_DIR}/tests/assets/smoke")
 set(MVM_SMOKE_MANIFEST "${MVM_SMOKE_DIR}/manifest.json")
@@ -79,6 +110,769 @@ if(NOT MVM_PWSH)
     message(FATAL_ERROR
         "pwsh が見つかりません。negative test の終了コード照合に必要です。")
 endif()
+
+foreach(_p2_r4_visible_case Good NegativeOriginalCallback NegativeSyntheticDelay
+        NegativeExpectedClass NegativeDisplayed)
+    string(TOLOWER "${_p2_r4_visible_case}" _p2_r4_visible_name)
+    mvm_add_test(p2_r4_visible_input_${_p2_r4_visible_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-r4-visible-input-contract.ps1"
+            -Case ${_p2_r4_visible_case}
+            -Exe "$<TARGET_FILE:mvm_p2_offline_mapping>"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-r4-visible-${_p2_r4_visible_name}")
+endforeach()
+
+foreach(_p2_c3_a3_t0_case IN ITEMS Good ParentMissing ReadyZero DisplayMismatch DwmLost MultipleDwmPid LifecycleOrder)
+    string(TOLOWER "${_p2_c3_a3_t0_case}" _p2_c3_a3_t0_name)
+    mvm_add_test(p2_c3_a3_t0_contract_${_p2_c3_a3_t0_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t0-contract.ps1"
+            -Case "${_p2_c3_a3_t0_case}"
+            -Analyzer "${CMAKE_SOURCE_DIR}/scripts/p2-c3-a3-t0-stall-localization.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t0-${_p2_c3_a3_t0_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+foreach(_p2_c3_a3_t1_condition_case IN ITEMS GoodVisible GoodOccluded GoodDirty NegativeVisibility
+        NegativeCloak NegativeCoverage NegativeUnexpected NegativeRectChange NegativeDirtyTicks NegativeDwmIdentity
+        NegativeEtwLoss GoodTargetInvalidate GoodTargetRedrawNow NegativeUserInput NegativeTargetDamage NegativeDamageFailure)
+    string(TOLOWER "${_p2_c3_a3_t1_condition_case}" _p2_c3_a3_t1_condition_name)
+    mvm_add_test(p2_c3_a3_t1_condition_${_p2_c3_a3_t1_condition_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t1-condition-contract.ps1"
+            -Case "${_p2_c3_a3_t1_condition_case}"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c3-a3-t1-condition.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t1-condition-${_p2_c3_a3_t1_condition_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+foreach(_p2_c3_a3_t1_summary_case IN ITEMS Visibility Dirty Rejected OrderConfound NegativeOrder)
+    string(TOLOWER "${_p2_c3_a3_t1_summary_case}" _p2_c3_a3_t1_summary_name)
+    mvm_add_test(p2_c3_a3_t1_summary_${_p2_c3_a3_t1_summary_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t1-summary-contract.ps1"
+            -Case "${_p2_c3_a3_t1_summary_case}"
+            -Summarizer "${CMAKE_SOURCE_DIR}/scripts/summarize-p2-c3-a3-t1.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t1-summary-${_p2_c3_a3_t1_summary_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+foreach(_p2_c3_a3_t2_case IN ITEMS Good NegativeMissingStage NegativePreflight)
+    string(TOLOWER "${_p2_c3_a3_t2_case}" _p2_c3_a3_t2_name)
+    mvm_add_test(p2_c3_a3_t2_update_chain_${_p2_c3_a3_t2_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t2-update-chain-contract.ps1"
+            -Case "${_p2_c3_a3_t2_case}"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c3-a3-t2-update-chain.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t2-update-chain-${_p2_c3_a3_t2_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+foreach(_p2_c3_a3_t2_summary_case IN ITEMS TargetDoesNotWake NegativeControl InvalidPositive OrderConfound NegativeRuntime)
+    string(TOLOWER "${_p2_c3_a3_t2_summary_case}" _p2_c3_a3_t2_summary_name)
+    mvm_add_test(p2_c3_a3_t2_summary_${_p2_c3_a3_t2_summary_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t2-summary-contract.ps1"
+            -Case "${_p2_c3_a3_t2_summary_case}"
+            -Summarizer "${CMAKE_SOURCE_DIR}/scripts/summarize-p2-c3-a3-t2.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t2-summary-${_p2_c3_a3_t2_summary_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+mvm_add_test(p2_d5_2_formal_architecture_prew2
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-formal-architecture-contract.ps1"
+        -Phase PreW2 -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+
+# P2-D5-2-W2-A.1: observer start -> 新規sample確認 -> measurement arm の順序不変量。
+mvm_add_test(p2_d5_2_formal_architecture_w2a1
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-formal-architecture-contract.ps1"
+        -Phase W2A1 -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+
+# W2-A.1 guard の mutation test。guard が実装構造の変更で空振りしていないことを固定する。
+foreach(_p2_d5_2_w2a1_case IN ITEMS Good NegativeBaselineAfterStart NegativeHelperDoesNotFailClose NegativeDuplicatePrerollCall NegativeArmBypassesPrerollPath NegativeEnvelopeOpensBeforePreroll NegativeDuplicateArm NegativeArmBeforePreroll NegativeNoShutdownOnFailure)
+    string(TOLOWER "${_p2_d5_2_w2a1_case}" _p2_d5_2_w2a1_name)
+    mvm_add_test(p2_d5_2_w2a1_preroll_guard_${_p2_d5_2_w2a1_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2a1-preroll-guard.ps1"
+            -Case "${_p2_d5_2_w2a1_case}"
+            -Contract "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-formal-architecture-contract.ps1"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2a1-guard-${_p2_d5_2_w2a1_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+foreach(_p2_d5_2_formal_v2_case IN ITEMS Good GoodPhysicalSurplus GoodBoundaryCohortDivergence AuthorityInvalidPropagated NegativeRetiredReason NegativeRetiredOpportunityRegression NegativeRuntimeOverride NegativeUnknownOutcome NegativeVblankSequence NegativeVblankObserver NegativeBoundaryNotBracketed NegativeOutputChanged NegativeEtwLoss NegativeRingOverflow NegativePresentedFrameMismatch NegativeMultiPresentedOrdinal NegativeIdentityE1 NegativeIdentityE2 NegativeIdentityP1 NegativeIdentityP2 NegativeIdentityP3 NegativeIdentityP4 NegativeIdentityU1 NegativeIdentityS1 NegativeIdentityS2 NegativeIdentityN1 NegativeContractVersion GoodSourceHalfRate GoodForeignIntentAtBoundary NegativeIntentMissing NegativeIntentAmbiguous NegativeIntentOutOfDomain NegativeIntentDuplicateDisplay)
+    string(TOLOWER "${_p2_d5_2_formal_v2_case}" _p2_d5_2_formal_v2_name)
+    mvm_add_test(p2_d5_2_formal_v2_${_p2_d5_2_formal_v2_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-formal-v2-contract.ps1"
+            -Case "${_p2_d5_2_formal_v2_case}"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-formal-v2.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-formal-v2-${_p2_d5_2_formal_v2_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+# P2-D5-2-W2-A: physical VBlank domain shadowのexecutable contract。
+# shadow only であること、boundaryがhalf-openで閉じること、required_intent_countと
+# physical countの差をverdictにしないことを固定する。
+foreach(_p2_d5_2_w2a_case IN ITEMS Good GoodSuccessorAfterEnd GoodEmptyDomain GoodPhysicalOverhang GoodPhysicalSurplus AuthorityInvalidStall AuthorityInvalidWindow NegativeNotShadowOnly NegativeCounterAuthorityChanged NegativePerformanceConnected NegativeWindowAuthority NegativeOpportunityAuthority NegativeDomainRelation NegativePerformanceField NegativeRetiredReason NegativeUnknownReason NegativeCanonicalMapping NegativeValidWithError NegativeInvalidWithoutError NegativeSequenceStatus NegativeLongInterval NegativeShortInterval NegativeRingOverflow NegativeWaitFailure NegativeCumulative NegativeOutputChanged NegativeBoundaryNotBracketed NegativePredecessorInDomain NegativeSuccessorBeforeEnd NegativeIdentityD1 NegativeIdentityD2 NegativeIdentityD3 NegativeIdentityD4 NegativeEmptyDomainOrigin NegativeEmptyDomainBracket NegativeIdentityX1 NegativeIdentityX2 NegativeIdentityX3 AuthorityInvalidPrerollTimeout NegativePrerollNotCompleted NegativePrerollTimeoutFlag NegativePrerollNotBeforeStart NegativePrerollAtStart GoodPrerollOrdinalNonZero)
+    string(TOLOWER "${_p2_d5_2_w2a_case}" _p2_d5_2_w2a_name)
+    mvm_add_test(p2_d5_2_w2a_physical_domain_${_p2_d5_2_w2a_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2a-physical-domain-contract.ps1"
+            -Case "${_p2_d5_2_w2a_case}"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2a-physical-domain.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2a-${_p2_d5_2_w2a_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+# P2-D5-2-W2-B1: scheduler intent identityのABI v4 exact-copy transport。
+foreach(_p2_d5_2_w2b1_case IN ITEMS GoodFormal GoodNonFormal GoodSuppressedFormal NegativeAppV3QtV4 NegativeAppV4QtV3 NegativeTokenLayout NegativeRecordLayout NegativeLayoutSignature NegativeFormalInvalid NegativeOrdinalMutation NegativeValidityMutation NegativeDuplicateEmbeddedTokenSerial NegativeDuplicateNativeSerial NegativeNonFormalFabricated NegativeRingOverflow NegativeMissingToken NegativeTokenSetFailure NegativeAuthorityFailure NegativeHookUnavailable NegativeLayoutHandshake NegativeSecondProducer NegativeRequiredFormalModeFalse NegativeSuppressionWithoutWitness NegativeSuppressionTransportDisposition)
+    string(TOLOWER "${_p2_d5_2_w2b1_case}" _p2_d5_2_w2b1_name)
+    mvm_add_test(p2_d5_2_w2b1_intent_transport_${_p2_d5_2_w2b1_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-b1-intent-transport-contract.ps1"
+            -Case "${_p2_d5_2_w2b1_case}"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-b1-intent-transport.ps1"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2b1-${_p2_d5_2_w2b1_name}.json"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+# P2-D5-2-W2-B2: B1 native intentからPresentEvent terminal outcomeまでのshadow exact closure。
+# Layer 2 cohortはnative submissionで固定し、DisplayedQPCのphysical mappingと性能集計は接続しない。
+foreach(_p2_d5_2_w2b2_case IN ITEMS GoodPresented GoodDiscarded GoodDisplayedOutsideMeasurementDomain GoodSuppressedPresented NegativeMissingPresentEvent NegativeDuplicatePresentEvent NegativeAmbiguousCandidate NegativeSequenceDiscontinuity NegativeThreadMismatch NegativeSyncIntervalMismatch NegativePresentFlagsMismatch NegativePresentStartOutsideNativeInterval NegativeSwapchainMismatch NegativeIntentJoinMutation NegativeFinalStateUnknown NegativeTerminalMissing NegativePresentedWithoutDisplayedQpc NegativeEtwLost NegativeEtwBufferLoss NegativeNativePresentCountMismatch NegativeNativePresentDuplicate)
+    string(TOLOWER "${_p2_d5_2_w2b2_case}" _p2_d5_2_w2b2_name)
+    mvm_add_test(p2_d5_2_w2b2_terminal_shadow_${_p2_d5_2_w2b2_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-b2-terminal-shadow-contract.ps1"
+            -Case "${_p2_d5_2_w2b2_case}"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-b2-terminal-shadow.ps1"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2b2-${_p2_d5_2_w2b2_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+# P2-D5-2-W2-C0: Layer 2 cohort外を含むdisplay candidate coverage inventory。
+foreach(_p2_d5_2_w2c0_case IN ITEMS GoodForeignBoundary GoodLowerForeignOrdinalCollision GoodUpperCurrentStraddlesEnd NegativeMissingNative NegativeMissingIntent NegativePhysicalAuthority NegativeIntentScopeMissing NegativeIntentScopeAmbiguous NegativeIntentScopeMutation)
+    string(TOLOWER "${_p2_d5_2_w2c0_case}" _p2_d5_2_w2c0_name)
+    mvm_add_test(p2_d5_2_w2c0_display_candidate_inventory_${_p2_d5_2_w2c0_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c0-display-candidate-inventory-contract.ps1"
+            -Case "${_p2_d5_2_w2c0_case}"
+            -Inventory "${CMAKE_SOURCE_DIR}/scripts/inventory-p2-d5-2-w2-c0-display-candidates.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c0-${_p2_d5_2_w2c0_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+# P2-D5-2-W2-C0.1: measurement窓を変えずにnative/physical capture envelopeを閉じる。
+foreach(_p2_d5_2_w2c01_case IN ITEMS Good NegativeStartAfterArm NegativeEndMutation NegativeSuccessorBeforeEnd NegativeCloseBeforeSuccessor NegativeSuccessorTimeout NegativeWindowExtended)
+    string(TOLOWER "${_p2_d5_2_w2c01_case}" _p2_d5_2_w2c01_name)
+    mvm_add_test(p2_d5_2_w2c01_capture_envelope_${_p2_d5_2_w2c01_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c01-capture-envelope-contract.ps1"
+            -Case "${_p2_d5_2_w2c01_case}"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-c01-capture-envelope.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c01-${_p2_d5_2_w2c01_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+mvm_add_test(p2_d5_2_w2c01_capture_envelope_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c01-capture-envelope-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+
+# P2-D5-2-W2-C1: DisplayedQPCをphysical VBlank causal cellへshadow-only mappingする。
+foreach(_p2_d5_2_w2c1_case IN ITEMS GoodInDomain GoodForeignIntentDisplayedInDomain GoodUpperCurrentStraddlesEnd GoodDisplayedOutsideDomain GoodExactBoundaries GoodCausalCellProperty GoodHeadOutsideSupportNonFormal GoodTailOutsideSupportNonFormal GoodTailInsideSupportByMargin NegativeMissingDisplayedQpc NegativeMultipleDisplayedQpc NegativeFormalPresentedOutsideSupportHead NegativeFormalPresentedOutsideSupportTail NegativeInDomainPresentedOutsideSupport NegativeInsideSupportMissingMappingMarkedOutside NegativeOutsideSupportTailCountMutation NegativeSuccessorMutationMakesCandidateInside NegativeAmbiguousPhysicalMapping NegativeDuplicatePresentedPhysicalOrdinal NegativePhysicalAuthority NegativeEtwLoss NegativeMissingNativeExact NegativeMissingIntentExact NegativeMissingIntentScopeExact NegativeMappingProvenanceMutation)
+    string(TOLOWER "${_p2_d5_2_w2c1_case}" _p2_d5_2_w2c1_name)
+    mvm_add_test(p2_d5_2_w2c1_displayed_mapping_${_p2_d5_2_w2c1_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c1-displayed-mapping-contract.ps1"
+            -Case "${_p2_d5_2_w2c1_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-c1-mapping-core.ps1"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+mvm_add_test(p2_d5_2_w2c1_mapping_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c1-mapping-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+foreach(_p2_d5_2_w2c1_runner_case IN ITEMS NegativePresentedBeforePredecessorNotDropped NegativePresentedAfterSuccessorNotDropped)
+    string(TOLOWER "${_p2_d5_2_w2c1_runner_case}" _p2_d5_2_w2c1_runner_name)
+    mvm_add_test(p2_d5_2_w2c1_runner_${_p2_d5_2_w2c1_runner_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c1-runner-candidate-closure.ps1"
+            -Case "${_p2_d5_2_w2c1_runner_case}"
+            -Runner "${CMAKE_SOURCE_DIR}/scripts/map-p2-d5-2-w2-c1-displayed-qpc.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c1-runner-${_p2_d5_2_w2c1_runner_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+foreach(_p2_d5_2_w2c11_gap_case IN ITEMS Good NegativeRelationMutation)
+    string(TOLOWER "${_p2_d5_2_w2c11_gap_case}" _p2_d5_2_w2c11_gap_name)
+    mvm_add_test(p2_d5_2_w2c11_support_gap_${_p2_d5_2_w2c11_gap_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c11-support-gap-contract.ps1"
+            -Case "${_p2_d5_2_w2c11_gap_case}"
+            -Inventory "${CMAKE_SOURCE_DIR}/scripts/inventory-p2-d5-2-w2-c11-physical-support-gaps.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c11-gap-${_p2_d5_2_w2c11_gap_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+foreach(_p2_d5_2_w2c11_support_case IN ITEMS Good NegativeLowerAfterCapture NegativePostrollBeforeClose NegativeMissingSuccessor NegativeAuthorityFalse)
+    string(TOLOWER "${_p2_d5_2_w2c11_support_case}" _p2_d5_2_w2c11_support_name)
+    mvm_add_test(p2_d5_2_w2c11_support_envelope_${_p2_d5_2_w2c11_support_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c11-support-envelope-contract.ps1"
+            -Case "${_p2_d5_2_w2c11_support_case}"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-c11-physical-support-envelope.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c11-support-${_p2_d5_2_w2c11_support_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+mvm_add_test(p2_d5_2_w2c11_support_envelope_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c11-support-envelope-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+
+# P2-D5-2-W2-C1.2: C0.1.1 Presented全母集団のupstream provenanceを診断する。
+foreach(_p2_d5_2_w2c12_case IN ITEMS GoodOutsideCapture GoodWithinCaptureRegression NegativeMappingCandidateDropped NegativeProofRecordDropped NegativeCaptureRelationMutation)
+    string(TOLOWER "${_p2_d5_2_w2c12_case}" _p2_d5_2_w2c12_name)
+    mvm_add_test(p2_d5_2_w2c12_upstream_population_${_p2_d5_2_w2c12_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c12-upstream-population-contract.ps1"
+            -Case "${_p2_d5_2_w2c12_case}"
+            -Inventory "${CMAKE_SOURCE_DIR}/scripts/inventory-p2-d5-2-w2-c12-upstream-presented-population.ps1"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-c12-upstream-presented-population.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c12-${_p2_d5_2_w2c12_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+mvm_add_test(p2_d5_2_w2c12_upstream_population_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c12-upstream-population-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+
+# P2-D5-2-W2-C1.3: B2 Presented exact setをC1 formal input authorityへ切り替える。
+foreach(_p2_d5_2_w2c13_case IN ITEMS Good GoodSuppressedNonFormal NegativeB2FormalEligibilityMissing NegativeB2PresentedDropped NegativeExtraFormalCandidate NegativeB2CandidateMissingC0Join NegativeB2CandidateAmbiguousC0Join NegativeB2FormalUpstreamInvalid NegativeObservedPopulationDropped)
+    string(TOLOWER "${_p2_d5_2_w2c13_case}" _p2_d5_2_w2c13_name)
+    mvm_add_test(p2_d5_2_w2c13_formal_population_${_p2_d5_2_w2c13_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c13-formal-population-contract.ps1"
+            -Case "${_p2_d5_2_w2c13_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-c13-formal-population-core.ps1"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-c13-formal-population.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c13-${_p2_d5_2_w2c13_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+mvm_add_test(p2_d5_2_w2c13_formal_population_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c13-formal-population-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+
+# P2-D5-2-W2-C1.4: sealed rawからphysical mappingを再生しartifact ordinalを検証する。
+foreach(_p2_d5_2_w2c14_case IN ITEMS NegativeFormalMappedOrdinalMutation NegativeObservedMappedOrdinalMutation NegativeTracedAppHashMutation NegativePresentHistoryRawHashMutation NegativeMappingSupportBoundaryMutation)
+    string(TOLOWER "${_p2_d5_2_w2c14_case}" _p2_d5_2_w2c14_name)
+    mvm_add_test(p2_d5_2_w2c14_sealed_mapping_replay_${_p2_d5_2_w2c14_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c13-formal-population-contract.ps1"
+            -Case "${_p2_d5_2_w2c14_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-c13-formal-population-core.ps1"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-c14-sealed-mapping-replay.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c14-${_p2_d5_2_w2c14_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+mvm_add_test(p2_d5_2_w2c14_sealed_mapping_replay_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c14-sealed-mapping-replay-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+
+# P2-D5-2-W2-C2: C1 formal Presentedからintent satisfaction ledgerを再集計する。
+foreach(_p2_d5_2_w2c2_case IN ITEMS GoodRepeatedSourceFrameDifferentIntents GoodForeignPresentedInDomain GoodCurrentIntentSatisfiedOnce NegativeDuplicateCurrentIntent NegativeCurrentIntentOutsideRequiredDomain NegativeMissingIntentOrdinal NegativeMissingIntentScope NegativeIntentScopeNotExact NegativeTwoPresentedSamePhysicalOrdinal NegativeSatisfiedForeignMiscount NegativeAccountingIdentityMutation NegativePhysicalFillCountMutation)
+    string(TOLOWER "${_p2_d5_2_w2c2_case}" _p2_d5_2_w2c2_name)
+    mvm_add_test(p2_d5_2_w2c2_intent_satisfaction_${_p2_d5_2_w2c2_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c2-intent-satisfaction-contract.ps1"
+            -Case "${_p2_d5_2_w2c2_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-c2-intent-satisfaction-core.ps1"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+mvm_add_test(p2_d5_2_w2c2_intent_satisfaction_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c2-intent-satisfaction-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+mvm_add_test(p2_d5_2_w2c2_broken_c1_rejected
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c2-broken-c1-rejected.ps1"
+        -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-c2-intent-satisfaction-ledger.ps1"
+        -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c2-broken-c1"
+    PROPERTIES LABELS "gpu_preview")
+mvm_add_test(p2_d5_2_w2c2_checker_integration
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c2-checker-integration.ps1"
+        -C13Fixture "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c13-formal-population-contract.ps1"
+        -C13Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-c13-formal-population-core.ps1"
+        -C1Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-c14-sealed-mapping-replay.ps1"
+        -Builder "${CMAKE_SOURCE_DIR}/scripts/build-p2-d5-2-w2-c2-intent-satisfaction-ledger.ps1"
+        -C2Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-c2-intent-satisfaction-ledger.ps1"
+        -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c2-checker-integration"
+    PROPERTIES LABELS "gpu_preview")
+
+# P2-D5-2-W2-C2.1: scheduler sole producerからrequired intent identity setを確定する。
+foreach(_p2_d5_2_w2c21_case IN ITEMS GoodExactSet GoodDistinctDecisionsSameOrdinal GoodRequiredIntentWithoutDecision NegativeMissingRequiredSet NegativeDuplicateRequiredSet NegativeCountSetMismatch NegativeRequiredSetMissingMembership NegativeMembershipExtraOutsideRequiredSet NegativeMissingDecisionQpc NegativeBoundaryRelationMutation NegativeMissingMeasurementStartQpc NegativeMissingMeasurementEndQpc NegativeAmbiguousFormalReverseJoin)
+    string(TOLOWER "${_p2_d5_2_w2c21_case}" _p2_d5_2_w2c21_name)
+    mvm_add_test(p2_d5_2_w2c21_required_intent_domain_${_p2_d5_2_w2c21_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c21-required-intent-domain-contract.ps1"
+            -Case "${_p2_d5_2_w2c21_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-c21-required-intent-domain-core.ps1"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+mvm_add_test(p2_d5_2_w2c21_required_intent_domain_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c21-required-intent-domain-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+mvm_add_test(p2_d5_2_w2c21_checker_integration
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c21-checker-integration.ps1"
+        -C13Fixture "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c13-formal-population-contract.ps1"
+        -C13Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-c13-formal-population-core.ps1"
+        -C1Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-c14-sealed-mapping-replay.ps1"
+        -Inventory "${CMAKE_SOURCE_DIR}/scripts/inventory-p2-d5-2-w2-c21-required-intent-domain.ps1"
+        -C21Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-c21-required-intent-domain.ps1"
+        -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c21-checker-integration"
+    PROPERTIES LABELS "gpu_preview")
+
+# P2-D5-2-W2-C2.3: duplicate ordinal 0とoutside-required ordinal 301のproducer semanticsを固定する。
+foreach(_p2_d5_2_w2c23_case IN ITEMS GoodExact NegativeMissingSemantics NegativeAmbiguousReverse NegativeZeroNotDuplicateCallback NegativeZeroSingleDecision NegativeZeroSharedToken Negative301MembershipTrue Negative301PastSourceDomainFalse Negative301NoFormalPresented)
+    string(TOLOWER "${_p2_d5_2_w2c23_case}" _p2_d5_2_w2c23_name)
+    mvm_add_test(p2_d5_2_w2c23_producer_semantics_${_p2_d5_2_w2c23_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c23-producer-semantics-contract.ps1"
+            -Case "${_p2_d5_2_w2c23_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-c23-producer-semantics-core.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2c23-${_p2_d5_2_w2c23_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+foreach(_p2_d5_2_w2c24_case IN ITEMS Good NegativeDuplicateWithMissingMembershipProvenance NegativeDuplicateDispositionSwappedToOutside NegativeOutsideDispositionSwappedToDuplicate NegativeEligibilityMutation)
+    string(TOLOWER "${_p2_d5_2_w2c24_case}" _p2_d5_2_w2c24_name)
+    mvm_add_test(p2_d5_2_w2c24_formal_transport_${_p2_d5_2_w2c24_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c24-formal-transport-contract.ps1"
+            -Case "${_p2_d5_2_w2c24_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-c24-formal-transport-core.ps1"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+mvm_add_test(p2_d5_2_w2c24_formal_transport_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c24-formal-transport-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+
+# P2-D5-2-W2-D: W2-A/A.1, B1, B2, C1, C2.1, C2 の closed authority を
+# noncanonical formal-v2 shadow artifact へ統合する。canonical cutoverではない。
+foreach(_p2_d5_2_w2d_case IN ITEMS GoodExactIntegration GoodForeignPresentedInDomain GoodLayer1ACountDiffersFromLayer1B GoodOutOfDomainPresented GoodEmptyPhysicalDomain GoodForeignOrdinalOverlapsRequiredSet NegativeRequiredIntentSetMutation NegativeSatisfiedIntentMutation NegativePhysicalOrdinalMutation NegativeScopeMutation NegativeFinalStateMutation NegativeMissingCompositionToken NegativeMissingNativePresentSerial NegativeMissingPhysicalOrdinal NegativeDuplicateExactEventKey NegativeEmptyRequiredSet NegativeDuplicateRequiredIntent NegativePhysicalDomainCardinalityMutation NegativeFilledExceedsPhysicalOpportunity)
+    string(TOLOWER "${_p2_d5_2_w2d_case}" _p2_d5_2_w2d_name)
+    mvm_add_test(p2_d5_2_w2d_formal_v2_shadow_${_p2_d5_2_w2d_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-d-formal-v2-shadow-contract.ps1"
+            -Case "${_p2_d5_2_w2d_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-d-formal-v2-shadow-core.ps1"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+mvm_add_test(p2_d5_2_w2d_formal_v2_shadow_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-d-formal-v2-shadow-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+mvm_add_test(p2_d5_2_w2d_authority_mixing
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-d-authority-mixing.ps1"
+        -C13Fixture "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c13-formal-population-contract.ps1"
+        -C13Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-c13-formal-population-core.ps1"
+        -C1Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-c14-sealed-mapping-replay.ps1"
+        -C2Builder "${CMAKE_SOURCE_DIR}/scripts/build-p2-d5-2-w2-c2-intent-satisfaction-ledger.ps1"
+        -C2Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-c2-intent-satisfaction-ledger.ps1"
+        -Builder "${CMAKE_SOURCE_DIR}/scripts/build-p2-d5-2-w2-d-formal-v2-shadow.ps1"
+        -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w2-d-formal-v2-shadow.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+        -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2d-authority-mixing"
+    PROPERTIES LABELS "gpu_preview")
+
+# P2-D5-2-W2-E: canonical presentation authority を formal-v2 exact chain へ切り替え、
+# legacy frameSwapped / DWM path を diagnostic へ降格する。performance verdict は W3。
+foreach(_p2_d5_2_w2e_case IN ITEMS GoodCanonicalCutover GoodLegacyDiagnosticsRemainPresent NegativeShadowProofNotExact NegativeShadowVerdictInvalid NegativeHistoricalVerdictMutation NegativeLegacyAuthorityStillEnabled NegativeLegacyMetricFeedsCanonicalVerdict NegativeLegacyMetricUnclassified NegativeLegacyDiagnosticsDeleted NegativeCanonicalSourceFrameIdentity NegativeCanonicalNearestQpcFallback NegativeCanonicalRecordSourceFrameField)
+    string(TOLOWER "${_p2_d5_2_w2e_case}" _p2_d5_2_w2e_name)
+    mvm_add_test(p2_d5_2_w2e_canonical_authority_${_p2_d5_2_w2e_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-e-canonical-authority-contract.ps1"
+            -Case "${_p2_d5_2_w2e_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w2-e-canonical-authority-core.ps1"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+foreach(_p2_d5_2_w2e_retire_case IN ITEMS GoodRetired GoodLegacyDiagnosticsRemainPresent GoodCanonicalMetricNameNotLegacy NegativeCanonicalPerformanceAnnotated NegativeUnclassifiedSite NegativeThresholdReintroduced NegativeDispositionMissing NegativeDispositionWrong NegativeLegacyDiagnosticDeleted NegativeUnregisteredCheckerWithLegacyThreshold NegativeUnregisteredCheckerWithMultilineLegacyThreshold NegativeDeclaredCheckerWithMultilineLegacyThreshold NegativeDeclaredCheckerWithAliasedLegacyThreshold)
+    string(TOLOWER "${_p2_d5_2_w2e_retire_case}" _p2_d5_2_w2e_retire_name)
+    mvm_add_test(p2_d5_2_w2e_retirement_${_p2_d5_2_w2e_retire_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-e-retirement-inventory.ps1"
+            -Case "${_p2_d5_2_w2e_retire_case}"
+            -Inventory "${CMAKE_SOURCE_DIR}/scripts/inventory-p2-d5-2-w2-e-legacy-authority.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2e-retirement-${_p2_d5_2_w2e_retire_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+mvm_add_test(p2_d5_2_w2e_canonical_authority_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-e-canonical-authority-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+# repository の実際の canonical checker に legacy 依存が残っていないこと。
+mvm_add_test(p2_d5_2_w2e_repository_retirement
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_SOURCE_DIR}/scripts/inventory-p2-d5-2-w2-e-legacy-authority.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+        -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w2e-repository-retirement.json"
+    PROPERTIES LABELS "gpu_preview")
+
+# P2-D5-2-W3: canonical performance verdict。W2-E が W3 へ保留した評価をここで解禁する。
+# 段を分け、acquisition / authority / accounting が INVALID なら performance へ進まない。
+foreach(_p2_d5_2_w3_case IN ITEMS GoodCanonicalPass GoodCanonicalFail GoodLayer1ALayer1BDifference NegativeAcquisitionCheckpointMismatch NegativeAcquisitionCheckpointMissing NegativeAcquisitionNotFresh NegativeAcquisitionWorktreeDirty NegativeAcquisitionBinaryProvenanceMissing NegativeAcquisitionCoverageIncomplete NegativeAcquisitionIntentScopeNotExact NegativeCanonicalAuthorityNotFormalV2 NegativeCanonicalCutoverNotExact NegativeLegacyAuthorityStillCanonical NegativeLegacyMetricFeedsCanonicalVerdict NegativeCanonicalChainIdentityInvalid NegativeShadowNotExact NegativeAccountingIdentityViolation NegativeAccountingSumViolation NegativeMeasurementWindowInvalid NegativeMeasurementWindowCountMismatch NegativeQpcFrequencyInconsistent)
+    string(TOLOWER "${_p2_d5_2_w3_case}" _p2_d5_2_w3_name)
+    mvm_add_test(p2_d5_2_w3_canonical_performance_${_p2_d5_2_w3_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w3-canonical-performance-contract.ps1"
+            -Case "${_p2_d5_2_w3_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w3-canonical-performance-core.ps1"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+mvm_add_test(p2_d5_2_w3_canonical_performance_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w3-canonical-performance-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+
+# P2-D5-2-W4-A: unsatisfied intentがchainのどこで失われたかをexactに分類する。
+# 原因判定はしない。母集団はexact required current intent setのみで、
+# 1 intent identityにつきちょうど1 bucketへ入る。
+foreach(_p2_d5_2_w4a_case IN ITEMS GoodExactPartition GoodNoPrimaryDecision GoodDownstreamLossBuckets NegativeRequiredIntentMissingFromAllBuckets NegativeRequiredIntentInTwoBuckets NegativeMultiplePrimaryDecision NegativeDuplicateCallbackCountedAsDrop NegativeOutsideRequiredCountedAsDrop NegativeMissingSetMutation NegativeSatisfiedSetMutation NegativeAggregateOnlyForgery)
+    string(TOLOWER "${_p2_d5_2_w4a_case}" _p2_d5_2_w4a_name)
+    mvm_add_test(p2_d5_2_w4a_intent_attribution_${_p2_d5_2_w4a_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w4-a-intent-attribution-contract.ps1"
+            -Case "${_p2_d5_2_w4a_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w4-a-intent-attribution-core.ps1"
+            -SharedReplay "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w4-a-shared-replay.ps1"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+# P2-D5-2-W4-B: isolated missing と double-missing boundary の producer-side exact
+# semantic transition を識別する。root cause は出さない。
+foreach(_p2_d5_2_w4b_case IN ITEMS GoodIsolatedAndDouble GoodEdgeCohorts GoodLongerMissingRun NegativeMissingSetSplice NegativeIsolatedClassifiedAsDouble NegativeDoubleEventCountMutation NegativeMissingOrdinalInterpolatedProducerField NegativeNearestDecisionQpcUsed NegativeCrossRunNeighborSplice NegativeRootCauseDeclared NegativeAggregateOnlyTransitionForgery NegativeDecisionSpanUsedAsMeasurementWindow NegativeLegacyElapsedPromotedToAuthority NegativeTailGapMutation)
+    string(TOLOWER "${_p2_d5_2_w4b_case}" _p2_d5_2_w4b_name)
+    mvm_add_test(p2_d5_2_w4b_producer_semantics_${_p2_d5_2_w4b_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w4-b-producer-semantics-contract.ps1"
+            -Case "${_p2_d5_2_w4b_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w4-b-producer-semantics-core.ps1"
+            -SharedReplay "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w4-b-shared-replay.ps1"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+# P2-D5-2-W4-C0: causal attribution前にproducerの全writer / return / stop pathを
+# 静的に列挙する。新規captureとproduct変更は行わない。
+foreach(_p2_d5_2_w4c0_case IN ITEMS GoodStaticInventory NegativeUnclassifiedOrdinalWriter NegativeUnclassifiedLastFinalizedWriter NegativeUnclassifiedNoDecisionReturn NegativeSecondIntentProducer NegativeIndirectOrdinalReconstruction)
+    string(TOLOWER "${_p2_d5_2_w4c0_case}" _p2_d5_2_w4c0_name)
+    mvm_add_test(p2_d5_2_w4c0_static_control_flow_${_p2_d5_2_w4c0_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w4-c0-static-control-flow-contract.ps1"
+            -Case "${_p2_d5_2_w4c0_case}"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+# P2-D5-2-W4-C1: sealed W3 cohortだけでcompleted refresh inputとのcausal compatibilityを
+# replayする。branch executionとroot causeは確定しない。
+foreach(_p2_d5_2_w4c1_case IN ITEMS GoodCompatibility NegativeCompletedOrdinalMutation NegativeIntentDeltaMutation NegativeNearestQpcBinding NegativeSourceRequiredDomainConflation NegativeCandidateForced NegativePlannedEndHeuristic NegativeMissingStateInterpolation NegativeRootCauseDeclared)
+    string(TOLOWER "${_p2_d5_2_w4c1_case}" _p2_d5_2_w4c1_name)
+    mvm_add_test(p2_d5_2_w4c1_causal_compatibility_${_p2_d5_2_w4c1_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w4-c1-causal-compatibility-contract.ps1"
+            -Case "${_p2_d5_2_w4c1_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w4-c1-causal-compatibility-core.ps1"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+# P2-D5-2-W4-C2: 全scheduler invocationのbranch-exact ledger契約。
+foreach(_p2_d5_2_w4c2_case IN ITEMS GoodExact NegativeInvocationSequenceGap NegativePrePostStateMutation NegativeDecisionReasonMutation NegativeDecisionWithoutTransport NegativeSourceRequiredDomainConflation NegativePostTerminalInvocation NegativeCompletedOrdinalMutation NegativePerformanceAuthorityPromotion NegativePhysicalSuccessorRequired)
+    string(TOLOWER "${_p2_d5_2_w4c2_case}" _p2_d5_2_w4c2_name)
+    mvm_add_test(p2_d5_2_w4c2_invocation_ledger_${_p2_d5_2_w4c2_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w4-c2-invocation-ledger-contract.ps1"
+            -Case "${_p2_d5_2_w4c2_case}"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w4-c2-invocation-ledger.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w4c2-${_p2_d5_2_w4c2_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+foreach(_p2_d5_2_w4c2_arch_case IN ITEMS Good NegativePostWorktree NegativePostSource NegativePostQtGui NegativePostQtQuick NegativeWarmupMismatch NegativeExit6Teardown NegativeExit6Metrics NegativeExit6Mapping NegativeTeardownStageState NegativeTeardownStageReport NegativeTerminalExitState NegativeTerminalExitReport NegativeEnvelopeStopRenderExitBarrier NegativePostEnvelopeTeardownBridge NegativeC2PhysicalSuccessorWait NegativeC2PhysicalObserverStart NegativeDiagnosticPhaseTrace NegativeEnvelopeStopTimeout)
+    string(TOLOWER "${_p2_d5_2_w4c2_arch_case}" _p2_d5_2_w4c2_arch_name)
+    mvm_add_test(p2_d5_2_w4c2_invocation_ledger_architecture_${_p2_d5_2_w4c2_arch_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w4-c2-invocation-ledger-architecture.ps1"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Case "${_p2_d5_2_w4c2_arch_case}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+# P2-D5-2-W4-C3: exact causal replayへ進む前のstop witness/replay設計freeze。
+foreach(_p2_d5_2_w4c3_design_case IN ITEMS Good NegativeCauseEnum NegativeExactJoin NegativeAlternativeStop NegativeStopPublishSerial NegativeTargetPredicateReplay NegativeSerialMemoryOrder NegativeSerialSitePrecedence NegativeReplayScope NegativeOverflowSemantics NegativeArbitrationAuthority NegativeArbitrationClaimPrestate NegativeSerialAsAuthority NegativeArbitrationResetLifetime NegativeArbitrationEpochCondition NegativeLosingClaimOwnership NegativeStaleSerialAuthorityClaim NegativeFlagAsAuthority NegativeMeasurementStartStateCondition NegativeCaptureGateExchangeReturn NegativeExactContinuityClaim NegativeAnchoredOriginInvariant NegativeAuthority)
+    string(TOLOWER "${_p2_d5_2_w4c3_design_case}" _p2_d5_2_w4c3_design_name)
+    mvm_add_test(p2_d5_2_w4c3_causal_replay_design_${_p2_d5_2_w4c3_design_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w4-c3-causal-replay-design-contract.ps1"
+            -Contract "${CMAKE_SOURCE_DIR}/docs/p2-d5-2-w4-c3-causal-replay-design.md"
+            -Case "${_p2_d5_2_w4c3_design_case}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+# P2-D5-2-W4-C3 step 6: fresh capture runnerのworkload/provenance契約。
+foreach(_p2_d5_2_w4c3_runner_case IN ITEMS Good NegativeDirtyWorktreeAllowed NegativeMissingCheckerProvenance NegativeMajorityAggregate NegativePostCaptureUnchecked NegativeMeasureSecondsShortened NegativePerformanceAuthorityPromotion NegativeRunClosureWeakened)
+    string(TOLOWER "${_p2_d5_2_w4c3_runner_case}" _p2_d5_2_w4c3_runner_name)
+    mvm_add_test(p2_d5_2_w4c3_acquisition_runner_${_p2_d5_2_w4c3_runner_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w4-c3-acquisition-runner-contract.ps1"
+            -Runner "${CMAKE_SOURCE_DIR}/scripts/acquire-p2-d5-2-w4-c3-diagnostic.ps1"
+            -Case "${_p2_d5_2_w4c3_runner_case}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+# P2-D5-2-W4-C3 step 4: checker/replayのfail-closed性をsynthetic artifactで閉じる。
+foreach(_p2_d5_2_w4c3_checker_case IN ITEMS Good GoodLosingExplicitStopPublication GoodExactInt64BoundaryDivision GoodObservedOrdinalGapPattern NegativeRequiredMembershipReplayMutation NegativeRequiredMembershipExactMissing NegativeC2LedgerPerformanceAuthorityPromotion NegativeC2LedgerRecordCountMismatch NegativeC2LedgerPhysicalAuthorityPromotion NegativeTerminalMembershipFalse NegativeTerminalPreStateMismatch NegativeAnchoredRegression NegativeAnchoredOriginMutation NegativeLastFinalizedRegression NegativePastSourceDomainRegression NegativeTerminalAnchorMutation NegativeTerminalOriginMutation NegativeMissingReplayField NegativeMissingStopWitness NegativeDuplicateWitness NegativeTerminalInvocationJoinMutation NegativeArbitrationWinnerMutation NegativeArbitrationPreviousMutation NegativeMeasurementStartStateMutation NegativeResetCountMutation NegativeCaptureGateExchangeMutation NegativeGateCloseSnapshotMissing NegativeDomainTerminalClaimSourceMutation NegativeTerminalWitnessFactMismatch NegativeTerminalTargetPredicateMutation NegativeSchedulerConfigMutation NegativeCheckedOverflowBypass NegativeNearestQpcJoin NegativePostTerminalInvocation NegativeInvalidFatalPresent NegativeRootCauseDeclaredWithoutExactReplay NegativePerformanceAuthorityPromotion)
+    string(TOLOWER "${_p2_d5_2_w4c3_checker_case}" _p2_d5_2_w4c3_checker_name)
+    mvm_add_test(p2_d5_2_w4c3_causal_replay_checker_${_p2_d5_2_w4c3_checker_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w4-c3-causal-replay-checker.ps1"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w4-c3-causal-replay.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w4c3-checker-${_p2_d5_2_w4c3_checker_name}"
+            -Case "${_p2_d5_2_w4c3_checker_case}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+# P2-D5-2-W4-C3 step 2: stop arbitration / publication serial / scheduler_config emitの構造検査。
+foreach(_p2_d5_2_w4c3_arch_case IN ITEMS Good NegativeStopPublishSerialRelaxedOrdering NegativeStopSideEffectBeforeArbitrationClaim NegativeUnclaimedExplicitStopWriter NegativeUnclaimedFatalWriter NegativeUnclaimedFatalLatchSite NegativeArbitrationResetDuringMeasurement NegativeSecondArbitrationResetSite NegativeInlineArbitrationCas NegativeMissingSchedulerConfigEmit NegativeArbitrationResetAfterMeasurementStartPublication NegativeSecondArbitrationResetWriterInHeader NegativeMissingWitnessEmit NegativeSecondWitnessOverwrite NegativeWitnessCauseReconstructed NegativeClaimResultNotTransported NegativeMeasurementStartSnapshotAtReset NegativeWitnessCapturedBeforePayloadPublish NegativeCaptureGateExchangeReturnIgnored NegativeExplicitStopClaimDefaulted NegativeExplicitStopClaimReconstructedFromWinner NegativeExplicitStopClaimRecordNotPublished NegativeStopPublicationRecordOverwrittenBeforeConsume NegativeStopRequestConsumedOutsideProtocol)
+    string(TOLOWER "${_p2_d5_2_w4c3_arch_case}" _p2_d5_2_w4c3_arch_name)
+    mvm_add_test(p2_d5_2_w4c3_stop_arbitration_architecture_${_p2_d5_2_w4c3_arch_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w4-c3-stop-arbitration-architecture.ps1"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Case "${_p2_d5_2_w4c3_arch_case}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
+    string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)
+    mvm_add_test(p2_c3_a3_t2_d1b2_evaluability_${_p2_c3_a3_t2_d1b2e_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t2-d1b2-evaluability-contract.ps1"
+            -Case "${_p2_c3_a3_t2_d1b2e_case}"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c3-a3-t2-d1b2-rebuild-evaluability.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t2-d1b2e-${_p2_c3_a3_t2_d1b2e_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+foreach(_p2_c3_a3_t2_d1b2_case IN ITEMS ExactAvailable ExeMissing QtGuiMissing UnchangedFromCurrent RebuildIsNotExact NegativeMissingIdentities)
+    string(TOLOWER "${_p2_c3_a3_t2_d1b2_case}" _p2_c3_a3_t2_d1b2_name)
+    mvm_add_test(p2_c3_a3_t2_d1b2_reconstruction_${_p2_c3_a3_t2_d1b2_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t2-d1b2-reconstruction-contract.ps1"
+            -Case "${_p2_c3_a3_t2_d1b2_case}"
+            -Inventory "${CMAKE_SOURCE_DIR}/scripts/inventory-p2-c3-a3-t2-d1b2-runtime-reconstruction.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t2-d1b2-${_p2_c3_a3_t2_d1b2_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+foreach(_p2_c3_a3_t2_d1b3a_case IN ITEMS OverlapReproducesBad IndependentLossNotSufficient OverlapNoPathChange StickyAfterRemove RecoveredAfterRemove NegativeUserInput NegativeEtwLoss)
+    string(TOLOWER "${_p2_c3_a3_t2_d1b3a_case}" _p2_c3_a3_t2_d1b3a_name)
+    mvm_add_test(p2_c3_a3_t2_d1b3a_overlap_${_p2_c3_a3_t2_d1b3a_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t2-d1b3a-overlap-contract.ps1"
+            -Case "${_p2_c3_a3_t2_d1b3a_case}"
+            -Summarizer "${CMAKE_SOURCE_DIR}/scripts/summarize-p2-c3-a3-t2-d1b3a.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t2-d1b3a-${_p2_c3_a3_t2_d1b3a_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+foreach(_p2_c3_a3_t2_d1b0_case IN ITEMS Good NegativeNotCaptured NegativeClaimsAuthority NegativeMissingSwapchainField NegativeCapabilityContaminated NegativeZeroIdentity)
+    string(TOLOWER "${_p2_c3_a3_t2_d1b0_case}" _p2_c3_a3_t2_d1b0_name)
+    mvm_add_test(p2_c3_a3_t2_d1b0_preflight_${_p2_c3_a3_t2_d1b0_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t2-d1b0-preflight-contract.ps1"
+            -Case "${_p2_c3_a3_t2_d1b0_case}"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c3-a3-t2-d1b0-preflight.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t2-d1b0-${_p2_c3_a3_t2_d1b0_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+foreach(_p2_c3_a3_t2_d1b1_case IN ITEMS ReproducesBadRegime BothArmsGoodIndependent ComposedBothArms OrderTimeConfound StaticConfigDiffers NegativeUserInput NegativeEtwLoss)
+    string(TOLOWER "${_p2_c3_a3_t2_d1b1_case}" _p2_c3_a3_t2_d1b1_name)
+    mvm_add_test(p2_c3_a3_t2_d1b1_probe_${_p2_c3_a3_t2_d1b1_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t2-d1b1-probe-contract.ps1"
+            -Case "${_p2_c3_a3_t2_d1b1_case}"
+            -Summarizer "${CMAKE_SOURCE_DIR}/scripts/summarize-p2-c3-a3-t2-d1b1.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t2-d1b1-${_p2_c3_a3_t2_d1b1_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+foreach(_p2_c3_a3_t2_d1a_case IN ITEMS ComposedNotFailure BadWithoutGoodComposed NoBadRegime ParentFieldUnavailable ModeClassBoundary NegativeMissingPresentMode)
+    string(TOLOWER "${_p2_c3_a3_t2_d1a_case}" _p2_c3_a3_t2_d1a_name)
+    mvm_add_test(p2_c3_a3_t2_d1a_regime_${_p2_c3_a3_t2_d1a_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t2-d1a-regime-contract.ps1"
+            -Case "${_p2_c3_a3_t2_d1a_case}"
+            -Inventory "${CMAKE_SOURCE_DIR}/scripts/inventory-p2-c3-a3-t2-d1a-regime.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t2-d1a-${_p2_c3_a3_t2_d1a_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+foreach(_p2_c3_a3_t2_d0_case IN ITEMS IndependentOfDwm ExternalTransition UnknownPresentPath LegacySchemaUnresolved InsufficientGroups NegativeEtwLoss)
+    string(TOLOWER "${_p2_c3_a3_t2_d0_case}" _p2_c3_a3_t2_d0_name)
+    mvm_add_test(p2_c3_a3_t2_d0_presentation_path_${_p2_c3_a3_t2_d0_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t2-d0-presentation-path-contract.ps1"
+            -Case "${_p2_c3_a3_t2_d0_case}"
+            -Analyzer "${CMAKE_SOURCE_DIR}/scripts/analyze-p2-c3-a3-t2-d0-presentation-path.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t2-d0-${_p2_c3_a3_t2_d0_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+foreach(_p2_c3_a3_t2_c_case IN ITEMS C1InvalidationWakes C1ForcedRedrawRequired C1RegimeInvalid C1OrderConfound C2PaintProcessingWakes C2RedirectionSuspect C2RegimeInvalid NegativeUpdateChainVolume NegativeRuntime NegativeUserInput NegativeDamageCadence)
+    string(TOLOWER "${_p2_c3_a3_t2_c_case}" _p2_c3_a3_t2_c_name)
+    mvm_add_test(p2_c3_a3_t2_c_summary_${_p2_c3_a3_t2_c_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t2-c-summary-contract.ps1"
+            -Case "${_p2_c3_a3_t2_c_case}"
+            -Summarizer "${CMAKE_SOURCE_DIR}/scripts/summarize-p2-c3-a3-t2-c.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t2-c-summary-${_p2_c3_a3_t2_c_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+foreach(_p2_c3_a3_t2_startup_case IN ITEMS Good NegativeFlagGatedContext NegativeMissingNullGuard NegativeVisibleAtLoad NegativeShowBeforeAttach)
+    string(TOLOWER "${_p2_c3_a3_t2_startup_case}" _p2_c3_a3_t2_startup_name)
+    mvm_add_test(p2_c3_a3_t2_startup_order_${_p2_c3_a3_t2_startup_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a3-t2-startup-order-contract.ps1"
+            -Case "${_p2_c3_a3_t2_startup_case}"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a3-t2-startup-order-${_p2_c3_a3_t2_startup_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+foreach(_p2_c3_a2_lifecycle_case IN ITEMS Good MissingWaiting Order ParentMismatch Lost EarlierIncomplete)
+    string(TOLOWER "${_p2_c3_a2_lifecycle_case}" _p2_c3_a2_lifecycle_name)
+    add_test(
+        NAME p2_c3_a2_lifecycle_contract_${_p2_c3_a2_lifecycle_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a2-lifecycle-contract.ps1"
+            -Case "${_p2_c3_a2_lifecycle_case}"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c3-a2-lifecycle.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a2-lifecycle-${_p2_c3_a2_lifecycle_name}")
+    set_tests_properties(p2_c3_a2_lifecycle_contract_${_p2_c3_a2_lifecycle_name} PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+foreach(_p2_b1_shadow_case Good NegativeEarlyCommit NegativeFirstSolution
+        NegativeFormalAuthority NegativePhysicalDoubleCount NegativeSourceAccounting
+        NegativeCandidateWindow ExpectedNoSolutionFailure)
+    string(TOLOWER "${_p2_b1_shadow_case}" _p2_b1_shadow_name)
+    mvm_add_test(p2_b1_shadow_${_p2_b1_shadow_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-b1-shadow-contract.ps1"
+            -Case ${_p2_b1_shadow_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-b1-shadow.ps1"
+            -FailureChecker "${CMAKE_SOURCE_DIR}/scripts/check-p2-b1-shadow-failure.ps1"
+            -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-b1-shadow-${_p2_b1_shadow_name}.json")
+endforeach()
+
+foreach(_p2_c0_native_case Good NegativeMissingToken NegativeDuplicateSerial
+        NegativeTokenMismatch NegativePresentFlags)
+    string(TOLOWER "${_p2_c0_native_case}" _p2_c0_native_name)
+    mvm_add_test(p2_c0_native_hook_${_p2_c0_native_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c0-native-hook-contract.ps1"
+            -Case ${_p2_c0_native_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c0-native-hook.ps1"
+            -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-c0-native-${_p2_c0_native_name}.json")
+endforeach()
+
+foreach(_p2_c0_etw_case Good GoodDiscarded GoodBoundaryStraddle NegativeUnknown NegativeLost
+        NegativeOrder NegativeOutsideInterval NegativeCount)
+    string(TOLOWER "${_p2_c0_etw_case}" _p2_c0_etw_name)
+    mvm_add_test(p2_c0_native_etw_${_p2_c0_etw_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c0-native-etw-contract.ps1"
+            -Case ${_p2_c0_etw_case}
+            -Fixture "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c0-native-hook-contract.ps1"
+            -NativeChecker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c0-native-hook.ps1"
+            -EtwChecker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c0-native-etw.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c0-etw-${_p2_c0_etw_name}")
+endforeach()
+
+foreach(_p2_c1_case Good NegativeUnknown NegativeLost NegativeFrameRange
+        NegativeOpportunityOrder NegativeDisplayedPayload)
+    string(TOLOWER "${_p2_c1_case}" _p2_c1_name)
+    mvm_add_test(p2_c1_display_authority_${_p2_c1_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c1-display-authority-contract.ps1"
+            -Case ${_p2_c1_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c1-display-authority.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c1-display-${_p2_c1_name}")
+endforeach()
+
+foreach(_p2_c2_case Good NegativeUnknown NegativeIdentity NegativePayload NegativeOrder)
+    string(TOLOWER "${_p2_c2_case}" _p2_c2_name)
+    mvm_add_test(p2_c2_display_discard_attribution_${_p2_c2_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c2-display-discard-attribution-contract.ps1"
+            -Case ${_p2_c2_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c2-display-discard-attribution.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c2-attribution-${_p2_c2_name}")
+endforeach()
+
+foreach(_p2_c2_reason_case Good NegativeZeroDiscard NegativeUnknownReason NegativeMissingReason
+        NegativePresentedReason NegativeMissingDiagnosticField)
+    string(TOLOWER "${_p2_c2_reason_case}" _p2_c2_reason_name)
+    mvm_add_test(p2_c2_discard_reason_${_p2_c2_reason_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c2-discard-reason-contract.ps1"
+            -Case ${_p2_c2_reason_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c2-discard-reasons.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c2-reason-${_p2_c2_reason_name}")
+endforeach()
+
+foreach(_p2_c3_case GoodControl GoodDwmFlush GoodFrameLatency1 NegativeMissingBatch
+        NegativeWrongLatency NegativeFlushCount)
+    string(TOLOWER "${_p2_c3_case}" _p2_c3_name)
+    mvm_add_test(p2_c3_submission_backpressure_${_p2_c3_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-submission-backpressure-contract.ps1"
+            -Case ${_p2_c3_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-c3-submission-backpressure.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-backpressure-${_p2_c3_name}")
+endforeach()
+
+foreach(_p2_c3_a2_case Good NegativeModeMissing NegativeBatchZero NegativeLost NegativeOrder)
+    string(TOLOWER "${_p2_c3_a2_case}" _p2_c3_a2_name)
+    mvm_add_test(p2_c3_a2_offline_${_p2_c3_a2_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-c3-a2-offline-contract.ps1"
+            -Case ${_p2_c3_a2_case}
+            -Analyzer "${CMAKE_SOURCE_DIR}/scripts/p2-c3-a2-offline-attribution.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-c3-a2-${_p2_c3_a2_name}")
+endforeach()
 
 # ARGS に ';' を含む引数 (--map や --require-proxy-ids) を渡す場合は
 # **'@SEMI@' と書く。** ここで ';' へ戻す。
@@ -192,6 +986,13 @@ foreach(i RANGE ${_bad_last})
         ARGS verify-media "${MVM_FIXTURES}/bad-${bad}.json"
         PROPERTIES REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_h264.mp4")
 endforeach()
+
+mvm_add_test(p2_formal_output_path_contract
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-formal-output-path.ps1"
+        -Guard "${CMAKE_SOURCE_DIR}/scripts/formal-output-path.ps1"
+        -RepositoryRoot "${CMAKE_SOURCE_DIR}"
+        -GitExe "${GIT_EXECUTABLE}")
 
 # --- 破損・退化素材の negative test -----------------------------------------
 # これらが成功扱いされないことを確認する。
@@ -953,6 +1754,46 @@ target_link_libraries(mvm_test_gpu_pure PRIVATE mvm::gpu_preview mvm::warnings)
 # 依存 DLL が解決できず 0xC0000135 で落ちる (実際に落ちた)。
 mvm_add_test(gpu_pure_unit COMMAND mvm_test_gpu_pure)
 
+# P2-Q4はproduction schedulerを変更せず、offline modelの契約を先に固定する。
+add_executable(mvm_test_p2_render_opportunity
+    harness/test_p2_render_opportunity_replay.cpp
+    harness/p2_render_opportunity_replay.cpp
+)
+target_include_directories(mvm_test_p2_render_opportunity PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/harness)
+target_link_libraries(mvm_test_p2_render_opportunity PRIVATE mvm::warnings)
+mvm_add_test(p2_render_opportunity_unit COMMAND mvm_test_p2_render_opportunity)
+
+# P2-Q6はactual presentation opportunity ordinalからsource domainを閉じる
+# pure/offline proofであり、production schedulerへは接続しない。
+add_executable(mvm_test_p2_opportunity_ordinal
+    harness/test_p2_opportunity_ordinal_replay.cpp
+    harness/p2_opportunity_ordinal_replay.cpp
+)
+target_include_directories(mvm_test_p2_opportunity_ordinal PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/harness)
+target_link_libraries(mvm_test_p2_opportunity_ordinal PRIVATE mvm::warnings)
+mvm_add_test(p2_opportunity_ordinal_unit COMMAND mvm_test_p2_opportunity_ordinal)
+
+if(MVM_ENABLE_QT)
+    add_executable(mvm_p2_scheduler_replay
+        harness/p2_scheduler_replay.cpp
+        harness/p2_render_opportunity_replay.cpp
+    )
+    target_include_directories(mvm_p2_scheduler_replay PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/harness)
+    target_link_libraries(mvm_p2_scheduler_replay PRIVATE
+        mvm::gpu_preview
+        Qt6::Core
+        mvm::warnings
+    )
+
+    add_executable(mvm_p2_opportunity_ordinal_replay
+        harness/p2_opportunity_ordinal_replay_cli.cpp
+        harness/p2_opportunity_ordinal_replay.cpp
+    )
+    target_include_directories(mvm_p2_opportunity_ordinal_replay
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/harness)
+    target_link_libraries(mvm_p2_opportunity_ordinal_replay PRIVATE Qt6::Core mvm::warnings)
+endif()
+
 add_executable(mvm_test_source_frame_buffer_interruptible_wait
     gpu_preview/test_source_frame_buffer_interruptible_wait.cpp)
 target_link_libraries(mvm_test_source_frame_buffer_interruptible_wait PRIVATE
@@ -1184,6 +2025,20 @@ target_link_libraries(mvm_test_display_target_contract PRIVATE mvm::preview_qt m
 mvm_add_test(p3_c2_display_target_preflight_unit
     COMMAND mvm_test_display_target_contract)
 
+foreach(_p5e_preflight_case Good NegativeScreenName)
+    string(TOLOWER "${_p5e_preflight_case}" _p5e_preflight_case_name)
+    mvm_add_test(p5_e4_display_preflight_${_p5e_preflight_case_name}
+        COMMAND pwsh -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/audio_preview/test-p5-e4-display-preflight.ps1"
+            -Case ${_p5e_preflight_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p5-e4-display-preflight.ps1"
+            -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/p5-e4-display-preflight-${_p5e_preflight_case_name}")
+endforeach()
+
+mvm_add_test(p5_e4_a1_classifier_unit
+    COMMAND pwsh -NoProfile -File
+        "${CMAKE_SOURCE_DIR}/scripts/p5-e4-a1-eof-tail.ps1" -SelfTest)
+
 foreach(_p3_case Good NegativeCounter)
     string(TOLOWER "${_p3_case}" _p3_case_name)
     mvm_add_test(p3_a_contract_${_p3_case_name}
@@ -1206,7 +2061,7 @@ endforeach()
 
 set(_p3c_contract_cases
     Good
-    NegativeFps NegativeDrop NegativeAvP95 NegativeAvMax NegativeAvCount
+    LegacyFpsDiagnostic LegacyDropDiagnostic NegativeAvP95 NegativeAvMax NegativeAvCount
     NegativeScheduledAccounting NegativeFirstFrame NegativeAudioStartSample
     NegativeUnderflow NegativeOverflow NegativeMarker NegativeMixedPair
     NegativeGeneration NegativeAhead NegativeClockRegression NegativeQpcFallback
@@ -1285,6 +2140,13 @@ if(TARGET mvm_p3_av_sync_spike AND EXISTS "${MVM_P3_AUDIO_FIXTURE}" AND
             --metrics "${CMAKE_CURRENT_BINARY_DIR}/p3-b-seek-short.json"
             --mode seek --seek-count 4
         PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 300)
+    mvm_add_test(p3_async_audio_failure_fail_close
+        COMMAND pwsh -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/audio_preview/test-p3-async-audio-failure.ps1"
+            -Executable "$<TARGET_FILE:mvm_p3_av_sync_spike>"
+            -SourceA "${MVM_P3_AUDIO_FIXTURE}" -SourceB "${MVM_P3_B_VIDEO_FIXTURE}"
+            -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/p3-async-audio-failure"
+        PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120)
 else()
     message(STATUS
         "[mvm] P3-B fixture 未生成のため integration は未登録です。\n"
@@ -1381,6 +2243,129 @@ target_include_directories(mvm_test_parallel_dispatch_order PRIVATE "${CMAKE_SOU
 target_link_libraries(mvm_test_parallel_dispatch_order PRIVATE mvm::warnings)
 mvm_add_test(p2_parallel_dispatch_order COMMAND mvm_test_parallel_dispatch_order)
 
+# P2-D5-2のcausal opportunity schedulerをGPU非依存で固定する。
+add_executable(mvm_test_presentation_opportunity_scheduler
+    gpu_preview/test_presentation_opportunity_scheduler.cpp)
+target_link_libraries(mvm_test_presentation_opportunity_scheduler
+    PRIVATE mvm::gpu_preview mvm::warnings)
+mvm_add_test(p2_presentation_opportunity_scheduler
+    COMMAND mvm_test_presentation_opportunity_scheduler)
+
+# P2-D5-2/F3のwindow output VBlank authorityをGPU非依存のpure helperで固定する。
+add_executable(mvm_test_window_output_vblank_authority
+    gpu_preview/test_window_output_vblank_authority.cpp)
+target_link_libraries(mvm_test_window_output_vblank_authority
+    PRIVATE mvm::gpu_preview mvm::warnings)
+mvm_add_test(p2_window_output_vblank_authority
+    COMMAND mvm_test_window_output_vblank_authority)
+
+# P2-D5-2-W2-A: measurement窓に対するphysical VBlank domainのexact構築。
+# boundary / property / mutationをGPU非依存で固定する。
+add_executable(mvm_test_physical_vblank_domain
+    gpu_preview/test_physical_vblank_domain.cpp)
+target_link_libraries(mvm_test_physical_vblank_domain
+    PRIVATE mvm::gpu_preview mvm::warnings)
+mvm_add_test(p2_d5_2_w2a_physical_vblank_domain
+    COMMAND mvm_test_physical_vblank_domain)
+
+# P2-D5-2/F3-A: window output VBlank authority probeのcontract。
+# 対照群と、1 fieldだけを壊したnegativeで固定する。DWM composition clockが
+# window outputと一致しない場合でもprobeが通ること (diagnostic-only) も含む。
+foreach(_p2_vblank_case Good NegativeProbeFail NegativeOutputChanged NegativeSequenceStatus
+        NegativeLongInterval NegativeWaitFailure NegativeRingOverflow
+        NegativeCadenceDeviation NegativeDeviationRecalculation
+        DwmClockMismatchIsDiagnosticOnly)
+    string(TOLOWER "${_p2_vblank_case}" _p2_vblank_name)
+    mvm_add_test(p2_vblank_authority_checker_${_p2_vblank_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-vblank-authority-contract.ps1"
+            -Case ${_p2_vblank_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-vblank-authority.ps1"
+            -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-vblank-${_p2_vblank_name}.json")
+endforeach()
+
+# P2-D5-2/F3-B0: swap↔physical VBlankのshadow mapping contract。
+foreach(_p2_shadow_case Good SupersedeGood NegativeAmbiguousSwap NegativeObserverGap
+        NegativeAfterLast NegativeBeforeFirst NegativeShortInterval NegativeLongInterval
+        NegativeCumulativeDrift NegativeNormalPriority NegativeOutputChanged
+        NegativeSampleCount)
+    string(TOLOWER "${_p2_shadow_case}" _p2_shadow_name)
+    mvm_add_test(p2_vblank_shadow_checker_${_p2_shadow_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-vblank-shadow-contract.ps1"
+            -Case ${_p2_shadow_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-vblank-shadow.ps1"
+            -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-vblank-shadow-${_p2_shadow_name}.json")
+endforeach()
+
+# 実displayとDXGI outputを要求するため workstation label を付ける。
+if(TARGET mvm_p2_vblank_authority_probe)
+    add_test(NAME p2_vblank_authority_probe_live
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/run-p2-vblank-authority-probe.ps1"
+            -Exe "$<TARGET_FILE:mvm_p2_vblank_authority_probe>"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-vblank-authority.ps1"
+            -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-vblank-authority-probe-live.json"
+            -DurationMs 4000)
+    set_tests_properties(p2_vblank_authority_probe_live PROPERTIES
+        ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+        LABELS "p2;workstation" RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120)
+endif()
+
+# P2-D5-2/F3-B0.6-R1: Present IDをjoin keyにする完全oracle contract。
+# producerの真偽値だけに依存せず、submission列・statistics列・offline delayを再計算する。
+foreach(_p2_oracle_case Good NegativeSubmittedGap NegativeObservedGap NegativeFinalDrain
+        NegativePollInterval NegativeOfflineDelay NegativeEarlyMapper NegativeDiscardClaim)
+    string(TOLOWER "${_p2_oracle_case}" _p2_oracle_name)
+    mvm_add_test(p2_present_id_oracle_checker_${_p2_oracle_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-present-id-oracle-contract.ps1"
+            -Case ${_p2_oracle_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-present-id-oracle.ps1"
+            -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-present-id-oracle-${_p2_oracle_name}.json")
+endforeach()
+
+if(TARGET mvm_p2_present_identity_probe)
+    add_test(NAME p2_present_id_oracle_live
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/run-p2-present-id-oracle.ps1"
+            -Exe "$<TARGET_FILE:mvm_p2_present_identity_probe>"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-present-id-oracle.ps1"
+            -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-present-id-oracle-live.json"
+            -Presents 900)
+    set_tests_properties(p2_present_id_oracle_live PROPERTIES
+        ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+        LABELS "p2;workstation" RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 180)
+endif()
+
+# P2-D5-2/F3-B0.6-R2: ETW event historyとapp swap sequenceのexact join contract。
+foreach(_p2_etw_oracle_case Good NegativeCount NegativeOrder NegativeSwapChain
+        NegativeSyncInterval NegativeWindow NegativeLostEvent NegativeRawQpc NegativeBoundary
+        NegativePhysicalAuthority CollisionNotObservedGood)
+    string(TOLOWER "${_p2_etw_oracle_case}" _p2_etw_oracle_name)
+    mvm_add_test(p2_etw_present_history_checker_${_p2_etw_oracle_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-etw-present-history-contract.ps1"
+            -Case ${_p2_etw_oracle_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-etw-present-history.ps1"
+            -VBlankChecker "${CMAKE_SOURCE_DIR}/scripts/check-p2-vblank-shadow.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-etw-oracle-${_p2_etw_oracle_name}")
+endforeach()
+
+# F3-B0.6-R3: corpus constructionをmapperから独立にfail-closed検査する。
+foreach(_p2_r3_case Good NegativeOracleOpportunity NegativeDelayTouchesDisplayed
+        NegativeRecordOrder NegativeVBlankDeleted NegativeCollisionClaim)
+    string(TOLOWER "${_p2_r3_case}" _p2_r3_name)
+    mvm_add_test(p2_etw_synthetic_corpus_checker_${_p2_r3_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-etw-synthetic-corpus-contract.ps1"
+            -Case ${_p2_r3_case}
+            -CorpusChecker "${CMAKE_SOURCE_DIR}/scripts/check-p2-etw-synthetic-corpus.ps1"
+            -OracleChecker "${CMAKE_SOURCE_DIR}/scripts/check-p2-etw-present-history.ps1"
+            -VBlankChecker "${CMAKE_SOURCE_DIR}/scripts/check-p2-vblank-shadow.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-r3-${_p2_r3_name}")
+endforeach()
+
 # P2-D5-1 formal checkerはGPU非依存の対照群と、1 fieldだけを壊したnegativeで固定する。
 foreach(_p2_contract_case Good FormalGood NegativeInvariant NegativeSameDevice NegativeOutputSize
         NegativeBackend NegativeSeed NegativeFormalTiming NegativeScheduledHigh
@@ -1393,7 +2378,13 @@ foreach(_p2_contract_case Good FormalGood NegativeInvariant NegativeSameDevice N
         NegativeSeekConcurrencyCount SeekExecutionNonoverlapGood
         FormalSeekGood NegativeParallelDispatchCount
         NegativeParallelDispatchSample NegativeBRequestResult
-        NegativeDispatchAfterFirstReady)
+        NegativeDispatchAfterFirstReady NegativeOpportunityLedgerMutation
+        NegativeOpportunityOrdinalGapIgnored NegativeOpportunityRefreshChange
+        NegativeOpportunityAuthority NegativeOpportunityTail ReconciledGood
+        NegativeForwardDropIgnored NegativeMeasurementDelta
+        SupersededGood NegativeOpportunitySupersededSwapOrdinal
+        NegativeOpportunityFirstCandidate NegativeOpportunityDisplayedCount
+        NegativeOpportunityOrigin)
     string(TOLOWER "${_p2_contract_case}" _p2_contract_name)
     mvm_add_test(p2_formal_checker_${_p2_contract_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File

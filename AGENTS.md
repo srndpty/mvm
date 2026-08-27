@@ -234,6 +234,225 @@ Python worker、エフェクト UI、キーフレーム編集、レンダーキ�
 | `WILL_FAIL` で negative test | クラッシュでも合格になる                           | `scripts/expect-exit.ps1` で終了コードを厳密に照合                        |
 | 対象 0 件のテスト群          | 「全部通った」と報告される                         | `-N` で件数を数え、0 件なら失敗にする                                     |
 
+## Interactive measurement protocol
+
+Performance / ETW / DWM / GPU presentation / window-state acquisition を
+ユーザーに実行してもらう場合、実行コマンドを提示する前に必ず
+ユーザー操作の可否を明示する。
+
+表記は次のいずれかとする。
+
+- **操作可**: measurement 中も通常の PC 操作をしてよい。
+- **操作制限あり**: 禁止する操作、理由、必要時間を具体的に示す。
+- **操作停止必須**: measurement 中は対象 desktop へ入力しない。想定所要時間を必ず示す。
+
+操作が測定結果へ影響し得るにもかかわらず、無案内で取得を依頼してはならない。
+コマンドを渡すときは冒頭に必ず次の形式の banner を置く。
+
+```text
+【操作停止必須：約12分】
+この測定は desktop damage が DWM wake に影響するため、
+実行中は Alt+Tab、window 移動、他アプリ操作、動画再生をしないでください。
+```
+
+特に DWM / presentation / occlusion / dirty / VBlank / ETW を扱う取得では、
+window overlap だけでなく Alt+Tab、window move/resize、他アプリの描画、
+notification、動画再生等の desktop damage が結果を変え得るものとして扱う。
+F3-C3-A3-T1 で `EXTERNAL_DIRTY` だけが DWM wake regime を激変させることが
+3/3 で causal に出ている。mvm と無関係な別 window の damage で足りる。
+
+ユーザー操作または desktop 状態が protocol 条件を破った run は
+性能 FAIL として扱わず `PROTOCOL_INVALID` とする。
+historical artifact は削除・上書きしない。
+
+可能な限り runner 自身でも次を記録し fail-close する。
+
+- target geometry / visibility / iconic / cloaked
+- foreground change
+- user input occurrence（`GetLastInputInfo`）
+- unexpected window overlap
+- acquisition/session collision
+
+ただし**入力が無くても別アプリが勝手に描画すれば external dirty は起きる**。
+別モニタへ逃がすだけでも不十分（T1 が示したのは DWM-wide effect のため）。
+この種の run は同じ PC で 10〜15 分操作を止めるか、別の物理マシンで作業する。
+
+retry-until-success が scheduler timing や測定対象の状態で cohort を
+条件付ける可能性がある場合、自動 retry で有効 run を選別してはならない。
+起動失敗が特定条件にのみ存在する場合は選別ではなく原因を先に直す。
+
+## 起動時 configuration の確定順序
+
+`QQmlApplicationEngine::load()` は QML の `visible: true` を通じて
+render thread を起動しうる。したがって `load()` の後に config を書き込むと、
+render thread の `initialize()` が GUI thread の設定を追い越した run だけ
+別の構成で走る。
+
+- render 側から読む設定は `load()` より前に確定させるか、
+  window を `visible: false` で生成し設定確定後に明示的に可視化する。
+- render 側の capability 取得を、後から変更される diagnostic flag に
+  依存させない。使用可否は使用箇所で fail-close する。
+
+この race は F3-C3-A3-T2-B で `TARGET_RHIITEM_PIXEL_TOGGLE` 条件だけを
+確率的に 0xC0000005 で落とし、causal matrix の cohort を条件付けた。
+regression は `tests/gpu_preview/test-p2-c3-a3-t2-startup-order-contract.ps1`、
+起動反復の gate は `scripts/p2-c3-a3-t2-startup-smoke.ps1` で固定している。
+
+## HWND damage probe の段階
+
+`InvalidateRect` は update region を設定するだけで、`WM_PAINT` や DWM の
+damage processing が起きるとは限らない。したがって「InvalidateRect が効かない」
+だけで redirection path を疑ってはならない。必ず次の3段を経由する。
+
+```text
+1. TARGET_HWND_INVALIDATE   InvalidateRect(hwnd, &rect, FALSE)
+2. TARGET_HWND_REDRAW_NOW   RedrawWindow(..., RDW_INVALIDATE|RDW_UPDATENOW|
+                                              RDW_NOERASE|RDW_NOCHILDREN)
+3. TARGET_REDIRECTION_PATH_SUSPECT
+```
+
+1 が suppression でも 2 へ進む。2 が REGULAR なら Win32/QPA → DWM の
+damage-processing boundary への attribution であり、2 でも suppression かつ
+`EXTERNAL_DIRTY` のみ REGULAR のときに初めて 3 へ進む。
+
+両者が実際に別物であることは controller 側で確認できる。`InvalidateRect` の
+直後は update region が残り、`RedrawWindow(UPDATENOW)` の直後は消費されている。
+`target_update_region_observed_count` がこの区別を記録する。
+
+`RDW_UPDATENOW` は Qt 側の event processing を刺激しうる。HWND damage だけを
+注入した比較であり続けることを確かめるため、T2-C でも T2-A の update-chain
+closure を全条件で再検査し、`native_present_count` の条件間 spread が 2% を
+超えた run は `UPDATE_CHAIN_VOLUME_DIVERGENT` として解釈を限定する。
+
+## DWM PresentStart を display authority にしない
+
+**DWM Present cadence は app display cadence ではない。**
+DWM PresentStart が 0 件でも、app は 900/900 displayed でありうる。
+
+F3-C3-A3-T2-D0 で、T2-B / T2-C1 / T2-C2 の 27 run すべて
+(`EXTERNAL_DIRTY` 9 run を含む) が次だった。
+
+```text
+present_mode   Hardware_Composed_Independent_Flip  900/900
+DWM parent     0
+FinalState     Presented 900
+DisplayedQPC   900   provenance: InFrame+Win32k+DxgkPresent
+                     (DwmParentDisplayed なし)
+DWM-wide PresentStart  0 〜 885 (条件により変動するが display path は不変)
+```
+
+independent flip 中は DWM がスリープでき、app のフレームは直接 display へ出る。
+外部 window の damage でだけ DWM が起きるのは期待挙動であって欠陥ではない。
+逆に、大量 Discard を示した historical run では DWM parent が
+3598/3598 付きながら displayed は 104 件しかなかった。
+**DWM が最も活発な run が最も壊滅的に discard している。**
+
+したがって次を守る。
+
+- `target_attached_parent_count` や DWM PresentStart 数を
+  physical-display authority にしない。
+- display の最終 authority は次の順で閉じる。
+
+```text
+composition token
+  -> native Present identity
+  -> PresentMon app PresentEvent
+  -> FinalState / DisplayedQPC
+  -> physical display identity
+```
+
+- 「DWM wake が少ない = 表示 drop」と読まない。presentation path
+  (independent / composed) を先に排除してから display を論じる。
+- raw の field 欠損を 0 とみなさない。旧 acquisition schema は
+  `attached_dwm_parent_present_start_qpc` を持たない。StrictMode で読み、
+  欠損時は `DISPLAYED_PATH_UNRESOLVED` として fail-close する。
+
+## capability と actual presentation path を混ぜない
+
+`presentation_eligibility_preflight` は diagnostic-only の説明変数であり、
+presentation path の authority ではない。
+
+```text
+capability (eligibility 説明変数)
+    DXGI_SWAP_CHAIN_DESC1 実値
+    hardware composition support flags
+    tearing support
+    adapter / output identity
+    window style / cloaked / geometry
+
+observed runtime (actual presentation path の authority)
+    PresentMode
+    FinalState
+    DisplayedQPC とその provenance
+    DWM parent identity
+```
+
+hardware composition capable であることは、その Present が independent flip /
+MPO されたことを意味しない。schema 上も別 object に分け、
+`is_presentation_path_authority=false` を固定する。
+
+swapchain の値は Qt の設定や環境変数から再構成せず、実際に作成済みの
+`IDXGISwapChain` から `GetDesc1()` で取る。patched Qt が記録する
+`swapchainIdentity` は実ポインタであり、swapchain を所有する render thread の
+`frameSwapped` 契機で一度だけ読む。
+
+## PowerShell の自動変数を変数名に使わない
+
+`$input` に加えて `$profile` も実際に踏んだ（IDE の PSScriptAnalyzer が検出）。
+`$profile` は PowerShell profile path の自動変数である。
+
+
+`$input` は PowerShell の**自動変数**で、pipeline / stdin の enumerator に
+束縛される。これを自前の変数名として使うと、stdin が開いたままの pipe である
+環境（ctest の test process など）で enumerator の materialize が EOF 待ちに
+なり、**プロセスが無限にハングする**。
+
+実際に `p2_c3_a3_t2_d1b1_probe_*` が ctest のバッチ実行で毎回 timeout した。
+単体実行や小さいバッチでは再現せず、当初「一過性」と誤診した。
+`$input` を `$userInput` へ改名して解消（106/106 PASS、timeout 0）。
+
+- `$input` `$args` `$_` `$PSItem` `$matches` `$error` `$host` `$this` 等を
+  変数名にしない。
+- ctest 実行時は `--timeout` を付け、hang を無限待ちにしない。
+- timeout が出たら「一過性」と断定せず、残留 process を PID 指定で止めて
+  再現性を確認する。machine-wide な `Stop-Process -Name pwsh` は禁止。
+
+## ctest の test 環境は PATH が細い
+
+ctest が起動する test process の PATH には `git` や UCRT64 の tool が
+入っていないことがある。開発シェルでは通るのに ctest でだけ落ちる。
+
+- test / script から外部 tool を呼ぶなら `Get-Command` で解決し、
+  見つからなければ既知の install 先へ fallback してから明示 path で呼ぶ。
+- 解決できないときは fail-closed にする（暗黙に PATH 依存で通さない）。
+- ctest 実行時は `--timeout` を付ける。
+
+## historical archaeology の停止条件
+
+過去 run の root cause 追跡は、次のいずれかに達したら止めて
+current runtime の formal authority wiring へ戻る。
+
+```text
+EXACT_HISTORICAL_RUNTIME_UNAVAILABLE
+    かつ
+REBUILD_PROBE_NOT_EVALUABLE
+```
+
+`REBUILD_PROBE_NOT_EVALUABLE` は、observer を両 arm へ同等に適用できない場合に
+宣言する。F3-C3-A3-T2-D1-B2 では native present hook の ABI が v2/v3 で
+非互換であり、historical Qt6Gui も残っていなかった。
+
+このとき historical 観測は不変保存したうえで次を確定させる。
+
+```text
+historical BAD         preserved
+current reproducibility NOT ESTABLISHED
+historical cause        NOT ESTABLISHED
+```
+
+**historical root cause の完全解明を closure の前提にしない。**
+再現しない過去不具合のために production change を発明しない。
+
 ## Windows / CMake / Ninja ビルド運用
 
 このリポジトリでは MSYS2 UCRT64 の CMake/Ninja ビルドが長時間かかることがある。

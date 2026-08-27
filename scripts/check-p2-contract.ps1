@@ -8,6 +8,15 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# P2-D5-2-W2-E canonical authority disposition (machine-readable)。
+# W2-E retirement inventory がこの宣言を読む。値を変えるときは
+# scripts/inventory-p2-d5-2-w2-e-legacy-authority.ps1 の契約も一緒に見ること。
+$MvmPresentationAuthorityDisposition = [ordered]@{
+    presentation_authority        = 'FORMAL_V2'
+    legacy_presentation_metrics   = 'DIAGNOSTIC'
+    canonical_performance_verdict = 'DEFERRED_TO_W3'
+}
+
 $failures = [System.Collections.Generic.List[string]]::new()
 
 function Add-Failure([string]$Message) {
@@ -35,6 +44,20 @@ function Require-Zero($Object, [string]$Name) {
     }
 }
 
+function Require-Authority($Value, [long]$RefreshNumerator, [long]$RefreshDenominator,
+                           [string]$Prefix) {
+    Require-Equal (Require-Property $Value 'available') $true "$Prefix.available"
+    $count = [long](Require-Property $Value 'refresh_count')
+    $qpc = [long](Require-Property $Value 'qpc_vblank')
+    Require-Equal (Require-Property $Value 'refresh_numerator') $RefreshNumerator `
+        "$Prefix.refresh_numerator"
+    Require-Equal (Require-Property $Value 'refresh_denominator') $RefreshDenominator `
+        "$Prefix.refresh_denominator"
+    if ($count -le 0) { Add-Failure "$Prefix.refresh_countは正数である必要があります" }
+    if ($qpc -le 0) { Add-Failure "$Prefix.qpc_vblankは正数である必要があります" }
+    return [pscustomobject]@{ count=$count; qpc=$qpc }
+}
+
 try {
     $raw = Get-Content -LiteralPath $Json -Raw -Encoding utf8 | ConvertFrom-Json
 } catch {
@@ -42,8 +65,8 @@ try {
     exit 2
 }
 
-Require-Equal (Require-Property $raw 'schema') 'mvm-p2-formal-1' 'schema'
-Require-Equal (Require-Property $raw 'formal_contract_version') 'P2-D5-1' 'formal_contract_version'
+Require-Equal (Require-Property $raw 'schema') 'mvm-p2-formal-2' 'schema'
+Require-Equal (Require-Property $raw 'formal_contract_version') 'P2-D5-2' 'formal_contract_version'
 Require-Equal (Require-Property $raw 'mode') $Mode.ToLowerInvariant() 'mode'
 Require-Equal (Require-Property $raw 'process_exit_code') 0 'JSON process_exit_code'
 Require-Equal $ProcessExitCode 0 '実process exit code'
@@ -83,7 +106,35 @@ Require-Zero $raw 'lifecycle_order_violation_count'
 Require-Equal (Require-Property $raw 'teardown_success') $true 'teardown_success'
 Require-Equal (Require-Property $raw 'final_report_written_after_teardown') $true 'final_report_written_after_teardown'
 
+$measurementAvailable = Require-Property $raw 'measurement_available'
+if ($measurementAvailable -eq $true) {
+    foreach ($name in @(
+        'measurement_composition_requested_count', 'measurement_composition_drawn_count',
+        'measurement_gpu_submission_count', 'measurement_layer_draw_count',
+        'measurement_logical_clear_count', 'measurement_scheduled_output_count',
+        'measurement_displayed_composition_count', 'measurement_dropped_output_count',
+        'measurement_missing_pair_count', 'measurement_source_a_eof_count',
+        'measurement_source_b_eof_count', 'measurement_drop_scheduler_deadline',
+        'measurement_drop_missing_source_a', 'measurement_drop_missing_source_b',
+        'measurement_drop_missing_both', 'measurement_drop_stale_generation',
+        'measurement_drop_future_generation', 'measurement_drop_stale_composition_epoch',
+        'measurement_drop_render_failure', 'measurement_present_callback_count',
+        'measurement_repeated_present_count', 'measurement_partial_gpu_issue_failure_count',
+        'measurement_completion_poll_failure_count',
+        'measurement_untracked_submission_count')) {
+        $value = Require-Property $raw $name
+        if ($null -ne $value -and [long]$value -lt 0) {
+            Add-Failure "$name はmeasurement snapshot差分なので非負である必要があります"
+        }
+    }
+}
+
 if ($Mode -eq 'Playback') {
+    Require-Equal (Require-Property $raw 'measurement_started') $true 'measurement_started'
+    Require-Equal (Require-Property $raw 'measurement_stop_captured') $true `
+        'measurement_stop_captured'
+    Require-Equal (Require-Property $raw 'measurement_available') $true `
+        'measurement_available'
     Require-Equal (Require-Property $raw 'configured_measurement_preroll_frames') 8 `
         'configured_measurement_preroll_frames'
     Require-Equal (Require-Property $raw 'measurement_preroll_ok') $true `
@@ -119,25 +170,214 @@ if ($Mode -eq 'Playback') {
     $submission = Require-Property $raw 'measurement_gpu_submission_count'
     $layers = Require-Property $raw 'measurement_layer_draw_count'
     $clears = Require-Property $raw 'measurement_logical_clear_count'
-    $reasons = @(
-        'measurement_drop_scheduler_deadline',
-        'measurement_drop_missing_source_a',
-        'measurement_drop_missing_source_b',
-        'measurement_drop_missing_both',
-        'measurement_drop_stale_generation',
-        'measurement_drop_future_generation',
-        'measurement_drop_stale_composition_epoch',
-        'measurement_drop_render_failure'
-    )
-    $reasonSum = 0L
-    foreach ($name in $reasons) {
-        $value = Require-Property $raw $name
-        if ($null -ne $value) { $reasonSum += [long]$value }
+    Require-Equal (Require-Property $raw 'formal_opportunity_authority_valid') $true `
+        'formal_opportunity_authority_valid'
+    Require-Equal (Require-Property $raw 'formal_opportunity_error') 'NONE' `
+        'formal_opportunity_error'
+    $refreshNumerator = Require-Property $raw 'formal_refresh_numerator'
+    $refreshDenominator = Require-Property $raw 'formal_refresh_denominator'
+    $sourceFpsNumerator = Require-Property $raw 'formal_source_fps_numerator'
+    $sourceFpsDenominator = Require-Property $raw 'formal_source_fps_denominator'
+    # QPCはopportunity序数の根拠ではないが、continuity cross-checkの基準として
+    # 記録されている必要がある。
+    $qpcFrequency = [long](Require-Property $raw 'formal_qpc_frequency')
+    if ($qpcFrequency -le 0) {
+        Add-Failure "formal_qpc_frequencyは正数である必要があります (actual=$qpcFrequency)"
     }
-    if ($null -ne $scheduled -and $null -ne $displayed -and $null -ne $dropped) {
-        Require-Equal ([long]$scheduled) ([long]$displayed + [long]$dropped) 'scheduled == displayed + dropped'
-        Require-Equal $reasonSum ([long]$dropped) 'drop reason sum == dropped'
+    Require-Equal $sourceFpsNumerator 60 'formal_source_fps_numerator'
+    Require-Equal $sourceFpsDenominator 1 'formal_source_fps_denominator'
+    if ($null -eq $refreshNumerator -or [long]$refreshNumerator -le 0) {
+        Add-Failure "formal_refresh_numeratorは正数である必要があります (actual=$refreshNumerator)"
     }
+    if ($null -eq $refreshDenominator -or [long]$refreshDenominator -le 0) {
+        Add-Failure "formal_refresh_denominatorは正数である必要があります (actual=$refreshDenominator)"
+    }
+
+    # producer summaryを信じず、raw opportunity ledgerとDWM authority sampleから
+    # 全accountingを独立に再計算する。opportunity序数の根拠はrefresh countだけで、
+    # QPC差分をopportunity間隔へ丸める規則は契約に持ち込まない。
+    Require-Equal (Require-Property $raw 'formal_opportunity_anchored') $true `
+        'formal_opportunity_anchored'
+    $origin = [long](Require-Property $raw 'formal_opportunity_origin_refresh_count')
+    if ($origin -le 0) {
+        Add-Failure "formal_opportunity_origin_refresh_countは正数である必要があります (actual=$origin)"
+    }
+    $ledger = @(Require-Property $raw 'formal_opportunity_ledger')
+    if ($ledger.Count -eq 0) { Add-Failure 'formal_opportunity_ledgerが空です' }
+    $previousActualOrdinal = -1L
+    $previousSwapQpc = 0L
+    $previousRenderOrdinal = -1L
+    $previousSwapOrdinal = -1L
+    $previousPostAuthority = $null
+    $previousUnique = -1L
+    $displayedUnique = 0L
+    $repeated = 0L
+    $gapTrueDrop = 0L
+    $forwardReconciliationCount = 0L
+    $lostOpportunityCount = 0L
+    $supersededTotal = 0L
+    $swappedCompositions = 0L
+    $firstForward = $null
+    for ($index = 0; $index -lt $ledger.Count; ++$index) {
+        $record = $ledger[$index]
+        $prefix = "formal_opportunity_ledger[$index]"
+        $lastFinalized = [long](Require-Property $record 'last_finalized_opportunity_ordinal')
+        $predicted = [long](Require-Property $record 'predicted_opportunity_ordinal')
+        $actual = [long](Require-Property $record 'actual_opportunity_ordinal')
+        $renderBeginQpc = [long](Require-Property $record 'render_begin_qpc')
+        $renderEndQpc = [long](Require-Property $record 'render_end_qpc')
+        $swapQpc = [long](Require-Property $record 'presentation_swap_qpc')
+        $renderOrdinal = [long](Require-Property $record 'render_ordinal')
+        $swapOrdinal = [long](Require-Property $record 'swap_ordinal')
+        $recordNumerator = [long](Require-Property $record 'refresh_numerator')
+        $recordDenominator = [long](Require-Property $record 'refresh_denominator')
+        $predictedSource = [long](Require-Property $record 'predicted_source_frame')
+        $expected = [long](Require-Property $record 'expected_source_frame')
+        $presented = [long](Require-Property $record 'presented_source_frame')
+        $recordedRepeat = [bool](Require-Property $record 'repeat')
+        $recordedDrop = [long](Require-Property $record 'true_drop_before_this_opportunity')
+        $recordedLost = [long](Require-Property $record 'lost_opportunity_count')
+        $superseded = [long](Require-Property $record 'superseded_candidate_count')
+        $recordedForward = [bool](Require-Property $record 'forward_reconciliation')
+        $classification = Require-Property $record 'classification'
+        $pre = Require-Authority (Require-Property $record 'pre_render_authority') `
+            $refreshNumerator $refreshDenominator "$prefix.pre_render_authority"
+        $post = Require-Authority (Require-Property $record 'post_swap_authority') `
+            $refreshNumerator $refreshDenominator "$prefix.post_swap_authority"
+
+        Require-Equal $lastFinalized $previousActualOrdinal `
+            "$prefix.last_finalized_opportunity_ordinal"
+        if ($superseded -lt 0) { Add-Failure "$prefix.superseded_candidate_countが負です" }
+        # 同一opportunity内の複数swapはledger 1件へ畳まれる。swap ordinalは
+        # supersedeされたcandidateを含めて連続でなければならない。
+        Require-Equal $swapOrdinal ($previousSwapOrdinal + 1 + $superseded) "$prefix.swap_ordinal"
+        if ($renderOrdinal -le $previousRenderOrdinal) {
+            Add-Failure "$prefix.render_ordinalが前recordから前進していません"
+        }
+        if ($renderBeginQpc -le 0 -or $renderEndQpc -lt $renderBeginQpc -or
+            $swapQpc -lt $renderEndQpc -or $swapQpc -le $previousSwapQpc) {
+            Add-Failure "$prefix のrender/swap QPC順序が不正です"
+        }
+        # ordinalはrefresh count authorityだけから再計算する。
+        $recalculatedActual = $post.count - $origin
+        $recalculatedPredicted = if ($index -eq 0) { 0L } else { $pre.count - $origin + 1L }
+        Require-Equal $predicted $recalculatedPredicted "$prefix.predicted_opportunity_ordinal"
+        Require-Equal $actual $recalculatedActual "$prefix.actual_opportunity_ordinal"
+        if ($actual -le $previousActualOrdinal) {
+            Add-Failure "$prefix でopportunity ordinalが前進していません"
+        }
+        Require-Equal $recordNumerator $refreshNumerator "$prefix.refresh_numerator"
+        Require-Equal $recordDenominator $refreshDenominator "$prefix.refresh_denominator"
+        Require-Equal (Require-Property $record 'authority_continuous') $true `
+            "$prefix.authority_continuous"
+        if ($post.count -lt $pre.count -or $post.qpc -lt $pre.qpc) {
+            Add-Failure "$prefix のpre/post authorityが後退しています"
+        }
+        if ($null -ne $previousPostAuthority -and
+            ($pre.count -lt $previousPostAuthority.count -or
+             $pre.qpc -lt $previousPostAuthority.qpc)) {
+            Add-Failure "$prefix のauthorityが前recordから後退しています"
+        }
+        if ([long]$refreshNumerator -gt 0 -and [long]$refreshDenominator -gt 0) {
+            $recalculatedPredictedSource = [long][decimal]::Floor(
+                ([decimal]$predicted * [decimal]$sourceFpsNumerator *
+                    [decimal]$refreshDenominator) /
+                    ([decimal]$sourceFpsDenominator * [decimal]$refreshNumerator))
+            $recalculatedActualTarget = [long][decimal]::Floor(
+                ([decimal]$actual * [decimal]$sourceFpsNumerator *
+                    [decimal]$refreshDenominator) /
+                    ([decimal]$sourceFpsDenominator * [decimal]$refreshNumerator))
+            Require-Equal $predictedSource $recalculatedPredictedSource `
+                "$prefix.predicted_source_frame"
+            Require-Equal $expected $recalculatedActualTarget "$prefix.expected_source_frame"
+        }
+        if ($expected -lt 0) {
+            Add-Failure "$prefix.expected_source_frameが負です (actual=$expected)"
+        }
+        if ($predictedSource -lt 0 -or $predictedSource -ge [long]$requiredFrames -or
+            $presented -lt 0 -or $presented -ge [long]$requiredFrames) {
+            Add-Failure "$prefix のrendered source frameがsource domain外です"
+        }
+        # finalizeされたのはlatest candidateであり、その描画frameはそのcandidateの
+        # predicted ordinalのtargetでなければならない。
+        Require-Equal $presented $predictedSource "$prefix.presented_source_frame"
+        $isRepeat = $presented -eq $previousUnique
+        Require-Equal $recordedRepeat $isRepeat "$prefix.repeat"
+        $trueDropBefore = if ($isRepeat) { 0L } else { $presented - $previousUnique - 1L }
+        if ($trueDropBefore -lt 0) {
+            Add-Failure "${prefix}でtarget regressionを検出しました"
+        }
+        Require-Equal $recordedDrop $trueDropBefore `
+            "$prefix.true_drop_before_this_opportunity"
+        if ($isRepeat) { ++$repeated }
+        else {
+            ++$displayedUnique
+            $gapTrueDrop += $trueDropBefore
+            $previousUnique = $presented
+        }
+        $lost = if ($index -eq 0) { $actual } else { $actual - $previousActualOrdinal - 1L }
+        Require-Equal $recordedLost $lost "$prefix.lost_opportunity_count"
+        Require-Equal $recordedForward ($actual -gt $predicted) "$prefix.forward_reconciliation"
+        $expectedClassification = if ($lost -gt 0) { 'FORWARD_OPPORTUNITY_LOSS' } else { 'EXACT' }
+        Require-Equal $classification $expectedClassification "$prefix.classification"
+        if ($actual -gt $predicted) { ++$forwardReconciliationCount }
+        $lostOpportunityCount += $lost
+        if ($lost -gt 0 -and $null -eq $firstForward) { $firstForward = $record }
+        $supersededTotal += $superseded
+        $swappedCompositions += 1 + $superseded
+        $previousActualOrdinal = $actual
+        $previousSwapQpc = $swapQpc
+        $previousRenderOrdinal = $renderOrdinal
+        $previousSwapOrdinal = $swapOrdinal
+        $previousPostAuthority = $post
+    }
+    $tailTrueDrop = [long]$requiredFrames - $previousUnique - 1L
+    if ($tailTrueDrop -lt 0) { Add-Failure 'tail_true_dropが負になりました' }
+    $trueDrop = $gapTrueDrop + $tailTrueDrop
+    Require-Equal (Require-Property $raw 'formal_finalized_opportunity_count') $ledger.Count `
+        'formal_finalized_opportunity_count'
+    Require-Equal (Require-Property $raw 'formal_displayed_unique_count') $displayedUnique `
+        'formal_displayed_unique_count'
+    Require-Equal (Require-Property $raw 'formal_repeated_opportunity_count') $repeated `
+        'formal_repeated_opportunity_count'
+    Require-Equal (Require-Property $raw 'formal_gap_true_drop_count') $gapTrueDrop `
+        'formal_gap_true_drop_count'
+    Require-Equal (Require-Property $raw 'tail_true_drop') $tailTrueDrop 'tail_true_drop'
+    Require-Equal (Require-Property $raw 'formal_true_opportunity_drop_count') $trueDrop `
+        'formal_true_opportunity_drop_count'
+    Require-Equal (Require-Property $raw 'formal_forward_reconciliation_count') `
+        $forwardReconciliationCount 'formal_forward_reconciliation_count'
+    Require-Equal (Require-Property $raw 'formal_lost_opportunity_count') `
+        $lostOpportunityCount 'formal_lost_opportunity_count'
+    Require-Equal (Require-Property $raw 'formal_superseded_candidate_count') `
+        $supersededTotal 'formal_superseded_candidate_count'
+    Require-Equal (Require-Property $raw 'formal_swapped_composition_count') `
+        $swappedCompositions 'formal_swapped_composition_count'
+    $firstEvent = Require-Property $raw 'formal_first_reconciliation_event'
+    Require-Equal (Require-Property $firstEvent 'captured') ($null -ne $firstForward) `
+        'formal_first_reconciliation_event.captured'
+    if ($null -ne $firstForward) {
+        Require-Equal (Require-Property $firstEvent 'classification') 'FORWARD_OPPORTUNITY_LOSS' `
+            'formal_first_reconciliation_event.classification'
+        Require-Equal (Require-Property $firstEvent 'predicted_opportunity_ordinal') `
+            $firstForward.predicted_opportunity_ordinal `
+            'formal_first_reconciliation_event.predicted_opportunity_ordinal'
+        Require-Equal (Require-Property $firstEvent 'actual_opportunity_ordinal') `
+            $firstForward.actual_opportunity_ordinal `
+            'formal_first_reconciliation_event.actual_opportunity_ordinal'
+    }
+    Require-Property $raw 'diagnostic_synthetic_deadline_drop_count' | Out-Null
+    Require-Zero $raw 'measurement_drop_scheduler_deadline'
+    if ($null -ne $scheduled) { Require-Equal ([long]$scheduled) ([long]$requiredFrames) `
+            'measurement_scheduled_output_count' }
+    # displayed compositionはswapされたcompositionであり、finalizeされた
+    # presentation opportunityともunique source frameとも同義ではない。
+    if ($null -ne $displayed) { Require-Equal ([long]$displayed) $swappedCompositions `
+            'measurement_displayed_composition_count' }
+    if ($null -ne $dropped) { Require-Equal ([long]$dropped) $trueDrop `
+            'measurement_dropped_output_count' }
+    Require-Equal ($displayedUnique + $trueDrop) ([long]$requiredFrames) `
+        'displayedUnique + trueDrop == required domain'
     if ($null -ne $submission -and $null -ne $displayed) {
         Require-Equal ([long]$submission) ([long]$displayed) 'gpu submission == displayed'
     }
@@ -161,16 +401,23 @@ if ($Mode -eq 'Playback') {
     Require-Zero $raw 'measurement_completion_poll_failure_count'
     Require-Zero $raw 'measurement_partial_gpu_issue_failure_count'
     if (-not $DryRun) {
-        Require-Equal $scheduled 3600 'measurement_scheduled_output_count'
         Require-Equal (Require-Property $raw 'measurement_first_output_frame') 0 `
             'measurement_first_output_frame'
+        # W2-E: DIAGNOSTIC_INTEGRITY
         $fps = Require-Property $raw 'effective_fps'
+        # W2-E: DIAGNOSTIC_INTEGRITY
         $dropRate = Require-Property $raw 'drop_rate'
-        if ($null -ne $fps -and [double]$fps -lt 55) {
-            Add-Failure "effective_fpsは55以上が必要です (actual=$fps)"
-        }
-        if ($null -ne $dropRate -and [double]$dropRate -gt 0.02) {
-            Add-Failure "drop_rateは0.02以下が必要です (actual=$dropRate)"
+        # P2-D5-2-W2-E: effective_fps / drop_rate は legacy frameSwapped ledger 由来である。
+        # canonical presentation authority は formal-v2 exact chain へ移したため、
+        # threshold 判定はここでは行わない。値は diagnostic として残し報告する。
+        # canonical performance verdict は W3 の formal-v2 fresh acquisition で出す。
+        Write-Host ("[W2-E] legacy presentation metrics (diagnostic, non-authoritative): " +
+            "effective_fps=$fps drop_rate=$dropRate")
+        $recalculatedDropRate = [double]$trueDrop / [double]$requiredFrames
+        if ($null -ne $dropRate -and
+            [math]::Abs([double]$dropRate - $recalculatedDropRate) -gt 1e-12) {
+            # W2-E: DIAGNOSTIC_INTEGRITY
+            Add-Failure "drop_rateがledger再計算と一致しません (actual=$dropRate recalculated=$recalculatedDropRate)"
         }
     }
 } else {
@@ -282,5 +529,9 @@ if ($failures.Count -ne 0) {
 }
 
 $kind = if ($DryRun) { 'dry-run harness' } else { 'formal' }
+Write-Host ("[W2-E] presentation_authority={0} legacy_presentation_metrics={1} canonical_performance_verdict={2}" -f
+    $MvmPresentationAuthorityDisposition.presentation_authority,
+    $MvmPresentationAuthorityDisposition.legacy_presentation_metrics,
+    $MvmPresentationAuthorityDisposition.canonical_performance_verdict)
 Write-Host "P2 $kind contract: PASS ($Mode)"
 exit 0

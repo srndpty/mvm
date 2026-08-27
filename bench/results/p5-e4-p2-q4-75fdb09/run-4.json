@@ -1,0 +1,34 @@
+{
+    "authority": "diagnostic_only_not_closure_evidence",
+    "callback_count": 3596,
+    "current_replay": {
+        "deadline_drop": 101,
+        "decision_exact": true,
+        "displayed": 3499,
+        "exact": true,
+        "first_output_frame": 0,
+        "frame_identity_strictly_increasing": true,
+        "last_output_frame": 3599,
+        "no_non_scheduler_repeat": true,
+        "repeated": 97,
+        "scheduled": 3600
+    },
+    "end_qpc_exclusive": 1086566752576,
+    "input": "C:\\dev\\soft\\mvm\\bench\\results\\p5-e4-p2-q3-c800536\\run-4\\playback.json",
+    "nearest_slot_candidate": {
+        "deadline_drop": 70,
+        "displayed": 3530,
+        "first_output_frame": 0,
+        "frame_identity_strictly_increasing": true,
+        "frame_zero_started": true,
+        "invariants_pass": true,
+        "last_output_frame": 3599,
+        "measurement_range_respected": true,
+        "repeated": 66,
+        "scheduled": 3600
+    },
+    "qpc_frequency": 10000000,
+    "required_frame_count": 3600,
+    "schema": "mvm.p5-e4-p2-q4-replay.v1",
+    "start_qpc": 1085966752576
+}

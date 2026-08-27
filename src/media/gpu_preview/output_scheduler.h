@@ -30,6 +30,12 @@ struct OutputScheduleDecision {
     long long skippedDeadlineCount = 0;
 };
 
+struct OutputScheduleState {
+    long long nextFrame = -1;
+    long long nextDeadlineQpc = 0;
+    long long nextNextDeadlineQpc = 0;
+};
+
 class OutputScheduler60Hz {
 public:
     void start(long long startQpc, long long qpcFrequency);
@@ -37,6 +43,7 @@ public:
     OutputScheduleDecision takeDue(long long nowQpc);
     OutputScheduleDecision takeDueBefore(long long nowQpc, long long endQpcExclusive);
     long long closeBefore(long long endQpcExclusive);
+    OutputScheduleState state() const;
     static OutputDropReason classifyDeadline(PairResult pairResult,
                                              CompositionResult compositionResult);
 

@@ -1,0 +1,5 @@
+
+ProcDump v11.1 - Sysinternals process dump utility
+Copyright (C) 2009-2025 Mark Russinovich and Andrew Richards
+Sysinternals - www.sysinternals.com
+
