@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$SourceRoot,
-    [ValidateSet('Good','NegativePostWorktree','NegativePostSource','NegativePostQtGui','NegativePostQtQuick','NegativeWarmupMismatch','NegativeExit6Teardown','NegativeExit6Metrics','NegativeExit6Mapping','NegativeTeardownStageState','NegativeTeardownStageReport','NegativeTeardownWindowUpdate','NegativeTerminalExitState','NegativeTerminalExitReport','NegativeTeardownRenderJob')]
+    [ValidateSet('Good','NegativePostWorktree','NegativePostSource','NegativePostQtGui','NegativePostQtQuick','NegativeWarmupMismatch','NegativeExit6Teardown','NegativeExit6Metrics','NegativeExit6Mapping','NegativeTeardownStageState','NegativeTeardownStageReport','NegativeTerminalExitState','NegativeTerminalExitReport','NegativeEnvelopeStopRenderExitBarrier')]
     [string]$Case='Good'
 )
 $ErrorActionPreference='Stop'
@@ -39,14 +39,12 @@ function Assert-TeardownStageDiagnostics([string]$Header,[string]$Renderer,[stri
     Require $Header 'enum class RenderTeardownDiagnosticStage' 'render teardown stage enumがありません'
     Require $Renderer 'teardownDiagnosticStage\.compare_exchange_strong' 'teardown要求をrender callbackへexact joinしていません'
     Require $Renderer 'teardownDiagnosticStage\.store\(RenderTeardownDiagnosticStage::CompositorDrain' 'compositor drain stageを記録していません'
-    Require $Renderer 'requestTeardown\(\)[\s\S]+if \(window\(\)\)[\s\S]+window\(\)->update\(\)' 'teardown要求がwindow frameを起動しません'
-    Require $Renderer 'scheduleRenderJob\(new TeardownWakeJob\(state_\)' 'teardown要求がrender-loop jobを登録しません'
     Require $Controller 'teardownDiagnosticStageName\(diagnosticStage\)' 'teardown timeoutが停止stageを出力しません'
     Require $Header 'enum class TerminalRenderExitDiagnosticStage' 'terminal render exit stage enumがありません'
     Require $Renderer 'TerminalRenderExitDiagnosticStage::NativeTokenDestructorEntered[\s\S]+TerminalRenderExitDiagnosticStage::NativeTokenDestructorComplete' 'native token destructorの通過点を記録していません'
     Require $Renderer 'TerminalRenderExitDiagnosticStage::RenderCallbackExited' 'terminal render callback exitを記録していません'
     Require $Controller 'terminalRenderExitDiagnosticStageName\(terminalExitStage\)' 'teardown timeoutがterminal render exit stageを出力しません'
-    Require $Controller 'teardownWakeJobObserved\.load' 'teardown timeoutがwake job実行有無を出力しません'
+    Require $Controller 'if \(state_->renderCallbackActive\.load\(std::memory_order_acquire\)\) \{[\s\S]{0,900}return;[\s\S]{0,200}// W2-C1\.1' 'capture envelope callback退出前にteardownを開始し得ます'
 }
 $mutatedRunner=$runner
 $mutatedHeader=$rendererHeader
@@ -63,10 +61,9 @@ switch($Case){
     'NegativeExit6Mapping' {$mutatedController=$mutatedController.Replace('W4-C2_DIAGNOSTIC_EXIT6_CLOSE_MAPPING_FAILURE','W4-C2_DIAGNOSTIC_EXIT6_UNKNOWN')}
     'NegativeTeardownStageState' {$mutatedRenderer=$mutatedRenderer.Replace('RenderTeardownDiagnosticStage::CompositorDrain','RenderTeardownDiagnosticStage::RenderCallbackObserved')}
     'NegativeTeardownStageReport' {$mutatedController=$mutatedController.Replace('teardownDiagnosticStageName(diagnosticStage)','"UNOBSERVED"')}
-    'NegativeTeardownWindowUpdate' {$mutatedRenderer=$mutatedRenderer.Replace('window()->update();','update();')}
     'NegativeTerminalExitState' {$mutatedRenderer=$mutatedRenderer.Replace('TerminalRenderExitDiagnosticStage::NativeTokenDestructorEntered','TerminalRenderExitDiagnosticStage::FinishMeasurementReturned')}
     'NegativeTerminalExitReport' {$mutatedController=$mutatedController.Replace('terminalRenderExitDiagnosticStageName(terminalExitStage)','"UNOBSERVED"')}
-    'NegativeTeardownRenderJob' {$mutatedRenderer=$mutatedRenderer.Replace('scheduleRenderJob(new TeardownWakeJob(state_)','scheduleRenderJob(nullptr')}
+    'NegativeEnvelopeStopRenderExitBarrier' {$mutatedController=$mutatedController.Replace('if (state_->renderCallbackActive.load(std::memory_order_acquire)) {','if (false) {')}
 }
 if($Case-eq'Good'){
     Assert-ProvenancePostChecks $mutatedRunner

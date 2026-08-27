@@ -18,23 +18,9 @@
 
 #include <QScopeGuard>
 #include <QQuickWindow>
-#include <QRunnable>
 
 namespace mvm::app {
 namespace {
-
-class TeardownWakeJob final : public QRunnable {
-public:
-    explicit TeardownWakeJob(std::shared_ptr<CompositorSpikeState> state)
-        : state_(std::move(state)) {}
-
-    void run() override {
-        state_->teardownWakeJobObserved.store(true, std::memory_order_release);
-    }
-
-private:
-    std::shared_ptr<CompositorSpikeState> state_;
-};
 
 constexpr int kMarkerBandWidth = mvm::marker::kCellSize * mvm::marker::kCellCount;
 constexpr int kMarkerBandHeight = mvm::marker::kCellSize;
@@ -1578,13 +1564,6 @@ void CompositorRhiItem::requestTeardown() {
     state_->teardownDiagnosticStage.store(RenderTeardownDiagnosticStage::Requested,
                                           std::memory_order_release);
     state_->teardownRequested.store(true, std::memory_order_release);
-    // native capture close後もrender-loop boundaryを通るよう、render jobを先に登録して
-    // item updateと同じframeへteardown callbackを配送する。
-    if (window()) {
-        window()->scheduleRenderJob(new TeardownWakeJob(state_),
-                                    QQuickWindow::BeforeRenderingStage);
-        window()->update();
-    }
     update();
 }
 

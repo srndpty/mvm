@@ -156,6 +156,11 @@ render callback after teardown request = 0
 ```
 
 worker join待ちやGPU drainではなく、measurement/capture gate close後のteardown要求がrender callbackへ
-配送されていない。shutdown限定の回避策として`requestTeardown()`からitemと所有windowの両方へ
-`update()`を要求する。この変更はmeasurement counter、scheduler decision、capture gate closeより後であり、
-W4-CのLink A→B authorityには使わない。
+配送されていない。itemと所有windowの両方への`update()`およびrender jobによるwakeを診断的に試したが、
+いずれも次frameを起動しなかった。この試行は撤回し、正式captureには含めない。
+
+追加診断でterminal callbackは`RENDER_CALLBACK_EXITED`まで到達し、render jobも実行されなかった。
+`nativePresentEnvelopeStopped`がcallback内部でpublishされた直後、GUI timerがcallback退出前に
+`performShutdown()`を開始し、次frame要求が進行中frameへcoalesceされる順序と整合する。
+したがってwake jobは撤回し、`CaptureEnvelopeStopWait`がrender callback退出を観測してから
+teardownを要求するbarrierへ置き換える。

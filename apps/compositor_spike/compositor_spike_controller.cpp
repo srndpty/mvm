@@ -1135,6 +1135,20 @@ void CompositorSpikeController::tick() {
         }
     } else if (phase_ == Phase::CaptureEnvelopeStopWait) {
         if (state_->nativePresentEnvelopeStopped.load(std::memory_order_acquire)) {
+            // stoppedはrender callback内部でpublishされる。callback退出前に次のupdateを
+            // 要求すると進行中frameへcoalesceされ、teardown callbackが失われる。
+            if (state_->renderCallbackActive.load(std::memory_order_acquire)) {
+                if (phaseTimer_.elapsed() >= 15000) {
+                    std::fprintf(stderr,
+                                 "W4-C2_DIAGNOSTIC_EXIT6_ENVELOPE_CALLBACK_TIMEOUT: "
+                                 "capture envelope停止callbackが15秒以内に退出しませんでした\n");
+                    exitCode_ = 6;
+                    phase_ = Phase::Done;
+                    timer_.stop();
+                    Q_EMIT finished();
+                }
+                return;
+            }
             // W2-C1.1ではobserverをここで止めない。candidate capture closure後も
             // render teardownとpostroll実sampleまで採取を継続する。
             if (captureEnvelopeCloseFailure_) {
@@ -1257,13 +1271,12 @@ void CompositorSpikeController::tick() {
                          "W4-C2_DIAGNOSTIC_EXIT6_TEARDOWN_TIMEOUT: "
                          "render teardownが15秒以内に完了しませんでした stage=%s "
                          "worker_a_joined=%d worker_b_joined=%d render_callback_active=%d "
-                         "terminal_exit_stage=%s teardown_wake_job_observed=%d\n",
+                         "terminal_exit_stage=%s\n",
                          teardownDiagnosticStageName(diagnosticStage),
                          workerA_ && workerA_->joined() ? 1 : 0,
                          workerB_ && workerB_->joined() ? 1 : 0,
                          state_->renderCallbackActive.load(std::memory_order_acquire) ? 1 : 0,
-                         terminalRenderExitDiagnosticStageName(terminalExitStage),
-                         state_->teardownWakeJobObserved.load(std::memory_order_acquire) ? 1 : 0);
+                         terminalRenderExitDiagnosticStageName(terminalExitStage));
             exitCode_ = 6;
             phase_ = Phase::Done;
             timer_.stop();
