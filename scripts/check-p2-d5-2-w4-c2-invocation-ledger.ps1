@@ -18,6 +18,13 @@ if(-not[bool]$ledger.diagnostic_root_cause_capture-or
    [bool]$ledger.canonical_performance_authority){
     throw 'W4-C2 captureのdiagnostic/performance authority分離が不正です'
 }
+if([bool]$ledger.physical_vblank_successor_required-or
+   [bool]$ledger.physical_mapping_support_authority){
+    throw 'W4-C2がphysical VBlank mapping authorityへ昇格されています'
+}
+if([int64]$ledger.measurement_stop_qpc-le0-or[int64]$ledger.native_envelope_close_qpc-le0){
+    throw 'W4-C2 capture gate closeのraw QPCがありません'
+}
 $records=@($ledger.records)
 if($records.Count-eq0-or$records.Count-ne[int64]$ledger.record_count){
     throw 'W4-C2 invocation record countが不正です'

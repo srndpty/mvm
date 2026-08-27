@@ -169,3 +169,19 @@ barrierだけではGUI側updateの配送は回復しなかった。native envelo
 `update()`で次callbackを予約し、controllerのteardown要求到着まではscheduler/native Presentより前の
 gateで再予約するbridgeを追加する。したがってbridge callbackはscheduler invocation ledgerや
 native Present ledgerへ混入しない。
+
+bridge確認runではteardownとmetrics生成が完了し、C2 checkerは1743 invocation、terminal serial
+1743、post-terminal 0でPASSした。一方、W2 physical VBlank successorがtimeoutし、mapping support
+closeだけがexit 6となった。observer ring overflowは245,023,994であり、C2 scheduler証跡とは別の
+authority failureである。
+
+```text
+build/p2-d5-2-w4-c2-post-envelope-bridge-smoke-20260827-e34768c
+C2 checker = SCHEDULER_INVOCATION_CONTROL_FLOW_EXACT
+process exit = 6 (PHYSICAL_VBLANK_SUCCESSOR_TIMEOUT)
+formal cohort inclusion = false
+```
+
+正式C2 modeではphysical VBlank successor / mapping supportを要求せず、schemaにも両authorityが
+falseであることを固定する。measurement stop QPCとnative envelope close QPCはraw値として残すが、
+Link A→Bやexplicit stop順序の判定はC3まで行わない。

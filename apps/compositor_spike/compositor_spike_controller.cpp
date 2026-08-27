@@ -693,6 +693,21 @@ bool CompositorSpikeController::startVBlankObserverWithPreroll() {
 bool CompositorSpikeController::closeVBlankMappingSupportAfterTeardown() {
     if (!vblankObserverRunning_)
         return true;
+    const auto stopObserver = [this] {
+        vblankObserver_.stop();
+        vblankObserverRunning_ = false;
+        vblankIdentityEnd_ = gpu::resolveWindowOutput(
+                                 item_ && item_->window()
+                                     ? reinterpret_cast<void*>(item_->window()->winId())
+                                     : nullptr)
+                                 .identity;
+    };
+    // W4-C2はscheduler/capture-gate因果診断であり、W2のphysical mapping supportを
+    // authorityにしない。terminal後のDWM sleepをsuccessor failureへ変換しない。
+    if (config_.formalSchedulerInvocationLedger) {
+        stopObserver();
+        return true;
+    }
     bool supportClosed = true;
     if (state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire)) {
         // producer/render teardownが完了した時点をfreezeし、その後の実sampleを
@@ -709,12 +724,7 @@ bool CompositorSpikeController::closeVBlankMappingSupportAfterTeardown() {
             supportClosed = false;
         }
     }
-    vblankObserver_.stop();
-    vblankObserverRunning_ = false;
-    vblankIdentityEnd_ =
-        gpu::resolveWindowOutput(
-            item_ && item_->window() ? reinterpret_cast<void*>(item_->window()->winId()) : nullptr)
-            .identity;
+    stopObserver();
     return supportClosed;
 }
 
@@ -1086,21 +1096,23 @@ void CompositorSpikeController::tick() {
                 // このcapture closure待機で変更しない。
                 frozenMeasurementEndQpc_ =
                     state_->measurementEndQpc.load(std::memory_order_acquire);
-                const long long now = gpu::qpcTicks();
-                const long long untilEnd = std::max(0LL, frozenMeasurementEndQpc_ - now);
-                const long long untilEndMs =
-                    static_cast<long long>(std::ceil(static_cast<double>(untilEnd) * 1000.0 /
-                                                     static_cast<double>(gpu::qpcFrequency())));
-                const long long timeoutMs = untilEndMs + kVBlankSuccessorLivenessMs;
-                const bool successorConfirmed = vblankObserver_.waitForSuccessor(
-                    frozenMeasurementEndQpc_, timeoutMs, vblankSuccessor_);
-                if (!successorConfirmed) {
-                    captureEnvelopeCloseFailure_ = true;
-                    captureEnvelopeCloseReason_ =
-                        vblankSuccessor_.timedOut
-                            ? QStringLiteral("PHYSICAL_VBLANK_SUCCESSOR_TIMEOUT")
-                            : QStringLiteral(
-                                  "physical VBlank observerがsuccessor待機中に停止しました");
+                if (!config_.formalSchedulerInvocationLedger) {
+                    const long long now = gpu::qpcTicks();
+                    const long long untilEnd = std::max(0LL, frozenMeasurementEndQpc_ - now);
+                    const long long untilEndMs = static_cast<long long>(std::ceil(
+                        static_cast<double>(untilEnd) * 1000.0 /
+                        static_cast<double>(gpu::qpcFrequency())));
+                    const long long timeoutMs = untilEndMs + kVBlankSuccessorLivenessMs;
+                    const bool successorConfirmed = vblankObserver_.waitForSuccessor(
+                        frozenMeasurementEndQpc_, timeoutMs, vblankSuccessor_);
+                    if (!successorConfirmed) {
+                        captureEnvelopeCloseFailure_ = true;
+                        captureEnvelopeCloseReason_ =
+                            vblankSuccessor_.timedOut
+                                ? QStringLiteral("PHYSICAL_VBLANK_SUCCESSOR_TIMEOUT")
+                                : QStringLiteral(
+                                      "physical VBlank observerがsuccessor待機中に停止しました");
+                    }
                 }
             }
             if (state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire) &&
@@ -1160,11 +1172,15 @@ void CompositorSpikeController::tick() {
             const bool incrementalMapperResolved = pollIncrementalMapperShadow(true);
             const bool authorityStable =
                 !formalOpportunity || sameDwmAuthority(dwmTimingStart_, dwmTimingStop_);
-            const bool envelopeClosedAfterSuccessor =
-                vblankSuccessor_.completed &&
-                vblankSuccessor_.sample.qpc >= frozenMeasurementEndQpc_ &&
-                state_->nativePresentEnvelopeCloseQpc.load(std::memory_order_acquire) >=
-                    vblankSuccessor_.sample.qpc;
+            const long long envelopeCloseQpc =
+                state_->nativePresentEnvelopeCloseQpc.load(std::memory_order_acquire);
+            const bool envelopeClosedAfterSuccessor = config_.formalSchedulerInvocationLedger
+                                                          ? envelopeCloseQpc >= measurementStop_.qpc
+                                                          : vblankSuccessor_.completed &&
+                                                                vblankSuccessor_.sample.qpc >=
+                                                                    frozenMeasurementEndQpc_ &&
+                                                                envelopeCloseQpc >=
+                                                                    vblankSuccessor_.sample.qpc;
             const bool measurementSucceeded = authorityStable && incrementalMapperResolved &&
                                               envelopeClosedAfterSuccessor &&
                                               !state_->fatal.load(std::memory_order_acquire);
@@ -2600,6 +2616,11 @@ bool CompositorSpikeController::writeMetrics() {
              {"schema", "mvm-p2-d5-2-w4-c2-scheduler-invocation-ledger-1"},
              {"diagnostic_root_cause_capture", formalOpportunitySnapshot.invocationLedgerEnabled},
              {"canonical_performance_authority", false},
+             {"physical_vblank_successor_required", false},
+             {"physical_mapping_support_authority", false},
+             {"measurement_stop_qpc", measurementStop_.qpc},
+             {"native_envelope_close_qpc",
+              state_->nativePresentEnvelopeCloseQpc.load(std::memory_order_acquire)},
              {"record_count", formalSchedulerInvocationLedger.size()},
              {"records", formalSchedulerInvocationLedger}}},
         {"measurement_composition_requested_count",

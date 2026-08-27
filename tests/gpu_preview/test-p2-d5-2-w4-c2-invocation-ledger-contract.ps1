@@ -4,7 +4,8 @@ param(
         'GoodExact','NegativeInvocationSequenceGap','NegativePrePostStateMutation',
         'NegativeDecisionReasonMutation','NegativeDecisionWithoutTransport',
         'NegativeSourceRequiredDomainConflation','NegativePostTerminalInvocation',
-        'NegativeCompletedOrdinalMutation','NegativePerformanceAuthorityPromotion')][string]$Case,
+        'NegativeCompletedOrdinalMutation','NegativePerformanceAuthorityPromotion',
+        'NegativePhysicalSuccessorRequired')][string]$Case,
     [Parameter(Mandatory=$true)][string]$Checker,
     [Parameter(Mandatory=$true)][string]$Directory
 )
@@ -43,6 +44,8 @@ $records=@(
 $app=[ordered]@{formal_scheduler_invocation_ledger=[ordered]@{
     schema='mvm-p2-d5-2-w4-c2-scheduler-invocation-ledger-1'
     diagnostic_root_cause_capture=$true;canonical_performance_authority=$false
+    physical_vblank_successor_required=$false;physical_mapping_support_authority=$false
+    measurement_stop_qpc=301;native_envelope_close_qpc=302
     record_count=$records.Count;records=$records}}
 switch($Case){
     'NegativeInvocationSequenceGap'{$records[2].scheduler_invocation_serial='4'}
@@ -55,6 +58,7 @@ switch($Case){
         $app.formal_scheduler_invocation_ledger.record_count=$records.Count}
     'NegativeCompletedOrdinalMutation'{$records[2].input_authority.refresh_count='100'}
     'NegativePerformanceAuthorityPromotion'{$app.formal_scheduler_invocation_ledger.canonical_performance_authority=$true}
+    'NegativePhysicalSuccessorRequired'{$app.formal_scheduler_invocation_ledger.physical_vblank_successor_required=$true}
 }
 $json=Join-Path $Directory 'capture.json'
 $app|ConvertTo-Json -Depth 16|Set-Content -LiteralPath $json -Encoding utf8
