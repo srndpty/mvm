@@ -185,3 +185,7 @@ formal cohort inclusion = false
 正式C2 modeではphysical VBlank successor / mapping supportを要求せず、schemaにも両authorityが
 falseであることを固定する。measurement stop QPCとnative envelope close QPCはraw値として残すが、
 Link A→Bやexplicit stop順序の判定はC3まで行わない。
+
+successor判定を外した最初のrunは、observer threadの停止joinで120秒timeoutした。physical mapping
+authorityを持たないC2でobserverを開始してから無視する設計自体が不適切なので、C2 modeではobserverを
+起動しない。DWM completed-refresh scheduler authorityとnative envelopeは引き続き有効である。

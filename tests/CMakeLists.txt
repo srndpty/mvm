@@ -618,7 +618,7 @@ foreach(_p2_d5_2_w4c2_case IN ITEMS GoodExact NegativeInvocationSequenceGap Nega
             -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w4c2-${_p2_d5_2_w4c2_name}"
         PROPERTIES LABELS "gpu_preview")
 endforeach()
-foreach(_p2_d5_2_w4c2_arch_case IN ITEMS Good NegativePostWorktree NegativePostSource NegativePostQtGui NegativePostQtQuick NegativeWarmupMismatch NegativeExit6Teardown NegativeExit6Metrics NegativeExit6Mapping NegativeTeardownStageState NegativeTeardownStageReport NegativeTerminalExitState NegativeTerminalExitReport NegativeEnvelopeStopRenderExitBarrier NegativePostEnvelopeTeardownBridge NegativeC2PhysicalSuccessorWait)
+foreach(_p2_d5_2_w4c2_arch_case IN ITEMS Good NegativePostWorktree NegativePostSource NegativePostQtGui NegativePostQtQuick NegativeWarmupMismatch NegativeExit6Teardown NegativeExit6Metrics NegativeExit6Mapping NegativeTeardownStageState NegativeTeardownStageReport NegativeTerminalExitState NegativeTerminalExitReport NegativeEnvelopeStopRenderExitBarrier NegativePostEnvelopeTeardownBridge NegativeC2PhysicalSuccessorWait NegativeC2PhysicalObserverStart)
     string(TOLOWER "${_p2_d5_2_w4c2_arch_case}" _p2_d5_2_w4c2_arch_name)
     mvm_add_test(p2_d5_2_w4c2_invocation_ledger_architecture_${_p2_d5_2_w4c2_arch_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File

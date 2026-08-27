@@ -664,6 +664,10 @@ constexpr long long kVBlankSuccessorLivenessMs = 500;
 bool CompositorSpikeController::startVBlankObserverWithPreroll() {
     if (!config_.vblankObserver || vblankObserverStarted_)
         return true;
+    // W4-C2はphysical mapping authorityを明示的に持たない。observerを開始して
+    // 後から無視すると、停止join自体がC2 captureのlivenessを支配してしまう。
+    if (config_.formalSchedulerInvocationLedger)
+        return true;
     auto* window = item_ ? item_->window() : nullptr;
     void* vblankHwnd = window ? reinterpret_cast<void*>(window->winId()) : nullptr;
     const auto resolved = gpu::resolveWindowOutput(vblankHwnd);

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$SourceRoot,
-    [ValidateSet('Good','NegativePostWorktree','NegativePostSource','NegativePostQtGui','NegativePostQtQuick','NegativeWarmupMismatch','NegativeExit6Teardown','NegativeExit6Metrics','NegativeExit6Mapping','NegativeTeardownStageState','NegativeTeardownStageReport','NegativeTerminalExitState','NegativeTerminalExitReport','NegativeEnvelopeStopRenderExitBarrier','NegativePostEnvelopeTeardownBridge','NegativeC2PhysicalSuccessorWait')]
+    [ValidateSet('Good','NegativePostWorktree','NegativePostSource','NegativePostQtGui','NegativePostQtQuick','NegativeWarmupMismatch','NegativeExit6Teardown','NegativeExit6Metrics','NegativeExit6Mapping','NegativeTeardownStageState','NegativeTeardownStageReport','NegativeTerminalExitState','NegativeTerminalExitReport','NegativeEnvelopeStopRenderExitBarrier','NegativePostEnvelopeTeardownBridge','NegativeC2PhysicalSuccessorWait','NegativeC2PhysicalObserverStart')]
     [string]$Case='Good'
 )
 $ErrorActionPreference='Stop'
@@ -46,6 +46,7 @@ function Assert-TeardownStageDiagnostics([string]$Header,[string]$Renderer,[stri
     Require $Controller 'terminalRenderExitDiagnosticStageName\(terminalExitStage\)' 'teardown timeoutがterminal render exit stageを出力しません'
     Require $Controller 'if \(state_->renderCallbackActive\.load\(std::memory_order_acquire\)\) \{[\s\S]{0,900}return;[\s\S]{0,200}// W2-C1\.1' 'capture envelope callback退出前にteardownを開始し得ます'
     Require $Controller 'if \(!config_\.formalSchedulerInvocationLedger\) \{[\s\S]{0,900}waitForSuccessor' 'W4-C2がphysical VBlank successorを待ち得ます'
+    Require $Controller 'startVBlankObserverWithPreroll\(\)[\s\S]{0,300}if \(config_\.formalSchedulerInvocationLedger\)[\s\S]{0,100}return true;' 'W4-C2がphysical VBlank observerを開始し得ます'
     Require $Renderer 'teardownRequested\.load[\s\S]{0,900}nativePresentEnvelopeStopped\.load[\s\S]{0,400}update\(\);[\s\S]{0,100}return;' 'post-envelope callbackがschedulerより前でteardownへbridgeされません'
 }
 $mutatedRunner=$runner
@@ -68,6 +69,7 @@ switch($Case){
     'NegativeEnvelopeStopRenderExitBarrier' {$mutatedController=$mutatedController.Replace('if (state_->renderCallbackActive.load(std::memory_order_acquire)) {','if (false) {')}
     'NegativePostEnvelopeTeardownBridge' {$mutatedRenderer=$mutatedRenderer.Replace('state_->nativePresentEnvelopeStopped.load(std::memory_order_acquire) &&','false &&')}
     'NegativeC2PhysicalSuccessorWait' {$mutatedController=$mutatedController.Replace('if (!config_.formalSchedulerInvocationLedger) {','if (true) {')}
+    'NegativeC2PhysicalObserverStart' {$mutatedController=$mutatedController.Replace('if (config_.formalSchedulerInvocationLedger)','if (false)')}
 }
 if($Case-eq'Good'){
     Assert-ProvenancePostChecks $mutatedRunner
