@@ -202,6 +202,12 @@ function Invoke-MvmW4BProducerSemantics {
     # --- run-level time-domain diagnostic ---
     # measurement window は producer から作らない。W2-A physical authority を受け取る。
     $primarySorted=@($primaryByOrdinal.Values|Sort-Object{[int64](Get-MvmW4BValue $_ 'decision_qpc')})
+    # run-level summary は全 primary decision から first/last/cadence を作る。
+    # event-local neighbor だけでなく、ここでも全件の exactness を要求する。
+    foreach($primary in $primarySorted){
+        if(-not[bool](Get-MvmW4BValue $primary 'decision_qpc_exact')){$blockers['DECISION_QPC_NOT_EXACT']=$true}
+        if(-not[bool](Get-MvmW4BValue $primary 'producer_semantics_exact')){$blockers['PRODUCER_SEMANTICS_NOT_EXACT']=$true}
+    }
     $timeDomain=$null
     if($primarySorted.Count-ge2-and$QpcFrequency-gt0-and$MeasurementEndQpcExclusive-gt$MeasurementStartQpc){
         $firstQpc=[int64](Get-MvmW4BValue $primarySorted[0] 'decision_qpc')
@@ -232,9 +238,9 @@ function Invoke-MvmW4BProducerSemantics {
             last_required_intent_ordinal=$(if($requiredSorted.Count-gt0){[string]$requiredSorted[-1]}else{$null})
             trailing_missing_required_intent_count=$trailingMissing
             # legacy elapsed は correlation。authority にはしない。
+            # tolerance 付きの match bool は作らない。差そのものを保存する。
             legacy_measurement_elapsed_seconds_diagnostic=$LegacyMeasurementElapsedSeconds
-            producer_active_span_matches_legacy_elapsed=(
-                [Math]::Abs($spanSeconds-$LegacyMeasurementElapsedSeconds)-lt0.001)
+            legacy_elapsed_minus_producer_span_seconds=($LegacyMeasurementElapsedSeconds-$spanSeconds)
             legacy_measurement_elapsed_used_as_authority=$false
             decision_span_used_as_measurement_window=$false
         }
