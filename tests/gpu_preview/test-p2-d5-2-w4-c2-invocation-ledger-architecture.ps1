@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$SourceRoot,
-    [ValidateSet('Good','NegativePostWorktree','NegativePostSource','NegativePostQtGui','NegativePostQtQuick')]
+    [ValidateSet('Good','NegativePostWorktree','NegativePostSource','NegativePostQtGui','NegativePostQtQuick','NegativeWarmupMismatch')]
     [string]$Case='Good'
 )
 $ErrorActionPreference='Stop'
@@ -23,6 +23,7 @@ Require $renderer 'noteInvocationTransportDisposition' 'renderer transport dispo
 Require $controller 'mvm-p2-d5-2-w4-c2-scheduler-invocation-ledger-1' 'C2 schemaがemitされません'
 Require $controller 'diagnostic_root_cause_capture[\s\S]+canonical_performance_authority' 'diagnostic/performance authority分離がありません'
 function Assert-ProvenancePostChecks([string]$Text){
+    Require $Text '\[int\]\$WarmupSeconds=5' 'sealed W3と同じwarmupが固定されていません'
     Require $Text '\$postStatus=& git -C \$repo status --porcelain' '終了時worktree検査がありません'
     Require $Text 'foreach\(\$path in \$sourceHashes\.Keys\)[\s\S]+\$postSourceHash-ne\$sourceHashes\[\$path\]' '終了時source hash検査がありません'
     Require $Text 'Get-FileHash -LiteralPath \$qtGui[\s\S]+-ne\$qtGuiHash' '終了時Qt6Gui hash検査がありません'
@@ -34,6 +35,7 @@ switch($Case){
     'NegativePostSource' {$mutatedRunner=$mutatedRunner.Replace('foreach($path in $sourceHashes.Keys){','foreach($path in @()){')}
     'NegativePostQtGui' {$mutatedRunner=$mutatedRunner.Replace('-ne$qtGuiHash){','-ne(Get-FileHash -LiteralPath $qtGui -Algorithm SHA256).Hash.ToLowerInvariant()){')}
     'NegativePostQtQuick' {$mutatedRunner=$mutatedRunner.Replace('-ne$qtQuickHash){','-ne(Get-FileHash -LiteralPath $qtQuick -Algorithm SHA256).Hash.ToLowerInvariant()){')}
+    'NegativeWarmupMismatch' {$mutatedRunner=$mutatedRunner.Replace('[int]$WarmupSeconds=5','[int]$WarmupSeconds=2')}
 }
 if($Case-eq'Good'){
     Assert-ProvenancePostChecks $mutatedRunner

@@ -118,3 +118,20 @@ canonical_performance_authority = false
 historical_w3_verdict_rewritten = false
 root_cause_determined = false
 ```
+
+## formal capture attempt
+
+checkpoint `8b0640b`で最初のformal runを開始したが、runnerの既定warmupが2秒で、sealed W3の
+5秒条件と一致していなかった。run 1は約72秒後にexit 6となりmetricsを生成せず、残りrunは
+fail-closedで実行していない。ledger無効controlも同じexit 6だったため、C2 ledger固有の失敗ではない。
+両artifactは保存し、正式cohortには含めない。warmup差をexit 6の原因とは断定しない。
+
+```text
+build/p2-d5-2-w4-c2-formal-20260827-8b0640b
+build/p2-d5-2-w4-c2-control-no-ledger-20260827-8b0640b
+classification = PROTOCOL_INVALID_CONFIGURATION
+root_cause_of_exit_6 = NOT_ESTABLISHED
+```
+
+W3との比較可能性を回復するため、formal runnerの既定値を`warmup=5, measure=60`へ修正し、
+architecture mutation testで固定する。

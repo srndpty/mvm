@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$OutputDirectory,
     [ValidateRange(1,10)][int]$Runs=3,
-    [ValidateRange(1,60)][int]$WarmupSeconds=2,
+    [ValidateRange(1,60)][int]$WarmupSeconds=5,
     [ValidateRange(1,60)][int]$MeasureSeconds=60,
     [ValidateRange(30,300)][int]$TimeoutSeconds=120,
     [string]$Executable=(Join-Path (Split-Path -Parent $PSScriptRoot) 'build\ucrt64-release\bin\mvm_compositor_spike.exe'),
