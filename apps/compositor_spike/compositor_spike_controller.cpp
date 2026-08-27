@@ -2205,6 +2205,7 @@ bool CompositorSpikeController::writeMetrics() {
         intentScopeByToken[record.tokenSerial].push_back(record);
         intentScopeLedgerJson.append(QJsonObject{
             {"token_serial", QString::number(record.tokenSerial)},
+            {"reservation_id", QString::number(record.reservationId)},
             {"intent_ordinal", QString::number(record.intentOrdinal)},
             {"intent_scope", nativePresentIntentScopeName(record.scope)},
             {"decision_qpc", record.decisionQpc},
@@ -2570,6 +2571,12 @@ bool CompositorSpikeController::writeMetrics() {
         {"stale_token_count", static_cast<qint64>(nativePresentSnapshot.staleTokenCount)},
         {"token_set_failure_count", projectedMissingTokenCount},
         {"failed_present_count", projectedFailedPresentCount},
+        {"missing_frame_swapped_receipt_count",
+         static_cast<qint64>(nativePresentSnapshot.missingFrameSwappedReceiptCount)},
+        {"duplicate_frame_swapped_receipt_count",
+         static_cast<qint64>(nativePresentSnapshot.duplicateFrameSwappedReceiptCount)},
+        {"stale_frame_swapped_receipt_count",
+         static_cast<qint64>(nativePresentSnapshot.staleFrameSwappedReceiptCount)},
         {"submission_mode", static_cast<qint64>(nativePresentSnapshot.submissionMode)},
         {"configured_maximum_frame_latency",
          static_cast<qint64>(nativePresentSnapshot.configuredMaximumFrameLatency)},
@@ -2614,6 +2621,12 @@ bool CompositorSpikeController::writeMetrics() {
              {"duplicate_token_count",
               static_cast<qint64>(nativePresentSnapshot.duplicateTokenCount)},
              {"stale_token_count", static_cast<qint64>(nativePresentSnapshot.staleTokenCount)},
+             {"missing_frame_swapped_receipt_count",
+              static_cast<qint64>(nativePresentSnapshot.missingFrameSwappedReceiptCount)},
+             {"duplicate_frame_swapped_receipt_count",
+              static_cast<qint64>(nativePresentSnapshot.duplicateFrameSwappedReceiptCount)},
+             {"stale_frame_swapped_receipt_count",
+              static_cast<qint64>(nativePresentSnapshot.staleFrameSwappedReceiptCount)},
              {"token_set_failure_count",
               state_->nativePresentTokenSetFailureCount.load(std::memory_order_relaxed)},
              {"authority_pass", nativePresentAuthorityPass && captureEnvelopeLowerClosed &&

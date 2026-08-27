@@ -4,9 +4,9 @@
 
 - 対象: P2 formal Playbackのrequired-intent issuance / completion control
 - 前提: B2は`EXACT_TARGET_OUTPUT_COUNTER_AUTHORITY_UNAVAILABLE`でCLOSED
-- phase: **DESIGN / STATIC INVENTORY ONLY**
-- production code: **UNCHANGED**
-- test / capture: **NOT RUN / NOT CHANGED**
+- phase: **DESIGN CLOSED / IMPLEMENTATION I0 DONE** (実装状況は§10)
+- production code: I0 (exact qualified commit join) のみ変更済み。queue semanticsとordinal issuanceは**UNCHANGED**
+- test / capture: I0 targeted test済み。live captureは**NOT RUN**
 - canonical W3 verdict: **UNCHANGED / FAIL**
 - P5-E4: **BLOCKED**
 
@@ -406,8 +406,103 @@ implementation後のclosureには以下が必要であり、本design完了だ�
 B3 static inventory                 CLOSED
 B3 corrective design               CLOSED
 selected production candidate       B REQUIRED-INTENT QUEUE
-production implementation           NOT STARTED / NOT AUTHORIZED IN THIS PHASE
-test / capture                      NOT RUN / NOT CHANGED
+production implementation           I0 DONE / I1 NOT STARTED (§10)
+test / capture                      I0 TARGETED TEST DONE / LIVE CAPTURE NOT RUN
 canonical W3 verdict                UNCHANGED / FAIL
 P5-E4                               BLOCKED
 ```
+
+## 10. B3-I0 実装結果 — Exact Qualified Commit Join
+
+I0はB3 candidate Bのうち**join provenanceだけ**を確定するsliceである。required-intent queue semantics、
+ordinal issuance、threshold、required set、W2/W3 historical authority、FinalState satisfactionは変更していない。
+
+### 10.1 expected_present_serialのauthority
+
+`expected_present_serial`のauthorityはpatched Qtが`IDXGISwapChain::Present`直前にmintし、そのPresentの
+`MvmNativePresentRecord`自身が保持する`presentSerial`だけである。同じ値をPresent return直後に
+one-shot `MvmNativePresentFrameSwappedReceipt`へ複製し、DirectConnectionの`frameSwapped` callbackが
+1回だけconsumeする。
+
+```text
+scheduler decision      reservation_id   (++reservationSerial_、schedulerが唯一のproducer)
+composition token       token_serial / intent_ordinal
+patched Qt Present      present_serial / swapchain_identity / HRESULT   ← authority
+one-shot receipt        上の値のexact copy。app側で再構成しない
+frameSwapped callback   receipt -> exact record lookup -> qualified join
+```
+
+`last + 1`、latest record、ring array position、QPC proximityからは生成しない。
+`ExactQualifiedCommitJoin::bindNativePresent()`の`expectedPresentSerial_ = evidence.presentSerial;`が
+唯一の代入箇所であり、`NativePresentHook::recordForPresentSerial()`はpresent serialが一意に一致する
+recordだけを返す(0件も2件以上もfail-close)。
+
+### 10.2 1 transactionとして検証するidentity
+
+```text
+RESERVED            reserve(reservation_id, intent_ordinal, token_serial)
+RENDER_COMPLETED    markRenderComplete(同一 reservation_id / intent_ordinal / token_serial)
+NATIVE_PRESENT      bindNativePresent(record: token present / intent ordinal exact /
+                    present_serial != 0 / swapchain_identity != 0 / HRESULT >= 0 /
+                    capture envelope内でswapchain identity固定)
+COMMITTED           commitFrameSwapped(receipt: 上の全idを一致比較)
+                    -> QUALIFIED_COMMIT
+```
+
+`QUALIFIED_COMMIT`はsuccessful native Present + matching frameSwapped + matching render completionが
+すべて成立した場合だけ返す。**queue dequeueはまだ行わない**。
+identity欠損、不一致、Present failure、swap欠損、二重commit、順序違反はすべてfail-closeし、
+`compositor_rhi_item.cpp`の`recordFrameSwapped()`はfatal latchへ落とす。
+
+### 10.3 変更範囲
+
+| 対象 | 変更 |
+|---|---|
+| `src/media/gpu_preview/qualified_present_commit_join.{h,cpp}` | 新規。join state machineとerror分類 |
+| `src/app/preview/native_present_hook_abi.h` | ABI v4 -> **v5**。receipt構造体、receipt loss counter 3種、layout signature |
+| `qt-patches/qtbase-6.11.1/0001-*.patch` | Present return直後のreceipt mint、`..._take_frame_swapped_receipt` export、one-shot consume、begin/endでのreset・stale計上 |
+| `src/app/preview/native_present_hook.{h,cpp}` | `takeFrameSwappedReceipt()` / `recordForPresentSerial()`、receipt counterのauthority検査への編入 |
+| `src/app/preview/compositor_rhi_item.{h,cpp}` | envelope開始でjoin start、decisionでreserve、render完了でjoin前進、`frameSwapped`でreceipt -> record -> bind -> commit |
+| `src/media/gpu_preview/presentation_opportunity_scheduler.{h,cpp}` | `decision.reservationId`。duplicate callbackは同じreservationを返す |
+| `apps/compositor_spike/compositor_spike_controller.cpp` | `reservation_id`とreceipt counterをJSONへ出力 |
+
+ABI v5化に伴い、W2-B1 intent transport contractのversion negativeは
+`NegativeAppV4QtV5` / `NegativeAppV5QtV4`へ更新した。
+
+### 10.4 I0 targeted test
+
+```text
+p2_qualified_present_commit_join                   join positive + join-specific negatives
+p2_b3_i0_exact_qualified_join_architecture         source-level provenance guard
+p2_b3_i0_exact_qualified_join_guard_*              guard自身のmutation test (Good + negative 12)
+```
+
+positiveは`QUALIFIED_COMMIT`、`expected_present_serial`のrecord由来、swapchain identityのenvelope固定を
+個別に観測する。negativeはnative側(record欠損 / intent mismatch / token mismatch / token欠損 /
+intent provenance欠損 / present serial 0 / swapchain identity 0 / Present failure)、commit側
+(frameSwapped欠損 / reservation mismatch / intent mismatch / token mismatch / present serial mismatch /
+swapchain identity mismatch / HRESULT mismatch / duplicate commit)、lifecycle
+(envelope外reserve / reservation id 0 / 二重reserve / render完了なしのPresent / reservationなしのswap /
+native Present未結合のswap / envelope内swapchain migration)を個別に落とす。
+
+architecture guardは`AGENTS.md`の規約どおりmutation testを併設した。実sourceの変異コピーに対し、
+receipt ABIの削除、receipt serialのglobal counter由来化、one-shot exportの削除、consume省略、
+app側receipt取得APIの削除、exact record lookupの削除、commit順序のbypass、reservation identityの
+非scheduler化、`expected_present_serial`のlast+1推定、latest record authority、sequential serial推定、
+QPC近接joinの12件をguardが検出することを固定する。
+
+### 10.5 未変更 / 次slice
+
+```text
+required-intent queue semantics      UNCHANGED (I1)
+ordinal issuance semantics           UNCHANGED (I1)
+W2/W3 historical authority           UNCHANGED
+FinalState satisfaction / threshold  UNCHANGED
+required set                         UNCHANGED
+canonical W3 verdict                 UNCHANGED / FAIL
+P5-E4                                BLOCKED
+```
+
+ABI v5はpatched Qtの再build後にだけ実行時互換になる。`scripts/prepare-p2-c0-qt-source.ps1` と
+`scripts/build-p2-c0-patched-qt.ps1`の再実行はI0のexit条件ではなく、live captureを行うsliceで実施する。
+patch自体はpristine v6.11.1 sourceへ0001 -> 0002の順で適用可能であることを確認済みである。

@@ -10,7 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 
-inline constexpr std::uint32_t MVM_NATIVE_PRESENT_HOOK_ABI_VERSION = 4;
+inline constexpr std::uint32_t MVM_NATIVE_PRESENT_HOOK_ABI_VERSION = 5;
 inline constexpr std::uint32_t MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY = 8192;
 inline constexpr std::uint32_t MVM_NATIVE_PRESENT_HOOK_MAX_SOURCES = 2;
 
@@ -49,6 +49,19 @@ struct MvmNativePresentRecord {
     std::uint32_t intentOrdinalValid = 0;
     std::uint32_t reservedIntent = 0;
     MvmNativePresentCompositionToken token{};
+};
+
+// actual Present returnからDirectConnectionのframeSwapped callbackへ渡すone-shot receipt。
+// presentSerialはrecordと同じmint済み値であり、app側で推定しない。
+struct MvmNativePresentFrameSwappedReceipt {
+    std::uint64_t presentSerial = 0;
+    std::uint64_t swapchainIdentity = 0;
+    std::int32_t hresult = 0;
+    std::uint32_t tokenPresent = 0;
+    std::uint64_t tokenSerial = 0;
+    std::uint64_t intentOrdinal = 0;
+    std::uint32_t intentOrdinalValid = 0;
+    std::uint32_t reserved = 0;
 };
 
 inline constexpr std::uint64_t mvmNativePresentLayoutMix(std::uint64_t signature,
@@ -125,6 +138,9 @@ struct MvmNativePresentRing {
     std::uint32_t duplicateTokenCount = 0;
     std::uint32_t staleTokenCount = 0;
     std::uint32_t failedPresentCount = 0;
+    std::uint32_t missingFrameSwappedReceiptCount = 0;
+    std::uint32_t duplicateFrameSwappedReceiptCount = 0;
+    std::uint32_t staleFrameSwappedReceiptCount = 0;
     std::uint32_t authorityFailure = 0;
     std::uint32_t submissionMode = 0;
     std::uint32_t configuredMaximumFrameLatency = 0;
@@ -164,6 +180,12 @@ inline constexpr std::uint64_t mvmNativePresentHookLayoutSignature() {
         mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, staleTokenCount));
     signature =
         mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, failedPresentCount));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentRing, missingFrameSwappedReceiptCount));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentRing, duplicateFrameSwappedReceiptCount));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentRing, staleFrameSwappedReceiptCount));
     signature =
         mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, authorityFailure));
     signature = mvmNativePresentLayoutMix(
@@ -202,6 +224,7 @@ using MvmNativePresentHookAbiVersionFn = std::uint32_t (*)();
 using MvmNativePresentHookBeginFn = int (*)(MvmNativePresentRing*);
 using MvmNativePresentHookSetTokenFn = int (*)(const MvmNativePresentCompositionToken*);
 using MvmNativePresentHookEndFn = int (*)();
+using MvmNativePresentHookTakeFrameSwappedReceiptFn = int (*)(MvmNativePresentFrameSwappedReceipt*);
 using MvmDirtyPropagationBeginFn = std::uint64_t (*)();
 using MvmDirtyPropagationStageFn = std::uint64_t (*)(std::uint32_t, std::uint64_t);
 

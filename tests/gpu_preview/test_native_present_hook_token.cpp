@@ -57,34 +57,34 @@ int main() {
     if (!check(!mvm::app::makeNativePresentCompositionToken(frame, 8, 0, false, rejected),
                "generation 0を拒否しません"))
         return 1;
-    if (!check(mvmNativePresentHookLayoutCompatible(4, MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY,
+    if (!check(mvmNativePresentHookLayoutCompatible(5, MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY,
                                                     sizeof(MvmNativePresentCompositionToken),
                                                     sizeof(MvmNativePresentRecord),
                                                     mvmNativePresentHookLayoutSignature()),
-               "ABI v4 layoutを受理しません") ||
-        !check(!mvmNativePresentHookLayoutCompatible(3, MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY,
+               "ABI v5 layoutを受理しません") ||
+        !check(!mvmNativePresentHookLayoutCompatible(4, MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY,
                                                      sizeof(MvmNativePresentCompositionToken),
                                                      sizeof(MvmNativePresentRecord),
                                                      mvmNativePresentHookLayoutSignature()),
-               "v3 app / v4 Qt相当のABI mismatchを拒否しません") ||
-        !check(!mvmNativePresentHookLayoutCompatible(4, MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY,
+               "v4 app / v5 Qt相当のABI mismatchを拒否しません") ||
+        !check(!mvmNativePresentHookLayoutCompatible(5, MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY,
                                                      sizeof(MvmNativePresentCompositionToken) - 1,
                                                      sizeof(MvmNativePresentRecord),
                                                      mvmNativePresentHookLayoutSignature()),
                "composition token layout mutationを拒否しません") ||
-        !check(!mvmNativePresentHookLayoutCompatible(4, MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY,
+        !check(!mvmNativePresentHookLayoutCompatible(5, MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY,
                                                      sizeof(MvmNativePresentCompositionToken),
                                                      sizeof(MvmNativePresentRecord) + 1,
                                                      mvmNativePresentHookLayoutSignature()),
                "native record size mutationを拒否しません") ||
-        !check(!mvmNativePresentHookLayoutCompatible(4, MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY,
+        !check(!mvmNativePresentHookLayoutCompatible(5, MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY,
                                                      sizeof(MvmNativePresentCompositionToken),
                                                      sizeof(MvmNativePresentRecord),
                                                      mvmNativePresentHookLayoutSignature() ^ 1ULL),
                "同一sizeのoffset layout mutationを拒否しません"))
         return 1;
-    if (!check(!mvmNativePresentHookAbiVersionsCompatible(3, 4), "v3 app / v4 Qtを拒否しません") ||
-        !check(!mvmNativePresentHookAbiVersionsCompatible(4, 3), "v4 app / v3 Qtを拒否しません"))
+    if (!check(!mvmNativePresentHookAbiVersionsCompatible(4, 5), "v4 app / v5 Qtを拒否しません") ||
+        !check(!mvmNativePresentHookAbiVersionsCompatible(5, 4), "v5 app / v4 Qtを拒否しません"))
         return 1;
     return 0;
 }

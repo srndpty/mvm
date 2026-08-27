@@ -712,8 +712,30 @@ completionを止めてもknown W3 causeを除去できないためcorrectionと�
 required set `[0,N)`はstart時にimmutable、duplicate / invalid / uncommitted renderはconsume 0、intent identity
 確定後にsource mapping、planned endの未発行tailはunsatisfiedとして保存する。normal completion ownerは
 `PLANNED_WINDOW_END`だけとし、`past_source_domain && required_intent_membership`および`DOMAIN_TERMINAL`を
-successful completionにしない。production/test/captureは未変更で、次gateはcandidate Bのexact native Present
-join配線、queue implementation、targeted negativesである。canonical W3 FAILとP5-E4 BLOCKEDは不変である。
+successful completionにしない。canonical W3 FAILとP5-E4 BLOCKEDは不変である。
+
+#### B3-I0 — Exact Qualified Commit Join (実装済み)
+
+candidate Bのうちjoin provenanceだけを確定するsliceを実装した。詳細は
+[B3 design §10](p2-d5-2-b3-counter-free-required-intent-completion.md)にある。
+
+- `expected_present_serial`のauthorityはpatched Qtが`Present`直前にmintしrecord自身が持つ値だけとし、
+  one-shot receiptでDirectConnectionの`frameSwapped`へ渡す。`last + 1`、latest record、ring array位置、
+  QPC proximityからは生成しない
+- reservation_id / intent ordinal / token serial / present serial / swapchain identity / HRESULT /
+  render completion / frameSwapped commitを1 transactionとして検証し、successful native Present +
+  matching frameSwapped + matching render completionのときだけ`QUALIFIED_COMMIT`を返す。
+  **queue dequeueはまだ行わない**
+- mismatch / missing / Present failure / duplicate commitはすべてfail-closeする
+- native present hook ABIは**v4 -> v5**。receipt構造体とreceipt loss counter 3種を追加し、
+  W2-B1 transport negativeを`NegativeAppV4QtV5` / `NegativeAppV5QtV4`へ更新した
+- targeted testはjoin unit test、source-level architecture guard、guard自身のmutation test
+  (Good + negative 12) の**15件**。ordinary CTestは ucrt64-release **TESTCOUNT**
+- required-intent queue semantics、ordinal issuance、W2/W3 historical authority、
+  FinalState satisfaction、threshold、required setは未変更である
+
+次sliceはI1 (required-intent queue state machine) である。ABI v5はpatched Qtの再build後に
+実行時互換になるため、live captureはI1以降のsliceで行う。
 
 ### E4 実装結果 (実測)
 

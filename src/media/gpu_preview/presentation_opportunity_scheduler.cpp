@@ -123,6 +123,7 @@ PresentationOpportunityDecision PresentationOpportunityScheduler::selectForRende
                                 PresentationSchedulerInvocationReason::PastSourceDomain, decision);
     }
     decision.repeat = target == lastUniqueFrame_;
+    decision.reservationId = ++reservationSerial_;
     lastAuthority_ = preRenderAuthority;
     pendingDecision_ = decision;
     pendingRender_ = true;

@@ -56,6 +56,9 @@ struct PresentationOpportunityDecision {
     long long lastFinalizedOpportunityOrdinal = -1;
     long long renderBeginQpc = 0;
     long long renderOrdinal = -1;
+    // B3-I0。primary pending renderごとのlocal reservation identity。
+    // intent ordinalのauthorityではなく、token/render/Present/swap join専用。
+    unsigned long long reservationId = 0;
     PresentationAuthoritySample preRenderAuthority;
     unsigned long long invocationSerial = 0;
 };
@@ -280,6 +283,7 @@ private:
     bool pastSourceDomain_ = false;
     bool anchored_ = false;
     unsigned long long originRefreshCount_ = 0;
+    unsigned long long reservationSerial_ = 0;
 
     bool pendingRender_ = false;
     PresentationOpportunityDecision pendingDecision_{};

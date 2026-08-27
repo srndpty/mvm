@@ -11,6 +11,7 @@
 #include "media/gpu_preview/phase4_composition_driver.h"
 #include "media/gpu_preview/presentation_opportunity_attribution.h"
 #include "media/gpu_preview/presentation_opportunity_scheduler.h"
+#include "media/gpu_preview/qualified_present_commit_join.h"
 #include "media/gpu_preview/scheduler_phase_attribution.h"
 #include "media/gpu_preview/source_decode_worker.h"
 #include "media/gpu_preview/transition_probe.h"
@@ -228,6 +229,7 @@ struct CompositorStopWitness {
 
 struct NativePresentIntentScopeRecord {
     std::uint64_t tokenSerial = 0;
+    std::uint64_t reservationId = 0;
     std::uint64_t intentOrdinal = 0;
     NativePresentIntentScope scope = NativePresentIntentScope::ForeignPreMeasurement;
     long long decisionQpc = 0;
@@ -493,6 +495,7 @@ struct CompositorSpikeState {
     std::atomic<long long> formalRequiredFrameCount{0};
     std::mutex formalOpportunityMutex;
     gpu::PresentationOpportunityScheduler formalOpportunityScheduler;
+    gpu::ExactQualifiedCommitJoin formalQualifiedCommitJoin;
     gpu::ComposedFrame diagnosticFixedFrame;
     CompositorMarkerProbe markerProbe;
     std::atomic<long long> markerAChecked{0};

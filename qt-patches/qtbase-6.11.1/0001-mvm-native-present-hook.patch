@@ -2,7 +2,7 @@ diff --git a/src/gui/rhi/qrhid3d11.cpp b/src/gui/rhi/qrhid3d11.cpp
 index e6a567a6..d3c13b8d 100644
 --- a/src/gui/rhi/qrhid3d11.cpp
 +++ b/src/gui/rhi/qrhid3d11.cpp
-@@ -9,9 +9,197 @@
+@@ -9,9 +9,239 @@
  #include <QtCore/qcryptographichash.h>
  #include <QtCore/private/qsystemerror_p.h>
  #include "qrhid3dhelpers_p.h"
@@ -17,6 +17,8 @@ index e6a567a6..d3c13b8d 100644
 +volatile LONG64 mvmPresentSerial = 0;
 +thread_local MvmNativePresentCompositionToken mvmPendingToken{};
 +thread_local bool mvmPendingTokenValid = false;
++thread_local MvmNativePresentFrameSwappedReceipt mvmFrameSwappedReceipt{};
++thread_local bool mvmFrameSwappedReceiptValid = false;
 +using MvmDwmFlushFn = HRESULT (WINAPI *)();
 +MvmDwmFlushFn mvmDwmFlush = nullptr;
 +bool mvmSwapChainDiagnosticsCaptured = false;
@@ -105,6 +107,19 @@ index e6a567a6..d3c13b8d 100644
 +    QueryPerformanceCounter(&returned);
 +    capture.record->presentReturnQpc = returned.QuadPart;
 +    capture.record->hresult = static_cast<std::int32_t>(result);
++    if (mvmFrameSwappedReceiptValid) {
++        ++capture.ring->duplicateFrameSwappedReceiptCount;
++        capture.ring->authorityFailure = 1;
++    }
++    mvmFrameSwappedReceipt = {};
++    mvmFrameSwappedReceipt.presentSerial = capture.record->presentSerial;
++    mvmFrameSwappedReceipt.swapchainIdentity = capture.record->swapchainIdentity;
++    mvmFrameSwappedReceipt.hresult = capture.record->hresult;
++    mvmFrameSwappedReceipt.tokenPresent = capture.record->tokenPresent;
++    mvmFrameSwappedReceipt.tokenSerial = capture.record->token.tokenSerial;
++    mvmFrameSwappedReceipt.intentOrdinal = capture.record->intentOrdinal;
++    mvmFrameSwappedReceipt.intentOrdinalValid = capture.record->intentOrdinalValid;
++    mvmFrameSwappedReceiptValid = true;
 +    if (FAILED(result)) {
 +        ++capture.ring->failedPresentCount;
 +        capture.ring->authorityFailure = 1;
@@ -140,6 +155,9 @@ index e6a567a6..d3c13b8d 100644
 +    ring->duplicateTokenCount = 0;
 +    ring->staleTokenCount = 0;
 +    ring->failedPresentCount = 0;
++    ring->missingFrameSwappedReceiptCount = 0;
++    ring->duplicateFrameSwappedReceiptCount = 0;
++    ring->staleFrameSwappedReceiptCount = 0;
 +    ring->authorityFailure = 0;
 +    ring->submissionMode = mvmSubmissionMode();
 +    ring->configuredMaximumFrameLatency =
@@ -161,6 +179,8 @@ index e6a567a6..d3c13b8d 100644
 +    }
 +    mvmPendingToken = {};
 +    mvmPendingTokenValid = false;
++    mvmFrameSwappedReceipt = {};
++    mvmFrameSwappedReceiptValid = false;
 +    mvmPresentRing = ring;
 +    ring->enabled = 1;
 +    return 1;
@@ -188,6 +208,11 @@ index e6a567a6..d3c13b8d 100644
 +    if (!ring || ring->enabled == 0)
 +        return 0;
 +    ring->enabled = 0;
++    if (mvmFrameSwappedReceiptValid) {
++        ++ring->staleFrameSwappedReceiptCount;
++        ring->authorityFailure = 1;
++        mvmFrameSwappedReceiptValid = false;
++    }
 +    if (mvmPendingTokenValid) {
 +        ++ring->staleTokenCount;
 +        ring->authorityFailure = 1;
@@ -197,10 +222,27 @@ index e6a567a6..d3c13b8d 100644
 +    return 1;
 +}
 +
++extern "C" Q_DECL_EXPORT int mvm_qt_d3d11_present_hook_take_frame_swapped_receipt(
++        MvmNativePresentFrameSwappedReceipt *receipt)
++{
++    MvmNativePresentRing *ring = mvmPresentRing;
++    if (!ring || ring->enabled == 0 || !receipt || !mvmFrameSwappedReceiptValid) {
++        if (ring) {
++            ++ring->missingFrameSwappedReceiptCount;
++            ring->authorityFailure = 1;
++        }
++        return 0;
++    }
++    *receipt = mvmFrameSwappedReceipt;
++    mvmFrameSwappedReceipt = {};
++    mvmFrameSwappedReceiptValid = false;
++    return 1;
++}
++
  QT_BEGIN_NAMESPACE
  
  using namespace Qt::StringLiterals;
-@@ -1538,7 +1726,10 @@ QRhi::FrameOpResult QRhiD3D11::endFrame(QRhiSwapChain *swapChain, QRhi::EndFrame
+@@ -1538,7 +1768,10 @@ QRhi::FrameOpResult QRhiD3D11::endFrame(QRhiSwapChain *swapChain, QRhi::EndFrame
              qWarning("Failed to present: IDXGISwapChain is unavailable");
              return QRhi::FrameOpError;
          }

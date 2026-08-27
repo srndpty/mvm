@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][ValidateSet(
-        'GoodFormal','GoodNonFormal','GoodSuppressedFormal','NegativeAppV3QtV4','NegativeAppV4QtV3',
+        'GoodFormal','GoodNonFormal','GoodSuppressedFormal','NegativeAppV4QtV5','NegativeAppV5QtV4',
         'NegativeTokenLayout','NegativeRecordLayout','NegativeLayoutSignature',
         'NegativeFormalInvalid','NegativeOrdinalMutation','NegativeValidityMutation',
         'NegativeDuplicateEmbeddedTokenSerial','NegativeDuplicateNativeSerial',
@@ -32,7 +32,7 @@ $records=@(0..2|ForEach-Object{
 })
 $transport=[ordered]@{
     schema='mvm-p2-d5-2-w2-b1-intent-identity-transport-2'
-    abi_version=4;app_abi_version=4;qt_abi_version_observed=4
+    abi_version=5;app_abi_version=5;qt_abi_version_observed=5
     layout_handshake_accepted=$true;layout_signature='123456789'
     composition_token_size=120;native_present_record_size=200
     shadow_only=$true;performance_accounting_connected=$false;formal_mode=$formal
@@ -40,8 +40,8 @@ $transport=[ordered]@{
     verdict='INTENT_IDENTITY_ABI_V4_TRANSPORT_EXACT';records=$records
 }
 $hook=[ordered]@{
-    abi_version=4;composition_token_size=120;native_present_record_size=200
-    layout_signature='123456789';qt_abi_version_observed=4;layout_handshake_accepted=$true
+    abi_version=5;composition_token_size=120;native_present_record_size=200
+    layout_signature='123456789';qt_abi_version_observed=5;layout_handshake_accepted=$true
     available=$true;hook_enabled=$true;capture_started=$true;capture_stopped=$true
     overflow_count=0;missing_token_count=0;duplicate_token_count=0;stale_token_count=0
     token_set_failure_count=0;failed_present_count=0;authority_failure=$false
@@ -55,8 +55,8 @@ switch($Case){
         $records[1].formal_transport_eligible=$false;$records[1].suppression_exact=$true
         $records[1].transport_disposition='SUPPRESS_DUPLICATE_CALLBACK'
     }
-    'NegativeAppV3QtV4'{$transport.app_abi_version=3}
-    'NegativeAppV4QtV3'{$transport.qt_abi_version_observed=3;$hook.qt_abi_version_observed=3}
+    'NegativeAppV4QtV5'{$transport.app_abi_version=4}
+    'NegativeAppV5QtV4'{$transport.qt_abi_version_observed=4;$hook.qt_abi_version_observed=4}
     'NegativeTokenLayout'{$transport.composition_token_size=119}
     'NegativeRecordLayout'{$transport.native_present_record_size=201}
     'NegativeLayoutSignature'{$transport.layout_signature='987654321'}

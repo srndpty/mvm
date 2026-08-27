@@ -22,6 +22,9 @@ struct NativePresentHookSnapshot {
     std::uint32_t duplicateTokenCount = 0;
     std::uint32_t staleTokenCount = 0;
     std::uint32_t failedPresentCount = 0;
+    std::uint32_t missingFrameSwappedReceiptCount = 0;
+    std::uint32_t duplicateFrameSwappedReceiptCount = 0;
+    std::uint32_t staleFrameSwappedReceiptCount = 0;
     std::uint32_t submissionMode = 0;
     std::uint32_t configuredMaximumFrameLatency = 0;
     std::uint32_t swapchainMaximumFrameLatency = 0;
@@ -54,6 +57,8 @@ public:
     // W2-C0.1 capture supersetではdomain外prestart Presentのtoken欠損を
     // candidate-level gateへ委ねる。ring loss/duplicate/stale/failedは許容しない。
     bool captureEnvelopeTransportValid() const;
+    bool takeFrameSwappedReceipt(MvmNativePresentFrameSwappedReceipt& receipt);
+    bool recordForPresentSerial(std::uint64_t presentSerial, MvmNativePresentRecord& record) const;
     // patched Qtが記録した実IDXGISwapChainポインタ。0はrecord未取得。
     std::uint64_t latestSwapchainIdentity() const;
     NativePresentHookSnapshot snapshot() const;
@@ -63,6 +68,7 @@ private:
     MvmNativePresentHookBeginFn begin_ = nullptr;
     MvmNativePresentHookSetTokenFn setToken_ = nullptr;
     MvmNativePresentHookEndFn end_ = nullptr;
+    MvmNativePresentHookTakeFrameSwappedReceiptFn takeFrameSwappedReceipt_ = nullptr;
     MvmDirtyPropagationBeginFn dirtyBegin_ = nullptr;
     MvmDirtyPropagationStageFn dirtyStage_ = nullptr;
     std::unique_ptr<MvmNativePresentRing> ring_;

@@ -33,9 +33,12 @@ bool NativePresentHook::load(std::string& error) {
     setToken_ =
         resolve<MvmNativePresentHookSetTokenFn>(qtGui, "mvm_qt_d3d11_present_hook_set_token");
     end_ = resolve<MvmNativePresentHookEndFn>(qtGui, "mvm_qt_d3d11_present_hook_end");
+    takeFrameSwappedReceipt_ = resolve<MvmNativePresentHookTakeFrameSwappedReceiptFn>(
+        qtGui, "mvm_qt_d3d11_present_hook_take_frame_swapped_receipt");
     dirtyBegin_ = resolve<MvmDirtyPropagationBeginFn>(qtGui, "mvm_qt_dirty_propagation_begin");
     dirtyStage_ = resolve<MvmDirtyPropagationStageFn>(qtGui, "mvm_qt_dirty_propagation_stage");
-    if (!abiVersion_ || !begin_ || !setToken_ || !end_ || !dirtyBegin_ || !dirtyStage_) {
+    if (!abiVersion_ || !begin_ || !setToken_ || !end_ || !takeFrameSwappedReceipt_ ||
+        !dirtyBegin_ || !dirtyStage_) {
         error = "Qt6Gui.dllにF3-C0 native Present hook exportがありません";
         return false;
     }
@@ -87,13 +90,44 @@ bool NativePresentHook::authorityValid() const {
     return ring_ && captureStarted_ && captureStopped_ && ring_->authorityFailure == 0 &&
            ring_->overflowCount == 0 && ring_->missingTokenCount == 0 &&
            ring_->duplicateTokenCount == 0 && ring_->staleTokenCount == 0 &&
-           ring_->failedPresentCount == 0;
+           ring_->failedPresentCount == 0 && ring_->missingFrameSwappedReceiptCount == 0 &&
+           ring_->duplicateFrameSwappedReceiptCount == 0 &&
+           ring_->staleFrameSwappedReceiptCount == 0;
 }
 
 bool NativePresentHook::captureEnvelopeTransportValid() const {
     return available_ && layoutHandshakeAccepted_ && ring_ && captureStarted_ && captureStopped_ &&
            ring_->overflowCount == 0 && ring_->duplicateTokenCount == 0 &&
-           ring_->staleTokenCount == 0 && ring_->failedPresentCount == 0;
+           ring_->staleTokenCount == 0 && ring_->failedPresentCount == 0 &&
+           ring_->missingFrameSwappedReceiptCount == 0 &&
+           ring_->duplicateFrameSwappedReceiptCount == 0 &&
+           ring_->staleFrameSwappedReceiptCount == 0;
+}
+
+bool NativePresentHook::takeFrameSwappedReceipt(MvmNativePresentFrameSwappedReceipt& receipt) {
+    receipt = {};
+    return captureStarted_ && !captureStopped_ && takeFrameSwappedReceipt_ &&
+           takeFrameSwappedReceipt_(&receipt) != 0;
+}
+
+bool NativePresentHook::recordForPresentSerial(std::uint64_t presentSerial,
+                                               MvmNativePresentRecord& record) const {
+    if (!ring_ || presentSerial == 0)
+        return false;
+    const auto count = std::min(ring_->recordCount, ring_->capacity);
+    const MvmNativePresentRecord* match = nullptr;
+    for (std::uint32_t index = 0; index < count; ++index) {
+        const auto& candidate = ring_->records[index];
+        if (candidate.presentSerial != presentSerial)
+            continue;
+        if (match)
+            return false;
+        match = &candidate;
+    }
+    if (!match)
+        return false;
+    record = *match;
+    return true;
 }
 
 NativePresentHookSnapshot NativePresentHook::snapshot() const {
@@ -109,6 +143,9 @@ NativePresentHookSnapshot NativePresentHook::snapshot() const {
         result.duplicateTokenCount = ring_->duplicateTokenCount;
         result.staleTokenCount = ring_->staleTokenCount;
         result.failedPresentCount = ring_->failedPresentCount;
+        result.missingFrameSwappedReceiptCount = ring_->missingFrameSwappedReceiptCount;
+        result.duplicateFrameSwappedReceiptCount = ring_->duplicateFrameSwappedReceiptCount;
+        result.staleFrameSwappedReceiptCount = ring_->staleFrameSwappedReceiptCount;
         result.submissionMode = ring_->submissionMode;
         result.configuredMaximumFrameLatency = ring_->configuredMaximumFrameLatency;
         result.swapchainMaximumFrameLatency = ring_->swapchainMaximumFrameLatency;

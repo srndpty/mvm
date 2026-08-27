@@ -230,8 +230,8 @@ foreach(_p2_d5_2_w2a_case IN ITEMS Good GoodSuccessorAfterEnd GoodEmptyDomain Go
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
-# P2-D5-2-W2-B1: scheduler intent identityのABI v4 exact-copy transport。
-foreach(_p2_d5_2_w2b1_case IN ITEMS GoodFormal GoodNonFormal GoodSuppressedFormal NegativeAppV3QtV4 NegativeAppV4QtV3 NegativeTokenLayout NegativeRecordLayout NegativeLayoutSignature NegativeFormalInvalid NegativeOrdinalMutation NegativeValidityMutation NegativeDuplicateEmbeddedTokenSerial NegativeDuplicateNativeSerial NegativeNonFormalFabricated NegativeRingOverflow NegativeMissingToken NegativeTokenSetFailure NegativeAuthorityFailure NegativeHookUnavailable NegativeLayoutHandshake NegativeSecondProducer NegativeRequiredFormalModeFalse NegativeSuppressionWithoutWitness NegativeSuppressionTransportDisposition)
+# P2-D5-2-W2-B1: scheduler intent identityのABI v5 exact-copy transport。
+foreach(_p2_d5_2_w2b1_case IN ITEMS GoodFormal GoodNonFormal GoodSuppressedFormal NegativeAppV4QtV5 NegativeAppV5QtV4 NegativeTokenLayout NegativeRecordLayout NegativeLayoutSignature NegativeFormalInvalid NegativeOrdinalMutation NegativeValidityMutation NegativeDuplicateEmbeddedTokenSerial NegativeDuplicateNativeSerial NegativeNonFormalFabricated NegativeRingOverflow NegativeMissingToken NegativeTokenSetFailure NegativeAuthorityFailure NegativeHookUnavailable NegativeLayoutHandshake NegativeSecondProducer NegativeRequiredFormalModeFalse NegativeSuppressionWithoutWitness NegativeSuppressionTransportDisposition)
     string(TOLOWER "${_p2_d5_2_w2b1_case}" _p2_d5_2_w2b1_name)
     mvm_add_test(p2_d5_2_w2b1_intent_transport_${_p2_d5_2_w2b1_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File
@@ -2250,6 +2250,32 @@ target_link_libraries(mvm_test_presentation_opportunity_scheduler
     PRIVATE mvm::gpu_preview mvm::warnings)
 mvm_add_test(p2_presentation_opportunity_scheduler
     COMMAND mvm_test_presentation_opportunity_scheduler)
+
+# P2-D5-2/B3-I0: required queueへ接続する前のexact qualified commit join。
+add_executable(mvm_test_qualified_present_commit_join
+    gpu_preview/test_qualified_present_commit_join.cpp)
+target_link_libraries(mvm_test_qualified_present_commit_join
+    PRIVATE mvm::gpu_preview mvm::warnings)
+mvm_add_test(p2_qualified_present_commit_join
+    COMMAND mvm_test_qualified_present_commit_join)
+
+mvm_add_test(p2_b3_i0_exact_qualified_join_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i0-exact-qualified-join-architecture.ps1"
+        -RepoRoot "${CMAKE_SOURCE_DIR}")
+
+# B3-I0 architecture guardのmutation test。guardが空振りしていないことを固定する。
+foreach(_p2_b3_i0_case IN ITEMS Good NegativeReceiptAbiRemoved NegativeReceiptSerialDerived NegativeReceiptExportRemoved NegativeReceiptNotOneShot NegativeHookTakeReceiptRemoved NegativeExactRecordLookupRemoved NegativeCommitOrderBypassesRecord NegativeReservationIdentityNotScheduler NegativeExpectedSerialSequential NegativeLatestRecordAuthority NegativeSequentialSerialEstimate NegativeQpcProximityJoin)
+    string(TOLOWER "${_p2_b3_i0_case}" _p2_b3_i0_name)
+    mvm_add_test(p2_b3_i0_exact_qualified_join_guard_${_p2_b3_i0_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i0-exact-qualified-join-guard.ps1"
+            -Case "${_p2_b3_i0_case}"
+            -Contract "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i0-exact-qualified-join-architecture.ps1"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-b3-i0-join-guard-${_p2_b3_i0_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
 
 # P2-D5-2/F3のwindow output VBlank authorityをGPU非依存のpure helperで固定する。
 add_executable(mvm_test_window_output_vblank_authority

@@ -312,7 +312,8 @@ void duplicateCallbackDoesNotCreateOpportunity() {
     const auto first = driver.select(100, 1);
     const auto duplicate = driver.select(100, 2);
     check(duplicate.valid && duplicate.duplicateCallback &&
-              duplicate.opportunityOrdinal == first.opportunityOrdinal,
+              duplicate.opportunityOrdinal == first.opportunityOrdinal &&
+              first.reservationId != 0 && duplicate.reservationId == first.reservationId,
           "duplicate callbackをfake opportunityとして扱いました");
     check(value.markRenderComplete(5, first.targetFrame, first.renderOrdinal) &&
               value.commitSwap(10, authority(101), 0),

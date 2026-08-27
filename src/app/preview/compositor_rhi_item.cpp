@@ -386,7 +386,7 @@ protected:
                 }
                 std::lock_guard<std::mutex> lock(state_->nativePresentIntentScopeMutex);
                 state_->nativePresentIntentScopeLedger.push_back(
-                    {nativePresentToken.tokenSerial(),
+                    {nativePresentToken.tokenSerial(), formalDecision.reservationId,
                      static_cast<std::uint64_t>(formalDecision.opportunityOrdinal),
                      foreignPreMeasurement ? NativePresentIntentScope::ForeignPreMeasurement
                                            : NativePresentIntentScope::CurrentMeasurement,
@@ -454,11 +454,21 @@ protected:
                 return;
             }
             {
+                std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+                if (!state_->formalQualifiedCommitJoin.reserve(
+                        {formalDecision.reservationId, formalDecision.opportunityOrdinal,
+                         nativePresentToken.tokenSerial()})) {
+                    fail(std::string("P2-D5-2 B3-I0 reservation join失敗: ") +
+                         gpu::qualifiedCommitErrorName(state_->formalQualifiedCommitJoin.error()));
+                    return;
+                }
+            }
+            {
                 // scheduler decisionがordinalとscopeの唯一のproducerである。
-                // native recordとのjoin keyはABI v4既存のtoken serialだけを使う。
+                // reservationとnative recordのexact join keyはABI v5 token serial。
                 std::lock_guard<std::mutex> lock(state_->nativePresentIntentScopeMutex);
                 state_->nativePresentIntentScopeLedger.push_back(
-                    {nativePresentToken.tokenSerial(),
+                    {nativePresentToken.tokenSerial(), formalDecision.reservationId,
                      static_cast<std::uint64_t>(formalDecision.opportunityOrdinal),
                      foreignPreMeasurement ? NativePresentIntentScope::ForeignPreMeasurement
                                            : NativePresentIntentScope::CurrentMeasurement,
@@ -472,16 +482,11 @@ protected:
             }
             if (foreignPreMeasurement) {
                 const long long repeatedFrame = lastNativePresentToken_.outputFrameNumber;
-                bool completed = false;
-                gpu::PresentationOpportunityError error = gpu::PresentationOpportunityError::None;
-                if (repeatedFrame >= 0) {
-                    std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
-                    completed = state_->formalOpportunityScheduler.markRenderComplete(
-                        gpu::qpcTicks(), repeatedFrame, formalDecision.renderOrdinal);
-                }
-                if (!completed) {
-                    fail(std::string("P2-D5-2 lower envelope render完了記録失敗: ") +
-                         gpu::presentationOpportunityErrorName(error));
+                std::string completionError;
+                if (repeatedFrame < 0 ||
+                    !markFormalRenderComplete(formalDecision, nativePresentToken.tokenSerial(),
+                                              gpu::qpcTicks(), repeatedFrame, completionError)) {
+                    fail("P2-D5-2 lower envelope render完了記録失敗: " + completionError);
                     return;
                 }
                 state_->formalOpportunityPresentedFrame.store(repeatedFrame,
@@ -681,17 +686,10 @@ protected:
             if (formalDecisionObserved && !formalDecision.duplicateCallback) {
                 const long long presented =
                     state_->formalOpportunityPresentedFrame.load(std::memory_order_acquire);
-                bool completed = false;
-                gpu::PresentationOpportunityError error = gpu::PresentationOpportunityError::None;
-                {
-                    std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
-                    completed = state_->formalOpportunityScheduler.markRenderComplete(
-                        gpu::qpcTicks(), presented, formalDecision.renderOrdinal);
-                    error = state_->formalOpportunityScheduler.error();
-                }
-                if (!completed)
-                    fail(std::string("P2-D5-2 render完了記録失敗: ") +
-                         gpu::presentationOpportunityErrorName(error));
+                std::string completionError;
+                if (!markFormalRenderComplete(formalDecision, nativePresentToken.tokenSerial(),
+                                              gpu::qpcTicks(), presented, completionError))
+                    fail("P2-D5-2 render完了記録失敗: " + completionError);
             }
             return;
         }
@@ -917,17 +915,10 @@ protected:
         presentationCapture.markSubmitted(output);
         if (formalDecisionObserved) {
             state_->formalOpportunityPresentedFrame.store(output, std::memory_order_release);
-            bool completed = false;
-            gpu::PresentationOpportunityError error = gpu::PresentationOpportunityError::None;
-            {
-                std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
-                completed = state_->formalOpportunityScheduler.markRenderComplete(
-                    displayedQpc, output, formalDecision.renderOrdinal);
-                error = state_->formalOpportunityScheduler.error();
-            }
-            if (!completed) {
-                fail(std::string("P2-D5-2 render完了記録失敗: ") +
-                     gpu::presentationOpportunityErrorName(error));
+            std::string completionError;
+            if (!markFormalRenderComplete(formalDecision, nativePresentToken.tokenSerial(),
+                                          displayedQpc, output, completionError)) {
+                fail("P2-D5-2 render完了記録失敗: " + completionError);
                 return;
             }
         }
@@ -953,6 +944,24 @@ protected:
     }
 
 private:
+    bool markFormalRenderComplete(const gpu::PresentationOpportunityDecision& decision,
+                                  std::uint64_t tokenSerial, long long renderEndQpc,
+                                  long long renderedFrame, std::string& error) {
+        std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+        if (!state_->formalOpportunityScheduler.markRenderComplete(renderEndQpc, renderedFrame,
+                                                                   decision.renderOrdinal)) {
+            error =
+                gpu::presentationOpportunityErrorName(state_->formalOpportunityScheduler.error());
+            return false;
+        }
+        if (!state_->formalQualifiedCommitJoin.markRenderComplete(
+                decision.reservationId, decision.opportunityOrdinal, tokenSerial)) {
+            error = gpu::qualifiedCommitErrorName(state_->formalQualifiedCommitJoin.error());
+            return false;
+        }
+        return true;
+    }
+
     bool issueTargetPixelToggle(std::uint64_t tokenSerial,
                                 const std::shared_ptr<NativePresentHook>& nativeHook,
                                 std::uint64_t propagationSerial, std::string& err) {
@@ -1207,6 +1216,13 @@ private:
                 fail(hookError.empty() ? "native Present capture envelopeを開始できません"
                                        : hookError);
                 return true;
+            }
+            {
+                std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+                if (!state_->formalQualifiedCommitJoin.startEnvelope()) {
+                    fail("P2-D5-2 B3-I0 qualified commit envelopeを開始できません");
+                    return true;
+                }
             }
             state_->nativePresentEnvelopeBeginQpc.store(gpu::qpcTicks(), std::memory_order_release);
             {
@@ -1722,11 +1738,50 @@ void CompositorRhiItem::recordFrameSwapped() {
             state_->eligibilityPreflightCaptured.store(true, std::memory_order_release);
         }
     }
+    const auto failQualifiedJoin = [&](const std::string& reason) {
+        claimStopCause(*state_, StopArbitration::Fatal);
+        {
+            std::lock_guard<std::mutex> lock(state_->errorMutex);
+            state_->fatalReason = "P2-D5-2 B3-I0 exact qualified commit失敗: " + reason;
+        }
+        state_->fatal.store(true, std::memory_order_release);
+    };
+
+    MvmNativePresentFrameSwappedReceipt receipt;
+    MvmNativePresentRecord nativeRecord;
+    bool exactReceiptAvailable = false;
+    const bool formalEnvelopeActive =
+        state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire) &&
+        state_->nativePresentCaptureActive.load(std::memory_order_acquire);
+    if (formalEnvelopeActive) {
+        const auto hook = state_->nativePresentHook;
+        if (!hook || !hook->takeFrameSwappedReceipt(receipt)) {
+            failQualifiedJoin("frameSwapped one-shot receiptがありません");
+            return;
+        }
+        if (!hook->recordForPresentSerial(receipt.presentSerial, nativeRecord)) {
+            failQualifiedJoin("receipt present serialに一致するunique native recordがありません");
+            return;
+        }
+        exactReceiptAvailable = true;
+    }
+
     const bool ignoredFormalBoundarySwap =
         state_->formalOpportunityIgnoreNextSwap.exchange(false, std::memory_order_acq_rel);
+    if (ignoredFormalBoundarySwap) {
+        std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+        if (state_->formalQualifiedCommitJoin.hasActiveReservation()) {
+            failQualifiedJoin("boundary swapがactive reservationを破棄しようとしました");
+            return;
+        }
+    }
     if (!ignoredFormalBoundarySwap &&
         !state_->formalOpportunityDomainReached.load(std::memory_order_acquire) &&
         state_->formalOpportunityCaptureActive.load(std::memory_order_acquire)) {
+        if (!exactReceiptAvailable) {
+            failQualifiedJoin("formal frameSwappedにexact receiptがありません");
+            return;
+        }
         const long long swapQpc = gpu::qpcTicks();
         const long long swapOrdinal =
             state_->formalOpportunitySwapOrdinal.fetch_add(1, std::memory_order_relaxed);
@@ -1734,9 +1789,39 @@ void CompositorRhiItem::recordFrameSwapped() {
         gpu::PresentationOpportunityError error = gpu::PresentationOpportunityError::None;
         {
             std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
-            committed = state_->formalOpportunityScheduler.commitSwap(
-                swapQpc, capturePresentationAuthority(state_), swapOrdinal);
+            const auto reservation = state_->formalQualifiedCommitJoin.reservation();
+            const gpu::QualifiedNativePresentEvidence nativeEvidence{
+                true,
+                nativeRecord.presentSerial,
+                nativeRecord.swapchainIdentity,
+                nativeRecord.hresult,
+                nativeRecord.tokenPresent != 0,
+                nativeRecord.token.tokenSerial,
+                static_cast<long long>(nativeRecord.intentOrdinal),
+                nativeRecord.intentOrdinalValid != 0};
+            const gpu::QualifiedFrameSwappedEvidence swapEvidence{
+                true,
+                reservation.reservationId,
+                static_cast<long long>(receipt.intentOrdinal),
+                receipt.tokenSerial,
+                receipt.presentSerial,
+                receipt.swapchainIdentity,
+                receipt.hresult};
+            const bool nativeBound =
+                state_->formalQualifiedCommitJoin.bindNativePresent(nativeEvidence);
+            const auto qualified =
+                nativeBound ? state_->formalQualifiedCommitJoin.commitFrameSwapped(swapEvidence)
+                            : gpu::QualifiedCommitResult::Rejected;
+            if (qualified == gpu::QualifiedCommitResult::QualifiedCommit) {
+                committed = state_->formalOpportunityScheduler.commitSwap(
+                    swapQpc, capturePresentationAuthority(state_), swapOrdinal);
+            }
             error = state_->formalOpportunityScheduler.error();
+            if (qualified != gpu::QualifiedCommitResult::QualifiedCommit) {
+                failQualifiedJoin(
+                    gpu::qualifiedCommitErrorName(state_->formalQualifiedCommitJoin.error()));
+                return;
+            }
         }
         if (!committed) {
             // W4-C3 amend 4。fail()を経由しないfatal latch siteも同じhelperを通す。
