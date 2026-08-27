@@ -1257,12 +1257,13 @@ void CompositorSpikeController::tick() {
                          "W4-C2_DIAGNOSTIC_EXIT6_TEARDOWN_TIMEOUT: "
                          "render teardownが15秒以内に完了しませんでした stage=%s "
                          "worker_a_joined=%d worker_b_joined=%d render_callback_active=%d "
-                         "terminal_exit_stage=%s\n",
+                         "terminal_exit_stage=%s teardown_wake_job_observed=%d\n",
                          teardownDiagnosticStageName(diagnosticStage),
                          workerA_ && workerA_->joined() ? 1 : 0,
                          workerB_ && workerB_->joined() ? 1 : 0,
                          state_->renderCallbackActive.load(std::memory_order_acquire) ? 1 : 0,
-                         terminalRenderExitDiagnosticStageName(terminalExitStage));
+                         terminalRenderExitDiagnosticStageName(terminalExitStage),
+                         state_->teardownWakeJobObserved.load(std::memory_order_acquire) ? 1 : 0);
             exitCode_ = 6;
             phase_ = Phase::Done;
             timer_.stop();

@@ -238,6 +238,7 @@ struct CompositorSpikeState {
         RenderTeardownDiagnosticStage::NotRequested};
     std::atomic<bool> renderCallbackActive{false};
     std::atomic<bool> terminalRenderExitTracking{false};
+    std::atomic<bool> teardownWakeJobObserved{false};
     std::atomic<TerminalRenderExitDiagnosticStage> terminalRenderExitDiagnosticStage{
         TerminalRenderExitDiagnosticStage::NotObserved};
     std::atomic<bool> playbackSchedulerEnabled{false};
