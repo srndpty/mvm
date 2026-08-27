@@ -443,9 +443,9 @@ P5-Dと同様に一度に閉じない。§10.1のscopeを次の4 sliceへ分け�
 | P5-E1 | video sourceのinternal multi-source所有化、`CompositorCoordinator`をcomposition epochのauthorityとするproduct配線、`ExactFramePairer`のN一般化 (capabilityは1/1のまま) | 済 |
 | P5-E2 | `removeSource()`、active/pending composition参照中のremoval拒否、audio authorityの返却 | 済 |
 | P5-E3 | capabilityを`maxQualifiedActiveVideoSources == 2` / `maxQualifiedCompositionLayers == 2`へ引き上げ、多層render経路、per-source seek generation、`apps/p5e_preview_smoke` | 済 |
-| P5-E4 | P5-E closure (§10.2全項目の突き合わせ、frozen P2/P3-C-2/P4 regression再走、三文書更新) | **未確定**。P3-C-2再監査で変更後commitにFAILを再現し、未変更親はPASSしたため帰属確認または修正が必要 |
+| P5-E4 | P5-E closure (§10.2全項目の突き合わせ、frozen P2/P3-C-2/P4 regression再走、三文書更新) | **BLOCKED**。P2-D5-2/W4-C3 root-cause attributionはformal 3/3 EXACTでCLOSED。canonical P2 production correctionとfinal checkpoint gateは未実行 |
 
-#### P5-E closure evidence audit (未確定)
+### 10.4 P5-E closure evidence audit (再監査中)
 
 §10.2と実テストの対応は次のとおりである。表内のunit名は
 `tests/preview_engine/test_preview_engine.cpp`、product名はCTest名を指す。
@@ -487,12 +487,35 @@ A/Bのper-source generationが異なることをproduct testで再assertし、co
 コピーするmutationをfixture固有のseek増分に依存せず検出する。この追加はsmoke testだけであり、frozen
 対象のproduction hot pathを変更しない。
 
+2026-08-28の再監査では、P2-D5-2/W4-C3がcheckpoint `4e170fe`でformal 3/3すべて
+`W4_C3_CAUSAL_REPLAY_EXACT`、`root_cause_determined=true`となりCLOSEDしたことを新しい前提とする。
+これによりP2 FAILのroot-cause attribution gateは充足した。一方、W4-C3はdiagnostic-onlyで
+canonical performance authorityへ昇格しないため、W3の`CANONICAL_PERFORMANCE_FAIL`
+（29.033 fps / drop 51.611%）は不変である。W4-C3 CLOSEDをfrozen P2 PASSへ読み替えない。
+
+未実行gateは次のとおりである。
+
+- W4-C3のexact chainに基づくproduction correctionと、そのnegative / targeted gate
+- correction後のclean checkpointにおけるordinary CTest、P5-C 11件、P5-D 13件、P5-E 17件
+- 同一checkpointのP2-D5-2 correctness/Seek 6/6
+- 同一checkpointのfresh W3 canonical performance 3/3とfrozen 55 fps / drop 2% threshold PASS
+- 同一checkpointのP3-C-2 9/9
+- 同一checkpointのP4 formal 3/3
+- 全raw / summary / provenance / SHA-256 manifestと三文書の最終整合監査
+
+現在のblockerは、root causeの未確定ではなく、確定したcausal chainに対するproduction correctionが
+未設計・未実装で、canonical P2 PASSがまだ存在しないことである。W4-C3がscope外とした
+counterfactualな`+1` sequenceを未検証のまま修正根拠にしない。closureの実行順は
+P2 corrective contract・negative固定、実装とtargeted gate、ordinary/product regression、
+P2 correctnessとcanonical performance、P3-C-2、P4、artifact/docs auditとする。
+
 #### P5-E4 exit criteria
 
 - §10.2の全要求が上表のpositive/negative testへ対応し、P5-E test groupが17件存在すること
 - ordinary/P5-C/P5-D/P5-E gateがすべてPASSすること
 - clean worktreeでP2/P4/P3-C-2 frozen contractがすべてPASSし、P5-E変更へのregression帰属が無いこと。
-  **P3-C-2再監査が未達のため、この項目は未充足**
+  P2はcorrectness/Seek 6/6に加え、formal-v2 canonical authorityによるfresh performance 3/3が
+  frozen thresholdを満たすこと。**W4-C3 attributionは閉じたがcanonical P2 PASSが未達のため、この項目は未充足**
 - 製品契約のcapability、layer order、source removal semanticsが実装済み範囲と一致すること
 
 #### P5-E3 exit criteria

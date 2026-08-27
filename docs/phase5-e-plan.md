@@ -1,6 +1,7 @@
 # P5-E 実装プラン — Product composition (二source / 二layer)
 
-- 状態: **P5-E1 / P5-E2 / P5-E3 完了 / P5-E4実装済み・closure BLOCKED (QUAL-F2後P2 FAIL)**
+- 状態: **P5-E1 / P5-E2 / P5-E3 完了 / P5-E4実装済み・closure BLOCKED
+  (P2-D5-2/W4-C3 3/3 EXACT CLOSED、canonical P2 corrective gate未実行)**
 - 親計画: [Phase 5 計画](phase5-plan.md) §10
 - 製品契約: [PreviewEngine 製品契約](preview-engine-contract.md)
 - 起点commit: `2de8e2d` (P5-D closure merge)
@@ -566,7 +567,10 @@ product (`apps/p5e_preview_smoke`、`-L p5e`、8 本):
    (`GpuCompositor` 入口 / `SourceFrameBuffer` / `ExactFramePairer` / `CompositorCoordinator`) を
    触るため、§15 の「共有 hot path を変更する場合は closure gate を明示する」に該当する。
    - `p2-matrix.ps1` — 二source exact pairingを複数runし、各runで
-     `check-p2-contract.ps1` (P2-D5-1) を実行する
+     `check-p2-contract.ps1` (P2-D5-2) を実行する
+   - P2-D5-2 W3 canonical performance — `CanonicalPresentMonLive`のfresh 3 runから
+     formal-v2 authorityでthresholdを評価する。`p2-matrix.ps1`のlegacy presentation metricsは
+     diagnostic-onlyであり、これをcanonical PASSの代用にしない
    - `run-p4-formal-matrix.ps1` — composition catalog / referenceを複数runし、各runで
      `check-p4-formal-contract.ps1`を実行する
    - `p3-c2-matrix.ps1` — audio-master seekを複数runし、各runで
@@ -580,6 +584,48 @@ product (`apps/p5e_preview_smoke`、`-L p5e`、8 本):
      末尾の「二source/二layer は P5-E で … capability を引き上げる」を実績記述へ書き換える
    - 同 §7 に **layers の vector 順 = 背面→前面の z 順** を明記する
    - 同 §6 に removeSource の実装済み範囲 (audio authority の返却を含む) を追記する
+
+### E4 closure再開監査 (2026-08-28)
+
+P2-D5-2/W4-C3はcheckpoint `4e170fe`でformal 3/3すべて
+`W4_C3_CAUSAL_REPLAY_EXACT`となり、`root_cause_determined=true`で**CLOSED**した。
+actual causal chainは、completed refresh ordinalから導出したtargetがsource-domain terminal predicateを
+成立させ、`DOMAIN_TERMINAL`がcapture gateを閉じたことである。
+
+ただしW4-C3はdiagnostic-onlyであり、canonical performance authorityへ昇格しない。
+したがってW3の`CANONICAL_PERFORMANCE_FAIL`（29.033 fps / drop 51.611%）を書き換えず、
+W4-C3の3/3 EXACTをP5-E4のfrozen P2 PASSへ読み替えない。W4-C3以前のT2未採取は現在のblockerではなく、
+後段W4で置き換えられたhistorical investigationとして保持する。
+
+exit criteriaの再監査結果は次のとおりである。
+
+| gate | 現在の判定 | 根拠 / 未実行事項 |
+| --- | --- | --- |
+| §10.2要求とpositive/negative testの対応、対象0件防止 | **充足済み** | 対応表とP5-E literal 17件検査を実装済み |
+| 製品契約のcapability `2 / 2 / 1`、layer順、remove semantics | **充足済み** | `preview-engine-contract.md` §6 / §7 / §7.4を更新済み |
+| historical P3-C-2 blockerの解消 | **充足済み** | QUAL-F2 checkpointで独立2 campaignが各9/9 PASS。ただしfinal checkpoint gateとは分ける |
+| P2-D5-2 root-cause attribution | **充足済み** | W4-C3 formal 3/3 EXACT、root cause determined |
+| P2-D5-2 canonical performance | **未充足** | W3 canonical verdictはFAILのまま。production correction、fresh W3 3/3、frozen threshold PASSが未実行 |
+| current closure checkpointのordinary / P5-C / P5-D / P5-E | **未実行** | W4-C3 merge後の最終candidateでは未走行 |
+| current closure checkpointのP2 correctness / Seek | **未実行** | correction後の`p2-matrix.ps1` Playback 3/3 + Seek 3/3が未走行 |
+| current closure checkpointのP3-C-2 | **未実行** | correction後の`p3-c2-matrix.ps1` 9/9が未走行 |
+| current closure checkpointのP4 | **未実行** | QUAL-F2 final suiteはP2 FAILでstopしたため、`run-p4-formal-matrix.ps1` 3/3が未走行 |
+| final docs / artifact / manifest audit | **未実行** | final checkpointと全gateのSHA-256/provenance確定後に実施する |
+
+現在のblockerは、W4-C3で確定したactual causal chainに対する**production correctionが未設計・未実装**で、
+canonical P2 performance PASSが存在しないことである。W4-C3のscope外である「+1なら早期terminalを避ける」
+というcounterfactualを、そのまま修正根拠にはしない。
+
+closureは次の順序で再開する。今回は計画更新だけを行い、test/captureはまだ実行しない。
+
+1. W4-C3のexact chainから、変更するproduct invariantと変更しないrequired/source domain、threshold、
+   authorityを明文化し、修正が無ければ落ちるnegativeを先に固定する。
+2. 最小のproduction correctionを実装し、targeted unit / architecture / dry-runで経路を閉じる。
+3. clean release checkpointを固定し、ordinary CTestとP5-C / P5-D / P5-E product regressionを実行する。
+4. 同一checkpointでP2 correctness/Seek 6/6と、fresh W3 canonical performance 3/3を実行する。
+   authority/protocol/accountingがVALIDで、frozen 55 fps / 2% thresholdを全runで満たすことを要求する。
+5. 同一checkpointでP3-C-2 9/9、P4 3/3を実行する。FAIL時はstopし、変更前後の複数runで帰属する。
+6. raw、summary、provenance、manifestを不変保存し、`docs/phase5-plan.md` §10.4と本節を最終判定へ更新する。
 
 ### E4 実装結果 (実測)
 
