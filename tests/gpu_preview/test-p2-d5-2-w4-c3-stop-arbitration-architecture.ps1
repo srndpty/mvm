@@ -9,7 +9,8 @@ param(
         'NegativeArbitrationResetAfterMeasurementStartPublication',
         'NegativeSecondArbitrationResetWriterInHeader','NegativeMissingWitnessEmit',
         'NegativeSecondWitnessOverwrite','NegativeWitnessCauseReconstructed',
-        'NegativeClaimResultNotTransported','NegativeMeasurementStartSnapshotAtReset')]
+        'NegativeClaimResultNotTransported','NegativeMeasurementStartSnapshotAtReset',
+        'NegativeWitnessCapturedBeforePayloadPublish','NegativeCaptureGateExchangeReturnIgnored')]
     [string]$Case='Good'
 )
 $ErrorActionPreference='Stop'
@@ -92,19 +93,29 @@ switch($Case){
         $controller=$controller.Replace('mvm-p2-d5-2-w4-c3-stop-witness-3','mvm-p2-d5-2-w4-c3-stop-witness-absent')}
     'NegativeSecondWitnessOverwrite' {
         $renderer=$renderer.Replace((Lf @'
-        bool expected = false;
-        if (state_->stopWitnessCaptured.compare_exchange_strong(expected, true,
-                                                                std::memory_order_seq_cst)) {
-            std::lock_guard<std::mutex> lock(state_->stopWitnessMutex);
-            state_->stopWitness = witness;
-        } else {
-            state_->stopWitnessDuplicateCount.fetch_add(1, std::memory_order_seq_cst);
-        }
+            if (!state_->stopWitnessCaptured.load(std::memory_order_acquire)) {
+                state_->stopWitness = witness;
+                state_->stopWitnessCaptured.store(true, std::memory_order_release);
+            } else {
+                state_->stopWitnessDuplicateCount.fetch_add(1, std::memory_order_seq_cst);
+            }
 '@),(Lf @'
-        {
-            std::lock_guard<std::mutex> lock(state_->stopWitnessMutex);
             state_->stopWitness = witness;
-        }
+            state_->stopWitnessCaptured.store(true, std::memory_order_release);
+'@))}
+    'NegativeWitnessCapturedBeforePayloadPublish' {
+        $renderer=$renderer.Replace((Lf @'
+                state_->stopWitness = witness;
+                state_->stopWitnessCaptured.store(true, std::memory_order_release);
+'@),(Lf @'
+                state_->stopWitnessCaptured.store(true, std::memory_order_release);
+                state_->stopWitness = witness;
+'@))}
+    'NegativeCaptureGateExchangeReturnIgnored' {
+        $renderer=$renderer.Replace((Lf @'
+            witness.captureGateExchangeClosed = captureGateWasOpen;
+'@),(Lf @'
+            witness.captureGateExchangeClosed = true;
 '@))}
     'NegativeWitnessCauseReconstructed' {
         $controller=$controller.Replace((Lf @'
@@ -184,10 +195,17 @@ try{
     Require $rendererHeader 'struct CompositorStopWitness \{' 'stop witness structがありません'
     Require $renderer 'void finishMeasurement\(long long callbackBegin, StopArbitration cause,[\s\S]{0,200}const StopClaimResult& claim,[\s\S]{0,200}const StopWitnessTerminalFacts& terminal' 'cause/claim/terminal factsがfinishMeasurementへ明示transportされていません'
     Require $renderer 'witness\.arbitrationPrevious = claim\.previous;[\s\S]{0,120}witness\.arbitrationClaimSucceeded = claim\.succeeded;' 'claim結果がそのまま保存されていません'
-    Require $renderer 'stopWitnessCaptured\.compare_exchange_strong\(expected, true,[\s\S]{0,400}stopWitnessDuplicateCount\.fetch_add' 'stop witnessがwrite-onceではありません'
+    Require $renderer 'if \(!state_->stopWitnessCaptured\.load\(std::memory_order_acquire\)\) \{[\s\S]{0,400}stopWitnessDuplicateCount\.fetch_add' 'stop witnessがwrite-onceではありません'
+    # capturedは書き終えたpayloadのpublicationでなければならない。
+    Require $renderer 'state_->stopWitness = witness;\s*state_->stopWitnessCaptured\.store\(true, std::memory_order_release\);' 'captured publishがpayload保存より前にあります'
+    Require $renderer 'std::lock_guard<std::mutex> lock\(state_->stopWitnessMutex\);[\s\S]{0,200}stopWitnessCaptured\.load' 'witness publicationがmutex下で行われていません'
+    Require $controller 'std::lock_guard<std::mutex> lock\(state_->stopWitnessMutex\);[\s\S]{0,300}stopWitnessCaptured\.load' 'reader側がcaptured/payloadを同じmutex下で読んでいません'
+    # capture gate actionはexchangeの実returnだけから立てる。
+    Require $renderer 'const bool captureGateWasOpen =\s*state_->formalOpportunityCaptureActive\.exchange\(false[\s\S]{0,200}witness\.captureGateExchangeClosed = captureGateWasOpen;' 'capture gate exchangeの実returnがactionになっていません'
+    Deny $renderer 'witness\.captureGateExchangeClosed = true;' 'capture gate actionがexchange以外から立てられています'
     Require $renderer 'facts\.schedulerInvocationSerial = decision\.invocationSerial;' 'terminal invocation serialがdecision由来ではありません'
     Require $renderer 'scheduler_\.start\(callbackBegin[\s\S]{0,400}measurementStartArbitrationState\.store[\s\S]{0,3000}formalOpportunityCaptureActive\.store\(true' 'measurement-start snapshotがauthority pointで撮られていません'
-    Require $renderer 'witness\.gateCloseExplicitStopPublishSerial =[\s\S]{0,300}formalOpportunityCaptureActive\.exchange\(false' 'at_gate_close serialがcapture gate exchange直前で撮られていません'
+    Require $renderer 'witness\.gateCloseExplicitStopPublishSerial =[\s\S]{0,500}formalOpportunityCaptureActive\.exchange\(false' 'at_gate_close serialがcapture gate exchange直前で撮られていません'
     Require $controller 'mvm-p2-d5-2-w4-c3-stop-witness-3' 'stop witness schemaがemitされません'
     Require $controller 'stopArbitrationName\(witness\.arbitrationPrevious\)[\s\S]{0,400}claim_succeeded[\s\S]{0,400}reset_count_during_measurement' 'arbitration fieldがwitness由来で出力されていません'
     Deny $controller 'stopArbitrationName\(\s*state_->stopArbitration\.load' 'controllerがarbitration stateからcauseを再構築しています'

@@ -187,6 +187,7 @@ struct CompositorStopWitness {
     unsigned long long measurementStartFatalPublishSerial = 0;
     unsigned long long preExplicitStopPublishSerial = 0;
     unsigned long long preFatalPublishSerial = 0;
+    bool gateCloseSnapshotCaptured = false;
     unsigned long long gateCloseExplicitStopPublishSerial = 0;
     unsigned long long gateCloseFatalPublishSerial = 0;
 

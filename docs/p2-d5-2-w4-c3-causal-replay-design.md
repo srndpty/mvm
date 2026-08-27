@@ -16,14 +16,16 @@ amend 1: alternative stop publication ordering serial
 amend 2: ordinal -> target -> past_source_domain predicate replay
 amend 3: publication serial memory ordering / replay scope / overflow semantics
 amend 4: single atomic stop-cause arbitration（alternative exclusion authority）
+amend 5: flag/publication serialをclosure authorityから降格
 ```
 
 amend 1は`pre.explicit_stop_requested=false`だけでは別threadからのpublicationとのinterleavingを
 排除できない欠陥を閉じる。amend 2はLink A→Bのordinalとterminal branchの間に残っていたedgeを
 exact replayで埋める。amend 3はamend 1のserialをC++ memory modelとpublication site先頭という
 実装契約まで下ろし、amend 2のreplay範囲とoverflow semanticsの曖昧さを消す。amend 4は
-alternative stop exclusionのauthorityをserial観測から単一atomicのCAS ownershipへ移す。いずれかを
-満たさないcaptureは`W4_C3_PARTIAL`とする。
+alternative stop exclusionのauthorityをserial観測から単一atomicのCAS ownershipへ移す。amend 5は
+その帰結として、flagとpublication serialをclosureの必須条件から外す。いずれかを満たさないcaptureは
+`W4_C3_PARTIAL`とする。
 
 ## 追加する唯一の stop witness
 
@@ -345,6 +347,43 @@ stop_arbitration.reset_count_during_measurement = 0
 `NONE -> EXPLICIT_STOP`のclaimを成功させてからDOMAIN_TERMINAL claimを試し、後者が失敗して
 root cause PASSにならないことをcheckerへ要求する。
 
+## amend 5: flag / publication serialのclosure降格
+
+amend 4を実装すると、正しいDOMAIN_TERMINAL runでも次が起こる。
+
+```text
+render:     claim DOMAIN_TERMINAL 成功（previous=NONE）
+render:     formalOpportunityDomainReached.store(true)
+controller: domainReachedを観測 -> claim EXPLICIT_STOP 失敗（previous=DOMAIN_TERMINAL）
+            -> explicit_stop_publish_serial++ / measurementStopRequested=true
+render:     finishMeasurementのpre snapshot
+```
+
+このとき`pre.explicit_stop_requested=true`、`pre serial != measurement_start serial`となるが、
+causal ownershipはDOMAIN_TERMINALのままである。reset-to-NONEはmeasurement中禁止なので、
+claim成功後に来るEXPLICIT_STOP/FATALはownershipを奪えない。
+
+したがって次をCause B / Link A→Bの必須条件から外す。
+
+```text
+pre.explicit_stop_requested = false
+pre.fatal_latched = false
+pre.explicit_stop_publish_serial == at_gate_close.explicit_stop_publish_serial
+pre.fatal_publish_serial         == at_gate_close.fatal_publish_serial
+at_gate_close.* == measurement_start.*
+```
+
+これらはartifactに残すが位置づけは次に固定する。
+
+```text
+diagnostic only
+do not infer causal ownership from these fields
+```
+
+「loser claimへ帰属できた場合だけ許容する」という例外ロジックは採らない。`losing_stop_claim_count`は
+aggregate counterであり、個々のflag変化を特定のloser claimへexact joinするには弱い。ownershipは
+CAS winnerだけで決まるので、その帰属はroot cause判定に不要である。
+
 ## exact join
 
 DOMAIN_TERMINAL witnessは次をすべて同じscheduler invocation serialへ結ぶ。
@@ -488,31 +527,32 @@ Cause BとLink A→Bは各runで次をすべて要求する。
 
 ```text
 terminal witness count = 1
+duplicate witness count = 0
 cause = DOMAIN_TERMINAL
 scheduler invocation join count = 1
-pre.capture_gate_open = true
-pre.explicit_stop_requested = false
-pre.planned_window_end_reached = false
-pre.fatal_latched = false
+stop_arbitration.measurement_start_state = NONE
+stop_arbitration.reset_count_during_measurement = 0
 stop_arbitration.previous = NONE
 stop_arbitration.claimed = DOMAIN_TERMINAL
 stop_arbitration.claim_succeeded = true
-stop_arbitration.reset_count_during_measurement = 0
-pre.explicit_stop_publish_serial == at_gate_close.explicit_stop_publish_serial
-pre.fatal_publish_serial == at_gate_close.fatal_publish_serial
-at_gate_close.explicit_stop_publish_serial == measurement_start.explicit_stop_publish_serial
-at_gate_close.fatal_publish_serial == measurement_start.fatal_publish_serial
+pre.capture_gate_open = true
+pre.planned_window_end_reached = false
 action.formal_opportunity_domain_reached_published = true
 action.finish_measurement_entered = true
-action.capture_gate_exchange_closed = true
-action.measurement_stop_published = true
+action.capture_gate_exchange_closed = true      # capture gate exchangeの実return
 post.capture_gate_open = false
+action.measurement_stop_published = true
 post-terminal scheduler invocation count = 0
 INVALID_FATAL count = 0
 replayed_target_frame == recorded target_frame（全valid decision invocation）
 replayed_past_source_domain == recorded past_source_domain（全valid decision invocation）
 terminal直前decisionのpast_source_domain = false
 ```
+
+`pre.capture_gate_open` / `action.capture_gate_exchange_closed` / `post.capture_gate_open`は同一
+gate（`formalOpportunityCaptureActive`）のbefore / exchange実return / afterでなければならない。
+`explicit_stop_requested`、`fatal_latched`、publication serialはartifactに残るがclosure条件では
+ない（amend 5）。
 
 さらにterminal invocationのpre stateを、それ以前のC2 invocation replayの最終post stateとexactに
 一致させる。required-intent domainとsource-frame domainは引き続き別fieldであり、terminal
@@ -544,8 +584,10 @@ NegativeTerminalInvocationJoinMutation
 NegativeCaptureGatePreMutation
 NegativeCaptureGateExchangeMutation
 NegativeExplicitStopPreexisting
-NegativeExplicitStopPublishedBetweenPreAndGateClose
+NegativeAlternativeStopFieldUsedAsAuthority
 NegativeStopPublishSerialRelaxedOrdering
+NegativeWitnessCapturedBeforePayloadPublish
+NegativeCaptureGateExchangeReturnIgnored
 NegativeAlternativeStopWinsArbitration
 NegativeDomainTerminalClaimWithoutNonePrestate
 NegativeArbitrationResetDuringMeasurement
@@ -561,8 +603,12 @@ NegativeRootCauseDeclaredWithAlternativeStop
 NegativePerformanceAuthorityPromotion
 ```
 
-`NegativeExplicitStopPublishedBetweenPreAndGateClose`はpre snapshot後・gate close前に
-explicit stopがpublishされたcaptureを拒否し、raceによるfalse root-cause PASSを直接防ぐ。
+`NegativeAlternativeStopFieldUsedAsAuthority`は、checkerが`explicit_stop_requested`や
+publication serialからcausal ownershipを導く実装を拒否する（amend 5）。alternative stopの排除は
+arbitration winnerだけが与える。
+`NegativeWitnessCapturedBeforePayloadPublish`は`captured=true`がpayload保存より先に見える実装を、
+`NegativeCaptureGateExchangeReturnIgnored`は`capture_gate_exchange_closed`をgate exchangeの実
+return以外（interval activeなど別条件）から立てる実装を拒否する。
 `NegativeTerminalTargetPredicateMutation`はterminalの`target_frame`または
 `past_source_domain`を改変したcaptureをreplay不一致として拒否する。
 `NegativeStopPublishSerialRelaxedOrdering`と`NegativeStopSideEffectBeforeArbitrationClaim`は

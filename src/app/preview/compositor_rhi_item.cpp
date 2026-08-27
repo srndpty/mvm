@@ -1128,12 +1128,16 @@ private:
         }
         if (state_->measurementIntervalActive.exchange(false, std::memory_order_acq_rel)) {
             // capture gate exchangeの直前にalternative publication serialを撮る。
+            witness.gateCloseSnapshotCaptured = true;
             witness.gateCloseExplicitStopPublishSerial =
                 state_->explicitStopPublishSerial.load(std::memory_order_seq_cst);
             witness.gateCloseFatalPublishSerial =
                 state_->fatalPublishSerial.load(std::memory_order_seq_cst);
-            witness.captureGateExchangeClosed = true;
-            if (state_->formalOpportunityCaptureActive.exchange(false, std::memory_order_acq_rel)) {
+            // capture gate exchangeの実returnだけをactionとして記録する。
+            const bool captureGateWasOpen =
+                state_->formalOpportunityCaptureActive.exchange(false, std::memory_order_acq_rel);
+            witness.captureGateExchangeClosed = captureGateWasOpen;
+            if (captureGateWasOpen) {
                 bool closed = false;
                 gpu::PresentationOpportunitySnapshot snapshot;
                 {
@@ -1177,20 +1181,17 @@ private:
         witness.postCaptureGateOpen =
             state_->formalOpportunityCaptureActive.load(std::memory_order_acquire);
         witness.measurementStopQpc = callbackBegin;
-        if (witness.gateCloseExplicitStopPublishSerial == 0 &&
-            witness.gateCloseFatalPublishSerial == 0 && !witness.captureGateExchangeClosed) {
-            // interval非activeでgate exchangeへ到達しなかった場合も観測値を捏造しない。
-            witness.gateCloseExplicitStopPublishSerial = witness.preExplicitStopPublishSerial;
-            witness.gateCloseFatalPublishSerial = witness.preFatalPublishSerial;
-        }
         // winner witnessはwrite-once。後着のstopは上書きせずduplicateへ落とす。
-        bool expected = false;
-        if (state_->stopWitnessCaptured.compare_exchange_strong(expected, true,
-                                                                std::memory_order_seq_cst)) {
+        // capturedは「完全に書き終えたwitnessが存在する」publication contractなので、
+        // payloadを保存し終えてから最後にpublishする。
+        {
             std::lock_guard<std::mutex> lock(state_->stopWitnessMutex);
-            state_->stopWitness = witness;
-        } else {
-            state_->stopWitnessDuplicateCount.fetch_add(1, std::memory_order_seq_cst);
+            if (!state_->stopWitnessCaptured.load(std::memory_order_acquire)) {
+                state_->stopWitness = witness;
+                state_->stopWitnessCaptured.store(true, std::memory_order_release);
+            } else {
+                state_->stopWitnessDuplicateCount.fetch_add(1, std::memory_order_seq_cst);
+            }
         }
     }
 

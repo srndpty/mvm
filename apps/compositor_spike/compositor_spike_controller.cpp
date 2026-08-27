@@ -2230,10 +2230,13 @@ bool CompositorSpikeController::writeMetrics() {
     QJsonObject formalStopWitnessJson;
     {
         CompositorStopWitness witness;
-        bool captured = state_->stopWitnessCaptured.load(std::memory_order_seq_cst);
-        if (captured) {
+        bool captured = false;
+        {
+            // capturedとpayloadは同じmutex下で読む。captured=trueは完全なwitnessを意味する。
             std::lock_guard<std::mutex> lock(state_->stopWitnessMutex);
-            witness = state_->stopWitness;
+            captured = state_->stopWitnessCaptured.load(std::memory_order_acquire);
+            if (captured)
+                witness = state_->stopWitness;
         }
         formalStopWitnessJson = QJsonObject{
             {"schema", "mvm-p2-d5-2-w4-c3-stop-witness-3"},
@@ -2246,6 +2249,8 @@ bool CompositorSpikeController::writeMetrics() {
              static_cast<qint64>(state_->stopWitnessDuplicateCount.load(std::memory_order_seq_cst))},
             {"losing_stop_claim_count",
              static_cast<qint64>(state_->losingStopClaimCount.load(std::memory_order_seq_cst))},
+            // flagとpublication serialはdiagnosticであり、causal ownershipを与えない。
+            {"alternative_stop_fields_are_diagnostic_only", true},
             {"cause", QString::fromLatin1(stopArbitrationName(witness.cause))},
             {"render_callback_begin_qpc", witness.renderCallbackBeginQpc},
             {"scheduler_invocation_serial",
@@ -2285,7 +2290,8 @@ bool CompositorSpikeController::writeMetrics() {
                          {"capture_gate_exchange_closed", witness.captureGateExchangeClosed},
                          {"measurement_stop_published", witness.measurementStopPublished}}},
             {"at_gate_close",
-             QJsonObject{{"explicit_stop_publish_serial",
+             QJsonObject{{"snapshot_captured", witness.gateCloseSnapshotCaptured},
+                         {"explicit_stop_publish_serial",
                           static_cast<qint64>(witness.gateCloseExplicitStopPublishSerial)},
                          {"fatal_publish_serial",
                           static_cast<qint64>(witness.gateCloseFatalPublishSerial)}}},
