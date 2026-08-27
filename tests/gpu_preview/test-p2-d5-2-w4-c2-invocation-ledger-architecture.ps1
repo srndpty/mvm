@@ -1,5 +1,9 @@
 [CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$SourceRoot)
+param(
+    [Parameter(Mandatory=$true)][string]$SourceRoot,
+    [ValidateSet('Good','NegativePostWorktree','NegativePostSource','NegativePostQtGui','NegativePostQtQuick')]
+    [string]$Case='Good'
+)
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 function Read-Source([string]$Relative){Get-Content -LiteralPath (Join-Path $SourceRoot $Relative) -Raw -Encoding utf8}
@@ -9,6 +13,7 @@ $header=Read-Source 'src/media/gpu_preview/presentation_opportunity_scheduler.h'
 $scheduler=Read-Source 'src/media/gpu_preview/presentation_opportunity_scheduler.cpp'
 $renderer=Read-Source 'src/app/preview/compositor_rhi_item.cpp'
 $controller=Read-Source 'apps/compositor_spike/compositor_spike_controller.cpp'
+$runner=Read-Source 'scripts/acquire-p2-d5-2-w4-c2-diagnostic.ps1'
 Require $header 'OutsideSourceDomainDecision' 'source-domain result enumがありません'
 Deny $header 'OutsideRequiredDomainDecision' 'scheduler resultにrequired-domain enumが混入しています'
 Require $header 'requiredIntentMembership[\s\S]+transportDisposition' 'required membershipとtransport dispositionが別fieldではありません'
@@ -17,4 +22,23 @@ Require $scheduler 'CompletedOrdinalUnavailable[\s\S]+CompletedOrdinalOverflow[\
 Require $renderer 'noteInvocationTransportDisposition' 'renderer transport dispositionをinvocationへexact joinしていません'
 Require $controller 'mvm-p2-d5-2-w4-c2-scheduler-invocation-ledger-1' 'C2 schemaがemitされません'
 Require $controller 'diagnostic_root_cause_capture[\s\S]+canonical_performance_authority' 'diagnostic/performance authority分離がありません'
-Write-Output 'W4-C2 invocation ledger architecture: PASS'
+function Assert-ProvenancePostChecks([string]$Text){
+    Require $Text '\$postStatus=& git -C \$repo status --porcelain' '終了時worktree検査がありません'
+    Require $Text 'foreach\(\$path in \$sourceHashes\.Keys\)[\s\S]+\$postSourceHash-ne\$sourceHashes\[\$path\]' '終了時source hash検査がありません'
+    Require $Text 'Get-FileHash -LiteralPath \$qtGui[\s\S]+-ne\$qtGuiHash' '終了時Qt6Gui hash検査がありません'
+    Require $Text 'Get-FileHash -LiteralPath \$qtQuick[\s\S]+-ne\$qtQuickHash' '終了時Qt6Quick hash検査がありません'
+}
+$mutatedRunner=$runner
+switch($Case){
+    'NegativePostWorktree' {$mutatedRunner=$mutatedRunner.Replace('$postStatus=& git -C $repo status --porcelain',"`$postStatus=''")}
+    'NegativePostSource' {$mutatedRunner=$mutatedRunner.Replace('foreach($path in $sourceHashes.Keys){','foreach($path in @()){')}
+    'NegativePostQtGui' {$mutatedRunner=$mutatedRunner.Replace('-ne$qtGuiHash){','-ne(Get-FileHash -LiteralPath $qtGui -Algorithm SHA256).Hash.ToLowerInvariant()){')}
+    'NegativePostQtQuick' {$mutatedRunner=$mutatedRunner.Replace('-ne$qtQuickHash){','-ne(Get-FileHash -LiteralPath $qtQuick -Algorithm SHA256).Hash.ToLowerInvariant()){')}
+}
+if($Case-eq'Good'){
+    Assert-ProvenancePostChecks $mutatedRunner
+}else{
+    try{Assert-ProvenancePostChecks $mutatedRunner;throw "mutationが検出されませんでした: $Case"}
+    catch{if($_.Exception.Message-like'mutationが検出されませんでした:*'){throw}}
+}
+Write-Output "W4-C2 invocation ledger architecture: PASS ($Case)"

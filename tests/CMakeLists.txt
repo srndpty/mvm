@@ -618,11 +618,15 @@ foreach(_p2_d5_2_w4c2_case IN ITEMS GoodExact NegativeInvocationSequenceGap Nega
             -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w4c2-${_p2_d5_2_w4c2_name}"
         PROPERTIES LABELS "gpu_preview")
 endforeach()
-mvm_add_test(p2_d5_2_w4c2_invocation_ledger_architecture
-    COMMAND "${MVM_PWSH}" -NoProfile -File
-        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w4-c2-invocation-ledger-architecture.ps1"
-        -SourceRoot "${CMAKE_SOURCE_DIR}"
-    PROPERTIES LABELS "gpu_preview")
+foreach(_p2_d5_2_w4c2_arch_case IN ITEMS Good NegativePostWorktree NegativePostSource NegativePostQtGui NegativePostQtQuick)
+    string(TOLOWER "${_p2_d5_2_w4c2_arch_case}" _p2_d5_2_w4c2_arch_name)
+    mvm_add_test(p2_d5_2_w4c2_invocation_ledger_architecture_${_p2_d5_2_w4c2_arch_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w4-c2-invocation-ledger-architecture.ps1"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Case "${_p2_d5_2_w4c2_arch_case}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
 
 foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
     string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)

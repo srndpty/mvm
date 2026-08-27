@@ -26,6 +26,8 @@ if(-not[string]::IsNullOrWhiteSpace(($status|Out-String))){
     throw 'W4-C2 diagnostic captureはclean worktreeから取得してください'
 }
 $binaryHash=(Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash.ToLowerInvariant()
+$qtGuiHash=(Get-FileHash -LiteralPath $qtGui -Algorithm SHA256).Hash.ToLowerInvariant()
+$qtQuickHash=(Get-FileHash -LiteralPath $qtQuick -Algorithm SHA256).Hash.ToLowerInvariant()
 $sourceHashes=[ordered]@{}
 foreach($path in @('src/media/gpu_preview/presentation_opportunity_scheduler.h',
         'src/media/gpu_preview/presentation_opportunity_scheduler.cpp',
@@ -73,8 +75,24 @@ for($run=1;$run-le$Runs;++$run){
         verdict=[string]$checked.verdict}
 }
 if((& git -C $repo rev-parse HEAD).Trim()-ne$headSha){throw 'W4-C2 capture中にHEADが変化しました'}
+$postStatus=& git -C $repo status --porcelain
+if(-not[string]::IsNullOrWhiteSpace(($postStatus|Out-String))){
+    throw 'W4-C2 capture中にworktreeが変化しました'
+}
 if((Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash.ToLowerInvariant()-ne$binaryHash){
     throw 'W4-C2 capture中にbinaryが変化しました'
+}
+foreach($path in $sourceHashes.Keys){
+    $postSourceHash=(Get-FileHash -LiteralPath (Join-Path $repo $path) -Algorithm SHA256).Hash.ToLowerInvariant()
+    if($postSourceHash-ne$sourceHashes[$path]){
+        throw "W4-C2 capture中にsourceが変化しました: $path"
+    }
+}
+if((Get-FileHash -LiteralPath $qtGui -Algorithm SHA256).Hash.ToLowerInvariant()-ne$qtGuiHash){
+    throw 'W4-C2 capture中にQt6Gui.dllが変化しました'
+}
+if((Get-FileHash -LiteralPath $qtQuick -Algorithm SHA256).Hash.ToLowerInvariant()-ne$qtQuickHash){
+    throw 'W4-C2 capture中にQt6Quick.dllが変化しました'
 }
 $summary=[ordered]@{schema='mvm-p2-d5-2-w4-c2-diagnostic-acquisition-1';stage='P2-D5-2-W4-C2'
     diagnostic_root_cause_capture=$true;canonical_performance_authority=$false
@@ -82,8 +100,8 @@ $summary=[ordered]@{schema='mvm-p2-d5-2-w4-c2-diagnostic-acquisition-1';stage='P
     historical_w4b_rewritten=$false;checkpoint_sha=$headSha;worktree_clean=$true
     instrumentation_schema_version=1;executable_sha256=$binaryHash
     interactive_protocol='OPERATION_STOP_REQUIRED'
-    qt_gui_sha256=(Get-FileHash $qtGui -Algorithm SHA256).Hash.ToLowerInvariant()
-    qt_quick_sha256=(Get-FileHash $qtQuick -Algorithm SHA256).Hash.ToLowerInvariant()
+    qt_gui_sha256=$qtGuiHash
+    qt_quick_sha256=$qtQuickHash
     source_sha256=$sourceHashes;runs=$Runs;warmup_seconds=$WarmupSeconds
     measure_seconds=$MeasureSeconds;results=$results}
 $summary|ConvertTo-Json -Depth 12|Set-Content -LiteralPath (Join-Path $OutputDirectory 'w4-c2-acquisition.json') -Encoding utf8
