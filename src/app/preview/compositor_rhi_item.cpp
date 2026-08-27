@@ -67,6 +67,10 @@ public:
             state_->latestSubmittedRenderOrdinal.store(renderOrdinal_, std::memory_order_release);
         }
         state_->latestCompletedRenderOrdinal.store(renderOrdinal_, std::memory_order_release);
+        if (state_->terminalRenderExitTracking.load(std::memory_order_acquire))
+            state_->terminalRenderExitDiagnosticStage.store(
+                TerminalRenderExitDiagnosticStage::PresentationCaptureDestructorComplete,
+                std::memory_order_release);
     }
 
     void setDecision(long long selectedOutputFrame, long long skippedDeadlineCount, bool repeated) {
@@ -115,9 +119,19 @@ public:
     ~NativePresentTokenCapture() {
         if (!active_)
             return;
+        const bool terminalExitTracking =
+            state_->terminalRenderExitTracking.load(std::memory_order_acquire);
+        if (terminalExitTracking)
+            state_->terminalRenderExitDiagnosticStage.store(
+                TerminalRenderExitDiagnosticStage::NativeTokenDestructorEntered,
+                std::memory_order_release);
         const auto hook = state_->nativePresentHook;
         if (!valid_ || !hook || !hook->setCompositionToken(token_))
             state_->nativePresentTokenSetFailureCount.fetch_add(1, std::memory_order_relaxed);
+        if (terminalExitTracking)
+            state_->terminalRenderExitDiagnosticStage.store(
+                TerminalRenderExitDiagnosticStage::NativeTokenDestructorComplete,
+                std::memory_order_release);
     }
 
     bool setFormalIntentOrdinal(long long intentOrdinal) {
@@ -210,6 +224,14 @@ protected:
     void render(QRhiCommandBuffer* cb) override {
         gpu::D3D11LockRoleScope lockRole(gpu::D3D11LockRole::Render);
         const long long callbackBegin = gpu::qpcTicks();
+        state_->renderCallbackActive.store(true, std::memory_order_release);
+        [[maybe_unused]] const auto renderCallbackExit = qScopeGuard([state = state_] {
+            if (state->terminalRenderExitTracking.load(std::memory_order_acquire))
+                state->terminalRenderExitDiagnosticStage.store(
+                    TerminalRenderExitDiagnosticStage::RenderCallbackExited,
+                    std::memory_order_release);
+            state->renderCallbackActive.store(false, std::memory_order_release);
+        });
         if (state_->p3SeekDiagnostics.active.load(std::memory_order_acquire)) {
             state_->p3SeekDiagnostics.renderCallbackCount.fetch_add(1, std::memory_order_relaxed);
             state_->p3SeekDiagnostics.lastRenderCallbackQpc.store(callbackBegin,
@@ -393,8 +415,16 @@ protected:
                     1, std::memory_order_relaxed);
                 if (formalDecision.pastSourceDomain) {
                     state_->formalOpportunityDomainReached.store(true, std::memory_order_release);
-                    if (state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire))
+                    if (state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire)) {
+                        state_->terminalRenderExitTracking.store(true, std::memory_order_release);
+                        state_->terminalRenderExitDiagnosticStage.store(
+                            TerminalRenderExitDiagnosticStage::FinishMeasurementEntered,
+                            std::memory_order_release);
                         finishMeasurement(callbackBegin);
+                        state_->terminalRenderExitDiagnosticStage.store(
+                            TerminalRenderExitDiagnosticStage::FinishMeasurementReturned,
+                            std::memory_order_release);
+                    }
                 }
                 return;
             }
@@ -448,8 +478,16 @@ protected:
                 state_->formalOpportunityDomainReached.store(true, std::memory_order_release);
                 // W2-C0.1。scheduler-produced pastSourceDomain intentを持つこのcallbackで
                 // measurementを閉じる。controllerからstop用の追加Presentを作らない。
-                if (state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire))
+                if (state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire)) {
+                    state_->terminalRenderExitTracking.store(true, std::memory_order_release);
+                    state_->terminalRenderExitDiagnosticStage.store(
+                        TerminalRenderExitDiagnosticStage::FinishMeasurementEntered,
+                        std::memory_order_release);
                     finishMeasurement(callbackBegin);
+                    state_->terminalRenderExitDiagnosticStage.store(
+                        TerminalRenderExitDiagnosticStage::FinishMeasurementReturned,
+                        std::memory_order_release);
+                }
                 return;
             }
             formalDecisionObserved = true;

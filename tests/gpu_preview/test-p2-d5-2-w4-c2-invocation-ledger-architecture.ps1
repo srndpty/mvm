@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$SourceRoot,
-    [ValidateSet('Good','NegativePostWorktree','NegativePostSource','NegativePostQtGui','NegativePostQtQuick','NegativeWarmupMismatch','NegativeExit6Teardown','NegativeExit6Metrics','NegativeExit6Mapping','NegativeTeardownStageState','NegativeTeardownStageReport','NegativeTeardownWindowUpdate')]
+    [ValidateSet('Good','NegativePostWorktree','NegativePostSource','NegativePostQtGui','NegativePostQtQuick','NegativeWarmupMismatch','NegativeExit6Teardown','NegativeExit6Metrics','NegativeExit6Mapping','NegativeTeardownStageState','NegativeTeardownStageReport','NegativeTeardownWindowUpdate','NegativeTerminalExitState','NegativeTerminalExitReport')]
     [string]$Case='Good'
 )
 $ErrorActionPreference='Stop'
@@ -41,6 +41,10 @@ function Assert-TeardownStageDiagnostics([string]$Header,[string]$Renderer,[stri
     Require $Renderer 'teardownDiagnosticStage\.store\(RenderTeardownDiagnosticStage::CompositorDrain' 'compositor drain stageを記録していません'
     Require $Renderer 'requestTeardown\(\)[\s\S]+if \(window\(\)\)[\s\S]+window\(\)->update\(\)' 'teardown要求がwindow frameを起動しません'
     Require $Controller 'teardownDiagnosticStageName\(diagnosticStage\)' 'teardown timeoutが停止stageを出力しません'
+    Require $Header 'enum class TerminalRenderExitDiagnosticStage' 'terminal render exit stage enumがありません'
+    Require $Renderer 'TerminalRenderExitDiagnosticStage::NativeTokenDestructorEntered[\s\S]+TerminalRenderExitDiagnosticStage::NativeTokenDestructorComplete' 'native token destructorの通過点を記録していません'
+    Require $Renderer 'TerminalRenderExitDiagnosticStage::RenderCallbackExited' 'terminal render callback exitを記録していません'
+    Require $Controller 'terminalRenderExitDiagnosticStageName\(terminalExitStage\)' 'teardown timeoutがterminal render exit stageを出力しません'
 }
 $mutatedRunner=$runner
 $mutatedHeader=$rendererHeader
@@ -58,6 +62,8 @@ switch($Case){
     'NegativeTeardownStageState' {$mutatedRenderer=$mutatedRenderer.Replace('RenderTeardownDiagnosticStage::CompositorDrain','RenderTeardownDiagnosticStage::RenderCallbackObserved')}
     'NegativeTeardownStageReport' {$mutatedController=$mutatedController.Replace('teardownDiagnosticStageName(diagnosticStage)','"UNOBSERVED"')}
     'NegativeTeardownWindowUpdate' {$mutatedRenderer=$mutatedRenderer.Replace('window()->update();','update();')}
+    'NegativeTerminalExitState' {$mutatedRenderer=$mutatedRenderer.Replace('TerminalRenderExitDiagnosticStage::NativeTokenDestructorEntered','TerminalRenderExitDiagnosticStage::FinishMeasurementReturned')}
+    'NegativeTerminalExitReport' {$mutatedController=$mutatedController.Replace('terminalRenderExitDiagnosticStageName(terminalExitStage)','"UNOBSERVED"')}
 }
 if($Case-eq'Good'){
     Assert-ProvenancePostChecks $mutatedRunner

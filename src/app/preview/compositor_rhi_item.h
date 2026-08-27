@@ -117,6 +117,16 @@ enum class RenderTeardownDiagnosticStage {
     Complete,
 };
 
+enum class TerminalRenderExitDiagnosticStage {
+    NotObserved = 0,
+    FinishMeasurementEntered,
+    FinishMeasurementReturned,
+    PresentationCaptureDestructorComplete,
+    NativeTokenDestructorEntered,
+    NativeTokenDestructorComplete,
+    RenderCallbackExited,
+};
+
 struct NativePresentIntentScopeRecord {
     std::uint64_t tokenSerial = 0;
     std::uint64_t intentOrdinal = 0;
@@ -226,6 +236,10 @@ struct CompositorSpikeState {
     std::atomic<bool> teardownComplete{false};
     std::atomic<RenderTeardownDiagnosticStage> teardownDiagnosticStage{
         RenderTeardownDiagnosticStage::NotRequested};
+    std::atomic<bool> renderCallbackActive{false};
+    std::atomic<bool> terminalRenderExitTracking{false};
+    std::atomic<TerminalRenderExitDiagnosticStage> terminalRenderExitDiagnosticStage{
+        TerminalRenderExitDiagnosticStage::NotObserved};
     std::atomic<bool> playbackSchedulerEnabled{false};
     // P3-B 専用。P2 の QPC scheduler とは同時に有効にしない。
     std::shared_ptr<audio::AudioMasterClock> audioMasterClock;

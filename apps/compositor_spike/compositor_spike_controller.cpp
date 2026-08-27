@@ -44,6 +44,26 @@ const char* teardownDiagnosticStageName(RenderTeardownDiagnosticStage stage) {
     return "UNKNOWN";
 }
 
+const char* terminalRenderExitDiagnosticStageName(TerminalRenderExitDiagnosticStage stage) {
+    switch (stage) {
+    case TerminalRenderExitDiagnosticStage::NotObserved:
+        return "NOT_OBSERVED";
+    case TerminalRenderExitDiagnosticStage::FinishMeasurementEntered:
+        return "FINISH_MEASUREMENT_ENTERED";
+    case TerminalRenderExitDiagnosticStage::FinishMeasurementReturned:
+        return "FINISH_MEASUREMENT_RETURNED";
+    case TerminalRenderExitDiagnosticStage::PresentationCaptureDestructorComplete:
+        return "PRESENTATION_CAPTURE_DESTRUCTOR_COMPLETE";
+    case TerminalRenderExitDiagnosticStage::NativeTokenDestructorEntered:
+        return "NATIVE_TOKEN_DESTRUCTOR_ENTERED";
+    case TerminalRenderExitDiagnosticStage::NativeTokenDestructorComplete:
+        return "NATIVE_TOKEN_DESTRUCTOR_COMPLETE";
+    case TerminalRenderExitDiagnosticStage::RenderCallbackExited:
+        return "RENDER_CALLBACK_EXITED";
+    }
+    return "UNKNOWN";
+}
+
 DwmPresentationTimingSnapshot captureDwmTiming(QQuickWindow* window) {
     DwmPresentationTimingSnapshot result;
     if (!window)
@@ -1231,13 +1251,18 @@ void CompositorSpikeController::tick() {
         } else if (phaseTimer_.elapsed() > 15000) {
             const auto diagnosticStage =
                 state_->teardownDiagnosticStage.load(std::memory_order_acquire);
+            const auto terminalExitStage =
+                state_->terminalRenderExitDiagnosticStage.load(std::memory_order_acquire);
             std::fprintf(stderr,
                          "W4-C2_DIAGNOSTIC_EXIT6_TEARDOWN_TIMEOUT: "
                          "render teardownが15秒以内に完了しませんでした stage=%s "
-                         "worker_a_joined=%d worker_b_joined=%d\n",
+                         "worker_a_joined=%d worker_b_joined=%d render_callback_active=%d "
+                         "terminal_exit_stage=%s\n",
                          teardownDiagnosticStageName(diagnosticStage),
                          workerA_ && workerA_->joined() ? 1 : 0,
-                         workerB_ && workerB_->joined() ? 1 : 0);
+                         workerB_ && workerB_->joined() ? 1 : 0,
+                         state_->renderCallbackActive.load(std::memory_order_acquire) ? 1 : 0,
+                         terminalRenderExitDiagnosticStageName(terminalExitStage));
             exitCode_ = 6;
             phase_ = Phase::Done;
             timer_.stop();
