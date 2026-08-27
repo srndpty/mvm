@@ -199,3 +199,18 @@ build/p2-d5-2-w4-c2-no-physical-observer-smoke-20260827-d7e9629
 classification = DIAGNOSTIC_TIMEOUT_PHASE_NOT_OBSERVABLE
 formal cohort inclusion = false
 ```
+
+phase trace付きの5秒短縮runは`CAPTURE_ENVELOPE_STOP_WAIT`まで到達して45秒timeoutした。
+observerを起動しない場合、measurement stop callback退出前にGUI側のenvelope stop updateが
+coalesceされ、次callbackが失われる。observer待機は従来この順序を偶然回避していた。
+
+```text
+build/p2-d5-2-w4-c2-phase-trace-short-20260827-b0fec49
+last controller phase = CAPTURE_ENVELOPE_STOP_WAIT
+formal cohort inclusion = false
+```
+
+measurement stop後はscheduler/native Present token生成より前のgateでrender callbackを橋渡しし、
+stop requestを同じgateで処理する。これによりterminal後のscheduler invocationを増やさない。
+またnative envelope stopが15秒以内に完了しなければexit 6でfail-closeし、外部runnerのtimeoutまで
+無期限に待たない。

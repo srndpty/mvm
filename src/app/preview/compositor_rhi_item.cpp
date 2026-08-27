@@ -246,12 +246,13 @@ protected:
                 update();
             return;
         }
-        // native envelope停止後はGUI threadのupdateが進行中frameへcoalesceされ得る。
-        // render thread自身でteardown要求到着までcallbackを橋渡しする。このgateは
-        // scheduler invocationとnative Present token生成より前なので、証跡を増やさない。
+        // measurement stop後はGUI threadのenvelope stop updateが進行中frameへ
+        // coalesceされ得る。render thread自身でstop request処理とteardown要求到着まで
+        // callbackを橋渡しする。このgateはscheduler invocationとnative Present token生成
+        // より前なので、terminal後の証跡を増やさない。
         if (state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire) &&
-            state_->nativePresentEnvelopeStopped.load(std::memory_order_acquire) &&
             state_->measurementStopCaptured.load(std::memory_order_acquire)) {
+            captureMeasurementBoundary(callbackBegin);
             update();
             return;
         }
@@ -266,7 +267,8 @@ protected:
         // 次の無intent callbackを予約することもない。
         [[maybe_unused]] const auto nextFrameRequest = qScopeGuard([this] {
             if (!state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire) ||
-                !state_->measurementStopCaptured.load(std::memory_order_acquire))
+                !state_->measurementStopCaptured.load(std::memory_order_acquire) ||
+                !state_->nativePresentEnvelopeStopped.load(std::memory_order_acquire))
                 update();
         });
         // fatal後もmeasurement stop要求だけはrender threadで採取する。

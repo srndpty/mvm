@@ -1262,6 +1262,14 @@ void CompositorSpikeController::tick() {
                     ? nativeFailure
                     : QStringLiteral("incremental presentation mapperを一意に解決できません"),
                 !measurementSucceeded);
+        } else if (phaseTimer_.elapsed() >= 15000) {
+            std::fprintf(stderr,
+                         "W4-C2_DIAGNOSTIC_EXIT6_ENVELOPE_STOP_TIMEOUT: "
+                         "native Present capture envelopeが15秒以内に停止しませんでした\n");
+            exitCode_ = 6;
+            phase_ = Phase::Done;
+            timer_.stop();
+            Q_EMIT finished();
         } else if (phaseTimer_.elapsed() >= config_.displayTimeoutMs) {
             captureEnvelopeCloseFailure_ = true;
             captureEnvelopeCloseReason_ =
