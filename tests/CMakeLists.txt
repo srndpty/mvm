@@ -639,6 +639,17 @@ foreach(_p2_d5_2_w4c3_design_case IN ITEMS Good NegativeCauseEnum NegativeExactJ
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
+# P2-D5-2-W4-C3 step 6: fresh capture runnerのworkload/provenance契約。
+foreach(_p2_d5_2_w4c3_runner_case IN ITEMS Good NegativeDirtyWorktreeAllowed NegativeMissingCheckerProvenance NegativeMajorityAggregate NegativePostCaptureUnchecked NegativeMeasureSecondsShortened NegativePerformanceAuthorityPromotion NegativeRunClosureWeakened)
+    string(TOLOWER "${_p2_d5_2_w4c3_runner_case}" _p2_d5_2_w4c3_runner_name)
+    mvm_add_test(p2_d5_2_w4c3_acquisition_runner_${_p2_d5_2_w4c3_runner_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w4-c3-acquisition-runner-contract.ps1"
+            -Runner "${CMAKE_SOURCE_DIR}/scripts/acquire-p2-d5-2-w4-c3-diagnostic.ps1"
+            -Case "${_p2_d5_2_w4c3_runner_case}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 # P2-D5-2-W4-C3 step 4: checker/replayのfail-closed性をsynthetic artifactで閉じる。
 foreach(_p2_d5_2_w4c3_checker_case IN ITEMS Good GoodLosingExplicitStopPublication GoodExactInt64BoundaryDivision GoodObservedOrdinalGapPattern NegativeRequiredMembershipReplayMutation NegativeRequiredMembershipExactMissing NegativeC2LedgerPerformanceAuthorityPromotion NegativeC2LedgerRecordCountMismatch NegativeC2LedgerPhysicalAuthorityPromotion NegativeTerminalMembershipFalse NegativeTerminalPreStateMismatch NegativeStateContinuityBreak NegativeMissingReplayField NegativeMissingStopWitness NegativeDuplicateWitness NegativeTerminalInvocationJoinMutation NegativeArbitrationWinnerMutation NegativeArbitrationPreviousMutation NegativeMeasurementStartStateMutation NegativeResetCountMutation NegativeCaptureGateExchangeMutation NegativeGateCloseSnapshotMissing NegativeDomainTerminalClaimSourceMutation NegativeTerminalWitnessFactMismatch NegativeTerminalTargetPredicateMutation NegativeSchedulerConfigMutation NegativeCheckedOverflowBypass NegativeNearestQpcJoin NegativePostTerminalInvocation NegativeInvalidFatalPresent NegativeRootCauseDeclaredWithoutExactReplay NegativePerformanceAuthorityPromotion)
     string(TOLOWER "${_p2_d5_2_w4c3_checker_case}" _p2_d5_2_w4c3_checker_name)
