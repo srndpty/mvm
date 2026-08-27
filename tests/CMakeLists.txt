@@ -629,7 +629,7 @@ foreach(_p2_d5_2_w4c2_arch_case IN ITEMS Good NegativePostWorktree NegativePostS
 endforeach()
 
 # P2-D5-2-W4-C3: exact causal replayへ進む前のstop witness/replay設計freeze。
-foreach(_p2_d5_2_w4c3_design_case IN ITEMS Good NegativeCauseEnum NegativeExactJoin NegativeAlternativeStop NegativeAuthority)
+foreach(_p2_d5_2_w4c3_design_case IN ITEMS Good NegativeCauseEnum NegativeExactJoin NegativeAlternativeStop NegativeStopPublishSerial NegativeTargetPredicateReplay NegativeAuthority)
     string(TOLOWER "${_p2_d5_2_w4c3_design_case}" _p2_d5_2_w4c3_design_name)
     mvm_add_test(p2_d5_2_w4c3_causal_replay_design_${_p2_d5_2_w4c3_design_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File
