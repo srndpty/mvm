@@ -443,7 +443,7 @@ P5-Dと同様に一度に閉じない。§10.1のscopeを次の4 sliceへ分け�
 | P5-E1 | video sourceのinternal multi-source所有化、`CompositorCoordinator`をcomposition epochのauthorityとするproduct配線、`ExactFramePairer`のN一般化 (capabilityは1/1のまま) | 済 |
 | P5-E2 | `removeSource()`、active/pending composition参照中のremoval拒否、audio authorityの返却 | 済 |
 | P5-E3 | capabilityを`maxQualifiedActiveVideoSources == 2` / `maxQualifiedCompositionLayers == 2`へ引き上げ、多層render経路、per-source seek generation、`apps/p5e_preview_smoke` | 済 |
-| P5-E4 | P5-E closure (§10.2全項目の突き合わせ、frozen P2/P3-C-2/P4 regression再走、三文書更新) | **BLOCKED**。P2-D5-2/W4-C3 root-cause attributionはformal 3/3 EXACTでCLOSED。canonical P2 production correctionとfinal checkpoint gateは未実行 |
+| P5-E4 | P5-E closure (§10.2全項目の突き合わせ、frozen P2/P3-C-2/P4 regression再走、三文書更新) | **BLOCKED**。P2-D5-2/W4-C3 root-cause attributionはformal 3/3 EXACTでCLOSED。B2は`EXACT_TARGET_OUTPUT_COUNTER_AUTHORITY_UNAVAILABLE`で閉じ、counter-free production correctionとfinal checkpoint gateは未実行 |
 
 ### 10.4 P5-E closure evidence audit (再監査中)
 
@@ -504,9 +504,11 @@ canonical performance authorityへ昇格しないため、W3の`CANONICAL_PERFOR
 - 全raw / summary / provenance / SHA-256 manifestと三文書の最終整合監査
 
 現在のblockerは、root causeの未確定ではなく、確定したcausal chainに対するproduction correctionが
-未設計・未実装で、canonical P2 PASSがまだ存在しないことである。W4-C3がscope外とした
-counterfactualな`+1` sequenceを未検証のまま修正根拠にしない。closureの実行順は
-P2 corrective contract・negative固定、実装とtargeted gate、ordinary/product regression、
+未設計・未実装で、canonical P2 PASSがまだ存在しないことである。B2 static inventoryではsupportedな
+same-causal-point target-output completed counterが無く、`EXACT_TARGET_OUTPUT_COUNTER_AUTHORITY_UNAVAILABLE`で
+閉じた。target-output counter置換を修正前提にせず、次はcounter-free required-intent completion correctionを
+設計する。W4-C3がscope外としたcounterfactualな`+1` sequenceを未検証のまま修正根拠にしない。closureの実行順は
+counter-free P2 corrective contract・negative固定、実装とtargeted gate、ordinary/product regression、
 P2 correctnessとcanonical performance、P3-C-2、P4、artifact/docs auditとする。
 
 #### P5-E4 exit criteria

@@ -103,6 +103,10 @@ API contractの一次資料:
 代替authorityとしてB1へ採用しない。`IDXGISwapChain::GetFrameStatistics`もmulti-monitor等でstatisticsが
 unreliableと明記されており、別のsupport/provenance設計なしにfallbackしない。
 
+この候補inventoryは[B2 Supported Exact Target-output Counter Authority](p2-d5-2-b2-supported-exact-target-output-counter-authority.md)
+で完了した。4候補はすべてstatic rejectionとなり、verdictは
+`EXACT_TARGET_OUTPUT_COUNTER_AUTHORITY_UNAVAILABLE`である。
+
 ### 1.3 current scheduler authority
 
 current product inputは次のmixed authorityである。
@@ -552,6 +556,7 @@ B1 design                         CLOSED
 B1 amendment review               CLOSED
 B1 exact physical sample authority UNAVAILABLE
 B1 shadow replay                  NOT EVALUABLE
+B2 supported authority inventory CLOSED / NO CANDIDATE
 B1 instrumentation               NOT STARTED
 B1 negative tests                NOT STARTED
 B1 fresh capture                 NOT STARTED

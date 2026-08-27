@@ -672,6 +672,28 @@ threshold変更、required-set縮小は禁止したままである。
 `past_source_domain && required_intent_membership`をsuccessful completionにしないinvariantは継続してfreeze済みで、
 代替product behaviorは未選択である。P5-E4は引き続きBLOCKEDである。
 
+#### P2-D5-2 B2 — Supported Exact Target-output Counter Authority
+
+B1 shadowを再有効化できるsupported counterを
+[B2 static inventory](p2-d5-2-b2-supported-exact-target-output-counter-authority.md)で評価した。production、test、
+capture、instrumentationは変更していない。
+
+current QRhiはwindowed D3D11 `FLIP_DISCARD` swapchainで、public `QRhiD3D11NativeHandles`はdevice/contextだけを
+公開する。一方、local Qt patchのnative Present hookはactual `IDXGISwapChain*`を所有thread上で取得できるため、
+underlying objectへの到達自体は可能である。しかし`IDXGISwapChain::GetFrameStatistics`の`SyncRefreshCount` /
+`SyncQPCTime`はAPI call時点ではなくschedulerが最後にmachine timeをsampleしたpairであり、pre-renderとfirst
+post-swapのsame causal sampleを直接表さない。さらにMicrosoftがmulti-monitor等でstatisticsをunreliableと
+明記しており、current workloadはsingle-monitor専用contractではないためstatic rejectionとした。
+
+`IDXGIOutput::GetFrameStatistics`はfull-screen限定でcurrent windowed pathではunsupported、
+`D3DKMTGetScanLine`はscanline/VBlank statusだけでcompleted countを返さず、
+`D3DKMTWaitForVerticalBlankEvent(2)`はblocking waitでcount/boundary timestampを返さない。scanline transition、
+observer wake QPC、nearest、derived cadence、sequential counterで救済しない。
+
+全候補をstatic rejectionし、`EXACT_TARGET_OUTPUT_COUNTER_AUTHORITY_UNAVAILABLE`でB2を閉じた。B1 physical shadowは
+`NOT EVALUABLE`のまま維持し、production correctionはtarget-output counter置換系統から、未設計の
+`B3 Counter-free Required-intent Completion Correction`へ切り替える。P5-E4は引き続きBLOCKEDである。
+
 ### E4 実装結果 (実測)
 
 - `docs/phase5-plan.md` §10.2の全要求をunit/product testへ突き合わせ、対応表を§10へ追加した。
