@@ -818,6 +818,8 @@ void CompositorSpikeController::armMeasurementAfterCaptureEnvelopeOpen() {
     state_->measurementArmQpc.store(gpu::qpcTicks(), std::memory_order_release);
     state_->measurementStartRequested.store(true, std::memory_order_release);
     state_->measurementStartCaptured.store(false, std::memory_order_release);
+    // W4-C3 amend 4。stop arbitration lifecycleのreset siteはここ1箇所だけ。
+    resetStopArbitrationForMeasurement(*state_);
     state_->measurementStopRequested.store(false, std::memory_order_release);
     state_->measurementStopCaptured.store(false, std::memory_order_release);
     phase_ = Phase::MeasureStartWait;
@@ -1131,6 +1133,9 @@ void CompositorSpikeController::tick() {
             gpu::qpcMsBetween(measurementStart_.qpc, nowQpc) >= config_.measureSeconds * 1000.0) {
             phase_ = Phase::MeasureStopWait;
             if (!state_->measurementStopCaptured.load(std::memory_order_acquire)) {
+                // W4-C3 amend 4。stop side effectより前にownershipをclaimする。
+                const StopClaimResult claim = claimStopCause(*state_, StopArbitration::ExplicitStop);
+                explicitStopClaim_ = claim;
                 state_->measurementStopRequested.store(true, std::memory_order_release);
                 state_->measurementStopCaptured.store(false, std::memory_order_release);
                 item_->update();
@@ -1581,6 +1586,8 @@ void CompositorSpikeController::beginShutdown(const QString& reason, bool failur
         !state_->measurementStopCaptured.load(std::memory_order_acquire) &&
         (state_->measurementStartCaptured.load(std::memory_order_acquire) ||
          state_->measurementIntervalActive.load(std::memory_order_acquire))) {
+        // W4-C3 amend 4。fatal shutdown由来のstopもownershipをclaimしてから発行する。
+        fatalStopClaim_ = claimStopCause(*state_, StopArbitration::Fatal);
         state_->measurementStopRequested.store(true, std::memory_order_release);
         phase_ = Phase::FatalMeasureStopWait;
         phaseTimer_.restart();
@@ -2693,6 +2700,21 @@ bool CompositorSpikeController::writeMetrics() {
              {"native_envelope_close_qpc",
               state_->nativePresentEnvelopeCloseQpc.load(std::memory_order_acquire)},
              {"record_count", formalSchedulerInvocationLedger.size()},
+             // W4-C3 amend 2。replay入力はscheduler instanceが使用したconfigそのもの。
+             {"scheduler_config",
+              QJsonObject{
+                  {"source_frame_offset",
+                   static_cast<qint64>(formalOpportunitySnapshot.config.sourceFrameOffset)},
+                  {"source_fps_numerator",
+                   static_cast<qint64>(formalOpportunitySnapshot.config.sourceFpsNumerator)},
+                  {"source_fps_denominator",
+                   static_cast<qint64>(formalOpportunitySnapshot.config.sourceFpsDenominator)},
+                  {"refresh_numerator",
+                   static_cast<qint64>(formalOpportunitySnapshot.config.refreshNumerator)},
+                  {"refresh_denominator",
+                   static_cast<qint64>(formalOpportunitySnapshot.config.refreshDenominator)},
+                  {"required_frame_count",
+                   static_cast<qint64>(formalOpportunitySnapshot.config.requiredFrameCount)}}},
              {"records", formalSchedulerInvocationLedger}}},
         {"measurement_composition_requested_count",
          measurementJson(measurement.compositionRequested)},

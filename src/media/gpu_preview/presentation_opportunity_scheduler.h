@@ -212,6 +212,9 @@ struct PresentationOpportunitySnapshot {
     std::vector<long long> requiredIntentOrdinals;
     bool invocationLedgerEnabled = false;
     std::vector<PresentationSchedulerInvocationRecord> invocationRecords;
+    // W4-C3 exact causal replayの入力。scheduler instanceが実際に使用したconfigを
+    // そのまま渡す。artifact側で別fieldから再構成してはならない。
+    PresentationOpportunityConfig config;
 };
 
 // P2-D5-2/F2 formal Playback専用。presentation opportunityの序数はDWM refresh

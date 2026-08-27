@@ -573,6 +573,37 @@ root cause PASSを出させず、`NegativeDomainTerminalClaimWithoutNonePrestate
 `NegativeArbitrationResetDuringMeasurement`と`NegativeSecondArbitrationResetSite`は
 measurement中のreset-to-NONE、およびlifecycle reset siteの複数化を拒否する。
 
+## publication site inventory（step 2で列挙、architecture testで固定）
+
+source上のwriterを完全列挙し、全siteを`claimStopCause()`単一helperへ結んだ。未分類writerは無い。
+
+```text
+EXPLICIT_STOP
+  compositor_spike_controller.cpp  measurement stop request（domain reached / 経過時間）
+
+FATAL
+  compositor_spike_controller.cpp  beginShutdown由来のmeasurement stop request
+  compositor_rhi_item.cpp          fail()のfatal latch
+  compositor_rhi_item.cpp          commitSwap失敗のfatal latch（fail()を経由しない）
+
+PLANNED_WINDOW_END
+  compositor_rhi_item.cpp          captureMeasurementBoundary()のintervalEnded分岐
+
+DOMAIN_TERMINAL
+  compositor_rhi_item.cpp          SuppressOutsideRequiredSet terminal branch
+  compositor_rhi_item.cpp          transport terminal branch
+
+EXPLICIT_STOP consumption（publication siteではない）
+  compositor_rhi_item.cpp          measurementStopRequested.exchange(false)
+
+lifecycle reset（1箇所のみ）
+  compositor_spike_controller.cpp  armMeasurementAfterCaptureEnvelopeOpen()
+```
+
+architecture testは、reset site数=1、helper外のinline CAS/store無し、
+`formalOpportunityDomainReached`storeの全件がclaim直後であること、fatal latch数<=claim数、
+`scheduler_config`がinstance config由来であることを検査する。
+
 ## 実装順序
 
 ```text

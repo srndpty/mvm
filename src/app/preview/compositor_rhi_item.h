@@ -127,6 +127,38 @@ enum class TerminalRenderExitDiagnosticStage {
     RenderCallbackExited,
 };
 
+// P2-D5-2 W4-C3 amend 4。measurementを止め得るcauseのownershipを単一atomicで裁定する。
+// CAS winnerだけがcausal authorityであり、flagやserialはownershipを与えない。
+enum class StopArbitration {
+    None = 0,
+    DomainTerminal,
+    PlannedWindowEnd,
+    ExplicitStop,
+    Fatal,
+};
+
+inline const char* stopArbitrationName(StopArbitration cause) {
+    switch (cause) {
+    case StopArbitration::None:
+        return "NONE";
+    case StopArbitration::DomainTerminal:
+        return "DOMAIN_TERMINAL";
+    case StopArbitration::PlannedWindowEnd:
+        return "PLANNED_WINDOW_END";
+    case StopArbitration::ExplicitStop:
+        return "EXPLICIT_STOP";
+    case StopArbitration::Fatal:
+        return "FATAL";
+    }
+    return "UNKNOWN";
+}
+
+struct StopClaimResult {
+    bool succeeded = false;
+    StopArbitration previous = StopArbitration::None;
+    unsigned long long publishSerial = 0;
+};
+
 struct NativePresentIntentScopeRecord {
     std::uint64_t tokenSerial = 0;
     std::uint64_t intentOrdinal = 0;
@@ -409,6 +441,13 @@ struct CompositorSpikeState {
     std::atomic<bool> measurementStartCaptured{false};
     std::atomic<bool> measurementStopRequested{false};
     std::atomic<bool> measurementStopCaptured{false};
+    // W4-C3 amend 4。stop causeのownership。measurement epochごとにreset siteは1箇所だけ。
+    std::atomic<StopArbitration> stopArbitration{StopArbitration::None};
+    std::atomic<unsigned long long> stopArbitrationResetCount{0};
+    std::atomic<unsigned long long> stopArbitrationResetDuringMeasurementCount{0};
+    // W4-C3 amend 1/3。補強diagnosticであり、alternative exclusion authorityではない。
+    std::atomic<unsigned long long> explicitStopPublishSerial{0};
+    std::atomic<unsigned long long> fatalPublishSerial{0};
     std::atomic<long long> measurementDurationQpc{0};
     std::atomic<long long> measurementEndQpc{0};
     std::atomic<bool> measurementIntervalActive{false};
@@ -421,6 +460,32 @@ struct CompositorSpikeState {
     std::mutex errorMutex;
     std::string fatalReason;
 };
+
+// W4-C3 amend 4。classified stop publication siteはこのhelperだけを通る。
+// 順序はarbitration claim -> publication serial -> 既存flag/side effectで固定する。
+inline StopClaimResult claimStopCause(CompositorSpikeState& state, StopArbitration cause) {
+    StopClaimResult result;
+    StopArbitration expected = StopArbitration::None;
+    result.succeeded =
+        state.stopArbitration.compare_exchange_strong(expected, cause, std::memory_order_seq_cst);
+    result.previous = expected;
+    if (cause == StopArbitration::ExplicitStop)
+        result.publishSerial =
+            state.explicitStopPublishSerial.fetch_add(1, std::memory_order_seq_cst) + 1;
+    else if (cause == StopArbitration::Fatal)
+        result.publishSerial = state.fatalPublishSerial.fetch_add(1, std::memory_order_seq_cst) + 1;
+    return result;
+}
+
+// W4-C3 amend 4。lifecycle reset siteはこの1箇所だけ。measurement中の呼出しは
+// contract違反としてcountされ、closure条件(reset_count_during_measurement=0)を破る。
+inline void resetStopArbitrationForMeasurement(CompositorSpikeState& state) {
+    if (state.measurementIntervalActive.load(std::memory_order_seq_cst) ||
+        state.measurementStartCaptured.load(std::memory_order_seq_cst))
+        state.stopArbitrationResetDuringMeasurementCount.fetch_add(1, std::memory_order_seq_cst);
+    state.stopArbitration.store(StopArbitration::None, std::memory_order_seq_cst);
+    state.stopArbitrationResetCount.fetch_add(1, std::memory_order_seq_cst);
+}
 
 class CompositorRhiItem : public QQuickRhiItem {
     Q_OBJECT

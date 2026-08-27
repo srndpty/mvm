@@ -425,6 +425,9 @@ protected:
                 state_->formalOutsideRequiredTransportSuppressedCount.fetch_add(
                     1, std::memory_order_relaxed);
                 if (formalDecision.pastSourceDomain) {
+                    // W4-C3 amend 4。domainReachedはcontroller stopを誘発する外部可視な
+                    // side effectなので、その前にDOMAIN_TERMINALをclaimする。
+                    stopClaim_ = claimStopCause(*state_, StopArbitration::DomainTerminal);
                     state_->formalOpportunityDomainReached.store(true, std::memory_order_release);
                     if (state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire)) {
                         state_->terminalRenderExitTracking.store(true, std::memory_order_release);
@@ -486,6 +489,8 @@ protected:
                 return;
             }
             if (formalDecision.pastSourceDomain) {
+                // W4-C3 amend 4。同上。terminal branchのclaimがcausal authorityになる。
+                stopClaim_ = claimStopCause(*state_, StopArbitration::DomainTerminal);
                 state_->formalOpportunityDomainReached.store(true, std::memory_order_release);
                 // W2-C0.1。scheduler-produced pastSourceDomain intentを持つこのcallbackで
                 // measurementを閉じる。controllerからstop用の追加Presentを作らない。
@@ -1179,6 +1184,10 @@ private:
         const bool stopRequested =
             state_->measurementStopRequested.exchange(false, std::memory_order_acq_rel);
         if (intervalEnded || stopRequested) {
+            // W4-C3 amend 4。planned window endはここが publication site。
+            // explicit stopはcontroller siteでclaim済みなので再claimしない。
+            if (intervalEnded)
+                stopClaim_ = claimStopCause(*state_, StopArbitration::PlannedWindowEnd);
             finishMeasurement(callbackBegin);
             return true;
         }
@@ -1402,7 +1411,11 @@ private:
         }
     }
 
+    StopClaimResult stopClaim_;
+
     void fail(const std::string& reason) {
+        // W4-C3 amend 4。fatal latchも外部可視なside effectより前にclaimする。
+        stopClaim_ = claimStopCause(*state_, StopArbitration::Fatal);
         {
             std::lock_guard<std::mutex> lock(state_->errorMutex);
             if (state_->fatalReason.empty())
@@ -1620,6 +1633,8 @@ void CompositorRhiItem::recordFrameSwapped() {
             error = state_->formalOpportunityScheduler.error();
         }
         if (!committed) {
+            // W4-C3 amend 4。fail()を経由しないfatal latch siteも同じhelperを通す。
+            claimStopCause(*state_, StopArbitration::Fatal);
             {
                 std::lock_guard<std::mutex> lock(state_->errorMutex);
                 state_->fatalReason = std::string("P2-D5-2 render↔swap authority失敗: ") +

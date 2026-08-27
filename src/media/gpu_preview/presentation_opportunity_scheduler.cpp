@@ -393,7 +393,8 @@ PresentationOpportunitySnapshot PresentationOpportunityScheduler::snapshot() con
             started_ && error_ == PresentationOpportunityError::None,
             requiredIntentOrdinals_,
             config_.invocationLedgerEnabled,
-            invocationRecords_};
+            invocationRecords_,
+            config_};
 }
 
 bool PresentationOpportunityScheduler::noteInvocationTransportDisposition(

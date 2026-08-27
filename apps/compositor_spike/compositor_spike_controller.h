@@ -164,6 +164,9 @@ private:
     bool measurementStartCaptured_ = false;
     bool measurementStopCaptured_ = false;
     bool measurementAvailable_ = false;
+    // W4-C3 amend 4。controller側publication siteのclaim結果。ownershipは変えない。
+    StopClaimResult explicitStopClaim_;
+    StopClaimResult fatalStopClaim_;
     long long sourceAFrameCount_ = -1;
     long long sourceBFrameCount_ = -1;
     long long requiredMeasurementFrameCount_ = 0;

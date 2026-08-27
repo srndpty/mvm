@@ -639,6 +639,17 @@ foreach(_p2_d5_2_w4c3_design_case IN ITEMS Good NegativeCauseEnum NegativeExactJ
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
+# P2-D5-2-W4-C3 step 2: stop arbitration / publication serial / scheduler_config emitの構造検査。
+foreach(_p2_d5_2_w4c3_arch_case IN ITEMS Good NegativeStopPublishSerialRelaxedOrdering NegativeStopSideEffectBeforeArbitrationClaim NegativeUnclaimedExplicitStopWriter NegativeUnclaimedFatalWriter NegativeUnclaimedFatalLatchSite NegativeArbitrationResetDuringMeasurement NegativeSecondArbitrationResetSite NegativeInlineArbitrationCas NegativeMissingSchedulerConfigEmit)
+    string(TOLOWER "${_p2_d5_2_w4c3_arch_case}" _p2_d5_2_w4c3_arch_name)
+    mvm_add_test(p2_d5_2_w4c3_stop_arbitration_architecture_${_p2_d5_2_w4c3_arch_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w4-c3-stop-arbitration-architecture.ps1"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Case "${_p2_d5_2_w4c3_arch_case}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
     string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)
     mvm_add_test(p2_c3_a3_t2_d1b2_evaluability_${_p2_c3_a3_t2_d1b2e_name}
