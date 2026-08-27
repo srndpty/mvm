@@ -816,12 +816,15 @@ void CompositorSpikeController::armMeasurementAfterCaptureEnvelopeOpen() {
                                              config_.measureSeconds,
                                          std::memory_order_release);
     state_->measurementArmQpc.store(gpu::qpcTicks(), std::memory_order_release);
-    state_->measurementStartRequested.store(true, std::memory_order_release);
     state_->measurementStartCaptured.store(false, std::memory_order_release);
-    // W4-C3 amend 4。stop arbitration lifecycleのreset siteはここ1箇所だけ。
-    resetStopArbitrationForMeasurement(*state_);
     state_->measurementStopRequested.store(false, std::memory_order_release);
     state_->measurementStopCaptured.store(false, std::memory_order_release);
+    // W4-C3 amend 4。stop arbitration lifecycleのreset siteはここ1箇所だけであり、
+    // measurement startのpublicationより前でなければならない。render threadが
+    // start requestをconsumeした後にresetが走るinterleavingを作らない。
+    resetStopArbitrationForMeasurement(*state_);
+    // start requestはこのepoch初期化がすべて済んだ後で最後にpublishする。
+    state_->measurementStartRequested.store(true, std::memory_order_release);
     phase_ = Phase::MeasureStartWait;
     item_->update();
 }

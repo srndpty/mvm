@@ -274,6 +274,7 @@ StopArbitration lifecycle:
 
 pre-measurement reset:
   exactly once -> NONE
+  measurement start publicationより前（同一thread上でsequenced-before）
 
 measurement-start authority established:
   arbitration == NONE を exact に確認

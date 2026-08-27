@@ -5,7 +5,9 @@ param(
         'NegativeStopSideEffectBeforeArbitrationClaim','NegativeUnclaimedExplicitStopWriter',
         'NegativeUnclaimedFatalWriter','NegativeUnclaimedFatalLatchSite',
         'NegativeArbitrationResetDuringMeasurement','NegativeSecondArbitrationResetSite',
-        'NegativeInlineArbitrationCas','NegativeMissingSchedulerConfigEmit')]
+        'NegativeInlineArbitrationCas','NegativeMissingSchedulerConfigEmit',
+        'NegativeArbitrationResetAfterMeasurementStartPublication',
+        'NegativeSecondArbitrationResetWriterInHeader')]
     [string]$Case='Good'
 )
 $ErrorActionPreference='Stop'
@@ -73,6 +75,25 @@ switch($Case){
 '@))}
     'NegativeMissingSchedulerConfigEmit' {
         $controller=$controller.Replace('{"scheduler_config",','{"scheduler_config_absent",')}
+    'NegativeArbitrationResetAfterMeasurementStartPublication' {
+        $controller=$controller.Replace((Lf @'
+    resetStopArbitrationForMeasurement(*state_);
+    // start requestはこのepoch初期化がすべて済んだ後で最後にpublishする。
+    state_->measurementStartRequested.store(true, std::memory_order_release);
+'@),(Lf @'
+    state_->measurementStartRequested.store(true, std::memory_order_release);
+    resetStopArbitrationForMeasurement(*state_);
+'@))}
+    'NegativeSecondArbitrationResetWriterInHeader' {
+        $rendererHeader=$rendererHeader.Replace((Lf @'
+inline void resetStopArbitrationForMeasurement(CompositorSpikeState& state) {
+'@),(Lf @'
+inline void clearStopArbitration(CompositorSpikeState& state) {
+    state.stopArbitration.store(StopArbitration::None, std::memory_order_seq_cst);
+}
+
+inline void resetStopArbitrationForMeasurement(CompositorSpikeState& state) {
+'@))}
 }
 try{
     # amend 4: 単一atomicのarbitrationとhelper
@@ -88,6 +109,13 @@ try{
     Require $rendererHeader 'stopArbitrationResetDuringMeasurementCount\.fetch_add\(1, std::memory_order_seq_cst\)' 'measurement中resetの検出がありません'
     $resetSites=([regex]::Matches($renderer+$controller,'resetStopArbitrationForMeasurement\(')).Count
     if($resetSites-ne1){throw "lifecycle reset siteが1箇所ではありません: $resetSites"}
+    # reset writerの実体はheader内にあるので、header自身でexactly-oneを閉じる。
+    $headerResetWriters=([regex]::Matches($rendererHeader,'stopArbitration\.store\(StopArbitration::None')).Count
+    if($headerResetWriters-ne1){throw "arbitration reset writerが1箇所ではありません: $headerResetWriters"}
+    Require $rendererHeader 'inline void resetStopArbitrationForMeasurement\(CompositorSpikeState& state\) \{[^}]*stopArbitration\.store\(StopArbitration::None' '唯一のreset writerがlifecycle helper内にありません'
+    # reset は measurement start publication より前（同一thread上でsequenced-before）。
+    Require $controller 'resetStopArbitrationForMeasurement\(\*state_\);[\s\S]{0,300}measurementStartRequested\.store\(true' 'arbitration resetがmeasurement start publicationより後にあります'
+    Deny $controller 'measurementStartRequested\.store\(true[\s\S]{0,300}resetStopArbitrationForMeasurement\(\*state_\);' 'measurement start publication後にarbitration resetが走り得ます'
     Deny $renderer 'stopArbitration\.store\(' 'render側にarbitration resetがあります'
     Deny $controller 'stopArbitration\.store\(' 'controller側にhelper外のarbitration resetがあります'
     Deny $renderer 'stopArbitration\.compare_exchange_strong' 'helper外のinline CASがあります'
