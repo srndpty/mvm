@@ -574,6 +574,37 @@ gate（`formalOpportunityCaptureActive`）のbefore / exchange実return / after�
 一致させる。required-intent domainとsource-frame domainは引き続き別fieldであり、terminal
 `past_source_domain=true`からrequired-domain exhaustionを推論しない。
 
+## checker（step 4）
+
+`scripts/check-p2-d5-2-w4-c3-causal-replay.ps1`はartifactの保存済みfieldだけを検証し、
+witnessもcauseも再構築しない。verdictの分類は機械的に固定する。
+
+```text
+W4_C3_PARTIAL
+  必須evidence欠落
+  witness missing / captured=false / claim_recorded=false
+  at_gate_close snapshot未取得
+  scheduler_config missing
+  join対象不足（serialに一致するrecordが無い）
+
+W4_C3_INCOMPATIBLE
+  evidenceは存在するが矛盾
+  serial join count != 1
+  joined recordとwitness factsの不一致
+  arbitration winner / previous / measurement_start_state / reset count の不一致
+  arithmetic replay不一致（中間積overflowを含む）
+  terminal直前predicate不一致
+  post-terminal invocation、INVALID_FATAL
+  canonical performance authorityへの昇格
+
+W4_C3_CAUSAL_REPLAY_EXACT
+  全requirement成立
+```
+
+「値が違う」をPARTIALへ落とさない。観測済みの矛盾はINCOMPATIBLEとする。checkerは
+`root_cause_determined`をEXACT以外では必ずfalseにし、flagとpublication serialは
+`alternative_stop_fields.used_as_authority=false`として表示するだけで判定に使わない。
+
 ## verdict
 
 ```text

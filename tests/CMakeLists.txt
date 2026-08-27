@@ -639,6 +639,18 @@ foreach(_p2_d5_2_w4c3_design_case IN ITEMS Good NegativeCauseEnum NegativeExactJ
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
+# P2-D5-2-W4-C3 step 4: checker/replayのfail-closed性をsynthetic artifactで閉じる。
+foreach(_p2_d5_2_w4c3_checker_case IN ITEMS Good GoodLosingExplicitStopPublication NegativeMissingStopWitness NegativeDuplicateWitness NegativeTerminalInvocationJoinMutation NegativeArbitrationWinnerMutation NegativeArbitrationPreviousMutation NegativeMeasurementStartStateMutation NegativeResetCountMutation NegativeCaptureGateExchangeMutation NegativeGateCloseSnapshotMissing NegativeDomainTerminalClaimSourceMutation NegativeTerminalWitnessFactMismatch NegativeTerminalTargetPredicateMutation NegativeSchedulerConfigMutation NegativeCheckedOverflowBypass NegativeNearestQpcJoin NegativePostTerminalInvocation NegativeInvalidFatalPresent NegativeRootCauseDeclaredWithoutExactReplay NegativePerformanceAuthorityPromotion)
+    string(TOLOWER "${_p2_d5_2_w4c3_checker_case}" _p2_d5_2_w4c3_checker_name)
+    mvm_add_test(p2_d5_2_w4c3_causal_replay_checker_${_p2_d5_2_w4c3_checker_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w4-c3-causal-replay-checker.ps1"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w4-c3-causal-replay.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w4c3-checker-${_p2_d5_2_w4c3_checker_name}"
+            -Case "${_p2_d5_2_w4c3_checker_case}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 # P2-D5-2-W4-C3 step 2: stop arbitration / publication serial / scheduler_config emitの構造検査。
 foreach(_p2_d5_2_w4c3_arch_case IN ITEMS Good NegativeStopPublishSerialRelaxedOrdering NegativeStopSideEffectBeforeArbitrationClaim NegativeUnclaimedExplicitStopWriter NegativeUnclaimedFatalWriter NegativeUnclaimedFatalLatchSite NegativeArbitrationResetDuringMeasurement NegativeSecondArbitrationResetSite NegativeInlineArbitrationCas NegativeMissingSchedulerConfigEmit NegativeArbitrationResetAfterMeasurementStartPublication NegativeSecondArbitrationResetWriterInHeader NegativeMissingWitnessEmit NegativeSecondWitnessOverwrite NegativeWitnessCauseReconstructed NegativeClaimResultNotTransported NegativeMeasurementStartSnapshotAtReset NegativeWitnessCapturedBeforePayloadPublish NegativeCaptureGateExchangeReturnIgnored NegativeExplicitStopClaimDefaulted NegativeExplicitStopClaimReconstructedFromWinner NegativeExplicitStopClaimRecordNotPublished NegativeStopPublicationRecordOverwrittenBeforeConsume NegativeStopRequestConsumedOutsideProtocol)
     string(TOLOWER "${_p2_d5_2_w4c3_arch_case}" _p2_d5_2_w4c3_arch_name)
