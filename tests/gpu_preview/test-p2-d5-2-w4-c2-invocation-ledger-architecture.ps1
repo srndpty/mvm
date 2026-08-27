@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$SourceRoot,
-    [ValidateSet('Good','NegativePostWorktree','NegativePostSource','NegativePostQtGui','NegativePostQtQuick','NegativeWarmupMismatch','NegativeExit6Teardown','NegativeExit6Metrics','NegativeExit6Mapping')]
+    [ValidateSet('Good','NegativePostWorktree','NegativePostSource','NegativePostQtGui','NegativePostQtQuick','NegativeWarmupMismatch','NegativeExit6Teardown','NegativeExit6Metrics','NegativeExit6Mapping','NegativeTeardownStageState','NegativeTeardownStageReport')]
     [string]$Case='Good'
 )
 $ErrorActionPreference='Stop'
@@ -11,6 +11,7 @@ function Require([string]$Text,[string]$Pattern,[string]$Message){if($Text-notma
 function Deny([string]$Text,[string]$Pattern,[string]$Message){if($Text-match$Pattern){throw $Message}}
 $header=Read-Source 'src/media/gpu_preview/presentation_opportunity_scheduler.h'
 $scheduler=Read-Source 'src/media/gpu_preview/presentation_opportunity_scheduler.cpp'
+$rendererHeader=Read-Source 'src/app/preview/compositor_rhi_item.h'
 $renderer=Read-Source 'src/app/preview/compositor_rhi_item.cpp'
 $controller=Read-Source 'apps/compositor_spike/compositor_spike_controller.cpp'
 $runner=Read-Source 'scripts/acquire-p2-d5-2-w4-c2-diagnostic.ps1'
@@ -34,7 +35,15 @@ function Assert-ExitSixDiagnostics([string]$Text){
     Require $Text 'W4-C2_DIAGNOSTIC_EXIT6_METRICS_WRITE_FAILURE' 'metrics failureのexit 6識別子がありません'
     Require $Text 'W4-C2_DIAGNOSTIC_EXIT6_CLOSE_MAPPING_FAILURE' 'mapping close failureのexit 6識別子がありません'
 }
+function Assert-TeardownStageDiagnostics([string]$Header,[string]$Renderer,[string]$Controller){
+    Require $Header 'enum class RenderTeardownDiagnosticStage' 'render teardown stage enumがありません'
+    Require $Renderer 'teardownDiagnosticStage\.compare_exchange_strong' 'teardown要求をrender callbackへexact joinしていません'
+    Require $Renderer 'teardownDiagnosticStage\.store\(RenderTeardownDiagnosticStage::CompositorDrain' 'compositor drain stageを記録していません'
+    Require $Controller 'teardownDiagnosticStageName\(diagnosticStage\)' 'teardown timeoutが停止stageを出力しません'
+}
 $mutatedRunner=$runner
+$mutatedHeader=$rendererHeader
+$mutatedRenderer=$renderer
 $mutatedController=$controller
 switch($Case){
     'NegativePostWorktree' {$mutatedRunner=$mutatedRunner.Replace('$postStatus=& git -C $repo status --porcelain',"`$postStatus=''")}
@@ -45,14 +54,18 @@ switch($Case){
     'NegativeExit6Teardown' {$mutatedController=$mutatedController.Replace('W4-C2_DIAGNOSTIC_EXIT6_TEARDOWN_TIMEOUT','W4-C2_DIAGNOSTIC_EXIT6_UNKNOWN')}
     'NegativeExit6Metrics' {$mutatedController=$mutatedController.Replace('W4-C2_DIAGNOSTIC_EXIT6_METRICS_WRITE_FAILURE','W4-C2_DIAGNOSTIC_EXIT6_UNKNOWN')}
     'NegativeExit6Mapping' {$mutatedController=$mutatedController.Replace('W4-C2_DIAGNOSTIC_EXIT6_CLOSE_MAPPING_FAILURE','W4-C2_DIAGNOSTIC_EXIT6_UNKNOWN')}
+    'NegativeTeardownStageState' {$mutatedRenderer=$mutatedRenderer.Replace('RenderTeardownDiagnosticStage::CompositorDrain','RenderTeardownDiagnosticStage::RenderCallbackObserved')}
+    'NegativeTeardownStageReport' {$mutatedController=$mutatedController.Replace('teardownDiagnosticStageName(diagnosticStage)','"UNOBSERVED"')}
 }
 if($Case-eq'Good'){
     Assert-ProvenancePostChecks $mutatedRunner
     Assert-ExitSixDiagnostics $mutatedController
+    Assert-TeardownStageDiagnostics $mutatedHeader $mutatedRenderer $mutatedController
 }else{
     try{
         Assert-ProvenancePostChecks $mutatedRunner
         Assert-ExitSixDiagnostics $mutatedController
+        Assert-TeardownStageDiagnostics $mutatedHeader $mutatedRenderer $mutatedController
         throw "mutationが検出されませんでした: $Case"
     }
     catch{if($_.Exception.Message-like'mutationが検出されませんでした:*'){throw}}

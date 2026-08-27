@@ -106,6 +106,17 @@ enum class MeasurementBoundaryRelation {
     PostMeasurement,
 };
 
+enum class RenderTeardownDiagnosticStage {
+    NotRequested = 0,
+    Requested,
+    RenderCallbackObserved,
+    WorkerJoinPending,
+    ProbeDrain,
+    CompositorDrain,
+    Failed,
+    Complete,
+};
+
 struct NativePresentIntentScopeRecord {
     std::uint64_t tokenSerial = 0;
     std::uint64_t intentOrdinal = 0;
@@ -213,6 +224,8 @@ struct CompositorSpikeState {
     std::atomic<bool> fatal{false};
     std::atomic<bool> teardownRequested{false};
     std::atomic<bool> teardownComplete{false};
+    std::atomic<RenderTeardownDiagnosticStage> teardownDiagnosticStage{
+        RenderTeardownDiagnosticStage::NotRequested};
     std::atomic<bool> playbackSchedulerEnabled{false};
     // P3-B 専用。P2 の QPC scheduler とは同時に有効にしない。
     std::shared_ptr<audio::AudioMasterClock> audioMasterClock;

@@ -22,6 +22,28 @@
 
 namespace mvm::app {
 namespace {
+const char* teardownDiagnosticStageName(RenderTeardownDiagnosticStage stage) {
+    switch (stage) {
+    case RenderTeardownDiagnosticStage::NotRequested:
+        return "NOT_REQUESTED";
+    case RenderTeardownDiagnosticStage::Requested:
+        return "REQUESTED";
+    case RenderTeardownDiagnosticStage::RenderCallbackObserved:
+        return "RENDER_CALLBACK_OBSERVED";
+    case RenderTeardownDiagnosticStage::WorkerJoinPending:
+        return "WORKER_JOIN_PENDING";
+    case RenderTeardownDiagnosticStage::ProbeDrain:
+        return "PROBE_DRAIN";
+    case RenderTeardownDiagnosticStage::CompositorDrain:
+        return "COMPOSITOR_DRAIN";
+    case RenderTeardownDiagnosticStage::Failed:
+        return "FAILED";
+    case RenderTeardownDiagnosticStage::Complete:
+        return "COMPLETE";
+    }
+    return "UNKNOWN";
+}
+
 DwmPresentationTimingSnapshot captureDwmTiming(QQuickWindow* window) {
     DwmPresentationTimingSnapshot result;
     if (!window)
@@ -1207,9 +1229,15 @@ void CompositorSpikeController::tick() {
             timer_.stop();
             Q_EMIT finished();
         } else if (phaseTimer_.elapsed() > 15000) {
+            const auto diagnosticStage =
+                state_->teardownDiagnosticStage.load(std::memory_order_acquire);
             std::fprintf(stderr,
                          "W4-C2_DIAGNOSTIC_EXIT6_TEARDOWN_TIMEOUT: "
-                         "render teardownが15秒以内に完了しませんでした\n");
+                         "render teardownが15秒以内に完了しませんでした stage=%s "
+                         "worker_a_joined=%d worker_b_joined=%d\n",
+                         teardownDiagnosticStageName(diagnosticStage),
+                         workerA_ && workerA_->joined() ? 1 : 0,
+                         workerB_ && workerB_->joined() ? 1 : 0);
             exitCode_ = 6;
             phase_ = Phase::Done;
             timer_.stop();

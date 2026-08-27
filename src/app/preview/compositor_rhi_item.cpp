@@ -215,6 +215,10 @@ protected:
                                                                   std::memory_order_relaxed);
         }
         if (state_->teardownRequested.load(std::memory_order_acquire)) {
+            auto requestedStage = RenderTeardownDiagnosticStage::Requested;
+            state_->teardownDiagnosticStage.compare_exchange_strong(
+                requestedStage, RenderTeardownDiagnosticStage::RenderCallbackObserved,
+                std::memory_order_acq_rel);
             if (teardown())
                 update();
             return;
@@ -1407,6 +1411,8 @@ private:
                 b = state_->workerB;
             }
             if ((a && !a->joined()) || (b && !b->joined())) {
+                state_->teardownDiagnosticStage.store(
+                    RenderTeardownDiagnosticStage::WorkerJoinPending, std::memory_order_release);
                 state_->lifecycleOrderViolationCount.fetch_add(1, std::memory_order_relaxed);
                 return true;
             }
@@ -1414,16 +1420,24 @@ private:
                 if (!state_->transitionProbeReadback.beginDrain(5000, err)) {
                     fail(err);
                     teardownStage_ = TeardownStage::Failed;
+                    state_->teardownDiagnosticStage.store(RenderTeardownDiagnosticStage::Failed,
+                                                          std::memory_order_release);
                     return false;
                 }
                 teardownStage_ = TeardownStage::ProbeDrain;
+                state_->teardownDiagnosticStage.store(RenderTeardownDiagnosticStage::ProbeDrain,
+                                                      std::memory_order_release);
             } else {
                 if (!state_->compositor.beginShutdown(10000, err)) {
                     fail(err);
                     teardownStage_ = TeardownStage::Failed;
+                    state_->teardownDiagnosticStage.store(RenderTeardownDiagnosticStage::Failed,
+                                                          std::memory_order_release);
                     return false;
                 }
                 teardownStage_ = TeardownStage::CompositorDrain;
+                state_->teardownDiagnosticStage.store(
+                    RenderTeardownDiagnosticStage::CompositorDrain, std::memory_order_release);
             }
         }
 
@@ -1440,6 +1454,8 @@ private:
             if (status == gpu::TransitionProbeDrainStatus::Failed) {
                 fail(err);
                 teardownStage_ = TeardownStage::Failed;
+                state_->teardownDiagnosticStage.store(RenderTeardownDiagnosticStage::Failed,
+                                                      std::memory_order_release);
                 return false;
             }
             state_->transitionProbeReady.store(false, std::memory_order_release);
@@ -1447,9 +1463,13 @@ private:
             if (!state_->compositor.beginShutdown(10000, err)) {
                 fail(err);
                 teardownStage_ = TeardownStage::Failed;
+                state_->teardownDiagnosticStage.store(RenderTeardownDiagnosticStage::Failed,
+                                                      std::memory_order_release);
                 return false;
             }
             teardownStage_ = TeardownStage::CompositorDrain;
+            state_->teardownDiagnosticStage.store(RenderTeardownDiagnosticStage::CompositorDrain,
+                                                  std::memory_order_release);
         }
 
         if (teardownStage_ == TeardownStage::CompositorDrain) {
@@ -1459,6 +1479,8 @@ private:
             if (status == gpu::GpuCompositorShutdownStatus::Failed) {
                 fail(err);
                 teardownStage_ = TeardownStage::Failed;
+                state_->teardownDiagnosticStage.store(RenderTeardownDiagnosticStage::Failed,
+                                                      std::memory_order_release);
                 return false;
             }
         }
@@ -1469,6 +1491,8 @@ private:
         state_->deviceReady.store(false, std::memory_order_release);
         state_->teardownComplete.store(true, std::memory_order_release);
         teardownStage_ = TeardownStage::Complete;
+        state_->teardownDiagnosticStage.store(RenderTeardownDiagnosticStage::Complete,
+                                              std::memory_order_release);
         return false;
     }
 
@@ -1498,6 +1522,8 @@ CompositorRhiItem::CompositorRhiItem(QQuickItem* parent)
 }
 
 void CompositorRhiItem::requestTeardown() {
+    state_->teardownDiagnosticStage.store(RenderTeardownDiagnosticStage::Requested,
+                                          std::memory_order_release);
     state_->teardownRequested.store(true, std::memory_order_release);
     update();
 }
