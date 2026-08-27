@@ -17,6 +17,7 @@ amend 2: ordinal -> target -> past_source_domain predicate replay
 amend 3: publication serial memory ordering / replay scope / overflow semantics
 amend 4: single atomic stop-cause arbitration（alternative exclusion authority）
 amend 5: flag/publication serialをclosure authorityから降格
+amend 6: invocation間state transitionをexact continuityとして要求しない
 ```
 
 amend 1は`pre.explicit_stop_requested=false`だけでは別threadからのpublicationとのinterleavingを
@@ -586,15 +587,60 @@ gate（`formalOpportunityCaptureActive`）のbefore / exchange実return / after�
 `explicit_stop_requested`、`fatal_latched`、publication serialはartifactに残るがclosure条件では
 ない（amend 5）。
 
-さらにterminal invocationのpre stateを、それ以前のC2 invocation replayの最終post stateとexactに
-一致させる。checkerはC2 ledgerのstate continuityを全invocationで検証する。
+### amend 6: invocation間state transitionの扱い
+
+`markRenderComplete()`と`commitSwap()`はinvocation ledgerの外でscheduler stateを進める。実測でも
+初回swapで`anchored`がfalse->trueへ移り、`last_finalized_opportunity_ordinal`はinvocation間で
+前進する。したがって`previous.post == current.pre`というraw equalityは原理的に成立しない。
+この区間をexactに再構築することもできない。
+
+ここで証明できるのは次だけであり、`exact state continuity`や
+`exact reconstruction of inter-invocation state transition`とは呼ばない。
 
 ```text
-state_transition_exact = true
-previous.post.started / closed / anchored
-  / origin_refresh_count / last_finalized_opportunity_ordinal
-  / pending_render / past_source_domain
-    == current.pre.同fields
+observed invocation boundary states are compatible with
+the frozen monotone / immutability invariants
+```
+
+一方、C3 causal replay全体を`EXACT`と呼ぶことは維持する。causal chainの本丸
+
+```text
+input refresh authority -> completed refresh ordinal -> intent ordinal
+-> exact target formula -> past_source_domain predicate
+-> OUTSIDE_SOURCE_DOMAIN_DECISION -> exact scheduler serial
+-> DOMAIN_TERMINAL arbitration winner -> capture gate close
+```
+
+は保存済み入力とbranch-exact witnessからexactに再生できる。未観測なのはinvocation間の補助
+state transitionであって、このcausal edge自体ではない。
+
+freezeするinvariantは次のとおり。
+
+```text
+Per invocation:
+  state_transition_exact = true
+  pre.started  = true
+  post.started = true
+  pre.closed   = false
+  post.closed  = false
+
+Across invocation boundaries:
+  anchored:
+    false -> true のみ、true -> false 禁止
+  origin_refresh_count:
+    unanchored stateでは 0
+    anchor成立後は全subsequent pre/postで不変（frozen origin）
+  last_finalized_opportunity_ordinal:
+    non-decreasing、regression禁止
+  past_source_domain:
+    false -> true のみ、true -> false 禁止
+
+Terminal:
+  pre.anchored = true
+  pre.past_source_domain = false
+  post.past_source_domain = true
+  terminal origin == frozen anchored origin
+  terminal last_finalized >= previous valid last_finalized
 ```
 
 replay authorityに使うfieldはすべてpresenceを明示検査する。欠落fieldを既定値へ落として
@@ -667,6 +713,12 @@ NegativeStopPublishSerialRelaxedOrdering
 NegativeWitnessCapturedBeforePayloadPublish
 NegativeCaptureGateExchangeReturnIgnored
 NegativeTerminalPreStateMismatch
+NegativeAnchoredRegression
+NegativeAnchoredOriginMutation
+NegativeLastFinalizedRegression
+NegativePastSourceDomainRegression
+NegativeTerminalAnchorMutation
+NegativeTerminalOriginMutation
 NegativeTerminalMembershipFalse
 NegativeExplicitStopClaimDefaulted
 NegativeExplicitStopClaimReconstructedFromWinner

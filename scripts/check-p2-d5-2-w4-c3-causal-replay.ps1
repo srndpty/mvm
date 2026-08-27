@@ -187,7 +187,12 @@ try{
     $validResults=@('PRIMARY_DECISION','DUPLICATE_DECISION','OUTSIDE_SOURCE_DOMAIN_DECISION')
     $stateFields=@('started','closed','anchored','origin_refresh_count',
                    'last_finalized_opportunity_ordinal','pending_render','past_source_domain')
+    # markRenderComplete()/commitSwap()はinvocation ledgerの外でstateを進めるため、
+    # invocation間のstate transitionはexactに再構築できない。ここで検証するのは
+    # 「観測されたinvocation境界のstateがfrozen monotone/immutability invariantと
+    # compatibleであること」であり、exact continuityとは呼ばない。
     $fatalCount=0;$terminalIndex=-1;$replayedCount=0;$previous=$null
+    $frozenOrigin=$null
     $previousValid=$null
     for($index=0;$index-lt$records.Count;++$index){
         $record=$records[$index]
@@ -204,13 +209,51 @@ try{
         if(-not[bool]$record.state_transition_exact){
             Fail-Incompatible "pre/post stateがexactではありません: serial=${serial}"
         }
-        # C2 ledgerのstate continuity。前invocationのpostと今のpreをexact一致させる。
+        # per invocation invariant
+        if(-not[bool]$record.pre.started-or-not[bool]$record.post.started){
+            Fail-Incompatible "schedulerがstartedではありません: serial=$serial"
+        }
+        if([bool]$record.pre.closed-or[bool]$record.post.closed){
+            Fail-Incompatible "measurement中にschedulerがclosedです: serial=$serial"
+        }
+        if(-not[bool]$record.pre.anchored-and[int64]$record.pre.origin_refresh_count-ne0){
+            Fail-Incompatible "unanchored stateにorigin refresh countがあります: serial=$serial"
+        }
+        # anchor成立後のoriginはfrozen。以降の全pre/postで不変。
+        if([bool]$record.pre.anchored){
+            if($null-eq$frozenOrigin){$frozenOrigin=[int64]$record.pre.origin_refresh_count}
+            elseif([int64]$record.pre.origin_refresh_count-ne$frozenOrigin){
+                Fail-Incompatible "anchored originが変化しました: serial=$serial"
+            }
+        }
+        if([bool]$record.post.anchored){
+            if($null-eq$frozenOrigin){$frozenOrigin=[int64]$record.post.origin_refresh_count}
+            elseif([int64]$record.post.origin_refresh_count-ne$frozenOrigin){
+                Fail-Incompatible "anchored originが変化しました: serial=$serial"
+            }
+        }
+        if([bool]$record.pre.anchored-and-not[bool]$record.post.anchored){
+            Fail-Incompatible "anchored stateが後退しています: serial=$serial"
+        }
+        if([bool]$record.pre.past_source_domain-and-not[bool]$record.post.past_source_domain){
+            Fail-Incompatible "past_source_domainが後退しています: serial=$serial"
+        }
+        if([int64]$record.post.last_finalized_opportunity_ordinal-lt
+           [int64]$record.pre.last_finalized_opportunity_ordinal){
+            Fail-Incompatible "last finalized ordinalが後退しています: serial=$serial"
+        }
+        # invocation境界のinvariant
         if($null-ne$previous){
-            foreach($field in $stateFields){
-                if([string]$previous.post.$field-ne[string]$record.pre.$field){
-                    Fail-Incompatible ("invocation state continuityが切れています: serial={0} field={1}" -f `
-                        $serial,$field)
-                }
+            if([bool]$previous.post.anchored-and-not[bool]$record.pre.anchored){
+                Fail-Incompatible "anchored stateが後退しています: serial=$serial"
+            }
+            if([int64]$record.pre.last_finalized_opportunity_ordinal-lt
+               [int64]$previous.post.last_finalized_opportunity_ordinal){
+                Fail-Incompatible "last finalized ordinalが後退しています: serial=$serial"
+            }
+            if([bool]$previous.post.past_source_domain-and
+               -not[bool]$record.pre.past_source_domain){
+                Fail-Incompatible "past_source_domainが後退しています: serial=$serial"
             }
         }
         $previous=$record
@@ -279,11 +322,20 @@ try{
             if([bool]$previousValid.past_source_domain){
                 Fail-Incompatible 'terminal直前decisionが既にsource domain外です'
             }
-            foreach($field in $stateFields){
-                if([string]$previousValid.post.$field-ne[string]$record.pre.$field){
-                    Fail-Incompatible ("terminal preが直前invocationのpostと一致しません: field={0}" -f `
-                        $field)
-                }
+            if(-not[bool]$record.pre.anchored){
+                Fail-Incompatible 'terminal invocationがanchored stateではありません'
+            }
+            if($null-eq$frozenOrigin-or
+               [int64]$record.pre.origin_refresh_count-ne$frozenOrigin){
+                Fail-Incompatible 'terminal originがanchor確立時のfrozen originと一致しません'
+            }
+            if([bool]$record.pre.past_source_domain-or
+               -not[bool]$record.post.past_source_domain){
+                Fail-Incompatible 'terminalのpast_source_domain遷移がexactではありません'
+            }
+            if([int64]$record.pre.last_finalized_opportunity_ordinal-lt
+               [int64]$previousValid.post.last_finalized_opportunity_ordinal){
+                Fail-Incompatible 'terminalのlast finalizedが直前valid invocationから後退しています'
             }
             $terminalIndex=$index
         }
@@ -339,6 +391,7 @@ try{
         invalid_fatal_count=$fatalCount
         post_terminal_invocation_count=0
         join_method='scheduler_invocation_serial'
+        inter_invocation_state='INVARIANT_COMPATIBLE_NOT_EXACTLY_RECONSTRUCTED'
         qpc_used_for_join=$false
         alternative_stop_fields=$diagnostic
         root_cause_determined=$true

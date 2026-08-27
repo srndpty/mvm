@@ -8,7 +8,8 @@ param(
         'NegativeArbitrationResetLifetime','NegativeArbitrationEpochCondition',
         'NegativeLosingClaimOwnership','NegativeStaleSerialAuthorityClaim',
         'NegativeFlagAsAuthority','NegativeMeasurementStartStateCondition',
-        'NegativeCaptureGateExchangeReturn','NegativeAuthority')]
+        'NegativeCaptureGateExchangeReturn','NegativeExactContinuityClaim',
+        'NegativeAnchoredOriginInvariant','NegativeAuthority')]
     [string]$Case='Good'
 )
 $ErrorActionPreference='Stop'
@@ -34,6 +35,8 @@ switch($Case){
     'NegativeStaleSerialAuthorityClaim' {$contractText=$contractText.Replace('snapshot点を固定するのは、比較対象の観測点を曖昧にしないためである。','この順序でsnapshotするので、at_gate_close serial == measurement_start serialがmeasurement interval全体でalternative publicationなしを意味する。')}
     'NegativeReplayScope' {$contractText=$contractText.Replace('replay対象はvalid decision invocationに限る。','replay対象は全invocationとする。')}
     'NegativeOverflowSemantics' {$contractText=$contractText.Replace('producerと同じchecked multiply / add precondition','checkerは多倍長整数で評価してよい')}
+    'NegativeExactContinuityClaim' {$contractText=$contractText.Replace('`exact reconstruction of inter-invocation state transition`とは呼ばない','`exact reconstruction of inter-invocation state transition`と呼んでよい')}
+    'NegativeAnchoredOriginInvariant' {$contractText=$contractText.Replace('anchor成立後は全subsequent pre/postで不変（frozen origin）','anchor成立後もorigin_refresh_countは変化してよい')}
     'NegativeAuthority' {$contractText=$contractText.Replace('canonical performance authorityへ昇格しない','canonical performance authorityへ昇格する')}
 }
 function Require([string]$Pattern,[string]$Message){
@@ -54,6 +57,12 @@ try{
     Require 'action\.capture_gate_exchange_closed = true +# capture gate exchangeの実return' 'capture gate exchangeの実return要求がありません'
     Require 'gate（`formalOpportunityCaptureActive`）のbefore / exchange実return / after' 'pre/action/postが同一gateに固定されていません'
     Require 'duplicate witness count = 0' 'witness write-onceのclosure条件がありません'
+    Require 'observed invocation boundary states are compatible with[\s\S]{0,120}frozen monotone / immutability invariants' 'invocation間stateの主張範囲が限定されていません'
+    Require '`exact reconstruction of inter-invocation state transition`とは呼ばない' 'invocation間state transitionをexact再構築と称し得ます'
+    Require 'anchor成立後は全subsequent pre/postで不変（frozen origin）' 'anchored originのimmutability invariantがありません'
+    Require 'last_finalized_opportunity_ordinal:[\s\S]{0,80}non-decreasing' 'last finalizedの単調性invariantがありません'
+    Require 'terminal origin == frozen anchored origin' 'terminal originのfrozen origin一致条件がありません'
+    Require 'NegativeAnchoredRegression[\s\S]{0,200}NegativeTerminalOriginMutation' 'invariant別のnegativeがありません'
     Require 'publish siteはflag storeより前にserialをfetch_add\(1\)する' 'publication serialのwriter-side順序規約がありません'
     Require 'pre\.explicit_stop_publish_serial +== at_gate_close\.explicit_stop_publish_serial' 'publication serialの比較定義がありません'
     Require 'scheduler_config:[\s\S]+source_frame_offset[\s\S]+source_fps_numerator[\s\S]+source_fps_denominator[\s\S]+refresh_numerator[\s\S]+refresh_denominator[\s\S]+required_frame_count' 'replay入力のscheduler configがありません'

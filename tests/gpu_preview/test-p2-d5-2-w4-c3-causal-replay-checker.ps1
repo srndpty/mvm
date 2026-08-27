@@ -3,11 +3,14 @@ param(
     [Parameter(Mandatory=$true)][string]$Checker,
     [Parameter(Mandatory=$true)][string]$Directory,
     [ValidateSet('Good','GoodLosingExplicitStopPublication','GoodExactInt64BoundaryDivision',
-        'GoodObservedOrdinalGapPattern','NegativeRequiredMembershipReplayMutation',
+        'GoodObservedOrdinalGapPattern','NegativeAnchoredRegression',
+        'NegativeAnchoredOriginMutation','NegativeLastFinalizedRegression',
+        'NegativePastSourceDomainRegression','NegativeTerminalAnchorMutation',
+        'NegativeTerminalOriginMutation','NegativeRequiredMembershipReplayMutation',
         'NegativeRequiredMembershipExactMissing','NegativeC2LedgerPerformanceAuthorityPromotion',
         'NegativeC2LedgerRecordCountMismatch','NegativeC2LedgerPhysicalAuthorityPromotion',
         'NegativeTerminalMembershipFalse','NegativeTerminalPreStateMismatch',
-        'NegativeStateContinuityBreak','NegativeMissingReplayField','NegativeMissingStopWitness',
+        'NegativeMissingReplayField','NegativeMissingStopWitness',
         'NegativeDuplicateWitness','NegativeTerminalInvocationJoinMutation',
         'NegativeArbitrationWinnerMutation','NegativeArbitrationPreviousMutation',
         'NegativeMeasurementStartStateMutation','NegativeResetCountMutation',
@@ -182,11 +185,29 @@ switch($Case){
     'NegativeTerminalPreStateMismatch' {
         # serial/ordinal/target/predicateは触らず、terminalのpre stateだけ壊す。
         $terminal=$artifact.formal_scheduler_invocation_ledger.records[$records.Count-1]
-        $terminal.pre.last_finalized_opportunity_ordinal=
-            ([int64]$terminal.pre.last_finalized_opportunity_ordinal-3)}
-    'NegativeStateContinuityBreak' {
+        $terminal.pre.past_source_domain=$true}
+    'NegativeAnchoredRegression' {
+        $artifact.formal_scheduler_invocation_ledger.records[2].pre.anchored=$false
+        $artifact.formal_scheduler_invocation_ledger.records[2].post.anchored=$false}
+    'NegativeAnchoredOriginMutation' {
         $artifact.formal_scheduler_invocation_ledger.records[1].pre.origin_refresh_count=
+            ($origin+5)
+        $artifact.formal_scheduler_invocation_ledger.records[1].post.origin_refresh_count=
             ($origin+5)}
+    'NegativeLastFinalizedRegression' {
+        $artifact.formal_scheduler_invocation_ledger.records[2].pre.
+            last_finalized_opportunity_ordinal=-5
+        $artifact.formal_scheduler_invocation_ledger.records[2].post.
+            last_finalized_opportunity_ordinal=-5}
+    'NegativePastSourceDomainRegression' {
+        $artifact.formal_scheduler_invocation_ledger.records[1].post.past_source_domain=$true}
+    'NegativeTerminalAnchorMutation' {
+        $terminal=$artifact.formal_scheduler_invocation_ledger.records[$records.Count-1]
+        $terminal.pre.anchored=$false}
+    'NegativeTerminalOriginMutation' {
+        $terminal=$artifact.formal_scheduler_invocation_ledger.records[$records.Count-1]
+        $terminal.pre.origin_refresh_count=($origin+7)
+        $terminal.post.origin_refresh_count=($origin+7)}
     'NegativeMissingReplayField' {
         $artifact.formal_scheduler_invocation_ledger.records[0].pre.Remove('anchored')}
     'GoodLosingExplicitStopPublication' {
