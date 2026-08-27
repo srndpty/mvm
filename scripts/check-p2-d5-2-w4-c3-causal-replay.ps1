@@ -23,13 +23,22 @@ function Need([object]$Object,[string]$Name,[string]$Context){
     return $Object.$Name
 }
 # producerと同じ64-bit signed checked演算。中間積のoverflowも一致させる。
+# PowerShellの'/'と[math]::Floorはdouble経路に入るため、整数除算はDivRemだけを使う。
 $script:Int64Max=[int64]::MaxValue
+function Exact-Int64Divide([int64]$Numerator,[int64]$Denominator,[string]$Context){
+    if($Denominator-le0){Fail-Incompatible "${Context}: denominatorが正ではありません"}
+    if($Numerator-lt0){Fail-Incompatible "${Context}: 負のnumeratorはproducer domain外です"}
+    $remainder=[int64]0
+    # 非負domainなのでtruncation toward zeroとfloorは一致する。
+    return [System.Math]::DivRem($Numerator,$Denominator,[ref]$remainder)
+}
 function Checked-Multiply([int64]$A,[int64]$B,[string]$Context){
     if($A-lt0-or$B-lt0){Fail-Incompatible "${Context}: 負のoperandはproducer domain外です"}
-    if($A-ne0-and$B-gt[math]::Floor($script:Int64Max/$A)){
-        Fail-Incompatible "${Context}: checked multiplyがoverflowします"
+    if($A-ne0){
+        $limit=Exact-Int64Divide $script:Int64Max $A $Context
+        if($B-gt$limit){Fail-Incompatible "${Context}: checked multiplyがoverflowします"}
     }
-    return [int64]($A*$B)
+    return [int64]([int64]$A*[int64]$B)
 }
 function Checked-Add([int64]$A,[int64]$B,[string]$Context){
     if($B-gt($script:Int64Max-$A)){Fail-Incompatible "${Context}: checked addがoverflowします"}
@@ -41,8 +50,7 @@ function Replay-Target([int64]$Ordinal,$Config,[string]$Context){
     $numerator=Checked-Multiply $numerator ([int64]$Config.refresh_denominator) $Context
     $denominator=Checked-Multiply ([int64]$Config.source_fps_denominator) `
         ([int64]$Config.refresh_numerator) $Context
-    if($denominator-le0){Fail-Incompatible "${Context}: denominatorが正ではありません"}
-    $relative=[int64][math]::Floor($numerator/$denominator)
+    $relative=Exact-Int64Divide $numerator $denominator $Context
     return Checked-Add ([int64]$Config.source_frame_offset) $relative $Context
 }
 try{
@@ -157,6 +165,11 @@ try{
        [bool]$terminal.required_intent_membership){
         Fail-Incompatible 'witnessとjoined recordのrequired intent membershipが一致しません'
     }
+    # source-frame domainのterminal predicateが成立した時点で、required-intent domain上は
+    # まだrequired intentであること。両domainの非同一性を保ったcausal chainを要求する。
+    if(-not[bool]$terminal.required_intent_membership){
+        Fail-Incompatible 'terminal decisionがrequired intent domain外です（W4-C3 closure対象外）'
+    }
 
     # ---- 5. scheduler config（artifact直読み。再構成しない）----
     $config=Need $ledger 'scheduler_config' 'formal_scheduler_invocation_ledger'
@@ -172,10 +185,35 @@ try{
 
     # ---- 6. valid decision replay ----
     $validResults=@('PRIMARY_DECISION','DUPLICATE_DECISION','OUTSIDE_SOURCE_DOMAIN_DECISION')
-    $fatalCount=0;$terminalIndex=-1;$replayedCount=0;$previousValid=$null
+    $stateFields=@('started','closed','anchored','origin_refresh_count',
+                   'last_finalized_opportunity_ordinal','pending_render','past_source_domain')
+    $fatalCount=0;$terminalIndex=-1;$replayedCount=0;$previous=$null
+    $previousValid=$null
     for($index=0;$index-lt$records.Count;++$index){
         $record=$records[$index]
+        $context="record[$index]"
+        foreach($field in 'scheduler_invocation_serial','result','reason','decision_valid',
+                          'state_transition_exact','pre','post'){
+            $null=Need $record $field $context
+        }
+        foreach($field in $stateFields){
+            $null=Need $record.pre $field "$context.pre"
+            $null=Need $record.post $field "$context.post"
+        }
         $serial=[int64]$record.scheduler_invocation_serial
+        if(-not[bool]$record.state_transition_exact){
+            Fail-Incompatible "pre/post stateがexactではありません: serial=${serial}"
+        }
+        # C2 ledgerのstate continuity。前invocationのpostと今のpreをexact一致させる。
+        if($null-ne$previous){
+            foreach($field in $stateFields){
+                if([string]$previous.post.$field-ne[string]$record.pre.$field){
+                    Fail-Incompatible ("invocation state continuityが切れています: serial={0} field={1}" -f `
+                        $serial,$field)
+                }
+            }
+        }
+        $previous=$record
         if($serial-ne($index+1)){Fail-Incompatible "invocation serialが連続していません: $serial"}
         $result=[string]$record.result
         if($result-eq'INVALID_FATAL'){
@@ -187,6 +225,14 @@ try{
             continue
         }
         if($result-notin$validResults){Fail-Incompatible "未知のresultです: $result"}
+        foreach($field in 'intent_ordinal','target_frame','past_source_domain',
+                          'required_intent_membership','input_authority'){
+            $null=Need $record $field $context
+        }
+        $null=Need $record.input_authority 'refresh_count' "$context.input_authority"
+        if(-not[bool]$record.decision_valid){
+            Fail-Incompatible "valid resultのdecisionがvalidではありません: serial=${serial}"
+        }
         $ordinal=[int64]$record.intent_ordinal
         if($ordinal-lt0){Fail-Incompatible "intent ordinalが負です: serial=$serial"}
         # completed refresh -> ordinal
@@ -220,6 +266,12 @@ try{
             }
             if([bool]$previousValid.past_source_domain){
                 Fail-Incompatible 'terminal直前decisionが既にsource domain外です'
+            }
+            foreach($field in $stateFields){
+                if([string]$previousValid.post.$field-ne[string]$record.pre.$field){
+                    Fail-Incompatible ("terminal preが直前invocationのpostと一致しません: field={0}" -f `
+                        $field)
+                }
             }
             $terminalIndex=$index
         }

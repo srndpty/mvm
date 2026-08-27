@@ -2,7 +2,9 @@
 param(
     [Parameter(Mandatory=$true)][string]$Checker,
     [Parameter(Mandatory=$true)][string]$Directory,
-    [ValidateSet('Good','GoodLosingExplicitStopPublication','NegativeMissingStopWitness',
+    [ValidateSet('Good','GoodLosingExplicitStopPublication','GoodExactInt64BoundaryDivision',
+        'NegativeTerminalMembershipFalse','NegativeTerminalPreStateMismatch',
+        'NegativeStateContinuityBreak','NegativeMissingReplayField','NegativeMissingStopWitness',
         'NegativeDuplicateWitness','NegativeTerminalInvocationJoinMutation',
         'NegativeArbitrationWinnerMutation','NegativeArbitrationPreviousMutation',
         'NegativeMeasurementStartStateMutation','NegativeResetCountMutation',
@@ -18,17 +20,33 @@ $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 
 # synthetic artifactでchecker自身のfail-closed性を閉じる。実captureはここでは取らない。
-$requiredFrameCount=5
+# 60fps source / 30Hz refresh。terminalではtarget >= required_frame_count だが、
+# ordinalはまだrequired-intent domain内（membership=true）という実workload形状にする。
+$requiredFrameCount=10
 $origin=1000
+$schedulerConfig=[ordered]@{
+    source_frame_offset=0;source_fps_numerator=60;source_fps_denominator=1
+    refresh_numerator=30;refresh_denominator=1;required_frame_count=$requiredFrameCount}
+$script:state=[ordered]@{started=$true;closed=$false;anchored=$true;origin_refresh_count=$origin
+                         last_finalized_opportunity_ordinal=-1;pending_render=$false
+                         past_source_domain=$false}
+function Copy-State($State){
+    $copy=[ordered]@{}
+    foreach($key in $State.Keys){$copy[$key]=$State[$key]}
+    return $copy
+}
 function New-Invocation([int]$Serial,[int64]$Ordinal,[string]$Result,[string]$Reason,
-                        [int64]$Target,[bool]$Past){
+                        [int64]$Target,[bool]$Past,[int64]$Required){
+    $pre=Copy-State $script:state
+    $post=Copy-State $script:state
+    $post.last_finalized_opportunity_ordinal=($Ordinal-1)
+    $post.past_source_domain=$Past
+    $script:state=Copy-State $post
     return [ordered]@{
         scheduler_invocation_serial=$Serial
         invocation_qpc=(10000+$Serial*166)
         input_authority=[ordered]@{refresh_count=($origin+$Ordinal-1);qpc=(10000+$Serial*166)}
-        pre=[ordered]@{started=$true;closed=$false;anchored=$true;origin_refresh_count=$origin
-                       last_finalized_opportunity_ordinal=($Ordinal-2);pending_render=$false
-                       past_source_domain=$false}
+        pre=$pre
         result=$Result
         reason=$Reason
         decision_valid=$true
@@ -37,24 +55,42 @@ function New-Invocation([int]$Serial,[int64]$Ordinal,[string]$Result,[string]$Re
         target_frame=$Target
         repeat=$false
         past_source_domain=$Past
-        required_intent_membership=($Ordinal-ge0-and$Ordinal-lt$requiredFrameCount)
+        required_intent_membership=($Ordinal-ge0-and$Ordinal-lt$Required)
         required_intent_membership_exact=$true
-        last_finalized_opportunity_ordinal=($Ordinal-2)
-        formal_transport_disposition=$(if($Past){'SUPPRESS_OUTSIDE_REQUIRED_SET'}else{'TRANSPORT'})
+        last_finalized_opportunity_ordinal=($Ordinal-1)
+        formal_transport_disposition=$(if($Ordinal-lt$Required){'TRANSPORT'}
+                                       else{'SUPPRESS_OUTSIDE_REQUIRED_SET'})
         formal_transport_disposition_exact=$true
-        post=[ordered]@{started=$true;closed=$false;anchored=$true;origin_refresh_count=$origin
-                        last_finalized_opportunity_ordinal=($Ordinal-2)
-                        pending_render=(-not$Past);past_source_domain=$Past}
+        post=$post
         state_transition_exact=$true
     }
 }
-$records=@()
-for($ordinal=1;$ordinal-le5;++$ordinal){
-    $target=$ordinal          # source_fps 60/1, refresh 60/1, offset 0 -> target = ordinal
-    $past=$target-ge$requiredFrameCount
-    $records+=,(New-Invocation $ordinal $ordinal `
-        $(if($past){'OUTSIDE_SOURCE_DOMAIN_DECISION'}else{'PRIMARY_DECISION'}) `
-        $(if($past){'PAST_SOURCE_DOMAIN'}else{'PRIMARY'}) $target $past)
+function Build-Records([object]$Config,[int64[]]$Ordinals){
+    $built=@()
+    $required=[int64]$Config.required_frame_count
+    foreach($ordinal in $Ordinals){
+        $numerator=[int64]$ordinal*[int64]$Config.source_fps_numerator*
+                   [int64]$Config.refresh_denominator
+        $denominator=[int64]$Config.source_fps_denominator*[int64]$Config.refresh_numerator
+        $remainder=[int64]0
+        $target=[int64]$Config.source_frame_offset+
+                [System.Math]::DivRem($numerator,$denominator,[ref]$remainder)
+        $past=$target-ge$required
+        $built+=,(New-Invocation ([int]$ordinal) $ordinal `
+            $(if($past){'OUTSIDE_SOURCE_DOMAIN_DECISION'}else{'PRIMARY_DECISION'}) `
+            $(if($past){'PAST_SOURCE_DOMAIN'}else{'PRIMARY'}) $target $past $required)
+    }
+    return $built
+}
+if($Case-eq'GoodExactInt64BoundaryDivision'){
+    # doubleに落ちると商が1ずれるconfig。exact int64除算でのみ再生できる。
+    $schedulerConfig=[ordered]@{
+        source_frame_offset=0;source_fps_numerator=[int64]9007199254740993
+        source_fps_denominator=3;refresh_numerator=1;refresh_denominator=1
+        required_frame_count=[int64]6004799503160662}
+    $records=Build-Records $schedulerConfig @([int64]1,[int64]2)
+}else{
+    $records=Build-Records $schedulerConfig @([int64]1,[int64]2,[int64]3,[int64]4,[int64]5)
 }
 $terminalRecord=$records[$records.Count-1]
 $artifact=[ordered]@{
@@ -99,15 +135,31 @@ $artifact=[ordered]@{
         measurement_stop_qpc=10830
         native_envelope_close_qpc=10900
         record_count=$records.Count
-        scheduler_config=[ordered]@{
-            source_frame_offset=0;source_fps_numerator=60;source_fps_denominator=1
-            refresh_numerator=60;refresh_denominator=1;required_frame_count=$requiredFrameCount}
+        scheduler_config=$schedulerConfig
         records=$records
     }
 }
 $expectPass=$false
 switch($Case){
     'Good' {$expectPass=$true}
+    'GoodExactInt64BoundaryDivision' {$expectPass=$true}
+    'NegativeTerminalMembershipFalse' {
+        # source domain外になった時点でrequired intent domainも尽きているcapture。
+        # 壊れてはいないが、W4-C3 closureの対象workloadではない。
+        $terminal=$artifact.formal_scheduler_invocation_ledger.records[$records.Count-1]
+        $terminal.required_intent_membership=$false
+        $terminal.formal_transport_disposition='SUPPRESS_OUTSIDE_REQUIRED_SET'
+        $artifact.formal_stop_witness.terminal_required_intent_membership=$false}
+    'NegativeTerminalPreStateMismatch' {
+        # serial/ordinal/target/predicateは触らず、terminalのpre stateだけ壊す。
+        $terminal=$artifact.formal_scheduler_invocation_ledger.records[$records.Count-1]
+        $terminal.pre.last_finalized_opportunity_ordinal=
+            ([int64]$terminal.pre.last_finalized_opportunity_ordinal-3)}
+    'NegativeStateContinuityBreak' {
+        $artifact.formal_scheduler_invocation_ledger.records[1].pre.origin_refresh_count=
+            ($origin+5)}
+    'NegativeMissingReplayField' {
+        $artifact.formal_scheduler_invocation_ledger.records[0].pre.Remove('anchored')}
     'GoodLosingExplicitStopPublication' {
         # DOMAIN_TERMINALに負けた後着EXPLICIT_STOPがflag/serialを動かしてもPASSさせる。
         $expectPass=$true

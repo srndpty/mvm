@@ -486,6 +486,10 @@ producerと同じchecked multiply / add precondition
 producerと同じ切り捨て除算
 ```
 
+PowerShellの`/`と`[math]::Floor`はdouble経路に入るため使わない。overflow判定のquotientも
+target計算のquotientも`System.Math.DivRem(Int64, Int64, ref Int64)`によるexact整数除算だけで
+求める。operandは非負domainなので、C++のtruncation toward zeroとfloorは一致する。
+
 `ordinal * source_fps_numerator * refresh_denominator`の中間積がproducer側でchecked
 arithmeticである以上、checkerがPowerShell/.NETの多倍長やdoubleへ逃げて「計算できたからPASS」と
 してはならない。producerがoverflowで`INVALID_FATAL`へ落ちる入力は、checkerでも同じ
@@ -501,7 +505,19 @@ terminal decision:
   past_source_domain == true
   result             == OUTSIDE_SOURCE_DOMAIN_DECISION
   reason             == PAST_SOURCE_DOMAIN
+  required_intent_membership == true
 ```
+
+`required_intent_membership = true`をterminalで必須にするのは、W4-C3が閉じるのが
+
+```text
+source-frame domainのterminal predicateが成立した時点でも
+required-intent domain上はまだrequired intentだった
+```
+
+という二domainの非同一性を保ったchainだからである。terminal membershipがfalseのcapture
+（例: 5秒smoke）は壊れているのではなく、W4-C3 closureの対象workloadではない。現行の
+二値分類では`W4_C3_INCOMPATIBLE`とし、`W4_C3_CAUSAL_REPLAY_EXACT`へは昇格させない。
 
 replayは整数演算だけで行い、浮動小数、丸めの近似、tolerance比較を使わない。overflow検査に
 失敗したinvocationは`INVALID_FATAL`として記録されている前提であり、replay側で補間しない。
@@ -571,7 +587,18 @@ gate（`formalOpportunityCaptureActive`）のbefore / exchange実return / after�
 ない（amend 5）。
 
 さらにterminal invocationのpre stateを、それ以前のC2 invocation replayの最終post stateとexactに
-一致させる。required-intent domainとsource-frame domainは引き続き別fieldであり、terminal
+一致させる。checkerはC2 ledgerのstate continuityを全invocationで検証する。
+
+```text
+state_transition_exact = true
+previous.post.started / closed / anchored
+  / origin_refresh_count / last_finalized_opportunity_ordinal
+  / pending_render / past_source_domain
+    == current.pre.同fields
+```
+
+replay authorityに使うfieldはすべてpresenceを明示検査する。欠落fieldを既定値へ落として
+偶然PASSさせない（fail-closed）。required-intent domainとsource-frame domainは引き続き別fieldであり、terminal
 `past_source_domain=true`からrequired-domain exhaustionを推論しない。
 
 ## checker（step 4）
@@ -635,6 +662,8 @@ NegativeAlternativeStopFieldUsedAsAuthority
 NegativeStopPublishSerialRelaxedOrdering
 NegativeWitnessCapturedBeforePayloadPublish
 NegativeCaptureGateExchangeReturnIgnored
+NegativeTerminalPreStateMismatch
+NegativeTerminalMembershipFalse
 NegativeExplicitStopClaimDefaulted
 NegativeExplicitStopClaimReconstructedFromWinner
 NegativeAlternativeStopWinsArbitration
