@@ -7,7 +7,9 @@ param(
         'NegativeArbitrationResetDuringMeasurement','NegativeSecondArbitrationResetSite',
         'NegativeInlineArbitrationCas','NegativeMissingSchedulerConfigEmit',
         'NegativeArbitrationResetAfterMeasurementStartPublication',
-        'NegativeSecondArbitrationResetWriterInHeader')]
+        'NegativeSecondArbitrationResetWriterInHeader','NegativeMissingWitnessEmit',
+        'NegativeSecondWitnessOverwrite','NegativeWitnessCauseReconstructed',
+        'NegativeClaimResultNotTransported','NegativeMeasurementStartSnapshotAtReset')]
     [string]$Case='Good'
 )
 $ErrorActionPreference='Stop'
@@ -27,11 +29,13 @@ switch($Case){
         $rendererHeader=$rendererHeader.Replace('compare_exchange_strong(expected, cause, std::memory_order_seq_cst)','compare_exchange_strong(expected, cause, std::memory_order_relaxed)')}
     'NegativeStopSideEffectBeforeArbitrationClaim' {
         $renderer=$renderer.Replace((Lf @'
-                    stopClaim_ = claimStopCause(*state_, StopArbitration::DomainTerminal);
+                    const StopClaimResult terminalClaim =
+                        claimStopCause(*state_, StopArbitration::DomainTerminal);
                     state_->formalOpportunityDomainReached.store(true, std::memory_order_release);
 '@),(Lf @'
                     state_->formalOpportunityDomainReached.store(true, std::memory_order_release);
-                    stopClaim_ = claimStopCause(*state_, StopArbitration::DomainTerminal);
+                    const StopClaimResult terminalClaim =
+                        claimStopCause(*state_, StopArbitration::DomainTerminal);
 '@))}
     'NegativeUnclaimedExplicitStopWriter' {
         $controller=$controller.Replace((Lf @'
@@ -60,9 +64,9 @@ switch($Case){
 '@),'')}
     'NegativeSecondArbitrationResetSite' {
         $renderer=$renderer.Replace((Lf @'
-    void finishMeasurement(long long callbackBegin) {
+    void finishMeasurement(long long callbackBegin, StopArbitration cause,
 '@),(Lf @'
-    void finishMeasurement(long long callbackBegin) {
+    void finishMeasurement(long long callbackBegin, StopArbitration cause,
         state_->stopArbitration.store(StopArbitration::None, std::memory_order_seq_cst);
 '@))}
     'NegativeInlineArbitrationCas' {
@@ -84,6 +88,45 @@ switch($Case){
     state_->measurementStartRequested.store(true, std::memory_order_release);
     resetStopArbitrationForMeasurement(*state_);
 '@))}
+    'NegativeMissingWitnessEmit' {
+        $controller=$controller.Replace('mvm-p2-d5-2-w4-c3-stop-witness-3','mvm-p2-d5-2-w4-c3-stop-witness-absent')}
+    'NegativeSecondWitnessOverwrite' {
+        $renderer=$renderer.Replace((Lf @'
+        bool expected = false;
+        if (state_->stopWitnessCaptured.compare_exchange_strong(expected, true,
+                                                                std::memory_order_seq_cst)) {
+            std::lock_guard<std::mutex> lock(state_->stopWitnessMutex);
+            state_->stopWitness = witness;
+        } else {
+            state_->stopWitnessDuplicateCount.fetch_add(1, std::memory_order_seq_cst);
+        }
+'@),(Lf @'
+        {
+            std::lock_guard<std::mutex> lock(state_->stopWitnessMutex);
+            state_->stopWitness = witness;
+        }
+'@))}
+    'NegativeWitnessCauseReconstructed' {
+        $controller=$controller.Replace((Lf @'
+            {"cause", QString::fromLatin1(stopArbitrationName(witness.cause))},
+'@),(Lf @'
+            {"cause", QString::fromLatin1(stopArbitrationName(
+                          state_->stopArbitration.load(std::memory_order_seq_cst)))},
+'@))}
+    'NegativeClaimResultNotTransported' {
+        $renderer=$renderer.Replace((Lf @'
+        witness.arbitrationPrevious = claim.previous;
+        witness.arbitrationClaimSucceeded = claim.succeeded;
+'@),(Lf @'
+        witness.arbitrationPrevious = StopArbitration::None;
+        witness.arbitrationClaimSucceeded =
+            state_->stopArbitration.load(std::memory_order_seq_cst) == cause;
+'@))}
+    'NegativeMeasurementStartSnapshotAtReset' {
+        $renderer=$renderer.Replace((Lf @'
+            state_->measurementStartArbitrationState.store(
+                state_->stopArbitration.load(std::memory_order_seq_cst), std::memory_order_seq_cst);
+'@),'')}
     'NegativeSecondArbitrationResetWriterInHeader' {
         $rendererHeader=$rendererHeader.Replace((Lf @'
 inline void resetStopArbitrationForMeasurement(CompositorSpikeState& state) {
@@ -130,12 +173,25 @@ try{
     if($domainReachedStores-eq0-or$claimedDomainReached-ne$domainReachedStores){
         throw "DOMAIN_TERMINAL claimがside effectより前にないsiteがあります: claimed=$claimedDomainReached stores=$domainReachedStores"
     }
-    Require $renderer 'claimStopCause\(\*state_, StopArbitration::PlannedWindowEnd\);[\s\S]{0,200}finishMeasurement\(callbackBegin\)' 'planned window end siteがclaimを通りません'
+    Require $renderer 'claimStopCause\(\*state_, StopArbitration::PlannedWindowEnd\);[\s\S]{0,300}finishMeasurement\(callbackBegin, cause, claim\)' 'planned window end siteがclaimを通りません'
     $terminalClaims=([regex]::Matches($renderer,'claimStopCause\(\*state_, StopArbitration::DomainTerminal\)')).Count
     if($terminalClaims-ne2){throw "terminal branchのclaim siteが2箇所ではありません: $terminalClaims"}
     $fatalStores=([regex]::Matches($renderer,'fatal\.store\(true')).Count
     $fatalClaims=([regex]::Matches($renderer,'claimStopCause\(\*state_, StopArbitration::Fatal\)')).Count
     if($fatalClaims-lt$fatalStores){throw "fatal latch siteにclaimを通らないものがあります: claims=$fatalClaims stores=$fatalStores"}
+
+    # step 3: stop witness v3
+    Require $rendererHeader 'struct CompositorStopWitness \{' 'stop witness structがありません'
+    Require $renderer 'void finishMeasurement\(long long callbackBegin, StopArbitration cause,[\s\S]{0,200}const StopClaimResult& claim,[\s\S]{0,200}const StopWitnessTerminalFacts& terminal' 'cause/claim/terminal factsがfinishMeasurementへ明示transportされていません'
+    Require $renderer 'witness\.arbitrationPrevious = claim\.previous;[\s\S]{0,120}witness\.arbitrationClaimSucceeded = claim\.succeeded;' 'claim結果がそのまま保存されていません'
+    Require $renderer 'stopWitnessCaptured\.compare_exchange_strong\(expected, true,[\s\S]{0,400}stopWitnessDuplicateCount\.fetch_add' 'stop witnessがwrite-onceではありません'
+    Require $renderer 'facts\.schedulerInvocationSerial = decision\.invocationSerial;' 'terminal invocation serialがdecision由来ではありません'
+    Require $renderer 'scheduler_\.start\(callbackBegin[\s\S]{0,400}measurementStartArbitrationState\.store[\s\S]{0,3000}formalOpportunityCaptureActive\.store\(true' 'measurement-start snapshotがauthority pointで撮られていません'
+    Require $renderer 'witness\.gateCloseExplicitStopPublishSerial =[\s\S]{0,300}formalOpportunityCaptureActive\.exchange\(false' 'at_gate_close serialがcapture gate exchange直前で撮られていません'
+    Require $controller 'mvm-p2-d5-2-w4-c3-stop-witness-3' 'stop witness schemaがemitされません'
+    Require $controller 'stopArbitrationName\(witness\.arbitrationPrevious\)[\s\S]{0,400}claim_succeeded[\s\S]{0,400}reset_count_during_measurement' 'arbitration fieldがwitness由来で出力されていません'
+    Deny $controller 'stopArbitrationName\(\s*state_->stopArbitration\.load' 'controllerがarbitration stateからcauseを再構築しています'
+    Deny $renderer 'witness\.arbitrationClaimSucceeded =\s*state_->stopArbitration\.load' 'claim結果をstateから逆算しています'
 
     # amend 2: replay入力はscheduler instance config
     Require $schedulerHeader 'PresentationOpportunityConfig config;' 'snapshotがscheduler instance configを持ちません'

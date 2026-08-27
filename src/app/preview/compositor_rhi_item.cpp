@@ -427,14 +427,17 @@ protected:
                 if (formalDecision.pastSourceDomain) {
                     // W4-C3 amend 4。domainReachedはcontroller stopを誘発する外部可視な
                     // side effectなので、その前にDOMAIN_TERMINALをclaimする。
-                    stopClaim_ = claimStopCause(*state_, StopArbitration::DomainTerminal);
+                    const StopClaimResult terminalClaim =
+                        claimStopCause(*state_, StopArbitration::DomainTerminal);
                     state_->formalOpportunityDomainReached.store(true, std::memory_order_release);
                     if (state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire)) {
                         state_->terminalRenderExitTracking.store(true, std::memory_order_release);
                         state_->terminalRenderExitDiagnosticStage.store(
                             TerminalRenderExitDiagnosticStage::FinishMeasurementEntered,
                             std::memory_order_release);
-                        finishMeasurement(callbackBegin);
+                        finishMeasurement(callbackBegin, StopArbitration::DomainTerminal,
+                                          terminalClaim,
+                                          terminalStopFacts(formalDecision));
                         state_->terminalRenderExitDiagnosticStage.store(
                             TerminalRenderExitDiagnosticStage::FinishMeasurementReturned,
                             std::memory_order_release);
@@ -490,7 +493,8 @@ protected:
             }
             if (formalDecision.pastSourceDomain) {
                 // W4-C3 amend 4。同上。terminal branchのclaimがcausal authorityになる。
-                stopClaim_ = claimStopCause(*state_, StopArbitration::DomainTerminal);
+                const StopClaimResult terminalClaim =
+                    claimStopCause(*state_, StopArbitration::DomainTerminal);
                 state_->formalOpportunityDomainReached.store(true, std::memory_order_release);
                 // W2-C0.1。scheduler-produced pastSourceDomain intentを持つこのcallbackで
                 // measurementを閉じる。controllerからstop用の追加Presentを作らない。
@@ -499,7 +503,8 @@ protected:
                     state_->terminalRenderExitDiagnosticStage.store(
                         TerminalRenderExitDiagnosticStage::FinishMeasurementEntered,
                         std::memory_order_release);
-                    finishMeasurement(callbackBegin);
+                    finishMeasurement(callbackBegin, StopArbitration::DomainTerminal, terminalClaim,
+                                      terminalStopFacts(formalDecision));
                     state_->terminalRenderExitDiagnosticStage.store(
                         TerminalRenderExitDiagnosticStage::FinishMeasurementReturned,
                         std::memory_order_release);
@@ -1065,7 +1070,50 @@ private:
         return state_->formalOpportunityScheduler.start(config);
     }
 
-    void finishMeasurement(long long callbackBegin) {
+    // terminal decisionの事実をそのまま運ぶ。QPCやledger末尾から再構築しない。
+    static StopWitnessTerminalFacts
+    terminalStopFacts(const gpu::PresentationOpportunityDecision& decision) {
+        StopWitnessTerminalFacts facts;
+        facts.schedulerInvocationSerial = decision.invocationSerial;
+        facts.intentOrdinal = decision.opportunityOrdinal;
+        facts.targetFrame = decision.targetFrame;
+        facts.pastSourceDomain = decision.pastSourceDomain;
+        facts.requiredIntentMembership = decision.requiredIntentMembership;
+        facts.formalOpportunityDomainReachedPublished = true;
+        return facts;
+    }
+
+    void finishMeasurement(long long callbackBegin, StopArbitration cause,
+                           const StopClaimResult& claim,
+                           const StopWitnessTerminalFacts& terminal = {}) {
+        // W4-C3 stop witness v3。pre snapshotはfinishMeasurement entry時点。
+        CompositorStopWitness witness;
+        witness.cause = cause;
+        witness.renderCallbackBeginQpc = callbackBegin;
+        witness.terminal = terminal;
+        witness.arbitrationClaimed = cause;
+        witness.arbitrationPrevious = claim.previous;
+        witness.arbitrationClaimSucceeded = claim.succeeded;
+        witness.measurementStartState =
+            state_->measurementStartArbitrationState.load(std::memory_order_seq_cst);
+        witness.resetCountDuringMeasurement =
+            state_->stopArbitrationResetDuringMeasurementCount.load(std::memory_order_seq_cst);
+        witness.measurementStartExplicitStopPublishSerial =
+            state_->measurementStartExplicitStopPublishSerial.load(std::memory_order_seq_cst);
+        witness.measurementStartFatalPublishSerial =
+            state_->measurementStartFatalPublishSerial.load(std::memory_order_seq_cst);
+        witness.preExplicitStopPublishSerial =
+            state_->explicitStopPublishSerial.load(std::memory_order_seq_cst);
+        witness.preFatalPublishSerial = state_->fatalPublishSerial.load(std::memory_order_seq_cst);
+        witness.preCaptureGateOpen =
+            state_->formalOpportunityCaptureActive.load(std::memory_order_acquire);
+        witness.preExplicitStopRequested =
+            state_->measurementStopRequested.load(std::memory_order_acquire);
+        witness.prePlannedWindowEndReached =
+            state_->measurementIntervalActive.load(std::memory_order_acquire) &&
+            callbackBegin >= state_->measurementEndQpc.load(std::memory_order_acquire);
+        witness.preFatalLatched = state_->fatal.load(std::memory_order_acquire);
+        witness.finishMeasurementEntered = true;
         const bool retainNativeEnvelope =
             state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire) &&
             !state_->fatal.load(std::memory_order_acquire);
@@ -1079,6 +1127,12 @@ private:
             }
         }
         if (state_->measurementIntervalActive.exchange(false, std::memory_order_acq_rel)) {
+            // capture gate exchangeの直前にalternative publication serialを撮る。
+            witness.gateCloseExplicitStopPublishSerial =
+                state_->explicitStopPublishSerial.load(std::memory_order_seq_cst);
+            witness.gateCloseFatalPublishSerial =
+                state_->fatalPublishSerial.load(std::memory_order_seq_cst);
+            witness.captureGateExchangeClosed = true;
             if (state_->formalOpportunityCaptureActive.exchange(false, std::memory_order_acq_rel)) {
                 bool closed = false;
                 gpu::PresentationOpportunitySnapshot snapshot;
@@ -1119,6 +1173,25 @@ private:
             state_->measurementStop.qpc = callbackBegin;
         }
         state_->measurementStopCaptured.store(true, std::memory_order_release);
+        witness.measurementStopPublished = true;
+        witness.postCaptureGateOpen =
+            state_->formalOpportunityCaptureActive.load(std::memory_order_acquire);
+        witness.measurementStopQpc = callbackBegin;
+        if (witness.gateCloseExplicitStopPublishSerial == 0 &&
+            witness.gateCloseFatalPublishSerial == 0 && !witness.captureGateExchangeClosed) {
+            // interval非activeでgate exchangeへ到達しなかった場合も観測値を捏造しない。
+            witness.gateCloseExplicitStopPublishSerial = witness.preExplicitStopPublishSerial;
+            witness.gateCloseFatalPublishSerial = witness.preFatalPublishSerial;
+        }
+        // winner witnessはwrite-once。後着のstopは上書きせずduplicateへ落とす。
+        bool expected = false;
+        if (state_->stopWitnessCaptured.compare_exchange_strong(expected, true,
+                                                                std::memory_order_seq_cst)) {
+            std::lock_guard<std::mutex> lock(state_->stopWitnessMutex);
+            state_->stopWitness = witness;
+        } else {
+            state_->stopWitnessDuplicateCount.fetch_add(1, std::memory_order_seq_cst);
+        }
     }
 
     bool captureMeasurementBoundary(long long callbackBegin) {
@@ -1186,9 +1259,13 @@ private:
         if (intervalEnded || stopRequested) {
             // W4-C3 amend 4。planned window endはここが publication site。
             // explicit stopはcontroller siteでclaim済みなので再claimしない。
+            // その場合claim fieldはthis siteでは未取得のまま残し、後から再構築しない。
+            const StopArbitration cause =
+                intervalEnded ? StopArbitration::PlannedWindowEnd : StopArbitration::ExplicitStop;
+            StopClaimResult claim;
             if (intervalEnded)
-                stopClaim_ = claimStopCause(*state_, StopArbitration::PlannedWindowEnd);
-            finishMeasurement(callbackBegin);
+                claim = claimStopCause(*state_, StopArbitration::PlannedWindowEnd);
+            finishMeasurement(callbackBegin, cause, claim);
             return true;
         }
         if (state_->measurementStartRequested.exchange(false, std::memory_order_acq_rel)) {
@@ -1196,6 +1273,17 @@ private:
                 state_->measurementDurationQpc.load(std::memory_order_acquire);
             scheduler_.start(callbackBegin, static_cast<long long>(gpu::qpcFrequency()));
             schedulerStarted_ = true;
+            // W4-C3。measurement-start authorityが成立したこの一点でalternative
+            // publication stateをsnapshotする。controllerのreset直後では撮らない。
+            state_->measurementStartArbitrationState.store(
+                state_->stopArbitration.load(std::memory_order_seq_cst), std::memory_order_seq_cst);
+            state_->measurementStartExplicitStopPublishSerial.store(
+                state_->explicitStopPublishSerial.load(std::memory_order_seq_cst),
+                std::memory_order_seq_cst);
+            state_->measurementStartFatalPublishSerial.store(
+                state_->fatalPublishSerial.load(std::memory_order_seq_cst),
+                std::memory_order_seq_cst);
+            state_->stopWitnessCaptured.store(false, std::memory_order_seq_cst);
             if (state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire)) {
                 if (state_->formalOpportunityEnvelopePrerollActive.exchange(
                         false, std::memory_order_acq_rel)) {
@@ -1411,11 +1499,9 @@ private:
         }
     }
 
-    StopClaimResult stopClaim_;
-
     void fail(const std::string& reason) {
         // W4-C3 amend 4。fatal latchも外部可視なside effectより前にclaimする。
-        stopClaim_ = claimStopCause(*state_, StopArbitration::Fatal);
+        claimStopCause(*state_, StopArbitration::Fatal);
         {
             std::lock_guard<std::mutex> lock(state_->errorMutex);
             if (state_->fatalReason.empty())

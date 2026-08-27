@@ -159,6 +159,53 @@ struct StopClaimResult {
     unsigned long long publishSerial = 0;
 };
 
+// W4-C3 stop witness v3。terminal callbackで確定した事実だけを運ぶ。
+// checkerもcontrollerもQPCやledger末尾からこれらを再構築してはならない。
+struct StopWitnessTerminalFacts {
+    unsigned long long schedulerInvocationSerial = 0;
+    long long intentOrdinal = -1;
+    long long targetFrame = -1;
+    bool pastSourceDomain = false;
+    bool requiredIntentMembership = false;
+    bool formalOpportunityDomainReachedPublished = false;
+};
+
+struct CompositorStopWitness {
+    StopArbitration cause = StopArbitration::None;
+    long long renderCallbackBeginQpc = 0;
+    StopWitnessTerminalFacts terminal;
+
+    // arbitration。call siteのclaim結果をそのまま保存する。
+    StopArbitration arbitrationPrevious = StopArbitration::None;
+    StopArbitration arbitrationClaimed = StopArbitration::None;
+    bool arbitrationClaimSucceeded = false;
+    StopArbitration measurementStartState = StopArbitration::None;
+    unsigned long long resetCountDuringMeasurement = 0;
+
+    // publication serial（補強diagnostic）
+    unsigned long long measurementStartExplicitStopPublishSerial = 0;
+    unsigned long long measurementStartFatalPublishSerial = 0;
+    unsigned long long preExplicitStopPublishSerial = 0;
+    unsigned long long preFatalPublishSerial = 0;
+    unsigned long long gateCloseExplicitStopPublishSerial = 0;
+    unsigned long long gateCloseFatalPublishSerial = 0;
+
+    // pre
+    bool preCaptureGateOpen = false;
+    bool preExplicitStopRequested = false;
+    bool prePlannedWindowEndReached = false;
+    bool preFatalLatched = false;
+
+    // action
+    bool finishMeasurementEntered = false;
+    bool captureGateExchangeClosed = false;
+    bool measurementStopPublished = false;
+
+    // post
+    bool postCaptureGateOpen = false;
+    long long measurementStopQpc = 0;
+};
+
 struct NativePresentIntentScopeRecord {
     std::uint64_t tokenSerial = 0;
     std::uint64_t intentOrdinal = 0;
@@ -448,6 +495,16 @@ struct CompositorSpikeState {
     // W4-C3 amend 1/3。補強diagnosticであり、alternative exclusion authorityではない。
     std::atomic<unsigned long long> explicitStopPublishSerial{0};
     std::atomic<unsigned long long> fatalPublishSerial{0};
+    // W4-C3 stop witness v3。winner witnessはwrite-once、後着claimは別counterへ落とす。
+    std::atomic<bool> stopWitnessCaptured{false};
+    std::atomic<unsigned long long> stopWitnessDuplicateCount{0};
+    std::atomic<unsigned long long> losingStopClaimCount{0};
+    std::mutex stopWitnessMutex;
+    CompositorStopWitness stopWitness;
+    // measurement-start authority pointで撮るsnapshot。reset直後ではない。
+    std::atomic<StopArbitration> measurementStartArbitrationState{StopArbitration::None};
+    std::atomic<unsigned long long> measurementStartExplicitStopPublishSerial{0};
+    std::atomic<unsigned long long> measurementStartFatalPublishSerial{0};
     std::atomic<long long> measurementDurationQpc{0};
     std::atomic<long long> measurementEndQpc{0};
     std::atomic<bool> measurementIntervalActive{false};
@@ -474,6 +531,9 @@ inline StopClaimResult claimStopCause(CompositorSpikeState& state, StopArbitrati
             state.explicitStopPublishSerial.fetch_add(1, std::memory_order_seq_cst) + 1;
     else if (cause == StopArbitration::Fatal)
         result.publishSerial = state.fatalPublishSerial.fetch_add(1, std::memory_order_seq_cst) + 1;
+    // claim failureはownershipを変えない。loserは別counterへ落とすだけ。
+    if (!result.succeeded)
+        state.losingStopClaimCount.fetch_add(1, std::memory_order_seq_cst);
     return result;
 }
 

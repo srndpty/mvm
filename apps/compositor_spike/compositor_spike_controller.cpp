@@ -2225,6 +2225,73 @@ bool CompositorSpikeController::writeMetrics() {
              gpu::formalIntentTransportDispositionName(record.transportDisposition)},
         });
     }
+    // W4-C3 stop witness v3。render threadが記録した値をそのまま出力し、
+    // controller側でcauseやclaim結果をQPC等から再構築しない。
+    QJsonObject formalStopWitnessJson;
+    {
+        CompositorStopWitness witness;
+        bool captured = state_->stopWitnessCaptured.load(std::memory_order_seq_cst);
+        if (captured) {
+            std::lock_guard<std::mutex> lock(state_->stopWitnessMutex);
+            witness = state_->stopWitness;
+        }
+        formalStopWitnessJson = QJsonObject{
+            {"schema", "mvm-p2-d5-2-w4-c3-stop-witness-3"},
+            {"diagnostic_root_cause_capture",
+             state_->formalSchedulerInvocationLedgerEnabled.load(std::memory_order_acquire)},
+            {"canonical_performance_authority", false},
+            {"captured", captured},
+            {"witness_count", captured ? 1 : 0},
+            {"duplicate_witness_count",
+             static_cast<qint64>(state_->stopWitnessDuplicateCount.load(std::memory_order_seq_cst))},
+            {"losing_stop_claim_count",
+             static_cast<qint64>(state_->losingStopClaimCount.load(std::memory_order_seq_cst))},
+            {"cause", QString::fromLatin1(stopArbitrationName(witness.cause))},
+            {"render_callback_begin_qpc", witness.renderCallbackBeginQpc},
+            {"scheduler_invocation_serial",
+             static_cast<qint64>(witness.terminal.schedulerInvocationSerial)},
+            {"terminal_intent_ordinal", witness.terminal.intentOrdinal},
+            {"terminal_target_frame", witness.terminal.targetFrame},
+            {"terminal_past_source_domain", witness.terminal.pastSourceDomain},
+            {"terminal_required_intent_membership", witness.terminal.requiredIntentMembership},
+            {"stop_arbitration",
+             QJsonObject{
+                 {"previous", QString::fromLatin1(stopArbitrationName(witness.arbitrationPrevious))},
+                 {"claimed", QString::fromLatin1(stopArbitrationName(witness.arbitrationClaimed))},
+                 {"claim_succeeded", witness.arbitrationClaimSucceeded},
+                 {"measurement_start_state",
+                  QString::fromLatin1(stopArbitrationName(witness.measurementStartState))},
+                 {"reset_count_during_measurement",
+                  static_cast<qint64>(witness.resetCountDuringMeasurement)}}},
+            {"measurement_start",
+             QJsonObject{{"explicit_stop_publish_serial",
+                          static_cast<qint64>(
+                              witness.measurementStartExplicitStopPublishSerial)},
+                         {"fatal_publish_serial",
+                          static_cast<qint64>(witness.measurementStartFatalPublishSerial)}}},
+            {"pre",
+             QJsonObject{
+                 {"capture_gate_open", witness.preCaptureGateOpen},
+                 {"explicit_stop_requested", witness.preExplicitStopRequested},
+                 {"planned_window_end_reached", witness.prePlannedWindowEndReached},
+                 {"fatal_latched", witness.preFatalLatched},
+                 {"explicit_stop_publish_serial",
+                  static_cast<qint64>(witness.preExplicitStopPublishSerial)},
+                 {"fatal_publish_serial", static_cast<qint64>(witness.preFatalPublishSerial)}}},
+            {"action",
+             QJsonObject{{"formal_opportunity_domain_reached_published",
+                          witness.terminal.formalOpportunityDomainReachedPublished},
+                         {"finish_measurement_entered", witness.finishMeasurementEntered},
+                         {"capture_gate_exchange_closed", witness.captureGateExchangeClosed},
+                         {"measurement_stop_published", witness.measurementStopPublished}}},
+            {"at_gate_close",
+             QJsonObject{{"explicit_stop_publish_serial",
+                          static_cast<qint64>(witness.gateCloseExplicitStopPublishSerial)},
+                         {"fatal_publish_serial",
+                          static_cast<qint64>(witness.gateCloseFatalPublishSerial)}}},
+            {"post", QJsonObject{{"capture_gate_open", witness.postCaptureGateOpen},
+                                 {"measurement_stop_qpc", witness.measurementStopQpc}}}};
+    }
     QJsonArray formalSchedulerInvocationLedger;
     for (const auto& record : formalOpportunitySnapshot.invocationRecords) {
         formalSchedulerInvocationLedger.append(QJsonObject{
@@ -2692,6 +2759,7 @@ bool CompositorSpikeController::writeMetrics() {
         {"diagnostic_synthetic_deadline_drop_count",
          state_->diagnosticSyntheticDeadlineDropCount.load(std::memory_order_relaxed)},
         {"formal_opportunity_ledger", formalOpportunityLedger},
+        {"formal_stop_witness", formalStopWitnessJson},
         {"formal_scheduler_invocation_ledger",
          QJsonObject{
              {"schema", "mvm-p2-d5-2-w4-c2-scheduler-invocation-ledger-1"},
