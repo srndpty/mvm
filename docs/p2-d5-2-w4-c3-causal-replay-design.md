@@ -49,6 +49,8 @@ stop_arbitration:
   previous                        # DOMAIN_TERMINAL成立時はNONE
   claimed                         # DOMAIN_TERMINAL
   claim_succeeded
+  reset_count_during_measurement  # 0でなければ無効
+  measurement_start_state         # NONE
 
 measurement_start:
   explicit_stop_publish_serial
@@ -129,7 +131,7 @@ serial equalityはその補強証拠として扱う。
 
 ### memory ordering（instrumentation前にfreeze）
 
-serialはdiagnostic counterではなくnegative causal witnessなので、C++ memory modelまで固定する。
+serialは補強diagnosticだが、観測値の比較を意味あるものにするためC++ memory modelまで固定する。
 
 ```text
 writer:
@@ -140,9 +142,8 @@ reader（stop witness）:
   publish_serial.load(std::memory_order_seq_cst)
 ```
 
-`relaxed`および`acquire/release`だけのserial ordering は W4-C3 では採らない。W4-C3は診断専用で
-publication siteは低頻度なので、未観測incrementを排除するhappens-before/coherence argumentを
-書き下すより、`seq_cst`で単一のSC total order上に
+`relaxed`および`acquire/release`だけのserial ordering は W4-C3 では採らない。publication siteは
+低頻度なので、`seq_cst`で
 
 ```text
 measurement_start serial
@@ -150,8 +151,8 @@ pre serial
 at_gate_close serial
 ```
 
-を並べる方が証拠として単純である。release/acquireへ緩めるなら、その argument自体をこの契約へ
-追記してからでなければならない。
+を単一のSC total order上に並べる方が単純である。ただしこれはserialの読み値を整合させるための
+規約であって、これ自体がalternative publicationの先行排除を与えるわけではない。
 
 「publication開始」の定義はamend 4のarbitration claimとし、serial incrementはその直後に置く。
 したがって次を禁止する。
@@ -181,25 +182,29 @@ snapshot alternative-publication serials   <- measurement_start
 formal measurement capture open / activate
 ```
 
-この順序でsnapshotするので、`at_gate_close serial == measurement_start serial`が
-measurement interval全体でalternative publicationなしを意味する。
+snapshot点を固定するのは、比較対象の観測点を曖昧にしないためである。
 
-DOMAIN_TERMINAL closure条件へ次を追加する。
+DOMAIN_TERMINAL closure条件へ次のserial比較を補強diagnosticとして追加する。
 
 ```text
 pre.explicit_stop_publish_serial == at_gate_close.explicit_stop_publish_serial
 pre.fatal_publish_serial         == at_gate_close.fatal_publish_serial
-```
 
-これでterminal cause選択からcapture gate closeまでにalternative publicationが割り込んでいない
-ことをexactに言える。さらにmeasurement開始時のserialとも比較する。
-
-```text
 at_gate_close.explicit_stop_publish_serial == measurement_start.explicit_stop_publish_serial
 at_gate_close.fatal_publish_serial         == measurement_start.fatal_publish_serial
 ```
 
-これが成立すればmeasurement中に先行explicit stop publicationもfatal publicationも無い。
+serial equalityが意味するのは次だけである。
+
+```text
+measurement_start / pre / at_gate_close の観測値に
+publication-countの変化が見えなかった
+```
+
+alternative publicationの先行排除はserial equalityからは主張しない。そのauthorityは
+amend 4のStopArbitration CAS ownershipのみが持つ。serial不一致はcaptureをPARTIAL/INCOMPATIBLE
+側へ落とす材料としてだけ使う。
+
 `planned_window_end`は`callbackBegin >= measurementEndQpc`という純粋なexact predicateなので
 serialを持たない。
 
@@ -258,6 +263,67 @@ previous        = 実際に勝っていたcause（例: DOMAIN_TERMINAL）
 これによりexplicit stopが「先行していた」のか「後から来て負けた」のかが識別される。後着の
 EXPLICIT_STOPは`LOST_TO_DOMAIN_TERMINAL`として扱い、root cause判定を汚さない。
 
+### arbitration epoch / reset lifetime
+
+CAS winnerをcausal authorityにした以上、そのatomicのepochもauthority contractの一部である。
+`previous = NONE`は「measurement epoch中に一度もNONEへ戻されていない」ことを前提にしてのみ
+exclusionを意味する。次のlifecycleをfreezeする。
+
+```text
+StopArbitration lifecycle:
+
+pre-measurement reset:
+  exactly once -> NONE
+
+measurement-start authority established:
+  arbitration == NONE を exact に確認
+
+measurement active:
+  reset-to-NONE 禁止
+
+terminal / stop winner established:
+  winnerをmeasurement終了まで保持
+
+next measurement:
+  lifecycle reset siteは1箇所だけで NONE へ戻す
+```
+
+したがって次のsequenceはcontract違反であり、`previous=NONE`かつ`claim_succeeded=true`の
+witnessが出ても無効とする。
+
+```text
+NONE -> EXPLICIT_STOP    // 先行claim
+EXPLICIT_STOP -> NONE    // reset（禁止）
+NONE -> DOMAIN_TERMINAL  // 見かけ上のterminal claim成功
+```
+
+architecture testで、reset siteが1箇所であること、そのsiteがmeasurement activeな区間から
+到達しないことを検査する。
+
+```text
+NegativeArbitrationResetDuringMeasurement
+NegativeSecondArbitrationResetSite
+```
+
+### losing claimのside effect semantics
+
+CASに失敗したsiteはstop ownershipを変えない。
+
+```text
+claim failure does not alter stop ownership
+```
+
+loserが既存flag（`measurementStopRequested`等）をpublishする実装を残す場合も、artifact上の
+flagとownershipを混同しない。
+
+```text
+flag = true は causal ownership を意味しない
+causal ownership = arbitration winner のみ
+```
+
+stop witnessはloserのclaim結果（`claim_succeeded=false` / `previous=勝者`）をそのまま記録し、
+checkerはflag値からcauseを推定しない。
+
 役割分担:
 
 ```text
@@ -271,6 +337,7 @@ DOMAIN_TERMINAL closure条件へ次を追加する。
 stop_arbitration.previous = NONE
 stop_arbitration.claimed = DOMAIN_TERMINAL
 stop_arbitration.claim_succeeded = true
+stop_arbitration.reset_count_during_measurement = 0
 ```
 
 `NegativeExplicitStopPublishedBetweenPreAndGateClose`のfixtureは、先に
@@ -429,6 +496,7 @@ pre.fatal_latched = false
 stop_arbitration.previous = NONE
 stop_arbitration.claimed = DOMAIN_TERMINAL
 stop_arbitration.claim_succeeded = true
+stop_arbitration.reset_count_during_measurement = 0
 pre.explicit_stop_publish_serial == at_gate_close.explicit_stop_publish_serial
 pre.fatal_publish_serial == at_gate_close.fatal_publish_serial
 at_gate_close.explicit_stop_publish_serial == measurement_start.explicit_stop_publish_serial
@@ -479,6 +547,8 @@ NegativeExplicitStopPublishedBetweenPreAndGateClose
 NegativeStopPublishSerialRelaxedOrdering
 NegativeAlternativeStopWinsArbitration
 NegativeDomainTerminalClaimWithoutNonePrestate
+NegativeArbitrationResetDuringMeasurement
+NegativeSecondArbitrationResetSite
 NegativeStopSideEffectBeforeArbitrationClaim
 NegativePlannedWindowEndPreexisting
 NegativeFatalPreexisting
@@ -500,6 +570,8 @@ claimより前に外部可視なstop side effectを置いたものを拒否す�
 `NegativeAlternativeStopWinsArbitration`はEXPLICIT_STOP/FATALがarbitrationに勝ったcaptureで
 root cause PASSを出させず、`NegativeDomainTerminalClaimWithoutNonePrestate`は
 `previous != NONE`のまま DOMAIN_TERMINAL をclaimedとして記録したcaptureを拒否する。
+`NegativeArbitrationResetDuringMeasurement`と`NegativeSecondArbitrationResetSite`は
+measurement中のreset-to-NONE、およびlifecycle reset siteの複数化を拒否する。
 
 ## 実装順序
 
@@ -516,7 +588,7 @@ then
   1. scheduler_config emit
   2. stop arbitration atomic + publication serial instrumentation
      （claim seq_cst / site先頭、serialはclaim直後）
-  3. stop witness v2
+  3. stop witness v3
   4. checker / replay
   5. negatives（architecture testを含む）
   6. diagnostic-only fresh capture

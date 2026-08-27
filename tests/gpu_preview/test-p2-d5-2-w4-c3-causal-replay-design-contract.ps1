@@ -5,6 +5,8 @@ param(
         'NegativeStopPublishSerial','NegativeTargetPredicateReplay','NegativeSerialMemoryOrder',
         'NegativeSerialSitePrecedence','NegativeReplayScope','NegativeOverflowSemantics',
         'NegativeArbitrationAuthority','NegativeArbitrationClaimPrestate','NegativeSerialAsAuthority',
+        'NegativeArbitrationResetLifetime','NegativeArbitrationEpochCondition',
+        'NegativeLosingClaimOwnership','NegativeStaleSerialAuthorityClaim',
         'NegativeAuthority')]
     [string]$Case='Good'
 )
@@ -22,6 +24,10 @@ switch($Case){
     'NegativeArbitrationAuthority' {$contractText=$contractText.Replace('stop_arbitration.claim_succeeded = true','stop_arbitration.claim_succeeded = false')}
     'NegativeArbitrationClaimPrestate' {$contractText=$contractText.Replace('stop_arbitration.previous = NONE','stop_arbitration.previous = EXPLICIT_STOP')}
     'NegativeSerialAsAuthority' {$contractText=$contractText.Replace('alternative-stop exclusion authorityではない','alternative-stop exclusion authorityである')}
+    'NegativeArbitrationResetLifetime' {$contractText=$contractText.Replace('  reset-to-NONE 禁止','  reset-to-NONE 許容')}
+    'NegativeArbitrationEpochCondition' {$contractText=$contractText.Replace('stop_arbitration.reset_count_during_measurement = 0','stop_arbitration.reset_count_during_measurement >= 0')}
+    'NegativeLosingClaimOwnership' {$contractText=$contractText.Replace('claim failure does not alter stop ownership','claim failureはstop ownershipを上書きしてよい')}
+    'NegativeStaleSerialAuthorityClaim' {$contractText=$contractText.Replace('snapshot点を固定するのは、比較対象の観測点を曖昧にしないためである。','この順序でsnapshotするので、at_gate_close serial == measurement_start serialがmeasurement interval全体でalternative publicationなしを意味する。')}
     'NegativeReplayScope' {$contractText=$contractText.Replace('replay対象はvalid decision invocationに限る。','replay対象は全invocationとする。')}
     'NegativeOverflowSemantics' {$contractText=$contractText.Replace('producerと同じchecked multiply / add precondition','checkerは多倍長整数で評価してよい')}
     'NegativeAuthority' {$contractText=$contractText.Replace('canonical performance authorityへ昇格しない','canonical performance authorityへ昇格する')}
@@ -60,6 +66,18 @@ try{
     Require 'NegativeAlternativeStopWinsArbitration' 'arbitration敗北時のnegativeがありません'
     Require 'NegativeDomainTerminalClaimWithoutNonePrestate' 'claim prestate negativeがありません'
     Require 'NegativeStopSideEffectBeforeArbitrationClaim' 'side-effect precedence negativeがありません'
+    Require 'StopArbitration lifecycle:[\s\S]+exactly once -> NONE[\s\S]+reset-to-NONE 禁止[\s\S]+winnerをmeasurement終了まで保持[\s\S]+lifecycle reset siteは1箇所' 'arbitration epoch/reset lifetimeがfreezeされていません'
+    Require 'stop_arbitration\.reset_count_during_measurement = 0' 'measurement中reset禁止のclosure条件がありません'
+    Require 'claim failure does not alter stop ownership' 'losing claimのownership semanticsがありません'
+    Require 'flag = true は causal ownership を意味しない' 'flagとownershipの分離がありません'
+    Require 'NegativeArbitrationResetDuringMeasurement' 'measurement中reset negativeがありません'
+    Require 'NegativeSecondArbitrationResetSite' 'reset site重複negativeがありません'
+    Deny 'serial[^
+]*measurement interval全体でalternative publicationなし' 'serialへ旧exclusion authority表現が残っています'
+    Deny '先行explicit stop publicationもfatal publicationも無い' 'serialへ旧exclusion authority表現が残っています'
+    Deny 'alternative publicationが割り込んでいない?
+ことをexactに言える' 'serialへ旧exclusion authority表現が残っています'
+    Deny 'stop witness v2' 'implementation orderのstop witness版数が古いままです'
     Require 'measurement-start authority established[\s\S]+snapshot alternative-publication serials[\s\S]+formal measurement capture open' 'measurement_start snapshotの位置が固定されていません'
     Require 'replay対象はvalid decision invocationに限る' 'replay対象がvalid decision invocationへ限定されていません'
     Require 'INVALID_FATAL[\s\S]+target/past_source_domainを捏造・補完しない' 'INVALID_FATAL時のreplay制限がありません'
