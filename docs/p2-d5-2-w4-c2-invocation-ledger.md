@@ -135,3 +135,13 @@ root_cause_of_exit_6 = NOT_ESTABLISHED
 
 W3との比較可能性を回復するため、formal runnerの既定値を`warmup=5, measure=60`へ修正し、
 architecture mutation testで固定する。
+
+修正後のW3一致条件でもrun 1は同じexit 6となった。したがってwarmup差はexit 6の原因ではない。
+同一失敗が3回連続したためretryを停止し、既存のexit 6分岐を区別するdiagnostic stderrを追加する。
+
+```text
+build/p2-d5-2-w4-c2-formal-20260827-b1f63fb
+formal_capture = FAILED_CLOSED
+root_cause_of_exit_6 = NOT_ESTABLISHED
+W4_C_LINK_A_TO_B = NOT_ESTABLISHED
+```

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <dwmapi.h>
 #include <random>
 #include <unordered_map>
@@ -1190,14 +1191,25 @@ void CompositorSpikeController::tick() {
     } else if (phase_ == Phase::ShutdownWait) {
         item_->update();
         if (state_->teardownComplete.load()) {
-            if (!closeVBlankMappingSupportAfterTeardown())
+            if (!closeVBlankMappingSupportAfterTeardown()) {
+                std::fprintf(stderr,
+                             "W4-C2_DIAGNOSTIC_EXIT6_CLOSE_MAPPING_FAILURE: "
+                             "VBlank mapping supportの終了に失敗しました\n");
                 exitCode_ = 6;
-            if (!writeMetrics())
+            }
+            if (!writeMetrics()) {
+                std::fprintf(stderr,
+                             "W4-C2_DIAGNOSTIC_EXIT6_METRICS_WRITE_FAILURE: "
+                             "最終metricsの書込みに失敗しました\n");
                 exitCode_ = 6;
+            }
             phase_ = Phase::Done;
             timer_.stop();
             Q_EMIT finished();
         } else if (phaseTimer_.elapsed() > 15000) {
+            std::fprintf(stderr,
+                         "W4-C2_DIAGNOSTIC_EXIT6_TEARDOWN_TIMEOUT: "
+                         "render teardownが15秒以内に完了しませんでした\n");
             exitCode_ = 6;
             phase_ = Phase::Done;
             timer_.stop();
