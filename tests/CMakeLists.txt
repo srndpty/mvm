@@ -628,6 +628,17 @@ foreach(_p2_d5_2_w4c2_arch_case IN ITEMS Good NegativePostWorktree NegativePostS
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
+# P2-D5-2-W4-C3: exact causal replayへ進む前のstop witness/replay設計freeze。
+foreach(_p2_d5_2_w4c3_design_case IN ITEMS Good NegativeCauseEnum NegativeExactJoin NegativeAlternativeStop NegativeAuthority)
+    string(TOLOWER "${_p2_d5_2_w4c3_design_case}" _p2_d5_2_w4c3_design_name)
+    mvm_add_test(p2_d5_2_w4c3_causal_replay_design_${_p2_d5_2_w4c3_design_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w4-c3-causal-replay-design-contract.ps1"
+            -Contract "${CMAKE_SOURCE_DIR}/docs/p2-d5-2-w4-c3-causal-replay-design.md"
+            -Case "${_p2_d5_2_w4c3_design_case}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
     string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)
     mvm_add_test(p2_c3_a3_t2_d1b2_evaluability_${_p2_c3_a3_t2_d1b2e_name}

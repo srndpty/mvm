@@ -214,3 +214,45 @@ measurement stop後はscheduler/native Present token生成より前のgateでren
 stop requestを同じgateで処理する。これによりterminal後のscheduler invocationを増やさない。
 またnative envelope stopが15秒以内に完了しなければexit 6でfail-closeし、外部runnerのtimeoutまで
 無期限に待たない。
+
+## formal C2 capture result
+
+checkpoint `4f2b950`のclean worktreeから、sealed W3と同じ`warmup=5`、`measure=60`で
+3 runを取得した。runnerのpost provenance checkと各runのinvocation checkerはすべてPASSした。
+
+```text
+build/p2-d5-2-w4-c2-formal-20260827-4f2b950
+runs = 3/3 PASS
+verdict = SCHEDULER_INVOCATION_CONTROL_FLOW_EXACT (3/3)
+invocations = 1743 / 1743 / 1743
+PRIMARY_DECISION = 1741 / 1741 / 1741
+DUPLICATE_DECISION = 1 / 1 / 1
+OUTSIDE_SOURCE_DOMAIN_DECISION = 1 / 1 / 1
+INVALID_FATAL = 0 / 0 / 0
+terminal serial = 1743 / 1743 / 1743
+terminal intent ordinal = 3598 / 3598 / 3598
+required_intent_membership = true / true / true
+past_source_domain = true / true / true
+formal_transport_disposition = TRANSPORT / TRANSPORT / TRANSPORT
+post_terminal_invocation = 0 / 0 / 0
+measurement elapsed seconds = 29.0574383 / 29.0574563 / 29.0573773
+canonical_performance_authority = false
+```
+
+source-frame terminalとrequired-intent membershipが同時に別fieldとして記録され、3 runとも
+`past_source_domain=true`かつ`required_intent_membership=true`だった。したがって両domainを
+同一視していないこともruntimeで確認できた。
+
+C2はterminal branch executionとpost-terminal invocation 0件を閉じるが、terminal invocationから
+`finishMeasurement()`のcapture gate closeへ至った因果edge、および`EXPLICIT_STOP`が先にpublish
+されていないことをbranch-exact fieldとして持たない。terminal invocation QPCとmeasurement stop QPCは
+一致するが、QPC一致だけを因果joinに使わない。よって現時点の判定は次のままとする。
+
+```text
+Cause B DOMAIN_TERMINAL = BRANCH_EXECUTION_EXACT
+Cause B PLANNED_WINDOW_END = EXACT_INCOMPATIBLE
+Cause B EXPLICIT_STOP = NOT_OBSERVABLE
+Link A -> B = NOT_ESTABLISHED
+root_cause_determined = false
+attribution = PARTIAL
+```
