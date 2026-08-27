@@ -164,3 +164,8 @@ worker join待ちやGPU drainではなく、measurement/capture gate close後の
 `performShutdown()`を開始し、次frame要求が進行中frameへcoalesceされる順序と整合する。
 したがってwake jobは撤回し、`CaptureEnvelopeStopWait`がrender callback退出を観測してから
 teardownを要求するbarrierへ置き換える。
+
+barrierだけではGUI側updateの配送は回復しなかった。native envelope停止callbackからrender threadの
+`update()`で次callbackを予約し、controllerのteardown要求到着まではscheduler/native Presentより前の
+gateで再予約するbridgeを追加する。したがってbridge callbackはscheduler invocation ledgerや
+native Present ledgerへ混入しない。

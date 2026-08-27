@@ -246,6 +246,15 @@ protected:
                 update();
             return;
         }
+        // native envelope停止後はGUI threadのupdateが進行中frameへcoalesceされ得る。
+        // render thread自身でteardown要求到着までcallbackを橋渡しする。このgateは
+        // scheduler invocationとnative Present token生成より前なので、証跡を増やさない。
+        if (state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire) &&
+            state_->nativePresentEnvelopeStopped.load(std::memory_order_acquire) &&
+            state_->measurementStopCaptured.load(std::memory_order_acquire)) {
+            update();
+            return;
+        }
         const auto nativeHook = state_->nativePresentHook;
         const std::uint64_t propagationSerial =
             nativeHook ? nativeHook->recordDirtyPropagationStage(MVM_DIRTY_STAGE_COMPOSITOR_RENDER)
@@ -1149,6 +1158,9 @@ private:
             }
             state_->nativePresentEnvelopeCloseQpc.store(gpu::qpcTicks(), std::memory_order_release);
             state_->nativePresentEnvelopeStopped.store(true, std::memory_order_release);
+            // GUI controllerがworker停止とteardown要求をpublishするまで、Presentを伴わない
+            // 次callbackをrender threadから確実に予約する。
+            update();
             return true;
         }
         if (state_->measurementResetRequested.exchange(false, std::memory_order_acq_rel)) {
