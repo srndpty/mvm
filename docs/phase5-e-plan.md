@@ -627,6 +627,23 @@ closureは次の順序で再開する。今回は計画更新だけを行い、t
 5. 同一checkpointでP3-C-2 9/9、P4 3/3を実行する。FAIL時はstopし、変更前後の複数runで帰属する。
 6. raw、summary、provenance、manifestを不変保存し、`docs/phase5-plan.md` §10.4と本節を最終判定へ更新する。
 
+#### P2-D5-2 B0 — Same-output Authority Attribution design
+
+W4-C3 CLOSED後の最初のcorrective designとして、mixed output provenanceをsame-callbackでexact比較する
+[B0設計契約](p2-d5-2-b0-same-output-authority-attribution.md)をfreezeした。capture、test実行、production
+behavior変更はまだ行っていない。
+
+static API inventoryでは、Windows 8.1以降`DwmGetCompositionTimingInfo`の`hwnd`は`NULL`必須で、
+target HWND指定は`E_INVALIDARG`となる。したがってliteralな「HWND-bound DWM counter」はproduction候補として
+static rejectionである。B0 schemaは非NULL呼出しを診断事実として保存するが、NULL fallback、nearest-QPC、
+cadence tolerance、counter clamp、sequential ordinal `+1`で救済しない。
+
+B0はNULL / HWND-attempt / existing W4-C3 sequenceをinvocation serialでjoinし、supportedな環境でのみ
+HWND shadow ordinal / target / predicateをreplayする。`past_source_domain && required_intent_membership`を
+successful measurement completionにしないproduct invariantと、`required_intent_count` / actual
+`source_frame_count`のauthority分離も同設計へ固定した。代替product behaviorは未実装であり、
+P5-E4は引き続きBLOCKEDである。
+
 ### E4 実装結果 (実測)
 
 - `docs/phase5-plan.md` §10.2の全要求をunit/product testへ突き合わせ、対応表を§10へ追加した。
