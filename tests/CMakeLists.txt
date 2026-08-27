@@ -583,6 +583,18 @@ foreach(_p2_d5_2_w4b_case IN ITEMS GoodIsolatedAndDouble GoodEdgeCohorts GoodLon
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
+# P2-D5-2-W4-C0: causal attribution前にproducerの全writer / return / stop pathを
+# 静的に列挙する。新規captureとproduct変更は行わない。
+foreach(_p2_d5_2_w4c0_case IN ITEMS GoodStaticInventory NegativeUnclassifiedOrdinalWriter NegativeUnclassifiedLastFinalizedWriter NegativeUnclassifiedNoDecisionReturn NegativeSecondIntentProducer NegativeIndirectOrdinalReconstruction)
+    string(TOLOWER "${_p2_d5_2_w4c0_case}" _p2_d5_2_w4c0_name)
+    mvm_add_test(p2_d5_2_w4c0_static_control_flow_${_p2_d5_2_w4c0_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w4-c0-static-control-flow-contract.ps1"
+            -Case "${_p2_d5_2_w4c0_case}"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
     string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)
     mvm_add_test(p2_c3_a3_t2_d1b2_evaluability_${_p2_c3_a3_t2_d1b2e_name}
