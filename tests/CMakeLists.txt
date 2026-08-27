@@ -595,6 +595,35 @@ foreach(_p2_d5_2_w4c0_case IN ITEMS GoodStaticInventory NegativeUnclassifiedOrdi
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
+# P2-D5-2-W4-C1: sealed W3 cohortだけでcompleted refresh inputとのcausal compatibilityを
+# replayする。branch executionとroot causeは確定しない。
+foreach(_p2_d5_2_w4c1_case IN ITEMS GoodCompatibility NegativeCompletedOrdinalMutation NegativeIntentDeltaMutation NegativeNearestQpcBinding NegativeSourceRequiredDomainConflation NegativeCandidateForced NegativePlannedEndHeuristic NegativeMissingStateInterpolation NegativeRootCauseDeclared)
+    string(TOLOWER "${_p2_d5_2_w4c1_case}" _p2_d5_2_w4c1_name)
+    mvm_add_test(p2_d5_2_w4c1_causal_compatibility_${_p2_d5_2_w4c1_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w4-c1-causal-compatibility-contract.ps1"
+            -Case "${_p2_d5_2_w4c1_case}"
+            -Core "${CMAKE_SOURCE_DIR}/scripts/p2-d5-2-w4-c1-causal-compatibility-core.ps1"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+# P2-D5-2-W4-C2: 全scheduler invocationのbranch-exact ledger契約。
+foreach(_p2_d5_2_w4c2_case IN ITEMS GoodExact NegativeInvocationSequenceGap NegativePrePostStateMutation NegativeDecisionReasonMutation NegativeDecisionWithoutTransport NegativeSourceRequiredDomainConflation NegativePostTerminalInvocation NegativeCompletedOrdinalMutation NegativePerformanceAuthorityPromotion)
+    string(TOLOWER "${_p2_d5_2_w4c2_case}" _p2_d5_2_w4c2_name)
+    mvm_add_test(p2_d5_2_w4c2_invocation_ledger_${_p2_d5_2_w4c2_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w4-c2-invocation-ledger-contract.ps1"
+            -Case "${_p2_d5_2_w4c2_case}"
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-d5-2-w4-c2-invocation-ledger.ps1"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-d5-2-w4c2-${_p2_d5_2_w4c2_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+mvm_add_test(p2_d5_2_w4c2_invocation_ledger_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w4-c2-invocation-ledger-architecture.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+
 foreach(_p2_c3_a3_t2_d1b2e_case IN ITEMS NotEvaluableAbiMismatch EvaluableSameAbi AbiMismatchWithHistoricalQt NegativeBadProofSchema)
     string(TOLOWER "${_p2_c3_a3_t2_d1b2e_case}" _p2_c3_a3_t2_d1b2e_name)
     mvm_add_test(p2_c3_a3_t2_d1b2_evaluability_${_p2_c3_a3_t2_d1b2e_name}

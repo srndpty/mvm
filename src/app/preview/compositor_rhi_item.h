@@ -347,6 +347,7 @@ struct CompositorSpikeState {
     // P2-D5-2 formal Playback専用。scheduler本体とledgerはrender/swap callback間で
     // 同じlockにより直列化し、共有OutputScheduler60Hzから完全に分離する。
     std::atomic<bool> formalOpportunitySchedulerEnabled{false};
+    std::atomic<bool> formalSchedulerInvocationLedgerEnabled{false};
     std::atomic<bool> formalOpportunityCaptureActive{false};
     // W2-C0.1 lower envelope専用。同じscheduler実装をmeasurement前だけ別runで使い、
     // B1 scope開始時にclose/restartする。source selection/counterへは接続しない。

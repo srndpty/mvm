@@ -82,13 +82,20 @@ try{
     Require-Count $finalize 'lastFinalizedOrdinal_\s*=\s*ordinal\s*;' 1 `
         'last finalized writerがfinalize pathから外れています'
 
-    # 現実装のinvalid returnはすべてfatal。正常NO_DECISIONを暗黙追加できないよう固定する。
-    Require-Count $select 'return\s+\{\s*\}\s*;' 6 `
-        '未分類のinvalid/no-decision returnがあります'
-    Require-Count $select 'return\s+duplicate\s*;' 1 `
-        'duplicate decision returnが変更されています'
-    Require-Count $select 'return\s+decision\s*;' 2 `
-        'outside-domain/primary decision returnが変更されています'
+    # C2 instrumentation後も全returnはbranch-exact finishInvocationを通る。
+    # 正常NO_DECISIONやledgerを迂回するreturnを暗黙追加できないよう固定する。
+    Require-Count $select 'return\s+\{\s*\}\s*;' 0 `
+        'invocation ledgerを迂回するinvalid/no-decision returnがあります'
+    Require-Count $select 'return\s+finishInvocation\(' 9 `
+        '未分類またはinstrumentationを迂回するreturnがあります'
+    Require-Count $select 'PresentationSchedulerInvocationResult::InvalidFatal' 6 `
+        'fatal resultのbranch数が分類と一致しません'
+    Require-Count $select 'PresentationSchedulerInvocationResult::DuplicateDecision' 1 `
+        'duplicate decision resultが変更されています'
+    Require-Count $select 'PresentationSchedulerInvocationResult::OutsideSourceDomainDecision' 1 `
+        'source-domain resultが変更されています'
+    Require-Count $select 'PresentationSchedulerInvocationResult::PrimaryDecision' 1 `
+        'primary decision resultが変更されています'
     Require-Count $select 'fail\(PresentationOpportunityError::InvalidConfiguration\)' 1 `
         'INVALID_CONFIGURATION fatal returnが分類と一致しません'
     Require-Count $select 'fail\(PresentationOpportunityError::AuthorityDiscontinuity\)' 2 `
@@ -124,6 +131,11 @@ try{
        $document-notmatch 'w4_c0_static_inventory_complete = true' -or
        $document-notmatch 'root_cause_determined = false'){
         throw 'W4-C freezeまたはC0 verdictが文書に固定されていません'
+    }
+    if($document-match 'OUTSIDE_REQUIRED_DOMAIN_DECISION' -or
+       $document-notmatch 'OUTSIDE_SOURCE_DOMAIN_DECISION' -or
+       $document-notmatch 'SUPPRESSED_OUTSIDE_REQUIRED_INTENT_DOMAIN'){
+        throw 'source domain resultとrequired intent transport dispositionが分離されていません'
     }
 }catch{
     $rejected=$true

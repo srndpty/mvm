@@ -50,6 +50,7 @@ struct CompositorSpikeConfig {
     bool diagnosticTiming = false;
     bool schedulerPhaseRing = false;
     bool presentationOpportunityRing = false;
+    bool formalSchedulerInvocationLedger = false;
     bool vblankObserver = false;
     bool incrementalMapperShadow = false;
     NativePresentHookMode nativePresentHook = NativePresentHookMode::Disabled;

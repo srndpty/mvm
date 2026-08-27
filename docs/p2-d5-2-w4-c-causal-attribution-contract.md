@@ -69,7 +69,7 @@ scheduler_invocation_serial
 invocation_qpc
 pre: anchored / origin_refresh_count / completed_refresh_ordinal /
      last_finalized_opportunity_ordinal / required-domain state
-result: PRIMARY_DECISION / DUPLICATE_DECISION / OUTSIDE_REQUIRED_DOMAIN_DECISION /
+result: PRIMARY_DECISION / DUPLICATE_DECISION / OUTSIDE_SOURCE_DOMAIN_DECISION /
         INVALID_FATAL
 reason: source branch と 1:1 の enum
 decision: opportunity_ordinal / target_frame / repeat / past_source_domain /
@@ -77,6 +77,20 @@ decision: opportunity_ordinal / target_frame / repeat / past_source_domain /
 post: scheduler state
 state_transition_exact = true
 ```
+
+上記 result の domain は scheduler が判定する source-frame domain である。required-intent
+domain は transport 層の別 authority なので、result と混ぜず次の field に分離する。
+
+```text
+result: PRIMARY_DECISION / DUPLICATE_DECISION / OUTSIDE_SOURCE_DOMAIN_DECISION /
+        INVALID_FATAL
+required_intent_membership: true / false
+formal_transport_disposition:
+  TRANSPORT / SUPPRESSED_OUTSIDE_REQUIRED_INTENT_DOMAIN / SUPPRESSED_DUPLICATE / INVALID
+```
+
+source-domain resultへrequired-domainを意味するenum名を付けることを禁止する。source-domain
+terminalの観測だけからrequired ordinal domain exhaustionを結論してはならない。
 
 現実装の `selectForRender()` は正常な `NO_DECISION` を返さない。`return {}` の全経路は
 error を latch する fatal path である。このため、C2 で一般的な `NO_DECISION` enum を
@@ -262,9 +276,13 @@ C0 では先頭 5 件を静的契約テストで固定する。残りは該当 s
 ```text
 w4_c_contract_frozen = true
 w4_c0_static_inventory_complete = true
-w4_c1_started = false
-new_capture_performed = false
-producer_instrumentation_changed = false
+w4_c1_started = true
+w4_c1_complete = true
+formal_c2_capture_performed = false
+non_authoritative_runtime_smoke_performed = true
+producer_instrumentation_changed = true
 root_cause_determined = false
-attribution = STATIC_PRODUCER_PATHS_ONLY
+attribution = EXACT_CAUSAL_COMPATIBILITY_PARTIAL_COVERAGE
+c2_instrumentation_required = true
+c2_instrumentation_implemented = true
 ```

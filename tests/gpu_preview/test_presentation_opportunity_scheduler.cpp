@@ -18,6 +18,8 @@ using Scheduler = mvm::gpu::PresentationOpportunityScheduler;
 using Error = mvm::gpu::PresentationOpportunityError;
 using Classification = mvm::gpu::PresentationOpportunityClassification;
 using TransportDisposition = mvm::gpu::FormalIntentTransportDisposition;
+using InvocationResult = mvm::gpu::PresentationSchedulerInvocationResult;
+using InvocationReason = mvm::gpu::PresentationSchedulerInvocationReason;
 
 constexpr long long kQpcFrequency = 600;
 
@@ -406,6 +408,66 @@ void formalIntentTransportPolicyIsExact() {
           "NegativeDuplicateWithMissingMembershipProvenance: duplicate suppressionがmembership provenance欠損を隠しました");
 }
 
+void diagnosticInvocationLedgerIsBranchExact() {
+    Scheduler value;
+    check(value.start({1, 0, 60, 1, 60, 1, kQpcFrequency, true}),
+          "W4-C2 diagnostic schedulerを開始できません");
+    Driver driver{&value};
+    const auto primary = driver.select(100, 1);
+    check(primary.valid && primary.invocationSerial == 1,
+          "primary invocation serialが発行されません");
+    check(value.noteInvocationTransportDisposition(primary.invocationSerial,
+                                                   TransportDisposition::Transport),
+          "primary transport dispositionを記録できません");
+    const auto duplicate = driver.select(100, 2);
+    check(duplicate.duplicateCallback && duplicate.invocationSerial == 2,
+          "duplicate invocationを独立記録していません");
+    check(value.noteInvocationTransportDisposition(duplicate.invocationSerial,
+                                                   TransportDisposition::SuppressDuplicateCallback),
+          "duplicate transport dispositionを記録できません");
+    check(value.markRenderComplete(5, primary.targetFrame, primary.renderOrdinal) &&
+              value.commitSwap(10, authority(101), 0),
+          "W4-C2 primaryをcommitできません");
+    const auto terminal = driver.select(101, 11);
+    check(terminal.valid && terminal.pastSourceDomain && terminal.invocationSerial == 3,
+          "source-domain terminal invocationを記録できません");
+    check(value.noteInvocationTransportDisposition(
+              terminal.invocationSerial, TransportDisposition::SuppressOutsideRequiredSet),
+          "terminal transport dispositionを別fieldへ記録できません");
+    const auto snapshot = value.snapshot();
+    check(snapshot.invocationLedgerEnabled && snapshot.invocationRecords.size() == 3,
+          "全scheduler invocationがledgerにありません");
+    if (snapshot.invocationRecords.size() == 3) {
+        const auto& first = snapshot.invocationRecords[0];
+        const auto& second = snapshot.invocationRecords[1];
+        const auto& third = snapshot.invocationRecords[2];
+        check(first.result == InvocationResult::PrimaryDecision &&
+                  first.reason == InvocationReason::Primary && first.stateTransitionExact &&
+                  first.transportDispositionExact,
+              "primary invocationのbranch/stateがexactではありません");
+        check(second.result == InvocationResult::DuplicateDecision &&
+                  second.reason == InvocationReason::PendingRender && second.pre.pendingRender &&
+                  second.post.pendingRender,
+              "duplicate invocationのpre/post stateが違います");
+        check(third.result == InvocationResult::OutsideSourceDomainDecision &&
+                  third.reason == InvocationReason::PastSourceDomain &&
+                  !third.decision.requiredIntentMembership && third.decision.pastSourceDomain &&
+                  third.transportDisposition == TransportDisposition::SuppressOutsideRequiredSet,
+              "source-domain resultとrequired-domain dispositionが分離されていません");
+    }
+
+    Scheduler invalid;
+    check(invalid.start({1, 0, 60, 1, 60, 1, kQpcFrequency, true}),
+          "W4-C2 invalid schedulerを開始できません");
+    check(!invalid.selectForRender(1, {}, 0).valid, "invalid authorityを拒否しません");
+    const auto invalidSnapshot = invalid.snapshot();
+    check(invalidSnapshot.invocationRecords.size() == 1 &&
+              invalidSnapshot.invocationRecords[0].result == InvocationResult::InvalidFatal &&
+              invalidSnapshot.invocationRecords[0].reason == InvocationReason::AuthorityUnusable &&
+              !invalidSnapshot.invocationRecords[0].transportDispositionExact,
+          "fatal invocationのbranch-exact reasonがありません");
+}
+
 } // namespace
 
 int main() {
@@ -421,6 +483,7 @@ int main() {
     sourceFrameOffsetIsExact();
     requiredIntentAuthorityIsProducedAtStart();
     formalIntentTransportPolicyIsExact();
+    diagnosticInvocationLedgerIsBranchExact();
     std::fprintf(stderr, "P2-D5-2/F2 presentation opportunity scheduler: 失敗 %d件\n", failures);
     return failures == 0 ? 0 : 1;
 }

@@ -14,19 +14,19 @@ using namespace mvm::app;
 
 namespace {
 void usage() {
-    std::fprintf(stderr,
-                 "使い方: mvm_compositor_spike --source-a <path> --source-b <path> "
-                 "--metrics <json> [options]\n"
-                 "  --warmup-seconds <n> --measure-seconds <n> --seed <n>\n"
-                 "  --seek-count <n> --display-timeout-ms <n>\n"
-                 "  --formal-preflight\n"
-                 "  --diagnostic-timing --diagnostic-case a|b|c|d\n"
-                 "  --scheduler-phase-ring\n"
-                 "  --presentation-opportunity-ring\n"
-                 "  --incremental-mapper-shadow\n"
-                 "  --native-present-hook off|on\n"
-                 "  --target-rhiitem-pixel-toggle\n"
-                 "  --gpu-completion fence|event_query --mode playback|seek|layout\n");
+    std::fprintf(stderr, "使い方: mvm_compositor_spike --source-a <path> --source-b <path> "
+                         "--metrics <json> [options]\n"
+                         "  --warmup-seconds <n> --measure-seconds <n> --seed <n>\n"
+                         "  --seek-count <n> --display-timeout-ms <n>\n"
+                         "  --formal-preflight\n"
+                         "  --diagnostic-timing --diagnostic-case a|b|c|d\n"
+                         "  --scheduler-phase-ring\n"
+                         "  --presentation-opportunity-ring\n"
+                         "  --w4-c2-scheduler-invocation-ledger\n"
+                         "  --incremental-mapper-shadow\n"
+                         "  --native-present-hook off|on\n"
+                         "  --target-rhiitem-pixel-toggle\n"
+                         "  --gpu-completion fence|event_query --mode playback|seek|layout\n");
 }
 
 bool parse(const QStringList& args, CompositorSpikeConfig& config) {
@@ -64,6 +64,8 @@ bool parse(const QStringList& args, CompositorSpikeConfig& config) {
         else if (arg == "--vblank-observer") config.vblankObserver = true;
         else if (arg == "--presentation-opportunity-ring")
             config.presentationOpportunityRing = true;
+        else if (arg == "--w4-c2-scheduler-invocation-ledger")
+            config.formalSchedulerInvocationLedger = true;
         else if (arg == "--incremental-mapper-shadow")
             config.incrementalMapperShadow = true;
         else if (arg == "--native-present-hook") {
@@ -92,10 +94,13 @@ bool parse(const QStringList& args, CompositorSpikeConfig& config) {
         config.nativePresentHook == NativePresentHookMode::Disabled ||
         (config.presentationOpportunityRing && config.vblankObserver &&
          config.mode == CompositorMode::Playback);
+    const bool invocationLedgerDependencies =
+        !config.formalSchedulerInvocationLedger ||
+        (config.formalPreflight && config.mode == CompositorMode::Playback);
     return !config.sourceA.isEmpty() && !config.sourceB.isEmpty() &&
            !config.metricsPath.isEmpty() && config.warmupSeconds >= 0 &&
            config.measureSeconds > 0 && config.seekCount > 0 && config.displayTimeoutMs > 0 &&
-           mapperDependencies && nativePresentDependencies;
+           mapperDependencies && nativePresentDependencies && invocationLedgerDependencies;
 }
 } // namespace
 

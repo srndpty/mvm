@@ -333,6 +333,14 @@ protected:
             }
             const auto transportDisposition =
                 gpu::formalIntentTransportDisposition(foreignPreMeasurement, formalDecision);
+            {
+                std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+                if (!state_->formalOpportunityScheduler.noteInvocationTransportDisposition(
+                        formalDecision.invocationSerial, transportDisposition)) {
+                    fail("W4-C2 scheduler invocationとtransport dispositionを結合できません");
+                    return;
+                }
+            }
             const auto recordSuppressedNonFormal = [&] {
                 if (nativePresentToken.tokenSerial() == 0) {
                     fail("P2-D5-2 suppressed transportに有効なtoken serialがありません");
@@ -992,7 +1000,8 @@ private:
             1,
             state_->formalRefreshNumerator.load(std::memory_order_relaxed),
             state_->formalRefreshDenominator.load(std::memory_order_relaxed),
-            static_cast<long long>(gpu::qpcFrequency())};
+            static_cast<long long>(gpu::qpcFrequency()),
+            state_->formalSchedulerInvocationLedgerEnabled.load(std::memory_order_acquire)};
         std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
         return state_->formalOpportunityScheduler.start(config);
     }

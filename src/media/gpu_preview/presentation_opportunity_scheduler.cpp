@@ -28,6 +28,8 @@ bool PresentationOpportunityScheduler::start(const PresentationOpportunityConfig
     config_ = config;
     records_.reserve(static_cast<std::size_t>(config.requiredFrameCount * 2));
     requiredIntentOrdinals_.reserve(static_cast<std::size_t>(config.requiredFrameCount));
+    if (config.invocationLedgerEnabled)
+        invocationRecords_.reserve(static_cast<std::size_t>(config.requiredFrameCount * 2));
     for (long long ordinal = 0; ordinal < config.requiredFrameCount; ++ordinal)
         requiredIntentOrdinals_.push_back(ordinal);
     started_ = true;
@@ -37,14 +39,19 @@ bool PresentationOpportunityScheduler::start(const PresentationOpportunityConfig
 PresentationOpportunityDecision PresentationOpportunityScheduler::selectForRender(
     long long callbackQpc, const PresentationAuthoritySample& preRenderAuthority,
     long long renderOrdinal) {
+    const auto pre = invocationState();
     if (!started_ || closed_ || error_ != PresentationOpportunityError::None || callbackQpc <= 0) {
         fail(PresentationOpportunityError::InvalidConfiguration);
-        return {};
+        return finishInvocation(pre, callbackQpc, preRenderAuthority,
+                                PresentationSchedulerInvocationResult::InvalidFatal,
+                                PresentationSchedulerInvocationReason::InvalidConfiguration, {});
     }
     if (pendingRender_) {
         auto duplicate = pendingDecision_;
         duplicate.duplicateCallback = true;
-        return duplicate;
+        return finishInvocation(pre, callbackQpc, preRenderAuthority,
+                                PresentationSchedulerInvocationResult::DuplicateDecision,
+                                PresentationSchedulerInvocationReason::PendingRender, duplicate);
     }
     if (!presentationAuthorityUsable(preRenderAuthority, config_.refreshNumerator,
                                      config_.refreshDenominator) ||
@@ -52,14 +59,18 @@ PresentationOpportunityDecision PresentationOpportunityScheduler::selectForRende
         captureFirstEvent(PresentationOpportunityClassification::AuthorityDiscontinuity, -1, -1, 0,
                           preRenderAuthority, -1, false);
         fail(PresentationOpportunityError::AuthorityDiscontinuity);
-        return {};
+        return finishInvocation(pre, callbackQpc, preRenderAuthority,
+                                PresentationSchedulerInvocationResult::InvalidFatal,
+                                PresentationSchedulerInvocationReason::AuthorityUnusable, {});
     }
     // QPCはordinal authorityではない。continuityのcross-checkにだけ使う。
     if (callbackQpc < lastSwapQpc_) {
         captureFirstEvent(PresentationOpportunityClassification::Regression, -1, -1, 0,
                           preRenderAuthority, -1, false);
         fail(PresentationOpportunityError::OpportunityRegression);
-        return {};
+        return finishInvocation(pre, callbackQpc, preRenderAuthority,
+                                PresentationSchedulerInvocationResult::InvalidFatal,
+                                PresentationSchedulerInvocationReason::CallbackQpcRegression, {});
     }
 
     // 最初のrenderはmeasurement先頭のopportunity 0を狙う。以降はpre-render
@@ -71,11 +82,17 @@ PresentationOpportunityDecision PresentationOpportunityScheduler::selectForRende
             captureFirstEvent(PresentationOpportunityClassification::AuthorityDiscontinuity, -1, -1,
                               0, preRenderAuthority, -1, false);
             fail(PresentationOpportunityError::AuthorityDiscontinuity);
-            return {};
+            return finishInvocation(
+                pre, callbackQpc, preRenderAuthority,
+                PresentationSchedulerInvocationResult::InvalidFatal,
+                PresentationSchedulerInvocationReason::CompletedOrdinalUnavailable, {});
         }
         if (completed >= std::numeric_limits<long long>::max()) {
             fail(PresentationOpportunityError::ArithmeticOverflow);
-            return {};
+            return finishInvocation(pre, callbackQpc, preRenderAuthority,
+                                    PresentationSchedulerInvocationResult::InvalidFatal,
+                                    PresentationSchedulerInvocationReason::CompletedOrdinalOverflow,
+                                    {});
         }
         ordinal = completed + 1;
     }
@@ -83,7 +100,10 @@ PresentationOpportunityDecision PresentationOpportunityScheduler::selectForRende
     long long target = -1;
     if (!targetFor(ordinal, target)) {
         fail(PresentationOpportunityError::ArithmeticOverflow);
-        return {};
+        return finishInvocation(pre, callbackQpc, preRenderAuthority,
+                                PresentationSchedulerInvocationResult::InvalidFatal,
+                                PresentationSchedulerInvocationReason::TargetArithmeticOverflow,
+                                {});
     }
     PresentationOpportunityDecision decision;
     decision.valid = true;
@@ -98,7 +118,9 @@ PresentationOpportunityDecision PresentationOpportunityScheduler::selectForRende
     if (target >= config_.requiredFrameCount) {
         decision.pastSourceDomain = true;
         pastSourceDomain_ = true;
-        return decision;
+        return finishInvocation(pre, callbackQpc, preRenderAuthority,
+                                PresentationSchedulerInvocationResult::OutsideSourceDomainDecision,
+                                PresentationSchedulerInvocationReason::PastSourceDomain, decision);
     }
     decision.repeat = target == lastUniqueFrame_;
     lastAuthority_ = preRenderAuthority;
@@ -107,7 +129,9 @@ PresentationOpportunityDecision PresentationOpportunityScheduler::selectForRende
     pendingRenderCompleted_ = false;
     pendingRenderEndQpc_ = 0;
     pendingRenderedSourceFrame_ = -1;
-    return decision;
+    return finishInvocation(pre, callbackQpc, preRenderAuthority,
+                            PresentationSchedulerInvocationResult::PrimaryDecision,
+                            PresentationSchedulerInvocationReason::Primary, decision);
 }
 
 bool PresentationOpportunityScheduler::markRenderComplete(long long renderEndQpc,
@@ -367,7 +391,41 @@ PresentationOpportunitySnapshot PresentationOpportunityScheduler::snapshot() con
             firstEvent_,
             records_,
             started_ && error_ == PresentationOpportunityError::None,
-            requiredIntentOrdinals_};
+            requiredIntentOrdinals_,
+            config_.invocationLedgerEnabled,
+            invocationRecords_};
+}
+
+bool PresentationOpportunityScheduler::noteInvocationTransportDisposition(
+    unsigned long long invocationSerial, FormalIntentTransportDisposition disposition) {
+    if (!config_.invocationLedgerEnabled)
+        return true;
+    if (invocationSerial == 0 || invocationRecords_.empty() ||
+        invocationRecords_.back().invocationSerial != invocationSerial ||
+        invocationRecords_.back().transportDispositionExact)
+        return false;
+    invocationRecords_.back().transportDisposition = disposition;
+    invocationRecords_.back().transportDispositionExact = true;
+    return true;
+}
+
+PresentationSchedulerInvocationState PresentationOpportunityScheduler::invocationState() const {
+    return {started_,       closed_,          anchored_, originRefreshCount_, lastFinalizedOrdinal_,
+            pendingRender_, pastSourceDomain_};
+}
+
+PresentationOpportunityDecision PresentationOpportunityScheduler::finishInvocation(
+    const PresentationSchedulerInvocationState& pre, long long invocationQpc,
+    const PresentationAuthoritySample& inputAuthority, PresentationSchedulerInvocationResult result,
+    PresentationSchedulerInvocationReason reason, PresentationOpportunityDecision decision) {
+    if (!config_.invocationLedgerEnabled)
+        return decision;
+    decision.invocationSerial = ++invocationSerial_;
+    invocationRecords_.push_back({decision.invocationSerial, invocationQpc, inputAuthority, pre,
+                                  result, reason, decision,
+                                  FormalIntentTransportDisposition::InvalidMembershipProvenance,
+                                  false, invocationState(), true});
+    return decision;
 }
 
 bool PresentationOpportunityScheduler::fail(PresentationOpportunityError error) {
@@ -459,6 +517,46 @@ presentationOpportunityClassificationName(PresentationOpportunityClassification 
         return "AUTHORITY_DISCONTINUITY";
     case PresentationOpportunityClassification::PairingDefect:
         return "PAIRING_DEFECT";
+    }
+    return "UNKNOWN";
+}
+
+const char*
+presentationSchedulerInvocationResultName(PresentationSchedulerInvocationResult result) {
+    switch (result) {
+    case PresentationSchedulerInvocationResult::PrimaryDecision:
+        return "PRIMARY_DECISION";
+    case PresentationSchedulerInvocationResult::DuplicateDecision:
+        return "DUPLICATE_DECISION";
+    case PresentationSchedulerInvocationResult::OutsideSourceDomainDecision:
+        return "OUTSIDE_SOURCE_DOMAIN_DECISION";
+    case PresentationSchedulerInvocationResult::InvalidFatal:
+        return "INVALID_FATAL";
+    }
+    return "UNKNOWN";
+}
+
+const char*
+presentationSchedulerInvocationReasonName(PresentationSchedulerInvocationReason reason) {
+    switch (reason) {
+    case PresentationSchedulerInvocationReason::Primary:
+        return "PRIMARY";
+    case PresentationSchedulerInvocationReason::PendingRender:
+        return "PENDING_RENDER";
+    case PresentationSchedulerInvocationReason::PastSourceDomain:
+        return "PAST_SOURCE_DOMAIN";
+    case PresentationSchedulerInvocationReason::InvalidConfiguration:
+        return "INVALID_CONFIGURATION";
+    case PresentationSchedulerInvocationReason::AuthorityUnusable:
+        return "AUTHORITY_UNUSABLE";
+    case PresentationSchedulerInvocationReason::CallbackQpcRegression:
+        return "CALLBACK_QPC_REGRESSION";
+    case PresentationSchedulerInvocationReason::CompletedOrdinalUnavailable:
+        return "COMPLETED_ORDINAL_UNAVAILABLE";
+    case PresentationSchedulerInvocationReason::CompletedOrdinalOverflow:
+        return "COMPLETED_ORDINAL_OVERFLOW";
+    case PresentationSchedulerInvocationReason::TargetArithmeticOverflow:
+        return "TARGET_ARITHMETIC_OVERFLOW";
     }
     return "UNKNOWN";
 }

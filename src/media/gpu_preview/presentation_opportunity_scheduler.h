@@ -40,6 +40,8 @@ struct PresentationOpportunityConfig {
     long long refreshNumerator = 0;
     long long refreshDenominator = 0;
     long long qpcFrequency = 0;
+    // W4-C2 diagnostic capture専用。canonical performance authorityでは使わない。
+    bool invocationLedgerEnabled = false;
 };
 
 struct PresentationOpportunityDecision {
@@ -55,6 +57,7 @@ struct PresentationOpportunityDecision {
     long long renderBeginQpc = 0;
     long long renderOrdinal = -1;
     PresentationAuthoritySample preRenderAuthority;
+    unsigned long long invocationSerial = 0;
 };
 
 enum class FormalIntentTransportDisposition {
@@ -90,6 +93,52 @@ formalIntentTransportDisposition(bool foreignPreMeasurement,
         return FormalIntentTransportDisposition::SuppressOutsideRequiredSet;
     return FormalIntentTransportDisposition::Transport;
 }
+
+enum class PresentationSchedulerInvocationResult {
+    PrimaryDecision = 0,
+    DuplicateDecision,
+    OutsideSourceDomainDecision,
+    InvalidFatal,
+};
+
+enum class PresentationSchedulerInvocationReason {
+    Primary = 0,
+    PendingRender,
+    PastSourceDomain,
+    InvalidConfiguration,
+    AuthorityUnusable,
+    CallbackQpcRegression,
+    CompletedOrdinalUnavailable,
+    CompletedOrdinalOverflow,
+    TargetArithmeticOverflow,
+};
+
+struct PresentationSchedulerInvocationState {
+    bool started = false;
+    bool closed = false;
+    bool anchored = false;
+    unsigned long long originRefreshCount = 0;
+    long long lastFinalizedOpportunityOrdinal = -1;
+    bool pendingRender = false;
+    bool pastSourceDomain = false;
+};
+
+struct PresentationSchedulerInvocationRecord {
+    unsigned long long invocationSerial = 0;
+    long long invocationQpc = 0;
+    PresentationAuthoritySample inputAuthority;
+    PresentationSchedulerInvocationState pre;
+    PresentationSchedulerInvocationResult result =
+        PresentationSchedulerInvocationResult::InvalidFatal;
+    PresentationSchedulerInvocationReason reason =
+        PresentationSchedulerInvocationReason::InvalidConfiguration;
+    PresentationOpportunityDecision decision;
+    FormalIntentTransportDisposition transportDisposition =
+        FormalIntentTransportDisposition::InvalidMembershipProvenance;
+    bool transportDispositionExact = false;
+    PresentationSchedulerInvocationState post;
+    bool stateTransitionExact = false;
+};
 
 // finalizeされた1 presentation opportunity。同一opportunity内で複数swapが起きた
 // 場合に記録されるのはlatest candidateで、置き換えられたcandidate数は
@@ -161,6 +210,8 @@ struct PresentationOpportunitySnapshot {
     std::vector<PresentationOpportunityLedgerRecord> records;
     bool requiredIntentSetExact = false;
     std::vector<long long> requiredIntentOrdinals;
+    bool invocationLedgerEnabled = false;
+    std::vector<PresentationSchedulerInvocationRecord> invocationRecords;
 };
 
 // P2-D5-2/F2 formal Playback専用。presentation opportunityの序数はDWM refresh
@@ -180,6 +231,8 @@ public:
                     long long swapOrdinal);
     bool close();
     PresentationOpportunitySnapshot snapshot() const;
+    bool noteInvocationTransportDisposition(unsigned long long invocationSerial,
+                                            FormalIntentTransportDisposition disposition);
 
     bool hasPendingRender() const { return pendingRender_; }
 
@@ -209,6 +262,13 @@ private:
                            long long actualOrdinal, long long actualTarget, long long swapQpc,
                            const PresentationAuthoritySample& post, long long swapOrdinal,
                            bool continuous);
+    PresentationSchedulerInvocationState invocationState() const;
+    PresentationOpportunityDecision
+    finishInvocation(const PresentationSchedulerInvocationState& pre, long long invocationQpc,
+                     const PresentationAuthoritySample& inputAuthority,
+                     PresentationSchedulerInvocationResult result,
+                     PresentationSchedulerInvocationReason reason,
+                     PresentationOpportunityDecision decision);
 
     PresentationOpportunityConfig config_{};
     PresentationOpportunityError error_ = PresentationOpportunityError::None;
@@ -246,11 +306,15 @@ private:
     PresentationOpportunityFirstEvent firstEvent_{};
     std::vector<PresentationOpportunityLedgerRecord> records_;
     std::vector<long long> requiredIntentOrdinals_;
+    unsigned long long invocationSerial_ = 0;
+    std::vector<PresentationSchedulerInvocationRecord> invocationRecords_;
 };
 
 const char* presentationOpportunityErrorName(PresentationOpportunityError error);
 const char*
 presentationOpportunityClassificationName(PresentationOpportunityClassification classification);
+const char* presentationSchedulerInvocationResultName(PresentationSchedulerInvocationResult result);
+const char* presentationSchedulerInvocationReasonName(PresentationSchedulerInvocationReason reason);
 
 } // namespace mvm::gpu
 

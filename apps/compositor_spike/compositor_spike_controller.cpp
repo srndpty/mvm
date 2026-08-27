@@ -143,6 +143,17 @@ QJsonObject presentationAuthorityJson(const gpu::PresentationAuthoritySample& va
             {"refresh_denominator", value.refreshDenominator}};
 }
 
+QJsonObject
+presentationInvocationStateJson(const gpu::PresentationSchedulerInvocationState& value) {
+    return {{"started", value.started},
+            {"closed", value.closed},
+            {"anchored", value.anchored},
+            {"origin_refresh_count", static_cast<qint64>(value.originRefreshCount)},
+            {"last_finalized_opportunity_ordinal", value.lastFinalizedOpportunityOrdinal},
+            {"pending_render", value.pendingRender},
+            {"past_source_domain", value.pastSourceDomain}};
+}
+
 QJsonObject presentationFirstEventJson(const gpu::PresentationOpportunityFirstEvent& value) {
     return {{"captured", value.captured},
             {"classification", QString::fromLatin1(gpu::presentationOpportunityClassificationName(
@@ -360,6 +371,8 @@ void CompositorSpikeController::attach(CompositorRhiItem* item) {
         config_.formalPreflight && config_.mode == CompositorMode::Playback &&
             config_.diagnosticCase == CompositorDiagnosticCase::None,
         std::memory_order_release);
+    state_->formalSchedulerInvocationLedgerEnabled.store(config_.formalSchedulerInvocationLedger,
+                                                         std::memory_order_release);
     state_->nativePresentCaptureEnvelopeEnabled.store(
         config_.formalPreflight && config_.mode == CompositorMode::Playback &&
             config_.diagnosticCase == CompositorDiagnosticCase::None && config_.vblankObserver &&
@@ -2036,6 +2049,33 @@ bool CompositorSpikeController::writeMetrics() {
              gpu::formalIntentTransportDispositionName(record.transportDisposition)},
         });
     }
+    QJsonArray formalSchedulerInvocationLedger;
+    for (const auto& record : formalOpportunitySnapshot.invocationRecords) {
+        formalSchedulerInvocationLedger.append(QJsonObject{
+            {"scheduler_invocation_serial", static_cast<qint64>(record.invocationSerial)},
+            {"invocation_qpc", record.invocationQpc},
+            {"input_authority", presentationAuthorityJson(record.inputAuthority)},
+            {"pre", presentationInvocationStateJson(record.pre)},
+            {"result",
+             QString::fromLatin1(gpu::presentationSchedulerInvocationResultName(record.result))},
+            {"reason",
+             QString::fromLatin1(gpu::presentationSchedulerInvocationReasonName(record.reason))},
+            {"decision_valid", record.decision.valid},
+            {"duplicate_callback", record.decision.duplicateCallback},
+            {"intent_ordinal", record.decision.opportunityOrdinal},
+            {"target_frame", record.decision.targetFrame},
+            {"repeat", record.decision.repeat},
+            {"past_source_domain", record.decision.pastSourceDomain},
+            {"required_intent_membership", record.decision.requiredIntentMembership},
+            {"required_intent_membership_exact", record.decision.requiredIntentMembershipExact},
+            {"last_finalized_opportunity_ordinal", record.decision.lastFinalizedOpportunityOrdinal},
+            {"formal_transport_disposition",
+             QString::fromLatin1(
+                 gpu::formalIntentTransportDispositionName(record.transportDisposition))},
+            {"formal_transport_disposition_exact", record.transportDispositionExact},
+            {"post", presentationInvocationStateJson(record.post)},
+            {"state_transition_exact", record.stateTransitionExact}});
+    }
     const auto scopeRecordMatchesNative = [](const NativePresentIntentScopeRecord& producer,
                                              const MvmNativePresentRecord& native) {
         if (producer.transportDisposition !=
@@ -2476,6 +2516,13 @@ bool CompositorSpikeController::writeMetrics() {
         {"diagnostic_synthetic_deadline_drop_count",
          state_->diagnosticSyntheticDeadlineDropCount.load(std::memory_order_relaxed)},
         {"formal_opportunity_ledger", formalOpportunityLedger},
+        {"formal_scheduler_invocation_ledger",
+         QJsonObject{
+             {"schema", "mvm-p2-d5-2-w4-c2-scheduler-invocation-ledger-1"},
+             {"diagnostic_root_cause_capture", formalOpportunitySnapshot.invocationLedgerEnabled},
+             {"canonical_performance_authority", false},
+             {"record_count", formalSchedulerInvocationLedger.size()},
+             {"records", formalSchedulerInvocationLedger}}},
         {"measurement_composition_requested_count",
          measurementJson(measurement.compositionRequested)},
         {"measurement_composition_drawn_count", measurementJson(measurement.compositionDrawn)},
