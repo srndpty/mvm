@@ -12,7 +12,9 @@ param(
         'NegativeClaimResultNotTransported','NegativeMeasurementStartSnapshotAtReset',
         'NegativeWitnessCapturedBeforePayloadPublish','NegativeCaptureGateExchangeReturnIgnored',
         'NegativeExplicitStopClaimDefaulted','NegativeExplicitStopClaimReconstructedFromWinner',
-        'NegativeExplicitStopClaimRecordNotPublished')]
+        'NegativeExplicitStopClaimRecordNotPublished',
+        'NegativeStopPublicationRecordOverwrittenBeforeConsume',
+        'NegativeStopRequestConsumedOutsideProtocol')]
     [string]$Case='Good'
 )
 $ErrorActionPreference='Stop'
@@ -44,17 +46,15 @@ switch($Case){
         $controller=$controller.Replace((Lf @'
                 const StopClaimResult claim = claimStopCause(*state_, StopArbitration::ExplicitStop);
                 explicitStopClaim_ = claim;
-                // consumerがwitnessへ入れるclaim結果をこのpublication siteで確定させる。
-                publishStopClaimRecord(*state_, StopArbitration::ExplicitStop, claim);
-                state_->measurementStopRequested.store(true, std::memory_order_release);
+                // flagとclaim recordを同じpublication protocolで発行する。
+                publishStopRequest(*state_, StopArbitration::ExplicitStop, claim);
 '@),(Lf @'
                 state_->measurementStopRequested.store(true, std::memory_order_release);
 '@))}
     'NegativeUnclaimedFatalWriter' {
         $controller=$controller.Replace((Lf @'
         fatalStopClaim_ = claimStopCause(*state_, StopArbitration::Fatal);
-        publishStopClaimRecord(*state_, StopArbitration::Fatal, fatalStopClaim_);
-        state_->measurementStopRequested.store(true, std::memory_order_release);
+        publishStopRequest(*state_, StopArbitration::Fatal, fatalStopClaim_);
 '@),(Lf @'
         state_->measurementStopRequested.store(true, std::memory_order_release);
 '@))}
@@ -118,7 +118,7 @@ switch($Case){
 '@))}
     'NegativeExplicitStopClaimDefaulted' {
         $renderer=$renderer.Replace((Lf @'
-                const StopPublicationRecord published = readStopClaimRecord(*state_);
+                const StopPublicationRecord published = stopConsumption.record;
                 if (published.valid) {
                     cause = published.claimed;
                     claim.previous = published.previous;
@@ -130,7 +130,7 @@ switch($Case){
 '@),'')}
     'NegativeExplicitStopClaimReconstructedFromWinner' {
         $renderer=$renderer.Replace((Lf @'
-                const StopPublicationRecord published = readStopClaimRecord(*state_);
+                const StopPublicationRecord published = stopConsumption.record;
                 if (published.valid) {
                     cause = published.claimed;
                     claim.previous = published.previous;
@@ -145,8 +145,27 @@ switch($Case){
 '@))}
     'NegativeExplicitStopClaimRecordNotPublished' {
         $controller=$controller.Replace((Lf @'
-                publishStopClaimRecord(*state_, StopArbitration::ExplicitStop, claim);
+                publishStopRequest(*state_, StopArbitration::ExplicitStop, claim);
+'@),(Lf @'
+                state_->measurementStopRequested.store(true, std::memory_order_release);
+'@))}
+    'NegativeStopPublicationRecordOverwrittenBeforeConsume' {
+        $rendererHeader=$rendererHeader.Replace((Lf @'
+    if (state.measurementStopRequested.load(std::memory_order_acquire)) {
+        // 既にpending requestがある。recordは最初のpublicationのまま保持する。
+        state.coalescedStopPublicationCount.fetch_add(1, std::memory_order_seq_cst);
+        return;
+    }
 '@),'')}
+    'NegativeStopRequestConsumedOutsideProtocol' {
+        $renderer=$renderer.Replace((Lf @'
+        const StopRequestConsumption stopConsumption = consumeStopRequest(*state_);
+        const bool stopRequested = stopConsumption.requested;
+'@),(Lf @'
+        const StopRequestConsumption stopConsumption;
+        const bool stopRequested =
+            state_->measurementStopRequested.exchange(false, std::memory_order_acq_rel);
+'@))}
     'NegativeCaptureGateExchangeReturnIgnored' {
         $renderer=$renderer.Replace((Lf @'
             witness.captureGateExchangeClosed = captureGateWasOpen;
@@ -212,8 +231,8 @@ try{
     Deny $controller 'stopArbitration\.compare_exchange_strong' 'helper外のinline CASがあります'
 
     # classified publication siteが全てclaimを通る
-    Require $controller 'claimStopCause\(\*state_, StopArbitration::ExplicitStop\);[\s\S]{0,400}measurementStopRequested\.store\(true' 'explicit stop writerがclaimを通りません'
-    Require $controller 'claimStopCause\(\*state_, StopArbitration::Fatal\);[\s\S]{0,400}measurementStopRequested\.store\(true' 'fatal shutdown由来のstop writerがclaimを通りません'
+    Require $controller 'claimStopCause\(\*state_, StopArbitration::ExplicitStop\);[\s\S]{0,400}publishStopRequest\(' 'explicit stop writerがclaimを通りません'
+    Require $controller 'claimStopCause\(\*state_, StopArbitration::Fatal\);[\s\S]{0,400}publishStopRequest\(' 'fatal shutdown由来のstop writerがclaimを通りません'
     Require $renderer 'claimStopCause\(\*state_, StopArbitration::Fatal\);[\s\S]{0,400}fatal\.store\(true' 'fatal latch siteがclaimを通りません'
     $domainReachedStores=([regex]::Matches($renderer,'formalOpportunityDomainReached\.store\(true')).Count
     $claimedDomainReached=([regex]::Matches($renderer,'claimStopCause\(\*state_, StopArbitration::DomainTerminal\);\s*state_->formalOpportunityDomainReached\.store\(true')).Count
@@ -248,12 +267,17 @@ try{
     Deny $renderer 'witness\.arbitrationClaimSucceeded =\s*state_->stopArbitration\.load' 'claim結果をstateから逆算しています'
 
     # explicit stop consumptionはpublication siteのclaim recordをexactに引き継ぐ
-    Require $rendererHeader 'inline void publishStopClaimRecord\(CompositorSpikeState& state, StopArbitration cause,' 'publication claim recordのwriter helperがありません'
-    Require $rendererHeader 'inline StopPublicationRecord readStopClaimRecord\(CompositorSpikeState& state\)' 'publication claim recordのreader helperがありません'
+    Require $rendererHeader 'inline void publishStopRequest\(CompositorSpikeState& state, StopArbitration cause,' 'stop request publication helperがありません'
+    Require $rendererHeader 'inline StopRequestConsumption consumeStopRequest\(CompositorSpikeState& state\)' 'stop request consumption helperがありません'
+    Require $rendererHeader 'std::lock_guard<std::mutex> lock\(state\.stopPublicationMutex\);[\s\S]{0,300}measurementStopRequested\.load[\s\S]{0,300}coalescedStopPublicationCount\.fetch_add[\s\S]{0,300}stopPublicationRecord = StopPublicationRecord\{true' 'pending requestのrecordが後着publicationで上書きされ得ます'
+    Require $rendererHeader 'consumption\.record = state\.stopPublicationRecord;[\s\S]{0,200}stopPublicationRecord = StopPublicationRecord\{\};' 'consumeがflagとrecordを同時に取り出していません'
+    # stop request flagのwriter/consumerはpublication protocolの外に出さない。
+    Deny $controller 'measurementStopRequested\.store\(' 'controllerがprotocol外でstop request flagを操作しています'
+    Deny $renderer 'measurementStopRequested\.exchange\(' 'rendererがprotocol外でstop requestをconsumeしています'
     Require $rendererHeader 'stopPublicationRecord = StopPublicationRecord\{\};' 'lifecycle resetでclaim recordが消えません'
-    Require $controller 'publishStopClaimRecord\(\*state_, StopArbitration::ExplicitStop, claim\);[\s\S]{0,200}measurementStopRequested\.store\(true' 'explicit stop publication siteがclaim recordを残しません'
-    Require $controller 'publishStopClaimRecord\(\*state_, StopArbitration::Fatal, fatalStopClaim_\);[\s\S]{0,200}measurementStopRequested\.store\(true' 'fatal stop publication siteがclaim recordを残しません'
-    Require $renderer 'const StopPublicationRecord published = readStopClaimRecord\(\*state_\);[\s\S]{0,400}claim\.succeeded = published\.succeeded;' 'explicit stop consumptionがclaim recordを引き継いでいません'
+    Require $controller 'claimStopCause\(\*state_, StopArbitration::ExplicitStop\);[\s\S]{0,300}publishStopRequest\(\*state_, StopArbitration::ExplicitStop, claim\);' 'explicit stop publication siteがprotocolを通りません'
+    Require $controller 'publishStopRequest\(\*state_, StopArbitration::Fatal, fatalStopClaim_\);' 'fatal stop publication siteがprotocolを通りません'
+    Require $renderer 'const StopPublicationRecord published = stopConsumption\.record;[\s\S]{0,400}claim\.succeeded = published\.succeeded;' 'explicit stop consumptionがconsumeしたrecordを引き継いでいません'
     Deny $renderer 'claim\.succeeded =\s*state_->stopArbitration\.load' 'claim結果をwinner stateから逆算しています'
 
     # amend 2: replay入力はscheduler instance config

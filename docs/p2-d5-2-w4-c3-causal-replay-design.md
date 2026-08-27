@@ -255,6 +255,22 @@ terminal callbackでのclaim成功そのものが、この単一atomicのmodific
 
 というbranch-exact arbitration witnessになる。timing/visibilityの議論を経由しない。
 
+claim結果はpublication siteからconsumerへexactに運ぶ。EXPLICIT_STOP / FATALのようにpublication
+siteとfinishMeasurement call siteが別threadの場合、publication siteは
+
+```text
+stop_publication_record:
+  valid / claimed / previous / succeeded / publish_serial
+```
+
+をstop request flagと同じlock下で保存し、consumerもflagとrecordを同じlock下で受け取る。pending
+stop requestが既にある場合、後着publicationはrecordを上書きせず`coalesced_stop_publication_count`
+へ落とす。これによりconsumeしたrecordは、そのflagをpublishしたsiteのものであることが保証される。
+
+consumerが`stopArbitration.load()`からclaim結果を逆算してはならない。recordが無い場合は
+`claim_recorded=false`を記録し、defaultのclaim結果を観測値のように出さない。witnessには
+`claim_source`（`THIS_CALL_SITE` / `PUBLICATION_RECORD` / `NONE`）を残す。
+
 claimに失敗したsiteは推測せず、結果をそのまま記録する。
 
 ```text

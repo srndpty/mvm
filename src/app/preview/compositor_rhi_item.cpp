@@ -1258,8 +1258,9 @@ private:
         const bool intervalEnded =
             state_->measurementIntervalActive.load(std::memory_order_acquire) &&
             callbackBegin >= state_->measurementEndQpc.load(std::memory_order_acquire);
-        const bool stopRequested =
-            state_->measurementStopRequested.exchange(false, std::memory_order_acq_rel);
+        // flagとそのpublication recordを同じlock下で受け取る。
+        const StopRequestConsumption stopConsumption = consumeStopRequest(*state_);
+        const bool stopRequested = stopConsumption.requested;
         if (intervalEnded || stopRequested) {
             // W4-C3 amend 4。planned window endはここが publication site。
             // explicit stopはcontroller siteでclaim済みなので再claimしない。
@@ -1273,7 +1274,7 @@ private:
                 claimRecorded = true;
             } else {
                 cause = StopArbitration::ExplicitStop;
-                const StopPublicationRecord published = readStopClaimRecord(*state_);
+                const StopPublicationRecord published = stopConsumption.record;
                 if (published.valid) {
                     cause = published.claimed;
                     claim.previous = published.previous;

@@ -817,9 +817,9 @@ void CompositorSpikeController::armMeasurementAfterCaptureEnvelopeOpen() {
                                          std::memory_order_release);
     state_->measurementArmQpc.store(gpu::qpcTicks(), std::memory_order_release);
     state_->measurementStartCaptured.store(false, std::memory_order_release);
-    state_->measurementStopRequested.store(false, std::memory_order_release);
     state_->measurementStopCaptured.store(false, std::memory_order_release);
     // W4-C3 amend 4。stop arbitration lifecycleのreset siteはここ1箇所だけであり、
+    // pending stop requestとclaim recordもこのhelper内で同じlock下へ戻す。
     // measurement startのpublicationより前でなければならない。render threadが
     // start requestをconsumeした後にresetが走るinterleavingを作らない。
     resetStopArbitrationForMeasurement(*state_);
@@ -1139,9 +1139,8 @@ void CompositorSpikeController::tick() {
                 // W4-C3 amend 4。stop side effectより前にownershipをclaimする。
                 const StopClaimResult claim = claimStopCause(*state_, StopArbitration::ExplicitStop);
                 explicitStopClaim_ = claim;
-                // consumerがwitnessへ入れるclaim結果をこのpublication siteで確定させる。
-                publishStopClaimRecord(*state_, StopArbitration::ExplicitStop, claim);
-                state_->measurementStopRequested.store(true, std::memory_order_release);
+                // flagとclaim recordを同じpublication protocolで発行する。
+                publishStopRequest(*state_, StopArbitration::ExplicitStop, claim);
                 state_->measurementStopCaptured.store(false, std::memory_order_release);
                 item_->update();
             }
@@ -1593,8 +1592,7 @@ void CompositorSpikeController::beginShutdown(const QString& reason, bool failur
          state_->measurementIntervalActive.load(std::memory_order_acquire))) {
         // W4-C3 amend 4。fatal shutdown由来のstopもownershipをclaimしてから発行する。
         fatalStopClaim_ = claimStopCause(*state_, StopArbitration::Fatal);
-        publishStopClaimRecord(*state_, StopArbitration::Fatal, fatalStopClaim_);
-        state_->measurementStopRequested.store(true, std::memory_order_release);
+        publishStopRequest(*state_, StopArbitration::Fatal, fatalStopClaim_);
         phase_ = Phase::FatalMeasureStopWait;
         phaseTimer_.restart();
         item_->update();
@@ -2250,6 +2248,9 @@ bool CompositorSpikeController::writeMetrics() {
             {"witness_count", captured ? 1 : 0},
             {"duplicate_witness_count",
              static_cast<qint64>(state_->stopWitnessDuplicateCount.load(std::memory_order_seq_cst))},
+            {"coalesced_stop_publication_count",
+             static_cast<qint64>(
+                 state_->coalescedStopPublicationCount.load(std::memory_order_seq_cst))},
             {"losing_stop_claim_count",
              static_cast<qint64>(state_->losingStopClaimCount.load(std::memory_order_seq_cst))},
             // flagとpublication serialはdiagnosticであり、causal ownershipを与えない。

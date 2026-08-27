@@ -169,6 +169,12 @@ struct StopPublicationRecord {
     unsigned long long publishSerial = 0;
 };
 
+// pending stop requestとそのrecordは同じprotocolで運ぶ。
+struct StopRequestConsumption {
+    bool requested = false;
+    StopPublicationRecord record;
+};
+
 // W4-C3 stop witness v3。terminal callbackで確定した事実だけを運ぶ。
 // checkerもcontrollerもQPCやledger末尾からこれらを再構築してはならない。
 struct StopWitnessTerminalFacts {
@@ -517,6 +523,7 @@ struct CompositorSpikeState {
     CompositorStopWitness stopWitness;
     std::mutex stopPublicationMutex;
     StopPublicationRecord stopPublicationRecord;
+    std::atomic<unsigned long long> coalescedStopPublicationCount{0};
     // measurement-start authority pointで撮るsnapshot。reset直後ではない。
     std::atomic<StopArbitration> measurementStartArbitrationState{StopArbitration::None};
     std::atomic<unsigned long long> measurementStartExplicitStopPublishSerial{0};
@@ -553,18 +560,32 @@ inline StopClaimResult claimStopCause(CompositorSpikeState& state, StopArbitrati
     return result;
 }
 
-// W4-C3。publication siteのclaim結果をそのまま保存する。flag storeより前に呼ぶ。
-inline void publishStopClaimRecord(CompositorSpikeState& state, StopArbitration cause,
-                                   const StopClaimResult& claim) {
+// W4-C3。stop request flagとそのclaim recordは単一のpublication protocolで扱う。
+// pending requestのrecordは後着publicationで上書きしない。
+inline void publishStopRequest(CompositorSpikeState& state, StopArbitration cause,
+                               const StopClaimResult& claim) {
     std::lock_guard<std::mutex> lock(state.stopPublicationMutex);
+    if (state.measurementStopRequested.load(std::memory_order_acquire)) {
+        // 既にpending requestがある。recordは最初のpublicationのまま保持する。
+        state.coalescedStopPublicationCount.fetch_add(1, std::memory_order_seq_cst);
+        return;
+    }
     state.stopPublicationRecord = StopPublicationRecord{true, cause, claim.previous,
                                                         claim.succeeded, claim.publishSerial};
+    state.measurementStopRequested.store(true, std::memory_order_release);
 }
 
-// consumer（render thread）はこのrecordだけを読む。stateからの逆算をしない。
-inline StopPublicationRecord readStopClaimRecord(CompositorSpikeState& state) {
+// consumer（render thread）はflagとrecordを同じlock下で受け取る。
+// stateからclaim結果を逆算しない。
+inline StopRequestConsumption consumeStopRequest(CompositorSpikeState& state) {
     std::lock_guard<std::mutex> lock(state.stopPublicationMutex);
-    return state.stopPublicationRecord;
+    StopRequestConsumption consumption;
+    if (!state.measurementStopRequested.exchange(false, std::memory_order_acq_rel))
+        return consumption;
+    consumption.requested = true;
+    consumption.record = state.stopPublicationRecord;
+    state.stopPublicationRecord = StopPublicationRecord{};
+    return consumption;
 }
 
 // W4-C3 amend 4。lifecycle reset siteはこの1箇所だけ。measurement中の呼出しは
@@ -576,8 +597,10 @@ inline void resetStopArbitrationForMeasurement(CompositorSpikeState& state) {
     state.stopArbitration.store(StopArbitration::None, std::memory_order_seq_cst);
     state.stopArbitrationResetCount.fetch_add(1, std::memory_order_seq_cst);
     {
+        // pending stop requestとrecordは同じlock下でepoch初期化する。
         std::lock_guard<std::mutex> lock(state.stopPublicationMutex);
         state.stopPublicationRecord = StopPublicationRecord{};
+        state.measurementStopRequested.store(false, std::memory_order_release);
     }
 }
 
