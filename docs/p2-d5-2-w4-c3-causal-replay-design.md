@@ -785,6 +785,37 @@ architecture testは、reset site数=1、helper外のinline CAS/store無し、
 `formalOpportunityDomainReached`storeの全件がclaim直後であること、fatal latch数<=claim数、
 `scheduler_config`がinstance config由来であることを検査する。
 
+## formal capture 結果（2026-08-28）
+
+checkpoint `4e170fe` / stop witness schema `mvm-p2-d5-2-w4-c3-stop-witness-3` で、C2 formalと同一
+workload（3 run / warmup 2s / measure 60s / timeout 120s、playback・fence・seed 20260827）の
+diagnostic-only captureを取得した。
+
+```text
+scheduler_config   refresh 59950/1000, source 60/1, offset 0, required_frame_count 3600
+invocation count   1743 (3 runとも)
+terminal           serial 1743 / OUTSIDE_SOURCE_DOMAIN_DECISION / PAST_SOURCE_DOMAIN
+                   intent_ordinal 3598, target_frame 3601, past_source_domain true
+                   required_intent_membership true
+直前valid          ordinal 3596 / target 3598 / past_source_domain false
+stop witness       cause DOMAIN_TERMINAL, witness_count 1, duplicate_witness_count 0
+stop_arbitration   previous NONE / claimed DOMAIN_TERMINAL / claim_succeeded true
+                   claim_source THIS_CALL_SITE / measurement_start_state NONE
+                   reset_count_during_measurement 0
+capture gate       pre open -> exchange実return true -> post closed
+replayed decisions 1743 / INVALID_FATAL 0 / post-terminal invocation 0
+
+verdict            W4_C3_CAUSAL_REPLAY_EXACT (3/3、多数決なし)
+root_cause_determined = true
+canonical performance authorityへは昇格しない
+```
+
+先行する同条件のcapture（`build/p2-d5-2-w4-c3-formal-20260828`）は、amend 6以前のchecker欠陥
+（invocation間state transitionのraw equality要求）で0/3となった。実データは同一形状であり、
+`capture_status = NOT_CLOSURE_AUTHORITY` /
+`reason = CHECKER_CONTRACT_DEFECT_RAW_INTER_INVOCATION_EQUALITY`として診断用に保存し、closure
+authorityには使わない。
+
 ## 実装順序
 
 ```text
