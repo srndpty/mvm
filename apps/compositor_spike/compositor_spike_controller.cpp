@@ -825,6 +825,12 @@ void CompositorSpikeController::armMeasurementAfterCaptureEnvelopeOpen() {
     resetStopArbitrationForMeasurement(*state_);
     // start requestはこのepoch初期化がすべて済んだ後で最後にpublishする。
     state_->measurementStartRequested.store(true, std::memory_order_release);
+    BoundarySwapAttributionEvent boundaryEvent;
+    boundaryEvent.kind = BoundarySwapEventKind::MeasurementStartRequestPublished;
+    boundaryEvent.qpc = gpu::qpcTicks();
+    boundaryEvent.threadId = static_cast<std::uint32_t>(GetCurrentThreadId());
+    boundaryEvent.phase = "CONTROLLER_MEASUREMENT_ARM";
+    state_->recordBoundarySwapAttribution(boundaryEvent);
     phase_ = Phase::MeasureStartWait;
     item_->update();
 }
@@ -2619,6 +2625,131 @@ bool CompositorSpikeController::writeMetrics() {
                      {"ignored_boundary_swap", tokenFailure.ignoredBoundarySwap},
                      {"preroll_active", tokenFailure.prerollActive}}},
     };
+    std::vector<BoundarySwapAttributionEvent> boundaryEvents;
+    {
+        std::lock_guard<std::mutex> lock(state_->boundarySwapAttributionMutex);
+        boundaryEvents = state_->boundarySwapAttributionEvents;
+    }
+    std::sort(
+        boundaryEvents.begin(), boundaryEvents.end(),
+        [](const auto& left, const auto& right) { return left.eventSerial < right.eventSerial; });
+    QJsonArray boundaryEventJson;
+    bool eventSerialContiguous = true;
+    unsigned long long ignorePublicationEventSerial = 0;
+    unsigned long long ignorePublicationSerial = 0;
+    unsigned long long consumerEventSerial = 0;
+    std::uint64_t consumerPresentSerial = 0;
+    std::uint64_t consumerTokenSerial = 0;
+    NativePresentIntentScope consumerScope = NativePresentIntentScope::ForeignPreMeasurement;
+    bool consumerScopeExact = false;
+    long long publicationCount = 0;
+    long long consumerCount = 0;
+    long long foreignBeforePublicationCount = 0;
+    long long foreignAfterPublicationWithoutConsumeCount = 0;
+    for (std::size_t index = 0; index < boundaryEvents.size(); ++index) {
+        const auto& event = boundaryEvents[index];
+        if (event.eventSerial != index + 1)
+            eventSerialContiguous = false;
+        if (event.kind == BoundarySwapEventKind::IgnoreNextSwapPublished) {
+            ++publicationCount;
+            ignorePublicationEventSerial = event.eventSerial;
+            ignorePublicationSerial = event.ignorePublicationSerial;
+        }
+        if (event.kind == BoundarySwapEventKind::FrameSwapped && event.ignoreConsumed) {
+            ++consumerCount;
+            if (consumerCount == 1) {
+                consumerEventSerial = event.eventSerial;
+                consumerPresentSerial = event.receiptPresentSerial;
+                consumerTokenSerial = event.receiptTokenSerial;
+                consumerScope = event.intentScope;
+                consumerScopeExact = event.intentScopeExact;
+            }
+        }
+        boundaryEventJson.append(QJsonObject{
+            {"event_serial", static_cast<qint64>(event.eventSerial)},
+            {"event", boundarySwapEventKindName(event.kind)},
+            {"qpc", event.qpc},
+            {"thread_id", static_cast<qint64>(event.threadId)},
+            {"phase", event.phase},
+            {"ignore_publication_serial", static_cast<qint64>(event.ignorePublicationSerial)},
+            {"ignore_pre_value", event.ignorePreValue},
+            {"ignore_consumed", event.ignoreConsumed},
+            {"receipt_observed", event.receiptObserved},
+            {"receipt_present_serial", QString::number(event.receiptPresentSerial)},
+            {"receipt_token_serial", QString::number(event.receiptTokenSerial)},
+            {"receipt_intent_ordinal", QString::number(event.receiptIntentOrdinal)},
+            {"receipt_intent_ordinal_valid", event.receiptIntentOrdinalValid},
+            {"receipt_token_present", event.receiptTokenPresent},
+            {"receipt_swapchain_identity", QString::number(event.receiptSwapchainIdentity)},
+            {"receipt_hresult", event.receiptHresult},
+            {"present_enter_qpc", event.presentEnterQpc},
+            {"present_return_qpc", event.presentReturnQpc},
+            {"present_thread_id", static_cast<qint64>(event.presentThreadId)},
+            {"intent_scope_exact", event.intentScopeExact},
+            {"intent_scope", event.intentScopeExact
+                                 ? nativePresentIntentScopeName(event.intentScope)
+                                 : "UNRESOLVED"},
+            {"intent_scope_match_count", static_cast<qint64>(event.intentScopeMatchCount)},
+            {"active_reservation", event.activeReservation},
+            {"reservation_id", QString::number(event.reservation.reservationId)},
+            {"reservation_intent_ordinal", event.reservation.intentOrdinal},
+            {"reservation_token_serial", QString::number(event.reservation.tokenSerial)},
+        });
+    }
+    if (ignorePublicationEventSerial != 0) {
+        for (const auto& event : boundaryEvents) {
+            if (event.kind != BoundarySwapEventKind::FrameSwapped || !event.intentScopeExact ||
+                event.intentScope != NativePresentIntentScope::ForeignPreMeasurement)
+                continue;
+            if (event.eventSerial < ignorePublicationEventSerial)
+                ++foreignBeforePublicationCount;
+            else if (!event.ignoreConsumed)
+                ++foreignAfterPublicationWithoutConsumeCount;
+        }
+    }
+    const bool exactSinglePublication = publicationCount == 1 && ignorePublicationSerial != 0;
+    const bool exactSingleConsumer = consumerCount == 1 && consumerEventSerial != 0;
+    const bool consumerIsForeignBoundary =
+        exactSingleConsumer && consumerScopeExact &&
+        consumerScope == NativePresentIntentScope::ForeignPreMeasurement;
+    const bool ownershipIdentityExpressed =
+        exactSinglePublication && exactSingleConsumer && consumerIsForeignBoundary;
+    const char* foreignPresentRelation =
+        foreignBeforePublicationCount > 0 && foreignAfterPublicationWithoutConsumeCount == 0
+            ? "FOREIGN_CALLBACK_BEFORE_IGNORE_PUBLICATION"
+        : foreignAfterPublicationWithoutConsumeCount > 0
+            ? "FOREIGN_CALLBACK_AFTER_PUBLICATION_BYPASSED_CONSUME"
+            : "FOREIGN_CALLBACK_RELATION_UNRESOLVED";
+    const QJsonObject boundarySwapOwnershipAttribution{
+        {"schema", "mvm-p2-d5-2-b3-i3-boundary-swap-ownership-attribution-1"},
+        {"diagnostic_only", true},
+        {"product_semantics_changed", false},
+        {"queue_semantics_changed", false},
+        {"join_accept_reject_changed", false},
+        {"identity_join_uses_present_and_token_serial", true},
+        {"nearest_qpc_used", false},
+        {"callback_index_used_as_identity", false},
+        {"event_serial_is_identity_authority", false},
+        {"event_serial_contiguous", eventSerialContiguous},
+        {"publication_count", publicationCount},
+        {"consumer_count", consumerCount},
+        {"ignore_publication_event_serial", static_cast<qint64>(ignorePublicationEventSerial)},
+        {"ignore_publication_serial", static_cast<qint64>(ignorePublicationSerial)},
+        {"consumer_event_serial", static_cast<qint64>(consumerEventSerial)},
+        {"consumer_present_serial", QString::number(consumerPresentSerial)},
+        {"consumer_token_serial", QString::number(consumerTokenSerial)},
+        {"consumer_scope_exact", consumerScopeExact},
+        {"consumer_scope",
+         consumerScopeExact ? nativePresentIntentScopeName(consumerScope) : "UNRESOLVED"},
+        {"foreign_callback_relation", foreignPresentRelation},
+        {"foreign_before_publication_count", foreignBeforePublicationCount},
+        {"foreign_after_publication_without_consume_count",
+         foreignAfterPublicationWithoutConsumeCount},
+        {"positional_contract_expresses_boundary_identity", ownershipIdentityExpressed},
+        {"verdict", ownershipIdentityExpressed ? "POSITIONAL_BOUNDARY_OWNERSHIP_OBSERVED"
+                                               : "POSITIONAL_BOUNDARY_OWNERSHIP_NOT_EXPRESSED"},
+        {"records", boundaryEventJson},
+    };
     const QJsonObject nativePresentHook{
         {"abi_version", static_cast<qint64>(MVM_NATIVE_PRESENT_HOOK_ABI_VERSION)},
         {"composition_token_size", static_cast<qint64>(sizeof(MvmNativePresentCompositionToken))},
@@ -2784,6 +2915,7 @@ bool CompositorSpikeController::writeMetrics() {
              {"records", intentIdentityLedger},
          }},
         {"composition_token_runtime_attribution", compositionTokenRuntimeAttribution},
+        {"boundary_swap_ownership_attribution", boundarySwapOwnershipAttribution},
         {"dirty_propagation",
          QJsonObject{
              {"schema", "mvm-p2-c3-a3-t2-dirty-propagation-1"},

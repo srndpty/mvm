@@ -631,3 +631,73 @@ preroll tokenのcurrent Presentへの混入は観測されなかった。停止�
 
 これはretryで成功cohortを選別せず、別のexact runtime orderingとして保存する。元のmismatch predicateは
 **未確定**であり、production fixは設計しない。fresh W3 canonical 3/3にも進まない。
+
+## 13. B3-I3 Boundary-swap Ownership Attribution
+
+I3もdiagnostic-only sliceである。`formalOpportunityIgnoreNextSwap`の値、publication位置、consume位置、
+active reservation時のFATAL、I0/I1 queue/join semanticsは変更していない。
+
+### 13.1 flag source inventory
+
+```text
+initial/reset     CompositorSpikeState::formalOpportunityIgnoreNextSwap{false}
+producer         measurement-start render callbackのstore(true)       exactly 1 site
+consume/reset    recordFrameSwapped()のexchange(false)                 exactly 1 site
+```
+
+明示的なepoch reset writerは存在しない。初期値falseから始まり、各publicationを最初に通過した
+`frameSwapped` callbackがpositionだけでconsumeする。present serial、token serial、scope、reservationは
+flag自身に束縛されていない。
+
+I3 ledgerはGUI threadのmeasurement-start request publication、render threadのrequest consume、required queue
+start、first reservation、ignore publication、および全`frameSwapped`をglobal diagnostic event serialへ記録する。
+event serial/QPC/callback位置は順序説明専用でidentity authorityではない。callback identityはone-shot receiptの
+present/token serialをexact scope producer recordへ1件一致させて確定する。
+
+### 13.2 exact runtime ordering
+
+noncanonical smoke `boundary-ownership-b3-i3-20260828T094430Z`は次を記録した。
+
+| event | QPC | thread | exact identity / state |
+|---|---:|---:|---|
+| 1 `FRAME_SWAPPED` | 1207680030718 | 27852 | Present 1 / token 88 / `FOREIGN_PRE_MEASUREMENT` / ignore pre=false / preroll reservation 1 active |
+| 2 `MEASUREMENT_START_REQUEST_PUBLISHED` | 1207680194965 | 48976 | GUI measurement arm |
+| 3 `MEASUREMENT_START_CONSUMED` | 1207680195028 | 27852 | render measurement start |
+| 4 `REQUIRED_QUEUE_STARTED` | 1207680195167 | 27852 | current immutable queue start |
+| 5 `IGNORE_NEXT_SWAP_PUBLISHED` | 1207680195167 | 27852 | publication serial 1 |
+| 6 `FIRST_RESERVATION` | 1207680195225 | 27852 | reservation 1 / intent 0 / token 89 |
+| 7 `FRAME_SWAPPED` | 1207680199391 | 27852 | Present 2 / token 89 / `CURRENT_MEASUREMENT` / ignore pre=true・consumed / reservation 1 active |
+
+Present 1はenter 1207680029634、return 1207680030062、frameSwapped 1207680030718であり、ignore publication
+より前にcallbackまで完了している。publication後にFOREIGN callbackがconsume siteを迂回したのではない。
+Present 2はenter 1207680198061、return 1207680199361、frameSwapped 1207680199391で、flagの唯一のconsumerに
+なった。両callbackはpresent/token serialとexact scope recordで結合済みである。
+
+```text
+foreign_callback_relation                    FOREIGN_CALLBACK_BEFORE_IGNORE_PUBLICATION
+foreign_after_publication_without_consume    0
+consumer                                     Present 2 / token 89 / CURRENT_MEASUREMENT
+positional_contract_expresses_identity       false
+verdict                                      POSITIONAL_BOUNDARY_OWNERSHIP_NOT_EXPRESSED
+```
+
+したがってpositional `ignore-next-swap`は「publication後の次callback」を一意に選べても、意図したboundary
+Present identityを表現できない。このrunでは既に完了したFOREIGN Present 1を所有できず、CURRENT Present 2へ
+所有権が移った。
+
+### 13.3 identity-bound replacement候補（design only）
+
+production fixはまだ行わない。候補は次の2つである。
+
+1. **Exact boundary reservation**: measurement transition時に未完了のpreroll reservationが実在する場合だけ、
+   `(reservation_id, intent_ordinal, token_serial, FOREIGN_PRE_MEASUREMENT)`をboundary ownerとしてfreezeする。
+   frameSwappedはreceipt present/token serialとexact scope recordがすべて一致した場合だけconsumeする。
+   既にcallback/commit済みならownerを発行しない。
+2. **Preroll receipt closure handshake**: exact preroll receiptのconsume/commit完了をtransition前提にし、その後に
+   current queueをstartする。positionによるignore flag自体を不要にする。
+
+どちらもnearest QPC、callback index、latest Present、serial推定を使わない。選定にはtransition中の未完了
+preroll reservation/receipt状態を追加artifactで確定する必要があるため、I3では実装しない。
+
+元の`COMPOSITION_TOKEN_MISMATCH`はhistorical runtime failureとして未解決のまま保持し、今回のboundary
+failureへ再分類しない。production fixとfresh W3 canonical 3/3はattribution closure後まで保留する。

@@ -444,6 +444,19 @@ protected:
                     return;
                 }
             }
+            if (!foreignPreMeasurement && !state_->boundaryFirstReservationRecorded.exchange(
+                                              true, std::memory_order_acq_rel)) {
+                BoundarySwapAttributionEvent reservationEvent;
+                reservationEvent.kind = BoundarySwapEventKind::FirstReservation;
+                reservationEvent.qpc = gpu::qpcTicks();
+                reservationEvent.threadId = static_cast<std::uint32_t>(GetCurrentThreadId());
+                reservationEvent.phase = "CURRENT_MEASUREMENT_RENDER";
+                reservationEvent.activeReservation = true;
+                reservationEvent.reservation = {formalDecision.reservationId,
+                                                formalDecision.opportunityOrdinal,
+                                                nativePresentToken.tokenSerial()};
+                state_->recordBoundarySwapAttribution(reservationEvent);
+            }
             {
                 // scheduler decisionがordinalとscopeの唯一のproducerである。
                 // reservationとnative recordのexact join keyはABI v5 token serial。
@@ -1176,6 +1189,13 @@ private:
                                                                  std::memory_order_acq_rel)) {
             std::string hookError;
             state_->nativePresentTokenSetFailureCount.store(0, std::memory_order_relaxed);
+            state_->boundarySwapEventSerial.store(0, std::memory_order_relaxed);
+            state_->ignoreNextSwapPublicationSerial.store(0, std::memory_order_relaxed);
+            state_->boundaryFirstReservationRecorded.store(false, std::memory_order_relaxed);
+            {
+                std::lock_guard<std::mutex> lock(state_->boundarySwapAttributionMutex);
+                state_->boundarySwapAttributionEvents.clear();
+            }
             {
                 std::lock_guard<std::mutex> lock(state_->compositionTokenAttributionMutex);
                 state_->latestCompositionTokenPublication = {};
@@ -1274,6 +1294,12 @@ private:
             return true;
         }
         if (state_->measurementStartRequested.exchange(false, std::memory_order_acq_rel)) {
+            BoundarySwapAttributionEvent measurementStartEvent;
+            measurementStartEvent.kind = BoundarySwapEventKind::MeasurementStartConsumed;
+            measurementStartEvent.qpc = callbackBegin;
+            measurementStartEvent.threadId = static_cast<std::uint32_t>(GetCurrentThreadId());
+            measurementStartEvent.phase = "RENDER_MEASUREMENT_START";
+            state_->recordBoundarySwapAttribution(measurementStartEvent);
             const long long duration =
                 state_->measurementDurationQpc.load(std::memory_order_acquire);
             scheduler_.start(callbackBegin, static_cast<long long>(gpu::qpcFrequency()));
@@ -1305,6 +1331,12 @@ private:
                     fail("P2-D5-2 opportunity schedulerを開始できません");
                     return true;
                 }
+                BoundarySwapAttributionEvent queueStartEvent;
+                queueStartEvent.kind = BoundarySwapEventKind::RequiredQueueStarted;
+                queueStartEvent.qpc = gpu::qpcTicks();
+                queueStartEvent.threadId = static_cast<std::uint32_t>(GetCurrentThreadId());
+                queueStartEvent.phase = "RENDER_MEASUREMENT_START";
+                state_->recordBoundarySwapAttribution(queueStartEvent);
                 state_->formalOpportunityPresentedFrame.store(-1, std::memory_order_relaxed);
                 state_->formalOpportunitySwapOrdinal.store(0, std::memory_order_relaxed);
                 state_->formalOpportunityTrueDropCount.store(0, std::memory_order_relaxed);
@@ -1314,6 +1346,16 @@ private:
                 state_->diagnosticSyntheticDeadlineDropCount.store(0, std::memory_order_relaxed);
                 state_->formalOpportunityDomainReached.store(false, std::memory_order_relaxed);
                 state_->formalOpportunityIgnoreNextSwap.store(true, std::memory_order_release);
+                const auto publicationSerial = state_->ignoreNextSwapPublicationSerial.fetch_add(
+                                                   1, std::memory_order_seq_cst) +
+                                               1;
+                BoundarySwapAttributionEvent ignorePublicationEvent;
+                ignorePublicationEvent.kind = BoundarySwapEventKind::IgnoreNextSwapPublished;
+                ignorePublicationEvent.qpc = gpu::qpcTicks();
+                ignorePublicationEvent.threadId = static_cast<std::uint32_t>(GetCurrentThreadId());
+                ignorePublicationEvent.phase = "RENDER_MEASUREMENT_START";
+                ignorePublicationEvent.ignorePublicationSerial = publicationSerial;
+                state_->recordBoundarySwapAttribution(ignorePublicationEvent);
                 state_->formalOpportunityCaptureActive.store(true, std::memory_order_release);
                 formalOpportunityRenderOrdinal_ = 0;
             }
@@ -1755,11 +1797,57 @@ void CompositorRhiItem::recordFrameSwapped() {
                 state_->formalOpportunityEnvelopePrerollActive.load(std::memory_order_acquire);
         };
 
+    bool callbackScopeExact = false;
+    NativePresentIntentScope callbackScope = NativePresentIntentScope::ForeignPreMeasurement;
+    unsigned long long callbackScopeMatchCount = 0;
+    if (exactReceiptAvailable && receipt.tokenPresent != 0) {
+        std::lock_guard<std::mutex> scopeLock(state_->nativePresentIntentScopeMutex);
+        for (const auto& scopeRecord : state_->nativePresentIntentScopeLedger) {
+            if (scopeRecord.tokenSerial != receipt.tokenSerial)
+                continue;
+            ++callbackScopeMatchCount;
+            callbackScope = scopeRecord.scope;
+        }
+        callbackScopeExact = callbackScopeMatchCount == 1;
+    }
+    const auto ignorePublicationSerial =
+        state_->ignoreNextSwapPublicationSerial.load(std::memory_order_seq_cst);
     const bool ignoredFormalBoundarySwap =
         state_->formalOpportunityIgnoreNextSwap.exchange(false, std::memory_order_acq_rel);
+    const auto recordBoundaryCallback = [&](bool activeReservation,
+                                            const gpu::QualifiedCommitReservation& reservation) {
+        BoundarySwapAttributionEvent event;
+        event.kind = BoundarySwapEventKind::FrameSwapped;
+        event.qpc = gpu::qpcTicks();
+        event.threadId = static_cast<std::uint32_t>(GetCurrentThreadId());
+        event.phase = "FRAME_SWAPPED_CALLBACK";
+        event.ignorePublicationSerial = ignorePublicationSerial;
+        event.ignorePreValue = ignoredFormalBoundarySwap;
+        event.ignoreConsumed = ignoredFormalBoundarySwap;
+        event.receiptObserved = exactReceiptAvailable;
+        event.receiptPresentSerial = receipt.presentSerial;
+        event.receiptTokenSerial = receipt.tokenSerial;
+        event.receiptIntentOrdinal = receipt.intentOrdinal;
+        event.receiptIntentOrdinalValid = receipt.intentOrdinalValid != 0;
+        event.receiptTokenPresent = receipt.tokenPresent != 0;
+        event.receiptSwapchainIdentity = receipt.swapchainIdentity;
+        event.receiptHresult = receipt.hresult;
+        event.presentEnterQpc = nativeRecord.presentEnterQpc;
+        event.presentReturnQpc = nativeRecord.presentReturnQpc;
+        event.presentThreadId = nativeRecord.threadId;
+        event.intentScopeExact = callbackScopeExact;
+        event.intentScope = callbackScope;
+        event.intentScopeMatchCount = callbackScopeMatchCount;
+        event.activeReservation = activeReservation;
+        event.reservation = reservation;
+        state_->recordBoundarySwapAttribution(event);
+    };
     if (ignoredFormalBoundarySwap) {
         std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
-        if (state_->formalQualifiedCommitJoin.hasActiveReservation()) {
+        const bool activeReservation = state_->formalQualifiedCommitJoin.hasActiveReservation();
+        const auto reservation = state_->formalQualifiedCommitJoin.reservation();
+        recordBoundaryCallback(activeReservation, reservation);
+        if (activeReservation) {
             auto attribution = state_->formalQualifiedCommitJoin.runtimeAttribution();
             attribution.failurePhase = gpu::QualifiedCommitFailurePhase::PreJoinBoundarySwap;
             attribution.failurePredicate =
@@ -1768,6 +1856,10 @@ void CompositorRhiItem::recordFrameSwapped() {
             failQualifiedJoin("boundary swapがactive reservationを破棄しようとしました");
             return;
         }
+    } else {
+        std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+        recordBoundaryCallback(state_->formalQualifiedCommitJoin.hasActiveReservation(),
+                               state_->formalQualifiedCommitJoin.reservation());
     }
     if (!ignoredFormalBoundarySwap &&
         !state_->formalOpportunityDomainReached.load(std::memory_order_acquire) &&

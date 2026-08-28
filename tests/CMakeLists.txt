@@ -2297,6 +2297,24 @@ mvm_add_test(p2_b3_i2_composition_token_attribution_architecture
         -RepoRoot "${CMAKE_SOURCE_DIR}"
     PROPERTIES LABELS "gpu_preview")
 
+# P2-D5-2/B3-I3: positional ignore-next-swapのpublication/consume ownershipを診断する。
+mvm_add_test(p2_b3_i3_boundary_swap_ownership_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i3-boundary-swap-ownership-architecture.ps1"
+        -RepoRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+foreach(_p2_b3_i3_case IN ITEMS Good NegativeSecondProducer NegativeConsumeRemoved NegativePresentSerialRemoved NegativeScopeExactRemoved NegativeNearestQpc NegativeEventSerialAuthority NegativeProductSemanticsChanged)
+    string(TOLOWER "${_p2_b3_i3_case}" _p2_b3_i3_name)
+    mvm_add_test(p2_b3_i3_boundary_swap_ownership_guard_${_p2_b3_i3_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i3-boundary-swap-ownership-guard.ps1"
+            -Case "${_p2_b3_i3_case}"
+            -Contract "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i3-boundary-swap-ownership-architecture.ps1"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-b3-i3-boundary-guard-${_p2_b3_i3_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 # B3-I0 architecture guardのmutation test。guardが空振りしていないことを固定する。
 foreach(_p2_b3_i0_case IN ITEMS Good NegativeReceiptAbiRemoved NegativeReceiptSerialDerived NegativeReceiptExportRemoved NegativeReceiptNotOneShot NegativeHookTakeReceiptRemoved NegativeExactRecordLookupRemoved NegativeCommitOrderBypassesRecord NegativeReservationIdentityNotScheduler NegativeExpectedSerialSequential NegativeLatestRecordAuthority NegativeSequentialSerialEstimate NegativeQpcProximityJoin)
     string(TOLOWER "${_p2_b3_i0_case}" _p2_b3_i0_name)

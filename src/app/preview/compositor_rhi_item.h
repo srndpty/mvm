@@ -272,6 +272,62 @@ struct CompositionTokenJoinFailureAttribution {
     bool prerollActive = false;
 };
 
+enum class BoundarySwapEventKind {
+    MeasurementStartRequestPublished = 0,
+    MeasurementStartConsumed,
+    RequiredQueueStarted,
+    FirstReservation,
+    IgnoreNextSwapPublished,
+    FrameSwapped,
+};
+
+inline const char* boundarySwapEventKindName(BoundarySwapEventKind kind) {
+    switch (kind) {
+    case BoundarySwapEventKind::MeasurementStartRequestPublished:
+        return "MEASUREMENT_START_REQUEST_PUBLISHED";
+    case BoundarySwapEventKind::MeasurementStartConsumed:
+        return "MEASUREMENT_START_CONSUMED";
+    case BoundarySwapEventKind::RequiredQueueStarted:
+        return "REQUIRED_QUEUE_STARTED";
+    case BoundarySwapEventKind::FirstReservation:
+        return "FIRST_RESERVATION";
+    case BoundarySwapEventKind::IgnoreNextSwapPublished:
+        return "IGNORE_NEXT_SWAP_PUBLISHED";
+    case BoundarySwapEventKind::FrameSwapped:
+        return "FRAME_SWAPPED";
+    }
+    return "UNKNOWN";
+}
+
+// B3-I3 diagnostic-only。eventSerialは複数threadからの記録順を固定するだけで、
+// Present identityやboundary ownershipを生成しない。
+struct BoundarySwapAttributionEvent {
+    unsigned long long eventSerial = 0;
+    BoundarySwapEventKind kind = BoundarySwapEventKind::MeasurementStartRequestPublished;
+    long long qpc = 0;
+    std::uint32_t threadId = 0;
+    const char* phase = "NONE";
+    unsigned long long ignorePublicationSerial = 0;
+    bool ignorePreValue = false;
+    bool ignoreConsumed = false;
+    bool receiptObserved = false;
+    std::uint64_t receiptPresentSerial = 0;
+    std::uint64_t receiptTokenSerial = 0;
+    std::uint64_t receiptIntentOrdinal = 0;
+    bool receiptIntentOrdinalValid = false;
+    bool receiptTokenPresent = false;
+    std::uint64_t receiptSwapchainIdentity = 0;
+    std::int32_t receiptHresult = 0;
+    long long presentEnterQpc = 0;
+    long long presentReturnQpc = 0;
+    std::uint32_t presentThreadId = 0;
+    bool intentScopeExact = false;
+    NativePresentIntentScope intentScope = NativePresentIntentScope::ForeignPreMeasurement;
+    unsigned long long intentScopeMatchCount = 0;
+    bool activeReservation = false;
+    gpu::QualifiedCommitReservation reservation{};
+};
+
 inline const char* nativePresentIntentScopeName(NativePresentIntentScope scope) {
     switch (scope) {
     case NativePresentIntentScope::ForeignPreMeasurement:
@@ -509,6 +565,11 @@ struct CompositorSpikeState {
     std::atomic<bool> formalOpportunityEnvelopePrerollStarted{false};
     std::atomic<bool> formalOpportunityEnvelopePrerollCompleted{false};
     std::atomic<bool> formalOpportunityIgnoreNextSwap{false};
+    std::atomic<unsigned long long> boundarySwapEventSerial{0};
+    std::atomic<unsigned long long> ignoreNextSwapPublicationSerial{0};
+    std::atomic<bool> boundaryFirstReservationRecorded{false};
+    std::mutex boundarySwapAttributionMutex;
+    std::vector<BoundarySwapAttributionEvent> boundarySwapAttributionEvents;
     std::atomic<bool> formalOpportunityDomainReached{false};
     std::atomic<long long> formalOpportunityPresentedFrame{-1};
     std::atomic<long long> formalOpportunitySwapOrdinal{0};
@@ -568,6 +629,12 @@ struct CompositorSpikeState {
     gpu::AdapterInfo qtAdapter;
     std::mutex errorMutex;
     std::string fatalReason;
+
+    void recordBoundarySwapAttribution(BoundarySwapAttributionEvent event) {
+        event.eventSerial = boundarySwapEventSerial.fetch_add(1, std::memory_order_seq_cst) + 1;
+        std::lock_guard<std::mutex> lock(boundarySwapAttributionMutex);
+        boundarySwapAttributionEvents.push_back(event);
+    }
 };
 
 // W4-C3 amend 4。classified stop publication siteはこのhelperだけを通る。
