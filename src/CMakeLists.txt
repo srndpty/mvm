@@ -94,6 +94,7 @@ add_library(mvm_gpu_preview STATIC
     media/gpu_preview/presentation_opportunity_attribution.cpp
     media/gpu_preview/presentation_opportunity_scheduler.cpp
     media/gpu_preview/qualified_present_commit_join.cpp
+    media/gpu_preview/required_intent_queue.cpp
     media/gpu_preview/presentation_refresh_authority.cpp
     media/gpu_preview/window_output_vblank_authority.cpp
     media/gpu_preview/window_output_vblank_observer.cpp

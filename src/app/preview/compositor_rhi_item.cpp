@@ -16,8 +16,8 @@
 #include <tuple>
 #include <vector>
 
-#include <QScopeGuard>
 #include <QQuickWindow>
+#include <QScopeGuard>
 
 namespace mvm::app {
 namespace {
@@ -390,18 +390,11 @@ protected:
                      static_cast<std::uint64_t>(formalDecision.opportunityOrdinal),
                      foreignPreMeasurement ? NativePresentIntentScope::ForeignPreMeasurement
                                            : NativePresentIntentScope::CurrentMeasurement,
-                     callbackBegin,
-                     true,
-                     formalDecision.requiredIntentMembership,
-                     formalDecision.requiredIntentMembershipExact,
-                     boundaryRelation,
-                     true,
-                     formalDecision.duplicateCallback,
-                     formalDecision.repeat,
-                     formalDecision.pastSourceDomain,
-                     formalDecision.targetFrame,
-                     formalDecision.lastFinalizedOpportunityOrdinal,
-                     formalDecision.renderBeginQpc,
+                     callbackBegin, true, formalDecision.requiredIntentMembership,
+                     formalDecision.requiredIntentMembershipExact, boundaryRelation, true,
+                     formalDecision.duplicateCallback, formalDecision.repeat,
+                     formalDecision.pastSourceDomain, formalDecision.targetFrame,
+                     formalDecision.lastFinalizedOpportunityOrdinal, formalDecision.renderBeginQpc,
                      transportDisposition});
                 return true;
             };
@@ -424,25 +417,6 @@ protected:
                     return;
                 state_->formalOutsideRequiredTransportSuppressedCount.fetch_add(
                     1, std::memory_order_relaxed);
-                if (formalDecision.pastSourceDomain) {
-                    // W4-C3 amend 4。domainReachedはcontroller stopを誘発する外部可視な
-                    // side effectなので、その前にDOMAIN_TERMINALをclaimする。
-                    const StopClaimResult terminalClaim =
-                        claimStopCause(*state_, StopArbitration::DomainTerminal);
-                    state_->formalOpportunityDomainReached.store(true, std::memory_order_release);
-                    if (state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire)) {
-                        state_->terminalRenderExitTracking.store(true, std::memory_order_release);
-                        state_->terminalRenderExitDiagnosticStage.store(
-                            TerminalRenderExitDiagnosticStage::FinishMeasurementEntered,
-                            std::memory_order_release);
-                        finishMeasurement(callbackBegin, StopArbitration::DomainTerminal,
-                                          terminalClaim,
-                                          terminalStopFacts(formalDecision));
-                        state_->terminalRenderExitDiagnosticStage.store(
-                            TerminalRenderExitDiagnosticStage::FinishMeasurementReturned,
-                            std::memory_order_release);
-                    }
-                }
                 return;
             }
             if (!nativePresentToken.setFormalIntentOrdinal(formalDecision.opportunityOrdinal)) {
@@ -494,26 +468,6 @@ protected:
                 ++formalOpportunityRenderOrdinal_;
                 // lower envelopeではintentだけを生成し、source selection、formal
                 // counter、measurement schedulerへは接続しない。
-                return;
-            }
-            if (formalDecision.pastSourceDomain) {
-                // W4-C3 amend 4。同上。terminal branchのclaimがcausal authorityになる。
-                const StopClaimResult terminalClaim =
-                    claimStopCause(*state_, StopArbitration::DomainTerminal);
-                state_->formalOpportunityDomainReached.store(true, std::memory_order_release);
-                // W2-C0.1。scheduler-produced pastSourceDomain intentを持つこのcallbackで
-                // measurementを閉じる。controllerからstop用の追加Presentを作らない。
-                if (state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire)) {
-                    state_->terminalRenderExitTracking.store(true, std::memory_order_release);
-                    state_->terminalRenderExitDiagnosticStage.store(
-                        TerminalRenderExitDiagnosticStage::FinishMeasurementEntered,
-                        std::memory_order_release);
-                    finishMeasurement(callbackBegin, StopArbitration::DomainTerminal, terminalClaim,
-                                      terminalStopFacts(formalDecision));
-                    state_->terminalRenderExitDiagnosticStage.store(
-                        TerminalRenderExitDiagnosticStage::FinishMeasurementReturned,
-                        std::memory_order_release);
-                }
                 return;
             }
             formalDecisionObserved = true;
@@ -1154,7 +1108,10 @@ private:
                 gpu::PresentationOpportunitySnapshot snapshot;
                 {
                     std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
-                    closed = state_->formalOpportunityScheduler.close();
+                    closed =
+                        cause == StopArbitration::PlannedWindowEnd
+                            ? state_->formalOpportunityScheduler.closePlannedWindow()
+                            : state_->formalOpportunityScheduler.closeWithoutNormalCompletion();
                     snapshot = state_->formalOpportunityScheduler.snapshot();
                 }
                 if (!closed) {
@@ -1324,7 +1281,7 @@ private:
                 if (state_->formalOpportunityEnvelopePrerollActive.exchange(
                         false, std::memory_order_acq_rel)) {
                     std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
-                    if (!state_->formalOpportunityScheduler.close()) {
+                    if (!state_->formalOpportunityScheduler.closeWithoutNormalCompletion()) {
                         fail("P2-D5-2 lower envelope intent producerを停止できません");
                         return true;
                     }
@@ -1813,8 +1770,10 @@ void CompositorRhiItem::recordFrameSwapped() {
                 nativeBound ? state_->formalQualifiedCommitJoin.commitFrameSwapped(swapEvidence)
                             : gpu::QualifiedCommitResult::Rejected;
             if (qualified == gpu::QualifiedCommitResult::QualifiedCommit) {
-                committed = state_->formalOpportunityScheduler.commitSwap(
-                    swapQpc, capturePresentationAuthority(state_), swapOrdinal);
+                committed = state_->formalOpportunityScheduler.commitQualifiedPresent(
+                                reservation.reservationId, reservation.intentOrdinal) &&
+                            state_->formalOpportunityScheduler.commitSwap(
+                                swapQpc, capturePresentationAuthority(state_), swapOrdinal);
             }
             error = state_->formalOpportunityScheduler.error();
             if (qualified != gpu::QualifiedCommitResult::QualifiedCommit) {

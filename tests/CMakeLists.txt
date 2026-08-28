@@ -2259,6 +2259,32 @@ target_link_libraries(mvm_test_qualified_present_commit_join
 mvm_add_test(p2_qualified_present_commit_join
     COMMAND mvm_test_qualified_present_commit_join)
 
+# P2-D5-2/B3-I1: immutable required setのreserve / qualified commit-dequeue。
+add_executable(mvm_test_required_intent_queue
+    gpu_preview/test_required_intent_queue.cpp)
+target_link_libraries(mvm_test_required_intent_queue
+    PRIVATE mvm::gpu_preview mvm::warnings)
+mvm_add_test(p2_b3_i1_required_intent_queue
+    COMMAND mvm_test_required_intent_queue)
+
+mvm_add_test(p2_b3_i1_required_intent_queue_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i1-required-intent-queue-architecture.ps1"
+        -RepoRoot "${CMAKE_SOURCE_DIR}")
+
+# B3-I1 architecture guardが各禁止mutationを実際に検出することを固定する。
+foreach(_p2_b3_i1_case IN ITEMS Good NegativeRequiredSetMutable NegativeReserveAfterMapping NegativeDuplicateCreatesNew NegativeRenderConsumes NegativeQualifiedDequeueRemoved NegativeQualifiedWiringRemoved NegativePlannedEndDropsActive NegativeDomainTerminalCompletion NegativeDisplayImported NegativeObserverIdentity NegativeConservationRemoved NegativeSourceCoverageSkipped)
+    string(TOLOWER "${_p2_b3_i1_case}" _p2_b3_i1_name)
+    mvm_add_test(p2_b3_i1_required_intent_queue_guard_${_p2_b3_i1_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i1-required-intent-queue-guard.ps1"
+            -Case "${_p2_b3_i1_case}"
+            -Contract "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i1-required-intent-queue-architecture.ps1"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-b3-i1-queue-guard-${_p2_b3_i1_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 mvm_add_test(p2_b3_i0_exact_qualified_join_architecture
     COMMAND "${MVM_PWSH}" -NoProfile -File
         "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i0-exact-qualified-join-architecture.ps1"

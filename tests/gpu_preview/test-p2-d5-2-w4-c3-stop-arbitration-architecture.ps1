@@ -33,15 +33,8 @@ switch($Case){
     'NegativeStopPublishSerialRelaxedOrdering' {
         $rendererHeader=$rendererHeader.Replace('compare_exchange_strong(expected, cause, std::memory_order_seq_cst)','compare_exchange_strong(expected, cause, std::memory_order_relaxed)')}
     'NegativeStopSideEffectBeforeArbitrationClaim' {
-        $renderer=$renderer.Replace((Lf @'
-                    const StopClaimResult terminalClaim =
-                        claimStopCause(*state_, StopArbitration::DomainTerminal);
-                    state_->formalOpportunityDomainReached.store(true, std::memory_order_release);
-'@),(Lf @'
-                    state_->formalOpportunityDomainReached.store(true, std::memory_order_release);
-                    const StopClaimResult terminalClaim =
-                        claimStopCause(*state_, StopArbitration::DomainTerminal);
-'@))}
+        $renderer=$renderer.Replace('            formalDecisionObserved = true;',
+            "            finishMeasurement(callbackBegin, StopArbitration::DomainTerminal, {});`n            formalDecisionObserved = true;")}
     'NegativeUnclaimedExplicitStopWriter' {
         $controller=$controller.Replace((Lf @'
                 const StopClaimResult claim = claimStopCause(*state_, StopArbitration::ExplicitStop);
@@ -234,14 +227,11 @@ try{
     Require $controller 'claimStopCause\(\*state_, StopArbitration::ExplicitStop\);[\s\S]{0,400}publishStopRequest\(' 'explicit stop writerがclaimを通りません'
     Require $controller 'claimStopCause\(\*state_, StopArbitration::Fatal\);[\s\S]{0,400}publishStopRequest\(' 'fatal shutdown由来のstop writerがclaimを通りません'
     Require $renderer 'claimStopCause\(\*state_, StopArbitration::Fatal\);[\s\S]{0,400}fatal\.store\(true' 'fatal latch siteがclaimを通りません'
-    $domainReachedStores=([regex]::Matches($renderer,'formalOpportunityDomainReached\.store\(true')).Count
-    $claimedDomainReached=([regex]::Matches($renderer,'claimStopCause\(\*state_, StopArbitration::DomainTerminal\);\s*state_->formalOpportunityDomainReached\.store\(true')).Count
-    if($domainReachedStores-eq0-or$claimedDomainReached-ne$domainReachedStores){
-        throw "DOMAIN_TERMINAL claimがside effectより前にないsiteがあります: claimed=$claimedDomainReached stores=$domainReachedStores"
-    }
+    Deny $renderer 'formalOpportunityDomainReached\.store\(true' 'source domainをnormal completion side effectにしています'
+    Deny $renderer 'finishMeasurement\(callbackBegin,\s*StopArbitration::DomainTerminal' 'DOMAIN_TERMINALをsuccessful completionにしています'
     Require $renderer 'claimStopCause\(\*state_, StopArbitration::PlannedWindowEnd\);[\s\S]{0,900}finishMeasurement\(callbackBegin, cause, claim,' 'planned window end siteがclaimを通りません'
     $terminalClaims=([regex]::Matches($renderer,'claimStopCause\(\*state_, StopArbitration::DomainTerminal\)')).Count
-    if($terminalClaims-ne2){throw "terminal branchのclaim siteが2箇所ではありません: $terminalClaims"}
+    if($terminalClaims-ne0){throw "terminal branchのclaim siteが残っています: $terminalClaims"}
     $fatalStores=([regex]::Matches($renderer,'fatal\.store\(true')).Count
     $fatalClaims=([regex]::Matches($renderer,'claimStopCause\(\*state_, StopArbitration::Fatal\)')).Count
     if($fatalClaims-lt$fatalStores){throw "fatal latch siteにclaimを通らないものがあります: claims=$fatalClaims stores=$fatalStores"}
@@ -282,7 +272,7 @@ try{
 
     # amend 2: replay入力はscheduler instance config
     Require $schedulerHeader 'PresentationOpportunityConfig config;' 'snapshotがscheduler instance configを持ちません'
-    Require $scheduler 'invocationRecords_,[\s\S]{0,40}config_\};' 'snapshotがconfig_をそのまま返しません'
+    Require $scheduler 'invocationRecords_,[\s\S]{0,200}config_\};' 'snapshotがconfig_をそのまま返しません'
     Require $controller '\{"scheduler_config",[\s\S]{0,900}source_frame_offset[\s\S]{0,900}required_frame_count' 'scheduler_configがemitされません'
     Require $controller 'formalOpportunitySnapshot\.config\.sourceFrameOffset' 'scheduler_configがinstance config由来ではありません'
 

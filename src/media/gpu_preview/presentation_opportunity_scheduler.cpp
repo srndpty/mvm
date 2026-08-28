@@ -27,11 +27,10 @@ bool PresentationOpportunityScheduler::start(const PresentationOpportunityConfig
         return fail(PresentationOpportunityError::ArithmeticOverflow);
     config_ = config;
     records_.reserve(static_cast<std::size_t>(config.requiredFrameCount * 2));
-    requiredIntentOrdinals_.reserve(static_cast<std::size_t>(config.requiredFrameCount));
     if (config.invocationLedgerEnabled)
         invocationRecords_.reserve(static_cast<std::size_t>(config.requiredFrameCount * 2));
-    for (long long ordinal = 0; ordinal < config.requiredFrameCount; ++ordinal)
-        requiredIntentOrdinals_.push_back(ordinal);
+    if (!requiredIntentQueue_.start(config.requiredFrameCount))
+        return fail(PresentationOpportunityError::RequiredQueueFailure);
     started_ = true;
     return true;
 }
@@ -73,29 +72,28 @@ PresentationOpportunityDecision PresentationOpportunityScheduler::selectForRende
                                 PresentationSchedulerInvocationReason::CallbackQpcRegression, {});
     }
 
-    // 最初のrenderはmeasurement先頭のopportunity 0を狙う。以降はpre-render
-    // authorityが示す完了済みrefreshの「次」を狙う。丸めは一切入れない。
-    long long ordinal = 0;
-    if (anchored_) {
-        long long completed = 0;
-        if (!presentationOpportunityOrdinal(originRefreshCount_, preRenderAuthority, completed)) {
-            captureFirstEvent(PresentationOpportunityClassification::AuthorityDiscontinuity, -1, -1,
-                              0, preRenderAuthority, -1, false);
-            fail(PresentationOpportunityError::AuthorityDiscontinuity);
-            return finishInvocation(
-                pre, callbackQpc, preRenderAuthority,
-                PresentationSchedulerInvocationResult::InvalidFatal,
-                PresentationSchedulerInvocationReason::CompletedOrdinalUnavailable, {});
-        }
-        if (completed >= std::numeric_limits<long long>::max()) {
-            fail(PresentationOpportunityError::ArithmeticOverflow);
-            return finishInvocation(pre, callbackQpc, preRenderAuthority,
-                                    PresentationSchedulerInvocationResult::InvalidFatal,
-                                    PresentationSchedulerInvocationReason::CompletedOrdinalOverflow,
-                                    {});
-        }
-        ordinal = completed + 1;
+    // B3-I1。actual issuance identityはDWM counterやprevious ordinalではなく、
+    // immutable required setのqueue headを先にreserveして確定する。
+    const auto queueDecision = requiredIntentQueue_.reserveHead();
+    if (queueDecision.result == RequiredIntentReserveResult::Rejected) {
+        fail(PresentationOpportunityError::RequiredQueueFailure);
+        return finishInvocation(pre, callbackQpc, preRenderAuthority,
+                                PresentationSchedulerInvocationResult::InvalidFatal,
+                                PresentationSchedulerInvocationReason::InvalidConfiguration, {});
     }
+    if (queueDecision.result == RequiredIntentReserveResult::Exhausted) {
+        PresentationOpportunityDecision exhausted;
+        exhausted.valid = true;
+        exhausted.requiredIntentMembershipExact = true;
+        exhausted.renderBeginQpc = callbackQpc;
+        exhausted.renderOrdinal = renderOrdinal;
+        exhausted.preRenderAuthority = preRenderAuthority;
+        return finishInvocation(
+            pre, callbackQpc, preRenderAuthority,
+            PresentationSchedulerInvocationResult::RequiredQueueExhaustedDecision,
+            PresentationSchedulerInvocationReason::RequiredQueueExhausted, exhausted);
+    }
+    const long long ordinal = queueDecision.reservation.intentOrdinal;
 
     long long target = -1;
     if (!targetFor(ordinal, target)) {
@@ -114,20 +112,23 @@ PresentationOpportunityDecision PresentationOpportunityScheduler::selectForRende
     decision.lastFinalizedOpportunityOrdinal = lastFinalizedOrdinal_;
     decision.renderBeginQpc = callbackQpc;
     decision.renderOrdinal = renderOrdinal;
+    decision.reservationId = queueDecision.reservation.reservationId;
     decision.preRenderAuthority = preRenderAuthority;
     if (target >= config_.requiredFrameCount) {
         decision.pastSourceDomain = true;
         pastSourceDomain_ = true;
+        fail(PresentationOpportunityError::SourceCoverageInsufficient);
+        decision.valid = false;
         return finishInvocation(pre, callbackQpc, preRenderAuthority,
-                                PresentationSchedulerInvocationResult::OutsideSourceDomainDecision,
+                                PresentationSchedulerInvocationResult::InvalidFatal,
                                 PresentationSchedulerInvocationReason::PastSourceDomain, decision);
     }
     decision.repeat = target == lastUniqueFrame_;
-    decision.reservationId = ++reservationSerial_;
     lastAuthority_ = preRenderAuthority;
     pendingDecision_ = decision;
     pendingRender_ = true;
     pendingRenderCompleted_ = false;
+    pendingQualifiedCommit_ = false;
     pendingRenderEndQpc_ = 0;
     pendingRenderedSourceFrame_ = -1;
     return finishInvocation(pre, callbackQpc, preRenderAuthority,
@@ -158,6 +159,22 @@ bool PresentationOpportunityScheduler::markRenderComplete(long long renderEndQpc
     pendingRenderCompleted_ = true;
     pendingRenderEndQpc_ = renderEndQpc;
     pendingRenderedSourceFrame_ = renderedSourceFrame;
+    if (!requiredIntentQueue_.markRenderComplete(pendingDecision_.reservationId,
+                                                 pendingDecision_.opportunityOrdinal))
+        return fail(PresentationOpportunityError::RequiredQueueFailure);
+    return true;
+}
+
+bool PresentationOpportunityScheduler::commitQualifiedPresent(unsigned long long reservationId,
+                                                              long long intentOrdinal) {
+    if (!started_ || closed_ || error_ != PresentationOpportunityError::None || !pendingRender_ ||
+        !pendingRenderCompleted_ || pendingQualifiedCommit_)
+        return fail(PresentationOpportunityError::QualifiedCommitMissing);
+    if (reservationId != pendingDecision_.reservationId ||
+        intentOrdinal != pendingDecision_.opportunityOrdinal ||
+        !requiredIntentQueue_.commitQualified(reservationId, intentOrdinal))
+        return fail(PresentationOpportunityError::RequiredQueueFailure);
+    pendingQualifiedCommit_ = true;
     return true;
 }
 
@@ -176,6 +193,8 @@ bool PresentationOpportunityScheduler::commitSwap(
                           postSwapAuthority, swapOrdinal, false);
         return fail(PresentationOpportunityError::RenderNotCompleted);
     }
+    if (!pendingQualifiedCommit_)
+        return fail(PresentationOpportunityError::QualifiedCommitMissing);
     // QPCはcontinuityのcross-checkであり、opportunity序数の根拠にはしない。
     if (swapQpc <= 0 || swapQpc < pendingRenderEndQpc_ ||
         (lastSwapQpc_ > 0 && swapQpc <= lastSwapQpc_)) {
@@ -262,6 +281,7 @@ bool PresentationOpportunityScheduler::commitSwap(
     pendingRender_ = false;
     pendingDecision_ = {};
     pendingRenderCompleted_ = false;
+    pendingQualifiedCommit_ = false;
     pendingRenderEndQpc_ = 0;
     pendingRenderedSourceFrame_ = -1;
     return true;
@@ -354,14 +374,21 @@ bool PresentationOpportunityScheduler::finalizePendingOpportunity() {
     return true;
 }
 
-bool PresentationOpportunityScheduler::close() {
+bool PresentationOpportunityScheduler::closePlannedWindow() {
+    return close(true);
+}
+
+bool PresentationOpportunityScheduler::closeWithoutNormalCompletion() {
+    return close(false);
+}
+
+bool PresentationOpportunityScheduler::close(bool plannedWindowEnd) {
     if (!started_ || closed_ || error_ != PresentationOpportunityError::None)
         return fail(PresentationOpportunityError::InvalidConfiguration);
-    if (pendingRender_) {
-        captureFirstEvent(PresentationOpportunityClassification::PairingDefect, -1, -1, 0, {}, -1,
-                          false);
-        return fail(PresentationOpportunityError::RenderWithoutSwap);
-    }
+    const bool queueClosed = plannedWindowEnd ? requiredIntentQueue_.closePlannedWindow()
+                                              : requiredIntentQueue_.closeWithoutNormalCompletion();
+    if (!queueClosed)
+        return fail(PresentationOpportunityError::RequiredQueueFailure);
     // measurement endではpending opportunityをfinalizeしてからtailを数える。
     if (pendingOpportunity_ && !finalizePendingOpportunity())
         return false;
@@ -392,9 +419,10 @@ PresentationOpportunitySnapshot PresentationOpportunityScheduler::snapshot() con
             firstEvent_,
             records_,
             started_ && error_ == PresentationOpportunityError::None,
-            requiredIntentOrdinals_,
+            requiredIntentQueue_.snapshot().requiredIntentOrdinals,
             config_.invocationLedgerEnabled,
             invocationRecords_,
+            requiredIntentQueue_.snapshot(),
             config_};
 }
 
@@ -500,6 +528,12 @@ const char* presentationOpportunityErrorName(PresentationOpportunityError error)
         return "SWAP_ORDINAL_MISMATCH";
     case PresentationOpportunityError::PresentedFrameMismatch:
         return "PRESENTED_FRAME_MISMATCH";
+    case PresentationOpportunityError::RequiredQueueFailure:
+        return "REQUIRED_QUEUE_FAILURE";
+    case PresentationOpportunityError::SourceCoverageInsufficient:
+        return "SOURCE_COVERAGE_INSUFFICIENT";
+    case PresentationOpportunityError::QualifiedCommitMissing:
+        return "QUALIFIED_COMMIT_MISSING";
     }
     return "UNKNOWN";
 }
@@ -532,6 +566,8 @@ presentationSchedulerInvocationResultName(PresentationSchedulerInvocationResult 
         return "DUPLICATE_DECISION";
     case PresentationSchedulerInvocationResult::OutsideSourceDomainDecision:
         return "OUTSIDE_SOURCE_DOMAIN_DECISION";
+    case PresentationSchedulerInvocationResult::RequiredQueueExhaustedDecision:
+        return "REQUIRED_QUEUE_EXHAUSTED_DECISION";
     case PresentationSchedulerInvocationResult::InvalidFatal:
         return "INVALID_FATAL";
     }
@@ -547,6 +583,8 @@ presentationSchedulerInvocationReasonName(PresentationSchedulerInvocationReason 
         return "PENDING_RENDER";
     case PresentationSchedulerInvocationReason::PastSourceDomain:
         return "PAST_SOURCE_DOMAIN";
+    case PresentationSchedulerInvocationReason::RequiredQueueExhausted:
+        return "REQUIRED_QUEUE_EXHAUSTED";
     case PresentationSchedulerInvocationReason::InvalidConfiguration:
         return "INVALID_CONFIGURATION";
     case PresentationSchedulerInvocationReason::AuthorityUnusable:

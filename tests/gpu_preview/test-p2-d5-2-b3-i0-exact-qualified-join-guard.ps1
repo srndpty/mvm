@@ -26,6 +26,7 @@ $relatives=@(
     'src/app/preview/native_present_hook.cpp',
     'src/app/preview/compositor_rhi_item.cpp',
     'src/media/gpu_preview/presentation_opportunity_scheduler.cpp',
+    'src/media/gpu_preview/required_intent_queue.cpp',
     'src/media/gpu_preview/qualified_present_commit_join.cpp',
     'qt-patches/qtbase-6.11.1/0001-mvm-native-present-hook.patch')
 
@@ -85,9 +86,9 @@ switch($Case){
     }
     'NegativeReservationIdentityNotScheduler'{
         # reservation identity の producer を scheduler 以外へ移す。
-        Edit-Source 'src/media/gpu_preview/presentation_opportunity_scheduler.cpp' `
-            'decision.reservationId = ++reservationSerial_;' `
-            'decision.reservationId = 1;'
+        Edit-Source 'src/media/gpu_preview/required_intent_queue.cpp' `
+            'activeReservation_ = {++reservationSerial_,' `
+            'activeReservation_ = {1,'
     }
     'NegativeExpectedSerialSequential'{
         # expected_present_serial を last + 1 で推定する。

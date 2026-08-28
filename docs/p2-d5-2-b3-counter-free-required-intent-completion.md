@@ -4,9 +4,9 @@
 
 - 対象: P2 formal Playbackのrequired-intent issuance / completion control
 - 前提: B2は`EXACT_TARGET_OUTPUT_COUNTER_AUTHORITY_UNAVAILABLE`でCLOSED
-- phase: **DESIGN CLOSED / IMPLEMENTATION I0 DONE** (実装状況は§10)
-- production code: I0 (exact qualified commit join) のみ変更済み。queue semanticsとordinal issuanceは**UNCHANGED**
-- test / capture: I0 targeted test済み。live captureは**NOT RUN**
+- phase: **DESIGN CLOSED / IMPLEMENTATION I0 + I1 DONE** (実装状況は§10、§11)
+- production code: I0 exact qualified commit joinとI1 required-intent queueを接続済み
+- test / capture: I0/I1 targeted test済み。live captureは**NOT RUN**
 - canonical W3 verdict: **UNCHANGED / FAIL**
 - P5-E4: **BLOCKED**
 
@@ -406,8 +406,8 @@ implementation後のclosureには以下が必要であり、本design完了だ�
 B3 static inventory                 CLOSED
 B3 corrective design               CLOSED
 selected production candidate       B REQUIRED-INTENT QUEUE
-production implementation           I0 DONE / I1 NOT STARTED (§10)
-test / capture                      I0 TARGETED TEST DONE / LIVE CAPTURE NOT RUN
+production implementation           I0 DONE / I1 DONE (§10, §11)
+test / capture                      I0/I1 TARGETED TEST DONE / LIVE CAPTURE NOT RUN
 canonical W3 verdict                UNCHANGED / FAIL
 P5-E4                               BLOCKED
 ```
@@ -515,3 +515,28 @@ P5-E4                                BLOCKED
 ABI v5はpatched Qtの再build後にだけ実行時互換になる。`scripts/prepare-p2-c0-qt-source.ps1` と
 `scripts/build-p2-c0-patched-qt.ps1`の再実行はI0のexit条件ではなく、live captureを行うsliceで実施する。
 patch自体はpristine v6.11.1 sourceへ0001 -> 0002の順で適用可能であることを確認済みである。
+
+## 11. B3-I1 実装結果 — Required-intent Queue State Machine
+
+I1ではstart時のimmutable `[0,N)`を`RequiredIntentQueue`へ固定し、actual issuance identityを
+queue headのreserveからのみ生成する。`selectForRender()`はreserve後に初めてsource targetを計算するため、
+DWM counter/QPC/callback index/source frame/physical observer/previous ordinalはintent identityへ関与しない。
+
+```text
+reserve head -> identity確定 -> source mapping -> render complete (consume 0)
+             -> I0 QUALIFIED_COMMIT -> exactly 1 dequeue
+```
+
+duplicate callbackはschedulerの同一pending decision、queue単体では同一active reservationを返し、
+新規issue/transport/dequeueを行わない。missing/mismatch/unrendered transactionはfail-closeしdequeue 0、
+source coverage不足は`SOURCE_COVERAGE_INSUFFICIENT`で失敗する。required setのskip・縮小は行わない。
+
+planned endではactive reservationとunissued tailを保持する。online snapshotは`required/issued/rendered/
+qualified_commit/dequeued/active/unissued_tail`とconservation verdictをJSONへ出力するが、
+`display_satisfaction_imported=false`を固定し、後段FinalState satisfactionとは分離する。
+normal completion ownerは`PLANNED_WINDOW_END`だけであり、queue emptyや`past_source_domain`、
+`DOMAIN_TERMINAL`をsuccessful completionへ使わない。
+
+targeted testはqueue state machine、既存opportunity scheduler regression、architecture guard、
+guard mutation 12件を追加した。I0 exact native Present joinのsemanticsとABIは変更していない。
+このsliceではcanonical W3 captureを実行しておらず、canonical W3 verdictとP5-E4 blockは不変である。

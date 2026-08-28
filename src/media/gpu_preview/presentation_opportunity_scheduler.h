@@ -2,6 +2,7 @@
 #define MVM_GPU_PREVIEW_PRESENTATION_OPPORTUNITY_SCHEDULER_H
 
 #include "media/gpu_preview/presentation_refresh_authority.h"
+#include "media/gpu_preview/required_intent_queue.h"
 
 #include <vector>
 
@@ -19,6 +20,9 @@ enum class PresentationOpportunityError {
     RenderOrdinalMismatch,
     SwapOrdinalMismatch,
     PresentedFrameMismatch,
+    RequiredQueueFailure,
+    SourceCoverageInsufficient,
+    QualifiedCommitMissing,
 };
 
 enum class PresentationOpportunityClassification {
@@ -70,8 +74,8 @@ enum class FormalIntentTransportDisposition {
     InvalidMembershipProvenance,
 };
 
-inline const char* formalIntentTransportDispositionName(
-    FormalIntentTransportDisposition disposition) {
+inline const char*
+formalIntentTransportDispositionName(FormalIntentTransportDisposition disposition) {
     switch (disposition) {
     case FormalIntentTransportDisposition::Transport:
         return "TRANSPORT";
@@ -101,6 +105,7 @@ enum class PresentationSchedulerInvocationResult {
     PrimaryDecision = 0,
     DuplicateDecision,
     OutsideSourceDomainDecision,
+    RequiredQueueExhaustedDecision,
     InvalidFatal,
 };
 
@@ -108,6 +113,7 @@ enum class PresentationSchedulerInvocationReason {
     Primary = 0,
     PendingRender,
     PastSourceDomain,
+    RequiredQueueExhausted,
     InvalidConfiguration,
     AuthorityUnusable,
     CallbackQpcRegression,
@@ -215,6 +221,7 @@ struct PresentationOpportunitySnapshot {
     std::vector<long long> requiredIntentOrdinals;
     bool invocationLedgerEnabled = false;
     std::vector<PresentationSchedulerInvocationRecord> invocationRecords;
+    RequiredIntentQueueSnapshot requiredIntentQueue;
     // W4-C3 exact causal replayの入力。scheduler instanceが実際に使用したconfigを
     // そのまま渡す。artifact側で別fieldから再構成してはならない。
     PresentationOpportunityConfig config;
@@ -233,9 +240,11 @@ public:
                                                     long long renderOrdinal);
     bool markRenderComplete(long long renderEndQpc, long long renderedSourceFrame,
                             long long renderOrdinal);
+    bool commitQualifiedPresent(unsigned long long reservationId, long long intentOrdinal);
     bool commitSwap(long long swapQpc, const PresentationAuthoritySample& postSwapAuthority,
                     long long swapOrdinal);
-    bool close();
+    bool closePlannedWindow();
+    bool closeWithoutNormalCompletion();
     PresentationOpportunitySnapshot snapshot() const;
     bool noteInvocationTransportDisposition(unsigned long long invocationSerial,
                                             FormalIntentTransportDisposition disposition);
@@ -262,6 +271,7 @@ private:
     };
 
     bool fail(PresentationOpportunityError error);
+    bool close(bool plannedWindowEnd);
     bool targetFor(long long ordinal, long long& target) const;
     bool finalizePendingOpportunity();
     void captureFirstEvent(PresentationOpportunityClassification classification,
@@ -283,11 +293,12 @@ private:
     bool pastSourceDomain_ = false;
     bool anchored_ = false;
     unsigned long long originRefreshCount_ = 0;
-    unsigned long long reservationSerial_ = 0;
+    RequiredIntentQueue requiredIntentQueue_;
 
     bool pendingRender_ = false;
     PresentationOpportunityDecision pendingDecision_{};
     bool pendingRenderCompleted_ = false;
+    bool pendingQualifiedCommit_ = false;
     long long pendingRenderEndQpc_ = 0;
     long long pendingRenderedSourceFrame_ = -1;
 
@@ -312,7 +323,6 @@ private:
     long long swappedCompositionCount_ = 0;
     PresentationOpportunityFirstEvent firstEvent_{};
     std::vector<PresentationOpportunityLedgerRecord> records_;
-    std::vector<long long> requiredIntentOrdinals_;
     unsigned long long invocationSerial_ = 0;
     std::vector<PresentationSchedulerInvocationRecord> invocationRecords_;
 };

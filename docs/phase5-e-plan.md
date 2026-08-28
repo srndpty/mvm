@@ -605,7 +605,7 @@ exit criteriaの再監査結果は次のとおりである。
 | 製品契約のcapability `2 / 2 / 1`、layer順、remove semantics | **充足済み** | `preview-engine-contract.md` §6 / §7 / §7.4を更新済み |
 | historical P3-C-2 blockerの解消 | **充足済み** | QUAL-F2 checkpointで独立2 campaignが各9/9 PASS。ただしfinal checkpoint gateとは分ける |
 | P2-D5-2 root-cause attribution | **充足済み** | W4-C3 formal 3/3 EXACT、root cause determined |
-| P2-D5-2 canonical performance | **未充足** | B3 corrective designはCLOSEDだがproduction implementation、fresh W3 3/3、frozen threshold PASSが未実行 |
+| P2-D5-2 canonical performance | **未充足** | B3 I0/I1 production implementation済み。fresh W3 3/3とfrozen threshold PASSは未実行 |
 | current closure checkpointのordinary / P5-C / P5-D / P5-E | **未実行** | W4-C3 merge後の最終candidateでは未走行 |
 | current closure checkpointのP2 correctness / Seek | **未実行** | correction後の`p2-matrix.ps1` Playback 3/3 + Seek 3/3が未走行 |
 | current closure checkpointのP3-C-2 | **未実行** | correction後の`p3-c2-matrix.ps1` 9/9が未走行 |
@@ -739,8 +739,18 @@ candidate Bのうちjoin provenanceだけを確定するsliceを実装した。�
 - required-intent queue semantics、ordinal issuance、W2/W3 historical authority、
   FinalState satisfaction、threshold、required setは未変更である
 
-次sliceはI1 (required-intent queue state machine) である。ABI v5はpatched Qtの再build後に
-実行時互換になるため、live captureはI1以降のsliceで行う。
+#### B3-I1 — Required-intent Queue State Machine (実装済み)
+
+- immutable required set `[0,N)`のqueue headをsource mappingより先にreserveする
+- duplicate/render completionはconsumeせず、I0 `QUALIFIED_COMMIT`だけがexactly 1件dequeueする
+- source coverage不足は明示的contract failureとし、required setのskip/dequeue/縮小を行わない
+- planned endのactive reservationとunissued tailを後段accounting向けsnapshotへ保持する
+- `committed != satisfied`を維持し、display/FinalState authorityをonline queueへ入れない
+- normal completion ownerは`PLANNED_WINDOW_END`だけとする
+- queue unit、scheduler regression、architecture guardとmutation testを追加した
+- canonical W3 captureは本sliceでは未実施。canonical verdictは変更しない
+
+ABI v5はpatched Qtの再build後に実行時互換になる。live captureは後続sliceで行う。
 
 ### E4 実装結果 (実測)
 
