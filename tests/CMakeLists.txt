@@ -2273,7 +2273,7 @@ mvm_add_test(p2_b3_i1_required_intent_queue_architecture
         -RepoRoot "${CMAKE_SOURCE_DIR}")
 
 # B3-I1 architecture guardが各禁止mutationを実際に検出することを固定する。
-foreach(_p2_b3_i1_case IN ITEMS Good NegativeRequiredSetMutable NegativeReserveAfterMapping NegativeDuplicateCreatesNew NegativeRenderConsumes NegativeQualifiedDequeueRemoved NegativeQualifiedWiringRemoved NegativePlannedEndDropsActive NegativeDomainTerminalCompletion NegativeDisplayImported NegativeObserverIdentity NegativeConservationRemoved NegativeSourceCoverageSkipped)
+foreach(_p2_b3_i1_case IN ITEMS Good NegativeRequiredSetMutable NegativeReserveAfterMapping NegativeDuplicateCreatesNew NegativeRenderConsumes NegativeQualifiedDequeueRemoved NegativeQualifiedWiringRemoved NegativePlannedEndDropsActive NegativeDomainTerminalCompletion NegativeDisplayImported NegativeObserverIdentity NegativeConservationRemoved NegativeSourceCoverageSkipped NegativeSwapCommitFailureConsumesIntent)
     string(TOLOWER "${_p2_b3_i1_case}" _p2_b3_i1_name)
     mvm_add_test(p2_b3_i1_required_intent_queue_guard_${_p2_b3_i1_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File

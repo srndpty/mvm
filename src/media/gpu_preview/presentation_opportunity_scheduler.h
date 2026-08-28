@@ -270,10 +270,22 @@ private:
         PresentationAuthoritySample postSwapAuthority;
     };
 
+    struct PendingOpportunityFinalization {
+        PresentationOpportunityLedgerRecord record;
+        PresentationOpportunityFirstEvent firstEvent;
+        bool captureFirstEvent = false;
+        bool repeat = false;
+        bool forward = false;
+        long long trueDropBefore = 0;
+        long long lostOpportunities = 0;
+    };
+
     bool fail(PresentationOpportunityError error);
     bool close(bool plannedWindowEnd);
     bool targetFor(long long ordinal, long long& target) const;
     bool finalizePendingOpportunity();
+    bool preparePendingOpportunityFinalization(PendingOpportunityFinalization& prepared);
+    void applyPendingOpportunityFinalization(const PendingOpportunityFinalization& prepared);
     void captureFirstEvent(PresentationOpportunityClassification classification,
                            long long actualOrdinal, long long actualTarget, long long swapQpc,
                            const PresentationAuthoritySample& post, long long swapOrdinal,
@@ -298,7 +310,7 @@ private:
     bool pendingRender_ = false;
     PresentationOpportunityDecision pendingDecision_{};
     bool pendingRenderCompleted_ = false;
-    bool pendingQualifiedCommit_ = false;
+    bool pendingQualifiedEvidence_ = false;
     long long pendingRenderEndQpc_ = 0;
     long long pendingRenderedSourceFrame_ = -1;
 

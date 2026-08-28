@@ -524,7 +524,8 @@ DWM counter/QPC/callback index/source frame/physical observer/previous ordinal�
 
 ```text
 reserve head -> identity確定 -> source mapping -> render complete (consume 0)
-             -> I0 QUALIFIED_COMMIT -> exactly 1 dequeue
+             -> I0 QUALIFIED_COMMIT evidence (consume 0)
+             -> swap全failure条件をvalidate -> failure-free commit point -> exactly 1 dequeue
 ```
 
 duplicate callbackはschedulerの同一pending decision、queue単体では同一active reservationを返し、
@@ -538,5 +539,19 @@ normal completion ownerは`PLANNED_WINDOW_END`だけであり、queue emptyや`p
 `DOMAIN_TERMINAL`をsuccessful completionへ使わない。
 
 targeted testはqueue state machine、既存opportunity scheduler regression、architecture guard、
-guard mutation 12件を追加した。I0 exact native Present joinのsemanticsとABIは変更していない。
+guard mutation 13件を追加した。I0 exact native Present joinのsemanticsとABIは変更していない。
 このsliceではcanonical W3 captureを実行しておらず、canonical W3 verdictとP5-E4 blockは不変である。
+
+### 11.1 amendment — swap commitとのlogical atomicity
+
+I0 `QUALIFIED_COMMIT`はpending qualified evidenceを確定するだけで、required queueをdequeueしない。
+`commitSwap()`はQPC、render/swap ordinal、authority continuity、actual opportunity、pending finalizeを
+すべて副作用なしでvalidateする。pending finalizeはprepare/applyへ分離し、queue dequeueより後に
+failure pathを残さない。全検証後のfailure-free commit pointでqueue headを1件dequeueし、同じ経路で
+scheduler swap stateをapplyする。rollbackによる救済は行わない。
+
+`NegativeSwapCommitFailureConsumesIntent`はpost-I0のauthority regression、VBlank/QPC regression、
+swap ordinal mismatchで`dequeued_count`が増えず、active rendered reservationが保持されることを固定する。
+source coverage fatal後は元のfatal reasonを維持したnon-normal cleanupでqueueをclosedにし、active
+reservationとunissued tailを保存する。architecture guardはdequeueをswap validationより前へ移すmutationを
+拒否する。canonical W3/live captureは引き続き未実施である。

@@ -6,7 +6,7 @@ param(
         'NegativeQualifiedWiringRemoved','NegativePlannedEndDropsActive',
         'NegativeDomainTerminalCompletion','NegativeDisplayImported',
         'NegativeObserverIdentity','NegativeConservationRemoved',
-        'NegativeSourceCoverageSkipped')][string]$Case,
+        'NegativeSourceCoverageSkipped','NegativeSwapCommitFailureConsumesIntent')][string]$Case,
     [Parameter(Mandatory=$true)][string]$Contract,
     [Parameter(Mandatory=$true)][string]$SourceRoot,
     [Parameter(Mandatory=$true)][string]$Directory
@@ -44,6 +44,7 @@ switch($Case){
     'NegativeObserverIdentity'{Edit-Source 'src/media/gpu_preview/required_intent_queue.cpp' 'bool RequiredIntentQueue::matches' "static long long DwmPresentQpc = 0;`n`nbool RequiredIntentQueue::matches"}
     'NegativeConservationRemoved'{Edit-Source 'src/media/gpu_preview/required_intent_queue.cpp' 'required == headIndex_ + activeCount + unissued' 'required >= headIndex_ + activeCount + unissued'}
     'NegativeSourceCoverageSkipped'{Edit-Source 'src/media/gpu_preview/presentation_opportunity_scheduler.cpp' 'PresentationOpportunityError::SourceCoverageInsufficient' 'PresentationOpportunityError::None'}
+    'NegativeSwapCommitFailureConsumesIntent'{Edit-Source 'src/media/gpu_preview/presentation_opportunity_scheduler.cpp' '    pendingQualifiedEvidence_ = true;' "    requiredIntentQueue_.commitQualified(reservationId, intentOrdinal);`n    pendingQualifiedEvidence_ = true;"}
 }
 
 foreach($relative in $relatives){

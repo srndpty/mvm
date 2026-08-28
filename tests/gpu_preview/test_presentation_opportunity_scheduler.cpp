@@ -39,6 +39,15 @@ mvm::gpu::PresentationAuthoritySample authority(unsigned long long refreshCount,
             refreshDenominator};
 }
 
+void checkFailedSwapDidNotConsume(const Scheduler& value, long long expectedDequeued,
+                                  const char* message) {
+    const auto queue = value.snapshot().requiredIntentQueue;
+    check(queue.dequeuedCount == expectedDequeued &&
+              queue.qualifiedCommitCount == expectedDequeued && queue.activeReservationCount == 1 &&
+              queue.activeReservationRendered && queue.conservationValid,
+          message);
+}
+
 // 1回のrender/swapを駆動する。opportunity序数はrefresh countだけが決めるので、
 // QPCはcontinuityのcross-checkとしてしか渡さない。
 struct Driver {
@@ -233,6 +242,9 @@ void authorityFailuresAreFatal() {
     check(!regression.commitSwap(65, authority(100), driver.swapOrdinal) &&
               regression.error() == Error::AuthorityDiscontinuity,
           "refresh count regressionをfail-closedにできません");
+    checkFailedSwapDidNotConsume(
+        regression, 3,
+        "NegativeSwapCommitFailureConsumesIntent: authority regressionがintentをconsumeしました");
 
     auto vblank = scheduler(60, 1, 12);
     Driver vblankDriver{&vblank};
@@ -248,6 +260,9 @@ void authorityFailuresAreFatal() {
     check(!vblank.commitSwap(65, backward, vblankDriver.swapOrdinal) &&
               vblank.error() == Error::AuthorityDiscontinuity,
           "qpcVBlank discontinuityをfail-closedにできません");
+    checkFailedSwapDidNotConsume(vblank, 3,
+                                 "NegativeSwapCommitFailureConsumesIntent: VBlank authority "
+                                 "failureがintentをconsumeしました");
 
     auto missing = scheduler(60, 1, 12);
     check(!missing.selectForRender(1, {}, 0).valid &&
@@ -302,9 +317,16 @@ void pairingFailuresAreFatal() {
           "swap ordinal testのrender完了に失敗しました");
     check(swapOrdinal.commitQualifiedPresent(first.reservationId, first.opportunityOrdinal),
           "swap ordinal testのqualified commitに失敗しました");
+    const auto qualifiedPending = swapOrdinal.snapshot().requiredIntentQueue;
+    check(qualifiedPending.dequeuedCount == 0 && qualifiedPending.activeReservationCount == 1 &&
+              qualifiedPending.activeReservationRendered,
+          "I0 QUALIFIED_COMMIT evidenceだけでintentをdequeueしました");
     check(!swapOrdinal.commitSwap(10, authority(101), 3) &&
               swapOrdinal.error() == Error::SwapOrdinalMismatch,
           "swap ordinalの飛びを拒否しません");
+    checkFailedSwapDidNotConsume(
+        swapOrdinal, 0,
+        "NegativeSwapCommitFailureConsumesIntent: swap ordinal mismatchがintentをconsumeしました");
 
     auto qpcRegression = scheduler(60, 1, 12);
     Driver qpcDriver{&qpcRegression};
@@ -318,6 +340,36 @@ void pairingFailuresAreFatal() {
     check(!qpcRegression.commitSwap(20, authority(103), qpcDriver.swapOrdinal) &&
               qpcRegression.error() == Error::OpportunityRegression,
           "swap QPCの後退をcontinuity cross-checkで拒否しません");
+    checkFailedSwapDidNotConsume(
+        qpcRegression, 2,
+        "NegativeSwapCommitFailureConsumesIntent: QPC regressionがintentをconsumeしました");
+}
+
+void sourceCoverageFatalCleanupPreservesQueue() {
+    Scheduler value;
+    check(value.start({4, 0, 60, 1, 30, 1, kQpcFrequency}),
+          "source coverage cleanup schedulerを開始できません");
+    Driver driver{&value, 0, 0, 30, 1};
+    check(driver.runCadence(2), "source coverage fatal前のcommitに失敗しました");
+    const auto fatalDecision = driver.select(102, 41);
+    check(!fatalDecision.valid && fatalDecision.pastSourceDomain &&
+              fatalDecision.opportunityOrdinal == 2 && fatalDecision.targetFrame == 4 &&
+              value.error() == Error::SourceCoverageInsufficient,
+          "source coverage不足をqueue reservation後のfatalにできません");
+    const auto before = value.snapshot().requiredIntentQueue;
+    check(before.dequeuedCount == 2 && before.activeReservationCount == 1 &&
+              before.activeReservation.intentOrdinal == 2 && before.unissuedTailCount == 1,
+          "source coverage fatal時点でreservation/tailが保持されません");
+    check(value.closeWithoutNormalCompletion(),
+          "source coverage fatal後のnon-normal cleanupに失敗しました");
+    const auto snapshot = value.snapshot();
+    const auto after = snapshot.requiredIntentQueue;
+    check(snapshot.closed && snapshot.error == Error::SourceCoverageInsufficient && after.closed &&
+              !after.plannedWindowEnded && after.dequeuedCount == before.dequeuedCount &&
+              after.activeReservationCount == before.activeReservationCount &&
+              after.activeReservation.intentOrdinal == before.activeReservation.intentOrdinal &&
+              after.unissuedTailCount == before.unissuedTailCount && after.conservationValid,
+          "source coverage fatal cleanupがreservation/tailまたはfatal原因を変更しました");
 }
 
 void duplicateCallbackDoesNotCreateOpportunity() {
@@ -497,6 +549,7 @@ int main() {
     refreshCountGapAccounting();
     authorityFailuresAreFatal();
     pairingFailuresAreFatal();
+    sourceCoverageFatalCleanupPreservesQueue();
     duplicateCallbackDoesNotCreateOpportunity();
     measurementEndFinalizesPending();
     overflowIsClosed();

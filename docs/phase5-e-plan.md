@@ -750,6 +750,10 @@ candidate Bのうちjoin provenanceだけを確定するsliceを実装した。�
 - queue unit、scheduler regression、architecture guardとmutation testを追加した
 - canonical W3 captureは本sliceでは未実施。canonical verdictは変更しない
 
+I1 amendmentでは、I0 `QUALIFIED_COMMIT`をpending evidenceに限定し、queue dequeueを`commitSwap()`の
+全failure条件より後のlogical commit pointへ遅延した。post-I0 swap failureはconsume 0でfail-closeし、
+source coverage fatal後のnon-normal cleanupもactive reservation/unissued tailを保持する。
+
 ABI v5はpatched Qtの再build後に実行時互換になる。live captureは後続sliceで行う。
 
 ### E4 実装結果 (実測)
