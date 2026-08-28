@@ -10,7 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 
-inline constexpr std::uint32_t MVM_NATIVE_PRESENT_HOOK_ABI_VERSION = 5;
+inline constexpr std::uint32_t MVM_NATIVE_PRESENT_HOOK_ABI_VERSION = 6;
 inline constexpr std::uint32_t MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY = 8192;
 inline constexpr std::uint32_t MVM_NATIVE_PRESENT_HOOK_MAX_SOURCES = 2;
 
@@ -64,6 +64,24 @@ struct MvmNativePresentFrameSwappedReceipt {
     std::uint32_t reserved = 0;
 };
 
+// B3-I5A。patched Qtの同一render-threadにあるone-shot stateをread-onlyで返す。
+// abiVersion/snapshotSize/layoutSignatureはcallerが設定し、Qtが検証してからraw stateをcopyする。
+struct MvmNativePresentOneShotSnapshot {
+    std::uint32_t abiVersion = MVM_NATIVE_PRESENT_HOOK_ABI_VERSION;
+    std::uint32_t snapshotSize = 0;
+    std::uint64_t layoutSignature = 0;
+    std::uint64_t captureEpoch = 0;
+    std::uint32_t captureActive = 0;
+    std::uint32_t captureThreadId = 0;
+    std::uint32_t callerThreadId = 0;
+    std::uint32_t callerThreadExact = 0;
+    std::uint32_t pendingTokenValid = 0;
+    std::uint32_t pendingReceiptValid = 0;
+    std::uint32_t reserved[2]{};
+    MvmNativePresentCompositionToken pendingToken{};
+    MvmNativePresentFrameSwappedReceipt pendingReceipt{};
+};
+
 inline constexpr std::uint64_t mvmNativePresentLayoutMix(std::uint64_t signature,
                                                          std::uint64_t value) {
     return (signature ^ value) * 1099511628211ULL;
@@ -100,6 +118,33 @@ inline constexpr std::uint64_t mvmNativePresentTokenRecordLayoutSignature() {
     return mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRecord, token));
 }
 
+inline constexpr std::uint64_t mvmNativePresentOneShotSnapshotLayoutSignature() {
+    std::uint64_t signature = 1469598103934665603ULL;
+    signature = mvmNativePresentLayoutMix(signature, sizeof(MvmNativePresentOneShotSnapshot));
+    signature = mvmNativePresentLayoutMix(signature, alignof(MvmNativePresentOneShotSnapshot));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentOneShotSnapshot, layoutSignature));
+    signature = mvmNativePresentLayoutMix(signature,
+                                          offsetof(MvmNativePresentOneShotSnapshot, captureEpoch));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentOneShotSnapshot, captureThreadId));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentOneShotSnapshot, pendingTokenValid));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentOneShotSnapshot, pendingReceiptValid));
+    signature = mvmNativePresentLayoutMix(signature,
+                                          offsetof(MvmNativePresentOneShotSnapshot, pendingToken));
+    return mvmNativePresentLayoutMix(signature,
+                                     offsetof(MvmNativePresentOneShotSnapshot, pendingReceipt));
+}
+
+inline constexpr bool mvmNativePresentOneShotSnapshotLayoutCompatible(
+    std::uint32_t abiVersion, std::uint32_t snapshotSize, std::uint64_t layoutSignature) {
+    return abiVersion == MVM_NATIVE_PRESENT_HOOK_ABI_VERSION &&
+           snapshotSize == sizeof(MvmNativePresentOneShotSnapshot) &&
+           layoutSignature == mvmNativePresentOneShotSnapshotLayoutSignature();
+}
+
 enum MvmDirtyPropagationStage : std::uint32_t {
     MVM_DIRTY_STAGE_RENDERER_UPDATE = 0,
     MVM_DIRTY_STAGE_NODE_SCHEDULE_UPDATE,
@@ -131,6 +176,11 @@ struct MvmNativePresentRing {
     std::uint32_t presentRecordSize = sizeof(MvmNativePresentRecord);
     // MvmNativePresentRing自身の定義完了後にapp側が設定する。0のままならQtは拒否する。
     std::uint64_t layoutSignature = 0;
+    std::uint32_t oneShotSnapshotSize = sizeof(MvmNativePresentOneShotSnapshot);
+    std::uint32_t captureThreadId = 0;
+    std::uint64_t oneShotSnapshotLayoutSignature = 0;
+    std::uint64_t captureEpoch = 0;
+    std::uint32_t threadMismatchCount = 0;
     std::uint32_t enabled = 0;
     std::uint32_t recordCount = 0;
     std::uint32_t overflowCount = 0;
@@ -169,6 +219,15 @@ inline constexpr std::uint64_t mvmNativePresentHookLayoutSignature() {
         mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, presentRecordSize));
     signature =
         mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, layoutSignature));
+    signature =
+        mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, oneShotSnapshotSize));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentRing, oneShotSnapshotLayoutSignature));
+    signature = mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, captureEpoch));
+    signature =
+        mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, captureThreadId));
+    signature =
+        mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, threadMismatchCount));
     signature = mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, enabled));
     signature = mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, recordCount));
     signature = mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentRing, overflowCount));
@@ -201,17 +260,30 @@ inline constexpr bool mvmNativePresentHookAbiVersionsCompatible(std::uint32_t ap
            qtVersion == MVM_NATIVE_PRESENT_HOOK_ABI_VERSION;
 }
 
-inline constexpr bool mvmNativePresentHookLayoutCompatible(std::uint32_t abiVersion,
-                                                           std::uint32_t capacity,
-                                                           std::uint32_t compositionTokenSize,
-                                                           std::uint32_t presentRecordSize,
-                                                           std::uint64_t layoutSignature) {
+inline constexpr bool mvmNativePresentHookLayoutCompatible(
+    std::uint32_t abiVersion, std::uint32_t capacity, std::uint32_t compositionTokenSize,
+    std::uint32_t presentRecordSize, std::uint32_t oneShotSnapshotSize,
+    std::uint64_t oneShotSnapshotLayoutSignature, std::uint64_t layoutSignature) {
     return mvmNativePresentHookAbiVersionsCompatible(abiVersion,
                                                      MVM_NATIVE_PRESENT_HOOK_ABI_VERSION) &&
            capacity == MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY &&
            compositionTokenSize == sizeof(MvmNativePresentCompositionToken) &&
            presentRecordSize == sizeof(MvmNativePresentRecord) &&
+           oneShotSnapshotSize == sizeof(MvmNativePresentOneShotSnapshot) &&
+           oneShotSnapshotLayoutSignature == mvmNativePresentOneShotSnapshotLayoutSignature() &&
            layoutSignature == mvmNativePresentHookLayoutSignature();
+}
+
+inline constexpr bool
+mvmNativePresentOneShotSnapshotExact(const MvmNativePresentOneShotSnapshot& snapshot,
+                                     std::uint64_t expectedCaptureEpoch,
+                                     std::uint32_t expectedThreadId) {
+    return mvmNativePresentOneShotSnapshotLayoutCompatible(
+               snapshot.abiVersion, snapshot.snapshotSize, snapshot.layoutSignature) &&
+           expectedCaptureEpoch != 0 && snapshot.captureEpoch == expectedCaptureEpoch &&
+           snapshot.captureActive != 0 && expectedThreadId != 0 &&
+           snapshot.captureThreadId == expectedThreadId &&
+           snapshot.callerThreadId == expectedThreadId && snapshot.callerThreadExact != 0;
 }
 
 enum : std::uint32_t {
@@ -225,7 +297,18 @@ using MvmNativePresentHookBeginFn = int (*)(MvmNativePresentRing*);
 using MvmNativePresentHookSetTokenFn = int (*)(const MvmNativePresentCompositionToken*);
 using MvmNativePresentHookEndFn = int (*)();
 using MvmNativePresentHookTakeFrameSwappedReceiptFn = int (*)(MvmNativePresentFrameSwappedReceipt*);
+using MvmNativePresentHookOneShotSnapshotFn = int (*)(std::uint64_t,
+                                                      MvmNativePresentOneShotSnapshot*);
 using MvmDirtyPropagationBeginFn = std::uint64_t (*)();
 using MvmDirtyPropagationStageFn = std::uint64_t (*)(std::uint32_t, std::uint64_t);
+
+enum MvmNativePresentOneShotSnapshotResult : int {
+    MVM_ONE_SHOT_SNAPSHOT_OK = 1,
+    MVM_ONE_SHOT_SNAPSHOT_CAPTURE_INACTIVE = 0,
+    MVM_ONE_SHOT_SNAPSHOT_INVALID_ARGUMENT = -1,
+    MVM_ONE_SHOT_SNAPSHOT_ABI_LAYOUT_MISMATCH = -2,
+    MVM_ONE_SHOT_SNAPSHOT_EPOCH_MISMATCH = -3,
+    MVM_ONE_SHOT_SNAPSHOT_THREAD_MISMATCH = -4,
+};
 
 #endif

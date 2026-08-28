@@ -802,3 +802,29 @@ mutation testで拒否する。
 
 元の`COMPOSITION_TOKEN_MISMATCH`は`UNRESOLVED_HISTORICAL_RUNTIME_FAILURE`のまま保持し、I3 boundary failureへ
 再分類しない。production fix、runtime smoke、fresh W3 canonical 3/3はI4の範囲外である。
+
+## 15. B3-I5A Qt One-shot Exact Snapshot ABI
+
+I5AではQt native Present hook ABIをv5からv6へ上げ、I4 quiescenceが必要とするone-shot stateの
+read-only取得境界だけを追加した。handshake本体、measurement transition、required queue、qualified join、
+canonical W3には接続しない。
+
+capture開始時にpatched Qtが単調な`captureEpoch`をmintし、その時点のrender thread IDを固定する。snapshot callerは
+expected capture epoch、ABI version、snapshot size、snapshot layout signatureを入力し、Qtはcurrent capture active、
+epoch一致、`GetCurrentThreadId()`一致をすべて検査する。不一致は専用result codeで拒否する。
+
+成功snapshotは次のraw stateをcopyする。
+
+```text
+capture epoch / capture active / capture thread / caller thread / exactness
+pending token valid / MvmNativePresentCompositionToken
+pending receipt valid / MvmNativePresentFrameSwappedReceipt
+```
+
+exportは`mvmPendingTokenValid`、`mvmFrameSwappedReceiptValid`およびraw TLS objectを変更しない。actual Present enter、
+set token、frameSwapped receipt take、capture endもcapture threadと異なるcallerをfail-closeする。pending stateは
+latest Present、ring counter差分、QPC、callback index、serial arithmeticから復元しない。
+
+app wrapperはexport availability、ABI v6、ring/snapshot layout handshake、expected epoch、caller threadを再検査する。
+I5Aでは`readOneShotSnapshot()`のcallerをmeasurement codeへ追加していない。元のhistorical
+`COMPOSITION_TOKEN_MISMATCH`も未解決・未再分類のままである。

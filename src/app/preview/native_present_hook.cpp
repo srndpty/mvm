@@ -35,10 +35,12 @@ bool NativePresentHook::load(std::string& error) {
     end_ = resolve<MvmNativePresentHookEndFn>(qtGui, "mvm_qt_d3d11_present_hook_end");
     takeFrameSwappedReceipt_ = resolve<MvmNativePresentHookTakeFrameSwappedReceiptFn>(
         qtGui, "mvm_qt_d3d11_present_hook_take_frame_swapped_receipt");
+    oneShotSnapshot_ = resolve<MvmNativePresentHookOneShotSnapshotFn>(
+        qtGui, "mvm_qt_d3d11_present_hook_one_shot_snapshot");
     dirtyBegin_ = resolve<MvmDirtyPropagationBeginFn>(qtGui, "mvm_qt_dirty_propagation_begin");
     dirtyStage_ = resolve<MvmDirtyPropagationStageFn>(qtGui, "mvm_qt_dirty_propagation_stage");
     if (!abiVersion_ || !begin_ || !setToken_ || !end_ || !takeFrameSwappedReceipt_ ||
-        !dirtyBegin_ || !dirtyStage_) {
+        !oneShotSnapshot_ || !dirtyBegin_ || !dirtyStage_) {
         error = "Qt6Gui.dllにF3-C0 native Present hook exportがありません";
         return false;
     }
@@ -49,6 +51,7 @@ bool NativePresentHook::load(std::string& error) {
         return false;
     }
     ring_ = std::make_unique<MvmNativePresentRing>();
+    ring_->oneShotSnapshotLayoutSignature = mvmNativePresentOneShotSnapshotLayoutSignature();
     ring_->layoutSignature = mvmNativePresentHookLayoutSignature();
     available_ = true;
     return true;
@@ -58,6 +61,14 @@ bool NativePresentHook::beginCapture(std::string& error) {
     layoutHandshakeAccepted_ = false;
     if (!available_ || !ring_ || captureStarted_ || !begin_ || begin_(ring_.get()) == 0) {
         error = "native Present hook captureを開始できません";
+        return false;
+    }
+    captureEpoch_ = ring_->captureEpoch;
+    if (captureEpoch_ == 0 || ring_->captureThreadId == 0) {
+        (void)end_();
+        captureEpoch_ = 0;
+        captureStopped_ = true;
+        error = "native Present hook capture epoch/thread identityが不正です";
         return false;
     }
     layoutHandshakeAccepted_ = true;
@@ -90,7 +101,8 @@ bool NativePresentHook::authorityValid() const {
     return ring_ && captureStarted_ && captureStopped_ && ring_->authorityFailure == 0 &&
            ring_->overflowCount == 0 && ring_->missingTokenCount == 0 &&
            ring_->duplicateTokenCount == 0 && ring_->staleTokenCount == 0 &&
-           ring_->failedPresentCount == 0 && ring_->missingFrameSwappedReceiptCount == 0 &&
+           ring_->threadMismatchCount == 0 && ring_->failedPresentCount == 0 &&
+           ring_->missingFrameSwappedReceiptCount == 0 &&
            ring_->duplicateFrameSwappedReceiptCount == 0 &&
            ring_->staleFrameSwappedReceiptCount == 0;
 }
@@ -98,8 +110,8 @@ bool NativePresentHook::authorityValid() const {
 bool NativePresentHook::captureEnvelopeTransportValid() const {
     return available_ && layoutHandshakeAccepted_ && ring_ && captureStarted_ && captureStopped_ &&
            ring_->overflowCount == 0 && ring_->duplicateTokenCount == 0 &&
-           ring_->staleTokenCount == 0 && ring_->failedPresentCount == 0 &&
-           ring_->missingFrameSwappedReceiptCount == 0 &&
+           ring_->threadMismatchCount == 0 && ring_->staleTokenCount == 0 &&
+           ring_->failedPresentCount == 0 && ring_->missingFrameSwappedReceiptCount == 0 &&
            ring_->duplicateFrameSwappedReceiptCount == 0 &&
            ring_->staleFrameSwappedReceiptCount == 0;
 }
@@ -108,6 +120,39 @@ bool NativePresentHook::takeFrameSwappedReceipt(MvmNativePresentFrameSwappedRece
     receipt = {};
     return captureStarted_ && !captureStopped_ && takeFrameSwappedReceipt_ &&
            takeFrameSwappedReceipt_(&receipt) != 0;
+}
+
+bool NativePresentHook::readOneShotSnapshot(std::uint64_t expectedCaptureEpoch,
+                                            MvmNativePresentOneShotSnapshot& snapshot,
+                                            std::string& error) const {
+    snapshot = {};
+    snapshot.snapshotSize = sizeof(MvmNativePresentOneShotSnapshot);
+    snapshot.layoutSignature = mvmNativePresentOneShotSnapshotLayoutSignature();
+    if (!captureStarted_ || captureStopped_ || !oneShotSnapshot_) {
+        error = "native Present one-shot snapshotをcapture外で取得できません";
+        return false;
+    }
+    if (expectedCaptureEpoch == 0 || expectedCaptureEpoch != captureEpoch_) {
+        error = "native Present one-shot snapshotのcapture epochが一致しません";
+        return false;
+    }
+    const int result = oneShotSnapshot_(expectedCaptureEpoch, &snapshot);
+    if (result != MVM_ONE_SHOT_SNAPSHOT_OK) {
+        error = result == MVM_ONE_SHOT_SNAPSHOT_THREAD_MISMATCH
+                    ? "native Present one-shot snapshotのthread identityが一致しません"
+                : result == MVM_ONE_SHOT_SNAPSHOT_EPOCH_MISMATCH
+                    ? "native Present one-shot snapshotのcapture epochが一致しません"
+                : result == MVM_ONE_SHOT_SNAPSHOT_ABI_LAYOUT_MISMATCH
+                    ? "native Present one-shot snapshotのABI/layoutが一致しません"
+                    : "native Present one-shot snapshotを取得できません";
+        return false;
+    }
+    const auto callerThreadId = static_cast<std::uint32_t>(GetCurrentThreadId());
+    if (!mvmNativePresentOneShotSnapshotExact(snapshot, expectedCaptureEpoch, callerThreadId)) {
+        error = "native Present one-shot snapshotのexact identity検査に失敗しました";
+        return false;
+    }
+    return true;
 }
 
 bool NativePresentHook::recordForPresentSerial(std::uint64_t presentSerial,
@@ -146,6 +191,9 @@ NativePresentHookSnapshot NativePresentHook::snapshot() const {
         result.missingFrameSwappedReceiptCount = ring_->missingFrameSwappedReceiptCount;
         result.duplicateFrameSwappedReceiptCount = ring_->duplicateFrameSwappedReceiptCount;
         result.staleFrameSwappedReceiptCount = ring_->staleFrameSwappedReceiptCount;
+        result.captureEpoch = ring_->captureEpoch;
+        result.captureThreadId = ring_->captureThreadId;
+        result.threadMismatchCount = ring_->threadMismatchCount;
         result.submissionMode = ring_->submissionMode;
         result.configuredMaximumFrameLatency = ring_->configuredMaximumFrameLatency;
         result.swapchainMaximumFrameLatency = ring_->swapchainMaximumFrameLatency;

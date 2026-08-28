@@ -231,7 +231,7 @@ foreach(_p2_d5_2_w2a_case IN ITEMS Good GoodSuccessorAfterEnd GoodEmptyDomain Go
 endforeach()
 
 # P2-D5-2-W2-B1: scheduler intent identityのABI v5 exact-copy transport。
-foreach(_p2_d5_2_w2b1_case IN ITEMS GoodFormal GoodNonFormal GoodSuppressedFormal NegativeAppV4QtV5 NegativeAppV5QtV4 NegativeTokenLayout NegativeRecordLayout NegativeLayoutSignature NegativeFormalInvalid NegativeOrdinalMutation NegativeValidityMutation NegativeDuplicateEmbeddedTokenSerial NegativeDuplicateNativeSerial NegativeNonFormalFabricated NegativeRingOverflow NegativeMissingToken NegativeTokenSetFailure NegativeAuthorityFailure NegativeHookUnavailable NegativeLayoutHandshake NegativeSecondProducer NegativeRequiredFormalModeFalse NegativeSuppressionWithoutWitness NegativeSuppressionTransportDisposition)
+foreach(_p2_d5_2_w2b1_case IN ITEMS GoodFormal GoodNonFormal GoodSuppressedFormal NegativeAppV5QtV6 NegativeAppV6QtV5 NegativeTokenLayout NegativeRecordLayout NegativeLayoutSignature NegativeFormalInvalid NegativeOrdinalMutation NegativeValidityMutation NegativeDuplicateEmbeddedTokenSerial NegativeDuplicateNativeSerial NegativeNonFormalFabricated NegativeRingOverflow NegativeMissingToken NegativeTokenSetFailure NegativeAuthorityFailure NegativeHookUnavailable NegativeLayoutHandshake NegativeSecondProducer NegativeRequiredFormalModeFalse NegativeSuppressionWithoutWitness NegativeSuppressionTransportDisposition)
     string(TOLOWER "${_p2_d5_2_w2b1_case}" _p2_d5_2_w2b1_name)
     mvm_add_test(p2_d5_2_w2b1_intent_transport_${_p2_d5_2_w2b1_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File
@@ -2324,6 +2324,24 @@ foreach(_p2_b3_i4_case IN ITEMS Good NegativeCurrentQueueStartBeforeClosure Nega
             -Case "${_p2_b3_i4_case}"
             -Contract "${CMAKE_SOURCE_DIR}/docs/p2-d5-2-b3-i4-preroll-transition-quiescence.json"
             -RepoRoot "${CMAKE_SOURCE_DIR}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+# P2-D5-2/B3-I5A: Qt one-shot pending stateのepoch/thread-bound read-only ABI。
+mvm_add_test(p2_b3_i5a_one_shot_snapshot_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i5a-one-shot-snapshot-architecture.ps1"
+        -RepoRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+foreach(_p2_b3_i5a_case IN ITEMS Good NegativeAbiNotBumped NegativeEpochRemoved NegativeRawTokenRemoved NegativeRawReceiptRemoved NegativeSnapshotConsumesToken NegativeSnapshotConsumesReceipt NegativeThreadCheckRemoved NegativePresentReceiptThreadChecksRemoved NegativeCaptureOutsideAccepted NegativeLayoutCheckRemoved NegativeLatestPresentInference NegativeMeasurementConnected NegativeHistoricalMismatchReclassified)
+    string(TOLOWER "${_p2_b3_i5a_case}" _p2_b3_i5a_name)
+    mvm_add_test(p2_b3_i5a_one_shot_snapshot_guard_${_p2_b3_i5a_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i5a-one-shot-snapshot-guard.ps1"
+            -Case "${_p2_b3_i5a_case}"
+            -Contract "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i5a-one-shot-snapshot-architecture.ps1"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-b3-i5a-snapshot-guard-${_p2_b3_i5a_name}"
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 

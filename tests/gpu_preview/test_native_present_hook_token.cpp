@@ -57,34 +57,97 @@ int main() {
     if (!check(!mvm::app::makeNativePresentCompositionToken(frame, 8, 0, false, rejected),
                "generation 0を拒否しません"))
         return 1;
-    if (!check(mvmNativePresentHookLayoutCompatible(5, MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY,
-                                                    sizeof(MvmNativePresentCompositionToken),
-                                                    sizeof(MvmNativePresentRecord),
-                                                    mvmNativePresentHookLayoutSignature()),
-               "ABI v5 layoutを受理しません") ||
-        !check(!mvmNativePresentHookLayoutCompatible(4, MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY,
-                                                     sizeof(MvmNativePresentCompositionToken),
-                                                     sizeof(MvmNativePresentRecord),
-                                                     mvmNativePresentHookLayoutSignature()),
-               "v4 app / v5 Qt相当のABI mismatchを拒否しません") ||
-        !check(!mvmNativePresentHookLayoutCompatible(5, MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY,
-                                                     sizeof(MvmNativePresentCompositionToken) - 1,
-                                                     sizeof(MvmNativePresentRecord),
-                                                     mvmNativePresentHookLayoutSignature()),
+    if (!check(mvmNativePresentHookLayoutCompatible(
+                   6, MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY,
+                   sizeof(MvmNativePresentCompositionToken), sizeof(MvmNativePresentRecord),
+                   sizeof(MvmNativePresentOneShotSnapshot),
+                   mvmNativePresentOneShotSnapshotLayoutSignature(),
+                   mvmNativePresentHookLayoutSignature()),
+               "ABI v6 layoutを受理しません") ||
+        !check(!mvmNativePresentHookLayoutCompatible(
+                   5, MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY,
+                   sizeof(MvmNativePresentCompositionToken), sizeof(MvmNativePresentRecord),
+                   sizeof(MvmNativePresentOneShotSnapshot),
+                   mvmNativePresentOneShotSnapshotLayoutSignature(),
+                   mvmNativePresentHookLayoutSignature()),
+               "v5 app / v6 Qt相当のABI mismatchを拒否しません") ||
+        !check(!mvmNativePresentHookLayoutCompatible(
+                   6, MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY,
+                   sizeof(MvmNativePresentCompositionToken) - 1, sizeof(MvmNativePresentRecord),
+                   sizeof(MvmNativePresentOneShotSnapshot),
+                   mvmNativePresentOneShotSnapshotLayoutSignature(),
+                   mvmNativePresentHookLayoutSignature()),
                "composition token layout mutationを拒否しません") ||
-        !check(!mvmNativePresentHookLayoutCompatible(5, MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY,
-                                                     sizeof(MvmNativePresentCompositionToken),
-                                                     sizeof(MvmNativePresentRecord) + 1,
-                                                     mvmNativePresentHookLayoutSignature()),
+        !check(!mvmNativePresentHookLayoutCompatible(
+                   6, MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY,
+                   sizeof(MvmNativePresentCompositionToken), sizeof(MvmNativePresentRecord) + 1,
+                   sizeof(MvmNativePresentOneShotSnapshot),
+                   mvmNativePresentOneShotSnapshotLayoutSignature(),
+                   mvmNativePresentHookLayoutSignature()),
                "native record size mutationを拒否しません") ||
-        !check(!mvmNativePresentHookLayoutCompatible(5, MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY,
-                                                     sizeof(MvmNativePresentCompositionToken),
-                                                     sizeof(MvmNativePresentRecord),
-                                                     mvmNativePresentHookLayoutSignature() ^ 1ULL),
-               "同一sizeのoffset layout mutationを拒否しません"))
+        !check(!mvmNativePresentHookLayoutCompatible(
+                   6, MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY,
+                   sizeof(MvmNativePresentCompositionToken), sizeof(MvmNativePresentRecord),
+                   sizeof(MvmNativePresentOneShotSnapshot),
+                   mvmNativePresentOneShotSnapshotLayoutSignature(),
+                   mvmNativePresentHookLayoutSignature() ^ 1ULL),
+               "同一sizeのoffset layout mutationを拒否しません") ||
+        !check(!mvmNativePresentHookLayoutCompatible(
+                   6, MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY,
+                   sizeof(MvmNativePresentCompositionToken), sizeof(MvmNativePresentRecord),
+                   sizeof(MvmNativePresentOneShotSnapshot) - 1,
+                   mvmNativePresentOneShotSnapshotLayoutSignature(),
+                   mvmNativePresentHookLayoutSignature()),
+               "one-shot snapshot size mutationを拒否しません") ||
+        !check(!mvmNativePresentHookLayoutCompatible(
+                   6, MVM_NATIVE_PRESENT_HOOK_RING_CAPACITY,
+                   sizeof(MvmNativePresentCompositionToken), sizeof(MvmNativePresentRecord),
+                   sizeof(MvmNativePresentOneShotSnapshot),
+                   mvmNativePresentOneShotSnapshotLayoutSignature() ^ 1ULL,
+                   mvmNativePresentHookLayoutSignature()),
+               "one-shot snapshot layout mutationを拒否しません"))
         return 1;
-    if (!check(!mvmNativePresentHookAbiVersionsCompatible(4, 5), "v4 app / v5 Qtを拒否しません") ||
-        !check(!mvmNativePresentHookAbiVersionsCompatible(5, 4), "v5 app / v4 Qtを拒否しません"))
+    if (!check(!mvmNativePresentHookAbiVersionsCompatible(5, 6), "v5 app / v6 Qtを拒否しません") ||
+        !check(!mvmNativePresentHookAbiVersionsCompatible(6, 5), "v6 app / v5 Qtを拒否しません"))
+        return 1;
+
+    MvmNativePresentOneShotSnapshot oneShot;
+    oneShot.snapshotSize = sizeof(MvmNativePresentOneShotSnapshot);
+    oneShot.layoutSignature = mvmNativePresentOneShotSnapshotLayoutSignature();
+    oneShot.captureEpoch = 17;
+    oneShot.captureActive = 1;
+    oneShot.captureThreadId = 23;
+    oneShot.callerThreadId = 23;
+    oneShot.callerThreadExact = 1;
+    oneShot.pendingTokenValid = 1;
+    oneShot.pendingToken = token;
+    oneShot.pendingReceiptValid = 1;
+    oneShot.pendingReceipt = {
+        31, 41, 0, 1, token.tokenSerial, token.intentOrdinal, token.intentOrdinalValid, 0};
+    if (!check(mvmNativePresentOneShotSnapshotExact(oneShot, 17, 23),
+               "exact one-shot snapshotを受理しません") ||
+        !check(oneShot.pendingTokenValid == 1 && oneShot.pendingToken.tokenSerial == 5 &&
+                   oneShot.pendingReceiptValid == 1 && oneShot.pendingReceipt.presentSerial == 31 &&
+                   oneShot.pendingReceipt.tokenSerial == 5,
+               "one-shot snapshotのraw identityが一致しません") ||
+        !check(!mvmNativePresentOneShotSnapshotExact(oneShot, 18, 23),
+               "capture epoch mismatchを拒否しません") ||
+        !check(!mvmNativePresentOneShotSnapshotExact(oneShot, 17, 24),
+               "thread mismatchを拒否しません"))
+        return 1;
+    oneShot.captureActive = 0;
+    if (!check(!mvmNativePresentOneShotSnapshotExact(oneShot, 17, 23),
+               "capture外snapshotを拒否しません"))
+        return 1;
+    oneShot.captureActive = 1;
+    oneShot.callerThreadExact = 0;
+    if (!check(!mvmNativePresentOneShotSnapshotExact(oneShot, 17, 23),
+               "thread exactness欠損を拒否しません"))
+        return 1;
+    oneShot.callerThreadExact = 1;
+    oneShot.layoutSignature ^= 1ULL;
+    if (!check(!mvmNativePresentOneShotSnapshotExact(oneShot, 17, 23),
+               "snapshot layout mismatchを拒否しません"))
         return 1;
     return 0;
 }

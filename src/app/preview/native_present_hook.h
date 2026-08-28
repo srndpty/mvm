@@ -17,6 +17,9 @@ struct NativePresentHookSnapshot {
     bool layoutHandshakeAccepted = false;
     bool captureStarted = false;
     bool captureStopped = false;
+    std::uint64_t captureEpoch = 0;
+    std::uint32_t captureThreadId = 0;
+    std::uint32_t threadMismatchCount = 0;
     std::uint32_t overflowCount = 0;
     std::uint32_t missingTokenCount = 0;
     std::uint32_t duplicateTokenCount = 0;
@@ -58,6 +61,13 @@ public:
     // candidate-level gateへ委ねる。ring loss/duplicate/stale/failedは許容しない。
     bool captureEnvelopeTransportValid() const;
     bool takeFrameSwappedReceipt(MvmNativePresentFrameSwappedReceipt& receipt);
+    // B3-I5A read-only。pending token/receiptをconsume/resetせず、capture epochと
+    // actual Present/frameSwapped threadの一致を必須にする。
+    bool readOneShotSnapshot(std::uint64_t expectedCaptureEpoch,
+                             MvmNativePresentOneShotSnapshot& snapshot, std::string& error) const;
+
+    std::uint64_t captureEpoch() const { return captureEpoch_; }
+
     bool recordForPresentSerial(std::uint64_t presentSerial, MvmNativePresentRecord& record) const;
     // patched Qtが記録した実IDXGISwapChainポインタ。0はrecord未取得。
     std::uint64_t latestSwapchainIdentity() const;
@@ -69,6 +79,7 @@ private:
     MvmNativePresentHookSetTokenFn setToken_ = nullptr;
     MvmNativePresentHookEndFn end_ = nullptr;
     MvmNativePresentHookTakeFrameSwappedReceiptFn takeFrameSwappedReceipt_ = nullptr;
+    MvmNativePresentHookOneShotSnapshotFn oneShotSnapshot_ = nullptr;
     MvmDirtyPropagationBeginFn dirtyBegin_ = nullptr;
     MvmDirtyPropagationStageFn dirtyStage_ = nullptr;
     std::unique_ptr<MvmNativePresentRing> ring_;
@@ -77,6 +88,7 @@ private:
     bool layoutHandshakeAccepted_ = false;
     bool captureStarted_ = false;
     bool captureStopped_ = false;
+    std::uint64_t captureEpoch_ = 0;
 };
 
 bool makeNativePresentCompositionToken(const gpu::ComposedFrame& frame, std::uint64_t tokenSerial,

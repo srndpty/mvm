@@ -30,7 +30,7 @@ $abi=Read-Source 'src/app/preview/native_present_hook_abi.h'
 $renderer=Read-Source 'src/app/preview/compositor_rhi_item.cpp'
 $controller=Read-Source 'apps/compositor_spike/compositor_spike_controller.cpp'
 $qtPatch=Read-Source 'qt-patches/qtbase-6.11.1/0001-mvm-native-present-hook.patch'
-if($abi-notmatch'MVM_NATIVE_PRESENT_HOOK_ABI_VERSION\s*=\s*5'){Fail 'app ABIがv5ではありません'}
+if($abi-notmatch'MVM_NATIVE_PRESENT_HOOK_ABI_VERSION\s*=\s*6'){Fail 'app ABIがv6ではありません'}
 foreach($type in @('MvmNativePresentCompositionToken','MvmNativePresentRecord')){
     $start=$abi.IndexOf("struct $type")
     if($start-lt0){Fail "$type がありません"}
@@ -67,11 +67,11 @@ $raw=Get-Content -LiteralPath $Json -Raw -Encoding utf8|ConvertFrom-Json
 $hook=$raw.native_present_hook
 $transport=$hook.intent_identity_transport
 Equal ([string]$transport.schema) 'mvm-p2-d5-2-w2-b1-intent-identity-transport-2' 'transport schema'
-Equal ([int]$hook.abi_version) 5 'hook ABI'
-Equal ([int]$transport.abi_version) 5 'transport ABI'
-Equal ([int]$transport.app_abi_version) 5 'app ABI'
-Equal ([int]$transport.qt_abi_version_observed) 5 'observed Qt ABI'
-Equal ([int]$hook.qt_abi_version_observed) 5 'hook observed Qt ABI'
+Equal ([int]$hook.abi_version) 6 'hook ABI'
+Equal ([int]$transport.abi_version) 6 'transport ABI'
+Equal ([int]$transport.app_abi_version) 6 'app ABI'
+Equal ([int]$transport.qt_abi_version_observed) 6 'observed Qt ABI'
+Equal ([int]$hook.qt_abi_version_observed) 6 'hook observed Qt ABI'
 Equal ([bool]$transport.layout_handshake_accepted) $true 'transport layout handshake'
 Equal ([bool]$hook.layout_handshake_accepted) $true 'hook layout handshake'
 Equal ([int]$transport.composition_token_size) 120 'composition token ABI size'

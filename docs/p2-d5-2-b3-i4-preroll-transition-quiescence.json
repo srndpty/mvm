@@ -133,7 +133,8 @@
     },
     "unissued_tail_participates_in_quiescence": false,
     "unissued_tail_remains_immutable": true,
-    "current_abi_gap": "ABI v5はpending token/receiptのread-only exact snapshotを公開しない。将来実装は同一render-thread handshake snapshotを追加し、counter/QPC/serial推定で代用しない"
+    "abi_v5_gap": "ABI v5はpending token/receiptのread-only exact snapshotを公開しない",
+    "abi_gap_resolution": "B3-I5A ABI v6が同一render-thread・capture epoch-bound read-only snapshotを追加した。I4 handshakeにはまだ未接続"
   },
   "transition": {
     "ordered_steps": [
