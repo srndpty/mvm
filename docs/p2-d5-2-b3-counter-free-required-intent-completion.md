@@ -7,8 +7,9 @@
 - phase: **DESIGN CLOSED / IMPLEMENTATION I0 + I1 + I5A + I5B(+amendment 2) DONE / I5B runtime smoke PASS** (実装状況は§10、§11、§15、§16)
 - production code: I0 exact qualified commit joinとI1 required-intent queueを接続済み
 - test / capture: I0/I1 targeted test済み。live captureは**NOT RUN**
-- canonical W3 verdict: **UNCHANGED / FAIL** (fresh 3/3試行はrun 1 acquisition failureで不成立。§17)
-- P5-E4: **BLOCKED**
+- canonical W3 verdict: **CANONICAL_PERFORMANCE_PASS** (checkpoint 6f23aaf19f68のfresh 3/3。§24)
+  historical W3 FAIL (§17以前) は別cohortとして併存する
+- P5-E4: **W3 blocker解除** (§24)
 
 本designはexternal refresh counterの代替を発明しない。callback index、QPC、NULL DWM counter、
 physical observer、source frame、previous ordinal単独をintent identity authorityにせず、current schedulerに
@@ -1334,7 +1335,7 @@ B3-I6A source mapping authority DESIGN CLOSED (§18)
 B3-I6B fatal/token atomicity   CLOSED (§19、§20、§21、§23)
 B3-I6C mapping / preflight修正  CLOSED / positive smoke PASS (§22)
 deferred I6B integration test  CLOSED (§23)
-fresh W3 canonical 3/3         GO可 / 未実行
+fresh W3 canonical 3/3         CANONICAL_PERFORMANCE_PASS (§24)
 P3-C-2 / P4再検証               HOLD (W3 3/3 PASSが前提)
 P5-E4                          BLOCKED
 historical COMPOSITION_TOKEN_MISMATCH   UNRESOLVED_HISTORICAL_RUNTIME_FAILURE
@@ -1963,3 +1964,90 @@ historical COMPOSITION_TOKEN_MISMATCH        UNRESOLVED_HISTORICAL_RUNTIME_FAILU
 
 §21.1のstop ruleにより、deferred integration testがgreenになった時点でfresh W3 canonical 3/3の
 前提条件は満たされた。W3 acquisitionはclean worktreeと管理者権限を要求するため、実行は別手順とする。
+
+## 24. fresh W3 canonical 3/3 — CANONICAL_PERFORMANCE_PASS
+
+I6A / I6B / I6C closure後のcheckpoint `6f23aaf19f68` (clean worktree) でfresh W3 canonical 3/3を
+取得し、6段評価を通した。**historical W3 contract / frozen threshold / drop-rate denominator /
+required population / FinalState authorityはいずれも変更していない**。
+
+### 24.1 verdict
+
+```text
+verdict                       CANONICAL_PERFORMANCE_PASS
+canonical_effective_fps       59.933      frozen minimum 55.0    threshold met
+canonical_drop_rate           0.111%      frozen maximum 2.0%    threshold met
+canonical_required_intent     10800       (3 run x 3600)
+canonical_satisfied_intent    10788
+canonical_true_drop           12
+canonical_measurement_seconds 180.0
+presentation_authority        FORMAL_V2 / legacy authority未使用
+thresholds_frozen_unchanged   true
+evaluation_order  ACQUISITION -> AUTHORITY -> ACCOUNTING -> METRIC -> THRESHOLD -> VERDICT
+stage1/2/3 blockers           0 / 0 / 0
+stage4/5/6                    すべて評価済み
+expected checkpoint sha       一致
+```
+
+historical W3は同じthresholdと同じ分母で29.033 fps / 51.611% drop / FAILだった。
+
+### 24.2 段階結果
+
+```text
+acquisition   PASS 3/3   DISPLAY_DOMAIN_CANDIDATE_COVERAGE_COMPLETE
+              W2-B2 terminal shadow PASS x3 (native=presented=3598 / discarded=0)
+              W2-C0.1 capture envelope PASS x3
+C1            PASS 3/3   DISPLAYED_QPC_PHYSICAL_VBLANK_ORDINAL_EXACT
+C2.1          PASS       required intent domain authority exact
+C2.4          PASS 3/3   formal transport policy exact
+C2            PASS       10794 formal Presented
+W2-D          PASS       required 10800 / satisfied 10788 / unsatisfied 12 / physical 10791 / filled 10788
+W2-E          PASS       FORMAL_V2 / legacy_canonical 0
+W3 build      PASS       CANONICAL_PERFORMANCE_PASS
+W3 checker    PASS       同上を独立に再評価
+ctest p2_d5_2_w3_*       22/22 PASS
+```
+
+各runは3598 issuanceをplanned window endまで完走し、source coverage fatalは1度も起きていない。
+§17のW3 run 1で観測した`SOURCE_COVERAGE_INSUFFICIENT`はI6C mapping修正後には再現していない。
+
+### 24.3 sealed artifacts
+
+```text
+build/p2-d5-2-w3-cohort-20260829b/                        sealed cohort (run-1..3)
+build/p2-d5-2-w3-cohort-20260829b/w3-acquisition-provenance.json
+build/p2-d5-2-w3-c1-mapping-20260829.json                 C1
+build/p2-d5-2-w3-c21-required-intent-20260829.json        C2.1
+build/p2-d5-2-w3-c24-formal-transport-20260829.json       C2.4
+build/p2-d5-2-w3-c2-intent-satisfaction-20260829.json     C2
+build/p2-d5-2-w3-d-formal-v2-shadow-20260829.json         W2-D
+build/p2-d5-2-w3-e-canonical-authority-20260829.json      W2-E
+build/p2-d5-2-w3-canonical-performance-20260829.json      W3
+build/p2-d5-2-w3-canonical-performance-20260829-manifest.json
+    44 entry / checkpoint sha / completed_runs 3 / replacement_retry false / SHA-256
+```
+
+### 24.4 この verdict が主張していないこと
+
+```text
+historical COMPOSITION_TOKEN_MISMATCH   UNRESOLVED_HISTORICAL_RUNTIME_FAILURE のまま
+                                        本PASSを根拠に再分類しない
+historical W3 FAILの取り消し             行わない。別checkpointの別cohortとして併存させる
+B3-I6B natural runtime negative          依然 NOT ESTABLISHED (§20)。
+                                        closureはinjection integration test (§23) による
+unsatisfied 12件の原因                   本sliceでは追及していない
+```
+
+### 24.5 現在位置
+
+```text
+B3-I0 / I1 / I2 / I3 / I4 / I5A / I5B    CLOSED
+B3-I6A / I6B / I6B-V / I6C               CLOSED
+fresh W3 canonical 3/3                   CANONICAL_PERFORMANCE_PASS
+canonical W3 verdict                     PASS (checkpoint 6f23aaf19f68 cohort)
+next                                     P3-C-2 / P4 再検証
+P5-E4                                    W3 blocker解除
+```
+
+ordinary CTestの既存failure 7件は本sliceでも未修正であり、最終closureまでの技術的負債として
+持ち越す。
