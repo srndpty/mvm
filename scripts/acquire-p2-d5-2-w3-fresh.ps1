@@ -54,15 +54,19 @@ Write-Host ("P2-D5-2 W3 fresh acquisition: checkpoint={0} runs={1} measure={2}s"
 function Write-PartialProvenance([string]$Reason){
     if(-not(Test-Path -LiteralPath $OutputDirectory)){return}
     $partialPath=Join-Path $OutputDirectory 'w3-acquisition-partial-provenance.json'
+    # 成功したrunだけをcompletedとして数える。artifactの存在はcompletionではない。
     $completedRuns=0
     for($run=1;$run-le$Runs;++$run){
-        if(Test-Path -LiteralPath (Join-Path $OutputDirectory "run-$run/traced-app.json")){$completedRuns++}
+        $runJson=Join-Path $OutputDirectory "run-$run/traced-app.json"
+        if(-not(Test-Path -LiteralPath $runJson)){continue}
+        $runApp=Get-Content -LiteralPath $runJson -Raw -Encoding utf8|ConvertFrom-Json
+        if([int]$runApp.process_exit_code-eq0){$completedRuns++}
     }
     $files=@()
     foreach($file in (Get-ChildItem -Recurse -File -LiteralPath $OutputDirectory|
                       Where-Object{$_.Name-ne'w3-acquisition-partial-provenance.json'}|Sort-Object FullName)){
         $files+=[ordered]@{
-            path=$file.FullName.Substring((Resolve-Path -LiteralPath $OutputDirectory).Path.Length+1).Replace('','/')
+            path=($file.FullName.Substring((Resolve-Path -LiteralPath $OutputDirectory).Path.Length+1) -replace '\\','/')
             size=$file.Length
             sha256=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
         }
