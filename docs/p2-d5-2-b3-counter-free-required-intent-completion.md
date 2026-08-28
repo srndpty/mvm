@@ -828,3 +828,9 @@ latest Present、ring counter差分、QPC、callback index、serial arithmetic�
 app wrapperはexport availability、ABI v6、ring/snapshot layout handshake、expected epoch、caller threadを再検査する。
 I5Aでは`readOneShotSnapshot()`のcallerをmeasurement codeへ追加していない。元のhistorical
 `COMPOSITION_TOKEN_MISMATCH`も未解決・未再分類のままである。
+
+I5A amendmentではsnapshot layout signatureを、snapshot直下の全semantic fieldと、raw token内のsource identityを
+含む全semantic field、raw receiptの全semantic fieldまで拡張した。reserved paddingはsemantic fieldではないため
+署名対象外とする。同一sizeを保ったまま`captureActive`と`captureThreadId`、またはreceiptの`hresult`と
+`tokenPresent`のoffset authorityを差し替えるmutationは、独立期待値によるABI unitとarchitecture guardの両方で
+拒否する。このamendmentもproduction transitionへは接続せず、I5B開始条件はI5A gateのgreenである。

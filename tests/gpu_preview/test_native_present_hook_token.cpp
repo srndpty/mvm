@@ -20,9 +20,119 @@ bool check(bool condition, const char* message) {
     return condition;
 }
 
+constexpr std::uint64_t expectedLayoutMix(std::uint64_t signature, std::uint64_t value) {
+    return (signature ^ value) * 1099511628211ULL;
+}
+
+constexpr std::uint64_t expectedSourceIdentitySemanticLayoutSignature() {
+    std::uint64_t signature = 1469598103934665603ULL;
+    signature = expectedLayoutMix(signature, sizeof(MvmNativePresentSourceIdentity));
+    signature = expectedLayoutMix(signature, alignof(MvmNativePresentSourceIdentity));
+    signature = expectedLayoutMix(signature, offsetof(MvmNativePresentSourceIdentity, sourceId));
+    signature =
+        expectedLayoutMix(signature, offsetof(MvmNativePresentSourceIdentity, sourceGeneration));
+    signature =
+        expectedLayoutMix(signature, offsetof(MvmNativePresentSourceIdentity, resourceEpoch));
+    return expectedLayoutMix(signature, offsetof(MvmNativePresentSourceIdentity, frameNumber));
+}
+
+constexpr std::uint64_t expectedCompositionTokenSemanticLayoutSignature() {
+    std::uint64_t signature = 1469598103934665603ULL;
+    signature = expectedLayoutMix(signature, sizeof(MvmNativePresentCompositionToken));
+    signature = expectedLayoutMix(signature, alignof(MvmNativePresentCompositionToken));
+    signature = expectedLayoutMix(signature, expectedSourceIdentitySemanticLayoutSignature());
+    signature =
+        expectedLayoutMix(signature, offsetof(MvmNativePresentCompositionToken, tokenSerial));
+    signature =
+        expectedLayoutMix(signature, offsetof(MvmNativePresentCompositionToken, compositionEpoch));
+    signature =
+        expectedLayoutMix(signature, offsetof(MvmNativePresentCompositionToken, compositionState));
+    signature =
+        expectedLayoutMix(signature, offsetof(MvmNativePresentCompositionToken, outputFrameNumber));
+    signature =
+        expectedLayoutMix(signature, offsetof(MvmNativePresentCompositionToken, intentOrdinal));
+    signature = expectedLayoutMix(signature,
+                                  offsetof(MvmNativePresentCompositionToken, intentOrdinalValid));
+    signature =
+        expectedLayoutMix(signature, offsetof(MvmNativePresentCompositionToken, sourceCount));
+    signature =
+        expectedLayoutMix(signature, offsetof(MvmNativePresentCompositionToken, propagationSerial));
+    return expectedLayoutMix(signature, offsetof(MvmNativePresentCompositionToken, sources));
+}
+
+constexpr std::uint64_t expectedReceiptSemanticLayoutSignature(bool mutateSameSizeOffset) {
+    std::uint64_t signature = 1469598103934665603ULL;
+    signature = expectedLayoutMix(signature, sizeof(MvmNativePresentFrameSwappedReceipt));
+    signature = expectedLayoutMix(signature, alignof(MvmNativePresentFrameSwappedReceipt));
+    signature =
+        expectedLayoutMix(signature, offsetof(MvmNativePresentFrameSwappedReceipt, presentSerial));
+    signature = expectedLayoutMix(signature,
+                                  offsetof(MvmNativePresentFrameSwappedReceipt, swapchainIdentity));
+    signature = expectedLayoutMix(signature,
+                                  mutateSameSizeOffset
+                                      ? offsetof(MvmNativePresentFrameSwappedReceipt, tokenPresent)
+                                      : offsetof(MvmNativePresentFrameSwappedReceipt, hresult));
+    signature =
+        expectedLayoutMix(signature, offsetof(MvmNativePresentFrameSwappedReceipt, tokenPresent));
+    signature =
+        expectedLayoutMix(signature, offsetof(MvmNativePresentFrameSwappedReceipt, tokenSerial));
+    signature =
+        expectedLayoutMix(signature, offsetof(MvmNativePresentFrameSwappedReceipt, intentOrdinal));
+    return expectedLayoutMix(signature,
+                             offsetof(MvmNativePresentFrameSwappedReceipt, intentOrdinalValid));
+}
+
+constexpr std::uint64_t expectedSnapshotLayoutSignature(bool mutateSameSizeOffset,
+                                                        bool mutateNestedReceipt) {
+    std::uint64_t signature = 1469598103934665603ULL;
+    signature = expectedLayoutMix(signature, sizeof(MvmNativePresentOneShotSnapshot));
+    signature = expectedLayoutMix(signature, alignof(MvmNativePresentOneShotSnapshot));
+    signature = expectedLayoutMix(signature, expectedCompositionTokenSemanticLayoutSignature());
+    signature =
+        expectedLayoutMix(signature, expectedReceiptSemanticLayoutSignature(mutateNestedReceipt));
+    signature = expectedLayoutMix(signature, offsetof(MvmNativePresentOneShotSnapshot, abiVersion));
+    signature =
+        expectedLayoutMix(signature, offsetof(MvmNativePresentOneShotSnapshot, snapshotSize));
+    signature =
+        expectedLayoutMix(signature, offsetof(MvmNativePresentOneShotSnapshot, layoutSignature));
+    signature =
+        expectedLayoutMix(signature, offsetof(MvmNativePresentOneShotSnapshot, captureEpoch));
+    signature = expectedLayoutMix(
+        signature, mutateSameSizeOffset ? offsetof(MvmNativePresentOneShotSnapshot, captureThreadId)
+                                        : offsetof(MvmNativePresentOneShotSnapshot, captureActive));
+    signature =
+        expectedLayoutMix(signature, offsetof(MvmNativePresentOneShotSnapshot, captureThreadId));
+    signature =
+        expectedLayoutMix(signature, offsetof(MvmNativePresentOneShotSnapshot, callerThreadId));
+    signature =
+        expectedLayoutMix(signature, offsetof(MvmNativePresentOneShotSnapshot, callerThreadExact));
+    signature =
+        expectedLayoutMix(signature, offsetof(MvmNativePresentOneShotSnapshot, pendingTokenValid));
+    signature = expectedLayoutMix(signature,
+                                  offsetof(MvmNativePresentOneShotSnapshot, pendingReceiptValid));
+    signature =
+        expectedLayoutMix(signature, offsetof(MvmNativePresentOneShotSnapshot, pendingToken));
+    return expectedLayoutMix(signature, offsetof(MvmNativePresentOneShotSnapshot, pendingReceipt));
+}
+
 } // namespace
 
 int main() {
+    constexpr auto expectedSnapshotSignature = expectedSnapshotLayoutSignature(false, false);
+    constexpr auto sameSizeOffsetMutation = expectedSnapshotLayoutSignature(true, false);
+    constexpr auto nestedSameSizeOffsetMutation = expectedSnapshotLayoutSignature(false, true);
+    if (!check(mvmNativePresentOneShotSnapshotLayoutSignature() == expectedSnapshotSignature,
+               "one-shot snapshot署名が全semantic fieldの独立期待値と一致しません") ||
+        !check(sameSizeOffsetMutation != expectedSnapshotSignature &&
+                   !mvmNativePresentOneShotSnapshotLayoutCompatible(
+                       6, sizeof(MvmNativePresentOneShotSnapshot), sameSizeOffsetMutation),
+               "同一sizeのsnapshot semantic-field offset mutationを拒否しません") ||
+        !check(nestedSameSizeOffsetMutation != expectedSnapshotSignature &&
+                   !mvmNativePresentOneShotSnapshotLayoutCompatible(
+                       6, sizeof(MvmNativePresentOneShotSnapshot), nestedSameSizeOffsetMutation),
+               "同一sizeのnested receipt semantic-field offset mutationを拒否しません"))
+        return 1;
+
     mvm::gpu::ComposedFrame frame;
     frame.outputFrameNumber = 42;
     frame.compositionEpoch = {7};

@@ -2333,7 +2333,7 @@ mvm_add_test(p2_b3_i5a_one_shot_snapshot_architecture
         "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i5a-one-shot-snapshot-architecture.ps1"
         -RepoRoot "${CMAKE_SOURCE_DIR}"
     PROPERTIES LABELS "gpu_preview")
-foreach(_p2_b3_i5a_case IN ITEMS Good NegativeAbiNotBumped NegativeEpochRemoved NegativeRawTokenRemoved NegativeRawReceiptRemoved NegativeSnapshotConsumesToken NegativeSnapshotConsumesReceipt NegativeThreadCheckRemoved NegativePresentReceiptThreadChecksRemoved NegativeCaptureOutsideAccepted NegativeLayoutCheckRemoved NegativeLatestPresentInference NegativeMeasurementConnected NegativeHistoricalMismatchReclassified)
+foreach(_p2_b3_i5a_case IN ITEMS Good NegativeAbiNotBumped NegativeEpochRemoved NegativeRawTokenRemoved NegativeRawReceiptRemoved NegativeSnapshotConsumesToken NegativeSnapshotConsumesReceipt NegativeThreadCheckRemoved NegativePresentReceiptThreadChecksRemoved NegativeCaptureOutsideAccepted NegativeLayoutCheckRemoved NegativeSameSizeSemanticFieldOffsetMutation NegativeNestedSemanticFieldOffsetMutation NegativeLatestPresentInference NegativeMeasurementConnected NegativeHistoricalMismatchReclassified)
     string(TOLOWER "${_p2_b3_i5a_case}" _p2_b3_i5a_name)
     mvm_add_test(p2_b3_i5a_one_shot_snapshot_guard_${_p2_b3_i5a_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File

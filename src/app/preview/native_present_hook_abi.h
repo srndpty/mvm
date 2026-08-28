@@ -87,6 +87,66 @@ inline constexpr std::uint64_t mvmNativePresentLayoutMix(std::uint64_t signature
     return (signature ^ value) * 1099511628211ULL;
 }
 
+inline constexpr std::uint64_t mvmNativePresentSourceIdentitySemanticLayoutSignature() {
+    std::uint64_t signature = 1469598103934665603ULL;
+    signature = mvmNativePresentLayoutMix(signature, sizeof(MvmNativePresentSourceIdentity));
+    signature = mvmNativePresentLayoutMix(signature, alignof(MvmNativePresentSourceIdentity));
+    signature =
+        mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentSourceIdentity, sourceId));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentSourceIdentity, sourceGeneration));
+    signature = mvmNativePresentLayoutMix(signature,
+                                          offsetof(MvmNativePresentSourceIdentity, resourceEpoch));
+    return mvmNativePresentLayoutMix(signature,
+                                     offsetof(MvmNativePresentSourceIdentity, frameNumber));
+}
+
+inline constexpr std::uint64_t mvmNativePresentCompositionTokenSemanticLayoutSignature() {
+    std::uint64_t signature = 1469598103934665603ULL;
+    signature = mvmNativePresentLayoutMix(signature, sizeof(MvmNativePresentCompositionToken));
+    signature = mvmNativePresentLayoutMix(signature, alignof(MvmNativePresentCompositionToken));
+    signature = mvmNativePresentLayoutMix(signature,
+                                          mvmNativePresentSourceIdentitySemanticLayoutSignature());
+    signature = mvmNativePresentLayoutMix(signature,
+                                          offsetof(MvmNativePresentCompositionToken, tokenSerial));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentCompositionToken, compositionEpoch));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentCompositionToken, compositionState));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentCompositionToken, outputFrameNumber));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentCompositionToken, intentOrdinal));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentCompositionToken, intentOrdinalValid));
+    signature = mvmNativePresentLayoutMix(signature,
+                                          offsetof(MvmNativePresentCompositionToken, sourceCount));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentCompositionToken, propagationSerial));
+    return mvmNativePresentLayoutMix(signature,
+                                     offsetof(MvmNativePresentCompositionToken, sources));
+}
+
+inline constexpr std::uint64_t mvmNativePresentFrameSwappedReceiptSemanticLayoutSignature() {
+    std::uint64_t signature = 1469598103934665603ULL;
+    signature = mvmNativePresentLayoutMix(signature, sizeof(MvmNativePresentFrameSwappedReceipt));
+    signature = mvmNativePresentLayoutMix(signature, alignof(MvmNativePresentFrameSwappedReceipt));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentFrameSwappedReceipt, presentSerial));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentFrameSwappedReceipt, swapchainIdentity));
+    signature = mvmNativePresentLayoutMix(signature,
+                                          offsetof(MvmNativePresentFrameSwappedReceipt, hresult));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentFrameSwappedReceipt, tokenPresent));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentFrameSwappedReceipt, tokenSerial));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentFrameSwappedReceipt, intentOrdinal));
+    return mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentFrameSwappedReceipt, intentOrdinalValid));
+}
+
 inline constexpr std::uint64_t mvmNativePresentTokenRecordLayoutSignature() {
     std::uint64_t signature = 1469598103934665603ULL;
     signature = mvmNativePresentLayoutMix(signature, sizeof(MvmNativePresentCompositionToken));
@@ -123,11 +183,25 @@ inline constexpr std::uint64_t mvmNativePresentOneShotSnapshotLayoutSignature() 
     signature = mvmNativePresentLayoutMix(signature, sizeof(MvmNativePresentOneShotSnapshot));
     signature = mvmNativePresentLayoutMix(signature, alignof(MvmNativePresentOneShotSnapshot));
     signature = mvmNativePresentLayoutMix(
+        signature, mvmNativePresentCompositionTokenSemanticLayoutSignature());
+    signature = mvmNativePresentLayoutMix(
+        signature, mvmNativePresentFrameSwappedReceiptSemanticLayoutSignature());
+    signature =
+        mvmNativePresentLayoutMix(signature, offsetof(MvmNativePresentOneShotSnapshot, abiVersion));
+    signature = mvmNativePresentLayoutMix(signature,
+                                          offsetof(MvmNativePresentOneShotSnapshot, snapshotSize));
+    signature = mvmNativePresentLayoutMix(
         signature, offsetof(MvmNativePresentOneShotSnapshot, layoutSignature));
     signature = mvmNativePresentLayoutMix(signature,
                                           offsetof(MvmNativePresentOneShotSnapshot, captureEpoch));
+    signature = mvmNativePresentLayoutMix(signature,
+                                          offsetof(MvmNativePresentOneShotSnapshot, captureActive));
     signature = mvmNativePresentLayoutMix(
         signature, offsetof(MvmNativePresentOneShotSnapshot, captureThreadId));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentOneShotSnapshot, callerThreadId));
+    signature = mvmNativePresentLayoutMix(
+        signature, offsetof(MvmNativePresentOneShotSnapshot, callerThreadExact));
     signature = mvmNativePresentLayoutMix(
         signature, offsetof(MvmNativePresentOneShotSnapshot, pendingTokenValid));
     signature = mvmNativePresentLayoutMix(

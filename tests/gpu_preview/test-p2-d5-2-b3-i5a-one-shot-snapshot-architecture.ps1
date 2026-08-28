@@ -5,6 +5,11 @@ Set-StrictMode -Version Latest
 function Read-Source([string]$Relative){Get-Content -Raw -LiteralPath (Join-Path $RepoRoot $Relative)}
 function Require([string]$Text,[string]$Pattern,[string]$Message){if($Text-notmatch$Pattern){throw $Message}}
 function Reject([string]$Text,[string]$Pattern,[string]$Message){if($Text-match$Pattern){throw $Message}}
+function Get-FunctionBody([string]$Text,[string]$Name){
+    $match=[regex]::Match($Text,"$([regex]::Escape($Name))\s*\(\)\s*\{(?<body>[\s\S]+?)\r?\n\}")
+    if(-not$match.Success){throw "layout signature functionを抽出できません: $Name"}
+    return $match.Groups['body'].Value
+}
 
 $abi=Read-Source 'src/app/preview/native_present_hook_abi.h'
 $hookHeader=Read-Source 'src/app/preview/native_present_hook.h'
@@ -19,6 +24,25 @@ foreach($field in @('captureEpoch','captureThreadId','callerThreadId','callerThr
     Require $abi ([regex]::Escape($field)) "snapshot ABI fieldが不足しています: $field"
 }
 Require $abi 'mvmNativePresentOneShotSnapshotLayoutSignature' 'snapshot layout signatureがありません'
+$sourceSignature=Get-FunctionBody $abi 'mvmNativePresentSourceIdentitySemanticLayoutSignature'
+foreach($field in @('sourceId','sourceGeneration','resourceEpoch','frameNumber')){
+    Require $sourceSignature "offsetof\(MvmNativePresentSourceIdentity,\s*$field\)" "source identity semantic fieldが署名されていません: $field"
+}
+$tokenSignature=Get-FunctionBody $abi 'mvmNativePresentCompositionTokenSemanticLayoutSignature'
+Require $tokenSignature 'mvmNativePresentSourceIdentitySemanticLayoutSignature' 'token署名がnested source identity layoutを閉じていません'
+foreach($field in @('tokenSerial','compositionEpoch','compositionState','outputFrameNumber','intentOrdinal','intentOrdinalValid','sourceCount','propagationSerial','sources')){
+    Require $tokenSignature "offsetof\(MvmNativePresentCompositionToken,\s*$field\)" "composition token semantic fieldが署名されていません: $field"
+}
+$receiptSignature=Get-FunctionBody $abi 'mvmNativePresentFrameSwappedReceiptSemanticLayoutSignature'
+foreach($field in @('presentSerial','swapchainIdentity','hresult','tokenPresent','tokenSerial','intentOrdinal','intentOrdinalValid')){
+    Require $receiptSignature "offsetof\(MvmNativePresentFrameSwappedReceipt,\s*$field\)" "frameSwapped receipt semantic fieldが署名されていません: $field"
+}
+$oneShotSignature=Get-FunctionBody $abi 'mvmNativePresentOneShotSnapshotLayoutSignature'
+Require $oneShotSignature 'mvmNativePresentCompositionTokenSemanticLayoutSignature' 'snapshot署名がnested token semantic layoutを閉じていません'
+Require $oneShotSignature 'mvmNativePresentFrameSwappedReceiptSemanticLayoutSignature' 'snapshot署名がnested receipt semantic layoutを閉じていません'
+foreach($field in @('abiVersion','snapshotSize','layoutSignature','captureEpoch','captureActive','captureThreadId','callerThreadId','callerThreadExact','pendingTokenValid','pendingReceiptValid','pendingToken','pendingReceipt')){
+    Require $oneShotSignature "offsetof\(MvmNativePresentOneShotSnapshot,\s*$field\)" "snapshot semantic fieldが署名されていません: $field"
+}
 Require $abi 'oneShotSnapshotSize[\s\S]+oneShotSnapshotLayoutSignature[\s\S]+mvmNativePresentHookLayoutCompatible' 'ring handshakeがsnapshot size/layoutを検査しません'
 Require $patch 'mvmCaptureEpochSerial[\s\S]+InterlockedIncrement64\(&mvmCaptureEpochSerial\)[\s\S]+ring->captureEpoch' 'capture epochをbegin時にmintしていません'
 Require $patch 'mvm_qt_d3d11_present_hook_one_shot_snapshot' 'read-only snapshot exportがありません'

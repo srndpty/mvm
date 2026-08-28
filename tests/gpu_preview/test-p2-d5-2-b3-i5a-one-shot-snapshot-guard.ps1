@@ -6,7 +6,8 @@ param(
         'NegativeSnapshotConsumesReceipt','NegativeThreadCheckRemoved',
         'NegativePresentReceiptThreadChecksRemoved',
         'NegativeCaptureOutsideAccepted','NegativeLayoutCheckRemoved',
-        'NegativeLatestPresentInference','NegativeMeasurementConnected',
+        'NegativeSameSizeSemanticFieldOffsetMutation',
+        'NegativeNestedSemanticFieldOffsetMutation','NegativeLatestPresentInference','NegativeMeasurementConnected',
         'NegativeHistoricalMismatchReclassified')][string]$Case,
     [Parameter(Mandatory=$true)][string]$Contract,
     [Parameter(Mandatory=$true)][string]$SourceRoot,
@@ -47,6 +48,8 @@ switch($Case){
     'NegativePresentReceiptThreadChecksRemoved'{Edit-Source $patch 'ring->captureThreadId != GetCurrentThreadId()' 'ring->captureThreadId != ring->captureThreadId'}
     'NegativeCaptureOutsideAccepted'{Edit-Source $patch 'if (!ring || ring->enabled == 0)' 'if (!ring)'}
     'NegativeLayoutCheckRemoved'{Edit-Source $patch 'mvmNativePresentOneShotSnapshotLayoutCompatible(' 'mvmNativePresentOneShotSnapshotLayoutIgnored('}
+    'NegativeSameSizeSemanticFieldOffsetMutation'{Edit-Source $abi 'offsetof(MvmNativePresentOneShotSnapshot, captureActive)' 'offsetof(MvmNativePresentOneShotSnapshot, captureThreadId)'}
+    'NegativeNestedSemanticFieldOffsetMutation'{Edit-Source $abi 'offsetof(MvmNativePresentFrameSwappedReceipt, hresult)' 'offsetof(MvmNativePresentFrameSwappedReceipt, tokenPresent)'}
     'NegativeLatestPresentInference'{Edit-Source $patch 'exact.pendingReceipt = mvmFrameSwappedReceipt;' "exact.pendingReceipt = mvmFrameSwappedReceipt;`n+    const auto latestPresent = ring->records[ring->recordCount - 1];"}
     'NegativeMeasurementConnected'{Edit-Source $renderer 'void CompositorRhiItem::recordFrameSwapped() {' "void CompositorRhiItem::recordFrameSwapped() {`n    MvmNativePresentOneShotSnapshot connectedSnapshot;`n    std::string connectedError;`n    state_->nativePresentHook->readOneShotSnapshot(state_->nativePresentHook->captureEpoch(), connectedSnapshot, connectedError);"}
     'NegativeHistoricalMismatchReclassified'{Edit-Source 'docs/p2-d5-2-b3-i4-preroll-transition-quiescence.json' '"reclassified_as_i3_boundary_failure": false' '"reclassified_as_i3_boundary_failure": true'}

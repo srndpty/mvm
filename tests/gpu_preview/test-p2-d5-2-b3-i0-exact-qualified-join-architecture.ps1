@@ -12,7 +12,7 @@ $queue=Read-Source 'src/media/gpu_preview/required_intent_queue.cpp'
 $join=Read-Source 'src/media/gpu_preview/qualified_present_commit_join.cpp'
 $patch=Read-Source 'qt-patches/qtbase-6.11.1/0001-mvm-native-present-hook.patch'
 
-Require $abi 'MvmNativePresentFrameSwappedReceipt' 'frameSwapped receipt ABIがありません'
+Require $abi 'struct\s+MvmNativePresentFrameSwappedReceipt\s*\{' 'frameSwapped receipt ABIがありません'
 Require $patch 'mvmEndPresentCapture[\s\S]+mvmFrameSwappedReceipt\.presentSerial\s*=\s*capture\.record->presentSerial' 'actual Present recordがreceipt authorityをmintしていません'
 Require $patch 'mvm_qt_d3d11_present_hook_take_frame_swapped_receipt' 'one-shot receipt exportがありません'
 Require $patch 'mvmFrameSwappedReceiptValid\s*=\s*false' 'receiptがone-shot consumeされません'
