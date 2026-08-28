@@ -412,6 +412,18 @@ void PresentationOpportunityScheduler::applyPendingOpportunityFinalization(
     pendingCandidate_ = {};
 }
 
+bool PresentationOpportunityScheduler::finalizePendingOpportunityExact() {
+    if (!started_ || closed_ || error_ != PresentationOpportunityError::None)
+        return fail(PresentationOpportunityError::InvalidConfiguration);
+    // in-flight transactionが残っている間はfinalizeしない。drain完了後だけ呼ぶ。
+    if (pendingRender_)
+        return fail(PresentationOpportunityError::RenderWithoutSwap);
+    if (pendingOpportunity_ && !finalizePendingOpportunity())
+        return false;
+    pendingOpportunityExactlyFinalized_ = true;
+    return true;
+}
+
 bool PresentationOpportunityScheduler::closePlannedWindow() {
     return close(true);
 }

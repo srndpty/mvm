@@ -7,7 +7,7 @@ param(
         'NegativePresentReceiptThreadChecksRemoved',
         'NegativeCaptureOutsideAccepted','NegativeLayoutCheckRemoved',
         'NegativeSameSizeSemanticFieldOffsetMutation',
-        'NegativeNestedSemanticFieldOffsetMutation','NegativeLatestPresentInference','NegativeMeasurementConnected',
+        'NegativeNestedSemanticFieldOffsetMutation','NegativeLatestPresentInference','NegativeMeasurementDisconnected',
         'NegativeHistoricalMismatchReclassified')][string]$Case,
     [Parameter(Mandatory=$true)][string]$Contract,
     [Parameter(Mandatory=$true)][string]$SourceRoot,
@@ -51,7 +51,7 @@ switch($Case){
     'NegativeSameSizeSemanticFieldOffsetMutation'{Edit-Source $abi 'offsetof(MvmNativePresentOneShotSnapshot, captureActive)' 'offsetof(MvmNativePresentOneShotSnapshot, captureThreadId)'}
     'NegativeNestedSemanticFieldOffsetMutation'{Edit-Source $abi 'offsetof(MvmNativePresentFrameSwappedReceipt, hresult)' 'offsetof(MvmNativePresentFrameSwappedReceipt, tokenPresent)'}
     'NegativeLatestPresentInference'{Edit-Source $patch 'exact.pendingReceipt = mvmFrameSwappedReceipt;' "exact.pendingReceipt = mvmFrameSwappedReceipt;`n+    const auto latestPresent = ring->records[ring->recordCount - 1];"}
-    'NegativeMeasurementConnected'{Edit-Source $renderer 'void CompositorRhiItem::recordFrameSwapped() {' "void CompositorRhiItem::recordFrameSwapped() {`n    MvmNativePresentOneShotSnapshot connectedSnapshot;`n    std::string connectedError;`n    state_->nativePresentHook->readOneShotSnapshot(state_->nativePresentHook->captureEpoch(), connectedSnapshot, connectedError);"}
+    'NegativeMeasurementDisconnected'{Edit-Source $renderer 'readOneShotSnapshot(hook->captureEpoch()' 'readOneShotSnapshot(0'}
     'NegativeHistoricalMismatchReclassified'{Edit-Source 'docs/p2-d5-2-b3-i4-preroll-transition-quiescence.json' '"reclassified_as_i3_boundary_failure": false' '"reclassified_as_i3_boundary_failure": true'}
 }
 foreach($relative in $relatives){

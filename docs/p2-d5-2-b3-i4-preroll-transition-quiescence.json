@@ -134,7 +134,7 @@
     "unissued_tail_participates_in_quiescence": false,
     "unissued_tail_remains_immutable": true,
     "abi_v5_gap": "ABI v5はpending token/receiptのread-only exact snapshotを公開しない",
-    "abi_gap_resolution": "B3-I5A ABI v6が同一render-thread・capture epoch-bound read-only snapshotを追加した。I4 handshakeにはまだ未接続"
+    "abi_gap_resolution": "B3-I5A ABI v6が同一render-thread・capture epoch-bound read-only snapshotを追加し、B3-I5B handshakeのquiescence checkが唯一のcallerとして接続した"
   },
   "transition": {
     "ordered_steps": [

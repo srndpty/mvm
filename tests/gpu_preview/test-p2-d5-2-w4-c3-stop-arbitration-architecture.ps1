@@ -249,7 +249,7 @@ try{
     Require $renderer 'const bool captureGateWasOpen =\s*state_->formalOpportunityCaptureActive\.exchange\(false[\s\S]{0,200}witness\.captureGateExchangeClosed = captureGateWasOpen;' 'capture gate exchangeの実returnがactionになっていません'
     Deny $renderer 'witness\.captureGateExchangeClosed = true;' 'capture gate actionがexchange以外から立てられています'
     Require $renderer 'facts\.schedulerInvocationSerial = decision\.invocationSerial;' 'terminal invocation serialがdecision由来ではありません'
-    Require $renderer 'scheduler_\.start\(callbackBegin[\s\S]{0,400}measurementStartArbitrationState\.store[\s\S]{0,3000}formalOpportunityCaptureActive\.store\(true' 'measurement-start snapshotがauthority pointで撮られていません'
+    Require $renderer 'scheduler_\.start\(callbackBegin[\s\S]{0,400}measurementStartArbitrationState\.store[\s\S]{0,12000}formalOpportunityCaptureActive\.store\(true' 'measurement-start snapshotがauthority pointで撮られていません'
     Require $renderer 'witness\.gateCloseExplicitStopPublishSerial =[\s\S]{0,500}formalOpportunityCaptureActive\.exchange\(false' 'at_gate_close serialがcapture gate exchange直前で撮られていません'
     Require $controller 'mvm-p2-d5-2-w4-c3-stop-witness-3' 'stop witness schemaがemitされません'
     Require $controller 'stopArbitrationName\(witness\.arbitrationPrevious\)[\s\S]{0,400}claim_succeeded[\s\S]{0,900}reset_count_during_measurement' 'arbitration fieldがwitness由来で出力されていません'

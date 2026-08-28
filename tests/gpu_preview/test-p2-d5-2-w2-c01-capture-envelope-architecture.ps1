@@ -16,7 +16,8 @@ Require-Pattern $renderer 'nativePresentEnvelopeStopRequested\.exchange[\s\S]+en
 Require-Pattern $renderer 'cause == StopArbitration::PlannedWindowEnd[\s\S]+formalOpportunityScheduler\.closePlannedWindow\(\)' 'planned window endがnormal completion ownerではありません'
 if($renderer-match'finishMeasurement\(callbackBegin,\s*StopArbitration::DomainTerminal'){throw 'source-domain terminalをsuccessful completionにしています'}
 Require-Pattern $renderer 'qScopeGuard[\s\S]+measurementStopCaptured[\s\S]+update\(\)' 'envelope drain中の追加Present抑止がありません'
-Require-Pattern $renderer 'formalOpportunityEnvelopePrerollActive\.store\([\s\S]+formalOpportunityEnvelopePrerollActive\.exchange\([\s\S]+formalOpportunityScheduler\.closeWithoutNormalCompletion\([\s\S]+startFormalOpportunityScheduler\(\)' 'lower intent producerがB1 schedulerへ混入しています'
+# B3-I5B。preroll producerのcloseはdrain step側へ移動した。positional flagは廃止済み。
+Require-Pattern $renderer 'formalOpportunityScheduler\.closeWithoutNormalCompletion\([\s\S]+formalOpportunityEnvelopePrerollActive\.store\([\s\S]{0,60}false[\s\S]+startFormalOpportunityScheduler\(true\)[\s\S]+startFormalOpportunityScheduler\(\)' 'lower intent producerがB1 schedulerへ混入しています'
 Require-Pattern $renderer 'setFormalIntentOrdinal\(formalDecision\.opportunityOrdinal\)[\s\S]+nativePresentIntentScopeLedger\.push_back' 'intent ordinal producerとscope producerが同じ箇所にありません'
 Require-Pattern $renderer 'nativePresentToken\.tokenSerial\(\)[\s\S]+NativePresentIntentScope::ForeignPreMeasurement[\s\S]+NativePresentIntentScope::CurrentMeasurement' 'token serial keyed scope provenanceがありません'
 Require-Pattern $controller 'join_key", "composition_token\.token_serial"' 'scope ledgerのexact join keyがtoken serialではありません'

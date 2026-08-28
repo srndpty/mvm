@@ -64,7 +64,9 @@ Require $patch 'mvm_qt_d3d11_present_hook_take_frame_swapped_receipt[\s\S]+ring-
 Require $hook 'mvm_qt_d3d11_present_hook_one_shot_snapshot' 'app loaderがsnapshot exportを必須にしていません'
 Require $hookHeader 'readOneShotSnapshot' 'app read-only wrapperがありません'
 Require $hook 'expectedCaptureEpoch != captureEpoch_[\s\S]+oneShotSnapshot_\(expectedCaptureEpoch[\s\S]+mvmNativePresentOneShotSnapshotExact' 'app wrapperがepoch/thread/layoutをexact検査していません'
-Reject ($renderer+$controller) 'readOneShotSnapshot' 'I5A snapshotをmeasurement transitionへ接続しています'
+# B3-I5B。I5A snapshotはpreroll drain handshakeのquiescence checkが唯一のcallerである。
+Require $renderer 'readOneShotSnapshot\(hook->captureEpoch\(\)' 'I5A snapshotがB3-I5B quiescence checkへ接続されていません'
+Reject $renderer 'readOneShotSnapshot[\s\S]{0,400}(commitSwap|commitQualifiedPresent)' 'I5A snapshotをcommit authorityへ接続しています'
 Require $i4Design '"status": "UNRESOLVED_HISTORICAL_RUNTIME_FAILURE"' 'historical COMPOSITION_TOKEN_MISMATCHを変更しています'
 Require $i4Design '"reclassified_as_i3_boundary_failure": false' 'historical mismatchをI3へ再分類しています'
 

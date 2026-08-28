@@ -4,7 +4,7 @@
 
 - 対象: P2 formal Playbackのrequired-intent issuance / completion control
 - 前提: B2は`EXACT_TARGET_OUTPUT_COUNTER_AUTHORITY_UNAVAILABLE`でCLOSED
-- phase: **DESIGN CLOSED / IMPLEMENTATION I0 + I1 DONE** (実装状況は§10、§11)
+- phase: **DESIGN CLOSED / IMPLEMENTATION I0 + I1 + I5A + I5B DONE** (実装状況は§10、§11、§15、§16)
 - production code: I0 exact qualified commit joinとI1 required-intent queueを接続済み
 - test / capture: I0/I1 targeted test済み。live captureは**NOT RUN**
 - canonical W3 verdict: **UNCHANGED / FAIL**
@@ -834,3 +834,118 @@ I5A amendmentではsnapshot layout signatureを、snapshot直下の全semantic f
 署名対象外とする。同一sizeを保ったまま`captureActive`と`captureThreadId`、またはreceiptの`hresult`と
 `tokenPresent`のoffset authorityを差し替えるmutationは、独立期待値によるABI unitとarchitecture guardの両方で
 拒否する。このamendmentもproduction transitionへは接続せず、I5B開始条件はI5A gateのgreenである。
+
+## 16. B3-I5B 実装結果 — Admission-close / Drain Handshake
+
+I5Bはpreroll(FOREIGN)からcurrent(CANONICAL)へのtransitionをproduction実装したsliceである。I4 designの
+`ordered_steps`と`PREROLL_TRANSACTION_FULLY_QUIESCENT`をそのまま実行時契約にし、I5A ABI v6のexact one-shot
+snapshotをquiescence checkのQt側入力として接続した。I0/I1のqueue semantics、join accept/reject、required set、
+FinalState satisfactionは変更していない。
+
+### 16.1 明示state machine
+
+`src/media/gpu_preview/preroll_transition_handshake.{h,cpp}`を追加した。transitionのauthorityはphase boolでも
+callback位置でもなく、この列挙だけである。
+
+```text
+OPEN -> DRAIN_REQUESTED -> DRAINING -> QUIESCENCE_CHECK -> QUIESCENT
+     -> CURRENT_READY -> MEASUREMENT_ARMED -> CURRENT_RUNNING
+```
+
+全failureは`PROTOCOL_FATAL`へ落ちる。timeoutも同じであり、performance dropやrequired setのskip/縮小へは
+決して変換しない。handshake waitは`admission close -> quiescence ack`の区間として別に記録し、
+`armMeasurement()`はcanonical startがack QPCより前になるcaseを`CANONICAL_WINDOW_MUTATED`で拒否する。
+
+### 16.2 admission closeとscheduler closeの分離
+
+```text
+admission close   新規FOREIGN reservationだけを禁止する
+                  既存active FOREIGN transactionのrender / Present / receipt /
+                  join / commit / dequeue / finalizeはそのまま許可する
+scheduler close   active transaction drain (active count == 0) と
+                  pending opportunityのexact finalizeの後にだけ行う
+```
+
+render callbackの`selectForRender`前段に`foreignAdmissionOpen`を追加し、preroll scopeで閉じている間は
+新しいFOREIGN reservationを発行しない。`PresentationOpportunityScheduler::finalizePendingOpportunityExact()`を
+追加し、closeより前にpending opportunityを確定させる。accept/reject判定とledger内容は変更していない。
+
+### 16.3 quiescence check
+
+drain完了後、同一render callback内で1つのlogical snapshotを採取する。ABI v6 one-shot snapshot、
+required queue snapshot、join active reservation、scheduler pending state、preroll scope ledger、
+transport counterを同じ区間から読み、間にPresentもcallback境界も挟まない。
+
+I4 §14.2の全predicateを`PrerollQuiescenceVerdict`の個別fieldとして保存する。1つでもfalseなら
+current queue startとmeasurement armを許可せず、次callbackまで待機する。capture epoch不一致と
+render thread不一致は待って解消する条件ではないため、その場で`CAPTURE_EPOCH_MISMATCH` /
+`RENDER_THREAD_MISMATCH`として停止する。
+
+`ISSUED_PREFIX_EXACT_IDENTITY_CLOSED`はscope ledgerのtoken serialとnative Present recordの
+`token.tokenSerial`のexact一致だけで結合し、present serial、swapchain identity、HRESULT、
+intent ordinal provenanceを個別に検査する。QPC近接、latest Present、callback index、serial推定は使わない。
+
+### 16.4 ack後の順序
+
+```text
+quiescence ack
+  -> current required queue start (issuance gateは閉じたまま)
+  -> canonical measurement start/end authority freeze
+  -> current issuance gate open + measurement window start
+```
+
+`formalOpportunityCaptureActive`はissuance gate openの1点でだけtrueになる。measurement-start callbackは
+handshakeが成立するまでarmせず、`update()`で次callbackを予約して待つ。したがってhandshake waitは
+canonical measurement windowへ算入されない。
+
+### 16.5 positional flagの削除
+
+`formalOpportunityIgnoreNextSwap`はstate、producer、consumerごと削除した。quiescence成立後はFOREIGN
+callbackが残らないため、位置でboundary swapを読み飛ばす必要がない。ack後にFOREIGN scopeのframeSwappedが
+到達した場合は、I2と同じraw evidenceを保存して`PRE_JOIN_BOUNDARY_SWAP`のPROTOCOL_FATALで停止する。
+exact boundary reservationはdrain中のactive FOREIGN reservationにだけ束縛でき、完了済みFOREIGN Presentへの
+後付け(`RETROACTIVE_FOREIGN_OWNER`)とCURRENT Presentのboundary化(`CURRENT_PRESENT_AS_BOUNDARY`)は拒否する。
+
+B3-I3のpositional ownership guardは対象が消えたため廃止し、artifactも
+`boundary_swap_ownership_attribution`から`preroll_transition_handshake`
+(`mvm-p2-d5-2-b3-i5b-preroll-transition-handshake-1`)へ置き換えた。I3 §13の観測結果自体はhistorical
+recordとして本documentに残す。
+
+### 16.6 targeted test
+
+```text
+p2_b3_i5b_preroll_transition_handshake              state machine unit (positive / negative)
+p2_b3_i5b_admission_close_drain_architecture         source-level契約guard
+p2_b3_i5b_admission_close_drain_guard_*              guard mutation (Good + negative 16)
+```
+
+unitのpositiveはactive FOREIGN 0件caseと1件drain caseの両方を通す。negativeはquiescence predicate 13件を
+1 fieldずつ壊し、いずれも`quiescent=false`・当該fieldのfalse・ack拒否・current queue start拒否・
+measurement arm拒否を個別に固定する。mutation guardはmixed epoch、wrong render thread、early queue start、
+early measurement arm、issuance before arm、admission close後の新規FOREIGN reservation、drain前scheduler close、
+pending opportunity finalize省略、retroactive owner、CURRENT boundary、timeoutのperformance drop化、
+handshake waitのwindow算入、positional flag残存、one-shot snapshot切断、nearest QPC join、
+historical mismatch再分類を拒否する。
+
+ordinary CTest (ucrt64-release、`-LE 'performance|stability'`) は**1259/1266 PASS**である。残り7件は本slice前の
+clean worktreeでも同じく失敗する既存failureであり、`p2_c3_a3_t2_startup_order` negative 3件、
+`p2_present_id_oracle_live`、`p2_d5_2_w2c21_required_intent_domain_architecture`、
+`p2_d5_2_w4c0_static_control_flow_goodstaticinventory`、`p2_d5_2_w4c3_stop_arbitration_architecture_good`である。
+後半3件は本slice以前からのguard driftである。w2-c2.1はrequired setがI1でqueueへ移動した後もscheduler側の
+`push_back`を要求し、w4-c0はanchored ordinal advancement式、w4-c3は`publishStopRequest`の行折り返しに一致
+しない。いずれも本sliceでは修正していない。本sliceが実際に変更したassertionだけは更新した
+(w4-c0のinvocation gate、w4-c3のmeasurement-start snapshot window、w2-c01のpreroll close順序、
+I5Aのone-shot snapshot接続方向)。
+
+### 16.7 未実施 / 次slice
+
+```text
+canonical W3                       NOT RUN / UNCHANGED / FAIL
+live capture / runtime smoke       NOT RUN
+ABI v6 patched Qt rebuild          NOT RUN
+P5-E4                              BLOCKED
+```
+
+historical `COMPOSITION_TOKEN_MISMATCH`は`UNRESOLVED_HISTORICAL_RUNTIME_FAILURE`のまま保持し、I3 boundary
+failureにもI5B transition failureにも再分類しない。次はABI v6でpatched Qtを再buildし、noncanonical runtime
+smokeでhandshakeの実runtime orderingを採取する。canonical W3はその後である。

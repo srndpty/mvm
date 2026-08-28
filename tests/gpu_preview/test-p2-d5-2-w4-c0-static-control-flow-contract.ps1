@@ -118,7 +118,7 @@ try{
     }
 
     # invocation gateと全measurement stop authorityをsource上で固定する。
-    Require-Count $renderer 'if \(output < 0 && formalOpportunityActive\)' 1 `
+    Require-Count $renderer 'if \(output < 0 && formalOpportunityActive && foreignAdmissionOpen\)' 1 `
         'formal scheduler invocation gateが変更されています'
     Require-Count $renderer 'formalOpportunityCaptureActive\.exchange\(false,' 1 `
         'measurement中のcapture gate close authorityが単一ではありません'

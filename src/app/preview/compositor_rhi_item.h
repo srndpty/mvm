@@ -9,6 +9,7 @@
 #include "media/gpu_preview/compositor_coordinator.h"
 #include "media/gpu_preview/gpu_compositor.h"
 #include "media/gpu_preview/phase4_composition_driver.h"
+#include "media/gpu_preview/preroll_transition_handshake.h"
 #include "media/gpu_preview/presentation_opportunity_attribution.h"
 #include "media/gpu_preview/presentation_opportunity_scheduler.h"
 #include "media/gpu_preview/qualified_present_commit_join.h"
@@ -268,16 +269,22 @@ struct CompositionTokenJoinFailureAttribution {
     std::uint32_t frameSwappedThreadId = 0;
     long long frameSwappedQpc = 0;
     bool formalEnvelopeActive = false;
-    bool ignoredBoundarySwap = false;
+    // B3-I5B。positional ignore-next-swapは削除済み。transition state machineの
+    // 観測値だけを保持する。
+    gpu::PrerollTransitionState transitionState = gpu::PrerollTransitionState::Open;
     bool prerollActive = false;
 };
 
 enum class BoundarySwapEventKind {
     MeasurementStartRequestPublished = 0,
     MeasurementStartConsumed,
+    PrerollAdmissionClosed,
+    PrerollDrainObserved,
+    PrerollQuiescenceAck,
     RequiredQueueStarted,
+    MeasurementArmed,
+    CurrentIssuanceOpened,
     FirstReservation,
-    IgnoreNextSwapPublished,
     FrameSwapped,
 };
 
@@ -287,12 +294,20 @@ inline const char* boundarySwapEventKindName(BoundarySwapEventKind kind) {
         return "MEASUREMENT_START_REQUEST_PUBLISHED";
     case BoundarySwapEventKind::MeasurementStartConsumed:
         return "MEASUREMENT_START_CONSUMED";
+    case BoundarySwapEventKind::PrerollAdmissionClosed:
+        return "PREROLL_ADMISSION_CLOSED";
+    case BoundarySwapEventKind::PrerollDrainObserved:
+        return "PREROLL_DRAIN_OBSERVED";
+    case BoundarySwapEventKind::PrerollQuiescenceAck:
+        return "PREROLL_QUIESCENCE_ACK";
     case BoundarySwapEventKind::RequiredQueueStarted:
         return "REQUIRED_QUEUE_STARTED";
+    case BoundarySwapEventKind::MeasurementArmed:
+        return "MEASUREMENT_ARMED";
+    case BoundarySwapEventKind::CurrentIssuanceOpened:
+        return "CURRENT_ISSUANCE_OPENED";
     case BoundarySwapEventKind::FirstReservation:
         return "FIRST_RESERVATION";
-    case BoundarySwapEventKind::IgnoreNextSwapPublished:
-        return "IGNORE_NEXT_SWAP_PUBLISHED";
     case BoundarySwapEventKind::FrameSwapped:
         return "FRAME_SWAPPED";
     }
@@ -307,9 +322,10 @@ struct BoundarySwapAttributionEvent {
     long long qpc = 0;
     std::uint32_t threadId = 0;
     const char* phase = "NONE";
-    unsigned long long ignorePublicationSerial = 0;
-    bool ignorePreValue = false;
-    bool ignoreConsumed = false;
+    unsigned long long transitionStepSerial = 0;
+    gpu::PrerollTransitionState transitionState = gpu::PrerollTransitionState::Open;
+    gpu::PrerollTransitionError transitionError = gpu::PrerollTransitionError::None;
+    bool transitionQuiescent = false;
     bool receiptObserved = false;
     std::uint64_t receiptPresentSerial = 0;
     std::uint64_t receiptTokenSerial = 0;
@@ -564,9 +580,8 @@ struct CompositorSpikeState {
     std::atomic<bool> formalOpportunityEnvelopePrerollActive{false};
     std::atomic<bool> formalOpportunityEnvelopePrerollStarted{false};
     std::atomic<bool> formalOpportunityEnvelopePrerollCompleted{false};
-    std::atomic<bool> formalOpportunityIgnoreNextSwap{false};
     std::atomic<unsigned long long> boundarySwapEventSerial{0};
-    std::atomic<unsigned long long> ignoreNextSwapPublicationSerial{0};
+    std::atomic<unsigned long long> prerollTransitionStepSerial{0};
     std::atomic<bool> boundaryFirstReservationRecorded{false};
     std::mutex boundarySwapAttributionMutex;
     std::vector<BoundarySwapAttributionEvent> boundarySwapAttributionEvents;
@@ -583,6 +598,8 @@ struct CompositorSpikeState {
     std::mutex formalOpportunityMutex;
     gpu::PresentationOpportunityScheduler formalOpportunityScheduler;
     gpu::ExactQualifiedCommitJoin formalQualifiedCommitJoin;
+    // B3-I5B。preroll -> currentのtransitionはこのstate machineだけがauthorityである。
+    gpu::PrerollTransitionHandshake formalPrerollTransition;
     gpu::ComposedFrame diagnosticFixedFrame;
     CompositorMarkerProbe markerProbe;
     std::atomic<long long> markerAChecked{0};

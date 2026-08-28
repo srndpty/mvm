@@ -22,6 +22,9 @@
 namespace mvm::app {
 namespace {
 
+// B3-I5B。preroll drain handshakeのfail-close timeout。canonical measurement
+// windowの外であり、超過はPROTOCOL_FATALとして扱う。
+constexpr long long kPrerollTransitionTimeoutSeconds = 2;
 constexpr int kMarkerBandWidth = mvm::marker::kCellSize * mvm::marker::kCellCount;
 constexpr int kMarkerBandHeight = mvm::marker::kCellSize;
 
@@ -336,10 +339,19 @@ protected:
             state_->audioMasterSchedulerEnabled.load(std::memory_order_acquire);
         const bool formalOpportunityActive =
             state_->formalOpportunityCaptureActive.load(std::memory_order_acquire);
+        // B3-I5B。admission closeは新規FOREIGN reservationだけを禁止する。
+        // 既存active FOREIGN transactionのrender/Present/receipt/commitは止めない。
+        bool foreignAdmissionOpen = true;
+        if (formalOpportunityActive &&
+            state_->formalOpportunityEnvelopePrerollActive.load(std::memory_order_acquire)) {
+            std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+            const auto transition = state_->formalPrerollTransition.snapshot();
+            foreignAdmissionOpen = !transition.started || transition.foreignAdmissionOpen;
+        }
         bool formalOpportunityRepeat = false;
         bool formalDecisionObserved = false;
         gpu::PresentationOpportunityDecision formalDecision;
-        if (output < 0 && formalOpportunityActive) {
+        if (output < 0 && formalOpportunityActive && foreignAdmissionOpen) {
             gpu::PresentationOpportunityError formalError = gpu::PresentationOpportunityError::None;
             {
                 std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
@@ -441,6 +453,12 @@ protected:
                          nativePresentToken.tokenSerial()})) {
                     fail(std::string("P2-D5-2 B3-I0 reservation join失敗: ") +
                          gpu::qualifiedCommitErrorName(state_->formalQualifiedCommitJoin.error()));
+                    return;
+                }
+                if (foreignPreMeasurement &&
+                    !state_->formalPrerollTransition.noteForeignReservationAdmitted(callbackBegin)) {
+                    fail(std::string("P2-D5-2 B3-I5B FOREIGN admissionを記録できません: ") +
+                         gpu::prerollTransitionErrorName(state_->formalPrerollTransition.error()));
                     return;
                 }
             }
@@ -1184,13 +1202,229 @@ private:
         }
     }
 
+    enum class PrerollTransitionProgress { Waiting = 0, Ready, Fatal };
+
+    struct PrerollIdentityClosure {
+        long long closedCount = 0;
+        bool partitionExact = true;
+    };
+
+    // issued prefixの1:1 exact join。QPC近接、latest Present、callback index、
+    // serial推定を使わず、token serialのexact一致だけでrecordを対応付ける。
+    static PrerollIdentityClosure
+    computePrerollIdentityClosure(const std::vector<NativePresentIntentScopeRecord>& ledger,
+                                  const std::vector<MvmNativePresentRecord>& records) {
+        PrerollIdentityClosure closure;
+        long long ledgerMatchTotal = 0;
+        for (const auto& scopeRecord : ledger) {
+            if (scopeRecord.scope != NativePresentIntentScope::ForeignPreMeasurement) {
+                // preroll drain中にCURRENT scope recordが存在してはならない。
+                closure.partitionExact = false;
+                continue;
+            }
+            long long matchCount = 0;
+            const MvmNativePresentRecord* matched = nullptr;
+            for (const auto& record : records) {
+                if (record.tokenPresent == 0 || record.token.tokenSerial != scopeRecord.tokenSerial)
+                    continue;
+                ++matchCount;
+                matched = &record;
+            }
+            ledgerMatchTotal += matchCount;
+            if (scopeRecord.transportDisposition !=
+                gpu::FormalIntentTransportDisposition::Transport) {
+                // suppressed recordはissued transactionではない。Present 0件か、
+                // reservationを持たない1件のどちらかで終端する。
+                if (matchCount > 1)
+                    closure.partitionExact = false;
+                continue;
+            }
+            if (matchCount != 1 || matched == nullptr || scopeRecord.reservationId == 0 ||
+                matched->presentSerial == 0 || matched->swapchainIdentity == 0 ||
+                matched->hresult < 0 || matched->intentOrdinalValid == 0 ||
+                matched->intentOrdinal != scopeRecord.intentOrdinal) {
+                closure.partitionExact = false;
+                continue;
+            }
+            ++closure.closedCount;
+        }
+        long long tokenBearingRecordCount = 0;
+        for (const auto& record : records)
+            if (record.tokenPresent != 0)
+                ++tokenBearingRecordCount;
+        // ledgerへ対応しないtoken付きPresentが残っていればpartitionはexactではない。
+        if (tokenBearingRecordCount != ledgerMatchTotal)
+            closure.partitionExact = false;
+        return closure;
+    }
+
+    void recordPrerollTransitionEvent(BoundarySwapEventKind kind, const char* phase) {
+        BoundarySwapAttributionEvent event;
+        event.kind = kind;
+        event.qpc = gpu::qpcTicks();
+        event.threadId = static_cast<std::uint32_t>(GetCurrentThreadId());
+        event.phase = phase;
+        event.transitionStepSerial =
+            state_->prerollTransitionStepSerial.fetch_add(1, std::memory_order_seq_cst) + 1;
+        {
+            std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+            const auto transition = state_->formalPrerollTransition.snapshot();
+            event.transitionState = transition.state;
+            event.transitionError = transition.error;
+            event.transitionQuiescent = transition.verdict.quiescent;
+        }
+        state_->recordBoundarySwapAttribution(event);
+    }
+
+    bool requestPrerollAdmissionClose(long long callbackBegin) {
+        {
+            std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+            auto& handshake = state_->formalPrerollTransition;
+            if (!handshake.requestAdmissionClose(callbackBegin) ||
+                !handshake.beginDrain(callbackBegin)) {
+                fail(std::string("P2-D5-2 B3-I5B admission closeに失敗しました: ") +
+                     gpu::prerollTransitionErrorName(handshake.error()));
+                return false;
+            }
+        }
+        recordPrerollTransitionEvent(BoundarySwapEventKind::PrerollAdmissionClosed,
+                                     "RENDER_PREROLL_ADMISSION_CLOSE");
+        return true;
+    }
+
+    // 1 render callback内でqueue / join / scheduler / Qt one-shot / scope ledger /
+    // transport counterを1つのlogical snapshotとして評価する。
+    PrerollTransitionProgress advancePrerollTransition(long long callbackBegin) {
+        const auto hook = state_->nativePresentHook;
+        if (!hook) {
+            fail("P2-D5-2 B3-I5B quiescence checkにnative Present hookが必要です");
+            return PrerollTransitionProgress::Fatal;
+        }
+        MvmNativePresentOneShotSnapshot oneShot{};
+        std::string snapshotError;
+        if (!hook->readOneShotSnapshot(hook->captureEpoch(), oneShot, snapshotError)) {
+            fail("P2-D5-2 B3-I5B one-shot snapshotを取得できません: " + snapshotError);
+            return PrerollTransitionProgress::Fatal;
+        }
+        const auto hookSnapshot = hook->snapshot();
+        std::vector<NativePresentIntentScopeRecord> scopeLedger;
+        {
+            std::lock_guard<std::mutex> lock(state_->nativePresentIntentScopeMutex);
+            scopeLedger = state_->nativePresentIntentScopeLedger;
+        }
+        const auto closure = computePrerollIdentityClosure(scopeLedger, hookSnapshot.records);
+        const long long transportFailureCounterTotal =
+            static_cast<long long>(hookSnapshot.overflowCount) +
+            static_cast<long long>(hookSnapshot.missingTokenCount) +
+            static_cast<long long>(hookSnapshot.duplicateTokenCount) +
+            static_cast<long long>(hookSnapshot.staleTokenCount) +
+            static_cast<long long>(hookSnapshot.failedPresentCount) +
+            static_cast<long long>(hookSnapshot.missingFrameSwappedReceiptCount) +
+            static_cast<long long>(hookSnapshot.duplicateFrameSwappedReceiptCount) +
+            static_cast<long long>(hookSnapshot.staleFrameSwappedReceiptCount) +
+            static_cast<long long>(hookSnapshot.threadMismatchCount) +
+            state_->nativePresentTokenSetFailureCount.load(std::memory_order_relaxed);
+
+        bool waiting = false;
+        std::string failure;
+        bool closedForeignScheduler = false;
+        {
+            std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+            auto& handshake = state_->formalPrerollTransition;
+            auto& scheduler = state_->formalOpportunityScheduler;
+            if (!handshake.snapshot().foreignSchedulerClosed) {
+                const bool inflight =
+                    scheduler.hasPendingRender() ||
+                    state_->formalQualifiedCommitJoin.hasActiveReservation() ||
+                    oneShot.pendingTokenValid != 0 || oneShot.pendingReceiptValid != 0 ||
+                    handshake.snapshot().activeForeignTransactionCount != 0;
+                if (!inflight) {
+                    // scheduler closeはactive transaction drainとpending opportunity
+                    // finalizeの後だけ行う。
+                    if (!scheduler.finalizePendingOpportunityExact() ||
+                        !handshake.notePendingOpportunityFinalized()) {
+                        failure =
+                            std::string("P2-D5-2 B3-I5B pending opportunity finalize失敗: ") +
+                            gpu::prerollTransitionErrorName(handshake.error());
+                    } else if (!scheduler.closeWithoutNormalCompletion() ||
+                               !handshake.noteForeignSchedulerClosed()) {
+                        failure = std::string("P2-D5-2 B3-I5B preroll scheduler close失敗: ") +
+                                  gpu::prerollTransitionErrorName(handshake.error());
+                    } else {
+                        state_->formalOpportunityEnvelopePrerollActive.store(
+                            false, std::memory_order_release);
+                        state_->formalOpportunityEnvelopePrerollCompleted.store(
+                            true, std::memory_order_release);
+                        state_->formalOpportunityCaptureActive.store(false,
+                                                                     std::memory_order_release);
+                        closedForeignScheduler = true;
+                    }
+                }
+            }
+            if (failure.empty()) {
+                const auto schedulerSnapshot = scheduler.snapshot();
+                const auto& queue = schedulerSnapshot.requiredIntentQueue;
+                gpu::PrerollQuiescenceObservation observation;
+                observation.captureEpoch = oneShot.captureEpoch;
+                observation.observerThreadId = static_cast<std::uint32_t>(GetCurrentThreadId());
+                observation.prerollAdmissionClosed = !handshake.foreignAdmissionOpen();
+                observation.schedulerPendingRender = scheduler.hasPendingRender();
+                observation.schedulerPendingQualifiedEvidence =
+                    scheduler.hasPendingQualifiedEvidence();
+                observation.schedulerPendingOpportunity = scheduler.hasPendingOpportunity();
+                observation.schedulerPendingOpportunityExactlyFinalized =
+                    scheduler.pendingOpportunityExactlyFinalized();
+                observation.queueActiveReservationCount = queue.activeReservationCount;
+                observation.joinActiveReservation =
+                    state_->formalQualifiedCommitJoin.hasActiveReservation();
+                observation.qtPendingCompositionToken = oneShot.pendingTokenValid != 0;
+                observation.qtPendingFrameSwappedReceipt = oneShot.pendingReceiptValid != 0;
+                observation.issuedCount = queue.issuedCount;
+                observation.renderedCount = queue.renderedCount;
+                observation.qualifiedCommitCount = queue.qualifiedCommitCount;
+                observation.dequeuedCount = queue.dequeuedCount;
+                observation.queueConservationValid = queue.conservationValid;
+                observation.issuedPrefixExactIdentityClosedCount = closure.closedCount;
+                observation.prerollScopeLedgerTerminalPartitionExact = closure.partitionExact;
+                observation.transportFailureCounterTotal = transportFailureCounterTotal;
+                const auto verdict = handshake.evaluateQuiescence(observation, callbackBegin);
+                if (handshake.error() != gpu::PrerollTransitionError::None) {
+                    failure = std::string("P2-D5-2 B3-I5B quiescence handshake失敗: ") +
+                              gpu::prerollTransitionErrorName(handshake.error());
+                } else if (!verdict.quiescent) {
+                    waiting = true;
+                } else if (!handshake.ackQuiescence(gpu::qpcTicks())) {
+                    failure = std::string("P2-D5-2 B3-I5B quiescence ack拒否: ") +
+                              gpu::prerollTransitionErrorName(handshake.error());
+                }
+            }
+        }
+        if (!failure.empty()) {
+            // timeoutを含め、handshake failureはPROTOCOL_FATALである。
+            // performance dropやrequired setの縮小へは決して変換しない。
+            fail(failure);
+            return PrerollTransitionProgress::Fatal;
+        }
+        if (closedForeignScheduler)
+            recordPrerollTransitionEvent(BoundarySwapEventKind::PrerollDrainObserved,
+                                         "RENDER_PREROLL_SCHEDULER_CLOSED");
+        if (waiting) {
+            recordPrerollTransitionEvent(BoundarySwapEventKind::PrerollDrainObserved,
+                                         "RENDER_PREROLL_DRAIN");
+            return PrerollTransitionProgress::Waiting;
+        }
+        recordPrerollTransitionEvent(BoundarySwapEventKind::PrerollQuiescenceAck,
+                                     "RENDER_PREROLL_QUIESCENCE_ACK");
+        return PrerollTransitionProgress::Ready;
+    }
+
     bool captureMeasurementBoundary(long long callbackBegin) {
         if (state_->nativePresentEnvelopeStartRequested.exchange(false,
                                                                  std::memory_order_acq_rel)) {
             std::string hookError;
             state_->nativePresentTokenSetFailureCount.store(0, std::memory_order_relaxed);
             state_->boundarySwapEventSerial.store(0, std::memory_order_relaxed);
-            state_->ignoreNextSwapPublicationSerial.store(0, std::memory_order_relaxed);
+            state_->prerollTransitionStepSerial.store(0, std::memory_order_relaxed);
             state_->boundaryFirstReservationRecorded.store(false, std::memory_order_relaxed);
             {
                 std::lock_guard<std::mutex> lock(state_->boundarySwapAttributionMutex);
@@ -1232,6 +1466,23 @@ private:
                 state_->formalOpportunityEnvelopePrerollActive.store(true,
                                                                      std::memory_order_release);
                 state_->formalOpportunityCaptureActive.store(true, std::memory_order_release);
+                {
+                    // B3-I5B。transitionのauthorityはこのstate machineだけである。
+                    // capture epochとrender threadをここでfreezeする。
+                    std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+                    const std::uint64_t captureEpoch =
+                        state_->nativePresentHook ? state_->nativePresentHook->captureEpoch() : 0;
+                    if (!state_->formalPrerollTransition.begin(
+                            captureEpoch, static_cast<std::uint32_t>(GetCurrentThreadId()),
+                            gpu::qpcTicks(),
+                            static_cast<long long>(gpu::qpcFrequency()) *
+                                kPrerollTransitionTimeoutSeconds)) {
+                        fail(std::string("P2-D5-2 B3-I5B preroll transitionを開始できません: ") +
+                             gpu::prerollTransitionErrorName(
+                                 state_->formalPrerollTransition.error()));
+                        return true;
+                    }
+                }
             }
             state_->nativePresentEnvelopeStarted.store(true, std::memory_order_release);
         }
@@ -1300,6 +1551,26 @@ private:
             measurementStartEvent.threadId = static_cast<std::uint32_t>(GetCurrentThreadId());
             measurementStartEvent.phase = "RENDER_MEASUREMENT_START";
             state_->recordBoundarySwapAttribution(measurementStartEvent);
+            measurementStartPending_ = true;
+            // admission closeはscheduler closeではない。新規FOREIGN reservationだけを止め、
+            // 既に発行済みのFOREIGN transactionはそのままdrainさせる。
+            if (state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire) &&
+                !requestPrerollAdmissionClose(callbackBegin))
+                return true;
+        }
+        if (measurementStartPending_) {
+            if (state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire)) {
+                const auto progress = advancePrerollTransition(callbackBegin);
+                if (progress == PrerollTransitionProgress::Fatal)
+                    return true;
+                if (progress == PrerollTransitionProgress::Waiting) {
+                    // handshake waitはcanonical measurement windowの外である。
+                    // 未成立の間はcurrent intentを発行せず、次callbackを予約して待つ。
+                    update();
+                    return true;
+                }
+            }
+            measurementStartPending_ = false;
             const long long duration =
                 state_->measurementDurationQpc.load(std::memory_order_acquire);
             scheduler_.start(callbackBegin, static_cast<long long>(gpu::qpcFrequency()));
@@ -1316,27 +1587,23 @@ private:
                 std::memory_order_seq_cst);
             state_->stopWitnessCaptured.store(false, std::memory_order_seq_cst);
             if (state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire)) {
-                if (state_->formalOpportunityEnvelopePrerollActive.exchange(
-                        false, std::memory_order_acq_rel)) {
+                // preroll producerのcloseはdrain stepで完了している。quiescence ack後に
+                // current required queueをinitializeするだけで、issuanceはまだ開かない。
+                {
                     std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
-                    if (!state_->formalOpportunityScheduler.closeWithoutNormalCompletion()) {
-                        fail("P2-D5-2 lower envelope intent producerを停止できません");
+                    if (!state_->formalPrerollTransition.startCurrentRequiredQueue()) {
+                        fail(std::string("P2-D5-2 B3-I5B current queue start拒否: ") +
+                             gpu::prerollTransitionErrorName(
+                                 state_->formalPrerollTransition.error()));
                         return true;
                     }
-                    state_->formalOpportunityEnvelopePrerollCompleted.store(
-                        true, std::memory_order_release);
                 }
-                state_->formalOpportunityCaptureActive.store(false, std::memory_order_release);
                 if (!startFormalOpportunityScheduler()) {
                     fail("P2-D5-2 opportunity schedulerを開始できません");
                     return true;
                 }
-                BoundarySwapAttributionEvent queueStartEvent;
-                queueStartEvent.kind = BoundarySwapEventKind::RequiredQueueStarted;
-                queueStartEvent.qpc = gpu::qpcTicks();
-                queueStartEvent.threadId = static_cast<std::uint32_t>(GetCurrentThreadId());
-                queueStartEvent.phase = "RENDER_MEASUREMENT_START";
-                state_->recordBoundarySwapAttribution(queueStartEvent);
+                recordPrerollTransitionEvent(BoundarySwapEventKind::RequiredQueueStarted,
+                                             "RENDER_CURRENT_QUEUE_START");
                 state_->formalOpportunityPresentedFrame.store(-1, std::memory_order_relaxed);
                 state_->formalOpportunitySwapOrdinal.store(0, std::memory_order_relaxed);
                 state_->formalOpportunityTrueDropCount.store(0, std::memory_order_relaxed);
@@ -1345,18 +1612,6 @@ private:
                     0, std::memory_order_relaxed);
                 state_->diagnosticSyntheticDeadlineDropCount.store(0, std::memory_order_relaxed);
                 state_->formalOpportunityDomainReached.store(false, std::memory_order_relaxed);
-                state_->formalOpportunityIgnoreNextSwap.store(true, std::memory_order_release);
-                const auto publicationSerial = state_->ignoreNextSwapPublicationSerial.fetch_add(
-                                                   1, std::memory_order_seq_cst) +
-                                               1;
-                BoundarySwapAttributionEvent ignorePublicationEvent;
-                ignorePublicationEvent.kind = BoundarySwapEventKind::IgnoreNextSwapPublished;
-                ignorePublicationEvent.qpc = gpu::qpcTicks();
-                ignorePublicationEvent.threadId = static_cast<std::uint32_t>(GetCurrentThreadId());
-                ignorePublicationEvent.phase = "RENDER_MEASUREMENT_START";
-                ignorePublicationEvent.ignorePublicationSerial = publicationSerial;
-                state_->recordBoundarySwapAttribution(ignorePublicationEvent);
-                state_->formalOpportunityCaptureActive.store(true, std::memory_order_release);
                 formalOpportunityRenderOrdinal_ = 0;
             }
             previousSchedulerPhaseCallbackQpc_ = 0;
@@ -1377,6 +1632,19 @@ private:
                 state_->presentationCaptureActive.store(true, std::memory_order_release);
             }
             state_->measurementEndQpc.store(callbackBegin + duration, std::memory_order_release);
+            if (state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire)) {
+                // canonical start/end authorityをfreezeしてからissuance gateを開く。
+                std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+                if (!state_->formalPrerollTransition.armMeasurement(callbackBegin,
+                                                                   callbackBegin + duration)) {
+                    fail(std::string("P2-D5-2 B3-I5B measurement arm拒否: ") +
+                         gpu::prerollTransitionErrorName(state_->formalPrerollTransition.error()));
+                    return true;
+                }
+            }
+            if (state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire))
+                recordPrerollTransitionEvent(BoundarySwapEventKind::MeasurementArmed,
+                                             "RENDER_MEASUREMENT_ARM");
             if (state_->nativePresentHookEnabled.load(std::memory_order_acquire)) {
                 if (state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire)) {
                     if (!state_->nativePresentCaptureActive.load(std::memory_order_acquire)) {
@@ -1410,6 +1678,20 @@ private:
                 std::lock_guard<std::mutex> lock(state_->measurementMutex);
                 state_->measurementStart = measurementCounters();
                 state_->measurementStart.qpc = callbackBegin;
+            }
+            if (state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire)) {
+                {
+                    std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+                    if (!state_->formalPrerollTransition.openCurrentIssuanceGate()) {
+                        fail(std::string("P2-D5-2 B3-I5B issuance gate拒否: ") +
+                             gpu::prerollTransitionErrorName(
+                                 state_->formalPrerollTransition.error()));
+                        return true;
+                    }
+                }
+                state_->formalOpportunityCaptureActive.store(true, std::memory_order_release);
+                recordPrerollTransitionEvent(BoundarySwapEventKind::CurrentIssuanceOpened,
+                                             "RENDER_CURRENT_ISSUANCE_OPEN");
             }
             state_->playbackSchedulerEnabled.store(true, std::memory_order_release);
             state_->measurementStartCaptured.store(true, std::memory_order_release);
@@ -1710,6 +1992,7 @@ private:
     bool presentationOpportunityEnabled_ = false;
     long long presentationRenderOrdinal_ = 0;
     long long formalOpportunityRenderOrdinal_ = 0;
+    bool measurementStartPending_ = false;
     TeardownStage teardownStage_ = TeardownStage::NotStarted;
 };
 
@@ -1779,7 +2062,7 @@ void CompositorRhiItem::recordFrameSwapped() {
 
     const auto captureJoinFailureAttribution =
         [&](gpu::QualifiedCommitRuntimeAttribution joinAttribution, long long frameSwappedQpc,
-            bool ignoredBoundarySwap) {
+            gpu::PrerollTransitionState transitionState) {
             std::lock_guard<std::mutex> attributionLock(state_->compositionTokenAttributionMutex);
             if (state_->compositionTokenJoinFailure.captured)
                 return;
@@ -1792,7 +2075,7 @@ void CompositorRhiItem::recordFrameSwapped() {
             failure.frameSwappedThreadId = static_cast<std::uint32_t>(GetCurrentThreadId());
             failure.frameSwappedQpc = frameSwappedQpc;
             failure.formalEnvelopeActive = formalEnvelopeActive;
-            failure.ignoredBoundarySwap = ignoredBoundarySwap;
+            failure.transitionState = transitionState;
             failure.prerollActive =
                 state_->formalOpportunityEnvelopePrerollActive.load(std::memory_order_acquire);
         };
@@ -1810,20 +2093,21 @@ void CompositorRhiItem::recordFrameSwapped() {
         }
         callbackScopeExact = callbackScopeMatchCount == 1;
     }
-    const auto ignorePublicationSerial =
-        state_->ignoreNextSwapPublicationSerial.load(std::memory_order_seq_cst);
-    const bool ignoredFormalBoundarySwap =
-        state_->formalOpportunityIgnoreNextSwap.exchange(false, std::memory_order_acq_rel);
-    const auto recordBoundaryCallback = [&](bool activeReservation,
-                                            const gpu::QualifiedCommitReservation& reservation) {
+    // B3-I5B。positional ignore-next-swapは削除済みである。boundary ownershipは
+    // quiescence handshakeとexact receipt identityだけが決める。
+    const auto recordBoundaryCallback =
+        [&](bool activeReservation, const gpu::QualifiedCommitReservation& reservation,
+            const gpu::PrerollTransitionSnapshot& transition) {
         BoundarySwapAttributionEvent event;
         event.kind = BoundarySwapEventKind::FrameSwapped;
         event.qpc = gpu::qpcTicks();
         event.threadId = static_cast<std::uint32_t>(GetCurrentThreadId());
         event.phase = "FRAME_SWAPPED_CALLBACK";
-        event.ignorePublicationSerial = ignorePublicationSerial;
-        event.ignorePreValue = ignoredFormalBoundarySwap;
-        event.ignoreConsumed = ignoredFormalBoundarySwap;
+        event.transitionStepSerial =
+            state_->prerollTransitionStepSerial.load(std::memory_order_seq_cst);
+        event.transitionState = transition.state;
+        event.transitionError = transition.error;
+        event.transitionQuiescent = transition.verdict.quiescent;
         event.receiptObserved = exactReceiptAvailable;
         event.receiptPresentSerial = receipt.presentSerial;
         event.receiptTokenSerial = receipt.tokenSerial;
@@ -1842,27 +2126,46 @@ void CompositorRhiItem::recordFrameSwapped() {
         event.reservation = reservation;
         state_->recordBoundarySwapAttribution(event);
     };
-    if (ignoredFormalBoundarySwap) {
+    gpu::PrerollTransitionState callbackTransitionState = gpu::PrerollTransitionState::Open;
+    {
         std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+        auto& handshake = state_->formalPrerollTransition;
+        const auto transition = handshake.snapshot();
+        callbackTransitionState = transition.state;
         const bool activeReservation = state_->formalQualifiedCommitJoin.hasActiveReservation();
         const auto reservation = state_->formalQualifiedCommitJoin.reservation();
-        recordBoundaryCallback(activeReservation, reservation);
-        if (activeReservation) {
+        recordBoundaryCallback(activeReservation, reservation, transition);
+        // exact boundary reservationはdrain中のactive FOREIGN transactionにだけ束縛する。
+        // 完了済みFOREIGN PresentへもCURRENT Presentへもownerを後付けしない。
+        const bool inDrain = transition.state == gpu::PrerollTransitionState::DrainRequested ||
+                             transition.state == gpu::PrerollTransitionState::Draining;
+        const bool postQuiescence = transition.state == gpu::PrerollTransitionState::Quiescent ||
+                                    transition.state == gpu::PrerollTransitionState::CurrentReady ||
+                                    transition.state ==
+                                        gpu::PrerollTransitionState::MeasurementArmed ||
+                                    transition.state == gpu::PrerollTransitionState::CurrentRunning;
+        // quiescence ack後にFOREIGN callbackは残らない。残っていたなら
+        // active reservationを破棄する前にPROTOCOL_FATALで停止する。
+        if (postQuiescence && callbackScopeExact &&
+            callbackScope == NativePresentIntentScope::ForeignPreMeasurement) {
             auto attribution = state_->formalQualifiedCommitJoin.runtimeAttribution();
             attribution.failurePhase = gpu::QualifiedCommitFailurePhase::PreJoinBoundarySwap;
             attribution.failurePredicate =
                 gpu::QualifiedCommitFailurePredicate::BoundarySwapRequiresNoActiveReservation;
-            captureJoinFailureAttribution(attribution, gpu::qpcTicks(), true);
-            failQualifiedJoin("boundary swapがactive reservationを破棄しようとしました");
+            captureJoinFailureAttribution(attribution, gpu::qpcTicks(), transition.state);
+            failQualifiedJoin("quiescence ack後にFOREIGN boundary swapが到達しました");
             return;
         }
-    } else {
-        std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
-        recordBoundaryCallback(state_->formalQualifiedCommitJoin.hasActiveReservation(),
-                               state_->formalQualifiedCommitJoin.reservation());
+        if (inDrain && activeReservation && !transition.boundaryOwnerBound && callbackScopeExact &&
+            callbackScope == NativePresentIntentScope::ForeignPreMeasurement &&
+            !handshake.bindBoundaryOwner({reservation.reservationId, reservation.intentOrdinal,
+                                          reservation.tokenSerial, true, true})) {
+            failQualifiedJoin(std::string("P2-D5-2 B3-I5B boundary owner束縛失敗: ") +
+                              gpu::prerollTransitionErrorName(handshake.error()));
+            return;
+        }
     }
-    if (!ignoredFormalBoundarySwap &&
-        !state_->formalOpportunityDomainReached.load(std::memory_order_acquire) &&
+    if (!state_->formalOpportunityDomainReached.load(std::memory_order_acquire) &&
         state_->formalOpportunityCaptureActive.load(std::memory_order_acquire)) {
         if (!exactReceiptAvailable) {
             failQualifiedJoin("formal frameSwappedにexact receiptがありません");
@@ -1905,10 +2208,18 @@ void CompositorRhiItem::recordFrameSwapped() {
                                 swapQpc, capturePresentationAuthority(state_), swapOrdinal);
             }
             error = state_->formalOpportunityScheduler.error();
+            if (committed && callbackScopeExact &&
+                callbackScope == NativePresentIntentScope::ForeignPreMeasurement &&
+                !state_->formalPrerollTransition.noteForeignTransactionTerminal(swapQpc)) {
+                failQualifiedJoin(
+                    std::string("P2-D5-2 B3-I5B FOREIGN transaction終端記録失敗: ") +
+                    gpu::prerollTransitionErrorName(state_->formalPrerollTransition.error()));
+                return;
+            }
             if (qualified != gpu::QualifiedCommitResult::QualifiedCommit) {
                 captureJoinFailureAttribution(
                     state_->formalQualifiedCommitJoin.runtimeAttribution(), swapQpc,
-                    ignoredFormalBoundarySwap);
+                    callbackTransitionState);
                 failQualifiedJoin(
                     gpu::qualifiedCommitErrorName(state_->formalQualifiedCommitJoin.error()));
                 return;

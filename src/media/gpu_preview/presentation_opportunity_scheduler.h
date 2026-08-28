@@ -243,6 +243,9 @@ public:
     bool commitQualifiedPresent(unsigned long long reservationId, long long intentOrdinal);
     bool commitSwap(long long swapQpc, const PresentationAuthoritySample& postSwapAuthority,
                     long long swapOrdinal);
+    // B3-I5B。preroll drainのexact finalize point。closeより前にpending opportunityを
+    // 確定させるだけで、queue semanticsとaccept/reject判定は変更しない。
+    bool finalizePendingOpportunityExact();
     bool closePlannedWindow();
     bool closeWithoutNormalCompletion();
     PresentationOpportunitySnapshot snapshot() const;
@@ -250,6 +253,14 @@ public:
                                             FormalIntentTransportDisposition disposition);
 
     bool hasPendingRender() const { return pendingRender_; }
+
+    bool hasPendingRenderCompletion() const { return pendingRenderCompleted_; }
+
+    bool hasPendingQualifiedEvidence() const { return pendingQualifiedEvidence_; }
+
+    bool hasPendingOpportunity() const { return pendingOpportunity_; }
+
+    bool pendingOpportunityExactlyFinalized() const { return pendingOpportunityExactlyFinalized_; }
 
     bool pastSourceDomain() const { return pastSourceDomain_; }
 
@@ -315,6 +326,7 @@ private:
     long long pendingRenderedSourceFrame_ = -1;
 
     bool pendingOpportunity_ = false;
+    bool pendingOpportunityExactlyFinalized_ = false;
     long long pendingOpportunityOrdinal_ = -1;
     long long pendingSupersededCount_ = 0;
     Candidate pendingCandidate_{};

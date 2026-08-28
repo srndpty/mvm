@@ -2267,6 +2267,14 @@ target_link_libraries(mvm_test_required_intent_queue
 mvm_add_test(p2_b3_i1_required_intent_queue
     COMMAND mvm_test_required_intent_queue)
 
+# P2-D5-2/B3-I5B: admission close / drain handshakeのexplicit state machine。
+add_executable(mvm_test_preroll_transition_handshake
+    gpu_preview/test_preroll_transition_handshake.cpp)
+target_link_libraries(mvm_test_preroll_transition_handshake
+    PRIVATE mvm::gpu_preview mvm::warnings)
+mvm_add_test(p2_b3_i5b_preroll_transition_handshake
+    COMMAND mvm_test_preroll_transition_handshake)
+
 mvm_add_test(p2_b3_i1_required_intent_queue_architecture
     COMMAND "${MVM_PWSH}" -NoProfile -File
         "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i1-required-intent-queue-architecture.ps1"
@@ -2297,21 +2305,22 @@ mvm_add_test(p2_b3_i2_composition_token_attribution_architecture
         -RepoRoot "${CMAKE_SOURCE_DIR}"
     PROPERTIES LABELS "gpu_preview")
 
-# P2-D5-2/B3-I3: positional ignore-next-swapのpublication/consume ownershipを診断する。
-mvm_add_test(p2_b3_i3_boundary_swap_ownership_architecture
+# P2-D5-2/B3-I5B: admission close / drain handshakeのsource-level契約。
+# positional ignore-next-swapを削除したため、B3-I3 positional guardは廃止した。
+mvm_add_test(p2_b3_i5b_admission_close_drain_architecture
     COMMAND "${MVM_PWSH}" -NoProfile -File
-        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i3-boundary-swap-ownership-architecture.ps1"
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i5b-admission-close-drain-architecture.ps1"
         -RepoRoot "${CMAKE_SOURCE_DIR}"
     PROPERTIES LABELS "gpu_preview")
-foreach(_p2_b3_i3_case IN ITEMS Good NegativeSecondProducer NegativeConsumeRemoved NegativePresentSerialRemoved NegativeScopeExactRemoved NegativeNearestQpc NegativeEventSerialAuthority NegativeProductSemanticsChanged)
-    string(TOLOWER "${_p2_b3_i3_case}" _p2_b3_i3_name)
-    mvm_add_test(p2_b3_i3_boundary_swap_ownership_guard_${_p2_b3_i3_name}
+foreach(_p2_b3_i5b_case IN ITEMS Good NegativePositionalIgnoreRetained NegativeAdmissionCloseClosesScheduler NegativeSchedulerCloseBeforeDrain NegativePendingOpportunityFinalizeSkipped NegativeQuiescencePredicateDropped NegativeEpochCheckRemoved NegativeThreadCheckRemoved NegativeEarlyQueueStart NegativeEarlyMeasurementArm NegativeIssuanceBeforeArm NegativeAdmissionGateRemoved NegativeOneShotSnapshotRemoved NegativeWaitChargedToWindow NegativeTimeoutAsPerformanceDrop NegativeNearestQpcJoin NegativeHistoricalMismatchReclassified)
+    string(TOLOWER "${_p2_b3_i5b_case}" _p2_b3_i5b_name)
+    mvm_add_test(p2_b3_i5b_admission_close_drain_guard_${_p2_b3_i5b_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File
-            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i3-boundary-swap-ownership-guard.ps1"
-            -Case "${_p2_b3_i3_case}"
-            -Contract "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i3-boundary-swap-ownership-architecture.ps1"
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i5b-admission-close-drain-guard.ps1"
+            -Case "${_p2_b3_i5b_case}"
+            -Contract "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i5b-admission-close-drain-architecture.ps1"
             -SourceRoot "${CMAKE_SOURCE_DIR}"
-            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-b3-i3-boundary-guard-${_p2_b3_i3_name}"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-b3-i5b-handshake-guard-${_p2_b3_i5b_name}"
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
@@ -2333,7 +2342,7 @@ mvm_add_test(p2_b3_i5a_one_shot_snapshot_architecture
         "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i5a-one-shot-snapshot-architecture.ps1"
         -RepoRoot "${CMAKE_SOURCE_DIR}"
     PROPERTIES LABELS "gpu_preview")
-foreach(_p2_b3_i5a_case IN ITEMS Good NegativeAbiNotBumped NegativeEpochRemoved NegativeRawTokenRemoved NegativeRawReceiptRemoved NegativeSnapshotConsumesToken NegativeSnapshotConsumesReceipt NegativeThreadCheckRemoved NegativePresentReceiptThreadChecksRemoved NegativeCaptureOutsideAccepted NegativeLayoutCheckRemoved NegativeSameSizeSemanticFieldOffsetMutation NegativeNestedSemanticFieldOffsetMutation NegativeLatestPresentInference NegativeMeasurementConnected NegativeHistoricalMismatchReclassified)
+foreach(_p2_b3_i5a_case IN ITEMS Good NegativeAbiNotBumped NegativeEpochRemoved NegativeRawTokenRemoved NegativeRawReceiptRemoved NegativeSnapshotConsumesToken NegativeSnapshotConsumesReceipt NegativeThreadCheckRemoved NegativePresentReceiptThreadChecksRemoved NegativeCaptureOutsideAccepted NegativeLayoutCheckRemoved NegativeSameSizeSemanticFieldOffsetMutation NegativeNestedSemanticFieldOffsetMutation NegativeLatestPresentInference NegativeMeasurementDisconnected NegativeHistoricalMismatchReclassified)
     string(TOLOWER "${_p2_b3_i5a_case}" _p2_b3_i5a_name)
     mvm_add_test(p2_b3_i5a_one_shot_snapshot_guard_${_p2_b3_i5a_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File
