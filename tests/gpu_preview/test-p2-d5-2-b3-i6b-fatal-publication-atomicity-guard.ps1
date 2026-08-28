@@ -17,6 +17,8 @@ Set-StrictMode -Version Latest
 $relatives=@(
     'src/app/preview/compositor_rhi_item.h',
     'src/app/preview/compositor_rhi_item.cpp',
+    'src/app/preview/composition_token_publication.h',
+    'src/app/preview/formal_present_join_admission.h',
     'src/media/gpu_preview/presentation_opportunity_scheduler.cpp',
     'src/media/gpu_preview/required_intent_queue.cpp',
     'apps/compositor_spike/compositor_spike_controller.cpp')
@@ -31,6 +33,8 @@ function Edit-Source([string]$RelativePath,[string]$From,[string]$To){
     $sources[$RelativePath]=$sourceText.Replace($From,$To)
 }
 $renderer='src/app/preview/compositor_rhi_item.cpp'
+$publication='src/app/preview/composition_token_publication.h'
+$admission='src/app/preview/formal_present_join_admission.h'
 $header='src/app/preview/compositor_rhi_item.h'
 $queue='src/media/gpu_preview/required_intent_queue.cpp'
 $scheduler='src/media/gpu_preview/presentation_opportunity_scheduler.cpp'
@@ -38,19 +42,17 @@ $controller='apps/compositor_spike/compositor_spike_controller.cpp'
 switch($Case){
     'Good'{}
     'NegativeTokenPublishedBeforeValidation'{
-        Edit-Source $renderer 'if (!publicationAllowed()) {' 'if (false) {'}
+        Edit-Source $publication 'if (!publicationAllowed()) {' 'if (false) {'}
     'NegativePendingTokenAfterFatal'{
-        Edit-Source $renderer 'return active_ && valid_ && !state_->fatal.load(std::memory_order_acquire);' 'return active_ && valid_;'}
+        Edit-Source $publication 'return active_ && valid_ && !sink_.protocolFatalLatched();' 'return active_ && valid_;'}
     'NegativeSuppressionCountedAsTransportFailure'{
-        Edit-Source $renderer 'state_->nativePresentTokenSuppressedBeforePresentCount.fetch_add(
-                1, std::memory_order_relaxed);' 'state_->nativePresentTokenSetFailureCount.fetch_add(1, std::memory_order_relaxed);'}
+        Edit-Source $publication '            sink_.noteSuppressedBeforePresent();' '            sink_.notePublicationFailure();'}
     'NegativeSecondPublicationSite'{
-        Edit-Source $renderer 'const bool succeeded = hook && hook->setCompositionToken(token_);' "const bool succeeded = hook && hook->setCompositionToken(token_);`n        if (hook) hook->setCompositionToken(token_);"}
+        Edit-Source $renderer 'return hook && hook->setCompositionToken(token);' "if (hook) hook->setCompositionToken(token);`n            return hook && hook->setCompositionToken(token);"}
     'NegativeFormalReceiptAfterFatal'{
-        Edit-Source $renderer 'state_->nativePresentCaptureActive.load(std::memory_order_acquire) && !protocolFatalLatched;' 'state_->nativePresentCaptureActive.load(std::memory_order_acquire);'}
+        Edit-Source $admission '        input.formalSchedulerEnabled && input.nativeCaptureActive && !input.protocolFatalLatched;' '        input.formalSchedulerEnabled && input.nativeCaptureActive;'}
     'NegativePostFatalJoinReached'{
-        Edit-Source $renderer 'if (!protocolFatalLatched &&
-        !state_->formalOpportunityDomainReached.load(std::memory_order_acquire) &&' 'if (!state_->formalOpportunityDomainReached.load(std::memory_order_acquire) &&'}
+        Edit-Source $admission '        !input.protocolFatalLatched && !input.domainReached && input.formalCaptureActive;' '        !input.domainReached && input.formalCaptureActive;'}
     'NegativePrimaryFatalOverwrittenByJoin'{
         Edit-Source $renderer 'if (state_->fatalReason.empty())
                 state_->fatalReason = "P2-D5-2 B3-I0 exact qualified commit失敗: " + reason;' 'state_->fatalReason = "P2-D5-2 B3-I0 exact qualified commit失敗: " + reason;'}
@@ -65,7 +67,7 @@ switch($Case){
         Edit-Source $controller '{"token_publication_suppressed_before_present_count",' '{"token_publication_suppressed_before_present_count_disabled",'}
     'NegativeNearestTokenRecovery'{
         Edit-Source $renderer 'const auto hook = state_->nativePresentHook;
-        const bool succeeded = hook && hook->setCompositionToken(token_);' "const auto hook = state_->nativePresentHook;`n        const auto nearestTokenCandidate = gpu::qpcTicks();`n        (void)nearestTokenCandidate;`n        const bool succeeded = hook && hook->setCompositionToken(token_);"}
+            return hook && hook->setCompositionToken(token);' "const auto hook = state_->nativePresentHook;`n            const auto nearestTokenCandidate = gpu::qpcTicks();`n            (void)nearestTokenCandidate;`n            return hook && hook->setCompositionToken(token);"}
 }
 foreach($relativePath in $relatives){
     $targetPath=Join-Path $mutationRoot $relativePath

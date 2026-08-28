@@ -2366,6 +2366,33 @@ foreach(_p2_b3_i6b_case IN ITEMS Good NegativeTokenPublishedBeforeValidation Neg
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
+# P2-D5-2/B3-I6B deferred integration-negative。production publication gateを直接実行する。
+add_executable(mvm_test_i6b_publication_atomicity
+    gpu_preview/test_i6b_publication_atomicity.cpp)
+target_link_libraries(mvm_test_i6b_publication_atomicity
+    PRIVATE mvm::gpu_preview mvm::warnings)
+mvm_add_test(p2_b3_i6b_publication_atomicity_integration
+    COMMAND mvm_test_i6b_publication_atomicity)
+
+mvm_add_test(p2_b3_i6b_injection_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i6b-injection-architecture.ps1"
+        -RepoRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+# injection testのmutation test。production headerとtestを1点ずつ壊して実際にcompile/実行する。
+foreach(_p2_b3_i6b_inj_case IN ITEMS Good NegativeFatalInjectionAfterPublication NegativePublicationGateIgnored NegativeSuppressionCounterMissing NegativePostFatalReceiptTaken NegativePostFatalBindReached NegativePostFatalCommitReached NegativePrimaryFatalOverwritten NegativeQueueDequeuedAfterFatal NegativeFakeIdentityInjection NegativeProductionComponentDuplicated)
+    string(TOLOWER "${_p2_b3_i6b_inj_case}" _p2_b3_i6b_inj_name)
+    mvm_add_test(p2_b3_i6b_injection_guard_${_p2_b3_i6b_inj_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i6b-injection-guard.ps1"
+            -Case "${_p2_b3_i6b_inj_case}"
+            -Contract "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i6b-injection-architecture.ps1"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-b3-i6b-injection-guard-${_p2_b3_i6b_inj_name}"
+            -GpuPreviewLibrary "$<TARGET_FILE:mvm_gpu_preview>"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 # P2-D5-2/B3-I6C: intent ordinal -> source frame mappingとsource coverage preflightの修正。
 mvm_add_test(p2_b3_i6c_source_mapping_correction_architecture
     COMMAND "${MVM_PWSH}" -NoProfile -File

@@ -1331,9 +1331,10 @@ B3-I5B                         CLOSED / runtime smoke PASS
 fresh W3 canonical 3/3         NOT ACHIEVED (run 1 acquisition failure)
 canonical W3 verdict           UNCHANGED / FAIL
 B3-I6A source mapping authority DESIGN CLOSED (§18)
-B3-I6B fatal/token atomicity   CLOSED WITH DEFERRED INTEGRATION-NEGATIVE (§19、§20、§21)
-B3-I6C mapping / preflight修正  DONE / positive smoke PASS (§22)
-deferred I6B integration test  fresh W3より前に必ず閉じる (§21.1)
+B3-I6B fatal/token atomicity   CLOSED (§19、§20、§21、§23)
+B3-I6C mapping / preflight修正  CLOSED / positive smoke PASS (§22)
+deferred I6B integration test  CLOSED (§23)
+fresh W3 canonical 3/3         GO可 / 未実行
 P3-C-2 / P4再検証               HOLD (W3 3/3 PASSが前提)
 P5-E4                          BLOCKED
 historical COMPOSITION_TOKEN_MISMATCH   UNRESOLVED_HISTORICAL_RUNTIME_FAILURE
@@ -1849,3 +1850,116 @@ next  deferred I6B integration injection test   (fresh W3より前に必ず閉�
 canonical W3 verdict                    UNCHANGED / FAIL
 historical COMPOSITION_TOKEN_MISMATCH   UNRESOLVED_HISTORICAL_RUNTIME_FAILURE
 ```
+
+## 23. B3-I6B deferred integration-negative — CLOSED
+
+§21.1で凍結した9段acceptance chainを、production componentをそのまま実行するintegration-level testで
+閉じた。`SOURCE_COVERAGE_INSUFFICIENT`の再現は行わず、証明対象は一般形である。
+
+```text
+token publication前に生じたcallback-local protocol fatalは、
+そのtransactionをformal Present transactionにしない
+```
+
+### 23.1 testability refactor (semantics変更なし)
+
+publication gateとadmission判定をproduction componentとして抽出し、rendererとtestが**同じ実装**を使う。
+testが同じlogicを複製すると「production destructorのgateが実際に効く」ことを証明できないためである。
+
+```text
+src/app/preview/composition_token_publication.h
+    CompositionTokenPublicationSink   publication siteの外部effect境界
+    CompositionTokenPublication       RAII gate。scope exitでだけpublishする
+src/app/preview/formal_present_join_admission.h
+    formalPresentJoinAdmission()      post-fatal Presentをformal transactionから外す判定
+```
+
+rendererは`CompositionTokenPublication`を保持し、`CompositorSpikeState`へのadapter (`StateSink`) だけが
+hook / counter / attribution / terminal exit stageを知る。`recordFrameSwapped()`は
+`formalPresentJoinAdmission()`の結果だけを使い、条件式を複製しない。gate semanticsは§19から不変で、
+publication siteは依然としてexactly 1箇所である。
+
+### 23.2 integration injection test
+
+`tests/gpu_preview/test_i6b_publication_atomicity.cpp` (`p2_b3_i6b_publication_atomicity_integration`)
+
+injection authorityは**publication直前にprotocol fatalを立てることだけ**である。fake token serial、
+fake present serial、fake QPC、fake VBlank ordinal、nearest/latest reconstruction、production config
+overrideは一切使わない。
+
+```text
+1. capture active / valid                     publicationAllowed() == true
+2. publication前にprotocol fatalを注入        TEST ONLY seam (1箇所)
+3. 実際のdestructorを通す                      RAII scope exit
+4. setCompositionToken call count              0
+5. suppressed_before_present_count             1
+   publication attempt / transport failure     0 / 0
+6. post-fatal frameSwapped相当                 formalPresentJoinAdmission()
+7. take receipt / bind / commit call count     0 / 0 / 0
+8. fatal reason                                注入前のfirst fatalのまま
+9. queue issued/rendered/qualified/dequeued    delta 0
+   active reservation / tail                   不変
+   pending qualified evidence                  false
+   conservation                                valid
+```
+
+positive controlとして、fatalが無ければdestructorが1回だけpublishすることも固定する。さらに
+`fatalAfterPublicationDoesNotSuppress`で、publication後のfatalは遡って抑止扱いにならないことを確認し、
+**seamがpublicationより前であること自体**を固定する。
+
+### 23.3 injection mutation test
+
+`p2_b3_i6b_injection_guard_*` (Good + negative 10) は、production headerかtest sourceを1点だけ壊し、
+architecture guard・compile・実行のいずれかが必ず落ちることを確認する。mutationは変異treeを実際に
+compileして走らせるため、source patternだけの空振りにならない。
+
+```text
+NegativeFatalInjectionAfterPublication   seamをpublication後へ動かす
+NegativePublicationGateIgnored           gateからfatal項を外す
+NegativeSuppressionCounterMissing        抑止counterを記録しない
+NegativePostFatalReceiptTaken            formal envelope判定からfatal項を外す
+NegativePostFatalBindReached             commit gateからfatal項を外す
+NegativePostFatalCommitReached           commit到達をgate外から数える
+NegativePrimaryFatalOverwritten          first fatalを上書きする
+NegativeQueueDequeuedAfterFatal          post-fatalでtransactionを前進させる
+NegativeFakeIdentityInjection            identityを偽造する
+NegativeProductionComponentDuplicated    componentをtest側で複製する
+```
+
+`NegativeQueueDequeuedAfterFatal`は最初のacceptance定義では検出できなかった。post-fatalの
+`commitQualifiedPresent`はdequeueまで進めないため、queue counterだけでは空振りする。
+acceptanceへ`pending qualified evidence == false`を追加して閉じた。
+
+### 23.4 gate結果
+
+```text
+p2_b3_i6b_publication_atomicity_integration   PASS
+p2_b3_i6b_injection_architecture              PASS
+p2_b3_i6b_injection_guard_*                   Good + negative 10 PASS
+p2_b3_i6b_fatal_publication_atomicity_*       refactor後も Good + negative 12 PASS
+```
+
+ordinary CTest (`-LE 'performance|stability'`) は既存failure 7件のみである
+(`p2_c3_a3_t2_startup_order` negative 3件、`p2_present_id_oracle_live`、
+`p2_d5_2_w2c21_required_intent_domain_architecture`、
+`p2_d5_2_w4c0_static_control_flow_goodstaticinventory`、
+`p2_d5_2_w4c3_stop_arbitration_architecture_good`)。
+
+### 23.5 status
+
+```text
+B3-I6A source mapping semantics              CLOSED
+B3-I6B production implementation             CLOSED
+B3-I6B deferred integration-negative         CLOSED  (§23)
+B3-I6B overall                               CLOSED
+B3-I6B-V deterministic natural vector        CLOSED / IMPOSSIBLE UNDER VALID CONFIG
+B3-I6C mapping + preflight correction        CLOSED / runtime positive PASS
+acquisition failure-path sealing             VERIFIED
+
+fresh W3 canonical 3/3                       GO可 (未実行)
+canonical W3 verdict                         UNCHANGED / FAIL
+historical COMPOSITION_TOKEN_MISMATCH        UNRESOLVED_HISTORICAL_RUNTIME_FAILURE
+```
+
+§21.1のstop ruleにより、deferred integration testがgreenになった時点でfresh W3 canonical 3/3の
+前提条件は満たされた。W3 acquisitionはclean worktreeと管理者権限を要求するため、実行は別手順とする。

@@ -1,5 +1,7 @@
 #include "app/preview/compositor_rhi_item.h"
 
+#include "app/preview/composition_token_publication.h"
+#include "app/preview/formal_present_join_admission.h"
 #include "core/mvm_marker.h"
 #include "media/audio_preview/audio_video_scheduler.h"
 #include "media/gpu_preview/exact_frame_pairer.h"
@@ -107,60 +109,22 @@ public:
     NativePresentTokenCapture(const std::shared_ptr<CompositorSpikeState>& state,
                               const MvmNativePresentCompositionToken& lastToken,
                               std::uint64_t tokenSerial, std::uint64_t propagationSerial)
-        : state_(state), token_(lastToken), propagationSerial_(propagationSerial),
-          active_(state->nativePresentCaptureActive.load(std::memory_order_acquire)) {
+        : state_(state), token_(lastToken), propagationSerial_(propagationSerial), sink_(state),
+          publication_(sink_, state->nativePresentCaptureActive.load(std::memory_order_acquire),
+                       token_) {
         // non-formal callbackへ直前のformal identityを持ち越さない。
         token_.intentOrdinal = 0;
         token_.intentOrdinalValid = 0;
-        if (active_ && token_.outputFrameNumber >= 0) {
+        if (state_->nativePresentCaptureActive.load(std::memory_order_acquire) &&
+            token_.outputFrameNumber >= 0) {
             token_.tokenSerial = tokenSerial;
             token_.propagationSerial = propagationSerial_;
-            valid_ = true;
+            publication_.setTokenValid(true);
         }
     }
 
-    // B3-I6B。callback-localのfail-able pre-Present validationがすべて成功した場合だけ
-    // publicationを許可する。fatal latch後はformal tokenを一切publishしない。
-    bool publicationAllowed() const {
-        return active_ && valid_ && !state_->fatal.load(std::memory_order_acquire);
-    }
-
-    ~NativePresentTokenCapture() {
-        if (!active_)
-            return;
-        const bool terminalExitTracking =
-            state_->terminalRenderExitTracking.load(std::memory_order_acquire);
-        if (terminalExitTracking)
-            state_->terminalRenderExitDiagnosticStage.store(
-                TerminalRenderExitDiagnosticStage::NativeTokenDestructorEntered,
-                std::memory_order_release);
-        if (!publicationAllowed()) {
-            // fatal transactionはQt pending tokenを残さない。以後のPresentは
-            // formal tokenを持たず、formal join candidateにならない。
-            // nearest/latest/QPC/serial推定でcancelやrecoveryを行うことはない。
-            state_->nativePresentTokenSuppressedBeforePresentCount.fetch_add(
-                1, std::memory_order_relaxed);
-            if (terminalExitTracking)
-                state_->terminalRenderExitDiagnosticStage.store(
-                    TerminalRenderExitDiagnosticStage::NativeTokenDestructorComplete,
-                    std::memory_order_release);
-            return;
-        }
-        const auto hook = state_->nativePresentHook;
-        const bool succeeded = hook && hook->setCompositionToken(token_);
-        {
-            std::lock_guard<std::mutex> lock(state_->compositionTokenAttributionMutex);
-            state_->latestCompositionTokenPublication = {
-                true, succeeded, static_cast<std::uint32_t>(GetCurrentThreadId()), gpu::qpcTicks(),
-                token_};
-        }
-        if (!succeeded)
-            state_->nativePresentTokenSetFailureCount.fetch_add(1, std::memory_order_relaxed);
-        if (terminalExitTracking)
-            state_->terminalRenderExitDiagnosticStage.store(
-                TerminalRenderExitDiagnosticStage::NativeTokenDestructorComplete,
-                std::memory_order_release);
-    }
+    // B3-I6B。publicationはCompositionTokenPublicationのscope exitだけが行う。
+    bool publicationAllowed() const { return publication_.publicationAllowed(); }
 
     bool setFormalIntentOrdinal(long long intentOrdinal) {
         if (intentOrdinal < 0)
@@ -173,20 +137,73 @@ public:
     std::uint64_t tokenSerial() const { return token_.tokenSerial; }
 
     bool setFrame(const gpu::ComposedFrame& frame, std::uint64_t tokenSerial) {
-        valid_ = makeNativePresentCompositionToken(frame, tokenSerial, token_.intentOrdinal,
-                                                   token_.intentOrdinalValid != 0, token_);
+        const bool valid = makeNativePresentCompositionToken(
+            frame, tokenSerial, token_.intentOrdinal, token_.intentOrdinalValid != 0, token_);
         token_.propagationSerial = propagationSerial_;
-        return valid_;
+        publication_.setTokenValid(valid);
+        return valid;
     }
 
     const MvmNativePresentCompositionToken& token() const { return token_; }
 
 private:
+    // CompositorSpikeStateへのadapter。publication gate本体はstateを知らない。
+    class StateSink final : public CompositionTokenPublicationSink {
+    public:
+        explicit StateSink(const std::shared_ptr<CompositorSpikeState>& state) : state_(state) {}
+
+        bool protocolFatalLatched() const override {
+            return state_->fatal.load(std::memory_order_acquire);
+        }
+
+        bool terminalExitTracking() const override {
+            return state_->terminalRenderExitTracking.load(std::memory_order_acquire);
+        }
+
+        void noteDestructorEntered() override {
+            state_->terminalRenderExitDiagnosticStage.store(
+                TerminalRenderExitDiagnosticStage::NativeTokenDestructorEntered,
+                std::memory_order_release);
+        }
+
+        void noteDestructorComplete() override {
+            state_->terminalRenderExitDiagnosticStage.store(
+                TerminalRenderExitDiagnosticStage::NativeTokenDestructorComplete,
+                std::memory_order_release);
+        }
+
+        bool publishCompositionToken(const MvmNativePresentCompositionToken& token) override {
+            const auto hook = state_->nativePresentHook;
+            return hook && hook->setCompositionToken(token);
+        }
+
+        void notePublicationAttempt(bool succeeded,
+                                    const MvmNativePresentCompositionToken& token) override {
+            std::lock_guard<std::mutex> lock(state_->compositionTokenAttributionMutex);
+            state_->latestCompositionTokenPublication = {
+                true, succeeded, static_cast<std::uint32_t>(GetCurrentThreadId()), gpu::qpcTicks(),
+                token};
+        }
+
+        void notePublicationFailure() override {
+            state_->nativePresentTokenSetFailureCount.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        void noteSuppressedBeforePresent() override {
+            state_->nativePresentTokenSuppressedBeforePresentCount.fetch_add(
+                1, std::memory_order_relaxed);
+        }
+
+    private:
+        std::shared_ptr<CompositorSpikeState> state_;
+    };
+
     std::shared_ptr<CompositorSpikeState> state_;
     MvmNativePresentCompositionToken token_{};
     std::uint64_t propagationSerial_ = 0;
-    bool active_ = false;
-    bool valid_ = false;
+    StateSink sink_;
+    // 宣言順の最後に置く。destructorが最初に走り、token_はまだ生存している。
+    CompositionTokenPublication publication_;
 };
 
 class CompositorRhiRenderer final : public QQuickRhiItemRenderer {
@@ -2093,10 +2110,14 @@ void CompositorRhiItem::recordFrameSwapped() {
     bool exactReceiptAvailable = false;
     // B3-I6B。first protocol fatal後のPresentはformal join candidateにしない。
     // Present自体の抑止は前提にせず、formal tokenを持たないPresentとして扱うだけである。
+    // 判定はformalPresentJoinAdmission()だけが持ち、ここで条件式を複製しない。
     const bool protocolFatalLatched = state_->fatal.load(std::memory_order_acquire);
-    const bool formalEnvelopeActive =
-        state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire) &&
-        state_->nativePresentCaptureActive.load(std::memory_order_acquire) && !protocolFatalLatched;
+    const auto joinAdmission = formalPresentJoinAdmission(
+        {state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire),
+         state_->nativePresentCaptureActive.load(std::memory_order_acquire), protocolFatalLatched,
+         state_->formalOpportunityDomainReached.load(std::memory_order_acquire),
+         state_->formalOpportunityCaptureActive.load(std::memory_order_acquire)});
+    const bool formalEnvelopeActive = joinAdmission.formalEnvelopeActive;
     if (formalEnvelopeActive) {
         const auto hook = state_->nativePresentHook;
         if (!hook || !hook->takeFrameSwappedReceipt(receipt)) {
@@ -2215,9 +2236,7 @@ void CompositorRhiItem::recordFrameSwapped() {
             return;
         }
     }
-    if (!protocolFatalLatched &&
-        !state_->formalOpportunityDomainReached.load(std::memory_order_acquire) &&
-        state_->formalOpportunityCaptureActive.load(std::memory_order_acquire)) {
+    if (joinAdmission.joinCommitAllowed) {
         if (!exactReceiptAvailable) {
             failQualifiedJoin("formal frameSwappedにexact receiptがありません");
             return;
