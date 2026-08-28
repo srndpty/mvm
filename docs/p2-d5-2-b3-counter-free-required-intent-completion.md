@@ -7,7 +7,7 @@
 - phase: **DESIGN CLOSED / IMPLEMENTATION I0 + I1 + I5A + I5B(+amendment 2) DONE / I5B runtime smoke PASS** (実装状況は§10、§11、§15、§16)
 - production code: I0 exact qualified commit joinとI1 required-intent queueを接続済み
 - test / capture: I0/I1 targeted test済み。live captureは**NOT RUN**
-- canonical W3 verdict: **UNCHANGED / FAIL**
+- canonical W3 verdict: **UNCHANGED / FAIL** (fresh 3/3試行はrun 1 acquisition failureで不成立。§17)
 - P5-E4: **BLOCKED**
 
 本designはexternal refresh counterの代替を発明しない。callback index、QPC、NULL DWM counter、
@@ -1224,3 +1224,113 @@ r2 artifact auditはhandshake / I0 / I1 / terminationのschemaを個別に確認
 historical `COMPOSITION_TOKEN_MISMATCH`は`UNRESOLVED_HISTORICAL_RUNTIME_FAILURE`のまま保持し、I3 boundary
 failureにもI5B transition failureにも再分類しない。次はABI v6でpatched Qtを再buildし、noncanonical runtime
 smokeでhandshakeの実runtime orderingを採取する。canonical W3はその後である。
+
+## 17. fresh W3 canonical 3/3 試行 — acquisition stage FAIL
+
+B3-I5B amendment 2 checkpoint (`45910320d7d8`、clean worktree) でfresh W3 canonical 3/3を試行した。
+historical W3 contract / threshold / denominator / required population / FinalState authorityは一切変更していない。
+frozen thresholdは`effective_fps >= 55` / `drop_rate <= 2%`のままである。
+
+```powershell
+pwsh scripts/acquire-p2-d5-2-w3-fresh.ps1 `
+  -OutputDirectory build/p2-d5-2-w3-cohort-20260829 `
+  -Runs 3 -WarmupSeconds 5 -MeasureSeconds 60 -TimeoutSeconds 240
+```
+
+**run 1がacquisition/protocol stageで失敗し、cohortは成立しなかった**。acquisition scriptはrun 1のapp
+異常終了(exit 3)でthrowするため、run 2 / run 3は取得していない。replacement retryも行っていない。
+canonical W3 verdictは`NOT_ACHIEVED_ACQUISITION_STAGE_FAILURE`であり、historical W3 verdictは**FAIL / UNCHANGED**のままである。
+
+### 17.1 B3-I5B handshakeはこのrunでも成立している
+
+```text
+state / error                                CURRENT_RUNNING / NONE
+handshake_step_order_exact                   true
+canonical_start_order_exact                  true
+quiescence 13 predicate                      all true
+wait_charged_to_measurement_window           false
+handshake_wait_qpc                           126
+```
+
+したがってrun 1の失敗はhandshake / admission close / drain / quiescenceのいずれでもない。
+
+### 17.2 primary failure — `SOURCE_COVERAGE_INSUFFICIENT`
+
+```text
+required_frame_count      3600   (measure 60s x source 60fps)
+source_a / source_b       3600 frames
+refresh                   59950 / 1000  (59.95Hz)
+source fps                60 / 1
+failing intent ordinal    3597
+```
+
+`targetFor(ordinal) = ordinal * 60000 / 59950`はordinalより約0.083%速く進む。ordinal 3597で
+source targetが3600に達し、3600 frameのsource domain外へ出るため、B3-I1の
+`target >= requiredFrameCount`判定が`SOURCE_COVERAGE_INSUFFICIENT`でfail-closeした。
+
+これはI5Bで新設した経路ではなく、I1時点から存在するsource coverage fail-closeである。59.95Hzの
+60秒windowはrequired set 3600件を発行し切れるが、source domainは最後の約3 ordinal分を持たない。
+
+required count / denominator / thresholdの調整でPASSへ寄せることはしない。sizingの是非は別途判断する。
+
+### 17.3 secondary failure — fatal callbackのPresentがjoinへ到達する
+
+surfaceしたshutdown reasonはprimaryではなくI0 joinのものだった。
+
+```text
+shutdown_reason   P2-D5-2 B3-I0 exact qualified commit失敗: RENDER_COMPLETION_MISSING
+phase / predicate BIND_NATIVE_PRESENT / STATE_IS_RENDER_COMPLETED
+active reservation  id 3597 / intent 3596 / token 3929  (既にcommit済み)
+native record       present 3600 / token 3930 / intent_ordinal_valid=false / HRESULT 0
+receipt             present 3600 / token 3930   (recordとexact一致)
+scope ledger        token 3930のrecordなし (missing_scope_count=1)
+```
+
+source coverage fatalとなったcallbackは、`selectForRender`でqueue headをreserve済み(issued 3598)、
+composition token 3930をmint済みだが、transport siteへ到達する前に`fail()`でreturnした。その
+callbackのPresentはQt側で実行され、receiptが`frameSwapped`へ届き、joinは既にCommitted状態だったため
+`RENDER_COMPLETION_MISSING`で停止した。
+
+identity自体は壊れていない (record↔receiptのpresent/token/swapchain/HRESULTはexact一致、
+`nearest_latest_fallback_used=false`)。問題は**fatal returnとPresentの間にtoken publicationが残る**
+という順序であり、historical `COMPOSITION_TOKEN_MISMATCH`とは別のpredicateである。再分類はしない。
+
+### 17.4 このrunの数値をcanonical判定に使わない
+
+参考として記録するが、planned window endへ到達しておらず(`planned_window_ended=false`)、
+fatalで終了しているため**canonical W3 metricではない**。
+
+```text
+                          historical W3 run-1 (20260826)   本run-1 (INVALID)
+formal swapped                     1741                          3597
+formal displayed unique            1741                          3596
+formal true opportunity drop       1859                             2
+drop_rate (app)                  0.516                             0
+effective_fps                   59.916                        59.934
+formal_opportunity_error          NONE          SOURCE_COVERAGE_INSUFFICIENT
+```
+
+この差をB3の成果として主張しない。canonical verdictは3/3 PASSのcohortからしか出さない。
+
+### 17.5 sealed artifacts
+
+```text
+build/p2-d5-2-w3-cohort-20260829/run-1/                     raw artifacts (9 files)
+build/p2-d5-2-w3-cohort-20260829/w3-partial-cohort-manifest.json
+    checkpoint sha / primary+secondary attribution / SHA-256 manifest
+```
+
+`w3-acquisition-provenance.json`はacquisition scriptがrun 1 failureでthrowしたため生成されていない。
+代替としてpartial cohort manifestへcheckpoint sha、planned/completed run数、replacement retry
+無しの事実、両failureの識別子、SHA-256を固定した。
+
+### 17.6 現在位置
+
+```text
+B3-I5B                         CLOSED / runtime smoke PASS
+fresh W3 canonical 3/3         NOT ACHIEVED (run 1 acquisition failure)
+canonical W3 verdict           UNCHANGED / FAIL
+P3-C-2 / P4再検証               HOLD (W3 3/3 PASSが前提)
+P5-E4                          BLOCKED
+historical COMPOSITION_TOKEN_MISMATCH   UNRESOLVED_HISTORICAL_RUNTIME_FAILURE
+```
