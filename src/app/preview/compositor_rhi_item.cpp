@@ -1571,9 +1571,12 @@ private:
                 }
             }
             measurementStartPending_ = false;
+            // B3-I5B。canonical measurement windowはquiescence ackより後にsampleする。
+            // callback beginを使うとhandshake evaluation自身がwindowへ入ってしまう。
+            const long long measurementArmQpc = gpu::qpcTicks();
             const long long duration =
                 state_->measurementDurationQpc.load(std::memory_order_acquire);
-            scheduler_.start(callbackBegin, static_cast<long long>(gpu::qpcFrequency()));
+            scheduler_.start(measurementArmQpc, static_cast<long long>(gpu::qpcFrequency()));
             schedulerStarted_ = true;
             // W4-C3。measurement-start authorityが成立したこの一点でalternative
             // publication stateをsnapshotする。controllerのreset直後では撮らない。
@@ -1628,15 +1631,16 @@ private:
                 state_->latestSubmittedRenderOrdinal.store(-1, std::memory_order_relaxed);
                 state_->latestSubmittedOutputFrame.store(-1, std::memory_order_relaxed);
                 state_->presentationSwapOrdinal.store(0, std::memory_order_relaxed);
-                state_->measurementStartQpc.store(callbackBegin, std::memory_order_release);
+                state_->measurementStartQpc.store(measurementArmQpc, std::memory_order_release);
                 state_->presentationCaptureActive.store(true, std::memory_order_release);
             }
-            state_->measurementEndQpc.store(callbackBegin + duration, std::memory_order_release);
+            state_->measurementEndQpc.store(measurementArmQpc + duration,
+                                            std::memory_order_release);
             if (state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire)) {
                 // canonical start/end authorityをfreezeしてからissuance gateを開く。
                 std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
-                if (!state_->formalPrerollTransition.armMeasurement(callbackBegin,
-                                                                   callbackBegin + duration)) {
+                if (!state_->formalPrerollTransition.armMeasurement(
+                        measurementArmQpc, measurementArmQpc + duration)) {
                     fail(std::string("P2-D5-2 B3-I5B measurement arm拒否: ") +
                          gpu::prerollTransitionErrorName(state_->formalPrerollTransition.error()));
                     return true;
@@ -1670,14 +1674,14 @@ private:
                     state_->diagnosticRenderSamples.clear();
                     state_->diagnosticRenderCallbackIntervalUs.clear();
                 }
-                previousDiagnosticCallbackQpc_ = callbackBegin;
+                previousDiagnosticCallbackQpc_ = measurementArmQpc;
                 state_->device.lock().beginDiagnostics();
                 state_->diagnosticTimingEnabled.store(true, std::memory_order_release);
             }
             {
                 std::lock_guard<std::mutex> lock(state_->measurementMutex);
                 state_->measurementStart = measurementCounters();
-                state_->measurementStart.qpc = callbackBegin;
+                state_->measurementStart.qpc = measurementArmQpc;
             }
             if (state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire)) {
                 {

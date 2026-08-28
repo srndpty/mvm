@@ -6,6 +6,7 @@ param(
         'NegativeQuiescencePredicateDropped','NegativeEpochCheckRemoved',
         'NegativeThreadCheckRemoved','NegativeEarlyQueueStart','NegativeEarlyMeasurementArm',
         'NegativeIssuanceBeforeArm','NegativeAdmissionGateRemoved','NegativeOneShotSnapshotRemoved',
+        'NegativeCanonicalStartFromCallbackBegin',
         'NegativeWaitChargedToWindow','NegativeTimeoutAsPerformanceDrop',
         'NegativeNearestQpcJoin','NegativeHistoricalMismatchReclassified')][string]$Case,
     [Parameter(Mandatory=$true)][string]$Contract,
@@ -60,6 +61,8 @@ switch($Case){
         Edit-Source $renderer 'output < 0 && formalOpportunityActive && foreignAdmissionOpen' 'output < 0 && formalOpportunityActive'}
     'NegativeOneShotSnapshotRemoved'{
         Edit-Source $renderer 'readOneShotSnapshot(hook->captureEpoch()' 'readOneShotSnapshot(0'}
+    'NegativeCanonicalStartFromCallbackBegin'{
+        Edit-Source $renderer 'measurementArmQpc, measurementArmQpc + duration)) {' 'callbackBegin, callbackBegin + duration)) {'}
     'NegativeWaitChargedToWindow'{
         Edit-Source $handshake 'snapshot.waitChargedToMeasurementWindow = false;' 'snapshot.waitChargedToMeasurementWindow = true;'}
     'NegativeTimeoutAsPerformanceDrop'{

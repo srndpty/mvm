@@ -916,7 +916,7 @@ recordとして本documentに残す。
 ```text
 p2_b3_i5b_preroll_transition_handshake              state machine unit (positive / negative)
 p2_b3_i5b_admission_close_drain_architecture         source-level契約guard
-p2_b3_i5b_admission_close_drain_guard_*              guard mutation (Good + negative 16)
+p2_b3_i5b_admission_close_drain_guard_*              guard mutation (Good + negative 17)
 ```
 
 unitのpositiveはactive FOREIGN 0件caseと1件drain caseの両方を通す。negativeはquiescence predicate 13件を
@@ -924,8 +924,8 @@ unitのpositiveはactive FOREIGN 0件caseと1件drain caseの両方を通す。n
 measurement arm拒否を個別に固定する。mutation guardはmixed epoch、wrong render thread、early queue start、
 early measurement arm、issuance before arm、admission close後の新規FOREIGN reservation、drain前scheduler close、
 pending opportunity finalize省略、retroactive owner、CURRENT boundary、timeoutのperformance drop化、
-handshake waitのwindow算入、positional flag残存、one-shot snapshot切断、nearest QPC join、
-historical mismatch再分類を拒否する。
+handshake waitのwindow算入、canonical window startのcallback begin化、positional flag残存、
+one-shot snapshot切断、nearest QPC join、historical mismatch再分類を拒否する。
 
 ordinary CTest (ucrt64-release、`-LE 'performance|stability'`) は**1259/1266 PASS**である。残り7件は本slice前の
 clean worktreeでも同じく失敗する既存failureであり、`p2_c3_a3_t2_startup_order` negative 3件、
@@ -937,12 +937,82 @@ clean worktreeでも同じく失敗する既存failureであり、`p2_c3_a3_t2_s
 (w4-c0のinvocation gate、w4-c3のmeasurement-start snapshot window、w2-c01のpreroll close順序、
 I5Aのone-shot snapshot接続方向)。
 
-### 16.7 未実施 / 次slice
+
+### 16.7 ABI v6 patched Qt rebuild と noncanonical runtime smoke 1回目
+
+patched Qt sourceをupstream v6.11.1へ戻したうえで更新済み`0001` -> `0002`を再適用し、
+`scripts/prepare-p2-c0-qt-source.ps1`のprovenance検査をPASSさせてから再buildした。
+
+```text
+qtbase upstream          59c81a3c2247b821b9b84b4eb8d939b77e07e276
+qtdeclarative upstream   a02bed441965ee1f18f856352c7d5ee5ba35d795
+Qt6Gui.dll exports       ..._abi_version / _begin / _set_token / _end
+                         ..._take_frame_swapped_receipt
+                         ..._one_shot_snapshot          ← ABI v6で追加
+```
+
+同条件のnoncanonical formal Playback smoke (`warmup 1s / measure 3s / hook on / formal preflight`) を
+**1回だけ**実行した。artifactは`build/handshake-b3-i5b-20260828T202738Z/formal-playback-smoke.json`である。
+retryによる成功cohortの選別は行っていない。
+
+runtime ABI handshakeは成立した。
+
+```text
+app ABI / Qt ABI                 6 / 6
+snapshot layout handshake        accepted
+capture epoch                    1 (exact)
+observer thread == render thread true
+```
+
+quiescence handshakeもack成立まではdesignどおりに進んだ。
+
+```text
+event 1-2  FRAME_SWAPPED (FOREIGN_PRE_MEASUREMENT, active reservation)
+event 3    MEASUREMENT_START_REQUEST_PUBLISHED   (GUI)
+event 4    MEASUREMENT_START_CONSUMED            (render)
+event 5    PREROLL_ADMISSION_CLOSED              -> DRAINING
+event 6    PREROLL_DRAIN_OBSERVED                scheduler closed (active 0 / finalize済み)
+event 7    PREROLL_QUIESCENCE_ACK                -> QUIESCENT
+event 8    REQUIRED_QUEUE_STARTED                -> CURRENT_READY
+```
+
+`PREROLL_TRANSACTION_FULLY_QUIESCENT`は同一evaluation (evaluation_count=1) で13 predicate全てtrueであり、
+`same_capture_epoch` / `same_render_thread`も成立した。active FOREIGNは0件でdrainした。
+
+その直後の`MEASUREMENT_ARM`で停止した。
+
+```text
+state    PROTOCOL_FATAL
+error    CANONICAL_WINDOW_MUTATED
+reason   P2-D5-2 B3-I5B measurement arm拒否: CANONICAL_WINDOW_MUTATED
+```
+
+原因は本sliceのimplementation defectである。`armMeasurement()`はcanonical window startが
+quiescence ack QPCより前であることを拒否するが、arm siteはcallback begin QPCを渡していた。ack QPCは
+同じcallback内でcallback beginより後にsampleされるため、`start < ack`が常に成立する
+(`handshake_wait_qpc = 72` ticks)。unit testは`start=240 / ack=230`を手で与えていたため検出できなかった。
+
+fail-close自体は設計どおりに機能した。current required queueは`issued=0 / dequeued=0 / tail=180`で
+conservation validのまま保持され、issuance gateは開かず、measurement windowも開始せず、performance dropへは
+一切変換されていない。teardownも成功している。
+
+修正はarm siteでquiescence ack後に`measurementArmQpc = gpu::qpcTicks()`をsampleし、
+`scheduler_.start` / `measurementStartQpc` / `measurementEndQpc` / `measurementStart.qpc` /
+`armMeasurement()`すべてをその値で統一した。architecture guardへ
+`armMeasurement(callbackBegin ...)`を拒否するassertionと、mutation case
+`NegativeCanonicalStartFromCallbackBegin`を追加した。W4-C3 guardのmeasurement-start snapshot patternも
+同じ変数名へ更新した。
+
+**この修正後のsmokeは未実行である。** 失敗した1 runはattribution authorityとしてそのまま保存し、
+次のsmokeは別runとして記録する。canonical W3は引き続きHOLDである。
+
+### 16.8 未実施 / 次slice
 
 ```text
 canonical W3                       NOT RUN / UNCHANGED / FAIL
-live capture / runtime smoke       NOT RUN
-ABI v6 patched Qt rebuild          NOT RUN
+ABI v6 patched Qt rebuild          DONE (§16.8)
+noncanonical runtime smoke         1回実行 / PROTOCOL_FATAL (§16.8)
+修正後のsmoke                       NOT RUN
 P5-E4                              BLOCKED
 ```
 

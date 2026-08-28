@@ -66,6 +66,10 @@ Require $renderer 'oneShot\.pendingTokenValid[\s\S]{0,200}oneShot\.pendingReceip
 Require $renderer 'computePrerollIdentityClosure' 'issued prefixのexact identity closureを評価していません'
 Require $renderer 'transportFailureCounterTotal' 'transport failure counterをquiescenceへ取り込んでいません'
 Require $renderer 'finalizePendingOpportunityExact\(\)[\s\S]{0,400}notePendingOpportunityFinalized[\s\S]{0,600}closeWithoutNormalCompletion\(\)[\s\S]{0,200}noteForeignSchedulerClosed' 'scheduler closeがdrain / pending opportunity finalizeより前に来ています'
+Require $renderer 'const long long measurementArmQpc = gpu::qpcTicks\(\);' 'canonical measurement window startをquiescence ack後にsampleしていません'
+Require $renderer 'armMeasurement\(\s*?
+?\s*measurementArmQpc, measurementArmQpc \+ duration\)' 'canonical windowのfreeze値がarm時点のsampleではありません'
+Reject $renderer 'armMeasurement\(callbackBegin' 'handshake評価を含むcallback begin QPCをcanonical window startにしています'
 Require $renderer 'openCurrentIssuanceGate\(\)[\s\S]{0,600}formalOpportunityCaptureActive\.store\(true' 'issuance gateがmeasurement arm後のopen siteと結びついていません'
 Require $renderer 'PrerollTransitionProgress::Waiting[\s\S]{0,200}update\(\);\s*\r?\n\s*return true' 'quiescence未成立時に待機せずarmしています'
 Require $renderer 'record\.token\.tokenSerial != scopeRecord\.tokenSerial' 'identity closureがtoken serialのexact一致で結合していません'
