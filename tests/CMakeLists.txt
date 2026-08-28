@@ -2290,6 +2290,13 @@ mvm_add_test(p2_b3_i0_exact_qualified_join_architecture
         "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i0-exact-qualified-join-architecture.ps1"
         -RepoRoot "${CMAKE_SOURCE_DIR}")
 
+# P2-D5-2/B3-I2: product判定を変えず、composition token mismatchのraw predicateを固定する。
+mvm_add_test(p2_b3_i2_composition_token_attribution_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i2-composition-token-attribution-architecture.ps1"
+        -RepoRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+
 # B3-I0 architecture guardのmutation test。guardが空振りしていないことを固定する。
 foreach(_p2_b3_i0_case IN ITEMS Good NegativeReceiptAbiRemoved NegativeReceiptSerialDerived NegativeReceiptExportRemoved NegativeReceiptNotOneShot NegativeHookTakeReceiptRemoved NegativeExactRecordLookupRemoved NegativeCommitOrderBypassesRecord NegativeReservationIdentityNotScheduler NegativeExpectedSerialSequential NegativeLatestRecordAuthority NegativeSequentialSerialEstimate NegativeQpcProximityJoin)
     string(TOLOWER "${_p2_b3_i0_case}" _p2_b3_i0_name)

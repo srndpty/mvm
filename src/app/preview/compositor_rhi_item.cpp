@@ -126,7 +126,14 @@ public:
                 TerminalRenderExitDiagnosticStage::NativeTokenDestructorEntered,
                 std::memory_order_release);
         const auto hook = state_->nativePresentHook;
-        if (!valid_ || !hook || !hook->setCompositionToken(token_))
+        const bool succeeded = valid_ && hook && hook->setCompositionToken(token_);
+        {
+            std::lock_guard<std::mutex> lock(state_->compositionTokenAttributionMutex);
+            state_->latestCompositionTokenPublication = {
+                true, succeeded, static_cast<std::uint32_t>(GetCurrentThreadId()), gpu::qpcTicks(),
+                token_};
+        }
+        if (!succeeded)
             state_->nativePresentTokenSetFailureCount.fetch_add(1, std::memory_order_relaxed);
         if (terminalExitTracking)
             state_->terminalRenderExitDiagnosticStage.store(
@@ -1169,6 +1176,11 @@ private:
                                                                  std::memory_order_acq_rel)) {
             std::string hookError;
             state_->nativePresentTokenSetFailureCount.store(0, std::memory_order_relaxed);
+            {
+                std::lock_guard<std::mutex> lock(state_->compositionTokenAttributionMutex);
+                state_->latestCompositionTokenPublication = {};
+                state_->compositionTokenJoinFailure = {};
+            }
             if (!state_->nativePresentHook || !state_->nativePresentHook->beginCapture(hookError)) {
                 fail(hookError.empty() ? "native Present capture envelopeを開始できません"
                                        : hookError);
@@ -1723,11 +1735,36 @@ void CompositorRhiItem::recordFrameSwapped() {
         exactReceiptAvailable = true;
     }
 
+    const auto captureJoinFailureAttribution =
+        [&](gpu::QualifiedCommitRuntimeAttribution joinAttribution, long long frameSwappedQpc,
+            bool ignoredBoundarySwap) {
+            std::lock_guard<std::mutex> attributionLock(state_->compositionTokenAttributionMutex);
+            if (state_->compositionTokenJoinFailure.captured)
+                return;
+            auto& failure = state_->compositionTokenJoinFailure;
+            failure.captured = true;
+            failure.join = joinAttribution;
+            failure.nativeRecord = nativeRecord;
+            failure.receipt = receipt;
+            failure.latestPublication = state_->latestCompositionTokenPublication;
+            failure.frameSwappedThreadId = static_cast<std::uint32_t>(GetCurrentThreadId());
+            failure.frameSwappedQpc = frameSwappedQpc;
+            failure.formalEnvelopeActive = formalEnvelopeActive;
+            failure.ignoredBoundarySwap = ignoredBoundarySwap;
+            failure.prerollActive =
+                state_->formalOpportunityEnvelopePrerollActive.load(std::memory_order_acquire);
+        };
+
     const bool ignoredFormalBoundarySwap =
         state_->formalOpportunityIgnoreNextSwap.exchange(false, std::memory_order_acq_rel);
     if (ignoredFormalBoundarySwap) {
         std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
         if (state_->formalQualifiedCommitJoin.hasActiveReservation()) {
+            auto attribution = state_->formalQualifiedCommitJoin.runtimeAttribution();
+            attribution.failurePhase = gpu::QualifiedCommitFailurePhase::PreJoinBoundarySwap;
+            attribution.failurePredicate =
+                gpu::QualifiedCommitFailurePredicate::BoundarySwapRequiresNoActiveReservation;
+            captureJoinFailureAttribution(attribution, gpu::qpcTicks(), true);
             failQualifiedJoin("boundary swapがactive reservationを破棄しようとしました");
             return;
         }
@@ -1777,6 +1814,9 @@ void CompositorRhiItem::recordFrameSwapped() {
             }
             error = state_->formalOpportunityScheduler.error();
             if (qualified != gpu::QualifiedCommitResult::QualifiedCommit) {
+                captureJoinFailureAttribution(
+                    state_->formalQualifiedCommitJoin.runtimeAttribution(), swapQpc,
+                    ignoredFormalBoundarySwap);
                 failQualifiedJoin(
                     gpu::qualifiedCommitErrorName(state_->formalQualifiedCommitJoin.error()));
                 return;

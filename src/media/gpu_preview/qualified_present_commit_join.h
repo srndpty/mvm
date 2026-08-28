@@ -7,6 +7,36 @@ namespace mvm::gpu {
 
 enum class QualifiedCommitResult { Rejected = 0, QualifiedCommit };
 
+enum class QualifiedCommitFailurePhase {
+    None = 0,
+    PreJoinBoundarySwap,
+    BindNativePresent,
+    CommitFrameSwapped,
+};
+
+enum class QualifiedCommitFailurePredicate {
+    None = 0,
+    BoundarySwapRequiresNoActiveReservation,
+    BindStateRenderCompleted,
+    BindRecordPresent,
+    BindTokenPresent,
+    BindIntentOrdinalExact,
+    BindIntentOrdinalEqualsReservation,
+    BindTokenSerialEqualsReservation,
+    BindPresentSerialNonzero,
+    BindSwapchainIdentityNonzero,
+    BindHresultSucceeded,
+    BindSwapchainIdentityPinned,
+    CommitStateNativePresentBound,
+    CommitFrameSwappedObserved,
+    CommitReservationIdEqualsReservation,
+    CommitIntentOrdinalEqualsReservation,
+    CommitTokenSerialEqualsReservation,
+    CommitPresentSerialEqualsNative,
+    CommitSwapchainIdentityEqualsNative,
+    CommitHresultEqualsNative,
+};
+
 enum class QualifiedCommitError {
     None = 0,
     EnvelopeNotStarted,
@@ -56,6 +86,19 @@ struct QualifiedFrameSwappedEvidence {
     std::int32_t hresult = 0;
 };
 
+// B3-I2 diagnostic-only。joinに渡されたraw値をそのまま保持し、identityの
+// 補完・nearest/latest lookup・serial推定は行わない。
+struct QualifiedCommitRuntimeAttribution {
+    QualifiedCommitReservation reservation{};
+    QualifiedNativePresentEvidence nativePresent{};
+    QualifiedFrameSwappedEvidence frameSwapped{};
+    bool nativePresentObserved = false;
+    bool frameSwappedObserved = false;
+    QualifiedCommitFailurePhase failurePhase = QualifiedCommitFailurePhase::None;
+    QualifiedCommitFailurePredicate failurePredicate = QualifiedCommitFailurePredicate::None;
+    QualifiedCommitError error = QualifiedCommitError::None;
+};
+
 class ExactQualifiedCommitJoin {
 public:
     bool startEnvelope();
@@ -75,11 +118,18 @@ public:
 
     QualifiedCommitError error() const { return error_; }
 
+    const QualifiedCommitRuntimeAttribution& runtimeAttribution() const { return attribution_; }
+
 private:
     enum class State { Idle, Reserved, RenderCompleted, NativePresentBound, Committed };
 
     bool fail(QualifiedCommitError error);
+    bool failAt(QualifiedCommitFailurePhase phase, QualifiedCommitFailurePredicate predicate,
+                QualifiedCommitError error);
     QualifiedCommitResult reject(QualifiedCommitError error);
+    QualifiedCommitResult rejectAt(QualifiedCommitFailurePhase phase,
+                                   QualifiedCommitFailurePredicate predicate,
+                                   QualifiedCommitError error);
     bool matchesReservation(std::uint64_t reservationId, long long intentOrdinal,
                             std::uint64_t tokenSerial) const;
 
@@ -90,9 +140,12 @@ private:
     std::uint64_t expectedPresentSerial_ = 0;
     std::int32_t expectedHresult_ = 0;
     std::uint64_t boundSwapchainIdentity_ = 0;
+    QualifiedCommitRuntimeAttribution attribution_{};
 };
 
 const char* qualifiedCommitErrorName(QualifiedCommitError error);
+const char* qualifiedCommitFailurePhaseName(QualifiedCommitFailurePhase phase);
+const char* qualifiedCommitFailurePredicateName(QualifiedCommitFailurePredicate predicate);
 
 } // namespace mvm::gpu
 

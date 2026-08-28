@@ -555,3 +555,79 @@ swap ordinal mismatchで`dequeued_count`が増えず、active rendered reservati
 source coverage fatal後は元のfatal reasonを維持したnon-normal cleanupでqueueをclosedにし、active
 reservationとunissued tailを保存する。architecture guardはdequeueをswap validationより前へ移すmutationを
 拒否する。canonical W3/live captureは引き続き未実施である。
+
+## 12. B3-I2 Composition Token Runtime Attribution
+
+I2はdiagnostic-only sliceである。I0/I1 queue semantics、joinのaccept/reject、FATAL挙動、product counter、
+required set、FinalState/display authorityは変更しない。nearest/latest/fallback、QPC proximity、serial推定も
+追加しない。
+
+### 12.1 `COMPOSITION_TOKEN_MISMATCH` predicate inventory
+
+source上で同errorを生成できるpredicateは次の4個に閉じている。
+
+| phase | predicate | 比較 |
+|---|---|---|
+| `BIND_NATIVE_PRESENT` | `NATIVE_TOKEN_PRESENT` | native recordにcomposition tokenがある |
+| `BIND_NATIVE_PRESENT` | `NATIVE_INTENT_ORDINAL_VALID` | native recordのintent ordinal provenanceがvalid |
+| `BIND_NATIVE_PRESENT` | `NATIVE_TOKEN_SERIAL_EQUALS_RESERVATION` | native token serialとactive reservationが一致 |
+| `COMMIT_FRAME_SWAPPED` | `RECEIPT_TOKEN_SERIAL_EQUALS_RESERVATION` | one-shot receipt token serialとactive reservationが一致 |
+
+従来は最初の2 predicateが1分岐へ畳まれていた。I2ではreturn/errorを変えずに分岐を分け、phaseとpredicateを
+raw evidenceへ記録する。reservation、native record、frameSwapped receiptの各id、token presence/validity、
+swapchain identity、HRESULTに加え、setToken/Present/frameSwapped threadとQPCをartifactへ保存する。
+
+token lifetimeのsource-level順序は次である。
+
+```text
+render callback
+  -> NativePresentTokenCaptureでtokenを構築
+  -> destructorが同じrender threadでsetToken exportを同期呼出し
+  -> Qt thread_local pending tokenへcopy
+  -> actual Present直前にone-shot consumeしnative recordへcopy、pendingをreset
+  -> Present return直後にrecordからthread_local receiptへcopy
+  -> DirectConnection frameSwappedが同じthreadでreceiptをone-shot consume/reset
+```
+
+pending tokenが残った状態の再set、receipt未consumeで次Present、capture end時のpending/receiptは既存counterで
+duplicate/staleとしてfail-closeする。boundary/preroll Presentも同じringへ入り、intent scope ledgerのexact
+producer recordとraw token serialで区別する。
+
+### 12.2 noncanonical runtime attribution
+
+同条件の短時間formal Playbackを実施したが、I2後の2 runはいずれも元の
+`COMPOSITION_TOKEN_MISMATCH`を再現せず、join前の次のFATALへ到達した。
+
+```text
+boundary swapがactive reservationを破棄しようとしました
+```
+
+両runともcapture envelopeは`FOREIGN_PRE_MEASUREMENT` 1 Presentの次に
+`CURRENT_MEASUREMENT` reservation付きPresentを記録した。measurement開始時の
+`formalOpportunityIgnoreNextSwap`がactive reservationのあるcallbackでconsumeされ、BIND/COMMITへ入る前に
+停止した。このためI2 attributionの`failure_phase` / `failure_predicate`は`NONE`であり、元runの4候補を
+推定で1個へ狭めない。queueは`qualified=0 / dequeued=0 / active=1`、conservation validを保持した。
+
+pre-join fatalにも同じraw snapshotを適用した最終確認runでは、次をexactに記録した。
+
+```text
+failure phase/predicate  PRE_JOIN_BOUNDARY_SWAP /
+                         BOUNDARY_SWAP_REQUIRES_NO_ACTIVE_RESERVATION
+active reservation       id=1 intent=0 token=84
+native Present record    present=2 intent=0(valid) token=84(present)
+frameSwapped receipt     present=2 intent=0(valid) token=84(present)
+swapchain / HRESULT      native == receipt / 0 == 0
+thread                    setToken == Present == frameSwapped == 9692
+QPC order                 setToken < Present enter < Present return < frameSwapped
+capture sequence          present 1 token 83 FOREIGN_PRE_MEASUREMENT
+                         present 2 token 84 CURRENT_MEASUREMENT
+receipt counters          missing/duplicate/stale = 0/0/0
+queue                     qualified=0 dequeued=0 active=1 tail=179 conservation valid
+```
+
+このrunではsetTokenからreceiptまでtoken identityは一致し、intervening Present、one-shot loss/reset failure、
+preroll tokenのcurrent Presentへの混入は観測されなかった。停止点はtoken comparisonより前であるため、
+元runの`COMPOSITION_TOKEN_MISMATCH` predicateの証明には使わない。
+
+これはretryで成功cohortを選別せず、別のexact runtime orderingとして保存する。元のmismatch predicateは
+**未確定**であり、production fixは設計しない。fresh W3 canonical 3/3にも進まない。

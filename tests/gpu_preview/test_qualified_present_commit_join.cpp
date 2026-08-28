@@ -6,6 +6,8 @@ namespace {
 
 using Error = mvm::gpu::QualifiedCommitError;
 using Join = mvm::gpu::ExactQualifiedCommitJoin;
+using Phase = mvm::gpu::QualifiedCommitFailurePhase;
+using Predicate = mvm::gpu::QualifiedCommitFailurePredicate;
 using Result = mvm::gpu::QualifiedCommitResult;
 
 int failures = 0;
@@ -46,6 +48,9 @@ void positive() {
           "expected_present_serialがactual native record由来ではありません");
     check(join.boundSwapchainIdentity() == 0x12340000,
           "actual swapchain identityをcapture envelopeへ固定できません");
+    check(join.runtimeAttribution().failurePhase == Phase::None &&
+              join.runtimeAttribution().failurePredicate == Predicate::None,
+          "positive joinへfailure attributionを混入しました");
 }
 
 template<typename Mutate>
@@ -83,6 +88,48 @@ void nativeNegatives() {
                  [](auto& value) { value.swapchainIdentity = 0; });
     rejectNative(Error::PresentFailed, "Present failureを拒否しません",
                  [](auto& value) { value.hresult = static_cast<std::int32_t>(0x80004005U); });
+}
+
+void compositionPredicateAttribution() {
+    {
+        auto join = renderedJoin();
+        auto evidence = nativePresent();
+        evidence.tokenPresent = false;
+        check(!join.bindNativePresent(evidence) &&
+                  join.runtimeAttribution().failurePhase == Phase::BindNativePresent &&
+                  join.runtimeAttribution().failurePredicate == Predicate::BindTokenPresent,
+              "bind token-present predicateを分離できません");
+    }
+    {
+        auto join = renderedJoin();
+        auto evidence = nativePresent();
+        evidence.intentOrdinalExact = false;
+        check(!join.bindNativePresent(evidence) &&
+                  join.runtimeAttribution().failurePhase == Phase::BindNativePresent &&
+                  join.runtimeAttribution().failurePredicate == Predicate::BindIntentOrdinalExact,
+              "bind intent-validity predicateを分離できません");
+    }
+    {
+        auto join = renderedJoin();
+        auto evidence = nativePresent();
+        evidence.tokenSerial = 9002;
+        check(!join.bindNativePresent(evidence) &&
+                  join.runtimeAttribution().failurePhase == Phase::BindNativePresent &&
+                  join.runtimeAttribution().failurePredicate ==
+                      Predicate::BindTokenSerialEqualsReservation,
+              "bind token serial predicateを分離できません");
+    }
+    {
+        auto join = renderedJoin();
+        check(join.bindNativePresent(nativePresent()), "commit attribution前提が壊れています");
+        auto evidence = frameSwapped();
+        evidence.tokenSerial = 9002;
+        check(join.commitFrameSwapped(evidence) == Result::Rejected &&
+                  join.runtimeAttribution().failurePhase == Phase::CommitFrameSwapped &&
+                  join.runtimeAttribution().failurePredicate ==
+                      Predicate::CommitTokenSerialEqualsReservation,
+              "commit receipt token serial predicateを分離できません");
+    }
 }
 
 void commitNegatives() {
@@ -178,6 +225,7 @@ void pinnedSwapchain() {
 int main() {
     positive();
     nativeNegatives();
+    compositionPredicateAttribution();
     commitNegatives();
     lifecycleNegatives();
     pinnedSwapchain();

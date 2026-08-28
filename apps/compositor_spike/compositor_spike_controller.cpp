@@ -700,11 +700,11 @@ bool CompositorSpikeController::closeVBlankMappingSupportAfterTeardown() {
     const auto stopObserver = [this] {
         vblankObserver_.stop();
         vblankObserverRunning_ = false;
-        vblankIdentityEnd_ = gpu::resolveWindowOutput(
-                                 item_ && item_->window()
-                                     ? reinterpret_cast<void*>(item_->window()->winId())
-                                     : nullptr)
-                                 .identity;
+        vblankIdentityEnd_ =
+            gpu::resolveWindowOutput(item_ && item_->window()
+                                         ? reinterpret_cast<void*>(item_->window()->winId())
+                                         : nullptr)
+                .identity;
     };
     // W4-C2はscheduler/capture-gate因果診断であり、W2のphysical mapping supportを
     // authorityにしない。terminal後のDWM sleepをsuccessor failureへ変換しない。
@@ -1137,7 +1137,8 @@ void CompositorSpikeController::tick() {
             phase_ = Phase::MeasureStopWait;
             if (!state_->measurementStopCaptured.load(std::memory_order_acquire)) {
                 // W4-C3 amend 4。stop side effectより前にownershipをclaimする。
-                const StopClaimResult claim = claimStopCause(*state_, StopArbitration::ExplicitStop);
+                const StopClaimResult claim =
+                    claimStopCause(*state_, StopArbitration::ExplicitStop);
                 explicitStopClaim_ = claim;
                 // flagとclaim recordを同じpublication protocolで発行する。
                 publishStopRequest(*state_, StopArbitration::ExplicitStop, claim);
@@ -1171,9 +1172,9 @@ void CompositorSpikeController::tick() {
                 if (!config_.formalSchedulerInvocationLedger) {
                     const long long now = gpu::qpcTicks();
                     const long long untilEnd = std::max(0LL, frozenMeasurementEndQpc_ - now);
-                    const long long untilEndMs = static_cast<long long>(std::ceil(
-                        static_cast<double>(untilEnd) * 1000.0 /
-                        static_cast<double>(gpu::qpcFrequency())));
+                    const long long untilEndMs =
+                        static_cast<long long>(std::ceil(static_cast<double>(untilEnd) * 1000.0 /
+                                                         static_cast<double>(gpu::qpcFrequency())));
                     const long long timeoutMs = untilEndMs + kVBlankSuccessorLivenessMs;
                     const bool successorConfirmed = vblankObserver_.waitForSuccessor(
                         frozenMeasurementEndQpc_, timeoutMs, vblankSuccessor_);
@@ -1246,13 +1247,12 @@ void CompositorSpikeController::tick() {
                 !formalOpportunity || sameDwmAuthority(dwmTimingStart_, dwmTimingStop_);
             const long long envelopeCloseQpc =
                 state_->nativePresentEnvelopeCloseQpc.load(std::memory_order_acquire);
-            const bool envelopeClosedAfterSuccessor = config_.formalSchedulerInvocationLedger
-                                                          ? envelopeCloseQpc >= measurementStop_.qpc
-                                                          : vblankSuccessor_.completed &&
-                                                                vblankSuccessor_.sample.qpc >=
-                                                                    frozenMeasurementEndQpc_ &&
-                                                                envelopeCloseQpc >=
-                                                                    vblankSuccessor_.sample.qpc;
+            const bool envelopeClosedAfterSuccessor =
+                config_.formalSchedulerInvocationLedger
+                    ? envelopeCloseQpc >= measurementStop_.qpc
+                    : vblankSuccessor_.completed &&
+                          vblankSuccessor_.sample.qpc >= frozenMeasurementEndQpc_ &&
+                          envelopeCloseQpc >= vblankSuccessor_.sample.qpc;
             const bool measurementSucceeded = authorityStable && incrementalMapperResolved &&
                                               envelopeClosedAfterSuccessor &&
                                               !state_->fatal.load(std::memory_order_acquire);
@@ -1272,9 +1272,8 @@ void CompositorSpikeController::tick() {
                     : QStringLiteral("incremental presentation mapperを一意に解決できません"),
                 !measurementSucceeded);
         } else if (phaseTimer_.elapsed() >= 15000) {
-            std::fprintf(stderr,
-                         "W4-C2_DIAGNOSTIC_EXIT6_ENVELOPE_STOP_TIMEOUT: "
-                         "native Present capture envelopeが15秒以内に停止しませんでした\n");
+            std::fprintf(stderr, "W4-C2_DIAGNOSTIC_EXIT6_ENVELOPE_STOP_TIMEOUT: "
+                                 "native Present capture envelopeが15秒以内に停止しませんでした\n");
             exitCode_ = 6;
             phase_ = Phase::Done;
             timer_.stop();
@@ -1344,15 +1343,13 @@ void CompositorSpikeController::tick() {
         item_->update();
         if (state_->teardownComplete.load()) {
             if (!closeVBlankMappingSupportAfterTeardown()) {
-                std::fprintf(stderr,
-                             "W4-C2_DIAGNOSTIC_EXIT6_CLOSE_MAPPING_FAILURE: "
-                             "VBlank mapping supportの終了に失敗しました\n");
+                std::fprintf(stderr, "W4-C2_DIAGNOSTIC_EXIT6_CLOSE_MAPPING_FAILURE: "
+                                     "VBlank mapping supportの終了に失敗しました\n");
                 exitCode_ = 6;
             }
             if (!writeMetrics()) {
-                std::fprintf(stderr,
-                             "W4-C2_DIAGNOSTIC_EXIT6_METRICS_WRITE_FAILURE: "
-                             "最終metricsの書込みに失敗しました\n");
+                std::fprintf(stderr, "W4-C2_DIAGNOSTIC_EXIT6_METRICS_WRITE_FAILURE: "
+                                     "最終metricsの書込みに失敗しました\n");
                 exitCode_ = 6;
             }
             phase_ = Phase::Done;
@@ -2247,8 +2244,8 @@ bool CompositorSpikeController::writeMetrics() {
             {"canonical_performance_authority", false},
             {"captured", captured},
             {"witness_count", captured ? 1 : 0},
-            {"duplicate_witness_count",
-             static_cast<qint64>(state_->stopWitnessDuplicateCount.load(std::memory_order_seq_cst))},
+            {"duplicate_witness_count", static_cast<qint64>(state_->stopWitnessDuplicateCount.load(
+                                            std::memory_order_seq_cst))},
             {"coalesced_stop_publication_count",
              static_cast<qint64>(
                  state_->coalescedStopPublicationCount.load(std::memory_order_seq_cst))},
@@ -2266,35 +2263,33 @@ bool CompositorSpikeController::writeMetrics() {
             {"terminal_required_intent_membership", witness.terminal.requiredIntentMembership},
             {"stop_arbitration",
              QJsonObject{
-                 {"previous", QString::fromLatin1(stopArbitrationName(witness.arbitrationPrevious))},
+                 {"previous",
+                  QString::fromLatin1(stopArbitrationName(witness.arbitrationPrevious))},
                  {"claimed", QString::fromLatin1(stopArbitrationName(witness.arbitrationClaimed))},
                  {"claim_succeeded", witness.arbitrationClaimSucceeded},
                  {"claim_recorded", witness.claimRecorded},
                  {"claim_source",
-                  QString::fromLatin1(witness.claimRecorded
-                                          ? (witness.claimFromPublicationRecord
-                                                 ? "PUBLICATION_RECORD"
-                                                 : "THIS_CALL_SITE")
-                                          : "NONE")},
+                  QString::fromLatin1(witness.claimRecorded ? (witness.claimFromPublicationRecord
+                                                                   ? "PUBLICATION_RECORD"
+                                                                   : "THIS_CALL_SITE")
+                                                            : "NONE")},
                  {"measurement_start_state",
                   QString::fromLatin1(stopArbitrationName(witness.measurementStartState))},
                  {"reset_count_during_measurement",
                   static_cast<qint64>(witness.resetCountDuringMeasurement)}}},
             {"measurement_start",
              QJsonObject{{"explicit_stop_publish_serial",
-                          static_cast<qint64>(
-                              witness.measurementStartExplicitStopPublishSerial)},
+                          static_cast<qint64>(witness.measurementStartExplicitStopPublishSerial)},
                          {"fatal_publish_serial",
                           static_cast<qint64>(witness.measurementStartFatalPublishSerial)}}},
-            {"pre",
-             QJsonObject{
-                 {"capture_gate_open", witness.preCaptureGateOpen},
-                 {"explicit_stop_requested", witness.preExplicitStopRequested},
-                 {"planned_window_end_reached", witness.prePlannedWindowEndReached},
-                 {"fatal_latched", witness.preFatalLatched},
-                 {"explicit_stop_publish_serial",
-                  static_cast<qint64>(witness.preExplicitStopPublishSerial)},
-                 {"fatal_publish_serial", static_cast<qint64>(witness.preFatalPublishSerial)}}},
+            {"pre", QJsonObject{{"capture_gate_open", witness.preCaptureGateOpen},
+                                {"explicit_stop_requested", witness.preExplicitStopRequested},
+                                {"planned_window_end_reached", witness.prePlannedWindowEndReached},
+                                {"fatal_latched", witness.preFatalLatched},
+                                {"explicit_stop_publish_serial",
+                                 static_cast<qint64>(witness.preExplicitStopPublishSerial)},
+                                {"fatal_publish_serial",
+                                 static_cast<qint64>(witness.preFatalPublishSerial)}}},
             {"action",
              QJsonObject{{"formal_opportunity_domain_reached_published",
                           witness.terminal.formalOpportunityDomainReachedPublished},
@@ -2339,8 +2334,7 @@ bool CompositorSpikeController::writeMetrics() {
     }
     const auto scopeRecordMatchesNative = [](const NativePresentIntentScopeRecord& producer,
                                              const MvmNativePresentRecord& native) {
-        if (producer.transportDisposition !=
-            gpu::FormalIntentTransportDisposition::Transport) {
+        if (producer.transportDisposition != gpu::FormalIntentTransportDisposition::Transport) {
             const bool suppressionExact =
                 producer.transportDisposition ==
                     gpu::FormalIntentTransportDisposition::SuppressDuplicateCallback ||
@@ -2349,8 +2343,7 @@ bool CompositorSpikeController::writeMetrics() {
             return suppressionExact && native.intentOrdinalValid == 0 &&
                    native.token.intentOrdinalValid == 0;
         }
-        return producer.transportDisposition ==
-                   gpu::FormalIntentTransportDisposition::Transport &&
+        return producer.transportDisposition == gpu::FormalIntentTransportDisposition::Transport &&
                native.intentOrdinalValid == 1 && native.token.intentOrdinalValid == 1 &&
                producer.intentOrdinal == native.intentOrdinal;
     };
@@ -2468,9 +2461,8 @@ bool CompositorSpikeController::writeMetrics() {
         const auto scope = intentScopeByToken.find(record.token.tokenSerial);
         const bool exactScope = scope != intentScopeByToken.end() && scope->second.size() == 1 &&
                                 scopeRecordMatchesNative(scope->second.front(), record);
-        const bool suppressed =
-            exactScope && scope->second.front().transportDisposition !=
-                              gpu::FormalIntentTransportDisposition::Transport;
+        const bool suppressed = exactScope && scope->second.front().transportDisposition !=
+                                                  gpu::FormalIntentTransportDisposition::Transport;
         const bool modeValid = formalIntentMode
                                    ? (record.token.intentOrdinalValid == 1 || suppressed)
                                    : record.token.intentOrdinalValid == 0;
@@ -2491,11 +2483,9 @@ bool CompositorSpikeController::writeMetrics() {
             {"native_present_intent_valid", record.intentOrdinalValid != 0},
             {"formal_transport_eligible", exactScope && !suppressed},
             {"suppression_exact", suppressed},
-            {"transport_disposition",
-             exactScope
-                 ? gpu::formalIntentTransportDispositionName(
-                       scope->second.front().transportDisposition)
-                 : "UNRESOLVED"},
+            {"transport_disposition", exactScope ? gpu::formalIntentTransportDispositionName(
+                                                       scope->second.front().transportDisposition)
+                                                 : "UNRESOLVED"},
         });
         nativePresentRecords.append(nativePresentRecordJson(record));
     }
@@ -2548,6 +2538,87 @@ bool CompositorSpikeController::writeMetrics() {
     const bool captureEnvelopeUpperClosed =
         vblankSuccessor_.completed && vblankSuccessor_.sample.qpc >= frozenMeasurementEndQpc_ &&
         captureEnvelopeCloseQpc >= vblankSuccessor_.sample.qpc;
+    CompositionTokenJoinFailureAttribution tokenFailure;
+    {
+        std::lock_guard<std::mutex> lock(state_->compositionTokenAttributionMutex);
+        tokenFailure = state_->compositionTokenJoinFailure;
+    }
+    const auto& joinAttribution = tokenFailure.join;
+    const auto& reservationEvidence = joinAttribution.reservation;
+    const auto& nativeEvidence = joinAttribution.nativePresent;
+    const auto& swapEvidence = joinAttribution.frameSwapped;
+    const auto& rawNativeRecord = tokenFailure.nativeRecord;
+    const auto& rawReceipt = tokenFailure.receipt;
+    const auto& publication = tokenFailure.latestPublication;
+    const QJsonObject compositionTokenRuntimeAttribution{
+        {"schema", "mvm-p2-d5-2-b3-i2-composition-token-runtime-attribution-1"},
+        {"diagnostic_only", true},
+        {"identity_authority", false},
+        {"nearest_latest_fallback_used", false},
+        {"serial_inference_used", false},
+        {"captured", tokenFailure.captured},
+        {"failure_phase",
+         QString::fromLatin1(gpu::qualifiedCommitFailurePhaseName(joinAttribution.failurePhase))},
+        {"failure_predicate", QString::fromLatin1(gpu::qualifiedCommitFailurePredicateName(
+                                  joinAttribution.failurePredicate))},
+        {"failure_error",
+         QString::fromLatin1(gpu::qualifiedCommitErrorName(joinAttribution.error))},
+        {"reservation",
+         QJsonObject{{"reservation_id", QString::number(reservationEvidence.reservationId)},
+                     {"intent_ordinal", reservationEvidence.intentOrdinal},
+                     {"token_serial", QString::number(reservationEvidence.tokenSerial)}}},
+        {"native_present_record",
+         QJsonObject{{"record_present", nativeEvidence.recordPresent},
+                     {"reservation_id_available", false},
+                     {"present_serial", QString::number(rawNativeRecord.presentSerial)},
+                     {"swapchain_identity", QString::number(rawNativeRecord.swapchainIdentity)},
+                     {"hresult", rawNativeRecord.hresult},
+                     {"token_present", rawNativeRecord.tokenPresent != 0},
+                     {"intent_ordinal", QString::number(rawNativeRecord.intentOrdinal)},
+                     {"intent_ordinal_valid", rawNativeRecord.intentOrdinalValid != 0},
+                     {"token_serial", QString::number(rawNativeRecord.token.tokenSerial)},
+                     {"present_thread_id", static_cast<qint64>(rawNativeRecord.threadId)},
+                     {"present_enter_qpc", rawNativeRecord.presentEnterQpc},
+                     {"present_return_qpc", rawNativeRecord.presentReturnQpc}}},
+        {"frame_swapped_receipt",
+         QJsonObject{
+             {"observed", swapEvidence.observed},
+             {"commit_evidence_reservation_id", QString::number(swapEvidence.reservationId)},
+             {"present_serial", QString::number(rawReceipt.presentSerial)},
+             {"swapchain_identity", QString::number(rawReceipt.swapchainIdentity)},
+             {"hresult", rawReceipt.hresult},
+             {"token_present", rawReceipt.tokenPresent != 0},
+             {"intent_ordinal", QString::number(rawReceipt.intentOrdinal)},
+             {"intent_ordinal_valid", rawReceipt.intentOrdinalValid != 0},
+             {"token_serial", QString::number(rawReceipt.tokenSerial)},
+             {"callback_thread_id", static_cast<qint64>(tokenFailure.frameSwappedThreadId)},
+             {"callback_qpc", tokenFailure.frameSwappedQpc}}},
+        {"latest_set_token_publication",
+         QJsonObject{{"observed", publication.observed},
+                     {"succeeded", publication.succeeded},
+                     {"thread_id", static_cast<qint64>(publication.threadId)},
+                     {"qpc", publication.qpc},
+                     {"token_serial", QString::number(publication.token.tokenSerial)},
+                     {"intent_ordinal", QString::number(publication.token.intentOrdinal)},
+                     {"intent_ordinal_valid", publication.token.intentOrdinalValid != 0},
+                     {"output_frame", publication.token.outputFrameNumber}}},
+        {"lifetime_checks",
+         QJsonObject{{"set_token_precedes_present",
+                      publication.observed && publication.qpc <= rawNativeRecord.presentEnterQpc},
+                     {"set_token_and_present_same_thread",
+                      publication.observed && publication.threadId == rawNativeRecord.threadId},
+                     {"present_and_frame_swapped_same_thread",
+                      rawNativeRecord.threadId == tokenFailure.frameSwappedThreadId},
+                     {"latest_publication_token_equals_native_record",
+                      publication.token.tokenSerial == rawNativeRecord.token.tokenSerial},
+                     {"native_record_equals_receipt_present_serial",
+                      rawNativeRecord.presentSerial == rawReceipt.presentSerial},
+                     {"native_record_equals_receipt_token_serial",
+                      rawNativeRecord.token.tokenSerial == rawReceipt.tokenSerial},
+                     {"formal_envelope_active", tokenFailure.formalEnvelopeActive},
+                     {"ignored_boundary_swap", tokenFailure.ignoredBoundarySwap},
+                     {"preroll_active", tokenFailure.prerollActive}}},
+    };
     const QJsonObject nativePresentHook{
         {"abi_version", static_cast<qint64>(MVM_NATIVE_PRESENT_HOOK_ABI_VERSION)},
         {"composition_token_size", static_cast<qint64>(sizeof(MvmNativePresentCompositionToken))},
@@ -2656,15 +2727,12 @@ bool CompositorSpikeController::writeMetrics() {
                    formalOpportunitySnapshot.requiredIntentQueue.plannedWindowEnded},
                   {"display_satisfaction_imported",
                    formalOpportunitySnapshot.requiredIntentQueue.displaySatisfactionImported},
-                  {"required_count",
-                   formalOpportunitySnapshot.requiredIntentQueue.requiredCount},
+                  {"required_count", formalOpportunitySnapshot.requiredIntentQueue.requiredCount},
                   {"issued_count", formalOpportunitySnapshot.requiredIntentQueue.issuedCount},
-                  {"rendered_count",
-                   formalOpportunitySnapshot.requiredIntentQueue.renderedCount},
+                  {"rendered_count", formalOpportunitySnapshot.requiredIntentQueue.renderedCount},
                   {"qualified_commit_count",
                    formalOpportunitySnapshot.requiredIntentQueue.qualifiedCommitCount},
-                  {"dequeued_count",
-                   formalOpportunitySnapshot.requiredIntentQueue.dequeuedCount},
+                  {"dequeued_count", formalOpportunitySnapshot.requiredIntentQueue.dequeuedCount},
                   {"active_reservation_count",
                    formalOpportunitySnapshot.requiredIntentQueue.activeReservationCount},
                   {"active_reservation_id",
@@ -2678,9 +2746,8 @@ bool CompositorSpikeController::writeMetrics() {
                    formalOpportunitySnapshot.requiredIntentQueue.unissuedTailCount},
                   {"conservation_valid",
                    formalOpportunitySnapshot.requiredIntentQueue.conservationValid},
-                  {"error",
-                   QString::fromLatin1(gpu::requiredIntentQueueErrorName(
-                       formalOpportunitySnapshot.requiredIntentQueue.error))},
+                  {"error", QString::fromLatin1(gpu::requiredIntentQueueErrorName(
+                                formalOpportunitySnapshot.requiredIntentQueue.error))},
               }},
              {"duplicate_transport_suppressed_count",
               state_->formalDuplicateTransportSuppressedCount.load(std::memory_order_relaxed)},
@@ -2716,6 +2783,7 @@ bool CompositorSpikeController::writeMetrics() {
                                                       : "INTENT_IDENTITY_ABI_V4_TRANSPORT_INVALID"},
              {"records", intentIdentityLedger},
          }},
+        {"composition_token_runtime_attribution", compositionTokenRuntimeAttribution},
         {"dirty_propagation",
          QJsonObject{
              {"schema", "mvm-p2-c3-a3-t2-dirty-propagation-1"},

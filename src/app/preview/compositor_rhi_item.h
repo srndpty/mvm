@@ -249,6 +249,29 @@ struct NativePresentIntentScopeRecord {
         gpu::FormalIntentTransportDisposition::Transport;
 };
 
+// B3-I2 diagnostic-only。setToken呼出し時点とfatal join時点のraw値を保存する。
+// identity authorityやproduct判定には接続しない。
+struct CompositionTokenPublicationAttribution {
+    bool observed = false;
+    bool succeeded = false;
+    std::uint32_t threadId = 0;
+    long long qpc = 0;
+    MvmNativePresentCompositionToken token{};
+};
+
+struct CompositionTokenJoinFailureAttribution {
+    bool captured = false;
+    gpu::QualifiedCommitRuntimeAttribution join;
+    MvmNativePresentRecord nativeRecord{};
+    MvmNativePresentFrameSwappedReceipt receipt{};
+    CompositionTokenPublicationAttribution latestPublication;
+    std::uint32_t frameSwappedThreadId = 0;
+    long long frameSwappedQpc = 0;
+    bool formalEnvelopeActive = false;
+    bool ignoredBoundarySwap = false;
+    bool prerollActive = false;
+};
+
 inline const char* nativePresentIntentScopeName(NativePresentIntentScope scope) {
     switch (scope) {
     case NativePresentIntentScope::ForeignPreMeasurement:
@@ -467,6 +490,9 @@ struct CompositorSpikeState {
     std::mutex eligibilityPreflightMutex;
     PresentationEligibilityPreflight eligibilityPreflight;
     std::atomic<long long> nativePresentTokenSetFailureCount{0};
+    std::mutex compositionTokenAttributionMutex;
+    CompositionTokenPublicationAttribution latestCompositionTokenPublication;
+    CompositionTokenJoinFailureAttribution compositionTokenJoinFailure;
     std::atomic<long long> latestCompletedRenderOrdinal{-1};
     std::atomic<long long> latestSubmittedRenderOrdinal{-1};
     std::atomic<long long> latestSubmittedOutputFrame{-1};
@@ -573,8 +599,8 @@ inline void publishStopRequest(CompositorSpikeState& state, StopArbitration caus
         state.coalescedStopPublicationCount.fetch_add(1, std::memory_order_seq_cst);
         return;
     }
-    state.stopPublicationRecord = StopPublicationRecord{true, cause, claim.previous,
-                                                        claim.succeeded, claim.publishSerial};
+    state.stopPublicationRecord =
+        StopPublicationRecord{true, cause, claim.previous, claim.succeeded, claim.publishSerial};
     state.measurementStopRequested.store(true, std::memory_order_release);
 }
 
