@@ -2646,6 +2646,11 @@ bool CompositorSpikeController::writeMetrics() {
     unsigned long long currentQueueStartEventSerial = 0;
     unsigned long long measurementArmedEventSerial = 0;
     unsigned long long issuanceOpenEventSerial = 0;
+    long long admissionCloseEventQpc = 0;
+    long long quiescenceAckEventQpc = 0;
+    long long currentQueueStartEventQpc = 0;
+    long long measurementArmedEventQpc = 0;
+    long long issuanceOpenEventQpc = 0;
     long long foreignCallbackCount = 0;
     long long foreignCallbackAfterQuiescenceAckCount = 0;
     long long currentCallbackBeforeIssuanceOpenCount = 0;
@@ -2656,18 +2661,23 @@ bool CompositorSpikeController::writeMetrics() {
         switch (event.kind) {
         case BoundarySwapEventKind::PrerollAdmissionClosed:
             admissionCloseEventSerial = event.eventSerial;
+            admissionCloseEventQpc = event.qpc;
             break;
         case BoundarySwapEventKind::PrerollQuiescenceAck:
             quiescenceAckEventSerial = event.eventSerial;
+            quiescenceAckEventQpc = event.qpc;
             break;
         case BoundarySwapEventKind::RequiredQueueStarted:
             currentQueueStartEventSerial = event.eventSerial;
+            currentQueueStartEventQpc = event.qpc;
             break;
         case BoundarySwapEventKind::MeasurementArmed:
             measurementArmedEventSerial = event.eventSerial;
+            measurementArmedEventQpc = event.qpc;
             break;
         case BoundarySwapEventKind::CurrentIssuanceOpened:
             issuanceOpenEventSerial = event.eventSerial;
+            issuanceOpenEventQpc = event.qpc;
             break;
         default:
             break;
@@ -2724,9 +2734,20 @@ bool CompositorSpikeController::writeMetrics() {
         quiescenceAckEventSerial < currentQueueStartEventSerial &&
         currentQueueStartEventSerial < measurementArmedEventSerial &&
         measurementArmedEventSerial < issuanceOpenEventSerial;
+    // B3-I5B amendment 2。canonical measurement start authorityは
+    // ack -> current queue start -> canonical start -> measurement arm -> issuance open
+    // のQPC順序を満たさなければならない。current queue initializationはwindowの外である。
+    const bool canonicalStartOrderExact =
+        prerollTransition.quiescenceAckQpc > 0 && currentQueueStartEventQpc > 0 &&
+        prerollTransition.canonicalMeasurementStartQpc > 0 && measurementArmedEventQpc > 0 &&
+        issuanceOpenEventQpc > 0 &&
+        prerollTransition.quiescenceAckQpc <= currentQueueStartEventQpc &&
+        currentQueueStartEventQpc <= prerollTransition.canonicalMeasurementStartQpc &&
+        prerollTransition.canonicalMeasurementStartQpc <= measurementArmedEventQpc &&
+        measurementArmedEventQpc <= issuanceOpenEventQpc;
     const auto& quiescenceVerdict = prerollTransition.verdict;
     const bool quiescenceHandshakeObserved =
-        handshakeStepOrderExact && quiescenceVerdict.quiescent &&
+        handshakeStepOrderExact && canonicalStartOrderExact && quiescenceVerdict.quiescent &&
         prerollTransition.foreignSchedulerClosed && prerollTransition.canonicalWindowFrozen &&
         prerollTransition.currentIssuanceOpen && foreignCallbackAfterQuiescenceAckCount == 0 &&
         currentCallbackBeforeIssuanceOpenCount == 0;
@@ -2756,6 +2777,17 @@ bool CompositorSpikeController::writeMetrics() {
         {"measurement_armed_event_serial", static_cast<qint64>(measurementArmedEventSerial)},
         {"current_issuance_open_event_serial", static_cast<qint64>(issuanceOpenEventSerial)},
         {"handshake_step_order_exact", handshakeStepOrderExact},
+        {"canonical_start_order_exact", canonicalStartOrderExact},
+        {"canonical_start_after_current_queue_ready",
+         currentQueueStartEventQpc > 0 &&
+             currentQueueStartEventQpc <= prerollTransition.canonicalMeasurementStartQpc},
+        {"admission_close_qpc", prerollTransition.admissionCloseQpc},
+        {"quiescence_ack_qpc", prerollTransition.quiescenceAckQpc},
+        {"admission_close_event_qpc", admissionCloseEventQpc},
+        {"quiescence_ack_event_qpc", quiescenceAckEventQpc},
+        {"current_queue_start_event_qpc", currentQueueStartEventQpc},
+        {"measurement_armed_event_qpc", measurementArmedEventQpc},
+        {"current_issuance_open_event_qpc", issuanceOpenEventQpc},
         {"handshake_wait_qpc", prerollTransition.handshakeWaitQpc},
         {"wait_charged_to_measurement_window",
          prerollTransition.waitChargedToMeasurementWindow},

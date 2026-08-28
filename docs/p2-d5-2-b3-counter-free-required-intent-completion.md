@@ -4,7 +4,7 @@
 
 - 対象: P2 formal Playbackのrequired-intent issuance / completion control
 - 前提: B2は`EXACT_TARGET_OUTPUT_COUNTER_AUTHORITY_UNAVAILABLE`でCLOSED
-- phase: **DESIGN CLOSED / IMPLEMENTATION I0 + I1 + I5A + I5B DONE / I5B runtime smoke PASS** (実装状況は§10、§11、§15、§16)
+- phase: **DESIGN CLOSED / IMPLEMENTATION I0 + I1 + I5A + I5B(+amendment 2) DONE / I5B runtime smoke PASS** (実装状況は§10、§11、§15、§16)
 - production code: I0 exact qualified commit joinとI1 required-intent queueを接続済み
 - test / capture: I0/I1 targeted test済み。live captureは**NOT RUN**
 - canonical W3 verdict: **UNCHANGED / FAIL**
@@ -916,7 +916,7 @@ recordとして本documentに残す。
 ```text
 p2_b3_i5b_preroll_transition_handshake              state machine unit (positive / negative)
 p2_b3_i5b_admission_close_drain_architecture         source-level契約guard
-p2_b3_i5b_admission_close_drain_guard_*              guard mutation (Good + negative 17)
+p2_b3_i5b_admission_close_drain_guard_*              guard mutation (Good + negative 18)
 ```
 
 unitのpositiveはactive FOREIGN 0件caseと1件drain caseの両方を通す。negativeはquiescence predicate 13件を
@@ -924,8 +924,9 @@ unitのpositiveはactive FOREIGN 0件caseと1件drain caseの両方を通す。n
 measurement arm拒否を個別に固定する。mutation guardはmixed epoch、wrong render thread、early queue start、
 early measurement arm、issuance before arm、admission close後の新規FOREIGN reservation、drain前scheduler close、
 pending opportunity finalize省略、retroactive owner、CURRENT boundary、timeoutのperformance drop化、
-handshake waitのwindow算入、canonical window startのcallback begin化、positional flag残存、
-one-shot snapshot切断、nearest QPC join、historical mismatch再分類を拒否する。
+handshake waitのwindow算入、canonical window startのcallback begin化、canonical startのcurrent queue
+準備前sample、positional flag残存、one-shot snapshot切断、nearest QPC join、historical mismatch再分類を
+拒否する。
 
 ordinary CTest (ucrt64-release、`-LE 'performance|stability'`) は**1259/1266 PASS**である。残り7件は本slice前の
 clean worktreeでも同じく失敗する既存failureであり、`p2_c3_a3_t2_startup_order` negative 3件、
@@ -1114,12 +1115,104 @@ transitionであったことの証明ではない。historicalは`UNRESOLVED_HIS
 確定しており、handshake判定には使っていない。r2 artifactを現行codeのexact checkpointとして残すため、本slice
 では修正していない。
 
-### 16.9 未実施 / 次slice
+
+### 16.9 amendment 2 — canonical measurement start authorityをcurrent queue準備完了後へ移す
+
+r2はhandshake / I0 / I1 runtime smokeとしてPASSしたが、exact orderingが
+
+```text
+QUIESCENCE_ACK -> canonical_start -> REQUIRED_QUEUE_STARTED -> MEASUREMENT_ARMED -> ISSUANCE_OPEN
+```
+
+となり、I4 frozen ordering
+(`ACK -> current queue start -> measurement arm/window -> issuance`) と一致していなかった。canonical startを
+current queue初期化より前にsampleしていたためである。r1 / r2は変更も無効化もしない。
+
+amendment 2では`measurementArmQpc`のsample点を、`startCurrentRequiredQueue()`と
+`startFormalOpportunityScheduler()`の成功後・`armMeasurement()`直前へ移した。canonical
+`scheduler_.start` / `measurementStartQpc` / `measurementEndQpc` / `measurementStart.qpc` /
+`armMeasurement()`はすべてこの同一sampleを使う。W4-C3のmeasurement-start arbitration snapshotも同じ点で撮る。
+current queue initializationはissuance disabledのままcanonical windowの外で完了する。
+
+architecture guardには次を追加した。
+
+```text
+Require  startCurrentRequiredQueue -> startFormalOpportunityScheduler -> measurementArmQpc sample -> armMeasurement
+Reject   measurementArmQpc sample -> startCurrentRequiredQueue        (canonical startがqueue準備前)
+Require  scheduler_.start(measurementArmQpc) が同一sampleを使う
+mutation NegativeCanonicalStartBeforeCurrentQueueReady
+```
+
+runtime artifactにもclosureを追加した。controllerは
+`ack <= queue_started <= canonical_start <= measurement_armed <= issuance_open`をQPCで検査し、
+`canonical_start_order_exact`をhandshake verdictの必須条件へ組み込む。`quiescence_ack_qpc`、
+`current_queue_start_event_qpc`、`measurement_armed_event_qpc`、`current_issuance_open_event_qpc`を
+artifactへ出力する。
+
+`FIRST_RESERVATION` eventのtransition snapshotも実際の値を採るよう修正した。diagnostic-onlyであり、
+ordering authorityはevent serialとQPCのままである。
+
+### 16.10 amendment 2 noncanonical smoke (exactly 1 run)
+
+新checkpointで**1 runだけ**実行した。artifactは
+`build/handshake-b3-i5b-a2-20260829T002803Z/formal-playback-smoke.json`である。
+
+```text
+QPC 1413788090142  MEASUREMENT_START_REQUEST_PUBLISHED  thread 35316 (GUI)
+QPC 1413788256837  MEASUREMENT_START_CONSUMED           thread 33688 (render)
+QPC 1413788256855  PREROLL_ADMISSION_CLOSED             -> DRAINING
+QPC 1413788256996  PREROLL_DRAIN_OBSERVED               scheduler closed
+QPC 1413788256998  PREROLL_QUIESCENCE_ACK               -> QUIESCENT
+QPC 1413788257058  REQUIRED_QUEUE_STARTED               -> CURRENT_READY
+QPC 1413788257058  canonical measurement start          (queue ready後の同一sample点)
+QPC 1413788257065  MEASUREMENT_ARMED                    -> MEASUREMENT_ARMED
+QPC 1413788257074  CURRENT_ISSUANCE_OPENED              -> CURRENT_RUNNING
+QPC 1413788257116  FIRST_RESERVATION                    reservation 1 / intent 0 / CURRENT_RUNNING
+```
+
+```text
+state / error                                CURRENT_RUNNING / NONE
+handshake_step_order_exact                   true
+canonical_start_order_exact                  true
+canonical_start_after_current_queue_ready    true
+quiescence 13 predicate                      all true (evaluation_count 1)
+foreign_callback_after_quiescence_ack_count  0
+current_callback_before_issuance_open_count  0
+wait_charged_to_measurement_window           false
+handshake_wait_qpc                           155 (約15.5µs / window外)
+verdict                                      PREROLL_TRANSITION_QUIESCENCE_HANDSHAKE_OBSERVED
+
+I0  missing/duplicate/stale token / receipt  0 / 0 / 0
+    failed present / overflow / token set failure  0 / 0 / 0
+    join failure captured                    false (phase NONE / predicate NONE)
+    nearest-latest fallback used             false
+    capture envelope authority_pass          true (env missing_token=2はW2-C0.1 superset契約どおり)
+
+I1  required/issued/rendered/qualified/dequeued  180 / 180 / 180 / 180 / 180
+    tail 0 / active 0 / conservation valid / required_set_immutable / planned_window_ended
+    display_satisfaction_imported            false
+    scope partition                          FOREIGN 2 / CURRENT 180、missing/ambiguous/mutation/unmatched 0
+
+終端 stop cause PLANNED_WINDOW_END (witness 1 / duplicate 0)
+    DOMAIN_TERMINAL successful completion    0
+    source_coverage_ok true / fatal なし / exit 0 / teardown success
+```
+
+CURRENT intent ordinalは0..179 contiguousだったが、これは記録でありverdict authorityではない。
+`effective_fps = 59.951` / `drop_rate = 0` / `formal_lost_opportunity_count = 191`も
+noncanonical 3秒smokeの記録であり、canonical W3 verdictではない。
+
+r1 (pre-fix VALID FAIL) と r2 (post-fix PASS / ordering不一致) はそのまま保存する。本runはamendment 2
+checkpointの単発validationである。historical `COMPOSITION_TOKEN_MISMATCH`は本runでも再現せず、
+`UNRESOLVED_HISTORICAL_RUNTIME_FAILURE`のまま保持する。
+
+### 16.11 未実施 / 次slice
 
 ```text
 ABI v6 patched Qt rebuild          DONE (§16.7)
 noncanonical runtime smoke r1      VALID FAIL / CANONICAL_WINDOW_MUTATED (§16.7)
-noncanonical runtime smoke r2      PASS (§16.8)
+noncanonical runtime smoke r2      PASS / ordering不一致 (§16.8)
+amendment 2 smoke                  PASS / I4 frozen ordering一致 (§16.10)
 canonical W3                       NOT RUN / UNCHANGED / FAIL
 P5-E4                              BLOCKED
 ```

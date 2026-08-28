@@ -473,6 +473,17 @@ protected:
                 reservationEvent.reservation = {formalDecision.reservationId,
                                                 formalDecision.opportunityOrdinal,
                                                 nativePresentToken.tokenSerial()};
+                reservationEvent.transitionStepSerial =
+                    state_->prerollTransitionStepSerial.load(std::memory_order_seq_cst);
+                {
+                    // diagnostic-only。orderingはevent serialとQPCで確定しており、
+                    // このsnapshotをhandshake authorityには使わない。
+                    std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+                    const auto transition = state_->formalPrerollTransition.snapshot();
+                    reservationEvent.transitionState = transition.state;
+                    reservationEvent.transitionError = transition.error;
+                    reservationEvent.transitionQuiescent = transition.verdict.quiescent;
+                }
                 state_->recordBoundarySwapAttribution(reservationEvent);
             }
             {
@@ -1571,24 +1582,8 @@ private:
                 }
             }
             measurementStartPending_ = false;
-            // B3-I5B。canonical measurement windowはquiescence ackより後にsampleする。
-            // callback beginを使うとhandshake evaluation自身がwindowへ入ってしまう。
-            const long long measurementArmQpc = gpu::qpcTicks();
             const long long duration =
                 state_->measurementDurationQpc.load(std::memory_order_acquire);
-            scheduler_.start(measurementArmQpc, static_cast<long long>(gpu::qpcFrequency()));
-            schedulerStarted_ = true;
-            // W4-C3。measurement-start authorityが成立したこの一点でalternative
-            // publication stateをsnapshotする。controllerのreset直後では撮らない。
-            state_->measurementStartArbitrationState.store(
-                state_->stopArbitration.load(std::memory_order_seq_cst), std::memory_order_seq_cst);
-            state_->measurementStartExplicitStopPublishSerial.store(
-                state_->explicitStopPublishSerial.load(std::memory_order_seq_cst),
-                std::memory_order_seq_cst);
-            state_->measurementStartFatalPublishSerial.store(
-                state_->fatalPublishSerial.load(std::memory_order_seq_cst),
-                std::memory_order_seq_cst);
-            state_->stopWitnessCaptured.store(false, std::memory_order_seq_cst);
             if (state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire)) {
                 // preroll producerのcloseはdrain stepで完了している。quiescence ack後に
                 // current required queueをinitializeするだけで、issuanceはまだ開かない。
@@ -1617,6 +1612,24 @@ private:
                 state_->formalOpportunityDomainReached.store(false, std::memory_order_relaxed);
                 formalOpportunityRenderOrdinal_ = 0;
             }
+            // B3-I5B amendment 2。canonical measurement start authorityは
+            // quiescence ack -> current required queue start -> current formal scheduler準備
+            // がすべて成功した後、armMeasurement()直前のこの1点でsampleする。
+            // current queue initializationはissuance closedのままwindow外で完了している。
+            const long long measurementArmQpc = gpu::qpcTicks();
+            scheduler_.start(measurementArmQpc, static_cast<long long>(gpu::qpcFrequency()));
+            schedulerStarted_ = true;
+            // W4-C3。measurement-start authorityが成立したこの一点でalternative
+            // publication stateをsnapshotする。controllerのreset直後では撮らない。
+            state_->measurementStartArbitrationState.store(
+                state_->stopArbitration.load(std::memory_order_seq_cst), std::memory_order_seq_cst);
+            state_->measurementStartExplicitStopPublishSerial.store(
+                state_->explicitStopPublishSerial.load(std::memory_order_seq_cst),
+                std::memory_order_seq_cst);
+            state_->measurementStartFatalPublishSerial.store(
+                state_->fatalPublishSerial.load(std::memory_order_seq_cst),
+                std::memory_order_seq_cst);
+            state_->stopWitnessCaptured.store(false, std::memory_order_seq_cst);
             previousSchedulerPhaseCallbackQpc_ = 0;
             schedulerPhaseRingEnabled_ =
                 state_->schedulerPhaseRingEnabled.load(std::memory_order_acquire);
@@ -1637,18 +1650,20 @@ private:
             state_->measurementEndQpc.store(measurementArmQpc + duration,
                                             std::memory_order_release);
             if (state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire)) {
-                // canonical start/end authorityをfreezeしてからissuance gateを開く。
-                std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
-                if (!state_->formalPrerollTransition.armMeasurement(
-                        measurementArmQpc, measurementArmQpc + duration)) {
-                    fail(std::string("P2-D5-2 B3-I5B measurement arm拒否: ") +
-                         gpu::prerollTransitionErrorName(state_->formalPrerollTransition.error()));
-                    return true;
+                {
+                    // canonical start/end authorityをfreezeしてからissuance gateを開く。
+                    std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+                    if (!state_->formalPrerollTransition.armMeasurement(
+                            measurementArmQpc, measurementArmQpc + duration)) {
+                        fail(std::string("P2-D5-2 B3-I5B measurement arm拒否: ") +
+                             gpu::prerollTransitionErrorName(
+                                 state_->formalPrerollTransition.error()));
+                        return true;
+                    }
                 }
-            }
-            if (state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire))
                 recordPrerollTransitionEvent(BoundarySwapEventKind::MeasurementArmed,
                                              "RENDER_MEASUREMENT_ARM");
+            }
             if (state_->nativePresentHookEnabled.load(std::memory_order_acquire)) {
                 if (state_->nativePresentCaptureEnvelopeEnabled.load(std::memory_order_acquire)) {
                     if (!state_->nativePresentCaptureActive.load(std::memory_order_acquire)) {

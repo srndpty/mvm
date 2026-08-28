@@ -66,8 +66,13 @@ Require $renderer 'oneShot\.pendingTokenValid[\s\S]{0,200}oneShot\.pendingReceip
 Require $renderer 'computePrerollIdentityClosure' 'issued prefixのexact identity closureを評価していません'
 Require $renderer 'transportFailureCounterTotal' 'transport failure counterをquiescenceへ取り込んでいません'
 Require $renderer 'finalizePendingOpportunityExact\(\)[\s\S]{0,400}notePendingOpportunityFinalized[\s\S]{0,600}closeWithoutNormalCompletion\(\)[\s\S]{0,200}noteForeignSchedulerClosed' 'scheduler closeがdrain / pending opportunity finalizeより前に来ています'
-Require $renderer 'const long long measurementArmQpc = gpu::qpcTicks\(\);' 'canonical measurement window startをquiescence ack後にsampleしていません'
-Require $renderer 'armMeasurement\(\s*?
+Require $renderer 'startCurrentRequiredQueue\(\)[\s\S]+startFormalOpportunityScheduler\(\)[\s\S]+const long long measurementArmQpc = gpu::qpcTicks\(\);[\s\S]{0,3000}armMeasurement\(' 'canonical start authorityがcurrent queue / current scheduler準備完了後にsampleされていません'
+Reject $renderer 'const long long measurementArmQpc = gpu::qpcTicks\(\);[\s\S]{0,900}startCurrentRequiredQueue' 'canonical startをcurrent queue start前にsampleしています'
+Require $renderer 'const long long measurementArmQpc = gpu::qpcTicks\(\);\s*
+?
+\s*scheduler_\.start\(measurementArmQpc' 'canonical schedulerが同一sampleでstartしていません'
+Require $renderer 'armMeasurement\(\s*
+?
 ?\s*measurementArmQpc, measurementArmQpc \+ duration\)' 'canonical windowのfreeze値がarm時点のsampleではありません'
 Reject $renderer 'armMeasurement\(callbackBegin' 'handshake評価を含むcallback begin QPCをcanonical window startにしています'
 Require $renderer 'openCurrentIssuanceGate\(\)[\s\S]{0,600}formalOpportunityCaptureActive\.store\(true' 'issuance gateがmeasurement arm後のopen siteと結びついていません'
@@ -79,7 +84,10 @@ Reject $renderer '(?i)(nearestBoundary|closestBoundary|latestPresentJoin)' 'rend
 foreach($fieldName in @(
     'preroll_transition_handshake','positional_ignore_next_swap_removed',
     'admission_close_is_scheduler_close','scheduler_closed_after_active_transaction_drain',
-    'handshake_step_order_exact','handshake_wait_qpc','wait_charged_to_measurement_window',
+    'handshake_step_order_exact','canonical_start_order_exact',
+    'canonical_start_after_current_queue_ready','quiescence_ack_qpc',
+    'current_queue_start_event_qpc','measurement_armed_event_qpc',
+    'current_issuance_open_event_qpc','handshake_wait_qpc','wait_charged_to_measurement_window',
     'canonical_measurement_start_qpc','canonical_window_frozen','current_issuance_open',
     'boundary_owner_bound','retroactive_owner_for_completed_foreign_present',
     'current_present_consumed_as_boundary','PREROLL_TRANSACTION_FULLY_QUIESCENT',
@@ -87,6 +95,8 @@ foreach($fieldName in @(
     'preroll_scope_ledger_terminal_partition_exact','transport_failure_counters_zero')){
     Require $controller ([regex]::Escape($fieldName)) "B3-I5B artifact fieldが不足しています: $fieldName"
 }
+Require $controller 'quiescenceAckQpc <= currentQueueStartEventQpc[\s\S]{0,400}currentQueueStartEventQpc <= prerollTransition\.canonicalMeasurementStartQpc[\s\S]{0,400}canonicalMeasurementStartQpc <= measurementArmedEventQpc[\s\S]{0,200}measurementArmedEventQpc <= issuanceOpenEventQpc' 'ack <= queue start <= canonical start <= arm <= issuance openのruntime closureがありません'
+Require $controller 'canonicalStartOrderExact && quiescenceVerdict\.quiescent' 'canonical start orderingがhandshake verdictへ組み込まれていません'
 Require $controller '"timeout_disposition", "PROTOCOL_FAIL_CLOSE_NOT_PERFORMANCE_DROP"' 'timeoutをperformance dropへ流していないことを固定していません'
 Require $controller '"admission_close_is_scheduler_close", false' 'admission closeとscheduler closeの分離を固定していません'
 Require $controller '"nearest_qpc_used", false[\s\S]{0,200}"callback_index_used_as_identity", false[\s\S]{0,200}"event_serial_is_identity_authority", false' 'QPC/callback/event serialをidentity authorityから排除していません'
