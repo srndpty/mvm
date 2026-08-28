@@ -4,9 +4,10 @@
 
 - 対象: P2 formal Playbackのrequired-intent issuance / completion control
 - 前提: B2は`EXACT_TARGET_OUTPUT_COUNTER_AUTHORITY_UNAVAILABLE`でCLOSED
-- phase: **DESIGN CLOSED / IMPLEMENTATION I0 + I1 + I5A + I5B(+amendment 2) DONE / I5B runtime smoke PASS** (実装状況は§10、§11、§15、§16)
-- production code: I0 exact qualified commit joinとI1 required-intent queueを接続済み
-- test / capture: I0/I1 targeted test済み。live captureは**NOT RUN**
+- phase: **DESIGN CLOSED / IMPLEMENTATION I0 + I1 + I5A + I5B + I6A + I6B + I6C CLOSED** (実装状況は§10、§11、§15、§16、§18-§23)
+- production code: I0 join / I1 queue / I5B transition handshake / I6C source mappingを接続済み
+- test / capture: 全sliceのtargeted gate green。noncanonical runtime smoke (§16.8、§22.5) と
+  fresh W3 canonical live acquisition 3/3 (§24) まで実施済み
 - canonical W3 verdict: **CANONICAL_PERFORMANCE_PASS** (checkpoint 6f23aaf19f68のfresh 3/3。§24)
   historical W3 FAIL (§17以前) は別cohortとして併存する
 - P5-E4: **W3 blocker解除** (§24)
@@ -1329,15 +1330,18 @@ build/p2-d5-2-w3-cohort-20260829/w3-partial-cohort-manifest.json
 
 ```text
 B3-I5B                         CLOSED / runtime smoke PASS
-fresh W3 canonical 3/3         NOT ACHIEVED (run 1 acquisition failure)
-canonical W3 verdict           UNCHANGED / FAIL
 B3-I6A source mapping authority DESIGN CLOSED (§18)
 B3-I6B fatal/token atomicity   CLOSED (§19、§20、§21、§23)
 B3-I6C mapping / preflight修正  CLOSED / positive smoke PASS (§22)
 deferred I6B integration test  CLOSED (§23)
-fresh W3 canonical 3/3         CANONICAL_PERFORMANCE_PASS (§24)
-P3-C-2 / P4再検証               HOLD (W3 3/3 PASSが前提)
-P5-E4                          BLOCKED
+W3 fresh 3/3 試行 (§17 checkpoint)  NOT ACHIEVED / run 1 acquisition failure
+fresh W3 canonical 3/3         CANONICAL_PERFORMANCE_PASS (checkpoint 6f23aaf19f68。§24)
+historical W3 verdict          FAIL / immutable
+P3-C-2 9/9                     PASS (§25.1)
+P4 3/3                         PASS (§25.2)
+P5-E4                          W3 BLOCKER CLEARED / FINAL CLOSURE PENDING
+                               (ordinary regression debt 7件の整理が前提)
+ordinary regression debt       既知failure 7件 (§16.6)
 historical COMPOSITION_TOKEN_MISMATCH   UNRESOLVED_HISTORICAL_RUNTIME_FAILURE
 ```
 
@@ -2045,9 +2049,93 @@ B3-I0 / I1 / I2 / I3 / I4 / I5A / I5B    CLOSED
 B3-I6A / I6B / I6B-V / I6C               CLOSED
 fresh W3 canonical 3/3                   CANONICAL_PERFORMANCE_PASS
 canonical W3 verdict                     PASS (checkpoint 6f23aaf19f68 cohort)
-next                                     P3-C-2 / P4 再検証
-P5-E4                                    W3 blocker解除
+P3-C-2 9/9 / P4 3/3                      PASS (§25)
+P5-E4                                    W3 blocker解除 / final closure判断待ち
 ```
 
 ordinary CTestの既存failure 7件は本sliceでも未修正であり、最終closureまでの技術的負債として
 持ち越す。
+
+## 25. P3-C-2 9/9 と P4 3/3 の同一 checkpoint 再検証
+
+W3 canonical PASSと**同じproduct checkpoint `6f23aaf19f68`**、clean worktreeで再検証した。
+既存contract / threshold / metric定義は一切変更していない。B3 / I6の新しいdiagnostic fieldは
+runtime sanityとしてのみ見て、P3-C-2 / P4のgateへは接続していない。
+
+checkpointについて注記する。§24 doc更新が`528250c`として別途commitされHEADが進んでいたが、
+`6f23aaf..528250c`はdesign doc 1 fileのみの差分であり、product treeは同一である。再検証は
+doc変更をstashし、`6f23aaf19f68`のclean worktreeへ移して実行した。P4はprovenanceへbranch名を
+記録するため、detachedのままにせず同commit上の一時branchで実行した。
+
+### 25.1 P3-C-2 formal matrix — 9/9 PASS
+
+```text
+formal_verdict                             PASS   (contract_version P3-C-2 / dry_run false)
+expected / completed processes             9 / 9
+all_runs_pass / p3_c_pass                  true / true
+provenance_unchanged                       true
+hardware_provenance_unchanged              true
+display_environment_provenance_unchanged   true
+start / end commit                         6f23aaf19f68 / 6f23aaf19f68
+start / end dirty_worktree                 false / false
+executable sha256                          start == end
+runs   playback 1-3 / seek 1-3 / pause-resume 1-3
+       すべて process_exit_code 0 / contract_exit_code 0 / pass
+```
+
+各runでP3-C-1とP3-C-2の両契約checkerがPASSしている。matrix自身が
+`dirty worktree`をhard failさせるため、clean worktree要件はrunner側でも担保されている。
+
+artifact: `build/p3-c2-matrix-20260829/`
+
+### 25.2 P4 formal matrix — 3/3 PASS
+
+```text
+formal_verdict                 PASS
+all_runs_pass                  true
+provenance_unchanged           true
+start / end head               6f23aaf19f68 / 6f23aaf19f68
+start / end worktree clean     true / true
+branch                         p3p4-verify-6f23aaf (同一commit上の一時branch)
+runtime_path_preflight_pass    true
+fixture a / b sha256           frozen値と一致
+canonical schedule hash        frozen値と一致
+run 1 / 2 / 3                  process_exit 0 / checker_exit 0
+                               fps 59.683 / 59.833 / 59.783
+                               drop 0.528% / 0.278% / 0.361%
+                               A/V p95 <= 15.917ms / max <= 17.271ms / probes 10件
+```
+
+P4 checkerは`[W2-E] presentation_authority=FORMAL_V2 / legacy_presentation_metrics=DIAGNOSTIC /
+canonical_performance_verdict=DEFERRED_TO_W3`を各runで宣言しており、display ledger由来の
+fps / dropはdiagnosticのままである。W3 PASSを理由にP4のgateやthresholdは緩めていない。
+
+artifact: `build/p4-formal-matrix-20260829/`
+
+### 25.3 seal
+
+```text
+build/p3c2-p4-reverification-20260829-manifest.json
+    14 entry / product checkpoint sha / worktree clean / same_checkpoint_as_w3_cohort
+    p3_c2 PASS 9 runs / p4 PASS 3 runs / contracts_unchanged / thresholds_unchanged
+    replacement_retry false / 各raw artifactのSHA-256
+```
+
+### 25.4 現在位置
+
+```text
+B3-I0..I6C                     CLOSED
+deferred I6B integration       CLOSED
+fresh W3 canonical 3/3         CLOSED / CANONICAL_PERFORMANCE_PASS
+historical W3                  FAIL / immutable
+historical token mismatch      UNRESOLVED
+P3-C-2 9/9                     PASS (§25.1)
+P4 3/3                         PASS (§25.2)
+ordinary regression debt       既知failure 7件 / 未整理
+P5-E4                          final closure判断待ち
+```
+
+P5-E4をCLOSEDにする前に、ordinary CTestの既知failure 7件
+(`p2_c3_a3_t2_startup_order` negative 3件 / `p2_present_id_oracle_live` / guard drift 3件) を
+**修正するか、formal exclusion contractとして別途凍結するか**のどちらかが必要である。
+「pre-existingだから無視」では最終gateを閉じない。
