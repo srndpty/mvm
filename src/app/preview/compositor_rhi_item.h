@@ -562,6 +562,9 @@ struct CompositorSpikeState {
     std::mutex eligibilityPreflightMutex;
     PresentationEligibilityPreflight eligibilityPreflight;
     std::atomic<long long> nativePresentTokenSetFailureCount{0};
+    // B3-I6B。fail-able pre-Present validationが失敗したcallbackでpublicationを
+    // 抑止した回数。transport failureではなくfail-closed動作の記録である。
+    std::atomic<long long> nativePresentTokenSuppressedBeforePresentCount{0};
     std::mutex compositionTokenAttributionMutex;
     CompositionTokenPublicationAttribution latestCompositionTokenPublication;
     CompositionTokenJoinFailureAttribution compositionTokenJoinFailure;

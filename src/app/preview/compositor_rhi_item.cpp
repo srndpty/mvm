@@ -119,6 +119,12 @@ public:
         }
     }
 
+    // B3-I6B。callback-localのfail-able pre-Present validationがすべて成功した場合だけ
+    // publicationを許可する。fatal latch後はformal tokenを一切publishしない。
+    bool publicationAllowed() const {
+        return active_ && valid_ && !state_->fatal.load(std::memory_order_acquire);
+    }
+
     ~NativePresentTokenCapture() {
         if (!active_)
             return;
@@ -128,8 +134,20 @@ public:
             state_->terminalRenderExitDiagnosticStage.store(
                 TerminalRenderExitDiagnosticStage::NativeTokenDestructorEntered,
                 std::memory_order_release);
+        if (!publicationAllowed()) {
+            // fatal transactionはQt pending tokenを残さない。以後のPresentは
+            // formal tokenを持たず、formal join candidateにならない。
+            // nearest/latest/QPC/serial推定でcancelやrecoveryを行うことはない。
+            state_->nativePresentTokenSuppressedBeforePresentCount.fetch_add(
+                1, std::memory_order_relaxed);
+            if (terminalExitTracking)
+                state_->terminalRenderExitDiagnosticStage.store(
+                    TerminalRenderExitDiagnosticStage::NativeTokenDestructorComplete,
+                    std::memory_order_release);
+            return;
+        }
         const auto hook = state_->nativePresentHook;
-        const bool succeeded = valid_ && hook && hook->setCompositionToken(token_);
+        const bool succeeded = hook && hook->setCompositionToken(token_);
         {
             std::lock_guard<std::mutex> lock(state_->compositionTokenAttributionMutex);
             state_->latestCompositionTokenPublication = {
@@ -1434,6 +1452,8 @@ private:
                                                                  std::memory_order_acq_rel)) {
             std::string hookError;
             state_->nativePresentTokenSetFailureCount.store(0, std::memory_order_relaxed);
+            state_->nativePresentTokenSuppressedBeforePresentCount.store(0,
+                                                                         std::memory_order_relaxed);
             state_->boundarySwapEventSerial.store(0, std::memory_order_relaxed);
             state_->prerollTransitionStepSerial.store(0, std::memory_order_relaxed);
             state_->boundaryFirstReservationRecorded.store(false, std::memory_order_relaxed);
@@ -2054,8 +2074,11 @@ void CompositorRhiItem::recordFrameSwapped() {
     const auto failQualifiedJoin = [&](const std::string& reason) {
         claimStopCause(*state_, StopArbitration::Fatal);
         {
+            // B3-I6B。first protocol fatalがauthorityであり、post-fatal diagnosticsで
+            // 上書きしない。
             std::lock_guard<std::mutex> lock(state_->errorMutex);
-            state_->fatalReason = "P2-D5-2 B3-I0 exact qualified commit失敗: " + reason;
+            if (state_->fatalReason.empty())
+                state_->fatalReason = "P2-D5-2 B3-I0 exact qualified commit失敗: " + reason;
         }
         state_->fatal.store(true, std::memory_order_release);
     };
@@ -2063,9 +2086,12 @@ void CompositorRhiItem::recordFrameSwapped() {
     MvmNativePresentFrameSwappedReceipt receipt;
     MvmNativePresentRecord nativeRecord;
     bool exactReceiptAvailable = false;
+    // B3-I6B。first protocol fatal後のPresentはformal join candidateにしない。
+    // Present自体の抑止は前提にせず、formal tokenを持たないPresentとして扱うだけである。
+    const bool protocolFatalLatched = state_->fatal.load(std::memory_order_acquire);
     const bool formalEnvelopeActive =
         state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire) &&
-        state_->nativePresentCaptureActive.load(std::memory_order_acquire);
+        state_->nativePresentCaptureActive.load(std::memory_order_acquire) && !protocolFatalLatched;
     if (formalEnvelopeActive) {
         const auto hook = state_->nativePresentHook;
         if (!hook || !hook->takeFrameSwappedReceipt(receipt)) {
@@ -2184,7 +2210,8 @@ void CompositorRhiItem::recordFrameSwapped() {
             return;
         }
     }
-    if (!state_->formalOpportunityDomainReached.load(std::memory_order_acquire) &&
+    if (!protocolFatalLatched &&
+        !state_->formalOpportunityDomainReached.load(std::memory_order_acquire) &&
         state_->formalOpportunityCaptureActive.load(std::memory_order_acquire)) {
         if (!exactReceiptAvailable) {
             failQualifiedJoin("formal frameSwappedにexact receiptがありません");
@@ -2248,9 +2275,11 @@ void CompositorRhiItem::recordFrameSwapped() {
             // W4-C3 amend 4。fail()を経由しないfatal latch siteも同じhelperを通す。
             claimStopCause(*state_, StopArbitration::Fatal);
             {
+                // B3-I6B。first protocol fatalを上書きしない。
                 std::lock_guard<std::mutex> lock(state_->errorMutex);
-                state_->fatalReason = std::string("P2-D5-2 render↔swap authority失敗: ") +
-                                      gpu::presentationOpportunityErrorName(error);
+                if (state_->fatalReason.empty())
+                    state_->fatalReason = std::string("P2-D5-2 render↔swap authority失敗: ") +
+                                          gpu::presentationOpportunityErrorName(error);
             }
             state_->fatal.store(true, std::memory_order_release);
         }

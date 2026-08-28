@@ -372,6 +372,42 @@ void sourceCoverageFatalCleanupPreservesQueue() {
           "source coverage fatal cleanupがreservation/tailまたはfatal原因を変更しました");
 }
 
+// B3-I6B。source coverage fatalの後にcallbackやswapが続いても、queue historyは
+// rollbackされず、failed reservationもdequeueされない。
+void postSourceCoverageFatalDoesNotMutateTransaction() {
+    Scheduler value;
+    check(value.start({4, 0, 60, 1, 30, 1, kQpcFrequency}),
+          "post-fatal atomicity schedulerを開始できません");
+    Driver driver{&value, 0, 0, 30, 1};
+    check(driver.runCadence(2), "post-fatal atomicity前のcommitに失敗しました");
+    const auto fatalDecision = driver.select(102, 41);
+    check(!fatalDecision.valid && value.error() == Error::SourceCoverageInsufficient,
+          "source coverage fatalへ到達できません");
+    const auto atFatal = value.snapshot().requiredIntentQueue;
+
+    // post-fatal callback / render完了 / qualified evidence / swapはいずれも
+    // transactionを前進させない。
+    const auto postDecision = value.selectForRender(45, authority(103, 30, 1), 2);
+    check(!postDecision.valid, "post-fatal callbackがvalid decisionを返しました");
+    check(!value.markRenderComplete(50, 4, 2), "post-fatal render完了を受理しました");
+    check(!value.commitQualifiedPresent(atFatal.activeReservation.reservationId,
+                                        atFatal.activeReservation.intentOrdinal),
+          "post-fatal qualified evidenceを受理しました");
+    check(!value.commitSwap(55, authority(104, 30, 1), 2), "post-fatal swapを受理しました");
+
+    const auto after = value.snapshot().requiredIntentQueue;
+    check(after.issuedCount == atFatal.issuedCount &&
+              after.renderedCount == atFatal.renderedCount &&
+              after.qualifiedCommitCount == atFatal.qualifiedCommitCount &&
+              after.dequeuedCount == atFatal.dequeuedCount &&
+              after.activeReservationCount == atFatal.activeReservationCount &&
+              after.activeReservation.reservationId == atFatal.activeReservation.reservationId &&
+              after.unissuedTailCount == atFatal.unissuedTailCount && after.conservationValid,
+          "post-fatal操作がqueue transactionを変更しました");
+    check(value.error() == Error::SourceCoverageInsufficient,
+          "post-fatal操作がfirst protocol fatalを上書きしました");
+}
+
 void duplicateCallbackDoesNotCreateOpportunity() {
     auto value = scheduler(60, 1, 12);
     Driver driver{&value};
@@ -550,6 +586,7 @@ int main() {
     authorityFailuresAreFatal();
     pairingFailuresAreFatal();
     sourceCoverageFatalCleanupPreservesQueue();
+    postSourceCoverageFatalDoesNotMutateTransaction();
     duplicateCallbackDoesNotCreateOpportunity();
     measurementEndFinalizesPending();
     overflowIsClosed();

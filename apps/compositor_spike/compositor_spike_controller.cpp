@@ -2928,6 +2928,9 @@ bool CompositorSpikeController::writeMetrics() {
               static_cast<qint64>(nativePresentSnapshot.staleFrameSwappedReceiptCount)},
              {"token_set_failure_count",
               state_->nativePresentTokenSetFailureCount.load(std::memory_order_relaxed)},
+             {"token_publication_suppressed_before_present_count",
+              state_->nativePresentTokenSuppressedBeforePresentCount.load(
+                  std::memory_order_relaxed)},
              {"authority_pass", nativePresentAuthorityPass && captureEnvelopeLowerClosed &&
                                     frozenMeasurementWindowUnchanged &&
                                     captureEnvelopeUpperClosed && intentScopeAuthorityPass},

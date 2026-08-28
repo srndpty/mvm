@@ -2348,6 +2348,24 @@ foreach(_p2_b3_i6a_case IN ITEMS Good NegativeProductionChanged NegativeCanonica
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
+# P2-D5-2/B3-I6B: fatal transactionがformal token publication / joinへ流れないことを固定する。
+mvm_add_test(p2_b3_i6b_fatal_publication_atomicity_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i6b-fatal-publication-atomicity-architecture.ps1"
+        -RepoRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+foreach(_p2_b3_i6b_case IN ITEMS Good NegativeTokenPublishedBeforeValidation NegativePendingTokenAfterFatal NegativeSuppressionCountedAsTransportFailure NegativeSecondPublicationSite NegativeFormalReceiptAfterFatal NegativePostFatalJoinReached NegativePrimaryFatalOverwrittenByJoin NegativePrimaryFatalOverwrittenBySwap NegativeQueueRollback NegativeSourceCoverageFailCloseRemoved NegativeSuppressionCounterHidden NegativeNearestTokenRecovery)
+    string(TOLOWER "${_p2_b3_i6b_case}" _p2_b3_i6b_name)
+    mvm_add_test(p2_b3_i6b_fatal_publication_atomicity_guard_${_p2_b3_i6b_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i6b-fatal-publication-atomicity-guard.ps1"
+            -Case "${_p2_b3_i6b_case}"
+            -Contract "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i6b-fatal-publication-atomicity-architecture.ps1"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-b3-i6b-atomicity-guard-${_p2_b3_i6b_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 # P2-D5-2/B3-I5A: Qt one-shot pending stateのepoch/thread-bound read-only ABI。
 mvm_add_test(p2_b3_i5a_one_shot_snapshot_architecture
     COMMAND "${MVM_PWSH}" -NoProfile -File

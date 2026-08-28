@@ -1331,7 +1331,7 @@ B3-I5B                         CLOSED / runtime smoke PASS
 fresh W3 canonical 3/3         NOT ACHIEVED (run 1 acquisition failure)
 canonical W3 verdict           UNCHANGED / FAIL
 B3-I6A source mapping authority DESIGN CLOSED (§18)
-B3-I6B fatal/token atomicity   NOT STARTED
+B3-I6B fatal/token atomicity   DONE / targeted green、runtime negative未再現 (§19)
 B3-I6C mapping / preflight修正  NOT STARTED
 P3-C-2 / P4再検証               HOLD (W3 3/3 PASSが前提)
 P5-E4                          BLOCKED
@@ -1442,3 +1442,127 @@ I6BはI6Aのsemanticsに依存しない独立のcorrectness sliceであり、`SO
 
 historical `COMPOSITION_TOKEN_MISMATCH`は`UNRESOLVED_HISTORICAL_RUNTIME_FAILURE`のまま保持し、
 I6 mapping failureへ再分類しない。
+
+## 19. B3-I6B — Fatal-before-Present Publication Atomicity
+
+§17.3で露出したlatent correctness bugを、I6A mapping semanticsとは独立に塞ぐsliceである。
+I6A selected semantics、required set、source fixture、threshold、denominatorは変更していない。
+I6Cはまだ行っていない。canonical W3はI6B + I6C closureまでHOLDである。
+
+### 19.1 exact negative baseline
+
+W3 run 1が記録したchainをそのままbaselineにする。
+
+```text
+queue reserve (issued 3598)
+-> composition token 3930 publication
+-> SOURCE_COVERAGE_INSUFFICIENT (primary)
+-> callback return
+-> actual Present
+-> frameSwapped receipt
+-> formal join (Committed状態)
+-> RENDER_COMPLETION_MISSING (secondary)
+-> shutdown reasonがsecondaryで上書きされる
+```
+
+### 19.2 変更
+
+**composition token publicationのgate**。`NativePresentTokenCapture`に
+`publicationAllowed()`を追加し、destructorはこのgateを通過した場合だけ
+`setCompositionToken`を呼ぶ。gateは`active_ && valid_ && !fatal`であり、callback-localの
+fail-able pre-Present validation (source mapping / source coverageを含む) が1つでも失敗して
+fatalが立った場合はpublicationを行わない。publication siteはdestructorのexactly 1箇所である。
+
+抑止時はQt pending formal tokenを残さず、その後のPresentはformal tokenを持たないため
+formal join candidateにならない。抑止は`nativePresentTokenSuppressedBeforePresentCount`へ
+記録し、**transport failure counterへは混ぜない**。Present自体の抑止は前提にしていない。
+nearest/latest/QPC/present-serial推定によるtoken cancelやtransaction recoveryは実装せず、
+guardで拒否する。
+
+**post-fatal Presentのjoin除外**。`recordFrameSwapped`は先頭で
+`protocolFatalLatched`を観測し、first protocol fatal後は`formalEnvelopeActive`をfalseにして
+receipt take / bind / commitのいずれにも入らない。post-fatal callbackはboundary attribution
+eventとしてだけ記録する。
+
+**first protocol fatalのimmutable化**。join failureとrender↔swap authority failureの
+`fatalReason` writerを`fail()`と同じfirst-writer-winsにした。post-fatal diagnosticsが
+primary fatalを上書きしない。
+
+**queue historyのrollback禁止**。failed reservationはdequeueせず、active/tail/conservationを
+保持する既存契約 (B3-I1) をそのまま維持し、post-fatal操作でも前進しないことを新規testで固定した。
+
+### 19.3 targeted test
+
+```text
+p2_presentation_opportunity_scheduler
+    postSourceCoverageFatalDoesNotMutateTransaction を追加
+p2_b3_i6b_fatal_publication_atomicity_architecture
+p2_b3_i6b_fatal_publication_atomicity_guard_*   Good + negative 12
+```
+
+unit positiveは、source coverage fatal後にcallback / render完了 / qualified evidence / swapを
+すべて拒否し、issued / rendered / qualified / dequeued / active / tail / conservationが
+fatal時点から1つも変化せず、first protocol fatal (`SOURCE_COVERAGE_INSUFFICIENT`) も
+上書きされないことを固定する。
+
+guard mutationはtoken-before-validation、fatal後のpending token残存、抑止のtransport failure化、
+publication siteの二重化、fatal後のformal receipt生成、post-fatal joinへの到達、
+primary fatalのjoin/swap側からの上書き、queue rollback、source coverage fail-closeの除去、
+抑止counterの隠蔽、nearest token recoveryを個別に拒否する。
+
+ordinary CTestは既存failure 6件のみで、それ以外はgreenである。
+
+### 19.4 noncanonical negative smoke — negative vectorは再現しなかった
+
+既存configで**exactly 1 run**取得した
+(`build/i6b-negative-smoke-20260829T011354Z/negative-source-coverage-smoke.json`、
+warmup 5s / measure 60s / hook on / formal preflight、ETWなし)。
+
+期待していた`SOURCE_COVERAGE_INSUFFICIENT`は**この runでは発生しなかった**。
+
+```text
+issued / rendered / qualified / dequeued   3596 / 3596 / 3596 / 3596
+unissued tail                             4
+最大intent ordinal                         3595  (target 3597 < 3600)
+fatal ordinal                             3597  (target 3600) には未到達
+stop cause                                PLANNED_WINDOW_END
+formal_opportunity_error                  NONE
+process exit                              0
+```
+
+W3 run 1は60秒windowへ3598件のissuanceが入りordinal 3597へ到達したが、本runは3596件で
+planned window endに達した。source coverage fatalは**window終端とordinal 3597到達の競合**であり、
+この2件差の範囲に入っている。したがってI6Bのruntime negative validationは本runでは成立していない。
+retryして再現runを選別することはしない。
+
+同runはI6Bがsuccess pathに対して**behavior-neutral**であることは示している。
+
+```text
+token publication suppressed count        0
+token set failure                         0
+missing / duplicate / stale token         0 / 0 / 0
+missing / duplicate / stale receipt       0 / 0 / 0
+native present authority_pass             true
+capture envelope authority_pass           true
+handshake                                 CURRENT_RUNNING / canonical_start_order_exact
+queue conservation                        valid / planned_window_ended
+```
+
+`effective_fps 59.915` / `drop_rate 0.111%` / `true drop 4`はnoncanonical 1 runの記録であり、
+canonical W3 metricではない。
+
+### 19.5 現在位置
+
+```text
+B3-I6B implementation                 DONE
+B3-I6B targeted gate                  GREEN
+B3-I6B runtime negative validation    NOT ESTABLISHED (negative vector未再現)
+B3-I6C                                NOT STARTED
+canonical W3                          HOLD
+canonical W3 verdict                  UNCHANGED / FAIL
+historical COMPOSITION_TOKEN_MISMATCH UNRESOLVED_HISTORICAL_RUNTIME_FAILURE
+```
+
+runtime negative validationを成立させるには、window終端との競合に依存しない決定的な
+negative vectorが要る。それはcanonical inputかconfigのどちらかを触ることになるため、
+I6Bの範囲では選択しない。
