@@ -701,3 +701,104 @@ preroll reservation/receipt状態を追加artifactで確定する必要がある
 
 元の`COMPOSITION_TOKEN_MISMATCH`はhistorical runtime failureとして未解決のまま保持し、今回のboundary
 failureへ再分類しない。production fixとfresh W3 canonical 3/3はattribution closure後まで保留する。
+
+## 14. B3-I4 Preroll Transition Quiescence Design
+
+I4はdesign-only sliceである。production behavior、I0/I1 queue semantics、join accept/reject、Qt ABI v5、
+canonical W3を変更しない。機械可読な設計契約は
+`docs/p2-d5-2-b3-i4-preroll-transition-quiescence.json`に固定した。
+
+### 14.1 lifecycle inventoryと現行gap
+
+prerollの1 transactionは次の順で進む。
+
+```text
+Started/Active
+  -> queue head reservation
+  -> join Reserved
+  -> render completion / join RenderCompleted
+  -> Qt pending composition token
+  -> actual Present record / token one-shot consume
+  -> pending frameSwapped receipt
+  -> exact receipt consume
+  -> join NativePresentBound / Committed
+  -> scheduler pending qualified evidence
+  -> failure-free commitSwap + queue exactly 1 dequeue
+```
+
+`formalOpportunityEnvelopePrerollStarted`は開始履歴、`Active`は新しいrender decisionのscope分類、
+`Completed`は現行のproducer close履歴にすぎない。現行measurement-start callbackは`Active=false`にして
+`closeWithoutNormalCompletion()`を呼んだ直後に`Completed=true`をpublishする。しかしI1 contractでは
+non-normal closeがactive reservationとunissued tailを保持する。さらに同じscheduler objectの次の`start()`は
+stateを初期化する。このため3個のphase boolから旧epoch transactionのclosureを証明できない。
+
+Qt ABI v5のone-shot stateも、tokenは`set_token`からactual Present enterまで、receiptはPresent returnから
+`frameSwapped`のtakeまで存続する。capture endは残存stateをstaleとしてFATALにできるが、transition handshake用の
+read-only pending snapshotは公開していない。将来実装では同じrender threadでtoken/receipt pendingを含むexact
+snapshot/ackを追加する必要がある。counter差分、QPC、latest record、serial推定で代用しない。
+
+### 14.2 exact quiescence predicate
+
+`PREROLL_TRANSACTION_FULLY_QUIESCENT`は同一`FOREIGN_PRE_MEASUREMENT` epoch snapshotで次をすべて満たすこととする。
+
+```text
+preroll admission closed
+&& scheduler pending render == false
+&& scheduler pending qualified evidence == false
+&& scheduler pending opportunity == false、またはexact finalize済み
+&& queue active reservation count == 0
+&& join active reservation == false
+&& Qt pending composition token == false
+&& Qt pending frameSwapped receipt == false
+&& issued == rendered == qualified_commit == dequeued
+&& queue conservation valid
+&& issued prefixの全要素が
+   reservation -> token publication -> native Present -> receipt
+   -> qualified join -> swap commit/dequeueへ1:1 exact join済み
+&& preroll scope ledgerのissued/suppressed全recordがexact terminal partition済み
+&& transport failure counters == 0
+```
+
+identityはreservation id / intent ordinal / token serialと、native record↔receiptのpresent serial /
+swapchain identity / HRESULTだけを使う。unissued tailはtransactionではないためquiescenceの空条件に含めないが、
+immutable required setのtailとして保持する。phase bool単独はどの項も置き換えない。
+
+### 14.3 transition handshake
+
+将来のproduction transitionは、preroll admissionを閉じたあと、既に発行済みのFOREIGN transactionだけを通常の
+exact join/commit pointまでdrainする。admission closeは新規`selectForRender`を止めるgateであり、scheduler
+`close()`とは分離する。先にschedulerをcloseすると未完了transactionのcommitを拒否するため、active transaction
+drainとpending opportunityのexact finalize後に旧schedulerをcloseする。quiescence snapshot/ack成立後にcurrent required queueをstartし、その後に
+canonical measurementをarmしてissuance gateとmeasurement windowを開始する。順序は次で固定する。
+
+```text
+preroll admission close request
+  -> exact active FOREIGN transaction drain
+  -> PREROLL_TRANSACTION_FULLY_QUIESCENT ack
+  -> current required queue start
+  -> canonical measurement arm
+  -> current issuance gate open + measurement window start
+```
+
+handshake waitはmeasurement armより前でありrequired-intent windowへ算入しない。未解決ならcurrent intentを発行せず
+待機する。timeoutは`PROTOCOL_FAIL_CLOSE_NOT_PERFORMANCE_DROP`であり、表示dropへ分類せず、required setのskip/dequeue/
+縮小も行わない。
+
+### 14.4 boundary ownershipの選定
+
+selected designは**Preroll receipt closure handshake**である。quiescence後にはFOREIGN callbackが残らないため、
+positional `formalOpportunityIgnoreNextSwap`は設計上削除可能であり、CURRENT Presentをboundaryとしてconsumeする
+必要もない。
+
+I3のExact boundary reservation候補は、handshake開始時に実在する未完了FOREIGN reservationだけへ
+`(reservation_id, intent_ordinal, token_serial, FOREIGN_PRE_MEASUREMENT)`をprospectiveに束縛し、そのtransactionを
+closureへ進める補助手段として採用できる。quiescenceの代用ではない。既にframeSwapped/commit済みのhistorical
+Presentへownerを後付けせず、CURRENT scopeとは決して一致させない。
+
+negative contractはcurrent queue start before closure、measurement window before handshake、completed FOREIGNへの
+retroactive owner、CURRENT Present consumed as boundary、timeout as performance dropをすべて`PROTOCOL_FATAL`に固定した。
+加えてphase bool authority、required-set shrink、positional flag残存、serial inference、historical mismatch再分類を
+mutation testで拒否する。
+
+元の`COMPOSITION_TOKEN_MISMATCH`は`UNRESOLVED_HISTORICAL_RUNTIME_FAILURE`のまま保持し、I3 boundary failureへ
+再分類しない。production fix、runtime smoke、fresh W3 canonical 3/3はI4の範囲外である。

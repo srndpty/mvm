@@ -2315,6 +2315,18 @@ foreach(_p2_b3_i3_case IN ITEMS Good NegativeSecondProducer NegativeConsumeRemov
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
+# P2-D5-2/B3-I4: productionを変えず、preroll transaction quiescence設計を固定する。
+foreach(_p2_b3_i4_case IN ITEMS Good NegativeCurrentQueueStartBeforeClosure NegativeMeasurementWindowBeforeHandshake NegativeRetroactiveForeignOwner NegativeCurrentPresentBoundary NegativeTimeoutAsPerformanceDrop NegativeAdmissionCloseAsSchedulerClose NegativePendingOpportunityOmitted NegativePhaseBoolAuthority NegativeRequiredSetShrink NegativePositionalIgnoreRetained NegativeSerialInference NegativeHistoricalMismatchReclassified)
+    string(TOLOWER "${_p2_b3_i4_case}" _p2_b3_i4_name)
+    mvm_add_test(p2_b3_i4_preroll_quiescence_design_${_p2_b3_i4_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i4-preroll-quiescence-design-contract.ps1"
+            -Case "${_p2_b3_i4_case}"
+            -Contract "${CMAKE_SOURCE_DIR}/docs/p2-d5-2-b3-i4-preroll-transition-quiescence.json"
+            -RepoRoot "${CMAKE_SOURCE_DIR}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 # B3-I0 architecture guardのmutation test。guardが空振りしていないことを固定する。
 foreach(_p2_b3_i0_case IN ITEMS Good NegativeReceiptAbiRemoved NegativeReceiptSerialDerived NegativeReceiptExportRemoved NegativeReceiptNotOneShot NegativeHookTakeReceiptRemoved NegativeExactRecordLookupRemoved NegativeCommitOrderBypassesRecord NegativeReservationIdentityNotScheduler NegativeExpectedSerialSequential NegativeLatestRecordAuthority NegativeSequentialSerialEstimate NegativeQpcProximityJoin)
     string(TOLOWER "${_p2_b3_i0_case}" _p2_b3_i0_name)
