@@ -1087,16 +1087,21 @@ private:
         const long long repeatedFrame = lastNativePresentToken_.outputFrameNumber;
         if (envelopePreroll && repeatedFrame < 0)
             return false;
+        // B3-I6C。source frame rateとrequired-intent rateはgpu側のsingle authorityから取る。
+        // preroll producerはsource 1/s workloadとして同じintent rate軸へ載せるため、
+        // preroll rangeのtargetはrepeatedFrameのまま動かない。
         const gpu::PresentationOpportunityConfig config{
             envelopePreroll ? repeatedFrame + 1
                             : state_->formalRequiredFrameCount.load(std::memory_order_acquire),
             envelopePreroll ? repeatedFrame : 0,
-            envelopePreroll ? 1 : 60,
-            1,
+            envelopePreroll ? 1 : gpu::kFormalSourceFrameRate.numerator,
+            envelopePreroll ? 1 : gpu::kFormalSourceFrameRate.denominator,
             state_->formalRefreshNumerator.load(std::memory_order_relaxed),
             state_->formalRefreshDenominator.load(std::memory_order_relaxed),
             static_cast<long long>(gpu::qpcFrequency()),
-            state_->formalSchedulerInvocationLedgerEnabled.load(std::memory_order_acquire)};
+            state_->formalSchedulerInvocationLedgerEnabled.load(std::memory_order_acquire),
+            gpu::kFormalRequiredIntentRate.numerator,
+            gpu::kFormalRequiredIntentRate.denominator};
         std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
         return state_->formalOpportunityScheduler.start(config);
     }

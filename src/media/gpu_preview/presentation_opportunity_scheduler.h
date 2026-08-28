@@ -34,6 +34,25 @@ enum class PresentationOpportunityClassification {
     PairingDefect,
 };
 
+// B3-I6C。formal workload configurationのrate authority。required countとtarget mappingは
+// 同じ1つのrequired-intent rateだけを参照する。display refreshはmappingへ関与しない。
+struct RequiredIntentRate {
+    long long numerator = 0;
+    long long denominator = 0;
+};
+
+// canonical formal workload。required intentもsourceも60/1である。
+inline constexpr RequiredIntentRate kFormalRequiredIntentRate{60, 1};
+inline constexpr RequiredIntentRate kFormalSourceFrameRate{60, 1};
+
+// required set sizeのsingle producer。W2-A denominatorと同じ測定秒数から作る。
+inline constexpr long long formalRequiredIntentCountForSeconds(long long seconds) {
+    return seconds > 0 && kFormalRequiredIntentRate.denominator > 0
+               ? seconds * kFormalRequiredIntentRate.numerator /
+                     kFormalRequiredIntentRate.denominator
+               : 0;
+}
+
 struct PresentationOpportunityConfig {
     long long requiredFrameCount = 0;
     // acquisition prerollなど、既存frame domain内の途中をscheduler target 0として
@@ -46,7 +65,30 @@ struct PresentationOpportunityConfig {
     long long qpcFrequency = 0;
     // W4-C2 diagnostic capture専用。canonical performance authorityでは使わない。
     bool invocationLedgerEnabled = false;
+    // B3-I6C。intent ordinalが属するworkload時間軸。0のままならstartはfail-closeする。
+    long long requiredIntentRateNumerator = 0;
+    long long requiredIntentRateDenominator = 0;
 };
+
+// intent ordinal -> source frameのexact mapping。display refreshは使わない。
+bool presentationTargetFrameFor(const PresentationOpportunityConfig& config, long long ordinal,
+                                long long& target);
+
+// required set全域のexact target rangeとmonotonicity。countの比較では代用しない。
+struct RequiredIntentSourceCoverage {
+    bool valid = false;
+    bool monotonicNonDecreasing = false;
+    long long requiredCount = 0;
+    long long minTarget = -1;
+    long long maxTarget = -1;
+};
+
+RequiredIntentSourceCoverage
+requiredIntentSourceCoverage(const PresentationOpportunityConfig& config);
+
+// coverage成立条件は 0 <= minTarget かつ maxTarget < sourceFrameCount である。
+bool requiredIntentSourceCoverageSatisfied(const RequiredIntentSourceCoverage& coverage,
+                                           long long sourceFrameCount);
 
 struct PresentationOpportunityDecision {
     bool valid = false;

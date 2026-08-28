@@ -1331,8 +1331,9 @@ B3-I5B                         CLOSED / runtime smoke PASS
 fresh W3 canonical 3/3         NOT ACHIEVED (run 1 acquisition failure)
 canonical W3 verdict           UNCHANGED / FAIL
 B3-I6A source mapping authority DESIGN CLOSED (§18)
-B3-I6B fatal/token atomicity   DONE / targeted green、runtime negative未再現 (§19)
-B3-I6C mapping / preflight修正  NOT STARTED
+B3-I6B fatal/token atomicity   CLOSED WITH DEFERRED INTEGRATION-NEGATIVE (§19、§20、§21)
+B3-I6C mapping / preflight修正  DONE / positive smoke PASS (§22)
+deferred I6B integration test  fresh W3より前に必ず閉じる (§21.1)
 P3-C-2 / P4再検証               HOLD (W3 3/3 PASSが前提)
 P5-E4                          BLOCKED
 historical COMPOSITION_TOKEN_MISMATCH   UNRESOLVED_HISTORICAL_RUNTIME_FAILURE
@@ -1566,3 +1567,285 @@ historical COMPOSITION_TOKEN_MISMATCH UNRESOLVED_HISTORICAL_RUNTIME_FAILURE
 runtime negative validationを成立させるには、window終端との競合に依存しない決定的な
 negative vectorが要る。それはcanonical inputかconfigのどちらかを触ることになるため、
 I6Bの範囲では選択しない。
+
+## 20. B3-I6B-V — Deterministic Fatal Publication Runtime Vector (設計失敗 / 1 run)
+
+diagnostic-only のnoncanonical vectorを設計し、**exactly 1 run**実施した。production I6B semantics、
+I6A selected mapping semantics、canonical fixture、canonical required set、threshold、denominatorは
+一切変更していない。期待した`SOURCE_COVERAGE_INSUFFICIENT`は発生せず、**vector設計が不成立**である。
+retryは行っていない。
+
+artifact: `build/i6b-v-deterministic-vector-20260829T012213Z/`
+runner: `scripts/p2-d5-2-b3-i6b-v-negative-vector.ps1` (diagnostic-only)
+
+### 20.1 設計した vector と結果
+
+legacy mappingでfatalがplanned window endより前に来る条件は、後述のとおり
+**issuance rate > display refresh rate**だけである。vsync待ちを外してissuance rateを上げる
+workload cadenceを選び、authorityは何も偽造しない構成にした。
+
+結果はapp側のproduct guardによる拒否だった。
+
+```text
+app exit                 6
+stderr                   formal presentation pathではQSG_NO_VSYNCを使用できません
+producer                 apps/compositor_spike/main.cpp:116-118
+measurement              未開始 (traced-app.json未生成)
+```
+
+これはproductのfail-closedが正しく働いた結果である。guardを外して測ることはしない
+(formal presentation pathのworkload契約を壊すため)。
+
+### 20.2 なぜ config だけでは margin を作れないか
+
+現行の3つの固定値から、marginは構造的に作れない。
+
+```text
+required        = measureSeconds * 60                     controller:462
+scheduler config sourceFps = 60/1 (hardcoded)             startFormalOpportunityScheduler
+target(i)       = floor(i * 60 * refreshDen / refreshNum) targetFor
+fatal condition = target(i) >= required
+```
+
+refresh rate を R、window を T とすると
+
+```text
+fatal ordinal      i_f = ceil(T * R)
+window内issuance   <= R * T           (vsync下では1 Present = 1 issuance が上限)
+```
+
+`i_f`と上限issuance数がどちらも`R*T`であり、**Rを上げても下げてもTを変えても打ち消し合う**。
+したがってvsyncが必須である限り、fatalはrequired setの末尾1〜3件目にしか現れず、
+「全window中refresh cadenceの100%を維持できたか」というcoin flipになる。
+
+実測もこれと一致する。
+
+```text
+W3 run 1 (T=60)                3598 issuance -> ordinal 3597 到達 -> fatal
+I6B smoke (T=60, §19.4)        3596 issuance -> ordinal 3595 止まり -> fatal無し
+```
+
+### 20.3 margin を作るには production surface が要る
+
+次のいずれかが必要であり、いずれも「production semanticsを変更しない」という本sliceの制約に
+反するため選択しない。
+
+```text
+(a) test専用の intent rate authority
+    I6Aの INTENT_RATE_HAS_SINGLE_PRODUCER を導入する際に、rateをdiagnostic runで
+    差し替え可能にする。required = r * T と mapping の 60/R が分離されmarginが生まれる。
+(b) scheduler configのsourceFps (現在hardcoded 60) をdiagnostic-onlyで上書きする経路
+(c) I6C後にlegacy mappingが消えるため、runtime vectorではなくinjection/unit levelで
+    fatal-before-Present orderingを固定する
+```
+
+I6C後は`SOURCE_COVERAGE_INSUFFICIENT`自体が正常経路から到達不能になるため、(c)が最も筋が良い。
+
+### 20.4 同 run で実検証できたもの — acquisition failure path sealing
+
+vectorはPASSしなかったが、**failure path provenance sealingは実runで検証できた**。
+`acquire-p2-d5-2-w3-fresh.ps1`へ`-LiveRunner`としてvector runnerを渡し、live gate失敗を
+経由させた。
+
+```text
+w3-acquisition-partial-provenance.json   生成された
+acquisition_gate                         FAILED
+planned_runs / completed_runs            1 / 0
+replacement_retry_performed              false
+run_metrics_are_canonical                false
+canonical_w3_verdict                     NOT_ACHIEVED_ACQUISITION_STAGE_FAILURE
+checkpoint_sha / binary 4点のSHA-256      記録された
+files                                    run-1/app-stderr.txt, run-1/app-stdout.txt
+                                         (path正規化とSHA-256が正しく出力された)
+```
+
+この実行で§18.5実装の2件の欠陥が実証的に潰れた。path正規化の`Replace`引数が空文字列で
+実行時例外になっていた件と、completed run数をartifactの存在で数えていた件である。後者は
+`process_exit_code == 0`だけをcompletedとする形へ直し、本runで`completed_runs = 0`を確認した。
+
+既知のcaveatが1件ある。sealerはW3 acquisition専用のため、`-LiveRunner`にdiagnostic runnerを
+与えた本runでも`acquisition_mode`は`CanonicalPresentMonLive`と記録される。この1件は
+canonical W3 cohortではない (directory名とrun_metrics_are_canonical=falseで区別できる)。
+sealerへ実際のlive runnerを記録するfieldを足すのは次sliceで行う。**本runで検証済みのsealerを
+後から書き換えないため、本sliceでは変更していない。**
+
+### 20.5 現在位置
+
+```text
+B3-I6B implementation                 DONE / targeted gate GREEN
+B3-I6B runtime negative validation    NOT ESTABLISHED (vector構成不能 / §20.2)
+B3-I6B runtime closure                NOT CLOSED
+acquisition failure sealing           VERIFIED (§20.4)
+B3-I6C                                NOT STARTED
+canonical W3                          HOLD / verdict UNCHANGED / FAIL
+historical COMPOSITION_TOKEN_MISMATCH UNRESOLVED_HISTORICAL_RUNTIME_FAILURE
+```
+
+I6B runtime closureの成立には production surface の追加が要るため、その可否判断まで
+`NOT CLOSED`のまま保持する。
+
+## 21. B3-I6B status の二層固定と runner sealing verdict
+
+I6B-V (§20) の結論に従い、I6Bのstatusを二層で固定する。runtime negativeが無いことを理由に
+implementationをopenへ戻さない一方、runtime failure pathまでexactに証明済みとも言わない。
+
+```text
+B3-I6B production implementation        CLOSED
+B3-I6B targeted correctness gate        CLOSED / GREEN
+B3-I6B success-path runtime neutrality  OBSERVED (§19.4)
+B3-I6B natural runtime negative         NOT ESTABLISHED
+B3-I6B deterministic natural vector     UNAVAILABLE UNDER VALID FORMAL CONFIG (§20.2)
+B3-I6B overall product-fix status       CLOSED WITH DEFERRED INTEGRATION-NEGATIVE EVIDENCE
+
+acquisition failure-path sealing        VERIFIED (§20.4)
+```
+
+production surfaceへdiagnostic-onlyのintent rate / source fps overrideを足してruntime negativeを
+作る案は採らない。I6Aで閉じた`INTENT_RATE_HAS_SINGLE_PRODUCER`の実装前に別のrate authorityを
+足すことになり、目的と手段が逆になるためである。
+
+### 21.1 deferred integration-negative の凍結条件
+
+置き換えとなるclosure testは**fresh W3 canonical 3/3より前に必ず閉じる**。scheduler unitの延長では
+不足であり、renderer/Qt境界のpublication lifecycleを実際に通すintegration-level testとする。
+
+```text
+1. NativePresentTokenCapture を active/valid にする
+2. token publication前に protocol fatal を注入する
+3. capture objectのdestructorを実際に通す
+4. setCompositionToken call count == 0
+5. suppressed_before_present_count == 1
+6. post-fatal frameSwapped相当を送る
+7. receipt take / bind / commit / join に入らない
+8. fatalReasonは注入前のfirst fatalのまま
+9. queueはdequeue / rollbackしない
+```
+
+injection authorityは**publication直前にfatal latchを立てることだけ**に限定する。fake token serial、
+fake present serial、fake QPC、fake VBlank ordinal、nearest/latest reconstruction、production config
+overrideはいずれも禁止する。`SOURCE_COVERAGE_INSUFFICIENT`の再現は不要であり、証明する不変量は
+一般形の「token publication前に生じたcallback-local protocol fatalは、そのtransactionをformal Present
+transactionにしない」である。
+
+`acquisition_mode`がdiagnostic runnerでも`CanonicalPresentMonLive`と記録される件は provenance
+metadata gapとして残す。`requested_live_runner` / `resolved_live_runner`の追加は次sliceで行い、
+§20.4でsealed済みのartifactは書き換えない。
+
+## 22. B3-I6C — Source Mapping / Coverage Preflight Correction
+
+I6A selected semantics (`WORKLOAD_INTENT_TIME_AXIS`) を実装した。required set、canonical source
+fixture、W2-A denominator、threshold、FinalState authority、queue semantics、join semanticsは
+変更していない。
+
+### 22.1 rate authority の single producer 化
+
+```text
+gpu::kFormalRequiredIntentRate  {60, 1}   required countとtarget mappingの唯一のrate authority
+gpu::kFormalSourceFrameRate     {60, 1}   canonical workloadのsource frame rate
+gpu::formalRequiredIntentCountForSeconds(seconds)   required set sizeのsingle producer
+```
+
+controllerの`measureSeconds * 60`リテラルと、renderer configのhardcoded `60`を両方この authority へ
+置き換えた。`PresentationOpportunityConfig`へ`requiredIntentRateNumerator/Denominator`を追加し、
+未設定 (0) は`start()`が`INVALID_CONFIGURATION`でfail-closeする。既存configが黙って別の意味へ
+ずれないよう、fieldは末尾に追加してdefaultを0にした。
+
+「single producer」は世界中で60固定という意味ではなく、**各formal workload configurationが参照する
+required-intent rate authorityが1つだけ**という意味である。
+
+### 22.2 mapping
+
+```text
+target(i) = sourceFrameOffset
+          + floor(i * sourceFps / requiredIntentRate)
+```
+
+実装は`presentationTargetFrameFor()`のexactly 1箇所であり、
+`PresentationOpportunityScheduler::targetFor()`はそこへ委譲するだけである (DRY)。
+display refresh (`refreshNumerator/Denominator`) はauthority検査専用となり、mappingからは消えた。
+
+canonicalでは
+
+```text
+requiredIntentRate = 60/1、sourceFps = 60/1
+target(i) = i、required set = 0..3599、max target = 3599、source = 3600 frames
+```
+
+### 22.3 source coverage preflight
+
+count比較を廃止し、required set全域のexact target rangeで判定する。
+
+```text
+requiredIntentSourceCoverage(config)
+    required set [0, requiredCount) を全走査し min/max target と monotonicity を出す
+requiredIntentSourceCoverageSatisfied(coverage, sourceFrameCount)
+    coverage.valid && 0 <= minTarget && maxTarget < sourceFrameCount
+```
+
+単調性は別invariantとして証明せず、同じ走査で実測する。artifactへ
+`required_intent_source_coverage` (rate、min/max target、monotonicity、
+`target_mapping_uses_display_refresh=false`、`count_comparison_used=false`) を出力する。
+
+### 22.4 targeted test
+
+```text
+p2_presentation_opportunity_scheduler
+    targetMappingIsDisplayRefreshIndependent
+    prerollTargetStaysOnRepeatedFrame            positive + negative
+    requiredIntentSourceCoverageIsExact
+    既存accountingをworkload rate軸へ更新 (intent rate 30 / 120)
+p2_b3_i6c_source_mapping_correction_architecture
+p2_b3_i6c_source_mapping_correction_guard_*      Good + negative 12
+```
+
+`targetMappingIsDisplayRefreshIndependent`は60 / 59.95 / 120 / 30 Hzで同一target列になることを、
+実装式とは独立に`target(i) = i`を期待値として固定する。`prerollTargetStaysOnRepeatedFrame`は
+preroll rangeでtargetが`repeatedFrame`のままであること (positive) と、intent rateをsource rateと
+同じにすると repeat が壊れること (negative) を固定し、repeatを保っているのがrate authorityであることを示す。
+`requiredIntentSourceCoverageIsExact`はcanonical (max 3599 / 3600 frameでcoverage成立、3599では不成立) と
+legacy display軸 (max 3602 / 3600 frameで不成立) を対比し、count比較では両者を区別できないことも固定する。
+
+guard mutationはmappingのrefresh依存化、targetForでの式複製、rate validation削除、第2のrate producer、
+count比較preflightへの復帰、coverageのlast targetのみ評価、monotonicity未検査、
+`maxTarget <= sourceFrameCount`への緩和、minTarget無視、rendererのhardcoded rate、
+artifactのrefresh mapping主張、count比較主張を個別に拒否する。
+
+ordinary CTestは既存failure 6件のみである。
+
+### 22.5 noncanonical positive smoke (1 run)
+
+`build/i6c-positive-smoke-20260829T013919Z/positive-smoke.json`
+
+```text
+coverage      rate 60/60 / display非依存 / valid / monotonic
+              required 3600 / min 0 / max 3599 / source 3600 / count比較不使用
+queue         issued=rendered=qualified=dequeued=3598 / tail 2 / active 0
+              conservation valid / planned_window_ended / error NONE
+終端           PLANNED_WINDOW_END / exit 0 / formal_opportunity_error NONE
+handshake     CURRENT_RUNNING / canonical_start_order_exact
+transport     token・receiptのmissing/duplicate/stale 0 / failed present 0 / authority_pass
+publication   suppressed_before_present_count 0
+current 3598件  target == intent ordinal がすべて成立
+preroll 2件     target == repeatedFrame (301) がすべて成立
+```
+
+§17のW3 run 1はordinal 3597で`SOURCE_COVERAGE_INSUFFICIENT`へ落ちたが、本runは同じ3598 issuanceを
+fatalなくplanned window endまで完走した。live artifactでもtarget == ordinalとpreroll repeatを確認できた。
+
+`effective_fps 59.951` / `drop_rate 0.056%` / `true drop 2`は**noncanonical 1 runの記録であり
+canonical W3 metricではない**。
+
+### 22.6 現在位置
+
+```text
+I6A source mapping semantics            CLOSED
+I6B publication atomicity implementation CLOSED WITH DEFERRED INTEGRATION-NEGATIVE EVIDENCE
+I6B-V deterministic natural vector      CLOSED / IMPOSSIBLE UNDER VALID CONFIG
+runner failure-path sealing             VERIFIED
+I6C mapping + preflight correction      DONE / targeted green / positive smoke PASS
+
+next  deferred I6B integration injection test   (fresh W3より前に必ず閉じる)
+      fresh W3 canonical 3/3                    HOLD
+canonical W3 verdict                    UNCHANGED / FAIL
+historical COMPOSITION_TOKEN_MISMATCH   UNRESOLVED_HISTORICAL_RUNTIME_FAILURE
+```

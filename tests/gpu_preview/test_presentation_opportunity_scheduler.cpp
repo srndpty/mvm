@@ -23,11 +23,13 @@ using InvocationReason = mvm::gpu::PresentationSchedulerInvocationReason;
 
 constexpr long long kQpcFrequency = 600;
 
+// B3-I6C。required-intent rateはtargetの時間軸authorityであり、refreshはauthority検査専用。
 Scheduler scheduler(long long refreshNumerator, long long refreshDenominator,
-                    long long requiredFrameCount = 3600) {
+                    long long requiredFrameCount = 3600, long long intentRateNumerator = 60,
+                    long long intentRateDenominator = 1) {
     Scheduler value;
-    check(value.start(
-              {requiredFrameCount, 0, 60, 1, refreshNumerator, refreshDenominator, kQpcFrequency}),
+    check(value.start({requiredFrameCount, 0, 60, 1, refreshNumerator, refreshDenominator,
+                       kQpcFrequency, false, intentRateNumerator, intentRateDenominator}),
           "schedulerを開始できません");
     return value;
 }
@@ -107,34 +109,39 @@ void regularCadences() {
     check(result.originRefreshCount == 101 && result.records[0].actualOpportunityOrdinal == 0,
           "最初のswapのrefresh countをoriginへ固定できません");
 
+    // B3-I6C。display refreshはtarget mappingへ関与しない。59.95Hzでもtarget == ordinalである。
     auto hz5995 = scheduler(59950, 1000);
     Driver slow{&hz5995, 0, 0, 59950, 1000};
     check(slow.runCadence(3597), "59.95 Hz cadenceをcommitできません");
     const auto endDecision = slow.select(100 + 3597, 20 * 3597 + 1);
-    check(!endDecision.valid && endDecision.pastSourceDomain && endDecision.targetFrame == 3600 &&
-              hz5995.error() == Error::SourceCoverageInsufficient,
-          "source coverage不足を明示的contract failureにできません");
+    check(endDecision.valid && !endDecision.pastSourceDomain && endDecision.targetFrame == 3597 &&
+              hz5995.error() == Error::None,
+          "59.95 Hz displayでsource domainを外れました");
     result = hz5995.snapshot();
     check(result.requiredIntentQueue.dequeuedCount == 3597 &&
               result.requiredIntentQueue.activeReservationCount == 1 &&
               result.requiredIntentQueue.unissuedTailCount == 2,
-          "source coverage failureがrequired setをskip/dequeue/縮小しました");
+          "59.95 Hz cadenceがrequired setをskip/dequeue/縮小しました");
 
-    auto hz120 = scheduler(120, 1);
-    Driver fast{&hz120, 0, 0, 120, 1};
-    check(fast.runCadence(3600), "120 Hz cadenceをcommitできません");
-    check(hz120.closePlannedWindow(), "120 Hz schedulerをcloseできません");
-    result = hz120.snapshot();
-    check(result.displayedUnique == 1800 && result.trueDrop == 1800 && result.repeated == 1800,
-          "120 Hz required-intent domain accountingが違います");
+    // source 60fps workloadをintent rate 120/sへ載せると、2 intentごとに同じsource frameになる。
+    auto rate120 = scheduler(60, 1, 3600, 120, 1);
+    Driver fast{&rate120, 0, 0, 60, 1};
+    check(fast.runCadence(3600), "intent rate 120のcadenceをcommitできません");
+    check(rate120.closePlannedWindow(), "intent rate 120 schedulerをcloseできません");
+    result = rate120.snapshot();
+    check(result.displayedUnique == 1800 && result.repeated == 1800 && result.gapTrueDrop == 0 &&
+              result.tailTrueDrop == 1800 && result.trueDrop == 1800,
+          "intent rate 120のrequired-intent domain accountingが違います");
 
-    auto hz30 = scheduler(30, 1);
-    Driver half{&hz30, 0, 0, 30, 1};
-    check(half.runCadence(1800), "30 Hz cadenceをcommitできません");
-    check(hz30.closePlannedWindow(), "30 Hz schedulerをcloseできません");
-    result = hz30.snapshot();
-    check(result.displayedUnique == 1800 && result.trueDrop == 1800 && result.repeated == 0,
-          "30 Hz drop accountingが違います");
+    // intent rate 30/sなら1 intentごとにsource frameが2進む。
+    auto rate30 = scheduler(60, 1, 3600, 30, 1);
+    Driver half{&rate30, 0, 0, 60, 1};
+    check(half.runCadence(1800), "intent rate 30のcadenceをcommitできません");
+    check(rate30.closePlannedWindow(), "intent rate 30 schedulerをcloseできません");
+    result = rate30.snapshot();
+    check(result.displayedUnique == 1800 && result.repeated == 0 && result.gapTrueDrop == 1799 &&
+              result.tailTrueDrop == 1 && result.trueDrop == 1800,
+          "intent rate 30のdrop accountingが違います");
 }
 
 // 今回のformal Playback run 1で観測した実sequenceをdeterministic regressionにする。
@@ -347,9 +354,10 @@ void pairingFailuresAreFatal() {
 
 void sourceCoverageFatalCleanupPreservesQueue() {
     Scheduler value;
-    check(value.start({4, 0, 60, 1, 30, 1, kQpcFrequency}),
+    // source 60fps workloadをintent rate 30/sへ載せる。target = 2*ordinalでrequired 4を超える。
+    check(value.start({4, 0, 60, 1, 60, 1, kQpcFrequency, false, 30, 1}),
           "source coverage cleanup schedulerを開始できません");
-    Driver driver{&value, 0, 0, 30, 1};
+    Driver driver{&value, 0, 0, 60, 1};
     check(driver.runCadence(2), "source coverage fatal前のcommitに失敗しました");
     const auto fatalDecision = driver.select(102, 41);
     check(!fatalDecision.valid && fatalDecision.pastSourceDomain &&
@@ -376,9 +384,9 @@ void sourceCoverageFatalCleanupPreservesQueue() {
 // rollbackされず、failed reservationもdequeueされない。
 void postSourceCoverageFatalDoesNotMutateTransaction() {
     Scheduler value;
-    check(value.start({4, 0, 60, 1, 30, 1, kQpcFrequency}),
+    check(value.start({4, 0, 60, 1, 60, 1, kQpcFrequency, false, 30, 1}),
           "post-fatal atomicity schedulerを開始できません");
-    Driver driver{&value, 0, 0, 30, 1};
+    Driver driver{&value, 0, 0, 60, 1};
     check(driver.runCadence(2), "post-fatal atomicity前のcommitに失敗しました");
     const auto fatalDecision = driver.select(102, 41);
     check(!fatalDecision.valid && value.error() == Error::SourceCoverageInsufficient,
@@ -387,13 +395,13 @@ void postSourceCoverageFatalDoesNotMutateTransaction() {
 
     // post-fatal callback / render完了 / qualified evidence / swapはいずれも
     // transactionを前進させない。
-    const auto postDecision = value.selectForRender(45, authority(103, 30, 1), 2);
+    const auto postDecision = value.selectForRender(45, authority(103, 60, 1), 2);
     check(!postDecision.valid, "post-fatal callbackがvalid decisionを返しました");
     check(!value.markRenderComplete(50, 4, 2), "post-fatal render完了を受理しました");
     check(!value.commitQualifiedPresent(atFatal.activeReservation.reservationId,
                                         atFatal.activeReservation.intentOrdinal),
           "post-fatal qualified evidenceを受理しました");
-    check(!value.commitSwap(55, authority(104, 30, 1), 2), "post-fatal swapを受理しました");
+    check(!value.commitSwap(55, authority(104, 60, 1), 2), "post-fatal swapを受理しました");
 
     const auto after = value.snapshot().requiredIntentQueue;
     check(after.issuedCount == atFatal.issuedCount &&
@@ -406,6 +414,95 @@ void postSourceCoverageFatalDoesNotMutateTransaction() {
           "post-fatal操作がqueue transactionを変更しました");
     check(value.error() == Error::SourceCoverageInsufficient,
           "post-fatal操作がfirst protocol fatalを上書きしました");
+}
+
+// B3-I6C。同じworkload configurationならdisplay refreshが変わってもtarget列は一致する。
+void targetMappingIsDisplayRefreshIndependent() {
+    const long long refreshRates[][2] = {{60, 1}, {59950, 1000}, {120, 1}, {30, 1}};
+    long long expected[16]{};
+    for (long long ordinal = 0; ordinal < 16; ++ordinal)
+        expected[ordinal] = ordinal; // source 60fps / intent rate 60/s のexact mapping
+    for (const auto& refresh : refreshRates) {
+        mvm::gpu::PresentationOpportunityConfig config{};
+        config.requiredFrameCount = 3600;
+        config.sourceFpsNumerator = 60;
+        config.sourceFpsDenominator = 1;
+        config.refreshNumerator = refresh[0];
+        config.refreshDenominator = refresh[1];
+        config.qpcFrequency = kQpcFrequency;
+        config.requiredIntentRateNumerator = 60;
+        config.requiredIntentRateDenominator = 1;
+        for (long long ordinal = 0; ordinal < 16; ++ordinal) {
+            long long target = -1;
+            check(mvm::gpu::presentationTargetFrameFor(config, ordinal, target) &&
+                      target == expected[ordinal],
+                  "target mappingがdisplay refreshに依存しています");
+        }
+    }
+}
+
+// B3-I6C。prerollはsource 1/s workloadとして同じintent rate軸に載る。
+void prerollTargetStaysOnRepeatedFrame() {
+    const long long repeatedFrame = 41;
+    mvm::gpu::PresentationOpportunityConfig preroll{};
+    preroll.requiredFrameCount = repeatedFrame + 1;
+    preroll.sourceFrameOffset = repeatedFrame;
+    preroll.sourceFpsNumerator = 1;
+    preroll.sourceFpsDenominator = 1;
+    preroll.refreshNumerator = 59950;
+    preroll.refreshDenominator = 1000;
+    preroll.qpcFrequency = kQpcFrequency;
+    preroll.requiredIntentRateNumerator = 60;
+    preroll.requiredIntentRateDenominator = 1;
+    for (long long ordinal = 0; ordinal < 60; ++ordinal) {
+        long long target = -1;
+        check(mvm::gpu::presentationTargetFrameFor(preroll, ordinal, target) &&
+                  target == repeatedFrame,
+              "preroll targetがrepeated frameから動きました");
+    }
+    // negative。intent rateをsource rateと同じにするとrepeat semanticsが壊れる。
+    mvm::gpu::PresentationOpportunityConfig broken = preroll;
+    broken.requiredIntentRateNumerator = 1;
+    long long brokenTarget = -1;
+    check(mvm::gpu::presentationTargetFrameFor(broken, 1, brokenTarget) &&
+              brokenTarget == repeatedFrame + 1,
+          "preroll repeatを保つのがintent rate authorityであることを示せません");
+}
+
+// B3-I6C。source coverageはcount比較ではなくrequired set全域のexact target rangeで決める。
+void requiredIntentSourceCoverageIsExact() {
+    mvm::gpu::PresentationOpportunityConfig canonical{};
+    canonical.requiredFrameCount = 3600;
+    canonical.sourceFpsNumerator = 60;
+    canonical.sourceFpsDenominator = 1;
+    canonical.refreshNumerator = 59950;
+    canonical.refreshDenominator = 1000;
+    canonical.qpcFrequency = kQpcFrequency;
+    canonical.requiredIntentRateNumerator = 60;
+    canonical.requiredIntentRateDenominator = 1;
+    const auto coverage = mvm::gpu::requiredIntentSourceCoverage(canonical);
+    check(coverage.valid && coverage.monotonicNonDecreasing && coverage.requiredCount == 3600 &&
+              coverage.minTarget == 0 && coverage.maxTarget == 3599,
+          "canonical workloadのexact target rangeが違います");
+    check(mvm::gpu::requiredIntentSourceCoverageSatisfied(coverage, 3600),
+          "3600 frame sourceがcanonical required setをcoverできていません");
+    check(!mvm::gpu::requiredIntentSourceCoverageSatisfied(coverage, 3599),
+          "max targetがsource domain外でもcoverage成立にしています");
+    check(!mvm::gpu::requiredIntentSourceCoverageSatisfied(coverage, 0),
+          "source frame 0件をcoverage成立にしています");
+
+    // legacy display軸mapping (intent rate = 59.95/s) は同じ3600 frameでcoverできない。
+    mvm::gpu::PresentationOpportunityConfig legacy = canonical;
+    legacy.requiredIntentRateNumerator = 59950;
+    legacy.requiredIntentRateDenominator = 1000;
+    const auto legacyCoverage = mvm::gpu::requiredIntentSourceCoverage(legacy);
+    check(legacyCoverage.valid && legacyCoverage.maxTarget == 3602 &&
+              !mvm::gpu::requiredIntentSourceCoverageSatisfied(legacyCoverage, 3600),
+          "legacy display軸mappingのcoverage不足を検出できません");
+
+    // count比較では両者を区別できないことを固定する。
+    check(3600 >= canonical.requiredFrameCount && 3600 >= legacy.requiredFrameCount,
+          "count比較がcoverage authorityになり得ないことを示せません");
 }
 
 void duplicateCallbackDoesNotCreateOpportunity() {
@@ -448,7 +545,8 @@ void measurementEndFinalizesPending() {
 
 void overflowIsClosed() {
     Scheduler overflow;
-    overflow.start({3600, 0, std::numeric_limits<long long>::max(), 1, 60, 3, 20});
+    // mapping本体のchecked multiplyを通す。ordinal * sourceFps * rateDen で overflow する。
+    overflow.start({3600, 0, std::numeric_limits<long long>::max(), 1, 60, 3, 20, false, 60, 3});
     Driver driver{&overflow, 0, 0, 60, 3};
     check(driver.present(100, 101, 1, 5, 10), "overflow testの初回commitに失敗しました");
     check(!driver.select(101, 11).valid && overflow.error() == Error::ArithmeticOverflow,
@@ -457,7 +555,7 @@ void overflowIsClosed() {
 
 void sourceFrameOffsetIsExact() {
     Scheduler value;
-    check(value.start({61, 60, 1, 1, 60, 1, kQpcFrequency}),
+    check(value.start({61, 60, 1, 1, 60, 1, kQpcFrequency, false, 60, 1}),
           "source offset schedulerを開始できません");
     Driver driver{&value};
     const auto first = driver.select(100, 1);
@@ -516,7 +614,7 @@ void formalIntentTransportPolicyIsExact() {
 
 void diagnosticInvocationLedgerIsBranchExact() {
     Scheduler value;
-    check(value.start({1, 0, 60, 1, 60, 1, kQpcFrequency, true}),
+    check(value.start({1, 0, 60, 1, 60, 1, kQpcFrequency, true, 60, 1}),
           "W4-C2 diagnostic schedulerを開始できません");
     Driver driver{&value};
     const auto primary = driver.select(100, 1);
@@ -565,7 +663,7 @@ void diagnosticInvocationLedgerIsBranchExact() {
     }
 
     Scheduler invalid;
-    check(invalid.start({1, 0, 60, 1, 60, 1, kQpcFrequency, true}),
+    check(invalid.start({1, 0, 60, 1, 60, 1, kQpcFrequency, true, 60, 1}),
           "W4-C2 invalid schedulerを開始できません");
     check(!invalid.selectForRender(1, {}, 0).valid, "invalid authorityを拒否しません");
     const auto invalidSnapshot = invalid.snapshot();
@@ -587,6 +685,9 @@ int main() {
     pairingFailuresAreFatal();
     sourceCoverageFatalCleanupPreservesQueue();
     postSourceCoverageFatalDoesNotMutateTransaction();
+    targetMappingIsDisplayRefreshIndependent();
+    prerollTargetStaysOnRepeatedFrame();
+    requiredIntentSourceCoverageIsExact();
     duplicateCallbackDoesNotCreateOpportunity();
     measurementEndFinalizesPending();
     overflowIsClosed();

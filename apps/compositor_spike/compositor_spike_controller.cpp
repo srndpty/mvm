@@ -459,9 +459,23 @@ bool CompositorSpikeController::startWorkers() {
     const auto b = workerB_ ? workerB_->snapshot() : gpu::SourceDecoderSnapshot{};
     sourceAFrameCount_ = a.info.frameCount;
     sourceBFrameCount_ = b.info.frameCount;
-    requiredMeasurementFrameCount_ = static_cast<long long>(config_.measureSeconds) * 60;
-    sourceCoverageOk_ = sourceAFrameCount_ >= requiredMeasurementFrameCount_ &&
-                        (!workerB_ || sourceBFrameCount_ >= requiredMeasurementFrameCount_);
+    // B3-I6C。required set sizeとsource coverageはrequired-intent rate authorityだけから決める。
+    requiredMeasurementFrameCount_ =
+        gpu::formalRequiredIntentCountForSeconds(static_cast<long long>(config_.measureSeconds));
+    // coverageはcount比較ではなくrequired set全域のexact target rangeで判定する。
+    gpu::PresentationOpportunityConfig coverageConfig{};
+    coverageConfig.requiredFrameCount = requiredMeasurementFrameCount_;
+    coverageConfig.sourceFrameOffset = 0;
+    coverageConfig.sourceFpsNumerator = gpu::kFormalSourceFrameRate.numerator;
+    coverageConfig.sourceFpsDenominator = gpu::kFormalSourceFrameRate.denominator;
+    coverageConfig.requiredIntentRateNumerator = gpu::kFormalRequiredIntentRate.numerator;
+    coverageConfig.requiredIntentRateDenominator = gpu::kFormalRequiredIntentRate.denominator;
+    requiredIntentSourceCoverage_ = gpu::requiredIntentSourceCoverage(coverageConfig);
+    sourceCoverageOk_ =
+        gpu::requiredIntentSourceCoverageSatisfied(requiredIntentSourceCoverage_,
+                                                   sourceAFrameCount_) &&
+        (!workerB_ || gpu::requiredIntentSourceCoverageSatisfied(requiredIntentSourceCoverage_,
+                                                                 sourceBFrameCount_));
     if (config_.formalPreflight && config_.mode == CompositorMode::Playback &&
         config_.diagnosticCase == CompositorDiagnosticCase::None && !sourceCoverageOk_) {
         beginShutdown(QStringLiteral("Playback測定区間をsourceがcoverageしていません"), true);
@@ -3061,6 +3075,29 @@ bool CompositorSpikeController::writeMetrics() {
         {"configured_measure_seconds", config_.measureSeconds},
         {"configured_seek_count", config_.seekCount},
         {"diagnostic_target_rhiitem_pixel_toggle", config_.diagnosticTargetPixelToggle},
+        {"required_intent_source_coverage",
+         QJsonObject{
+             {"schema", "mvm-p2-d5-2-b3-i6c-required-intent-source-coverage-1"},
+             {"required_intent_rate_numerator",
+              static_cast<qint64>(gpu::kFormalRequiredIntentRate.numerator)},
+             {"required_intent_rate_denominator",
+              static_cast<qint64>(gpu::kFormalRequiredIntentRate.denominator)},
+             {"source_frame_rate_numerator",
+              static_cast<qint64>(gpu::kFormalSourceFrameRate.numerator)},
+             {"source_frame_rate_denominator",
+              static_cast<qint64>(gpu::kFormalSourceFrameRate.denominator)},
+             {"target_mapping_uses_display_refresh", false},
+             {"coverage_valid", requiredIntentSourceCoverage_.valid},
+             {"monotonic_non_decreasing",
+              requiredIntentSourceCoverage_.monotonicNonDecreasing},
+             {"required_count", requiredIntentSourceCoverage_.requiredCount},
+             {"min_target", requiredIntentSourceCoverage_.minTarget},
+             {"max_target", requiredIntentSourceCoverage_.maxTarget},
+             {"source_a_frame_count", sourceAFrameCount_},
+             {"source_b_frame_count", sourceBFrameCount_},
+             {"coverage_rule", "0 <= min_target && max_target < source_frame_count"},
+             {"count_comparison_used", false},
+         }},
         {"configured_measurement_preroll_frames",
          static_cast<qint64>(gpu::kMeasurementPrerollFrames)},
         {"measurement_preroll_ok", measurementPrerollOk_},

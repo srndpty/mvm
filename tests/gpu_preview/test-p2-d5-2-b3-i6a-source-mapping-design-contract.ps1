@@ -129,10 +129,12 @@ if($Case-eq'Good'){
     $scheduler=Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'src/media/gpu_preview/presentation_opportunity_scheduler.cpp')
     $controller=Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'apps/compositor_spike/compositor_spike_controller.cpp')
     $queue=Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'src/media/gpu_preview/required_intent_queue.cpp')
-    Require ($scheduler-match'config_\.sourceFpsNumerator[\s\S]{0,200}config_\.refreshDenominator') '現行targetForがrefresh比を使っている事実を確認できません'
+    # §18.1のinventoryはdesign時点の記録である。B3-I6C実装後は、選定semanticsが
+    # 実sourceで成立していることを確認する。
+    Require ($scheduler-match'config\.requiredIntentRateNumerator') 'selected semanticsのrate authorityがmappingにありません'
     Require ($scheduler-match'target >= config_\.requiredFrameCount') 'source domain判定siteを確認できません'
-    Require ($controller-match'requiredMeasurementFrameCount_ = static_cast<long long>\(config_\.measureSeconds\) \* 60') 'required countのworkload rate producerを確認できません'
-    Require ($controller-match'sourceCoverageOk_ = sourceAFrameCount_ >= requiredMeasurementFrameCount_') '現行preflightがrequired countと比較している事実を確認できません'
+    Require ($controller-match'gpu::formalRequiredIntentCountForSeconds') 'required countのrate authority producerを確認できません'
+    Require ($controller-match'gpu::requiredIntentSourceCoverageSatisfied') 'preflightがcoverage authorityを使っている事実を確認できません'
     Require ($queue-match'requiredIntentOrdinals_\.push_back\(ordinal\)') 'required setのqueue producerを確認できません'
     Write-Output 'P2-D5-2 B3-I6A source mapping authority design contract Good: PASS'
     exit 0

@@ -15,12 +15,71 @@ bool checkedMultiply(long long left, long long right, long long& result) {
 
 } // namespace
 
+// B3-I6C。intent ordinalはworkload時間軸の識別子であり、mappingはdisplay refreshに依存しない。
+bool presentationTargetFrameFor(const PresentationOpportunityConfig& config, long long ordinal,
+                                long long& target) {
+    long long numerator = 0;
+    long long denominator = 0;
+    if (ordinal < 0 || config.sourceFrameOffset < 0 || config.sourceFpsNumerator <= 0 ||
+        config.sourceFpsDenominator <= 0 || config.requiredIntentRateNumerator <= 0 ||
+        config.requiredIntentRateDenominator <= 0)
+        return false;
+    if (!checkedMultiply(ordinal, config.sourceFpsNumerator, numerator) ||
+        !checkedMultiply(numerator, config.requiredIntentRateDenominator, numerator) ||
+        !checkedMultiply(config.sourceFpsDenominator, config.requiredIntentRateNumerator,
+                         denominator) ||
+        denominator <= 0)
+        return false;
+    const long long relativeTarget = numerator / denominator;
+    if (relativeTarget > std::numeric_limits<long long>::max() - config.sourceFrameOffset)
+        return false;
+    target = config.sourceFrameOffset + relativeTarget;
+    return true;
+}
+
+RequiredIntentSourceCoverage
+requiredIntentSourceCoverage(const PresentationOpportunityConfig& config) {
+    RequiredIntentSourceCoverage coverage;
+    if (config.requiredFrameCount <= 0)
+        return coverage;
+    coverage.requiredCount = config.requiredFrameCount;
+    coverage.monotonicNonDecreasing = true;
+    long long previous = 0;
+    // required set全域のexact min/maxを取る。単調性も同じ走査で確認する。
+    for (long long ordinal = 0; ordinal < config.requiredFrameCount; ++ordinal) {
+        long long target = 0;
+        if (!presentationTargetFrameFor(config, ordinal, target))
+            return {};
+        if (ordinal == 0) {
+            coverage.minTarget = target;
+            coverage.maxTarget = target;
+        } else {
+            if (target < previous)
+                coverage.monotonicNonDecreasing = false;
+            if (target < coverage.minTarget)
+                coverage.minTarget = target;
+            if (target > coverage.maxTarget)
+                coverage.maxTarget = target;
+        }
+        previous = target;
+    }
+    coverage.valid = true;
+    return coverage;
+}
+
+bool requiredIntentSourceCoverageSatisfied(const RequiredIntentSourceCoverage& coverage,
+                                           long long sourceFrameCount) {
+    return coverage.valid && coverage.minTarget >= 0 && sourceFrameCount > 0 &&
+           coverage.maxTarget < sourceFrameCount;
+}
+
 bool PresentationOpportunityScheduler::start(const PresentationOpportunityConfig& config) {
     *this = {};
     if (config.requiredFrameCount <= 0 || config.sourceFrameOffset < 0 ||
         config.sourceFrameOffset >= config.requiredFrameCount || config.sourceFpsNumerator <= 0 ||
         config.sourceFpsDenominator <= 0 || config.refreshNumerator <= 0 ||
-        config.refreshDenominator <= 0 || config.qpcFrequency <= 0)
+        config.refreshDenominator <= 0 || config.qpcFrequency <= 0 ||
+        config.requiredIntentRateNumerator <= 0 || config.requiredIntentRateDenominator <= 0)
         return fail(PresentationOpportunityError::InvalidConfiguration);
     if (config.requiredFrameCount >
         static_cast<long long>(std::numeric_limits<std::size_t>::max() / 2))
@@ -524,18 +583,8 @@ bool PresentationOpportunityScheduler::fail(PresentationOpportunityError error) 
 }
 
 bool PresentationOpportunityScheduler::targetFor(long long ordinal, long long& target) const {
-    long long numerator = 0;
-    long long denominator = 0;
-    if (!checkedMultiply(ordinal, config_.sourceFpsNumerator, numerator) ||
-        !checkedMultiply(numerator, config_.refreshDenominator, numerator) ||
-        !checkedMultiply(config_.sourceFpsDenominator, config_.refreshNumerator, denominator) ||
-        denominator <= 0)
-        return false;
-    const long long relativeTarget = numerator / denominator;
-    if (relativeTarget > std::numeric_limits<long long>::max() - config_.sourceFrameOffset)
-        return false;
-    target = config_.sourceFrameOffset + relativeTarget;
-    return true;
+    // mappingの唯一の実装はpresentationTargetFrameForである。ここで式を複製しない。
+    return presentationTargetFrameFor(config_, ordinal, target);
 }
 
 void PresentationOpportunityScheduler::captureFirstEvent(
