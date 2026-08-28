@@ -4,7 +4,7 @@
 
 - 対象: P2 formal Playbackのrequired-intent issuance / completion control
 - 前提: B2は`EXACT_TARGET_OUTPUT_COUNTER_AUTHORITY_UNAVAILABLE`でCLOSED
-- phase: **DESIGN CLOSED / IMPLEMENTATION I0 + I1 + I5A + I5B DONE** (実装状況は§10、§11、§15、§16)
+- phase: **DESIGN CLOSED / IMPLEMENTATION I0 + I1 + I5A + I5B DONE / I5B runtime smoke PASS** (実装状況は§10、§11、§15、§16)
 - production code: I0 exact qualified commit joinとI1 required-intent queueを接続済み
 - test / capture: I0/I1 targeted test済み。live captureは**NOT RUN**
 - canonical W3 verdict: **UNCHANGED / FAIL**
@@ -1006,15 +1006,127 @@ conservation validのまま保持され、issuance gateは開かず、measuremen
 **この修正後のsmokeは未実行である。** 失敗した1 runはattribution authorityとしてそのまま保存し、
 次のsmokeは別runとして記録する。canonical W3は引き続きHOLDである。
 
-### 16.8 未実施 / 次slice
+
+### 16.8 noncanonical runtime smoke 2回目 (post-fix validation)
+
+r1 (`build/handshake-b3-i5b-20260828T202738Z`) はpre-fix checkpointのvalid failureとしてそのまま保存する。
+r2は同一条件・**exactly 1 run**のpost-fix validationであり、retryによる成功cohort選別ではない。
 
 ```text
+parent failure artifact   handshake-b3-i5b-20260828T202738Z (PROTOCOL_FATAL / CANONICAL_WINDOW_MUTATED)
+change under validation   canonical arm authority: callbackBegin -> post-quiescence measurementArmQpc
+r2 artifact               build/handshake-b3-i5b-r2-20260829T000543Z/formal-playback-smoke.json
+```
+
+#### I5B handshake
+
+```text
+app ABI / Qt ABI                             6 / 6
+snapshot layout handshake                    accepted
+capture epoch                                1 (exact)
+observer thread == render thread             true (25940)
+
+state                                        CURRENT_RUNNING
+error                                        NONE
+handshake_step_order_exact                   true
+quiescence evaluation_count                  1
+quiescence predicate 13件                     all true
+foreign_callback_after_quiescence_ack_count  0
+current_callback_before_issuance_open_count  0
+wait_charged_to_measurement_window           false
+canonical_window_frozen                      true
+current_issuance_open                        true
+verdict                                      PREROLL_TRANSITION_QUIESCENCE_HANDSHAKE_OBSERVED
+```
+
+exact orderingは次である。canonical startはack QPCより後であり、handshake wait 72 ticks (約7.2µs) は
+measurement windowの外にある。
+
+```text
+QPC 1400409378592  MEASUREMENT_START_REQUEST_PUBLISHED  thread 41196 (GUI)
+QPC 1400409545288  MEASUREMENT_START_CONSUMED           thread 25940 (render)
+QPC 1400409545305  PREROLL_ADMISSION_CLOSED             -> DRAINING
+QPC 1400409545361  PREROLL_DRAIN_OBSERVED               scheduler closed
+QPC 1400409545362  PREROLL_QUIESCENCE_ACK               -> QUIESCENT
+QPC 1400409545365  canonical measurement start          (>= ack)
+QPC 1400409545395  REQUIRED_QUEUE_STARTED               -> CURRENT_READY
+QPC 1400409545398  MEASUREMENT_ARMED                    -> MEASUREMENT_ARMED
+QPC 1400409545408  CURRENT_ISSUANCE_OPENED              -> CURRENT_RUNNING
+QPC 1400409545456  FIRST_RESERVATION                    reservation 1 / intent 0
+```
+
+FOREIGN callbackはPresent 1 (token 91) とPresent 2 (token 92) の2件で、いずれもack前に完了している。
+本runのactive FOREIGN transactionはdrain poll時点で0件だった。1件drainのlive evidenceは未取得である
+(1件になるまでretryはしない)。
+
+#### I0 exact join / transport
+
+```text
+missing / duplicate / stale token             0 / 0 / 0
+missing / duplicate / stale receipt           0 / 0 / 0
+failed present / ring overflow / thread mismatch  0 / 0 / 0
+token set failure                             0
+native present record count                   180
+authority_pass                                true
+composition token join failure                captured=false / phase=NONE / predicate=NONE
+nearest-latest fallback used                  false
+capture envelope authority_pass               true
+```
+
+capture envelopeのみ`missing_token_count = 2`だが、これはW2-C0.1 supersetがdomain外prestart Presentの
+token欠損をcandidate-level gateへ委ねる既存契約どおりであり、projected counterは0である。
+
+#### I1 required-intent queue / termination
+
+```text
+required / issued / rendered / qualified / dequeued   180 / 180 / 180 / 180 / 180
+unissued tail                                        0
+active reservation count                             0
+conservation_valid                                   true
+required_set_immutable                               true
+display_satisfaction_imported                        false
+planned_window_ended                                 true
+
+stop cause                                           PLANNED_WINDOW_END (witness 1件 / duplicate 0)
+DOMAIN_TERMINAL successful completion                0
+source_coverage_ok                                   true
+fatal                                                なし / process exit 0 / teardown success
+```
+
+intent scope ledgerはFOREIGN 2件・CURRENT 180件にexact partitionされ、missing/ambiguous/mutation/unmatched
+はすべて0である。CURRENT intent ordinalは0..179のcontiguousで、reservation idは1..180だった。これは記録で
+あってverdict authorityではない。正しさは
+`queue head reserve -> exact token transport -> Present -> receipt -> qualified commit -> dequeue`が
+成立したことによる。
+
+#### 本runで到達していないもの
+
+`effective_fps = 59.946` / `drop_rate = 0` / `formal_true_opportunity_drop_count = 0`は
+**noncanonical 3秒smokeの記録**であり、canonical W3 verdictではない。W3 thresholdの判定には使わない。
+`formal_lost_opportunity_count = 191`はopportunity ordinal側のgap accountingであり、本sliceでは解釈しない。
+
+historical `COMPOSITION_TOKEN_MISMATCH`は本runで再現しなかった。これはroot causeがI3 boundaryやI5B
+transitionであったことの証明ではない。historicalは`UNRESOLVED_HISTORICAL_RUNTIME_FAILURE`のまま保持し、
+本runは`new corrected cohort / not reproduced`として別に記録する。
+
+既知のdiagnostic gapが1件ある。`FIRST_RESERVATION` eventだけがtransition snapshotを取らずに記録されるため、
+`transition_state`が既定値`OPEN`のまま出る (実際の状態は`CURRENT_RUNNING`)。ordering自体はevent serialとQPCで
+確定しており、handshake判定には使っていない。r2 artifactを現行codeのexact checkpointとして残すため、本slice
+では修正していない。
+
+### 16.9 未実施 / 次slice
+
+```text
+ABI v6 patched Qt rebuild          DONE (§16.7)
+noncanonical runtime smoke r1      VALID FAIL / CANONICAL_WINDOW_MUTATED (§16.7)
+noncanonical runtime smoke r2      PASS (§16.8)
 canonical W3                       NOT RUN / UNCHANGED / FAIL
-ABI v6 patched Qt rebuild          DONE (§16.8)
-noncanonical runtime smoke         1回実行 / PROTOCOL_FATAL (§16.8)
-修正後のsmoke                       NOT RUN
 P5-E4                              BLOCKED
 ```
+
+r2 artifact auditはhandshake / I0 / I1 / terminationのschemaを個別に確認済みである。fresh W3 canonical 3/3は
+別sliceとして計画する。ordinary CTestの既存failure 7件 (§16.6) は最終P5-E4 closureまでの技術的負債として
+持ち越す。
 
 historical `COMPOSITION_TOKEN_MISMATCH`は`UNRESOLVED_HISTORICAL_RUNTIME_FAILURE`のまま保持し、I3 boundary
 failureにもI5B transition failureにも再分類しない。次はABI v6でpatched Qtを再buildし、noncanonical runtime
