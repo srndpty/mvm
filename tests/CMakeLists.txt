@@ -2336,6 +2336,18 @@ foreach(_p2_b3_i4_case IN ITEMS Good NegativeCurrentQueueStartBeforeClosure Nega
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
+# P2-D5-2/B3-I6A: required intent ordinalの時間軸とsource mapping authorityを設計として固定する。
+foreach(_p2_b3_i6a_case IN ITEMS Good NegativeProductionChanged NegativeCanonicalW3Allowed NegativeDisplayAxisSelected NegativeRefreshDependentTargetAllowed NegativeSourceFixtureExtensionAllowed NegativeRequiredSetShrinkAllowed NegativeThresholdChanged NegativeDenominatorChanged NegativeCoveragePreflightInvariantDropped NegativeClampTargetAllowed NegativeCoverageFatalAsPerformanceDrop NegativeIntentOrdinalFromPhysicalVblank NegativeSingleIntentRateProducerDropped NegativeHistoricalMismatchReclassified)
+    string(TOLOWER "${_p2_b3_i6a_case}" _p2_b3_i6a_name)
+    mvm_add_test(p2_b3_i6a_source_mapping_design_${_p2_b3_i6a_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i6a-source-mapping-design-contract.ps1"
+            -Case "${_p2_b3_i6a_case}"
+            -Contract "${CMAKE_SOURCE_DIR}/docs/p2-d5-2-b3-i6a-source-mapping-authority.json"
+            -RepoRoot "${CMAKE_SOURCE_DIR}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 # P2-D5-2/B3-I5A: Qt one-shot pending stateのepoch/thread-bound read-only ABI。
 mvm_add_test(p2_b3_i5a_one_shot_snapshot_architecture
     COMMAND "${MVM_PWSH}" -NoProfile -File

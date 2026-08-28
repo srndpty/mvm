@@ -111,8 +111,7 @@ bool PrerollTransitionHandshake::noteForeignTransactionTerminal(long long qpc) {
     return true;
 }
 
-bool PrerollTransitionHandshake::bindBoundaryOwner(
-    const PrerollBoundaryOwnerCandidate& candidate) {
+bool PrerollTransitionHandshake::bindBoundaryOwner(const PrerollBoundaryOwnerCandidate& candidate) {
     if (!started_)
         return fail(PrerollTransitionError::NotStarted);
     if (error_ != PrerollTransitionError::None)
@@ -193,8 +192,7 @@ PrerollTransitionHandshake::evaluateQuiescence(const PrerollQuiescenceObservatio
         observation.observerThreadId != 0 && observation.observerThreadId == renderThreadId_;
     verdict.prerollAdmissionClosed = observation.prerollAdmissionClosed && foreignAdmissionClosed_;
     verdict.schedulerPendingRenderFalse = !observation.schedulerPendingRender;
-    verdict.schedulerPendingQualifiedEvidenceFalse =
-        !observation.schedulerPendingQualifiedEvidence;
+    verdict.schedulerPendingQualifiedEvidenceFalse = !observation.schedulerPendingQualifiedEvidence;
     verdict.schedulerPendingOpportunityFalseOrExactlyFinalized =
         !observation.schedulerPendingOpportunity ||
         observation.schedulerPendingOpportunityExactlyFinalized;
@@ -330,8 +328,9 @@ PrerollTransitionSnapshot PrerollTransitionHandshake::snapshot() const {
     snapshot.canonicalMeasurementEndQpc = canonicalMeasurementEndQpc_;
     snapshot.admissionCloseQpc = admissionCloseQpc_;
     snapshot.quiescenceAckQpc = quiescenceAckQpc_;
-    snapshot.handshakeWaitQpc =
-        quiescenceAckQpc_ > 0 && admissionCloseQpc_ > 0 ? quiescenceAckQpc_ - admissionCloseQpc_ : 0;
+    snapshot.handshakeWaitQpc = quiescenceAckQpc_ > 0 && admissionCloseQpc_ > 0
+                                    ? quiescenceAckQpc_ - admissionCloseQpc_
+                                    : 0;
     snapshot.waitChargedToMeasurementWindow = false;
     snapshot.timeoutQpc = timeoutQpc_;
     snapshot.quiescenceEvaluationCount = quiescenceEvaluationCount_;

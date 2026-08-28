@@ -1330,7 +1330,115 @@ build/p2-d5-2-w3-cohort-20260829/w3-partial-cohort-manifest.json
 B3-I5B                         CLOSED / runtime smoke PASS
 fresh W3 canonical 3/3         NOT ACHIEVED (run 1 acquisition failure)
 canonical W3 verdict           UNCHANGED / FAIL
+B3-I6A source mapping authority DESIGN CLOSED (§18)
+B3-I6B fatal/token atomicity   NOT STARTED
+B3-I6C mapping / preflight修正  NOT STARTED
 P3-C-2 / P4再検証               HOLD (W3 3/3 PASSが前提)
 P5-E4                          BLOCKED
 historical COMPOSITION_TOKEN_MISMATCH   UNRESOLVED_HISTORICAL_RUNTIME_FAILURE
 ```
+
+## 18. B3-I6A — Source Mapping Authority (design only)
+
+§17のW3 run 1が露出した2件は別sliceへ分ける。本節はそのうちmapping semanticsだけを扱う。
+design本体は`docs/p2-d5-2-b3-i6a-source-mapping-authority.md`、機械可読契約は
+`docs/p2-d5-2-b3-i6a-source-mapping-authority.json`である。
+
+production codeは変更していない。mapping、source coverage preflight、queue、join、threshold、
+denominator、required population、canonical source fixtureのいずれも触っていない。canonical W3はHOLD、
+historical W3 verdictはFAILのままである。
+
+### 18.1 確定した問題
+
+required intent ordinalの時間軸authorityが2つ存在していた。
+
+```text
+required_intent_count   measureSeconds * 60        Layer 1A / workload軸
+required intent ordinal RequiredIntentQueue head   Layer 1A / workload軸
+targetFor(ordinal)      refresh比を適用            Layer 1B / display軸  ← 混在
+source coverage preflight  source >= required count Layer 1A / workload軸
+```
+
+pre-B3では`opportunityOrdinal`がDWM refresh count由来のdisplay opportunity序数だったため、
+`targetFor`のrefresh比は正しかった。B3-I1でordinal producerをqueue head identityへ移した際に
+`targetFor`が据え置かれ、意味の異なるordinalへdisplay rateが適用され続けている。
+
+preflightも`required count`としか比較しておらず、mappingが実際に要求する最大source frame
+(`max target = 3602`) を検査していないため、preflightは通り runtimeだけが末尾でfail-closeした。
+
+### 18.2 選定 — `WORKLOAD_INTENT_TIME_AXIS`
+
+```text
+target(i) = sourceFrameOffset + floor(i * sourceFps / requiredIntentRate)
+canonical: target(i) = i、max target = 3599、source fixture 3600 frameで充足
+display refresh非依存
+```
+
+根拠は既に凍結済みの契約である。
+
+1. W1 formal accounting contract v2 §1が`intent_ordinal`をLayer 1A、`physical_vblank_ordinal`を
+   Layer 1Bとし、「1Aと1Bを同一視しない」と無修飾`ordinal`の禁止を凍結している
+2. 同§1が`required_intent_count`を「test contract由来の分母」と定義している
+3. B3-I1でordinal producerがrequired-intent queue headになった
+4. display軸を採るとcanonical input assetのsizingが測定機のrefreshに依存し再現しない
+   (59.95Hzなら3603、60.000Hzなら3600)
+
+したがって**source fixtureを3603へ延長することは修正ではなく症状の隠蔽**であり、禁止解法として
+固定した。required set 3600、drop-rate分母、frozen threshold 55fps/2%はいずれも変更しない。
+
+### 18.3 凍結invariantと禁止解法
+
+```text
+frozen    REQUIRED_INTENT_ORDINAL_IS_LAYER_1A
+          TARGET_MAPPING_INDEPENDENT_OF_DISPLAY_REFRESH
+          INTENT_RATE_HAS_SINGLE_PRODUCER
+          SOURCE_COVERAGE_PREFLIGHT_USES_MAX_TARGET_OVER_REQUIRED_SET
+          MAX_TARGET_OVER_REQUIRED_SET_LESS_THAN_SOURCE_FRAME_COUNT
+          REQUIRED_SET_SIZE_UNCHANGED / DROP_RATE_DENOMINATOR_UNCHANGED
+          SOURCE_COVERAGE_FAILURE_IS_PROTOCOL_FATAL_NOT_PERFORMANCE_DROP
+
+prohibited EXTEND_SOURCE_FIXTURE_TO_HIDE_MAPPING_DEFECT / SHRINK_REQUIRED_SET
+          CHANGE_FROZEN_THRESHOLD / CHANGE_DROP_RATE_DENOMINATOR / SKIP_TAIL_INTENTS
+          CLAMP_TARGET_TO_LAST_SOURCE_FRAME
+          TREAT_SOURCE_COVERAGE_FATAL_AS_PERFORMANCE_DROP
+          DERIVE_INTENT_ORDINAL_FROM_PHYSICAL_VBLANK_ORDINAL
+```
+
+### 18.4 targeted test
+
+```text
+p2_b3_i6a_source_mapping_design_*   Good + negative 14
+```
+
+Goodは設計契約に加えて、現行sourceのinventory (targetForのrefresh比、`target >= requiredFrameCount`判定、
+controllerの`measureSeconds * 60`、preflightの比較対象、queueのrequired set producer) が
+design記述と一致することを固定する。negativeはdisplay軸選定、refresh依存mappingの許可、
+source fixture延長の許可、required set縮小、threshold/分母変更、preflight invariant削除、
+target clamp許可、coverage fatalのperformance drop化、intent ordinalのphysical VBlank由来化、
+intent rate single producer削除、historical mismatch再分類を個別に拒否する。
+
+### 18.5 acquisition runner robustness (product fixではない)
+
+`scripts/acquire-p2-d5-2-w3-fresh.ps1`が失敗時にもprovenanceを封止するようにした。live gateの
+失敗をcatchし、`w3-acquisition-partial-provenance.json`へcheckpoint sha、binary hash、
+planned/completed run数、replacement retry無しの事実、`run_metrics_are_canonical=false`、
+raw artifactのSHA-256を書いてからfail-closeする。成功時のprovenanceとはfile名もschemaも分けており、
+失敗cohortをcanonicalと誤認させない。parseとPSScriptAnalyzerで検証済みで、実際のfailure pathは
+次のcanonical attemptで初めて実行される。
+
+### 18.6 未実施 / 次slice
+
+```text
+B3-I6B  fatal-before-Present publication atomicity   NOT STARTED (§17.3)
+B3-I6C  target mapping / coverage preflight修正       NOT STARTED
+fresh W3 canonical 3/3                               HOLD
+canonical W3 verdict                                 UNCHANGED / FAIL
+P5-E4                                                BLOCKED
+```
+
+I6Cはselected semanticsに従いmappingとpreflightを修正する。source fixtureは変更しない。
+I6BはI6Aのsemanticsに依存しない独立のcorrectness sliceであり、`SOURCE_COVERAGE_INSUFFICIENT`を
+再現可能なnegative test vectorとして使えるうちに先に実施する。
+
+historical `COMPOSITION_TOKEN_MISMATCH`は`UNRESOLVED_HISTORICAL_RUNTIME_FAILURE`のまま保持し、
+I6 mapping failureへ再分類しない。

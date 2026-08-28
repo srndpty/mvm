@@ -81,8 +81,7 @@ void positiveZeroActiveForeignTransaction() {
           "quiescence ackに失敗しました");
     check(handshake.startCurrentRequiredQueue() && handshake.state() == State::CurrentReady,
           "CURRENT_READYへ遷移できません");
-    check(!handshake.currentIssuanceOpen(),
-          "current queue初期化だけでissuance gateが開いています");
+    check(!handshake.currentIssuanceOpen(), "current queue初期化だけでissuance gateが開いています");
     check(handshake.armMeasurement(240, 1240) && handshake.state() == State::MeasurementArmed,
           "measurement armに失敗しました");
     check(!handshake.currentIssuanceOpen(), "measurement arm直後にissuance gateが開いています");
@@ -112,8 +111,7 @@ void positiveSingleForeignTransactionDrain() {
     Handshake draining;
     check(draining.begin(kEpoch, kRenderThread, 100, kTimeout), "drain handshakeを開始できません");
     check(draining.noteForeignReservationAdmitted(110), "FOREIGN reservationを記録できません");
-    check(draining.requestAdmissionClose(200) && draining.beginDrain(200),
-          "drainを開始できません");
+    check(draining.requestAdmissionClose(200) && draining.beginDrain(200), "drainを開始できません");
     Observation inflight = quiescentObservation();
     inflight.schedulerPendingRender = true;
     inflight.joinActiveReservation = true;
@@ -162,6 +160,7 @@ void negativeQuiescencePredicateFailures() {
         void (*mutate)(Observation&);
         bool (*field)(const mvm::gpu::PrerollQuiescenceVerdict&);
     };
+
     static const Case cases[] = {
         {"PREROLL_ADMISSION_CLOSED", [](Observation& o) { o.prerollAdmissionClosed = false; },
          [](const mvm::gpu::PrerollQuiescenceVerdict& v) { return v.prerollAdmissionClosed; }},
@@ -216,7 +215,9 @@ void negativeQuiescencePredicateFailures() {
          }},
         {"TRANSPORT_FAILURE_COUNTERS_ZERO",
          [](Observation& o) { o.transportFailureCounterTotal = 1; },
-         [](const mvm::gpu::PrerollQuiescenceVerdict& v) { return v.transportFailureCountersZero; }},
+         [](const mvm::gpu::PrerollQuiescenceVerdict& v) {
+             return v.transportFailureCountersZero;
+         }},
     };
     for (const auto& testCase : cases) {
         Handshake handshake;
@@ -228,7 +229,8 @@ void negativeQuiescencePredicateFailures() {
         const std::string label = std::string("quiescence predicate: ") + testCase.name;
         check(verdict.evaluated && !verdict.quiescent, (label + " がquiescentのままです").c_str());
         check(!testCase.field(verdict), (label + " のfieldがfalseになりません").c_str());
-        check(!handshake.ackQuiescence(220) && handshake.error() == Error::QuiescencePredicateFailed,
+        check(!handshake.ackQuiescence(220) &&
+                  handshake.error() == Error::QuiescencePredicateFailed,
               (label + " でackを許可しました").c_str());
         check(!handshake.startCurrentRequiredQueue(),
               (label + " でcurrent queue startを許可しました").c_str());

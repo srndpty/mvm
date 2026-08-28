@@ -456,7 +456,8 @@ protected:
                     return;
                 }
                 if (foreignPreMeasurement &&
-                    !state_->formalPrerollTransition.noteForeignReservationAdmitted(callbackBegin)) {
+                    !state_->formalPrerollTransition.noteForeignReservationAdmitted(
+                        callbackBegin)) {
                     fail(std::string("P2-D5-2 B3-I5B FOREIGN admissionを記録できません: ") +
                          gpu::prerollTransitionErrorName(state_->formalPrerollTransition.error()));
                     return;
@@ -1344,19 +1345,18 @@ private:
             auto& handshake = state_->formalPrerollTransition;
             auto& scheduler = state_->formalOpportunityScheduler;
             if (!handshake.snapshot().foreignSchedulerClosed) {
-                const bool inflight =
-                    scheduler.hasPendingRender() ||
-                    state_->formalQualifiedCommitJoin.hasActiveReservation() ||
-                    oneShot.pendingTokenValid != 0 || oneShot.pendingReceiptValid != 0 ||
-                    handshake.snapshot().activeForeignTransactionCount != 0;
+                const bool inflight = scheduler.hasPendingRender() ||
+                                      state_->formalQualifiedCommitJoin.hasActiveReservation() ||
+                                      oneShot.pendingTokenValid != 0 ||
+                                      oneShot.pendingReceiptValid != 0 ||
+                                      handshake.snapshot().activeForeignTransactionCount != 0;
                 if (!inflight) {
                     // scheduler closeはactive transaction drainとpending opportunity
                     // finalizeの後だけ行う。
                     if (!scheduler.finalizePendingOpportunityExact() ||
                         !handshake.notePendingOpportunityFinalized()) {
-                        failure =
-                            std::string("P2-D5-2 B3-I5B pending opportunity finalize失敗: ") +
-                            gpu::prerollTransitionErrorName(handshake.error());
+                        failure = std::string("P2-D5-2 B3-I5B pending opportunity finalize失敗: ") +
+                                  gpu::prerollTransitionErrorName(handshake.error());
                     } else if (!scheduler.closeWithoutNormalCompletion() ||
                                !handshake.noteForeignSchedulerClosed()) {
                         failure = std::string("P2-D5-2 B3-I5B preroll scheduler close失敗: ") +
@@ -2114,9 +2114,9 @@ void CompositorRhiItem::recordFrameSwapped() {
     }
     // B3-I5B。positional ignore-next-swapは削除済みである。boundary ownershipは
     // quiescence handshakeとexact receipt identityだけが決める。
-    const auto recordBoundaryCallback =
-        [&](bool activeReservation, const gpu::QualifiedCommitReservation& reservation,
-            const gpu::PrerollTransitionSnapshot& transition) {
+    const auto recordBoundaryCallback = [&](bool activeReservation,
+                                            const gpu::QualifiedCommitReservation& reservation,
+                                            const gpu::PrerollTransitionSnapshot& transition) {
         BoundarySwapAttributionEvent event;
         event.kind = BoundarySwapEventKind::FrameSwapped;
         event.qpc = gpu::qpcTicks();
@@ -2158,11 +2158,11 @@ void CompositorRhiItem::recordFrameSwapped() {
         // 完了済みFOREIGN PresentへもCURRENT Presentへもownerを後付けしない。
         const bool inDrain = transition.state == gpu::PrerollTransitionState::DrainRequested ||
                              transition.state == gpu::PrerollTransitionState::Draining;
-        const bool postQuiescence = transition.state == gpu::PrerollTransitionState::Quiescent ||
-                                    transition.state == gpu::PrerollTransitionState::CurrentReady ||
-                                    transition.state ==
-                                        gpu::PrerollTransitionState::MeasurementArmed ||
-                                    transition.state == gpu::PrerollTransitionState::CurrentRunning;
+        const bool postQuiescence =
+            transition.state == gpu::PrerollTransitionState::Quiescent ||
+            transition.state == gpu::PrerollTransitionState::CurrentReady ||
+            transition.state == gpu::PrerollTransitionState::MeasurementArmed ||
+            transition.state == gpu::PrerollTransitionState::CurrentRunning;
         // quiescence ack後にFOREIGN callbackは残らない。残っていたなら
         // active reservationを破棄する前にPROTOCOL_FATALで停止する。
         if (postQuiescence && callbackScopeExact &&
