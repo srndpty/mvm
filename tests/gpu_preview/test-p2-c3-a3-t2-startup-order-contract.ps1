@@ -13,10 +13,12 @@ $renderer='src/app/preview/compositor_rhi_item.cpp'
 $qml='apps/compositor_spike/Main.qml'
 $entry='apps/compositor_spike/main.cpp'
 
+# source treeとこのscript自身の改行が混在しても、mutationはLF domainで比較する。
+function Lf([string]$Text){$Text-replace "`r`n","`n"}
 function Read-Source([string]$Root,[string]$Relative){
     $path=Join-Path $Root $Relative
     if(-not(Test-Path -LiteralPath $path)){throw "契約対象sourceがありません: $path"}
-    Get-Content -LiteralPath $path -Raw -Encoding utf8
+    Lf (Get-Content -LiteralPath $path -Raw -Encoding utf8)
 }
 # 契約判定はコード本体に対して行う。コメント本文に識別子が現れても違反にしない。
 function Remove-Comments([string]$Text){
@@ -77,7 +79,9 @@ function New-MutatedRoot([scriptblock]$Mutate){
 }
 function Edit-Copy([string]$Relative,[string]$Old,[string]$New){
     $path=Join-Path $Directory $Relative
-    $text=Get-Content -LiteralPath $path -Raw -Encoding utf8
+    $text=Lf (Get-Content -LiteralPath $path -Raw -Encoding utf8)
+    $Old=Lf $Old
+    $New=Lf $New
     if($text.IndexOf($Old)-lt0){throw "mutation対象が見つかりません: $Relative"}
     $text=$text.Replace($Old,$New)
     Set-Content -LiteralPath $path -Value $text -Encoding utf8 -NoNewline

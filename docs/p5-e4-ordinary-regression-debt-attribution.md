@@ -541,7 +541,9 @@ contract にも触れない。
 - 判定は単発 PASS ではなく、複数 run で `sampler_vblank_gap_count = 0` と
   `poll_interval_valid = true` が安定することを要求する
   （§5.2 のとおり単発は分散が大きい）
-- P5-E4 closure の gate には載せず、独立して閉じる
+- S2-a〜S2-d とは独立した implementation slice として閉じる。ただし、
+  ordinary regression debt 7件の解消を要求する **P5-E4 final closure の
+  prerequisite には含める**
 
 ### S2-f — 空振り防止の横断 gate（提案。範囲外なので判断を仰ぐ）
 
