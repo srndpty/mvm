@@ -323,7 +323,7 @@ NegativeSecondIntentProducer             anchored ordinal advancement式が変�
 NegativeIndirectOrdinalReconstruction    anchored ordinal advancement式が変更されています                    ← 空振り
 ```
 
-W4-C3（22 negative 中 **6 件が空振り**。いずれも
+W4-C3（23 negative 中 **6 件が空振り**。いずれも
 「pending requestのrecordが後着publicationで上書きされ得ます」を投げている）。
 
 ```text

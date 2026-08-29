@@ -29,6 +29,32 @@ $renderer=Read-Source 'src/app/preview/compositor_rhi_item.cpp'
 $controller=Read-Source 'apps/compositor_spike/compositor_spike_controller.cpp'
 $schedulerHeader=Read-Source 'src/media/gpu_preview/presentation_opportunity_scheduler.h'
 $scheduler=Read-Source 'src/media/gpu_preview/presentation_opportunity_scheduler.cpp'
+$originalSources=@($rendererHeader,$renderer,$controller,$schedulerHeader,$scheduler)
+$expectedViolations=@{
+    NegativeStopPublishSerialRelaxedOrdering='arbitration claimがseq_cst CASではありません'
+    NegativeStopSideEffectBeforeArbitrationClaim='DOMAIN_TERMINALをsuccessful completionにしています'
+    NegativeUnclaimedExplicitStopWriter='explicit stop writerがclaimを通りません'
+    NegativeUnclaimedFatalWriter='fatal shutdown由来のstop writerがclaimを通りません'
+    NegativeUnclaimedFatalLatchSite='fatal latch siteにclaimを通らないものがあります: claims=2 stores=3'
+    NegativeArbitrationResetDuringMeasurement='measurement中resetの検出がありません'
+    NegativeSecondArbitrationResetSite='render側にarbitration resetがあります'
+    NegativeInlineArbitrationCas='helper外のinline CASがあります'
+    NegativeMissingSchedulerConfigEmit='scheduler_configがemitされません'
+    NegativeArbitrationResetAfterMeasurementStartPublication='arbitration resetがmeasurement start publicationより後にあります'
+    NegativeSecondArbitrationResetWriterInHeader='arbitration reset writerが1箇所ではありません: 2'
+    NegativeMissingWitnessEmit='stop witness schemaがemitされません'
+    NegativeSecondWitnessOverwrite='stop witnessがwrite-onceではありません'
+    NegativeWitnessCauseReconstructed='controllerがarbitration stateからcauseを再構築しています'
+    NegativeClaimResultNotTransported='claim結果がそのまま保存されていません'
+    NegativeMeasurementStartSnapshotAtReset='measurement-start snapshotがauthority pointで撮られていません'
+    NegativeWitnessCapturedBeforePayloadPublish='captured publishがpayload保存より前にあります'
+    NegativeCaptureGateExchangeReturnIgnored='capture gate exchangeの実returnがactionになっていません'
+    NegativeExplicitStopClaimDefaulted='explicit stop consumptionがconsumeしたrecordを引き継いでいません'
+    NegativeExplicitStopClaimReconstructedFromWinner='explicit stop consumptionがconsumeしたrecordを引き継いでいません'
+    NegativeExplicitStopClaimRecordNotPublished='explicit stop writerがclaimを通りません'
+    NegativeStopPublicationRecordOverwrittenBeforeConsume='pending requestのrecordが後着publicationで上書きされ得ます'
+    NegativeStopRequestConsumedOutsideProtocol='rendererがprotocol外でstop requestをconsumeしています'
+}
 switch($Case){
     'NegativeStopPublishSerialRelaxedOrdering' {
         $rendererHeader=$rendererHeader.Replace('compare_exchange_strong(expected, cause, std::memory_order_seq_cst)','compare_exchange_strong(expected, cause, std::memory_order_relaxed)')}
@@ -37,7 +63,8 @@ switch($Case){
             "            finishMeasurement(callbackBegin, StopArbitration::DomainTerminal, {});`n            formalDecisionObserved = true;")}
     'NegativeUnclaimedExplicitStopWriter' {
         $controller=$controller.Replace((Lf @'
-                const StopClaimResult claim = claimStopCause(*state_, StopArbitration::ExplicitStop);
+                const StopClaimResult claim =
+                    claimStopCause(*state_, StopArbitration::ExplicitStop);
                 explicitStopClaim_ = claim;
                 // flagとclaim recordを同じpublication protocolで発行する。
                 publishStopRequest(*state_, StopArbitration::ExplicitStop, claim);
@@ -70,7 +97,8 @@ switch($Case){
 '@))}
     'NegativeInlineArbitrationCas' {
         $controller=$controller.Replace((Lf @'
-                const StopClaimResult claim = claimStopCause(*state_, StopArbitration::ExplicitStop);
+                const StopClaimResult claim =
+                    claimStopCause(*state_, StopArbitration::ExplicitStop);
 '@),(Lf @'
                 StopArbitration expected = StopArbitration::None;
                 state_->stopArbitration.compare_exchange_strong(expected, StopArbitration::ExplicitStop, std::memory_order_seq_cst);
@@ -197,6 +225,17 @@ inline void clearStopArbitration(CompositorSpikeState& state) {
 inline void resetStopArbitrationForMeasurement(CompositorSpikeState& state) {
 '@))}
 }
+if($Case-ne'Good'){
+    $mutatedSources=@($rendererHeader,$renderer,$controller,$schedulerHeader,$scheduler)
+    $mutationApplied=$false
+    for($sourceIndex=0;$sourceIndex-lt$originalSources.Count;++$sourceIndex){
+        if($mutatedSources[$sourceIndex]-cne$originalSources[$sourceIndex]){
+            $mutationApplied=$true
+            break
+        }
+    }
+    if(-not$mutationApplied){throw "mutation対象が見つかりません: $Case"}
+}
 try{
     # amend 4: 単一atomicのarbitrationとhelper
     Require $rendererHeader 'enum class StopArbitration \{[\s\S]*None = 0,[\s\S]*DomainTerminal,[\s\S]*PlannedWindowEnd,[\s\S]*ExplicitStop,[\s\S]*Fatal,[\s\S]*\};' 'StopArbitration enumがありません'
@@ -259,7 +298,7 @@ try{
     # explicit stop consumptionはpublication siteのclaim recordをexactに引き継ぐ
     Require $rendererHeader 'inline void publishStopRequest\(CompositorSpikeState& state, StopArbitration cause,' 'stop request publication helperがありません'
     Require $rendererHeader 'inline StopRequestConsumption consumeStopRequest\(CompositorSpikeState& state\)' 'stop request consumption helperがありません'
-    Require $rendererHeader 'std::lock_guard<std::mutex> lock\(state\.stopPublicationMutex\);[\s\S]{0,300}measurementStopRequested\.load[\s\S]{0,300}coalescedStopPublicationCount\.fetch_add[\s\S]{0,300}stopPublicationRecord = StopPublicationRecord\{true' 'pending requestのrecordが後着publicationで上書きされ得ます'
+    Require $rendererHeader 'std::lock_guard<std::mutex> lock\(state\.stopPublicationMutex\);[\s\S]{0,300}measurementStopRequested\.load[\s\S]{0,300}coalescedStopPublicationCount\.fetch_add[\s\S]{0,300}stopPublicationRecord\s*=\s*StopPublicationRecord\{true' 'pending requestのrecordが後着publicationで上書きされ得ます'
     Require $rendererHeader 'consumption\.record = state\.stopPublicationRecord;[\s\S]{0,200}stopPublicationRecord = StopPublicationRecord\{\};' 'consumeがflagとrecordを同時に取り出していません'
     # stop request flagのwriter/consumerはpublication protocolの外に出さない。
     Deny $controller 'measurementStopRequested\.store\(' 'controllerがprotocol外でstop request flagを操作しています'
@@ -279,5 +318,14 @@ try{
     if($Case-ne'Good'){throw "mutationが検出されませんでした: $Case"}
 }catch{
     if($Case-eq'Good'-or$_.Exception.Message-like'mutationが検出されませんでした:*'){throw}
+    $actualViolation=$_.Exception.Message
+    if(-not$expectedViolations.ContainsKey($Case)){
+        throw "negative caseの期待違反が定義されていません: $Case"
+    }
+    $expectedViolation=$expectedViolations[$Case]
+    if($actualViolation-cne$expectedViolation){
+        throw "negative caseが意図しない契約違反を検出しました: case=$Case expected='$expectedViolation' actual='$actualViolation'"
+    }
+    Write-Output "expected violation: $actualViolation"
 }
 Write-Output "W4-C3 stop arbitration architecture: PASS ($Case)"
