@@ -28,8 +28,18 @@ warmupの完了、失敗0、最終warmup ID、測定先頭IDとの連続性をar
 fail-closeにした。測定domainへ入ったsuccessful Presentは従来どおり全件exact joinする。
 
 `WindowOutputVBlankObserver` のpublication signalは
-`waitForPublishedCount()`を呼んだobserverだけがopt-inする。通常利用時のcanonical
-observer hot pathには`SetEvent`を追加しない。
+`waitForPublishedCount()`を呼んだobserverだけがopt-inする。ただしhot pathが
+完全無変更であるとは主張しない。opt-inしていないcanonical observerでも
+`publicationNotificationEnabled_` のacquire loadとbranchはVBlankごとに通る。
+
+```text
+canonical observer (opt-inなし)
+  SetEvent syscall追加        なし
+  atomic load + branch追加    あり (VBlankごとに1回)
+```
+
+このためW3 / P3-C-2 / P4のPASSを `6f23aaf` から流用せず、S2-eを含む
+checkpointで取り直す。
 
 次は変更していない。
 
