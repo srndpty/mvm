@@ -2402,6 +2402,17 @@ int cmdSoak(const bench::Args& a) {
         return kExitUsage;
     }
     int iterations = (int)std::strtol(a.get("iterations", "100").c_str(), nullptr, 10);
+    // S2-g1b: warmup は measurement-domain boundary であって retention の許容量ではない。
+    // handle は audio iteration でのみ階段状に変化するため、25 iteration の quartile 窓に
+    // 含まれる独立値は 2-3 個しかなく、先頭 block (startup 側) に支配される。
+    // suite 条件では先頭 block が低く出て片側 delta が正へ偏る (観測 shift +4.8)。
+    // warmup を measurement domain から外すと observed effective interval 20-40 で
+    // combined max delta が +5 -> +1 になる。30 はその区間の中央として凍結した値であり、
+    // 最適であることが証明された値ではない。
+    const int warmupIterations =
+        (int)std::strtol(a.get("warmup-iterations", "0").c_str(), nullptr, 10);
+    // measured workload は減らさない。warmup は総回数に上乗せする。
+    const int totalIterations = warmupIterations + iterations;
     std::string wavDir = a.get("wav-dir");
     bool doAudio = !wavDir.empty() && wavDir != "1";
 
@@ -2440,7 +2451,7 @@ int cmdSoak(const bench::Args& a) {
 
     const long long probeFrame = 137;
 
-    for (int it = 0; it < iterations; it++) {
+    for (int it = 0; it < totalIterations; it++) {
         MvmComposeInfo info{};
         char cerr[1024] = {0};
         MvmComposeHandle* h = mvm_mlt_compose_open(&sc.timeline, &info, cerr, sizeof(cerr));
@@ -2499,9 +2510,10 @@ int cmdSoak(const bench::Args& a) {
 
     mvm_mlt_runtime_shutdown();
 
-    if (samples.size() < (size_t)iterations)
+    // warmup 中も functional correctness authority は有効である。完走要件も総回数で見る。
+    if (samples.size() < (size_t)totalIterations)
         problems.push_back("完走しませんでした (" + std::to_string(samples.size()) + "/" +
-                           std::to_string(iterations) + ")");
+                           std::to_string(totalIterations) + ")");
 
     bool valuesStable = true;
     if (samples.size() >= 2) {
@@ -2537,13 +2549,19 @@ int cmdSoak(const bench::Args& a) {
 
     // handle は単調増加してはいけない。最後の 1/4 が最初の 1/4 より
     // 明確に多ければリークとみなす。
+    // S2-g1b: threshold は凍結値である。warmup 導入によって緩めない。
+    const size_t kHandleGrowthThreshold = 8;
     size_t handleFirst = 0, handleLast = 0;
     unsigned long long rssFirst = 0, rssLast = 0;
-    if (samples.size() >= 8) {
-        size_t q = samples.size() / 4;
+    // handle retention の sampling authority は measured domain だけに適用する。
+    const size_t measuredBegin =
+        (samples.size() > (size_t)warmupIterations) ? (size_t)warmupIterations : samples.size();
+    const size_t measuredCount = samples.size() - measuredBegin;
+    if (measuredCount >= 8) {
+        size_t q = measuredCount / 4;
         for (size_t i = 0; i < q; i++) {
-            handleFirst += samples[i].handles;
-            rssFirst += samples[i].rssBytes;
+            handleFirst += samples[measuredBegin + i].handles;
+            rssFirst += samples[measuredBegin + i].rssBytes;
         }
         for (size_t i = samples.size() - q; i < samples.size(); i++) {
             handleLast += samples[i].handles;
@@ -2554,14 +2572,14 @@ int cmdSoak(const bench::Args& a) {
         rssFirst /= q;
         rssLast /= q;
 
-        if (handleLast > handleFirst + 8)
+        if (handleLast > handleFirst + kHandleGrowthThreshold)
             problems.push_back("handle 数が増加しています " + std::to_string(handleFirst) + " -> " +
                                std::to_string(handleLast));
 
         // WorkingSetSize だけを「リーク量」とは呼ばない。常駐した物理ページと
         // 確保し続けている仮想メモリを区別できないため、既定では合否に使わない。
         double perIter =
-            (double)((long long)rssLast - (long long)rssFirst) / (double)(samples.size() * 3 / 4);
+            (double)((long long)rssLast - (long long)rssFirst) / (double)(measuredCount * 3 / 4);
         if (checkMemory && perIter > 256.0 * 1024.0)
             problems.push_back("RSS が反復あたり " + std::to_string((long long)perIter) +
                                " バイト増加しています (診断は mvm_bench memory-probe を使うこと)");
@@ -2590,7 +2608,13 @@ int cmdSoak(const bench::Args& a) {
     // 出力しないため warmup boundary を実測できない。
     const bool dumpAllSamples = a.has("dump-all-samples");
     std::printf("  \"sample_emission\": \"%s\",\n", dumpAllSamples ? "ALL" : "DECIMATED_10");
-    std::printf("  \"quartile_size\": %zu,\n", samples.size() / 4);
+    std::printf("  \"handle_growth_threshold\": %zu,\n", kHandleGrowthThreshold);
+    std::printf("  \"functional_authority_domain\": \"ALL_ITERATIONS\",\n");
+    std::printf("  \"handle_retention_authority_domain\": \"MEASURED_ONLY\",\n");
+    std::printf("  \"warmup_iteration_count\": %d,\n", warmupIterations);
+    std::printf("  \"measured_iteration_count\": %zu,\n", measuredCount);
+    std::printf("  \"handle_measurement_start_iteration\": %zu,\n", measuredBegin);
+    std::printf("  \"quartile_size\": %zu,\n", measuredCount / 4);
     std::printf("  \"samples\": [");
     for (size_t i = 0; i < samples.size(); i++) {
         if (!dumpAllSamples && i % 10 != 0 && i + 1 != samples.size())

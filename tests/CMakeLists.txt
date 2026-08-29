@@ -1200,16 +1200,36 @@ mvm_add_test(verify_audio_no_clipping
 # ownership は「正しさ」だけを見る。
 # Working Set の増減だけを理由に ownership 失敗としない。
 # メモリは memory_soak_diagnostic (stability ラベル) へ分離した。
+# S2-g1b: warmup 30 は measurement-domain boundary である。retention の許容量ではない。
+# measured workload は 100 のまま (総実行は 130)。threshold +8 と metric は不変。
+# 30 は observed effective interval 20-40 の中央として凍結した値であり、
+# 最適であることが証明された値ではない (docs/p5-e4-s2-g1c-*.md)。
+#
 # S2-g1c: --dump-all-samples は emission 専用の診断 flag である。
 # verdict / threshold / metric / window には影響しない (S2-g1a で検証済み)。
 # suite 条件下で handle 系列を捕捉するために一時的に付与している。
 # attribution 完了後に残置か除去かを判断すること。
 mvm_add_test(ownership_soak_100
-    COMMAND mvm_bench soak "${MVM_S5_SCENARIO}" --iterations 100
+    COMMAND mvm_bench soak "${MVM_S5_SCENARIO}" --iterations 100 --warmup-iterations 30
             --wav-dir "${MVM_AUDIO_OUT}" --no-memory-check --dump-all-samples
     PROPERTIES
         REQUIRED_FILES "${MVM_S5_SCENARIO}"
         TIMEOUT 1800)
+
+# S2-g1b: warmup が gate avoidance ではなく measurement-domain repair であることを
+# 固定する。threshold / measured workload / warmup 除外 / warmup 中の functional
+# authority を、それぞれ intended violation の exact-match で検査する。
+foreach(_soak_warmup_case Good NegativeWarmupIncludedInHandleWindow
+        NegativeMeasuredIterationCountReduced NegativeHandleThresholdRelaxed
+        NegativeWarmupFunctionalFailureIgnored)
+    string(TOLOWER "${_soak_warmup_case}" _soak_warmup_name)
+    mvm_add_test(soak_warmup_contract_${_soak_warmup_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-soak-warmup-contract.ps1"
+            -Case ${_soak_warmup_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-soak-warmup-contract.ps1"
+            -Output "${CMAKE_CURRENT_BINARY_DIR}/soak-warmup-${_soak_warmup_name}.json")
+endforeach()
 
 # メモリは長時間かかるうえ、まだ合否を決められる段階にない。
 # 通常 CTest から外し、stability ラベルで明示的に実行する。
