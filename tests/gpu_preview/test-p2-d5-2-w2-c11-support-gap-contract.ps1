@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][ValidateSet('Good','NegativeRelationMutation')][string]$Case,
     [Parameter(Mandatory=$true)][string]$Inventory,
@@ -7,6 +7,10 @@ param(
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 if(-not(Test-Path -LiteralPath $Directory)){New-Item -ItemType Directory -Path $Directory|Out-Null}
+# S2-f2: invocationごとに一意なdirectoryへ書き、warm build treeでのstale artifact
+# 継承を構造的に不可能にする。expectation semanticsは変更しない。
+$Directory=Join-Path $Directory ("inv-$PID-"+[guid]::NewGuid().ToString('N').Substring(0,12))
+New-Item -ItemType Directory -Path $Directory -Force|Out-Null
 $runDirectory=Join-Path $Directory 'run-1';if(-not(Test-Path -LiteralPath $runDirectory)){New-Item -ItemType Directory -Path $runDirectory|Out-Null}
 function Candidate([int]$Sequence,[int64]$Qpc,[string]$Relation){
     [ordered]@{etw_sequence=$Sequence;native_present_serial="$Sequence";composition_token_serial="$Sequence"

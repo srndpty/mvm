@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][ValidateSet(
         'Good','NegativeLowerAfterCapture','NegativePostrollBeforeClose',
@@ -9,6 +9,10 @@ param(
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 if(-not(Test-Path -LiteralPath $Directory)){New-Item -ItemType Directory -Path $Directory|Out-Null}
+# S2-f2: invocationごとに一意なdirectoryへ書き、warm build treeでのstale artifact
+# 継承を構造的に不可能にする。expectation semanticsは変更しない。
+$Directory=Join-Path $Directory ("inv-$PID-"+[guid]::NewGuid().ToString('N').Substring(0,12))
+New-Item -ItemType Directory -Path $Directory -Force|Out-Null
 $samples=@([ordered]@{ordinal=0;qpc=100},[ordered]@{ordinal=1;qpc=200},[ordered]@{ordinal=2;qpc=300})
 $support=[ordered]@{
     schema='mvm-p2-d5-2-w2-c11-physical-mapping-support-envelope-1';shadow_only=$true

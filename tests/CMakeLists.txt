@@ -301,7 +301,7 @@ mvm_add_test(p2_d5_2_w2c1_mapping_architecture
         "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c1-mapping-architecture.ps1"
         -SourceRoot "${CMAKE_SOURCE_DIR}"
     PROPERTIES LABELS "gpu_preview")
-foreach(_p2_d5_2_w2c1_runner_case IN ITEMS NegativePresentedBeforePredecessorNotDropped NegativePresentedAfterSuccessorNotDropped)
+foreach(_p2_d5_2_w2c1_runner_case IN ITEMS Good NegativePresentedBeforePredecessorNotDropped NegativePresentedAfterSuccessorNotDropped NegativeStaleArtifactNotReused)
     string(TOLOWER "${_p2_d5_2_w2c1_runner_case}" _p2_d5_2_w2c1_runner_name)
     mvm_add_test(p2_d5_2_w2c1_runner_${_p2_d5_2_w2c1_runner_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File
