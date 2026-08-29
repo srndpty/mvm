@@ -119,19 +119,44 @@ classifier) は不要である可能性が高い。
 したがって audio fixture 競合はこの失敗の原因ではない。
 ```
 
-## 8. 併せて確認された別 defect (本失敗の原因ではない)
+## 8. 撤回: hermeticity defect の主張は誤りだった
 
-`ownership_soak_100` は `--wav-dir "${MVM_AUDIO_OUT}"` を使うが
-`FIXTURES_REQUIRED mvm_audio` も `RESOURCE_LOCK` も持たない。
-`render_audio_*` (FIXTURES_SETUP) / `verify_audio_*` (FIXTURES_REQUIRED) と
-同一 directory を共有しながら fixture の外にいる。
+初版でここに「`ownership_soak_100` が `${MVM_AUDIO_OUT}` を共有しながら
+audio fixture の外側にいるため `-j8` で同時実行しうる」と書いた。**これは誤りで
+あり撤回する。**
 
-`-j8` の schedule 次第では同時実行しうる。実際、本 attribution の初回試行で
-soak を 2 本同時に走らせた際、
+`mvm_add_test` (tests/CMakeLists.txt:91) は workstation label を持つ test へ
+`RESOURCE_LOCK "mvm_workstation"` を自動付与している。生成された
+CTestTestfile.cmake で確認した。
+
+```text
+render_audio_mixed        LABELS workstation  RESOURCE_LOCK mvm_workstation
+verify_audio_no_clipping  LABELS workstation  RESOURCE_LOCK mvm_workstation
+ownership_soak_100        LABELS workstation  RESOURCE_LOCK mvm_workstation
+```
+
+CTest は同一 RESOURCE_LOCK を持つ test を同時実行しない。したがって
+`ownership_soak_100` と audio test 群が並列に走ることはなく、
+mutable directory の並行 race は存在しない。
+
+初版が証拠として挙げた
 
 ```text
 iteration 80: WAV 読めず: RIFF/WAVE ヘッダがありません
 ```
 
-が発生した。今回の cohort failure の原因ではないが、hermeticity defect として
-独立に存在する。
+は、attribution 初回試行で **私が CTest の外側で soak を 2 本手動起動し、
+resource lock を迂回した**ために起きたものである。suite の defect ではない。
+
+残る論点は並行性ではなく順序である。`ownership_soak_100` は
+`FIXTURES_REQUIRED mvm_audio` を持たないため、fixture との相対順序は未規定で
+ある。ただし今回の failed run では
+
+```text
+render_audio_* 完了 → ownership_soak_100 → verify_audio_* (全て PASS)
+```
+
+の順で走っており、soak の後段 verify_audio は PASS している。順序に起因する
+実害は観測されていない。
+
+**S2-g2 は defect として成立しない。** 未検証の順序論点として残すに留める。

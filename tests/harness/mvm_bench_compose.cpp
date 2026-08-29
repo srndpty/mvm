@@ -2585,9 +2585,15 @@ int cmdSoak(const bench::Args& a) {
     std::printf("  \"quartile_avg\": { \"handles_first\": %zu, \"handles_last\": %zu,"
                 " \"rss_mb_first\": %.2f, \"rss_mb_last\": %.2f },\n",
                 handleFirst, handleLast, rssFirst / 1048576.0, rssLast / 1048576.0);
+    // S2-g1a: --dump-all-samples は診断専用。判定条件には一切影響しない。
+    // samples 自体は元から毎 iteration 記録しているが、既定では 10 回ごとにしか
+    // 出力しないため warmup boundary を実測できない。
+    const bool dumpAllSamples = a.has("dump-all-samples");
+    std::printf("  \"sample_emission\": \"%s\",\n", dumpAllSamples ? "ALL" : "DECIMATED_10");
+    std::printf("  \"quartile_size\": %zu,\n", samples.size() / 4);
     std::printf("  \"samples\": [");
     for (size_t i = 0; i < samples.size(); i++) {
-        if (i % 10 != 0 && i + 1 != samples.size())
+        if (!dumpAllSamples && i % 10 != 0 && i + 1 != samples.size())
             continue; // 10 回ごとと最終回だけ出す
         std::printf("%s\n    { \"i\": %d, \"handles\": %zu, \"rss_mb\": %.2f }", i ? "," : "",
                     samples[i].iteration, samples[i].handles, samples[i].rssBytes / 1048576.0);
