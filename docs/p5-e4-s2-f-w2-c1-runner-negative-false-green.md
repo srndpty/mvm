@@ -230,3 +230,106 @@ fail-close 時にも diagnostic artifact を出す必要があり、これは ex
 semantics の変更にあたるため S2-f2 の範囲外とする。
 
 **これは「c11 は健全」という意味ではない。未閉鎖項目として残す。**
+
+## 9. S2-f3: c11 negative の execution/semantic 分離
+
+### 9.1 再導出で見つかった3件目の dead expectation
+
+exact-match を固定する前に、W2-C1 と同様に「旧 expectation が到達可能か」を
+current source から再導出した。`NegativeLowerAfterCapture` が到達不能だった。
+
+```text
+fixture      predecessor_ordinal=0, predecessor_qpc=160
+samples      (0,100) (1,200) (2,300)
+→ (0,160) は sample に存在しない
+→ boundary sample witness check が先に発火
+→ LOWER_SUPPORT_NOT_CLOSED へ到達しない
+```
+
+実測した failure 理由は次だった。
+
+```text
+NegativeLowerAfterCapture     boundary sample witnessがexactではありません
+NegativeMissingSuccessor      boundary sample witnessがexactではありません
+NegativePostrollBeforeClose   upper supportが閉じていません
+NegativeAuthorityFalse        support authorityが不成立です
+```
+
+`NegativeLowerAfterCapture` は名前が主張する違反ではなく別の違反で落ちており、
+`NegativeMissingSuccessor` と重複していた。結果として checker の lower support
+closure 判定 (predecessor_qpc >= capture_begin_qpc) には negative coverage が
+存在しなかった。**これは vacuous PASS ではなく、誤った経路での PASS である。**
+
+fixture を実在 sample へ修正した。
+
+```text
+predecessor_ordinal=1, predecessor_qpc=200
+→ boundary witness は exact
+→ 200 >= capture_begin_qpc(150) だけを違反
+→ LOWER_SUPPORT_NOT_CLOSED へ到達
+```
+
+### 9.2 checker diagnostic output contract
+
+判定条件は一切変更していない。fail-close 時にも artifact を書くようにし、
+既存の fail site へ violation code を 1:1 で割り当てただけである。
+
+```text
+INPUT_MISSING
+REQUIRED_FIELD_MISSING
+SUPPORT_SCHEMA_INVALID
+SHADOW_ISOLATION_INVALID
+BOUNDARY_SAMPLE_WITNESS_NOT_EXACT
+LOWER_SUPPORT_NOT_CLOSED
+UPPER_SUPPORT_NOT_CLOSED
+CLOSED_SUPPORT_ORDER_INVALID
+SUPPORT_COUNTER_NONZERO
+SUPPORT_AUTHORITY_INVALID
+```
+
+これにより呼び出し側が usage crash と intended semantic rejection を
+artifact で区別できる。
+
+### 9.3 harness 二層化
+
+```text
+層1  proof artifact 不在 / schema 不正
+       => CHECKER_EXECUTION_FAILURE => test FAIL
+層2  proof.pass == false
+     proof.violation == frozen expected violation
+```
+
+frozen expectation は次である。
+
+```text
+NegativeLowerAfterCapture     LOWER_SUPPORT_NOT_CLOSED
+NegativePostrollBeforeClose   UPPER_SUPPORT_NOT_CLOSED
+NegativeMissingSuccessor      BOUNDARY_SAMPLE_WITNESS_NOT_EXACT
+NegativeAuthorityFalse        SUPPORT_AUTHORITY_INVALID
+```
+
+### 9.4 support gap
+
+`inventory-p2-d5-2-w2-c11-physical-support-gaps.ps1` は fail-close 前に
+artifact を書いていたため checker 変更は不要だった。harness 側で
+`INVENTORY_EXECUTION_FAILURE` 分離と
+`relation_classification_exact == false` の exact-match を追加した。
+
+### 9.5 mutation applicability
+
+```text
+N1  旧fixture復帰 (intended violation 到達不能へ戻す)
+    => DETECTED: intended violationが一致しません
+N2  mutation除去
+    => DETECTED: がfail-closeされませんでした
+N3  failure artifact廃止 (旧checker挙動へ戻す)
+    => DETECTED: CHECKER_EXECUTION_FAILURE
+```
+
+3/3。N1 は fixture 修正が、N3 は diagnostic contract が、それぞれ実際に
+検出能力へ寄与していることを示す。
+
+### 9.6 結果
+
+c11 8件が release / debug 両 preset で PASS。**8章で残していた c11 の
+未閉鎖項目はこれで閉じた。**

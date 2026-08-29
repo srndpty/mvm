@@ -34,11 +34,24 @@ $proofPath=Join-Path $Directory 'display-candidate-inventory.json'
 $proof|ConvertTo-Json -Depth 10|Set-Content -LiteralPath $proofPath -Encoding utf8
 $app|ConvertTo-Json -Depth 10|Set-Content -LiteralPath (Join-Path $runDirectory 'traced-app.json') -Encoding utf8
 $output=Join-Path $Directory 'support-gap.json'
-& pwsh -NoProfile -File $Inventory -C011Directory $Directory -InventoryProof $proofPath -Output $output *> $null
+$inventoryLog=Join-Path $Directory 'inventory-output.txt'
+& pwsh -NoProfile -File $Inventory -C011Directory $Directory -InventoryProof $proofPath -Output $output *> $inventoryLog
+$inventoryExit=$LASTEXITCODE
+$inventoryDetail=[string](Get-Content -LiteralPath $inventoryLog -Raw -Encoding utf8 -ErrorAction SilentlyContinue)
+# S2-f3: 層1 execution。artifact不在はINVENTORY_EXECUTION_FAILUREでtest FAILにし、
+# 非0 exitだけをnegativeのPASS条件にしない。
+if(-not(Test-Path -LiteralPath $output)){
+    throw "$Case INVENTORY_EXECUTION_FAILURE: support-gap artifactが生成されませんでした (exit=$inventoryExit)`n$inventoryDetail"
+}
 if($Case-eq'NegativeRelationMutation'){
-    if($LASTEXITCODE-eq0){throw 'display relation mutationが受理されました'}
+    if($inventoryExit-eq0){throw 'display relation mutationが受理されました'}
+    # 層2 semantic。relation mutationは自分の違反で落ちること。
+    $mutated=Get-Content -LiteralPath $output -Raw -Encoding utf8|ConvertFrom-Json
+    if([bool]$mutated.runs[0].relation_classification_exact){
+        throw 'display relation mutationがrelation_classification_exactを崩していません'
+    }
 }else{
-    if($LASTEXITCODE-ne0){throw 'support gap inventoryが失敗しました'}
+    if($inventoryExit-ne0){throw "support gap inventoryが失敗しました (exit=$inventoryExit)`n$inventoryDetail"}
     $actual=Get-Content -LiteralPath $output -Raw -Encoding utf8|ConvertFrom-Json
     # C1 の support-domain contract 修正後、missing_mapping_count は support 内だけを数える。
     # support 外 (qpc 50 / 450) は head/tail として分類され missing にはならない。
