@@ -2431,6 +2431,12 @@ int cmdSoak(const bench::Args& a) {
         unsigned long long rssBytes;
         long long markerValue;
         double audioRmsL;
+        // S2-g3: sustained growth の owner 特定用。診断専用で判定には使わない。
+        size_t gdiObjects;
+        size_t userObjects;
+        bool audioThisIteration;
+        size_t handlesBeforeAudio;
+        size_t handlesAfterAudio;
     };
 
     std::vector<Sample> samples;
@@ -2440,6 +2446,15 @@ int cmdSoak(const bench::Args& a) {
         DWORD n = 0;
         GetProcessHandleCount(GetCurrentProcess(), &n);
         return (size_t)n;
+    };
+    // S2-g3: GetGuiResources は GDI / USER object のみを返す。kernel handle の
+    // 種別内訳ではない。process handle が増えて GDI/USER が横ばいなら、
+    // file/event/thread/section 等の kernel handle を疑う根拠になる。
+    auto gdiObjects = []() -> size_t {
+        return (size_t)GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS);
+    };
+    auto userObjects = []() -> size_t {
+        return (size_t)GetGuiResources(GetCurrentProcess(), GR_USEROBJECTS);
     };
     auto rssBytes = []() -> unsigned long long {
         PROCESS_MEMORY_COUNTERS pmc{};
@@ -2477,6 +2492,12 @@ int cmdSoak(const bench::Args& a) {
         // 音声経路の参照リークはこれで十分検出できる。
         double rmsL = 0;
         const bool audioThisIter = doAudio && (it % 10 == 0);
+        // S2-g3: audio 前後で handle を挟み、retention が audio iteration 内で
+        // 起きているか、それとも非同期な別 owner かを切り分ける。
+        size_t handlesBeforeAudio = 0;
+        size_t handlesAfterAudio = 0;
+        if (audioThisIter)
+            handlesBeforeAudio = handleCount();
         if (audioThisIter) {
             std::string tmp = wavDir + "/soak_tmp.wav";
             char rerr[512] = {0};
@@ -2496,9 +2517,13 @@ int cmdSoak(const bench::Args& a) {
             fs::remove(utf8Path(tmp), ec);
         }
 
+        if (audioThisIter)
+            handlesAfterAudio = handleCount();
+
         mvm_mlt_compose_close(h);
 
-        samples.push_back({it, handleCount(), rssBytes(), markerValue, rmsL});
+        samples.push_back({it, handleCount(), rssBytes(), markerValue, rmsL, gdiObjects(),
+                           userObjects(), audioThisIter, handlesBeforeAudio, handlesAfterAudio});
 
         // 進捗を stderr へ。長時間走るので無反応に見えないようにする。
         if ((it + 1) % 10 == 0 || it == 0) {
@@ -2619,8 +2644,13 @@ int cmdSoak(const bench::Args& a) {
     for (size_t i = 0; i < samples.size(); i++) {
         if (!dumpAllSamples && i % 10 != 0 && i + 1 != samples.size())
             continue; // 10 回ごとと最終回だけ出す
-        std::printf("%s\n    { \"i\": %d, \"handles\": %zu, \"rss_mb\": %.2f }", i ? "," : "",
-                    samples[i].iteration, samples[i].handles, samples[i].rssBytes / 1048576.0);
+        std::printf("%s\n    { \"i\": %d, \"handles\": %zu, \"rss_mb\": %.2f,"
+                    " \"gdi\": %zu, \"user\": %zu, \"audio\": %s,"
+                    " \"h_before_audio\": %zu, \"h_after_audio\": %zu }",
+                    i ? "," : "", samples[i].iteration, samples[i].handles,
+                    samples[i].rssBytes / 1048576.0, samples[i].gdiObjects,
+                    samples[i].userObjects, samples[i].audioThisIteration ? "true" : "false",
+                    samples[i].handlesBeforeAudio, samples[i].handlesAfterAudio);
     }
     std::printf("\n  ],\n  \"problems\": [");
     for (size_t i = 0; i < problems.size(); i++)
