@@ -18,6 +18,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <map>
 #include <mutex>
 #include <numeric>
 #include <psapi.h>
@@ -2394,6 +2395,179 @@ int cmdPreviewBench(const bench::Args& a) {
 // RSS には allocator のキャッシュが乗るため、小さな増減は
 // 即リークと断定しない。明確な線形増加のみ不合格にする。
 
+// ---------------------------------------------------------------------------
+// S2-g4: kernel handle の種別内訳を数える診断専用ユーティリティ。
+//
+// GDI/USER は S2-g3 で owner 候補から除外できた (gdi=3 固定 / user は系統的増加なし)。
+// 残るのは file / event / thread / section 等の kernel handle であり、
+// GetGuiResources では分解できない。
+//
+// **この計装は診断専用である。**
+//   verdict influence            = 0
+//   threshold influence          = 0
+//   ownership contract influence = 0
+// artifact には kernel_handle_diagnostics_authoritative=false を明示する。
+//
+// ObjectTypeIndex から型名への対応は文書化されていない。NtQueryObject を任意の
+// handle へ呼ぶと named pipe 等で blocking しうるため使わない。代わりに
+// 自分で作った既知の object の index を引いて index->name 表を作る。
+namespace mvm_g4 {
+
+typedef struct {
+    PVOID Object;
+    ULONG_PTR UniqueProcessId;
+    ULONG_PTR HandleValue;
+    ULONG GrantedAccess;
+    USHORT CreatorBackTraceIndex;
+    USHORT ObjectTypeIndex;
+    ULONG HandleAttributes;
+    ULONG Reserved;
+} G4HandleEntry;
+
+typedef struct {
+    ULONG_PTR NumberOfHandles;
+    ULONG_PTR Reserved;
+    G4HandleEntry Handles[1];
+} G4HandleInfo;
+
+typedef LONG(NTAPI* PfnNtQuerySystemInformation)(ULONG, PVOID, ULONG, PULONG);
+
+inline PfnNtQuerySystemInformation ntQuery() {
+    static PfnNtQuerySystemInformation fn = []() -> PfnNtQuerySystemInformation {
+        HMODULE m = GetModuleHandleW(L"ntdll.dll");
+        return m ? (PfnNtQuerySystemInformation)(void*)GetProcAddress(m, "NtQuerySystemInformation")
+                 : nullptr;
+    }();
+    return fn;
+}
+
+// SystemExtendedHandleInformation
+static const ULONG kSystemExtendedHandleInformation = 64;
+
+inline std::vector<G4HandleEntry> snapshotOwnHandles() {
+    std::vector<G4HandleEntry> out;
+    auto fn = ntQuery();
+    if (!fn)
+        return out;
+    const ULONG_PTR self = (ULONG_PTR)GetCurrentProcessId();
+    ULONG size = 1u << 20;
+    std::vector<unsigned char> buf;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        buf.assign(size, 0);
+        ULONG need = 0;
+        LONG st = fn(kSystemExtendedHandleInformation, buf.data(), size, &need);
+        if (st == 0) {
+            auto* info = reinterpret_cast<G4HandleInfo*>(buf.data());
+            out.reserve(512);
+            for (ULONG_PTR i = 0; i < info->NumberOfHandles; ++i)
+                if (info->Handles[i].UniqueProcessId == self)
+                    out.push_back(info->Handles[i]);
+            return out;
+        }
+        // STATUS_INFO_LENGTH_MISMATCH 以外は諦める (診断なので失敗を許容する)。
+        if (st != (LONG)0xC0000004L)
+            return out;
+        size = (need > size) ? (need + (1u << 16)) : (size * 2);
+    }
+    return out;
+}
+
+// 既知 object を作って ObjectTypeIndex を引き当て、index -> name 表を作る。
+inline const std::map<USHORT, std::string>& typeNames() {
+    static std::map<USHORT, std::string> table = []() {
+        std::map<USHORT, std::string> t;
+        auto learn = [&t](HANDLE h, const char* name) {
+            if (!h || h == INVALID_HANDLE_VALUE)
+                return;
+            for (const auto& e : snapshotOwnHandles())
+                if ((HANDLE)e.HandleValue == h) {
+                    t[e.ObjectTypeIndex] = name;
+                    break;
+                }
+        };
+        HANDLE ev = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        learn(ev, "Event");
+        HANDLE mu = CreateMutexW(nullptr, FALSE, nullptr);
+        learn(mu, "Mutant");
+        HANDLE se = CreateSemaphoreW(nullptr, 0, 1, nullptr);
+        learn(se, "Semaphore");
+        HANDLE wt = CreateWaitableTimerW(nullptr, TRUE, nullptr);
+        learn(wt, "Timer");
+        HANDLE io = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 1);
+        learn(io, "IoCompletion");
+        HANDLE sec = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, 4096,
+                                        nullptr);
+        learn(sec, "Section");
+        wchar_t tmpDir[MAX_PATH] = {0};
+        wchar_t tmpFile[MAX_PATH] = {0};
+        HANDLE fh = INVALID_HANDLE_VALUE;
+        if (GetTempPathW(MAX_PATH, tmpDir) && GetTempFileNameW(tmpDir, L"g4", 0, tmpFile)) {
+            fh = CreateFileW(tmpFile, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                                        FILE_SHARE_DELETE,
+                             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+            learn(fh, "File");
+        }
+        HANDLE th = nullptr;
+        DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &th, 0, FALSE,
+                        DUPLICATE_SAME_ACCESS);
+        learn(th, "Thread");
+        HANDLE pr = nullptr;
+        DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(), GetCurrentProcess(), &pr, 0, FALSE,
+                        DUPLICATE_SAME_ACCESS);
+        learn(pr, "Process");
+        HANDLE tok = nullptr;
+        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok))
+            learn(tok, "Token");
+        HKEY hk = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software", 0, KEY_READ, &hk) == ERROR_SUCCESS)
+            learn((HANDLE)hk, "Key");
+
+        if (ev) CloseHandle(ev);
+        if (mu) CloseHandle(mu);
+        if (se) CloseHandle(se);
+        if (wt) CloseHandle(wt);
+        if (io) CloseHandle(io);
+        if (sec) CloseHandle(sec);
+        if (fh != INVALID_HANDLE_VALUE) CloseHandle(fh);
+        if (tmpFile[0]) DeleteFileW(tmpFile);
+        if (th) CloseHandle(th);
+        if (pr) CloseHandle(pr);
+        if (tok) CloseHandle(tok);
+        if (hk) RegCloseKey(hk);
+        return t;
+    }();
+    return table;
+}
+
+// 型名 -> 個数。未知 index は "Type<N>" にまとめる。
+inline std::map<std::string, size_t> countByType() {
+    std::map<std::string, size_t> out;
+    const auto& names = typeNames();
+    for (const auto& e : snapshotOwnHandles()) {
+        auto it = names.find(e.ObjectTypeIndex);
+        if (it != names.end())
+            out[it->second] += 1;
+        else
+            out["Type" + std::to_string((int)e.ObjectTypeIndex)] += 1;
+    }
+    return out;
+}
+
+inline std::string toJson(const std::map<std::string, size_t>& m) {
+    std::string s = "{";
+    bool first = true;
+    for (const auto& kv : m) {
+        if (!first)
+            s += ", ";
+        first = false;
+        s += "\"" + kv.first + "\": " + std::to_string(kv.second);
+    }
+    s += "}";
+    return s;
+}
+
+} // namespace mvm_g4
+
 int cmdSoak(const bench::Args& a) {
     using namespace bench;
 
@@ -2437,6 +2611,9 @@ int cmdSoak(const bench::Args& a) {
         bool audioThisIteration;
         size_t handlesBeforeAudio;
         size_t handlesAfterAudio;
+        std::string typesBeforeAudio;
+        std::string typesAfterAudio;
+        std::string typesAfterClose;
     };
 
     std::vector<Sample> samples;
@@ -2496,8 +2673,13 @@ int cmdSoak(const bench::Args& a) {
         // 起きているか、それとも非同期な別 owner かを切り分ける。
         size_t handlesBeforeAudio = 0;
         size_t handlesAfterAudio = 0;
-        if (audioThisIter)
+        // S2-g4: audio iteration でだけ kernel handle の種別内訳を 3 点で採る。
+        // 全 iteration で handle table を列挙すると soak 自体が遅くなるため。
+        std::string typesBeforeAudio, typesAfterAudio, typesAfterClose;
+        if (audioThisIter) {
             handlesBeforeAudio = handleCount();
+            typesBeforeAudio = mvm_g4::toJson(mvm_g4::countByType());
+        }
         if (audioThisIter) {
             std::string tmp = wavDir + "/soak_tmp.wav";
             char rerr[512] = {0};
@@ -2517,13 +2699,18 @@ int cmdSoak(const bench::Args& a) {
             fs::remove(utf8Path(tmp), ec);
         }
 
-        if (audioThisIter)
+        if (audioThisIter) {
             handlesAfterAudio = handleCount();
+            typesAfterAudio = mvm_g4::toJson(mvm_g4::countByType());
+        }
 
         mvm_mlt_compose_close(h);
+        if (audioThisIter)
+            typesAfterClose = mvm_g4::toJson(mvm_g4::countByType());
 
         samples.push_back({it, handleCount(), rssBytes(), markerValue, rmsL, gdiObjects(),
-                           userObjects(), audioThisIter, handlesBeforeAudio, handlesAfterAudio});
+                           userObjects(), audioThisIter, handlesBeforeAudio, handlesAfterAudio,
+                           typesBeforeAudio, typesAfterAudio, typesAfterClose});
 
         // 進捗を stderr へ。長時間走るので無反応に見えないようにする。
         if ((it + 1) % 10 == 0 || it == 0) {
@@ -2633,6 +2820,7 @@ int cmdSoak(const bench::Args& a) {
     // 出力しないため warmup boundary を実測できない。
     const bool dumpAllSamples = a.has("dump-all-samples");
     std::printf("  \"sample_emission\": \"%s\",\n", dumpAllSamples ? "ALL" : "DECIMATED_10");
+    std::printf("  \"kernel_handle_diagnostics_authoritative\": false,\n");
     std::printf("  \"handle_growth_threshold\": %zu,\n", kHandleGrowthThreshold);
     std::printf("  \"functional_authority_domain\": \"ALL_ITERATIONS\",\n");
     std::printf("  \"handle_retention_authority_domain\": \"MEASURED_ONLY\",\n");
@@ -2651,6 +2839,14 @@ int cmdSoak(const bench::Args& a) {
                     samples[i].rssBytes / 1048576.0, samples[i].gdiObjects,
                     samples[i].userObjects, samples[i].audioThisIteration ? "true" : "false",
                     samples[i].handlesBeforeAudio, samples[i].handlesAfterAudio);
+        if (samples[i].audioThisIteration && !samples[i].typesBeforeAudio.empty()) {
+            std::printf(",\n    { \"i\": %d, \"kernel_handle_types\": "
+                        "{ \"before_audio\": %s, \"after_audio\": %s, "
+                        "\"after_close\": %s } }",
+                        samples[i].iteration, samples[i].typesBeforeAudio.c_str(),
+                        samples[i].typesAfterAudio.c_str(),
+                        samples[i].typesAfterClose.c_str());
+        }
     }
     std::printf("\n  ],\n  \"problems\": [");
     for (size_t i = 0; i < problems.size(); i++)
