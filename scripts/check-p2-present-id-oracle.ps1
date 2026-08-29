@@ -1,5 +1,9 @@
-param(
-    [Parameter(Mandatory=$true)][string]$Json
+﻿param(
+    [Parameter(Mandatory=$true)][string]$Json,
+    # S2-e2: authority modeはbuild typeの推測ではなく呼び出し側が明示する。
+    #   FULL_RELEASE      correctness + timing
+    #   CORRECTNESS_ONLY  correctnessのみ。timingはauthorityではない。
+    [ValidateSet('FULL_RELEASE','CORRECTNESS_ONLY')][string]$AuthorityMode='FULL_RELEASE'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -10,6 +14,25 @@ function Assert-Oracle([bool]$Condition, [string]$Message) {
 
 $raw = Get-Content -Raw -LiteralPath $Json | ConvertFrom-Json
 Assert-Oracle ($raw.schema -eq 'mvm-p2-present-id-oracle-2') 'schemaが一致しません'
+# authority provenanceが無いartifactはcanonicalにしない。
+Assert-Oracle ($raw.PSObject.Properties.Name -contains 'authority_mode') `
+    'authority mode provenanceがありません'
+Assert-Oracle ($raw.authority_mode -eq $AuthorityMode) `
+    "authority modeが要求と一致しません: expected=$AuthorityMode actual=$($raw.authority_mode)"
+foreach ($field in @('correctness_verdict','timing_verdict','acquisition_liveness_verdict')) {
+    Assert-Oracle ($raw.PSObject.Properties.Name -contains $field) "$field がありません"
+}
+# correctnessとacquisition livenessはどちらのmodeでも緩めない。
+Assert-Oracle ($raw.correctness_verdict -eq 'PASS') 'correctness verdictがPASSではありません'
+Assert-Oracle ($raw.acquisition_liveness_verdict -eq 'PASS') `
+    'acquisition liveness verdictがPASSではありません'
+if ($AuthorityMode -eq 'FULL_RELEASE') {
+    Assert-Oracle ($raw.timing_verdict -eq 'PASS') 'timing verdictがPASSではありません'
+} else {
+    # NOT_AUTHORITY_IN_DEBUGはPASSの代替ではない。scope外であることの明示である。
+    Assert-Oracle ($raw.timing_verdict -eq 'NOT_AUTHORITY_IN_DEBUG') `
+        "CORRECTNESS_ONLYでtiming verdictがNOT_AUTHORITY_IN_DEBUGではありません: $($raw.timing_verdict)"
+}
 Assert-Oracle ($raw.swap_effect -eq 'FLIP_DISCARD') 'swap effectがFLIP_DISCARDではありません'
 Assert-Oracle ([int64]$raw.buffer_count -eq 3) 'BufferCountが3ではありません'
 Assert-Oracle ([int64]$raw.sync_interval -eq 1) 'SyncIntervalが1ではありません'
@@ -85,9 +108,13 @@ Assert-Oracle ([int64]$raw.sampler_vblank_wait_failure_count -eq 0) `
     'samplerのVBlank wait失敗があります'
 Assert-Oracle ([int64]$raw.statistics_failure_count -eq 0) 'GetFrameStatistics失敗があります'
 Assert-Oracle ([int64]$raw.statistics_disjoint_count -eq 0) 'frame statisticsがdisjointです'
-Assert-Oracle ([bool]$raw.poll_interval_valid) 'poller intervalが大きすぎます'
-Assert-Oracle ([int64]$raw.max_poll_interval_qpc * 2 -lt [int64]$raw.nominal_period_qpc) `
-    'poller intervalの再計算が失敗しました'
+# timing authority。release frozen thresholdは変更していない。
+# CORRECTNESS_ONLYではthresholdを緩めるのではなく、判定自体を行わない。
+if ($AuthorityMode -eq 'FULL_RELEASE') {
+    Assert-Oracle ([bool]$raw.poll_interval_valid) 'poller intervalが大きすぎます'
+    Assert-Oracle ([int64]$raw.max_poll_interval_qpc * 2 -lt [int64]$raw.nominal_period_qpc) `
+        'poller intervalの再計算が失敗しました'
+}
 Assert-Oracle ([bool]$raw.window_output_stable) 'window outputがrun中に変化しました'
 Assert-Oracle ([bool]$raw.statistics_output_matches_window) 'statistics outputがwindow outputと一致しません'
 Assert-Oracle ([int64]$raw.vblank_ring_overflow_count -eq 0) 'VBlank ring overflowがあります'

@@ -97,6 +97,11 @@ int main(int argc, char** argv) {
     int presentCount = 900;
     std::string notifyDelayPattern = "0,100,300,800,1200";
     bool dwmFlushFallback = false;
+    // S2-e2: authority modeはbuild typeから推測せず、呼び出し側が明示する。
+    //   FULL_RELEASE      correctness + timing authority
+    //   CORRECTNESS_ONLY  correctnessのみ。timingはauthorityではない。
+    // CORRECTNESS_ONLYでもcorrectness (900/900, gap=0, exact join) は一切緩めない。
+    std::string authorityMode = "FULL_RELEASE";
     for (int index = 1; index < argc; ++index) {
         if (std::strcmp(argv[index], "--dwm-flush-fallback") == 0) {
             dwmFlushFallback = true;
@@ -108,7 +113,19 @@ int main(int argc, char** argv) {
             presentCount = std::atoi(argv[index + 1]);
         else if (std::strcmp(argv[index], "--notify-delay-pattern") == 0)
             notifyDelayPattern = argv[index + 1];
+        else if (std::strcmp(argv[index], "--authority-mode") == 0)
+            authorityMode = argv[index + 1];
     }
+    if (authorityMode != "FULL_RELEASE" && authorityMode != "CORRECTNESS_ONLY") {
+        std::fprintf(stderr, "--authority-mode is FULL_RELEASE or CORRECTNESS_ONLY\n");
+        return 2;
+    }
+    const bool timingIsAuthority = authorityMode == "FULL_RELEASE";
+    // acquisition livenessのbudget。performance thresholdではない。
+    // CORRECTNESS_ONLYでは遅いbuildでも900件を完走できるよう余裕を持たせる。
+    // ここを変えてもtiming verdictには一切影響しない。
+    const DWORD acquisitionWaitMs = timingIsAuthority ? 1000u : 8000u;
+    const auto acquisitionWaitSeconds = std::chrono::seconds(timingIsAuthority ? 1 : 8);
     const auto notifyDelayMilliPeriods = parseDelayPattern(notifyDelayPattern);
     if (metricsPath.empty() || presentCount <= 0 || notifyDelayMilliPeriods.empty() ||
         std::any_of(notifyDelayMilliPeriods.begin(), notifyDelayMilliPeriods.end(),
@@ -333,7 +350,7 @@ int main(int argc, char** argv) {
     bool submittedIdsConsecutive = true;
     for (int submissionIndex = 0; submissionIndex < presentCount; ++submissionIndex) {
         pumpMessages();
-        if (WaitForSingleObject(frameLatencyWaitable, 1000) != WAIT_OBJECT_0) {
+        if (WaitForSingleObject(frameLatencyWaitable, acquisitionWaitMs) != WAIT_OBJECT_0) {
             ++frameLatencyWaitFailureCount;
             break;
         }
@@ -362,7 +379,7 @@ int main(int argc, char** argv) {
             if (!dwmFlushFallback) {
                 const std::size_t presentPublicationCount = observer.ring().publishedCount();
                 const bool cycleCompleted =
-                    observationChanged.wait_for(lock, std::chrono::seconds(1), [&] {
+                    observationChanged.wait_for(lock, acquisitionWaitSeconds, [&] {
                         return samplerCompletedVBlankCount.load(std::memory_order_acquire) >
                                presentPublicationCount;
                     });
@@ -376,7 +393,7 @@ int main(int argc, char** argv) {
             // current IDを待つとproducer自身を止めるため、未観測を最大1件に制限する。
             const long long requiredObservedPresentId =
                 (std::max)(0LL, static_cast<long long>(presentId) - 1);
-            const bool observed = observationChanged.wait_for(lock, std::chrono::seconds(1), [&] {
+            const bool observed = observationChanged.wait_for(lock, acquisitionWaitSeconds, [&] {
                 return lastObservedPresentId.load(std::memory_order_acquire) >=
                        requiredObservedPresentId;
             });
@@ -431,7 +448,8 @@ int main(int argc, char** argv) {
         maxPollIntervalQpc.load(std::memory_order_acquire) * 2 < nominalPeriodQpc;
     const bool outputStable =
         endIdentity.ok && mvm::gpu::sameWindowOutput(resolved.identity, endIdentity.identity);
-    const bool oracleValid =
+    // S2-e2: correctness authorityにpollIntervalValidを含めない。timingは別軸である。
+    const bool correctnessValid =
         warmupComplete && measurementFollowsWarmup && configuredSubmissionsComplete &&
         presentFailureCount == 0 && getLastPresentCountFailureCount == 0 &&
         frameLatencyWaitFailureCount == 0 && samplerAckTimeoutCount == 0 &&
@@ -442,11 +460,14 @@ int main(int argc, char** argv) {
         samplerVBlankGaps.load(std::memory_order_acquire) == 0 &&
         samplerVBlankWaitFailures.load(std::memory_order_acquire) == 0 &&
         statisticsFailures.load(std::memory_order_acquire) == 0 &&
-        statisticsDisjoint.load(std::memory_order_acquire) == 0 && pollIntervalValid &&
+        statisticsDisjoint.load(std::memory_order_acquire) == 0 &&
         observer.waitFailureCount() == 0 && observer.ring().overflowCount() == 0 && outputStable;
-    const bool completeOracleValid = oracleValid && statisticsOutputMatchesWindow;
+    const bool completeCorrectnessValid = correctnessValid && statisticsOutputMatchesWindow;
+    // timing authorityがactiveなときだけpollIntervalValidをverdictへ入れる。
+    const bool completeOracleValid =
+        completeCorrectnessValid && (!timingIsAuthority || pollIntervalValid);
     const bool oracleSamplingGap = !observedIdsComplete || !finalDrainComplete ||
-                                   !pollIntervalValid ||
+                                   (timingIsAuthority && !pollIntervalValid) ||
                                    samplerVBlankGaps.load(std::memory_order_acquire) != 0;
 
     FILE* file = nullptr;
@@ -454,6 +475,16 @@ int main(int argc, char** argv) {
         return 6;
     std::fprintf(file, "{\n");
     std::fprintf(file, "  \"schema\": \"mvm-p2-present-id-oracle-2\",\n");
+    std::fprintf(file, "  \"authority_mode\": \"%s\",\n", authorityMode.c_str());
+    std::fprintf(file, "  \"correctness_verdict\": \"%s\",\n",
+                 completeCorrectnessValid ? "PASS" : "FAIL");
+    std::fprintf(file, "  \"timing_verdict\": \"%s\",\n",
+                 timingIsAuthority ? (pollIntervalValid ? "PASS" : "FAIL")
+                                   : "NOT_AUTHORITY_IN_DEBUG");
+    std::fprintf(file, "  \"acquisition_liveness_verdict\": \"%s\",\n",
+                 configuredSubmissionsComplete ? "PASS" : "FAIL");
+    std::fprintf(file, "  \"acquisition_wait_budget_ms\": %lu,\n",
+                 static_cast<unsigned long>(acquisitionWaitMs));
     std::fprintf(file, "  \"oracle_status\": \"%s\",\n", completeOracleValid ? "VALID" : "INVALID");
     std::fprintf(file, "  \"oracle_valid\": %s,\n", completeOracleValid ? "true" : "false");
     std::fprintf(file, "  \"mapper_proof_status\": \"NOT_YET_EVALUABLE\",\n");

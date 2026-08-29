@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory=$true)][ValidateSet(
         'Good', 'NegativeSubmittedGap', 'NegativeObservedGap', 'NegativeFinalDrain',
         'NegativePollInterval', 'NegativeOfflineDelay', 'NegativeEarlyMapper',
@@ -6,7 +6,10 @@ param(
         'NegativeSamplerVBlankWaitFailure', 'NegativeSamplerPriorityMode',
         'NegativeSamplerAckTimeout', 'NegativeSamplerCycleTimeout',
         'NegativeFrameLatencyWaitFailure', 'NegativeWarmupIncomplete',
-        'NegativeFrameLatencyMode')][string]$Case,
+        'NegativeFrameLatencyMode',
+        'GoodCorrectnessOnly', 'NegativeAuthorityModeMissing',
+        'NegativeDebugTimingApplied', 'NegativeReleaseTimingDisabled',
+        'NegativeCorrectnessRelaxedInDebug')][string]$Case,
     [Parameter(Mandatory=$true)][string]$Checker,
     [Parameter(Mandatory=$true)][string]$Output
 )
@@ -36,6 +39,8 @@ for ($index = 0; $index -lt 4; ++$index) {
 }
 $raw = [ordered]@{
     schema='mvm-p2-present-id-oracle-2'; oracle_status='VALID'; oracle_valid=$true
+    authority_mode='FULL_RELEASE'; correctness_verdict='PASS'; timing_verdict='PASS'
+    acquisition_liveness_verdict='PASS'; acquisition_wait_budget_ms=1000
     mapper_proof_status='NOT_YET_EVALUABLE'; flip_discard_frame_discard_claim='NOT_ESTABLISHED'
     sampling_gap_code='NONE'; qpc_frequency=10000000; nominal_period_qpc=1000
     configured_present_count=4; swap_effect='FLIP_DISCARD'; buffer_count=3; sync_interval=1
@@ -80,7 +85,19 @@ $expectedViolation = @{
     NegativeFrameLatencyWaitFailure='frame latency wait失敗があります'
     NegativeWarmupIncomplete='warmupが完了していません'
     NegativeFrameLatencyMode='maximum frame latencyが1ではありません'
+    NegativeAuthorityModeMissing='authority mode provenanceがありません'
+    NegativeDebugTimingApplied='CORRECTNESS_ONLYでtiming verdictがNOT_AUTHORITY_IN_DEBUGではありません: PASS'
+    NegativeReleaseTimingDisabled='timing verdictがPASSではありません'
+    NegativeCorrectnessRelaxedInDebug='ORACLE_SAMPLING_GAP: transition数が不足しています'
 }
+
+# S2-e2: caseごとにcheckerへ渡すauthority modeを決める。build typeは推測しない。
+$caseAuthorityMode = @{
+    GoodCorrectnessOnly='CORRECTNESS_ONLY'
+    NegativeDebugTimingApplied='CORRECTNESS_ONLY'
+    NegativeCorrectnessRelaxedInDebug='CORRECTNESS_ONLY'
+}
+$authorityMode = if ($caseAuthorityMode.ContainsKey($Case)) { $caseAuthorityMode[$Case] } else { 'FULL_RELEASE' }
 $beforeMutation = $raw | ConvertTo-Json -Depth 10 -Compress
 
 switch ($Case) {
@@ -99,21 +116,45 @@ switch ($Case) {
     'NegativeFrameLatencyWaitFailure' { $raw.frame_latency_wait_failure_count = 1 }
     'NegativeWarmupIncomplete' { $raw.warmup_complete = $false }
     'NegativeFrameLatencyMode' { $raw.maximum_frame_latency = 2 }
+    # CORRECTNESS_ONLYではtiming判定を行わない。timing verdictをPASSと主張する
+    # artifactはauthority scopeの詐称なのでrejectする。
+    'GoodCorrectnessOnly' {
+        $raw.authority_mode = 'CORRECTNESS_ONLY'
+        $raw.timing_verdict = 'NOT_AUTHORITY_IN_DEBUG'
+        # timing thresholdを外れた値でもCORRECTNESS_ONLYでは判定されない。
+        $raw.max_poll_interval_qpc = 600
+    }
+    'NegativeAuthorityModeMissing' { $raw.Remove('authority_mode') }
+    'NegativeDebugTimingApplied' {
+        $raw.authority_mode = 'CORRECTNESS_ONLY'
+        $raw.timing_verdict = 'PASS'
+    }
+    'NegativeReleaseTimingDisabled' {
+        $raw.authority_mode = 'FULL_RELEASE'
+        $raw.timing_verdict = 'NOT_AUTHORITY_IN_DEBUG'
+    }
+    # debug splitを入れてもcorrectnessは緩まないことの証明。
+    # correctness_verdict fieldはPASSのままにし、checkerが再計算で捕まえることを要求する。
+    'NegativeCorrectnessRelaxedInDebug' {
+        $raw.authority_mode = 'CORRECTNESS_ONLY'
+        $raw.timing_verdict = 'NOT_AUTHORITY_IN_DEBUG'
+        $raw.statistics_transitions[2].present_count = 104
+    }
 }
 
 $afterMutation = $raw | ConvertTo-Json -Depth 10 -Compress
-if ($Case -ne 'Good' -and $beforeMutation -ceq $afterMutation) {
+if ($Case -notlike 'Good*' -and $beforeMutation -ceq $afterMutation) {
     throw "negative mutationが適用されませんでした: $Case"
 }
 
 $raw | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $Output -Encoding utf8
 try {
-    & $Checker -Json $Output *> $null
+    & $Checker -Json $Output -AuthorityMode $authorityMode *> $null
     $actualViolation = $null
 } catch {
     $actualViolation = $_.Exception.Message
 }
-if ($Case -eq 'Good') {
+if ($Case -like 'Good*') {
     if ($null -ne $actualViolation) { throw "対照群が失敗しました: $actualViolation" }
 } elseif ($null -eq $actualViolation) {
     throw "negative caseをcheckerが受理しました: $Case"

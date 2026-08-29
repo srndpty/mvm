@@ -2509,7 +2509,9 @@ foreach(_p2_oracle_case Good NegativeSubmittedGap NegativeObservedGap NegativeFi
         NegativePollInterval NegativeOfflineDelay NegativeEarlyMapper NegativeDiscardClaim
         NegativeSamplerTriggerMode NegativeSamplerVBlankWaitFailure NegativeSamplerPriorityMode
         NegativeSamplerAckTimeout NegativeSamplerCycleTimeout NegativeFrameLatencyWaitFailure
-        NegativeWarmupIncomplete NegativeFrameLatencyMode)
+        NegativeWarmupIncomplete NegativeFrameLatencyMode
+        GoodCorrectnessOnly NegativeAuthorityModeMissing NegativeDebugTimingApplied
+        NegativeReleaseTimingDisabled NegativeCorrectnessRelaxedInDebug)
     string(TOLOWER "${_p2_oracle_case}" _p2_oracle_name)
     mvm_add_test(p2_present_id_oracle_checker_${_p2_oracle_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File
@@ -2526,7 +2528,10 @@ if(TARGET mvm_p2_present_identity_probe)
             -Exe "$<TARGET_FILE:mvm_p2_present_identity_probe>"
             -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-present-id-oracle.ps1"
             -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-present-id-oracle-live.json"
-            -Presents 900)
+            -Presents 900
+            # S2-e2: timing authorityはRelease限定。Debugはcorrectness/acquisitionのみ
+            # 評価する。correctness (900/900, gap=0, exact join) は両方で同一である。
+            -AuthorityMode "$<IF:$<CONFIG:Debug>,CORRECTNESS_ONLY,FULL_RELEASE>")
     set_tests_properties(p2_present_id_oracle_live PROPERTIES
         ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
         LABELS "p2;workstation" RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 180)
