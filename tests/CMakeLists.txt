@@ -1200,9 +1200,13 @@ mvm_add_test(verify_audio_no_clipping
 # ownership は「正しさ」だけを見る。
 # Working Set の増減だけを理由に ownership 失敗としない。
 # メモリは memory_soak_diagnostic (stability ラベル) へ分離した。
+# S2-g1c: --dump-all-samples は emission 専用の診断 flag である。
+# verdict / threshold / metric / window には影響しない (S2-g1a で検証済み)。
+# suite 条件下で handle 系列を捕捉するために一時的に付与している。
+# attribution 完了後に残置か除去かを判断すること。
 mvm_add_test(ownership_soak_100
     COMMAND mvm_bench soak "${MVM_S5_SCENARIO}" --iterations 100
-            --wav-dir "${MVM_AUDIO_OUT}" --no-memory-check
+            --wav-dir "${MVM_AUDIO_OUT}" --no-memory-check --dump-all-samples
     PROPERTIES
         REQUIRED_FILES "${MVM_S5_SCENARIO}"
         TIMEOUT 1800)
