@@ -2511,7 +2511,9 @@ foreach(_p2_oracle_case Good NegativeSubmittedGap NegativeObservedGap NegativeFi
         NegativeSamplerAckTimeout NegativeSamplerCycleTimeout NegativeFrameLatencyWaitFailure
         NegativeWarmupIncomplete NegativeFrameLatencyMode
         GoodCorrectnessOnly NegativeAuthorityModeMissing NegativeDebugTimingApplied
-        NegativeReleaseTimingDisabled NegativeCorrectnessRelaxedInDebug)
+        NegativeReleaseTimingDisabled NegativeCorrectnessRelaxedInDebug
+        NegativeOccludedPresent NegativeUnclassifiedPresentStatus
+        NegativePresentOutcomeAuthority NegativeWindowVisibility)
     string(TOLOWER "${_p2_oracle_case}" _p2_oracle_name)
     mvm_add_test(p2_present_id_oracle_checker_${_p2_oracle_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File

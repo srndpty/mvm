@@ -148,6 +148,17 @@ int main(int argc, char** argv) {
     if (!hwnd)
         return 5;
     ShowWindow(hwnd, SW_SHOW);
+    // S2-e3 (B): acquisition stabilization。occlusionの発生確率を下げるための
+    // preconditionであって、occlusionを不可能にするauthorityではない。
+    // 実際にocclusionが起きた場合はA側 (DXGI_STATUS_OCCLUDED検出) がfail-closeする。
+    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    SetForegroundWindow(hwnd);
+    pumpMessages();
+    const bool windowVisibilityPrecondition = IsWindowVisible(hwnd) && !IsIconic(hwnd);
+    if (!windowVisibilityPrecondition) {
+        std::fprintf(stderr, "probe windowを可視状態にできませんでした\n");
+        return 5;
+    }
     pumpMessages();
 
     ComPtr<ID3D11Device> device;
@@ -191,6 +202,12 @@ int main(int argc, char** argv) {
         return 5;
 
     constexpr int warmupPresentCount = 12;
+    // S2-e3: success-severityのPresent statusを未分類のまま成功扱いしない。
+    // DXGI_STATUS_OCCLUDEDはSUCCEEDED()がtrueなので、FAILED()だけでは捕捉できない。
+    // 分類しないと「画面へ出ていないPresent」をsubmission成功として数えてしまい、
+    // GetFrameStatisticsが進まない結果をsampler ack timeoutへ誤帰属する。
+    long long presentOccludedCount = 0;
+    long long presentUnclassifiedStatusCount = 0;
     long long warmupPresentFailureCount = 0;
     long long warmupFrameLatencyWaitFailureCount = 0;
     long long finalWarmupPresentId = -1;
@@ -203,8 +220,17 @@ int main(int argc, char** argv) {
         const float color[4] = {0.05f, 0.05f, 0.08f, 1.0f};
         context->OMSetRenderTargets(1, rtv.GetAddressOf(), nullptr);
         context->ClearRenderTargetView(rtv.Get(), color);
-        if (FAILED(swapChain->Present(1, 0))) {
+        const HRESULT warmupPresentHr = swapChain->Present(1, 0);
+        if (FAILED(warmupPresentHr)) {
             ++warmupPresentFailureCount;
+            break;
+        }
+        if (warmupPresentHr == DXGI_STATUS_OCCLUDED) {
+            ++presentOccludedCount;
+            break;
+        }
+        if (warmupPresentHr != S_OK) {
+            ++presentUnclassifiedStatusCount;
             break;
         }
         UINT warmupPresentId = 0;
@@ -364,6 +390,16 @@ int main(int argc, char** argv) {
             ++presentFailureCount;
             break;
         }
+        // occludedなPresentは画面へ到達していない。submission成功として数えない。
+        if (presentHr == DXGI_STATUS_OCCLUDED) {
+            ++presentOccludedCount;
+            break;
+        }
+        // S_OK以外のsuccess statusは未分類である。silentに成功扱いしない。
+        if (presentHr != S_OK) {
+            ++presentUnclassifiedStatusCount;
+            break;
+        }
         UINT presentId = 0;
         if (FAILED(swapChain->GetLastPresentCount(&presentId))) {
             ++getLastPresentCountFailureCount;
@@ -451,7 +487,9 @@ int main(int argc, char** argv) {
     // S2-e2: correctness authorityにpollIntervalValidを含めない。timingは別軸である。
     const bool correctnessValid =
         warmupComplete && measurementFollowsWarmup && configuredSubmissionsComplete &&
-        presentFailureCount == 0 && getLastPresentCountFailureCount == 0 &&
+        presentFailureCount == 0 && presentOccludedCount == 0 &&
+        presentUnclassifiedStatusCount == 0 && windowVisibilityPrecondition &&
+        getLastPresentCountFailureCount == 0 &&
         frameLatencyWaitFailureCount == 0 && samplerAckTimeoutCount == 0 &&
         samplerCycleTimeoutCount == 0 && submittedIdsConsecutive && observedIdsComplete &&
         joinedTransitions.size() == submissions.size() && finalDrainComplete &&
@@ -485,6 +523,22 @@ int main(int argc, char** argv) {
                  configuredSubmissionsComplete ? "PASS" : "FAIL");
     std::fprintf(file, "  \"acquisition_wait_budget_ms\": %lu,\n",
                  static_cast<unsigned long>(acquisitionWaitMs));
+    std::fprintf(file, "  \"present_occluded_count\": %lld,\n", presentOccludedCount);
+    std::fprintf(file, "  \"present_unclassified_status_count\": %lld,\n",
+                 presentUnclassifiedStatusCount);
+    std::fprintf(file, "  \"present_outcome_authority_exact\": %s,\n",
+                 (presentOccludedCount == 0 && presentUnclassifiedStatusCount == 0 &&
+                  presentFailureCount == 0)
+                     ? "true"
+                     : "false");
+    std::fprintf(file, "  \"present_outcome_code\": \"%s\",\n",
+                 presentFailureCount != 0          ? "PRESENT_FAILURE"
+                 : presentOccludedCount != 0       ? "OCCLUDED_NOT_AUTHORITY"
+                 : presentUnclassifiedStatusCount != 0
+                     ? "UNCLASSIFIED_PRESENT_STATUS"
+                     : "PRESENT_OUTCOME_EXACT");
+    std::fprintf(file, "  \"window_visibility_precondition\": %s,\n",
+                 windowVisibilityPrecondition ? "true" : "false");
     std::fprintf(file, "  \"oracle_status\": \"%s\",\n", completeOracleValid ? "VALID" : "INVALID");
     std::fprintf(file, "  \"oracle_valid\": %s,\n", completeOracleValid ? "true" : "false");
     std::fprintf(file, "  \"mapper_proof_status\": \"NOT_YET_EVALUABLE\",\n");

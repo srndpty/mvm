@@ -9,7 +9,9 @@
         'NegativeFrameLatencyMode',
         'GoodCorrectnessOnly', 'NegativeAuthorityModeMissing',
         'NegativeDebugTimingApplied', 'NegativeReleaseTimingDisabled',
-        'NegativeCorrectnessRelaxedInDebug')][string]$Case,
+        'NegativeCorrectnessRelaxedInDebug',
+        'NegativeOccludedPresent', 'NegativeUnclassifiedPresentStatus',
+        'NegativePresentOutcomeAuthority', 'NegativeWindowVisibility')][string]$Case,
     [Parameter(Mandatory=$true)][string]$Checker,
     [Parameter(Mandatory=$true)][string]$Output
 )
@@ -52,6 +54,9 @@ $raw = [ordered]@{
     submitted_ids_consecutive=$true; observed_ids_complete=$true; final_drain_complete=$true
     final_submitted_present_id=103; final_observed_present_count=103
     present_failure_count=0; get_last_present_count_failure_count=0
+    present_occluded_count=0; present_unclassified_status_count=0
+    present_outcome_authority_exact=$true; present_outcome_code='PRESENT_OUTCOME_EXACT'
+    window_visibility_precondition=$true
     frame_latency_wait_failure_count=0
     sampler_ack_timeout_count=0
     sampler_cycle_timeout_count=0
@@ -89,6 +94,10 @@ $expectedViolation = @{
     NegativeDebugTimingApplied='CORRECTNESS_ONLYでtiming verdictがNOT_AUTHORITY_IN_DEBUGではありません: PASS'
     NegativeReleaseTimingDisabled='timing verdictがPASSではありません'
     NegativeCorrectnessRelaxedInDebug='ORACLE_SAMPLING_GAP: transition数が不足しています'
+    NegativeOccludedPresent='OCCLUDED_NOT_AUTHORITY: occludedなPresentがあります'
+    NegativeUnclassifiedPresentStatus='UNCLASSIFIED_PRESENT_STATUS: 未分類のPresent statusがあります'
+    NegativePresentOutcomeAuthority='present outcome authorityがexactではありません'
+    NegativeWindowVisibility='window visibility preconditionが成立していません'
 }
 
 # S2-e2: caseごとにcheckerへ渡すauthority modeを決める。build typeは推測しない。
@@ -125,6 +134,21 @@ switch ($Case) {
         $raw.max_poll_interval_qpc = 600
     }
     'NegativeAuthorityModeMissing' { $raw.Remove('authority_mode') }
+    # occludedなPresentがsubmission成功として数えられていないこと。
+    # sampler_ack_timeout_countは0のままで、OCCLUDED_NOT_AUTHORITYとして落ちること。
+    'NegativeOccludedPresent' {
+        $raw.present_occluded_count = 1
+        $raw.present_outcome_authority_exact = $false
+        $raw.present_outcome_code = 'OCCLUDED_NOT_AUTHORITY'
+    }
+    'NegativeUnclassifiedPresentStatus' {
+        $raw.present_unclassified_status_count = 1
+        $raw.present_outcome_authority_exact = $false
+        $raw.present_outcome_code = 'UNCLASSIFIED_PRESENT_STATUS'
+    }
+    # countは0なのにauthority flagだけfalse。自己申告の不整合を捕まえる。
+    'NegativePresentOutcomeAuthority' { $raw.present_outcome_authority_exact = $false }
+    'NegativeWindowVisibility' { $raw.window_visibility_precondition = $false }
     'NegativeDebugTimingApplied' {
         $raw.authority_mode = 'CORRECTNESS_ONLY'
         $raw.timing_verdict = 'PASS'

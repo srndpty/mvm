@@ -61,6 +61,23 @@ Assert-Oracle ([bool]$raw.measurement_follows_warmup) '測定Presentがwarmupに
 Assert-Oracle ($submissions.Count -eq $configured) '成功submission数がconfigured countと一致しません'
 Assert-Oracle ([bool]$raw.configured_submissions_complete) 'submissionが完了していません'
 Assert-Oracle ([int64]$raw.present_failure_count -eq 0) 'Present失敗があります'
+# S2-e3: success-severityのPresent statusを未分類のまま成功扱いしない。
+# occludedなPresentは画面へ到達していないのでsubmission成功ではない。
+foreach ($field in @('present_occluded_count','present_unclassified_status_count',
+                     'present_outcome_authority_exact','present_outcome_code',
+                     'window_visibility_precondition')) {
+    Assert-Oracle ($raw.PSObject.Properties.Name -contains $field) "$field がありません"
+}
+Assert-Oracle ([bool]$raw.window_visibility_precondition) `
+    'window visibility preconditionが成立していません'
+Assert-Oracle ([int64]$raw.present_occluded_count -eq 0) `
+    'OCCLUDED_NOT_AUTHORITY: occludedなPresentがあります'
+Assert-Oracle ([int64]$raw.present_unclassified_status_count -eq 0) `
+    'UNCLASSIFIED_PRESENT_STATUS: 未分類のPresent statusがあります'
+Assert-Oracle ([bool]$raw.present_outcome_authority_exact) `
+    'present outcome authorityがexactではありません'
+Assert-Oracle ($raw.present_outcome_code -eq 'PRESENT_OUTCOME_EXACT') `
+    "present outcome codeが不正です: $($raw.present_outcome_code)"
 Assert-Oracle ([int64]$raw.get_last_present_count_failure_count -eq 0) 'GetLastPresentCount失敗があります'
 Assert-Oracle ([int64]$raw.frame_latency_wait_failure_count -eq 0) `
     'frame latency wait失敗があります'
