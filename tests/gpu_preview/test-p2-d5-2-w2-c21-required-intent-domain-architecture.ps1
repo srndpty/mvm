@@ -5,7 +5,7 @@ Set-StrictMode -Version Latest
 $runner=Get-Content -LiteralPath (Join-Path $SourceRoot 'scripts/inventory-p2-d5-2-w2-c21-required-intent-domain.ps1') -Raw -Encoding utf8
 $core=Get-Content -LiteralPath (Join-Path $SourceRoot 'scripts/p2-d5-2-w2-c21-required-intent-domain-core.ps1') -Raw -Encoding utf8
 $proofCore=Get-Content -LiteralPath (Join-Path $SourceRoot 'scripts/p2-d5-2-w2-c21-from-c1-core.ps1') -Raw -Encoding utf8
-$scheduler=Get-Content -LiteralPath (Join-Path $SourceRoot 'src/media/gpu_preview/presentation_opportunity_scheduler.cpp') -Raw -Encoding utf8
+$requiredIntentQueue=Get-Content -LiteralPath (Join-Path $SourceRoot 'src/media/gpu_preview/required_intent_queue.cpp') -Raw -Encoding utf8
 $renderer=Get-Content -LiteralPath (Join-Path $SourceRoot 'src/app/preview/compositor_rhi_item.cpp') -Raw -Encoding utf8
 $controller=Get-Content -LiteralPath (Join-Path $SourceRoot 'apps/compositor_spike/compositor_spike_controller.cpp') -Raw -Encoding utf8
 function Require([string]$Text,[string]$Pattern,[string]$Message){if($Text-notmatch$Pattern){throw $Message}}
@@ -22,7 +22,7 @@ Require -Text $core -Pattern 'presented_population_used_to_derive_required_set=\
 Require -Text $core -Pattern 'nearest_qpc_or_tolerance_used=\$false' -Message 'QPC heuristic不使用が固定されていません'
 Require -Text $core -Pattern 'source_frame_identity_used=\$false[\s\S]+producer_changed=\$false' -Message 'C2.1禁止事項が固定されていません'
 Require -Text $proofCore -Pattern 'branch_a_established=\$branchA[\s\S]+branch_b_established=\$branchB' -Message 'producer required setからA/Bを確定していません'
-Require -Text $scheduler -Pattern 'requiredIntentOrdinals_\.push_back\(ordinal\)' -Message 'required intent setをscheduler start時点で生成していません'
+Require -Text $requiredIntentQueue -Pattern 'requiredIntentOrdinals_\.push_back\(ordinal\)' -Message 'required intent setをscheduler start時点で生成していません'
 Require -Text $renderer -Pattern 'callbackBegin[\s\S]+requiredIntentMembership[\s\S]+boundaryRelation' -Message 'decision authority fieldsをproducer地点で固定していません'
 Require -Text $controller -Pattern 'required_intent_set_derived_from_presented", false[\s\S]+required_intent_set_exact[\s\S]+required_intent_ordinals' -Message 'producer-side required setを独立emitしていません'
 Require -Text $controller -Pattern 'mvm-p2-d5-2-w2-c23-intent-authority-provenance-3' -Message 'C2.3 producer semantics追加後のschemaを識別できません'

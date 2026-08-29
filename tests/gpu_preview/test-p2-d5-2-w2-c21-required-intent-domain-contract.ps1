@@ -31,6 +31,9 @@ $scope=[pscustomobject][ordered]@{authority_pass=$true;required_intent_set_exact
 $native=@((Native '1' '10'),(Native '2' '11'))
 $formal=@((Formal '1' '10' 1),(Formal '2' '11' 2))
 $required=2
+$envelope=[pscustomobject]@{measurement_arm_qpc=900;measurement_start_qpc=1000;frozen_measurement_end_qpc=2000}
+$baselineInputs=[pscustomobject]@{scope=$scope;native=$native;formal=$formal
+    required=$required;envelope=$envelope}|ConvertTo-Json -Depth 10 -Compress
 switch($Case){
     'GoodDistinctDecisionsSameOrdinal'{
         $scope.records=@((Decision '1' '10'),(Decision '2' '10'),(Decision '3' '11'))
@@ -55,16 +58,18 @@ switch($Case){
     }
     'NegativeMissingDecisionQpc'{$scope.records[0].decision_qpc=$null;$scope.records[0].decision_qpc_exact=$false}
     'NegativeBoundaryRelationMutation'{$scope.records[0].measurement_boundary_relation='POST_MEASUREMENT'}
-    'NegativeMissingMeasurementStartQpc'{}
-    'NegativeMissingMeasurementEndQpc'{}
+    'NegativeMissingMeasurementStartQpc'{$envelope.PSObject.Properties.Remove('measurement_start_qpc')}
+    'NegativeMissingMeasurementEndQpc'{$envelope.PSObject.Properties.Remove('frozen_measurement_end_qpc')}
     'NegativeAmbiguousFormalReverseJoin'{$formal+=,(Formal '1' '10' 3)}
 }
-$envelope=[pscustomobject]@{measurement_arm_qpc=900;measurement_start_qpc=1000;frozen_measurement_end_qpc=2000}
-if($Case-eq'NegativeMissingMeasurementStartQpc'){$envelope.PSObject.Properties.Remove('measurement_start_qpc')}
-if($Case-eq'NegativeMissingMeasurementEndQpc'){$envelope.PSObject.Properties.Remove('frozen_measurement_end_qpc')}
+$good=$Case.StartsWith('Good')
+if(-not$good){
+    $mutatedInputs=[pscustomobject]@{scope=$scope;native=$native;formal=$formal
+        required=$required;envelope=$envelope}|ConvertTo-Json -Depth 10 -Compress
+    if($mutatedInputs-ceq$baselineInputs){throw "negative input mutationが適用されませんでした: $Case"}
+}
 $result=Invoke-MvmC21RunInventory -IntentScopeAuthority $scope -NativePresentRecords $native `
     -FormalPresentedCandidates $formal -RequiredIntentCount $required -CaptureEnvelope $envelope
-$good=$Case.StartsWith('Good')
 if($good){
     if(-not[bool]$result.authority_exact){throw "正当なC2.1 authorityを拒否しました: $(@($result.blockers)-join', ')"}
     if($Case-eq'GoodDistinctDecisionsSameOrdinal'-and
@@ -86,5 +91,6 @@ if($good){
         'NegativeAmbiguousFormalReverseJoin'{'FORMAL_PRESENTED_REVERSE_ATTRIBUTION_INVALID'}
     }
     if($expected-notin@($result.blockers)){throw "期待blockerがありません: $expected"}
+    Write-Output "expected blocker: $expected"
 }
 Write-Output "W2-C2.1 contract $Case`: PASS"
