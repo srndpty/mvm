@@ -2,6 +2,7 @@
 
 #include "media/gpu_preview/qpc_clock.h"
 
+#include <algorithm>
 #include <dxgi1_6.h>
 #include <vector>
 #include <windows.h>
@@ -132,6 +133,10 @@ WindowOutputResolveResult resolveWindowOutput(void* windowHandle) {
 
 WindowOutputVBlankObserver::~WindowOutputVBlankObserver() {
     stop();
+    if (publicationEvent_) {
+        CloseHandle(static_cast<HANDLE>(publicationEvent_));
+        publicationEvent_ = nullptr;
+    }
 }
 
 bool WindowOutputVBlankObserver::start(void* windowHandle, std::string& error) {
@@ -162,9 +167,17 @@ bool WindowOutputVBlankObserver::start(void* windowHandle, std::string& error) {
         return false;
     }
     identity_ = resolved.identity;
+    if (!publicationEvent_)
+        publicationEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!publicationEvent_) {
+        error = "VBlank publication eventを作成できません";
+        return false;
+    }
+    ResetEvent(static_cast<HANDLE>(publicationEvent_));
     ring_.reset();
     waitFailures_.store(0, std::memory_order_relaxed);
     priorityState_.store(0, std::memory_order_relaxed);
+    publicationNotificationEnabled_.store(false, std::memory_order_relaxed);
     stopRequested_.store(false, std::memory_order_relaxed);
     running_.store(true, std::memory_order_release);
     output->AddRef();
@@ -261,8 +274,42 @@ bool WindowOutputVBlankObserver::waitForSuccessor(long long frozenMeasurementEnd
     }
 }
 
+bool WindowOutputVBlankObserver::waitForPublishedCount(std::size_t baselineCount,
+                                                       long long timeoutMs) {
+    if (!publicationEvent_ || timeoutMs <= 0)
+        return false;
+    publicationNotificationEnabled_.store(true, std::memory_order_release);
+    const long long begin = qpcTicks();
+    const long long budget = (static_cast<long long>(qpcFrequency()) * timeoutMs) / 1000;
+    const long long deadline = begin + budget;
+    for (;;) {
+        if (ring_.publishedCount() > baselineCount)
+            return true;
+        if (stopRequested_.load(std::memory_order_acquire) ||
+            !running_.load(std::memory_order_acquire) ||
+            waitFailures_.load(std::memory_order_acquire) != 0)
+            return false;
+        const long long remainingQpc = deadline - qpcTicks();
+        if (remainingQpc <= 0)
+            return false;
+        const long long remainingMs =
+            std::max(1LL, (remainingQpc * 1000) / static_cast<long long>(qpcFrequency()));
+        const DWORD waitMs = static_cast<DWORD>(std::min<long long>(remainingMs, MAXDWORD - 1));
+        const DWORD waitResult =
+            WaitForSingleObject(static_cast<HANDLE>(publicationEvent_), waitMs);
+        if (waitResult == WAIT_FAILED) {
+            waitFailures_.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+        if (waitResult == WAIT_TIMEOUT)
+            return ring_.publishedCount() > baselineCount;
+    }
+}
+
 void WindowOutputVBlankObserver::stop() {
     stopRequested_.store(true, std::memory_order_release);
+    if (publicationEvent_)
+        SetEvent(static_cast<HANDLE>(publicationEvent_));
     if (thread_.joinable())
         thread_.join();
     running_.store(false, std::memory_order_release);
@@ -285,6 +332,11 @@ void WindowOutputVBlankObserver::run(void* outputHandle) {
             break;
         }
         ring_.capture({ordinal, qpcTicks()});
+        if (publicationNotificationEnabled_.load(std::memory_order_acquire) &&
+            !SetEvent(static_cast<HANDLE>(publicationEvent_))) {
+            waitFailures_.fetch_add(1, std::memory_order_relaxed);
+            break;
+        }
         ++ordinal;
     }
 }

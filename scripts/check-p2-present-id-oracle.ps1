@@ -13,6 +13,8 @@ Assert-Oracle ($raw.schema -eq 'mvm-p2-present-id-oracle-2') 'schemaが一致し
 Assert-Oracle ($raw.swap_effect -eq 'FLIP_DISCARD') 'swap effectがFLIP_DISCARDではありません'
 Assert-Oracle ([int64]$raw.buffer_count -eq 3) 'BufferCountが3ではありません'
 Assert-Oracle ([int64]$raw.sync_interval -eq 1) 'SyncIntervalが1ではありません'
+Assert-Oracle ([bool]$raw.frame_latency_waitable) 'frame latency waitableが無効です'
+Assert-Oracle ([int64]$raw.maximum_frame_latency -eq 1) 'maximum frame latencyが1ではありません'
 if ([bool]$raw.dwm_flush_used) {
     Assert-Oracle ($raw.dwm_flush_mode -eq 'ORACLE_ONLY_FALLBACK') `
         'DwmFlushがoracle-only fallbackとして明示されていません'
@@ -24,10 +26,23 @@ $submissions = @($raw.present_submissions)
 $transitions = @($raw.statistics_transitions)
 $oracle = @($raw.oracle_records)
 $configured = [int64]$raw.configured_present_count
+$warmupCount = [int64]$raw.warmup_present_count
+Assert-Oracle ($warmupCount -gt 0) 'warmup Present数が正ではありません'
+Assert-Oracle ([bool]$raw.warmup_complete) 'warmupが完了していません'
+Assert-Oracle ([int64]$raw.warmup_present_failure_count -eq 0) 'warmup Present失敗があります'
+Assert-Oracle ([int64]$raw.warmup_frame_latency_wait_failure_count -eq 0) `
+    'warmup frame latency wait失敗があります'
+Assert-Oracle ([int64]$raw.final_warmup_present_id -eq $warmupCount) `
+    'warmup最終Present IDが一致しません'
+Assert-Oracle ([bool]$raw.measurement_follows_warmup) '測定Presentがwarmupに連続していません'
 Assert-Oracle ($submissions.Count -eq $configured) '成功submission数がconfigured countと一致しません'
 Assert-Oracle ([bool]$raw.configured_submissions_complete) 'submissionが完了していません'
 Assert-Oracle ([int64]$raw.present_failure_count -eq 0) 'Present失敗があります'
 Assert-Oracle ([int64]$raw.get_last_present_count_failure_count -eq 0) 'GetLastPresentCount失敗があります'
+Assert-Oracle ([int64]$raw.frame_latency_wait_failure_count -eq 0) `
+    'frame latency wait失敗があります'
+Assert-Oracle ([int64]$raw.sampler_ack_timeout_count -eq 0) 'sampler ack timeoutがあります'
+Assert-Oracle ([int64]$raw.sampler_cycle_timeout_count -eq 0) 'sampler cycle timeoutがあります'
 
 for ($index = 0; $index -lt $submissions.Count; ++$index) {
     $submission = $submissions[$index]
@@ -43,6 +58,8 @@ Assert-Oracle ([bool]$raw.submitted_ids_consecutive) 'producerがPresent ID不�
 
 $firstId = [int64]$submissions[0].present_id
 $lastId = [int64]$submissions[-1].present_id
+Assert-Oracle ($firstId -eq [int64]$raw.final_warmup_present_id + 1) `
+    '測定先頭Present IDがwarmup最終IDに連続していません'
 $observed = @($transitions | Where-Object {
     [int64]$_.present_count -ge $firstId -and [int64]$_.present_count -le $lastId
 })
@@ -58,8 +75,14 @@ Assert-Oracle ([int64]$raw.final_submitted_present_id -eq $lastId) 'final submit
 Assert-Oracle ([int64]$raw.final_observed_present_count -eq $lastId) 'final PresentCountが一致しません'
 
 Assert-Oracle ([bool]$raw.sampler_high_priority) 'samplerを高優先度へ昇格できていません'
+Assert-Oracle ($raw.sampler_priority_mode -eq 'TIME_CRITICAL') `
+    'samplerがTIME_CRITICAL priorityを使用していません'
+Assert-Oracle ($raw.sampler_trigger_mode -eq 'OBSERVER_PUBLICATION_EVENT') `
+    'samplerがevent-based VBlank waitを使用していません'
 Assert-Oracle ([bool]$raw.sampler_baseline_ready) 'submission前にstatistics baselineを確立できませんでした'
 Assert-Oracle ([int64]$raw.sampler_vblank_gap_count -eq 0) 'samplerがVBlank triggerを取りこぼしました'
+Assert-Oracle ([int64]$raw.sampler_vblank_wait_failure_count -eq 0) `
+    'samplerのVBlank wait失敗があります'
 Assert-Oracle ([int64]$raw.statistics_failure_count -eq 0) 'GetFrameStatistics失敗があります'
 Assert-Oracle ([int64]$raw.statistics_disjoint_count -eq 0) 'frame statisticsがdisjointです'
 Assert-Oracle ([bool]$raw.poll_interval_valid) 'poller intervalが大きすぎます'

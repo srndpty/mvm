@@ -2506,7 +2506,10 @@ endif()
 # P2-D5-2/F3-B0.6-R1: Present IDをjoin keyにする完全oracle contract。
 # producerの真偽値だけに依存せず、submission列・statistics列・offline delayを再計算する。
 foreach(_p2_oracle_case Good NegativeSubmittedGap NegativeObservedGap NegativeFinalDrain
-        NegativePollInterval NegativeOfflineDelay NegativeEarlyMapper NegativeDiscardClaim)
+        NegativePollInterval NegativeOfflineDelay NegativeEarlyMapper NegativeDiscardClaim
+        NegativeSamplerTriggerMode NegativeSamplerVBlankWaitFailure NegativeSamplerPriorityMode
+        NegativeSamplerAckTimeout NegativeSamplerCycleTimeout NegativeFrameLatencyWaitFailure
+        NegativeWarmupIncomplete NegativeFrameLatencyMode)
     string(TOLOWER "${_p2_oracle_case}" _p2_oracle_name)
     mvm_add_test(p2_present_id_oracle_checker_${_p2_oracle_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File
