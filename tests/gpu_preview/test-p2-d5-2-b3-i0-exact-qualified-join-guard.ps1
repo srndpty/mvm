@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][ValidateSet(
         'Good','NegativeReceiptAbiRemoved','NegativeReceiptSerialDerived',
@@ -29,8 +29,11 @@ $relatives=@(
     'src/media/gpu_preview/required_intent_queue.cpp',
     'src/media/gpu_preview/qualified_present_commit_join.cpp',
     'qt-patches/qtbase-6.11.1/0001-mvm-native-present-hook.patch')
+# S2-h: PID だけでは isolation key にならない。Windows は PID を再利用するため、
+# 過去 run の process-<PID> directory と衝突して「既存artifactを上書きしません」で
+# 失敗する。S2-f2 と同じく invocation ごとに一意な suffix を付ける。
 
-$root=Join-Path $Directory "process-$PID"
+$root=Join-Path $Directory ("process-$PID-" + [guid]::NewGuid().ToString('N').Substring(0,12))
 if(Test-Path -LiteralPath $root){Remove-Item -LiteralPath $root -Recurse -Force}
 $sources=@{}
 foreach($relative in $relatives){

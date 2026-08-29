@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][ValidateSet(
         'Good','NegativeBaselineAfterStart','NegativeHelperDoesNotFailClose',
@@ -21,7 +21,10 @@ Set-StrictMode -Version Latest
 
 $relative='apps/compositor_spike/compositor_spike_controller.cpp'
 $original=Get-Content -LiteralPath (Join-Path $SourceRoot $relative) -Raw -Encoding utf8
-$root=Join-Path $Directory "process-$PID"
+# S2-h: PID だけでは isolation key にならない。Windows は PID を再利用するため、
+# 過去 run の process-<PID> directory と衝突して「既存artifactを上書きしません」で
+# 失敗する。S2-f2 と同じく invocation ごとに一意な suffix を付ける。
+$root=Join-Path $Directory ("process-$PID-" + [guid]::NewGuid().ToString('N').Substring(0,12))
 if(Test-Path -LiteralPath $root){Remove-Item -LiteralPath $root -Recurse -Force}
 New-Item -ItemType Directory -Path (Join-Path $root 'apps/compositor_spike') -Force|Out-Null
 

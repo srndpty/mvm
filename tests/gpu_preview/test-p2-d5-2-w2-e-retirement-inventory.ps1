@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][ValidateSet(
         'GoodRetired','GoodLegacyDiagnosticsRemainPresent','GoodCanonicalMetricNameNotLegacy',
@@ -16,7 +16,10 @@ Set-StrictMode -Version Latest
 
 # 実 repository ではなく合成 source root を検査対象にする。retirement contract
 # そのものを固定したいので、本物の checker の中身に依存させない。
-$root=Join-Path $Directory "process-$PID"
+# S2-h: PID だけでは isolation key にならない。Windows は PID を再利用するため、
+# 過去 run の process-<PID> directory と衝突して「既存artifactを上書きしません」で
+# 失敗する。S2-f2 と同じく invocation ごとに一意な suffix を付ける。
+$root=Join-Path $Directory ("process-$PID-" + [guid]::NewGuid().ToString('N').Substring(0,12))
 if(Test-Path -LiteralPath $root){Remove-Item -LiteralPath $root -Recurse -Force}
 foreach($relative in @('scripts','src/app/preview','src/media/gpu_preview')){
     New-Item -ItemType Directory -Path (Join-Path $root $relative) -Force|Out-Null

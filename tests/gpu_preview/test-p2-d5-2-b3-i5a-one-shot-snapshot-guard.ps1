@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][ValidateSet(
         'Good','NegativeAbiNotBumped','NegativeEpochRemoved','NegativeRawTokenRemoved',
@@ -24,7 +24,10 @@ $relatives=@(
     'apps/compositor_spike/compositor_spike_controller.cpp',
     'qt-patches/qtbase-6.11.1/0001-mvm-native-present-hook.patch',
     'docs/p2-d5-2-b3-i4-preroll-transition-quiescence.json')
-$mutationRoot=Join-Path $Directory "process-$PID"
+# S2-h: PID だけでは isolation key にならない。Windows は PID を再利用するため、
+# 過去 run の process-<PID> directory と衝突して「既存artifactを上書きしません」で
+# 失敗する。S2-f2 と同じく invocation ごとに一意な suffix を付ける。
+$mutationRoot=Join-Path $Directory ("process-$PID-" + [guid]::NewGuid().ToString('N').Substring(0,12))
 $sources=@{}
 foreach($relative in $relatives){$sources[$relative]=Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $SourceRoot $relative)}
 function Edit-Source([string]$Relative,[string]$From,[string]$To){

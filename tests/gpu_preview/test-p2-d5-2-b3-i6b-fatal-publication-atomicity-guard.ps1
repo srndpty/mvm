@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][ValidateSet(
         'Good','NegativeTokenPublishedBeforeValidation','NegativePendingTokenAfterFatal',
@@ -22,7 +22,10 @@ $relatives=@(
     'src/media/gpu_preview/presentation_opportunity_scheduler.cpp',
     'src/media/gpu_preview/required_intent_queue.cpp',
     'apps/compositor_spike/compositor_spike_controller.cpp')
-$mutationRoot=Join-Path $Directory "process-$PID"
+# S2-h: PID だけでは isolation key にならない。Windows は PID を再利用するため、
+# 過去 run の process-<PID> directory と衝突して「既存artifactを上書きしません」で
+# 失敗する。S2-f2 と同じく invocation ごとに一意な suffix を付ける。
+$mutationRoot=Join-Path $Directory ("process-$PID-" + [guid]::NewGuid().ToString('N').Substring(0,12))
 $sources=@{}
 foreach($relativePath in $relatives){
     $sources[$relativePath]=Get-Content -LiteralPath (Join-Path $SourceRoot $relativePath) -Raw -Encoding utf8
