@@ -27,6 +27,7 @@ class MvmController final : public QObject {
     Q_PROPERTY(bool busy READ busy NOTIFY stateChanged)
     Q_PROPERTY(bool previewReady READ previewReady NOTIFY stateChanged)
     Q_PROPERTY(bool hasManimAsset READ hasManimAsset NOTIFY stateChanged)
+    Q_PROPERTY(bool hasManimTimelineClip READ hasManimTimelineClip NOTIFY stateChanged)
     Q_PROPERTY(QString manimScriptPath READ manimScriptPath NOTIFY stateChanged)
     Q_PROPERTY(QString manimSceneName READ manimSceneName NOTIFY stateChanged)
     Q_PROPERTY(QString manimStateText READ manimStateText NOTIFY stateChanged)
@@ -58,6 +59,8 @@ public:
 
     bool hasManimAsset() const { return !project_.manimAssets.empty(); }
 
+    bool hasManimTimelineClip() const;
+
     QString manimScriptPath() const { return manimScriptPath_; }
 
     QString manimSceneName() const { return manimSceneName_; }
@@ -74,8 +77,12 @@ public:
 
     Q_INVOKABLE bool generateManimClip(const QUrl& scriptUrl, const QString& sceneName);
     Q_INVOKABLE bool regenerateManimClip();
+    Q_INVOKABLE bool addManimToTimeline();
     Q_INVOKABLE bool addVideoClip(const QUrl& fileUrl);
     Q_INVOKABLE bool selectClip(int index);
+    Q_INVOKABLE bool moveCurrentClipLeft();
+    Q_INVOKABLE bool moveCurrentClipRight();
+    Q_INVOKABLE bool deleteCurrentClip();
     Q_INVOKABLE bool exportTimeline(const QUrl& outputUrl);
 
 public Q_SLOTS:
@@ -93,7 +100,8 @@ private:
     void syncFirstManimAsset();
     // Manim asset が確定したら timeline 上の Manim clip を追従させる。
     // timeline と asset の対応を決める箇所はここだけにする。
-    void syncManimTimelineClip();
+    bool syncManimTimelineClip(bool addIfMissing);
+    bool moveCurrentClip(int offset);
     bool saveProject(project::Project candidate, const QString& failurePrefix);
     bool generateAndInstallManimClip(const std::filesystem::path& scriptPath,
                                      const QString& sceneName, bool requirePreviewReady);

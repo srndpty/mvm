@@ -15,6 +15,7 @@ add_library(mvm::core ALIAS mvm_core)
 add_library(mvm_project STATIC
     project/project.cpp
     project/project_json.cpp
+    project/timeline_edit.cpp
 )
 target_include_directories(mvm_project PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_project PRIVATE mvm::warnings)

@@ -24,6 +24,7 @@ struct TimelineClip {
     TimelineClipKind kind = TimelineClipKind::Video;
     std::filesystem::path mediaPath; // 解決済みの実ファイル
     std::string name;                // UI 表示名
+    bool operator==(const TimelineClip&) const = default;
 };
 
 struct Project {

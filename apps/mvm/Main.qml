@@ -87,8 +87,15 @@ ApplicationWindow {
 
                 Button {
                     text: mvmController.busy ? "Generating…" : "Regenerate"
-                    enabled: !mvmController.busy
+                    visible: mvmController.hasManimTimelineClip
+                    enabled: visible && !mvmController.busy
                     onClicked: mvmController.regenerateManimClip()
+                }
+                Button {
+                    text: "Add Manim to Timeline"
+                    visible: !mvmController.hasManimTimelineClip
+                    enabled: visible && !mvmController.busy
+                    onClicked: mvmController.addManimToTimeline()
                 }
             }
         }
@@ -110,10 +117,32 @@ ApplicationWindow {
             }
         }
 
-        Label {
-            text: "Timeline (左から順に書き出されます)"
-            color: "#c9ccd2"
-            font.bold: true
+        RowLayout {
+            Layout.fillWidth: true
+
+            Label {
+                Layout.fillWidth: true
+                text: "Timeline (左から順に書き出されます)"
+                color: "#c9ccd2"
+                font.bold: true
+            }
+            Button {
+                text: "Move Left"
+                enabled: !mvmController.busy && mvmController.currentClipIndex > 0
+                onClicked: mvmController.moveCurrentClipLeft()
+            }
+            Button {
+                text: "Move Right"
+                enabled: !mvmController.busy
+                         && mvmController.currentClipIndex >= 0
+                         && mvmController.currentClipIndex < mvmController.clipCount - 1
+                onClicked: mvmController.moveCurrentClipRight()
+            }
+            Button {
+                text: "Delete"
+                enabled: !mvmController.busy && mvmController.currentClipIndex >= 0
+                onClicked: mvmController.deleteCurrentClip()
+            }
         }
 
         Rectangle {
@@ -123,7 +152,7 @@ ApplicationWindow {
             color: "#20242a"
             border.color: "#3c424c"
 
-            // 並び順がそのまま再生順。ドラッグやトリムは持たない (M4 のスコープ)。
+            // 並び順がそのまま再生順。M5 はボタンによる移動・削除だけを持つ。
             Row {
                 anchors.fill: parent
                 anchors.margins: 10

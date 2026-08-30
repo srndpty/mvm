@@ -5,6 +5,7 @@
 #include <fstream>
 #include <sstream>
 #include <system_error>
+#include <utility>
 
 namespace mvm::project {
 namespace {
@@ -654,6 +655,14 @@ ProjectIoResult saveProjectJson(const Project& project, const std::filesystem::p
         return result;
     }
     result.success = true;
+    return result;
+}
+
+ProjectIoResult saveProjectJsonTransaction(Project& liveProject, Project candidate,
+                                           const std::filesystem::path& projectPath) {
+    ProjectIoResult result = saveProjectJson(candidate, projectPath);
+    if (result.success)
+        liveProject = std::move(candidate);
     return result;
 }
 

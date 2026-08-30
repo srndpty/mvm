@@ -59,6 +59,16 @@ set_tests_properties(m4_timeline_export_focused PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 600)
 
+# --- M5: minimal timeline editing ------------------------------------------
+add_executable(mvm_test_timeline_edit harness/test_timeline_edit.cpp)
+target_link_libraries(mvm_test_timeline_edit PRIVATE
+    mvm::project mvm::util mvm::warnings)
+add_test(NAME m5_timeline_edit_focused
+    COMMAND mvm_test_timeline_edit "${CMAKE_CURRENT_BINARY_DIR}/m5-timeline-edit")
+set_tests_properties(m5_timeline_edit_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+
 add_executable(mvm_manim_project_smoke harness/mvm_manim_project_smoke.cpp)
 target_link_libraries(mvm_manim_project_smoke PRIVATE
     mvm::project mvm::manim mvm::mlt mvm::util mvm::warnings)
