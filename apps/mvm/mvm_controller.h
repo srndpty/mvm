@@ -109,7 +109,7 @@ private:
                                int clipIndex);
     bool installVideoClip(const std::filesystem::path& videoPath, const QString& clipName,
                           int clipIndex);
-    void resumeCurrentClip();
+    bool resumeCurrentClip(const QString& failurePrefix);
 
     std::filesystem::path projectPath_;
     std::filesystem::path manimExecutablePath_;

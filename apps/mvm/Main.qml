@@ -87,7 +87,7 @@ ApplicationWindow {
 
                 Button {
                     text: mvmController.busy ? "Generating…" : "Regenerate"
-                    visible: mvmController.hasManimTimelineClip
+                    visible: mvmController.hasManimAsset
                     enabled: visible && !mvmController.busy
                     onClicked: mvmController.regenerateManimClip()
                 }

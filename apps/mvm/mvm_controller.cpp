@@ -241,11 +241,17 @@ void MvmController::pollPreviewState() {
     }
 }
 
-void MvmController::resumeCurrentClip() {
+bool MvmController::resumeCurrentClip(const QString& failurePrefix) {
     if (!currentSource_ || !previewEngine_)
-        return;
-    if (previewEngine_->status().state == preview::PreviewEngineState::ReadyPaused)
-        previewEngine_->play();
+        return true;
+    if (previewEngine_->status().state != preview::PreviewEngineState::ReadyPaused)
+        return true;
+    const auto played = previewEngine_->play();
+    if (!played) {
+        setStatus(failurePrefix + previewErrorText(played.error()));
+        return false;
+    }
+    return true;
 }
 
 bool MvmController::installVideoClip(const std::filesystem::path& videoPath,
@@ -268,7 +274,7 @@ bool MvmController::installVideoClip(const std::filesystem::path& videoPath,
         if (!removed) {
             setStatus(QStringLiteral("以前のclip sourceを解放できません: ") +
                       previewErrorText(removed.error()));
-            resumeCurrentClip();
+            resumeCurrentClip(QStringLiteral("現在のclipを再開できません: "));
             return false;
         }
         staleSource_.reset();
@@ -282,7 +288,7 @@ bool MvmController::installVideoClip(const std::filesystem::path& videoPath,
     if (!added) {
         setStatus(QStringLiteral("生成videoをPreviewで開けません: ") +
                   previewErrorText(added.error()));
-        resumeCurrentClip();
+        resumeCurrentClip(QStringLiteral("現在のclipを再開できません: "));
         return false;
     }
 
@@ -294,7 +300,7 @@ bool MvmController::installVideoClip(const std::filesystem::path& videoPath,
         previewEngine_->removeSource(added.value());
         setStatus(QStringLiteral("生成videoをcompositionへ追加できません: ") +
                   previewErrorText(submitted.error()));
-        resumeCurrentClip();
+        resumeCurrentClip(QStringLiteral("現在のclipを再開できません: "));
         return false;
     }
 
@@ -330,10 +336,6 @@ bool MvmController::generateManimClip(const QUrl& scriptUrl, const QString& scen
 bool MvmController::regenerateManimClip() {
     if (project_.manimAssets.empty()) {
         setStatus(QStringLiteral("再生成するManim assetがありません"));
-        return false;
-    }
-    if (!hasManimTimelineClip()) {
-        setStatus(QStringLiteral("先にManim assetをtimelineへ追加してください"));
         return false;
     }
     const project::ManimAsset& asset = project_.manimAssets.front();
@@ -556,8 +558,11 @@ bool MvmController::deleteCurrentClip() {
     }
 
     if (!saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: "))) {
-        if (wasPlaying)
-            resumeCurrentClip();
+        const QString saveFailure = statusText_;
+        if (wasPlaying) {
+            resumeCurrentClip(saveFailure +
+                              QStringLiteral("\nPreviewを元のclipへ戻せません: "));
+        }
         return false;
     }
 
@@ -571,11 +576,20 @@ bool MvmController::deleteCurrentClip() {
     currentClipPath_.clear();
     currentClipIndex_ = -1;
     Q_EMIT stateChanged();
-    if (!previewReset)
-        return false;
+    if (!previewReset) {
+        const QString resetFailure = statusText_;
+        setStatus(QStringLiteral("clipは削除しましたが、") + resetFailure);
+        return true;
+    }
 
-    if (deleted.selectedIndex >= 0)
-        return selectClip(deleted.selectedIndex);
+    if (deleted.selectedIndex >= 0) {
+        if (!selectClip(deleted.selectedIndex)) {
+            const QString previewFailure = statusText_;
+            setStatus(QStringLiteral("clipは削除しましたが、次のclipをPreviewできません: ") +
+                      previewFailure);
+        }
+        return true;
+    }
 
     setStatus(QStringLiteral("timelineから最後のclipを削除しました"));
     return true;
