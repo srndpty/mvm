@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$C13Fixture,
     [Parameter(Mandatory=$true)][string]$C13Core,
@@ -10,7 +10,10 @@ param(
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 if(-not(Test-Path -LiteralPath $Directory)){New-Item -ItemType Directory -Path $Directory|Out-Null}
-$caseDirectory=Join-Path $Directory "process-$PID"
+# S2-h: PID だけでは isolation key にならない。Windows は PID を再利用するため、
+# 過去 run の process-<PID> directory と衝突して「既存artifactを上書きしません」で
+# 失敗する。S2-f2 と同じく invocation ごとに一意な suffix を付ける。
+$caseDirectory=Join-Path $Directory ("process-$PID-" + [guid]::NewGuid().ToString('N').Substring(0,12))
 if(-not(Test-Path -LiteralPath $caseDirectory)){New-Item -ItemType Directory -Path $caseDirectory|Out-Null}
 & $C13Fixture -Case Good -Core $C13Core -Checker $C1Checker -Directory $caseDirectory *> $null
 $c1Path=Join-Path $caseDirectory 'c13-good.json'

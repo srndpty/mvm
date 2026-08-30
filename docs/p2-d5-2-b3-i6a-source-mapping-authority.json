@@ -1,0 +1,145 @@
+{
+  "schema": "mvm-p2-d5-2-b3-i6a-source-mapping-authority-design-1",
+  "status": "DESIGN_ONLY",
+  "production_behavior_changed": false,
+  "queue_semantics_changed": false,
+  "join_accept_reject_changed": false,
+  "threshold_changed": false,
+  "denominator_changed": false,
+  "required_population_changed": false,
+  "source_fixture_changed": false,
+  "canonical_w3_allowed": false,
+  "observed_failure": {
+    "cohort": "build/p2-d5-2-w3-cohort-20260829",
+    "run": 1,
+    "verdict": "NOT_ACHIEVED_ACQUISITION_STAGE_FAILURE",
+    "primary_error": "SOURCE_COVERAGE_INSUFFICIENT",
+    "failing_intent_ordinal": 3597,
+    "required_intent_count": 3600,
+    "source_frame_count": 3600,
+    "refresh_numerator": 59950,
+    "refresh_denominator": 1000,
+    "source_fps_numerator": 60,
+    "source_fps_denominator": 1,
+    "observed_target_for_failing_ordinal": 3600,
+    "max_target_over_required_set": 3602,
+    "metrics_are_canonical": false
+  },
+  "authorities": [
+    {
+      "authority": "required_intent_count",
+      "producer": "compositor_spike_controller.cpp: measureSeconds * 60",
+      "layer": "1A_WORKLOAD_INTENT",
+      "time_axis": "WORKLOAD",
+      "role": "drop-rate denominator / immutable required set size",
+      "frozen_by": "W1 formal accounting contract v2 §1"
+    },
+    {
+      "authority": "required_intent_ordinal",
+      "producer": "RequiredIntentQueue::reserveHead (B3-I1)",
+      "layer": "1A_WORKLOAD_INTENT",
+      "time_axis": "WORKLOAD",
+      "role": "issued intent identity",
+      "frozen_by": "W1 naming rule / B3-I1"
+    },
+    {
+      "authority": "physical_vblank_ordinal",
+      "producer": "window output physical VBlank observer",
+      "layer": "1B_PHYSICAL_OPPORTUNITY",
+      "time_axis": "DISPLAY",
+      "role": "observed physical opportunity domain",
+      "frozen_by": "W1 formal accounting contract v2 §1 / W2-A"
+    },
+    {
+      "authority": "target_source_frame",
+      "producer": "PresentationOpportunityScheduler::targetFor",
+      "layer": "MIXED_1A_ORDINAL_WITH_1B_RATE",
+      "time_axis": "DISPLAY",
+      "role": "intent ordinal -> source frame mapping",
+      "current_expression": "sourceFrameOffset + floor(ordinal * sourceFpsNum * refreshDen / (sourceFpsDen * refreshNum))",
+      "conflict": "Layer 1A ordinalへLayer 1B refresh rateを適用している"
+    },
+    {
+      "authority": "source_coverage_preflight",
+      "producer": "compositor_spike_controller.cpp: sourceFrameCount >= requiredMeasurementFrameCount",
+      "layer": "1A_WORKLOAD_INTENT",
+      "time_axis": "WORKLOAD",
+      "role": "acquisition preflight",
+      "conflict": "runtime mappingが要求する最大source frameではなくrequired countと比較している"
+    }
+  ],
+  "candidates": [
+    {
+      "name": "WORKLOAD_INTENT_TIME_AXIS",
+      "meaning": "intent ordinalはworkload contract rate (60/s) 上の識別子である",
+      "target_expression": "sourceFrameOffset + floor(ordinal * sourceFps / requiredIntentRate)",
+      "target_depends_on_display_refresh": false,
+      "canonical_max_target": 3599,
+      "requires_source_fixture_change": false,
+      "required_set_size_changed": false,
+      "denominator_changed": false
+    },
+    {
+      "name": "DISPLAY_OPPORTUNITY_TIME_AXIS",
+      "meaning": "intent ordinalはdisplay refresh opportunity上の識別子である",
+      "target_expression": "sourceFrameOffset + floor(ordinal * sourceFps * refreshDen / (sourceFpsDen * refreshNum))",
+      "target_depends_on_display_refresh": true,
+      "canonical_max_target": 3602,
+      "requires_source_fixture_change": true,
+      "required_source_frame_count": 3603,
+      "required_set_size_changed": false,
+      "denominator_changed": false,
+      "rejection_reasons": [
+        "W1 §1がintent_ordinalをLayer 1Aとして固定し、1Aと1Bの同一視を禁止している",
+        "canonical source fixtureのsizingがdisplay refreshに依存し、機器間で再現しない",
+        "B3-I1でordinal producerがqueue head identityへ移った事実と整合しない"
+      ]
+    }
+  ],
+  "selected_semantics": "WORKLOAD_INTENT_TIME_AXIS",
+  "selection_basis": [
+    "W1_LAYER_1A_1B_SEPARATION_FROZEN",
+    "W1_REQUIRED_INTENT_COUNT_IS_TEST_CONTRACT_DENOMINATOR",
+    "B3_I1_ORDINAL_PRODUCER_IS_REQUIRED_INTENT_QUEUE_HEAD",
+    "CANONICAL_INPUT_MUST_NOT_DEPEND_ON_DISPLAY_REFRESH"
+  ],
+  "frozen_invariants": [
+    "REQUIRED_INTENT_ORDINAL_IS_LAYER_1A",
+    "TARGET_MAPPING_INDEPENDENT_OF_DISPLAY_REFRESH",
+    "INTENT_RATE_HAS_SINGLE_PRODUCER",
+    "SOURCE_COVERAGE_PREFLIGHT_USES_MAX_TARGET_OVER_REQUIRED_SET",
+    "MAX_TARGET_OVER_REQUIRED_SET_LESS_THAN_SOURCE_FRAME_COUNT",
+    "REQUIRED_SET_SIZE_UNCHANGED",
+    "DROP_RATE_DENOMINATOR_UNCHANGED",
+    "SOURCE_COVERAGE_FAILURE_IS_PROTOCOL_FATAL_NOT_PERFORMANCE_DROP"
+  ],
+  "prohibited_resolutions": [
+    "EXTEND_SOURCE_FIXTURE_TO_HIDE_MAPPING_DEFECT",
+    "SHRINK_REQUIRED_SET",
+    "CHANGE_FROZEN_THRESHOLD",
+    "CHANGE_DROP_RATE_DENOMINATOR",
+    "SKIP_TAIL_INTENTS",
+    "CLAMP_TARGET_TO_LAST_SOURCE_FRAME",
+    "TREAT_SOURCE_COVERAGE_FATAL_AS_PERFORMANCE_DROP",
+    "DERIVE_INTENT_ORDINAL_FROM_PHYSICAL_VBLANK_ORDINAL"
+  ],
+  "preroll_mapping": {
+    "unchanged_by_selection": true,
+    "current_config": "requiredFrameCount=repeatedFrame+1 / sourceFrameOffset=repeatedFrame / sourceFps=1",
+    "observed_effect": "preroll intentは同一source frameを繰り返す",
+    "note": "selected semanticsでもpreroll rangeでtargetはrepeatedFrameのまま変わらない"
+  },
+  "implementation_deferred_to": {
+    "B3-I6B": "fatal-before-Present publication atomicity (source mapping semanticsとは独立)",
+    "B3-I6C": "selected semanticsに従うtarget mapping修正とsource coverage preflight修正"
+  },
+  "canonical_w3": {
+    "status": "HOLD",
+    "historical_verdict_unchanged": "FAIL",
+    "rerun_allowed_after": ["B3-I6B", "B3-I6C"]
+  },
+  "historical_composition_token_mismatch": {
+    "status": "UNRESOLVED_HISTORICAL_RUNTIME_FAILURE",
+    "reclassified_as_i6_mapping_failure": false
+  }
+}

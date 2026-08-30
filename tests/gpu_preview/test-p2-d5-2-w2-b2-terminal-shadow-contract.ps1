@@ -44,7 +44,7 @@ $transportRecords=@(0..2|ForEach-Object{
 })
 $transport=[ordered]@{
     schema='mvm-p2-d5-2-w2-b1-intent-identity-transport-2'
-    abi_version=4;app_abi_version=4;qt_abi_version_observed=4
+    abi_version=6;app_abi_version=6;qt_abi_version_observed=6
     layout_handshake_accepted=$true;layout_signature='123456789'
     composition_token_size=120;native_present_record_size=200
     shadow_only=$true;performance_accounting_connected=$false;formal_mode=$true
@@ -52,8 +52,8 @@ $transport=[ordered]@{
     records=$transportRecords
 }
 $hook=[ordered]@{
-    abi_version=4;composition_token_size=120;native_present_record_size=200
-    layout_signature='123456789';qt_abi_version_observed=4;layout_handshake_accepted=$true
+    abi_version=6;composition_token_size=120;native_present_record_size=200
+    layout_signature='123456789';qt_abi_version_observed=6;layout_handshake_accepted=$true
     available=$true;hook_enabled=$true;capture_started=$true;capture_stopped=$true
     overflow_count=0;missing_token_count=0;duplicate_token_count=0;stale_token_count=0
     token_set_failure_count=0;failed_present_count=0;authority_failure=$false

@@ -34,7 +34,15 @@ function Get-Function([string]$Text,[string]$Signature){
 $scheduler=Read-Source 'src/media/gpu_preview/presentation_opportunity_scheduler.cpp'
 $renderer=Read-Source 'src/app/preview/compositor_rhi_item.cpp'
 $transport=Read-Source 'src/media/gpu_preview/presentation_opportunity_scheduler.h'
-$document=Read-Source 'docs/p2-d5-2-w4-c-causal-attribution-contract.md'
+$contract=Read-Source 'docs/p5-e4-s2-d-w4-c0-current-control-flow-contract.md'
+$originalSources=@($scheduler,$renderer)
+$expectedViolations=@{
+    NegativeUnclassifiedOrdinalWriter='未分類のopportunity ordinal writerがあります (actual=2 expected=1)'
+    NegativeUnclassifiedLastFinalizedWriter='未分類のlast finalized writerがあります (actual=2 expected=1)'
+    NegativeUnclassifiedNoDecisionReturn='invocation ledgerを迂回するinvalid/no-decision returnがあります (actual=1 expected=0)'
+    NegativeSecondIntentProducer='intent transport producerが単一ordinal直結ではありません (actual=0 expected=1)'
+    NegativeIndirectOrdinalReconstruction='target/source/callback/QPCからintent ordinalを間接再構築しています'
+}
 
 switch($Case){
     'NegativeUnclassifiedOrdinalWriter'{
@@ -42,8 +50,8 @@ switch($Case){
             "decision.opportunityOrdinal = ordinal;`n    decision.opportunityOrdinal = ordinal + 1;")
     }
     'NegativeUnclassifiedLastFinalizedWriter'{
-        $scheduler=$scheduler.Replace('lastFinalizedOrdinal_ = ordinal;',
-            "lastFinalizedOrdinal_ = ordinal;`n    lastFinalizedOrdinal_ = ordinal + 1;")
+        $scheduler=$scheduler.Replace('lastFinalizedOrdinal_ = prepared.record.actualOpportunityOrdinal;',
+            "lastFinalizedOrdinal_ = prepared.record.actualOpportunityOrdinal;`n    lastFinalizedOrdinal_ = prepared.record.actualOpportunityOrdinal + 1;")
     }
     'NegativeUnclassifiedNoDecisionReturn'{
         $scheduler=$scheduler.Replace('long long target = -1;',
@@ -60,30 +68,55 @@ switch($Case){
     }
 }
 
+$mutatedSources=@($scheduler,$renderer)
+if($Case-ne'GoodStaticInventory'){
+    $mutationApplied=$false
+    for($sourceIndex=0;$sourceIndex-lt$originalSources.Count;++$sourceIndex){
+        if($mutatedSources[$sourceIndex]-cne$originalSources[$sourceIndex]){
+            $mutationApplied=$true
+            break
+        }
+    }
+    if(-not$mutationApplied){throw "mutation対象が見つかりません: $Case"}
+}
+
 $select=Get-Function $scheduler `
     'PresentationOpportunityDecision PresentationOpportunityScheduler::selectForRender('
 $finalize=Get-Function $scheduler 'bool PresentationOpportunityScheduler::finalizePendingOpportunity()'
+$apply=Get-Function $scheduler `
+    'void PresentationOpportunityScheduler::applyPendingOpportunityFinalization('
 
-$rejected=$false
+$intendedViolationDetected=$false
 try{
-    # ordinal producerとadvancement式。writer追加・別identityへの差し替えを受理しない。
+    # B3 current authority。queue reservationが唯一のordinal producerである。
+    Require-Count $select 'const auto queueDecision\s*=\s*requiredIntentQueue_\.reserveHead\(\)\s*;' 1 `
+        'required intent queue reservationが単一producerではありません'
+    Require-Count $select `
+        'const long long ordinal\s*=\s*queueDecision\.reservation\.intentOrdinal\s*;' 1 `
+        'intent ordinalがqueue reservation identityから作られていません'
+    Require-Count $select '\bordinal\s*=' 1 `
+        'queue reservation以外のordinal producerがあります'
     Require-Count $select 'decision\.opportunityOrdinal\s*=\s*ordinal\s*;' 1 `
         'formal decision ordinalのproducerが単一ではありません'
     Require-Count $select 'opportunityOrdinal\s*=' 1 `
         '未分類のopportunity ordinal writerがあります'
-    Require-Count $select 'ordinal\s*=\s*completed\s*\+\s*1\s*;' 1 `
-        'anchored ordinal advancement式が変更されています'
-    Require-Count $select 'presentationOpportunityOrdinal\(originRefreshCount_,' 1 `
-        'ordinalがrefresh authority以外から作られています'
+    Require-Count $select 'presentationOpportunityOrdinal\(' 0 `
+        'physical refresh ordinalからintent ordinalを再構築しています'
+    Require-Count $select 'completed\s*\+\s*1' 0 `
+        'completed refresh countからintent ordinalを再構築しています'
 
-    # last finalizedの実行時writerはfinalize時の1箇所だけ。
+    # writerはapply関数内の1箇所だけ。finalize wrapperも必ず同じapplyへ流す。
     Require-Count $scheduler 'lastFinalizedOrdinal_\s*=' 1 `
         '未分類のlast finalized writerがあります'
-    Require-Count $finalize 'lastFinalizedOrdinal_\s*=\s*ordinal\s*;' 1 `
-        'last finalized writerがfinalize pathから外れています'
+    Require-Count $apply `
+        'lastFinalizedOrdinal_\s*=\s*prepared\.record\.actualOpportunityOrdinal\s*;' 1 `
+        'last finalized writerがapply pathから外れています'
+    Require-Count $finalize 'preparePendingOpportunityFinalization\(prepared\)' 1 `
+        'finalize pathがpending opportunityのprepareを通りません'
+    Require-Count $finalize 'applyPendingOpportunityFinalization\(prepared\)' 1 `
+        'finalize pathが単一apply writerを通りません'
 
-    # C2 instrumentation後も全returnはbranch-exact finishInvocationを通る。
-    # 正常NO_DECISIONやledgerを迂回するreturnを暗黙追加できないよう固定する。
+    # 全returnをbranch-exact finishInvocationで閉じる。
     Require-Count $select 'return\s+\{\s*\}\s*;' 0 `
         'invocation ledgerを迂回するinvalid/no-decision returnがあります'
     Require-Count $select 'return\s+finishInvocation\(' 9 `
@@ -92,20 +125,19 @@ try{
         'fatal resultのbranch数が分類と一致しません'
     Require-Count $select 'PresentationSchedulerInvocationResult::DuplicateDecision' 1 `
         'duplicate decision resultが変更されています'
-    Require-Count $select 'PresentationSchedulerInvocationResult::OutsideSourceDomainDecision' 1 `
-        'source-domain resultが変更されています'
+    Require-Count $select 'PresentationSchedulerInvocationResult::RequiredQueueExhaustedDecision' 1 `
+        'required queue exhausted resultが変更されています'
+    Require-Count $select 'PresentationSchedulerInvocationResult::OutsideSourceDomainDecision' 0 `
+        'source coverage errorをsuccessful decisionへ戻しています'
     Require-Count $select 'PresentationSchedulerInvocationResult::PrimaryDecision' 1 `
         'primary decision resultが変更されています'
-    Require-Count $select 'fail\(PresentationOpportunityError::InvalidConfiguration\)' 1 `
-        'INVALID_CONFIGURATION fatal returnが分類と一致しません'
-    Require-Count $select 'fail\(PresentationOpportunityError::AuthorityDiscontinuity\)' 2 `
-        'AUTHORITY_DISCONTINUITY fatal returnが分類と一致しません'
-    Require-Count $select 'fail\(PresentationOpportunityError::OpportunityRegression\)' 1 `
-        'OPPORTUNITY_REGRESSION fatal returnが分類と一致しません'
-    Require-Count $select 'fail\(PresentationOpportunityError::ArithmeticOverflow\)' 2 `
-        'ARITHMETIC_OVERFLOW fatal returnが分類と一致しません'
 
-    # required-domainとtargetは別式。intent transportのproducerはordinal直結の1箇所だけ。
+    # source coverage不足はqueue reservation後のprotocol fatalである。
+    Require-Count $select `
+        'if \(target >= config_\.requiredFrameCount\) \{[\s\S]{0,500}fail\(PresentationOpportunityError::SourceCoverageInsufficient\);[\s\S]{0,300}decision\.valid = false;[\s\S]{0,300}PresentationSchedulerInvocationResult::InvalidFatal,[\s\S]{0,200}PresentationSchedulerInvocationReason::PastSourceDomain' 1 `
+        'source coverage errorがprotocol fatalとして分類されていません'
+
+    # required-domainとtargetは別式。transportはdecision ordinal直結の1箇所だけ。
     Require-Count $select 'requiredIntentMembership\s*=\s*ordinal\s*>=\s*0\s*&&\s*ordinal\s*<\s*config_\.requiredFrameCount' 1 `
         'required intent membership式が変更されています'
     Require-Count $select 'target\s*>=\s*config_\.requiredFrameCount' 1 `
@@ -113,36 +145,51 @@ try{
     Require-Count $renderer `
         'setFormalIntentOrdinal\(formalDecision\.opportunityOrdinal\)' 1 `
         'intent transport producerが単一ordinal直結ではありません'
-    if($renderer-match '(?i)(reconstruct|derive)[A-Za-z_]*IntentOrdinal\s*='){
-        throw 'target/source fieldからintent ordinalを間接再構築しています'
+    if($renderer-match '(?i)\b[A-Za-z_][A-Za-z0-9_]*IntentOrdinal\s*=\s*(formalDecision\.(targetFrame|renderOrdinal|renderBeginQpc)|callbackBegin|output)'){
+        throw 'target/source/callback/QPCからintent ordinalを間接再構築しています'
     }
 
-    # invocation gateと全measurement stop authorityをsource上で固定する。
-    Require-Count $renderer 'if \(output < 0 && formalOpportunityActive\)' 1 `
+    # invocation gateとmeasurement stop authority。DOMAIN_TERMINALは成功にしない。
+    Require-Count $renderer 'if \(output < 0 && formalOpportunityActive && foreignAdmissionOpen\)' 1 `
         'formal scheduler invocation gateが変更されています'
     Require-Count $renderer 'formalOpportunityCaptureActive\.exchange\(false,' 1 `
         'measurement中のcapture gate close authorityが単一ではありません'
     Require-Count $renderer 'if \(intervalEnded \|\| stopRequested\)' 1 `
         'planned/explicit measurement stop pathが変更されています'
-    Require-Count $renderer 'formalOpportunityDomainReached\.store\(true,' 2 `
-        'domain terminal branchの分類数が変更されています'
+    Require-Count $renderer 'finishMeasurement\(callbackBegin,\s*StopArbitration::DomainTerminal' 0 `
+        'DOMAIN_TERMINALをsuccessful completionにしています'
+    Require-Count $renderer 'formalOpportunityDomainReached\.store\(true,' 0 `
+        'DOMAIN_TERMINALをnormal completion side effectにしています'
+    Require-Count $renderer 'StopArbitration cause = StopArbitration::PlannedWindowEnd;' 1 `
+        'planned window endがnormal completion ownerではありません'
+    Require-Count $renderer 'closePlannedWindow\(\)' 1 `
+        'normal completion ownerが単一ではありません'
+    Require-Count $renderer `
+        'cause == StopArbitration::PlannedWindowEnd\s*\?\s*state_->formalOpportunityScheduler\.closePlannedWindow\(\)\s*:\s*state_->formalOpportunityScheduler\.closeWithoutNormalCompletion\(\)' 1 `
+        'PLANNED_WINDOW_END以外がnormal completionになり得ます'
 
-    if($document-notmatch 'Contract \(FROZEN\)' -or
-       $document-notmatch 'w4_c0_static_inventory_complete = true' -or
-       $document-notmatch 'root_cause_determined = false'){
-        throw 'W4-C freezeまたはC0 verdictが文書に固定されていません'
-    }
-    if($document-match 'OUTSIDE_REQUIRED_DOMAIN_DECISION' -or
-       $document-notmatch 'OUTSIDE_SOURCE_DOMAIN_DECISION' -or
-       $document-notmatch 'SUPPRESSED_OUTSIDE_REQUIRED_INTENT_DOMAIN'){
-        throw 'source domain resultとrequired intent transport dispositionが分離されていません'
+    if($transport-notmatch 'RequiredQueueExhaustedDecision' -or
+       $contract-notmatch 'w4_c0_current_contract\s+true' -or
+       $contract-notmatch 'ordinal_authority\s+REQUIRED_INTENT_QUEUE_RESERVATION' -or
+       $contract-notmatch 'source_coverage_failure\s+PROTOCOL_FATAL' -or
+       $contract-notmatch 'domain_terminal_success\s+false' -or
+       $contract-notmatch 'normal_completion_owner\s+PLANNED_WINDOW_END'){
+        throw 'W4-C0 current control-flow contractが文書に固定されていません'
     }
 }catch{
-    $rejected=$true
     if($Case-eq'GoodStaticInventory'){throw}
+    $actualViolation=$_.Exception.Message
+    if(-not$expectedViolations.ContainsKey($Case)){
+        throw "negative caseの期待違反が定義されていません: $Case"
+    }
+    $expectedViolation=$expectedViolations[$Case]
+    if($actualViolation-cne$expectedViolation){
+        throw "negative caseが意図しない契約違反を検出しました: case=$Case expected='$expectedViolation' actual='$actualViolation'"
+    }
+    $intendedViolationDetected=$true
+    Write-Output "expected violation: $actualViolation"
 }
-
-if($Case-ne'GoodStaticInventory' -and -not$rejected){
+if($Case-ne'GoodStaticInventory'-and-not$intendedViolationDetected){
     throw "$Case が静的inventoryに受理されました"
 }
 Write-Output "W4-C0 static control-flow contract $Case : PASS"

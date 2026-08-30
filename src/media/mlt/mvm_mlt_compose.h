@@ -104,6 +104,22 @@ void mvm_mlt_audio_free(MvmComposeAudio* a);
 int mvm_mlt_compose_render_audio(MvmComposeHandle* h, const char* out_path, int timeout_ms,
                                  char* err, size_t err_size);
 
+/* --------------------------------------------------------------------------
+ * S2-g5: audio consumer teardown ordering の診断専用 hook。
+ *
+ * ownership_soak_100 が suite 条件で捕まえた Event handle retention
+ * (audio render あたり約 +1) の root cause を切り分けるためだけに存在する。
+ * hook は phase 名を通知するだけで、consumer の挙動も戻り値も変えない。
+ *
+ *   diagnostic-only
+ *   verdict semantics 変更なし
+ *   threshold 変更なし
+ *
+ * hook が NULL のとき (既定) は一切呼ばれない。
+ * -------------------------------------------------------------------------- */
+typedef void (*MvmComposeTracePhase)(const char* phase);
+void mvm_mlt_compose_set_trace_hook(MvmComposeTracePhase hook);
+
 /* seek 後のキャッシュ破棄方法の比較 (S6 / 実験用) */
 typedef enum {
     MVM_SEEK_PLAIN = 0,     /* seek のみ */

@@ -9,8 +9,10 @@
 #include "media/gpu_preview/compositor_coordinator.h"
 #include "media/gpu_preview/gpu_compositor.h"
 #include "media/gpu_preview/phase4_composition_driver.h"
+#include "media/gpu_preview/preroll_transition_handshake.h"
 #include "media/gpu_preview/presentation_opportunity_attribution.h"
 #include "media/gpu_preview/presentation_opportunity_scheduler.h"
+#include "media/gpu_preview/qualified_present_commit_join.h"
 #include "media/gpu_preview/scheduler_phase_attribution.h"
 #include "media/gpu_preview/source_decode_worker.h"
 #include "media/gpu_preview/transition_probe.h"
@@ -228,6 +230,7 @@ struct CompositorStopWitness {
 
 struct NativePresentIntentScopeRecord {
     std::uint64_t tokenSerial = 0;
+    std::uint64_t reservationId = 0;
     std::uint64_t intentOrdinal = 0;
     NativePresentIntentScope scope = NativePresentIntentScope::ForeignPreMeasurement;
     long long decisionQpc = 0;
@@ -245,6 +248,100 @@ struct NativePresentIntentScopeRecord {
     long long renderBeginQpc = 0;
     gpu::FormalIntentTransportDisposition transportDisposition =
         gpu::FormalIntentTransportDisposition::Transport;
+};
+
+// B3-I2 diagnostic-only。setToken呼出し時点とfatal join時点のraw値を保存する。
+// identity authorityやproduct判定には接続しない。
+struct CompositionTokenPublicationAttribution {
+    bool observed = false;
+    bool succeeded = false;
+    std::uint32_t threadId = 0;
+    long long qpc = 0;
+    MvmNativePresentCompositionToken token{};
+};
+
+struct CompositionTokenJoinFailureAttribution {
+    bool captured = false;
+    gpu::QualifiedCommitRuntimeAttribution join;
+    MvmNativePresentRecord nativeRecord{};
+    MvmNativePresentFrameSwappedReceipt receipt{};
+    CompositionTokenPublicationAttribution latestPublication;
+    std::uint32_t frameSwappedThreadId = 0;
+    long long frameSwappedQpc = 0;
+    bool formalEnvelopeActive = false;
+    // B3-I5B。positional ignore-next-swapは削除済み。transition state machineの
+    // 観測値だけを保持する。
+    gpu::PrerollTransitionState transitionState = gpu::PrerollTransitionState::Open;
+    bool prerollActive = false;
+};
+
+enum class BoundarySwapEventKind {
+    MeasurementStartRequestPublished = 0,
+    MeasurementStartConsumed,
+    PrerollAdmissionClosed,
+    PrerollDrainObserved,
+    PrerollQuiescenceAck,
+    RequiredQueueStarted,
+    MeasurementArmed,
+    CurrentIssuanceOpened,
+    FirstReservation,
+    FrameSwapped,
+};
+
+inline const char* boundarySwapEventKindName(BoundarySwapEventKind kind) {
+    switch (kind) {
+    case BoundarySwapEventKind::MeasurementStartRequestPublished:
+        return "MEASUREMENT_START_REQUEST_PUBLISHED";
+    case BoundarySwapEventKind::MeasurementStartConsumed:
+        return "MEASUREMENT_START_CONSUMED";
+    case BoundarySwapEventKind::PrerollAdmissionClosed:
+        return "PREROLL_ADMISSION_CLOSED";
+    case BoundarySwapEventKind::PrerollDrainObserved:
+        return "PREROLL_DRAIN_OBSERVED";
+    case BoundarySwapEventKind::PrerollQuiescenceAck:
+        return "PREROLL_QUIESCENCE_ACK";
+    case BoundarySwapEventKind::RequiredQueueStarted:
+        return "REQUIRED_QUEUE_STARTED";
+    case BoundarySwapEventKind::MeasurementArmed:
+        return "MEASUREMENT_ARMED";
+    case BoundarySwapEventKind::CurrentIssuanceOpened:
+        return "CURRENT_ISSUANCE_OPENED";
+    case BoundarySwapEventKind::FirstReservation:
+        return "FIRST_RESERVATION";
+    case BoundarySwapEventKind::FrameSwapped:
+        return "FRAME_SWAPPED";
+    }
+    return "UNKNOWN";
+}
+
+// B3-I3 diagnostic-only。eventSerialは複数threadからの記録順を固定するだけで、
+// Present identityやboundary ownershipを生成しない。
+struct BoundarySwapAttributionEvent {
+    unsigned long long eventSerial = 0;
+    BoundarySwapEventKind kind = BoundarySwapEventKind::MeasurementStartRequestPublished;
+    long long qpc = 0;
+    std::uint32_t threadId = 0;
+    const char* phase = "NONE";
+    unsigned long long transitionStepSerial = 0;
+    gpu::PrerollTransitionState transitionState = gpu::PrerollTransitionState::Open;
+    gpu::PrerollTransitionError transitionError = gpu::PrerollTransitionError::None;
+    bool transitionQuiescent = false;
+    bool receiptObserved = false;
+    std::uint64_t receiptPresentSerial = 0;
+    std::uint64_t receiptTokenSerial = 0;
+    std::uint64_t receiptIntentOrdinal = 0;
+    bool receiptIntentOrdinalValid = false;
+    bool receiptTokenPresent = false;
+    std::uint64_t receiptSwapchainIdentity = 0;
+    std::int32_t receiptHresult = 0;
+    long long presentEnterQpc = 0;
+    long long presentReturnQpc = 0;
+    std::uint32_t presentThreadId = 0;
+    bool intentScopeExact = false;
+    NativePresentIntentScope intentScope = NativePresentIntentScope::ForeignPreMeasurement;
+    unsigned long long intentScopeMatchCount = 0;
+    bool activeReservation = false;
+    gpu::QualifiedCommitReservation reservation{};
 };
 
 inline const char* nativePresentIntentScopeName(NativePresentIntentScope scope) {
@@ -465,6 +562,12 @@ struct CompositorSpikeState {
     std::mutex eligibilityPreflightMutex;
     PresentationEligibilityPreflight eligibilityPreflight;
     std::atomic<long long> nativePresentTokenSetFailureCount{0};
+    // B3-I6B。fail-able pre-Present validationが失敗したcallbackでpublicationを
+    // 抑止した回数。transport failureではなくfail-closed動作の記録である。
+    std::atomic<long long> nativePresentTokenSuppressedBeforePresentCount{0};
+    std::mutex compositionTokenAttributionMutex;
+    CompositionTokenPublicationAttribution latestCompositionTokenPublication;
+    CompositionTokenJoinFailureAttribution compositionTokenJoinFailure;
     std::atomic<long long> latestCompletedRenderOrdinal{-1};
     std::atomic<long long> latestSubmittedRenderOrdinal{-1};
     std::atomic<long long> latestSubmittedOutputFrame{-1};
@@ -480,7 +583,11 @@ struct CompositorSpikeState {
     std::atomic<bool> formalOpportunityEnvelopePrerollActive{false};
     std::atomic<bool> formalOpportunityEnvelopePrerollStarted{false};
     std::atomic<bool> formalOpportunityEnvelopePrerollCompleted{false};
-    std::atomic<bool> formalOpportunityIgnoreNextSwap{false};
+    std::atomic<unsigned long long> boundarySwapEventSerial{0};
+    std::atomic<unsigned long long> prerollTransitionStepSerial{0};
+    std::atomic<bool> boundaryFirstReservationRecorded{false};
+    std::mutex boundarySwapAttributionMutex;
+    std::vector<BoundarySwapAttributionEvent> boundarySwapAttributionEvents;
     std::atomic<bool> formalOpportunityDomainReached{false};
     std::atomic<long long> formalOpportunityPresentedFrame{-1};
     std::atomic<long long> formalOpportunitySwapOrdinal{0};
@@ -493,6 +600,9 @@ struct CompositorSpikeState {
     std::atomic<long long> formalRequiredFrameCount{0};
     std::mutex formalOpportunityMutex;
     gpu::PresentationOpportunityScheduler formalOpportunityScheduler;
+    gpu::ExactQualifiedCommitJoin formalQualifiedCommitJoin;
+    // B3-I5B。preroll -> currentのtransitionはこのstate machineだけがauthorityである。
+    gpu::PrerollTransitionHandshake formalPrerollTransition;
     gpu::ComposedFrame diagnosticFixedFrame;
     CompositorMarkerProbe markerProbe;
     std::atomic<long long> markerAChecked{0};
@@ -539,6 +649,12 @@ struct CompositorSpikeState {
     gpu::AdapterInfo qtAdapter;
     std::mutex errorMutex;
     std::string fatalReason;
+
+    void recordBoundarySwapAttribution(BoundarySwapAttributionEvent event) {
+        event.eventSerial = boundarySwapEventSerial.fetch_add(1, std::memory_order_seq_cst) + 1;
+        std::lock_guard<std::mutex> lock(boundarySwapAttributionMutex);
+        boundarySwapAttributionEvents.push_back(event);
+    }
 };
 
 // W4-C3 amend 4。classified stop publication siteはこのhelperだけを通る。
@@ -570,8 +686,8 @@ inline void publishStopRequest(CompositorSpikeState& state, StopArbitration caus
         state.coalescedStopPublicationCount.fetch_add(1, std::memory_order_seq_cst);
         return;
     }
-    state.stopPublicationRecord = StopPublicationRecord{true, cause, claim.previous,
-                                                        claim.succeeded, claim.publishSerial};
+    state.stopPublicationRecord =
+        StopPublicationRecord{true, cause, claim.previous, claim.succeeded, claim.publishSerial};
     state.measurementStopRequested.store(true, std::memory_order_release);
 }
 

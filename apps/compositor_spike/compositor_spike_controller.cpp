@@ -459,9 +459,23 @@ bool CompositorSpikeController::startWorkers() {
     const auto b = workerB_ ? workerB_->snapshot() : gpu::SourceDecoderSnapshot{};
     sourceAFrameCount_ = a.info.frameCount;
     sourceBFrameCount_ = b.info.frameCount;
-    requiredMeasurementFrameCount_ = static_cast<long long>(config_.measureSeconds) * 60;
-    sourceCoverageOk_ = sourceAFrameCount_ >= requiredMeasurementFrameCount_ &&
-                        (!workerB_ || sourceBFrameCount_ >= requiredMeasurementFrameCount_);
+    // B3-I6C。required set sizeとsource coverageはrequired-intent rate authorityだけから決める。
+    requiredMeasurementFrameCount_ =
+        gpu::formalRequiredIntentCountForSeconds(static_cast<long long>(config_.measureSeconds));
+    // coverageはcount比較ではなくrequired set全域のexact target rangeで判定する。
+    gpu::PresentationOpportunityConfig coverageConfig{};
+    coverageConfig.requiredFrameCount = requiredMeasurementFrameCount_;
+    coverageConfig.sourceFrameOffset = 0;
+    coverageConfig.sourceFpsNumerator = gpu::kFormalSourceFrameRate.numerator;
+    coverageConfig.sourceFpsDenominator = gpu::kFormalSourceFrameRate.denominator;
+    coverageConfig.requiredIntentRateNumerator = gpu::kFormalRequiredIntentRate.numerator;
+    coverageConfig.requiredIntentRateDenominator = gpu::kFormalRequiredIntentRate.denominator;
+    requiredIntentSourceCoverage_ = gpu::requiredIntentSourceCoverage(coverageConfig);
+    sourceCoverageOk_ =
+        gpu::requiredIntentSourceCoverageSatisfied(requiredIntentSourceCoverage_,
+                                                   sourceAFrameCount_) &&
+        (!workerB_ || gpu::requiredIntentSourceCoverageSatisfied(requiredIntentSourceCoverage_,
+                                                                 sourceBFrameCount_));
     if (config_.formalPreflight && config_.mode == CompositorMode::Playback &&
         config_.diagnosticCase == CompositorDiagnosticCase::None && !sourceCoverageOk_) {
         beginShutdown(QStringLiteral("Playback測定区間をsourceがcoverageしていません"), true);
@@ -700,11 +714,11 @@ bool CompositorSpikeController::closeVBlankMappingSupportAfterTeardown() {
     const auto stopObserver = [this] {
         vblankObserver_.stop();
         vblankObserverRunning_ = false;
-        vblankIdentityEnd_ = gpu::resolveWindowOutput(
-                                 item_ && item_->window()
-                                     ? reinterpret_cast<void*>(item_->window()->winId())
-                                     : nullptr)
-                                 .identity;
+        vblankIdentityEnd_ =
+            gpu::resolveWindowOutput(item_ && item_->window()
+                                         ? reinterpret_cast<void*>(item_->window()->winId())
+                                         : nullptr)
+                .identity;
     };
     // W4-C2はscheduler/capture-gate因果診断であり、W2のphysical mapping supportを
     // authorityにしない。terminal後のDWM sleepをsuccessor failureへ変換しない。
@@ -825,6 +839,12 @@ void CompositorSpikeController::armMeasurementAfterCaptureEnvelopeOpen() {
     resetStopArbitrationForMeasurement(*state_);
     // start requestはこのepoch初期化がすべて済んだ後で最後にpublishする。
     state_->measurementStartRequested.store(true, std::memory_order_release);
+    BoundarySwapAttributionEvent boundaryEvent;
+    boundaryEvent.kind = BoundarySwapEventKind::MeasurementStartRequestPublished;
+    boundaryEvent.qpc = gpu::qpcTicks();
+    boundaryEvent.threadId = static_cast<std::uint32_t>(GetCurrentThreadId());
+    boundaryEvent.phase = "CONTROLLER_MEASUREMENT_ARM";
+    state_->recordBoundarySwapAttribution(boundaryEvent);
     phase_ = Phase::MeasureStartWait;
     item_->update();
 }
@@ -1137,7 +1157,8 @@ void CompositorSpikeController::tick() {
             phase_ = Phase::MeasureStopWait;
             if (!state_->measurementStopCaptured.load(std::memory_order_acquire)) {
                 // W4-C3 amend 4。stop side effectより前にownershipをclaimする。
-                const StopClaimResult claim = claimStopCause(*state_, StopArbitration::ExplicitStop);
+                const StopClaimResult claim =
+                    claimStopCause(*state_, StopArbitration::ExplicitStop);
                 explicitStopClaim_ = claim;
                 // flagとclaim recordを同じpublication protocolで発行する。
                 publishStopRequest(*state_, StopArbitration::ExplicitStop, claim);
@@ -1171,9 +1192,9 @@ void CompositorSpikeController::tick() {
                 if (!config_.formalSchedulerInvocationLedger) {
                     const long long now = gpu::qpcTicks();
                     const long long untilEnd = std::max(0LL, frozenMeasurementEndQpc_ - now);
-                    const long long untilEndMs = static_cast<long long>(std::ceil(
-                        static_cast<double>(untilEnd) * 1000.0 /
-                        static_cast<double>(gpu::qpcFrequency())));
+                    const long long untilEndMs =
+                        static_cast<long long>(std::ceil(static_cast<double>(untilEnd) * 1000.0 /
+                                                         static_cast<double>(gpu::qpcFrequency())));
                     const long long timeoutMs = untilEndMs + kVBlankSuccessorLivenessMs;
                     const bool successorConfirmed = vblankObserver_.waitForSuccessor(
                         frozenMeasurementEndQpc_, timeoutMs, vblankSuccessor_);
@@ -1246,13 +1267,12 @@ void CompositorSpikeController::tick() {
                 !formalOpportunity || sameDwmAuthority(dwmTimingStart_, dwmTimingStop_);
             const long long envelopeCloseQpc =
                 state_->nativePresentEnvelopeCloseQpc.load(std::memory_order_acquire);
-            const bool envelopeClosedAfterSuccessor = config_.formalSchedulerInvocationLedger
-                                                          ? envelopeCloseQpc >= measurementStop_.qpc
-                                                          : vblankSuccessor_.completed &&
-                                                                vblankSuccessor_.sample.qpc >=
-                                                                    frozenMeasurementEndQpc_ &&
-                                                                envelopeCloseQpc >=
-                                                                    vblankSuccessor_.sample.qpc;
+            const bool envelopeClosedAfterSuccessor =
+                config_.formalSchedulerInvocationLedger
+                    ? envelopeCloseQpc >= measurementStop_.qpc
+                    : vblankSuccessor_.completed &&
+                          vblankSuccessor_.sample.qpc >= frozenMeasurementEndQpc_ &&
+                          envelopeCloseQpc >= vblankSuccessor_.sample.qpc;
             const bool measurementSucceeded = authorityStable && incrementalMapperResolved &&
                                               envelopeClosedAfterSuccessor &&
                                               !state_->fatal.load(std::memory_order_acquire);
@@ -1272,9 +1292,8 @@ void CompositorSpikeController::tick() {
                     : QStringLiteral("incremental presentation mapperを一意に解決できません"),
                 !measurementSucceeded);
         } else if (phaseTimer_.elapsed() >= 15000) {
-            std::fprintf(stderr,
-                         "W4-C2_DIAGNOSTIC_EXIT6_ENVELOPE_STOP_TIMEOUT: "
-                         "native Present capture envelopeが15秒以内に停止しませんでした\n");
+            std::fprintf(stderr, "W4-C2_DIAGNOSTIC_EXIT6_ENVELOPE_STOP_TIMEOUT: "
+                                 "native Present capture envelopeが15秒以内に停止しませんでした\n");
             exitCode_ = 6;
             phase_ = Phase::Done;
             timer_.stop();
@@ -1344,15 +1363,13 @@ void CompositorSpikeController::tick() {
         item_->update();
         if (state_->teardownComplete.load()) {
             if (!closeVBlankMappingSupportAfterTeardown()) {
-                std::fprintf(stderr,
-                             "W4-C2_DIAGNOSTIC_EXIT6_CLOSE_MAPPING_FAILURE: "
-                             "VBlank mapping supportの終了に失敗しました\n");
+                std::fprintf(stderr, "W4-C2_DIAGNOSTIC_EXIT6_CLOSE_MAPPING_FAILURE: "
+                                     "VBlank mapping supportの終了に失敗しました\n");
                 exitCode_ = 6;
             }
             if (!writeMetrics()) {
-                std::fprintf(stderr,
-                             "W4-C2_DIAGNOSTIC_EXIT6_METRICS_WRITE_FAILURE: "
-                             "最終metricsの書込みに失敗しました\n");
+                std::fprintf(stderr, "W4-C2_DIAGNOSTIC_EXIT6_METRICS_WRITE_FAILURE: "
+                                     "最終metricsの書込みに失敗しました\n");
                 exitCode_ = 6;
             }
             phase_ = Phase::Done;
@@ -2205,6 +2222,7 @@ bool CompositorSpikeController::writeMetrics() {
         intentScopeByToken[record.tokenSerial].push_back(record);
         intentScopeLedgerJson.append(QJsonObject{
             {"token_serial", QString::number(record.tokenSerial)},
+            {"reservation_id", QString::number(record.reservationId)},
             {"intent_ordinal", QString::number(record.intentOrdinal)},
             {"intent_scope", nativePresentIntentScopeName(record.scope)},
             {"decision_qpc", record.decisionQpc},
@@ -2246,8 +2264,8 @@ bool CompositorSpikeController::writeMetrics() {
             {"canonical_performance_authority", false},
             {"captured", captured},
             {"witness_count", captured ? 1 : 0},
-            {"duplicate_witness_count",
-             static_cast<qint64>(state_->stopWitnessDuplicateCount.load(std::memory_order_seq_cst))},
+            {"duplicate_witness_count", static_cast<qint64>(state_->stopWitnessDuplicateCount.load(
+                                            std::memory_order_seq_cst))},
             {"coalesced_stop_publication_count",
              static_cast<qint64>(
                  state_->coalescedStopPublicationCount.load(std::memory_order_seq_cst))},
@@ -2265,35 +2283,33 @@ bool CompositorSpikeController::writeMetrics() {
             {"terminal_required_intent_membership", witness.terminal.requiredIntentMembership},
             {"stop_arbitration",
              QJsonObject{
-                 {"previous", QString::fromLatin1(stopArbitrationName(witness.arbitrationPrevious))},
+                 {"previous",
+                  QString::fromLatin1(stopArbitrationName(witness.arbitrationPrevious))},
                  {"claimed", QString::fromLatin1(stopArbitrationName(witness.arbitrationClaimed))},
                  {"claim_succeeded", witness.arbitrationClaimSucceeded},
                  {"claim_recorded", witness.claimRecorded},
                  {"claim_source",
-                  QString::fromLatin1(witness.claimRecorded
-                                          ? (witness.claimFromPublicationRecord
-                                                 ? "PUBLICATION_RECORD"
-                                                 : "THIS_CALL_SITE")
-                                          : "NONE")},
+                  QString::fromLatin1(witness.claimRecorded ? (witness.claimFromPublicationRecord
+                                                                   ? "PUBLICATION_RECORD"
+                                                                   : "THIS_CALL_SITE")
+                                                            : "NONE")},
                  {"measurement_start_state",
                   QString::fromLatin1(stopArbitrationName(witness.measurementStartState))},
                  {"reset_count_during_measurement",
                   static_cast<qint64>(witness.resetCountDuringMeasurement)}}},
             {"measurement_start",
              QJsonObject{{"explicit_stop_publish_serial",
-                          static_cast<qint64>(
-                              witness.measurementStartExplicitStopPublishSerial)},
+                          static_cast<qint64>(witness.measurementStartExplicitStopPublishSerial)},
                          {"fatal_publish_serial",
                           static_cast<qint64>(witness.measurementStartFatalPublishSerial)}}},
-            {"pre",
-             QJsonObject{
-                 {"capture_gate_open", witness.preCaptureGateOpen},
-                 {"explicit_stop_requested", witness.preExplicitStopRequested},
-                 {"planned_window_end_reached", witness.prePlannedWindowEndReached},
-                 {"fatal_latched", witness.preFatalLatched},
-                 {"explicit_stop_publish_serial",
-                  static_cast<qint64>(witness.preExplicitStopPublishSerial)},
-                 {"fatal_publish_serial", static_cast<qint64>(witness.preFatalPublishSerial)}}},
+            {"pre", QJsonObject{{"capture_gate_open", witness.preCaptureGateOpen},
+                                {"explicit_stop_requested", witness.preExplicitStopRequested},
+                                {"planned_window_end_reached", witness.prePlannedWindowEndReached},
+                                {"fatal_latched", witness.preFatalLatched},
+                                {"explicit_stop_publish_serial",
+                                 static_cast<qint64>(witness.preExplicitStopPublishSerial)},
+                                {"fatal_publish_serial",
+                                 static_cast<qint64>(witness.preFatalPublishSerial)}}},
             {"action",
              QJsonObject{{"formal_opportunity_domain_reached_published",
                           witness.terminal.formalOpportunityDomainReachedPublished},
@@ -2338,8 +2354,7 @@ bool CompositorSpikeController::writeMetrics() {
     }
     const auto scopeRecordMatchesNative = [](const NativePresentIntentScopeRecord& producer,
                                              const MvmNativePresentRecord& native) {
-        if (producer.transportDisposition !=
-            gpu::FormalIntentTransportDisposition::Transport) {
+        if (producer.transportDisposition != gpu::FormalIntentTransportDisposition::Transport) {
             const bool suppressionExact =
                 producer.transportDisposition ==
                     gpu::FormalIntentTransportDisposition::SuppressDuplicateCallback ||
@@ -2348,8 +2363,7 @@ bool CompositorSpikeController::writeMetrics() {
             return suppressionExact && native.intentOrdinalValid == 0 &&
                    native.token.intentOrdinalValid == 0;
         }
-        return producer.transportDisposition ==
-                   gpu::FormalIntentTransportDisposition::Transport &&
+        return producer.transportDisposition == gpu::FormalIntentTransportDisposition::Transport &&
                native.intentOrdinalValid == 1 && native.token.intentOrdinalValid == 1 &&
                producer.intentOrdinal == native.intentOrdinal;
     };
@@ -2467,9 +2481,8 @@ bool CompositorSpikeController::writeMetrics() {
         const auto scope = intentScopeByToken.find(record.token.tokenSerial);
         const bool exactScope = scope != intentScopeByToken.end() && scope->second.size() == 1 &&
                                 scopeRecordMatchesNative(scope->second.front(), record);
-        const bool suppressed =
-            exactScope && scope->second.front().transportDisposition !=
-                              gpu::FormalIntentTransportDisposition::Transport;
+        const bool suppressed = exactScope && scope->second.front().transportDisposition !=
+                                                  gpu::FormalIntentTransportDisposition::Transport;
         const bool modeValid = formalIntentMode
                                    ? (record.token.intentOrdinalValid == 1 || suppressed)
                                    : record.token.intentOrdinalValid == 0;
@@ -2490,11 +2503,9 @@ bool CompositorSpikeController::writeMetrics() {
             {"native_present_intent_valid", record.intentOrdinalValid != 0},
             {"formal_transport_eligible", exactScope && !suppressed},
             {"suppression_exact", suppressed},
-            {"transport_disposition",
-             exactScope
-                 ? gpu::formalIntentTransportDispositionName(
-                       scope->second.front().transportDisposition)
-                 : "UNRESOLVED"},
+            {"transport_disposition", exactScope ? gpu::formalIntentTransportDispositionName(
+                                                       scope->second.front().transportDisposition)
+                                                 : "UNRESOLVED"},
         });
         nativePresentRecords.append(nativePresentRecordJson(record));
     }
@@ -2547,6 +2558,309 @@ bool CompositorSpikeController::writeMetrics() {
     const bool captureEnvelopeUpperClosed =
         vblankSuccessor_.completed && vblankSuccessor_.sample.qpc >= frozenMeasurementEndQpc_ &&
         captureEnvelopeCloseQpc >= vblankSuccessor_.sample.qpc;
+    CompositionTokenJoinFailureAttribution tokenFailure;
+    {
+        std::lock_guard<std::mutex> lock(state_->compositionTokenAttributionMutex);
+        tokenFailure = state_->compositionTokenJoinFailure;
+    }
+    const auto& joinAttribution = tokenFailure.join;
+    const auto& reservationEvidence = joinAttribution.reservation;
+    const auto& nativeEvidence = joinAttribution.nativePresent;
+    const auto& swapEvidence = joinAttribution.frameSwapped;
+    const auto& rawNativeRecord = tokenFailure.nativeRecord;
+    const auto& rawReceipt = tokenFailure.receipt;
+    const auto& publication = tokenFailure.latestPublication;
+    const QJsonObject compositionTokenRuntimeAttribution{
+        {"schema", "mvm-p2-d5-2-b3-i2-composition-token-runtime-attribution-1"},
+        {"diagnostic_only", true},
+        {"identity_authority", false},
+        {"nearest_latest_fallback_used", false},
+        {"serial_inference_used", false},
+        {"captured", tokenFailure.captured},
+        {"failure_phase",
+         QString::fromLatin1(gpu::qualifiedCommitFailurePhaseName(joinAttribution.failurePhase))},
+        {"failure_predicate", QString::fromLatin1(gpu::qualifiedCommitFailurePredicateName(
+                                  joinAttribution.failurePredicate))},
+        {"failure_error",
+         QString::fromLatin1(gpu::qualifiedCommitErrorName(joinAttribution.error))},
+        {"reservation",
+         QJsonObject{{"reservation_id", QString::number(reservationEvidence.reservationId)},
+                     {"intent_ordinal", reservationEvidence.intentOrdinal},
+                     {"token_serial", QString::number(reservationEvidence.tokenSerial)}}},
+        {"native_present_record",
+         QJsonObject{{"record_present", nativeEvidence.recordPresent},
+                     {"reservation_id_available", false},
+                     {"present_serial", QString::number(rawNativeRecord.presentSerial)},
+                     {"swapchain_identity", QString::number(rawNativeRecord.swapchainIdentity)},
+                     {"hresult", rawNativeRecord.hresult},
+                     {"token_present", rawNativeRecord.tokenPresent != 0},
+                     {"intent_ordinal", QString::number(rawNativeRecord.intentOrdinal)},
+                     {"intent_ordinal_valid", rawNativeRecord.intentOrdinalValid != 0},
+                     {"token_serial", QString::number(rawNativeRecord.token.tokenSerial)},
+                     {"present_thread_id", static_cast<qint64>(rawNativeRecord.threadId)},
+                     {"present_enter_qpc", rawNativeRecord.presentEnterQpc},
+                     {"present_return_qpc", rawNativeRecord.presentReturnQpc}}},
+        {"frame_swapped_receipt",
+         QJsonObject{
+             {"observed", swapEvidence.observed},
+             {"commit_evidence_reservation_id", QString::number(swapEvidence.reservationId)},
+             {"present_serial", QString::number(rawReceipt.presentSerial)},
+             {"swapchain_identity", QString::number(rawReceipt.swapchainIdentity)},
+             {"hresult", rawReceipt.hresult},
+             {"token_present", rawReceipt.tokenPresent != 0},
+             {"intent_ordinal", QString::number(rawReceipt.intentOrdinal)},
+             {"intent_ordinal_valid", rawReceipt.intentOrdinalValid != 0},
+             {"token_serial", QString::number(rawReceipt.tokenSerial)},
+             {"callback_thread_id", static_cast<qint64>(tokenFailure.frameSwappedThreadId)},
+             {"callback_qpc", tokenFailure.frameSwappedQpc}}},
+        {"latest_set_token_publication",
+         QJsonObject{{"observed", publication.observed},
+                     {"succeeded", publication.succeeded},
+                     {"thread_id", static_cast<qint64>(publication.threadId)},
+                     {"qpc", publication.qpc},
+                     {"token_serial", QString::number(publication.token.tokenSerial)},
+                     {"intent_ordinal", QString::number(publication.token.intentOrdinal)},
+                     {"intent_ordinal_valid", publication.token.intentOrdinalValid != 0},
+                     {"output_frame", publication.token.outputFrameNumber}}},
+        {"lifetime_checks",
+         QJsonObject{{"set_token_precedes_present",
+                      publication.observed && publication.qpc <= rawNativeRecord.presentEnterQpc},
+                     {"set_token_and_present_same_thread",
+                      publication.observed && publication.threadId == rawNativeRecord.threadId},
+                     {"present_and_frame_swapped_same_thread",
+                      rawNativeRecord.threadId == tokenFailure.frameSwappedThreadId},
+                     {"latest_publication_token_equals_native_record",
+                      publication.token.tokenSerial == rawNativeRecord.token.tokenSerial},
+                     {"native_record_equals_receipt_present_serial",
+                      rawNativeRecord.presentSerial == rawReceipt.presentSerial},
+                     {"native_record_equals_receipt_token_serial",
+                      rawNativeRecord.token.tokenSerial == rawReceipt.tokenSerial},
+                     {"formal_envelope_active", tokenFailure.formalEnvelopeActive},
+                     {"transition_state",
+                      gpu::prerollTransitionStateName(tokenFailure.transitionState)},
+                     {"preroll_active", tokenFailure.prerollActive}}},
+    };
+    std::vector<BoundarySwapAttributionEvent> boundaryEvents;
+    {
+        std::lock_guard<std::mutex> lock(state_->boundarySwapAttributionMutex);
+        boundaryEvents = state_->boundarySwapAttributionEvents;
+    }
+    std::sort(
+        boundaryEvents.begin(), boundaryEvents.end(),
+        [](const auto& left, const auto& right) { return left.eventSerial < right.eventSerial; });
+    gpu::PrerollTransitionSnapshot prerollTransition;
+    if (state_->formalOpportunitySchedulerEnabled.load(std::memory_order_acquire)) {
+        std::lock_guard<std::mutex> lock(state_->formalOpportunityMutex);
+        prerollTransition = state_->formalPrerollTransition.snapshot();
+    }
+    QJsonArray boundaryEventJson;
+    bool eventSerialContiguous = true;
+    unsigned long long admissionCloseEventSerial = 0;
+    unsigned long long quiescenceAckEventSerial = 0;
+    unsigned long long currentQueueStartEventSerial = 0;
+    unsigned long long measurementArmedEventSerial = 0;
+    unsigned long long issuanceOpenEventSerial = 0;
+    long long admissionCloseEventQpc = 0;
+    long long quiescenceAckEventQpc = 0;
+    long long currentQueueStartEventQpc = 0;
+    long long measurementArmedEventQpc = 0;
+    long long issuanceOpenEventQpc = 0;
+    long long foreignCallbackCount = 0;
+    long long foreignCallbackAfterQuiescenceAckCount = 0;
+    long long currentCallbackBeforeIssuanceOpenCount = 0;
+    for (std::size_t index = 0; index < boundaryEvents.size(); ++index) {
+        const auto& event = boundaryEvents[index];
+        if (event.eventSerial != index + 1)
+            eventSerialContiguous = false;
+        switch (event.kind) {
+        case BoundarySwapEventKind::PrerollAdmissionClosed:
+            admissionCloseEventSerial = event.eventSerial;
+            admissionCloseEventQpc = event.qpc;
+            break;
+        case BoundarySwapEventKind::PrerollQuiescenceAck:
+            quiescenceAckEventSerial = event.eventSerial;
+            quiescenceAckEventQpc = event.qpc;
+            break;
+        case BoundarySwapEventKind::RequiredQueueStarted:
+            currentQueueStartEventSerial = event.eventSerial;
+            currentQueueStartEventQpc = event.qpc;
+            break;
+        case BoundarySwapEventKind::MeasurementArmed:
+            measurementArmedEventSerial = event.eventSerial;
+            measurementArmedEventQpc = event.qpc;
+            break;
+        case BoundarySwapEventKind::CurrentIssuanceOpened:
+            issuanceOpenEventSerial = event.eventSerial;
+            issuanceOpenEventQpc = event.qpc;
+            break;
+        default:
+            break;
+        }
+        boundaryEventJson.append(QJsonObject{
+            {"event_serial", static_cast<qint64>(event.eventSerial)},
+            {"event", boundarySwapEventKindName(event.kind)},
+            {"qpc", event.qpc},
+            {"thread_id", static_cast<qint64>(event.threadId)},
+            {"phase", event.phase},
+            {"transition_step_serial", static_cast<qint64>(event.transitionStepSerial)},
+            {"transition_state", gpu::prerollTransitionStateName(event.transitionState)},
+            {"transition_error", gpu::prerollTransitionErrorName(event.transitionError)},
+            {"transition_quiescent", event.transitionQuiescent},
+            {"receipt_observed", event.receiptObserved},
+            {"receipt_present_serial", QString::number(event.receiptPresentSerial)},
+            {"receipt_token_serial", QString::number(event.receiptTokenSerial)},
+            {"receipt_intent_ordinal", QString::number(event.receiptIntentOrdinal)},
+            {"receipt_intent_ordinal_valid", event.receiptIntentOrdinalValid},
+            {"receipt_token_present", event.receiptTokenPresent},
+            {"receipt_swapchain_identity", QString::number(event.receiptSwapchainIdentity)},
+            {"receipt_hresult", event.receiptHresult},
+            {"present_enter_qpc", event.presentEnterQpc},
+            {"present_return_qpc", event.presentReturnQpc},
+            {"present_thread_id", static_cast<qint64>(event.presentThreadId)},
+            {"intent_scope_exact", event.intentScopeExact},
+            {"intent_scope", event.intentScopeExact
+                                 ? nativePresentIntentScopeName(event.intentScope)
+                                 : "UNRESOLVED"},
+            {"intent_scope_match_count", static_cast<qint64>(event.intentScopeMatchCount)},
+            {"active_reservation", event.activeReservation},
+            {"reservation_id", QString::number(event.reservation.reservationId)},
+            {"reservation_intent_ordinal", event.reservation.intentOrdinal},
+            {"reservation_token_serial", QString::number(event.reservation.tokenSerial)},
+        });
+    }
+    for (const auto& event : boundaryEvents) {
+        if (event.kind != BoundarySwapEventKind::FrameSwapped || !event.intentScopeExact)
+            continue;
+        if (event.intentScope == NativePresentIntentScope::ForeignPreMeasurement) {
+            ++foreignCallbackCount;
+            if (quiescenceAckEventSerial != 0 && event.eventSerial > quiescenceAckEventSerial)
+                ++foreignCallbackAfterQuiescenceAckCount;
+        } else if (issuanceOpenEventSerial != 0 && event.eventSerial < issuanceOpenEventSerial) {
+            ++currentCallbackBeforeIssuanceOpenCount;
+        }
+    }
+    // ordered_stepsどおりに進んだかをevent serialの順序として固定する。
+    // event serialはordering記録専用でありidentity authorityではない。
+    const bool handshakeStepOrderExact =
+        admissionCloseEventSerial != 0 && quiescenceAckEventSerial != 0 &&
+        currentQueueStartEventSerial != 0 && measurementArmedEventSerial != 0 &&
+        issuanceOpenEventSerial != 0 && admissionCloseEventSerial < quiescenceAckEventSerial &&
+        quiescenceAckEventSerial < currentQueueStartEventSerial &&
+        currentQueueStartEventSerial < measurementArmedEventSerial &&
+        measurementArmedEventSerial < issuanceOpenEventSerial;
+    // B3-I5B amendment 2。canonical measurement start authorityは
+    // ack -> current queue start -> canonical start -> measurement arm -> issuance open
+    // のQPC順序を満たさなければならない。current queue initializationはwindowの外である。
+    const bool canonicalStartOrderExact =
+        prerollTransition.quiescenceAckQpc > 0 && currentQueueStartEventQpc > 0 &&
+        prerollTransition.canonicalMeasurementStartQpc > 0 && measurementArmedEventQpc > 0 &&
+        issuanceOpenEventQpc > 0 &&
+        prerollTransition.quiescenceAckQpc <= currentQueueStartEventQpc &&
+        currentQueueStartEventQpc <= prerollTransition.canonicalMeasurementStartQpc &&
+        prerollTransition.canonicalMeasurementStartQpc <= measurementArmedEventQpc &&
+        measurementArmedEventQpc <= issuanceOpenEventQpc;
+    const auto& quiescenceVerdict = prerollTransition.verdict;
+    const bool quiescenceHandshakeObserved =
+        handshakeStepOrderExact && canonicalStartOrderExact && quiescenceVerdict.quiescent &&
+        prerollTransition.foreignSchedulerClosed && prerollTransition.canonicalWindowFrozen &&
+        prerollTransition.currentIssuanceOpen && foreignCallbackAfterQuiescenceAckCount == 0 &&
+        currentCallbackBeforeIssuanceOpenCount == 0;
+    const QJsonObject prerollTransitionHandshake{
+        {"schema", "mvm-p2-d5-2-b3-i5b-preroll-transition-handshake-1"},
+        {"positional_ignore_next_swap_removed", true},
+        {"queue_semantics_changed", false},
+        {"join_accept_reject_changed", false},
+        {"identity_join_uses_present_and_token_serial", true},
+        {"nearest_qpc_used", false},
+        {"callback_index_used_as_identity", false},
+        {"event_serial_is_identity_authority", false},
+        {"event_serial_contiguous", eventSerialContiguous},
+        {"state", gpu::prerollTransitionStateName(prerollTransition.state)},
+        {"error", gpu::prerollTransitionErrorName(prerollTransition.error)},
+        {"admission_close_is_scheduler_close", false},
+        {"scheduler_closed_after_active_transaction_drain",
+         prerollTransition.foreignSchedulerClosed && prerollTransition.pendingOpportunityFinalized},
+        {"pending_opportunity_exactly_finalized", prerollTransition.pendingOpportunityFinalized},
+        {"active_foreign_transaction_count", prerollTransition.activeForeignTransactionCount},
+        {"foreign_callback_count", foreignCallbackCount},
+        {"foreign_callback_after_quiescence_ack_count", foreignCallbackAfterQuiescenceAckCount},
+        {"current_callback_before_issuance_open_count", currentCallbackBeforeIssuanceOpenCount},
+        {"admission_close_event_serial", static_cast<qint64>(admissionCloseEventSerial)},
+        {"quiescence_ack_event_serial", static_cast<qint64>(quiescenceAckEventSerial)},
+        {"current_queue_start_event_serial", static_cast<qint64>(currentQueueStartEventSerial)},
+        {"measurement_armed_event_serial", static_cast<qint64>(measurementArmedEventSerial)},
+        {"current_issuance_open_event_serial", static_cast<qint64>(issuanceOpenEventSerial)},
+        {"handshake_step_order_exact", handshakeStepOrderExact},
+        {"canonical_start_order_exact", canonicalStartOrderExact},
+        {"canonical_start_after_current_queue_ready",
+         currentQueueStartEventQpc > 0 &&
+             currentQueueStartEventQpc <= prerollTransition.canonicalMeasurementStartQpc},
+        {"admission_close_qpc", prerollTransition.admissionCloseQpc},
+        {"quiescence_ack_qpc", prerollTransition.quiescenceAckQpc},
+        {"admission_close_event_qpc", admissionCloseEventQpc},
+        {"quiescence_ack_event_qpc", quiescenceAckEventQpc},
+        {"current_queue_start_event_qpc", currentQueueStartEventQpc},
+        {"measurement_armed_event_qpc", measurementArmedEventQpc},
+        {"current_issuance_open_event_qpc", issuanceOpenEventQpc},
+        {"handshake_wait_qpc", prerollTransition.handshakeWaitQpc},
+        {"wait_charged_to_measurement_window",
+         prerollTransition.waitChargedToMeasurementWindow},
+        {"timeout_qpc", prerollTransition.timeoutQpc},
+        {"timeout_disposition", "PROTOCOL_FAIL_CLOSE_NOT_PERFORMANCE_DROP"},
+        {"canonical_measurement_start_qpc", prerollTransition.canonicalMeasurementStartQpc},
+        {"canonical_measurement_end_qpc", prerollTransition.canonicalMeasurementEndQpc},
+        {"canonical_window_frozen", prerollTransition.canonicalWindowFrozen},
+        {"current_issuance_open", prerollTransition.currentIssuanceOpen},
+        {"boundary_owner_bound", prerollTransition.boundaryOwnerBound},
+        {"boundary_owner_reservation_id",
+         QString::number(prerollTransition.boundaryOwner.reservationId)},
+        {"boundary_owner_intent_ordinal", prerollTransition.boundaryOwner.intentOrdinal},
+        {"boundary_owner_token_serial",
+         QString::number(prerollTransition.boundaryOwner.tokenSerial)},
+        {"boundary_owner_scope_foreign_pre_measurement",
+         prerollTransition.boundaryOwner.foreignPreMeasurementScope},
+        {"retroactive_owner_for_completed_foreign_present", false},
+        {"current_present_consumed_as_boundary", false},
+        {"quiescence",
+         QJsonObject{
+             {"name", "PREROLL_TRANSACTION_FULLY_QUIESCENT"},
+             {"evaluated", quiescenceVerdict.evaluated},
+             {"quiescent", quiescenceVerdict.quiescent},
+             {"evaluation_count", prerollTransition.quiescenceEvaluationCount},
+             {"capture_epoch", QString::number(quiescenceVerdict.captureEpoch)},
+             {"observer_thread_id", static_cast<qint64>(quiescenceVerdict.observerThreadId)},
+             {"same_capture_epoch", quiescenceVerdict.sameCaptureEpoch},
+             {"same_render_thread", quiescenceVerdict.sameRenderThread},
+             {"preroll_admission_closed", quiescenceVerdict.prerollAdmissionClosed},
+             {"scheduler_pending_render_false", quiescenceVerdict.schedulerPendingRenderFalse},
+             {"scheduler_pending_qualified_evidence_false",
+              quiescenceVerdict.schedulerPendingQualifiedEvidenceFalse},
+             {"scheduler_pending_opportunity_false_or_exactly_finalized",
+              quiescenceVerdict.schedulerPendingOpportunityFalseOrExactlyFinalized},
+             {"queue_active_reservation_count_zero",
+              quiescenceVerdict.queueActiveReservationCountZero},
+             {"join_active_reservation_false", quiescenceVerdict.joinActiveReservationFalse},
+             {"qt_pending_composition_token_false",
+              quiescenceVerdict.qtPendingCompositionTokenFalse},
+             {"qt_pending_frame_swapped_receipt_false",
+              quiescenceVerdict.qtPendingFrameSwappedReceiptFalse},
+             {"issued_equals_rendered_equals_qualified_commit_equals_dequeued",
+              quiescenceVerdict.issuedEqualsRenderedEqualsQualifiedCommitEqualsDequeued},
+             {"queue_conservation_valid", quiescenceVerdict.queueConservationValid},
+             {"issued_prefix_exact_identity_closed",
+              quiescenceVerdict.issuedPrefixExactIdentityClosed},
+             {"preroll_scope_ledger_terminal_partition_exact",
+              quiescenceVerdict.prerollScopeLedgerTerminalPartitionExact},
+             {"transport_failure_counters_zero", quiescenceVerdict.transportFailureCountersZero},
+         }},
+        {"historical_composition_token_mismatch",
+         QJsonObject{{"status", "UNRESOLVED_HISTORICAL_RUNTIME_FAILURE"},
+                     {"reclassified_as_i3_boundary_failure", false},
+                     {"reclassified_as_i5b_transition_failure", false}}},
+        {"verdict", quiescenceHandshakeObserved ? "PREROLL_TRANSITION_QUIESCENCE_HANDSHAKE_OBSERVED"
+                                                : "PREROLL_TRANSITION_QUIESCENCE_NOT_OBSERVED"},
+        {"records", boundaryEventJson},
+    };
     const QJsonObject nativePresentHook{
         {"abi_version", static_cast<qint64>(MVM_NATIVE_PRESENT_HOOK_ABI_VERSION)},
         {"composition_token_size", static_cast<qint64>(sizeof(MvmNativePresentCompositionToken))},
@@ -2570,6 +2884,12 @@ bool CompositorSpikeController::writeMetrics() {
         {"stale_token_count", static_cast<qint64>(nativePresentSnapshot.staleTokenCount)},
         {"token_set_failure_count", projectedMissingTokenCount},
         {"failed_present_count", projectedFailedPresentCount},
+        {"missing_frame_swapped_receipt_count",
+         static_cast<qint64>(nativePresentSnapshot.missingFrameSwappedReceiptCount)},
+        {"duplicate_frame_swapped_receipt_count",
+         static_cast<qint64>(nativePresentSnapshot.duplicateFrameSwappedReceiptCount)},
+        {"stale_frame_swapped_receipt_count",
+         static_cast<qint64>(nativePresentSnapshot.staleFrameSwappedReceiptCount)},
         {"submission_mode", static_cast<qint64>(nativePresentSnapshot.submissionMode)},
         {"configured_maximum_frame_latency",
          static_cast<qint64>(nativePresentSnapshot.configuredMaximumFrameLatency)},
@@ -2614,8 +2934,17 @@ bool CompositorSpikeController::writeMetrics() {
              {"duplicate_token_count",
               static_cast<qint64>(nativePresentSnapshot.duplicateTokenCount)},
              {"stale_token_count", static_cast<qint64>(nativePresentSnapshot.staleTokenCount)},
+             {"missing_frame_swapped_receipt_count",
+              static_cast<qint64>(nativePresentSnapshot.missingFrameSwappedReceiptCount)},
+             {"duplicate_frame_swapped_receipt_count",
+              static_cast<qint64>(nativePresentSnapshot.duplicateFrameSwappedReceiptCount)},
+             {"stale_frame_swapped_receipt_count",
+              static_cast<qint64>(nativePresentSnapshot.staleFrameSwappedReceiptCount)},
              {"token_set_failure_count",
               state_->nativePresentTokenSetFailureCount.load(std::memory_order_relaxed)},
+             {"token_publication_suppressed_before_present_count",
+              state_->nativePresentTokenSuppressedBeforePresentCount.load(
+                  std::memory_order_relaxed)},
              {"authority_pass", nativePresentAuthorityPass && captureEnvelopeLowerClosed &&
                                     frozenMeasurementWindowUnchanged &&
                                     captureEnvelopeUpperClosed && intentScopeAuthorityPass},
@@ -2630,10 +2959,41 @@ bool CompositorSpikeController::writeMetrics() {
              {"scope_derived_from_present_qpc", false},
              {"scope_derived_from_source_frame", false},
              {"scope_derived_from_layer2_membership", false},
-             {"required_intent_set_producer", "formal opportunity scheduler start"},
+             {"required_intent_set_producer", "immutable required-intent queue start"},
              {"required_intent_set_derived_from_presented", false},
              {"required_intent_set_exact", formalOpportunitySnapshot.requiredIntentSetExact},
              {"required_intent_ordinals", requiredIntentOrdinalsJson},
+             {"online_queue_state",
+              QJsonObject{
+                  {"schema", "mvm-p2-d5-2-b3-i1-required-intent-queue-1"},
+                  {"required_set_immutable",
+                   formalOpportunitySnapshot.requiredIntentQueue.requiredSetImmutable},
+                  {"planned_window_ended",
+                   formalOpportunitySnapshot.requiredIntentQueue.plannedWindowEnded},
+                  {"display_satisfaction_imported",
+                   formalOpportunitySnapshot.requiredIntentQueue.displaySatisfactionImported},
+                  {"required_count", formalOpportunitySnapshot.requiredIntentQueue.requiredCount},
+                  {"issued_count", formalOpportunitySnapshot.requiredIntentQueue.issuedCount},
+                  {"rendered_count", formalOpportunitySnapshot.requiredIntentQueue.renderedCount},
+                  {"qualified_commit_count",
+                   formalOpportunitySnapshot.requiredIntentQueue.qualifiedCommitCount},
+                  {"dequeued_count", formalOpportunitySnapshot.requiredIntentQueue.dequeuedCount},
+                  {"active_reservation_count",
+                   formalOpportunitySnapshot.requiredIntentQueue.activeReservationCount},
+                  {"active_reservation_id",
+                   static_cast<qint64>(formalOpportunitySnapshot.requiredIntentQueue
+                                           .activeReservation.reservationId)},
+                  {"active_intent_ordinal",
+                   formalOpportunitySnapshot.requiredIntentQueue.activeReservation.intentOrdinal},
+                  {"active_reservation_rendered",
+                   formalOpportunitySnapshot.requiredIntentQueue.activeReservationRendered},
+                  {"unissued_tail_count",
+                   formalOpportunitySnapshot.requiredIntentQueue.unissuedTailCount},
+                  {"conservation_valid",
+                   formalOpportunitySnapshot.requiredIntentQueue.conservationValid},
+                  {"error", QString::fromLatin1(gpu::requiredIntentQueueErrorName(
+                                formalOpportunitySnapshot.requiredIntentQueue.error))},
+              }},
              {"duplicate_transport_suppressed_count",
               state_->formalDuplicateTransportSuppressedCount.load(std::memory_order_relaxed)},
              {"outside_required_transport_suppressed_count",
@@ -2668,6 +3028,8 @@ bool CompositorSpikeController::writeMetrics() {
                                                       : "INTENT_IDENTITY_ABI_V4_TRANSPORT_INVALID"},
              {"records", intentIdentityLedger},
          }},
+        {"composition_token_runtime_attribution", compositionTokenRuntimeAttribution},
+        {"preroll_transition_handshake", prerollTransitionHandshake},
         {"dirty_propagation",
          QJsonObject{
              {"schema", "mvm-p2-c3-a3-t2-dirty-propagation-1"},
@@ -2713,6 +3075,29 @@ bool CompositorSpikeController::writeMetrics() {
         {"configured_measure_seconds", config_.measureSeconds},
         {"configured_seek_count", config_.seekCount},
         {"diagnostic_target_rhiitem_pixel_toggle", config_.diagnosticTargetPixelToggle},
+        {"required_intent_source_coverage",
+         QJsonObject{
+             {"schema", "mvm-p2-d5-2-b3-i6c-required-intent-source-coverage-1"},
+             {"required_intent_rate_numerator",
+              static_cast<qint64>(gpu::kFormalRequiredIntentRate.numerator)},
+             {"required_intent_rate_denominator",
+              static_cast<qint64>(gpu::kFormalRequiredIntentRate.denominator)},
+             {"source_frame_rate_numerator",
+              static_cast<qint64>(gpu::kFormalSourceFrameRate.numerator)},
+             {"source_frame_rate_denominator",
+              static_cast<qint64>(gpu::kFormalSourceFrameRate.denominator)},
+             {"target_mapping_uses_display_refresh", false},
+             {"coverage_valid", requiredIntentSourceCoverage_.valid},
+             {"monotonic_non_decreasing",
+              requiredIntentSourceCoverage_.monotonicNonDecreasing},
+             {"required_count", requiredIntentSourceCoverage_.requiredCount},
+             {"min_target", requiredIntentSourceCoverage_.minTarget},
+             {"max_target", requiredIntentSourceCoverage_.maxTarget},
+             {"source_a_frame_count", sourceAFrameCount_},
+             {"source_b_frame_count", sourceBFrameCount_},
+             {"coverage_rule", "0 <= min_target && max_target < source_frame_count"},
+             {"count_comparison_used", false},
+         }},
         {"configured_measurement_preroll_frames",
          static_cast<qint64>(gpu::kMeasurementPrerollFrames)},
         {"measurement_preroll_ok", measurementPrerollOk_},

@@ -113,8 +113,9 @@ $recordIndex=$item.IndexOf('void CompositorRhiItem::recordFrameSwapped()')
 if($recordIndex-lt0){Fail 'recordFrameSwappedが見つかりません'}
 $tail=$item.Substring($recordIndex)
 $frameSwappedCommitsFormal=$tail-match 'formalOpportunityScheduler\.commitSwap'
-# frameSwapped 由来の例外ハック。v2 では不要になるはず。
+# frameSwapped 由来の例外ハック。B3-I5Bのquiescence handshakeで削除済み。
 $ignoreNextSwapPresent=$item-match 'formalOpportunityIgnoreNextSwap'
+$quiescenceHandshakePresent=$item-match 'formalPrerollTransition'
 # scheduler API に swap 概念が残っているか。
 $schedulerHasCommitSwap=$scheduler-match 'bool\s+commitSwap\('
 
@@ -123,8 +124,13 @@ if($Phase-eq'PreW2'){
     if(-not$frameSwappedCommitsFormal){
         Fail 'PreW2 baselineが崩れています: recordFrameSwappedがcommitSwapを呼んでいません'
     }
-    if(-not$ignoreNextSwapPresent){
-        Fail 'PreW2 baselineが崩れています: formalOpportunityIgnoreNextSwapがありません'
+    # B3-I5Bでpositional ignore-next-swapを削除し、boundary ownershipを
+    # quiescence handshakeへ移した。baselineはその後継契約を固定する。
+    if($ignoreNextSwapPresent){
+        Fail 'B3-I5B違反: positional formalOpportunityIgnoreNextSwapが残っています'
+    }
+    if(-not$quiescenceHandshakePresent){
+        Fail 'B3-I5B違反: preroll transition handshakeがrendererにありません'
     }
     if(-not$schedulerHasCommitSwap){
         Fail 'PreW2 baselineが崩れています: schedulerにcommitSwapがありません'

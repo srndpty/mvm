@@ -23,11 +23,13 @@ using InvocationReason = mvm::gpu::PresentationSchedulerInvocationReason;
 
 constexpr long long kQpcFrequency = 600;
 
+// B3-I6C。required-intent rateはtargetの時間軸authorityであり、refreshはauthority検査専用。
 Scheduler scheduler(long long refreshNumerator, long long refreshDenominator,
-                    long long requiredFrameCount = 3600) {
+                    long long requiredFrameCount = 3600, long long intentRateNumerator = 60,
+                    long long intentRateDenominator = 1) {
     Scheduler value;
-    check(value.start(
-              {requiredFrameCount, 0, 60, 1, refreshNumerator, refreshDenominator, kQpcFrequency}),
+    check(value.start({requiredFrameCount, 0, 60, 1, refreshNumerator, refreshDenominator,
+                       kQpcFrequency, false, intentRateNumerator, intentRateDenominator}),
           "schedulerを開始できません");
     return value;
 }
@@ -37,6 +39,15 @@ mvm::gpu::PresentationAuthoritySample authority(unsigned long long refreshCount,
                                                 long long refreshDenominator = 1) {
     return {true, refreshCount, static_cast<long long>(refreshCount) * 10, refreshNumerator,
             refreshDenominator};
+}
+
+void checkFailedSwapDidNotConsume(const Scheduler& value, long long expectedDequeued,
+                                  const char* message) {
+    const auto queue = value.snapshot().requiredIntentQueue;
+    check(queue.dequeuedCount == expectedDequeued &&
+              queue.qualifiedCommitCount == expectedDequeued && queue.activeReservationCount == 1 &&
+              queue.activeReservationRendered && queue.conservationValid,
+          message);
 }
 
 // 1回のrender/swapを駆動する。opportunity序数はrefresh countだけが決めるので、
@@ -62,8 +73,11 @@ struct Driver {
         if (!scheduler->markRenderComplete(renderEndQpc, decision.targetFrame,
                                            decision.renderOrdinal))
             return false;
-        const bool committed = scheduler->commitSwap(
-            swapQpc, authority(postCount, refreshNumerator, refreshDenominator), swapOrdinal);
+        const bool committed =
+            scheduler->commitQualifiedPresent(decision.reservationId,
+                                              decision.opportunityOrdinal) &&
+            scheduler->commitSwap(
+                swapQpc, authority(postCount, refreshNumerator, refreshDenominator), swapOrdinal);
         ++renderOrdinal;
         ++swapOrdinal;
         return committed;
@@ -85,7 +99,7 @@ void regularCadences() {
     auto hz60 = scheduler(60, 1);
     Driver driver{&hz60};
     check(driver.runCadence(3600), "60 Hz cadenceをcommitできません");
-    check(hz60.close(), "60 Hz schedulerをcloseできません");
+    check(hz60.closePlannedWindow(), "60 Hz schedulerをcloseできません");
     auto result = hz60.snapshot();
     check(result.displayedUnique == 3600 && result.trueDrop == 0 && result.repeated == 0,
           "60 Hz / 60 fpsのaccountingが違います");
@@ -95,32 +109,39 @@ void regularCadences() {
     check(result.originRefreshCount == 101 && result.records[0].actualOpportunityOrdinal == 0,
           "最初のswapのrefresh countをoriginへ固定できません");
 
+    // B3-I6C。display refreshはtarget mappingへ関与しない。59.95Hzでもtarget == ordinalである。
     auto hz5995 = scheduler(59950, 1000);
     Driver slow{&hz5995, 0, 0, 59950, 1000};
     check(slow.runCadence(3597), "59.95 Hz cadenceをcommitできません");
     const auto endDecision = slow.select(100 + 3597, 20 * 3597 + 1);
-    check(endDecision.valid && endDecision.pastSourceDomain && endDecision.targetFrame == 3600,
-          "59.95 Hzでframe 3600を非表示境界として検出できません");
-    check(hz5995.close(), "59.95 Hz schedulerをcloseできません");
+    check(endDecision.valid && !endDecision.pastSourceDomain && endDecision.targetFrame == 3597 &&
+              hz5995.error() == Error::None,
+          "59.95 Hz displayでsource domainを外れました");
     result = hz5995.snapshot();
-    check(result.displayedUnique == 3597 && result.trueDrop == 3 && result.repeated == 0,
-          "59.95 Hz cadence/domain lossが違います");
+    check(result.requiredIntentQueue.dequeuedCount == 3597 &&
+              result.requiredIntentQueue.activeReservationCount == 1 &&
+              result.requiredIntentQueue.unissuedTailCount == 2,
+          "59.95 Hz cadenceがrequired setをskip/dequeue/縮小しました");
 
-    auto hz120 = scheduler(120, 1);
-    Driver fast{&hz120, 0, 0, 120, 1};
-    check(fast.runCadence(7200), "120 Hz cadenceをcommitできません");
-    check(hz120.close(), "120 Hz schedulerをcloseできません");
-    result = hz120.snapshot();
-    check(result.displayedUnique == 3600 && result.trueDrop == 0 && result.repeated == 3600,
-          "120 Hz repeat accountingが違います");
+    // source 60fps workloadをintent rate 120/sへ載せると、2 intentごとに同じsource frameになる。
+    auto rate120 = scheduler(60, 1, 3600, 120, 1);
+    Driver fast{&rate120, 0, 0, 60, 1};
+    check(fast.runCadence(3600), "intent rate 120のcadenceをcommitできません");
+    check(rate120.closePlannedWindow(), "intent rate 120 schedulerをcloseできません");
+    result = rate120.snapshot();
+    check(result.displayedUnique == 1800 && result.repeated == 1800 && result.gapTrueDrop == 0 &&
+              result.tailTrueDrop == 1800 && result.trueDrop == 1800,
+          "intent rate 120のrequired-intent domain accountingが違います");
 
-    auto hz30 = scheduler(30, 1);
-    Driver half{&hz30, 0, 0, 30, 1};
-    check(half.runCadence(1800), "30 Hz cadenceをcommitできません");
-    check(hz30.close(), "30 Hz schedulerをcloseできません");
-    result = hz30.snapshot();
-    check(result.displayedUnique == 1800 && result.trueDrop == 1800 && result.repeated == 0,
-          "30 Hz drop accountingが違います");
+    // intent rate 30/sなら1 intentごとにsource frameが2進む。
+    auto rate30 = scheduler(60, 1, 3600, 30, 1);
+    Driver half{&rate30, 0, 0, 60, 1};
+    check(half.runCadence(1800), "intent rate 30のcadenceをcommitできません");
+    check(rate30.closePlannedWindow(), "intent rate 30 schedulerをcloseできません");
+    result = rate30.snapshot();
+    check(result.displayedUnique == 1800 && result.repeated == 0 && result.gapTrueDrop == 1799 &&
+              result.tailTrueDrop == 1 && result.trueDrop == 1800,
+          "intent rate 30のdrop accountingが違います");
 }
 
 // 今回のformal Playback run 1で観測した実sequenceをdeterministic regressionにする。
@@ -142,7 +163,7 @@ void longRenderThenShortSwapIsNotFatal() {
 
     // 次のopportunityへ前進した時点で、pendingがlatest candidateでfinalizeされる。
     check(driver.present(107, 108, 125, 127, 130), "supersede後のswapをcommitできません");
-    check(value.close(), "supersede sequenceをcloseできません");
+    check(value.closePlannedWindow(), "supersede sequenceをcloseできません");
     const auto result = value.snapshot();
     check(result.error == Error::None && result.closed,
           "1.688T→0.312T sequenceがfail-closedになりました");
@@ -150,16 +171,16 @@ void longRenderThenShortSwapIsNotFatal() {
               result.supersededCandidateCount == 1,
           "supersedeでopportunityとswapの数が分離できていません");
     const auto& lost = result.records[5];
-    check(lost.actualOpportunityOrdinal == 6 && lost.predictedOpportunityOrdinal == 7 &&
+    check(lost.actualOpportunityOrdinal == 6 && lost.predictedOpportunityOrdinal == 6 &&
               lost.lostOpportunityCount == 1 &&
               lost.classification == Classification::ForwardOpportunityLoss,
           "1.688 refresh swapのopportunity lossを記録できません");
-    check(lost.supersededCandidateCount == 1 && lost.presentedSourceFrame == 7,
+    check(lost.supersededCandidateCount == 1 && lost.presentedSourceFrame == 6,
           "same-opportunityのlatest candidateをfinalizeしていません (first candidate保持mutation)");
-    check(lost.trueDropBefore == 2 && result.gapTrueDrop == 2,
+    check(lost.trueDropBefore == 1 && result.gapTrueDrop == 1,
           "supersedeで捨てたframeをtrue dropへ計上していません");
-    check(result.records[6].actualOpportunityOrdinal == 7 && result.records[6].repeat,
-          "supersede後のopportunityをrepeatとして閉じられません");
+    check(result.records[6].actualOpportunityOrdinal == 7 && !result.records[6].repeat,
+          "supersede後のqueue intentを誤ってrepeatにしました");
     check(result.displayedUnique + result.trueDrop == 12,
           "supersede sequenceでdisplayed + trueDroppedがsource domainと一致しません");
 }
@@ -172,7 +193,7 @@ void sameRefreshCountDoesNotAdvanceOrdinal() {
     check(driver.present(103, 104, 61, 63, 65), "同一count 1本目をcommitできません");
     check(driver.present(104, 104, 66, 68, 70), "同一count 2本目をcommitできません");
     check(driver.present(104, 105, 71, 73, 75), "同一count後の前進をcommitできません");
-    check(value.close(), "同一count caseをcloseできません");
+    check(value.closePlannedWindow(), "同一count caseをcloseできません");
     const auto result = value.snapshot();
     check(result.records.size() == 5,
           "同一refresh countのswapを新opportunityとして数えました (same-opportunity mutation)");
@@ -193,7 +214,7 @@ void refreshCountGapAccounting() {
     check(one.runCadence(3), "単一gap testの先行cadenceに失敗しました");
     check(one.present(103, 106, 61, 63, 65), "refresh count +3のswapをcommitできません");
     check(one.present(106, 107, 66, 68, 70), "gap後のswapをcommitできません");
-    check(single.close(), "gap caseをcloseできません");
+    check(single.closePlannedWindow(), "gap caseをcloseできません");
     const auto result = single.snapshot();
     check(result.records.size() == 5, "gap caseのfinalize件数が違います");
     check(result.records[3].actualOpportunityOrdinal == 5 &&
@@ -203,11 +224,11 @@ void refreshCountGapAccounting() {
     check(result.records[3].presentedSourceFrame == 3 &&
               result.records[3].expectedSourceFrame == 5 && result.records[3].trueDropBefore == 0,
           "lost opportunityをsource dropへ二重計上しました");
-    check(result.records[4].trueDropBefore == 2 && result.gapTrueDrop == 2,
-          "lost opportunity後のsource gapを計上していません");
-    check(result.lostOpportunityCount == 2 && result.forwardReconciliationCount == 1,
-          "lost opportunity総数が違います");
-    check(result.tailTrueDrop == 5 && result.displayedUnique + result.trueDrop == 12,
+    check(result.records[4].trueDropBefore == 0 && result.gapTrueDrop == 0,
+          "lost DWM opportunityをrequired intent source gapへ逆輸入しました");
+    check(result.lostOpportunityCount == 2 && result.forwardReconciliationCount == 2,
+          "DWM opportunity診断をqueue issuanceと独立に集計できていません");
+    check(result.tailTrueDrop == 7 && result.displayedUnique + result.trueDrop == 12,
           "gap caseのsource domain accountingが閉じていません");
     check(result.firstEvent.captured &&
               result.firstEvent.classification == Classification::ForwardOpportunityLoss &&
@@ -223,9 +244,14 @@ void authorityFailuresAreFatal() {
     check(decision.valid, "count regression前のselectに失敗しました");
     check(regression.markRenderComplete(63, decision.targetFrame, decision.renderOrdinal),
           "count regression前のrender完了に失敗しました");
+    check(regression.commitQualifiedPresent(decision.reservationId, decision.opportunityOrdinal),
+          "count regression前のqualified commitに失敗しました");
     check(!regression.commitSwap(65, authority(100), driver.swapOrdinal) &&
               regression.error() == Error::AuthorityDiscontinuity,
           "refresh count regressionをfail-closedにできません");
+    checkFailedSwapDidNotConsume(
+        regression, 3,
+        "NegativeSwapCommitFailureConsumesIntent: authority regressionがintentをconsumeしました");
 
     auto vblank = scheduler(60, 1, 12);
     Driver vblankDriver{&vblank};
@@ -234,11 +260,16 @@ void authorityFailuresAreFatal() {
     check(ahead.valid, "VBlank regression前のselectに失敗しました");
     check(vblank.markRenderComplete(63, ahead.targetFrame, ahead.renderOrdinal),
           "VBlank regression前のrender完了に失敗しました");
+    check(vblank.commitQualifiedPresent(ahead.reservationId, ahead.opportunityOrdinal),
+          "VBlank regression前のqualified commitに失敗しました");
     mvm::gpu::PresentationAuthoritySample backward = authority(105);
     backward.qpcVBlank = 1;
     check(!vblank.commitSwap(65, backward, vblankDriver.swapOrdinal) &&
               vblank.error() == Error::AuthorityDiscontinuity,
           "qpcVBlank discontinuityをfail-closedにできません");
+    checkFailedSwapDidNotConsume(vblank, 3,
+                                 "NegativeSwapCommitFailureConsumesIntent: VBlank authority "
+                                 "failureがintentをconsumeしました");
 
     auto missing = scheduler(60, 1, 12);
     check(!missing.selectForRender(1, {}, 0).valid &&
@@ -268,10 +299,11 @@ void pairingFailuresAreFatal() {
     const auto selected = swapDriver.select(100, 1);
     check(swapMissing.markRenderComplete(5, selected.targetFrame, selected.renderOrdinal),
           "swap欠落testのrender完了に失敗しました");
-    check(!swapMissing.close() && swapMissing.error() == Error::RenderWithoutSwap,
-          "swap欠落を拒否しません");
-    check(swapMissing.snapshot().firstEvent.classification == Classification::PairingDefect,
-          "swap欠落のfirst-event分類が残りません");
+    check(swapMissing.closePlannedWindow(), "planned endで未commit reservationを保持できません");
+    const auto inflight = swapMissing.snapshot().requiredIntentQueue;
+    check(inflight.activeReservationCount == 1 && inflight.activeReservationRendered &&
+              inflight.dequeuedCount == 0,
+          "planned endでactive reservationをconsumeしました");
 
     auto orphanSwap = scheduler(60, 1, 12);
     check(!orphanSwap.commitSwap(10, authority(101), 0) &&
@@ -290,9 +322,18 @@ void pairingFailuresAreFatal() {
     const auto first = ordinalDriver.select(100, 1);
     check(swapOrdinal.markRenderComplete(5, first.targetFrame, first.renderOrdinal),
           "swap ordinal testのrender完了に失敗しました");
+    check(swapOrdinal.commitQualifiedPresent(first.reservationId, first.opportunityOrdinal),
+          "swap ordinal testのqualified commitに失敗しました");
+    const auto qualifiedPending = swapOrdinal.snapshot().requiredIntentQueue;
+    check(qualifiedPending.dequeuedCount == 0 && qualifiedPending.activeReservationCount == 1 &&
+              qualifiedPending.activeReservationRendered,
+          "I0 QUALIFIED_COMMIT evidenceだけでintentをdequeueしました");
     check(!swapOrdinal.commitSwap(10, authority(101), 3) &&
               swapOrdinal.error() == Error::SwapOrdinalMismatch,
           "swap ordinalの飛びを拒否しません");
+    checkFailedSwapDidNotConsume(
+        swapOrdinal, 0,
+        "NegativeSwapCommitFailureConsumesIntent: swap ordinal mismatchがintentをconsumeしました");
 
     auto qpcRegression = scheduler(60, 1, 12);
     Driver qpcDriver{&qpcRegression};
@@ -301,9 +342,167 @@ void pairingFailuresAreFatal() {
     check(ahead.valid, "QPC cross-check前のselectに失敗しました");
     check(qpcRegression.markRenderComplete(43, ahead.targetFrame, ahead.renderOrdinal),
           "QPC cross-check前のrender完了に失敗しました");
+    check(qpcRegression.commitQualifiedPresent(ahead.reservationId, ahead.opportunityOrdinal),
+          "QPC cross-check前のqualified commitに失敗しました");
     check(!qpcRegression.commitSwap(20, authority(103), qpcDriver.swapOrdinal) &&
               qpcRegression.error() == Error::OpportunityRegression,
           "swap QPCの後退をcontinuity cross-checkで拒否しません");
+    checkFailedSwapDidNotConsume(
+        qpcRegression, 2,
+        "NegativeSwapCommitFailureConsumesIntent: QPC regressionがintentをconsumeしました");
+}
+
+void sourceCoverageFatalCleanupPreservesQueue() {
+    Scheduler value;
+    // source 60fps workloadをintent rate 30/sへ載せる。target = 2*ordinalでrequired 4を超える。
+    check(value.start({4, 0, 60, 1, 60, 1, kQpcFrequency, false, 30, 1}),
+          "source coverage cleanup schedulerを開始できません");
+    Driver driver{&value, 0, 0, 60, 1};
+    check(driver.runCadence(2), "source coverage fatal前のcommitに失敗しました");
+    const auto fatalDecision = driver.select(102, 41);
+    check(!fatalDecision.valid && fatalDecision.pastSourceDomain &&
+              fatalDecision.opportunityOrdinal == 2 && fatalDecision.targetFrame == 4 &&
+              value.error() == Error::SourceCoverageInsufficient,
+          "source coverage不足をqueue reservation後のfatalにできません");
+    const auto before = value.snapshot().requiredIntentQueue;
+    check(before.dequeuedCount == 2 && before.activeReservationCount == 1 &&
+              before.activeReservation.intentOrdinal == 2 && before.unissuedTailCount == 1,
+          "source coverage fatal時点でreservation/tailが保持されません");
+    check(value.closeWithoutNormalCompletion(),
+          "source coverage fatal後のnon-normal cleanupに失敗しました");
+    const auto snapshot = value.snapshot();
+    const auto after = snapshot.requiredIntentQueue;
+    check(snapshot.closed && snapshot.error == Error::SourceCoverageInsufficient && after.closed &&
+              !after.plannedWindowEnded && after.dequeuedCount == before.dequeuedCount &&
+              after.activeReservationCount == before.activeReservationCount &&
+              after.activeReservation.intentOrdinal == before.activeReservation.intentOrdinal &&
+              after.unissuedTailCount == before.unissuedTailCount && after.conservationValid,
+          "source coverage fatal cleanupがreservation/tailまたはfatal原因を変更しました");
+}
+
+// B3-I6B。source coverage fatalの後にcallbackやswapが続いても、queue historyは
+// rollbackされず、failed reservationもdequeueされない。
+void postSourceCoverageFatalDoesNotMutateTransaction() {
+    Scheduler value;
+    check(value.start({4, 0, 60, 1, 60, 1, kQpcFrequency, false, 30, 1}),
+          "post-fatal atomicity schedulerを開始できません");
+    Driver driver{&value, 0, 0, 60, 1};
+    check(driver.runCadence(2), "post-fatal atomicity前のcommitに失敗しました");
+    const auto fatalDecision = driver.select(102, 41);
+    check(!fatalDecision.valid && value.error() == Error::SourceCoverageInsufficient,
+          "source coverage fatalへ到達できません");
+    const auto atFatal = value.snapshot().requiredIntentQueue;
+
+    // post-fatal callback / render完了 / qualified evidence / swapはいずれも
+    // transactionを前進させない。
+    const auto postDecision = value.selectForRender(45, authority(103, 60, 1), 2);
+    check(!postDecision.valid, "post-fatal callbackがvalid decisionを返しました");
+    check(!value.markRenderComplete(50, 4, 2), "post-fatal render完了を受理しました");
+    check(!value.commitQualifiedPresent(atFatal.activeReservation.reservationId,
+                                        atFatal.activeReservation.intentOrdinal),
+          "post-fatal qualified evidenceを受理しました");
+    check(!value.commitSwap(55, authority(104, 60, 1), 2), "post-fatal swapを受理しました");
+
+    const auto after = value.snapshot().requiredIntentQueue;
+    check(after.issuedCount == atFatal.issuedCount &&
+              after.renderedCount == atFatal.renderedCount &&
+              after.qualifiedCommitCount == atFatal.qualifiedCommitCount &&
+              after.dequeuedCount == atFatal.dequeuedCount &&
+              after.activeReservationCount == atFatal.activeReservationCount &&
+              after.activeReservation.reservationId == atFatal.activeReservation.reservationId &&
+              after.unissuedTailCount == atFatal.unissuedTailCount && after.conservationValid,
+          "post-fatal操作がqueue transactionを変更しました");
+    check(value.error() == Error::SourceCoverageInsufficient,
+          "post-fatal操作がfirst protocol fatalを上書きしました");
+}
+
+// B3-I6C。同じworkload configurationならdisplay refreshが変わってもtarget列は一致する。
+void targetMappingIsDisplayRefreshIndependent() {
+    const long long refreshRates[][2] = {{60, 1}, {59950, 1000}, {120, 1}, {30, 1}};
+    long long expected[16]{};
+    for (long long ordinal = 0; ordinal < 16; ++ordinal)
+        expected[ordinal] = ordinal; // source 60fps / intent rate 60/s のexact mapping
+    for (const auto& refresh : refreshRates) {
+        mvm::gpu::PresentationOpportunityConfig config{};
+        config.requiredFrameCount = 3600;
+        config.sourceFpsNumerator = 60;
+        config.sourceFpsDenominator = 1;
+        config.refreshNumerator = refresh[0];
+        config.refreshDenominator = refresh[1];
+        config.qpcFrequency = kQpcFrequency;
+        config.requiredIntentRateNumerator = 60;
+        config.requiredIntentRateDenominator = 1;
+        for (long long ordinal = 0; ordinal < 16; ++ordinal) {
+            long long target = -1;
+            check(mvm::gpu::presentationTargetFrameFor(config, ordinal, target) &&
+                      target == expected[ordinal],
+                  "target mappingがdisplay refreshに依存しています");
+        }
+    }
+}
+
+// B3-I6C。prerollはsource 1/s workloadとして同じintent rate軸に載る。
+void prerollTargetStaysOnRepeatedFrame() {
+    const long long repeatedFrame = 41;
+    mvm::gpu::PresentationOpportunityConfig preroll{};
+    preroll.requiredFrameCount = repeatedFrame + 1;
+    preroll.sourceFrameOffset = repeatedFrame;
+    preroll.sourceFpsNumerator = 1;
+    preroll.sourceFpsDenominator = 1;
+    preroll.refreshNumerator = 59950;
+    preroll.refreshDenominator = 1000;
+    preroll.qpcFrequency = kQpcFrequency;
+    preroll.requiredIntentRateNumerator = 60;
+    preroll.requiredIntentRateDenominator = 1;
+    for (long long ordinal = 0; ordinal < 60; ++ordinal) {
+        long long target = -1;
+        check(mvm::gpu::presentationTargetFrameFor(preroll, ordinal, target) &&
+                  target == repeatedFrame,
+              "preroll targetがrepeated frameから動きました");
+    }
+    // negative。intent rateをsource rateと同じにするとrepeat semanticsが壊れる。
+    mvm::gpu::PresentationOpportunityConfig broken = preroll;
+    broken.requiredIntentRateNumerator = 1;
+    long long brokenTarget = -1;
+    check(mvm::gpu::presentationTargetFrameFor(broken, 1, brokenTarget) &&
+              brokenTarget == repeatedFrame + 1,
+          "preroll repeatを保つのがintent rate authorityであることを示せません");
+}
+
+// B3-I6C。source coverageはcount比較ではなくrequired set全域のexact target rangeで決める。
+void requiredIntentSourceCoverageIsExact() {
+    mvm::gpu::PresentationOpportunityConfig canonical{};
+    canonical.requiredFrameCount = 3600;
+    canonical.sourceFpsNumerator = 60;
+    canonical.sourceFpsDenominator = 1;
+    canonical.refreshNumerator = 59950;
+    canonical.refreshDenominator = 1000;
+    canonical.qpcFrequency = kQpcFrequency;
+    canonical.requiredIntentRateNumerator = 60;
+    canonical.requiredIntentRateDenominator = 1;
+    const auto coverage = mvm::gpu::requiredIntentSourceCoverage(canonical);
+    check(coverage.valid && coverage.monotonicNonDecreasing && coverage.requiredCount == 3600 &&
+              coverage.minTarget == 0 && coverage.maxTarget == 3599,
+          "canonical workloadのexact target rangeが違います");
+    check(mvm::gpu::requiredIntentSourceCoverageSatisfied(coverage, 3600),
+          "3600 frame sourceがcanonical required setをcoverできていません");
+    check(!mvm::gpu::requiredIntentSourceCoverageSatisfied(coverage, 3599),
+          "max targetがsource domain外でもcoverage成立にしています");
+    check(!mvm::gpu::requiredIntentSourceCoverageSatisfied(coverage, 0),
+          "source frame 0件をcoverage成立にしています");
+
+    // legacy display軸mapping (intent rate = 59.95/s) は同じ3600 frameでcoverできない。
+    mvm::gpu::PresentationOpportunityConfig legacy = canonical;
+    legacy.requiredIntentRateNumerator = 59950;
+    legacy.requiredIntentRateDenominator = 1000;
+    const auto legacyCoverage = mvm::gpu::requiredIntentSourceCoverage(legacy);
+    check(legacyCoverage.valid && legacyCoverage.maxTarget == 3602 &&
+              !mvm::gpu::requiredIntentSourceCoverageSatisfied(legacyCoverage, 3600),
+          "legacy display軸mappingのcoverage不足を検出できません");
+
+    // count比較では両者を区別できないことを固定する。
+    check(3600 >= canonical.requiredFrameCount && 3600 >= legacy.requiredFrameCount,
+          "count比較がcoverage authorityになり得ないことを示せません");
 }
 
 void duplicateCallbackDoesNotCreateOpportunity() {
@@ -312,12 +511,14 @@ void duplicateCallbackDoesNotCreateOpportunity() {
     const auto first = driver.select(100, 1);
     const auto duplicate = driver.select(100, 2);
     check(duplicate.valid && duplicate.duplicateCallback &&
-              duplicate.opportunityOrdinal == first.opportunityOrdinal,
+              duplicate.opportunityOrdinal == first.opportunityOrdinal &&
+              first.reservationId != 0 && duplicate.reservationId == first.reservationId,
           "duplicate callbackをfake opportunityとして扱いました");
     check(value.markRenderComplete(5, first.targetFrame, first.renderOrdinal) &&
+              value.commitQualifiedPresent(first.reservationId, first.opportunityOrdinal) &&
               value.commitSwap(10, authority(101), 0),
           "duplicate後のswapをcommitできません");
-    check(value.close(), "duplicate callback caseをcloseできません");
+    check(value.closePlannedWindow(), "duplicate callback caseをcloseできません");
     const auto result = value.snapshot();
     check(result.records.size() == 1 && result.trueDrop == 11,
           "duplicate callbackがledger件数を増やしました");
@@ -331,7 +532,7 @@ void measurementEndFinalizesPending() {
     auto before = value.snapshot();
     check(before.records.size() == 3 && before.lastFinalizedOpportunityOrdinal == 2,
           "close前にlatest opportunityをfinalizeしてはいけません");
-    check(value.close(), "tail caseをcloseできません");
+    check(value.closePlannedWindow(), "tail caseをcloseできません");
     const auto result = value.snapshot();
     check(result.records.size() == 4 && result.lastFinalizedOpportunityOrdinal == 3,
           "measurement endでpending opportunityをfinalizeしていません");
@@ -344,7 +545,8 @@ void measurementEndFinalizesPending() {
 
 void overflowIsClosed() {
     Scheduler overflow;
-    overflow.start({3600, 0, std::numeric_limits<long long>::max(), 1, 60, 3, 20});
+    // mapping本体のchecked multiplyを通す。ordinal * sourceFps * rateDen で overflow する。
+    overflow.start({3600, 0, std::numeric_limits<long long>::max(), 1, 60, 3, 20, false, 60, 3});
     Driver driver{&overflow, 0, 0, 60, 3};
     check(driver.present(100, 101, 1, 5, 10), "overflow testの初回commitに失敗しました");
     check(!driver.select(101, 11).valid && overflow.error() == Error::ArithmeticOverflow,
@@ -353,13 +555,14 @@ void overflowIsClosed() {
 
 void sourceFrameOffsetIsExact() {
     Scheduler value;
-    check(value.start({61, 60, 1, 1, 60, 1, kQpcFrequency}),
+    check(value.start({61, 60, 1, 1, 60, 1, kQpcFrequency, false, 60, 1}),
           "source offset schedulerを開始できません");
     Driver driver{&value};
     const auto first = driver.select(100, 1);
     check(first.valid && first.targetFrame == 60,
           "source offsetがscheduler targetへ反映されていません");
     check(value.markRenderComplete(5, 60, first.renderOrdinal) &&
+              value.commitQualifiedPresent(first.reservationId, first.opportunityOrdinal) &&
               value.commitSwap(10, authority(101), 0),
           "source offset targetをexact commitできません");
 }
@@ -405,12 +608,13 @@ void formalIntentTransportPolicyIsExact() {
     decision.duplicateCallback = true;
     check(mvm::gpu::formalIntentTransportDisposition(false, decision) ==
               TransportDisposition::InvalidMembershipProvenance,
-          "NegativeDuplicateWithMissingMembershipProvenance: duplicate suppressionがmembership provenance欠損を隠しました");
+          "NegativeDuplicateWithMissingMembershipProvenance: duplicate suppressionがmembership "
+          "provenance欠損を隠しました");
 }
 
 void diagnosticInvocationLedgerIsBranchExact() {
     Scheduler value;
-    check(value.start({1, 0, 60, 1, 60, 1, kQpcFrequency, true}),
+    check(value.start({1, 0, 60, 1, 60, 1, kQpcFrequency, true, 60, 1}),
           "W4-C2 diagnostic schedulerを開始できません");
     Driver driver{&value};
     const auto primary = driver.select(100, 1);
@@ -426,11 +630,13 @@ void diagnosticInvocationLedgerIsBranchExact() {
                                                    TransportDisposition::SuppressDuplicateCallback),
           "duplicate transport dispositionを記録できません");
     check(value.markRenderComplete(5, primary.targetFrame, primary.renderOrdinal) &&
+              value.commitQualifiedPresent(primary.reservationId, primary.opportunityOrdinal) &&
               value.commitSwap(10, authority(101), 0),
           "W4-C2 primaryをcommitできません");
     const auto terminal = driver.select(101, 11);
-    check(terminal.valid && terminal.pastSourceDomain && terminal.invocationSerial == 3,
-          "source-domain terminal invocationを記録できません");
+    check(terminal.valid && !terminal.pastSourceDomain && terminal.invocationSerial == 3 &&
+              !terminal.requiredIntentMembership,
+          "required queue exhausted invocationを記録できません");
     check(value.noteInvocationTransportDisposition(
               terminal.invocationSerial, TransportDisposition::SuppressOutsideRequiredSet),
           "terminal transport dispositionを別fieldへ記録できません");
@@ -449,15 +655,15 @@ void diagnosticInvocationLedgerIsBranchExact() {
                   second.reason == InvocationReason::PendingRender && second.pre.pendingRender &&
                   second.post.pendingRender,
               "duplicate invocationのpre/post stateが違います");
-        check(third.result == InvocationResult::OutsideSourceDomainDecision &&
-                  third.reason == InvocationReason::PastSourceDomain &&
-                  !third.decision.requiredIntentMembership && third.decision.pastSourceDomain &&
+        check(third.result == InvocationResult::RequiredQueueExhaustedDecision &&
+                  third.reason == InvocationReason::RequiredQueueExhausted &&
+                  !third.decision.requiredIntentMembership && !third.decision.pastSourceDomain &&
                   third.transportDisposition == TransportDisposition::SuppressOutsideRequiredSet,
-              "source-domain resultとrequired-domain dispositionが分離されていません");
+              "queue exhaustionをsource-domain completionへ誤変換しました");
     }
 
     Scheduler invalid;
-    check(invalid.start({1, 0, 60, 1, 60, 1, kQpcFrequency, true}),
+    check(invalid.start({1, 0, 60, 1, 60, 1, kQpcFrequency, true, 60, 1}),
           "W4-C2 invalid schedulerを開始できません");
     check(!invalid.selectForRender(1, {}, 0).valid, "invalid authorityを拒否しません");
     const auto invalidSnapshot = invalid.snapshot();
@@ -477,6 +683,11 @@ int main() {
     refreshCountGapAccounting();
     authorityFailuresAreFatal();
     pairingFailuresAreFatal();
+    sourceCoverageFatalCleanupPreservesQueue();
+    postSourceCoverageFatalDoesNotMutateTransaction();
+    targetMappingIsDisplayRefreshIndependent();
+    prerollTargetStaysOnRepeatedFrame();
+    requiredIntentSourceCoverageIsExact();
     duplicateCallbackDoesNotCreateOpportunity();
     measurementEndFinalizesPending();
     overflowIsClosed();

@@ -49,9 +49,59 @@ if(-not(Test-Path -LiteralPath $LiveRunner)){Fail "live runnerがありません
 
 Write-Host ("P2-D5-2 W3 fresh acquisition: checkpoint={0} runs={1} measure={2}s" -f `
     $headSha.Substring(0,12),$Runs,$MeasureSeconds)
-& pwsh -NoProfile -File $LiveRunner -OutputDirectory $OutputDirectory -Runs $Runs `
-    -WarmupSeconds $WarmupSeconds -MeasureSeconds $MeasureSeconds -TimeoutSeconds $TimeoutSeconds
-if($LASTEXITCODE-ne0){Fail 'W3 fresh acquisitionのC0.1.1 live gateが失敗しました'}
+# acquisition が途中で失敗しても、取得済み raw artifact の provenance と SHA-256 を必ず封止する。
+# 成功時の provenance とは別ファイル名にし、失敗 cohort を canonical と誤認させない。
+function Write-PartialProvenance([string]$Reason){
+    if(-not(Test-Path -LiteralPath $OutputDirectory)){return}
+    $partialPath=Join-Path $OutputDirectory 'w3-acquisition-partial-provenance.json'
+    # 成功したrunだけをcompletedとして数える。artifactの存在はcompletionではない。
+    $completedRuns=0
+    for($run=1;$run-le$Runs;++$run){
+        $runJson=Join-Path $OutputDirectory "run-$run/traced-app.json"
+        if(-not(Test-Path -LiteralPath $runJson)){continue}
+        $runApp=Get-Content -LiteralPath $runJson -Raw -Encoding utf8|ConvertFrom-Json
+        if([int]$runApp.process_exit_code-eq0){$completedRuns++}
+    }
+    $files=@()
+    foreach($file in (Get-ChildItem -Recurse -File -LiteralPath $OutputDirectory|
+                      Where-Object{$_.Name-ne'w3-acquisition-partial-provenance.json'}|Sort-Object FullName)){
+        $files+=[ordered]@{
+            path=($file.FullName.Substring((Resolve-Path -LiteralPath $OutputDirectory).Path.Length+1) -replace '\\','/')
+            size=$file.Length
+            sha256=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+    }
+    $partial=[ordered]@{
+        schema='mvm-p2-d5-2-w3-acquisition-partial-provenance-1';stage='P2-D5-2-W3'
+        acquisition_gate='FAILED';fresh_acquisition=$true
+        acquisition_mode='CanonicalPresentMonLive'
+        checkpoint_sha=$headSha;worktree_clean=$true
+        planned_runs=$Runs;completed_runs=$completedRuns
+        replacement_retry_performed=$false
+        canonical_w3_verdict='NOT_ACHIEVED_ACQUISITION_STAGE_FAILURE'
+        run_metrics_are_canonical=$false
+        failure_reason=$Reason
+        warmup_seconds=$WarmupSeconds;measure_seconds=$MeasureSeconds
+        sealed_at_utc=(Get-Date).ToUniversalTime().ToString('o')
+        files=$files
+    }
+    foreach($key in @($binaryHashes.Keys)){$partial[$key]=$binaryHashes[$key]}
+    $partial|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $partialPath -Encoding utf8
+    Write-Host ("P2-D5-2 W3 fresh acquisition: partial provenance sealed ({0})" -f $partialPath)
+}
+
+$acquisitionFailure=''
+try{
+    & pwsh -NoProfile -File $LiveRunner -OutputDirectory $OutputDirectory -Runs $Runs `
+        -WarmupSeconds $WarmupSeconds -MeasureSeconds $MeasureSeconds -TimeoutSeconds $TimeoutSeconds
+    if($LASTEXITCODE-ne0){$acquisitionFailure='W3 fresh acquisitionのC0.1.1 live gateが失敗しました'}
+}catch{
+    $acquisitionFailure=$_.Exception.Message
+}
+if(-not[string]::IsNullOrWhiteSpace($acquisitionFailure)){
+    Write-PartialProvenance $acquisitionFailure
+    Fail $acquisitionFailure
+}
 
 $summaryPath=Join-Path $OutputDirectory 'w2-c01-live-summary.json'
 if(-not(Test-Path -LiteralPath $summaryPath)){Fail "live summaryがありません: $summaryPath"}

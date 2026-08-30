@@ -18,6 +18,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <map>
 #include <mutex>
 #include <numeric>
 #include <psapi.h>
@@ -2394,6 +2395,253 @@ int cmdPreviewBench(const bench::Args& a) {
 // RSS には allocator のキャッシュが乗るため、小さな増減は
 // 即リークと断定しない。明確な線形増加のみ不合格にする。
 
+// ---------------------------------------------------------------------------
+// S2-g4: kernel handle の種別内訳を数える診断専用ユーティリティ。
+//
+// GDI/USER は S2-g3 で owner 候補から除外できた (gdi=3 固定 / user は系統的増加なし)。
+// 残るのは file / event / thread / section 等の kernel handle であり、
+// GetGuiResources では分解できない。
+//
+// **この計装は診断専用である。**
+//   verdict influence            = 0
+//   threshold influence          = 0
+//   ownership contract influence = 0
+// artifact には kernel_handle_diagnostics_authoritative=false を明示する。
+//
+// ObjectTypeIndex から型名への対応は文書化されていない。NtQueryObject を任意の
+// handle へ呼ぶと named pipe 等で blocking しうるため使わない。代わりに
+// 自分で作った既知の object の index を引いて index->name 表を作る。
+namespace mvm_g4 {
+
+typedef struct {
+    PVOID Object;
+    ULONG_PTR UniqueProcessId;
+    ULONG_PTR HandleValue;
+    ULONG GrantedAccess;
+    USHORT CreatorBackTraceIndex;
+    USHORT ObjectTypeIndex;
+    ULONG HandleAttributes;
+    ULONG Reserved;
+} G4HandleEntry;
+
+typedef struct {
+    ULONG_PTR NumberOfHandles;
+    ULONG_PTR Reserved;
+    G4HandleEntry Handles[1];
+} G4HandleInfo;
+
+typedef LONG(NTAPI* PfnNtQuerySystemInformation)(ULONG, PVOID, ULONG, PULONG);
+
+inline PfnNtQuerySystemInformation ntQuery() {
+    static PfnNtQuerySystemInformation fn = []() -> PfnNtQuerySystemInformation {
+        HMODULE m = GetModuleHandleW(L"ntdll.dll");
+        return m ? (PfnNtQuerySystemInformation)(void*)GetProcAddress(m, "NtQuerySystemInformation")
+                 : nullptr;
+    }();
+    return fn;
+}
+
+// SystemExtendedHandleInformation
+static const ULONG kSystemExtendedHandleInformation = 64;
+
+inline std::vector<G4HandleEntry> snapshotOwnHandles() {
+    std::vector<G4HandleEntry> out;
+    auto fn = ntQuery();
+    if (!fn)
+        return out;
+    const ULONG_PTR self = (ULONG_PTR)GetCurrentProcessId();
+    ULONG size = 1u << 20;
+    std::vector<unsigned char> buf;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        buf.assign(size, 0);
+        ULONG need = 0;
+        LONG st = fn(kSystemExtendedHandleInformation, buf.data(), size, &need);
+        if (st == 0) {
+            auto* info = reinterpret_cast<G4HandleInfo*>(buf.data());
+            out.reserve(512);
+            for (ULONG_PTR i = 0; i < info->NumberOfHandles; ++i)
+                if (info->Handles[i].UniqueProcessId == self)
+                    out.push_back(info->Handles[i]);
+            return out;
+        }
+        // STATUS_INFO_LENGTH_MISMATCH 以外は諦める (診断なので失敗を許容する)。
+        if (st != (LONG)0xC0000004L)
+            return out;
+        size = (need > size) ? (need + (1u << 16)) : (size * 2);
+    }
+    return out;
+}
+
+// 既知 object を作って ObjectTypeIndex を引き当て、index -> name 表を作る。
+inline const std::map<USHORT, std::string>& typeNames() {
+    static std::map<USHORT, std::string> table = []() {
+        std::map<USHORT, std::string> t;
+        auto learn = [&t](HANDLE h, const char* name) {
+            if (!h || h == INVALID_HANDLE_VALUE)
+                return;
+            for (const auto& e : snapshotOwnHandles())
+                if ((HANDLE)e.HandleValue == h) {
+                    t[e.ObjectTypeIndex] = name;
+                    break;
+                }
+        };
+        HANDLE ev = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        learn(ev, "Event");
+        HANDLE mu = CreateMutexW(nullptr, FALSE, nullptr);
+        learn(mu, "Mutant");
+        HANDLE se = CreateSemaphoreW(nullptr, 0, 1, nullptr);
+        learn(se, "Semaphore");
+        HANDLE wt = CreateWaitableTimerW(nullptr, TRUE, nullptr);
+        learn(wt, "Timer");
+        HANDLE io = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 1);
+        learn(io, "IoCompletion");
+        HANDLE sec = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, 4096,
+                                        nullptr);
+        learn(sec, "Section");
+        wchar_t tmpDir[MAX_PATH] = {0};
+        wchar_t tmpFile[MAX_PATH] = {0};
+        HANDLE fh = INVALID_HANDLE_VALUE;
+        if (GetTempPathW(MAX_PATH, tmpDir) && GetTempFileNameW(tmpDir, L"g4", 0, tmpFile)) {
+            fh = CreateFileW(tmpFile, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                                        FILE_SHARE_DELETE,
+                             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+            learn(fh, "File");
+        }
+        HANDLE th = nullptr;
+        DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &th, 0, FALSE,
+                        DUPLICATE_SAME_ACCESS);
+        learn(th, "Thread");
+        HANDLE pr = nullptr;
+        DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(), GetCurrentProcess(), &pr, 0, FALSE,
+                        DUPLICATE_SAME_ACCESS);
+        learn(pr, "Process");
+        HANDLE tok = nullptr;
+        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok))
+            learn(tok, "Token");
+        HKEY hk = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software", 0, KEY_READ, &hk) == ERROR_SUCCESS)
+            learn((HANDLE)hk, "Key");
+
+        if (ev) CloseHandle(ev);
+        if (mu) CloseHandle(mu);
+        if (se) CloseHandle(se);
+        if (wt) CloseHandle(wt);
+        if (io) CloseHandle(io);
+        if (sec) CloseHandle(sec);
+        if (fh != INVALID_HANDLE_VALUE) CloseHandle(fh);
+        if (tmpFile[0]) DeleteFileW(tmpFile);
+        if (th) CloseHandle(th);
+        if (pr) CloseHandle(pr);
+        if (tok) CloseHandle(tok);
+        if (hk) RegCloseKey(hk);
+        return t;
+    }();
+    return table;
+}
+
+// 型名 -> 個数。未知 index は "Type<N>" にまとめる。
+inline std::map<std::string, size_t> countByType() {
+    std::map<std::string, size_t> out;
+    const auto& names = typeNames();
+    for (const auto& e : snapshotOwnHandles()) {
+        auto it = names.find(e.ObjectTypeIndex);
+        if (it != names.end())
+            out[it->second] += 1;
+        else
+            out["Type" + std::to_string((int)e.ObjectTypeIndex)] += 1;
+    }
+    return out;
+}
+
+inline std::string toJson(const std::map<std::string, size_t>& m) {
+    std::string s = "{";
+    bool first = true;
+    for (const auto& kv : m) {
+        if (!first)
+            s += ", ";
+        first = false;
+        s += "\"" + kv.first + "\": " + std::to_string(kv.second);
+    }
+    s += "}";
+    return s;
+}
+
+// S2-g7: Event を count ではなく identity で追う。
+//
+// CreateEvent/CloseHandle を hook するのではなく、handle table 上の
+// (HandleValue, Object) を集合として取り、render 前後で差分を取る。
+// これで「どの identity が残ったか」が直接分かる。API hook より軽く、
+// 対象を MLT consumer 由来の Event に限定しなくても差分で自然に絞れる。
+struct EventIdentity {
+    ULONG_PTR handleValue;
+    PVOID object;
+    ULONG grantedAccess;
+};
+
+inline std::vector<EventIdentity> snapshotEventIdentities() {
+    std::vector<EventIdentity> out;
+    const auto& names = typeNames();
+    for (const auto& e : snapshotOwnHandles()) {
+        auto it = names.find(e.ObjectTypeIndex);
+        if (it != names.end() && it->second == "Event")
+            out.push_back({e.HandleValue, e.Object, e.GrantedAccess});
+    }
+    return out;
+}
+
+typedef LONG(NTAPI* PfnNtQueryObject)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+
+// ObjectNameInformation。Event に対しては blocking しない
+// (blocking が問題になるのは named pipe / file である)。
+inline std::string eventName(ULONG_PTR handleValue) {
+    static PfnNtQueryObject fn = []() -> PfnNtQueryObject {
+        HMODULE m = GetModuleHandleW(L"ntdll.dll");
+        return m ? (PfnNtQueryObject)(void*)GetProcAddress(m, "NtQueryObject") : nullptr;
+    }();
+    if (!fn)
+        return "";
+    unsigned char buf[1024] = {0};
+    ULONG need = 0;
+    if (fn((HANDLE)handleValue, 1 /*ObjectNameInformation*/, buf, sizeof(buf), &need) != 0)
+        return "";
+    // UNICODE_STRING { USHORT Length; USHORT MaximumLength; PWSTR Buffer; }
+    USHORT len = *reinterpret_cast<USHORT*>(buf);
+    wchar_t* p = *reinterpret_cast<wchar_t**>(buf + sizeof(void*));
+    if (!p || len == 0)
+        return "";
+    std::wstring w(p, len / sizeof(wchar_t));
+    std::string outStr;
+    outStr.reserve(w.size());
+    for (wchar_t c : w)
+        outStr.push_back(c < 128 ? (char)c : '?');
+    return outStr;
+}
+
+// S2-g5: teardown phase ごとの Event 数を記録する。
+// logical stopped と physical teardown 完了を区別し、close 後も残るのか
+// 遅れて解放されるのか (= race) を直接見る。
+inline size_t eventCount() {
+    const auto& names = typeNames();
+    size_t n = 0;
+    for (const auto& e : snapshotOwnHandles()) {
+        auto it = names.find(e.ObjectTypeIndex);
+        if (it != names.end() && it->second == "Event")
+            n += 1;
+    }
+    return n;
+}
+
+inline std::vector<std::pair<std::string, size_t>>& phaseLog() {
+    static std::vector<std::pair<std::string, size_t>> v;
+    return v;
+}
+
+inline void tracePhase(const char* phase) {
+    phaseLog().emplace_back(phase, eventCount());
+}
+
+} // namespace mvm_g4
+
 int cmdSoak(const bench::Args& a) {
     using namespace bench;
 
@@ -2402,6 +2650,17 @@ int cmdSoak(const bench::Args& a) {
         return kExitUsage;
     }
     int iterations = (int)std::strtol(a.get("iterations", "100").c_str(), nullptr, 10);
+    // S2-g1b: warmup は measurement-domain boundary であって retention の許容量ではない。
+    // handle は audio iteration でのみ階段状に変化するため、25 iteration の quartile 窓に
+    // 含まれる独立値は 2-3 個しかなく、先頭 block (startup 側) に支配される。
+    // suite 条件では先頭 block が低く出て片側 delta が正へ偏る (観測 shift +4.8)。
+    // warmup を measurement domain から外すと observed effective interval 20-40 で
+    // combined max delta が +5 -> +1 になる。30 はその区間の中央として凍結した値であり、
+    // 最適であることが証明された値ではない。
+    const int warmupIterations =
+        (int)std::strtol(a.get("warmup-iterations", "0").c_str(), nullptr, 10);
+    // measured workload は減らさない。warmup は総回数に上乗せする。
+    const int totalIterations = warmupIterations + iterations;
     std::string wavDir = a.get("wav-dir");
     bool doAudio = !wavDir.empty() && wavDir != "1";
 
@@ -2420,6 +2679,17 @@ int cmdSoak(const bench::Args& a) {
         unsigned long long rssBytes;
         long long markerValue;
         double audioRmsL;
+        // S2-g3: sustained growth の owner 特定用。診断専用で判定には使わない。
+        size_t gdiObjects;
+        size_t userObjects;
+        bool audioThisIteration;
+        size_t handlesBeforeAudio;
+        size_t handlesAfterAudio;
+        std::string typesBeforeAudio;
+        std::string typesAfterAudio;
+        std::string typesAfterClose;
+        std::string phaseTrace;
+        std::string retainedEvents;
     };
 
     std::vector<Sample> samples;
@@ -2429,6 +2699,15 @@ int cmdSoak(const bench::Args& a) {
         DWORD n = 0;
         GetProcessHandleCount(GetCurrentProcess(), &n);
         return (size_t)n;
+    };
+    // S2-g3: GetGuiResources は GDI / USER object のみを返す。kernel handle の
+    // 種別内訳ではない。process handle が増えて GDI/USER が横ばいなら、
+    // file/event/thread/section 等の kernel handle を疑う根拠になる。
+    auto gdiObjects = []() -> size_t {
+        return (size_t)GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS);
+    };
+    auto userObjects = []() -> size_t {
+        return (size_t)GetGuiResources(GetCurrentProcess(), GR_USEROBJECTS);
     };
     auto rssBytes = []() -> unsigned long long {
         PROCESS_MEMORY_COUNTERS pmc{};
@@ -2440,7 +2719,7 @@ int cmdSoak(const bench::Args& a) {
 
     const long long probeFrame = 137;
 
-    for (int it = 0; it < iterations; it++) {
+    for (int it = 0; it < totalIterations; it++) {
         MvmComposeInfo info{};
         char cerr[1024] = {0};
         MvmComposeHandle* h = mvm_mlt_compose_open(&sc.timeline, &info, cerr, sizeof(cerr));
@@ -2466,6 +2745,24 @@ int cmdSoak(const bench::Args& a) {
         // 音声経路の参照リークはこれで十分検出できる。
         double rmsL = 0;
         const bool audioThisIter = doAudio && (it % 10 == 0);
+        // S2-g3: audio 前後で handle を挟み、retention が audio iteration 内で
+        // 起きているか、それとも非同期な別 owner かを切り分ける。
+        size_t handlesBeforeAudio = 0;
+        size_t handlesAfterAudio = 0;
+        // S2-g4: audio iteration でだけ kernel handle の種別内訳を 3 点で採る。
+        // 全 iteration で handle table を列挙すると soak 自体が遅くなるため。
+        std::string typesBeforeAudio, typesAfterAudio, typesAfterClose;
+        std::string phaseTrace;
+        std::string retainedEvents;
+        std::vector<mvm_g4::EventIdentity> eventsBeforeRender;
+        if (audioThisIter) {
+            handlesBeforeAudio = handleCount();
+            typesBeforeAudio = mvm_g4::toJson(mvm_g4::countByType());
+            mvm_g4::phaseLog().clear();
+            mvm_g4::phaseLog().emplace_back("before_render", mvm_g4::eventCount());
+            eventsBeforeRender = mvm_g4::snapshotEventIdentities();
+            mvm_mlt_compose_set_trace_hook(&mvm_g4::tracePhase);
+        }
         if (audioThisIter) {
             std::string tmp = wavDir + "/soak_tmp.wav";
             char rerr[512] = {0};
@@ -2485,9 +2782,60 @@ int cmdSoak(const bench::Args& a) {
             fs::remove(utf8Path(tmp), ec);
         }
 
-        mvm_mlt_compose_close(h);
+        if (audioThisIter) {
+            mvm_mlt_compose_set_trace_hook(nullptr);
+            // close 後に遅れて解放されるかを見る。解放されるなら race、
+            // 残り続けるなら cleanup omission である。
+            // S2-g6b: settle sample は削除した。delayed release は S2-g5 で
+            // 0/13 と確定しており (1000ms 待っても解放されない)、この待ちは
+            // render timing を歪めるだけである。poll_count と retention の
+            // 相関を見る以上、余計な待ちを入れない。
+            mvm_g4::phaseLog().emplace_back("after_render_returned", mvm_g4::eventCount());
+            std::string t = "[";
+            bool first = true;
+            for (const auto& kv : mvm_g4::phaseLog()) {
+                if (!first)
+                    t += ", ";
+                first = false;
+                t += "{\"phase\": \"" + kv.first + "\", \"event\": " + std::to_string(kv.second) + "}";
+            }
+            t += "]";
+            phaseTrace = t;
+            handlesAfterAudio = handleCount();
+            typesAfterAudio = mvm_g4::toJson(mvm_g4::countByType());
+        }
 
-        samples.push_back({it, handleCount(), rssBytes(), markerValue, rmsL});
+        mvm_mlt_compose_close(h);
+        if (audioThisIter) {
+            typesAfterClose = mvm_g4::toJson(mvm_g4::countByType());
+            // S2-g7: compose close 後も残った Event identity を特定する。
+            std::set<ULONG_PTR> before;
+            for (const auto& e : eventsBeforeRender)
+                before.insert(e.handleValue);
+            std::string r = "[";
+            bool first = true;
+            for (const auto& e : mvm_g4::snapshotEventIdentities()) {
+                if (before.count(e.handleValue))
+                    continue;
+                if (!first)
+                    r += ", ";
+                first = false;
+                char b[320];
+                std::snprintf(b, sizeof(b),
+                              "{\"handle\": %llu, \"object\": \"%p\", \"access\": %lu, \"name\": \"%s\"}",
+                              (unsigned long long)e.handleValue, e.object,
+                              (unsigned long)e.grantedAccess,
+                              mvm_g4::eventName(e.handleValue).c_str());
+                r += b;
+            }
+            r += "]";
+            retainedEvents = r;
+        }
+
+        samples.push_back({it, handleCount(), rssBytes(), markerValue, rmsL, gdiObjects(),
+                           userObjects(), audioThisIter, handlesBeforeAudio, handlesAfterAudio,
+                           typesBeforeAudio, typesAfterAudio, typesAfterClose, phaseTrace,
+                           retainedEvents});
 
         // 進捗を stderr へ。長時間走るので無反応に見えないようにする。
         if ((it + 1) % 10 == 0 || it == 0) {
@@ -2499,9 +2847,10 @@ int cmdSoak(const bench::Args& a) {
 
     mvm_mlt_runtime_shutdown();
 
-    if (samples.size() < (size_t)iterations)
+    // warmup 中も functional correctness authority は有効である。完走要件も総回数で見る。
+    if (samples.size() < (size_t)totalIterations)
         problems.push_back("完走しませんでした (" + std::to_string(samples.size()) + "/" +
-                           std::to_string(iterations) + ")");
+                           std::to_string(totalIterations) + ")");
 
     bool valuesStable = true;
     if (samples.size() >= 2) {
@@ -2537,13 +2886,19 @@ int cmdSoak(const bench::Args& a) {
 
     // handle は単調増加してはいけない。最後の 1/4 が最初の 1/4 より
     // 明確に多ければリークとみなす。
+    // S2-g1b: threshold は凍結値である。warmup 導入によって緩めない。
+    const size_t kHandleGrowthThreshold = 8;
     size_t handleFirst = 0, handleLast = 0;
     unsigned long long rssFirst = 0, rssLast = 0;
-    if (samples.size() >= 8) {
-        size_t q = samples.size() / 4;
+    // handle retention の sampling authority は measured domain だけに適用する。
+    const size_t measuredBegin =
+        (samples.size() > (size_t)warmupIterations) ? (size_t)warmupIterations : samples.size();
+    const size_t measuredCount = samples.size() - measuredBegin;
+    if (measuredCount >= 8) {
+        size_t q = measuredCount / 4;
         for (size_t i = 0; i < q; i++) {
-            handleFirst += samples[i].handles;
-            rssFirst += samples[i].rssBytes;
+            handleFirst += samples[measuredBegin + i].handles;
+            rssFirst += samples[measuredBegin + i].rssBytes;
         }
         for (size_t i = samples.size() - q; i < samples.size(); i++) {
             handleLast += samples[i].handles;
@@ -2554,14 +2909,14 @@ int cmdSoak(const bench::Args& a) {
         rssFirst /= q;
         rssLast /= q;
 
-        if (handleLast > handleFirst + 8)
+        if (handleLast > handleFirst + kHandleGrowthThreshold)
             problems.push_back("handle 数が増加しています " + std::to_string(handleFirst) + " -> " +
                                std::to_string(handleLast));
 
         // WorkingSetSize だけを「リーク量」とは呼ばない。常駐した物理ページと
         // 確保し続けている仮想メモリを区別できないため、既定では合否に使わない。
         double perIter =
-            (double)((long long)rssLast - (long long)rssFirst) / (double)(samples.size() * 3 / 4);
+            (double)((long long)rssLast - (long long)rssFirst) / (double)(measuredCount * 3 / 4);
         if (checkMemory && perIter > 256.0 * 1024.0)
             problems.push_back("RSS が反復あたり " + std::to_string((long long)perIter) +
                                " バイト増加しています (診断は mvm_bench memory-probe を使うこと)");
@@ -2585,12 +2940,46 @@ int cmdSoak(const bench::Args& a) {
     std::printf("  \"quartile_avg\": { \"handles_first\": %zu, \"handles_last\": %zu,"
                 " \"rss_mb_first\": %.2f, \"rss_mb_last\": %.2f },\n",
                 handleFirst, handleLast, rssFirst / 1048576.0, rssLast / 1048576.0);
+    // S2-g1a: --dump-all-samples は診断専用。判定条件には一切影響しない。
+    // samples 自体は元から毎 iteration 記録しているが、既定では 10 回ごとにしか
+    // 出力しないため warmup boundary を実測できない。
+    const bool dumpAllSamples = a.has("dump-all-samples");
+    std::printf("  \"sample_emission\": \"%s\",\n", dumpAllSamples ? "ALL" : "DECIMATED_10");
+    std::printf("  \"kernel_handle_diagnostics_authoritative\": false,\n");
+    std::printf("  \"handle_growth_threshold\": %zu,\n", kHandleGrowthThreshold);
+    std::printf("  \"functional_authority_domain\": \"ALL_ITERATIONS\",\n");
+    std::printf("  \"handle_retention_authority_domain\": \"MEASURED_ONLY\",\n");
+    std::printf("  \"warmup_iteration_count\": %d,\n", warmupIterations);
+    std::printf("  \"measured_iteration_count\": %zu,\n", measuredCount);
+    std::printf("  \"handle_measurement_start_iteration\": %zu,\n", measuredBegin);
+    std::printf("  \"quartile_size\": %zu,\n", measuredCount / 4);
     std::printf("  \"samples\": [");
     for (size_t i = 0; i < samples.size(); i++) {
-        if (i % 10 != 0 && i + 1 != samples.size())
+        if (!dumpAllSamples && i % 10 != 0 && i + 1 != samples.size())
             continue; // 10 回ごとと最終回だけ出す
-        std::printf("%s\n    { \"i\": %d, \"handles\": %zu, \"rss_mb\": %.2f }", i ? "," : "",
-                    samples[i].iteration, samples[i].handles, samples[i].rssBytes / 1048576.0);
+        std::printf("%s\n    { \"i\": %d, \"handles\": %zu, \"rss_mb\": %.2f,"
+                    " \"gdi\": %zu, \"user\": %zu, \"audio\": %s,"
+                    " \"h_before_audio\": %zu, \"h_after_audio\": %zu }",
+                    i ? "," : "", samples[i].iteration, samples[i].handles,
+                    samples[i].rssBytes / 1048576.0, samples[i].gdiObjects,
+                    samples[i].userObjects, samples[i].audioThisIteration ? "true" : "false",
+                    samples[i].handlesBeforeAudio, samples[i].handlesAfterAudio);
+        if (samples[i].audioThisIteration && !samples[i].typesBeforeAudio.empty()) {
+            std::printf(",\n    { \"i\": %d, \"kernel_handle_types\": "
+                        "{ \"before_audio\": %s, \"after_audio\": %s, "
+                        "\"after_close\": %s } }",
+                        samples[i].iteration, samples[i].typesBeforeAudio.c_str(),
+                        samples[i].typesAfterAudio.c_str(),
+                        samples[i].typesAfterClose.c_str());
+        }
+        if (samples[i].audioThisIteration && !samples[i].phaseTrace.empty()) {
+            std::printf(",\n    { \"i\": %d, \"teardown_phases\": %s }",
+                        samples[i].iteration, samples[i].phaseTrace.c_str());
+        }
+        if (samples[i].audioThisIteration && !samples[i].retainedEvents.empty()) {
+            std::printf(",\n    { \"i\": %d, \"retained_events\": %s }",
+                        samples[i].iteration, samples[i].retainedEvents.c_str());
+        }
     }
     std::printf("\n  ],\n  \"problems\": [");
     for (size_t i = 0; i < problems.size(); i++)

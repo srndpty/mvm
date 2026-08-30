@@ -170,6 +170,7 @@ private:
     long long sourceAFrameCount_ = -1;
     long long sourceBFrameCount_ = -1;
     long long requiredMeasurementFrameCount_ = 0;
+    gpu::RequiredIntentSourceCoverage requiredIntentSourceCoverage_{};
     bool sourceCoverageOk_ = false;
     bool measurementPrerollOk_ = false;
     long long measurementPrerollDepthA_ = -1;

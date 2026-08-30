@@ -2,6 +2,7 @@
 #define MVM_GPU_PREVIEW_PRESENTATION_OPPORTUNITY_SCHEDULER_H
 
 #include "media/gpu_preview/presentation_refresh_authority.h"
+#include "media/gpu_preview/required_intent_queue.h"
 
 #include <vector>
 
@@ -19,6 +20,9 @@ enum class PresentationOpportunityError {
     RenderOrdinalMismatch,
     SwapOrdinalMismatch,
     PresentedFrameMismatch,
+    RequiredQueueFailure,
+    SourceCoverageInsufficient,
+    QualifiedCommitMissing,
 };
 
 enum class PresentationOpportunityClassification {
@@ -29,6 +33,25 @@ enum class PresentationOpportunityClassification {
     AuthorityDiscontinuity,
     PairingDefect,
 };
+
+// B3-I6C。formal workload configurationのrate authority。required countとtarget mappingは
+// 同じ1つのrequired-intent rateだけを参照する。display refreshはmappingへ関与しない。
+struct RequiredIntentRate {
+    long long numerator = 0;
+    long long denominator = 0;
+};
+
+// canonical formal workload。required intentもsourceも60/1である。
+inline constexpr RequiredIntentRate kFormalRequiredIntentRate{60, 1};
+inline constexpr RequiredIntentRate kFormalSourceFrameRate{60, 1};
+
+// required set sizeのsingle producer。W2-A denominatorと同じ測定秒数から作る。
+inline constexpr long long formalRequiredIntentCountForSeconds(long long seconds) {
+    return seconds > 0 && kFormalRequiredIntentRate.denominator > 0
+               ? seconds * kFormalRequiredIntentRate.numerator /
+                     kFormalRequiredIntentRate.denominator
+               : 0;
+}
 
 struct PresentationOpportunityConfig {
     long long requiredFrameCount = 0;
@@ -42,7 +65,30 @@ struct PresentationOpportunityConfig {
     long long qpcFrequency = 0;
     // W4-C2 diagnostic capture専用。canonical performance authorityでは使わない。
     bool invocationLedgerEnabled = false;
+    // B3-I6C。intent ordinalが属するworkload時間軸。0のままならstartはfail-closeする。
+    long long requiredIntentRateNumerator = 0;
+    long long requiredIntentRateDenominator = 0;
 };
+
+// intent ordinal -> source frameのexact mapping。display refreshは使わない。
+bool presentationTargetFrameFor(const PresentationOpportunityConfig& config, long long ordinal,
+                                long long& target);
+
+// required set全域のexact target rangeとmonotonicity。countの比較では代用しない。
+struct RequiredIntentSourceCoverage {
+    bool valid = false;
+    bool monotonicNonDecreasing = false;
+    long long requiredCount = 0;
+    long long minTarget = -1;
+    long long maxTarget = -1;
+};
+
+RequiredIntentSourceCoverage
+requiredIntentSourceCoverage(const PresentationOpportunityConfig& config);
+
+// coverage成立条件は 0 <= minTarget かつ maxTarget < sourceFrameCount である。
+bool requiredIntentSourceCoverageSatisfied(const RequiredIntentSourceCoverage& coverage,
+                                           long long sourceFrameCount);
 
 struct PresentationOpportunityDecision {
     bool valid = false;
@@ -56,6 +102,9 @@ struct PresentationOpportunityDecision {
     long long lastFinalizedOpportunityOrdinal = -1;
     long long renderBeginQpc = 0;
     long long renderOrdinal = -1;
+    // B3-I0。primary pending renderごとのlocal reservation identity。
+    // intent ordinalのauthorityではなく、token/render/Present/swap join専用。
+    unsigned long long reservationId = 0;
     PresentationAuthoritySample preRenderAuthority;
     unsigned long long invocationSerial = 0;
 };
@@ -67,8 +116,8 @@ enum class FormalIntentTransportDisposition {
     InvalidMembershipProvenance,
 };
 
-inline const char* formalIntentTransportDispositionName(
-    FormalIntentTransportDisposition disposition) {
+inline const char*
+formalIntentTransportDispositionName(FormalIntentTransportDisposition disposition) {
     switch (disposition) {
     case FormalIntentTransportDisposition::Transport:
         return "TRANSPORT";
@@ -98,6 +147,7 @@ enum class PresentationSchedulerInvocationResult {
     PrimaryDecision = 0,
     DuplicateDecision,
     OutsideSourceDomainDecision,
+    RequiredQueueExhaustedDecision,
     InvalidFatal,
 };
 
@@ -105,6 +155,7 @@ enum class PresentationSchedulerInvocationReason {
     Primary = 0,
     PendingRender,
     PastSourceDomain,
+    RequiredQueueExhausted,
     InvalidConfiguration,
     AuthorityUnusable,
     CallbackQpcRegression,
@@ -212,6 +263,7 @@ struct PresentationOpportunitySnapshot {
     std::vector<long long> requiredIntentOrdinals;
     bool invocationLedgerEnabled = false;
     std::vector<PresentationSchedulerInvocationRecord> invocationRecords;
+    RequiredIntentQueueSnapshot requiredIntentQueue;
     // W4-C3 exact causal replayの入力。scheduler instanceが実際に使用したconfigを
     // そのまま渡す。artifact側で別fieldから再構成してはならない。
     PresentationOpportunityConfig config;
@@ -230,14 +282,27 @@ public:
                                                     long long renderOrdinal);
     bool markRenderComplete(long long renderEndQpc, long long renderedSourceFrame,
                             long long renderOrdinal);
+    bool commitQualifiedPresent(unsigned long long reservationId, long long intentOrdinal);
     bool commitSwap(long long swapQpc, const PresentationAuthoritySample& postSwapAuthority,
                     long long swapOrdinal);
-    bool close();
+    // B3-I5B。preroll drainのexact finalize point。closeより前にpending opportunityを
+    // 確定させるだけで、queue semanticsとaccept/reject判定は変更しない。
+    bool finalizePendingOpportunityExact();
+    bool closePlannedWindow();
+    bool closeWithoutNormalCompletion();
     PresentationOpportunitySnapshot snapshot() const;
     bool noteInvocationTransportDisposition(unsigned long long invocationSerial,
                                             FormalIntentTransportDisposition disposition);
 
     bool hasPendingRender() const { return pendingRender_; }
+
+    bool hasPendingRenderCompletion() const { return pendingRenderCompleted_; }
+
+    bool hasPendingQualifiedEvidence() const { return pendingQualifiedEvidence_; }
+
+    bool hasPendingOpportunity() const { return pendingOpportunity_; }
+
+    bool pendingOpportunityExactlyFinalized() const { return pendingOpportunityExactlyFinalized_; }
 
     bool pastSourceDomain() const { return pastSourceDomain_; }
 
@@ -258,9 +323,22 @@ private:
         PresentationAuthoritySample postSwapAuthority;
     };
 
+    struct PendingOpportunityFinalization {
+        PresentationOpportunityLedgerRecord record;
+        PresentationOpportunityFirstEvent firstEvent;
+        bool captureFirstEvent = false;
+        bool repeat = false;
+        bool forward = false;
+        long long trueDropBefore = 0;
+        long long lostOpportunities = 0;
+    };
+
     bool fail(PresentationOpportunityError error);
+    bool close(bool plannedWindowEnd);
     bool targetFor(long long ordinal, long long& target) const;
     bool finalizePendingOpportunity();
+    bool preparePendingOpportunityFinalization(PendingOpportunityFinalization& prepared);
+    void applyPendingOpportunityFinalization(const PendingOpportunityFinalization& prepared);
     void captureFirstEvent(PresentationOpportunityClassification classification,
                            long long actualOrdinal, long long actualTarget, long long swapQpc,
                            const PresentationAuthoritySample& post, long long swapOrdinal,
@@ -280,14 +358,17 @@ private:
     bool pastSourceDomain_ = false;
     bool anchored_ = false;
     unsigned long long originRefreshCount_ = 0;
+    RequiredIntentQueue requiredIntentQueue_;
 
     bool pendingRender_ = false;
     PresentationOpportunityDecision pendingDecision_{};
     bool pendingRenderCompleted_ = false;
+    bool pendingQualifiedEvidence_ = false;
     long long pendingRenderEndQpc_ = 0;
     long long pendingRenderedSourceFrame_ = -1;
 
     bool pendingOpportunity_ = false;
+    bool pendingOpportunityExactlyFinalized_ = false;
     long long pendingOpportunityOrdinal_ = -1;
     long long pendingSupersededCount_ = 0;
     Candidate pendingCandidate_{};
@@ -308,7 +389,6 @@ private:
     long long swappedCompositionCount_ = 0;
     PresentationOpportunityFirstEvent firstEvent_{};
     std::vector<PresentationOpportunityLedgerRecord> records_;
-    std::vector<long long> requiredIntentOrdinals_;
     unsigned long long invocationSerial_ = 0;
     std::vector<PresentationSchedulerInvocationRecord> invocationRecords_;
 };

@@ -1,0 +1,188 @@
+{
+  "schema": "mvm-p2-d5-2-b3-i4-preroll-transition-quiescence-design-1",
+  "status": "DESIGN_ONLY",
+  "production_behavior_changed": false,
+  "queue_semantics_changed": false,
+  "join_accept_reject_changed": false,
+  "canonical_w3_allowed": false,
+  "inventory": [
+    {
+      "state": "preroll_started",
+      "current_storage": "formalOpportunityEnvelopePrerollStarted",
+      "writer": "capture envelope開始後のrender thread",
+      "readers": ["artifact serializer"],
+      "meaning": "preroll producerを一度開始した履歴だけを表す"
+    },
+    {
+      "state": "preroll_active",
+      "current_storage": "formalOpportunityEnvelopePrerollActive",
+      "writer": "capture envelope開始とmeasurement-start render callback",
+      "readers": ["render callback scope classification", "failure artifact"],
+      "meaning": "新規render decisionのFOREIGN scope分類でありclosure authorityではない"
+    },
+    {
+      "state": "preroll_completed",
+      "current_storage": "formalOpportunityEnvelopePrerollCompleted",
+      "writer": "closeWithoutNormalCompletion直後のrender thread",
+      "readers": ["artifact serializer"],
+      "meaning": "現行ではproducer close履歴だけを表しtransaction closure authorityではない"
+    },
+    {
+      "state": "required_queue_reservation",
+      "current_storage": "RequiredIntentQueue activeReservation",
+      "writer": "selectForRenderからのreserveHeadとswap commit pointのcommitQualified",
+      "readers": ["scheduler decision", "queue snapshot", "join reservation"],
+      "meaning": "issued preroll intentのexact reservation identity"
+    },
+    {
+      "state": "scheduler_pending_render",
+      "current_storage": "PresentationOpportunityScheduler pendingRender",
+      "writer": "selectForRenderとcommitSwap",
+      "readers": ["duplicate decision path", "markRenderComplete", "commitSwap", "close"],
+      "meaning": "reservationからswap commit pointまで存続するscheduler transaction"
+    },
+    {
+      "state": "scheduler_pending_qualified_evidence",
+      "current_storage": "PresentationOpportunityScheduler pendingQualifiedEvidence",
+      "writer": "commitQualifiedPresentとcommitSwap",
+      "readers": ["commitQualifiedPresent", "commitSwap"],
+      "meaning": "I0 qualified evidence。queue dequeueではない"
+    },
+    {
+      "state": "scheduler_render_completion",
+      "current_storage": "PresentationOpportunityScheduler pendingRenderCompleted",
+      "writer": "markRenderCompleteとcommitSwap",
+      "readers": ["commitQualifiedPresent", "commitSwap"],
+      "meaning": "render完了済みだがswap commit pointへ未到達かを表す"
+    },
+    {
+      "state": "scheduler_pending_opportunity",
+      "current_storage": "PresentationOpportunityScheduler pendingOpportunity",
+      "writer": "commitSwap、次opportunity advance、scheduler close",
+      "readers": ["commitSwap validation", "close/finalize", "ledger accounting"],
+      "meaning": "swap commit済みlatest candidateのfinalize待ち。active joinとは別state"
+    },
+    {
+      "state": "join_state",
+      "current_storage": "ExactQualifiedCommitJoin State",
+      "writer": "reserve、markRenderComplete、bindNativePresent、commitFrameSwapped",
+      "readers": ["各join transition", "hasActiveReservation", "failure attribution"],
+      "meaning": "reservation/render/native Present/frameSwappedのexact transaction state"
+    },
+    {
+      "state": "composition_token_pending",
+      "current_storage": "patched Qt thread_local mvmPendingTokenValid",
+      "writer": "set_token、actual Present enter、capture begin/end",
+      "readers": ["set_token duplicate check", "actual Present enter", "capture end"],
+      "meaning": "actual Presentへまだone-shot consumeされていないtoken"
+    },
+    {
+      "state": "native_present_record",
+      "current_storage": "MvmNativePresentRing record",
+      "writer": "actual Present enter/return",
+      "readers": ["present serial exact lookup", "artifact serializer"],
+      "meaning": "tokenをconsumeしたactual Presentのraw identity/result"
+    },
+    {
+      "state": "frame_swapped_receipt_pending",
+      "current_storage": "patched Qt thread_local mvmFrameSwappedReceiptValid",
+      "writer": "actual Present return、take receipt、capture begin/end",
+      "readers": ["next Present duplicate check", "frameSwapped one-shot consume", "capture end"],
+      "meaning": "frameSwapped callbackへまだone-shot consumeされていないnative Present receipt"
+    },
+    {
+      "state": "qualified_swap_commit",
+      "current_storage": "join Committed + scheduler swap commit + queue dequeued prefix",
+      "writer": "exact frameSwapped join後のfailure-free commitSwap",
+      "readers": ["scheduler snapshot", "queue conservation", "artifact serializer"],
+      "meaning": "I0/I1 transactionの唯一のsuccessful terminal"
+    }
+  ],
+  "quiescence": {
+    "name": "PREROLL_TRANSACTION_FULLY_QUIESCENT",
+    "epoch_scope": "FOREIGN_PRE_MEASUREMENT",
+    "phase_bool_alone_is_authority": false,
+    "same_epoch_snapshot_required": true,
+    "all_of": [
+      "PREROLL_ADMISSION_CLOSED",
+      "SCHEDULER_PENDING_RENDER_FALSE",
+      "SCHEDULER_PENDING_QUALIFIED_EVIDENCE_FALSE",
+      "SCHEDULER_PENDING_OPPORTUNITY_FALSE_OR_EXACTLY_FINALIZED",
+      "QUEUE_ACTIVE_RESERVATION_COUNT_ZERO",
+      "JOIN_ACTIVE_RESERVATION_FALSE",
+      "QT_PENDING_COMPOSITION_TOKEN_FALSE",
+      "QT_PENDING_FRAME_SWAPPED_RECEIPT_FALSE",
+      "ISSUED_EQUALS_RENDERED_EQUALS_QUALIFIED_COMMIT_EQUALS_DEQUEUED",
+      "QUEUE_CONSERVATION_VALID",
+      "ISSUED_PREFIX_EXACT_IDENTITY_CLOSED",
+      "PREROLL_SCOPE_LEDGER_TERMINAL_PARTITION_EXACT",
+      "TRANSPORT_FAILURE_COUNTERS_ZERO"
+    ],
+    "issued_prefix_identity": {
+      "one_to_one_chain": [
+        "reservation",
+        "composition_token_publication",
+        "native_present_record",
+        "frame_swapped_receipt",
+        "qualified_join",
+        "scheduler_swap_commit_and_queue_dequeue"
+      ],
+      "reservation_keys": ["reservation_id", "intent_ordinal", "token_serial"],
+      "native_receipt_keys": ["present_serial", "token_serial", "swapchain_identity", "hresult"],
+      "scope": "FOREIGN_PRE_MEASUREMENT"
+    },
+    "unissued_tail_participates_in_quiescence": false,
+    "unissued_tail_remains_immutable": true,
+    "abi_v5_gap": "ABI v5はpending token/receiptのread-only exact snapshotを公開しない",
+    "abi_gap_resolution": "B3-I5A ABI v6が同一render-thread・capture epoch-bound read-only snapshotを追加し、B3-I5B handshakeのquiescence checkが唯一のcallerとして接続した"
+  },
+  "transition": {
+    "ordered_steps": [
+      "CAPTURE_ENVELOPE_AND_JOIN_START",
+      "PREROLL_PRODUCER_START",
+      "PREROLL_ADMISSION_CLOSE_REQUEST",
+      "DRAIN_EXACT_ACTIVE_FOREIGN_TRANSACTION",
+      "PREROLL_QUIESCENCE_SNAPSHOT_AND_ACK",
+      "CURRENT_REQUIRED_QUEUE_START",
+      "CANONICAL_MEASUREMENT_ARM",
+      "CURRENT_ISSUANCE_GATE_OPEN_AND_MEASUREMENT_WINDOW_START"
+    ],
+    "handshake_completed_before_measurement_arm": true,
+    "admission_close_is_scheduler_close": false,
+    "scheduler_close_occurs_after_active_transaction_drain": true,
+    "waiting_charged_to_required_intent_window": false,
+    "current_intent_issued_while_unresolved": false,
+    "required_set_shrink_allowed": false,
+    "timeout_disposition": "PROTOCOL_FAIL_CLOSE_NOT_PERFORMANCE_DROP"
+  },
+  "boundary_ownership": {
+    "positional_ignore_next_swap_removable": true,
+    "selected_design": "QUIESCENCE_HANDSHAKE",
+    "exact_boundary_reservation_role": "ACTIVE_FOREIGN_TRANSACTION_CLOSURE_ONLY",
+    "candidate_may_be_created_only_for_currently_active_foreign_reservation": true,
+    "candidate_identity": ["reservation_id", "intent_ordinal", "token_serial", "FOREIGN_PRE_MEASUREMENT"],
+    "retroactive_owner_for_completed_foreign_present_allowed": false,
+    "current_measurement_present_may_be_boundary": false,
+    "candidate_is_quiescence_substitute": false
+  },
+  "prohibited_identity_authorities": [
+    "NEAREST_QPC",
+    "LATEST_PRESENT",
+    "CALLBACK_INDEX",
+    "PRESENT_SERIAL_INFERENCE",
+    "TOKEN_SERIAL_INFERENCE",
+    "DWM_COUNTER",
+    "PREVIOUS_ORDINAL"
+  ],
+  "negative_contracts": [
+    {"name": "CURRENT_QUEUE_START_BEFORE_PREROLL_CLOSURE", "expected": "PROTOCOL_FATAL"},
+    {"name": "MEASUREMENT_WINDOW_STARTS_BEFORE_HANDSHAKE_COMPLETION", "expected": "PROTOCOL_FATAL"},
+    {"name": "RETROACTIVE_OWNER_FOR_COMPLETED_FOREIGN_PRESENT", "expected": "PROTOCOL_FATAL"},
+    {"name": "CURRENT_PRESENT_CONSUMED_AS_BOUNDARY", "expected": "PROTOCOL_FATAL"},
+    {"name": "QUIESCENCE_TIMEOUT_TREATED_AS_PERFORMANCE_DROP", "expected": "PROTOCOL_FATAL"}
+  ],
+  "historical_composition_token_mismatch": {
+    "status": "UNRESOLVED_HISTORICAL_RUNTIME_FAILURE",
+    "reclassified_as_i3_boundary_failure": false
+  }
+}

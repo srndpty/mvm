@@ -1,6 +1,7 @@
 # P5-E 実装プラン — Product composition (二source / 二layer)
 
-- 状態: **P5-E1 / P5-E2 / P5-E3 完了 / P5-E4実装済み・closure BLOCKED (QUAL-F2後P2 FAIL)**
+- 状態: **P5-E1 / P5-E2 / P5-E3 完了 / P5-E4実装済み・closure BLOCKED
+  (P2-D5-2/W4-C3 3/3 EXACT CLOSED、canonical P2 corrective gate未実行)**
 - 親計画: [Phase 5 計画](phase5-plan.md) §10
 - 製品契約: [PreviewEngine 製品契約](preview-engine-contract.md)
 - 起点commit: `2de8e2d` (P5-D closure merge)
@@ -566,7 +567,10 @@ product (`apps/p5e_preview_smoke`、`-L p5e`、8 本):
    (`GpuCompositor` 入口 / `SourceFrameBuffer` / `ExactFramePairer` / `CompositorCoordinator`) を
    触るため、§15 の「共有 hot path を変更する場合は closure gate を明示する」に該当する。
    - `p2-matrix.ps1` — 二source exact pairingを複数runし、各runで
-     `check-p2-contract.ps1` (P2-D5-1) を実行する
+     `check-p2-contract.ps1` (P2-D5-2) を実行する
+   - P2-D5-2 W3 canonical performance — `CanonicalPresentMonLive`のfresh 3 runから
+     formal-v2 authorityでthresholdを評価する。`p2-matrix.ps1`のlegacy presentation metricsは
+     diagnostic-onlyであり、これをcanonical PASSの代用にしない
    - `run-p4-formal-matrix.ps1` — composition catalog / referenceを複数runし、各runで
      `check-p4-formal-contract.ps1`を実行する
    - `p3-c2-matrix.ps1` — audio-master seekを複数runし、各runで
@@ -580,6 +584,177 @@ product (`apps/p5e_preview_smoke`、`-L p5e`、8 本):
      末尾の「二source/二layer は P5-E で … capability を引き上げる」を実績記述へ書き換える
    - 同 §7 に **layers の vector 順 = 背面→前面の z 順** を明記する
    - 同 §6 に removeSource の実装済み範囲 (audio authority の返却を含む) を追記する
+
+### E4 closure再開監査 (2026-08-28)
+
+P2-D5-2/W4-C3はcheckpoint `4e170fe`でformal 3/3すべて
+`W4_C3_CAUSAL_REPLAY_EXACT`となり、`root_cause_determined=true`で**CLOSED**した。
+actual causal chainは、completed refresh ordinalから導出したtargetがsource-domain terminal predicateを
+成立させ、`DOMAIN_TERMINAL`がcapture gateを閉じたことである。
+
+ただしW4-C3はdiagnostic-onlyであり、canonical performance authorityへ昇格しない。
+したがってW3の`CANONICAL_PERFORMANCE_FAIL`（29.033 fps / drop 51.611%）を書き換えず、
+W4-C3の3/3 EXACTをP5-E4のfrozen P2 PASSへ読み替えない。W4-C3以前のT2未採取は現在のblockerではなく、
+後段W4で置き換えられたhistorical investigationとして保持する。
+
+exit criteriaの再監査結果は次のとおりである。
+
+| gate | 現在の判定 | 根拠 / 未実行事項 |
+| --- | --- | --- |
+| §10.2要求とpositive/negative testの対応、対象0件防止 | **充足済み** | 対応表とP5-E literal 17件検査を実装済み |
+| 製品契約のcapability `2 / 2 / 1`、layer順、remove semantics | **充足済み** | `preview-engine-contract.md` §6 / §7 / §7.4を更新済み |
+| historical P3-C-2 blockerの解消 | **充足済み** | QUAL-F2 checkpointで独立2 campaignが各9/9 PASS。ただしfinal checkpoint gateとは分ける |
+| P2-D5-2 root-cause attribution | **充足済み** | W4-C3 formal 3/3 EXACT、root cause determined |
+| P2-D5-2 canonical performance | **未充足** | B3 I0/I1 production implementation済み。fresh W3 3/3とfrozen threshold PASSは未実行 |
+| current closure checkpointのordinary / P5-C / P5-D / P5-E | **未実行** | W4-C3 merge後の最終candidateでは未走行 |
+| current closure checkpointのP2 correctness / Seek | **未実行** | correction後の`p2-matrix.ps1` Playback 3/3 + Seek 3/3が未走行 |
+| current closure checkpointのP3-C-2 | **未実行** | correction後の`p3-c2-matrix.ps1` 9/9が未走行 |
+| current closure checkpointのP4 | **未実行** | QUAL-F2 final suiteはP2 FAILでstopしたため、`run-p4-formal-matrix.ps1` 3/3が未走行 |
+| final docs / artifact / manifest audit | **未実行** | final checkpointと全gateのSHA-256/provenance確定後に実施する |
+
+現在のblockerは、W4-C3で確定したactual causal chainに対するB3 production correctionが**設計済みだが未実装**で、
+canonical P2 performance PASSが存在しないことである。W4-C3のscope外である「+1なら早期terminalを避ける」
+というcounterfactualを修正根拠にせず、qualified local commitでだけimmutable queueを1件consumeする。
+
+closureは次の順序で再開する。今回は計画更新だけを行い、test/captureはまだ実行しない。
+
+1. **完了**: B3でproduct invariant、immutable required set、qualified local commit、source mapping分離、
+   planned-end completion、実装前negative contractをfreezeした。
+2. candidate Bのexact native Present joinとqueue transactionを実装し、targeted unit / architecture / dry-runで
+   reserve / duplicate / render-complete / commit-dequeue / unsatisfied tail経路を閉じる。
+3. clean release checkpointを固定し、ordinary CTestとP5-C / P5-D / P5-E product regressionを実行する。
+4. 同一checkpointでP2 correctness/Seek 6/6と、fresh W3 canonical performance 3/3を実行する。
+   authority/protocol/accountingがVALIDで、frozen 55 fps / 2% thresholdを全runで満たすことを要求する。
+5. 同一checkpointでP3-C-2 9/9、P4 3/3を実行する。FAIL時はstopし、変更前後の複数runで帰属する。
+6. raw、summary、provenance、manifestを不変保存し、`docs/phase5-plan.md` §10.4と本節を最終判定へ更新する。
+
+#### P2-D5-2 B0 — Same-output Authority Attribution design
+
+W4-C3 CLOSED後の最初のcorrective designとして、mixed output provenanceをsame-callbackでexact比較する
+[B0設計契約](p2-d5-2-b0-same-output-authority-attribution.md)をfreezeした。capture、test実行、production
+behavior変更はまだ行っていない。
+
+static API inventoryでは、Windows 8.1以降`DwmGetCompositionTimingInfo`の`hwnd`は`NULL`必須で、
+target HWND指定は`E_INVALIDARG`となる。したがってliteralな「HWND-bound DWM counter」はproduction候補として
+static rejectionである。B0 schemaは非NULL呼出しを診断事実として保存するが、NULL fallback、nearest-QPC、
+cadence tolerance、counter clamp、sequential ordinal `+1`で救済しない。
+
+B0はNULL / HWND-attempt / existing W4-C3 sequenceをinvocation serialでjoinし、supportedな環境でのみ
+HWND shadow ordinal / target / predicateをreplayする。`past_source_domain && required_intent_membership`を
+successful measurement completionにしないproduct invariantと、`required_intent_count` / actual
+`source_frame_count`のauthority分離も同設計へ固定した。代替product behaviorは未実装であり、
+P5-E4は引き続きBLOCKEDである。
+
+#### P2-D5-2 B1 — Target-output Physical Authority Attribution design
+
+B0でHWND-bound DWM counterをstatic rejectionしたため、次の候補として既存target `IDXGIOutput` physical
+VBlank observerをcurrent NULL DWM / actual scheduler ordinalと同一fresh captureで比較する
+[B1設計契約](p2-d5-2-b1-target-output-physical-authority-attribution.md)をfreezeした。instrumentation、negative
+test、capture、production behavior変更はまだ行っていない。
+
+B1 amendmentでobserver sampleの命令位置を再監査した。sample QPCは`WaitForVBlank()`成功return後にobserver
+threadが`QueryPerformanceCounter()`を実行した時刻であり、physical VBlank boundary timestampではない。
+したがってcallback QPCを隣接observer wake QPCへhalf-open bracketしてcompleted physical ordinalを得る初版contractを
+撤回した。nearest-QPC、cadence tolerance、midpoint、interpolationで救済しない。
+
+current scheduler originはfirst committed swapの`frameSwapped` callback中に取得したpost-swap NULL DWM counterで
+確立する。初版のfirst committed Presentをdisplayed physical ordinalへ後からjoinするoriginは別causal boundaryで
+あるため、これも撤回した。pre-renderと同じfirst post-swap causal sample pointの双方でtarget-output counterを
+直接得るsupported authorityが確立するまで、physical joinとshadow replayは`NOT EVALUABLE`である。
+
+delta contractも「全点でtarget deltaがintent deltaと不一致」から、NULL sequenceのactual sequenceへの全点exact
+一致、exact common domain上のtarget physical sequence非同一性（少なくとも1点差）、full shadow causal outcome
+differenceへ修正した。現行observerでは後二者を評価できないため、現在のverdictはcandidate rejectionではなく
+`TARGET_OUTPUT_PHYSICAL_NOT_EVALUABLE`である。
+
+output migration、observer failure/overflow/regression、publication ambiguity、causal-boundary/join/coverage欠損は
+fail-closeする。render callbackの`WaitForVBlank()`、QPC heuristic、counter clamp、sequential ordinal `+1`、
+threshold変更、required-set縮小は禁止したままである。
+`past_source_domain && required_intent_membership`をsuccessful completionにしないinvariantは継続してfreeze済みで、
+代替product behaviorは未選択である。P5-E4は引き続きBLOCKEDである。
+
+#### P2-D5-2 B2 — Supported Exact Target-output Counter Authority
+
+B1 shadowを再有効化できるsupported counterを
+[B2 static inventory](p2-d5-2-b2-supported-exact-target-output-counter-authority.md)で評価した。production、test、
+capture、instrumentationは変更していない。
+
+current QRhiはwindowed D3D11 `FLIP_DISCARD` swapchainで、public `QRhiD3D11NativeHandles`はdevice/contextだけを
+公開する。一方、local Qt patchのnative Present hookはactual `IDXGISwapChain*`を所有thread上で取得できるため、
+underlying objectへの到達自体は可能である。しかし`IDXGISwapChain::GetFrameStatistics`の`SyncRefreshCount` /
+`SyncQPCTime`はAPI call時点ではなくschedulerが最後にmachine timeをsampleしたpairであり、pre-renderとfirst
+post-swapのsame causal sampleを直接表さない。さらにMicrosoftがmulti-monitor等でstatisticsをunreliableと
+明記しており、current workloadはsingle-monitor専用contractではないためstatic rejectionとした。
+
+`IDXGIOutput::GetFrameStatistics`はfull-screen限定でcurrent windowed pathではunsupported、
+`D3DKMTGetScanLine`はscanline/VBlank statusだけでcompleted countを返さず、
+`D3DKMTWaitForVerticalBlankEvent(2)`はblocking waitでcount/boundary timestampを返さない。scanline transition、
+observer wake QPC、nearest、derived cadence、sequential counterで救済しない。
+
+全候補をstatic rejectionし、`EXACT_TARGET_OUTPUT_COUNTER_AUTHORITY_UNAVAILABLE`でB2を閉じた。B1 physical shadowは
+`NOT EVALUABLE`のまま維持し、production correctionはtarget-output counter置換系統から
+`B3 Counter-free Required-intent Completion Correction`へ切り替えた。P5-E4は引き続きBLOCKEDである。
+
+#### P2-D5-2 B3 — Counter-free Required-intent Completion Correction
+
+[B3 corrective design](p2-d5-2-b3-counter-free-required-intent-completion.md)でcurrent schedulerの
+`selectForRender -> markRenderComplete -> commitSwap`、`pendingRender`、duplicate suppression、
+`pendingOpportunity` / `lastFinalizedOpportunityOrdinal`をsource-level inventoryした。次scheduler decisionより前に
+因果的に確定している既存境界は、同一reservation/token、matching render completion、successful native Present、
+matching frameSwapped commitをexact joinした**qualified local commit**である。ETW Presented/FinalStateはfuture
+display outcomeなのでonline issuanceへ逆輸入しない。
+
+A: local completed-opportunity counter、B: immutable required-intent queueのreserve / qualified commit-dequeue、
+C: fail-close onlyを比較し、Bを第一候補とした。A/BはW4-C3で確定したNULL DWM `+2/+3` jumpをissuanceから
+除去するには十分だが、planned window内の全commitやW3 threshold PASSを保証しない。Cはfalse successful
+completionを止めてもknown W3 causeを除去できないためcorrectionとして不十分である。
+
+required set `[0,N)`はstart時にimmutable、duplicate / invalid / uncommitted renderはconsume 0、intent identity
+確定後にsource mapping、planned endの未発行tailはunsatisfiedとして保存する。normal completion ownerは
+`PLANNED_WINDOW_END`だけとし、`past_source_domain && required_intent_membership`および`DOMAIN_TERMINAL`を
+successful completionにしない。canonical W3 FAILとP5-E4 BLOCKEDは不変である。
+
+#### B3-I0 — Exact Qualified Commit Join (実装済み)
+
+candidate Bのうちjoin provenanceだけを確定するsliceを実装した。詳細は
+[B3 design §10](p2-d5-2-b3-counter-free-required-intent-completion.md)にある。
+
+- `expected_present_serial`のauthorityはpatched Qtが`Present`直前にmintしrecord自身が持つ値だけとし、
+  one-shot receiptでDirectConnectionの`frameSwapped`へ渡す。`last + 1`、latest record、ring array位置、
+  QPC proximityからは生成しない
+- reservation_id / intent ordinal / token serial / present serial / swapchain identity / HRESULT /
+  render completion / frameSwapped commitを1 transactionとして検証し、successful native Present +
+  matching frameSwapped + matching render completionのときだけ`QUALIFIED_COMMIT`を返す。
+  **queue dequeueはまだ行わない**
+- mismatch / missing / Present failure / duplicate commitはすべてfail-closeする
+- native present hook ABIは**v4 -> v5**。receipt構造体とreceipt loss counter 3種を追加し、
+  W2-B1 transport negativeを`NegativeAppV4QtV5` / `NegativeAppV5QtV4`へ更新した
+- targeted testはjoin unit test、source-level architecture guard、guard自身のmutation test
+  (Good + negative 12) の**15件**。ordinary CTest (ucrt64-release、`-LE 'performance|stability'`) は
+  **1196/1200 PASS**。残り4件は本sliceより前 (`379c274`のclean worktree) でも同じく失敗する既存failureであり、
+  `p2_c3_a3_t2_startup_order` negative 3件 (contract ps1がCRLF、対象sourceがLFのためmutation anchorが一致しない) と
+  `p2_present_id_oracle_live` (本機で2026-08-23以降全runが`ORACLE_SAMPLING_GAP`) である
+- ABI v5化でW2-B2 terminal shadow contractのfixtureも`abi_version=5`へ更新した
+  (同fixtureはB1 transport checkerへ委譲するため、更新しないとGood 4件とNegativeIntentJoinMutationが落ちる)
+- required-intent queue semantics、ordinal issuance、W2/W3 historical authority、
+  FinalState satisfaction、threshold、required setは未変更である
+
+#### B3-I1 — Required-intent Queue State Machine (実装済み)
+
+- immutable required set `[0,N)`のqueue headをsource mappingより先にreserveする
+- duplicate/render completionはconsumeせず、I0 `QUALIFIED_COMMIT`だけがexactly 1件dequeueする
+- source coverage不足は明示的contract failureとし、required setのskip/dequeue/縮小を行わない
+- planned endのactive reservationとunissued tailを後段accounting向けsnapshotへ保持する
+- `committed != satisfied`を維持し、display/FinalState authorityをonline queueへ入れない
+- normal completion ownerは`PLANNED_WINDOW_END`だけとする
+- queue unit、scheduler regression、architecture guardとmutation testを追加した
+- canonical W3 captureは本sliceでは未実施。canonical verdictは変更しない
+
+I1 amendmentでは、I0 `QUALIFIED_COMMIT`をpending evidenceに限定し、queue dequeueを`commitSwap()`の
+全failure条件より後のlogical commit pointへ遅延した。post-I0 swap failureはconsume 0でfail-closeし、
+source coverage fatal後のnon-normal cleanupもactive reservation/unissued tailを保持する。
+
+ABI v5はpatched Qtの再build後に実行時互換になる。live captureは後続sliceで行う。
 
 ### E4 実装結果 (実測)
 

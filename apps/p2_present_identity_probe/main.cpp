@@ -6,12 +6,16 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <d3d11.h>
 #include <dwmapi.h>
 #include <dxgi1_6.h>
+#include <mutex>
+#include <semaphore>
 #include <string>
 #include <thread>
 #include <vector>
@@ -93,6 +97,11 @@ int main(int argc, char** argv) {
     int presentCount = 900;
     std::string notifyDelayPattern = "0,100,300,800,1200";
     bool dwmFlushFallback = false;
+    // S2-e2: authority modeはbuild typeから推測せず、呼び出し側が明示する。
+    //   FULL_RELEASE      correctness + timing authority
+    //   CORRECTNESS_ONLY  correctnessのみ。timingはauthorityではない。
+    // CORRECTNESS_ONLYでもcorrectness (900/900, gap=0, exact join) は一切緩めない。
+    std::string authorityMode = "FULL_RELEASE";
     for (int index = 1; index < argc; ++index) {
         if (std::strcmp(argv[index], "--dwm-flush-fallback") == 0) {
             dwmFlushFallback = true;
@@ -104,7 +113,19 @@ int main(int argc, char** argv) {
             presentCount = std::atoi(argv[index + 1]);
         else if (std::strcmp(argv[index], "--notify-delay-pattern") == 0)
             notifyDelayPattern = argv[index + 1];
+        else if (std::strcmp(argv[index], "--authority-mode") == 0)
+            authorityMode = argv[index + 1];
     }
+    if (authorityMode != "FULL_RELEASE" && authorityMode != "CORRECTNESS_ONLY") {
+        std::fprintf(stderr, "--authority-mode is FULL_RELEASE or CORRECTNESS_ONLY\n");
+        return 2;
+    }
+    const bool timingIsAuthority = authorityMode == "FULL_RELEASE";
+    // acquisition livenessのbudget。performance thresholdではない。
+    // CORRECTNESS_ONLYでは遅いbuildでも900件を完走できるよう余裕を持たせる。
+    // ここを変えてもtiming verdictには一切影響しない。
+    const DWORD acquisitionWaitMs = timingIsAuthority ? 1000u : 8000u;
+    const auto acquisitionWaitSeconds = std::chrono::seconds(timingIsAuthority ? 1 : 8);
     const auto notifyDelayMilliPeriods = parseDelayPattern(notifyDelayPattern);
     if (metricsPath.empty() || presentCount <= 0 || notifyDelayMilliPeriods.empty() ||
         std::any_of(notifyDelayMilliPeriods.begin(), notifyDelayMilliPeriods.end(),
@@ -127,6 +148,17 @@ int main(int argc, char** argv) {
     if (!hwnd)
         return 5;
     ShowWindow(hwnd, SW_SHOW);
+    // S2-e3 (B): acquisition stabilization。occlusionの発生確率を下げるための
+    // preconditionであって、occlusionを不可能にするauthorityではない。
+    // 実際にocclusionが起きた場合はA側 (DXGI_STATUS_OCCLUDED検出) がfail-closeする。
+    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    SetForegroundWindow(hwnd);
+    pumpMessages();
+    const bool windowVisibilityPrecondition = IsWindowVisible(hwnd) && !IsIconic(hwnd);
+    if (!windowVisibilityPrecondition) {
+        std::fprintf(stderr, "probe windowを可視状態にできませんでした\n");
+        return 5;
+    }
     pumpMessages();
 
     ComPtr<ID3D11Device> device;
@@ -150,15 +182,68 @@ int main(int argc, char** argv) {
     desc.BufferCount = 3;
     desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     desc.Scaling = DXGI_SCALING_STRETCH;
+    desc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
     ComPtr<IDXGISwapChain1> swapChain;
     if (FAILED(factory->CreateSwapChainForHwnd(device.Get(), hwnd, &desc, nullptr, nullptr,
                                                &swapChain)))
+        return 5;
+
+    ComPtr<IDXGISwapChain2> swapChain2;
+    if (FAILED(swapChain.As(&swapChain2)) || FAILED(swapChain2->SetMaximumFrameLatency(1)))
+        return 5;
+    const HANDLE frameLatencyWaitable = swapChain2->GetFrameLatencyWaitableObject();
+    if (!frameLatencyWaitable)
         return 5;
 
     ComPtr<ID3D11Texture2D> backBuffer;
     ComPtr<ID3D11RenderTargetView> rtv;
     if (FAILED(swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer))) ||
         FAILED(device->CreateRenderTargetView(backBuffer.Get(), nullptr, &rtv)))
+        return 5;
+
+    constexpr int warmupPresentCount = 12;
+    // S2-e3: success-severityのPresent statusを未分類のまま成功扱いしない。
+    // DXGI_STATUS_OCCLUDEDはSUCCEEDED()がtrueなので、FAILED()だけでは捕捉できない。
+    // 分類しないと「画面へ出ていないPresent」をsubmission成功として数えてしまい、
+    // GetFrameStatisticsが進まない結果をsampler ack timeoutへ誤帰属する。
+    long long presentOccludedCount = 0;
+    long long presentUnclassifiedStatusCount = 0;
+    long long warmupPresentFailureCount = 0;
+    long long warmupFrameLatencyWaitFailureCount = 0;
+    long long finalWarmupPresentId = -1;
+    for (int warmupIndex = 0; warmupIndex < warmupPresentCount; ++warmupIndex) {
+        pumpMessages();
+        if (WaitForSingleObject(frameLatencyWaitable, 1000) != WAIT_OBJECT_0) {
+            ++warmupFrameLatencyWaitFailureCount;
+            break;
+        }
+        const float color[4] = {0.05f, 0.05f, 0.08f, 1.0f};
+        context->OMSetRenderTargets(1, rtv.GetAddressOf(), nullptr);
+        context->ClearRenderTargetView(rtv.Get(), color);
+        const HRESULT warmupPresentHr = swapChain->Present(1, 0);
+        if (FAILED(warmupPresentHr)) {
+            ++warmupPresentFailureCount;
+            break;
+        }
+        if (warmupPresentHr == DXGI_STATUS_OCCLUDED) {
+            ++presentOccludedCount;
+            break;
+        }
+        if (warmupPresentHr != S_OK) {
+            ++presentUnclassifiedStatusCount;
+            break;
+        }
+        UINT warmupPresentId = 0;
+        if (FAILED(swapChain->GetLastPresentCount(&warmupPresentId))) {
+            ++warmupPresentFailureCount;
+            break;
+        }
+        finalWarmupPresentId = warmupPresentId;
+    }
+    const bool warmupComplete = finalWarmupPresentId == warmupPresentCount &&
+                                warmupPresentFailureCount == 0 &&
+                                warmupFrameLatencyWaitFailureCount == 0;
+    if (!warmupComplete)
         return 5;
 
     const auto resolved = mvm::gpu::resolveWindowOutput(hwnd);
@@ -190,30 +275,38 @@ int main(int argc, char** argv) {
     std::vector<StatisticsTransition> transitions;
     transitions.reserve(static_cast<std::size_t>(presentCount) + 16);
     std::atomic<bool> statisticsStop{false};
-    std::atomic<bool> samplerEnabled{false};
+    std::binary_semaphore samplerStart{0};
     std::atomic<bool> samplerBaselineReady{false};
     std::atomic<int> samplerPriorityState{0};
     std::atomic<long long> samplerVBlankGaps{0};
+    std::atomic<long long> samplerVBlankWaitFailures{0};
     std::atomic<long long> statisticsFailures{0};
     std::atomic<long long> statisticsDisjoint{0};
     std::atomic<long long> baselineDisjoint{0};
     std::atomic<long long> maxPollIntervalQpc{0};
     std::atomic<long long> lastObservedPresentId{-1};
+    std::atomic<std::size_t> samplerCompletedVBlankCount{0};
+    std::mutex observationMutex;
+    std::condition_variable observationChanged;
     std::thread statisticsThread([&] {
-        const bool priorityOk = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST) != 0;
+        const bool priorityOk =
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) != 0;
         samplerPriorityState.store(priorityOk ? 1 : 2, std::memory_order_release);
-        while (!samplerEnabled.load(std::memory_order_acquire) &&
-               !statisticsStop.load(std::memory_order_acquire))
-            Sleep(0);
+        samplerStart.acquire();
         long long previousPollQpc = 0;
         long long previousPresentCount = -1;
         std::size_t observedVBlankCount = observer.ring().publishedCount();
         while (!statisticsStop.load(std::memory_order_acquire)) {
-            const std::size_t currentVBlankCount = observer.ring().publishedCount();
-            if (currentVBlankCount == observedVBlankCount) {
-                Sleep(0);
+            if (!observer.waitForPublishedCount(observedVBlankCount, 100)) {
+                if (statisticsStop.load(std::memory_order_acquire))
+                    break;
+                if (!observer.running() || observer.waitFailureCount() != 0) {
+                    samplerVBlankWaitFailures.fetch_add(1, std::memory_order_relaxed);
+                    break;
+                }
                 continue;
             }
+            const std::size_t currentVBlankCount = observer.ring().publishedCount();
             if (currentVBlankCount != observedVBlankCount + 1)
                 samplerVBlankGaps.fetch_add(
                     static_cast<long long>(currentVBlankCount - observedVBlankCount - 1),
@@ -245,19 +338,30 @@ int main(int argc, char** argv) {
                         transitions.push_back(
                             {pollQpc, statistics.PresentCount, statistics.PresentRefreshCount,
                              statistics.SyncRefreshCount, statistics.SyncQPCTime.QuadPart});
-                        lastObservedPresentId.store(statistics.PresentCount,
-                                                    std::memory_order_release);
+                        {
+                            std::lock_guard<std::mutex> lock(observationMutex);
+                            lastObservedPresentId.store(statistics.PresentCount,
+                                                        std::memory_order_release);
+                        }
+                        observationChanged.notify_all();
                     }
                 }
-                Sleep(0);
+                // 3/4周期だけのbounded poll。Sleep(0)は次回scheduleを保証せず
+                // transitionを取りこぼすため、schedulerへyieldしない。
+                YieldProcessor();
             }
+            {
+                std::lock_guard<std::mutex> lock(observationMutex);
+                samplerCompletedVBlankCount.store(currentVBlankCount, std::memory_order_release);
+            }
+            observationChanged.notify_all();
         }
     });
 
     for (int attempt = 0;
          attempt < 500 && samplerPriorityState.load(std::memory_order_acquire) == 0; ++attempt)
         Sleep(1);
-    samplerEnabled.store(true, std::memory_order_release);
+    samplerStart.release();
     for (int attempt = 0; attempt < 500 && !samplerBaselineReady.load(std::memory_order_acquire);
          ++attempt)
         Sleep(1);
@@ -266,9 +370,16 @@ int main(int argc, char** argv) {
     submissions.reserve(static_cast<std::size_t>(presentCount));
     long long presentFailureCount = 0;
     long long getLastPresentCountFailureCount = 0;
+    long long frameLatencyWaitFailureCount = 0;
+    long long samplerAckTimeoutCount = 0;
+    long long samplerCycleTimeoutCount = 0;
     bool submittedIdsConsecutive = true;
     for (int submissionIndex = 0; submissionIndex < presentCount; ++submissionIndex) {
         pumpMessages();
+        if (WaitForSingleObject(frameLatencyWaitable, acquisitionWaitMs) != WAIT_OBJECT_0) {
+            ++frameLatencyWaitFailureCount;
+            break;
+        }
         const float color[4] = {0.05f, 0.05f, 0.08f, 1.0f};
         context->OMSetRenderTargets(1, rtv.GetAddressOf(), nullptr);
         context->ClearRenderTargetView(rtv.Get(), color);
@@ -279,6 +390,16 @@ int main(int argc, char** argv) {
             ++presentFailureCount;
             break;
         }
+        // occludedなPresentは画面へ到達していない。submission成功として数えない。
+        if (presentHr == DXGI_STATUS_OCCLUDED) {
+            ++presentOccludedCount;
+            break;
+        }
+        // S_OK以外のsuccess statusは未分類である。silentに成功扱いしない。
+        if (presentHr != S_OK) {
+            ++presentUnclassifiedStatusCount;
+            break;
+        }
         UINT presentId = 0;
         if (FAILED(swapChain->GetLastPresentCount(&presentId))) {
             ++getLastPresentCountFailureCount;
@@ -287,6 +408,36 @@ int main(int argc, char** argv) {
         if (!submissions.empty() && presentId != submissions.back().presentId + 1U)
             submittedIdsConsecutive = false;
         submissions.push_back({submissionIndex, presentId, renderEndQpc, presentReturnQpc});
+        {
+            // samplerがPresent後のVBlankを最後までpollしてから次のPresentを許可する。
+            // producer側のbarrierなのでpublication eventのconsumerはsampler一つに保つ。
+            std::unique_lock<std::mutex> lock(observationMutex);
+            if (!dwmFlushFallback) {
+                const std::size_t presentPublicationCount = observer.ring().publishedCount();
+                const bool cycleCompleted =
+                    observationChanged.wait_for(lock, acquisitionWaitSeconds, [&] {
+                        return samplerCompletedVBlankCount.load(std::memory_order_acquire) >
+                               presentPublicationCount;
+                    });
+                if (!cycleCompleted) {
+                    ++samplerCycleTimeoutCount;
+                    break;
+                }
+            }
+
+            // GetFrameStatisticsは最新Presentより1件遅れて進むことがある。
+            // current IDを待つとproducer自身を止めるため、未観測を最大1件に制限する。
+            const long long requiredObservedPresentId =
+                (std::max)(0LL, static_cast<long long>(presentId) - 1);
+            const bool observed = observationChanged.wait_for(lock, acquisitionWaitSeconds, [&] {
+                return lastObservedPresentId.load(std::memory_order_acquire) >=
+                       requiredObservedPresentId;
+            });
+            if (!observed) {
+                ++samplerAckTimeoutCount;
+                break;
+            }
+        }
     }
 
     // DwmFlushは使わない。最後のsubmitted Present IDが観測されるまでbounded drainする。
@@ -322,6 +473,9 @@ int main(int argc, char** argv) {
     }
     const bool configuredSubmissionsComplete =
         submissions.size() == static_cast<std::size_t>(presentCount);
+    const bool measurementFollowsWarmup =
+        !submissions.empty() &&
+        static_cast<long long>(submissions.front().presentId) == finalWarmupPresentId + 1;
     const bool finalDrainComplete =
         finalSubmittedId >= 0 &&
         lastObservedPresentId.load(std::memory_order_acquire) == finalSubmittedId;
@@ -330,19 +484,28 @@ int main(int argc, char** argv) {
         maxPollIntervalQpc.load(std::memory_order_acquire) * 2 < nominalPeriodQpc;
     const bool outputStable =
         endIdentity.ok && mvm::gpu::sameWindowOutput(resolved.identity, endIdentity.identity);
-    const bool oracleValid =
-        configuredSubmissionsComplete && presentFailureCount == 0 &&
-        getLastPresentCountFailureCount == 0 && submittedIdsConsecutive && observedIdsComplete &&
+    // S2-e2: correctness authorityにpollIntervalValidを含めない。timingは別軸である。
+    const bool correctnessValid =
+        warmupComplete && measurementFollowsWarmup && configuredSubmissionsComplete &&
+        presentFailureCount == 0 && presentOccludedCount == 0 &&
+        presentUnclassifiedStatusCount == 0 && windowVisibilityPrecondition &&
+        getLastPresentCountFailureCount == 0 &&
+        frameLatencyWaitFailureCount == 0 && samplerAckTimeoutCount == 0 &&
+        samplerCycleTimeoutCount == 0 && submittedIdsConsecutive && observedIdsComplete &&
         joinedTransitions.size() == submissions.size() && finalDrainComplete &&
         samplerPriorityState.load(std::memory_order_acquire) == 1 &&
         samplerBaselineReady.load(std::memory_order_acquire) &&
         samplerVBlankGaps.load(std::memory_order_acquire) == 0 &&
+        samplerVBlankWaitFailures.load(std::memory_order_acquire) == 0 &&
         statisticsFailures.load(std::memory_order_acquire) == 0 &&
-        statisticsDisjoint.load(std::memory_order_acquire) == 0 && pollIntervalValid &&
+        statisticsDisjoint.load(std::memory_order_acquire) == 0 &&
         observer.waitFailureCount() == 0 && observer.ring().overflowCount() == 0 && outputStable;
-    const bool completeOracleValid = oracleValid && statisticsOutputMatchesWindow;
+    const bool completeCorrectnessValid = correctnessValid && statisticsOutputMatchesWindow;
+    // timing authorityがactiveなときだけpollIntervalValidをverdictへ入れる。
+    const bool completeOracleValid =
+        completeCorrectnessValid && (!timingIsAuthority || pollIntervalValid);
     const bool oracleSamplingGap = !observedIdsComplete || !finalDrainComplete ||
-                                   !pollIntervalValid ||
+                                   (timingIsAuthority && !pollIntervalValid) ||
                                    samplerVBlankGaps.load(std::memory_order_acquire) != 0;
 
     FILE* file = nullptr;
@@ -350,6 +513,32 @@ int main(int argc, char** argv) {
         return 6;
     std::fprintf(file, "{\n");
     std::fprintf(file, "  \"schema\": \"mvm-p2-present-id-oracle-2\",\n");
+    std::fprintf(file, "  \"authority_mode\": \"%s\",\n", authorityMode.c_str());
+    std::fprintf(file, "  \"correctness_verdict\": \"%s\",\n",
+                 completeCorrectnessValid ? "PASS" : "FAIL");
+    std::fprintf(file, "  \"timing_verdict\": \"%s\",\n",
+                 timingIsAuthority ? (pollIntervalValid ? "PASS" : "FAIL")
+                                   : "NOT_AUTHORITY_IN_DEBUG");
+    std::fprintf(file, "  \"acquisition_liveness_verdict\": \"%s\",\n",
+                 configuredSubmissionsComplete ? "PASS" : "FAIL");
+    std::fprintf(file, "  \"acquisition_wait_budget_ms\": %lu,\n",
+                 static_cast<unsigned long>(acquisitionWaitMs));
+    std::fprintf(file, "  \"present_occluded_count\": %lld,\n", presentOccludedCount);
+    std::fprintf(file, "  \"present_unclassified_status_count\": %lld,\n",
+                 presentUnclassifiedStatusCount);
+    std::fprintf(file, "  \"present_outcome_authority_exact\": %s,\n",
+                 (presentOccludedCount == 0 && presentUnclassifiedStatusCount == 0 &&
+                  presentFailureCount == 0)
+                     ? "true"
+                     : "false");
+    std::fprintf(file, "  \"present_outcome_code\": \"%s\",\n",
+                 presentFailureCount != 0          ? "PRESENT_FAILURE"
+                 : presentOccludedCount != 0       ? "OCCLUDED_NOT_AUTHORITY"
+                 : presentUnclassifiedStatusCount != 0
+                     ? "UNCLASSIFIED_PRESENT_STATUS"
+                     : "PRESENT_OUTCOME_EXACT");
+    std::fprintf(file, "  \"window_visibility_precondition\": %s,\n",
+                 windowVisibilityPrecondition ? "true" : "false");
     std::fprintf(file, "  \"oracle_status\": \"%s\",\n", completeOracleValid ? "VALID" : "INVALID");
     std::fprintf(file, "  \"oracle_valid\": %s,\n", completeOracleValid ? "true" : "false");
     std::fprintf(file, "  \"mapper_proof_status\": \"NOT_YET_EVALUABLE\",\n");
@@ -359,9 +548,19 @@ int main(int argc, char** argv) {
     std::fprintf(file, "  \"qpc_frequency\": %lld,\n", qpcFrequency);
     std::fprintf(file, "  \"nominal_period_qpc\": %lld,\n", nominalPeriodQpc);
     std::fprintf(file, "  \"configured_present_count\": %d,\n", presentCount);
+    std::fprintf(file, "  \"warmup_present_count\": %d,\n", warmupPresentCount);
+    std::fprintf(file, "  \"warmup_complete\": %s,\n", warmupComplete ? "true" : "false");
+    std::fprintf(file, "  \"warmup_present_failure_count\": %lld,\n", warmupPresentFailureCount);
+    std::fprintf(file, "  \"warmup_frame_latency_wait_failure_count\": %lld,\n",
+                 warmupFrameLatencyWaitFailureCount);
+    std::fprintf(file, "  \"final_warmup_present_id\": %lld,\n", finalWarmupPresentId);
+    std::fprintf(file, "  \"measurement_follows_warmup\": %s,\n",
+                 measurementFollowsWarmup ? "true" : "false");
     std::fprintf(file, "  \"swap_effect\": \"FLIP_DISCARD\",\n");
     std::fprintf(file, "  \"buffer_count\": 3,\n");
     std::fprintf(file, "  \"sync_interval\": 1,\n");
+    std::fprintf(file, "  \"frame_latency_waitable\": true,\n");
+    std::fprintf(file, "  \"maximum_frame_latency\": 1,\n");
     std::fprintf(file, "  \"dwm_flush_used\": %s,\n", dwmFlushFallback ? "true" : "false");
     std::fprintf(file, "  \"dwm_flush_mode\": \"%s\",\n",
                  dwmFlushFallback ? "ORACLE_ONLY_FALLBACK" : "DISABLED");
@@ -378,12 +577,20 @@ int main(int argc, char** argv) {
     std::fprintf(file, "  \"present_failure_count\": %lld,\n", presentFailureCount);
     std::fprintf(file, "  \"get_last_present_count_failure_count\": %lld,\n",
                  getLastPresentCountFailureCount);
+    std::fprintf(file, "  \"frame_latency_wait_failure_count\": %lld,\n",
+                 frameLatencyWaitFailureCount);
+    std::fprintf(file, "  \"sampler_ack_timeout_count\": %lld,\n", samplerAckTimeoutCount);
+    std::fprintf(file, "  \"sampler_cycle_timeout_count\": %lld,\n", samplerCycleTimeoutCount);
     std::fprintf(file, "  \"sampler_high_priority\": %s,\n",
                  samplerPriorityState.load(std::memory_order_acquire) == 1 ? "true" : "false");
+    std::fprintf(file, "  \"sampler_priority_mode\": \"TIME_CRITICAL\",\n");
+    std::fprintf(file, "  \"sampler_trigger_mode\": \"OBSERVER_PUBLICATION_EVENT\",\n");
     std::fprintf(file, "  \"sampler_baseline_ready\": %s,\n",
                  samplerBaselineReady.load(std::memory_order_acquire) ? "true" : "false");
     std::fprintf(file, "  \"sampler_vblank_gap_count\": %lld,\n",
                  samplerVBlankGaps.load(std::memory_order_acquire));
+    std::fprintf(file, "  \"sampler_vblank_wait_failure_count\": %lld,\n",
+                 samplerVBlankWaitFailures.load(std::memory_order_acquire));
     std::fprintf(file, "  \"statistics_failure_count\": %lld,\n",
                  statisticsFailures.load(std::memory_order_acquire));
     std::fprintf(file, "  \"statistics_disjoint_count\": %lld,\n",

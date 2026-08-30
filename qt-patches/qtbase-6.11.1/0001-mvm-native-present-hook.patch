@@ -2,7 +2,7 @@ diff --git a/src/gui/rhi/qrhid3d11.cpp b/src/gui/rhi/qrhid3d11.cpp
 index e6a567a6..d3c13b8d 100644
 --- a/src/gui/rhi/qrhid3d11.cpp
 +++ b/src/gui/rhi/qrhid3d11.cpp
-@@ -9,9 +9,197 @@
+@@ -9,9 +9,301 @@
  #include <QtCore/qcryptographichash.h>
  #include <QtCore/private/qsystemerror_p.h>
  #include "qrhid3dhelpers_p.h"
@@ -13,10 +13,13 @@ index e6a567a6..d3c13b8d 100644
  
 +namespace {
 +
++volatile LONG64 mvmCaptureEpochSerial = 0;
 +MvmNativePresentRing *mvmPresentRing = nullptr;
 +volatile LONG64 mvmPresentSerial = 0;
 +thread_local MvmNativePresentCompositionToken mvmPendingToken{};
 +thread_local bool mvmPendingTokenValid = false;
++thread_local MvmNativePresentFrameSwappedReceipt mvmFrameSwappedReceipt{};
++thread_local bool mvmFrameSwappedReceiptValid = false;
 +using MvmDwmFlushFn = HRESULT (WINAPI *)();
 +MvmDwmFlushFn mvmDwmFlush = nullptr;
 +bool mvmSwapChainDiagnosticsCaptured = false;
@@ -67,6 +70,11 @@ index e6a567a6..d3c13b8d 100644
 +    MvmNativePresentRing *ring = mvmPresentRing;
 +    if (!ring || ring->enabled == 0)
 +        return {};
++    if (ring->captureThreadId == 0 || ring->captureThreadId != GetCurrentThreadId()) {
++        ++ring->threadMismatchCount;
++        ring->authorityFailure = 1;
++        return { ring, nullptr };
++    }
 +    mvmCaptureSwapChainDiagnostics(swapChain, ring);
 +    if (ring->recordCount >= ring->capacity) {
 +        ++ring->overflowCount;
@@ -105,6 +113,19 @@ index e6a567a6..d3c13b8d 100644
 +    QueryPerformanceCounter(&returned);
 +    capture.record->presentReturnQpc = returned.QuadPart;
 +    capture.record->hresult = static_cast<std::int32_t>(result);
++    if (mvmFrameSwappedReceiptValid) {
++        ++capture.ring->duplicateFrameSwappedReceiptCount;
++        capture.ring->authorityFailure = 1;
++    }
++    mvmFrameSwappedReceipt = {};
++    mvmFrameSwappedReceipt.presentSerial = capture.record->presentSerial;
++    mvmFrameSwappedReceipt.swapchainIdentity = capture.record->swapchainIdentity;
++    mvmFrameSwappedReceipt.hresult = capture.record->hresult;
++    mvmFrameSwappedReceipt.tokenPresent = capture.record->tokenPresent;
++    mvmFrameSwappedReceipt.tokenSerial = capture.record->token.tokenSerial;
++    mvmFrameSwappedReceipt.intentOrdinal = capture.record->intentOrdinal;
++    mvmFrameSwappedReceipt.intentOrdinalValid = capture.record->intentOrdinalValid;
++    mvmFrameSwappedReceiptValid = true;
 +    if (FAILED(result)) {
 +        ++capture.ring->failedPresentCount;
 +        capture.ring->authorityFailure = 1;
@@ -131,15 +152,25 @@ index e6a567a6..d3c13b8d 100644
 +{
 +    if (!ring || !mvmNativePresentHookLayoutCompatible(
 +                ring->abiVersion, ring->capacity, ring->compositionTokenSize,
-+                ring->presentRecordSize, ring->layoutSignature) || mvmPresentRing)
++                ring->presentRecordSize, ring->oneShotSnapshotSize,
++                ring->oneShotSnapshotLayoutSignature, ring->layoutSignature) || mvmPresentRing)
++        return 0;
++    const LONG64 captureEpoch = InterlockedIncrement64(&mvmCaptureEpochSerial);
++    if (captureEpoch <= 0)
 +        return 0;
 +    ring->enabled = 0;
++    ring->captureEpoch = static_cast<std::uint64_t>(captureEpoch);
++    ring->captureThreadId = GetCurrentThreadId();
++    ring->threadMismatchCount = 0;
 +    ring->recordCount = 0;
 +    ring->overflowCount = 0;
 +    ring->missingTokenCount = 0;
 +    ring->duplicateTokenCount = 0;
 +    ring->staleTokenCount = 0;
 +    ring->failedPresentCount = 0;
++    ring->missingFrameSwappedReceiptCount = 0;
++    ring->duplicateFrameSwappedReceiptCount = 0;
++    ring->staleFrameSwappedReceiptCount = 0;
 +    ring->authorityFailure = 0;
 +    ring->submissionMode = mvmSubmissionMode();
 +    ring->configuredMaximumFrameLatency =
@@ -161,6 +192,8 @@ index e6a567a6..d3c13b8d 100644
 +    }
 +    mvmPendingToken = {};
 +    mvmPendingTokenValid = false;
++    mvmFrameSwappedReceipt = {};
++    mvmFrameSwappedReceiptValid = false;
 +    mvmPresentRing = ring;
 +    ring->enabled = 1;
 +    return 1;
@@ -172,6 +205,11 @@ index e6a567a6..d3c13b8d 100644
 +    MvmNativePresentRing *ring = mvmPresentRing;
 +    if (!ring || ring->enabled == 0 || !token)
 +        return 0;
++    if (ring->captureThreadId == 0 || ring->captureThreadId != GetCurrentThreadId()) {
++        ++ring->threadMismatchCount;
++        ring->authorityFailure = 1;
++        return 0;
++    }
 +    if (mvmPendingTokenValid) {
 +        ++ring->duplicateTokenCount;
 +        ring->authorityFailure = 1;
@@ -187,7 +225,17 @@ index e6a567a6..d3c13b8d 100644
 +    MvmNativePresentRing *ring = mvmPresentRing;
 +    if (!ring || ring->enabled == 0)
 +        return 0;
++    if (ring->captureThreadId == 0 || ring->captureThreadId != GetCurrentThreadId()) {
++        ++ring->threadMismatchCount;
++        ring->authorityFailure = 1;
++        return 0;
++    }
 +    ring->enabled = 0;
++    if (mvmFrameSwappedReceiptValid) {
++        ++ring->staleFrameSwappedReceiptCount;
++        ring->authorityFailure = 1;
++        mvmFrameSwappedReceiptValid = false;
++    }
 +    if (mvmPendingTokenValid) {
 +        ++ring->staleTokenCount;
 +        ring->authorityFailure = 1;
@@ -197,10 +245,66 @@ index e6a567a6..d3c13b8d 100644
 +    return 1;
 +}
 +
++extern "C" Q_DECL_EXPORT int mvm_qt_d3d11_present_hook_take_frame_swapped_receipt(
++        MvmNativePresentFrameSwappedReceipt *receipt)
++{
++    MvmNativePresentRing *ring = mvmPresentRing;
++    if (!ring || ring->enabled == 0 || !receipt || !mvmFrameSwappedReceiptValid) {
++        if (ring) {
++            ++ring->missingFrameSwappedReceiptCount;
++            ring->authorityFailure = 1;
++        }
++        return 0;
++    }
++    if (ring->captureThreadId == 0 || ring->captureThreadId != GetCurrentThreadId()) {
++        ++ring->threadMismatchCount;
++        ring->authorityFailure = 1;
++        return 0;
++    }
++    *receipt = mvmFrameSwappedReceipt;
++    mvmFrameSwappedReceipt = {};
++    mvmFrameSwappedReceiptValid = false;
++    return 1;
++}
++
++extern "C" Q_DECL_EXPORT int mvm_qt_d3d11_present_hook_one_shot_snapshot(
++        std::uint64_t expectedCaptureEpoch, MvmNativePresentOneShotSnapshot *snapshot)
++{
++    if (!snapshot || expectedCaptureEpoch == 0)
++        return MVM_ONE_SHOT_SNAPSHOT_INVALID_ARGUMENT;
++    if (!mvmNativePresentOneShotSnapshotLayoutCompatible(
++                snapshot->abiVersion, snapshot->snapshotSize, snapshot->layoutSignature))
++        return MVM_ONE_SHOT_SNAPSHOT_ABI_LAYOUT_MISMATCH;
++    MvmNativePresentRing *ring = mvmPresentRing;
++    if (!ring || ring->enabled == 0)
++        return MVM_ONE_SHOT_SNAPSHOT_CAPTURE_INACTIVE;
++    if (ring->captureEpoch != expectedCaptureEpoch)
++        return MVM_ONE_SHOT_SNAPSHOT_EPOCH_MISMATCH;
++    const std::uint32_t callerThreadId = GetCurrentThreadId();
++    if (ring->captureThreadId == 0 || ring->captureThreadId != callerThreadId)
++        return MVM_ONE_SHOT_SNAPSHOT_THREAD_MISMATCH;
++
++    MvmNativePresentOneShotSnapshot exact{};
++    exact.abiVersion = MVM_NATIVE_PRESENT_HOOK_ABI_VERSION;
++    exact.snapshotSize = sizeof(MvmNativePresentOneShotSnapshot);
++    exact.layoutSignature = mvmNativePresentOneShotSnapshotLayoutSignature();
++    exact.captureEpoch = ring->captureEpoch;
++    exact.captureActive = 1;
++    exact.captureThreadId = ring->captureThreadId;
++    exact.callerThreadId = callerThreadId;
++    exact.callerThreadExact = 1;
++    exact.pendingTokenValid = mvmPendingTokenValid ? 1U : 0U;
++    exact.pendingReceiptValid = mvmFrameSwappedReceiptValid ? 1U : 0U;
++    exact.pendingToken = mvmPendingToken;
++    exact.pendingReceipt = mvmFrameSwappedReceipt;
++    *snapshot = exact;
++    return MVM_ONE_SHOT_SNAPSHOT_OK;
++}
++
  QT_BEGIN_NAMESPACE
  
  using namespace Qt::StringLiterals;
-@@ -1538,7 +1726,10 @@ QRhi::FrameOpResult QRhiD3D11::endFrame(QRhiSwapChain *swapChain, QRhi::EndFrame
+@@ -1538,7 +1830,10 @@ QRhi::FrameOpResult QRhiD3D11::endFrame(QRhiSwapChain *swapChain, QRhi::EndFrame
              qWarning("Failed to present: IDXGISwapChain is unavailable");
              return QRhi::FrameOpError;
          }

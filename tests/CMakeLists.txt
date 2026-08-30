@@ -230,8 +230,8 @@ foreach(_p2_d5_2_w2a_case IN ITEMS Good GoodSuccessorAfterEnd GoodEmptyDomain Go
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
-# P2-D5-2-W2-B1: scheduler intent identityのABI v4 exact-copy transport。
-foreach(_p2_d5_2_w2b1_case IN ITEMS GoodFormal GoodNonFormal GoodSuppressedFormal NegativeAppV3QtV4 NegativeAppV4QtV3 NegativeTokenLayout NegativeRecordLayout NegativeLayoutSignature NegativeFormalInvalid NegativeOrdinalMutation NegativeValidityMutation NegativeDuplicateEmbeddedTokenSerial NegativeDuplicateNativeSerial NegativeNonFormalFabricated NegativeRingOverflow NegativeMissingToken NegativeTokenSetFailure NegativeAuthorityFailure NegativeHookUnavailable NegativeLayoutHandshake NegativeSecondProducer NegativeRequiredFormalModeFalse NegativeSuppressionWithoutWitness NegativeSuppressionTransportDisposition)
+# P2-D5-2-W2-B1: scheduler intent identityのABI v5 exact-copy transport。
+foreach(_p2_d5_2_w2b1_case IN ITEMS GoodFormal GoodNonFormal GoodSuppressedFormal NegativeAppV5QtV6 NegativeAppV6QtV5 NegativeTokenLayout NegativeRecordLayout NegativeLayoutSignature NegativeFormalInvalid NegativeOrdinalMutation NegativeValidityMutation NegativeDuplicateEmbeddedTokenSerial NegativeDuplicateNativeSerial NegativeNonFormalFabricated NegativeRingOverflow NegativeMissingToken NegativeTokenSetFailure NegativeAuthorityFailure NegativeHookUnavailable NegativeLayoutHandshake NegativeSecondProducer NegativeRequiredFormalModeFalse NegativeSuppressionWithoutWitness NegativeSuppressionTransportDisposition)
     string(TOLOWER "${_p2_d5_2_w2b1_case}" _p2_d5_2_w2b1_name)
     mvm_add_test(p2_d5_2_w2b1_intent_transport_${_p2_d5_2_w2b1_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File
@@ -301,7 +301,7 @@ mvm_add_test(p2_d5_2_w2c1_mapping_architecture
         "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-w2-c1-mapping-architecture.ps1"
         -SourceRoot "${CMAKE_SOURCE_DIR}"
     PROPERTIES LABELS "gpu_preview")
-foreach(_p2_d5_2_w2c1_runner_case IN ITEMS NegativePresentedBeforePredecessorNotDropped NegativePresentedAfterSuccessorNotDropped)
+foreach(_p2_d5_2_w2c1_runner_case IN ITEMS Good NegativePresentedBeforePredecessorNotDropped NegativePresentedAfterSuccessorNotDropped NegativeStaleArtifactNotReused)
     string(TOLOWER "${_p2_d5_2_w2c1_runner_case}" _p2_d5_2_w2c1_runner_name)
     mvm_add_test(p2_d5_2_w2c1_runner_${_p2_d5_2_w2c1_runner_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File
@@ -1200,12 +1200,36 @@ mvm_add_test(verify_audio_no_clipping
 # ownership は「正しさ」だけを見る。
 # Working Set の増減だけを理由に ownership 失敗としない。
 # メモリは memory_soak_diagnostic (stability ラベル) へ分離した。
+# S2-g1b: warmup 30 は measurement-domain boundary である。retention の許容量ではない。
+# measured workload は 100 のまま (総実行は 130)。threshold +8 と metric は不変。
+# 30 は observed effective interval 20-40 の中央として凍結した値であり、
+# 最適であることが証明された値ではない (docs/p5-e4-s2-g1c-*.md)。
+#
+# S2-g1c: --dump-all-samples は emission 専用の診断 flag である。
+# verdict / threshold / metric / window には影響しない (S2-g1a で検証済み)。
+# suite 条件下で handle 系列を捕捉するために一時的に付与している。
+# attribution 完了後に残置か除去かを判断すること。
 mvm_add_test(ownership_soak_100
-    COMMAND mvm_bench soak "${MVM_S5_SCENARIO}" --iterations 100
-            --wav-dir "${MVM_AUDIO_OUT}" --no-memory-check
+    COMMAND mvm_bench soak "${MVM_S5_SCENARIO}" --iterations 100 --warmup-iterations 30
+            --wav-dir "${MVM_AUDIO_OUT}" --no-memory-check --dump-all-samples
     PROPERTIES
         REQUIRED_FILES "${MVM_S5_SCENARIO}"
         TIMEOUT 1800)
+
+# S2-g1b: warmup が gate avoidance ではなく measurement-domain repair であることを
+# 固定する。threshold / measured workload / warmup 除外 / warmup 中の functional
+# authority を、それぞれ intended violation の exact-match で検査する。
+foreach(_soak_warmup_case Good NegativeWarmupIncludedInHandleWindow
+        NegativeMeasuredIterationCountReduced NegativeHandleThresholdRelaxed
+        NegativeWarmupFunctionalFailureIgnored)
+    string(TOLOWER "${_soak_warmup_case}" _soak_warmup_name)
+    mvm_add_test(soak_warmup_contract_${_soak_warmup_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-soak-warmup-contract.ps1"
+            -Case ${_soak_warmup_case}
+            -Checker "${CMAKE_SOURCE_DIR}/scripts/check-soak-warmup-contract.ps1"
+            -Output "${CMAKE_CURRENT_BINARY_DIR}/soak-warmup-${_soak_warmup_name}.json")
+endforeach()
 
 # メモリは長時間かかるうえ、まだ合否を決められる段階にない。
 # 通常 CTest から外し、stability ラベルで明示的に実行する。
@@ -2251,6 +2275,197 @@ target_link_libraries(mvm_test_presentation_opportunity_scheduler
 mvm_add_test(p2_presentation_opportunity_scheduler
     COMMAND mvm_test_presentation_opportunity_scheduler)
 
+# P2-D5-2/B3-I0: required queueへ接続する前のexact qualified commit join。
+add_executable(mvm_test_qualified_present_commit_join
+    gpu_preview/test_qualified_present_commit_join.cpp)
+target_link_libraries(mvm_test_qualified_present_commit_join
+    PRIVATE mvm::gpu_preview mvm::warnings)
+mvm_add_test(p2_qualified_present_commit_join
+    COMMAND mvm_test_qualified_present_commit_join)
+
+# P2-D5-2/B3-I1: immutable required setのreserve / qualified commit-dequeue。
+add_executable(mvm_test_required_intent_queue
+    gpu_preview/test_required_intent_queue.cpp)
+target_link_libraries(mvm_test_required_intent_queue
+    PRIVATE mvm::gpu_preview mvm::warnings)
+mvm_add_test(p2_b3_i1_required_intent_queue
+    COMMAND mvm_test_required_intent_queue)
+
+# P2-D5-2/B3-I5B: admission close / drain handshakeのexplicit state machine。
+add_executable(mvm_test_preroll_transition_handshake
+    gpu_preview/test_preroll_transition_handshake.cpp)
+target_link_libraries(mvm_test_preroll_transition_handshake
+    PRIVATE mvm::gpu_preview mvm::warnings)
+mvm_add_test(p2_b3_i5b_preroll_transition_handshake
+    COMMAND mvm_test_preroll_transition_handshake)
+
+mvm_add_test(p2_b3_i1_required_intent_queue_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i1-required-intent-queue-architecture.ps1"
+        -RepoRoot "${CMAKE_SOURCE_DIR}")
+
+# B3-I1 architecture guardが各禁止mutationを実際に検出することを固定する。
+foreach(_p2_b3_i1_case IN ITEMS Good NegativeRequiredSetMutable NegativeReserveAfterMapping NegativeDuplicateCreatesNew NegativeRenderConsumes NegativeQualifiedDequeueRemoved NegativeQualifiedWiringRemoved NegativePlannedEndDropsActive NegativeDomainTerminalCompletion NegativeDisplayImported NegativeObserverIdentity NegativeConservationRemoved NegativeSourceCoverageSkipped NegativeSwapCommitFailureConsumesIntent)
+    string(TOLOWER "${_p2_b3_i1_case}" _p2_b3_i1_name)
+    mvm_add_test(p2_b3_i1_required_intent_queue_guard_${_p2_b3_i1_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i1-required-intent-queue-guard.ps1"
+            -Case "${_p2_b3_i1_case}"
+            -Contract "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i1-required-intent-queue-architecture.ps1"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-b3-i1-queue-guard-${_p2_b3_i1_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+mvm_add_test(p2_b3_i0_exact_qualified_join_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i0-exact-qualified-join-architecture.ps1"
+        -RepoRoot "${CMAKE_SOURCE_DIR}")
+
+# P2-D5-2/B3-I2: product判定を変えず、composition token mismatchのraw predicateを固定する。
+mvm_add_test(p2_b3_i2_composition_token_attribution_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i2-composition-token-attribution-architecture.ps1"
+        -RepoRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+
+# P2-D5-2/B3-I5B: admission close / drain handshakeのsource-level契約。
+# positional ignore-next-swapを削除したため、B3-I3 positional guardは廃止した。
+mvm_add_test(p2_b3_i5b_admission_close_drain_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i5b-admission-close-drain-architecture.ps1"
+        -RepoRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+foreach(_p2_b3_i5b_case IN ITEMS Good NegativePositionalIgnoreRetained NegativeAdmissionCloseClosesScheduler NegativeSchedulerCloseBeforeDrain NegativePendingOpportunityFinalizeSkipped NegativeQuiescencePredicateDropped NegativeEpochCheckRemoved NegativeThreadCheckRemoved NegativeEarlyQueueStart NegativeEarlyMeasurementArm NegativeIssuanceBeforeArm NegativeAdmissionGateRemoved NegativeOneShotSnapshotRemoved NegativeCanonicalStartFromCallbackBegin NegativeCanonicalStartBeforeCurrentQueueReady NegativeWaitChargedToWindow NegativeTimeoutAsPerformanceDrop NegativeNearestQpcJoin NegativeHistoricalMismatchReclassified)
+    string(TOLOWER "${_p2_b3_i5b_case}" _p2_b3_i5b_name)
+    mvm_add_test(p2_b3_i5b_admission_close_drain_guard_${_p2_b3_i5b_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i5b-admission-close-drain-guard.ps1"
+            -Case "${_p2_b3_i5b_case}"
+            -Contract "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i5b-admission-close-drain-architecture.ps1"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-b3-i5b-handshake-guard-${_p2_b3_i5b_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+# P2-D5-2/B3-I4: productionを変えず、preroll transaction quiescence設計を固定する。
+foreach(_p2_b3_i4_case IN ITEMS Good NegativeCurrentQueueStartBeforeClosure NegativeMeasurementWindowBeforeHandshake NegativeRetroactiveForeignOwner NegativeCurrentPresentBoundary NegativeTimeoutAsPerformanceDrop NegativeAdmissionCloseAsSchedulerClose NegativePendingOpportunityOmitted NegativePhaseBoolAuthority NegativeRequiredSetShrink NegativePositionalIgnoreRetained NegativeSerialInference NegativeHistoricalMismatchReclassified)
+    string(TOLOWER "${_p2_b3_i4_case}" _p2_b3_i4_name)
+    mvm_add_test(p2_b3_i4_preroll_quiescence_design_${_p2_b3_i4_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i4-preroll-quiescence-design-contract.ps1"
+            -Case "${_p2_b3_i4_case}"
+            -Contract "${CMAKE_SOURCE_DIR}/docs/p2-d5-2-b3-i4-preroll-transition-quiescence.json"
+            -RepoRoot "${CMAKE_SOURCE_DIR}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+# P2-D5-2/B3-I6A: required intent ordinalの時間軸とsource mapping authorityを設計として固定する。
+foreach(_p2_b3_i6a_case IN ITEMS Good NegativeProductionChanged NegativeCanonicalW3Allowed NegativeDisplayAxisSelected NegativeRefreshDependentTargetAllowed NegativeSourceFixtureExtensionAllowed NegativeRequiredSetShrinkAllowed NegativeThresholdChanged NegativeDenominatorChanged NegativeCoveragePreflightInvariantDropped NegativeClampTargetAllowed NegativeCoverageFatalAsPerformanceDrop NegativeIntentOrdinalFromPhysicalVblank NegativeSingleIntentRateProducerDropped NegativeHistoricalMismatchReclassified)
+    string(TOLOWER "${_p2_b3_i6a_case}" _p2_b3_i6a_name)
+    mvm_add_test(p2_b3_i6a_source_mapping_design_${_p2_b3_i6a_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i6a-source-mapping-design-contract.ps1"
+            -Case "${_p2_b3_i6a_case}"
+            -Contract "${CMAKE_SOURCE_DIR}/docs/p2-d5-2-b3-i6a-source-mapping-authority.json"
+            -RepoRoot "${CMAKE_SOURCE_DIR}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+# P2-D5-2/B3-I6B: fatal transactionがformal token publication / joinへ流れないことを固定する。
+mvm_add_test(p2_b3_i6b_fatal_publication_atomicity_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i6b-fatal-publication-atomicity-architecture.ps1"
+        -RepoRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+foreach(_p2_b3_i6b_case IN ITEMS Good NegativeTokenPublishedBeforeValidation NegativePendingTokenAfterFatal NegativeSuppressionCountedAsTransportFailure NegativeSecondPublicationSite NegativeFormalReceiptAfterFatal NegativePostFatalJoinReached NegativePrimaryFatalOverwrittenByJoin NegativePrimaryFatalOverwrittenBySwap NegativeQueueRollback NegativeSourceCoverageFailCloseRemoved NegativeSuppressionCounterHidden NegativeNearestTokenRecovery)
+    string(TOLOWER "${_p2_b3_i6b_case}" _p2_b3_i6b_name)
+    mvm_add_test(p2_b3_i6b_fatal_publication_atomicity_guard_${_p2_b3_i6b_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i6b-fatal-publication-atomicity-guard.ps1"
+            -Case "${_p2_b3_i6b_case}"
+            -Contract "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i6b-fatal-publication-atomicity-architecture.ps1"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-b3-i6b-atomicity-guard-${_p2_b3_i6b_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+# P2-D5-2/B3-I6B deferred integration-negative。production publication gateを直接実行する。
+add_executable(mvm_test_i6b_publication_atomicity
+    gpu_preview/test_i6b_publication_atomicity.cpp)
+target_link_libraries(mvm_test_i6b_publication_atomicity
+    PRIVATE mvm::gpu_preview mvm::warnings)
+mvm_add_test(p2_b3_i6b_publication_atomicity_integration
+    COMMAND mvm_test_i6b_publication_atomicity)
+
+mvm_add_test(p2_b3_i6b_injection_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i6b-injection-architecture.ps1"
+        -RepoRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+# injection testのmutation test。production headerとtestを1点ずつ壊して実際にcompile/実行する。
+foreach(_p2_b3_i6b_inj_case IN ITEMS Good NegativeFatalInjectionAfterPublication NegativePublicationGateIgnored NegativeSuppressionCounterMissing NegativePostFatalReceiptTaken NegativePostFatalBindReached NegativePostFatalCommitReached NegativePrimaryFatalOverwritten NegativeQueueDequeuedAfterFatal NegativeFakeIdentityInjection NegativeProductionComponentDuplicated)
+    string(TOLOWER "${_p2_b3_i6b_inj_case}" _p2_b3_i6b_inj_name)
+    mvm_add_test(p2_b3_i6b_injection_guard_${_p2_b3_i6b_inj_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i6b-injection-guard.ps1"
+            -Case "${_p2_b3_i6b_inj_case}"
+            -Contract "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i6b-injection-architecture.ps1"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-b3-i6b-injection-guard-${_p2_b3_i6b_inj_name}"
+            -GpuPreviewLibrary "$<TARGET_FILE:mvm_gpu_preview>"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+# P2-D5-2/B3-I6C: intent ordinal -> source frame mappingとsource coverage preflightの修正。
+mvm_add_test(p2_b3_i6c_source_mapping_correction_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i6c-source-mapping-correction-architecture.ps1"
+        -RepoRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+foreach(_p2_b3_i6c_case IN ITEMS Good NegativeMappingUsesDisplayRefresh NegativeTargetForDuplicatesMapping NegativeRateValidationRemoved NegativeSecondIntentRateProducer NegativeCountComparisonPreflight NegativeCoverageUsesLastTargetOnly NegativeMonotonicityNotChecked NegativeCoverageAllowsMaxAtSourceCount NegativeCoverageIgnoresMinTarget NegativeRendererHardcodedSourceRate NegativeArtifactClaimsRefreshMapping NegativeArtifactClaimsCountComparison)
+    string(TOLOWER "${_p2_b3_i6c_case}" _p2_b3_i6c_name)
+    mvm_add_test(p2_b3_i6c_source_mapping_correction_guard_${_p2_b3_i6c_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i6c-source-mapping-correction-guard.ps1"
+            -Case "${_p2_b3_i6c_case}"
+            -Contract "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i6c-source-mapping-correction-architecture.ps1"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-b3-i6c-mapping-guard-${_p2_b3_i6c_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+# P2-D5-2/B3-I5A: Qt one-shot pending stateのepoch/thread-bound read-only ABI。
+mvm_add_test(p2_b3_i5a_one_shot_snapshot_architecture
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i5a-one-shot-snapshot-architecture.ps1"
+        -RepoRoot "${CMAKE_SOURCE_DIR}"
+    PROPERTIES LABELS "gpu_preview")
+foreach(_p2_b3_i5a_case IN ITEMS Good NegativeAbiNotBumped NegativeEpochRemoved NegativeRawTokenRemoved NegativeRawReceiptRemoved NegativeSnapshotConsumesToken NegativeSnapshotConsumesReceipt NegativeThreadCheckRemoved NegativePresentReceiptThreadChecksRemoved NegativeCaptureOutsideAccepted NegativeLayoutCheckRemoved NegativeSameSizeSemanticFieldOffsetMutation NegativeNestedSemanticFieldOffsetMutation NegativeLatestPresentInference NegativeMeasurementDisconnected NegativeHistoricalMismatchReclassified)
+    string(TOLOWER "${_p2_b3_i5a_case}" _p2_b3_i5a_name)
+    mvm_add_test(p2_b3_i5a_one_shot_snapshot_guard_${_p2_b3_i5a_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i5a-one-shot-snapshot-guard.ps1"
+            -Case "${_p2_b3_i5a_case}"
+            -Contract "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i5a-one-shot-snapshot-architecture.ps1"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-b3-i5a-snapshot-guard-${_p2_b3_i5a_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
+# B3-I0 architecture guardのmutation test。guardが空振りしていないことを固定する。
+foreach(_p2_b3_i0_case IN ITEMS Good NegativeReceiptAbiRemoved NegativeReceiptSerialDerived NegativeReceiptExportRemoved NegativeReceiptNotOneShot NegativeHookTakeReceiptRemoved NegativeExactRecordLookupRemoved NegativeCommitOrderBypassesRecord NegativeReservationIdentityNotScheduler NegativeExpectedSerialSequential NegativeLatestRecordAuthority NegativeSequentialSerialEstimate NegativeQpcProximityJoin)
+    string(TOLOWER "${_p2_b3_i0_case}" _p2_b3_i0_name)
+    mvm_add_test(p2_b3_i0_exact_qualified_join_guard_${_p2_b3_i0_name}
+        COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i0-exact-qualified-join-guard.ps1"
+            -Case "${_p2_b3_i0_case}"
+            -Contract "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-p2-d5-2-b3-i0-exact-qualified-join-architecture.ps1"
+            -SourceRoot "${CMAKE_SOURCE_DIR}"
+            -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-b3-i0-join-guard-${_p2_b3_i0_name}"
+        PROPERTIES LABELS "gpu_preview")
+endforeach()
+
 # P2-D5-2/F3のwindow output VBlank authorityをGPU非依存のpure helperで固定する。
 add_executable(mvm_test_window_output_vblank_authority
     gpu_preview/test_window_output_vblank_authority.cpp)
@@ -2315,7 +2530,14 @@ endif()
 # P2-D5-2/F3-B0.6-R1: Present IDをjoin keyにする完全oracle contract。
 # producerの真偽値だけに依存せず、submission列・statistics列・offline delayを再計算する。
 foreach(_p2_oracle_case Good NegativeSubmittedGap NegativeObservedGap NegativeFinalDrain
-        NegativePollInterval NegativeOfflineDelay NegativeEarlyMapper NegativeDiscardClaim)
+        NegativePollInterval NegativeOfflineDelay NegativeEarlyMapper NegativeDiscardClaim
+        NegativeSamplerTriggerMode NegativeSamplerVBlankWaitFailure NegativeSamplerPriorityMode
+        NegativeSamplerAckTimeout NegativeSamplerCycleTimeout NegativeFrameLatencyWaitFailure
+        NegativeWarmupIncomplete NegativeFrameLatencyMode
+        GoodCorrectnessOnly NegativeAuthorityModeMissing NegativeDebugTimingApplied
+        NegativeReleaseTimingDisabled NegativeCorrectnessRelaxedInDebug
+        NegativeOccludedPresent NegativeUnclassifiedPresentStatus
+        NegativePresentOutcomeAuthority NegativeWindowVisibility)
     string(TOLOWER "${_p2_oracle_case}" _p2_oracle_name)
     mvm_add_test(p2_present_id_oracle_checker_${_p2_oracle_name}
         COMMAND "${MVM_PWSH}" -NoProfile -File
@@ -2332,7 +2554,10 @@ if(TARGET mvm_p2_present_identity_probe)
             -Exe "$<TARGET_FILE:mvm_p2_present_identity_probe>"
             -Checker "${CMAKE_SOURCE_DIR}/scripts/check-p2-present-id-oracle.ps1"
             -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-present-id-oracle-live.json"
-            -Presents 900)
+            -Presents 900
+            # S2-e2: timing authorityはRelease限定。Debugはcorrectness/acquisitionのみ
+            # 評価する。correctness (900/900, gap=0, exact join) は両方で同一である。
+            -AuthorityMode "$<IF:$<CONFIG:Debug>,CORRECTNESS_ONLY,FULL_RELEASE>")
     set_tests_properties(p2_present_id_oracle_live PROPERTIES
         ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
         LABELS "p2;workstation" RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 180)

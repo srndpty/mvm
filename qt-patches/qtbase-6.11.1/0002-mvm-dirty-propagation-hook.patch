@@ -1,9 +1,11 @@
 diff --git a/src/gui/rhi/qrhid3d11.cpp b/src/gui/rhi/qrhid3d11.cpp
 --- a/src/gui/rhi/qrhid3d11.cpp
 +++ b/src/gui/rhi/qrhid3d11.cpp
-@@ -22,8 +23,51 @@ volatile LONG64 mvmPresentSerial = 0;
+@@ -22,10 +23,53 @@ volatile LONG64 mvmPresentSerial = 0;
  thread_local MvmNativePresentCompositionToken mvmPendingToken{};
  thread_local bool mvmPendingTokenValid = false;
+ thread_local MvmNativePresentFrameSwappedReceipt mvmFrameSwappedReceipt{};
+ thread_local bool mvmFrameSwappedReceiptValid = false;
 +thread_local std::uint64_t mvmCurrentPropagationSerial = 0;
 +volatile LONG64 mvmPropagationSerial = 0;
  using MvmDwmFlushFn = HRESULT (WINAPI *)();

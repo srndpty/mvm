@@ -74,6 +74,11 @@ public:
     bool waitForSuccessor(long long frozenMeasurementEndQpc, long long timeoutMs,
                           VBlankSuccessorResult& result);
 
+    // baselineCountより後のpublicationをeventで待つ。呼び出したobserverだけが
+    // opt-inでpublication signalを有効にし、通常のcanonical observer hot pathには
+    // signal syscallを追加しない。timeoutはacquisition liveness用である。
+    bool waitForPublishedCount(std::size_t baselineCount, long long timeoutMs);
+
     // TIME_CRITICALを取れなかった場合、normal priorityへ黙ってfallbackしない。
     bool timeCriticalPriority() const {
         return priorityState_.load(std::memory_order_acquire) == 1;
@@ -89,6 +94,8 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<long long> waitFailures_{0};
     std::atomic<int> priorityState_{0};
+    void* publicationEvent_ = nullptr;
+    std::atomic<bool> publicationNotificationEnabled_{false};
 };
 
 } // namespace mvm::gpu
