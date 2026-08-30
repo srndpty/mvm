@@ -46,13 +46,8 @@ MvmController::MvmController(std::filesystem::path projectPath,
       manimExecutablePath_(std::move(manimExecutablePath)), project_(std::move(project)),
       previewEngine_(std::make_shared<preview::PreviewEngine>()),
       dispatcher_(std::make_shared<QtEventDispatcher>(this)) {
-    preview::PreviewEngineConfig config;
-    config.output.frameRate = {60, 1};
-    const auto initialized = previewEngine_->initialize(config, dispatcher_);
-    if (!initialized) {
-        statusText_ =
-            QStringLiteral("Preview初期化に失敗しました: ") + previewErrorText(initialized.error());
-    }
+    initializePreviewEngine(QStringLiteral("Preview初期化に失敗しました: "));
+    restoreFirstManimClip();
 
     stateTimer_.setInterval(100);
     connect(&stateTimer_, &QTimer::timeout, this, &MvmController::pollPreviewState);
@@ -78,6 +73,76 @@ void MvmController::setStatus(QString status) {
     Q_EMIT stateChanged();
 }
 
+bool MvmController::initializePreviewEngine(const QString& failurePrefix) {
+    preview::PreviewEngineConfig config;
+    config.output.frameRate = {60, 1};
+    const auto initialized = previewEngine_->initialize(config, dispatcher_);
+    if (!initialized) {
+        statusText_ = failurePrefix + previewErrorText(initialized.error());
+        return false;
+    }
+    return true;
+}
+
+bool MvmController::resetPreviewEngine() {
+    auto replacement = std::make_shared<preview::PreviewEngine>();
+    const auto previous = previewEngine_;
+    previewEngine_ = replacement;
+    if (!initializePreviewEngine(QStringLiteral("Preview再初期化に失敗しました: "))) {
+        previewEngine_ = previous;
+        Q_EMIT stateChanged();
+        return false;
+    }
+
+    currentSource_.reset();
+    staleSource_.reset();
+    previewReady_ = false;
+    if (previewSurface_)
+        previewSurface_->setEngine(previewEngine_);
+    Q_EMIT stateChanged();
+    return true;
+}
+
+void MvmController::syncFirstManimAsset() {
+    if (project_.manimAssets.empty()) {
+        manimScriptPath_.clear();
+        manimSceneName_.clear();
+        manimStateText_.clear();
+        return;
+    }
+    const project::ManimAsset& asset = project_.manimAssets.front();
+    manimScriptPath_ = fromPath(asset.scriptPath);
+    manimSceneName_ = QString::fromStdString(asset.sceneName);
+    manimStateText_ = QString::fromLatin1(project::manimGenerationStateName(asset.generationState));
+}
+
+void MvmController::restoreFirstManimClip() {
+    const ManimClipRestoreResult restored = mvm::app::restoreFirstManimClip(project_, projectPath_);
+    syncFirstManimAsset();
+    if (!restored.hasAsset)
+        return;
+
+    const project::ManimAsset& asset = project_.manimAssets.front();
+    if (restored.generatedVideoAvailable) {
+        const QString clipName = QString::fromStdString(asset.sceneName) + QStringLiteral(" — ") +
+                                 QFileInfo(fromPath(asset.generatedVideoPath)).fileName();
+        queueVideoClipInstall(asset.generatedVideoPath, clipName);
+        statusText_ = restored.success
+                          ? QStringLiteral("保存済みManim clipを復元しています")
+                          : QString::fromStdString(restored.error);
+    } else {
+        statusText_ = restored.success
+                          ? QStringLiteral("生成済みvideoがありません。Regenerateしてください")
+                          : QString::fromStdString(restored.error);
+    }
+}
+
+void MvmController::queueVideoClipInstall(const std::filesystem::path& videoPath,
+                                          QString clipName) {
+    pendingVideoPath_ = videoPath;
+    pendingClipName_ = std::move(clipName);
+}
+
 void MvmController::pollPreviewState() {
     if (!previewEngine_)
         return;
@@ -86,9 +151,16 @@ void MvmController::pollPreviewState() {
                        status.state == preview::PreviewEngineState::Playing;
     if (previewReady_ != ready) {
         previewReady_ = ready;
-        if (ready && !busy_ && currentClipPath_.isEmpty())
+        if (ready && !busy_ && currentClipPath_.isEmpty() && !hasManimAsset())
             statusText_ = QStringLiteral("Add Manim Clipを選択してください");
         Q_EMIT stateChanged();
+    }
+    if (status.state == preview::PreviewEngineState::ReadyPaused && pendingVideoPath_) {
+        const std::filesystem::path videoPath = std::move(*pendingVideoPath_);
+        const QString clipName = std::move(pendingClipName_);
+        pendingVideoPath_.reset();
+        pendingClipName_.clear();
+        installVideoClip(videoPath, clipName);
     }
     if (status.state == preview::PreviewEngineState::Error && status.lastError) {
         const QString message =
@@ -165,7 +237,7 @@ bool MvmController::installVideoClip(const std::filesystem::path& videoPath,
     currentSource_ = added.value();
     currentClipName_ = clipName;
     currentClipPath_ = fromPath(videoPath);
-    statusText_ = QStringLiteral("Manim clipを生成して再生しています");
+    statusText_ = QStringLiteral("Manim clipを再生しています");
     Q_EMIT stateChanged();
     return true;
 }
@@ -175,6 +247,26 @@ bool MvmController::generateManimClip(const QUrl& scriptUrl, const QString& scen
         return false;
     const QString localScript =
         scriptUrl.isLocalFile() ? scriptUrl.toLocalFile() : scriptUrl.toString();
+    return generateAndInstallManimClip(std::filesystem::path(localScript.toStdWString()), sceneName,
+                                       true);
+}
+
+bool MvmController::regenerateManimClip() {
+    if (project_.manimAssets.empty()) {
+        setStatus(QStringLiteral("再生成するManim assetがありません"));
+        return false;
+    }
+    const project::ManimAsset& asset = project_.manimAssets.front();
+    return generateAndInstallManimClip(asset.scriptPath, QString::fromStdString(asset.sceneName),
+                                       false);
+}
+
+bool MvmController::generateAndInstallManimClip(const std::filesystem::path& scriptPath,
+                                                const QString& sceneName,
+                                                bool requirePreviewReady) {
+    if (busy_)
+        return false;
+    const QString localScript = fromPath(scriptPath);
     const QFileInfo scriptInfo(localScript);
     const QString trimmedScene = sceneName.trimmed();
     if (!scriptInfo.exists() || !scriptInfo.isFile() ||
@@ -186,7 +278,7 @@ bool MvmController::generateManimClip(const QUrl& scriptUrl, const QString& scen
         setStatus(QStringLiteral("Scene class名を入力してください"));
         return false;
     }
-    if (!previewReady_) {
+    if (requirePreviewReady && !previewReady_) {
         setStatus(QStringLiteral("Previewの準備が完了していません"));
         return false;
     }
@@ -199,7 +291,7 @@ bool MvmController::generateManimClip(const QUrl& scriptUrl, const QString& scen
     ManimClipGenerationRequest request;
     request.manimExecutablePath = manimExecutablePath_;
     request.projectPath = projectPath_;
-    request.scriptPath = std::filesystem::path(localScript.toStdWString());
+    request.scriptPath = scriptPath;
     request.sceneName = trimmedScene.toStdString();
     request.width = 640;
     request.height = 360;
@@ -215,9 +307,28 @@ bool MvmController::generateManimClip(const QUrl& scriptUrl, const QString& scen
         return false;
     }
 
+    syncFirstManimAsset();
     const QString clipName = trimmedScene + QStringLiteral(" — ") +
                              QFileInfo(fromPath(generated.outputVideoPath)).fileName();
-    return installVideoClip(generated.outputVideoPath, clipName);
+    const preview::PreviewEngineState previewState = previewEngine_->status().state;
+    if (previewState == preview::PreviewEngineState::ReadyPaused ||
+        previewState == preview::PreviewEngineState::Playing) {
+        return installVideoClip(generated.outputVideoPath, clipName);
+    }
+
+    queueVideoClipInstall(generated.outputVideoPath, clipName);
+    if (previewState == preview::PreviewEngineState::ShuttingDown ||
+        previewState == preview::PreviewEngineState::Shutdown ||
+        previewState == preview::PreviewEngineState::Error) {
+        if (!resetPreviewEngine()) {
+            pendingVideoPath_.reset();
+            pendingClipName_.clear();
+            return false;
+        }
+    }
+    statusText_ = QStringLiteral("生成済みclipのPreviewを準備しています");
+    Q_EMIT stateChanged();
+    return true;
 }
 
 void MvmController::shutdown() {

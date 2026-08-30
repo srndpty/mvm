@@ -25,6 +25,10 @@ class MvmController final : public QObject {
     Q_PROPERTY(bool hasCurrentClip READ hasCurrentClip NOTIFY stateChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY stateChanged)
     Q_PROPERTY(bool previewReady READ previewReady NOTIFY stateChanged)
+    Q_PROPERTY(bool hasManimAsset READ hasManimAsset NOTIFY stateChanged)
+    Q_PROPERTY(QString manimScriptPath READ manimScriptPath NOTIFY stateChanged)
+    Q_PROPERTY(QString manimSceneName READ manimSceneName NOTIFY stateChanged)
+    Q_PROPERTY(QString manimStateText READ manimStateText NOTIFY stateChanged)
 
 public:
     MvmController(std::filesystem::path projectPath, std::filesystem::path manimExecutablePath,
@@ -47,7 +51,16 @@ public:
 
     bool previewReady() const { return previewReady_; }
 
+    bool hasManimAsset() const { return !project_.manimAssets.empty(); }
+
+    QString manimScriptPath() const { return manimScriptPath_; }
+
+    QString manimSceneName() const { return manimSceneName_; }
+
+    QString manimStateText() const { return manimStateText_; }
+
     Q_INVOKABLE bool generateManimClip(const QUrl& scriptUrl, const QString& sceneName);
+    Q_INVOKABLE bool regenerateManimClip();
 
 public Q_SLOTS:
     void shutdown();
@@ -58,6 +71,13 @@ Q_SIGNALS:
 private:
     void pollPreviewState();
     void setStatus(QString status);
+    bool initializePreviewEngine(const QString& failurePrefix);
+    bool resetPreviewEngine();
+    void restoreFirstManimClip();
+    void syncFirstManimAsset();
+    bool generateAndInstallManimClip(const std::filesystem::path& scriptPath,
+                                     const QString& sceneName, bool requirePreviewReady);
+    void queueVideoClipInstall(const std::filesystem::path& videoPath, QString clipName);
     bool installVideoClip(const std::filesystem::path& videoPath, const QString& clipName);
     void resumeCurrentClip();
 
@@ -72,6 +92,11 @@ private:
     QString statusText_ = QStringLiteral("Previewを初期化しています");
     QString currentClipName_;
     QString currentClipPath_;
+    QString manimScriptPath_;
+    QString manimSceneName_;
+    QString manimStateText_;
+    std::optional<std::filesystem::path> pendingVideoPath_;
+    QString pendingClipName_;
     bool busy_ = false;
     bool previewReady_ = false;
     bool shutdownStarted_ = false;

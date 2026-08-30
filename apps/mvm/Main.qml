@@ -26,6 +26,7 @@ ApplicationWindow {
 
             Button {
                 text: "Add Manim Clip"
+                visible: !mvmController.hasManimAsset
                 enabled: mvmController.previewReady && !mvmController.busy
                 onClicked: scriptDialog.open()
             }
@@ -40,6 +41,45 @@ ApplicationWindow {
                 text: mvmController.statusText
                 color: "#e6e8ec"
                 elide: Text.ElideRight
+            }
+        }
+
+        Frame {
+            visible: mvmController.hasManimAsset
+            Layout.fillWidth: true
+
+            contentItem: RowLayout {
+                spacing: 14
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 4
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: "Script: " + mvmController.manimScriptPath
+                        color: "#e6e8ec"
+                        elide: Text.ElideMiddle
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: "Scene: " + mvmController.manimSceneName
+                        color: "#e6e8ec"
+                        elide: Text.ElideRight
+                    }
+                    Label {
+                        text: "State: " + mvmController.manimStateText
+                        color: mvmController.manimStateText === "SourceChanged"
+                               ? "#f2c66d" : "#a8d5a2"
+                        font.bold: true
+                    }
+                }
+
+                Button {
+                    text: mvmController.busy ? "Generating…" : "Regenerate"
+                    enabled: !mvmController.busy
+                    onClicked: mvmController.regenerateManimClip()
+                }
             }
         }
 

@@ -91,4 +91,47 @@ ManimClipGenerationResult generateManimClip(project::Project& project,
     return result;
 }
 
+ManimClipRestoreResult restoreFirstManimClip(project::Project& project,
+                                             const std::filesystem::path& projectPath) {
+    ManimClipRestoreResult result;
+    if (project.manimAssets.empty()) {
+        result.success = true;
+        return result;
+    }
+
+    result.hasAsset = true;
+    const project::ManimAsset& current = project.manimAssets.front();
+    // 未生成やfile削除はerror_codeを立てるが、ここでは「再生できない」だけの状態として扱う。
+    std::error_code videoError;
+    result.generatedVideoAvailable =
+        std::filesystem::is_regular_file(current.generatedVideoPath, videoError);
+
+    const manim::ManimFingerprintResult fingerprint =
+        manim::fingerprintManimSource(current.scriptPath);
+    if (!fingerprint.success) {
+        result.error = fingerprint.error;
+        return result;
+    }
+
+    project::Project candidate = project;
+    project::ManimAsset& candidateAsset = candidate.manimAssets.front();
+    const project::ManimGenerationState previousState = candidateAsset.generationState;
+    if (!project::refreshManimGenerationState(candidateAsset, fingerprint.fingerprint,
+                                              result.error)) {
+        return result;
+    }
+
+    if (candidateAsset.generationState != previousState) {
+        const project::ProjectIoResult saved = project::saveProjectJson(candidate, projectPath);
+        if (!saved.success) {
+            result.error = saved.error;
+            return result;
+        }
+        project = std::move(candidate);
+    }
+
+    result.success = true;
+    return result;
+}
+
 } // namespace mvm::app

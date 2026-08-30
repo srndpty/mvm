@@ -86,13 +86,44 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    const auto unchangedRestore = mvm::app::restoreFirstManimClip(project, projectPath);
+    if (!require(unchangedRestore.success, unchangedRestore.error.c_str()) ||
+        !require(unchangedRestore.hasAsset && unchangedRestore.generatedVideoAvailable,
+                 "保存済みManim clipを復元できません") ||
+        !require(project.manimAssets.front().generationState ==
+                     mvm::project::ManimGenerationState::Ready,
+                 "未変更sourceをReadyとして復元しません")) {
+        return 1;
+    }
+
     const std::string oldFingerprint = project.manimAssets.front().sourceFingerprint;
     const auto oldVideoPath = project.manimAssets.front().generatedVideoPath;
     if (!require(writeScript(scriptPath, "second"), "sample scriptを更新できません"))
         return 1;
+
+    const auto changedRestore = mvm::app::restoreFirstManimClip(project, projectPath);
+    const auto changedReload = mvm::project::loadProjectJson(projectPath);
+    if (!require(changedRestore.success, changedRestore.error.c_str()) ||
+        !require(changedRestore.generatedVideoAvailable,
+                 "source変更後に最後の生成videoを見失いました") ||
+        !require(project.manimAssets.front().generationState ==
+                     mvm::project::ManimGenerationState::SourceChanged,
+                 "変更sourceをSourceChangedとして復元しません") ||
+        !require(changedReload.success, changedReload.error.c_str()) ||
+        !require(changedReload.project.manimAssets.front().generationState ==
+                     mvm::project::ManimGenerationState::SourceChanged,
+                 "SourceChangedがProjectへ保存されません") ||
+        !require(changedReload.project.manimAssets.front().generatedVideoPath == oldVideoPath,
+                 "SourceChanged更新で最後の生成video relationが変わりました")) {
+        return 1;
+    }
+
     const auto second = mvm::app::generateManimClip(project, request);
     if (!require(second.success, second.error.c_str()) ||
         !require(project.manimAssets.size() == 1, "同じscriptとSceneでassetが増えました") ||
+        !require(project.manimAssets.front().generationState ==
+                     mvm::project::ManimGenerationState::Ready,
+                 "再生成後のassetがReadyではありません") ||
         !require(project.manimAssets.front().sourceFingerprint != oldFingerprint,
                  "再生成でfingerprintが更新されません") ||
         !require(project.manimAssets.front().generatedVideoPath != oldVideoPath,
@@ -111,6 +142,22 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::puts("M2 Manim clip workflow focused test: PASS");
+    error.clear();
+    if (!require(std::filesystem::remove(project.manimAssets.front().generatedVideoPath, error) &&
+                     !error,
+                 "欠損video testの生成物を削除できません")) {
+        return 1;
+    }
+    const auto missingVideoRestore = mvm::app::restoreFirstManimClip(project, projectPath);
+    if (!require(missingVideoRestore.success, missingVideoRestore.error.c_str()) ||
+        !require(missingVideoRestore.hasAsset && !missingVideoRestore.generatedVideoAvailable,
+                 "欠損した生成videoをavailableとして扱いました") ||
+        !require(project.manimAssets.size() == 1 &&
+                     project.manimAssets.front().generatedVideoPath == second.outputVideoPath,
+                 "生成video欠損時にrelationを破棄しました")) {
+        return 1;
+    }
+
+    std::puts("M3 Manim clip workflow focused test: PASS");
     return 0;
 }

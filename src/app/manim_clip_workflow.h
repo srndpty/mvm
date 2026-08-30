@@ -27,10 +27,22 @@ struct ManimClipGenerationResult {
     std::string error;
 };
 
+struct ManimClipRestoreResult {
+    bool success = false;
+    bool hasAsset = false;
+    bool generatedVideoAvailable = false;
+    std::string error;
+};
+
 // Manim renderからProject保存までを同期実行する。
 // 途中で失敗した場合、projectは呼び出し前のまま維持する。
 ManimClipGenerationResult generateManimClip(project::Project& project,
                                             const ManimClipGenerationRequest& request);
+
+// 先頭のManim assetだけを現在のsource fingerprintで再評価する。
+// 状態変更の保存に失敗した場合、projectは呼び出し前のまま維持する。
+ManimClipRestoreResult restoreFirstManimClip(project::Project& project,
+                                             const std::filesystem::path& projectPath);
 
 } // namespace mvm::app
 
