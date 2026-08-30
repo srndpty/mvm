@@ -38,6 +38,17 @@ target_include_directories(mvm_manim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_manim PUBLIC mvm::util PRIVATE mvm::warnings bcrypt ole32)
 add_library(mvm::manim ALIAS mvm_manim)
 
+# --- M2: Manim clip orchestration ------------------------------------------
+# QtやPreviewEngineを含めず、render・fingerprint・Project保存の順序だけを担う。
+add_library(mvm_manim_clip_workflow STATIC
+    app/manim_clip_workflow.cpp
+)
+target_include_directories(mvm_manim_clip_workflow PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_manim_clip_workflow
+    PUBLIC mvm::project mvm::manim
+    PRIVATE mvm::warnings)
+add_library(mvm::manim_clip_workflow ALIAS mvm_manim_clip_workflow)
+
 # --- Phase 5 / P5-B: PreviewEngine product foundation -----------------------
 # public boundaryは標準C++の値型だけを保ち、private実装でGPU backendへ接続する。
 add_library(mvm_preview_engine STATIC

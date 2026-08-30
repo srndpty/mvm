@@ -49,6 +49,18 @@ target_link_libraries(mvm_manim_project_smoke PRIVATE
     mvm::project mvm::manim mvm::mlt mvm::util mvm::warnings)
 target_compile_definitions(mvm_manim_project_smoke PRIVATE ${MVM_MLT_PATH_DEFS})
 
+add_executable(mvm_test_manim_clip_workflow harness/test_manim_clip_workflow.cpp)
+target_link_libraries(mvm_test_manim_clip_workflow PRIVATE
+    mvm::manim_clip_workflow mvm::util mvm::warnings)
+add_dependencies(mvm_test_manim_clip_workflow mvm_fake_manim_cli)
+add_test(NAME m2_manim_clip_workflow_focused
+    COMMAND mvm_test_manim_clip_workflow
+        "$<TARGET_FILE:mvm_fake_manim_cli>"
+        "${CMAKE_CURRENT_BINARY_DIR}/m2-manim-clip-unit")
+set_tests_properties(m2_manim_clip_workflow_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+
 # ScrubCoalescer の純粋単体テスト。MLT にも Qt にも依存しない。
 add_executable(mvm_test_scrub_coalescer harness/test_scrub_coalescer.cpp)
 target_include_directories(mvm_test_scrub_coalescer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/harness)
