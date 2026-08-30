@@ -2566,6 +2566,57 @@ inline std::string toJson(const std::map<std::string, size_t>& m) {
     return s;
 }
 
+// S2-g7: Event を count ではなく identity で追う。
+//
+// CreateEvent/CloseHandle を hook するのではなく、handle table 上の
+// (HandleValue, Object) を集合として取り、render 前後で差分を取る。
+// これで「どの identity が残ったか」が直接分かる。API hook より軽く、
+// 対象を MLT consumer 由来の Event に限定しなくても差分で自然に絞れる。
+struct EventIdentity {
+    ULONG_PTR handleValue;
+    PVOID object;
+    ULONG grantedAccess;
+};
+
+inline std::vector<EventIdentity> snapshotEventIdentities() {
+    std::vector<EventIdentity> out;
+    const auto& names = typeNames();
+    for (const auto& e : snapshotOwnHandles()) {
+        auto it = names.find(e.ObjectTypeIndex);
+        if (it != names.end() && it->second == "Event")
+            out.push_back({e.HandleValue, e.Object, e.GrantedAccess});
+    }
+    return out;
+}
+
+typedef LONG(NTAPI* PfnNtQueryObject)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+
+// ObjectNameInformation。Event に対しては blocking しない
+// (blocking が問題になるのは named pipe / file である)。
+inline std::string eventName(ULONG_PTR handleValue) {
+    static PfnNtQueryObject fn = []() -> PfnNtQueryObject {
+        HMODULE m = GetModuleHandleW(L"ntdll.dll");
+        return m ? (PfnNtQueryObject)(void*)GetProcAddress(m, "NtQueryObject") : nullptr;
+    }();
+    if (!fn)
+        return "";
+    unsigned char buf[1024] = {0};
+    ULONG need = 0;
+    if (fn((HANDLE)handleValue, 1 /*ObjectNameInformation*/, buf, sizeof(buf), &need) != 0)
+        return "";
+    // UNICODE_STRING { USHORT Length; USHORT MaximumLength; PWSTR Buffer; }
+    USHORT len = *reinterpret_cast<USHORT*>(buf);
+    wchar_t* p = *reinterpret_cast<wchar_t**>(buf + sizeof(void*));
+    if (!p || len == 0)
+        return "";
+    std::wstring w(p, len / sizeof(wchar_t));
+    std::string outStr;
+    outStr.reserve(w.size());
+    for (wchar_t c : w)
+        outStr.push_back(c < 128 ? (char)c : '?');
+    return outStr;
+}
+
 // S2-g5: teardown phase ごとの Event 数を記録する。
 // logical stopped と physical teardown 完了を区別し、close 後も残るのか
 // 遅れて解放されるのか (= race) を直接見る。
@@ -2638,6 +2689,7 @@ int cmdSoak(const bench::Args& a) {
         std::string typesAfterAudio;
         std::string typesAfterClose;
         std::string phaseTrace;
+        std::string retainedEvents;
     };
 
     std::vector<Sample> samples;
@@ -2701,11 +2753,14 @@ int cmdSoak(const bench::Args& a) {
         // 全 iteration で handle table を列挙すると soak 自体が遅くなるため。
         std::string typesBeforeAudio, typesAfterAudio, typesAfterClose;
         std::string phaseTrace;
+        std::string retainedEvents;
+        std::vector<mvm_g4::EventIdentity> eventsBeforeRender;
         if (audioThisIter) {
             handlesBeforeAudio = handleCount();
             typesBeforeAudio = mvm_g4::toJson(mvm_g4::countByType());
             mvm_g4::phaseLog().clear();
             mvm_g4::phaseLog().emplace_back("before_render", mvm_g4::eventCount());
+            eventsBeforeRender = mvm_g4::snapshotEventIdentities();
             mvm_mlt_compose_set_trace_hook(&mvm_g4::tracePhase);
         }
         if (audioThisIter) {
@@ -2751,12 +2806,36 @@ int cmdSoak(const bench::Args& a) {
         }
 
         mvm_mlt_compose_close(h);
-        if (audioThisIter)
+        if (audioThisIter) {
             typesAfterClose = mvm_g4::toJson(mvm_g4::countByType());
+            // S2-g7: compose close 後も残った Event identity を特定する。
+            std::set<ULONG_PTR> before;
+            for (const auto& e : eventsBeforeRender)
+                before.insert(e.handleValue);
+            std::string r = "[";
+            bool first = true;
+            for (const auto& e : mvm_g4::snapshotEventIdentities()) {
+                if (before.count(e.handleValue))
+                    continue;
+                if (!first)
+                    r += ", ";
+                first = false;
+                char b[320];
+                std::snprintf(b, sizeof(b),
+                              "{\"handle\": %llu, \"object\": \"%p\", \"access\": %lu, \"name\": \"%s\"}",
+                              (unsigned long long)e.handleValue, e.object,
+                              (unsigned long)e.grantedAccess,
+                              mvm_g4::eventName(e.handleValue).c_str());
+                r += b;
+            }
+            r += "]";
+            retainedEvents = r;
+        }
 
         samples.push_back({it, handleCount(), rssBytes(), markerValue, rmsL, gdiObjects(),
                            userObjects(), audioThisIter, handlesBeforeAudio, handlesAfterAudio,
-                           typesBeforeAudio, typesAfterAudio, typesAfterClose, phaseTrace});
+                           typesBeforeAudio, typesAfterAudio, typesAfterClose, phaseTrace,
+                           retainedEvents});
 
         // 進捗を stderr へ。長時間走るので無反応に見えないようにする。
         if ((it + 1) % 10 == 0 || it == 0) {
@@ -2896,6 +2975,10 @@ int cmdSoak(const bench::Args& a) {
         if (samples[i].audioThisIteration && !samples[i].phaseTrace.empty()) {
             std::printf(",\n    { \"i\": %d, \"teardown_phases\": %s }",
                         samples[i].iteration, samples[i].phaseTrace.c_str());
+        }
+        if (samples[i].audioThisIteration && !samples[i].retainedEvents.empty()) {
+            std::printf(",\n    { \"i\": %d, \"retained_events\": %s }",
+                        samples[i].iteration, samples[i].retainedEvents.c_str());
         }
     }
     std::printf("\n  ],\n  \"problems\": [");
