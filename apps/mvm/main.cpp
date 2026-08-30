@@ -1,4 +1,5 @@
 #include "app/preview/preview_engine_rhi_item.h"
+#include "media/mlt/mvm_mlt_runtime.h"
 #include "mvm_controller.h"
 #include "project/project_json.h"
 
@@ -80,6 +81,16 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "Project pathを確認できません: %s\n", existsError.message().c_str());
         return 3;
     }
+
+    // 書き出しは MLT の avformat consumer を使う。QML の render thread が動き出す
+    // 前に初期化を終わらせる (AGENTS.md の QML 起動順の規約)。
+    // 場所を推測させず、build 時に確定した module / data directory を明示する。
+    if (mvm_mlt_runtime_init(MVM_MLT_MODULE_DIR, MVM_MLT_DATA_DIR) != 0) {
+        std::fprintf(stderr, "MLTを初期化できません。書き出しが行えないため起動を中止します\n");
+        return 5;
+    }
+    QObject::connect(&application, &QCoreApplication::aboutToQuit,
+                     [] { mvm_mlt_runtime_shutdown(); });
 
     mvm::app::MvmController controller(arguments.projectPath, arguments.manimExecutablePath,
                                        std::move(project));

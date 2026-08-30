@@ -9,6 +9,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QTimer>
 #include <QUrl>
 
@@ -29,6 +30,10 @@ class MvmController final : public QObject {
     Q_PROPERTY(QString manimScriptPath READ manimScriptPath NOTIFY stateChanged)
     Q_PROPERTY(QString manimSceneName READ manimSceneName NOTIFY stateChanged)
     Q_PROPERTY(QString manimStateText READ manimStateText NOTIFY stateChanged)
+    Q_PROPERTY(QStringList clipNames READ clipNames NOTIFY stateChanged)
+    Q_PROPERTY(int clipCount READ clipCount NOTIFY stateChanged)
+    Q_PROPERTY(int currentClipIndex READ currentClipIndex NOTIFY stateChanged)
+    Q_PROPERTY(bool canExport READ canExport NOTIFY stateChanged)
 
 public:
     MvmController(std::filesystem::path projectPath, std::filesystem::path manimExecutablePath,
@@ -59,8 +64,19 @@ public:
 
     QString manimStateText() const { return manimStateText_; }
 
+    QStringList clipNames() const;
+
+    int clipCount() const { return static_cast<int>(project_.timelineClips.size()); }
+
+    int currentClipIndex() const { return currentClipIndex_; }
+
+    bool canExport() const { return !project_.timelineClips.empty() && !busy_; }
+
     Q_INVOKABLE bool generateManimClip(const QUrl& scriptUrl, const QString& sceneName);
     Q_INVOKABLE bool regenerateManimClip();
+    Q_INVOKABLE bool addVideoClip(const QUrl& fileUrl);
+    Q_INVOKABLE bool selectClip(int index);
+    Q_INVOKABLE bool exportTimeline(const QUrl& outputUrl);
 
 public Q_SLOTS:
     void shutdown();
@@ -75,10 +91,16 @@ private:
     bool resetPreviewEngine();
     void restoreFirstManimClip();
     void syncFirstManimAsset();
+    // Manim asset が確定したら timeline 上の Manim clip を追従させる。
+    // timeline と asset の対応を決める箇所はここだけにする。
+    void syncManimTimelineClip();
+    bool saveProject(project::Project candidate, const QString& failurePrefix);
     bool generateAndInstallManimClip(const std::filesystem::path& scriptPath,
                                      const QString& sceneName, bool requirePreviewReady);
-    void queueVideoClipInstall(const std::filesystem::path& videoPath, QString clipName);
-    bool installVideoClip(const std::filesystem::path& videoPath, const QString& clipName);
+    void queueVideoClipInstall(const std::filesystem::path& videoPath, QString clipName,
+                               int clipIndex);
+    bool installVideoClip(const std::filesystem::path& videoPath, const QString& clipName,
+                          int clipIndex);
     void resumeCurrentClip();
 
     std::filesystem::path projectPath_;
@@ -97,6 +119,8 @@ private:
     QString manimStateText_;
     std::optional<std::filesystem::path> pendingVideoPath_;
     QString pendingClipName_;
+    int pendingClipIndex_ = -1;
+    int currentClipIndex_ = -1;
     bool busy_ = false;
     bool previewReady_ = false;
     bool shutdownStarted_ = false;

@@ -25,10 +25,20 @@ ApplicationWindow {
             spacing: 10
 
             Button {
+                text: "Add Video"
+                enabled: !mvmController.busy
+                onClicked: videoDialog.open()
+            }
+            Button {
                 text: "Add Manim Clip"
                 visible: !mvmController.hasManimAsset
                 enabled: mvmController.previewReady && !mvmController.busy
                 onClicked: scriptDialog.open()
+            }
+            Button {
+                text: "Export"
+                enabled: mvmController.canExport
+                onClicked: exportDialog.open()
             }
             BusyIndicator {
                 running: mvmController.busy
@@ -101,7 +111,7 @@ ApplicationWindow {
         }
 
         Label {
-            text: "Timeline"
+            text: "Timeline (左から順に書き出されます)"
             color: "#c9ccd2"
             font.bold: true
         }
@@ -113,40 +123,60 @@ ApplicationWindow {
             color: "#20242a"
             border.color: "#3c424c"
 
-            Rectangle {
-                visible: mvmController.hasCurrentClip
-                anchors.left: parent.left
-                anchors.top: parent.top
-                anchors.bottom: parent.bottom
+            // 並び順がそのまま再生順。ドラッグやトリムは持たない (M4 のスコープ)。
+            Row {
+                anchors.fill: parent
                 anchors.margins: 10
-                width: Math.min(parent.width - 20, 520)
-                radius: 4
-                color: "#315f86"
-                border.color: "#65a8dc"
+                spacing: 8
 
-                Column {
-                    anchors.fill: parent
-                    anchors.margins: 10
-                    spacing: 5
+                Repeater {
+                    model: mvmController.clipNames
 
-                    Label {
-                        width: parent.width
-                        text: mvmController.currentClipName
-                        color: "white"
-                        font.bold: true
-                        elide: Text.ElideRight
-                    }
-                    Label {
-                        width: parent.width
-                        text: "Video · " + mvmController.currentClipPath
-                        color: "#d8edf9"
-                        elide: Text.ElideMiddle
+                    Rectangle {
+                        required property int index
+                        required property string modelData
+
+                        height: parent.height
+                        width: Math.max(150, Math.min(320,
+                                   (parent.width - (mvmController.clipCount - 1) * 8)
+                                   / Math.max(1, mvmController.clipCount)))
+                        radius: 4
+                        color: index === mvmController.currentClipIndex ? "#315f86" : "#2b3038"
+                        border.color: index === mvmController.currentClipIndex
+                                      ? "#65a8dc" : "#454b56"
+
+                        Column {
+                            anchors.fill: parent
+                            anchors.margins: 8
+                            spacing: 4
+
+                            Label {
+                                width: parent.width
+                                text: (index + 1) + ". " + modelData
+                                color: "white"
+                                font.bold: true
+                                elide: Text.ElideMiddle
+                            }
+                            Label {
+                                width: parent.width
+                                text: index === mvmController.currentClipIndex
+                                      ? "Preview中" : "クリックでPreview"
+                                color: "#a9b1bd"
+                                elide: Text.ElideRight
+                            }
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: !mvmController.busy
+                            onClicked: mvmController.selectClip(index)
+                        }
                     }
                 }
             }
 
             Label {
-                visible: !mvmController.hasCurrentClip
+                visible: mvmController.clipCount === 0
                 anchors.centerIn: parent
                 text: "No clip"
                 color: "#858b95"
@@ -159,6 +189,22 @@ ApplicationWindow {
             color: "#858b95"
             elide: Text.ElideMiddle
         }
+    }
+
+    FileDialog {
+        id: videoDialog
+        title: "動画ファイルを選択"
+        nameFilters: ["動画 (*.mp4 *.mov *.mkv *.ts)", "すべて (*)"]
+        onAccepted: mvmController.addVideoClip(selectedFile)
+    }
+
+    FileDialog {
+        id: exportDialog
+        title: "書き出し先を指定"
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "mp4"
+        nameFilters: ["MP4 (*.mp4)"]
+        onAccepted: mvmController.exportTimeline(selectedFile)
     }
 
     FileDialog {

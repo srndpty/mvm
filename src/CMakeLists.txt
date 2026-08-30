@@ -49,6 +49,18 @@ target_link_libraries(mvm_manim_clip_workflow
     PRIVATE mvm::warnings)
 add_library(mvm::manim_clip_workflow ALIAS mvm_manim_clip_workflow)
 
+# --- M4: timeline export orchestration --------------------------------------
+# Qt に依存しない。Project の clip 列を解決し、tmp へ書き出して検証してから
+# 正規名へ rename する順序だけを担う。MLT の呼び出しは mvm::mlt に閉じる。
+add_library(mvm_timeline_export STATIC
+    app/timeline_export.cpp
+)
+target_include_directories(mvm_timeline_export PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_timeline_export
+    PUBLIC mvm::project
+    PRIVATE mvm::mlt mvm::warnings)
+add_library(mvm::timeline_export ALIAS mvm_timeline_export)
+
 # --- Phase 5 / P5-B: PreviewEngine product foundation -----------------------
 # public boundaryは標準C++の値型だけを保ち、private実装でGPU backendへ接続する。
 add_library(mvm_preview_engine STATIC
@@ -69,6 +81,7 @@ add_library(mvm_mlt STATIC
     media/mlt/mvm_mlt_probe.c
     media/mlt/mvm_mlt_explore.c
     media/mlt/mvm_mlt_compose.c
+    media/mlt/mvm_mlt_export.c
     media/mlt/mvm_mlt_audiograph.c
 )
 target_include_directories(mvm_mlt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

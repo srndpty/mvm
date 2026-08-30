@@ -44,6 +44,21 @@ set_tests_properties(m1_project_manim_focused PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 120)
 
+# --- M4: timeline export ----------------------------------------------------
+# 実素材 2 本を順に並べて 1 本の MP4 にできることだけを見る。
+add_executable(mvm_test_timeline_export harness/test_timeline_export.cpp)
+target_link_libraries(mvm_test_timeline_export PRIVATE
+    mvm::timeline_export mvm::mlt mvm::util mvm::warnings)
+target_compile_definitions(mvm_test_timeline_export PRIVATE ${MVM_MLT_PATH_DEFS})
+add_test(NAME m4_timeline_export_focused
+    COMMAND mvm_test_timeline_export
+        "${CMAKE_CURRENT_BINARY_DIR}/m4-timeline-export"
+        "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4"
+        "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_hevc.mp4")
+set_tests_properties(m4_timeline_export_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 600)
+
 add_executable(mvm_manim_project_smoke harness/mvm_manim_project_smoke.cpp)
 target_link_libraries(mvm_manim_project_smoke PRIVATE
     mvm::project mvm::manim mvm::mlt mvm::util mvm::warnings)

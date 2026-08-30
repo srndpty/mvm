@@ -65,6 +65,16 @@ bool refreshManimGenerationState(ManimAsset& asset, const std::string& currentFi
     return true;
 }
 
+const char* timelineClipKindName(TimelineClipKind kind) {
+    switch (kind) {
+    case TimelineClipKind::Video:
+        return "video";
+    case TimelineClipKind::Manim:
+        return "manim";
+    }
+    return "";
+}
+
 const char* manimGenerationStateName(ManimGenerationState state) {
     switch (state) {
     case ManimGenerationState::NotGenerated:

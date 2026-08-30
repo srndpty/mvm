@@ -76,6 +76,23 @@ bool isProjectManagedRelativePath(const std::filesystem::path& path) {
            *normalized.begin() != L"..";
 }
 
+// project directory 配下なら relative、そうでなければ absolute で保存する。
+// script_path と timeline clip の media_path は同じ規則で扱う。
+std::string persistedSourcePath(const std::filesystem::path& path,
+                                const std::filesystem::path& projectDirectory) {
+    const auto absolutePath =
+        (path.is_absolute() ? path : projectDirectory / path).lexically_normal();
+    const auto relative = absolutePath.lexically_relative(projectDirectory);
+    return relative.empty() ? pathToUtf8(absolutePath) : pathToUtf8(relative);
+}
+
+// 読み込み時に relative を project directory へ再アンカーする。
+std::filesystem::path resolveSourcePath(const std::filesystem::path& path,
+                                        const std::filesystem::path& projectDirectory) {
+    return path.is_absolute() ? path.lexically_normal()
+                              : (projectDirectory / path).lexically_normal();
+}
+
 bool persistedScriptPath(const std::filesystem::path& path,
                          const std::filesystem::path& projectDirectory, std::string& result,
                          std::string& error) {
@@ -83,10 +100,7 @@ bool persistedScriptPath(const std::filesystem::path& path,
         error = "Manim script_path が空です";
         return false;
     }
-    const auto absolutePath =
-        (path.is_absolute() ? path : projectDirectory / path).lexically_normal();
-    const auto relative = absolutePath.lexically_relative(projectDirectory);
-    result = relative.empty() ? pathToUtf8(absolutePath) : pathToUtf8(relative);
+    result = persistedSourcePath(path, projectDirectory);
     return true;
 }
 
@@ -134,6 +148,7 @@ public:
     bool parse(Project& project, std::string& error) {
         bool hasSchema = false;
         bool hasAssets = false;
+        bool hasClips = false;
         if (!consume('{'))
             return finish(error);
         skipWhitespace();
@@ -150,6 +165,10 @@ public:
                     if (hasAssets || !parseAssets(project.manimAssets))
                         return failAndFinish("manim_assets が重複または不正です", error);
                     hasAssets = true;
+                } else if (key == "timeline_clips") {
+                    if (hasClips || !parseTimelineClips(project.timelineClips))
+                        return failAndFinish("timeline_clips が重複または不正です", error);
+                    hasClips = true;
                 } else if (!skipValue()) {
                     return finish(error);
                 }
@@ -166,6 +185,8 @@ public:
             return failAndFinish("Project JSON の末尾に余分な値があります", error);
         if (!hasSchema || !hasAssets)
             return failAndFinish("schema_version または manim_assets がありません", error);
+        // timeline_clips は additive な optional field である。key が無い場合は
+        // 「clip が 1 本も無い timeline」を意味する (schema migration は行わない)。
         if (project.schemaVersion != kSchemaVersion)
             return failAndFinish("対応していない Project schema_version です", error);
         error.clear();
@@ -419,6 +440,85 @@ private:
         return consume(']');
     }
 
+    bool parseClipKind(const std::string& text, TimelineClipKind& kind) {
+        if (text == "video")
+            kind = TimelineClipKind::Video;
+        else if (text == "manim")
+            kind = TimelineClipKind::Manim;
+        else
+            return fail("未知の timeline clip kind です: " + text);
+        return true;
+    }
+
+    bool parseTimelineClip(TimelineClip& clip) {
+        bool hasKind = false;
+        bool hasMedia = false;
+        bool hasName = false;
+        std::string kind;
+        std::string media;
+
+        if (!consume('{'))
+            return false;
+        skipWhitespace();
+        if (!peek('}')) {
+            while (true) {
+                std::string key;
+                if (!parseString(key) || !consume(':'))
+                    return false;
+                if (key == "kind") {
+                    if (hasKind || !parseString(kind))
+                        return fail("timeline clip の kind が重複または不正です");
+                    hasKind = true;
+                } else if (key == "media_path") {
+                    if (hasMedia || !parseString(media))
+                        return fail("timeline clip の media_path が重複または不正です");
+                    hasMedia = true;
+                } else if (key == "name") {
+                    if (hasName || !parseString(clip.name))
+                        return fail("timeline clip の name が重複または不正です");
+                    hasName = true;
+                } else if (!skipValue()) {
+                    return false;
+                }
+                skipWhitespace();
+                if (consumeIf(','))
+                    continue;
+                break;
+            }
+        }
+        if (!consume('}'))
+            return false;
+        if (!hasKind || !hasMedia || !hasName)
+            return fail("timeline clip の必須 field がありません");
+        if (media.empty())
+            return fail("timeline clip の media_path が空です");
+        if (clip.name.empty())
+            return fail("timeline clip の name が空です");
+        if (!parseClipKind(kind, clip.kind))
+            return false;
+        clip.mediaPath = pathFromUtf8(media);
+        return true;
+    }
+
+    bool parseTimelineClips(std::vector<TimelineClip>& clips) {
+        if (!consume('['))
+            return false;
+        skipWhitespace();
+        if (consumeIf(']'))
+            return true;
+        while (true) {
+            TimelineClip clip;
+            if (!parseTimelineClip(clip))
+                return false;
+            clips.push_back(std::move(clip));
+            skipWhitespace();
+            if (consumeIf(','))
+                continue;
+            break;
+        }
+        return consume(']');
+    }
+
     bool skipValue() {
         skipWhitespace();
         if (position_ >= text_.size())
@@ -520,6 +620,27 @@ ProjectIoResult saveProjectJson(const Project& project, const std::filesystem::p
     }
     if (!project.manimAssets.empty())
         json << '\n';
+    json << "  ],\n  \"timeline_clips\": [";
+    for (std::size_t index = 0; index < project.timelineClips.size(); ++index) {
+        const auto& clip = project.timelineClips[index];
+        if (clip.mediaPath.empty() || clip.name.empty()) {
+            result.error = "timeline clip の media_path または name が空です";
+            return result;
+        }
+        const std::string kindName = timelineClipKindName(clip.kind);
+        if (kindName.empty()) {
+            result.error = "保存できない timeline clip kind です";
+            return result;
+        }
+        json << (index == 0 ? "\n" : ",\n") << "    {\n"
+             << "      \"kind\": \"" << kindName << "\",\n"
+             << "      \"media_path\": \""
+             << escapeJson(persistedSourcePath(clip.mediaPath, projectDirectory)) << "\",\n"
+             << "      \"name\": \"" << escapeJson(clip.name) << "\"\n"
+             << "    }";
+    }
+    if (!project.timelineClips.empty())
+        json << '\n';
     json << "  ]\n}\n";
 
     std::ofstream output(absoluteProjectPath, std::ios::binary | std::ios::trunc);
@@ -560,10 +681,7 @@ ProjectLoadResult loadProjectJson(const std::filesystem::path& projectPath) {
 
     const auto projectDirectory = absoluteProjectPath.parent_path().lexically_normal();
     for (auto& asset : parsed.manimAssets) {
-        if (asset.scriptPath.is_absolute())
-            asset.scriptPath = asset.scriptPath.lexically_normal();
-        else
-            asset.scriptPath = (projectDirectory / asset.scriptPath).lexically_normal();
+        asset.scriptPath = resolveSourcePath(asset.scriptPath, projectDirectory);
 
         if (!asset.generatedVideoPath.empty()) {
             if (!isProjectManagedRelativePath(asset.generatedVideoPath)) {
@@ -582,6 +700,9 @@ ProjectLoadResult loadProjectJson(const std::filesystem::path& projectPath) {
             return result;
         }
     }
+
+    for (auto& clip : parsed.timelineClips)
+        clip.mediaPath = resolveSourcePath(clip.mediaPath, projectDirectory);
 
     result.project = std::move(parsed);
     result.success = true;
