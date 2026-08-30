@@ -2566,6 +2566,29 @@ inline std::string toJson(const std::map<std::string, size_t>& m) {
     return s;
 }
 
+// S2-g5: teardown phase ごとの Event 数を記録する。
+// logical stopped と physical teardown 完了を区別し、close 後も残るのか
+// 遅れて解放されるのか (= race) を直接見る。
+inline size_t eventCount() {
+    const auto& names = typeNames();
+    size_t n = 0;
+    for (const auto& e : snapshotOwnHandles()) {
+        auto it = names.find(e.ObjectTypeIndex);
+        if (it != names.end() && it->second == "Event")
+            n += 1;
+    }
+    return n;
+}
+
+inline std::vector<std::pair<std::string, size_t>>& phaseLog() {
+    static std::vector<std::pair<std::string, size_t>> v;
+    return v;
+}
+
+inline void tracePhase(const char* phase) {
+    phaseLog().emplace_back(phase, eventCount());
+}
+
 } // namespace mvm_g4
 
 int cmdSoak(const bench::Args& a) {
@@ -2614,6 +2637,7 @@ int cmdSoak(const bench::Args& a) {
         std::string typesBeforeAudio;
         std::string typesAfterAudio;
         std::string typesAfterClose;
+        std::string phaseTrace;
     };
 
     std::vector<Sample> samples;
@@ -2676,9 +2700,13 @@ int cmdSoak(const bench::Args& a) {
         // S2-g4: audio iteration でだけ kernel handle の種別内訳を 3 点で採る。
         // 全 iteration で handle table を列挙すると soak 自体が遅くなるため。
         std::string typesBeforeAudio, typesAfterAudio, typesAfterClose;
+        std::string phaseTrace;
         if (audioThisIter) {
             handlesBeforeAudio = handleCount();
             typesBeforeAudio = mvm_g4::toJson(mvm_g4::countByType());
+            mvm_g4::phaseLog().clear();
+            mvm_g4::phaseLog().emplace_back("before_render", mvm_g4::eventCount());
+            mvm_mlt_compose_set_trace_hook(&mvm_g4::tracePhase);
         }
         if (audioThisIter) {
             std::string tmp = wavDir + "/soak_tmp.wav";
@@ -2700,6 +2728,24 @@ int cmdSoak(const bench::Args& a) {
         }
 
         if (audioThisIter) {
+            mvm_mlt_compose_set_trace_hook(nullptr);
+            // close 後に遅れて解放されるかを見る。解放されるなら race、
+            // 残り続けるなら cleanup omission である。
+            mvm_g4::phaseLog().emplace_back("after_render_returned", mvm_g4::eventCount());
+            Sleep(250);
+            mvm_g4::phaseLog().emplace_back("settle_250ms", mvm_g4::eventCount());
+            Sleep(750);
+            mvm_g4::phaseLog().emplace_back("settle_1000ms", mvm_g4::eventCount());
+            std::string t = "[";
+            bool first = true;
+            for (const auto& kv : mvm_g4::phaseLog()) {
+                if (!first)
+                    t += ", ";
+                first = false;
+                t += "{\"phase\": \"" + kv.first + "\", \"event\": " + std::to_string(kv.second) + "}";
+            }
+            t += "]";
+            phaseTrace = t;
             handlesAfterAudio = handleCount();
             typesAfterAudio = mvm_g4::toJson(mvm_g4::countByType());
         }
@@ -2710,7 +2756,7 @@ int cmdSoak(const bench::Args& a) {
 
         samples.push_back({it, handleCount(), rssBytes(), markerValue, rmsL, gdiObjects(),
                            userObjects(), audioThisIter, handlesBeforeAudio, handlesAfterAudio,
-                           typesBeforeAudio, typesAfterAudio, typesAfterClose});
+                           typesBeforeAudio, typesAfterAudio, typesAfterClose, phaseTrace});
 
         // 進捗を stderr へ。長時間走るので無反応に見えないようにする。
         if ((it + 1) % 10 == 0 || it == 0) {
@@ -2846,6 +2892,10 @@ int cmdSoak(const bench::Args& a) {
                         samples[i].iteration, samples[i].typesBeforeAudio.c_str(),
                         samples[i].typesAfterAudio.c_str(),
                         samples[i].typesAfterClose.c_str());
+        }
+        if (samples[i].audioThisIteration && !samples[i].phaseTrace.empty()) {
+            std::printf(",\n    { \"i\": %d, \"teardown_phases\": %s }",
+                        samples[i].iteration, samples[i].phaseTrace.c_str());
         }
     }
     std::printf("\n  ],\n  \"problems\": [");

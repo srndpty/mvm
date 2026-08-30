@@ -1115,6 +1115,18 @@ int mvm_mlt_compose_audio(MvmComposeHandle* h, long long frame, MvmComposeAudio*
 /* WAV 書き出し (M3 の正式な音声検証経路)                                     */
 /* ------------------------------------------------------------------------- */
 
+/* S2-g5: 診断専用 hook。既定 NULL で一切呼ばれない。挙動は変えない。 */
+static MvmComposeTracePhase g_trace_hook = NULL;
+
+void mvm_mlt_compose_set_trace_hook(MvmComposeTracePhase hook) {
+    g_trace_hook = hook;
+}
+
+static void trace_phase(const char* phase) {
+    if (g_trace_hook)
+        g_trace_hook(phase);
+}
+
 int mvm_mlt_compose_render_audio(MvmComposeHandle* h, const char* out_path, int timeout_ms,
                                  char* err, size_t err_size) {
     if (!h || !out_path || !*out_path) {
@@ -1160,6 +1172,8 @@ int mvm_mlt_compose_render_audio(MvmComposeHandle* h, const char* out_path, int 
         return 1;
     }
 
+    trace_phase("start_returned");
+
     /* 完了待ち。timeout を成功扱いにしない。 */
     int waited = 0;
     const int step = 20;
@@ -1175,8 +1189,13 @@ int mvm_mlt_compose_render_audio(MvmComposeHandle* h, const char* out_path, int 
         }
     }
 
+    /* S2-g5: logical stopped (is_stopped==true) と physical teardown 完了は
+       別事象である。両者を別 phase として記録する。 */
+    trace_phase("is_stopped_true");
     mlt_consumer_stop(consumer);
+    trace_phase("stop_returned");
     mlt_consumer_close(consumer);
+    trace_phase("close_returned");
 
     /* 空ファイルを成功扱いしない。中身の妥当性は呼び出し側が ffprobe で見る。 */
     wchar_t* w = mvm_utf8_to_wide(out_path);
