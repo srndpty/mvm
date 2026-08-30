@@ -68,12 +68,8 @@ Require $renderer 'transportFailureCounterTotal' 'transport failure counterをqu
 Require $renderer 'finalizePendingOpportunityExact\(\)[\s\S]{0,400}notePendingOpportunityFinalized[\s\S]{0,600}closeWithoutNormalCompletion\(\)[\s\S]{0,200}noteForeignSchedulerClosed' 'scheduler closeがdrain / pending opportunity finalizeより前に来ています'
 Require $renderer 'startCurrentRequiredQueue\(\)[\s\S]+startFormalOpportunityScheduler\(\)[\s\S]+const long long measurementArmQpc = gpu::qpcTicks\(\);[\s\S]{0,3000}armMeasurement\(' 'canonical start authorityがcurrent queue / current scheduler準備完了後にsampleされていません'
 Reject $renderer 'const long long measurementArmQpc = gpu::qpcTicks\(\);[\s\S]{0,900}startCurrentRequiredQueue' 'canonical startをcurrent queue start前にsampleしています'
-Require $renderer 'const long long measurementArmQpc = gpu::qpcTicks\(\);\s*
-?
-\s*scheduler_\.start\(measurementArmQpc' 'canonical schedulerが同一sampleでstartしていません'
-Require $renderer 'armMeasurement\(\s*
-?
-?\s*measurementArmQpc, measurementArmQpc \+ duration\)' 'canonical windowのfreeze値がarm時点のsampleではありません'
+Require $renderer 'const long long measurementArmQpc = gpu::qpcTicks\(\);\s*\r?\n\s*scheduler_\.start\(measurementArmQpc' 'canonical schedulerが同一sampleでstartしていません'
+Require $renderer 'armMeasurement\(\s*\r?\n?\s*measurementArmQpc, measurementArmQpc \+ duration\)' 'canonical windowのfreeze値がarm時点のsampleではありません'
 Reject $renderer 'armMeasurement\(callbackBegin' 'handshake評価を含むcallback begin QPCをcanonical window startにしています'
 Require $renderer 'openCurrentIssuanceGate\(\)[\s\S]{0,600}formalOpportunityCaptureActive\.store\(true' 'issuance gateがmeasurement arm後のopen siteと結びついていません'
 Require $renderer 'PrerollTransitionProgress::Waiting[\s\S]{0,200}update\(\);\s*\r?\n\s*return true' 'quiescence未成立時に待機せずarmしています'

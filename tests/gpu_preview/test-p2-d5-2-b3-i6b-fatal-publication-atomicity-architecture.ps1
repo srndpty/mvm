@@ -22,10 +22,8 @@ Require $publication 'if \(!publicationAllowed\(\)\) \{(?:(?!return;)[\s\S])*sin
 Reject $publication 'if \(!publicationAllowed\(\)\) \{(?:(?!return;)[\s\S])*notePublicationFailure' 'publication抑止をtransport failureとして数えています'
 Require $publication 'const bool succeeded = sink_\.publishCompositionToken\(token_\);' 'publication siteがgate後のscope exitではありません'
 Require $renderer 'CompositionTokenPublication publication_;' 'rendererがproduction publication componentを保持していません'
-Require $renderer 'void noteSuppressedBeforePresent\(\) override \{\s*?
-?\s*state_->nativePresentTokenSuppressedBeforePresentCount\.fetch_add' '抑止counterがstateへ接続されていません'
-Require $renderer 'void notePublicationFailure\(\) override \{\s*?
-?\s*state_->nativePresentTokenSetFailureCount\.fetch_add' 'token set failure counterの接続がありません'
+Require $renderer 'void noteSuppressedBeforePresent\(\) override \{\s*\r?\n\s*state_->nativePresentTokenSuppressedBeforePresentCount\.fetch_add' '抑止counterがstateへ接続されていません'
+Require $renderer 'void notePublicationFailure\(\) override \{\s*\r?\n\s*state_->nativePresentTokenSetFailureCount\.fetch_add' 'token set failure counterの接続がありません'
 if(([regex]::Matches($renderer,'hook->setCompositionToken\(')).Count-ne1){throw 'composition token publication siteがexactly 1箇所ではありません'}
 Require $header 'nativePresentTokenSuppressedBeforePresentCount\{0\}' '抑止counterがstateにありません'
 Require $controller '"token_publication_suppressed_before_present_count",' '抑止counterをartifactへ出していません'

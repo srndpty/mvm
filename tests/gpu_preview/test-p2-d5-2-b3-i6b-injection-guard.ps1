@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][ValidateSet(
         'Good','NegativeFatalInjectionAfterPublication','NegativePublicationGateIgnored',
@@ -14,6 +14,13 @@ param(
 )
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
+# CIのtoolchainはC:\msys64固定ではない (msys2 actionはtemp配下へ展開する)。
+# 既定pathが無い場合はPATH上のg++へfallbackする。解決できなければ即failさせる。
+if(-not(Test-Path -LiteralPath $Compiler)){
+    $resolvedCompiler=@(Get-Command g++ -CommandType Application -ErrorAction SilentlyContinue)|Select-Object -First 1
+    if($null-eq$resolvedCompiler){throw "compilerを解決できません: $Compiler"}
+    $Compiler=[string]$resolvedCompiler.Source
+}
 # S2-h2: mutation match を physical line ending から独立させる。
 # .cpp/.h は repo policy 上 LF、.ps1 は CRLF である (.gitattributes)。
 # here-string の $From/$To は .ps1 の物理改行を持つため、そのままでは LF の

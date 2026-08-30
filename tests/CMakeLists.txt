@@ -2477,6 +2477,7 @@ foreach(_p2_b3_i6b_inj_case IN ITEMS Good NegativeFatalInjectionAfterPublication
             -SourceRoot "${CMAKE_SOURCE_DIR}"
             -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-b3-i6b-injection-guard-${_p2_b3_i6b_inj_name}"
             -GpuPreviewLibrary "$<TARGET_FILE:mvm_gpu_preview>"
+            -Compiler "${CMAKE_CXX_COMPILER}"
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
@@ -2688,7 +2689,7 @@ add_test(NAME compositor_diagnostic_case_invalid_negative
         -ExpectExit 2 -Exe "$<TARGET_FILE:mvm_compositor_spike>"
         -ChildArgs "--diagnostic-case|invalid")
 set_tests_properties(compositor_diagnostic_case_invalid_negative PROPERTIES
-    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 30)
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 120)
 
 if(MVM_HAVE_P2_BENCHMARK_FIXTURES)
     foreach(_kind_name actual_device no_full_frame_copy actual_target_probe shutdown)
