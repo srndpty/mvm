@@ -44,6 +44,10 @@ Thumbs.db
 desktop.ini
 tmp/
 
+# Python が fixture/script の import 時に生成する bytecode cache
+__pycache__/
+*.py[cod]
+
 # ablation の派生 scenario は build/<preset>/ablation/scenarios にだけ置く。
 # 以前は bench/scenarios へ書いており、派生物が Git に入ってしまった。
 bench/scenarios/abl-*.json

@@ -2,6 +2,7 @@
 #include "media/audio_preview/audio_decode_worker.h"
 #include "media/audio_preview/wasapi_audio_sink.h"
 
+#include <windows.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -12,7 +13,6 @@
 #include <sstream>
 #include <thread>
 #include <vector>
-#include <windows.h>
 
 using namespace mvm::audio;
 

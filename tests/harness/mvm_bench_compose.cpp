@@ -2495,16 +2495,16 @@ inline const std::map<USHORT, std::string>& typeNames() {
         learn(wt, "Timer");
         HANDLE io = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 1);
         learn(io, "IoCompletion");
-        HANDLE sec = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, 4096,
-                                        nullptr);
+        HANDLE sec =
+            CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, 4096, nullptr);
         learn(sec, "Section");
         wchar_t tmpDir[MAX_PATH] = {0};
         wchar_t tmpFile[MAX_PATH] = {0};
         HANDLE fh = INVALID_HANDLE_VALUE;
         if (GetTempPathW(MAX_PATH, tmpDir) && GetTempFileNameW(tmpDir, L"g4", 0, tmpFile)) {
-            fh = CreateFileW(tmpFile, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE |
-                                                        FILE_SHARE_DELETE,
-                             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+            fh = CreateFileW(tmpFile, GENERIC_READ,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                             OPEN_EXISTING, FILE_ATTRIBUTE_TEMPORARY, nullptr);
             learn(fh, "File");
         }
         HANDLE th = nullptr;
@@ -2512,8 +2512,8 @@ inline const std::map<USHORT, std::string>& typeNames() {
                         DUPLICATE_SAME_ACCESS);
         learn(th, "Thread");
         HANDLE pr = nullptr;
-        DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(), GetCurrentProcess(), &pr, 0, FALSE,
-                        DUPLICATE_SAME_ACCESS);
+        DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(), GetCurrentProcess(), &pr, 0,
+                        FALSE, DUPLICATE_SAME_ACCESS);
         learn(pr, "Process");
         HANDLE tok = nullptr;
         if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok))
@@ -2522,18 +2522,30 @@ inline const std::map<USHORT, std::string>& typeNames() {
         if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software", 0, KEY_READ, &hk) == ERROR_SUCCESS)
             learn((HANDLE)hk, "Key");
 
-        if (ev) CloseHandle(ev);
-        if (mu) CloseHandle(mu);
-        if (se) CloseHandle(se);
-        if (wt) CloseHandle(wt);
-        if (io) CloseHandle(io);
-        if (sec) CloseHandle(sec);
-        if (fh != INVALID_HANDLE_VALUE) CloseHandle(fh);
-        if (tmpFile[0]) DeleteFileW(tmpFile);
-        if (th) CloseHandle(th);
-        if (pr) CloseHandle(pr);
-        if (tok) CloseHandle(tok);
-        if (hk) RegCloseKey(hk);
+        if (ev)
+            CloseHandle(ev);
+        if (mu)
+            CloseHandle(mu);
+        if (se)
+            CloseHandle(se);
+        if (wt)
+            CloseHandle(wt);
+        if (io)
+            CloseHandle(io);
+        if (sec)
+            CloseHandle(sec);
+        if (fh != INVALID_HANDLE_VALUE)
+            CloseHandle(fh);
+        if (tmpFile[0])
+            DeleteFileW(tmpFile);
+        if (th)
+            CloseHandle(th);
+        if (pr)
+            CloseHandle(pr);
+        if (tok)
+            CloseHandle(tok);
+        if (hk)
+            RegCloseKey(hk);
         return t;
     }();
     return table;
@@ -2797,7 +2809,8 @@ int cmdSoak(const bench::Args& a) {
                 if (!first)
                     t += ", ";
                 first = false;
-                t += "{\"phase\": \"" + kv.first + "\", \"event\": " + std::to_string(kv.second) + "}";
+                t += "{\"phase\": \"" + kv.first + "\", \"event\": " + std::to_string(kv.second) +
+                     "}";
             }
             t += "]";
             phaseTrace = t;
@@ -2821,11 +2834,11 @@ int cmdSoak(const bench::Args& a) {
                     r += ", ";
                 first = false;
                 char b[320];
-                std::snprintf(b, sizeof(b),
-                              "{\"handle\": %llu, \"object\": \"%p\", \"access\": %lu, \"name\": \"%s\"}",
-                              (unsigned long long)e.handleValue, e.object,
-                              (unsigned long)e.grantedAccess,
-                              mvm_g4::eventName(e.handleValue).c_str());
+                std::snprintf(
+                    b, sizeof(b),
+                    "{\"handle\": %llu, \"object\": \"%p\", \"access\": %lu, \"name\": \"%s\"}",
+                    (unsigned long long)e.handleValue, e.object, (unsigned long)e.grantedAccess,
+                    mvm_g4::eventName(e.handleValue).c_str());
                 r += b;
             }
             r += "]";
@@ -2961,24 +2974,23 @@ int cmdSoak(const bench::Args& a) {
                     " \"gdi\": %zu, \"user\": %zu, \"audio\": %s,"
                     " \"h_before_audio\": %zu, \"h_after_audio\": %zu }",
                     i ? "," : "", samples[i].iteration, samples[i].handles,
-                    samples[i].rssBytes / 1048576.0, samples[i].gdiObjects,
-                    samples[i].userObjects, samples[i].audioThisIteration ? "true" : "false",
-                    samples[i].handlesBeforeAudio, samples[i].handlesAfterAudio);
+                    samples[i].rssBytes / 1048576.0, samples[i].gdiObjects, samples[i].userObjects,
+                    samples[i].audioThisIteration ? "true" : "false", samples[i].handlesBeforeAudio,
+                    samples[i].handlesAfterAudio);
         if (samples[i].audioThisIteration && !samples[i].typesBeforeAudio.empty()) {
             std::printf(",\n    { \"i\": %d, \"kernel_handle_types\": "
                         "{ \"before_audio\": %s, \"after_audio\": %s, "
                         "\"after_close\": %s } }",
                         samples[i].iteration, samples[i].typesBeforeAudio.c_str(),
-                        samples[i].typesAfterAudio.c_str(),
-                        samples[i].typesAfterClose.c_str());
+                        samples[i].typesAfterAudio.c_str(), samples[i].typesAfterClose.c_str());
         }
         if (samples[i].audioThisIteration && !samples[i].phaseTrace.empty()) {
-            std::printf(",\n    { \"i\": %d, \"teardown_phases\": %s }",
-                        samples[i].iteration, samples[i].phaseTrace.c_str());
+            std::printf(",\n    { \"i\": %d, \"teardown_phases\": %s }", samples[i].iteration,
+                        samples[i].phaseTrace.c_str());
         }
         if (samples[i].audioThisIteration && !samples[i].retainedEvents.empty()) {
-            std::printf(",\n    { \"i\": %d, \"retained_events\": %s }",
-                        samples[i].iteration, samples[i].retainedEvents.c_str());
+            std::printf(",\n    { \"i\": %d, \"retained_events\": %s }", samples[i].iteration,
+                        samples[i].retainedEvents.c_str());
         }
     }
     std::printf("\n  ],\n  \"problems\": [");

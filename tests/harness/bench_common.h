@@ -21,6 +21,7 @@
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "util/mvm_win_utf8.h"
 
+#include <windows.h>
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -35,7 +36,6 @@
 #include <sstream>
 #include <string>
 #include <vector>
-#include <windows.h>
 
 namespace bench {
 

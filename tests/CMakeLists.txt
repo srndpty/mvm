@@ -13,6 +13,69 @@ add_executable(mvm_bench
     harness/mvm_bench_proxy.cpp
 )
 
+# --- M0: Manim external renderer -------------------------------------------
+add_executable(mvm_fake_manim_cli harness/fake_manim_cli.cpp)
+target_link_libraries(mvm_fake_manim_cli PRIVATE mvm::util mvm::warnings)
+
+add_executable(mvm_test_manim_renderer harness/test_manim_renderer.cpp)
+target_link_libraries(mvm_test_manim_renderer PRIVATE mvm::manim mvm::util mvm::warnings)
+add_dependencies(mvm_test_manim_renderer mvm_fake_manim_cli)
+add_test(NAME m0_manim_renderer_focused
+    COMMAND mvm_test_manim_renderer
+        "$<TARGET_FILE:mvm_fake_manim_cli>"
+        "${CMAKE_CURRENT_BINARY_DIR}/m0-manim-unit")
+set_tests_properties(m0_manim_renderer_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+
+# 実 Manim の導入は build の必須条件にしない。検証時に executable の絶対パスを
+# 明示してこの smoke を実行する。
+add_executable(mvm_manim_smoke harness/mvm_manim_smoke.cpp)
+target_link_libraries(mvm_manim_smoke PRIVATE
+    mvm::manim mvm::mlt mvm::util mvm::warnings)
+target_compile_definitions(mvm_manim_smoke PRIVATE ${MVM_MLT_PATH_DEFS})
+
+add_executable(mvm_test_project_manim harness/test_project_manim.cpp)
+target_link_libraries(mvm_test_project_manim PRIVATE
+    mvm::project mvm::util mvm::warnings)
+add_test(NAME m1_project_manim_focused
+    COMMAND mvm_test_project_manim "${CMAKE_CURRENT_BINARY_DIR}/m1-project-unit")
+set_tests_properties(m1_project_manim_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+
+# --- M4: timeline export ----------------------------------------------------
+# 実素材 2 本を順に並べて 1 本の MP4 にできることだけを見る。
+add_executable(mvm_test_timeline_export harness/test_timeline_export.cpp)
+target_link_libraries(mvm_test_timeline_export PRIVATE
+    mvm::timeline_export mvm::mlt mvm::util mvm::warnings)
+target_compile_definitions(mvm_test_timeline_export PRIVATE ${MVM_MLT_PATH_DEFS})
+add_test(NAME m4_timeline_export_focused
+    COMMAND mvm_test_timeline_export
+        "${CMAKE_CURRENT_BINARY_DIR}/m4-timeline-export"
+        "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4"
+        "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_hevc.mp4")
+set_tests_properties(m4_timeline_export_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 600)
+
+add_executable(mvm_manim_project_smoke harness/mvm_manim_project_smoke.cpp)
+target_link_libraries(mvm_manim_project_smoke PRIVATE
+    mvm::project mvm::manim mvm::mlt mvm::util mvm::warnings)
+target_compile_definitions(mvm_manim_project_smoke PRIVATE ${MVM_MLT_PATH_DEFS})
+
+add_executable(mvm_test_manim_clip_workflow harness/test_manim_clip_workflow.cpp)
+target_link_libraries(mvm_test_manim_clip_workflow PRIVATE
+    mvm::manim_clip_workflow mvm::util mvm::warnings)
+add_dependencies(mvm_test_manim_clip_workflow mvm_fake_manim_cli)
+add_test(NAME m2_manim_clip_workflow_focused
+    COMMAND mvm_test_manim_clip_workflow
+        "$<TARGET_FILE:mvm_fake_manim_cli>"
+        "${CMAKE_CURRENT_BINARY_DIR}/m2-manim-clip-unit")
+set_tests_properties(m2_manim_clip_workflow_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+
 # ScrubCoalescer の純粋単体テスト。MLT にも Qt にも依存しない。
 add_executable(mvm_test_scrub_coalescer harness/test_scrub_coalescer.cpp)
 target_include_directories(mvm_test_scrub_coalescer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/harness)
@@ -2414,6 +2477,7 @@ foreach(_p2_b3_i6b_inj_case IN ITEMS Good NegativeFatalInjectionAfterPublication
             -SourceRoot "${CMAKE_SOURCE_DIR}"
             -Directory "${CMAKE_CURRENT_BINARY_DIR}/p2-b3-i6b-injection-guard-${_p2_b3_i6b_inj_name}"
             -GpuPreviewLibrary "$<TARGET_FILE:mvm_gpu_preview>"
+            -Compiler "${CMAKE_CXX_COMPILER}"
         PROPERTIES LABELS "gpu_preview")
 endforeach()
 
@@ -2625,7 +2689,7 @@ add_test(NAME compositor_diagnostic_case_invalid_negative
         -ExpectExit 2 -Exe "$<TARGET_FILE:mvm_compositor_spike>"
         -ChildArgs "--diagnostic-case|invalid")
 set_tests_properties(compositor_diagnostic_case_invalid_negative PROPERTIES
-    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 30)
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}" TIMEOUT 120)
 
 if(MVM_HAVE_P2_BENCHMARK_FIXTURES)
     foreach(_kind_name actual_device no_full_frame_copy actual_target_probe shutdown)

@@ -92,12 +92,18 @@ VBlankSequenceStatus vblankSequenceStatus(const VBlankObservation* samples, std:
 
 const char* vblankSequenceStatusName(VBlankSequenceStatus status) {
     switch (status) {
-    case VBlankSequenceStatus::Ok: return "OK";
-    case VBlankSequenceStatus::Empty: return "EMPTY";
-    case VBlankSequenceStatus::Invalid: return "INVALID";
-    case VBlankSequenceStatus::OrdinalRegression: return "ORDINAL_REGRESSION";
-    case VBlankSequenceStatus::OrdinalGap: return "ORDINAL_GAP";
-    case VBlankSequenceStatus::QpcRegression: return "QPC_REGRESSION";
+    case VBlankSequenceStatus::Ok:
+        return "OK";
+    case VBlankSequenceStatus::Empty:
+        return "EMPTY";
+    case VBlankSequenceStatus::Invalid:
+        return "INVALID";
+    case VBlankSequenceStatus::OrdinalRegression:
+        return "ORDINAL_REGRESSION";
+    case VBlankSequenceStatus::OrdinalGap:
+        return "ORDINAL_GAP";
+    case VBlankSequenceStatus::QpcRegression:
+        return "QPC_REGRESSION";
     }
     return "UNKNOWN";
 }

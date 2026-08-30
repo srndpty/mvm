@@ -1,21 +1,28 @@
 // F3-C3-A3-T1: target workloadを変更せず、外部window状態だけを固定・記録する。
+#include <windows.h>
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
 #include <cwchar>
 #include <dwmapi.h>
 #include <string>
 #include <thread>
 #include <vector>
-#include <windows.h>
 
 namespace {
 
-enum class Mode { Visible, Occluded, ForceDirty, TargetInvalidate, TargetRedrawNow,
-                  ForeignOverlap, OverlapThenRemove };
+enum class Mode {
+    Visible,
+    Occluded,
+    ForceDirty,
+    TargetInvalidate,
+    TargetRedrawNow,
+    ForeignOverlap,
+    OverlapThenRemove
+};
 
 // F3-C3-A3-T2-D1-B3a: phaseごとにPresentを分類できるよう境界QPCを記録する。
 struct PhaseBoundary {
@@ -273,14 +280,13 @@ bool writeJson(wchar_t const* outputPath, Mode mode, unsigned long processId,
     FILE* file = nullptr;
     if (_wfopen_s(&file, outputPath, L"wb") != 0 || file == nullptr)
         return false;
-    auto const modeName =
-        mode == Mode::Visible            ? "VISIBLE_UNOCCLUDED"
-        : mode == Mode::Occluded         ? "FULLY_OCCLUDED"
-        : mode == Mode::ForceDirty       ? "VISIBLE_UNOCCLUDED_FORCE_DIRTY"
-        : mode == Mode::TargetInvalidate ? "VISIBLE_UNOCCLUDED_TARGET_INVALIDATE"
-        : mode == Mode::TargetRedrawNow  ? "VISIBLE_UNOCCLUDED_TARGET_REDRAW_NOW"
-        : mode == Mode::ForeignOverlap   ? "FOREIGN_WINDOW_OVERLAP"
-                                         : "OVERLAP_THEN_REMOVE";
+    auto const modeName = mode == Mode::Visible            ? "VISIBLE_UNOCCLUDED"
+                          : mode == Mode::Occluded         ? "FULLY_OCCLUDED"
+                          : mode == Mode::ForceDirty       ? "VISIBLE_UNOCCLUDED_FORCE_DIRTY"
+                          : mode == Mode::TargetInvalidate ? "VISIBLE_UNOCCLUDED_TARGET_INVALIDATE"
+                          : mode == Mode::TargetRedrawNow  ? "VISIBLE_UNOCCLUDED_TARGET_REDRAW_NOW"
+                          : mode == Mode::ForeignOverlap   ? "FOREIGN_WINDOW_OVERLAP"
+                                                           : "OVERLAP_THEN_REMOVE";
     std::fprintf(file, "{\n  \"schema\": \"mvm-p2-c3-a3-t1-window-state-1\",\n");
     std::fprintf(file, "  \"mode\": \"%s\",\n", modeName);
     std::fprintf(file, "  \"target_process_id\": %lu,\n", processId);
@@ -567,9 +573,9 @@ int wmain(int argc, wchar_t** argv) {
                 issued = InvalidateRect(target, &damage, FALSE);
             } else {
                 // invalidate + 同期的なpaint処理まで進める positive control。
-                issued = RedrawWindow(target, &damage, nullptr,
-                                      RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE |
-                                          RDW_NOCHILDREN);
+                issued =
+                    RedrawWindow(target, &damage, nullptr,
+                                 RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE | RDW_NOCHILDREN);
             }
             if (issued)
                 ++targetDamageCount;

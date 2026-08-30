@@ -115,6 +115,7 @@ add_subdirectory(src)
 # Phase 1 / P1 の検証アプリ。Qt が無ければ作らない。
 if(MVM_ENABLE_QT)
     qt_standard_project_setup(REQUIRES 6.5)
+    add_subdirectory(apps/mvm)
     add_subdirectory(apps/preview_spike)
     add_subdirectory(apps/compositor_spike)
     add_subdirectory(apps/p3_av_sync_spike)

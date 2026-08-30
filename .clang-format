@@ -21,11 +21,16 @@ SpaceAfterTemplateKeyword: false
 IncludeCategories:
   # Own headers first (paired header handled by clang-format automatically)
   - Regex: '^"'
-    Priority: 1
+    Priority: 10
   # MLT: only legal inside src/media/mlt/
   - Regex: '^<(framework|mlt)/'
-    Priority: 4
+    Priority: 40
   - Regex: '^<Q'
-    Priority: 3
+    Priority: 30
+  # windows.h は他の Win32 ヘッダ (bcrypt.h 等) が前提にする型を定義するため、
+  # 同じブロック内でも必ず先頭へ並べる。
+  - Regex: '^<windows\.h>'
+    Priority: 20
+    SortPriority: 15
   - Regex: '^<'
-    Priority: 2
+    Priority: 20

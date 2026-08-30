@@ -2,9 +2,9 @@
 
 #include "../../util/mvm_win_utf8.h"
 
+#include <windows.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
 
 #include <framework/mlt.h>
 

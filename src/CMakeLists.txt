@@ -10,6 +10,16 @@ target_include_directories(mvm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_core PRIVATE mvm::warnings)
 add_library(mvm::core ALIAS mvm_core)
 
+# --- minimal product Project Model -----------------------------------------
+# Qt / MLT / Manim に依存しない純粋な値型と schema 固定 JSON のみ。
+add_library(mvm_project STATIC
+    project/project.cpp
+    project/project_json.cpp
+)
+target_include_directories(mvm_project PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_project PRIVATE mvm::warnings)
+add_library(mvm::project ALIAS mvm_project)
+
 # --- Windows / UTF-8 ヘルパ -------------------------------------------------
 # Phase 0 スパイク用の小さなヘルパ。製品用の platform 層ではない。
 add_library(mvm_util STATIC
@@ -17,6 +27,39 @@ add_library(mvm_util STATIC
 )
 target_include_directories(mvm_util PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 add_library(mvm::util ALIAS mvm_util)
+
+# --- Manim external renderer ------------------------------------------------
+# Python を埋め込まず、明示された Manim CLI を外部プロセスとして実行する。
+add_library(mvm_manim STATIC
+    media/manim/manim_fingerprint.cpp
+    media/manim/manim_renderer.cpp
+)
+target_include_directories(mvm_manim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_manim PUBLIC mvm::util PRIVATE mvm::warnings bcrypt ole32)
+add_library(mvm::manim ALIAS mvm_manim)
+
+# --- M2: Manim clip orchestration ------------------------------------------
+# QtやPreviewEngineを含めず、render・fingerprint・Project保存の順序だけを担う。
+add_library(mvm_manim_clip_workflow STATIC
+    app/manim_clip_workflow.cpp
+)
+target_include_directories(mvm_manim_clip_workflow PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_manim_clip_workflow
+    PUBLIC mvm::project mvm::manim
+    PRIVATE mvm::warnings)
+add_library(mvm::manim_clip_workflow ALIAS mvm_manim_clip_workflow)
+
+# --- M4: timeline export orchestration --------------------------------------
+# Qt に依存しない。Project の clip 列を解決し、tmp へ書き出して検証してから
+# 正規名へ rename する順序だけを担う。MLT の呼び出しは mvm::mlt に閉じる。
+add_library(mvm_timeline_export STATIC
+    app/timeline_export.cpp
+)
+target_include_directories(mvm_timeline_export PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_timeline_export
+    PUBLIC mvm::project
+    PRIVATE mvm::mlt mvm::warnings)
+add_library(mvm::timeline_export ALIAS mvm_timeline_export)
 
 # --- Phase 5 / P5-B: PreviewEngine product foundation -----------------------
 # public boundaryは標準C++の値型だけを保ち、private実装でGPU backendへ接続する。
@@ -38,6 +81,7 @@ add_library(mvm_mlt STATIC
     media/mlt/mvm_mlt_probe.c
     media/mlt/mvm_mlt_explore.c
     media/mlt/mvm_mlt_compose.c
+    media/mlt/mvm_mlt_export.c
     media/mlt/mvm_mlt_audiograph.c
 )
 target_include_directories(mvm_mlt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

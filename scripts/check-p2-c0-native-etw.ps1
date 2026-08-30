@@ -26,7 +26,7 @@ if([string]$etw.acquisition_mode-eq'CANONICAL_PRESENTMON_LIVE'){
     Equal ([bool]$etw.event_id_filtering) $true 'event_id_filtering'
 }
 foreach($field in @('etw_events_lost','etw_buffers_lost','present_event_overflow_count')){Equal ([int64]$etw.$field) 0 $field}
-$opportunity=$app.presentation_opportunity;$hook=$app.native_present_hook
+$opportunity=$app.presentation_opportunity
 $measurementStart=[int64]$opportunity.measurement_start_qpc
 $measurementEnd=[int64]$opportunity.measurement_end_qpc_exclusive
 if($measurementStart-le0-or$measurementEnd-le$measurementStart){Fail 'measurement windowが不正です'}

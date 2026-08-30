@@ -2,10 +2,10 @@
 
 #include "media/gpu_preview/qpc_clock.h"
 
+#include <windows.h>
 #include <algorithm>
 #include <dxgi1_6.h>
 #include <vector>
-#include <windows.h>
 #include <wrl/client.h>
 
 namespace mvm::gpu {

@@ -1,10 +1,10 @@
 #include "mvm_win_utf8.h"
 
+#include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
-#include <windows.h>
 
 wchar_t* mvm_utf8_to_wide(const char* utf8) {
     if (!utf8)

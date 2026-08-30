@@ -1,9 +1,9 @@
 #include "app/preview/presentation_eligibility_preflight.h"
 
+#include <windows.h>
 #include <d3d11.h>
 #include <dwmapi.h>
 #include <dxgi1_6.h>
-#include <windows.h>
 
 namespace mvm::app {
 namespace {
@@ -23,8 +23,8 @@ void captureAdapter(ID3D11Device* device, PresentationEligibilityPreflight& resu
     if (device == nullptr)
         return;
     IDXGIDevice* dxgiDevice = nullptr;
-    if (FAILED(device->QueryInterface(__uuidof(IDXGIDevice),
-                                      reinterpret_cast<void**>(&dxgiDevice))) ||
+    if (FAILED(
+            device->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxgiDevice))) ||
         dxgiDevice == nullptr)
         return;
     IDXGIAdapter* adapter = nullptr;
@@ -39,8 +39,8 @@ void captureAdapter(ID3D11Device* device, PresentationEligibilityPreflight& resu
         // ALLOW_TEARING は factory capability であり、この Present が tearing した
         // ことを意味しない。
         IDXGIFactory5* factory5 = nullptr;
-        if (SUCCEEDED(adapter->GetParent(__uuidof(IDXGIFactory5),
-                                         reinterpret_cast<void**>(&factory5))) &&
+        if (SUCCEEDED(
+                adapter->GetParent(__uuidof(IDXGIFactory5), reinterpret_cast<void**>(&factory5))) &&
             factory5 != nullptr) {
             BOOL allowTearing = FALSE;
             if (SUCCEEDED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING,
@@ -72,8 +72,8 @@ void captureOutput(IDXGISwapChain1* swapChain, PresentationEligibilityPreflight&
     }
     // hardware composition capability。actual MPO 使用の証拠ではない。
     IDXGIOutput6* output6 = nullptr;
-    if (SUCCEEDED(output->QueryInterface(__uuidof(IDXGIOutput6),
-                                         reinterpret_cast<void**>(&output6))) &&
+    if (SUCCEEDED(
+            output->QueryInterface(__uuidof(IDXGIOutput6), reinterpret_cast<void**>(&output6))) &&
         output6 != nullptr) {
         UINT flags = 0;
         if (SUCCEEDED(output6->CheckHardwareCompositionSupport(&flags))) {
@@ -113,8 +113,9 @@ void captureWindow(HWND window, PresentationEligibilityPreflight& result) {
 
 } // namespace
 
-PresentationEligibilityPreflight capturePresentationEligibilityPreflight(
-    std::uint64_t swapchainIdentity, void* nativeDevice, void* windowHandle) {
+PresentationEligibilityPreflight
+capturePresentationEligibilityPreflight(std::uint64_t swapchainIdentity, void* nativeDevice,
+                                        void* windowHandle) {
     PresentationEligibilityPreflight result;
     result.swapchain_identity = swapchainIdentity;
     captureWindow(static_cast<HWND>(windowHandle), result);

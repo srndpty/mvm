@@ -78,8 +78,9 @@ struct PresentationEligibilityPreflight {
 
 // swapchainIdentity は patched Qt が記録した実 IDXGISwapChain ポインタである。
 // 同一プロセス・swapchain を所有する render thread から呼ぶこと。
-PresentationEligibilityPreflight capturePresentationEligibilityPreflight(
-    std::uint64_t swapchainIdentity, void* nativeDevice, void* windowHandle);
+PresentationEligibilityPreflight
+capturePresentationEligibilityPreflight(std::uint64_t swapchainIdentity, void* nativeDevice,
+                                        void* windowHandle);
 
 } // namespace mvm::app
 #endif

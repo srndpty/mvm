@@ -63,8 +63,8 @@ foreach($run in $runs){
     # ETWはwarmupも含めて保持されているため、全phaseのPresentを分類できる。
     $events=@($raw.events|Where-Object{[long]$_.process_id-eq$targetPid}|Sort-Object {[long]$_.present_start_qpc})
     $phaseStats=[ordered]@{}
-    foreach($event in $events){
-        $qpc=[long]$event.present_start_qpc
+    foreach($ev in $events){
+        $qpc=[long]$ev.present_start_qpc
         if($qpc-lt[long]$boundaries[0].qpc){continue}
         $phase='MEASURE'
         if($qpc-lt$measureStart-or$qpc-ge$measureEnd){
@@ -78,13 +78,13 @@ foreach($run in $runs){
         }
         $stats=$phaseStats[$phase]
         $stats.count++
-        $mode=[string]$event.present_mode
+        $mode=[string]$ev.present_mode
         if($independentModes-contains$mode){$stats.independent++}
         elseif($composedModes-contains$mode){$stats.composed++}else{$stats.other++}
-        if($event.PSObject.Properties.Name-contains'attached_dwm_parent_present_start_qpc'-and
-           [long]$event.attached_dwm_parent_present_start_qpc-gt0){$stats.parent++}
-        if([string]$event.final_state-eq'Presented'){
-            $hit=@($event.displayed|Where-Object{$null-ne$_-and($_.PSObject.Properties.Name-contains'qpc')-and[long]$_.qpc-gt0})
+        if($ev.PSObject.Properties.Name-contains'attached_dwm_parent_present_start_qpc'-and
+           [long]$ev.attached_dwm_parent_present_start_qpc-gt0){$stats.parent++}
+        if([string]$ev.final_state-eq'Presented'){
+            $hit=@($ev.displayed|Where-Object{$null-ne$_-and($_.PSObject.Properties.Name-contains'qpc')-and[long]$_.qpc-gt0})
             if($hit.Count-eq0){$stats.unknown++}else{$stats.displayed++}
         }else{$stats.discarded++}
     }
