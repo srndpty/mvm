@@ -2731,11 +2731,11 @@ int cmdSoak(const bench::Args& a) {
             mvm_mlt_compose_set_trace_hook(nullptr);
             // close 後に遅れて解放されるかを見る。解放されるなら race、
             // 残り続けるなら cleanup omission である。
+            // S2-g6b: settle sample は削除した。delayed release は S2-g5 で
+            // 0/13 と確定しており (1000ms 待っても解放されない)、この待ちは
+            // render timing を歪めるだけである。poll_count と retention の
+            // 相関を見る以上、余計な待ちを入れない。
             mvm_g4::phaseLog().emplace_back("after_render_returned", mvm_g4::eventCount());
-            Sleep(250);
-            mvm_g4::phaseLog().emplace_back("settle_250ms", mvm_g4::eventCount());
-            Sleep(750);
-            mvm_g4::phaseLog().emplace_back("settle_1000ms", mvm_g4::eventCount());
             std::string t = "[";
             bool first = true;
             for (const auto& kv : mvm_g4::phaseLog()) {
