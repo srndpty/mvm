@@ -2,14 +2,13 @@
 
 #include "util/mvm_win_utf8.h"
 
-#include <windows.h>
-
 #include <array>
 #include <bcrypt.h>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
 #include <vector>
+#include <windows.h>
 
 namespace mvm::manim {
 namespace {

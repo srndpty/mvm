@@ -17,10 +17,10 @@ void check(bool condition, const std::string& message) {
 
 using mvm::gpu::buildPhysicalVBlankDomain;
 using mvm::gpu::PhysicalVBlankDomain;
-using mvm::gpu::PhysicalVBlankDomainError;
-using mvm::gpu::PhysicalVBlankDomainInput;
 using mvm::gpu::physicalVBlankDomainCanonicalReason;
+using mvm::gpu::PhysicalVBlankDomainError;
 using mvm::gpu::physicalVBlankDomainErrorName;
+using mvm::gpu::PhysicalVBlankDomainInput;
 using mvm::gpu::VBlankObservation;
 
 constexpr long long kQpcFrequency = 10000000; // 10 MHz
@@ -77,7 +77,8 @@ void goodDomain() {
     input.requiredIntentCount = 100;
     PhysicalVBlankDomain domain;
     check(buildPhysicalVBlankDomain(input, domain), "good: shadow authorityがvalidではない");
-    check(domain.shadowAuthorityError == PhysicalVBlankDomainError::None, "good: errorが残っている");
+    check(domain.shadowAuthorityError == PhysicalVBlankDomainError::None,
+          "good: errorが残っている");
     check(domain.physicalOpportunityCount == 100, "good: physical_opportunity_countが100ではない");
     check(domain.originOrdinal == kFirstOrdinal + 10, "good: origin_ordinalが不正");
     check(domain.originQpc == qpcAt(10), "good: origin_qpcが不正");

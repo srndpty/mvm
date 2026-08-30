@@ -6,39 +6,51 @@ namespace mvm::gpu {
 
 const char* physicalVBlankDomainErrorName(PhysicalVBlankDomainError error) {
     switch (error) {
-    case PhysicalVBlankDomainError::None: return "NONE";
+    case PhysicalVBlankDomainError::None:
+        return "NONE";
     case PhysicalVBlankDomainError::MeasurementWindowInvalid:
         return "PHYSICAL_VBLANK_MEASUREMENT_WINDOW_INVALID";
     case PhysicalVBlankDomainError::ObserverUnavailable:
         return "PHYSICAL_VBLANK_OBSERVER_UNAVAILABLE";
-    case PhysicalVBlankDomainError::RingOverflow: return "PHYSICAL_VBLANK_RING_OVERFLOW";
-    case PhysicalVBlankDomainError::WaitFailure: return "PHYSICAL_VBLANK_WAIT_FAILURE";
-    case PhysicalVBlankDomainError::SequenceBreak: return "PHYSICAL_VBLANK_SEQUENCE_BREAK";
-    case PhysicalVBlankDomainError::OutputOrModeChanged: return "OUTPUT_OR_MODE_CHANGED";
-    case PhysicalVBlankDomainError::PrerollTimeout: return "PHYSICAL_VBLANK_PREROLL_TIMEOUT";
+    case PhysicalVBlankDomainError::RingOverflow:
+        return "PHYSICAL_VBLANK_RING_OVERFLOW";
+    case PhysicalVBlankDomainError::WaitFailure:
+        return "PHYSICAL_VBLANK_WAIT_FAILURE";
+    case PhysicalVBlankDomainError::SequenceBreak:
+        return "PHYSICAL_VBLANK_SEQUENCE_BREAK";
+    case PhysicalVBlankDomainError::OutputOrModeChanged:
+        return "OUTPUT_OR_MODE_CHANGED";
+    case PhysicalVBlankDomainError::PrerollTimeout:
+        return "PHYSICAL_VBLANK_PREROLL_TIMEOUT";
     case PhysicalVBlankDomainError::PrerollNotBeforeStart:
         return "PHYSICAL_VBLANK_PREROLL_NOT_BEFORE_START";
     case PhysicalVBlankDomainError::BoundaryNotBracketed:
         return "PHYSICAL_VBLANK_BOUNDARY_NOT_BRACKETED";
-    case PhysicalVBlankDomainError::ObserverStall: return "PHYSICAL_VBLANK_OBSERVER_STALL";
+    case PhysicalVBlankDomainError::ObserverStall:
+        return "PHYSICAL_VBLANK_OBSERVER_STALL";
     }
     return "PHYSICAL_VBLANK_OBSERVER_STALL";
 }
 
 const char* physicalVBlankDomainCanonicalReason(PhysicalVBlankDomainError error) {
     switch (error) {
-    case PhysicalVBlankDomainError::None: return "NONE";
+    case PhysicalVBlankDomainError::None:
+        return "NONE";
     // 窓を供給するのはmeasurement lifecycle authorityであり、observerではない。
     // 供給されなかった時点でcanonical authority setから逸脱している。
-    case PhysicalVBlankDomainError::MeasurementWindowInvalid: return "RUNTIME_AUTHORITY_OVERRIDE";
+    case PhysicalVBlankDomainError::MeasurementWindowInvalid:
+        return "RUNTIME_AUTHORITY_OVERRIDE";
     case PhysicalVBlankDomainError::ObserverUnavailable:
     case PhysicalVBlankDomainError::RingOverflow:
     case PhysicalVBlankDomainError::WaitFailure:
     case PhysicalVBlankDomainError::PrerollTimeout:
     case PhysicalVBlankDomainError::PrerollNotBeforeStart:
-    case PhysicalVBlankDomainError::ObserverStall: return "PHYSICAL_VBLANK_OBSERVER_INVALID";
-    case PhysicalVBlankDomainError::SequenceBreak: return "PHYSICAL_VBLANK_SEQUENCE_BREAK";
-    case PhysicalVBlankDomainError::OutputOrModeChanged: return "OUTPUT_OR_MODE_CHANGED";
+    case PhysicalVBlankDomainError::ObserverStall:
+        return "PHYSICAL_VBLANK_OBSERVER_INVALID";
+    case PhysicalVBlankDomainError::SequenceBreak:
+        return "PHYSICAL_VBLANK_SEQUENCE_BREAK";
+    case PhysicalVBlankDomainError::OutputOrModeChanged:
+        return "OUTPUT_OR_MODE_CHANGED";
     case PhysicalVBlankDomainError::BoundaryNotBracketed:
         return "PHYSICAL_VBLANK_BOUNDARY_NOT_BRACKETED";
     }
@@ -131,8 +143,7 @@ bool buildPhysicalVBlankDomain(const PhysicalVBlankDomainInput& input, PhysicalV
         out.lastQpc = input.samples[end - 1].qpc;
     }
     // Layer 1A と Layer 1B の差。shadow出力のみ。verdictには接続しない。
-    out.intentOverhangCount =
-        std::max(0LL, out.requiredIntentCount - out.physicalOpportunityCount);
+    out.intentOverhangCount = std::max(0LL, out.requiredIntentCount - out.physicalOpportunityCount);
     out.intentSurplusCount = std::max(0LL, out.physicalOpportunityCount - out.requiredIntentCount);
 
     if (!out.boundaryBracketed)
