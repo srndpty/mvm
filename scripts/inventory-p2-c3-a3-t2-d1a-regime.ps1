@@ -60,8 +60,8 @@ foreach($spec in $specs){
     $modeCounts=@{};$displayedCount=0;$presentedCount=0;$unknownCount=0
     $independentCount=0;$composedCount=0;$otherModeCount=0
     $modeClasses=@()
-    foreach($event in $events){
-        $mode=[string]$event.present_mode
+    foreach($ev in $events){
+        $mode=[string]$ev.present_mode
         if(-not$modeCounts.ContainsKey($mode)){$modeCounts[$mode]=0}
         $modeCounts[$mode]++
         $modeClass=if($independentModes-contains$mode){'INDEPENDENT'}
@@ -71,9 +71,9 @@ foreach($spec in $specs){
             'COMPOSED'{$composedCount++}
             default{$otherModeCount++}
         }
-        $modeClasses+=[pscustomobject]@{qpc=[long]$event.present_start_qpc;class=$modeClass}
-        $presented=[string]$event.final_state-eq'Presented'
-        $displayed=@($event.displayed|Where-Object{$null-ne$_-and(Has $_ 'qpc')-and[long]$_.qpc-gt0})
+        $modeClasses+=[pscustomobject]@{qpc=[long]$ev.present_start_qpc;class=$modeClass}
+        $presented=[string]$ev.final_state-eq'Presented'
+        $displayed=@($ev.displayed|Where-Object{$null-ne$_-and(Has $_ 'qpc')-and[long]$_.qpc-gt0})
         if($presented){
             $presentedCount++
             if($displayed.Count-eq0){$unknownCount++}else{$displayedCount++}

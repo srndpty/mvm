@@ -1,4 +1,7 @@
 [CmdletBinding()]
+# RepositoryRootはnested functionのAbiVersion内でのみ使う。PSReviewUnusedParameterは
+# nested scopeの参照を追跡しないため、ここで抑止する。
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter','RepositoryRoot')]
 param(
     # historical mvm sourceのcommit-ish。
     [Parameter(Mandatory=$true)][string]$HistoricalCommit,

@@ -48,14 +48,14 @@ foreach($run in $runs){
         [long]$_.present_start_qpc-ge$start-and[long]$_.present_start_qpc-lt$end})
     if($events.Count-eq0){Fail "measurement window内にtarget Presentがありません: $rawPath"}
     $modeCounts=@{};$displayed=0;$presented=0;$unknown=0;$independent=0;$composed=0
-    foreach($event in $events){
-        $mode=[string]$event.present_mode
+    foreach($ev in $events){
+        $mode=[string]$ev.present_mode
         if(-not$modeCounts.ContainsKey($mode)){$modeCounts[$mode]=0}
         $modeCounts[$mode]++
         if($independentModes-contains$mode){$independent++}elseif($composedModes-contains$mode){$composed++}
-        if([string]$event.final_state-eq'Presented'){
+        if([string]$ev.final_state-eq'Presented'){
             $presented++
-            $hit=@($event.displayed|Where-Object{$null-ne$_-and($_.PSObject.Properties.Name-contains'qpc')-and[long]$_.qpc-gt0})
+            $hit=@($ev.displayed|Where-Object{$null-ne$_-and($_.PSObject.Properties.Name-contains'qpc')-and[long]$_.qpc-gt0})
             if($hit.Count-eq0){$unknown++}else{$displayed++}
         }
     }

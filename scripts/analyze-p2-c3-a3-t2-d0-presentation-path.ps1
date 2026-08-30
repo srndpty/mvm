@@ -42,16 +42,16 @@ foreach($spec in $RunSpec){
         DISPLAYED_PATH_UNRESOLVED=0;DISCARDED=0;UNKNOWN=0}
     $modeCounts=@{}
     $evidenceCounts=@{}
-    foreach($event in $events){
-        $mode=[string]$event.present_mode
+    foreach($ev in $events){
+        $mode=[string]$ev.present_mode
         if(-not$modeCounts.ContainsKey($mode)){$modeCounts[$mode]=0}
         $modeCounts[$mode]++
         # displayedはJSON上 [] が null になることがある。欠損を要素として扱わない。
-        $displayed=@($event.displayed|Where-Object{$null-ne$_-and
+        $displayed=@($ev.displayed|Where-Object{$null-ne$_-and
             ($_.PSObject.Properties.Name-contains'qpc')-and[long]$_.qpc-gt0})
         $hasDisplayed=$displayed.Count-gt0
-        $hasParent=$parentFieldAvailable-and[long]$event.attached_dwm_parent_present_start_qpc-gt0
-        $presented=[string]$event.final_state-eq'Presented'
+        $hasParent=$parentFieldAvailable-and[long]$ev.attached_dwm_parent_present_start_qpc-gt0
+        $presented=[string]$ev.final_state-eq'Presented'
         # 分類は後付け推測ではなくraw stateのみから行う。
         # parent fieldが無いrunでは composed と independent を区別できないため、
         # 0とみなさず DISPLAYED_PATH_UNRESOLVED とする。
@@ -65,12 +65,12 @@ foreach($spec in $RunSpec){
         if($hasDisplayed){
             # DisplayedQPCを確定させたevent経路をprovenanceとして残す。
             $evidence=@()
-            if([bool]$event.seen_in_frame_event){$evidence+='InFrame'}
-            if([bool]$event.wait_for_flip_event){$evidence+='WaitForFlip'}
-            if([bool]$event.wait_for_mpo_flip_event){$evidence+='WaitForMPOFlip'}
-            if([bool]$event.seen_win32k_events){$evidence+='Win32k'}
-            if([bool]$event.seen_dxgk_present){$evidence+='DxgkPresent'}
-            if($parentFieldAvailable-and[long]$event.dwm_parent_displayed_qpc-gt0){$evidence+='DwmParentDisplayed'}
+            if([bool]$ev.seen_in_frame_event){$evidence+='InFrame'}
+            if([bool]$ev.wait_for_flip_event){$evidence+='WaitForFlip'}
+            if([bool]$ev.wait_for_mpo_flip_event){$evidence+='WaitForMPOFlip'}
+            if([bool]$ev.seen_win32k_events){$evidence+='Win32k'}
+            if([bool]$ev.seen_dxgk_present){$evidence+='DxgkPresent'}
+            if($parentFieldAvailable-and[long]$ev.dwm_parent_displayed_qpc-gt0){$evidence+='DwmParentDisplayed'}
             $key=if($evidence.Count-eq0){'NONE'}else{$evidence -join '+'}
             $key=$key+'/'+[string]$displayed[0].frame_type
             if(-not$evidenceCounts.ContainsKey($key)){$evidenceCounts[$key]=0}
