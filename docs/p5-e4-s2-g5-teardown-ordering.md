@@ -24,7 +24,22 @@ failing run の全 13 audio iteration で、`close_returned` 以降 Event 数は
 遅延解放が起きた iteration: 0 / 13
 ```
 
-**teardown race 仮説は棄却する。**
+**delayed-release teardown race 仮説は棄却する。**
+
+棄却範囲を正確にしておく。
+
+```text
+close 後に worker が遅れて終了し、その後 Event を解放する
+  -> REFUTED (遅延解放 0/13、1000ms 待っても減らない)
+
+observable cleanup omission
+  -> ESTABLISHED (close+1s まで残り、render ごとに累積する)
+
+あらゆる種類の race
+  -> まだ完全には否定できない
+     「race の結果 cleanup path 自体を飛ばして永久 retention になる」型は
+     本測定では区別できない
+```
 
 race であれば、worker thread が close 後に終了して Event を解放するはずであり、
 `settle_250ms` か `settle_1000ms` で減少が観測されなければならない。
@@ -66,12 +81,17 @@ production/resource retention   ESTABLISHED  (変更なし)
 resource type                   Event        (変更なし)
 rate when fault active          ~1 / audio render  (変更なし)
 
-teardown race                   REFUTED
+delayed-release teardown race   REFUTED
   遅延解放 0/13。1000ms 待っても解放されない。
 
-root cause                      cleanup omission
-  consumer teardown 経路のどこかで Event が destroy されないまま残る。
-  どの object かは未特定。
+observable cleanup omission     ESTABLISHED
+  close+1s まで残り render をまたいで累積する。
+  ただし「destroy 呼び出しの単純な書き忘れ」とまでは言えない。
+  条件分岐による missed cleanup や retained subordinate object も含む。
+
+specific leaked Event object    UNKNOWN
+specific missing cleanup path   UNKNOWN
+conditional path difference     OPEN
 ```
 
 私は S2-g4 で teardown race を有力仮説として提示した。**直接計測により棄却された。**

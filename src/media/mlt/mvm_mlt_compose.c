@@ -1177,9 +1177,11 @@ int mvm_mlt_compose_render_audio(MvmComposeHandle* h, const char* out_path, int 
     /* 完了待ち。timeout を成功扱いにしない。 */
     int waited = 0;
     const int step = 20;
+    int poll_count = 0; /* S2-g6: 診断専用。判定には使わない。 */
     while (!mlt_consumer_is_stopped(consumer)) {
         Sleep(step);
         waited += step;
+        ++poll_count;
         if (waited >= timeout_ms) {
             mlt_consumer_stop(consumer);
             mlt_consumer_close(consumer);
@@ -1191,6 +1193,20 @@ int mvm_mlt_compose_render_audio(MvmComposeHandle* h, const char* out_path, int 
 
     /* S2-g5: logical stopped (is_stopped==true) と physical teardown 完了は
        別事象である。両者を別 phase として記録する。 */
+    /* S2-g6: fault-active / fault-inactive render で最初に何が違うのかを見る。
+       consumer の observable な state だけを記録する。MLT 内部へは降りない。 */
+    {
+        char marker[256];
+        mlt_properties props = MLT_CONSUMER_PROPERTIES(consumer);
+        snprintf(marker, sizeof(marker),
+                 "path poll_count=%d waited_ms=%d real_time=%d terminate_on_pause=%d "
+                 "frequency=%d channels=%d",
+                 poll_count, waited, mlt_properties_get_int(props, "real_time"),
+                 mlt_properties_get_int(props, "terminate_on_pause"),
+                 mlt_properties_get_int(props, "frequency"),
+                 mlt_properties_get_int(props, "channels"));
+        trace_phase(marker);
+    }
     trace_phase("is_stopped_true");
     mlt_consumer_stop(consumer);
     trace_phase("stop_returned");
