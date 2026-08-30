@@ -1,4 +1,5 @@
 // F3-C3-A3-T1: target workloadを変更せず、外部window状態だけを固定・記録する。
+#include <windows.h>
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -10,7 +11,6 @@
 #include <string>
 #include <thread>
 #include <vector>
-#include <windows.h>
 
 namespace {
 

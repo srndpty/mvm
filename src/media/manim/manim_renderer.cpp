@@ -2,6 +2,7 @@
 
 #include "util/mvm_win_utf8.h"
 
+#include <windows.h>
 #include <climits>
 #include <cwchar>
 #include <fstream>
@@ -9,7 +10,6 @@
 #include <sstream>
 #include <system_error>
 #include <vector>
-#include <windows.h>
 
 namespace mvm::manim {
 namespace {

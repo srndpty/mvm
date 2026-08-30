@@ -1,9 +1,9 @@
 #include "media/audio_preview/audio_decode_worker.h"
 
+#include <windows.h>
 #include <algorithm>
 #include <chrono>
 #include <cstring>
-#include <windows.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>

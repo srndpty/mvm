@@ -1,9 +1,9 @@
 #include "app/preview/presentation_eligibility_preflight.h"
 
+#include <windows.h>
 #include <d3d11.h>
 #include <dwmapi.h>
 #include <dxgi1_6.h>
-#include <windows.h>
 
 namespace mvm::app {
 namespace {

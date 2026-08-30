@@ -3,10 +3,10 @@
 #include "../../util/mvm_win_utf8.h"
 #include "mvm_mlt_runtime.h"
 
+#include <windows.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
 
 #include <framework/mlt.h>
 

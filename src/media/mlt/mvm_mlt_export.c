@@ -4,10 +4,10 @@
 #include "mvm_mlt_probe.h"
 #include "mvm_mlt_runtime.h"
 
+#include <windows.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
-#include <windows.h>
 
 #include <framework/mlt.h>
 

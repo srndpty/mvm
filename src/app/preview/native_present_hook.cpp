@@ -1,8 +1,8 @@
 #include "app/preview/native_present_hook.h"
 
+#include <windows.h>
 #include <algorithm>
 #include <bit>
-#include <windows.h>
 
 namespace mvm::app {
 namespace {

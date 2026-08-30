@@ -2,6 +2,7 @@
 #define INITGUID
 #include "media/audio_preview/wasapi_audio_sink.h"
 
+#include <windows.h>
 #include <algorithm>
 #include <audioclient.h>
 #include <avrt.h>
@@ -11,7 +12,6 @@
 #include <functiondiscoverykeys_devpkey.h>
 #include <initguid.h>
 #include <mmdeviceapi.h>
-#include <windows.h>
 
 extern "C" {
 #include <libavutil/channel_layout.h>
