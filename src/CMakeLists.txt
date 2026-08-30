@@ -18,6 +18,15 @@ add_library(mvm_util STATIC
 target_include_directories(mvm_util PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 add_library(mvm::util ALIAS mvm_util)
 
+# --- Manim external renderer ------------------------------------------------
+# Python を埋め込まず、明示された Manim CLI を外部プロセスとして実行する。
+add_library(mvm_manim STATIC
+    media/manim/manim_renderer.cpp
+)
+target_include_directories(mvm_manim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_manim PUBLIC mvm::util PRIVATE mvm::warnings)
+add_library(mvm::manim ALIAS mvm_manim)
+
 # --- Phase 5 / P5-B: PreviewEngine product foundation -----------------------
 # public boundaryは標準C++の値型だけを保ち、private実装でGPU backendへ接続する。
 add_library(mvm_preview_engine STATIC

@@ -13,6 +13,28 @@ add_executable(mvm_bench
     harness/mvm_bench_proxy.cpp
 )
 
+# --- M0: Manim external renderer -------------------------------------------
+add_executable(mvm_fake_manim_cli harness/fake_manim_cli.cpp)
+target_link_libraries(mvm_fake_manim_cli PRIVATE mvm::util mvm::warnings)
+
+add_executable(mvm_test_manim_renderer harness/test_manim_renderer.cpp)
+target_link_libraries(mvm_test_manim_renderer PRIVATE mvm::manim mvm::util mvm::warnings)
+add_dependencies(mvm_test_manim_renderer mvm_fake_manim_cli)
+add_test(NAME m0_manim_renderer_focused
+    COMMAND mvm_test_manim_renderer
+        "$<TARGET_FILE:mvm_fake_manim_cli>"
+        "${CMAKE_CURRENT_BINARY_DIR}/m0-manim-unit")
+set_tests_properties(m0_manim_renderer_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+
+# 実 Manim の導入は build の必須条件にしない。検証時に executable の絶対パスを
+# 明示してこの smoke を実行する。
+add_executable(mvm_manim_smoke harness/mvm_manim_smoke.cpp)
+target_link_libraries(mvm_manim_smoke PRIVATE
+    mvm::manim mvm::mlt mvm::util mvm::warnings)
+target_compile_definitions(mvm_manim_smoke PRIVATE ${MVM_MLT_PATH_DEFS})
+
 # ScrubCoalescer の純粋単体テスト。MLT にも Qt にも依存しない。
 add_executable(mvm_test_scrub_coalescer harness/test_scrub_coalescer.cpp)
 target_include_directories(mvm_test_scrub_coalescer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/harness)
