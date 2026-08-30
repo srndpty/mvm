@@ -10,6 +10,16 @@ target_include_directories(mvm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_core PRIVATE mvm::warnings)
 add_library(mvm::core ALIAS mvm_core)
 
+# --- minimal product Project Model -----------------------------------------
+# Qt / MLT / Manim に依存しない純粋な値型と schema 固定 JSON のみ。
+add_library(mvm_project STATIC
+    project/project.cpp
+    project/project_json.cpp
+)
+target_include_directories(mvm_project PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_project PRIVATE mvm::warnings)
+add_library(mvm::project ALIAS mvm_project)
+
 # --- Windows / UTF-8 ヘルパ -------------------------------------------------
 # Phase 0 スパイク用の小さなヘルパ。製品用の platform 層ではない。
 add_library(mvm_util STATIC
@@ -21,10 +31,11 @@ add_library(mvm::util ALIAS mvm_util)
 # --- Manim external renderer ------------------------------------------------
 # Python を埋め込まず、明示された Manim CLI を外部プロセスとして実行する。
 add_library(mvm_manim STATIC
+    media/manim/manim_fingerprint.cpp
     media/manim/manim_renderer.cpp
 )
 target_include_directories(mvm_manim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(mvm_manim PUBLIC mvm::util PRIVATE mvm::warnings)
+target_link_libraries(mvm_manim PUBLIC mvm::util PRIVATE mvm::warnings bcrypt ole32)
 add_library(mvm::manim ALIAS mvm_manim)
 
 # --- Phase 5 / P5-B: PreviewEngine product foundation -----------------------

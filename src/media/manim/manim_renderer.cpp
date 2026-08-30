@@ -2,9 +2,10 @@
 
 #include "util/mvm_win_utf8.h"
 
-#include <atomic>
 #include <climits>
+#include <cwchar>
 #include <fstream>
+#include <objbase.h>
 #include <sstream>
 #include <system_error>
 #include <vector>
@@ -119,10 +120,28 @@ bool validateRequest(const ManimRenderRequest& request, ManimRenderResult& resul
 
 std::filesystem::path createJobDirectory(const std::filesystem::path& outputDirectory,
                                          ManimRenderResult& result) {
-    static std::atomic<unsigned long> counter{0};
-    const auto sequence = counter.fetch_add(1, std::memory_order_relaxed);
-    const auto name =
-        L"mvm-manim-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(sequence);
+    GUID invocationId{};
+    const HRESULT guidResult = CoCreateGuid(&invocationId);
+    if (FAILED(guidResult)) {
+        appendError(result, "Manim invocation GUID を生成できません (HRESULT=" +
+                                std::to_string(static_cast<unsigned long>(guidResult)) + ")");
+        return {};
+    }
+
+    wchar_t guidText[33]{};
+    const int written = std::swprintf(
+        guidText, 33, L"%08lx%04x%04x%02x%02x%02x%02x%02x%02x%02x%02x", invocationId.Data1,
+        static_cast<unsigned>(invocationId.Data2), static_cast<unsigned>(invocationId.Data3),
+        static_cast<unsigned>(invocationId.Data4[0]), static_cast<unsigned>(invocationId.Data4[1]),
+        static_cast<unsigned>(invocationId.Data4[2]), static_cast<unsigned>(invocationId.Data4[3]),
+        static_cast<unsigned>(invocationId.Data4[4]), static_cast<unsigned>(invocationId.Data4[5]),
+        static_cast<unsigned>(invocationId.Data4[6]), static_cast<unsigned>(invocationId.Data4[7]));
+    if (written != 32) {
+        appendError(result, "Manim invocation GUID を文字列化できません");
+        return {};
+    }
+
+    const auto name = L"mvm-manim-" + std::to_wstring(GetCurrentProcessId()) + L"-" + guidText;
     const auto jobDirectory = std::filesystem::absolute(outputDirectory) / name;
 
     std::error_code error;

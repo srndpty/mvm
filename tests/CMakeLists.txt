@@ -35,6 +35,20 @@ target_link_libraries(mvm_manim_smoke PRIVATE
     mvm::manim mvm::mlt mvm::util mvm::warnings)
 target_compile_definitions(mvm_manim_smoke PRIVATE ${MVM_MLT_PATH_DEFS})
 
+add_executable(mvm_test_project_manim harness/test_project_manim.cpp)
+target_link_libraries(mvm_test_project_manim PRIVATE
+    mvm::project mvm::util mvm::warnings)
+add_test(NAME m1_project_manim_focused
+    COMMAND mvm_test_project_manim "${CMAKE_CURRENT_BINARY_DIR}/m1-project-unit")
+set_tests_properties(m1_project_manim_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+
+add_executable(mvm_manim_project_smoke harness/mvm_manim_project_smoke.cpp)
+target_link_libraries(mvm_manim_project_smoke PRIVATE
+    mvm::project mvm::manim mvm::mlt mvm::util mvm::warnings)
+target_compile_definitions(mvm_manim_project_smoke PRIVATE ${MVM_MLT_PATH_DEFS})
+
 # ScrubCoalescer の純粋単体テスト。MLT にも Qt にも依存しない。
 add_executable(mvm_test_scrub_coalescer harness/test_scrub_coalescer.cpp)
 target_include_directories(mvm_test_scrub_coalescer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/harness)

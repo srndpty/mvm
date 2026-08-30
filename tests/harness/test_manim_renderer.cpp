@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <regex>
 #include <string>
 
 namespace {
@@ -59,6 +60,18 @@ void testGood(const std::filesystem::path& executable, const std::filesystem::pa
     check(result.stdoutText.find("fake Manim 標準出力") != std::string::npos, "stdout を捕捉する");
     check(result.stderrText.find("fake Manim 標準エラー") != std::string::npos,
           "stderr を捕捉する");
+
+    const auto second = mvm::manim::renderManim(
+        makeRequest(executable, script, root / L"good-output", "GoodScene"));
+    check(second.success, "同じ process 内の2回目 invocation が成功する");
+
+    const auto jobName =
+        result.outputVideoPath.parent_path().parent_path().parent_path().filename();
+    const auto secondJobName =
+        second.outputVideoPath.parent_path().parent_path().parent_path().filename();
+    const std::wregex jobPattern(LR"(mvm-manim-[0-9]+-[0-9a-f]{32})");
+    check(std::regex_match(jobName.wstring(), jobPattern), "job directory が PID+GUID 形式である");
+    check(jobName != secondJobName, "invocation ごとに異なる GUID directory を使う");
 }
 
 void testNonZero(const std::filesystem::path& executable, const std::filesystem::path& root) {
