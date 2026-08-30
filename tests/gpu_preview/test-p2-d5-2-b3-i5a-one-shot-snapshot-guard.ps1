@@ -15,6 +15,15 @@ param(
 )
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
+# S2-h2: mutation match を physical line ending から独立させる。
+# .cpp/.h は repo policy 上 LF、.ps1 は CRLF である (.gitattributes)。
+# here-string の $From/$To は .ps1 の物理改行を持つため、そのままでは LF の
+# source と一致しない。source と pattern の両方を LF domain へ射影してから
+# match する。assertion semantics は変更しない。checkout 表現への依存を外すだけ。
+function Normalize-Lf([string]$Text) {
+    if ($null -eq $Text) { return $Text }
+    return $Text -replace "`r`n", "`n"
+}
 
 $relatives=@(
     'src/app/preview/native_present_hook_abi.h',
@@ -31,6 +40,8 @@ $mutationRoot=Join-Path $Directory ("process-$PID-" + [guid]::NewGuid().ToString
 $sources=@{}
 foreach($relative in $relatives){$sources[$relative]=Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $SourceRoot $relative)}
 function Edit-Source([string]$Relative,[string]$From,[string]$To){
+    $From=Normalize-Lf $From
+    $To=Normalize-Lf $To
     $sourceText=$sources[$Relative]
     if($sourceText-notmatch[regex]::Escape($From)){throw "変異対象がありません: $Relative / $From"}
     $sources[$Relative]=$sourceText.Replace($From,$To)
