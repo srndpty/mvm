@@ -79,6 +79,61 @@ set_tests_properties(m6b_timeline_playback_focused PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 120)
 
+# --- M7a-P0: fixed-effect backend primitive verification -------------------
+# 製品Project/Preview/Exportへ配線する前に、実画素の意味論だけを固定する。
+add_executable(mvm_test_m7a_p0_mlt harness/test_m7a_p0_mlt.cpp)
+target_link_libraries(mvm_test_m7a_p0_mlt PRIVATE
+    mvm::core mvm::mlt mvm::util mvm::warnings)
+target_compile_definitions(mvm_test_m7a_p0_mlt PRIVATE ${MVM_MLT_PATH_DEFS})
+add_test(NAME m7a_p0_mlt_primitives
+    COMMAND mvm_test_m7a_p0_mlt
+        "${CMAKE_CURRENT_BINARY_DIR}/m7a-p0-mlt"
+        "${MVM_UCRT64_ROOT}/bin/ffmpeg.exe"
+        "${CMAKE_CURRENT_BINARY_DIR}/m7a-p0-mlt.json")
+set_tests_properties(m7a_p0_mlt_primitives PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS m7a-p0
+    TIMEOUT 600)
+
+add_test(NAME m7a_p0_mlt_zero_sample_negative
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+            -ExpectExit 7 -Exe "$<TARGET_FILE:mvm_test_m7a_p0_mlt>"
+            -ChildArgs "|--negative-empty")
+set_tests_properties(m7a_p0_mlt_zero_sample_negative PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS m7a-p0
+    TIMEOUT 120)
+
+add_executable(mvm_test_m7a_p0_gpu gpu_preview/test_m7a_p0_gpu.cpp)
+target_link_libraries(mvm_test_m7a_p0_gpu PRIVATE
+    mvm::core mvm::gpu_preview mvm::warnings)
+add_test(NAME m7a_p0_gpu_primitives
+    COMMAND mvm_test_m7a_p0_gpu "${CMAKE_CURRENT_BINARY_DIR}/m7a-p0-gpu.json")
+set_tests_properties(m7a_p0_gpu_primitives PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS m7a-p0
+    TIMEOUT 120)
+
+add_test(NAME m7a_p0_gpu_zero_sample_negative
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+            -ExpectExit 7 -Exe "$<TARGET_FILE:mvm_test_m7a_p0_gpu>"
+            -ChildArgs "|--negative-empty")
+set_tests_properties(m7a_p0_gpu_zero_sample_negative PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS m7a-p0
+    TIMEOUT 120)
+
+add_test(NAME m7a_p0_summary_contract
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/summarize-m7a-p0.ps1"
+            -MltJson "${CMAKE_CURRENT_BINARY_DIR}/m7a-p0-mlt.json"
+            -GpuJson "${CMAKE_CURRENT_BINARY_DIR}/m7a-p0-gpu.json"
+            -OutJson "${CMAKE_CURRENT_BINARY_DIR}/m7a-p0-summary.json")
+set_tests_properties(m7a_p0_summary_contract PROPERTIES
+    DEPENDS "m7a_p0_mlt_primitives;m7a_p0_gpu_primitives"
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS m7a-p0
+    TIMEOUT 120)
+
 add_executable(mvm_manim_project_smoke harness/mvm_manim_project_smoke.cpp)
 target_link_libraries(mvm_manim_project_smoke PRIVATE
     mvm::project mvm::manim mvm::mlt mvm::util mvm::warnings)
