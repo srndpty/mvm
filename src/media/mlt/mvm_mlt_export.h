@@ -26,6 +26,10 @@ extern "C" {
 
 typedef struct {
     const char* path; /* UTF-8。実在する動画ファイル */
+    long long source_fps_num;
+    long long source_fps_den;
+    long long source_in_frame;  /* inclusive、素材固有 frame domain */
+    long long source_out_frame; /* exclusive、素材固有 frame domain */
 } MvmExportClip;
 
 typedef struct {
@@ -47,6 +51,15 @@ typedef struct {
     int fps_num;
     int fps_den;
 } MvmExportResult;
+
+/* 素材固有の frame 境界を MLT producer profile の frame 境界へ変換する。
+ * Project timeline 変換とは別の意味論を持つため、Project helper は流用しない。 */
+int mvm_source_boundary_to_producer_boundary(long long source_frame,
+                                             long long source_fps_num,
+                                             long long source_fps_den,
+                                             int producer_fps_num,
+                                             int producer_fps_den,
+                                             long long* out_frame);
 
 /*
  * clips を順に連結して out_path へ H.264 / MP4 で書き出す。

@@ -6,12 +6,67 @@
 
 #include <windows.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
 #include <framework/mlt.h>
 
 #define MVM_EXPORT_MAX_CLIPS 64
+
+static uint64_t gcd_u64(uint64_t left, uint64_t right) {
+    while (right != 0) {
+        uint64_t remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    return left;
+}
+
+static int checked_mul_u64(uint64_t left, uint64_t right, uint64_t* out) {
+    if (left != 0 && right > UINT64_MAX / left)
+        return 0;
+    *out = left * right;
+    return 1;
+}
+
+int mvm_source_boundary_to_producer_boundary(long long source_frame,
+                                             long long source_fps_num,
+                                             long long source_fps_den,
+                                             int producer_fps_num,
+                                             int producer_fps_den,
+                                             long long* out_frame) {
+    if (!out_frame || source_frame < 0 || source_fps_num <= 0 || source_fps_den <= 0 ||
+        producer_fps_num <= 0 || producer_fps_den <= 0)
+        return 1;
+    uint64_t factors[3] = {(uint64_t)source_frame, (uint64_t)producer_fps_num,
+                           (uint64_t)source_fps_den};
+    uint64_t divisors[2] = {(uint64_t)producer_fps_den, (uint64_t)source_fps_num};
+    for (int d = 0; d < 2; ++d) {
+        for (int f = 0; f < 3; ++f) {
+            uint64_t common = gcd_u64(factors[f], divisors[d]);
+            factors[f] /= common;
+            divisors[d] /= common;
+        }
+    }
+    uint64_t numerator = 1;
+    uint64_t denominator = 1;
+    for (int i = 0; i < 3; ++i) {
+        if (!checked_mul_u64(numerator, factors[i], &numerator))
+            return 1;
+    }
+    for (int i = 0; i < 2; ++i) {
+        if (!checked_mul_u64(denominator, divisors[i], &denominator) || denominator == 0)
+            return 1;
+    }
+    uint64_t converted = numerator / denominator;
+    if (numerator % denominator != 0)
+        ++converted;
+    if (converted > INT64_MAX)
+        return 1;
+    *out_frame = (long long)converted;
+    return 0;
+}
 
 static void set_err(char* err, size_t n, const char* fmt, ...) {
     if (!err || !n)
@@ -106,6 +161,12 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
             set_err(err, err_size, "clip %d のファイルがありません: %s", i, clips[i].path);
             return 1;
         }
+        if (clips[i].source_fps_num <= 0 || clips[i].source_fps_den <= 0 ||
+            clips[i].source_in_frame < 0 ||
+            clips[i].source_out_frame <= clips[i].source_in_frame) {
+            set_err(err, err_size, "clip %d の source range または FPS が不正です", i);
+            return 1;
+        }
     }
 
     /* --- profile ----------------------------------------------------------
@@ -171,8 +232,27 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
             goto fail;
         }
 
-        /* 全長をそのまま追加する。M4 はトリムしない。 */
-        if (mlt_playlist_append(playlist, p) != 0) {
+        long long producer_in = 0;
+        long long producer_out_exclusive = 0;
+        if (mvm_source_boundary_to_producer_boundary(
+                clips[i].source_in_frame, clips[i].source_fps_num, clips[i].source_fps_den,
+                spec->fps_num, spec->fps_den, &producer_in) != 0 ||
+            mvm_source_boundary_to_producer_boundary(
+                clips[i].source_out_frame, clips[i].source_fps_num, clips[i].source_fps_den,
+                spec->fps_num, spec->fps_den, &producer_out_exclusive) != 0 ||
+            producer_out_exclusive <= producer_in) {
+            set_err(err, err_size, "clip %d の producer frame range を変換できません", i);
+            goto fail;
+        }
+        const long long playtime = (long long)mlt_producer_get_playtime(p);
+        if (producer_out_exclusive > playtime) {
+            set_err(err, err_size,
+                    "clip %d の trim range が素材尺を超えています: out=%lld length=%lld", i,
+                    producer_out_exclusive, playtime);
+            goto fail;
+        }
+        if (mlt_playlist_append_io(playlist, p, (mlt_position)producer_in,
+                                   (mlt_position)(producer_out_exclusive - 1)) != 0) {
             set_err(err, err_size, "clip %d を playlist へ追加できません: %s", i, clips[i].path);
             goto fail;
         }

@@ -30,7 +30,8 @@ std::filesystem::path fromUtf8(const char* text) {
 mvm::project::TimelineClip
 clip(const char* name,
      mvm::project::TimelineClipKind kind = mvm::project::TimelineClipKind::Video) {
-    return {kind, std::filesystem::path(name) += ".mp4", name};
+    return {kind, std::filesystem::path(name) += ".mp4", name, std::string("id-") + name,
+            60, 1, 300, 0, 300, 0};
 }
 
 mvm::project::Project threeClips() {
@@ -97,11 +98,13 @@ void testManimPlacement() {
     asset.generatedVideoPath = "scene.mp4";
     project.manimAssets.push_back(asset);
 
-    const auto placed = mvm::project::appendManimTimelineClip(project, project.manimAssets.front());
+    const auto placed = mvm::project::appendManimTimelineClip(
+        project, project.manimAssets.front(), "id-manim", 60, 1, 300);
     check(placed.success && placed.selectedIndex == 1, "Manim clip を末尾へ配置できません");
     check(project.timelineClips.back().kind == mvm::project::TimelineClipKind::Manim,
           "配置した clip が Manim ではありません");
-    check(!mvm::project::appendManimTimelineClip(project, project.manimAssets.front()).success,
+    check(!mvm::project::appendManimTimelineClip(project, project.manimAssets.front(),
+                                                 "id-manim-2", 60, 1, 300).success,
           "同じ Manim asset の重複配置を拒否しません");
 
     const auto deleted = mvm::project::deleteTimelineClip(project, 1);

@@ -1,6 +1,7 @@
 #ifndef MVM_PROJECT_PROJECT_H
 #define MVM_PROJECT_PROJECT_H
 
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -17,20 +18,27 @@ struct ManimAsset {
     std::string sourceFingerprint;
 };
 
-// M4: timeline に並ぶ 1 clip。順序だけを持ち、開始時刻・トラック・トリムは持たない。
 enum class TimelineClipKind { Video, Manim };
 
 struct TimelineClip {
     TimelineClipKind kind = TimelineClipKind::Video;
     std::filesystem::path mediaPath; // 解決済みの実ファイル
     std::string name;                // UI 表示名
+    std::string id;                  // Project 内で一意な永続 ID
+    std::int64_t sourceFpsNum = 0;
+    std::int64_t sourceFpsDen = 1;
+    std::int64_t sourceFrameCount = 0;
+    std::int64_t sourceInFrame = 0;  // inclusive、素材固有 frame domain
+    std::int64_t sourceOutFrame = 0; // exclusive、素材固有 frame domain
+    std::int64_t timelineStartFrame = 0; // Project timebase
     bool operator==(const TimelineClip&) const = default;
 };
 
 struct Project {
-    int schemaVersion = 1;
+    int schemaVersion = 2;
+    std::int64_t timelineFpsNum = 60;
+    std::int64_t timelineFpsDen = 1;
     std::vector<ManimAsset> manimAssets;
-    // 並び順がそのまま再生順になる。M4 では [通常 video][Manim] の 2 clip を想定する。
     std::vector<TimelineClip> timelineClips;
 };
 

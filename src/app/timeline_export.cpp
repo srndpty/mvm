@@ -1,6 +1,7 @@
 #include "app/timeline_export.h"
 
 #include "media/mlt/mvm_mlt_export.h"
+#include "project/timeline_edit.h"
 
 #include <system_error>
 #include <vector>
@@ -25,6 +26,11 @@ TimelineExportResult exportTimeline(const project::Project& project,
     }
     if (project.timelineClips.empty()) {
         result.error = "timeline に clip がありません";
+        return result;
+    }
+    const auto timeline = project::validateTimeline(project);
+    if (!timeline.success) {
+        result.error = timeline.error;
         return result;
     }
 
@@ -55,8 +61,12 @@ TimelineExportResult exportTimeline(const project::Project& project,
 
     std::vector<MvmExportClip> clips;
     clips.reserve(clipPaths.size());
-    for (const auto& path : clipPaths)
-        clips.push_back(MvmExportClip{path.c_str()});
+    for (std::size_t index = 0; index < clipPaths.size(); ++index) {
+        const auto& clip = project.timelineClips[index];
+        clips.push_back(MvmExportClip{clipPaths[index].c_str(), clip.sourceFpsNum,
+                                      clip.sourceFpsDen, clip.sourceInFrame,
+                                      clip.sourceOutFrame});
+    }
 
     const MvmExportSpec spec{
         .width = request.width,

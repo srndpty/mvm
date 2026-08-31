@@ -1,4 +1,5 @@
 #include "project/project_json.h"
+#include "project/timeline_edit.h"
 
 #include <algorithm>
 #include <cctype>
@@ -10,7 +11,7 @@
 namespace mvm::project {
 namespace {
 
-constexpr int kSchemaVersion = 1;
+constexpr int kSchemaVersion = 2;
 
 std::string pathToUtf8(const std::filesystem::path& path) {
     const auto text = path.generic_u8string();
@@ -148,6 +149,8 @@ public:
 
     bool parse(Project& project, std::string& error) {
         bool hasSchema = false;
+        bool hasTimelineFpsNum = false;
+        bool hasTimelineFpsDen = false;
         bool hasAssets = false;
         bool hasClips = false;
         if (!consume('{'))
@@ -162,6 +165,14 @@ public:
                     if (hasSchema || !parseInteger(project.schemaVersion))
                         return failAndFinish("schema_version が重複または不正です", error);
                     hasSchema = true;
+                } else if (key == "timeline_fps_num") {
+                    if (hasTimelineFpsNum || !parseInteger64(project.timelineFpsNum))
+                        return failAndFinish("timeline_fps_num が重複または不正です", error);
+                    hasTimelineFpsNum = true;
+                } else if (key == "timeline_fps_den") {
+                    if (hasTimelineFpsDen || !parseInteger64(project.timelineFpsDen))
+                        return failAndFinish("timeline_fps_den が重複または不正です", error);
+                    hasTimelineFpsDen = true;
                 } else if (key == "manim_assets") {
                     if (hasAssets || !parseAssets(project.manimAssets))
                         return failAndFinish("manim_assets が重複または不正です", error);
@@ -184,12 +195,14 @@ public:
         skipWhitespace();
         if (position_ != text_.size())
             return failAndFinish("Project JSON の末尾に余分な値があります", error);
-        if (!hasSchema || !hasAssets)
-            return failAndFinish("schema_version または manim_assets がありません", error);
-        // timeline_clips は additive な optional field である。key が無い場合は
-        // 「clip が 1 本も無い timeline」を意味する (schema migration は行わない)。
+        if (!hasSchema || !hasTimelineFpsNum || !hasTimelineFpsDen || !hasAssets || !hasClips)
+            return failAndFinish("Project schema 2 の必須 field がありません", error);
         if (project.schemaVersion != kSchemaVersion)
-            return failAndFinish("対応していない Project schema_version です", error);
+            return failAndFinish("schema_version 1 は非対応です。schema 2 Projectを作成してください",
+                                 error);
+        const auto timeline = validateTimeline(project);
+        if (!timeline.success)
+            return failAndFinish(timeline.error, error);
         error.clear();
         return true;
     }
@@ -348,6 +361,25 @@ private:
         return true;
     }
 
+    bool parseInteger64(std::int64_t& value) {
+        skipWhitespace();
+        const std::size_t start = position_;
+        if (position_ < text_.size() && text_[position_] == '-')
+            ++position_;
+        if (position_ >= text_.size() ||
+            !std::isdigit(static_cast<unsigned char>(text_[position_])))
+            return fail("JSON integer が不正です");
+        while (position_ < text_.size() &&
+               std::isdigit(static_cast<unsigned char>(text_[position_])))
+            ++position_;
+        try {
+            value = std::stoll(text_.substr(start, position_ - start));
+        } catch (...) {
+            return fail("JSON integer が範囲外です");
+        }
+        return true;
+    }
+
     bool parseState(const std::string& text, ManimGenerationState& state) {
         if (text == "NotGenerated")
             state = ManimGenerationState::NotGenerated;
@@ -455,6 +487,13 @@ private:
         bool hasKind = false;
         bool hasMedia = false;
         bool hasName = false;
+        bool hasId = false;
+        bool hasSourceFpsNum = false;
+        bool hasSourceFpsDen = false;
+        bool hasSourceFrameCount = false;
+        bool hasSourceIn = false;
+        bool hasSourceOut = false;
+        bool hasTimelineStart = false;
         std::string kind;
         std::string media;
 
@@ -478,6 +517,34 @@ private:
                     if (hasName || !parseString(clip.name))
                         return fail("timeline clip の name が重複または不正です");
                     hasName = true;
+                } else if (key == "id") {
+                    if (hasId || !parseString(clip.id))
+                        return fail("timeline clip の id が重複または不正です");
+                    hasId = true;
+                } else if (key == "source_fps_num") {
+                    if (hasSourceFpsNum || !parseInteger64(clip.sourceFpsNum))
+                        return fail("timeline clip の source_fps_num が重複または不正です");
+                    hasSourceFpsNum = true;
+                } else if (key == "source_fps_den") {
+                    if (hasSourceFpsDen || !parseInteger64(clip.sourceFpsDen))
+                        return fail("timeline clip の source_fps_den が重複または不正です");
+                    hasSourceFpsDen = true;
+                } else if (key == "source_frame_count") {
+                    if (hasSourceFrameCount || !parseInteger64(clip.sourceFrameCount))
+                        return fail("timeline clip の source_frame_count が重複または不正です");
+                    hasSourceFrameCount = true;
+                } else if (key == "source_in_frame") {
+                    if (hasSourceIn || !parseInteger64(clip.sourceInFrame))
+                        return fail("timeline clip の source_in_frame が重複または不正です");
+                    hasSourceIn = true;
+                } else if (key == "source_out_frame") {
+                    if (hasSourceOut || !parseInteger64(clip.sourceOutFrame))
+                        return fail("timeline clip の source_out_frame が重複または不正です");
+                    hasSourceOut = true;
+                } else if (key == "timeline_start_frame") {
+                    if (hasTimelineStart || !parseInteger64(clip.timelineStartFrame))
+                        return fail("timeline clip の timeline_start_frame が重複または不正です");
+                    hasTimelineStart = true;
                 } else if (!skipValue()) {
                     return false;
                 }
@@ -489,7 +556,9 @@ private:
         }
         if (!consume('}'))
             return false;
-        if (!hasKind || !hasMedia || !hasName)
+        if (!hasKind || !hasMedia || !hasName || !hasId || !hasSourceFpsNum ||
+            !hasSourceFpsDen || !hasSourceFrameCount || !hasSourceIn || !hasSourceOut ||
+            !hasTimelineStart)
             return fail("timeline clip の必須 field がありません");
         if (media.empty())
             return fail("timeline clip の media_path が空です");
@@ -573,6 +642,11 @@ ProjectIoResult saveProjectJson(const Project& project, const std::filesystem::p
         result.error = "保存できない Project schema_version です";
         return result;
     }
+    const auto timeline = validateTimeline(project);
+    if (!timeline.success) {
+        result.error = timeline.error;
+        return result;
+    }
 
     std::error_code pathError;
     const auto absoluteProjectPath = std::filesystem::absolute(projectPath, pathError);
@@ -588,7 +662,10 @@ ProjectIoResult saveProjectJson(const Project& project, const std::filesystem::p
     }
 
     std::ostringstream json;
-    json << "{\n  \"schema_version\": 1,\n  \"manim_assets\": [";
+    json << "{\n  \"schema_version\": 2,\n"
+         << "  \"timeline_fps_num\": " << project.timelineFpsNum << ",\n"
+         << "  \"timeline_fps_den\": " << project.timelineFpsDen << ",\n"
+         << "  \"manim_assets\": [";
     for (std::size_t index = 0; index < project.manimAssets.size(); ++index) {
         const auto& asset = project.manimAssets[index];
         std::string script;
@@ -637,7 +714,14 @@ ProjectIoResult saveProjectJson(const Project& project, const std::filesystem::p
              << "      \"kind\": \"" << kindName << "\",\n"
              << "      \"media_path\": \""
              << escapeJson(persistedSourcePath(clip.mediaPath, projectDirectory)) << "\",\n"
-             << "      \"name\": \"" << escapeJson(clip.name) << "\"\n"
+             << "      \"name\": \"" << escapeJson(clip.name) << "\",\n"
+             << "      \"id\": \"" << escapeJson(clip.id) << "\",\n"
+             << "      \"source_fps_num\": " << clip.sourceFpsNum << ",\n"
+             << "      \"source_fps_den\": " << clip.sourceFpsDen << ",\n"
+             << "      \"source_frame_count\": " << clip.sourceFrameCount << ",\n"
+             << "      \"source_in_frame\": " << clip.sourceInFrame << ",\n"
+             << "      \"source_out_frame\": " << clip.sourceOutFrame << ",\n"
+             << "      \"timeline_start_frame\": " << clip.timelineStartFrame << "\n"
              << "    }";
     }
     if (!project.timelineClips.empty())

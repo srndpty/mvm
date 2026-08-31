@@ -8,6 +8,7 @@
 #include <optional>
 
 #include <QObject>
+#include <QAbstractItemModel>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
@@ -16,6 +17,7 @@
 namespace mvm::app {
 
 class PreviewEngineRhiItem;
+class TimelineClipModel;
 
 class MvmController final : public QObject {
     Q_OBJECT
@@ -32,8 +34,12 @@ class MvmController final : public QObject {
     Q_PROPERTY(QString manimSceneName READ manimSceneName NOTIFY stateChanged)
     Q_PROPERTY(QString manimStateText READ manimStateText NOTIFY stateChanged)
     Q_PROPERTY(QStringList clipNames READ clipNames NOTIFY stateChanged)
+    Q_PROPERTY(QAbstractItemModel* timelineModel READ timelineModel CONSTANT)
     Q_PROPERTY(int clipCount READ clipCount NOTIFY stateChanged)
     Q_PROPERTY(int currentClipIndex READ currentClipIndex NOTIFY stateChanged)
+    Q_PROPERTY(qint64 playheadFrame READ playheadFrame NOTIFY stateChanged)
+    Q_PROPERTY(qint64 totalTimelineFrames READ totalTimelineFrames NOTIFY stateChanged)
+    Q_PROPERTY(QString currentTimeText READ currentTimeText NOTIFY stateChanged)
     Q_PROPERTY(bool canExport READ canExport NOTIFY stateChanged)
 
 public:
@@ -68,10 +74,17 @@ public:
     QString manimStateText() const { return manimStateText_; }
 
     QStringList clipNames() const;
+    QAbstractItemModel* timelineModel() const;
 
     int clipCount() const { return static_cast<int>(project_.timelineClips.size()); }
 
     int currentClipIndex() const { return currentClipIndex_; }
+
+    qint64 playheadFrame() const { return playheadFrame_; }
+
+    qint64 totalTimelineFrames() const { return totalTimelineFrames_; }
+
+    QString currentTimeText() const;
 
     bool canExport() const { return !project_.timelineClips.empty() && !busy_; }
 
@@ -80,6 +93,10 @@ public:
     Q_INVOKABLE bool addManimToTimeline();
     Q_INVOKABLE bool addVideoClip(const QUrl& fileUrl);
     Q_INVOKABLE bool selectClip(int index);
+    Q_INVOKABLE bool seekTimelineFrame(qint64 frame);
+    Q_INVOKABLE bool reorderClip(const QString& clipId, int destinationIndex);
+    Q_INVOKABLE bool trimClip(const QString& clipId, const QString& edge,
+                              qint64 projectFrameDelta);
     Q_INVOKABLE bool moveCurrentClipLeft();
     Q_INVOKABLE bool moveCurrentClipRight();
     Q_INVOKABLE bool deleteCurrentClip();
@@ -103,19 +120,20 @@ private:
     bool syncManimTimelineClip(bool addIfMissing);
     bool moveCurrentClip(int offset);
     bool saveProject(project::Project candidate, const QString& failurePrefix);
+    void refreshTimelineModel();
     bool generateAndInstallManimClip(const std::filesystem::path& scriptPath,
                                      const QString& sceneName, bool requirePreviewReady);
     void queueVideoClipInstall(const std::filesystem::path& videoPath, QString clipName,
-                               int clipIndex);
+                               int clipIndex, std::int64_t sourceFrame);
     bool installVideoClip(const std::filesystem::path& videoPath, const QString& clipName,
-                          int clipIndex);
-    bool resumeCurrentClip(const QString& failurePrefix);
+                          int clipIndex, std::int64_t sourceFrame);
 
     std::filesystem::path projectPath_;
     std::filesystem::path manimExecutablePath_;
     project::Project project_;
     std::shared_ptr<preview::PreviewEngine> previewEngine_;
     std::shared_ptr<preview::PreviewEventDispatcher> dispatcher_;
+    std::unique_ptr<TimelineClipModel> timelineModel_;
     PreviewEngineRhiItem* previewSurface_ = nullptr;
     std::optional<preview::PreviewSourceId> currentSource_;
     std::optional<preview::PreviewSourceId> staleSource_;
@@ -128,7 +146,10 @@ private:
     std::optional<std::filesystem::path> pendingVideoPath_;
     QString pendingClipName_;
     int pendingClipIndex_ = -1;
+    std::int64_t pendingSourceFrame_ = 0;
     int currentClipIndex_ = -1;
+    std::int64_t playheadFrame_ = 0;
+    std::int64_t totalTimelineFrames_ = 0;
     bool busy_ = false;
     bool previewReady_ = false;
     bool shutdownStarted_ = false;

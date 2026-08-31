@@ -56,8 +56,13 @@ long long probeFrameCount(const std::filesystem::path& path) {
 mvm::project::Project makeProject(const std::filesystem::path& first,
                                   const std::filesystem::path& second) {
     mvm::project::Project project;
-    project.timelineClips.push_back({mvm::project::TimelineClipKind::Video, first, "normal"});
-    project.timelineClips.push_back({mvm::project::TimelineClipKind::Manim, second, "manim"});
+    const auto firstFrames = probeFrameCount(first);
+    const auto secondFrames = probeFrameCount(second);
+    project.timelineClips.push_back({mvm::project::TimelineClipKind::Video, first, "normal",
+                                     "normal-id", 60, 1, firstFrames, 0, firstFrames, 0});
+    project.timelineClips.push_back({mvm::project::TimelineClipKind::Manim, second, "manim",
+                                     "manim-id", 60, 1, secondFrames, 0, secondFrames,
+                                     firstFrames});
     return project;
 }
 

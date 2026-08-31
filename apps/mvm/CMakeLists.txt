@@ -1,6 +1,7 @@
 qt_add_executable(mvm
     main.cpp
     mvm_controller.cpp
+    timeline_clip_model.cpp
 )
 
 qt_add_qml_module(mvm
