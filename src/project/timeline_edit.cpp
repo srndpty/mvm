@@ -20,9 +20,8 @@ bool checkedMultiply(std::uint64_t left, std::uint64_t right, std::uint64_t& res
     return true;
 }
 
-TimelineFrameResult convertBoundary(std::int64_t frame, std::int64_t fromNum,
-                                    std::int64_t fromDen, std::int64_t toNum,
-                                    std::int64_t toDen, bool roundUp) {
+TimelineFrameResult convertBoundary(std::int64_t frame, std::int64_t fromNum, std::int64_t fromDen,
+                                    std::int64_t toNum, std::int64_t toDen, bool roundUp) {
     TimelineFrameResult result;
     if (frame < 0 || fromNum <= 0 || fromDen <= 0 || toNum <= 0 || toDen <= 0) {
         result.error = "frame または timebase が不正です";
@@ -83,8 +82,8 @@ TimelineFrameResult sourceBoundaryToTimelineBoundary(std::int64_t sourceFrame,
                                                      std::int64_t sourceFpsDen,
                                                      std::int64_t timelineFpsNum,
                                                      std::int64_t timelineFpsDen) {
-    return convertBoundary(sourceFrame, sourceFpsNum, sourceFpsDen, timelineFpsNum,
-                           timelineFpsDen, true);
+    return convertBoundary(sourceFrame, sourceFpsNum, sourceFpsDen, timelineFpsNum, timelineFpsDen,
+                           true);
 }
 
 TimelineFrameResult timelineBoundaryToSourceBoundary(std::int64_t timelineFrame,
@@ -97,14 +96,14 @@ TimelineFrameResult timelineBoundaryToSourceBoundary(std::int64_t timelineFrame,
 }
 
 TimelineFrameResult timelineClipDuration(const Project& project, const TimelineClip& clip) {
-    const auto begin = sourceBoundaryToTimelineBoundary(
-        clip.sourceInFrame, clip.sourceFpsNum, clip.sourceFpsDen, project.timelineFpsNum,
-        project.timelineFpsDen);
+    const auto begin =
+        sourceBoundaryToTimelineBoundary(clip.sourceInFrame, clip.sourceFpsNum, clip.sourceFpsDen,
+                                         project.timelineFpsNum, project.timelineFpsDen);
     if (!begin.success)
         return begin;
-    const auto end = sourceBoundaryToTimelineBoundary(
-        clip.sourceOutFrame, clip.sourceFpsNum, clip.sourceFpsDen, project.timelineFpsNum,
-        project.timelineFpsDen);
+    const auto end =
+        sourceBoundaryToTimelineBoundary(clip.sourceOutFrame, clip.sourceFpsNum, clip.sourceFpsDen,
+                                         project.timelineFpsNum, project.timelineFpsDen);
     if (!end.success)
         return end;
     TimelineFrameResult result;
@@ -115,6 +114,16 @@ TimelineFrameResult timelineClipDuration(const Project& project, const TimelineC
     result.success = true;
     result.frame = end.frame - begin.frame;
     return result;
+}
+
+bool sourceRateMatchesTimelineRate(const Project& project, const TimelineClip& clip) {
+    if (clip.sourceFpsNum <= 0 || clip.sourceFpsDen <= 0 || project.timelineFpsNum <= 0 ||
+        project.timelineFpsDen <= 0)
+        return false;
+    const auto sourceDivisor = std::gcd(clip.sourceFpsNum, clip.sourceFpsDen);
+    const auto timelineDivisor = std::gcd(project.timelineFpsNum, project.timelineFpsDen);
+    return clip.sourceFpsNum / sourceDivisor == project.timelineFpsNum / timelineDivisor &&
+           clip.sourceFpsDen / sourceDivisor == project.timelineFpsDen / timelineDivisor;
 }
 
 TimelineValidationResult validateTimeline(const Project& project) {
@@ -201,8 +210,7 @@ TimelineEditResult reorderTimelineClip(Project& project, const std::string& clip
     }
     auto clip = std::move(project.timelineClips[static_cast<std::size_t>(sourceIndex)]);
     project.timelineClips.erase(project.timelineClips.begin() + sourceIndex);
-    project.timelineClips.insert(project.timelineClips.begin() + destinationIndex,
-                                 std::move(clip));
+    project.timelineClips.insert(project.timelineClips.begin() + destinationIndex, std::move(clip));
     const auto valid = recomputeTimelineStarts(project);
     if (!valid.success) {
         result.error = valid.error;
@@ -253,11 +261,10 @@ TimelineEditResult trimTimelineClip(Project& project, const std::string& clipId,
         return result;
     }
     auto& clip = project.timelineClips[static_cast<std::size_t>(index)];
-    const std::int64_t original =
-        edge == TrimEdge::Left ? clip.sourceInFrame : clip.sourceOutFrame;
-    const auto timelineBoundary = sourceBoundaryToTimelineBoundary(
-        original, clip.sourceFpsNum, clip.sourceFpsDen, project.timelineFpsNum,
-        project.timelineFpsDen);
+    const std::int64_t original = edge == TrimEdge::Left ? clip.sourceInFrame : clip.sourceOutFrame;
+    const auto timelineBoundary =
+        sourceBoundaryToTimelineBoundary(original, clip.sourceFpsNum, clip.sourceFpsDen,
+                                         project.timelineFpsNum, project.timelineFpsDen);
     if (!timelineBoundary.success ||
         (projectFrameDelta < 0 && timelineBoundary.frame < -projectFrameDelta) ||
         (projectFrameDelta > 0 &&
@@ -304,8 +311,8 @@ TimelineEditResult appendManimTimelineClip(Project& project, const ManimAsset& a
         return result;
     }
     project.timelineClips.push_back({TimelineClipKind::Manim, asset.generatedVideoPath,
-                                     asset.sceneName, std::move(clipId), sourceFpsNum,
-                                     sourceFpsDen, sourceFrameCount, 0, sourceFrameCount, 0});
+                                     asset.sceneName, std::move(clipId), sourceFpsNum, sourceFpsDen,
+                                     sourceFrameCount, 0, sourceFrameCount, 0});
     const auto valid = recomputeTimelineStarts(project);
     if (!valid.success) {
         result.error = valid.error;

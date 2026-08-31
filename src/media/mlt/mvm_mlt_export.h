@@ -52,14 +52,12 @@ typedef struct {
     int fps_den;
 } MvmExportResult;
 
-/* 素材固有の frame 境界を MLT producer profile の frame 境界へ変換する。
- * Project timeline 変換とは別の意味論を持つため、Project helper は流用しない。 */
-int mvm_source_boundary_to_producer_boundary(long long source_frame,
-                                             long long source_fps_num,
-                                             long long source_fps_den,
-                                             int producer_fps_num,
-                                             int producer_fps_den,
-                                             long long* out_frame);
+/* 素材固有の frame 境界を MLT producer profile の frame 境界へ floor で変換する。
+ * producer が実際に公開する位置 domain に合わせる操作であり、ceil を使う Project
+ * timeline 変換とは別の意味論を持つため、Project helper は流用しない。 */
+int mvm_source_boundary_to_producer_boundary(long long source_frame, long long source_fps_num,
+                                             long long source_fps_den, int producer_fps_num,
+                                             int producer_fps_den, long long* out_frame);
 
 /*
  * clips を順に連結して out_path へ H.264 / MP4 で書き出す。

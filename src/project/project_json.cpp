@@ -1,4 +1,5 @@
 #include "project/project_json.h"
+
 #include "project/timeline_edit.h"
 
 #include <algorithm>
@@ -195,11 +196,15 @@ public:
         skipWhitespace();
         if (position_ != text_.size())
             return failAndFinish("Project JSON の末尾に余分な値があります", error);
-        if (!hasSchema || !hasTimelineFpsNum || !hasTimelineFpsDen || !hasAssets || !hasClips)
-            return failAndFinish("Project schema 2 の必須 field がありません", error);
+        if (!hasSchema)
+            return failAndFinish("schema_version がありません", error);
         if (project.schemaVersion != kSchemaVersion)
-            return failAndFinish("schema_version 1 は非対応です。schema 2 Projectを作成してください",
-                                 error);
+            return failAndFinish(
+                "対応していない schema_version です: " + std::to_string(project.schemaVersion) +
+                    "。schema 2 Projectを作成してください",
+                error);
+        if (!hasTimelineFpsNum || !hasTimelineFpsDen || !hasAssets || !hasClips)
+            return failAndFinish("Project schema 2 の必須 field がありません", error);
         const auto timeline = validateTimeline(project);
         if (!timeline.success)
             return failAndFinish(timeline.error, error);
@@ -556,9 +561,8 @@ private:
         }
         if (!consume('}'))
             return false;
-        if (!hasKind || !hasMedia || !hasName || !hasId || !hasSourceFpsNum ||
-            !hasSourceFpsDen || !hasSourceFrameCount || !hasSourceIn || !hasSourceOut ||
-            !hasTimelineStart)
+        if (!hasKind || !hasMedia || !hasName || !hasId || !hasSourceFpsNum || !hasSourceFpsDen ||
+            !hasSourceFrameCount || !hasSourceIn || !hasSourceOut || !hasTimelineStart)
             return fail("timeline clip の必須 field がありません");
         if (media.empty())
             return fail("timeline clip の media_path が空です");

@@ -28,8 +28,8 @@ struct TimelineClip {
     std::int64_t sourceFpsNum = 0;
     std::int64_t sourceFpsDen = 1;
     std::int64_t sourceFrameCount = 0;
-    std::int64_t sourceInFrame = 0;  // inclusive、素材固有 frame domain
-    std::int64_t sourceOutFrame = 0; // exclusive、素材固有 frame domain
+    std::int64_t sourceInFrame = 0;      // inclusive、素材固有 frame domain
+    std::int64_t sourceOutFrame = 0;     // exclusive、素材固有 frame domain
     std::int64_t timelineStartFrame = 0; // Project timebase
     bool operator==(const TimelineClip&) const = default;
 };

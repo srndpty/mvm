@@ -64,8 +64,7 @@ TimelineExportResult exportTimeline(const project::Project& project,
     for (std::size_t index = 0; index < clipPaths.size(); ++index) {
         const auto& clip = project.timelineClips[index];
         clips.push_back(MvmExportClip{clipPaths[index].c_str(), clip.sourceFpsNum,
-                                      clip.sourceFpsDen, clip.sourceInFrame,
-                                      clip.sourceOutFrame});
+                                      clip.sourceFpsDen, clip.sourceInFrame, clip.sourceOutFrame});
     }
 
     const MvmExportSpec spec{

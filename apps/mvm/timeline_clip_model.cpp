@@ -7,7 +7,7 @@ namespace mvm::app {
 TimelineClipModel::TimelineClipModel(QObject* parent) : QAbstractListModel(parent) {}
 
 int TimelineClipModel::rowCount(const QModelIndex& parent) const {
-    return parent.isValid() ? 0 : items_.size();
+    return parent.isValid() ? 0 : static_cast<int>(items_.size());
 }
 
 QVariant TimelineClipModel::data(const QModelIndex& index, int role) const {
@@ -67,7 +67,7 @@ void TimelineClipModel::setProject(const project::Project& project) {
                        clip.timelineStartFrame, duration.success ? duration.frame : 0,
                        clip.sourceInFrame, clip.sourceOutFrame, clip.sourceFrameCount,
                        clip.sourceFpsNum, clip.sourceFpsDen,
-                       clip.sourceFpsNum == 60 && clip.sourceFpsDen == 1});
+                       project::sourceRateMatchesTimelineRate(project, clip)});
     }
     endResetModel();
 }

@@ -3,9 +3,13 @@
 #include "app/manim_clip_workflow.h"
 #include "app/preview/preview_engine_rhi_item.h"
 #include "app/timeline_export.h"
+#include "media/mlt/mvm_mlt_probe.h"
 #include "project/project_json.h"
 #include "project/timeline_edit.h"
+#include "timeline_clip_model.h"
 
+#include <algorithm>
+#include <numeric>
 #include <utility>
 
 #include <QCoreApplication>
@@ -13,6 +17,7 @@
 #include <QFileInfo>
 #include <QMetaObject>
 #include <QPointer>
+#include <QUuid>
 
 namespace mvm::app {
 namespace {
@@ -23,6 +28,41 @@ QString fromPath(const std::filesystem::path& path) {
 
 QString previewErrorText(const preview::PreviewError& error) {
     return QString::fromStdString(error.detail);
+}
+
+struct ProbedMedia {
+    bool success = false;
+    std::int64_t fpsNum = 0;
+    std::int64_t fpsDen = 1;
+    std::int64_t frameCount = 0;
+    QString error;
+};
+
+ProbedMedia probeMedia(const std::filesystem::path& path) {
+    ProbedMedia result;
+    const auto text = path.u8string();
+    const std::string utf8(reinterpret_cast<const char*>(text.data()), text.size());
+    MvmMltProbeResult probe{};
+    if (mvm_mlt_probe_file(utf8.c_str(), &probe) != 0 || !probe.ok) {
+        result.error = QStringLiteral("素材を解析できません: ") +
+                       QString::fromUtf8(probe.error[0] ? probe.error : utf8.c_str());
+        return result;
+    }
+    if (!probe.has_video || probe.is_unbounded_length || probe.frame_count <= 0 ||
+        probe.fps_num <= 0 || probe.fps_den <= 0) {
+        result.error = QStringLiteral("有限尺と有効なFPSを持つ動画ではありません");
+        return result;
+    }
+    const auto divisor = std::gcd(probe.fps_num, probe.fps_den);
+    result.fpsNum = probe.fps_num / divisor;
+    result.fpsDen = probe.fps_den / divisor;
+    result.frameCount = probe.frame_count;
+    result.success = true;
+    return result;
+}
+
+std::string newClipId() {
+    return QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
 }
 
 class QtEventDispatcher final : public preview::PreviewEventDispatcher {
@@ -57,7 +97,9 @@ MvmController::MvmController(std::filesystem::path projectPath,
     : QObject(parent), projectPath_(std::move(projectPath)),
       manimExecutablePath_(std::move(manimExecutablePath)), project_(std::move(project)),
       previewEngine_(std::make_shared<preview::PreviewEngine>()),
-      dispatcher_(std::make_shared<QtEventDispatcher>(this)) {
+      dispatcher_(std::make_shared<QtEventDispatcher>(this)),
+      timelineModel_(std::make_unique<TimelineClipModel>()) {
+    refreshTimelineModel();
     initializePreviewEngine(QStringLiteral("Preview初期化に失敗しました: "));
     restoreFirstManimClip();
 
@@ -151,10 +193,12 @@ void MvmController::restoreFirstManimClip() {
         const project::ManimAsset& asset = project_.manimAssets.front();
         const QString clipName = QString::fromStdString(asset.sceneName) + QStringLiteral(" — ") +
                                  QFileInfo(fromPath(asset.generatedVideoPath)).fileName();
-        queueVideoClipInstall(asset.generatedVideoPath, clipName, manimIndex);
-        statusText_ = restored.success
-                          ? QStringLiteral("保存済みManim clipを復元しています")
-                          : QString::fromStdString(restored.error);
+        const auto& clip = project_.timelineClips[static_cast<std::size_t>(manimIndex)];
+        if (project::sourceRateMatchesTimelineRate(project_, clip))
+            queueVideoClipInstall(asset.generatedVideoPath, clipName, manimIndex,
+                                  clip.sourceInFrame);
+        statusText_ = restored.success ? QStringLiteral("保存済みManim clipを復元しました")
+                                       : QString::fromStdString(restored.error);
     } else {
         statusText_ = restored.success
                           ? QStringLiteral("生成済みvideoがありません。Regenerateしてください")
@@ -163,10 +207,12 @@ void MvmController::restoreFirstManimClip() {
 }
 
 void MvmController::queueVideoClipInstall(const std::filesystem::path& videoPath,
-                                          QString clipName, int clipIndex) {
+                                          QString clipName, int clipIndex,
+                                          std::int64_t sourceFrame) {
     pendingVideoPath_ = videoPath;
     pendingClipName_ = std::move(clipName);
     pendingClipIndex_ = clipIndex;
+    pendingSourceFrame_ = sourceFrame;
 }
 
 QStringList MvmController::clipNames() const {
@@ -177,6 +223,31 @@ QStringList MvmController::clipNames() const {
     return names;
 }
 
+QAbstractItemModel* MvmController::timelineModel() const {
+    return timelineModel_.get();
+}
+
+QString MvmController::currentTimeText() const {
+    const qint64 frames = std::max<qint64>(0, playheadFrame_);
+    const qint64 totalSeconds = frames / 60;
+    return QStringLiteral("%1:%2:%3:%4")
+        .arg(totalSeconds / 3600, 2, 10, QLatin1Char('0'))
+        .arg((totalSeconds / 60) % 60, 2, 10, QLatin1Char('0'))
+        .arg(totalSeconds % 60, 2, 10, QLatin1Char('0'))
+        .arg(frames % 60, 2, 10, QLatin1Char('0'));
+}
+
+void MvmController::refreshTimelineModel() {
+    if (timelineModel_)
+        timelineModel_->setProject(project_);
+    const auto timeline = project::validateTimeline(project_);
+    totalTimelineFrames_ = timeline.success ? timeline.totalFrames : 0;
+    if (totalTimelineFrames_ == 0)
+        playheadFrame_ = 0;
+    else
+        playheadFrame_ = std::clamp<std::int64_t>(playheadFrame_, 0, totalTimelineFrames_ - 1);
+}
+
 bool MvmController::saveProject(project::Project candidate, const QString& failurePrefix) {
     const project::ProjectIoResult saved =
         project::saveProjectJsonTransaction(project_, std::move(candidate), projectPath_);
@@ -184,6 +255,7 @@ bool MvmController::saveProject(project::Project candidate, const QString& failu
         setStatus(failurePrefix + QString::fromStdString(saved.error));
         return false;
     }
+    refreshTimelineModel();
     return true;
 }
 
@@ -194,20 +266,42 @@ bool MvmController::syncManimTimelineClip(bool addIfMissing) {
     if (asset.generatedVideoPath.empty())
         return true;
 
+    const ProbedMedia media = probeMedia(asset.generatedVideoPath);
+    if (!media.success) {
+        setStatus(QStringLiteral("Manim videoをtimelineへ反映できません: ") + media.error);
+        return false;
+    }
+
     project::Project candidate = project_;
     const int index = indexOfManimClip(candidate.timelineClips);
-    project::TimelineClip clip{project::TimelineClipKind::Manim, asset.generatedVideoPath,
-                               asset.sceneName};
     if (index < 0) {
         if (!addIfMissing)
             return true;
-        candidate.timelineClips.push_back(std::move(clip));
+        const auto placed = project::appendManimTimelineClip(
+            candidate, asset, newClipId(), media.fpsNum, media.fpsDen, media.frameCount);
+        if (!placed.success) {
+            setStatus(QString::fromStdString(placed.error));
+            return false;
+        }
     } else {
-        const project::TimelineClip& existing =
-            candidate.timelineClips[static_cast<std::size_t>(index)];
-        if (existing.mediaPath == clip.mediaPath && existing.name == clip.name)
+        project::TimelineClip& existing = candidate.timelineClips[static_cast<std::size_t>(index)];
+        if (existing.sourceFpsNum != media.fpsNum || existing.sourceFpsDen != media.fpsDen ||
+            existing.sourceOutFrame > media.frameCount) {
+            setStatus(QStringLiteral("再生成後のManim素材では既存trimを保持できません。"
+                                     "timelineから削除して追加し直してください"));
+            return false;
+        }
+        if (existing.mediaPath == asset.generatedVideoPath && existing.name == asset.sceneName &&
+            existing.sourceFrameCount == media.frameCount)
             return true; // 変化が無ければ project を書き直さない
-        candidate.timelineClips[static_cast<std::size_t>(index)] = std::move(clip);
+        existing.mediaPath = asset.generatedVideoPath;
+        existing.name = asset.sceneName;
+        existing.sourceFrameCount = media.frameCount;
+        const auto valid = project::recomputeTimelineStarts(candidate);
+        if (!valid.success) {
+            setStatus(QString::fromStdString(valid.error));
+            return false;
+        }
     }
     return saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: "));
 }
@@ -228,10 +322,12 @@ void MvmController::pollPreviewState() {
         const std::filesystem::path videoPath = std::move(*pendingVideoPath_);
         const QString clipName = std::move(pendingClipName_);
         const int clipIndex = pendingClipIndex_;
+        const std::int64_t sourceFrame = pendingSourceFrame_;
         pendingVideoPath_.reset();
         pendingClipName_.clear();
         pendingClipIndex_ = -1;
-        installVideoClip(videoPath, clipName, clipIndex);
+        pendingSourceFrame_ = 0;
+        installVideoClip(videoPath, clipName, clipIndex, sourceFrame);
     }
     if (status.state == preview::PreviewEngineState::Error && status.lastError) {
         const QString message =
@@ -241,21 +337,9 @@ void MvmController::pollPreviewState() {
     }
 }
 
-bool MvmController::resumeCurrentClip(const QString& failurePrefix) {
-    if (!currentSource_ || !previewEngine_)
-        return true;
-    if (previewEngine_->status().state != preview::PreviewEngineState::ReadyPaused)
-        return true;
-    const auto played = previewEngine_->play();
-    if (!played) {
-        setStatus(failurePrefix + previewErrorText(played.error()));
-        return false;
-    }
-    return true;
-}
-
 bool MvmController::installVideoClip(const std::filesystem::path& videoPath,
-                                     const QString& clipName, int clipIndex) {
+                                     const QString& clipName, int clipIndex,
+                                     std::int64_t sourceFrame) {
     const auto state = previewEngine_->status().state;
     if (state == preview::PreviewEngineState::Playing) {
         const auto paused = previewEngine_->pause();
@@ -274,7 +358,6 @@ bool MvmController::installVideoClip(const std::filesystem::path& videoPath,
         if (!removed) {
             setStatus(QStringLiteral("以前のclip sourceを解放できません: ") +
                       previewErrorText(removed.error()));
-            resumeCurrentClip(QStringLiteral("現在のclipを再開できません: "));
             return false;
         }
         staleSource_.reset();
@@ -288,7 +371,6 @@ bool MvmController::installVideoClip(const std::filesystem::path& videoPath,
     if (!added) {
         setStatus(QStringLiteral("生成videoをPreviewで開けません: ") +
                   previewErrorText(added.error()));
-        resumeCurrentClip(QStringLiteral("現在のclipを再開できません: "));
         return false;
     }
 
@@ -300,13 +382,12 @@ bool MvmController::installVideoClip(const std::filesystem::path& videoPath,
         previewEngine_->removeSource(added.value());
         setStatus(QStringLiteral("生成videoをcompositionへ追加できません: ") +
                   previewErrorText(submitted.error()));
-        resumeCurrentClip(QStringLiteral("現在のclipを再開できません: "));
         return false;
     }
 
-    const auto played = previewEngine_->play();
-    if (!played) {
-        setStatus(QStringLiteral("生成videoを再生できません: ") + previewErrorText(played.error()));
+    const auto sought = previewEngine_->seek({sourceFrame});
+    if (!sought) {
+        setStatus(QStringLiteral("Previewをseekできません: ") + previewErrorText(sought.error()));
         return false;
     }
 
@@ -315,7 +396,7 @@ bool MvmController::installVideoClip(const std::filesystem::path& videoPath,
     currentClipName_ = clipName;
     currentClipPath_ = fromPath(videoPath);
     currentClipIndex_ = clipIndex;
-    statusText_ = clipName + QStringLiteral(" を再生しています");
+    statusText_ = clipName + QStringLiteral(" を表示しています");
     Q_EMIT stateChanged();
     return true;
 }
@@ -404,10 +485,13 @@ bool MvmController::generateAndInstallManimClip(const std::filesystem::path& scr
     const preview::PreviewEngineState previewState = previewEngine_->status().state;
     if (previewState == preview::PreviewEngineState::ReadyPaused ||
         previewState == preview::PreviewEngineState::Playing) {
-        return installVideoClip(generated.outputVideoPath, clipName, manimIndex);
+        const auto& clip = project_.timelineClips[static_cast<std::size_t>(manimIndex)];
+        return installVideoClip(generated.outputVideoPath, clipName, manimIndex,
+                                clip.sourceInFrame);
     }
 
-    queueVideoClipInstall(generated.outputVideoPath, clipName, manimIndex);
+    const auto& clip = project_.timelineClips[static_cast<std::size_t>(manimIndex)];
+    queueVideoClipInstall(generated.outputVideoPath, clipName, manimIndex, clip.sourceInFrame);
     if (previewState == preview::PreviewEngineState::ShuttingDown ||
         previewState == preview::PreviewEngineState::Shutdown ||
         previewState == preview::PreviewEngineState::Error) {
@@ -443,8 +527,14 @@ bool MvmController::addManimToTimeline() {
     }
 
     project::Project candidate = project_;
-    const project::TimelineEditResult placed =
-        project::appendManimTimelineClip(candidate, candidate.manimAssets.front());
+    const ProbedMedia media = probeMedia(asset.generatedVideoPath);
+    if (!media.success) {
+        setStatus(media.error);
+        return false;
+    }
+    const project::TimelineEditResult placed = project::appendManimTimelineClip(
+        candidate, candidate.manimAssets.front(), newClipId(), media.fpsNum, media.fpsDen,
+        media.frameCount);
     if (!placed.success) {
         setStatus(QString::fromStdString(placed.error));
         return false;
@@ -471,10 +561,21 @@ bool MvmController::addVideoClip(const QUrl& fileUrl) {
     }
 
     const std::filesystem::path mediaPath(localFile.toStdWString());
+    const ProbedMedia media = probeMedia(mediaPath);
+    if (!media.success) {
+        setStatus(media.error);
+        return false;
+    }
     project::Project candidate = project_;
     const project::TimelineClip clip{project::TimelineClipKind::Video, mediaPath,
-                                     info.fileName().toStdString()};
+                                     info.fileName().toStdString(), newClipId(), media.fpsNum,
+                                     media.fpsDen, media.frameCount, 0, media.frameCount, 0};
     candidate.timelineClips.push_back(clip);
+    const auto valid = project::recomputeTimelineStarts(candidate);
+    if (!valid.success) {
+        setStatus(QString::fromStdString(valid.error));
+        return false;
+    }
 
     if (!saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: ")))
         return false;
@@ -490,6 +591,23 @@ bool MvmController::selectClip(int index) {
         return false;
     }
     const project::TimelineClip& clip = project_.timelineClips[static_cast<std::size_t>(index)];
+    return seekTimelineFrame(clip.timelineStartFrame);
+}
+
+bool MvmController::seekTimelineFrame(qint64 frame) {
+    if (project_.timelineClips.empty()) {
+        setStatus(QStringLiteral("seekするclipがありません"));
+        return false;
+    }
+    const qint64 clamped = std::clamp<qint64>(frame, 0, totalTimelineFrames_ - 1);
+    playheadFrame_ = clamped;
+    const int index = project::timelineClipIndexAtFrame(project_, clamped);
+    Q_EMIT stateChanged();
+    if (index < 0) {
+        setStatus(QStringLiteral("playhead位置にclipがありません"));
+        return false;
+    }
+    const project::TimelineClip& clip = project_.timelineClips[static_cast<std::size_t>(index)];
     const QString clipName = QString::fromStdString(clip.name);
     if (!std::filesystem::is_regular_file(clip.mediaPath)) {
         setStatus(clipName + QStringLiteral(" のファイルがありません: ") +
@@ -497,13 +615,108 @@ bool MvmController::selectClip(int index) {
         return false;
     }
 
-    const preview::PreviewEngineState previewState = previewEngine_->status().state;
-    if (previewState == preview::PreviewEngineState::ReadyPaused ||
-        previewState == preview::PreviewEngineState::Playing) {
-        return installVideoClip(clip.mediaPath, clipName, index);
+    if (!project::sourceRateMatchesTimelineRate(project_, clip)) {
+        pendingVideoPath_.reset();
+        pendingClipName_.clear();
+        pendingClipIndex_ = -1;
+        pendingSourceFrame_ = 0;
+        resetPreviewEngine();
+        currentSource_.reset();
+        staleSource_.reset();
+        currentClipIndex_ = index;
+        currentClipName_ = clipName;
+        currentClipPath_.clear();
+        setStatus(clipName + QStringLiteral(
+                                 " は60fpsではないためPreview未対応です。編集・保存・Exportは可能です"));
+        return true;
     }
-    queueVideoClipInstall(clip.mediaPath, clipName, index);
+
+    const std::int64_t sourceFrame =
+        clip.sourceInFrame + (clamped - clip.timelineStartFrame);
+    if (currentSource_ && currentClipIndex_ == index) {
+        const auto state = previewEngine_->status().state;
+        if (state != preview::PreviewEngineState::ReadyPaused) {
+            setStatus(QStringLiteral("Previewがseek可能になるまで待ってください"));
+            return false;
+        }
+        const auto sought = previewEngine_->seek({sourceFrame});
+        if (!sought) {
+            setStatus(QStringLiteral("Previewをseekできません: ") +
+                      previewErrorText(sought.error()));
+            return false;
+        }
+        currentClipName_ = clipName;
+        currentClipPath_ = fromPath(clip.mediaPath);
+        setStatus(clipName + QStringLiteral(" を表示しています"));
+        return true;
+    }
+
+    const preview::PreviewEngineState previewState = previewEngine_->status().state;
+    if (previewState == preview::PreviewEngineState::ReadyPaused) {
+        return installVideoClip(clip.mediaPath, clipName, index, sourceFrame);
+    }
+    queueVideoClipInstall(clip.mediaPath, clipName, index, sourceFrame);
     setStatus(QStringLiteral("Previewの準備を待っています"));
+    return true;
+}
+
+bool MvmController::reorderClip(const QString& clipId, int destinationIndex) {
+    if (busy_)
+        return false;
+    project::Project candidate = project_;
+    const auto moved = project::reorderTimelineClip(candidate, clipId.toStdString(),
+                                                     destinationIndex);
+    if (!moved.success) {
+        setStatus(QString::fromStdString(moved.error));
+        return false;
+    }
+    if (!saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: ")))
+        return false;
+    resetPreviewEngine();
+    currentSource_.reset();
+    staleSource_.reset();
+    currentClipName_.clear();
+    currentClipPath_.clear();
+    currentClipIndex_ = moved.selectedIndex;
+    playheadFrame_ = project_.timelineClips[static_cast<std::size_t>(moved.selectedIndex)]
+                         .timelineStartFrame;
+    statusText_ = QStringLiteral("clipを移動しました");
+    Q_EMIT stateChanged();
+    return true;
+}
+
+bool MvmController::trimClip(const QString& clipId, const QString& edge,
+                             qint64 projectFrameDelta) {
+    if (busy_)
+        return false;
+    project::TrimEdge trimEdge;
+    if (edge == QStringLiteral("left"))
+        trimEdge = project::TrimEdge::Left;
+    else if (edge == QStringLiteral("right"))
+        trimEdge = project::TrimEdge::Right;
+    else {
+        setStatus(QStringLiteral("trim edgeが不正です"));
+        return false;
+    }
+    project::Project candidate = project_;
+    const auto trimmed = project::trimTimelineClip(candidate, clipId.toStdString(), trimEdge,
+                                                    projectFrameDelta);
+    if (!trimmed.success) {
+        setStatus(QString::fromStdString(trimmed.error));
+        return false;
+    }
+    if (!saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: ")))
+        return false;
+    resetPreviewEngine();
+    currentSource_.reset();
+    staleSource_.reset();
+    currentClipName_.clear();
+    currentClipPath_.clear();
+    currentClipIndex_ = trimmed.selectedIndex;
+    playheadFrame_ = project_.timelineClips[static_cast<std::size_t>(trimmed.selectedIndex)]
+                         .timelineStartFrame;
+    statusText_ = QStringLiteral("clipをtrimしました");
+    Q_EMIT stateChanged();
     return true;
 }
 
@@ -546,29 +759,13 @@ bool MvmController::deleteCurrentClip() {
         return false;
     }
 
-    const preview::PreviewEngineState previewState = previewEngine_->status().state;
-    const bool wasPlaying = previewState == preview::PreviewEngineState::Playing;
-    if (wasPlaying) {
-        const auto paused = previewEngine_->pause();
-        if (!paused) {
-            setStatus(QStringLiteral("削除前にPreviewを停止できません: ") +
-                      previewErrorText(paused.error()));
-            return false;
-        }
-    }
-
-    if (!saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: "))) {
-        const QString saveFailure = statusText_;
-        if (wasPlaying) {
-            resumeCurrentClip(saveFailure +
-                              QStringLiteral("\nPreviewを元のclipへ戻せません: "));
-        }
+    if (!saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: ")))
         return false;
-    }
 
     pendingVideoPath_.reset();
     pendingClipName_.clear();
     pendingClipIndex_ = -1;
+    pendingSourceFrame_ = 0;
     const bool previewReset = resetPreviewEngine();
     currentSource_.reset();
     staleSource_.reset();

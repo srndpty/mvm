@@ -39,6 +39,7 @@ TimelineFrameResult timelineBoundaryToSourceBoundary(std::int64_t timelineFrame,
                                                      std::int64_t timelineFpsNum,
                                                      std::int64_t timelineFpsDen);
 TimelineFrameResult timelineClipDuration(const Project& project, const TimelineClip& clip);
+bool sourceRateMatchesTimelineRate(const Project& project, const TimelineClip& clip);
 TimelineValidationResult validateTimeline(const Project& project);
 TimelineValidationResult recomputeTimelineStarts(Project& project);
 int timelineClipIndexAtFrame(const Project& project, std::int64_t timelineFrame);

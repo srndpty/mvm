@@ -54,7 +54,8 @@ add_test(NAME m4_timeline_export_focused
     COMMAND mvm_test_timeline_export
         "${CMAKE_CURRENT_BINARY_DIR}/m4-timeline-export"
         "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4"
-        "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_hevc.mp4")
+        "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_hevc.mp4"
+        "${MVM_UCRT64_ROOT}/bin/ffmpeg.exe")
 set_tests_properties(m4_timeline_export_focused PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 600)

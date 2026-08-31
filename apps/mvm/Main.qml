@@ -14,6 +14,9 @@ ApplicationWindow {
     color: "#15171b"
 
     property url selectedManimScript
+    readonly property real pixelsPerFrame: 1.5
+    property bool playheadDragging: false
+    property int dragPlayheadFrame: 0
 
     ColumnLayout {
         anchors.fill: parent
@@ -122,21 +125,9 @@ ApplicationWindow {
 
             Label {
                 Layout.fillWidth: true
-                text: "Timeline (左から順に書き出されます)"
+                text: "Timeline  60 fps  |  " + mvmController.currentTimeText
                 color: "#c9ccd2"
                 font.bold: true
-            }
-            Button {
-                text: "Move Left"
-                enabled: !mvmController.busy && mvmController.currentClipIndex > 0
-                onClicked: mvmController.moveCurrentClipLeft()
-            }
-            Button {
-                text: "Move Right"
-                enabled: !mvmController.busy
-                         && mvmController.currentClipIndex >= 0
-                         && mvmController.currentClipIndex < mvmController.clipCount - 1
-                onClicked: mvmController.moveCurrentClipRight()
             }
             Button {
                 text: "Delete"
@@ -147,68 +138,295 @@ ApplicationWindow {
 
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 92
+            Layout.preferredHeight: 142
             radius: 5
             color: "#20242a"
             border.color: "#3c424c"
 
-            // 並び順がそのまま再生順。M5 はボタンによる移動・削除だけを持つ。
-            Row {
+            Flickable {
+                id: timelineFlick
                 anchors.fill: parent
-                anchors.margins: 10
-                spacing: 8
+                anchors.margins: 6
+                clip: true
+                contentWidth: Math.max(width, mvmController.totalTimelineFrames
+                                               * root.pixelsPerFrame + 24)
+                contentHeight: height
+                boundsBehavior: Flickable.StopAtBounds
 
-                Repeater {
-                    model: mvmController.clipNames
+                Item {
+                    id: timelineContent
+                    width: timelineFlick.contentWidth
+                    height: timelineFlick.height
 
                     Rectangle {
-                        required property int index
-                        required property string modelData
+                        id: ruler
+                        x: 0
+                        y: 0
+                        width: parent.width
+                        height: 34
+                        color: "#191c21"
 
-                        height: parent.height
-                        width: Math.max(150, Math.min(320,
-                                   (parent.width - (mvmController.clipCount - 1) * 8)
-                                   / Math.max(1, mvmController.clipCount)))
-                        radius: 4
-                        color: index === mvmController.currentClipIndex ? "#315f86" : "#2b3038"
-                        border.color: index === mvmController.currentClipIndex
-                                      ? "#65a8dc" : "#454b56"
+                        Repeater {
+                            model: Math.ceil(mvmController.totalTimelineFrames / 60) + 1
 
-                        Column {
-                            anchors.fill: parent
-                            anchors.margins: 8
-                            spacing: 4
+                            Item {
+                                required property int index
+                                x: index * 60 * root.pixelsPerFrame
+                                width: 1
+                                height: ruler.height
 
-                            Label {
-                                width: parent.width
-                                text: (index + 1) + ". " + modelData
-                                color: "white"
-                                font.bold: true
-                                elide: Text.ElideMiddle
-                            }
-                            Label {
-                                width: parent.width
-                                text: index === mvmController.currentClipIndex
-                                      ? "Preview中" : "クリックでPreview"
-                                color: "#a9b1bd"
-                                elide: Text.ElideRight
+                                Rectangle {
+                                    anchors.bottom: parent.bottom
+                                    width: 1
+                                    height: 12
+                                    color: "#77808c"
+                                }
+                                Label {
+                                    x: 4
+                                    y: 1
+                                    text: index + "s"
+                                    color: "#aab1ba"
+                                    font.pixelSize: 11
+                                }
                             }
                         }
 
                         MouseArea {
                             anchors.fill: parent
-                            enabled: !mvmController.busy
-                            onClicked: mvmController.selectClip(index)
+                            enabled: !mvmController.busy && mvmController.clipCount > 0
+                            onClicked: mouse => {
+                                const frame = Math.round(mouse.x / root.pixelsPerFrame)
+                                mvmController.seekTimelineFrame(frame)
+                            }
                         }
                     }
-                }
-            }
 
-            Label {
-                visible: mvmController.clipCount === 0
-                anchors.centerIn: parent
-                text: "No clip"
-                color: "#858b95"
+                    ListView {
+                        id: timelineList
+                        x: 0
+                        y: ruler.height + 4
+                        width: parent.width
+                        height: parent.height - y
+                        orientation: ListView.Horizontal
+                        interactive: false
+                        spacing: 0
+                        model: mvmController.timelineModel
+
+                        delegate: Rectangle {
+                            id: clipItem
+                            required property int index
+                            required property string clipId
+                            required property string displayName
+                            required property string clipKind
+                            required property real timelineStartFrame
+                            required property real timelineDurationFrames
+                            required property real sourceInFrame
+                            required property real sourceOutFrame
+                            required property real sourceFpsNum
+                            required property real sourceFpsDen
+                            required property bool previewSupported
+
+                            property real leftPreviewDelta: 0
+                            property real rightPreviewDelta: 0
+                            property real bodyPressContentX: 0
+                            property real bodyDragOffset: 0
+                            property bool bodyMoved: false
+
+                            width: Math.max(1, (timelineDurationFrames - leftPreviewDelta
+                                               + rightPreviewDelta) * root.pixelsPerFrame)
+                            height: timelineList.height - 8
+                            radius: 3
+                            color: index === mvmController.currentClipIndex ? "#315f86" : "#2b3038"
+                            border.color: previewSupported ? "#65a8dc" : "#c88b4a"
+                            z: bodyMoved ? 20 : 1
+                            transform: Translate {
+                                x: clipItem.leftPreviewDelta * root.pixelsPerFrame
+                                   + clipItem.bodyDragOffset
+                            }
+
+                            Column {
+                                anchors.fill: parent
+                                anchors.leftMargin: 12
+                                anchors.rightMargin: 12
+                                anchors.topMargin: 8
+                                spacing: 3
+
+                                Label {
+                                    width: parent.width
+                                    text: displayName
+                                    color: "white"
+                                    font.bold: true
+                                    elide: Text.ElideMiddle
+                                }
+                                Label {
+                                    width: parent.width
+                                    text: sourceFpsNum + "/" + sourceFpsDen + " fps  |  "
+                                          + Math.round(timelineDurationFrames) + "f"
+                                    color: previewSupported ? "#b8c1cc" : "#f0b870"
+                                    elide: Text.ElideRight
+                                }
+                            }
+
+                            MouseArea {
+                                id: bodyArea
+                                anchors.fill: parent
+                                anchors.leftMargin: 9
+                                anchors.rightMargin: 9
+                                enabled: !mvmController.busy
+                                onPressed: mouse => {
+                                    clipItem.bodyMoved = false
+                                    clipItem.bodyDragOffset = 0
+                                    clipItem.bodyPressContentX = mapToItem(timelineContent,
+                                                                           mouse.x, mouse.y).x
+                                }
+                                onPositionChanged: mouse => {
+                                    const now = mapToItem(timelineContent, mouse.x, mouse.y).x
+                                    clipItem.bodyDragOffset = now - clipItem.bodyPressContentX
+                                    if (Math.abs(clipItem.bodyDragOffset) > 5)
+                                        clipItem.bodyMoved = true
+                                }
+                                onReleased: mouse => {
+                                    const center = clipItem.timelineStartFrame
+                                                   * root.pixelsPerFrame
+                                                   + clipItem.bodyDragOffset
+                                                   + clipItem.width / 2
+                                    if (clipItem.bodyMoved) {
+                                        let destination = timelineList.indexAt(center,
+                                                                               timelineList.height / 2)
+                                        if (destination < 0)
+                                            destination = center < 0 ? 0
+                                                                     : mvmController.clipCount - 1
+                                        clipItem.bodyDragOffset = 0
+                                        mvmController.reorderClip(clipItem.clipId, destination)
+                                    } else {
+                                        clipItem.bodyDragOffset = 0
+                                        const point = bodyArea.mapToItem(clipItem,
+                                                                         mouse.x, mouse.y)
+                                        const frame = Math.round((clipItem.timelineStartFrame
+                                                                  + point.x
+                                                                    / root.pixelsPerFrame))
+                                        mvmController.seekTimelineFrame(frame)
+                                    }
+                                }
+                                onCanceled: {
+                                    clipItem.bodyDragOffset = 0
+                                    clipItem.bodyMoved = false
+                                }
+                            }
+
+                            Rectangle {
+                                width: 8
+                                height: parent.height
+                                anchors.left: parent.left
+                                color: "#85c4ee"
+                                radius: 2
+                                z: 30
+
+                                MouseArea {
+                                    property real pressContentX: 0
+                                    anchors.fill: parent
+                                    cursorShape: Qt.SizeHorCursor
+                                    enabled: !mvmController.busy
+                                    onPressed: mouse => {
+                                        pressContentX = mapToItem(timelineContent, mouse.x, mouse.y).x
+                                    }
+                                    onPositionChanged: mouse => {
+                                        const now = mapToItem(timelineContent, mouse.x, mouse.y).x
+                                        leftPreviewDelta = Math.round((now - pressContentX)
+                                                                      / root.pixelsPerFrame)
+                                    }
+                                    onReleased: {
+                                        const delta = leftPreviewDelta
+                                        leftPreviewDelta = 0
+                                        if (delta !== 0)
+                                            mvmController.trimClip(clipId, "left", delta)
+                                    }
+                                    onCanceled: leftPreviewDelta = 0
+                                }
+                            }
+
+                            Rectangle {
+                                width: 8
+                                height: parent.height
+                                anchors.right: parent.right
+                                color: "#85c4ee"
+                                radius: 2
+                                z: 30
+
+                                MouseArea {
+                                    property real pressContentX: 0
+                                    anchors.fill: parent
+                                    cursorShape: Qt.SizeHorCursor
+                                    enabled: !mvmController.busy
+                                    onPressed: mouse => {
+                                        pressContentX = mapToItem(timelineContent, mouse.x, mouse.y).x
+                                    }
+                                    onPositionChanged: mouse => {
+                                        const now = mapToItem(timelineContent, mouse.x, mouse.y).x
+                                        rightPreviewDelta = Math.round((now - pressContentX)
+                                                                       / root.pixelsPerFrame)
+                                    }
+                                    onReleased: {
+                                        const delta = rightPreviewDelta
+                                        rightPreviewDelta = 0
+                                        if (delta !== 0)
+                                            mvmController.trimClip(clipId, "right", delta)
+                                    }
+                                    onCanceled: rightPreviewDelta = 0
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        id: playhead
+                        x: (root.playheadDragging ? root.dragPlayheadFrame
+                                                  : mvmController.playheadFrame)
+                           * root.pixelsPerFrame - 1
+                        y: 0
+                        width: 2
+                        height: parent.height
+                        color: "#f15b5b"
+                        z: 100
+
+                        Rectangle {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            width: 12
+                            height: 9
+                            color: "#f15b5b"
+                        }
+
+                        MouseArea {
+                            anchors.centerIn: parent
+                            width: 16
+                            height: parent.height
+                            enabled: !mvmController.busy && mvmController.clipCount > 0
+                            cursorShape: Qt.SizeHorCursor
+                            onPressed: {
+                                root.dragPlayheadFrame = mvmController.playheadFrame
+                                root.playheadDragging = true
+                            }
+                            onPositionChanged: mouse => {
+                                const point = mapToItem(timelineContent, mouse.x, mouse.y)
+                                root.dragPlayheadFrame = Math.max(0,
+                                    Math.min(mvmController.totalTimelineFrames - 1,
+                                             Math.round(point.x / root.pixelsPerFrame)))
+                            }
+                            onReleased: {
+                                root.playheadDragging = false
+                                mvmController.seekTimelineFrame(root.dragPlayheadFrame)
+                            }
+                            onCanceled: root.playheadDragging = false
+                        }
+                    }
+
+                    Label {
+                        visible: mvmController.clipCount === 0
+                        anchors.centerIn: parent
+                        text: "No clip"
+                        color: "#858b95"
+                    }
+                }
             }
         }
 

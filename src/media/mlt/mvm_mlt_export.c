@@ -30,12 +30,9 @@ static int checked_mul_u64(uint64_t left, uint64_t right, uint64_t* out) {
     return 1;
 }
 
-int mvm_source_boundary_to_producer_boundary(long long source_frame,
-                                             long long source_fps_num,
-                                             long long source_fps_den,
-                                             int producer_fps_num,
-                                             int producer_fps_den,
-                                             long long* out_frame) {
+int mvm_source_boundary_to_producer_boundary(long long source_frame, long long source_fps_num,
+                                             long long source_fps_den, int producer_fps_num,
+                                             int producer_fps_den, long long* out_frame) {
     if (!out_frame || source_frame < 0 || source_fps_num <= 0 || source_fps_den <= 0 ||
         producer_fps_num <= 0 || producer_fps_den <= 0)
         return 1;
@@ -60,8 +57,6 @@ int mvm_source_boundary_to_producer_boundary(long long source_frame,
             return 1;
     }
     uint64_t converted = numerator / denominator;
-    if (numerator % denominator != 0)
-        ++converted;
     if (converted > INT64_MAX)
         return 1;
     *out_frame = (long long)converted;
@@ -162,8 +157,7 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
             return 1;
         }
         if (clips[i].source_fps_num <= 0 || clips[i].source_fps_den <= 0 ||
-            clips[i].source_in_frame < 0 ||
-            clips[i].source_out_frame <= clips[i].source_in_frame) {
+            clips[i].source_in_frame < 0 || clips[i].source_out_frame <= clips[i].source_in_frame) {
             set_err(err, err_size, "clip %d の source range または FPS が不正です", i);
             return 1;
         }
