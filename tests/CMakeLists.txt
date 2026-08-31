@@ -70,6 +70,15 @@ set_tests_properties(m5_timeline_edit_focused PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 120)
 
+# --- M6b: controller clockとsegmented/rebased境界判断 -----------------------
+add_executable(mvm_test_timeline_playback harness/test_timeline_playback.cpp)
+target_link_libraries(mvm_test_timeline_playback PRIVATE
+    mvm::timeline_playback mvm::warnings)
+add_test(NAME m6b_timeline_playback_focused COMMAND mvm_test_timeline_playback)
+set_tests_properties(m6b_timeline_playback_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+
 add_executable(mvm_manim_project_smoke harness/mvm_manim_project_smoke.cpp)
 target_link_libraries(mvm_manim_project_smoke PRIVATE
     mvm::project mvm::manim mvm::mlt mvm::util mvm::warnings)

@@ -123,6 +123,16 @@ ApplicationWindow {
         RowLayout {
             Layout.fillWidth: true
 
+            Button {
+                text: mvmController.playing ? "Pause" : "Play"
+                enabled: mvmController.playing || mvmController.canPlay
+                onClicked: {
+                    if (mvmController.playing)
+                        mvmController.pauseTimeline()
+                    else
+                        mvmController.playTimeline()
+                }
+            }
             Label {
                 Layout.fillWidth: true
                 text: "Timeline  60 fps  |  " + mvmController.currentTimeText

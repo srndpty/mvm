@@ -7,8 +7,9 @@
 #include <memory>
 #include <optional>
 
-#include <QObject>
 #include <QAbstractItemModel>
+#include <QElapsedTimer>
+#include <QObject>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
@@ -40,6 +41,8 @@ class MvmController final : public QObject {
     Q_PROPERTY(qint64 playheadFrame READ playheadFrame NOTIFY stateChanged)
     Q_PROPERTY(qint64 totalTimelineFrames READ totalTimelineFrames NOTIFY stateChanged)
     Q_PROPERTY(QString currentTimeText READ currentTimeText NOTIFY stateChanged)
+    Q_PROPERTY(bool playing READ playing NOTIFY stateChanged)
+    Q_PROPERTY(bool canPlay READ canPlay NOTIFY stateChanged)
     Q_PROPERTY(bool canExport READ canExport NOTIFY stateChanged)
 
 public:
@@ -86,6 +89,10 @@ public:
 
     QString currentTimeText() const;
 
+    bool playing() const { return playing_; }
+
+    bool canPlay() const;
+
     bool canExport() const { return !project_.timelineClips.empty() && !busy_; }
 
     Q_INVOKABLE bool generateManimClip(const QUrl& scriptUrl, const QString& sceneName);
@@ -94,6 +101,8 @@ public:
     Q_INVOKABLE bool addVideoClip(const QUrl& fileUrl);
     Q_INVOKABLE bool selectClip(int index);
     Q_INVOKABLE bool seekTimelineFrame(qint64 frame);
+    Q_INVOKABLE bool playTimeline();
+    Q_INVOKABLE bool pauseTimeline();
     Q_INVOKABLE bool reorderClip(const QString& clipId, int destinationIndex);
     Q_INVOKABLE bool trimClip(const QString& clipId, const QString& edge,
                               qint64 projectFrameDelta);
@@ -110,6 +119,7 @@ Q_SIGNALS:
 
 private:
     void pollPreviewState();
+    void advanceTimelinePlayback();
     void setStatus(QString status);
     bool initializePreviewEngine(const QString& failurePrefix);
     bool resetPreviewEngine();
@@ -127,6 +137,11 @@ private:
                                int clipIndex, std::int64_t sourceFrame);
     bool installVideoClip(const std::filesystem::path& videoPath, const QString& clipName,
                           int clipIndex, std::int64_t sourceFrame);
+    bool prepareTimelineFrameForPlayback(int clipIndex, std::int64_t timelineFrame);
+    bool queuePreparedPlayback(int clipIndex, std::int64_t timelineFrame);
+    void startPendingPlayback();
+    bool cancelPendingPlaybackForPause();
+    void stopPlaybackWithError(QString error);
 
     std::filesystem::path projectPath_;
     std::filesystem::path manimExecutablePath_;
@@ -153,6 +168,14 @@ private:
     bool busy_ = false;
     bool previewReady_ = false;
     bool shutdownStarted_ = false;
+    bool playing_ = false;
+    bool pendingPlaybackStart_ = false;
+    int playbackClipIndex_ = -1;
+    std::int64_t playbackBaseFrame_ = 0;
+    int pendingPlaybackClipIndex_ = -1;
+    std::int64_t pendingPlaybackBaseFrame_ = 0;
+    QElapsedTimer playbackClock_;
+    QTimer playbackTimer_;
     QTimer stateTimer_;
 };
 

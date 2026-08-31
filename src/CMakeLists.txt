@@ -50,6 +50,15 @@ target_link_libraries(mvm_manim_clip_workflow
     PRIVATE mvm::warnings)
 add_library(mvm::manim_clip_workflow ALIAS mvm_manim_clip_workflow)
 
+# --- M6b: controller clockによる単一track timeline再生 ---------------------
+# QtやPreviewEngineには依存せず、経過時間のframe変換とclip境界判断だけを担う。
+add_library(mvm_timeline_playback STATIC
+    app/timeline_playback.cpp
+)
+target_include_directories(mvm_timeline_playback PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_timeline_playback PUBLIC mvm::project PRIVATE mvm::warnings)
+add_library(mvm::timeline_playback ALIAS mvm_timeline_playback)
+
 # --- M4: timeline export orchestration --------------------------------------
 # Qt に依存しない。Project の clip 列を解決し、tmp へ書き出して検証してから
 # 正規名へ rename する順序だけを担う。MLT の呼び出しは mvm::mlt に閉じる。
