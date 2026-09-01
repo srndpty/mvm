@@ -185,6 +185,49 @@ static int attach_export_affine(mlt_profile profile, mlt_producer cut, const Mvm
     return 0;
 }
 
+static int plant_export_overlay_affine(mlt_profile profile, mlt_tractor tractor,
+                                       const MvmExportClip* clip, char* err, size_t err_size) {
+    mlt_transition transition = mlt_factory_transition(profile, "affine", NULL);
+    if (!transition) {
+        set_err(err, err_size, "必須transition 'affine'を作れません");
+        return 1;
+    }
+    mlt_properties props = MLT_TRANSITION_PROPERTIES(transition);
+    mlt_properties_set_int(props, "fill", 1);
+    mlt_properties_set_int(props, "distort", 1);
+    mlt_properties_set_int(props, "b_alpha", 0);
+    mlt_properties_set_int(props, "repeat_off", 1);
+    mlt_properties_set_int(props, "mirror_off", 1);
+    mlt_properties_set_int(props, "keyed", 0);
+    mlt_properties_set(props, "halign", "center");
+    mlt_properties_set(props, "valign", "middle");
+    /* M7b-P0実画素結果がauthority。名前からfix_rotate_zへ置換しない。 */
+    mlt_properties_set_double(props, "fix_rotate_x", clip->rotation_degrees);
+    mlt_transition_set_in_and_out(
+        transition, (mlt_position)clip->timeline_start_frame,
+        (mlt_position)(clip->timeline_start_frame + clip->timeline_duration_frames - 1));
+    for (int index = 0; index < clip->opacity_keyframe_count; ++index) {
+        const MvmExportOpacityKeyframe* key = &clip->opacity_keyframes[index];
+        mlt_rect rect = {clip->rect_x, clip->rect_y, clip->rect_width, clip->rect_height,
+                         key->opacity};
+        if (mlt_properties_anim_set_rect(props, "rect", rect, (mlt_position)key->local_frame,
+                                         (mlt_position)clip->timeline_duration_frames,
+                                         mlt_keyframe_linear) != 0) {
+            mlt_transition_close(transition);
+            set_err(err, err_size, "V2 affine opacity keyframeを設定できません");
+            return 1;
+        }
+    }
+    mlt_transition_set_tracks(transition, 0, 1);
+    if (mlt_field_plant_transition(mlt_tractor_field(tractor), transition, 0, 1) != 0) {
+        mlt_transition_close(transition);
+        set_err(err, err_size, "V2 affine transitionをV1/V2間へ配置できません");
+        return 1;
+    }
+    mlt_transition_close(transition);
+    return 0;
+}
+
 int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const MvmExportSpec* spec,
                             const char* out_path, MvmExportResult* out, char* err,
                             size_t err_size) {
@@ -486,4 +529,282 @@ fail:
     if (profile)
         mlt_profile_close(profile);
     return 1;
+}
+
+int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long long total_duration,
+                             const MvmExportSpec* spec, const char* out_path, MvmExportResult* out,
+                             char* err, size_t err_size) {
+    mlt_profile profile = NULL;
+    mlt_tractor tractor = NULL;
+    mlt_playlist playlists[2] = {NULL, NULL};
+    mlt_producer producers[MVM_EXPORT_MAX_CLIPS] = {NULL};
+    mlt_producer cuts[MVM_EXPORT_MAX_CLIPS] = {NULL};
+    int producer_count = 0;
+    int cut_count = 0;
+    mlt_consumer consumer = NULL;
+    long long cursors[2] = {0, 0};
+    int failed = 1;
+
+    if (out)
+        memset(out, 0, sizeof(*out));
+    if (!mvm_mlt_runtime_is_ready() || !clips || !spec || !out_path || !*out_path ||
+        clip_count <= 0 || clip_count > MVM_EXPORT_MAX_CLIPS || total_duration <= 0 ||
+        spec->width <= 0 || spec->height <= 0 || spec->fps_num <= 0 || spec->fps_den <= 0 ||
+        spec->timeout_ms <= 0) {
+        set_err(err, err_size, "M7b tractor export引数が不正です");
+        return 1;
+    }
+    for (int index = 0; index < clip_count; ++index) {
+        const MvmExportClip* clip = &clips[index];
+        if (!clip->path || !clip->path[0] || !file_exists_utf8(clip->path) ||
+            (clip->video_track != 0 && clip->video_track != 1) || clip->timeline_start_frame < 0 ||
+            clip->timeline_duration_frames <= 0 ||
+            clip->timeline_start_frame > total_duration - clip->timeline_duration_frames ||
+            clip->source_fps_num <= 0 || clip->source_fps_den <= 0 || clip->source_in_frame < 0 ||
+            clip->source_out_frame <= clip->source_in_frame || clip->crop_left < 0 ||
+            clip->crop_top < 0 || clip->crop_right < 0 || clip->crop_bottom < 0) {
+            set_err(err, err_size, "tractor clip %dのmappingが不正です", index);
+            return 1;
+        }
+        if (clip->timeline_start_frame < cursors[clip->video_track]) {
+            set_err(err, err_size, "tractor clip %dが同一trackで重複または未sortです", index);
+            return 1;
+        }
+        cursors[clip->video_track] = clip->timeline_start_frame + clip->timeline_duration_frames;
+        if ((clip->video_track == 1 || clip->effects_enabled) &&
+            (clip->opacity_keyframe_count <= 0 ||
+             clip->opacity_keyframe_count > MVM_EXPORT_MAX_OPACITY_KEYFRAMES ||
+             clip->rect_width <= 0.0 || clip->rect_height <= 0.0)) {
+            set_err(err, err_size, "clip %dのeffect/transition mappingが不正です", index);
+            return 1;
+        }
+        for (int key_index = 0; key_index < clip->opacity_keyframe_count; ++key_index) {
+            const MvmExportOpacityKeyframe* key = &clip->opacity_keyframes[key_index];
+            if (key->local_frame < 0 || key->local_frame >= clip->timeline_duration_frames ||
+                key->opacity < 0.0 || key->opacity > 1.0 ||
+                (key_index > 0 &&
+                 key->local_frame <= clip->opacity_keyframes[key_index - 1].local_frame)) {
+                set_err(err, err_size, "clip %dのopacity key domainが不正です", index);
+                return 1;
+            }
+        }
+        if (clip->video_track == 1 &&
+            (clip->opacity_keyframes[0].local_frame != 0 ||
+             clip->opacity_keyframes[clip->opacity_keyframe_count - 1].local_frame !=
+                 clip->timeline_duration_frames - 1)) {
+            set_err(err, err_size, "V2 clip %dのtransition-local端keyがありません", index);
+            return 1;
+        }
+    }
+
+    profile = mlt_profile_init(NULL);
+    if (!profile) {
+        set_err(err, err_size, "profileを作れません");
+        goto cleanup;
+    }
+    profile->width = spec->width;
+    profile->height = spec->height;
+    profile->frame_rate_num = spec->fps_num;
+    profile->frame_rate_den = spec->fps_den;
+    profile->sample_aspect_num = 1;
+    profile->sample_aspect_den = 1;
+    profile->display_aspect_num = spec->width;
+    profile->display_aspect_den = spec->height;
+    profile->progressive = 1;
+    profile->colorspace = 601;
+    if (profile->width != spec->width || profile->height != spec->height ||
+        profile->frame_rate_num != spec->fps_num || profile->frame_rate_den != spec->fps_den) {
+        set_err(err, err_size, "profileの実値が要求と一致しません");
+        goto cleanup;
+    }
+    {
+        mlt_repository repo = mlt_factory_repository();
+        if (!service_exists(mlt_repository_producers(repo), "avformat") ||
+            !service_exists(mlt_repository_consumers(repo), "avformat") ||
+            !service_exists(mlt_repository_filters(repo), "crop") ||
+            !service_exists(mlt_repository_filters(repo), "affine") ||
+            !service_exists(mlt_repository_transitions(repo), "affine")) {
+            set_err(err, err_size, "tractor exportに必要なcrop/affine/avformatがありません");
+            goto cleanup;
+        }
+    }
+
+    tractor = mlt_tractor_new();
+    playlists[0] = mlt_playlist_new(profile);
+    playlists[1] = mlt_playlist_new(profile);
+    if (!tractor || !playlists[0] || !playlists[1]) {
+        set_err(err, err_size, "tractorまたはV1/V2 playlistを作れません");
+        goto cleanup;
+    }
+    cursors[0] = 0;
+    cursors[1] = 0;
+    for (int index = 0; index < clip_count; ++index) {
+        const MvmExportClip* clip = &clips[index];
+        const int track = clip->video_track;
+        if (clip->timeline_start_frame > cursors[track]) {
+            if (mlt_playlist_blank(playlists[track], (mlt_position)(clip->timeline_start_frame -
+                                                                    cursors[track] - 1)) != 0) {
+                set_err(err, err_size, "track %dへblankを追加できません", track);
+                goto cleanup;
+            }
+            if (out)
+                ++out->playlist_blank_count;
+        }
+
+        mlt_producer parent = mlt_factory_producer(profile, NULL, clip->path);
+        if (!parent || mlt_producer_get_playtime(parent) <= 0) {
+            if (parent)
+                mlt_producer_close(parent);
+            set_err(err, err_size, "clip %dのproducerを開けません", index);
+            goto cleanup;
+        }
+        producers[producer_count++] = parent;
+        long long producer_in = 0;
+        long long producer_out = 0;
+        if (mvm_source_boundary_to_producer_boundary(clip->source_in_frame, clip->source_fps_num,
+                                                     clip->source_fps_den, spec->fps_num,
+                                                     spec->fps_den, &producer_in) != 0 ||
+            mvm_source_boundary_to_producer_boundary(clip->source_out_frame, clip->source_fps_num,
+                                                     clip->source_fps_den, spec->fps_num,
+                                                     spec->fps_den, &producer_out) != 0 ||
+            producer_out - producer_in != clip->timeline_duration_frames ||
+            producer_out > (long long)mlt_producer_get_playtime(parent)) {
+            set_err(err, err_size, "clip %dのcut尺がtimeline配置尺と一致しません", index);
+            goto cleanup;
+        }
+        mlt_producer cut =
+            mlt_producer_cut(parent, (mlt_position)producer_in, (mlt_position)(producer_out - 1));
+        if (!cut || mlt_producer_get_playtime(cut) != clip->timeline_duration_frames) {
+            if (cut)
+                mlt_producer_close(cut);
+            set_err(err, err_size, "clip %dの明示cutを作れません", index);
+            goto cleanup;
+        }
+        cuts[cut_count++] = cut;
+        if (track == 0 && clip->effects_enabled) {
+            if (attach_export_crop(profile, cut, clip, err, err_size) != 0 ||
+                attach_export_affine(profile, cut, clip, producer_in,
+                                     clip->timeline_duration_frames, err, err_size) != 0)
+                goto cleanup;
+        } else if (track == 1) {
+            /* V2へopaque-black affine filterをattachしてはならない。cropだけをcutへ置く。 */
+            if (attach_export_crop(profile, cut, clip, err, err_size) != 0)
+                goto cleanup;
+        }
+        if (mlt_playlist_append(playlists[track], cut) != 0) {
+            set_err(err, err_size, "clip %dをtrack %d playlistへ追加できません", index, track);
+            goto cleanup;
+        }
+        cursors[track] = clip->timeline_start_frame + clip->timeline_duration_frames;
+    }
+    for (int track = 0; track < 2; ++track) {
+        if (cursors[track] < total_duration) {
+            if (mlt_playlist_blank(playlists[track],
+                                   (mlt_position)(total_duration - cursors[track] - 1)) != 0) {
+                set_err(err, err_size, "track %dへ末尾blankを追加できません", track);
+                goto cleanup;
+            }
+            if (out)
+                ++out->playlist_blank_count;
+        }
+        mlt_properties_set_int(MLT_PLAYLIST_PROPERTIES(playlists[track]), "hide", 2);
+        if (mlt_tractor_set_track(tractor, MLT_PLAYLIST_PRODUCER(playlists[track]), track) != 0) {
+            set_err(err, err_size, "track %dをtractorへ設定できません", track);
+            goto cleanup;
+        }
+    }
+    for (int index = 0; index < clip_count; ++index) {
+        if (clips[index].video_track != 1)
+            continue;
+        if (plant_export_overlay_affine(profile, tractor, &clips[index], err, err_size) != 0)
+            goto cleanup;
+        if (out)
+            ++out->transition_count;
+    }
+
+    {
+        mlt_producer output = MLT_TRACTOR_PRODUCER(tractor);
+        if ((long long)mlt_producer_get_playtime(output) != total_duration) {
+            set_err(err, err_size, "tractor尺がProject timeline endと一致しません");
+            goto cleanup;
+        }
+        mlt_producer_set_in_and_out(output, 0, (mlt_position)(total_duration - 1));
+        mlt_producer_seek(output, 0);
+        consumer = mlt_factory_consumer(profile, "avformat", out_path);
+        if (!consumer) {
+            set_err(err, err_size, "avformat consumerを作れません");
+            goto cleanup;
+        }
+        mlt_properties cp = MLT_CONSUMER_PROPERTIES(consumer);
+        mlt_properties_set(cp, "target", out_path);
+        mlt_properties_set(cp, "f", "mp4");
+        mlt_properties_set(cp, "vcodec", "libx264");
+        mlt_properties_set(cp, "preset", "medium");
+        mlt_properties_set(cp, "crf", "23");
+        mlt_properties_set(cp, "pix_fmt", "yuv420p");
+        mlt_properties_set(cp, "movflags", "+faststart");
+        mlt_properties_set_int(cp, "an", 1);
+        mlt_properties_set_int(cp, "real_time", -1);
+        mlt_properties_set_int(cp, "terminate_on_pause", 1);
+        if (mlt_consumer_connect(consumer, MLT_PRODUCER_SERVICE(output)) != 0 ||
+            mlt_consumer_start(consumer) != 0) {
+            set_err(err, err_size, "tractor consumerを開始できません");
+            goto cleanup;
+        }
+    }
+    {
+        int waited = 0;
+        while (!mlt_consumer_is_stopped(consumer)) {
+            Sleep(20);
+            waited += 20;
+            if (waited >= spec->timeout_ms) {
+                set_err(err, err_size, "tractor consumerがtimeoutしました");
+                goto cleanup;
+            }
+        }
+    }
+    mlt_consumer_stop(consumer);
+    mlt_consumer_close(consumer);
+    consumer = NULL;
+    {
+        unsigned long long size = 0;
+        MvmMltProbeResult probe;
+        if (!file_size_utf8(out_path, &size) || size == 0 ||
+            mvm_mlt_probe_file(out_path, &probe) != 0 || !probe.ok || !probe.has_video ||
+            probe.frame_count <= 0) {
+            set_err(err, err_size, "tractor出力を検証できません");
+            goto cleanup;
+        }
+        if (out) {
+            out->frame_count = probe.frame_count;
+            out->duration_sec = probe.duration_sec;
+            out->width = probe.width;
+            out->height = probe.height;
+            out->fps_num = probe.fps_num;
+            out->fps_den = probe.fps_den;
+            out->used_tractor = 1;
+            out->opaque_black_affine_filter_count = 0;
+        }
+    }
+    failed = 0;
+
+cleanup:
+    if (consumer) {
+        mlt_consumer_stop(consumer);
+        mlt_consumer_close(consumer);
+    }
+    if (tractor)
+        mlt_tractor_close(tractor);
+    for (int track = 1; track >= 0; --track)
+        if (playlists[track])
+            mlt_playlist_close(playlists[track]);
+    for (int index = 0; index < cut_count; ++index)
+        if (cuts[index])
+            mlt_producer_close(cuts[index]);
+    for (int index = 0; index < producer_count; ++index)
+        if (producers[index])
+            mlt_producer_close(producers[index]);
+    if (profile)
+        mlt_profile_close(profile);
+    return failed;
 }

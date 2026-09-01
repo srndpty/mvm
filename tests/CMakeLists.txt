@@ -60,6 +60,18 @@ set_tests_properties(m4_timeline_export_focused PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 600)
 
+add_executable(mvm_test_timeline_export_mapping harness/test_timeline_export_mapping.cpp)
+target_link_libraries(mvm_test_timeline_export_mapping PRIVATE
+    mvm::timeline_export mvm::warnings)
+add_test(NAME m7b_3_timeline_export_mapping_focused COMMAND mvm_test_timeline_export_mapping)
+set_tests_properties(m7b_3_timeline_export_mapping_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+add_test(NAME m7b_3_product_export_architecture
+    COMMAND pwsh -NoProfile -File
+            ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-m7b-product-export-architecture.ps1)
+set_tests_properties(m7b_3_product_export_architecture PROPERTIES TIMEOUT 120)
+
 # --- M5: minimal timeline editing ------------------------------------------
 add_executable(mvm_test_timeline_edit harness/test_timeline_edit.cpp)
 target_link_libraries(mvm_test_timeline_edit PRIVATE

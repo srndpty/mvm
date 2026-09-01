@@ -19,22 +19,23 @@ std::string pathToUtf8(const std::filesystem::path& path) {
 }
 
 bool mapExportEffects(const project::TimelineClip& clip, const TimelineExportRequest& request,
-                      MvmExportClip& output, std::string& error) {
-    if (project::clipEffectsAreDefault(clip.effects))
+                      std::int64_t timelineDuration, bool requireOverlay,
+                      TimelineExportClipMapping& output, std::string& error) {
+    if (project::clipEffectsAreDefault(clip.effects) && !requireOverlay)
         return true;
     const auto mapped = project::mapClipEffects(clip.effects);
-    output.effects_enabled = 1;
-    output.crop_left = static_cast<int>(std::lround(mapped.sourceRect.x * request.width));
-    output.crop_top = static_cast<int>(std::lround(mapped.sourceRect.y * request.height));
-    output.crop_right = static_cast<int>(
+    output.effectsEnabled = !project::clipEffectsAreDefault(clip.effects);
+    output.cropLeft = static_cast<int>(std::lround(mapped.sourceRect.x * request.width));
+    output.cropTop = static_cast<int>(std::lround(mapped.sourceRect.y * request.height));
+    output.cropRight = static_cast<int>(
         std::lround((1.0 - mapped.sourceRect.x - mapped.sourceRect.width) * request.width));
-    output.crop_bottom = static_cast<int>(
+    output.cropBottom = static_cast<int>(
         std::lround((1.0 - mapped.sourceRect.y - mapped.sourceRect.height) * request.height));
-    output.rect_x = mapped.destinationRect.x * request.width;
-    output.rect_y = mapped.destinationRect.y * request.height;
-    output.rect_width = mapped.destinationRect.width * request.width;
-    output.rect_height = mapped.destinationRect.height * request.height;
-    output.rotation_degrees = mapped.rotationDegrees;
+    output.rectX = mapped.destinationRect.x * request.width;
+    output.rectY = mapped.destinationRect.y * request.height;
+    output.rectWidth = mapped.destinationRect.width * request.width;
+    output.rectHeight = mapped.destinationRect.height * request.height;
+    output.rotationDegrees = mapped.rotationDegrees;
 
     const std::int64_t duration = clip.sourceOutFrame - clip.sourceInFrame;
     std::set<std::int64_t> sourcePositions{0, duration - 1};
@@ -55,7 +56,7 @@ bool mapExportEffects(const project::TimelineClip& clip, const TimelineExportReq
         return false;
     }
     for (std::int64_t sourceLocal : sourcePositions) {
-        if (output.opacity_keyframe_count >= MVM_EXPORT_MAX_OPACITY_KEYFRAMES) {
+        if (output.opacityKeys.size() >= MVM_EXPORT_MAX_OPACITY_KEYFRAMES) {
             error = "effect opacity keyframe数が固定上限を超えました";
             return false;
         }
@@ -66,16 +67,74 @@ bool mapExportEffects(const project::TimelineClip& clip, const TimelineExportReq
             error = "effect keyframeのproducer位置を変換できません";
             return false;
         }
-        auto& key = output.opacity_keyframes[output.opacity_keyframe_count++];
-        key.local_frame = std::max<long long>(0, absoluteProducer - producerIn);
-        key.opacity =
+        const auto localFrame =
+            std::clamp<long long>(absoluteProducer - producerIn, 0, timelineDuration - 1);
+        const double opacity =
             mapped.baseOpacity *
             core::clipFadeFactor(sourceLocal, duration, mapped.fadeInFrames, mapped.fadeOutFrames);
+        if (!output.opacityKeys.empty() && output.opacityKeys.back().localFrame == localFrame)
+            output.opacityKeys.back().opacity = opacity;
+        else
+            output.opacityKeys.push_back({localFrame, opacity});
     }
     return true;
 }
 
 } // namespace
+
+TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
+                                         const TimelineExportRequest& request) {
+    TimelineExportPlan plan;
+    if (request.width <= 0 || request.height <= 0 || request.fpsNum <= 0 || request.fpsDen <= 0) {
+        plan.error = "書き出しprofileが不正です";
+        return plan;
+    }
+    const auto valid = project::validateTimeline(project);
+    if (!valid.success) {
+        plan.error = valid.error;
+        return plan;
+    }
+    plan.totalDurationFrames = valid.totalFrames;
+    bool anyV2 = false;
+    std::int64_t v1Cursor = 0;
+    std::vector<int> indices(project.timelineClips.size());
+    for (std::size_t index = 0; index < indices.size(); ++index)
+        indices[index] = static_cast<int>(index);
+    std::stable_sort(indices.begin(), indices.end(), [&](int left, int right) {
+        const auto& a = project.timelineClips[static_cast<std::size_t>(left)];
+        const auto& b = project.timelineClips[static_cast<std::size_t>(right)];
+        if (a.videoTrack != b.videoTrack)
+            return static_cast<int>(a.videoTrack) < static_cast<int>(b.videoTrack);
+        return a.timelineStartFrame < b.timelineStartFrame;
+    });
+    for (const int index : indices) {
+        const auto& clip = project.timelineClips[static_cast<std::size_t>(index)];
+        const auto duration = project::timelineClipDuration(project, clip);
+        if (!duration.success) {
+            plan.error = duration.error;
+            return plan;
+        }
+        TimelineExportClipMapping mapped;
+        mapped.projectClipIndex = index;
+        mapped.track = clip.videoTrack;
+        mapped.timelineStartFrame = clip.timelineStartFrame;
+        mapped.timelineDurationFrames = duration.frame;
+        const bool overlay = clip.videoTrack == project::VideoTrack::V2;
+        anyV2 = anyV2 || overlay;
+        if (!overlay) {
+            if (clip.timelineStartFrame != v1Cursor)
+                plan.backend = TimelineExportResult::Backend::Tractor;
+            v1Cursor = clip.timelineStartFrame + duration.frame;
+        }
+        if (!mapExportEffects(clip, request, duration.frame, overlay, mapped, plan.error))
+            return plan;
+        plan.clips.push_back(std::move(mapped));
+    }
+    if (anyV2)
+        plan.backend = TimelineExportResult::Backend::Tractor;
+    plan.success = true;
+    return plan;
+}
 
 TimelineExportResult exportTimeline(const project::Project& project,
                                     const TimelineExportRequest& request) {
@@ -89,9 +148,9 @@ TimelineExportResult exportTimeline(const project::Project& project,
         result.error = "timeline に clip がありません";
         return result;
     }
-    const auto timeline = project::validateTimeline(project);
-    if (!timeline.success) {
-        result.error = timeline.error;
+    const auto plan = mapTimelineExportPlan(project, request);
+    if (!plan.success) {
+        result.error = plan.error;
         return result;
     }
 
@@ -122,7 +181,8 @@ TimelineExportResult exportTimeline(const project::Project& project,
 
     std::vector<MvmExportClip> clips;
     clips.reserve(clipPaths.size());
-    for (std::size_t index = 0; index < clipPaths.size(); ++index) {
+    for (const auto& planned : plan.clips) {
+        const auto index = static_cast<std::size_t>(planned.projectClipIndex);
         const auto& clip = project.timelineClips[index];
         MvmExportClip mapped{};
         mapped.path = clipPaths[index].c_str();
@@ -130,8 +190,24 @@ TimelineExportResult exportTimeline(const project::Project& project,
         mapped.source_fps_den = clip.sourceFpsDen;
         mapped.source_in_frame = clip.sourceInFrame;
         mapped.source_out_frame = clip.sourceOutFrame;
-        if (!mapExportEffects(clip, request, mapped, result.error))
-            return result;
+        mapped.video_track = static_cast<int>(planned.track);
+        mapped.timeline_start_frame = planned.timelineStartFrame;
+        mapped.timeline_duration_frames = planned.timelineDurationFrames;
+        mapped.effects_enabled = planned.effectsEnabled ? 1 : 0;
+        mapped.crop_left = planned.cropLeft;
+        mapped.crop_top = planned.cropTop;
+        mapped.crop_right = planned.cropRight;
+        mapped.crop_bottom = planned.cropBottom;
+        mapped.rect_x = planned.rectX;
+        mapped.rect_y = planned.rectY;
+        mapped.rect_width = planned.rectWidth;
+        mapped.rect_height = planned.rectHeight;
+        mapped.rotation_degrees = planned.rotationDegrees;
+        for (const auto& plannedKey : planned.opacityKeys) {
+            auto& key = mapped.opacity_keyframes[mapped.opacity_keyframe_count++];
+            key.local_frame = plannedKey.localFrame;
+            key.opacity = plannedKey.opacity;
+        }
         clips.push_back(mapped);
     }
 
@@ -152,8 +228,14 @@ TimelineExportResult exportTimeline(const project::Project& project,
     const std::string temporaryUtf8 = pathToUtf8(temporaryPath);
     MvmExportResult exported{};
     char error[1024] = {0};
-    if (mvm_mlt_export_sequence(clips.data(), static_cast<int>(clips.size()), &spec,
-                                temporaryUtf8.c_str(), &exported, error, sizeof(error)) != 0) {
+    const int exportStatus =
+        plan.backend == TimelineExportResult::Backend::Sequential
+            ? mvm_mlt_export_sequence(clips.data(), static_cast<int>(clips.size()), &spec,
+                                      temporaryUtf8.c_str(), &exported, error, sizeof(error))
+            : mvm_mlt_export_two_track(clips.data(), static_cast<int>(clips.size()),
+                                       plan.totalDurationFrames, &spec, temporaryUtf8.c_str(),
+                                       &exported, error, sizeof(error));
+    if (exportStatus != 0) {
         std::filesystem::remove(temporaryPath, pathError);
         result.error = error[0] ? error : "書き出しに失敗しました";
         return result;
@@ -169,6 +251,10 @@ TimelineExportResult exportTimeline(const project::Project& project,
     result.outputPath = outputPath;
     result.frameCount = exported.frame_count;
     result.durationSec = exported.duration_sec;
+    result.backend = plan.backend;
+    result.playlistBlankCount = exported.playlist_blank_count;
+    result.transitionCount = exported.transition_count;
+    result.opaqueBlackAffineFilterCount = exported.opaque_black_affine_filter_count;
     result.success = true;
     return result;
 }

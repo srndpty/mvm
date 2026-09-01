@@ -114,6 +114,40 @@ bool generateEffectsFixture(const std::filesystem::path& ffmpeg,
                     output.c_str(), static_cast<wchar_t*>(nullptr)) == 0;
 }
 
+bool generateSolidFixture(const std::filesystem::path& ffmpeg, const std::filesystem::path& output,
+                          const wchar_t* color) {
+    const std::wstring source = std::wstring(L"color=c=") + color + L":s=320x240:r=60:d=2";
+    return _wspawnl(_P_WAIT, ffmpeg.c_str(), ffmpeg.c_str(), L"-y", L"-loglevel", L"error", L"-f",
+                    L"lavfi", L"-i", source.c_str(), L"-c:v", L"libx264", L"-preset", L"ultrafast",
+                    L"-crf", L"8", L"-pix_fmt", L"yuv420p", output.c_str(),
+                    static_cast<wchar_t*>(nullptr)) == 0;
+}
+
+struct Rgb {
+    int r = 0;
+    int g = 0;
+    int b = 0;
+};
+
+Rgb pixelAt(const std::filesystem::path& path, long long frame, int x, int y) {
+    MvmMltImage image{};
+    char error[512] = {};
+    if (mvm_mlt_decode_frame(toUtf8(path).c_str(), frame, &image, error, sizeof(error)) != 0 ||
+        !image.rgba || x < 0 || y < 0 || x >= image.width || y >= image.height) {
+        check(false, "overlay出力frameをdecodeできません");
+        return {};
+    }
+    const std::size_t offset =
+        (static_cast<std::size_t>(y) * image.width + static_cast<std::size_t>(x)) * 4;
+    const Rgb result{image.rgba[offset], image.rgba[offset + 1], image.rgba[offset + 2]};
+    mvm_mlt_image_free(&image);
+    return result;
+}
+
+bool blue(const Rgb& value) {
+    return value.b > 180 && value.r < 70 && value.g < 70;
+}
+
 struct EffectFrameMetrics {
     double mean = 0.0;
     int minX = 100000;
@@ -217,6 +251,8 @@ int main(int argc, char** argv) {
     check(std::filesystem::exists(outputPath), "出力 MP4 がありません");
     check(!std::filesystem::exists(std::filesystem::path(outputPath).concat(".mvmtmp")),
           "一時ファイルが残っています");
+    check(result.backend == mvm::app::TimelineExportResult::Backend::Sequential,
+          "contiguous V1-onlyが既存sequential fast pathを外れました");
 
     if (result.success) {
         MvmMltProbeResult probe{};
@@ -266,6 +302,112 @@ int main(int argc, char** argv) {
                 check(frameIsBlue(output, exported.frameCount - 1),
                       "trim出力の末尾が選択した青区間ではありません");
             }
+        }
+    }
+
+    // --- 3. 負: clip が 0 本 ----------------------------------------------
+    // --- M7b-3: 製品tractor経路の実MP4 overlay -----------------------------
+    {
+        const auto bottomPath = testDirectory / L"m7b-bottom.mp4";
+        const auto topPath = testDirectory / L"m7b-top.mp4";
+        check(generateSolidFixture(ffmpeg, bottomPath, L"blue"), "M7b V1 fixtureを生成できません");
+        check(generateSolidFixture(ffmpeg, topPath, L"red"), "M7b V2 fixtureを生成できません");
+        {
+            const std::string topUtf8 = toUtf8(topPath);
+            MvmExportClip invalid{};
+            invalid.path = topUtf8.c_str();
+            invalid.source_fps_num = 60;
+            invalid.source_fps_den = 1;
+            invalid.source_in_frame = 0;
+            invalid.source_out_frame = 10;
+            invalid.video_track = 1;
+            invalid.timeline_start_frame = 0;
+            invalid.timeline_duration_frames = 10;
+            invalid.rect_width = 320;
+            invalid.rect_height = 240;
+            invalid.opacity_keyframe_count = 2;
+            invalid.opacity_keyframes[0] = {1, 1.0}; // local 0を意図的に欠落させる
+            invalid.opacity_keyframes[1] = {9, 1.0};
+            const MvmExportSpec invalidSpec{320, 240, 60, 1, 10000};
+            char invalidError[512] = {};
+            const auto invalidOutput = testDirectory / L"m7b-invalid-key.mp4";
+            check(mvm_mlt_export_two_track(&invalid, 1, 10, &invalidSpec,
+                                           toUtf8(invalidOutput).c_str(), nullptr, invalidError,
+                                           sizeof(invalidError)) != 0,
+                  "transition-local端key欠落を拒否しません");
+            check(!std::filesystem::exists(invalidOutput),
+                  "invalid transition mappingで出力を生成しました");
+        }
+        mvm::project::Project overlaid;
+        mvm::project::TimelineClip bottom{mvm::project::TimelineClipKind::Video,
+                                          bottomPath,
+                                          "bottom",
+                                          "bottom-id",
+                                          60,
+                                          1,
+                                          120,
+                                          0,
+                                          120,
+                                          0};
+        bottom.videoTrack = mvm::project::VideoTrack::V1;
+        mvm::project::TimelineClip top{mvm::project::TimelineClipKind::Manim,
+                                       topPath,
+                                       "top",
+                                       "top-id",
+                                       60,
+                                       1,
+                                       120,
+                                       10,
+                                       70,
+                                       20};
+        top.videoTrack = mvm::project::VideoTrack::V2;
+        top.effects.scalePercent = 60;
+        top.effects.positionXPercent = 10;
+        top.effects.cropLeftPercent = 15;
+        top.effects.opacityPercent = 50;
+        top.effects.fadeInFrames = 10;
+        top.effects.fadeOutFrames = 10;
+        mvm::project::TimelineClip secondTop{mvm::project::TimelineClipKind::Manim,
+                                             topPath,
+                                             "top-2",
+                                             "top-2-id",
+                                             60,
+                                             1,
+                                             120,
+                                             80,
+                                             100,
+                                             90};
+        secondTop.videoTrack = mvm::project::VideoTrack::V2;
+        // vector順をtimeline authorityにしないことも実経路で踏む。
+        overlaid.timelineClips = {secondTop, top, bottom};
+        mvm::app::TimelineExportRequest overlayRequest;
+        overlayRequest.outputPath = testDirectory / L"m7b-product-overlay.mp4";
+        overlayRequest.width = 320;
+        overlayRequest.height = 240;
+        const auto exported = mvm::app::exportTimeline(overlaid, overlayRequest);
+        check(exported.success, "M7b product tractor overlayを書き出せません");
+        if (!exported.success)
+            std::fprintf(stderr, "  error: %s\n", exported.error.c_str());
+        check(exported.backend == mvm::app::TimelineExportResult::Backend::Tractor,
+              "M7b overlayがtractor経路を使用していません");
+        check(exported.playlistBlankCount == 3 && exported.transitionCount == 2,
+              "V2 playlist blankまたはclip単位transition数が不正です");
+        check(exported.opaqueBlackAffineFilterCount == 0,
+              "V2がopaque-black affine filterを使用しました");
+        if (exported.success) {
+            check(blue(pixelAt(overlayRequest.outputPath, 0, 160, 120)),
+                  "V2開始前にV1が表示されません");
+            check(blue(pixelAt(overlayRequest.outputPath, 20, 160, 120)),
+                  "V2 fade-in先頭がV1を透過しません");
+            const auto center = pixelAt(overlayRequest.outputPath, 45, 190, 120);
+            const auto corner = pixelAt(overlayRequest.outputPath, 45, 10, 10);
+            check(center.r > 70 && center.b > 70, "V2 opacity 50%がV1を透過する混色になりません");
+            check(blue(corner), "V2 scale/crop外側がV1を露出しません");
+            check(blue(pixelAt(overlayRequest.outputPath, 85, 160, 120)),
+                  "2本のV2 clip間gapへtransition/effectが漏れています");
+            const auto second = pixelAt(overlayRequest.outputPath, 95, 160, 120);
+            check(second.r > 180 && second.b < 80,
+                  "default V2 clipがoverlay transitionで表示されません");
         }
     }
 

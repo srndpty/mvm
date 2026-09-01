@@ -49,6 +49,9 @@ typedef struct {
     double rotation_degrees;
     MvmExportOpacityKeyframe opacity_keyframes[MVM_EXPORT_MAX_OPACITY_KEYFRAMES];
     int opacity_keyframe_count;
+    int video_track; /* 0=V1, 1=V2 */
+    long long timeline_start_frame;
+    long long timeline_duration_frames;
 } MvmExportClip;
 
 typedef struct {
@@ -69,6 +72,10 @@ typedef struct {
     int height;
     int fps_num;
     int fps_den;
+    int used_tractor;
+    int playlist_blank_count;
+    int transition_count;
+    int opaque_black_affine_filter_count;
 } MvmExportResult;
 
 /* 素材固有の frame 境界を MLT producer profile の frame 境界へ floor で変換する。
@@ -98,6 +105,11 @@ int mvm_source_boundary_to_producer_boundary(long long source_frame, long long s
  */
 int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const MvmExportSpec* spec,
                             const char* out_path, MvmExportResult* out, char* err, size_t err_size);
+
+/* M7b製品経路。2本の固定playlistとV2 clipごとのaffine transitionを使う。 */
+int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long long total_duration,
+                             const MvmExportSpec* spec, const char* out_path, MvmExportResult* out,
+                             char* err, size_t err_size);
 
 #ifdef __cplusplus
 }
