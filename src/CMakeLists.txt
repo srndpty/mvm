@@ -61,6 +61,13 @@ target_include_directories(mvm_timeline_playback PUBLIC ${CMAKE_CURRENT_SOURCE_D
 target_link_libraries(mvm_timeline_playback PUBLIC mvm::project PRIVATE mvm::warnings)
 add_library(mvm::timeline_playback ALIAS mvm_timeline_playback)
 
+add_library(mvm_timeline_preview_mapping STATIC
+    app/timeline_preview_mapping.cpp
+)
+target_include_directories(mvm_timeline_preview_mapping PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_timeline_preview_mapping PUBLIC mvm::project PRIVATE mvm::warnings)
+add_library(mvm::timeline_preview_mapping ALIAS mvm_timeline_preview_mapping)
+
 # --- M4: timeline export orchestration --------------------------------------
 # Qt に依存しない。Project の clip 列を解決し、tmp へ書き出して検証してから
 # 正規名へ rename する順序だけを担う。MLT の呼び出しは mvm::mlt に閉じる。

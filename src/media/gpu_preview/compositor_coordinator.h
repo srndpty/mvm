@@ -92,6 +92,9 @@ public:
     CompositionStateId compositionState() const;
     CompositionResult compose(long long outputFrameNumber,
                               const std::vector<DecodedGpuFrame>& frames, ComposedFrame& out);
+    CompositionResult composeEnvelopes(long long outputFrameNumber,
+                                       const std::vector<DecodedFrameEnvelope>& frames,
+                                       ComposedFrame& out);
     CompositionResult validateForDisplay(const ComposedFrame& frame) const;
 
     long long mixedSourceFrameCount() const;
@@ -101,8 +104,7 @@ public:
 
 private:
     friend struct CompositorCoordinatorTestAccess;
-    CompositionResult validateLocked(long long outputFrameNumber,
-                                     const std::vector<DecodedGpuFrame>& frames) const;
+    CompositionResult validateSourcesLocked(const std::vector<DecodedGpuFrame>& frames) const;
     mutable std::mutex mutex_;
     std::vector<LayerLayout> layout_;
     std::map<SourceId, SourceGeneration> generations_;

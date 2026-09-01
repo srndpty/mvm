@@ -186,8 +186,7 @@ CompositionStateId CompositorCoordinator::compositionState() const {
 }
 
 CompositionResult
-CompositorCoordinator::validateLocked(long long outputFrameNumber,
-                                      const std::vector<DecodedGpuFrame>& frames) const {
+CompositorCoordinator::validateSourcesLocked(const std::vector<DecodedGpuFrame>& frames) const {
     if (!configured_)
         return CompositionResult::MissingSource;
     if (frames.size() != layout_.size())
@@ -199,8 +198,6 @@ CompositorCoordinator::validateLocked(long long outputFrameNumber,
             return CompositionResult::UnknownSource;
         if (!seen.insert(frame.sourceId).second)
             return CompositionResult::MissingSource;
-        if (frame.frameNumber != outputFrameNumber)
-            return CompositionResult::MixedFrame;
         if (frame.sourceGeneration < expected->second)
             return CompositionResult::StaleGeneration;
         if (expected->second < frame.sourceGeneration)
@@ -212,8 +209,28 @@ CompositorCoordinator::validateLocked(long long outputFrameNumber,
 CompositionResult CompositorCoordinator::compose(long long outputFrameNumber,
                                                  const std::vector<DecodedGpuFrame>& frames,
                                                  ComposedFrame& out) {
+    std::vector<DecodedFrameEnvelope> envelopes;
+    envelopes.reserve(frames.size());
+    for (const auto& frame : frames)
+        envelopes.push_back({frame.frameNumber, frame});
+    return composeEnvelopes(outputFrameNumber, envelopes, out);
+}
+
+CompositionResult
+CompositorCoordinator::composeEnvelopes(long long outputFrameNumber,
+                                        const std::vector<DecodedFrameEnvelope>& frames,
+                                        ComposedFrame& out) {
     std::lock_guard<std::mutex> lock(mutex_);
-    const CompositionResult result = validateLocked(outputFrameNumber, frames);
+    std::vector<DecodedGpuFrame> decodedFrames;
+    decodedFrames.reserve(frames.size());
+    for (const auto& envelope : frames) {
+        if (envelope.outputFrameNumber != outputFrameNumber) {
+            ++mixedFrame_;
+            return CompositionResult::MixedFrame;
+        }
+        decodedFrames.push_back(envelope.frame);
+    }
+    const CompositionResult result = validateSourcesLocked(decodedFrames);
     if (result != CompositionResult::Accepted) {
         if (result == CompositionResult::MissingSource)
             ++missing_;
@@ -229,9 +246,9 @@ CompositionResult CompositorCoordinator::compose(long long outputFrameNumber,
     out.compositionEpoch = epoch_; // mutable global への参照ではなく値で固定
     out.compositionState = state_;
     for (const auto& spec : layout_) {
-        const auto it = std::find_if(frames.begin(), frames.end(), [&](const auto& frame) {
-            return frame.sourceId == spec.sourceId;
-        });
+        const auto it =
+            std::find_if(decodedFrames.begin(), decodedFrames.end(),
+                         [&](const auto& frame) { return frame.sourceId == spec.sourceId; });
         CompositionLayerFrame layer;
         layer.frame = *it;
         layer.destination = spec.destination;
@@ -256,7 +273,7 @@ CompositionResult CompositorCoordinator::validateForDisplay(const ComposedFrame&
     frames.reserve(frame.layers.size());
     for (const auto& layer : frame.layers)
         frames.push_back(layer.frame);
-    return validateLocked(frame.outputFrameNumber, frames);
+    return validateSourcesLocked(frames);
 }
 
 long long CompositorCoordinator::mixedSourceFrameCount() const {

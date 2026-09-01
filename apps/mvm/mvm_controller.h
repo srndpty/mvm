@@ -6,6 +6,8 @@
 
 #include <memory>
 #include <optional>
+#include <array>
+#include <vector>
 
 #include <QAbstractItemModel>
 #include <QElapsedTimer>
@@ -159,6 +161,7 @@ private:
     const project::ClipEffects& currentEffects() const;
     bool submitClipComposition(preview::PreviewSourceId source, const project::TimelineClip& clip,
                                QString& error);
+    bool syncPreviewSourcesAt(std::int64_t timelineFrame, QString& error);
     bool refreshCurrentClipEffectsPreview(QString& error);
     void refreshTimelineModel();
     bool generateAndInstallManimClip(const std::filesystem::path& scriptPath,
@@ -182,6 +185,13 @@ private:
     PreviewEngineRhiItem* previewSurface_ = nullptr;
     std::optional<preview::PreviewSourceId> currentSource_;
     std::optional<preview::PreviewSourceId> staleSource_;
+    struct TrackPreviewSource {
+        preview::PreviewSourceId source;
+        std::string clipId;
+        int clipIndex = -1;
+    };
+    std::array<std::optional<TrackPreviewSource>, 2> trackSources_;
+    std::vector<preview::PreviewSourceId> retiredSources_;
     QString statusText_ = QStringLiteral("Previewを初期化しています");
     QString currentClipName_;
     QString currentClipPath_;

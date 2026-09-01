@@ -1971,6 +1971,15 @@ target_link_libraries(mvm_test_gpu_pure PRIVATE mvm::gpu_preview mvm::warnings)
 # mvm_add_test を使う。ucrt64in を PATH に入れないと
 # 依存 DLL が解決できず 0xC0000135 で落ちる (実際に落ちた)。
 mvm_add_test(gpu_pure_unit COMMAND mvm_test_gpu_pure)
+mvm_add_test(m7b_output_source_identity_architecture
+    COMMAND pwsh -NoProfile -File
+            ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-m7b-output-source-identity-architecture.ps1)
+
+add_executable(mvm_test_timeline_preview_mapping harness/test_timeline_preview_mapping.cpp)
+target_link_libraries(mvm_test_timeline_preview_mapping PRIVATE
+    mvm::timeline_preview_mapping mvm::warnings)
+mvm_add_test(m7b_2_timeline_preview_mapping_focused
+    COMMAND mvm_test_timeline_preview_mapping)
 
 # P2-Q4はproduction schedulerを変更せず、offline modelの契約を先に固定する。
 add_executable(mvm_test_p2_render_opportunity

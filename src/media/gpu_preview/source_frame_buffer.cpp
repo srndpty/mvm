@@ -10,10 +10,15 @@ SourceFrameBuffer::SourceFrameBuffer(SourceId source, SourceGeneration generatio
     : source_(source), generation_(generation), capacity_(capacity == 0 ? 1 : capacity) {}
 
 SubmitResult SourceFrameBuffer::submitFrame(const DecodedGpuFrame& frame) {
+    return submitFrameForOutput(frame, frame.frameNumber);
+}
+
+SubmitResult SourceFrameBuffer::submitFrameForOutput(const DecodedGpuFrame& frame,
+                                                     long long outputFrameNumber) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (stopped_)
         return SubmitResult::RejectedNotReady;
-    if (!frame.valid() || frame.sourceId != source_)
+    if (!frame.valid() || frame.sourceId != source_ || outputFrameNumber < 0)
         return SubmitResult::RejectedInvalidFrame;
     if (frame.sourceGeneration < generation_)
         return SubmitResult::RejectedStaleGeneration;
@@ -21,7 +26,7 @@ SubmitResult SourceFrameBuffer::submitFrame(const DecodedGpuFrame& frame) {
         return SubmitResult::RejectedFutureGeneration;
     if (frames_.size() >= capacity_)
         return SubmitResult::RejectedQueueFull;
-    frames_.push_back(frame);
+    frames_.push_back({outputFrameNumber, frame});
     changed_.notify_all();
     return SubmitResult::Accepted;
 }
@@ -59,7 +64,7 @@ bool SourceFrameBuffer::take(DecodedGpuFrame& frame) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (frames_.empty())
         return false;
-    frame = std::move(frames_.front());
+    frame = std::move(frames_.front().frame);
     frames_.pop_front();
     changed_.notify_all();
     return true;
@@ -69,15 +74,23 @@ bool SourceFrameBuffer::peekFrontIdentity(SourceFrameIdentity& identity) const {
     std::lock_guard<std::mutex> lock(mutex_);
     if (frames_.empty())
         return false;
-    identity = identityOf(frames_.front());
+    identity = identityOf(frames_.front().frame);
+    return true;
+}
+
+bool SourceFrameBuffer::peekFrontOutputFrameNumber(long long& outputFrameNumber) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (frames_.empty())
+        return false;
+    outputFrameNumber = frames_.front().outputFrameNumber;
     return true;
 }
 
 bool SourceFrameBuffer::takeExact(long long frameNumber, DecodedGpuFrame& frame) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (frames_.empty() || frames_.front().frameNumber != frameNumber)
+    if (frames_.empty() || frames_.front().outputFrameNumber != frameNumber)
         return false;
-    frame = std::move(frames_.front());
+    frame = std::move(frames_.front().frame);
     frames_.pop_front();
     changed_.notify_all();
     return true;
@@ -85,6 +98,21 @@ bool SourceFrameBuffer::takeExact(long long frameNumber, DecodedGpuFrame& frame)
 
 bool SourceFrameBuffer::takeExactAll(const std::vector<SourceFrameBuffer*>& sources,
                                      long long frameNumber, std::vector<DecodedGpuFrame>& frames) {
+    std::vector<DecodedFrameEnvelope> envelopes;
+    if (!takeExactEnvelopes(sources, frameNumber, envelopes)) {
+        frames.clear();
+        return false;
+    }
+    frames.clear();
+    frames.reserve(envelopes.size());
+    for (auto& envelope : envelopes)
+        frames.push_back(std::move(envelope.frame));
+    return true;
+}
+
+bool SourceFrameBuffer::takeExactEnvelopes(const std::vector<SourceFrameBuffer*>& sources,
+                                           long long outputFrameNumber,
+                                           std::vector<DecodedFrameEnvelope>& frames) {
     frames.clear();
     if (sources.empty())
         return false;
@@ -116,7 +144,8 @@ bool SourceFrameBuffer::takeExactAll(const std::vector<SourceFrameBuffer*>& sour
     // 全sourceのfrontが一致するまでは一つも消費しない。partial consumeを許すと
     // 片側だけ進んだbufferがexact pairを永久に成立させなくなる。
     for (SourceFrameBuffer* source : ordered) {
-        if (source->frames_.empty() || source->frames_.front().frameNumber != frameNumber)
+        if (source->frames_.empty() ||
+            source->frames_.front().outputFrameNumber != outputFrameNumber)
             return false;
     }
 
@@ -144,7 +173,7 @@ bool SourceFrameBuffer::takeExactPair(SourceFrameBuffer& a, SourceFrameBuffer& b
 size_t SourceFrameBuffer::discardBefore(long long frameNumber) {
     std::lock_guard<std::mutex> lock(mutex_);
     size_t discarded = 0;
-    while (!frames_.empty() && frames_.front().frameNumber < frameNumber) {
+    while (!frames_.empty() && frames_.front().outputFrameNumber < frameNumber) {
         frames_.pop_front();
         ++discarded;
     }
@@ -232,8 +261,8 @@ SourceFrameBufferSnapshot SourceFrameBuffer::snapshot() const {
     result.depth = frames_.size();
     result.stopped = stopped_;
     if (!frames_.empty()) {
-        result.frontFrame = frames_.front().frameNumber;
-        result.backFrame = frames_.back().frameNumber;
+        result.frontFrame = frames_.front().outputFrameNumber;
+        result.backFrame = frames_.back().outputFrameNumber;
     }
     return result;
 }

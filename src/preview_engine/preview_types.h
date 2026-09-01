@@ -25,6 +25,18 @@ struct PreviewPosition {
     bool operator==(const PreviewPosition&) const = default;
 };
 
+struct PreviewSourceFrameRequest {
+    PreviewSourceId source;
+    std::int64_t sourceFrameNumber = -1;
+    bool operator==(const PreviewSourceFrameRequest&) const = default;
+};
+
+struct PreviewFrameRequest {
+    std::int64_t outputFrameNumber = -1;
+    std::vector<PreviewSourceFrameRequest> sources;
+    bool operator==(const PreviewFrameRequest&) const = default;
+};
+
 struct PreviewOutputConfig {
     PreviewFrameRate frameRate;
 };

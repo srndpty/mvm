@@ -4,6 +4,7 @@
 #include "app/preview/preview_engine_rhi_item.h"
 #include "app/timeline_export.h"
 #include "app/timeline_playback.h"
+#include "app/timeline_preview_mapping.h"
 #include "media/mlt/mvm_mlt_probe.h"
 #include "project/project_json.h"
 #include "project/timeline_edit.h"
@@ -233,6 +234,8 @@ bool MvmController::resetPreviewEngine() {
 
     currentSource_.reset();
     staleSource_.reset();
+    trackSources_ = {};
+    retiredSources_.clear();
     previewReady_ = false;
     if (previewSurface_)
         previewSurface_->setEngine(previewEngine_);
@@ -392,6 +395,16 @@ void MvmController::pollPreviewState() {
     if (!previewEngine_)
         return;
     const auto status = previewEngine_->status();
+    if (status.lastPresentedComposition == status.latestAcceptedDesiredComposition &&
+        !retiredSources_.empty()) {
+        const auto pendingRetirement = std::move(retiredSources_);
+        retiredSources_.clear();
+        for (const auto source : pendingRetirement) {
+            const auto removed = previewEngine_->removeSource(source);
+            if (!removed)
+                retiredSources_.push_back(source);
+        }
+    }
     const bool ready = status.state == preview::PreviewEngineState::ReadyPaused ||
                        status.state == preview::PreviewEngineState::Playing;
     if (previewReady_ != ready) {
@@ -440,50 +453,136 @@ bool MvmController::installVideoClip(const std::filesystem::path& videoPath,
         return false;
     }
 
-    if (staleSource_) {
-        const auto removed = previewEngine_->removeSource(*staleSource_);
-        if (!removed) {
-            setStatus(QStringLiteral("以前のclip sourceを解放できません: ") +
-                      previewErrorText(removed.error()));
-            return false;
-        }
-        staleSource_.reset();
-    }
-
-    preview::PreviewSourceDescriptor descriptor;
-    descriptor.mediaPath = videoPath;
-    descriptor.videoEnabled = true;
-    descriptor.audioEnabled = false;
-    const auto added = previewEngine_->addSource(descriptor);
-    if (!added) {
-        setStatus(QStringLiteral("生成videoをPreviewで開けません: ") +
-                  previewErrorText(added.error()));
-        return false;
-    }
-
     QString compositionError;
-    if (clipIndex < 0 || clipIndex >= static_cast<int>(project_.timelineClips.size()) ||
-        !submitClipComposition(added.value(),
-                               project_.timelineClips[static_cast<std::size_t>(clipIndex)],
-                               compositionError)) {
-        previewEngine_->removeSource(added.value());
+    if (clipIndex < 0 || clipIndex >= static_cast<int>(project_.timelineClips.size())) {
         setStatus(QStringLiteral("生成videoをcompositionへ追加できません: ") + compositionError);
         return false;
     }
-
-    const auto sought = previewEngine_->seek({sourceFrame});
-    if (!sought) {
-        setStatus(QStringLiteral("Previewをseekできません: ") + previewErrorText(sought.error()));
+    const auto& clip = project_.timelineClips[static_cast<std::size_t>(clipIndex)];
+    const std::int64_t timelineFrame =
+        clip.timelineStartFrame + (sourceFrame - clip.sourceInFrame);
+    if (!syncPreviewSourcesAt(timelineFrame, compositionError)) {
+        setStatus(QStringLiteral("生成videoをcompositionへ追加できません: ") + compositionError);
         return false;
     }
-
-    staleSource_ = currentSource_;
-    currentSource_ = added.value();
     currentClipName_ = clipName;
     currentClipPath_ = fromPath(videoPath);
     currentClipIndex_ = clipIndex;
+    currentSource_.reset();
+    for (const auto& slot : trackSources_)
+        if (slot && slot->clipIndex == currentClipIndex_)
+            currentSource_ = slot->source;
     statusText_ = clipName + QStringLiteral(" を表示しています");
     Q_EMIT stateChanged();
+    return true;
+}
+
+bool MvmController::syncPreviewSourcesAt(std::int64_t timelineFrame, QString& error) {
+    const auto mappedFrame = mapTimelinePreviewFrame(project_, timelineFrame);
+    if (!mappedFrame.success) {
+        error = QString::fromStdString(mappedFrame.error);
+        return false;
+    }
+    std::array<const project::TimelineClip*, 2> active{};
+    for (const auto& mapping : mappedFrame.layers)
+        active[static_cast<std::size_t>(mapping.track)] =
+            &project_.timelineClips[static_cast<std::size_t>(mapping.clipIndex)];
+    auto candidateSources = trackSources_;
+    std::vector<preview::PreviewSourceId> newlyAdded;
+
+    for (std::size_t track = 0; track < active.size(); ++track) {
+        const project::TimelineClip* clip = active[track];
+        if (!clip) {
+            candidateSources[track].reset();
+            continue;
+        }
+        const int clipIndex = static_cast<int>(clip - project_.timelineClips.data());
+        if (candidateSources[track] && candidateSources[track]->clipId == clip->id)
+            continue;
+        if (!std::filesystem::is_regular_file(clip->mediaPath)) {
+            error = QString::fromStdString(clip->name) + QStringLiteral(" のファイルがありません: ") +
+                    fromPath(clip->mediaPath);
+            return false;
+        }
+        if (!project::sourceRateMatchesTimelineRate(project_, *clip)) {
+            error = QString::fromStdString(clip->name) +
+                    QStringLiteral(" は60fpsではないためPreview未対応です");
+            return false;
+        }
+        preview::PreviewSourceDescriptor descriptor;
+        descriptor.mediaPath = clip->mediaPath;
+        descriptor.videoEnabled = true;
+        const auto added = previewEngine_->addSource(descriptor);
+        if (!added) {
+            error = previewErrorText(added.error());
+            for (const auto source : newlyAdded)
+                previewEngine_->removeSource(source);
+            return false;
+        }
+        newlyAdded.push_back(added.value());
+        candidateSources[track] = TrackPreviewSource{added.value(), clip->id, clipIndex};
+    }
+
+    auto composition = std::make_shared<preview::CompositionSnapshot>();
+    preview::PreviewFrameRequest request;
+    request.outputFrameNumber = timelineFrame;
+    for (std::size_t track = 0; track < active.size(); ++track) {
+        const project::TimelineClip* clip = active[track];
+        if (!clip || !candidateSources[track])
+            continue;
+        preview::PreviewCompositionLayer layer;
+        layer.source = candidateSources[track]->source;
+        if (!project::clipEffectsAreDefault(clip->effects)) {
+            const auto mapped = project::mapClipEffects(clip->effects);
+            layer.destination = {static_cast<float>(mapped.destinationRect.x),
+                                 static_cast<float>(mapped.destinationRect.y),
+                                 static_cast<float>(mapped.destinationRect.width),
+                                 static_cast<float>(mapped.destinationRect.height)};
+            layer.sourceRect = {static_cast<float>(mapped.sourceRect.x),
+                                static_cast<float>(mapped.sourceRect.y),
+                                static_cast<float>(mapped.sourceRect.width),
+                                static_cast<float>(mapped.sourceRect.height)};
+            layer.opacity = static_cast<float>(mapped.baseOpacity);
+            layer.effectsEnabled = true;
+            layer.rotationDegrees = static_cast<float>(mapped.rotationDegrees);
+            layer.sourceInFrame = clip->sourceInFrame;
+            layer.sourceDurationFrames = clip->sourceOutFrame - clip->sourceInFrame;
+            layer.fadeInFrames = mapped.fadeInFrames;
+            layer.fadeOutFrames = mapped.fadeOutFrames;
+        }
+        // activeClipsAtはV1,V2の順なので、この挿入順がbottom/top authorityになる。
+        composition->layers.push_back(layer);
+        const auto& layerMapping = *std::find_if(
+            mappedFrame.layers.begin(), mappedFrame.layers.end(), [track](const auto& mapping) {
+                return static_cast<std::size_t>(mapping.track) == track;
+            });
+        request.sources.push_back(
+            {candidateSources[track]->source, layerMapping.sourceFrameNumber});
+    }
+    const auto submitted = previewEngine_->submitComposition(composition);
+    if (!submitted) {
+        error = previewErrorText(submitted.error());
+        for (const auto source : newlyAdded)
+            previewEngine_->removeSource(source);
+        return false;
+    }
+    const auto sought = previewEngine_->seekFrameRequest(request);
+    if (!sought) {
+        error = previewErrorText(sought.error());
+        return false;
+    }
+    for (std::size_t track = 0; track < trackSources_.size(); ++track) {
+        if (trackSources_[track] &&
+            (!candidateSources[track] ||
+             trackSources_[track]->source != candidateSources[track]->source))
+            retiredSources_.push_back(trackSources_[track]->source);
+    }
+    trackSources_ = std::move(candidateSources);
+    currentSource_.reset();
+    for (const auto& slot : trackSources_)
+        if (slot && slot->clipIndex == currentClipIndex_)
+            currentSource_ = slot->source;
+    error.clear();
     return true;
 }
 
@@ -526,19 +625,7 @@ bool MvmController::refreshCurrentClipEffectsPreview(QString& error) {
         error = QStringLiteral("選択clipがありません");
         return false;
     }
-    if (!currentSource_)
-        return seekTimelineFrame(playheadFrame_);
-    const auto& clip = project_.timelineClips[static_cast<std::size_t>(currentClipIndex_)];
-    if (!submitClipComposition(*currentSource_, clip, error))
-        return false;
-    const std::int64_t sourceFrame =
-        clip.sourceInFrame + (playheadFrame_ - clip.timelineStartFrame);
-    const auto sought = previewEngine_->seek({sourceFrame});
-    if (!sought) {
-        error = previewErrorText(sought.error());
-        return false;
-    }
-    return true;
+    return syncPreviewSourcesAt(playheadFrame_, error);
 }
 
 bool MvmController::generateManimClip(const QUrl& scriptUrl, const QString& sceneName) {
@@ -761,90 +848,54 @@ bool MvmController::seekTimelineFrame(qint64 frame) {
     }
     const qint64 clamped = std::clamp<qint64>(frame, 0, totalTimelineFrames_ - 1);
     playheadFrame_ = clamped;
-    const int index = project::timelineClipIndexAtFrame(project_, clamped);
-    Q_EMIT stateChanged();
+    const auto active = project::activeClipsAt(project_, clamped);
+    int index = -1;
+    // 選択clipがactiveなら維持し、それ以外はV2を優先してinspector対象にする。
+    for (const auto* clip : active)
+        if (clip && static_cast<int>(clip - project_.timelineClips.data()) == currentClipIndex_)
+            index = currentClipIndex_;
     if (index < 0) {
-        setStatus(QStringLiteral("playhead位置にclipがありません"));
+        const auto* selected = active[1] ? active[1] : active[0];
+        if (selected)
+            index = static_cast<int>(selected - project_.timelineClips.data());
+    }
+    Q_EMIT stateChanged();
+    if (previewEngine_->status().state != preview::PreviewEngineState::ReadyPaused) {
+        setStatus(QStringLiteral("Previewがseek可能になるまで待ってください"));
         return false;
     }
-    const project::TimelineClip& clip = project_.timelineClips[static_cast<std::size_t>(index)];
-    const QString clipName = QString::fromStdString(clip.name);
-    if (!std::filesystem::is_regular_file(clip.mediaPath)) {
-        setStatus(clipName + QStringLiteral(" のファイルがありません: ") +
-                  fromPath(clip.mediaPath));
+    QString error;
+    if (!syncPreviewSourcesAt(clamped, error)) {
+        setStatus(QStringLiteral("Previewをseekできません: ") + error);
         return false;
     }
-
-    if (!project::sourceRateMatchesTimelineRate(project_, clip)) {
-        pendingVideoPath_.reset();
-        pendingClipName_.clear();
-        pendingClipIndex_ = -1;
-        pendingSourceFrame_ = 0;
-        resetPreviewEngine();
-        currentSource_.reset();
-        staleSource_.reset();
-        currentClipIndex_ = index;
-        currentClipName_ = clipName;
-        currentClipPath_.clear();
-        setStatus(
-            clipName +
-            QStringLiteral(" は60fpsではないためPreview未対応です。編集・保存・Exportは可能です"));
-        return true;
-    }
-
-    const std::int64_t sourceFrame = clip.sourceInFrame + (clamped - clip.timelineStartFrame);
-    if (currentSource_ && currentClipIndex_ == index) {
-        const auto state = previewEngine_->status().state;
-        if (state != preview::PreviewEngineState::ReadyPaused) {
-            setStatus(QStringLiteral("Previewがseek可能になるまで待ってください"));
-            return false;
-        }
-        const auto sought = previewEngine_->seek({sourceFrame});
-        if (!sought) {
-            setStatus(QStringLiteral("Previewをseekできません: ") +
-                      previewErrorText(sought.error()));
-            return false;
-        }
-        currentClipName_ = clipName;
+    currentClipIndex_ = index;
+    if (index >= 0) {
+        const auto& clip = project_.timelineClips[static_cast<std::size_t>(index)];
+        currentClipName_ = QString::fromStdString(clip.name);
         currentClipPath_ = fromPath(clip.mediaPath);
-        setStatus(clipName + QStringLiteral(" を表示しています"));
-        return true;
+        currentSource_.reset();
+        for (const auto& slot : trackSources_)
+            if (slot && slot->clipIndex == index)
+                currentSource_ = slot->source;
+        setStatus(currentClipName_ + QStringLiteral(" を表示しています"));
+    } else {
+        currentSource_.reset();
+        currentClipName_.clear();
+        currentClipPath_.clear();
+        setStatus(QStringLiteral("timeline gapを表示しています"));
     }
-
-    const preview::PreviewEngineState previewState = previewEngine_->status().state;
-    if (previewState == preview::PreviewEngineState::ReadyPaused) {
-        return installVideoClip(clip.mediaPath, clipName, index, sourceFrame);
-    }
-    queueVideoClipInstall(clip.mediaPath, clipName, index, sourceFrame);
-    setStatus(QStringLiteral("Previewの準備を待っています"));
     return true;
 }
 
 bool MvmController::prepareTimelineFrameForPlayback(int clipIndex, std::int64_t timelineFrame) {
-    if (clipIndex < 0 || clipIndex >= static_cast<int>(project_.timelineClips.size())) {
-        setStatus(QStringLiteral("再生するtimeline clipがありません"));
+    (void)clipIndex;
+    QString error;
+    if (!syncPreviewSourcesAt(timelineFrame, error)) {
+        setStatus(QStringLiteral("Previewを準備できません: ") + error);
         return false;
     }
-    const auto& clip = project_.timelineClips[static_cast<std::size_t>(clipIndex)];
-    if (!std::filesystem::is_regular_file(clip.mediaPath)) {
-        setStatus(QString::fromStdString(clip.name) + QStringLiteral(" のファイルがありません: ") +
-                  fromPath(clip.mediaPath));
-        return false;
-    }
-    const std::int64_t sourceFrame = clip.sourceInFrame + (timelineFrame - clip.timelineStartFrame);
-    const QString clipName = QString::fromStdString(clip.name);
-    if (currentSource_ && currentClipIndex_ == clipIndex) {
-        const auto sought = previewEngine_->seek({sourceFrame});
-        if (!sought) {
-            setStatus(QStringLiteral("Previewをseekできません: ") +
-                      previewErrorText(sought.error()));
-            return false;
-        }
-        currentClipName_ = clipName;
-        currentClipPath_ = fromPath(clip.mediaPath);
-        return true;
-    }
-    return installVideoClip(clip.mediaPath, clipName, clipIndex, sourceFrame);
+    return true;
 }
 
 bool MvmController::queuePreparedPlayback(int clipIndex, std::int64_t timelineFrame) {
@@ -907,11 +958,11 @@ bool MvmController::playTimeline() {
                   previewStateText(previewState));
         return false;
     }
-    const int clipIndex = project::timelineClipIndexAtFrame(project_, playheadFrame_);
-    if (clipIndex < 0) {
-        setStatus(QStringLiteral("playhead位置に再生可能なclipがありません"));
-        return false;
-    }
+    const auto active = project::activeClipsAt(project_, playheadFrame_);
+    const auto* selected = active[1] ? active[1] : active[0];
+    const int clipIndex = selected
+                              ? static_cast<int>(selected - project_.timelineClips.data())
+                              : -1;
     return queuePreparedPlayback(clipIndex, playheadFrame_);
 }
 
@@ -940,14 +991,29 @@ void MvmController::advanceTimelinePlayback() {
         stopPlaybackWithError(QString::fromStdString(mapped.error));
         return;
     }
-    const auto step = evaluateTimelinePlayback(project_, playbackClipIndex_, mapped.frame);
-    if (!step.success) {
-        stopPlaybackWithError(QString::fromStdString(step.error));
+    const std::int64_t frame = std::min(mapped.frame, totalTimelineFrames_);
+    if (frame >= totalTimelineFrames_) {
+        playbackTimer_.stop();
+        playbackClock_.invalidate();
+        previewEngine_->pause();
+        playheadFrame_ = totalTimelineFrames_;
+        playing_ = false;
+        playbackClipIndex_ = -1;
+        statusText_ = QStringLiteral("timeline終端まで再生しました");
+        Q_EMIT stateChanged();
         return;
     }
-    if (step.transition == TimelinePlaybackTransition::StayInClip) {
-        if (playheadFrame_ != step.frame) {
-            playheadFrame_ = step.frame;
+    const auto active = project::activeClipsAt(project_, frame);
+    bool sameSourceSet = true;
+    for (std::size_t track = 0; track < active.size(); ++track) {
+        const std::string desired = active[track] ? active[track]->id : std::string{};
+        const std::string installed = trackSources_[track] ? trackSources_[track]->clipId
+                                                          : std::string{};
+        sameSourceSet = sameSourceSet && desired == installed;
+    }
+    if (sameSourceSet) {
+        if (playheadFrame_ != frame) {
+            playheadFrame_ = frame;
             Q_EMIT stateChanged();
         }
         return;
@@ -961,16 +1027,12 @@ void MvmController::advanceTimelinePlayback() {
                               previewErrorText(paused.error()));
         return;
     }
-    playheadFrame_ = step.frame;
-    if (step.transition == TimelinePlaybackTransition::Finished) {
-        playing_ = false;
-        playbackClipIndex_ = -1;
-        statusText_ = QStringLiteral("timeline終端まで再生しました");
-        Q_EMIT stateChanged();
-        return;
-    }
-
-    if (!queuePreparedPlayback(step.clipIndex, step.frame)) {
+    playheadFrame_ = frame;
+    const auto* selected = active[1] ? active[1] : active[0];
+    const int nextClip = selected
+                             ? static_cast<int>(selected - project_.timelineClips.data())
+                             : -1;
+    if (!queuePreparedPlayback(nextClip, frame)) {
         stopPlaybackWithError(QStringLiteral("次のclipへ切り替えられません: ") + statusText_);
         return;
     }
