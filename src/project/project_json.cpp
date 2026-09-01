@@ -620,6 +620,7 @@ private:
         bool hasSourceOut = false;
         bool hasTimelineStart = false;
         bool hasEffects = false;
+        bool hasVideoTrack = false;
         std::string kind;
         std::string media;
 
@@ -671,6 +672,14 @@ private:
                     if (hasTimelineStart || !parseInteger64(clip.timelineStartFrame))
                         return fail("timeline clip の timeline_start_frame が重複または不正です");
                     hasTimelineStart = true;
+                } else if (key == "video_track") {
+                    std::int64_t videoTrack = -1;
+                    if (hasVideoTrack || !parseInteger64(videoTrack) || videoTrack < 0 ||
+                        videoTrack > 1) {
+                        return fail("timeline clip の video_track が重複または不正です");
+                    }
+                    clip.videoTrack = static_cast<VideoTrack>(videoTrack);
+                    hasVideoTrack = true;
                 } else if (key == "effects") {
                     if (hasEffects || !parseClipEffects(clip.effects))
                         return fail("timeline clip の effects が重複または不正です");
@@ -695,6 +704,9 @@ private:
             return fail("timeline clip の name が空です");
         if (!parseClipKind(kind, clip.kind))
             return false;
+        // schema 2互換契約: video_track欠損は明示的にV1として読む。
+        if (!hasVideoTrack)
+            clip.videoTrack = VideoTrack::V1;
         clip.mediaPath = pathFromUtf8(media);
         return true;
     }
@@ -851,6 +863,7 @@ ProjectIoResult saveProjectJson(const Project& project, const std::filesystem::p
              << "      \"source_in_frame\": " << clip.sourceInFrame << ",\n"
              << "      \"source_out_frame\": " << clip.sourceOutFrame << ",\n"
              << "      \"timeline_start_frame\": " << clip.timelineStartFrame << ",\n"
+             << "      \"video_track\": " << static_cast<int>(clip.videoTrack) << ",\n"
              << "      \"effects\": {\n"
              << "        \"position_x_percent\": " << clip.effects.positionXPercent << ",\n"
              << "        \"position_y_percent\": " << clip.effects.positionYPercent << ",\n"

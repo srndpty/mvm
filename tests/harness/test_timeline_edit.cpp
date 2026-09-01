@@ -141,8 +141,11 @@ void testValidationFailures() {
     check(!mvm::project::validateTimeline(emptyRange).success, "duration 0のclipを拒否しません");
 
     auto gap = threeClips();
-    gap.timelineClips[1].timelineStartFrame = 301;
-    check(!mvm::project::validateTimeline(gap).success, "timeline gapを拒否しません");
+    gap.timelineClips[0].timelineStartFrame = 0;
+    gap.timelineClips[1].timelineStartFrame = 400;
+    gap.timelineClips[2].timelineStartFrame = 800;
+    const auto gapResult = mvm::project::validateTimeline(gap);
+    check(gapResult.success && gapResult.totalFrames == 1100, "timeline gapを受理しません");
 }
 
 void testDeleteSelection() {

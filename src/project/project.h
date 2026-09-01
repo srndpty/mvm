@@ -21,6 +21,7 @@ struct ManimAsset {
 };
 
 enum class TimelineClipKind { Video, Manim };
+enum class VideoTrack { V1 = 0, V2 = 1 };
 
 struct TimelineClip {
     TimelineClipKind kind = TimelineClipKind::Video;
@@ -34,6 +35,7 @@ struct TimelineClip {
     std::int64_t sourceOutFrame = 0;     // exclusive、素材固有 frame domain
     std::int64_t timelineStartFrame = 0; // Project timebase
     ClipEffects effects;
+    VideoTrack videoTrack = VideoTrack::V1;
     bool operator==(const TimelineClip&) const = default;
 };
 

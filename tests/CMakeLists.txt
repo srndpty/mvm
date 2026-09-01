@@ -170,6 +170,17 @@ set_tests_properties(m7b_p0_summary_contract PROPERTIES
     LABELS m7b-p0
     TIMEOUT 120)
 
+# --- M7b-1: fixed two-track Project model and schema-2 persistence ---------
+add_executable(mvm_test_two_track_project harness/test_two_track_project.cpp)
+target_link_libraries(mvm_test_two_track_project PRIVATE
+    mvm::project mvm::util mvm::warnings)
+add_test(NAME m7b_1_two_track_project_focused
+    COMMAND mvm_test_two_track_project "${CMAKE_CURRENT_BINARY_DIR}/m7b-1-two-track-project")
+set_tests_properties(m7b_1_two_track_project_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS m7b-1
+    TIMEOUT 120)
+
 add_executable(mvm_test_clip_effects harness/test_clip_effects.cpp)
 target_link_libraries(mvm_test_clip_effects PRIVATE mvm::project mvm::warnings)
 add_test(NAME m7a_1_clip_effects_focused
