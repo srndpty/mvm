@@ -43,9 +43,17 @@ struct LayerLayout {
     RectF sourceUv{};
     float opacity = 1.0f;
     int zOrder = 0;
+    bool effectsEnabled = false;
+    float rotationDegrees = 0.0f;
+    long long sourceInFrame = 0;
+    long long sourceDurationFrames = 0;
+    long long fadeInFrames = 0;
+    long long fadeOutFrames = 0;
 };
 
 struct CompositorCoordinatorTestAccess;
+
+float resolveLayerOpacity(const LayerLayout& layout, long long decodedSourceFrame);
 
 class CompositorCoordinator {
 public:

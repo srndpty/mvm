@@ -44,6 +44,17 @@ class MvmController final : public QObject {
     Q_PROPERTY(bool playing READ playing NOTIFY stateChanged)
     Q_PROPERTY(bool canPlay READ canPlay NOTIFY stateChanged)
     Q_PROPERTY(bool canExport READ canExport NOTIFY stateChanged)
+    Q_PROPERTY(double effectPositionX READ effectPositionX NOTIFY stateChanged)
+    Q_PROPERTY(double effectPositionY READ effectPositionY NOTIFY stateChanged)
+    Q_PROPERTY(double effectScale READ effectScale NOTIFY stateChanged)
+    Q_PROPERTY(double effectRotation READ effectRotation NOTIFY stateChanged)
+    Q_PROPERTY(double effectOpacity READ effectOpacity NOTIFY stateChanged)
+    Q_PROPERTY(double effectCropLeft READ effectCropLeft NOTIFY stateChanged)
+    Q_PROPERTY(double effectCropTop READ effectCropTop NOTIFY stateChanged)
+    Q_PROPERTY(double effectCropRight READ effectCropRight NOTIFY stateChanged)
+    Q_PROPERTY(double effectCropBottom READ effectCropBottom NOTIFY stateChanged)
+    Q_PROPERTY(qint64 effectFadeIn READ effectFadeIn NOTIFY stateChanged)
+    Q_PROPERTY(qint64 effectFadeOut READ effectFadeOut NOTIFY stateChanged)
 
 public:
     MvmController(std::filesystem::path projectPath, std::filesystem::path manimExecutablePath,
@@ -95,6 +106,18 @@ public:
 
     bool canExport() const { return !project_.timelineClips.empty() && !busy_; }
 
+    double effectPositionX() const;
+    double effectPositionY() const;
+    double effectScale() const;
+    double effectRotation() const;
+    double effectOpacity() const;
+    double effectCropLeft() const;
+    double effectCropTop() const;
+    double effectCropRight() const;
+    double effectCropBottom() const;
+    qint64 effectFadeIn() const;
+    qint64 effectFadeOut() const;
+
     Q_INVOKABLE bool generateManimClip(const QUrl& scriptUrl, const QString& sceneName);
     Q_INVOKABLE bool regenerateManimClip();
     Q_INVOKABLE bool addManimToTimeline();
@@ -104,12 +127,15 @@ public:
     Q_INVOKABLE bool playTimeline();
     Q_INVOKABLE bool pauseTimeline();
     Q_INVOKABLE bool reorderClip(const QString& clipId, int destinationIndex);
-    Q_INVOKABLE bool trimClip(const QString& clipId, const QString& edge,
-                              qint64 projectFrameDelta);
+    Q_INVOKABLE bool trimClip(const QString& clipId, const QString& edge, qint64 projectFrameDelta);
     Q_INVOKABLE bool moveCurrentClipLeft();
     Q_INVOKABLE bool moveCurrentClipRight();
     Q_INVOKABLE bool deleteCurrentClip();
     Q_INVOKABLE bool exportTimeline(const QUrl& outputUrl);
+    Q_INVOKABLE bool applyCurrentClipEffects(double positionX, double positionY, double scale,
+                                             double rotation, double opacity, double cropLeft,
+                                             double cropTop, double cropRight, double cropBottom,
+                                             qint64 fadeInSourceFrames, qint64 fadeOutSourceFrames);
 
 public Q_SLOTS:
     void shutdown();
@@ -130,6 +156,10 @@ private:
     bool syncManimTimelineClip(bool addIfMissing);
     bool moveCurrentClip(int offset);
     bool saveProject(project::Project candidate, const QString& failurePrefix);
+    const project::ClipEffects& currentEffects() const;
+    bool submitClipComposition(preview::PreviewSourceId source, const project::TimelineClip& clip,
+                               QString& error);
+    bool refreshCurrentClipEffectsPreview(QString& error);
     void refreshTimelineModel();
     bool generateAndInstallManimClip(const std::filesystem::path& scriptPath,
                                      const QString& sceneName, bool requirePreviewReady);

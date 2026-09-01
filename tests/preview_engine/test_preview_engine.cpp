@@ -392,6 +392,24 @@ void compositionDomains() {
                        PreviewErrorCategory::CompositionFailure, "invalid opacityをacceptしました");
     }
 
+    PreviewCompositionLayer effectLayer =
+        layer(1, {-0.25F, 0.1F, 0.8F, 0.8F}, {0.1F, 0.2F, 0.7F, 0.6F}, 0.5F);
+    effectLayer.effectsEnabled = true;
+    effectLayer.rotationDegrees = 30.0F;
+    effectLayer.sourceInFrame = 100;
+    effectLayer.sourceDurationFrames = 60;
+    effectLayer.fadeInFrames = 10;
+    effectLayer.fadeOutFrames = 12;
+    CompositionAcceptanceState effectState;
+    require(effectState.submit(snapshot({effectLayer}), sources, capabilities),
+            "M7a effect layerの画面外destinationとsource-native timingをrejectしました");
+    effectLayer.fadeInFrames = 50;
+    effectLayer.fadeOutFrames = 20;
+    CompositionAcceptanceState invalidEffectState;
+    requireFailure(invalidEffectState.submit(snapshot({effectLayer}), sources, capabilities),
+                   PreviewErrorCategory::CompositionFailure,
+                   "重なるsource-native FadeをPreview mappingがacceptしました");
+
     // 各fieldを独立に壊す。代表fieldだけの検査では、他fieldの有限性検査漏れを検出できない。
     for (int field = 0; field < 4; ++field) {
         for (float value : {nan, inf, -inf}) {

@@ -1,6 +1,8 @@
 #ifndef MVM_PROJECT_PROJECT_H
 #define MVM_PROJECT_PROJECT_H
 
+#include "project/clip_effects.h"
+
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -31,6 +33,7 @@ struct TimelineClip {
     std::int64_t sourceInFrame = 0;      // inclusive、素材固有 frame domain
     std::int64_t sourceOutFrame = 0;     // exclusive、素材固有 frame domain
     std::int64_t timelineStartFrame = 0; // Project timebase
+    ClipEffects effects;
     bool operator==(const TimelineClip&) const = default;
 };
 

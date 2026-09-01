@@ -1697,6 +1697,24 @@ void testHwFormatSelection() {
     checkEq(chooseHwPixelFormat(nullptr, 0), -1, "null 候補で落ちない");
 }
 
+void testM7aSourceNativeFadeAuthority() {
+    std::fprintf(stderr, "[M7a source-native fade]\n");
+    LayerLayout effect;
+    effect.opacity = 0.8f;
+    effect.effectsEnabled = true;
+    effect.sourceInFrame = 100;
+    effect.sourceDurationFrames = 20;
+    effect.fadeInFrames = 12;
+    const long long decodedSourceFrame = 110;
+    const long long unrelatedOutputOrdinal = 2;
+    const float actual = resolveLayerOpacity(effect, decodedSourceFrame);
+    const float wrong = resolveLayerOpacity(effect, effect.sourceInFrame + unrelatedOutputOrdinal);
+    check(std::abs(actual - wrong) > 0.1f,
+          "FadeはPreview output ordinalではなくdecoded source frameをauthorityにする");
+    check(std::abs(actual - 0.8f * (10.0f / 11.0f)) < 0.0001f,
+          "FadeはsourceFrame-sourceInFrameとsource-native durationで評価する");
+}
+
 } // namespace
 
 int main() {
@@ -1724,6 +1742,7 @@ int main() {
     testSourceSeekMailbox();
     testMeasurementPreroll();
     testHwFormatSelection();
+    testM7aSourceNativeFadeAuthority();
 
     std::fprintf(stderr, "\n検査 %d 件 / 失敗 %d 件\n", gChecks, gFailures);
     if (gChecks == 0) {

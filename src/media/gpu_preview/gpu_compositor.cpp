@@ -141,14 +141,16 @@ bool GpuCompositor::prepareComposition(const ComposedFrame& frame,
         return false;
     }
     for (const auto& layer : frame.layers) {
+        const bool legacyGeometryInvalid =
+            !layer.effectsEnabled && (layer.destination.x < 0 || layer.destination.y < 0 ||
+                                      layer.destination.x + layer.destination.width > 1.0f ||
+                                      layer.destination.y + layer.destination.height > 1.0f);
         if (!layer.frame.valid() || layer.destination.width <= 0 || layer.destination.height <= 0 ||
-            layer.destination.x < 0 || layer.destination.y < 0 ||
-            layer.destination.x + layer.destination.width > 1.0f ||
-            layer.destination.y + layer.destination.height > 1.0f || layer.sourceUv.width <= 0 ||
-            layer.sourceUv.height <= 0 || layer.sourceUv.x < 0 || layer.sourceUv.y < 0 ||
+            legacyGeometryInvalid || layer.sourceUv.width <= 0 || layer.sourceUv.height <= 0 ||
+            layer.sourceUv.x < 0 || layer.sourceUv.y < 0 ||
             layer.sourceUv.x + layer.sourceUv.width > 1.0f ||
             layer.sourceUv.y + layer.sourceUv.height > 1.0f || layer.opacity < 0.0f ||
-            layer.opacity > 1.0f) {
+            layer.opacity > 1.0f || !std::isfinite(layer.rotationDegrees)) {
             err = "composition layerの値が不正です";
             return false;
         }
@@ -271,8 +273,15 @@ bool GpuCompositor::issueComposition(const ComposedFrame& frame,
         const bool injectedFailure = testFaults_.failBeforeLayerDraw == layerIndex;
         if (injectedFailure)
             err = "test fault: issue開始後のlayer描画失敗";
-        if (injectedFailure || !converter_.drawLayer(layer.frame, target.rtv, destination, uv,
-                                                     layer.opacity, true, err)) {
+        const bool drawn =
+            !injectedFailure &&
+            (layer.effectsEnabled
+                 ? converter_.drawEffectLayer(layer.frame, target.rtv, target.width, target.height,
+                                              destination, uv, layer.opacity, layer.rotationDegrees,
+                                              true, err)
+                 : converter_.drawLayer(layer.frame, target.rtv, destination, uv, layer.opacity,
+                                        true, err));
+        if (injectedFailure || !drawn) {
             ++counters_.partialGpuIssueFailureCount;
             const SubmissionResult partial = completion_.signalSubmission();
             if (partial.tracked()) {

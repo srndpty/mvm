@@ -110,13 +110,90 @@ static int file_size_utf8(const char* path, unsigned long long* size) {
     return 1;
 }
 
+static int attach_export_crop(mlt_profile profile, mlt_producer cut, const MvmExportClip* clip,
+                              char* err, size_t err_size) {
+    if (clip->crop_left == 0 && clip->crop_top == 0 && clip->crop_right == 0 &&
+        clip->crop_bottom == 0)
+        return 0;
+    mlt_filter parameters = mlt_factory_filter(profile, "crop", NULL);
+    mlt_filter active = mlt_factory_filter(profile, "crop", NULL);
+    if (!parameters || !active) {
+        if (parameters)
+            mlt_filter_close(parameters);
+        if (active)
+            mlt_filter_close(active);
+        set_err(err, err_size, "必須filter 'crop'を2 instance作れません");
+        return 1;
+    }
+    mlt_properties props = MLT_FILTER_PROPERTIES(parameters);
+    mlt_properties_set_int(props, "active", 0);
+    mlt_properties_set_int(props, "use_profile", 1);
+    mlt_properties_set_int(props, "left", clip->crop_left);
+    mlt_properties_set_int(props, "top", clip->crop_top);
+    mlt_properties_set_int(props, "right", clip->crop_right);
+    mlt_properties_set_int(props, "bottom", clip->crop_bottom);
+    mlt_properties_set_int(MLT_FILTER_PROPERTIES(active), "active", 1);
+    if (mlt_producer_attach(cut, parameters) != 0 || mlt_producer_attach(cut, active) != 0) {
+        mlt_filter_close(parameters);
+        mlt_filter_close(active);
+        set_err(err, err_size, "crop filter pairをclipへattachできません");
+        return 1;
+    }
+    mlt_filter_close(parameters);
+    mlt_filter_close(active);
+    return 0;
+}
+
+static int attach_export_affine(mlt_profile profile, mlt_producer cut, const MvmExportClip* clip,
+                                long long producer_in, long long duration, char* err,
+                                size_t err_size) {
+    mlt_filter filter = mlt_factory_filter(profile, "affine", NULL);
+    if (!filter) {
+        set_err(err, err_size, "必須filter 'affine'を作れません");
+        return 1;
+    }
+    mlt_properties props = MLT_FILTER_PROPERTIES(filter);
+    mlt_properties_set(props, "background", "colour:#000000");
+    mlt_properties_set_int(props, "transition.fill", 1);
+    mlt_properties_set_int(props, "transition.distort", 1);
+    mlt_properties_set_int(props, "transition.b_alpha", 0);
+    mlt_properties_set_int(props, "transition.repeat_off", 1);
+    mlt_properties_set_int(props, "transition.mirror_off", 1);
+    mlt_properties_set(props, "transition.halign", "center");
+    mlt_properties_set(props, "transition.valign", "middle");
+    mlt_properties_set_double(props, "transition.fix_rotate_z", clip->rotation_degrees);
+    mlt_filter_set_in_and_out(filter, (mlt_position)producer_in,
+                              (mlt_position)(producer_in + duration - 1));
+    for (int i = 0; i < clip->opacity_keyframe_count; ++i) {
+        const MvmExportOpacityKeyframe* key = &clip->opacity_keyframes[i];
+        mlt_rect rect = {clip->rect_x, clip->rect_y, clip->rect_width, clip->rect_height,
+                         key->opacity};
+        if (mlt_properties_anim_set_rect(props, "transition.rect", rect,
+                                         (mlt_position)key->local_frame, (mlt_position)duration,
+                                         mlt_keyframe_linear) != 0) {
+            mlt_filter_close(filter);
+            set_err(err, err_size, "affine opacity animationを設定できません");
+            return 1;
+        }
+    }
+    if (mlt_producer_attach(cut, filter) != 0) {
+        mlt_filter_close(filter);
+        set_err(err, err_size, "affine filterをclipへattachできません");
+        return 1;
+    }
+    mlt_filter_close(filter);
+    return 0;
+}
+
 int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const MvmExportSpec* spec,
                             const char* out_path, MvmExportResult* out, char* err,
                             size_t err_size) {
     mlt_profile profile = NULL;
     mlt_playlist playlist = NULL;
     mlt_producer producers[MVM_EXPORT_MAX_CLIPS];
+    mlt_producer cuts[MVM_EXPORT_MAX_CLIPS];
     int producer_count = 0;
+    int cut_count = 0;
     mlt_consumer consumer = NULL;
     mlt_producer pp = NULL;
     long long total = 0;
@@ -161,6 +238,13 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
             set_err(err, err_size, "clip %d の source range または FPS が不正です", i);
             return 1;
         }
+        if (clips[i].effects_enabled &&
+            (clips[i].opacity_keyframe_count <= 0 ||
+             clips[i].opacity_keyframe_count > MVM_EXPORT_MAX_OPACITY_KEYFRAMES ||
+             clips[i].rect_width <= 0.0 || clips[i].rect_height <= 0.0)) {
+            set_err(err, err_size, "clip %d のeffect mappingが不正です", i);
+            return 1;
+        }
     }
 
     /* --- profile ----------------------------------------------------------
@@ -201,6 +285,14 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
         if (!service_exists(mlt_repository_consumers(repo), "avformat")) {
             set_err(err, err_size, "必須 consumer 'avformat' がありません");
             goto fail;
+        }
+        for (int i = 0; i < clip_count; ++i) {
+            if (clips[i].effects_enabled &&
+                (!service_exists(mlt_repository_filters(repo), "crop") ||
+                 !service_exists(mlt_repository_filters(repo), "affine"))) {
+                set_err(err, err_size, "effectに必要なfilter crop/affineがありません");
+                goto fail;
+            }
         }
     }
 
@@ -245,10 +337,33 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
                     producer_out_exclusive, playtime);
             goto fail;
         }
-        if (mlt_playlist_append_io(playlist, p, (mlt_position)producer_in,
-                                   (mlt_position)(producer_out_exclusive - 1)) != 0) {
-            set_err(err, err_size, "clip %d を playlist へ追加できません: %s", i, clips[i].path);
-            goto fail;
+        if (!clips[i].effects_enabled) {
+            if (mlt_playlist_append_io(playlist, p, (mlt_position)producer_in,
+                                       (mlt_position)(producer_out_exclusive - 1)) != 0) {
+                set_err(err, err_size, "clip %d を playlist へ追加できません: %s", i,
+                        clips[i].path);
+                goto fail;
+            }
+        } else {
+            const long long duration = producer_out_exclusive - producer_in;
+            mlt_producer cut = mlt_producer_cut(p, (mlt_position)producer_in,
+                                                (mlt_position)(producer_out_exclusive - 1));
+            if (!cut || mlt_producer_get_playtime(cut) != duration) {
+                if (cut)
+                    mlt_producer_close(cut);
+                set_err(err, err_size, "clip %d のeffect用cutを作れません", i);
+                goto fail;
+            }
+            cuts[cut_count++] = cut;
+            if (attach_export_crop(profile, cut, &clips[i], err, err_size) != 0 ||
+                attach_export_affine(profile, cut, &clips[i], producer_in, duration, err,
+                                     err_size) != 0) {
+                goto fail;
+            }
+            if (mlt_playlist_append(playlist, cut) != 0) {
+                set_err(err, err_size, "effect付きclipをplaylistへ追加できません");
+                goto fail;
+            }
         }
     }
 
@@ -349,6 +464,8 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
         }
     }
 
+    for (int i = 0; i < cut_count; i++)
+        mlt_producer_close(cuts[i]);
     for (int i = 0; i < producer_count; i++)
         mlt_producer_close(producers[i]);
     mlt_playlist_close(playlist);
@@ -360,6 +477,8 @@ fail:
         mlt_consumer_stop(consumer);
         mlt_consumer_close(consumer);
     }
+    for (int i = 0; i < cut_count; i++)
+        mlt_producer_close(cuts[i]);
     for (int i = 0; i < producer_count; i++)
         mlt_producer_close(producers[i]);
     if (playlist)

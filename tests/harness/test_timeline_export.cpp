@@ -15,6 +15,7 @@
 #include "project/project.h"
 #include "util/mvm_win_utf8.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -98,6 +99,57 @@ bool frameIsBlue(const std::filesystem::path& path, long long frame) {
     if (!(blue > 180 && red < 80))
         std::fprintf(stderr, "  frame %lld RGBA先頭=%d,%d,%d\n", frame, red, green, blue);
     return blue > 180 && red < 80;
+}
+
+bool generateEffectsFixture(const std::filesystem::path& ffmpeg,
+                            const std::filesystem::path& output) {
+    const wchar_t* filter = L"drawbox=x=0:y=0:w=iw:h=20:color=red:t=fill,"
+                            L"drawbox=x=0:y=ih-20:w=iw:h=20:color=blue:t=fill,"
+                            L"drawbox=x=0:y=20:w=20:h=ih-40:color=green:t=fill,"
+                            L"drawbox=x=iw-20:y=20:w=20:h=ih-40:color=yellow:t=fill,"
+                            L"drawbox=x=150:y=110:w=20:h=20:color=magenta:t=fill";
+    return _wspawnl(_P_WAIT, ffmpeg.c_str(), ffmpeg.c_str(), L"-y", L"-loglevel", L"error", L"-f",
+                    L"lavfi", L"-i", L"color=c=gray:s=320x240:r=60:d=2", L"-vf", filter, L"-c:v",
+                    L"libx264", L"-preset", L"ultrafast", L"-crf", L"8", L"-pix_fmt", L"yuv420p",
+                    output.c_str(), static_cast<wchar_t*>(nullptr)) == 0;
+}
+
+struct EffectFrameMetrics {
+    double mean = 0.0;
+    int minX = 100000;
+    int minY = 100000;
+    int maxX = -1;
+    int maxY = -1;
+};
+
+EffectFrameMetrics effectMetrics(const std::filesystem::path& path, long long frame) {
+    EffectFrameMetrics result;
+    MvmMltImage image{};
+    char error[512] = {};
+    if (mvm_mlt_decode_frame(toUtf8(path).c_str(), frame, &image, error, sizeof(error)) != 0 ||
+        !image.rgba) {
+        check(false, "effect出力frameをdecodeできません");
+        return result;
+    }
+    double sum = 0.0;
+    for (int y = 0; y < image.height; ++y) {
+        for (int x = 0; x < image.width; ++x) {
+            const std::size_t offset =
+                (static_cast<std::size_t>(y) * image.width + static_cast<std::size_t>(x)) * 4;
+            const int brightness =
+                image.rgba[offset] + image.rgba[offset + 1] + image.rgba[offset + 2];
+            sum += brightness;
+            if (brightness > 45) {
+                result.minX = std::min(result.minX, x);
+                result.minY = std::min(result.minY, y);
+                result.maxX = std::max(result.maxX, x);
+                result.maxY = std::max(result.maxY, y);
+            }
+        }
+    }
+    result.mean = sum / static_cast<double>(image.width * image.height * 3);
+    mvm_mlt_image_free(&image);
+    return result;
 }
 
 } // namespace
@@ -214,6 +266,47 @@ int main(int argc, char** argv) {
                 check(frameIsBlue(output, exported.frameCount - 1),
                       "trim出力の末尾が選択した青区間ではありません");
             }
+        }
+    }
+
+    // --- 3. 負: clip が 0 本 ----------------------------------------------
+    // --- M7a-2: 製品exportの固定effect chain -------------------------------
+    {
+        const auto source = testDirectory / L"m7a-effects-source.mp4";
+        check(generateEffectsFixture(ffmpeg, source), "M7a effect fixtureを生成できません");
+        mvm::project::Project effected;
+        effected.timelineClips.push_back({mvm::project::TimelineClipKind::Manim, source, "effects",
+                                          "effects-id", 60, 1, 120, 10, 70, 0});
+        auto& effects = effected.timelineClips.front().effects;
+        effects.cropLeftPercent = 10;
+        effects.cropTopPercent = 10;
+        effects.cropRightPercent = 20;
+        effects.cropBottomPercent = 5;
+        effects.scalePercent = 60;
+        effects.positionXPercent = 12;
+        effects.positionYPercent = -8;
+        effects.rotationDegrees = 25;
+        effects.opacityPercent = 50;
+        effects.fadeInFrames = 10;
+        effects.fadeOutFrames = 10;
+        mvm::app::TimelineExportRequest effectRequest;
+        effectRequest.outputPath = testDirectory / L"m7a-effects.mp4";
+        effectRequest.width = 320;
+        effectRequest.height = 240;
+        const auto exported = mvm::app::exportTimeline(effected, effectRequest);
+        check(exported.success, "M7a effect付きclipを書き出せません");
+        if (!exported.success)
+            std::fprintf(stderr, "  error: %s\n", exported.error.c_str());
+        if (exported.success) {
+            const auto first = effectMetrics(effectRequest.outputPath, 0);
+            const auto middle = effectMetrics(effectRequest.outputPath, 30);
+            const auto last = effectMetrics(effectRequest.outputPath, exported.frameCount - 1);
+            check(middle.mean > 5.0, "effect出力の中間frameが空です");
+            check(first.mean < middle.mean * 0.2 && last.mean < middle.mean * 0.2,
+                  "source-native Fade In/Outが実画素へ反映されません");
+            check(middle.maxX > middle.minX && middle.maxY > middle.minY &&
+                      middle.maxX - middle.minX < 230 && middle.maxY - middle.minY < 210,
+                  "非zoom crop/scale/rotationの外接矩形が反映されません");
         }
     }
 

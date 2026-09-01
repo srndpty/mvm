@@ -273,9 +273,32 @@ bool runSingleLayerProductCases(OwnedDevice& owned, ReadbackCounters& readbacks,
                              straightAlphaBlend(right, {0, 0, 0, 255}, 0.5), err))
         return false;
 
+    std::fprintf(stderr, "[m7a_effect_aware_quad_rotation]\n");
+    {
+        std::lock_guard<D3D11Lock> lock(owned.shared.lock());
+        owned.context->ClearRenderTargetView(target.rtv, black);
+    }
+    auto effectQuad = singleLayerComposition(frame, {0.25f, 0.25f, 0.5f, 0.5f}, 0.5f);
+    effectQuad.layers[0].sourceUv = {0.5f, 0.0f, 0.5f, 1.0f};
+    effectQuad.layers[0].effectsEnabled = true;
+    effectQuad.layers[0].rotationDegrees = 45.0f;
+    if (!compositor.composeSingleLayerToTarget(effectQuad, external, err))
+        return false;
+    std::vector<unsigned char> rotatedPixels;
+    if (!compositor.readExternalOutputProbe(target.texture, 17, 17, 1, 1, rotatedPixels, err) ||
+        rotatedPixels[0] + rotatedPixels[1] + rotatedPixels[2] > 15) {
+        err = "回転quad外のpixelがblackではありません";
+        return false;
+    }
+    if (!compositor.readExternalOutputProbe(target.texture, 32, 32, 1, 1, rotatedPixels, err) ||
+        rotatedPixels[0] + rotatedPixels[1] + rotatedPixels[2] < 30) {
+        err = "回転quad中心にeffect済みpixelがありません";
+        return false;
+    }
+
     const auto beforeShutdown = compositor.counters();
-    if (beforeShutdown.compositionDrawnCount != 2 || beforeShutdown.layerDrawCount != 2 ||
-        beforeShutdown.gpuSubmissionCount != 2 || beforeShutdown.untrackedSubmissionCount != 0 ||
+    if (beforeShutdown.compositionDrawnCount != 3 || beforeShutdown.layerDrawCount != 3 ||
+        beforeShutdown.gpuSubmissionCount != 3 || beforeShutdown.untrackedSubmissionCount != 0 ||
         !compositor.shutdown(10000, err)) {
         err = "single-layer submission/retirement invariantが成立しません: " + err;
         return false;

@@ -134,6 +134,15 @@ set_tests_properties(m7a_p0_summary_contract PROPERTIES
     LABELS m7a-p0
     TIMEOUT 120)
 
+add_executable(mvm_test_clip_effects harness/test_clip_effects.cpp)
+target_link_libraries(mvm_test_clip_effects PRIVATE mvm::project mvm::warnings)
+add_test(NAME m7a_1_clip_effects_focused
+    COMMAND mvm_test_clip_effects "${CMAKE_CURRENT_BINARY_DIR}/m7a-1-clip-effects")
+set_tests_properties(m7a_1_clip_effects_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS m7a
+    TIMEOUT 120)
+
 add_executable(mvm_manim_project_smoke harness/mvm_manim_project_smoke.cpp)
 target_link_libraries(mvm_manim_project_smoke PRIVATE
     mvm::project mvm::manim mvm::mlt mvm::util mvm::warnings)

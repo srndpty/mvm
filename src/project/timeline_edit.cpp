@@ -153,6 +153,12 @@ TimelineValidationResult validateTimeline(const Project& project) {
             result.error = "timeline clip の source range または FPS が不正です: " + clip.name;
             return result;
         }
+        std::string effectsError;
+        if (!validateClipEffects(clip.effects, clip.sourceOutFrame - clip.sourceInFrame,
+                                 effectsError)) {
+            result.error = clip.name + ": " + effectsError;
+            return result;
+        }
         if (clip.timelineStartFrame != expectedStart) {
             result.error = "timeline clip が contiguous ではありません: " + clip.name;
             return result;
@@ -310,9 +316,17 @@ TimelineEditResult appendManimTimelineClip(Project& project, const ManimAsset& a
         result.error = "Manim asset はすでに timeline に配置されています";
         return result;
     }
-    project.timelineClips.push_back({TimelineClipKind::Manim, asset.generatedVideoPath,
-                                     asset.sceneName, std::move(clipId), sourceFpsNum, sourceFpsDen,
-                                     sourceFrameCount, 0, sourceFrameCount, 0});
+    project.timelineClips.push_back({TimelineClipKind::Manim,
+                                     asset.generatedVideoPath,
+                                     asset.sceneName,
+                                     std::move(clipId),
+                                     sourceFpsNum,
+                                     sourceFpsDen,
+                                     sourceFrameCount,
+                                     0,
+                                     sourceFrameCount,
+                                     0,
+                                     {}});
     const auto valid = recomputeTimelineStarts(project);
     if (!valid.success) {
         result.error = valid.error;

@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <fstream>
+#include <iomanip>
 #include <sstream>
 #include <system_error>
 #include <utility>
@@ -385,6 +387,49 @@ private:
         return true;
     }
 
+    bool parseNumber(double& value) {
+        skipWhitespace();
+        const std::size_t start = position_;
+        if (position_ < text_.size() && text_[position_] == '-')
+            ++position_;
+        if (position_ >= text_.size() ||
+            !std::isdigit(static_cast<unsigned char>(text_[position_])))
+            return fail("JSON number が不正です");
+        if (text_[position_] == '0') {
+            ++position_;
+        } else {
+            while (position_ < text_.size() &&
+                   std::isdigit(static_cast<unsigned char>(text_[position_])))
+                ++position_;
+        }
+        if (position_ < text_.size() && text_[position_] == '.') {
+            ++position_;
+            const std::size_t fractionStart = position_;
+            while (position_ < text_.size() &&
+                   std::isdigit(static_cast<unsigned char>(text_[position_])))
+                ++position_;
+            if (fractionStart == position_)
+                return fail("JSON number の小数部が不正です");
+        }
+        if (position_ < text_.size() && (text_[position_] == 'e' || text_[position_] == 'E')) {
+            ++position_;
+            if (position_ < text_.size() && (text_[position_] == '+' || text_[position_] == '-'))
+                ++position_;
+            const std::size_t exponentStart = position_;
+            while (position_ < text_.size() &&
+                   std::isdigit(static_cast<unsigned char>(text_[position_])))
+                ++position_;
+            if (exponentStart == position_)
+                return fail("JSON number の指数部が不正です");
+        }
+        try {
+            value = std::stod(text_.substr(start, position_ - start));
+        } catch (...) {
+            return fail("JSON number が範囲外です");
+        }
+        return std::isfinite(value) || fail("JSON number が有限値ではありません");
+    }
+
     bool parseState(const std::string& text, ManimGenerationState& state) {
         if (text == "NotGenerated")
             state = ManimGenerationState::NotGenerated;
@@ -488,6 +533,81 @@ private:
         return true;
     }
 
+    bool parseClipEffects(ClipEffects& effects) {
+        bool seen[11] = {};
+        if (!consume('{'))
+            return false;
+        skipWhitespace();
+        if (!peek('}')) {
+            while (true) {
+                std::string key;
+                if (!parseString(key) || !consume(':'))
+                    return false;
+                int field = -1;
+                if (key == "position_x_percent")
+                    field = 0;
+                else if (key == "position_y_percent")
+                    field = 1;
+                else if (key == "scale_percent")
+                    field = 2;
+                else if (key == "rotation_degrees")
+                    field = 3;
+                else if (key == "opacity_percent")
+                    field = 4;
+                else if (key == "crop_left_percent")
+                    field = 5;
+                else if (key == "crop_top_percent")
+                    field = 6;
+                else if (key == "crop_right_percent")
+                    field = 7;
+                else if (key == "crop_bottom_percent")
+                    field = 8;
+                else if (key == "fade_in_frames")
+                    field = 9;
+                else if (key == "fade_out_frames")
+                    field = 10;
+                else
+                    return fail("effects に未知の field があります: " + key);
+                if (seen[field])
+                    return fail("effects field が重複しています: " + key);
+                seen[field] = true;
+                if (field == 0 && !parseNumber(effects.positionXPercent))
+                    return false;
+                if (field == 1 && !parseNumber(effects.positionYPercent))
+                    return false;
+                if (field == 2 && !parseNumber(effects.scalePercent))
+                    return false;
+                if (field == 3 && !parseNumber(effects.rotationDegrees))
+                    return false;
+                if (field == 4 && !parseNumber(effects.opacityPercent))
+                    return false;
+                if (field == 5 && !parseNumber(effects.cropLeftPercent))
+                    return false;
+                if (field == 6 && !parseNumber(effects.cropTopPercent))
+                    return false;
+                if (field == 7 && !parseNumber(effects.cropRightPercent))
+                    return false;
+                if (field == 8 && !parseNumber(effects.cropBottomPercent))
+                    return false;
+                if (field == 9 && !parseInteger64(effects.fadeInFrames))
+                    return false;
+                if (field == 10 && !parseInteger64(effects.fadeOutFrames))
+                    return false;
+                skipWhitespace();
+                if (consumeIf(','))
+                    continue;
+                break;
+            }
+        }
+        if (!consume('}'))
+            return false;
+        for (bool present : seen) {
+            if (!present)
+                return fail("effects object の固定fieldが不足しています");
+        }
+        return true;
+    }
+
     bool parseTimelineClip(TimelineClip& clip) {
         bool hasKind = false;
         bool hasMedia = false;
@@ -499,6 +619,7 @@ private:
         bool hasSourceIn = false;
         bool hasSourceOut = false;
         bool hasTimelineStart = false;
+        bool hasEffects = false;
         std::string kind;
         std::string media;
 
@@ -550,6 +671,10 @@ private:
                     if (hasTimelineStart || !parseInteger64(clip.timelineStartFrame))
                         return fail("timeline clip の timeline_start_frame が重複または不正です");
                     hasTimelineStart = true;
+                } else if (key == "effects") {
+                    if (hasEffects || !parseClipEffects(clip.effects))
+                        return fail("timeline clip の effects が重複または不正です");
+                    hasEffects = true;
                 } else if (!skipValue()) {
                     return false;
                 }
@@ -692,7 +817,7 @@ ProjectIoResult saveProjectJson(const Project& project, const std::filesystem::p
             return result;
         }
 
-        json << (index == 0 ? "\n" : ",\n") << "    {\n"
+        json << std::setprecision(17) << (index == 0 ? "\n" : ",\n") << "    {\n"
              << "      \"script_path\": \"" << escapeJson(script) << "\",\n"
              << "      \"scene_name\": \"" << escapeJson(asset.sceneName) << "\",\n"
              << "      \"generated_video_path\": \"" << escapeJson(video) << "\",\n"
@@ -725,7 +850,20 @@ ProjectIoResult saveProjectJson(const Project& project, const std::filesystem::p
              << "      \"source_frame_count\": " << clip.sourceFrameCount << ",\n"
              << "      \"source_in_frame\": " << clip.sourceInFrame << ",\n"
              << "      \"source_out_frame\": " << clip.sourceOutFrame << ",\n"
-             << "      \"timeline_start_frame\": " << clip.timelineStartFrame << "\n"
+             << "      \"timeline_start_frame\": " << clip.timelineStartFrame << ",\n"
+             << "      \"effects\": {\n"
+             << "        \"position_x_percent\": " << clip.effects.positionXPercent << ",\n"
+             << "        \"position_y_percent\": " << clip.effects.positionYPercent << ",\n"
+             << "        \"scale_percent\": " << clip.effects.scalePercent << ",\n"
+             << "        \"rotation_degrees\": " << clip.effects.rotationDegrees << ",\n"
+             << "        \"opacity_percent\": " << clip.effects.opacityPercent << ",\n"
+             << "        \"crop_left_percent\": " << clip.effects.cropLeftPercent << ",\n"
+             << "        \"crop_top_percent\": " << clip.effects.cropTopPercent << ",\n"
+             << "        \"crop_right_percent\": " << clip.effects.cropRightPercent << ",\n"
+             << "        \"crop_bottom_percent\": " << clip.effects.cropBottomPercent << ",\n"
+             << "        \"fade_in_frames\": " << clip.effects.fadeInFrames << ",\n"
+             << "        \"fade_out_frames\": " << clip.effects.fadeOutFrames << "\n"
+             << "      }\n"
              << "    }";
     }
     if (!project.timelineClips.empty())

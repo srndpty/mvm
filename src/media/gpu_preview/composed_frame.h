@@ -36,6 +36,8 @@ struct CompositionLayerFrame {
     RectF sourceUv{};
     float opacity = 1.0f;
     int zOrder = 0;
+    bool effectsEnabled = false;
+    float rotationDegrees = 0.0f;
 };
 
 struct ComposedFrame {

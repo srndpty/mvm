@@ -14,6 +14,7 @@ add_library(mvm::core ALIAS mvm_core)
 # --- minimal product Project Model -----------------------------------------
 # Qt / MLT / Manim に依存しない純粋な値型と schema 固定 JSON のみ。
 add_library(mvm_project STATIC
+    project/clip_effects.cpp
     project/project.cpp
     project/project_json.cpp
     project/timeline_edit.cpp
@@ -69,7 +70,7 @@ add_library(mvm_timeline_export STATIC
 target_include_directories(mvm_timeline_export PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_timeline_export
     PUBLIC mvm::project
-    PRIVATE mvm::mlt mvm::warnings)
+    PRIVATE mvm::core mvm::mlt mvm::warnings)
 add_library(mvm::timeline_export ALIAS mvm_timeline_export)
 
 # --- Phase 5 / P5-B: PreviewEngine product foundation -----------------------
@@ -160,7 +161,7 @@ add_library(mvm_gpu_preview STATIC
 target_include_directories(mvm_gpu_preview PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_gpu_preview
     PUBLIC  PkgConfig::MVM_FFMPEG d3d11 dxgi
-    PRIVATE d3dcompiler mvm::warnings
+    PRIVATE d3dcompiler mvm::core mvm::warnings
 )
 add_library(mvm::gpu_preview ALIAS mvm_gpu_preview)
 

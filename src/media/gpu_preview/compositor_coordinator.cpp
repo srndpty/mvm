@@ -1,5 +1,7 @@
 #include "media/gpu_preview/compositor_coordinator.h"
 
+#include "core/clip_fade.h"
+
 #include <algorithm>
 #include <limits>
 #include <set>
@@ -13,7 +15,10 @@ bool sameRect(const RectF& a, const RectF& b) {
 
 bool sameLayout(const LayerLayout& a, const LayerLayout& b) {
     return a.sourceId == b.sourceId && sameRect(a.destination, b.destination) &&
-           sameRect(a.sourceUv, b.sourceUv) && a.opacity == b.opacity && a.zOrder == b.zOrder;
+           sameRect(a.sourceUv, b.sourceUv) && a.opacity == b.opacity && a.zOrder == b.zOrder &&
+           a.effectsEnabled == b.effectsEnabled && a.rotationDegrees == b.rotationDegrees &&
+           a.sourceInFrame == b.sourceInFrame && a.sourceDurationFrames == b.sourceDurationFrames &&
+           a.fadeInFrames == b.fadeInFrames && a.fadeOutFrames == b.fadeOutFrames;
 }
 
 bool validLayout(const std::vector<LayerLayout>& layout,
@@ -33,6 +38,16 @@ bool sameLayouts(const std::vector<LayerLayout>& a, const std::vector<LayerLayou
 }
 
 } // namespace
+
+float resolveLayerOpacity(const LayerLayout& layout, long long decodedSourceFrame) {
+    double opacity = layout.opacity;
+    if (layout.effectsEnabled) {
+        const long long localFrame = decodedSourceFrame - layout.sourceInFrame;
+        opacity *= core::clipFadeFactor(localFrame, layout.sourceDurationFrames,
+                                        layout.fadeInFrames, layout.fadeOutFrames);
+    }
+    return static_cast<float>(opacity);
+}
 
 ConfigureResult
 CompositorCoordinator::configure(std::vector<LayerLayout> layout,
@@ -217,7 +232,15 @@ CompositionResult CompositorCoordinator::compose(long long outputFrameNumber,
         const auto it = std::find_if(frames.begin(), frames.end(), [&](const auto& frame) {
             return frame.sourceId == spec.sourceId;
         });
-        out.layers.push_back({*it, spec.destination, spec.sourceUv, spec.opacity, spec.zOrder});
+        CompositionLayerFrame layer;
+        layer.frame = *it;
+        layer.destination = spec.destination;
+        layer.sourceUv = spec.sourceUv;
+        layer.opacity = resolveLayerOpacity(spec, it->frameNumber);
+        layer.zOrder = spec.zOrder;
+        layer.effectsEnabled = spec.effectsEnabled;
+        layer.rotationDegrees = spec.rotationDegrees;
+        out.layers.push_back(std::move(layer));
     }
     std::stable_sort(out.layers.begin(), out.layers.end(), deterministicLayerLess);
     return CompositionResult::Accepted;

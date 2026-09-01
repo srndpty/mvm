@@ -78,6 +78,11 @@ bool validRect(const PreviewNormalizedRect& rect) {
     return rect.width <= 1.0F - rect.x && rect.height <= 1.0F - rect.y;
 }
 
+bool validEffectDestination(const PreviewNormalizedRect& rect) {
+    return std::isfinite(rect.x) && std::isfinite(rect.y) && std::isfinite(rect.width) &&
+           std::isfinite(rect.height) && rect.width > 0.0F && rect.height > 0.0F;
+}
+
 PreviewNormalizedRect canonicalRect(PreviewNormalizedRect rect) {
     rect.x = canonicalFloat(rect.x);
     rect.y = canonicalFloat(rect.y);
@@ -397,7 +402,9 @@ CompositionAcceptanceState::submit(const std::shared_ptr<const CompositionSnapsh
 
     CompositionSnapshot canonical = *snapshot;
     for (PreviewCompositionLayer& layer : canonical.layers) {
-        if (!validRect(layer.destination) || !validRect(layer.sourceRect)) {
+        if (!(layer.effectsEnabled ? validEffectDestination(layer.destination)
+                                   : validRect(layer.destination)) ||
+            !validRect(layer.sourceRect)) {
             return Result<AcceptedComposition>::failure(
                 compositionError(PreviewErrorCategory::CompositionFailure,
                                  "normalized rectangleがinvalidです", layer.source));
@@ -407,9 +414,21 @@ CompositionAcceptanceState::submit(const std::shared_ptr<const CompositionSnapsh
                 compositionError(PreviewErrorCategory::CompositionFailure,
                                  "opacityが[0,1]の範囲外です", layer.source));
         }
+        if (!std::isfinite(layer.rotationDegrees) ||
+            (layer.effectsEnabled &&
+             (layer.sourceInFrame < 0 || layer.sourceDurationFrames <= 0 ||
+              layer.fadeInFrames < 0 || layer.fadeOutFrames < 0 ||
+              layer.fadeInFrames > layer.sourceDurationFrames ||
+              layer.fadeOutFrames > layer.sourceDurationFrames ||
+              layer.fadeInFrames > layer.sourceDurationFrames - layer.fadeOutFrames))) {
+            return Result<AcceptedComposition>::failure(compositionError(
+                PreviewErrorCategory::CompositionFailure,
+                "source-native effect timingまたはrotationが不正です", layer.source));
+        }
         layer.destination = canonicalRect(layer.destination);
         layer.sourceRect = canonicalRect(layer.sourceRect);
         layer.opacity = canonicalFloat(layer.opacity);
+        layer.rotationDegrees = canonicalFloat(layer.rotationDegrees);
     }
 
     if (latestAcceptedSnapshot_ && *latestAcceptedSnapshot_ == canonical) {
@@ -794,6 +813,12 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                                layer.sourceRect.height};
             mapped.opacity = layer.opacity;
             mapped.zOrder = static_cast<int>(i);
+            mapped.effectsEnabled = layer.effectsEnabled;
+            mapped.rotationDegrees = layer.rotationDegrees;
+            mapped.sourceInFrame = layer.sourceInFrame;
+            mapped.sourceDurationFrames = layer.sourceDurationFrames;
+            mapped.fadeInFrames = layer.fadeInFrames;
+            mapped.fadeOutFrames = layer.fadeOutFrames;
             layout.push_back(mapped);
         }
         return layout;

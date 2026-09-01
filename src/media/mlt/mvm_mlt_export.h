@@ -25,11 +25,30 @@ extern "C" {
 #endif
 
 typedef struct {
+    long long local_frame;
+    double opacity;
+} MvmExportOpacityKeyframe;
+
+#define MVM_EXPORT_MAX_OPACITY_KEYFRAMES 8
+
+typedef struct {
     const char* path; /* UTF-8。実在する動画ファイル */
     long long source_fps_num;
     long long source_fps_den;
     long long source_in_frame;  /* inclusive、素材固有 frame domain */
     long long source_out_frame; /* exclusive、素材固有 frame domain */
+    int effects_enabled;
+    int crop_left;
+    int crop_top;
+    int crop_right;
+    int crop_bottom;
+    double rect_x;
+    double rect_y;
+    double rect_width;
+    double rect_height;
+    double rotation_degrees;
+    MvmExportOpacityKeyframe opacity_keyframes[MVM_EXPORT_MAX_OPACITY_KEYFRAMES];
+    int opacity_keyframe_count;
 } MvmExportClip;
 
 typedef struct {
