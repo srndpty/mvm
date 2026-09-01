@@ -82,6 +82,23 @@ set_tests_properties(m5_timeline_edit_focused PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 120)
 
+add_executable(mvm_test_timeline_clip_model
+    harness/test_timeline_clip_model.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/timeline_clip_model.cpp)
+target_include_directories(mvm_test_timeline_clip_model PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_test_timeline_clip_model PRIVATE
+    mvm::project Qt6::Core mvm::warnings)
+set_target_properties(mvm_test_timeline_clip_model PROPERTIES AUTOMOC ON)
+add_test(NAME m7b_4_timeline_clip_model_focused COMMAND mvm_test_timeline_clip_model)
+set_tests_properties(m7b_4_timeline_clip_model_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+
+add_test(NAME m7b_4_timeline_ui_architecture
+    COMMAND pwsh -NoProfile -File
+            ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-m7b4-timeline-ui-architecture.ps1)
+set_tests_properties(m7b_4_timeline_ui_architecture PROPERTIES TIMEOUT 120)
+
 # --- M6b: controller clockとsegmented/rebased境界判断 -----------------------
 add_executable(mvm_test_timeline_playback harness/test_timeline_playback.cpp)
 target_link_libraries(mvm_test_timeline_playback PRIVATE

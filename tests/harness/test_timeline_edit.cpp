@@ -36,13 +36,17 @@ clip(const char* name,
             name, std::string("id-") + name,
             60,   1,
             300,  0,
-            300,  0};
+            300,  0,
+            {},   mvm::project::VideoTrack::V1};
 }
 
 mvm::project::Project threeClips() {
     mvm::project::Project project;
     project.timelineClips = {clip("A"), clip("Manim", mvm::project::TimelineClipKind::Manim),
                              clip("B")};
+    project.timelineClips[0].timelineStartFrame = 0;
+    project.timelineClips[1].timelineStartFrame = 300;
+    project.timelineClips[2].timelineStartFrame = 600;
     return project;
 }
 
@@ -105,8 +109,18 @@ void testFrameConversions() {
 
 void testTrimAndLookup() {
     mvm::project::Project project;
-    project.timelineClips.push_back({mvm::project::TimelineClipKind::Video, "fractional.mp4",
-                                     "fractional", "fractional-id", 30000, 1001, 300, 0, 300, 0});
+    project.timelineClips.push_back({mvm::project::TimelineClipKind::Video,
+                                     "fractional.mp4",
+                                     "fractional",
+                                     "fractional-id",
+                                     30000,
+                                     1001,
+                                     300,
+                                     0,
+                                     300,
+                                     0,
+                                     {},
+                                     mvm::project::VideoTrack::V1});
     const auto recomputed = mvm::project::recomputeTimelineStarts(project);
     check(recomputed.success && recomputed.totalFrames == 601,
           "29.97fps clipのtimeline durationが違います");
@@ -125,6 +139,77 @@ void testTrimAndLookup() {
                                                         mvm::project::TrimEdge::Right, -10000);
     check(!invalid.success, "sourceOut <= sourceInになるtrimを拒否しません");
     project = beforeInvalid;
+
+    auto unrelated = clip("unrelated");
+    unrelated.videoTrack = mvm::project::VideoTrack::V2;
+    unrelated.timelineStartFrame = 77;
+    unrelated.effects.opacityPercent = 42.0;
+    project.timelineClips.push_back(unrelated);
+    const auto beforeUnrelated = project.timelineClips.back();
+    const auto beforeRightStart = project.timelineClips.front().timelineStartFrame;
+    const auto right =
+        mvm::project::trimTimelineClip(project, "fractional-id", mvm::project::TrimEdge::Right, -3);
+    check(right.success && project.timelineClips.front().timelineStartFrame == beforeRightStart,
+          "right trimでclip startが変化しました");
+    check(project.timelineClips.back() == beforeUnrelated,
+          "trimで無関係clipのtrack/start/effectsが変化しました");
+
+    const auto oldEnd =
+        project.timelineClips.front().timelineStartFrame +
+        mvm::project::timelineClipDuration(project, project.timelineClips.front()).frame;
+    const auto secondLeft =
+        mvm::project::trimTimelineClip(project, "fractional-id", mvm::project::TrimEdge::Left, 4);
+    const auto newEnd =
+        project.timelineClips.front().timelineStartFrame +
+        mvm::project::timelineClipDuration(project, project.timelineClips.front()).frame;
+    check(secondLeft.success && oldEnd == newEnd, "left trimがclipの右端を維持しません");
+    check(project.timelineClips.back() == beforeUnrelated,
+          "left trimで無関係clipの配置が変化しました");
+}
+
+void testM7bUiPlacementHelpers() {
+    mvm::project::Project project;
+    auto base = clip("base");
+    base.timelineStartFrame = 120;
+    project.timelineClips.push_back(base);
+
+    auto added = clip("added");
+    added.timelineStartFrame = 999;
+    const auto video = mvm::project::appendVideoTimelineClip(project, added);
+    check(video.success &&
+              project.timelineClips.back().videoTrack == mvm::project::VideoTrack::V1 &&
+              project.timelineClips.back().timelineStartFrame == 420,
+          "Add VideoがV1の最大endへ配置されません");
+
+    mvm::project::ManimAsset asset;
+    asset.sceneName = "Overlay";
+    asset.generatedVideoPath = "overlay.mp4";
+    const auto manim =
+        mvm::project::appendManimTimelineClipAt(project, asset, "overlay-id", 60, 1, 120, 180);
+    check(manim.success &&
+              project.timelineClips.back().videoTrack == mvm::project::VideoTrack::V2 &&
+              project.timelineClips.back().timelineStartFrame == 180,
+          "Add Manimがplayhead指定位置のV2へ配置されません");
+
+    const auto beforeRejected = project;
+    const auto rejected =
+        mvm::project::moveClip(project, "id-added", mvm::project::VideoTrack::V1, 200);
+    check(!rejected.success && project.timelineClips == beforeRejected.timelineClips,
+          "same-track overlap拒否時にProjectが変化しました");
+
+    const auto cross =
+        mvm::project::moveClip(project, "id-added", mvm::project::VideoTrack::V2, 420);
+    check(cross.success && project.timelineClips[1].videoTrack == mvm::project::VideoTrack::V2 &&
+              project.timelineClips[1].timelineStartFrame == 420,
+          "V1からV2へのcross-track移動ができません");
+    const auto horizontal =
+        mvm::project::moveClip(project, "id-added", mvm::project::VideoTrack::V2, 500);
+    check(horizontal.success && project.timelineClips[1].timelineStartFrame == 500,
+          "clipを同じtrack内で水平移動できません");
+    const auto back =
+        mvm::project::moveClip(project, "id-added", mvm::project::VideoTrack::V1, 420);
+    check(back.success && project.timelineClips[1].videoTrack == mvm::project::VideoTrack::V1,
+          "V2からV1へ移動できません");
 }
 
 void testValidationFailures() {
@@ -214,6 +299,12 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
     candidate.timelineClips[1].sourceOutFrame = 270;
     check(mvm::project::recomputeTimelineStarts(candidate).success,
           "保存用のsource-native trimを確定できません");
+    candidate.timelineClips[2].videoTrack = mvm::project::VideoTrack::V2;
+    candidate.timelineClips[2].timelineStartFrame = 90;
+    candidate.timelineClips[2].effects.scalePercent = 60.0;
+    candidate.timelineClips[2].effects.opacityPercent = 55.0;
+    check(mvm::project::validateTimeline(candidate).success,
+          "二track配置とeffectsを持つ保存candidateが不正です");
     const auto saved =
         mvm::project::saveProjectJsonTransaction(live, std::move(candidate), root / "project.json");
     check(saved.success, "編集済み Project を保存できません");
@@ -233,10 +324,12 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
                                   actual.sourceFrameCount == expected.sourceFrameCount &&
                                   actual.sourceInFrame == expected.sourceInFrame &&
                                   actual.sourceOutFrame == expected.sourceOutFrame &&
-                                  actual.timelineStartFrame == expected.timelineStartFrame;
+                                  actual.timelineStartFrame == expected.timelineStartFrame &&
+                                  actual.videoTrack == expected.videoTrack &&
+                                  actual.effects == expected.effects;
         }
     }
-    check(timelineFieldsMatch, "schema 2のID・FPS・trim・timeline startがround-tripしません");
+    check(timelineFieldsMatch, "schema 2のID・FPS・trim・track/start/effectsがround-tripしません");
 
     const auto beforeFailure = live.timelineClips;
     auto failedCandidate = live;
@@ -261,6 +354,7 @@ int main(int argc, char** argv) {
     testMove();
     testFrameConversions();
     testTrimAndLookup();
+    testM7bUiPlacementHelpers();
     testValidationFailures();
     testDeleteSelection();
     testManimPlacement();

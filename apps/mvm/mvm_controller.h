@@ -125,13 +125,13 @@ public:
     Q_INVOKABLE bool addManimToTimeline();
     Q_INVOKABLE bool addVideoClip(const QUrl& fileUrl);
     Q_INVOKABLE bool selectClip(int index);
+    Q_INVOKABLE bool selectTimelineClip(const QString& clipId, qint64 frame);
     Q_INVOKABLE bool seekTimelineFrame(qint64 frame);
     Q_INVOKABLE bool playTimeline();
     Q_INVOKABLE bool pauseTimeline();
-    Q_INVOKABLE bool reorderClip(const QString& clipId, int destinationIndex);
+    Q_INVOKABLE bool moveTimelineClip(const QString& clipId, int destinationTrack,
+                                      qint64 timelineStartFrame);
     Q_INVOKABLE bool trimClip(const QString& clipId, const QString& edge, qint64 projectFrameDelta);
-    Q_INVOKABLE bool moveCurrentClipLeft();
-    Q_INVOKABLE bool moveCurrentClipRight();
     Q_INVOKABLE bool deleteCurrentClip();
     Q_INVOKABLE bool exportTimeline(const QUrl& outputUrl);
     Q_INVOKABLE bool applyCurrentClipEffects(double positionX, double positionY, double scale,
@@ -156,8 +156,10 @@ private:
     // Manim asset が確定したら timeline 上の Manim clip を追従させる。
     // timeline と asset の対応を決める箇所はここだけにする。
     bool syncManimTimelineClip(bool addIfMissing);
-    bool moveCurrentClip(int offset);
     bool saveProject(project::Project candidate, const QString& failurePrefix);
+    void setCurrentClipSelection(int index);
+    bool refreshPreviewAfterSavedEdit(const std::string& selectedClipId,
+                                      const QString& successStatus);
     const project::ClipEffects& currentEffects() const;
     bool submitClipComposition(preview::PreviewSourceId source, const project::TimelineClip& clip,
                                QString& error);

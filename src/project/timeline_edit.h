@@ -50,8 +50,10 @@ const TimelineClip* activeClipAt(const Project& project, VideoTrack track,
 std::array<const TimelineClip*, 2> activeClipsAt(const Project& project,
                                                  std::int64_t timelineFrame);
 TimelineFrameResult timelineEndFrame(const Project& project);
+TimelineFrameResult timelineTrackEndFrame(const Project& project, VideoTrack track);
 TimelineEditResult moveClip(Project& project, const std::string& clipId,
                             VideoTrack destinationTrack, std::int64_t newStartFrame);
+TimelineEditResult appendVideoTimelineClip(Project& project, TimelineClip clip);
 
 TimelineEditResult moveTimelineClip(Project& project, int selectedIndex, int offset);
 TimelineEditResult reorderTimelineClip(Project& project, const std::string& clipId,
@@ -63,6 +65,11 @@ TimelineEditResult appendManimTimelineClip(Project& project, const ManimAsset& a
                                            std::string clipId, std::int64_t sourceFpsNum,
                                            std::int64_t sourceFpsDen,
                                            std::int64_t sourceFrameCount);
+TimelineEditResult appendManimTimelineClipAt(Project& project, const ManimAsset& asset,
+                                             std::string clipId, std::int64_t sourceFpsNum,
+                                             std::int64_t sourceFpsDen,
+                                             std::int64_t sourceFrameCount,
+                                             std::int64_t timelineStartFrame);
 
 } // namespace mvm::project
 
