@@ -5,6 +5,14 @@ find_package(PkgConfig REQUIRED)
 find_package(Git REQUIRED)
 pkg_check_modules(PNG REQUIRED IMPORTED_TARGET libpng)
 
+# clean configureでも、最初のPowerShell testを登録する前に実行ファイルを確定する。
+# ここより後へ移すと未定義変数が "-NoProfile" を実行ファイル名にしてしまう。
+find_program(MVM_PWSH pwsh)
+if(NOT MVM_PWSH)
+    message(FATAL_ERROR
+        "pwsh が見つかりません。negative test の終了コード照合に必要です。")
+endif()
+
 # --- mvm_bench --------------------------------------------------------------
 # Qt に依存しない C++20 CLI。MLT のヘッダは include しない。
 add_executable(mvm_bench
@@ -199,6 +207,11 @@ set_tests_properties(m7b_p0_summary_contract PROPERTIES
     LABELS m7b-p0
     TIMEOUT 120)
 
+add_test(NAME powershell_ctest_registration_order
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-pwsh-registration-order.ps1")
+set_tests_properties(powershell_ctest_registration_order PROPERTIES TIMEOUT 120)
+
 # --- M7b-1: fixed two-track Project model and schema-2 persistence ---------
 add_executable(mvm_test_two_track_project harness/test_two_track_project.cpp)
 target_link_libraries(mvm_test_two_track_project PRIVATE
@@ -328,11 +341,6 @@ endfunction()
 # 「失敗したこと」ではなく「意図した理由で失敗したこと」を検査する。
 #
 # このリポジトリに WILL_FAIL は 1 件も無い。増やさないこと。
-find_program(MVM_PWSH pwsh)
-if(NOT MVM_PWSH)
-    message(FATAL_ERROR
-        "pwsh が見つかりません。negative test の終了コード照合に必要です。")
-endif()
 
 foreach(_p2_r4_visible_case Good NegativeOriginalCallback NegativeSyntheticDelay
         NegativeExpectedClass NegativeDisplayed)
