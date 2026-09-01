@@ -134,6 +134,42 @@ set_tests_properties(m7a_p0_summary_contract PROPERTIES
     LABELS m7a-p0
     TIMEOUT 120)
 
+# --- M7b-P0: two-track overlay export primitive verification ---------------
+# 製品Project/Preview/Exportへ配線せず、tractor + affine transitionの
+# 透明overlay意味論と座標domainだけを実MP4画素で固定する。
+add_executable(mvm_test_m7b_p0_mlt harness/test_m7b_p0_mlt.cpp)
+target_link_libraries(mvm_test_m7b_p0_mlt PRIVATE
+    mvm::core mvm::mlt mvm::util mvm::warnings)
+target_compile_definitions(mvm_test_m7b_p0_mlt PRIVATE ${MVM_MLT_PATH_DEFS})
+add_test(NAME m7b_p0_mlt_overlay_primitives
+    COMMAND mvm_test_m7b_p0_mlt
+        "${CMAKE_CURRENT_BINARY_DIR}/m7b-p0-mlt"
+        "${MVM_UCRT64_ROOT}/bin/ffmpeg.exe"
+        "${CMAKE_CURRENT_BINARY_DIR}/m7b-p0-raw.json")
+set_tests_properties(m7b_p0_mlt_overlay_primitives PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS m7b-p0
+    TIMEOUT 600)
+
+add_test(NAME m7b_p0_mlt_zero_sample_negative
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+            -ExpectExit 7 -Exe "$<TARGET_FILE:mvm_test_m7b_p0_mlt>"
+            -ChildArgs "|--negative-empty")
+set_tests_properties(m7b_p0_mlt_zero_sample_negative PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS m7b-p0
+    TIMEOUT 120)
+
+add_test(NAME m7b_p0_summary_contract
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/summarize-m7b-p0.ps1"
+            -RawJson "${CMAKE_CURRENT_BINARY_DIR}/m7b-p0-raw.json"
+            -OutJson "${CMAKE_CURRENT_BINARY_DIR}/m7b-p0-summary.json")
+set_tests_properties(m7b_p0_summary_contract PROPERTIES
+    DEPENDS m7b_p0_mlt_overlay_primitives
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS m7b-p0
+    TIMEOUT 120)
+
 add_executable(mvm_test_clip_effects harness/test_clip_effects.cpp)
 target_link_libraries(mvm_test_clip_effects PRIVATE mvm::project mvm::warnings)
 add_test(NAME m7a_1_clip_effects_focused

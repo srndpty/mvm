@@ -95,6 +95,7 @@ add_library(mvm_mlt STATIC
     media/mlt/mvm_mlt_compose.c
     media/mlt/mvm_mlt_export.c
     media/mlt/mvm_mlt_effects_p0.c
+    media/mlt/mvm_mlt_overlay_p0.c
     media/mlt/mvm_mlt_audiograph.c
 )
 target_include_directories(mvm_mlt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
