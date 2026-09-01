@@ -25,6 +25,18 @@ struct PreviewPosition {
     bool operator==(const PreviewPosition&) const = default;
 };
 
+struct PreviewSourceFrameRequest {
+    PreviewSourceId source;
+    std::int64_t sourceFrameNumber = -1;
+    bool operator==(const PreviewSourceFrameRequest&) const = default;
+};
+
+struct PreviewFrameRequest {
+    std::int64_t outputFrameNumber = -1;
+    std::vector<PreviewSourceFrameRequest> sources;
+    bool operator==(const PreviewFrameRequest&) const = default;
+};
+
 struct PreviewOutputConfig {
     PreviewFrameRate frameRate;
 };
@@ -52,6 +64,12 @@ struct PreviewCompositionLayer {
     PreviewNormalizedRect destination;
     PreviewNormalizedRect sourceRect;
     float opacity = 1.0F;
+    bool effectsEnabled = false;
+    float rotationDegrees = 0.0F;
+    std::int64_t sourceInFrame = 0;
+    std::int64_t sourceDurationFrames = 0;
+    std::int64_t fadeInFrames = 0;
+    std::int64_t fadeOutFrames = 0;
     bool operator==(const PreviewCompositionLayer&) const = default;
 };
 

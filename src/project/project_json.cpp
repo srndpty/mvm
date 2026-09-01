@@ -1,15 +1,20 @@
 #include "project/project_json.h"
 
+#include "project/timeline_edit.h"
+
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <fstream>
+#include <iomanip>
 #include <sstream>
 #include <system_error>
+#include <utility>
 
 namespace mvm::project {
 namespace {
 
-constexpr int kSchemaVersion = 1;
+constexpr int kSchemaVersion = 2;
 
 std::string pathToUtf8(const std::filesystem::path& path) {
     const auto text = path.generic_u8string();
@@ -147,6 +152,8 @@ public:
 
     bool parse(Project& project, std::string& error) {
         bool hasSchema = false;
+        bool hasTimelineFpsNum = false;
+        bool hasTimelineFpsDen = false;
         bool hasAssets = false;
         bool hasClips = false;
         if (!consume('{'))
@@ -161,6 +168,14 @@ public:
                     if (hasSchema || !parseInteger(project.schemaVersion))
                         return failAndFinish("schema_version が重複または不正です", error);
                     hasSchema = true;
+                } else if (key == "timeline_fps_num") {
+                    if (hasTimelineFpsNum || !parseInteger64(project.timelineFpsNum))
+                        return failAndFinish("timeline_fps_num が重複または不正です", error);
+                    hasTimelineFpsNum = true;
+                } else if (key == "timeline_fps_den") {
+                    if (hasTimelineFpsDen || !parseInteger64(project.timelineFpsDen))
+                        return failAndFinish("timeline_fps_den が重複または不正です", error);
+                    hasTimelineFpsDen = true;
                 } else if (key == "manim_assets") {
                     if (hasAssets || !parseAssets(project.manimAssets))
                         return failAndFinish("manim_assets が重複または不正です", error);
@@ -183,12 +198,18 @@ public:
         skipWhitespace();
         if (position_ != text_.size())
             return failAndFinish("Project JSON の末尾に余分な値があります", error);
-        if (!hasSchema || !hasAssets)
-            return failAndFinish("schema_version または manim_assets がありません", error);
-        // timeline_clips は additive な optional field である。key が無い場合は
-        // 「clip が 1 本も無い timeline」を意味する (schema migration は行わない)。
+        if (!hasSchema)
+            return failAndFinish("schema_version がありません", error);
         if (project.schemaVersion != kSchemaVersion)
-            return failAndFinish("対応していない Project schema_version です", error);
+            return failAndFinish(
+                "対応していない schema_version です: " + std::to_string(project.schemaVersion) +
+                    "。schema 2 Projectを作成してください",
+                error);
+        if (!hasTimelineFpsNum || !hasTimelineFpsDen || !hasAssets || !hasClips)
+            return failAndFinish("Project schema 2 の必須 field がありません", error);
+        const auto timeline = validateTimeline(project);
+        if (!timeline.success)
+            return failAndFinish(timeline.error, error);
         error.clear();
         return true;
     }
@@ -347,6 +368,68 @@ private:
         return true;
     }
 
+    bool parseInteger64(std::int64_t& value) {
+        skipWhitespace();
+        const std::size_t start = position_;
+        if (position_ < text_.size() && text_[position_] == '-')
+            ++position_;
+        if (position_ >= text_.size() ||
+            !std::isdigit(static_cast<unsigned char>(text_[position_])))
+            return fail("JSON integer が不正です");
+        while (position_ < text_.size() &&
+               std::isdigit(static_cast<unsigned char>(text_[position_])))
+            ++position_;
+        try {
+            value = std::stoll(text_.substr(start, position_ - start));
+        } catch (...) {
+            return fail("JSON integer が範囲外です");
+        }
+        return true;
+    }
+
+    bool parseNumber(double& value) {
+        skipWhitespace();
+        const std::size_t start = position_;
+        if (position_ < text_.size() && text_[position_] == '-')
+            ++position_;
+        if (position_ >= text_.size() ||
+            !std::isdigit(static_cast<unsigned char>(text_[position_])))
+            return fail("JSON number が不正です");
+        if (text_[position_] == '0') {
+            ++position_;
+        } else {
+            while (position_ < text_.size() &&
+                   std::isdigit(static_cast<unsigned char>(text_[position_])))
+                ++position_;
+        }
+        if (position_ < text_.size() && text_[position_] == '.') {
+            ++position_;
+            const std::size_t fractionStart = position_;
+            while (position_ < text_.size() &&
+                   std::isdigit(static_cast<unsigned char>(text_[position_])))
+                ++position_;
+            if (fractionStart == position_)
+                return fail("JSON number の小数部が不正です");
+        }
+        if (position_ < text_.size() && (text_[position_] == 'e' || text_[position_] == 'E')) {
+            ++position_;
+            if (position_ < text_.size() && (text_[position_] == '+' || text_[position_] == '-'))
+                ++position_;
+            const std::size_t exponentStart = position_;
+            while (position_ < text_.size() &&
+                   std::isdigit(static_cast<unsigned char>(text_[position_])))
+                ++position_;
+            if (exponentStart == position_)
+                return fail("JSON number の指数部が不正です");
+        }
+        try {
+            value = std::stod(text_.substr(start, position_ - start));
+        } catch (...) {
+            return fail("JSON number が範囲外です");
+        }
+        return std::isfinite(value) || fail("JSON number が有限値ではありません");
+    }
+
     bool parseState(const std::string& text, ManimGenerationState& state) {
         if (text == "NotGenerated")
             state = ManimGenerationState::NotGenerated;
@@ -450,10 +533,94 @@ private:
         return true;
     }
 
+    bool parseClipEffects(ClipEffects& effects) {
+        bool seen[11] = {};
+        if (!consume('{'))
+            return false;
+        skipWhitespace();
+        if (!peek('}')) {
+            while (true) {
+                std::string key;
+                if (!parseString(key) || !consume(':'))
+                    return false;
+                int field = -1;
+                if (key == "position_x_percent")
+                    field = 0;
+                else if (key == "position_y_percent")
+                    field = 1;
+                else if (key == "scale_percent")
+                    field = 2;
+                else if (key == "rotation_degrees")
+                    field = 3;
+                else if (key == "opacity_percent")
+                    field = 4;
+                else if (key == "crop_left_percent")
+                    field = 5;
+                else if (key == "crop_top_percent")
+                    field = 6;
+                else if (key == "crop_right_percent")
+                    field = 7;
+                else if (key == "crop_bottom_percent")
+                    field = 8;
+                else if (key == "fade_in_frames")
+                    field = 9;
+                else if (key == "fade_out_frames")
+                    field = 10;
+                else
+                    return fail("effects に未知の field があります: " + key);
+                if (seen[field])
+                    return fail("effects field が重複しています: " + key);
+                seen[field] = true;
+                if (field == 0 && !parseNumber(effects.positionXPercent))
+                    return false;
+                if (field == 1 && !parseNumber(effects.positionYPercent))
+                    return false;
+                if (field == 2 && !parseNumber(effects.scalePercent))
+                    return false;
+                if (field == 3 && !parseNumber(effects.rotationDegrees))
+                    return false;
+                if (field == 4 && !parseNumber(effects.opacityPercent))
+                    return false;
+                if (field == 5 && !parseNumber(effects.cropLeftPercent))
+                    return false;
+                if (field == 6 && !parseNumber(effects.cropTopPercent))
+                    return false;
+                if (field == 7 && !parseNumber(effects.cropRightPercent))
+                    return false;
+                if (field == 8 && !parseNumber(effects.cropBottomPercent))
+                    return false;
+                if (field == 9 && !parseInteger64(effects.fadeInFrames))
+                    return false;
+                if (field == 10 && !parseInteger64(effects.fadeOutFrames))
+                    return false;
+                skipWhitespace();
+                if (consumeIf(','))
+                    continue;
+                break;
+            }
+        }
+        if (!consume('}'))
+            return false;
+        for (bool present : seen) {
+            if (!present)
+                return fail("effects object の固定fieldが不足しています");
+        }
+        return true;
+    }
+
     bool parseTimelineClip(TimelineClip& clip) {
         bool hasKind = false;
         bool hasMedia = false;
         bool hasName = false;
+        bool hasId = false;
+        bool hasSourceFpsNum = false;
+        bool hasSourceFpsDen = false;
+        bool hasSourceFrameCount = false;
+        bool hasSourceIn = false;
+        bool hasSourceOut = false;
+        bool hasTimelineStart = false;
+        bool hasEffects = false;
+        bool hasVideoTrack = false;
         std::string kind;
         std::string media;
 
@@ -477,6 +644,46 @@ private:
                     if (hasName || !parseString(clip.name))
                         return fail("timeline clip の name が重複または不正です");
                     hasName = true;
+                } else if (key == "id") {
+                    if (hasId || !parseString(clip.id))
+                        return fail("timeline clip の id が重複または不正です");
+                    hasId = true;
+                } else if (key == "source_fps_num") {
+                    if (hasSourceFpsNum || !parseInteger64(clip.sourceFpsNum))
+                        return fail("timeline clip の source_fps_num が重複または不正です");
+                    hasSourceFpsNum = true;
+                } else if (key == "source_fps_den") {
+                    if (hasSourceFpsDen || !parseInteger64(clip.sourceFpsDen))
+                        return fail("timeline clip の source_fps_den が重複または不正です");
+                    hasSourceFpsDen = true;
+                } else if (key == "source_frame_count") {
+                    if (hasSourceFrameCount || !parseInteger64(clip.sourceFrameCount))
+                        return fail("timeline clip の source_frame_count が重複または不正です");
+                    hasSourceFrameCount = true;
+                } else if (key == "source_in_frame") {
+                    if (hasSourceIn || !parseInteger64(clip.sourceInFrame))
+                        return fail("timeline clip の source_in_frame が重複または不正です");
+                    hasSourceIn = true;
+                } else if (key == "source_out_frame") {
+                    if (hasSourceOut || !parseInteger64(clip.sourceOutFrame))
+                        return fail("timeline clip の source_out_frame が重複または不正です");
+                    hasSourceOut = true;
+                } else if (key == "timeline_start_frame") {
+                    if (hasTimelineStart || !parseInteger64(clip.timelineStartFrame))
+                        return fail("timeline clip の timeline_start_frame が重複または不正です");
+                    hasTimelineStart = true;
+                } else if (key == "video_track") {
+                    std::int64_t videoTrack = -1;
+                    if (hasVideoTrack || !parseInteger64(videoTrack) || videoTrack < 0 ||
+                        videoTrack > 1) {
+                        return fail("timeline clip の video_track が重複または不正です");
+                    }
+                    clip.videoTrack = static_cast<VideoTrack>(videoTrack);
+                    hasVideoTrack = true;
+                } else if (key == "effects") {
+                    if (hasEffects || !parseClipEffects(clip.effects))
+                        return fail("timeline clip の effects が重複または不正です");
+                    hasEffects = true;
                 } else if (!skipValue()) {
                     return false;
                 }
@@ -488,7 +695,8 @@ private:
         }
         if (!consume('}'))
             return false;
-        if (!hasKind || !hasMedia || !hasName)
+        if (!hasKind || !hasMedia || !hasName || !hasId || !hasSourceFpsNum || !hasSourceFpsDen ||
+            !hasSourceFrameCount || !hasSourceIn || !hasSourceOut || !hasTimelineStart)
             return fail("timeline clip の必須 field がありません");
         if (media.empty())
             return fail("timeline clip の media_path が空です");
@@ -496,6 +704,9 @@ private:
             return fail("timeline clip の name が空です");
         if (!parseClipKind(kind, clip.kind))
             return false;
+        // schema 2互換契約: video_track欠損は明示的にV1として読む。
+        if (!hasVideoTrack)
+            clip.videoTrack = VideoTrack::V1;
         clip.mediaPath = pathFromUtf8(media);
         return true;
     }
@@ -572,6 +783,11 @@ ProjectIoResult saveProjectJson(const Project& project, const std::filesystem::p
         result.error = "保存できない Project schema_version です";
         return result;
     }
+    const auto timeline = validateTimeline(project);
+    if (!timeline.success) {
+        result.error = timeline.error;
+        return result;
+    }
 
     std::error_code pathError;
     const auto absoluteProjectPath = std::filesystem::absolute(projectPath, pathError);
@@ -587,7 +803,10 @@ ProjectIoResult saveProjectJson(const Project& project, const std::filesystem::p
     }
 
     std::ostringstream json;
-    json << "{\n  \"schema_version\": 1,\n  \"manim_assets\": [";
+    json << "{\n  \"schema_version\": 2,\n"
+         << "  \"timeline_fps_num\": " << project.timelineFpsNum << ",\n"
+         << "  \"timeline_fps_den\": " << project.timelineFpsDen << ",\n"
+         << "  \"manim_assets\": [";
     for (std::size_t index = 0; index < project.manimAssets.size(); ++index) {
         const auto& asset = project.manimAssets[index];
         std::string script;
@@ -610,7 +829,7 @@ ProjectIoResult saveProjectJson(const Project& project, const std::filesystem::p
             return result;
         }
 
-        json << (index == 0 ? "\n" : ",\n") << "    {\n"
+        json << std::setprecision(17) << (index == 0 ? "\n" : ",\n") << "    {\n"
              << "      \"script_path\": \"" << escapeJson(script) << "\",\n"
              << "      \"scene_name\": \"" << escapeJson(asset.sceneName) << "\",\n"
              << "      \"generated_video_path\": \"" << escapeJson(video) << "\",\n"
@@ -636,7 +855,28 @@ ProjectIoResult saveProjectJson(const Project& project, const std::filesystem::p
              << "      \"kind\": \"" << kindName << "\",\n"
              << "      \"media_path\": \""
              << escapeJson(persistedSourcePath(clip.mediaPath, projectDirectory)) << "\",\n"
-             << "      \"name\": \"" << escapeJson(clip.name) << "\"\n"
+             << "      \"name\": \"" << escapeJson(clip.name) << "\",\n"
+             << "      \"id\": \"" << escapeJson(clip.id) << "\",\n"
+             << "      \"source_fps_num\": " << clip.sourceFpsNum << ",\n"
+             << "      \"source_fps_den\": " << clip.sourceFpsDen << ",\n"
+             << "      \"source_frame_count\": " << clip.sourceFrameCount << ",\n"
+             << "      \"source_in_frame\": " << clip.sourceInFrame << ",\n"
+             << "      \"source_out_frame\": " << clip.sourceOutFrame << ",\n"
+             << "      \"timeline_start_frame\": " << clip.timelineStartFrame << ",\n"
+             << "      \"video_track\": " << static_cast<int>(clip.videoTrack) << ",\n"
+             << "      \"effects\": {\n"
+             << "        \"position_x_percent\": " << clip.effects.positionXPercent << ",\n"
+             << "        \"position_y_percent\": " << clip.effects.positionYPercent << ",\n"
+             << "        \"scale_percent\": " << clip.effects.scalePercent << ",\n"
+             << "        \"rotation_degrees\": " << clip.effects.rotationDegrees << ",\n"
+             << "        \"opacity_percent\": " << clip.effects.opacityPercent << ",\n"
+             << "        \"crop_left_percent\": " << clip.effects.cropLeftPercent << ",\n"
+             << "        \"crop_top_percent\": " << clip.effects.cropTopPercent << ",\n"
+             << "        \"crop_right_percent\": " << clip.effects.cropRightPercent << ",\n"
+             << "        \"crop_bottom_percent\": " << clip.effects.cropBottomPercent << ",\n"
+             << "        \"fade_in_frames\": " << clip.effects.fadeInFrames << ",\n"
+             << "        \"fade_out_frames\": " << clip.effects.fadeOutFrames << "\n"
+             << "      }\n"
              << "    }";
     }
     if (!project.timelineClips.empty())
@@ -654,6 +894,14 @@ ProjectIoResult saveProjectJson(const Project& project, const std::filesystem::p
         return result;
     }
     result.success = true;
+    return result;
+}
+
+ProjectIoResult saveProjectJsonTransaction(Project& liveProject, Project candidate,
+                                           const std::filesystem::path& projectPath) {
+    ProjectIoResult result = saveProjectJson(candidate, projectPath);
+    if (result.success)
+        liveProject = std::move(candidate);
     return result;
 }
 

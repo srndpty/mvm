@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 
 namespace mvm::gpu {
 
@@ -58,12 +59,18 @@ void SourceSeekMailbox::restart() {
 
 SeekRequestResult SourceSeekMailbox::request(long long frameNumber, long long requestQpc,
                                              SeekTicket& ticket, std::string& err) {
+    return request(frameNumber, frameNumber, requestQpc, ticket, err);
+}
+
+SeekRequestResult SourceSeekMailbox::request(long long sourceFrameNumber,
+                                             long long outputFrameNumber, long long requestQpc,
+                                             SeekTicket& ticket, std::string& err) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (stopped_) {
         err = "停止中のworkerへseekを要求できません";
         return SeekRequestResult::RejectedStopped;
     }
-    if (frameNumber < 0) {
+    if (sourceFrameNumber < 0 || outputFrameNumber < 0) {
         err = "seek targetは0以上である必要があります";
         return SeekRequestResult::RejectedInvalid;
     }
@@ -71,7 +78,7 @@ SeekRequestResult SourceSeekMailbox::request(long long frameNumber, long long re
         err = "同じsourceに未完了seekが既にあります";
         return SeekRequestResult::RejectedBusy;
     }
-    ticket = {++nextRequestId_, frameNumber};
+    ticket = {++nextRequestId_, sourceFrameNumber, outputFrameNumber};
     ticket_ = ticket;
     requestQpc_ = requestQpc;
     outstanding_ = true;
@@ -114,7 +121,8 @@ SeekWaitResult SourceSeekMailbox::wait(const SeekTicket& ticket, int timeoutMs,
                                        SeekCompletion& completion) {
     std::unique_lock<std::mutex> lock(mutex_);
     if (!outstanding_ || ticket.requestId != ticket_.requestId ||
-        ticket.targetFrame != ticket_.targetFrame)
+        ticket.targetFrame != ticket_.targetFrame ||
+        ticket.outputFrameNumber != ticket_.outputFrameNumber)
         return SeekWaitResult::StaleTicket;
     if (!completed_.wait_for(
             lock, std::chrono::milliseconds(std::max(0, timeoutMs)), [this, &ticket] {
@@ -414,7 +422,16 @@ bool SourceDecodeWorker::submitWithBackpressure(const DecodedGpuFrame& frame, st
         // ここで戻らないとworkerがsubmit待ちに留まり、mailboxのseek優先順位を破る。
         if (seekMailbox_.hasPending())
             return false;
-        const SubmitResult result = buffer_.submitFrame(frame);
+        const long long sourceAnchor = sourceFrameAnchor_.load(std::memory_order_acquire);
+        const long long outputAnchor = outputFrameAnchor_.load(std::memory_order_acquire);
+        const long long delta = frame.frameNumber - sourceAnchor;
+        if ((delta > 0 && outputAnchor > std::numeric_limits<long long>::max() - delta) ||
+            (delta < 0 && outputAnchor < std::numeric_limits<long long>::min() - delta)) {
+            err = "source frameからoutput identityへの換算がoverflowしました";
+            noteFatal(err);
+            return false;
+        }
+        const SubmitResult result = buffer_.submitFrameForOutput(frame, outputAnchor + delta);
         if (result == SubmitResult::Accepted) {
             std::lock_guard<std::mutex> lock(snapshotMutex_);
             ++snapshot_.submittedCount;
@@ -459,6 +476,12 @@ bool SourceDecodeWorker::submitWithBackpressure(const DecodedGpuFrame& frame, st
 
 SeekRequestResult SourceDecodeWorker::requestSeek(long long frameNumber, SeekTicket& ticket,
                                                   std::string& err) {
+    return requestSeek(frameNumber, frameNumber, ticket, err);
+}
+
+SeekRequestResult SourceDecodeWorker::requestSeek(long long sourceFrameNumber,
+                                                  long long outputFrameNumber, SeekTicket& ticket,
+                                                  std::string& err) {
     if (!running()) {
         err = "停止中のworkerへseekを要求できません";
         return SeekRequestResult::RejectedStopped;
@@ -468,7 +491,8 @@ SeekRequestResult SourceDecodeWorker::requestSeek(long long frameNumber, SeekTic
         // mailbox pendingはwake_のpredicateである。commandMutexなしで更新すると、workerが
         // predicate確認からwaitへ移る隙間のnotifyを失い、pendingのまま停止し得る。
         std::lock_guard<std::mutex> lock(commandMutex_);
-        result = seekMailbox_.request(frameNumber, qpcTicks(), ticket, err);
+        result =
+            seekMailbox_.request(sourceFrameNumber, outputFrameNumber, qpcTicks(), ticket, err);
         if (result == SeekRequestResult::Accepted) {
             playing_.store(false, std::memory_order_release);
             setSeekPhase(SeekExecutionPhase::Queued, ticket);
@@ -521,6 +545,10 @@ SeekCompletion SourceDecodeWorker::executeSeek(const SeekTicket& ticket, long lo
         completion.decodeReadyMs = qpcMsBetween(requestQpc, completion.decodeReadyQpc);
         return completion;
     }
+    // decoded frame identityはsource-nativeのまま保ち、buffer envelopeだけへ
+    // 共通output identityを付与する。
+    sourceFrameAnchor_.store(ticket.targetFrame, std::memory_order_release);
+    outputFrameAnchor_.store(ticket.outputFrameNumber, std::memory_order_release);
 
     DecodedGpuFrame frame;
     setSeekPhase(SeekExecutionPhase::RequestExactFrame, ticket);
@@ -566,8 +594,8 @@ bool SourceDecodeWorker::seekBlocking(long long frameNumber, double& decodeReady
     }
     pause();
     const long long requestQpc = qpcTicks();
-    const SeekCompletion completion = executeSeek({0, frameNumber}, requestQpc);
-    setSeekPhase(SeekExecutionPhase::Completed, {0, frameNumber});
+    const SeekCompletion completion = executeSeek({0, frameNumber, frameNumber}, requestQpc);
+    setSeekPhase(SeekExecutionPhase::Completed, {0, frameNumber, frameNumber});
     decodeReadyMs = completion.decodeReadyMs;
     err = completion.error;
     return completion.status == SeekCompletionStatus::Completed;

@@ -16,6 +16,7 @@ namespace mvm::gpu {
 struct SeekTicket {
     unsigned long long requestId = 0;
     long long targetFrame = -1;
+    long long outputFrameNumber = -1;
 };
 
 enum class SeekRequestResult { Accepted, RejectedBusy, RejectedStopped, RejectedInvalid };
@@ -89,6 +90,8 @@ public:
     void restart();
     SeekRequestResult request(long long frameNumber, long long requestQpc, SeekTicket& ticket,
                               std::string& err);
+    SeekRequestResult request(long long sourceFrameNumber, long long outputFrameNumber,
+                              long long requestQpc, SeekTicket& ticket, std::string& err);
     bool takePending(SeekTicket& ticket, long long& requestQpc);
     SeekCompletionPublishResult publish(const SeekCompletion& completion);
     SeekWaitResult wait(const SeekTicket& ticket, int timeoutMs, SeekCompletion& completion);
@@ -158,6 +161,8 @@ public:
     void pause();
     void stepForward();
     SeekRequestResult requestSeek(long long frameNumber, SeekTicket& ticket, std::string& err);
+    SeekRequestResult requestSeek(long long sourceFrameNumber, long long outputFrameNumber,
+                                  SeekTicket& ticket, std::string& err);
     SeekWaitResult waitSeek(const SeekTicket& ticket, int timeoutMs, SeekCompletion& completion);
     bool seekBlocking(long long frameNumber, double& decodeReadyMs, std::string& err);
     bool flushBlocking(std::string& err);
@@ -222,6 +227,8 @@ private:
     std::atomic<SeekExecutionPhase> seekPhase_{SeekExecutionPhase::Idle};
     std::atomic<unsigned long long> seekRequestId_{0};
     std::atomic<long long> seekTargetFrame_{-1};
+    std::atomic<long long> sourceFrameAnchor_{0};
+    std::atomic<long long> outputFrameAnchor_{0};
     std::atomic<long long> seekPhaseEnterQpc_{0};
     std::atomic<long long> seekLastProgressQpc_{0};
     std::atomic<long long> seekCompletionPublishRejectCount_{0};

@@ -30,12 +30,21 @@ inline SourceFrameIdentity identityOf(const DecodedGpuFrame& frame) {
     return {frame.sourceId, frame.sourceGeneration, frame.resourceEpoch, frame.frameNumber};
 }
 
+// decode位置とPreview/presentation identityを混同しないためのbuffer envelope。
+// frame.frameNumberは常にsource-native、outputFrameNumberはpairing authorityである。
+struct DecodedFrameEnvelope {
+    long long outputFrameNumber = -1;
+    DecodedGpuFrame frame;
+};
+
 struct CompositionLayerFrame {
     DecodedGpuFrame frame;
     RectF destination{}; // 出力に対する正規化座標
     RectF sourceUv{};
     float opacity = 1.0f;
     int zOrder = 0;
+    bool effectsEnabled = false;
+    float rotationDegrees = 0.0f;
 };
 
 struct ComposedFrame {

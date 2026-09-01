@@ -1,6 +1,7 @@
 qt_add_executable(mvm
     main.cpp
     mvm_controller.cpp
+    timeline_clip_model.cpp
 )
 
 qt_add_qml_module(mvm
@@ -13,6 +14,8 @@ qt_add_qml_module(mvm
 target_include_directories(mvm PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm PRIVATE
     mvm::manim_clip_workflow
+    mvm::timeline_playback
+    mvm::timeline_preview_mapping
     mvm::timeline_export
     mvm::mlt
     mvm::preview_engine

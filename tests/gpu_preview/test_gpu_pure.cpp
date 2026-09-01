@@ -1697,6 +1697,68 @@ void testHwFormatSelection() {
     checkEq(chooseHwPixelFormat(nullptr, 0), -1, "null 候補で落ちない");
 }
 
+void testM7aSourceNativeFadeAuthority() {
+    std::fprintf(stderr, "[M7a source-native fade]\n");
+    LayerLayout effect;
+    effect.opacity = 0.8f;
+    effect.effectsEnabled = true;
+    effect.sourceInFrame = 100;
+    effect.sourceDurationFrames = 20;
+    effect.fadeInFrames = 12;
+    const long long decodedSourceFrame = 110;
+    const long long unrelatedOutputOrdinal = 2;
+    const float actual = resolveLayerOpacity(effect, decodedSourceFrame);
+    const float wrong = resolveLayerOpacity(effect, effect.sourceInFrame + unrelatedOutputOrdinal);
+    check(std::abs(actual - wrong) > 0.1f,
+          "FadeはPreview output ordinalではなくdecoded source frameをauthorityにする");
+    check(std::abs(actual - 0.8f * (10.0f / 11.0f)) < 0.0001f,
+          "FadeはsourceFrame-sourceInFrameとsource-native durationで評価する");
+}
+
+void testM7bOutputAndSourceIdentitySeparation() {
+    std::fprintf(stderr, "[M7b output/source identity separation]\n");
+    SourceRegistry registry;
+    const SourceId v1 = registry.registerSource();
+    const SourceId v2 = registry.registerSource();
+    SourceFrameBuffer bottom(v1, SourceGeneration{1}, 2);
+    SourceFrameBuffer top(v2, SourceGeneration{1}, 2);
+    auto bottomFrame = makeFrame(110, 1);
+    bottomFrame.sourceId = v1;
+    auto topFrame = makeFrame(25, 1);
+    topFrame.sourceId = v2;
+    check(bottom.submitFrameForOutput(bottomFrame, 40) == SubmitResult::Accepted,
+          "V1 source frame 110へoutput 40を付与");
+    check(top.submitFrameForOutput(topFrame, 40) == SubmitResult::Accepted,
+          "V2 source frame 25へ同じoutput 40を付与");
+
+    CompositorCoordinator coordinator;
+    const std::vector<LayerLayout> layout = {
+        {v1, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0f, 0},
+        {v2, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0f, 1},
+    };
+    check(coordinator.configure(layout, {{v1, {1}}, {v2, {1}}}) == ConfigureResult::Configured,
+          "2 track coordinatorを構成");
+    ExactFramePairer pairer({&bottom, &top}, coordinator);
+    ComposedFrame composed;
+    check(pairer.tryPair(40, composed) == PairResult::Paired,
+          "異なるsource frameを共通output identityでpairする");
+    checkEq(composed.outputFrameNumber, 40, "composed identityはoutput frame");
+    checkEq(composed.layers[0].frame.frameNumber, 110, "V1 decoded identityはsource-nativeのまま");
+    checkEq(composed.layers[1].frame.frameNumber, 25, "V2 decoded identityはsource-nativeのまま");
+    check(composed.layers[0].zOrder < composed.layers[1].zOrder, "V1はV2より先に合成される");
+
+    auto mismatchA = makeFrame(111, 1);
+    mismatchA.sourceId = v1;
+    auto mismatchB = makeFrame(26, 1);
+    mismatchB.sourceId = v2;
+    check(bottom.submitFrameForOutput(mismatchA, 41) == SubmitResult::Accepted,
+          "mismatch V1を追加");
+    check(top.submitFrameForOutput(mismatchB, 42) == SubmitResult::Accepted, "mismatch V2を追加");
+    check(pairer.tryPair(41, composed) != PairResult::Paired, "output identity不一致を拒否する");
+    checkEq(static_cast<long long>(bottom.depth()), 1, "不一致時に片側だけ消費しない");
+    checkEq(static_cast<long long>(top.depth()), 1, "不一致時にもう片側も消費しない");
+}
+
 } // namespace
 
 int main() {
@@ -1724,6 +1786,8 @@ int main() {
     testSourceSeekMailbox();
     testMeasurementPreroll();
     testHwFormatSelection();
+    testM7aSourceNativeFadeAuthority();
+    testM7bOutputAndSourceIdentitySeparation();
 
     std::fprintf(stderr, "\n検査 %d 件 / 失敗 %d 件\n", gChecks, gFailures);
     if (gChecks == 0) {

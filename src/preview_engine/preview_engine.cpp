@@ -78,6 +78,11 @@ bool validRect(const PreviewNormalizedRect& rect) {
     return rect.width <= 1.0F - rect.x && rect.height <= 1.0F - rect.y;
 }
 
+bool validEffectDestination(const PreviewNormalizedRect& rect) {
+    return std::isfinite(rect.x) && std::isfinite(rect.y) && std::isfinite(rect.width) &&
+           std::isfinite(rect.height) && rect.width > 0.0F && rect.height > 0.0F;
+}
+
 PreviewNormalizedRect canonicalRect(PreviewNormalizedRect rect) {
     rect.x = canonicalFloat(rect.x);
     rect.y = canonicalFloat(rect.y);
@@ -365,10 +370,6 @@ CompositionAcceptanceState::submit(const std::shared_ptr<const CompositionSnapsh
         return Result<AcceptedComposition>::failure(
             compositionError(PreviewErrorCategory::CompositionFailure, "snapshotがnullです"));
     }
-    if (snapshot->layers.empty()) {
-        return Result<AcceptedComposition>::failure(
-            compositionError(PreviewErrorCategory::CompositionFailure, "snapshotがemptyです"));
-    }
     if (snapshot->layers.size() > capabilities.maxQualifiedCompositionLayers) {
         return Result<AcceptedComposition>::failure(compositionError(
             PreviewErrorCategory::UnsupportedCapability, "qualified layer countを超えています"));
@@ -397,7 +398,9 @@ CompositionAcceptanceState::submit(const std::shared_ptr<const CompositionSnapsh
 
     CompositionSnapshot canonical = *snapshot;
     for (PreviewCompositionLayer& layer : canonical.layers) {
-        if (!validRect(layer.destination) || !validRect(layer.sourceRect)) {
+        if (!(layer.effectsEnabled ? validEffectDestination(layer.destination)
+                                   : validRect(layer.destination)) ||
+            !validRect(layer.sourceRect)) {
             return Result<AcceptedComposition>::failure(
                 compositionError(PreviewErrorCategory::CompositionFailure,
                                  "normalized rectangleがinvalidです", layer.source));
@@ -407,9 +410,21 @@ CompositionAcceptanceState::submit(const std::shared_ptr<const CompositionSnapsh
                 compositionError(PreviewErrorCategory::CompositionFailure,
                                  "opacityが[0,1]の範囲外です", layer.source));
         }
+        if (!std::isfinite(layer.rotationDegrees) ||
+            (layer.effectsEnabled &&
+             (layer.sourceInFrame < 0 || layer.sourceDurationFrames <= 0 ||
+              layer.fadeInFrames < 0 || layer.fadeOutFrames < 0 ||
+              layer.fadeInFrames > layer.sourceDurationFrames ||
+              layer.fadeOutFrames > layer.sourceDurationFrames ||
+              layer.fadeInFrames > layer.sourceDurationFrames - layer.fadeOutFrames))) {
+            return Result<AcceptedComposition>::failure(compositionError(
+                PreviewErrorCategory::CompositionFailure,
+                "source-native effect timingまたはrotationが不正です", layer.source));
+        }
         layer.destination = canonicalRect(layer.destination);
         layer.sourceRect = canonicalRect(layer.sourceRect);
         layer.opacity = canonicalFloat(layer.opacity);
+        layer.rotationDegrees = canonicalFloat(layer.rotationDegrees);
     }
 
     if (latestAcceptedSnapshot_ && *latestAcceptedSnapshot_ == canonical) {
@@ -794,6 +809,12 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                                layer.sourceRect.height};
             mapped.opacity = layer.opacity;
             mapped.zOrder = static_cast<int>(i);
+            mapped.effectsEnabled = layer.effectsEnabled;
+            mapped.rotationDegrees = layer.rotationDegrees;
+            mapped.sourceInFrame = layer.sourceInFrame;
+            mapped.sourceDurationFrames = layer.sourceDurationFrames;
+            mapped.fadeInFrames = layer.fadeInFrames;
+            mapped.fadeOutFrames = layer.fadeOutFrames;
             layout.push_back(mapped);
         }
         return layout;
@@ -815,6 +836,12 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         const auto layout = buildLayoutLocked(snapshot);
         if (!layout)
             return compositionFailure("accepted compositionが未登録sourceを参照しています");
+
+        if (snapshot.layers.empty()) {
+            pairer.reset();
+            coordinatorSources.clear();
+            return std::nullopt;
+        }
 
         std::vector<std::uint64_t> referenced;
         for (const auto& layer : snapshot.layers) {
@@ -884,6 +911,7 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         PreviewPosition target;
         std::int64_t audioSample = 0;
         std::map<std::uint64_t, gpu::SeekTicket> videoTickets;
+        std::map<std::uint64_t, std::int64_t> expectedSourceFrames;
         audio::AudioSeekTicket audioTicket;
         bool audioReady = false;
         bool decodeReady = false;
@@ -1142,17 +1170,16 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         };
 
         if (!pending.decodeReady) {
-            for (const auto& [publicId, entry] : videoSources) {
-                if (!entry.worker || pending.expectedVideoGenerations.contains(publicId))
-                    continue;
-                const auto ticket = pending.videoTickets.find(publicId);
-                if (ticket == pending.videoTickets.end()) {
-                    return seekFailure("video seek ticketがsourceごとに記録されていません",
+            for (const auto& [publicId, ticketValue] : pending.videoTickets) {
+                const auto entry = videoSources.find(publicId);
+                if (entry == videoSources.end() || !entry->second.worker)
+                    return seekFailure("video seek中にsourceが解除されました",
                                        PreviewSourceId{publicId});
-                }
+                if (pending.expectedVideoGenerations.contains(publicId))
+                    continue;
                 gpu::SeekCompletion completion;
                 const gpu::SeekWaitResult result =
-                    entry.worker->waitSeek(ticket->second, 0, completion);
+                    entry->second.worker->waitSeek(ticketValue, 0, completion);
                 if (result == gpu::SeekWaitResult::StaleTicket)
                     return seekFailure("video seek completionのticketが一致しません",
                                        PreviewSourceId{publicId});
@@ -1162,10 +1189,14 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                                            PreviewSourceId{publicId});
                     }
                     // decodeしたframeが要求と違えばexact seekではない。
-                    if (completion.decodedFrameNumber != pending.target.outputFrame) {
+                    const auto expectedFrame = pending.expectedSourceFrames.find(publicId);
+                    if (expectedFrame == pending.expectedSourceFrames.end() ||
+                        completion.decodedFrameNumber != expectedFrame->second) {
                         return seekFailure(
                             "video seekがrequested frameを返しませんでした (requested=" +
-                                std::to_string(pending.target.outputFrame) +
+                                (expectedFrame == pending.expectedSourceFrames.end()
+                                     ? std::string("missing")
+                                     : std::to_string(expectedFrame->second)) +
                                 ", decoded=" + std::to_string(completion.decodedFrameNumber) + ")",
                             PreviewSourceId{publicId});
                     }
@@ -1191,7 +1222,7 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                     pending.audioReady = true;
                 }
             }
-            if (pending.expectedVideoGenerations.size() == videoSources.size() &&
+            if (pending.expectedVideoGenerations.size() == pending.videoTickets.size() &&
                 pending.audioReady) {
                 pending.decodeReady = true;
                 ++seekDecodeReadyCount;
@@ -1512,12 +1543,13 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
             makeError(PreviewErrorCategory::InvalidState, PreviewOperation::AddSource,
                       "native render deviceの準備前にsourceを登録できません"));
     }
-    if (descriptor.videoEnabled &&
-        impl_->videoSources.size() >= impl_->capability.maxQualifiedActiveVideoSources) {
+    // source-set切替中は旧sourceを新composition提示まで保持する。active compositionの
+    // 上限は引き続きcapabilityの2件であり、登録slotだけを最大4件許す。
+    constexpr std::size_t maximumRegisteredVideoSources = 4;
+    if (descriptor.videoEnabled && impl_->videoSources.size() >= maximumRegisteredVideoSources) {
         return Result<PreviewSourceId>::failure(
             makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
-                      "qualified active video source数を超えています (上限=" +
-                          std::to_string(impl_->capability.maxQualifiedActiveVideoSources) + ")"));
+                      "source-set切替用のvideo source登録上限を超えています"));
     }
     if (descriptor.audioEnabled) {
         if (impl_->capability.maxQualifiedActiveAudioSources == 0) {
@@ -1831,9 +1863,8 @@ Result<void> PreviewEngine::play() {
             return affinity;
         if (impl_->machine.state() != PreviewEngineState::ReadyPaused)
             return invalidState(PreviewOperation::Play, "playを受理できないstateです");
-        if (!impl_->hasVideoWorkerLocked() || !impl_->compositionState.latestAcceptedToken()) {
-            return invalidState(PreviewOperation::Play,
-                                "playには登録済みvideo sourceとaccepted compositionが必要です");
+        if (!impl_->compositionState.latestAcceptedToken()) {
+            return invalidState(PreviewOperation::Play, "playにはaccepted compositionが必要です");
         }
         audioWorker = impl_->audioWorker;
         audioSink = impl_->audioSink;
@@ -1913,7 +1944,7 @@ Result<void> PreviewEngine::play() {
                                         ? 0
                                         : impl_->telemetrySnapshot.status.position.outputFrame + 1;
         impl_->lastSchedulerTarget = impl_->schedulerBaseFrame - 1;
-        for (gpu::SourceDecodeWorker* worker : impl_->videoWorkersLocked())
+        for (gpu::SourceDecodeWorker* worker : impl_->referencedVideoWorkersLocked())
             worker->play();
         impl_->telemetrySnapshot.status.state = PreviewEngineState::Playing;
     }
@@ -1992,6 +2023,22 @@ Result<void> PreviewEngine::pause() {
 // 「要求したoutputFrameを実際に提示できたか」で判定する
 // (preview-engine-contract.md §10.1)。
 Result<void> PreviewEngine::seek(PreviewPosition target) {
+    PreviewFrameRequest request;
+    request.outputFrameNumber = target.outputFrame;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        const auto snapshot = impl_->compositionState.latestAcceptedSnapshot();
+        if (snapshot) {
+            for (const auto& layer : snapshot->layers)
+                request.sources.push_back({layer.source, target.outputFrame});
+        }
+    }
+    return seekFrameRequest(request);
+}
+
+Result<void> PreviewEngine::seekFrameRequest(const PreviewFrameRequest& request) {
+    const PreviewPosition target{request.outputFrameNumber};
+    std::map<std::uint64_t, std::int64_t> requestedFrames;
     std::shared_ptr<audio::AudioDecodeWorker> audioWorker;
     std::shared_ptr<audio::WasapiAudioSink> audioSink;
     std::int64_t audioSample = 0;
@@ -2013,9 +2060,32 @@ Result<void> PreviewEngine::seek(PreviewPosition target) {
                                                    PreviewOperation::Seek,
                                                    "負のoutputFrameへはseekできません"));
         }
-        if (!impl_->hasVideoWorkerLocked() || !impl_->compositionState.latestAcceptedToken()) {
-            return invalidState(PreviewOperation::Seek,
-                                "seekには登録済みvideo sourceとaccepted compositionが必要です");
+        const auto acceptedSnapshot = impl_->compositionState.latestAcceptedSnapshot();
+        if (!impl_->compositionState.latestAcceptedToken() || !acceptedSnapshot) {
+            return invalidState(PreviewOperation::Seek, "seekにはaccepted compositionが必要です");
+        }
+        std::set<std::uint64_t> expectedSources;
+        for (const auto& layer : acceptedSnapshot->layers)
+            expectedSources.insert(layer.source.value);
+        for (const auto& sourceRequest : request.sources) {
+            if (sourceRequest.source.value == 0 || sourceRequest.sourceFrameNumber < 0 ||
+                !requestedFrames
+                     .emplace(sourceRequest.source.value, sourceRequest.sourceFrameNumber)
+                     .second) {
+                return Result<void>::failure(
+                    makeError(PreviewErrorCategory::SeekFailure, PreviewOperation::Seek,
+                              "source frame requestがinvalidまたは重複しています"));
+            }
+        }
+        std::set<std::uint64_t> requestedSources;
+        for (const auto& [source, frame] : requestedFrames) {
+            (void)frame;
+            requestedSources.insert(source);
+        }
+        if (requestedSources != expectedSources) {
+            return Result<void>::failure(
+                makeError(PreviewErrorCategory::SeekFailure, PreviewOperation::Seek,
+                          "source frame requestがaccepted compositionのsource集合と一致しません"));
         }
         if (!impl_->timebase) {
             return invalidState(PreviewOperation::Seek, "output timebaseが未確定です");
@@ -2082,17 +2152,26 @@ Result<void> PreviewEngine::seek(PreviewPosition target) {
             bool videoRequestsAccepted = true;
             std::optional<PreviewSourceId> rejectedVideoSource;
             impl_->pendingSeek.videoTickets.clear();
-            for (const auto& [publicId, entry] : impl_->videoSources) {
+            impl_->pendingSeek.expectedSourceFrames.clear();
+            for (const auto& [publicId, sourceFrame] : requestedFrames) {
+                const auto sourceEntry = impl_->videoSources.find(publicId);
+                if (sourceEntry == impl_->videoSources.end() || !sourceEntry->second.worker) {
+                    videoRequestsAccepted = false;
+                    rejectedVideoSource = PreviewSourceId{publicId};
+                    requestError = "要求sourceが登録されていません";
+                    break;
+                }
                 gpu::SeekTicket ticket;
-                const gpu::SeekRequestResult request =
-                    entry.worker->requestSeek(target.outputFrame, ticket, requestError);
-                if (request != gpu::SeekRequestResult::Accepted) {
+                const gpu::SeekRequestResult seekRequest = sourceEntry->second.worker->requestSeek(
+                    sourceFrame, target.outputFrame, ticket, requestError);
+                if (seekRequest != gpu::SeekRequestResult::Accepted) {
                     videoRequestsAccepted = false;
                     rejectedVideoSource = PreviewSourceId{publicId};
                     break;
                 }
                 ++impl_->seekVideoRequestAcceptedCount;
                 impl_->pendingSeek.videoTickets.emplace(publicId, ticket);
+                impl_->pendingSeek.expectedSourceFrames.emplace(publicId, sourceFrame);
             }
             audio::AudioSeekRequestResult audioRequest = audio::AudioSeekRequestResult::Accepted;
             if (audioWorker) {
@@ -2433,8 +2512,7 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
             (renderState != PreviewEngineState::Playing || !engine.impl_->schedulerEnabled)) {
             return Result<RenderFrameResult>::success(result);
         }
-        if (!renderTargetView || width <= 0 || height <= 0 ||
-            !engine.impl_->hasVideoWorkerLocked() || !engine.impl_->compositor) {
+        if (!renderTargetView || width <= 0 || height <= 0 || !engine.impl_->compositor) {
             return Result<RenderFrameResult>::failure(
                 makeError(PreviewErrorCategory::InvalidState, PreviewOperation::RenderDeviceAttach,
                           "render targetまたはproduct runtimeが未準備です"));
@@ -2488,13 +2566,53 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
             // 決まっていないとexact pairingの対象sourceも決まらない。
             const auto token = engine.impl_->compositionState.latestAcceptedToken();
             const auto snapshot = engine.impl_->compositionState.latestAcceptedSnapshot();
-            if (!token || !snapshot || snapshot->layers.empty()) {
+            if (!token || !snapshot) {
                 return Result<RenderFrameResult>::failure(makeError(
                     PreviewErrorCategory::CompositionFailure, PreviewOperation::RenderDeviceAttach,
                     "accepted compositionが見つかりません"));
             }
-            if (std::optional<PreviewError> syncFailure =
-                    engine.impl_->syncCompositionRuntimeLocked(*token, *snapshot)) {
+            if (snapshot->layers.empty()) {
+                // gapはrender passの既存background clearをそのまま表示する。
+                // decode sourceをpresentation identityの代用にしない。
+                engine.impl_->pairer.reset();
+                engine.impl_->coordinatorSources.clear();
+                engine.impl_->compositionState.markPresented(*token, snapshot);
+                engine.impl_->distinctPresentedFrames.note(target);
+                ++engine.impl_->presentationSequence;
+                ++engine.impl_->telemetrySnapshot.presentedFrameCount;
+                engine.impl_->telemetrySnapshot.currentSourceQueueDepth = 0;
+                engine.impl_->telemetrySnapshot.status.position = {target};
+                engine.impl_->telemetrySnapshot.status.lastPresentedComposition = *token;
+                result.presented = true;
+                result.sourceFrame = -1;
+                result.frame = {engine.impl_->presentationSequence, {target}, *token, 0};
+                if (seeking) {
+                    ++engine.impl_->seekCompletedCount;
+                    engine.impl_->lastSeekPresentedFrame = target;
+                    seekResumePlaying = engine.impl_->pendingSeek.resumePlaying;
+                    seekResumeSample = engine.impl_->pendingSeek.audioSample;
+                    seekResumeAudioGeneration = engine.impl_->pendingSeek.expectedAudioGeneration;
+                    engine.impl_->pendingSeek = PreviewEngine::Impl::PendingSeek{};
+                    engine.impl_->lastSchedulerTarget = target;
+                    engine.impl_->schedulerBaseFrame = target + 1;
+                    engine.impl_->resumeAudioSample = seekResumeSample;
+                    if (seekResumePlaying) {
+                        seekAwaitingResume = true;
+                    } else {
+                        Result<void> completed = engine.impl_->machine.completeSeek();
+                        if (!completed)
+                            fatal = completed.error();
+                        else {
+                            engine.impl_->telemetrySnapshot.status.state =
+                                engine.impl_->machine.state();
+                            seekCompletedState = engine.impl_->machine.state();
+                            engine.impl_->notifyLocked(StateChangedEvent{*seekCompletedState},
+                                                       seekDispatch);
+                        }
+                    }
+                }
+            } else if (std::optional<PreviewError> syncFailure =
+                           engine.impl_->syncCompositionRuntimeLocked(*token, *snapshot)) {
                 fatal = std::move(*syncFailure);
             } else {
                 gpu::ExactFramePairer& pairer = *engine.impl_->pairer;

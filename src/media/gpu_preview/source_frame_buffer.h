@@ -28,6 +28,7 @@ class SourceFrameBuffer final : public IPreviewSurface {
 public:
     SourceFrameBuffer(SourceId source, SourceGeneration generation, size_t capacity = 3);
     SubmitResult submitFrame(const DecodedGpuFrame& frame) override;
+    SubmitResult submitFrameForOutput(const DecodedGpuFrame& frame, long long outputFrameNumber);
     void clear() override;
     long long displayedFrameNumber() const override;
     GenerationUpdateResult setGeneration(SourceGeneration generation);
@@ -38,6 +39,7 @@ public:
 
     bool take(DecodedGpuFrame& frame);
     bool peekFrontIdentity(SourceFrameIdentity& identity) const;
+    bool peekFrontOutputFrameNumber(long long& outputFrameNumber) const;
     bool takeExact(long long frameNumber, DecodedGpuFrame& frame);
     // N source の front を単一 transaction で取得する。全 source が requested と
     // 一致する場合だけ commit し、一つでも変化していればどれも残す。
@@ -47,6 +49,9 @@ public:
     // 成功時 `frames` は `sources` と同じ順序で埋まる。
     static bool takeExactAll(const std::vector<SourceFrameBuffer*>& sources, long long frameNumber,
                              std::vector<DecodedGpuFrame>& frames);
+    static bool takeExactEnvelopes(const std::vector<SourceFrameBuffer*>& sources,
+                                   long long outputFrameNumber,
+                                   std::vector<DecodedFrameEnvelope>& frames);
     // 2 source 版。`takeExactAll` へ委譲する薄い wrapper であり、
     // P1〜P4 の frozen 呼び出し側のために残す。
     static bool takeExactPair(SourceFrameBuffer& a, SourceFrameBuffer& b, long long frameNumber,
@@ -72,7 +77,7 @@ private:
     size_t capacity_ = 3;
     mutable std::mutex mutex_;
     std::condition_variable changed_;
-    std::deque<DecodedGpuFrame> frames_;
+    std::deque<DecodedFrameEnvelope> frames_;
     long long displayed_ = -1;
     bool stopped_ = false;
 };

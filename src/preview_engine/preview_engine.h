@@ -53,6 +53,7 @@ public:
     Result<void> play();
     Result<void> pause();
     Result<void> seek(PreviewPosition target);
+    Result<void> seekFrameRequest(const PreviewFrameRequest& request);
 
     PreviewStatus status() const;
     PreviewCapabilities capabilities() const;

@@ -2,6 +2,7 @@
 
 #include "media/gpu_preview/color_metadata.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <d3dcompiler.h>
@@ -37,6 +38,8 @@ cbuffer Params : register(b0)
     float4 lum;      // x = yScale, y = yOffset, z = uvScale, w = sampleScale
     float4 mat;      // x = vr, y = ug, z = vg, w = ub
     float4 misc;     // x = chroma neutral, y = straight layer opacity
+    float4 destination; // effect quad: normalized x/y/w/h
+    float4 geometry;    // x = cos, y = sin
 };
 
 Texture2DArray<float4> texLuma   : register(t0);
@@ -51,6 +54,24 @@ VSOut vs_main(uint id : SV_VertexID)
     float2 uv = float2((id << 1) & 2, id & 2);   // (0,0) (2,0) (0,2)
     o.uv  = uv;
     o.pos = float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);
+    return o;
+}
+
+VSOut vs_effect(uint id : SV_VertexID)
+{
+    static const float2 corners[6] = {
+        float2(0,0), float2(1,0), float2(0,1),
+        float2(0,1), float2(1,0), float2(1,1)
+    };
+    VSOut o;
+    float2 unit = corners[id];
+    float2 p = destination.xy + unit * destination.zw;
+    float2 center = destination.xy + destination.zw * 0.5;
+    float2 delta = p - center;
+    p = center + float2(geometry.x * delta.x - geometry.y * delta.y,
+                        geometry.y * delta.x + geometry.x * delta.y);
+    o.uv = unit;
+    o.pos = float4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
     return o;
 }
 
@@ -82,6 +103,8 @@ struct ShaderParams {
     float lum[4];
     float mat[4];
     float misc[4];
+    float destination[4];
+    float geometry[4];
 };
 
 bool compile(const char* entry, const char* target, ID3DBlob** out, std::string& err) {
@@ -196,20 +219,30 @@ bool Nv12Converter::ensureShaders(std::string& err) {
     ID3D11Device* dev = shared_->device();
 
     ID3DBlob* vsBlob = nullptr;
+    ID3DBlob* effectVsBlob = nullptr;
     ID3DBlob* psBlob = nullptr;
     if (!compile("vs_main", "vs_5_0", &vsBlob, err))
         return false;
+    if (!compile("vs_effect", "vs_5_0", &effectVsBlob, err)) {
+        vsBlob->Release();
+        return false;
+    }
     if (!compile("ps_main", "ps_5_0", &psBlob, err)) {
         vsBlob->Release();
+        effectVsBlob->Release();
         return false;
     }
 
     HRESULT rc =
         dev->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &vs_);
     if (SUCCEEDED(rc))
+        rc = dev->CreateVertexShader(effectVsBlob->GetBufferPointer(),
+                                     effectVsBlob->GetBufferSize(), nullptr, &effectVs_);
+    if (SUCCEEDED(rc))
         rc = dev->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr,
                                     &ps_);
     vsBlob->Release();
+    effectVsBlob->Release();
     psBlob->Release();
     if (FAILED(rc)) {
         err = hr("shader オブジェクトの生成", rc);
@@ -300,6 +333,7 @@ void Nv12Converter::release() {
     safeRelease(samplerPoint_);
     safeRelease(cbuffer_);
     safeRelease(ps_);
+    safeRelease(effectVs_);
     safeRelease(vs_);
 
     shared_ = nullptr;
@@ -437,7 +471,8 @@ void Nv12Converter::retireEntriesNotInEpoch(ResourceEpoch epoch, GpuRetirementQu
 
 bool Nv12Converter::drawInternal(const DecodedGpuFrame& frame, ID3D11RenderTargetView* rtv,
                                  const FitRect& viewport, const float uvRect[4], bool linearFilter,
-                                 float opacity, std::string& err) {
+                                 float opacity, std::string& err, bool effectAware, int targetWidth,
+                                 int targetHeight, float rotationDegrees) {
     SrvPair srv;
     if (!acquireSrvs(frame, srv, err))
         return false;
@@ -461,6 +496,17 @@ bool Nv12Converter::drawInternal(const DecodedGpuFrame& frame, ID3D11RenderTarge
     params.mat[3] = k.ub;
     params.misc[0] = chromaNeutral;
     params.misc[1] = opacity;
+    if (effectAware) {
+        params.destination[0] = static_cast<float>(viewport.x) / static_cast<float>(targetWidth);
+        params.destination[1] = static_cast<float>(viewport.y) / static_cast<float>(targetHeight);
+        params.destination[2] =
+            static_cast<float>(viewport.width) / static_cast<float>(targetWidth);
+        params.destination[3] =
+            static_cast<float>(viewport.height) / static_cast<float>(targetHeight);
+        const float radians = rotationDegrees * 3.14159265358979323846f / 180.0f;
+        params.geometry[0] = std::cos(radians);
+        params.geometry[1] = std::sin(radians);
+    }
 
     ID3D11DeviceContext* ctx = shared_->context();
 
@@ -474,10 +520,10 @@ bool Nv12Converter::drawInternal(const DecodedGpuFrame& frame, ID3D11RenderTarge
     ctx->Unmap(cbuffer_, 0);
 
     D3D11_VIEWPORT vp{};
-    vp.TopLeftX = static_cast<float>(viewport.x);
-    vp.TopLeftY = static_cast<float>(viewport.y);
-    vp.Width = static_cast<float>(viewport.width);
-    vp.Height = static_cast<float>(viewport.height);
+    vp.TopLeftX = effectAware ? 0.0f : static_cast<float>(viewport.x);
+    vp.TopLeftY = effectAware ? 0.0f : static_cast<float>(viewport.y);
+    vp.Width = static_cast<float>(effectAware ? targetWidth : viewport.width);
+    vp.Height = static_cast<float>(effectAware ? targetHeight : viewport.height);
     vp.MinDepth = 0.0f;
     vp.MaxDepth = 1.0f;
 
@@ -492,7 +538,9 @@ bool Nv12Converter::drawInternal(const DecodedGpuFrame& frame, ID3D11RenderTarge
     ctx->RSSetViewports(1, &vp);
     ctx->IASetInputLayout(nullptr);
     ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    ctx->VSSetShader(vs_, nullptr, 0);
+    ctx->VSSetShader(effectAware ? effectVs_ : vs_, nullptr, 0);
+    if (effectAware)
+        ctx->VSSetConstantBuffers(0, 1, &cbuffer_);
     ctx->PSSetShader(ps_, nullptr, 0);
     ctx->PSSetConstantBuffers(0, 1, &cbuffer_);
     ctx->PSSetShaderResources(0, 2, srvs);
@@ -500,7 +548,7 @@ bool Nv12Converter::drawInternal(const DecodedGpuFrame& frame, ID3D11RenderTarge
     ctx->GSSetShader(nullptr, nullptr, 0);
     ctx->HSSetShader(nullptr, nullptr, 0);
     ctx->DSSetShader(nullptr, nullptr, 0);
-    ctx->Draw(3, 0);
+    ctx->Draw(effectAware ? 6 : 3, 0);
 
     // SRV を外す。次に同じ texture が render target になる可能性は無いが、
     // 束ねたまま返すと呼び出し側 (QRhi) の状態追跡と衝突しうる。
@@ -548,6 +596,21 @@ bool Nv12Converter::drawLayer(const DecodedGpuFrame& frame, ID3D11RenderTargetVi
     }
     std::lock_guard<D3D11Lock> guard(shared_->lock());
     return drawInternal(frame, rtv, destination, sourceUv, linearFilter, opacity, err);
+}
+
+bool Nv12Converter::drawEffectLayer(const DecodedGpuFrame& frame, ID3D11RenderTargetView* rtv,
+                                    int targetWidth, int targetHeight, const FitRect& destination,
+                                    const float sourceUv[4], float opacity, float rotationDegrees,
+                                    bool linearFilter, std::string& err) {
+    if (!ready_ || !rtv || !frame.valid() || targetWidth <= 0 || targetHeight <= 0 ||
+        destination.width <= 0 || destination.height <= 0 || opacity < 0.0f || opacity > 1.0f ||
+        !std::isfinite(rotationDegrees)) {
+        err = "effect-aware compositor layerの引数が不正です";
+        return false;
+    }
+    std::lock_guard<D3D11Lock> guard(shared_->lock());
+    return drawInternal(frame, rtv, destination, sourceUv, linearFilter, opacity, err, true,
+                        targetWidth, targetHeight, rotationDegrees);
 }
 
 bool Nv12Converter::readSourceProbe(const DecodedGpuFrame& frame, float u, float v,

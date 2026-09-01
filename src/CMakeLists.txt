@@ -3,6 +3,7 @@
 
 # --- pure core --------------------------------------------------------------
 add_library(mvm_core STATIC
+    core/clip_fade.cpp
     core/checked_output_timebase.cpp
     core/presentation_opportunity_mapper.cpp
 )
@@ -13,8 +14,10 @@ add_library(mvm::core ALIAS mvm_core)
 # --- minimal product Project Model -----------------------------------------
 # Qt / MLT / Manim に依存しない純粋な値型と schema 固定 JSON のみ。
 add_library(mvm_project STATIC
+    project/clip_effects.cpp
     project/project.cpp
     project/project_json.cpp
+    project/timeline_edit.cpp
 )
 target_include_directories(mvm_project PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_project PRIVATE mvm::warnings)
@@ -49,6 +52,22 @@ target_link_libraries(mvm_manim_clip_workflow
     PRIVATE mvm::warnings)
 add_library(mvm::manim_clip_workflow ALIAS mvm_manim_clip_workflow)
 
+# --- M6b: controller clockによる単一track timeline再生 ---------------------
+# QtやPreviewEngineには依存せず、経過時間のframe変換とclip境界判断だけを担う。
+add_library(mvm_timeline_playback STATIC
+    app/timeline_playback.cpp
+)
+target_include_directories(mvm_timeline_playback PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_timeline_playback PUBLIC mvm::project PRIVATE mvm::warnings)
+add_library(mvm::timeline_playback ALIAS mvm_timeline_playback)
+
+add_library(mvm_timeline_preview_mapping STATIC
+    app/timeline_preview_mapping.cpp
+)
+target_include_directories(mvm_timeline_preview_mapping PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_timeline_preview_mapping PUBLIC mvm::project PRIVATE mvm::warnings)
+add_library(mvm::timeline_preview_mapping ALIAS mvm_timeline_preview_mapping)
+
 # --- M4: timeline export orchestration --------------------------------------
 # Qt に依存しない。Project の clip 列を解決し、tmp へ書き出して検証してから
 # 正規名へ rename する順序だけを担う。MLT の呼び出しは mvm::mlt に閉じる。
@@ -58,7 +77,7 @@ add_library(mvm_timeline_export STATIC
 target_include_directories(mvm_timeline_export PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_timeline_export
     PUBLIC mvm::project
-    PRIVATE mvm::mlt mvm::warnings)
+    PRIVATE mvm::core mvm::mlt mvm::warnings)
 add_library(mvm::timeline_export ALIAS mvm_timeline_export)
 
 # --- Phase 5 / P5-B: PreviewEngine product foundation -----------------------
@@ -82,6 +101,8 @@ add_library(mvm_mlt STATIC
     media/mlt/mvm_mlt_explore.c
     media/mlt/mvm_mlt_compose.c
     media/mlt/mvm_mlt_export.c
+    media/mlt/mvm_mlt_effects_p0.c
+    media/mlt/mvm_mlt_overlay_p0.c
     media/mlt/mvm_mlt_audiograph.c
 )
 target_include_directories(mvm_mlt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -148,7 +169,7 @@ add_library(mvm_gpu_preview STATIC
 target_include_directories(mvm_gpu_preview PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_gpu_preview
     PUBLIC  PkgConfig::MVM_FFMPEG d3d11 dxgi
-    PRIVATE d3dcompiler mvm::warnings
+    PRIVATE d3dcompiler mvm::core mvm::warnings
 )
 add_library(mvm::gpu_preview ALIAS mvm_gpu_preview)
 

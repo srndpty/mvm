@@ -13,7 +13,50 @@ ApplicationWindow {
     title: "mvm — Manim MVP"
     color: "#15171b"
 
+    component EffectSpinEditor: ColumnLayout {
+        required property string labelText
+        property alias value: control.value
+        property alias from: control.from
+        property alias to: control.to
+
+        spacing: 2
+        Label {
+            text: parent.labelText
+            color: "#c9ccd2"
+            font.pixelSize: 10
+        }
+        SpinBox {
+            id: control
+            Layout.preferredWidth: 76
+        }
+    }
+
     property url selectedManimScript
+    readonly property real pixelsPerFrame: 1.5
+    property bool playheadDragging: false
+    property int dragPlayheadFrame: 0
+    function syncEffectInspector() {
+        positionX.value = Math.round(mvmController.effectPositionX);
+        positionY.value = Math.round(mvmController.effectPositionY);
+        scale.value = Math.round(mvmController.effectScale);
+        rotation.value = Math.round(mvmController.effectRotation);
+        opacity.value = Math.round(mvmController.effectOpacity);
+        cropLeft.value = Math.round(mvmController.effectCropLeft);
+        cropTop.value = Math.round(mvmController.effectCropTop);
+        cropRight.value = Math.round(mvmController.effectCropRight);
+        cropBottom.value = Math.round(mvmController.effectCropBottom);
+        fadeIn.value = mvmController.effectFadeIn;
+        fadeOut.value = mvmController.effectFadeOut;
+    }
+
+    Connections {
+        target: mvmController
+        function onStateChanged() {
+            root.syncEffectInspector();
+        }
+    }
+
+    Component.onCompleted: syncEffectInspector()
 
     ColumnLayout {
         anchors.fill: parent
@@ -79,16 +122,22 @@ ApplicationWindow {
                     }
                     Label {
                         text: "State: " + mvmController.manimStateText
-                        color: mvmController.manimStateText === "SourceChanged"
-                               ? "#f2c66d" : "#a8d5a2"
+                        color: mvmController.manimStateText === "SourceChanged" ? "#f2c66d" : "#a8d5a2"
                         font.bold: true
                     }
                 }
 
                 Button {
                     text: mvmController.busy ? "Generating…" : "Regenerate"
-                    enabled: !mvmController.busy
+                    visible: mvmController.hasManimAsset
+                    enabled: visible && !mvmController.busy
                     onClicked: mvmController.regenerateManimClip()
+                }
+                Button {
+                    text: "Add Manim to Timeline"
+                    visible: !mvmController.hasManimTimelineClip
+                    enabled: visible && !mvmController.busy
+                    onClicked: mvmController.addManimToTimeline()
                 }
             }
         }
@@ -110,76 +159,445 @@ ApplicationWindow {
             }
         }
 
-        Label {
-            text: "Timeline (左から順に書き出されます)"
-            color: "#c9ccd2"
-            font.bold: true
+        Frame {
+            Layout.fillWidth: true
+            visible: mvmController.currentClipIndex >= 0
+
+            contentItem: RowLayout {
+                spacing: 5
+                EffectSpinEditor {
+                    id: positionX
+                    labelText: "位置 X (%)"
+                    from: -1000
+                    to: 1000
+                }
+                EffectSpinEditor {
+                    id: positionY
+                    labelText: "位置 Y (%)"
+                    from: -1000
+                    to: 1000
+                }
+                EffectSpinEditor {
+                    id: scale
+                    labelText: "拡大率 (%)"
+                    from: 1
+                    to: 1000
+                }
+                EffectSpinEditor {
+                    id: rotation
+                    labelText: "回転 (°)"
+                    from: -360
+                    to: 360
+                }
+                EffectSpinEditor {
+                    id: opacity
+                    labelText: "不透明度 (%)"
+                    from: 0
+                    to: 100
+                }
+                EffectSpinEditor {
+                    id: cropLeft
+                    labelText: "Crop 左 (%)"
+                    from: 0
+                    to: 99
+                }
+                EffectSpinEditor {
+                    id: cropTop
+                    labelText: "Crop 上 (%)"
+                    from: 0
+                    to: 99
+                }
+                EffectSpinEditor {
+                    id: cropRight
+                    labelText: "Crop 右 (%)"
+                    from: 0
+                    to: 99
+                }
+                EffectSpinEditor {
+                    id: cropBottom
+                    labelText: "Crop 下 (%)"
+                    from: 0
+                    to: 99
+                }
+                EffectSpinEditor {
+                    id: fadeIn
+                    labelText: "フェードイン（素材フレーム）"
+                    from: 0
+                    to: 1000000
+                }
+                EffectSpinEditor {
+                    id: fadeOut
+                    labelText: "フェードアウト（素材フレーム）"
+                    from: 0
+                    to: 1000000
+                }
+                Button {
+                    text: "適用"
+                    enabled: !mvmController.busy && !mvmController.playing
+                    onClicked: mvmController.applyCurrentClipEffects(positionX.value, positionY.value, scale.value, rotation.value, opacity.value, cropLeft.value, cropTop.value, cropRight.value, cropBottom.value, fadeIn.value, fadeOut.value)
+                }
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+
+            Button {
+                text: mvmController.playing ? "Pause" : "Play"
+                enabled: mvmController.playing || mvmController.canPlay
+                onClicked: {
+                    if (mvmController.playing)
+                        mvmController.pauseTimeline();
+                    else
+                        mvmController.playTimeline();
+                }
+            }
+            Label {
+                Layout.fillWidth: true
+                text: "Timeline  60 fps  |  " + mvmController.currentTimeText
+                color: "#c9ccd2"
+                font.bold: true
+            }
+            Button {
+                text: "Delete"
+                enabled: !mvmController.busy && mvmController.currentClipIndex >= 0
+                onClicked: mvmController.deleteCurrentClip()
+            }
         }
 
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 92
+            Layout.preferredHeight: 190
             radius: 5
             color: "#20242a"
             border.color: "#3c424c"
 
-            // 並び順がそのまま再生順。ドラッグやトリムは持たない (M4 のスコープ)。
-            Row {
-                anchors.fill: parent
-                anchors.margins: 10
-                spacing: 8
+            readonly property real labelWidth: 38
+            readonly property real rulerHeight: 34
+            readonly property real rowHeight: 68
+
+            Column {
+                x: 0
+                y: parent.rulerHeight
+                width: parent.labelWidth
+                height: parent.rowHeight * 2
 
                 Repeater {
-                    model: mvmController.clipNames
-
+                    model: ["V2", "V1"]
                     Rectangle {
                         required property int index
                         required property string modelData
-
-                        height: parent.height
-                        width: Math.max(150, Math.min(320,
-                                   (parent.width - (mvmController.clipCount - 1) * 8)
-                                   / Math.max(1, mvmController.clipCount)))
-                        radius: 4
-                        color: index === mvmController.currentClipIndex ? "#315f86" : "#2b3038"
-                        border.color: index === mvmController.currentClipIndex
-                                      ? "#65a8dc" : "#454b56"
-
-                        Column {
-                            anchors.fill: parent
-                            anchors.margins: 8
-                            spacing: 4
-
-                            Label {
-                                width: parent.width
-                                text: (index + 1) + ". " + modelData
-                                color: "white"
-                                font.bold: true
-                                elide: Text.ElideMiddle
-                            }
-                            Label {
-                                width: parent.width
-                                text: index === mvmController.currentClipIndex
-                                      ? "Preview中" : "クリックでPreview"
-                                color: "#a9b1bd"
-                                elide: Text.ElideRight
-                            }
-                        }
-
-                        MouseArea {
-                            anchors.fill: parent
-                            enabled: !mvmController.busy
-                            onClicked: mvmController.selectClip(index)
+                        width: parent.width
+                        height: 68
+                        color: index === 0 ? "#252a31" : "#20252b"
+                        border.color: "#3c424c"
+                        Label {
+                            anchors.centerIn: parent
+                            text: modelData
+                            color: "#c9ccd2"
+                            font.bold: true
                         }
                     }
                 }
             }
 
-            Label {
-                visible: mvmController.clipCount === 0
-                anchors.centerIn: parent
-                text: "No clip"
-                color: "#858b95"
+            Flickable {
+                id: timelineFlick
+                x: parent.labelWidth
+                y: 0
+                width: parent.width - x - 6
+                height: parent.height - 6
+                clip: true
+                contentWidth: Math.max(width, mvmController.totalTimelineFrames * root.pixelsPerFrame + 24)
+                contentHeight: height
+                boundsBehavior: Flickable.StopAtBounds
+
+                Item {
+                    id: timelineContent
+                    width: timelineFlick.contentWidth
+                    height: timelineFlick.height
+
+                    Rectangle {
+                        id: ruler
+                        x: 0
+                        y: 0
+                        width: parent.width
+                        height: 34
+                        color: "#191c21"
+
+                        Repeater {
+                            model: Math.ceil(mvmController.totalTimelineFrames / 60) + 1
+
+                            Item {
+                                required property int index
+                                x: index * 60 * root.pixelsPerFrame
+                                width: 1
+                                height: ruler.height
+
+                                Rectangle {
+                                    anchors.bottom: parent.bottom
+                                    width: 1
+                                    height: 12
+                                    color: "#77808c"
+                                }
+                                Label {
+                                    x: 4
+                                    y: 1
+                                    text: index + "s"
+                                    color: "#aab1ba"
+                                    font.pixelSize: 11
+                                }
+                            }
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: !mvmController.busy && mvmController.clipCount > 0
+                            onClicked: mouse => {
+                                const frame = Math.round(mouse.x / root.pixelsPerFrame);
+                                mvmController.seekTimelineFrame(frame);
+                            }
+                        }
+                    }
+
+                    Item {
+                        id: trackArea
+                        x: 0
+                        y: ruler.height + 4
+                        width: parent.width
+                        height: 136
+
+                        Rectangle {
+                            anchors.fill: parent
+                            color: "#191c21"
+                        }
+                        Rectangle {
+                            y: 0
+                            width: parent.width
+                            height: 68
+                            color: "#252a31"
+                            border.color: "#343a43"
+                        }
+                        Rectangle {
+                            y: 68
+                            width: parent.width
+                            height: 68
+                            color: "#20252b"
+                            border.color: "#343a43"
+                        }
+
+                        Repeater {
+                            model: mvmController.timelineModel
+
+                            delegate: Rectangle {
+                                id: clipItem
+                                required property int index
+                                required property string clipId
+                                required property string displayName
+                                required property string clipKind
+                                required property real timelineStartFrame
+                                required property real timelineDurationFrames
+                                required property real sourceInFrame
+                                required property real sourceOutFrame
+                                required property real sourceFpsNum
+                                required property real sourceFpsDen
+                                required property bool previewSupported
+                                required property int videoTrack
+
+                                property real leftPreviewDelta: 0
+                                property real rightPreviewDelta: 0
+                                property point bodyPressPoint: Qt.point(0, 0)
+                                property real bodyDragOffsetX: 0
+                                property real bodyDragOffsetY: 0
+                                property bool bodyMoved: false
+
+                                x: timelineStartFrame * root.pixelsPerFrame
+                                y: (videoTrack === 1 ? 0 : 68) + 4
+                                width: Math.max(1, (timelineDurationFrames - leftPreviewDelta + rightPreviewDelta) * root.pixelsPerFrame)
+                                height: 60
+                                radius: 3
+                                color: index === mvmController.currentClipIndex ? "#315f86" : "#2b3038"
+                                border.color: previewSupported ? "#65a8dc" : "#c88b4a"
+                                z: bodyMoved ? 20 : 1
+                                transform: Translate {
+                                    x: clipItem.leftPreviewDelta * root.pixelsPerFrame + clipItem.bodyDragOffsetX
+                                    y: clipItem.bodyDragOffsetY
+                                }
+
+                                Column {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 12
+                                    anchors.rightMargin: 12
+                                    anchors.topMargin: 8
+                                    spacing: 3
+
+                                    Label {
+                                        width: parent.width
+                                        text: displayName
+                                        color: "white"
+                                        font.bold: true
+                                        elide: Text.ElideMiddle
+                                    }
+                                    Label {
+                                        width: parent.width
+                                        text: sourceFpsNum + "/" + sourceFpsDen + " fps  |  " + Math.round(timelineDurationFrames) + "f"
+                                        color: previewSupported ? "#b8c1cc" : "#f0b870"
+                                        elide: Text.ElideRight
+                                    }
+                                }
+
+                                MouseArea {
+                                    id: bodyArea
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 9
+                                    anchors.rightMargin: 9
+                                    enabled: !mvmController.busy
+                                    onPressed: mouse => {
+                                        clipItem.bodyMoved = false;
+                                        clipItem.bodyDragOffsetX = 0;
+                                        clipItem.bodyDragOffsetY = 0;
+                                        clipItem.bodyPressPoint = mapToItem(trackArea, mouse.x, mouse.y);
+                                    }
+                                    onPositionChanged: mouse => {
+                                        const now = mapToItem(trackArea, mouse.x, mouse.y);
+                                        clipItem.bodyDragOffsetX = now.x - clipItem.bodyPressPoint.x;
+                                        clipItem.bodyDragOffsetY = now.y - clipItem.bodyPressPoint.y;
+                                        if (Math.abs(clipItem.bodyDragOffsetX) > 5 || Math.abs(clipItem.bodyDragOffsetY) > 5)
+                                            clipItem.bodyMoved = true;
+                                    }
+                                    onReleased: mouse => {
+                                        if (clipItem.bodyMoved) {
+                                            const candidateX = clipItem.timelineStartFrame * root.pixelsPerFrame + clipItem.bodyDragOffsetX;
+                                            const centerY = clipItem.y + clipItem.bodyDragOffsetY + clipItem.height / 2;
+                                            const destinationTrack = centerY < 68 ? 1 : 0;
+                                            const destinationStart = Math.max(0, Math.round(candidateX / root.pixelsPerFrame));
+                                            clipItem.bodyDragOffsetX = 0;
+                                            clipItem.bodyDragOffsetY = 0;
+                                            clipItem.bodyMoved = false;
+                                            mvmController.moveTimelineClip(clipItem.clipId, destinationTrack, destinationStart);
+                                        } else {
+                                            clipItem.bodyDragOffsetX = 0;
+                                            clipItem.bodyDragOffsetY = 0;
+                                            const point = bodyArea.mapToItem(clipItem, mouse.x, mouse.y);
+                                            const frame = Math.round((clipItem.timelineStartFrame + point.x / root.pixelsPerFrame));
+                                            mvmController.selectTimelineClip(clipItem.clipId, frame);
+                                        }
+                                    }
+                                    onCanceled: {
+                                        clipItem.bodyDragOffsetX = 0;
+                                        clipItem.bodyDragOffsetY = 0;
+                                        clipItem.bodyMoved = false;
+                                    }
+                                }
+
+                                Rectangle {
+                                    width: 8
+                                    height: parent.height
+                                    anchors.left: parent.left
+                                    color: "#85c4ee"
+                                    radius: 2
+                                    z: 30
+
+                                    MouseArea {
+                                        property real pressContentX: 0
+                                        anchors.fill: parent
+                                        cursorShape: Qt.SizeHorCursor
+                                        enabled: !mvmController.busy
+                                        onPressed: mouse => {
+                                            pressContentX = mapToItem(timelineContent, mouse.x, mouse.y).x;
+                                        }
+                                        onPositionChanged: mouse => {
+                                            const now = mapToItem(timelineContent, mouse.x, mouse.y).x;
+                                            leftPreviewDelta = Math.round((now - pressContentX) / root.pixelsPerFrame);
+                                        }
+                                        onReleased: {
+                                            const delta = leftPreviewDelta;
+                                            leftPreviewDelta = 0;
+                                            if (delta !== 0)
+                                                mvmController.trimClip(clipId, "left", delta);
+                                        }
+                                        onCanceled: leftPreviewDelta = 0
+                                    }
+                                }
+
+                                Rectangle {
+                                    width: 8
+                                    height: parent.height
+                                    anchors.right: parent.right
+                                    color: "#85c4ee"
+                                    radius: 2
+                                    z: 30
+
+                                    MouseArea {
+                                        property real pressContentX: 0
+                                        anchors.fill: parent
+                                        cursorShape: Qt.SizeHorCursor
+                                        enabled: !mvmController.busy
+                                        onPressed: mouse => {
+                                            pressContentX = mapToItem(timelineContent, mouse.x, mouse.y).x;
+                                        }
+                                        onPositionChanged: mouse => {
+                                            const now = mapToItem(timelineContent, mouse.x, mouse.y).x;
+                                            rightPreviewDelta = Math.round((now - pressContentX) / root.pixelsPerFrame);
+                                        }
+                                        onReleased: {
+                                            const delta = rightPreviewDelta;
+                                            rightPreviewDelta = 0;
+                                            if (delta !== 0)
+                                                mvmController.trimClip(clipId, "right", delta);
+                                        }
+                                        onCanceled: rightPreviewDelta = 0
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        id: playhead
+                        x: (root.playheadDragging ? root.dragPlayheadFrame : mvmController.playheadFrame) * root.pixelsPerFrame - 1
+                        y: 0
+                        width: 2
+                        height: parent.height
+                        color: "#f15b5b"
+                        z: 100
+
+                        Rectangle {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            width: 12
+                            height: 9
+                            color: "#f15b5b"
+                        }
+
+                        MouseArea {
+                            anchors.centerIn: parent
+                            width: 16
+                            height: parent.height
+                            enabled: !mvmController.busy && mvmController.clipCount > 0
+                            cursorShape: Qt.SizeHorCursor
+                            onPressed: {
+                                root.dragPlayheadFrame = mvmController.playheadFrame;
+                                root.playheadDragging = true;
+                            }
+                            onPositionChanged: mouse => {
+                                const point = mapToItem(timelineContent, mouse.x, mouse.y);
+                                root.dragPlayheadFrame = Math.max(0, Math.min(mvmController.totalTimelineFrames - 1, Math.round(point.x / root.pixelsPerFrame)));
+                            }
+                            onReleased: {
+                                root.playheadDragging = false;
+                                mvmController.seekTimelineFrame(root.dragPlayheadFrame);
+                            }
+                            onCanceled: root.playheadDragging = false
+                        }
+                    }
+
+                    Label {
+                        visible: mvmController.clipCount === 0
+                        anchors.centerIn: parent
+                        text: "No clip"
+                        color: "#858b95"
+                    }
+                }
             }
         }
 
@@ -212,10 +630,10 @@ ApplicationWindow {
         title: "Manim Python scriptを選択"
         nameFilters: ["Python script (*.py)"]
         onAccepted: {
-            root.selectedManimScript = selectedFile
-            sceneField.text = ""
-            generationDialog.open()
-            sceneField.forceActiveFocus()
+            root.selectedManimScript = selectedFile;
+            sceneField.text = "";
+            generationDialog.open();
+            sceneField.forceActiveFocus();
         }
     }
 
@@ -263,9 +681,8 @@ ApplicationWindow {
                     text: mvmController.busy ? "Generating…" : "Generate"
                     enabled: !mvmController.busy && sceneField.text.trim().length > 0
                     onClicked: {
-                        if (mvmController.generateManimClip(root.selectedManimScript,
-                                                           sceneField.text))
-                            generationDialog.close()
+                        if (mvmController.generateManimClip(root.selectedManimScript, sceneField.text))
+                            generationDialog.close();
                     }
                 }
             }

@@ -43,9 +43,17 @@ struct LayerLayout {
     RectF sourceUv{};
     float opacity = 1.0f;
     int zOrder = 0;
+    bool effectsEnabled = false;
+    float rotationDegrees = 0.0f;
+    long long sourceInFrame = 0;
+    long long sourceDurationFrames = 0;
+    long long fadeInFrames = 0;
+    long long fadeOutFrames = 0;
 };
 
 struct CompositorCoordinatorTestAccess;
+
+float resolveLayerOpacity(const LayerLayout& layout, long long decodedSourceFrame);
 
 class CompositorCoordinator {
 public:
@@ -84,6 +92,9 @@ public:
     CompositionStateId compositionState() const;
     CompositionResult compose(long long outputFrameNumber,
                               const std::vector<DecodedGpuFrame>& frames, ComposedFrame& out);
+    CompositionResult composeEnvelopes(long long outputFrameNumber,
+                                       const std::vector<DecodedFrameEnvelope>& frames,
+                                       ComposedFrame& out);
     CompositionResult validateForDisplay(const ComposedFrame& frame) const;
 
     long long mixedSourceFrameCount() const;
@@ -93,8 +104,7 @@ public:
 
 private:
     friend struct CompositorCoordinatorTestAccess;
-    CompositionResult validateLocked(long long outputFrameNumber,
-                                     const std::vector<DecodedGpuFrame>& frames) const;
+    CompositionResult validateSourcesLocked(const std::vector<DecodedGpuFrame>& frames) const;
     mutable std::mutex mutex_;
     std::vector<LayerLayout> layout_;
     std::map<SourceId, SourceGeneration> generations_;

@@ -392,6 +392,24 @@ void compositionDomains() {
                        PreviewErrorCategory::CompositionFailure, "invalid opacityをacceptしました");
     }
 
+    PreviewCompositionLayer effectLayer =
+        layer(1, {-0.25F, 0.1F, 0.8F, 0.8F}, {0.1F, 0.2F, 0.7F, 0.6F}, 0.5F);
+    effectLayer.effectsEnabled = true;
+    effectLayer.rotationDegrees = 30.0F;
+    effectLayer.sourceInFrame = 100;
+    effectLayer.sourceDurationFrames = 60;
+    effectLayer.fadeInFrames = 10;
+    effectLayer.fadeOutFrames = 12;
+    CompositionAcceptanceState effectState;
+    require(effectState.submit(snapshot({effectLayer}), sources, capabilities),
+            "M7a effect layerの画面外destinationとsource-native timingをrejectしました");
+    effectLayer.fadeInFrames = 50;
+    effectLayer.fadeOutFrames = 20;
+    CompositionAcceptanceState invalidEffectState;
+    requireFailure(invalidEffectState.submit(snapshot({effectLayer}), sources, capabilities),
+                   PreviewErrorCategory::CompositionFailure,
+                   "重なるsource-native FadeをPreview mappingがacceptしました");
+
     // 各fieldを独立に壊す。代表fieldだけの検査では、他fieldの有限性検査漏れを検出できない。
     for (int field = 0; field < 4; ++field) {
         for (float value : {nan, inf, -inf}) {
@@ -478,8 +496,7 @@ void compositionStructuralEqualityLiterals() {
 
     const std::vector<std::shared_ptr<const CompositionSnapshot>> invalidSnapshots{
         snapshot({layer(1, {-0.1F, 0.0F, 1.0F, 1.0F})}),
-        snapshot({layer(1, {}, {0.0F, 0.0F, 0.0F, 1.0F})}), snapshot({layer(1, {}, {}, 1.1F)}),
-        snapshot({})};
+        snapshot({layer(1, {}, {0.0F, 0.0F, 0.0F, 1.0F})}), snapshot({layer(1, {}, {}, 1.1F)})};
     for (const auto& invalid : invalidSnapshots) {
         CompositionAcceptanceState state;
         const auto accepted = state.submit(snapshot({layer(1)}), sources, capabilities);
@@ -526,12 +543,13 @@ void compositionIdentityAndCapabilities() {
             "last presented snapshotがpresented tokenと対応していません");
 
     CompositionAcceptanceState rejected;
-    requireFailure(
-        rejected.submit(std::make_shared<const CompositionSnapshot>(), sources, capabilities),
-        PreviewErrorCategory::CompositionFailure, "empty snapshotをacceptしました");
+    const auto emptyAccepted =
+        rejected.submit(std::make_shared<const CompositionSnapshot>(), sources, capabilities);
+    require(emptyAccepted && emptyAccepted.value() == AcceptedComposition{{1}, 1},
+            "gap用empty snapshotをacceptしませんでした");
     const auto afterReject = rejected.submit(a, sources, capabilities);
-    require(afterReject && afterReject.value() == AcceptedComposition{{1}, 1},
-            "rejectがID/revisionを消費しました");
+    require(afterReject && afterReject.value() == AcceptedComposition{{2}, 2},
+            "emptyからvideo compositionへのrevisionが不正です");
 
     CompositionAcceptanceState negativeZero;
     const auto minusZero = negativeZero.submit(
@@ -970,8 +988,11 @@ void p5cControlAndRenderNegatives() {
                    "native device準備前のaudioEnabled sourceを受理しました");
     requireFailure(engine.addSource({"voice.wav", false, true}), PreviewErrorCategory::InvalidState,
                    "native device準備前のaudio-only sourceを受理しました");
-    requireFailure(engine.submitComposition(std::make_shared<const CompositionSnapshot>()),
-                   PreviewErrorCategory::CompositionFailure, "empty compositionを受理しました");
+    // source/compositionなしのseekはgap composition受理前に検査する。
+    requireFailure(engine.seek({0}), PreviewErrorCategory::InvalidState,
+                   "source/compositionなしのseekを受理しました");
+    require(engine.submitComposition(std::make_shared<const CompositionSnapshot>()),
+            "gap用empty compositionを受理できません");
     requireFailure(engine.submitComposition(snapshot({layer(99)})),
                    PreviewErrorCategory::InvalidSource, "unknown sourceを受理しました");
     requireFailure(engine.submitComposition(snapshot({layer(1), layer(2)})),
@@ -983,8 +1004,6 @@ void p5cControlAndRenderNegatives() {
     // 先に行い、呼び出し側の誤りをstateの都合で別errorへすり替えない。
     requireFailure(engine.seek({-1}), PreviewErrorCategory::SeekFailure,
                    "負のoutputFrameへのseekを受理しました");
-    requireFailure(engine.seek({0}), PreviewErrorCategory::InvalidState,
-                   "source/compositionなしのseekを受理しました");
     require(engine.requestShutdown(), "shutdown requestに失敗しました");
     require(PreviewRenderPort::completeTeardown(engine), "teardown completionに失敗しました");
 }

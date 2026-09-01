@@ -39,12 +39,12 @@ PairResult ExactFramePairer::tryPair(long long outputFrameNumber, ComposedFrame&
     bool anyEmpty = false;
     bool firstSourceMissing = false;
     for (size_t i = 0; i < sources_.size(); ++i) {
-        SourceFrameIdentity identity;
-        const bool has = sources_[i]->peekFrontIdentity(identity);
+        long long frontOutputFrame = -1;
+        const bool has = sources_[i]->peekFrontOutputFrameNumber(frontOutputFrame);
         if (!has)
             anyEmpty = true;
         // front が要求 frame より先へ進んでいる = この frame はもう来ない。
-        const bool missing = has && identity.frameNumber > outputFrameNumber;
+        const bool missing = has && frontOutputFrame > outputFrameNumber;
         if (missing) {
             anyMissing = true;
             if (i == 0)
@@ -69,13 +69,13 @@ PairResult ExactFramePairer::tryPair(long long outputFrameNumber, ComposedFrame&
     if (anyEmpty)
         return PairResult::WaitingForSource;
 
-    std::vector<DecodedGpuFrame> frames;
-    if (!SourceFrameBuffer::takeExactAll(sources_, outputFrameNumber, frames)) {
+    std::vector<DecodedFrameEnvelope> frames;
+    if (!SourceFrameBuffer::takeExactEnvelopes(sources_, outputFrameNumber, frames)) {
         ++counters_.mixedFrameRejected;
         return PairResult::MixedFrame;
     }
 
-    const CompositionResult result = coordinator_.compose(outputFrameNumber, frames, out);
+    const CompositionResult result = coordinator_.composeEnvelopes(outputFrameNumber, frames, out);
     switch (result) {
     case CompositionResult::Accepted:
         ++counters_.pairedCount;

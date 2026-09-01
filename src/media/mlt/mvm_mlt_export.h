@@ -25,7 +25,33 @@ extern "C" {
 #endif
 
 typedef struct {
+    long long local_frame;
+    double opacity;
+} MvmExportOpacityKeyframe;
+
+#define MVM_EXPORT_MAX_OPACITY_KEYFRAMES 8
+
+typedef struct {
     const char* path; /* UTF-8。実在する動画ファイル */
+    long long source_fps_num;
+    long long source_fps_den;
+    long long source_in_frame;  /* inclusive、素材固有 frame domain */
+    long long source_out_frame; /* exclusive、素材固有 frame domain */
+    int effects_enabled;
+    int crop_left;
+    int crop_top;
+    int crop_right;
+    int crop_bottom;
+    double rect_x;
+    double rect_y;
+    double rect_width;
+    double rect_height;
+    double rotation_degrees;
+    MvmExportOpacityKeyframe opacity_keyframes[MVM_EXPORT_MAX_OPACITY_KEYFRAMES];
+    int opacity_keyframe_count;
+    int video_track; /* 0=V1, 1=V2 */
+    long long timeline_start_frame;
+    long long timeline_duration_frames;
 } MvmExportClip;
 
 typedef struct {
@@ -46,7 +72,18 @@ typedef struct {
     int height;
     int fps_num;
     int fps_den;
+    int used_tractor;
+    int playlist_blank_count;
+    int transition_count;
+    int opaque_black_affine_filter_count;
 } MvmExportResult;
+
+/* 素材固有の frame 境界を MLT producer profile の frame 境界へ floor で変換する。
+ * producer が実際に公開する位置 domain に合わせる操作であり、ceil を使う Project
+ * timeline 変換とは別の意味論を持つため、Project helper は流用しない。 */
+int mvm_source_boundary_to_producer_boundary(long long source_frame, long long source_fps_num,
+                                             long long source_fps_den, int producer_fps_num,
+                                             int producer_fps_den, long long* out_frame);
 
 /*
  * clips を順に連結して out_path へ H.264 / MP4 で書き出す。
@@ -68,6 +105,11 @@ typedef struct {
  */
 int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const MvmExportSpec* spec,
                             const char* out_path, MvmExportResult* out, char* err, size_t err_size);
+
+/* M7b製品経路。2本の固定playlistとV2 clipごとのaffine transitionを使う。 */
+int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long long total_duration,
+                             const MvmExportSpec* spec, const char* out_path, MvmExportResult* out,
+                             char* err, size_t err_size);
 
 #ifdef __cplusplus
 }

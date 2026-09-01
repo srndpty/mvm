@@ -1,21 +1,25 @@
-// M4: timeline export の focused test。
+// M6a: timeline order と source-native trim を逐次 export する focused test。
 //
-// 検査するのは 3 点だけに絞る (M4 のスコープ)。
+// 検査するのは次の経路に絞る。
 //   1. 実素材 2 本を順に並べて 1 本の再生可能な MP4 になる
-//   2. clip が 0 本なら失敗する
-//   3. 素材が存在しなければ失敗する
+//   2. 29.97fps 素材の trim が MLT producer 位置と内容の両方で一致する
+//   3. clip が 0 本なら失敗する
+//   4. 素材が存在しなければ失敗する
 //
 // 期待フレーム数は実装の式を再利用せず、入力を probe して独立に足し合わせる。
 
 #include "app/timeline_export.h"
+#include "media/mlt/mvm_mlt_export.h"
 #include "media/mlt/mvm_mlt_probe.h"
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "project/project.h"
 #include "util/mvm_win_utf8.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <process.h>
 #include <string>
 
 namespace {
@@ -54,25 +58,147 @@ long long probeFrameCount(const std::filesystem::path& path) {
 }
 
 mvm::project::Project makeProject(const std::filesystem::path& first,
-                                  const std::filesystem::path& second) {
+                                  const std::filesystem::path& second, long long firstFrames,
+                                  long long secondFrames) {
     mvm::project::Project project;
-    project.timelineClips.push_back({mvm::project::TimelineClipKind::Video, first, "normal"});
-    project.timelineClips.push_back({mvm::project::TimelineClipKind::Manim, second, "manim"});
+    project.timelineClips.push_back({mvm::project::TimelineClipKind::Video, first, "normal",
+                                     "normal-id", 60, 1, firstFrames, 0, firstFrames, 0});
+    project.timelineClips.push_back({mvm::project::TimelineClipKind::Manim, second, "manim",
+                                     "manim-id", 60, 1, secondFrames, 0, secondFrames,
+                                     firstFrames});
     return project;
+}
+
+bool generateFractionalFixture(const std::filesystem::path& ffmpeg,
+                               const std::filesystem::path& output) {
+    const intptr_t exitCode =
+        _wspawnl(_P_WAIT, ffmpeg.c_str(), ffmpeg.c_str(), L"-y", L"-loglevel", L"error", L"-f",
+                 L"lavfi", L"-i", L"color=c=red:s=64x64:r=30000/1001:d=1", L"-f", L"lavfi", L"-i",
+                 L"color=c=blue:s=64x64:r=30000/1001:d=1", L"-filter_complex",
+                 L"[0:v][1:v]concat=n=2:v=1:a=0", L"-c:v", L"libx264", L"-pix_fmt", L"yuv420p",
+                 output.c_str(), static_cast<wchar_t*>(nullptr));
+    return exitCode == 0 && std::filesystem::is_regular_file(output);
+}
+
+bool frameIsBlue(const std::filesystem::path& path, long long frame) {
+    MvmMltImage image{};
+    char error[512] = {};
+    if (mvm_mlt_decode_frame(toUtf8(path).c_str(), frame, &image, error, sizeof(error)) != 0 ||
+        !image.rgba || image.width <= 0 || image.height <= 0) {
+        std::fprintf(stderr, "NG: 色検査frameをdecodeできません: %s\n", error);
+        return false;
+    }
+    const std::size_t center =
+        (static_cast<std::size_t>(image.height / 2) * static_cast<std::size_t>(image.width) +
+         static_cast<std::size_t>(image.width / 2)) *
+        4;
+    const int red = image.rgba[center];
+    const int green = image.rgba[center + 1];
+    const int blue = image.rgba[center + 2];
+    mvm_mlt_image_free(&image);
+    if (!(blue > 180 && red < 80))
+        std::fprintf(stderr, "  frame %lld RGBA先頭=%d,%d,%d\n", frame, red, green, blue);
+    return blue > 180 && red < 80;
+}
+
+bool generateEffectsFixture(const std::filesystem::path& ffmpeg,
+                            const std::filesystem::path& output) {
+    const wchar_t* filter = L"drawbox=x=0:y=0:w=iw:h=20:color=red:t=fill,"
+                            L"drawbox=x=0:y=ih-20:w=iw:h=20:color=blue:t=fill,"
+                            L"drawbox=x=0:y=20:w=20:h=ih-40:color=green:t=fill,"
+                            L"drawbox=x=iw-20:y=20:w=20:h=ih-40:color=yellow:t=fill,"
+                            L"drawbox=x=150:y=110:w=20:h=20:color=magenta:t=fill";
+    return _wspawnl(_P_WAIT, ffmpeg.c_str(), ffmpeg.c_str(), L"-y", L"-loglevel", L"error", L"-f",
+                    L"lavfi", L"-i", L"color=c=gray:s=320x240:r=60:d=2", L"-vf", filter, L"-c:v",
+                    L"libx264", L"-preset", L"ultrafast", L"-crf", L"8", L"-pix_fmt", L"yuv420p",
+                    output.c_str(), static_cast<wchar_t*>(nullptr)) == 0;
+}
+
+bool generateSolidFixture(const std::filesystem::path& ffmpeg, const std::filesystem::path& output,
+                          const wchar_t* color) {
+    const std::wstring source = std::wstring(L"color=c=") + color + L":s=320x240:r=60:d=2";
+    return _wspawnl(_P_WAIT, ffmpeg.c_str(), ffmpeg.c_str(), L"-y", L"-loglevel", L"error", L"-f",
+                    L"lavfi", L"-i", source.c_str(), L"-c:v", L"libx264", L"-preset", L"ultrafast",
+                    L"-crf", L"8", L"-pix_fmt", L"yuv420p", output.c_str(),
+                    static_cast<wchar_t*>(nullptr)) == 0;
+}
+
+struct Rgb {
+    int r = 0;
+    int g = 0;
+    int b = 0;
+};
+
+Rgb pixelAt(const std::filesystem::path& path, long long frame, int x, int y) {
+    MvmMltImage image{};
+    char error[512] = {};
+    if (mvm_mlt_decode_frame(toUtf8(path).c_str(), frame, &image, error, sizeof(error)) != 0 ||
+        !image.rgba || x < 0 || y < 0 || x >= image.width || y >= image.height) {
+        check(false, "overlay出力frameをdecodeできません");
+        return {};
+    }
+    const std::size_t offset =
+        (static_cast<std::size_t>(y) * image.width + static_cast<std::size_t>(x)) * 4;
+    const Rgb result{image.rgba[offset], image.rgba[offset + 1], image.rgba[offset + 2]};
+    mvm_mlt_image_free(&image);
+    return result;
+}
+
+bool blue(const Rgb& value) {
+    return value.b > 180 && value.r < 70 && value.g < 70;
+}
+
+struct EffectFrameMetrics {
+    double mean = 0.0;
+    int minX = 100000;
+    int minY = 100000;
+    int maxX = -1;
+    int maxY = -1;
+};
+
+EffectFrameMetrics effectMetrics(const std::filesystem::path& path, long long frame) {
+    EffectFrameMetrics result;
+    MvmMltImage image{};
+    char error[512] = {};
+    if (mvm_mlt_decode_frame(toUtf8(path).c_str(), frame, &image, error, sizeof(error)) != 0 ||
+        !image.rgba) {
+        check(false, "effect出力frameをdecodeできません");
+        return result;
+    }
+    double sum = 0.0;
+    for (int y = 0; y < image.height; ++y) {
+        for (int x = 0; x < image.width; ++x) {
+            const std::size_t offset =
+                (static_cast<std::size_t>(y) * image.width + static_cast<std::size_t>(x)) * 4;
+            const int brightness =
+                image.rgba[offset] + image.rgba[offset + 1] + image.rgba[offset + 2];
+            sum += brightness;
+            if (brightness > 45) {
+                result.minX = std::min(result.minX, x);
+                result.minY = std::min(result.minY, y);
+                result.maxX = std::max(result.maxX, x);
+                result.maxY = std::max(result.maxY, y);
+            }
+        }
+    }
+    result.mean = sum / static_cast<double>(image.width * image.height * 3);
+    mvm_mlt_image_free(&image);
+    return result;
 }
 
 } // namespace
 
 int main(int argc, char** argv) {
     mvm_enable_utf8_console();
-    if (argc != 4) {
-        std::fprintf(stderr, "使い方: test_timeline_export <test-dir> <clip1> <clip2>\n");
+    if (argc != 5) {
+        std::fprintf(stderr, "使い方: test_timeline_export <test-dir> <clip1> <clip2> <ffmpeg>\n");
         return 2;
     }
 
     const auto testDirectory = std::filesystem::absolute(fromUtf8(argv[1]));
     const auto firstClip = std::filesystem::absolute(fromUtf8(argv[2]));
     const auto secondClip = std::filesystem::absolute(fromUtf8(argv[3]));
+    const auto ffmpeg = std::filesystem::absolute(fromUtf8(argv[4]));
 
     std::error_code error;
     std::filesystem::remove_all(testDirectory, error);
@@ -82,8 +208,21 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "test directory を作成できません\n");
         return 1;
     }
+
+    long long producerBoundary = -1;
+    check(mvm_source_boundary_to_producer_boundary(30, 30000, 1001, 60, 1, &producerBoundary) ==
+                  0 &&
+              producerBoundary == 60,
+          "29.97fps source境界をMLT producer位置へ変換できません");
+    check(mvm_source_boundary_to_producer_boundary(60, 30000, 1001, 60, 1, &producerBoundary) ==
+                  0 &&
+              producerBoundary == 120,
+          "MLT producer境界変換がProject timelineのceil意味論と分離されていません");
+    check(mvm_source_boundary_to_producer_boundary(-1, 60, 1, 60, 1, &producerBoundary) != 0,
+          "負のMLT producer境界を拒否しません");
     if (!std::filesystem::is_regular_file(firstClip) ||
-        !std::filesystem::is_regular_file(secondClip)) {
+        !std::filesystem::is_regular_file(secondClip) ||
+        !std::filesystem::is_regular_file(ffmpeg)) {
         std::fprintf(stderr, "テスト素材がありません。pwsh scripts/make-testmedia.ps1 -Mode Smoke "
                              "を実行してください\n");
         return 2;
@@ -95,20 +234,25 @@ int main(int argc, char** argv) {
     }
 
     // --- 1. 正: 2 本を順に並べて 1 本の MP4 にする --------------------------
-    const long long expectedFrames = probeFrameCount(firstClip) + probeFrameCount(secondClip);
+    const long long firstFrames = probeFrameCount(firstClip);
+    const long long secondFrames = probeFrameCount(secondClip);
+    const long long expectedFrames = firstFrames + secondFrames;
     check(expectedFrames > 0, "入力素材のフレーム数を取得できません");
 
     const auto outputPath = testDirectory / L"m4-export.mp4";
     mvm::app::TimelineExportRequest request;
     request.outputPath = outputPath;
 
-    auto result = mvm::app::exportTimeline(makeProject(firstClip, secondClip), request);
+    auto result = mvm::app::exportTimeline(
+        makeProject(firstClip, secondClip, firstFrames, secondFrames), request);
     check(result.success, "2 clip の書き出しに失敗しました");
     if (!result.success)
         std::fprintf(stderr, "  error: %s\n", result.error.c_str());
     check(std::filesystem::exists(outputPath), "出力 MP4 がありません");
     check(!std::filesystem::exists(std::filesystem::path(outputPath).concat(".mvmtmp")),
           "一時ファイルが残っています");
+    check(result.backend == mvm::app::TimelineExportResult::Backend::Sequential,
+          "contiguous V1-onlyが既存sequential fast pathを外れました");
 
     if (result.success) {
         MvmMltProbeResult probe{};
@@ -131,7 +275,184 @@ int main(int argc, char** argv) {
         }
     }
 
-    // --- 2. 負: clip が 0 本 ----------------------------------------------
+    // --- 2. 29.97fps: source-native trim -> MLT producer位置の内容検査 ------
+    {
+        const auto fractional = testDirectory / L"fractional-source.mp4";
+        check(generateFractionalFixture(ffmpeg, fractional), "29.97fps fixtureを生成できません");
+        MvmMltProbeResult sourceProbe{};
+        const bool sourceOk = mvm_mlt_probe_file(toUtf8(fractional).c_str(), &sourceProbe) == 0 &&
+                              sourceProbe.ok && sourceProbe.fps_num == 30000 &&
+                              sourceProbe.fps_den == 1001 && sourceProbe.frame_count >= 60;
+        check(sourceOk, "29.97fps fixtureのFPSまたはframe countが不正です");
+        if (sourceOk) {
+            mvm::project::Project trimmed;
+            trimmed.timelineClips.push_back({mvm::project::TimelineClipKind::Video, fractional,
+                                             "fractional", "fractional-id", sourceProbe.fps_num,
+                                             sourceProbe.fps_den, sourceProbe.frame_count, 30,
+                                             sourceProbe.frame_count, 0});
+            const auto output = testDirectory / L"fractional-trimmed.mp4";
+            mvm::app::TimelineExportRequest trimmedRequest;
+            trimmedRequest.outputPath = output;
+            const auto exported = mvm::app::exportTimeline(trimmed, trimmedRequest);
+            check(exported.success, "29.97fps trimを書き出せません");
+            if (!exported.success)
+                std::fprintf(stderr, "  error: %s\n", exported.error.c_str());
+            if (exported.success) {
+                check(frameIsBlue(output, 0), "trim出力の先頭が選択した青区間ではありません");
+                check(frameIsBlue(output, exported.frameCount - 1),
+                      "trim出力の末尾が選択した青区間ではありません");
+            }
+        }
+    }
+
+    // --- 3. 負: clip が 0 本 ----------------------------------------------
+    // --- M7b-3: 製品tractor経路の実MP4 overlay -----------------------------
+    {
+        const auto bottomPath = testDirectory / L"m7b-bottom.mp4";
+        const auto topPath = testDirectory / L"m7b-top.mp4";
+        check(generateSolidFixture(ffmpeg, bottomPath, L"blue"), "M7b V1 fixtureを生成できません");
+        check(generateSolidFixture(ffmpeg, topPath, L"red"), "M7b V2 fixtureを生成できません");
+        {
+            const std::string topUtf8 = toUtf8(topPath);
+            MvmExportClip invalid{};
+            invalid.path = topUtf8.c_str();
+            invalid.source_fps_num = 60;
+            invalid.source_fps_den = 1;
+            invalid.source_in_frame = 0;
+            invalid.source_out_frame = 10;
+            invalid.video_track = 1;
+            invalid.timeline_start_frame = 0;
+            invalid.timeline_duration_frames = 10;
+            invalid.rect_width = 320;
+            invalid.rect_height = 240;
+            invalid.opacity_keyframe_count = 2;
+            invalid.opacity_keyframes[0] = {1, 1.0}; // local 0を意図的に欠落させる
+            invalid.opacity_keyframes[1] = {9, 1.0};
+            const MvmExportSpec invalidSpec{320, 240, 60, 1, 10000};
+            char invalidError[512] = {};
+            const auto invalidOutput = testDirectory / L"m7b-invalid-key.mp4";
+            check(mvm_mlt_export_two_track(&invalid, 1, 10, &invalidSpec,
+                                           toUtf8(invalidOutput).c_str(), nullptr, invalidError,
+                                           sizeof(invalidError)) != 0,
+                  "transition-local端key欠落を拒否しません");
+            check(!std::filesystem::exists(invalidOutput),
+                  "invalid transition mappingで出力を生成しました");
+        }
+        mvm::project::Project overlaid;
+        mvm::project::TimelineClip bottom{mvm::project::TimelineClipKind::Video,
+                                          bottomPath,
+                                          "bottom",
+                                          "bottom-id",
+                                          60,
+                                          1,
+                                          120,
+                                          0,
+                                          120,
+                                          0};
+        bottom.videoTrack = mvm::project::VideoTrack::V1;
+        mvm::project::TimelineClip top{mvm::project::TimelineClipKind::Manim,
+                                       topPath,
+                                       "top",
+                                       "top-id",
+                                       60,
+                                       1,
+                                       120,
+                                       10,
+                                       70,
+                                       20};
+        top.videoTrack = mvm::project::VideoTrack::V2;
+        top.effects.scalePercent = 60;
+        top.effects.positionXPercent = 10;
+        top.effects.cropLeftPercent = 15;
+        top.effects.opacityPercent = 50;
+        top.effects.fadeInFrames = 10;
+        top.effects.fadeOutFrames = 10;
+        mvm::project::TimelineClip secondTop{mvm::project::TimelineClipKind::Manim,
+                                             topPath,
+                                             "top-2",
+                                             "top-2-id",
+                                             60,
+                                             1,
+                                             120,
+                                             80,
+                                             100,
+                                             90};
+        secondTop.videoTrack = mvm::project::VideoTrack::V2;
+        // vector順をtimeline authorityにしないことも実経路で踏む。
+        overlaid.timelineClips = {secondTop, top, bottom};
+        mvm::app::TimelineExportRequest overlayRequest;
+        overlayRequest.outputPath = testDirectory / L"m7b-product-overlay.mp4";
+        overlayRequest.width = 320;
+        overlayRequest.height = 240;
+        const auto exported = mvm::app::exportTimeline(overlaid, overlayRequest);
+        check(exported.success, "M7b product tractor overlayを書き出せません");
+        if (!exported.success)
+            std::fprintf(stderr, "  error: %s\n", exported.error.c_str());
+        check(exported.backend == mvm::app::TimelineExportResult::Backend::Tractor,
+              "M7b overlayがtractor経路を使用していません");
+        check(exported.playlistBlankCount == 3 && exported.transitionCount == 2,
+              "V2 playlist blankまたはclip単位transition数が不正です");
+        check(exported.opaqueBlackAffineFilterCount == 0,
+              "V2がopaque-black affine filterを使用しました");
+        if (exported.success) {
+            check(blue(pixelAt(overlayRequest.outputPath, 0, 160, 120)),
+                  "V2開始前にV1が表示されません");
+            check(blue(pixelAt(overlayRequest.outputPath, 20, 160, 120)),
+                  "V2 fade-in先頭がV1を透過しません");
+            const auto center = pixelAt(overlayRequest.outputPath, 45, 190, 120);
+            const auto corner = pixelAt(overlayRequest.outputPath, 45, 10, 10);
+            check(center.r > 70 && center.b > 70, "V2 opacity 50%がV1を透過する混色になりません");
+            check(blue(corner), "V2 scale/crop外側がV1を露出しません");
+            check(blue(pixelAt(overlayRequest.outputPath, 85, 160, 120)),
+                  "2本のV2 clip間gapへtransition/effectが漏れています");
+            const auto second = pixelAt(overlayRequest.outputPath, 95, 160, 120);
+            check(second.r > 180 && second.b < 80,
+                  "default V2 clipがoverlay transitionで表示されません");
+        }
+    }
+
+    // --- 3. 負: clip が 0 本 ----------------------------------------------
+    // --- M7a-2: 製品exportの固定effect chain -------------------------------
+    {
+        const auto source = testDirectory / L"m7a-effects-source.mp4";
+        check(generateEffectsFixture(ffmpeg, source), "M7a effect fixtureを生成できません");
+        mvm::project::Project effected;
+        effected.timelineClips.push_back({mvm::project::TimelineClipKind::Manim, source, "effects",
+                                          "effects-id", 60, 1, 120, 10, 70, 0});
+        auto& effects = effected.timelineClips.front().effects;
+        effects.cropLeftPercent = 10;
+        effects.cropTopPercent = 10;
+        effects.cropRightPercent = 20;
+        effects.cropBottomPercent = 5;
+        effects.scalePercent = 60;
+        effects.positionXPercent = 12;
+        effects.positionYPercent = -8;
+        effects.rotationDegrees = 25;
+        effects.opacityPercent = 50;
+        effects.fadeInFrames = 10;
+        effects.fadeOutFrames = 10;
+        mvm::app::TimelineExportRequest effectRequest;
+        effectRequest.outputPath = testDirectory / L"m7a-effects.mp4";
+        effectRequest.width = 320;
+        effectRequest.height = 240;
+        const auto exported = mvm::app::exportTimeline(effected, effectRequest);
+        check(exported.success, "M7a effect付きclipを書き出せません");
+        if (!exported.success)
+            std::fprintf(stderr, "  error: %s\n", exported.error.c_str());
+        if (exported.success) {
+            const auto first = effectMetrics(effectRequest.outputPath, 0);
+            const auto middle = effectMetrics(effectRequest.outputPath, 30);
+            const auto last = effectMetrics(effectRequest.outputPath, exported.frameCount - 1);
+            check(middle.mean > 5.0, "effect出力の中間frameが空です");
+            check(first.mean < middle.mean * 0.2 && last.mean < middle.mean * 0.2,
+                  "source-native Fade In/Outが実画素へ反映されません");
+            check(middle.maxX > middle.minX && middle.maxY > middle.minY &&
+                      middle.maxX - middle.minX < 230 && middle.maxY - middle.minY < 210,
+                  "非zoom crop/scale/rotationの外接矩形が反映されません");
+        }
+    }
+
+    // --- 3. 負: clip が 0 本 ----------------------------------------------
     {
         mvm::project::Project empty;
         mvm::app::TimelineExportRequest emptyRequest;
@@ -142,13 +463,13 @@ int main(int argc, char** argv) {
               "clip 0 本なのに出力ファイルが作られました");
     }
 
-    // --- 3. 負: 素材が存在しない ------------------------------------------
+    // --- 4. 負: 素材が存在しない ------------------------------------------
     {
         const auto missing = testDirectory / L"missing.mp4";
         mvm::app::TimelineExportRequest missingRequest;
         missingRequest.outputPath = testDirectory / L"m4-missing.mp4";
-        const auto missingResult =
-            mvm::app::exportTimeline(makeProject(firstClip, missing), missingRequest);
+        const auto missingResult = mvm::app::exportTimeline(
+            makeProject(firstClip, missing, firstFrames, secondFrames), missingRequest);
         check(!missingResult.success, "存在しない素材の書き出しが成功してしまいました");
         check(!std::filesystem::exists(missingRequest.outputPath),
               "失敗したのに出力ファイルが残っています");

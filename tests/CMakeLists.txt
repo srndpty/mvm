@@ -5,6 +5,14 @@ find_package(PkgConfig REQUIRED)
 find_package(Git REQUIRED)
 pkg_check_modules(PNG REQUIRED IMPORTED_TARGET libpng)
 
+# clean configureでも、最初のPowerShell testを登録する前に実行ファイルを確定する。
+# ここより後へ移すと未定義変数が "-NoProfile" を実行ファイル名にしてしまう。
+find_program(MVM_PWSH pwsh)
+if(NOT MVM_PWSH)
+    message(FATAL_ERROR
+        "pwsh が見つかりません。negative test の終了コード照合に必要です。")
+endif()
+
 # --- mvm_bench --------------------------------------------------------------
 # Qt に依存しない C++20 CLI。MLT のヘッダは include しない。
 add_executable(mvm_bench
@@ -54,10 +62,175 @@ add_test(NAME m4_timeline_export_focused
     COMMAND mvm_test_timeline_export
         "${CMAKE_CURRENT_BINARY_DIR}/m4-timeline-export"
         "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4"
-        "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_hevc.mp4")
+        "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_hevc.mp4"
+        "${MVM_UCRT64_ROOT}/bin/ffmpeg.exe")
 set_tests_properties(m4_timeline_export_focused PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 600)
+
+add_executable(mvm_test_timeline_export_mapping harness/test_timeline_export_mapping.cpp)
+target_link_libraries(mvm_test_timeline_export_mapping PRIVATE
+    mvm::timeline_export mvm::warnings)
+add_test(NAME m7b_3_timeline_export_mapping_focused COMMAND mvm_test_timeline_export_mapping)
+set_tests_properties(m7b_3_timeline_export_mapping_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+add_test(NAME m7b_3_product_export_architecture
+    COMMAND pwsh -NoProfile -File
+            ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-m7b-product-export-architecture.ps1)
+set_tests_properties(m7b_3_product_export_architecture PROPERTIES TIMEOUT 120)
+
+# --- M5: minimal timeline editing ------------------------------------------
+add_executable(mvm_test_timeline_edit harness/test_timeline_edit.cpp)
+target_link_libraries(mvm_test_timeline_edit PRIVATE
+    mvm::project mvm::util mvm::warnings)
+add_test(NAME m5_timeline_edit_focused
+    COMMAND mvm_test_timeline_edit "${CMAKE_CURRENT_BINARY_DIR}/m5-timeline-edit")
+set_tests_properties(m5_timeline_edit_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+
+add_executable(mvm_test_timeline_clip_model
+    harness/test_timeline_clip_model.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/timeline_clip_model.cpp)
+target_include_directories(mvm_test_timeline_clip_model PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_test_timeline_clip_model PRIVATE
+    mvm::project Qt6::Core mvm::warnings)
+set_target_properties(mvm_test_timeline_clip_model PROPERTIES AUTOMOC ON)
+add_test(NAME m7b_4_timeline_clip_model_focused COMMAND mvm_test_timeline_clip_model)
+set_tests_properties(m7b_4_timeline_clip_model_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+
+add_test(NAME m7b_4_timeline_ui_architecture
+    COMMAND pwsh -NoProfile -File
+            ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-m7b4-timeline-ui-architecture.ps1)
+set_tests_properties(m7b_4_timeline_ui_architecture PROPERTIES TIMEOUT 120)
+
+# --- M6b: controller clockとsegmented/rebased境界判断 -----------------------
+add_executable(mvm_test_timeline_playback harness/test_timeline_playback.cpp)
+target_link_libraries(mvm_test_timeline_playback PRIVATE
+    mvm::timeline_playback mvm::warnings)
+add_test(NAME m6b_timeline_playback_focused COMMAND mvm_test_timeline_playback)
+set_tests_properties(m6b_timeline_playback_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+
+# --- M7a-P0: fixed-effect backend primitive verification -------------------
+# 製品Project/Preview/Exportへ配線する前に、実画素の意味論だけを固定する。
+add_executable(mvm_test_m7a_p0_mlt harness/test_m7a_p0_mlt.cpp)
+target_link_libraries(mvm_test_m7a_p0_mlt PRIVATE
+    mvm::core mvm::mlt mvm::util mvm::warnings)
+target_compile_definitions(mvm_test_m7a_p0_mlt PRIVATE ${MVM_MLT_PATH_DEFS})
+add_test(NAME m7a_p0_mlt_primitives
+    COMMAND mvm_test_m7a_p0_mlt
+        "${CMAKE_CURRENT_BINARY_DIR}/m7a-p0-mlt"
+        "${MVM_UCRT64_ROOT}/bin/ffmpeg.exe"
+        "${CMAKE_CURRENT_BINARY_DIR}/m7a-p0-mlt.json")
+set_tests_properties(m7a_p0_mlt_primitives PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS m7a-p0
+    TIMEOUT 600)
+
+add_test(NAME m7a_p0_mlt_zero_sample_negative
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+            -ExpectExit 7 -Exe "$<TARGET_FILE:mvm_test_m7a_p0_mlt>"
+            -ChildArgs "|--negative-empty")
+set_tests_properties(m7a_p0_mlt_zero_sample_negative PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS m7a-p0
+    TIMEOUT 120)
+
+add_executable(mvm_test_m7a_p0_gpu gpu_preview/test_m7a_p0_gpu.cpp)
+target_link_libraries(mvm_test_m7a_p0_gpu PRIVATE
+    mvm::core mvm::gpu_preview mvm::warnings)
+add_test(NAME m7a_p0_gpu_primitives
+    COMMAND mvm_test_m7a_p0_gpu "${CMAKE_CURRENT_BINARY_DIR}/m7a-p0-gpu.json")
+set_tests_properties(m7a_p0_gpu_primitives PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS m7a-p0
+    TIMEOUT 120)
+
+add_test(NAME m7a_p0_gpu_zero_sample_negative
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+            -ExpectExit 7 -Exe "$<TARGET_FILE:mvm_test_m7a_p0_gpu>"
+            -ChildArgs "|--negative-empty")
+set_tests_properties(m7a_p0_gpu_zero_sample_negative PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS m7a-p0
+    TIMEOUT 120)
+
+add_test(NAME m7a_p0_summary_contract
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/summarize-m7a-p0.ps1"
+            -MltJson "${CMAKE_CURRENT_BINARY_DIR}/m7a-p0-mlt.json"
+            -GpuJson "${CMAKE_CURRENT_BINARY_DIR}/m7a-p0-gpu.json"
+            -OutJson "${CMAKE_CURRENT_BINARY_DIR}/m7a-p0-summary.json")
+set_tests_properties(m7a_p0_summary_contract PROPERTIES
+    DEPENDS "m7a_p0_mlt_primitives;m7a_p0_gpu_primitives"
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS m7a-p0
+    TIMEOUT 120)
+
+# --- M7b-P0: two-track overlay export primitive verification ---------------
+# 製品Project/Preview/Exportへ配線せず、tractor + affine transitionの
+# 透明overlay意味論と座標domainだけを実MP4画素で固定する。
+add_executable(mvm_test_m7b_p0_mlt harness/test_m7b_p0_mlt.cpp)
+target_link_libraries(mvm_test_m7b_p0_mlt PRIVATE
+    mvm::core mvm::mlt mvm::util mvm::warnings)
+target_compile_definitions(mvm_test_m7b_p0_mlt PRIVATE ${MVM_MLT_PATH_DEFS})
+add_test(NAME m7b_p0_mlt_overlay_primitives
+    COMMAND mvm_test_m7b_p0_mlt
+        "${CMAKE_CURRENT_BINARY_DIR}/m7b-p0-mlt"
+        "${MVM_UCRT64_ROOT}/bin/ffmpeg.exe"
+        "${CMAKE_CURRENT_BINARY_DIR}/m7b-p0-raw.json")
+set_tests_properties(m7b_p0_mlt_overlay_primitives PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS m7b-p0
+    TIMEOUT 600)
+
+add_test(NAME m7b_p0_mlt_zero_sample_negative
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+            -ExpectExit 7 -Exe "$<TARGET_FILE:mvm_test_m7b_p0_mlt>"
+            -ChildArgs "|--negative-empty")
+set_tests_properties(m7b_p0_mlt_zero_sample_negative PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS m7b-p0
+    TIMEOUT 120)
+
+add_test(NAME m7b_p0_summary_contract
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/summarize-m7b-p0.ps1"
+            -RawJson "${CMAKE_CURRENT_BINARY_DIR}/m7b-p0-raw.json"
+            -OutJson "${CMAKE_CURRENT_BINARY_DIR}/m7b-p0-summary.json")
+set_tests_properties(m7b_p0_summary_contract PROPERTIES
+    DEPENDS m7b_p0_mlt_overlay_primitives
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS m7b-p0
+    TIMEOUT 120)
+
+add_test(NAME powershell_ctest_registration_order
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-pwsh-registration-order.ps1")
+set_tests_properties(powershell_ctest_registration_order PROPERTIES TIMEOUT 120)
+
+# --- M7b-1: fixed two-track Project model and schema-2 persistence ---------
+add_executable(mvm_test_two_track_project harness/test_two_track_project.cpp)
+target_link_libraries(mvm_test_two_track_project PRIVATE
+    mvm::project mvm::util mvm::warnings)
+add_test(NAME m7b_1_two_track_project_focused
+    COMMAND mvm_test_two_track_project "${CMAKE_CURRENT_BINARY_DIR}/m7b-1-two-track-project")
+set_tests_properties(m7b_1_two_track_project_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS m7b-1
+    TIMEOUT 120)
+
+add_executable(mvm_test_clip_effects harness/test_clip_effects.cpp)
+target_link_libraries(mvm_test_clip_effects PRIVATE mvm::project mvm::warnings)
+add_test(NAME m7a_1_clip_effects_focused
+    COMMAND mvm_test_clip_effects "${CMAKE_CURRENT_BINARY_DIR}/m7a-1-clip-effects")
+set_tests_properties(m7a_1_clip_effects_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS m7a
+    TIMEOUT 120)
 
 add_executable(mvm_manim_project_smoke harness/mvm_manim_project_smoke.cpp)
 target_link_libraries(mvm_manim_project_smoke PRIVATE
@@ -168,11 +341,6 @@ endfunction()
 # 「失敗したこと」ではなく「意図した理由で失敗したこと」を検査する。
 #
 # このリポジトリに WILL_FAIL は 1 件も無い。増やさないこと。
-find_program(MVM_PWSH pwsh)
-if(NOT MVM_PWSH)
-    message(FATAL_ERROR
-        "pwsh が見つかりません。negative test の終了コード照合に必要です。")
-endif()
 
 foreach(_p2_r4_visible_case Good NegativeOriginalCallback NegativeSyntheticDelay
         NegativeExpectedClass NegativeDisplayed)
@@ -1840,6 +2008,15 @@ target_link_libraries(mvm_test_gpu_pure PRIVATE mvm::gpu_preview mvm::warnings)
 # mvm_add_test を使う。ucrt64in を PATH に入れないと
 # 依存 DLL が解決できず 0xC0000135 で落ちる (実際に落ちた)。
 mvm_add_test(gpu_pure_unit COMMAND mvm_test_gpu_pure)
+mvm_add_test(m7b_output_source_identity_architecture
+    COMMAND pwsh -NoProfile -File
+            ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-m7b-output-source-identity-architecture.ps1)
+
+add_executable(mvm_test_timeline_preview_mapping harness/test_timeline_preview_mapping.cpp)
+target_link_libraries(mvm_test_timeline_preview_mapping PRIVATE
+    mvm::timeline_preview_mapping mvm::warnings)
+mvm_add_test(m7b_2_timeline_preview_mapping_focused
+    COMMAND mvm_test_timeline_preview_mapping)
 
 # P2-Q4はproduction schedulerを変更せず、offline modelの契約を先に固定する。
 add_executable(mvm_test_p2_render_opportunity
