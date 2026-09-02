@@ -86,6 +86,23 @@ pwsh scripts/build.ps1
 UCRT64 の gcc は依存 DLL を PATH から解決するため、これが無いと
 **エラーを出さずに失敗**し、CMake からは「compiler is broken」としか見えない。
 
+## 開発用コマンド
+
+リポジトリルートの `dev.ps1` を、通常の開発作業の短い入口として使う。
+これは既存の正式スクリプトを置き換えず、そのまま呼び出す薄い front-end である。
+
+```powershell
+.\dev.ps1 build   # scripts/build.ps1
+.\dev.ps1 gui     # release ビルド済みの mvm GUI
+.\dev.ps1 test    # scripts/test.ps1（release/debug の通常 CTest）
+.\dev.ps1 lint    # scripts/lint.ps1
+.\dev.ps1 help
+```
+
+`gui` は既定で `build/ucrt64-release/m6a-gui/project.mvm.json` を開き、
+ユーザープロファイル下の `.local/bin/manim.exe` を使用する。場所が異なる場合は
+`-Ucrt64` または `-ManimExecutable` で明示する。
+
 MSYS2 UCRT64 シェル、または VSCode の統合ターミナル「MSYS2 UCRT64」からなら
 `cmake --preset ucrt64-release` を直接呼んでもよい。
 

@@ -114,6 +114,20 @@ pwsh scripts/lint.ps1                # 整形差分と静的検査
 pwsh scripts/coverage.ps1            # カバレッジ
 ```
 
+通常の開発作業では、次の repo-local な短い入口を推奨する。これらは上記の
+正式スクリプトをそのまま呼び出す front-end であり、詳細な option が必要な場合は
+引き続き正式スクリプトを直接使う。
+
+```powershell
+Build:   .\dev.ps1 build
+Run GUI: .\dev.ps1 gui
+Test:    .\dev.ps1 test
+Lint:    .\dev.ps1 lint
+```
+
+`dev check` は定義していない。通常 CTest と lint は独立した正式入口であり、
+両者を束ねる canonical validation script が追加されるまでは gate を推測しない。
+
 計測用の matrix スクリプト（いずれも生 JSON から集計まで行う）:
 
 ```powershell
