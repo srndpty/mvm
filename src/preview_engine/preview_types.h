@@ -184,10 +184,15 @@ struct PreviewCapabilities {
     // configured* が「実際に確定した構成」かどうか。
     //
     // **これは derived value の cache ではなく一次 state である。**
-    // configured* の既定値は measuredEnvelope の既定値と同じ組なので、これが無いと
-    // initialize していない engine が tuple equality だけで一致してしまう
-    // (「実測 authority の false positive」)。initialize が最後まで成功したときに
-    // だけ true にし、rollback では false へ戻す。
+    //
+    // この struct 自体の既定値 (1 / 1 / 0 / 60-1 / 0 / 0) は measuredEnvelope と
+    // 一致しない。問題になるのは `PreviewEngine` が initialize 前に持つ product
+    // capability であり、そちらは 2 / 2 / 1 / 48000 / 2 へ上書きされているため
+    // measuredEnvelope と同値の組になる。この flag が無いと、initialize を
+    // 通していない engine が tuple equality だけで一致してしまう
+    // (「実測 authority の false positive」)。
+    //
+    // initialize が最後まで成功したときにだけ true にし、rollback では false へ戻す。
     bool hasConfiguredEnvelope = false;
 
     // ---- 実測済みの構成 ----

@@ -7,7 +7,16 @@
 | `[事実]`   | 実際に実行して観測した。再現手順を併記する         |
 | `[推測]`   | 観測から導いた説明。ソースを読んで確かめてはいない |
 | `[未検証]` | まだ測っていない。できると仮定してはいけない       |
+| `[当時]`   | その時点の実装。現行 API とは異なる                |
 | `[exit]`   | exit criteria への影響                             |
+
+## この文書の読み方
+
+§1〜§10 は最初の実装、§11 以降はレビュー指摘への対応を**時系列で追記**している。
+API の形は後の節が前の節を上書きする。`[当時]` を付けた記述は履歴として残しており、
+現行 API ではない。
+
+現時点の output frame rate / capability の contract は **§14.1** が最新である。
 
 ## 1. Project schema 3 と `.mvm`
 
@@ -58,10 +67,13 @@ core::configurableOutputFrameRates()  24/1, 24000/1001, 25/1,   設定可能
 preview engine は新設した `createConfigured` を使う。
 `createConfigured` を通ったことは「qualify された」ことを意味しない。
 
-`[事実]` `PreviewCapabilities` は `configuredOutputFrameRate` (initialize で確定した rate) と
-`outputFrameRateMeasured` (実測済みか) を別 field で公開する。
-以前は固定値 60/1 を返しており、source の rate 検査が output と別の rate を
+`[事実]` `PreviewCapabilities` は `configuredOutputFrameRate` (initialize で確定した rate)
+を公開する。以前は固定値 60/1 を返しており、source の rate 検査が output と別の rate を
 基準にしうる形だった。
+
+`[事実]` 「実測済みか」は当初 `outputFrameRateMeasured` という bool field だったが、
+現在は `measuredEnvelope` (実測した構成の組) と derived な
+`matchesMeasuredEnvelope()` に置き換わっている。経緯は §12.2 / §13.2 / §14.1。
 
 `[事実]` UI は未計測 rate を選んだとき transport 行へ「(未計測)」を出す。
 
@@ -215,15 +227,19 @@ decode worker が最初の frame を出せていない。素材か GPU decode �
 ## 8. contract test の更新
 
 `[事実]` 60/1 固定を前提にしていた次の 2 つは、新しい contract へ書き換えた。
+以下は現行 API での記述である (途中の版については §12.2 / §13.2 / §14.1 を参照)。
 
 - `tests/core/test_checked_output_timebase.cpp`
-  qualified / 未 qualified の rate を **literal で列挙**して受理・拒否を検査する。
-  実装の `isSupportedOutputFrameRate` は呼ばない。呼ぶと表を壊した変更を
+  measured / configurable / どちらでもない rate を **literal で列挙**して
+  受理・拒否を検査する。実装の `isMeasuredOutputFrameRate` /
+  `isConfigurableOutputFrameRate` は呼ばない。呼ぶと表を壊した変更を
   テストが追認してしまう。
 - `tests/preview_engine/test_preview_engine.cpp`
-  拒否側の rate を 24/1 から 48/1 へ変えたうえで、qualified な各 rate で
-  `initialize` が成功し、`capabilities().qualifiedOutputFrameRate` が
-  **その rate を公開する**ことと、source rate 検査がその rate を基準にすることを検査する。
+  拒否側の rate を 24/1 から 48/1 へ変えたうえで、configurable な各 rate で
+  `initialize` が成功し、`capabilities().configuredOutputFrameRate` が
+  **その rate を公開する**ことと、source rate 検査がその rate を基準にすることを
+  検査する。あわせて `matchesMeasuredEnvelope()` が 60/1 以外で false になること、
+  `measuredEnvelope` が initialize した rate へ追従しないことを固定する。
 
 ## 9. GUI の起動確認と、preview が黒いままである件
 
@@ -324,13 +340,18 @@ mutation で実際に失敗することを確認して確かめた
 
 ### 12.2 capability の qualification provenance
 
-`[事実]` `PreviewCapabilities` の `maxQualified*` / `qualifiedAudio*` は
-「現在の構成で受理できる上限」であって、それぞれが独立に qualify されている
-わけではなかった。24fps で initialize した capability が
+`[当時]` `PreviewCapabilities` には `maxQualified*` / `qualifiedAudio*` という field が
+あった。実体は「現在の構成で受理できる上限」であって、それぞれが独立に qualify
+されているわけではない。24fps で initialize した capability が
 `maxQualifiedCompositionLayers = 2` を返すと、その 2 layer の qualification が
-60/1 cohort 由来なのか現在の構成由来なのかを型から判別できない。
+60/1 cohort 由来なのか現在の構成由来なのかを型から判別できなかった。
+(これらの field は現在すべて `configured*` へ改名されている)
 
 `[事実]` qualification を **envelope (tuple)** として保持する形へ変えた。
+
+以下は `[当時の実装]` である。`matchesMeasuredEnvelope` はこの後
+§13.2 で derived getter へ、§14.1 で `hasConfiguredEnvelope` を見る形へ変わっている。
+現行 API は §14.1 の記述を参照すること。
 
 ```cpp
 struct MeasuredPreviewEnvelope {   // 実測した「構成の組」
@@ -422,13 +443,21 @@ audio domain まで**組として**比較する。軸ごとに独立に合成で
 
 ### 14.1 未初期化 engine が measured 一致になりえた
 
-`[事実]` `PreviewCapabilities` の `configured*` 既定値は
-`MeasuredPreviewEnvelope` の既定値と**同じ組**である。
+`[事実]` 一致してしまうのは **`PreviewEngine` が initialize 前に持つ product
+capability** である。`PreviewCapabilities` struct 自体の既定値は envelope と
+一致しない。主語を取り違えると、この修正が不要に見える。
 
 ```text
-configured*      既定: 60/1, video 2, layer 2, audio 1, 48kHz, stereo
-measuredEnvelope 既定: 60/1, video 2, layer 2, audio 1, 48kHz, stereo
+PreviewCapabilities{} 既定       : 60/1, video 1, layer 1, audio 0, 0Hz, 0ch
+PreviewEngine の initialize 前   : 60/1, video 2, layer 2, audio 1, 48kHz, stereo
+measuredEnvelope{} 既定          : 60/1, video 2, layer 2, audio 1, 48kHz, stereo
+                                   ^^^^ engine 側と同値になる
 ```
+
+`[事実]` `PreviewEngine::Impl` は construct 時に product の上限
+(2 / 2 / 1 / 48000 / 2) を capability へ書き込む。
+`configuredOutputFrameRate` は struct 既定の 60/1 のままなので、
+initialize を通していなくても envelope と同じ組になる。
 
 `[事実]` そのため tuple equality だけの derived getter では、
 `initialize()` を通していない engine が `matchesMeasuredEnvelope() == true` を返した。
