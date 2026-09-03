@@ -183,12 +183,22 @@ struct PreviewCapabilities {
 
     // ---- 実測済みの構成 ----
     MeasuredPreviewEnvelope measuredEnvelope;
-    // 現在の構成が measuredEnvelope と一致するか。
-    // false のときは「動くが、この構成では測っていない」である。
-    bool matchesMeasuredEnvelope = false;
 
     bool duplicateSourceLayersSupported = false;
     bool deviceRecoverySupported = false;
+
+    // 現在の構成が measuredEnvelope と**組として**一致するか。
+    // 保存値にすると configured field を書き換える経路 (test hook を含む) ごとに
+    // 再計算が要り、書き忘れると stale な true が残る。derived にして
+    // 「派生値が元と食い違う」状態そのものを作らない。
+    bool matchesMeasuredEnvelope() const {
+        return configuredOutputFrameRate == measuredEnvelope.outputFrameRate &&
+               configuredMaxActiveVideoSources == measuredEnvelope.maxActiveVideoSources &&
+               configuredMaxCompositionLayers == measuredEnvelope.maxCompositionLayers &&
+               configuredMaxActiveAudioSources == measuredEnvelope.maxActiveAudioSources &&
+               configuredAudioSampleRate == measuredEnvelope.audioSampleRate &&
+               configuredAudioChannelCount == measuredEnvelope.audioChannelCount;
+    }
 };
 
 struct PreviewDeviceInfo {

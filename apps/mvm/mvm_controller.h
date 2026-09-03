@@ -230,6 +230,11 @@ private:
     struct AudioPreviewSource {
         preview::PreviewSourceId source;
         AudioSourceIdentity identity;
+        // addSource へ実際に渡した descriptor をそのまま持つ。
+        // rollback で現在の Project から作り直すと、move / ripple / trim で
+        // timelineStartFrame が変わった後は「戻したはずの source」が新しい
+        // offset を持ってしまい、identity と実体が食い違う。
+        preview::PreviewSourceDescriptor descriptor;
         int clipIndex = -1;
     };
 
@@ -264,8 +269,9 @@ private:
     };
 
     bool applyAudioSourceFor(std::int64_t timelineFrame, AudioSwitchUndo& undo, QString& error);
-    // applyAudioSourceFor の結果を打ち消す。best-effort であり、戻せなかった場合は
-    // 黙って成功にせず false を返す。
+    // applyAudioSourceFor の結果を打ち消す。控えておいた descriptor をそのまま
+    // 使い、現在の Project からは作り直さない。戻せなかった場合は黙って成功に
+    // せず false を返す。
     bool revertAudioSource(const AudioSwitchUndo& undo, QString& error);
     // clip から audio source descriptor を組む。offset の換算は mapping 側へ委譲する。
     bool audioDescriptorFor(int clipIndex, preview::PreviewSourceDescriptor& descriptor,

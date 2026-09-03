@@ -285,7 +285,7 @@ bool MvmController::frameRateMeasured() const {
     // Project 側の rate 表だけで判断すると、layer 数など他の軸を含む
     // envelope 一致を見落とす。engine 未初期化のときだけ rate 表へ落とす。
     if (previewEngine_)
-        return previewEngine_->capabilities().matchesMeasuredEnvelope;
+        return previewEngine_->capabilities().matchesMeasuredEnvelope();
     return project::isMeasuredTimelineFrameRate(project_.timelineFpsNum, project_.timelineFpsDen);
 }
 
@@ -808,7 +808,8 @@ bool MvmController::applyAudioSourceFor(std::int64_t timelineFrame, AudioSwitchU
         error = previewErrorText(added.error());
         return false;
     }
-    audioSource_ = AudioPreviewSource{added.value(), *desired, mapped.clipIndex};
+    // 実際に渡した descriptor を控える。rollback はこれをそのまま使う。
+    audioSource_ = AudioPreviewSource{added.value(), *desired, descriptor, mapped.clipIndex};
     return true;
 }
 
@@ -825,17 +826,18 @@ bool MvmController::revertAudioSource(const AudioSwitchUndo& undo, QString& erro
     }
     if (!undo.previous)
         return true;
-    preview::PreviewSourceDescriptor descriptor;
-    if (!audioDescriptorFor(undo.previous->clipIndex, descriptor, error))
-        return false;
-    const auto added = previewEngine_->addSource(descriptor);
+    // **現在の Project から descriptor を作り直さない。** 切り替えの間に
+    // timelineStartFrame や sourceInFrame が変わっていると、offset が
+    // 切り替え前と別物になり、identity と source 実体が食い違う。
+    const auto added = previewEngine_->addSource(undo.previous->descriptor);
     if (!added) {
         error = previewErrorText(added.error());
         return false;
     }
-    // engine が付け直した id は元と別物なので、id だけ差し替えて identity は保つ。
+    // engine が付け直した id は元と別物なので、id だけ差し替えて
+    // identity と descriptor は控えた値をそのまま復元する。
     audioSource_ = AudioPreviewSource{added.value(), undo.previous->identity,
-                                      undo.previous->clipIndex};
+                                      undo.previous->descriptor, undo.previous->clipIndex};
     return true;
 }
 

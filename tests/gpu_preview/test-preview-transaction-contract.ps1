@@ -95,9 +95,38 @@ if ($removeIndex -gt $addIndex) {
     throw 'audio の remove より前に add しています (engine は 1 件しか受理しません)'
 }
 
-# --- 5. identity は timing に効く入力をすべて含む ------------------------------
+# --- 5. rollback は控えた descriptor をそのまま使う ---------------------------
+# 現在の Project から作り直すと、切り替えの間に move / ripple / trim で
+# timelineStartFrame が変わっていた場合、戻したはずの source が新しい offset を
+# 持ち、identity と実体が食い違う。
+$revertBody = Get-FunctionBody -Text $controller `
+    -Signature 'bool MvmController::revertAudioSource(const AudioSwitchUndo& undo, QString& error)'
+if (-not $revertBody.Contains('addSource(undo.previous->descriptor)')) {
+    throw 'revertAudioSource が控えた descriptor をそのまま使っていません'
+}
+if ($revertBody.Contains('audioDescriptorFor(')) {
+    throw 'revertAudioSource が現在の Project から descriptor を作り直しています'
+}
+if (-not $revertBody.Contains('undo.previous->identity')) {
+    throw 'revertAudioSource が控えた identity を復元していません'
+}
+
+# applyAudioSourceFor は addSource へ渡した descriptor をそのまま控えること。
+if (-not $applyBody.Contains('AudioPreviewSource{added.value(), *desired, descriptor,')) {
+    throw 'applyAudioSourceFor が実際に渡した descriptor を控えていません'
+}
+
 $headerPath = Join-Path $PSScriptRoot '..\..\apps\mvm\mvm_controller.h'
 $header = Get-Content -LiteralPath $headerPath -Raw
+$sourceStart = $header.IndexOf('struct AudioPreviewSource {')
+if ($sourceStart -lt 0) { throw 'AudioPreviewSource がありません' }
+$sourceEnd = $header.IndexOf('};', $sourceStart)
+$sourceStruct = $header.Substring($sourceStart, $sourceEnd - $sourceStart)
+if (-not $sourceStruct.Contains('PreviewSourceDescriptor descriptor')) {
+    throw 'AudioPreviewSource が descriptor を保持していません'
+}
+
+# --- 6. identity は timing に効く入力をすべて含む ------------------------------
 $identityStart = $header.IndexOf('struct AudioSourceIdentity {')
 if ($identityStart -lt 0) { throw 'AudioSourceIdentity がありません' }
 $identityEnd = $header.IndexOf('};', $identityStart)

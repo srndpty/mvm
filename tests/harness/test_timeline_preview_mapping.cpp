@@ -139,7 +139,7 @@ void testMutedTracks() {
             "mute した audio track を preview 対象から外していません");
 }
 
-// preview が qualify している layer 数を超えたら成功にしない。
+// 現在の構成の layer 上限を超えたら成功にしない。
 void testLayerLimit() {
     mvm::project::Project project = mvm::project::createDefaultProject();
     require(mvm::project::addTrack(project, mvm::project::TrackKind::Video).success,
@@ -148,7 +148,7 @@ void testLayerLimit() {
                              clip("v3", 2, 0, 0, 100)};
     const auto tooMany = mvm::app::mapTimelinePreviewFrame(project, 10);
     require(!tooMany.success && tooMany.layers.empty(),
-            "qualified layer数を超えたframeを成功にしました");
+            "configured layer数を超えたframeを成功にしました");
 
     // 3本目を mute すれば 2 layer に収まる。
     project.videoTracks[2].muted = true;

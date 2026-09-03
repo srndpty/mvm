@@ -24,9 +24,13 @@ struct TimelinePreviewFrameMapping {
     std::string error;
 };
 
-// preview が同時に合成できる video layer の上限。GPU compositor 自体は N layer を
-// 描けるが、qualify して計測したのは 2 layer までなので、それを超える frame は
-// 成功に見せず失敗として返す。
+// preview が同時に合成できる video layer の上限。
+//
+// GPU compositor 自体は N layer を描ける。この 2 という値は
+// **現在の configured limit** であり、それが実測済みなのは
+// `MeasuredPreviewEnvelope` の組 (60/1 × 2 video source × 2 layer × 1 audio ×
+// 48kHz stereo) としてである。「2 layer が単独で qualify されている」ではない。
+// 上限を超える frame は成功に見せず失敗として返す。
 inline constexpr std::size_t kMaxPreviewVideoLayers = 2;
 
 TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& project,

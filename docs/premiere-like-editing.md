@@ -81,7 +81,13 @@ negative test として固定しており、実測なしの昇格はここで落
 ## 3. preview の layer 上限
 
 `[事実]` `GpuCompositor::composeLayersToTarget` は N layer を描ける実装だが、
-`PreviewCapabilities` が qualify しているのは 2 layer までである。
+`PreviewCapabilities::configuredMaxCompositionLayers` は 2 である。
+
+`[事実]` この 2 が実測済みなのは **組として**である。
+`MeasuredPreviewEnvelope` は
+「60/1 × video source 2 × composition layer 2 × audio source 1 × 48kHz stereo」
+という tuple であり、「2 layer 単独が qualify されている」ではない
+(§12.2 を参照)。
 
 `[事実]` そのため `mapTimelinePreviewFrame` は、同一 frame で 3 本以上の
 video track に clip が載っている場合を成功にせず、
@@ -360,3 +366,54 @@ audio domain まで**組として**比較する。軸ごとに独立に合成で
 
 `[事実]` UI の「(未計測)」表示は engine の `matchesMeasuredEnvelope` を authority に
 した。Project 側の rate 表だけで判断すると、rate 以外の軸を見落とす。
+
+## 13. 再々レビュー指摘への対応 (P2 1 件 / P3 2 件)
+
+### 13.1 audio rollback が旧 source の exact state を復元していなかった
+
+`[事実]` `AudioSwitchUndo` は旧 source の id と identity だけを控えており、
+`revertAudioSource()` は descriptor を **現在の `project_` から作り直して**いた。
+
+`[事実]` そのため move / ripple / left-trim で `timelineStartFrame` や
+`sourceInFrame` が変わった後に seek が失敗すると、
+「engine 上の source は新しい offset、controller の identity は旧値」という
+食い違いが残った。compensation transaction の目的を満たしていない。
+
+`[事実]` `AudioPreviewSource` に `PreviewSourceDescriptor descriptor` を持たせ、
+`addSource` へ実際に渡した descriptor をそのまま控えるようにした。
+`revertAudioSource()` は `undo.previous->descriptor` をそのまま `addSource` へ渡し、
+現在の Project からは作り直さない。identity と descriptor の両方を控えた値へ戻す。
+
+`[事実]` `tests/gpu_preview/test-preview-transaction-contract.ps1` に次を追加した。
+
+- `revertAudioSource` が `addSource(undo.previous->descriptor)` を使うこと
+- `revertAudioSource` が `audioDescriptorFor(` を**呼ばない**こと
+- `applyAudioSourceFor` が渡した descriptor をそのまま控えること
+- `AudioPreviewSource` が descriptor を保持していること
+
+`[事実]` 効いていることは、`revertAudioSource` を旧実装 (現在の Project から
+再計算) へ戻す mutation で実際に失敗することを確認して確かめた。
+
+### 13.2 `matchesMeasuredEnvelope` が保存値だった
+
+`[事実]` initialize 時に一度計算して保存していたため、
+`PreviewRenderPort::setVideoSourceLimitForTest()` のように configured field を
+後から書き換える経路では stale な `true` が残りえた。
+
+`[事実]` `PreviewCapabilities::matchesMeasuredEnvelope()` を **derived getter** にし、
+保存値を無くした。派生値が元と食い違う状態そのものを作らない。
+
+`[事実]` `tests/preview_engine/test_preview_engine.cpp::measuredEnvelopeIsDerived` が、
+6 つの軸を 1 つずつ崩して一致しなくなること、戻せば一致へ復帰すること
+(保存値なら stale のまま) を検査する。
+
+### 13.3 旧 `qualified` 用語の残り
+
+`[事実]` 型は直っていたが文言が旧契約のままだった箇所を落とした。
+
+| 場所 | 変更 |
+| ---- | ---- |
+| engine の error 文字列 | 「qualified layer countを超えています」→「設定されたcomposition layer countを超えています」など、`configured*` を見ている実態に合わせた |
+| `kMaxPreviewVideoLayers` のコメント | 2 は **現在の configured limit** であり、実測済みなのは `MeasuredPreviewEnvelope` の**組**としてである旨を明記 |
+| docs §3 | 「`PreviewCapabilities` が qualify しているのは 2 layer まで」→ configured limit と measured envelope の区別を明示 |
+| test の変数名 | 非 60fps 群の `qualifiedRates` → `configurableOnlyRates`。実体は `matchesMeasuredEnvelope() == false` の検査である |

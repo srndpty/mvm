@@ -371,8 +371,9 @@ CompositionAcceptanceState::submit(const std::shared_ptr<const CompositionSnapsh
             compositionError(PreviewErrorCategory::CompositionFailure, "snapshotがnullです"));
     }
     if (snapshot->layers.size() > capabilities.configuredMaxCompositionLayers) {
-        return Result<AcceptedComposition>::failure(compositionError(
-            PreviewErrorCategory::UnsupportedCapability, "qualified layer countを超えています"));
+        return Result<AcceptedComposition>::failure(
+            compositionError(PreviewErrorCategory::UnsupportedCapability,
+                             "設定されたcomposition layer countを超えています"));
     }
 
     std::set<std::uint64_t> distinctSources;
@@ -387,13 +388,13 @@ CompositionAcceptanceState::submit(const std::shared_ptr<const CompositionSnapsh
             !capabilities.duplicateSourceLayersSupported) {
             return Result<AcceptedComposition>::failure(compositionError(
                 PreviewErrorCategory::UnsupportedCapability,
-                "同一sourceのduplicate layerはqualified capability外です", layer.source));
+                "同一sourceのduplicate layerは現在の構成では扱えません", layer.source));
         }
     }
     if (distinctSources.size() > capabilities.configuredMaxActiveVideoSources) {
         return Result<AcceptedComposition>::failure(
             compositionError(PreviewErrorCategory::UnsupportedCapability,
-                             "qualified active video source countを超えています"));
+                             "設定されたactive video source countを超えています"));
     }
 
     CompositionSnapshot canonical = *snapshot;
@@ -529,7 +530,9 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         PreviewCapabilities value;
         value.configuredMaxActiveVideoSources = 2;
         value.configuredMaxCompositionLayers = 2;
-        // P5-D2でaudio-master transportを接続したため、qualified audio domainを公開する。
+        // P5-D2でaudio-master transportを接続したため、audio domainを公開する。
+        // ここは「現在の構成で受理できる上限」であって qualification ではない。
+        // 実測した組は measuredEnvelope (既定値 = 60/1 cohort) が持つ。
         value.configuredMaxActiveAudioSources = 1;
         value.configuredAudioSampleRate = audio::kInternalSampleRate;
         value.configuredAudioChannelCount = audio::kInternalChannels;
@@ -1486,17 +1489,8 @@ Result<void> PreviewEngine::initialize(const PreviewEngineConfig& config,
         // capability が公開する rate は「今回 initialize した rate」である。
         // 固定値を返すと source 側の rate 検査が別の rate を基準にしてしまう。
         impl_->capability.configuredOutputFrameRate = rate.value();
-        // 現在の構成が実測 envelope と**組として**一致するかを判定する。
-        // rate だけ、layer 数だけ、と軸ごとに合成できると仮定しない。
-        const PreviewCapabilities& capability = impl_->capability;
-        const MeasuredPreviewEnvelope& envelope = capability.measuredEnvelope;
-        impl_->capability.matchesMeasuredEnvelope =
-            rate.value() == envelope.outputFrameRate &&
-            capability.configuredMaxActiveVideoSources == envelope.maxActiveVideoSources &&
-            capability.configuredMaxCompositionLayers == envelope.maxCompositionLayers &&
-            capability.configuredMaxActiveAudioSources == envelope.maxActiveAudioSources &&
-            capability.configuredAudioSampleRate == envelope.audioSampleRate &&
-            capability.configuredAudioChannelCount == envelope.audioChannelCount;
+        // measured envelope との一致は PreviewCapabilities の derived getter が返す。
+        // ここで保存値を作らない (configured を書き換える経路ごとの再計算漏れを避ける)。
         impl_->timebase = timebase.value();
         impl_->telemetrySnapshot.status.state = impl_->machine.state();
     }
@@ -1580,7 +1574,7 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
         if (impl_->capability.configuredMaxActiveAudioSources == 0) {
             return Result<PreviewSourceId>::failure(
                 makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
-                          "audio sourceはqualified capabilityに含まれていません"));
+                          "audio sourceは現在の構成では扱えません"));
         }
         if (impl_->publicAudioSource) {
             return Result<PreviewSourceId>::failure(

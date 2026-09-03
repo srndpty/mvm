@@ -141,6 +141,60 @@ std::unordered_map<std::uint64_t, EligibleSource> twoSources() {
     return {{1, {true}}, {2, {true}}};
 }
 
+// matchesMeasuredEnvelope は保存値ではなく derived であること。
+// 保存値にすると configured を書き換える経路ごとに再計算が要り、
+// 書き忘れると stale な true が残る。
+void measuredEnvelopeIsDerived() {
+    PreviewCapabilities capability;
+    const MeasuredPreviewEnvelope envelope;
+    capability.configuredOutputFrameRate = envelope.outputFrameRate;
+    capability.configuredMaxActiveVideoSources = envelope.maxActiveVideoSources;
+    capability.configuredMaxCompositionLayers = envelope.maxCompositionLayers;
+    capability.configuredMaxActiveAudioSources = envelope.maxActiveAudioSources;
+    capability.configuredAudioSampleRate = envelope.audioSampleRate;
+    capability.configuredAudioChannelCount = envelope.audioChannelCount;
+    require(capability.matchesMeasuredEnvelope(), "envelopeと同じ構成を一致として返しません");
+
+    // 軸ごとに 1 つずつ崩す。どれが崩れても一致にしない。
+    {
+        PreviewCapabilities mutated = capability;
+        mutated.configuredOutputFrameRate = PreviewFrameRate{24, 1};
+        require(!mutated.matchesMeasuredEnvelope(), "output rateの相違を無視しました");
+    }
+    {
+        PreviewCapabilities mutated = capability;
+        mutated.configuredMaxActiveVideoSources = envelope.maxActiveVideoSources - 1;
+        require(!mutated.matchesMeasuredEnvelope(), "video source上限の相違を無視しました");
+    }
+    {
+        PreviewCapabilities mutated = capability;
+        mutated.configuredMaxCompositionLayers = envelope.maxCompositionLayers + 1;
+        require(!mutated.matchesMeasuredEnvelope(), "layer上限の相違を無視しました");
+    }
+    {
+        PreviewCapabilities mutated = capability;
+        mutated.configuredMaxActiveAudioSources = envelope.maxActiveAudioSources + 1;
+        require(!mutated.matchesMeasuredEnvelope(), "audio source上限の相違を無視しました");
+    }
+    {
+        PreviewCapabilities mutated = capability;
+        mutated.configuredAudioSampleRate = 44100;
+        require(!mutated.matchesMeasuredEnvelope(), "audio sample rateの相違を無視しました");
+    }
+    {
+        PreviewCapabilities mutated = capability;
+        mutated.configuredAudioChannelCount = 1;
+        require(!mutated.matchesMeasuredEnvelope(), "audio channel数の相違を無視しました");
+    }
+
+    // 崩してから戻せば一致へ復帰する (保存値なら stale のまま)。
+    PreviewCapabilities restored = capability;
+    restored.configuredMaxActiveVideoSources = envelope.maxActiveVideoSources - 1;
+    require(!restored.matchesMeasuredEnvelope(), "崩した構成を一致として返しました");
+    restored.configuredMaxActiveVideoSources = envelope.maxActiveVideoSources;
+    require(restored.matchesMeasuredEnvelope(), "戻した構成が一致へ復帰しません");
+}
+
 void frameRateAndDescriptorValidation() {
     const auto valid = validatePreviewFrameRate(120, 2);
     require(valid && valid.value() == PreviewFrameRate{60, 1},
@@ -175,18 +229,18 @@ void frameRateAndDescriptorValidation() {
 
     // 60/1 以外の qualified rate を受理し、capability がその rate を公開すること。
     // 固定値 60/1 を返すと source の rate 検査が別の基準で動いてしまう。
-    const std::pair<std::uint32_t, std::uint32_t> qualifiedRates[] = {
+    const std::pair<std::uint32_t, std::uint32_t> configurableOnlyRates[] = {
         {24, 1}, {24000, 1001}, {25, 1}, {30, 1}, {30000, 1001}, {50, 1}, {60000, 1001}};
-    for (const auto& [numerator, denominator] : qualifiedRates) {
+    for (const auto& [numerator, denominator] : configurableOnlyRates) {
         PreviewEngine rateEngine;
         auto rateDispatcher = std::make_shared<ManualDispatcher>();
         require(rateEngine.initialize({{{numerator, denominator}}}, rateDispatcher),
-                "qualified rateをinitializeでrejectしました");
+                "configurable rateをinitializeでrejectしました");
         require(rateEngine.capabilities().configuredOutputFrameRate ==
                     PreviewFrameRate{numerator, denominator},
                 "capabilityがinitializeしたoutput rateを公開していません");
         // 受理できることと計測済みであることを混ぜない。60/1 以外は未計測である。
-        require(!rateEngine.capabilities().matchesMeasuredEnvelope,
+        require(!rateEngine.capabilities().matchesMeasuredEnvelope(),
                 "未計測の構成をmeasured envelope一致として公開しました");
         // envelope そのものは 60/1 cohort のまま動かない。現在の rate へ追従させると
         // 「測っていない構成を測ったことにする」になる。
@@ -202,9 +256,9 @@ void frameRateAndDescriptorValidation() {
         requireFailure(validateSourceFrameRate(60, 1, {numerator, denominator}),
                        PreviewErrorCategory::UnsupportedCapability,
                        "output rateと異なるsource rateを受理しました");
-        require(rateEngine.requestShutdown(), "qualified rate engineのshutdownに失敗しました");
+        require(rateEngine.requestShutdown(), "configurable rate engineのshutdownに失敗しました");
         require(rateEngine.status().state == PreviewEngineState::Shutdown,
-                "qualified rate engineがterminal Shutdownへ到達しませんでした");
+                "configurable rate engineがterminal Shutdownへ到達しませんでした");
     }
 
     PreviewEngine equivalentRateEngine;
@@ -213,7 +267,7 @@ void frameRateAndDescriptorValidation() {
             "60/1と等価な120/2をinitializeで受理しませんでした");
     // P5-D2でaudio-master transportを接続したため、qualified audio sourceは1件になった。
     // 等価rationalの受理がcapabilityを書き換えないことを、ここで固定する。
-    require(equivalentRateEngine.capabilities().matchesMeasuredEnvelope,
+    require(equivalentRateEngine.capabilities().matchesMeasuredEnvelope(),
             "60/1構成をmeasured envelope一致として公開していません");
     require(equivalentRateEngine.capabilities().configuredOutputFrameRate ==
                     PreviewFrameRate{60, 1} &&
@@ -1155,9 +1209,9 @@ void unsafeDestructionProcess() {
 // P5-D2: audio-master transportの公開contract。期待値はproduct helperを呼ばず
 // 独立したliteralで与える。
 void p5dAudioDomainAndCapabilities() {
-    // qualified audio domainは48000 Hz / stereo / float32だけである。
+    // 現在の構成の audio domain は 48000 Hz / stereo / float32 だけである。
     require(validateQualifiedAudioDomain(48000, 2, "flt"),
-            "qualified audio domainを受理しませんでした");
+            "configured audio domainを受理しませんでした");
     requireFailure(validateQualifiedAudioDomain(44100, 2, "flt"),
                    PreviewErrorCategory::UnsupportedCapability,
                    "44100 Hzを暗黙のresampleで受理しました");
@@ -1183,9 +1237,9 @@ void p5dAudioDomainAndCapabilities() {
     require(engine.initialize({{{60, 1}}}, dispatcher), "initializeに失敗しました");
     const PreviewCapabilities capabilities = engine.capabilities();
     require(capabilities.configuredMaxActiveAudioSources == 1,
-            "qualified audio source数が1として公開されていません");
+            "configured audio source数が1として公開されていません");
     require(capabilities.configuredAudioSampleRate == 48000,
-            "qualified audio sample rateが48000として公開されていません");
+            "configured audio sample rateが48000として公開されていません");
     require(capabilities.configuredAudioChannelCount == 2,
             "qualified audio channel数が2として公開されていません");
     require(!capabilities.deviceRecoverySupported,
@@ -1256,6 +1310,7 @@ int main(int argc, char** argv) {
     }
 
     const std::vector<std::pair<const char*, std::function<void()>>> tests{
+        {"measured envelope derived", measuredEnvelopeIsDerived},
         {"frame rate / descriptor", frameRateAndDescriptorValidation},
         {"Result / error", resultAndErrorValues},
         {"state machine", stateMachineLifecycle},
