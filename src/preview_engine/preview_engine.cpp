@@ -1457,22 +1457,22 @@ Result<void> PreviewEngine::initialize(const PreviewEngineConfig& config,
     if (!rate) {
         return Result<void>::failure(rate.error());
     }
-    if (!core::isSupportedOutputFrameRate(static_cast<std::int64_t>(rate.value().numerator),
-                                          static_cast<std::int64_t>(rate.value().denominator))) {
+    if (!core::isConfigurableOutputFrameRate(static_cast<std::int64_t>(rate.value().numerator),
+                                             static_cast<std::int64_t>(rate.value().denominator))) {
         return Result<void>::failure(
             makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::Initialize,
-                      "指定frame rateはqualifiedな出力rateではありません: " +
+                      "指定frame rateは設定可能な出力rateではありません: " +
                           std::to_string(rate.value().numerator) + "/" +
                           std::to_string(rate.value().denominator)));
     }
     // scheduler / seek / statusが同じ換算を使うよう、timebaseはここで一度だけ確定する。
-    const auto timebase = core::CheckedOutputTimebase::createQualified(
+    const auto timebase = core::CheckedOutputTimebase::createConfigured(
         static_cast<std::int64_t>(rate.value().numerator),
         static_cast<std::int64_t>(rate.value().denominator), audio::kInternalSampleRate);
     if (!timebase) {
         return Result<void>::failure(makeError(PreviewErrorCategory::UnsupportedCapability,
                                                PreviewOperation::Initialize,
-                                               "qualified output timebaseを構築できません"));
+                                               "設定されたoutput timebaseを構築できません"));
     }
 
     {
@@ -1485,7 +1485,11 @@ Result<void> PreviewEngine::initialize(const PreviewEngineConfig& config,
         impl_->configuredFrameRate = rate.value();
         // capability が公開する rate は「今回 initialize した rate」である。
         // 固定値を返すと source 側の rate 検査が別の rate を基準にしてしまう。
-        impl_->capability.qualifiedOutputFrameRate = rate.value();
+        // 計測済みかどうかは別 field で出す。受理を qualification と混同させない。
+        impl_->capability.configuredOutputFrameRate = rate.value();
+        impl_->capability.outputFrameRateMeasured =
+            core::isMeasuredOutputFrameRate(static_cast<std::int64_t>(rate.value().numerator),
+                                            static_cast<std::int64_t>(rate.value().denominator));
         impl_->timebase = timebase.value();
         impl_->telemetrySnapshot.status.state = impl_->machine.state();
     }

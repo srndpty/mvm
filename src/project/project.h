@@ -72,10 +72,15 @@ struct Project {
 // 新規 Project の初期構成。track が 0 本の Project を作らせない。
 Project createDefaultProject();
 
-// timeline fps として受理する rate かどうか。preview engine の qualified output rate と
-// 同じ表 (core::supportedOutputFrameRates) を参照する。ここに別表を持たない。
-bool isSupportedTimelineFrameRate(std::int64_t fpsNum, std::int64_t fpsDen);
-const std::vector<core::SupportedFrameRate>& supportedTimelineFrameRates();
+// timeline fps として設定できる rate かどうか。core の configurable 表を参照する。
+// ここに別表を持たない。
+bool isConfigurableTimelineFrameRate(std::int64_t fpsNum, std::int64_t fpsDen);
+const std::vector<core::SupportedFrameRate>& configurableTimelineFrameRates();
+// 実測して qualify した rate かどうか。UI はこれを使って
+// 「設定はできるが未計測」を利用者へ出す。受理できること = 計測済み ではない。
+bool isMeasuredTimelineFrameRate(std::int64_t fpsNum, std::int64_t fpsDen);
+// 約分済みの pair かどうか。Project へ永続化する fps は canonical だけを認める。
+bool isCanonicalFrameRate(std::int64_t fpsNum, std::int64_t fpsDen);
 
 const std::vector<Track>& tracksOfKind(const Project& project, TrackKind kind);
 std::vector<Track>& tracksOfKind(Project& project, TrackKind kind);

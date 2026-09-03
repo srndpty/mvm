@@ -1,7 +1,9 @@
 #include "app/timeline_preview_mapping.h"
 
+#include "core/checked_output_timebase.h"
 #include "project/timeline_edit.h"
 
+#include <cmath>
 #include <string>
 
 namespace mvm::app {
@@ -83,6 +85,47 @@ TimelinePreviewAudioMapping mapTimelinePreviewAudio(const project::Project& proj
         result.sourceFrameNumber = clip->sourceInFrame + (timelineFrame - clip->timelineStartFrame);
     }
     result.success = true;
+    return result;
+}
+
+AudioPreviewOffset audioPreviewSampleOffset(const project::Project& project,
+                                            const project::TimelineClip& clip) {
+    AudioPreviewOffset result;
+    const auto sourceTimebase = core::CheckedOutputTimebase::create(
+        clip.sourceFpsNum, clip.sourceFpsDen, core::kQualifiedAudioSampleRate);
+    const auto timelineTimebase = core::CheckedOutputTimebase::create(
+        project.timelineFpsNum, project.timelineFpsDen, core::kQualifiedAudioSampleRate);
+    if (!sourceTimebase || !timelineTimebase) {
+        result.error = "audio用のtimebaseを構築できません";
+        return result;
+    }
+    const auto sourceSample = sourceTimebase.value().seekTargetSample(clip.sourceInFrame);
+    const auto timelineSample = timelineTimebase.value().seekTargetSample(clip.timelineStartFrame);
+    if (!sourceSample || !timelineSample) {
+        result.error = "audio clipのsample位置を換算できません";
+        return result;
+    }
+    result.success = true;
+    result.sampleOffset = sourceSample.value() - timelineSample.value();
+    return result;
+}
+
+AudioSourceFrameCount audioSourceFrameCount(double durationSeconds, std::int64_t fpsNum,
+                                            std::int64_t fpsDen) {
+    AudioSourceFrameCount result;
+    if (!(durationSeconds > 0.0) || !std::isfinite(durationSeconds) || fpsNum <= 0 || fpsDen <= 0) {
+        result.error = "音声素材の尺またはframe rateが不正です";
+        return result;
+    }
+    const double frames =
+        durationSeconds * static_cast<double>(fpsNum) / static_cast<double>(fpsDen);
+    const double ceiled = std::ceil(frames);
+    if (!(ceiled >= 1.0) || ceiled > 9.0e15) {
+        result.error = "音声素材の尺をframe数へ変換できません";
+        return result;
+    }
+    result.success = true;
+    result.frameCount = static_cast<std::int64_t>(ceiled);
     return result;
 }
 

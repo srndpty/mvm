@@ -44,21 +44,32 @@ video / audio を別 vector にしたのは、片方へ track を足したとき
 
 ## 2. timeline frame rate を 60/1 以外にできるようにした
 
-`[事実]` qualified な output frame rate の表は
-`core::supportedOutputFrameRates()` に一本化した。
-`preview_engine` の output rate も `Project` の timeline fps もこの表だけを読む。
+`[事実]` **measured と configurable を別の表に分けた。** 受理できることを
+qualification と読み替えないためである。
 
 ```text
-24/1, 24000/1001, 25/1, 30/1, 30000/1001, 50/1, 60/1, 60000/1001
+core::measuredOutputFrameRates()      60/1                      実測済み
+core::configurableOutputFrameRates()  24/1, 24000/1001, 25/1,   設定可能
+                                      30/1, 30000/1001, 50/1,
+                                      60/1, 60000/1001
 ```
 
-`[事実]` `CheckedOutputTimebase::createQualified` は
-「60/1 固定」から「上記の表に含まれること」へ緩めた。audio sample rate は
-48000 のまま固定である。
+`[事実]` `CheckedOutputTimebase::createQualified` は **60/1 のみ**という元の契約に戻した。
+preview engine は新設した `createConfigured` を使う。
+`createConfigured` を通ったことは「qualify された」ことを意味しない。
 
-`[事実]` `PreviewCapabilities::qualifiedOutputFrameRate` は
-`initialize()` で確定した rate を公開するようになった。以前は固定値 60/1 を返しており、
-source の rate 検査が output と別の rate を基準にしうる形だった。
+`[事実]` `PreviewCapabilities` は `configuredOutputFrameRate` (initialize で確定した rate) と
+`outputFrameRateMeasured` (実測済みか) を別 field で公開する。
+以前は固定値 60/1 を返しており、source の rate 検査が output と別の rate を
+基準にしうる形だった。
+
+`[事実]` UI は未計測 rate を選んだとき transport 行へ「(未計測)」を出す。
+
+`[未検証]` 60/1 以外は **実測していない**。measured 表へ昇格させるには
+canonical preview workload (p1-matrix.ps1 相当) を取得する必要がある。
+`tests/core/test_checked_output_timebase.cpp` は
+「configurable だが measured でない rate が createQualified を通らないこと」を
+negative test として固定しており、実測なしの昇格はここで落ちる。
 
 `[事実]` clip の fps は従来どおり timeline fps と一致していなければ preview できない。
 今回のスコープは「Project の fps を選べる」であり、混在 rate の frame rate 変換ではない。
@@ -235,3 +246,32 @@ native style のままだと mute が視覚的に分からない。
 `[事実]` `main.cpp` で `QQuickStyle::setStyle("Basic")` を
 `QQmlApplicationEngine::load()` より前に設定した
 (AGENTS.md「起動時 configuration の確定順序」)。これで customization 警告は消える。
+
+## 11. レビュー指摘への対応
+
+`[事実]` 静的レビューで挙がった P1 3 件・P2 5 件・P3 1 件へ次のとおり対応した。
+
+| 指摘 | 対応 |
+| ---- | ---- |
+| 未計測 rate を qualified authority へ昇格していた | measured / configurable を別表に分離 (§2)。`createQualified` は 60/1 のみへ戻し、`createConfigured` を新設 |
+| 1001 分母 Project で Manim clip の fps が一致しない | Manim へ渡せる fps は整数のみ。丸めて「対応した」ことにせず、`timelineFpsDen != 1` の Project では生成を fail-closed にした |
+| audio source の再利用条件が clip ID だけ | `AudioSourceIdentity` (clipId / sourceInFrame / timelineStartFrame / source fps / timeline fps) を identity にし、どれか 1 つでも変われば remove/add する |
+| Project fps 変更で既存 audio の source domain を読み替える | `audioPreviewSampleOffset` が source と timeline を**別 timebase**で sample 化。さらに `setTimelineFrameRate` は clip がある Project では拒否する |
+| audio duration の `floor` で末尾が切れる | `audioSourceFrameCount` で `ceil`。1 frame 未満の素材も 1 frame clip として保持する |
+| `seekFrameRequest` 失敗時に source を rollback していない | rollback を追加。removeSource が拒否された場合は retirement queue へ回して再試行する |
+| track 削除後に preview cache を更新していない | `removeTrack` で pause → save → engine reset → 現在位置で再構築。UI 側も再生中は削除ボタンを無効化 |
+| `commit=false` が live Project を書き換えていた | `previewEffectsOverride_` を新設し、drag 中は Project を触らない。`DragNumberField` に `onCanceled` を足し `cancelEffectPreview()` を呼ぶ |
+| meter の停止時 decay が render callback 依存 | `pause` / `resetForSeek` / `stop` で peak を確定的に 0 にする |
+| canonical fps と ComboBox の equality 不一致 | `validateTimeline` が約分済み pair だけを受理する。Project に 120/2 は保存できない |
+
+`[事実]` 追加した regression test:
+
+- `tests/harness/test_timeline_preview_mapping.cpp`
+  audio offset の source/timeline timebase 分離、clip 移動・左 trim で offset が
+  変わること、素材固有 fps と Project fps が違う場合、`ceil` 換算、mute、
+  layer 上限、audio 重なり拒否。
+- `tests/harness/test_timeline_edit.cpp`
+  measured / configurable の分離、canonical fps 必須、
+  clip がある Project の fps 変更拒否。
+- `tests/core/test_checked_output_timebase.cpp`
+  configurable だが measured でない rate が `createQualified` を通らないこと。

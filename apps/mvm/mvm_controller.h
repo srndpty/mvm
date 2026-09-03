@@ -55,6 +55,8 @@ class MvmController final : public QObject {
     Q_PROPERTY(int timelineFpsNum READ timelineFpsNum NOTIFY stateChanged)
     Q_PROPERTY(int timelineFpsDen READ timelineFpsDen NOTIFY stateChanged)
     Q_PROPERTY(QString timelineFpsText READ timelineFpsText NOTIFY stateChanged)
+    // 現在の frame rate が実測済みか。設定できること != 計測済み。
+    Q_PROPERTY(bool frameRateMeasured READ frameRateMeasured NOTIFY stateChanged)
     Q_PROPERTY(QVariantList supportedFrameRates READ supportedFrameRates CONSTANT)
     // audio meter。dBFS。無音時は kMeterSilenceDb を返す。
     Q_PROPERTY(double audioMeterDbLeft READ audioMeterDbLeft NOTIFY meterChanged)
@@ -135,6 +137,7 @@ public:
     int timelineFpsDen() const { return static_cast<int>(project_.timelineFpsDen); }
 
     QString timelineFpsText() const;
+    bool frameRateMeasured() const;
     QVariantList supportedFrameRates() const;
 
     double audioMeterDbLeft() const { return audioMeterDbLeft_; }
@@ -172,9 +175,13 @@ public:
     Q_INVOKABLE bool trimClip(const QString& clipId, const QString& edge, qint64 projectFrameDelta);
     Q_INVOKABLE bool deleteCurrentClip();
     Q_INVOKABLE bool exportTimeline(const QUrl& outputUrl);
-    // effect の 1 値だけを更新する。commit=false は preview のみ (drag 中)、
-    // commit=true で Project へ保存する。
+    // effect の 1 値だけを更新する。
+    //   commit=false : Project を書き換えず、preview だけを ephemeral な override で
+    //                  追従させる (drag 中)。
+    //   commit=true  : override を確定して Project transaction にする。
     Q_INVOKABLE bool setEffectValue(const QString& key, double value, bool commit);
+    // drag が release されずに終わった場合に override を捨てる。
+    Q_INVOKABLE bool cancelEffectPreview();
 
     // track 編集
     Q_INVOKABLE bool addTrack(const QString& trackKind);
@@ -205,6 +212,27 @@ private:
         int clipIndex = -1;
     };
 
+    // audio source を作り直すべきかの判定に使う identity。
+    // clip ID は media identity であって timing identity ではない。
+    // clip を動かす / trim する / Project fps が変わると offset が変わるため、
+    // offset を決めた入力そのものを identity に含める。
+    struct AudioSourceIdentity {
+        std::string clipId;
+        std::int64_t sourceInFrame = 0;
+        std::int64_t timelineStartFrame = 0;
+        std::int64_t sourceFpsNum = 0;
+        std::int64_t sourceFpsDen = 1;
+        std::int64_t timelineFpsNum = 0;
+        std::int64_t timelineFpsDen = 1;
+        bool operator==(const AudioSourceIdentity&) const = default;
+    };
+
+    struct AudioPreviewSource {
+        preview::PreviewSourceId source;
+        AudioSourceIdentity identity;
+        int clipIndex = -1;
+    };
+
     void pollPreviewState();
     void pollAudioMeter();
     void advanceTimelinePlayback();
@@ -221,6 +249,9 @@ private:
     bool refreshPreviewAfterSavedEdit(const std::string& selectedClipId,
                                       const QString& successStatus);
     const project::ClipEffects& currentEffects() const;
+    // preview override を適用した effects を返す。composition はこれを使う。
+    project::ClipEffects effectsForPreview(int clipIndex) const;
+    bool applyEffectKey(project::ClipEffects& effects, const QString& key, double value);
     bool syncPreviewSourcesAt(std::int64_t timelineFrame, QString& error);
     bool syncAudioSourceFor(std::int64_t timelineFrame, QString& error);
     bool refreshCurrentClipEffectsPreview(QString& error);
@@ -253,7 +284,11 @@ private:
     std::optional<preview::PreviewSourceId> currentSource_;
     // video track index -> preview source。track を増やしても添字を取り違えない。
     std::map<int, TrackPreviewSource> trackSources_;
-    std::optional<TrackPreviewSource> audioSource_;
+    std::optional<AudioPreviewSource> audioSource_;
+    // drag 中だけ生きる effect の上書き。Project へは書かない。
+    // これがあるのは currentClipIndex_ の clip に対してだけである。
+    std::optional<project::ClipEffects> previewEffectsOverride_;
+    int previewEffectsClipIndex_ = -1;
     std::vector<preview::PreviewSourceId> retiredSources_;
     QString statusText_ = QStringLiteral("Previewを初期化しています");
     QString currentClipName_;

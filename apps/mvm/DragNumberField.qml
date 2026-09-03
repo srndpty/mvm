@@ -19,6 +19,8 @@ Item {
     // 親 (GridLayout) の enabled が伝わらず、無効化しても drag できてしまう。
 
     signal valueEdited(real newValue, bool commit)
+    // grab を奪われた等で release が来なかった場合。編集を確定させない。
+    signal editCanceled()
 
     implicitWidth: 116
     implicitHeight: 38
@@ -107,6 +109,11 @@ Item {
             onReleased: {
                 if (dragged)
                     root.valueEdited(root.value, true);
+                dragged = false;
+            }
+            onCanceled: {
+                if (dragged)
+                    root.editCanceled();
                 dragged = false;
             }
             onDoubleClicked: {

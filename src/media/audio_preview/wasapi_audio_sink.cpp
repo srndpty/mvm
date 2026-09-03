@@ -356,6 +356,7 @@ bool WasapiAudioSink::prefillEndpoint(std::int64_t mediaStartSample, SourceGener
 
 bool WasapiAudioSink::pause(std::string& error) {
     std::lock_guard clientLock(clientMutex_);
+    clearMeterPeaks();
     {
         std::lock_guard lock(mutex_);
         if (!metrics_.open) {
@@ -406,6 +407,8 @@ bool WasapiAudioSink::pause(std::string& error) {
 
 bool WasapiAudioSink::resetForSeek(std::string& error) {
     std::lock_guard clientLock(clientMutex_);
+    // reset 後は render event が来ない可能性がある。減衰待ちにせずここで 0 にする。
+    clearMeterPeaks();
     if (playing_) {
         error = "seek reset は pause 後にだけ実行できます";
         std::lock_guard lock(mutex_);
@@ -440,6 +443,8 @@ bool WasapiAudioSink::resetForSeek(std::string& error) {
 
 void WasapiAudioSink::stop() {
     acceptingCommands_ = false;
+    // stop 後は render loop が回らないので、最後の peak を凍らせない。
+    clearMeterPeaks();
     {
         std::lock_guard clientLock(clientMutex_);
         if (client_)
@@ -479,6 +484,11 @@ void WasapiAudioSink::renderLoop() {
     if (avrt)
         AvRevertMmThreadCharacteristics(avrt);
     CoUninitialize();
+}
+
+void WasapiAudioSink::clearMeterPeaks() {
+    meterPeakLeft_.store(0.0F, std::memory_order_relaxed);
+    meterPeakRight_.store(0.0F, std::memory_order_relaxed);
 }
 
 void WasapiAudioSink::updateMeterPeaks(std::int64_t consumedFrames) {

@@ -7,6 +7,7 @@
 #include "app/timeline_preview_mapping.h"
 #include "core/checked_output_timebase.h"
 #include "media/mlt/mvm_mlt_probe.h"
+#include "project/clip_effects.h"
 #include "project/project_json.h"
 #include "project/timeline_edit.h"
 #include "timeline_clip_model.h"
@@ -111,16 +112,14 @@ ProbedMedia probeAudioMedia(const std::filesystem::path& path, std::int64_t time
         result.error = QStringLiteral("有限の尺を持つ音声素材ではありません");
         return result;
     }
-    const double frames = probe.duration_sec * static_cast<double>(timelineFpsNum) /
-                          static_cast<double>(timelineFpsDen);
-    const auto frameCount = static_cast<std::int64_t>(std::floor(frames));
-    if (frameCount <= 0) {
-        result.error = QStringLiteral("音声素材の尺が 1 frame 未満です");
+    const auto frames = audioSourceFrameCount(probe.duration_sec, timelineFpsNum, timelineFpsDen);
+    if (!frames.success) {
+        result.error = QString::fromStdString(frames.error);
         return result;
     }
     result.fpsNum = timelineFpsNum;
     result.fpsDen = timelineFpsDen;
-    result.frameCount = frameCount;
+    result.frameCount = frames.frameCount;
     result.success = true;
     return result;
 }
@@ -241,7 +240,48 @@ const project::ClipEffects& MvmController::currentEffects() const {
     if (currentClipIndex_ < 0 ||
         currentClipIndex_ >= static_cast<int>(project_.timelineClips.size()))
         return defaults;
+    if (previewEffectsOverride_ && previewEffectsClipIndex_ == currentClipIndex_)
+        return *previewEffectsOverride_;
     return project_.timelineClips[static_cast<std::size_t>(currentClipIndex_)].effects;
+}
+
+project::ClipEffects MvmController::effectsForPreview(int clipIndex) const {
+    if (previewEffectsOverride_ && previewEffectsClipIndex_ == clipIndex)
+        return *previewEffectsOverride_;
+    return project_.timelineClips[static_cast<std::size_t>(clipIndex)].effects;
+}
+
+bool MvmController::applyEffectKey(project::ClipEffects& effects, const QString& key,
+                                   double value) {
+    if (key == QStringLiteral("positionX"))
+        effects.positionXPercent = value;
+    else if (key == QStringLiteral("positionY"))
+        effects.positionYPercent = value;
+    else if (key == QStringLiteral("scale"))
+        effects.scalePercent = value;
+    else if (key == QStringLiteral("rotation"))
+        effects.rotationDegrees = value;
+    else if (key == QStringLiteral("opacity"))
+        effects.opacityPercent = value;
+    else if (key == QStringLiteral("cropLeft"))
+        effects.cropLeftPercent = value;
+    else if (key == QStringLiteral("cropTop"))
+        effects.cropTopPercent = value;
+    else if (key == QStringLiteral("cropRight"))
+        effects.cropRightPercent = value;
+    else if (key == QStringLiteral("cropBottom"))
+        effects.cropBottomPercent = value;
+    else if (key == QStringLiteral("fadeIn"))
+        effects.fadeInFrames = static_cast<std::int64_t>(std::llround(value));
+    else if (key == QStringLiteral("fadeOut"))
+        effects.fadeOutFrames = static_cast<std::int64_t>(std::llround(value));
+    else
+        return false;
+    return true;
+}
+
+bool MvmController::frameRateMeasured() const {
+    return project::isMeasuredTimelineFrameRate(project_.timelineFpsNum, project_.timelineFpsDen);
 }
 
 double MvmController::effectPositionX() const {
@@ -413,7 +453,7 @@ QString MvmController::timelineFpsText() const {
 
 QVariantList MvmController::supportedFrameRates() const {
     QVariantList rates;
-    for (const auto& rate : project::supportedTimelineFrameRates()) {
+    for (const auto& rate : project::configurableTimelineFrameRates()) {
         QVariantMap entry;
         entry[QStringLiteral("num")] = static_cast<int>(rate.numerator);
         entry[QStringLiteral("den")] = static_cast<int>(rate.denominator);
@@ -484,6 +524,11 @@ bool MvmController::resolveTrackRef(const QString& trackKind, int trackIndex,
 }
 
 void MvmController::setCurrentClipSelection(int index) {
+    if (previewEffectsOverride_ && previewEffectsClipIndex_ != index) {
+        // 別 clip を選んだ時点で、確定していない override は捨てる。
+        previewEffectsOverride_.reset();
+        previewEffectsClipIndex_ = -1;
+    }
     currentClipIndex_ = index;
     currentSource_.reset();
     if (index < 0 || index >= static_cast<int>(project_.timelineClips.size())) {
@@ -600,9 +645,12 @@ void MvmController::pollPreviewState() {
     if (previewReady_ != ready) {
         previewReady_ = ready;
         // preview が使えるようになったら playhead 位置の frame を出す。
-        // Project を開いた直後に黒画面のままにしない。
+        // Project を開いた直後や engine を作り直した直後に黒画面のままにしない。
+        // 判定は「source が 1 つも載っていないか」で行う。選択 clip の有無で見ると、
+        // engine reset 直後に seek が弾かれて選択だけ残った状態を拾えない。
         const bool showInitialFrame = ready && !busy_ && !pendingVideoPath_ &&
-                                      currentClipIndex_ < 0 && !project_.timelineClips.empty();
+                                      trackSources_.empty() && !audioSource_ &&
+                                      !project_.timelineClips.empty();
         Q_EMIT stateChanged();
         if (showInitialFrame) {
             seekTimelineFrame(playheadFrame_);
@@ -683,10 +731,22 @@ bool MvmController::syncAudioSourceFor(std::int64_t timelineFrame, QString& erro
         error = QString::fromStdString(mapped.error);
         return false;
     }
-    const std::string desiredClipId = mapped.hasAudio ? mapped.clipId : std::string{};
-    if (audioSource_ && audioSource_->clipId == desiredClipId) {
-        if (mapped.hasAudio)
-            audioSource_->clipIndex = mapped.clipIndex;
+
+    std::optional<AudioSourceIdentity> desired;
+    if (mapped.hasAudio) {
+        const auto& clip = project_.timelineClips[static_cast<std::size_t>(mapped.clipIndex)];
+        desired = AudioSourceIdentity{clip.id,
+                                      clip.sourceInFrame,
+                                      clip.timelineStartFrame,
+                                      clip.sourceFpsNum,
+                                      clip.sourceFpsDen,
+                                      project_.timelineFpsNum,
+                                      project_.timelineFpsDen};
+    }
+    // engine は addSource 時点の offset を保持する。identity のどれか 1 つでも
+    // 変わったら、既存 source を再利用してはいけない。
+    if (audioSource_ && desired && audioSource_->identity == *desired) {
+        audioSource_->clipIndex = mapped.clipIndex;
         return true;
     }
 
@@ -700,7 +760,7 @@ bool MvmController::syncAudioSourceFor(std::int64_t timelineFrame, QString& erro
         }
         audioSource_.reset();
     }
-    if (!mapped.hasAudio)
+    if (!desired)
         return true;
 
     const auto& clip = project_.timelineClips[static_cast<std::size_t>(mapped.clipIndex)];
@@ -709,30 +769,23 @@ bool MvmController::syncAudioSourceFor(std::int64_t timelineFrame, QString& erro
                 fromPath(clip.mediaPath);
         return false;
     }
-    // output frame -> media sample のずれ。seek / clock 換算と同じ authority で出す。
-    const auto timebase = core::CheckedOutputTimebase::create(
-        project_.timelineFpsNum, project_.timelineFpsDen, core::kQualifiedAudioSampleRate);
-    if (!timebase) {
-        error = QStringLiteral("audio用のtimebaseを構築できません");
-        return false;
-    }
-    const auto sourceSample = timebase.value().seekTargetSample(clip.sourceInFrame);
-    const auto timelineSample = timebase.value().seekTargetSample(clip.timelineStartFrame);
-    if (!sourceSample || !timelineSample) {
-        error = QStringLiteral("audio clipのsample位置を換算できません");
+    // output frame -> media sample のずれ。換算式は mapping 側へ一本化している。
+    const auto offset = audioPreviewSampleOffset(project_, clip);
+    if (!offset.success) {
+        error = QString::fromStdString(offset.error);
         return false;
     }
 
     preview::PreviewSourceDescriptor descriptor;
     descriptor.mediaPath = clip.mediaPath;
     descriptor.audioEnabled = true;
-    descriptor.audioSampleOffset = sourceSample.value() - timelineSample.value();
+    descriptor.audioSampleOffset = offset.sampleOffset;
     const auto added = previewEngine_->addSource(descriptor);
     if (!added) {
         error = previewErrorText(added.error());
         return false;
     }
-    audioSource_ = TrackPreviewSource{added.value(), clip.id, mapped.clipIndex};
+    audioSource_ = AudioPreviewSource{added.value(), *desired, mapped.clipIndex};
     return true;
 }
 
@@ -751,8 +804,12 @@ bool MvmController::syncPreviewSourcesAt(std::int64_t timelineFrame, QString& er
     auto candidateSources = trackSources_;
     std::vector<preview::PreviewSourceId> newlyAdded;
     const auto rollback = [&] {
-        for (const auto source : newlyAdded)
-            previewEngine_->removeSource(source);
+        for (const auto source : newlyAdded) {
+            // accepted composition が参照している最中は removeSource が拒否されうる。
+            // 落とさず retirement queue へ回し、pollPreviewState に再試行させる。
+            if (!previewEngine_->removeSource(source))
+                retiredSources_.push_back(source);
+        }
     };
 
     std::vector<int> desiredTracks;
@@ -807,10 +864,12 @@ bool MvmController::syncPreviewSourcesAt(std::int64_t timelineFrame, QString& er
         const auto slot = candidateSources.find(layerMapping.videoTrackIndex);
         if (slot == candidateSources.end())
             continue;
+        // drag 中の override はここでだけ効かせる。Project は書き換えない。
+        const project::ClipEffects effects = effectsForPreview(layerMapping.clipIndex);
         preview::PreviewCompositionLayer layer;
         layer.source = slot->second.source;
-        if (!project::clipEffectsAreDefault(clip.effects)) {
-            const auto mapped = project::mapClipEffects(clip.effects);
+        if (!project::clipEffectsAreDefault(effects)) {
+            const auto mapped = project::mapClipEffects(effects);
             layer.destination = {static_cast<float>(mapped.destinationRect.x),
                                  static_cast<float>(mapped.destinationRect.y),
                                  static_cast<float>(mapped.destinationRect.width),
@@ -839,6 +898,9 @@ bool MvmController::syncPreviewSourcesAt(std::int64_t timelineFrame, QString& er
     const auto sought = previewEngine_->seekFrameRequest(request);
     if (!sought) {
         error = previewErrorText(sought.error());
+        // scrub は Seeking 中の reject を 40ms ごとに retry する。ここで rollback
+        // しないと、retry のたびに source が積み上がって登録上限に達する。
+        rollback();
         return false;
     }
     for (const auto& [trackIndex, slot] : trackSources_) {
@@ -915,6 +977,12 @@ bool MvmController::generateAndInstallManimClip(const std::filesystem::path& scr
         setStatus(QStringLiteral("Previewの準備が完了していません"));
         return false;
     }
+    if (project_.timelineFpsDen != 1) {
+        setStatus(QStringLiteral("Manimは整数fpsでしか生成できません。現在のProject frame rate (") +
+                  timelineFpsText() +
+                  QStringLiteral(") ではProjectと一致するclipを作れないため生成しません"));
+        return false;
+    }
 
     const bool addTimelinePlacement = project_.manimAssets.empty();
 
@@ -930,10 +998,10 @@ bool MvmController::generateAndInstallManimClip(const std::filesystem::path& scr
     request.sceneName = trimmedScene.toStdString();
     request.width = 640;
     request.height = 360;
-    // Manim は Project の timeline fps で描かせる。ここを固定すると
-    // 60fps 以外の Project で必ず「Preview未対応」の clip ができてしまう。
-    request.fps = static_cast<int>(std::llround(static_cast<double>(project_.timelineFpsNum) /
-                                                static_cast<double>(project_.timelineFpsDen)));
+    // Manim へ渡せる fps は整数だけである。1001 分母の Project で整数へ丸めると、
+    // 生成物は 30/1 になり Project の 30000/1001 と一致せず「Preview未対応」の
+    // clip ができる。丸めて対応したことにせず、ここで fail-closed にする。
+    request.fps = static_cast<int>(project_.timelineFpsNum / project_.timelineFpsDen);
     const ManimClipGenerationResult generated = mvm::app::generateManimClip(project_, request);
 
     busy_ = false;
@@ -1357,7 +1425,7 @@ void MvmController::advanceTimelinePlayback() {
     const auto audioMapping = mapTimelinePreviewAudio(project_, frame);
     const std::string desiredAudio =
         (audioMapping.success && audioMapping.hasAudio) ? audioMapping.clipId : std::string{};
-    const std::string currentAudio = audioSource_ ? audioSource_->clipId : std::string{};
+    const std::string currentAudio = audioSource_ ? audioSource_->identity.clipId : std::string{};
     sameSourceSet = sameSourceSet && desiredAudio == currentAudio;
     if (sameSourceSet) {
         if (playheadFrame_ != frame) {
@@ -1544,6 +1612,10 @@ bool MvmController::addTrack(const QString& trackKind) {
 bool MvmController::removeTrack(const QString& trackKind, int trackIndex) {
     if (busy_)
         return false;
+    // track を消すと後続 track の index が繰り上がる。preview cache は track index を
+    // key にしているので、止めてから組み直さないと stale な対応が残る。
+    if (!pauseTimeline())
+        return false;
     project::TrackRef track;
     if (!resolveTrackRef(trackKind, trackIndex, track)) {
         setStatus(QStringLiteral("削除するtrackが不正です"));
@@ -1557,8 +1629,21 @@ bool MvmController::removeTrack(const QString& trackKind, int trackIndex) {
     }
     if (!saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: ")))
         return false;
-    setStatus(QStringLiteral("trackを削除しました"));
-    return true;
+    // index の対応が変わったので cache を捨ててから現在位置で組み直す。
+    trackSources_.clear();
+    audioSource_.reset();
+    if (!resetPreviewEngine()) {
+        const QString failure = statusText_;
+        setStatus(QStringLiteral("trackは削除しましたが、Previewを初期化できません: ") + failure);
+        return true;
+    }
+    const std::string selectedId =
+        (currentClipIndex_ >= 0 &&
+         currentClipIndex_ < static_cast<int>(project_.timelineClips.size()))
+            ? project_.timelineClips[static_cast<std::size_t>(currentClipIndex_)].id
+            : std::string{};
+    currentClipIndex_ = -1;
+    return refreshPreviewAfterSavedEdit(selectedId, QStringLiteral("trackを削除しました"));
 }
 
 bool MvmController::setTrackMuted(const QString& trackKind, int trackIndex, bool muted) {
@@ -1711,19 +1796,12 @@ bool MvmController::setTimelineFrameRate(int fpsNum, int fpsDen) {
         return false;
     if (!pauseTimeline())
         return false;
-    if (!project::isSupportedTimelineFrameRate(fpsNum, fpsDen)) {
-        setStatus(QStringLiteral("対応していないframe rateです"));
-        return false;
-    }
     if (project_.timelineFpsNum == fpsNum && project_.timelineFpsDen == fpsDen)
         return true;
     project::Project candidate = project_;
-    candidate.timelineFpsNum = fpsNum;
-    candidate.timelineFpsDen = fpsDen;
-    const auto valid = project::validateTimeline(candidate);
-    if (!valid.success) {
-        setStatus(QStringLiteral("このframe rateへは変更できません: ") +
-                  QString::fromStdString(valid.error));
+    const auto changed = project::setTimelineFrameRate(candidate, fpsNum, fpsDen);
+    if (!changed.success) {
+        setStatus(QString::fromStdString(changed.error));
         return false;
     }
     if (!saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: ")))
@@ -1736,8 +1814,11 @@ bool MvmController::setTimelineFrameRate(int fpsNum, int fpsDen) {
         return true;
     }
     Q_EMIT stateChanged();
-    setStatus(QStringLiteral("timeline frame rateを ") + timelineFpsText() +
-              QStringLiteral(" にしました"));
+    QString status = QStringLiteral("timeline frame rateを ") + timelineFpsText() +
+                     QStringLiteral(" にしました");
+    if (!frameRateMeasured())
+        status += QStringLiteral("（このrateのpreviewは未計測です）");
+    setStatus(std::move(status));
     return true;
 }
 
@@ -1790,49 +1871,43 @@ bool MvmController::setEffectValue(const QString& key, double value, bool commit
     if (!pauseTimeline())
         return false;
 
-    project::Project candidate = project_;
-    project::ClipEffects& effects =
-        candidate.timelineClips[static_cast<std::size_t>(currentClipIndex_)].effects;
-    if (key == QStringLiteral("positionX"))
-        effects.positionXPercent = value;
-    else if (key == QStringLiteral("positionY"))
-        effects.positionYPercent = value;
-    else if (key == QStringLiteral("scale"))
-        effects.scalePercent = value;
-    else if (key == QStringLiteral("rotation"))
-        effects.rotationDegrees = value;
-    else if (key == QStringLiteral("opacity"))
-        effects.opacityPercent = value;
-    else if (key == QStringLiteral("cropLeft"))
-        effects.cropLeftPercent = value;
-    else if (key == QStringLiteral("cropTop"))
-        effects.cropTopPercent = value;
-    else if (key == QStringLiteral("cropRight"))
-        effects.cropRightPercent = value;
-    else if (key == QStringLiteral("cropBottom"))
-        effects.cropBottomPercent = value;
-    else if (key == QStringLiteral("fadeIn"))
-        effects.fadeInFrames = static_cast<std::int64_t>(std::llround(value));
-    else if (key == QStringLiteral("fadeOut"))
-        effects.fadeOutFrames = static_cast<std::int64_t>(std::llround(value));
-    else {
+    const int clipIndex = currentClipIndex_;
+    project::ClipEffects candidateEffects = effectsForPreview(clipIndex);
+    if (!applyEffectKey(candidateEffects, key, value)) {
         setStatus(QStringLiteral("未知のeffect項目です: ") + key);
         return false;
     }
 
+    const auto& clip = project_.timelineClips[static_cast<std::size_t>(clipIndex)];
+    std::string effectsError;
+    if (!project::validateClipEffects(candidateEffects, clip.sourceOutFrame - clip.sourceInFrame,
+                                      effectsError)) {
+        setStatus(QString::fromStdString(effectsError));
+        return false;
+    }
+
+    if (!commit) {
+        // drag 中は Project を書き換えない。preview だけ override で追従させる。
+        previewEffectsOverride_ = candidateEffects;
+        previewEffectsClipIndex_ = clipIndex;
+        Q_EMIT stateChanged();
+        QString previewError;
+        if (!refreshCurrentClipEffectsPreview(previewError))
+            setStatus(QStringLiteral("effectのPreview更新に失敗しました: ") + previewError);
+        return true;
+    }
+
+    project::Project candidate = project_;
+    candidate.timelineClips[static_cast<std::size_t>(clipIndex)].effects = candidateEffects;
     const auto valid = project::validateTimeline(candidate);
     if (!valid.success) {
         setStatus(QString::fromStdString(valid.error));
         return false;
     }
-    if (commit) {
-        if (!saveProject(std::move(candidate), QStringLiteral("effectを保存できません: ")))
-            return false;
-    } else {
-        // drag 中は保存しない。preview だけを追従させ、release で保存する。
-        project_ = std::move(candidate);
-        refreshTimelineModel();
-    }
+    if (!saveProject(std::move(candidate), QStringLiteral("effectを保存できません: ")))
+        return false;
+    previewEffectsOverride_.reset();
+    previewEffectsClipIndex_ = -1;
     Q_EMIT stateChanged();
 
     QString previewError;
@@ -1840,8 +1915,22 @@ bool MvmController::setEffectValue(const QString& key, double value, bool commit
         setStatus(QStringLiteral("effectのPreview更新に失敗しました: ") + previewError);
         return true;
     }
-    if (commit)
-        setStatus(QStringLiteral("effectを保存してPreviewへ反映しました"));
+    setStatus(QStringLiteral("effectを保存してPreviewへ反映しました"));
+    return true;
+}
+
+bool MvmController::cancelEffectPreview() {
+    if (!previewEffectsOverride_)
+        return true;
+    previewEffectsOverride_.reset();
+    previewEffectsClipIndex_ = -1;
+    Q_EMIT stateChanged();
+    QString previewError;
+    if (!refreshCurrentClipEffectsPreview(previewError)) {
+        setStatus(QStringLiteral("effectのPreview更新に失敗しました: ") + previewError);
+        return true;
+    }
+    setStatus(QStringLiteral("effectの編集を取り消しました"));
     return true;
 }
 

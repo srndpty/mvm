@@ -96,18 +96,26 @@ void testFrameConversions() {
           "同値な60fps rateをPreview対応として判定できません");
 }
 
-// Project の timeline fps を 60 以外へ変えられること。対応表の外は拒否すること。
+// Project の timeline fps を 60 以外へ設定できること。表の外は拒否すること。
+// configurable と measured を混ぜないこと。
 void testTimelineFrameRates() {
-    check(mvm::project::isSupportedTimelineFrameRate(30, 1) &&
-              mvm::project::isSupportedTimelineFrameRate(30000, 1001) &&
-              mvm::project::isSupportedTimelineFrameRate(24, 1),
-          "対応 rate を対応外と判定しました");
-    check(!mvm::project::isSupportedTimelineFrameRate(48, 1) &&
-              !mvm::project::isSupportedTimelineFrameRate(0, 1) &&
-              !mvm::project::isSupportedTimelineFrameRate(60, 0),
-          "対応外 rate を受理しました");
-    check(mvm::project::isSupportedTimelineFrameRate(120, 2),
-          "約分すれば対応 rate になる値を拒否しました");
+    check(mvm::project::isConfigurableTimelineFrameRate(30, 1) &&
+              mvm::project::isConfigurableTimelineFrameRate(30000, 1001) &&
+              mvm::project::isConfigurableTimelineFrameRate(24, 1),
+          "設定可能 rate を対応外と判定しました");
+    check(!mvm::project::isConfigurableTimelineFrameRate(48, 1) &&
+              !mvm::project::isConfigurableTimelineFrameRate(0, 1) &&
+              !mvm::project::isConfigurableTimelineFrameRate(60, 0),
+          "設定表に無い rate を受理しました");
+    check(mvm::project::isConfigurableTimelineFrameRate(120, 2),
+          "約分すれば設定可能になる値を拒否しました");
+
+    // 設定できること != 計測済み。60/1 以外を measured にしない。
+    check(mvm::project::isMeasuredTimelineFrameRate(60, 1), "60/1 が measured ではありません");
+    check(!mvm::project::isMeasuredTimelineFrameRate(24, 1) &&
+              !mvm::project::isMeasuredTimelineFrameRate(30000, 1001) &&
+              !mvm::project::isMeasuredTimelineFrameRate(50, 1),
+          "未計測 rate を measured として公開しました");
 
     mvm::project::Project project = mvm::project::createDefaultProject();
     project.timelineFpsNum = 30;
@@ -119,7 +127,50 @@ void testTimelineFrameRates() {
 
     project.timelineFpsNum = 48;
     check(!mvm::project::validateTimeline(project).success,
-          "対応外 timeline fps の Project を受理しました");
+          "設定表に無い timeline fps の Project を受理しました");
+
+    // 永続化する fps は canonical だけを authority にする。
+    mvm::project::Project reducible = mvm::project::createDefaultProject();
+    reducible.timelineFpsNum = 120;
+    reducible.timelineFpsDen = 2;
+    check(!mvm::project::validateTimeline(reducible).success,
+          "約分されていない timeline fps の Project を受理しました");
+}
+
+// fps 変更は clip がある Project では拒否する。既存 clip の source frame domain を
+// 黙って別 timebase で読み替えないこと。
+void testTimelineFrameRateChange() {
+    mvm::project::Project empty = mvm::project::createDefaultProject();
+    const auto changed = mvm::project::setTimelineFrameRate(empty, 24, 1);
+    check(changed.success && empty.timelineFpsNum == 24 && empty.timelineFpsDen == 1,
+          "空 Project の frame rate を変更できません");
+
+    const auto ntsc = mvm::project::setTimelineFrameRate(empty, 30000, 1001);
+    check(ntsc.success && empty.timelineFpsNum == 30000 && empty.timelineFpsDen == 1001,
+          "1001 分母の frame rate を設定できません");
+
+    check(!mvm::project::setTimelineFrameRate(empty, 48, 1).success,
+          "設定表に無い rate を受理しました");
+    check(!mvm::project::setTimelineFrameRate(empty, 120, 2).success,
+          "約分されていない pair を受理しました");
+
+    mvm::project::Project withClip = mvm::project::createDefaultProject();
+    auto audio = clip("voice", mvm::project::TimelineClipKind::Audio, kA1);
+    audio.sourceInFrame = 60; // 左 trim 済み。source domain は取り込み時の fps
+    audio.timelineStartFrame = 120;
+    check(mvm::project::appendTimelineClip(withClip, audio, kA1).success,
+          "audio clip を追加できません");
+    const auto before = withClip;
+    const auto rejected = mvm::project::setTimelineFrameRate(withClip, 24, 1);
+    check(!rejected.success, "clip がある Project の frame rate 変更を拒否しません");
+    check(withClip.timelineFpsNum == before.timelineFpsNum &&
+              withClip.timelineFpsDen == before.timelineFpsDen &&
+              withClip.timelineClips == before.timelineClips,
+          "拒否した frame rate 変更で Project が変化しました");
+
+    // 同じ rate への設定は no-op として成功にする。
+    check(mvm::project::setTimelineFrameRate(withClip, 60, 1).success,
+          "同一 rate への設定を失敗にしました");
 }
 
 void testTrimAndLookup() {
@@ -505,6 +556,7 @@ int main(int argc, char** argv) {
     }
     testFrameConversions();
     testTimelineFrameRates();
+    testTimelineFrameRateChange();
     testTrimAndLookup();
     testPlacementHelpers();
     testTrackEditing();

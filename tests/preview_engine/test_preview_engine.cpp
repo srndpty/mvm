@@ -182,12 +182,15 @@ void frameRateAndDescriptorValidation() {
         auto rateDispatcher = std::make_shared<ManualDispatcher>();
         require(rateEngine.initialize({{{numerator, denominator}}}, rateDispatcher),
                 "qualified rateをinitializeでrejectしました");
-        require(rateEngine.capabilities().qualifiedOutputFrameRate ==
+        require(rateEngine.capabilities().configuredOutputFrameRate ==
                     PreviewFrameRate{numerator, denominator},
                 "capabilityがinitializeしたoutput rateを公開していません");
+        // 受理できることと計測済みであることを混ぜない。60/1 以外は未計測である。
+        require(!rateEngine.capabilities().outputFrameRateMeasured,
+                "未計測のrateをmeasuredとして公開しました");
         // source の rate 検査が output rate を基準にしていること。
         require(validateSourceFrameRate(numerator, denominator,
-                                        rateEngine.capabilities().qualifiedOutputFrameRate),
+                                        rateEngine.capabilities().configuredOutputFrameRate),
                 "output rateと同じsource rateをrejectしました");
         requireFailure(validateSourceFrameRate(60, 1, {numerator, denominator}),
                        PreviewErrorCategory::UnsupportedCapability,
@@ -203,7 +206,9 @@ void frameRateAndDescriptorValidation() {
             "60/1と等価な120/2をinitializeで受理しませんでした");
     // P5-D2でaudio-master transportを接続したため、qualified audio sourceは1件になった。
     // 等価rationalの受理がcapabilityを書き換えないことを、ここで固定する。
-    require(equivalentRateEngine.capabilities().qualifiedOutputFrameRate ==
+    require(equivalentRateEngine.capabilities().outputFrameRateMeasured,
+            "60/1をmeasuredとして公開していません");
+    require(equivalentRateEngine.capabilities().configuredOutputFrameRate ==
                     PreviewFrameRate{60, 1} &&
                 equivalentRateEngine.capabilities().maxQualifiedActiveAudioSources == 1 &&
                 equivalentRateEngine.capabilities().qualifiedAudioSampleRate == 48000 &&
@@ -1186,8 +1191,8 @@ void p5dAudioDomainAndCapabilities() {
             "qualified composition layer数が2として公開されていません");
     require(!capabilities.duplicateSourceLayersSupported,
             "同一sourceの複数layer配置をsupport済みとして公開しました");
-    require(capabilities.qualifiedOutputFrameRate.numerator == 60 &&
-                capabilities.qualifiedOutputFrameRate.denominator == 1,
+    require(capabilities.configuredOutputFrameRate.numerator == 60 &&
+                capabilities.configuredOutputFrameRate.denominator == 1,
             "qualified output frame rateが60/1として公開されていません");
 
     // descriptor validatorだけでなく、addSource()経路でも空descriptorを拒否する。

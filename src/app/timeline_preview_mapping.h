@@ -49,6 +49,33 @@ struct TimelinePreviewAudioMapping {
 TimelinePreviewAudioMapping mapTimelinePreviewAudio(const project::Project& project,
                                                     std::int64_t timelineFrame);
 
+// audio source の media sample と output frame の対応ずれ。
+//
+//   media sample = (output frame を換算した sample) + offset
+//
+// sourceInFrame は素材固有の frame domain、timelineStartFrame は Project timebase
+// なので、**別々の timebase で sample 化する**。両方を Project fps で換算すると、
+// Project fps を変えたときに素材内の位置がずれる。
+struct AudioPreviewOffset {
+    bool success = false;
+    std::int64_t sampleOffset = 0;
+    std::string error;
+};
+
+AudioPreviewOffset audioPreviewSampleOffset(const project::Project& project,
+                                            const project::TimelineClip& clip);
+
+// audio 素材の尺を frame 数へ変換する。素材全体を含む clip を作るので ceil にする。
+// floor だと末尾が最大 1 frame 切り落とされ、必ず短くなる方向へ bias する。
+struct AudioSourceFrameCount {
+    bool success = false;
+    std::int64_t frameCount = 0;
+    std::string error;
+};
+
+AudioSourceFrameCount audioSourceFrameCount(double durationSeconds, std::int64_t fpsNum,
+                                            std::int64_t fpsDen);
+
 } // namespace mvm::app
 
 #endif

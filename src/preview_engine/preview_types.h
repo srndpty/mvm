@@ -158,9 +158,12 @@ struct PreviewCapabilities {
     std::uint32_t maxQualifiedActiveVideoSources = 1;
     std::uint32_t maxQualifiedCompositionLayers = 1;
     std::uint32_t maxQualifiedActiveAudioSources = 0;
-    // initialize() で確定した output frame rate。qualified な rate 集合は
-    // core::supportedOutputFrameRates() が唯一の authority である。
-    PreviewFrameRate qualifiedOutputFrameRate{60, 1};
+    // initialize() で確定した output frame rate。
+    // **受理されたことは qualify されたことではない。** 実測して qualify 済みか
+    // どうかは outputFrameRateMeasured が持つ。表の authority は
+    // core::configurableOutputFrameRates() / core::measuredOutputFrameRates()。
+    PreviewFrameRate configuredOutputFrameRate{60, 1};
+    bool outputFrameRateMeasured = true;
     std::uint32_t qualifiedAudioSampleRate = 0;
     std::uint32_t qualifiedAudioChannelCount = 0;
     bool duplicateSourceLayersSupported = false;

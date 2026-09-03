@@ -66,6 +66,15 @@ TimelineEditResult appendManimTimelineClipAt(Project& project, const ManimAsset&
                                              std::int64_t sourceFrameCount,
                                              std::int64_t timelineStartFrame, TrackRef track);
 
+// timeline fps の変更。clip が 1 本でもある Project では拒否する。
+//
+// audio clip は素材固有 fps を持たないため、取り込み時の Project fps を
+// source frame domain として保存している。fps を変えると、既存 clip の
+// sourceInFrame / timelineStartFrame をどちらの timebase で読むべきかが
+// 曖昧になる (wall-clock を保つのか frame 番号を保つのかも別問題)。
+// 変換仕様を決めるまでは、空の Project でだけ変更を許す。
+TimelineEditResult setTimelineFrameRate(Project& project, std::int64_t fpsNum, std::int64_t fpsDen);
+
 // track 編集。clip が載っている track は削除させない (暗黙に clip を消さない)。
 TimelineEditResult addTrack(Project& project, TrackKind kind);
 TimelineEditResult removeTrack(Project& project, TrackRef track);

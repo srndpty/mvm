@@ -90,8 +90,8 @@ CheckedOutputTimebase::createQualified(std::int64_t frameRateNumerator,
     auto result = create(frameRateNumerator, frameRateDenominator, audioSampleRate);
     if (!result)
         return result;
-    if (!isSupportedOutputFrameRate(result.value().frameRateNumerator_,
-                                    result.value().frameRateDenominator_) ||
+    if (!isMeasuredOutputFrameRate(result.value().frameRateNumerator_,
+                                   result.value().frameRateDenominator_) ||
         result.value().audioSampleRate_ != kQualifiedAudioSampleRate) {
         return OutputTimebaseResult<CheckedOutputTimebase>::failure(
             OutputTimebaseError::UnsupportedProductRate);
@@ -99,27 +99,64 @@ CheckedOutputTimebase::createQualified(std::int64_t frameRateNumerator,
     return result;
 }
 
-const std::vector<SupportedFrameRate>& supportedOutputFrameRates() {
-    // NTSC 系 (1001 分母) を含めるのは、素材の実 fps がこの形で出てくるため。
-    static const std::vector<SupportedFrameRate> rates = {
-        {24, 1}, {24000, 1001}, {25, 1}, {30, 1}, {30000, 1001}, {50, 1}, {60, 1}, {60000, 1001},
-    };
-    return rates;
+OutputTimebaseResult<CheckedOutputTimebase>
+CheckedOutputTimebase::createConfigured(std::int64_t frameRateNumerator,
+                                        std::int64_t frameRateDenominator,
+                                        std::int64_t audioSampleRate) {
+    auto result = create(frameRateNumerator, frameRateDenominator, audioSampleRate);
+    if (!result)
+        return result;
+    if (!isConfigurableOutputFrameRate(result.value().frameRateNumerator_,
+                                       result.value().frameRateDenominator_) ||
+        result.value().audioSampleRate_ != kQualifiedAudioSampleRate) {
+        return OutputTimebaseResult<CheckedOutputTimebase>::failure(
+            OutputTimebaseError::UnsupportedProductRate);
+    }
+    return result;
 }
 
-bool isSupportedOutputFrameRate(std::int64_t numerator, std::int64_t denominator) {
+namespace {
+
+bool containsRate(const std::vector<SupportedFrameRate>& rates, std::int64_t numerator,
+                  std::int64_t denominator) {
     if (numerator <= 0 || denominator <= 0)
         return false;
     const std::int64_t divisor = std::gcd(numerator, denominator);
     const std::int64_t canonicalNumerator = numerator / divisor;
     const std::int64_t canonicalDenominator = denominator / divisor;
-    for (const auto& rate : supportedOutputFrameRates()) {
+    for (const auto& rate : rates) {
         const std::int64_t rateDivisor = std::gcd(rate.numerator, rate.denominator);
         if (rate.numerator / rateDivisor == canonicalNumerator &&
             rate.denominator / rateDivisor == canonicalDenominator)
             return true;
     }
     return false;
+}
+
+} // namespace
+
+const std::vector<SupportedFrameRate>& measuredOutputFrameRates() {
+    // p1-matrix.ps1 相当の canonical preview workload を取得済みの rate だけ。
+    // 実測を取らずにここへ足さない。
+    static const std::vector<SupportedFrameRate> rates = {{60, 1}};
+    return rates;
+}
+
+bool isMeasuredOutputFrameRate(std::int64_t numerator, std::int64_t denominator) {
+    return containsRate(measuredOutputFrameRates(), numerator, denominator);
+}
+
+const std::vector<SupportedFrameRate>& configurableOutputFrameRates() {
+    // NTSC 系 (1001 分母) を含めるのは、素材の実 fps がこの形で出てくるため。
+    // measured なのは 60/1 だけである (measuredOutputFrameRates を参照)。
+    static const std::vector<SupportedFrameRate> rates = {
+        {24, 1}, {24000, 1001}, {25, 1}, {30, 1}, {30000, 1001}, {50, 1}, {60, 1}, {60000, 1001},
+    };
+    return rates;
+}
+
+bool isConfigurableOutputFrameRate(std::int64_t numerator, std::int64_t denominator) {
+    return containsRate(configurableOutputFrameRates(), numerator, denominator);
 }
 
 CanonicalRational CheckedOutputTimebase::frameRate() const {

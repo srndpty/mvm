@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <numeric>
 #include <utility>
 
 namespace mvm::project {
@@ -87,12 +88,20 @@ const char* trackKindName(TrackKind kind) {
     return "";
 }
 
-const std::vector<core::SupportedFrameRate>& supportedTimelineFrameRates() {
-    return core::supportedOutputFrameRates();
+const std::vector<core::SupportedFrameRate>& configurableTimelineFrameRates() {
+    return core::configurableOutputFrameRates();
 }
 
-bool isSupportedTimelineFrameRate(std::int64_t fpsNum, std::int64_t fpsDen) {
-    return core::isSupportedOutputFrameRate(fpsNum, fpsDen);
+bool isConfigurableTimelineFrameRate(std::int64_t fpsNum, std::int64_t fpsDen) {
+    return core::isConfigurableOutputFrameRate(fpsNum, fpsDen);
+}
+
+bool isMeasuredTimelineFrameRate(std::int64_t fpsNum, std::int64_t fpsDen) {
+    return core::isMeasuredOutputFrameRate(fpsNum, fpsDen);
+}
+
+bool isCanonicalFrameRate(std::int64_t fpsNum, std::int64_t fpsDen) {
+    return fpsNum > 0 && fpsDen > 0 && std::gcd(fpsNum, fpsDen) == 1;
 }
 
 std::string defaultTrackName(TrackKind kind, int index) {

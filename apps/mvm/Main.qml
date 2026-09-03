@@ -70,7 +70,11 @@ ApplicationWindow {
             ComboBox {
                 id: fpsBox
                 implicitWidth: 96
-                enabled: !mvmController.busy
+                // clip がある Project の frame rate は変更できない (source domain の
+                // 変換仕様が未定のため)。押せてから失敗するより、ここで示す。
+                enabled: !mvmController.busy && mvmController.clipCount === 0
+                ToolTip.visible: hovered && mvmController.clipCount > 0
+                ToolTip.text: "clipがあるProjectのframe rateは変更できません"
                 textRole: "label"
                 model: mvmController.supportedFrameRates
                 function syncFromController() {
@@ -157,6 +161,7 @@ ApplicationWindow {
                             minimumValue: -1000
                             maximumValue: 1000
                             stepPerPixel: 0.5
+                            onEditCanceled: mvmController.cancelEffectPreview()
                             onValueEdited: (newValue, commit) => mvmController.setEffectValue("positionX", newValue, commit)
                         }
                         DragNumberField {
@@ -167,6 +172,7 @@ ApplicationWindow {
                             minimumValue: -1000
                             maximumValue: 1000
                             stepPerPixel: 0.5
+                            onEditCanceled: mvmController.cancelEffectPreview()
                             onValueEdited: (newValue, commit) => mvmController.setEffectValue("positionY", newValue, commit)
                         }
                         DragNumberField {
@@ -177,6 +183,7 @@ ApplicationWindow {
                             minimumValue: 1
                             maximumValue: 1000
                             stepPerPixel: 0.5
+                            onEditCanceled: mvmController.cancelEffectPreview()
                             onValueEdited: (newValue, commit) => mvmController.setEffectValue("scale", newValue, commit)
                         }
                         DragNumberField {
@@ -187,6 +194,7 @@ ApplicationWindow {
                             minimumValue: -360
                             maximumValue: 360
                             stepPerPixel: 0.5
+                            onEditCanceled: mvmController.cancelEffectPreview()
                             onValueEdited: (newValue, commit) => mvmController.setEffectValue("rotation", newValue, commit)
                         }
                         DragNumberField {
@@ -197,6 +205,7 @@ ApplicationWindow {
                             minimumValue: 0
                             maximumValue: 100
                             stepPerPixel: 0.3
+                            onEditCanceled: mvmController.cancelEffectPreview()
                             onValueEdited: (newValue, commit) => mvmController.setEffectValue("opacity", newValue, commit)
                         }
                         Item { Layout.fillWidth: true; implicitHeight: 1 }
@@ -209,6 +218,7 @@ ApplicationWindow {
                             minimumValue: 0
                             maximumValue: 99
                             stepPerPixel: 0.2
+                            onEditCanceled: mvmController.cancelEffectPreview()
                             onValueEdited: (newValue, commit) => mvmController.setEffectValue("cropLeft", newValue, commit)
                         }
                         DragNumberField {
@@ -219,6 +229,7 @@ ApplicationWindow {
                             minimumValue: 0
                             maximumValue: 99
                             stepPerPixel: 0.2
+                            onEditCanceled: mvmController.cancelEffectPreview()
                             onValueEdited: (newValue, commit) => mvmController.setEffectValue("cropRight", newValue, commit)
                         }
                         DragNumberField {
@@ -229,6 +240,7 @@ ApplicationWindow {
                             minimumValue: 0
                             maximumValue: 99
                             stepPerPixel: 0.2
+                            onEditCanceled: mvmController.cancelEffectPreview()
                             onValueEdited: (newValue, commit) => mvmController.setEffectValue("cropTop", newValue, commit)
                         }
                         DragNumberField {
@@ -239,6 +251,7 @@ ApplicationWindow {
                             minimumValue: 0
                             maximumValue: 99
                             stepPerPixel: 0.2
+                            onEditCanceled: mvmController.cancelEffectPreview()
                             onValueEdited: (newValue, commit) => mvmController.setEffectValue("cropBottom", newValue, commit)
                         }
                         DragNumberField {
@@ -248,6 +261,7 @@ ApplicationWindow {
                             minimumValue: 0
                             maximumValue: 1000000
                             stepPerPixel: 1
+                            onEditCanceled: mvmController.cancelEffectPreview()
                             onValueEdited: (newValue, commit) => mvmController.setEffectValue("fadeIn", newValue, commit)
                         }
                         DragNumberField {
@@ -257,6 +271,7 @@ ApplicationWindow {
                             minimumValue: 0
                             maximumValue: 1000000
                             stepPerPixel: 1
+                            onEditCanceled: mvmController.cancelEffectPreview()
                             onValueEdited: (newValue, commit) => mvmController.setEffectValue("fadeOut", newValue, commit)
                         }
                     }
@@ -348,9 +363,15 @@ ApplicationWindow {
                 font.pixelSize: 16
             }
             Label {
-                text: mvmController.timelineFpsText + "  |  zoom "
-                      + Math.round(timelinePanel.pixelsPerFrame * 100) + "%"
-                color: "#9aa2ad"
+                text: mvmController.timelineFpsText
+                      + (mvmController.frameRateMeasured ? "" : " (未計測)")
+                      + "  |  zoom " + Math.round(timelinePanel.pixelsPerFrame * 100) + "%"
+                color: mvmController.frameRateMeasured ? "#9aa2ad" : "#f2c66d"
+                ToolTip.visible: !mvmController.frameRateMeasured && hovered
+                ToolTip.text: "このframe rateのpreviewは実測していません"
+
+                HoverHandler { id: fpsHover }
+                property bool hovered: fpsHover.hovered
             }
             Item { Layout.fillWidth: true }
             Label {
@@ -494,7 +515,8 @@ ApplicationWindow {
                         implicitHeight: 18
                         text: "×"
                         flat: true
-                        enabled: !mvmController.busy
+                        // 再生中に track index が変わると preview の対応が崩れる。
+                        enabled: !mvmController.busy && !mvmController.playing
                         ToolTip.visible: hovered
                         ToolTip.text: "このトラックを削除"
                         onClicked: mvmController.removeTrack(header.headerKind, header.headerIndex)

@@ -92,6 +92,8 @@ private:
     bool renderAvailable();
     // 直近 block の peak を減衰付きで更新する。sourceScratch_ の先頭から frames 分を見る。
     void updateMeterPeaks(std::int64_t consumedFrames);
+    // render loop が止まる経路で peak を確定的に 0 へ落とす。
+    void clearMeterPeaks();
     bool prefillEndpoint(std::int64_t mediaStartSample, SourceGeneration generation,
                          std::string& error);
     bool resetClient(std::string& error);

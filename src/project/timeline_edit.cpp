@@ -157,8 +157,14 @@ TimelineValidationResult validateTimeline(const Project& project) {
         result.error = "Project schema_version が 3 ではありません";
         return result;
     }
-    if (!isSupportedTimelineFrameRate(project.timelineFpsNum, project.timelineFpsDen)) {
+    if (!isConfigurableTimelineFrameRate(project.timelineFpsNum, project.timelineFpsDen)) {
         result.error = "Project timeline FPS が対応外です";
+        return result;
+    }
+    // 永続化された fps は約分済みの 1 つの表現だけを authority にする。
+    // 120/2 と 60/1 が両方存在すると、UI の一致判定も比較も二重定義になる。
+    if (!isCanonicalFrameRate(project.timelineFpsNum, project.timelineFpsDen)) {
+        result.error = "Project timeline FPS が約分されていません";
         return result;
     }
     if (project.videoTracks.empty()) {
@@ -479,6 +485,35 @@ TimelineEditResult appendManimTimelineClipAt(Project& project, const ManimAsset&
     project = std::move(candidate);
     result.success = true;
     result.selectedIndex = static_cast<int>(project.timelineClips.size()) - 1;
+    return result;
+}
+
+TimelineEditResult setTimelineFrameRate(Project& project, std::int64_t fpsNum,
+                                        std::int64_t fpsDen) {
+    TimelineEditResult result;
+    if (!isConfigurableTimelineFrameRate(fpsNum, fpsDen) || !isCanonicalFrameRate(fpsNum, fpsDen)) {
+        result.error = "対応していない timeline frame rate です";
+        return result;
+    }
+    if (project.timelineFpsNum == fpsNum && project.timelineFpsDen == fpsDen) {
+        result.success = true;
+        return result;
+    }
+    if (!project.timelineClips.empty()) {
+        result.error = "clip がある Project の frame rate は変更できません。"
+                       "新規 Project を作ってから frame rate を選んでください";
+        return result;
+    }
+    Project candidate = project;
+    candidate.timelineFpsNum = fpsNum;
+    candidate.timelineFpsDen = fpsDen;
+    const auto valid = validateTimeline(candidate);
+    if (!valid.success) {
+        result.error = valid.error;
+        return result;
+    }
+    project = std::move(candidate);
+    result.success = true;
     return result;
 }
 
