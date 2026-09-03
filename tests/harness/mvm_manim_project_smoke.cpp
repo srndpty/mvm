@@ -93,7 +93,7 @@ int main() {
         return fail(created.error);
     }
 
-    mvm::project::Project project;
+    mvm::project::Project project = mvm::project::createDefaultProject();
     project.manimAssets.push_back(created.asset);
     const auto saved = mvm::project::saveProjectJson(project, projectPath);
     if (!saved.success) {

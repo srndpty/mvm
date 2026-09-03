@@ -1,11 +1,13 @@
 #ifndef MVM_PROJECT_PROJECT_H
 #define MVM_PROJECT_PROJECT_H
 
+#include "core/checked_output_timebase.h"
 #include "project/clip_effects.h"
 
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace mvm::project {
@@ -20,8 +22,25 @@ struct ManimAsset {
     std::string sourceFingerprint;
 };
 
-enum class TimelineClipKind { Video, Manim };
-enum class VideoTrack { V1 = 0, V2 = 1 };
+enum class TimelineClipKind { Video, Manim, Audio };
+
+enum class TrackKind { Video, Audio };
+
+// track は video / audio それぞれ独立した vector で持つ。
+// 片方へ track を足しても、もう片方の clip の index を振り直さずに済む。
+struct Track {
+    std::string name; // UI 表示名。"V1" / "A1" など
+    bool muted = false;
+    bool operator==(const Track&) const = default;
+};
+
+// clip がどの track に載っているか。kind と index を必ず組で扱い、
+// 「V1 と A1 が同じ 0」という取り違えを型で防ぐ。
+struct TrackRef {
+    TrackKind kind = TrackKind::Video;
+    int index = 0;
+    bool operator==(const TrackRef&) const = default;
+};
 
 struct TimelineClip {
     TimelineClipKind kind = TimelineClipKind::Video;
@@ -35,17 +54,35 @@ struct TimelineClip {
     std::int64_t sourceOutFrame = 0;     // exclusive、素材固有 frame domain
     std::int64_t timelineStartFrame = 0; // Project timebase
     ClipEffects effects;
-    VideoTrack videoTrack = VideoTrack::V1;
+    TrackRef track;
     bool operator==(const TimelineClip&) const = default;
 };
 
 struct Project {
-    int schemaVersion = 2;
+    int schemaVersion = 3;
     std::int64_t timelineFpsNum = 60;
     std::int64_t timelineFpsDen = 1;
+    // index 0 が最下層 (V1)。合成順は index 昇順で bottom -> top。
+    std::vector<Track> videoTracks;
+    std::vector<Track> audioTracks;
     std::vector<ManimAsset> manimAssets;
     std::vector<TimelineClip> timelineClips;
 };
+
+// 新規 Project の初期構成。track が 0 本の Project を作らせない。
+Project createDefaultProject();
+
+// timeline fps として受理する rate かどうか。preview engine の qualified output rate と
+// 同じ表 (core::supportedOutputFrameRates) を参照する。ここに別表を持たない。
+bool isSupportedTimelineFrameRate(std::int64_t fpsNum, std::int64_t fpsDen);
+const std::vector<core::SupportedFrameRate>& supportedTimelineFrameRates();
+
+const std::vector<Track>& tracksOfKind(const Project& project, TrackKind kind);
+std::vector<Track>& tracksOfKind(Project& project, TrackKind kind);
+bool isValidTrackRef(const Project& project, TrackRef track);
+// clip の kind がその track に載ってよいか。audio clip を video track へ置かせない。
+bool clipKindFitsTrackKind(TimelineClipKind clipKind, TrackKind trackKind);
+std::string defaultTrackName(TrackKind kind, int index);
 
 struct ManimAssetResult {
     bool success = false;
@@ -65,6 +102,7 @@ bool refreshManimGenerationState(ManimAsset& asset, const std::string& currentFi
 const char* manimGenerationStateName(ManimGenerationState state);
 
 const char* timelineClipKindName(TimelineClipKind kind);
+const char* trackKindName(TrackKind kind);
 
 } // namespace mvm::project
 

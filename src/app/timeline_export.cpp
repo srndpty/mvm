@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <set>
+#include <string>
 #include <system_error>
 #include <vector>
 
@@ -95,7 +96,23 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
         return plan;
     }
     plan.totalDurationFrames = valid.totalFrames;
-    bool anyV2 = false;
+    if (static_cast<int>(project.videoTracks.size()) > kMaxExportVideoTracks) {
+        for (const auto& clip : project.timelineClips) {
+            if (clip.track.kind == project::TrackKind::Video &&
+                clip.track.index >= kMaxExportVideoTracks) {
+                plan.error = "書き出しは video track を " + std::to_string(kMaxExportVideoTracks) +
+                             " 本までしか扱えません: " + clip.name;
+                return plan;
+            }
+        }
+    }
+    for (const auto& clip : project.timelineClips) {
+        if (clip.track.kind == project::TrackKind::Audio) {
+            plan.error = "audio clip を含む timeline の書き出しは未対応です: " + clip.name;
+            return plan;
+        }
+    }
+    bool anyOverlay = false;
     std::int64_t v1Cursor = 0;
     std::vector<int> indices(project.timelineClips.size());
     for (std::size_t index = 0; index < indices.size(); ++index)
@@ -103,8 +120,8 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
     std::stable_sort(indices.begin(), indices.end(), [&](int left, int right) {
         const auto& a = project.timelineClips[static_cast<std::size_t>(left)];
         const auto& b = project.timelineClips[static_cast<std::size_t>(right)];
-        if (a.videoTrack != b.videoTrack)
-            return static_cast<int>(a.videoTrack) < static_cast<int>(b.videoTrack);
+        if (a.track.index != b.track.index)
+            return a.track.index < b.track.index;
         return a.timelineStartFrame < b.timelineStartFrame;
     });
     for (const int index : indices) {
@@ -116,11 +133,11 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
         }
         TimelineExportClipMapping mapped;
         mapped.projectClipIndex = index;
-        mapped.track = clip.videoTrack;
+        mapped.videoTrackIndex = clip.track.index;
         mapped.timelineStartFrame = clip.timelineStartFrame;
         mapped.timelineDurationFrames = duration.frame;
-        const bool overlay = clip.videoTrack == project::VideoTrack::V2;
-        anyV2 = anyV2 || overlay;
+        const bool overlay = clip.track.index > 0;
+        anyOverlay = anyOverlay || overlay;
         if (!overlay) {
             if (clip.timelineStartFrame != v1Cursor)
                 plan.backend = TimelineExportResult::Backend::Tractor;
@@ -130,7 +147,7 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
             return plan;
         plan.clips.push_back(std::move(mapped));
     }
-    if (anyV2)
+    if (anyOverlay)
         plan.backend = TimelineExportResult::Backend::Tractor;
     plan.success = true;
     return plan;
@@ -190,7 +207,7 @@ TimelineExportResult exportTimeline(const project::Project& project,
         mapped.source_fps_den = clip.sourceFpsDen;
         mapped.source_in_frame = clip.sourceInFrame;
         mapped.source_out_frame = clip.sourceOutFrame;
-        mapped.video_track = static_cast<int>(planned.track);
+        mapped.video_track = planned.videoTrackIndex;
         mapped.timeline_start_frame = planned.timelineStartFrame;
         mapped.timeline_duration_frames = planned.timelineDurationFrames;
         mapped.effects_enabled = planned.effectsEnabled ? 1 : 0;

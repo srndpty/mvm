@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace mvm::core {
 
@@ -39,6 +40,20 @@ struct OutputTimebaseResult {
         return out;
     }
 };
+
+// product が qualify した output frame rate の表。preview engine の output rate も
+// Project の timeline fps もこの 1 箇所だけを参照する。2 箇所に書かない。
+struct SupportedFrameRate {
+    std::int64_t numerator = 0;
+    std::int64_t denominator = 1;
+    bool operator==(const SupportedFrameRate&) const = default;
+};
+
+const std::vector<SupportedFrameRate>& supportedOutputFrameRates();
+bool isSupportedOutputFrameRate(std::int64_t numerator, std::int64_t denominator);
+
+// qualified な audio sample rate。timebase と Project の両方がこれを基準にする。
+inline constexpr std::int64_t kQualifiedAudioSampleRate = 48000;
 
 struct CanonicalRational {
     std::int64_t numerator = 0;

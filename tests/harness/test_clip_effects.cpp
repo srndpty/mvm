@@ -19,7 +19,7 @@ void check(bool value, const char* message) {
 }
 
 mvm::project::Project projectWithClip() {
-    mvm::project::Project project;
+    mvm::project::Project project = mvm::project::createDefaultProject();
     project.timelineClips.push_back({mvm::project::TimelineClipKind::Manim,
                                      "clip.mp4",
                                      "clip",
@@ -81,26 +81,26 @@ int main(int argc, char** argv) {
 
     Project project = projectWithClip();
     project.timelineClips.front().effects = effects;
-    const auto path = directory / "effects.json";
+    const auto path = directory / "effects.mvm";
     check(saveProjectJson(project, path).success, "effects付きProjectを保存する");
     const auto loaded = loadProjectJson(path);
     check(loaded.success && loaded.project.timelineClips.front().effects == effects,
           "effectsをJSON round-tripする");
 
-    const auto legacy = directory / "legacy.json";
+    const auto legacy = directory / "legacy.mvm";
     std::ofstream legacyFile(legacy);
     legacyFile
-        << R"({"schema_version":2,"timeline_fps_num":60,"timeline_fps_den":1,"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0}]})";
+        << R"({"schema_version":3,"format":"mvm-project","timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,"track_kind":"video","track_index":0}]})";
     legacyFile.close();
     const auto legacyLoaded = loadProjectJson(legacy);
     check(legacyLoaded.success &&
               clipEffectsAreDefault(legacyLoaded.project.timelineClips[0].effects),
-          "effects欠損schema-2 clipへ明示defaultを適用する");
+          "effects欠損clipへ明示defaultを適用する");
 
-    const auto partial = directory / "partial.json";
+    const auto partial = directory / "partial.mvm";
     std::ofstream partialFile(partial);
     partialFile
-        << R"({"schema_version":2,"timeline_fps_num":60,"timeline_fps_den":1,"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,"effects":{"scale_percent":60}}]})";
+        << R"({"schema_version":3,"format":"mvm-project","timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,"track_kind":"video","track_index":0,"effects":{"scale_percent":60}}]})";
     partialFile.close();
     check(!loadProjectJson(partial).success, "部分effects objectをfail-closedで拒否する");
 

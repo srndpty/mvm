@@ -11,6 +11,7 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickItem>
+#include <QQuickStyle>
 #include <QQuickWindow>
 #include <QSGRendererInterface>
 #include <QStringList>
@@ -23,7 +24,7 @@ struct AppArguments {
 };
 
 void usage() {
-    std::fprintf(stderr, "使い方: mvm --project <project.json> "
+    std::fprintf(stderr, "使い方: mvm --project <project.mvm> "
                          "--manim-executable <absolute-manim.exe>\n");
 }
 
@@ -61,6 +62,10 @@ int main(int argc, char** argv) {
 
     QGuiApplication application(argc, argv);
     application.setApplicationName(QStringLiteral("mvm"));
+    // native (Windows) style は background / contentItem の差し替えを黙って無視する。
+    // track の mute 状態などを色で出しているため、customization できる style を選ぶ。
+    // QML の読み込みより前に確定させる (AGENTS.md の起動時 configuration 確定順序)。
+    QQuickStyle::setStyle(QStringLiteral("Basic"));
 
     AppArguments arguments;
     if (!parseArguments(application.arguments(), arguments)) {
@@ -68,7 +73,9 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    mvm::project::Project project;
+    // Project が無ければ既定構成 (V1/V2 + A1) から始める。track 0 本の Project を
+    // 作らせない。
+    mvm::project::Project project = mvm::project::createDefaultProject();
     std::error_code existsError;
     if (std::filesystem::exists(arguments.projectPath, existsError)) {
         const auto loaded = mvm::project::loadProjectJson(arguments.projectPath);

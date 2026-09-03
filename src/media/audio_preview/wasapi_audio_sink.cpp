@@ -7,6 +7,7 @@
 #include <audioclient.h>
 #include <avrt.h>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <functiondiscoverykeys_devpkey.h>
@@ -324,6 +325,7 @@ bool WasapiAudioSink::prefillEndpoint(std::int64_t mediaStartSample, SourceGener
         error = "endpoint prefill は requested media sample 由来の PCM を満たせません";
         return false;
     }
+    updateMeterPeaks(consumed.audioSamples);
     const std::uint8_t* input[] = {reinterpret_cast<const std::uint8_t*>(sourceScratch_.data())};
     std::uint8_t* output[] = {deviceBuffer};
     const int converted =
@@ -479,12 +481,33 @@ void WasapiAudioSink::renderLoop() {
     CoUninitialize();
 }
 
+void WasapiAudioSink::updateMeterPeaks(std::int64_t consumedFrames) {
+    // sourceScratch_ は internal domain (48kHz / stereo / float32) の interleaved PCM。
+    // 実際に endpoint へ送る PCM をそのまま測る。resample 後の device format は測らない。
+    float blockLeft = 0.0F;
+    float blockRight = 0.0F;
+    for (std::int64_t frame = 0; frame < consumedFrames; ++frame) {
+        const auto base = static_cast<std::size_t>(frame) * kInternalChannels;
+        blockLeft = std::max(blockLeft, std::fabs(sourceScratch_[base]));
+        blockRight = std::max(blockRight, std::fabs(sourceScratch_[base + 1]));
+    }
+    const float decayedLeft =
+        meterPeakLeft_.load(std::memory_order_relaxed) * kMeterPeakDecayPerBlock;
+    const float decayedRight =
+        meterPeakRight_.load(std::memory_order_relaxed) * kMeterPeakDecayPerBlock;
+    meterPeakLeft_.store(std::max(blockLeft, decayedLeft), std::memory_order_relaxed);
+    meterPeakRight_.store(std::max(blockRight, decayedRight), std::memory_order_relaxed);
+}
+
 bool WasapiAudioSink::renderAvailable() {
     std::lock_guard clientLock(clientMutex_);
     // event 判定後に pause/reset が clientMutex_ を先に取得した場合、古い
     // playing=true を見た callback が reset 後へ PCM を書かないよう再検査する。
-    if (!playing_)
+    if (!playing_) {
+        // 停止中は meter を凍結させず 0 へ落とす。止めた直後の値が残らないようにする。
+        updateMeterPeaks(0);
         return true;
+    }
     if (renderFaultInjected_.load(std::memory_order_acquire)) {
         // 実際の WASAPI 失敗と同じ経路で停止させる。
         recordFailure("injected WASAPI render fault (test)");
@@ -554,6 +577,7 @@ bool WasapiAudioSink::renderAvailable() {
             attribution_->firstAudioUnderflow.capture(snapshot);
         }
     }
+    updateMeterPeaks(consumed.audioSamples);
     const std::uint8_t* input[] = {reinterpret_cast<const std::uint8_t*>(sourceScratch_.data())};
     std::uint8_t* output[] = {deviceBuffer};
     const int converted =
@@ -638,7 +662,10 @@ void WasapiAudioSink::recordFailure(const std::string& error) {
 
 WasapiSnapshot WasapiAudioSink::snapshot() const {
     std::lock_guard lock(mutex_);
-    return metrics_;
+    WasapiSnapshot result = metrics_;
+    result.meterPeakLeft = meterPeakLeft_.load(std::memory_order_relaxed);
+    result.meterPeakRight = meterPeakRight_.load(std::memory_order_relaxed);
+    return result;
 }
 
 void WasapiAudioSink::releaseDevice() {

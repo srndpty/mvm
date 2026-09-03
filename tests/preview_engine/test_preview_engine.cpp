@@ -154,7 +154,7 @@ void frameRateAndDescriptorValidation() {
             static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) + 1, 1),
         PreviewErrorCategory::UnsupportedCapability,
         "uint32 boundary overflowをrejectしませんでした");
-    const auto validButUnqualified = validatePreviewFrameRate(24, 1);
+    const auto validButUnqualified = validatePreviewFrameRate(48, 1);
     require(validButUnqualified, "positive rationalをtype validationでrejectしました");
     require(validateSourceFrameRate(120, 2, {60, 1}), "source frame rateをcanonical比較できません");
     requireFailure(validateSourceFrameRate(30, 1, {60, 1}),
@@ -165,11 +165,37 @@ void frameRateAndDescriptorValidation() {
 
     PreviewEngine unqualifiedEngine;
     auto dispatcher = std::make_shared<ManualDispatcher>();
-    requireFailure(unqualifiedEngine.initialize({{{24, 1}}}, dispatcher),
+    // 48/1 は qualified 表に無い。表の中身はここへ literal で書き、実装の
+    // 判定関数を呼ばない。
+    requireFailure(unqualifiedEngine.initialize({{{48, 1}}}, dispatcher),
                    PreviewErrorCategory::UnsupportedCapability,
                    "unqualified rateをinitializeでrejectしませんでした");
     require(unqualifiedEngine.status().state == PreviewEngineState::Uninitialized,
             "initialize reject後にstateが変化しました");
+
+    // 60/1 以外の qualified rate を受理し、capability がその rate を公開すること。
+    // 固定値 60/1 を返すと source の rate 検査が別の基準で動いてしまう。
+    const std::pair<std::uint32_t, std::uint32_t> qualifiedRates[] = {
+        {24, 1}, {24000, 1001}, {25, 1}, {30, 1}, {30000, 1001}, {50, 1}, {60000, 1001}};
+    for (const auto& [numerator, denominator] : qualifiedRates) {
+        PreviewEngine rateEngine;
+        auto rateDispatcher = std::make_shared<ManualDispatcher>();
+        require(rateEngine.initialize({{{numerator, denominator}}}, rateDispatcher),
+                "qualified rateをinitializeでrejectしました");
+        require(rateEngine.capabilities().qualifiedOutputFrameRate ==
+                    PreviewFrameRate{numerator, denominator},
+                "capabilityがinitializeしたoutput rateを公開していません");
+        // source の rate 検査が output rate を基準にしていること。
+        require(validateSourceFrameRate(numerator, denominator,
+                                        rateEngine.capabilities().qualifiedOutputFrameRate),
+                "output rateと同じsource rateをrejectしました");
+        requireFailure(validateSourceFrameRate(60, 1, {numerator, denominator}),
+                       PreviewErrorCategory::UnsupportedCapability,
+                       "output rateと異なるsource rateを受理しました");
+        require(rateEngine.requestShutdown(), "qualified rate engineのshutdownに失敗しました");
+        require(rateEngine.status().state == PreviewEngineState::Shutdown,
+                "qualified rate engineがterminal Shutdownへ到達しませんでした");
+    }
 
     PreviewEngine equivalentRateEngine;
     auto equivalentRateDispatcher = std::make_shared<ManualDispatcher>();
@@ -650,7 +676,7 @@ void eventOwnershipAndFatalPath() {
     PreviewEngine rollback;
     auto rejectedDispatcher = std::make_shared<ManualDispatcher>();
     std::weak_ptr<ManualDispatcher> rejectedWeak = rejectedDispatcher;
-    requireFailure(rollback.initialize({{{24, 1}}}, rejectedDispatcher),
+    requireFailure(rollback.initialize({{{48, 1}}}, rejectedDispatcher),
                    PreviewErrorCategory::UnsupportedCapability,
                    "invalid initializeをacceptしました");
     rejectedDispatcher.reset();

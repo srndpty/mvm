@@ -4,9 +4,9 @@
 #include "preview_engine/preview_engine.h"
 #include "project/project.h"
 
+#include <map>
 #include <memory>
 #include <optional>
-#include <array>
 #include <vector>
 
 #include <QAbstractItemModel>
@@ -16,15 +16,17 @@
 #include <QStringList>
 #include <QTimer>
 #include <QUrl>
+#include <QVariantList>
 
 namespace mvm::app {
 
 class PreviewEngineRhiItem;
 class TimelineClipModel;
+class TrackModel;
 
 class MvmController final : public QObject {
     Q_OBJECT
-    Q_PROPERTY(QString projectPath READ projectPath CONSTANT)
+    Q_PROPERTY(QString projectPath READ projectPath NOTIFY stateChanged)
     Q_PROPERTY(QString statusText READ statusText NOTIFY stateChanged)
     Q_PROPERTY(QString currentClipName READ currentClipName NOTIFY stateChanged)
     Q_PROPERTY(QString currentClipPath READ currentClipPath NOTIFY stateChanged)
@@ -38,6 +40,10 @@ class MvmController final : public QObject {
     Q_PROPERTY(QString manimStateText READ manimStateText NOTIFY stateChanged)
     Q_PROPERTY(QStringList clipNames READ clipNames NOTIFY stateChanged)
     Q_PROPERTY(QAbstractItemModel* timelineModel READ timelineModel CONSTANT)
+    Q_PROPERTY(QAbstractItemModel* videoTrackModel READ videoTrackModel CONSTANT)
+    Q_PROPERTY(QAbstractItemModel* audioTrackModel READ audioTrackModel CONSTANT)
+    Q_PROPERTY(int videoTrackCount READ videoTrackCount NOTIFY stateChanged)
+    Q_PROPERTY(int audioTrackCount READ audioTrackCount NOTIFY stateChanged)
     Q_PROPERTY(int clipCount READ clipCount NOTIFY stateChanged)
     Q_PROPERTY(int currentClipIndex READ currentClipIndex NOTIFY stateChanged)
     Q_PROPERTY(qint64 playheadFrame READ playheadFrame NOTIFY stateChanged)
@@ -46,6 +52,13 @@ class MvmController final : public QObject {
     Q_PROPERTY(bool playing READ playing NOTIFY stateChanged)
     Q_PROPERTY(bool canPlay READ canPlay NOTIFY stateChanged)
     Q_PROPERTY(bool canExport READ canExport NOTIFY stateChanged)
+    Q_PROPERTY(int timelineFpsNum READ timelineFpsNum NOTIFY stateChanged)
+    Q_PROPERTY(int timelineFpsDen READ timelineFpsDen NOTIFY stateChanged)
+    Q_PROPERTY(QString timelineFpsText READ timelineFpsText NOTIFY stateChanged)
+    Q_PROPERTY(QVariantList supportedFrameRates READ supportedFrameRates CONSTANT)
+    // audio meter。dBFS。無音時は kMeterSilenceDb を返す。
+    Q_PROPERTY(double audioMeterDbLeft READ audioMeterDbLeft NOTIFY meterChanged)
+    Q_PROPERTY(double audioMeterDbRight READ audioMeterDbRight NOTIFY meterChanged)
     Q_PROPERTY(double effectPositionX READ effectPositionX NOTIFY stateChanged)
     Q_PROPERTY(double effectPositionY READ effectPositionY NOTIFY stateChanged)
     Q_PROPERTY(double effectScale READ effectScale NOTIFY stateChanged)
@@ -59,6 +72,9 @@ class MvmController final : public QObject {
     Q_PROPERTY(qint64 effectFadeOut READ effectFadeOut NOTIFY stateChanged)
 
 public:
+    // meter の下限。linear 0 を -inf にすると QML 側で扱いにくいので床を決めておく。
+    static constexpr double kMeterSilenceDb = -60.0;
+
     MvmController(std::filesystem::path projectPath, std::filesystem::path manimExecutablePath,
                   project::Project project, QObject* parent = nullptr);
     ~MvmController() override;
@@ -91,6 +107,12 @@ public:
 
     QStringList clipNames() const;
     QAbstractItemModel* timelineModel() const;
+    QAbstractItemModel* videoTrackModel() const;
+    QAbstractItemModel* audioTrackModel() const;
+
+    int videoTrackCount() const { return static_cast<int>(project_.videoTracks.size()); }
+
+    int audioTrackCount() const { return static_cast<int>(project_.audioTracks.size()); }
 
     int clipCount() const { return static_cast<int>(project_.timelineClips.size()); }
 
@@ -108,6 +130,17 @@ public:
 
     bool canExport() const { return !project_.timelineClips.empty() && !busy_; }
 
+    int timelineFpsNum() const { return static_cast<int>(project_.timelineFpsNum); }
+
+    int timelineFpsDen() const { return static_cast<int>(project_.timelineFpsDen); }
+
+    QString timelineFpsText() const;
+    QVariantList supportedFrameRates() const;
+
+    double audioMeterDbLeft() const { return audioMeterDbLeft_; }
+
+    double audioMeterDbRight() const { return audioMeterDbRight_; }
+
     double effectPositionX() const;
     double effectPositionY() const;
     double effectScale() const;
@@ -124,29 +157,56 @@ public:
     Q_INVOKABLE bool regenerateManimClip();
     Q_INVOKABLE bool addManimToTimeline();
     Q_INVOKABLE bool addVideoClip(const QUrl& fileUrl);
+    Q_INVOKABLE bool addAudioClip(const QUrl& fileUrl);
     Q_INVOKABLE bool selectClip(int index);
     Q_INVOKABLE bool selectTimelineClip(const QString& clipId, qint64 frame);
     Q_INVOKABLE bool seekTimelineFrame(qint64 frame);
+    // scrub。drag 中は最新位置だけを coalesce して seek し、release で確定する。
+    Q_INVOKABLE void beginScrub();
+    Q_INVOKABLE void scrubToFrame(qint64 frame);
+    Q_INVOKABLE void endScrub();
     Q_INVOKABLE bool playTimeline();
     Q_INVOKABLE bool pauseTimeline();
-    Q_INVOKABLE bool moveTimelineClip(const QString& clipId, int destinationTrack,
-                                      qint64 timelineStartFrame);
+    Q_INVOKABLE bool moveTimelineClip(const QString& clipId, const QString& trackKind,
+                                      int trackIndex, qint64 timelineStartFrame);
     Q_INVOKABLE bool trimClip(const QString& clipId, const QString& edge, qint64 projectFrameDelta);
     Q_INVOKABLE bool deleteCurrentClip();
     Q_INVOKABLE bool exportTimeline(const QUrl& outputUrl);
-    Q_INVOKABLE bool applyCurrentClipEffects(double positionX, double positionY, double scale,
-                                             double rotation, double opacity, double cropLeft,
-                                             double cropTop, double cropRight, double cropBottom,
-                                             qint64 fadeInSourceFrames, qint64 fadeOutSourceFrames);
+    // effect の 1 値だけを更新する。commit=false は preview のみ (drag 中)、
+    // commit=true で Project へ保存する。
+    Q_INVOKABLE bool setEffectValue(const QString& key, double value, bool commit);
+
+    // track 編集
+    Q_INVOKABLE bool addTrack(const QString& trackKind);
+    Q_INVOKABLE bool removeTrack(const QString& trackKind, int trackIndex);
+    Q_INVOKABLE bool setTrackMuted(const QString& trackKind, int trackIndex, bool muted);
+
+    // 空白部分の ripple delete。gap が無ければ false を返し status に理由を出す。
+    Q_INVOKABLE bool hasGapAt(const QString& trackKind, int trackIndex, qint64 frame) const;
+    Q_INVOKABLE bool rippleDeleteGap(const QString& trackKind, int trackIndex, qint64 frame);
+
+    // Project ファイル (.mvm)
+    Q_INVOKABLE bool newProject(const QUrl& fileUrl);
+    Q_INVOKABLE bool openProject(const QUrl& fileUrl);
+    Q_INVOKABLE bool saveProjectAs(const QUrl& fileUrl);
+    Q_INVOKABLE bool setTimelineFrameRate(int fpsNum, int fpsDen);
 
 public Q_SLOTS:
     void shutdown();
 
 Q_SIGNALS:
     void stateChanged();
+    void meterChanged();
 
 private:
+    struct TrackPreviewSource {
+        preview::PreviewSourceId source;
+        std::string clipId;
+        int clipIndex = -1;
+    };
+
     void pollPreviewState();
+    void pollAudioMeter();
     void advanceTimelinePlayback();
     void setStatus(QString status);
     bool initializePreviewEngine(const QString& failurePrefix);
@@ -161,11 +221,12 @@ private:
     bool refreshPreviewAfterSavedEdit(const std::string& selectedClipId,
                                       const QString& successStatus);
     const project::ClipEffects& currentEffects() const;
-    bool submitClipComposition(preview::PreviewSourceId source, const project::TimelineClip& clip,
-                               QString& error);
     bool syncPreviewSourcesAt(std::int64_t timelineFrame, QString& error);
+    bool syncAudioSourceFor(std::int64_t timelineFrame, QString& error);
     bool refreshCurrentClipEffectsPreview(QString& error);
     void refreshTimelineModel();
+    // trackKind 文字列を TrackRef へ解決する。失敗時は status を設定して false。
+    bool resolveTrackRef(const QString& trackKind, int trackIndex, project::TrackRef& track) const;
     bool generateAndInstallManimClip(const std::filesystem::path& scriptPath,
                                      const QString& sceneName, bool requirePreviewReady);
     void queueVideoClipInstall(const std::filesystem::path& videoPath, QString clipName,
@@ -177,6 +238,8 @@ private:
     void startPendingPlayback();
     bool cancelPendingPlaybackForPause();
     void stopPlaybackWithError(QString error);
+    // Project を丸ごと差し替える (New / Open)。preview も作り直す。
+    bool adoptProject(project::Project loaded, std::filesystem::path path, QString successStatus);
 
     std::filesystem::path projectPath_;
     std::filesystem::path manimExecutablePath_;
@@ -184,15 +247,13 @@ private:
     std::shared_ptr<preview::PreviewEngine> previewEngine_;
     std::shared_ptr<preview::PreviewEventDispatcher> dispatcher_;
     std::unique_ptr<TimelineClipModel> timelineModel_;
+    std::unique_ptr<TrackModel> videoTrackModel_;
+    std::unique_ptr<TrackModel> audioTrackModel_;
     PreviewEngineRhiItem* previewSurface_ = nullptr;
     std::optional<preview::PreviewSourceId> currentSource_;
-    std::optional<preview::PreviewSourceId> staleSource_;
-    struct TrackPreviewSource {
-        preview::PreviewSourceId source;
-        std::string clipId;
-        int clipIndex = -1;
-    };
-    std::array<std::optional<TrackPreviewSource>, 2> trackSources_;
+    // video track index -> preview source。track を増やしても添字を取り違えない。
+    std::map<int, TrackPreviewSource> trackSources_;
+    std::optional<TrackPreviewSource> audioSource_;
     std::vector<preview::PreviewSourceId> retiredSources_;
     QString statusText_ = QStringLiteral("Previewを初期化しています");
     QString currentClipName_;
@@ -207,11 +268,16 @@ private:
     int currentClipIndex_ = -1;
     std::int64_t playheadFrame_ = 0;
     std::int64_t totalTimelineFrames_ = 0;
+    double audioMeterDbLeft_ = kMeterSilenceDb;
+    double audioMeterDbRight_ = kMeterSilenceDb;
     bool busy_ = false;
     bool previewReady_ = false;
     bool shutdownStarted_ = false;
     bool playing_ = false;
     bool pendingPlaybackStart_ = false;
+    bool scrubbing_ = false;
+    bool scrubPending_ = false;
+    std::int64_t scrubTargetFrame_ = 0;
     int playbackClipIndex_ = -1;
     std::int64_t playbackBaseFrame_ = 0;
     int pendingPlaybackClipIndex_ = -1;
@@ -219,6 +285,8 @@ private:
     QElapsedTimer playbackClock_;
     QTimer playbackTimer_;
     QTimer stateTimer_;
+    QTimer scrubTimer_;
+    QTimer meterTimer_;
 };
 
 } // namespace mvm::app

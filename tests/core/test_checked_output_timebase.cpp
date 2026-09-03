@@ -41,9 +41,24 @@ void configurationAndCanonicalization() {
                    OutputTimebaseError::InvalidDenominator, "負の分母を拒否しませんでした");
     requireFailure(CheckedOutputTimebase::create(60, 1, 0), OutputTimebaseError::InvalidSampleRate,
                    "sample rate 0を拒否しませんでした");
-    requireFailure(CheckedOutputTimebase::createQualified(24, 1, 48000),
-                   OutputTimebaseError::UnsupportedProductRate,
-                   "未qualifiedの24/1を製品構成として受理しました");
+    // qualified な rate の一覧はここへ literal で書く。実装の
+    // isSupportedOutputFrameRate を呼ぶと、表を壊した変更をテストが追認してしまう。
+    const std::pair<std::int64_t, std::int64_t> qualifiedRates[] = {
+        {24, 1}, {24000, 1001}, {25, 1}, {30, 1}, {30000, 1001}, {50, 1}, {60, 1}, {60000, 1001}};
+    for (const auto& [numerator, denominator] : qualifiedRates) {
+        const auto accepted = CheckedOutputTimebase::createQualified(numerator, denominator, 48000);
+        require(static_cast<bool>(accepted), "qualified rateを製品構成として拒否しました");
+        require(accepted &&
+                    accepted.value().frameRate() == CanonicalRational{numerator, denominator},
+                "qualified rateがcanonical値として保持されていません");
+    }
+    const std::pair<std::int64_t, std::int64_t> unqualifiedRates[] = {
+        {48, 1}, {15, 1}, {23, 1}, {59, 1}, {120, 1}, {24000, 1002}};
+    for (const auto& [numerator, denominator] : unqualifiedRates) {
+        requireFailure(CheckedOutputTimebase::createQualified(numerator, denominator, 48000),
+                       OutputTimebaseError::UnsupportedProductRate,
+                       "未qualifiedのrateを製品構成として受理しました");
+    }
     requireFailure(CheckedOutputTimebase::createQualified(60, 1, 44100),
                    OutputTimebaseError::UnsupportedProductRate,
                    "未qualifiedの44100 Hzを製品構成として受理しました");

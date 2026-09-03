@@ -3,9 +3,9 @@
 
 #include "project/project.h"
 
-#include <array>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace mvm::project {
 
@@ -42,34 +42,47 @@ TimelineFrameResult timelineBoundaryToSourceBoundary(std::int64_t timelineFrame,
 TimelineFrameResult timelineClipDuration(const Project& project, const TimelineClip& clip);
 bool sourceRateMatchesTimelineRate(const Project& project, const TimelineClip& clip);
 TimelineValidationResult validateTimeline(const Project& project);
-// 既存の単一列編集用。M7bのtrack/start配置authorityには使用しない。
-TimelineValidationResult recomputeTimelineStarts(Project& project);
-int timelineClipIndexAtFrame(const Project& project, std::int64_t timelineFrame);
-const TimelineClip* activeClipAt(const Project& project, VideoTrack track,
-                                 std::int64_t timelineFrame);
-std::array<const TimelineClip*, 2> activeClipsAt(const Project& project,
-                                                 std::int64_t timelineFrame);
-TimelineFrameResult timelineEndFrame(const Project& project);
-TimelineFrameResult timelineTrackEndFrame(const Project& project, VideoTrack track);
-TimelineEditResult moveClip(Project& project, const std::string& clipId,
-                            VideoTrack destinationTrack, std::int64_t newStartFrame);
-TimelineEditResult appendVideoTimelineClip(Project& project, TimelineClip clip);
 
-TimelineEditResult moveTimelineClip(Project& project, int selectedIndex, int offset);
-TimelineEditResult reorderTimelineClip(Project& project, const std::string& clipId,
-                                       int destinationIndex);
+int timelineClipIndexAt(const Project& project, TrackRef track, std::int64_t timelineFrame);
+const TimelineClip* activeClipAt(const Project& project, TrackRef track,
+                                 std::int64_t timelineFrame);
+// index が track index と一致する配列を返す。clip が無い track は nullptr。
+// 合成順は index 昇順で bottom -> top。
+std::vector<const TimelineClip*> activeClipsAt(const Project& project, TrackKind kind,
+                                               std::int64_t timelineFrame);
+TimelineFrameResult timelineEndFrame(const Project& project);
+TimelineFrameResult timelineTrackEndFrame(const Project& project, TrackRef track);
+
+TimelineEditResult moveClip(Project& project, const std::string& clipId, TrackRef destinationTrack,
+                            std::int64_t newStartFrame);
+// track 末尾へ追加する。clip.track と clip.timelineStartFrame はここで確定させる。
+TimelineEditResult appendTimelineClip(Project& project, TimelineClip clip, TrackRef track);
 TimelineEditResult deleteTimelineClip(Project& project, int selectedIndex);
 TimelineEditResult trimTimelineClip(Project& project, const std::string& clipId, TrimEdge edge,
                                     std::int64_t projectFrameDelta);
-TimelineEditResult appendManimTimelineClip(Project& project, const ManimAsset& asset,
-                                           std::string clipId, std::int64_t sourceFpsNum,
-                                           std::int64_t sourceFpsDen,
-                                           std::int64_t sourceFrameCount);
 TimelineEditResult appendManimTimelineClipAt(Project& project, const ManimAsset& asset,
                                              std::string clipId, std::int64_t sourceFpsNum,
                                              std::int64_t sourceFpsDen,
                                              std::int64_t sourceFrameCount,
-                                             std::int64_t timelineStartFrame);
+                                             std::int64_t timelineStartFrame, TrackRef track);
+
+// track 編集。clip が載っている track は削除させない (暗黙に clip を消さない)。
+TimelineEditResult addTrack(Project& project, TrackKind kind);
+TimelineEditResult removeTrack(Project& project, TrackRef track);
+TimelineEditResult setTrackMuted(Project& project, TrackRef track, bool muted);
+
+struct TimelineGap {
+    bool found = false;
+    std::int64_t start = 0;
+    std::int64_t end = 0;
+    std::string error;
+};
+
+// track 上の timelineFrame を含む「clip が無く、後ろに clip がある」区間を返す。
+// 終端より後ろの空白は詰める対象が無いので found=false とする。
+TimelineGap gapAt(const Project& project, TrackRef track, std::int64_t timelineFrame);
+// gapAt が返す区間を閉じ、後続 clip を左へ詰める (ripple delete)。
+TimelineEditResult rippleDeleteGap(Project& project, TrackRef track, std::int64_t timelineFrame);
 
 } // namespace mvm::project
 

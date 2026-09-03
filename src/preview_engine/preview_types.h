@@ -49,6 +49,11 @@ struct PreviewSourceDescriptor {
     std::filesystem::path mediaPath;
     bool videoEnabled = false;
     bool audioEnabled = false;
+    // audio source の media sample と output frame の対応をずらす量。
+    //   media sample = (output frame を換算した sample) + audioSampleOffset
+    // timeline 上で 0 以外の位置に置いた audio clip を鳴らすために使う。
+    // videoEnabled のみの source では無視する。
+    std::int64_t audioSampleOffset = 0;
 };
 
 struct PreviewNormalizedRect {
@@ -153,6 +158,8 @@ struct PreviewCapabilities {
     std::uint32_t maxQualifiedActiveVideoSources = 1;
     std::uint32_t maxQualifiedCompositionLayers = 1;
     std::uint32_t maxQualifiedActiveAudioSources = 0;
+    // initialize() で確定した output frame rate。qualified な rate 集合は
+    // core::supportedOutputFrameRates() が唯一の authority である。
     PreviewFrameRate qualifiedOutputFrameRate{60, 1};
     std::uint32_t qualifiedAudioSampleRate = 0;
     std::uint32_t qualifiedAudioChannelCount = 0;
@@ -188,6 +195,10 @@ struct PreviewTelemetry {
     std::uint32_t currentSourceQueueDepth = 0;
     std::uint32_t gpuRetirementCurrentDepth = 0;
     std::uint32_t gpuRetirementPeakDepth = 0;
+    // endpoint へ送った PCM の channel peak (linear, 0..1)。audio source が
+    // 無い間は 0。dB への換算は表示側の責務にする。
+    float audioMeterPeakLeft = 0.0F;
+    float audioMeterPeakRight = 0.0F;
     PreviewStatus status;
 };
 

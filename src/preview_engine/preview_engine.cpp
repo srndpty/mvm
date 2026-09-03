@@ -643,6 +643,9 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     std::optional<PreviewSourceId> publicAudioSource;
     audio::SourceId internalAudioSource{};
     std::int64_t resumeAudioSample = 0;
+    // addSource で受け取った audio source の timeline 上の位置ずれ (sample)。
+    // output frame <-> audio media sample の換算はこの 1 つの値だけで補正する。
+    std::int64_t audioSampleOffset = 0;
     bool audioMasterActive = false;
     bool audioSinkJoined = true;
     bool audioWorkerJoined = true;
@@ -1031,7 +1034,12 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                 projectionFailure("audio master clockが停止しています");
                 return result;
             }
-            const auto frame = timebase->schedulerOutputFrame(clock.mediaSamplePosition);
+            if (clock.mediaSamplePosition < audioSampleOffset) {
+                projectionFailure("audio master clockがaudio clipの開始より前を指しています");
+                return result;
+            }
+            const auto frame =
+                timebase->schedulerOutputFrame(clock.mediaSamplePosition - audioSampleOffset);
             if (!frame) {
                 projectionFailure("audio sample positionをoutput frameへ換算できません");
                 return result;
@@ -1449,15 +1457,18 @@ Result<void> PreviewEngine::initialize(const PreviewEngineConfig& config,
     if (!rate) {
         return Result<void>::failure(rate.error());
     }
-    if (!(rate.value() == impl_->capability.qualifiedOutputFrameRate)) {
+    if (!core::isSupportedOutputFrameRate(static_cast<std::int64_t>(rate.value().numerator),
+                                          static_cast<std::int64_t>(rate.value().denominator))) {
         return Result<void>::failure(
             makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::Initialize,
-                      "指定frame rateは現在qualifiedな60/1ではありません"));
+                      "指定frame rateはqualifiedな出力rateではありません: " +
+                          std::to_string(rate.value().numerator) + "/" +
+                          std::to_string(rate.value().denominator)));
     }
     // scheduler / seek / statusが同じ換算を使うよう、timebaseはここで一度だけ確定する。
     const auto timebase = core::CheckedOutputTimebase::createQualified(
-        static_cast<std::int64_t>(config.output.frameRate.numerator),
-        static_cast<std::int64_t>(config.output.frameRate.denominator), audio::kInternalSampleRate);
+        static_cast<std::int64_t>(rate.value().numerator),
+        static_cast<std::int64_t>(rate.value().denominator), audio::kInternalSampleRate);
     if (!timebase) {
         return Result<void>::failure(makeError(PreviewErrorCategory::UnsupportedCapability,
                                                PreviewOperation::Initialize,
@@ -1472,6 +1483,9 @@ Result<void> PreviewEngine::initialize(const PreviewEngineConfig& config,
         }
         impl_->dispatcher = std::move(dispatcher);
         impl_->configuredFrameRate = rate.value();
+        // capability が公開する rate は「今回 initialize した rate」である。
+        // 固定値を返すと source 側の rate 検査が別の rate を基準にしてしまう。
+        impl_->capability.qualifiedOutputFrameRate = rate.value();
         impl_->timebase = timebase.value();
         impl_->telemetrySnapshot.status.state = impl_->machine.state();
     }
@@ -1669,6 +1683,7 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
         impl_->audioSinkJoined = false;
         impl_->audioWorkerJoined = false;
         impl_->resumeAudioSample = 0;
+        impl_->audioSampleOffset = descriptor.audioSampleOffset;
         const audio::WasapiSnapshot endpoint = impl_->audioSink->snapshot();
         impl_->deviceSnapshot.audioSampleRate =
             static_cast<std::uint32_t>(endpoint.deviceFormat.sampleRate);
@@ -1812,6 +1827,7 @@ Result<void> PreviewEngine::removeSource(PreviewSourceId source) {
                 impl_->publicAudioSource.reset();
                 impl_->internalAudioSource = audio::SourceId{};
                 impl_->resumeAudioSample = 0;
+                impl_->audioSampleOffset = 0;
                 impl_->audioSinkJoined = true;
                 impl_->audioWorkerJoined = true;
                 impl_->deviceSnapshot.audioSampleRate = 0;
@@ -2097,7 +2113,16 @@ Result<void> PreviewEngine::seekFrameRequest(const PreviewFrameRequest& request)
                                                    PreviewOperation::Seek,
                                                    "outputFrameをaudio sampleへ換算できません"));
         }
-        audioSample = sample.value();
+        // output frame -> media sample。audio clip の timeline 位置ずれをここで足す。
+        if (impl_->audioSampleOffset > 0 &&
+            sample.value() > std::numeric_limits<std::int64_t>::max() - impl_->audioSampleOffset) {
+            return Result<void>::failure(makeError(PreviewErrorCategory::SeekFailure,
+                                                   PreviewOperation::Seek,
+                                                   "audio sample offsetの加算がoverflowしました"));
+        }
+        audioSample = sample.value() + impl_->audioSampleOffset;
+        if (audioSample < 0)
+            audioSample = 0;
         resumePlaying = state == PreviewEngineState::Playing;
         audioWorker = impl_->audioWorker;
         audioSink = impl_->audioSink;
@@ -2242,6 +2267,11 @@ PreviewTelemetry PreviewEngine::telemetry() const {
     PreviewTelemetry result = impl_->telemetrySnapshot;
     result.status.state = impl_->machine.state();
     result.status.lastError = impl_->machine.lastError();
+    if (impl_->audioSink) {
+        const audio::WasapiSnapshot endpoint = impl_->audioSink->snapshot();
+        result.audioMeterPeakLeft = endpoint.meterPeakLeft;
+        result.audioMeterPeakRight = endpoint.meterPeakRight;
+    }
     return result;
 }
 

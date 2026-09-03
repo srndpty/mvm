@@ -7,6 +7,7 @@
 #include <cmath>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <system_error>
 #include <utility>
@@ -14,7 +15,9 @@
 namespace mvm::project {
 namespace {
 
-constexpr int kSchemaVersion = 2;
+constexpr int kSchemaVersion = 3;
+// .mvm ファイルであることを識別する marker。拡張子だけを根拠にしない。
+constexpr char kFormatMarker[] = "mvm-project";
 
 std::string pathToUtf8(const std::filesystem::path& path) {
     const auto text = path.generic_u8string();
@@ -152,10 +155,14 @@ public:
 
     bool parse(Project& project, std::string& error) {
         bool hasSchema = false;
+        bool hasFormat = false;
         bool hasTimelineFpsNum = false;
         bool hasTimelineFpsDen = false;
+        bool hasVideoTracks = false;
+        bool hasAudioTracks = false;
         bool hasAssets = false;
         bool hasClips = false;
+        std::string format;
         if (!consume('{'))
             return finish(error);
         skipWhitespace();
@@ -168,6 +175,18 @@ public:
                     if (hasSchema || !parseInteger(project.schemaVersion))
                         return failAndFinish("schema_version が重複または不正です", error);
                     hasSchema = true;
+                } else if (key == "format") {
+                    if (hasFormat || !parseString(format))
+                        return failAndFinish("format が重複または不正です", error);
+                    hasFormat = true;
+                } else if (key == "video_tracks") {
+                    if (hasVideoTracks || !parseTracks(project.videoTracks))
+                        return failAndFinish("video_tracks が重複または不正です", error);
+                    hasVideoTracks = true;
+                } else if (key == "audio_tracks") {
+                    if (hasAudioTracks || !parseTracks(project.audioTracks))
+                        return failAndFinish("audio_tracks が重複または不正です", error);
+                    hasAudioTracks = true;
                 } else if (key == "timeline_fps_num") {
                     if (hasTimelineFpsNum || !parseInteger64(project.timelineFpsNum))
                         return failAndFinish("timeline_fps_num が重複または不正です", error);
@@ -203,10 +222,17 @@ public:
         if (project.schemaVersion != kSchemaVersion)
             return failAndFinish(
                 "対応していない schema_version です: " + std::to_string(project.schemaVersion) +
-                    "。schema 2 Projectを作成してください",
+                    "。schema " + std::to_string(kSchemaVersion) + " の .mvm を開いてください",
                 error);
-        if (!hasTimelineFpsNum || !hasTimelineFpsDen || !hasAssets || !hasClips)
-            return failAndFinish("Project schema 2 の必須 field がありません", error);
+        if (!hasFormat || format != kFormatMarker)
+            return failAndFinish("mvm project ファイルではありません (format marker 不一致)",
+                                 error);
+        if (!hasTimelineFpsNum || !hasTimelineFpsDen || !hasVideoTracks || !hasAudioTracks ||
+            !hasAssets || !hasClips) {
+            return failAndFinish("Project schema " + std::to_string(kSchemaVersion) +
+                                     " の必須 field がありません",
+                                 error);
+        }
         const auto timeline = validateTimeline(project);
         if (!timeline.success)
             return failAndFinish(timeline.error, error);
@@ -523,11 +549,94 @@ private:
         return consume(']');
     }
 
+    bool parseBool(bool& value) {
+        skipWhitespace();
+        if (text_.compare(position_, 4, "true") == 0) {
+            position_ += 4;
+            value = true;
+            return true;
+        }
+        if (text_.compare(position_, 5, "false") == 0) {
+            position_ += 5;
+            value = false;
+            return true;
+        }
+        return fail("JSON boolean が不正です");
+    }
+
+    bool parseTrack(Track& track) {
+        bool hasName = false;
+        bool hasMuted = false;
+        if (!consume('{'))
+            return false;
+        skipWhitespace();
+        if (!peek('}')) {
+            while (true) {
+                std::string key;
+                if (!parseString(key) || !consume(':'))
+                    return false;
+                if (key == "name") {
+                    if (hasName || !parseString(track.name))
+                        return fail("track の name が重複または不正です");
+                    hasName = true;
+                } else if (key == "muted") {
+                    if (hasMuted || !parseBool(track.muted))
+                        return fail("track の muted が重複または不正です");
+                    hasMuted = true;
+                } else if (!skipValue()) {
+                    return false;
+                }
+                skipWhitespace();
+                if (consumeIf(','))
+                    continue;
+                break;
+            }
+        }
+        if (!consume('}'))
+            return false;
+        if (!hasName || !hasMuted)
+            return fail("track の必須 field がありません");
+        if (track.name.empty())
+            return fail("track の name が空です");
+        return true;
+    }
+
+    bool parseTracks(std::vector<Track>& tracks) {
+        if (!consume('['))
+            return false;
+        skipWhitespace();
+        if (consumeIf(']'))
+            return true;
+        while (true) {
+            Track track;
+            if (!parseTrack(track))
+                return false;
+            tracks.push_back(std::move(track));
+            skipWhitespace();
+            if (consumeIf(','))
+                continue;
+            break;
+        }
+        return consume(']');
+    }
+
+    bool parseTrackKind(const std::string& text, TrackKind& kind) {
+        if (text == "video")
+            kind = TrackKind::Video;
+        else if (text == "audio")
+            kind = TrackKind::Audio;
+        else
+            return fail("未知の track kind です: " + text);
+        return true;
+    }
+
     bool parseClipKind(const std::string& text, TimelineClipKind& kind) {
         if (text == "video")
             kind = TimelineClipKind::Video;
         else if (text == "manim")
             kind = TimelineClipKind::Manim;
+        else if (text == "audio")
+            kind = TimelineClipKind::Audio;
         else
             return fail("未知の timeline clip kind です: " + text);
         return true;
@@ -620,9 +729,11 @@ private:
         bool hasSourceOut = false;
         bool hasTimelineStart = false;
         bool hasEffects = false;
-        bool hasVideoTrack = false;
+        bool hasTrackKind = false;
+        bool hasTrackIndex = false;
         std::string kind;
         std::string media;
+        std::string trackKind;
 
         if (!consume('{'))
             return false;
@@ -672,14 +783,18 @@ private:
                     if (hasTimelineStart || !parseInteger64(clip.timelineStartFrame))
                         return fail("timeline clip の timeline_start_frame が重複または不正です");
                     hasTimelineStart = true;
-                } else if (key == "video_track") {
-                    std::int64_t videoTrack = -1;
-                    if (hasVideoTrack || !parseInteger64(videoTrack) || videoTrack < 0 ||
-                        videoTrack > 1) {
-                        return fail("timeline clip の video_track が重複または不正です");
+                } else if (key == "track_kind") {
+                    if (hasTrackKind || !parseString(trackKind))
+                        return fail("timeline clip の track_kind が重複または不正です");
+                    hasTrackKind = true;
+                } else if (key == "track_index") {
+                    std::int64_t trackIndex = -1;
+                    if (hasTrackIndex || !parseInteger64(trackIndex) || trackIndex < 0 ||
+                        trackIndex > std::numeric_limits<int>::max()) {
+                        return fail("timeline clip の track_index が重複または不正です");
                     }
-                    clip.videoTrack = static_cast<VideoTrack>(videoTrack);
-                    hasVideoTrack = true;
+                    clip.track.index = static_cast<int>(trackIndex);
+                    hasTrackIndex = true;
                 } else if (key == "effects") {
                     if (hasEffects || !parseClipEffects(clip.effects))
                         return fail("timeline clip の effects が重複または不正です");
@@ -696,7 +811,8 @@ private:
         if (!consume('}'))
             return false;
         if (!hasKind || !hasMedia || !hasName || !hasId || !hasSourceFpsNum || !hasSourceFpsDen ||
-            !hasSourceFrameCount || !hasSourceIn || !hasSourceOut || !hasTimelineStart)
+            !hasSourceFrameCount || !hasSourceIn || !hasSourceOut || !hasTimelineStart ||
+            !hasTrackKind || !hasTrackIndex)
             return fail("timeline clip の必須 field がありません");
         if (media.empty())
             return fail("timeline clip の media_path が空です");
@@ -704,9 +820,8 @@ private:
             return fail("timeline clip の name が空です");
         if (!parseClipKind(kind, clip.kind))
             return false;
-        // schema 2互換契約: video_track欠損は明示的にV1として読む。
-        if (!hasVideoTrack)
-            clip.videoTrack = VideoTrack::V1;
+        if (!parseTrackKind(trackKind, clip.track.kind))
+            return false;
         clip.mediaPath = pathFromUtf8(media);
         return true;
     }
@@ -803,10 +918,25 @@ ProjectIoResult saveProjectJson(const Project& project, const std::filesystem::p
     }
 
     std::ostringstream json;
-    json << "{\n  \"schema_version\": 2,\n"
+    const auto writeTracks = [&json](const char* key, const std::vector<Track>& tracks) {
+        json << "  \"" << key << "\": [";
+        for (std::size_t index = 0; index < tracks.size(); ++index) {
+            json << (index == 0 ? "\n" : ",\n") << "    { \"name\": \""
+                 << escapeJson(tracks[index].name)
+                 << "\", \"muted\": " << (tracks[index].muted ? "true" : "false") << " }";
+        }
+        if (!tracks.empty())
+            json << '\n';
+        json << "  ],\n";
+    };
+
+    json << "{\n  \"schema_version\": " << kSchemaVersion << ",\n"
+         << "  \"format\": \"" << kFormatMarker << "\",\n"
          << "  \"timeline_fps_num\": " << project.timelineFpsNum << ",\n"
-         << "  \"timeline_fps_den\": " << project.timelineFpsDen << ",\n"
-         << "  \"manim_assets\": [";
+         << "  \"timeline_fps_den\": " << project.timelineFpsDen << ",\n";
+    writeTracks("video_tracks", project.videoTracks);
+    writeTracks("audio_tracks", project.audioTracks);
+    json << "  \"manim_assets\": [";
     for (std::size_t index = 0; index < project.manimAssets.size(); ++index) {
         const auto& asset = project.manimAssets[index];
         std::string script;
@@ -863,7 +993,8 @@ ProjectIoResult saveProjectJson(const Project& project, const std::filesystem::p
              << "      \"source_in_frame\": " << clip.sourceInFrame << ",\n"
              << "      \"source_out_frame\": " << clip.sourceOutFrame << ",\n"
              << "      \"timeline_start_frame\": " << clip.timelineStartFrame << ",\n"
-             << "      \"video_track\": " << static_cast<int>(clip.videoTrack) << ",\n"
+             << "      \"track_kind\": \"" << trackKindName(clip.track.kind) << "\",\n"
+             << "      \"track_index\": " << clip.track.index << ",\n"
              << "      \"effects\": {\n"
              << "        \"position_x_percent\": " << clip.effects.positionXPercent << ",\n"
              << "        \"position_y_percent\": " << clip.effects.positionYPercent << ",\n"

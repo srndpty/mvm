@@ -73,7 +73,7 @@ switch ($Command.ToLowerInvariant()) {
         $ucrt64Bin = Join-Path $Ucrt64 'bin'
         $executable = Join-Path $releaseBuildDirectory 'bin\mvm.exe'
         $projectDirectory = Join-Path $releaseBuildDirectory 'm6a-gui'
-        $projectPath = Join-Path $projectDirectory 'project.mvm.json'
+        $projectPath = Join-Path $projectDirectory 'project.mvm'
 
         if (-not (Test-Path -LiteralPath $ucrt64Bin -PathType Container)) {
             throw "UCRT64 の bin ディレクトリが見つかりません: $ucrt64Bin"

@@ -90,12 +90,36 @@ CheckedOutputTimebase::createQualified(std::int64_t frameRateNumerator,
     auto result = create(frameRateNumerator, frameRateDenominator, audioSampleRate);
     if (!result)
         return result;
-    if (result.value().frameRateNumerator_ != 60 || result.value().frameRateDenominator_ != 1 ||
-        result.value().audioSampleRate_ != 48000) {
+    if (!isSupportedOutputFrameRate(result.value().frameRateNumerator_,
+                                    result.value().frameRateDenominator_) ||
+        result.value().audioSampleRate_ != kQualifiedAudioSampleRate) {
         return OutputTimebaseResult<CheckedOutputTimebase>::failure(
             OutputTimebaseError::UnsupportedProductRate);
     }
     return result;
+}
+
+const std::vector<SupportedFrameRate>& supportedOutputFrameRates() {
+    // NTSC 系 (1001 分母) を含めるのは、素材の実 fps がこの形で出てくるため。
+    static const std::vector<SupportedFrameRate> rates = {
+        {24, 1}, {24000, 1001}, {25, 1}, {30, 1}, {30000, 1001}, {50, 1}, {60, 1}, {60000, 1001},
+    };
+    return rates;
+}
+
+bool isSupportedOutputFrameRate(std::int64_t numerator, std::int64_t denominator) {
+    if (numerator <= 0 || denominator <= 0)
+        return false;
+    const std::int64_t divisor = std::gcd(numerator, denominator);
+    const std::int64_t canonicalNumerator = numerator / divisor;
+    const std::int64_t canonicalDenominator = denominator / divisor;
+    for (const auto& rate : supportedOutputFrameRates()) {
+        const std::int64_t rateDivisor = std::gcd(rate.numerator, rate.denominator);
+        if (rate.numerator / rateDivisor == canonicalNumerator &&
+            rate.denominator / rateDivisor == canonicalDenominator)
+            return true;
+    }
+    return false;
 }
 
 CanonicalRational CheckedOutputTimebase::frameRate() const {
@@ -181,7 +205,8 @@ CheckedOutputTimebase::statusOutputFrame(std::int64_t audioSample) const {
 
 const CheckedOutputTimebase& qualifiedOutputTimebase() {
     static const CheckedOutputTimebase value = [] {
-        const auto result = CheckedOutputTimebase::createQualified(60, 1, 48000);
+        const auto result =
+            CheckedOutputTimebase::createQualified(60, 1, kQualifiedAudioSampleRate);
         return result.value();
     }();
     return value;

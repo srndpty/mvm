@@ -20,7 +20,8 @@ add_library(mvm_project STATIC
     project/timeline_edit.cpp
 )
 target_include_directories(mvm_project PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(mvm_project PRIVATE mvm::warnings)
+# qualified output frame rate の表は mvm::core に一本化しているため PUBLIC で持つ。
+target_link_libraries(mvm_project PUBLIC mvm::core PRIVATE mvm::warnings)
 add_library(mvm::project ALIAS mvm_project)
 
 # --- Windows / UTF-8 ヘルパ -------------------------------------------------
