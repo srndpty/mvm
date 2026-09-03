@@ -1489,8 +1489,9 @@ Result<void> PreviewEngine::initialize(const PreviewEngineConfig& config,
         // capability が公開する rate は「今回 initialize した rate」である。
         // 固定値を返すと source 側の rate 検査が別の rate を基準にしてしまう。
         impl_->capability.configuredOutputFrameRate = rate.value();
-        // measured envelope との一致は PreviewCapabilities の derived getter が返す。
-        // ここで保存値を作らない (configured を書き換える経路ごとの再計算漏れを避ける)。
+        // ここで初めて構成が確定する。measured envelope との一致は derived getter が
+        // 返すが、この flag が無いと未初期化の既定値が envelope と一致してしまう。
+        impl_->capability.hasConfiguredEnvelope = true;
         impl_->timebase = timebase.value();
         impl_->telemetrySnapshot.status.state = impl_->machine.state();
     }
@@ -1506,6 +1507,8 @@ Result<void> PreviewEngine::initialize(const PreviewEngineConfig& config,
         impl_->dispatchScheduled = false;
         impl_->telemetrySnapshot = PreviewTelemetry{};
         impl_->timebase.reset();
+        // 構成は確定しなかった。measured 判定を false positive にしない。
+        impl_->capability.hasConfiguredEnvelope = false;
         return posted;
     }
     return Result<void>::success();

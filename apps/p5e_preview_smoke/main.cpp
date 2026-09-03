@@ -1178,7 +1178,7 @@ int main(int argc, char** argv) {
                             diagnostics.audioTransportFailureCount == 0 &&
                             diagnostics.audioSinkDeviceFailureCount == 0 &&
                             diagnostics.audioDomainRejectCount == 0 &&
-                            // video-only経路のwall-clockはqualified masterであり退避ではない。
+                            // video-only経路のwall-clockは正規のmasterであり退避ではない。
                             diagnostics.videoMasterQpcFallbackCount == 0)) &&
                           // 中断されたremovalはcommitされない。
                           (!fatalFault || (afterRemoval.registeredAudioSourceCount == 1 &&

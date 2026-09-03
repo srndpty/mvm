@@ -122,7 +122,8 @@ public:
     std::size_t deviceChanges = 0;
 };
 
-PreviewEngineConfig qualifiedConfig() {
+// 実測済み (measured) の構成。60/1 は measuredOutputFrameRates の唯一の要素。
+PreviewEngineConfig measuredConfig() {
     return {{{60, 1}}};
 }
 
@@ -145,7 +146,22 @@ std::unordered_map<std::uint64_t, EligibleSource> twoSources() {
 // 保存値にすると configured を書き換える経路ごとに再計算が要り、
 // 書き忘れると stale な true が残る。
 void measuredEnvelopeIsDerived() {
+    // 第0状態: 構成が未確定なら、値が envelope と一致していても measured にしない。
+    // configured* の既定値は envelope の既定値と同じ組なので、この検査が無いと
+    // 「initialize していない engine が measured」を通してしまう。
+    PreviewCapabilities unconfigured;
+    unconfigured.configuredOutputFrameRate = MeasuredPreviewEnvelope{}.outputFrameRate;
+    unconfigured.configuredMaxActiveVideoSources = MeasuredPreviewEnvelope{}.maxActiveVideoSources;
+    unconfigured.configuredMaxCompositionLayers = MeasuredPreviewEnvelope{}.maxCompositionLayers;
+    unconfigured.configuredMaxActiveAudioSources = MeasuredPreviewEnvelope{}.maxActiveAudioSources;
+    unconfigured.configuredAudioSampleRate = MeasuredPreviewEnvelope{}.audioSampleRate;
+    unconfigured.configuredAudioChannelCount = MeasuredPreviewEnvelope{}.audioChannelCount;
+    require(!unconfigured.hasConfiguredEnvelope, "構成未確定が既定値になっていません");
+    require(!unconfigured.matchesMeasuredEnvelope(),
+            "構成未確定のcapabilityをmeasured一致として返しました");
+
     PreviewCapabilities capability;
+    capability.hasConfiguredEnvelope = true;
     const MeasuredPreviewEnvelope envelope;
     capability.configuredOutputFrameRate = envelope.outputFrameRate;
     capability.configuredMaxActiveVideoSources = envelope.maxActiveVideoSources;
@@ -208,8 +224,8 @@ void frameRateAndDescriptorValidation() {
             static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) + 1, 1),
         PreviewErrorCategory::UnsupportedCapability,
         "uint32 boundary overflowをrejectしませんでした");
-    const auto validButUnqualified = validatePreviewFrameRate(48, 1);
-    require(validButUnqualified, "positive rationalをtype validationでrejectしました");
+    const auto validButUnconfigurable = validatePreviewFrameRate(48, 1);
+    require(validButUnconfigurable, "positive rationalをtype validationでrejectしました");
     require(validateSourceFrameRate(120, 2, {60, 1}), "source frame rateをcanonical比較できません");
     requireFailure(validateSourceFrameRate(30, 1, {60, 1}),
                    PreviewErrorCategory::UnsupportedCapability, "30fps sourceをP5-Cで受理しました");
@@ -217,17 +233,27 @@ void frameRateAndDescriptorValidation() {
                    PreviewErrorCategory::UnsupportedCapability,
                    "120fps sourceをP5-Cで受理しました");
 
-    PreviewEngine unqualifiedEngine;
+    PreviewEngine unconfigurableEngine;
     auto dispatcher = std::make_shared<ManualDispatcher>();
-    // 48/1 は qualified 表に無い。表の中身はここへ literal で書き、実装の
+    // initialize 前の engine は measured ではない。configured* の既定値が
+    // measured envelope の既定値と同じ組であることに引きずられない。
+    require(!unconfigurableEngine.capabilities().matchesMeasuredEnvelope(),
+            "initialize前のengineをmeasured一致として公開しました");
+    require(!unconfigurableEngine.capabilities().hasConfiguredEnvelope,
+            "initialize前のengineが構成確定済みになっています");
+    // 48/1 は configurable 表に無い。表の中身はここへ literal で書き、実装の
     // 判定関数を呼ばない。
-    requireFailure(unqualifiedEngine.initialize({{{48, 1}}}, dispatcher),
+    requireFailure(unconfigurableEngine.initialize({{{48, 1}}}, dispatcher),
                    PreviewErrorCategory::UnsupportedCapability,
-                   "unqualified rateをinitializeでrejectしませんでした");
-    require(unqualifiedEngine.status().state == PreviewEngineState::Uninitialized,
+                   "configurableでないrateをinitializeでrejectしませんでした");
+    require(unconfigurableEngine.status().state == PreviewEngineState::Uninitialized,
             "initialize reject後にstateが変化しました");
+    // initialize に失敗した engine も measured ではない。
+    require(!unconfigurableEngine.capabilities().matchesMeasuredEnvelope(),
+            "initialize失敗後のengineをmeasured一致として公開しました");
 
-    // 60/1 以外の qualified rate を受理し、capability がその rate を公開すること。
+    // 60/1 以外の configurable rate (= 未計測) を受理し、capability がその rate を
+    // 公開すること。受理は qualification ではない。
     // 固定値 60/1 を返すと source の rate 検査が別の基準で動いてしまう。
     const std::pair<std::uint32_t, std::uint32_t> configurableOnlyRates[] = {
         {24, 1}, {24000, 1001}, {25, 1}, {30, 1}, {30000, 1001}, {50, 1}, {60000, 1001}};
@@ -265,7 +291,7 @@ void frameRateAndDescriptorValidation() {
     auto equivalentRateDispatcher = std::make_shared<ManualDispatcher>();
     require(equivalentRateEngine.initialize({{{120, 2}}}, equivalentRateDispatcher),
             "60/1と等価な120/2をinitializeで受理しませんでした");
-    // P5-D2でaudio-master transportを接続したため、qualified audio sourceは1件になった。
+    // P5-D2でaudio-master transportを接続したため、configured audio sourceは1件である。
     // 等価rationalの受理がcapabilityを書き換えないことを、ここで固定する。
     require(equivalentRateEngine.capabilities().matchesMeasuredEnvelope(),
             "60/1構成をmeasured envelope一致として公開していません");
@@ -699,7 +725,7 @@ void engineFacadeAndEvents() {
     auto dispatcher = std::make_shared<ManualDispatcher>();
     auto sink = std::make_shared<RecordingSink>();
     sink->engine = &engine;
-    require(engine.initialize(qualifiedConfig(), dispatcher), "engine initializeに失敗しました");
+    require(engine.initialize(measuredConfig(), dispatcher), "engine initializeに失敗しました");
     const PreviewCapabilities productCapabilities = engine.capabilities();
     require(productCapabilities.configuredMaxActiveVideoSources == 2 &&
                 productCapabilities.configuredMaxCompositionLayers == 2 &&
@@ -752,18 +778,23 @@ void eventOwnershipAndFatalPath() {
     auto refusingDispatcher = std::make_shared<ManualDispatcher>();
     refusingDispatcher->acceptPosts = false;
     std::weak_ptr<ManualDispatcher> refusingWeak = refusingDispatcher;
-    requireFailure(postRollback.initialize(qualifiedConfig(), refusingDispatcher),
+    requireFailure(postRollback.initialize(measuredConfig(), refusingDispatcher),
                    PreviewErrorCategory::ShutdownFailure,
                    "dispatcher post failureをinitialize successにしました");
     require(postRollback.status().state == PreviewEngineState::Uninitialized,
             "dispatcher post failure後にstateをrollbackしていません");
+    // rollback した engine の構成は確定していない。measured へ戻さない。
+    require(!postRollback.capabilities().hasConfiguredEnvelope,
+            "rollback後も構成確定済みのままです");
+    require(!postRollback.capabilities().matchesMeasuredEnvelope(),
+            "rollbackしたengineをmeasured一致として公開しました");
     refusingDispatcher.reset();
     require(refusingWeak.expired(), "dispatcher post failure後もdispatcherを保持しています");
 
     PreviewEngine detached;
     auto detachedDispatcher = std::make_shared<ManualDispatcher>();
     auto detachedSink = std::make_shared<RecordingSink>();
-    require(detached.initialize(qualifiedConfig(), detachedDispatcher), "initializeに失敗しました");
+    require(detached.initialize(measuredConfig(), detachedDispatcher), "initializeに失敗しました");
     require(detached.attachEventSink(detachedSink), "sink attachに失敗しました");
     require(detached.detachEventSink(), "pending callback前のdetachに失敗しました");
     detachedDispatcher->runAll();
@@ -776,7 +807,7 @@ void eventOwnershipAndFatalPath() {
     PreviewEngine expired;
     auto expiredDispatcher = std::make_shared<ManualDispatcher>();
     auto expiredSink = std::make_shared<RecordingSink>();
-    require(expired.initialize(qualifiedConfig(), expiredDispatcher), "initializeに失敗しました");
+    require(expired.initialize(measuredConfig(), expiredDispatcher), "initializeに失敗しました");
     require(expired.attachEventSink(expiredSink), "sink attachに失敗しました");
     expiredSink.reset();
     expiredDispatcher->runAll();
@@ -790,7 +821,7 @@ void eventOwnershipAndFatalPath() {
     PreviewEngine fatal;
     auto fatalDispatcher = std::make_shared<ManualDispatcher>();
     auto fatalSink = std::make_shared<RecordingSink>();
-    require(fatal.initialize(qualifiedConfig(), fatalDispatcher),
+    require(fatal.initialize(measuredConfig(), fatalDispatcher),
             "fatal test initializeに失敗しました");
     require(fatal.attachEventSink(fatalSink), "fatal sink attachに失敗しました");
     fatalDispatcher->runAll();
@@ -825,7 +856,7 @@ void constructorThreadAuthority() {
     std::optional<Result<void>> initializeResult;
     std::thread initializeThread([&] {
         initializeResult.emplace(
-            wrongThreadInitialize.initialize(qualifiedConfig(), rejectedDispatcher));
+            wrongThreadInitialize.initialize(measuredConfig(), rejectedDispatcher));
     });
     initializeThread.join();
     require(initializeResult.has_value(), "wrong-thread initialize resultがありません");
@@ -838,7 +869,7 @@ void constructorThreadAuthority() {
 
     PreviewEngine engine;
     auto dispatcher = std::make_shared<ManualDispatcher>();
-    require(engine.initialize(qualifiedConfig(), dispatcher),
+    require(engine.initialize(measuredConfig(), dispatcher),
             "owner-thread initializeに失敗しました");
     dispatcher->runAll();
     auto sink = std::make_shared<RecordingSink>();
@@ -861,7 +892,7 @@ void constructorThreadAuthority() {
 void dispatcherAndSinkFailureContainment() {
     PreviewEngine rejectedPost;
     auto rejectingDispatcher = std::make_shared<ManualDispatcher>();
-    require(rejectedPost.initialize(qualifiedConfig(), rejectingDispatcher),
+    require(rejectedPost.initialize(measuredConfig(), rejectingDispatcher),
             "runtime reject test initializeに失敗しました");
     rejectingDispatcher->runAll();
     rejectingDispatcher->rejectNextPost = true;
@@ -879,7 +910,7 @@ void dispatcherAndSinkFailureContainment() {
 
     PreviewEngine throwingPost;
     auto throwingDispatcher = std::make_shared<ManualDispatcher>();
-    require(throwingPost.initialize(qualifiedConfig(), throwingDispatcher),
+    require(throwingPost.initialize(measuredConfig(), throwingDispatcher),
             "runtime throw test initializeに失敗しました");
     throwingDispatcher->runAll();
     throwingDispatcher->throwNextPost = true;
@@ -904,7 +935,7 @@ void dispatcherAndSinkFailureContainment() {
     PreviewEngine throwingSinkEngine;
     auto sinkDispatcher = std::make_shared<ManualDispatcher>();
     auto throwingSink = std::make_shared<ThrowingSink>();
-    require(throwingSinkEngine.initialize(qualifiedConfig(), sinkDispatcher),
+    require(throwingSinkEngine.initialize(measuredConfig(), sinkDispatcher),
             "sink throw test initializeに失敗しました");
     require(throwingSinkEngine.attachEventSink(throwingSink), "throwing sink attachに失敗しました");
     bool sinkExceptionEscaped = false;
@@ -928,7 +959,7 @@ void dispatcherAndSinkFailureContainment() {
 void dispatcherContinuationFailure() {
     PreviewEngine engine;
     auto dispatcher = std::make_shared<ManualDispatcher>();
-    require(engine.initialize(qualifiedConfig(), dispatcher),
+    require(engine.initialize(measuredConfig(), dispatcher),
             "continuation test initializeに失敗しました");
     require(PreviewRenderPort::attachLogicalDevice(engine),
             "continuation test render attachに失敗しました");
@@ -964,7 +995,7 @@ void fillNonTerminalMailbox(PreviewEngine& engine) {
 void mailboxSaturationLifecycle() {
     PreviewEngine normal;
     auto normalDispatcher = std::make_shared<ManualDispatcher>();
-    require(normal.initialize(qualifiedConfig(), normalDispatcher),
+    require(normal.initialize(measuredConfig(), normalDispatcher),
             "mailbox normal test initializeに失敗しました");
     normalDispatcher->runAll();
     normalDispatcher->acceptPosts = false;
@@ -980,7 +1011,7 @@ void mailboxSaturationLifecycle() {
 
     PreviewEngine fatal;
     auto fatalDispatcher = std::make_shared<ManualDispatcher>();
-    require(fatal.initialize(qualifiedConfig(), fatalDispatcher),
+    require(fatal.initialize(measuredConfig(), fatalDispatcher),
             "mailbox fatal test initializeに失敗しました");
     fatalDispatcher->runAll();
     fatalDispatcher->acceptPosts = false;
@@ -1010,7 +1041,7 @@ void dispatcherRetention() {
     PreviewEngine engine;
     auto dispatcher = std::make_shared<ManualDispatcher>();
     std::weak_ptr<ManualDispatcher> weak = dispatcher;
-    require(engine.initialize(qualifiedConfig(), dispatcher), "initializeに失敗しました");
+    require(engine.initialize(measuredConfig(), dispatcher), "initializeに失敗しました");
     dispatcher.reset();
     require(!weak.expired(), "terminal acknowledgement前にdispatcherを解放しました");
     auto retained = weak.lock();
@@ -1031,7 +1062,7 @@ void safeDestruction() {
     {
         PreviewEngine engine;
         auto dispatcher = std::make_shared<ManualDispatcher>();
-        require(engine.initialize(qualifiedConfig(), dispatcher), "initializeに失敗しました");
+        require(engine.initialize(measuredConfig(), dispatcher), "initializeに失敗しました");
         require(engine.requestShutdown(), "shutdown requestに失敗しました");
         require(engine.status().state == PreviewEngineState::Shutdown,
                 "renderer未生成のshutdownを内部完了できませんでした");
@@ -1039,7 +1070,7 @@ void safeDestruction() {
     {
         PreviewEngine engine;
         auto dispatcher = std::make_shared<ManualDispatcher>();
-        require(engine.initialize(qualifiedConfig(), dispatcher), "initializeに失敗しました");
+        require(engine.initialize(measuredConfig(), dispatcher), "initializeに失敗しました");
         PreviewError error{PreviewErrorCategory::DeviceFailure,
                            PreviewErrorSeverity::FatalToSession,
                            PreviewOperation::RenderDeviceAttach,
@@ -1054,7 +1085,7 @@ void safeDestruction() {
 void p5cControlAndRenderNegatives() {
     PreviewEngine engine;
     auto dispatcher = std::make_shared<ManualDispatcher>();
-    require(engine.initialize(qualifiedConfig(), dispatcher), "initializeに失敗しました");
+    require(engine.initialize(measuredConfig(), dispatcher), "initializeに失敗しました");
     requireFailure(engine.play(), PreviewErrorCategory::InvalidState,
                    "render attach前のplayを受理しました");
     requireFailure(engine.addSource({"movie.mp4", true, false}), PreviewErrorCategory::InvalidState,
@@ -1152,7 +1183,7 @@ void p5eCompositionSourceReferences() {
 void p5eRemoveSourceNegatives() {
     PreviewEngine engine;
     auto dispatcher = std::make_shared<ManualDispatcher>();
-    require(engine.initialize(qualifiedConfig(), dispatcher), "initializeに失敗しました");
+    require(engine.initialize(measuredConfig(), dispatcher), "initializeに失敗しました");
     // ReadyPaused以外はstateで拒否する。
     requireFailure(engine.removeSource({1}), PreviewErrorCategory::InvalidState,
                    "ReadyPaused前のremoveSourceを受理しました");
@@ -1203,7 +1234,7 @@ void unsafeDestructionProcess() {
     std::set_terminate([] { std::_Exit(86); });
     PreviewEngine engine;
     auto dispatcher = std::make_shared<ManualDispatcher>();
-    require(engine.initialize(qualifiedConfig(), dispatcher), "initializeに失敗しました");
+    require(engine.initialize(measuredConfig(), dispatcher), "initializeに失敗しました");
 }
 
 // P5-D2: audio-master transportの公開contract。期待値はproduct helperを呼ばず
@@ -1241,20 +1272,20 @@ void p5dAudioDomainAndCapabilities() {
     require(capabilities.configuredAudioSampleRate == 48000,
             "configured audio sample rateが48000として公開されていません");
     require(capabilities.configuredAudioChannelCount == 2,
-            "qualified audio channel数が2として公開されていません");
+            "configured audio channel数が2として公開されていません");
     require(!capabilities.deviceRecoverySupported,
             "device recoveryをsupport済みとして公開しました");
     // P5-E3 capability確定。active source数とlayer数は独立したliteralで固定する。
     // active source数とlayer数は別capabilityとして検査する (contract §21)。
     require(capabilities.configuredMaxActiveVideoSources == 2,
-            "qualified active video source数が2として公開されていません");
+            "configured active video source数が2として公開されていません");
     require(capabilities.configuredMaxCompositionLayers == 2,
-            "qualified composition layer数が2として公開されていません");
+            "configured composition layer数が2として公開されていません");
     require(!capabilities.duplicateSourceLayersSupported,
             "同一sourceの複数layer配置をsupport済みとして公開しました");
     require(capabilities.configuredOutputFrameRate.numerator == 60 &&
                 capabilities.configuredOutputFrameRate.denominator == 1,
-            "qualified output frame rateが60/1として公開されていません");
+            "configured output frame rateが60/1として公開されていません");
 
     // descriptor validatorだけでなく、addSource()経路でも空descriptorを拒否する。
     // video/audioのどちらも無効なsourceにpublic IDを発行しない。

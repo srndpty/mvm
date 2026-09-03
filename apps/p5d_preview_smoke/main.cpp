@@ -185,12 +185,13 @@ int main(int argc, char** argv) {
         return 3;
     }
 
-    // audio統合後もqualified capabilityを実体として公開していること。
+    // audio統合後も configured capability を実体として公開していること。
+    // 個々の軸を qualified とは呼ばない (実測済みの組は measuredEnvelope)。
     const auto capabilities = engine->capabilities();
     if (capabilities.configuredMaxActiveAudioSources != 1 ||
         capabilities.configuredAudioSampleRate != 48000 ||
         capabilities.configuredAudioChannelCount != 2) {
-        std::fprintf(stderr, "qualified audio capabilityが公開されていません\n");
+        std::fprintf(stderr, "configured audio capabilityが公開されていません\n");
         return 3;
     }
 

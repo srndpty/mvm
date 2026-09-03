@@ -417,3 +417,68 @@ audio domain まで**組として**比較する。軸ごとに独立に合成で
 | `kMaxPreviewVideoLayers` のコメント | 2 は **現在の configured limit** であり、実測済みなのは `MeasuredPreviewEnvelope` の**組**としてである旨を明記 |
 | docs §3 | 「`PreviewCapabilities` が qualify しているのは 2 layer まで」→ configured limit と measured envelope の区別を明示 |
 | test の変数名 | 非 60fps 群の `qualifiedRates` → `configurableOnlyRates`。実体は `matchesMeasuredEnvelope() == false` の検査である |
+
+## 14. 4 巡目レビュー指摘への対応 (P2 1 件 / P3 1 件)
+
+### 14.1 未初期化 engine が measured 一致になりえた
+
+`[事実]` `PreviewCapabilities` の `configured*` 既定値は
+`MeasuredPreviewEnvelope` の既定値と**同じ組**である。
+
+```text
+configured*      既定: 60/1, video 2, layer 2, audio 1, 48kHz, stereo
+measuredEnvelope 既定: 60/1, video 2, layer 2, audio 1, 48kHz, stereo
+```
+
+`[事実]` そのため tuple equality だけの derived getter では、
+`initialize()` を通していない engine が `matchesMeasuredEnvelope() == true` を返した。
+controller の `frameRateMeasured()` は engine pointer の存在だけで engine authority へ
+切り替えていたため、`initialize()` が失敗した engine でも
+「測定済み」と答えうる **実測 authority の false positive** になっていた。
+
+`[事実]` `PreviewCapabilities::hasConfiguredEnvelope` を足した。
+これは derived value の cache ではなく「現在構成が確定した」という**一次 state**
+であり、§13.2 で避けた stale-derived-value の問題とは別物である。
+
+- `initialize()` の全検証を通った後にだけ `true`
+- dispatcher post 失敗の rollback 経路で `false` へ戻す
+- `matchesMeasuredEnvelope()` は先頭でこれを見る
+
+`[事実]` `frameRateMeasured()` は Project の rate 表への fallback を廃止した。
+fallback があると、engine の初期化に失敗していても
+「60fps だから測定済み」と答えてしまう。
+
+`[事実]` regression は次の 4 状態を検査する
+(`tests/preview_engine/test_preview_engine.cpp`)。
+
+| 状態 | 期待 |
+| ---- | ---- |
+| fresh engine (initialize 前) | `false` |
+| initialize 60/1 成功 | `true` |
+| initialize 24/1 等 成功 | `false` |
+| initialize 失敗 / rollback | `false` |
+
+加えて capability 値そのものに対して、
+「値が envelope と一致していても `hasConfiguredEnvelope == false` なら measured にしない」
+という第 0 状態を検査する。
+
+`[事実]` 効いていることは、`matchesMeasuredEnvelope()` から
+`hasConfiguredEnvelope &&` を外す mutation で実際に失敗することを確認して確かめた。
+
+### 14.2 test / smoke に残っていた旧 `qualified` 語彙
+
+`[事実]` 次を `configured` / `measured` へ揃えた。
+
+| 場所 | 変更 |
+| ---- | ---- |
+| `configurableOnlyRates` 直前のコメント | 「60/1 以外の qualified rate」→「configurable rate (= 未計測)。受理は qualification ではない」 |
+| equivalent-rate 部の「qualified audio sourceは1件」 | 「configured audio sourceは1件」 |
+| `unqualifiedEngine` / `validButUnqualified` | `unconfigurableEngine` / `validButUnconfigurable` |
+| `qualifiedConfig()` | `measuredConfig()` (60/1 は measured 表の唯一の要素) |
+| `p5dAudioDomainAndCapabilities` の assertion message | `configured audio channel数` など、見ている field に合わせた |
+| `p5d_preview_smoke` の comment / failure message | 「configured capability」。個々の軸を qualified と呼ばない |
+| `p5e_preview_smoke` の wall-clock comment | 「正規の master」 |
+
+`[事実]` `validateQualifiedAudioDomain` と `kQualifiedAudioSampleRate` は
+48kHz / stereo / float32 という **measured envelope の一部**を指しており、
+個別軸を qualified と呼んでいる例ではないため名前を変えていない。

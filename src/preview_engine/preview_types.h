@@ -181,6 +181,15 @@ struct PreviewCapabilities {
     std::uint32_t configuredAudioSampleRate = 0;
     std::uint32_t configuredAudioChannelCount = 0;
 
+    // configured* が「実際に確定した構成」かどうか。
+    //
+    // **これは derived value の cache ではなく一次 state である。**
+    // configured* の既定値は measuredEnvelope の既定値と同じ組なので、これが無いと
+    // initialize していない engine が tuple equality だけで一致してしまう
+    // (「実測 authority の false positive」)。initialize が最後まで成功したときに
+    // だけ true にし、rollback では false へ戻す。
+    bool hasConfiguredEnvelope = false;
+
     // ---- 実測済みの構成 ----
     MeasuredPreviewEnvelope measuredEnvelope;
 
@@ -191,8 +200,12 @@ struct PreviewCapabilities {
     // 保存値にすると configured field を書き換える経路 (test hook を含む) ごとに
     // 再計算が要り、書き忘れると stale な true が残る。derived にして
     // 「派生値が元と食い違う」状態そのものを作らない。
+    //
+    // 構成が未確定 (hasConfiguredEnvelope == false) のときは常に false を返す。
+    // 「まだ分からない」を「測定済み」にしない。
     bool matchesMeasuredEnvelope() const {
-        return configuredOutputFrameRate == measuredEnvelope.outputFrameRate &&
+        return hasConfiguredEnvelope &&
+               configuredOutputFrameRate == measuredEnvelope.outputFrameRate &&
                configuredMaxActiveVideoSources == measuredEnvelope.maxActiveVideoSources &&
                configuredMaxCompositionLayers == measuredEnvelope.maxCompositionLayers &&
                configuredMaxActiveAudioSources == measuredEnvelope.maxActiveAudioSources &&

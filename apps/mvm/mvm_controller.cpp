@@ -281,12 +281,11 @@ bool MvmController::applyEffectKey(project::ClipEffects& effects, const QString&
 }
 
 bool MvmController::frameRateMeasured() const {
-    // engine がある間は engine の envelope 一致判定を authority にする。
-    // Project 側の rate 表だけで判断すると、layer 数など他の軸を含む
-    // envelope 一致を見落とす。engine 未初期化のときだけ rate 表へ落とす。
-    if (previewEngine_)
-        return previewEngine_->capabilities().matchesMeasuredEnvelope();
-    return project::isMeasuredTimelineFrameRate(project_.timelineFpsNum, project_.timelineFpsDen);
+    // engine の envelope 一致判定だけを authority にする。
+    // Project 側の rate 表へ fallback すると、engine の initialize が失敗していても
+    // 「60fps だから測定済み」と答えてしまい、false positive になる。
+    // 構成が未確定の engine では matchesMeasuredEnvelope() が false を返す。
+    return previewEngine_ && previewEngine_->capabilities().matchesMeasuredEnvelope();
 }
 
 double MvmController::effectPositionX() const {
