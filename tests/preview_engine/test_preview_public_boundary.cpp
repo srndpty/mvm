@@ -9,11 +9,11 @@ static_assert(std::is_copy_constructible_v<mvm::preview::PreviewTelemetry>);
 
 int main() {
     const mvm::preview::PreviewCapabilities capabilities;
-    return capabilities.maxQualifiedActiveVideoSources == 1 &&
-                   capabilities.maxQualifiedCompositionLayers == 1 &&
-                   capabilities.maxQualifiedActiveAudioSources == 0 &&
-                   capabilities.qualifiedAudioSampleRate == 0 &&
-                   capabilities.qualifiedAudioChannelCount == 0 &&
+    return capabilities.configuredMaxActiveVideoSources == 1 &&
+                   capabilities.configuredMaxCompositionLayers == 1 &&
+                   capabilities.configuredMaxActiveAudioSources == 0 &&
+                   capabilities.configuredAudioSampleRate == 0 &&
+                   capabilities.configuredAudioChannelCount == 0 &&
                    !capabilities.duplicateSourceLayersSupported &&
                    !capabilities.deviceRecoverySupported
                ? 0

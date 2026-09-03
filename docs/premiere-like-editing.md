@@ -275,3 +275,88 @@ native style のままだと mute が視覚的に分からない。
   clip がある Project の fps 変更拒否。
 - `tests/core/test_checked_output_timebase.cpp`
   configurable だが measured でない rate が `createQualified` を通らないこと。
+
+## 12. 再レビュー指摘への対応 (P2 2 件)
+
+### 12.1 audio / video preview transaction の非対称性
+
+`[事実]` 変更前は `syncPreviewSourcesAt()` が **先に audio を remove/add してから**
+video source と composition と seek を処理していた。そのため後段が失敗すると
+「video は旧状態、audio は新 source」という部分 commit が起きえた。
+
+`[事実]` 失敗しうる操作を先に済ませ、後戻りできない audio の差し替えを最後へ寄せた。
+
+```text
+video prepare (addSource)
+  -> composition submit
+  -> audio 差し替え (applyAudioSourceFor)
+  -> seekFrameRequest
+```
+
+`[事実]` engine は active audio source を 1 件しか受理しないため、audio は
+remove -> add の順にしかできず prepare/commit へ素直に割れない。
+そこで `AudioSwitchUndo` に切り替え前の source と identity を控え、
+後段が失敗したら `revertAudioSource()` で元へ戻す compensation transaction にした。
+`rollback()` は video source の retire と audio の revert を **同じ境界で**行う。
+
+`[事実]` 戻せなかった場合は黙って成功にせず、`error` 文字列へ追記して呼び出し側の
+status に残す。
+
+`[事実]` 検査は `tests/gpu_preview/test-preview-transaction-contract.ps1` に置いた。
+engine と GPU device を要求するため controller を駆動する unit test は書けないので、
+次を source 上で固定している。
+
+- audio の差し替えが composition submit より後にあること
+- audio 差し替え後の `return false` がすべて `rollback()` を通ること
+- `rollback()` が video の retire と `revertAudioSource` の両方を行うこと
+- `applyAudioSourceFor` が remove の前に undo を控えていること
+- `AudioSourceIdentity` が timing に効く入力を全部持っていること
+
+`[事実]` この検査が効いていることは、audio の差し替えを submit より前へ戻した
+mutation で実際に失敗することを確認して確かめた
+(AGENTS.md「negative test を必ず添える」)。
+
+### 12.2 capability の qualification provenance
+
+`[事実]` `PreviewCapabilities` の `maxQualified*` / `qualifiedAudio*` は
+「現在の構成で受理できる上限」であって、それぞれが独立に qualify されている
+わけではなかった。24fps で initialize した capability が
+`maxQualifiedCompositionLayers = 2` を返すと、その 2 layer の qualification が
+60/1 cohort 由来なのか現在の構成由来なのかを型から判別できない。
+
+`[事実]` qualification を **envelope (tuple)** として保持する形へ変えた。
+
+```cpp
+struct MeasuredPreviewEnvelope {   // 実測した「構成の組」
+    PreviewFrameRate outputFrameRate{60, 1};
+    std::uint32_t maxActiveVideoSources = 2;
+    std::uint32_t maxCompositionLayers = 2;
+    std::uint32_t maxActiveAudioSources = 1;
+    std::uint32_t audioSampleRate = 48000;
+    std::uint32_t audioChannelCount = 2;
+};
+
+struct PreviewCapabilities {
+    // 現在の構成で受理できる上限。measured とは限らない。
+    std::uint32_t configuredMaxActiveVideoSources;
+    std::uint32_t configuredMaxCompositionLayers;
+    std::uint32_t configuredMaxActiveAudioSources;
+    PreviewFrameRate configuredOutputFrameRate;
+    std::uint32_t configuredAudioSampleRate;
+    std::uint32_t configuredAudioChannelCount;
+
+    MeasuredPreviewEnvelope measuredEnvelope;
+    bool matchesMeasuredEnvelope;   // 現在の構成が envelope と組として一致するか
+};
+```
+
+`[事実]` `matchesMeasuredEnvelope` は rate だけでなく layer 上限・source 上限・
+audio domain まで**組として**比較する。軸ごとに独立に合成できると仮定しない。
+
+`[事実]` `measuredEnvelope` は initialize した rate へ追従しない。
+`tests/preview_engine/test_preview_engine.cpp` が
+「非 60/1 で initialize しても envelope が 60/1 のままであること」を検査している。
+追従させる変更を入れるとここで落ちる。
+
+`[事実]` UI の「(未計測)」表示は engine の `matchesMeasuredEnvelope` を authority に
+した。Project 側の rate 表だけで判断すると、rate 以外の軸を見落とす。

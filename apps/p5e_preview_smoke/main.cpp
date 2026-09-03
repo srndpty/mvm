@@ -198,8 +198,8 @@ int main(int argc, char** argv) {
     if (!engine->initialize({{{60, 1}}}, dispatcher) || !engine->attachEventSink(sink))
         return 3;
     const auto capabilities = engine->capabilities();
-    if (capabilities.maxQualifiedActiveVideoSources != 2 ||
-        capabilities.maxQualifiedCompositionLayers != 2 ||
+    if (capabilities.configuredMaxActiveVideoSources != 2 ||
+        capabilities.configuredMaxCompositionLayers != 2 ||
         capabilities.duplicateSourceLayersSupported) {
         std::fprintf(stderr, "P5-E3 capabilityが2/2/duplicate=falseではありません\n");
         return 3;

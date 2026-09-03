@@ -154,18 +154,39 @@ struct PreviewError {
     bool operator==(const PreviewError&) const = default;
 };
 
+// canonical workload を実測した「構成の組」。
+//
+// **qualification の各軸を独立に合成できると仮定しない。** 2 layer が qualified
+// なのは 60/1 cohort で測ったからであり、24/1 構成で 2 layer が qualified である
+// ことは意味しない。したがって measured 側は個別の上限値ではなく envelope
+// (tuple) として持ち、現在の構成が envelope と一致するかどうかだけを公開する。
+struct MeasuredPreviewEnvelope {
+    PreviewFrameRate outputFrameRate{60, 1};
+    std::uint32_t maxActiveVideoSources = 2;
+    std::uint32_t maxCompositionLayers = 2;
+    std::uint32_t maxActiveAudioSources = 1;
+    std::uint32_t audioSampleRate = 48000;
+    std::uint32_t audioChannelCount = 2;
+    bool operator==(const MeasuredPreviewEnvelope&) const = default;
+};
+
 struct PreviewCapabilities {
-    std::uint32_t maxQualifiedActiveVideoSources = 1;
-    std::uint32_t maxQualifiedCompositionLayers = 1;
-    std::uint32_t maxQualifiedActiveAudioSources = 0;
+    // ---- 現在の構成で実際に受理できる上限。measured とは限らない ----
+    std::uint32_t configuredMaxActiveVideoSources = 1;
+    std::uint32_t configuredMaxCompositionLayers = 1;
+    std::uint32_t configuredMaxActiveAudioSources = 0;
     // initialize() で確定した output frame rate。
-    // **受理されたことは qualify されたことではない。** 実測して qualify 済みか
-    // どうかは outputFrameRateMeasured が持つ。表の authority は
-    // core::configurableOutputFrameRates() / core::measuredOutputFrameRates()。
+    // 受理されたことは qualify されたことではない。
     PreviewFrameRate configuredOutputFrameRate{60, 1};
-    bool outputFrameRateMeasured = true;
-    std::uint32_t qualifiedAudioSampleRate = 0;
-    std::uint32_t qualifiedAudioChannelCount = 0;
+    std::uint32_t configuredAudioSampleRate = 0;
+    std::uint32_t configuredAudioChannelCount = 0;
+
+    // ---- 実測済みの構成 ----
+    MeasuredPreviewEnvelope measuredEnvelope;
+    // 現在の構成が measuredEnvelope と一致するか。
+    // false のときは「動くが、この構成では測っていない」である。
+    bool matchesMeasuredEnvelope = false;
+
     bool duplicateSourceLayersSupported = false;
     bool deviceRecoverySupported = false;
 };

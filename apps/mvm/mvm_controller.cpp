@@ -281,6 +281,11 @@ bool MvmController::applyEffectKey(project::ClipEffects& effects, const QString&
 }
 
 bool MvmController::frameRateMeasured() const {
+    // engine がある間は engine の envelope 一致判定を authority にする。
+    // Project 側の rate 表だけで判断すると、layer 数など他の軸を含む
+    // envelope 一致を見落とす。engine 未初期化のときだけ rate 表へ落とす。
+    if (previewEngine_)
+        return previewEngine_->capabilities().matchesMeasuredEnvelope;
     return project::isMeasuredTimelineFrameRate(project_.timelineFpsNum, project_.timelineFpsDen);
 }
 
@@ -725,7 +730,35 @@ bool MvmController::installVideoClip(const std::filesystem::path& videoPath,
     return true;
 }
 
-bool MvmController::syncAudioSourceFor(std::int64_t timelineFrame, QString& error) {
+bool MvmController::audioDescriptorFor(int clipIndex,
+                                      preview::PreviewSourceDescriptor& descriptor,
+                                      QString& error) {
+    if (clipIndex < 0 || clipIndex >= static_cast<int>(project_.timelineClips.size())) {
+        error = QStringLiteral("audio clipがありません");
+        return false;
+    }
+    const auto& clip = project_.timelineClips[static_cast<std::size_t>(clipIndex)];
+    if (!std::filesystem::is_regular_file(clip.mediaPath)) {
+        error = QString::fromStdString(clip.name) + QStringLiteral(" のファイルがありません: ") +
+                fromPath(clip.mediaPath);
+        return false;
+    }
+    // output frame -> media sample のずれ。換算式は mapping 側へ一本化している。
+    const auto offset = audioPreviewSampleOffset(project_, clip);
+    if (!offset.success) {
+        error = QString::fromStdString(offset.error);
+        return false;
+    }
+    descriptor = preview::PreviewSourceDescriptor{};
+    descriptor.mediaPath = clip.mediaPath;
+    descriptor.audioEnabled = true;
+    descriptor.audioSampleOffset = offset.sampleOffset;
+    return true;
+}
+
+bool MvmController::applyAudioSourceFor(std::int64_t timelineFrame, AudioSwitchUndo& undo,
+                                        QString& error) {
+    undo = AudioSwitchUndo{};
     const auto mapped = mapTimelinePreviewAudio(project_, timelineFrame);
     if (!mapped.success) {
         error = QString::fromStdString(mapped.error);
@@ -750,12 +783,19 @@ bool MvmController::syncAudioSourceFor(std::int64_t timelineFrame, QString& erro
         return true;
     }
 
-    // engine は active audio source を 1 件しか受理しない。切り替えは
-    // 「外してから足す」しかないので、遅延 retire は使わない。
+    preview::PreviewSourceDescriptor descriptor;
+    if (desired && !audioDescriptorFor(mapped.clipIndex, descriptor, error))
+        return false;
+
+    // ここから先が実際の差し替えである。戻せるように旧 source を控える。
+    undo.changed = true;
+    undo.previous = audioSource_;
     if (audioSource_) {
         const auto removed = previewEngine_->removeSource(audioSource_->source);
         if (!removed) {
             error = previewErrorText(removed.error());
+            undo.changed = false;
+            undo.previous.reset();
             return false;
         }
         audioSource_.reset();
@@ -763,23 +803,6 @@ bool MvmController::syncAudioSourceFor(std::int64_t timelineFrame, QString& erro
     if (!desired)
         return true;
 
-    const auto& clip = project_.timelineClips[static_cast<std::size_t>(mapped.clipIndex)];
-    if (!std::filesystem::is_regular_file(clip.mediaPath)) {
-        error = QString::fromStdString(clip.name) + QStringLiteral(" のファイルがありません: ") +
-                fromPath(clip.mediaPath);
-        return false;
-    }
-    // output frame -> media sample のずれ。換算式は mapping 側へ一本化している。
-    const auto offset = audioPreviewSampleOffset(project_, clip);
-    if (!offset.success) {
-        error = QString::fromStdString(offset.error);
-        return false;
-    }
-
-    preview::PreviewSourceDescriptor descriptor;
-    descriptor.mediaPath = clip.mediaPath;
-    descriptor.audioEnabled = true;
-    descriptor.audioSampleOffset = offset.sampleOffset;
     const auto added = previewEngine_->addSource(descriptor);
     if (!added) {
         error = previewErrorText(added.error());
@@ -789,26 +812,58 @@ bool MvmController::syncAudioSourceFor(std::int64_t timelineFrame, QString& erro
     return true;
 }
 
+bool MvmController::revertAudioSource(const AudioSwitchUndo& undo, QString& error) {
+    if (!undo.changed)
+        return true;
+    if (audioSource_) {
+        const auto removed = previewEngine_->removeSource(audioSource_->source);
+        if (!removed) {
+            error = previewErrorText(removed.error());
+            return false;
+        }
+        audioSource_.reset();
+    }
+    if (!undo.previous)
+        return true;
+    preview::PreviewSourceDescriptor descriptor;
+    if (!audioDescriptorFor(undo.previous->clipIndex, descriptor, error))
+        return false;
+    const auto added = previewEngine_->addSource(descriptor);
+    if (!added) {
+        error = previewErrorText(added.error());
+        return false;
+    }
+    // engine が付け直した id は元と別物なので、id だけ差し替えて identity は保つ。
+    audioSource_ = AudioPreviewSource{added.value(), undo.previous->identity,
+                                      undo.previous->clipIndex};
+    return true;
+}
+
 bool MvmController::syncPreviewSourcesAt(std::int64_t timelineFrame, QString& error) {
     const auto mappedFrame = mapTimelinePreviewFrame(project_, timelineFrame);
     if (!mappedFrame.success) {
         error = QString::fromStdString(mappedFrame.error);
         return false;
     }
-    // audio は composition の layer ではないので、video より先に確定させる。
-    // seekFrameRequest は composition の source 集合と完全一致を要求するため、
-    // audio source をここへ混ぜない。
-    if (!syncAudioSourceFor(timelineFrame, error))
-        return false;
-
+    // 失敗しうる操作を先に済ませ、後戻りできない audio の差し替えを最後へ寄せる。
+    //   video prepare -> composition submit -> audio 差し替え -> seek
+    // audio は composition の layer ではないので submit の後でよい。
+    // seek だけは audio 差し替えの後になるため、失敗時は audio を元へ戻す。
     auto candidateSources = trackSources_;
     std::vector<preview::PreviewSourceId> newlyAdded;
+    AudioSwitchUndo audioUndo;
     const auto rollback = [&] {
         for (const auto source : newlyAdded) {
             // accepted composition が参照している最中は removeSource が拒否されうる。
             // 落とさず retirement queue へ回し、pollPreviewState に再試行させる。
             if (!previewEngine_->removeSource(source))
                 retiredSources_.push_back(source);
+        }
+        QString revertError;
+        if (!revertAudioSource(audioUndo, revertError)) {
+            // 戻せなかったことを黙って握らない。呼び出し側が status を上書きするので、
+            // error 文字列へ足して失われないようにする。
+            error += QStringLiteral("\naudio sourceを元に戻せませんでした: ") + revertError;
         }
     };
 
@@ -895,11 +950,17 @@ bool MvmController::syncPreviewSourcesAt(std::int64_t timelineFrame, QString& er
         rollback();
         return false;
     }
+    // audio の差し替えはここまでの失敗を通り抜けてから行う。
+    if (!applyAudioSourceFor(timelineFrame, audioUndo, error)) {
+        rollback();
+        return false;
+    }
     const auto sought = previewEngine_->seekFrameRequest(request);
     if (!sought) {
         error = previewErrorText(sought.error());
         // scrub は Seeking 中の reject を 40ms ごとに retry する。ここで rollback
         // しないと、retry のたびに source が積み上がって登録上限に達する。
+        // audio も同じ境界で戻す。video だけ戻して audio が新しいまま、にしない。
         rollback();
         return false;
     }

@@ -253,7 +253,23 @@ private:
     project::ClipEffects effectsForPreview(int clipIndex) const;
     bool applyEffectKey(project::ClipEffects& effects, const QString& key, double value);
     bool syncPreviewSourcesAt(std::int64_t timelineFrame, QString& error);
-    bool syncAudioSourceFor(std::int64_t timelineFrame, QString& error);
+    // audio source の差し替えは engine が active audio source を 1 件しか受理しない
+    // ため remove -> add の順にしかできず、prepare/commit へ素直に割れない。
+    // そこで「切り替え前の状態」を持ち、後段が失敗したら元へ戻す compensation
+    // transaction にする。video 側だけ rollback して audio が新しいまま残る、
+    // という部分 commit を作らない。
+    struct AudioSwitchUndo {
+        bool changed = false;
+        std::optional<AudioPreviewSource> previous;
+    };
+
+    bool applyAudioSourceFor(std::int64_t timelineFrame, AudioSwitchUndo& undo, QString& error);
+    // applyAudioSourceFor の結果を打ち消す。best-effort であり、戻せなかった場合は
+    // 黙って成功にせず false を返す。
+    bool revertAudioSource(const AudioSwitchUndo& undo, QString& error);
+    // clip から audio source descriptor を組む。offset の換算は mapping 側へ委譲する。
+    bool audioDescriptorFor(int clipIndex, preview::PreviewSourceDescriptor& descriptor,
+                            QString& error);
     bool refreshCurrentClipEffectsPreview(QString& error);
     void refreshTimelineModel();
     // trackKind 文字列を TrackRef へ解決する。失敗時は status を設定して false。

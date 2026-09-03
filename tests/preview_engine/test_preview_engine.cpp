@@ -186,8 +186,15 @@ void frameRateAndDescriptorValidation() {
                     PreviewFrameRate{numerator, denominator},
                 "capabilityがinitializeしたoutput rateを公開していません");
         // 受理できることと計測済みであることを混ぜない。60/1 以外は未計測である。
-        require(!rateEngine.capabilities().outputFrameRateMeasured,
-                "未計測のrateをmeasuredとして公開しました");
+        require(!rateEngine.capabilities().matchesMeasuredEnvelope,
+                "未計測の構成をmeasured envelope一致として公開しました");
+        // envelope そのものは 60/1 cohort のまま動かない。現在の rate へ追従させると
+        // 「測っていない構成を測ったことにする」になる。
+        require(rateEngine.capabilities().measuredEnvelope.outputFrameRate ==
+                    PreviewFrameRate{60, 1},
+                "measured envelopeがinitializeしたrateへ追従しました");
+        require(rateEngine.capabilities().measuredEnvelope.maxCompositionLayers == 2,
+                "measured envelopeのlayer上限が変化しました");
         // source の rate 検査が output rate を基準にしていること。
         require(validateSourceFrameRate(numerator, denominator,
                                         rateEngine.capabilities().configuredOutputFrameRate),
@@ -206,13 +213,13 @@ void frameRateAndDescriptorValidation() {
             "60/1と等価な120/2をinitializeで受理しませんでした");
     // P5-D2でaudio-master transportを接続したため、qualified audio sourceは1件になった。
     // 等価rationalの受理がcapabilityを書き換えないことを、ここで固定する。
-    require(equivalentRateEngine.capabilities().outputFrameRateMeasured,
-            "60/1をmeasuredとして公開していません");
+    require(equivalentRateEngine.capabilities().matchesMeasuredEnvelope,
+            "60/1構成をmeasured envelope一致として公開していません");
     require(equivalentRateEngine.capabilities().configuredOutputFrameRate ==
                     PreviewFrameRate{60, 1} &&
-                equivalentRateEngine.capabilities().maxQualifiedActiveAudioSources == 1 &&
-                equivalentRateEngine.capabilities().qualifiedAudioSampleRate == 48000 &&
-                equivalentRateEngine.capabilities().qualifiedAudioChannelCount == 2,
+                equivalentRateEngine.capabilities().configuredMaxActiveAudioSources == 1 &&
+                equivalentRateEngine.capabilities().configuredAudioSampleRate == 48000 &&
+                equivalentRateEngine.capabilities().configuredAudioChannelCount == 2,
             "等価rationalの受理で公開capabilityを変更しました");
     require(equivalentRateEngine.requestShutdown(),
             "等価rational regression testのshutdownに失敗しました");
@@ -476,8 +483,8 @@ void compositionDomains() {
 void compositionStructuralEqualityLiterals() {
     const auto sources = twoSources();
     PreviewCapabilities capabilities;
-    capabilities.maxQualifiedActiveVideoSources = 2;
-    capabilities.maxQualifiedCompositionLayers = 2;
+    capabilities.configuredMaxActiveVideoSources = 2;
+    capabilities.configuredMaxCompositionLayers = 2;
 
     const PreviewNormalizedRect baseRect{0.1F, 0.1F, 0.5F, 0.5F};
     const auto expectDifferent = [&](std::shared_ptr<const CompositionSnapshot> first,
@@ -550,8 +557,8 @@ void compositionIdentityAndCapabilities() {
     PreviewCapabilities capabilities;
     // P5-E closureのproduct capability 2/2と同じenvelopeで、
     // acceptance identity、order、distinct-source semanticsを固定する。
-    capabilities.maxQualifiedActiveVideoSources = 2;
-    capabilities.maxQualifiedCompositionLayers = 2;
+    capabilities.configuredMaxActiveVideoSources = 2;
+    capabilities.configuredMaxCompositionLayers = 2;
     CompositionAcceptanceState state;
 
     const auto a = snapshot({layer(1)});
@@ -599,7 +606,7 @@ void compositionIdentityAndCapabilities() {
             "opacity 0 layerを構造比較から除外しました");
 
     PreviewCapabilities oneSource = capabilities;
-    oneSource.maxQualifiedActiveVideoSources = 1;
+    oneSource.configuredMaxActiveVideoSources = 1;
     CompositionAcceptanceState sourceCap;
     requireFailure(
         sourceCap.submit(snapshot({layer(1), layer(2, {}, {}, 0.0F)}), sources, oneSource),
@@ -607,7 +614,7 @@ void compositionIdentityAndCapabilities() {
         "opacity 0 layerをdistinct source countから除外しました");
 
     PreviewCapabilities oneLayer = capabilities;
-    oneLayer.maxQualifiedCompositionLayers = 1;
+    oneLayer.configuredMaxCompositionLayers = 1;
     CompositionAcceptanceState layerCap;
     requireFailure(layerCap.submit(snapshot({layer(1), layer(2, {}, {}, 0.0F)}), sources, oneLayer),
                    PreviewErrorCategory::UnsupportedCapability,
@@ -640,11 +647,11 @@ void engineFacadeAndEvents() {
     sink->engine = &engine;
     require(engine.initialize(qualifiedConfig(), dispatcher), "engine initializeに失敗しました");
     const PreviewCapabilities productCapabilities = engine.capabilities();
-    require(productCapabilities.maxQualifiedActiveVideoSources == 2 &&
-                productCapabilities.maxQualifiedCompositionLayers == 2 &&
-                productCapabilities.maxQualifiedActiveAudioSources == 1 &&
-                productCapabilities.qualifiedAudioSampleRate == 48000 &&
-                productCapabilities.qualifiedAudioChannelCount == 2,
+    require(productCapabilities.configuredMaxActiveVideoSources == 2 &&
+                productCapabilities.configuredMaxCompositionLayers == 2 &&
+                productCapabilities.configuredMaxActiveAudioSources == 1 &&
+                productCapabilities.configuredAudioSampleRate == 48000 &&
+                productCapabilities.configuredAudioChannelCount == 2,
             "公開capabilityがP5-E3 product wiringの実装上限と一致しません");
     require(engine.status().state == PreviewEngineState::WaitingForRenderDevice,
             "logical initialize stateが違います");
@@ -1047,8 +1054,8 @@ void p5eCompositionSourceReferences() {
     sources.emplace(1, EligibleSource{true, false});
     sources.emplace(2, EligibleSource{true, false});
     PreviewCapabilities capabilities;
-    capabilities.maxQualifiedActiveVideoSources = 2;
-    capabilities.maxQualifiedCompositionLayers = 2;
+    capabilities.configuredMaxActiveVideoSources = 2;
+    capabilities.configuredMaxCompositionLayers = 2;
 
     CompositionAcceptanceState state;
     require(!state.referencesSource({1}), "compositionが無い状態で参照ありと判定しました");
@@ -1175,19 +1182,19 @@ void p5dAudioDomainAndCapabilities() {
     auto dispatcher = std::make_shared<ManualDispatcher>();
     require(engine.initialize({{{60, 1}}}, dispatcher), "initializeに失敗しました");
     const PreviewCapabilities capabilities = engine.capabilities();
-    require(capabilities.maxQualifiedActiveAudioSources == 1,
+    require(capabilities.configuredMaxActiveAudioSources == 1,
             "qualified audio source数が1として公開されていません");
-    require(capabilities.qualifiedAudioSampleRate == 48000,
+    require(capabilities.configuredAudioSampleRate == 48000,
             "qualified audio sample rateが48000として公開されていません");
-    require(capabilities.qualifiedAudioChannelCount == 2,
+    require(capabilities.configuredAudioChannelCount == 2,
             "qualified audio channel数が2として公開されていません");
     require(!capabilities.deviceRecoverySupported,
             "device recoveryをsupport済みとして公開しました");
     // P5-E3 capability確定。active source数とlayer数は独立したliteralで固定する。
     // active source数とlayer数は別capabilityとして検査する (contract §21)。
-    require(capabilities.maxQualifiedActiveVideoSources == 2,
+    require(capabilities.configuredMaxActiveVideoSources == 2,
             "qualified active video source数が2として公開されていません");
-    require(capabilities.maxQualifiedCompositionLayers == 2,
+    require(capabilities.configuredMaxCompositionLayers == 2,
             "qualified composition layer数が2として公開されていません");
     require(!capabilities.duplicateSourceLayersSupported,
             "同一sourceの複数layer配置をsupport済みとして公開しました");

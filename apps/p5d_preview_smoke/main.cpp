@@ -187,9 +187,9 @@ int main(int argc, char** argv) {
 
     // audio統合後もqualified capabilityを実体として公開していること。
     const auto capabilities = engine->capabilities();
-    if (capabilities.maxQualifiedActiveAudioSources != 1 ||
-        capabilities.qualifiedAudioSampleRate != 48000 ||
-        capabilities.qualifiedAudioChannelCount != 2) {
+    if (capabilities.configuredMaxActiveAudioSources != 1 ||
+        capabilities.configuredAudioSampleRate != 48000 ||
+        capabilities.configuredAudioChannelCount != 2) {
         std::fprintf(stderr, "qualified audio capabilityが公開されていません\n");
         return 3;
     }
