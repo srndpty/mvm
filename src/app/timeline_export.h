@@ -38,7 +38,7 @@ struct TimelineExportOpacityKey {
 
 struct TimelineExportClipMapping {
     int projectClipIndex = -1;
-    project::VideoTrack track = project::VideoTrack::V1;
+    int videoTrackIndex = 0;
     std::int64_t timelineStartFrame = 0;
     std::int64_t timelineDurationFrames = 0;
     bool effectsEnabled = false;
@@ -53,6 +53,10 @@ struct TimelineExportClipMapping {
     double rotationDegrees = 0.0;
     std::vector<TimelineExportOpacityKey> opacityKeys;
 };
+
+// MLT 側の書き出し経路が持つ playlist は V1 / V2 の 2 本だけである。
+// track を増やせるのは編集 model の話であり、書き出しはここで fail-closed にする。
+inline constexpr int kMaxExportVideoTracks = 2;
 
 struct TimelineExportPlan {
     bool success = false;

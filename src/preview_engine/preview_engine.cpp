@@ -370,9 +370,10 @@ CompositionAcceptanceState::submit(const std::shared_ptr<const CompositionSnapsh
         return Result<AcceptedComposition>::failure(
             compositionError(PreviewErrorCategory::CompositionFailure, "snapshotがnullです"));
     }
-    if (snapshot->layers.size() > capabilities.maxQualifiedCompositionLayers) {
-        return Result<AcceptedComposition>::failure(compositionError(
-            PreviewErrorCategory::UnsupportedCapability, "qualified layer countを超えています"));
+    if (snapshot->layers.size() > capabilities.configuredMaxCompositionLayers) {
+        return Result<AcceptedComposition>::failure(
+            compositionError(PreviewErrorCategory::UnsupportedCapability,
+                             "設定されたcomposition layer countを超えています"));
     }
 
     std::set<std::uint64_t> distinctSources;
@@ -387,13 +388,13 @@ CompositionAcceptanceState::submit(const std::shared_ptr<const CompositionSnapsh
             !capabilities.duplicateSourceLayersSupported) {
             return Result<AcceptedComposition>::failure(compositionError(
                 PreviewErrorCategory::UnsupportedCapability,
-                "同一sourceのduplicate layerはqualified capability外です", layer.source));
+                "同一sourceのduplicate layerは現在の構成では扱えません", layer.source));
         }
     }
-    if (distinctSources.size() > capabilities.maxQualifiedActiveVideoSources) {
+    if (distinctSources.size() > capabilities.configuredMaxActiveVideoSources) {
         return Result<AcceptedComposition>::failure(
             compositionError(PreviewErrorCategory::UnsupportedCapability,
-                             "qualified active video source countを超えています"));
+                             "設定されたactive video source countを超えています"));
     }
 
     CompositionSnapshot canonical = *snapshot;
@@ -527,12 +528,14 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     bool dispatchScheduled = false;
     PreviewCapabilities capability = [] {
         PreviewCapabilities value;
-        value.maxQualifiedActiveVideoSources = 2;
-        value.maxQualifiedCompositionLayers = 2;
-        // P5-D2でaudio-master transportを接続したため、qualified audio domainを公開する。
-        value.maxQualifiedActiveAudioSources = 1;
-        value.qualifiedAudioSampleRate = audio::kInternalSampleRate;
-        value.qualifiedAudioChannelCount = audio::kInternalChannels;
+        value.configuredMaxActiveVideoSources = 2;
+        value.configuredMaxCompositionLayers = 2;
+        // P5-D2でaudio-master transportを接続したため、audio domainを公開する。
+        // ここは「現在の構成で受理できる上限」であって qualification ではない。
+        // 実測した組は measuredEnvelope (既定値 = 60/1 cohort) が持つ。
+        value.configuredMaxActiveAudioSources = 1;
+        value.configuredAudioSampleRate = audio::kInternalSampleRate;
+        value.configuredAudioChannelCount = audio::kInternalChannels;
         return value;
     }();
     PreviewTelemetry telemetrySnapshot;
@@ -643,6 +646,9 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     std::optional<PreviewSourceId> publicAudioSource;
     audio::SourceId internalAudioSource{};
     std::int64_t resumeAudioSample = 0;
+    // addSource で受け取った audio source の timeline 上の位置ずれ (sample)。
+    // output frame <-> audio media sample の換算はこの 1 つの値だけで補正する。
+    std::int64_t audioSampleOffset = 0;
     bool audioMasterActive = false;
     bool audioSinkJoined = true;
     bool audioWorkerJoined = true;
@@ -1031,7 +1037,12 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                 projectionFailure("audio master clockが停止しています");
                 return result;
             }
-            const auto frame = timebase->schedulerOutputFrame(clock.mediaSamplePosition);
+            if (clock.mediaSamplePosition < audioSampleOffset) {
+                projectionFailure("audio master clockがaudio clipの開始より前を指しています");
+                return result;
+            }
+            const auto frame =
+                timebase->schedulerOutputFrame(clock.mediaSamplePosition - audioSampleOffset);
             if (!frame) {
                 projectionFailure("audio sample positionをoutput frameへ換算できません");
                 return result;
@@ -1449,19 +1460,22 @@ Result<void> PreviewEngine::initialize(const PreviewEngineConfig& config,
     if (!rate) {
         return Result<void>::failure(rate.error());
     }
-    if (!(rate.value() == impl_->capability.qualifiedOutputFrameRate)) {
+    if (!core::isConfigurableOutputFrameRate(static_cast<std::int64_t>(rate.value().numerator),
+                                             static_cast<std::int64_t>(rate.value().denominator))) {
         return Result<void>::failure(
             makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::Initialize,
-                      "指定frame rateは現在qualifiedな60/1ではありません"));
+                      "指定frame rateは設定可能な出力rateではありません: " +
+                          std::to_string(rate.value().numerator) + "/" +
+                          std::to_string(rate.value().denominator)));
     }
     // scheduler / seek / statusが同じ換算を使うよう、timebaseはここで一度だけ確定する。
-    const auto timebase = core::CheckedOutputTimebase::createQualified(
-        static_cast<std::int64_t>(config.output.frameRate.numerator),
-        static_cast<std::int64_t>(config.output.frameRate.denominator), audio::kInternalSampleRate);
+    const auto timebase = core::CheckedOutputTimebase::createConfigured(
+        static_cast<std::int64_t>(rate.value().numerator),
+        static_cast<std::int64_t>(rate.value().denominator), audio::kInternalSampleRate);
     if (!timebase) {
         return Result<void>::failure(makeError(PreviewErrorCategory::UnsupportedCapability,
                                                PreviewOperation::Initialize,
-                                               "qualified output timebaseを構築できません"));
+                                               "設定されたoutput timebaseを構築できません"));
     }
 
     {
@@ -1472,6 +1486,12 @@ Result<void> PreviewEngine::initialize(const PreviewEngineConfig& config,
         }
         impl_->dispatcher = std::move(dispatcher);
         impl_->configuredFrameRate = rate.value();
+        // capability が公開する rate は「今回 initialize した rate」である。
+        // 固定値を返すと source 側の rate 検査が別の rate を基準にしてしまう。
+        impl_->capability.configuredOutputFrameRate = rate.value();
+        // ここで初めて構成が確定する。measured envelope との一致は derived getter が
+        // 返すが、この flag が無いと未初期化の既定値が envelope と一致してしまう。
+        impl_->capability.hasConfiguredEnvelope = true;
         impl_->timebase = timebase.value();
         impl_->telemetrySnapshot.status.state = impl_->machine.state();
     }
@@ -1487,6 +1507,8 @@ Result<void> PreviewEngine::initialize(const PreviewEngineConfig& config,
         impl_->dispatchScheduled = false;
         impl_->telemetrySnapshot = PreviewTelemetry{};
         impl_->timebase.reset();
+        // 構成は確定しなかった。measured 判定を false positive にしない。
+        impl_->capability.hasConfiguredEnvelope = false;
         return posted;
     }
     return Result<void>::success();
@@ -1552,10 +1574,10 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
                       "source-set切替用のvideo source登録上限を超えています"));
     }
     if (descriptor.audioEnabled) {
-        if (impl_->capability.maxQualifiedActiveAudioSources == 0) {
+        if (impl_->capability.configuredMaxActiveAudioSources == 0) {
             return Result<PreviewSourceId>::failure(
                 makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
-                          "audio sourceはqualified capabilityに含まれていません"));
+                          "audio sourceは現在の構成では扱えません"));
         }
         if (impl_->publicAudioSource) {
             return Result<PreviewSourceId>::failure(
@@ -1629,7 +1651,7 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
             impl_->timebase ? impl_->timebase->audioSampleRate() : 0;
         Result<void> domain = internal::validateQualifiedAudioDomain(
             static_cast<int>(configuredSampleRate),
-            static_cast<int>(impl_->capability.qualifiedAudioChannelCount), "flt");
+            static_cast<int>(impl_->capability.configuredAudioChannelCount), "flt");
         if (!domain) {
             newAudioWorker->stop();
             rollbackVideo();
@@ -1669,6 +1691,7 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
         impl_->audioSinkJoined = false;
         impl_->audioWorkerJoined = false;
         impl_->resumeAudioSample = 0;
+        impl_->audioSampleOffset = descriptor.audioSampleOffset;
         const audio::WasapiSnapshot endpoint = impl_->audioSink->snapshot();
         impl_->deviceSnapshot.audioSampleRate =
             static_cast<std::uint32_t>(endpoint.deviceFormat.sampleRate);
@@ -1812,6 +1835,7 @@ Result<void> PreviewEngine::removeSource(PreviewSourceId source) {
                 impl_->publicAudioSource.reset();
                 impl_->internalAudioSource = audio::SourceId{};
                 impl_->resumeAudioSample = 0;
+                impl_->audioSampleOffset = 0;
                 impl_->audioSinkJoined = true;
                 impl_->audioWorkerJoined = true;
                 impl_->deviceSnapshot.audioSampleRate = 0;
@@ -2097,7 +2121,16 @@ Result<void> PreviewEngine::seekFrameRequest(const PreviewFrameRequest& request)
                                                    PreviewOperation::Seek,
                                                    "outputFrameをaudio sampleへ換算できません"));
         }
-        audioSample = sample.value();
+        // output frame -> media sample。audio clip の timeline 位置ずれをここで足す。
+        if (impl_->audioSampleOffset > 0 &&
+            sample.value() > std::numeric_limits<std::int64_t>::max() - impl_->audioSampleOffset) {
+            return Result<void>::failure(makeError(PreviewErrorCategory::SeekFailure,
+                                                   PreviewOperation::Seek,
+                                                   "audio sample offsetの加算がoverflowしました"));
+        }
+        audioSample = sample.value() + impl_->audioSampleOffset;
+        if (audioSample < 0)
+            audioSample = 0;
         resumePlaying = state == PreviewEngineState::Playing;
         audioWorker = impl_->audioWorker;
         audioSink = impl_->audioSink;
@@ -2242,6 +2275,11 @@ PreviewTelemetry PreviewEngine::telemetry() const {
     PreviewTelemetry result = impl_->telemetrySnapshot;
     result.status.state = impl_->machine.state();
     result.status.lastError = impl_->machine.lastError();
+    if (impl_->audioSink) {
+        const audio::WasapiSnapshot endpoint = impl_->audioSink->snapshot();
+        result.audioMeterPeakLeft = endpoint.meterPeakLeft;
+        result.audioMeterPeakRight = endpoint.meterPeakRight;
+    }
     return result;
 }
 
@@ -3655,7 +3693,7 @@ Result<void> PreviewRenderPort::setVideoSourceLimitForTest(PreviewEngine& engine
         return invalidState(PreviewOperation::AddSource,
                             "video source上限はReadyPausedかつsource未登録時に設定してください");
     }
-    engine.impl_->capability.maxQualifiedActiveVideoSources = limit;
+    engine.impl_->capability.configuredMaxActiveVideoSources = limit;
     return Result<void>::success();
 }
 

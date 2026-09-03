@@ -107,6 +107,14 @@ add_test(NAME m7b_4_timeline_ui_architecture
             ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-m7b4-timeline-ui-architecture.ps1)
 set_tests_properties(m7b_4_timeline_ui_architecture PROPERTIES TIMEOUT 120)
 
+# preview source 差し替えの失敗時 transaction 契約。engine と GPU device を要求する
+# ため controller を駆動する unit test は書けないので、順序と rollback 到達性を
+# source 上で固定する。
+add_test(NAME preview_transaction_contract
+    COMMAND pwsh -NoProfile -File
+            ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-preview-transaction-contract.ps1)
+set_tests_properties(preview_transaction_contract PROPERTIES TIMEOUT 120)
+
 # --- M6b: controller clockとsegmented/rebased境界判断 -----------------------
 add_executable(mvm_test_timeline_playback harness/test_timeline_playback.cpp)
 target_link_libraries(mvm_test_timeline_playback PRIVATE

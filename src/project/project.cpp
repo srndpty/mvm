@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <numeric>
 #include <utility>
 
 namespace mvm::project {
@@ -71,8 +72,65 @@ const char* timelineClipKindName(TimelineClipKind kind) {
         return "video";
     case TimelineClipKind::Manim:
         return "manim";
+    case TimelineClipKind::Audio:
+        return "audio";
     }
     return "";
+}
+
+const char* trackKindName(TrackKind kind) {
+    switch (kind) {
+    case TrackKind::Video:
+        return "video";
+    case TrackKind::Audio:
+        return "audio";
+    }
+    return "";
+}
+
+const std::vector<core::SupportedFrameRate>& configurableTimelineFrameRates() {
+    return core::configurableOutputFrameRates();
+}
+
+bool isConfigurableTimelineFrameRate(std::int64_t fpsNum, std::int64_t fpsDen) {
+    return core::isConfigurableOutputFrameRate(fpsNum, fpsDen);
+}
+
+bool isMeasuredTimelineFrameRate(std::int64_t fpsNum, std::int64_t fpsDen) {
+    return core::isMeasuredOutputFrameRate(fpsNum, fpsDen);
+}
+
+bool isCanonicalFrameRate(std::int64_t fpsNum, std::int64_t fpsDen) {
+    return fpsNum > 0 && fpsDen > 0 && std::gcd(fpsNum, fpsDen) == 1;
+}
+
+std::string defaultTrackName(TrackKind kind, int index) {
+    return (kind == TrackKind::Video ? "V" : "A") + std::to_string(index + 1);
+}
+
+const std::vector<Track>& tracksOfKind(const Project& project, TrackKind kind) {
+    return kind == TrackKind::Video ? project.videoTracks : project.audioTracks;
+}
+
+std::vector<Track>& tracksOfKind(Project& project, TrackKind kind) {
+    return kind == TrackKind::Video ? project.videoTracks : project.audioTracks;
+}
+
+bool isValidTrackRef(const Project& project, TrackRef track) {
+    const auto& tracks = tracksOfKind(project, track.kind);
+    return track.index >= 0 && track.index < static_cast<int>(tracks.size());
+}
+
+bool clipKindFitsTrackKind(TimelineClipKind clipKind, TrackKind trackKind) {
+    return (clipKind == TimelineClipKind::Audio) == (trackKind == TrackKind::Audio);
+}
+
+Project createDefaultProject() {
+    Project project;
+    project.videoTracks = {Track{defaultTrackName(TrackKind::Video, 0), false},
+                           Track{defaultTrackName(TrackKind::Video, 1), false}};
+    project.audioTracks = {Track{defaultTrackName(TrackKind::Audio, 0), false}};
+    return project;
 }
 
 const char* manimGenerationStateName(ManimGenerationState state) {

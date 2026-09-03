@@ -198,8 +198,8 @@ int main(int argc, char** argv) {
     if (!engine->initialize({{{60, 1}}}, dispatcher) || !engine->attachEventSink(sink))
         return 3;
     const auto capabilities = engine->capabilities();
-    if (capabilities.maxQualifiedActiveVideoSources != 2 ||
-        capabilities.maxQualifiedCompositionLayers != 2 ||
+    if (capabilities.configuredMaxActiveVideoSources != 2 ||
+        capabilities.configuredMaxCompositionLayers != 2 ||
         capabilities.duplicateSourceLayersSupported) {
         std::fprintf(stderr, "P5-E3 capabilityが2/2/duplicate=falseではありません\n");
         return 3;
@@ -1178,7 +1178,7 @@ int main(int argc, char** argv) {
                             diagnostics.audioTransportFailureCount == 0 &&
                             diagnostics.audioSinkDeviceFailureCount == 0 &&
                             diagnostics.audioDomainRejectCount == 0 &&
-                            // video-only経路のwall-clockはqualified masterであり退避ではない。
+                            // video-only経路のwall-clockは正規のmasterであり退避ではない。
                             diagnostics.videoMasterQpcFallbackCount == 0)) &&
                           // 中断されたremovalはcommitされない。
                           (!fatalFault || (afterRemoval.registeredAudioSourceCount == 1 &&

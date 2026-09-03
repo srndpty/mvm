@@ -43,8 +43,16 @@ struct WasapiSnapshot {
     std::uint64_t audioDeviceReleaseBeforeJoin = 0;
     std::uint64_t audioLifecycleViolation = 0;
     float sessionVolume = 1.0F;
+    // 直近に endpoint へ送った PCM の channel ごと peak (linear, 0..1)。
+    // UI の polling 間隔で peak を取りこぼさないよう、減衰は render 側で行う。
+    float meterPeakLeft = 0.0F;
+    float meterPeakRight = 0.0F;
     std::string lastError;
 };
+
+// render block ごとの peak 減衰係数。endpoint の 1 block は概ね 10ms なので、
+// この係数だと約 -0.9 dB/block で落ちる。値の根拠を呼び出し側へ散らさない。
+inline constexpr float kMeterPeakDecayPerBlock = 0.90F;
 
 class WasapiAudioSink final {
 public:
@@ -82,6 +90,10 @@ public:
 private:
     void renderLoop();
     bool renderAvailable();
+    // 直近 block の peak を減衰付きで更新する。sourceScratch_ の先頭から frames 分を見る。
+    void updateMeterPeaks(std::int64_t consumedFrames);
+    // render loop が止まる経路で peak を確定的に 0 へ落とす。
+    void clearMeterPeaks();
     bool prefillEndpoint(std::int64_t mediaStartSample, SourceGeneration generation,
                          std::string& error);
     bool resetClient(std::string& error);
@@ -111,6 +123,8 @@ private:
     std::atomic<bool> acceptingCommands_{true};
     std::atomic<bool> threadRunning_{false};
     std::atomic<bool> playing_{false};
+    std::atomic<float> meterPeakLeft_{0.0F};
+    std::atomic<float> meterPeakRight_{0.0F};
     std::atomic<bool> renderFaultInjected_{false};
     std::atomic<bool> pauseFaultInjected_{false};
     std::atomic<bool> playFaultInjected_{false};

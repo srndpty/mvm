@@ -12,7 +12,7 @@ void require(bool condition, const char* message) {
     }
 }
 
-mvm::project::TimelineClip clip(std::string id, mvm::project::VideoTrack track, std::int64_t start,
+mvm::project::TimelineClip clip(std::string id, int videoTrackIndex, std::int64_t start,
                                 std::int64_t sourceIn, std::int64_t duration) {
     mvm::project::TimelineClip value;
     value.kind = mvm::project::TimelineClipKind::Video;
@@ -25,7 +25,7 @@ mvm::project::TimelineClip clip(std::string id, mvm::project::VideoTrack track, 
     value.sourceInFrame = sourceIn;
     value.sourceOutFrame = sourceIn + duration;
     value.timelineStartFrame = start;
-    value.videoTrack = track;
+    value.track = mvm::project::TrackRef{mvm::project::TrackKind::Video, videoTrackIndex};
     return value;
 }
 
@@ -36,9 +36,8 @@ int main() {
     request.width = 320;
     request.height = 240;
 
-    mvm::project::Project contiguous;
-    contiguous.timelineClips = {clip("later", mvm::project::VideoTrack::V1, 10, 0, 10),
-                                clip("first", mvm::project::VideoTrack::V1, 0, 5, 10)};
+    mvm::project::Project contiguous = mvm::project::createDefaultProject();
+    contiguous.timelineClips = {clip("later", 0, 10, 0, 10), clip("first", 0, 0, 5, 10)};
     const auto sequential = mvm::app::mapTimelineExportPlan(contiguous, request);
     require(sequential.success &&
                 sequential.backend == mvm::app::TimelineExportResult::Backend::Sequential,
@@ -52,11 +51,11 @@ int main() {
     require(gap.success && gap.backend == mvm::app::TimelineExportResult::Backend::Tractor,
             "V1-only gapがtractorを選びません");
 
-    mvm::project::Project overlay;
-    auto bottom = clip("bottom", mvm::project::VideoTrack::V1, 0, 0, 100);
+    mvm::project::Project overlay = mvm::project::createDefaultProject();
+    auto bottom = clip("bottom", 0, 0, 0, 100);
     bottom.effects.scalePercent = 80;
-    auto topLate = clip("top-late", mvm::project::VideoTrack::V2, 60, 20, 20);
-    auto topEarly = clip("top-early", mvm::project::VideoTrack::V2, 10, 30, 20);
+    auto topLate = clip("top-late", 1, 60, 20, 20);
+    auto topEarly = clip("top-early", 1, 10, 30, 20);
     topEarly.effects.opacityPercent = 50;
     topEarly.effects.cropLeftPercent = 10;
     topEarly.effects.fadeInFrames = 5;
@@ -65,7 +64,7 @@ int main() {
     const auto tractor = mvm::app::mapTimelineExportPlan(overlay, request);
     require(tractor.success && tractor.backend == mvm::app::TimelineExportResult::Backend::Tractor,
             "V1+V2がtractorを選びません");
-    require(tractor.clips.size() == 3 && tractor.clips[0].track == mvm::project::VideoTrack::V1 &&
+    require(tractor.clips.size() == 3 && tractor.clips[0].videoTrackIndex == 0 &&
                 tractor.clips[1].timelineStartFrame == 10 &&
                 tractor.clips[2].timelineStartFrame == 60,
             "track/start順のmappingが不正です");

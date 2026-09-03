@@ -37,8 +37,10 @@ QVariant TimelineClipModel::data(const QModelIndex& index, int role) const {
         return item.sourceFpsDen;
     case PreviewSupportedRole:
         return item.previewSupported;
-    case VideoTrackRole:
-        return item.videoTrack;
+    case TrackKindRole:
+        return item.trackKind;
+    case TrackIndexRole:
+        return item.trackIndex;
     default:
         return {};
     }
@@ -56,7 +58,8 @@ QHash<int, QByteArray> TimelineClipModel::roleNames() const {
             {SourceFpsNumRole, "sourceFpsNum"},
             {SourceFpsDenRole, "sourceFpsDen"},
             {PreviewSupportedRole, "previewSupported"},
-            {VideoTrackRole, "videoTrack"}};
+            {TrackKindRole, "trackKind"},
+            {TrackIndexRole, "trackIndex"}};
 }
 
 void TimelineClipModel::setProject(const project::Project& project) {
@@ -71,7 +74,8 @@ void TimelineClipModel::setProject(const project::Project& project) {
                        clip.sourceInFrame, clip.sourceOutFrame, clip.sourceFrameCount,
                        clip.sourceFpsNum, clip.sourceFpsDen,
                        project::sourceRateMatchesTimelineRate(project, clip),
-                       static_cast<int>(clip.videoTrack)});
+                       QString::fromLatin1(project::trackKindName(clip.track.kind)),
+                       clip.track.index});
     }
     endResetModel();
 }

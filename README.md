@@ -99,7 +99,7 @@ UCRT64 の gcc は依存 DLL を PATH から解決するため、これが無い
 .\dev.ps1 help
 ```
 
-`gui` は既定で `build/ucrt64-release/m6a-gui/project.mvm.json` を開き、
+`gui` は既定で `build/ucrt64-release/m6a-gui/project.mvm` を開き、
 ユーザープロファイル下の `.local/bin/manim.exe` を使用する。場所が異なる場合は
 `-Ucrt64` または `-ManimExecutable` で明示する。
 

@@ -41,9 +41,44 @@ void configurationAndCanonicalization() {
                    OutputTimebaseError::InvalidDenominator, "負の分母を拒否しませんでした");
     requireFailure(CheckedOutputTimebase::create(60, 1, 0), OutputTimebaseError::InvalidSampleRate,
                    "sample rate 0を拒否しませんでした");
-    requireFailure(CheckedOutputTimebase::createQualified(24, 1, 48000),
+    // measured と configurable は別の表である。両方 literal で書く。
+    // 実装の判定関数を呼ぶと、表を壊した変更をテストが追認してしまう。
+    //
+    // measured: canonical preview workload を実測済み。現時点では 60/1 だけ。
+    const std::pair<std::int64_t, std::int64_t> measuredRates[] = {{60, 1}};
+    for (const auto& [numerator, denominator] : measuredRates) {
+        const auto accepted = CheckedOutputTimebase::createQualified(numerator, denominator, 48000);
+        require(static_cast<bool>(accepted), "measured rateを製品構成として拒否しました");
+    }
+    // configurable だが measured ではない rate は createQualified を通ってはいけない。
+    // ここが通るようになったら、それは実測なしの qualification 昇格である。
+    const std::pair<std::int64_t, std::int64_t> configurableOnlyRates[] = {
+        {24, 1}, {24000, 1001}, {25, 1}, {30, 1}, {30000, 1001}, {50, 1}, {60000, 1001}};
+    for (const auto& [numerator, denominator] : configurableOnlyRates) {
+        requireFailure(CheckedOutputTimebase::createQualified(numerator, denominator, 48000),
+                       OutputTimebaseError::UnsupportedProductRate,
+                       "未計測のrateをqualifiedとして受理しました");
+        const auto configured =
+            CheckedOutputTimebase::createConfigured(numerator, denominator, 48000);
+        require(static_cast<bool>(configured), "configurable rateをcreateConfiguredが拒否しました");
+        require(configured &&
+                    configured.value().frameRate() == CanonicalRational{numerator, denominator},
+                "configurable rateがcanonical値として保持されていません");
+    }
+    // 表のどちらにも無い rate は createConfigured も拒否する。
+    const std::pair<std::int64_t, std::int64_t> unconfigurableRates[] = {
+        {48, 1}, {15, 1}, {23, 1}, {59, 1}, {120, 1}, {24000, 1002}};
+    for (const auto& [numerator, denominator] : unconfigurableRates) {
+        requireFailure(CheckedOutputTimebase::createConfigured(numerator, denominator, 48000),
+                       OutputTimebaseError::UnsupportedProductRate,
+                       "設定表に無いrateをcreateConfiguredが受理しました");
+        requireFailure(CheckedOutputTimebase::createQualified(numerator, denominator, 48000),
+                       OutputTimebaseError::UnsupportedProductRate,
+                       "設定表に無いrateをcreateQualifiedが受理しました");
+    }
+    requireFailure(CheckedOutputTimebase::createConfigured(60, 1, 44100),
                    OutputTimebaseError::UnsupportedProductRate,
-                   "未qualifiedの24/1を製品構成として受理しました");
+                   "createConfiguredが未qualifiedの44100 Hzを受理しました");
     requireFailure(CheckedOutputTimebase::createQualified(60, 1, 44100),
                    OutputTimebaseError::UnsupportedProductRate,
                    "未qualifiedの44100 Hzを製品構成として受理しました");

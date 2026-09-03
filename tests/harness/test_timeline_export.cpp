@@ -60,7 +60,7 @@ long long probeFrameCount(const std::filesystem::path& path) {
 mvm::project::Project makeProject(const std::filesystem::path& first,
                                   const std::filesystem::path& second, long long firstFrames,
                                   long long secondFrames) {
-    mvm::project::Project project;
+    mvm::project::Project project = mvm::project::createDefaultProject();
     project.timelineClips.push_back({mvm::project::TimelineClipKind::Video, first, "normal",
                                      "normal-id", 60, 1, firstFrames, 0, firstFrames, 0});
     project.timelineClips.push_back({mvm::project::TimelineClipKind::Manim, second, "manim",
@@ -285,7 +285,7 @@ int main(int argc, char** argv) {
                               sourceProbe.fps_den == 1001 && sourceProbe.frame_count >= 60;
         check(sourceOk, "29.97fps fixtureのFPSまたはframe countが不正です");
         if (sourceOk) {
-            mvm::project::Project trimmed;
+            mvm::project::Project trimmed = mvm::project::createDefaultProject();
             trimmed.timelineClips.push_back({mvm::project::TimelineClipKind::Video, fractional,
                                              "fractional", "fractional-id", sourceProbe.fps_num,
                                              sourceProbe.fps_den, sourceProbe.frame_count, 30,
@@ -338,7 +338,7 @@ int main(int argc, char** argv) {
             check(!std::filesystem::exists(invalidOutput),
                   "invalid transition mappingで出力を生成しました");
         }
-        mvm::project::Project overlaid;
+        mvm::project::Project overlaid = mvm::project::createDefaultProject();
         mvm::project::TimelineClip bottom{mvm::project::TimelineClipKind::Video,
                                           bottomPath,
                                           "bottom",
@@ -349,7 +349,7 @@ int main(int argc, char** argv) {
                                           0,
                                           120,
                                           0};
-        bottom.videoTrack = mvm::project::VideoTrack::V1;
+        bottom.track = mvm::project::TrackRef{mvm::project::TrackKind::Video, 0};
         mvm::project::TimelineClip top{mvm::project::TimelineClipKind::Manim,
                                        topPath,
                                        "top",
@@ -360,7 +360,7 @@ int main(int argc, char** argv) {
                                        10,
                                        70,
                                        20};
-        top.videoTrack = mvm::project::VideoTrack::V2;
+        top.track = mvm::project::TrackRef{mvm::project::TrackKind::Video, 1};
         top.effects.scalePercent = 60;
         top.effects.positionXPercent = 10;
         top.effects.cropLeftPercent = 15;
@@ -377,7 +377,7 @@ int main(int argc, char** argv) {
                                              80,
                                              100,
                                              90};
-        secondTop.videoTrack = mvm::project::VideoTrack::V2;
+        secondTop.track = mvm::project::TrackRef{mvm::project::TrackKind::Video, 1};
         // vector順をtimeline authorityにしないことも実経路で踏む。
         overlaid.timelineClips = {secondTop, top, bottom};
         mvm::app::TimelineExportRequest overlayRequest;
@@ -416,7 +416,7 @@ int main(int argc, char** argv) {
     {
         const auto source = testDirectory / L"m7a-effects-source.mp4";
         check(generateEffectsFixture(ffmpeg, source), "M7a effect fixtureを生成できません");
-        mvm::project::Project effected;
+        mvm::project::Project effected = mvm::project::createDefaultProject();
         effected.timelineClips.push_back({mvm::project::TimelineClipKind::Manim, source, "effects",
                                           "effects-id", 60, 1, 120, 10, 70, 0});
         auto& effects = effected.timelineClips.front().effects;
@@ -454,7 +454,7 @@ int main(int argc, char** argv) {
 
     // --- 3. 負: clip が 0 本 ----------------------------------------------
     {
-        mvm::project::Project empty;
+        mvm::project::Project empty = mvm::project::createDefaultProject();
         mvm::app::TimelineExportRequest emptyRequest;
         emptyRequest.outputPath = testDirectory / L"m4-empty.mp4";
         const auto emptyResult = mvm::app::exportTimeline(empty, emptyRequest);

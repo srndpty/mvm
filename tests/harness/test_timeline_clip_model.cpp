@@ -15,7 +15,7 @@ void check(bool condition, const char* message) {
     ++failures;
 }
 
-mvm::project::TimelineClip clip(const char* id, mvm::project::VideoTrack track, std::int64_t start,
+mvm::project::TimelineClip clip(const char* id, int videoTrackIndex, std::int64_t start,
                                 std::int64_t duration) {
     mvm::project::TimelineClip result;
     result.mediaPath = std::string(id) + ".mp4";
@@ -26,7 +26,7 @@ mvm::project::TimelineClip clip(const char* id, mvm::project::VideoTrack track, 
     result.sourceFrameCount = duration;
     result.sourceOutFrame = duration;
     result.timelineStartFrame = start;
-    result.videoTrack = track;
+    result.track = mvm::project::TrackRef{mvm::project::TrackKind::Video, videoTrackIndex};
     return result;
 }
 
@@ -34,11 +34,10 @@ mvm::project::TimelineClip clip(const char* id, mvm::project::VideoTrack track, 
 
 int main(int argc, char** argv) {
     QCoreApplication application(argc, argv);
-    mvm::project::Project project;
+    mvm::project::Project project = mvm::project::createDefaultProject();
     // vector順を時間順・track順のどちらにもせず、model roleをauthorityとして検査する。
-    project.timelineClips = {clip("late-v1", mvm::project::VideoTrack::V1, 500, 40),
-                             clip("early-v2", mvm::project::VideoTrack::V2, 25, 80),
-                             clip("early-v1", mvm::project::VideoTrack::V1, 100, 60)};
+    project.timelineClips = {clip("late-v1", 0, 500, 40), clip("early-v2", 1, 25, 80),
+                             clip("early-v1", 0, 100, 60)};
 
     mvm::app::TimelineClipModel model;
     model.setProject(project);
@@ -59,7 +58,7 @@ int main(int argc, char** argv) {
             model.data(index, mvm::app::TimelineClipModel::TimelineStartFrameRole).toLongLong();
         const auto duration =
             model.data(index, mvm::app::TimelineClipModel::TimelineDurationFramesRole).toLongLong();
-        const auto track = model.data(index, mvm::app::TimelineClipModel::VideoTrackRole).toInt();
+        const auto track = model.data(index, mvm::app::TimelineClipModel::TrackIndexRole).toInt();
         check(start == expected[row].start && duration == expected[row].duration &&
                   track == expected[row].track,
               "vector順に依存せずtrack/start/durationを公開できません");

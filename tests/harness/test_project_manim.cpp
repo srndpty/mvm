@@ -44,7 +44,7 @@ void testRoundTrip(const std::filesystem::path& root) {
     auto created = mvm::project::createReadyManimAsset(script, "ExampleScene", video, fingerprint);
     check(created.success, "Ready Manim asset を作成できる");
 
-    mvm::project::Project project;
+    mvm::project::Project project = mvm::project::createDefaultProject();
     project.manimAssets.push_back(created.asset);
     const auto projectPath = root / L"project.mvm.json";
     const auto saved = mvm::project::saveProjectJson(project, projectPath);
@@ -81,7 +81,7 @@ void testAbsoluteScriptFallback(const std::filesystem::path& root) {
                                                        generated, std::string(64, 'c'));
     check(created.success, "別 drive の script asset を作成できる");
 
-    mvm::project::Project project;
+    mvm::project::Project project = mvm::project::createDefaultProject();
     project.manimAssets.push_back(created.asset);
     const auto projectPath = root / L"absolute-script.mvm.json";
     const auto saved = mvm::project::saveProjectJson(project, projectPath);
@@ -100,13 +100,15 @@ void testInvalidJson(const std::filesystem::path& root) {
     check(!mvm::project::loadProjectJson(badSchema).success, "未知の schema version を拒否する");
 
     const auto missingField = root / L"missing-field.json";
-    writeText(missingField, R"({"schema_version":2,"manim_assets":[{"script_path":"scene.py"}]})");
+    writeText(
+        missingField,
+        R"({"schema_version":3,"format":"mvm-project","timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[{"script_path":"scene.py"}],"timeline_clips":[]})");
     check(!mvm::project::loadProjectJson(missingField).success, "必須 field 欠損を拒否する");
 
     const auto unknownState = root / L"unknown-state.json";
     writeText(
         unknownState,
-        R"({"schema_version":2,"timeline_fps_num":60,"timeline_fps_den":1,"manim_assets":[{"script_path":"scene.py","scene_name":"Scene","generated_video_path":"cache/out.mp4","generation_state":"Unknown","source_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],"timeline_clips":[]})");
+        R"({"schema_version":3,"format":"mvm-project","timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[{"script_path":"scene.py","scene_name":"Scene","generated_video_path":"cache/out.mp4","generation_state":"Unknown","source_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],"timeline_clips":[]})");
     check(!mvm::project::loadProjectJson(unknownState).success,
           "未知の generation state を拒否する");
 }

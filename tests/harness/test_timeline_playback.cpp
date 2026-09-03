@@ -30,10 +30,15 @@ mvm::project::TimelineClip clip(const char* name, const char* id) {
 }
 
 mvm::project::Project threeClips() {
-    mvm::project::Project project;
+    mvm::project::Project project = mvm::project::createDefaultProject();
     project.timelineClips = {clip("A", "a"), clip("Manim", "manim"), clip("B", "b")};
-    const auto recomputed = mvm::project::recomputeTimelineStarts(project);
-    check(recomputed.success, "テストtimelineを構築できません");
+    // V1 上に隙間なく並べる。start は helper に推測させず、ここで明示する。
+    std::int64_t start = 0;
+    for (auto& value : project.timelineClips) {
+        value.timelineStartFrame = start;
+        start += mvm::project::timelineClipDuration(project, value).frame;
+    }
+    check(mvm::project::validateTimeline(project).success, "テストtimelineを構築できません");
     return project;
 }
 

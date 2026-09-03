@@ -49,6 +49,11 @@ struct PreviewSourceDescriptor {
     std::filesystem::path mediaPath;
     bool videoEnabled = false;
     bool audioEnabled = false;
+    // audio source の media sample と output frame の対応をずらす量。
+    //   media sample = (output frame を換算した sample) + audioSampleOffset
+    // timeline 上で 0 以外の位置に置いた audio clip を鳴らすために使う。
+    // videoEnabled のみの source では無視する。
+    std::int64_t audioSampleOffset = 0;
 };
 
 struct PreviewNormalizedRect {
@@ -149,15 +154,69 @@ struct PreviewError {
     bool operator==(const PreviewError&) const = default;
 };
 
+// canonical workload を実測した「構成の組」。
+//
+// **qualification の各軸を独立に合成できると仮定しない。** 2 layer が qualified
+// なのは 60/1 cohort で測ったからであり、24/1 構成で 2 layer が qualified である
+// ことは意味しない。したがって measured 側は個別の上限値ではなく envelope
+// (tuple) として持ち、現在の構成が envelope と一致するかどうかだけを公開する。
+struct MeasuredPreviewEnvelope {
+    PreviewFrameRate outputFrameRate{60, 1};
+    std::uint32_t maxActiveVideoSources = 2;
+    std::uint32_t maxCompositionLayers = 2;
+    std::uint32_t maxActiveAudioSources = 1;
+    std::uint32_t audioSampleRate = 48000;
+    std::uint32_t audioChannelCount = 2;
+    bool operator==(const MeasuredPreviewEnvelope&) const = default;
+};
+
 struct PreviewCapabilities {
-    std::uint32_t maxQualifiedActiveVideoSources = 1;
-    std::uint32_t maxQualifiedCompositionLayers = 1;
-    std::uint32_t maxQualifiedActiveAudioSources = 0;
-    PreviewFrameRate qualifiedOutputFrameRate{60, 1};
-    std::uint32_t qualifiedAudioSampleRate = 0;
-    std::uint32_t qualifiedAudioChannelCount = 0;
+    // ---- 現在の構成で実際に受理できる上限。measured とは限らない ----
+    std::uint32_t configuredMaxActiveVideoSources = 1;
+    std::uint32_t configuredMaxCompositionLayers = 1;
+    std::uint32_t configuredMaxActiveAudioSources = 0;
+    // initialize() で確定した output frame rate。
+    // 受理されたことは qualify されたことではない。
+    PreviewFrameRate configuredOutputFrameRate{60, 1};
+    std::uint32_t configuredAudioSampleRate = 0;
+    std::uint32_t configuredAudioChannelCount = 0;
+
+    // configured* が「実際に確定した構成」かどうか。
+    //
+    // **これは derived value の cache ではなく一次 state である。**
+    //
+    // この struct 自体の既定値 (1 / 1 / 0 / 60-1 / 0 / 0) は measuredEnvelope と
+    // 一致しない。問題になるのは `PreviewEngine` が initialize 前に持つ product
+    // capability であり、そちらは 2 / 2 / 1 / 48000 / 2 へ上書きされているため
+    // measuredEnvelope と同値の組になる。この flag が無いと、initialize を
+    // 通していない engine が tuple equality だけで一致してしまう
+    // (「実測 authority の false positive」)。
+    //
+    // initialize が最後まで成功したときにだけ true にし、rollback では false へ戻す。
+    bool hasConfiguredEnvelope = false;
+
+    // ---- 実測済みの構成 ----
+    MeasuredPreviewEnvelope measuredEnvelope;
+
     bool duplicateSourceLayersSupported = false;
     bool deviceRecoverySupported = false;
+
+    // 現在の構成が measuredEnvelope と**組として**一致するか。
+    // 保存値にすると configured field を書き換える経路 (test hook を含む) ごとに
+    // 再計算が要り、書き忘れると stale な true が残る。derived にして
+    // 「派生値が元と食い違う」状態そのものを作らない。
+    //
+    // 構成が未確定 (hasConfiguredEnvelope == false) のときは常に false を返す。
+    // 「まだ分からない」を「測定済み」にしない。
+    bool matchesMeasuredEnvelope() const {
+        return hasConfiguredEnvelope &&
+               configuredOutputFrameRate == measuredEnvelope.outputFrameRate &&
+               configuredMaxActiveVideoSources == measuredEnvelope.maxActiveVideoSources &&
+               configuredMaxCompositionLayers == measuredEnvelope.maxCompositionLayers &&
+               configuredMaxActiveAudioSources == measuredEnvelope.maxActiveAudioSources &&
+               configuredAudioSampleRate == measuredEnvelope.audioSampleRate &&
+               configuredAudioChannelCount == measuredEnvelope.audioChannelCount;
+    }
 };
 
 struct PreviewDeviceInfo {
@@ -188,6 +247,10 @@ struct PreviewTelemetry {
     std::uint32_t currentSourceQueueDepth = 0;
     std::uint32_t gpuRetirementCurrentDepth = 0;
     std::uint32_t gpuRetirementPeakDepth = 0;
+    // endpoint へ送った PCM の channel peak (linear, 0..1)。audio source が
+    // 無い間は 0。dB への換算は表示側の責務にする。
+    float audioMeterPeakLeft = 0.0F;
+    float audioMeterPeakRight = 0.0F;
     PreviewStatus status;
 };
 

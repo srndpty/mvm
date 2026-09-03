@@ -58,7 +58,7 @@ int main(int argc, char** argv) {
     if (!require(writeScript(scriptPath, "first"), "sample scriptを書けません"))
         return 1;
 
-    mvm::project::Project project;
+    mvm::project::Project project = mvm::project::createDefaultProject();
     mvm::app::ManimClipGenerationRequest request{
         .manimExecutablePath = fakeManim,
         .projectPath = projectPath,

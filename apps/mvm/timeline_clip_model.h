@@ -23,7 +23,8 @@ public:
         SourceFpsNumRole,
         SourceFpsDenRole,
         PreviewSupportedRole,
-        VideoTrackRole,
+        TrackKindRole,
+        TrackIndexRole,
     };
 
     explicit TimelineClipModel(QObject* parent = nullptr);
@@ -47,7 +48,8 @@ private:
         qint64 sourceFpsNum = 0;
         qint64 sourceFpsDen = 1;
         bool previewSupported = false;
-        int videoTrack = 0;
+        QString trackKind;
+        int trackIndex = 0;
     };
 
     QList<Item> items_;
