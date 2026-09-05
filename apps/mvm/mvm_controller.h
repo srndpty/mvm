@@ -279,6 +279,7 @@ private:
     // という部分 commit を作らない。
     struct AudioSwitchUndo {
         bool changed = false;
+        bool engineReset = false;
         std::vector<AudioPreviewSource> previous;
     };
 

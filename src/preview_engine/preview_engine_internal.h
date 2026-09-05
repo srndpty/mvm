@@ -230,6 +230,8 @@ private:
 
 Result<void> validateSourceFrameRate(long long sourceNumerator, long long sourceDenominator,
                                      PreviewFrameRate outputFrameRate);
+Result<void> validateExpectedSourceFrameRate(long long actualNumerator, long long actualDenominator,
+                                             PreviewFrameRate expectedFrameRate);
 // 製品がqualifiedとして検証済みのinternal PCM domainは48000 Hz / stereo / float32だけである。
 // これ以外を暗黙のresample/channel変換で成功へ変えない (preview-engine-contract.md §5)。
 Result<void> validateQualifiedAudioDomain(int sampleRate, int channels,

@@ -549,6 +549,12 @@ ApplicationWindow {
                     Math.min(timelineFlick.contentWidth - timelineFlick.width,
                              timelineFlick.contentX - wheelDelta * 5));
             }
+            function handleNativePlainWheel(wheelDelta) {
+                timelineFlick.contentX = Math.max(
+                    0,
+                    Math.min(timelineFlick.contentWidth - timelineFlick.width,
+                             timelineFlick.contentX - wheelDelta));
+            }
 
             // --- トラックヘッダ (左端) ---
             Item {

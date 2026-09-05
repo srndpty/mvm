@@ -1,3 +1,4 @@
+#include "core/checked_integer.h"
 #include "core/checked_output_timebase.h"
 #include "media/audio_preview/audio_clock.h"
 #include "media/audio_preview/audio_decode_worker.h"
@@ -133,6 +134,13 @@ Result<void> validatePreviewSourceDescriptor(const PreviewSourceDescriptor& desc
                                                PreviewOperation::AddSource,
                                                "videoまたはaudioを有効にしてください"));
     }
+    if (descriptor.videoTimelineMappingEnabled &&
+        (descriptor.expectedVideoSourceFrameRate.numerator == 0 ||
+         descriptor.expectedVideoSourceFrameRate.denominator == 0)) {
+        return Result<void>::failure(
+            makeError(PreviewErrorCategory::InvalidSource, PreviewOperation::AddSource,
+                      "timeline mappingにはexpected source FPSが必要です"));
+    }
     return Result<void>::success();
 }
 
@@ -154,6 +162,32 @@ Result<void> validateSourceFrameRate(long long sourceNumerator, long long source
     (void)numerator;
     (void)denominator;
     (void)outputFrameRate;
+    return Result<void>::success();
+}
+
+Result<void> validateExpectedSourceFrameRate(long long actualNumerator, long long actualDenominator,
+                                             PreviewFrameRate expectedFrameRate) {
+    if (actualNumerator <= 0 || actualDenominator <= 0 || expectedFrameRate.numerator == 0 ||
+        expectedFrameRate.denominator == 0) {
+        return Result<void>::failure(makeError(PreviewErrorCategory::InvalidSource,
+                                               PreviewOperation::AddSource,
+                                               "source FPS authorityが不正です"));
+    }
+    auto actualNum = static_cast<std::uint64_t>(actualNumerator);
+    auto actualDen = static_cast<std::uint64_t>(actualDenominator);
+    const std::uint64_t actualDivisor = std::gcd(actualNum, actualDen);
+    actualNum /= actualDivisor;
+    actualDen /= actualDivisor;
+    auto expectedNum = static_cast<std::uint64_t>(expectedFrameRate.numerator);
+    auto expectedDen = static_cast<std::uint64_t>(expectedFrameRate.denominator);
+    const std::uint64_t expectedDivisor = std::gcd(expectedNum, expectedDen);
+    expectedNum /= expectedDivisor;
+    expectedDen /= expectedDivisor;
+    if (actualNum != expectedNum || actualDen != expectedDen) {
+        return Result<void>::failure(
+            makeError(PreviewErrorCategory::InvalidSource, PreviewOperation::AddSource,
+                      "Projectのsource FPSと実ファイルのFPSが一致しません"));
+    }
     return Result<void>::success();
 }
 
@@ -1138,12 +1172,13 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                 std::lock_guard<std::mutex> lock(self->mutex);
                 self->noteShutdownStepLocked(internal::ShutdownStep::StopAudioSink);
             }
-            if (audioDecoder) {
+            {
                 std::lock_guard<std::mutex> transport(self->audioTransportMutex);
-                audioDecoder->stop();
+                if (audioDecoder)
+                    audioDecoder->stop();
+                for (const auto& decoder : extraAudioDecoders)
+                    decoder->stop();
             }
-            for (const auto& decoder : extraAudioDecoders)
-                decoder->stop();
             {
                 std::lock_guard<std::mutex> lock(self->mutex);
                 self->noteShutdownStepLocked(internal::ShutdownStep::StopAudioDecodeWorker);
@@ -1281,10 +1316,15 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                                            PreviewSourceId{publicId});
                     }
                     std::string mixError;
-                    if (!audioSink ||
-                        !audioSink->updateMixInput(
-                            entry->second.worker->queue(), completion.seekGeneration,
-                            entry->second.sampleOffset - audioSampleOffset, mixError)) {
+                    std::int64_t offsetDelta = 0;
+                    if (!core::checkedSubtract(entry->second.sampleOffset, audioSampleOffset,
+                                               offsetDelta)) {
+                        mixError = "audio mix offsetの差がint64範囲を超えています";
+                    }
+                    if (!audioSink || !mixError.empty() ||
+                        !audioSink->updateMixInput(entry->second.worker->queue(),
+                                                   completion.seekGeneration, offsetDelta,
+                                                   mixError)) {
                         return seekFailure("audio mix generationを更新できません: " + mixError,
                                            PreviewSourceId{publicId});
                     }
@@ -1690,6 +1730,16 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
             impl_->sourceRegistry.unregisterSource(internalVideo);
             return Result<PreviewSourceId>::failure(supportedRate.error());
         }
+        if (descriptor.videoTimelineMappingEnabled) {
+            const Result<void> expectedRate = internal::validateExpectedSourceFrameRate(
+                opened.info.frameRate.num, opened.info.frameRate.den,
+                descriptor.expectedVideoSourceFrameRate);
+            if (!expectedRate) {
+                newVideoWorker->stop();
+                impl_->sourceRegistry.unregisterSource(internalVideo);
+                return Result<PreviewSourceId>::failure(expectedRate.error());
+            }
+        }
     }
 
     // audio registration。sinkはworkerのqueueとclockを参照するため、この順で組む。
@@ -1773,7 +1823,13 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
             static_cast<std::uint32_t>(endpoint.deviceFormat.channels);
     } else if (descriptor.audioEnabled) {
         std::string mixError;
-        const std::int64_t delta = descriptor.audioSampleOffset - impl_->audioSampleOffset;
+        std::int64_t delta = 0;
+        if (!core::checkedSubtract(descriptor.audioSampleOffset, impl_->audioSampleOffset, delta)) {
+            newAudioWorker->stop();
+            return Result<PreviewSourceId>::failure(
+                makeError(PreviewErrorCategory::InvalidSource, PreviewOperation::AddSource,
+                          "audio mix offsetの差がint64範囲を超えています"));
+        }
         if (!impl_->audioSink->addMixInput(newAudioWorker->queue(), delta,
                                            newAudioWorker->snapshot().sourceGeneration, mixError)) {
             newAudioWorker->stop();
@@ -2279,7 +2335,12 @@ Result<void> PreviewEngine::seekFrameRequest(const PreviewFrameRequest& request)
         audioSink = impl_->audioSink;
         const std::int64_t timelineSample = sample.value();
         for (const auto& [publicId, entry] : impl_->extraAudioSources) {
-            std::int64_t extraSample = timelineSample + entry.sampleOffset;
+            std::int64_t extraSample = 0;
+            if (!core::checkedAdd(timelineSample, entry.sampleOffset, extraSample)) {
+                return Result<void>::failure(
+                    makeError(PreviewErrorCategory::SeekFailure, PreviewOperation::Seek,
+                              "audio mix sample offsetの加算がoverflowしました"));
+            }
             if (extraSample < 0)
                 extraSample = 0;
             extraAudioTargets.push_back({publicId, entry.worker, extraSample});

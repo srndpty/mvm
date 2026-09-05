@@ -60,6 +60,10 @@ TimelineEditResult appendTimelineClip(Project& project, TimelineClip clip, Track
 // 指定位置へ配置する。既存 clip と重なる場合は fail-closed にする。
 TimelineEditResult placeTimelineClipAt(Project& project, TimelineClip clip, TrackRef track,
                                        std::int64_t timelineStartFrame);
+// link済みvideo/audioを一つのcandidateへ追加し、Project invariantを満たした状態だけをcommitする。
+TimelineEditResult placeLinkedAvPairAt(Project& project, TimelineClip video, TrackRef videoTrack,
+                                       TimelineClip audio, TrackRef audioTrack,
+                                       std::int64_t timelineStartFrame);
 TimelineEditResult deleteTimelineClip(Project& project, int selectedIndex);
 TimelineEditResult unlinkTimelineClip(Project& project, const std::string& clipId);
 TimelineEditResult trimTimelineClip(Project& project, const std::string& clipId, TrimEdge edge,

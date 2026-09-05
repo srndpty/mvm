@@ -34,6 +34,7 @@ $requiredInteractions = @(
     'function handleNativeAltWheel(',
     'function handleNativeCtrlWheel(',
     'function handleNativeShiftWheel(',
+    'function handleNativePlainWheel(',
     'setZoom(wheelDelta > 0 ? 1 : -1,',
     'readonly property var zoomLevels:',
     'property int zoomIndex:',
@@ -79,6 +80,7 @@ if (-not $main.Contains('class TimelineWheelEventFilter final') -or
     -not $main.Contains('testFlag(Qt::AltModifier)') -or
     -not $main.Contains('testFlag(Qt::ControlModifier)') -or
     -not $main.Contains('testFlag(Qt::ShiftModifier)') -or
+    -not $main.Contains('method = "handleNativePlainWheel"') -or
     -not $main.Contains('angleDelta.x()') -or
     -not $main.Contains('pixelDelta.x()') -or
     -not $main.Contains('if (delta == 0)') -or
@@ -101,6 +103,9 @@ if ($controller.Contains('recomputeTimelineStarts(candidate)')) {
 # preview の layer 構成は mapTimelinePreviewFrame に一本化する。
 if (-not $controller.Contains('mapTimelinePreviewFrame(project_, timelineFrame)')) {
     throw 'controllerがpreview layer mappingを経由していません'
+}
+if (-not $controller.Contains('project::placeLinkedAvPairAt(')) {
+    throw 'linked video/audioを単一transactionで配置していません'
 }
 
 if (-not $previewItem.Contains('setMirrorVertically(false)') -or

@@ -256,6 +256,12 @@ TimelineValidationResult validateTimeline(const Project& project) {
         intervals.push_back({clip.track, start, end, &clip});
         totalEnd = std::max(totalEnd, end);
     }
+    for (const auto& [linkGroupId, group] : linkGroups) {
+        if (group.count != 2 || !group.hasAudio || !group.hasVideo) {
+            result.error = "clipリンクはvideo/audioの1組である必要があります: " + linkGroupId;
+            return result;
+        }
+    }
     result.success = true;
     result.totalFrames = totalEnd;
     return result;
@@ -449,6 +455,41 @@ TimelineEditResult placeTimelineClipAt(Project& project, TimelineClip clip, Trac
     project = std::move(candidate);
     result.success = true;
     result.selectedIndex = static_cast<int>(project.timelineClips.size()) - 1;
+    return result;
+}
+
+TimelineEditResult placeLinkedAvPairAt(Project& project, TimelineClip video, TrackRef videoTrack,
+                                       TimelineClip audio, TrackRef audioTrack,
+                                       std::int64_t timelineStartFrame) {
+    TimelineEditResult result;
+    if (!isValidTrackRef(project, videoTrack) || !isValidTrackRef(project, audioTrack) ||
+        timelineStartFrame < 0) {
+        result.error = "リンクclipの追加先trackまたはstart frameが不正です";
+        return result;
+    }
+    if (video.kind == TimelineClipKind::Audio || audio.kind != TimelineClipKind::Audio ||
+        videoTrack.kind != TrackKind::Video || audioTrack.kind != TrackKind::Audio ||
+        video.linkGroupId.empty() || video.linkGroupId != audio.linkGroupId) {
+        result.error = "リンクclipは同じlink IDを持つvideo/audioの1組である必要があります";
+        return result;
+    }
+
+    Project candidate = project;
+    video.track = videoTrack;
+    video.timelineStartFrame = timelineStartFrame;
+    audio.track = audioTrack;
+    audio.timelineStartFrame = timelineStartFrame;
+    const int videoIndex = static_cast<int>(candidate.timelineClips.size());
+    candidate.timelineClips.push_back(std::move(video));
+    candidate.timelineClips.push_back(std::move(audio));
+    const auto validation = validateTimeline(candidate);
+    if (!validation.success) {
+        result.error = validation.error;
+        return result;
+    }
+    project = std::move(candidate);
+    result.success = true;
+    result.selectedIndex = videoIndex;
     return result;
 }
 

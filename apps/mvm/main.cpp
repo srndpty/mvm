@@ -60,7 +60,8 @@ protected:
             method = "handleNativeShiftWheel";
             arguments = {delta};
         } else {
-            return QObject::eventFilter(watched, event);
+            method = "handleNativePlainWheel";
+            arguments = {delta};
         }
 
         if (delta == 0)

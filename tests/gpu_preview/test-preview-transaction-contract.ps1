@@ -7,7 +7,11 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $controllerPath = Join-Path $PSScriptRoot '..\..\apps\mvm\mvm_controller.cpp'
+$enginePath = Join-Path $PSScriptRoot '..\..\src\preview_engine\preview_engine.cpp'
+$sinkPath = Join-Path $PSScriptRoot '..\..\src\media\audio_preview\wasapi_audio_sink.cpp'
 $controller = Get-Content -LiteralPath $controllerPath -Raw
+$engine = Get-Content -LiteralPath $enginePath -Raw
+$sink = Get-Content -LiteralPath $sinkPath -Raw
 
 function Get-FunctionBody {
     param([string]$Text, [string]$Signature)
@@ -84,15 +88,33 @@ if (-not $rollbackBody.Contains('revertAudioSource(audioUndo')) {
 $applyBody = Get-FunctionBody -Text $controller `
     -Signature 'bool MvmController::applyAudioSourceFor(std::int64_t timelineFrame, AudioSwitchUndo& undo,'
 $undoIndex = $applyBody.IndexOf('undo.previous = audioSources_;')
-$removeIndex = $applyBody.IndexOf('previewEngine_->removeSource(current->source)')
-$addIndex = $applyBody.IndexOf('previewEngine_->addSource(descriptor)')
+$replaceIndex = $applyBody.IndexOf('replaceSourceSet(')
 if ($undoIndex -lt 0) { throw 'applyAudioSourceFor が旧 source を控えていません' }
-if ($removeIndex -lt 0 -or $addIndex -lt 0) { throw 'applyAudioSourceFor の remove/add がありません' }
-if ($undoIndex -gt $removeIndex) {
+if ($replaceIndex -lt 0) { throw 'applyAudioSourceFor がsource set transactionを使っていません' }
+if ($undoIndex -gt $replaceIndex) {
     throw '旧 audio source を控える前に remove しています (戻せなくなります)'
 }
-if ($removeIndex -gt $addIndex) {
-    throw '旧audio setのremoveより前に新audio setをaddしています'
+
+$transactionPath = Join-Path $PSScriptRoot '..\..\src\app\audio_source_set_transaction.h'
+$transaction = Get-Content -LiteralPath $transactionPath -Raw
+foreach ($needle in @('current.pop_back()', 'if (apply(original))',
+                       'OperationFailedRestored', 'if (reset())')) {
+    if (-not $transaction.Contains($needle)) {
+        throw "audio source set compensation contractがありません: $needle"
+    }
+}
+
+if ($engine -notmatch '(?s)lock_guard<std::mutex> transport\(self->audioTransportMutex\);.*?audioDecoder->stop\(\);.*?extraAudioDecoders\).*?decoder->stop\(\);') {
+    throw 'primary/extra audio decoderのshutdown stopが同じtransport lock内にありません'
+}
+foreach ($needle in @('core::checkedSubtract(descriptor.audioSampleOffset',
+                       'core::checkedAdd(timelineSample, entry.sampleOffset')) {
+    if (-not $engine.Contains($needle)) {
+        throw "PreviewEngineのaudio offset checked算術がありません: $needle"
+    }
+}
+if (-not $sink.Contains('core::checkedAdd(requestedSampleStart, input.sampleOffsetDelta')) {
+    throw 'render-time audio mix offsetがchecked加算ではありません'
 }
 
 # --- 5. rollback は控えた descriptor をそのまま使う ---------------------------
@@ -101,18 +123,19 @@ if ($removeIndex -gt $addIndex) {
 # 持ち、identity と実体が食い違う。
 $revertBody = Get-FunctionBody -Text $controller `
     -Signature 'bool MvmController::revertAudioSource(const AudioSwitchUndo& undo, QString& error)'
-if (-not $revertBody.Contains('addSource(previous.descriptor)')) {
+if (-not $revertBody.Contains('replaceSourceSet(') -or
+    -not $revertBody.Contains('addSource(requested.descriptor)')) {
     throw 'revertAudioSource が控えた descriptor をそのまま使っていません'
 }
 if ($revertBody.Contains('audioDescriptorFor(')) {
     throw 'revertAudioSource が現在の Project から descriptor を作り直しています'
 }
-if (-not $revertBody.Contains('previous.identity')) {
+if (-not $revertBody.Contains('undo.previous')) {
     throw 'revertAudioSource が控えた identity を復元していません'
 }
 
 # applyAudioSourceFor は addSource へ渡した descriptor をそのまま控えること。
-if (-not $applyBody.Contains('{added.value(), desired[index], descriptor,')) {
+if (-not $applyBody.Contains('target.push_back({{}, desired[index], descriptor,')) {
     throw 'applyAudioSourceFor が実際に渡した descriptor を控えていません'
 }
 

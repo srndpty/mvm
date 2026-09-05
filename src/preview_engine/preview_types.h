@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace mvm::preview {
@@ -46,6 +47,11 @@ struct PreviewEngineConfig {
 };
 
 struct PreviewSourceDescriptor {
+    PreviewSourceDescriptor() = default;
+
+    PreviewSourceDescriptor(std::filesystem::path path, bool enableVideo, bool enableAudio)
+        : mediaPath(std::move(path)), videoEnabled(enableVideo), audioEnabled(enableAudio) {}
+
     std::filesystem::path mediaPath;
     bool videoEnabled = false;
     bool audioEnabled = false;
@@ -59,6 +65,8 @@ struct PreviewSourceDescriptor {
     bool videoTimelineMappingEnabled = false;
     std::int64_t videoSourceInFrame = 0;
     std::int64_t videoTimelineStartFrame = 0;
+    // Projectがmappingに用いたsource rate。decoder実測値との一致をopen後に検証する。
+    PreviewFrameRate expectedVideoSourceFrameRate;
 };
 
 struct PreviewNormalizedRect {

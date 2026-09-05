@@ -1,6 +1,7 @@
 #include "mvm_controller.h"
 
 #include "app/manim_clip_workflow.h"
+#include "app/audio_source_set_transaction.h"
 #include "app/preview/preview_engine_rhi_item.h"
 #include "app/timeline_export.h"
 #include "app/timeline_playback.h"
@@ -15,6 +16,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numeric>
 #include <utility>
 
@@ -802,56 +804,77 @@ bool MvmController::applyAudioSourceFor(std::int64_t timelineFrame, AudioSwitchU
         return true;
     }
 
-    undo.changed = true;
-    undo.previous = audioSources_;
-    // mix inputを先、masterを最後に外すため逆順で削除する。
-    for (auto current = audioSources_.rbegin(); current != audioSources_.rend(); ++current) {
-        const auto removed = previewEngine_->removeSource(current->source);
-        if (!removed) {
-            error = previewErrorText(removed.error());
-            undo.changed = false;
-            undo.previous.clear();
-            return false;
-        }
-    }
-    audioSources_.clear();
-
+    std::vector<AudioPreviewSource> target;
+    target.reserve(desired.size());
     for (std::size_t index = 0; index < desired.size(); ++index) {
         preview::PreviewSourceDescriptor descriptor;
         if (!audioDescriptorFor(mapped.layers[index].clipIndex, descriptor, error))
             return false;
-        const auto added = previewEngine_->addSource(descriptor);
-        if (!added) {
-            error = previewErrorText(added.error());
-            return false;
-        }
-        audioSources_.push_back(
-            {added.value(), desired[index], descriptor, mapped.layers[index].clipIndex});
+        target.push_back({{}, desired[index], descriptor, mapped.layers[index].clipIndex});
     }
-    return true;
+
+    undo.changed = true;
+    undo.previous = audioSources_;
+
+    QString operationError;
+    const auto replaced = replaceSourceSet(
+        audioSources_, target,
+        [&](const AudioPreviewSource& current) {
+            const auto removed = previewEngine_->removeSource(current.source);
+            if (!removed)
+                operationError = previewErrorText(removed.error());
+            return static_cast<bool>(removed);
+        },
+        [&](const AudioPreviewSource& requested, AudioPreviewSource& installed) {
+            const auto added = previewEngine_->addSource(requested.descriptor);
+            if (!added) {
+                operationError = previewErrorText(added.error());
+                return false;
+            }
+            installed.source = added.value();
+            return true;
+        },
+        [&] { return resetPreviewEngine(); });
+    if (replaced == SourceSetReplaceResult::Success)
+        return true;
+    undo.changed = false;
+    undo.engineReset = replaced == SourceSetReplaceResult::OperationFailedReset;
+    error = operationError;
+    if (replaced == SourceSetReplaceResult::OperationFailedReset)
+        error += QStringLiteral("; audio source復元にも失敗したためPreviewを再初期化しました");
+    else if (replaced == SourceSetReplaceResult::OperationFailedResetFailed)
+        error += QStringLiteral("; audio source復元とPreview再初期化に失敗しました");
+    return false;
 }
 
 bool MvmController::revertAudioSource(const AudioSwitchUndo& undo, QString& error) {
     if (!undo.changed)
         return true;
-    for (auto current = audioSources_.rbegin(); current != audioSources_.rend(); ++current) {
-        const auto removed = previewEngine_->removeSource(current->source);
-        if (!removed) {
-            error = previewErrorText(removed.error());
-            return false;
-        }
-    }
-    audioSources_.clear();
-    for (const auto& previous : undo.previous) {
-        const auto added = previewEngine_->addSource(previous.descriptor);
-        if (!added) {
-            error = previewErrorText(added.error());
-            return false;
-        }
-        audioSources_.push_back(
-            {added.value(), previous.identity, previous.descriptor, previous.clipIndex});
-    }
-    return true;
+    const auto replaced = replaceSourceSet(
+        audioSources_, undo.previous,
+        [&](const AudioPreviewSource& current) {
+            const auto removed = previewEngine_->removeSource(current.source);
+            if (!removed)
+                error = previewErrorText(removed.error());
+            return static_cast<bool>(removed);
+        },
+        [&](const AudioPreviewSource& requested, AudioPreviewSource& installed) {
+            const auto added = previewEngine_->addSource(requested.descriptor);
+            if (!added) {
+                error = previewErrorText(added.error());
+                return false;
+            }
+            installed.source = added.value();
+            return true;
+        },
+        [&] { return resetPreviewEngine(); });
+    if (replaced == SourceSetReplaceResult::Success)
+        return true;
+    if (replaced == SourceSetReplaceResult::OperationFailedReset)
+        error += QStringLiteral("; compensation失敗のためPreviewを再初期化しました");
+    else if (replaced == SourceSetReplaceResult::OperationFailedResetFailed)
+        error += QStringLiteral("; compensationとPreview再初期化に失敗しました");
+    return false;
 }
 
 bool MvmController::syncPreviewSourcesAt(std::int64_t timelineFrame, QString& error) {
@@ -868,11 +891,13 @@ bool MvmController::syncPreviewSourcesAt(std::int64_t timelineFrame, QString& er
     std::vector<preview::PreviewSourceId> newlyAdded;
     AudioSwitchUndo audioUndo;
     const auto rollback = [&] {
-        for (const auto source : newlyAdded) {
-            // accepted composition が参照している最中は removeSource が拒否されうる。
-            // 落とさず retirement queue へ回し、pollPreviewState に再試行させる。
-            if (!previewEngine_->removeSource(source))
-                retiredSources_.push_back(source);
+        if (!audioUndo.engineReset) {
+            for (const auto source : newlyAdded) {
+                // accepted composition が参照している最中は removeSource が拒否されうる。
+                // 落とさず retirement queue へ回し、pollPreviewState に再試行させる。
+                if (!previewEngine_->removeSource(source))
+                    retiredSources_.push_back(source);
+            }
         }
         QString revertError;
         if (!revertAudioSource(audioUndo, revertError)) {
@@ -907,6 +932,15 @@ bool MvmController::syncPreviewSourcesAt(std::int64_t timelineFrame, QString& er
         descriptor.videoTimelineMappingEnabled = true;
         descriptor.videoSourceInFrame = clip.sourceInFrame;
         descriptor.videoTimelineStartFrame = clip.timelineStartFrame;
+        if (clip.sourceFpsNum > std::numeric_limits<std::uint32_t>::max() ||
+            clip.sourceFpsDen > std::numeric_limits<std::uint32_t>::max()) {
+            error = QStringLiteral("source FPSをpreview descriptorへ格納できません");
+            rollback();
+            return false;
+        }
+        descriptor.expectedVideoSourceFrameRate = {
+            static_cast<std::uint32_t>(clip.sourceFpsNum),
+            static_cast<std::uint32_t>(clip.sourceFpsDen)};
         const auto added = previewEngine_->addSource(descriptor);
         if (!added) {
             error = previewErrorText(added.error());
@@ -1218,14 +1252,7 @@ bool MvmController::addVideoClip(const QUrl& fileUrl) {
     clip.sourceInFrame = 0;
     clip.sourceOutFrame = media.frameCount;
     clip.linkGroupId = linkGroupId;
-    const auto placed = project::placeTimelineClipAt(
-        candidate, std::move(clip),
-        project::TrackRef{project::TrackKind::Video, videoTrackIndex}, playheadFrame_);
-    if (!placed.success) {
-        setStatus(QString::fromStdString(placed.error));
-        return false;
-    }
-
+    project::TimelineEditResult placed;
     if (media.hasAudio) {
         if (candidate.audioTracks.empty()) {
             const auto addedTrack = project::addTrack(candidate, project::TrackKind::Audio);
@@ -1245,21 +1272,31 @@ bool MvmController::addVideoClip(const QUrl& fileUrl) {
         audioClip.sourceInFrame = 0;
         audioClip.sourceOutFrame = media.frameCount;
         audioClip.linkGroupId = linkGroupId;
-        auto audioPlaced = project::placeTimelineClipAt(
-            candidate, audioClip, project::TrackRef{project::TrackKind::Audio, 0}, playheadFrame_);
+        placed = project::placeLinkedAvPairAt(
+            candidate, clip, project::TrackRef{project::TrackKind::Video, videoTrackIndex},
+            audioClip, project::TrackRef{project::TrackKind::Audio, 0}, playheadFrame_);
         // A1 が使用中なら既存 clip を壊さず、新しい audio track に同じ位置で置く。
-        if (!audioPlaced.success) {
+        if (!placed.success) {
             const auto addedTrack = project::addTrack(candidate, project::TrackKind::Audio);
-            if (addedTrack.success) {
-                audioPlaced = project::placeTimelineClipAt(
-                    candidate, std::move(audioClip),
+            if (addedTrack.success)
+                placed = project::placeLinkedAvPairAt(
+                    candidate, std::move(clip),
+                    project::TrackRef{project::TrackKind::Video, videoTrackIndex},
+                    std::move(audioClip),
                     project::TrackRef{project::TrackKind::Audio, addedTrack.selectedIndex},
                     playheadFrame_);
-            }
         }
-        if (!audioPlaced.success) {
+        if (!placed.success) {
             setStatus(QStringLiteral("リンク音声をA1へ配置できません: ") +
-                      QString::fromStdString(audioPlaced.error));
+                      QString::fromStdString(placed.error));
+            return false;
+        }
+    } else {
+        placed = project::placeTimelineClipAt(
+            candidate, std::move(clip),
+            project::TrackRef{project::TrackKind::Video, videoTrackIndex}, playheadFrame_);
+        if (!placed.success) {
+            setStatus(QString::fromStdString(placed.error));
             return false;
         }
     }

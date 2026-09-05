@@ -2,6 +2,8 @@
 #define INITGUID
 #include "media/audio_preview/wasapi_audio_sink.h"
 
+#include "core/checked_integer.h"
+
 #include <windows.h>
 #include <algorithm>
 #include <audioclient.h>
@@ -499,7 +501,11 @@ AudioConsumeResult WasapiAudioSink::consumeMixed(std::int64_t requestedSampleSta
     for (auto& input : mixInputs_) {
         const std::size_t valueCount = static_cast<std::size_t>(samples) * kInternalChannels;
         std::fill_n(input.scratch.begin(), valueCount, 0.0F);
-        const std::int64_t requested = requestedSampleStart + input.sampleOffsetDelta;
+        std::int64_t requested = 0;
+        if (!core::checkedAdd(requestedSampleStart, input.sampleOffsetDelta, requested)) {
+            input.queue->noteUnderflow(samples);
+            continue;
+        }
         const AudioConsumeResult mixed =
             input.queue->consume(input.scratch.data(), requested, samples, input.generation);
         if (mixed.shortageKind == AudioShortageKind::Starvation)

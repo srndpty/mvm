@@ -230,6 +230,18 @@ void frameRateAndDescriptorValidation() {
     require(validateSourceFrameRate(30, 1, {60, 1}), "30fps sourceを60fps outputで受理できません");
     require(validateSourceFrameRate(120, 1, {60, 1}),
             "120fps sourceを60fps outputで受理できません");
+    require(validateExpectedSourceFrameRate(48000, 2002, {24000, 1001}),
+            "canonicalに等しいsource FPSを不一致にしました");
+    requireFailure(validateExpectedSourceFrameRate(25, 1, {24000, 1001}),
+                   PreviewErrorCategory::InvalidSource,
+                   "Project metadataと実ファイルのsource FPS不一致を受理しました");
+    PreviewSourceDescriptor missingExpectedRate;
+    missingExpectedRate.mediaPath = "movie.mp4";
+    missingExpectedRate.videoEnabled = true;
+    missingExpectedRate.videoTimelineMappingEnabled = true;
+    requireFailure(validatePreviewSourceDescriptor(missingExpectedRate),
+                   PreviewErrorCategory::InvalidSource,
+                   "expected source FPSの無いtimeline mappingを受理しました");
 
     PreviewEngine unconfigurableEngine;
     auto dispatcher = std::make_shared<ManualDispatcher>();

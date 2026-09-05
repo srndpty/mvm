@@ -1,3 +1,4 @@
+#include "core/checked_integer.h"
 #include "core/checked_output_timebase.h"
 
 #include <cstdint>
@@ -15,6 +16,23 @@ using mvm::core::OutputTimebaseError;
 void require(bool condition, const std::string& message) {
     if (!condition)
         throw std::runtime_error(message);
+}
+
+void checkedIntegerArithmetic() {
+    std::int64_t result = 0;
+    const auto maximum = std::numeric_limits<std::int64_t>::max();
+    const auto minimum = std::numeric_limits<std::int64_t>::min();
+    require(mvm::core::checkedAdd(20, -5, result) && result == 15,
+            "checkedAddが通常の加算に失敗しました");
+    require(!mvm::core::checkedAdd(maximum, 1, result), "checkedAddが正方向overflowを受理しました");
+    require(!mvm::core::checkedAdd(minimum, -1, result),
+            "checkedAddが負方向overflowを受理しました");
+    require(mvm::core::checkedSubtract(20, -5, result) && result == 25,
+            "checkedSubtractが通常の減算に失敗しました");
+    require(!mvm::core::checkedSubtract(maximum, -1, result),
+            "checkedSubtractが正方向overflowを受理しました");
+    require(!mvm::core::checkedSubtract(minimum, 1, result),
+            "checkedSubtractが負方向overflowを受理しました");
 }
 
 template<typename T>
@@ -193,6 +211,7 @@ void wallClockNanosecondMapping() {
 
 int main() {
     try {
+        checkedIntegerArithmetic();
         configurationAndCanonicalization();
         qualifiedMappingAndRounding();
         limitsAndOverflow();

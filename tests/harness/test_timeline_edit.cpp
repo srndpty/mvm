@@ -1,3 +1,4 @@
+#include "app/audio_source_set_transaction.h"
 #include "project/project_json.h"
 #include "project/timeline_edit.h"
 #include "util/mvm_win_utf8.h"
@@ -8,6 +9,7 @@
 #include <limits>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -18,6 +20,49 @@ void check(bool condition, const char* message) {
         return;
     std::fprintf(stderr, "FAIL: %s\n", message);
     ++failures;
+}
+
+void testAudioSourceSetCompensation() {
+    std::vector<int> current{1, 2, 3};
+    const std::vector<int> desired{4};
+    bool failedOnce = false;
+    bool resetCalled = false;
+    const auto result = mvm::app::replaceSourceSet(
+        current, desired,
+        [&](int value) {
+            if (value == 2 && !failedOnce) {
+                failedOnce = true;
+                return false;
+            }
+            return true;
+        },
+        [](int requested, int& installed) {
+            installed = requested;
+            return true;
+        },
+        [&] {
+            resetCalled = true;
+            return true;
+        });
+    check(result == mvm::app::SourceSetReplaceResult::OperationFailedRestored &&
+              current == std::vector<int>({1, 2, 3}) && !resetCalled,
+          "途中remove失敗後にexact旧source setを再構築できません");
+
+    current = {1, 2, 3};
+    resetCalled = false;
+    const auto resetResult = mvm::app::replaceSourceSet(
+        current, desired, [](int value) { return value != 2; },
+        [](int requested, int& installed) {
+            installed = requested;
+            return true;
+        },
+        [&] {
+            resetCalled = true;
+            return true;
+        });
+    check(resetResult == mvm::app::SourceSetReplaceResult::OperationFailedReset &&
+              current.empty() && resetCalled,
+          "旧source set再構築不能時にbackend resetでfail-closedにできません");
 }
 
 std::filesystem::path fromUtf8(const char* text) {
@@ -488,6 +533,33 @@ void testLinkedClipEditing() {
     malformed.timelineClips = {first, second};
     check(!mvm::project::validateTimeline(malformed).success,
           "同種clip同士の不正なリンクを受理しました");
+
+    auto orphan = mvm::project::createDefaultProject();
+    video.linkGroupId = "orphan-link";
+    orphan.timelineClips = {video};
+    check(!mvm::project::validateTimeline(orphan).success,
+          "counterpartの無いorphan linkを受理しました");
+
+    auto placedPair = mvm::project::createDefaultProject();
+    video.linkGroupId = "atomic-link";
+    audio.linkGroupId = "atomic-link";
+    const auto pairResult =
+        mvm::project::placeLinkedAvPairAt(placedPair, video, kV1, audio, kA1, 42);
+    check(pairResult.success && pairResult.selectedIndex == 0 &&
+              placedPair.timelineClips.size() == 2 &&
+              placedPair.timelineClips[0].timelineStartFrame == 42 &&
+              placedPair.timelineClips[1].timelineStartFrame == 42,
+          "linked A/V pairを単一transactionで配置できません");
+
+    auto blockedPair = placedPair;
+    const auto beforePairFailure = blockedPair.timelineClips;
+    video.id = "blocked-video";
+    audio.id = "blocked-audio";
+    video.linkGroupId = "blocked-link";
+    audio.linkGroupId = "blocked-link";
+    check(!mvm::project::placeLinkedAvPairAt(blockedPair, video, kV1, audio, kA1, 42).success &&
+              blockedPair.timelineClips == beforePairFailure,
+          "linked pairの衝突失敗で片側だけをcommitしました");
 }
 
 void testManimPlacement() {
@@ -532,7 +604,6 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
     candidate.timelineClips[2].timelineStartFrame = 90;
     candidate.timelineClips[2].effects.scalePercent = 60.0;
     candidate.timelineClips[2].effects.opacityPercent = 55.0;
-    candidate.timelineClips[2].linkGroupId = "round-trip-link";
     candidate.outputWidth = 3840;
     candidate.outputHeight = 2160;
     check(mvm::project::addTrack(candidate, mvm::project::TrackKind::Audio).success,
@@ -541,6 +612,7 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
     auto audio = clip("voice", mvm::project::TimelineClipKind::Audio, kA1);
     audio.timelineStartFrame = 42;
     audio.linkGroupId = "round-trip-link";
+    candidate.timelineClips[2].linkGroupId = "round-trip-link";
     candidate.timelineClips.push_back(audio);
     check(mvm::project::validateTimeline(candidate).success,
           "複数track配置とeffectsを持つ保存candidateが不正です");
@@ -614,6 +686,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     testFrameConversions();
+    testAudioSourceSetCompensation();
     testTimelineFrameRates();
     testTimelineFrameRateChange();
     testTrimAndLookup();
