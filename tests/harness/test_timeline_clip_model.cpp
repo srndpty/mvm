@@ -38,6 +38,7 @@ int main(int argc, char** argv) {
     // vector順を時間順・track順のどちらにもせず、model roleをauthorityとして検査する。
     project.timelineClips = {clip("late-v1", 0, 500, 40), clip("early-v2", 1, 25, 80),
                              clip("early-v1", 0, 100, 60)};
+    project.timelineClips[1].linkGroupId = "link";
 
     mvm::app::TimelineClipModel model;
     model.setProject(project);
@@ -65,6 +66,12 @@ int main(int argc, char** argv) {
         check(static_cast<double>(start) * pixelsPerFrame == expected[row].x &&
                   static_cast<double>(duration) * pixelsPerFrame == expected[row].width,
               "timeline geometryのframe換算が一致しません");
+        const bool linked = model.data(index, mvm::app::TimelineClipModel::LinkedRole).toBool();
+        check(linked == (row == 1), "clipのリンク状態をmodel roleへ公開できません");
+        const QString linkGroup =
+            model.data(index, mvm::app::TimelineClipModel::LinkGroupIdRole).toString();
+        check(linkGroup == (row == 1 ? QStringLiteral("link") : QString()),
+              "drag preview用link groupをmodel roleへ公開できません");
     }
 
     if (failures != 0)

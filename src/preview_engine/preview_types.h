@@ -54,6 +54,11 @@ struct PreviewSourceDescriptor {
     // timeline 上で 0 以外の位置に置いた audio clip を鳴らすために使う。
     // videoEnabled のみの source では無視する。
     std::int64_t audioSampleOffset = 0;
+    // video source frame と timeline output frame の対応原点。
+    // false の場合は従来どおり source/output を1:1で扱う。
+    bool videoTimelineMappingEnabled = false;
+    std::int64_t videoSourceInFrame = 0;
+    std::int64_t videoTimelineStartFrame = 0;
 };
 
 struct PreviewNormalizedRect {

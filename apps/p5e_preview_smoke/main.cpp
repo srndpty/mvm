@@ -70,6 +70,7 @@ public:
 
 enum class Stage {
     WaitDevice,
+    WaitAdHocSeek,
     WaitPrepareSeek,
     WaitInitial,
     WaitRecovered,
@@ -128,7 +129,8 @@ int main(int argc, char** argv) {
     const QStringList arguments = app.arguments();
     if (arguments.size() < 3 || arguments.size() > 4) {
         std::fprintf(stderr, "使い方: mvm_p5e_preview_smoke <fixture-a-path> <fixture-b-path> "
-                             "[--single-layer|--exceed-source-count|--exceed-layer-count"
+                             "[--single-layer|--ad-hoc-single-layer|--ad-hoc-timeline-seek"
+                             "|--exceed-source-count|--exceed-layer-count"
                              "|--duplicate-source-layer|--fault-missing-pair"
                              "|--remove-released-source|--seek-two-source"
                              "|--fault-seek-partial-generation|--fault-seek-partial-request"
@@ -139,9 +141,19 @@ int main(int argc, char** argv) {
         return 2;
     }
     Fault fault = Fault::None;
+    bool adHocFixtureA = false;
+    bool adHocTimelineSeek = false;
     if (arguments.size() == 4) {
         if (arguments[3] == "--single-layer")
             fault = Fault::SingleLayer;
+        else if (arguments[3] == "--ad-hoc-single-layer") {
+            fault = Fault::SingleLayer;
+            adHocFixtureA = true;
+        } else if (arguments[3] == "--ad-hoc-timeline-seek") {
+            fault = Fault::SingleLayer;
+            adHocFixtureA = true;
+            adHocTimelineSeek = true;
+        }
         else if (arguments[3] == "--exceed-source-count")
             fault = Fault::ExceedSourceCount;
         else if (arguments[3] == "--exceed-layer-count")
@@ -179,8 +191,9 @@ int main(int argc, char** argv) {
     QFile fixtureB(arguments[2]);
     QCryptographicHash fixtureHash(QCryptographicHash::Sha256);
     if (!fixture.open(QIODevice::ReadOnly) || !fixtureHash.addData(&fixture) ||
-        fixtureHash.result().toHex() !=
-            "d398114c38806f39670df51dfabb0095d462cbc35286ea1467901d4007cf0308") {
+        (!adHocFixtureA &&
+         fixtureHash.result().toHex() !=
+             "d398114c38806f39670df51dfabb0095d462cbc35286ea1467901d4007cf0308")) {
         std::fprintf(stderr, "fixture AのSHA-256がauthoritative値と一致しません\n");
         return 2;
     }
@@ -240,20 +253,29 @@ int main(int argc, char** argv) {
     timer.setInterval(10);
     QObject::connect(&timer, &QTimer::timeout, &app, [&] {
         const auto now = std::chrono::steady_clock::now();
+        const auto status = engine->status();
+        const auto telemetry = engine->telemetry();
         if (now - started > std::chrono::seconds(30)) {
-            std::fprintf(stderr, "P5-E smokeが30秒以内に完了しませんでした\n");
+            std::fprintf(stderr,
+                         "P5-E smokeが30秒以内に完了しませんでした "
+                         "(stage=%d state=%d presented=%llu dropped=%llu errors=%zu)\n",
+                         static_cast<int>(stage), static_cast<int>(status.state),
+                         static_cast<unsigned long long>(telemetry.presentedFrameCount),
+                         static_cast<unsigned long long>(telemetry.droppedFrameCount),
+                         sink->errors.size());
             exitCode = 10;
             app.quit();
             return;
         }
-        const auto status = engine->status();
-        const auto telemetry = engine->telemetry();
 
         if (stage == Stage::WaitDevice &&
             status.state == mvm::preview::PreviewEngineState::ReadyPaused) {
             mvm::preview::PreviewSourceDescriptor descriptor;
             descriptor.mediaPath = arguments[1].toStdWString();
             descriptor.videoEnabled = true;
+            descriptor.videoTimelineMappingEnabled = adHocTimelineSeek;
+            descriptor.videoSourceInFrame = 0;
+            descriptor.videoTimelineStartFrame = adHocTimelineSeek ? 17 : 0;
 
             if (fault == Fault::ExceedLayerCount &&
                 !mvm::preview::internal::PreviewRenderPort::setVideoSourceLimitForTest(*engine,
@@ -438,13 +460,44 @@ int main(int argc, char** argv) {
             auto composition = engine->submitComposition(snapshot);
             const auto noOp = engine->submitComposition(snapshot);
             if (!composition || !noOp || noOp.value() != composition.value() ||
-                composition.value().id.value != 1 || composition.value().revision != 1 ||
-                !engine->play()) {
+                composition.value().id.value != 1 || composition.value().revision != 1) {
                 exitCode = 5;
                 app.quit();
                 return;
             }
             accepted = composition.value();
+            if (adHocTimelineSeek) {
+                mvm::preview::PreviewFrameRequest request;
+                request.outputFrameNumber = 6757;
+                request.sources.push_back({videoSource, 3370});
+                if (!engine->seekFrameRequest(request)) {
+                    std::fprintf(stderr, "実素材timeline seekを開始できません\n");
+                    exitCode = 56;
+                    app.quit();
+                    return;
+                }
+                stage = Stage::WaitAdHocSeek;
+                return;
+            }
+            if (!engine->play()) {
+                exitCode = 5;
+                app.quit();
+                return;
+            }
+            stage = Stage::WaitInitial;
+            return;
+        }
+        if (stage == Stage::WaitAdHocSeek) {
+            if (status.state != mvm::preview::PreviewEngineState::ReadyPaused ||
+                telemetry.presentedFrameCount < 1) {
+                return;
+            }
+            if (!engine->play()) {
+                std::fprintf(stderr, "実素材timeline seek後の再生を開始できません\n");
+                exitCode = 57;
+                app.quit();
+                return;
+            }
             stage = Stage::WaitInitial;
             return;
         }

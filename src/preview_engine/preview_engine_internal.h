@@ -249,6 +249,7 @@ public:
                                                   void* context);
     static Result<RenderFrameResult> renderFrame(PreviewEngine& engine, void* renderTargetView,
                                                  int width, int height);
+    static bool renderFrameDue(PreviewEngine& engine);
     static Result<bool> completeRuntimeTeardown(PreviewEngine& engine);
     static Result<void> completeRendererDetach(PreviewEngine& engine);
     static Result<void> completeTeardown(PreviewEngine& engine);

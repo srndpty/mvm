@@ -261,7 +261,7 @@ bool GpuCompositor::issueComposition(const ComposedFrame& frame,
     }
     int layerIndex = 0;
     for (const auto& layer : frame.layers) {
-        const FitRect destination{
+        const FitRect destinationBox{
             static_cast<int>(std::lround(layer.destination.x * static_cast<float>(target.width))),
             static_cast<int>(std::lround(layer.destination.y * static_cast<float>(target.height))),
             static_cast<int>(
@@ -270,6 +270,18 @@ bool GpuCompositor::issueComposition(const ComposedFrame& frame,
                 std::lround(layer.destination.height * static_cast<float>(target.height)))};
         const float uv[4] = {layer.sourceUv.x, layer.sourceUv.y, layer.sourceUv.width,
                              layer.sourceUv.height};
+        // Project の destination は「配置可能な枠」であり、素材をそこまで変形する
+        // 指示ではない。crop 後の素材比率を保って枠内へ収める。
+        const int croppedWidth =
+            std::max(1, static_cast<int>(std::lround(static_cast<float>(layer.frame.width) *
+                                                     layer.sourceUv.width)));
+        const int croppedHeight =
+            std::max(1, static_cast<int>(std::lround(static_cast<float>(layer.frame.height) *
+                                                     layer.sourceUv.height)));
+        FitRect destination =
+            aspectFit(croppedWidth, croppedHeight, destinationBox.width, destinationBox.height);
+        destination.x += destinationBox.x;
+        destination.y += destinationBox.y;
         const bool injectedFailure = testFaults_.failBeforeLayerDraw == layerIndex;
         if (injectedFailure)
             err = "test fault: issue開始後のlayer描画失敗";

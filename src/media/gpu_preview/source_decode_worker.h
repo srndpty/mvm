@@ -144,6 +144,17 @@ struct SourceDecoderSnapshot {
     std::string lastError;
 };
 
+struct OutputFrameInterval {
+    bool valid = false;
+    long long begin = 0;
+    long long end = 0;
+};
+
+// 1枚のsource frameを表示するtimeline output frameの半開区間へ変換する。
+OutputFrameInterval sourceFrameOutputInterval(long long sourceFrame, long long sourceInFrame,
+                                              long long timelineStartFrame,
+                                              Rational sourceFrameRate, Rational outputFrameRate);
+
 // 1 sourceだけを駆動するworker。SharedD3D11Deviceは借用し、decoderとbufferは
 // このworkerが所有する。他sourceやglobal PreviewFrameQueueへ触れるAPIを持たない。
 class SourceDecodeWorker {
@@ -156,6 +167,8 @@ public:
     SourceDecodeWorker& operator=(const SourceDecodeWorker&) = delete;
 
     bool start(const std::string& utf8Path, std::string& err);
+    bool configureOutputMapping(long long sourceInFrame, long long timelineStartFrame,
+                                Rational outputFrameRate, std::string& err);
     void stop();
     void play();
     void pause();
@@ -229,6 +242,11 @@ private:
     std::atomic<long long> seekTargetFrame_{-1};
     std::atomic<long long> sourceFrameAnchor_{0};
     std::atomic<long long> outputFrameAnchor_{0};
+    bool outputMappingEnabled_ = false;
+    long long mappingSourceInFrame_ = 0;
+    long long mappingTimelineStartFrame_ = 0;
+    Rational mappingOutputFrameRate_{0, 1};
+    Rational sourceFrameRate_{0, 1};
     std::atomic<long long> seekPhaseEnterQpc_{0};
     std::atomic<long long> seekLastProgressQpc_{0};
     std::atomic<long long> seekCompletionPublishRejectCount_{0};

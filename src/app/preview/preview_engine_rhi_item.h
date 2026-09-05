@@ -11,7 +11,7 @@ namespace mvm::app {
 
 // P5-C product用の薄いQt隔離層。native targetは所有しないが、engineはrendererの
 // 切替完了まで共有所有し、GUI側の即時破棄によるuse-after-freeを防ぐ。
-class PreviewEngineRhiItem final : public QQuickRhiItem {
+class PreviewEngineRhiItem : public QQuickRhiItem {
     Q_OBJECT
 public:
     explicit PreviewEngineRhiItem(QQuickItem* parent = nullptr);

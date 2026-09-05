@@ -111,10 +111,10 @@ void testCompatibility() {
     check(mvm::app::timelinePreviewCompatible(project), "120/2の同値rateを再生不可にしました");
     project.timelineClips[1].sourceFpsNum = 30000;
     project.timelineClips[1].sourceFpsDen = 1001;
-    check(!mvm::app::timelinePreviewCompatible(project),
-          "29.97fpsを含むtimelineを再生可能にしました");
-    check(!mvm::app::timelineCanPlay(project, false, false, 0, 180),
-          "非対応clipを含むtimelineでcanPlayがtrueです");
+    check(mvm::app::timelinePreviewCompatible(project),
+          "異なるsource fpsを持つtimelineを再生不可にしました");
+    check(mvm::app::timelineCanPlay(project, false, false, 0, 180),
+          "異なるsource fpsを持つtimelineでcanPlayがfalseです");
 }
 
 } // namespace

@@ -68,6 +68,12 @@ public:
     bool play(std::int64_t mediaStartSample, SourceGeneration generation, std::string& error);
     bool pause(std::string& error);
     bool resetForSeek(std::string& error);
+    bool setSessionVolume(float volume, std::string& error);
+    bool addMixInput(AudioFrameQueue& queue, std::int64_t sampleOffsetDelta,
+                     SourceGeneration generation, std::string& error);
+    bool removeMixInput(AudioFrameQueue& queue, std::string& error);
+    bool updateMixInput(AudioFrameQueue& queue, SourceGeneration generation,
+                        std::int64_t sampleOffsetDelta, std::string& error);
     void stop();
     WasapiSnapshot snapshot() const;
 
@@ -97,6 +103,8 @@ private:
     bool prefillEndpoint(std::int64_t mediaStartSample, SourceGeneration generation,
                          std::string& error);
     bool resetClient(std::string& error);
+    AudioConsumeResult consumeMixed(std::int64_t requestedSampleStart, std::int64_t samples,
+                                    SourceGeneration primaryGeneration);
     void recordFailure(const std::string& error);
     void releaseDevice();
     // mutex_ を呼び出し側が保持している前提。open() の失敗経路から使う。
@@ -119,6 +127,15 @@ private:
     unsigned int bufferFrames_ = 0;
     int sourceScratchSamples_ = 0;
     std::vector<float> sourceScratch_;
+
+    struct MixInput {
+        AudioFrameQueue* queue = nullptr;
+        std::int64_t sampleOffsetDelta = 0;
+        SourceGeneration generation{};
+        std::vector<float> scratch;
+    };
+
+    std::vector<MixInput> mixInputs_;
     std::thread thread_;
     std::atomic<bool> acceptingCommands_{true};
     std::atomic<bool> threadRunning_{false};

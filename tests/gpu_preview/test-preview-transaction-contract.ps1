@@ -83,8 +83,8 @@ if (-not $rollbackBody.Contains('revertAudioSource(audioUndo')) {
 # --- 4. audio の差し替えは undo を記録してから行う ----------------------------
 $applyBody = Get-FunctionBody -Text $controller `
     -Signature 'bool MvmController::applyAudioSourceFor(std::int64_t timelineFrame, AudioSwitchUndo& undo,'
-$undoIndex = $applyBody.IndexOf('undo.previous = audioSource_;')
-$removeIndex = $applyBody.IndexOf('previewEngine_->removeSource(audioSource_->source)')
+$undoIndex = $applyBody.IndexOf('undo.previous = audioSources_;')
+$removeIndex = $applyBody.IndexOf('previewEngine_->removeSource(current->source)')
 $addIndex = $applyBody.IndexOf('previewEngine_->addSource(descriptor)')
 if ($undoIndex -lt 0) { throw 'applyAudioSourceFor が旧 source を控えていません' }
 if ($removeIndex -lt 0 -or $addIndex -lt 0) { throw 'applyAudioSourceFor の remove/add がありません' }
@@ -92,7 +92,7 @@ if ($undoIndex -gt $removeIndex) {
     throw '旧 audio source を控える前に remove しています (戻せなくなります)'
 }
 if ($removeIndex -gt $addIndex) {
-    throw 'audio の remove より前に add しています (engine は 1 件しか受理しません)'
+    throw '旧audio setのremoveより前に新audio setをaddしています'
 }
 
 # --- 5. rollback は控えた descriptor をそのまま使う ---------------------------
@@ -101,18 +101,18 @@ if ($removeIndex -gt $addIndex) {
 # 持ち、identity と実体が食い違う。
 $revertBody = Get-FunctionBody -Text $controller `
     -Signature 'bool MvmController::revertAudioSource(const AudioSwitchUndo& undo, QString& error)'
-if (-not $revertBody.Contains('addSource(undo.previous->descriptor)')) {
+if (-not $revertBody.Contains('addSource(previous.descriptor)')) {
     throw 'revertAudioSource が控えた descriptor をそのまま使っていません'
 }
 if ($revertBody.Contains('audioDescriptorFor(')) {
     throw 'revertAudioSource が現在の Project から descriptor を作り直しています'
 }
-if (-not $revertBody.Contains('undo.previous->identity')) {
+if (-not $revertBody.Contains('previous.identity')) {
     throw 'revertAudioSource が控えた identity を復元していません'
 }
 
 # applyAudioSourceFor は addSource へ渡した descriptor をそのまま控えること。
-if (-not $applyBody.Contains('AudioPreviewSource{added.value(), *desired, descriptor,')) {
+if (-not $applyBody.Contains('{added.value(), desired[index], descriptor,')) {
     throw 'applyAudioSourceFor が実際に渡した descriptor を控えていません'
 }
 

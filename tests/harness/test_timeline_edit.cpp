@@ -442,6 +442,54 @@ void testDeleteSelection() {
     check(middle.timelineClips == before, "拒否した削除で timeline が変化しました");
 }
 
+void testLinkedClipEditing() {
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    auto video = clip("linked-video");
+    auto audio = clip("linked-audio", mvm::project::TimelineClipKind::Audio, kA1);
+    video.linkGroupId = "link-1";
+    audio.linkGroupId = "link-1";
+    project.timelineClips = {video, audio};
+
+    const auto moved = mvm::project::moveClip(project, video.id, kV2, 120);
+    check(moved.success && project.timelineClips[0].track == kV2 &&
+              project.timelineClips[0].timelineStartFrame == 120 &&
+              project.timelineClips[1].track == kA1 &&
+              project.timelineClips[1].timelineStartFrame == 120,
+          "リンク移動で時間だけを同期できません");
+
+    auto blocked = project;
+    auto blocker = clip("audio-blocker", mvm::project::TimelineClipKind::Audio, kA1);
+    blocker.timelineStartFrame = 500;
+    blocked.timelineClips.push_back(blocker);
+    const auto beforeBlocked = blocked.timelineClips;
+    check(!mvm::project::moveClip(blocked, video.id, kV1, 300).success &&
+              blocked.timelineClips == beforeBlocked,
+          "リンク先が衝突する移動を受理しました");
+
+    const auto unlinked = mvm::project::unlinkTimelineClip(project, video.id);
+    check(unlinked.success && project.timelineClips[0].linkGroupId.empty() &&
+              project.timelineClips[1].linkGroupId.empty(),
+          "video/audioリンクを双方から解除できません");
+    check(!mvm::project::unlinkTimelineClip(project, video.id).success,
+          "未リンクclipのリンク解除を成功にしました");
+
+    video.linkGroupId = "link-2";
+    audio.linkGroupId = "link-2";
+    project.timelineClips = {video, audio};
+    const auto deleted = mvm::project::deleteTimelineClip(project, 0);
+    check(deleted.success && project.timelineClips.empty(),
+          "リンクclipの削除でvideo/audioの両方を削除しません");
+
+    auto malformed = mvm::project::createDefaultProject();
+    auto first = clip("same-kind-1");
+    auto second = clip("same-kind-2", mvm::project::TimelineClipKind::Video, kV2);
+    first.linkGroupId = "bad-link";
+    second.linkGroupId = "bad-link";
+    malformed.timelineClips = {first, second};
+    check(!mvm::project::validateTimeline(malformed).success,
+          "同種clip同士の不正なリンクを受理しました");
+}
+
 void testManimPlacement() {
     mvm::project::Project project = mvm::project::createDefaultProject();
     project.timelineClips.push_back(clip("A"));
@@ -484,11 +532,15 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
     candidate.timelineClips[2].timelineStartFrame = 90;
     candidate.timelineClips[2].effects.scalePercent = 60.0;
     candidate.timelineClips[2].effects.opacityPercent = 55.0;
+    candidate.timelineClips[2].linkGroupId = "round-trip-link";
+    candidate.outputWidth = 3840;
+    candidate.outputHeight = 2160;
     check(mvm::project::addTrack(candidate, mvm::project::TrackKind::Audio).success,
           "保存用candidateへaudio trackを追加できません");
     candidate.audioTracks[0].muted = true;
     auto audio = clip("voice", mvm::project::TimelineClipKind::Audio, kA1);
     audio.timelineStartFrame = 42;
+    audio.linkGroupId = "round-trip-link";
     candidate.timelineClips.push_back(audio);
     check(mvm::project::validateTimeline(candidate).success,
           "複数track配置とeffectsを持つ保存candidateが不正です");
@@ -499,12 +551,13 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
     check(saved.success, "編集済み Project を保存できません");
     const auto loaded = mvm::project::loadProjectJson(projectFile);
     check(loaded.success, "保存した .mvm を読み込めません");
-    bool timelineFieldsMatch = loaded.success && loaded.project.schemaVersion == 3 &&
-                               loaded.project.timelineFpsNum == 60 &&
-                               loaded.project.timelineFpsDen == 1 &&
-                               loaded.project.videoTracks == live.videoTracks &&
-                               loaded.project.audioTracks == live.audioTracks &&
-                               loaded.project.timelineClips.size() == live.timelineClips.size();
+    bool timelineFieldsMatch =
+        loaded.success && loaded.project.schemaVersion == 3 &&
+        loaded.project.timelineFpsNum == 60 && loaded.project.timelineFpsDen == 1 &&
+        loaded.project.outputWidth == 3840 && loaded.project.outputHeight == 2160 &&
+        loaded.project.videoTracks == live.videoTracks &&
+        loaded.project.audioTracks == live.audioTracks &&
+        loaded.project.timelineClips.size() == live.timelineClips.size();
     if (timelineFieldsMatch) {
         for (std::size_t index = 0; index < live.timelineClips.size(); ++index) {
             const auto& actual = loaded.project.timelineClips[index];
@@ -517,11 +570,17 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
                 actual.sourceInFrame == expected.sourceInFrame &&
                 actual.sourceOutFrame == expected.sourceOutFrame &&
                 actual.timelineStartFrame == expected.timelineStartFrame &&
-                actual.track == expected.track && actual.effects == expected.effects;
+                actual.track == expected.track && actual.effects == expected.effects &&
+                actual.linkGroupId == expected.linkGroupId;
         }
     }
     check(timelineFieldsMatch,
-          "schema 3のtrack構成・mute・clip種別・trim・effectsがround-tripしません");
+          "schema 3のoutput size・track構成・mute・clip種別・trim・effectsがround-tripしません");
+
+    auto invalidOutput = mvm::project::createDefaultProject();
+    invalidOutput.outputWidth = 0;
+    check(!mvm::project::validateTimeline(invalidOutput).success,
+          "幅0のProject output sizeを受理しました");
 
     // format marker が無いファイルは .mvm として受理しない。
     const auto strangerPath = root / "stranger.mvm";
@@ -564,6 +623,7 @@ int main(int argc, char** argv) {
     testRippleDelete();
     testValidationFailures();
     testDeleteSelection();
+    testLinkedClipEditing();
     testManimPlacement();
     testPersistenceTransaction(fromUtf8(argv[1]));
     if (failures != 0) {

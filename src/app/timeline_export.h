@@ -9,11 +9,11 @@
 
 namespace mvm::app {
 
-// M4 の書き出し要求。設定 UI は作らないので固定 profile を既定値として持つ。
+// M4 の書き出し要求。Project の output size を呼び出し側が渡す。
 struct TimelineExportRequest {
     std::filesystem::path outputPath;
-    int width = 640;
-    int height = 360;
+    int width = 1920;
+    int height = 1080;
     int fpsNum = 60;
     int fpsDen = 1;
     int timeoutMs = 600000;

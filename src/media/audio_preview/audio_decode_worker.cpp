@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <limits>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -210,6 +211,31 @@ bool AudioDecodeWorker::decodeOne(AudioChunk& chunk, std::string& error) {
     for (;;) {
         int result = avcodec_receive_frame(codec_, frame_);
         if (result == 0) {
+            const std::int64_t pts = frame_->best_effort_timestamp;
+            if (pts == AV_NOPTS_VALUE) {
+                error = "音声 frame に PTS がありません";
+                av_frame_unref(frame_);
+                return false;
+            }
+            const std::int64_t inputSample =
+                av_rescale_q(pts, stream->time_base, AVRational{1, codec_->sample_rate});
+            if (inputSample > std::numeric_limits<std::int64_t>::max() / kInternalSampleRate ||
+                inputSample < std::numeric_limits<std::int64_t>::min() / kInternalSampleRate) {
+                error = "音声 PTS をresampler timestampへ換算できません";
+                av_frame_unref(frame_);
+                return false;
+            }
+            // swr_next_pts は内部delayを含む「次に出るsample」の時刻を返す。
+            // 入力PTSを直接48kHzへ丸めると、44.1kHz等の変換で先頭chunkだけが
+            // delay分短くなり、次chunkとの間に偽の隙間ができる。
+            const std::int64_t nextOutputTimestamp =
+                swr_next_pts(resampler_, inputSample * kInternalSampleRate);
+            if (nextOutputTimestamp == std::numeric_limits<std::int64_t>::min()) {
+                error = "resamplerの出力timestampを取得できません";
+                av_frame_unref(frame_);
+                return false;
+            }
+            const std::int64_t start = av_rescale(nextOutputTimestamp, 1, codec_->sample_rate);
             const std::int64_t delay = swr_get_delay(resampler_, codec_->sample_rate);
             const int capacity = static_cast<int>(av_rescale_rnd(
                 delay + frame_->nb_samples, kInternalSampleRate, codec_->sample_rate, AV_ROUND_UP));
@@ -225,14 +251,6 @@ bool AudioDecodeWorker::decodeOne(AudioChunk& chunk, std::string& error) {
                 return false;
             }
             pcm->resize(static_cast<std::size_t>(converted) * kInternalChannels);
-            const std::int64_t pts = frame_->best_effort_timestamp;
-            if (pts == AV_NOPTS_VALUE) {
-                error = "音声 frame に PTS がありません";
-                av_frame_unref(frame_);
-                return false;
-            }
-            const std::int64_t start =
-                av_rescale_q(pts, stream->time_base, AVRational{1, kInternalSampleRate});
             chunk = {sourceId_,
                      generation_,
                      resourceEpoch_,

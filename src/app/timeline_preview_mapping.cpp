@@ -7,17 +7,6 @@
 #include <string>
 
 namespace mvm::app {
-namespace {
-
-std::string trackLabel(const project::Project& project, project::TrackKind kind, int index) {
-    const auto& tracks = project::tracksOfKind(project, kind);
-    if (index < 0 || index >= static_cast<int>(tracks.size()))
-        return project::defaultTrackName(kind, index);
-    return tracks[static_cast<std::size_t>(index)].name;
-}
-
-} // namespace
-
 TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& project,
                                                     std::int64_t timelineFrame) {
     TimelinePreviewFrameMapping result;
@@ -34,9 +23,18 @@ TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& proj
         // mute した video track は「黒」ではなく layer から外す。
         if (project.videoTracks[index].muted)
             continue;
+        const auto sourceOffset = project::timelineBoundaryToSourceBoundary(
+            timelineFrame - clip->timelineStartFrame, clip->sourceFpsNum, clip->sourceFpsDen,
+            project.timelineFpsNum, project.timelineFpsDen);
+        if (!sourceOffset.success ||
+            sourceOffset.frame >= clip->sourceOutFrame - clip->sourceInFrame) {
+            result.layers.clear();
+            result.error = clip->name + ": preview frameを素材frameへ換算できません";
+            return result;
+        }
         result.layers.push_back({static_cast<int>(index),
                                  static_cast<int>(clip - project.timelineClips.data()), clip->id,
-                                 clip->sourceInFrame + (timelineFrame - clip->timelineStartFrame)});
+                                 clip->sourceInFrame + sourceOffset.frame});
     }
     if (result.layers.size() > kMaxPreviewVideoLayers) {
         result.layers.clear();
@@ -72,17 +70,9 @@ TimelinePreviewAudioMapping mapTimelinePreviewAudio(const project::Project& proj
         const project::TimelineClip* clip = active[index];
         if (!clip || project.audioTracks[index].muted)
             continue;
-        if (result.hasAudio) {
-            result.hasAudio = false;
-            result.error = "audio track " +
-                           trackLabel(project, project::TrackKind::Audio, static_cast<int>(index)) +
-                           " が重なっています。preview は同時に 1 本の audio しか再生できません";
-            return result;
-        }
-        result.hasAudio = true;
-        result.clipIndex = static_cast<int>(clip - project.timelineClips.data());
-        result.clipId = clip->id;
-        result.sourceFrameNumber = clip->sourceInFrame + (timelineFrame - clip->timelineStartFrame);
+        result.layers.push_back({static_cast<int>(index),
+                                 static_cast<int>(clip - project.timelineClips.data()), clip->id,
+                                 clip->sourceInFrame + (timelineFrame - clip->timelineStartFrame)});
     }
     result.success = true;
     return result;

@@ -318,11 +318,17 @@ bool WasapiAudioSink::prefillEndpoint(std::int64_t mediaStartSample, SourceGener
         std::min(sourceScratchSamples_,
                  static_cast<int>(av_rescale_rnd(bufferFrames_, kInternalSampleRate,
                                                  mixFormat_->nSamplesPerSec, AV_ROUND_UP)));
-    const AudioConsumeResult consumed =
-        queue_.consume(sourceScratch_.data(), mediaStartSample, sourceNeeded, generation);
+    const AudioConsumeResult consumed = consumeMixed(mediaStartSample, sourceNeeded, generation);
     if (consumed.audioSamples != sourceNeeded || consumed.firstSample != mediaStartSample) {
         renderClient_->ReleaseBuffer(bufferFrames_, AUDCLNT_BUFFERFLAGS_SILENT);
-        error = "endpoint prefill は requested media sample 由来の PCM を満たせません";
+        error = "endpoint prefill は requested media sample 由来の PCM を満たせません "
+                "(requested=" +
+                std::to_string(mediaStartSample) +
+                ", first=" + std::to_string(consumed.firstSample) +
+                ", required=" + std::to_string(sourceNeeded) +
+                ", consumed=" + std::to_string(consumed.audioSamples) +
+                ", queued_before=" + std::to_string(consumed.queuedSamplesBeforeConsume) +
+                ", queue_last=" + std::to_string(consumed.queueLastAvailableSampleExclusive) + ")";
         return false;
     }
     updateMeterPeaks(consumed.audioSamples);
@@ -403,6 +409,105 @@ bool WasapiAudioSink::pause(std::string& error) {
     }
     clock_.pause();
     return true;
+}
+
+bool WasapiAudioSink::setSessionVolume(float volume, std::string& error) {
+    if (!(volume >= 0.0F) || volume > 1.0F) {
+        error = "master volume は 0.0〜1.0 の範囲で指定してください";
+        return false;
+    }
+    std::lock_guard clientLock(clientMutex_);
+    if (!client_) {
+        error = "WASAPI endpoint は open されていません";
+        return false;
+    }
+    ISimpleAudioVolume* control = nullptr;
+    HRESULT hr = client_->GetService(IID_ISimpleAudioVolume, reinterpret_cast<void**>(&control));
+    if (FAILED(hr) || !control) {
+        error = "endpoint master volume を取得できません: " + hresultText(hr);
+        return false;
+    }
+    hr = control->SetMasterVolume(volume, nullptr);
+    releaseCom(control);
+    if (FAILED(hr)) {
+        error = "endpoint master volume を設定できません: " + hresultText(hr);
+        return false;
+    }
+    std::lock_guard lock(mutex_);
+    metrics_.sessionVolume = volume;
+    return true;
+}
+
+bool WasapiAudioSink::addMixInput(AudioFrameQueue& queue, std::int64_t sampleOffsetDelta,
+                                  SourceGeneration generation, std::string& error) {
+    std::lock_guard clientLock(clientMutex_);
+    if (playing_) {
+        error = "再生中にaudio mix inputを追加できません";
+        return false;
+    }
+    if (std::any_of(mixInputs_.begin(), mixInputs_.end(),
+                    [&queue](const MixInput& input) { return input.queue == &queue; })) {
+        error = "audio mix inputは既に登録されています";
+        return false;
+    }
+    MixInput input;
+    input.queue = &queue;
+    input.sampleOffsetDelta = sampleOffsetDelta;
+    input.generation = generation;
+    input.scratch.resize(static_cast<std::size_t>(sourceScratchSamples_) * kInternalChannels);
+    mixInputs_.push_back(std::move(input));
+    return true;
+}
+
+bool WasapiAudioSink::removeMixInput(AudioFrameQueue& queue, std::string& error) {
+    std::lock_guard clientLock(clientMutex_);
+    if (playing_) {
+        error = "再生中にaudio mix inputを解除できません";
+        return false;
+    }
+    const auto found =
+        std::find_if(mixInputs_.begin(), mixInputs_.end(),
+                     [&queue](const MixInput& input) { return input.queue == &queue; });
+    if (found == mixInputs_.end()) {
+        error = "audio mix inputが登録されていません";
+        return false;
+    }
+    mixInputs_.erase(found);
+    return true;
+}
+
+bool WasapiAudioSink::updateMixInput(AudioFrameQueue& queue, SourceGeneration generation,
+                                     std::int64_t sampleOffsetDelta, std::string& error) {
+    std::lock_guard clientLock(clientMutex_);
+    const auto found =
+        std::find_if(mixInputs_.begin(), mixInputs_.end(),
+                     [&queue](const MixInput& input) { return input.queue == &queue; });
+    if (found == mixInputs_.end()) {
+        error = "audio mix inputが登録されていません";
+        return false;
+    }
+    found->generation = generation;
+    found->sampleOffsetDelta = sampleOffsetDelta;
+    return true;
+}
+
+AudioConsumeResult WasapiAudioSink::consumeMixed(std::int64_t requestedSampleStart,
+                                                 std::int64_t samples,
+                                                 SourceGeneration primaryGeneration) {
+    AudioConsumeResult primary =
+        queue_.consume(sourceScratch_.data(), requestedSampleStart, samples, primaryGeneration);
+    for (auto& input : mixInputs_) {
+        const std::size_t valueCount = static_cast<std::size_t>(samples) * kInternalChannels;
+        std::fill_n(input.scratch.begin(), valueCount, 0.0F);
+        const std::int64_t requested = requestedSampleStart + input.sampleOffsetDelta;
+        const AudioConsumeResult mixed =
+            input.queue->consume(input.scratch.data(), requested, samples, input.generation);
+        if (mixed.shortageKind == AudioShortageKind::Starvation)
+            input.queue->noteUnderflow(samples - mixed.audioSamples);
+        for (std::size_t index = 0; index < valueCount; ++index)
+            sourceScratch_[index] += input.scratch[index];
+    }
+    return primary;
 }
 
 bool WasapiAudioSink::resetForSeek(std::string& error) {
@@ -547,8 +652,7 @@ bool WasapiAudioSink::renderAvailable() {
               0.0f);
     const SourceGeneration expected{generation_.load()};
     const std::int64_t requestedSampleStart = nextRequestedSample_;
-    const AudioConsumeResult consumed =
-        queue_.consume(sourceScratch_.data(), requestedSampleStart, sourceNeeded, expected);
+    const AudioConsumeResult consumed = consumeMixed(requestedSampleStart, sourceNeeded, expected);
     const AudioConsumeTraceEntry trace{currentQpc(),
                                        requestedSampleStart,
                                        sourceNeeded,

@@ -25,6 +25,8 @@ public:
         PreviewSupportedRole,
         TrackKindRole,
         TrackIndexRole,
+        LinkedRole,
+        LinkGroupIdRole,
     };
 
     explicit TimelineClipModel(QObject* parent = nullptr);
@@ -50,6 +52,8 @@ private:
         bool previewSupported = false;
         QString trackKind;
         int trackIndex = 0;
+        bool linked = false;
+        QString linkGroupId;
     };
 
     QList<Item> items_;

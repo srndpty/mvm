@@ -55,6 +55,9 @@ struct TimelineClip {
     std::int64_t timelineStartFrame = 0; // Project timebase
     ClipEffects effects;
     TrackRef track;
+    // 同じ値を持つ video/audio clip はリンクされている。空文字列は未リンク。
+    // リンクは横移動と削除だけを同期し、track と trim は各 clip 固有に保つ。
+    std::string linkGroupId;
     bool operator==(const TimelineClip&) const = default;
 };
 
@@ -62,6 +65,9 @@ struct Project {
     int schemaVersion = 3;
     std::int64_t timelineFpsNum = 60;
     std::int64_t timelineFpsDen = 1;
+    // Project の出力 raster。preview と export が共有する基準寸法。
+    int outputWidth = 1920;
+    int outputHeight = 1080;
     // index 0 が最下層 (V1)。合成順は index 昇順で bottom -> top。
     std::vector<Track> videoTracks;
     std::vector<Track> audioTracks;

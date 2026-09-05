@@ -227,11 +227,9 @@ void frameRateAndDescriptorValidation() {
     const auto validButUnconfigurable = validatePreviewFrameRate(48, 1);
     require(validButUnconfigurable, "positive rationalをtype validationでrejectしました");
     require(validateSourceFrameRate(120, 2, {60, 1}), "source frame rateをcanonical比較できません");
-    requireFailure(validateSourceFrameRate(30, 1, {60, 1}),
-                   PreviewErrorCategory::UnsupportedCapability, "30fps sourceをP5-Cで受理しました");
-    requireFailure(validateSourceFrameRate(120, 1, {60, 1}),
-                   PreviewErrorCategory::UnsupportedCapability,
-                   "120fps sourceをP5-Cで受理しました");
+    require(validateSourceFrameRate(30, 1, {60, 1}), "30fps sourceを60fps outputで受理できません");
+    require(validateSourceFrameRate(120, 1, {60, 1}),
+            "120fps sourceを60fps outputで受理できません");
 
     PreviewEngine unconfigurableEngine;
     auto dispatcher = std::make_shared<ManualDispatcher>();
@@ -279,9 +277,8 @@ void frameRateAndDescriptorValidation() {
         require(validateSourceFrameRate(numerator, denominator,
                                         rateEngine.capabilities().configuredOutputFrameRate),
                 "output rateと同じsource rateをrejectしました");
-        requireFailure(validateSourceFrameRate(60, 1, {numerator, denominator}),
-                       PreviewErrorCategory::UnsupportedCapability,
-                       "output rateと異なるsource rateを受理しました");
+        require(validateSourceFrameRate(60, 1, {numerator, denominator}),
+                "output rateと異なるsource rateを拒否しました");
         require(rateEngine.requestShutdown(), "configurable rate engineのshutdownに失敗しました");
         require(rateEngine.status().state == PreviewEngineState::Shutdown,
                 "configurable rate engineがterminal Shutdownへ到達しませんでした");
@@ -291,13 +288,12 @@ void frameRateAndDescriptorValidation() {
     auto equivalentRateDispatcher = std::make_shared<ManualDispatcher>();
     require(equivalentRateEngine.initialize({{{120, 2}}}, equivalentRateDispatcher),
             "60/1と等価な120/2をinitializeで受理しませんでした");
-    // P5-D2でaudio-master transportを接続したため、configured audio sourceは1件である。
-    // 等価rationalの受理がcapabilityを書き換えないことを、ここで固定する。
-    require(equivalentRateEngine.capabilities().matchesMeasuredEnvelope(),
-            "60/1構成をmeasured envelope一致として公開していません");
+    // 8 audio mixはまだ正式計測の1 audio envelopeと別構成なので未計測とする。
+    require(!equivalentRateEngine.capabilities().matchesMeasuredEnvelope(),
+            "8 audio構成を1 audioのmeasured envelope一致として公開しました");
     require(equivalentRateEngine.capabilities().configuredOutputFrameRate ==
                     PreviewFrameRate{60, 1} &&
-                equivalentRateEngine.capabilities().configuredMaxActiveAudioSources == 1 &&
+                equivalentRateEngine.capabilities().configuredMaxActiveAudioSources == 8 &&
                 equivalentRateEngine.capabilities().configuredAudioSampleRate == 48000 &&
                 equivalentRateEngine.capabilities().configuredAudioChannelCount == 2,
             "等価rationalの受理で公開capabilityを変更しました");
@@ -726,10 +722,13 @@ void engineFacadeAndEvents() {
     auto sink = std::make_shared<RecordingSink>();
     sink->engine = &engine;
     require(engine.initialize(measuredConfig(), dispatcher), "engine initializeに失敗しました");
+    require(engine.setMasterVolume(0.35F), "source登録前のmaster volumeを設定できません");
+    requireFailure(engine.setMasterVolume(1.01F), PreviewErrorCategory::UnsupportedCapability,
+                   "範囲外のmaster volumeを受理しました");
     const PreviewCapabilities productCapabilities = engine.capabilities();
     require(productCapabilities.configuredMaxActiveVideoSources == 2 &&
                 productCapabilities.configuredMaxCompositionLayers == 2 &&
-                productCapabilities.configuredMaxActiveAudioSources == 1 &&
+                productCapabilities.configuredMaxActiveAudioSources == 8 &&
                 productCapabilities.configuredAudioSampleRate == 48000 &&
                 productCapabilities.configuredAudioChannelCount == 2,
             "公開capabilityがP5-E3 product wiringの実装上限と一致しません");
@@ -1267,8 +1266,8 @@ void p5dAudioDomainAndCapabilities() {
     auto dispatcher = std::make_shared<ManualDispatcher>();
     require(engine.initialize({{{60, 1}}}, dispatcher), "initializeに失敗しました");
     const PreviewCapabilities capabilities = engine.capabilities();
-    require(capabilities.configuredMaxActiveAudioSources == 1,
-            "configured audio source数が1として公開されていません");
+    require(capabilities.configuredMaxActiveAudioSources == 8,
+            "configured audio source数が8として公開されていません");
     require(capabilities.configuredAudioSampleRate == 48000,
             "configured audio sample rateが48000として公開されていません");
     require(capabilities.configuredAudioChannelCount == 2,

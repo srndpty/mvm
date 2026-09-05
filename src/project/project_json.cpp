@@ -158,6 +158,8 @@ public:
         bool hasFormat = false;
         bool hasTimelineFpsNum = false;
         bool hasTimelineFpsDen = false;
+        bool hasOutputWidth = false;
+        bool hasOutputHeight = false;
         bool hasVideoTracks = false;
         bool hasAudioTracks = false;
         bool hasAssets = false;
@@ -195,6 +197,14 @@ public:
                     if (hasTimelineFpsDen || !parseInteger64(project.timelineFpsDen))
                         return failAndFinish("timeline_fps_den が重複または不正です", error);
                     hasTimelineFpsDen = true;
+                } else if (key == "output_width") {
+                    if (hasOutputWidth || !parseInteger(project.outputWidth))
+                        return failAndFinish("output_width が重複または不正です", error);
+                    hasOutputWidth = true;
+                } else if (key == "output_height") {
+                    if (hasOutputHeight || !parseInteger(project.outputHeight))
+                        return failAndFinish("output_height が重複または不正です", error);
+                    hasOutputHeight = true;
                 } else if (key == "manim_assets") {
                     if (hasAssets || !parseAssets(project.manimAssets))
                         return failAndFinish("manim_assets が重複または不正です", error);
@@ -731,6 +741,7 @@ private:
         bool hasEffects = false;
         bool hasTrackKind = false;
         bool hasTrackIndex = false;
+        bool hasLinkGroupId = false;
         std::string kind;
         std::string media;
         std::string trackKind;
@@ -795,6 +806,10 @@ private:
                     }
                     clip.track.index = static_cast<int>(trackIndex);
                     hasTrackIndex = true;
+                } else if (key == "link_group_id") {
+                    if (hasLinkGroupId || !parseString(clip.linkGroupId))
+                        return fail("timeline clip の link_group_id が重複または不正です");
+                    hasLinkGroupId = true;
                 } else if (key == "effects") {
                     if (hasEffects || !parseClipEffects(clip.effects))
                         return fail("timeline clip の effects が重複または不正です");
@@ -934,6 +949,8 @@ ProjectIoResult saveProjectJson(const Project& project, const std::filesystem::p
          << "  \"format\": \"" << kFormatMarker << "\",\n"
          << "  \"timeline_fps_num\": " << project.timelineFpsNum << ",\n"
          << "  \"timeline_fps_den\": " << project.timelineFpsDen << ",\n";
+    json << "  \"output_width\": " << project.outputWidth << ",\n"
+         << "  \"output_height\": " << project.outputHeight << ",\n";
     writeTracks("video_tracks", project.videoTracks);
     writeTracks("audio_tracks", project.audioTracks);
     json << "  \"manim_assets\": [";
@@ -995,6 +1012,7 @@ ProjectIoResult saveProjectJson(const Project& project, const std::filesystem::p
              << "      \"timeline_start_frame\": " << clip.timelineStartFrame << ",\n"
              << "      \"track_kind\": \"" << trackKindName(clip.track.kind) << "\",\n"
              << "      \"track_index\": " << clip.track.index << ",\n"
+             << "      \"link_group_id\": \"" << escapeJson(clip.linkGroupId) << "\",\n"
              << "      \"effects\": {\n"
              << "        \"position_x_percent\": " << clip.effects.positionXPercent << ",\n"
              << "        \"position_y_percent\": " << clip.effects.positionYPercent << ",\n"

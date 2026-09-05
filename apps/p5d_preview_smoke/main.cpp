@@ -188,7 +188,7 @@ int main(int argc, char** argv) {
     // audio統合後も configured capability を実体として公開していること。
     // 個々の軸を qualified とは呼ばない (実測済みの組は measuredEnvelope)。
     const auto capabilities = engine->capabilities();
-    if (capabilities.configuredMaxActiveAudioSources != 1 ||
+    if (capabilities.configuredMaxActiveAudioSources != 8 ||
         capabilities.configuredAudioSampleRate != 48000 ||
         capabilities.configuredAudioChannelCount != 2) {
         std::fprintf(stderr, "configured audio capabilityが公開されていません\n");
@@ -255,26 +255,29 @@ int main(int argc, char** argv) {
                 app.quit();
                 return;
             }
-            // 2件目のactive audio sourceはfail-closedで拒否する。
+            // 複数audioは同一endpointへmixするため受理する。
             mvm::preview::PreviewSourceDescriptor audioOnly;
             audioOnly.mediaPath = arguments[1].toStdWString();
             audioOnly.audioEnabled = true;
             const auto secondAudio = engine->addSource(audioOnly);
-            const auto secondVideo = engine->addSource(descriptor);
             // P5-D3でseekは受理対象になった。ただしaccepted composition前は
             // fail-closedで拒否する。負のframeはSeekFailureで拒否する。
             const auto seek = engine->seek({0});
             const auto negativeSeek = engine->seek({-1});
-            if (secondAudio || secondVideo || seek || negativeSeek ||
-                secondAudio.error().category !=
-                    mvm::preview::PreviewErrorCategory::UnsupportedCapability ||
-                secondVideo.error().category !=
-                    mvm::preview::PreviewErrorCategory::UnsupportedCapability ||
+            if (!secondAudio || seek || negativeSeek ||
                 seek.error().category != mvm::preview::PreviewErrorCategory::InvalidState ||
                 negativeSeek ||
                 negativeSeek.error().category !=
                     mvm::preview::PreviewErrorCategory::SeekFailure) {
                 std::fprintf(stderr, "audio/video capability負例が期待どおりに落ちません\n");
+                exitCode = 11;
+                app.quit();
+                return;
+            }
+            const auto removeSecondAudio = engine->removeSource(secondAudio.value());
+            if (!removeSecondAudio) {
+                std::fprintf(stderr, "2件目のaudio sourceを解除できません: %s\n",
+                             removeSecondAudio.error().detail.c_str());
                 exitCode = 11;
                 app.quit();
                 return;

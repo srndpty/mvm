@@ -38,15 +38,17 @@ TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& proj
 bool sameTimelinePreviewSourceSet(const TimelinePreviewFrameMapping& a,
                                   const TimelinePreviewFrameMapping& b);
 
-// preview 対象になる audio clip (mute されていない audio track のうち、
-// timelineFrame に載っているもの)。現在の engine は audio source を 1 件しか
-// 受理しないため、複数該当した場合は失敗として返す。
-struct TimelinePreviewAudioMapping {
-    bool success = false;
-    bool hasAudio = false;
+struct TimelinePreviewAudioLayerMapping {
+    int audioTrackIndex = 0;
     int clipIndex = -1;
     std::string clipId;
     std::int64_t sourceFrameNumber = -1;
+};
+
+// preview 対象になる全audio clip。A1から順にmixする。
+struct TimelinePreviewAudioMapping {
+    bool success = false;
+    std::vector<TimelinePreviewAudioLayerMapping> layers;
     std::string error;
 };
 

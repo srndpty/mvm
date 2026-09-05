@@ -151,15 +151,10 @@ Result<void> validateSourceFrameRate(long long sourceNumerator, long long source
     const std::uint64_t divisor = std::gcd(numerator, denominator);
     numerator /= divisor;
     denominator /= divisor;
-    if (numerator == outputFrameRate.numerator && denominator == outputFrameRate.denominator)
-        return Result<void>::success();
-
-    return Result<void>::failure(
-        makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
-                  "P5-Cはoutputと同じフレームレートのsourceだけをsupportします (source=" +
-                      std::to_string(sourceNumerator) + "/" + std::to_string(sourceDenominator) +
-                      ", output=" + std::to_string(outputFrameRate.numerator) + "/" +
-                      std::to_string(outputFrameRate.denominator) + ")"));
+    (void)numerator;
+    (void)denominator;
+    (void)outputFrameRate;
+    return Result<void>::success();
 }
 
 Result<void> validateQualifiedAudioDomain(int sampleRate, int channels,
@@ -533,7 +528,7 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         // P5-D2でaudio-master transportを接続したため、audio domainを公開する。
         // ここは「現在の構成で受理できる上限」であって qualification ではない。
         // 実測した組は measuredEnvelope (既定値 = 60/1 cohort) が持つ。
-        value.configuredMaxActiveAudioSources = 1;
+        value.configuredMaxActiveAudioSources = 8;
         value.configuredAudioSampleRate = audio::kInternalSampleRate;
         value.configuredAudioChannelCount = audio::kInternalChannels;
         return value;
@@ -649,6 +644,14 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     // addSource で受け取った audio source の timeline 上の位置ずれ (sample)。
     // output frame <-> audio media sample の換算はこの 1 つの値だけで補正する。
     std::int64_t audioSampleOffset = 0;
+
+    struct ExtraAudioSourceEntry {
+        audio::SourceId internal;
+        std::shared_ptr<audio::AudioDecodeWorker> worker;
+        std::int64_t sampleOffset = 0;
+    };
+
+    std::map<std::uint64_t, ExtraAudioSourceEntry> extraAudioSources;
     bool audioMasterActive = false;
     bool audioSinkJoined = true;
     bool audioWorkerJoined = true;
@@ -677,6 +680,7 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         std::shared_ptr<audio::AudioMasterClock> audioClock;
         std::shared_ptr<audio::AudioDecodeWorker> audioWorker;
         std::shared_ptr<audio::WasapiAudioSink> audioSink;
+        std::vector<std::shared_ptr<audio::AudioDecodeWorker>> extraAudioWorkers;
 
         // 宣言順という規約に依存すると、将来の並べ替えで無言のuse-after-freeへ
         // 戻り得る (このUAFはcrashしないため、testでも捕まえられない)。
@@ -684,6 +688,7 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         ~DetachedWorkers() {
             audioSink.reset();
             audioWorker.reset();
+            extraAudioWorkers.clear();
             audioClock.reset();
         }
 
@@ -720,6 +725,10 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         detachedWorkers.audioSink = std::move(audioSink);
         detachedWorkers.audioWorker = std::move(audioWorker);
         detachedWorkers.audioClock = std::move(audioClock);
+        for (auto& [id, entry] : extraAudioSources) {
+            (void)id;
+            detachedWorkers.extraAudioWorkers.push_back(std::move(entry.worker));
+        }
         renderVisibleWorkersDetached = true;
         noteShutdownStepLocked(internal::ShutdownStep::DetachRenderVisibleWorkerRefs);
     }
@@ -919,6 +928,9 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         std::map<std::uint64_t, gpu::SeekTicket> videoTickets;
         std::map<std::uint64_t, std::int64_t> expectedSourceFrames;
         audio::AudioSeekTicket audioTicket;
+        std::map<std::uint64_t, audio::AudioSeekTicket> extraAudioTickets;
+        std::map<std::uint64_t, std::int64_t> extraAudioSamples;
+        std::map<std::uint64_t, audio::SourceGeneration> expectedExtraAudioGenerations;
         bool audioReady = false;
         bool decodeReady = false;
         bool resumePlaying = false;
@@ -1083,6 +1095,11 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         workerJoined = true;
         for (gpu::SourceDecodeWorker* worker : videoWorkersLocked())
             workerJoined = workerJoined && worker->joined();
+        for (const auto& [id, entry] : extraAudioSources) {
+            (void)id;
+            audioWorkerJoined =
+                audioWorkerJoined && entry.worker && entry.worker->snapshot().joined;
+        }
         renderTeardownRequested = workerJoined && audioSinkJoined && audioWorkerJoined;
         if (renderTeardownRequested) {
             // 停止対象が無い場合もstepの順序は同じ形で残す。
@@ -1098,11 +1115,16 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         shutdownThread = std::thread([self] {
             std::shared_ptr<audio::WasapiAudioSink> audioEndpoint;
             std::shared_ptr<audio::AudioDecodeWorker> audioDecoder;
+            std::vector<std::shared_ptr<audio::AudioDecodeWorker>> extraAudioDecoders;
             std::vector<gpu::SourceDecodeWorker*> workers;
             {
                 std::lock_guard<std::mutex> lock(self->mutex);
                 audioEndpoint = self->audioSink;
                 audioDecoder = self->audioWorker;
+                for (const auto& [id, entry] : self->extraAudioSources) {
+                    (void)id;
+                    extraAudioDecoders.push_back(entry.worker);
+                }
                 workers = self->videoWorkersLocked();
             }
             std::string ignored;
@@ -1120,6 +1142,8 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                 std::lock_guard<std::mutex> transport(self->audioTransportMutex);
                 audioDecoder->stop();
             }
+            for (const auto& decoder : extraAudioDecoders)
+                decoder->stop();
             {
                 std::lock_guard<std::mutex> lock(self->mutex);
                 self->noteShutdownStepLocked(internal::ShutdownStep::StopAudioDecodeWorker);
@@ -1135,6 +1159,8 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                     audioEndpoint == nullptr || audioEndpoint->snapshot().joined;
                 self->audioWorkerJoined =
                     audioDecoder == nullptr || audioDecoder->snapshot().joined;
+                for (const auto& decoder : extraAudioDecoders)
+                    self->audioWorkerJoined = self->audioWorkerJoined && decoder->snapshot().joined;
                 self->workerJoined = true;
                 for (gpu::SourceDecodeWorker* worker : workers)
                     self->workerJoined = self->workerJoined && worker->joined();
@@ -1148,6 +1174,7 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
             // detachedWorkersが所有しているので、ここでresetしても実体は生存する。
             audioEndpoint.reset();
             audioDecoder.reset();
+            extraAudioDecoders.clear();
             // video workerはdetachedWorkersが所有しており、この生ポインタは
             // teardown後にdanglingになる。publish前に手放す。
             workers.clear();
@@ -1233,8 +1260,41 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                     pending.audioReady = true;
                 }
             }
+            for (const auto& [publicId, ticketValue] : pending.extraAudioTickets) {
+                if (pending.expectedExtraAudioGenerations.contains(publicId))
+                    continue;
+                const auto entry = extraAudioSources.find(publicId);
+                if (entry == extraAudioSources.end() || !entry->second.worker)
+                    return seekFailure("audio mix seek中にsourceが解除されました",
+                                       PreviewSourceId{publicId});
+                audio::AudioSeekCompletion completion;
+                const audio::AudioSeekWaitResult result =
+                    entry->second.worker->waitSeek(ticketValue, 0, completion);
+                if (result == audio::AudioSeekWaitResult::StaleTicket)
+                    return seekFailure("audio mix seek completionのticketが一致しません",
+                                       PreviewSourceId{publicId});
+                if (result == audio::AudioSeekWaitResult::Ready) {
+                    const auto expected = pending.extraAudioSamples.find(publicId);
+                    if (!completion.completed || expected == pending.extraAudioSamples.end() ||
+                        completion.firstOutputSample != expected->second) {
+                        return seekFailure("audio mix seekがrequested sampleを返しませんでした",
+                                           PreviewSourceId{publicId});
+                    }
+                    std::string mixError;
+                    if (!audioSink ||
+                        !audioSink->updateMixInput(
+                            entry->second.worker->queue(), completion.seekGeneration,
+                            entry->second.sampleOffset - audioSampleOffset, mixError)) {
+                        return seekFailure("audio mix generationを更新できません: " + mixError,
+                                           PreviewSourceId{publicId});
+                    }
+                    pending.expectedExtraAudioGenerations.emplace(publicId,
+                                                                  completion.seekGeneration);
+                }
+            }
             if (pending.expectedVideoGenerations.size() == pending.videoTickets.size() &&
-                pending.audioReady) {
+                pending.audioReady &&
+                pending.expectedExtraAudioGenerations.size() == pending.extraAudioTickets.size()) {
                 pending.decodeReady = true;
                 ++seekDecodeReadyCount;
             }
@@ -1579,10 +1639,12 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
                 makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
                           "audio sourceは現在の構成では扱えません"));
         }
-        if (impl_->publicAudioSource) {
+        const std::size_t registeredAudioCount =
+            (impl_->publicAudioSource ? 1U : 0U) + impl_->extraAudioSources.size();
+        if (registeredAudioCount >= impl_->capability.configuredMaxActiveAudioSources) {
             return Result<PreviewSourceId>::failure(
                 makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,
-                          "P5-D product wiringはactive audio sourceを1件だけ受理します"));
+                          "active audio sourceの登録上限を超えています"));
         }
     }
     if (impl_->nextPublicSourceId == 0) {
@@ -1602,6 +1664,16 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
         newVideoWorker = std::make_unique<gpu::SourceDecodeWorker>(
             internalVideo, *impl_->renderDevice, impl_->readbacks, 6);
         std::string openError;
+        if (descriptor.videoTimelineMappingEnabled &&
+            !newVideoWorker->configureOutputMapping(
+                descriptor.videoSourceInFrame, descriptor.videoTimelineStartFrame,
+                {static_cast<long long>(impl_->configuredFrameRate.numerator),
+                 static_cast<long long>(impl_->configuredFrameRate.denominator)},
+                openError)) {
+            impl_->sourceRegistry.unregisterSource(internalVideo);
+            return Result<PreviewSourceId>::failure(makeError(
+                PreviewErrorCategory::InvalidSource, PreviewOperation::AddSource, openError));
+        }
         if (!newVideoWorker->start(path, openError)) {
             newVideoWorker->stop();
             impl_->sourceRegistry.unregisterSource(internalVideo);
@@ -1633,7 +1705,6 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
             impl_->sourceRegistry.unregisterSource(internalVideo);
         };
         internalAudio = audio::SourceId{impl_->nextPublicSourceId};
-        newAudioClock = std::make_shared<audio::AudioMasterClock>();
         newAudioWorker = std::make_shared<audio::AudioDecodeWorker>(internalAudio);
         std::string audioError;
         if (!newAudioWorker->start(path, audioError)) {
@@ -1657,16 +1728,19 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
             rollbackVideo();
             return Result<PreviewSourceId>::failure(domain.error());
         }
-        newAudioSink =
-            std::make_shared<audio::WasapiAudioSink>(newAudioWorker->queue(), *newAudioClock);
-        if (!newAudioSink->open(audioError, impl_->audioSessionVolume)) {
-            newAudioSink->stop();
-            newAudioWorker->stop();
-            rollbackVideo();
-            ++impl_->audioTransportFailureCount;
-            return Result<PreviewSourceId>::failure(
-                makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::AddSource,
-                          "WASAPI shared event-driven endpointをopenできません: " + audioError));
+        if (!impl_->publicAudioSource) {
+            newAudioClock = std::make_shared<audio::AudioMasterClock>();
+            newAudioSink =
+                std::make_shared<audio::WasapiAudioSink>(newAudioWorker->queue(), *newAudioClock);
+            if (!newAudioSink->open(audioError, impl_->audioSessionVolume)) {
+                newAudioSink->stop();
+                newAudioWorker->stop();
+                rollbackVideo();
+                ++impl_->audioTransportFailureCount;
+                return Result<PreviewSourceId>::failure(makeError(
+                    PreviewErrorCategory::AudioFailure, PreviewOperation::AddSource,
+                    "WASAPI shared event-driven endpointをopenできません: " + audioError));
+            }
         }
     }
 
@@ -1682,7 +1756,7 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
         impl_->deviceReleased = false;
         impl_->telemetrySnapshot.currentSourceQueueDepth = 0;
     }
-    if (descriptor.audioEnabled) {
+    if (descriptor.audioEnabled && !impl_->publicAudioSource) {
         impl_->internalAudioSource = internalAudio;
         impl_->publicAudioSource = published;
         impl_->audioClock = std::move(newAudioClock);
@@ -1697,6 +1771,20 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
             static_cast<std::uint32_t>(endpoint.deviceFormat.sampleRate);
         impl_->deviceSnapshot.audioChannelCount =
             static_cast<std::uint32_t>(endpoint.deviceFormat.channels);
+    } else if (descriptor.audioEnabled) {
+        std::string mixError;
+        const std::int64_t delta = descriptor.audioSampleOffset - impl_->audioSampleOffset;
+        if (!impl_->audioSink->addMixInput(newAudioWorker->queue(), delta,
+                                           newAudioWorker->snapshot().sourceGeneration, mixError)) {
+            newAudioWorker->stop();
+            return Result<PreviewSourceId>::failure(
+                makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::AddSource,
+                          "audio mix inputを登録できません: " + mixError));
+        }
+        impl_->extraAudioSources.emplace(
+            published.value,
+            PreviewEngine::Impl::ExtraAudioSourceEntry{internalAudio, std::move(newAudioWorker),
+                                                       descriptor.audioSampleOffset});
     }
     impl_->eligibleSources.emplace(
         published.value,
@@ -1720,6 +1808,7 @@ Result<void> PreviewEngine::removeSource(PreviewSourceId source) {
     std::shared_ptr<audio::AudioDecodeWorker> audioWorker;
     std::shared_ptr<audio::WasapiAudioSink> audioSink;
     bool removingAudio = false;
+    bool removingExtraAudio = false;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         Result<void> affinity = impl_->requireControlThread(PreviewOperation::RemoveSource);
@@ -1749,12 +1838,21 @@ Result<void> PreviewEngine::removeSource(PreviewSourceId source) {
 
         removingAudio = impl_->publicAudioSource && *impl_->publicAudioSource == source;
         if (removingAudio) {
+            if (!impl_->extraAudioSources.empty()) {
+                return invalidState(PreviewOperation::RemoveSource,
+                                    "mix inputより先にmaster audio sourceを削除できません");
+            }
             audioWorker = impl_->audioWorker;
             audioSink = impl_->audioSink;
             // schedulerがまだaudio clockをmasterとして参照しないようにする。
             // ReadyPausedなのでscheduler自体は止まっているが、authorityの
             // 取り下げをstopより先に確定させる。
             impl_->audioMasterActive = false;
+        } else if (const auto extra = impl_->extraAudioSources.find(source.value);
+                   extra != impl_->extraAudioSources.end()) {
+            removingExtraAudio = true;
+            audioWorker = extra->second.worker;
+            audioSink = impl_->audioSink;
         }
     }
 
@@ -1765,7 +1863,9 @@ Result<void> PreviewEngine::removeSource(PreviewSourceId source) {
     if (audioSink || audioWorker) {
         // shutdown ordering (contract §12) と同じ順で止める: sink -> worker -> clock。
         std::lock_guard<std::mutex> transport(impl_->audioTransportMutex);
-        if (audioSink) {
+        if (removingExtraAudio && audioSink && audioWorker) {
+            audioStopped = audioSink->removeMixInput(audioWorker->queue(), audioError);
+        } else if (audioSink) {
             audioStopped = audioSink->pause(audioError);
             audioSink->stop();
         }
@@ -1840,6 +1940,8 @@ Result<void> PreviewEngine::removeSource(PreviewSourceId source) {
                 impl_->audioWorkerJoined = true;
                 impl_->deviceSnapshot.audioSampleRate = 0;
                 impl_->deviceSnapshot.audioChannelCount = 0;
+            } else if (removingExtraAudio) {
+                impl_->extraAudioSources.erase(source.value);
             }
             impl_->eligibleSources.erase(source.value);
         }
@@ -1879,6 +1981,7 @@ PreviewEngine::submitComposition(std::shared_ptr<const CompositionSnapshot> snap
 Result<void> PreviewEngine::play() {
     std::shared_ptr<audio::AudioDecodeWorker> audioWorker;
     std::shared_ptr<audio::WasapiAudioSink> audioSink;
+    std::vector<std::shared_ptr<audio::AudioDecodeWorker>> extraAudioWorkers;
     std::int64_t startSample = 0;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -1892,6 +1995,10 @@ Result<void> PreviewEngine::play() {
         }
         audioWorker = impl_->audioWorker;
         audioSink = impl_->audioSink;
+        for (const auto& [id, entry] : impl_->extraAudioSources) {
+            (void)id;
+            extraAudioWorkers.push_back(entry.worker);
+        }
         startSample = impl_->resumeAudioSample;
     }
 
@@ -1899,6 +2006,8 @@ Result<void> PreviewEngine::play() {
     // control methodは同一threadからしか呼べないため、この窓でstateは動かない。
     if (audioWorker && audioSink) {
         audioWorker->play();
+        for (const auto& worker : extraAudioWorkers)
+            worker->play();
         if (!audioWorker->queue().waitForSamples(audio::kAudioPrerollSamples,
                                                  audio::kPrerollTimeoutMs)) {
             // 全chunkがdomain不一致でrejectされた場合もprerollは埋まらない。
@@ -1918,6 +2027,19 @@ Result<void> PreviewEngine::play() {
             return Result<void>::failure(
                 makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::Play,
                           "audio prerollを満たせないままplayを開始できません"));
+        }
+        for (const auto& worker : extraAudioWorkers) {
+            if (!worker->queue().waitForSamples(audio::kAudioPrerollSamples,
+                                                audio::kPrerollTimeoutMs)) {
+                audioWorker->pause();
+                for (const auto& started : extraAudioWorkers)
+                    started->pause();
+                std::lock_guard<std::mutex> lock(impl_->mutex);
+                ++impl_->audioTransportFailureCount;
+                return Result<void>::failure(makeError(PreviewErrorCategory::AudioFailure,
+                                                       PreviewOperation::Play,
+                                                       "audio mix inputのprerollを満たせません"));
+            }
         }
         // decode workerが実際に出したPCM domainを観測値として検査する。期待値を
         // そのまま渡すと原理的に失敗できない検査になるため、queueが受理したchunkの
@@ -1940,6 +2062,8 @@ Result<void> PreviewEngine::play() {
         std::string error;
         if (!audioSink->play(startSample, audioWorker->snapshot().sourceGeneration, error)) {
             audioWorker->pause();
+            for (const auto& worker : extraAudioWorkers)
+                worker->pause();
             std::lock_guard<std::mutex> lock(impl_->mutex);
             ++impl_->audioTransportFailureCount;
             return Result<void>::failure(makeError(PreviewErrorCategory::AudioFailure,
@@ -1954,6 +2078,8 @@ Result<void> PreviewEngine::play() {
         if (!played) {
             if (audioWorker)
                 audioWorker->pause();
+            for (const auto& worker : extraAudioWorkers)
+                worker->pause();
             if (audioSink) {
                 std::string ignored;
                 audioSink->pause(ignored);
@@ -1968,7 +2094,9 @@ Result<void> PreviewEngine::play() {
                                         ? 0
                                         : impl_->telemetrySnapshot.status.position.outputFrame + 1;
         impl_->lastSchedulerTarget = impl_->schedulerBaseFrame - 1;
-        for (gpu::SourceDecodeWorker* worker : impl_->referencedVideoWorkersLocked())
+        // 初回renderより前はpairer/coordinator source setがまだ同期されていない。
+        // referencedだけを起こすと0件になり、最初のframeが永久に供給されない。
+        for (gpu::SourceDecodeWorker* worker : impl_->videoWorkersLocked())
             worker->play();
         impl_->telemetrySnapshot.status.state = PreviewEngineState::Playing;
     }
@@ -1979,6 +2107,7 @@ Result<void> PreviewEngine::play() {
 Result<void> PreviewEngine::pause() {
     std::shared_ptr<audio::AudioDecodeWorker> audioWorker;
     std::shared_ptr<audio::WasapiAudioSink> audioSink;
+    std::vector<std::shared_ptr<audio::AudioDecodeWorker>> extraAudioWorkers;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         Result<void> affinity = impl_->requireControlThread(PreviewOperation::Pause);
@@ -1995,12 +2124,18 @@ Result<void> PreviewEngine::pause() {
             worker->pause();
         audioWorker = impl_->audioWorker;
         audioSink = impl_->audioSink;
+        for (const auto& [id, entry] : impl_->extraAudioSources) {
+            (void)id;
+            extraAudioWorkers.push_back(entry.worker);
+        }
     }
 
     std::string sinkError;
     const bool sinkPaused = audioSink == nullptr || audioSink->pause(sinkError);
     if (audioWorker)
         audioWorker->pause();
+    for (const auto& worker : extraAudioWorkers)
+        worker->pause();
 
     std::optional<PreviewError> fatal;
     PreviewEngineState published = PreviewEngineState::ReadyPaused;
@@ -2065,6 +2200,14 @@ Result<void> PreviewEngine::seekFrameRequest(const PreviewFrameRequest& request)
     std::map<std::uint64_t, std::int64_t> requestedFrames;
     std::shared_ptr<audio::AudioDecodeWorker> audioWorker;
     std::shared_ptr<audio::WasapiAudioSink> audioSink;
+
+    struct ExtraAudioSeekTarget {
+        std::uint64_t publicId = 0;
+        std::shared_ptr<audio::AudioDecodeWorker> worker;
+        std::int64_t sample = 0;
+    };
+
+    std::vector<ExtraAudioSeekTarget> extraAudioTargets;
     std::int64_t audioSample = 0;
     bool resumePlaying = false;
     {
@@ -2134,6 +2277,13 @@ Result<void> PreviewEngine::seekFrameRequest(const PreviewFrameRequest& request)
         resumePlaying = state == PreviewEngineState::Playing;
         audioWorker = impl_->audioWorker;
         audioSink = impl_->audioSink;
+        const std::int64_t timelineSample = sample.value();
+        for (const auto& [publicId, entry] : impl_->extraAudioSources) {
+            std::int64_t extraSample = timelineSample + entry.sampleOffset;
+            if (extraSample < 0)
+                extraSample = 0;
+            extraAudioTargets.push_back({publicId, entry.worker, extraSample});
+        }
 
         // transportを止めてからrequestする。動作中のschedulerとseekを競合させない。
         impl_->schedulerEnabled = false;
@@ -2151,6 +2301,8 @@ Result<void> PreviewEngine::seekFrameRequest(const PreviewFrameRequest& request)
     }
     if (audioWorker)
         audioWorker->pause();
+    for (const auto& extraTarget : extraAudioTargets)
+        extraTarget.worker->pause();
     if (audioPrepared && audioSink) {
         if (!audioSink->resetForSeek(audioError))
             audioPrepared = false;
@@ -2210,6 +2362,21 @@ Result<void> PreviewEngine::seekFrameRequest(const PreviewFrameRequest& request)
             if (audioWorker) {
                 audioRequest = audioWorker->requestSeek(audioSample, impl_->pendingSeek.audioTicket,
                                                         requestError);
+            }
+            impl_->pendingSeek.extraAudioTickets.clear();
+            impl_->pendingSeek.extraAudioSamples.clear();
+            impl_->pendingSeek.expectedExtraAudioGenerations.clear();
+            for (const auto& extraTarget : extraAudioTargets) {
+                audio::AudioSeekTicket ticket;
+                const auto accepted =
+                    extraTarget.worker->requestSeek(extraTarget.sample, ticket, requestError);
+                if (accepted != audio::AudioSeekRequestResult::Accepted) {
+                    audioRequest = accepted;
+                    break;
+                }
+                impl_->pendingSeek.extraAudioTickets.emplace(extraTarget.publicId, ticket);
+                impl_->pendingSeek.extraAudioSamples.emplace(extraTarget.publicId,
+                                                             extraTarget.sample);
             }
             if (!videoRequestsAccepted || audioRequest != audio::AudioSeekRequestResult::Accepted) {
                 // 一つでも未受理なら、source間のidentity整合を保証できない。
@@ -2347,6 +2514,24 @@ Result<void> PreviewEngine::requestShutdown() {
             }
         });
     }
+    return Result<void>::success();
+}
+
+Result<void> PreviewEngine::setMasterVolume(float volume) {
+    if (!(volume >= 0.0F) || volume > 1.0F) {
+        return Result<void>::failure(makeError(PreviewErrorCategory::UnsupportedCapability,
+                                               PreviewOperation::Initialize,
+                                               "master volumeは0.0〜1.0で指定してください"));
+    }
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (impl_->audioSink) {
+        std::string error;
+        if (!impl_->audioSink->setSessionVolume(volume, error)) {
+            return Result<void>::failure(
+                makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::Initialize, error));
+        }
+    }
+    impl_->audioSessionVolume = volume;
     return Result<void>::success();
 }
 
@@ -2535,6 +2720,7 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
     std::optional<PreviewEngineState> seekCompletedState;
     std::shared_ptr<audio::AudioDecodeWorker> seekAudioWorker;
     std::shared_ptr<audio::WasapiAudioSink> seekAudioSink;
+    std::vector<std::shared_ptr<audio::AudioDecodeWorker>> seekExtraAudioWorkers;
     {
         std::lock_guard<std::mutex> lock(engine.impl_->mutex);
         if (!engine.impl_->renderThread ||
@@ -2583,13 +2769,21 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
             if (!scheduled.valid)
                 fatal = scheduled.error;
             else {
-                target = scheduled.frame;
+                // 最初の1枚を提示する前にclockだけが進むと、decoder queueより常に
+                // 先のframeを要求し続けて永久に追いつけない。初回だけbaseを固定する。
+                target = engine.impl_->telemetrySnapshot.presentedFrameCount == 0
+                             ? engine.impl_->schedulerBaseFrame
+                             : scheduled.frame;
                 if (target <= engine.impl_->lastSchedulerTarget)
                     return Result<RenderFrameResult>::success(result);
                 proceed = true;
             }
         }
-        if (proceed && !seeking) {
+        const auto commitSchedulerTarget = [&] {
+            if (seeking) {
+                engine.impl_->lastSchedulerTarget = target;
+                return;
+            }
             const std::uint64_t skipped =
                 internal::skippedSchedulerFrameCount(engine.impl_->lastSchedulerTarget, target);
             const std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
@@ -2598,7 +2792,7 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
             else
                 engine.impl_->telemetrySnapshot.droppedFrameCount += skipped;
             engine.impl_->lastSchedulerTarget = target;
-        }
+        };
         if (proceed) {
             // compositionのruntime authorityを先に確定させる。layoutとstateが
             // 決まっていないとexact pairingの対象sourceも決まらない。
@@ -2615,6 +2809,7 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                 engine.impl_->pairer.reset();
                 engine.impl_->coordinatorSources.clear();
                 engine.impl_->compositionState.markPresented(*token, snapshot);
+                commitSchedulerTarget();
                 engine.impl_->distinctPresentedFrames.note(target);
                 ++engine.impl_->presentationSequence;
                 ++engine.impl_->telemetrySnapshot.presentedFrameCount;
@@ -2841,6 +3036,7 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                         for (gpu::SourceDecodeWorker* worker : workers)
                             worker->buffer().noteDisplayed(target);
                         engine.impl_->compositionState.markPresented(*token, snapshot);
+                        commitSchedulerTarget();
                         engine.impl_->distinctPresentedFrames.note(target);
                         ++engine.impl_->presentationSequence;
                         ++engine.impl_->telemetrySnapshot.presentedFrameCount;
@@ -2876,6 +3072,10 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                             engine.impl_->resumeAudioSample = seekResumeSample;
                             seekAudioWorker = engine.impl_->audioWorker;
                             seekAudioSink = engine.impl_->audioSink;
+                            for (const auto& [id, entry] : engine.impl_->extraAudioSources) {
+                                (void)id;
+                                seekExtraAudioWorkers.push_back(entry.worker);
+                            }
                             if (seekResumePlaying) {
                                 // transportを再開できる前に`Playing`を公開しない。
                                 // stateはSeekingのまま保持し、resume成功後にcommitする。
@@ -2943,10 +3143,30 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
             // shutdownのstop()と直列化する。engine mutexは保持しない。
             std::lock_guard<std::mutex> transport(engine.impl_->audioTransportMutex);
             seekAudioWorker->play();
+            for (const auto& worker : seekExtraAudioWorkers)
+                worker->play();
             std::string error;
-            // seek completionが返したidentityをそのまま運ぶ。
-            if (!seekAudioSink->play(seekResumeSample, seekResumeAudioGeneration, error)) {
+            for (const auto& worker : seekExtraAudioWorkers) {
+                if (!worker->queue().waitForSamples(audio::kAudioPrerollSamples,
+                                                    audio::kPrerollTimeoutMs)) {
+                    error = "audio mix inputのseek後prerollを満たせません";
+                    resumeFailure =
+                        makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::Seek, error,
+                                  PreviewErrorSeverity::FatalToSession);
+                    break;
+                }
+            }
+            if (resumeFailure) {
                 seekAudioWorker->pause();
+                for (const auto& worker : seekExtraAudioWorkers)
+                    worker->pause();
+            }
+            // seek completionが返したidentityをそのまま運ぶ。
+            if (!resumeFailure &&
+                !seekAudioSink->play(seekResumeSample, seekResumeAudioGeneration, error)) {
+                seekAudioWorker->pause();
+                for (const auto& worker : seekExtraAudioWorkers)
+                    worker->pause();
                 resumeFailure =
                     makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::Seek,
                               "seek後にWASAPI renderingを再開できません: " + error,
@@ -3020,6 +3240,17 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
         engine.impl_->notify(FramePresentedEvent{result.frame});
     }
     return Result<RenderFrameResult>::success(result);
+}
+
+bool PreviewRenderPort::renderFrameDue(PreviewEngine& engine) {
+    std::lock_guard<std::mutex> lock(engine.impl_->mutex);
+    const PreviewEngineState state = engine.impl_->machine.state();
+    if (state == PreviewEngineState::Seeking)
+        return engine.impl_->pendingSeek.active;
+    if (state != PreviewEngineState::Playing || !engine.impl_->schedulerEnabled)
+        return false;
+    const auto scheduled = engine.impl_->schedulerTargetLocked(std::chrono::steady_clock::now());
+    return scheduled.valid && scheduled.frame > engine.impl_->lastSchedulerTarget;
 }
 
 Result<void> PreviewRenderPort::attachLogicalDevice(PreviewEngine& engine) {
@@ -3158,7 +3389,8 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
         engine.impl_->finalRuntimeDiagnostics.audioSinkJoined = engine.impl_->audioSinkJoined;
         engine.impl_->finalRuntimeDiagnostics.audioWorkerJoined = engine.impl_->audioWorkerJoined;
         engine.impl_->finalRuntimeDiagnostics.registeredAudioSourceCount =
-            engine.impl_->publicAudioSource ? 1U : 0U;
+            (engine.impl_->publicAudioSource ? 1U : 0U) +
+            static_cast<std::uint32_t>(engine.impl_->extraAudioSources.size());
         if (drained) {
             engine.impl_->compositor.reset();
             // pairerはbufferをraw pointerで握る。worker本体より先に手放す。
@@ -3176,7 +3408,9 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
             engine.impl_->audioClock.reset();
             engine.impl_->detachedWorkers.audioSink.reset();
             engine.impl_->detachedWorkers.audioWorker.reset();
+            engine.impl_->detachedWorkers.extraAudioWorkers.clear();
             engine.impl_->detachedWorkers.audioClock.reset();
+            engine.impl_->extraAudioSources.clear();
             // unregisterは`PreviewSourceId`昇順で決定論的に行う。
             for (const auto& [publicId, entry] : engine.impl_->videoSources) {
                 (void)publicId;
@@ -3222,6 +3456,7 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
             engine.impl_->audioClock.reset();
             engine.impl_->detachedWorkers.audioSink.reset();
             engine.impl_->detachedWorkers.audioWorker.reset();
+            engine.impl_->detachedWorkers.extraAudioWorkers.clear();
             engine.impl_->detachedWorkers.audioClock.reset();
             engine.impl_->nativeDeviceAttached = false;
         }

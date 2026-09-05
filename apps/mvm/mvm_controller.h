@@ -61,6 +61,9 @@ class MvmController final : public QObject {
     // audio meter。dBFS。無音時は kMeterSilenceDb を返す。
     Q_PROPERTY(double audioMeterDbLeft READ audioMeterDbLeft NOTIFY meterChanged)
     Q_PROPERTY(double audioMeterDbRight READ audioMeterDbRight NOTIFY meterChanged)
+    Q_PROPERTY(double masterVolume READ masterVolume WRITE setMasterVolume NOTIFY stateChanged)
+    Q_PROPERTY(int outputWidth READ outputWidth NOTIFY stateChanged)
+    Q_PROPERTY(int outputHeight READ outputHeight NOTIFY stateChanged)
     Q_PROPERTY(double effectPositionX READ effectPositionX NOTIFY stateChanged)
     Q_PROPERTY(double effectPositionY READ effectPositionY NOTIFY stateChanged)
     Q_PROPERTY(double effectScale READ effectScale NOTIFY stateChanged)
@@ -143,6 +146,10 @@ public:
     double audioMeterDbLeft() const { return audioMeterDbLeft_; }
 
     double audioMeterDbRight() const { return audioMeterDbRight_; }
+    double masterVolume() const { return masterVolume_; }
+    int outputWidth() const { return project_.outputWidth; }
+    int outputHeight() const { return project_.outputHeight; }
+    void setMasterVolume(double volume);
 
     double effectPositionX() const;
     double effectPositionY() const;
@@ -174,6 +181,8 @@ public:
                                       int trackIndex, qint64 timelineStartFrame);
     Q_INVOKABLE bool trimClip(const QString& clipId, const QString& edge, qint64 projectFrameDelta);
     Q_INVOKABLE bool deleteCurrentClip();
+    Q_INVOKABLE bool deleteTimelineClip(const QString& clipId);
+    Q_INVOKABLE bool unlinkTimelineClip(const QString& clipId);
     Q_INVOKABLE bool exportTimeline(const QUrl& outputUrl);
     // effect の 1 値だけを更新する。
     //   commit=false : Project を書き換えず、preview だけを ephemeral な override で
@@ -190,6 +199,7 @@ public:
 
     // 空白部分の ripple delete。gap が無ければ false を返し status に理由を出す。
     Q_INVOKABLE bool hasGapAt(const QString& trackKind, int trackIndex, qint64 frame) const;
+    Q_INVOKABLE bool hasClipAt(const QString& trackKind, int trackIndex, qint64 frame) const;
     Q_INVOKABLE bool rippleDeleteGap(const QString& trackKind, int trackIndex, qint64 frame);
 
     // Project ファイル (.mvm)
@@ -210,6 +220,10 @@ private:
         preview::PreviewSourceId source;
         std::string clipId;
         int clipIndex = -1;
+        std::int64_t sourceInFrame = 0;
+        std::int64_t timelineStartFrame = 0;
+        std::int64_t sourceFpsNum = 0;
+        std::int64_t sourceFpsDen = 1;
     };
 
     // audio source を作り直すべきかの判定に使う identity。
@@ -258,14 +272,14 @@ private:
     project::ClipEffects effectsForPreview(int clipIndex) const;
     bool applyEffectKey(project::ClipEffects& effects, const QString& key, double value);
     bool syncPreviewSourcesAt(std::int64_t timelineFrame, QString& error);
-    // audio source の差し替えは engine が active audio source を 1 件しか受理しない
-    // ため remove -> add の順にしかできず、prepare/commit へ素直に割れない。
+    // audio source set の差し替えは、master/mix inputの参照寿命を守るため
+    // remove -> add の順に行い、prepare/commitへ素直に割れない。
     // そこで「切り替え前の状態」を持ち、後段が失敗したら元へ戻す compensation
     // transaction にする。video 側だけ rollback して audio が新しいまま残る、
     // という部分 commit を作らない。
     struct AudioSwitchUndo {
         bool changed = false;
-        std::optional<AudioPreviewSource> previous;
+        std::vector<AudioPreviewSource> previous;
     };
 
     bool applyAudioSourceFor(std::int64_t timelineFrame, AudioSwitchUndo& undo, QString& error);
@@ -306,7 +320,7 @@ private:
     std::optional<preview::PreviewSourceId> currentSource_;
     // video track index -> preview source。track を増やしても添字を取り違えない。
     std::map<int, TrackPreviewSource> trackSources_;
-    std::optional<AudioPreviewSource> audioSource_;
+    std::vector<AudioPreviewSource> audioSources_;
     // drag 中だけ生きる effect の上書き。Project へは書かない。
     // これがあるのは currentClipIndex_ の clip に対してだけである。
     std::optional<project::ClipEffects> previewEffectsOverride_;
@@ -327,6 +341,7 @@ private:
     std::int64_t totalTimelineFrames_ = 0;
     double audioMeterDbLeft_ = kMeterSilenceDb;
     double audioMeterDbRight_ = kMeterSilenceDb;
+    double masterVolume_ = 0.35;
     bool busy_ = false;
     bool previewReady_ = false;
     bool shutdownStarted_ = false;

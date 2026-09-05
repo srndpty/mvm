@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Layouts
+import mvm.preview 1.0
 
 ApplicationWindow {
     id: root
@@ -9,11 +10,28 @@ ApplicationWindow {
     height: 900
     minimumWidth: 980
     minimumHeight: 640
+    // PreviewSurface自体はこのQMLのscene graphへ宣言済み。C++から動的追加しない。
     visible: true
     title: "mvm — " + mvmController.projectPath
     color: "#15171b"
 
     property url selectedManimScript
+
+    Shortcut {
+        sequence: "Delete"
+        enabled: !mvmController.busy && mvmController.currentClipIndex >= 0
+        onActivated: mvmController.deleteCurrentClip()
+    }
+    Shortcut {
+        sequence: "Space"
+        enabled: !mvmController.busy && (mvmController.playing || mvmController.canPlay)
+        onActivated: {
+            if (mvmController.playing)
+                mvmController.pauseTimeline();
+            else
+                mvmController.playTimeline();
+        }
+    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -112,7 +130,8 @@ ApplicationWindow {
         RowLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.preferredHeight: 420
+            Layout.preferredHeight: root.height * 0.42
+            Layout.minimumHeight: 220
             spacing: 8
 
             Frame {
@@ -315,28 +334,59 @@ ApplicationWindow {
                 }
             }
 
-            Frame {
+            Rectangle {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                padding: 0
-
-                background: Rectangle {
-                    color: "#08090b"
-                    border.color: "#343840"
-                }
+                color: "#08090b"
+                border.color: "#343840"
 
                 Item {
-                    id: previewHost
-                    objectName: "previewHost"
+                    id: previewArea
                     anchors.fill: parent
+
+                    Item {
+                        id: previewHost
+                        objectName: "previewHost"
+                        anchors.centerIn: parent
+                        readonly property real outputAspect: Math.max(1, mvmController.outputWidth)
+                                                             / Math.max(1, mvmController.outputHeight)
+                        width: Math.min(parent.width, parent.height * outputAspect)
+                        height: width / outputAspect
+
+                        PreviewSurface {
+                            id: previewSurface
+                            objectName: "previewSurface"
+                            anchors.fill: parent
+                        }
+                    }
                 }
             }
 
-            AudioMeter {
-                Layout.preferredWidth: 92
+            ColumnLayout {
+                Layout.preferredWidth: 110
+                Layout.minimumWidth: 110
+                Layout.maximumWidth: 110
                 Layout.fillHeight: true
-                dbLeft: mvmController.audioMeterDbLeft
-                dbRight: mvmController.audioMeterDbRight
+                spacing: 4
+                AudioMeter {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    dbLeft: mvmController.audioMeterDbLeft
+                    dbRight: mvmController.audioMeterDbRight
+                }
+                Label {
+                    Layout.alignment: Qt.AlignHCenter
+                    text: "音量 " + Math.round(mvmController.masterVolume * 100) + "%"
+                    color: "#9aa2ad"
+                    font.pixelSize: 10
+                }
+                Slider {
+                    Layout.fillWidth: true
+                    from: 0
+                    to: 1
+                    value: mvmController.masterVolume
+                    onMoved: mvmController.masterVolume = value
+                }
             }
         }
 
@@ -375,7 +425,7 @@ ApplicationWindow {
             }
             Item { Layout.fillWidth: true }
             Label {
-                text: "ホイール: 横スクロール / Shift: 高速 / Alt: ズーム"
+                text: "ホイール: 横スクロール / Shift: 高速 / Alt: ズーム / Ctrl: 上下スクロール"
                 color: "#6f7681"
                 font.pixelSize: 11
             }
@@ -389,14 +439,24 @@ ApplicationWindow {
         // --- タイムライン ---------------------------------------------------
         Rectangle {
             id: timelinePanel
+            objectName: "timelinePanel"
             Layout.fillWidth: true
             Layout.fillHeight: true
             Layout.minimumHeight: 200
+            Layout.preferredHeight: root.height * 0.48
             radius: 5
             color: "#20242a"
             border.color: "#3c424c"
 
-            property real pixelsPerFrame: 1.5
+            // 離散段階で管理し、下限へ到達した後も逆方向のwheelを確実に受理する。
+            readonly property var zoomLevels: [0.005, 0.01, 0.02, 0.05, 0.1, 0.2,
+                                                0.35, 0.5, 0.75, 1.0, 1.5, 2, 3, 4,
+                                                6, 8, 12, 16, 24]
+            property int zoomIndex: 10
+            readonly property real pixelsPerFrame: zoomLevels[zoomIndex]
+            property string activeDragLinkGroup: ""
+            property string activeDragClipId: ""
+            property real activeDragOffsetX: 0
             readonly property real labelWidth: 96
             readonly property real rulerHeight: 26
             readonly property real trackHeight: 54
@@ -408,7 +468,7 @@ ApplicationWindow {
             // ルーラーの目盛り間隔。ズームに応じて 1/2/5/10/30/60 秒から選ぶ。
             readonly property int tickSeconds: {
                 const nominalFps = Math.max(1, Math.round(mvmController.timelineFpsNum / mvmController.timelineFpsDen));
-                const candidates = [1, 2, 5, 10, 30, 60, 300];
+                const candidates = [1, 2, 5, 10, 30, 60, 300, 900, 3600];
                 for (let index = 0; index < candidates.length; ++index) {
                     if (candidates[index] * nominalFps * pixelsPerFrame >= 70)
                         return candidates[index];
@@ -432,17 +492,62 @@ ApplicationWindow {
                     return { "kind": "video", "index": videoCount - 1 - row };
                 return { "kind": "audio", "index": row - videoCount };
             }
+            // drag中の中心Yを、同じ種別の最寄りtrackへ必ずsnapする。
+            function trackForDrag(kind, trackAreaY) {
+                let row = Math.floor(trackAreaY / trackHeight);
+                if (kind === "video") {
+                    row = Math.max(0, Math.min(videoCount - 1, row));
+                    return { "kind": "video", "index": videoCount - 1 - row };
+                }
+                row = Math.max(videoCount, Math.min(rowCount - 1, row));
+                return { "kind": "audio", "index": row - videoCount };
+            }
             function frameAtContentX(contentX) {
                 return Math.max(0, Math.round(contentX / pixelsPerFrame));
             }
-            function setZoom(newPixelsPerFrame, anchorItemX) {
-                const clamped = Math.max(0.05, Math.min(24, newPixelsPerFrame));
-                if (clamped === pixelsPerFrame)
+            function setZoom(direction, anchorItemX) {
+                const nextIndex = Math.max(0, Math.min(zoomLevels.length - 1,
+                                                       zoomIndex + direction));
+                const oldMaxContentX = Math.max(0, timelineFlick.contentWidth
+                                                   - timelineFlick.width);
+                const wasFullyVisible = oldMaxContentX <= 0.5;
+                if (nextIndex === zoomIndex)
                     return;
                 // カーソル下のフレームを固定したままズームする。
                 const anchorFrame = (timelineFlick.contentX + anchorItemX) / pixelsPerFrame;
-                pixelsPerFrame = clamped;
-                timelineFlick.contentX = Math.max(0, anchorFrame * clamped - anchorItemX);
+                zoomIndex = nextIndex;
+                const nextContentWidth = Math.max(
+                    timelineFlick.width,
+                    mvmController.totalTimelineFrames * pixelsPerFrame + 240);
+                const nextMaxContentX = Math.max(0, nextContentWidth - timelineFlick.width);
+                // 全体が収まっていた段階では、blank領域のcursor位置を遠い時刻として
+                // 解釈しない。横scroll可能になった後だけcursor anchorを適用する。
+                const desiredContentX = wasFullyVisible
+                                      ? 0
+                                      : anchorFrame * pixelsPerFrame - anchorItemX;
+                timelineFlick.contentX = Math.max(
+                    0, Math.min(nextMaxContentX, desiredContentX));
+            }
+
+            // QQuickWindowのevent filterがFlickableより先にAlt/Ctrl wheelを捕捉し、
+            // modifierを判定済みの専用入口へ渡す。
+            function handleNativeAltWheel(wheelDelta, localX) {
+                if (wheelDelta === 0)
+                    return;
+                setZoom(wheelDelta > 0 ? 1 : -1,
+                        Math.max(0, localX - labelWidth));
+            }
+            function handleNativeCtrlWheel(wheelDelta) {
+                timelineFlick.contentY = Math.max(
+                    0,
+                    Math.min(timelineFlick.contentHeight - timelineFlick.height,
+                             timelineFlick.contentY - wheelDelta));
+            }
+            function handleNativeShiftWheel(wheelDelta) {
+                timelineFlick.contentX = Math.max(
+                    0,
+                    Math.min(timelineFlick.contentWidth - timelineFlick.width,
+                             timelineFlick.contentX - wheelDelta * 5));
             }
 
             // --- トラックヘッダ (左端) ---
@@ -452,6 +557,7 @@ ApplicationWindow {
                 y: 0
                 width: timelinePanel.labelWidth
                 height: parent.height
+                clip: true
 
                 component TrackHeader: Rectangle {
                     id: header
@@ -462,7 +568,7 @@ ApplicationWindow {
 
                     width: timelinePanel.labelWidth
                     height: timelinePanel.trackHeight
-                    y: timelinePanel.rowY(headerKind, headerIndex)
+                    y: timelinePanel.rowY(headerKind, headerIndex) - timelineFlick.contentY
                     color: headerKind === "video" ? "#252a31" : "#232a2a"
                     border.color: "#3c424c"
 
@@ -548,8 +654,18 @@ ApplicationWindow {
                     }
                 }
 
+                Rectangle {
+                    y: timelinePanel.rulerHeight + timelinePanel.videoCount * timelinePanel.trackHeight
+                       - timelineFlick.contentY - 2
+                    width: parent.width
+                    height: 4
+                    color: "#59636f"
+                    z: 10
+                }
+
                 Row {
-                    y: timelinePanel.rulerHeight + timelinePanel.tracksHeight + 4
+                    y: timelinePanel.rulerHeight + timelinePanel.tracksHeight
+                       - timelineFlick.contentY + 4
                     x: 3
                     spacing: 4
                     Button {
@@ -571,6 +687,16 @@ ApplicationWindow {
                         onClicked: mvmController.addTrack("audio")
                     }
                 }
+
+                // track headerがscrollしてもruler領域へ描画されないよう覆う。
+                Rectangle {
+                    x: 0
+                    y: 0
+                    width: parent.width
+                    height: timelinePanel.rulerHeight
+                    color: "#191c21"
+                    z: 100
+                }
             }
 
             // --- スクロール領域 ---
@@ -582,39 +708,13 @@ ApplicationWindow {
                 height: parent.height - 4
                 clip: true
                 contentWidth: Math.max(width, mvmController.totalTimelineFrames * timelinePanel.pixelsPerFrame + 240)
-                contentHeight: height
+                contentHeight: Math.max(height, timelinePanel.rulerHeight
+                                        + timelinePanel.tracksHeight + 34)
                 boundsBehavior: Flickable.StopAtBounds
-                flickableDirection: Flickable.HorizontalFlick
+                flickableDirection: Flickable.HorizontalAndVerticalFlick
 
                 ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
-
-                // ホイール: 横スクロール / Shift: 高速 / Alt: ズーム。
-                // WheelHandler は下の MouseArea のクリックを奪わない。
-                WheelHandler {
-                    acceptedModifiers: Qt.NoModifier
-                    onWheel: event => {
-                        timelineFlick.contentX = Math.max(
-                            0,
-                            Math.min(timelineFlick.contentWidth - timelineFlick.width,
-                                     timelineFlick.contentX - event.angleDelta.y));
-                    }
-                }
-                WheelHandler {
-                    acceptedModifiers: Qt.ShiftModifier
-                    onWheel: event => {
-                        timelineFlick.contentX = Math.max(
-                            0,
-                            Math.min(timelineFlick.contentWidth - timelineFlick.width,
-                                     timelineFlick.contentX - event.angleDelta.y * 5));
-                    }
-                }
-                WheelHandler {
-                    acceptedModifiers: Qt.AltModifier
-                    onWheel: event => {
-                        const factor = event.angleDelta.y > 0 ? 1.2 : (1.0 / 1.2);
-                        timelinePanel.setZoom(timelinePanel.pixelsPerFrame * factor, event.x);
-                    }
-                }
+                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
                 Item {
                     id: timelineContent
@@ -625,7 +725,8 @@ ApplicationWindow {
                     Rectangle {
                         id: ruler
                         x: 0
-                        y: 0
+                        // 縦scrollから独立させ、常に上端へ固定する。
+                        y: timelineFlick.contentY
                         width: parent.width
                         height: timelinePanel.rulerHeight
                         color: "#191c21"
@@ -711,6 +812,15 @@ ApplicationWindow {
                             }
                         }
 
+                        // video/audio の境界を通常の track 罫線より太く示す。
+                        Rectangle {
+                            y: timelinePanel.videoCount * timelinePanel.trackHeight - 2
+                            width: parent.width
+                            height: 4
+                            color: "#59636f"
+                            z: 10
+                        }
+
                         // クリップの無い場所での右クリック。リップル削除を出す。
                         MouseArea {
                             id: emptyContextArea
@@ -724,9 +834,13 @@ ApplicationWindow {
                                 const track = timelinePanel.trackAtY(mouse.y + timelinePanel.rulerHeight);
                                 if (!track)
                                     return;
+                                // hit test はclipの半開区間に合わせてfloorする。
+                                const frame = Math.max(0, Math.floor(mouse.x / timelinePanel.pixelsPerFrame));
+                                if (mvmController.hasClipAt(track.kind, track.index, frame))
+                                    return;
                                 menuTrackKind = track.kind;
                                 menuTrackIndex = track.index;
-                                menuFrame = timelinePanel.frameAtContentX(mouse.x);
+                                menuFrame = frame;
                                 gapMenu.popup();
                             }
 
@@ -763,13 +877,18 @@ ApplicationWindow {
                                 required property bool previewSupported
                                 required property string trackKind
                                 required property int trackIndex
+                                required property bool linked
+                                required property string linkGroupId
 
                                 property real leftPreviewDelta: 0
                                 property real rightPreviewDelta: 0
                                 property point bodyPressPoint: Qt.point(0, 0)
                                 property real bodyDragOffsetX: 0
                                 property real bodyDragOffsetY: 0
+                                property real rawBodyDragOffsetX: 0
                                 property bool bodyMoved: false
+                                property string dragTrackKind: trackKind
+                                property int dragTrackIndex: trackIndex
 
                                 x: timelineStartFrame * timelinePanel.pixelsPerFrame
                                 y: timelinePanel.rowY(trackKind, trackIndex) - timelinePanel.rulerHeight + 3
@@ -782,8 +901,32 @@ ApplicationWindow {
                                 border.color: previewSupported ? "#65a8dc" : "#c88b4a"
                                 z: bodyMoved ? 20 : 1
                                 transform: Translate {
-                                    x: clipItem.leftPreviewDelta * timelinePanel.pixelsPerFrame + clipItem.bodyDragOffsetX
+                                    x: clipItem.leftPreviewDelta * timelinePanel.pixelsPerFrame
+                                       + (clipItem.bodyMoved
+                                          ? clipItem.bodyDragOffsetX
+                                          : (timelinePanel.activeDragLinkGroup !== ""
+                                             && clipItem.linkGroupId === timelinePanel.activeDragLinkGroup
+                                             && clipItem.clipId !== timelinePanel.activeDragClipId
+                                             ? timelinePanel.activeDragOffsetX : 0))
                                     y: clipItem.bodyDragOffsetY
+                                }
+
+                                TapHandler {
+                                    acceptedButtons: Qt.RightButton
+                                    onTapped: clipMenu.popup()
+                                }
+
+                                Menu {
+                                    id: clipMenu
+                                    MenuItem {
+                                        text: "削除"
+                                        onTriggered: mvmController.deleteTimelineClip(clipItem.clipId)
+                                    }
+                                    MenuItem {
+                                        text: "リンクを解除"
+                                        enabled: clipItem.linked
+                                        onTriggered: mvmController.unlinkTimelineClip(clipItem.clipId)
+                                    }
                                 }
 
                                 Column {
@@ -818,44 +961,77 @@ ApplicationWindow {
                                     anchors.leftMargin: 9
                                     anchors.rightMargin: 9
                                     enabled: !mvmController.busy
+                                    acceptedButtons: Qt.LeftButton
+                                    preventStealing: true
                                     onPressed: mouse => {
+                                        mouse.accepted = true;
                                         clipItem.bodyMoved = false;
                                         clipItem.bodyDragOffsetX = 0;
                                         clipItem.bodyDragOffsetY = 0;
+                                        clipItem.rawBodyDragOffsetX = 0;
+                                        clipItem.dragTrackKind = clipItem.trackKind;
+                                        clipItem.dragTrackIndex = clipItem.trackIndex;
                                         clipItem.bodyPressPoint = mapToItem(trackArea, mouse.x, mouse.y);
+                                        timelinePanel.activeDragLinkGroup = clipItem.linkGroupId;
+                                        timelinePanel.activeDragClipId = clipItem.clipId;
+                                        timelinePanel.activeDragOffsetX = 0;
                                     }
                                     onPositionChanged: mouse => {
                                         const now = mapToItem(trackArea, mouse.x, mouse.y);
-                                        clipItem.bodyDragOffsetX = now.x - clipItem.bodyPressPoint.x;
-                                        clipItem.bodyDragOffsetY = now.y - clipItem.bodyPressPoint.y;
-                                        if (Math.abs(clipItem.bodyDragOffsetX) > 5 || Math.abs(clipItem.bodyDragOffsetY) > 5)
+                                        clipItem.rawBodyDragOffsetX = now.x - clipItem.bodyPressPoint.x;
+                                        // track移動時の小さな横ぶれは無視する。
+                                        clipItem.bodyDragOffsetX = Math.abs(clipItem.rawBodyDragOffsetX) < 12
+                                                                   ? 0 : clipItem.rawBodyDragOffsetX;
+                                        timelinePanel.activeDragOffsetX = clipItem.bodyDragOffsetX;
+                                        const rawCenterY = clipItem.y
+                                                           + (now.y - clipItem.bodyPressPoint.y)
+                                                           + clipItem.height / 2;
+                                        const snapped = timelinePanel.trackForDrag(clipItem.trackKind,
+                                                                                    rawCenterY);
+                                        clipItem.dragTrackKind = snapped.kind;
+                                        clipItem.dragTrackIndex = snapped.index;
+                                        clipItem.bodyDragOffsetY = timelinePanel.rowY(snapped.kind,
+                                                                                     snapped.index)
+                                                                   - timelinePanel.rowY(clipItem.trackKind,
+                                                                                        clipItem.trackIndex);
+                                        if (Math.abs(clipItem.rawBodyDragOffsetX) > 5
+                                                || snapped.index !== clipItem.trackIndex)
                                             clipItem.bodyMoved = true;
                                     }
                                     onReleased: mouse => {
                                         if (clipItem.bodyMoved) {
                                             const candidateX = clipItem.timelineStartFrame * timelinePanel.pixelsPerFrame + clipItem.bodyDragOffsetX;
-                                            const centerY = clipItem.y + clipItem.bodyDragOffsetY + clipItem.height / 2;
-                                            const destination = timelinePanel.trackAtY(centerY + timelinePanel.rulerHeight);
+                                            const destination = { "kind": clipItem.dragTrackKind,
+                                                                  "index": clipItem.dragTrackIndex };
                                             clipItem.bodyDragOffsetX = 0;
                                             clipItem.bodyDragOffsetY = 0;
+                                            clipItem.rawBodyDragOffsetX = 0;
                                             clipItem.bodyMoved = false;
-                                            if (destination) {
-                                                mvmController.moveTimelineClip(
-                                                    clipItem.clipId, destination.kind, destination.index,
-                                                    Math.max(0, Math.round(candidateX / timelinePanel.pixelsPerFrame)));
-                                            }
+                                            mvmController.moveTimelineClip(
+                                                clipItem.clipId, destination.kind, destination.index,
+                                                Math.max(0, Math.round(candidateX / timelinePanel.pixelsPerFrame)));
                                         } else {
                                             clipItem.bodyDragOffsetX = 0;
                                             clipItem.bodyDragOffsetY = 0;
+                                            clipItem.rawBodyDragOffsetX = 0;
                                             const point = bodyArea.mapToItem(clipItem, mouse.x, mouse.y);
                                             const frame = Math.round(clipItem.timelineStartFrame + point.x / timelinePanel.pixelsPerFrame);
                                             mvmController.selectTimelineClip(clipItem.clipId, frame);
                                         }
+                                        timelinePanel.activeDragLinkGroup = "";
+                                        timelinePanel.activeDragClipId = "";
+                                        timelinePanel.activeDragOffsetX = 0;
                                     }
                                     onCanceled: {
                                         clipItem.bodyDragOffsetX = 0;
                                         clipItem.bodyDragOffsetY = 0;
+                                        clipItem.rawBodyDragOffsetX = 0;
                                         clipItem.bodyMoved = false;
+                                        clipItem.dragTrackKind = clipItem.trackKind;
+                                        clipItem.dragTrackIndex = clipItem.trackIndex;
+                                        timelinePanel.activeDragLinkGroup = "";
+                                        timelinePanel.activeDragClipId = "";
+                                        timelinePanel.activeDragOffsetX = 0;
                                     }
                                 }
 

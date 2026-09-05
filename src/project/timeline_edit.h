@@ -57,7 +57,11 @@ TimelineEditResult moveClip(Project& project, const std::string& clipId, TrackRe
                             std::int64_t newStartFrame);
 // track 末尾へ追加する。clip.track と clip.timelineStartFrame はここで確定させる。
 TimelineEditResult appendTimelineClip(Project& project, TimelineClip clip, TrackRef track);
+// 指定位置へ配置する。既存 clip と重なる場合は fail-closed にする。
+TimelineEditResult placeTimelineClipAt(Project& project, TimelineClip clip, TrackRef track,
+                                       std::int64_t timelineStartFrame);
 TimelineEditResult deleteTimelineClip(Project& project, int selectedIndex);
+TimelineEditResult unlinkTimelineClip(Project& project, const std::string& clipId);
 TimelineEditResult trimTimelineClip(Project& project, const std::string& clipId, TrimEdge edge,
                                     std::int64_t projectFrameDelta);
 TimelineEditResult appendManimTimelineClipAt(Project& project, const ManimAsset& asset,

@@ -37,6 +37,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -1759,6 +1760,34 @@ void testM7bOutputAndSourceIdentitySeparation() {
     checkEq(static_cast<long long>(top.depth()), 1, "不一致時にもう片側も消費しない");
 }
 
+void testCrossRateOutputIntervals() {
+    std::fprintf(stderr, "[cross-rate output intervals]\n");
+    const Rational source{24000, 1001};
+    const Rational output{60, 1};
+    const auto first = sourceFrameOutputInterval(100, 100, 10, source, output);
+    const auto second = sourceFrameOutputInterval(101, 100, 10, source, output);
+    check(first.valid && first.begin == 10 && first.end == 13,
+          "23.976fps先頭frameを60fpsの3 outputへ展開");
+    check(second.valid && second.begin == 13 && second.end == 16,
+          "23.976fps次frameのoutput区間が連続する");
+
+    const auto faster0 = sourceFrameOutputInterval(0, 0, 0, {120, 1}, output);
+    const auto faster1 = sourceFrameOutputInterval(1, 0, 0, {120, 1}, output);
+    check(faster0.valid && faster0.begin == 0 && faster0.end == 1,
+          "120fps先頭frameを60fpsへmapping");
+    check(faster1.valid && faster1.begin == 1 && faster1.end == 1,
+          "表示機会が無いsource frameを空区間にする");
+    check(!sourceFrameOutputInterval(99, 100, 10, source, output).valid,
+          "source inより前のframeを拒否する");
+    check(!sourceFrameOutputInterval(100, 100, 10, {0, 1}, output).valid,
+          "不正なsource rateを拒否する");
+    check(!sourceFrameOutputInterval(std::numeric_limits<long long>::max(), 0, 0,
+                                     {1, std::numeric_limits<long long>::max()},
+                                     {std::numeric_limits<long long>::max(), 1})
+               .valid,
+          "rate換算の中間積overflowを拒否する");
+}
+
 } // namespace
 
 int main() {
@@ -1788,6 +1817,7 @@ int main() {
     testHwFormatSelection();
     testM7aSourceNativeFadeAuthority();
     testM7bOutputAndSourceIdentitySeparation();
+    testCrossRateOutputIntervals();
 
     std::fprintf(stderr, "\n検査 %d 件 / 失敗 %d 件\n", gChecks, gFailures);
     if (gChecks == 0) {

@@ -90,6 +90,8 @@ protected:
         if (state != preview::PreviewEngineState::Playing &&
             state != preview::PreviewEngineState::Seeking)
             return;
+        if (!preview::internal::PreviewRenderPort::renderFrameDue(*engine_))
+            return;
         if (!ensureRtv(colorTexture()))
             return;
 
@@ -97,8 +99,8 @@ protected:
                                  QRhiCommandBuffer::ExternalContent);
         commandBuffer->beginExternal();
         const QSize size = colorTexture()->pixelSize();
-        preview::internal::PreviewRenderPort::renderFrame(*engine_, rtv_, size.width(),
-                                                          size.height());
+        (void)preview::internal::PreviewRenderPort::renderFrame(*engine_, rtv_, size.width(),
+                                                                size.height());
         commandBuffer->endExternal();
         commandBuffer->endPass();
     }
@@ -202,7 +204,7 @@ private:
 } // namespace
 
 PreviewEngineRhiItem::PreviewEngineRhiItem(QQuickItem* parent) : QQuickRhiItem(parent) {
-    setMirrorVertically(true);
+    setMirrorVertically(false);
 }
 
 void PreviewEngineRhiItem::setEngine(std::shared_ptr<preview::PreviewEngine> engine) {

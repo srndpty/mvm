@@ -10,17 +10,77 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <qqml.h>
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QSGRendererInterface>
 #include <QStringList>
+#include <QVariant>
+#include <QWheelEvent>
 
 namespace {
 
 struct AppArguments {
     std::filesystem::path projectPath;
     std::filesystem::path manimExecutablePath;
+};
+
+class TimelineWheelEventFilter final : public QObject {
+public:
+    TimelineWheelEventFilter(QQuickWindow* window, QQuickItem* timelinePanel)
+        : window_(window), timelinePanel_(timelinePanel) {}
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (watched != window_ || event->type() != QEvent::Wheel || !timelinePanel_)
+            return QObject::eventFilter(watched, event);
+        const auto* wheel = static_cast<QWheelEvent*>(event);
+        const QPointF local = timelinePanel_->mapFromScene(wheel->position());
+        if (!timelinePanel_->contains(local))
+            return QObject::eventFilter(watched, event);
+
+        const QPoint angleDelta = wheel->angleDelta();
+        const QPoint pixelDelta = wheel->pixelDelta();
+        // Windowsやmouse driverによってはAlt+縦wheelが横wheelへ変換される。
+        // 縦成分だけを見るとdelta=0をzoom-outと誤認し、最小zoomから戻れなくなる。
+        const int delta = angleDelta.y() != 0   ? angleDelta.y()
+                          : angleDelta.x() != 0 ? angleDelta.x()
+                          : pixelDelta.y() != 0 ? pixelDelta.y()
+                                                : pixelDelta.x();
+        const char* method = nullptr;
+        QVariantList arguments;
+        if (wheel->modifiers().testFlag(Qt::AltModifier)) {
+            method = "handleNativeAltWheel";
+            arguments = {delta, local.x()};
+        } else if (wheel->modifiers().testFlag(Qt::ControlModifier)) {
+            method = "handleNativeCtrlWheel";
+            arguments = {delta};
+        } else if (wheel->modifiers().testFlag(Qt::ShiftModifier)) {
+            method = "handleNativeShiftWheel";
+            arguments = {delta};
+        } else {
+            return QObject::eventFilter(watched, event);
+        }
+
+        if (delta == 0)
+            return true;
+
+        if (arguments.size() == 2) {
+            QMetaObject::invokeMethod(
+                timelinePanel_, method, Qt::DirectConnection, Q_ARG(QVariant, arguments[0]),
+                Q_ARG(QVariant, arguments[1]));
+        } else {
+            QMetaObject::invokeMethod(timelinePanel_, method, Qt::DirectConnection,
+                                      Q_ARG(QVariant, arguments[0]));
+        }
+        // modifier付きwheelはFlickableへ流さず、通常scrollへ化ける挙動を止める。
+        return true;
+    }
+
+private:
+    QQuickWindow* window_ = nullptr;
+    QQuickItem* timelinePanel_ = nullptr;
 };
 
 void usage() {
@@ -72,7 +132,6 @@ int main(int argc, char** argv) {
         usage();
         return 2;
     }
-
     // Project が無ければ既定構成 (V1/V2 + A1) から始める。track 0 本の Project を
     // 作らせない。
     mvm::project::Project project = mvm::project::createDefaultProject();
@@ -101,6 +160,7 @@ int main(int argc, char** argv) {
 
     mvm::app::MvmController controller(arguments.projectPath, arguments.manimExecutablePath,
                                        std::move(project));
+    qmlRegisterType<mvm::app::PreviewEngineRhiItem>("mvm.preview", 1, 0, "PreviewSurface");
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(QStringLiteral("mvmController"), &controller);
     engine.load(QUrl(QStringLiteral("qrc:/mvm/app/Main.qml")));
@@ -110,19 +170,18 @@ int main(int argc, char** argv) {
     }
 
     auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().first());
-    auto* previewHost =
-        window ? window->findChild<QQuickItem*>(QStringLiteral("previewHost")) : nullptr;
-    if (!window || !previewHost) {
-        std::fprintf(stderr, "mvmのWindowまたはPreview hostが見つかりません\n");
+    auto* timelinePanel =
+        window ? window->findChild<QQuickItem*>(QStringLiteral("timelinePanel")) : nullptr;
+    auto* surface = window ? window->findChild<mvm::app::PreviewEngineRhiItem*>(
+                                 QStringLiteral("previewSurface"))
+                           : nullptr;
+    if (!window || !surface || !timelinePanel) {
+        std::fprintf(stderr,
+                     "mvmのWindow、Preview、またはtimeline panelが見つかりません\n");
         return 4;
     }
-    auto* surface = new mvm::app::PreviewEngineRhiItem(previewHost);
-    surface->setWidth(previewHost->width());
-    surface->setHeight(previewHost->height());
-    QObject::connect(previewHost, &QQuickItem::widthChanged, surface,
-                     [surface, previewHost] { surface->setWidth(previewHost->width()); });
-    QObject::connect(previewHost, &QQuickItem::heightChanged, surface,
-                     [surface, previewHost] { surface->setHeight(previewHost->height()); });
+    TimelineWheelEventFilter timelineWheelFilter(window, timelinePanel);
+    window->installEventFilter(&timelineWheelFilter);
     controller.attachPreview(surface);
 
     QObject::connect(window, &QQuickWindow::closing, &controller,

@@ -8,6 +8,56 @@
 #include <limits>
 
 namespace mvm::gpu {
+namespace {
+
+__extension__ using WideInteger = __int128;
+
+bool checkedMultiply(WideInteger left, WideInteger right, WideInteger& result) {
+    return !__builtin_mul_overflow(left, right, &result);
+}
+
+bool ceilRatio(WideInteger numerator, WideInteger denominator, long long& result) {
+    if (numerator < 0 || denominator <= 0)
+        return false;
+    const WideInteger value = numerator / denominator + (numerator % denominator != 0 ? 1 : 0);
+    if (value > std::numeric_limits<long long>::max())
+        return false;
+    result = static_cast<long long>(value);
+    return true;
+}
+
+} // namespace
+
+OutputFrameInterval sourceFrameOutputInterval(long long sourceFrame, long long sourceInFrame,
+                                              long long timelineStartFrame,
+                                              Rational sourceFrameRate, Rational outputFrameRate) {
+    OutputFrameInterval result;
+    if (sourceFrame < sourceInFrame || sourceInFrame < 0 || timelineStartFrame < 0 ||
+        !sourceFrameRate.valid() || !outputFrameRate.valid())
+        return result;
+    WideInteger denominator = 0;
+    if (!checkedMultiply(static_cast<WideInteger>(outputFrameRate.den), sourceFrameRate.num,
+                         denominator))
+        return result;
+    const auto convert = [&](long long relative, long long& output) {
+        long long offset = 0;
+        WideInteger numerator = 0;
+        if (!checkedMultiply(static_cast<WideInteger>(relative), outputFrameRate.num, numerator) ||
+            !checkedMultiply(numerator, sourceFrameRate.den, numerator))
+            return false;
+        if (!ceilRatio(numerator, denominator, offset) ||
+            timelineStartFrame > std::numeric_limits<long long>::max() - offset)
+            return false;
+        output = timelineStartFrame + offset;
+        return true;
+    };
+    const long long relative = sourceFrame - sourceInFrame;
+    if (!convert(relative, result.begin) || relative == std::numeric_limits<long long>::max() ||
+        !convert(relative + 1, result.end))
+        return result;
+    result.valid = true;
+    return result;
+}
 
 const char* toString(SeekCompletionPublishResult result) {
     switch (result) {
@@ -179,6 +229,21 @@ SourceDecodeWorker::~SourceDecodeWorker() {
     stop();
 }
 
+bool SourceDecodeWorker::configureOutputMapping(long long sourceInFrame,
+                                                long long timelineStartFrame,
+                                                Rational outputFrameRate, std::string& err) {
+    if (startedOnce_ || sourceInFrame < 0 || timelineStartFrame < 0 || !outputFrameRate.valid()) {
+        err = "video output mappingの設定が不正または開始後です";
+        return false;
+    }
+    outputMappingEnabled_ = true;
+    mappingSourceInFrame_ = sourceInFrame;
+    mappingTimelineStartFrame_ = timelineStartFrame;
+    mappingOutputFrameRate_ = outputFrameRate;
+    err.clear();
+    return true;
+}
+
 void SourceDecodeWorker::refreshSnapshotLocked() {
     SourceDecoderSnapshot next;
     {
@@ -262,6 +327,7 @@ bool SourceDecodeWorker::start(const std::string& utf8Path, std::string& err) {
     auto decoder = std::make_unique<FFmpegD3D11Decoder>(device_, sourceId_, &counters_);
     if (!decoder->open(utf8Path, err))
         return false;
+    sourceFrameRate_ = decoder->info().frameRate;
     if (buffer_.setGeneration(decoder->sourceGeneration()) ==
         GenerationUpdateResult::RejectedRegression) {
         err = "source-local bufferのgenerationを初期化できません";
@@ -417,11 +483,20 @@ bool SourceDecodeWorker::submitWithBackpressure(const DecodedGpuFrame& frame, st
         noteFatal(err);
         return false;
     }
-    while (running()) {
-        // seek request後の旧generation frameは、満杯buffer待ちより先に破棄する。
-        // ここで戻らないとworkerがsubmit待ちに留まり、mailboxのseek優先順位を破る。
-        if (seekMailbox_.hasPending())
+    long long outputBegin = 0;
+    long long outputEnd = 0;
+    if (outputMappingEnabled_) {
+        const auto interval = sourceFrameOutputInterval(frame.frameNumber, mappingSourceInFrame_,
+                                                        mappingTimelineStartFrame_,
+                                                        sourceFrameRate_, mappingOutputFrameRate_);
+        if (!interval.valid) {
+            err = "source frameからtimeline output区間へ換算できません";
+            noteFatal(err);
             return false;
+        }
+        outputBegin = std::max(interval.begin, outputFrameAnchor_.load(std::memory_order_acquire));
+        outputEnd = interval.end;
+    } else {
         const long long sourceAnchor = sourceFrameAnchor_.load(std::memory_order_acquire);
         const long long outputAnchor = outputFrameAnchor_.load(std::memory_order_acquire);
         const long long delta = frame.frameNumber - sourceAnchor;
@@ -431,47 +506,64 @@ bool SourceDecodeWorker::submitWithBackpressure(const DecodedGpuFrame& frame, st
             noteFatal(err);
             return false;
         }
-        const SubmitResult result = buffer_.submitFrameForOutput(frame, outputAnchor + delta);
-        if (result == SubmitResult::Accepted) {
-            std::lock_guard<std::mutex> lock(snapshotMutex_);
-            ++snapshot_.submittedCount;
-            return true;
+        outputBegin = outputAnchor + delta;
+        if (outputBegin == std::numeric_limits<long long>::max()) {
+            err = "output frame区間の終端がoverflowします";
+            noteFatal(err);
+            return false;
         }
-        if (result == SubmitResult::RejectedQueueFull) {
-            {
-                std::lock_guard<std::mutex> lock(snapshotMutex_);
-                ++snapshot_.queueFullCount;
-                ++snapshot_.backpressureWaitCount;
-                snapshot_.submitBackpressureWaitActive = true;
-            }
-            const SourceBufferSpaceWaitResult wait =
-                buffer_.waitForSpaceInterruptible(50, [this] { return seekMailbox_.hasPending(); });
-            {
-                std::lock_guard<std::mutex> lock(snapshotMutex_);
-                snapshot_.submitBackpressureWaitActive = false;
-                if (wait == SourceBufferSpaceWaitResult::Interrupted)
-                    ++snapshot_.seekInterruptedSubmitWaitCount;
-            }
-            if (wait == SourceBufferSpaceWaitResult::Interrupted ||
-                wait == SourceBufferSpaceWaitResult::Stopped)
-                return false;
-            continue;
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(snapshotMutex_);
-            if (result == SubmitResult::RejectedStaleGeneration)
-                ++snapshot_.staleGenerationRejectCount;
-            else if (result == SubmitResult::RejectedFutureGeneration)
-                ++snapshot_.futureGenerationRejectCount;
-            else
-                ++snapshot_.invalidFrameRejectCount;
-        }
-        err = std::string("source-local bufferがframeを拒否しました: ") + toString(result);
-        noteFatal(err);
-        return false;
+        outputEnd = outputBegin + 1;
     }
-    return false;
+    for (long long outputFrame = outputBegin; outputFrame < outputEnd; ++outputFrame) {
+        while (running()) {
+            // seek request後の旧generation frameは、満杯buffer待ちより先に破棄する。
+            // ここで戻らないとworkerがsubmit待ちに留まり、mailboxのseek優先順位を破る。
+            if (seekMailbox_.hasPending())
+                return false;
+            const SubmitResult result = buffer_.submitFrameForOutput(frame, outputFrame);
+            if (result == SubmitResult::Accepted) {
+                std::lock_guard<std::mutex> lock(snapshotMutex_);
+                ++snapshot_.submittedCount;
+                break;
+            }
+            if (result == SubmitResult::RejectedQueueFull) {
+                {
+                    std::lock_guard<std::mutex> lock(snapshotMutex_);
+                    ++snapshot_.queueFullCount;
+                    ++snapshot_.backpressureWaitCount;
+                    snapshot_.submitBackpressureWaitActive = true;
+                }
+                const SourceBufferSpaceWaitResult wait = buffer_.waitForSpaceInterruptible(
+                    50, [this] { return seekMailbox_.hasPending(); });
+                {
+                    std::lock_guard<std::mutex> lock(snapshotMutex_);
+                    snapshot_.submitBackpressureWaitActive = false;
+                    if (wait == SourceBufferSpaceWaitResult::Interrupted)
+                        ++snapshot_.seekInterruptedSubmitWaitCount;
+                }
+                if (wait == SourceBufferSpaceWaitResult::Interrupted ||
+                    wait == SourceBufferSpaceWaitResult::Stopped)
+                    return false;
+                continue;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(snapshotMutex_);
+                if (result == SubmitResult::RejectedStaleGeneration)
+                    ++snapshot_.staleGenerationRejectCount;
+                else if (result == SubmitResult::RejectedFutureGeneration)
+                    ++snapshot_.futureGenerationRejectCount;
+                else
+                    ++snapshot_.invalidFrameRejectCount;
+            }
+            err = std::string("source-local bufferがframeを拒否しました: ") + toString(result);
+            noteFatal(err);
+            return false;
+        }
+        if (!running())
+            return false;
+    }
+    return true;
 }
 
 SeekRequestResult SourceDecodeWorker::requestSeek(long long frameNumber, SeekTicket& ticket,

@@ -126,7 +126,7 @@ void testMutedTracks() {
     const auto before = mvm::app::mapTimelinePreviewFrame(project, 10);
     require(before.success && before.layers.size() == 2, "2 layerを取得できません");
     const auto audioBefore = mvm::app::mapTimelinePreviewAudio(project, 10);
-    require(audioBefore.success && audioBefore.hasAudio, "audio clipを取得できません");
+    require(audioBefore.success && audioBefore.layers.size() == 1, "audio clipを取得できません");
 
     project.videoTracks[1].muted = true;
     const auto muted = mvm::app::mapTimelinePreviewFrame(project, 10);
@@ -135,7 +135,7 @@ void testMutedTracks() {
 
     project.audioTracks[0].muted = true;
     const auto audioMuted = mvm::app::mapTimelinePreviewAudio(project, 10);
-    require(audioMuted.success && !audioMuted.hasAudio,
+    require(audioMuted.success && audioMuted.layers.empty(),
             "mute した audio track を preview 対象から外していません");
 }
 
@@ -157,8 +157,8 @@ void testLayerLimit() {
             "mute で layer 数が上限内に収まりません");
 }
 
-// 同一 frame に複数 audio が載ったら成功にしない (engine は 1 件しか受理しない)。
-void testAudioOverlapRejected() {
+// 重なったaudioをA1から順にすべてmix対象へ載せる。
+void testAudioOverlapSelectsA1() {
     mvm::project::Project project = mvm::project::createDefaultProject();
     require(mvm::project::addTrack(project, mvm::project::TrackKind::Audio).success,
             "A2を追加できません");
@@ -166,7 +166,30 @@ void testAudioOverlapRejected() {
     second.track = mvm::project::TrackRef{mvm::project::TrackKind::Audio, 1};
     project.timelineClips = {audioClip("a1", 0, 0, 100, 60, 1), second};
     const auto overlapped = mvm::app::mapTimelinePreviewAudio(project, 10);
-    require(!overlapped.success && !overlapped.hasAudio, "重なった audio を成功にしました");
+    require(overlapped.success && overlapped.layers.size() == 2 &&
+                overlapped.layers[0].clipId == "a1" && overlapped.layers[1].clipId == "a2",
+            "重なったaudioをtrack順のmix対象にできません");
+
+    project.audioTracks[0].muted = true;
+    const auto a1Muted = mvm::app::mapTimelinePreviewAudio(project, 10);
+    require(a1Muted.success && a1Muted.layers.size() == 1 && a1Muted.layers[0].clipId == "a2",
+            "muteされたA1を飛ばしてA2を選択できません");
+}
+
+void testCrossRateVideoMapping() {
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    auto value = clip("23976", 0, 10, 100, 240);
+    value.sourceFpsNum = 24000;
+    value.sourceFpsDen = 1001;
+    project.timelineClips = {value};
+
+    const auto atOneSecond = mvm::app::mapTimelinePreviewFrame(project, 70);
+    require(atOneSecond.success && atOneSecond.layers.size() == 1 &&
+                atOneSecond.layers[0].sourceFrameNumber == 123,
+            "60fps timelineから23.976fps素材へframe換算できません");
+    const auto repeated = mvm::app::mapTimelinePreviewFrame(project, 11);
+    require(repeated.success && repeated.layers[0].sourceFrameNumber == 100,
+            "高fps timelineで必要なsource frameの重複を拒否しました");
 }
 
 } // namespace
@@ -176,7 +199,8 @@ int main() {
     testAudioSourceFrameCount();
     testMutedTracks();
     testLayerLimit();
-    testAudioOverlapRejected();
+    testAudioOverlapSelectsA1();
+    testCrossRateVideoMapping();
 
     mvm::project::Project project = mvm::project::createDefaultProject();
     project.timelineClips = {

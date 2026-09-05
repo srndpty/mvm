@@ -103,7 +103,7 @@ TimelinePlaybackStep evaluateTimelinePlayback(const project::Project& project, i
 
 bool timelinePreviewCompatible(const project::Project& project) {
     for (const auto& clip : project.timelineClips) {
-        if (!project::sourceRateMatchesTimelineRate(project, clip))
+        if (!project::timelineClipDuration(project, clip).success)
             return false;
     }
     return true;

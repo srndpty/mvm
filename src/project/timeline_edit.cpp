@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <limits>
 #include <numeric>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -167,6 +168,10 @@ TimelineValidationResult validateTimeline(const Project& project) {
         result.error = "Project timeline FPS が約分されていません";
         return result;
     }
+    if (project.outputWidth <= 0 || project.outputHeight <= 0) {
+        result.error = "Project output size が不正です";
+        return result;
+    }
     if (project.videoTracks.empty()) {
         result.error = "video track が 1 本もありません";
         return result;
@@ -181,6 +186,14 @@ TimelineValidationResult validateTimeline(const Project& project) {
         }
     }
     std::unordered_set<std::string> ids;
+
+    struct LinkGroupSummary {
+        int count = 0;
+        bool hasVideo = false;
+        bool hasAudio = false;
+    };
+
+    std::unordered_map<std::string, LinkGroupSummary> linkGroups;
     std::vector<TimelineInterval> intervals;
     intervals.reserve(project.timelineClips.size());
     std::int64_t totalEnd = 0;
@@ -216,6 +229,17 @@ TimelineValidationResult validateTimeline(const Project& project) {
         if (clip.timelineStartFrame < 0) {
             result.error = "timeline clip の start frame が負です: " + clip.name;
             return result;
+        }
+        if (!clip.linkGroupId.empty()) {
+            auto& group = linkGroups[clip.linkGroupId];
+            ++group.count;
+            group.hasAudio = group.hasAudio || clip.kind == TimelineClipKind::Audio;
+            group.hasVideo = group.hasVideo || clip.kind != TimelineClipKind::Audio;
+            if (group.count > 2 || (group.count == 2 && (!group.hasAudio || !group.hasVideo))) {
+                result.error =
+                    "clipリンクはvideo/audioの1組である必要があります: " + clip.linkGroupId;
+                return result;
+            }
         }
         std::int64_t start = 0;
         std::int64_t end = 0;
@@ -315,8 +339,24 @@ TimelineEditResult moveClip(Project& project, const std::string& clipId, TrackRe
         result.error = "この clip はその種別の track へ移動できません";
         return result;
     }
+    const std::int64_t oldStartFrame = clip.timelineStartFrame;
+    const std::string linkGroupId = clip.linkGroupId;
     clip.track = destinationTrack;
     clip.timelineStartFrame = newStartFrame;
+    if (!linkGroupId.empty()) {
+        const std::int64_t delta = newStartFrame - oldStartFrame;
+        for (auto& linked : candidate.timelineClips) {
+            if (linked.id == clipId || linked.linkGroupId != linkGroupId)
+                continue;
+            if ((delta < 0 && linked.timelineStartFrame < -delta) ||
+                (delta > 0 &&
+                 linked.timelineStartFrame > std::numeric_limits<std::int64_t>::max() - delta)) {
+                result.error = "リンクclipの移動先が範囲外です";
+                return result;
+            }
+            linked.timelineStartFrame += delta;
+        }
+    }
     const auto validation = validateTimeline(candidate);
     if (!validation.success) {
         result.error = validation.error;
@@ -365,7 +405,14 @@ TimelineEditResult deleteTimelineClip(Project& project, int selectedIndex) {
         return result;
     }
     Project candidate = project;
-    candidate.timelineClips.erase(candidate.timelineClips.begin() + selectedIndex);
+    const std::string linkGroupId =
+        candidate.timelineClips[static_cast<std::size_t>(selectedIndex)].linkGroupId;
+    if (linkGroupId.empty()) {
+        candidate.timelineClips.erase(candidate.timelineClips.begin() + selectedIndex);
+    } else {
+        std::erase_if(candidate.timelineClips,
+                      [&](const TimelineClip& clip) { return clip.linkGroupId == linkGroupId; });
+    }
     const auto valid = validateTimeline(candidate);
     if (!valid.success) {
         result.error = valid.error;
@@ -376,6 +423,61 @@ TimelineEditResult deleteTimelineClip(Project& project, int selectedIndex) {
     if (!project.timelineClips.empty())
         result.selectedIndex =
             std::min(selectedIndex, static_cast<int>(project.timelineClips.size()) - 1);
+    return result;
+}
+
+TimelineEditResult placeTimelineClipAt(Project& project, TimelineClip clip, TrackRef track,
+                                       std::int64_t timelineStartFrame) {
+    TimelineEditResult result;
+    if (!isValidTrackRef(project, track) || timelineStartFrame < 0) {
+        result.error = "追加先の track または start frame が不正です";
+        return result;
+    }
+    if (!clipKindFitsTrackKind(clip.kind, track.kind)) {
+        result.error = "clip 種別と track 種別が一致しません";
+        return result;
+    }
+    Project candidate = project;
+    clip.track = track;
+    clip.timelineStartFrame = timelineStartFrame;
+    candidate.timelineClips.push_back(std::move(clip));
+    const auto validation = validateTimeline(candidate);
+    if (!validation.success) {
+        result.error = validation.error;
+        return result;
+    }
+    project = std::move(candidate);
+    result.success = true;
+    result.selectedIndex = static_cast<int>(project.timelineClips.size()) - 1;
+    return result;
+}
+
+TimelineEditResult unlinkTimelineClip(Project& project, const std::string& clipId) {
+    TimelineEditResult result;
+    Project candidate = project;
+    const int index = indexOfId(candidate, clipId);
+    if (!validIndex(candidate, index)) {
+        result.error = "リンク解除する timeline clip がありません";
+        return result;
+    }
+    const std::string linkGroupId =
+        candidate.timelineClips[static_cast<std::size_t>(index)].linkGroupId;
+    if (linkGroupId.empty()) {
+        result.error = "選択した clip はリンクされていません";
+        return result;
+    }
+    for (auto& clip : candidate.timelineClips) {
+        if (clip.linkGroupId == linkGroupId)
+            clip.linkGroupId.clear();
+    }
+    const auto valid = validateTimeline(candidate);
+    if (!valid.success) {
+        result.error = valid.error;
+        return result;
+    }
+    project = std::move(candidate);
+    result.success = true;
+    result.selectedIndex = index;
     return result;
 }
 
@@ -476,7 +578,8 @@ TimelineEditResult appendManimTimelineClipAt(Project& project, const ManimAsset&
                                        sourceFrameCount,
                                        timelineStartFrame,
                                        {},
-                                       track});
+                                       track,
+                                       {}});
     const auto valid = validateTimeline(candidate);
     if (!valid.success) {
         result.error = valid.error;
