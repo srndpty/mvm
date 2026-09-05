@@ -777,9 +777,35 @@ TimelineEditResult rippleDeleteGap(Project& project, TrackRef track, std::int64_
         return result;
     }
     Project candidate = project;
-    for (auto& clip : candidate.timelineClips) {
-        if (clip.track == track && clip.timelineStartFrame >= gap.end)
-            clip.timelineStartFrame -= shift;
+    // ripple 対象を先に確定させる。link は横移動を同期する契約なので、対象 clip の
+    // counterpart も同じ shift へ含めないと linked A/V の相対位置が壊れる。
+    const std::size_t clipCount = candidate.timelineClips.size();
+    std::vector<bool> shifted(clipCount, false);
+    std::unordered_set<std::string> linkGroups;
+    for (std::size_t index = 0; index < clipCount; ++index) {
+        const auto& clip = candidate.timelineClips[index];
+        if (!(clip.track == track) || clip.timelineStartFrame < gap.end)
+            continue;
+        shifted[index] = true;
+        if (!clip.linkGroupId.empty())
+            linkGroups.insert(clip.linkGroupId);
+    }
+    for (std::size_t index = 0; index < clipCount; ++index) {
+        const auto& clip = candidate.timelineClips[index];
+        if (shifted[index] || clip.linkGroupId.empty())
+            continue;
+        if (linkGroups.count(clip.linkGroupId) != 0)
+            shifted[index] = true;
+    }
+    for (std::size_t index = 0; index < clipCount; ++index) {
+        if (!shifted[index])
+            continue;
+        auto& clip = candidate.timelineClips[index];
+        if (clip.timelineStartFrame < shift) {
+            result.error = "リンクclipの移動先が範囲外です";
+            return result;
+        }
+        clip.timelineStartFrame -= shift;
     }
     const auto valid = validateTimeline(candidate);
     if (!valid.success) {

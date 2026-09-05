@@ -28,6 +28,8 @@ struct AudioQueueSnapshot {
     double highWatermarkMs = 0.0;
     std::uint64_t underflowCount = 0;
     std::uint64_t underflowSamples = 0;
+    // queue starvation とは別枠。sample address が int64 で表現できず consume を諦めた回数。
+    std::uint64_t sampleAddressOverflowCount = 0;
     std::uint64_t terminalEofSilenceCallbackCount = 0;
     std::uint64_t terminalEofSilenceSamples = 0;
     bool endOfStreamKnown = false;
@@ -75,6 +77,7 @@ public:
     bool markEndOfStream(SourceGeneration generation, std::int64_t endSampleExclusive);
     bool setGeneration(SourceGeneration generation);
     void noteUnderflow(std::int64_t samples);
+    void noteSampleAddressOverflow();
     void stop();
     void restart();
     AudioQueueSnapshot snapshot() const;

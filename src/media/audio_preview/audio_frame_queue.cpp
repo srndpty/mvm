@@ -208,6 +208,11 @@ void AudioFrameQueue::noteUnderflow(std::int64_t samples) {
     metrics_.underflowSamples += static_cast<std::uint64_t>(samples);
 }
 
+void AudioFrameQueue::noteSampleAddressOverflow() {
+    std::lock_guard lock(mutex_);
+    ++metrics_.sampleAddressOverflowCount;
+}
+
 void AudioFrameQueue::stop() {
     std::lock_guard lock(mutex_);
     stopped_ = true;

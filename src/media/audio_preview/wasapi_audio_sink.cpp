@@ -503,7 +503,8 @@ AudioConsumeResult WasapiAudioSink::consumeMixed(std::int64_t requestedSampleSta
         std::fill_n(input.scratch.begin(), valueCount, 0.0F);
         std::int64_t requested = 0;
         if (!core::checkedAdd(requestedSampleStart, input.sampleOffsetDelta, requested)) {
-            input.queue->noteUnderflow(samples);
+            // starvation ではなく arithmetic domain error。provenance を混ぜない。
+            input.queue->noteSampleAddressOverflow();
             continue;
         }
         const AudioConsumeResult mixed =

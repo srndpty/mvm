@@ -429,6 +429,46 @@ void testRippleDelete() {
           "拒否したripple削除でProjectが変化しました");
 }
 
+void testRippleDeleteWithLinkedClips() {
+    // linked pair を ripple すると counterpart も同じ shift で動く。
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    auto video = clip("linked-video");
+    video.timelineStartFrame = 100;
+    auto audio = clip("linked-audio", mvm::project::TimelineClipKind::Audio, kA1);
+    audio.timelineStartFrame = 100;
+    video.linkGroupId = "ripple-link";
+    audio.linkGroupId = "ripple-link";
+    project.timelineClips = {video, audio};
+    check(mvm::project::validateTimeline(project).success, "linked ripple用のtimelineが不正です");
+
+    const auto rippled = mvm::project::rippleDeleteGap(project, kV1, 50);
+    check(rippled.success && project.timelineClips[0].timelineStartFrame == 0 &&
+              project.timelineClips[1].timelineStartFrame == 0,
+          "ripple削除でlinked counterpartが同期しません");
+
+    // counterpart 側が衝突するなら ripple 全体を失敗させる (fail-closed)。
+    mvm::project::Project blocked = mvm::project::createDefaultProject();
+    auto blocker = clip("audio-blocker", mvm::project::TimelineClipKind::Audio, kA1);
+    blocker.sourceOutFrame = 60;
+    blocker.timelineStartFrame = 0;
+    blocked.timelineClips = {video, audio, blocker};
+    check(mvm::project::validateTimeline(blocked).success, "衝突テスト用のtimelineが不正です");
+    const auto beforeBlocked = blocked.timelineClips;
+    check(!mvm::project::rippleDeleteGap(blocked, kV1, 50).success &&
+              blocked.timelineClips == beforeBlocked,
+          "counterpartが衝突するripple削除で片側だけを動かしました");
+
+    // unlink 後は対象 track だけを詰める。
+    mvm::project::Project unlinked = mvm::project::createDefaultProject();
+    unlinked.timelineClips = {video, audio};
+    check(mvm::project::unlinkTimelineClip(unlinked, video.id).success,
+          "ripple前のリンク解除に失敗しました");
+    check(mvm::project::rippleDeleteGap(unlinked, kV1, 50).success &&
+              unlinked.timelineClips[0].timelineStartFrame == 0 &&
+              unlinked.timelineClips[1].timelineStartFrame == 100,
+          "unlink後のripple削除が他trackのclipまで動かしました");
+}
+
 void testValidationFailures() {
     auto duplicate = threeClips();
     duplicate.timelineClips[1].id = duplicate.timelineClips[0].id;
@@ -694,6 +734,7 @@ int main(int argc, char** argv) {
     testTrackEditing();
     testAudioClipPlacement();
     testRippleDelete();
+    testRippleDeleteWithLinkedClips();
     testValidationFailures();
     testDeleteSelection();
     testLinkedClipEditing();
