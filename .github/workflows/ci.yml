@@ -80,6 +80,7 @@ jobs:
             mingw-w64-ucrt-x86_64-rnnoise
             mingw-w64-ucrt-x86_64-gtest
             mingw-w64-ucrt-x86_64-libpng
+            mingw-w64-ucrt-x86_64-ccache
 
       - name: MLT ランタイムの健全性を確認
         run: |
@@ -103,14 +104,50 @@ jobs:
         shell: pwsh
         run: pwsh scripts/make-testmedia.ps1 -Mode Smoke -Ucrt64 '${{ steps.msys2.outputs.msys2-location }}\ucrt64'
 
+      # ビルドする job だけ ccache を使う。テストが失敗してもキャッシュは保存したいので、
+      # actions/cache ではなく restore / save を分けて使う。
+      - name: ccache を復元
+        if: matrix.group == 'BuildDependent'
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-${{ matrix.preset }}-${{ github.sha }}
+          restore-keys: ccache-${{ matrix.preset }}-
+
       - name: ビルドとテスト
         shell: pwsh
         # GitHub hosted runner には Meiryo と D3D11VA hardware device が無い。
         # portable suite の件数と結果を検査し、workstation test は開発機で実行する。
         run: |
+          $ucrt64 = '${{ steps.msys2.outputs.msys2-location }}\ucrt64'
+          if ('${{ matrix.group }}' -eq 'BuildDependent') {
+            # CMake は初回 configure 時にこの環境変数を compiler launcher として読む。
+            $env:CMAKE_C_COMPILER_LAUNCHER = "$ucrt64\bin\ccache.exe"
+            $env:CMAKE_CXX_COMPILER_LAUNCHER = "$ucrt64\bin\ccache.exe"
+            $env:CCACHE_DIR = '${{ runner.temp }}\ccache'
+            # setup-msys2 は毎回 gcc を入れ直すため、既定の mtime 比較では常に外れる。
+            $env:CCACHE_COMPILERCHECK = 'content'
+            $env:CCACHE_MAXSIZE = '1G'
+            & "$ucrt64\bin\ccache.exe" --zero-stats | Out-Null
+          }
           $testArgs = @('-Preset', '${{ matrix.preset }}', '-Group', '${{ matrix.group }}')
           if ('${{ matrix.shard }}') { $testArgs += @('-Shard', '${{ matrix.shard }}') }
-          pwsh scripts/test.ps1 -Portable @testArgs -Ucrt64 '${{ steps.msys2.outputs.msys2-location }}\ucrt64'
+          pwsh scripts/test.ps1 -Portable @testArgs -Ucrt64 $ucrt64
+
+      # ヒット率を毎回ログに残す。0% が続くならキャッシュが効いていない。
+      - name: ccache の統計
+        if: always() && matrix.group == 'BuildDependent'
+        shell: pwsh
+        run: |
+          $env:CCACHE_DIR = '${{ runner.temp }}\ccache'
+          & '${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin\ccache.exe' --show-stats
+
+      - name: ccache を保存
+        if: always() && matrix.group == 'BuildDependent'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-${{ matrix.preset }}-${{ github.sha }}
 
       - name: 失敗時の診断情報
         if: failure()
