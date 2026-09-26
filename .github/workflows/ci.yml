@@ -21,8 +21,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # 通常テストの大半 (約 1070 件) は契約・checker スクリプトの検査で、
+  # release / debug で結果が変わらない (scripts/test.ps1 の -Group を参照)。
+  # 1 job で release と debug を順に回すと約 50 分かかるため、
+  #   - release / debug: ビルドしてビルド種別依存のテストだけを実行
+  #   - scripts k/n    : configure だけ行い、非依存テストを n 分割して実行
+  # に分けて並列に走らせる。
   build-and-test:
+    name: build-and-test (${{ matrix.name }})
     runs-on: windows-latest
+    strategy:
+      # 1 つの失敗で他を止めると、どこが壊れたかが分からなくなる。
+      fail-fast: false
+      matrix:
+        include:
+          - { name: release,     preset: ucrt64-release, group: BuildDependent,   lint: true }
+          - { name: debug,       preset: ucrt64-debug,   group: BuildDependent }
+          - { name: scripts 1/3, preset: ucrt64-release, group: BuildIndependent, shard: 1/3 }
+          - { name: scripts 2/3, preset: ucrt64-release, group: BuildIndependent, shard: 2/3 }
+          - { name: scripts 3/3, preset: ucrt64-release, group: BuildIndependent, shard: 3/3 }
     defaults:
       run:
         shell: msys2 {0}
@@ -73,13 +90,16 @@ jobs:
           pkgconf --modversion mlt-framework-7
 
       - name: 整形とアーキテクチャ検査
+        if: matrix.lint
         shell: pwsh
         run: |
           $analyzerVersion = (Get-Content scripts/PSScriptAnalyzer.version -Raw).Trim()
           Install-Module PSScriptAnalyzer -RequiredVersion $analyzerVersion -Scope CurrentUser -Force
           pwsh scripts/lint.ps1 -Ucrt64 '${{ steps.msys2.outputs.msys2-location }}\ucrt64'
 
+      # 非依存テストは素材を参照しないので、scripts job では生成しない。
       - name: 検証素材を生成 (Smoke)
+        if: matrix.group == 'BuildDependent'
         shell: pwsh
         run: pwsh scripts/make-testmedia.ps1 -Mode Smoke -Ucrt64 '${{ steps.msys2.outputs.msys2-location }}\ucrt64'
 
@@ -87,7 +107,10 @@ jobs:
         shell: pwsh
         # GitHub hosted runner には Meiryo と D3D11VA hardware device が無い。
         # portable suite の件数と結果を検査し、workstation test は開発機で実行する。
-        run: pwsh scripts/test.ps1 -Portable -Ucrt64 '${{ steps.msys2.outputs.msys2-location }}\ucrt64'
+        run: |
+          $testArgs = @('-Preset', '${{ matrix.preset }}', '-Group', '${{ matrix.group }}')
+          if ('${{ matrix.shard }}') { $testArgs += @('-Shard', '${{ matrix.shard }}') }
+          pwsh scripts/test.ps1 -Portable @testArgs -Ucrt64 '${{ steps.msys2.outputs.msys2-location }}\ucrt64'
 
       - name: 失敗時の診断情報
         if: failure()
