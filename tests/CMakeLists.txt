@@ -107,6 +107,24 @@ add_test(NAME m7b_4_timeline_ui_architecture
             ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-m7b4-timeline-ui-architecture.ps1)
 set_tests_properties(m7b_4_timeline_ui_architecture PROPERTIES TIMEOUT 120)
 
+qt_add_executable(mvm_test_controller_export
+    harness/test_mvm_controller_export.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/timeline_clip_model.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/track_model.cpp)
+target_include_directories(mvm_test_controller_export PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_test_controller_export PRIVATE
+    mvm::core mvm::project mvm::manim_clip_workflow
+    mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
+    mvm::mlt mvm::preview_engine mvm::preview_qt
+    Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 mvm::warnings)
+target_compile_definitions(mvm_test_controller_export PRIVATE ${MVM_MLT_PATH_DEFS})
+add_test(NAME m7b_4_controller_export_lifecycle
+    COMMAND mvm_test_controller_export ${CMAKE_BINARY_DIR}/tests/controller-export)
+set_tests_properties(m7b_4_controller_export_lifecycle PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+
 # preview source 差し替えの失敗時 transaction 契約。engine と GPU device を要求する
 # ため controller を駆動する unit test は書けないので、順序と rollback 到達性を
 # source 上で固定する。

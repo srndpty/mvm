@@ -2,12 +2,14 @@
 #define MVM_APPS_MVM_MVM_CONTROLLER_H
 
 #include "preview_engine/preview_engine.h"
+#include "app/timeline_export.h"
 #include "project/project.h"
 
 #include <map>
 #include <memory>
 #include <optional>
 #include <atomic>
+#include <functional>
 #include <thread>
 #include <vector>
 
@@ -25,7 +27,6 @@ namespace mvm::app {
 class PreviewEngineRhiItem;
 class TimelineClipModel;
 class TrackModel;
-struct TimelineExportResult;
 
 class MvmController final : public QObject {
     Q_OBJECT
@@ -57,6 +58,7 @@ class MvmController final : public QObject {
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY stateChanged)
     Q_PROPERTY(bool canExport READ canExport NOTIFY stateChanged)
     Q_PROPERTY(bool exporting READ exporting NOTIFY stateChanged)
+    Q_PROPERTY(bool exportCancelling READ exportCancelling NOTIFY stateChanged)
     Q_PROPERTY(double exportProgress READ exportProgress NOTIFY stateChanged)
     Q_PROPERTY(QString exportProgressText READ exportProgressText NOTIFY stateChanged)
     Q_PROPERTY(int timelineFpsNum READ timelineFpsNum NOTIFY stateChanged)
@@ -84,11 +86,15 @@ class MvmController final : public QObject {
     Q_PROPERTY(qint64 effectFadeOut READ effectFadeOut NOTIFY stateChanged)
 
 public:
+    using ExportRunner = std::function<TimelineExportResult(
+        const project::Project&, const TimelineExportRequest&)>;
+    using ExportThreadFactory = std::function<std::thread(std::function<void()>)>;
     // meter の下限。linear 0 を -inf にすると QML 側で扱いにくいので床を決めておく。
     static constexpr double kMeterSilenceDb = -60.0;
 
     MvmController(std::filesystem::path projectPath, std::filesystem::path manimExecutablePath,
-                  project::Project project, QObject* parent = nullptr);
+                  project::Project project, QObject* parent = nullptr,
+                  ExportRunner exportRunner = {}, ExportThreadFactory exportThreadFactory = {});
     ~MvmController() override;
 
     void attachPreview(PreviewEngineRhiItem* surface);
@@ -145,6 +151,7 @@ public:
     bool canExport() const { return !project_.timelineClips.empty() && !busy_; }
 
     bool exporting() const { return exporting_; }
+    bool exportCancelling() const { return exportCancelling_; }
 
     double exportProgress() const { return exportProgress_; }
 
@@ -373,8 +380,11 @@ private:
     double audioMeterDbRight_ = kMeterSilenceDb;
     double masterVolume_ = 0.35;
     std::thread exportThread_;
+    ExportRunner exportRunner_;
+    ExportThreadFactory exportThreadFactory_;
     std::atomic<bool> exportCancelRequested_{false};
     bool exporting_ = false;
+    bool exportCancelling_ = false;
     double exportProgress_ = 0.0;
     QString exportProgressText_;
     bool busy_ = false;

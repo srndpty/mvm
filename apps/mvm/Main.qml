@@ -1352,9 +1352,9 @@ ApplicationWindow {
             }
             Button {
                 Layout.alignment: Qt.AlignHCenter
-                text: mvmController.exportProgressText === "キャンセルしています…"
+                text: mvmController.exportCancelling
                       ? "キャンセル中…" : "キャンセル"
-                enabled: mvmController.exportProgressText !== "キャンセルしています…"
+                enabled: !mvmController.exportCancelling
                 onClicked: mvmController.cancelTimelineExport()
             }
         }

@@ -158,8 +158,9 @@ foreach ($needle in @('project::timelineClipIndexAt(project_, current.track, cla
         throw "audio/video選択同期またはUndoの契約がありません: $needle"
     }
 }
-foreach ($needle in @('exportThread_ = std::thread(',
+foreach ($needle in @('exportThread_ = exportThreadFactory_(',
                       'exportCancelRequested_.store(true, std::memory_order_release)',
+                      'exportCancelling_ = true;',
                       'finishTimelineExport(std::move(exported))',
                       'Qt::QueuedConnection')) {
     if (-not $controller.Contains($needle)) {

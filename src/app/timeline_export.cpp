@@ -260,10 +260,10 @@ TimelineExportResult exportTimeline(const project::Project& project,
             : mvm_mlt_export_two_track(clips.data(), static_cast<int>(clips.size()),
                                        plan.totalDurationFrames, &spec, temporaryUtf8.c_str(),
                                        &exported, error, sizeof(error));
-    if (exportStatus != 0) {
+    if (exportStatus != MVM_EXPORT_OK) {
         std::filesystem::remove(temporaryPath, pathError);
         result.error = error[0] ? error : "書き出しに失敗しました";
-        result.cancelled = result.error == "書き出しをキャンセルしました";
+        result.cancelled = exportStatus == MVM_EXPORT_CANCELLED;
         return result;
     }
 

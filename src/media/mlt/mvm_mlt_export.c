@@ -252,6 +252,7 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
     mlt_consumer consumer = NULL;
     mlt_producer pp = NULL;
     long long total = 0;
+    int cancelled = 0;
 
     if (!mvm_mlt_runtime_is_ready()) {
         set_err(err, err_size, "MLT が初期化されていません");
@@ -472,6 +473,7 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
         const int step = 20;
         while (!mlt_consumer_is_stopped(consumer)) {
             if (export_cancel_requested(spec, consumer, total)) {
+                cancelled = 1;
                 mlt_consumer_stop(consumer);
                 set_err(err, err_size, "書き出しをキャンセルしました");
                 goto fail;
@@ -487,6 +489,7 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
         }
         if (spec->progress_callback &&
             spec->progress_callback(total, total, spec->progress_opaque) != 0) {
+            cancelled = 1;
             mlt_consumer_stop(consumer);
             set_err(err, err_size, "書き出しをキャンセルしました");
             goto fail;
@@ -554,7 +557,7 @@ fail:
         mlt_playlist_close(playlist);
     if (profile)
         mlt_profile_close(profile);
-    return 1;
+    return cancelled ? MVM_EXPORT_CANCELLED : MVM_EXPORT_FAILED;
 }
 
 int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long long total_duration,
@@ -569,7 +572,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     int cut_count = 0;
     mlt_consumer consumer = NULL;
     long long cursors[2] = {0, 0};
-    int failed = 1;
+    int failed = MVM_EXPORT_FAILED;
 
     if (out)
         memset(out, 0, sizeof(*out));
@@ -784,6 +787,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
         int waited = 0;
         while (!mlt_consumer_is_stopped(consumer)) {
             if (export_cancel_requested(spec, consumer, total_duration)) {
+                failed = MVM_EXPORT_CANCELLED;
                 mlt_consumer_stop(consumer);
                 set_err(err, err_size, "書き出しをキャンセルしました");
                 goto cleanup;
@@ -797,6 +801,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
         }
         if (spec->progress_callback &&
             spec->progress_callback(total_duration, total_duration, spec->progress_opaque) != 0) {
+            failed = MVM_EXPORT_CANCELLED;
             mlt_consumer_stop(consumer);
             set_err(err, err_size, "書き出しをキャンセルしました");
             goto cleanup;
@@ -825,7 +830,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             out->opaque_black_affine_filter_count = 0;
         }
     }
-    failed = 0;
+    failed = MVM_EXPORT_OK;
 
 cleanup:
     if (consumer) {

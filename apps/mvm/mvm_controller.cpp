@@ -185,14 +185,20 @@ double linearToDb(float linear, double silenceDb) {
 
 MvmController::MvmController(std::filesystem::path projectPath,
                              std::filesystem::path manimExecutablePath, project::Project project,
-                             QObject* parent)
+                             QObject* parent, ExportRunner exportRunner,
+                             ExportThreadFactory exportThreadFactory)
     : QObject(parent), projectPath_(std::move(projectPath)),
       manimExecutablePath_(std::move(manimExecutablePath)), project_(std::move(project)),
       previewEngine_(std::make_shared<preview::PreviewEngine>()),
       dispatcher_(std::make_shared<QtEventDispatcher>(this)),
       timelineModel_(std::make_unique<TimelineClipModel>()),
       videoTrackModel_(std::make_unique<TrackModel>(project::TrackKind::Video)),
-      audioTrackModel_(std::make_unique<TrackModel>(project::TrackKind::Audio)) {
+      audioTrackModel_(std::make_unique<TrackModel>(project::TrackKind::Audio)),
+      exportRunner_(exportRunner ? std::move(exportRunner) : mvm::app::exportTimeline),
+      exportThreadFactory_(exportThreadFactory ? std::move(exportThreadFactory)
+                                               : [](std::function<void()> task) {
+                                                     return std::thread(std::move(task));
+                                                 }) {
     refreshTimelineModel();
     initializePreviewEngine(QStringLiteral("Preview初期化に失敗しました: "));
     restoreFirstManimClip();
@@ -384,8 +390,17 @@ bool MvmController::resetPreviewEngine() {
     const auto previous = previewEngine_;
     previewEngine_ = replacement;
     if (!initializePreviewEngine(QStringLiteral("Preview再初期化に失敗しました: "))) {
+        replacement->requestShutdown();
         previewEngine_ = previous;
         Q_EMIT stateChanged();
+        return false;
+    }
+    const auto shutdown = previous->requestShutdown();
+    if (!shutdown) {
+        replacement->requestShutdown();
+        previewEngine_ = previous;
+        setStatus(QStringLiteral("Preview再初期化前の終了に失敗しました: ") +
+                  previewErrorText(shutdown.error()));
         return false;
     }
 
@@ -2183,6 +2198,7 @@ bool MvmController::exportTimeline(const QUrl& outputUrl) {
         exportThread_.join();
     exportCancelRequested_.store(false, std::memory_order_release);
     exporting_ = true;
+    exportCancelling_ = false;
     exportProgress_ = 0.0;
     exportProgressText_ = QStringLiteral("準備しています…");
     busy_ = true;
@@ -2197,7 +2213,8 @@ bool MvmController::exportTimeline(const QUrl& outputUrl) {
             QMetaObject::invokeMethod(
                 this,
                 [this, completed, total] {
-                    if (!exporting_ || total <= 0)
+                    if (!exporting_ || exportCancelling_ ||
+                        exportCancelRequested_.load(std::memory_order_acquire) || total <= 0)
                         return;
                     exportProgress_ = std::clamp(static_cast<double>(completed) /
                                                      static_cast<double>(total),
@@ -2214,17 +2231,20 @@ bool MvmController::exportTimeline(const QUrl& outputUrl) {
 
     const project::Project exportProject = project_;
     try {
-        exportThread_ = std::thread([this, exportProject, request = std::move(request)]() mutable {
-            TimelineExportResult exported = mvm::app::exportTimeline(exportProject, request);
+        exportThread_ = exportThreadFactory_([this, exportProject, request = std::move(request)]() mutable {
+            TimelineExportResult exported = exportRunner_(exportProject, request);
             QMetaObject::invokeMethod(
                 this,
                 [this, exported = std::move(exported)]() mutable {
+                    if (shutdownStarted_)
+                        return;
                     finishTimelineExport(std::move(exported));
                 },
                 Qt::QueuedConnection);
         });
     } catch (const std::system_error& error) {
         exporting_ = false;
+        exportCancelling_ = false;
         busy_ = false;
         setStatus(QStringLiteral("書き出しworkerを開始できません: ") +
                   QString::fromLocal8Bit(error.what()));
@@ -2234,9 +2254,10 @@ bool MvmController::exportTimeline(const QUrl& outputUrl) {
 }
 
 void MvmController::cancelTimelineExport() {
-    if (!exporting_)
+    if (!exporting_ || exportCancelling_)
         return;
     exportCancelRequested_.store(true, std::memory_order_release);
+    exportCancelling_ = true;
     exportProgressText_ = QStringLiteral("キャンセルしています…");
     setStatus(exportProgressText_);
 }
@@ -2245,6 +2266,7 @@ void MvmController::finishTimelineExport(TimelineExportResult exported) {
     if (exportThread_.joinable())
         exportThread_.join();
     exporting_ = false;
+    exportCancelling_ = false;
     busy_ = false;
     if (!exported.success) {
         if (exported.cancelled)
@@ -2342,6 +2364,8 @@ void MvmController::shutdown() {
     if (exportThread_.joinable())
         exportThread_.join();
     exporting_ = false;
+    exportCancelling_ = false;
+    busy_ = false;
     playbackTimer_.stop();
     scrubTimer_.stop();
     meterTimer_.stop();
