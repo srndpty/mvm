@@ -45,6 +45,8 @@ QVariant TimelineClipModel::data(const QModelIndex& index, int role) const {
         return item.linked;
     case LinkGroupIdRole:
         return item.linkGroupId;
+    case SelectedRole:
+        return item.selected;
     default:
         return {};
     }
@@ -65,7 +67,8 @@ QHash<int, QByteArray> TimelineClipModel::roleNames() const {
             {TrackKindRole, "trackKind"},
             {TrackIndexRole, "trackIndex"},
             {LinkedRole, "linked"},
-            {LinkGroupIdRole, "linkGroupId"}};
+            {LinkGroupIdRole, "linkGroupId"},
+            {SelectedRole, "selected"}};
 }
 
 void TimelineClipModel::setProject(const project::Project& project) {
@@ -82,9 +85,23 @@ void TimelineClipModel::setProject(const project::Project& project) {
                        duration.success,
                        QString::fromLatin1(project::trackKindName(clip.track.kind)),
                        clip.track.index, !clip.linkGroupId.empty(),
-                       QString::fromStdString(clip.linkGroupId)});
+                       QString::fromStdString(clip.linkGroupId), false});
     }
     endResetModel();
+}
+
+void TimelineClipModel::setSelectedClipIds(const QSet<QString>& clipIds) {
+    if (items_.isEmpty())
+        return;
+    bool changed = false;
+    for (auto& item : items_) {
+        const bool selected = clipIds.contains(item.id);
+        changed = changed || item.selected != selected;
+        item.selected = selected;
+    }
+    if (changed)
+        Q_EMIT dataChanged(index(0, 0), index(static_cast<int>(items_.size()) - 1, 0),
+                           {SelectedRole});
 }
 
 } // namespace mvm::app

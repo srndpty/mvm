@@ -3,6 +3,7 @@
 #include <cstdio>
 
 #include <QCoreApplication>
+#include <QSet>
 
 namespace {
 
@@ -73,6 +74,12 @@ int main(int argc, char** argv) {
         check(linkGroup == (row == 1 ? QStringLiteral("link") : QString()),
               "drag preview用link groupをmodel roleへ公開できません");
     }
+
+    model.setSelectedClipIds(QSet<QString>{QStringLiteral("late-v1"), QStringLiteral("early-v1")});
+    check(model.data(model.index(0, 0), mvm::app::TimelineClipModel::SelectedRole).toBool() &&
+              !model.data(model.index(1, 0), mvm::app::TimelineClipModel::SelectedRole).toBool() &&
+              model.data(model.index(2, 0), mvm::app::TimelineClipModel::SelectedRole).toBool(),
+          "矩形選択した複数clipをmodel roleへ公開できません");
 
     if (failures != 0)
         return 1;

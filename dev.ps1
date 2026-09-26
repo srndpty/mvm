@@ -8,6 +8,7 @@
 
 .EXAMPLE
     .\dev.ps1 build
+    .\dev.ps1 run
     .\dev.ps1 gui
     .\dev.ps1 test
     .\dev.ps1 lint
@@ -30,6 +31,7 @@ Set-StrictMode -Version Latest
 $repoRoot = $PSScriptRoot
 $scriptsDirectory = Join-Path $repoRoot 'scripts'
 $releaseBuildDirectory = Join-Path $repoRoot 'build\ucrt64-release'
+$debugBuildDirectory = Join-Path $repoRoot 'build\ucrt64-debug'
 
 function Show-DevHelp {
     Write-Output @'
@@ -37,6 +39,7 @@ function Show-DevHelp {
 
 利用可能なコマンド:
   build  通常の release ビルドを実行する
+  run    debug の mvm だけを増分ビルドして GUI を起動する
   gui    release ビルド済みの mvm GUI を起動する
   test   release/debug の通常テストを実行する
   lint   整形差分・静的検査・アーキテクチャ検査を実行する
@@ -44,7 +47,7 @@ function Show-DevHelp {
 
 共通オプション:
   -Ucrt64 <path>            MSYS2 UCRT64 のルート
-  -ManimExecutable <path>   gui で使用する manim.exe
+  -ManimExecutable <path>   run / gui で使用する manim.exe
 
 各コマンドは既存の正式スクリプトまたは起動手順へ処理を委譲します。
 '@
@@ -59,9 +62,53 @@ function Invoke-CanonicalScript {
     exit $LASTEXITCODE
 }
 
+function Start-MvmGui {
+    param(
+        [Parameter(Mandatory)][string]$BuildDirectory,
+        [Parameter(Mandatory)][string]$MissingBuildHint
+    )
+
+    $ucrt64Bin = Join-Path $Ucrt64 'bin'
+    $executable = Join-Path $BuildDirectory 'bin\mvm.exe'
+    $projectDirectory = Join-Path $BuildDirectory 'm6a-gui'
+    $projectPath = Join-Path $projectDirectory 'project.mvm'
+
+    if (-not (Test-Path -LiteralPath $ucrt64Bin -PathType Container)) {
+        throw "UCRT64 の bin ディレクトリが見つかりません: $ucrt64Bin"
+    }
+    if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+        throw "mvm GUI が見つかりません: $executable`n$MissingBuildHint"
+    }
+    if (-not (Test-Path -LiteralPath $ManimExecutable -PathType Leaf)) {
+        throw "manim.exe が見つかりません: $ManimExecutable"
+    }
+
+    New-Item -ItemType Directory -Path $projectDirectory -Force | Out-Null
+    $env:PATH = "$ucrt64Bin;$env:PATH"
+
+    Push-Location $repoRoot
+    try {
+        & $executable --project $projectPath --manim-executable $ManimExecutable
+        exit $LASTEXITCODE
+    }
+    finally {
+        Pop-Location
+    }
+}
+
 switch ($Command.ToLowerInvariant()) {
     'build' {
         Invoke-CanonicalScript -Name 'build.ps1'
+    }
+    'run' {
+        $buildScript = Join-Path $scriptsDirectory 'build.ps1'
+        $pwsh = (Get-Process -Id $PID).Path
+        & $pwsh -NoProfile -File $buildScript -Preset ucrt64-debug -Target mvm -Ucrt64 $Ucrt64
+        if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+        }
+        Start-MvmGui -BuildDirectory $debugBuildDirectory `
+            -MissingBuildHint '.\dev.ps1 run を再実行してください。'
     }
     'test' {
         Invoke-CanonicalScript -Name 'test.ps1'
@@ -70,32 +117,8 @@ switch ($Command.ToLowerInvariant()) {
         Invoke-CanonicalScript -Name 'lint.ps1'
     }
     'gui' {
-        $ucrt64Bin = Join-Path $Ucrt64 'bin'
-        $executable = Join-Path $releaseBuildDirectory 'bin\mvm.exe'
-        $projectDirectory = Join-Path $releaseBuildDirectory 'm6a-gui'
-        $projectPath = Join-Path $projectDirectory 'project.mvm'
-
-        if (-not (Test-Path -LiteralPath $ucrt64Bin -PathType Container)) {
-            throw "UCRT64 の bin ディレクトリが見つかりません: $ucrt64Bin"
-        }
-        if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
-            throw "mvm GUI が見つかりません: $executable`n先に .\dev.ps1 build を実行してください。"
-        }
-        if (-not (Test-Path -LiteralPath $ManimExecutable -PathType Leaf)) {
-            throw "manim.exe が見つかりません: $ManimExecutable"
-        }
-
-        New-Item -ItemType Directory -Path $projectDirectory -Force | Out-Null
-        $env:PATH = "$ucrt64Bin;$env:PATH"
-
-        Push-Location $repoRoot
-        try {
-            & $executable --project $projectPath --manim-executable $ManimExecutable
-            exit $LASTEXITCODE
-        }
-        finally {
-            Pop-Location
-        }
+        Start-MvmGui -BuildDirectory $releaseBuildDirectory `
+            -MissingBuildHint '先に .\dev.ps1 build を実行してください。'
     }
     'help' {
         Show-DevHelp

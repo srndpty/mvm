@@ -93,13 +93,19 @@ UCRT64 の gcc は依存 DLL を PATH から解決するため、これが無い
 
 ```powershell
 .\dev.ps1 build   # scripts/build.ps1
+.\dev.ps1 run     # debug の mvm だけを増分ビルドして起動
 .\dev.ps1 gui     # release ビルド済みの mvm GUI
 .\dev.ps1 test    # scripts/test.ps1（release/debug の通常 CTest）
 .\dev.ps1 lint    # scripts/lint.ps1
 .\dev.ps1 help
 ```
 
-`gui` は既定で `build/ucrt64-release/m6a-gui/project.mvm` を開き、
+`run` は `ucrt64-debug` の製品 GUI ターゲットだけを増分ビルドし、
+`build/ucrt64-debug/m6a-gui/project.mvm` を開く。ブレークポイントや Debug 用の検査を伴う
+日常の実装確認にはこちらを使う。初回だけは Debug 用依存のビルドが必要になる。
+
+`build` / `gui` の release は `RelWithDebInfo` であり、最適化を有効にした通常確認や
+性能確認に使う。`gui` は既定で `build/ucrt64-release/m6a-gui/project.mvm` を開き、
 ユーザープロファイル下の `.local/bin/manim.exe` を使用する。場所が異なる場合は
 `-Ucrt64` または `-ManimExecutable` で明示する。
 
