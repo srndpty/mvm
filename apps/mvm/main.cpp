@@ -2,6 +2,7 @@
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "mvm_controller.h"
 #include "project/project_json.h"
+#include "timeline_space_move_state.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -36,13 +37,27 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override {
         if (watched != window_)
             return QObject::eventFilter(watched, event);
+        if (event->type() == QEvent::WindowDeactivate) {
+            if (spaceMoveState_.deactivate() && root_)
+                root_->setProperty("spaceMoveToolActive", false);
+            return QObject::eventFilter(watched, event);
+        }
         if ((event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease) && root_) {
             const auto* key = static_cast<QKeyEvent*>(event);
-            if (key->key() == Qt::Key_Space && key->modifiers() == Qt::NoModifier) {
-                if (!key->isAutoRepeat())
-                    root_->setProperty("spaceMoveToolActive", event->type() == QEvent::KeyPress);
+            const auto result = spaceMoveState_.handleKey(
+                event->type(), key->key(), key->modifiers(), key->isAutoRepeat(),
+                timelinePanel_ && timelinePanel_->property("pointerInside").toBool(),
+                mvm::app::acceptsTextInput(QGuiApplication::focusObject()));
+            if (result == mvm::app::TimelineSpaceMoveState::Result::Activate) {
+                root_->setProperty("spaceMoveToolActive", true);
                 return true;
             }
+            if (result == mvm::app::TimelineSpaceMoveState::Result::Deactivate) {
+                root_->setProperty("spaceMoveToolActive", false);
+                return true;
+            }
+            if (result == mvm::app::TimelineSpaceMoveState::Result::Consume)
+                return true;
         }
         if (event->type() != QEvent::Wheel || !timelinePanel_)
             return QObject::eventFilter(watched, event);
@@ -94,6 +109,7 @@ private:
     QQuickWindow* window_ = nullptr;
     QQuickItem* timelinePanel_ = nullptr;
     QObject* root_ = nullptr;
+    mvm::app::TimelineSpaceMoveState spaceMoveState_;
 };
 
 void usage() {

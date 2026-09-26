@@ -1434,7 +1434,7 @@ bool MvmController::selectTimelineClips(const QStringList& clipIds) {
         return true;
     }
     setCurrentClipSelection(indexOfClipId(project_.timelineClips, selectedIds.front()));
-    setStatus(QString::number(selectedIds.size()) + QStringLiteral("個のclipを選択しました"));
+    setStatus(QString::number(selectedClipIds_.size()) + QStringLiteral("個のclipを選択しました"));
     return true;
 }
 

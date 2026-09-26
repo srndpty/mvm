@@ -67,7 +67,7 @@ $requiredShortcuts = @(
 )
 
 foreach ($needle in @('spaceMoveToolActive', 'Qt.OpenHandCursor', 'Qt.ClosedHandCursor',
-                      'id: rectangleSelectionArea')) {
+                      'id: rectangleSelectionArea', 'readonly property bool pointerInside:')) {
     if (-not $qml.Contains($needle)) {
         throw "矩形選択またはSpace move toolの契約がありません: $needle"
     }
@@ -86,6 +86,8 @@ foreach ($needle in $forbiddenQml) {
 
 if (-not $main.Contains('class TimelineWheelEventFilter final') -or
     -not $main.Contains('window->installEventFilter(&timelineWheelFilter)') -or
+    -not $main.Contains('timelinePanel_->property("pointerInside").toBool()') -or
+    -not $main.Contains('acceptsTextInput(QGuiApplication::focusObject())') -or
     -not $main.Contains('testFlag(Qt::AltModifier)') -or
     -not $main.Contains('testFlag(Qt::ControlModifier)') -or
     -not $main.Contains('testFlag(Qt::ShiftModifier)') -or
@@ -108,6 +110,9 @@ if (-not $qml.Contains('PreviewSurface {') -or
 
 if ($controller.Contains('recomputeTimelineStarts(candidate)')) {
     throw 'controller編集経路がrecomputeTimelineStartsに依存しています'
+}
+if (-not $controller.Contains('QString::number(selectedClipIds_.size())')) {
+    throw 'linked clip展開後の実選択数をstatusへ表示していません'
 }
 # preview の layer 構成は mapTimelinePreviewFrame に一本化する。
 if (-not $controller.Contains('mapTimelinePreviewFrame(project_, timelineFrame)')) {

@@ -76,6 +76,7 @@ std::filesystem::path fromUtf8(const char* text) {
 
 constexpr mvm::project::TrackRef kV1{mvm::project::TrackKind::Video, 0};
 constexpr mvm::project::TrackRef kV2{mvm::project::TrackKind::Video, 1};
+constexpr mvm::project::TrackRef kV3{mvm::project::TrackKind::Video, 2};
 constexpr mvm::project::TrackRef kA1{mvm::project::TrackKind::Audio, 0};
 
 mvm::project::TimelineClip
@@ -320,30 +321,122 @@ void testPlacementHelpers() {
 }
 
 void testMultipleClipMove() {
-    auto project = mvm::project::createDefaultProject();
-    auto first = clip("multi-first", mvm::project::TimelineClipKind::Video, kV1);
-    auto second = clip("multi-second", mvm::project::TimelineClipKind::Video, kV2);
-    first.timelineStartFrame = 100;
-    second.timelineStartFrame = 500;
-    project.timelineClips = {first, second};
+    {
+        auto project = mvm::project::createDefaultProject();
+        check(mvm::project::addTrack(project, mvm::project::TrackKind::Video).success,
+              "複数移動テスト用のV3を追加できません");
+        auto first = clip("multi-first", mvm::project::TimelineClipKind::Video, kV1);
+        auto second = clip("multi-second", mvm::project::TimelineClipKind::Video, kV2);
+        first.timelineStartFrame = 100;
+        second.timelineStartFrame = 500;
+        project.timelineClips = {first, second};
 
-    const auto moved = mvm::project::moveClips(project, {first.id, second.id}, first.id, kV1, 220);
-    check(moved.success && project.timelineClips[0].timelineStartFrame == 220 &&
-              project.timelineClips[1].timelineStartFrame == 620,
-          "複数clipへ同じ時間差を一括適用できません");
+        const auto moved =
+            mvm::project::moveClips(project, {first.id, second.id}, first.id, kV2, 220);
+        check(moved.success && project.timelineClips[0].track == kV2 &&
+                  project.timelineClips[1].track == kV3 &&
+                  project.timelineClips[0].timelineStartFrame == 220 &&
+                  project.timelineClips[1].timelineStartFrame == 620,
+              "複数clipを時間・track方向へ平行移動できません");
 
-    auto blocker = clip("multi-blocker", mvm::project::TimelineClipKind::Video, kV1);
-    blocker.timelineStartFrame = 600;
-    project.timelineClips.push_back(blocker);
-    const auto beforeFailure = project.timelineClips;
-    const auto rejected =
-        mvm::project::moveClips(project, {first.id, second.id}, first.id, kV1, 500);
-    check(!rejected.success && project.timelineClips == beforeFailure,
-          "複数移動の重なり拒否時にProjectの一部だけが変化しました");
+        auto blocker = clip("multi-blocker", mvm::project::TimelineClipKind::Video, kV2);
+        blocker.timelineStartFrame = 600;
+        project.timelineClips.push_back(blocker);
+        const auto beforeFailure = project.timelineClips;
+        const auto rejected =
+            mvm::project::moveClips(project, {first.id, second.id}, first.id, kV2, 500);
+        check(!rejected.success && project.timelineClips == beforeFailure,
+              "複数移動の重なり拒否時にProjectの一部だけが変化しました");
 
-    const auto missingAnchor = mvm::project::moveClips(project, {second.id}, first.id, kV1, 300);
-    check(!missingAnchor.success && project.timelineClips == beforeFailure,
-          "選択外anchorを使う複数移動を拒否しません");
+        const auto missingAnchor =
+            mvm::project::moveClips(project, {second.id}, first.id, kV1, 300);
+        check(!missingAnchor.success && project.timelineClips == beforeFailure,
+              "選択外anchorを使う複数移動を拒否しません");
+    }
+
+    {
+        auto project = mvm::project::createDefaultProject();
+        auto first = clip("track-limit-first", mvm::project::TimelineClipKind::Video, kV1);
+        auto second = clip("track-limit-second", mvm::project::TimelineClipKind::Video, kV2);
+        second.timelineStartFrame = 400;
+        project.timelineClips = {first, second};
+        const auto beforeFailure = project.timelineClips;
+        const auto rejected =
+            mvm::project::moveClips(project, {first.id, second.id}, first.id, kV2, 100);
+        check(!rejected.success && project.timelineClips == beforeFailure,
+              "V3が無い複数track移動を全体rejectしません");
+    }
+
+    {
+        auto project = mvm::project::createDefaultProject();
+        auto video = clip("mixed-video", mvm::project::TimelineClipKind::Video, kV1);
+        auto audio = clip("mixed-audio", mvm::project::TimelineClipKind::Audio, kA1);
+        video.timelineStartFrame = 100;
+        audio.timelineStartFrame = 500;
+        project.timelineClips = {video, audio};
+        const auto moved =
+            mvm::project::moveClips(project, {video.id, audio.id}, video.id, kV2, 200);
+        check(moved.success && project.timelineClips[0].track == kV2 &&
+                  project.timelineClips[1].track == kA1 &&
+                  project.timelineClips[0].timelineStartFrame == 200 &&
+                  project.timelineClips[1].timelineStartFrame == 600,
+              "video縦移動時にaudioのtrackを維持して時間だけ移動できません");
+    }
+
+    {
+        auto project = mvm::project::createDefaultProject();
+        auto video = clip("linked-video", mvm::project::TimelineClipKind::Video, kV1);
+        auto audio = clip("linked-audio", mvm::project::TimelineClipKind::Audio, kA1);
+        video.timelineStartFrame = 100;
+        audio.timelineStartFrame = 100;
+        video.linkGroupId = "move-link";
+        audio.linkGroupId = "move-link";
+        project.timelineClips = {video, audio};
+
+        const auto moved = mvm::project::moveClips(project, {video.id}, video.id, kV2, 250);
+        check(moved.success && project.timelineClips[0].timelineStartFrame == 250 &&
+                  project.timelineClips[1].timelineStartFrame == 250 &&
+                  project.timelineClips[0].track == kV2 && project.timelineClips[1].track == kA1,
+              "片方だけ指定したlinked clipを同じ時間差で移動できません");
+
+        const auto movedWithDuplicateExpansion =
+            mvm::project::moveClips(project, {video.id, audio.id}, video.id, kV1, 300);
+        check(movedWithDuplicateExpansion.success &&
+                  project.timelineClips[0].timelineStartFrame == 300 &&
+                  project.timelineClips[1].timelineStartFrame == 300,
+              "selectedとlinked展開が重なるclipを二重移動しました");
+    }
+
+    {
+        auto project = mvm::project::createDefaultProject();
+        auto anchor = clip("lower-bound-anchor", mvm::project::TimelineClipKind::Video, kV1);
+        auto leftmost = clip("lower-bound-left", mvm::project::TimelineClipKind::Video, kV2);
+        anchor.timelineStartFrame = 100;
+        leftmost.timelineStartFrame = 20;
+        project.timelineClips = {anchor, leftmost};
+        const auto beforeFailure = project.timelineClips;
+        const auto rejected =
+            mvm::project::moveClips(project, {anchor.id, leftmost.id}, anchor.id, kV1, 50);
+        check(!rejected.success && project.timelineClips == beforeFailure,
+              "最左clipが0を割る複数移動を全体rejectしません");
+    }
+
+    {
+        auto project = mvm::project::createDefaultProject();
+        auto video = clip("legacy-linked-video", mvm::project::TimelineClipKind::Video, kV1);
+        auto audio = clip("legacy-linked-audio", mvm::project::TimelineClipKind::Audio, kA1);
+        video.timelineStartFrame = 100;
+        audio.timelineStartFrame = 100;
+        video.linkGroupId = "legacy-link";
+        audio.linkGroupId = "legacy-link";
+        project.timelineClips = {video, audio};
+        const auto moved = mvm::project::moveClip(project, video.id, kV2, 180);
+        check(moved.success && project.timelineClips[0].track == kV2 &&
+                  project.timelineClips[1].track == kA1 &&
+                  project.timelineClips[0].timelineStartFrame == 180 &&
+                  project.timelineClips[1].timelineStartFrame == 180,
+              "旧moveClipのlinked clip移動挙動が変わりました");
+    }
 }
 
 // track を任意に増減できること。clip の載った track を暗黙に消さないこと。

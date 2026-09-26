@@ -476,6 +476,11 @@ ApplicationWindow {
             readonly property int audioCount: mvmController.audioTrackCount
             readonly property int rowCount: videoCount + audioCount
             readonly property real tracksHeight: rowCount * trackHeight
+            readonly property bool pointerInside: timelineHover.hovered
+
+            HoverHandler {
+                id: timelineHover
+            }
 
             // ルーラーの目盛り間隔。ズームに応じて 1/2/5/10/30/60 秒から選ぶ。
             readonly property int tickSeconds: {
