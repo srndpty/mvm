@@ -435,6 +435,25 @@ int main(int argc, char** argv) {
             });
             if (!observed) {
                 ++samplerAckTimeoutCount;
+                // ack timeoutは画面側 (前面window、DWM合成mode) の状態に左右され得る。
+                // 再発時に環境要因と切り分けられるよう、timeout時点の状態を残す。
+                {
+                    ComPtr<IDXGISwapChainMedia> media;
+                    DXGI_FRAME_STATISTICS_MEDIA mediaStats{};
+                    HRESULT mediaHr = E_NOINTERFACE;
+                    if (SUCCEEDED(swapChain.As(&media)))
+                        mediaHr = media->GetFrameStatisticsMedia(&mediaStats);
+                    std::fprintf(stderr,
+                                 "sampler ack timeout時の状態: present=%u observed=%lld foreground=%d "
+                                 "iconic=%d visible=%d media_hr=0x%08lX composition_mode=%d "
+                                 "media_present_count=%u\n",
+                                 presentId, lastObservedPresentId.load(),
+                                 GetForegroundWindow() == hwnd ? 1 : 0, IsIconic(hwnd) ? 1 : 0,
+                                 IsWindowVisible(hwnd) ? 1 : 0,
+                                 static_cast<unsigned long>(mediaHr),
+                                 static_cast<int>(mediaStats.CompositionMode),
+                                 mediaStats.PresentCount);
+                }
                 break;
             }
         }

@@ -5,6 +5,8 @@
 #include "app/timeline_export.h"
 #include "project/project.h"
 
+#include <chrono>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <optional>
@@ -89,12 +91,16 @@ public:
     using ExportRunner = std::function<TimelineExportResult(
         const project::Project&, const TimelineExportRequest&)>;
     using ExportThreadFactory = std::function<std::thread(std::function<void()>)>;
+    // 書き出し完了後に出力ファイルをExplorerで表示する。失敗時はfalseとerrorを返す。
+    using FileRevealer =
+        std::function<bool(const std::filesystem::path& path, QString& error)>;
     // meter の下限。linear 0 を -inf にすると QML 側で扱いにくいので床を決めておく。
     static constexpr double kMeterSilenceDb = -60.0;
 
     MvmController(std::filesystem::path projectPath, std::filesystem::path manimExecutablePath,
                   project::Project project, QObject* parent = nullptr,
-                  ExportRunner exportRunner = {}, ExportThreadFactory exportThreadFactory = {});
+                  ExportRunner exportRunner = {}, ExportThreadFactory exportThreadFactory = {},
+                  FileRevealer fileRevealer = {});
     ~MvmController() override;
 
     void attachPreview(PreviewEngineRhiItem* surface);
@@ -384,7 +390,11 @@ private:
     std::thread exportThread_;
     ExportRunner exportRunner_;
     ExportThreadFactory exportThreadFactory_;
+    FileRevealer fileRevealer_;
     std::atomic<bool> exportCancelRequested_{false};
+    // ETAの基準点。最初に届いた進捗で固定し、準備時間を速度から除外する。
+    long long exportBaselineFrame_ = -1;
+    std::chrono::steady_clock::time_point exportBaselineTime_{};
     bool exporting_ = false;
     bool exportCancelling_ = false;
     double exportProgress_ = 0.0;

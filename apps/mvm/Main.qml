@@ -68,7 +68,7 @@ ApplicationWindow {
 
         Label {
             anchors.centerIn: parent
-            text: "動画をドロップしてタイムラインへ追加"
+            text: "メディアファイルをドロップして検査・追加"
             color: "white"
             font.pixelSize: 20
             font.bold: true

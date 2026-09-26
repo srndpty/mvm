@@ -3311,7 +3311,12 @@ bool PreviewRenderPort::renderFrameDue(PreviewEngine& engine) {
     if (state != PreviewEngineState::Playing || !engine.impl_->schedulerEnabled)
         return false;
     const auto scheduled = engine.impl_->schedulerTargetLocked(std::chrono::steady_clock::now());
-    return scheduled.valid && scheduled.frame > engine.impl_->lastSchedulerTarget;
+    // masterが成立しない (audio clock停止、sink failure、QPC退避) ならrenderFrameへ回し、
+    // そこでfatalとして表面化させる。ここでfalseを返すとrenderが止まるだけでPlayingが
+    // 続き、fail-closedであるべき失敗が永久に報告されない。
+    if (!scheduled.valid)
+        return true;
+    return scheduled.frame > engine.impl_->lastSchedulerTarget;
 }
 
 Result<void> PreviewRenderPort::attachLogicalDevice(PreviewEngine& engine) {

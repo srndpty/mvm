@@ -78,6 +78,10 @@ bool mapExportEffects(const project::TimelineClip& clip, const TimelineExportReq
         else
             output.opacityKeys.push_back({localFrame, opacity});
     }
+    // 素材fpsがtimelineより低いと、最終素材frameは複数のtimeline frameに跨る。
+    // その区間はpreviewと同じく最終素材frameのopacityを保持し、端keyをclip末尾へ置く。
+    if (output.opacityKeys.back().localFrame < timelineDuration - 1)
+        output.opacityKeys.push_back({timelineDuration - 1, output.opacityKeys.back().opacity});
     return true;
 }
 

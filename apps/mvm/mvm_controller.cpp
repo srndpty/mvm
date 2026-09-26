@@ -7,12 +7,14 @@
 #include "app/timeline_playback.h"
 #include "app/timeline_preview_mapping.h"
 #include "core/checked_output_timebase.h"
+#include "core/export_eta.h"
 #include "media/mlt/mvm_mlt_probe.h"
 #include "project/clip_effects.h"
 #include "project/project_json.h"
 #include "project/timeline_edit.h"
 #include "timeline_clip_model.h"
 #include "track_model.h"
+#include "util/mvm_reveal_in_explorer.h"
 
 #include <algorithm>
 #include <cmath>
@@ -34,6 +36,14 @@ namespace {
 
 QString fromPath(const std::filesystem::path& path) {
     return QString::fromStdWString(path.wstring());
+}
+
+bool revealFileInExplorer(const std::filesystem::path& path, QString& error) {
+    char detail[512] = {};
+    if (mvm_reveal_in_explorer(path.c_str(), detail, sizeof(detail)) == 0)
+        return true;
+    error = QString::fromUtf8(detail);
+    return false;
 }
 
 QString previewErrorText(const preview::PreviewError& error) {
@@ -186,7 +196,7 @@ double linearToDb(float linear, double silenceDb) {
 MvmController::MvmController(std::filesystem::path projectPath,
                              std::filesystem::path manimExecutablePath, project::Project project,
                              QObject* parent, ExportRunner exportRunner,
-                             ExportThreadFactory exportThreadFactory)
+                             ExportThreadFactory exportThreadFactory, FileRevealer fileRevealer)
     : QObject(parent), projectPath_(std::move(projectPath)),
       manimExecutablePath_(std::move(manimExecutablePath)), project_(std::move(project)),
       previewEngine_(std::make_shared<preview::PreviewEngine>()),
@@ -198,7 +208,8 @@ MvmController::MvmController(std::filesystem::path projectPath,
       exportThreadFactory_(exportThreadFactory ? std::move(exportThreadFactory)
                                                : [](std::function<void()> task) {
                                                      return std::thread(std::move(task));
-                                                 }) {
+                                                 }),
+      fileRevealer_(fileRevealer ? std::move(fileRevealer) : revealFileInExplorer) {
     refreshTimelineModel();
     initializePreviewEngine(QStringLiteral("Preview初期化に失敗しました: "));
     restoreFirstManimClip();
@@ -2225,6 +2236,7 @@ bool MvmController::exportTimeline(const QUrl& outputUrl) {
     exportCancelling_ = false;
     exportProgress_ = 0.0;
     exportProgressText_ = QStringLiteral("準備しています…");
+    exportBaselineFrame_ = -1;
     busy_ = true;
     statusText_ = QStringLiteral("書き出しています…");
     Q_EMIT stateChanged();
@@ -2234,18 +2246,29 @@ bool MvmController::exportTimeline(const QUrl& outputUrl) {
         const bool cancelled = exportCancelRequested_.load(std::memory_order_acquire);
         const long long previous = lastReportedFrame->exchange(completed, std::memory_order_relaxed);
         if (completed != previous) {
+            // 観測時刻はworker側で取る。queued eventの配送遅延をETAへ混ぜない。
+            const auto observedAt = std::chrono::steady_clock::now();
             QMetaObject::invokeMethod(
                 this,
-                [this, completed, total] {
+                [this, completed, total, observedAt] {
                     if (!exporting_ || exportCancelling_ ||
                         exportCancelRequested_.load(std::memory_order_acquire) || total <= 0)
                         return;
+                    if (exportBaselineFrame_ < 0) {
+                        exportBaselineFrame_ = completed;
+                        exportBaselineTime_ = observedAt;
+                    }
                     exportProgress_ = std::clamp(static_cast<double>(completed) /
                                                      static_cast<double>(total),
                                                  0.0, 1.0);
+                    const auto remaining = core::estimateExportRemainingSeconds(
+                        exportBaselineFrame_, completed, total,
+                        std::chrono::duration<double>(observedAt - exportBaselineTime_).count());
                     exportProgressText_ =
                         QString::number(completed) + QStringLiteral(" / ") +
-                        QString::number(total) + QStringLiteral(" frame");
+                        QString::number(total) + QStringLiteral(" frame ・ ") +
+                        (remaining ? QString::fromStdString(core::formatExportRemaining(*remaining))
+                                   : QStringLiteral("残り時間を計算中…"));
                     Q_EMIT stateChanged();
                 },
                 Qt::QueuedConnection);
@@ -2302,10 +2325,15 @@ void MvmController::finishTimelineExport(TimelineExportResult exported) {
     }
     exportProgress_ = 1.0;
     exportProgressText_ = QStringLiteral("完了");
-    setStatus(QStringLiteral("書き出しました: ") + fromPath(exported.outputPath) +
-              QStringLiteral(" (") + QString::number(exported.frameCount) +
-              QStringLiteral(" frame / ") + QString::number(exported.durationSec, 'f', 2) +
-              QStringLiteral(" 秒)"));
+    QString status = QStringLiteral("書き出しました: ") + fromPath(exported.outputPath) +
+                     QStringLiteral(" (") + QString::number(exported.frameCount) +
+                     QStringLiteral(" frame / ") + QString::number(exported.durationSec, 'f', 2) +
+                     QStringLiteral(" 秒)");
+    // Explorer表示の失敗は書き出しの失敗ではない。成功は保ったまま理由を併記する。
+    QString revealError;
+    if (!fileRevealer_(exported.outputPath, revealError))
+        status += QStringLiteral(" / Explorerで表示できません: ") + revealError;
+    setStatus(status);
 }
 
 bool MvmController::setEffectValue(const QString& key, double value, bool commit) {

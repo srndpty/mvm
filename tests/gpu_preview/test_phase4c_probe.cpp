@@ -92,6 +92,12 @@ void visibleUvNormalization() {
     require(unchanged && unchanged->x == full.x && unchanged->y == full.y &&
                 unchanged->width == full.width && unchanged->height == full.height,
             "physical == logicalでUVを変更しました");
+    // cropで左上offsetを持つUVは、offsetもallocation比で縮めないと表示位置がずれる。
+    const auto cropped = normalizeVisibleUv({0.5f, 0.5f, 0.5f, 0.5f}, 1920, 1080, 1920, 1088);
+    require(cropped && cropped->x == 0.5f &&
+                std::abs(cropped->y - 0.5f * 1080.0f / 1088.0f) < 0.000001f &&
+                std::abs(cropped->height - 0.5f * 1080.0f / 1088.0f) < 0.000001f,
+            "crop offset付きvisible UVのoffsetがallocation比で縮みません");
     require(!normalizeVisibleUv(full, 1920, 1080, 1919, 1080),
             "physical width < logical widthを受理しました");
     require(!normalizeVisibleUv(full, 1920, 1080, 1920, 1079),

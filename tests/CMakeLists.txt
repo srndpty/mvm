@@ -136,11 +136,20 @@ qt_add_executable(mvm_test_controller_export
     ${CMAKE_SOURCE_DIR}/apps/mvm/track_model.cpp)
 target_include_directories(mvm_test_controller_export PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
 target_link_libraries(mvm_test_controller_export PRIVATE
-    mvm::core mvm::project mvm::manim_clip_workflow
+    mvm::core mvm::project mvm::util mvm::manim_clip_workflow
     mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
     mvm::mlt mvm::preview_engine mvm::preview_qt
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 mvm::warnings)
 target_compile_definitions(mvm_test_controller_export PRIVATE ${MVM_MLT_PATH_DEFS})
+add_executable(mvm_test_export_eta core/test_export_eta.cpp)
+target_link_libraries(mvm_test_export_eta PRIVATE mvm::core mvm::warnings)
+add_test(NAME export_eta_unit COMMAND mvm_test_export_eta)
+
+add_executable(mvm_test_reveal_in_explorer util/test_reveal_in_explorer.cpp)
+target_link_libraries(mvm_test_reveal_in_explorer PRIVATE mvm::util mvm::warnings)
+add_test(NAME reveal_in_explorer_negative
+    COMMAND mvm_test_reveal_in_explorer ${CMAKE_BINARY_DIR}/tests/reveal-in-explorer)
+
 add_test(NAME m7b_4_controller_export_lifecycle
     COMMAND mvm_test_controller_export ${CMAKE_BINARY_DIR}/tests/controller-export)
 set_tests_properties(m7b_4_controller_export_lifecycle PROPERTIES

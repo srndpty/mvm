@@ -61,6 +61,23 @@ mvm::project::Project linkedProject() {
     return project;
 }
 
+// testで本物のExplorerを開かないよう、全export testは記録するだけのrevealerを渡す。
+struct RevealRecorder {
+    int calls = 0;
+    std::filesystem::path lastPath;
+    bool succeed = true;
+
+    mvm::app::MvmController::FileRevealer revealer() {
+        return [this](const std::filesystem::path& path, QString& error) {
+            ++calls;
+            lastPath = path;
+            if (!succeed)
+                error = QStringLiteral("fixture reveal failure");
+            return succeed;
+        };
+    }
+};
+
 mvm::app::TimelineExportResult successResult(const mvm::app::TimelineExportRequest& request) {
     mvm::app::TimelineExportResult result;
     result.success = true;
@@ -72,30 +89,90 @@ mvm::app::TimelineExportResult successResult(const mvm::app::TimelineExportReque
 
 void testCompleteAndRestart(const std::filesystem::path& path) {
     std::atomic<int> runs{0};
-    mvm::app::MvmController controller(path, {}, videoProject(), nullptr,
-                                       [&](const auto&, const auto& request) {
-                                           ++runs;
-                                           request.progress(60, 120);
-                                           return successResult(request);
-                                       });
-    const QUrl output =
-        QUrl::fromLocalFile(QString::fromStdWString((path.parent_path() / L"out.mp4").wstring()));
+    RevealRecorder reveals;
+    mvm::app::MvmController controller(
+        path, {}, videoProject(), nullptr,
+        [&](const auto&, const auto& request) {
+            ++runs;
+            request.progress(60, 120);
+            return successResult(request);
+        },
+        {}, reveals.revealer());
+    const auto outputPath = path.parent_path() / L"out.mp4";
+    const QUrl output = QUrl::fromLocalFile(QString::fromStdWString(outputPath.wstring()));
     check(controller.exportTimeline(output) && controller.exporting() && controller.busy(),
           "開始直後にexporting/busyが立ちません");
     check(pumpUntil([&] { return !controller.exporting(); }), "正常exportが完了しません");
     check(!controller.busy() && runs == 1 && controller.exportProgress() == 1,
           "正常完了後の状態が不正です");
+    check(reveals.calls == 1 && reveals.lastPath == outputPath,
+          "書き出し完了後に出力ファイルをExplorerで1回表示しません");
     check(controller.exportTimeline(output), "完了後に再exportできません");
     check(pumpUntil([&] { return !controller.exporting(); }) && runs == 2,
           "2回目のexportが完了しません");
+    check(reveals.calls == 2, "2回目の書き出し完了でExplorer表示しません");
+}
+
+void testRevealFailureKeepsSuccess(const std::filesystem::path& path) {
+    RevealRecorder reveals;
+    reveals.succeed = false;
+    QString failure;
+    mvm::app::MvmController controller(
+        path, {}, videoProject(), nullptr,
+        [](const auto&, const auto& request) { return successResult(request); }, {},
+        reveals.revealer());
+    QObject::connect(&controller, &mvm::app::MvmController::exportFailed,
+                     [&](const QString& message) { failure = message; });
+    const QUrl output = QUrl::fromLocalFile(
+        QString::fromStdWString((path.parent_path() / L"reveal-failure.mp4").wstring()));
+    check(controller.exportTimeline(output), "Explorer表示失敗試験を開始できません");
+    check(pumpUntil([&] { return !controller.exporting(); }), "Explorer表示失敗試験が完了しません");
+    check(reveals.calls == 1 && failure.isEmpty() && controller.exportProgress() == 1 &&
+              controller.statusText().startsWith(QStringLiteral("書き出しました: ")) &&
+              controller.statusText().contains(QStringLiteral("fixture reveal failure")),
+          "Explorer表示の失敗が書き出し成功を失敗へ変えた、または理由を表示しません");
+}
+
+void testEtaProgressText(const std::filesystem::path& path) {
+    std::atomic<bool> release{false};
+    RevealRecorder reveals;
+    mvm::app::MvmController controller(
+        path, {}, videoProject(), nullptr,
+        [&](const auto&, const auto& request) {
+            request.progress(0, 120);
+            // ETAは1秒以上の観測が必要。基準点から1秒強待ってから半分まで進める。
+            std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+            request.progress(60, 120);
+            while (!release.load())
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            return successResult(request);
+        },
+        {}, reveals.revealer());
+    const QUrl output =
+        QUrl::fromLocalFile(QString::fromStdWString((path.parent_path() / L"eta.mp4").wstring()));
+    check(controller.exportTimeline(output), "ETA試験を開始できません");
+    check(pumpUntil([&] {
+              return controller.exportProgressText().contains(QStringLiteral("残り時間を計算中"));
+          }),
+          "基準点だけの段階で残り時間を計算中と表示しません");
+    check(pumpUntil([&] {
+              const QString text = controller.exportProgressText();
+              return text.startsWith(QStringLiteral("60 / 120 frame")) &&
+                     text.contains(QStringLiteral("残り約 "));
+          }),
+          "進捗が進んだ後に残り時間を表示しません");
+    release.store(true);
+    check(pumpUntil([&] { return !controller.exporting(); }), "ETA試験のexportが完了しません");
 }
 
 void testQueuedProgressAfterCancel(const std::filesystem::path& path) {
     std::promise<void> queued;
     auto queuedFuture = queued.get_future();
     std::atomic<bool> release{false};
+    RevealRecorder reveals;
     mvm::app::MvmController controller(
-        path, {}, videoProject(), nullptr, [&](const auto&, const auto& request) {
+        path, {}, videoProject(), nullptr,
+        [&](const auto&, const auto& request) {
             request.progress(60, 120);
             queued.set_value();
             while (!release.load())
@@ -103,7 +180,8 @@ void testQueuedProgressAfterCancel(const std::filesystem::path& path) {
             mvm::app::TimelineExportResult result;
             result.cancelled = request.progress(61, 120);
             return result;
-        });
+        },
+        {}, reveals.revealer());
     const QUrl output = QUrl::fromLocalFile(
         QString::fromStdWString((path.parent_path() / L"cancel.mp4").wstring()));
     check(controller.exportTimeline(output), "キャンセル試験を開始できません");
@@ -117,15 +195,19 @@ void testQueuedProgressAfterCancel(const std::filesystem::path& path) {
     release.store(true);
     check(pumpUntil([&] { return !controller.exporting(); }), "キャンセル後にworkerが停止しません");
     check(!controller.busy() && !controller.exportCancelling(), "キャンセル完了後の状態が不正です");
+    check(reveals.calls == 0, "キャンセルした書き出しをExplorerで表示しました");
 }
 
 void testFailedExportNotification(const std::filesystem::path& path) {
-    mvm::app::MvmController controller(path, {}, videoProject(), nullptr,
-                                       [](const auto&, const auto&) {
-                                           mvm::app::TimelineExportResult result;
-                                           result.error = "fixture export failure";
-                                           return result;
-                                       });
+    RevealRecorder reveals;
+    mvm::app::MvmController controller(
+        path, {}, videoProject(), nullptr,
+        [](const auto&, const auto&) {
+            mvm::app::TimelineExportResult result;
+            result.error = "fixture export failure";
+            return result;
+        },
+        {}, reveals.revealer());
     QString notification;
     int notificationCount = 0;
     QObject::connect(&controller, &mvm::app::MvmController::exportFailed,
@@ -140,6 +222,7 @@ void testFailedExportNotification(const std::filesystem::path& path) {
     check(notificationCount == 1 &&
               notification == QStringLiteral("書き出しに失敗しました: fixture export failure"),
           "書き出し失敗を利用者通知へ1回だけ渡せません");
+    check(reveals.calls == 0, "失敗した書き出しをExplorerで表示しました");
 }
 
 void testShutdown(const std::filesystem::path& path, bool finishBeforeShutdown) {
@@ -147,14 +230,17 @@ void testShutdown(const std::filesystem::path& path, bool finishBeforeShutdown) 
     auto enteredFuture = entered.get_future();
     std::atomic<bool> release{false};
     std::atomic<bool> stopped{false};
+    RevealRecorder reveals;
     mvm::app::MvmController controller(
-        path, {}, videoProject(), nullptr, [&](const auto&, const auto& request) {
+        path, {}, videoProject(), nullptr,
+        [&](const auto&, const auto& request) {
             entered.set_value();
             while (!release.load() && !request.progress(0, 120))
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             stopped.store(true);
             return successResult(request);
-        });
+        },
+        {}, reveals.revealer());
     const QUrl output = QUrl::fromLocalFile(
         QString::fromStdWString((path.parent_path() / L"shutdown.mp4").wstring()));
     check(controller.exportTimeline(output), "shutdown試験を開始できません");
@@ -242,6 +328,8 @@ int main(int argc, char** argv) {
     testCompleteAndRestart(directory / L"complete.mvm");
     testQueuedProgressAfterCancel(directory / L"cancel.mvm");
     testFailedExportNotification(directory / L"failed.mvm");
+    testRevealFailureKeepsSuccess(directory / L"reveal-failure.mvm");
+    testEtaProgressText(directory / L"eta.mvm");
     testShutdown(directory / L"shutdown-active.mvm", false);
     testShutdown(directory / L"shutdown-finished.mvm", true);
     testThreadFailure(directory / L"thread-failure.mvm");

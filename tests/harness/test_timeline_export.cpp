@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <process.h>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -498,6 +499,97 @@ int main(int argc, char** argv) {
             check(middle.maxX > middle.minX && middle.maxY > middle.minY &&
                       middle.maxX - middle.minX < 230 && middle.maxY - middle.minY < 210,
                   "非zoom crop/scale/rotationの外接矩形が反映されません");
+        }
+    }
+
+    // --- tractor末尾補完frameにもcrop/effectが掛かる ------------------------
+    // 素材末尾の+1丸めでproducer実尺がtimeline配置尺より1 frame短くなるclipを作り、
+    // 補完frame（出力末尾）が直前の本体frameと同じ変換を受けていることを実画素で確かめる。
+    // tailが無変換なら、V1はscale 60%の黒枠が消え、V2はcropした左端の緑帯が戻る。
+    {
+        const auto source = testDirectory / L"padding-effects-source.mp4";
+        const auto background = testDirectory / L"padding-background.mp4";
+        check(generateEffectsFixture(ffmpeg, source), "padding effect fixtureを生成できません");
+        check(generateSolidFixture(ffmpeg, background, L"blue"),
+              "padding V1 fixtureを生成できません");
+        const long long sourceFrames = probeFrameCount(source);
+        check(sourceFrames == 120, "padding fixtureのframe数が前提と違います");
+        const std::string sourceUtf8 = toUtf8(source);
+        const std::string backgroundUtf8 = toUtf8(background);
+        constexpr long long kDuration = 61;
+
+        MvmExportClip padded{};
+        padded.path = sourceUtf8.c_str();
+        padded.source_fps_num = 60;
+        padded.source_fps_den = 1;
+        // probe上の素材尺をproducer実尺+1とし、末尾丸めclampで1 frame不足させる。
+        padded.source_frame_count = sourceFrames + 1;
+        padded.source_in_frame = sourceFrames + 1 - kDuration;
+        padded.source_out_frame = sourceFrames + 1;
+        padded.timeline_start_frame = 0;
+        padded.timeline_duration_frames = kDuration;
+        padded.opacity_keyframe_count = 2;
+        padded.opacity_keyframes[0] = {0, 1.0};
+        padded.opacity_keyframes[1] = {kDuration - 1, 1.0};
+
+        MvmExportClip v1Effect = padded;
+        v1Effect.video_track = 0;
+        v1Effect.effects_enabled = 1;
+        v1Effect.crop_left = 32;
+        v1Effect.rect_x = 64;
+        v1Effect.rect_y = 48;
+        v1Effect.rect_width = 192;
+        v1Effect.rect_height = 144;
+
+        MvmExportClip v1Plain{};
+        v1Plain.path = backgroundUtf8.c_str();
+        v1Plain.source_fps_num = 60;
+        v1Plain.source_fps_den = 1;
+        v1Plain.source_frame_count = sourceFrames;
+        v1Plain.source_in_frame = 0;
+        v1Plain.source_out_frame = kDuration;
+        v1Plain.timeline_duration_frames = kDuration;
+        MvmExportClip v2Crop = padded;
+        v2Crop.video_track = 1;
+        v2Crop.crop_left = 96;
+        v2Crop.rect_width = 320;
+        v2Crop.rect_height = 240;
+
+        struct PaddingCase {
+            const wchar_t* name;
+            std::vector<MvmExportClip> clips;
+        };
+
+        const PaddingCase cases[] = {{L"padding-v1-effects.mp4", {v1Effect}},
+                                     {L"padding-v2-crop.mp4", {v1Plain, v2Crop}}};
+        const MvmExportSpec paddingSpec{320, 240, 60, 1, 60000, 4, 0, nullptr, nullptr};
+        for (const auto& paddingCase : cases) {
+            const auto output = testDirectory / paddingCase.name;
+            char paddingError[512] = {};
+            const int status = mvm_mlt_export_two_track(
+                paddingCase.clips.data(), static_cast<int>(paddingCase.clips.size()), kDuration,
+                &paddingSpec, toUtf8(output).c_str(), nullptr, paddingError, sizeof(paddingError));
+            check(status == 0, "末尾補完が必要なclipをtractorで書き出せません");
+            if (status != 0) {
+                std::fprintf(stderr, "  %ls: %s\n", paddingCase.name, paddingError);
+                continue;
+            }
+            check(probeFrameCount(output) == kDuration, "末尾補完後の出力尺がtimeline尺と違います");
+            // 本体の最終frame(kDuration-2)と補完frame(kDuration-1)を格子状に比較する。
+            int mismatches = 0;
+            for (int y = 8; y < 240; y += 16) {
+                for (int x = 8; x < 320; x += 16) {
+                    const auto body = pixelAt(output, kDuration - 2, x, y);
+                    const auto tail = pixelAt(output, kDuration - 1, x, y);
+                    if (std::abs(body.r - tail.r) + std::abs(body.g - tail.g) +
+                            std::abs(body.b - tail.b) >
+                        60)
+                        ++mismatches;
+                }
+            }
+            check(mismatches == 0, "末尾補完frameが本体と同じcrop/effectを受けていません");
+            if (mismatches != 0)
+                std::fprintf(stderr, "  %ls: 不一致画素 %d\n", paddingCase.name, mismatches);
         }
     }
 

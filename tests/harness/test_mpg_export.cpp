@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -80,10 +81,61 @@ int main(int argc, char** argv) {
     const bool validOutput = mvm_mlt_probe_file(toUtf8(output).c_str(), &outputProbe) == 0 &&
                              outputProbe.ok && outputProbe.has_video && outputProbe.has_audio &&
                              outputProbe.frame_count > 0;
-    mvm_mlt_runtime_shutdown();
     if (!validOutput) {
+        mvm_mlt_runtime_shutdown();
         std::fprintf(stderr, "書き出し結果に映像・音声がありません: %s\n", outputProbe.error);
         return 6;
     }
-    return 0;
+
+    // linked audio clipを削除したtimelineでは、video producer内蔵の音声を復活させない。
+    // sequential fast pathとtractor経路の両方で検査する。
+    // Projectはlinked audio削除時に相手側のlinkも外すため、fixtureも同じ状態にする。
+    auto unlinkedVideo = video;
+    unlinkedVideo.linkGroupId.clear();
+    // V1先頭にgapを置くとaudio clipなしでもtractor経路になる。
+    auto gappedVideo = unlinkedVideo;
+    gappedVideo.timelineStartFrame = 10;
+    // MPG(非timeline fps)をV2へ置く。最終素材frameが複数timeline frameに跨っても、
+    // opacity端keyがclip末尾へ届いて書き出せることも同時に踏む。
+    auto overlay = unlinkedVideo;
+    overlay.id = "mpg-overlay";
+    overlay.name = "mpg-overlay";
+    overlay.track = {mvm::project::TrackKind::Video, 1};
+    overlay.effects.fadeOutFrames = 3;
+
+    struct VideoOnlyCase {
+        const char* name;
+        std::vector<mvm::project::TimelineClip> clips;
+        mvm::app::TimelineExportResult::Backend backend;
+    };
+
+    const VideoOnlyCase videoOnlyCases[] = {
+        {"sequential", {unlinkedVideo}, mvm::app::TimelineExportResult::Backend::Sequential},
+        {"tractor", {gappedVideo}, mvm::app::TimelineExportResult::Backend::Tractor},
+        {"overlay", {unlinkedVideo, overlay}, mvm::app::TimelineExportResult::Backend::Tractor},
+    };
+    int result = 0;
+    for (const auto& videoOnly : videoOnlyCases) {
+        project.timelineClips = videoOnly.clips;
+        request.outputPath = output;
+        request.outputPath.replace_filename(output.stem().wstring() + L"-video-only-" +
+                                            std::filesystem::path(videoOnly.name).wstring() +
+                                            L".mp4");
+        const auto videoOnlyExported = mvm::app::exportTimeline(project, request);
+        MvmMltProbeResult videoOnlyProbe{};
+        const bool probed =
+            videoOnlyExported.success &&
+            mvm_mlt_probe_file(toUtf8(request.outputPath).c_str(), &videoOnlyProbe) == 0 &&
+            videoOnlyProbe.ok;
+        if (!probed || videoOnlyExported.backend != videoOnly.backend ||
+            !videoOnlyProbe.has_video || videoOnlyProbe.has_audio) {
+            std::fprintf(stderr,
+                         "%s: video-only timelineから素材内蔵音声が出力された、"
+                         "または書き出せません: %s\n",
+                         videoOnly.name, videoOnlyExported.error.c_str());
+            result = 7;
+        }
+    }
+    mvm_mlt_runtime_shutdown();
+    return result;
 }

@@ -86,6 +86,29 @@ int main() {
                 tractor.clips[2].timelineStartFrame,
             "two V2 clip間gapのmapping fixtureが成立していません");
 
+    // 30fps素材を60fps timelineのV2へ置くと、最終素材frameはtimeline 2 frameに跨る。
+    // 端keyはclip末尾(timeline-local 19)に置き、最終素材frameのopacityを保持する。
+    mvm::project::Project lowFps = mvm::project::createDefaultProject();
+    auto lowFpsTop = clip("low-fps-top", 1, 0, 0, 10);
+    lowFpsTop.sourceFpsNum = 30;
+    lowFpsTop.effects.opacityPercent = 50;
+    lowFpsTop.effects.fadeInFrames = 3;
+    lowFpsTop.effects.fadeOutFrames = 3;
+    lowFps.timelineClips = {clip("low-fps-bottom", 0, 0, 0, 20), lowFpsTop};
+    const auto lowFpsPlan = mvm::app::mapTimelineExportPlan(lowFps, request);
+    require(lowFpsPlan.success && lowFpsPlan.clips.size() == 2 &&
+                lowFpsPlan.clips[1].timelineDurationFrames == 20,
+            "30fps V2 fixtureのmappingが成立していません");
+    const auto& lowFpsKeys = lowFpsPlan.clips[1].opacityKeys;
+    require(lowFpsKeys.size() >= 2 && lowFpsKeys.front().localFrame == 0 &&
+                lowFpsKeys.back().localFrame == 19,
+            "timelineより低fpsのV2で端keyがclip末尾に置かれません");
+    // 最終素材frame(source-local 9)はtimeline-local 18から始まり、19まで同じopacityを保つ。
+    require(lowFpsKeys[lowFpsKeys.size() - 2].localFrame == 18 &&
+                lowFpsKeys[lowFpsKeys.size() - 2].opacity == lowFpsKeys.back().opacity &&
+                lowFpsKeys.back().opacity == 0.0,
+            "最終素材frameのopacityを末尾まで保持しません");
+
     mvm::project::Project linkedAv = mvm::project::createDefaultProject();
     auto linkedVideo = clip("linked-video", 0, 0, 0, 100);
     linkedVideo.linkGroupId = "linked-pair";

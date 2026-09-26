@@ -127,13 +127,14 @@ bool makeNv12(ID3D11Device* device, int width, int height, unsigned char yLeft, 
 }
 
 DecodedGpuFrame fixtureFrame(OwnedNv12& texture, SourceId source, ResourceEpoch epoch,
-                             ColorSpace space = ColorSpace::BT709) {
+                             ColorSpace space = ColorSpace::BT709, int width = 16,
+                             int height = 16) {
     DecodedGpuFrame f;
     f.frameNumber = 0;
     f.pts = 0;
     f.timeBase = {1, 60};
-    f.width = 16;
-    f.height = 16;
+    f.width = width;
+    f.height = height;
     f.pixelFormat = GpuPixelFormat::NV12;
     f.texture = texture.texture;
     f.colorSpace = space;
@@ -152,6 +153,11 @@ Rgba8 expected601(int y, int u, int v) {
             q(1.164383 * c + 2.017232 * d), 255};
 }
 
+std::string formatRgba(Rgba8 value) {
+    return std::to_string(value.r) + "," + std::to_string(value.g) + "," + std::to_string(value.b) +
+           "," + std::to_string(value.a);
+}
+
 bool probeEquals(GpuCompositor& c, int x, int y, Rgba8 expected, std::string& err) {
     std::vector<unsigned char> rgba;
     if (!c.readOutputProbe(x, y, 1, 1, rgba, err))
@@ -159,7 +165,8 @@ bool probeEquals(GpuCompositor& c, int x, int y, Rgba8 expected, std::string& er
     const Rgba8 actual{rgba[0], rgba[1], rgba[2], rgba[3]};
     if (!probeWithinTolerance(actual, expected)) {
         err = "output probe RGBAがreference tolerance外です (位置 " + std::to_string(x) + "," +
-              std::to_string(y) + ")";
+              std::to_string(y) + " 実測 " + formatRgba(actual) + " 期待 " + formatRgba(expected) +
+              ")";
         return false;
     }
     return true;
@@ -442,12 +449,20 @@ bool runShutdownPollCases(OwnedDevice& owned, ReadbackCounters& readbacks, std::
 }
 
 bool runFixtureCases(GpuCompositor& compositor, OwnedDevice& owned, std::string& err) {
+    // compositorはdestination枠内へ素材比率を保ってaspect fitする。
+    // 出力と同じ16:9の素材にし、枠全体を塗る前提で位置を検査する。
+    constexpr int kFixtureWidth = 32;
+    constexpr int kFixtureHeight = 18;
     OwnedNv12 aTexture, bTexture;
-    if (!makeNv12(owned.device, 16, 16, 81, 90, 240, 81, 90, 240, aTexture, err) ||
-        !makeNv12(owned.device, 16, 16, 145, 54, 34, 41, 240, 110, bTexture, err))
+    if (!makeNv12(owned.device, kFixtureWidth, kFixtureHeight, 81, 90, 240, 81, 90, 240, aTexture,
+                  err) ||
+        !makeNv12(owned.device, kFixtureWidth, kFixtureHeight, 145, 54, 34, 41, 240, 110, bTexture,
+                  err))
         return false;
-    const DecodedGpuFrame a = fixtureFrame(aTexture, {1}, {1});
-    const DecodedGpuFrame b = fixtureFrame(bTexture, {2}, {2});
+    const DecodedGpuFrame a =
+        fixtureFrame(aTexture, {1}, {1}, ColorSpace::BT709, kFixtureWidth, kFixtureHeight);
+    const DecodedGpuFrame b =
+        fixtureFrame(bTexture, {2}, {2}, ColorSpace::BT709, kFixtureWidth, kFixtureHeight);
     const Rgba8 rgbA = bt709Limited(81, 90, 240);
     const Rgba8 rgbBLeft = bt709Limited(145, 54, 34);
     const Rgba8 rgbBRight = bt709Limited(41, 240, 110);
