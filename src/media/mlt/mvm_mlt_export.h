@@ -61,6 +61,13 @@ typedef struct {
     int fps_num;
     int fps_den;
     int timeout_ms;
+    /* 負の real_time として設定する非drop render worker数。 */
+    int render_threads;
+    /* 0はencoderによる自動選択。 */
+    int encoder_threads;
+    /* 非0を返すと書き出しを中止する。completed/totalはframe数。 */
+    int (*progress_callback)(long long completed, long long total, void* opaque);
+    void* progress_opaque;
 } MvmExportSpec;
 
 typedef struct {
@@ -77,6 +84,12 @@ typedef struct {
     int transition_count;
     int opaque_black_affine_filter_count;
 } MvmExportResult;
+
+typedef enum {
+    MVM_EXPORT_OK = 0,
+    MVM_EXPORT_FAILED = 1,
+    MVM_EXPORT_CANCELLED = 2,
+} MvmExportStatus;
 
 /* 素材固有の frame 境界を MLT producer profile の frame 境界へ floor で変換する。
  * producer が実際に公開する位置 domain に合わせる操作であり、ceil を使う Project
@@ -101,7 +114,7 @@ int mvm_source_boundary_to_producer_boundary(long long source_frame, long long s
  *
  * M4 では音声を書き出さない (映像のみ)。
  *
- * 戻り値: 0 = 成功
+ * 戻り値: MvmExportStatus
  */
 int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const MvmExportSpec* spec,
                             const char* out_path, MvmExportResult* out, char* err, size_t err_size);

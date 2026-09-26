@@ -16,10 +16,62 @@ ApplicationWindow {
     color: "#15171b"
 
     property url selectedManimScript
-    property bool spaceMoveToolActive: false
-    onActiveChanged: {
-        if (!active)
-            spaceMoveToolActive = false;
+
+    function isSupportedVideoUrl(url) {
+        const value = url.toString();
+        return /^file:/i.test(value) && /\.(mp4|mov|mkv|ts)$/i.test(value);
+    }
+
+    DropArea {
+        id: videoDropArea
+        property bool acceptingVideoDrag: false
+        anchors.fill: parent
+        z: 2000
+
+        onEntered: drag => {
+            acceptingVideoDrag = false;
+            drag.accepted = false;
+            if (mvmController.busy || !drag.hasUrls)
+                return;
+            for (let index = 0; index < drag.urls.length; ++index) {
+                if (root.isSupportedVideoUrl(drag.urls[index])) {
+                    acceptingVideoDrag = true;
+                    drag.accepted = true;
+                    return;
+                }
+            }
+        }
+        onExited: acceptingVideoDrag = false
+        onDropped: drop => {
+            acceptingVideoDrag = false;
+            let accepted = false;
+            for (let index = 0; index < drop.urls.length; ++index) {
+                const url = drop.urls[index];
+                if (!root.isSupportedVideoUrl(url))
+                    continue;
+                accepted = true;
+                mvmController.addVideoClip(url);
+            }
+            if (accepted)
+                drop.acceptProposedAction();
+        }
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        z: 1999
+        visible: videoDropArea.acceptingVideoDrag
+        color: "#99151920"
+        border.width: 3
+        border.color: "#64a8e8"
+
+        Label {
+            anchors.centerIn: parent
+            text: "動画をドロップしてタイムラインへ追加"
+            color: "white"
+            font.pixelSize: 20
+            font.bold: true
+        }
     }
 
     Shortcut {
@@ -28,7 +80,8 @@ ApplicationWindow {
         onActivated: mvmController.deleteCurrentClip()
     }
     Shortcut {
-        sequence: "Ctrl+Space"
+        sequence: "Space"
+        autoRepeat: false
         enabled: !mvmController.busy && (mvmController.playing || mvmController.canPlay)
         onActivated: {
             if (mvmController.playing)
@@ -36,6 +89,11 @@ ApplicationWindow {
             else
                 mvmController.playTimeline();
         }
+    }
+    Shortcut {
+        sequence: "Ctrl+Z"
+        enabled: mvmController.canUndo
+        onActivated: mvmController.undoLastEdit()
     }
 
     ColumnLayout {
@@ -430,7 +488,7 @@ ApplicationWindow {
             }
             Item { Layout.fillWidth: true }
             Label {
-                text: "ドラッグ: 矩形選択 / Space+ドラッグ: 移動 / Alt+ホイール: ズーム"
+                text: "ドラッグ: 矩形選択 / Space: 再生・一時停止 / Alt+ホイール: ズーム"
                 color: "#6f7681"
                 font.pixelSize: 11
             }
@@ -476,12 +534,6 @@ ApplicationWindow {
             readonly property int audioCount: mvmController.audioTrackCount
             readonly property int rowCount: videoCount + audioCount
             readonly property real tracksHeight: rowCount * trackHeight
-            readonly property bool pointerInside: timelineHover.hovered
-
-            HoverHandler {
-                id: timelineHover
-            }
-
             // ルーラーの目盛り間隔。ズームに応じて 1/2/5/10/30/60 秒から選ぶ。
             readonly property int tickSeconds: {
                 const nominalFps = Math.max(1, Math.round(mvmController.timelineFpsNum / mvmController.timelineFpsDen));
@@ -567,10 +619,15 @@ ApplicationWindow {
                              timelineFlick.contentX - wheelDelta * 5));
             }
             function handleNativePlainWheel(wheelDelta) {
+                const maxY = Math.max(0, timelineFlick.contentHeight - timelineFlick.height);
+                if (maxY > 0) {
+                    timelineFlick.contentY = Math.max(
+                        0, Math.min(maxY, timelineFlick.contentY - wheelDelta));
+                    return;
+                }
                 timelineFlick.contentX = Math.max(
-                    0,
-                    Math.min(timelineFlick.contentWidth - timelineFlick.width,
-                             timelineFlick.contentX - wheelDelta));
+                    0, Math.min(timelineFlick.contentWidth - timelineFlick.width,
+                                timelineFlick.contentX - wheelDelta));
             }
 
             // --- トラックヘッダ (左端) ---
@@ -737,13 +794,30 @@ ApplicationWindow {
                 flickableDirection: Flickable.HorizontalAndVerticalFlick
                 interactive: false
 
-                ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
-                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                ScrollBar.horizontal: ScrollBar {
+                    id: timelineHorizontalScrollBar
+                    policy: ScrollBar.AlwaysOn
+                    interactive: true
+                    active: true
+                    height: 12
+                    minimumSize: 0.08
+                }
+                ScrollBar.vertical: ScrollBar {
+                    id: timelineVerticalScrollBar
+                    policy: ScrollBar.AsNeeded
+                    interactive: true
+                    // Flickable自体はclip操作との競合を避けるためinteractive=false。
+                    // その場合もfade-outさせず、overflow中は必ず操作可能にする。
+                    active: timelineFlick.contentHeight > timelineFlick.height
+                    width: 12
+                    minimumSize: 0.08
+                }
 
                 Item {
                     id: timelineContent
                     width: timelineFlick.contentWidth
-                    height: timelineFlick.height
+                    // sticky rulerを最下部までscrollしてもcontentの内側に保つ。
+                    height: timelineFlick.contentHeight
 
                     // --- ルーラー ---
                     Rectangle {
@@ -754,6 +828,8 @@ ApplicationWindow {
                         width: parent.width
                         height: timelinePanel.rulerHeight
                         color: "#191c21"
+                        // 後から宣言されるtrack、clip、選択矩形より常に前面へ置く。
+                        z: 100
 
                         Repeater {
                             model: {
@@ -827,7 +903,7 @@ ApplicationWindow {
                         MouseArea {
                             id: rectangleSelectionArea
                             anchors.fill: parent
-                            enabled: !mvmController.busy && !root.spaceMoveToolActive
+                            enabled: !mvmController.busy
                             acceptedButtons: Qt.LeftButton
                             preventStealing: true
                             onPressed: mouse => {
@@ -1208,7 +1284,7 @@ ApplicationWindow {
                         width: 2
                         height: timelinePanel.rulerHeight + timelinePanel.tracksHeight
                         color: "#f15b5b"
-                        z: 100
+                        z: 200
 
                         Rectangle {
                             anchors.horizontalCenter: parent.horizontalCenter
@@ -1246,44 +1322,44 @@ ApplicationWindow {
                 }
             }
 
-            // Space押下中だけtimeline全体を掴んで移動する。
-            MouseArea {
-                id: moveToolArea
-                property real pressX: 0
-                property real pressY: 0
-                property real initialContentX: 0
-                property real initialContentY: 0
-                x: timelinePanel.labelWidth
-                y: 0
-                width: timelinePanel.width - x - 4
-                height: timelinePanel.height - 4
-                visible: root.spaceMoveToolActive
-                enabled: visible
-                z: 1000
-                acceptedButtons: Qt.LeftButton
-                preventStealing: true
-                cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
-                onPressed: mouse => {
-                    pressX = mouse.x;
-                    pressY = mouse.y;
-                    initialContentX = timelineFlick.contentX;
-                    initialContentY = timelineFlick.contentY;
-                }
-                onPositionChanged: mouse => {
-                    if (!pressed)
-                        return;
-                    const maxX = Math.max(0, timelineFlick.contentWidth - timelineFlick.width);
-                    const maxY = Math.max(0, timelineFlick.contentHeight - timelineFlick.height);
-                    timelineFlick.contentX = Math.max(0, Math.min(maxX,
-                        initialContentX - (mouse.x - pressX)));
-                    timelineFlick.contentY = Math.max(0, Math.min(maxY,
-                        initialContentY - (mouse.y - pressY)));
-                }
-            }
         }
     }
 
     // --- ダイアログ --------------------------------------------------------
+    Dialog {
+        id: exportProgressDialog
+        anchors.centerIn: parent
+        width: Math.min(root.width - 40, 460)
+        modal: true
+        visible: mvmController.exporting
+        closePolicy: Popup.NoAutoClose
+        title: "動画を書き出しています"
+
+        contentItem: ColumnLayout {
+            spacing: 12
+
+            Label {
+                Layout.fillWidth: true
+                text: mvmController.exportProgressText
+                horizontalAlignment: Text.AlignHCenter
+            }
+            ProgressBar {
+                Layout.fillWidth: true
+                from: 0
+                to: 1
+                value: mvmController.exportProgress
+                indeterminate: mvmController.exportProgressText === "準備しています…"
+            }
+            Button {
+                Layout.alignment: Qt.AlignHCenter
+                text: mvmController.exportCancelling
+                      ? "キャンセル中…" : "キャンセル"
+                enabled: !mvmController.exportCancelling
+                onClicked: mvmController.cancelTimelineExport()
+            }
+        }
+    }
+
     FileDialog {
         id: videoDialog
         title: "動画ファイルを選択"

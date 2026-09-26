@@ -72,6 +72,18 @@ static void set_err(char* err, size_t n, const char* fmt, ...) {
     va_end(ap);
 }
 
+static int export_cancel_requested(const MvmExportSpec* spec, mlt_consumer consumer,
+                                   long long total) {
+    if (!spec->progress_callback)
+        return 0;
+    long long completed = consumer ? (long long)mlt_consumer_position(consumer) + 1 : 0;
+    if (completed < 0)
+        completed = 0;
+    if (completed > total)
+        completed = total;
+    return spec->progress_callback(completed, total, spec->progress_opaque) != 0;
+}
+
 /* 指定した service が repository に登録されているか。
  * 無ければ別の方法へ落とさず失敗させるために使う。 */
 static int service_exists(mlt_properties list, const char* name) {
@@ -240,6 +252,7 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
     mlt_consumer consumer = NULL;
     mlt_producer pp = NULL;
     long long total = 0;
+    int cancelled = 0;
 
     if (!mvm_mlt_runtime_is_ready()) {
         set_err(err, err_size, "MLT が初期化されていません");
@@ -258,7 +271,9 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
                 MVM_EXPORT_MAX_CLIPS);
         return 1;
     }
-    if (spec->width <= 0 || spec->height <= 0 || spec->fps_num <= 0 || spec->fps_den <= 0) {
+    if (spec->width <= 0 || spec->height <= 0 || spec->fps_num <= 0 || spec->fps_den <= 0 ||
+        spec->render_threads <= 0 || spec->render_threads > 16 || spec->encoder_threads < 0 ||
+        spec->encoder_threads > 16) {
         set_err(err, err_size, "出力 profile の指定が不正です: %dx%d @ %d/%d", spec->width,
                 spec->height, spec->fps_num, spec->fps_den);
         return 1;
@@ -438,7 +453,8 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
         mlt_properties_set(cp, "pix_fmt", "yuv420p");
         mlt_properties_set(cp, "movflags", "+faststart");
         mlt_properties_set_int(cp, "an", 1);
-        mlt_properties_set_int(cp, "real_time", -1);
+        mlt_properties_set_int(cp, "real_time", -spec->render_threads);
+        mlt_properties_set_int(cp, "threads", spec->encoder_threads);
         mlt_properties_set_int(cp, "terminate_on_pause", 1);
     }
 
@@ -456,6 +472,12 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
         int waited = 0;
         const int step = 20;
         while (!mlt_consumer_is_stopped(consumer)) {
+            if (export_cancel_requested(spec, consumer, total)) {
+                cancelled = 1;
+                mlt_consumer_stop(consumer);
+                set_err(err, err_size, "書き出しをキャンセルしました");
+                goto fail;
+            }
             Sleep(step);
             waited += step;
             if (waited >= spec->timeout_ms) {
@@ -464,6 +486,13 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
                         spec->timeout_ms);
                 goto fail;
             }
+        }
+        if (spec->progress_callback &&
+            spec->progress_callback(total, total, spec->progress_opaque) != 0) {
+            cancelled = 1;
+            mlt_consumer_stop(consumer);
+            set_err(err, err_size, "書き出しをキャンセルしました");
+            goto fail;
         }
     }
     mlt_consumer_stop(consumer);
@@ -528,7 +557,7 @@ fail:
         mlt_playlist_close(playlist);
     if (profile)
         mlt_profile_close(profile);
-    return 1;
+    return cancelled ? MVM_EXPORT_CANCELLED : MVM_EXPORT_FAILED;
 }
 
 int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long long total_duration,
@@ -543,14 +572,15 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     int cut_count = 0;
     mlt_consumer consumer = NULL;
     long long cursors[2] = {0, 0};
-    int failed = 1;
+    int failed = MVM_EXPORT_FAILED;
 
     if (out)
         memset(out, 0, sizeof(*out));
     if (!mvm_mlt_runtime_is_ready() || !clips || !spec || !out_path || !*out_path ||
         clip_count <= 0 || clip_count > MVM_EXPORT_MAX_CLIPS || total_duration <= 0 ||
         spec->width <= 0 || spec->height <= 0 || spec->fps_num <= 0 || spec->fps_den <= 0 ||
-        spec->timeout_ms <= 0) {
+        spec->timeout_ms <= 0 || spec->render_threads <= 0 || spec->render_threads > 16 ||
+        spec->encoder_threads < 0 || spec->encoder_threads > 16) {
         set_err(err, err_size, "M7b tractor export引数が不正です");
         return 1;
     }
@@ -744,7 +774,8 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
         mlt_properties_set(cp, "pix_fmt", "yuv420p");
         mlt_properties_set(cp, "movflags", "+faststart");
         mlt_properties_set_int(cp, "an", 1);
-        mlt_properties_set_int(cp, "real_time", -1);
+        mlt_properties_set_int(cp, "real_time", -spec->render_threads);
+        mlt_properties_set_int(cp, "threads", spec->encoder_threads);
         mlt_properties_set_int(cp, "terminate_on_pause", 1);
         if (mlt_consumer_connect(consumer, MLT_PRODUCER_SERVICE(output)) != 0 ||
             mlt_consumer_start(consumer) != 0) {
@@ -755,12 +786,25 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     {
         int waited = 0;
         while (!mlt_consumer_is_stopped(consumer)) {
+            if (export_cancel_requested(spec, consumer, total_duration)) {
+                failed = MVM_EXPORT_CANCELLED;
+                mlt_consumer_stop(consumer);
+                set_err(err, err_size, "書き出しをキャンセルしました");
+                goto cleanup;
+            }
             Sleep(20);
             waited += 20;
             if (waited >= spec->timeout_ms) {
                 set_err(err, err_size, "tractor consumerがtimeoutしました");
                 goto cleanup;
             }
+        }
+        if (spec->progress_callback &&
+            spec->progress_callback(total_duration, total_duration, spec->progress_opaque) != 0) {
+            failed = MVM_EXPORT_CANCELLED;
+            mlt_consumer_stop(consumer);
+            set_err(err, err_size, "書き出しをキャンセルしました");
+            goto cleanup;
         }
     }
     mlt_consumer_stop(consumer);
@@ -786,7 +830,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             out->opaque_black_affine_filter_count = 0;
         }
     }
-    failed = 0;
+    failed = MVM_EXPORT_OK;
 
 cleanup:
     if (consumer) {

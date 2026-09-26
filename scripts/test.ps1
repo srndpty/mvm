@@ -16,6 +16,12 @@
     debug ビルドの性能値を判定に使わないため、-Performance は
     release でのみ意味を持つ。-Stability は診断が目的なので preset を問わない。
 
+    通常テストは「ビルド種別依存」と「ビルド種別非依存」に分けて扱う。
+    非依存とは、pwsh で起動し、引数に build/<preset>/bin を含まず、
+    DEPENDS 関係にも関わらないテストを指す (契約・checker スクリプトの検査)。
+    これらは release と debug で結果が変わらないため、1 回の呼び出しでは
+    最初の preset でだけ実行する。判定できないものは依存側に倒す。
+
 .PARAMETER Preset
     ucrt64-release / ucrt64-debug / both (既定)
 
@@ -34,12 +40,23 @@
     stability ラベル (長時間のメモリ診断など) も実行する。
     現時点では合否判定に使えないため、既定では実行しない。
 
+.PARAMETER Group
+    通常テストのうちどれを実行するか。
+      All (既定)       : 両方。ただし非依存テストは最初の preset でだけ実行する
+      BuildDependent   : ビルド種別依存のテストのみ
+      BuildIndependent : ビルド種別非依存のテストのみ。ビルドせず configure だけ行う
+
+.PARAMETER Shard
+    'k/n' 形式。BuildIndependent の対象を n 分割した k 番目だけを実行する。
+    CI で複数 job に分けて並列に走らせるために使う。
+
 .EXAMPLE
     pwsh scripts/test.ps1
     pwsh scripts/test.ps1 -Preset ucrt64-release -Performance
     pwsh scripts/test.ps1 -Preset ucrt64-release -Stability
     pwsh scripts/test.ps1 -Preset ucrt64-release -Portable   # 反復用の最短経路
     pwsh scripts/test.ps1 -Jobs 1                            # 直列に戻す
+    pwsh scripts/test.ps1 -Preset ucrt64-release -Group BuildIndependent -Shard 1/3
 #>
 [CmdletBinding()]
 param(
@@ -52,11 +69,33 @@ param(
     [switch]$Performance,
     [switch]$Stability,
     [switch]$Portable,
+
+    [ValidateSet('All', 'BuildDependent', 'BuildIndependent')]
+    [string]$Group = 'All',
+
+    [ValidatePattern('^[1-9][0-9]*/[1-9][0-9]*$')]
+    [string]$Shard,
+
     [string]$Ucrt64 = 'C:\msys64\ucrt64'
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$shardIndex = 0
+$shardCount = 1
+if ($Shard) {
+    if ($Group -ne 'BuildIndependent') {
+        throw "-Shard は -Group BuildIndependent と組み合わせてください"
+    }
+    $shardIndex, $shardCount = $Shard.Split('/') | ForEach-Object { [int]$_ }
+    if ($shardIndex -gt $shardCount) { throw "-Shard の k が n を超えています: $Shard" }
+    $shardIndex -= 1
+}
+if ($Group -eq 'BuildIndependent' -and ($Performance -or $Stability)) {
+    # configure だけでは性能・安定性テストの実行ファイルが無い。
+    throw "-Group BuildIndependent は -Performance / -Stability と併用できません"
+}
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $CTest    = Join-Path $Ucrt64 'bin\ctest.exe'
@@ -167,9 +206,65 @@ function Invoke-CTestGroup {
     $script:lastGroupExit = $code
 }
 
+# ビルド種別非依存のテスト名を登録順で返す。
+# 判定材料は ctest --show-only=json-v1 の command と DEPENDS だけ。
+# 取りこぼし (依存なのに非依存と判定) は debug での検証漏れになるため、
+# 少しでも怪しいものは依存側に倒す。
+function Get-BuildIndependentTestNames {
+    param([string]$BuildDir, [string[]]$CTestArgs)
+
+    $jsonLines = & $script:CTest --show-only=json-v1 @CTestArgs
+    if ($LASTEXITCODE -ne 0) { throw "ctest --show-only=json-v1 が exit $LASTEXITCODE で失敗しました" }
+    $tests = @((($jsonLines -join "`n") | ConvertFrom-Json).tests)
+
+    # build dir 配下を指す引数は、テスト出力先 (tests/ 以下) を除きビルド成果物とみなす。
+    # bin/ だけを見ると $<TARGET_FILE:...> の静的ライブラリ (src/*.a) を取りこぼす。
+    $buildPrefix = ($BuildDir -replace '\\', '/').ToLowerInvariant().TrimEnd('/') + '/'
+    $testOutputPrefix = $buildPrefix + 'tests/'
+
+    # DEPENDS で結ばれたテストは他のテストの出力を読むため、両端とも依存側に残す。
+    $dependsRelated = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($t in $tests) {
+        if (-not $t.PSObject.Properties['properties']) { continue }
+        foreach ($prop in @($t.properties)) {
+            if ($prop.name -ne 'DEPENDS') { continue }
+            [void]$dependsRelated.Add($t.name)
+            foreach ($d in @($prop.value)) { [void]$dependsRelated.Add("$d") }
+        }
+    }
+
+    $names = @()
+    foreach ($t in $tests) {
+        if (-not $t.PSObject.Properties['command']) { continue }
+        $command = @($t.command)
+        if ($command.Count -eq 0) { continue }
+        if ([IO.Path]::GetFileNameWithoutExtension("$($command[0])") -ne 'pwsh') { continue }
+        if ($dependsRelated.Contains($t.name)) { continue }
+        $usesBuildOutput = $false
+        foreach ($arg in $command) {
+            $normalized = ("$arg" -replace '\\', '/').ToLowerInvariant()
+            # '|' で連結された ChildArgs などに複数のパスが入るため、全出現位置を見る。
+            $at = $normalized.IndexOf($buildPrefix)
+            while ($at -ge 0) {
+                if ($normalized.IndexOf($testOutputPrefix, $at) -ne $at) { $usesBuildOutput = $true; break }
+                $at = $normalized.IndexOf($buildPrefix, $at + 1)
+            }
+            if ($usesBuildOutput) { break }
+        }
+        if (-not $usesBuildOutput) { $names += $t.name }
+    }
+    return , $names
+}
+
+# 非依存テストは 1 回の呼び出しで 1 度だけ実行する。
+$independentDone = $false
+
 foreach ($p in $presets) {
     Write-Host "`n=== $p ===" -ForegroundColor Cyan
-    & (Join-Path $PSScriptRoot 'build.ps1') -Preset $p -Ucrt64 $Ucrt64
+    # 非依存テストだけなら実行ファイルは不要なので configure で止める。
+    $buildArgs = @{ Preset = $p; Ucrt64 = $Ucrt64 }
+    if ($Group -eq 'BuildIndependent') { $buildArgs.ConfigureOnly = $true }
+    & (Join-Path $PSScriptRoot 'build.ps1') @buildArgs
     if ($LASTEXITCODE -ne 0) { throw "ビルドに失敗しました: $p" }
 
     $buildDir = Join-Path $RepoRoot "build\$p"
@@ -178,9 +273,47 @@ foreach ($p in $presets) {
     Push-Location $buildDir
     try {
         # 通常テスト: performance と stability の両方を除外する
-        Invoke-CTestGroup -Preset $p -Kind $normalKind -Required `
-            -CTestArgs @('-LE', $normalExclude)
+        $normalArgs = @('-LE', $normalExclude)
+        $effectiveGroup = if ($Group -eq 'All' -and $independentDone) { 'BuildDependent' } else { $Group }
+
+        if ($effectiveGroup -eq 'All') {
+            Invoke-CTestGroup -Preset $p -Kind $normalKind -Required -CTestArgs $normalArgs
+        } else {
+            $independent = Get-BuildIndependentTestNames -BuildDir $buildDir -CTestArgs $normalArgs
+            if ($independent.Count -eq 0) {
+                # 分類が壊れて全件が依存側に倒れた可能性がある。黙って続けない。
+                throw 'ビルド種別非依存のテストが 0 件です。分類処理を確認してください。'
+            }
+            $listDir = Join-Path $buildDir 'Testing'
+            New-Item -ItemType Directory -Force $listDir | Out-Null
+            $listFile = Join-Path $listDir 'mvm-build-independent-tests.txt'
+
+            if ($effectiveGroup -eq 'BuildDependent') {
+                Set-Content -LiteralPath $listFile -Value $independent -Encoding utf8NoBOM
+                if ($Group -eq 'All') {
+                    # 飛ばしたことを結果に残す。
+                    Write-Host "ビルド種別非依存の $($independent.Count) 件は実行済みのため省略します" -ForegroundColor Yellow
+                    $summary += [pscustomobject]@{
+                        Preset = $p; Kind = "$normalKind 非依存"; Total = $independent.Count; Ran = 0
+                        Failed = 0; Passed = 0; Exit = 0; Note = "$($presets[0]) で実行済み"
+                    }
+                }
+                Invoke-CTestGroup -Preset $p -Kind "$normalKind 依存" -Required `
+                    -CTestArgs ($normalArgs + @('--exclude-from-file', $listFile))
+            } else {
+                $selected = @(for ($i = $shardIndex; $i -lt $independent.Count; $i += $shardCount) { $independent[$i] })
+                Write-Host ("ビルド種別非依存 全 {0} 件のうち shard {1}/{2} の {3} 件を実行します" -f `
+                    $independent.Count, ($shardIndex + 1), $shardCount, $selected.Count)
+                # 空のリストを渡すと絞り込み無しと同じになり得るので、ここで止める。
+                if ($selected.Count -eq 0) { throw "shard $Shard の対象が 0 件です" }
+                Set-Content -LiteralPath $listFile -Value $selected -Encoding utf8NoBOM
+                $kind = if ($Shard) { "$normalKind 非依存 $Shard" } else { "$normalKind 非依存" }
+                Invoke-CTestGroup -Preset $p -Kind $kind -Required `
+                    -CTestArgs ($normalArgs + @('--tests-from-file', $listFile))
+            }
+        }
         if ($lastGroupExit -ne 0) { $anyFailed = $true }
+        if ($effectiveGroup -ne 'BuildDependent') { $independentDone = $true }
 
         if ($Performance) {
             if ($p -ne 'ucrt64-release') {

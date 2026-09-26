@@ -10,6 +10,9 @@ $checks = @(
     @{ Name = "P0 rotation property"; Pass = $source.Contains('"fix_rotate_x"') -and -not $source.Contains('MLT_TRANSITION_PROPERTIES(transition), "fix_rotate_z"') },
     @{ Name = "P0 fixed properties"; Pass = $hasFixedProperties },
     @{ Name = "V2 opaque affine filter forbidden"; Pass = $source.Contains("V2へopaque-black affine filterをattachしてはならない") -and $source.Contains("opaque_black_affine_filter_count = 0") }
+    @{ Name = "non-drop parallel render"; Pass = $source.Contains('"real_time", -spec->render_threads') }
+    @{ Name = "encoder auto threads"; Pass = $source.Contains('"threads", spec->encoder_threads') }
+    @{ Name = "progress and cancellation"; Pass = $source.Contains("mlt_consumer_position") -and $source.Contains("書き出しをキャンセルしました") }
 )
 $failed = @($checks | Where-Object { -not $_.Pass })
 foreach ($check in $checks) { Write-Host "$(if ($check.Pass) {'PASS'} else {'FAIL'}) $($check.Name)" }
