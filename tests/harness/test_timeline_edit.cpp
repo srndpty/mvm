@@ -319,6 +319,33 @@ void testPlacementHelpers() {
           "video clipのaudio trackへの移動を拒否しません");
 }
 
+void testMultipleClipMove() {
+    auto project = mvm::project::createDefaultProject();
+    auto first = clip("multi-first", mvm::project::TimelineClipKind::Video, kV1);
+    auto second = clip("multi-second", mvm::project::TimelineClipKind::Video, kV2);
+    first.timelineStartFrame = 100;
+    second.timelineStartFrame = 500;
+    project.timelineClips = {first, second};
+
+    const auto moved = mvm::project::moveClips(project, {first.id, second.id}, first.id, kV1, 220);
+    check(moved.success && project.timelineClips[0].timelineStartFrame == 220 &&
+              project.timelineClips[1].timelineStartFrame == 620,
+          "複数clipへ同じ時間差を一括適用できません");
+
+    auto blocker = clip("multi-blocker", mvm::project::TimelineClipKind::Video, kV1);
+    blocker.timelineStartFrame = 600;
+    project.timelineClips.push_back(blocker);
+    const auto beforeFailure = project.timelineClips;
+    const auto rejected =
+        mvm::project::moveClips(project, {first.id, second.id}, first.id, kV1, 500);
+    check(!rejected.success && project.timelineClips == beforeFailure,
+          "複数移動の重なり拒否時にProjectの一部だけが変化しました");
+
+    const auto missingAnchor = mvm::project::moveClips(project, {second.id}, first.id, kV1, 300);
+    check(!missingAnchor.success && project.timelineClips == beforeFailure,
+          "選択外anchorを使う複数移動を拒否しません");
+}
+
 // track を任意に増減できること。clip の載った track を暗黙に消さないこと。
 void testTrackEditing() {
     mvm::project::Project project = mvm::project::createDefaultProject();
@@ -731,6 +758,7 @@ int main(int argc, char** argv) {
     testTimelineFrameRateChange();
     testTrimAndLookup();
     testPlacementHelpers();
+    testMultipleClipMove();
     testTrackEditing();
     testAudioClipPlacement();
     testRippleDelete();

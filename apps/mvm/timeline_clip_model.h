@@ -4,6 +4,7 @@
 #include "project/project.h"
 
 #include <QAbstractListModel>
+#include <QSet>
 
 namespace mvm::app {
 
@@ -27,6 +28,7 @@ public:
         TrackIndexRole,
         LinkedRole,
         LinkGroupIdRole,
+        SelectedRole,
     };
 
     explicit TimelineClipModel(QObject* parent = nullptr);
@@ -36,6 +38,7 @@ public:
     QHash<int, QByteArray> roleNames() const override;
 
     void setProject(const project::Project& project);
+    void setSelectedClipIds(const QSet<QString>& clipIds);
 
 private:
     struct Item {
@@ -54,6 +57,7 @@ private:
         int trackIndex = 0;
         bool linked = false;
         QString linkGroupId;
+        bool selected = false;
     };
 
     QList<Item> items_;

@@ -329,38 +329,72 @@ TimelineFrameResult timelineTrackEndFrame(const Project& project, TrackRef track
 
 TimelineEditResult moveClip(Project& project, const std::string& clipId, TrackRef destinationTrack,
                             std::int64_t newStartFrame) {
+    return moveClips(project, {clipId}, clipId, destinationTrack, newStartFrame);
+}
+
+TimelineEditResult moveClips(Project& project, const std::vector<std::string>& clipIds,
+                             const std::string& anchorClipId, TrackRef destinationTrack,
+                             std::int64_t newStartFrame) {
     TimelineEditResult result;
-    if (!isValidTrackRef(project, destinationTrack) || newStartFrame < 0) {
+    if (clipIds.empty() || !isValidTrackRef(project, destinationTrack) || newStartFrame < 0) {
         result.error = "timeline clip の移動先 track または start frame が不正です";
         return result;
     }
     Project candidate = project;
-    const int index = indexOfId(candidate, clipId);
+    const int index = indexOfId(candidate, anchorClipId);
     if (!validIndex(candidate, index)) {
         result.error = "移動する timeline clip がありません";
         return result;
     }
-    auto& clip = candidate.timelineClips[static_cast<std::size_t>(index)];
-    if (!clipKindFitsTrackKind(clip.kind, destinationTrack.kind)) {
+    const auto& anchor = candidate.timelineClips[static_cast<std::size_t>(index)];
+    if (!clipKindFitsTrackKind(anchor.kind, destinationTrack.kind)) {
         result.error = "この clip はその種別の track へ移動できません";
         return result;
     }
-    const std::int64_t oldStartFrame = clip.timelineStartFrame;
-    const std::string linkGroupId = clip.linkGroupId;
-    clip.track = destinationTrack;
-    clip.timelineStartFrame = newStartFrame;
-    if (!linkGroupId.empty()) {
-        const std::int64_t delta = newStartFrame - oldStartFrame;
-        for (auto& linked : candidate.timelineClips) {
-            if (linked.id == clipId || linked.linkGroupId != linkGroupId)
-                continue;
-            if ((delta < 0 && linked.timelineStartFrame < -delta) ||
-                (delta > 0 &&
-                 linked.timelineStartFrame > std::numeric_limits<std::int64_t>::max() - delta)) {
-                result.error = "リンクclipの移動先が範囲外です";
+
+    std::unordered_set<std::string> movedIds;
+    std::unordered_set<std::string> linkGroups;
+    for (const auto& clipId : clipIds) {
+        const int selectedIndex = indexOfId(candidate, clipId);
+        if (!validIndex(candidate, selectedIndex)) {
+            result.error = "移動する timeline clip がありません";
+            return result;
+        }
+        const auto& selected = candidate.timelineClips[static_cast<std::size_t>(selectedIndex)];
+        movedIds.insert(selected.id);
+        if (!selected.linkGroupId.empty())
+            linkGroups.insert(selected.linkGroupId);
+    }
+    if (!movedIds.contains(anchorClipId)) {
+        result.error = "anchor clip が選択に含まれていません";
+        return result;
+    }
+    for (const auto& clip : candidate.timelineClips) {
+        if (!clip.linkGroupId.empty() && linkGroups.contains(clip.linkGroupId))
+            movedIds.insert(clip.id);
+    }
+
+    const std::int64_t oldStartFrame = anchor.timelineStartFrame;
+    const std::int64_t delta = newStartFrame - oldStartFrame;
+    const int trackDelta = destinationTrack.index - anchor.track.index;
+    for (auto& clip : candidate.timelineClips) {
+        if (!movedIds.contains(clip.id))
+            continue;
+        if ((delta < 0 && clip.timelineStartFrame < -delta) ||
+            (delta > 0 &&
+             clip.timelineStartFrame > std::numeric_limits<std::int64_t>::max() - delta)) {
+            result.error = "選択clipの移動先が範囲外です";
+            return result;
+        }
+        clip.timelineStartFrame += delta;
+        if (clip.track.kind == destinationTrack.kind) {
+            const int destinationIndex = clip.track.index + trackDelta;
+            const TrackRef translatedTrack{clip.track.kind, destinationIndex};
+            if (!isValidTrackRef(candidate, translatedTrack)) {
+                result.error = "選択clipの移動先trackが範囲外です";
                 return result;
             }
-            linked.timelineStartFrame += delta;
+            clip.track = translatedTrack;
         }
     }
     const auto validation = validateTimeline(candidate);

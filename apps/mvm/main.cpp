@@ -8,6 +8,7 @@
 
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QKeyEvent>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <qqml.h>
@@ -28,12 +29,22 @@ struct AppArguments {
 
 class TimelineWheelEventFilter final : public QObject {
 public:
-    TimelineWheelEventFilter(QQuickWindow* window, QQuickItem* timelinePanel)
-        : window_(window), timelinePanel_(timelinePanel) {}
+    TimelineWheelEventFilter(QQuickWindow* window, QQuickItem* timelinePanel, QObject* root)
+        : window_(window), timelinePanel_(timelinePanel), root_(root) {}
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override {
-        if (watched != window_ || event->type() != QEvent::Wheel || !timelinePanel_)
+        if (watched != window_)
+            return QObject::eventFilter(watched, event);
+        if ((event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease) && root_) {
+            const auto* key = static_cast<QKeyEvent*>(event);
+            if (key->key() == Qt::Key_Space && key->modifiers() == Qt::NoModifier) {
+                if (!key->isAutoRepeat())
+                    root_->setProperty("spaceMoveToolActive", event->type() == QEvent::KeyPress);
+                return true;
+            }
+        }
+        if (event->type() != QEvent::Wheel || !timelinePanel_)
             return QObject::eventFilter(watched, event);
         const auto* wheel = static_cast<QWheelEvent*>(event);
         const QPointF local = timelinePanel_->mapFromScene(wheel->position());
@@ -82,6 +93,7 @@ protected:
 private:
     QQuickWindow* window_ = nullptr;
     QQuickItem* timelinePanel_ = nullptr;
+    QObject* root_ = nullptr;
 };
 
 void usage() {
@@ -181,7 +193,7 @@ int main(int argc, char** argv) {
                      "mvmのWindow、Preview、またはtimeline panelが見つかりません\n");
         return 4;
     }
-    TimelineWheelEventFilter timelineWheelFilter(window, timelinePanel);
+    TimelineWheelEventFilter timelineWheelFilter(window, timelinePanel, engine.rootObjects().first());
     window->installEventFilter(&timelineWheelFilter);
     controller.attachPreview(surface);
 

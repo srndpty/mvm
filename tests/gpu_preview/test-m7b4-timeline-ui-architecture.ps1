@@ -17,7 +17,9 @@ $requiredQml = @(
     'function trackAtY(y)',
     'mvmController.selectTimelineClip(clipItem.clipId, frame)',
     'mvmController.moveTimelineClip(',
-    'destination.kind, destination.index'
+    'destination.kind, destination.index',
+    'mvmController.selectTimelineClips(selectedIds)',
+    'required property bool selected'
 )
 # track 数は固定しない。model から引き、行位置は rowY() だけが決める。
 $forbiddenQml = @(
@@ -61,8 +63,15 @@ $requiredInteractions = @(
 
 $requiredShortcuts = @(
     'sequence: "Delete"',
-    'sequence: "Space"'
+    'sequence: "Ctrl+Space"'
 )
+
+foreach ($needle in @('spaceMoveToolActive', 'Qt.OpenHandCursor', 'Qt.ClosedHandCursor',
+                      'id: rectangleSelectionArea')) {
+    if (-not $qml.Contains($needle)) {
+        throw "矩形選択またはSpace move toolの契約がありません: $needle"
+    }
+}
 
 foreach ($needle in ($requiredQml + $requiredInteractions + $requiredShortcuts)) {
     if (-not $qml.Contains($needle)) {

@@ -513,8 +513,13 @@ bool MvmController::canPlay() const {
 }
 
 void MvmController::refreshTimelineModel() {
-    if (timelineModel_)
+    if (timelineModel_) {
         timelineModel_->setProject(project_);
+        QSet<QString> selectedIds;
+        for (const auto& id : selectedClipIds_)
+            selectedIds.insert(QString::fromStdString(id));
+        timelineModel_->setSelectedClipIds(selectedIds);
+    }
     if (videoTrackModel_)
         videoTrackModel_->setProject(project_);
     if (audioTrackModel_)
@@ -572,6 +577,33 @@ void MvmController::setCurrentClipSelection(int index) {
             currentSource_ = slot.source;
     }
     Q_EMIT stateChanged();
+}
+
+void MvmController::setTimelineSelection(const std::vector<std::string>& clipIds) {
+    selectedClipIds_ = clipIds;
+    std::vector<std::string> selectedLinkGroups;
+    for (const auto& id : clipIds) {
+        const int index = indexOfClipId(project_.timelineClips, id);
+        if (index < 0)
+            continue;
+        const auto& linkGroup = project_.timelineClips[static_cast<std::size_t>(index)].linkGroupId;
+        if (!linkGroup.empty() &&
+            std::find(selectedLinkGroups.begin(), selectedLinkGroups.end(), linkGroup) ==
+                selectedLinkGroups.end())
+            selectedLinkGroups.push_back(linkGroup);
+    }
+    for (const auto& clip : project_.timelineClips) {
+        if (!clip.linkGroupId.empty() &&
+            std::find(selectedLinkGroups.begin(), selectedLinkGroups.end(), clip.linkGroupId) !=
+                selectedLinkGroups.end() &&
+            std::find(selectedClipIds_.begin(), selectedClipIds_.end(), clip.id) ==
+                selectedClipIds_.end())
+            selectedClipIds_.push_back(clip.id);
+    }
+    QSet<QString> selectedIds;
+    for (const auto& id : selectedClipIds_)
+        selectedIds.insert(QString::fromStdString(id));
+    timelineModel_->setSelectedClipIds(selectedIds);
 }
 
 bool MvmController::refreshPreviewAfterSavedEdit(const std::string& selectedClipId,
@@ -1366,8 +1398,9 @@ bool MvmController::selectClip(int index) {
         setStatus(QStringLiteral("選択したclipがありません"));
         return false;
     }
-    setCurrentClipSelection(index);
     const project::TimelineClip& clip = project_.timelineClips[static_cast<std::size_t>(index)];
+    setTimelineSelection({clip.id});
+    setCurrentClipSelection(index);
     return seekTimelineFrame(clip.timelineStartFrame);
 }
 
@@ -1377,8 +1410,32 @@ bool MvmController::selectTimelineClip(const QString& clipId, qint64 frame) {
         setStatus(QStringLiteral("選択したclipがありません"));
         return false;
     }
+    setTimelineSelection({clipId.toStdString()});
     setCurrentClipSelection(index);
     return seekTimelineFrame(frame);
+}
+
+bool MvmController::selectTimelineClips(const QStringList& clipIds) {
+    std::vector<std::string> selectedIds;
+    selectedIds.reserve(static_cast<std::size_t>(clipIds.size()));
+    for (const auto& clipId : clipIds) {
+        const std::string id = clipId.toStdString();
+        if (indexOfClipId(project_.timelineClips, id) < 0) {
+            setStatus(QStringLiteral("矩形選択に存在しないclipが含まれています"));
+            return false;
+        }
+        if (std::find(selectedIds.begin(), selectedIds.end(), id) == selectedIds.end())
+            selectedIds.push_back(id);
+    }
+    setTimelineSelection(selectedIds);
+    if (selectedIds.empty()) {
+        setCurrentClipSelection(-1);
+        setStatus(QStringLiteral("clipの選択を解除しました"));
+        return true;
+    }
+    setCurrentClipSelection(indexOfClipId(project_.timelineClips, selectedIds.front()));
+    setStatus(QString::number(selectedIds.size()) + QStringLiteral("個のclipを選択しました"));
+    return true;
 }
 
 void MvmController::beginScrub() {
@@ -1672,15 +1729,24 @@ bool MvmController::moveTimelineClip(const QString& clipId, const QString& track
         return false;
     }
     project::Project candidate = project_;
-    const auto moved = project::moveClip(candidate, clipId.toStdString(), destination,
-                                         std::max<qint64>(0, timelineStartFrame));
+    const std::string anchorId = clipId.toStdString();
+    std::vector<std::string> movedIds = selectedClipIds_;
+    if (std::find(movedIds.begin(), movedIds.end(), anchorId) == movedIds.end()) {
+        movedIds = {anchorId};
+        setTimelineSelection(movedIds);
+    }
+    const auto moved = project::moveClips(candidate, movedIds, anchorId, destination,
+                                          std::max<qint64>(0, timelineStartFrame));
     if (!moved.success) {
         setStatus(QString::fromStdString(moved.error));
         return false;
     }
     if (!saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: ")))
         return false;
-    return refreshPreviewAfterSavedEdit(clipId.toStdString(), QStringLiteral("clipを移動しました"));
+    const QString status = movedIds.size() > 1
+                               ? QString::number(movedIds.size()) + QStringLiteral("個のclipを移動しました")
+                               : QStringLiteral("clipを移動しました");
+    return refreshPreviewAfterSavedEdit(anchorId, status);
 }
 
 bool MvmController::trimClip(const QString& clipId, const QString& edge, qint64 projectFrameDelta) {
@@ -1916,6 +1982,7 @@ bool MvmController::adoptProject(project::Project loaded, std::filesystem::path 
         return false;
     project_ = std::move(loaded);
     projectPath_ = std::move(path);
+    selectedClipIds_.clear();
     currentClipIndex_ = -1;
     currentClipName_.clear();
     currentClipPath_.clear();

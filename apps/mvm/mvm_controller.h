@@ -170,6 +170,7 @@ public:
     Q_INVOKABLE bool addAudioClip(const QUrl& fileUrl);
     Q_INVOKABLE bool selectClip(int index);
     Q_INVOKABLE bool selectTimelineClip(const QString& clipId, qint64 frame);
+    Q_INVOKABLE bool selectTimelineClips(const QStringList& clipIds);
     Q_INVOKABLE bool seekTimelineFrame(qint64 frame);
     // scrub。drag 中は最新位置だけを coalesce して seek し、release で確定する。
     Q_INVOKABLE void beginScrub();
@@ -265,6 +266,7 @@ private:
     bool syncManimTimelineClip(bool addIfMissing);
     bool saveProject(project::Project candidate, const QString& failurePrefix);
     void setCurrentClipSelection(int index);
+    void setTimelineSelection(const std::vector<std::string>& clipIds);
     bool refreshPreviewAfterSavedEdit(const std::string& selectedClipId,
                                       const QString& successStatus);
     const project::ClipEffects& currentEffects() const;
@@ -338,6 +340,7 @@ private:
     int pendingClipIndex_ = -1;
     std::int64_t pendingSourceFrame_ = 0;
     int currentClipIndex_ = -1;
+    std::vector<std::string> selectedClipIds_;
     std::int64_t playheadFrame_ = 0;
     std::int64_t totalTimelineFrames_ = 0;
     double audioMeterDbLeft_ = kMeterSilenceDb;
