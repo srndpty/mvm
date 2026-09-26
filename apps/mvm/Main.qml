@@ -17,9 +17,10 @@ ApplicationWindow {
 
     property url selectedManimScript
 
-    function isSupportedVideoUrl(url) {
-        const value = url.toString();
-        return /^file:/i.test(value) && /\.(mp4|mov|mkv|ts)$/i.test(value);
+    function isLocalFileUrl(url) {
+        // 対応形式は拡張子では決めない。drop 後に controller が MLT で内容を検査し、
+        // 映像 stream・有限尺・FPS を確認できた素材だけを timeline へ追加する。
+        return /^file:/i.test(url.toString());
     }
 
     DropArea {
@@ -34,7 +35,7 @@ ApplicationWindow {
             if (mvmController.busy || !drag.hasUrls)
                 return;
             for (let index = 0; index < drag.urls.length; ++index) {
-                if (root.isSupportedVideoUrl(drag.urls[index])) {
+                if (root.isLocalFileUrl(drag.urls[index])) {
                     acceptingVideoDrag = true;
                     drag.accepted = true;
                     return;
@@ -47,7 +48,7 @@ ApplicationWindow {
             let accepted = false;
             for (let index = 0; index < drop.urls.length; ++index) {
                 const url = drop.urls[index];
-                if (!root.isSupportedVideoUrl(url))
+                if (!root.isLocalFileUrl(url))
                     continue;
                 accepted = true;
                 mvmController.addVideoClip(url);

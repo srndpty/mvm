@@ -83,10 +83,15 @@ $requiredShortcuts = @(
 $requiredVideoDrop = @(
     'id: videoDropArea',
     'drag.hasUrls',
-    'root.isSupportedVideoUrl(drag.urls[index])',
+    'root.isLocalFileUrl(drag.urls[index])',
     'mvmController.addVideoClip(url)',
     'drop.acceptProposedAction()',
     'videoDropArea.acceptingVideoDrag'
+)
+
+$forbiddenVideoDrop = @(
+    'isSupportedVideoUrl',
+    '/\.(mp4|mov|mkv|ts)$/i'
 )
 
 $requiredExportProgress = @(
@@ -113,6 +118,11 @@ foreach ($needle in ($requiredQml + $requiredInteractions + $requiredShortcuts +
                      $requiredVideoDrop + $requiredExportProgress)) {
     if (-not $qml.Contains($needle)) {
         throw "timeline UI contractがありません: $needle"
+    }
+}
+foreach ($needle in $forbiddenVideoDrop) {
+    if ($qml.Contains($needle)) {
+        throw "動画dropを拡張子で制限する旧契約が残っています: $needle"
     }
 }
 foreach ($needle in $forbiddenQml) {

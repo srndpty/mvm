@@ -107,6 +107,18 @@ add_test(NAME m7b_4_timeline_ui_architecture
             ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-m7b4-timeline-ui-architecture.ps1)
 set_tests_properties(m7b_4_timeline_ui_architecture PROPERTIES TIMEOUT 120)
 
+# import 対応は拡張子一覧ではなく内容 probe で決める。MPG の positive、未知拡張子の
+# positive、拡張子だけ MPG の negative を同じ経路で固定する。
+add_test(NAME m7b_4_media_import_content_probe
+    COMMAND pwsh -NoProfile -File
+            ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-media-import-content-probe.ps1
+            -Bench $<TARGET_FILE:mvm_bench>
+            -FFmpeg ${MVM_UCRT64_ROOT}/bin/ffmpeg.exe
+            -WorkDirectory ${CMAKE_CURRENT_BINARY_DIR}/media-import-content-probe)
+set_tests_properties(m7b_4_media_import_content_probe PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+
 qt_add_executable(mvm_test_controller_export
     harness/test_mvm_controller_export.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller.cpp
