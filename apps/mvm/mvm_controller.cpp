@@ -225,8 +225,15 @@ MvmController::MvmController(std::filesystem::path projectPath,
         }
         // seek が Seeking 中で弾かれた場合は pending のままにする。
         // ここで落とすと、drag が止まった位置の preview が更新されないまま残る。
-        if (seekTimelineFrame(scrubTargetFrame_))
+        if (seekTimelineFrame(scrubTargetFrame_)) {
             scrubPending_ = false;
+        } else if (previewEngine_->status().state == preview::PreviewEngineState::Error) {
+            // 復旧不能な error を Seeking と同じ一時状態として再試行すると、
+            // 同じ通知を 40 ms ごとに出し続けて本来の原因まで上書きしてしまう。
+            scrubPending_ = false;
+            scrubbing_ = false;
+            scrubTimer_.stop();
+        }
     });
 
     meterTimer_.setInterval(50);
@@ -352,6 +359,11 @@ bool MvmController::hasManimTimelineClip() const {
 void MvmController::setStatus(QString status) {
     statusText_ = std::move(status);
     Q_EMIT stateChanged();
+}
+
+void MvmController::reportExportFailure(QString message) {
+    setStatus(message);
+    Q_EMIT exportFailed(message);
 }
 
 bool MvmController::initializePreviewEngine(const QString& failurePrefix) {
@@ -1528,7 +1540,15 @@ bool MvmController::seekTimelineFrame(qint64 frame) {
             index = static_cast<int>(selected - project_.timelineClips.data());
     }
     Q_EMIT stateChanged();
-    if (previewEngine_->status().state != preview::PreviewEngineState::ReadyPaused) {
+    const auto previewStatus = previewEngine_->status();
+    if (previewStatus.state == preview::PreviewEngineState::Error) {
+        const QString detail = previewStatus.lastError
+                                   ? previewErrorText(*previewStatus.lastError)
+                                   : QStringLiteral("原因を取得できませんでした");
+        setStatus(QStringLiteral("Preview error: ") + detail);
+        return false;
+    }
+    if (previewStatus.state != preview::PreviewEngineState::ReadyPaused) {
         setStatus(QStringLiteral("Previewがseek可能になるまで待ってください"));
         return false;
     }
@@ -2172,16 +2192,20 @@ bool MvmController::setTimelineFrameRate(int fpsNum, int fpsDen) {
 }
 
 bool MvmController::exportTimeline(const QUrl& outputUrl) {
-    if (busy_)
+    if (busy_) {
+        reportExportFailure(QStringLiteral("別の処理中のため書き出しを開始できません"));
         return false;
-    if (!pauseTimeline())
+    }
+    if (!pauseTimeline()) {
+        reportExportFailure(statusText_);
         return false;
+    }
     if (project_.timelineClips.empty()) {
-        setStatus(QStringLiteral("書き出すclipがありません"));
+        reportExportFailure(QStringLiteral("書き出すclipがありません"));
         return false;
     }
     if (!outputUrl.isLocalFile()) {
-        setStatus(QStringLiteral("ローカルの書き出し先を指定してください"));
+        reportExportFailure(QStringLiteral("ローカルの書き出し先を指定してください"));
         return false;
     }
 
@@ -2246,8 +2270,8 @@ bool MvmController::exportTimeline(const QUrl& outputUrl) {
         exporting_ = false;
         exportCancelling_ = false;
         busy_ = false;
-        setStatus(QStringLiteral("書き出しworkerを開始できません: ") +
-                  QString::fromLocal8Bit(error.what()));
+        reportExportFailure(QStringLiteral("書き出しworkerを開始できません: ") +
+                            QString::fromLocal8Bit(error.what()));
         return false;
     }
     return true;
@@ -2272,8 +2296,8 @@ void MvmController::finishTimelineExport(TimelineExportResult exported) {
         if (exported.cancelled)
             setStatus(QStringLiteral("書き出しをキャンセルしました"));
         else
-            setStatus(QStringLiteral("書き出しに失敗しました: ") +
-                      QString::fromStdString(exported.error));
+            reportExportFailure(QStringLiteral("書き出しに失敗しました: ") +
+                                QString::fromStdString(exported.error));
         return;
     }
     exportProgress_ = 1.0;

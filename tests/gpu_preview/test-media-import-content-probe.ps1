@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$Bench,
+    [Parameter(Mandatory)][string]$AudioSeekTest,
+    [Parameter(Mandatory)][string]$MpgExportTest,
     [Parameter(Mandatory)][string]$FFmpeg,
     [Parameter(Mandatory)][string]$WorkDirectory
 )
@@ -22,9 +24,15 @@ function Invoke-MediaProbe([string]$MediaPath, [string]$JsonPath) {
 }
 
 $benchPath = [IO.Path]::GetFullPath($Bench)
+$audioSeekTestPath = [IO.Path]::GetFullPath($AudioSeekTest)
+$mpgExportTestPath = [IO.Path]::GetFullPath($MpgExportTest)
 $ffmpegPath = [IO.Path]::GetFullPath($FFmpeg)
 $workPath = [IO.Path]::GetFullPath($WorkDirectory)
 Assert-That (Test-Path -LiteralPath $benchPath -PathType Leaf) "mvm_bench がありません: $benchPath"
+Assert-That (Test-Path -LiteralPath $audioSeekTestPath -PathType Leaf) `
+    "audio seek testがありません: $audioSeekTestPath"
+Assert-That (Test-Path -LiteralPath $mpgExportTestPath -PathType Leaf) `
+    "MPG export testがありません: $mpgExportTestPath"
 Assert-That (Test-Path -LiteralPath $ffmpegPath -PathType Leaf) "UCRT64 FFmpeg がありません: $ffmpegPath"
 New-Item -ItemType Directory -Path $workPath -Force | Out-Null
 
@@ -45,6 +53,15 @@ Assert-That ($mpgProbe.mlt.is_unbounded_length -eq $false) 'MPG が有限尺と�
 Assert-That ([long]$mpgProbe.mlt.frame_count -gt 0) 'MPG の frame count が正ではありません'
 Assert-That ([long]$mpgProbe.mlt.fps_num -gt 0 -and [long]$mpgProbe.mlt.fps_den -gt 0) `
     'MPG の FPS が有効ではありません'
+
+# MPEG-PSは非ゼロのstream開始PTSを持つ。このfixtureでsample 0と途中位置の
+# exact audio seekを満たし、絶対PTSをそのままsample番号にしないことを固定する。
+& $audioSeekTestPath $mpgPath
+Assert-That ($LASTEXITCODE -eq 0) "非ゼロ開始PTSのaudio seekに失敗しました: exit $LASTEXITCODE"
+
+$mpgExportPath = Join-Path $workPath 'mpeg2-export.mp4'
+& $mpgExportTestPath $mpgPath $mpgExportPath
+Assert-That ($LASTEXITCODE -eq 0) "音声付きMPGの書き出しに失敗しました: exit $LASTEXITCODE"
 
 # 拡張子を変えても同じ内容なら受理できることを固定する。
 $unknownExtensionPath = Join-Path $workPath 'mpeg2-content.unknown-video'

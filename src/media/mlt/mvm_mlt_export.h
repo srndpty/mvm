@@ -35,8 +35,10 @@ typedef struct {
     const char* path; /* UTF-8。実在する動画ファイル */
     long long source_fps_num;
     long long source_fps_den;
+    long long source_frame_count;
     long long source_in_frame;  /* inclusive、素材固有 frame domain */
     long long source_out_frame; /* exclusive、素材固有 frame domain */
+    int is_audio;               /* 非0なら映像を隠して独立audio trackとしてmixする */
     int effects_enabled;
     int crop_left;
     int crop_top;

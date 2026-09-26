@@ -119,6 +119,29 @@ void testQueuedProgressAfterCancel(const std::filesystem::path& path) {
     check(!controller.busy() && !controller.exportCancelling(), "キャンセル完了後の状態が不正です");
 }
 
+void testFailedExportNotification(const std::filesystem::path& path) {
+    mvm::app::MvmController controller(path, {}, videoProject(), nullptr,
+                                       [](const auto&, const auto&) {
+                                           mvm::app::TimelineExportResult result;
+                                           result.error = "fixture export failure";
+                                           return result;
+                                       });
+    QString notification;
+    int notificationCount = 0;
+    QObject::connect(&controller, &mvm::app::MvmController::exportFailed,
+                     [&](const QString& message) {
+                         notification = message;
+                         ++notificationCount;
+                     });
+    const QUrl output = QUrl::fromLocalFile(
+        QString::fromStdWString((path.parent_path() / L"failed.mp4").wstring()));
+    check(controller.exportTimeline(output), "失敗通知試験を開始できません");
+    check(pumpUntil([&] { return !controller.exporting(); }), "失敗するexportが完了しません");
+    check(notificationCount == 1 &&
+              notification == QStringLiteral("書き出しに失敗しました: fixture export failure"),
+          "書き出し失敗を利用者通知へ1回だけ渡せません");
+}
+
 void testShutdown(const std::filesystem::path& path, bool finishBeforeShutdown) {
     std::promise<void> entered;
     auto enteredFuture = entered.get_future();
@@ -153,11 +176,16 @@ void testThreadFailure(const std::filesystem::path& path) {
             throw std::system_error(
                 std::make_error_code(std::errc::resource_unavailable_try_again));
         });
+    QString notification;
+    QObject::connect(&controller, &mvm::app::MvmController::exportFailed,
+                     [&](const QString& message) { notification = message; });
     const QUrl output =
         QUrl::fromLocalFile(QString::fromStdWString((path.parent_path() / L"fail.mp4").wstring()));
     check(!controller.exportTimeline(output), "worker起動失敗を受理しました");
     check(!controller.exporting() && !controller.busy() && !controller.exportCancelling(),
           "worker起動失敗後の状態が戻りません");
+    check(notification.startsWith(QStringLiteral("書き出しworkerを開始できません: ")),
+          "worker起動失敗を利用者通知へ渡せません");
 }
 
 void testUndo(const std::filesystem::path& path) {
@@ -213,6 +241,7 @@ int main(int argc, char** argv) {
     std::filesystem::create_directories(directory);
     testCompleteAndRestart(directory / L"complete.mvm");
     testQueuedProgressAfterCancel(directory / L"cancel.mvm");
+    testFailedExportNotification(directory / L"failed.mvm");
     testShutdown(directory / L"shutdown-active.mvm", false);
     testShutdown(directory / L"shutdown-finished.mvm", true);
     testThreadFailure(directory / L"thread-failure.mvm");

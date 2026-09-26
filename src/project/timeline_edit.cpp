@@ -374,15 +374,25 @@ TimelineEditResult moveClips(Project& project, const std::vector<std::string>& c
             movedIds.insert(clip.id);
     }
 
+    std::int64_t minimumStartFrame = std::numeric_limits<std::int64_t>::max();
+    for (const auto& clip : candidate.timelineClips) {
+        if (movedIds.contains(clip.id))
+            minimumStartFrame = std::min(minimumStartFrame, clip.timelineStartFrame);
+    }
+
     const std::int64_t oldStartFrame = anchor.timelineStartFrame;
-    const std::int64_t delta = newStartFrame - oldStartFrame;
+    const std::int64_t requestedDelta = newStartFrame - oldStartFrame;
+    // anchorだけを0へ丸めると、より左にある選択clipやリンク相手が負になる。
+    // グループ全体の最左端が0に接する位置で止め、全clipへ同じdeltaを適用する。
+    const std::int64_t delta = requestedDelta < 0 && minimumStartFrame < -requestedDelta
+                                   ? -minimumStartFrame
+                                   : requestedDelta;
     const int trackDelta = destinationTrack.index - anchor.track.index;
     for (auto& clip : candidate.timelineClips) {
         if (!movedIds.contains(clip.id))
             continue;
-        if ((delta < 0 && clip.timelineStartFrame < -delta) ||
-            (delta > 0 &&
-             clip.timelineStartFrame > std::numeric_limits<std::int64_t>::max() - delta)) {
+        if (delta > 0 &&
+            clip.timelineStartFrame > std::numeric_limits<std::int64_t>::max() - delta) {
             result.error = "選択clipの移動先が範囲外です";
             return result;
         }

@@ -239,6 +239,7 @@ public Q_SLOTS:
 Q_SIGNALS:
     void stateChanged();
     void meterChanged();
+    void exportFailed(const QString& message);
 
 private:
     struct TrackPreviewSource {
@@ -281,6 +282,7 @@ private:
     void pollAudioMeter();
     void advanceTimelinePlayback();
     void setStatus(QString status);
+    void reportExportFailure(QString message);
     bool initializePreviewEngine(const QString& failurePrefix);
     bool resetPreviewEngine();
     void restoreFirstManimClip();

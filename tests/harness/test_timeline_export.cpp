@@ -301,6 +301,28 @@ int main(int argc, char** argv) {
         }
     }
 
+    // producerの実尺より素材末尾境界だけが1 frame長い場合は、実尺へ限定して書き出す。
+    // 2 frame以上の超過まで黙って切り詰めないnegative testも対にする。
+    {
+        auto terminalRounding = mvm::project::createDefaultProject();
+        terminalRounding.timelineClips.push_back({mvm::project::TimelineClipKind::Video, firstClip,
+                                                  "terminal-rounding", "terminal-rounding-id", 60,
+                                                  1, firstFrames + 1, 0, firstFrames + 1, 0});
+        mvm::app::TimelineExportRequest roundingRequest;
+        roundingRequest.outputPath = testDirectory / L"terminal-rounding.mp4";
+        const auto rounded = mvm::app::exportTimeline(terminalRounding, roundingRequest);
+        check(rounded.success && std::filesystem::is_regular_file(roundingRequest.outputPath),
+              "素材末尾の1 frame丸め差を書き出し実尺へ合わせられません");
+        if (!rounded.success)
+            std::fprintf(stderr, "  error=%s\n", rounded.error.c_str());
+
+        terminalRounding.timelineClips[0].sourceFrameCount = firstFrames + 2;
+        terminalRounding.timelineClips[0].sourceOutFrame = firstFrames + 2;
+        roundingRequest.outputPath = testDirectory / L"terminal-overrun.mp4";
+        const auto overrun = mvm::app::exportTimeline(terminalRounding, roundingRequest);
+        check(!overrun.success, "素材末尾の2 frame超過を黙って切り詰めました");
+    }
+
     // --- 2. 29.97fps: source-native trim -> MLT producer位置の内容検査 ------
     {
         const auto fractional = testDirectory / L"fractional-source.mp4";
@@ -344,6 +366,7 @@ int main(int argc, char** argv) {
             invalid.path = topUtf8.c_str();
             invalid.source_fps_num = 60;
             invalid.source_fps_den = 1;
+            invalid.source_frame_count = 10;
             invalid.source_in_frame = 0;
             invalid.source_out_frame = 10;
             invalid.video_track = 1;

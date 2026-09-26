@@ -1,5 +1,7 @@
 #include "media/audio_preview/audio_decode_worker.h"
 
+#include "core/checked_integer.h"
+
 #include <windows.h>
 #include <algorithm>
 #include <chrono>
@@ -208,6 +210,7 @@ AudioSeekWaitResult AudioDecodeWorker::waitSeek(const AudioSeekTicket& ticket, i
 
 bool AudioDecodeWorker::decodeOne(AudioChunk& chunk, std::string& error) {
     AVStream* stream = format_->streams[streamIndex_];
+    int invalidPackets = 0;
     for (;;) {
         int result = avcodec_receive_frame(codec_, frame_);
         if (result == 0) {
@@ -217,8 +220,19 @@ bool AudioDecodeWorker::decodeOne(AudioChunk& chunk, std::string& error) {
                 av_frame_unref(frame_);
                 return false;
             }
+            // container 上の非ゼロ開始PTSを素材内sample 0へ正規化する。
+            // MPEG-PS等は先頭audio PTSが0ではないため、絶対PTSをsampleへ変換すると
+            // seek(0)の最初のchunkがsample 1000前後から始まり、exact seek契約を破る。
+            const std::int64_t streamStart =
+                stream->start_time == AV_NOPTS_VALUE ? 0 : stream->start_time;
+            std::int64_t relativePts = 0;
+            if (!core::checkedSubtract(pts, streamStart, relativePts)) {
+                error = "音声PTSからstream開始PTSを減算できません";
+                av_frame_unref(frame_);
+                return false;
+            }
             const std::int64_t inputSample =
-                av_rescale_q(pts, stream->time_base, AVRational{1, codec_->sample_rate});
+                av_rescale_q(relativePts, stream->time_base, AVRational{1, codec_->sample_rate});
             if (inputSample > std::numeric_limits<std::int64_t>::max() / kInternalSampleRate ||
                 inputSample < std::numeric_limits<std::int64_t>::min() / kInternalSampleRate) {
                 error = "音声 PTS をresampler timestampへ換算できません";
@@ -314,6 +328,11 @@ bool AudioDecodeWorker::decodeOne(AudioChunk& chunk, std::string& error) {
             }
             result = avcodec_send_packet(codec_, packet_);
             av_packet_unref(packet_);
+            // MPEG-PSはseek直後のpacketがaudio frame境界より前から始まる場合がある。
+            // decoderが同期を取り直せるよう少数の壊れた先頭packetだけを読み飛ばす。
+            // 上限なしで成功扱いにはせず、素材破損時はfail-closedにする。
+            if (result == AVERROR_INVALIDDATA && ++invalidPackets <= 32)
+                continue;
             if (result < 0 && result != AVERROR(EAGAIN)) {
                 error = "音声 packet decode に失敗しました: " + ffError(result);
                 return false;
@@ -329,10 +348,24 @@ AudioSeekCompletion AudioDecodeWorker::executeSeek(const AudioSeekTicket& ticket
     completion.requestedSample = ticket.targetSample;
     const std::int64_t begin = qpcNow();
     AVStream* stream = format_->streams[streamIndex_];
-    const std::int64_t timestamp =
+    const std::int64_t relativeTimestamp =
         av_rescale_q(ticket.targetSample, AVRational{1, kInternalSampleRate}, stream->time_base);
-    const int result = avformat_seek_file(format_, streamIndex_, INT64_MIN, timestamp, timestamp,
-                                          AVSEEK_FLAG_BACKWARD);
+    const std::int64_t streamStart = stream->start_time == AV_NOPTS_VALUE ? 0 : stream->start_time;
+    std::int64_t timestamp = 0;
+    if (!core::checkedAdd(relativeTimestamp, streamStart, timestamp)) {
+        completion.error = "音声seek timestampにstream開始PTSを加算できません";
+        return completion;
+    }
+    // 圧縮audioでは要求位置そのものがpacket/frame境界とは限らない。
+    // 少し前へseekしてdecodeしながら要求sampleまで捨てることで、MPEG-PSでも
+    // 要求位置より後の最初の有効frameへ飛んでexact seekを破ることを防ぐ。
+    const std::int64_t prerollTimestamp = av_rescale_q(1, AVRational{1, 1}, stream->time_base);
+    std::int64_t seekTimestamp = timestamp;
+    std::int64_t earlierTimestamp = 0;
+    if (core::checkedSubtract(timestamp, prerollTimestamp, earlierTimestamp))
+        seekTimestamp = std::max(streamStart, earlierTimestamp);
+    const int result = avformat_seek_file(format_, streamIndex_, INT64_MIN, seekTimestamp,
+                                          seekTimestamp, AVSEEK_FLAG_BACKWARD);
     if (result < 0) {
         completion.error = "音声 seek に失敗しました: " + ffError(result);
         return completion;
@@ -376,7 +409,10 @@ AudioSeekCompletion AudioDecodeWorker::executeSeek(const AudioSeekTicket& ticket
             completion.discardedPrerollSamples += trim;
         }
         if (chunk.startSample != ticket.targetSample) {
-            completion.error = "最初の output sample が requested sample と一致しません";
+            completion.error =
+                "最初の output sample が requested sample と一致しません: requested=" +
+                std::to_string(ticket.targetSample) +
+                " actual=" + std::to_string(chunk.startSample);
             return completion;
         }
         completion.firstOutputSample = chunk.startSample;

@@ -85,5 +85,39 @@ int main() {
     require(tractor.clips[1].timelineStartFrame + tractor.clips[1].timelineDurationFrames <
                 tractor.clips[2].timelineStartFrame,
             "two V2 clip間gapのmapping fixtureが成立していません");
+
+    mvm::project::Project linkedAv = mvm::project::createDefaultProject();
+    auto linkedVideo = clip("linked-video", 0, 0, 0, 100);
+    linkedVideo.linkGroupId = "linked-pair";
+    auto linkedAudio = linkedVideo;
+    linkedAudio.id = "linked-audio";
+    linkedAudio.name = "linked-audio";
+    linkedAudio.kind = mvm::project::TimelineClipKind::Audio;
+    linkedAudio.track = {mvm::project::TrackKind::Audio, 0};
+    linkedAv.timelineClips = {linkedVideo, linkedAudio};
+    const auto linkedPlan = mvm::app::mapTimelineExportPlan(linkedAv, request);
+    require(linkedPlan.success &&
+                linkedPlan.backend == mvm::app::TimelineExportResult::Backend::Tractor &&
+                linkedPlan.clips.size() == 2 && !linkedPlan.clips[0].audio &&
+                linkedPlan.clips[1].audio,
+            "linked audioを独立audio trackへmappingできません");
+
+    auto mismatchedLinkedAv = linkedAv;
+    mismatchedLinkedAv.timelineClips[1].sourceInFrame = 1;
+    mismatchedLinkedAv.timelineClips[1].timelineStartFrame = 10;
+    const auto mismatchedLinkedPlan = mvm::app::mapTimelineExportPlan(mismatchedLinkedAv, request);
+    require(mismatchedLinkedPlan.success && mismatchedLinkedPlan.clips.size() == 2 &&
+                mismatchedLinkedPlan.clips[1].audio &&
+                mismatchedLinkedPlan.clips[1].timelineStartFrame == 10,
+            "videoとstart/trimが異なるlinked audioをmappingできません");
+
+    auto standaloneAudio = linkedAudio;
+    standaloneAudio.linkGroupId.clear();
+    mvm::project::Project audioOnly = mvm::project::createDefaultProject();
+    audioOnly.timelineClips = {standaloneAudio};
+    const auto audioOnlyPlan = mvm::app::mapTimelineExportPlan(audioOnly, request);
+    require(audioOnlyPlan.success && audioOnlyPlan.clips.size() == 1 &&
+                audioOnlyPlan.clips[0].audio,
+            "単独audio clipを独立trackへmappingできません");
     return 0;
 }

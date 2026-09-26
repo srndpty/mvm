@@ -17,7 +17,7 @@ $requiredQml = @(
     'function trackAtY(y)',
     'mvmController.selectTimelineClip(clipItem.clipId, frame)',
     'mvmController.moveTimelineClip(',
-    'destination.kind, destination.index',
+    'releasedClipId, destinationKind, destinationIndex',
     'mvmController.selectTimelineClips(selectedIds)',
     'required property bool selected'
 )
@@ -48,6 +48,7 @@ $requiredInteractions = @(
     'const desiredContentX = wasFullyVisible',
     'Math.min(nextMaxContentX, desiredContentX)',
     'timelinePanel.activeDragOffsetX = clipItem.bodyDragOffsetX',
+    '-clipItem.timelineStartFrame * timelinePanel.pixelsPerFrame',
     'clipItem.linkGroupId === timelinePanel.activeDragLinkGroup',
     'timelineFlick.contentY',
     'id: timelineHorizontalScrollBar',
@@ -101,6 +102,14 @@ $requiredExportProgress = @(
     'mvmController.cancelTimelineExport()'
 )
 
+$requiredExportFailure = @(
+    'id: exportFailureDialog',
+    'title: "書き出しに失敗しました"',
+    'function onExportFailed(message)',
+    'exportFailureDialog.message = message',
+    'exportFailureDialog.open()'
+)
+
 foreach ($needle in @('id: rectangleSelectionArea')) {
     if (-not $qml.Contains($needle)) {
         throw "矩形選択の契約がありません: $needle"
@@ -115,7 +124,7 @@ foreach ($removed in @('spaceMoveToolActive', 'id: moveToolArea', 'sequence: "Ct
 }
 
 foreach ($needle in ($requiredQml + $requiredInteractions + $requiredShortcuts +
-                     $requiredVideoDrop + $requiredExportProgress)) {
+                     $requiredVideoDrop + $requiredExportProgress + $requiredExportFailure)) {
     if (-not $qml.Contains($needle)) {
         throw "timeline UI contractがありません: $needle"
     }
@@ -129,6 +138,17 @@ foreach ($needle in $forbiddenQml) {
     if ($qml.Contains($needle)) {
         throw "track数を固定する旧timeline UIが残っています: $needle"
     }
+}
+
+# moveTimelineClipは同期的にmodelを更新してdelegateを破棄し得る。
+# 呼び出し後にdelegate contextのtimelinePanelを参照するとReferenceErrorになる。
+$bodyAreaIndex = $qml.IndexOf('id: bodyArea')
+$bodyReleaseIndex = $qml.IndexOf('onReleased: mouse => {', $bodyAreaIndex)
+$bodyMoveIndex = $qml.IndexOf('mvmController.moveTimelineClip(', $bodyReleaseIndex)
+$bodyDragResetIndex = $qml.IndexOf('timelinePanel.activeDragLinkGroup = "";', $bodyReleaseIndex)
+if ($bodyAreaIndex -lt 0 -or $bodyReleaseIndex -lt 0 -or $bodyMoveIndex -lt 0 -or
+    $bodyDragResetIndex -lt 0 -or $bodyDragResetIndex -gt $bodyMoveIndex) {
+    throw 'delegateを破棄し得るmoveTimelineClipより前にdrag状態をresetしていません'
 }
 
 if (-not $main.Contains('class TimelineWheelEventFilter final') -or
@@ -175,6 +195,13 @@ foreach ($needle in @('exportThread_ = exportThreadFactory_(',
                       'Qt::QueuedConnection')) {
     if (-not $controller.Contains($needle)) {
         throw "非同期書き出しまたはキャンセル伝播の契約がありません: $needle"
+    }
+}
+foreach ($needle in @('previewStatus.state == preview::PreviewEngineState::Error',
+                      'else if (previewEngine_->status().state == preview::PreviewEngineState::Error)',
+                      'scrubTimer_.stop();')) {
+    if (-not $controller.Contains($needle)) {
+        throw "Preview error時のscrub停止契約がありません: $needle"
     }
 }
 # preview の layer 構成は mapTimelinePreviewFrame に一本化する。

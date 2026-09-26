@@ -109,10 +109,20 @@ set_tests_properties(m7b_4_timeline_ui_architecture PROPERTIES TIMEOUT 120)
 
 # import 対応は拡張子一覧ではなく内容 probe で決める。MPG の positive、未知拡張子の
 # positive、拡張子だけ MPG の negative を同じ経路で固定する。
+add_executable(mvm_test_audio_nonzero_start_seek
+    audio_preview/test_audio_nonzero_start_seek.cpp)
+target_link_libraries(mvm_test_audio_nonzero_start_seek PRIVATE
+    mvm::audio_preview mvm::warnings)
+add_executable(mvm_test_mpg_export harness/test_mpg_export.cpp)
+target_link_libraries(mvm_test_mpg_export PRIVATE
+    mvm::timeline_export mvm::mlt mvm::warnings)
+target_compile_definitions(mvm_test_mpg_export PRIVATE ${MVM_MLT_PATH_DEFS})
 add_test(NAME m7b_4_media_import_content_probe
     COMMAND pwsh -NoProfile -File
             ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-media-import-content-probe.ps1
             -Bench $<TARGET_FILE:mvm_bench>
+            -AudioSeekTest $<TARGET_FILE:mvm_test_audio_nonzero_start_seek>
+            -MpgExportTest $<TARGET_FILE:mvm_test_mpg_export>
             -FFmpeg ${MVM_UCRT64_ROOT}/bin/ffmpeg.exe
             -WorkDirectory ${CMAKE_CURRENT_BINARY_DIR}/media-import-content-probe)
 set_tests_properties(m7b_4_media_import_content_probe PROPERTIES
