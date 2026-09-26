@@ -217,7 +217,10 @@ function Get-BuildIndependentTestNames {
     if ($LASTEXITCODE -ne 0) { throw "ctest --show-only=json-v1 が exit $LASTEXITCODE で失敗しました" }
     $tests = @((($jsonLines -join "`n") | ConvertFrom-Json).tests)
 
-    $binPrefix = ((Join-Path $BuildDir 'bin') -replace '\\', '/').ToLowerInvariant() + '/'
+    # build dir 配下を指す引数は、テスト出力先 (tests/ 以下) を除きビルド成果物とみなす。
+    # bin/ だけを見ると $<TARGET_FILE:...> の静的ライブラリ (src/*.a) を取りこぼす。
+    $buildPrefix = ($BuildDir -replace '\\', '/').ToLowerInvariant().TrimEnd('/') + '/'
+    $testOutputPrefix = $buildPrefix + 'tests/'
 
     # DEPENDS で結ばれたテストは他のテストの出力を読むため、両端とも依存側に残す。
     $dependsRelated = [System.Collections.Generic.HashSet[string]]::new()
@@ -237,11 +240,18 @@ function Get-BuildIndependentTestNames {
         if ($command.Count -eq 0) { continue }
         if ([IO.Path]::GetFileNameWithoutExtension("$($command[0])") -ne 'pwsh') { continue }
         if ($dependsRelated.Contains($t.name)) { continue }
-        $usesBin = $false
+        $usesBuildOutput = $false
         foreach ($arg in $command) {
-            if ((("$arg") -replace '\\', '/').ToLowerInvariant().Contains($binPrefix)) { $usesBin = $true; break }
+            $normalized = ("$arg" -replace '\\', '/').ToLowerInvariant()
+            # '|' で連結された ChildArgs などに複数のパスが入るため、全出現位置を見る。
+            $at = $normalized.IndexOf($buildPrefix)
+            while ($at -ge 0) {
+                if ($normalized.IndexOf($testOutputPrefix, $at) -ne $at) { $usesBuildOutput = $true; break }
+                $at = $normalized.IndexOf($buildPrefix, $at + 1)
+            }
+            if ($usesBuildOutput) { break }
         }
-        if (-not $usesBin) { $names += $t.name }
+        if (-not $usesBuildOutput) { $names += $t.name }
     }
     return , $names
 }
