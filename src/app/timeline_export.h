@@ -4,6 +4,7 @@
 #include "project/project.h"
 
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -17,10 +18,15 @@ struct TimelineExportRequest {
     int fpsNum = 60;
     int fpsDen = 1;
     int timeoutMs = 600000;
+    int renderThreads = 4;
+    int encoderThreads = 0;
+    // trueを返すとキャンセルする。worker threadから呼ばれる。
+    std::function<bool(long long completedFrames, long long totalFrames)> progress;
 };
 
 struct TimelineExportResult {
     bool success = false;
+    bool cancelled = false;
     std::filesystem::path outputPath;
     long long frameCount = 0;
     double durationSec = 0.0;

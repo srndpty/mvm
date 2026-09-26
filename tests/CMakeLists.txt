@@ -102,18 +102,6 @@ set_tests_properties(m7b_4_timeline_clip_model_focused PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 120)
 
-add_executable(mvm_test_timeline_space_move_state
-    harness/test_timeline_space_move_state.cpp)
-target_include_directories(mvm_test_timeline_space_move_state PRIVATE
-    ${CMAKE_SOURCE_DIR}/apps/mvm)
-target_link_libraries(mvm_test_timeline_space_move_state PRIVATE
-    Qt6::Core Qt6::Gui mvm::warnings)
-add_test(NAME m7b_4_timeline_space_move_state_focused
-    COMMAND mvm_test_timeline_space_move_state)
-set_tests_properties(m7b_4_timeline_space_move_state_focused PROPERTIES
-    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
-    TIMEOUT 120)
-
 add_test(NAME m7b_4_timeline_ui_architecture
     COMMAND pwsh -NoProfile -File
             ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-m7b4-timeline-ui-architecture.ps1)

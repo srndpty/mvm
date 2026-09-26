@@ -242,6 +242,13 @@ int main(int argc, char** argv) {
     const auto outputPath = testDirectory / L"m4-export.mp4";
     mvm::app::TimelineExportRequest request;
     request.outputPath = outputPath;
+    long long reportedCompleted = -1;
+    long long reportedTotal = -1;
+    request.progress = [&](long long completed, long long total) {
+        reportedCompleted = completed;
+        reportedTotal = total;
+        return false;
+    };
 
     auto result = mvm::app::exportTimeline(
         makeProject(firstClip, secondClip, firstFrames, secondFrames), request);
@@ -253,6 +260,25 @@ int main(int argc, char** argv) {
           "一時ファイルが残っています");
     check(result.backend == mvm::app::TimelineExportResult::Backend::Sequential,
           "contiguous V1-onlyが既存sequential fast pathを外れました");
+    check(reportedTotal == expectedFrames && reportedCompleted == reportedTotal,
+          "書き出し進捗がtotal frameまで通知されません");
+
+    // cancellation callbackがconsumerを停止し、一時/最終ファイルを残さないこと。
+    const auto cancelledPath = testDirectory / L"m4-cancelled.mp4";
+    mvm::app::TimelineExportRequest cancelledRequest;
+    cancelledRequest.outputPath = cancelledPath;
+    int cancelCallbackCount = 0;
+    cancelledRequest.progress = [&](long long, long long) {
+        ++cancelCallbackCount;
+        return true;
+    };
+    const auto cancelled = mvm::app::exportTimeline(
+        makeProject(firstClip, secondClip, firstFrames, secondFrames), cancelledRequest);
+    check(!cancelled.success && cancelled.cancelled && cancelCallbackCount > 0,
+          "書き出しキャンセルを失敗として識別できません");
+    check(!std::filesystem::exists(cancelledPath) &&
+              !std::filesystem::exists(std::filesystem::path(cancelledPath).concat(".mvmtmp")),
+          "キャンセルした書き出しファイルが残っています");
 
     if (result.success) {
         MvmMltProbeResult probe{};
@@ -328,7 +354,7 @@ int main(int argc, char** argv) {
             invalid.opacity_keyframe_count = 2;
             invalid.opacity_keyframes[0] = {1, 1.0}; // local 0を意図的に欠落させる
             invalid.opacity_keyframes[1] = {9, 1.0};
-            const MvmExportSpec invalidSpec{320, 240, 60, 1, 10000};
+            const MvmExportSpec invalidSpec{320, 240, 60, 1, 10000, 4, 0, nullptr, nullptr};
             char invalidError[512] = {};
             const auto invalidOutput = testDirectory / L"m7b-invalid-key.mp4";
             check(mvm_mlt_export_two_track(&invalid, 1, 10, &invalidSpec,

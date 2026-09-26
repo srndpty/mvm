@@ -61,6 +61,13 @@ typedef struct {
     int fps_num;
     int fps_den;
     int timeout_ms;
+    /* 負の real_time として設定する非drop render worker数。 */
+    int render_threads;
+    /* 0はencoderによる自動選択。 */
+    int encoder_threads;
+    /* 非0を返すと書き出しを中止する。completed/totalはframe数。 */
+    int (*progress_callback)(long long completed, long long total, void* opaque);
+    void* progress_opaque;
 } MvmExportSpec;
 
 typedef struct {

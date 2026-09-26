@@ -234,6 +234,14 @@ TimelineExportResult exportTimeline(const project::Project& project,
         .fps_num = request.fpsNum,
         .fps_den = request.fpsDen,
         .timeout_ms = request.timeoutMs,
+        .render_threads = request.renderThreads,
+        .encoder_threads = request.encoderThreads,
+        .progress_callback =
+            [](long long completed, long long total, void* opaque) {
+                const auto* exportRequest = static_cast<const TimelineExportRequest*>(opaque);
+                return exportRequest->progress && exportRequest->progress(completed, total) ? 1 : 0;
+            },
+        .progress_opaque = const_cast<TimelineExportRequest*>(&request),
     };
 
     // 一時ファイルへ書き、検証を通ってから正規名へ rename する。
@@ -255,6 +263,7 @@ TimelineExportResult exportTimeline(const project::Project& project,
     if (exportStatus != 0) {
         std::filesystem::remove(temporaryPath, pathError);
         result.error = error[0] ? error : "書き出しに失敗しました";
+        result.cancelled = result.error == "書き出しをキャンセルしました";
         return result;
     }
 

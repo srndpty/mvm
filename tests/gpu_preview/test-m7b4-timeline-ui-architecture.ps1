@@ -33,6 +33,10 @@ $requiredInteractions = @(
     'mvmController.beginScrub()',
     'mvmController.scrubToFrame(',
     'mvmController.endScrub()',
+    'height: timelineFlick.contentHeight',
+    'y: timelineFlick.contentY',
+    'id: ruler',
+    'z: 200',
     'function handleNativeAltWheel(',
     'function handleNativeCtrlWheel(',
     'function handleNativeShiftWheel(',
@@ -46,7 +50,13 @@ $requiredInteractions = @(
     'timelinePanel.activeDragOffsetX = clipItem.bodyDragOffsetX',
     'clipItem.linkGroupId === timelinePanel.activeDragLinkGroup',
     'timelineFlick.contentY',
+    'id: timelineHorizontalScrollBar',
+    'policy: ScrollBar.AlwaysOn',
     'ScrollBar.vertical:',
+    'id: timelineVerticalScrollBar',
+    'active: timelineFlick.contentHeight > timelineFlick.height',
+    'interactive: true',
+    'const maxY = Math.max(0, timelineFlick.contentHeight - timelineFlick.height);',
     'function trackForDrag(kind, trackAreaY)',
     'preventStealing: true',
     'acceptedButtons: Qt.LeftButton',
@@ -63,17 +73,44 @@ $requiredInteractions = @(
 
 $requiredShortcuts = @(
     'sequence: "Delete"',
-    'sequence: "Ctrl+Space"'
+    'sequence: "Space"',
+    'autoRepeat: false',
+    'sequence: "Ctrl+Z"',
+    'enabled: mvmController.canUndo',
+    'onActivated: mvmController.undoLastEdit()'
 )
 
-foreach ($needle in @('spaceMoveToolActive', 'Qt.OpenHandCursor', 'Qt.ClosedHandCursor',
-                      'id: rectangleSelectionArea', 'readonly property bool pointerInside:')) {
+$requiredVideoDrop = @(
+    'id: videoDropArea',
+    'drag.hasUrls',
+    'root.isSupportedVideoUrl(drag.urls[index])',
+    'mvmController.addVideoClip(url)',
+    'drop.acceptProposedAction()',
+    'videoDropArea.acceptingVideoDrag'
+)
+
+$requiredExportProgress = @(
+    'visible: mvmController.exporting',
+    'value: mvmController.exportProgress',
+    'text: mvmController.exportProgressText',
+    'mvmController.cancelTimelineExport()'
+)
+
+foreach ($needle in @('id: rectangleSelectionArea')) {
     if (-not $qml.Contains($needle)) {
-        throw "矩形選択またはSpace move toolの契約がありません: $needle"
+        throw "矩形選択の契約がありません: $needle"
     }
 }
 
-foreach ($needle in ($requiredQml + $requiredInteractions + $requiredShortcuts)) {
+foreach ($removed in @('spaceMoveToolActive', 'id: moveToolArea', 'sequence: "Ctrl+Space"',
+                       'TimelineSpaceMoveState', 'acceptsTextInput(QGuiApplication::focusObject())')) {
+    if ($qml.Contains($removed) -or $main.Contains($removed)) {
+        throw "削除したSpace move toolの契約が残っています: $removed"
+    }
+}
+
+foreach ($needle in ($requiredQml + $requiredInteractions + $requiredShortcuts +
+                     $requiredVideoDrop + $requiredExportProgress)) {
     if (-not $qml.Contains($needle)) {
         throw "timeline UI contractがありません: $needle"
     }
@@ -86,8 +123,6 @@ foreach ($needle in $forbiddenQml) {
 
 if (-not $main.Contains('class TimelineWheelEventFilter final') -or
     -not $main.Contains('window->installEventFilter(&timelineWheelFilter)') -or
-    -not $main.Contains('timelinePanel_->property("pointerInside").toBool()') -or
-    -not $main.Contains('acceptsTextInput(QGuiApplication::focusObject())') -or
     -not $main.Contains('testFlag(Qt::AltModifier)') -or
     -not $main.Contains('testFlag(Qt::ControlModifier)') -or
     -not $main.Contains('testFlag(Qt::ShiftModifier)') -or
@@ -113,6 +148,23 @@ if ($controller.Contains('recomputeTimelineStarts(candidate)')) {
 }
 if (-not $controller.Contains('QString::number(selectedClipIds_.size())')) {
     throw 'linked clip展開後の実選択数をstatusへ表示していません'
+}
+foreach ($needle in @('project::timelineClipIndexAt(project_, current.track, clamped)',
+                      'setTimelineSelection({clipId.toStdString()});',
+                      'UndoEntry undo{project_, selectedClipIds_, currentClipId(), playheadFrame_};',
+                      'project::saveProjectJsonTransaction(project_, undo.project, projectPath_)',
+                      'undoHistory_.pop_back();')) {
+    if (-not $controller.Contains($needle)) {
+        throw "audio/video選択同期またはUndoの契約がありません: $needle"
+    }
+}
+foreach ($needle in @('exportThread_ = std::thread(',
+                      'exportCancelRequested_.store(true, std::memory_order_release)',
+                      'finishTimelineExport(std::move(exported))',
+                      'Qt::QueuedConnection')) {
+    if (-not $controller.Contains($needle)) {
+        throw "非同期書き出しまたはキャンセル伝播の契約がありません: $needle"
+    }
 }
 # preview の layer 構成は mapTimelinePreviewFrame に一本化する。
 if (-not $controller.Contains('mapTimelinePreviewFrame(project_, timelineFrame)')) {

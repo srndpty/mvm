@@ -18,6 +18,7 @@
 #include <cmath>
 #include <limits>
 #include <numeric>
+#include <system_error>
 #include <utility>
 
 #include <QCoreApplication>
@@ -195,6 +196,8 @@ MvmController::MvmController(std::filesystem::path projectPath,
     refreshTimelineModel();
     initializePreviewEngine(QStringLiteral("Preview初期化に失敗しました: "));
     restoreFirstManimClip();
+    // 起動時のasset同期は利用者の編集ではないため、Undo履歴へ残さない。
+    undoHistory_.clear();
 
     playbackTimer_.setInterval(16);
     playbackTimer_.setTimerType(Qt::PreciseTimer);
@@ -533,14 +536,26 @@ void MvmController::refreshTimelineModel() {
 }
 
 bool MvmController::saveProject(project::Project candidate, const QString& failurePrefix) {
+    UndoEntry undo{project_, selectedClipIds_, currentClipId(), playheadFrame_};
     const project::ProjectIoResult saved =
         project::saveProjectJsonTransaction(project_, std::move(candidate), projectPath_);
     if (!saved.success) {
         setStatus(failurePrefix + QString::fromStdString(saved.error));
         return false;
     }
+    undoHistory_.push_back(std::move(undo));
+    constexpr std::size_t kMaximumUndoEntries = 100;
+    if (undoHistory_.size() > kMaximumUndoEntries)
+        undoHistory_.erase(undoHistory_.begin());
     refreshTimelineModel();
     return true;
+}
+
+std::string MvmController::currentClipId() const {
+    if (currentClipIndex_ < 0 ||
+        currentClipIndex_ >= static_cast<int>(project_.timelineClips.size()))
+        return {};
+    return project_.timelineClips[static_cast<std::size_t>(currentClipIndex_)].id;
 }
 
 bool MvmController::resolveTrackRef(const QString& trackKind, int trackIndex,
@@ -1482,11 +1497,14 @@ bool MvmController::seekTimelineFrame(qint64 frame) {
     }
     const qint64 clamped = std::clamp<qint64>(frame, 0, totalTimelineFrames_ - 1);
     playheadFrame_ = clamped;
-    const auto active = project::activeClipsAt(project_, project::TrackKind::Video, clamped);
     int index = -1;
-    // 選択clipがactiveなら維持し、それ以外は最上位trackをinspector対象にする。
-    for (const auto* clip : active) {
-        if (clip && static_cast<int>(clip - project_.timelineClips.data()) == currentClipIndex_)
+    // 選択clipがactiveならaudio/videoを問わず維持する。videoだけを検索すると、
+    // A1の見た目の選択を残したままcurrentClipIndex_だけV1へ変わってしまう。
+    if (currentClipIndex_ >= 0 &&
+        currentClipIndex_ < static_cast<int>(project_.timelineClips.size())) {
+        const auto& current =
+            project_.timelineClips[static_cast<std::size_t>(currentClipIndex_)];
+        if (project::timelineClipIndexAt(project_, current.track, clamped) == currentClipIndex_)
             index = currentClipIndex_;
     }
     if (index < 0) {
@@ -1842,8 +1860,52 @@ bool MvmController::unlinkTimelineClip(const QString& clipId) {
     }
     if (!saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: ")))
         return false;
+    setTimelineSelection({clipId.toStdString()});
     return refreshPreviewAfterSavedEdit(clipId.toStdString(),
                                         QStringLiteral("clipのリンクを解除しました"));
+}
+
+bool MvmController::undoLastEdit() {
+    if (busy_ || !pauseTimeline())
+        return false;
+    if (undoHistory_.empty()) {
+        setStatus(QStringLiteral("元に戻せる編集がありません"));
+        return false;
+    }
+
+    const UndoEntry& undo = undoHistory_.back();
+    const project::ProjectIoResult saved =
+        project::saveProjectJsonTransaction(project_, undo.project, projectPath_);
+    if (!saved.success) {
+        setStatus(QStringLiteral("編集を元に戻せません: ") +
+                  QString::fromStdString(saved.error));
+        return false;
+    }
+
+    const std::vector<std::string> previousSelection = undo.selectedClipIds;
+    const std::string previousCurrentClipId = undo.currentClipId;
+    playheadFrame_ = undo.playheadFrame;
+    undoHistory_.pop_back();
+
+    selectedClipIds_.clear();
+    for (const auto& id : previousSelection) {
+        if (indexOfClipId(project_.timelineClips, id) >= 0)
+            selectedClipIds_.push_back(id);
+    }
+    refreshTimelineModel();
+    setCurrentClipSelection(indexOfClipId(project_.timelineClips, previousCurrentClipId));
+
+    pendingVideoPath_.reset();
+    pendingClipName_.clear();
+    pendingClipIndex_ = -1;
+    pendingSourceFrame_ = 0;
+    if (!resetPreviewEngine()) {
+        const QString resetFailure = statusText_;
+        setStatus(QStringLiteral("編集は元に戻しましたが、") + resetFailure);
+        return true;
+    }
+    setStatus(QStringLiteral("編集を元に戻しました"));
+    return true;
 }
 
 bool MvmController::addTrack(const QString& trackKind) {
@@ -1982,6 +2044,7 @@ bool MvmController::adoptProject(project::Project loaded, std::filesystem::path 
         return false;
     project_ = std::move(loaded);
     projectPath_ = std::move(path);
+    undoHistory_.clear();
     selectedClipIds_.clear();
     currentClipIndex_ = -1;
     currentClipName_.clear();
@@ -2000,6 +2063,8 @@ bool MvmController::adoptProject(project::Project loaded, std::filesystem::path 
         return true;
     }
     restoreFirstManimClip();
+    // Project切り替え時のasset同期も新しいProjectの初期状態として扱う。
+    undoHistory_.clear();
     Q_EMIT stateChanged();
     setStatus(std::move(successStatus));
     return true;
@@ -2111,26 +2176,90 @@ bool MvmController::exportTimeline(const QUrl& outputUrl) {
     request.height = project_.outputHeight;
     request.fpsNum = static_cast<int>(project_.timelineFpsNum);
     request.fpsDen = static_cast<int>(project_.timelineFpsDen);
+    request.renderThreads = 4;
+    request.encoderThreads = 0;
 
-    // Manim 生成と同じく GUI thread で同期実行する (M4 は非同期 job を作らない)。
+    if (exportThread_.joinable())
+        exportThread_.join();
+    exportCancelRequested_.store(false, std::memory_order_release);
+    exporting_ = true;
+    exportProgress_ = 0.0;
+    exportProgressText_ = QStringLiteral("準備しています…");
     busy_ = true;
     statusText_ = QStringLiteral("書き出しています…");
     Q_EMIT stateChanged();
-    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 
-    const TimelineExportResult exported = mvm::app::exportTimeline(project_, request);
+    auto lastReportedFrame = std::make_shared<std::atomic<long long>>(-1);
+    request.progress = [this, lastReportedFrame](long long completed, long long total) {
+        const bool cancelled = exportCancelRequested_.load(std::memory_order_acquire);
+        const long long previous = lastReportedFrame->exchange(completed, std::memory_order_relaxed);
+        if (completed != previous) {
+            QMetaObject::invokeMethod(
+                this,
+                [this, completed, total] {
+                    if (!exporting_ || total <= 0)
+                        return;
+                    exportProgress_ = std::clamp(static_cast<double>(completed) /
+                                                     static_cast<double>(total),
+                                                 0.0, 1.0);
+                    exportProgressText_ =
+                        QString::number(completed) + QStringLiteral(" / ") +
+                        QString::number(total) + QStringLiteral(" frame");
+                    Q_EMIT stateChanged();
+                },
+                Qt::QueuedConnection);
+        }
+        return cancelled;
+    };
 
-    busy_ = false;
-    if (!exported.success) {
-        setStatus(QStringLiteral("書き出しに失敗しました: ") +
-                  QString::fromStdString(exported.error));
+    const project::Project exportProject = project_;
+    try {
+        exportThread_ = std::thread([this, exportProject, request = std::move(request)]() mutable {
+            TimelineExportResult exported = mvm::app::exportTimeline(exportProject, request);
+            QMetaObject::invokeMethod(
+                this,
+                [this, exported = std::move(exported)]() mutable {
+                    finishTimelineExport(std::move(exported));
+                },
+                Qt::QueuedConnection);
+        });
+    } catch (const std::system_error& error) {
+        exporting_ = false;
+        busy_ = false;
+        setStatus(QStringLiteral("書き出しworkerを開始できません: ") +
+                  QString::fromLocal8Bit(error.what()));
         return false;
     }
+    return true;
+}
+
+void MvmController::cancelTimelineExport() {
+    if (!exporting_)
+        return;
+    exportCancelRequested_.store(true, std::memory_order_release);
+    exportProgressText_ = QStringLiteral("キャンセルしています…");
+    setStatus(exportProgressText_);
+}
+
+void MvmController::finishTimelineExport(TimelineExportResult exported) {
+    if (exportThread_.joinable())
+        exportThread_.join();
+    exporting_ = false;
+    busy_ = false;
+    if (!exported.success) {
+        if (exported.cancelled)
+            setStatus(QStringLiteral("書き出しをキャンセルしました"));
+        else
+            setStatus(QStringLiteral("書き出しに失敗しました: ") +
+                      QString::fromStdString(exported.error));
+        return;
+    }
+    exportProgress_ = 1.0;
+    exportProgressText_ = QStringLiteral("完了");
     setStatus(QStringLiteral("書き出しました: ") + fromPath(exported.outputPath) +
               QStringLiteral(" (") + QString::number(exported.frameCount) +
               QStringLiteral(" frame / ") + QString::number(exported.durationSec, 'f', 2) +
               QStringLiteral(" 秒)"));
-    return true;
 }
 
 bool MvmController::setEffectValue(const QString& key, double value, bool commit) {
@@ -2209,6 +2338,10 @@ void MvmController::shutdown() {
     if (shutdownStarted_)
         return;
     shutdownStarted_ = true;
+    exportCancelRequested_.store(true, std::memory_order_release);
+    if (exportThread_.joinable())
+        exportThread_.join();
+    exporting_ = false;
     playbackTimer_.stop();
     scrubTimer_.stop();
     meterTimer_.stop();

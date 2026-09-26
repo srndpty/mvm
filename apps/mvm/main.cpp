@@ -2,14 +2,12 @@
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "mvm_controller.h"
 #include "project/project_json.h"
-#include "timeline_space_move_state.h"
 
 #include <cstdio>
 #include <filesystem>
 
 #include <QFileInfo>
 #include <QGuiApplication>
-#include <QKeyEvent>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <qqml.h>
@@ -30,35 +28,13 @@ struct AppArguments {
 
 class TimelineWheelEventFilter final : public QObject {
 public:
-    TimelineWheelEventFilter(QQuickWindow* window, QQuickItem* timelinePanel, QObject* root)
-        : window_(window), timelinePanel_(timelinePanel), root_(root) {}
+    TimelineWheelEventFilter(QQuickWindow* window, QQuickItem* timelinePanel)
+        : window_(window), timelinePanel_(timelinePanel) {}
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override {
         if (watched != window_)
             return QObject::eventFilter(watched, event);
-        if (event->type() == QEvent::WindowDeactivate) {
-            if (spaceMoveState_.deactivate() && root_)
-                root_->setProperty("spaceMoveToolActive", false);
-            return QObject::eventFilter(watched, event);
-        }
-        if ((event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease) && root_) {
-            const auto* key = static_cast<QKeyEvent*>(event);
-            const auto result = spaceMoveState_.handleKey(
-                event->type(), key->key(), key->modifiers(), key->isAutoRepeat(),
-                timelinePanel_ && timelinePanel_->property("pointerInside").toBool(),
-                mvm::app::acceptsTextInput(QGuiApplication::focusObject()));
-            if (result == mvm::app::TimelineSpaceMoveState::Result::Activate) {
-                root_->setProperty("spaceMoveToolActive", true);
-                return true;
-            }
-            if (result == mvm::app::TimelineSpaceMoveState::Result::Deactivate) {
-                root_->setProperty("spaceMoveToolActive", false);
-                return true;
-            }
-            if (result == mvm::app::TimelineSpaceMoveState::Result::Consume)
-                return true;
-        }
         if (event->type() != QEvent::Wheel || !timelinePanel_)
             return QObject::eventFilter(watched, event);
         const auto* wheel = static_cast<QWheelEvent*>(event);
@@ -108,8 +84,6 @@ protected:
 private:
     QQuickWindow* window_ = nullptr;
     QQuickItem* timelinePanel_ = nullptr;
-    QObject* root_ = nullptr;
-    mvm::app::TimelineSpaceMoveState spaceMoveState_;
 };
 
 void usage() {
@@ -184,9 +158,6 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "MLTを初期化できません。書き出しが行えないため起動を中止します\n");
         return 5;
     }
-    QObject::connect(&application, &QCoreApplication::aboutToQuit,
-                     [] { mvm_mlt_runtime_shutdown(); });
-
     mvm::app::MvmController controller(arguments.projectPath, arguments.manimExecutablePath,
                                        std::move(project));
     qmlRegisterType<mvm::app::PreviewEngineRhiItem>("mvm.preview", 1, 0, "PreviewSurface");
@@ -209,7 +180,7 @@ int main(int argc, char** argv) {
                      "mvmのWindow、Preview、またはtimeline panelが見つかりません\n");
         return 4;
     }
-    TimelineWheelEventFilter timelineWheelFilter(window, timelinePanel, engine.rootObjects().first());
+    TimelineWheelEventFilter timelineWheelFilter(window, timelinePanel);
     window->installEventFilter(&timelineWheelFilter);
     controller.attachPreview(surface);
 
@@ -217,5 +188,8 @@ int main(int argc, char** argv) {
                      [&controller](QQuickCloseEvent*) { controller.shutdown(); });
     QObject::connect(&application, &QCoreApplication::aboutToQuit, &controller,
                      &mvm::app::MvmController::shutdown);
+    // export workerをjoinするcontroller shutdownより後にMLT runtimeを閉じる。
+    QObject::connect(&application, &QCoreApplication::aboutToQuit,
+                     [] { mvm_mlt_runtime_shutdown(); });
     return application.exec();
 }

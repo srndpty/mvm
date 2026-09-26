@@ -7,6 +7,8 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <atomic>
+#include <thread>
 #include <vector>
 
 #include <QAbstractItemModel>
@@ -23,6 +25,7 @@ namespace mvm::app {
 class PreviewEngineRhiItem;
 class TimelineClipModel;
 class TrackModel;
+struct TimelineExportResult;
 
 class MvmController final : public QObject {
     Q_OBJECT
@@ -51,7 +54,11 @@ class MvmController final : public QObject {
     Q_PROPERTY(QString currentTimeText READ currentTimeText NOTIFY stateChanged)
     Q_PROPERTY(bool playing READ playing NOTIFY stateChanged)
     Q_PROPERTY(bool canPlay READ canPlay NOTIFY stateChanged)
+    Q_PROPERTY(bool canUndo READ canUndo NOTIFY stateChanged)
     Q_PROPERTY(bool canExport READ canExport NOTIFY stateChanged)
+    Q_PROPERTY(bool exporting READ exporting NOTIFY stateChanged)
+    Q_PROPERTY(double exportProgress READ exportProgress NOTIFY stateChanged)
+    Q_PROPERTY(QString exportProgressText READ exportProgressText NOTIFY stateChanged)
     Q_PROPERTY(int timelineFpsNum READ timelineFpsNum NOTIFY stateChanged)
     Q_PROPERTY(int timelineFpsDen READ timelineFpsDen NOTIFY stateChanged)
     Q_PROPERTY(QString timelineFpsText READ timelineFpsText NOTIFY stateChanged)
@@ -133,7 +140,15 @@ public:
 
     bool canPlay() const;
 
+    bool canUndo() const { return !undoHistory_.empty() && !busy_; }
+
     bool canExport() const { return !project_.timelineClips.empty() && !busy_; }
+
+    bool exporting() const { return exporting_; }
+
+    double exportProgress() const { return exportProgress_; }
+
+    QString exportProgressText() const { return exportProgressText_; }
 
     int timelineFpsNum() const { return static_cast<int>(project_.timelineFpsNum); }
 
@@ -184,7 +199,9 @@ public:
     Q_INVOKABLE bool deleteCurrentClip();
     Q_INVOKABLE bool deleteTimelineClip(const QString& clipId);
     Q_INVOKABLE bool unlinkTimelineClip(const QString& clipId);
+    Q_INVOKABLE bool undoLastEdit();
     Q_INVOKABLE bool exportTimeline(const QUrl& outputUrl);
+    Q_INVOKABLE void cancelTimelineExport();
     // effect の 1 値だけを更新する。
     //   commit=false : Project を書き換えず、preview だけを ephemeral な override で
     //                  追従させる (drag 中)。
@@ -269,6 +286,7 @@ private:
     void setTimelineSelection(const std::vector<std::string>& clipIds);
     bool refreshPreviewAfterSavedEdit(const std::string& selectedClipId,
                                       const QString& successStatus);
+    std::string currentClipId() const;
     const project::ClipEffects& currentEffects() const;
     // preview override を適用した effects を返す。composition はこれを使う。
     project::ClipEffects effectsForPreview(int clipIndex) const;
@@ -308,6 +326,7 @@ private:
     void startPendingPlayback();
     bool cancelPendingPlaybackForPause();
     void stopPlaybackWithError(QString error);
+    void finishTimelineExport(TimelineExportResult result);
     // Project を丸ごと差し替える (New / Open)。preview も作り直す。
     bool adoptProject(project::Project loaded, std::filesystem::path path, QString successStatus);
 
@@ -341,11 +360,23 @@ private:
     std::int64_t pendingSourceFrame_ = 0;
     int currentClipIndex_ = -1;
     std::vector<std::string> selectedClipIds_;
+    struct UndoEntry {
+        project::Project project;
+        std::vector<std::string> selectedClipIds;
+        std::string currentClipId;
+        std::int64_t playheadFrame = 0;
+    };
+    std::vector<UndoEntry> undoHistory_;
     std::int64_t playheadFrame_ = 0;
     std::int64_t totalTimelineFrames_ = 0;
     double audioMeterDbLeft_ = kMeterSilenceDb;
     double audioMeterDbRight_ = kMeterSilenceDb;
     double masterVolume_ = 0.35;
+    std::thread exportThread_;
+    std::atomic<bool> exportCancelRequested_{false};
+    bool exporting_ = false;
+    double exportProgress_ = 0.0;
+    QString exportProgressText_;
     bool busy_ = false;
     bool previewReady_ = false;
     bool shutdownStarted_ = false;
