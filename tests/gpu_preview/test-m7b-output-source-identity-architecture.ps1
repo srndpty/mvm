@@ -9,7 +9,12 @@ $engine = Get-Content -Raw (Join-Path $repoRoot "src/preview_engine/preview_engi
 $checks = @(
     @{ Name = "buffer envelope"; Pass = $buffer.Contains("submitFrameForOutput") },
     @{ Name = "pairer output authority"; Pass = $pairer.Contains("peekFrontOutputFrameNumber") -and $pairer.Contains("takeExactEnvelopes") },
-    @{ Name = "decoded identity preserved"; Pass = $worker.Contains("submitFrameForOutput(frame, outputAnchor + delta)") },
+    # decoded frame は const のまま渡し、output identity は別に算出した番号で与える。
+    # mapping 無しは anchor 差分、mapping 有りは decoded frameNumber からの区間換算。
+    @{ Name = "decoded identity preserved"; Pass = $worker.Contains("submitWithBackpressure(const DecodedGpuFrame& frame") -and
+        $worker.Contains("submitFrameForOutput(frame, outputFrame)") -and
+        $worker.Contains("outputBegin = outputAnchor + delta") -and
+        $worker.Contains("sourceFrameOutputInterval(frame.frameNumber") },
     @{ Name = "explicit source request"; Pass = $engine -match '(?s)requestSeek\(\s*sourceFrame,\s*target\.outputFrame' },
     @{ Name = "presentation remains output identity"; Pass = $engine.Contains("status.position = {target}") },
     @{ Name = "forbidden decoded overwrite absent"; Pass = -not $worker.Contains("frame.frameNumber = ticket.outputFrameNumber") }
