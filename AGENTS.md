@@ -120,6 +120,7 @@ pwsh scripts/coverage.ps1            # カバレッジ
 
 ```powershell
 Build:   .\dev.ps1 build
+Run debug: .\dev.ps1 run
 Run GUI: .\dev.ps1 gui
 Test:    .\dev.ps1 test
 Lint:    .\dev.ps1 lint
