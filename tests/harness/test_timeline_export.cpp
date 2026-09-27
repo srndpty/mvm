@@ -16,9 +16,11 @@
 #include "util/mvm_win_utf8.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <process.h>
 #include <string>
 #include <vector>
@@ -62,11 +64,32 @@ mvm::project::Project makeProject(const std::filesystem::path& first,
                                   const std::filesystem::path& second, long long firstFrames,
                                   long long secondFrames) {
     mvm::project::Project project = mvm::project::createDefaultProject();
-    project.timelineClips.push_back({mvm::project::TimelineClipKind::Video, first, "normal",
-                                     "normal-id", 60, 1, firstFrames, 0, firstFrames, 0});
-    project.timelineClips.push_back({mvm::project::TimelineClipKind::Manim, second, "manim",
-                                     "manim-id", 60, 1, secondFrames, 0, secondFrames,
-                                     firstFrames});
+    project.timelineClips.push_back({mvm::project::TimelineClipKind::Video,
+                                     first,
+                                     "normal",
+                                     "normal-id",
+                                     60,
+                                     1,
+                                     firstFrames,
+                                     0,
+                                     firstFrames,
+                                     0,
+                                     {},
+                                     {},
+                                     {}});
+    project.timelineClips.push_back({mvm::project::TimelineClipKind::Manim,
+                                     second,
+                                     "manim",
+                                     "manim-id",
+                                     60,
+                                     1,
+                                     secondFrames,
+                                     0,
+                                     secondFrames,
+                                     firstFrames,
+                                     {},
+                                     {},
+                                     {}});
     return project;
 }
 
@@ -139,7 +162,9 @@ Rgb pixelAt(const std::filesystem::path& path, long long frame, int x, int y) {
         return {};
     }
     const std::size_t offset =
-        (static_cast<std::size_t>(y) * image.width + static_cast<std::size_t>(x)) * 4;
+        (static_cast<std::size_t>(y) * static_cast<std::size_t>(image.width) +
+         static_cast<std::size_t>(x)) *
+        4;
     const Rgb result{image.rgba[offset], image.rgba[offset + 1], image.rgba[offset + 2]};
     mvm_mlt_image_free(&image);
     return result;
@@ -170,7 +195,9 @@ EffectFrameMetrics effectMetrics(const std::filesystem::path& path, long long fr
     for (int y = 0; y < image.height; ++y) {
         for (int x = 0; x < image.width; ++x) {
             const std::size_t offset =
-                (static_cast<std::size_t>(y) * image.width + static_cast<std::size_t>(x)) * 4;
+                (static_cast<std::size_t>(y) * static_cast<std::size_t>(image.width) +
+                 static_cast<std::size_t>(x)) *
+                4;
             const int brightness =
                 image.rgba[offset] + image.rgba[offset + 1] + image.rgba[offset + 2];
             sum += brightness;
@@ -313,9 +340,19 @@ int main(int argc, char** argv) {
     // 2 frame以上の超過まで黙って切り詰めないnegative testも対にする。
     {
         auto terminalRounding = mvm::project::createDefaultProject();
-        terminalRounding.timelineClips.push_back({mvm::project::TimelineClipKind::Video, firstClip,
-                                                  "terminal-rounding", "terminal-rounding-id", 60,
-                                                  1, firstFrames + 1, 0, firstFrames + 1, 0});
+        terminalRounding.timelineClips.push_back({mvm::project::TimelineClipKind::Video,
+                                                  firstClip,
+                                                  "terminal-rounding",
+                                                  "terminal-rounding-id",
+                                                  60,
+                                                  1,
+                                                  firstFrames + 1,
+                                                  0,
+                                                  firstFrames + 1,
+                                                  0,
+                                                  {},
+                                                  {},
+                                                  {}});
         mvm::app::TimelineExportRequest roundingRequest;
         roundingRequest.outputPath = testDirectory / L"terminal-rounding.mp4";
         const auto rounded = mvm::app::exportTimeline(terminalRounding, roundingRequest);
@@ -342,10 +379,19 @@ int main(int argc, char** argv) {
         check(sourceOk, "29.97fps fixtureのFPSまたはframe countが不正です");
         if (sourceOk) {
             mvm::project::Project trimmed = mvm::project::createDefaultProject();
-            trimmed.timelineClips.push_back({mvm::project::TimelineClipKind::Video, fractional,
-                                             "fractional", "fractional-id", sourceProbe.fps_num,
-                                             sourceProbe.fps_den, sourceProbe.frame_count, 30,
-                                             sourceProbe.frame_count, 0});
+            trimmed.timelineClips.push_back({mvm::project::TimelineClipKind::Video,
+                                             fractional,
+                                             "fractional",
+                                             "fractional-id",
+                                             sourceProbe.fps_num,
+                                             sourceProbe.fps_den,
+                                             sourceProbe.frame_count,
+                                             30,
+                                             sourceProbe.frame_count,
+                                             0,
+                                             {},
+                                             {},
+                                             {}});
             const auto output = testDirectory / L"fractional-trimmed.mp4";
             mvm::app::TimelineExportRequest trimmedRequest;
             trimmedRequest.outputPath = output;
@@ -383,8 +429,9 @@ int main(int argc, char** argv) {
             invalid.rect_width = 320;
             invalid.rect_height = 240;
             invalid.opacity_keyframe_count = 2;
-            invalid.opacity_keyframes[0] = {1, 1.0}; // local 0を意図的に欠落させる
-            invalid.opacity_keyframes[1] = {9, 1.0};
+            const MvmExportOpacityKeyframe invalidKeys[] = {{1, 1.0}, // local 0を意図的に欠落させる
+                                                            {9, 1.0}};
+            invalid.opacity_keyframes = invalidKeys;
             const MvmExportSpec invalidSpec{320, 240, 60, 1, 23, 10000, 4, 0, nullptr, nullptr};
             char invalidError[512] = {};
             const auto invalidOutput = testDirectory / L"m7b-invalid-key.mp4";
@@ -405,7 +452,10 @@ int main(int argc, char** argv) {
                                           120,
                                           0,
                                           120,
-                                          0};
+                                          0,
+                                          {},
+                                          {},
+                                          {}};
         bottom.track = mvm::project::TrackRef{mvm::project::TrackKind::Video, 0};
         mvm::project::TimelineClip top{mvm::project::TimelineClipKind::Manim,
                                        topPath,
@@ -416,7 +466,10 @@ int main(int argc, char** argv) {
                                        120,
                                        10,
                                        70,
-                                       20};
+                                       20,
+                                       {},
+                                       {},
+                                       {}};
         top.track = mvm::project::TrackRef{mvm::project::TrackKind::Video, 1};
         top.effects.scalePercent = 60;
         top.effects.positionXPercent = 10;
@@ -433,7 +486,10 @@ int main(int argc, char** argv) {
                                              120,
                                              80,
                                              100,
-                                             90};
+                                             90,
+                                             {},
+                                             {},
+                                             {}};
         secondTop.track = mvm::project::TrackRef{mvm::project::TrackKind::Video, 1};
         // vector順をtimeline authorityにしないことも実経路で踏む。
         overlaid.timelineClips = {secondTop, top, bottom};
@@ -474,8 +530,19 @@ int main(int argc, char** argv) {
         const auto source = testDirectory / L"m7a-effects-source.mp4";
         check(generateEffectsFixture(ffmpeg, source), "M7a effect fixtureを生成できません");
         mvm::project::Project effected = mvm::project::createDefaultProject();
-        effected.timelineClips.push_back({mvm::project::TimelineClipKind::Manim, source, "effects",
-                                          "effects-id", 60, 1, 120, 10, 70, 0});
+        effected.timelineClips.push_back({mvm::project::TimelineClipKind::Manim,
+                                          source,
+                                          "effects",
+                                          "effects-id",
+                                          60,
+                                          1,
+                                          120,
+                                          10,
+                                          70,
+                                          0,
+                                          {},
+                                          {},
+                                          {}});
         auto& effects = effected.timelineClips.front().effects;
         effects.cropLeftPercent = 10;
         effects.cropTopPercent = 10;
@@ -536,8 +603,8 @@ int main(int argc, char** argv) {
         padded.timeline_start_frame = 0;
         padded.timeline_duration_frames = kDuration;
         padded.opacity_keyframe_count = 2;
-        padded.opacity_keyframes[0] = {0, 1.0};
-        padded.opacity_keyframes[1] = {kDuration - 1, 1.0};
+        const MvmExportOpacityKeyframe paddedKeys[] = {{0, 1.0}, {kDuration - 1, 1.0}};
+        padded.opacity_keyframes = paddedKeys;
 
         MvmExportClip v1Effect = padded;
         v1Effect.video_track = 0;
@@ -624,6 +691,82 @@ int main(int argc, char** argv) {
         check(!std::filesystem::exists(
                   std::filesystem::path(missingRequest.outputPath).concat(".mvmtmp")),
               "失敗したのに一時ファイルが残っています");
+    }
+
+    // 音量filterの実出力。設定の読み戻しだけでは無音・増幅を証明できない。
+    {
+        const auto wave = testDirectory / L"gain-source.wav";
+        check(_wspawnl(_P_WAIT, ffmpeg.c_str(), ffmpeg.c_str(), L"-y", L"-loglevel", L"error",
+                       L"-f", L"lavfi", L"-i", L"sine=frequency=440:duration=1:sample_rate=48000",
+                       L"-c:a", L"pcm_s16le", wave.c_str(), static_cast<wchar_t*>(nullptr)) == 0,
+              "gain検証用WAVを生成できません");
+        auto renderGain = [&](const char* name, double base,
+                              std::vector<mvm::project::ClipKeyframe> keys) {
+            auto project = mvm::project::createDefaultProject();
+            mvm::project::TimelineClip video;
+            video.kind = mvm::project::TimelineClipKind::Video;
+            video.mediaPath = firstClip;
+            video.name = "video";
+            video.id = "gain-video";
+            video.sourceFpsNum = 60;
+            video.sourceFpsDen = 1;
+            video.sourceFrameCount = firstFrames;
+            video.sourceOutFrame = 60;
+            video.track = {mvm::project::TrackKind::Video, 0};
+            project.timelineClips.push_back(video);
+            auto sound = video;
+            sound.kind = mvm::project::TimelineClipKind::Audio;
+            sound.track = {mvm::project::TrackKind::Audio, 0};
+            sound.mediaPath = wave;
+            sound.id = "gain-audio";
+            sound.effects.volumePercent = base;
+            sound.effects.volumeKeys = std::move(keys);
+            project.timelineClips.push_back(sound);
+            mvm::app::TimelineExportRequest gainRequest;
+            gainRequest.outputPath = testDirectory / (std::string(name) + ".mp4");
+            gainRequest.width = 320;
+            gainRequest.height = 240;
+            const auto exported = mvm::app::exportTimeline(project, gainRequest);
+            check(exported.success, "gain付きMLT書き出しに失敗しました");
+            if (!exported.success) {
+                std::fprintf(stderr, "  %s: %s\n", name, exported.error.c_str());
+                return std::vector<float>{};
+            }
+            const auto raw = testDirectory / (std::string(name) + ".f32");
+            check(_wspawnl(_P_WAIT, ffmpeg.c_str(), ffmpeg.c_str(), L"-y", L"-loglevel", L"error",
+                           L"-i", gainRequest.outputPath.c_str(), L"-map", L"0:a:0", L"-ac", L"1",
+                           L"-c:a", L"pcm_f32le", L"-f", L"f32le", raw.c_str(),
+                           static_cast<wchar_t*>(nullptr)) == 0,
+                  "gain書き出しのPCMを抽出できません");
+            std::ifstream stream(raw, std::ios::binary | std::ios::ate);
+            if (!stream)
+                return std::vector<float>{};
+            const auto bytes = stream.tellg();
+            std::vector<float> samples(static_cast<std::size_t>(bytes) / sizeof(float));
+            stream.seekg(0);
+            stream.read(reinterpret_cast<char*>(samples.data()),
+                        static_cast<std::streamsize>(samples.size() * sizeof(float)));
+            return samples;
+        };
+        const auto unity = renderGain("gain-unity", 100.0, {});
+        const auto silent = renderGain("gain-silent", 0.0, {});
+        const auto boosted = renderGain("gain-boost", 200.0, {});
+        const auto ramp = renderGain("gain-ramp", 100.0, {{0, 0.0}, {59, 200.0}});
+        const auto rms = [](const std::vector<float>& samples, std::size_t begin,
+                            std::size_t count) {
+            if (samples.size() < begin + count)
+                return 0.0;
+            double power = 0.0;
+            for (std::size_t i = begin; i < begin + count; ++i)
+                power += static_cast<double>(samples[i]) * static_cast<double>(samples[i]);
+            return std::sqrt(power / static_cast<double>(count));
+        };
+        const double reference = rms(unity, 20000, 8000);
+        check(reference > 0.02, "基準音声が実際に出力されていません");
+        check(rms(silent, 20000, 8000) < reference * 0.03, "音量0%が実際のPCMを無音にしていません");
+        check(rms(boosted, 20000, 8000) > reference * 1.6, "音量200%が実際のPCMを増幅していません");
+        check(rms(ramp, 4000, 4000) < rms(ramp, 38000, 4000) * 0.3,
+              "時間変化する音量が実際のPCMへ反映されていません");
     }
 
     mvm_mlt_runtime_shutdown();

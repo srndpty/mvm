@@ -29,6 +29,26 @@ struct TimelineValidationResult {
     std::string error;
 };
 
+enum class ClipKeyKind { Opacity, Volume };
+
+struct ClipKeyEditPreview {
+    bool success = false;
+    ClipEffects effects;
+    std::int64_t frame = 0;
+    std::string error;
+};
+
+// originalFrame が負なら追加。ドラッグ表示と確定の両方がこの候補計算を使う。
+ClipKeyEditPreview previewClipKeyEdit(const Project& project, const std::string& clipId,
+                                      ClipKeyKind kind, std::int64_t originalFrame,
+                                      std::int64_t requestedFrame, double requestedPercent);
+TimelineEditResult editClipKey(Project& project, const std::string& clipId, ClipKeyKind kind,
+                               std::int64_t originalFrame, std::int64_t requestedFrame,
+                               double requestedPercent);
+// frame のキーを消す。最後のキーを消すと線は effects の基準値へ戻る。
+TimelineEditResult deleteClipKey(Project& project, const std::string& clipId, ClipKeyKind kind,
+                                 std::int64_t frame);
+
 enum class TrimEdge { Left, Right };
 
 // リンクされた clip (video / audio の 1 組) の相手にも同じ編集を適用するか。

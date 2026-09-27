@@ -7,6 +7,10 @@
 #include <string>
 
 namespace mvm::app {
+namespace {
+__extension__ using WideInteger = __int128;
+} // namespace
+
 TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& project,
                                                     std::int64_t timelineFrame) {
     TimelinePreviewFrameMapping result;
@@ -73,12 +77,13 @@ bool previewVideoMappingCovers(const project::Project& project,
         return wanted.timelineStartFrame == installed.timelineStartFrame;
     // d R = d * timelineNum * sourceDen / (timelineDen * sourceNum)。fps は検証済みの正の値で、
     // 積は 128 bit に収まる。
-    const __int128 numerator =
-        static_cast<__int128>(sourceAdvance) * project.timelineFpsNum * clip.sourceFpsDen;
-    const __int128 denominator = static_cast<__int128>(project.timelineFpsDen) * clip.sourceFpsNum;
+    const WideInteger numerator =
+        static_cast<WideInteger>(sourceAdvance) * project.timelineFpsNum * clip.sourceFpsDen;
+    const WideInteger denominator =
+        static_cast<WideInteger>(project.timelineFpsDen) * clip.sourceFpsNum;
     if (denominator <= 0 || numerator % denominator != 0)
         return false;
-    return static_cast<__int128>(wanted.timelineStartFrame) - installed.timelineStartFrame ==
+    return static_cast<WideInteger>(wanted.timelineStartFrame) - installed.timelineStartFrame ==
            numerator / denominator;
 }
 

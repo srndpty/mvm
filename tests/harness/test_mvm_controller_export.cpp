@@ -370,6 +370,33 @@ void testSlipPreviewDoesNotEdit(const std::filesystem::path& path) {
           "slip previewの後にslipを確定できません");
 }
 
+void testPenKeyUndoRedo(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "ペン試験の初期Projectを保存できません");
+    mvm::app::MvmController controller(path, {}, initial);
+    const auto candidate = controller.previewClipKey(QStringLiteral("video"), -1, 20, 75.0);
+    check(candidate.value(QStringLiteral("success")).toBool() && !controller.dirty(),
+          "ペンのdrag候補がProjectを編集しました");
+    check(controller.commitClipKey(QStringLiteral("video"), -1, 20, 75.0) && controller.dirty(),
+          "ペンのキーを一回の編集として確定できません");
+    const auto* model = controller.timelineModel();
+    const int role = model->roleNames().key("automationKeys");
+    check(model->data(model->index(0, 0), role).toList() ==
+              candidate.value(QStringLiteral("keys")).toList(),
+          "ペンのdrag候補と確定表示が一致しません");
+    check(controller.undoLastEdit() && model->data(model->index(0, 0), role).toList().empty(),
+          "ペンのキーをUndoできません");
+    check(controller.redoLastEdit() && model->data(model->index(0, 0), role).toList() ==
+                                           candidate.value(QStringLiteral("keys")).toList(),
+          "ペンのキーをRedoできません");
+    check(controller.saveProject(), "ペンのキーを保存できません");
+    const auto loaded = mvm::project::loadProjectJson(path);
+    check(loaded.success && loaded.project.timelineClips[0].effects.opacityKeys.size() == 1 &&
+              loaded.project.timelineClips[0].effects.opacityKeys[0].valuePercent == 75.0,
+          "ペンのキーを再読込できません");
+}
+
 void testRedoRestoresDirtyState(const std::filesystem::path& path) {
     const auto initial = videoProject();
     check(mvm::project::saveProjectJson(initial, path).success,
@@ -1108,6 +1135,7 @@ int main(int argc, char** argv) {
     testUndo(directory / L"undo.mvm");
     testRedoRestoresDirtyState(directory / L"redo-dirty.mvm");
     testSlipPreviewDoesNotEdit(directory / L"slip-preview.mvm");
+    testPenKeyUndoRedo(directory / L"pen-undo-redo.mvm");
     testDirtyCheckpoint(directory / L"dirty-checkpoint.mvm");
     testProjectVideoSettings(directory / L"project-video-settings.mvm");
     testUnlinkUndo(directory / L"unlink-undo.mvm");

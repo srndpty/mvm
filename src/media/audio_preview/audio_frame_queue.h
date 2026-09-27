@@ -5,6 +5,7 @@
 
 #include <condition_variable>
 #include <deque>
+#include <functional>
 #include <mutex>
 
 namespace mvm::audio {
@@ -74,6 +75,7 @@ public:
     bool waitForSamples(std::int64_t requiredSamples, int timeoutMs);
     AudioConsumeResult consume(float* destination, std::int64_t requestedSampleStart,
                                std::int64_t samples, SourceGeneration expectedGeneration);
+    void setGainAtSample(std::function<float(std::int64_t)> gainAtSample);
     bool markEndOfStream(SourceGeneration generation, std::int64_t endSampleExclusive);
     bool setGeneration(SourceGeneration generation);
     void noteUnderflow(std::int64_t samples);
@@ -84,6 +86,7 @@ public:
     SourceGeneration generation() const;
 
 private:
+    std::function<float(std::int64_t)> gainAtSample_;
     SourceId source_{};
     SourceGeneration generation_{};
     std::int64_t hardMaxSamples_ = kQueueHardMaxSamples;

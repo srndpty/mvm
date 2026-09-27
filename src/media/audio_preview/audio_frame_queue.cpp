@@ -112,8 +112,16 @@ AudioConsumeResult AudioFrameQueue::consume(float* destination, std::int64_t req
         if (result.firstSample < 0)
             result.firstSample = chunk.startSample;
         const float* source = chunk.pcm->data() + chunk.offsetSamples * kInternalChannels;
-        std::memcpy(destination + result.audioSamples * kInternalChannels, source,
+        float* output = destination + result.audioSamples * kInternalChannels;
+        std::memcpy(output, source,
                     static_cast<std::size_t>(take) * kInternalChannels * sizeof(float));
+        if (gainAtSample_) {
+            for (std::int64_t sample = 0; sample < take; ++sample) {
+                const float gain = gainAtSample_(chunk.startSample + sample);
+                output[sample * kInternalChannels] *= gain;
+                output[sample * kInternalChannels + 1] *= gain;
+            }
+        }
         result.audioSamples += take;
         result.lastSampleExclusive = chunk.startSample + take;
         chunk.startSample += take;
@@ -158,6 +166,11 @@ AudioConsumeResult AudioFrameQueue::consume(float* destination, std::int64_t req
     metrics_.queuedDurationMs = toMs(metrics_.queuedSamples);
     changed_.notify_all();
     return result;
+}
+
+void AudioFrameQueue::setGainAtSample(std::function<float(std::int64_t)> gainAtSample) {
+    std::lock_guard lock(mutex_);
+    gainAtSample_ = std::move(gainAtSample);
 }
 
 bool AudioFrameQueue::markEndOfStream(SourceGeneration generation,

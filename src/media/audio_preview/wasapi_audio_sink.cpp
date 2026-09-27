@@ -178,8 +178,8 @@ bool WasapiAudioSink::open(std::string& error, float sessionVolume) {
     AVChannelLayout outputLayout{};
     av_channel_layout_default(&outputLayout, mixFormat_->nChannels);
     int result = swr_alloc_set_opts2(&outputResampler_, &outputLayout, deviceSampleFormat,
-                                     mixFormat_->nSamplesPerSec, &inputLayout, AV_SAMPLE_FMT_FLT,
-                                     kInternalSampleRate, 0, nullptr);
+                                     static_cast<int>(mixFormat_->nSamplesPerSec), &inputLayout,
+                                     AV_SAMPLE_FMT_FLT, kInternalSampleRate, 0, nullptr);
     av_channel_layout_uninit(&outputLayout);
     if (result < 0 || !outputResampler_ || swr_init(outputResampler_) < 0) {
         error = "endpoint 用 resampler を初期化できません";

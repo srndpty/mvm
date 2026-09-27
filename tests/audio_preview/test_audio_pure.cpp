@@ -55,6 +55,16 @@ int main() {
           "consume と同じqueue lock内でbefore/afterを記録する");
     check(consumed.queueLastAvailableSampleExclusive == 6,
           "consume時点のqueue末尾sample exclusiveを記録する");
+    AudioFrameQueue automated({1}, {1}, 10);
+    automated.setGainAtSample(
+        [](std::int64_t sample) { return sample == 0 ? 0.0F : (sample == 1 ? 1.0F : 2.0F); });
+    check(automated.push(chunk(1, 0, 3)) == AudioQueuePushResult::Accepted,
+          "音量カーブ用のPCMを受理する");
+    std::array<float, 6> gained{};
+    check(automated.consume(gained.data(), 0, 3, {1}).audioSamples == 3 && gained[0] == 0.0F &&
+              gained[1] == 0.0F && gained[2] == 0.25F && gained[3] == 0.25F && gained[4] == 0.5F &&
+              gained[5] == 0.5F,
+          "通常Previewのmix前PCMに0/100/200%を適用する");
     check(queue.setGeneration({2}), "generation を前進できる");
     check(queue.push(chunk(1, 6, 2)) == AudioQueuePushResult::RejectedStaleGeneration,
           "旧 generation を拒否する negative test");

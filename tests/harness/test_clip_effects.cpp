@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <limits>
 
 namespace {
@@ -30,6 +31,8 @@ mvm::project::Project projectWithClip() {
                                      10,
                                      110,
                                      0,
+                                     {},
+                                     {},
                                      {}});
     return project;
 }
@@ -44,6 +47,19 @@ int main(int argc, char** argv) {
     using namespace mvm::project;
     ClipEffects effects;
     check(clipEffectsAreDefault(effects), "既定effectをdefaultと判定する");
+    {
+        // preview / export は default の clip で effect 処理ごと省く。キーだけの clip
+        // を落とさない。
+        ClipEffects keyed;
+        keyed.opacityKeys = {{0, 100.0}, {10, 0.0}};
+        check(!clipEffectsAreDefault(keyed), "不透明度キーだけのeffectをdefaultにしない");
+        keyed = ClipEffects{};
+        keyed.volumeKeys = {{5, 100.0}};
+        check(!clipEffectsAreDefault(keyed), "音量キーだけのeffectをdefaultにしない");
+        keyed = ClipEffects{};
+        keyed.volumePercent = 50.0;
+        check(!clipEffectsAreDefault(keyed), "音量だけのeffectをdefaultにしない");
+    }
     std::string error;
     check(validateClipEffects(effects, 100, error), "既定effectが有効");
     effects.cropLeftPercent = 10;
@@ -80,12 +96,29 @@ int main(int argc, char** argv) {
     check(!validateClipEffects(invalid, 100, error), "非有限値を拒否する");
 
     Project project = projectWithClip();
+    effects.opacityKeys = {{20, 80.0}, {80, 20.123456789123}};
     project.timelineClips.front().effects = effects;
     const auto path = directory / "effects.mvm";
     check(saveProjectJson(project, path).success, "effects付きProjectを保存する");
     const auto loaded = loadProjectJson(path);
     check(loaded.success && loaded.project.timelineClips.front().effects == effects,
           "effectsをJSON round-tripする");
+    {
+        std::ifstream saved(path, std::ios::binary);
+        const std::string originalJson((std::istreambuf_iterator<char>(saved)),
+                                       std::istreambuf_iterator<char>());
+        auto malformedJson = originalJson;
+        const auto secondKey = malformedJson.find("\"frame\":80");
+        check(secondKey != std::string::npos, "負例のキー位置が保存されていません");
+        if (secondKey != std::string::npos) {
+            malformedJson.replace(secondKey, std::string("\"frame\":80").size(), "\"frame\":20");
+            const auto duplicatePath = directory / "duplicate-key.mvm";
+            std::ofstream output(duplicatePath, std::ios::binary);
+            output << malformedJson;
+            output.close();
+            check(!loadProjectJson(duplicatePath).success, "JSONの同一frameキーを拒否する");
+        }
+    }
 
     const auto legacy = directory / "legacy.mvm";
     std::ofstream legacyFile(legacy);
@@ -93,14 +126,12 @@ int main(int argc, char** argv) {
         << R"({"schema_version":4,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,"track_kind":"video","track_index":0}]})";
     legacyFile.close();
     const auto legacyLoaded = loadProjectJson(legacy);
-    check(legacyLoaded.success &&
-              clipEffectsAreDefault(legacyLoaded.project.timelineClips[0].effects),
-          "effects欠損clipへ明示defaultを適用する");
+    check(!legacyLoaded.success, "schema 4を拒否する");
 
     const auto partial = directory / "partial.mvm";
     std::ofstream partialFile(partial);
     partialFile
-        << R"({"schema_version":4,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,"track_kind":"video","track_index":0,"effects":{"scale_percent":60}}]})";
+        << R"({"schema_version":5,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,"track_kind":"video","track_index":0,"effects":{"scale_percent":60}}]})";
     partialFile.close();
     check(!loadProjectJson(partial).success, "部分effects objectをfail-closedで拒否する");
 

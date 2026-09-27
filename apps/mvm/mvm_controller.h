@@ -283,8 +283,12 @@ public:
     Q_INVOKABLE qint64 clampSlideDrag(const QString& clipId, qint64 projectFrameDelta,
                                       bool linked) const;
     // allTracks=true なら frame を内側に含む全 track の clip を分割する。
-    Q_INVOKABLE bool splitClipAt(const QString& clipId, qint64 frame, bool allTracks,
-                                 bool linked);
+    Q_INVOKABLE bool splitClipAt(const QString& clipId, qint64 frame, bool allTracks, bool linked);
+    Q_INVOKABLE QVariantMap previewClipKey(const QString& clipId, qint64 originalFrame,
+                                           qint64 requestedFrame, double valuePercent) const;
+    Q_INVOKABLE bool commitClipKey(const QString& clipId, qint64 originalFrame,
+                                   qint64 requestedFrame, double valuePercent);
+    Q_INVOKABLE bool deleteClipKey(const QString& clipId, qint64 frame);
     // direction は "forward" / "backward"。trackKind が空なら全 track。
     Q_INVOKABLE bool selectClipsFromFrame(qint64 frame, const QString& direction,
                                           const QString& trackKind, int trackIndex);
@@ -372,6 +376,7 @@ private:
     struct AudioSourceIdentity {
         std::filesystem::path mediaPath;
         std::int64_t sampleOffset = 0;
+        project::ClipEffects effects;
         bool operator==(const AudioSourceIdentity&) const = default;
     };
 
@@ -406,9 +411,12 @@ private:
     // timeline と asset の対応を決める箇所はここだけにする。
     bool syncManimTimelineClip(bool addIfMissing);
     bool commitProjectEdit(project::Project candidate, const QString& failurePrefix);
+    // キーフレーム編集の確定。変化が無ければ何もせず、確定後は preview を合わせる。
+    bool commitClipKeyCandidate(project::Project candidate);
     // timeline 編集の共通手順。一時停止 -> candidate へ edit -> commit -> preview 更新。
-    bool applyTimelineEdit(const std::function<project::TimelineEditResult(project::Project&)>& edit,
-                           const std::string& selectedClipId, const QString& successStatus);
+    bool
+    applyTimelineEdit(const std::function<project::TimelineEditResult(project::Project&)>& edit,
+                      const std::string& selectedClipId, const QString& successStatus);
     bool resolveTrimEdge(const QString& edge, project::TrimEdge& trimEdge);
     // bin 編集を candidate へ適用し、成功したら 1 つの undo として commit する。
     bool

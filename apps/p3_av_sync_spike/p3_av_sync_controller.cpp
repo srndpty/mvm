@@ -1,10 +1,14 @@
 #include "p3_av_sync_controller.h"
 
-#include <cstdio>
-
 #include "media/audio_preview/audio_video_scheduler.h"
 #include "media/gpu_preview/exact_frame_pairer.h"
 #include "media/gpu_preview/qpc_clock.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <random>
+#include <thread>
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -12,11 +16,6 @@
 #include <QQuickWindow>
 #include <QSaveFile>
 #include <QScreen>
-
-#include <algorithm>
-#include <cmath>
-#include <random>
-#include <thread>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -37,8 +36,7 @@ double qpcMs(long long begin, long long end) {
 double nearestRank(const std::vector<double>& sorted, double p) {
     if (sorted.empty())
         return 0.0;
-    const auto index = static_cast<size_t>(
-        std::ceil(static_cast<double>(sorted.size()) * p) - 1.0);
+    const auto index = static_cast<size_t>(std::ceil(static_cast<double>(sorted.size()) * p) - 1.0);
     return sorted[std::min(index, sorted.size() - 1)];
 }
 
@@ -66,48 +64,70 @@ QJsonObject deltaDistribution(const std::vector<double>& values, bool absolute) 
 
 QString modeName(P3AvMode mode) {
     switch (mode) {
-    case P3AvMode::Playback: return QStringLiteral("playback");
-    case P3AvMode::Seek: return QStringLiteral("seek");
-    case P3AvMode::PauseResume: return QStringLiteral("pause-resume");
+    case P3AvMode::Playback:
+        return QStringLiteral("playback");
+    case P3AvMode::Seek:
+        return QStringLiteral("seek");
+    case P3AvMode::PauseResume:
+        return QStringLiteral("pause-resume");
     }
     return QStringLiteral("unknown");
 }
 
 QString scheduleActionName(int value) {
     switch (static_cast<audio::AudioVideoScheduleAction>(value)) {
-    case audio::AudioVideoScheduleAction::Hold: return QStringLiteral("Hold");
-    case audio::AudioVideoScheduleAction::Request: return QStringLiteral("Request");
-    case audio::AudioVideoScheduleAction::CatchUp: return QStringLiteral("CatchUp");
-    case audio::AudioVideoScheduleAction::End: return QStringLiteral("End");
+    case audio::AudioVideoScheduleAction::Hold:
+        return QStringLiteral("Hold");
+    case audio::AudioVideoScheduleAction::Request:
+        return QStringLiteral("Request");
+    case audio::AudioVideoScheduleAction::CatchUp:
+        return QStringLiteral("CatchUp");
+    case audio::AudioVideoScheduleAction::End:
+        return QStringLiteral("End");
     case audio::AudioVideoScheduleAction::ClockRegression:
         return QStringLiteral("ClockRegression");
-    case audio::AudioVideoScheduleAction::Invalid: return QStringLiteral("Invalid");
+    case audio::AudioVideoScheduleAction::Invalid:
+        return QStringLiteral("Invalid");
     }
     return QStringLiteral("NotObserved");
 }
 
 QString pairResultName(int value) {
     switch (static_cast<gpu::PairResult>(value)) {
-    case gpu::PairResult::Paired: return QStringLiteral("Paired");
-    case gpu::PairResult::WaitingForSource: return QStringLiteral("WaitingForSource");
-    case gpu::PairResult::MissingA: return QStringLiteral("MissingA");
-    case gpu::PairResult::MissingB: return QStringLiteral("MissingB");
-    case gpu::PairResult::MissingBoth: return QStringLiteral("MissingBoth");
-    case gpu::PairResult::StaleGeneration: return QStringLiteral("StaleGeneration");
-    case gpu::PairResult::FutureGeneration: return QStringLiteral("FutureGeneration");
-    case gpu::PairResult::MixedFrame: return QStringLiteral("MixedFrame");
-    case gpu::PairResult::Rejected: return QStringLiteral("Rejected");
+    case gpu::PairResult::Paired:
+        return QStringLiteral("Paired");
+    case gpu::PairResult::WaitingForSource:
+        return QStringLiteral("WaitingForSource");
+    case gpu::PairResult::MissingA:
+        return QStringLiteral("MissingA");
+    case gpu::PairResult::MissingB:
+        return QStringLiteral("MissingB");
+    case gpu::PairResult::MissingBoth:
+        return QStringLiteral("MissingBoth");
+    case gpu::PairResult::StaleGeneration:
+        return QStringLiteral("StaleGeneration");
+    case gpu::PairResult::FutureGeneration:
+        return QStringLiteral("FutureGeneration");
+    case gpu::PairResult::MixedFrame:
+        return QStringLiteral("MixedFrame");
+    case gpu::PairResult::Rejected:
+        return QStringLiteral("Rejected");
     }
     return QStringLiteral("NotObserved");
 }
 
 QString orientationName(Qt::ScreenOrientation orientation) {
     switch (orientation) {
-    case Qt::LandscapeOrientation: return QStringLiteral("landscape");
-    case Qt::PortraitOrientation: return QStringLiteral("portrait");
-    case Qt::InvertedLandscapeOrientation: return QStringLiteral("inverted-landscape");
-    case Qt::InvertedPortraitOrientation: return QStringLiteral("inverted-portrait");
-    case Qt::PrimaryOrientation: return QStringLiteral("primary");
+    case Qt::LandscapeOrientation:
+        return QStringLiteral("landscape");
+    case Qt::PortraitOrientation:
+        return QStringLiteral("portrait");
+    case Qt::InvertedLandscapeOrientation:
+        return QStringLiteral("inverted-landscape");
+    case Qt::InvertedPortraitOrientation:
+        return QStringLiteral("inverted-portrait");
+    case Qt::PrimaryOrientation:
+        return QStringLiteral("primary");
     }
     return QStringLiteral("unknown");
 }
@@ -134,19 +154,26 @@ QJsonObject displayEnvironmentJson(const DisplayEnvironmentSnapshot& value) {
 
 audio::RuntimeAttributionMode attributionMode(P3AvMode mode) {
     switch (mode) {
-    case P3AvMode::Playback: return audio::RuntimeAttributionMode::Playback;
-    case P3AvMode::Seek: return audio::RuntimeAttributionMode::Seek;
-    case P3AvMode::PauseResume: return audio::RuntimeAttributionMode::PauseResume;
+    case P3AvMode::Playback:
+        return audio::RuntimeAttributionMode::Playback;
+    case P3AvMode::Seek:
+        return audio::RuntimeAttributionMode::Seek;
+    case P3AvMode::PauseResume:
+        return audio::RuntimeAttributionMode::PauseResume;
     }
     return audio::RuntimeAttributionMode::Unknown;
 }
 
 QString attributionModeName(audio::RuntimeAttributionMode mode) {
     switch (mode) {
-    case audio::RuntimeAttributionMode::Playback: return QStringLiteral("playback");
-    case audio::RuntimeAttributionMode::Seek: return QStringLiteral("seek");
-    case audio::RuntimeAttributionMode::PauseResume: return QStringLiteral("pause-resume");
-    case audio::RuntimeAttributionMode::Unknown: break;
+    case audio::RuntimeAttributionMode::Playback:
+        return QStringLiteral("playback");
+    case audio::RuntimeAttributionMode::Seek:
+        return QStringLiteral("seek");
+    case audio::RuntimeAttributionMode::PauseResume:
+        return QStringLiteral("pause-resume");
+    case audio::RuntimeAttributionMode::Unknown:
+        break;
     }
     return QStringLiteral("unknown");
 }
@@ -159,7 +186,8 @@ QString clockRegressionSiteName(audio::ClockRegressionSite site) {
         return QStringLiteral("SchedulerDecision");
     case audio::ClockRegressionSite::DisplayProjectionInvalid:
         return QStringLiteral("DisplayProjectionInvalid");
-    case audio::ClockRegressionSite::Unknown: break;
+    case audio::ClockRegressionSite::Unknown:
+        break;
     }
     return QStringLiteral("Unknown");
 }
@@ -240,8 +268,7 @@ QJsonValue firstClockRegressionJson(const audio::RuntimeAttributionState& state)
                        {"context", attributionContextJson(value->context)},
                        {"previous_frame", value->previousFrame},
                        {"candidate_frame", value->candidateFrame},
-                       {"raw_audio_master_sample_position",
-                        value->rawAudioMasterSamplePosition},
+                       {"raw_audio_master_sample_position", value->rawAudioMasterSamplePosition},
                        {"scheduler_target_frame", value->schedulerTargetFrame},
                        {"current_displayed_frame", value->currentDisplayedFrame},
                        {"source_generation", static_cast<qint64>(value->sourceGeneration)},
@@ -319,9 +346,9 @@ DisplayEnvironmentSnapshot P3AvSyncController::captureDisplayEnvironment() const
 
 bool P3AvSyncController::openPipelines() {
     workerA_ = std::make_shared<gpu::SourceDecodeWorker>(gpu::SourceId{1}, state_->device,
-                                                        state_->readbacks, 16);
+                                                         state_->readbacks, 16);
     workerB_ = std::make_shared<gpu::SourceDecodeWorker>(gpu::SourceId{2}, state_->device,
-                                                        state_->readbacks, 16);
+                                                         state_->readbacks, 16);
     audioWorker_ = std::make_shared<audio::AudioDecodeWorker>(audio::SourceId{1});
     audioSink_ = std::make_shared<audio::WasapiAudioSink>(audioWorker_->queue(), *audioClock_);
     audioSink_->setRuntimeAttribution(&state_->runtimeAttribution);
@@ -362,8 +389,8 @@ bool P3AvSyncController::openPipelines() {
         }
         if (config_.diagnosticFixedSeekTarget >= 0) {
             if (config_.diagnosticFixedSeekTarget > lastTarget) {
-                startShutdown(QStringLiteral("diagnostic fixed seek target がcanonical domain外です"),
-                              true);
+                startShutdown(
+                    QStringLiteral("diagnostic fixed seek target がcanonical domain外です"), true);
                 return false;
             }
             seekTargets_.assign(static_cast<std::size_t>(config_.seekCount),
@@ -464,31 +491,30 @@ bool P3AvSyncController::startAtFrame(long long targetFrame, bool measurementSta
         ++seekTimeoutCount_;
         const auto da = workerA_->seekDiagnosticSnapshot();
         const auto db = workerB_->seekDiagnosticSnapshot();
-        seekTimeoutDiagnostic_ = QStringLiteral(
-            "A(ticket=%1 phase=%2 generation=%3 depth=%4 ready=%5) "
-            "B(ticket=%6 phase=%7 generation=%8 depth=%9 ready=%10) "
-            "audio(ticket=%11 generation=%12 depth=%13 ready=%14)")
-                                     .arg(ticketA.requestId)
-                                     .arg(QString::fromLatin1(gpu::toString(da.phase)))
-                                     .arg(workerA_->snapshot().sourceGeneration.value)
-                                     .arg(workerA_->buffer().depth())
-                                     .arg(readyA)
-                                     .arg(ticketB.requestId)
-                                     .arg(QString::fromLatin1(gpu::toString(db.phase)))
-                                     .arg(workerB_->snapshot().sourceGeneration.value)
-                                     .arg(workerB_->buffer().depth())
-                                     .arg(readyB)
-                                     .arg(audioTicket.requestId)
-                                     .arg(audioWorker_->snapshot().sourceGeneration.value)
-                                     .arg(audioWorker_->queue().snapshot().queuedSamples)
-                                     .arg(readyAudio);
+        seekTimeoutDiagnostic_ =
+            QStringLiteral("A(ticket=%1 phase=%2 generation=%3 depth=%4 ready=%5) "
+                           "B(ticket=%6 phase=%7 generation=%8 depth=%9 ready=%10) "
+                           "audio(ticket=%11 generation=%12 depth=%13 ready=%14)")
+                .arg(ticketA.requestId)
+                .arg(QString::fromLatin1(gpu::toString(da.phase)))
+                .arg(workerA_->snapshot().sourceGeneration.value)
+                .arg(workerA_->buffer().depth())
+                .arg(readyA)
+                .arg(ticketB.requestId)
+                .arg(QString::fromLatin1(gpu::toString(db.phase)))
+                .arg(workerB_->snapshot().sourceGeneration.value)
+                .arg(workerB_->buffer().depth())
+                .arg(readyB)
+                .arg(audioTicket.requestId)
+                .arg(audioWorker_->snapshot().sourceGeneration.value)
+                .arg(audioWorker_->queue().snapshot().queuedSamples)
+                .arg(readyAudio);
         startShutdown(QStringLiteral("integrated seek 共通 5 秒 deadline timeout: ") +
                           seekTimeoutDiagnostic_,
                       true);
         return false;
     }
-    if (
-        completionA.status != gpu::SeekCompletionStatus::Completed ||
+    if (completionA.status != gpu::SeekCompletionStatus::Completed ||
         completionB.status != gpu::SeekCompletionStatus::Completed || !completionAudio.completed ||
         completionA.decodedFrameNumber != targetFrame ||
         completionB.decodedFrameNumber != targetFrame ||
@@ -504,24 +530,21 @@ bool P3AvSyncController::startAtFrame(long long targetFrame, bool measurementSta
         {"requested_frame", targetFrame},
         {"requested_audio_sample", targetSample},
         {"source_a",
-         QJsonObject{{"requested_generation",
-                      static_cast<qint64>(beforeA.sourceGeneration.value + 1)},
-                     {"ready_generation",
-                      static_cast<qint64>(completionA.sourceGeneration.value)},
-                     {"ready_qpc", completionA.decodeReadyQpc}}},
+         QJsonObject{
+             {"requested_generation", static_cast<qint64>(beforeA.sourceGeneration.value + 1)},
+             {"ready_generation", static_cast<qint64>(completionA.sourceGeneration.value)},
+             {"ready_qpc", completionA.decodeReadyQpc}}},
         {"source_b",
-         QJsonObject{{"requested_generation",
-                      static_cast<qint64>(beforeB.sourceGeneration.value + 1)},
-                     {"ready_generation",
-                      static_cast<qint64>(completionB.sourceGeneration.value)},
-                     {"ready_qpc", completionB.decodeReadyQpc}}},
+         QJsonObject{
+             {"requested_generation", static_cast<qint64>(beforeB.sourceGeneration.value + 1)},
+             {"ready_generation", static_cast<qint64>(completionB.sourceGeneration.value)},
+             {"ready_qpc", completionB.decodeReadyQpc}}},
         {"audio",
-         QJsonObject{{"requested_generation",
-                      static_cast<qint64>(beforeAudio.sourceGeneration.value + 1)},
-                     {"ready_generation",
-                      static_cast<qint64>(completionAudio.seekGeneration.value)},
-                     {"first_ready_sample", completionAudio.firstOutputSample},
-                     {"ready_qpc", completionAudio.readyQpc}}},
+         QJsonObject{
+             {"requested_generation", static_cast<qint64>(beforeAudio.sourceGeneration.value + 1)},
+             {"ready_generation", static_cast<qint64>(completionAudio.seekGeneration.value)},
+             {"first_ready_sample", completionAudio.firstOutputSample},
+             {"ready_qpc", completionAudio.readyQpc}}},
         {"all_media_ready_qpc", allReadyQpc}};
     const auto snapshotA = workerA_->snapshot();
     const auto snapshotB = workerB_->snapshot();
@@ -534,9 +557,9 @@ bool P3AvSyncController::startAtFrame(long long targetFrame, bool measurementSta
         return false;
     }
     if (!coordinatorConfigured_) {
-        if (state_->coordinator.configure(
-                p3Layout(), {{gpu::SourceId{1}, completionA.sourceGeneration},
-                             {gpu::SourceId{2}, completionB.sourceGeneration}}) !=
+        if (state_->coordinator.configure(p3Layout(),
+                                          {{gpu::SourceId{1}, completionA.sourceGeneration},
+                                           {gpu::SourceId{2}, completionB.sourceGeneration}}) !=
             gpu::ConfigureResult::Configured) {
             startShutdown(QStringLiteral("P3-B compositor coordinator を初期化できません"), true);
             return false;
@@ -588,8 +611,7 @@ bool P3AvSyncController::startAtFrame(long long targetFrame, bool measurementSta
         }
         const long long requiredSamples =
             static_cast<long long>(config_.durationSeconds) * audio::kInternalSampleRate;
-        state_->p3MeasurementEndSampleExclusive.store(requiredSamples,
-                                                       std::memory_order_release);
+        state_->p3MeasurementEndSampleExclusive.store(requiredSamples, std::memory_order_release);
         state_->p3MeasurementActive.store(true, std::memory_order_release);
     }
     if (!audioSink_->play(targetSample, completionAudio.seekGeneration, error)) {
@@ -612,12 +634,11 @@ bool P3AvSyncController::startAtFrame(long long targetFrame, bool measurementSta
     seeks_.push_back(record);
 
     displayBaseline_ = state_->ledger.baseline();
-    displayExpectation_ =
-        {targetFrame,
-         state_->coordinator.compositionEpoch(),
-         {{gpu::SourceId{1}, completionA.sourceGeneration, completionA.resourceEpoch, targetFrame},
-          {gpu::SourceId{2}, completionB.sourceGeneration, completionB.resourceEpoch,
-           targetFrame}}};
+    displayExpectation_ = {
+        targetFrame,
+        state_->coordinator.compositionEpoch(),
+        {{gpu::SourceId{1}, completionA.sourceGeneration, completionA.resourceEpoch, targetFrame},
+         {gpu::SourceId{2}, completionB.sourceGeneration, completionB.resourceEpoch, targetFrame}}};
     state_->audioMasterGeneration.store(completionAudio.seekGeneration.value,
                                         std::memory_order_release);
     state_->audioMasterLastDisplayed.store(targetFrame - 1, std::memory_order_release);
@@ -648,8 +669,8 @@ bool P3AvSyncController::pollFirstDisplay() {
     record.requestToFirstVideoMs = qpcMs(requestStartQpc_, display.displayRecordQpc);
     record.firstDisplayApplicationAvProjectionValid = display.applicationAvProjectionValid;
     record.firstDisplayApplicationAvDeltaMs = display.applicationAvDeltaMs;
-    state_->runtimeAttribution.context.firstExactVideoDisplayQpc.store(
-        display.displayRecordQpc, std::memory_order_release);
+    state_->runtimeAttribution.context.firstExactVideoDisplayQpc.store(display.displayRecordQpc,
+                                                                       std::memory_order_release);
     state_->p3SeekDiagnostics.active.store(false, std::memory_order_release);
     if (record.firstAudioSample != record.requestedAudioSample ||
         record.firstDisplayedVideoFrame != record.requestedFrame) {
@@ -676,8 +697,8 @@ void P3AvSyncController::captureSeekTimeoutStageEvidence() {
     const auto clock = audioClock_->snapshot();
     const long long nowQpc = gpu::qpcTicks();
     audio::Qpc100ns now100ns;
-    const bool qpcConverted = audio::qpcTicksTo100ns(
-        {static_cast<unsigned long long>(nowQpc)}, gpu::qpcFrequencyTicks(), now100ns);
+    const bool qpcConverted = audio::qpcTicksTo100ns({static_cast<unsigned long long>(nowQpc)},
+                                                     gpu::qpcFrequencyTicks(), now100ns);
     const audio::SourceGeneration expectedGeneration{
         state_->audioMasterGeneration.load(std::memory_order_acquire)};
     const auto projection = qpcConverted
@@ -686,15 +707,14 @@ void P3AvSyncController::captureSeekTimeoutStageEvidence() {
     const auto& render = state_->p3SeekDiagnostics;
     auto sourceJson = [](const gpu::SourceDecoderSnapshot& worker,
                          const gpu::SourceFrameBufferSnapshot& buffer) {
-        return QJsonObject{{"current_generation",
-                            static_cast<qint64>(worker.sourceGeneration.value)},
-                           {"resource_epoch", static_cast<qint64>(worker.resourceEpoch.value)},
-                           {"buffer_generation",
-                            static_cast<qint64>(buffer.generation.value)},
-                           {"buffer_front_frame", buffer.frontFrame},
-                           {"buffer_back_frame", buffer.backFrame},
-                           {"buffer_depth", static_cast<qint64>(buffer.depth)},
-                           {"eof", worker.eof}};
+        return QJsonObject{
+            {"current_generation", static_cast<qint64>(worker.sourceGeneration.value)},
+            {"resource_epoch", static_cast<qint64>(worker.resourceEpoch.value)},
+            {"buffer_generation", static_cast<qint64>(buffer.generation.value)},
+            {"buffer_front_frame", buffer.frontFrame},
+            {"buffer_back_frame", buffer.backFrame},
+            {"buffer_depth", static_cast<qint64>(buffer.depth)},
+            {"eof", worker.eof}};
     };
     QJsonObject sourceAJson = seekTimeoutStageEvidence_.value("source_a").toObject();
     QJsonObject sourceBJson = seekTimeoutStageEvidence_.value("source_b").toObject();
@@ -712,14 +732,14 @@ void P3AvSyncController::captureSeekTimeoutStageEvidence() {
     seekTimeoutStageEvidence_.insert("audio", audioJson);
     seekTimeoutStageEvidence_.insert(
         "wasapi_clock",
-        QJsonObject{{"sink_started", sink.running},
-                    {"clock_generation", static_cast<qint64>(clock.generation.value)},
-                    {"anchor_valid", sink.clockAnchorMediaSample >= 0 && clock.running},
-                    {"current_media_sample", clock.mediaSamplePosition},
-                    {"projected_media_sample", projection.mediaSample},
-                    {"last_clock_query_result", projection.valid ? "VALID" : "INVALID"},
-                    {"clock_query_failure_count",
-                     static_cast<qint64>(clock.clockQueryFailureCount)}});
+        QJsonObject{
+            {"sink_started", sink.running},
+            {"clock_generation", static_cast<qint64>(clock.generation.value)},
+            {"anchor_valid", sink.clockAnchorMediaSample >= 0 && clock.running},
+            {"current_media_sample", clock.mediaSamplePosition},
+            {"projected_media_sample", projection.mediaSample},
+            {"last_clock_query_result", projection.valid ? "VALID" : "INVALID"},
+            {"clock_query_failure_count", static_cast<qint64>(clock.clockQueryFailureCount)}});
     seekTimeoutStageEvidence_.insert(
         "video_scheduler",
         QJsonObject{{"last_displayed", render.schedulerLastDisplayed.load()},
@@ -732,32 +752,29 @@ void P3AvSyncController::captureSeekTimeoutStageEvidence() {
                     {"first_skipped_frames", render.schedulerFirstSkippedFrames.load()}});
     seekTimeoutStageEvidence_.insert(
         "pair_render",
-        QJsonObject{{"render_callback_count_after_seek", render.renderCallbackCount.load()},
-                    {"last_render_callback_qpc", render.lastRenderCallbackQpc.load()},
-                    {"pair_attempt_count", render.pairAttemptCount.load()},
-                    {"last_pair_result", pairResultName(render.lastPairResult.load())},
-                    {"stale_discard_a",
-                     state_->audioClockVideoStaleDiscardA.load() - seekStaleABaseline_},
-                    {"stale_discard_b",
-                     state_->audioClockVideoStaleDiscardB.load() - seekStaleBBaseline_},
-                    {"pair_wait_count",
-                     state_->videoPairWaitCount.load() - seekPairWaitBaseline_},
-                    {"exact_pair_formed_qpc", render.exactPairFormedQpc.load()},
-                    {"gpu_compose_submitted_qpc", render.gpuComposeSubmittedQpc.load()},
-                    {"gpu_completion_observed_qpc", render.gpuCompletionObservedQpc.load()},
-                    {"display_ledger_append_qpc", render.displayLedgerAppendQpc.load()}});
+        QJsonObject{
+            {"render_callback_count_after_seek", render.renderCallbackCount.load()},
+            {"last_render_callback_qpc", render.lastRenderCallbackQpc.load()},
+            {"pair_attempt_count", render.pairAttemptCount.load()},
+            {"last_pair_result", pairResultName(render.lastPairResult.load())},
+            {"stale_discard_a", state_->audioClockVideoStaleDiscardA.load() - seekStaleABaseline_},
+            {"stale_discard_b", state_->audioClockVideoStaleDiscardB.load() - seekStaleBBaseline_},
+            {"pair_wait_count", state_->videoPairWaitCount.load() - seekPairWaitBaseline_},
+            {"exact_pair_formed_qpc", render.exactPairFormedQpc.load()},
+            {"gpu_compose_submitted_qpc", render.gpuComposeSubmittedQpc.load()},
+            {"gpu_completion_observed_qpc", render.gpuCompletionObservedQpc.load()},
+            {"display_ledger_append_qpc", render.displayLedgerAppendQpc.load()}});
     seekTimeoutStageEvidence_.insert(
         "coordinator",
-        QJsonObject{{"source_generation_a",
-                     static_cast<qint64>(
-                         state_->coordinator.sourceGeneration(gpu::SourceId{1}).value)},
-                    {"source_generation_b",
-                     static_cast<qint64>(
-                         state_->coordinator.sourceGeneration(gpu::SourceId{2}).value)},
-                    {"resource_epoch_a", static_cast<qint64>(sourceA.resourceEpoch.value)},
-                    {"resource_epoch_b", static_cast<qint64>(sourceB.resourceEpoch.value)},
-                    {"composition_epoch",
-                     static_cast<qint64>(state_->coordinator.compositionEpoch().value)}});
+        QJsonObject{
+            {"source_generation_a",
+             static_cast<qint64>(state_->coordinator.sourceGeneration(gpu::SourceId{1}).value)},
+            {"source_generation_b",
+             static_cast<qint64>(state_->coordinator.sourceGeneration(gpu::SourceId{2}).value)},
+            {"resource_epoch_a", static_cast<qint64>(sourceA.resourceEpoch.value)},
+            {"resource_epoch_b", static_cast<qint64>(sourceB.resourceEpoch.value)},
+            {"composition_epoch",
+             static_cast<qint64>(state_->coordinator.compositionEpoch().value)}});
     seekTimeoutStageEvidence_.insert("timeout_qpc", nowQpc);
 }
 
@@ -831,8 +848,7 @@ void P3AvSyncController::tick() {
         if (state_->deviceReady.load(std::memory_order_acquire)) {
             phaseTimer_.restart();
             setPhase(config_.formalContractC2 ? Phase::DisplayPreflight : Phase::Start);
-        }
-        else if (phaseTimer_.elapsed() > 10000)
+        } else if (phaseTimer_.elapsed() > 10000)
             startShutdown(QStringLiteral("Qt/D3D11 device ready timeout"), true);
         break;
     case Phase::DisplayPreflight: {
@@ -947,11 +963,12 @@ void P3AvSyncController::tick() {
             const auto audioGeneration = audioWorker_->snapshot().sourceGeneration.value;
             const auto aGeneration = workerA_->snapshot().sourceGeneration.value;
             const auto bGeneration = workerB_->snapshot().sourceGeneration.value;
-            pauseGenerationStable_ = audioGeneration == state_->audioMasterGeneration.load() &&
-                                     static_cast<long long>(audioGeneration) == pauseGeneration_ &&
-                                     aGeneration == displayExpectation_.sources[0].sourceGeneration.value &&
-                                     bGeneration == displayExpectation_.sources[1].sourceGeneration.value &&
-                                     state_->videoQpcMasterFallbackCount.load() == pauseQpcFallback_;
+            pauseGenerationStable_ =
+                audioGeneration == state_->audioMasterGeneration.load() &&
+                static_cast<long long>(audioGeneration) == pauseGeneration_ &&
+                aGeneration == displayExpectation_.sources[0].sourceGeneration.value &&
+                bGeneration == displayExpectation_.sources[1].sourceGeneration.value &&
+                state_->videoQpcMasterFallbackCount.load() == pauseQpcFallback_;
             workerA_->play();
             workerB_->play();
             audioWorker_->play();
@@ -999,8 +1016,10 @@ void P3AvSyncController::tick() {
 }
 
 bool P3AvSyncController::writeMetrics() const {
-    const auto audioDecoder = audioWorker_ ? audioWorker_->snapshot() : audio::AudioDecoderSnapshot{};
-    const auto queue = audioWorker_ ? audioWorker_->queue().snapshot() : audio::AudioQueueSnapshot{};
+    const auto audioDecoder =
+        audioWorker_ ? audioWorker_->snapshot() : audio::AudioDecoderSnapshot{};
+    const auto queue =
+        audioWorker_ ? audioWorker_->queue().snapshot() : audio::AudioQueueSnapshot{};
     const auto sink = audioSink_ ? audioSink_->snapshot() : audio::WasapiSnapshot{};
     const auto a = workerA_ ? workerA_->snapshot() : gpu::SourceDecoderSnapshot{};
     const auto b = workerB_ ? workerB_->snapshot() : gpu::SourceDecoderSnapshot{};
@@ -1029,12 +1048,11 @@ bool P3AvSyncController::writeMetrics() const {
         std::vector<double> measurementDeltas;
         QJsonArray displayJson;
         for (const auto& display : measurementDisplays) {
-            displayJson.append(
-                QJsonObject{{"frame", display.outputFrameNumber},
-                            {"display_record_qpc", display.displayRecordQpc},
-                            {"application_av_projection_valid",
-                             display.applicationAvProjectionValid},
-                            {"application_av_delta_ms", display.applicationAvDeltaMs}});
+            displayJson.append(QJsonObject{
+                {"frame", display.outputFrameNumber},
+                {"display_record_qpc", display.displayRecordQpc},
+                {"application_av_projection_valid", display.applicationAvProjectionValid},
+                {"application_av_delta_ms", display.applicationAvDeltaMs}});
             if (firstFrame < 0)
                 firstFrame = display.outputFrameNumber;
             if (lastFrame >= 0) {
@@ -1077,8 +1095,7 @@ bool P3AvSyncController::writeMetrics() const {
                 {"request_to_first_display_ms", value.requestToFirstVideoMs},
                 {"first_display_application_av_projection_valid",
                  value.firstDisplayApplicationAvProjectionValid},
-                {"first_display_application_av_delta_ms",
-                 value.firstDisplayApplicationAvDeltaMs}});
+                {"first_display_application_av_delta_ms", value.firstDisplayApplicationAvDeltaMs}});
         }
 
         const auto delta = [&](long long current, long long baseline) {
@@ -1094,31 +1111,31 @@ bool P3AvSyncController::writeMetrics() const {
         });
         const bool modeCount = config_.mode != P3AvMode::Seek ||
                                seeks_.size() == static_cast<size_t>(config_.seekCount);
-        const long long underflow = delta(static_cast<long long>(queue.underflowCount),
-                                          measurementBaseline_.underflow);
+        const long long underflow =
+            delta(static_cast<long long>(queue.underflowCount), measurementBaseline_.underflow);
         const long long terminalEofSilenceCallbacks =
             delta(static_cast<long long>(queue.terminalEofSilenceCallbackCount),
                   measurementBaseline_.terminalEofSilenceCallbacks);
         const long long terminalEofSilenceSamples =
             delta(static_cast<long long>(queue.terminalEofSilenceSamples),
                   measurementBaseline_.terminalEofSilenceSamples);
-        const long long overflow = delta(static_cast<long long>(queue.overflowRejectCount),
-                                         measurementBaseline_.overflow);
+        const long long overflow =
+            delta(static_cast<long long>(queue.overflowRejectCount), measurementBaseline_.overflow);
         const long long markerMismatch =
             delta(state_->markerAMismatch.load(), measurementBaseline_.markerAMismatch) +
             delta(state_->markerBMismatch.load(), measurementBaseline_.markerBMismatch);
-        const long long mixedPair = delta(state_->coordinator.mixedSourceFrameCount(),
-                                          measurementBaseline_.mixedPair);
-        const long long mixedGeneration = delta(state_->coordinator.mixedGenerationCount(),
-                                                measurementBaseline_.mixedGeneration);
+        const long long mixedPair =
+            delta(state_->coordinator.mixedSourceFrameCount(), measurementBaseline_.mixedPair);
+        const long long mixedGeneration =
+            delta(state_->coordinator.mixedGenerationCount(), measurementBaseline_.mixedGeneration);
         const long long staleEpoch = delta(state_->coordinator.staleCompositionEpochCount(),
                                            measurementBaseline_.staleEpoch);
         const long long ahead =
             delta(state_->videoAheadViolationCount.load(), measurementBaseline_.ahead);
         const long long clockRegression =
             delta(state_->videoClockRegressionCount.load(), measurementBaseline_.clockRegression);
-        const long long qpcFallback = delta(state_->videoQpcMasterFallbackCount.load(),
-                                            measurementBaseline_.qpcFallback);
+        const long long qpcFallback =
+            delta(state_->videoQpcMasterFallbackCount.load(), measurementBaseline_.qpcFallback);
         const long long audioClockQueryFailure =
             delta(static_cast<long long>(clock.clockQueryFailureCount),
                   measurementBaseline_.audioClockQueryFailure);
@@ -1134,10 +1151,9 @@ bool P3AvSyncController::writeMetrics() const {
             seekBusyAcceptanceCount_ == 0 && seekGenerationMismatchCount_ == 0 &&
             seekStaleCompletionCount_ == 0 && state_->deviceLostCount.load() == 0 &&
             state_->lifecycleOrderViolationCount.load() == 0 &&
-            state_->readbacks.fullFrameReadbacks() == 0 &&
-            compositor.fullFrameGpuCopyCount == 0 && a.softwareFrameRejectCount == 0 &&
-            b.softwareFrameRejectCount == 0 && sink.deviceFailureCount == 0 &&
-            sink.audioRenderThreadJoinLeak == 0 &&
+            state_->readbacks.fullFrameReadbacks() == 0 && compositor.fullFrameGpuCopyCount == 0 &&
+            a.softwareFrameRejectCount == 0 && b.softwareFrameRejectCount == 0 &&
+            sink.deviceFailureCount == 0 && sink.audioRenderThreadJoinLeak == 0 &&
             audioDecoder.audioDecodeThreadJoinLeak == 0 && a.joined && b.joined && sink.joined &&
             audioDecoder.joined && displayCorrectness &&
             (config_.mode != P3AvMode::PauseResume ||
@@ -1173,13 +1189,12 @@ bool P3AvSyncController::writeMetrics() const {
                  ? static_cast<double>(uniqueDisplayed) / config_.durationSeconds
                  : 0.0},
             {"drop_rate", config_.mode == P3AvMode::Playback
-                              ? static_cast<double>(skipped) / requiredFrames
+                              ? static_cast<double>(skipped) / static_cast<double>(requiredFrames)
                               : 0.0},
             {"measurement_pair_wait_count",
              delta(state_->videoPairWaitCount.load(), measurementBaseline_.pairWait)},
-            {"measurement_target_superseded_count",
-             delta(state_->videoTargetSupersededCount.load(),
-                   measurementBaseline_.targetSuperseded)},
+            {"measurement_target_superseded_count", delta(state_->videoTargetSupersededCount.load(),
+                                                          measurementBaseline_.targetSuperseded)},
             {"measurement_stale_discard_a",
              delta(state_->audioClockVideoStaleDiscardA.load(), measurementBaseline_.staleA)},
             {"measurement_stale_discard_b",
@@ -1191,8 +1206,7 @@ bool P3AvSyncController::writeMetrics() const {
             {"first_terminal_eof_requested_count", queue.firstTerminalEofRequestedCount},
             {"first_terminal_eof_audio_samples", queue.firstTerminalEofAudioSamples},
             {"first_terminal_eof_silence_samples", queue.firstTerminalEofSilenceSamples},
-            {"first_terminal_eof_end_sample_exclusive",
-             queue.firstTerminalEofEndSampleExclusive},
+            {"first_terminal_eof_end_sample_exclusive", queue.firstTerminalEofEndSampleExclusive},
             {"first_terminal_eof_generation",
              static_cast<qint64>(queue.firstTerminalEofGeneration)},
             {"measurement_audio_overflow_count", overflow},
@@ -1203,8 +1217,7 @@ bool P3AvSyncController::writeMetrics() const {
             {"measurement_video_ahead_violation_count", ahead},
             {"measurement_clock_regression_count", clockRegression},
             {"measurement_video_qpc_master_fallback_count", qpcFallback},
-            {"measurement_audio_clock_query_failure_count",
-             audioClockQueryFailure},
+            {"measurement_audio_clock_query_failure_count", audioClockQueryFailure},
             {"application_av_delta_ms", deltaDistribution(measurementDeltas, false)},
             {"application_av_delta_abs_ms", deltaDistribution(measurementDeltas, true)},
             {"application_av_projection_failure_count",
@@ -1239,8 +1252,7 @@ bool P3AvSyncController::writeMetrics() const {
              a.softwareFrameRejectCount + b.softwareFrameRejectCount},
             {"device_lost_count", state_->deviceLostCount.load()},
             {"lifecycle_violation_count", state_->lifecycleOrderViolationCount.load()},
-            {"audio_render_thread_join_leak",
-             static_cast<qint64>(sink.audioRenderThreadJoinLeak)},
+            {"audio_render_thread_join_leak", static_cast<qint64>(sink.audioRenderThreadJoinLeak)},
             {"audio_device_failure_count", static_cast<qint64>(sink.deviceFailureCount)},
             {"audio_device_last_error", QString::fromStdString(sink.lastError)},
             {"audio_sink_joined", sink.joined},
@@ -1256,7 +1268,8 @@ bool P3AvSyncController::writeMetrics() const {
             {"adapter", QString::fromStdString(a.adapter.description)},
             {"audio_endpoint_sample_rate", sink.deviceFormat.sampleRate},
             {"audio_endpoint_channels", sink.deviceFormat.channels},
-            {"audio_endpoint_sample_format", QString::fromStdString(sink.deviceFormat.sampleFormat)}};
+            {"audio_endpoint_sample_format",
+             QString::fromStdString(sink.deviceFormat.sampleFormat)}};
         root.insert("first_audio_underflow_snapshot",
                     firstAudioUnderflowJson(state_->runtimeAttribution));
         root.insert("first_clock_regression_snapshot",
@@ -1299,19 +1312,20 @@ bool P3AvSyncController::writeMetrics() const {
 
     QJsonArray seekJson;
     for (const auto& value : seeks_) {
-        seekJson.append(QJsonObject{{"requested_frame", value.requestedFrame},
-                                    {"requested_audio_sample", value.requestedAudioSample},
-                                    {"audio_generation", static_cast<qint64>(value.audioGeneration)},
-                                    {"video_generation_a", static_cast<qint64>(value.videoGenerationA)},
-                                    {"video_generation_b", static_cast<qint64>(value.videoGenerationB)},
-                                    {"first_audio_sample", value.firstAudioSample},
-                                    {"first_displayed_video_frame", value.firstDisplayedVideoFrame},
-                                    {"audio_seek_ready_ms", value.audioSeekReadyMs},
-                                    {"video_a_ready_ms", value.videoAReadyMs},
-                                    {"video_b_ready_ms", value.videoBReadyMs},
-                                    {"all_media_ready_ms", value.allMediaReadyMs},
-                                    {"resume_to_first_video_ms", value.resumeToFirstVideoMs},
-                                    {"request_to_first_video_ms", value.requestToFirstVideoMs}});
+        seekJson.append(
+            QJsonObject{{"requested_frame", value.requestedFrame},
+                        {"requested_audio_sample", value.requestedAudioSample},
+                        {"audio_generation", static_cast<qint64>(value.audioGeneration)},
+                        {"video_generation_a", static_cast<qint64>(value.videoGenerationA)},
+                        {"video_generation_b", static_cast<qint64>(value.videoGenerationB)},
+                        {"first_audio_sample", value.firstAudioSample},
+                        {"first_displayed_video_frame", value.firstDisplayedVideoFrame},
+                        {"audio_seek_ready_ms", value.audioSeekReadyMs},
+                        {"video_a_ready_ms", value.videoAReadyMs},
+                        {"video_b_ready_ms", value.videoBReadyMs},
+                        {"all_media_ready_ms", value.allMediaReadyMs},
+                        {"resume_to_first_video_ms", value.resumeToFirstVideoMs},
+                        {"request_to_first_video_ms", value.requestToFirstVideoMs}});
     }
     QJsonObject root{
         {"schema_version", 1},
@@ -1349,8 +1363,7 @@ bool P3AvSyncController::writeMetrics() const {
         {"audio_overflow_count", static_cast<qint64>(queue.overflowRejectCount)},
         {"video_displayed_count", state_->displayedCompositionCount.load()},
         {"video_catchup_skip_count", state_->audioClockVideoCatchupSkipCount.load()},
-        {"audio_clock_video_catchup_skip_count",
-         state_->audioClockVideoCatchupSkipCount.load()},
+        {"audio_clock_video_catchup_skip_count", state_->audioClockVideoCatchupSkipCount.load()},
         {"video_pair_wait_count", state_->videoPairWaitCount.load()},
         {"video_target_superseded_count", state_->videoTargetSupersededCount.load()},
         {"audio_clock_video_stale_discard_a", state_->audioClockVideoStaleDiscardA.load()},
@@ -1368,7 +1381,8 @@ bool P3AvSyncController::writeMetrics() const {
         {"application_av_delta_ms", deltaDistribution(deltas, false)},
         {"application_av_delta_abs_ms", deltaDistribution(deltas, true)},
         {"integrated_seek_requested", config_.mode == P3AvMode::Seek ? config_.seekCount : 0},
-        {"integrated_seek_exact", config_.mode == P3AvMode::Seek ? static_cast<int>(seeks_.size()) : 0},
+        {"integrated_seek_exact",
+         config_.mode == P3AvMode::Seek ? static_cast<int>(seeks_.size()) : 0},
         {"seek_timeout_stage_evidence", seekTimeoutStageEvidence_},
         {"seeks", seekJson},
         {"pause_clock_frozen", pauseFrozen_},
@@ -1382,7 +1396,8 @@ bool P3AvSyncController::writeMetrics() const {
         {"shutdown_enter_observed", shutdownEntered_},
         {"shutdown_entered_from_playback", shutdownEnteredFromPlayback_},
         {"test_render_fault_injected_after_playing", renderFaultInjectedAfterPlaying_},
-        {"audio_decode_thread_join_leak", static_cast<qint64>(audioDecoder.audioDecodeThreadJoinLeak)},
+        {"audio_decode_thread_join_leak",
+         static_cast<qint64>(audioDecoder.audioDecodeThreadJoinLeak)},
         {"video_worker_a_joined", a.joined},
         {"video_worker_b_joined", b.joined},
         {"lifecycle_violation_count", state_->lifecycleOrderViolationCount.load()}};

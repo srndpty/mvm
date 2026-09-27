@@ -688,15 +688,13 @@ Main.qml のショートカットは `Instantiator` でこの配列から生成�
 | スライド | U | `slideTimelineClip` | 実装 |
 | ハンド / ズーム | H / Z | なし (表示だけを変える) | 実装 |
 | レート調整 | R | — | 無効 |
-| ペン | P | — | 無効 |
+| ペン | P | `previewClipKeyEdit` / `editClipKey` | 実装 |
 | 横書き文字 | T | — | 無効 |
 
-`[事実]` R / P / T はボタンを表示するが選べない。いずれも Project schema 4 に表現が無い。
+`[事実]` R / T はボタンを表示するが選べない。ペンは Project schema 5 で有効にした。
 
 - レート調整: clip は速度を持たず、尺は素材 fps → timeline fps の換算だけで決まる。
   preview の frame 対応・書き出し (MLT)・音声の offset とピッチの 3 経路に手が入る
-- ペン: キーフレームの仕組みが無い。opacity はフェードから作る固定 key だけで、
-  clip 音量の属性も無い
 - 横書き文字: テキスト clip の種別が無く、preview (RHI) と書き出しの両方に描画が要る
 
 ### 16.1 編集の契約
@@ -720,7 +718,7 @@ trim の計算は内部関数 `trimClipBoundary` に一本化し、trim / 分割
 
 `[事実]` `tests/harness/test_timeline_edit.cpp` に各操作の正常系と、拒否時に Project が
 変わらないことの検査を足した。29.97fps 素材でローリング境界が揃わない負例もある。
-`m7b_4_timeline_ui_architecture` はツールのキー割り当て・R/P/T の無効・文字入力中の
+`m7b_4_timeline_ui_architecture` はツールのキー割り当て・当時の R/P/T の無効・文字入力中の
 ショートカット無効を検査し、それぞれを壊した負例で検査が落ちることも確かめる。
 
 `[事実]` release の通常 CTest (`-LE "performance|stability"`) は 1384/1384 通過。
@@ -807,3 +805,51 @@ status 表示を手がかりに確認する。
 (素材の範囲と 1 frame 以上の尺)、timeline 先頭、接していない clip との空白に止める。
 `slideTimelineClip` の確定と drag 中の表示 (`clampSlideDrag`) の両方がこれを使い、
 trim / リップル / ローリング (`clampEdgeEdit`)、スリップ (`previewSlip`) と揃えた。
+
+### 16.6 ペンツールと Project schema 5
+
+`[事実]` Project schema を 5 に上げた。clip の `effects` に `volume_percent`、
+`opacity_keys`、`volume_keys` を保存する。キーの `frame` は clip 先頭からの timeline
+frame、`value_percent` は不透明度 0〜100 または音量 0〜200 である。キー間は線形補間し、
+両端の外側は端の値を保持する。既存フェードは素材フレーム基準のまま残し、カーブへ乗算する。
+schema 4 は読み込まない。
+
+`[事実]` trim、分割、ローリング、スライドで clip の素材範囲が変わるとき、
+残るキーを clip 相対位置へ換算し、端には切断位置の補間値を置く。slip と clip 全体の移動では
+キーの位置を変えない。ペンのドラッグ表示と確定は Project の `previewClipKeyEdit` を共有する。
+リンク相手へペン操作そのものは複製しない。
+
+`[事実]` preview の映像 opacity と通常・シャトル音声の gain に Project の評価値を使う。
+書き出しは全出力フレームを評価して MLT の opacity animation と `volume` filter へ渡す。
+`m4_timeline_export_focused` は生成した WAV の書き出し後 PCM を測り、0%、100%、200%、
+時間変化が実出力へ反映されることを確認する。再現手順は
+`ctest --test-dir build/ucrt64-release -R m4_timeline_export_focused --output-on-failure`。
+
+`[事実]` ペンの操作は clip の選択状態を見ない。線の上下 12px 以内をクリックすると
+キーを追加し、キーの左右 8px・上下 12px 以内を押すとそのキーをドラッグする。どちらでもなければ
+clip を選択する。判定は画面上の距離で決め、キーの左右は frame へ丸める前の x で比べる
+(丸めると高倍率で隣の frame のキーまで拾い、Alt+クリックで誤って消す)。以前は値の単位で ±8 に
+固定しており、音量 (最大 200%) の clip では線の上下 2px 程度しか受け付けなかった。
+
+`[事実]` 線は clip の上下 4px を空けて描く。値→y (`penY`) と y→値 (`penValueAt`) は
+同じ `penGeometry` (TimelineGestures.js) を使い、逆関数になっている。線の描画と線の当たり判定は
+同じ頂点 (`penLinePoints`) を使い、判定は押した x で折れ線を補間した y との距離で決める
+(`penLineYAt`)。「線を掴んだか」は描画された線の位置、「どの frame へキーを置くか」だけを
+frame へ丸めて決める。以前は x を frame へ丸めてから線の値を評価しており、急な傾きの線では
+見えている線を押しても clip の選択になった。以前は描画だけが inset を持ち、100% のキーを真横へドラッグすると約 93% に落ちた。
+キーを中心から外して掴んだ場合も、そのずれを保ってドラッグする。いずれも
+`tst_timeline_gestures.qml` の pen テストで固定している。
+線は暗い縁取り付きの黄色 2px、キーは塗りつぶした青い四角で描く。ドラッグ中とポイント中の
+キーは白く一回り大きくする。線は `Shape` (CurveRenderer) のベクタ描画である。Canvas は
+clip の小数 px 位置で texture が補間され、急な傾きの線がぼやけた。
+
+`[事実]` キーのドラッグ中 (押下・移動・離す時点のいずれか) に Shift を押していると、値を
+100% (音量なら 0 dB) へ吸着する。キーを Alt+クリックすると削除する (`deleteClipKey`)。
+キー以外の Alt+クリックは何もしない。最後のキーを消すと線は effects の基準値に戻る。
+Shift を押しただけでマウスを動かさない間は、表示は吸着しない (離した時点では吸着する)。
+
+`[未検証]` ペンの実機マウス操作と、長い音声 clip で出力フレームごとの key を MLT に渡す場合の
+書き出し時間は測っていない。書き出しは clip 尺の全 frame を評価して key にするため、60fps・2 時間の
+clip では 1 clip あたり 43.2 万 key になる。preview と同じ `evaluateClipOpacity/Volume` を
+frame ごとに使うことで補間・フェード乗算・素材 fps の差を揃えている。キー・フェード境界・
+clip 端などの変化点だけへ圧縮する余地はあるが、preview との一致を壊しやすいので、計測してから判断する。

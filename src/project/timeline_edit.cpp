@@ -1,6 +1,7 @@
 #include "project/timeline_edit.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <numeric>
 #include <unordered_map>
@@ -147,6 +148,16 @@ bool trimClipBoundary(const Project& project, TimelineClip& clip, TrimEdge edge,
     } else {
         clip.sourceOutFrame = sourceBoundary.frame;
     }
+    const auto adjustedDuration = timelineClipDuration(project, clip);
+    if (!adjustedDuration.success) {
+        error = adjustedDuration.error;
+        return false;
+    }
+    const auto localShift = clip.timelineStartFrame - originalStart;
+    reframeClipKeys(clip.effects.opacityKeys, originalDuration.frame, adjustedDuration.frame,
+                    localShift);
+    reframeClipKeys(clip.effects.volumeKeys, originalDuration.frame, adjustedDuration.frame,
+                    localShift);
     return true;
 }
 
@@ -274,6 +285,17 @@ TimelineValidationResult validateTimeline(const Project& project) {
         }
         if (!clipKindFitsTrackKind(clip.kind, clip.track.kind)) {
             result.error = "timeline clip の種別と track 種別が一致しません: " + clip.name;
+            return result;
+        }
+        const auto duration = timelineClipDuration(project, clip);
+        if (!duration.success ||
+            !validateClipKeyframes(clip.effects.opacityKeys, duration.frame, 100.0, effectsError) ||
+            !validateClipKeyframes(clip.effects.volumeKeys, duration.frame, 200.0, effectsError) ||
+            (clip.kind == TimelineClipKind::Audio &&
+             (!clip.effects.opacityKeys.empty() || clip.effects.opacityPercent != 100.0)) ||
+            (clip.kind != TimelineClipKind::Audio &&
+             (!clip.effects.volumeKeys.empty() || clip.effects.volumePercent != 100.0))) {
+            result.error = clip.name + ": キーフレームが clip の種別または尺に合いません";
             return result;
         }
         if (clip.timelineStartFrame < 0) {
@@ -1552,6 +1574,98 @@ TimelineEditResult rippleDeleteGap(Project& project, TrackRef track, std::int64_
     project = std::move(candidate);
     result.success = true;
     return result;
+}
+
+ClipKeyEditPreview previewClipKeyEdit(const Project& project, const std::string& clipId,
+                                      ClipKeyKind kind, std::int64_t originalFrame,
+                                      std::int64_t requestedFrame, double requestedPercent) {
+    ClipKeyEditPreview result;
+    const int index = indexOfId(project, clipId);
+    if (!validIndex(project, index)) {
+        result.error = "キーフレームを編集する clip がありません";
+        return result;
+    }
+    const auto& clip = project.timelineClips[static_cast<std::size_t>(index)];
+    if ((kind == ClipKeyKind::Volume) != (clip.kind == TimelineClipKind::Audio) ||
+        !std::isfinite(requestedPercent)) {
+        result.error = "キーフレームの種別または値が不正です";
+        return result;
+    }
+    const auto duration = timelineClipDuration(project, clip);
+    if (!duration.success)
+        result.error = duration.error;
+    if (!duration.success)
+        return result;
+    result.effects = clip.effects;
+    auto& keys =
+        kind == ClipKeyKind::Volume ? result.effects.volumeKeys : result.effects.opacityKeys;
+    auto found = std::find_if(keys.begin(), keys.end(), [originalFrame](const auto& key) {
+        return key.frame == originalFrame;
+    });
+    if (originalFrame >= 0 && found == keys.end()) {
+        result.error = "移動元のキーフレームがありません";
+        return result;
+    }
+    const double maximum = kind == ClipKeyKind::Volume ? 200.0 : 100.0;
+    const double value = std::clamp(requestedPercent, 0.0, maximum);
+    if (originalFrame < 0) {
+        result.frame = std::clamp<std::int64_t>(requestedFrame, 0, duration.frame - 1);
+        found = std::find_if(keys.begin(), keys.end(),
+                             [&](const auto& key) { return key.frame == result.frame; });
+        if (found != keys.end())
+            found->valuePercent = value;
+        else
+            keys.push_back({result.frame, value});
+        std::sort(keys.begin(), keys.end(),
+                  [](const auto& a, const auto& b) { return a.frame < b.frame; });
+    } else {
+        const auto position = static_cast<std::size_t>(found - keys.begin());
+        const auto lower = position == 0 ? 0 : keys[position - 1].frame + 1;
+        const auto upper =
+            position + 1 == keys.size() ? duration.frame - 1 : keys[position + 1].frame - 1;
+        result.frame = std::clamp(requestedFrame, lower, upper);
+        keys[position] = {result.frame, value};
+    }
+    Project candidate = project;
+    candidate.timelineClips[static_cast<std::size_t>(index)].effects = result.effects;
+    const auto valid = validateTimeline(candidate);
+    if (!valid.success) {
+        result.error = valid.error;
+        return result;
+    }
+    result.success = true;
+    return result;
+}
+
+TimelineEditResult editClipKey(Project& project, const std::string& clipId, ClipKeyKind kind,
+                               std::int64_t originalFrame, std::int64_t requestedFrame,
+                               double requestedPercent) {
+    const auto preview =
+        previewClipKeyEdit(project, clipId, kind, originalFrame, requestedFrame, requestedPercent);
+    if (!preview.success)
+        return {false, -1, preview.error};
+    Project candidate = project;
+    const int index = indexOfId(candidate, clipId);
+    candidate.timelineClips[static_cast<std::size_t>(index)].effects = preview.effects;
+    return commitCandidate(project, std::move(candidate), index);
+}
+
+TimelineEditResult deleteClipKey(Project& project, const std::string& clipId, ClipKeyKind kind,
+                                 std::int64_t frame) {
+    const int index = indexOfId(project, clipId);
+    if (!validIndex(project, index))
+        return {false, -1, "キーフレームを削除する clip がありません"};
+    Project candidate = project;
+    auto& clip = candidate.timelineClips[static_cast<std::size_t>(index)];
+    if ((kind == ClipKeyKind::Volume) != (clip.kind == TimelineClipKind::Audio))
+        return {false, -1, "キーフレームの種別が不正です"};
+    auto& keys = kind == ClipKeyKind::Volume ? clip.effects.volumeKeys : clip.effects.opacityKeys;
+    const auto found = std::find_if(keys.begin(), keys.end(),
+                                    [frame](const auto& key) { return key.frame == frame; });
+    if (found == keys.end())
+        return {false, -1, "削除するキーフレームがありません"};
+    keys.erase(found);
+    return commitCandidate(project, std::move(candidate), index);
 }
 
 } // namespace mvm::project

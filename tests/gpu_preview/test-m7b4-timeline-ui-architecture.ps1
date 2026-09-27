@@ -129,7 +129,7 @@ function Test-TimelineToolContract([string]$panelSource, [string]$mainSource) {
         @{ Tool = 'rate'; Key = 'R'; Available = 'false' },
         @{ Tool = 'slip'; Key = 'Y'; Available = 'true' },
         @{ Tool = 'slide'; Key = 'U'; Available = 'true' },
-        @{ Tool = 'pen'; Key = 'P'; Available = 'false' },
+        @{ Tool = 'pen'; Key = 'P'; Available = 'true' },
         @{ Tool = 'hand'; Key = 'H'; Available = 'true' },
         @{ Tool = 'zoom'; Key = 'Z'; Available = 'true' },
         @{ Tool = 'text'; Key = 'T'; Available = 'false' }

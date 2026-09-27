@@ -3,6 +3,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Layouts
+import QtQuick.Shapes
 import "TimelineGestures.js" as Gestures
 
 ApplicationWindow {
@@ -1596,6 +1597,43 @@ ApplicationWindow {
                                 required property string linkGroupId
                                 required property bool selected
                                 required property string mediaPath
+                                required property var automationKeys
+                                required property real automationBase
+
+                                property var previewKeys: null
+                                property var penState: null
+                                property int penFrame: 0
+                                property real penValue: 100
+                                readonly property real automationMaximum: clipKind === "audio" ? 200 : 100
+                                // 線の描画・マウス位置→値・当たり判定が共有する座標系 (TimelineGestures.js)。
+                                // 線は上下 4px を空けて描き、当たり判定は線の上下 12px、キーの左右 8px。
+                                readonly property var penGeometry: ({
+                                    "pixelsPerFrame": timelinePanel.pixelsPerFrame,
+                                    "maximum": automationMaximum,
+                                    "width": width,
+                                    "height": height,
+                                    "inset": 4,
+                                    "keyPixels": 8,
+                                    "linePixels": 12
+                                })
+                                // ペンで指しているキー (clip 先頭からの frame)。-1 は無し。
+                                property int penHoverKeyFrame: -1
+                                readonly property var shownKeys: previewKeys || automationKeys
+                                function automationY(value) {
+                                    return Gestures.penY(clipItem.penGeometry, value);
+                                }
+                                // 自動化の線の頂点 (clip 内の座標)。ペンの当たり判定と同じ頂点を使う。
+                                readonly property var automationPoints:
+                                    Gestures.penLinePoints(shownKeys, automationBase, penGeometry)
+                                        .map(point => Qt.point(point.x, point.y))
+
+                                function penFrameAt(x) {
+                                    return Math.max(0, Math.min(clipItem.timelineDurationFrames - 1,
+                                                                Math.round(x / timelinePanel.pixelsPerFrame)));
+                                }
+                                function penValueAt(y) {
+                                    return Gestures.penValueAt(clipItem.penGeometry, y);
+                                }
 
                                 property real leftPreviewDelta: 0
                                 property real rightPreviewDelta: 0
@@ -1853,6 +1891,53 @@ ApplicationWindow {
                                     }
                                 }
 
+                                // Canvas は clip の小数 px 位置と HiDPI で texture が拡大・補間され、
+                                // 急な傾きの線がぼやける。線は Shape (CurveRenderer) でベクタ描画する。
+                                Shape {
+                                    id: automationShape
+                                    anchors.fill: parent
+                                    z: 30
+                                    preferredRendererType: Shape.CurveRenderer
+                                    // 波形や clip の色と同系色にしない。暗い縁取りで明るい波形の上でも読める。
+                                    ShapePath {
+                                        strokeColor: Qt.rgba(0, 0, 0, 0.65)
+                                        strokeWidth: 4
+                                        fillColor: "transparent"
+                                        joinStyle: ShapePath.RoundJoin
+                                        capStyle: ShapePath.FlatCap
+                                        PathPolyline { path: clipItem.automationPoints }
+                                    }
+                                    ShapePath {
+                                        strokeColor: "#ffd84d"
+                                        strokeWidth: 2
+                                        fillColor: "transparent"
+                                        joinStyle: ShapePath.RoundJoin
+                                        capStyle: ShapePath.FlatCap
+                                        PathPolyline { path: clipItem.automationPoints }
+                                    }
+                                }
+
+                                // キーは塗りつぶした青い四角。ドラッグ中・ポイント中のキーは白く大きくする。
+                                Repeater {
+                                    model: clipItem.shownKeys
+                                    delegate: Rectangle {
+                                        required property var modelData
+                                        readonly property bool active:
+                                            modelData.frame === (clipItem.previewKeys ? clipItem.penFrame
+                                                                                      : clipItem.penHoverKeyFrame)
+                                        readonly property int half: active ? 5 : 4
+                                        x: Math.round(modelData.frame * timelinePanel.pixelsPerFrame) - half
+                                        y: Math.round(clipItem.automationY(modelData.value)) - half
+                                        z: 31
+                                        width: half * 2
+                                        height: half * 2
+                                        color: active ? "#ffffff" : "#3d8bff"
+                                        border.width: 1
+                                        border.color: active ? "#3d8bff" : "#0b1a33"
+                                        antialiasing: false
+                                    }
+                                }
+
                                 MouseArea {
                                     id: bodyArea
                                     anchors.fill: parent
@@ -1861,11 +1946,15 @@ ApplicationWindow {
                                     enabled: !root.mvmController.busy && !timelinePanel.viewToolActive
                                     acceptedButtons: Qt.LeftButton
                                     preventStealing: true
-                                    hoverEnabled: timelinePanel.tool === "razor"
+                                    hoverEnabled: timelinePanel.tool === "razor" || timelinePanel.tool === "pen"
                                     cursorShape: timelinePanel.tool === "razor" ? Qt.IBeamCursor
+                                                 : timelinePanel.tool === "pen" ? Qt.CrossCursor
                                                  : (timelinePanel.tool === "slip" || timelinePanel.tool === "slide"
                                                     ? Qt.SizeHorCursor : Qt.ArrowCursor)
-                                    onExited: clipItem.razorHoverX = -1
+                                    onExited: {
+                                        clipItem.razorHoverX = -1;
+                                        clipItem.penHoverKeyFrame = -1;
+                                    }
                                     onPressed: mouse => {
                                         mouse.accepted = true;
                                         const pressPoint = bodyArea.mapToItem(clipItem, mouse.x, mouse.y);
@@ -1873,6 +1962,39 @@ ApplicationWindow {
                                                                       + pressPoint.x / timelinePanel.pixelsPerFrame);
                                         clipItem.bodyPressPoint = mapToItem(trackArea, mouse.x, mouse.y);
                                         const tool = timelinePanel.tool;
+                                        if (tool === "pen") {
+                                            const localFrame = clipItem.penFrameAt(pressPoint.x);
+                                            clipItem.penState = Gestures.penPress(
+                                                clipItem.automationKeys, clipItem.automationBase,
+                                                localFrame, pressPoint.x, pressPoint.y,
+                                                clipItem.penGeometry, mouse.modifiers);
+                                            const penGesture = clipItem.penState.gesture;
+                                            if (penGesture !== "pen") {
+                                                const deletedFrame = clipItem.penState.frame;
+                                                clipItem.penState = null;
+                                                clipItem.penHoverKeyFrame = -1;
+                                                // controller 呼び出しは delegate を破棄し得るので最後に呼ぶ。
+                                                if (penGesture === "deleteKey")
+                                                    root.mvmController.deleteClipKey(clipItem.clipId,
+                                                                                     deletedFrame);
+                                                else if (penGesture === "select")
+                                                    root.mvmController.selectTimelineClip(
+                                                        clipItem.clipId, pressFrame, true);
+                                                return;
+                                            }
+                                            clipItem.penFrame = clipItem.penState.frame;
+                                            clipItem.penValue = Gestures.penSnapValue(clipItem.penState.value,
+                                                                                      mouse.modifiers);
+                                            const candidate = root.mvmController.previewClipKey(
+                                                clipItem.clipId, clipItem.penState.originalFrame,
+                                                clipItem.penFrame, clipItem.penValue);
+                                            if (candidate.success) {
+                                                clipItem.previewKeys = candidate.keys;
+                                                clipItem.penFrame = candidate.frame;
+                                            }
+                                            clipItem.bodyGesture = "pen";
+                                            return;
+                                        }
                                         // 操作の種類と release で使う値 (分割位置など) はここで確定する。
                                         clipItem.gestureState = Gestures.bodyPress(tool, mouse.modifiers, pressFrame);
                                         clipItem.bodyGesture = clipItem.gestureState.gesture;
@@ -1918,6 +2040,30 @@ ApplicationWindow {
                                         timelinePanel.activeDragOffsetY = 0;
                                     }
                                     onPositionChanged: mouse => {
+                                        if (pressed && clipItem.bodyGesture === "pen") {
+                                            const point = bodyArea.mapToItem(clipItem, mouse.x, mouse.y);
+                                            const dragValue = Gestures.penSnapValue(
+                                                clipItem.penValueAt(point.y + clipItem.penState.grabOffsetY),
+                                                mouse.modifiers);
+                                            const candidate = root.mvmController.previewClipKey(
+                                                clipItem.clipId, clipItem.penState.originalFrame,
+                                                clipItem.penFrameAt(point.x + clipItem.penState.grabOffsetX),
+                                                dragValue);
+                                            if (candidate.success) {
+                                                clipItem.previewKeys = candidate.keys;
+                                                clipItem.penFrame = candidate.frame;
+                                                clipItem.penValue = dragValue;
+                                            }
+                                            return;
+                                        }
+                                        if (!pressed && timelinePanel.tool === "pen") {
+                                            const point = bodyArea.mapToItem(clipItem, mouse.x, mouse.y);
+                                            const hovered = Gestures.penNearestKey(
+                                                clipItem.automationKeys, clipItem.penGeometry, point.x,
+                                                clipItem.penValueAt(point.y));
+                                            clipItem.penHoverKeyFrame = hovered ? hovered.frame : -1;
+                                            return;
+                                        }
                                         if (!pressed || clipItem.bodyGesture === "razor") {
                                             clipItem.razorHoverX = bodyArea.mapToItem(clipItem, mouse.x, mouse.y).x;
                                             return;
@@ -1966,6 +2112,21 @@ ApplicationWindow {
                                             clipItem.bodyMoved = true;
                                     }
                                     onReleased: mouse => {
+                                        if (timelinePanel.tool === "pen" && clipItem.penState === null)
+                                            return;
+                                        if (clipItem.bodyGesture === "pen") {
+                                            // Shift を押しただけでマウスを動かしていなくても吸着させる。
+                                            const action = Gestures.penRelease(
+                                                clipItem.penState, clipItem.penFrame,
+                                                Gestures.penSnapValue(clipItem.penValue, mouse.modifiers));
+                                            const id = clipItem.clipId;
+                                            clipItem.previewKeys = null;
+                                            clipItem.penState = null;
+                                            clipItem.bodyGesture = "";
+                                            root.mvmController.commitClipKey(id, action.originalFrame,
+                                                                              action.frame, action.value);
+                                            return;
+                                        }
                                         const gesture = clipItem.bodyGesture;
                                         const releasedClipId = clipItem.clipId;
                                         const destinationKind = clipItem.dragTrackKind;
@@ -2028,6 +2189,8 @@ ApplicationWindow {
                                         }
                                     }
                                     onCanceled: {
+                                        clipItem.previewKeys = null;
+                                        clipItem.penState = null;
                                         if (clipItem.bodyGesture === "slip")
                                             root.mvmController.endSlipPreview();
                                         clipItem.bodyGesture = "";
@@ -2182,7 +2345,10 @@ ApplicationWindow {
                             anchors.horizontalCenter: parent.horizontalCenter
                             y: 0
                             width: 16
-                            height: parent.height
+                            // ペンは再生ヘッドの真下のキーも操作する。track 上では clip へ通し、
+                            // ruler の部分だけで再生ヘッドを掴む。
+                            height: timelinePanel.tool === "pen" ? timelinePanel.rulerHeight
+                                                                 : parent.height
                             enabled: !root.mvmController.busy && root.mvmController.clipCount > 0
                             cursorShape: Qt.SizeHorCursor
                             preventStealing: true

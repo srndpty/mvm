@@ -34,6 +34,8 @@ public:
         LinkGroupIdRole,
         SelectedRole,
         MediaPathRole,
+        AutomationKeysRole,
+        AutomationBaseRole,
     };
 
     explicit TimelineClipModel(QObject* parent = nullptr);
@@ -71,6 +73,8 @@ private:
         QString linkGroupId;
         bool selected = false;
         QString mediaPath;
+        QVariantList automationKeys;
+        double automationBase = 100.0;
     };
 
     QList<Item> items_;

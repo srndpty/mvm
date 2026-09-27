@@ -55,6 +55,10 @@ QVariant TimelineClipModel::data(const QModelIndex& index, int role) const {
         return item.selected;
     case MediaPathRole:
         return item.mediaPath;
+    case AutomationKeysRole:
+        return item.automationKeys;
+    case AutomationBaseRole:
+        return item.automationBase;
     default:
         return {};
     }
@@ -77,7 +81,9 @@ QHash<int, QByteArray> TimelineClipModel::roleNames() const {
             {LinkedRole, "linked"},
             {LinkGroupIdRole, "linkGroupId"},
             {SelectedRole, "selected"},
-            {MediaPathRole, "mediaPath"}};
+            {MediaPathRole, "mediaPath"},
+            {AutomationKeysRole, "automationKeys"},
+            {AutomationBaseRole, "automationBase"}};
 }
 
 void TimelineClipModel::setProject(const project::Project& project) {
@@ -86,6 +92,12 @@ void TimelineClipModel::setProject(const project::Project& project) {
     items_.reserve(static_cast<qsizetype>(project.timelineClips.size()));
     for (const auto& clip : project.timelineClips) {
         const auto duration = project::timelineClipDuration(project, clip);
+        const bool audio = clip.kind == project::TimelineClipKind::Audio;
+        const auto& keys = audio ? clip.effects.volumeKeys : clip.effects.opacityKeys;
+        QVariantList automationKeys;
+        for (const auto& key : keys)
+            automationKeys.append(QVariantMap{{QStringLiteral("frame"), key.frame},
+                                              {QStringLiteral("value"), key.valuePercent}});
         items_.append({QString::fromStdString(clip.id), QString::fromStdString(clip.name),
                        QString::fromLatin1(project::timelineClipKindName(clip.kind)),
                        clip.timelineStartFrame, duration.success ? duration.frame : 0,
@@ -95,7 +107,8 @@ void TimelineClipModel::setProject(const project::Project& project) {
                        QString::fromLatin1(project::trackKindName(clip.track.kind)),
                        clip.track.index, !clip.linkGroupId.empty(),
                        QString::fromStdString(clip.linkGroupId), false,
-                       QString::fromStdWString(clip.mediaPath.wstring())});
+                       QString::fromStdWString(clip.mediaPath.wstring()), automationKeys,
+                       audio ? clip.effects.volumePercent : clip.effects.opacityPercent});
     }
     endResetModel();
 }

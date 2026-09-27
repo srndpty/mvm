@@ -29,7 +29,10 @@ typedef struct {
     double opacity;
 } MvmExportOpacityKeyframe;
 
-#define MVM_EXPORT_MAX_OPACITY_KEYFRAMES 8
+typedef struct {
+    long long local_frame;
+    double gain;
+} MvmExportGainKeyframe;
 
 typedef struct {
     const char* path; /* UTF-8。実在する動画ファイル */
@@ -49,8 +52,10 @@ typedef struct {
     double rect_width;
     double rect_height;
     double rotation_degrees;
-    MvmExportOpacityKeyframe opacity_keyframes[MVM_EXPORT_MAX_OPACITY_KEYFRAMES];
+    const MvmExportOpacityKeyframe* opacity_keyframes;
     int opacity_keyframe_count;
+    const MvmExportGainKeyframe* gain_keyframes;
+    int gain_keyframe_count;
     int video_track; /* 0=V1, 1=V2 */
     long long timeline_start_frame;
     long long timeline_duration_frames;

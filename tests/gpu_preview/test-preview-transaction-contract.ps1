@@ -135,7 +135,9 @@ if (-not $revertBody.Contains('undo.previous')) {
 }
 
 # applyAudioSourceFor は addSource へ渡した descriptor をそのまま控えること。
-if (-not $applyBody.Contains('target.push_back({{}, desired[index], descriptor,')) {
+# clang-format が初期化子の改行位置を変えても同じ契約として読むため、空白を詰めて比べる。
+$applyBodyCompact = $applyBody -replace '\s+', ' '
+if (-not $applyBodyCompact.Contains('target.push_back({{}, desired[index], descriptor,')) {
     throw 'applyAudioSourceFor が実際に渡した descriptor を控えていません'
 }
 
@@ -158,7 +160,7 @@ $identityStart = $header.IndexOf('struct AudioSourceIdentity {')
 if ($identityStart -lt 0) { throw 'AudioSourceIdentity がありません' }
 $identityEnd = $header.IndexOf('};', $identityStart)
 $identity = $header.Substring($identityStart, $identityEnd - $identityStart)
-foreach ($field in @('mediaPath', 'sampleOffset')) {
+foreach ($field in @('mediaPath', 'sampleOffset', 'effects')) {
     if (-not $identity.Contains($field)) {
         throw "AudioSourceIdentity に $field がありません (offset が変わっても再利用されます)"
     }
@@ -168,7 +170,7 @@ if ($identitiesStart -lt 0) { throw 'audioIdentitiesFor がありません' }
 $identitiesEnd = $controller.IndexOf("`n}", $identitiesStart)
 $identitiesBody = $controller.Substring($identitiesStart, $identitiesEnd - $identitiesStart)
 if (-not $identitiesBody.Contains('audioPreviewSampleOffset(project_, clip)') -or
-    -not $identitiesBody.Contains('identities.push_back({clip.mediaPath, offset.sampleOffset})')) {
+    -not $identitiesBody.Contains('identities.push_back({clip.mediaPath, offset.sampleOffset, clip.effects})')) {
     throw 'audio identity が audioPreviewSampleOffset の換算結果から作られていません'
 }
 

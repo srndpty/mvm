@@ -149,8 +149,8 @@ void writeJson(const Args& args, const AudioDecoderSnapshot& decoder,
         << "}\n";
 }
 
-bool startPipeline(const Args& args, AudioDecodeWorker& worker, AudioMasterClock& clock,
-                   WasapiAudioSink& sink, std::string& error) {
+bool startPipeline(const Args& args, AudioDecodeWorker& worker, WasapiAudioSink& sink,
+                   std::string& error) {
     if (!worker.start(args.source, error))
         return false;
     if (!sink.open(error, kVerificationSessionVolume))
@@ -174,7 +174,7 @@ int main(int argc, char** argv) {
     WasapiAudioSink sink(worker.queue(), clock);
     std::string error;
     bool pass = args.mode == "fixture" ? worker.start(args.source, error)
-                                       : startPipeline(args, worker, clock, sink, error);
+                                       : startPipeline(args, worker, sink, error);
     const std::int64_t frequency = qpcFrequency();
     const std::int64_t begin = qpcNow();
     const std::int64_t startMedia = clock.snapshot().mediaSamplePosition;
@@ -188,9 +188,11 @@ int main(int argc, char** argv) {
     int markerMatches = 0;
 
     if (pass && args.mode == "playback") {
-        while (static_cast<double>(qpcNow() - begin) / frequency < args.durationSeconds) {
+        while (static_cast<double>(qpcNow() - begin) / static_cast<double>(frequency) <
+               args.durationSeconds) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            const double qpcElapsed = static_cast<double>(qpcNow() - begin) / frequency;
+            const double qpcElapsed =
+                static_cast<double>(qpcNow() - begin) / static_cast<double>(frequency);
             const auto sample = clock.snapshot();
             const double audioElapsed =
                 static_cast<double>(sample.mediaSamplePosition - startMedia) / kInternalSampleRate;
@@ -293,7 +295,7 @@ int main(int argc, char** argv) {
         pass = pass && markerMatches == 6;
     }
 
-    const double elapsed = static_cast<double>(qpcNow() - begin) / frequency;
+    const double elapsed = static_cast<double>(qpcNow() - begin) / static_cast<double>(frequency);
     sink.stop();
     worker.stop();
     const auto decoderMetrics = worker.snapshot();

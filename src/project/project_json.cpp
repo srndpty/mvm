@@ -666,7 +666,7 @@ private:
     }
 
     bool parseClipEffects(ClipEffects& effects) {
-        bool seen[11] = {};
+        bool seen[14] = {};
         if (!consume('{'))
             return false;
         skipWhitespace();
@@ -698,6 +698,12 @@ private:
                     field = 9;
                 else if (key == "fade_out_frames")
                     field = 10;
+                else if (key == "volume_percent")
+                    field = 11;
+                else if (key == "opacity_keys")
+                    field = 12;
+                else if (key == "volume_keys")
+                    field = 13;
                 else
                     return fail("effects に未知の field があります: " + key);
                 if (seen[field])
@@ -725,6 +731,12 @@ private:
                     return false;
                 if (field == 10 && !parseInteger64(effects.fadeOutFrames))
                     return false;
+                if (field == 11 && !parseNumber(effects.volumePercent))
+                    return false;
+                if (field == 12 && !parseClipKeys(effects.opacityKeys))
+                    return false;
+                if (field == 13 && !parseClipKeys(effects.volumeKeys))
+                    return false;
                 skipWhitespace();
                 if (consumeIf(','))
                     continue;
@@ -738,6 +750,47 @@ private:
                 return fail("effects object の固定fieldが不足しています");
         }
         return true;
+    }
+
+    bool parseClipKeys(std::vector<ClipKeyframe>& keys) {
+        if (!consume('['))
+            return false;
+        skipWhitespace();
+        if (!peek(']')) {
+            while (true) {
+                if (!consume('{'))
+                    return false;
+                bool hasFrame = false;
+                bool hasValue = false;
+                ClipKeyframe keyframe;
+                while (true) {
+                    std::string field;
+                    if (!parseString(field) || !consume(':'))
+                        return false;
+                    if (field == "frame") {
+                        if (hasFrame || !parseInteger64(keyframe.frame))
+                            return false;
+                        hasFrame = true;
+                    } else if (field == "value_percent") {
+                        if (hasValue || !parseNumber(keyframe.valuePercent))
+                            return false;
+                        hasValue = true;
+                    } else {
+                        return fail("キーフレームに未知の field があります: " + field);
+                    }
+                    skipWhitespace();
+                    if (!consumeIf(','))
+                        break;
+                }
+                if (!hasFrame || !hasValue || !consume('}'))
+                    return false;
+                keys.push_back(keyframe);
+                skipWhitespace();
+                if (!consumeIf(','))
+                    break;
+            }
+        }
+        return consume(']');
     }
 
     bool parseTimelineClip(TimelineClip& clip) {
@@ -1110,6 +1163,7 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
     }
 
     std::ostringstream json;
+    json << std::setprecision(17);
     const auto writeTracks = [&json](const char* key, const std::vector<Track>& tracks) {
         json << "  \"" << key << "\": [";
         for (std::size_t index = 0; index < tracks.size(); ++index) {
@@ -1164,6 +1218,16 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
     if (!project.manimAssets.empty())
         json << '\n';
     json << "  ],\n  \"timeline_clips\": [";
+    const auto writeKeys = [&json](const std::vector<ClipKeyframe>& keys) {
+        json << '[';
+        for (std::size_t keyIndex = 0; keyIndex < keys.size(); ++keyIndex) {
+            if (keyIndex != 0)
+                json << ',';
+            json << "{\"frame\":" << keys[keyIndex].frame
+                 << ",\"value_percent\":" << keys[keyIndex].valuePercent << '}';
+        }
+        json << ']';
+    };
     for (std::size_t index = 0; index < project.timelineClips.size(); ++index) {
         const auto& clip = project.timelineClips[index];
         if (clip.mediaPath.empty() || clip.name.empty()) {
@@ -1196,13 +1260,18 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
              << "        \"scale_percent\": " << clip.effects.scalePercent << ",\n"
              << "        \"rotation_degrees\": " << clip.effects.rotationDegrees << ",\n"
              << "        \"opacity_percent\": " << clip.effects.opacityPercent << ",\n"
+             << "        \"volume_percent\": " << clip.effects.volumePercent << ",\n"
              << "        \"crop_left_percent\": " << clip.effects.cropLeftPercent << ",\n"
              << "        \"crop_top_percent\": " << clip.effects.cropTopPercent << ",\n"
              << "        \"crop_right_percent\": " << clip.effects.cropRightPercent << ",\n"
              << "        \"crop_bottom_percent\": " << clip.effects.cropBottomPercent << ",\n"
              << "        \"fade_in_frames\": " << clip.effects.fadeInFrames << ",\n"
-             << "        \"fade_out_frames\": " << clip.effects.fadeOutFrames << "\n"
-             << "      }\n"
+             << "        \"fade_out_frames\": " << clip.effects.fadeOutFrames << ",\n"
+             << "        \"opacity_keys\": ";
+        writeKeys(clip.effects.opacityKeys);
+        json << ",\n        \"volume_keys\": ";
+        writeKeys(clip.effects.volumeKeys);
+        json << "\n      }\n"
              << "    }";
     }
     if (!project.timelineClips.empty())

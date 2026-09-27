@@ -5,6 +5,7 @@
 #include "mvm_mlt_runtime.h"
 
 #include <windows.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -285,8 +286,56 @@ static int plant_export_overlay_affine(mlt_profile profile, mlt_tractor tractor,
 static int attach_tractor_clip_filters(mlt_profile profile, mlt_producer cut,
                                        const MvmExportClip* clip, int track, long long filter_in,
                                        char* err, size_t err_size) {
-    if (clip->is_audio)
+    if (clip->is_audio) {
+        const double first_gain = clip->gain_keyframes[0].gain;
+        int constant = 1;
+        for (int index = 1; index < clip->gain_keyframe_count; ++index)
+            constant = constant && clip->gain_keyframes[index].gain == first_gain;
+        if (constant && first_gain == 1.0)
+            return 0;
+        mlt_filter filter = mlt_factory_filter(profile, "volume", NULL);
+        if (!filter) {
+            set_err(err, err_size, "必須filter 'volume'を作れません");
+            return 1;
+        }
+        mlt_filter_set_in_and_out(filter, (mlt_position)filter_in,
+                                  (mlt_position)(filter_in + clip->timeline_duration_frames - 1));
+        mlt_properties properties = MLT_FILTER_PROPERTIES(filter);
+        if (constant) {
+            mlt_properties_set_double(properties, "gain", first_gain);
+            if (fabs(mlt_properties_get_double(properties, "gain") - first_gain) > 1e-9) {
+                mlt_filter_close(filter);
+                set_err(err, err_size, "audio gainの読み戻しが違います");
+                return 1;
+            }
+        } else {
+            for (int index = 0; index < clip->gain_keyframe_count; ++index) {
+                const double gain = clip->gain_keyframes[index].gain;
+                const double level_db = gain == 0.0 ? -120.0 : 20.0 * log10(gain);
+                if (mlt_properties_anim_set_double(
+                        properties, "level", level_db, (mlt_position)index,
+                        (mlt_position)clip->timeline_duration_frames, mlt_keyframe_discrete) != 0) {
+                    mlt_filter_close(filter);
+                    set_err(err, err_size, "audio level animationを設定できません");
+                    return 1;
+                }
+                const double observed = mlt_properties_anim_get_double(
+                    properties, "level", index, (int)clip->timeline_duration_frames);
+                if (!isfinite(observed) || fabs(observed - level_db) > 1e-6) {
+                    mlt_filter_close(filter);
+                    set_err(err, err_size, "audio level animationの読み戻しが違います");
+                    return 1;
+                }
+            }
+        }
+        if (mlt_producer_attach(cut, filter) != 0) {
+            mlt_filter_close(filter);
+            set_err(err, err_size, "audio level filterをattachできません");
+            return 1;
+        }
+        mlt_filter_close(filter);
         return 0;
+    }
     if (track == 0 && clip->effects_enabled)
         return attach_export_crop(profile, cut, clip, err, err_size) != 0 ||
                attach_export_affine(profile, cut, clip, filter_in, clip->timeline_duration_frames,
@@ -360,8 +409,7 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
             return 1;
         }
         if (clips[i].effects_enabled &&
-            (clips[i].opacity_keyframe_count <= 0 ||
-             clips[i].opacity_keyframe_count > MVM_EXPORT_MAX_OPACITY_KEYFRAMES ||
+            (clips[i].opacity_keyframe_count <= 0 || !clips[i].opacity_keyframes ||
              clips[i].rect_width <= 0.0 || clips[i].rect_height <= 0.0)) {
             set_err(err, err_size, "clip %d のeffect mappingが不正です", i);
             return 1;
@@ -659,12 +707,26 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             set_err(err, err_size, "tractor clip %dが同一trackで重複または未sortです", index);
             return 1;
         }
+        if (clip->is_audio) {
+            if (!clip->gain_keyframes ||
+                clip->gain_keyframe_count != clip->timeline_duration_frames) {
+                set_err(err, err_size, "audio clip %dのgain key数が尺と一致しません", index);
+                return 1;
+            }
+            for (int key_index = 0; key_index < clip->gain_keyframe_count; ++key_index) {
+                const MvmExportGainKeyframe* key = &clip->gain_keyframes[key_index];
+                if (key->local_frame != key_index || !isfinite(key->gain) || key->gain < 0.0 ||
+                    key->gain > 2.0) {
+                    set_err(err, err_size, "audio clip %dのgain keyが不正です", index);
+                    return 1;
+                }
+            }
+        }
         if (!clip->is_audio)
             cursors[clip->video_track] =
                 clip->timeline_start_frame + clip->timeline_duration_frames;
         if (!clip->is_audio && (clip->video_track == 1 || clip->effects_enabled) &&
-            (clip->opacity_keyframe_count <= 0 ||
-             clip->opacity_keyframe_count > MVM_EXPORT_MAX_OPACITY_KEYFRAMES ||
+            (clip->opacity_keyframe_count <= 0 || !clip->opacity_keyframes ||
              clip->rect_width <= 0.0 || clip->rect_height <= 0.0)) {
             set_err(err, err_size, "clip %dのeffect/transition mappingが不正です", index);
             return 1;

@@ -26,7 +26,10 @@ mvm::project::TimelineClip clip(const char* name, const char* id) {
             60,
             0,
             60,
-            0};
+            0,
+            {},
+            {},
+            {}};
 }
 
 mvm::project::Project threeClips() {

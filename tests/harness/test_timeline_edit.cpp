@@ -3,6 +3,7 @@
 #include "project/timeline_edit.h"
 #include "util/mvm_win_utf8.h"
 
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -1399,7 +1400,7 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
     const auto loaded = mvm::project::loadProjectJson(projectFile);
     check(loaded.success, "保存した .mvm を読み込めません");
     bool timelineFieldsMatch =
-        loaded.success && loaded.project.schemaVersion == 4 &&
+        loaded.success && loaded.project.schemaVersion == 5 &&
         loaded.project.timelineFpsNum == 60 && loaded.project.timelineFpsDen == 1 &&
         loaded.project.outputWidth == 3840 && loaded.project.outputHeight == 2160 &&
         loaded.project.videoTracks == live.videoTracks &&
@@ -1422,7 +1423,7 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
         }
     }
     check(timelineFieldsMatch,
-          "schema 4のoutput size・track構成・mute・clip種別・trim・effectsがround-tripしません");
+          "schema 5のoutput size・track構成・mute・clip種別・trim・effectsがround-tripしません");
 
     auto invalidOutput = mvm::project::createDefaultProject();
     invalidOutput.outputWidth = 0;
@@ -1433,7 +1434,7 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
     const auto strangerPath = root / "stranger.mvm";
     {
         std::ofstream stranger(strangerPath, std::ios::binary);
-        stranger << R"({"schema_version": 4, "timeline_fps_num": 60, "timeline_fps_den": 1,)"
+        stranger << R"({"schema_version": 5, "timeline_fps_num": 60, "timeline_fps_den": 1,)"
                  << R"("video_tracks": [{"name": "V1", "muted": false}], "audio_tracks": [],)"
                  << R"("manim_assets": [], "timeline_clips": [],)"
                  << R"("media_folders": [], "media_items": []})";
@@ -1454,6 +1455,104 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
     check(live.timelineClips == beforeFailure, "保存失敗時に live Project が変化しました");
 }
 
+void testClipKeyEditing() {
+    using namespace mvm::project;
+    Project project = createDefaultProject();
+    auto video = clip("key-video");
+    video.sourceFrameCount = 120;
+    video.sourceOutFrame = 100;
+    project.timelineClips.push_back(video);
+    const auto before = project;
+    const auto invalid = previewClipKeyEdit(project, video.id, ClipKeyKind::Opacity, 22, 40, 50);
+    check(!invalid.success && project == before, "存在しないキーの移動を拒否しProjectを保つ");
+    const auto preview = previewClipKeyEdit(project, video.id, ClipKeyKind::Opacity, -1, 20, 80);
+    check(preview.success && preview.frame == 20 && preview.effects.opacityKeys.size() == 1 &&
+              project == before,
+          "キードラッグの候補計算がProjectを変更しない");
+    check(editClipKey(project, video.id, ClipKeyKind::Opacity, -1, 20, 80).success &&
+              project.timelineClips[0].effects == preview.effects,
+          "候補と確定が同じキーフレームになる");
+    check(editClipKey(project, video.id, ClipKeyKind::Opacity, -1, 80, 20).success,
+          "2個目のキーを追加する");
+    const auto& keys = project.timelineClips[0].effects.opacityKeys;
+    check(std::abs(evaluateClipKeys(keys, 100, 50) - 50.0) < 1e-9 &&
+              evaluateClipKeys(keys, 100, 0) == 80 && evaluateClipKeys(keys, 100, 99) == 20,
+          "線形補間と端の保持を評価する");
+    const auto clamped = previewClipKeyEdit(project, video.id, ClipKeyKind::Opacity, 20, 99, 150);
+    check(clamped.success && clamped.frame == 79 &&
+              clamped.effects.opacityKeys[0].valuePercent == 100,
+          "キーの位置と値を隣接キー・値域で止める");
+    {
+        auto removed = project;
+        const auto unchanged = removed;
+        check(!deleteClipKey(removed, video.id, ClipKeyKind::Opacity, 21).success &&
+                  removed == unchanged,
+              "存在しないキーの削除を拒否しProjectを保つ");
+        check(!deleteClipKey(removed, video.id, ClipKeyKind::Volume, 20).success &&
+                  removed == unchanged,
+              "種別違いのキー削除を拒否する");
+        check(deleteClipKey(removed, video.id, ClipKeyKind::Opacity, 20).success &&
+                  removed.timelineClips[0].effects.opacityKeys.size() == 1 &&
+                  removed.timelineClips[0].effects.opacityKeys[0].frame == 80,
+              "指定したキーだけを削除する");
+        check(deleteClipKey(removed, video.id, ClipKeyKind::Opacity, 80).success &&
+                  removed.timelineClips[0].effects.opacityKeys.empty(),
+              "最後のキーも削除できる");
+    }
+    const auto original = project;
+    check(trimTimelineClip(project, video.id, TrimEdge::Left, 10, LinkMode::Single).success,
+          "キー付きclipをtrimする");
+    check(project.timelineClips[0].effects.opacityKeys.front().frame == 0 &&
+              std::abs(project.timelineClips[0].effects.opacityKeys.front().valuePercent - 80) <
+                  1e-9 &&
+              project.timelineClips[0].effects.opacityKeys[2].frame == 70 &&
+              project.timelineClips[0].effects.opacityKeys.back().frame == 89,
+          "trim後の可視カーブと端を保持する");
+    auto divided = original;
+    int nextId = 0;
+    check(splitTimelineClips(
+              divided, {video.id}, 50, [&] { return "key-new-" + std::to_string(++nextId); },
+              LinkMode::Single)
+              .success,
+          "キー付きclipを分割する");
+    check(divided.timelineClips.size() == 2 &&
+              std::abs(evaluateClipKeys(divided.timelineClips[0].effects.opacityKeys, 100, 49) -
+                       51.0) < 1e-9 &&
+              std::abs(evaluateClipKeys(divided.timelineClips[1].effects.opacityKeys, 100, 0) -
+                       50.0) < 1e-9,
+          "分割の左右端で元のカーブを保持する");
+    const auto rightKeys = divided.timelineClips[1].effects.opacityKeys;
+    check(slipTimelineClip(divided, divided.timelineClips[1].id, 10, LinkMode::Single).success &&
+              divided.timelineClips[1].effects.opacityKeys == rightKeys,
+          "slipはキーのtimeline位置を動かさない");
+    auto linked = original;
+    auto audio = clip("key-audio", TimelineClipKind::Audio, kA1);
+    audio.sourceFrameCount = 120;
+    audio.sourceOutFrame = 100;
+    audio.linkGroupId = "key-pair";
+    linked.timelineClips[0].linkGroupId = "key-pair";
+    linked.timelineClips.push_back(audio);
+    check(editClipKey(linked, video.id, ClipKeyKind::Opacity, -1, 50, 40).success &&
+              linked.timelineClips[1].effects.volumeKeys.empty(),
+          "リンク相手にペン操作を複製しない");
+    check(trimTimelineClip(linked, video.id, TrimEdge::Left, 10, LinkMode::Linked).success &&
+              linked.timelineClips[1].sourceInFrame == 10,
+          "リンク相手は自身のtrim規則で編集する");
+    auto malformed = original;
+    malformed.timelineClips[0].effects.opacityKeys.push_back({20, 30});
+    check(!validateTimeline(malformed).success, "重複キーを拒否する");
+    malformed = original;
+    malformed.timelineClips[0].effects.opacityKeys[0].valuePercent =
+        std::numeric_limits<double>::quiet_NaN();
+    check(!validateTimeline(malformed).success, "非有限キーを拒否する");
+    malformed = original;
+    malformed.timelineClips[0].effects.opacityKeys[0].frame = 100;
+    check(!validateTimeline(malformed).success, "clip外のキーを拒否する");
+    malformed = original;
+    malformed.timelineClips[0].effects.volumeKeys = {{5, 50}};
+    check(!validateTimeline(malformed).success, "映像clipの音量キーを拒否する");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1462,6 +1561,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     testFrameConversions();
+    testClipKeyEditing();
     testAudioSourceSetCompensation();
     testTimelineFrameRates();
     testTimelineFrameRateChange();
