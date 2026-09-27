@@ -1605,15 +1605,21 @@ ApplicationWindow {
                                 property int penFrame: 0
                                 property real penValue: 100
                                 readonly property real automationMaximum: clipKind === "audio" ? 200 : 100
-                                // 当たり判定は画面上の距離。線は上下にこの px 以内、キーは左右にこの px 以内。
-                                readonly property real penLineHitPixels: 12
-                                readonly property real penKeyHitPixels: 8
+                                // 線の描画・マウス位置→値・当たり判定が共有する座標系 (TimelineGestures.js)。
+                                // 線は上下 4px を空けて描き、当たり判定は線の上下 12px、キーの左右 8px。
+                                readonly property var penGeometry: ({
+                                    "pixelsPerFrame": timelinePanel.pixelsPerFrame,
+                                    "maximum": automationMaximum,
+                                    "height": height,
+                                    "inset": 4,
+                                    "keyPixels": 8,
+                                    "linePixels": 12
+                                })
                                 // ペンで指しているキー (clip 先頭からの frame)。-1 は無し。
                                 property int penHoverKeyFrame: -1
                                 readonly property var shownKeys: previewKeys || automationKeys
                                 function automationY(value) {
-                                    return Math.max(4, Math.min(clipItem.height - 4,
-                                        clipItem.height * (1 - value / clipItem.automationMaximum)));
+                                    return Gestures.penY(clipItem.penGeometry, value);
                                 }
                                 // 自動化の線の頂点 (clip 内の座標)。キーの外側は端の値を保つ。
                                 readonly property var automationPoints: {
@@ -1634,19 +1640,8 @@ ApplicationWindow {
                                     return Math.max(0, Math.min(clipItem.timelineDurationFrames - 1,
                                                                 Math.round(x / timelinePanel.pixelsPerFrame)));
                                 }
-                                function penFrameTolerance() {
-                                    return Math.max(1, Math.round(clipItem.penKeyHitPixels
-                                                                  / timelinePanel.pixelsPerFrame));
-                                }
-                                function penValueTolerance() {
-                                    return Gestures.penValueTolerance(clipItem.penLineHitPixels,
-                                                                      clipItem.automationMaximum,
-                                                                      clipItem.height);
-                                }
                                 function penValueAt(y) {
-                                    return Math.max(0, Math.min(clipItem.automationMaximum,
-                                                                Math.round((1 - y / clipItem.height)
-                                                                           * clipItem.automationMaximum)));
+                                    return Gestures.penValueAt(clipItem.penGeometry, y);
                                 }
 
                                 property real leftPreviewDelta: 0
@@ -1978,13 +1973,12 @@ ApplicationWindow {
                                         const tool = timelinePanel.tool;
                                         if (tool === "pen") {
                                             const localFrame = clipItem.penFrameAt(pressPoint.x);
-                                            const value = clipItem.penValueAt(pressPoint.y);
                                             clipItem.penState = Gestures.penPress(
                                                 clipItem.automationKeys,
                                                 root.mvmController.clipKeyLineValue(
                                                     clipItem.clipId, localFrame),
-                                                localFrame, value, clipItem.penFrameTolerance(),
-                                                clipItem.penValueTolerance(), mouse.modifiers);
+                                                localFrame, pressPoint.x, pressPoint.y,
+                                                clipItem.penGeometry, mouse.modifiers);
                                             const penGesture = clipItem.penState.gesture;
                                             if (penGesture !== "pen") {
                                                 const deletedFrame = clipItem.penState.frame;
@@ -2059,11 +2053,13 @@ ApplicationWindow {
                                     onPositionChanged: mouse => {
                                         if (pressed && clipItem.bodyGesture === "pen") {
                                             const point = bodyArea.mapToItem(clipItem, mouse.x, mouse.y);
-                                            const dragValue = Gestures.penSnapValue(clipItem.penValueAt(point.y),
-                                                                                    mouse.modifiers);
+                                            const dragValue = Gestures.penSnapValue(
+                                                clipItem.penValueAt(point.y + clipItem.penState.grabOffsetY),
+                                                mouse.modifiers);
                                             const candidate = root.mvmController.previewClipKey(
                                                 clipItem.clipId, clipItem.penState.originalFrame,
-                                                clipItem.penFrameAt(point.x), dragValue);
+                                                clipItem.penFrameAt(point.x + clipItem.penState.grabOffsetX),
+                                                dragValue);
                                             if (candidate.success) {
                                                 clipItem.previewKeys = candidate.keys;
                                                 clipItem.penFrame = candidate.frame;
@@ -2074,9 +2070,8 @@ ApplicationWindow {
                                         if (!pressed && timelinePanel.tool === "pen") {
                                             const point = bodyArea.mapToItem(clipItem, mouse.x, mouse.y);
                                             const hovered = Gestures.penNearestKey(
-                                                clipItem.automationKeys, clipItem.penFrameAt(point.x),
-                                                clipItem.penValueAt(point.y), clipItem.penFrameTolerance(),
-                                                clipItem.penValueTolerance());
+                                                clipItem.automationKeys, clipItem.penGeometry, point.x,
+                                                clipItem.penValueAt(point.y));
                                             clipItem.penHoverKeyFrame = hovered ? hovered.frame : -1;
                                             return;
                                         }

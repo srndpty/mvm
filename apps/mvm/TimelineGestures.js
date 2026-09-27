@@ -68,40 +68,68 @@ function edgeRelease(tool, edge, delta, linked) {
     return { "action": action, "edge": edge, "delta": delta, "linked": linked };
 }
 
-// ペンの当たり判定は画面上の距離で決める。値の単位で固定すると、音量 (最大 200%) の
-// 低い clip では数 px しか受け付けない。
-function penValueTolerance(pixels, maximumPercent, clipHeight) {
-    return pixels * maximumPercent / Math.max(clipHeight, 1);
+// ペンの座標系。geometry は clip 1 つ分の
+// { pixelsPerFrame, maximum (100 または 200 %), height, inset, keyPixels, linePixels }。
+// 線は上下 inset px を空けて描く。描画 (penY) と逆変換 (penValueAt) は必ずこの組で使い、
+// 片方だけ inset を無視しない (水平にドラッグしただけで値が変わる)。
+function penUsableHeight(geometry) {
+    return Math.max(1, geometry.height - 2 * geometry.inset);
 }
 
-// 押した位置に最も近い、許容範囲内のキー。無ければ null。
-function penNearestKey(keys, frame, valuePercent, frameTolerance, valueTolerance) {
+function penY(geometry, valuePercent) {
+    const clamped = Math.max(0, Math.min(geometry.maximum, valuePercent));
+    return geometry.inset + (1 - clamped / geometry.maximum) * penUsableHeight(geometry);
+}
+
+function penValueAt(geometry, y) {
+    const top = geometry.inset;
+    const bottom = top + penUsableHeight(geometry);
+    const normalized = 1 - (Math.max(top, Math.min(bottom, y)) - top) / (bottom - top);
+    return Math.round(normalized * geometry.maximum);
+}
+
+// 線の当たり判定 (上下 linePixels px) を値の単位へ直したもの。
+function penValueTolerance(geometry) {
+    return geometry.linePixels * geometry.maximum / penUsableHeight(geometry);
+}
+
+// 押した位置 (clip 内の x と値) に最も近い、画面上で左右 keyPixels・上下 linePixels 以内の
+// キー。frame へ丸めてから比べると、高倍率で隣の frame のキーまで拾う。無ければ null。
+function penNearestKey(keys, geometry, x, valuePercent) {
+    const pixelsPerValue = penUsableHeight(geometry) / geometry.maximum;
     let nearest = null;
     let nearestDistance = Infinity;
     for (let index = 0; index < keys.length; ++index) {
-        const distance = Math.abs(keys[index].frame - frame)
-                         + Math.abs(keys[index].value - valuePercent) / Math.max(valueTolerance, 1);
-        if (Math.abs(keys[index].frame - frame) <= frameTolerance
-                && Math.abs(keys[index].value - valuePercent) <= valueTolerance
-                && distance < nearestDistance) {
+        const dx = Math.abs(keys[index].frame * geometry.pixelsPerFrame - x);
+        const dy = Math.abs(keys[index].value - valuePercent) * pixelsPerValue;
+        if (dx <= geometry.keyPixels && dy <= geometry.linePixels && dx + dy < nearestDistance) {
             nearest = keys[index];
-            nearestDistance = distance;
+            nearestDistance = dx + dy;
         }
     }
     return nearest;
 }
 
+// キーの上ならそのキーの編集、線の近くならキーの追加、どちらでもなければ clip の選択。
 // Alt+クリックはキーの削除。キー以外の Alt+クリックは何もしない (キーを増やさない)。
-function penPress(keys, lineValue, frame, valuePercent, frameTolerance, valueTolerance, modifiers) {
+// x / y は clip 内の座標。キーを中心から外して掴んだときは grabOffset をドラッグ位置へ足し、
+// 最初の移動で値や frame が跳ばないようにする。
+function penPress(keys, lineValue, frame, x, y, geometry, modifiers) {
     if (!Number.isFinite(lineValue))
         return { "gesture": "select" };
-    const nearest = penNearestKey(keys, frame, valuePercent, frameTolerance, valueTolerance);
+    const valuePercent = penValueAt(geometry, y);
+    const nearest = penNearestKey(keys, geometry, x, valuePercent);
     if (((modifiers || 0) & Qt.AltModifier) !== 0)
         return nearest ? { "gesture": "deleteKey", "frame": nearest.frame } : { "gesture": "none" };
-    if (!nearest && Math.abs(lineValue - valuePercent) > valueTolerance)
+    if (!nearest && Math.abs(lineValue - valuePercent) > penValueTolerance(geometry))
         return { "gesture": "select" };
-    return { "gesture": "pen", "originalFrame": nearest ? nearest.frame : -1,
-             "frame": frame, "value": nearest ? nearest.value : valuePercent };
+    if (!nearest)
+        return { "gesture": "pen", "originalFrame": -1, "frame": frame, "value": valuePercent,
+                 "grabOffsetX": 0, "grabOffsetY": 0 };
+    return { "gesture": "pen", "originalFrame": nearest.frame, "frame": nearest.frame,
+             "value": nearest.value,
+             "grabOffsetX": nearest.frame * geometry.pixelsPerFrame - x,
+             "grabOffsetY": penY(geometry, nearest.value) - y };
 }
 
 // ドラッグ中の Shift は 100% (音量なら 0 dB、不透明度なら不透明) へ吸着する。

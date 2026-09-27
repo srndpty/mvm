@@ -47,6 +47,19 @@ int main(int argc, char** argv) {
     using namespace mvm::project;
     ClipEffects effects;
     check(clipEffectsAreDefault(effects), "既定effectをdefaultと判定する");
+    {
+        // preview / export は default の clip で effect 処理ごと省く。キーだけの clip
+        // を落とさない。
+        ClipEffects keyed;
+        keyed.opacityKeys = {{0, 100.0}, {10, 0.0}};
+        check(!clipEffectsAreDefault(keyed), "不透明度キーだけのeffectをdefaultにしない");
+        keyed = ClipEffects{};
+        keyed.volumeKeys = {{5, 100.0}};
+        check(!clipEffectsAreDefault(keyed), "音量キーだけのeffectをdefaultにしない");
+        keyed = ClipEffects{};
+        keyed.volumePercent = 50.0;
+        check(!clipEffectsAreDefault(keyed), "音量だけのeffectをdefaultにしない");
+    }
     std::string error;
     check(validateClipEffects(effects, 100, error), "既定effectが有効");
     effects.cropLeftPercent = 10;
