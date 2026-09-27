@@ -168,7 +168,7 @@ TimelineValidationResult validateTimeline(const Project& project) {
         result.error = "Project timeline FPS が約分されていません";
         return result;
     }
-    if (project.outputWidth <= 0 || project.outputHeight <= 0) {
+    if (!isValidProjectOutputSize(project.outputWidth, project.outputHeight)) {
         result.error = "Project output size が不正です";
         return result;
     }
@@ -678,26 +678,47 @@ TimelineEditResult appendManimTimelineClipAt(Project& project, const ManimAsset&
 
 TimelineEditResult setTimelineFrameRate(Project& project, std::int64_t fpsNum,
                                         std::int64_t fpsDen) {
+    return setProjectVideoSettings(project, project.outputWidth, project.outputHeight, fpsNum,
+                                   fpsDen);
+}
+
+TimelineEditResult setProjectVideoSettings(Project& project, int width, int height,
+                                           std::int64_t fpsNum, std::int64_t fpsDen) {
     TimelineEditResult result;
+    if (!isValidProjectOutputSize(width, height)) {
+        result.error = "Project output size が不正です";
+        return result;
+    }
     if (!isConfigurableTimelineFrameRate(fpsNum, fpsDen) || !isCanonicalFrameRate(fpsNum, fpsDen)) {
         result.error = "対応していない timeline frame rate です";
         return result;
     }
-    if (project.timelineFpsNum == fpsNum && project.timelineFpsDen == fpsDen) {
+    if (project.outputWidth == width && project.outputHeight == height &&
+        project.timelineFpsNum == fpsNum && project.timelineFpsDen == fpsDen) {
         result.success = true;
         return result;
     }
-    if (!project.timelineClips.empty()) {
-        result.error = "clip がある Project の frame rate は変更できません。"
-                       "新規 Project を作ってから frame rate を選んでください";
-        return result;
-    }
     Project candidate = project;
+    if (project.timelineFpsNum != fpsNum || project.timelineFpsDen != fpsDen) {
+        for (auto& clip : candidate.timelineClips) {
+            const auto converted =
+                sourceBoundaryToTimelineBoundary(clip.timelineStartFrame, project.timelineFpsNum,
+                                                 project.timelineFpsDen, fpsNum, fpsDen);
+            if (!converted.success) {
+                result.error =
+                    "clip開始位置を新しいtimeline frame rateへ変換できません: " + clip.name;
+                return result;
+            }
+            clip.timelineStartFrame = converted.frame;
+        }
+    }
+    candidate.outputWidth = width;
+    candidate.outputHeight = height;
     candidate.timelineFpsNum = fpsNum;
     candidate.timelineFpsDen = fpsDen;
     const auto valid = validateTimeline(candidate);
     if (!valid.success) {
-        result.error = valid.error;
+        result.error = "Project設定変更後のtimelineが不正です: " + valid.error;
         return result;
     }
     project = std::move(candidate);

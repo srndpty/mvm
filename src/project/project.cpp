@@ -17,6 +17,11 @@ bool isSha256(const std::string& value) {
 
 } // namespace
 
+bool isValidProjectOutputSize(int width, int height) {
+    return width >= 2 && height >= 2 && width <= kMaximumProjectOutputDimension &&
+           height <= kMaximumProjectOutputDimension && width % 2 == 0 && height % 2 == 0;
+}
+
 ManimAssetResult createReadyManimAsset(std::filesystem::path scriptPath, std::string sceneName,
                                        std::filesystem::path generatedVideoPath,
                                        std::string sourceFingerprint) {

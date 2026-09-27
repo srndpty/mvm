@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <future>
 #include <stdexcept>
@@ -13,6 +14,8 @@
 #include <thread>
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
+#include <QFile>
 #include <QUrl>
 
 namespace {
@@ -111,6 +114,38 @@ void testCompleteAndRestart(const std::filesystem::path& path) {
     check(pumpUntil([&] { return !controller.exporting(); }) && runs == 2,
           "2回目のexportが完了しません");
     check(reveals.calls == 2, "2回目の書き出し完了でExplorer表示しません");
+}
+
+void testExportQualitySelection(const std::filesystem::path& path) {
+    std::atomic<int> receivedCrf{-1};
+    RevealRecorder reveals;
+    mvm::app::MvmController controller(
+        path, {}, videoProject(), nullptr,
+        [&](const auto&, const auto& request) {
+            receivedCrf.store(request.videoCrf);
+            return successResult(request);
+        },
+        {}, reveals.revealer());
+    const QUrl output = QUrl::fromLocalFile(
+        QString::fromStdWString((path.parent_path() / L"quality.mp4").wstring()));
+
+    const auto verify = [&](const QString& quality, int expectedCrf, const char* message) {
+        receivedCrf.store(-1);
+        check(controller.exportTimelineWithQuality(output, quality), message);
+        check(pumpUntil([&] { return !controller.exporting(); }), "品質指定exportが完了しません");
+        check(receivedCrf.load() == expectedCrf, message);
+    };
+    verify(QStringLiteral("high"), 18, "高品質をCRF 18へ変換できません");
+    verify(QStringLiteral("standard"), 23, "標準品質をCRF 23へ変換できません");
+    verify(QStringLiteral("compact"), 28, "容量優先をCRF 28へ変換できません");
+
+    QString failure;
+    QObject::connect(&controller, &mvm::app::MvmController::exportFailed,
+                     [&](const QString& message) { failure = message; });
+    check(!controller.exportTimelineWithQuality(output, QStringLiteral("unknown")),
+          "未知の品質を受理しました");
+    check(failure == QStringLiteral("未知の書き出し品質です: unknown"),
+          "未知の品質を利用者へ通知しません");
 }
 
 void testRevealFailureKeepsSuccess(const std::filesystem::path& path) {
@@ -276,6 +311,8 @@ void testThreadFailure(const std::filesystem::path& path) {
 
 void testUndo(const std::filesystem::path& path) {
     const auto initial = videoProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "Undo試験の初期Projectを保存できません");
     mvm::app::MvmController controller(path, {}, initial);
     check(controller.addTrack("video") && controller.videoTrackCount() == 3,
           "編集Aが保存されません");
@@ -290,32 +327,526 @@ void testUndo(const std::filesystem::path& path) {
     const auto persisted = mvm::project::loadProjectJson(path);
     check(persisted.success && persisted.project.videoTracks.size() == 2 &&
               persisted.project.audioTracks.size() == 1,
-          "Undo後のProjectファイルが復元されません");
+          "Undoまでの未保存編集がcanonical Projectを書き換えました");
+}
+
+void testDirtyCheckpoint(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "dirty試験の初期Projectを保存できません");
+    mvm::app::MvmController controller(path, {}, initial);
+    check(!controller.dirty(), "起動直後のProjectがdirtyです");
+    check(controller.addTrack("video") && controller.dirty(), "編集後のProjectがdirtyになりません");
+    const auto beforeSave = mvm::project::loadProjectJson(path);
+    check(beforeSave.success && beforeSave.project.videoTracks.size() == 2,
+          "明示保存前の編集がcanonical Projectへ書き込まれました");
+    const bool checkpointSaved = controller.saveProject();
+    if (!checkpointSaved)
+        std::fprintf(stderr, "保存失敗: %s\n", controller.statusText().toUtf8().constData());
+    check(checkpointSaved && !controller.dirty(), "明示保存後のProjectがcleanになりません");
+    check(controller.addTrack("audio") && controller.dirty(), "保存後の再編集がdirtyになりません");
+    check(controller.undoLastEdit() && !controller.dirty(),
+          "保存済みチェックポイントまでUndoしてもcleanになりません");
+
+    check(controller.addTrack("audio") && controller.dirty(), "破棄対象の編集がdirtyになりません");
+    check(controller.discardUnsavedChanges() && !controller.dirty(),
+          "未保存変更を破棄してもcleanになりません");
+    check(controller.videoTrackCount() == 3 && controller.audioTrackCount() == 1,
+          "未保存変更の破棄でメモリ上のProjectが復元されません");
+    const auto restored = mvm::project::loadProjectJson(path);
+    check(restored.success && restored.project.videoTracks.size() == 3 &&
+              restored.project.audioTracks.size() == 1,
+          "未保存変更の破棄で保存済みチェックポイントを復元できません");
+}
+
+void testProjectVideoSettings(const std::filesystem::path& path) {
+    auto project = videoProject();
+    project.timelineClips.front().timelineStartFrame = 60;
+    check(mvm::project::saveProjectJson(project, path).success,
+          "映像設定試験の初期Projectを保存できません");
+    mvm::app::MvmController controller(path, {}, project);
+
+    check(controller.setProjectVideoSettings(1280, 720, 24, 1),
+          "clipがあるProjectの映像設定を変更できません");
+    check(controller.outputWidth() == 1280 && controller.outputHeight() == 720 &&
+              controller.timelineFpsNum() == 24 && controller.timelineFpsDen() == 1,
+          "controllerへProject映像設定が反映されません");
+    const auto beforeSave = mvm::project::loadProjectJson(path);
+    check(beforeSave.success && beforeSave.project.outputWidth == 1920 &&
+              beforeSave.project.timelineClips.front().timelineStartFrame == 60,
+          "映像設定の編集が明示保存前にcanonical Projectを書き換えました");
+    const bool settingsSaved = controller.saveProject();
+    if (!settingsSaved)
+        std::fprintf(stderr, "設定保存失敗: %s\n", controller.statusText().toUtf8().constData());
+    check(settingsSaved, "変更した映像設定を明示保存できません");
+    const auto saved = mvm::project::loadProjectJson(path);
+    check(saved.success && saved.project.outputWidth == 1280 && saved.project.outputHeight == 720 &&
+              saved.project.timelineFpsNum == 24 && saved.project.timelineFpsDen == 1 &&
+              saved.project.timelineClips.front().timelineStartFrame == 24,
+          "Project映像設定または換算後のclip位置を保存できません");
+
+    check(controller.undoLastEdit(), "Project映像設定をUndoできません");
+    check(controller.outputWidth() == 1920 && controller.outputHeight() == 1080 &&
+              controller.timelineFpsNum() == 60 && controller.timelineFpsDen() == 1,
+          "Undoで以前のProject映像設定へ戻りません");
 }
 
 void testUnlinkUndo(const std::filesystem::path& path) {
-    mvm::app::MvmController controller(path, {}, linkedProject());
+    const auto initial = linkedProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "リンク解除試験の初期Projectを保存できません");
+    mvm::app::MvmController controller(path, {}, initial);
     controller.selectTimelineClip("audio", 23);
     check(controller.currentClipIndex() == 1 && controller.playheadFrame() == 23,
           "Undo前のaudio選択と再生位置を設定できません");
     check(controller.unlinkTimelineClip("audio"), "audioのリンク解除に失敗しました");
-    auto unlinked = mvm::project::loadProjectJson(path);
-    check(unlinked.success && unlinked.project.timelineClips[0].linkGroupId.empty() &&
-              unlinked.project.timelineClips[1].linkGroupId.empty(),
-          "リンク解除がProjectへ保存されません");
+    const auto* model = controller.timelineModel();
+    const auto roleNames = model->roleNames();
+    const int linkGroupRole = roleNames.key("linkGroupId", -1);
+    check(linkGroupRole >= 0 &&
+              model->data(model->index(0, 0), linkGroupRole).toString().isEmpty() &&
+              model->data(model->index(1, 0), linkGroupRole).toString().isEmpty(),
+          "リンク解除が作業中Projectへ反映されません");
+    const auto canonicalBeforeUndo = mvm::project::loadProjectJson(path);
+    check(canonicalBeforeUndo.success &&
+              canonicalBeforeUndo.project.timelineClips[0].linkGroupId == "pair" &&
+              canonicalBeforeUndo.project.timelineClips[1].linkGroupId == "pair",
+          "リンク解除が明示保存前にcanonical Projectを書き換えました");
     check(controller.undoLastEdit(), "リンク解除をUndoできません");
-    const auto restored = mvm::project::loadProjectJson(path);
-    check(restored.success && restored.project.timelineClips[0].linkGroupId == "pair" &&
-              restored.project.timelineClips[1].linkGroupId == "pair",
+    check(model->data(model->index(0, 0), linkGroupRole).toString() == "pair" &&
+              model->data(model->index(1, 0), linkGroupRole).toString() == "pair",
           "Undoでリンク関係が復元されません");
     check(controller.currentClipIndex() == 1 && controller.playheadFrame() == 23,
           "Undoでaudio選択または再生位置が復元されません");
-    const auto* model = controller.timelineModel();
-    const auto roleNames = model->roleNames();
     const int selectedRole = roleNames.key("selected", -1);
     check(selectedRole >= 0 && model->data(model->index(0, 0), selectedRole).toBool() &&
               model->data(model->index(1, 0), selectedRole).toBool(),
           "Undoでリンク選択が復元されません");
+}
+
+void testRecoveryAutosave(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "復旧試験の初期Projectを保存できません");
+    std::filesystem::path recoveryPath = path;
+    recoveryPath += L".recovery";
+    {
+        mvm::app::MvmController controller(path, {}, initial);
+        check(controller.addTrack("video"), "復旧対象の編集を作成できません");
+        check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, 4000),
+              "編集後に自動復旧データが作成されません");
+        const auto canonical = mvm::project::loadProjectJson(path);
+        const auto recovery = mvm::project::loadProjectRecovery(recoveryPath, path);
+        check(canonical.success && canonical.project.videoTracks.size() == 2,
+              "自動保存がcanonical Projectを書き換えました");
+        check(recovery.success && !recovery.legacy && recovery.project.videoTracks.size() == 3 &&
+                  !recovery.sessionId.empty() && !recovery.savedAt.empty(),
+              "自動復旧データに作業中Projectが保存されません");
+        QFile canonicalFile(QString::fromStdWString(path.wstring()));
+        check(canonicalFile.open(QIODevice::ReadOnly), "照合用のcanonicalを読めません");
+        const QByteArray canonicalHash =
+            QCryptographicHash::hash(canonicalFile.readAll(), QCryptographicHash::Sha256).toHex();
+        check(recovery.canonicalSha256 == canonicalHash.toStdString(),
+              "自動復旧データが開いた時点のcanonical hashを保持しません");
+    }
+
+    mvm::app::MvmController reopened(path, {}, initial);
+    check(reopened.recoveryAvailable(), "再起動時に自動復旧データを検出できません");
+    check(reopened.restoreRecovery() && reopened.dirty() && reopened.videoTrackCount() == 3,
+          "自動復旧データをdirtyな作業中Projectとして復元できません");
+    const bool recoverySaved = reopened.saveProject();
+    if (!recoverySaved)
+        std::fprintf(stderr, "復旧保存失敗: %s\n", reopened.statusText().toUtf8().constData());
+    check(recoverySaved && !reopened.dirty(), "復元したProjectを明示保存できません");
+    const auto saved = mvm::project::loadProjectJson(path);
+    check(saved.success && saved.project.videoTracks.size() == 3 &&
+              !std::filesystem::exists(recoveryPath),
+          "復元後の保存でcanonical更新または復旧データ削除ができません");
+}
+
+void testExplicitSaveContract(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "契約試験の初期Projectを保存できません");
+    std::filesystem::path recoveryPath = path;
+    recoveryPath += L".recovery";
+    mvm::app::MvmController controller(path, {}, initial);
+    check(controller.holdsProjectLock() && !controller.dirty(), "明示保存試験の初期状態が不正です");
+    check(controller.addTrack("video") && controller.dirty() && controller.videoTrackCount() == 3,
+          "編集がworking stateへ反映されません");
+    const auto canonicalBefore = mvm::project::loadProjectJson(path);
+    check(canonicalBefore.success && canonicalBefore.project.videoTracks.size() == 2,
+          "編集直後のcanonicalがinitialのままではありません");
+    check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, 4000),
+          "編集後のrecoveryが作成されません");
+    const auto recovery = mvm::project::loadProjectRecovery(recoveryPath, path);
+    check(recovery.success && recovery.project.videoTracks.size() == 3,
+          "recoveryが編集後のworking stateではありません");
+    check(controller.saveProject() && !controller.dirty(), "Ctrl+Sでcleanになりません");
+    const auto canonicalAfter = mvm::project::loadProjectJson(path);
+    check(canonicalAfter.success && canonicalAfter.project.videoTracks.size() == 3 &&
+              !std::filesystem::exists(recoveryPath),
+          "明示保存でcanonical更新またはrecovery削除ができません");
+    for (const auto& entry : std::filesystem::directory_iterator(path.parent_path())) {
+        check(entry.path().filename().wstring().find(L".mvmtmp.") == std::wstring::npos,
+              "atomic writeの一時fileが残っています");
+    }
+}
+
+void testUndoRemovesRecovery(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "Undo復旧試験の初期Projectを保存できません");
+    std::filesystem::path recoveryPath = path;
+    recoveryPath += L".recovery";
+    mvm::app::MvmController controller(path, {}, initial);
+    check(controller.addTrack("audio") && controller.dirty(), "recovery削除対象の編集ができません");
+    check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, 4000),
+          "Undo前のrecoveryが作成されません");
+    check(controller.undoLastEdit() && !controller.dirty() &&
+              !std::filesystem::exists(recoveryPath),
+          "保存済みrevisionまでUndoしてもrecoveryが残ります");
+}
+
+void testCorruptRecoveryKept(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "破損復旧試験の初期Projectを保存できません");
+    std::filesystem::path recoveryPath = path;
+    recoveryPath += L".recovery";
+    {
+        std::ofstream broken(recoveryPath, std::ios::binary | std::ios::trunc);
+        broken << "{ this is not recovery json";
+        check(broken.good(), "破損した自動復旧データを用意できません");
+    }
+    mvm::app::MvmController controller(path, {}, initial);
+    check(controller.recoveryCorrupt() && !controller.recoveryAvailable() &&
+              std::filesystem::exists(recoveryPath) &&
+              controller.statusText().contains(QStringLiteral("壊れています")),
+          "破損recoveryを消すか、警告せずに復元対象へしました");
+    check(controller.dismissRecovery() && !controller.recoveryCorrupt() &&
+              std::filesystem::exists(recoveryPath),
+          "破損recoveryの確認を閉じるとfileまで削除します");
+}
+
+void testStaleRecoveryRemoved(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    std::filesystem::path recoveryPath = path;
+    recoveryPath += L".recovery";
+    check(mvm::project::saveProjectJson(initial, path).success &&
+              mvm::project::saveProjectJson(initial, recoveryPath).success,
+          "同一recoveryの試験を準備できません");
+    mvm::app::MvmController controller(path, {}, initial);
+    check(!controller.recoveryAvailable() && !std::filesystem::exists(recoveryPath),
+          "canonicalと同一のrecoveryをstaleとして削除できません");
+}
+
+void testCanonicalChangedRecovery(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "外部変更試験の初期Projectを保存できません");
+    std::filesystem::path recoveryPath = path;
+    recoveryPath += L".recovery";
+    {
+        mvm::app::MvmController controller(path, {}, initial);
+        check(controller.addTrack("video"), "外部変更と比較する編集を作成できません");
+        check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, 4000),
+              "外部変更試験のrecoveryが作成されません");
+    }
+    auto changed = initial;
+    changed.outputWidth = 1280;
+    check(mvm::project::saveProjectJson(changed, path).success,
+          "外部変更後のcanonicalを書けません");
+    mvm::app::MvmController reopened(path, {}, changed);
+    check(reopened.recoveryCanonicalChanged() && reopened.recoveryAvailable() &&
+              reopened.outputWidth() == 1280 && reopened.videoTrackCount() == 2 &&
+              std::filesystem::exists(recoveryPath),
+          "canonical hash不一致を外部変更として確認できません");
+    check(reopened.dismissRecovery() && !reopened.recoveryAvailable() &&
+              std::filesystem::exists(recoveryPath) && reopened.outputWidth() == 1280,
+          "キャンセルでrecoveryを削除するか、canonical以外を開きました");
+}
+
+void testDirtyProjectSwitchRefused(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "dirty guard試験の初期Projectを保存できません");
+    mvm::app::MvmController controller(path, {}, initial);
+    check(controller.addTrack("video") && controller.dirty(), "拒否対象の未保存変更を作れません");
+    const auto other = path.parent_path() / L"other-dirty-guard.mvm";
+    const QUrl otherUrl = QUrl::fromLocalFile(QString::fromStdWString(other.wstring()));
+    check(!controller.newProject(otherUrl) && !controller.openProject(otherUrl) &&
+              controller.dirty() && controller.videoTrackCount() == 3 &&
+              controller.projectPath() == QString::fromStdWString(path.wstring()),
+          "dirty中のNew/Openが未保存変更を飛ばしました");
+}
+
+void testProjectLock(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    {
+        mvm::app::MvmController first(path, {}, initial);
+        check(first.holdsProjectLock(), "最初のProject lockを取得できません");
+        mvm::app::MvmController second(path, {}, initial);
+        check(!second.holdsProjectLock() && !second.addTrack("audio") &&
+                  second.audioTrackCount() == 1,
+              "別プロセス相当の二重編集を拒否できません");
+        check(first.addTrack("video") && first.videoTrackCount() == 3,
+              "lockを持たない側の失敗が、持っている側の編集まで止めました");
+    }
+    mvm::app::MvmController reopened(path, {}, initial);
+    check(reopened.holdsProjectLock(), "終了後にProject lockを再取得できません");
+}
+
+void testRecoveryDisposition() {
+    const auto initial = videoProject();
+    auto edited = initial;
+    edited.videoTracks.push_back({"V3", false});
+    const std::string hashA(64, 'a');
+    const std::string hashB(64, 'b');
+    using Disposition = mvm::project::RecoveryDisposition;
+    check(mvm::project::classifyRecovery(edited, edited, hashA, hashB) == Disposition::Stale,
+          "内容が同一のrecoveryをhash不一致として扱いました");
+    check(mvm::project::classifyRecovery(edited, initial, hashA, hashA) == Disposition::Restorable,
+          "hashが一致する未保存編集を復元対象にしません");
+    check(mvm::project::classifyRecovery(edited, initial, hashA, hashB) ==
+              Disposition::CanonicalChanged,
+          "hash不一致を外部変更として扱いません");
+    check(mvm::project::classifyRecovery(edited, initial, "", hashB) ==
+              Disposition::CanonicalChanged,
+          "hashが無いrecoveryを照合済みとして復元対象にしました");
+    check(mvm::project::classifyRecovery(edited, initial, "", "") == Disposition::Restorable,
+          "canonical fileが無い未保存編集を復元対象にしません");
+}
+
+void testDiscardRecovery(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    auto edited = initial;
+    edited.videoTracks.push_back({"V3", false});
+    std::filesystem::path recoveryPath = path;
+    recoveryPath += L".recovery";
+    check(mvm::project::saveProjectJson(initial, path).success &&
+              mvm::project::saveProjectJson(edited, recoveryPath).success,
+          "破棄試験のProjectを準備できません");
+    mvm::app::MvmController controller(path, {}, initial);
+    check(controller.recoveryAvailable(), "破棄対象の自動復旧データを検出できません");
+    check(controller.discardRecovery() && !controller.recoveryAvailable() && !controller.dirty() &&
+              controller.videoTrackCount() == 2 && !std::filesystem::exists(recoveryPath),
+          "自動復旧データを破棄してcanonical状態を維持できません");
+}
+
+std::string fileSha256(const std::filesystem::path& path) {
+    QFile file(QString::fromStdWString(path.wstring()));
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    return QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256)
+        .toHex()
+        .toStdString();
+}
+
+void testRecoveryRecordsOpenedCanonicalHash(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "基準hash試験の初期Projectを保存できません");
+    const std::string openedHash = fileSha256(path);
+    check(openedHash.size() == 64, "開いたcanonicalのhashを計算できません");
+    std::filesystem::path recoveryPath = path;
+    recoveryPath += L".recovery";
+    {
+        mvm::app::MvmController controller(path, {}, initial);
+        auto external = initial;
+        external.outputWidth = 1280;
+        check(mvm::project::saveProjectJson(external, path).success,
+              "開いたあとのcanonicalを外部変更できません");
+        check(fileSha256(path) != openedHash, "外部変更がcanonicalのhashを変えていません");
+        check(controller.addTrack("video"), "基準hash試験の編集を作成できません");
+        check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, 4000),
+              "外部変更後の自動復旧データが作成されません");
+        const auto recovery = mvm::project::loadProjectRecovery(recoveryPath, path);
+        check(recovery.success && !recovery.foreignProject && !recovery.legacy &&
+                  recovery.canonicalSha256 == openedHash &&
+                  recovery.canonicalSha256 != fileSha256(path),
+              "自動復旧データが開いた時点ではなくdisk上のhashを記録しました");
+    }
+
+    const auto disk = mvm::project::loadProjectJson(path);
+    check(disk.success, "外部変更後のcanonicalを読めません");
+    mvm::app::MvmController reopened(path, {}, disk.project);
+    check(reopened.recoveryCanonicalChanged() && reopened.recoveryAvailable() &&
+              reopened.outputWidth() == 1280 && reopened.videoTrackCount() == 2,
+          "開いた時点のhashと現在のdiskが違うrecoveryを外部変更にしません");
+    check(reopened.restoreRecovery() && reopened.dirty() && reopened.videoTrackCount() == 3 &&
+              reopened.outputWidth() == 1920,
+          "外部変更があるrecoveryをworking stateへ復元できません");
+    check(!reopened.saveProject() &&
+              reopened.statusText() == QStringLiteral("Project fileが外部で変更されています"),
+          "復元後の通常保存が、基準と違うcanonicalを上書きしました");
+    const auto stillExternal = mvm::project::loadProjectJson(path);
+    check(stillExternal.success && stillExternal.project.outputWidth == 1280 &&
+              stillExternal.project.videoTracks.size() == 2,
+          "拒否した保存が外部変更を残していません");
+}
+
+void testSaveRefusesExternalCanonical(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "上書き拒否試験の初期Projectを保存できません");
+    mvm::app::MvmController controller(path, {}, initial);
+    auto external = initial;
+    external.outputWidth = 1280;
+    check(mvm::project::saveProjectJson(external, path).success,
+          "保存前のcanonicalを外部変更できません");
+    check(controller.addTrack("video") && controller.dirty(), "上書き拒否試験の編集ができません");
+    check(!controller.saveProject() && controller.dirty() &&
+              controller.statusText() == QStringLiteral("Project fileが外部で変更されています"),
+          "外部変更されたcanonicalへの通常保存を止められません");
+    const auto other = path.parent_path() / L"external-save-as.mvm";
+    const QUrl otherUrl = QUrl::fromLocalFile(QString::fromStdWString(other.wstring()));
+    check(controller.saveProjectAs(otherUrl) && !controller.dirty(),
+          "外部変更されたcanonicalから別名保存へ逃げられません");
+    const auto original = mvm::project::loadProjectJson(path);
+    const auto escaped = mvm::project::loadProjectJson(other);
+    check(original.success && original.project.outputWidth == 1280 &&
+              original.project.videoTracks.size() == 2 && escaped.success &&
+              escaped.project.outputWidth == 1920 && escaped.project.videoTracks.size() == 3,
+          "別名保存が元fileを残すか、working stateを書き出せていません");
+}
+
+void testExplicitOverwriteAfterExternalChange(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "明示上書き試験の初期Projectを保存できません");
+    mvm::app::MvmController controller(path, {}, initial);
+    auto external = initial;
+    external.outputWidth = 1280;
+    check(mvm::project::saveProjectJson(external, path).success && controller.addTrack("video"),
+          "明示上書き試験の外部変更または編集ができません");
+    check(!controller.saveProject(), "明示上書きの前に通常保存が通ってしまいました");
+    check(controller.saveProjectOverwritingExternalChange() && !controller.dirty(),
+          "利用者が明示した上書き保存ができません");
+    const auto overwritten = mvm::project::loadProjectJson(path);
+    check(overwritten.success && overwritten.project.outputWidth == 1920 &&
+              overwritten.project.videoTracks.size() == 3,
+          "明示した上書きがworking stateをcanonicalへ書きません");
+    check(controller.saveProject() && !controller.dirty(),
+          "上書き後の基準hashが更新されず、次の保存まで拒否されます");
+}
+
+void testForeignRecoveryIsNotRebased(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "別Project試験の初期Projectを保存できません");
+    std::filesystem::path recoveryPath = path;
+    recoveryPath += L".recovery";
+    {
+        mvm::app::MvmController controller(path, {}, initial);
+        check(controller.addTrack("video"), "別Project試験の編集を作成できません");
+        check(pumpUntil([&] { return std::filesystem::exists(recoveryPath); }, 4000),
+              "別Project試験のrecoveryが作成されません");
+    }
+    const auto home = mvm::project::loadProjectRecovery(recoveryPath, path);
+    const std::wstring generic = path.generic_wstring();
+    check(home.success && !home.foreignProject && home.project.videoTracks.size() == 3 &&
+              mvm::project::sameCanonicalPath(path, std::filesystem::path(generic)),
+          "記録したcanonical pathのrecoveryを同一Projectとして読めません");
+
+    const auto other = path.parent_path() / L"foreign-canonical.mvm";
+    check(mvm::project::saveProjectJson(initial, other).success,
+          "recoveryのコピー先Projectを保存できません");
+    std::filesystem::path otherRecovery = other;
+    otherRecovery += L".recovery";
+    std::error_code copyError;
+    std::filesystem::copy_file(recoveryPath, otherRecovery,
+                               std::filesystem::copy_options::overwrite_existing, copyError);
+    check(!copyError, "recoveryを別Projectの隣へコピーできません");
+    const auto foreign = mvm::project::loadProjectRecovery(otherRecovery, other);
+    check(foreign.success && foreign.foreignProject,
+          "別canonical pathのrecoveryを、開いているpath基準で解釈しました");
+    mvm::app::MvmController reopened(other, {}, initial);
+    check(reopened.recoveryForeign() && !reopened.recoveryAvailable() &&
+              reopened.videoTrackCount() == 2 && std::filesystem::exists(otherRecovery) &&
+              reopened.statusText().contains(QStringLiteral("別のProject")),
+          "別Projectのrecoveryを復元するか、fileを消しました");
+}
+
+void testPreservedRecoverySurvivesNewAndSaveAs(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "保全試験の初期Projectを保存できません");
+    std::filesystem::path recoveryPath = path;
+    recoveryPath += L".recovery";
+    {
+        std::ofstream broken(recoveryPath, std::ios::binary | std::ios::trunc);
+        broken << "{ this is not recovery json";
+        check(broken.good(), "保全する破損recoveryを用意できません");
+    }
+    {
+        mvm::app::MvmController controller(path, {}, initial);
+        check(controller.recoveryCorrupt(), "保全試験の破損recoveryを検出できません");
+        const QUrl sameUrl = QUrl::fromLocalFile(QString::fromStdWString(path.wstring()));
+        check(controller.saveProjectAs(sameUrl) && std::filesystem::exists(recoveryPath),
+              "同じ場所へのSave Asが保全したrecoveryを削除しました");
+        const auto savedAs = path.parent_path() / L"preserved-save-as.mvm";
+        const QUrl savedAsUrl = QUrl::fromLocalFile(QString::fromStdWString(savedAs.wstring()));
+        check(controller.saveProjectAs(savedAsUrl) && std::filesystem::exists(recoveryPath),
+              "別pathへのSave Asが保全したrecoveryを削除しました");
+    }
+    mvm::app::MvmController controller(path, {}, initial);
+    check(controller.recoveryCorrupt(), "Save As後も破損recoveryが残っていません");
+    const auto created = path.parent_path() / L"preserved-new.mvm";
+    const QUrl createdUrl = QUrl::fromLocalFile(QString::fromStdWString(created.wstring()));
+    check(controller.newProject(createdUrl) && std::filesystem::exists(recoveryPath),
+          "Newが保全したrecoveryを削除しました");
+}
+
+void testShiftSelectionToggle(const std::filesystem::path& path) {
+    auto project = linkedProject();
+    auto other = project.timelineClips[0];
+    other.id = "other";
+    other.name = "other";
+    other.linkGroupId.clear();
+    other.timelineStartFrame = 120;
+    project.timelineClips.push_back(std::move(other));
+    mvm::app::MvmController controller(path, {}, std::move(project));
+
+    const auto* model = controller.timelineModel();
+    const int selectedRole = model->roleNames().key("selected", -1);
+    const auto selected = [&](int row) {
+        return selectedRole >= 0 && model->data(model->index(row, 0), selectedRole).toBool();
+    };
+
+    controller.selectTimelineClip("other", 120);
+    controller.toggleTimelineClipSelection("video", 0);
+    check(selected(0) && selected(1) && selected(2),
+          "Shift選択で既存選択へリンクclip一組を追加できません");
+    controller.toggleTimelineClipSelection("audio", 0);
+    check(!selected(0) && !selected(1) && selected(2),
+          "選択済みリンクclipのShift選択で一組を解除できません");
+}
+
+void testDeleteMultipleSelection(const std::filesystem::path& path) {
+    auto project = videoProject();
+    auto audio = project.timelineClips[0];
+    audio.id = "audio";
+    audio.name = "audio";
+    audio.kind = mvm::project::TimelineClipKind::Audio;
+    audio.track = {mvm::project::TrackKind::Audio, 0};
+    project.timelineClips.push_back(std::move(audio));
+    auto remaining = project.timelineClips[0];
+    remaining.id = "remaining";
+    remaining.name = "remaining";
+    remaining.timelineStartFrame = 120;
+    project.timelineClips.push_back(std::move(remaining));
+    mvm::app::MvmController controller(path, {}, std::move(project));
+
+    check(controller.selectTimelineClips({"video", "audio"}), "削除対象の複数clipを選択できません");
+    check(controller.deleteCurrentClip() && controller.clipCount() == 1,
+          "Delete操作で選択中の全clipを削除できません");
+    const auto* model = controller.timelineModel();
+    const int clipIdRole = model->roleNames().key("clipId", -1);
+    check(clipIdRole >= 0 && model->data(model->index(0, 0), clipIdRole).toString() == "remaining",
+          "複数削除で選択外のclipまで削除しました");
+    check(controller.undoLastEdit() && controller.clipCount() == 3,
+          "複数clip削除を1回のUndoで復元できません");
 }
 } // namespace
 
@@ -326,6 +857,7 @@ int main(int argc, char** argv) {
     const std::filesystem::path directory = std::filesystem::path(argv[1]);
     std::filesystem::create_directories(directory);
     testCompleteAndRestart(directory / L"complete.mvm");
+    testExportQualitySelection(directory / L"quality.mvm");
     testQueuedProgressAfterCancel(directory / L"cancel.mvm");
     testFailedExportNotification(directory / L"failed.mvm");
     testRevealFailureKeepsSuccess(directory / L"reveal-failure.mvm");
@@ -334,6 +866,25 @@ int main(int argc, char** argv) {
     testShutdown(directory / L"shutdown-finished.mvm", true);
     testThreadFailure(directory / L"thread-failure.mvm");
     testUndo(directory / L"undo.mvm");
+    testDirtyCheckpoint(directory / L"dirty-checkpoint.mvm");
+    testProjectVideoSettings(directory / L"project-video-settings.mvm");
     testUnlinkUndo(directory / L"unlink-undo.mvm");
+    testRecoveryAutosave(directory / L"recovery-autosave.mvm");
+    testExplicitSaveContract(directory / L"explicit-save.mvm");
+    testUndoRemovesRecovery(directory / L"undo-recovery.mvm");
+    testCorruptRecoveryKept(directory / L"corrupt-recovery.mvm");
+    testStaleRecoveryRemoved(directory / L"stale-recovery.mvm");
+    testCanonicalChangedRecovery(directory / L"canonical-changed.mvm");
+    testRecoveryRecordsOpenedCanonicalHash(directory / L"recovery-base-hash.mvm");
+    testSaveRefusesExternalCanonical(directory / L"save-refuses-external.mvm");
+    testExplicitOverwriteAfterExternalChange(directory / L"save-overwrite-external.mvm");
+    testForeignRecoveryIsNotRebased(directory / L"foreign-recovery.mvm");
+    testPreservedRecoverySurvivesNewAndSaveAs(directory / L"preserved-recovery.mvm");
+    testDirtyProjectSwitchRefused(directory / L"dirty-guard.mvm");
+    testProjectLock(directory / L"project-lock.mvm");
+    testRecoveryDisposition();
+    testDiscardRecovery(directory / L"recovery-discard.mvm");
+    testShiftSelectionToggle(directory / L"shift-selection.mvm");
+    testDeleteMultipleSelection(directory / L"delete-multiple.mvm");
     return failures == 0 ? 0 : 1;
 }

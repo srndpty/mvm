@@ -1,11 +1,13 @@
 $ErrorActionPreference = 'Stop'
 $qmlPath = Join-Path $PSScriptRoot '..\..\apps\mvm\Main.qml'
 $controllerPath = Join-Path $PSScriptRoot '..\..\apps\mvm\mvm_controller.cpp'
+$controllerHeaderPath = Join-Path $PSScriptRoot '..\..\apps\mvm\mvm_controller.h'
 $mainPath = Join-Path $PSScriptRoot '..\..\apps\mvm\main.cpp'
 $previewItemPath = Join-Path $PSScriptRoot '..\..\src\app\preview\preview_engine_rhi_item.cpp'
 $compositorPath = Join-Path $PSScriptRoot '..\..\src\media\gpu_preview\gpu_compositor.cpp'
 $qml = Get-Content -LiteralPath $qmlPath -Raw
 $controller = Get-Content -LiteralPath $controllerPath -Raw
+$controllerHeader = Get-Content -LiteralPath $controllerHeaderPath -Raw
 $main = Get-Content -LiteralPath $mainPath -Raw
 $previewItem = Get-Content -LiteralPath $previewItemPath -Raw
 $compositor = Get-Content -LiteralPath $compositorPath -Raw
@@ -44,12 +46,22 @@ $requiredInteractions = @(
     'setZoom(wheelDelta > 0 ? 1 : -1,',
     'readonly property var zoomLevels:',
     'property int zoomIndex:',
-    'const wasFullyVisible = oldMaxContentX <= 0.5;',
-    'const desiredContentX = wasFullyVisible',
+    'readonly property real fitPixelsPerFrame:',
+    'Math.min(zoomLevels[0], requestedFitPixelsPerFrame)',
+    'readonly property int minimumZoomIndex:',
+    'timelineFlick.width * 0.7 / mvmController.totalTimelineFrames',
+    'zoomIndex === minimumZoomIndex ? fitPixelsPerFrame : zoomLevels[zoomIndex]',
+    'onObservedTimelineFramesChanged:',
+    'zoomIndex = Math.max(minimumZoomIndex,',
+    'Math.max(minimumZoomIndex, Math.min(zoomLevels.length - 1,',
+    'const anchorFrame = (timelineFlick.contentX + anchorItemX) / pixelsPerFrame;',
+    'const desiredContentX = anchorFrame * pixelsPerFrame - anchorItemX;',
     'Math.min(nextMaxContentX, desiredContentX)',
     'timelinePanel.activeDragOffsetX = clipItem.bodyDragOffsetX',
     '-clipItem.timelineStartFrame * timelinePanel.pixelsPerFrame',
     'clipItem.linkGroupId === timelinePanel.activeDragLinkGroup',
+    '(mouse.modifiers & Qt.ShiftModifier) !== 0',
+    'mvmController.toggleTimelineClipSelection(',
     'timelineFlick.contentY',
     'id: timelineHorizontalScrollBar',
     'policy: ScrollBar.AlwaysOn',
@@ -110,6 +122,26 @@ $requiredExportFailure = @(
     'exportFailureDialog.open()'
 )
 
+$requiredExportSettings = @(
+    'id: exportSettingsDialog',
+    'id: qualityCombo',
+    'key: "high"',
+    'key: "standard"',
+    'key: "compact"',
+    'mvmController.exportSettingsSummary()',
+    'mvmController.exportTimelineWithQuality(',
+    '品質は圧縮率だけを変更します。出力の解像度とfpsはプロジェクト設定のままです。'
+)
+
+$requiredProjectSettings = @(
+    'id: projectSettingsDialog',
+    'id: matchClipSettingsDialog',
+    'プロジェクト設定をこの素材に合わせる',
+    'mvmController.projectSettingsForClip(clipId)',
+    'mvmController.setProjectVideoSettings(',
+    '既存クリップの開始位置は秒位置を維持して換算します。素材のin/outは変更しません。続行しますか？'
+)
+
 foreach ($needle in @('id: rectangleSelectionArea')) {
     if (-not $qml.Contains($needle)) {
         throw "矩形選択の契約がありません: $needle"
@@ -124,7 +156,8 @@ foreach ($removed in @('spaceMoveToolActive', 'id: moveToolArea', 'sequence: "Ct
 }
 
 foreach ($needle in ($requiredQml + $requiredInteractions + $requiredShortcuts +
-                     $requiredVideoDrop + $requiredExportProgress + $requiredExportFailure)) {
+                     $requiredVideoDrop + $requiredExportProgress + $requiredExportFailure +
+                     $requiredExportSettings + $requiredProjectSettings)) {
     if (-not $qml.Contains($needle)) {
         throw "timeline UI contractがありません: $needle"
     }
@@ -138,6 +171,46 @@ foreach ($needle in $forbiddenQml) {
     if ($qml.Contains($needle)) {
         throw "track数を固定する旧timeline UIが残っています: $needle"
     }
+}
+
+# zoom式はQMLがauthority。ここは同じ式を独立に評価し、短いtimelineと長いtimelineの
+# 契約がソース上の式と一致することを確認する。
+$zoomMatch = [regex]::Match($qml, 'readonly property var zoomLevels:\s*\[(?<levels>[\s\S]*?)\]')
+if (-not $zoomMatch.Success) {
+    throw 'zoomLevelsを読み取れません'
+}
+$zoomLevels = @()
+foreach ($token in ($zoomMatch.Groups['levels'].Value -split ',')) {
+    $trimmed = $token.Trim()
+    if ($trimmed.Length -eq 0) { continue }
+    $zoomLevels += [double]::Parse($trimmed, [cultureinfo]::InvariantCulture)
+}
+if ($zoomLevels.Count -lt 2) {
+    throw 'zoom段階が複数ありません'
+}
+function Get-FitPixelsPerFrame([double]$viewportWidth, [double]$totalFrames) {
+    $rawFit = $viewportWidth * 0.7 / $totalFrames
+    return [Math]::Min($zoomLevels[0], $rawFit)
+}
+$shortFit = Get-FitPixelsPerFrame 1000 10
+if ([Math]::Abs($shortFit - $zoomLevels[0]) -gt 0.0000001) {
+    throw "10 frameの最小zoomが通常presetから外れています: $shortFit"
+}
+if ($zoomLevels[-1] -le $zoomLevels[0]) {
+    throw '10 frameで複数段階のzoomへ進めません'
+}
+$longFrames = 1000000
+$longViewport = 1000
+$longFit = Get-FitPixelsPerFrame $longViewport $longFrames
+if ($longFit -ge $zoomLevels[0]) {
+    throw '非常に長いtimelineでも通常presetより広くzoom outできません'
+}
+if ($longFit * $longFrames -gt $longViewport * 0.7 + 0.001) {
+    throw '最大zoom-outでtimeline全体がviewportの70%に収まりません'
+}
+if ($qml -notmatch 'const anchorFrame = \(timelineFlick\.contentX \+ anchorItemX\) / pixelsPerFrame;' -or
+    $qml -notmatch 'const desiredContentX = anchorFrame \* pixelsPerFrame - anchorItemX;') {
+    throw 'zoomのcursor anchorが維持されません'
 }
 
 # moveTimelineClipは同期的にmodelを更新してdelegateを破棄し得る。
@@ -181,14 +254,67 @@ if (-not $controller.Contains('QString::number(selectedClipIds_.size())')) {
 }
 foreach ($needle in @('project::timelineClipIndexAt(project_, current.track, clamped)',
                       'setTimelineSelection({clipId.toStdString()});',
-                      'UndoEntry undo{project_, selectedClipIds_, currentClipId(), playheadFrame_};',
-                      'project::saveProjectJsonTransaction(project_, undo.project, projectPath_)',
+                      'UndoEntry undo{project_, selectedClipIds_, currentClipId(), playheadFrame_, currentRevision_};',
+                      'std::vector<std::string> deletedIds = selectedClipIds_;',
+                      'for (const auto& id : deletedIds)',
+                      'project_ = undo.project;',
+                      'scheduleRecoveryAutosave();',
                       'undoHistory_.pop_back();')) {
     if (-not $controller.Contains($needle)) {
         throw "audio/video選択同期またはUndoの契約がありません: $needle"
     }
 }
-foreach ($needle in @('exportThread_ = exportThreadFactory_(',
+foreach ($needle in @('FILE_FLAG_DELETE_ON_CLOSE',
+                      'ERROR_SHARING_VIOLATION',
+                      'project::saveProjectRecovery(',
+                      'project::classifyRecovery(',
+                      'savedCanonicalSha256_',
+                      'canonicalBaseMatchesDisk(')) {
+    if (-not $controller.Contains($needle)) {
+        throw "Project lockまたはrecovery照合の契約がありません: $needle"
+    }
+}
+foreach ($needle in @('currentRevision_ = nextRevision_++;',
+                      'savedRevision_ = currentRevision_;')) {
+    if (-not $controller.Contains($needle)) {
+        throw "未保存変更のcontroller契約がありません: $needle"
+    }
+}
+foreach ($needle in @('Q_PROPERTY(bool dirty READ dirty NOTIFY stateChanged)',
+                      'Q_PROPERTY(bool recoveryAvailable READ recoveryAvailable NOTIFY stateChanged)',
+                      'Q_INVOKABLE bool saveProject();',
+                      'Q_INVOKABLE bool saveProjectOverwritingExternalChange();',
+                      'Q_PROPERTY(bool recoveryForeign READ recoveryForeign NOTIFY stateChanged)',
+                      'Q_INVOKABLE bool discardUnsavedChanges();',
+                      'Q_INVOKABLE bool restoreRecovery();',
+                      'Q_INVOKABLE bool discardRecovery();',
+                      'Q_INVOKABLE bool dismissRecovery();',
+                      'Q_PROPERTY(bool recoveryCanonicalChanged READ recoveryCanonicalChanged NOTIFY stateChanged)',
+                      'Q_PROPERTY(bool recoveryCorrupt READ recoveryCorrupt NOTIFY stateChanged)')) {
+    if (-not $controllerHeader.Contains($needle)) {
+        throw "未保存変更のcontroller公開契約がありません: $needle"
+    }
+}
+foreach ($needle in @('onClosing: close => {',
+                      'if (!closeConfirmed && mvmController.dirty)',
+                      'root.requestProjectAction("new")',
+                      'root.requestProjectAction("open")',
+                      'mvmController.saveProject()',
+                      'mvmController.discardUnsavedChanges()',
+                      'id: unsavedChangesDialog',
+                      'id: recoveryDialog',
+                      'id: externalSaveDialog',
+                      'mvmController.saveProjectOverwritingExternalChange()',
+                      'mvmController.recoveryForeign',
+                      'function onExternalCanonicalChangeOnSave()',
+                      'mvmController.recoveryCanonicalChanged',
+                      'mvmController.dismissRecovery()',
+                      'mvmController.recoveryCorrupt')) {
+    if (-not $qml.Contains($needle)) {
+        throw "未保存変更の終了確認UIがありません: $needle"
+    }
+}
+foreach ($needle in @('exportThreadFactory_([this,',
                       'exportCancelRequested_.store(true, std::memory_order_release)',
                       'exportCancelling_ = true;',
                       'finishTimelineExport(std::move(exported))',

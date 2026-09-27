@@ -35,7 +35,7 @@ std::int64_t qpcNow() {
 double qpcMilliseconds(std::int64_t begin, std::int64_t end) {
     LARGE_INTEGER frequency{};
     QueryPerformanceFrequency(&frequency);
-    return static_cast<double>(end - begin) * 1000.0 / frequency.QuadPart;
+    return static_cast<double>(end - begin) * 1000.0 / static_cast<double>(frequency.QuadPart);
 }
 } // namespace
 
@@ -417,6 +417,10 @@ AudioSeekCompletion AudioDecodeWorker::executeSeek(const AudioSeekTicket& ticket
         }
         completion.firstOutputSample = chunk.startSample;
         completion.seekGeneration = generation_;
+        if (completion.discardedPrerollSamples < 0) {
+            completion.error = "seek preroll sample数が負になりました";
+            return completion;
+        }
         if (queue_.push(std::move(chunk)) != AudioQueuePushResult::Accepted) {
             completion.error = "seek target chunk を queue へ投入できません";
             return completion;
@@ -425,7 +429,8 @@ AudioSeekCompletion AudioDecodeWorker::executeSeek(const AudioSeekTicket& ticket
         completion.readyQpc = qpcNow();
         completion.latencyMs = qpcMilliseconds(begin, completion.readyQpc);
         std::lock_guard lock(mutex_);
-        metrics_.discardedPrerollSamples += completion.discardedPrerollSamples;
+        metrics_.discardedPrerollSamples +=
+            static_cast<std::uint64_t>(completion.discardedPrerollSamples);
         return completion;
     }
 }

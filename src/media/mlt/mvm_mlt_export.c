@@ -96,7 +96,7 @@ static void configure_mp4_consumer(mlt_consumer consumer, const char* out_path,
     mlt_properties_set(cp, "f", "mp4");
     mlt_properties_set(cp, "vcodec", "libx264");
     mlt_properties_set(cp, "preset", "medium");
-    mlt_properties_set(cp, "crf", "23");
+    mlt_properties_set_int(cp, "crf", spec->video_crf);
     mlt_properties_set(cp, "pix_fmt", "yuv420p");
     mlt_properties_set(cp, "movflags", "+faststart");
     if (with_audio) {
@@ -329,8 +329,8 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
         return 1;
     }
     if (spec->width <= 0 || spec->height <= 0 || spec->fps_num <= 0 || spec->fps_den <= 0 ||
-        spec->render_threads <= 0 || spec->render_threads > 16 || spec->encoder_threads < 0 ||
-        spec->encoder_threads > 16) {
+        spec->video_crf < 0 || spec->video_crf > 51 || spec->render_threads <= 0 ||
+        spec->render_threads > 16 || spec->encoder_threads < 0 || spec->encoder_threads > 16) {
         set_err(err, err_size, "出力 profile の指定が不正です: %dx%d @ %d/%d", spec->width,
                 spec->height, spec->fps_num, spec->fps_den);
         return 1;
@@ -635,8 +635,9 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     if (!mvm_mlt_runtime_is_ready() || !clips || !spec || !out_path || !*out_path ||
         clip_count <= 0 || clip_count > MVM_EXPORT_MAX_CLIPS || total_duration <= 0 ||
         spec->width <= 0 || spec->height <= 0 || spec->fps_num <= 0 || spec->fps_den <= 0 ||
-        spec->timeout_ms <= 0 || spec->render_threads <= 0 || spec->render_threads > 16 ||
-        spec->encoder_threads < 0 || spec->encoder_threads > 16) {
+        spec->video_crf < 0 || spec->video_crf > 51 || spec->timeout_ms <= 0 ||
+        spec->render_threads <= 0 || spec->render_threads > 16 || spec->encoder_threads < 0 ||
+        spec->encoder_threads > 16) {
         set_err(err, err_size, "M7b tractor export引数が不正です");
         return 1;
     }

@@ -20,6 +20,7 @@ struct ManimAsset {
     std::filesystem::path generatedVideoPath;
     ManimGenerationState generationState = ManimGenerationState::NotGenerated;
     std::string sourceFingerprint;
+    bool operator==(const ManimAsset&) const = default;
 };
 
 enum class TimelineClipKind { Video, Manim, Audio };
@@ -73,7 +74,12 @@ struct Project {
     std::vector<Track> audioTracks;
     std::vector<ManimAsset> manimAssets;
     std::vector<TimelineClip> timelineClips;
+    bool operator==(const Project&) const = default;
 };
+
+inline constexpr int kMaximumProjectOutputDimension = 16384;
+// MP4のyuv420p出力が扱える正の偶数rasterだけをProjectへ保存する。
+bool isValidProjectOutputSize(int width, int height);
 
 // 新規 Project の初期構成。track が 0 本の Project を作らせない。
 Project createDefaultProject();

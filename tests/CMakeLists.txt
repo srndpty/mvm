@@ -107,6 +107,11 @@ add_test(NAME m7b_4_timeline_ui_architecture
             ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-m7b4-timeline-ui-architecture.ps1)
 set_tests_properties(m7b_4_timeline_ui_architecture PROPERTIES TIMEOUT 120)
 
+add_test(NAME m7b_4_external_save_continuation
+    COMMAND pwsh -NoProfile -File
+            ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-m7b4-external-save-continuation.ps1)
+set_tests_properties(m7b_4_external_save_continuation PROPERTIES TIMEOUT 120)
+
 # import 対応は拡張子一覧ではなく内容 probe で決める。MPG の positive、未知拡張子の
 # positive、拡張子だけ MPG の negative を同じ経路で固定する。
 add_executable(mvm_test_audio_nonzero_start_seek

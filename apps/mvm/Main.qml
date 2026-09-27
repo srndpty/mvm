@@ -12,15 +12,101 @@ ApplicationWindow {
     minimumHeight: 640
     // PreviewSurface自体はこのQMLのscene graphへ宣言済み。C++から動的追加しない。
     visible: true
-    title: "mvm — " + mvmController.projectPath
+    title: "mvm" + (mvmController.dirty ? " *" : "") + " — " + mvmController.projectPath
     color: "#15171b"
 
     property url selectedManimScript
+    property url pendingExportFile
+    property bool closeConfirmed: false
+    property string pendingProjectAction: ""
+    // 終了/New/Openの保存が外部変更で止まったときだけ立てる。上書きかSave Asの成功で再開する。
+    property bool pendingSaveContinuation: false
+
+    Component.onCompleted: {
+        if (mvmController.recoveryAvailable || mvmController.recoveryCorrupt
+                || mvmController.recoveryForeign)
+            recoveryDialog.open();
+    }
+
+    onClosing: close => {
+        if (!closeConfirmed && mvmController.dirty) {
+            close.accepted = false;
+            pendingProjectAction = "close";
+            unsavedChangesDialog.open();
+        }
+    }
+
+    function performProjectAction(action) {
+        if (action === "close") {
+            closeConfirmed = true;
+            close();
+        } else if (action === "new") {
+            newProjectDialog.open();
+        } else if (action === "open") {
+            openProjectDialog.open();
+        }
+    }
+
+    function requestProjectAction(action) {
+        if (mvmController.dirty) {
+            pendingProjectAction = action;
+            unsavedChangesDialog.open();
+            return;
+        }
+        performProjectAction(action);
+    }
+
+    function continuePendingProjectAction() {
+        const action = pendingProjectAction;
+        pendingProjectAction = "";
+        performProjectAction(action);
+    }
+
+    function noteExternalSaveDuringPendingAction() {
+        pendingSaveContinuation = pendingProjectAction !== "";
+    }
+
+    function abandonExternalSaveContinuation() {
+        pendingSaveContinuation = false;
+    }
+
+    // 直接のCtrl+Sではcontinuationが空なので、dialogを閉じるだけで終わる。
+    function completeExternalSave(saved) {
+        if (!saved)
+            return;
+        externalSaveDialog.close();
+        if (!pendingSaveContinuation)
+            return;
+        pendingSaveContinuation = false;
+        unsavedChangesDialog.close();
+        continuePendingProjectAction();
+    }
 
     function isLocalFileUrl(url) {
         // 対応形式は拡張子では決めない。drop 後に controller が MLT で内容を検査し、
         // 映像 stream・有限尺・FPS を確認できた素材だけを timeline へ追加する。
         return /^file:/i.test(url.toString());
+    }
+
+    function openProjectSettingsDialog() {
+        projectWidthField.text = mvmController.outputWidth.toString();
+        projectHeightField.text = mvmController.outputHeight.toString();
+        projectFpsBox.syncFromController();
+        projectSettingsDialog.open();
+    }
+
+    function confirmProjectSettingsFromClip(clipId) {
+        const settings = mvmController.projectSettingsForClip(clipId);
+        matchClipSettingsDialog.validSettings = settings.valid === true;
+        matchClipSettingsDialog.changesSettings = settings.changes === true;
+        matchClipSettingsDialog.clipName = settings.clipName || "";
+        matchClipSettingsDialog.sourceText = settings.sourceText || "";
+        matchClipSettingsDialog.errorText = settings.error || "";
+        matchClipSettingsDialog.targetWidth = settings.width || 0;
+        matchClipSettingsDialog.targetHeight = settings.height || 0;
+        matchClipSettingsDialog.targetFpsNum = settings.fpsNum || 0;
+        matchClipSettingsDialog.targetFpsDen = settings.fpsDen || 1;
+        matchClipSettingsDialog.open();
     }
 
     DropArea {
@@ -96,6 +182,11 @@ ApplicationWindow {
         enabled: mvmController.canUndo
         onActivated: mvmController.undoLastEdit()
     }
+    Shortcut {
+        sequence: "Ctrl+S"
+        enabled: !mvmController.busy && mvmController.dirty
+        onActivated: mvmController.saveProject()
+    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -110,12 +201,17 @@ ApplicationWindow {
             Button {
                 text: "新規"
                 enabled: !mvmController.busy
-                onClicked: newProjectDialog.open()
+                onClicked: root.requestProjectAction("new")
             }
             Button {
                 text: "開く"
                 enabled: !mvmController.busy
-                onClicked: openProjectDialog.open()
+                onClicked: root.requestProjectAction("open")
+            }
+            Button {
+                text: "保存"
+                enabled: !mvmController.busy && mvmController.dirty
+                onClicked: mvmController.saveProject()
             }
             Button {
                 text: "名前を付けて保存"
@@ -145,36 +241,11 @@ ApplicationWindow {
                 onClicked: exportDialog.open()
             }
             ToolSeparator {}
-            Label {
-                text: "Timeline"
-                color: "#9aa2ad"
-            }
-            ComboBox {
-                id: fpsBox
-                implicitWidth: 96
-                // clip がある Project の frame rate は変更できない (source domain の
-                // 変換仕様が未定のため)。押せてから失敗するより、ここで示す。
-                enabled: !mvmController.busy && mvmController.clipCount === 0
-                ToolTip.visible: hovered && mvmController.clipCount > 0
-                ToolTip.text: "clipがあるProjectのframe rateは変更できません"
-                textRole: "label"
-                model: mvmController.supportedFrameRates
-                function syncFromController() {
-                    for (let index = 0; index < count; ++index) {
-                        const entry = mvmController.supportedFrameRates[index];
-                        if (entry.num === mvmController.timelineFpsNum
-                                && entry.den === mvmController.timelineFpsDen) {
-                            currentIndex = index;
-                            return;
-                        }
-                    }
-                }
-                Component.onCompleted: syncFromController()
-                onActivated: index => {
-                    const entry = mvmController.supportedFrameRates[index];
-                    if (!mvmController.setTimelineFrameRate(entry.num, entry.den))
-                        syncFromController();
-                }
+            Button {
+                text: "プロジェクト設定: " + mvmController.outputWidth + "×"
+                      + mvmController.outputHeight + " / " + mvmController.timelineFpsText
+                enabled: !mvmController.busy
+                onClicked: root.openProjectSettingsDialog()
             }
             BusyIndicator {
                 running: mvmController.busy
@@ -489,7 +560,7 @@ ApplicationWindow {
             }
             Item { Layout.fillWidth: true }
             Label {
-                text: "ドラッグ: 矩形選択 / Space: 再生・一時停止 / Alt+ホイール: ズーム"
+                text: "ドラッグ: 矩形選択 / Shift+クリック: 複数選択 / Space: 再生・一時停止 / Alt+ホイール: ズーム"
                 color: "#6f7681"
                 font.pixelSize: 11
             }
@@ -517,7 +588,22 @@ ApplicationWindow {
                                                 0.35, 0.5, 0.75, 1.0, 1.5, 2, 3, 4,
                                                 6, 8, 12, 16, 24]
             property int zoomIndex: 10
-            readonly property real pixelsPerFrame: zoomLevels[zoomIndex]
+            property int observedTimelineFrames: mvmController.totalTimelineFrames
+            onObservedTimelineFramesChanged: {
+                zoomIndex = Math.max(minimumZoomIndex,
+                                     Math.min(zoomLevels.length - 1, zoomIndex));
+            }
+            // 通常の最小倍率でも全体が収まらない長いtimelineだけ、70%幅へ収める
+            // 特別なfit倍率を使う。短いtimelineで最大倍率側へ固定しない。
+            readonly property real requestedFitPixelsPerFrame:
+                mvmController.totalTimelineFrames > 0 && timelineFlick.width > 0
+                ? timelineFlick.width * 0.7 / mvmController.totalTimelineFrames
+                : zoomLevels[0]
+            readonly property real fitPixelsPerFrame:
+                Math.min(zoomLevels[0], requestedFitPixelsPerFrame)
+            readonly property int minimumZoomIndex: 0
+            readonly property real pixelsPerFrame:
+                zoomIndex === minimumZoomIndex ? fitPixelsPerFrame : zoomLevels[zoomIndex]
             property string activeDragLinkGroup: ""
             property string activeDragClipId: ""
             property real activeDragOffsetX: 0
@@ -576,11 +662,8 @@ ApplicationWindow {
                 return Math.max(0, Math.round(contentX / pixelsPerFrame));
             }
             function setZoom(direction, anchorItemX) {
-                const nextIndex = Math.max(0, Math.min(zoomLevels.length - 1,
+                const nextIndex = Math.max(minimumZoomIndex, Math.min(zoomLevels.length - 1,
                                                        zoomIndex + direction));
-                const oldMaxContentX = Math.max(0, timelineFlick.contentWidth
-                                                   - timelineFlick.width);
-                const wasFullyVisible = oldMaxContentX <= 0.5;
                 if (nextIndex === zoomIndex)
                     return;
                 // カーソル下のフレームを固定したままズームする。
@@ -590,11 +673,7 @@ ApplicationWindow {
                     timelineFlick.width,
                     mvmController.totalTimelineFrames * pixelsPerFrame + 240);
                 const nextMaxContentX = Math.max(0, nextContentWidth - timelineFlick.width);
-                // 全体が収まっていた段階では、blank領域のcursor位置を遠い時刻として
-                // 解釈しない。横scroll可能になった後だけcursor anchorを適用する。
-                const desiredContentX = wasFullyVisible
-                                      ? 0
-                                      : anchorFrame * pixelsPerFrame - anchorItemX;
+                const desiredContentX = anchorFrame * pixelsPerFrame - anchorItemX;
                 timelineFlick.contentX = Math.max(
                     0, Math.min(nextMaxContentX, desiredContentX));
             }
@@ -1031,6 +1110,7 @@ ApplicationWindow {
                                 property real bodyDragOffsetY: 0
                                 property real rawBodyDragOffsetX: 0
                                 property bool bodyMoved: false
+                                property bool bodyAdditiveSelection: false
                                 property string dragTrackKind: trackKind
                                 property int dragTrackIndex: trackIndex
 
@@ -1068,6 +1148,14 @@ ApplicationWindow {
 
                                 Menu {
                                     id: clipMenu
+                                    MenuItem {
+                                        text: "プロジェクト設定をこの素材に合わせる"
+                                        enabled: clipItem.clipKind !== "audio"
+                                                 && !mvmController.busy
+                                        onTriggered: root.confirmProjectSettingsFromClip(
+                                                         clipItem.clipId)
+                                    }
+                                    MenuSeparator {}
                                     MenuItem {
                                         text: "削除"
                                         onTriggered: mvmController.deleteTimelineClip(clipItem.clipId)
@@ -1116,13 +1204,15 @@ ApplicationWindow {
                                     onPressed: mouse => {
                                         mouse.accepted = true;
                                         clipItem.bodyMoved = false;
+                                        clipItem.bodyAdditiveSelection =
+                                                (mouse.modifiers & Qt.ShiftModifier) !== 0;
                                         clipItem.bodyDragOffsetX = 0;
                                         clipItem.bodyDragOffsetY = 0;
                                         clipItem.rawBodyDragOffsetX = 0;
                                         clipItem.dragTrackKind = clipItem.trackKind;
                                         clipItem.dragTrackIndex = clipItem.trackIndex;
                                         clipItem.bodyPressPoint = mapToItem(trackArea, mouse.x, mouse.y);
-                                        if (!clipItem.selected) {
+                                        if (!clipItem.bodyAdditiveSelection && !clipItem.selected) {
                                             const point = bodyArea.mapToItem(clipItem, mouse.x, mouse.y);
                                             const frame = Math.round(clipItem.timelineStartFrame
                                                                      + point.x / timelinePanel.pixelsPerFrame);
@@ -1164,6 +1254,7 @@ ApplicationWindow {
                                     }
                                     onReleased: mouse => {
                                         const moved = clipItem.bodyMoved;
+                                        const additiveSelection = clipItem.bodyAdditiveSelection;
                                         const releasedClipId = clipItem.clipId;
                                         const destinationKind = clipItem.dragTrackKind;
                                         const destinationIndex = clipItem.dragTrackIndex;
@@ -1185,6 +1276,7 @@ ApplicationWindow {
                                         clipItem.bodyDragOffsetY = 0;
                                         clipItem.rawBodyDragOffsetX = 0;
                                         clipItem.bodyMoved = false;
+                                        clipItem.bodyAdditiveSelection = false;
                                         timelinePanel.activeDragLinkGroup = "";
                                         timelinePanel.activeDragClipId = "";
                                         timelinePanel.activeDragOffsetX = 0;
@@ -1195,6 +1287,9 @@ ApplicationWindow {
                                             mvmController.moveTimelineClip(
                                                 releasedClipId, destinationKind, destinationIndex,
                                                 targetFrame);
+                                        } else if (additiveSelection) {
+                                            mvmController.toggleTimelineClipSelection(
+                                                releasedClipId, targetFrame);
                                         } else {
                                             mvmController.selectTimelineClip(releasedClipId,
                                                                              targetFrame);
@@ -1205,6 +1300,7 @@ ApplicationWindow {
                                         clipItem.bodyDragOffsetY = 0;
                                         clipItem.rawBodyDragOffsetX = 0;
                                         clipItem.bodyMoved = false;
+                                        clipItem.bodyAdditiveSelection = false;
                                         clipItem.dragTrackKind = clipItem.trackKind;
                                         clipItem.dragTrackIndex = clipItem.trackIndex;
                                         timelinePanel.activeDragLinkGroup = "";
@@ -1345,6 +1441,177 @@ ApplicationWindow {
 
     // --- ダイアログ --------------------------------------------------------
     Dialog {
+        id: projectSettingsDialog
+        anchors.centerIn: parent
+        width: Math.min(root.width - 40, 520)
+        modal: true
+        title: "プロジェクト設定"
+
+        contentItem: ColumnLayout {
+            spacing: 12
+
+            GridLayout {
+                Layout.fillWidth: true
+                columns: 2
+                columnSpacing: 12
+                rowSpacing: 8
+
+                Label { text: "幅" }
+                TextField {
+                    id: projectWidthField
+                    Layout.fillWidth: true
+                    validator: IntValidator { bottom: 2; top: 16384 }
+                    inputMethodHints: Qt.ImhDigitsOnly
+                    placeholderText: "1920"
+                }
+                Label { text: "高さ" }
+                TextField {
+                    id: projectHeightField
+                    Layout.fillWidth: true
+                    validator: IntValidator { bottom: 2; top: 16384 }
+                    inputMethodHints: Qt.ImhDigitsOnly
+                    placeholderText: "1080"
+                }
+                Label { text: "フレームレート" }
+                ComboBox {
+                    id: projectFpsBox
+                    Layout.fillWidth: true
+                    textRole: "label"
+                    model: mvmController.supportedFrameRates
+                    function syncFromController() {
+                        for (let index = 0; index < count; ++index) {
+                            const entry = mvmController.supportedFrameRates[index];
+                            if (entry.num === mvmController.timelineFpsNum
+                                    && entry.den === mvmController.timelineFpsDen) {
+                                currentIndex = index;
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: mvmController.clipCount > 0
+                text: "fpsを変更すると、既存クリップの開始位置を秒位置が保たれるよう換算します。素材のin/outは変更しません。"
+                color: "#f0c36a"
+                wrapMode: Text.Wrap
+            }
+            Label {
+                Layout.fillWidth: true
+                text: "幅と高さはMP4（yuv420p）で扱える2〜16384の偶数を指定してください。"
+                color: "#aeb4bf"
+                wrapMode: Text.Wrap
+            }
+        }
+
+        footer: DialogButtonBox {
+            Button {
+                text: "キャンセル"
+                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
+                onClicked: projectSettingsDialog.close()
+            }
+            Button {
+                text: "適用"
+                enabled: projectWidthField.acceptableInput
+                         && projectHeightField.acceptableInput
+                         && Number(projectWidthField.text) % 2 === 0
+                         && Number(projectHeightField.text) % 2 === 0
+                         && projectFpsBox.currentIndex >= 0
+                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+                onClicked: {
+                    const fps = mvmController.supportedFrameRates[projectFpsBox.currentIndex];
+                    if (mvmController.setProjectVideoSettings(
+                                Number(projectWidthField.text), Number(projectHeightField.text),
+                                fps.num, fps.den))
+                        projectSettingsDialog.close();
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: matchClipSettingsDialog
+        property bool validSettings: false
+        property bool changesSettings: false
+        property string clipName: ""
+        property string sourceText: ""
+        property string errorText: ""
+        property int targetWidth: 0
+        property int targetHeight: 0
+        property int targetFpsNum: 0
+        property int targetFpsDen: 1
+        anchors.centerIn: parent
+        width: Math.min(root.width - 40, 580)
+        modal: true
+        title: "プロジェクト設定を素材に合わせる"
+
+        contentItem: ColumnLayout {
+            spacing: 10
+
+            Label {
+                Layout.fillWidth: true
+                visible: matchClipSettingsDialog.validSettings
+                text: "素材: " + matchClipSettingsDialog.clipName + "\n"
+                      + matchClipSettingsDialog.sourceText + "\n\n"
+                      + "現在: " + mvmController.outputWidth + "×" + mvmController.outputHeight
+                      + " / " + mvmController.timelineFpsText + "\n"
+                      + "変更後: " + matchClipSettingsDialog.targetWidth + "×"
+                      + matchClipSettingsDialog.targetHeight + " / "
+                      + (matchClipSettingsDialog.targetFpsNum
+                         / matchClipSettingsDialog.targetFpsDen).toFixed(
+                             matchClipSettingsDialog.targetFpsDen === 1 ? 0 : 2) + " fps"
+                wrapMode: Text.Wrap
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: matchClipSettingsDialog.validSettings
+                         && mvmController.clipCount > 0
+                text: "既存クリップの開始位置は秒位置を維持して換算します。素材のin/outは変更しません。続行しますか？"
+                color: "#f0c36a"
+                wrapMode: Text.Wrap
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: !matchClipSettingsDialog.validSettings
+                text: matchClipSettingsDialog.errorText
+                color: "#ef8b8b"
+                wrapMode: Text.Wrap
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: matchClipSettingsDialog.validSettings
+                         && !matchClipSettingsDialog.changesSettings
+                text: "プロジェクト設定はすでにこの素材と一致しています。"
+                color: "#aeb4bf"
+                wrapMode: Text.Wrap
+            }
+        }
+
+        footer: DialogButtonBox {
+            Button {
+                text: "キャンセル"
+                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
+                onClicked: matchClipSettingsDialog.close()
+            }
+            Button {
+                text: "変更する"
+                enabled: matchClipSettingsDialog.validSettings
+                         && matchClipSettingsDialog.changesSettings
+                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+                onClicked: {
+                    if (mvmController.setProjectVideoSettings(
+                                matchClipSettingsDialog.targetWidth,
+                                matchClipSettingsDialog.targetHeight,
+                                matchClipSettingsDialog.targetFpsNum,
+                                matchClipSettingsDialog.targetFpsDen))
+                        matchClipSettingsDialog.close();
+                }
+            }
+        }
+    }
+
+    Dialog {
         id: exportProgressDialog
         anchors.centerIn: parent
         width: Math.min(root.width - 40, 460)
@@ -1394,11 +1661,115 @@ ApplicationWindow {
         }
     }
 
+    Dialog {
+        id: exportSettingsDialog
+        property string inputSpecText: ""
+        property string outputSpecText: ""
+        property string comparisonWarningText: ""
+        readonly property var qualityOptions: [
+            { key: "high", label: "高品質", detail: "CRF 18・容量大" },
+            { key: "standard", label: "標準", detail: "CRF 23" },
+            { key: "compact", label: "容量優先", detail: "CRF 28・画質低下" }
+        ]
+        anchors.centerIn: parent
+        width: Math.min(root.width - 40, 640)
+        modal: true
+        title: "書き出し設定"
+        onOpened: qualityCombo.currentIndex = 1
+
+        contentItem: ColumnLayout {
+            spacing: 12
+
+            Label {
+                Layout.fillWidth: true
+                text: exportSettingsDialog.inputSpecText
+                wrapMode: Text.Wrap
+            }
+            Label {
+                Layout.fillWidth: true
+                text: exportSettingsDialog.outputSpecText
+                wrapMode: Text.Wrap
+            }
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: comparisonWarningLabel.implicitHeight + 20
+                visible: exportSettingsDialog.comparisonWarningText.length > 0
+                color: "#3a3020"
+                border.color: "#b58a43"
+                radius: 4
+
+                Label {
+                    id: comparisonWarningLabel
+                    anchors.fill: parent
+                    anchors.margins: 10
+                    text: exportSettingsDialog.comparisonWarningText
+                    color: "#f0c36a"
+                    wrapMode: Text.Wrap
+                }
+            }
+            Label {
+                text: "エンコード品質"
+                font.bold: true
+            }
+            ComboBox {
+                id: qualityCombo
+                Layout.fillWidth: true
+                model: exportSettingsDialog.qualityOptions
+                textRole: "label"
+                delegate: ItemDelegate {
+                    width: qualityCombo.width
+                    text: modelData.label + "（" + modelData.detail + "）"
+                    highlighted: qualityCombo.highlightedIndex === index
+                }
+                contentItem: Label {
+                    leftPadding: 12
+                    rightPadding: qualityCombo.indicator.width + 12
+                    text: {
+                        const option = exportSettingsDialog.qualityOptions[qualityCombo.currentIndex];
+                        return option ? option.label + "（" + option.detail + "）" : "";
+                    }
+                    verticalAlignment: Text.AlignVCenter
+                }
+            }
+            Label {
+                Layout.fillWidth: true
+                text: "品質は圧縮率だけを変更します。出力の解像度とfpsはプロジェクト設定のままです。"
+                color: "#aeb4bf"
+                wrapMode: Text.Wrap
+            }
+        }
+
+        footer: DialogButtonBox {
+            Button {
+                text: "キャンセル"
+                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
+                onClicked: exportSettingsDialog.close()
+            }
+            Button {
+                text: "書き出す"
+                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+                onClicked: {
+                    const option = exportSettingsDialog.qualityOptions[qualityCombo.currentIndex];
+                    if (option && mvmController.exportTimelineWithQuality(
+                                root.pendingExportFile, option.key))
+                        exportSettingsDialog.close();
+                }
+            }
+        }
+    }
+
     Connections {
         target: mvmController
         function onExportFailed(message) {
             exportFailureDialog.message = message;
             exportFailureDialog.open();
+        }
+        function onRecoveryDetected() {
+            recoveryDialog.open();
+        }
+        function onExternalCanonicalChangeOnSave() {
+            root.noteExternalSaveDuringPendingAction();
+            externalSaveDialog.open();
         }
     }
 
@@ -1422,7 +1793,14 @@ ApplicationWindow {
         fileMode: FileDialog.SaveFile
         defaultSuffix: "mp4"
         nameFilters: ["MP4 (*.mp4)"]
-        onAccepted: mvmController.exportTimeline(selectedFile)
+        onAccepted: {
+            root.pendingExportFile = selectedFile;
+            const summary = mvmController.exportSettingsSummary();
+            exportSettingsDialog.inputSpecText = summary.inputText;
+            exportSettingsDialog.outputSpecText = summary.outputText;
+            exportSettingsDialog.comparisonWarningText = summary.warningText;
+            exportSettingsDialog.open();
+        }
     }
 
     FileDialog {
@@ -1447,7 +1825,166 @@ ApplicationWindow {
         fileMode: FileDialog.SaveFile
         defaultSuffix: "mvm"
         nameFilters: ["mvm プロジェクト (*.mvm)"]
-        onAccepted: mvmController.saveProjectAs(selectedFile)
+        onAccepted: root.completeExternalSave(mvmController.saveProjectAs(selectedFile))
+        onRejected: root.abandonExternalSaveContinuation()
+    }
+
+    Dialog {
+        id: recoveryDialog
+        anchors.centerIn: parent
+        width: Math.min(root.width - 40, 620)
+        modal: true
+        closePolicy: Popup.NoAutoClose
+        title: mvmController.recoveryCorrupt
+               ? "自動復旧データを読めません"
+               : (mvmController.recoveryForeign
+                  ? "別のProjectの自動復旧データです"
+                  : (mvmController.recoveryCanonicalChanged
+                     ? "Project fileが外部で変更されています"
+                     : "自動保存された編集があります"))
+
+        contentItem: Label {
+            text: mvmController.recoveryCorrupt
+                  ? "自動復旧データが壊れているため、最後に保存したProjectを開きました。復旧fileは残しています。\n"
+                    + mvmController.recoveryProjectPath
+                  : (mvmController.recoveryForeign
+                     ? "この自動復旧データは、今開いているProjectのものではありません。fileは残しています。\n"
+                       + mvmController.recoveryProjectPath
+                     : (mvmController.recoveryCanonicalChanged
+                     ? "自動保存のあとでProject fileの内容が変わっています。復元すると、その変更は明示保存するまでfileへ書き込まれません。\n"
+                       + mvmController.recoveryProjectPath
+                     : "前回、正常に保存されなかった編集が見つかりました。\n"
+                       + mvmController.recoveryProjectPath
+                       + "\n\n自動保存された編集を復元しますか？"))
+            color: "white"
+            wrapMode: Text.Wrap
+        }
+
+        footer: DialogButtonBox {
+            Button {
+                visible: !mvmController.recoveryCorrupt && !mvmController.recoveryForeign
+                text: "復元する"
+                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+                onClicked: {
+                    if (mvmController.restoreRecovery())
+                        recoveryDialog.close();
+                }
+            }
+            Button {
+                visible: !mvmController.recoveryCorrupt && !mvmController.recoveryForeign
+                text: mvmController.recoveryCanonicalChanged ? "現在のProjectを開く" : "最後の保存状態を使う"
+                DialogButtonBox.buttonRole: DialogButtonBox.DestructiveRole
+                onClicked: {
+                    if (mvmController.discardRecovery())
+                        recoveryDialog.close();
+                }
+            }
+            Button {
+                visible: mvmController.recoveryCanonicalChanged && !mvmController.recoveryCorrupt
+                      && !mvmController.recoveryForeign
+                text: "キャンセル"
+                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
+                onClicked: {
+                    if (mvmController.dismissRecovery())
+                        recoveryDialog.close();
+                }
+            }
+            Button {
+                visible: mvmController.recoveryCorrupt || mvmController.recoveryForeign
+                text: "OK"
+                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+                onClicked: {
+                    if (mvmController.dismissRecovery())
+                        recoveryDialog.close();
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: externalSaveDialog
+        anchors.centerIn: parent
+        width: Math.min(root.width - 40, 620)
+        modal: true
+        closePolicy: Popup.NoAutoClose
+        title: "Project fileが外部で変更されています"
+
+        contentItem: Label {
+            text: "このProjectを開いたあとで、fileの内容が変わっています。このまま保存すると、その変更を上書きします。"
+            color: "white"
+            wrapMode: Text.Wrap
+        }
+
+        footer: DialogButtonBox {
+            Button {
+                text: "上書きする"
+                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+                onClicked: root.completeExternalSave(
+                               mvmController.saveProjectOverwritingExternalChange())
+            }
+            Button {
+                text: "名前を付けて保存"
+                DialogButtonBox.buttonRole: DialogButtonBox.ActionRole
+                onClicked: {
+                    externalSaveDialog.close();
+                    saveProjectDialog.open();
+                }
+            }
+            Button {
+                text: "キャンセル"
+                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
+                onClicked: {
+                    root.abandonExternalSaveContinuation();
+                    externalSaveDialog.close();
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: unsavedChangesDialog
+        anchors.centerIn: parent
+        modal: true
+        closePolicy: Popup.NoAutoClose
+        title: "未保存の変更"
+
+        contentItem: Label {
+            text: "プロジェクトへの変更を保存しますか？"
+            color: "white"
+            wrapMode: Text.Wrap
+        }
+
+        footer: DialogButtonBox {
+            Button {
+                text: "保存"
+                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+                onClicked: {
+                    if (mvmController.saveProject()) {
+                        unsavedChangesDialog.close();
+                        root.continuePendingProjectAction();
+                    }
+                }
+            }
+            Button {
+                text: "保存しない"
+                DialogButtonBox.buttonRole: DialogButtonBox.DestructiveRole
+                onClicked: {
+                    if (mvmController.discardUnsavedChanges()) {
+                        unsavedChangesDialog.close();
+                        root.continuePendingProjectAction();
+                    }
+                }
+            }
+            Button {
+                text: "キャンセル"
+                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
+                onClicked: {
+                    root.pendingProjectAction = "";
+                    root.pendingSaveContinuation = false;
+                    unsavedChangesDialog.close();
+                }
+            }
+        }
     }
 
     FileDialog {

@@ -183,8 +183,7 @@ void testTimelineFrameRates() {
           "約分されていない timeline fps の Project を受理しました");
 }
 
-// fps 変更は clip がある Project では拒否する。既存 clip の source frame domain を
-// 黙って別 timebase で読み替えないこと。
+// fps変更ではsource domainを維持し、timeline上のwall-clock位置だけを換算する。
 void testTimelineFrameRateChange() {
     mvm::project::Project empty = mvm::project::createDefaultProject();
     const auto changed = mvm::project::setTimelineFrameRate(empty, 24, 1);
@@ -206,16 +205,32 @@ void testTimelineFrameRateChange() {
     audio.timelineStartFrame = 120;
     check(mvm::project::appendTimelineClip(withClip, audio, kA1).success,
           "audio clip を追加できません");
-    const auto before = withClip;
-    const auto rejected = mvm::project::setTimelineFrameRate(withClip, 24, 1);
-    check(!rejected.success, "clip がある Project の frame rate 変更を拒否しません");
-    check(withClip.timelineFpsNum == before.timelineFpsNum &&
-              withClip.timelineFpsDen == before.timelineFpsDen &&
-              withClip.timelineClips == before.timelineClips,
-          "拒否した frame rate 変更で Project が変化しました");
+    withClip.timelineClips.front().timelineStartFrame = 120;
+    const auto sourceBefore = withClip.timelineClips.front();
+    const auto changedWithClip = mvm::project::setProjectVideoSettings(withClip, 1280, 720, 24, 1);
+    check(changedWithClip.success && withClip.outputWidth == 1280 && withClip.outputHeight == 720 &&
+              withClip.timelineFpsNum == 24 && withClip.timelineFpsDen == 1,
+          "clipがあるProjectの映像設定を変更できません");
+    check(withClip.timelineClips.front().timelineStartFrame == 48,
+          "clip開始位置の秒位置を維持して新fpsへ換算できません");
+    check(withClip.timelineClips.front().sourceFpsNum == sourceBefore.sourceFpsNum &&
+              withClip.timelineClips.front().sourceFpsDen == sourceBefore.sourceFpsDen &&
+              withClip.timelineClips.front().sourceInFrame == sourceBefore.sourceInFrame &&
+              withClip.timelineClips.front().sourceOutFrame == sourceBefore.sourceOutFrame,
+          "Project設定変更で素材側のframe domainを書き換えました");
+
+    const auto beforeInvalid = withClip;
+    check(!mvm::project::setProjectVideoSettings(withClip, 0, 720, 24, 1).success,
+          "幅0のProject設定を受理しました");
+    check(withClip.outputWidth == beforeInvalid.outputWidth &&
+              withClip.outputHeight == beforeInvalid.outputHeight &&
+              withClip.timelineFpsNum == beforeInvalid.timelineFpsNum &&
+              withClip.timelineFpsDen == beforeInvalid.timelineFpsDen &&
+              withClip.timelineClips == beforeInvalid.timelineClips,
+          "拒否したProject設定でProjectが変化しました");
 
     // 同じ rate への設定は no-op として成功にする。
-    check(mvm::project::setTimelineFrameRate(withClip, 60, 1).success,
+    check(mvm::project::setTimelineFrameRate(withClip, 24, 1).success,
           "同一 rate への設定を失敗にしました");
 }
 

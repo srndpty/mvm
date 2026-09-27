@@ -240,6 +240,13 @@ int main(int argc, char** argv) {
     const long long expectedFrames = firstFrames + secondFrames;
     check(expectedFrames > 0, "入力素材のフレーム数を取得できません");
 
+    mvm::app::TimelineExportRequest invalidQualityRequest;
+    invalidQualityRequest.videoCrf = 52;
+    check(!mvm::app::mapTimelineExportPlan(
+               makeProject(firstClip, secondClip, firstFrames, secondFrames), invalidQualityRequest)
+               .success,
+          "範囲外の映像CRFを拒否しません");
+
     const auto outputPath = testDirectory / L"m4-export.mp4";
     mvm::app::TimelineExportRequest request;
     request.outputPath = outputPath;
@@ -378,7 +385,7 @@ int main(int argc, char** argv) {
             invalid.opacity_keyframe_count = 2;
             invalid.opacity_keyframes[0] = {1, 1.0}; // local 0を意図的に欠落させる
             invalid.opacity_keyframes[1] = {9, 1.0};
-            const MvmExportSpec invalidSpec{320, 240, 60, 1, 10000, 4, 0, nullptr, nullptr};
+            const MvmExportSpec invalidSpec{320, 240, 60, 1, 23, 10000, 4, 0, nullptr, nullptr};
             char invalidError[512] = {};
             const auto invalidOutput = testDirectory / L"m7b-invalid-key.mp4";
             check(mvm_mlt_export_two_track(&invalid, 1, 10, &invalidSpec,
@@ -562,7 +569,7 @@ int main(int argc, char** argv) {
 
         const PaddingCase cases[] = {{L"padding-v1-effects.mp4", {v1Effect}},
                                      {L"padding-v2-crop.mp4", {v1Plain, v2Crop}}};
-        const MvmExportSpec paddingSpec{320, 240, 60, 1, 60000, 4, 0, nullptr, nullptr};
+        const MvmExportSpec paddingSpec{320, 240, 60, 1, 23, 60000, 4, 0, nullptr, nullptr};
         for (const auto& paddingCase : cases) {
             const auto output = testDirectory / paddingCase.name;
             char paddingError[512] = {};

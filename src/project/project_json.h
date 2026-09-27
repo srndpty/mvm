@@ -19,12 +19,57 @@ struct ProjectLoadResult {
     std::string error;
 };
 
+struct ProjectSerializationResult {
+    bool success = false;
+    std::string json;
+    std::string error;
+};
+
+ProjectSerializationResult serializeProjectJson(const Project& project,
+                                                const std::filesystem::path& projectPath);
+// 同じdirectoryの一時fileへ書いてから置換する。途中まで書いたcanonicalを残さない。
 ProjectIoResult saveProjectJson(const Project& project, const std::filesystem::path& projectPath);
 // candidate の保存に成功した場合だけ liveProject を差し替える。
-// ファイル置換自体を atomic にする API ではない。
 ProjectIoResult saveProjectJsonTransaction(Project& liveProject, Project candidate,
                                            const std::filesystem::path& projectPath);
 ProjectLoadResult loadProjectJson(const std::filesystem::path& projectPath);
+ProjectLoadResult parseProjectJsonText(const std::string& jsonText,
+                                       const std::filesystem::path& projectPath);
+
+// crash recovery。canonicalそのものではなく、autosave時点の照合情報を持つ。
+struct ProjectRecoveryLoadResult {
+    bool success = false;
+    bool legacy = false;
+    // envelopeのcanonical_pathが、今開こうとしているProjectと違う。
+    // 中身は復元対象にしない。fileは消さない。
+    bool foreignProject = false;
+    std::string canonicalSha256;
+    std::string savedAt;
+    std::string sessionId;
+    std::string canonicalPath;
+    Project project;
+    std::string error;
+};
+
+// 表記ゆれ（区切り文字、大文字小文字）を吸収したうえで同一pathか。
+// 片方が存在しなくても比較できる。equivalent()は使わない。
+bool sameCanonicalPath(const std::filesystem::path& left, const std::filesystem::path& right);
+
+enum class RecoveryDisposition { Stale, Restorable, CanonicalChanged };
+
+ProjectIoResult saveProjectRecovery(const Project& project,
+                                    const std::filesystem::path& recoveryPath,
+                                    const std::filesystem::path& canonicalPath,
+                                    const std::string& canonicalSha256, const std::string& savedAt,
+                                    const std::string& sessionId);
+ProjectRecoveryLoadResult loadProjectRecovery(const std::filesystem::path& recoveryPath,
+                                              const std::filesystem::path& canonicalPath);
+// 内容が同一ならStale。記録したhashと現在のcanonicalが一致するときだけRestorable。
+// hashが空なのは、canonical file自体が無い場合だけRestorableにする。
+RecoveryDisposition classifyRecovery(const Project& recoveryProject,
+                                     const Project& canonicalProject,
+                                     const std::string& recordedHash,
+                                     const std::string& currentHash);
 
 } // namespace mvm::project
 

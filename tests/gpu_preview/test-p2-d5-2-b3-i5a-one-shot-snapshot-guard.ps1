@@ -68,10 +68,14 @@ switch($Case){
     'NegativeMeasurementDisconnected'{Edit-Source $renderer 'readOneShotSnapshot(hook->captureEpoch()' 'readOneShotSnapshot(0'}
     'NegativeHistoricalMismatchReclassified'{Edit-Source 'docs/p2-d5-2-b3-i4-preroll-transition-quiescence.json' '"reclassified_as_i3_boundary_failure": false' '"reclassified_as_i3_boundary_failure": true'}
 }
+# Set-Content -Encoding utf8 はプロセス共有の UTF8Encoding を使う。
+# pwsh の別スレッドが同じ encoder に触れると SynchronizationLockException になる。
+# CI の並列 ctest で偶発するため、呼び出しごとの encoder で書く。
+$utf8WithBom = [System.Text.UTF8Encoding]::new($true)
 foreach($relative in $relatives){
     $target=Join-Path $mutationRoot $relative
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target)|Out-Null
-    Set-Content -NoNewline -Encoding utf8 -LiteralPath $target -Value $sources[$relative]
+    [System.IO.File]::WriteAllText($target, $sources[$relative], $utf8WithBom)
 }
 $failed=$false
 try{& $Contract -RepoRoot $mutationRoot *> $null}catch{$failed=$true}

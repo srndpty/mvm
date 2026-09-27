@@ -59,6 +59,10 @@ int main(int argc, char** argv) {
         return 1;
 
     mvm::project::Project project = mvm::project::createDefaultProject();
+    if (!require(mvm::project::saveProjectJson(project, projectPath).success,
+                 "初期Projectを保存できません")) {
+        return 1;
+    }
     mvm::app::ManimClipGenerationRequest request{
         .manimExecutablePath = fakeManim,
         .projectPath = projectPath,
@@ -79,10 +83,8 @@ int main(int argc, char** argv) {
 
     const auto loaded = mvm::project::loadProjectJson(projectPath);
     if (!require(loaded.success, loaded.error.c_str()) ||
-        !require(loaded.project.manimAssets.size() == 1,
-                 "保存・reload後にManim relationが残りません") ||
-        !require(sameAsset(project.manimAssets.front(), loaded.project.manimAssets.front()),
-                 "保存・reload後のManim relationが一致しません")) {
+        !require(loaded.project.manimAssets.empty(),
+                 "Manim生成が明示保存前にcanonical Projectを書き換えました")) {
         return 1;
     }
 
@@ -110,10 +112,9 @@ int main(int argc, char** argv) {
                      mvm::project::ManimGenerationState::SourceChanged,
                  "変更sourceをSourceChangedとして復元しません") ||
         !require(changedReload.success, changedReload.error.c_str()) ||
-        !require(changedReload.project.manimAssets.front().generationState ==
-                     mvm::project::ManimGenerationState::SourceChanged,
-                 "SourceChangedがProjectへ保存されません") ||
-        !require(changedReload.project.manimAssets.front().generatedVideoPath == oldVideoPath,
+        !require(changedReload.project.manimAssets.empty(),
+                 "SourceChanged検出がcanonical Projectを書き換えました") ||
+        !require(project.manimAssets.front().generatedVideoPath == oldVideoPath,
                  "SourceChanged更新で最後の生成video relationが変わりました")) {
         return 1;
     }
