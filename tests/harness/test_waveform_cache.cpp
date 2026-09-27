@@ -87,6 +87,33 @@ QString qpath(const std::filesystem::path& path) {
     return QString::fromStdWString(path.wstring());
 }
 
+// 更新時刻は Win32 で直接読み書きする。std::filesystem の実装は秒精度のことがあり、
+// 100ns 単位の差を作れない。
+std::uint64_t writeTime(const std::filesystem::path& path) {
+    HANDLE file = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ, nullptr,
+                              OPEN_EXISTING, 0, nullptr);
+    FILETIME time{};
+    GetFileTime(file, nullptr, nullptr, &time);
+    CloseHandle(file);
+    return (static_cast<std::uint64_t>(time.dwHighDateTime) << 32) | time.dwLowDateTime;
+}
+
+bool setWriteTime(const std::filesystem::path& path, std::uint64_t value) {
+    HANDLE file = CreateFileW(path.c_str(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ, nullptr,
+                              OPEN_EXISTING, 0, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return false;
+    FILETIME time{static_cast<DWORD>(value), static_cast<DWORD>(value >> 32)};
+    const BOOL ok = SetFileTime(file, nullptr, nullptr, &time);
+    CloseHandle(file);
+    return ok != FALSE && writeTime(path) == value;
+}
+
+// revalidateAll の worker と完了通知を処理しきるまで待つ。
+void settle() {
+    waitUntil([] { return false; }, 200);
+}
+
 bool ready(WaveformCache& cache, const QString& path) {
     return cache.request(path).state == WaveformCache::State::Ready;
 }
@@ -157,6 +184,92 @@ int main(int argc, char** argv) {
         waitUntil([] { return false; }, 100);
         const auto entry = cache.request(qpath(slow));
         check(entry.peaks && entry.peaks->sampleRate == 2, "古い job の結果が残っている");
+    }
+
+    // --- 更新時刻は 100ns 単位で比べる。ms へ丸めると同じ size の差し替えを見逃す ---
+    {
+        WaveformCache cache(WaveformCache::kDefaultBudgetBytes, fakeDecode);
+        const auto path = directory / "tick.wav";
+        writeFile(path, "aaaa");
+        const std::uint64_t base = 133000000000000000ULL; // 100ns 単位、ms 境界ちょうど
+        check(setWriteTime(path, base), "更新時刻を設定できない");
+        check(waitUntil([&] { return ready(cache, qpath(path)); }), "tick が Ready にならない");
+        writeFile(path, "bbbb");
+        check(setWriteTime(path, base + 1), "更新時刻を 100ns 進められない");
+        check(cache.request(qpath(path)).state == WaveformCache::State::Loading,
+              "100ns だけ違う更新時刻の差し替えを見逃した");
+        check(waitUntil([&] { return ready(cache, qpath(path)); }),
+              "差し替え後に Ready にならない");
+    }
+
+    // --- size と更新時刻が一致したまま中身だけ変わった素材は、再検証で作り直す ---
+    {
+        WaveformCache cache(WaveformCache::kDefaultBudgetBytes, fakeDecode);
+        const auto small = directory / "same-stamp.wav";
+        const auto large = directory / "same-stamp-large.wav";
+        const auto untouched = directory / "untouched.wav";
+        std::string largeContent(200 * 1024, 'x');
+        writeFile(small, "aaaa");
+        writeFile(large, largeContent);
+        writeFile(untouched, "keep");
+        check(waitUntil([&] { return ready(cache, qpath(small)); }), "small が Ready にならない");
+        check(waitUntil([&] { return ready(cache, qpath(large)); }), "large が Ready にならない");
+        check(waitUntil([&] { return ready(cache, qpath(untouched)); }),
+              "untouched が Ready にならない");
+        const auto smallBefore = cache.request(qpath(small)).peaks;
+        const auto largeBefore = cache.request(qpath(large)).peaks;
+        const auto untouchedBefore = cache.request(qpath(untouched)).peaks;
+
+        const std::uint64_t smallTime = writeTime(small);
+        writeFile(small, "bbbb");
+        check(setWriteTime(small, smallTime), "small の更新時刻を戻せない");
+        // 大きい file は末尾だけを変える (先頭 64KiB は同じ)。
+        const std::uint64_t largeTime = writeTime(large);
+        largeContent.back() = 'y';
+        writeFile(large, largeContent);
+        check(setWriteTime(large, largeTime), "large の更新時刻を戻せない");
+
+        // 通常の request は size と更新時刻しか見ない (file の中身は読まない)。
+        check(cache.request(qpath(small)).peaks == smallBefore,
+              "通常の request で中身まで読んでいる");
+
+        decodeCalls = 0;
+        cache.revalidateAll();
+        check(waitUntil([&] {
+                  const auto s = cache.request(qpath(small));
+                  const auto l = cache.request(qpath(large));
+                  return s.state == WaveformCache::State::Ready && s.peaks != smallBefore &&
+                         l.state == WaveformCache::State::Ready && l.peaks != largeBefore;
+              }),
+              "同じ size・更新時刻で中身だけ変わった素材を作り直さない");
+        settle();
+        // 対照群: 中身の変わらない素材は再検証しても decode し直さない。
+        check(cache.request(qpath(untouched)).peaks == untouchedBefore && decodeCalls == 2,
+              "中身の変わらない素材まで作り直した");
+    }
+
+    // --- hard link の別 path は同じ素材として 1 度だけ decode する ---
+    {
+        WaveformCache cache(WaveformCache::kDefaultBudgetBytes, fakeDecode);
+        const auto original = directory / "linked.wav";
+        const auto alias = directory / "linked-alias.wav";
+        writeFile(original, "link");
+        std::error_code linkError;
+        std::filesystem::create_hard_link(original, alias, linkError);
+        check(!linkError, "hard link を作れない");
+        decodeCalls = 0;
+        check(waitUntil([&] { return ready(cache, qpath(original)); }),
+              "linked が Ready にならない");
+        check(cache.request(qpath(alias)).peaks == cache.request(qpath(original)).peaks &&
+                  decodeCalls == 1,
+              "hard link の別 path を別素材として decode した");
+        check(WaveformCache::sourceKey(qpath(alias)) == WaveformCache::sourceKey(qpath(original)),
+              "hard link の別 path が別の key になった");
+        // 存在しない file は path の字面で区別し、大文字小文字は畳まない
+        // (case-sensitive directory では別 file になり得る)。
+        check(WaveformCache::sourceKey(qpath(directory / "ghost.wav")) !=
+                  WaveformCache::sourceKey(qpath(directory / "GHOST.wav")),
+              "存在しない file の大文字小文字を畳んだ");
     }
 
     // --- budget を超えたら、表示されていない波形から捨てる ---

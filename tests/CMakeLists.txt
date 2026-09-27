@@ -107,7 +107,7 @@ add_executable(mvm_test_waveform_cache
     ${CMAKE_SOURCE_DIR}/apps/mvm/waveform_cache.cpp)
 target_include_directories(mvm_test_waveform_cache PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
 target_link_libraries(mvm_test_waveform_cache PRIVATE
-    mvm::audio_waveform Qt6::Core mvm::warnings)
+    mvm::audio_waveform mvm::util Qt6::Core mvm::warnings)
 set_target_properties(mvm_test_waveform_cache PROPERTIES AUTOMOC ON)
 add_test(NAME timeline_waveform_cache COMMAND mvm_test_waveform_cache)
 set_tests_properties(timeline_waveform_cache PROPERTIES

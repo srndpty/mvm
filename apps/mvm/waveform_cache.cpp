@@ -1,11 +1,13 @@
 #include "waveform_cache.h"
 
-#include <QDateTime>
+#include "util/mvm_file_identity.h"
+
 #include <QDir>
 #include <QFileInfo>
 #include <QMetaObject>
 
 #include <limits>
+#include <vector>
 
 namespace mvm::app {
 
@@ -24,6 +26,7 @@ WaveformCache::WaveformCache(std::size_t budgetBytes, DecodeFunction decode, QOb
 }
 
 WaveformCache::~WaveformCache() {
+    shuttingDown_->store(true, std::memory_order_relaxed);
     for (const auto& record : std::as_const(records_)) {
         if (record.cancel)
             record.cancel->store(true, std::memory_order_relaxed);
@@ -32,22 +35,85 @@ WaveformCache::~WaveformCache() {
     pool_.waitForDone();
 }
 
-QString WaveformCache::sourceKey(const QString& mediaPath) {
+WaveformCache::SourceProbe WaveformCache::probe(const QString& mediaPath) {
+    SourceProbe result;
     if (mediaPath.isEmpty())
-        return {};
-    // Windows の path は大文字小文字を区別しない。
-    return QDir::cleanPath(QFileInfo(mediaPath).absoluteFilePath()).toCaseFolded();
+        return result;
+    MvmFileIdentity identity{};
+    const std::wstring widePath = mediaPath.toStdWString();
+    if (mvm_file_identity_query(widePath.c_str(), &identity) == 0) {
+        // 実在する file は実体 (volume + file ID) で区別する。hard link / junction
+        // 経由の別 path は同じ素材、case-sensitive directory の別名 file は別素材になる。
+        const QByteArray fileId(reinterpret_cast<const char*>(identity.file_id),
+                                sizeof(identity.file_id));
+        result.key = QStringLiteral("file:%1:%2")
+                         .arg(identity.volume_serial, 16, 16, QLatin1Char('0'))
+                         .arg(QString::fromLatin1(fileId.toHex()));
+        result.identity = {true, identity.size, identity.last_write_time};
+        return result;
+    }
+    // 実体が取れない (存在しない等) ときだけ path の字面で区別する。
+    // 大文字小文字は畳まない。区別するかどうかは directory ごとに違う。
+    result.key = QStringLiteral("path:") + QDir::cleanPath(QFileInfo(mediaPath).absoluteFilePath());
+    return result;
 }
 
-WaveformCache::SourceIdentity WaveformCache::identityOf(const QString& mediaPath) {
-    const QFileInfo info(mediaPath);
-    if (!info.exists() || !info.isFile())
-        return {};
-    return {true, info.size(), info.lastModified().toMSecsSinceEpoch()};
+QString WaveformCache::sourceKey(const QString& mediaPath) {
+    return probe(mediaPath).key;
+}
+
+std::optional<std::uint64_t> WaveformCache::fingerprintOf(const QString& mediaPath) {
+    unsigned long long fingerprint = 0;
+    const std::wstring widePath = mediaPath.toStdWString();
+    if (mvm_file_content_fingerprint(widePath.c_str(), &fingerprint) != 0)
+        return std::nullopt;
+    return fingerprint;
 }
 
 void WaveformCache::revalidateAll() {
+    // size / 更新時刻 / 実体の変化は、各 view の request し直しで検出する。
     Q_EMIT entryChanged(QString());
+
+    // size と更新時刻が一致したまま中身だけ差し替えられた素材は、内容 fingerprint で
+    // 検出する。file を読むので GUI thread ではなく worker で行う。
+    struct Target {
+        QString key;
+        std::uint64_t ticket = 0;
+        QString path;
+        std::uint64_t fingerprint = 0;
+    };
+    std::vector<Target> targets;
+    for (auto it = records_.cbegin(); it != records_.cend(); ++it) {
+        if (!it->cancel && it->fingerprint)
+            targets.push_back({it.key(), it->ticket, it->path, *it->fingerprint});
+    }
+    if (targets.empty())
+        return;
+    pool_.start([this, targets = std::move(targets), shuttingDown = shuttingDown_] {
+        QList<QPair<QString, quint64>> stale;
+        for (const auto& target : targets) {
+            if (shuttingDown->load(std::memory_order_relaxed))
+                return;
+            const auto current = fingerprintOf(target.path);
+            if (!current || *current != target.fingerprint)
+                stale.append({target.key, target.ticket});
+        }
+        if (stale.isEmpty())
+            return;
+        QMetaObject::invokeMethod(
+            this, [this, stale] { dropStale(stale); }, Qt::QueuedConnection);
+    });
+}
+
+void WaveformCache::dropStale(const QList<QPair<QString, quint64>>& stale) {
+    for (const auto& [key, ticket] : stale) {
+        const auto found = records_.find(key);
+        // 検査中に作り直しが始まった record は、その結果を待つ。
+        if (found == records_.end() || found->ticket != ticket)
+            continue;
+        records_.erase(found);
+        Q_EMIT entryChanged(key);
+    }
 }
 
 std::size_t WaveformCache::readyBytes() const {
@@ -60,8 +126,9 @@ std::size_t WaveformCache::readyBytes() const {
 WaveformCache::Entry WaveformCache::request(const QString& mediaPath) {
     if (mediaPath.isEmpty())
         return {State::Failed, {}, QStringLiteral("素材の path がありません")};
-    const QString key = sourceKey(mediaPath);
-    const SourceIdentity identity = identityOf(mediaPath);
+    const SourceProbe source = probe(mediaPath);
+    const QString& key = source.key;
+    const SourceIdentity& identity = source.identity;
     auto found = records_.find(key);
     if (found != records_.end() && found->identity == identity) {
         found->lastUse = ++useClock_;
@@ -73,14 +140,16 @@ WaveformCache::Entry WaveformCache::request(const QString& mediaPath) {
         found->cancel->store(true, std::memory_order_relaxed);
     Record record;
     record.identity = identity;
+    record.path = mediaPath;
     record.ticket = nextTicket_++;
     record.lastUse = ++useClock_;
     record.cancel = std::make_shared<std::atomic<bool>>(false);
     records_.insert(key, record);
 
-    const std::string utf8Path = mediaPath.toStdString();
-    pool_.start([this, key, ticket = record.ticket, cancel = record.cancel, utf8Path] {
-        auto result = decode_(utf8Path, cancel.get());
+    pool_.start([this, key, ticket = record.ticket, cancel = record.cancel, mediaPath] {
+        // decode より前に取る。decode 中に差し替えられても、次の再検証で必ず不一致になる。
+        const auto fingerprint = fingerprintOf(mediaPath);
+        auto result = decode_(mediaPath.toStdString(), cancel.get());
         if (result.cancelled || cancel->load(std::memory_order_relaxed))
             return;
         Entry entry;
@@ -95,15 +164,16 @@ WaveformCache::Entry WaveformCache::request(const QString& mediaPath) {
         // this の破棄時に Qt が捨てるので、完了通知が破棄後に届くことはない。
         QMetaObject::invokeMethod(
             this,
-            [this, key, ticket, entry = std::move(entry)]() mutable {
-                finish(key, ticket, std::move(entry));
+            [this, key, ticket, fingerprint, entry = std::move(entry)]() mutable {
+                finish(key, ticket, fingerprint, std::move(entry));
             },
             Qt::QueuedConnection);
     });
     return record.entry;
 }
 
-void WaveformCache::finish(const QString& key, std::uint64_t ticket, Entry entry) {
+void WaveformCache::finish(const QString& key, std::uint64_t ticket,
+                           std::optional<std::uint64_t> fingerprint, Entry entry) {
     auto found = records_.find(key);
     // 生成中に素材が差し替えられた場合、古い job の結果で新しい record を上書きしない。
     if (found == records_.end() || found->ticket != ticket)
@@ -112,6 +182,7 @@ void WaveformCache::finish(const QString& key, std::uint64_t ticket, Entry entry
         qWarning("波形を生成できません: %s: %s", qUtf8Printable(key), qUtf8Printable(entry.error));
     found->bytes = entry.peaks ? core::waveformPeaksMemoryBytes(*entry.peaks) : 0;
     found->entry = std::move(entry);
+    found->fingerprint = fingerprint;
     found->cancel.reset();
     evictUnused(key);
     Q_EMIT entryChanged(key);
