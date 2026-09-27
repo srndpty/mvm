@@ -19,6 +19,8 @@ ApplicationWindow {
     property url pendingExportFile
     property bool closeConfirmed: false
     property string pendingProjectAction: ""
+    // 終了/New/Openの保存が外部変更で止まったときだけ立てる。上書きかSave Asの成功で再開する。
+    property bool pendingSaveContinuation: false
 
     Component.onCompleted: {
         if (mvmController.recoveryAvailable || mvmController.recoveryCorrupt
@@ -58,6 +60,26 @@ ApplicationWindow {
         const action = pendingProjectAction;
         pendingProjectAction = "";
         performProjectAction(action);
+    }
+
+    function noteExternalSaveDuringPendingAction() {
+        pendingSaveContinuation = pendingProjectAction !== "";
+    }
+
+    function abandonExternalSaveContinuation() {
+        pendingSaveContinuation = false;
+    }
+
+    // 直接のCtrl+Sではcontinuationが空なので、dialogを閉じるだけで終わる。
+    function completeExternalSave(saved) {
+        if (!saved)
+            return;
+        externalSaveDialog.close();
+        if (!pendingSaveContinuation)
+            return;
+        pendingSaveContinuation = false;
+        unsavedChangesDialog.close();
+        continuePendingProjectAction();
     }
 
     function isLocalFileUrl(url) {
@@ -1746,6 +1768,7 @@ ApplicationWindow {
             recoveryDialog.open();
         }
         function onExternalCanonicalChangeOnSave() {
+            root.noteExternalSaveDuringPendingAction();
             externalSaveDialog.open();
         }
     }
@@ -1802,7 +1825,8 @@ ApplicationWindow {
         fileMode: FileDialog.SaveFile
         defaultSuffix: "mvm"
         nameFilters: ["mvm プロジェクト (*.mvm)"]
-        onAccepted: mvmController.saveProjectAs(selectedFile)
+        onAccepted: root.completeExternalSave(mvmController.saveProjectAs(selectedFile))
+        onRejected: root.abandonExternalSaveContinuation()
     }
 
     Dialog {
@@ -1895,10 +1919,8 @@ ApplicationWindow {
             Button {
                 text: "上書きする"
                 DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
-                onClicked: {
-                    if (mvmController.saveProjectOverwritingExternalChange())
-                        externalSaveDialog.close();
-                }
+                onClicked: root.completeExternalSave(
+                               mvmController.saveProjectOverwritingExternalChange())
             }
             Button {
                 text: "名前を付けて保存"
@@ -1911,7 +1933,10 @@ ApplicationWindow {
             Button {
                 text: "キャンセル"
                 DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
-                onClicked: externalSaveDialog.close()
+                onClicked: {
+                    root.abandonExternalSaveContinuation();
+                    externalSaveDialog.close();
+                }
             }
         }
     }
@@ -1955,6 +1980,7 @@ ApplicationWindow {
                 DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
                 onClicked: {
                     root.pendingProjectAction = "";
+                    root.pendingSaveContinuation = false;
                     unsavedChangesDialog.close();
                 }
             }
