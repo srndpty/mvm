@@ -173,13 +173,14 @@ qt_add_executable(mvm_test_controller_export
     ${CMAKE_SOURCE_DIR}/apps/mvm/media_bin_model.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/media_import.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_playback.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/timeline_clip_model.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/track_model.cpp)
 target_include_directories(mvm_test_controller_export PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
 target_link_libraries(mvm_test_controller_export PRIVATE
     mvm::core mvm::project mvm::util mvm::manim_clip_workflow
     mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
-    mvm::mlt mvm::preview_engine mvm::preview_qt
+    mvm::mlt mvm::preview_engine mvm::audio_preview mvm::preview_qt
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 mvm::warnings)
 target_compile_definitions(mvm_test_controller_export PRIVATE ${MVM_MLT_PATH_DEFS})
 add_executable(mvm_test_export_eta core/test_export_eta.cpp)
@@ -195,6 +196,19 @@ add_test(NAME m7b_4_controller_export_lifecycle
     COMMAND mvm_test_controller_export ${CMAKE_BINARY_DIR}/tests/controller-export
             ${CMAKE_SOURCE_DIR}/tests/assets/smoke)
 set_tests_properties(m7b_4_controller_export_lifecycle PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+
+add_executable(mvm_test_shuttle_audio
+    harness/test_shuttle_audio.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_playback.cpp)
+target_include_directories(mvm_test_shuttle_audio PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_test_shuttle_audio PRIVATE
+    mvm::audio_preview mvm::timeline_playback mvm::timeline_preview_mapping
+    mvm::project mvm::warnings)
+add_test(NAME m6b_shuttle_audio_focused
+    COMMAND mvm_test_shuttle_audio ${CMAKE_SOURCE_DIR}/tests/assets/smoke/wav_48k.wav)
+set_tests_properties(m6b_shuttle_audio_focused PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 120)
 

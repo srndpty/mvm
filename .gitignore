@@ -43,6 +43,8 @@ CMakeUserPresets.json
 Thumbs.db
 desktop.ini
 tmp/
+# Chromium系プロセスが作業ディレクトリへ出す診断ログ。
+/debug.log
 
 # Python が fixture/script の import 時に生成する bytecode cache
 __pycache__/

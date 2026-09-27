@@ -14,6 +14,7 @@
 #include "project/path_identity.h"
 #include "project/project_json.h"
 #include "project/timeline_edit.h"
+#include "shuttle_audio_playback.h"
 #include "timeline_clip_model.h"
 #include "track_model.h"
 #include "util/mvm_reveal_in_explorer.h"
@@ -468,8 +469,20 @@ void MvmController::setMasterVolume(double volume) {
     const double clamped = std::clamp(volume, 0.0, 1.0);
     if (std::abs(masterVolume_ - clamped) < 0.0001)
         return;
+    if (shuttleAudio_) {
+        std::string error;
+        if (!shuttleAudio_->setVolume(static_cast<float>(clamped), error)) {
+            setStatus(QStringLiteral("シャトル音声のボリュームを変更できません: ") +
+                      QString::fromStdString(error));
+            return;
+        }
+    }
     const auto changed = previewEngine_->setMasterVolume(static_cast<float>(clamped));
     if (!changed) {
+        if (shuttleAudio_) {
+            std::string ignored;
+            shuttleAudio_->setVolume(static_cast<float>(masterVolume_), ignored);
+        }
         setStatus(QStringLiteral("マスターボリュームを変更できません: ") +
                   previewErrorText(changed.error()));
         return;
@@ -1129,8 +1142,11 @@ void MvmController::pollAudioMeter() {
     if (!previewEngine_)
         return;
     const auto telemetry = previewEngine_->telemetry();
-    const double left = linearToDb(telemetry.audioMeterPeakLeft, kMeterSilenceDb);
-    const double right = linearToDb(telemetry.audioMeterPeakRight, kMeterSilenceDb);
+    const auto shuttle = shuttleAudio_ ? shuttleAudio_->sinkSnapshot() : audio::WasapiSnapshot{};
+    const double left = linearToDb(
+        shuttleAudio_ ? shuttle.meterPeakLeft : telemetry.audioMeterPeakLeft, kMeterSilenceDb);
+    const double right = linearToDb(
+        shuttleAudio_ ? shuttle.meterPeakRight : telemetry.audioMeterPeakRight, kMeterSilenceDb);
     if (std::abs(left - audioMeterDbLeft_) < 0.05 && std::abs(right - audioMeterDbRight_) < 0.05)
         return;
     audioMeterDbLeft_ = left;
@@ -2406,12 +2422,16 @@ bool MvmController::cancelPendingPlaybackForPause() {
 
 bool MvmController::pauseTimeline() {
     if (shuttleRate_ != 0 && !shuttleSeeking_) {
-        const bool silentShuttle = shuttleTimer_.isActive();
+        const bool timedShuttle = shuttleTimer_.isActive();
         shuttleTimer_.stop();
         shuttleClock_.invalidate();
+        if (shuttleAudio_) {
+            shuttleAudio_->stop();
+            shuttleAudio_.reset();
+        }
         shuttleRate_ = 0;
         if (!playing_) {
-            if (silentShuttle) {
+            if (timedShuttle) {
                 scrubTargetFrame_ = playheadFrame_;
                 scrubPending_ = true;
                 scrubTimer_.start();
@@ -2477,18 +2497,45 @@ bool MvmController::changeShuttleRate(int direction) {
     }
     shuttleRate_ = *next;
     shuttleBaseFrame_ = std::clamp<std::int64_t>(playheadFrame_, 0, totalTimelineFrames_ - 1);
+    if (std::abs(*next) <= 4) {
+        shuttleAudio_ = std::make_unique<ShuttleAudioPlayback>();
+        std::string audioError;
+        if (!shuttleAudio_->start(project_, *next, shuttleBaseFrame_,
+                                  static_cast<float>(masterVolume_), audioError)) {
+            shuttleAudio_.reset();
+            shuttleRate_ = 0;
+            setStatus(QStringLiteral("シャトル音声を開始できません: ") +
+                      QString::fromStdString(audioError));
+            return false;
+        }
+    }
     shuttleClock_.restart();
     shuttleTimer_.start();
-    setStatus(QStringLiteral("シャトル %1 倍速（音声なし）").arg(*next));
+    setStatus(
+        QStringLiteral("シャトル %1 倍速%2")
+            .arg(*next)
+            .arg(shuttleAudio_ ? QStringLiteral("（音声あり）") : QStringLiteral("（音声なし）")));
     return true;
 }
 
 void MvmController::advanceTimelineShuttle() {
     if (!shuttleTimer_.isActive() || !shuttleClock_.isValid())
         return;
+    if (shuttleAudio_ && !shuttleAudio_->error().empty()) {
+        const QString error = QString::fromStdString(shuttleAudio_->error());
+        pauseTimeline();
+        setStatus(QStringLiteral("シャトル音声を再生できません: ") + error);
+        return;
+    }
+    const std::int64_t playedSamples = shuttleAudio_ ? shuttleAudio_->elapsedSamples() : 0;
+    const std::int64_t elapsedNs =
+        shuttleAudio_ ? (playedSamples / audio::kInternalSampleRate) * 1'000'000'000LL +
+                            (playedSamples % audio::kInternalSampleRate) * 1'000'000'000LL /
+                                audio::kInternalSampleRate
+                      : shuttleClock_.nsecsElapsed();
     const auto mapped = timelineShuttleFrameFromElapsed(
-        shuttleBaseFrame_, shuttleClock_.nsecsElapsed(), project_.timelineFpsNum,
-        project_.timelineFpsDen, shuttleRate_, totalTimelineFrames_ - 1);
+        shuttleBaseFrame_, elapsedNs, project_.timelineFpsNum, project_.timelineFpsDen,
+        shuttleRate_, totalTimelineFrames_ - 1);
     if (!mapped.success) {
         pauseTimeline();
         setStatus(QString::fromStdString(mapped.error));
@@ -2510,7 +2557,10 @@ void MvmController::advanceTimelineShuttle() {
         pauseTimeline();
         return;
     }
-    statusText_ = QStringLiteral("シャトル %1 倍速（音声なし）").arg(shuttleRate_);
+    statusText_ =
+        QStringLiteral("シャトル %1 倍速%2")
+            .arg(shuttleRate_)
+            .arg(shuttleAudio_ ? QStringLiteral("（音声あり）") : QStringLiteral("（音声なし）"));
     Q_EMIT stateChanged();
 }
 
@@ -3607,6 +3657,10 @@ void MvmController::shutdown() {
     busy_ = false;
     playbackTimer_.stop();
     shuttleTimer_.stop();
+    if (shuttleAudio_) {
+        shuttleAudio_->stop();
+        shuttleAudio_.reset();
+    }
     scrubTimer_.stop();
     meterTimer_.stop();
     playing_ = false;

@@ -3,6 +3,7 @@ qt_add_executable(mvm
     media_bin_model.cpp
     media_import.cpp
     mvm_controller.cpp
+    shuttle_audio_playback.cpp
     timeline_clip_model.cpp
     track_model.cpp
     waveform_cache.cpp
@@ -36,6 +37,7 @@ target_link_libraries(mvm PRIVATE
     mvm::audio_waveform
     mvm::mlt
     mvm::preview_engine
+    mvm::audio_preview
     mvm::preview_qt
     Qt6::Core
     Qt6::Gui

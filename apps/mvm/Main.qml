@@ -975,6 +975,27 @@ ApplicationWindow {
                     0, Math.min(nextMaxContentX, desiredContentX));
             }
 
+            // 再生ヘッドが表示幅の端へ近づいた時だけ、約70%幅ずつページを送る。
+            function pageForPlayback() {
+                if (!mvmController.playing || timelineFlick.width <= 0 ||
+                    mvmController.totalTimelineFrames <= 0)
+                    return;
+                const headX = mvmController.playheadFrame * pixelsPerFrame;
+                const leftEdge = timelineFlick.contentX;
+                const viewportWidth = timelineFlick.width;
+                const maxContentX = Math.max(0, timelineFlick.contentWidth - viewportWidth);
+                if (mvmController.shuttleRate < 0) {
+                    if (leftEdge <= 0 || headX > leftEdge + viewportWidth * 0.15)
+                        return;
+                    timelineFlick.contentX = Math.max(0, headX - viewportWidth * 0.85);
+                } else {
+                    if (leftEdge >= maxContentX || headX < leftEdge + viewportWidth * 0.85)
+                        return;
+                    timelineFlick.contentX = Math.min(maxContentX,
+                                                       headX - viewportWidth * 0.15);
+                }
+            }
+
             // QQuickWindowのevent filterがFlickableより先にAlt/Ctrl wheelを捕捉し、
             // modifierを判定済みの専用入口へ渡す。
             function handleNativeAltWheel(wheelDelta, localX) {
@@ -2094,6 +2115,9 @@ ApplicationWindow {
 
     Connections {
         target: mvmController
+        function onStateChanged() {
+            timelinePanel.pageForPlayback();
+        }
         function onExportFailed(message) {
             exportFailureDialog.message = message;
             exportFailureDialog.open();

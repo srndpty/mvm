@@ -33,6 +33,7 @@ namespace mvm::app {
 class PreviewEngineRhiItem;
 class TimelineClipModel;
 class TrackModel;
+class ShuttleAudioPlayback;
 
 class MvmController final : public QObject {
     Q_OBJECT
@@ -520,6 +521,7 @@ private:
     std::int64_t shuttleBaseFrame_ = 0;
     QElapsedTimer shuttleClock_;
     QTimer shuttleTimer_;
+    std::unique_ptr<ShuttleAudioPlayback> shuttleAudio_;
     bool pendingPlaybackStart_ = false;
     bool scrubbing_ = false;
     bool scrubPending_ = false;

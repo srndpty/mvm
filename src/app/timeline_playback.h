@@ -43,6 +43,10 @@ PlaybackFrameResult adjacentTimelineEditPoint(const project::Project& project,
 // 同方向の反復で加速し、反対方向で一段ずつ減速する。
 std::optional<int> nextShuttleRate(int currentRate, int direction);
 
+// 出力PCMのsample番号からtimeline上のsample番号を求める。逆再生も同じ時間軸で扱う。
+std::optional<std::int64_t> timelineShuttleSampleAt(std::int64_t baseSample, int rate,
+                                                    std::int64_t outputSample);
+
 TimelinePlaybackStep evaluateTimelinePlayback(const project::Project& project, int activeClipIndex,
                                               std::int64_t candidateFrame);
 
