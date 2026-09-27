@@ -62,8 +62,42 @@ struct TimelineClip {
     bool operator==(const TimelineClip&) const = default;
 };
 
+// Project JSON の schema。timeline 検証と JSON の読み書きが同じ値を参照する。
+inline constexpr int kProjectSchemaVersion = 4;
+
+// プロジェクトパネルの素材。timeline clip とは独立に存在し、mediaPath で対応づく。
+enum class MediaKind { Video, Audio, Image };
+
+// parentId が空なら root 直下。
+struct MediaFolder {
+    std::string id; // folder と media item で共有する名前空間の中で一意
+    std::string name;
+    std::string parentId;
+    bool operator==(const MediaFolder&) const = default;
+};
+
+// 種別ごとに意味を持つ field だけを埋め、それ以外は既定値のままにする。
+//   Video: fps / frameCount / width / height
+//   Audio: sampleRate / durationSamples
+//   Image: width / height
+struct MediaItem {
+    std::string id;
+    MediaKind kind = MediaKind::Video;
+    std::filesystem::path mediaPath; // 解決済みの実ファイル。bin 内で一意
+    std::string name;
+    std::string folderId; // 空なら root 直下
+    std::int64_t fpsNum = 0;
+    std::int64_t fpsDen = 1;
+    std::int64_t frameCount = 0;
+    int width = 0;
+    int height = 0;
+    int sampleRate = 0;
+    std::int64_t durationSamples = 0;
+    bool operator==(const MediaItem&) const = default;
+};
+
 struct Project {
-    int schemaVersion = 3;
+    int schemaVersion = kProjectSchemaVersion;
     std::int64_t timelineFpsNum = 60;
     std::int64_t timelineFpsDen = 1;
     // Project の出力 raster。preview と export が共有する基準寸法。
@@ -74,6 +108,8 @@ struct Project {
     std::vector<Track> audioTracks;
     std::vector<ManimAsset> manimAssets;
     std::vector<TimelineClip> timelineClips;
+    std::vector<MediaFolder> mediaFolders;
+    std::vector<MediaItem> mediaItems;
     bool operator==(const Project&) const = default;
 };
 

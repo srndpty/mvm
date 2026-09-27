@@ -66,11 +66,11 @@ std::string readText(const std::filesystem::path& path) {
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
-// schema 3 は track 配列と clip の track_kind / track_index を必須にする。
+// schema 4 は track 配列と clip の track_kind / track_index を必須にする。
 // 欠けたファイルを暗黙の既定値で読まないことを確認する。
 void testSchemaIsFailClosed(const std::filesystem::path& root) {
     const std::string header =
-        R"JSON({"schema_version":3,"format":"mvm-project","timeline_fps_num":60,"timeline_fps_den":1,)JSON"
+        R"JSON({"schema_version":4,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,"timeline_fps_den":1,)JSON"
         R"JSON("video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],)JSON";
     const std::string clipHead =
         R"JSON("timeline_clips":[{"kind":"video","media_path":"a.mp4","name":"A","id":"a",)JSON"
@@ -82,7 +82,7 @@ void testSchemaIsFailClosed(const std::filesystem::path& root) {
     const auto loaded = mvm::project::loadProjectJson(complete);
     check(loaded.success && loaded.project.timelineClips.size() == 1 &&
               loaded.project.timelineClips.front().track == kV1,
-          "schema 3のclip trackを読めません");
+          "schema 4のclip trackを読めません");
 
     const auto missingTrack = root / "missing-track.mvm";
     writeText(missingTrack, header + clipHead + "}]}");
@@ -90,9 +90,10 @@ void testSchemaIsFailClosed(const std::filesystem::path& root) {
           "track_kind / track_index が欠けたclipを既定値で受理しました");
 
     const auto missingTracks = root / "missing-tracks.mvm";
-    writeText(missingTracks,
-              R"JSON({"schema_version":3,"format":"mvm-project","timeline_fps_num":60,)JSON"
-              R"JSON("timeline_fps_den":1,"manim_assets":[],"timeline_clips":[]})JSON");
+    writeText(
+        missingTracks,
+        R"JSON({"schema_version":4,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,)JSON"
+        R"JSON("timeline_fps_den":1,"manim_assets":[],"timeline_clips":[]})JSON");
     check(!mvm::project::loadProjectJson(missingTracks).success,
           "track配列が無いProjectを受理しました");
 

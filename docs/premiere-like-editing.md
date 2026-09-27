@@ -511,3 +511,161 @@ fallback があると、engine の初期化に失敗していても
 `[事実]` `validateQualifiedAudioDomain` と `kQualifiedAudioSampleRate` は
 48kHz / stereo / float32 という **measured envelope の一部**を指しており、
 個別軸を qualified と呼んでいる例ではないため名前を変えていない。
+
+## 15. プロジェクトパネル (素材とフォルダ) と schema 4
+
+§1 の schema 3 は、この節の schema 4 で置き換わった。
+
+### 15.1 データと永続化
+
+`[事実]` `Project` に素材 bin を追加した。timeline clip とは独立に存在し、
+`mediaPath` で対応づく。シーケンスは単一のまま bin へは出していない。
+
+```cpp
+enum class MediaKind { Video, Audio, Image };
+struct MediaFolder { std::string id, name, parentId; };      // parentId 空 = root
+struct MediaItem {
+    std::string id; MediaKind kind; std::filesystem::path mediaPath;
+    std::string name, folderId;
+    std::int64_t fpsNum, fpsDen, frameCount;  // Video
+    int width, height;                        // Video / Image
+    int sampleRate; std::int64_t durationSamples;  // Audio
+};
+```
+
+`[事実]` schema 版の定数は `kProjectSchemaVersion` (project.h) に一本化した。
+それまで `validateTimeline` と `project_json.cpp` が別々に `3` を持っていた。
+
+`[事実]` **schema 3 の Project は読めない。** §1 と同じく互換分岐は残していない。
+`media_folders` / `media_items` は必須 field で、素材の全 field も種別に関係なく必須である。
+種別に該当しない値は 0 で保存し、0 であることを `validateMediaBin` が検査する
+(例: 解像度を持つ音声、尺を持つ静止画は拒否)。
+
+`[事実]` `validateMediaBin` は folder / item の id 一意性 (両者で名前空間を共有)、
+親 folder の実在、循環、同一ファイルの重複を検査する。
+`serializeProjectJson` (= `commitProjectEdit`) と読み込みの両方がこれを通す。
+読み込み側は path を project directory へ解決した後に検査する。
+
+### 15.2 編集の規則
+
+`[事実]` 編集は `src/project/media_bin.h` の純粋関数に集約した。
+どれも candidate を検証してから置き換え、失敗時は Project を変更しない。
+
+| 操作 | 規則 |
+| ---- | ---- |
+| 移動 | folder を自分自身・子孫へは入れない |
+| 削除 | folder は中身ごと。timeline で使用中の素材を 1 つでも含めば全体を拒否 |
+| 追加 | 同じファイル (lexically_normal で比較) の素材は 2 つ持たない |
+
+`[事実]` timeline へ素材を置く経路 (`addVideoClip` / `addAudioClip`) は、
+同じ transaction で bin にも登録する。既に bin にあれば何もしない。
+bin 側の操作はすべて `commitProjectEdit` を通るため、1 操作 1 undo になる。
+
+### 15.3 素材種別の判定
+
+`[事実]` 拡張子ではなく MLT の probe で決める (`apps/mvm/media_import.cpp`)。
+`mvm_bench probe` で次を観測した。
+
+| 素材 | has_video | frame_count | is_unbounded | 判定 |
+| ---- | --------- | ----------- | ------------ | ---- |
+| `tests/assets/smoke/png_alpha.png` | true | 2147483647 | true | Image |
+| ffmpeg で作った JPEG (testsrc2 1 frame) | true | 1 | false | Image |
+| `tests/assets/smoke/wav_48k.wav` | false | 125 | false | Audio |
+| ffmpeg で作った AAC の m4a | false | 75 | false | Audio |
+| カバーアート (attached_pic) 付き m4a | true (mjpeg) | 180 | false | **Video (誤り)** |
+
+`[事実]` JPEG は image2 demuxer 経由で有限尺 1 frame として返る。
+音声を持たない 1 frame の映像には時間方向の長さが無いため静止画とした。
+
+`[未検証]` カバーアート付きの音声素材は動画に分類される。MLT のプロパティに
+attached_pic を示す値は無く、手がかりは `meta.media.N.stream.frame_rate = 90000` だけだった。
+これで判定すると、本物の Motion JPEG + 音声の動画を誤判定しうるため入れていない。
+timeline へ直接追加する既存経路も同じ素材を動画として扱う。
+
+### 15.4 UI
+
+`[事実]` 左上のパネルをタブ化し、「エフェクトコントロール」と「プロジェクト」を
+同じ領域で切り替える。境界をドラッグすると左パネルの幅を 240px〜window 幅の 50% で変えられる。
+
+`[事実]` リスト表示の列は 名前 / フレームレート (音声は Hz) / デュレーション / 解像度。
+動画の尺は公称 fps (23.976 なら 24) で数える non-drop timecode、音声は `HH:MM:SS.mmm`。
+
+`[事実]` 開閉状態は UI の状態として `MediaBinModel` が持ち、Project には保存しない。
+開閉は reset ではなく行の挿入・削除で通知する (reset するとスクロール位置が失われる)。
+
+`[事実]` Delete / F2 はリストに focus があるとき bin 側が受け取る
+(`Keys.onShortcutOverride`)。受け取らないと Main.qml の Delete (timeline clip 削除) が発火する。
+
+`[事実]` drop で素材を移動すると model が作り直され、drop 元の delegate が破棄される。
+drop ハンドラの途中で破棄されて `ReferenceError: dragProxy is not defined` が出たため、
+移動は `Qt.callLater` で drag の後始末の後へ遅らせた。
+
+### 15.5 レビュー指摘への対応
+
+`[事実]` **schema 3 の hard break は維持した。** migration を入れるかは方針として判断し、
+AGENTS.md「後方互換のための分岐を残さない」を優先した。手元の開発用 Project は
+一度だけ手作業で変換した (元ファイルは `*.schema3.bak`)。
+
+`[事実]` 外部ファイルの drop は `CopyAction` で受理する。以前は
+`acceptProposedAction()` で、source が Move を提示するとそのまま Move を受理していた。
+mvm は元ファイルを参照するだけなので、Move を返すと source 側が「移動済み」として
+元ファイルを後始末しうる。source が Copy を許さない drag は受け付けない。
+`test-m7b4-timeline-ui-architecture.ps1` が `acceptProposedAction` を禁止している。
+
+`[未検証]` Explorer からの通常 drag / Shift+drag / Ctrl+drag で、実際に
+Explorer 側へ Copy が返ることは実機で確かめていない (合成入力で OLE drag を起こせない)。
+
+`[事実]` 素材の同一性は `src/project/path_identity.h` に一本化した。
+
+| key | 規則 | 使う場所 |
+| --- | ---- | -------- |
+| `canonicalPathKey` | absolute + lexically_normal + 区切り文字と大文字小文字を揃える。I/O なし | JSON 検証の重複判定、`sameCanonicalPath` |
+| `comparePathIdentity` | 両方存在すれば file ID、存在しなければ表記。取れなければ Unknown | 読み込み時の重複判定、timeline 使用中判定 |
+
+JSON 検証を実体に依存させないのは、保存済みの Project が disk 側の変化
+(後から hard link が張られた等) だけで開けなくなるのを避けるためである。
+hard link 経由の重複登録・使用中判定のすり抜けは、`mediaFileKey` を表記比較へ戻す
+mutation で `test_media_bin.cpp` の 4 検査が落ちることを確認した。
+
+`[事実]` 音声の尺は、取り込み時に sample 数が 2^63 未満であることを確かめてから
+`llround` する。表示は「秒」と「端数」に分けて換算し、`samples * 1000` を作らない。
+動画の公称 fps の切り上げも `num + den - 1` を使わない。
+
+`[事実]` `importMediaFiles` の戻り値は「1 件以上 commit したか」に変えた。
+一部が読めなくても読めた分は commit しており、以前はそれでも false を返していた。
+false は「Project を変更していない」の意味に保つ。
+
+### 15.6 再レビュー指摘への対応
+
+`[事実]` identity を取れなかった理由を区別する。以前は取得失敗をすべて
+「存在しない」と同じ表記比較へ落としており、access denied 等で片方だけ
+file ID を取れないと、同じ実体でも別物と判定していた。使用中判定では、
+これが「使用中の素材を削除できる」fail-open になる。
+
+| `mvm_file_identity_probe` | 意味 | 比較 |
+| ------------------------- | ---- | ---- |
+| `OK` → `FileId` | 通常ファイル | file ID で比べる |
+| `MISSING` (FILE/PATH_NOT_FOUND のみ) | 何も指していない | 相手と表記が違えば Different |
+| `UNAVAILABLE` (それ以外) | 実体が分からない | 表記が同じでなければ Unknown |
+
+`[事実]` `comparePathIdentity` は Same / Different / Unknown を返し、
+Unknown の倒し方は呼び出し側が決める。
+
+| 呼び出し側 | Unknown の扱い | 理由 |
+| ---------- | -------------- | ---- |
+| `mediaItemUsage` (削除の可否) | 使用中か不明として削除を拒否 | 使用中の素材を消さない |
+| `findMediaItemByPath` (重複登録) | 一致としない | 重複登録は best effort。拒否すると取り込みが止まる |
+| `sameCanonicalPath` → recovery の foreign 判定 | 別 Project として復元しない | 別 Project へ rebase しない |
+| Save As の同一先判定 | 同じかもしれないとして外部変更を検査 | 検査なしで canonical を上書きしない |
+
+`[事実]` `sameCanonicalPath` も実体で比べるようにした (以前は表記のみで、
+junction・8.3 名・hard link を別物と判定していた)。JSON の検証だけは
+`canonicalPathKey` (I/O なし) のまま残す。
+
+`[事実]` Unavailable の再現にはディレクトリを指す素材 path を使う
+(存在するが通常ファイルの identity を取れない)。`fileIdentityKey` の
+Unavailable を Missing へ戻す mutation で、`test_media_bin.cpp` の
+fail-closed 検査 4 件が落ちることを確認した。
+
+`[未検証]` Save As で Unknown になる経路 (開いている Project の identity を取れない)
+は controller test で再現していない。

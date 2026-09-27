@@ -1,12 +1,13 @@
 #include "project/project_json.h"
 
+#include "project/media_bin.h"
+#include "project/path_identity.h"
 #include "project/timeline_edit.h"
 #include "util/mvm_atomic_write.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
-#include <cwctype>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -17,7 +18,7 @@
 namespace mvm::project {
 namespace {
 
-constexpr int kSchemaVersion = 3;
+constexpr int kSchemaVersion = kProjectSchemaVersion;
 // .mvm ファイルであることを識別する marker。拡張子だけを根拠にしない。
 constexpr char kFormatMarker[] = "mvm-project";
 
@@ -166,6 +167,8 @@ public:
         bool hasAudioTracks = false;
         bool hasAssets = false;
         bool hasClips = false;
+        bool hasMediaFolders = false;
+        bool hasMediaItems = false;
         std::string format;
         if (!consume('{'))
             return finish(error);
@@ -215,6 +218,14 @@ public:
                     if (hasClips || !parseTimelineClips(project.timelineClips))
                         return failAndFinish("timeline_clips が重複または不正です", error);
                     hasClips = true;
+                } else if (key == "media_folders") {
+                    if (hasMediaFolders || !parseMediaFolders(project.mediaFolders))
+                        return failAndFinish("media_folders が重複または不正です", error);
+                    hasMediaFolders = true;
+                } else if (key == "media_items") {
+                    if (hasMediaItems || !parseMediaItems(project.mediaItems))
+                        return failAndFinish("media_items が重複または不正です", error);
+                    hasMediaItems = true;
                 } else if (!skipValue()) {
                     return finish(error);
                 }
@@ -240,7 +251,7 @@ public:
             return failAndFinish("mvm project ファイルではありません (format marker 不一致)",
                                  error);
         if (!hasTimelineFpsNum || !hasTimelineFpsDen || !hasVideoTracks || !hasAudioTracks ||
-            !hasAssets || !hasClips) {
+            !hasAssets || !hasClips || !hasMediaFolders || !hasMediaItems) {
             return failAndFinish("Project schema " + std::to_string(kSchemaVersion) +
                                      " の必須 field がありません",
                                  error);
@@ -862,6 +873,164 @@ private:
         return consume(']');
     }
 
+    bool parseMediaFolder(MediaFolder& folder) {
+        bool hasId = false;
+        bool hasName = false;
+        bool hasParent = false;
+        if (!consume('{'))
+            return false;
+        skipWhitespace();
+        if (!peek('}')) {
+            while (true) {
+                std::string key;
+                if (!parseString(key) || !consume(':'))
+                    return false;
+                if (key == "id") {
+                    if (hasId || !parseString(folder.id))
+                        return fail("media folder の id が重複または不正です");
+                    hasId = true;
+                } else if (key == "name") {
+                    if (hasName || !parseString(folder.name))
+                        return fail("media folder の name が重複または不正です");
+                    hasName = true;
+                } else if (key == "parent_id") {
+                    if (hasParent || !parseString(folder.parentId))
+                        return fail("media folder の parent_id が重複または不正です");
+                    hasParent = true;
+                } else if (!skipValue()) {
+                    return false;
+                }
+                skipWhitespace();
+                if (consumeIf(','))
+                    continue;
+                break;
+            }
+        }
+        if (!consume('}'))
+            return false;
+        if (!hasId || !hasName || !hasParent)
+            return fail("media folder の必須 field がありません");
+        return true;
+    }
+
+    bool parseMediaFolders(std::vector<MediaFolder>& folders) {
+        if (!consume('['))
+            return false;
+        skipWhitespace();
+        if (consumeIf(']'))
+            return true;
+        while (true) {
+            MediaFolder folder;
+            if (!parseMediaFolder(folder))
+                return false;
+            folders.push_back(std::move(folder));
+            skipWhitespace();
+            if (consumeIf(','))
+                continue;
+            break;
+        }
+        return consume(']');
+    }
+
+    // 種別に関係なく全 field を必須にする。該当しない値は 0 で保存されており、
+    // 0 であることは validateMediaBin が検査する。
+    bool parseMediaItem(MediaItem& item) {
+        bool seen[12] = {};
+        std::string kind;
+        std::string media;
+        if (!consume('{'))
+            return false;
+        skipWhitespace();
+        if (!peek('}')) {
+            while (true) {
+                std::string key;
+                if (!parseString(key) || !consume(':'))
+                    return false;
+                int field = -1;
+                bool parsed = false;
+                if (key == "id") {
+                    field = 0;
+                    parsed = !seen[field] && parseString(item.id);
+                } else if (key == "kind") {
+                    field = 1;
+                    parsed = !seen[field] && parseString(kind);
+                } else if (key == "media_path") {
+                    field = 2;
+                    parsed = !seen[field] && parseString(media);
+                } else if (key == "name") {
+                    field = 3;
+                    parsed = !seen[field] && parseString(item.name);
+                } else if (key == "folder_id") {
+                    field = 4;
+                    parsed = !seen[field] && parseString(item.folderId);
+                } else if (key == "fps_num") {
+                    field = 5;
+                    parsed = !seen[field] && parseInteger64(item.fpsNum);
+                } else if (key == "fps_den") {
+                    field = 6;
+                    parsed = !seen[field] && parseInteger64(item.fpsDen);
+                } else if (key == "frame_count") {
+                    field = 7;
+                    parsed = !seen[field] && parseInteger64(item.frameCount);
+                } else if (key == "width") {
+                    field = 8;
+                    parsed = !seen[field] && parseInteger(item.width);
+                } else if (key == "height") {
+                    field = 9;
+                    parsed = !seen[field] && parseInteger(item.height);
+                } else if (key == "sample_rate") {
+                    field = 10;
+                    parsed = !seen[field] && parseInteger(item.sampleRate);
+                } else if (key == "duration_samples") {
+                    field = 11;
+                    parsed = !seen[field] && parseInteger64(item.durationSamples);
+                } else if (!skipValue()) {
+                    return false;
+                }
+                if (field >= 0) {
+                    if (!parsed)
+                        return fail("media item の " + key + " が重複または不正です");
+                    seen[field] = true;
+                }
+                skipWhitespace();
+                if (consumeIf(','))
+                    continue;
+                break;
+            }
+        }
+        if (!consume('}'))
+            return false;
+        for (bool present : seen) {
+            if (!present)
+                return fail("media item の必須 field がありません");
+        }
+        if (media.empty())
+            return fail("media item の media_path が空です");
+        if (!parseMediaKindName(kind, item.kind))
+            return fail("未知の media item kind です: " + kind);
+        item.mediaPath = pathFromUtf8(media);
+        return true;
+    }
+
+    bool parseMediaItems(std::vector<MediaItem>& items) {
+        if (!consume('['))
+            return false;
+        skipWhitespace();
+        if (consumeIf(']'))
+            return true;
+        while (true) {
+            MediaItem item;
+            if (!parseMediaItem(item))
+                return false;
+            items.push_back(std::move(item));
+            skipWhitespace();
+            if (consumeIf(','))
+                continue;
+            break;
+        }
+        return consume(']');
+    }
+
     bool skipValue() {
         skipWhitespace();
         if (position_ >= text_.size())
@@ -919,6 +1088,11 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
     const auto timeline = validateTimeline(project);
     if (!timeline.success) {
         result.error = timeline.error;
+        return result;
+    }
+    const auto mediaBin = validateMediaBin(project);
+    if (!mediaBin.success) {
+        result.error = mediaBin.error;
         return result;
     }
 
@@ -1033,6 +1207,36 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
     }
     if (!project.timelineClips.empty())
         json << '\n';
+    json << "  ],\n  \"media_folders\": [";
+    for (std::size_t index = 0; index < project.mediaFolders.size(); ++index) {
+        const auto& folder = project.mediaFolders[index];
+        json << (index == 0 ? "\n" : ",\n") << "    { \"id\": \"" << escapeJson(folder.id)
+             << "\", \"name\": \"" << escapeJson(folder.name) << "\", \"parent_id\": \""
+             << escapeJson(folder.parentId) << "\" }";
+    }
+    if (!project.mediaFolders.empty())
+        json << '\n';
+    json << "  ],\n  \"media_items\": [";
+    for (std::size_t index = 0; index < project.mediaItems.size(); ++index) {
+        const auto& item = project.mediaItems[index];
+        json << (index == 0 ? "\n" : ",\n") << "    {\n"
+             << "      \"id\": \"" << escapeJson(item.id) << "\",\n"
+             << "      \"kind\": \"" << mediaKindName(item.kind) << "\",\n"
+             << "      \"media_path\": \""
+             << escapeJson(persistedSourcePath(item.mediaPath, projectDirectory)) << "\",\n"
+             << "      \"name\": \"" << escapeJson(item.name) << "\",\n"
+             << "      \"folder_id\": \"" << escapeJson(item.folderId) << "\",\n"
+             << "      \"fps_num\": " << item.fpsNum << ",\n"
+             << "      \"fps_den\": " << item.fpsDen << ",\n"
+             << "      \"frame_count\": " << item.frameCount << ",\n"
+             << "      \"width\": " << item.width << ",\n"
+             << "      \"height\": " << item.height << ",\n"
+             << "      \"sample_rate\": " << item.sampleRate << ",\n"
+             << "      \"duration_samples\": " << item.durationSamples << "\n"
+             << "    }";
+    }
+    if (!project.mediaItems.empty())
+        json << '\n';
     json << "  ]\n}\n";
 
     result.json = json.str();
@@ -1111,6 +1315,14 @@ ProjectLoadResult parseProjectJsonText(const std::string& jsonText,
 
     for (auto& clip : parsed.timelineClips)
         clip.mediaPath = resolveSourcePath(clip.mediaPath, projectDirectory);
+    for (auto& item : parsed.mediaItems)
+        item.mediaPath = resolveSourcePath(item.mediaPath, projectDirectory);
+    // media_path の重複は解決後の path で判定する。
+    const auto mediaBin = validateMediaBin(parsed);
+    if (!mediaBin.success) {
+        result.error = mediaBin.error;
+        return result;
+    }
 
     result.project = std::move(parsed);
     result.success = true;
@@ -1477,21 +1689,7 @@ ProjectRecoveryLoadResult loadProjectRecovery(const std::filesystem::path& recov
 }
 
 bool sameCanonicalPath(const std::filesystem::path& left, const std::filesystem::path& right) {
-    std::error_code leftError;
-    std::error_code rightError;
-    const auto leftAbsolute = std::filesystem::absolute(left, leftError).lexically_normal();
-    const auto rightAbsolute = std::filesystem::absolute(right, rightError).lexically_normal();
-    if (leftError || rightError)
-        return false;
-    const auto leftText = leftAbsolute.generic_wstring();
-    const auto rightText = rightAbsolute.generic_wstring();
-    if (leftText.size() != rightText.size())
-        return false;
-    for (std::size_t index = 0; index < leftText.size(); ++index) {
-        if (towlower(leftText[index]) != towlower(rightText[index]))
-            return false;
-    }
-    return true;
+    return comparePathIdentity(left, right) == PathSameness::Same;
 }
 
 RecoveryDisposition classifyRecovery(const Project& recoveryProject,

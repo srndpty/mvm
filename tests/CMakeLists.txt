@@ -102,6 +102,28 @@ set_tests_properties(m7b_4_timeline_clip_model_focused PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 120)
 
+# --- プロジェクトパネル (素材とフォルダ) ------------------------------------
+add_executable(mvm_test_media_bin harness/test_media_bin.cpp)
+target_link_libraries(mvm_test_media_bin PRIVATE mvm::project mvm::util mvm::warnings)
+add_test(NAME media_bin_project_focused
+    COMMAND mvm_test_media_bin "${CMAKE_CURRENT_BINARY_DIR}/media-bin-project")
+set_tests_properties(media_bin_project_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 60)
+
+add_executable(mvm_test_media_bin_model
+    harness/test_media_bin_model.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/media_bin_model.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/media_import.cpp)
+target_include_directories(mvm_test_media_bin_model PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_test_media_bin_model PRIVATE
+    mvm::project mvm::mlt Qt6::Core mvm::warnings)
+set_target_properties(mvm_test_media_bin_model PROPERTIES AUTOMOC ON)
+add_test(NAME media_bin_model_focused COMMAND mvm_test_media_bin_model)
+set_tests_properties(media_bin_model_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 60)
+
 add_executable(mvm_test_waveform_cache
     harness/test_waveform_cache.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/waveform_cache.cpp)
@@ -148,6 +170,8 @@ set_tests_properties(m7b_4_media_import_content_probe PROPERTIES
 
 qt_add_executable(mvm_test_controller_export
     harness/test_mvm_controller_export.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/media_bin_model.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/media_import.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/timeline_clip_model.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/track_model.cpp)
@@ -168,7 +192,8 @@ add_test(NAME reveal_in_explorer_negative
     COMMAND mvm_test_reveal_in_explorer ${CMAKE_BINARY_DIR}/tests/reveal-in-explorer)
 
 add_test(NAME m7b_4_controller_export_lifecycle
-    COMMAND mvm_test_controller_export ${CMAKE_BINARY_DIR}/tests/controller-export)
+    COMMAND mvm_test_controller_export ${CMAKE_BINARY_DIR}/tests/controller-export
+            ${CMAKE_SOURCE_DIR}/tests/assets/smoke)
 set_tests_properties(m7b_4_controller_export_lifecycle PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 120)

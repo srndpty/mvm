@@ -23,8 +23,20 @@ typedef struct MvmFileIdentity {
     long long last_write_time;
 } MvmFileIdentity;
 
-/* 通常ファイルの identity を取る。成功で 0。存在しない・ディレクトリ・
- * 開けない場合は非 0 を返し、out は 0 で埋める。 */
+/* identity 取得の結果。「存在しない」と「存在するかもしれないが取れない」を分ける。
+ * 後者を前者と同じに扱うと、同じ実体を別物と判定する (fail-open) 経路になる。 */
+typedef enum MvmFileIdentityStatus {
+    MVM_FILE_IDENTITY_OK = 0,
+    /* ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND。path は何も指していない。 */
+    MVM_FILE_IDENTITY_MISSING = 1,
+    /* access denied・ネットワーク・ディレクトリ・特殊 FS など。実体は分からない。 */
+    MVM_FILE_IDENTITY_UNAVAILABLE = 2
+} MvmFileIdentityStatus;
+
+/* 通常ファイルの identity を取る。OK 以外では out を 0 で埋める。 */
+MvmFileIdentityStatus mvm_file_identity_probe(const wchar_t* path, MvmFileIdentity* out);
+
+/* mvm_file_identity_probe が OK なら 0、それ以外は非 0。 */
 int mvm_file_identity_query(const wchar_t* path, MvmFileIdentity* out);
 
 /* 先頭と末尾の各 MVM_FILE_FINGERPRINT_EDGE_BYTES と size から 64bit の値を作る。

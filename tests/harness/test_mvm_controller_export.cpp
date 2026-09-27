@@ -1,3 +1,4 @@
+#include "media/mlt/mvm_mlt_runtime.h"
 #include "mvm_controller.h"
 #include "project/project_json.h"
 #include "project/timeline_edit.h"
@@ -850,9 +851,112 @@ void testDeleteMultipleSelection(const std::filesystem::path& path) {
 }
 } // namespace
 
+QString binEntryKind(const mvm::app::MediaBinModel& model, const QString& id) {
+    return model.data(model.index(model.rowOfEntry(id), 0), mvm::app::MediaBinModel::EntryKindRole)
+        .toString();
+}
+
+QString binEntryIdNamed(const mvm::app::MediaBinModel& model, const QString& name) {
+    for (int row = 0; row < model.rowCount(); ++row) {
+        const auto index = model.index(row, 0);
+        if (model.data(index, mvm::app::MediaBinModel::NameRole).toString() == name)
+            return model.data(index, mvm::app::MediaBinModel::EntryIdRole).toString();
+    }
+    return {};
+}
+
+// 実素材を内容 probe で読み込み、bin の編集が 1 操作 1 undo になることを見る。
+void testMediaBinImport(const std::filesystem::path& path, const std::filesystem::path& smoke) {
+    if (mvm_mlt_runtime_init(MVM_MLT_MODULE_DIR, MVM_MLT_DATA_DIR) != 0) {
+        check(false, "素材読み込み試験のMLTを初期化できません");
+        return;
+    }
+    const auto png = smoke / L"png_alpha.png";
+    const auto wav = smoke / L"wav_48k.wav";
+    const auto mp4 = smoke / L"v1080p60_h264.mp4";
+    if (!std::filesystem::exists(png) || !std::filesystem::exists(wav) ||
+        !std::filesystem::exists(mp4)) {
+        check(false, "Smoke素材がありません。pwsh scripts/make-testmedia.ps1 -Mode Smoke を"
+                     "実行してください");
+        mvm_mlt_runtime_shutdown();
+        return;
+    }
+    auto bogus = path;
+    bogus.replace_extension(L".txt");
+    {
+        std::ofstream text(bogus, std::ios::binary);
+        text << "not media";
+    }
+    const auto url = [](const std::filesystem::path& file) {
+        return QUrl::fromLocalFile(QString::fromStdWString(file.wstring()));
+    };
+
+    {
+        const auto initial = videoProject();
+        check(mvm::project::saveProjectJson(initial, path).success,
+              "素材読み込み試験の初期Projectを保存できません");
+        mvm::app::MvmController controller(path, {}, initial);
+        const auto& bin = *controller.mediaBinModel();
+
+        // 読めないファイルが混ざっても、読める素材は 1 つの編集として取り込む。
+        // 戻り値は「commit したか」であり、部分失敗は status で知らせる。
+        check(controller.importMediaFiles({url(png), url(wav), url(mp4), url(bogus)}, {}),
+              "一部の素材をcommitしたのにfalseを返しました");
+        check(controller.statusText().contains(QStringLiteral("1 件は読み込めません")),
+              "読めなかった素材がstatusで知らされません");
+        check(controller.canUndo() && controller.undoLastEdit() &&
+                  controller.mediaBinModel()->entryCount() == 0 &&
+                  controller.importMediaFiles({url(png), url(wav), url(mp4), url(bogus)}, {}),
+              "部分失敗した読み込みが1つのUndoになりません");
+        check(bin.entryCount() == 3, "読める素材だけが読み込まれていません");
+        const QString pngId = binEntryIdNamed(bin, QStringLiteral("png_alpha.png"));
+        const QString wavId = binEntryIdNamed(bin, QStringLiteral("wav_48k.wav"));
+        const QString mp4Id = binEntryIdNamed(bin, QStringLiteral("v1080p60_h264.mp4"));
+        check(binEntryKind(bin, pngId) == QStringLiteral("image") &&
+                  binEntryKind(bin, wavId) == QStringLiteral("audio") &&
+                  binEntryKind(bin, mp4Id) == QStringLiteral("video"),
+              "内容probeによる素材種別が違います");
+        check(bin.data(bin.index(bin.rowOfEntry(mp4Id), 0), mvm::app::MediaBinModel::RateTextRole)
+                      .toString() == QStringLiteral("60.00 fps"),
+              "読み込んだ動画のfps表示が違います");
+
+        check(!controller.importMediaFiles({url(wav)}, {}) && bin.entryCount() == 3,
+              "読み込み済みの素材を重複して読み込みました");
+
+        const QString folderId = controller.createMediaFolder({});
+        check(!folderId.isEmpty() && bin.entryCount() == 4, "フォルダを作成できません");
+        check(controller.moveMediaBinEntries({pngId}, folderId) &&
+                  bin.parentFolderOf(pngId) == folderId,
+              "素材をフォルダへ移動できません");
+        check(controller.undoLastEdit() && bin.parentFolderOf(pngId).isEmpty(),
+              "素材の移動をUndoできません");
+
+        check(!controller.addMediaItemToTimeline(pngId), "静止画をtimelineへ配置できてしまいます");
+
+        // timeline へ置いた素材は bin に重複登録しない。使用中になり削除を拒否する。
+        const int clipsBefore = controller.clipCount();
+        controller.addAudioClip(url(wav));
+        check(controller.clipCount() == clipsBefore + 1 && bin.entryCount() == 4,
+              "timelineへ置いた素材がbinへ重複登録されました");
+        check(bin.data(bin.index(bin.rowOfEntry(wavId), 0), mvm::app::MediaBinModel::InUseRole)
+                  .toBool(),
+              "timelineで使用中の印が付きません");
+        check(!controller.removeMediaBinEntries({wavId}) && bin.rowOfEntry(wavId) >= 0,
+              "timelineで使用中の素材を削除できてしまいます");
+
+        check(controller.moveMediaBinEntries({pngId}, folderId) &&
+                  controller.removeMediaBinEntries({folderId}) && bin.entryCount() == 2 &&
+                  bin.rowOfEntry(pngId) < 0,
+              "フォルダを中身ごと削除できません");
+        controller.shutdown();
+    }
+    std::filesystem::remove(bogus);
+    mvm_mlt_runtime_shutdown();
+}
+
 int main(int argc, char** argv) {
     QCoreApplication application(argc, argv);
-    if (argc != 2)
+    if (argc != 3)
         return 2;
     const std::filesystem::path directory = std::filesystem::path(argv[1]);
     std::filesystem::create_directories(directory);
@@ -886,5 +990,7 @@ int main(int argc, char** argv) {
     testDiscardRecovery(directory / L"recovery-discard.mvm");
     testShiftSelectionToggle(directory / L"shift-selection.mvm");
     testDeleteMultipleSelection(directory / L"delete-multiple.mvm");
+    // MLT を初期化するので最後に置く。ほかの試験は MLT 無しの前提で書かれている。
+    testMediaBinImport(directory / L"media-bin-import.mvm", std::filesystem::path(argv[2]));
     return failures == 0 ? 0 : 1;
 }

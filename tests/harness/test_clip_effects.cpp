@@ -90,7 +90,7 @@ int main(int argc, char** argv) {
     const auto legacy = directory / "legacy.mvm";
     std::ofstream legacyFile(legacy);
     legacyFile
-        << R"({"schema_version":3,"format":"mvm-project","timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,"track_kind":"video","track_index":0}]})";
+        << R"({"schema_version":4,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,"track_kind":"video","track_index":0}]})";
     legacyFile.close();
     const auto legacyLoaded = loadProjectJson(legacy);
     check(legacyLoaded.success &&
@@ -100,7 +100,7 @@ int main(int argc, char** argv) {
     const auto partial = directory / "partial.mvm";
     std::ofstream partialFile(partial);
     partialFile
-        << R"({"schema_version":3,"format":"mvm-project","timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,"track_kind":"video","track_index":0,"effects":{"scale_percent":60}}]})";
+        << R"({"schema_version":4,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,"track_kind":"video","track_index":0,"effects":{"scale_percent":60}}]})";
     partialFile.close();
     check(!loadProjectJson(partial).success, "部分effects objectをfail-closedで拒否する");
 

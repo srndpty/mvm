@@ -9,7 +9,9 @@
 #include "core/checked_output_timebase.h"
 #include "core/export_eta.h"
 #include "media/mlt/mvm_mlt_probe.h"
+#include "media_import.h"
 #include "project/clip_effects.h"
+#include "project/path_identity.h"
 #include "project/project_json.h"
 #include "project/timeline_edit.h"
 #include "timeline_clip_model.h"
@@ -235,6 +237,7 @@ MvmController::MvmController(std::filesystem::path projectPath,
       timelineModel_(std::make_unique<TimelineClipModel>()),
       videoTrackModel_(std::make_unique<TrackModel>(project::TrackKind::Video)),
       audioTrackModel_(std::make_unique<TrackModel>(project::TrackKind::Audio)),
+      mediaBinModel_(std::make_unique<MediaBinModel>()),
       exportRunner_(exportRunner ? std::move(exportRunner) : mvm::app::exportTimeline),
       exportThreadFactory_(
           exportThreadFactory
@@ -575,6 +578,10 @@ QAbstractItemModel* MvmController::audioTrackModel() const {
     return audioTrackModel_.get();
 }
 
+MediaBinModel* MvmController::mediaBinModel() const {
+    return mediaBinModel_.get();
+}
+
 QString MvmController::timelineFpsText() const {
     if (project_.timelineFpsDen == 1)
         return QString::number(project_.timelineFpsNum) + QStringLiteral(" fps");
@@ -628,6 +635,8 @@ void MvmController::refreshTimelineModel() {
         videoTrackModel_->setProject(project_);
     if (audioTrackModel_)
         audioTrackModel_->setProject(project_);
+    if (mediaBinModel_)
+        mediaBinModel_->setProject(project_);
     const auto timeline = project::validateTimeline(project_);
     totalTimelineFrames_ = timeline.success ? timeline.totalFrames : 0;
     if (totalTimelineFrames_ == 0)
@@ -1784,6 +1793,11 @@ bool MvmController::addVideoClip(const QUrl& fileUrl) {
         }
     }
 
+    QString registerError;
+    if (!registerMediaItem(candidate, mediaPath, registerError)) {
+        setStatus(registerError);
+        return false;
+    }
     if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
         return false;
 
@@ -1836,12 +1850,194 @@ bool MvmController::addAudioClip(const QUrl& fileUrl) {
         setStatus(QString::fromStdString(placed.error));
         return false;
     }
+    QString registerError;
+    if (!registerMediaItem(candidate, mediaPath, registerError)) {
+        setStatus(registerError);
+        return false;
+    }
     if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
         return false;
 
     const int index = placed.selectedIndex;
     Q_EMIT stateChanged();
     return selectClip(index);
+}
+
+bool MvmController::registerMediaItem(project::Project& candidate,
+                                      const std::filesystem::path& mediaPath,
+                                      QString& error) const {
+    if (project::findMediaItemByPath(candidate, mediaPath))
+        return true;
+    auto probed = probeMediaForBin(mediaPath);
+    if (!probed.success) {
+        error = QStringLiteral("素材をプロジェクトへ登録できません: ") +
+                QString::fromStdString(probed.error);
+        return false;
+    }
+    probed.item.id = newClipId();
+    probed.item.name =
+        QFileInfo(QString::fromStdWString(mediaPath.wstring())).fileName().toStdString();
+    const auto added = project::addMediaItem(candidate, std::move(probed.item));
+    if (!added.success) {
+        error = QStringLiteral("素材をプロジェクトへ登録できません: ") +
+                QString::fromStdString(added.error);
+        return false;
+    }
+    return true;
+}
+
+bool MvmController::applyMediaBinEdit(
+    const std::function<project::MediaBinEditResult(project::Project&)>& edit,
+    const QString& successStatus) {
+    if (busy_)
+        return false;
+    project::Project candidate = project_;
+    const auto edited = edit(candidate);
+    if (!edited.success) {
+        setStatus(QString::fromStdString(edited.error));
+        return false;
+    }
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
+        return false;
+    setStatus(successStatus);
+    Q_EMIT stateChanged();
+    return true;
+}
+
+bool MvmController::importMediaFiles(const QList<QUrl>& fileUrls, const QString& folderId) {
+    if (busy_)
+        return false;
+    project::Project candidate = project_;
+    int imported = 0;
+    int alreadyImported = 0;
+    QStringList failures;
+    for (const QUrl& url : fileUrls) {
+        if (!url.isLocalFile()) {
+            failures << url.toString() + QStringLiteral(": ローカルファイルではありません");
+            continue;
+        }
+        const QFileInfo info(url.toLocalFile());
+        if (!info.exists() || !info.isFile()) {
+            failures << info.fileName() + QStringLiteral(": ファイルがありません");
+            continue;
+        }
+        const std::filesystem::path mediaPath(info.absoluteFilePath().toStdWString());
+        if (project::findMediaItemByPath(candidate, mediaPath)) {
+            ++alreadyImported;
+            continue;
+        }
+        auto probed = probeMediaForBin(mediaPath);
+        if (!probed.success) {
+            failures << info.fileName() + QStringLiteral(": ") +
+                            QString::fromStdString(probed.error);
+            continue;
+        }
+        probed.item.id = newClipId();
+        probed.item.name = info.fileName().toStdString();
+        probed.item.folderId = folderId.toStdString();
+        const auto added = project::addMediaItem(candidate, std::move(probed.item));
+        if (!added.success) {
+            failures << info.fileName() + QStringLiteral(": ") +
+                            QString::fromStdString(added.error);
+            continue;
+        }
+        ++imported;
+    }
+    if (imported > 0 &&
+        !commitProjectEdit(std::move(candidate), QStringLiteral("素材を読み込めません: ")))
+        return false;
+
+    QStringList parts;
+    if (imported > 0)
+        parts << QStringLiteral("%1 件の素材を読み込みました").arg(imported);
+    if (alreadyImported > 0)
+        parts << QStringLiteral("読み込み済みの %1 件は省略しました").arg(alreadyImported);
+    if (!failures.isEmpty())
+        parts << QStringLiteral("%1 件は読み込めません (%2)")
+                     .arg(failures.size())
+                     .arg(failures.join(QStringLiteral(" / ")));
+    setStatus(parts.join(QStringLiteral("。")));
+    if (imported > 0 && !folderId.isEmpty())
+        mediaBinModel_->setExpanded(folderId, true);
+    Q_EMIT stateChanged();
+    // 一部が読めなくても、読めた素材は commit 済みである。false を「変更なし」の意味に保つ。
+    return imported > 0;
+}
+
+QString MvmController::createMediaFolder(const QString& parentFolderId) {
+    // 兄弟に限らず Project 全体で未使用の番号を振る。移動しても名前が衝突しない。
+    QString name;
+    for (int number = 1;; ++number) {
+        name = QStringLiteral("フォルダ %1").arg(number, 2, 10, QLatin1Char('0'));
+        const std::string candidateName = name.toStdString();
+        if (std::none_of(project_.mediaFolders.begin(), project_.mediaFolders.end(),
+                         [&](const auto& folder) { return folder.name == candidateName; }))
+            break;
+    }
+    project::MediaFolder folder{newClipId(), name.toStdString(), parentFolderId.toStdString()};
+    const QString id = QString::fromStdString(folder.id);
+    const bool created = applyMediaBinEdit(
+        [&](project::Project& candidate) {
+            return project::addMediaFolder(candidate, std::move(folder));
+        },
+        QStringLiteral("フォルダを作成しました: ") + name);
+    if (!created)
+        return {};
+    if (!parentFolderId.isEmpty())
+        mediaBinModel_->setExpanded(parentFolderId, true);
+    return id;
+}
+
+bool MvmController::renameMediaBinEntry(const QString& entryId, const QString& name) {
+    const QString trimmed = name.trimmed();
+    return applyMediaBinEdit(
+        [&](project::Project& candidate) {
+            return project::renameMediaBinEntry(candidate, entryId.toStdString(),
+                                                trimmed.toStdString());
+        },
+        QStringLiteral("名前を変更しました: ") + trimmed);
+}
+
+bool MvmController::moveMediaBinEntries(const QStringList& entryIds, const QString& folderId) {
+    std::vector<std::string> ids;
+    for (const auto& id : entryIds)
+        ids.push_back(id.toStdString());
+    const bool moved = applyMediaBinEdit(
+        [&](project::Project& candidate) {
+            return project::moveMediaBinEntries(candidate, ids, folderId.toStdString());
+        },
+        QStringLiteral("%1 件を移動しました").arg(entryIds.size()));
+    if (moved && !folderId.isEmpty())
+        mediaBinModel_->setExpanded(folderId, true);
+    return moved;
+}
+
+bool MvmController::removeMediaBinEntries(const QStringList& entryIds) {
+    std::vector<std::string> ids;
+    for (const auto& id : entryIds)
+        ids.push_back(id.toStdString());
+    return applyMediaBinEdit(
+        [&](project::Project& candidate) { return project::removeMediaBinEntries(candidate, ids); },
+        QStringLiteral("%1 件を削除しました").arg(entryIds.size()));
+}
+
+bool MvmController::addMediaItemToTimeline(const QString& itemId) {
+    const auto* item = project::findMediaItem(project_, itemId.toStdString());
+    if (!item) {
+        setStatus(QStringLiteral("素材がありません"));
+        return false;
+    }
+    const QUrl url = QUrl::fromLocalFile(QString::fromStdWString(item->mediaPath.wstring()));
+    switch (item->kind) {
+    case project::MediaKind::Video:
+        return addVideoClip(url);
+    case project::MediaKind::Audio:
+        return addAudioClip(url);
+    case project::MediaKind::Image:
+        break;
+    }
+    setStatus(QStringLiteral("静止画はまだタイムラインへ配置できません"));
+    return false;
 }
 
 bool MvmController::selectClip(int index) {
@@ -2684,7 +2880,10 @@ bool MvmController::saveProjectAs(const QUrl& fileUrl) {
         setStatus(QStringLiteral("Projectを保存できません: ") + error);
         return false;
     }
-    const bool sameTarget = project::sameCanonicalPath(path, projectPath_);
+    // 同じ実体か確定できないときも「同じかもしれない」として外部変更を検査する。
+    // 別物と決めつけると、開いている canonical を検査なしで上書きしうる。
+    const bool sameTarget =
+        project::comparePathIdentity(path, projectPath_) != project::PathSameness::Different;
     if (sameTarget) {
         QString mismatch;
         if (!canonicalBaseMatchesDisk(mismatch)) {
