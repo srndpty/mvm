@@ -40,6 +40,9 @@ ProjectLoadResult parseProjectJsonText(const std::string& jsonText,
 struct ProjectRecoveryLoadResult {
     bool success = false;
     bool legacy = false;
+    // envelopeのcanonical_pathが、今開こうとしているProjectと違う。
+    // 中身は復元対象にしない。fileは消さない。
+    bool foreignProject = false;
     std::string canonicalSha256;
     std::string savedAt;
     std::string sessionId;
@@ -47,6 +50,10 @@ struct ProjectRecoveryLoadResult {
     Project project;
     std::string error;
 };
+
+// 表記ゆれ（区切り文字、大文字小文字）を吸収したうえで同一pathか。
+// 片方が存在しなくても比較できる。equivalent()は使わない。
+bool sameCanonicalPath(const std::filesystem::path& left, const std::filesystem::path& right);
 
 enum class RecoveryDisposition { Stale, Restorable, CanonicalChanged };
 

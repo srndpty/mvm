@@ -64,6 +64,7 @@ class MvmController final : public QObject {
     Q_PROPERTY(bool recoveryAvailable READ recoveryAvailable NOTIFY stateChanged)
     Q_PROPERTY(bool recoveryCanonicalChanged READ recoveryCanonicalChanged NOTIFY stateChanged)
     Q_PROPERTY(bool recoveryCorrupt READ recoveryCorrupt NOTIFY stateChanged)
+    Q_PROPERTY(bool recoveryForeign READ recoveryForeign NOTIFY stateChanged)
     Q_PROPERTY(QString recoveryProjectPath READ recoveryProjectPath NOTIFY stateChanged)
     Q_PROPERTY(bool canExport READ canExport NOTIFY stateChanged)
     Q_PROPERTY(bool exporting READ exporting NOTIFY stateChanged)
@@ -168,6 +169,8 @@ public:
 
     bool recoveryCorrupt() const { return recoveryCorrupt_; }
 
+    bool recoveryForeign() const { return recoveryForeign_; }
+
     bool holdsProjectLock() const { return projectLockHeld_; }
 
     QString recoveryProjectPath() const;
@@ -263,6 +266,8 @@ public:
     Q_INVOKABLE bool newProject(const QUrl& fileUrl);
     Q_INVOKABLE bool openProject(const QUrl& fileUrl);
     Q_INVOKABLE bool saveProject();
+    // 外部変更されたcanonicalを、利用者が明示したときだけ上書きする。
+    Q_INVOKABLE bool saveProjectOverwritingExternalChange();
     Q_INVOKABLE bool saveProjectAs(const QUrl& fileUrl);
     Q_INVOKABLE bool discardUnsavedChanges();
     Q_INVOKABLE bool restoreRecovery();
@@ -281,6 +286,7 @@ Q_SIGNALS:
     void meterChanged();
     void exportFailed(const QString& message);
     void recoveryDetected();
+    void externalCanonicalChangeOnSave();
 
 private:
     bool startTimelineExport(const QUrl& outputUrl, int videoCrf);
@@ -336,6 +342,9 @@ private:
     bool commitProjectEdit(project::Project candidate, const QString& failurePrefix);
     bool writeCanonicalProject(const project::Project& project, const std::filesystem::path& path,
                                QString& error) const;
+    bool saveCurrentProject(bool overwriteExternalChange);
+    bool rememberCanonicalBase();
+    bool canonicalBaseMatchesDisk(QString& error) const;
     std::filesystem::path recoveryPath() const;
     bool removeRecoveryFile(QString& error);
     bool removeRecoveryBeside(const std::filesystem::path& projectPath, QString& error);
@@ -440,6 +449,10 @@ private:
     std::optional<project::Project> recoveryProject_;
     bool recoveryCanonicalChanged_ = false;
     bool recoveryCorrupt_ = false;
+    bool recoveryForeign_ = false;
+    std::string savedCanonicalSha256_;
+    bool canonicalBaseKnown_ = false;
+    std::string recoveryRecordedSha256_;
     void* projectLockHandle_ = nullptr;
     bool projectLockHeld_ = false;
     std::filesystem::path projectLockPath_;

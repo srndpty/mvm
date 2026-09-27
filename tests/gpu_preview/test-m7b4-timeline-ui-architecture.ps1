@@ -267,7 +267,9 @@ foreach ($needle in @('project::timelineClipIndexAt(project_, current.track, cla
 foreach ($needle in @('FILE_FLAG_DELETE_ON_CLOSE',
                       'ERROR_SHARING_VIOLATION',
                       'project::saveProjectRecovery(',
-                      'project::classifyRecovery(')) {
+                      'project::classifyRecovery(',
+                      'savedCanonicalSha256_',
+                      'canonicalBaseMatchesDisk(')) {
     if (-not $controller.Contains($needle)) {
         throw "Project lockまたはrecovery照合の契約がありません: $needle"
     }
@@ -281,6 +283,8 @@ foreach ($needle in @('currentRevision_ = nextRevision_++;',
 foreach ($needle in @('Q_PROPERTY(bool dirty READ dirty NOTIFY stateChanged)',
                       'Q_PROPERTY(bool recoveryAvailable READ recoveryAvailable NOTIFY stateChanged)',
                       'Q_INVOKABLE bool saveProject();',
+                      'Q_INVOKABLE bool saveProjectOverwritingExternalChange();',
+                      'Q_PROPERTY(bool recoveryForeign READ recoveryForeign NOTIFY stateChanged)',
                       'Q_INVOKABLE bool discardUnsavedChanges();',
                       'Q_INVOKABLE bool restoreRecovery();',
                       'Q_INVOKABLE bool discardRecovery();',
@@ -299,6 +303,10 @@ foreach ($needle in @('onClosing: close => {',
                       'mvmController.discardUnsavedChanges()',
                       'id: unsavedChangesDialog',
                       'id: recoveryDialog',
+                      'id: externalSaveDialog',
+                      'mvmController.saveProjectOverwritingExternalChange()',
+                      'mvmController.recoveryForeign',
+                      'function onExternalCanonicalChangeOnSave()',
                       'mvmController.recoveryCanonicalChanged',
                       'mvmController.dismissRecovery()',
                       'mvmController.recoveryCorrupt')) {

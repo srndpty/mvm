@@ -21,7 +21,8 @@ ApplicationWindow {
     property string pendingProjectAction: ""
 
     Component.onCompleted: {
-        if (mvmController.recoveryAvailable || mvmController.recoveryCorrupt)
+        if (mvmController.recoveryAvailable || mvmController.recoveryCorrupt
+                || mvmController.recoveryForeign)
             recoveryDialog.open();
     }
 
@@ -1744,6 +1745,9 @@ ApplicationWindow {
         function onRecoveryDetected() {
             recoveryDialog.open();
         }
+        function onExternalCanonicalChangeOnSave() {
+            externalSaveDialog.open();
+        }
     }
 
     FileDialog {
@@ -1809,27 +1813,32 @@ ApplicationWindow {
         closePolicy: Popup.NoAutoClose
         title: mvmController.recoveryCorrupt
                ? "自動復旧データを読めません"
-               : (mvmController.recoveryCanonicalChanged
-                  ? "Project fileが外部で変更されています"
-                  : "自動保存された編集があります")
+               : (mvmController.recoveryForeign
+                  ? "別のProjectの自動復旧データです"
+                  : (mvmController.recoveryCanonicalChanged
+                     ? "Project fileが外部で変更されています"
+                     : "自動保存された編集があります"))
 
         contentItem: Label {
             text: mvmController.recoveryCorrupt
                   ? "自動復旧データが壊れているため、最後に保存したProjectを開きました。復旧fileは残しています。\n"
                     + mvmController.recoveryProjectPath
-                  : (mvmController.recoveryCanonicalChanged
+                  : (mvmController.recoveryForeign
+                     ? "この自動復旧データは、今開いているProjectのものではありません。fileは残しています。\n"
+                       + mvmController.recoveryProjectPath
+                     : (mvmController.recoveryCanonicalChanged
                      ? "自動保存のあとでProject fileの内容が変わっています。復元すると、その変更は明示保存するまでfileへ書き込まれません。\n"
                        + mvmController.recoveryProjectPath
                      : "前回、正常に保存されなかった編集が見つかりました。\n"
                        + mvmController.recoveryProjectPath
-                       + "\n\n自動保存された編集を復元しますか？")
+                       + "\n\n自動保存された編集を復元しますか？"))
             color: "white"
             wrapMode: Text.Wrap
         }
 
         footer: DialogButtonBox {
             Button {
-                visible: !mvmController.recoveryCorrupt
+                visible: !mvmController.recoveryCorrupt && !mvmController.recoveryForeign
                 text: "復元する"
                 DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
                 onClicked: {
@@ -1838,7 +1847,7 @@ ApplicationWindow {
                 }
             }
             Button {
-                visible: !mvmController.recoveryCorrupt
+                visible: !mvmController.recoveryCorrupt && !mvmController.recoveryForeign
                 text: mvmController.recoveryCanonicalChanged ? "現在のProjectを開く" : "最後の保存状態を使う"
                 DialogButtonBox.buttonRole: DialogButtonBox.DestructiveRole
                 onClicked: {
@@ -1848,6 +1857,7 @@ ApplicationWindow {
             }
             Button {
                 visible: mvmController.recoveryCanonicalChanged && !mvmController.recoveryCorrupt
+                      && !mvmController.recoveryForeign
                 text: "キャンセル"
                 DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
                 onClicked: {
@@ -1856,13 +1866,52 @@ ApplicationWindow {
                 }
             }
             Button {
-                visible: mvmController.recoveryCorrupt
+                visible: mvmController.recoveryCorrupt || mvmController.recoveryForeign
                 text: "OK"
                 DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
                 onClicked: {
                     if (mvmController.dismissRecovery())
                         recoveryDialog.close();
                 }
+            }
+        }
+    }
+
+    Dialog {
+        id: externalSaveDialog
+        anchors.centerIn: parent
+        width: Math.min(root.width - 40, 620)
+        modal: true
+        closePolicy: Popup.NoAutoClose
+        title: "Project fileが外部で変更されています"
+
+        contentItem: Label {
+            text: "このProjectを開いたあとで、fileの内容が変わっています。このまま保存すると、その変更を上書きします。"
+            color: "white"
+            wrapMode: Text.Wrap
+        }
+
+        footer: DialogButtonBox {
+            Button {
+                text: "上書きする"
+                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+                onClicked: {
+                    if (mvmController.saveProjectOverwritingExternalChange())
+                        externalSaveDialog.close();
+                }
+            }
+            Button {
+                text: "名前を付けて保存"
+                DialogButtonBox.buttonRole: DialogButtonBox.ActionRole
+                onClicked: {
+                    externalSaveDialog.close();
+                    saveProjectDialog.open();
+                }
+            }
+            Button {
+                text: "キャンセル"
+                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
+                onClicked: externalSaveDialog.close()
             }
         }
     }

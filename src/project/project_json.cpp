@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cwctype>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -1395,6 +1396,12 @@ bool parseRecoveryEnvelope(const std::string& text, ProjectRecoveryLoadResult& r
         result.error = "canonical_sha256 がSHA-256ではありません";
         return false;
     }
+    // 別Projectへコピーされたrecoveryを、開いているpath基準でrebaseしない。
+    if (!sameCanonicalPath(pathFromUtf8(result.canonicalPath), canonicalPath)) {
+        result.foreignProject = true;
+        result.success = true;
+        return true;
+    }
     const auto project = parseProjectJsonText(projectJson, canonicalPath);
     if (!project.success) {
         result.error = project.error;
@@ -1419,7 +1426,14 @@ ProjectIoResult saveProjectRecovery(const Project& project,
         result.error = "自動復旧データの識別情報が不正です";
         return result;
     }
-    const auto serialized = serializeProjectJson(project, canonicalPath);
+    std::error_code pathError;
+    const auto absoluteCanonical =
+        std::filesystem::absolute(canonicalPath, pathError).lexically_normal();
+    if (pathError) {
+        result.error = "canonical pathを解決できません";
+        return result;
+    }
+    const auto serialized = serializeProjectJson(project, absoluteCanonical);
     if (!serialized.success) {
         result.error = serialized.error;
         return result;
@@ -1430,7 +1444,7 @@ ProjectIoResult saveProjectRecovery(const Project& project,
          << "  \"canonical_sha256\": \"" << escapeJson(canonicalSha256) << "\",\n"
          << "  \"saved_at\": \"" << escapeJson(savedAt) << "\",\n"
          << "  \"session_id\": \"" << escapeJson(sessionId) << "\",\n"
-         << "  \"canonical_path\": \"" << escapeJson(pathToUtf8(canonicalPath)) << "\",\n"
+         << "  \"canonical_path\": \"" << escapeJson(pathToUtf8(absoluteCanonical)) << "\",\n"
          << "  \"project\": " << serialized.json << "}\n";
     return writeUtf8FileAtomically(recoveryPath, json.str());
 }
@@ -1460,6 +1474,24 @@ ProjectRecoveryLoadResult loadProjectRecovery(const std::filesystem::path& recov
     result.legacy = true;
     result.success = true;
     return result;
+}
+
+bool sameCanonicalPath(const std::filesystem::path& left, const std::filesystem::path& right) {
+    std::error_code leftError;
+    std::error_code rightError;
+    const auto leftAbsolute = std::filesystem::absolute(left, leftError).lexically_normal();
+    const auto rightAbsolute = std::filesystem::absolute(right, rightError).lexically_normal();
+    if (leftError || rightError)
+        return false;
+    const auto leftText = leftAbsolute.generic_wstring();
+    const auto rightText = rightAbsolute.generic_wstring();
+    if (leftText.size() != rightText.size())
+        return false;
+    for (std::size_t index = 0; index < leftText.size(); ++index) {
+        if (towlower(leftText[index]) != towlower(rightText[index]))
+            return false;
+    }
+    return true;
 }
 
 RecoveryDisposition classifyRecovery(const Project& recoveryProject,

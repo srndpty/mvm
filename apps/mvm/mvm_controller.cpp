@@ -261,9 +261,11 @@ MvmController::MvmController(std::filesystem::path projectPath,
     if (!projectLockHeld_) {
         statusText_ = QStringLiteral("このProjectは他のプロセスが編集中です: ") + lockError;
     } else {
+        if (!rememberCanonicalBase())
+            statusText_ = QStringLiteral("Project fileの基準hashを記録できません");
         detectRecovery();
     }
-    if (projectLockHeld_ && !recoveryAvailable() && !recoveryCorrupt_) {
+    if (projectLockHeld_ && !recoveryAvailable() && !recoveryCorrupt_ && !recoveryForeign_) {
         const project::Project beforeRestore = project_;
         restoreFirstManimClip();
         if (project_ != beforeRestore && currentRevision_ == savedRevision_) {
@@ -761,6 +763,37 @@ QString MvmController::canonicalFileSha256(bool& readable) const {
     return QString::fromLatin1(hash.result().toHex());
 }
 
+bool MvmController::rememberCanonicalBase() {
+    bool readable = false;
+    const QString hash = canonicalFileSha256(readable);
+    if (!readable) {
+        canonicalBaseKnown_ = false;
+        savedCanonicalSha256_.clear();
+        return false;
+    }
+    savedCanonicalSha256_ = hash.toStdString();
+    canonicalBaseKnown_ = true;
+    return true;
+}
+
+bool MvmController::canonicalBaseMatchesDisk(QString& error) const {
+    if (!canonicalBaseKnown_) {
+        error = QStringLiteral("Project fileの基準hashが不明です");
+        return false;
+    }
+    bool readable = false;
+    const QString diskHash = canonicalFileSha256(readable);
+    if (!readable) {
+        error = QStringLiteral("Project fileを照合できません");
+        return false;
+    }
+    if (diskHash.toStdString() != savedCanonicalSha256_) {
+        error = QStringLiteral("Project fileが外部で変更されています");
+        return false;
+    }
+    return true;
+}
+
 void MvmController::scheduleRecoveryAutosave() {
     if (!dirty()) {
         recoveryDebounceTimer_.stop();
@@ -784,16 +817,15 @@ void MvmController::writeRecoveryAutosave() {
     }
     if (!projectLockHeld_ || recoveryRevision_ == currentRevision_)
         return;
-
-    bool hashReadable = false;
-    const QString canonicalHash = canonicalFileSha256(hashReadable);
-    if (!hashReadable) {
-        setStatus(QStringLiteral("自動復旧データを保存できません: Project fileを照合できません"));
+    // diskを読み直すと、開いたあとの外部変更を基準hashとして記録してしまう。
+    if (!canonicalBaseKnown_) {
+        setStatus(
+            QStringLiteral("自動復旧データを保存できません: Project fileの基準hashが不明です"));
         recoveryMaximumTimer_.start();
         return;
     }
     const auto saved = project::saveProjectRecovery(
-        project_, recoveryPath(), projectPath_, canonicalHash.toStdString(),
+        project_, recoveryPath(), projectPath_, savedCanonicalSha256_,
         QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs).toStdString(), sessionId_);
     if (!saved.success) {
         setStatus(QStringLiteral("自動復旧データを保存できません: ") +
@@ -808,6 +840,8 @@ void MvmController::detectRecovery() {
     recoveryProject_.reset();
     recoveryCanonicalChanged_ = false;
     recoveryCorrupt_ = false;
+    recoveryForeign_ = false;
+    recoveryRecordedSha256_.clear();
     recoveryRevision_ = 0;
     std::error_code existsError;
     const bool exists = std::filesystem::exists(recoveryPath(), existsError);
@@ -825,6 +859,16 @@ void MvmController::detectRecovery() {
         statusText_ = QStringLiteral("自動復旧データが壊れています。fileは保持しました: ") +
                       QString::fromStdString(loaded.error);
         Q_EMIT stateChanged();
+        Q_EMIT recoveryDetected();
+        return;
+    }
+    if (loaded.foreignProject) {
+        recoveryForeign_ = true;
+        statusText_ =
+            QStringLiteral("自動復旧データは別のProjectに属しています。fileは保持しました: ") +
+            QString::fromStdString(loaded.canonicalPath);
+        Q_EMIT stateChanged();
+        Q_EMIT recoveryDetected();
         return;
     }
 
@@ -832,6 +876,7 @@ void MvmController::detectRecovery() {
     const QString canonicalHash = canonicalFileSha256(hashReadable);
     if (!hashReadable) {
         recoveryProject_ = loaded.project;
+        recoveryRecordedSha256_ = loaded.canonicalSha256;
         recoveryCanonicalChanged_ = true;
         statusText_ =
             QStringLiteral("Project fileを照合できないため、自動復旧の扱いを確認してください");
@@ -851,6 +896,7 @@ void MvmController::detectRecovery() {
     }
 
     recoveryProject_ = loaded.project;
+    recoveryRecordedSha256_ = loaded.canonicalSha256;
     recoveryCanonicalChanged_ = disposition == project::RecoveryDisposition::CanonicalChanged;
     if (recoveryCanonicalChanged_) {
         statusText_ = QStringLiteral(
@@ -864,9 +910,14 @@ bool MvmController::restoreRecovery() {
     if (busy_ || !projectLockHeld_ || !recoveryProject_ || !pauseTimeline())
         return false;
     project_ = *recoveryProject_;
+    // 復元した作業状態の基準は、今のdiskではなくrecoveryに記録されたcanonical。
+    savedCanonicalSha256_ = recoveryRecordedSha256_;
+    canonicalBaseKnown_ = true;
     recoveryProject_.reset();
+    recoveryRecordedSha256_.clear();
     recoveryCanonicalChanged_ = false;
     recoveryCorrupt_ = false;
+    recoveryForeign_ = false;
     currentRevision_ = nextRevision_++;
     recoveryRevision_ = currentRevision_;
     undoHistory_.clear();
@@ -898,8 +949,10 @@ bool MvmController::discardRecovery() {
         return false;
     }
     recoveryProject_.reset();
+    recoveryRecordedSha256_.clear();
     recoveryCanonicalChanged_ = false;
     recoveryCorrupt_ = false;
+    recoveryForeign_ = false;
     const project::Project beforeRestore = project_;
     restoreFirstManimClip();
     if (project_ != beforeRestore && currentRevision_ == savedRevision_) {
@@ -914,11 +967,13 @@ bool MvmController::discardRecovery() {
 }
 
 bool MvmController::dismissRecovery() {
-    if (!recoveryProject_ && !recoveryCorrupt_)
+    if (!recoveryProject_ && !recoveryCorrupt_ && !recoveryForeign_)
         return false;
     recoveryProject_.reset();
+    recoveryRecordedSha256_.clear();
     recoveryCanonicalChanged_ = false;
     recoveryCorrupt_ = false;
+    recoveryForeign_ = false;
     Q_EMIT stateChanged();
     setStatus(QStringLiteral("自動復旧データは残したまま、確認を閉じました"));
     return true;
@@ -2510,6 +2565,8 @@ bool MvmController::adoptProject(project::Project loaded, std::filesystem::path 
     project_ = std::move(loaded);
     projectPath_ = std::move(path);
     savedProject_ = project_;
+    if (!rememberCanonicalBase())
+        statusText_ = QStringLiteral("Project fileの基準hashを記録できません");
     currentRevision_ = 0;
     savedRevision_ = 0;
     nextRevision_ = 1;
@@ -2535,7 +2592,7 @@ bool MvmController::adoptProject(project::Project loaded, std::filesystem::path 
     }
     setStatus(std::move(successStatus));
     detectRecovery();
-    if (!recoveryAvailable() && !recoveryCorrupt_) {
+    if (!recoveryAvailable() && !recoveryCorrupt_ && !recoveryForeign_) {
         const project::Project beforeRestore = project_;
         restoreFirstManimClip();
         if (project_ != beforeRestore && currentRevision_ == savedRevision_) {
@@ -2576,9 +2633,7 @@ bool MvmController::newProject(const QUrl& fileUrl) {
         setStatus(QStringLiteral("新規Projectを保存できません: ") + error);
         return false;
     }
-    QString recoveryError;
-    removeRecoveryBeside(projectPath_, recoveryError);
-    removeRecoveryBeside(path, recoveryError);
+    // dismissや破損で残したrecoveryは、Newでは消さない。
     adoptProjectLock(acquiredLock, path);
     return adoptProject(std::move(fresh), path, QStringLiteral("新規Projectを作成しました"));
 }
@@ -2629,27 +2684,39 @@ bool MvmController::saveProjectAs(const QUrl& fileUrl) {
         setStatus(QStringLiteral("Projectを保存できません: ") + error);
         return false;
     }
+    const bool sameTarget = project::sameCanonicalPath(path, projectPath_);
+    if (sameTarget) {
+        QString mismatch;
+        if (!canonicalBaseMatchesDisk(mismatch)) {
+            releaseLockHandle(acquiredLock);
+            setStatus(mismatch);
+            Q_EMIT externalCanonicalChangeOnSave();
+            return false;
+        }
+    }
     if (!writeCanonicalProject(project_, path, error)) {
         releaseLockHandle(acquiredLock);
         setStatus(QStringLiteral("Projectを保存できません: ") + error);
         return false;
     }
     const auto previousPath = projectPath_;
+    // このsessionが書いたautosaveだけ消す。dismissや破損で残したfileは残す。
+    const bool sessionWroteRecovery = recoveryRevision_ != 0;
     QString recoveryError;
-    bool removedRecovery = removeRecoveryBeside(previousPath, recoveryError);
-    QString destinationError;
-    if (!removeRecoveryBeside(path, destinationError)) {
-        removedRecovery = false;
-        recoveryError = destinationError;
-    }
+    bool removedRecovery = true;
+    if (sessionWroteRecovery)
+        removedRecovery = removeRecoveryBeside(previousPath, recoveryError);
     adoptProjectLock(acquiredLock, path);
     projectPath_ = path;
     savedProject_ = project_;
     savedRevision_ = currentRevision_;
+    const bool rememberedBase = rememberCanonicalBase();
     recoveryRevision_ = 0;
     recoveryProject_.reset();
+    recoveryRecordedSha256_.clear();
     recoveryCanonicalChanged_ = false;
     recoveryCorrupt_ = false;
+    recoveryForeign_ = false;
     recoveryDebounceTimer_.stop();
     recoveryMaximumTimer_.stop();
     Q_EMIT stateChanged();
@@ -2659,16 +2726,36 @@ bool MvmController::saveProjectAs(const QUrl& fileUrl) {
             recoveryError);
         return true;
     }
+    if (!rememberedBase) {
+        setStatus(QStringLiteral("Projectは保存しましたが、保存後のhashを記録できません"));
+        return true;
+    }
     setStatus(QStringLiteral("Projectを保存しました: ") + fromPath(path));
     return true;
 }
 
 bool MvmController::saveProject() {
+    return saveCurrentProject(false);
+}
+
+bool MvmController::saveProjectOverwritingExternalChange() {
+    return saveCurrentProject(true);
+}
+
+bool MvmController::saveCurrentProject(bool overwriteExternalChange) {
     if (busy_)
         return false;
     if (!projectLockHeld_) {
         setStatus(QStringLiteral("Projectを保存できません: Projectを排他できません"));
         return false;
+    }
+    if (!overwriteExternalChange) {
+        QString mismatch;
+        if (!canonicalBaseMatchesDisk(mismatch)) {
+            setStatus(mismatch);
+            Q_EMIT externalCanonicalChangeOnSave();
+            return false;
+        }
     }
     QString error;
     if (!writeCanonicalProject(project_, projectPath_, error)) {
@@ -2677,15 +2764,26 @@ bool MvmController::saveProject() {
     }
     savedProject_ = project_;
     savedRevision_ = currentRevision_;
+    const bool rememberedBase = rememberCanonicalBase();
     recoveryProject_.reset();
+    recoveryRecordedSha256_.clear();
     recoveryCanonicalChanged_ = false;
     recoveryCorrupt_ = false;
+    recoveryForeign_ = false;
     recoveryDebounceTimer_.stop();
     recoveryMaximumTimer_.stop();
     QString recoveryError;
-    if (!removeRecoveryFile(recoveryError)) {
+    // このsessionのautosaveだけ消す。保全したrecoveryは次回Openまで残す。
+    const bool sessionWroteRecovery = recoveryRevision_ != 0;
+    recoveryRevision_ = 0;
+    const bool removedRecovery = !sessionWroteRecovery || removeRecoveryFile(recoveryError);
+    if (!removedRecovery) {
         setStatus(QStringLiteral("Projectは保存しましたが、自動復旧データを削除できません: ") +
                   recoveryError);
+        return true;
+    }
+    if (!rememberedBase) {
+        setStatus(QStringLiteral("Projectは保存しましたが、保存後のhashを記録できません"));
         return true;
     }
     setStatus(QStringLiteral("Projectを保存しました: ") + fromPath(projectPath_));
