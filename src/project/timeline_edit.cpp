@@ -154,8 +154,9 @@ bool sourceRateMatchesTimelineRate(const Project& project, const TimelineClip& c
 
 TimelineValidationResult validateTimeline(const Project& project) {
     TimelineValidationResult result;
-    if (project.schemaVersion != 3) {
-        result.error = "Project schema_version が 3 ではありません";
+    if (project.schemaVersion != kProjectSchemaVersion) {
+        result.error = "Project schema_version が " + std::to_string(kProjectSchemaVersion) +
+                       " ではありません";
         return result;
     }
     if (!isConfigurableTimelineFrameRate(project.timelineFpsNum, project.timelineFpsDen)) {

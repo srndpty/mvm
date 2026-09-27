@@ -1,5 +1,7 @@
 qt_add_executable(mvm
     main.cpp
+    media_bin_model.cpp
+    media_import.cpp
     mvm_controller.cpp
     timeline_clip_model.cpp
     track_model.cpp
@@ -15,6 +17,8 @@ qt_add_qml_module(mvm
         Main.qml
         DragNumberField.qml
         AudioMeter.qml
+        MediaKindIcon.qml
+        ProjectPanel.qml
 )
 
 target_include_directories(mvm PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

@@ -2,7 +2,9 @@
 #define MVM_APPS_MVM_MVM_CONTROLLER_H
 
 #include "app/timeline_export.h"
+#include "media_bin_model.h"
 #include "preview_engine/preview_engine.h"
+#include "project/media_bin.h"
 #include "project/project.h"
 
 #include <atomic>
@@ -50,6 +52,7 @@ class MvmController final : public QObject {
     Q_PROPERTY(QAbstractItemModel* timelineModel READ timelineModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* videoTrackModel READ videoTrackModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* audioTrackModel READ audioTrackModel CONSTANT)
+    Q_PROPERTY(MediaBinModel* mediaBinModel READ mediaBinModel CONSTANT)
     Q_PROPERTY(int videoTrackCount READ videoTrackCount NOTIFY stateChanged)
     Q_PROPERTY(int audioTrackCount READ audioTrackCount NOTIFY stateChanged)
     Q_PROPERTY(int clipCount READ clipCount NOTIFY stateChanged)
@@ -140,6 +143,7 @@ public:
     QAbstractItemModel* timelineModel() const;
     QAbstractItemModel* videoTrackModel() const;
     QAbstractItemModel* audioTrackModel() const;
+    MediaBinModel* mediaBinModel() const;
 
     int videoTrackCount() const { return static_cast<int>(project_.videoTracks.size()); }
 
@@ -252,6 +256,16 @@ public:
     // drag が release されずに終わった場合に override を捨てる。
     Q_INVOKABLE bool cancelEffectPreview();
 
+    // プロジェクトパネル (素材とフォルダ)。folderId が空なら root。
+    // 読み込みは timeline へ置かずに bin へ登録するだけ。1 回の呼び出しが 1 undo になる。
+    Q_INVOKABLE bool importMediaFiles(const QList<QUrl>& fileUrls, const QString& folderId);
+    // 作成した folder の id を返す。失敗時は空文字列。
+    Q_INVOKABLE QString createMediaFolder(const QString& parentFolderId);
+    Q_INVOKABLE bool renameMediaBinEntry(const QString& entryId, const QString& name);
+    Q_INVOKABLE bool moveMediaBinEntries(const QStringList& entryIds, const QString& folderId);
+    Q_INVOKABLE bool removeMediaBinEntries(const QStringList& entryIds);
+    Q_INVOKABLE bool addMediaItemToTimeline(const QString& itemId);
+
     // track 編集
     Q_INVOKABLE bool addTrack(const QString& trackKind);
     Q_INVOKABLE bool removeTrack(const QString& trackKind, int trackIndex);
@@ -340,6 +354,13 @@ private:
     // timeline と asset の対応を決める箇所はここだけにする。
     bool syncManimTimelineClip(bool addIfMissing);
     bool commitProjectEdit(project::Project candidate, const QString& failurePrefix);
+    // bin 編集を candidate へ適用し、成功したら 1 つの undo として commit する。
+    bool
+    applyMediaBinEdit(const std::function<project::MediaBinEditResult(project::Project&)>& edit,
+                      const QString& successStatus);
+    // timeline へ置いた素材を bin にも登録する。既に同じ file の素材があれば何もしない。
+    bool registerMediaItem(project::Project& candidate, const std::filesystem::path& mediaPath,
+                           QString& error) const;
     bool writeCanonicalProject(const project::Project& project, const std::filesystem::path& path,
                                QString& error) const;
     bool saveCurrentProject(bool overwriteExternalChange);
@@ -413,6 +434,7 @@ private:
     std::unique_ptr<TimelineClipModel> timelineModel_;
     std::unique_ptr<TrackModel> videoTrackModel_;
     std::unique_ptr<TrackModel> audioTrackModel_;
+    std::unique_ptr<MediaBinModel> mediaBinModel_;
     PreviewEngineRhiItem* previewSurface_ = nullptr;
     std::optional<preview::PreviewSourceId> currentSource_;
     // video track index -> preview source。track を増やしても添字を取り違えない。

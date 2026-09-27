@@ -17,6 +17,7 @@ add_library(mvm::core ALIAS mvm_core)
 # Qt / MLT / Manim に依存しない純粋な値型と schema 固定 JSON のみ。
 add_library(mvm_project STATIC
     project/clip_effects.cpp
+    project/media_bin.cpp
     project/project.cpp
     project/project_json.cpp
     project/timeline_edit.cpp

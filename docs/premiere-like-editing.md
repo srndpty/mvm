@@ -511,3 +511,91 @@ fallback があると、engine の初期化に失敗していても
 `[事実]` `validateQualifiedAudioDomain` と `kQualifiedAudioSampleRate` は
 48kHz / stereo / float32 という **measured envelope の一部**を指しており、
 個別軸を qualified と呼んでいる例ではないため名前を変えていない。
+
+## 15. プロジェクトパネル (素材とフォルダ) と schema 4
+
+§1 の schema 3 は、この節の schema 4 で置き換わった。
+
+### 15.1 データと永続化
+
+`[事実]` `Project` に素材 bin を追加した。timeline clip とは独立に存在し、
+`mediaPath` で対応づく。シーケンスは単一のまま bin へは出していない。
+
+```cpp
+enum class MediaKind { Video, Audio, Image };
+struct MediaFolder { std::string id, name, parentId; };      // parentId 空 = root
+struct MediaItem {
+    std::string id; MediaKind kind; std::filesystem::path mediaPath;
+    std::string name, folderId;
+    std::int64_t fpsNum, fpsDen, frameCount;  // Video
+    int width, height;                        // Video / Image
+    int sampleRate; std::int64_t durationSamples;  // Audio
+};
+```
+
+`[事実]` schema 版の定数は `kProjectSchemaVersion` (project.h) に一本化した。
+それまで `validateTimeline` と `project_json.cpp` が別々に `3` を持っていた。
+
+`[事実]` **schema 3 の Project は読めない。** §1 と同じく互換分岐は残していない。
+`media_folders` / `media_items` は必須 field で、素材の全 field も種別に関係なく必須である。
+種別に該当しない値は 0 で保存し、0 であることを `validateMediaBin` が検査する
+(例: 解像度を持つ音声、尺を持つ静止画は拒否)。
+
+`[事実]` `validateMediaBin` は folder / item の id 一意性 (両者で名前空間を共有)、
+親 folder の実在、循環、同一ファイルの重複を検査する。
+`serializeProjectJson` (= `commitProjectEdit`) と読み込みの両方がこれを通す。
+読み込み側は path を project directory へ解決した後に検査する。
+
+### 15.2 編集の規則
+
+`[事実]` 編集は `src/project/media_bin.h` の純粋関数に集約した。
+どれも candidate を検証してから置き換え、失敗時は Project を変更しない。
+
+| 操作 | 規則 |
+| ---- | ---- |
+| 移動 | folder を自分自身・子孫へは入れない |
+| 削除 | folder は中身ごと。timeline で使用中の素材を 1 つでも含めば全体を拒否 |
+| 追加 | 同じファイル (lexically_normal で比較) の素材は 2 つ持たない |
+
+`[事実]` timeline へ素材を置く経路 (`addVideoClip` / `addAudioClip`) は、
+同じ transaction で bin にも登録する。既に bin にあれば何もしない。
+bin 側の操作はすべて `commitProjectEdit` を通るため、1 操作 1 undo になる。
+
+### 15.3 素材種別の判定
+
+`[事実]` 拡張子ではなく MLT の probe で決める (`apps/mvm/media_import.cpp`)。
+`mvm_bench probe` で次を観測した。
+
+| 素材 | has_video | frame_count | is_unbounded | 判定 |
+| ---- | --------- | ----------- | ------------ | ---- |
+| `tests/assets/smoke/png_alpha.png` | true | 2147483647 | true | Image |
+| ffmpeg で作った JPEG (testsrc2 1 frame) | true | 1 | false | Image |
+| `tests/assets/smoke/wav_48k.wav` | false | 125 | false | Audio |
+| ffmpeg で作った AAC の m4a | false | 75 | false | Audio |
+| カバーアート (attached_pic) 付き m4a | true (mjpeg) | 180 | false | **Video (誤り)** |
+
+`[事実]` JPEG は image2 demuxer 経由で有限尺 1 frame として返る。
+音声を持たない 1 frame の映像には時間方向の長さが無いため静止画とした。
+
+`[未検証]` カバーアート付きの音声素材は動画に分類される。MLT のプロパティに
+attached_pic を示す値は無く、手がかりは `meta.media.N.stream.frame_rate = 90000` だけだった。
+これで判定すると、本物の Motion JPEG + 音声の動画を誤判定しうるため入れていない。
+timeline へ直接追加する既存経路も同じ素材を動画として扱う。
+
+### 15.4 UI
+
+`[事実]` 左上のパネルをタブ化し、「エフェクトコントロール」と「プロジェクト」を
+同じ領域で切り替える。境界をドラッグすると左パネルの幅を 240px〜window 幅の 50% で変えられる。
+
+`[事実]` リスト表示の列は 名前 / フレームレート (音声は Hz) / デュレーション / 解像度。
+動画の尺は公称 fps (23.976 なら 24) で数える non-drop timecode、音声は `HH:MM:SS.mmm`。
+
+`[事実]` 開閉状態は UI の状態として `MediaBinModel` が持ち、Project には保存しない。
+開閉は reset ではなく行の挿入・削除で通知する (reset するとスクロール位置が失われる)。
+
+`[事実]` Delete / F2 はリストに focus があるとき bin 側が受け取る
+(`Keys.onShortcutOverride`)。受け取らないと Main.qml の Delete (timeline clip 削除) が発火する。
+
+`[事実]` drop で素材を移動すると model が作り直され、drop 元の delegate が破棄される。
+drop ハンドラの途中で破棄されて `ReferenceError: dragProxy is not defined` が出たため、
+移動は `Qt.callLater` で drag の後始末の後へ遅らせた。

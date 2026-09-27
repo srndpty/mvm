@@ -1,9 +1,10 @@
 #include "app/preview/preview_engine_rhi_item.h"
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "mvm_controller.h"
+#include "project/project_json.h"
+#include "util/mvm_win_utf8.h"
 #include "waveform_cache.h"
 #include "waveform_view.h"
-#include "project/project_json.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -122,6 +123,8 @@ bool parseArguments(const QStringList& arguments, AppArguments& parsed) {
 } // namespace
 
 int main(int argc, char** argv) {
+    // stderr のメッセージは UTF-8 で書く。コンソールが CP932 のままだと文字化けする。
+    mvm_enable_utf8_console();
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
 
     QGuiApplication application(argc, argv);
