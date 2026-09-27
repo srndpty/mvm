@@ -92,6 +92,12 @@ int main(int argc, char** argv) {
     // Projectはlinked audio削除時に相手側のlinkも外すため、fixtureも同じ状態にする。
     auto unlinkedVideo = video;
     unlinkedVideo.linkGroupId.clear();
+    // 素材末尾まで使う非timeline fpsのclipは、丸めで存在しないframeを指す位置を最終frameで
+    // 埋めるためtractor経路になる。sequential経路を確実に踏むため、末尾の1 frame手前で終える。
+    auto sequentialVideo = unlinkedVideo;
+    if (sequentialVideo.sourceOutFrame == sequentialVideo.sourceFrameCount &&
+        sequentialVideo.sourceOutFrame > 1)
+        --sequentialVideo.sourceOutFrame;
     // V1先頭にgapを置くとaudio clipなしでもtractor経路になる。
     auto gappedVideo = unlinkedVideo;
     gappedVideo.timelineStartFrame = 10;
@@ -110,7 +116,7 @@ int main(int argc, char** argv) {
     };
 
     const VideoOnlyCase videoOnlyCases[] = {
-        {"sequential", {unlinkedVideo}, mvm::app::TimelineExportResult::Backend::Sequential},
+        {"sequential", {sequentialVideo}, mvm::app::TimelineExportResult::Backend::Sequential},
         {"tractor", {gappedVideo}, mvm::app::TimelineExportResult::Backend::Tractor},
         {"overlay", {unlinkedVideo, overlay}, mvm::app::TimelineExportResult::Backend::Tractor},
     };

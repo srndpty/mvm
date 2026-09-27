@@ -17,6 +17,7 @@ static const char* const kRequiredProducers[] = {
     "qimage",   /* PNG (alpha)        : V2 */
     "xml",      /* デバッグ用ダンプの読み戻し */
     "color",    /* 単色生成 (テスト用背景) */
+    "timewarp", /* clip の再生速度 (レート調整) */
     NULL,
 };
 

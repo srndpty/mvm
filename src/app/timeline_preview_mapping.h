@@ -43,8 +43,9 @@ struct PreviewVideoMapping {
     std::filesystem::path mediaPath;
     std::int64_t sourceInFrame = 0;
     std::int64_t timelineStartFrame = 0;
-    std::int64_t sourceFpsNum = 0;
-    std::int64_t sourceFpsDen = 1;
+    // 速度込みの実効 fps (project::clipTimebase)。速度が違えば別の対応になる。
+    std::int64_t timebaseNum = 0;
+    std::int64_t timebaseDen = 1;
     bool operator==(const PreviewVideoMapping&) const = default;
 };
 

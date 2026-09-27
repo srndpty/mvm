@@ -64,7 +64,10 @@ function bodyRelease(state, moved, movedToFrame, releaseFrame, toolDragFrames) {
 function edgeRelease(tool, edge, delta, linked) {
     if (delta === 0)
         return { "action": "none" };
-    const action = tool === "ripple" ? "rippleTrim" : (tool === "rolling" ? "roll" : "trim");
+    const action = tool === "ripple" ? "rippleTrim"
+                 : tool === "rolling" ? "roll"
+                 : tool === "rate" ? "rateStretch"
+                 : "trim";
     return { "action": action, "edge": edge, "delta": delta, "linked": linked };
 }
 

@@ -1,5 +1,6 @@
 #include "media/gpu_preview/source_decode_worker.h"
 
+#include "core/source_frame_mapping.h"
 #include "media/gpu_preview/qpc_clock.h"
 
 #include <algorithm>
@@ -10,51 +11,47 @@
 namespace mvm::gpu {
 namespace {
 
-__extension__ using WideInteger = __int128;
-
-bool checkedMultiply(WideInteger left, WideInteger right, WideInteger& result) {
-    return !__builtin_mul_overflow(left, right, &result);
-}
-
-bool ceilRatio(WideInteger numerator, WideInteger denominator, long long& result) {
-    if (numerator < 0 || denominator <= 0)
-        return false;
-    const WideInteger value = numerator / denominator + (numerator % denominator != 0 ? 1 : 0);
-    if (value > std::numeric_limits<long long>::max())
-        return false;
-    result = static_cast<long long>(value);
-    return true;
+core::FrameRate coreRate(Rational rate) {
+    return {rate.num, rate.den};
 }
 
 } // namespace
 
 OutputFrameInterval sourceFrameOutputInterval(long long sourceFrame, long long sourceInFrame,
+                                              long long sourceFrameCount,
                                               long long timelineStartFrame,
                                               Rational sourceFrameRate, Rational outputFrameRate) {
+    // 対応の定義は core/source_frame_mapping.h (書き出しの MLT と同じ四捨五入)。
+    // 素材の絶対位置で数え、timeline 上では start - ceil(in R) だけずらす。
     OutputFrameInterval result;
-    if (sourceFrame < sourceInFrame || sourceInFrame < 0 || timelineStartFrame < 0 ||
-        !sourceFrameRate.valid() || !outputFrameRate.valid())
+    if (sourceFrame < sourceInFrame || sourceInFrame < 0 || sourceInFrame >= sourceFrameCount ||
+        timelineStartFrame < 0 || !sourceFrameRate.valid() || !outputFrameRate.valid())
         return result;
-    WideInteger denominator = 0;
-    if (!checkedMultiply(static_cast<WideInteger>(outputFrameRate.den), sourceFrameRate.num,
-                         denominator))
+    const auto source = coreRate(sourceFrameRate);
+    const auto output = coreRate(outputFrameRate);
+    const auto origin = core::convertFrameBoundary(sourceInFrame, source, output, true);
+    const auto first = core::firstOutputPositionOfSourceFrame(sourceFrame, source, output);
+    // 素材の最終 frame は、丸めで存在しない frame を指す位置まで表示し続ける。
+    const auto next = sourceFrame + 1 >= sourceFrameCount
+                          ? core::convertFrameBoundary(std::max(sourceFrame + 1, sourceFrameCount),
+                                                       source, output, true)
+                          : core::firstOutputPositionOfSourceFrame(sourceFrame + 1, source, output);
+    if (!origin || !first || !next || sourceFrame == std::numeric_limits<long long>::max())
         return result;
-    const auto convert = [&](long long relative, long long& output) {
-        long long offset = 0;
-        WideInteger numerator = 0;
-        if (!checkedMultiply(static_cast<WideInteger>(relative), outputFrameRate.num, numerator) ||
-            !checkedMultiply(numerator, sourceFrameRate.den, numerator))
+    const auto toTimeline = [&](long long position, long long& timeline) {
+        const long long offset = position - *origin;
+        if (offset < 0) {
+            timeline = timelineStartFrame;
+            return true;
+        }
+        if (timelineStartFrame > std::numeric_limits<long long>::max() - offset)
             return false;
-        if (!ceilRatio(numerator, denominator, offset) ||
-            timelineStartFrame > std::numeric_limits<long long>::max() - offset)
-            return false;
-        output = timelineStartFrame + offset;
+        timeline = timelineStartFrame + offset;
         return true;
     };
-    const long long relative = sourceFrame - sourceInFrame;
-    if (!convert(relative, result.begin) || relative == std::numeric_limits<long long>::max() ||
-        !convert(relative + 1, result.end))
+    if (!toTimeline(*first, result.begin) || !toTimeline(*next, result.end))
         return result;
+    result.end = std::max(result.begin, result.end);
     result.valid = true;
     return result;
 }
@@ -229,15 +226,18 @@ SourceDecodeWorker::~SourceDecodeWorker() {
     stop();
 }
 
-bool SourceDecodeWorker::configureOutputMapping(long long sourceInFrame,
-                                                long long timelineStartFrame,
+bool SourceDecodeWorker::configureOutputMapping(long long sourceInFrame, long long sourceFrameCount,
+                                                Rational speed, long long timelineStartFrame,
                                                 Rational outputFrameRate, std::string& err) {
-    if (startedOnce_ || sourceInFrame < 0 || timelineStartFrame < 0 || !outputFrameRate.valid()) {
+    if (startedOnce_ || sourceInFrame < 0 || sourceInFrame >= sourceFrameCount || !speed.valid() ||
+        timelineStartFrame < 0 || !outputFrameRate.valid()) {
         err = "video output mappingの設定が不正または開始後です";
         return false;
     }
     outputMappingEnabled_ = true;
     mappingSourceInFrame_ = sourceInFrame;
+    mappingSourceFrameCount_ = sourceFrameCount;
+    mappingSpeed_ = speed;
     mappingTimelineStartFrame_ = timelineStartFrame;
     mappingOutputFrameRate_ = outputFrameRate;
     err.clear();
@@ -486,9 +486,15 @@ bool SourceDecodeWorker::submitWithBackpressure(const DecodedGpuFrame& frame, st
     long long outputBegin = 0;
     long long outputEnd = 0;
     if (outputMappingEnabled_) {
-        const auto interval = sourceFrameOutputInterval(frame.frameNumber, mappingSourceInFrame_,
-                                                        mappingTimelineStartFrame_,
-                                                        sourceFrameRate_, mappingOutputFrameRate_);
+        const auto effectiveRate =
+            core::multiplyFrameRate(coreRate(sourceFrameRate_), coreRate(mappingSpeed_));
+        const auto interval =
+            effectiveRate
+                ? sourceFrameOutputInterval(frame.frameNumber, mappingSourceInFrame_,
+                                            mappingSourceFrameCount_, mappingTimelineStartFrame_,
+                                            {effectiveRate->num, effectiveRate->den},
+                                            mappingOutputFrameRate_)
+                : OutputFrameInterval{};
         if (!interval.valid) {
             err = "source frameからtimeline output区間へ換算できません";
             noteFatal(err);

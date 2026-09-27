@@ -68,7 +68,10 @@ bool ShuttleAudioPlayback::readSamples(std::size_t clipIndex, std::int64_t first
     if (!clip.worker) {
         clip.worker = std::make_unique<audio::AudioDecodeWorker>(
             audio::SourceId{static_cast<std::uint64_t>(clipIndex) + 2});
-        if (!clip.worker->start(plan_.clips[clipIndex].path, error))
+        // 素材 sample は通常再生と同じく速度で伸縮した時間軸で数える (sourceOffset も同じ)。
+        const auto& timelineClip = plan_.clips[clipIndex].clip;
+        if (!clip.worker->setPlaybackSpeed(timelineClip.speedNum, timelineClip.speedDen, error) ||
+            !clip.worker->start(plan_.clips[clipIndex].path, error))
             return false;
     }
     // 前進シャトルでは前 block の続きから rate 未満しか離れていないので、

@@ -55,6 +55,10 @@ struct TimelineExportClipMapping {
     int videoTrackIndex = 0;
     std::int64_t timelineStartFrame = 0;
     std::int64_t timelineDurationFrames = 0;
+    // producer の cut [producerInFrame, producerOutFrame) と、末尾を最終 frame で埋める数。
+    std::int64_t producerInFrame = 0;
+    std::int64_t producerOutFrame = 0;
+    std::int64_t tailPaddingFrames = 0;
     bool effectsEnabled = false;
     int cropLeft = 0;
     int cropTop = 0;

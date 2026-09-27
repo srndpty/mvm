@@ -183,13 +183,58 @@ void testCrossRateVideoMapping() {
     value.sourceFpsDen = 1001;
     project.timelineClips = {value};
 
+    // 書き出し (MLT) と同じ四捨五入。R = 60 * 1001 / 24000 = 2.5025、in = 100 の原点は
+    // ceil(250.25) = 251。timeline 70 は位置 311 で 311 / 2.5025 = 124.28 -> 124。
     const auto atOneSecond = mvm::app::mapTimelinePreviewFrame(project, 70);
     require(atOneSecond.success && atOneSecond.layers.size() == 1 &&
-                atOneSecond.layers[0].sourceFrameNumber == 123,
+                atOneSecond.layers[0].sourceFrameNumber == 124,
             "60fps timelineから23.976fps素材へframe換算できません");
-    const auto repeated = mvm::app::mapTimelinePreviewFrame(project, 11);
-    require(repeated.success && repeated.layers[0].sourceFrameNumber == 100,
-            "高fps timelineで必要なsource frameの重複を拒否しました");
+    // 位置 251 -> 100.30、252 -> 100.70、253 -> 101.10。
+    const auto first = mvm::app::mapTimelinePreviewFrame(project, 10);
+    const auto second = mvm::app::mapTimelinePreviewFrame(project, 11);
+    const auto repeated = mvm::app::mapTimelinePreviewFrame(project, 12);
+    require(first.success && first.layers[0].sourceFrameNumber == 100 && second.success &&
+                second.layers[0].sourceFrameNumber == 101 && repeated.success &&
+                repeated.layers[0].sourceFrameNumber == 101,
+            "高fps timelineで素材frameを四捨五入で選んでいません");
+}
+
+// 50% の clip。60fps 素材を 60fps へ置くと実効 fps は 30、R = 2。in = 10 の原点は 20 で、
+// timeline t は位置 20 + t を 2 で割って四捨五入した frame を出す (書き出しの timewarp と同じ)。
+//   t: 0 -> 10.0, 1 -> 10.5 -> 11, 2 -> 11.0, 3 -> 11.5 -> 12
+void testSlowedClipMapping() {
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    auto slowed = clip("slowed", 0, 0, 10, 100);
+    slowed.speedNum = 1;
+    slowed.speedDen = 2;
+    project.timelineClips = {slowed};
+    const std::int64_t expected[] = {10, 11, 11, 12};
+    for (std::int64_t t = 0; t < 4; ++t) {
+        const auto mapped = mvm::app::mapTimelinePreviewFrame(project, t);
+        require(mapped.success && mapped.layers.size() == 1 &&
+                    mapped.layers[0].sourceFrameNumber == expected[t],
+                "50%のclipの素材frameが四捨五入の対応と違います");
+    }
+    // 尺は 2 倍 (100 素材 frame -> 200)。
+    require(mvm::app::mapTimelinePreviewFrame(project, 199).success &&
+                mvm::app::mapTimelinePreviewFrame(project, 199).layers.size() == 1 &&
+                mvm::app::mapTimelinePreviewFrame(project, 200).layers.empty(),
+            "50%のclipの尺が2倍になりません");
+    // 速度が違えば同じ素材・同じ原点でも source を使い回さない。
+    auto normal = slowed;
+    normal.speedDen = 1;
+    require(!mvm::app::previewVideoMappingCovers(project, mvm::app::previewVideoMappingOf(normal),
+                                                 slowed),
+            "速度の違うclipのsourceを使い回しました");
+
+    // audio は伸縮した時間軸の sample で数える。実効 30fps で素材 in = 10 は 10 / 30 秒 =
+    // 16000 sample。timeline 0 に置いたので offset は 16000。
+    auto sound = audioClip("slowed-audio", 0, 10, 100, 60, 1);
+    sound.speedNum = 1;
+    sound.speedDen = 2;
+    const auto offset = mvm::app::audioPreviewSampleOffset(project, sound);
+    require(offset.success && offset.sampleOffset == 16000,
+            "50%のaudio clipのsample offsetが伸縮した時間軸になっていません");
 }
 
 // レーザーで分割した直後の連続した clip は、左半分の source のまま表示できる。
@@ -225,7 +270,8 @@ void testSplitClipReusesPreviewSource() {
     require(!mvm::app::previewVideoMappingCovers(project, leftSource, otherMedia),
             "別素材のclipを同じsourceで表示できると判定しました");
 
-    // 素材 fps が timeline と違うと frame 境界の丸めが原点に依存する。原点が違えば使い回さない。
+    // 素材の絶対位置のずらし量 start - ceil(in R) が違えば使い回さない。60fps で分割した
+    // in / start に 29.97fps を当てると、10 - ceil(200.2) と 70 - ceil(320.32) で一致しない。
     auto ntscLeft = left;
     auto ntscRight = right;
     ntscLeft.sourceFpsNum = ntscRight.sourceFpsNum = 30000;
@@ -251,6 +297,24 @@ void testSplitClipReusesPreviewSource() {
                 halfRate, mvm::app::previewVideoMappingOf(halfRate.timelineClips[0]),
                 halfRate.timelineClips[1]),
             "60fps timeline上の30fps素材の分割直後を同じsourceで表示できると判定しません");
+    // 29.97fps 素材も、実際に分割した右半分は左半分の source のまま表示できる。
+    // 対応を素材の絶対位置で数えるので、trim の境界 ceil(in R) と必ず揃う。
+    mvm::project::Project ntscRate = mvm::project::createDefaultProject();
+    auto ntsc = clip("ntsc", 0, 0, 0, 300);
+    ntsc.sourceFpsNum = 30000;
+    ntsc.sourceFpsDen = 1001;
+    ntscRate.timelineClips = {ntsc};
+    require(mvm::project::splitTimelineClips(
+                ntscRate, {"ntsc"}, 101, [&counter] { return "ntsc-" + std::to_string(++counter); },
+                mvm::project::LinkMode::Linked)
+                    .success &&
+                ntscRate.timelineClips.size() == 2,
+            "29.97fps素材のclipを分割できません");
+    require(mvm::app::previewVideoMappingCovers(
+                ntscRate, mvm::app::previewVideoMappingOf(ntscRate.timelineClips[0]),
+                ntscRate.timelineClips[1]),
+            "29.97fps素材の分割直後を同じsourceで表示できると判定しません");
+
     auto shiftedHalf = halfRate.timelineClips[1];
     shiftedHalf.timelineStartFrame += 1;
     require(!mvm::app::previewVideoMappingCovers(
@@ -271,6 +335,7 @@ void testSplitClipReusesPreviewSource() {
 
 int main() {
     testSplitClipReusesPreviewSource();
+    testSlowedClipMapping();
     testAudioPreviewSampleOffset();
     testAudioSourceFrameCount();
     testMutedTracks();

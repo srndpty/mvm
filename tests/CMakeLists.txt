@@ -56,7 +56,7 @@ set_tests_properties(m1_project_manim_focused PROPERTIES
 # 実素材 2 本を順に並べて 1 本の MP4 にできることだけを見る。
 add_executable(mvm_test_timeline_export harness/test_timeline_export.cpp)
 target_link_libraries(mvm_test_timeline_export PRIVATE
-    mvm::timeline_export mvm::mlt mvm::util mvm::warnings)
+    mvm::timeline_export mvm::timeline_preview_mapping mvm::mlt mvm::util mvm::warnings)
 target_compile_definitions(mvm_test_timeline_export PRIVATE ${MVM_MLT_PATH_DEFS})
 add_test(NAME m4_timeline_export_focused
     COMMAND mvm_test_timeline_export
@@ -1925,6 +1925,10 @@ mvm_add_test(preview_timebase_p5d1_unit COMMAND mvm_test_checked_output_timebase
     PROPERTIES LABELS p5d1)
 list(APPEND _mvm_p5d1_tests preview_timebase_p5d1_unit)
 
+add_executable(mvm_test_source_frame_mapping core/test_source_frame_mapping.cpp)
+target_link_libraries(mvm_test_source_frame_mapping PRIVATE mvm::core mvm::warnings)
+mvm_add_test(core_source_frame_mapping COMMAND mvm_test_source_frame_mapping)
+
 add_executable(mvm_test_preview_engine preview_engine/test_preview_engine.cpp)
 target_link_libraries(mvm_test_preview_engine PRIVATE mvm::preview_engine mvm::warnings)
 mvm_add_test(preview_engine_p5b_unit COMMAND mvm_test_preview_engine
@@ -2410,6 +2414,17 @@ if(TARGET mvm_p4_composition_spike)
 endif()
 
 # --- Phase 3 / A: audio pipeline --------------------------------------------
+# レート調整の音声。速度 s の素材を伸縮した時間軸の 48 kHz sample で出すことを実 PCM で測る。
+add_executable(mvm_test_audio_playback_speed audio_preview/test_audio_playback_speed.cpp)
+target_link_libraries(mvm_test_audio_playback_speed PRIVATE mvm::audio_preview mvm::warnings)
+add_test(NAME audio_playback_speed
+    COMMAND mvm_test_audio_playback_speed
+        "${CMAKE_CURRENT_BINARY_DIR}/audio-playback-speed"
+        "${MVM_UCRT64_ROOT}/bin/ffmpeg.exe")
+set_tests_properties(audio_playback_speed PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+
 add_executable(mvm_test_audio_pure audio_preview/test_audio_pure.cpp)
 target_link_libraries(mvm_test_audio_pure PRIVATE mvm::audio_preview mvm::warnings)
 mvm_add_test(p3_audio_pure_unit COMMAND mvm_test_audio_pure)

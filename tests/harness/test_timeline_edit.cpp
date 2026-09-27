@@ -634,6 +634,251 @@ std::function<std::string()> sequentialIds() {
     return [counter] { return "new-" + std::to_string(++*counter); };
 }
 
+// レート調整。期待値は手で計算した値である (実装の式を呼ばない)。
+void testRateStretch() {
+    using mvm::project::LinkMode;
+    using mvm::project::TrimEdge;
+    const auto duration = [](const mvm::project::Project& project, int index) {
+        return mvm::project::timelineClipDuration(
+                   project, project.timelineClips[static_cast<std::size_t>(index)])
+            .frame;
+    };
+
+    // 60fps 素材 300 frame を 0 に置き、次の clip は 600 から。
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    auto target = clip("rate");
+    auto next = clip("rate-next");
+    next.timelineStartFrame = 600;
+    project.timelineClips = {target, next};
+    check(mvm::project::validateTimeline(project).success, "レート調整用のtimelineが不正です");
+
+    // right 端を +300: 尺 600 = 50%。素材範囲と開始位置は変えない。
+    check(mvm::project::rateStretchTimelineClip(project, target.id, TrimEdge::Right, 300,
+                                                LinkMode::Single)
+              .success,
+          "right端のレート調整に失敗しました");
+    const auto& slowed = project.timelineClips[0];
+    check(slowed.speedNum == 1 && slowed.speedDen == 2 && duration(project, 0) == 600 &&
+              slowed.timelineStartFrame == 0 && slowed.sourceInFrame == 0 &&
+              slowed.sourceOutFrame == 300,
+          "50%にしたclipの速度・尺・素材範囲が違います");
+
+    // 次の clip に接したので、これ以上は伸ばせない。失敗しても Project は変わらない。
+    const auto beforeBlocked = project;
+    check(mvm::project::clampRateEdit(project, target.id, TrimEdge::Right, 10000, LinkMode::Single)
+                  .frame == 0,
+          "隣のclipで止まりません");
+    check(!mvm::project::rateStretchTimelineClip(project, target.id, TrimEdge::Right, 10000,
+                                                 LinkMode::Single)
+                  .success &&
+              project == beforeBlocked,
+          "伸ばせないレート調整が成功した、またはProjectを変えました");
+
+    // 縮める方向は 1000% (尺 30) で止まる。
+    check(mvm::project::clampRateEdit(project, target.id, TrimEdge::Right, -1000, LinkMode::Single)
+                  .frame == -570,
+          "1000%で止まりません");
+    check(mvm::project::rateStretchTimelineClip(project, target.id, TrimEdge::Right, -1000,
+                                                LinkMode::Single)
+                  .success &&
+              project.timelineClips[0].speedNum == 10 && project.timelineClips[0].speedDen == 1 &&
+              duration(project, 0) == 30,
+          "1000%のclipになりません");
+
+    // 10% は尺 3000。隣を遠ざけて確かめる。
+    project.timelineClips[1].timelineStartFrame = 10000;
+    check(mvm::project::clampRateEdit(project, target.id, TrimEdge::Right, 100000, LinkMode::Single)
+                  .frame == 2970,
+          "10%で止まりません");
+
+    // left 端は終端を保って開始位置を動かす。timeline 先頭で止まる。
+    mvm::project::Project leftProject = mvm::project::createDefaultProject();
+    auto leftTarget = clip("rate-left");
+    leftTarget.timelineStartFrame = 100;
+    leftProject.timelineClips = {leftTarget};
+    check(mvm::project::clampRateEdit(leftProject, leftTarget.id, TrimEdge::Left, -1000,
+                                      LinkMode::Single)
+                  .frame == -100,
+          "left端がtimeline先頭で止まりません");
+    check(mvm::project::rateStretchTimelineClip(leftProject, leftTarget.id, TrimEdge::Left, -1000,
+                                                LinkMode::Single)
+                  .success &&
+              leftProject.timelineClips[0].timelineStartFrame == 0 &&
+              duration(leftProject, 0) == 400 && leftProject.timelineClips[0].speedNum == 3 &&
+              leftProject.timelineClips[0].speedDen == 4,
+          "left端のレート調整で終端が保たれない、または速度が75%になりません");
+
+    // 29.97fps 素材 100 frame (60fps で尺 ceil(200.2) = 201) を尺 250 にする。
+    // 速度 = 100 * 60 * 1001 / (30000 * 250) = 1001 / 1250。尺はちょうど 250 になる。
+    mvm::project::Project ntscProject = mvm::project::createDefaultProject();
+    auto ntsc = clip("rate-ntsc");
+    ntsc.sourceFpsNum = 30000;
+    ntsc.sourceFpsDen = 1001;
+    ntsc.sourceOutFrame = 100;
+    ntscProject.timelineClips = {ntsc};
+    check(duration(ntscProject, 0) == 201, "29.97fps素材の尺の前提が違います");
+    check(mvm::project::rateStretchTimelineClip(ntscProject, ntsc.id, TrimEdge::Right, 49,
+                                                LinkMode::Single)
+                  .success &&
+              ntscProject.timelineClips[0].speedNum == 1001 &&
+              ntscProject.timelineClips[0].speedDen == 1250 && duration(ntscProject, 0) == 250,
+          "29.97fps素材の尺がちょうど目標にならない、または速度が約分されていません");
+
+    // key は内容に付いて伸縮する。端は端へ写る。150 -> round(150 * 599 / 299) = 301。
+    mvm::project::Project keyProject = mvm::project::createDefaultProject();
+    auto keyed = clip("rate-keys");
+    keyed.effects.opacityKeys = {{0, 0.0}, {150, 50.0}, {299, 100.0}};
+    keyProject.timelineClips = {keyed};
+    check(mvm::project::rateStretchTimelineClip(keyProject, keyed.id, TrimEdge::Right, 300,
+                                                LinkMode::Single)
+              .success,
+          "key付きclipのレート調整に失敗しました");
+    const auto& keys = keyProject.timelineClips[0].effects.opacityKeys;
+    check(keys.size() == 3 && keys[0].frame == 0 && keys[1].frame == 301 &&
+              keys[1].valuePercent == 50.0 && keys[2].frame == 599,
+          "keyが尺に合わせて伸縮しません");
+
+    // 50% の clip の trim: timeline 100 frame = 素材 50 frame。
+    check(mvm::project::trimTimelineClip(keyProject, keyed.id, TrimEdge::Right, -100,
+                                         LinkMode::Single)
+                  .success &&
+              keyProject.timelineClips[0].sourceOutFrame == 250 && duration(keyProject, 0) == 500,
+          "50%のclipのtrimが速度を考慮しません");
+    // 分割した左右とも速度を引き継ぎ、尺の合計は変わらない。
+    check(mvm::project::splitTimelineClips(keyProject, {keyed.id}, 200, sequentialIds(),
+                                           LinkMode::Linked)
+                  .success &&
+              keyProject.timelineClips.size() == 2 && keyProject.timelineClips[1].speedNum == 1 &&
+              keyProject.timelineClips[1].speedDen == 2 &&
+              duration(keyProject, 0) + duration(keyProject, 1) == 500,
+          "50%のclipを分割すると速度または尺が変わります");
+
+    // リンク相手にも同じ速度を適用する。相手の track の隣の clip でも止まる。
+    mvm::project::Project linked = mvm::project::createDefaultProject();
+    auto video = clip("rate-video");
+    auto audio = clip("rate-audio", mvm::project::TimelineClipKind::Audio, kA1);
+    video.linkGroupId = audio.linkGroupId = "rate-pair";
+    auto audioNext = clip("rate-audio-next", mvm::project::TimelineClipKind::Audio, kA1);
+    audioNext.timelineStartFrame = 450;
+    linked.timelineClips = {video, audio, audioNext};
+    check(mvm::project::clampRateEdit(linked, video.id, TrimEdge::Right, 300, LinkMode::Linked)
+                  .frame == 150,
+          "リンク相手の隣のclipで止まりません");
+    check(mvm::project::clampRateEdit(linked, video.id, TrimEdge::Right, 300, LinkMode::Single)
+                  .frame == 300,
+          "Altのレート調整がリンク相手の隣で止まりました");
+    check(mvm::project::rateStretchTimelineClip(linked, video.id, TrimEdge::Right, 150,
+                                                LinkMode::Linked)
+                  .success &&
+              linked.timelineClips[0].speedNum == 2 && linked.timelineClips[0].speedDen == 3 &&
+              linked.timelineClips[1].speedNum == 2 && linked.timelineClips[1].speedDen == 3 &&
+              duration(linked, 0) == 450 && duration(linked, 1) == 450,
+          "リンク相手に同じ速度を適用しません");
+    // Alt で片方だけ変えた後は、Linked のレート調整を拒否する。
+    linked.timelineClips[2].timelineStartFrame = 5000;
+    check(mvm::project::rateStretchTimelineClip(linked, video.id, TrimEdge::Right, -150,
+                                                LinkMode::Single)
+              .success,
+          "Altで片方だけレート調整できません");
+    const auto beforeMismatch = linked;
+    check(!mvm::project::rateStretchTimelineClip(linked, video.id, TrimEdge::Right, 100,
+                                                 LinkMode::Linked)
+                  .success &&
+              linked == beforeMismatch,
+          "速度の違うリンク相手を一緒にレート調整しました");
+}
+
+// 尺の違うリンク相手 (Alt で片方だけ trim した後など) のレート調整。相手は同じ速度で
+// 自分の尺になる。drag 中の表示 (previewRateStretch) と確定の結果が一致しなければならない。
+// 以前の QML は相手へ同じ端の移動量を配っており、A を 390f / 61.54% と表示していた。
+void testRateStretchLinkedDifferentDurations() {
+    using mvm::project::LinkMode;
+    using mvm::project::TrimEdge;
+    const auto duration = [](const mvm::project::Project& project, int index) {
+        return mvm::project::timelineClipDuration(
+                   project, project.timelineClips[static_cast<std::size_t>(index)])
+            .frame;
+    };
+    // V: 300f、A: 240f (素材 in 0..240)、どちらも 100%、0 から。
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    auto video = clip("rate-v");
+    auto audio = clip("rate-a", mvm::project::TimelineClipKind::Audio, kA1);
+    audio.sourceOutFrame = 240;
+    video.linkGroupId = audio.linkGroupId = "rate-unequal";
+    project.timelineClips = {video, audio};
+    check(mvm::project::validateTimeline(project).success, "尺の違うリンク対のtimelineが不正です");
+
+    // V を +150 (450f)。速度 = 300 / 450 = 2/3。A は 240 x 3/2 = 360f。
+    const auto preview =
+        mvm::project::previewRateStretch(project, video.id, TrimEdge::Right, 150, LinkMode::Linked);
+    const auto shownFor =
+        [&](const std::string& id) -> const mvm::project::RateStretchPreviewClip* {
+        for (const auto& shown : preview.clips) {
+            if (shown.clipId == id)
+                return &shown;
+        }
+        return nullptr;
+    };
+    const auto* shownVideo = shownFor(video.id);
+    const auto* shownAudio = shownFor(audio.id);
+    check(preview.success && preview.appliedDelta == 150 && preview.clips.size() == 2 &&
+              shownVideo && shownAudio,
+          "尺の違うリンク対のpreviewを作れません");
+    if (shownVideo && shownAudio) {
+        check(shownVideo->durationFrames == 450 && shownVideo->endDelta == 150 &&
+                  shownVideo->startDelta == 0 && shownVideo->speedNum == 2 &&
+                  shownVideo->speedDen == 3,
+              "previewのVが450f・2/3になりません");
+        check(shownAudio->durationFrames == 360 && shownAudio->endDelta == 120 &&
+                  shownAudio->startDelta == 0 && shownAudio->speedNum == 2 &&
+                  shownAudio->speedDen == 3,
+              "previewのAが同じ速度で自分の尺 (360f) になりません");
+    }
+    check(mvm::project::rateStretchTimelineClip(project, video.id, TrimEdge::Right, 150,
+                                                LinkMode::Linked)
+                  .success &&
+              duration(project, 0) == 450 && duration(project, 1) == 360 &&
+              project.timelineClips[1].speedNum == 2 && project.timelineClips[1].speedDen == 3,
+          "確定の結果がpreviewと一致しません");
+
+    // left 端。終端を 600 に揃えた V (300..600) と A (360..600) の V を -150 する。
+    // V は 150 から 450f、A は終端を保って 360f になり 240 から始まる (開始のずれ -120)。
+    mvm::project::Project left = mvm::project::createDefaultProject();
+    auto leftVideo = clip("rate-left-v");
+    auto leftAudio = clip("rate-left-a", mvm::project::TimelineClipKind::Audio, kA1);
+    leftVideo.timelineStartFrame = 300;
+    leftAudio.sourceInFrame = 60;
+    leftAudio.timelineStartFrame = 360;
+    leftVideo.linkGroupId = leftAudio.linkGroupId = "rate-left-unequal";
+    left.timelineClips = {leftVideo, leftAudio};
+    const auto leftPreview = mvm::project::previewRateStretch(left, leftVideo.id, TrimEdge::Left,
+                                                              -150, LinkMode::Linked);
+    bool leftShown = leftPreview.success && leftPreview.clips.size() == 2;
+    for (const auto& shown : leftPreview.clips) {
+        if (shown.clipId == leftVideo.id)
+            leftShown = leftShown && shown.startDelta == -150 && shown.endDelta == 0 &&
+                        shown.durationFrames == 450;
+        if (shown.clipId == leftAudio.id)
+            leftShown = leftShown && shown.startDelta == -120 && shown.endDelta == 0 &&
+                        shown.durationFrames == 360;
+    }
+    check(leftShown, "left端のpreviewでリンク相手が自分の尺で終端を保ちません");
+    check(mvm::project::rateStretchTimelineClip(left, leftVideo.id, TrimEdge::Left, -150,
+                                                LinkMode::Linked)
+                  .success &&
+              left.timelineClips[0].timelineStartFrame == 150 &&
+              left.timelineClips[1].timelineStartFrame == 240,
+          "left端の確定の結果がpreviewと一致しません");
+
+    // 伸縮できない量はpreviewでも動かさない (delta 0、現在の尺のまま)。
+    const auto blocked = mvm::project::previewRateStretch(project, video.id, TrimEdge::Right,
+                                                          -100000, LinkMode::Linked);
+    bool unchanged = blocked.success;
+    for (const auto& shown : blocked.clips)
+        unchanged = unchanged && shown.startDelta == 0 && shown.endDelta <= 0;
+    check(unchanged && blocked.appliedDelta < 0, "縮める方向のpreviewが1000%で止まりません");
+}
+
 void testSplitClips() {
     mvm::project::Project project = mvm::project::createDefaultProject();
     auto video = clip("split-video");
@@ -1376,6 +1621,9 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
     candidate.timelineClips[1].sourceInFrame = 30;
     candidate.timelineClips[1].sourceOutFrame = 270;
     candidate.timelineClips[1].timelineStartFrame = 300;
+    // 速度も round-trip する (29.97fps 素材 240 frame の 80%)。
+    candidate.timelineClips[1].speedNum = 4;
+    candidate.timelineClips[1].speedDen = 5;
     candidate.timelineClips[2].track = kV2;
     candidate.timelineClips[2].timelineStartFrame = 90;
     candidate.timelineClips[2].effects.scalePercent = 60.0;
@@ -1400,7 +1648,7 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
     const auto loaded = mvm::project::loadProjectJson(projectFile);
     check(loaded.success, "保存した .mvm を読み込めません");
     bool timelineFieldsMatch =
-        loaded.success && loaded.project.schemaVersion == 5 &&
+        loaded.success && loaded.project.schemaVersion == 6 &&
         loaded.project.timelineFpsNum == 60 && loaded.project.timelineFpsDen == 1 &&
         loaded.project.outputWidth == 3840 && loaded.project.outputHeight == 2160 &&
         loaded.project.videoTracks == live.videoTracks &&
@@ -1419,11 +1667,13 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
                 actual.sourceOutFrame == expected.sourceOutFrame &&
                 actual.timelineStartFrame == expected.timelineStartFrame &&
                 actual.track == expected.track && actual.effects == expected.effects &&
-                actual.linkGroupId == expected.linkGroupId;
+                actual.linkGroupId == expected.linkGroupId &&
+                actual.speedNum == expected.speedNum && actual.speedDen == expected.speedDen;
         }
     }
     check(timelineFieldsMatch,
-          "schema 5のoutput size・track構成・mute・clip種別・trim・effectsがround-tripしません");
+          "schema 6のoutput "
+          "size・track構成・mute・clip種別・trim・effects・速度がround-tripしません");
 
     auto invalidOutput = mvm::project::createDefaultProject();
     invalidOutput.outputWidth = 0;
@@ -1434,7 +1684,7 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
     const auto strangerPath = root / "stranger.mvm";
     {
         std::ofstream stranger(strangerPath, std::ios::binary);
-        stranger << R"({"schema_version": 5, "timeline_fps_num": 60, "timeline_fps_den": 1,)"
+        stranger << R"({"schema_version": 6, "timeline_fps_num": 60, "timeline_fps_den": 1,)"
                  << R"("video_tracks": [{"name": "V1", "muted": false}], "audio_tracks": [],)"
                  << R"("manim_assets": [], "timeline_clips": [],)"
                  << R"("media_folders": [], "media_items": []})";
@@ -1573,6 +1823,8 @@ int main(int argc, char** argv) {
     testRippleDelete();
     testRippleDeleteWithLinkedClips();
     testSplitClips();
+    testRateStretch();
+    testRateStretchLinkedDifferentDurations();
     testRippleTrim();
     testRollEdit();
     testLinkedToolEditing();

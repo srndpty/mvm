@@ -126,7 +126,7 @@ function Test-TimelineToolContract([string]$panelSource, [string]$mainSource) {
         @{ Tool = 'razor'; Key = 'C'; Available = 'true' },
         @{ Tool = 'ripple'; Key = 'B'; Available = 'true' },
         @{ Tool = 'rolling'; Key = 'N'; Available = 'true' },
-        @{ Tool = 'rate'; Key = 'R'; Available = 'false' },
+        @{ Tool = 'rate'; Key = 'R'; Available = 'true' },
         @{ Tool = 'slip'; Key = 'Y'; Available = 'true' },
         @{ Tool = 'slide'; Key = 'U'; Available = 'true' },
         @{ Tool = 'pen'; Key = 'P'; Available = 'true' },
@@ -147,6 +147,7 @@ function Test-TimelineToolContract([string]$panelSource, [string]$mainSource) {
                           'root.mvmController.splitClipAt(',
                           'root.mvmController.rippleTrimClip(',
                           'root.mvmController.rollClipEdge(',
+                          'root.mvmController.rateStretchClip(',
                           'root.mvmController.slipClip(',
                           'root.mvmController.slideClip(',
                           'root.mvmController.selectClipsFromFrame(',
@@ -158,10 +159,56 @@ function Test-TimelineToolContract([string]$panelSource, [string]$mainSource) {
 if (-not (Test-TimelineToolContract $toolPanel $qml)) {
     throw 'タイムラインツールのキー割り当てまたは実行先が崩れています'
 }
+# レート調整の drag 中の表示は、確定と同じ Project の計算 (previewRateStretch) を
+# clip ごとに使う。リンク相手の尺が違うと、共有の端の移動量では相手の表示が確定と食い違う。
+#   端ハンドル   -> previewRateStretch(..., "left"/"right", ...) の clips を ratePreviewClips へ
+#   clip の表示  -> ratePreview の startDelta / endDelta / speed
+#   波形         -> shownSpeed で縮尺を決める
+#   終了        -> endLinkedEdit で ratePreviewClips を空にする
+function Test-RatePreviewContract([string]$mainSource) {
+    foreach ($needle in @(
+        'readonly property var ratePreview: timelinePanel.ratePreviewClips[clipId]',
+        'ratePreview !== undefined ? ratePreview.startDelta',
+        'ratePreview !== undefined ? ratePreview.endDelta',
+        'ratePreview !== undefined ? ratePreview.speed : speed',
+        'secondsPerPixel: timelineSecondsPerFrame * clipItem.shownSpeed',
+        'root.mvmController.rateStretchClip(')) {
+        if (-not $mainSource.Contains($needle)) { return $false }
+    }
+    foreach ($edge in @('left', 'right')) {
+        $call = 'root\.mvmController\.previewRateStretch\(\s*clipItem\.clipId,\s*"' + $edge +
+                '",\s*requested,\s*clipItem\.editLinked\)'
+        if ($mainSource -notmatch $call) { return $false }
+    }
+    if (([regex]::Matches($mainSource, 'timelinePanel\.ratePreviewClips = preview\.clips')).Count -ne 2) {
+        return $false
+    }
+    if ($mainSource -notmatch 'function endLinkedEdit\(\) \{\s*timelinePanel\.ratePreviewClips = \(\{\}\);') {
+        return $false
+    }
+    return $true
+}
+if (-not (Test-RatePreviewContract $qml)) {
+    throw 'レート調整の drag 中の表示が確定と同じ計算 (previewRateStretch) を使っていません'
+}
+foreach ($brokenRate in @(
+    $qml.Replace('ratePreview !== undefined ? ratePreview.endDelta', 'ratePreview !== undefined ? rightPreviewDelta'),
+    $qml.Replace('ratePreview !== undefined ? ratePreview.speed : speed', 'speed'),
+    $qml.Replace('secondsPerPixel: timelineSecondsPerFrame * clipItem.shownSpeed', 'secondsPerPixel: timelineSecondsPerFrame * clipItem.speed'),
+    $qml.Replace('timelinePanel.ratePreviewClips = ({});', ''),
+    ($qml -replace 'timelinePanel\.ratePreviewClips = preview\.clips;', ''),
+    ($qml -replace 'previewRateStretch\(\s*clipItem\.clipId,\s*"right"', 'clampEdgeDrag(clipItem.clipId, "right"')
+)) {
+    if ($brokenRate -eq $qml -or (Test-RatePreviewContract $brokenRate)) {
+        throw 'レート調整の表示の検査の負例が効いていません'
+    }
+}
+
 # どれか 1 つを壊すと上の検査が落ちることを確かめる。
 foreach ($broken in @(
     @{ Panel = $toolPanel.Replace('key: "C"', 'key: "X"'); Main = $qml },
-    @{ Panel = $toolPanel -replace '(tool:\s*"rate"[^{}]*available:\s*)false', '${1}true'; Main = $qml },
+    @{ Panel = $toolPanel -replace '(tool:\s*"rate"[^{}]*available:\s*)true', '${1}false'; Main = $qml },
+    @{ Panel = $toolPanel; Main = $qml.Replace('root.mvmController.rateStretchClip(', 'root.mvmController.trimClip(') },
     @{ Panel = $toolPanel; Main = $qml.Replace('enabled: modelData.available && !root.keyboardFocusTakesKeys',
                                                 'enabled: modelData.available') }
 )) {

@@ -22,6 +22,11 @@ constexpr int kSchemaVersion = kProjectSchemaVersion;
 // .mvm ファイルであることを識別する marker。拡張子だけを根拠にしない。
 constexpr char kFormatMarker[] = "mvm-project";
 
+std::string unsupportedSchemaMessage(int schemaVersion) {
+    return "対応していない schema_version です: " + std::to_string(schemaVersion) + "。schema " +
+           std::to_string(kSchemaVersion) + " の .mvm を開いてください";
+}
+
 std::string pathToUtf8(const std::filesystem::path& path) {
     const auto text = path.generic_u8string();
     return {text.begin(), text.end()};
@@ -182,6 +187,11 @@ public:
                     if (hasSchema || !parseInteger(project.schemaVersion))
                         return failAndFinish("schema_version が重複または不正です", error);
                     hasSchema = true;
+                    // 版が違うファイルは後続の field の形も違うので、ここで止める。
+                    // 止めないと「必須 field がありません」など原因の分からないエラーになる。
+                    if (project.schemaVersion != kSchemaVersion)
+                        return failAndFinish(unsupportedSchemaMessage(project.schemaVersion),
+                                             error);
                 } else if (key == "format") {
                     if (hasFormat || !parseString(format))
                         return failAndFinish("format が重複または不正です", error);
@@ -243,10 +253,7 @@ public:
         if (!hasSchema)
             return failAndFinish("schema_version がありません", error);
         if (project.schemaVersion != kSchemaVersion)
-            return failAndFinish(
-                "対応していない schema_version です: " + std::to_string(project.schemaVersion) +
-                    "。schema " + std::to_string(kSchemaVersion) + " の .mvm を開いてください",
-                error);
+            return failAndFinish(unsupportedSchemaMessage(project.schemaVersion), error);
         if (!hasFormat || format != kFormatMarker)
             return failAndFinish("mvm project ファイルではありません (format marker 不一致)",
                                  error);
@@ -808,6 +815,8 @@ private:
         bool hasTrackKind = false;
         bool hasTrackIndex = false;
         bool hasLinkGroupId = false;
+        bool hasSpeedNum = false;
+        bool hasSpeedDen = false;
         std::string kind;
         std::string media;
         std::string trackKind;
@@ -872,6 +881,14 @@ private:
                     }
                     clip.track.index = static_cast<int>(trackIndex);
                     hasTrackIndex = true;
+                } else if (key == "speed_num") {
+                    if (hasSpeedNum || !parseInteger64(clip.speedNum))
+                        return fail("timeline clip の speed_num が重複または不正です");
+                    hasSpeedNum = true;
+                } else if (key == "speed_den") {
+                    if (hasSpeedDen || !parseInteger64(clip.speedDen))
+                        return fail("timeline clip の speed_den が重複または不正です");
+                    hasSpeedDen = true;
                 } else if (key == "link_group_id") {
                     if (hasLinkGroupId || !parseString(clip.linkGroupId))
                         return fail("timeline clip の link_group_id が重複または不正です");
@@ -893,7 +910,7 @@ private:
             return false;
         if (!hasKind || !hasMedia || !hasName || !hasId || !hasSourceFpsNum || !hasSourceFpsDen ||
             !hasSourceFrameCount || !hasSourceIn || !hasSourceOut || !hasTimelineStart ||
-            !hasTrackKind || !hasTrackIndex)
+            !hasTrackKind || !hasTrackIndex || !hasSpeedNum || !hasSpeedDen)
             return fail("timeline clip の必須 field がありません");
         if (media.empty())
             return fail("timeline clip の media_path が空です");
@@ -1251,6 +1268,8 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
              << "      \"source_in_frame\": " << clip.sourceInFrame << ",\n"
              << "      \"source_out_frame\": " << clip.sourceOutFrame << ",\n"
              << "      \"timeline_start_frame\": " << clip.timelineStartFrame << ",\n"
+             << "      \"speed_num\": " << clip.speedNum << ",\n"
+             << "      \"speed_den\": " << clip.speedDen << ",\n"
              << "      \"track_kind\": \"" << trackKindName(clip.track.kind) << "\",\n"
              << "      \"track_index\": " << clip.track.index << ",\n"
              << "      \"link_group_id\": \"" << escapeJson(clip.linkGroupId) << "\",\n"

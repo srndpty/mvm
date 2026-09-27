@@ -9,62 +9,13 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <framework/mlt.h>
 
 #define MVM_EXPORT_MAX_CLIPS 64
 #define MVM_EXPORT_MAX_TRACTOR_TRACKS (MVM_EXPORT_MAX_CLIPS + 2)
-#define MVM_EXPORT_MAX_CUTS (MVM_EXPORT_MAX_CLIPS * 3)
-
-static uint64_t gcd_u64(uint64_t left, uint64_t right) {
-    while (right != 0) {
-        uint64_t remainder = left % right;
-        left = right;
-        right = remainder;
-    }
-    return left;
-}
-
-static int checked_mul_u64(uint64_t left, uint64_t right, uint64_t* out) {
-    if (left != 0 && right > UINT64_MAX / left)
-        return 0;
-    *out = left * right;
-    return 1;
-}
-
-int mvm_source_boundary_to_producer_boundary(long long source_frame, long long source_fps_num,
-                                             long long source_fps_den, int producer_fps_num,
-                                             int producer_fps_den, long long* out_frame) {
-    if (!out_frame || source_frame < 0 || source_fps_num <= 0 || source_fps_den <= 0 ||
-        producer_fps_num <= 0 || producer_fps_den <= 0)
-        return 1;
-    uint64_t factors[3] = {(uint64_t)source_frame, (uint64_t)producer_fps_num,
-                           (uint64_t)source_fps_den};
-    uint64_t divisors[2] = {(uint64_t)producer_fps_den, (uint64_t)source_fps_num};
-    for (int d = 0; d < 2; ++d) {
-        for (int f = 0; f < 3; ++f) {
-            uint64_t common = gcd_u64(factors[f], divisors[d]);
-            factors[f] /= common;
-            divisors[d] /= common;
-        }
-    }
-    uint64_t numerator = 1;
-    uint64_t denominator = 1;
-    for (int i = 0; i < 3; ++i) {
-        if (!checked_mul_u64(numerator, factors[i], &numerator))
-            return 1;
-    }
-    for (int i = 0; i < 2; ++i) {
-        if (!checked_mul_u64(denominator, divisors[i], &denominator) || denominator == 0)
-            return 1;
-    }
-    uint64_t converted = numerator / denominator;
-    if (converted > INT64_MAX)
-        return 1;
-    *out_frame = (long long)converted;
-    return 0;
-}
 
 static void set_err(char* err, size_t n, const char* fmt, ...) {
     if (!err || !n)
@@ -121,6 +72,44 @@ static int service_exists(mlt_properties list, const char* name) {
     for (int i = 0; i < count; i++) {
         const char* got = mlt_properties_get_name(list, i);
         if (got && strcmp(got, name) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+/* clip の producer を開く。等速なら素材のパス、それ以外は "timewarp:<speed>:<path>" を
+ * loader へ渡す。service 名 "timewarp" を直接指定すると loader が付ける音声の正規化
+ * (resample) が付かない。timewarp は audio の sample rate を変えて速度を表すため、正規化が
+ * 無いと tractor の mix で伸縮されずに元の速さで鳴る (§16.8 で実測)。 */
+static mlt_producer open_clip_producer(mlt_profile profile, const MvmExportClip* clip) {
+    if (clip->speed_num == 1 && clip->speed_den == 1)
+        return mlt_factory_producer(profile, NULL, clip->path);
+    size_t size = strlen(clip->path) + 64;
+    char* resource = (char*)malloc(size);
+    if (!resource)
+        return NULL;
+    snprintf(resource, size, "timewarp:%.17g:%s", (double)clip->speed_num / (double)clip->speed_den,
+             clip->path);
+    mlt_producer producer = mlt_factory_producer(profile, NULL, resource);
+    free(resource);
+    if (!producer)
+        return NULL;
+    /* 既定値は 0 だが、音程の扱いは仕様なので明示して読み戻す。 */
+    mlt_properties properties = MLT_PRODUCER_PROPERTIES(producer);
+    mlt_properties_set_int(properties, "warp_pitch", 0);
+    const double speed = mlt_properties_get_double(properties, "warp_speed");
+    const double wanted = (double)clip->speed_num / (double)clip->speed_den;
+    if (mlt_properties_get_int(properties, "warp_pitch") != 0 ||
+        fabs(speed - wanted) > 1e-9 * wanted) {
+        mlt_producer_close(producer);
+        return NULL;
+    }
+    return producer;
+}
+
+static int clips_need_timewarp(const MvmExportClip* clips, int clip_count) {
+    for (int i = 0; i < clip_count; ++i) {
+        if (clips[i].speed_num != 1 || clips[i].speed_den != 1)
             return 1;
     }
     return 0;
@@ -400,8 +389,16 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
         if (clips[i].source_fps_num <= 0 || clips[i].source_fps_den <= 0 ||
             clips[i].source_frame_count <= 0 || clips[i].source_in_frame < 0 ||
             clips[i].source_out_frame <= clips[i].source_in_frame ||
-            clips[i].source_out_frame > clips[i].source_frame_count) {
+            clips[i].source_out_frame > clips[i].source_frame_count ||
+            clips[i].producer_in_frame < 0 ||
+            clips[i].producer_out_frame <= clips[i].producer_in_frame || clips[i].speed_num <= 0 ||
+            clips[i].speed_den <= 0) {
             set_err(err, err_size, "clip %d の source range または FPS が不正です", i);
+            return 1;
+        }
+        if (clips[i].tail_padding_frames != 0) {
+            set_err(err, err_size, "clip %d は末尾の補完が要ります。sequential 経路は扱えません",
+                    i);
             return 1;
         }
         if (clips[i].is_audio) {
@@ -455,6 +452,11 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
             set_err(err, err_size, "必須 consumer 'avformat' がありません");
             goto fail;
         }
+        if (clips_need_timewarp(clips, clip_count) &&
+            !service_exists(mlt_repository_producers(repo), "timewarp")) {
+            set_err(err, err_size, "速度を変えたclipに必要なproducer 'timewarp'がありません");
+            goto fail;
+        }
         for (int i = 0; i < clip_count; ++i) {
             if (clips[i].effects_enabled &&
                 (!service_exists(mlt_repository_filters(repo), "crop") ||
@@ -475,7 +477,7 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
     for (int i = 0; i < clip_count; i++) {
         /* service には NULL (= loader) を渡す。"avformat" を明示すると
          * loader が付ける正規化 filter が外れる (mvm_mlt_compose.c と同じ理由)。 */
-        mlt_producer p = mlt_factory_producer(profile, NULL, clips[i].path);
+        mlt_producer p = open_clip_producer(profile, &clips[i]);
         if (!p) {
             set_err(err, err_size, "clip %d の producer を開けません: %s", i, clips[i].path);
             goto fail;
@@ -487,18 +489,8 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
             goto fail;
         }
 
-        long long producer_in = 0;
-        long long producer_out_exclusive = 0;
-        if (mvm_source_boundary_to_producer_boundary(
-                clips[i].source_in_frame, clips[i].source_fps_num, clips[i].source_fps_den,
-                spec->fps_num, spec->fps_den, &producer_in) != 0 ||
-            mvm_source_boundary_to_producer_boundary(
-                clips[i].source_out_frame, clips[i].source_fps_num, clips[i].source_fps_den,
-                spec->fps_num, spec->fps_den, &producer_out_exclusive) != 0 ||
-            producer_out_exclusive <= producer_in) {
-            set_err(err, err_size, "clip %d の producer frame range を変換できません", i);
-            goto fail;
-        }
+        const long long producer_in = clips[i].producer_in_frame;
+        long long producer_out_exclusive = clips[i].producer_out_frame;
         const long long playtime = (long long)mlt_producer_get_playtime(p);
         if (!clamp_terminal_rounding(&clips[i], playtime, &producer_out_exclusive)) {
             set_err(err, err_size,
@@ -671,9 +663,10 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     int audio_tracks[MVM_EXPORT_MAX_TRACTOR_TRACKS] = {0};
     int playlist_count = 2;
     mlt_producer producers[MVM_EXPORT_MAX_CLIPS] = {NULL};
-    mlt_producer cuts[MVM_EXPORT_MAX_CUTS] = {NULL};
+    mlt_producer* cuts = NULL;
     int producer_count = 0;
     int cut_count = 0;
+    long long cut_capacity = 0;
     mlt_consumer consumer = NULL;
     long long cursors[MVM_EXPORT_MAX_TRACTOR_TRACKS] = {0};
     int failed = MVM_EXPORT_FAILED;
@@ -699,10 +692,16 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             clip->source_frame_count <= 0 || clip->source_in_frame < 0 ||
             clip->source_out_frame <= clip->source_in_frame ||
             clip->source_out_frame > clip->source_frame_count || clip->crop_left < 0 ||
-            clip->crop_top < 0 || clip->crop_right < 0 || clip->crop_bottom < 0) {
+            clip->crop_top < 0 || clip->crop_right < 0 || clip->crop_bottom < 0 ||
+            clip->producer_in_frame < 0 || clip->producer_out_frame <= clip->producer_in_frame ||
+            clip->tail_padding_frames < 0 || clip->speed_num <= 0 || clip->speed_den <= 0 ||
+            clip->producer_out_frame - clip->producer_in_frame + clip->tail_padding_frames !=
+                clip->timeline_duration_frames) {
             set_err(err, err_size, "tractor clip %dのmappingが不正です", index);
             return 1;
         }
+        /* 本体 cut 1 本、末尾の補完 frame ごとに 1 本、素材末尾の +1 丸めの補完 1 本。 */
+        cut_capacity += 2 + clip->tail_padding_frames;
         if (!clip->is_audio && clip->timeline_start_frame < cursors[clip->video_track]) {
             set_err(err, err_size, "tractor clip %dが同一trackで重複または未sortです", index);
             return 1;
@@ -749,6 +748,11 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             return 1;
         }
     }
+    cuts = (mlt_producer*)calloc((size_t)cut_capacity, sizeof(*cuts));
+    if (!cuts) {
+        set_err(err, err_size, "cut 配列を確保できません");
+        return 1;
+    }
 
     profile = mlt_profile_init(NULL);
     if (!profile) {
@@ -777,8 +781,11 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             !service_exists(mlt_repository_filters(repo), "crop") ||
             !service_exists(mlt_repository_filters(repo), "affine") ||
             !service_exists(mlt_repository_transitions(repo), "affine") ||
-            !service_exists(mlt_repository_transitions(repo), "mix")) {
-            set_err(err, err_size, "tractor exportに必要なcrop/affine/mix/avformatがありません");
+            !service_exists(mlt_repository_transitions(repo), "mix") ||
+            (clips_need_timewarp(clips, clip_count) &&
+             !service_exists(mlt_repository_producers(repo), "timewarp"))) {
+            set_err(err, err_size,
+                    "tractor exportに必要なcrop/affine/mix/avformat/timewarpがありません");
             goto cleanup;
         }
     }
@@ -818,7 +825,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
                 ++out->playlist_blank_count;
         }
 
-        mlt_producer parent = mlt_factory_producer(profile, NULL, clip->path);
+        mlt_producer parent = open_clip_producer(profile, clip);
         if (!parent || mlt_producer_get_playtime(parent) <= 0) {
             if (parent)
                 mlt_producer_close(parent);
@@ -826,19 +833,8 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             goto cleanup;
         }
         producers[producer_count++] = parent;
-        long long producer_in = 0;
-        long long producer_out = 0;
-        long long requested_producer_out = 0;
-        if (mvm_source_boundary_to_producer_boundary(clip->source_in_frame, clip->source_fps_num,
-                                                     clip->source_fps_den, spec->fps_num,
-                                                     spec->fps_den, &producer_in) != 0 ||
-            mvm_source_boundary_to_producer_boundary(clip->source_out_frame, clip->source_fps_num,
-                                                     clip->source_fps_den, spec->fps_num,
-                                                     spec->fps_den, &requested_producer_out) != 0) {
-            set_err(err, err_size, "clip %dのcut境界を変換できません", index);
-            goto cleanup;
-        }
-        producer_out = requested_producer_out;
+        const long long producer_in = clip->producer_in_frame;
+        long long producer_out = clip->producer_out_frame;
         if (!clamp_terminal_rounding(clip, (long long)mlt_producer_get_playtime(parent),
                                      &producer_out) ||
             producer_out - producer_in <= 0) {
@@ -846,8 +842,10 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             goto cleanup;
         }
         const long long actual_duration = producer_out - producer_in;
+        /* 補完は呼び出し側が決めた末尾の分と、素材末尾の +1 丸めで削った 1 frame だけ。 */
         const long long padding_frames = clip->timeline_duration_frames - actual_duration;
-        if (padding_frames < 0 || padding_frames > 2) {
+        if (padding_frames < clip->tail_padding_frames ||
+            padding_frames > clip->tail_padding_frames + 1) {
             set_err(err, err_size, "clip %dのcut尺差が許容範囲外です: timeline=%lld producer=%lld",
                     index, clip->timeline_duration_frames, actual_duration);
             goto cleanup;
@@ -1015,6 +1013,7 @@ cleanup:
     for (int index = 0; index < cut_count; ++index)
         if (cuts[index])
             mlt_producer_close(cuts[index]);
+    free(cuts);
     for (int index = 0; index < producer_count; ++index)
         if (producers[index])
             mlt_producer_close(producers[index]);

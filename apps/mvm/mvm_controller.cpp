@@ -1298,6 +1298,8 @@ bool MvmController::audioDescriptorFor(int clipIndex, preview::PreviewSourceDesc
     descriptor.mediaPath = clip.mediaPath;
     descriptor.audioEnabled = true;
     descriptor.audioSampleOffset = offset.sampleOffset;
+    descriptor.speedNum = clip.speedNum;
+    descriptor.speedDen = clip.speedDen;
     const auto timebase = core::CheckedOutputTimebase::create(
         project_.timelineFpsNum, project_.timelineFpsDen, audio::kInternalSampleRate);
     if (!timebase) {
@@ -1316,10 +1318,9 @@ bool MvmController::audioDescriptorFor(int clipIndex, preview::PreviewSourceDesc
         if (!frame)
             return 0.0F;
         const auto local = frame.value() - clip.timelineStartFrame;
-        const auto source = project::timelineBoundaryToSourceBoundary(
-            local, clip.sourceFpsNum, clip.sourceFpsDen, timelineFpsNum, timelineFpsDen);
-        if (local < 0 || !source.success ||
-            source.frame >= clip.sourceOutFrame - clip.sourceInFrame)
+        const auto source =
+            project::clipFadeSourceFrameAt(clip, timelineFpsNum, timelineFpsDen, local);
+        if (!source.success)
             return 0.0F;
         return static_cast<float>(project::evaluateClipVolume(
             clip.effects, local, source.frame, clip.sourceOutFrame - clip.sourceInFrame));
@@ -1339,7 +1340,8 @@ bool MvmController::audioIdentitiesFor(const TimelinePreviewAudioMapping& mapped
             error = QString::fromStdString(offset.error);
             return false;
         }
-        identities.push_back({clip.mediaPath, offset.sampleOffset, clip.effects});
+        identities.push_back(
+            {clip.mediaPath, offset.sampleOffset, clip.effects, clip.speedNum, clip.speedDen});
     }
     return true;
 }
@@ -1542,7 +1544,10 @@ bool MvmController::syncPreviewSourcesAt(std::int64_t timelineFrame, QString& er
         descriptor.videoEnabled = true;
         descriptor.videoTimelineMappingEnabled = true;
         descriptor.videoSourceInFrame = clip.sourceInFrame;
+        descriptor.videoSourceFrameCount = clip.sourceFrameCount;
         descriptor.videoTimelineStartFrame = clip.timelineStartFrame;
+        descriptor.speedNum = clip.speedNum;
+        descriptor.speedDen = clip.speedDen;
         if (clip.sourceFpsNum > std::numeric_limits<std::uint32_t>::max() ||
             clip.sourceFpsDen > std::numeric_limits<std::uint32_t>::max()) {
             error = QStringLiteral("source FPSをpreview descriptorへ格納できません");
@@ -2854,6 +2859,48 @@ bool MvmController::trimClip(const QString& clipId, const QString& edge, qint64 
         id, QStringLiteral("clipをtrimしました"));
 }
 
+bool MvmController::rateStretchClip(const QString& clipId, const QString& edge,
+                                    qint64 projectFrameDelta, bool linked) {
+    project::TrimEdge trimEdge;
+    if (!resolveTrimEdge(edge, trimEdge))
+        return false;
+    const std::string id = clipId.toStdString();
+    return applyTimelineEdit(
+        [&](project::Project& candidate) {
+            return project::rateStretchTimelineClip(candidate, id, trimEdge, projectFrameDelta,
+                                                    linkModeFor(linked));
+        },
+        id, QStringLiteral("clipの速度を変えました"));
+}
+
+QVariantMap MvmController::previewRateStretch(const QString& clipId, const QString& edge,
+                                              qint64 projectFrameDelta, bool linked) const {
+    QVariantMap result{{QStringLiteral("delta"), qint64{0}},
+                       {QStringLiteral("clips"), QVariantMap{}}};
+    project::TrimEdge trimEdge;
+    if (edge == QStringLiteral("left"))
+        trimEdge = project::TrimEdge::Left;
+    else if (edge == QStringLiteral("right"))
+        trimEdge = project::TrimEdge::Right;
+    else
+        return result;
+    const auto preview = project::previewRateStretch(project_, clipId.toStdString(), trimEdge,
+                                                     projectFrameDelta, linkModeFor(linked));
+    if (!preview.success)
+        return result;
+    QVariantMap clips;
+    for (const auto& shown : preview.clips) {
+        clips.insert(QString::fromStdString(shown.clipId),
+                     QVariantMap{{QStringLiteral("startDelta"), qint64{shown.startDelta}},
+                                 {QStringLiteral("endDelta"), qint64{shown.endDelta}},
+                                 {QStringLiteral("speed"), static_cast<double>(shown.speedNum) /
+                                                               static_cast<double>(shown.speedDen)}});
+    }
+    result.insert(QStringLiteral("delta"), qint64{preview.appliedDelta});
+    result.insert(QStringLiteral("clips"), clips);
+    return result;
+}
+
 qint64 MvmController::clampEdgeDrag(const QString& clipId, const QString& edge, const QString& tool,
                                     qint64 projectFrameDelta, bool linked) const {
     project::TrimEdge trimEdge;
@@ -2952,6 +2999,7 @@ qint64 MvmController::previewSlip(qint64 projectFrameDelta) {
         slipPreview_->mediaPath = clip.mediaPath;
         slipPreview_->sourceFpsNum = clip.sourceFpsNum;
         slipPreview_->sourceFpsDen = clip.sourceFpsDen;
+        slipPreview_->sourceFrameCount = clip.sourceFrameCount;
         slipPreview_->sourceFrame = clip.sourceInFrame;
         slipPreview_->pending = true;
         if (!slipPreviewTimer_.isActive()) {
@@ -2985,6 +3033,7 @@ void MvmController::applySlipPreview() {
         descriptor.videoEnabled = true;
         descriptor.videoTimelineMappingEnabled = true;
         descriptor.videoSourceInFrame = 0;
+        descriptor.videoSourceFrameCount = slipPreview_->sourceFrameCount;
         descriptor.videoTimelineStartFrame = 0;
         descriptor.expectedVideoSourceFrameRate = {
             static_cast<std::uint32_t>(slipPreview_->sourceFpsNum),

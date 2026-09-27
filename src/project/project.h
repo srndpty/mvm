@@ -59,11 +59,21 @@ struct TimelineClip {
     // 同じ値を持つ video/audio clip はリンクされている。空文字列は未リンク。
     // リンクは横移動と削除だけを同期し、track と trim は各 clip 固有に保つ。
     std::string linkGroupId;
+    // 再生速度 (約分済みの正の有理数)。1/1 が等速、1/2 が 50%。
+    // 素材範囲 (in/out) は変えず、timeline 上の尺が 1/速度 倍になる。
+    // timeline との換算は必ず clipTimebase (timeline_edit.h) を通す。
+    std::int64_t speedNum = 1;
+    std::int64_t speedDen = 1;
     bool operator==(const TimelineClip&) const = default;
 };
 
+// 速度の範囲 (10%〜1000%)。rbpitch の pitchscale 0.1〜10 に収め、後から音程保持を
+// 足しても範囲を変えずに済むようにしている。
+inline constexpr std::int64_t kMinClipSpeedPercent = 10;
+inline constexpr std::int64_t kMaxClipSpeedPercent = 1000;
+
 // Project JSON の schema。timeline 検証と JSON の読み書きが同じ値を参照する。
-inline constexpr int kProjectSchemaVersion = 5;
+inline constexpr int kProjectSchemaVersion = 6;
 
 // プロジェクトパネルの素材。timeline clip とは独立に存在し、mediaPath で対応づく。
 enum class MediaKind { Video, Audio, Image };

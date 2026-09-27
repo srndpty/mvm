@@ -1,6 +1,7 @@
 #ifndef MVM_PROJECT_TIMELINE_EDIT_H
 #define MVM_PROJECT_TIMELINE_EDIT_H
 
+#include "core/source_frame_mapping.h"
 #include "project/project.h"
 
 #include <cstdint>
@@ -66,7 +67,44 @@ TimelineFrameResult timelineBoundaryToSourceBoundary(std::int64_t timelineFrame,
                                                      std::int64_t sourceFpsDen,
                                                      std::int64_t timelineFpsNum,
                                                      std::int64_t timelineFpsDen);
+// clip の実効 fps (素材 fps × 速度、約分済み)。速度 s の clip は素材 fps が f s の clip と
+// 同じに扱えるので、timeline との換算はすべてこれを使う。実際の素材 fps を使ってよいのは
+// decode の検証と素材 frame の秒換算だけである。積を int64 で表せなければ nullopt。
+std::optional<core::FrameRate> clipTimebase(const TimelineClip& clip);
+// clipTimebase を使う境界換算。素材境界 -> timeline は ceil、逆は floor。
+TimelineFrameResult clipSourceBoundaryToTimeline(const TimelineClip& clip, std::int64_t sourceFrame,
+                                                 std::int64_t timelineFpsNum,
+                                                 std::int64_t timelineFpsDen);
+TimelineFrameResult clipTimelineBoundaryToSource(const TimelineClip& clip,
+                                                 std::int64_t timelineFrame,
+                                                 std::int64_t timelineFpsNum,
+                                                 std::int64_t timelineFpsDen);
 TimelineFrameResult timelineClipDuration(const Project& project, const TimelineClip& clip);
+// clip 先頭から clipLocalFrame 番目の timeline frame が表示する素材 frame (素材の絶対 frame)。
+// core::sourceFrameAtOutputPosition の四捨五入で、書き出し (MLT) と同じ frame を返す。
+// 丸めで sourceOutFrame (trim で外した次の frame) を返すことがあるのも MLT と同じである。
+// 素材の末尾を越える分だけは最終 frame に止める。
+TimelineFrameResult clipSourceFrameAt(const TimelineClip& clip, std::int64_t timelineFpsNum,
+                                      std::int64_t timelineFpsDen, std::int64_t clipLocalFrame);
+
+// 書き出しの producer に渡す cut の範囲。位置は素材の 0 frame から数えた output 位置
+// (core/source_frame_mapping.h) で、[begin, end) が clipSourceFrameAt と同じ frame を出す。
+// 素材の末尾で、丸めると存在しない frame を指す位置は cut に含めない。その分の
+// tailFrames は最終 frame を繰り返して埋める (clipSourceFrameAt の最終 frame への止め方と同じ)。
+struct ClipProducerRange {
+    bool success = false;
+    std::int64_t begin = 0;
+    std::int64_t end = 0;
+    std::int64_t tailFrames = 0;
+    std::string error;
+};
+
+ClipProducerRange clipProducerRange(const TimelineClip& clip, std::int64_t timelineFpsNum,
+                                    std::int64_t timelineFpsDen);
+// フェードと音量カーブの評価に渡す素材 local frame (clipSourceFrameAt - in)。
+// 丸めで素材範囲の外を指す分は [0, out - in) に収める。
+TimelineFrameResult clipFadeSourceFrameAt(const TimelineClip& clip, std::int64_t timelineFpsNum,
+                                          std::int64_t timelineFpsDen, std::int64_t clipLocalFrame);
 bool sourceRateMatchesTimelineRate(const Project& project, const TimelineClip& clip);
 TimelineValidationResult validateTimeline(const Project& project);
 
@@ -115,6 +153,50 @@ TimelineFrameResult clampEdgeEdit(const Project& project, const std::string& cli
 // clampEdgeEdit で止め、1 frame も動かせなければ失敗する。
 TimelineEditResult trimTimelineClip(Project& project, const std::string& clipId, TrimEdge edge,
                                     std::int64_t projectFrameDelta, LinkMode linkMode);
+
+// --- レート調整 (Premiere の Rate Stretch) --------------------------------
+// 端をドラッグして、素材範囲 (in/out) を変えずに速度を変えて尺を伸縮する。反対側の端は動かさず、
+// リップルも上書きもしない。Linked ならリンク相手にも同じ速度を適用し、同じ側の端を動かす
+// (相手の速度がもともと違えば失敗する)。
+//
+// 尺 D にしたい clip の速度は s = (out - in) R / D (R = timeline fps / 素材 fps) とする。
+// このとき実効 fps は (out - in) timeline fps / D で、尺はちょうど D になる。
+
+// 端のドラッグ量 (project frame) を、伸縮できる範囲で止めた値にする。止める条件は
+// 速度の範囲 (kMin/kMaxClipSpeedPercent)、1 frame 以上の尺、同じ track の隣の clip、
+// timeline 先頭で、Linked ならリンク相手の条件も含める。確定と drag 中の表示の両方が使う。
+TimelineFrameResult clampRateEdit(const Project& project, const std::string& clipId, TrimEdge edge,
+                                  std::int64_t projectFrameDelta, LinkMode linkMode);
+
+// drag 中の表示。clampRateEdit で止めた量で伸縮した結果を、対象 clip (Linked ならリンク相手も)
+// ごとに返す。確定 (rateStretchTimelineClip) と同じ candidate から作るので、リンク相手の
+// 尺が操作した clip と違っても、表示と確定が食い違わない (相手は同じ速度で自分の尺になる)。
+struct RateStretchPreviewClip {
+    std::string clipId;
+    std::int64_t timelineStartFrame = 0;
+    std::int64_t durationFrames = 0;
+    std::int64_t speedNum = 1;
+    std::int64_t speedDen = 1;
+    // 開始 / 終端が現在の位置から動く frame 数 (drag 中の表示用)。
+    std::int64_t startDelta = 0;
+    std::int64_t endDelta = 0;
+};
+
+struct RateStretchPreview {
+    bool success = false;
+    // 操作した clip の端を実際に動かす量 (clampRateEdit の結果)。
+    std::int64_t appliedDelta = 0;
+    std::vector<RateStretchPreviewClip> clips;
+    std::string error;
+};
+
+RateStretchPreview previewRateStretch(const Project& project, const std::string& clipId,
+                                      TrimEdge edge, std::int64_t projectFrameDelta,
+                                      LinkMode linkMode);
+// clampRateEdit で止めた量で伸縮する。1 frame も伸縮できなければ失敗する。
+TimelineEditResult rateStretchTimelineClip(Project& project, const std::string& clipId,
+                                           TrimEdge edge, std::int64_t projectFrameDelta,
+                                           LinkMode linkMode);
 
 // --- Premiere 風の編集ツール ---------------------------------------------
 // いずれも candidate 全体を validateTimeline で検証し、失敗時は Project を変更しない。

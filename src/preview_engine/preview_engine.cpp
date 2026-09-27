@@ -141,6 +141,18 @@ Result<void> validatePreviewSourceDescriptor(const PreviewSourceDescriptor& desc
             makeError(PreviewErrorCategory::InvalidSource, PreviewOperation::AddSource,
                       "timeline mappingにはexpected source FPSが必要です"));
     }
+    if (descriptor.speedNum <= 0 || descriptor.speedDen <= 0) {
+        return Result<void>::failure(makeError(PreviewErrorCategory::InvalidSource,
+                                               PreviewOperation::AddSource,
+                                               "再生速度は正の有理数である必要があります"));
+    }
+    if (descriptor.videoTimelineMappingEnabled &&
+        (descriptor.videoSourceInFrame < 0 ||
+         descriptor.videoSourceFrameCount <= descriptor.videoSourceInFrame)) {
+        return Result<void>::failure(
+            makeError(PreviewErrorCategory::InvalidSource, PreviewOperation::AddSource,
+                      "timeline mappingには素材inより大きい素材frame数が必要です"));
+    }
     return Result<void>::success();
 }
 
@@ -1706,7 +1718,8 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
         std::string openError;
         if (descriptor.videoTimelineMappingEnabled &&
             !newVideoWorker->configureOutputMapping(
-                descriptor.videoSourceInFrame, descriptor.videoTimelineStartFrame,
+                descriptor.videoSourceInFrame, descriptor.videoSourceFrameCount,
+                {descriptor.speedNum, descriptor.speedDen}, descriptor.videoTimelineStartFrame,
                 {static_cast<long long>(impl_->configuredFrameRate.numerator),
                  static_cast<long long>(impl_->configuredFrameRate.denominator)},
                 openError)) {
@@ -1758,7 +1771,9 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
         newAudioWorker = std::make_shared<audio::AudioDecodeWorker>(internalAudio);
         newAudioWorker->queue().setGainAtSample(descriptor.audioGainAtMediaSample);
         std::string audioError;
-        if (!newAudioWorker->start(path, audioError)) {
+        if (!newAudioWorker->setPlaybackSpeed(descriptor.speedNum, descriptor.speedDen,
+                                              audioError) ||
+            !newAudioWorker->start(path, audioError)) {
             newAudioWorker->stop();
             rollbackVideo();
             ++impl_->telemetrySnapshot.decodeFailureCount;

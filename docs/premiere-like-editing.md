@@ -687,14 +687,12 @@ Main.qml のショートカットは `Instantiator` でこの配列から生成�
 | スリップ | Y | `slipTimelineClip` | 実装 |
 | スライド | U | `slideTimelineClip` | 実装 |
 | ハンド / ズーム | H / Z | なし (表示だけを変える) | 実装 |
-| レート調整 | R | — | 無効 |
+| レート調整 | R | `rateStretchTimelineClip` / `clampRateEdit` | 実装 |
 | ペン | P | `previewClipKeyEdit` / `editClipKey` | 実装 |
 | 横書き文字 | T | — | 無効 |
 
-`[事実]` R / T はボタンを表示するが選べない。ペンは Project schema 5 で有効にした。
+`[事実]` T はボタンを表示するが選べない。ペンは Project schema 5、レート調整は schema 6 で有効にした。
 
-- レート調整: clip は速度を持たず、尺は素材 fps → timeline fps の換算だけで決まる。
-  preview の frame 対応・書き出し (MLT)・音声の offset とピッチの 3 経路に手が入る
 - 横書き文字: テキスト clip の種別が無く、preview (RHI) と書き出しの両方に描画が要る
 
 ### 16.1 編集の契約
@@ -853,3 +851,114 @@ Shift を押しただけでマウスを動かさない間は、表示は吸着�
 clip では 1 clip あたり 43.2 万 key になる。preview と同じ `evaluateClipOpacity/Volume` を
 frame ごとに使うことで補間・フェード乗算・素材 fps の差を揃えている。キー・フェード境界・
 clip 端などの変化点だけへ圧縮する余地はあるが、preview との一致を壊しやすいので、計測してから判断する。
+
+### 16.7 素材 frame の対応を書き出し (MLT) に揃える (レート調整の前段)
+
+レート調整 (R) を入れると、timeline fps と素材 fps の比が整数でない clip が当たり前になる。
+その前に、preview と書き出しで「timeline frame がどの素材 frame を出すか」を一致させた。
+
+`[事実]` MLT (7.36.1) の avformat producer は、profile fps の位置 p (素材の 0 frame から数える) に
+素材 frame `floor(p × 素材fps / profile fps + 1/2)` を出す。preview は `floor(p / R)` だったので、
+fps が違う clip で最大 1 素材 frame 食い違っていた。25fps 素材を 60fps profile で出すと 239 frame 中
+118 frame がずれていた。再現手順: `testsrc2` で作った素材を `melt -profile <60fps> src.mp4
+-consumer avformat:out.nut vcodec=rawvideo` で出し、素材 fps の profile で出した frame と
+`framemd5` で照合する (ffmpeg で直接 decode した md5 とは変換が違うので照合に使えない)。
+
+`[事実]` 同じ理由で、書き出しの cut 開始を `floor(in R)` にしていたため、R < 2 の clip は先頭に
+in より前の frame を出していた。50fps 素材を 60fps へ置き in = 4 とすると frame 3 が出た。
+
+`[事実]` ちょうど 1/2 の境界では MLT が double で計算するため、まれに下へ丸まる
+(25fps→60fps の p = 138 は 57.5 で frame 57)。mvm は有理数で厳密に上へ丸め、これは再現しない。
+
+変更:
+
+- 対応の定義を `src/core/source_frame_mapping.h` の 1 か所にした。境界は `ceil(s R)`、表示は
+  `floor(p / R + 1/2)`。Project の `convertBoundary`、preview (`clipSourceFrameAt`)、
+  decode worker (`sourceFrameOutputInterval`)、書き出しの cut (`clipProducerRange`)、
+  フェード・音量カーブの評価 (`clipFadeSourceFrameAt`) がすべてこれを使う
+- 書き出しの cut は Project の境界と同じ `ceil(in R)` から始める。C 側の floor 換算
+  (`mvm_source_boundary_to_producer_boundary`) は削除し、C++ で決めた範囲を渡す
+- 素材の末尾で、丸めると存在しない frame を指す位置は cut に含めず、最終 frame を繰り返して埋める。
+  埋める数は clip ごとに決まる (以前の「0〜2 frame」の許容は廃止)。埋める clip は tractor 経路で書き出す
+- 丸めで trim の外側の frame (sourceOutFrame) を出す位置があるのも MLT と同じにしている
+- 位置を素材の絶対位置で数えるので、分割した右半分は素材 fps によらず左半分の preview source を
+  引き継げる (§16.5 の「(in' - in) R が整数」の条件は不要になった。29.97fps 素材も引き継ぐ)
+
+`[事実]` `m4_timeline_export_focused` に、48fps 素材を in = 3 から 60fps へ置いた clip を書き出し、
+全 8 frame が手計算の対応 3,4,5,6,6,7,8,9 と一致すること、preview も同じ列を返すことを足した。
+書き出しは色変換で輝度が変わるので、同じ輝度式の 60fps 素材を 1:1 で後ろに置いた校正表と照合する。
+cut 開始を floor に戻した mutant でこの検査が落ちることを確認した。
+
+`[事実]` timewarp producer (レート調整で使う予定) も同じ四捨五入だった。
+`timewarp:<speed>:src.mp4` を 60fps profile で出すと、length は素材尺 ÷ speed (端数切り上げ、
+0.73 で 329 frame)、frame は `floor(k × speed × 素材fps / profile fps + 1/2)` と一致した
+(0.73 で 328/328、1/3 で 716/717、不一致 1 件は 1/2 境界の double 誤差)。
+`warp_pitch=0` では 1000Hz の正弦波が 0.5x で 500Hz、2x で 2000Hz になり、
+`warp_pitch=1` では 1000Hz のまま保たれた (中央 1 秒のゼロ交差で測定)。
+
+### 16.8 レート調整ツールと Project schema 6
+
+`[事実]` Project schema を 6 に上げた。clip に再生速度 `speed_num` / `speed_den` (約分済みの正の有理数、
+10%〜1000%) を必須で保存する。schema 5 は読み込まない。範囲は rbpitch の pitchscale 0.1〜10 に合わせ、
+後から音程保持を足しても変えずに済むようにした。
+
+`[事実]` 速度 s の clip は、素材 fps が f s の clip と同じに扱う。実効 fps は `project::clipTimebase`
+(`core::multiplyFrameRate`) の 1 か所で決め、trim・分割・リップル・ローリング・スライド・スリップの境界、
+clip の尺、preview の frame 対応 (§16.7)、decode worker の区間、書き出しの cut、フェードと音量カーブの
+評価がすべてこれを使う。実際の素材 fps は decode の検証と表示だけに使う。
+
+レート調整の操作 (Premiere の Rate Stretch):
+
+- 端をドラッグすると素材範囲 (in/out) を変えずに速度を変える。反対側の端は動かさず、リップルも上書きもしない
+- 尺を D にする速度は s = (out - in) R / D。実効 fps が (out - in) timeline fps / D になり、尺はちょうど D になる
+  (29.97fps 素材でも端数が出ない)
+- 止め方は `clampRateEdit` に一本化し、確定と drag 中の表示 (`clampEdgeDrag` の `rate`) の両方が使う。
+  速度の範囲・1 frame 以上の尺・同じ track の隣の clip・timeline 先頭で止め、Linked ならリンク相手の条件も含める。
+  判定そのものは candidate に `validateTimeline` を掛けて行い、止める位置は二分探索で求める
+  (各条件は尺の上限か下限なので、成り立つ範囲は現在の尺から連続している)
+- Linked はリンク相手にも同じ速度を適用する。相手の速度がもともと違う (Alt で片方だけ変えた) 場合は拒否する
+- drag 中の表示は確定と同じ計算 (`previewRateStretch`) で作る。clamp して伸縮した candidate から、
+  対象 clip ごとの開始 / 終端のずれと速度を返し、QML は `ratePreviewClips` として clip ごとに使う
+  (幅、波形の縮尺 `shownSpeed`、ラベルの %)。確定 (`rateStretchTimelineClip`) も同じ candidate を作る。
+  以前は QML がリンク相手へ操作した clip と同じ端の移動量を配っており、尺の違うリンク対
+  (V 300f / A 240f) で V を +150 すると A を 390f / 61.54% と表示し、離すと 360f / 66.67% へ跳んだ
+- 波形は 4 倍ずつ粗くした peak の階層から 1 列あたり高々 8 個程度を走査するだけで、drag 中に縮尺を
+  変えても再 decode は起きない (ズームと同じ負荷)
+- opacity / volume の key は内容に付いて伸縮する (`rescaleClipKeys`、端は端へ写る)。丸めで同じ frame に
+  重なった key は先の 1 つを残す。フェードは素材 frame 基準なので変えない
+
+音声は速度に連動させる (テープ方式。ピッチ保持は未対応):
+
+- preview: `AudioDecodeWorker::setPlaybackSpeed`。swr の rate を (素材 rate × p) : (48000 × q) にし、
+  出力を「速度で伸縮した時間軸」の 48kHz sample にする。この時間軸なら「media sample = timeline sample + offset」の
+  定数のずらしが保てるので、offset・mix・audio master clock には手を入れていない。rate が int に収まらない
+  速度だけ連分数で近似する。シャトルも同じ worker を使う
+- 書き出し: 等速でない clip は `timewarp:<speed>:<path>` を loader へ渡して開く (`warp_pitch=0`)。
+  `timewarp` は必須 service に加えた
+
+`[事実]` service 名 `"timewarp"` を `mlt_factory_producer` へ直接渡すと、tractor の書き出しで音声が
+伸縮されなかった (440Hz・1 秒の WAV を 50% にしても 440Hz・1 秒のまま)。loader へ `timewarp:0.5:<path>` を
+渡すと 220Hz・2 秒になった。melt に同じ文字列を渡した単体の書き出しは最初から 2 秒だった。
+`[推測]` timewarp は audio の sample rate を変えて速度を表し、loader が付ける resample の正規化で初めて
+伸縮した音になる。mix transition はこれを resample しない。
+
+`[事実]` 次を検査に固定した。
+
+- `test_timeline_edit` (尺の違うリンク対): V 300f / A 240f の V を +150 すると preview も確定も
+  V 450f・A 360f・2/3 になること、left 端では A が終端を保って開始のずれ -120 になること
+- `m7b_4_timeline_ui_architecture`: 端ハンドルが rate のとき `previewRateStretch` を呼び、clip の幅・
+  `shownSpeed`・波形の縮尺がその結果を使い、drag の終了で消すこと (1 か所ずつ壊した負例つき)
+- `test_timeline_edit`: 50%・75%・1000%・10% の止め方、隣の clip とリンク相手の隣の clip で止まること、
+  29.97fps 素材の尺がちょうど 250 になり速度 1001/1250 になること、key の伸縮、速度付き clip の trim と分割、
+  速度の違うリンク相手の拒否、拒否時に Project が変わらないこと
+- `test_clip_effects`: schema 5・速度の欠落・範囲外・未約分の拒否と、10% / 1000% ちょうどの受理 (対照群つき)
+- `test_timeline_preview_mapping`: 50% の clip の frame 対応 (四捨五入)、尺、速度の違う source を使い回さないこと、
+  音声の offset
+- `m4_timeline_export_focused`: 40% の clip の全 15 frame が手計算の対応と一致すること (校正表で照合)、
+  440Hz・1 秒の WAV を 50% で書き出すと 120 frame・約 220Hz になること (上の loader の件で実際に落ちた)
+- `audio_playback_speed`: preview の decoder で 44.1kHz・1000Hz・1 秒の WAV を 1 / 1/2 / 2 / 73/100 で読み、
+  sample 数が 48000/s (±64)、周波数が 1000 s Hz (±1%)、伸縮した時間軸の seek が通しの decode と一致すること。
+  実測は 47983 / 95966 / 23984 / 65730 sample、1000.3 / 500.2 / 2001.3 / 730.3 Hz
+
+`[未検証]` 実機のマウス操作、preview の音声を耳で確かめること、1000% での preview の decode 負荷
+(全 frame を decode するので、コマ落ちするかは測っていない)。
