@@ -135,7 +135,9 @@ if (-not $revertBody.Contains('undo.previous')) {
 }
 
 # applyAudioSourceFor は addSource へ渡した descriptor をそのまま控えること。
-if (-not $applyBody.Contains('target.push_back({{}, desired[index], descriptor,')) {
+# clang-format が初期化子の改行位置を変えても同じ契約として読むため、空白を詰めて比べる。
+$applyBodyCompact = $applyBody -replace '\s+', ' '
+if (-not $applyBodyCompact.Contains('target.push_back({{}, desired[index], descriptor,')) {
     throw 'applyAudioSourceFor が実際に渡した descriptor を控えていません'
 }
 
