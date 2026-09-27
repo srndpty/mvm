@@ -48,6 +48,8 @@ bool planShuttleAudio(const project::Project& project, int rate, std::int64_t ba
     next.baseSample = base.value();
     next.endSample = end.value();
     next.rate = rate;
+    next.timelineFpsNum = project.timelineFpsNum;
+    next.timelineFpsDen = project.timelineFpsDen;
     for (const auto& clip : project.timelineClips) {
         if (!isShuttleAudibleClip(project, clip))
             continue;
@@ -67,7 +69,9 @@ bool planShuttleAudio(const project::Project& project, int rate, std::int64_t ba
         const auto utf8Path = clip.mediaPath.u8string();
         next.clips.push_back(
             {std::string(reinterpret_cast<const char*>(utf8Path.data()), utf8Path.size()),
-             startSample.value(), endSample.value(), offset.sampleOffset});
+             startSample.value(), endSample.value(), offset.sampleOffset, clip.effects,
+             clip.timelineStartFrame, clip.sourceFpsNum, clip.sourceFpsDen,
+             clip.sourceOutFrame - clip.sourceInFrame});
     }
     plan = std::move(next);
     return true;
@@ -84,6 +88,12 @@ bool mixShuttleBlock(const ShuttleAudioPlan& plan, std::int64_t outputStart,
         return false;
     }
     pcm.assign(static_cast<std::size_t>(sampleCount) * audio::kInternalChannels, 0.0F);
+    const auto timebase = core::CheckedOutputTimebase::create(
+        plan.timelineFpsNum, plan.timelineFpsDen, audio::kInternalSampleRate);
+    if (!timebase) {
+        error = "シャトル音声の音量カーブを換算できません";
+        return false;
+    }
     for (std::size_t clipIndex = 0; clipIndex < plan.clips.size(); ++clipIndex) {
         const auto& clip = plan.clips[clipIndex];
         // 出力 i に対応する素材 sample。clip の外なら無し。
@@ -125,8 +135,25 @@ bool mixShuttleBlock(const ShuttleAudioPlan& plan, std::int64_t outputStart,
             const auto index =
                 static_cast<std::size_t>(*sourceSample - first) * audio::kInternalChannels;
             const auto output = static_cast<std::size_t>(i) * audio::kInternalChannels;
-            pcm[output] += source[index];
-            pcm[output + 1] += source[index + 1];
+            const auto timelineSample = timelineShuttleSampleAt(plan.baseSample, plan.rate,
+                                                                outputStart + i);
+            if (!timelineSample) {
+                error = "シャトル音声のtimeline sampleを換算できません";
+                return false;
+            }
+            const auto frame = timebase.value().schedulerOutputFrame(*timelineSample);
+            const auto local = frame ? frame.value() - clip.timelineStartFrame : -1;
+            const auto sourceFrame = project::timelineBoundaryToSourceBoundary(
+                local, clip.sourceFpsNum, clip.sourceFpsDen, plan.timelineFpsNum,
+                plan.timelineFpsDen);
+            if (local < 0 || !sourceFrame.success || sourceFrame.frame >= clip.sourceDuration) {
+                error = "シャトル音声の音量カーブ位置が不正です";
+                return false;
+            }
+            const float gain = static_cast<float>(project::evaluateClipVolume(
+                clip.effects, local, sourceFrame.frame, clip.sourceDuration));
+            pcm[output] += source[index] * gain;
+            pcm[output + 1] += source[index + 1] * gain;
         }
     }
     for (auto& sample : pcm)

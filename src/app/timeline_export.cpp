@@ -1,12 +1,11 @@
 #include "app/timeline_export.h"
 
-#include "core/clip_fade.h"
 #include "media/mlt/mvm_mlt_export.h"
 #include "project/timeline_edit.h"
 
 #include <algorithm>
 #include <cmath>
-#include <set>
+#include <limits>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -38,50 +37,19 @@ bool mapExportEffects(const project::TimelineClip& clip, const TimelineExportReq
     output.rectHeight = mapped.destinationRect.height * request.height;
     output.rotationDegrees = mapped.rotationDegrees;
 
-    const std::int64_t duration = clip.sourceOutFrame - clip.sourceInFrame;
-    std::set<std::int64_t> sourcePositions{0, duration - 1};
-    const auto add = [&](std::int64_t frame) {
-        if (frame >= 0 && frame < duration)
-            sourcePositions.insert(frame);
-    };
-    add(clip.effects.fadeInFrames - 1);
-    add(clip.effects.fadeInFrames);
-    add(duration - clip.effects.fadeOutFrames - 1);
-    add(duration - clip.effects.fadeOutFrames);
-
-    long long producerIn = 0;
-    if (mvm_source_boundary_to_producer_boundary(clip.sourceInFrame, clip.sourceFpsNum,
-                                                 clip.sourceFpsDen, request.fpsNum, request.fpsDen,
-                                                 &producerIn) != 0) {
-        error = "effect keyframeのproducer位置を変換できません";
-        return false;
-    }
-    for (std::int64_t sourceLocal : sourcePositions) {
-        if (output.opacityKeys.size() >= MVM_EXPORT_MAX_OPACITY_KEYFRAMES) {
-            error = "effect opacity keyframe数が固定上限を超えました";
+    for (std::int64_t frame = 0; frame < timelineDuration; ++frame) {
+        const auto source = project::timelineBoundaryToSourceBoundary(
+            frame, clip.sourceFpsNum, clip.sourceFpsDen, request.fpsNum, request.fpsDen);
+        if (!source.success) {
+            error = source.error;
             return false;
         }
-        long long absoluteProducer = 0;
-        if (mvm_source_boundary_to_producer_boundary(
-                clip.sourceInFrame + sourceLocal, clip.sourceFpsNum, clip.sourceFpsDen,
-                request.fpsNum, request.fpsDen, &absoluteProducer) != 0) {
-            error = "effect keyframeのproducer位置を変換できません";
-            return false;
-        }
-        const auto localFrame =
-            std::clamp<long long>(absoluteProducer - producerIn, 0, timelineDuration - 1);
-        const double opacity =
-            mapped.baseOpacity *
-            core::clipFadeFactor(sourceLocal, duration, mapped.fadeInFrames, mapped.fadeOutFrames);
-        if (!output.opacityKeys.empty() && output.opacityKeys.back().localFrame == localFrame)
-            output.opacityKeys.back().opacity = opacity;
-        else
-            output.opacityKeys.push_back({localFrame, opacity});
+        const auto sourceLocal =
+            std::min(source.frame, clip.sourceOutFrame - clip.sourceInFrame - 1);
+        output.opacityKeys.push_back(
+            {frame, project::evaluateClipOpacity(clip.effects, frame, sourceLocal,
+                                                 clip.sourceOutFrame - clip.sourceInFrame)});
     }
-    // 素材fpsがtimelineより低いと、最終素材frameは複数のtimeline frameに跨る。
-    // その区間はpreviewと同じく最終素材frameのopacityを保持し、端keyをclip末尾へ置く。
-    if (output.opacityKeys.back().localFrame < timelineDuration - 1)
-        output.opacityKeys.push_back({timelineDuration - 1, output.opacityKeys.back().opacity});
     return true;
 }
 
@@ -91,7 +59,8 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
                                          const TimelineExportRequest& request) {
     TimelineExportPlan plan;
     if (request.width <= 0 || request.height <= 0 || request.fpsNum <= 0 || request.fpsDen <= 0 ||
-        request.videoCrf < 0 || request.videoCrf > 51) {
+        request.videoCrf < 0 || request.videoCrf > 51 || request.fpsNum != project.timelineFpsNum ||
+        request.fpsDen != project.timelineFpsDen) {
         plan.error = "書き出しprofileが不正です";
         return plan;
     }
@@ -133,6 +102,10 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
             plan.error = duration.error;
             return plan;
         }
+        if (duration.frame > std::numeric_limits<int>::max()) {
+            plan.error = "書き出しclipのキーフレーム数が上限を超えました";
+            return plan;
+        }
         TimelineExportClipMapping mapped;
         mapped.projectClipIndex = index;
         mapped.audio = clip.track.kind == project::TrackKind::Audio;
@@ -141,6 +114,20 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
         mapped.timelineDurationFrames = duration.frame;
         if (mapped.audio) {
             anyAudio = true;
+            for (std::int64_t frame = 0; frame < duration.frame; ++frame) {
+                const auto source = project::timelineBoundaryToSourceBoundary(
+                    frame, clip.sourceFpsNum, clip.sourceFpsDen, request.fpsNum, request.fpsDen);
+                if (!source.success) {
+                    plan.error = source.error;
+                    return plan;
+                }
+                mapped.gainKeys.push_back(
+                    {frame,
+                     project::evaluateClipVolume(
+                         clip.effects, frame,
+                         std::min(source.frame, clip.sourceOutFrame - clip.sourceInFrame - 1),
+                         clip.sourceOutFrame - clip.sourceInFrame)});
+            }
             plan.clips.push_back(std::move(mapped));
             continue;
         }
@@ -206,6 +193,10 @@ TimelineExportResult exportTimeline(const project::Project& project,
 
     std::vector<MvmExportClip> clips;
     clips.reserve(clipPaths.size());
+    std::vector<std::vector<MvmExportOpacityKeyframe>> opacityStorage;
+    std::vector<std::vector<MvmExportGainKeyframe>> gainStorage;
+    opacityStorage.reserve(plan.clips.size());
+    gainStorage.reserve(plan.clips.size());
     for (const auto& planned : plan.clips) {
         const auto index = static_cast<std::size_t>(planned.projectClipIndex);
         const auto& clip = project.timelineClips[index];
@@ -230,11 +221,16 @@ TimelineExportResult exportTimeline(const project::Project& project,
         mapped.rect_width = planned.rectWidth;
         mapped.rect_height = planned.rectHeight;
         mapped.rotation_degrees = planned.rotationDegrees;
-        for (const auto& plannedKey : planned.opacityKeys) {
-            auto& key = mapped.opacity_keyframes[mapped.opacity_keyframe_count++];
-            key.local_frame = plannedKey.localFrame;
-            key.opacity = plannedKey.opacity;
-        }
+        auto& opacityKeys = opacityStorage.emplace_back();
+        for (const auto& key : planned.opacityKeys)
+            opacityKeys.push_back({key.localFrame, key.opacity});
+        mapped.opacity_keyframes = opacityKeys.data();
+        mapped.opacity_keyframe_count = static_cast<int>(opacityKeys.size());
+        auto& gainKeys = gainStorage.emplace_back();
+        for (const auto& key : planned.gainKeys)
+            gainKeys.push_back({key.localFrame, key.gain});
+        mapped.gain_keyframes = gainKeys.data();
+        mapped.gain_keyframe_count = static_cast<int>(gainKeys.size());
         clips.push_back(mapped);
     }
 

@@ -319,12 +319,6 @@ RegionStats regionStats(const unsigned char* rgba, int w, int h, const Region& r
     return s;
 }
 
-// 2 つの領域が「同じ絵か」を平均色の距離で見る
-double meanColourDistance(const RegionStats& a, const RegionStats& b) {
-    double dr = a.meanR - b.meanR, dg = a.meanG - b.meanG, db = a.meanB - b.meanB;
-    return std::sqrt(dr * dr + dg * dg + db * db);
-}
-
 // --------------------------------------------------------------------------
 // Goertzel 法による単一周波数の強度
 // --------------------------------------------------------------------------
@@ -338,7 +332,7 @@ double goertzel(const float* samples, int count, int stride, double sampleRate, 
     double coeff = 2.0 * std::cos(omega);
     double s0 = 0, s1 = 0, s2 = 0;
     for (int i = 0; i < count; i++) {
-        s0 = samples[(size_t)i * (size_t)stride] + coeff * s1 - s2;
+        s0 = static_cast<double>(samples[(size_t)i * (size_t)stride]) + coeff * s1 - s2;
         s2 = s1;
         s1 = s0;
     }
@@ -903,11 +897,11 @@ Percentiles computeStats(std::vector<double> v) {
     p.p50 = at(0.50);
     p.p95 = at(0.95);
     p.max = v.back();
-    p.mean = std::accumulate(v.begin(), v.end(), 0.0) / v.size();
+    p.mean = std::accumulate(v.begin(), v.end(), 0.0) / static_cast<double>(v.size());
     double acc = 0;
     for (double x : v)
         acc += (x - p.mean) * (x - p.mean);
-    p.stddev = std::sqrt(acc / v.size());
+    p.stddev = std::sqrt(acc / static_cast<double>(v.size()));
     return p;
 }
 
@@ -1522,7 +1516,7 @@ double dcOffset(const std::vector<float>& d, int ch, int channels) {
     double acc = 0;
     long long n = 0;
     for (size_t i = (size_t)ch; i < d.size(); i += (size_t)channels) {
-        acc += d[i];
+        acc += static_cast<double>(d[i]);
         n++;
     }
     return n ? acc / (double)n : 0;
@@ -2853,7 +2847,8 @@ int cmdSoak(const bench::Args& a) {
         // 進捗を stderr へ。長時間走るので無反応に見えないようにする。
         if ((it + 1) % 10 == 0 || it == 0) {
             std::fprintf(stderr, "  soak %d/%d handles=%zu rss=%.1fMB\n", it + 1, iterations,
-                         samples.back().handles, samples.back().rssBytes / 1048576.0);
+                         samples.back().handles,
+                         static_cast<double>(samples.back().rssBytes) / 1048576.0);
             std::fflush(stderr);
         }
     }
@@ -2943,16 +2938,19 @@ int cmdSoak(const bench::Args& a) {
     if (!samples.empty()) {
         std::printf("  \"first\": { \"handles\": %zu, \"rss_mb\": %.2f, \"marker\": %lld,"
                     " \"audio_rms_l\": %g },\n",
-                    samples.front().handles, samples.front().rssBytes / 1048576.0,
+                    samples.front().handles,
+                    static_cast<double>(samples.front().rssBytes) / 1048576.0,
                     samples.front().markerValue, samples.front().audioRmsL);
         std::printf("  \"last\": { \"handles\": %zu, \"rss_mb\": %.2f, \"marker\": %lld,"
                     " \"audio_rms_l\": %g },\n",
-                    samples.back().handles, samples.back().rssBytes / 1048576.0,
+                    samples.back().handles,
+                    static_cast<double>(samples.back().rssBytes) / 1048576.0,
                     samples.back().markerValue, samples.back().audioRmsL);
     }
     std::printf("  \"quartile_avg\": { \"handles_first\": %zu, \"handles_last\": %zu,"
                 " \"rss_mb_first\": %.2f, \"rss_mb_last\": %.2f },\n",
-                handleFirst, handleLast, rssFirst / 1048576.0, rssLast / 1048576.0);
+                handleFirst, handleLast, static_cast<double>(rssFirst) / 1048576.0,
+                static_cast<double>(rssLast) / 1048576.0);
     // S2-g1a: --dump-all-samples は診断専用。判定条件には一切影響しない。
     // samples 自体は元から毎 iteration 記録しているが、既定では 10 回ごとにしか
     // 出力しないため warmup boundary を実測できない。
@@ -2974,9 +2972,9 @@ int cmdSoak(const bench::Args& a) {
                     " \"gdi\": %zu, \"user\": %zu, \"audio\": %s,"
                     " \"h_before_audio\": %zu, \"h_after_audio\": %zu }",
                     i ? "," : "", samples[i].iteration, samples[i].handles,
-                    samples[i].rssBytes / 1048576.0, samples[i].gdiObjects, samples[i].userObjects,
-                    samples[i].audioThisIteration ? "true" : "false", samples[i].handlesBeforeAudio,
-                    samples[i].handlesAfterAudio);
+                    static_cast<double>(samples[i].rssBytes) / 1048576.0, samples[i].gdiObjects,
+                    samples[i].userObjects, samples[i].audioThisIteration ? "true" : "false",
+                    samples[i].handlesBeforeAudio, samples[i].handlesAfterAudio);
         if (samples[i].audioThisIteration && !samples[i].typesBeforeAudio.empty()) {
             std::printf(",\n    { \"i\": %d, \"kernel_handle_types\": "
                         "{ \"before_audio\": %s, \"after_audio\": %s, "
@@ -3395,10 +3393,10 @@ int cmdMemoryProbe(const bench::Args& a) {
                 wsLastQ += ws[i];
                 pLastQ += priv[i];
             }
-            wsFirstQ /= q;
-            wsLastQ /= q;
-            pFirstQ /= q;
-            pLastQ /= q;
+            wsFirstQ /= static_cast<double>(q);
+            wsLastQ /= static_cast<double>(q);
+            pFirstQ /= static_cast<double>(q);
+            pLastQ /= static_cast<double>(q);
         }
         js << "  \"working_set_mb\": { \"first\": " << mb((unsigned long long)ws.front())
            << ", \"last\": " << mb((unsigned long long)ws.back())

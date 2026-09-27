@@ -543,7 +543,7 @@ int cmdSnapshotRace(const std::string& media, int iterations) {
                 lastDecoded = s.decodedFrameCount;
             }
             for (char c : s.lastError)
-                if (c == ' ')
+                if (c == '\0')
                     note("lastError に NUL があります (torn read)");
         }
     });

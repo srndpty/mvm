@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <filesystem>
 
+#include <QByteArray>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
@@ -16,6 +17,7 @@
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QSGRendererInterface>
+#include <QString>
 #include <QStringList>
 #include <QVariant>
 #include <QWheelEvent>
@@ -141,15 +143,23 @@ int main(int argc, char** argv) {
     // Project が無ければ既定構成 (V1/V2 + A1) から始める。track 0 本の Project を
     // 作らせない。
     mvm::project::Project project = mvm::project::createDefaultProject();
+    // dev.ps1 は .mvm を固定で渡すため、どのファイルを開こうとしたかを成否に関係なく出す。
+    const QByteArray projectPathText =
+        QString::fromStdWString(arguments.projectPath.wstring()).toUtf8();
     std::error_code existsError;
     if (std::filesystem::exists(arguments.projectPath, existsError)) {
+        std::fprintf(stderr, "Projectを開きます: %s\n", projectPathText.constData());
         const auto loaded = mvm::project::loadProjectJson(arguments.projectPath);
         if (!loaded.success) {
-            std::fprintf(stderr, "Projectを開けません: %s\n", loaded.error.c_str());
+            std::fprintf(stderr, "Projectを開けません: %s: %s\n", projectPathText.constData(),
+                         loaded.error.c_str());
             return 3;
         }
         project = loaded.project;
-    } else if (existsError) {
+    } else if (!existsError) {
+        std::fprintf(stderr, "Projectが無いため既定構成で始めます: %s\n",
+                     projectPathText.constData());
+    } else {
         std::fprintf(stderr, "Project pathを確認できません: %s\n", existsError.message().c_str());
         return 3;
     }
@@ -171,8 +181,9 @@ int main(int argc, char** argv) {
     // engine より先に破棄されないよう、engine より前に宣言する。
     mvm::app::WaveformCache waveformCache;
     QQmlApplicationEngine engine;
-    engine.setInitialProperties({{QStringLiteral("mvmController"), QVariant::fromValue(&controller)},
-                                 {QStringLiteral("waveformCache"), QVariant::fromValue(&waveformCache)}});
+    engine.setInitialProperties(
+        {{QStringLiteral("mvmController"), QVariant::fromValue(&controller)},
+         {QStringLiteral("waveformCache"), QVariant::fromValue(&waveformCache)}});
     // 外部ツールで素材を差し替えて戻ってきたとき、古い波形を出し続けない。
     QObject::connect(&application, &QGuiApplication::applicationStateChanged, &waveformCache,
                      [&waveformCache](Qt::ApplicationState state) {

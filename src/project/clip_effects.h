@@ -3,8 +3,15 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace mvm::project {
+
+struct ClipKeyframe {
+    std::int64_t frame = 0;
+    double valuePercent = 100.0;
+    bool operator==(const ClipKeyframe&) const = default;
+};
 
 struct ClipEffects {
     double positionXPercent = 0.0;
@@ -12,6 +19,9 @@ struct ClipEffects {
     double scalePercent = 100.0;
     double rotationDegrees = 0.0;
     double opacityPercent = 100.0;
+    double volumePercent = 100.0;
+    std::vector<ClipKeyframe> opacityKeys;
+    std::vector<ClipKeyframe> volumeKeys;
     double cropLeftPercent = 0.0;
     double cropTopPercent = 0.0;
     double cropRightPercent = 0.0;
@@ -41,6 +51,16 @@ struct ClipEffectMapping {
 bool clipEffectsAreDefault(const ClipEffects& effects);
 bool validateClipEffects(const ClipEffects& effects, std::int64_t sourceNativeDuration,
                          std::string& error);
+bool validateClipKeyframes(const std::vector<ClipKeyframe>& keys, std::int64_t timelineDuration,
+                           double maximumPercent, std::string& error);
+double evaluateClipKeys(const std::vector<ClipKeyframe>& keys, double basePercent,
+                        std::int64_t localFrame);
+double evaluateClipOpacity(const ClipEffects& effects, std::int64_t timelineLocalFrame,
+                           std::int64_t sourceLocalFrame, std::int64_t sourceDuration);
+double evaluateClipVolume(const ClipEffects& effects, std::int64_t timelineLocalFrame,
+                          std::int64_t sourceLocalFrame, std::int64_t sourceDuration);
+void reframeClipKeys(std::vector<ClipKeyframe>& keys, std::int64_t oldDuration,
+                     std::int64_t newDuration, std::int64_t newStartInOldFrames);
 ClipEffectMapping mapClipEffects(const ClipEffects& effects);
 
 } // namespace mvm::project

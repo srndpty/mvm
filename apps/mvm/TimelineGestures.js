@@ -67,3 +67,49 @@ function edgeRelease(tool, edge, delta, linked) {
     const action = tool === "ripple" ? "rippleTrim" : (tool === "rolling" ? "roll" : "trim");
     return { "action": action, "edge": edge, "delta": delta, "linked": linked };
 }
+
+// ペンの当たり判定は画面上の距離で決める。値の単位で固定すると、音量 (最大 200%) の
+// 低い clip では数 px しか受け付けない。
+function penValueTolerance(pixels, maximumPercent, clipHeight) {
+    return pixels * maximumPercent / Math.max(clipHeight, 1);
+}
+
+// 押した位置に最も近い、許容範囲内のキー。無ければ null。
+function penNearestKey(keys, frame, valuePercent, frameTolerance, valueTolerance) {
+    let nearest = null;
+    let nearestDistance = Infinity;
+    for (let index = 0; index < keys.length; ++index) {
+        const distance = Math.abs(keys[index].frame - frame)
+                         + Math.abs(keys[index].value - valuePercent) / Math.max(valueTolerance, 1);
+        if (Math.abs(keys[index].frame - frame) <= frameTolerance
+                && Math.abs(keys[index].value - valuePercent) <= valueTolerance
+                && distance < nearestDistance) {
+            nearest = keys[index];
+            nearestDistance = distance;
+        }
+    }
+    return nearest;
+}
+
+// Alt+クリックはキーの削除。キー以外の Alt+クリックは何もしない (キーを増やさない)。
+function penPress(keys, lineValue, frame, valuePercent, frameTolerance, valueTolerance, modifiers) {
+    if (!Number.isFinite(lineValue))
+        return { "gesture": "select" };
+    const nearest = penNearestKey(keys, frame, valuePercent, frameTolerance, valueTolerance);
+    if (((modifiers || 0) & Qt.AltModifier) !== 0)
+        return nearest ? { "gesture": "deleteKey", "frame": nearest.frame } : { "gesture": "none" };
+    if (!nearest && Math.abs(lineValue - valuePercent) > valueTolerance)
+        return { "gesture": "select" };
+    return { "gesture": "pen", "originalFrame": nearest ? nearest.frame : -1,
+             "frame": frame, "value": nearest ? nearest.value : valuePercent };
+}
+
+// ドラッグ中の Shift は 100% (音量なら 0 dB、不透明度なら不透明) へ吸着する。
+function penSnapValue(valuePercent, modifiers) {
+    return ((modifiers || 0) & Qt.ShiftModifier) !== 0 ? 100 : valuePercent;
+}
+
+function penRelease(state, frame, valuePercent) {
+    return { "action": "editKey", "originalFrame": state.originalFrame,
+             "frame": frame, "value": valuePercent };
+}

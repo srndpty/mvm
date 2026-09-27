@@ -142,5 +142,26 @@ int main() {
     require(audioOnlyPlan.success && audioOnlyPlan.clips.size() == 1 &&
                 audioOnlyPlan.clips[0].audio,
             "単独audio clipを独立trackへmappingできません");
+    mvm::project::Project automated = mvm::project::createDefaultProject();
+    auto picture = clip("automated-video", 0, 0, 0, 11);
+    picture.effects.opacityKeys = {{0, 100}, {10, 0}};
+    picture.effects.fadeInFrames = 3;
+    auto sound = picture;
+    sound.id = "automated-audio";
+    sound.kind = mvm::project::TimelineClipKind::Audio;
+    sound.track = {mvm::project::TrackKind::Audio, 0};
+    sound.effects = {};
+    sound.effects.volumeKeys = {{0, 0}, {10, 200}};
+    automated.timelineClips = {picture, sound};
+    const auto automationPlan = mvm::app::mapTimelineExportPlan(automated, request);
+    require(automationPlan.success && automationPlan.clips.size() == 2 &&
+                automationPlan.clips[0].opacityKeys.size() == 11 &&
+                automationPlan.clips[0].opacityKeys[0].opacity == 0.0 &&
+                automationPlan.clips[0].opacityKeys[5].opacity == 0.5 &&
+                automationPlan.clips[1].gainKeys.size() == 11 &&
+                automationPlan.clips[1].gainKeys[0].gain == 0.0 &&
+                automationPlan.clips[1].gainKeys[5].gain == 1.0 &&
+                automationPlan.clips[1].gainKeys[10].gain == 2.0,
+            "手動カーブとフェードを出力フレームへ反映できません");
     return 0;
 }

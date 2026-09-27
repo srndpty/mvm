@@ -19,12 +19,19 @@ struct ShuttleAudioClip {
     std::int64_t timelineEndSample = 0;
     // 素材 sample = timeline sample + sourceOffset
     std::int64_t sourceOffset = 0;
+    project::ClipEffects effects;
+    std::int64_t timelineStartFrame = 0;
+    std::int64_t sourceFpsNum = 0;
+    std::int64_t sourceFpsDen = 1;
+    std::int64_t sourceDuration = 0;
 };
 
 struct ShuttleAudioPlan {
     std::int64_t baseSample = 0;
     std::int64_t endSample = 0;
     int rate = 0;
+    std::int64_t timelineFpsNum = 60;
+    std::int64_t timelineFpsDen = 1;
     std::vector<ShuttleAudioClip> clips;
 };
 

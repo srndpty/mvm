@@ -1756,6 +1756,7 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
         };
         internalAudio = audio::SourceId{impl_->nextPublicSourceId};
         newAudioWorker = std::make_shared<audio::AudioDecodeWorker>(internalAudio);
+        newAudioWorker->queue().setGainAtSample(descriptor.audioGainAtMediaSample);
         std::string audioError;
         if (!newAudioWorker->start(path, audioError)) {
             newAudioWorker->stop();

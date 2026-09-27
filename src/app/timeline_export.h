@@ -44,6 +44,11 @@ struct TimelineExportOpacityKey {
     double opacity = 1.0;
 };
 
+struct TimelineExportGainKey {
+    std::int64_t localFrame = 0;
+    double gain = 1.0;
+};
+
 struct TimelineExportClipMapping {
     int projectClipIndex = -1;
     bool audio = false;
@@ -61,6 +66,7 @@ struct TimelineExportClipMapping {
     double rectHeight = 0.0;
     double rotationDegrees = 0.0;
     std::vector<TimelineExportOpacityKey> opacityKeys;
+    std::vector<TimelineExportGainKey> gainKeys;
 };
 
 // MLT 側の書き出し経路が持つ playlist は V1 / V2 の 2 本だけである。

@@ -76,4 +76,43 @@ TestCase {
         compare(roll.linked, false);
         compare(Gestures.edgeRelease("ripple", "left", 0, true).action, "none");
     }
+
+    function test_penUsesPressedKeyAndDragValue() {
+        const keys = [{ frame: 10, value: 80 }, { frame: 30, value: 20 }];
+        const existing = Gestures.penPress(keys, 100, 11, 82, 2, 8);
+        compare(existing.originalFrame, 10);
+        const moved = Gestures.penRelease(existing, 19, 40);
+        compare(moved.action, "editKey");
+        compare(moved.originalFrame, 10);
+        compare(moved.frame, 19);
+        compare(moved.value, 40);
+        const inserted = Gestures.penPress(keys, 50, 20, 50, 2, 8);
+        compare(inserted.originalFrame, -1);
+        compare(Gestures.penRelease(inserted, 21, 48).frame, 21);
+        compare(Gestures.penPress(keys, 50, 20, 90, 2, 8).gesture, "select");
+    }
+
+    function test_penAltDeletesKeyAndShiftSnaps() {
+        const keys = [{ frame: 10, value: 80 }];
+        const removed = Gestures.penPress(keys, 80, 11, 82, 2, 8, Qt.AltModifier);
+        compare(removed.gesture, "deleteKey");
+        compare(removed.frame, 10);
+        // キーから外れた Alt+クリックはキーを増やさず、clip の選択にもしない。
+        compare(Gestures.penPress(keys, 80, 30, 80, 2, 8, Qt.AltModifier).gesture, "none");
+        compare(Gestures.penPress(keys, 80, 11, 82, 2, 8, Qt.NoModifier).gesture, "pen");
+        compare(Gestures.penSnapValue(143, Qt.ShiftModifier), 100);
+        compare(Gestures.penSnapValue(143, Qt.NoModifier), 143);
+    }
+
+    function test_penToleranceFollowsClipPixels() {
+        // 高さ 40px の音量 clip (最大 200%) で 12px = 60%。値の単位で固定しない。
+        const tolerance = Gestures.penValueTolerance(12, 200, 40);
+        compare(tolerance, 60);
+        compare(Gestures.penPress([], 100, 20, 150, 2, tolerance).gesture, "pen");
+        compare(Gestures.penPress([], 100, 20, 170, 2, tolerance).gesture, "select");
+        compare(Gestures.penValueTolerance(12, 100, 0), 1200);
+        const keys = [{ frame: 10, value: 80 }, { frame: 14, value: 90 }];
+        compare(Gestures.penNearestKey(keys, 13, 88, 2, 8).frame, 14);
+        compare(Gestures.penNearestKey(keys, 20, 80, 2, 8), null);
+    }
 }

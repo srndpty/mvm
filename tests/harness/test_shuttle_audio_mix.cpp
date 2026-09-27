@@ -246,10 +246,31 @@ void testReaderFailure() {
     check(!mvm::app::mixShuttleBlock(plan, 0, 100, shortRead, pcm, error) && !error.empty(),
           "要求より短い素材sampleを受け入れます");
 }
+
+void testAutomationGain() {
+    auto project = singleClipProject();
+    project.timelineClips[0].effects.volumeKeys = {{0, 0}, {20, 200}};
+    mvm::app::ShuttleAudioPlan plan;
+    std::string error;
+    check(mvm::app::planShuttleAudio(project, 1, 30, plan, error),
+          "音量カーブ付きシャトルplanを作れません");
+    std::vector<ReadCall> calls;
+    std::vector<float> pcm;
+    check(mvm::app::mixShuttleBlock(plan, 0, 1, encodingReader(calls), pcm, error) &&
+              pcm[0] == 0.0F,
+          "シャトル音声の0%が無音になりません");
+    check(mvm::app::mixShuttleBlock(plan, 8000, 1, encodingReader(calls), pcm, error) &&
+              pcm[0] == encodeSample(56000),
+          "シャトル音声の中間100%が一致しません");
+    check(mvm::app::mixShuttleBlock(plan, 16000, 1, encodingReader(calls), pcm, error) &&
+              pcm[0] == encodeSample(64000) * 2,
+          "シャトル音声の200%が増幅されません");
+}
 } // namespace
 
 int main() {
     testPlan();
+    testAutomationGain();
     testForwardMapping();
     testReverseStopsAtClipStart();
     testForwardStopsAtTimelineEnd();
