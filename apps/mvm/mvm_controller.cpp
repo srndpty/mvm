@@ -14,6 +14,8 @@
 #include "project/path_identity.h"
 #include "project/project_json.h"
 #include "project/timeline_edit.h"
+#include "shuttle_audio_mix.h"
+#include "shuttle_audio_playback.h"
 #include "timeline_clip_model.h"
 #include "track_model.h"
 #include "util/mvm_reveal_in_explorer.h"
@@ -282,6 +284,9 @@ MvmController::MvmController(std::filesystem::path projectPath,
     playbackTimer_.setInterval(16);
     playbackTimer_.setTimerType(Qt::PreciseTimer);
     connect(&playbackTimer_, &QTimer::timeout, this, &MvmController::advanceTimelinePlayback);
+    shuttleTimer_.setInterval(40);
+    shuttleTimer_.setTimerType(Qt::PreciseTimer);
+    connect(&shuttleTimer_, &QTimer::timeout, this, &MvmController::advanceTimelineShuttle);
 
     stateTimer_.setInterval(100);
     connect(&stateTimer_, &QTimer::timeout, this, &MvmController::pollPreviewState);
@@ -465,8 +470,20 @@ void MvmController::setMasterVolume(double volume) {
     const double clamped = std::clamp(volume, 0.0, 1.0);
     if (std::abs(masterVolume_ - clamped) < 0.0001)
         return;
+    if (shuttleAudio_) {
+        std::string error;
+        if (!shuttleAudio_->setVolume(static_cast<float>(clamped), error)) {
+            setStatus(QStringLiteral("シャトル音声のボリュームを変更できません: ") +
+                      QString::fromStdString(error));
+            return;
+        }
+    }
     const auto changed = previewEngine_->setMasterVolume(static_cast<float>(clamped));
     if (!changed) {
+        if (shuttleAudio_) {
+            std::string ignored;
+            shuttleAudio_->setVolume(static_cast<float>(masterVolume_), ignored);
+        }
         setStatus(QStringLiteral("マスターボリュームを変更できません: ") +
                   previewErrorText(changed.error()));
         return;
@@ -566,7 +583,7 @@ QStringList MvmController::clipNames() const {
     return names;
 }
 
-QAbstractItemModel* MvmController::timelineModel() const {
+TimelineClipModel* MvmController::timelineModel() const {
     return timelineModel_.get();
 }
 
@@ -1126,8 +1143,11 @@ void MvmController::pollAudioMeter() {
     if (!previewEngine_)
         return;
     const auto telemetry = previewEngine_->telemetry();
-    const double left = linearToDb(telemetry.audioMeterPeakLeft, kMeterSilenceDb);
-    const double right = linearToDb(telemetry.audioMeterPeakRight, kMeterSilenceDb);
+    const auto shuttle = shuttleAudio_ ? shuttleAudio_->sinkSnapshot() : audio::WasapiSnapshot{};
+    const double left = linearToDb(
+        shuttleAudio_ ? shuttle.meterPeakLeft : telemetry.audioMeterPeakLeft, kMeterSilenceDb);
+    const double right = linearToDb(
+        shuttleAudio_ ? shuttle.meterPeakRight : telemetry.audioMeterPeakRight, kMeterSilenceDb);
     if (std::abs(left - audioMeterDbLeft_) < 0.05 && std::abs(right - audioMeterDbRight_) < 0.05)
         return;
     audioMeterDbLeft_ = left;
@@ -2172,6 +2192,8 @@ bool MvmController::seekTimelineFrame(qint64 frame) {
     }
     const qint64 clamped = std::clamp<qint64>(frame, 0, totalTimelineFrames_ - 1);
     playheadFrame_ = clamped;
+    if (scrubPending_ && !scrubbing_)
+        scrubTargetFrame_ = clamped;
     int index = -1;
     // 選択clipがactiveならaudio/videoを問わず維持する。videoだけを検索すると、
     // A1の見た目の選択を残したままcurrentClipIndex_だけV1へ変わってしまう。
@@ -2221,6 +2243,10 @@ bool MvmController::seekTimelineFrame(qint64 frame) {
         currentClipPath_.clear();
         setStatus(QStringLiteral("timeline gapを表示しています"));
     }
+    if (scrubPending_ && !scrubbing_) {
+        scrubPending_ = false;
+        scrubTimer_.stop();
+    }
     return true;
 }
 
@@ -2268,6 +2294,8 @@ void MvmController::startPendingPlayback() {
 }
 
 bool MvmController::playTimeline() {
+    if (shuttleRate_ != 0 && !pauseTimeline())
+        return false;
     if (busy_) {
         setStatus(QStringLiteral("処理中はtimelineを再生できません"));
         return false;
@@ -2311,6 +2339,7 @@ void MvmController::stopPlaybackWithError(QString error) {
                 QStringLiteral("\nPreviewも停止できません: ") + previewErrorText(paused.error());
     }
     playing_ = false;
+    shuttleRate_ = 0;
     pendingPlaybackStart_ = false;
     playbackClipIndex_ = -1;
     pendingPlaybackClipIndex_ = -1;
@@ -2333,6 +2362,7 @@ void MvmController::advanceTimelinePlayback() {
         previewEngine_->pause();
         playheadFrame_ = totalTimelineFrames_;
         playing_ = false;
+        shuttleRate_ = 0;
         playbackClipIndex_ = -1;
         statusText_ = QStringLiteral("timeline終端まで再生しました");
         Q_EMIT stateChanged();
@@ -2392,6 +2422,39 @@ bool MvmController::cancelPendingPlaybackForPause() {
 }
 
 bool MvmController::pauseTimeline() {
+    if (shuttleRate_ != 0 && !shuttleSeeking_) {
+        const bool timedShuttle = shuttleTimer_.isActive();
+        // 最後の tick から今までに進んだ分を playhead へ確定させてから止める。
+        // tick の位置のまま止めると、停止位置が最大 1 tick 分 (16x で約 640ms) 古くなる。
+        // audio clock を読むので、音声を止める前に行う。
+        // 確定できなくても transport は必ず止め、古い位置で止まったことを status に残す。
+        QString clockError;
+        if (timedShuttle) {
+            std::int64_t frame = 0;
+            if (shuttleFrameFromClock(frame, clockError))
+                playheadFrame_ = frame;
+            else if (clockError.isEmpty())
+                clockError = QStringLiteral("原因を取得できませんでした");
+        }
+        shuttleTimer_.stop();
+        shuttleClock_.invalidate();
+        if (shuttleAudio_) {
+            shuttleAudio_->stop();
+            shuttleAudio_.reset();
+        }
+        shuttleRate_ = 0;
+        if (!playing_) {
+            if (timedShuttle) {
+                scrubTargetFrame_ = playheadFrame_;
+                scrubPending_ = true;
+                scrubTimer_.start();
+            }
+            setStatus(clockError.isEmpty()
+                          ? QStringLiteral("シャトルを停止しました")
+                          : QStringLiteral("シャトル停止位置を確定できません: ") + clockError);
+            return true;
+        }
+    }
     if (!playing_)
         return true;
     if (cancelPendingPlaybackForPause())
@@ -2414,6 +2477,155 @@ bool MvmController::pauseTimeline() {
     statusText_ = QStringLiteral("timelineを一時停止しました");
     Q_EMIT stateChanged();
     return true;
+}
+
+bool MvmController::shuttleLeft() {
+    return changeShuttleRate(-1);
+}
+
+bool MvmController::shuttleRight() {
+    return changeShuttleRate(1);
+}
+
+bool MvmController::changeShuttleRate(int direction) {
+    if (busy_ || project_.timelineClips.empty() || totalTimelineFrames_ <= 0 || direction == 0)
+        return false;
+    if (shuttleTimer_.isActive())
+        advanceTimelineShuttle();
+    const int current = shuttleRate_ != 0 ? shuttleRate_ : (playing_ ? 1 : 0);
+    const auto next = nextShuttleRate(current, direction);
+    if (!next)
+        return false;
+    if (!pauseTimeline())
+        return false;
+    if (*next == 0)
+        return true;
+    scrubPending_ = false;
+    if (!scrubbing_)
+        scrubTimer_.stop();
+    if (*next == 1) {
+        if (!playTimeline())
+            return false;
+        shuttleRate_ = 1;
+        Q_EMIT stateChanged();
+        return true;
+    }
+    shuttleRate_ = *next;
+    shuttleBaseFrame_ = std::clamp<std::int64_t>(playheadFrame_, 0, totalTimelineFrames_ - 1);
+    shuttleAudioFailure_.clear();
+    // 鳴らす clip が無ければ WASAPI を開かず、timer clock だけで動かす。
+    if (std::abs(*next) <= 4 && hasShuttleAudibleClip(project_)) {
+        auto shuttleAudio = std::make_unique<ShuttleAudioPlayback>();
+        std::string audioError;
+        if (shuttleAudio->start(project_, *next, shuttleBaseFrame_,
+                                static_cast<float>(masterVolume_), audioError)) {
+            shuttleAudio_ = std::move(shuttleAudio);
+        } else {
+            // 音声 device の障害で映像の transport 操作まで止めない。
+            // 無音で続けていることは status に出し続ける。
+            shuttleAudioFailure_ = QString::fromStdString(audioError);
+        }
+    }
+    shuttleClock_.restart();
+    shuttleTimer_.start();
+    setStatus(shuttleStatusText());
+    return true;
+}
+
+void MvmController::advanceTimelineShuttle() {
+    if (!shuttleTimer_.isActive() || !shuttleClock_.isValid())
+        return;
+    if (shuttleAudio_ && !shuttleAudio_->error().empty()) {
+        const QString error = QString::fromStdString(shuttleAudio_->error());
+        pauseTimeline();
+        setStatus(QStringLiteral("シャトル音声を再生できません: ") + error);
+        return;
+    }
+    std::int64_t frame = 0;
+    QString clockError;
+    if (!shuttleFrameFromClock(frame, clockError)) {
+        // 停止時にもう一度 clock を読み、確定できなかったことを pauseTimeline が status へ出す。
+        pauseTimeline();
+        return;
+    }
+    shuttleSeeking_ = true;
+    const bool updated = seekTimelineFrame(frame);
+    shuttleSeeking_ = false;
+    if (!updated) {
+        if (previewEngine_->status().state == preview::PreviewEngineState::Error) {
+            const QString failure = statusText_;
+            pauseTimeline();
+            setStatus(failure);
+        }
+        return;
+    }
+    if ((shuttleRate_ < 0 && frame == 0) ||
+        (shuttleRate_ > 0 && frame == totalTimelineFrames_ - 1)) {
+        pauseTimeline();
+        return;
+    }
+    statusText_ = shuttleStatusText();
+    Q_EMIT stateChanged();
+}
+
+bool MvmController::shuttleFrameFromClock(std::int64_t& frame, QString& error) const {
+    const std::int64_t playedSamples = shuttleAudio_ ? shuttleAudio_->elapsedSamples() : 0;
+    const std::int64_t elapsedNs =
+        shuttleAudio_ ? (playedSamples / audio::kInternalSampleRate) * 1'000'000'000LL +
+                            (playedSamples % audio::kInternalSampleRate) * 1'000'000'000LL /
+                                audio::kInternalSampleRate
+                      : shuttleClock_.nsecsElapsed();
+    const auto mapped = timelineShuttleFrameFromElapsed(
+        shuttleBaseFrame_, elapsedNs, project_.timelineFpsNum, project_.timelineFpsDen,
+        shuttleRate_, totalTimelineFrames_ - 1);
+    if (!mapped.success) {
+        error = QString::fromStdString(mapped.error);
+        return false;
+    }
+    frame = mapped.frame;
+    return true;
+}
+
+QString MvmController::shuttleStatusText() const {
+    const QString audio =
+        shuttleAudio_                  ? QStringLiteral("（音声あり）")
+        : shuttleAudioFailure_.isEmpty() ? QStringLiteral("（音声なし）")
+                                         : QStringLiteral("（音声を開始できないため無音: %1）")
+                                               .arg(shuttleAudioFailure_);
+    return QStringLiteral("シャトル %1 倍速%2").arg(shuttleRate_).arg(audio);
+}
+
+bool MvmController::stepTimelineFrames(int delta) {
+    if (busy_ || project_.timelineClips.empty() || totalTimelineFrames_ <= 0 || delta == 0)
+        return false;
+    // 再生・シャトル中は止めてから、止まった位置を基準に動かす。
+    if (!pauseTimeline())
+        return false;
+    const auto lastFrame = totalTimelineFrames_ - 1;
+    const auto baseFrame = std::clamp<std::int64_t>(playheadFrame_, 0, totalTimelineFrames_);
+    const auto amount = static_cast<std::int64_t>(delta);
+    const auto target =
+        amount > 0 ? baseFrame + std::min(amount, std::max<std::int64_t>(0, lastFrame - baseFrame))
+                   : baseFrame - std::min(-amount, baseFrame);
+    return seekTimelineFrame(std::min(target, lastFrame));
+}
+
+bool MvmController::jumpToEditPoint(int direction) {
+    if (busy_ || project_.timelineClips.empty() || totalTimelineFrames_ <= 0)
+        return false;
+    // 再生・シャトル中は止めてから、止まった位置を基準に動かす。
+    if (!pauseTimeline())
+        return false;
+    const auto lastFrame = totalTimelineFrames_ - 1;
+    if (playheadFrame_ == totalTimelineFrames_ && direction < 0)
+        return seekTimelineFrame(lastFrame);
+    const auto point = adjacentTimelineEditPoint(
+        project_, std::clamp<std::int64_t>(playheadFrame_, 0, lastFrame), direction, lastFrame);
+    if (!point.success) {
+        setStatus(QString::fromStdString(point.error));
+        return false;
+    }
+    return seekTimelineFrame(point.frame);
 }
 
 bool MvmController::moveTimelineClip(const QString& clipId, const QString& trackKind,
@@ -3481,9 +3693,15 @@ void MvmController::shutdown() {
     exportCancelling_ = false;
     busy_ = false;
     playbackTimer_.stop();
+    shuttleTimer_.stop();
+    if (shuttleAudio_) {
+        shuttleAudio_->stop();
+        shuttleAudio_.reset();
+    }
     scrubTimer_.stop();
     meterTimer_.stop();
     playing_ = false;
+    shuttleRate_ = 0;
     stateTimer_.stop();
     if (previewEngine_)
         previewEngine_->requestShutdown();

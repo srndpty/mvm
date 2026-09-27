@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 
@@ -39,6 +40,7 @@ Item {
             model: [{ "name": "L", "db": root.dbLeft }, { "name": "R", "db": root.dbRight }]
 
             Column {
+                id: meterColumn
                 required property var modelData
                 spacing: 3
 
@@ -54,18 +56,18 @@ Item {
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
                         anchors.margins: 2
-                        height: Math.max(0, (parent.height - 4) * root.fillRatio(modelData.db))
+                        height: Math.max(0, (parent.height - 4) * root.fillRatio(meterColumn.modelData.db))
                         radius: 1
                         // -6dB を超えたら黄、0dB 近傍は赤。判断を色で出す。
-                        color: modelData.db >= -1 ? "#e05a5a"
-                             : modelData.db >= -6 ? "#e0c05a"
+                        color: meterColumn.modelData.db >= -1 ? "#e05a5a"
+                             : meterColumn.modelData.db >= -6 ? "#e0c05a"
                                                   : "#5ac07a"
                     }
                 }
                 Label {
                     width: 18
                     horizontalAlignment: Text.AlignHCenter
-                    text: modelData.name
+                    text: meterColumn.modelData.name
                     color: "#9aa2ad"
                     font.pixelSize: 9
                 }

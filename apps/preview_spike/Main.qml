@@ -7,17 +7,18 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
-import mvm.preview 1.0
 
 ApplicationWindow {
     id: root
+    required property SpikeController spike
+    required property bool measureMode
     width: 1280
     height: 800
     visible: true
     title: "mvm preview_spike (Phase 1 / P1)"
 
     // 計測モードでは操作させない。人の操作が測定値に混ざる。
-    readonly property bool interactive: !measureMode
+    readonly property bool interactive: !root.measureMode
 
     ColumnLayout {
         anchors.fill: parent
@@ -44,14 +45,14 @@ ApplicationWindow {
                 onClicked: fileDialog.open()
             }
             Button {
-                text: spike.playing ? "Pause" : "Play"
+                text: root.spike.playing ? "Pause" : "Play"
                 enabled: root.interactive
-                onClicked: spike.playing ? spike.pause() : spike.play()
+                onClicked: root.spike.playing ? root.spike.pause() : root.spike.play()
             }
             Button {
                 text: "Step"
                 enabled: root.interactive
-                onClicked: spike.stepForward()
+                onClicked: root.spike.stepForward()
             }
             CheckBox {
                 id: filterCheck
@@ -63,10 +64,10 @@ ApplicationWindow {
                 id: seekSlider
                 Layout.fillWidth: true
                 from: 0
-                to: Math.max(1, spike.frameCount - 1)
+                to: Math.max(1, root.spike.frameCount - 1)
                 stepSize: 1
-                enabled: root.interactive && spike.frameCount > 0
-                onMoved: spike.seekTo(Math.round(value))
+                enabled: root.interactive && root.spike.frameCount > 0
+                onMoved: root.spike.seekTo(Math.round(value))
             }
         }
 
@@ -79,21 +80,21 @@ ApplicationWindow {
             columnSpacing: 16
 
             Label { text: "requested frame" }
-            Label { text: spike.requestedFrame; font.bold: true }
+            Label { text: root.spike.requestedFrame; font.bold: true }
             Label { text: "displayed frame" }
-            Label { text: spike.displayedFrame; font.bold: true }
+            Label { text: root.spike.displayedFrame; font.bold: true }
 
             Label { text: "fps (表示)" }
-            Label { text: spike.fps.toFixed(1); font.bold: true }
+            Label { text: root.spike.fps.toFixed(1); font.bold: true }
             Label { text: "frames" }
-            Label { text: spike.frameCount }
+            Label { text: root.spike.frameCount }
         }
 
         Label {
             Layout.fillWidth: true
             Layout.leftMargin: 8
             Layout.rightMargin: 8
-            text: spike.counterText
+            text: root.spike.counterText
             font.family: "Consolas"
             wrapMode: Text.WordWrap
         }
@@ -101,7 +102,7 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.leftMargin: 8
             Layout.rightMargin: 8
-            text: spike.deviceText
+            text: root.spike.deviceText
             font.family: "Consolas"
             wrapMode: Text.WordWrap
         }
@@ -110,7 +111,7 @@ ApplicationWindow {
             Layout.leftMargin: 8
             Layout.rightMargin: 8
             Layout.bottomMargin: 8
-            text: spike.statusText
+            text: root.spike.statusText
             wrapMode: Text.WordWrap
         }
     }
@@ -119,6 +120,6 @@ ApplicationWindow {
         id: fileDialog
         title: "素材を開く"
         nameFilters: ["動画 (*.mp4 *.mov *.mkv *.ts)", "すべて (*)"]
-        onAccepted: spike.openMedia(selectedFile)
+        onAccepted: root.spike.openMedia(selectedFile)
     }
 }

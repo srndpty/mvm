@@ -130,8 +130,6 @@ int main(int argc, char** argv) {
             return 2;
     }
     const QString metricsPath = args[metricsIndex + 1];
-
-    qmlRegisterType<CompositorRhiItem>("mvm.compositor", 1, 0, "CompositorSurface");
     QQmlApplicationEngine engine;
     engine.load(QUrl(QStringLiteral("qrc:/mvm/p2_vblank_authority_probe/Main.qml")));
     if (engine.rootObjects().isEmpty())

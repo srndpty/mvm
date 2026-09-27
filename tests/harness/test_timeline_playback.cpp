@@ -117,12 +117,77 @@ void testCompatibility() {
           "異なるsource fpsを持つtimelineでcanPlayがfalseです");
 }
 
+void testShuttleClockAndEditPoints() {
+    using mvm::app::adjacentTimelineEditPoint;
+    using mvm::app::nextShuttleRate;
+    using mvm::app::timelineShuttleFrameFromElapsed;
+    check(nextShuttleRate(0, 1) == 1 && nextShuttleRate(1, 1) == 2 && nextShuttleRate(2, 1) == 4 &&
+              nextShuttleRate(4, 1) == 8 && nextShuttleRate(8, 1) == 16 &&
+              nextShuttleRate(16, 1) == 16,
+          "右シャトルの加速段階が違います");
+    check(nextShuttleRate(16, -1) == 8 && nextShuttleRate(4, -1) == 2 &&
+              nextShuttleRate(1, -1) == 0 && nextShuttleRate(0, -1) == -1 &&
+              nextShuttleRate(-1, -1) == -2 && nextShuttleRate(-2, -1) == -4,
+          "左シャトルの減速・逆再生段階が違います");
+    check(!nextShuttleRate(3, 1) && !nextShuttleRate(17, 1) && !nextShuttleRate(0, 0),
+          "不正なシャトル入力を受理しました");
+    const auto forward = timelineShuttleFrameFromElapsed(40, 250'000'000, 60, 1, 2, 179);
+    const auto reverse = timelineShuttleFrameFromElapsed(40, 250'000'000, 60, 1, -4, 179);
+    const auto atStart = timelineShuttleFrameFromElapsed(3, 1'000'000'000, 60, 1, -4, 179);
+    const auto atEnd = timelineShuttleFrameFromElapsed(175, 1'000'000'000, 60, 1, 4, 179);
+    check(forward.success && forward.frame == 70, "2倍速の進行位置が違います");
+    check(reverse.success && reverse.frame == 0, "逆方向4倍速を先頭で止めません");
+    check(atStart.success && atStart.frame == 0, "逆方向シャトルが先頭を越えました");
+    check(atEnd.success && atEnd.frame == 179, "正方向シャトルが末尾を越えました");
+    check(!timelineShuttleFrameFromElapsed(0, 0, 60, 1, 0, 179).success,
+          "速度0のシャトルを受理しました");
+    check(timelineShuttleFrameFromElapsed(0, 250'000'000, 60, 1, 16, 179).frame == 179,
+          "16倍速の進行位置が違います");
+    check(!timelineShuttleFrameFromElapsed(0, 0, 60, 1, 17, 179).success,
+          "上限を超えるシャトルを受理しました");
+    check(!timelineShuttleFrameFromElapsed(0, 0, 60, 1, 3, 179).success,
+          "段階にないシャトル速度を受理しました");
+    using mvm::app::timelineShuttleSampleAt;
+    check(timelineShuttleSampleAt(100, 1, 2) == 102 && timelineShuttleSampleAt(100, 2, 2) == 104 &&
+              timelineShuttleSampleAt(100, 4, 2) == 108,
+          "正方向の音声sample間隔が違います");
+    check(timelineShuttleSampleAt(100, -1, 2) == 98 && timelineShuttleSampleAt(100, -2, 2) == 96 &&
+              timelineShuttleSampleAt(100, -4, 2) == 92,
+          "逆再生の音声sample順序が違います");
+    check(!timelineShuttleSampleAt(0, -1, 1) && !timelineShuttleSampleAt(100, 8, 1) &&
+              !timelineShuttleSampleAt(100, 0, 1) &&
+              !timelineShuttleSampleAt(std::numeric_limits<std::int64_t>::max(), 4, 1),
+          "音声sample変換が範囲外の入力を受理しました");
+
+    auto project = threeClips();
+    auto upper = clip("Upper", "upper");
+    upper.track = {mvm::project::TrackKind::Video, 1};
+    upper.timelineStartFrame = 30;
+    project.timelineClips.push_back(upper);
+    const auto next = adjacentTimelineEditPoint(project, 0, 1, 179);
+    const auto afterUpperStart = adjacentTimelineEditPoint(project, 30, 1, 179);
+    const auto previous = adjacentTimelineEditPoint(project, 90, -1, 179);
+    const auto finalEdge = adjacentTimelineEditPoint(project, 120, 1, 179);
+    check(next.success && next.frame == 30, "別trackのclip先頭を飛ばしました");
+    check(afterUpperStart.success && afterUpperStart.frame == 60,
+          "現在位置と同じ編集点へ留まりました");
+    check(previous.success && previous.frame == 60, "前の編集点を選べません");
+    check(finalEdge.success && finalEdge.frame == 179, "末尾clipの終端へ移動できません");
+    check(!adjacentTimelineEditPoint(project, 0, -1, 179).success,
+          "先頭より前に編集点を見つけました");
+    check(!adjacentTimelineEditPoint(project, 90, 0, 179).success, "方向0を受理しました");
+    project.timelineClips[0].sourceOutFrame = 0;
+    check(!adjacentTimelineEditPoint(project, 30, 1, 179).success,
+          "不正clipの編集点を黙って飛ばしました");
+}
+
 } // namespace
 
 int main() {
     testClockMapping();
     testSegmentedTransitions();
     testCompatibility();
+    testShuttleClockAndEditPoints();
     if (failures != 0) {
         std::fprintf(stderr, "M6b timeline playback: %d 件失敗\n", failures);
         return 1;

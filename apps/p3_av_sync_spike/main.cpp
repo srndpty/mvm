@@ -78,7 +78,6 @@ int main(int argc, char** argv) {
         usage();
         return 2;
     }
-    qmlRegisterType<CompositorRhiItem>("mvm.compositor", 1, 0, "CompositorSurface");
     P3AvSyncController controller(config);
     QQmlApplicationEngine engine;
     engine.load(QUrl(QStringLiteral("qrc:/mvm/p3_av_sync_spike/Main.qml")));

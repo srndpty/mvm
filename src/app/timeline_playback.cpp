@@ -2,8 +2,11 @@
 
 #include "project/timeline_edit.h"
 
+#include <algorithm>
+#include <cstdlib>
 #include <limits>
 #include <numeric>
+#include <optional>
 
 namespace mvm::app {
 namespace {
@@ -55,6 +58,93 @@ PlaybackFrameResult timelineFrameFromElapsed(std::int64_t baseFrame,
     result.success = true;
     result.frame = baseFrame + static_cast<std::int64_t>(advanced);
     return result;
+}
+
+PlaybackFrameResult timelineShuttleFrameFromElapsed(std::int64_t baseFrame,
+                                                    std::int64_t elapsedNanoseconds,
+                                                    std::int64_t timelineFpsNum,
+                                                    std::int64_t timelineFpsDen, int rate,
+                                                    std::int64_t lastFrame) {
+    PlaybackFrameResult result;
+    if (rate == 0 || rate < -16 || rate > 16 || (std::abs(rate) & (std::abs(rate) - 1)) != 0 ||
+        baseFrame < 0 || lastFrame < 0 || baseFrame > lastFrame || timelineFpsNum <= 0 ||
+        timelineFpsNum > std::numeric_limits<std::int64_t>::max() / std::abs(rate)) {
+        result.error = "シャトルの速度またはframe範囲が不正です";
+        return result;
+    }
+    const auto advanced = timelineFrameFromElapsed(0, elapsedNanoseconds,
+                                                   timelineFpsNum * std::abs(rate), timelineFpsDen);
+    if (!advanced.success)
+        return advanced;
+    result.success = true;
+    result.frame = rate > 0 ? baseFrame + std::min(advanced.frame, lastFrame - baseFrame)
+                            : baseFrame - std::min(advanced.frame, baseFrame);
+    return result;
+}
+
+PlaybackFrameResult adjacentTimelineEditPoint(const project::Project& project,
+                                              std::int64_t playheadFrame, int direction,
+                                              std::int64_t lastFrame) {
+    PlaybackFrameResult result;
+    if ((direction != -1 && direction != 1) || playheadFrame < 0 || lastFrame < 0 ||
+        playheadFrame > lastFrame) {
+        result.error = "編集点の探索方向またはframe範囲が不正です";
+        return result;
+    }
+    std::optional<std::int64_t> nearest;
+    for (const auto& clip : project.timelineClips) {
+        const auto duration = project::timelineClipDuration(project, clip);
+        if (!duration.success || duration.frame <= 0 || clip.timelineStartFrame < 0 ||
+            clip.timelineStartFrame > std::numeric_limits<std::int64_t>::max() - duration.frame) {
+            result.error = duration.success ? "clipの編集点が不正です" : duration.error;
+            return result;
+        }
+        const std::int64_t edges[2] = {
+            clip.timelineStartFrame, std::min(clip.timelineStartFrame + duration.frame, lastFrame)};
+        for (const auto edge : edges) {
+            if (direction > 0 && edge > playheadFrame && (!nearest || edge < *nearest))
+                nearest = edge;
+            if (direction < 0 && edge < playheadFrame && (!nearest || edge > *nearest))
+                nearest = edge;
+        }
+    }
+    if (!nearest) {
+        result.error = direction > 0 ? "次の編集点はありません" : "前の編集点はありません";
+        return result;
+    }
+    result.success = true;
+    result.frame = *nearest;
+    return result;
+}
+
+std::optional<int> nextShuttleRate(int currentRate, int direction) {
+    if ((direction != -1 && direction != 1) || currentRate < -16 || currentRate > 16 ||
+        (currentRate != 0 && (std::abs(currentRate) & (std::abs(currentRate) - 1)) != 0))
+        return std::nullopt;
+    if (currentRate == 0)
+        return direction;
+    if ((currentRate > 0) == (direction > 0))
+        return direction * std::min(16, std::abs(currentRate) * 2);
+    if (std::abs(currentRate) == 1)
+        return 0;
+    return (currentRate > 0 ? 1 : -1) * (std::abs(currentRate) / 2);
+}
+
+std::optional<std::int64_t> timelineShuttleSampleAt(std::int64_t baseSample, int rate,
+                                                    std::int64_t outputSample) {
+    if (baseSample < 0 || outputSample < 0 ||
+        (rate != -4 && rate != -2 && rate != -1 && rate != 1 && rate != 2 && rate != 4) ||
+        outputSample > std::numeric_limits<std::int64_t>::max() / std::abs(rate))
+        return std::nullopt;
+    const std::int64_t delta = outputSample * std::abs(rate);
+    if (rate > 0) {
+        if (baseSample > std::numeric_limits<std::int64_t>::max() - delta)
+            return std::nullopt;
+        return baseSample + delta;
+    }
+    if (baseSample < delta)
+        return std::nullopt;
+    return baseSample - delta;
 }
 
 TimelinePlaybackStep evaluateTimelinePlayback(const project::Project& project, int activeClipIndex,

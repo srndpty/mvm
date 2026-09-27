@@ -129,7 +129,6 @@ int main(int argc, char** argv) {
         usage();
         return 2;
     }
-    qmlRegisterType<CompositorRhiItem>("mvm.compositor", 1, 0, "CompositorSurface");
     CompositorSpikeController controller(config);
     QQmlApplicationEngine engine;
     engine.load(QUrl(QStringLiteral("qrc:/mvm/compositor_spike/Main.qml")));

@@ -59,7 +59,6 @@ int main(int argc, char** argv) {
         usage();
         return 2;
     }
-    qmlRegisterType<CompositorRhiItem>("mvm.compositor", 1, 0, "CompositorSurface");
     P4CompositionController controller(config);
     QQmlApplicationEngine engine;
     engine.load(QUrl(QStringLiteral("qrc:/mvm/p4_composition_spike/Main.qml")));

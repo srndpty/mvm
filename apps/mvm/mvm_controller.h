@@ -6,6 +6,7 @@
 #include "preview_engine/preview_engine.h"
 #include "project/media_bin.h"
 #include "project/project.h"
+#include "timeline_clip_model.h"
 
 #include <atomic>
 #include <chrono>
@@ -27,15 +28,18 @@
 #include <QUrl>
 #include <QVariantList>
 #include <QVariantMap>
+#include <QtQml/qqmlregistration.h>
 
 namespace mvm::app {
 
 class PreviewEngineRhiItem;
-class TimelineClipModel;
 class TrackModel;
+class ShuttleAudioPlayback;
 
-class MvmController final : public QObject {
+class MvmController : public QObject {
     Q_OBJECT
+    QML_NAMED_ELEMENT(MvmController)
+    QML_UNCREATABLE("アプリが生成したコントローラーを使用してください")
     Q_PROPERTY(QString projectPath READ projectPath NOTIFY stateChanged)
     Q_PROPERTY(QString statusText READ statusText NOTIFY stateChanged)
     Q_PROPERTY(QString currentClipName READ currentClipName NOTIFY stateChanged)
@@ -49,10 +53,10 @@ class MvmController final : public QObject {
     Q_PROPERTY(QString manimSceneName READ manimSceneName NOTIFY stateChanged)
     Q_PROPERTY(QString manimStateText READ manimStateText NOTIFY stateChanged)
     Q_PROPERTY(QStringList clipNames READ clipNames NOTIFY stateChanged)
-    Q_PROPERTY(QAbstractItemModel* timelineModel READ timelineModel CONSTANT)
+    Q_PROPERTY(mvm::app::TimelineClipModel* timelineModel READ timelineModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* videoTrackModel READ videoTrackModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* audioTrackModel READ audioTrackModel CONSTANT)
-    Q_PROPERTY(MediaBinModel* mediaBinModel READ mediaBinModel CONSTANT)
+    Q_PROPERTY(mvm::app::MediaBinModel* mediaBinModel READ mediaBinModel CONSTANT)
     Q_PROPERTY(int videoTrackCount READ videoTrackCount NOTIFY stateChanged)
     Q_PROPERTY(int audioTrackCount READ audioTrackCount NOTIFY stateChanged)
     Q_PROPERTY(int clipCount READ clipCount NOTIFY stateChanged)
@@ -61,6 +65,7 @@ class MvmController final : public QObject {
     Q_PROPERTY(qint64 totalTimelineFrames READ totalTimelineFrames NOTIFY stateChanged)
     Q_PROPERTY(QString currentTimeText READ currentTimeText NOTIFY stateChanged)
     Q_PROPERTY(bool playing READ playing NOTIFY stateChanged)
+    Q_PROPERTY(int shuttleRate READ shuttleRate NOTIFY stateChanged)
     Q_PROPERTY(bool canPlay READ canPlay NOTIFY stateChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY stateChanged)
     Q_PROPERTY(bool dirty READ dirty NOTIFY stateChanged)
@@ -140,7 +145,7 @@ public:
     QString manimStateText() const { return manimStateText_; }
 
     QStringList clipNames() const;
-    QAbstractItemModel* timelineModel() const;
+    TimelineClipModel* timelineModel() const;
     QAbstractItemModel* videoTrackModel() const;
     QAbstractItemModel* audioTrackModel() const;
     MediaBinModel* mediaBinModel() const;
@@ -159,7 +164,9 @@ public:
 
     QString currentTimeText() const;
 
-    bool playing() const { return playing_; }
+    bool playing() const { return playing_ || shuttleRate_ != 0; }
+
+    int shuttleRate() const { return shuttleRate_; }
 
     bool canPlay() const;
 
@@ -237,6 +244,10 @@ public:
     Q_INVOKABLE void endScrub();
     Q_INVOKABLE bool playTimeline();
     Q_INVOKABLE bool pauseTimeline();
+    Q_INVOKABLE bool shuttleLeft();
+    Q_INVOKABLE bool shuttleRight();
+    Q_INVOKABLE bool stepTimelineFrames(int delta);
+    Q_INVOKABLE bool jumpToEditPoint(int direction);
     Q_INVOKABLE bool moveTimelineClip(const QString& clipId, const QString& trackKind,
                                       int trackIndex, qint64 timelineStartFrame);
     Q_INVOKABLE bool trimClip(const QString& clipId, const QString& edge, qint64 projectFrameDelta);
@@ -346,6 +357,11 @@ private:
     void pollPreviewState();
     void pollAudioMeter();
     void advanceTimelinePlayback();
+    void advanceTimelineShuttle();
+    // timed shuttle の clock (音声があれば audio clock) から現在の timeline frame を求める。
+    bool shuttleFrameFromClock(std::int64_t& frame, QString& error) const;
+    QString shuttleStatusText() const;
+    bool changeShuttleRate(int direction);
     void setStatus(QString status);
     void reportExportFailure(QString message);
     bool initializePreviewEngine(const QString& failurePrefix);
@@ -506,6 +522,14 @@ private:
     bool previewReady_ = false;
     bool shutdownStarted_ = false;
     bool playing_ = false;
+    int shuttleRate_ = 0;
+    bool shuttleSeeking_ = false;
+    std::int64_t shuttleBaseFrame_ = 0;
+    QElapsedTimer shuttleClock_;
+    QTimer shuttleTimer_;
+    std::unique_ptr<ShuttleAudioPlayback> shuttleAudio_;
+    // 音声を開始できず無音でシャトルしている理由。空なら失敗していない。
+    QString shuttleAudioFailure_;
     bool pendingPlaybackStart_ = false;
     bool scrubbing_ = false;
     bool scrubPending_ = false;

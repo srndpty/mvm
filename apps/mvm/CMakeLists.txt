@@ -3,6 +3,8 @@ qt_add_executable(mvm
     media_bin_model.cpp
     media_import.cpp
     mvm_controller.cpp
+    shuttle_audio_mix.cpp
+    shuttle_audio_playback.cpp
     timeline_clip_model.cpp
     track_model.cpp
     waveform_cache.cpp
@@ -13,8 +15,20 @@ qt_add_qml_module(mvm
     URI mvm.app
     VERSION 1.0
     RESOURCE_PREFIX /
+    SOURCES
+        preview_surface_qml.h
     QML_FILES
         Main.qml
+        CompactMenu.qml
+        CompactMenuItem.qml
+        CompactMenuSeparator.qml
+        ModernDialog.qml
+        ModernDialogFooter.qml
+        ModernDialogButton.qml
+        ModernDialogField.qml
+        ModernDialogOption.qml
+        ModernDialogComboBox.qml
+        ModernDialogProgressBar.qml
         DragNumberField.qml
         AudioMeter.qml
         MediaKindIcon.qml
@@ -33,6 +47,7 @@ target_link_libraries(mvm PRIVATE
     mvm::audio_waveform
     mvm::mlt
     mvm::preview_engine
+    mvm::audio_preview
     mvm::preview_qt
     Qt6::Core
     Qt6::Gui
