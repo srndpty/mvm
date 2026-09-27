@@ -1010,11 +1010,14 @@ ApplicationWindow {
                     Math.min(timelineFlick.contentHeight - timelineFlick.height,
                              timelineFlick.contentY - wheelDelta));
             }
-            function handleNativeShiftWheel(wheelDelta) {
+            function scrollTimelineHorizontally(wheelDelta) {
                 timelineFlick.contentX = Math.max(
                     0,
                     Math.min(timelineFlick.contentWidth - timelineFlick.width,
-                             timelineFlick.contentX - wheelDelta * 5));
+                             timelineFlick.contentX - wheelDelta));
+            }
+            function handleNativeShiftWheel(wheelDelta) {
+                scrollTimelineHorizontally(wheelDelta);
             }
             function handleNativePlainWheel(wheelDelta) {
                 const maxY = Math.max(0, timelineFlick.contentHeight - timelineFlick.height);
@@ -1023,9 +1026,7 @@ ApplicationWindow {
                         0, Math.min(maxY, timelineFlick.contentY - wheelDelta));
                     return;
                 }
-                timelineFlick.contentX = Math.max(
-                    0, Math.min(timelineFlick.contentWidth - timelineFlick.width,
-                                timelineFlick.contentX - wheelDelta));
+                scrollTimelineHorizontally(wheelDelta);
             }
 
             // --- トラックヘッダ (左端) ---
@@ -1795,7 +1796,7 @@ ApplicationWindow {
     }
 
     // --- ダイアログ --------------------------------------------------------
-    Dialog {
+    ModernDialog {
         id: projectSettingsDialog
         anchors.centerIn: parent
         width: Math.min(root.width - 40, 520)
@@ -1812,7 +1813,7 @@ ApplicationWindow {
                 rowSpacing: 8
 
                 Label { text: "幅" }
-                TextField {
+                ModernDialogField {
                     id: projectWidthField
                     Layout.fillWidth: true
                     validator: IntValidator { bottom: 2; top: 16384 }
@@ -1820,7 +1821,7 @@ ApplicationWindow {
                     placeholderText: "1920"
                 }
                 Label { text: "高さ" }
-                TextField {
+                ModernDialogField {
                     id: projectHeightField
                     Layout.fillWidth: true
                     validator: IntValidator { bottom: 2; top: 16384 }
@@ -1828,7 +1829,7 @@ ApplicationWindow {
                     placeholderText: "1080"
                 }
                 Label { text: "フレームレート" }
-                ComboBox {
+                ModernDialogComboBox {
                     id: projectFpsBox
                     Layout.fillWidth: true
                     textRole: "label"
@@ -1860,20 +1861,19 @@ ApplicationWindow {
             }
         }
 
-        footer: DialogButtonBox {
-            Button {
+        footer: ModernDialogFooter {
+            ModernDialogButton {
                 text: "キャンセル"
-                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
                 onClicked: projectSettingsDialog.close()
             }
-            Button {
+            ModernDialogButton {
                 text: "適用"
+                prominent: true
                 enabled: projectWidthField.acceptableInput
                          && projectHeightField.acceptableInput
                          && Number(projectWidthField.text) % 2 === 0
                          && Number(projectHeightField.text) % 2 === 0
                          && projectFpsBox.currentIndex >= 0
-                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
                 onClicked: {
                     const fps = mvmController.supportedFrameRates[projectFpsBox.currentIndex];
                     if (mvmController.setProjectVideoSettings(
@@ -1885,7 +1885,7 @@ ApplicationWindow {
         }
     }
 
-    Dialog {
+    ModernDialog {
         id: matchClipSettingsDialog
         property bool validSettings: false
         property bool changesSettings: false
@@ -1943,17 +1943,16 @@ ApplicationWindow {
             }
         }
 
-        footer: DialogButtonBox {
-            Button {
+        footer: ModernDialogFooter {
+            ModernDialogButton {
                 text: "キャンセル"
-                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
                 onClicked: matchClipSettingsDialog.close()
             }
-            Button {
+            ModernDialogButton {
                 text: "変更する"
+                prominent: true
                 enabled: matchClipSettingsDialog.validSettings
                          && matchClipSettingsDialog.changesSettings
-                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
                 onClicked: {
                     if (mvmController.setProjectVideoSettings(
                                 matchClipSettingsDialog.targetWidth,
@@ -1966,7 +1965,7 @@ ApplicationWindow {
         }
     }
 
-    Dialog {
+    ModernDialog {
         id: exportProgressDialog
         anchors.centerIn: parent
         width: Math.min(root.width - 40, 460)
@@ -1983,15 +1982,16 @@ ApplicationWindow {
                 text: mvmController.exportProgressText
                 horizontalAlignment: Text.AlignHCenter
             }
-            ProgressBar {
+            ModernDialogProgressBar {
                 Layout.fillWidth: true
                 from: 0
                 to: 1
                 value: mvmController.exportProgress
                 indeterminate: mvmController.exportProgressText === "準備しています…"
             }
-            Button {
-                Layout.alignment: Qt.AlignHCenter
+        }
+        footer: ModernDialogFooter {
+            ModernDialogButton {
                 text: mvmController.exportCancelling
                       ? "キャンセル中…" : "キャンセル"
                 enabled: !mvmController.exportCancelling
@@ -2000,23 +2000,29 @@ ApplicationWindow {
         }
     }
 
-    Dialog {
+    ModernDialog {
         id: exportFailureDialog
         property string message: ""
         anchors.centerIn: parent
         width: Math.min(root.width - 40, 560)
         modal: true
         title: "書き出しに失敗しました"
-        standardButtons: Dialog.Ok
 
         contentItem: Label {
             width: exportFailureDialog.availableWidth
             text: exportFailureDialog.message
             wrapMode: Text.Wrap
         }
+        footer: ModernDialogFooter {
+            ModernDialogButton {
+                text: "OK"
+                prominent: true
+                onClicked: exportFailureDialog.close()
+            }
+        }
     }
 
-    Dialog {
+    ModernDialog {
         id: exportSettingsDialog
         property string inputSpecText: ""
         property string outputSpecText: ""
@@ -2066,13 +2072,13 @@ ApplicationWindow {
                 text: "エンコード品質"
                 font.bold: true
             }
-            ComboBox {
+            ModernDialogComboBox {
                 id: qualityCombo
                 Layout.fillWidth: true
                 model: exportSettingsDialog.qualityOptions
                 textRole: "label"
-                delegate: ItemDelegate {
-                    width: qualityCombo.width
+                delegate: ModernDialogOption {
+                    width: qualityCombo.width - 8
                     text: modelData.label + "（" + modelData.detail + "）"
                     highlighted: qualityCombo.highlightedIndex === index
                 }
@@ -2083,6 +2089,7 @@ ApplicationWindow {
                         const option = exportSettingsDialog.qualityOptions[qualityCombo.currentIndex];
                         return option ? option.label + "（" + option.detail + "）" : "";
                     }
+                    color: "#f0f1f3"
                     verticalAlignment: Text.AlignVCenter
                 }
             }
@@ -2094,15 +2101,14 @@ ApplicationWindow {
             }
         }
 
-        footer: DialogButtonBox {
-            Button {
+        footer: ModernDialogFooter {
+            ModernDialogButton {
                 text: "キャンセル"
-                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
                 onClicked: exportSettingsDialog.close()
             }
-            Button {
+            ModernDialogButton {
                 text: "書き出す"
-                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+                prominent: true
                 onClicked: {
                     const option = exportSettingsDialog.qualityOptions[qualityCombo.currentIndex];
                     if (option && mvmController.exportTimelineWithQuality(
@@ -2187,7 +2193,7 @@ ApplicationWindow {
         onRejected: root.abandonExternalSaveContinuation()
     }
 
-    Dialog {
+    ModernDialog {
         id: recoveryDialog
         anchors.centerIn: parent
         width: Math.min(root.width - 40, 620)
@@ -2214,43 +2220,42 @@ ApplicationWindow {
                      : "前回、正常に保存されなかった編集が見つかりました。\n"
                        + mvmController.recoveryProjectPath
                        + "\n\n自動保存された編集を復元しますか？"))
-            color: "white"
+            color: "#f0f1f3"
             wrapMode: Text.Wrap
         }
 
-        footer: DialogButtonBox {
-            Button {
+        footer: ModernDialogFooter {
+            ModernDialogButton {
                 visible: !mvmController.recoveryCorrupt && !mvmController.recoveryForeign
                 text: "復元する"
-                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+                prominent: true
                 onClicked: {
                     if (mvmController.restoreRecovery())
                         recoveryDialog.close();
                 }
             }
-            Button {
+            ModernDialogButton {
                 visible: !mvmController.recoveryCorrupt && !mvmController.recoveryForeign
                 text: mvmController.recoveryCanonicalChanged ? "現在のProjectを開く" : "最後の保存状態を使う"
-                DialogButtonBox.buttonRole: DialogButtonBox.DestructiveRole
+                destructive: true
                 onClicked: {
                     if (mvmController.discardRecovery())
                         recoveryDialog.close();
                 }
             }
-            Button {
+            ModernDialogButton {
                 visible: mvmController.recoveryCanonicalChanged && !mvmController.recoveryCorrupt
                       && !mvmController.recoveryForeign
                 text: "キャンセル"
-                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
                 onClicked: {
                     if (mvmController.dismissRecovery())
                         recoveryDialog.close();
                 }
             }
-            Button {
+            ModernDialogButton {
                 visible: mvmController.recoveryCorrupt || mvmController.recoveryForeign
                 text: "OK"
-                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+                prominent: true
                 onClicked: {
                     if (mvmController.dismissRecovery())
                         recoveryDialog.close();
@@ -2259,7 +2264,7 @@ ApplicationWindow {
         }
     }
 
-    Dialog {
+    ModernDialog {
         id: externalSaveDialog
         anchors.centerIn: parent
         width: Math.min(root.width - 40, 620)
@@ -2269,28 +2274,26 @@ ApplicationWindow {
 
         contentItem: Label {
             text: "このProjectを開いたあとで、fileの内容が変わっています。このまま保存すると、その変更を上書きします。"
-            color: "white"
+            color: "#f0f1f3"
             wrapMode: Text.Wrap
         }
 
-        footer: DialogButtonBox {
-            Button {
+        footer: ModernDialogFooter {
+            ModernDialogButton {
                 text: "上書きする"
-                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+                destructive: true
                 onClicked: root.completeExternalSave(
                                mvmController.saveProjectOverwritingExternalChange())
             }
-            Button {
+            ModernDialogButton {
                 text: "名前を付けて保存"
-                DialogButtonBox.buttonRole: DialogButtonBox.ActionRole
                 onClicked: {
                     externalSaveDialog.close();
                     saveProjectDialog.open();
                 }
             }
-            Button {
+            ModernDialogButton {
                 text: "キャンセル"
-                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
                 onClicked: {
                     root.abandonExternalSaveContinuation();
                     externalSaveDialog.close();
@@ -2299,23 +2302,24 @@ ApplicationWindow {
         }
     }
 
-    Dialog {
+    ModernDialog {
         id: unsavedChangesDialog
         anchors.centerIn: parent
+        width: Math.min(root.width - 40, 420)
         modal: true
         closePolicy: Popup.NoAutoClose
         title: "未保存の変更"
 
         contentItem: Label {
             text: "プロジェクトへの変更を保存しますか？"
-            color: "white"
+            color: "#f0f1f3"
             wrapMode: Text.Wrap
         }
 
-        footer: DialogButtonBox {
-            Button {
+        footer: ModernDialogFooter {
+            ModernDialogButton {
                 text: "保存"
-                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+                prominent: true
                 onClicked: {
                     if (mvmController.saveProject()) {
                         unsavedChangesDialog.close();
@@ -2323,9 +2327,9 @@ ApplicationWindow {
                     }
                 }
             }
-            Button {
+            ModernDialogButton {
                 text: "保存しない"
-                DialogButtonBox.buttonRole: DialogButtonBox.DestructiveRole
+                destructive: true
                 onClicked: {
                     if (mvmController.discardUnsavedChanges()) {
                         unsavedChangesDialog.close();
@@ -2333,9 +2337,8 @@ ApplicationWindow {
                     }
                 }
             }
-            Button {
+            ModernDialogButton {
                 text: "キャンセル"
-                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
                 onClicked: {
                     root.pendingProjectAction = "";
                     root.pendingSaveContinuation = false;
@@ -2357,7 +2360,7 @@ ApplicationWindow {
         }
     }
 
-    Dialog {
+    ModernDialog {
         id: generationDialog
         anchors.centerIn: parent
         width: Math.min(root.width - 40, 660)
@@ -2372,7 +2375,7 @@ ApplicationWindow {
                 text: "Script"
                 font.bold: true
             }
-            TextField {
+            ModernDialogField {
                 Layout.fillWidth: true
                 readOnly: true
                 text: root.selectedManimScript.toString().replace(/^file:\/\//, "")
@@ -2381,29 +2384,28 @@ ApplicationWindow {
                 text: "Scene class"
                 font.bold: true
             }
-            TextField {
+            ModernDialogField {
                 id: sceneField
                 Layout.fillWidth: true
                 placeholderText: "MvmM0Scene"
                 enabled: !mvmController.busy
                 onAccepted: generateButton.clicked()
             }
-            RowLayout {
-                Layout.alignment: Qt.AlignRight
-
-                Button {
-                    text: "Cancel"
-                    enabled: !mvmController.busy
-                    onClicked: generationDialog.close()
-                }
-                Button {
-                    id: generateButton
-                    text: mvmController.busy ? "Generating…" : "Generate"
-                    enabled: !mvmController.busy && sceneField.text.trim().length > 0
-                    onClicked: {
-                        if (mvmController.generateManimClip(root.selectedManimScript, sceneField.text))
-                            generationDialog.close();
-                    }
+        }
+        footer: ModernDialogFooter {
+            ModernDialogButton {
+                text: "Cancel"
+                enabled: !mvmController.busy
+                onClicked: generationDialog.close()
+            }
+            ModernDialogButton {
+                id: generateButton
+                text: mvmController.busy ? "Generating…" : "Generate"
+                prominent: true
+                enabled: !mvmController.busy && sceneField.text.trim().length > 0
+                onClicked: {
+                    if (mvmController.generateManimClip(root.selectedManimScript, sceneField.text))
+                        generationDialog.close();
                 }
             }
         }

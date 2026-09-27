@@ -19,6 +19,13 @@ qt_add_qml_module(mvm
         CompactMenu.qml
         CompactMenuItem.qml
         CompactMenuSeparator.qml
+        ModernDialog.qml
+        ModernDialogFooter.qml
+        ModernDialogButton.qml
+        ModernDialogField.qml
+        ModernDialogOption.qml
+        ModernDialogComboBox.qml
+        ModernDialogProgressBar.qml
         DragNumberField.qml
         AudioMeter.qml
         MediaKindIcon.qml
