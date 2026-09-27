@@ -286,7 +286,6 @@ public:
     Q_INVOKABLE bool splitClipAt(const QString& clipId, qint64 frame, bool allTracks, bool linked);
     Q_INVOKABLE QVariantMap previewClipKey(const QString& clipId, qint64 originalFrame,
                                            qint64 requestedFrame, double valuePercent) const;
-    Q_INVOKABLE double clipKeyLineValue(const QString& clipId, qint64 frame) const;
     Q_INVOKABLE bool commitClipKey(const QString& clipId, qint64 originalFrame,
                                    qint64 requestedFrame, double valuePercent);
     Q_INVOKABLE bool deleteClipKey(const QString& clipId, qint64 frame);

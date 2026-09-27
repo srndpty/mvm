@@ -4044,18 +4044,6 @@ void MvmController::finishTimelineExport(TimelineExportResult exported) {
     setStatus(status);
 }
 
-double MvmController::clipKeyLineValue(const QString& clipId, qint64 frame) const {
-    const auto id = clipId.toStdString();
-    const auto found = std::find_if(project_.timelineClips.begin(), project_.timelineClips.end(),
-                                    [&](const auto& clip) { return clip.id == id; });
-    if (found == project_.timelineClips.end())
-        return std::numeric_limits<double>::quiet_NaN();
-    const bool audio = found->kind == project::TimelineClipKind::Audio;
-    return project::evaluateClipKeys(
-        audio ? found->effects.volumeKeys : found->effects.opacityKeys,
-        audio ? found->effects.volumePercent : found->effects.opacityPercent, frame);
-}
-
 QVariantMap MvmController::previewClipKey(const QString& clipId, qint64 originalFrame,
                                           qint64 requestedFrame, double valuePercent) const {
     const auto id = clipId.toStdString();

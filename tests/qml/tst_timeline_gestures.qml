@@ -79,8 +79,8 @@ TestCase {
 
     // Main.qml の clip と同じ座標系。video は最大 100%、audio は最大 200%。
     function penGeometry(maximum, pixelsPerFrame) {
-        return { "pixelsPerFrame": pixelsPerFrame, "maximum": maximum, "height": 54,
-                 "inset": 4, "keyPixels": 8, "linePixels": 12 };
+        return { "pixelsPerFrame": pixelsPerFrame, "maximum": maximum, "width": 800,
+                 "height": 54, "inset": 4, "keyPixels": 8, "linePixels": 12 };
     }
 
     function test_penValueAndYRoundTrip() {
@@ -99,26 +99,58 @@ TestCase {
         compare(Gestures.penValueAt(video, 0), 100);
         compare(Gestures.penValueAt(video, 54), 0);
         compare(Gestures.penValueAt(audio, -10), 200);
-        // 線の当たり判定 12px は、描画に使う高さ (54 - 2*4) を基準に値へ直す。
-        fuzzyCompare(Gestures.penValueTolerance(video), 12 * 100 / 46, 1e-9);
-        fuzzyCompare(Gestures.penValueTolerance(audio), 12 * 200 / 46, 1e-9);
-        const flat = { "pixelsPerFrame": 4, "maximum": 100, "height": 4, "inset": 4,
-                       "keyPixels": 8, "linePixels": 12 };
+        const flat = { "pixelsPerFrame": 4, "maximum": 100, "width": 800, "height": 4,
+                       "inset": 4, "keyPixels": 8, "linePixels": 12 };
         verify(Number.isFinite(Gestures.penValueAt(flat, 2)));
     }
 
     function test_penLineClickAddsOrSelects() {
         const video = penGeometry(100, 4);
-        // 線は 100% (y = 4)。6px 下は追加、16px 下は clip の選択。
+        // 線は 100% (y = 4)。12px 下までは追加、それより下は clip の選択。
         const added = Gestures.penPress([], 100, 20, 80, 10, video);
         compare(added.gesture, "pen");
         compare(added.originalFrame, -1);
         compare(added.frame, 20);
         compare(added.value, Gestures.penValueAt(video, 10));
         compare(added.grabOffsetY, 0);
-        compare(Gestures.penPress([], 100, 20, 80, 20, video).gesture, "select");
-        // 線の値を取れない clip は選択だけ。
-        compare(Gestures.penPress([], NaN, 20, 80, 4, video).gesture, "select");
+        compare(Gestures.penPress([], 100, 20, 80, 16, video).gesture, "pen");
+        compare(Gestures.penPress([], 100, 20, 80, 17, video).gesture, "select");
+    }
+
+    function test_penLinePointsMatchDrawing() {
+        const video = penGeometry(100, 4);
+        const flat = Gestures.penLinePoints([], 50, video);
+        compare(flat.length, 2);
+        compare(flat[0].x, 0);
+        compare(flat[1].x, 800);
+        compare(flat[0].y, Gestures.penY(video, 50));
+        // キーの外側は端の値を保つ。
+        const points = Gestures.penLinePoints([{ frame: 10, value: 0 }, { frame: 20, value: 100 }],
+                                              50, video);
+        compare(points.length, 4);
+        compare(points[0].y, Gestures.penY(video, 0));
+        compare(points[1].x, 40);
+        compare(points[3].x, 800);
+        compare(points[3].y, Gestures.penY(video, 100));
+        compare(Gestures.penLineYAt(points, 20), Gestures.penY(video, 0));
+        compare(Gestures.penLineYAt(points, 60), Gestures.penY(video, 50));
+        compare(Gestures.penLineYAt(points, 900), Gestures.penY(video, 100));
+    }
+
+    function test_penLineHitFollowsSlopedLineBetweenFrames() {
+        // frame 10 = 0%、frame 11 = 100%、1 frame = 32px。frame 10.5 (x = 336) の線は 50%。
+        // frame へ丸めて線の値を評価すると 100% になり、見えている線を押しても選択になる。
+        const zoomed = penGeometry(100, 32);
+        const keys = [{ frame: 10, value: 0 }, { frame: 11, value: 100 }];
+        const y = Gestures.penY(zoomed, 50);
+        compare(Gestures.penLineYAt(Gestures.penLinePoints(keys, 100, zoomed), 336), y);
+        const added = Gestures.penPress(keys, 100, 11, 336, y, zoomed);
+        compare(added.gesture, "pen");
+        compare(added.originalFrame, -1);
+        // キーを置く frame だけは frame へ丸めた値。
+        compare(added.frame, 11);
+        compare(added.value, 50);
+        compare(Gestures.penPress(keys, 100, 11, 336, y + 13, zoomed).gesture, "select");
     }
 
     function test_penDragsPressedKeyWithoutJump() {

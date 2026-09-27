@@ -1610,6 +1610,7 @@ ApplicationWindow {
                                 readonly property var penGeometry: ({
                                     "pixelsPerFrame": timelinePanel.pixelsPerFrame,
                                     "maximum": automationMaximum,
+                                    "width": width,
                                     "height": height,
                                     "inset": 4,
                                     "keyPixels": 8,
@@ -1621,20 +1622,10 @@ ApplicationWindow {
                                 function automationY(value) {
                                     return Gestures.penY(clipItem.penGeometry, value);
                                 }
-                                // 自動化の線の頂点 (clip 内の座標)。キーの外側は端の値を保つ。
-                                readonly property var automationPoints: {
-                                    const keys = shownKeys;
-                                    if (keys.length === 0) {
-                                        const y = automationY(automationBase);
-                                        return [Qt.point(0, y), Qt.point(width, y)];
-                                    }
-                                    const points = [Qt.point(0, automationY(keys[0].value))];
-                                    for (let index = 0; index < keys.length; ++index)
-                                        points.push(Qt.point(keys[index].frame * timelinePanel.pixelsPerFrame,
-                                                             automationY(keys[index].value)));
-                                    points.push(Qt.point(width, automationY(keys[keys.length - 1].value)));
-                                    return points;
-                                }
+                                // 自動化の線の頂点 (clip 内の座標)。ペンの当たり判定と同じ頂点を使う。
+                                readonly property var automationPoints:
+                                    Gestures.penLinePoints(shownKeys, automationBase, penGeometry)
+                                        .map(point => Qt.point(point.x, point.y))
 
                                 function penFrameAt(x) {
                                     return Math.max(0, Math.min(clipItem.timelineDurationFrames - 1,
@@ -1974,9 +1965,7 @@ ApplicationWindow {
                                         if (tool === "pen") {
                                             const localFrame = clipItem.penFrameAt(pressPoint.x);
                                             clipItem.penState = Gestures.penPress(
-                                                clipItem.automationKeys,
-                                                root.mvmController.clipKeyLineValue(
-                                                    clipItem.clipId, localFrame),
+                                                clipItem.automationKeys, clipItem.automationBase,
                                                 localFrame, pressPoint.x, pressPoint.y,
                                                 clipItem.penGeometry, mouse.modifiers);
                                             const penGesture = clipItem.penState.gesture;
