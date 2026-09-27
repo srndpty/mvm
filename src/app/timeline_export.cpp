@@ -90,7 +90,8 @@ bool mapExportEffects(const project::TimelineClip& clip, const TimelineExportReq
 TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
                                          const TimelineExportRequest& request) {
     TimelineExportPlan plan;
-    if (request.width <= 0 || request.height <= 0 || request.fpsNum <= 0 || request.fpsDen <= 0) {
+    if (request.width <= 0 || request.height <= 0 || request.fpsNum <= 0 || request.fpsDen <= 0 ||
+        request.videoCrf < 0 || request.videoCrf > 51) {
         plan.error = "書き出しprofileが不正です";
         return plan;
     }
@@ -242,6 +243,7 @@ TimelineExportResult exportTimeline(const project::Project& project,
         .height = request.height,
         .fps_num = request.fpsNum,
         .fps_den = request.fpsDen,
+        .video_crf = request.videoCrf,
         .timeout_ms = request.timeoutMs,
         .render_threads = request.renderThreads,
         .encoder_threads = request.encoderThreads,

@@ -17,6 +17,8 @@ struct TimelineExportRequest {
     int height = 1080;
     int fpsNum = 60;
     int fpsDen = 1;
+    // libx264 の constant rate factor。UI が提示する3段階の実値を明示して渡す。
+    int videoCrf = 23;
     int timeoutMs = 600000;
     int renderThreads = 4;
     int encoderThreads = 0;

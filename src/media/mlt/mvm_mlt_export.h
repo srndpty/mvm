@@ -62,6 +62,8 @@ typedef struct {
     int height;
     int fps_num;
     int fps_den;
+    /* libx264 CRF。0..51 の範囲を明示し、consumer側で既定値へ落とさない。 */
+    int video_crf;
     int timeout_ms;
     /* 負の real_time として設定する非drop render worker数。 */
     int render_threads;

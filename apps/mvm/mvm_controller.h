@@ -1,17 +1,18 @@
 #ifndef MVM_APPS_MVM_MVM_CONTROLLER_H
 #define MVM_APPS_MVM_MVM_CONTROLLER_H
 
-#include "preview_engine/preview_engine.h"
 #include "app/timeline_export.h"
+#include "preview_engine/preview_engine.h"
 #include "project/project.h"
 
+#include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
-#include <atomic>
-#include <functional>
 #include <thread>
 #include <vector>
 
@@ -23,6 +24,7 @@
 #include <QTimer>
 #include <QUrl>
 #include <QVariantList>
+#include <QVariantMap>
 
 namespace mvm::app {
 
@@ -58,6 +60,7 @@ class MvmController final : public QObject {
     Q_PROPERTY(bool playing READ playing NOTIFY stateChanged)
     Q_PROPERTY(bool canPlay READ canPlay NOTIFY stateChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY stateChanged)
+    Q_PROPERTY(bool dirty READ dirty NOTIFY stateChanged)
     Q_PROPERTY(bool canExport READ canExport NOTIFY stateChanged)
     Q_PROPERTY(bool exporting READ exporting NOTIFY stateChanged)
     Q_PROPERTY(bool exportCancelling READ exportCancelling NOTIFY stateChanged)
@@ -88,12 +91,11 @@ class MvmController final : public QObject {
     Q_PROPERTY(qint64 effectFadeOut READ effectFadeOut NOTIFY stateChanged)
 
 public:
-    using ExportRunner = std::function<TimelineExportResult(
-        const project::Project&, const TimelineExportRequest&)>;
+    using ExportRunner =
+        std::function<TimelineExportResult(const project::Project&, const TimelineExportRequest&)>;
     using ExportThreadFactory = std::function<std::thread(std::function<void()>)>;
     // 書き出し完了後に出力ファイルをExplorerで表示する。失敗時はfalseとerrorを返す。
-    using FileRevealer =
-        std::function<bool(const std::filesystem::path& path, QString& error)>;
+    using FileRevealer = std::function<bool(const std::filesystem::path& path, QString& error)>;
     // meter の下限。linear 0 を -inf にすると QML 側で扱いにくいので床を決めておく。
     static constexpr double kMeterSilenceDb = -60.0;
 
@@ -154,9 +156,12 @@ public:
 
     bool canUndo() const { return !undoHistory_.empty() && !busy_; }
 
+    bool dirty() const { return currentRevision_ != savedRevision_; }
+
     bool canExport() const { return !project_.timelineClips.empty() && !busy_; }
 
     bool exporting() const { return exporting_; }
+
     bool exportCancelling() const { return exportCancelling_; }
 
     double exportProgress() const { return exportProgress_; }
@@ -174,9 +179,13 @@ public:
     double audioMeterDbLeft() const { return audioMeterDbLeft_; }
 
     double audioMeterDbRight() const { return audioMeterDbRight_; }
+
     double masterVolume() const { return masterVolume_; }
+
     int outputWidth() const { return project_.outputWidth; }
+
     int outputHeight() const { return project_.outputHeight; }
+
     void setMasterVolume(double volume);
 
     double effectPositionX() const;
@@ -198,6 +207,7 @@ public:
     Q_INVOKABLE bool addAudioClip(const QUrl& fileUrl);
     Q_INVOKABLE bool selectClip(int index);
     Q_INVOKABLE bool selectTimelineClip(const QString& clipId, qint64 frame);
+    Q_INVOKABLE bool toggleTimelineClipSelection(const QString& clipId, qint64 frame);
     Q_INVOKABLE bool selectTimelineClips(const QStringList& clipIds);
     Q_INVOKABLE bool seekTimelineFrame(qint64 frame);
     // scrub。drag 中は最新位置だけを coalesce して seek し、release で確定する。
@@ -213,7 +223,9 @@ public:
     Q_INVOKABLE bool deleteTimelineClip(const QString& clipId);
     Q_INVOKABLE bool unlinkTimelineClip(const QString& clipId);
     Q_INVOKABLE bool undoLastEdit();
+    Q_INVOKABLE QVariantMap exportSettingsSummary() const;
     Q_INVOKABLE bool exportTimeline(const QUrl& outputUrl);
+    Q_INVOKABLE bool exportTimelineWithQuality(const QUrl& outputUrl, const QString& quality);
     Q_INVOKABLE void cancelTimelineExport();
     // effect の 1 値だけを更新する。
     //   commit=false : Project を書き換えず、preview だけを ephemeral な override で
@@ -236,7 +248,11 @@ public:
     // Project ファイル (.mvm)
     Q_INVOKABLE bool newProject(const QUrl& fileUrl);
     Q_INVOKABLE bool openProject(const QUrl& fileUrl);
+    Q_INVOKABLE bool saveProject();
     Q_INVOKABLE bool saveProjectAs(const QUrl& fileUrl);
+    Q_INVOKABLE bool discardUnsavedChanges();
+    Q_INVOKABLE QVariantMap projectSettingsForClip(const QString& clipId) const;
+    Q_INVOKABLE bool setProjectVideoSettings(int width, int height, int fpsNum, int fpsDen);
     Q_INVOKABLE bool setTimelineFrameRate(int fpsNum, int fpsDen);
 
 public Q_SLOTS:
@@ -248,6 +264,8 @@ Q_SIGNALS:
     void exportFailed(const QString& message);
 
 private:
+    bool startTimelineExport(const QUrl& outputUrl, int videoCrf);
+
     struct TrackPreviewSource {
         preview::PreviewSourceId source;
         std::string clipId;
@@ -307,6 +325,7 @@ private:
     project::ClipEffects effectsForPreview(int clipIndex) const;
     bool applyEffectKey(project::ClipEffects& effects, const QString& key, double value);
     bool syncPreviewSourcesAt(std::int64_t timelineFrame, QString& error);
+
     // audio source set の差し替えは、master/mix inputの参照寿命を守るため
     // remove -> add の順に行い、prepare/commitへ素直に割れない。
     // そこで「切り替え前の状態」を持ち、後段が失敗したら元へ戻す compensation
@@ -375,13 +394,20 @@ private:
     std::int64_t pendingSourceFrame_ = 0;
     int currentClipIndex_ = -1;
     std::vector<std::string> selectedClipIds_;
+
     struct UndoEntry {
         project::Project project;
         std::vector<std::string> selectedClipIds;
         std::string currentClipId;
         std::int64_t playheadFrame = 0;
+        std::uint64_t revision = 0;
     };
+
     std::vector<UndoEntry> undoHistory_;
+    project::Project savedProject_;
+    std::uint64_t currentRevision_ = 0;
+    std::uint64_t savedRevision_ = 0;
+    std::uint64_t nextRevision_ = 1;
     std::int64_t playheadFrame_ = 0;
     std::int64_t totalTimelineFrames_ = 0;
     double audioMeterDbLeft_ = kMeterSilenceDb;

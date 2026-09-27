@@ -184,8 +184,6 @@ int main(int argc, char** argv) {
     window->installEventFilter(&timelineWheelFilter);
     controller.attachPreview(surface);
 
-    QObject::connect(window, &QQuickWindow::closing, &controller,
-                     [&controller](QQuickCloseEvent*) { controller.shutdown(); });
     QObject::connect(&application, &QCoreApplication::aboutToQuit, &controller,
                      &mvm::app::MvmController::shutdown);
     // export workerをjoinするcontroller shutdownより後にMLT runtimeを閉じる。

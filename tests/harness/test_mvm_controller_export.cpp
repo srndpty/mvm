@@ -113,6 +113,38 @@ void testCompleteAndRestart(const std::filesystem::path& path) {
     check(reveals.calls == 2, "2回目の書き出し完了でExplorer表示しません");
 }
 
+void testExportQualitySelection(const std::filesystem::path& path) {
+    std::atomic<int> receivedCrf{-1};
+    RevealRecorder reveals;
+    mvm::app::MvmController controller(
+        path, {}, videoProject(), nullptr,
+        [&](const auto&, const auto& request) {
+            receivedCrf.store(request.videoCrf);
+            return successResult(request);
+        },
+        {}, reveals.revealer());
+    const QUrl output = QUrl::fromLocalFile(
+        QString::fromStdWString((path.parent_path() / L"quality.mp4").wstring()));
+
+    const auto verify = [&](const QString& quality, int expectedCrf, const char* message) {
+        receivedCrf.store(-1);
+        check(controller.exportTimelineWithQuality(output, quality), message);
+        check(pumpUntil([&] { return !controller.exporting(); }), "品質指定exportが完了しません");
+        check(receivedCrf.load() == expectedCrf, message);
+    };
+    verify(QStringLiteral("high"), 18, "高品質をCRF 18へ変換できません");
+    verify(QStringLiteral("standard"), 23, "標準品質をCRF 23へ変換できません");
+    verify(QStringLiteral("compact"), 28, "容量優先をCRF 28へ変換できません");
+
+    QString failure;
+    QObject::connect(&controller, &mvm::app::MvmController::exportFailed,
+                     [&](const QString& message) { failure = message; });
+    check(!controller.exportTimelineWithQuality(output, QStringLiteral("unknown")),
+          "未知の品質を受理しました");
+    check(failure == QStringLiteral("未知の書き出し品質です: unknown"),
+          "未知の品質を利用者へ通知しません");
+}
+
 void testRevealFailureKeepsSuccess(const std::filesystem::path& path) {
     RevealRecorder reveals;
     reveals.succeed = false;
@@ -293,6 +325,50 @@ void testUndo(const std::filesystem::path& path) {
           "Undo後のProjectファイルが復元されません");
 }
 
+void testDirtyCheckpoint(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    mvm::app::MvmController controller(path, {}, initial);
+    check(!controller.dirty(), "起動直後のProjectがdirtyです");
+    check(controller.addTrack("video") && controller.dirty(), "編集後のProjectがdirtyになりません");
+    check(controller.saveProject() && !controller.dirty(),
+          "明示保存後のProjectがcleanになりません");
+    check(controller.addTrack("audio") && controller.dirty(), "保存後の再編集がdirtyになりません");
+    check(controller.undoLastEdit() && !controller.dirty(),
+          "保存済みチェックポイントまでUndoしてもcleanになりません");
+
+    check(controller.addTrack("audio") && controller.dirty(), "破棄対象の編集がdirtyになりません");
+    check(controller.discardUnsavedChanges() && !controller.dirty(),
+          "未保存変更を破棄してもcleanになりません");
+    check(controller.videoTrackCount() == 3 && controller.audioTrackCount() == 1,
+          "未保存変更の破棄でメモリ上のProjectが復元されません");
+    const auto restored = mvm::project::loadProjectJson(path);
+    check(restored.success && restored.project.videoTracks.size() == 3 &&
+              restored.project.audioTracks.size() == 1,
+          "未保存変更の破棄で保存済みチェックポイントを復元できません");
+}
+
+void testProjectVideoSettings(const std::filesystem::path& path) {
+    auto project = videoProject();
+    project.timelineClips.front().timelineStartFrame = 60;
+    mvm::app::MvmController controller(path, {}, std::move(project));
+
+    check(controller.setProjectVideoSettings(1280, 720, 24, 1),
+          "clipがあるProjectの映像設定を変更できません");
+    check(controller.outputWidth() == 1280 && controller.outputHeight() == 720 &&
+              controller.timelineFpsNum() == 24 && controller.timelineFpsDen() == 1,
+          "controllerへProject映像設定が反映されません");
+    const auto saved = mvm::project::loadProjectJson(path);
+    check(saved.success && saved.project.outputWidth == 1280 && saved.project.outputHeight == 720 &&
+              saved.project.timelineFpsNum == 24 && saved.project.timelineFpsDen == 1 &&
+              saved.project.timelineClips.front().timelineStartFrame == 24,
+          "Project映像設定または換算後のclip位置を保存できません");
+
+    check(controller.undoLastEdit(), "Project映像設定をUndoできません");
+    check(controller.outputWidth() == 1920 && controller.outputHeight() == 1080 &&
+              controller.timelineFpsNum() == 60 && controller.timelineFpsDen() == 1,
+          "Undoで以前のProject映像設定へ戻りません");
+}
+
 void testUnlinkUndo(const std::filesystem::path& path) {
     mvm::app::MvmController controller(path, {}, linkedProject());
     controller.selectTimelineClip("audio", 23);
@@ -317,6 +393,57 @@ void testUnlinkUndo(const std::filesystem::path& path) {
               model->data(model->index(1, 0), selectedRole).toBool(),
           "Undoでリンク選択が復元されません");
 }
+
+void testShiftSelectionToggle(const std::filesystem::path& path) {
+    auto project = linkedProject();
+    auto other = project.timelineClips[0];
+    other.id = "other";
+    other.name = "other";
+    other.linkGroupId.clear();
+    other.timelineStartFrame = 120;
+    project.timelineClips.push_back(std::move(other));
+    mvm::app::MvmController controller(path, {}, std::move(project));
+
+    const auto* model = controller.timelineModel();
+    const int selectedRole = model->roleNames().key("selected", -1);
+    const auto selected = [&](int row) {
+        return selectedRole >= 0 && model->data(model->index(row, 0), selectedRole).toBool();
+    };
+
+    controller.selectTimelineClip("other", 120);
+    controller.toggleTimelineClipSelection("video", 0);
+    check(selected(0) && selected(1) && selected(2),
+          "Shift選択で既存選択へリンクclip一組を追加できません");
+    controller.toggleTimelineClipSelection("audio", 0);
+    check(!selected(0) && !selected(1) && selected(2),
+          "選択済みリンクclipのShift選択で一組を解除できません");
+}
+
+void testDeleteMultipleSelection(const std::filesystem::path& path) {
+    auto project = videoProject();
+    auto audio = project.timelineClips[0];
+    audio.id = "audio";
+    audio.name = "audio";
+    audio.kind = mvm::project::TimelineClipKind::Audio;
+    audio.track = {mvm::project::TrackKind::Audio, 0};
+    project.timelineClips.push_back(std::move(audio));
+    auto remaining = project.timelineClips[0];
+    remaining.id = "remaining";
+    remaining.name = "remaining";
+    remaining.timelineStartFrame = 120;
+    project.timelineClips.push_back(std::move(remaining));
+    mvm::app::MvmController controller(path, {}, std::move(project));
+
+    check(controller.selectTimelineClips({"video", "audio"}), "削除対象の複数clipを選択できません");
+    check(controller.deleteCurrentClip() && controller.clipCount() == 1,
+          "Delete操作で選択中の全clipを削除できません");
+    const auto* model = controller.timelineModel();
+    const int clipIdRole = model->roleNames().key("clipId", -1);
+    check(clipIdRole >= 0 && model->data(model->index(0, 0), clipIdRole).toString() == "remaining",
+          "複数削除で選択外のclipまで削除しました");
+    check(controller.undoLastEdit() && controller.clipCount() == 3,
+          "複数clip削除を1回のUndoで復元できません");
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -326,6 +453,7 @@ int main(int argc, char** argv) {
     const std::filesystem::path directory = std::filesystem::path(argv[1]);
     std::filesystem::create_directories(directory);
     testCompleteAndRestart(directory / L"complete.mvm");
+    testExportQualitySelection(directory / L"quality.mvm");
     testQueuedProgressAfterCancel(directory / L"cancel.mvm");
     testFailedExportNotification(directory / L"failed.mvm");
     testRevealFailureKeepsSuccess(directory / L"reveal-failure.mvm");
@@ -334,6 +462,10 @@ int main(int argc, char** argv) {
     testShutdown(directory / L"shutdown-finished.mvm", true);
     testThreadFailure(directory / L"thread-failure.mvm");
     testUndo(directory / L"undo.mvm");
+    testDirtyCheckpoint(directory / L"dirty-checkpoint.mvm");
+    testProjectVideoSettings(directory / L"project-video-settings.mvm");
     testUnlinkUndo(directory / L"unlink-undo.mvm");
+    testShiftSelectionToggle(directory / L"shift-selection.mvm");
+    testDeleteMultipleSelection(directory / L"delete-multiple.mvm");
     return failures == 0 ? 0 : 1;
 }

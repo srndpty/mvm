@@ -75,6 +75,10 @@ struct Project {
     std::vector<TimelineClip> timelineClips;
 };
 
+inline constexpr int kMaximumProjectOutputDimension = 16384;
+// MP4のyuv420p出力が扱える正の偶数rasterだけをProjectへ保存する。
+bool isValidProjectOutputSize(int width, int height);
+
 // 新規 Project の初期構成。track が 0 本の Project を作らせない。
 Project createDefaultProject();
 
