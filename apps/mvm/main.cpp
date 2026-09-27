@@ -173,6 +173,12 @@ int main(int argc, char** argv) {
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(QStringLiteral("mvmController"), &controller);
     engine.rootContext()->setContextProperty(QStringLiteral("waveformCache"), &waveformCache);
+    // 外部ツールで素材を差し替えて戻ってきたとき、古い波形を出し続けない。
+    QObject::connect(&application, &QGuiApplication::applicationStateChanged, &waveformCache,
+                     [&waveformCache](Qt::ApplicationState state) {
+                         if (state == Qt::ApplicationActive)
+                             waveformCache.revalidateAll();
+                     });
     engine.load(QUrl(QStringLiteral("qrc:/mvm/app/Main.qml")));
     if (engine.rootObjects().isEmpty()) {
         std::fprintf(stderr, "mvm QMLを読み込めませんでした\n");

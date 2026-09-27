@@ -3,6 +3,7 @@
 #include "core/waveform_peaks.h"
 
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -49,6 +50,44 @@ int main() {
         check(builder.reset(8, 1, 4, error), "reset に失敗した");
         WaveformPeaks peaks;
         check(!builder.finish(peaks, error), "空の波形を成功にした");
+    }
+
+    // --- 壊れた PTS で巨大な確保や signed overflow を起こさない ---
+    {
+        const std::vector<float> values(100, 0.5f);
+        const float* planes[] = {values.data(), values.data()};
+        WaveformPeakBuilder builder;
+        std::string error;
+        check(builder.reset(48000, 2, 64, error), "reset に失敗した");
+        // startSample + frameCount - 1 が溢れる位置。
+        check(!builder.addPlanar(std::numeric_limits<std::int64_t>::max() - 1, planes, 100, error),
+              "INT64_MAX 付近の位置を受理した");
+        // 溢れはしないが、既定の budget (256MiB) を大きく超える位置。
+        // 受理すると stereo で約 2^40/64 peak * 16 byte = 256GiB を確保しにいく。
+        check(!builder.addPlanar(std::int64_t{1} << 40, planes, 100, error),
+              "巨大な正の位置を受理した");
+        check(error.find("timestamp") != std::string::npos, "失敗理由が timestamp を示していない");
+        // 全体が素材開始より前なら、INT64_MIN でも捨てるだけで失敗にしない。
+        check(builder.addPlanar(std::numeric_limits<std::int64_t>::min(), planes, 100, error),
+              "INT64_MIN の位置で失敗した");
+        // 失敗した追加の後でも、正常な位置は受理し続ける (巨大な位置で確保していない)。
+        check(builder.addPlanar(0, planes, 100, error), "正常な位置を受理できない");
+        WaveformPeaks small;
+        check(builder.finish(small, error) && small.levels[0].peakCount == 2,
+              "失敗した追加が peak 数へ影響している");
+    }
+
+    // --- budget の境界: stereo の 1 peak は 16 byte ---
+    {
+        const std::vector<float> values(4, 0.5f);
+        const float* planes[] = {values.data(), values.data()};
+        WaveformPeakBuilder builder;
+        std::string error;
+        check(!builder.reset(8, 2, 4, error, 15), "1 peak も持てない budget を受理した");
+        check(builder.reset(8, 2, 4, error, 32), "2 peak 分の budget で reset できない");
+        check(builder.addPlanar(4, planes, 4, error), "2 peak 目 (sample 4..7) を拒否した");
+        check(!builder.addPlanar(5, planes, 4, error),
+              "3 peak 目 (sample 8) に掛かる追加を受理した");
     }
 
     // --- 2 channel、peak 幅 4、sample rate 8 (1 peak = 0.5 秒) ---
@@ -151,6 +190,15 @@ int main() {
         check(narrow.valid && narrow.maximum == 64.0f / 127.0f, "最細 level で peak を拾えない");
         const auto beside = waveformColumn(wide, 0, 6.078125, 6.0859375);
         check(beside.valid && beside.maximum == 0.0f, "隣の区間へ peak が漏れている");
+    }
+
+    // cache の budget 計算に使う。量子化後の min/max (1 byte ずつ) を少なくとも数える。
+    {
+        std::size_t stored = 0;
+        for (const auto& level : peaks.levels)
+            stored += level.minimum.size() + level.maximum.size();
+        check(mvm::core::waveformPeaksMemoryBytes(peaks) >= stored && stored == 12,
+              "peak の byte 数が保持している min/max より小さい");
     }
 
     check(mvm::core::waveformSamplesPerPeak(48000) == 64, "48kHz の peak 幅が 64 でない");

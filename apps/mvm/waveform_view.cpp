@@ -24,8 +24,8 @@ void WaveformView::setCache(QObject* cache) {
         disconnect(cache_, nullptr, this, nullptr);
     cache_ = typed;
     if (cache_) {
-        connect(cache_, &WaveformCache::entryChanged, this, [this](const QString& path) {
-            if (path == mediaPath_)
+        connect(cache_, &WaveformCache::entryChanged, this, [this](const QString& key) {
+            if (key.isEmpty() || key == WaveformCache::sourceKey(mediaPath_))
                 refreshEntry();
         });
     }

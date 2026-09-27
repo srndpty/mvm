@@ -1,14 +1,13 @@
 #include "core/waveform_peaks.h"
 
+#include "core/checked_integer.h"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
 
 namespace mvm::core {
 namespace {
-
-// 1 時間を大きく超える素材でも index が int64 に収まる範囲で打ち切る。
-constexpr std::int64_t kMaximumPeakCount = std::int64_t{1} << 32;
 
 std::int8_t quantize(float value) {
     const float clamped = std::clamp(value, -1.0f, 1.0f);
@@ -44,16 +43,32 @@ WaveformPeakLevel coarsen(const WaveformPeakLevel& finer, int channels) {
 
 } // namespace
 
+std::size_t waveformPeaksMemoryBytes(const WaveformPeaks& peaks) {
+    std::size_t total = sizeof(WaveformPeaks);
+    for (const auto& level : peaks.levels)
+        total += sizeof(WaveformPeakLevel) + level.minimum.capacity() + level.maximum.capacity();
+    return total;
+}
+
 std::int64_t waveformSamplesPerPeak(int sampleRate) {
     return std::max<std::int64_t>(1, sampleRate / 750);
 }
 
 bool WaveformPeakBuilder::reset(int sampleRate, int channels, std::int64_t samplesPerPeak,
-                                std::string& error) {
+                                std::string& error, std::size_t workingByteBudget) {
     if (sampleRate <= 0 || channels <= 0 || samplesPerPeak <= 0) {
         error = "波形の sample rate / channel 数 / peak 幅が不正です";
         return false;
     }
+    // 1 peak あたり channel ごとに float の min/max を 1 つずつ持つ。
+    const std::size_t bytesPerPeak = static_cast<std::size_t>(channels) * 2 * sizeof(float);
+    const std::size_t maximumPeaks = workingByteBudget / bytesPerPeak;
+    if (maximumPeaks == 0) {
+        error = "波形の作業領域の上限が小さすぎます";
+        return false;
+    }
+    maximumPeakCount_ = static_cast<std::int64_t>(
+        std::min<std::size_t>(maximumPeaks, std::numeric_limits<std::int64_t>::max()));
     sampleRate_ = sampleRate;
     channels_ = channels;
     samplesPerPeak_ = samplesPerPeak;
@@ -75,15 +90,17 @@ bool WaveformPeakBuilder::addPlanar(std::int64_t startSample, const float* const
     }
     if (frameCount == 0)
         return true;
-    const std::int64_t firstFrame = std::max<std::int64_t>(0, -startSample);
-    if (firstFrame >= frameCount)
+    // -startSample は INT64_MIN で溢れるので、全体が負の位置かを先に判定する。
+    if (startSample <= -static_cast<std::int64_t>(frameCount))
         return true;
-    const std::int64_t lastSample = startSample + frameCount - 1;
-    const std::int64_t requiredPeaks = lastSample / samplesPerPeak_ + 1;
-    if (requiredPeaks > kMaximumPeakCount) {
-        error = "音声素材が長すぎて波形を作れません";
+    const std::int64_t firstFrame = startSample < 0 ? -startSample : 0;
+    std::int64_t lastSample = 0;
+    if (!checkedAdd(startSample, frameCount - 1, lastSample) ||
+        lastSample / samplesPerPeak_ >= maximumPeakCount_) {
+        error = "音声素材が長すぎるか、timestamp が不正です";
         return false;
     }
+    const std::int64_t requiredPeaks = lastSample / samplesPerPeak_ + 1;
     if (requiredPeaks > peakCount_) {
         // 未到達を +inf/-inf にしておき、finish で無音へ置き換える。
         // 0 で初期化すると、正の値だけの bucket の min が 0 に張り付く。

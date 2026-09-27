@@ -2,6 +2,7 @@
 
 #include "core/checked_integer.h"
 
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -149,10 +150,17 @@ bool WaveformDecoder::convertFrame(std::string& error) {
     }
     const std::int64_t startSample =
         av_rescale_q(relativePts, stream->time_base, AVRational{1, codec_->sample_rate});
+    // av_rescale_q は溢れると INT64_MIN を返す。負の位置として黙って捨てない。
+    if (startSample == std::numeric_limits<std::int64_t>::min()) {
+        error = "音声PTSをsample位置へ換算できません";
+        return false;
+    }
 
-    // rate を変えないので delay は 0 のはずだが、converter の内部 buffer を仮定しない。
-    const int capacity =
-        static_cast<int>(swr_get_delay(resampler_.get(), codec_->sample_rate)) + frame_->nb_samples;
+    // sample の位置は各 frame の PTS から決める。converter が sample を持ち越すと、
+    // 前の frame の残りを次の frame の PTS の位置へ置いてしまう。rate と layout を
+    // 変えない format 変換だけなので持ち越しは起きないはずだが、仮定せず検査する。
+    // (持ち越しが無いので、末尾で converter を flush する必要も無い。)
+    const int capacity = frame_->nb_samples;
     std::vector<std::uint8_t*> output(static_cast<std::size_t>(channels_));
     for (int channel = 0; channel < channels_; ++channel) {
         auto& plane = planes_[static_cast<std::size_t>(channel)];
@@ -164,6 +172,11 @@ bool WaveformDecoder::convertFrame(std::string& error) {
                     const_cast<const std::uint8_t**>(frame_->extended_data), frame_->nb_samples);
     if (converted < 0) {
         error = "音声 sample 変換に失敗しました: " + ffError(converted);
+        return false;
+    }
+    if (converted != frame_->nb_samples ||
+        swr_get_delay(resampler_.get(), codec_->sample_rate) != 0) {
+        error = "音声 format converter が sample を持ち越しました (frame の位置を決められません)";
         return false;
     }
     std::vector<const float*> planes(static_cast<std::size_t>(channels_));
