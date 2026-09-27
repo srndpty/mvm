@@ -7,6 +7,7 @@ add_library(mvm_core STATIC
     core/checked_output_timebase.cpp
     core/export_eta.cpp
     core/presentation_opportunity_mapper.cpp
+    core/waveform_peaks.cpp
 )
 target_include_directories(mvm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_core PRIVATE mvm::warnings)
@@ -198,6 +199,19 @@ target_link_libraries(mvm_audio_preview
     PRIVATE ole32 uuid avrt mvm::warnings
 )
 add_library(mvm::audio_preview ALIAS mvm_audio_preview)
+
+# --- timeline 波形 -----------------------------------------------------------
+# 素材の音声を元の channel 数のまま decode し、表示用 peak を作る。
+# preview の再生経路 (mvm_audio_preview) とは独立させ、Qt にも依存しない。
+add_library(mvm_audio_waveform STATIC
+    media/audio_waveform/audio_waveform_decoder.cpp
+)
+target_include_directories(mvm_audio_waveform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_audio_waveform
+    PUBLIC mvm::core
+    PRIVATE PkgConfig::MVM_FFMPEG mvm::warnings
+)
+add_library(mvm::audio_waveform ALIAS mvm_audio_waveform)
 
 # --- Qt probe ---------------------------------------------------------------
 # Qt が UCRT64 版であり、実際にリンク・起動できることを確認する。

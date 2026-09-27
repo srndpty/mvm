@@ -73,7 +73,15 @@ int main(int argc, char** argv) {
             model.data(index, mvm::app::TimelineClipModel::LinkGroupIdRole).toString();
         check(linkGroup == (row == 1 ? QStringLiteral("link") : QString()),
               "drag preview用link groupをmodel roleへ公開できません");
+        // 波形は素材 path ごとに生成する。clip id ではなく素材 path を出すこと。
+        const QString id = model.data(index, mvm::app::TimelineClipModel::ClipIdRole).toString();
+        const QString mediaPath =
+            model.data(index, mvm::app::TimelineClipModel::MediaPathRole).toString();
+        check(mediaPath == id + QStringLiteral(".mp4"),
+              "波形用の素材pathをmodel roleへ公開できません");
     }
+    check(model.roleNames().value(mvm::app::TimelineClipModel::MediaPathRole) == "mediaPath",
+          "QMLから素材pathを参照するrole名がありません");
 
     model.setSelectedClipIds(QSet<QString>{QStringLiteral("late-v1"), QStringLiteral("early-v1")});
     check(model.data(model.index(0, 0), mvm::app::TimelineClipModel::SelectedRole).toBool() &&

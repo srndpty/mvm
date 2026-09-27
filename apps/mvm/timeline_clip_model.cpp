@@ -47,6 +47,8 @@ QVariant TimelineClipModel::data(const QModelIndex& index, int role) const {
         return item.linkGroupId;
     case SelectedRole:
         return item.selected;
+    case MediaPathRole:
+        return item.mediaPath;
     default:
         return {};
     }
@@ -68,7 +70,8 @@ QHash<int, QByteArray> TimelineClipModel::roleNames() const {
             {TrackIndexRole, "trackIndex"},
             {LinkedRole, "linked"},
             {LinkGroupIdRole, "linkGroupId"},
-            {SelectedRole, "selected"}};
+            {SelectedRole, "selected"},
+            {MediaPathRole, "mediaPath"}};
 }
 
 void TimelineClipModel::setProject(const project::Project& project) {
@@ -85,7 +88,8 @@ void TimelineClipModel::setProject(const project::Project& project) {
                        duration.success,
                        QString::fromLatin1(project::trackKindName(clip.track.kind)),
                        clip.track.index, !clip.linkGroupId.empty(),
-                       QString::fromStdString(clip.linkGroupId), false});
+                       QString::fromStdString(clip.linkGroupId), false,
+                       QString::fromStdWString(clip.mediaPath.wstring())});
     }
     endResetModel();
 }

@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Layouts
 import mvm.preview 1.0
+import mvm.timeline 1.0
 
 ApplicationWindow {
     id: root
@@ -1102,6 +1103,7 @@ ApplicationWindow {
                                 required property bool linked
                                 required property string linkGroupId
                                 required property bool selected
+                                required property string mediaPath
 
                                 property real leftPreviewDelta: 0
                                 property real rightPreviewDelta: 0
@@ -1113,6 +1115,16 @@ ApplicationWindow {
                                 property bool bodyAdditiveSelection: false
                                 property string dragTrackKind: trackKind
                                 property int dragTrackIndex: trackIndex
+                                // trim/drag中の見かけの横ずれ。波形の可視範囲計算にも使う。
+                                readonly property real renderOffsetX:
+                                    leftPreviewDelta * timelinePanel.pixelsPerFrame
+                                    + (bodyMoved
+                                       ? bodyDragOffsetX
+                                       : ((selected
+                                           || (timelinePanel.activeDragLinkGroup !== ""
+                                               && clipItem.linkGroupId === timelinePanel.activeDragLinkGroup))
+                                          && clipId !== timelinePanel.activeDragClipId
+                                          ? timelinePanel.activeDragOffsetX : 0))
 
                                 x: timelineStartFrame * timelinePanel.pixelsPerFrame
                                 y: timelinePanel.rowY(trackKind, trackIndex) - timelinePanel.rulerHeight + 3
@@ -1125,14 +1137,7 @@ ApplicationWindow {
                                 border.color: previewSupported ? "#65a8dc" : "#c88b4a"
                                 z: bodyMoved ? 20 : 1
                                 transform: Translate {
-                                    x: clipItem.leftPreviewDelta * timelinePanel.pixelsPerFrame
-                                       + (clipItem.bodyMoved
-                                          ? clipItem.bodyDragOffsetX
-                                          : ((clipItem.selected
-                                              || (timelinePanel.activeDragLinkGroup !== ""
-                                                  && clipItem.linkGroupId === timelinePanel.activeDragLinkGroup))
-                                             && clipItem.clipId !== timelinePanel.activeDragClipId
-                                             ? timelinePanel.activeDragOffsetX : 0))
+                                    x: clipItem.renderOffsetX
                                     y: clipItem.bodyMoved
                                        ? clipItem.bodyDragOffsetY
                                        : (clipItem.selected
@@ -1167,6 +1172,37 @@ ApplicationWindow {
                                     }
                                 }
 
+                                // premiere と同様に channel ごとに 1 行 (mono 1 行、stereo 2 行)。
+                                // 長い clip を高倍率で見ても巨大な texture を作らないよう、
+                                // viewport と重なる範囲だけに置いて、その左端の素材時刻を渡す。
+                                WaveformView {
+                                    id: clipWaveform
+                                    readonly property real clipContentX:
+                                        trackArea.x + clipItem.x + clipItem.renderOffsetX
+                                    readonly property real visibleLeft:
+                                        Math.max(0, timelineFlick.contentX - clipContentX)
+                                    readonly property real visibleRight:
+                                        Math.min(clipItem.width,
+                                                 timelineFlick.contentX + timelineFlick.width - clipContentX)
+                                    readonly property real timelineSecondsPerFrame:
+                                        mvmController.timelineFpsDen / Math.max(1, mvmController.timelineFpsNum)
+                                    visible: clipItem.clipKind === "audio" && visibleRight > visibleLeft
+                                    cache: waveformCache
+                                    mediaPath: clipItem.clipKind === "audio" ? clipItem.mediaPath : ""
+                                    x: visibleLeft
+                                    y: 2
+                                    width: Math.max(0, Math.ceil(visibleRight - visibleLeft))
+                                    height: clipItem.height - 4
+                                    // clip 左端 = 素材の sourceInFrame (trim preview 中は leftPreviewDelta 分ずれる)。
+                                    startSeconds: clipItem.sourceInFrame * clipItem.sourceFpsDen
+                                                  / Math.max(1, clipItem.sourceFpsNum)
+                                                  + (clipItem.leftPreviewDelta
+                                                     + visibleLeft / timelinePanel.pixelsPerFrame)
+                                                    * timelineSecondsPerFrame
+                                    secondsPerPixel: timelineSecondsPerFrame / timelinePanel.pixelsPerFrame
+                                    color: clipItem.selected ? "#a9d6ff" : "#7fd49a"
+                                }
+
                                 Column {
                                     anchors.fill: parent
                                     anchors.leftMargin: 12
@@ -1184,6 +1220,8 @@ ApplicationWindow {
                                     }
                                     Label {
                                         width: parent.width
+                                        // audio clip は波形を優先し、尺の表示を重ねない。
+                                        visible: clipKind !== "audio"
                                         text: clipKind === "audio"
                                               ? Math.round(timelineDurationFrames) + "f"
                                               : sourceFpsNum + "/" + sourceFpsDen + " fps  |  " + Math.round(timelineDurationFrames) + "f"

@@ -3,6 +3,8 @@ qt_add_executable(mvm
     mvm_controller.cpp
     timeline_clip_model.cpp
     track_model.cpp
+    waveform_cache.cpp
+    waveform_view.cpp
 )
 
 qt_add_qml_module(mvm
@@ -24,6 +26,7 @@ target_link_libraries(mvm PRIVATE
     mvm::timeline_playback
     mvm::timeline_preview_mapping
     mvm::timeline_export
+    mvm::audio_waveform
     mvm::mlt
     mvm::preview_engine
     mvm::preview_qt

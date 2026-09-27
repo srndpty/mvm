@@ -2342,6 +2342,18 @@ message(STATUS "[mvm] P5-D1 testを${_mvm_p5d1_registered}件登録しました"
 add_executable(mvm_p3_audio_smoke audio_preview/mvm_p3_audio_smoke.cpp)
 target_link_libraries(mvm_p3_audio_smoke PRIVATE mvm::audio_preview mvm::warnings)
 
+# --- timeline 波形 -----------------------------------------------------------
+add_executable(mvm_test_waveform_peaks core/test_waveform_peaks.cpp)
+target_link_libraries(mvm_test_waveform_peaks PRIVATE mvm::core mvm::warnings)
+mvm_add_test(timeline_waveform_peaks_unit COMMAND mvm_test_waveform_peaks
+    PROPERTIES TIMEOUT 60)
+
+add_executable(mvm_test_audio_waveform_decoder audio_preview/test_audio_waveform_decoder.cpp)
+target_link_libraries(mvm_test_audio_waveform_decoder PRIVATE
+    mvm::audio_waveform mvm::warnings)
+mvm_add_test(timeline_audio_waveform_decoder COMMAND mvm_test_audio_waveform_decoder
+    PROPERTIES TIMEOUT 60)
+
 add_executable(mvm_test_audio_worker_wake audio_preview/test_audio_worker_wake.cpp)
 target_link_libraries(mvm_test_audio_worker_wake PRIVATE mvm::audio_preview mvm::warnings)
 
