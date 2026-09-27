@@ -50,8 +50,10 @@ TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& proj
 }
 
 PreviewVideoMapping previewVideoMappingOf(const project::TimelineClip& clip) {
-    return {clip.mediaPath, clip.sourceInFrame, clip.timelineStartFrame, clip.sourceFpsNum,
-            clip.sourceFpsDen};
+    // 検証済みの clip では timebase は必ずある。無ければ 0 のまま使い回し判定に失敗させる。
+    const auto timebase = project::clipTimebase(clip).value_or(core::FrameRate{0, 1});
+    return {clip.mediaPath, clip.sourceInFrame, clip.timelineStartFrame, timebase.num,
+            timebase.den};
 }
 
 bool previewVideoMappingCovers(const project::Project& project,
@@ -60,8 +62,8 @@ bool previewVideoMappingCovers(const project::Project& project,
     const PreviewVideoMapping wanted = previewVideoMappingOf(clip);
     if (installed == wanted)
         return true;
-    if (installed.mediaPath != wanted.mediaPath || installed.sourceFpsNum != wanted.sourceFpsNum ||
-        installed.sourceFpsDen != wanted.sourceFpsDen)
+    if (installed.mediaPath != wanted.mediaPath || installed.timebaseNum != wanted.timebaseNum ||
+        installed.timebaseDen != wanted.timebaseDen || wanted.timebaseNum <= 0)
         return false;
     // source は素材 frame s を、素材の 0 frame から数えた output 位置の区間
     // [ceil((s - 1/2) R), ceil((s + 1/2) R)) に写し、timeline 上では
@@ -75,8 +77,8 @@ bool previewVideoMappingCovers(const project::Project& project,
         return false;
     const auto origin = [&](const PreviewVideoMapping& mapping) {
         return project::sourceBoundaryToTimelineBoundary(
-            mapping.sourceInFrame, mapping.sourceFpsNum, mapping.sourceFpsDen,
-            project.timelineFpsNum, project.timelineFpsDen);
+            mapping.sourceInFrame, mapping.timebaseNum, mapping.timebaseDen, project.timelineFpsNum,
+            project.timelineFpsDen);
     };
     const auto installedOrigin = origin(installed);
     const auto wantedOrigin = origin(wanted);
@@ -121,8 +123,16 @@ TimelinePreviewAudioMapping mapTimelinePreviewAudio(const project::Project& proj
 AudioPreviewOffset audioPreviewSampleOffset(const project::Project& project,
                                             const project::TimelineClip& clip) {
     AudioPreviewOffset result;
+    // 素材側は速度で伸縮した時間軸の sample で数える。decoder は速度 s の clip を
+    // 48 kHz x 1/s の密度で出すので、この時間軸では素材 in の位置が in / (f s) 秒になり、
+    // 「media sample = timeline sample + offset」の定数のずらしのまま保てる。
+    const auto clipRate = project::clipTimebase(clip);
+    if (!clipRate) {
+        result.error = "audio clipの速度とfpsの積を表せません";
+        return result;
+    }
     const auto sourceTimebase = core::CheckedOutputTimebase::create(
-        clip.sourceFpsNum, clip.sourceFpsDen, core::kQualifiedAudioSampleRate);
+        clipRate->num, clipRate->den, core::kQualifiedAudioSampleRate);
     const auto timelineTimebase = core::CheckedOutputTimebase::create(
         project.timelineFpsNum, project.timelineFpsDen, core::kQualifiedAudioSampleRate);
     if (!sourceTimebase || !timelineTimebase) {

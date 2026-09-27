@@ -8,6 +8,8 @@
 namespace mvm::project {
 namespace {
 
+__extension__ using WideInteger = __int128;
+
 bool inRange(double value, double minimum, double maximum) {
     return std::isfinite(value) && value >= minimum && value <= maximum;
 }
@@ -112,6 +114,25 @@ double evaluateClipVolume(const ClipEffects& effects, std::int64_t timelineLocal
     return evaluateClipKeys(effects.volumeKeys, effects.volumePercent, timelineLocalFrame) / 100.0 *
            core::clipFadeFactor(sourceLocalFrame, sourceDuration, effects.fadeInFrames,
                                 effects.fadeOutFrames);
+}
+
+void rescaleClipKeys(std::vector<ClipKeyframe>& keys, std::int64_t oldDuration,
+                     std::int64_t newDuration) {
+    if (keys.empty() || oldDuration <= 0 || newDuration <= 0 || oldDuration == newDuration)
+        return;
+    const auto old = keys;
+    keys.clear();
+    for (const auto& key : old) {
+        // 端から端へ: frame k -> round(k (new - 1) / (old - 1))。
+        const std::int64_t frame =
+            oldDuration == 1 ? 0
+                             : static_cast<std::int64_t>(
+                                   (static_cast<WideInteger>(key.frame) * (newDuration - 1) * 2 +
+                                    (oldDuration - 1)) /
+                                   (static_cast<WideInteger>(oldDuration - 1) * 2));
+        if (keys.empty() || keys.back().frame != frame)
+            keys.push_back({frame, key.valuePercent});
+    }
 }
 
 void reframeClipKeys(std::vector<ClipKeyframe>& keys, std::int64_t oldDuration,

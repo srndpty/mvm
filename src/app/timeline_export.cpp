@@ -216,6 +216,8 @@ TimelineExportResult exportTimeline(const project::Project& project,
         mapped.producer_in_frame = planned.producerInFrame;
         mapped.producer_out_frame = planned.producerOutFrame;
         mapped.tail_padding_frames = planned.tailPaddingFrames;
+        mapped.speed_num = clip.speedNum;
+        mapped.speed_den = clip.speedDen;
         mapped.is_audio = planned.audio ? 1 : 0;
         mapped.video_track = planned.videoTrackIndex;
         mapped.timeline_start_frame = planned.timelineStartFrame;

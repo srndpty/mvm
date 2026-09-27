@@ -227,9 +227,9 @@ SourceDecodeWorker::~SourceDecodeWorker() {
 }
 
 bool SourceDecodeWorker::configureOutputMapping(long long sourceInFrame, long long sourceFrameCount,
-                                                long long timelineStartFrame,
+                                                Rational speed, long long timelineStartFrame,
                                                 Rational outputFrameRate, std::string& err) {
-    if (startedOnce_ || sourceInFrame < 0 || sourceInFrame >= sourceFrameCount ||
+    if (startedOnce_ || sourceInFrame < 0 || sourceInFrame >= sourceFrameCount || !speed.valid() ||
         timelineStartFrame < 0 || !outputFrameRate.valid()) {
         err = "video output mappingの設定が不正または開始後です";
         return false;
@@ -237,6 +237,7 @@ bool SourceDecodeWorker::configureOutputMapping(long long sourceInFrame, long lo
     outputMappingEnabled_ = true;
     mappingSourceInFrame_ = sourceInFrame;
     mappingSourceFrameCount_ = sourceFrameCount;
+    mappingSpeed_ = speed;
     mappingTimelineStartFrame_ = timelineStartFrame;
     mappingOutputFrameRate_ = outputFrameRate;
     err.clear();
@@ -485,9 +486,15 @@ bool SourceDecodeWorker::submitWithBackpressure(const DecodedGpuFrame& frame, st
     long long outputBegin = 0;
     long long outputEnd = 0;
     if (outputMappingEnabled_) {
-        const auto interval = sourceFrameOutputInterval(
-            frame.frameNumber, mappingSourceInFrame_, mappingSourceFrameCount_,
-            mappingTimelineStartFrame_, sourceFrameRate_, mappingOutputFrameRate_);
+        const auto effectiveRate =
+            core::multiplyFrameRate(coreRate(sourceFrameRate_), coreRate(mappingSpeed_));
+        const auto interval =
+            effectiveRate
+                ? sourceFrameOutputInterval(frame.frameNumber, mappingSourceInFrame_,
+                                            mappingSourceFrameCount_, mappingTimelineStartFrame_,
+                                            {effectiveRate->num, effectiveRate->den},
+                                            mappingOutputFrameRate_)
+                : OutputFrameInterval{};
         if (!interval.valid) {
             err = "source frameからtimeline output区間へ換算できません";
             noteFatal(err);

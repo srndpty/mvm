@@ -170,7 +170,8 @@ public:
     SourceDecodeWorker& operator=(const SourceDecodeWorker&) = delete;
 
     bool start(const std::string& utf8Path, std::string& err);
-    bool configureOutputMapping(long long sourceInFrame, long long sourceFrameCount,
+    // speed は clip の再生速度。区間は decoder の実 fps x speed (実効 fps) で計算する。
+    bool configureOutputMapping(long long sourceInFrame, long long sourceFrameCount, Rational speed,
                                 long long timelineStartFrame, Rational outputFrameRate,
                                 std::string& err);
     void stop();
@@ -249,6 +250,7 @@ private:
     bool outputMappingEnabled_ = false;
     long long mappingSourceInFrame_ = 0;
     long long mappingSourceFrameCount_ = 0;
+    Rational mappingSpeed_{1, 1};
     long long mappingTimelineStartFrame_ = 0;
     Rational mappingOutputFrameRate_{0, 1};
     Rational sourceFrameRate_{0, 1};

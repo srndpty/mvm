@@ -59,6 +59,11 @@ double evaluateClipOpacity(const ClipEffects& effects, std::int64_t timelineLoca
                            std::int64_t sourceLocalFrame, std::int64_t sourceDuration);
 double evaluateClipVolume(const ClipEffects& effects, std::int64_t timelineLocalFrame,
                           std::int64_t sourceLocalFrame, std::int64_t sourceDuration);
+// 尺 oldDuration の key を尺 newDuration へ伸縮する (レート調整)。key は素材の内容に付いて動き、
+// 先頭と末尾の frame はそれぞれ先頭と末尾へ写る。丸めで同じ frame に重なった key は先の 1
+// つを残す。
+void rescaleClipKeys(std::vector<ClipKeyframe>& keys, std::int64_t oldDuration,
+                     std::int64_t newDuration);
 void reframeClipKeys(std::vector<ClipKeyframe>& keys, std::int64_t oldDuration,
                      std::int64_t newDuration, std::int64_t newStartInOldFrames);
 ClipEffectMapping mapClipEffects(const ClipEffects& effects);

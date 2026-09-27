@@ -69,6 +69,10 @@ public:
     AudioDecodeWorker(const AudioDecodeWorker&) = delete;
     AudioDecodeWorker& operator=(const AudioDecodeWorker&) = delete;
 
+    // clip の再生速度 (start より前に呼ぶ)。速度 s の素材を 48 kHz x 1/s の密度で出す。
+    // 出力 sample は「速度で伸縮した時間軸」の位置になり、seek もこの位置で指定する。
+    // 音程は速度に連動する (テープ方式)。
+    bool setPlaybackSpeed(std::int64_t speedNum, std::int64_t speedDen, std::string& error);
     bool start(const std::string& utf8Path, std::string& error);
     // stopped worker を playing へ戻さない。shutdown と競合しても
     // 再生状態が復活しないようにする。
@@ -102,6 +106,11 @@ private:
     AVFormatContext* format_ = nullptr;
     AVCodecContext* codec_ = nullptr;
     SwrContext* resampler_ = nullptr;
+    std::int64_t speedNum_ = 1;
+    std::int64_t speedDen_ = 1;
+    // resampler に渡す入力 / 出力 rate。等速なら素材 rate / 48000。
+    int resamplerInputRate_ = 0;
+    int resamplerOutputRate_ = kInternalSampleRate;
     AVFrame* frame_ = nullptr;
     AVPacket* packet_ = nullptr;
     int streamIndex_ = -1;

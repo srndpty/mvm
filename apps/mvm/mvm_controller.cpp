@@ -1298,6 +1298,8 @@ bool MvmController::audioDescriptorFor(int clipIndex, preview::PreviewSourceDesc
     descriptor.mediaPath = clip.mediaPath;
     descriptor.audioEnabled = true;
     descriptor.audioSampleOffset = offset.sampleOffset;
+    descriptor.speedNum = clip.speedNum;
+    descriptor.speedDen = clip.speedDen;
     const auto timebase = core::CheckedOutputTimebase::create(
         project_.timelineFpsNum, project_.timelineFpsDen, audio::kInternalSampleRate);
     if (!timebase) {
@@ -1338,7 +1340,8 @@ bool MvmController::audioIdentitiesFor(const TimelinePreviewAudioMapping& mapped
             error = QString::fromStdString(offset.error);
             return false;
         }
-        identities.push_back({clip.mediaPath, offset.sampleOffset, clip.effects});
+        identities.push_back(
+            {clip.mediaPath, offset.sampleOffset, clip.effects, clip.speedNum, clip.speedDen});
     }
     return true;
 }
@@ -1543,6 +1546,8 @@ bool MvmController::syncPreviewSourcesAt(std::int64_t timelineFrame, QString& er
         descriptor.videoSourceInFrame = clip.sourceInFrame;
         descriptor.videoSourceFrameCount = clip.sourceFrameCount;
         descriptor.videoTimelineStartFrame = clip.timelineStartFrame;
+        descriptor.speedNum = clip.speedNum;
+        descriptor.speedDen = clip.speedDen;
         if (clip.sourceFpsNum > std::numeric_limits<std::uint32_t>::max() ||
             clip.sourceFpsDen > std::numeric_limits<std::uint32_t>::max()) {
             error = QStringLiteral("source FPSをpreview descriptorへ格納できません");
@@ -2854,6 +2859,20 @@ bool MvmController::trimClip(const QString& clipId, const QString& edge, qint64 
         id, QStringLiteral("clipをtrimしました"));
 }
 
+bool MvmController::rateStretchClip(const QString& clipId, const QString& edge,
+                                    qint64 projectFrameDelta, bool linked) {
+    project::TrimEdge trimEdge;
+    if (!resolveTrimEdge(edge, trimEdge))
+        return false;
+    const std::string id = clipId.toStdString();
+    return applyTimelineEdit(
+        [&](project::Project& candidate) {
+            return project::rateStretchTimelineClip(candidate, id, trimEdge, projectFrameDelta,
+                                                    linkModeFor(linked));
+        },
+        id, QStringLiteral("clipの速度を変えました"));
+}
+
 qint64 MvmController::clampEdgeDrag(const QString& clipId, const QString& edge, const QString& tool,
                                     qint64 projectFrameDelta, bool linked) const {
     project::TrimEdge trimEdge;
@@ -2863,6 +2882,11 @@ qint64 MvmController::clampEdgeDrag(const QString& clipId, const QString& edge, 
         trimEdge = project::TrimEdge::Right;
     else
         return 0;
+    if (tool == QStringLiteral("rate")) {
+        const auto clamped = project::clampRateEdit(project_, clipId.toStdString(), trimEdge,
+                                                    projectFrameDelta, linkModeFor(linked));
+        return clamped.success ? clamped.frame : 0;
+    }
     const project::EdgeEditKind kind =
         tool == QStringLiteral("ripple")    ? project::EdgeEditKind::Ripple
         : tool == QStringLiteral("rolling") ? project::EdgeEditKind::Roll

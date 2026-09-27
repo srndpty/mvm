@@ -260,11 +260,15 @@ public:
                                       int trackIndex, qint64 timelineStartFrame, bool linked);
     Q_INVOKABLE bool trimClip(const QString& clipId, const QString& edge, qint64 projectFrameDelta,
                               bool linked);
+    // レート調整ツール。素材範囲を変えずに速度を変えて、edge 側の端を動かす。
+    Q_INVOKABLE bool rateStretchClip(const QString& clipId, const QString& edge,
+                                     qint64 projectFrameDelta, bool linked);
     // タイムラインツール。edge は "left" / "right"。
     Q_INVOKABLE bool rippleTrimClip(const QString& clipId, const QString& edge,
                                     qint64 projectFrameDelta, bool linked);
     // 端のドラッグ量を、確定時と同じ規則 (素材の端・1 frame 以上の尺) で止めた値。
-    // drag 中の表示に使う。tool は "select" / "ripple" / "rolling"。
+    // drag 中の表示に使う。tool は "select" / "ripple" / "rolling" / "rate"。
+    // "rate" は速度の範囲・隣の clip・timeline 先頭で止める (clampRateEdit)。
     Q_INVOKABLE qint64 clampEdgeDrag(const QString& clipId, const QString& edge,
                                      const QString& tool, qint64 projectFrameDelta,
                                      bool linked) const;
@@ -377,6 +381,9 @@ private:
         std::filesystem::path mediaPath;
         std::int64_t sampleOffset = 0;
         project::ClipEffects effects;
+        // 速度が違えば decoder の伸縮が違うので別の source になる。
+        std::int64_t speedNum = 1;
+        std::int64_t speedDen = 1;
         bool operator==(const AudioSourceIdentity&) const = default;
     };
 

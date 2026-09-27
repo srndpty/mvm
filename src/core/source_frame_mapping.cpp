@@ -59,6 +59,22 @@ std::optional<Ratio> outputPerSource(FrameRate source, FrameRate output) {
 
 } // namespace
 
+std::optional<FrameRate> multiplyFrameRate(FrameRate rate, FrameRate factor) {
+    if (!validRate(rate) || !validRate(factor))
+        return std::nullopt;
+    // 掛ける前に交差約分して、表せる範囲を広げる。
+    const auto a = std::gcd(rate.num, factor.den);
+    const auto b = std::gcd(factor.num, rate.den);
+    FrameRate product;
+    if (__builtin_mul_overflow(rate.num / a, factor.num / b, &product.num) ||
+        __builtin_mul_overflow(rate.den / b, factor.den / a, &product.den))
+        return std::nullopt;
+    const auto common = std::gcd(product.num, product.den);
+    product.num /= common;
+    product.den /= common;
+    return product;
+}
+
 std::optional<std::int64_t> convertFrameBoundary(std::int64_t frame, FrameRate from, FrameRate to,
                                                  bool roundUp) {
     if (frame < 0)

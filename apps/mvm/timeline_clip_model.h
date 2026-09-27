@@ -36,6 +36,9 @@ public:
         MediaPathRole,
         AutomationKeysRole,
         AutomationBaseRole,
+        // 再生速度の倍率 (1.0 が等速)。表示と波形の素材秒の換算だけに使う。
+        // frame の換算は C++ 側 (project::clipTimebase) で行い、QML で有理数を再現しない。
+        SpeedRole,
     };
 
     explicit TimelineClipModel(QObject* parent = nullptr);
@@ -75,6 +78,7 @@ private:
         QString mediaPath;
         QVariantList automationKeys;
         double automationBase = 100.0;
+        double speed = 1.0;
     };
 
     QList<Item> items_;

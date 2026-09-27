@@ -32,6 +32,55 @@ std::int64_t qpcNow() {
     return value.QuadPart;
 }
 
+__extension__ using WideInteger = __int128;
+
+WideInteger gcdWide(WideInteger a, WideInteger b) {
+    while (b != 0) {
+        const WideInteger r = a % b;
+        a = b;
+        b = r;
+    }
+    return a;
+}
+
+// numerator / denominator を int で表せる有理数にする。約分して収まればそのまま、
+// 収まらなければ連分数で分母・分子とも INT_MAX 以下の最良近似にする
+// (相対誤差は 1e-18 程度で、1 時間の再生でも 1 sample に満たない)。
+bool resamplerRates(WideInteger numerator, WideInteger denominator, int& input, int& output) {
+    if (numerator <= 0 || denominator <= 0)
+        return false;
+    const WideInteger common = gcdWide(numerator, denominator);
+    numerator /= common;
+    denominator /= common;
+    const WideInteger limit = std::numeric_limits<int>::max();
+    if (numerator <= limit && denominator <= limit) {
+        input = static_cast<int>(numerator);
+        output = static_cast<int>(denominator);
+        return true;
+    }
+    WideInteger h0 = 0, h1 = 1, k0 = 1, k1 = 0;
+    WideInteger a = numerator, b = denominator;
+    while (b != 0) {
+        const WideInteger q = a / b;
+        const WideInteger h2 = q * h1 + h0;
+        const WideInteger k2 = q * k1 + k0;
+        if (h2 > limit || k2 > limit)
+            break;
+        h0 = h1;
+        h1 = h2;
+        k0 = k1;
+        k1 = k2;
+        const WideInteger r = a % b;
+        a = b;
+        b = r;
+    }
+    if (h1 <= 0 || k1 <= 0)
+        return false;
+    input = static_cast<int>(h1);
+    output = static_cast<int>(k1);
+    return true;
+}
+
 double qpcMilliseconds(std::int64_t begin, std::int64_t end) {
     LARGE_INTEGER frequency{};
     QueryPerformanceFrequency(&frequency);
@@ -82,10 +131,19 @@ bool AudioDecodeWorker::openInput(const std::string& path, std::string& error) {
         error = "音声 decoder を初期化できません: " + ffError(result);
         return false;
     }
+    // 速度 s = p / q の素材を「rate が素材 rate x s の入力」として 48 kHz へ変換すると、
+    // 出力は伸縮した時間軸の sample になる。rate は整数比 (素材 rate x p) : (48000 x q)。
+    if (codec_->sample_rate <= 0 ||
+        !resamplerRates(static_cast<WideInteger>(codec_->sample_rate) * speedNum_,
+                        static_cast<WideInteger>(kInternalSampleRate) * speedDen_,
+                        resamplerInputRate_, resamplerOutputRate_)) {
+        error = "音声の再生速度をresamplerのrateへ換算できません";
+        return false;
+    }
     AVChannelLayout outputLayout = AV_CHANNEL_LAYOUT_STEREO;
-    result = swr_alloc_set_opts2(&resampler_, &outputLayout, AV_SAMPLE_FMT_FLT, kInternalSampleRate,
-                                 &codec_->ch_layout, codec_->sample_fmt, codec_->sample_rate, 0,
-                                 nullptr);
+    result = swr_alloc_set_opts2(&resampler_, &outputLayout, AV_SAMPLE_FMT_FLT,
+                                 resamplerOutputRate_, &codec_->ch_layout, codec_->sample_fmt,
+                                 resamplerInputRate_, 0, nullptr);
     if (result < 0 || !resampler_ || (result = swr_init(resampler_)) < 0) {
         error = "音声 format converter を初期化できません: " + ffError(result);
         return false;
@@ -99,6 +157,18 @@ bool AudioDecodeWorker::openInput(const std::string& path, std::string& error) {
     metrics_.sourceFormat = {codec_->sample_rate, codec_->ch_layout.nb_channels,
                              av_get_sample_fmt_name(codec_->sample_fmt)};
     metrics_.open = true;
+    return true;
+}
+
+bool AudioDecodeWorker::setPlaybackSpeed(std::int64_t speedNum, std::int64_t speedDen,
+                                         std::string& error) {
+    std::lock_guard lock(mutex_);
+    if (running_ || speedNum <= 0 || speedDen <= 0) {
+        error = "音声の再生速度が不正、または開始後です";
+        return false;
+    }
+    speedNum_ = speedNum;
+    speedDen_ = speedDen;
     return true;
 }
 
@@ -233,8 +303,8 @@ bool AudioDecodeWorker::decodeOne(AudioChunk& chunk, std::string& error) {
             }
             const std::int64_t inputSample =
                 av_rescale_q(relativePts, stream->time_base, AVRational{1, codec_->sample_rate});
-            if (inputSample > std::numeric_limits<std::int64_t>::max() / kInternalSampleRate ||
-                inputSample < std::numeric_limits<std::int64_t>::min() / kInternalSampleRate) {
+            if (inputSample > std::numeric_limits<std::int64_t>::max() / resamplerOutputRate_ ||
+                inputSample < std::numeric_limits<std::int64_t>::min() / resamplerOutputRate_) {
                 error = "音声 PTS をresampler timestampへ換算できません";
                 av_frame_unref(frame_);
                 return false;
@@ -242,17 +312,19 @@ bool AudioDecodeWorker::decodeOne(AudioChunk& chunk, std::string& error) {
             // swr_next_pts は内部delayを含む「次に出るsample」の時刻を返す。
             // 入力PTSを直接48kHzへ丸めると、44.1kHz等の変換で先頭chunkだけが
             // delay分短くなり、次chunkとの間に偽の隙間ができる。
+            // resampler から見た入力 rate は素材 rate x 速度なので、sample 数はそのまま渡す。
             const std::int64_t nextOutputTimestamp =
-                swr_next_pts(resampler_, inputSample * kInternalSampleRate);
+                swr_next_pts(resampler_, inputSample * resamplerOutputRate_);
             if (nextOutputTimestamp == std::numeric_limits<std::int64_t>::min()) {
                 error = "resamplerの出力timestampを取得できません";
                 av_frame_unref(frame_);
                 return false;
             }
-            const std::int64_t start = av_rescale(nextOutputTimestamp, 1, codec_->sample_rate);
-            const std::int64_t delay = swr_get_delay(resampler_, codec_->sample_rate);
-            const int capacity = static_cast<int>(av_rescale_rnd(
-                delay + frame_->nb_samples, kInternalSampleRate, codec_->sample_rate, AV_ROUND_UP));
+            const std::int64_t start = av_rescale(nextOutputTimestamp, 1, resamplerInputRate_);
+            const std::int64_t delay = swr_get_delay(resampler_, resamplerInputRate_);
+            const int capacity =
+                static_cast<int>(av_rescale_rnd(delay + frame_->nb_samples, resamplerOutputRate_,
+                                                resamplerInputRate_, AV_ROUND_UP));
             auto pcm = std::make_shared<std::vector<float>>(static_cast<std::size_t>(capacity) *
                                                             kInternalChannels);
             std::uint8_t* output[] = {reinterpret_cast<std::uint8_t*>(pcm->data())};
@@ -348,8 +420,11 @@ AudioSeekCompletion AudioDecodeWorker::executeSeek(const AudioSeekTicket& ticket
     completion.requestedSample = ticket.targetSample;
     const std::int64_t begin = qpcNow();
     AVStream* stream = format_->streams[streamIndex_];
+    // 伸縮した時間軸の出力 sample を素材の入力 sample へ戻してから時刻にする。
+    const std::int64_t inputSample =
+        av_rescale(ticket.targetSample, resamplerInputRate_, resamplerOutputRate_);
     const std::int64_t relativeTimestamp =
-        av_rescale_q(ticket.targetSample, AVRational{1, kInternalSampleRate}, stream->time_base);
+        av_rescale_q(inputSample, AVRational{1, codec_->sample_rate}, stream->time_base);
     const std::int64_t streamStart = stream->start_time == AV_NOPTS_VALUE ? 0 : stream->start_time;
     std::int64_t timestamp = 0;
     if (!core::checkedAdd(relativeTimestamp, streamStart, timestamp)) {

@@ -24,6 +24,10 @@ struct FrameRate {
     std::int64_t den = 1;
 };
 
+// rate x factor を約分して返す。速度 s の clip の実効 fps (素材 fps x s) に使う。
+// どちらかが正でない、または積を int64 で表せなければ nullopt。
+std::optional<FrameRate> multiplyFrameRate(FrameRate rate, FrameRate factor);
+
 // 素材境界 s の output 位置。roundUp なら ceil(s R)、そうでなければ floor(s R)。
 // from / to を入れ替えれば output 境界 -> 素材境界にも使える。
 std::optional<std::int64_t> convertFrameBoundary(std::int64_t frame, FrameRate from, FrameRate to,

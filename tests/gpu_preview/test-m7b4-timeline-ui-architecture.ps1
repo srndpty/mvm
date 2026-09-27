@@ -126,7 +126,7 @@ function Test-TimelineToolContract([string]$panelSource, [string]$mainSource) {
         @{ Tool = 'razor'; Key = 'C'; Available = 'true' },
         @{ Tool = 'ripple'; Key = 'B'; Available = 'true' },
         @{ Tool = 'rolling'; Key = 'N'; Available = 'true' },
-        @{ Tool = 'rate'; Key = 'R'; Available = 'false' },
+        @{ Tool = 'rate'; Key = 'R'; Available = 'true' },
         @{ Tool = 'slip'; Key = 'Y'; Available = 'true' },
         @{ Tool = 'slide'; Key = 'U'; Available = 'true' },
         @{ Tool = 'pen'; Key = 'P'; Available = 'true' },
@@ -147,6 +147,7 @@ function Test-TimelineToolContract([string]$panelSource, [string]$mainSource) {
                           'root.mvmController.splitClipAt(',
                           'root.mvmController.rippleTrimClip(',
                           'root.mvmController.rollClipEdge(',
+                          'root.mvmController.rateStretchClip(',
                           'root.mvmController.slipClip(',
                           'root.mvmController.slideClip(',
                           'root.mvmController.selectClipsFromFrame(',
@@ -161,7 +162,8 @@ if (-not (Test-TimelineToolContract $toolPanel $qml)) {
 # どれか 1 つを壊すと上の検査が落ちることを確かめる。
 foreach ($broken in @(
     @{ Panel = $toolPanel.Replace('key: "C"', 'key: "X"'); Main = $qml },
-    @{ Panel = $toolPanel -replace '(tool:\s*"rate"[^{}]*available:\s*)false', '${1}true'; Main = $qml },
+    @{ Panel = $toolPanel -replace '(tool:\s*"rate"[^{}]*available:\s*)true', '${1}false'; Main = $qml },
+    @{ Panel = $toolPanel; Main = $qml.Replace('root.mvmController.rateStretchClip(', 'root.mvmController.trimClip(') },
     @{ Panel = $toolPanel; Main = $qml.Replace('enabled: modelData.available && !root.keyboardFocusTakesKeys',
                                                 'enabled: modelData.available') }
 )) {

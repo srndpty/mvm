@@ -2414,6 +2414,17 @@ if(TARGET mvm_p4_composition_spike)
 endif()
 
 # --- Phase 3 / A: audio pipeline --------------------------------------------
+# レート調整の音声。速度 s の素材を伸縮した時間軸の 48 kHz sample で出すことを実 PCM で測る。
+add_executable(mvm_test_audio_playback_speed audio_preview/test_audio_playback_speed.cpp)
+target_link_libraries(mvm_test_audio_playback_speed PRIVATE mvm::audio_preview mvm::warnings)
+add_test(NAME audio_playback_speed
+    COMMAND mvm_test_audio_playback_speed
+        "${CMAKE_CURRENT_BINARY_DIR}/audio-playback-speed"
+        "${MVM_UCRT64_ROOT}/bin/ffmpeg.exe")
+set_tests_properties(audio_playback_speed PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+
 add_executable(mvm_test_audio_pure audio_preview/test_audio_pure.cpp)
 target_link_libraries(mvm_test_audio_pure PRIVATE mvm::audio_preview mvm::warnings)
 mvm_add_test(p3_audio_pure_unit COMMAND mvm_test_audio_pure)

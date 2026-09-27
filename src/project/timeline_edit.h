@@ -1,6 +1,7 @@
 #ifndef MVM_PROJECT_TIMELINE_EDIT_H
 #define MVM_PROJECT_TIMELINE_EDIT_H
 
+#include "core/source_frame_mapping.h"
 #include "project/project.h"
 
 #include <cstdint>
@@ -66,6 +67,18 @@ TimelineFrameResult timelineBoundaryToSourceBoundary(std::int64_t timelineFrame,
                                                      std::int64_t sourceFpsDen,
                                                      std::int64_t timelineFpsNum,
                                                      std::int64_t timelineFpsDen);
+// clip の実効 fps (素材 fps × 速度、約分済み)。速度 s の clip は素材 fps が f s の clip と
+// 同じに扱えるので、timeline との換算はすべてこれを使う。実際の素材 fps を使ってよいのは
+// decode の検証と素材 frame の秒換算だけである。積を int64 で表せなければ nullopt。
+std::optional<core::FrameRate> clipTimebase(const TimelineClip& clip);
+// clipTimebase を使う境界換算。素材境界 -> timeline は ceil、逆は floor。
+TimelineFrameResult clipSourceBoundaryToTimeline(const TimelineClip& clip, std::int64_t sourceFrame,
+                                                 std::int64_t timelineFpsNum,
+                                                 std::int64_t timelineFpsDen);
+TimelineFrameResult clipTimelineBoundaryToSource(const TimelineClip& clip,
+                                                 std::int64_t timelineFrame,
+                                                 std::int64_t timelineFpsNum,
+                                                 std::int64_t timelineFpsDen);
 TimelineFrameResult timelineClipDuration(const Project& project, const TimelineClip& clip);
 // clip 先頭から clipLocalFrame 番目の timeline frame が表示する素材 frame (素材の絶対 frame)。
 // core::sourceFrameAtOutputPosition の四捨五入で、書き出し (MLT) と同じ frame を返す。
@@ -140,6 +153,24 @@ TimelineFrameResult clampEdgeEdit(const Project& project, const std::string& cli
 // clampEdgeEdit で止め、1 frame も動かせなければ失敗する。
 TimelineEditResult trimTimelineClip(Project& project, const std::string& clipId, TrimEdge edge,
                                     std::int64_t projectFrameDelta, LinkMode linkMode);
+
+// --- レート調整 (Premiere の Rate Stretch) --------------------------------
+// 端をドラッグして、素材範囲 (in/out) を変えずに速度を変えて尺を伸縮する。反対側の端は動かさず、
+// リップルも上書きもしない。Linked ならリンク相手にも同じ速度を適用し、同じ側の端を動かす
+// (相手の速度がもともと違えば失敗する)。
+//
+// 尺 D にしたい clip の速度は s = (out - in) R / D (R = timeline fps / 素材 fps) とする。
+// このとき実効 fps は (out - in) timeline fps / D で、尺はちょうど D になる。
+
+// 端のドラッグ量 (project frame) を、伸縮できる範囲で止めた値にする。止める条件は
+// 速度の範囲 (kMin/kMaxClipSpeedPercent)、1 frame 以上の尺、同じ track の隣の clip、
+// timeline 先頭で、Linked ならリンク相手の条件も含める。確定と drag 中の表示の両方が使う。
+TimelineFrameResult clampRateEdit(const Project& project, const std::string& clipId, TrimEdge edge,
+                                  std::int64_t projectFrameDelta, LinkMode linkMode);
+// clampRateEdit で止めた量で伸縮する。1 frame も伸縮できなければ失敗する。
+TimelineEditResult rateStretchTimelineClip(Project& project, const std::string& clipId,
+                                           TrimEdge edge, std::int64_t projectFrameDelta,
+                                           LinkMode linkMode);
 
 // --- Premiere 風の編集ツール ---------------------------------------------
 // いずれも candidate 全体を validateTimeline で検証し、失敗時は Project を変更しない。

@@ -75,6 +75,11 @@ TestCase {
         compare(roll.delta, 2);
         compare(roll.linked, false);
         compare(Gestures.edgeRelease("ripple", "left", 0, true).action, "none");
+        const rate = Gestures.edgeRelease("rate", "left", -5, true);
+        compare(rate.action, "rateStretch");
+        compare(rate.edge, "left");
+        compare(rate.delta, -5);
+        compare(rate.linked, true);
     }
 
     // Main.qml の clip と同じ座標系。video は最大 100%、audio は最大 200%。

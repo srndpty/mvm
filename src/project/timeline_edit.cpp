@@ -13,6 +13,8 @@
 namespace mvm::project {
 namespace {
 
+__extension__ using WideInteger = __int128;
+
 bool validIndex(const Project& project, int index) {
     return index >= 0 && index < static_cast<int>(project.timelineClips.size());
 }
@@ -79,9 +81,8 @@ bool trimClipBoundary(const Project& project, TimelineClip& clip, TrimEdge edge,
     }
     const std::int64_t originalStart = clip.timelineStartFrame;
     const std::int64_t original = edge == TrimEdge::Left ? clip.sourceInFrame : clip.sourceOutFrame;
-    const auto timelineBoundary =
-        sourceBoundaryToTimelineBoundary(original, clip.sourceFpsNum, clip.sourceFpsDen,
-                                         project.timelineFpsNum, project.timelineFpsDen);
+    const auto timelineBoundary = clipSourceBoundaryToTimeline(
+        clip, original, project.timelineFpsNum, project.timelineFpsDen);
     if (!timelineBoundary.success ||
         (projectFrameDelta < 0 && timelineBoundary.frame < -projectFrameDelta) ||
         (projectFrameDelta > 0 &&
@@ -89,9 +90,9 @@ bool trimClipBoundary(const Project& project, TimelineClip& clip, TrimEdge edge,
         error = timelineBoundary.success ? "trim delta が範囲外です" : timelineBoundary.error;
         return false;
     }
-    const auto sourceBoundary = timelineBoundaryToSourceBoundary(
-        timelineBoundary.frame + projectFrameDelta, clip.sourceFpsNum, clip.sourceFpsDen,
-        project.timelineFpsNum, project.timelineFpsDen);
+    const auto sourceBoundary =
+        clipTimelineBoundaryToSource(clip, timelineBoundary.frame + projectFrameDelta,
+                                     project.timelineFpsNum, project.timelineFpsDen);
     if (!sourceBoundary.success) {
         error = sourceBoundary.error;
         return false;
@@ -147,15 +148,45 @@ TimelineFrameResult timelineBoundaryToSourceBoundary(std::int64_t timelineFrame,
                            sourceFpsDen, false);
 }
 
+std::optional<core::FrameRate> clipTimebase(const TimelineClip& clip) {
+    return core::multiplyFrameRate({clip.sourceFpsNum, clip.sourceFpsDen},
+                                   {clip.speedNum, clip.speedDen});
+}
+
+TimelineFrameResult clipSourceBoundaryToTimeline(const TimelineClip& clip, std::int64_t sourceFrame,
+                                                 std::int64_t timelineFpsNum,
+                                                 std::int64_t timelineFpsDen) {
+    const auto timebase = clipTimebase(clip);
+    if (!timebase) {
+        TimelineFrameResult result;
+        result.error = "clip の速度と素材 fps の積を表せません";
+        return result;
+    }
+    return sourceBoundaryToTimelineBoundary(sourceFrame, timebase->num, timebase->den,
+                                            timelineFpsNum, timelineFpsDen);
+}
+
+TimelineFrameResult clipTimelineBoundaryToSource(const TimelineClip& clip,
+                                                 std::int64_t timelineFrame,
+                                                 std::int64_t timelineFpsNum,
+                                                 std::int64_t timelineFpsDen) {
+    const auto timebase = clipTimebase(clip);
+    if (!timebase) {
+        TimelineFrameResult result;
+        result.error = "clip の速度と素材 fps の積を表せません";
+        return result;
+    }
+    return timelineBoundaryToSourceBoundary(timelineFrame, timebase->num, timebase->den,
+                                            timelineFpsNum, timelineFpsDen);
+}
+
 TimelineFrameResult timelineClipDuration(const Project& project, const TimelineClip& clip) {
-    const auto begin =
-        sourceBoundaryToTimelineBoundary(clip.sourceInFrame, clip.sourceFpsNum, clip.sourceFpsDen,
-                                         project.timelineFpsNum, project.timelineFpsDen);
+    const auto begin = clipSourceBoundaryToTimeline(clip, clip.sourceInFrame,
+                                                    project.timelineFpsNum, project.timelineFpsDen);
     if (!begin.success)
         return begin;
-    const auto end =
-        sourceBoundaryToTimelineBoundary(clip.sourceOutFrame, clip.sourceFpsNum, clip.sourceFpsDen,
-                                         project.timelineFpsNum, project.timelineFpsDen);
+    const auto end = clipSourceBoundaryToTimeline(clip, clip.sourceOutFrame, project.timelineFpsNum,
+                                                  project.timelineFpsDen);
     if (!end.success)
         return end;
     TimelineFrameResult result;
@@ -171,21 +202,21 @@ TimelineFrameResult timelineClipDuration(const Project& project, const TimelineC
 TimelineFrameResult clipSourceFrameAt(const TimelineClip& clip, std::int64_t timelineFpsNum,
                                       std::int64_t timelineFpsDen, std::int64_t clipLocalFrame) {
     TimelineFrameResult result;
-    const auto origin = sourceBoundaryToTimelineBoundary(
-        clip.sourceInFrame, clip.sourceFpsNum, clip.sourceFpsDen, timelineFpsNum, timelineFpsDen);
+    const auto origin =
+        clipSourceBoundaryToTimeline(clip, clip.sourceInFrame, timelineFpsNum, timelineFpsDen);
     if (!origin.success)
         return origin;
-    const auto end = sourceBoundaryToTimelineBoundary(
-        clip.sourceOutFrame, clip.sourceFpsNum, clip.sourceFpsDen, timelineFpsNum, timelineFpsDen);
+    const auto end =
+        clipSourceBoundaryToTimeline(clip, clip.sourceOutFrame, timelineFpsNum, timelineFpsDen);
     if (!end.success)
         return end;
     if (clipLocalFrame < 0 || clipLocalFrame >= end.frame - origin.frame) {
         result.error = "clip の範囲外の frame です";
         return result;
     }
-    const auto source = core::sourceFrameAtOutputPosition(origin.frame + clipLocalFrame,
-                                                          {clip.sourceFpsNum, clip.sourceFpsDen},
-                                                          {timelineFpsNum, timelineFpsDen});
+    // origin の換算が通っているので timebase は必ずある。
+    const auto source = core::sourceFrameAtOutputPosition(
+        origin.frame + clipLocalFrame, *clipTimebase(clip), {timelineFpsNum, timelineFpsDen});
     if (!source) {
         result.error = "timeline frame を素材 frame へ換算できません";
         return result;
@@ -198,14 +229,17 @@ TimelineFrameResult clipSourceFrameAt(const TimelineClip& clip, std::int64_t tim
 ClipProducerRange clipProducerRange(const TimelineClip& clip, std::int64_t timelineFpsNum,
                                     std::int64_t timelineFpsDen) {
     ClipProducerRange result;
-    const auto begin = sourceBoundaryToTimelineBoundary(
-        clip.sourceInFrame, clip.sourceFpsNum, clip.sourceFpsDen, timelineFpsNum, timelineFpsDen);
-    const auto end = sourceBoundaryToTimelineBoundary(
-        clip.sourceOutFrame, clip.sourceFpsNum, clip.sourceFpsDen, timelineFpsNum, timelineFpsDen);
+    const auto begin =
+        clipSourceBoundaryToTimeline(clip, clip.sourceInFrame, timelineFpsNum, timelineFpsDen);
+    const auto end =
+        clipSourceBoundaryToTimeline(clip, clip.sourceOutFrame, timelineFpsNum, timelineFpsDen);
+    if (!begin.success || !end.success) {
+        result.error = "clip の cut 範囲を換算できません";
+        return result;
+    }
     const auto beyondSource = core::firstOutputPositionOfSourceFrame(
-        clip.sourceFrameCount, {clip.sourceFpsNum, clip.sourceFpsDen},
-        {timelineFpsNum, timelineFpsDen});
-    if (!begin.success || !end.success || !beyondSource) {
+        clip.sourceFrameCount, *clipTimebase(clip), {timelineFpsNum, timelineFpsDen});
+    if (!beyondSource) {
         result.error = "clip の cut 範囲を換算できません";
         return result;
     }
@@ -231,13 +265,14 @@ TimelineFrameResult clipFadeSourceFrameAt(const TimelineClip& clip, std::int64_t
 }
 
 bool sourceRateMatchesTimelineRate(const Project& project, const TimelineClip& clip) {
-    if (clip.sourceFpsNum <= 0 || clip.sourceFpsDen <= 0 || project.timelineFpsNum <= 0 ||
-        project.timelineFpsDen <= 0)
+    // 速度込みの実効 fps で比べる。等速でない clip は timeline frame と素材 frame が 1:1
+    // にならない。
+    const auto timebase = clipTimebase(clip);
+    if (!timebase || project.timelineFpsNum <= 0 || project.timelineFpsDen <= 0)
         return false;
-    const auto sourceDivisor = std::gcd(clip.sourceFpsNum, clip.sourceFpsDen);
     const auto timelineDivisor = std::gcd(project.timelineFpsNum, project.timelineFpsDen);
-    return clip.sourceFpsNum / sourceDivisor == project.timelineFpsNum / timelineDivisor &&
-           clip.sourceFpsDen / sourceDivisor == project.timelineFpsDen / timelineDivisor;
+    return timebase->num == project.timelineFpsNum / timelineDivisor &&
+           timebase->den == project.timelineFpsDen / timelineDivisor;
 }
 
 TimelineValidationResult validateTimeline(const Project& project) {
@@ -299,6 +334,17 @@ TimelineValidationResult validateTimeline(const Project& project) {
             clip.sourceInFrame < 0 || clip.sourceOutFrame <= clip.sourceInFrame ||
             clip.sourceOutFrame > clip.sourceFrameCount) {
             result.error = "timeline clip の source range または FPS が不正です: " + clip.name;
+            return result;
+        }
+        if (clip.speedNum <= 0 || clip.speedDen <= 0 ||
+            std::gcd(clip.speedNum, clip.speedDen) != 1 || !clipTimebase(clip) ||
+            static_cast<WideInteger>(clip.speedNum) * 100 <
+                static_cast<WideInteger>(clip.speedDen) * kMinClipSpeedPercent ||
+            static_cast<WideInteger>(clip.speedNum) * 100 >
+                static_cast<WideInteger>(clip.speedDen) * kMaxClipSpeedPercent) {
+            result.error = "timeline clip の速度が不正です (約分済みの " +
+                           std::to_string(kMinClipSpeedPercent) + "%〜" +
+                           std::to_string(kMaxClipSpeedPercent) + "%): " + clip.name;
             return result;
         }
         std::string effectsError;
@@ -781,15 +827,12 @@ bool rollEditPoint(Project& candidate, int index, TrimEdge edge, std::int64_t pr
 // clip の in / out を timeline 上で動かせる範囲 [lower, upper] (project frame)。
 bool slipRange(const Project& project, const TimelineClip& clip, std::int64_t& lower,
                std::int64_t& upper, std::string& error) {
-    const auto in =
-        sourceBoundaryToTimelineBoundary(clip.sourceInFrame, clip.sourceFpsNum, clip.sourceFpsDen,
-                                         project.timelineFpsNum, project.timelineFpsDen);
-    const auto out =
-        sourceBoundaryToTimelineBoundary(clip.sourceOutFrame, clip.sourceFpsNum, clip.sourceFpsDen,
-                                         project.timelineFpsNum, project.timelineFpsDen);
-    const auto end = sourceBoundaryToTimelineBoundary(clip.sourceFrameCount, clip.sourceFpsNum,
-                                                      clip.sourceFpsDen, project.timelineFpsNum,
-                                                      project.timelineFpsDen);
+    const auto in = clipSourceBoundaryToTimeline(clip, clip.sourceInFrame, project.timelineFpsNum,
+                                                 project.timelineFpsDen);
+    const auto out = clipSourceBoundaryToTimeline(clip, clip.sourceOutFrame, project.timelineFpsNum,
+                                                  project.timelineFpsDen);
+    const auto end = clipSourceBoundaryToTimeline(clip, clip.sourceFrameCount,
+                                                  project.timelineFpsNum, project.timelineFpsDen);
     if (!in.success || !out.success || !end.success) {
         error = !in.success ? in.error : (!out.success ? out.error : end.error);
         return false;
@@ -803,9 +846,8 @@ bool slipRange(const Project& project, const TimelineClip& clip, std::int64_t& l
 // 素材の範囲を超える分は端で止める。in が動いたら moved=true。
 bool slipClipSource(const Project& project, TimelineClip& clip, std::int64_t projectFrameDelta,
                     bool& moved, std::string& error) {
-    const auto inBoundary =
-        sourceBoundaryToTimelineBoundary(clip.sourceInFrame, clip.sourceFpsNum, clip.sourceFpsDen,
-                                         project.timelineFpsNum, project.timelineFpsDen);
+    const auto inBoundary = clipSourceBoundaryToTimeline(
+        clip, clip.sourceInFrame, project.timelineFpsNum, project.timelineFpsDen);
     if (!inBoundary.success) {
         error = inBoundary.error;
         return false;
@@ -820,9 +862,8 @@ bool slipClipSource(const Project& project, TimelineClip& clip, std::int64_t pro
         projectFrameDelta < 0 && inBoundary.frame < -projectFrameDelta
             ? 0
             : inBoundary.frame + projectFrameDelta;
-    const auto shiftedIn =
-        timelineBoundaryToSourceBoundary(shiftedBoundary, clip.sourceFpsNum, clip.sourceFpsDen,
-                                         project.timelineFpsNum, project.timelineFpsDen);
+    const auto shiftedIn = clipTimelineBoundaryToSource(
+        clip, shiftedBoundary, project.timelineFpsNum, project.timelineFpsDen);
     if (!shiftedIn.success) {
         error = shiftedIn.error;
         return false;
@@ -846,15 +887,12 @@ namespace {
 // 素材の範囲を超えず、clip の尺を 1 frame 以上に保つ。
 bool edgeRange(const Project& project, const TimelineClip& clip, TrimEdge edge, std::int64_t& lower,
                std::int64_t& upper, std::string& error) {
-    const auto in =
-        sourceBoundaryToTimelineBoundary(clip.sourceInFrame, clip.sourceFpsNum, clip.sourceFpsDen,
-                                         project.timelineFpsNum, project.timelineFpsDen);
-    const auto out =
-        sourceBoundaryToTimelineBoundary(clip.sourceOutFrame, clip.sourceFpsNum, clip.sourceFpsDen,
-                                         project.timelineFpsNum, project.timelineFpsDen);
-    const auto end = sourceBoundaryToTimelineBoundary(clip.sourceFrameCount, clip.sourceFpsNum,
-                                                      clip.sourceFpsDen, project.timelineFpsNum,
-                                                      project.timelineFpsDen);
+    const auto in = clipSourceBoundaryToTimeline(clip, clip.sourceInFrame, project.timelineFpsNum,
+                                                 project.timelineFpsDen);
+    const auto out = clipSourceBoundaryToTimeline(clip, clip.sourceOutFrame, project.timelineFpsNum,
+                                                  project.timelineFpsDen);
+    const auto end = clipSourceBoundaryToTimeline(clip, clip.sourceFrameCount,
+                                                  project.timelineFpsNum, project.timelineFpsDen);
     if (!in.success || !out.success || !end.success) {
         error = !in.success ? in.error : (!out.success ? out.error : end.error);
         return false;
@@ -1693,6 +1731,176 @@ TimelineEditResult deleteClipKey(Project& project, const std::string& clipId, Cl
     if (found == keys.end())
         return {false, -1, "削除するキーフレームがありません"};
     keys.erase(found);
+    return commitCandidate(project, std::move(candidate), index);
+}
+
+namespace {
+
+// 尺を newDuration にする速度 (out - in) R / D を、約分した有理数で返す。
+bool speedForDuration(const Project& project, const TimelineClip& clip, std::int64_t newDuration,
+                      std::int64_t& speedNum, std::int64_t& speedDen) {
+    if (newDuration <= 0)
+        return false;
+    // (out - in) tlNum srcDen / (tlDen srcNum D)
+    const WideInteger length = clip.sourceOutFrame - clip.sourceInFrame;
+    WideInteger num = length * project.timelineFpsNum * clip.sourceFpsDen;
+    WideInteger den =
+        static_cast<WideInteger>(project.timelineFpsDen) * clip.sourceFpsNum * newDuration;
+    if (num <= 0 || den <= 0)
+        return false;
+    WideInteger a = num, b = den;
+    while (b != 0) {
+        const WideInteger r = a % b;
+        a = b;
+        b = r;
+    }
+    num /= a;
+    den /= a;
+    if (num > std::numeric_limits<std::int64_t>::max() ||
+        den > std::numeric_limits<std::int64_t>::max())
+        return false;
+    speedNum = static_cast<std::int64_t>(num);
+    speedDen = static_cast<std::int64_t>(den);
+    return true;
+}
+
+// 操作した clip の尺が newDuration になるよう、対象 clip へ速度を適用する。
+// left 端なら各 clip の終端を、right 端なら開始位置を保つ。key は尺に合わせて伸縮する。
+bool applyRateStretch(Project& candidate, int index, TrimEdge edge, std::int64_t newDuration,
+                      LinkMode linkMode, std::string& error) {
+    const auto& operated = candidate.timelineClips[static_cast<std::size_t>(index)];
+    std::int64_t speedNum = 0;
+    std::int64_t speedDen = 0;
+    if (!speedForDuration(candidate, operated, newDuration, speedNum, speedDen)) {
+        error = "この尺にする速度を表せません";
+        return false;
+    }
+    const std::int64_t originalNum = operated.speedNum;
+    const std::int64_t originalDen = operated.speedDen;
+    for (const int target : editTargets(candidate, index, linkMode)) {
+        auto& clip = candidate.timelineClips[static_cast<std::size_t>(target)];
+        if (clip.speedNum != originalNum || clip.speedDen != originalDen) {
+            error = "リンク相手と速度が違うため、一緒にレート調整できません (Alt "
+                    "で片方だけ調整できます)";
+            return false;
+        }
+        const auto before = timelineClipDuration(candidate, clip);
+        if (!before.success) {
+            error = before.error;
+            return false;
+        }
+        clip.speedNum = speedNum;
+        clip.speedDen = speedDen;
+        const auto after = timelineClipDuration(candidate, clip);
+        if (!after.success) {
+            error = after.error;
+            return false;
+        }
+        if (edge == TrimEdge::Left) {
+            const std::int64_t end = clip.timelineStartFrame + before.frame;
+            clip.timelineStartFrame = end - after.frame;
+        }
+        rescaleClipKeys(clip.effects.opacityKeys, before.frame, after.frame);
+        rescaleClipKeys(clip.effects.volumeKeys, before.frame, after.frame);
+    }
+    return true;
+}
+
+// 尺 D で伸縮した candidate が成り立つか。判定は validateTimeline に一本化する
+// (速度の範囲、1 frame 以上の尺、timeline 先頭、同じ track の重なり)。
+bool rateStretchFeasible(const Project& project, int index, TrimEdge edge, std::int64_t newDuration,
+                         LinkMode linkMode) {
+    Project candidate = project;
+    std::string error;
+    return applyRateStretch(candidate, index, edge, newDuration, linkMode, error) &&
+           validateTimeline(candidate).success;
+}
+
+} // namespace
+
+TimelineFrameResult clampRateEdit(const Project& project, const std::string& clipId, TrimEdge edge,
+                                  std::int64_t projectFrameDelta, LinkMode linkMode) {
+    TimelineFrameResult result;
+    const int index = indexOfId(project, clipId);
+    if (!validIndex(project, index)) {
+        result.error = "レート調整する timeline clip がありません";
+        return result;
+    }
+    const auto& clip = project.timelineClips[static_cast<std::size_t>(index)];
+    for (const int target : editTargets(project, index, linkMode)) {
+        const auto& other = project.timelineClips[static_cast<std::size_t>(target)];
+        if (other.speedNum != clip.speedNum || other.speedDen != clip.speedDen) {
+            result.error = "リンク相手と速度が違うため、一緒にレート調整できません (Alt "
+                           "で片方だけ調整できます)";
+            return result;
+        }
+    }
+    const auto duration = timelineClipDuration(project, clip);
+    if (!duration.success) {
+        result.error = duration.error;
+        return result;
+    }
+    // right 端は右へ動かすと伸び、left 端は左へ動かすと伸びる。
+    const auto durationFor = [&](std::int64_t delta) -> std::int64_t {
+        const WideInteger value =
+            static_cast<WideInteger>(duration.frame) +
+            (edge == TrimEdge::Right ? delta : -static_cast<WideInteger>(delta));
+        if (value < 1)
+            return 0;
+        if (value > std::numeric_limits<std::int64_t>::max() / 4)
+            return std::numeric_limits<std::int64_t>::max() / 4;
+        return static_cast<std::int64_t>(value);
+    };
+    // 伸縮できる範囲は現在の尺 (delta 0) から要求した向きに連続している
+    // (各条件は尺の上限か下限なので)。成り立つ最も遠い量を二分探索で求める。
+    std::int64_t reachable = 0;
+    std::int64_t blocked = projectFrameDelta;
+    if (projectFrameDelta != 0 && durationFor(projectFrameDelta) > 0 &&
+        rateStretchFeasible(project, index, edge, durationFor(projectFrameDelta), linkMode)) {
+        reachable = projectFrameDelta;
+    } else {
+        while ((blocked > reachable ? blocked - reachable : reachable - blocked) > 1) {
+            const std::int64_t middle = reachable + (blocked - reachable) / 2;
+            const std::int64_t candidateDuration = durationFor(middle);
+            if (candidateDuration > 0 &&
+                rateStretchFeasible(project, index, edge, candidateDuration, linkMode))
+                reachable = middle;
+            else
+                blocked = middle;
+        }
+    }
+    result.success = true;
+    result.frame = reachable;
+    return result;
+}
+
+TimelineEditResult rateStretchTimelineClip(Project& project, const std::string& clipId,
+                                           TrimEdge edge, std::int64_t projectFrameDelta,
+                                           LinkMode linkMode) {
+    TimelineEditResult result;
+    const auto clamped = clampRateEdit(project, clipId, edge, projectFrameDelta, linkMode);
+    if (!clamped.success) {
+        result.error = clamped.error;
+        return result;
+    }
+    if (clamped.frame == 0) {
+        result.error = "速度の範囲 (" + std::to_string(kMinClipSpeedPercent) + "%〜" +
+                       std::to_string(kMaxClipSpeedPercent) +
+                       "%) または隣の clip に達しているため、これ以上伸縮できません";
+        return result;
+    }
+    Project candidate = project;
+    const int index = indexOfId(candidate, clipId);
+    const auto duration =
+        timelineClipDuration(candidate, candidate.timelineClips[static_cast<std::size_t>(index)]);
+    if (!duration.success) {
+        result.error = duration.error;
+        return result;
+    }
+    const std::int64_t newDuration =
+        duration.frame + (edge == TrimEdge::Right ? clamped.frame : -clamped.frame);
+    if (!applyRateStretch(candidate, index, edge, newDuration, linkMode, result.error))
+        return result;
     return commitCandidate(project, std::move(candidate), index);
 }
 

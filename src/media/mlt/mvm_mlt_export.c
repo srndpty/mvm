@@ -77,6 +77,44 @@ static int service_exists(mlt_properties list, const char* name) {
     return 0;
 }
 
+/* clip の producer を開く。等速なら素材のパス、それ以外は "timewarp:<speed>:<path>" を
+ * loader へ渡す。service 名 "timewarp" を直接指定すると loader が付ける音声の正規化
+ * (resample) が付かない。timewarp は audio の sample rate を変えて速度を表すため、正規化が
+ * 無いと tractor の mix で伸縮されずに元の速さで鳴る (§16.8 で実測)。 */
+static mlt_producer open_clip_producer(mlt_profile profile, const MvmExportClip* clip) {
+    if (clip->speed_num == 1 && clip->speed_den == 1)
+        return mlt_factory_producer(profile, NULL, clip->path);
+    size_t size = strlen(clip->path) + 64;
+    char* resource = (char*)malloc(size);
+    if (!resource)
+        return NULL;
+    snprintf(resource, size, "timewarp:%.17g:%s", (double)clip->speed_num / (double)clip->speed_den,
+             clip->path);
+    mlt_producer producer = mlt_factory_producer(profile, NULL, resource);
+    free(resource);
+    if (!producer)
+        return NULL;
+    /* 既定値は 0 だが、音程の扱いは仕様なので明示して読み戻す。 */
+    mlt_properties properties = MLT_PRODUCER_PROPERTIES(producer);
+    mlt_properties_set_int(properties, "warp_pitch", 0);
+    const double speed = mlt_properties_get_double(properties, "warp_speed");
+    const double wanted = (double)clip->speed_num / (double)clip->speed_den;
+    if (mlt_properties_get_int(properties, "warp_pitch") != 0 ||
+        fabs(speed - wanted) > 1e-9 * wanted) {
+        mlt_producer_close(producer);
+        return NULL;
+    }
+    return producer;
+}
+
+static int clips_need_timewarp(const MvmExportClip* clips, int clip_count) {
+    for (int i = 0; i < clip_count; ++i) {
+        if (clips[i].speed_num != 1 || clips[i].speed_den != 1)
+            return 1;
+    }
+    return 0;
+}
+
 /* probe由来の素材末尾はtimebase変換後にproducer実尺より1 frameだけ長くなることがある。
  * 任意の範囲超過は隠さず、素材末尾を選んだ場合の+1だけを実測playtimeへ合わせる。 */
 static int clamp_terminal_rounding(const MvmExportClip* clip, long long playtime,
@@ -353,7 +391,8 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
             clips[i].source_out_frame <= clips[i].source_in_frame ||
             clips[i].source_out_frame > clips[i].source_frame_count ||
             clips[i].producer_in_frame < 0 ||
-            clips[i].producer_out_frame <= clips[i].producer_in_frame) {
+            clips[i].producer_out_frame <= clips[i].producer_in_frame || clips[i].speed_num <= 0 ||
+            clips[i].speed_den <= 0) {
             set_err(err, err_size, "clip %d の source range または FPS が不正です", i);
             return 1;
         }
@@ -413,6 +452,11 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
             set_err(err, err_size, "必須 consumer 'avformat' がありません");
             goto fail;
         }
+        if (clips_need_timewarp(clips, clip_count) &&
+            !service_exists(mlt_repository_producers(repo), "timewarp")) {
+            set_err(err, err_size, "速度を変えたclipに必要なproducer 'timewarp'がありません");
+            goto fail;
+        }
         for (int i = 0; i < clip_count; ++i) {
             if (clips[i].effects_enabled &&
                 (!service_exists(mlt_repository_filters(repo), "crop") ||
@@ -433,7 +477,7 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
     for (int i = 0; i < clip_count; i++) {
         /* service には NULL (= loader) を渡す。"avformat" を明示すると
          * loader が付ける正規化 filter が外れる (mvm_mlt_compose.c と同じ理由)。 */
-        mlt_producer p = mlt_factory_producer(profile, NULL, clips[i].path);
+        mlt_producer p = open_clip_producer(profile, &clips[i]);
         if (!p) {
             set_err(err, err_size, "clip %d の producer を開けません: %s", i, clips[i].path);
             goto fail;
@@ -650,7 +694,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             clip->source_out_frame > clip->source_frame_count || clip->crop_left < 0 ||
             clip->crop_top < 0 || clip->crop_right < 0 || clip->crop_bottom < 0 ||
             clip->producer_in_frame < 0 || clip->producer_out_frame <= clip->producer_in_frame ||
-            clip->tail_padding_frames < 0 ||
+            clip->tail_padding_frames < 0 || clip->speed_num <= 0 || clip->speed_den <= 0 ||
             clip->producer_out_frame - clip->producer_in_frame + clip->tail_padding_frames !=
                 clip->timeline_duration_frames) {
             set_err(err, err_size, "tractor clip %dのmappingが不正です", index);
@@ -737,8 +781,11 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             !service_exists(mlt_repository_filters(repo), "crop") ||
             !service_exists(mlt_repository_filters(repo), "affine") ||
             !service_exists(mlt_repository_transitions(repo), "affine") ||
-            !service_exists(mlt_repository_transitions(repo), "mix")) {
-            set_err(err, err_size, "tractor exportに必要なcrop/affine/mix/avformatがありません");
+            !service_exists(mlt_repository_transitions(repo), "mix") ||
+            (clips_need_timewarp(clips, clip_count) &&
+             !service_exists(mlt_repository_producers(repo), "timewarp"))) {
+            set_err(err, err_size,
+                    "tractor exportに必要なcrop/affine/mix/avformat/timewarpがありません");
             goto cleanup;
         }
     }
@@ -778,7 +825,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
                 ++out->playlist_blank_count;
         }
 
-        mlt_producer parent = mlt_factory_producer(profile, NULL, clip->path);
+        mlt_producer parent = open_clip_producer(profile, clip);
         if (!parent || mlt_producer_get_playtime(parent) <= 0) {
             if (parent)
                 mlt_producer_close(parent);

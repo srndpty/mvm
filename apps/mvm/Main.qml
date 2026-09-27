@@ -985,13 +985,14 @@ ApplicationWindow {
             property int adjacentEditDelta: 0
             // clip の端のハンドルを使うツール。それ以外のツールでは端も clip 本体として扱う。
             readonly property bool edgeToolActive: tool === "select" || tool === "ripple"
-                                                   || tool === "rolling"
+                                                   || tool === "rolling" || tool === "rate"
             readonly property bool trackSelectToolActive: tool === "trackForward"
                                                           || tool === "trackBackward"
             // timeline の表示だけを変えるツール。clip や ruler への操作を受けない。
             readonly property bool viewToolActive: tool === "hand" || tool === "zoom"
             readonly property color edgeHandleColor: tool === "ripple" ? "#e8c15a"
-                                                     : (tool === "rolling" ? "#e27d6a" : "#85c4ee")
+                                                     : tool === "rolling" ? "#e27d6a"
+                                                     : tool === "rate" ? "#b99af0" : "#85c4ee"
             readonly property real toolPanelWidth: 34
             readonly property real labelWidth: 96
             readonly property real rulerHeight: 26
@@ -1590,6 +1591,7 @@ ApplicationWindow {
                                 required property real sourceOutFrame
                                 required property real sourceFpsNum
                                 required property real sourceFpsDen
+                                required property real speed
                                 required property bool previewSupported
                                 required property string trackKind
                                 required property int trackIndex
@@ -1673,6 +1675,14 @@ ApplicationWindow {
                                     (linkedEditPartner ? timelinePanel.linkedRightDelta : rightPreviewDelta)
                                     + timelinePanel.adjacentDeltaFor(trackKind, trackIndex, timelineStartFrame,
                                                      timelineStartFrame + timelineDurationFrames, "end")
+                                // レート調整の drag 中の見かけの速度。素材範囲はそのままで尺だけが変わるので、
+                                // 速度 x 元の尺 / 表示中の尺。確定する速度 (out - in) R / D と同じ値になり、
+                                // 離した瞬間に波形の縮尺が変わらない。
+                                readonly property real shownSpeed:
+                                    timelinePanel.tool === "rate"
+                                    ? speed * timelineDurationFrames
+                                      / Math.max(1, timelineDurationFrames - shownLeftDelta + shownRightDelta)
+                                    : speed
                                 readonly property int shownSlideFrames:
                                     bodyGesture === "slide" ? toolDragFrames
                                     : (linkedEditPartner ? timelinePanel.linkedSlideFrames : 0)
@@ -1759,13 +1769,16 @@ ApplicationWindow {
                                     width: Math.max(0, Math.ceil(visibleRight - visibleLeft))
                                     height: clipItem.height - 4
                                     // clip 左端 = 素材の sourceInFrame (trim preview 中は leftPreviewDelta 分ずれる)。
+                                    // timeline の 1 秒は素材の shownSpeed 秒。レート調整の drag は素材の in を
+                                    // 動かさないのでずらさず、縮尺だけを drag に合わせて変える。
                                     startSeconds: (clipItem.sourceInFrame + clipItem.shownSlipDelta)
                                                   * clipItem.sourceFpsDen
                                                   / Math.max(1, clipItem.sourceFpsNum)
-                                                  + (clipItem.shownLeftDelta
+                                                  + ((timelinePanel.tool === "rate" ? 0 : clipItem.shownLeftDelta)
                                                      + visibleLeft / timelinePanel.pixelsPerFrame)
-                                                    * timelineSecondsPerFrame
-                                    secondsPerPixel: timelineSecondsPerFrame / timelinePanel.pixelsPerFrame
+                                                    * timelineSecondsPerFrame * clipItem.shownSpeed
+                                    secondsPerPixel: timelineSecondsPerFrame * clipItem.shownSpeed
+                                                     / timelinePanel.pixelsPerFrame
                                     color: clipItem.selected ? "#a9d6ff" : "#7fd49a"
                                 }
 
@@ -1788,9 +1801,11 @@ ApplicationWindow {
                                         width: parent.width
                                         // audio clip は波形を優先し、尺の表示を重ねない。
                                             visible: clipItem.clipKind !== "audio"
-                                            text: clipItem.clipKind === "audio"
-                                                ? Math.round(clipItem.timelineDurationFrames) + "f"
-                                                : clipItem.sourceFpsNum + "/" + clipItem.sourceFpsDen + " fps  |  " + Math.round(clipItem.timelineDurationFrames) + "f"
+                                            text: (clipItem.shownSpeed !== 1
+                                                   ? (Math.round(clipItem.shownSpeed * 10000) / 100) + "%  |  " : "")
+                                                + (clipItem.clipKind === "audio"
+                                                   ? Math.round(clipItem.timelineDurationFrames) + "f"
+                                                   : clipItem.sourceFpsNum + "/" + clipItem.sourceFpsDen + " fps  |  " + Math.round(clipItem.timelineDurationFrames) + "f")
                                             color: clipItem.previewSupported ? "#b8c1cc" : "#f0b870"
                                         font.pixelSize: 10
                                         elide: Text.ElideRight
@@ -1857,6 +1872,8 @@ ApplicationWindow {
                                         root.mvmController.rippleTrimClip(id, action.edge, action.delta, action.linked);
                                     else if (action.action === "roll")
                                         root.mvmController.rollClipEdge(id, action.edge, action.delta, action.linked);
+                                    else if (action.action === "rateStretch")
+                                        root.mvmController.rateStretchClip(id, action.edge, action.delta, action.linked);
                                     else if (action.action === "trim")
                                         root.mvmController.trimClip(id, action.edge, action.delta, action.linked);
                                 }

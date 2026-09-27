@@ -447,6 +447,8 @@ int main(int argc, char** argv) {
             invalid.source_out_frame = 10;
             invalid.producer_in_frame = 0;
             invalid.producer_out_frame = 10;
+            invalid.speed_num = 1;
+            invalid.speed_den = 1;
             invalid.video_track = 1;
             invalid.timeline_start_frame = 0;
             invalid.timeline_duration_frames = 10;
@@ -627,6 +629,8 @@ int main(int argc, char** argv) {
         // 60fps 素材を 60fps へ置くので producer 位置は素材 frame と同じ。
         padded.producer_in_frame = padded.source_in_frame;
         padded.producer_out_frame = padded.source_out_frame;
+        padded.speed_num = 1;
+        padded.speed_den = 1;
         padded.timeline_start_frame = 0;
         padded.timeline_duration_frames = kDuration;
         padded.opacity_keyframe_count = 2;
@@ -651,6 +655,8 @@ int main(int argc, char** argv) {
         v1Plain.source_out_frame = kDuration;
         v1Plain.producer_in_frame = 0;
         v1Plain.producer_out_frame = kDuration;
+        v1Plain.speed_num = 1;
+        v1Plain.speed_den = 1;
         v1Plain.timeline_duration_frames = kDuration;
         MvmExportClip v2Crop = padded;
         v2Crop.video_track = 1;
@@ -743,11 +749,25 @@ int main(int argc, char** argv) {
             clip.track = {mvm::project::TrackKind::Video, 0};
             return clip;
         };
-        const std::vector<long long> expected = {3, 4, 5, 6, 6, 7, 8, 9};
+        // 続けて 60fps 素材を 40% (速度 2/5) で in = 2..8 に置く。実効 24fps で R = 2.5、
+        // 原点は ceil(5) = 5 で尺は ceil(20) - 5 = 15。位置 5..19 を 2.5 で割って四捨五入する。
+        //   5:2.0 6:2.4 7:2.8 8:3.2 9:3.6 10:4.0 11:4.4 12:4.8 13:5.2 14:5.6 15:6.0 16:6.4
+        //   17:6.8 18:7.2 19:7.6
+        // 最後の frame 8 は trim の外側 (out = 8) で、丸めで出るのは MLT の timewarp と同じ。
+        // p / 2.5 はちょうど 1/2 にならない (4p = 5(2k + 1) は偶奇が合わない)。
+        std::vector<long long> expected = {3, 4, 5, 6, 6, 7, 8, 9};
+        const std::vector<long long> slowed = {2, 2, 3, 3, 4, 4, 4, 5, 5, 6, 6, 6, 7, 7, 8};
+        const auto mixedLength = static_cast<std::int64_t>(expected.size());
+        expected.insert(expected.end(), slowed.begin(), slowed.end());
         constexpr long long kCalibrationFrames = 12;
         const auto mappedLength = static_cast<std::int64_t>(expected.size());
+        auto slowedClip =
+            rampClip(calibration, "frame-mapping-slowed", 60, calibrationFrames, 2, 8, mixedLength);
+        slowedClip.speedNum = 2;
+        slowedClip.speedDen = 5;
         mvm::project::Project mapped = mvm::project::createDefaultProject();
         mapped.timelineClips = {rampClip(source, "frame-mapping", 48, sourceFrames, 3, 9, 0),
+                                slowedClip,
                                 rampClip(calibration, "calibration", 60, calibrationFrames, 0,
                                          kCalibrationFrames, mappedLength)};
 
@@ -795,6 +815,72 @@ int main(int argc, char** argv) {
             }
             check(compared == static_cast<int>(mappedLength),
                   "書き出しのframe対応を全frame比較していません");
+        }
+    }
+
+    // --- 速度を変えた clip の音声は速度に連動する (timewarp warp_pitch=0) --------------
+    // 440Hz・1 秒の WAV を 50% で置くと、尺が 2 秒になり 220Hz になる。
+    {
+        const auto wave = testDirectory / L"speed-source.wav";
+        check(_wspawnl(_P_WAIT, ffmpeg.c_str(), ffmpeg.c_str(), L"-y", L"-loglevel", L"error",
+                       L"-f", L"lavfi", L"-i", L"sine=frequency=440:duration=1:sample_rate=48000",
+                       L"-c:a", L"pcm_s16le", wave.c_str(), static_cast<wchar_t*>(nullptr)) == 0,
+              "速度検証用WAVを生成できません");
+        auto project = mvm::project::createDefaultProject();
+        mvm::project::TimelineClip video;
+        video.kind = mvm::project::TimelineClipKind::Video;
+        video.mediaPath = firstClip;
+        video.name = "speed-video";
+        video.id = "speed-video";
+        video.sourceFpsNum = 60;
+        video.sourceFpsDen = 1;
+        video.sourceFrameCount = firstFrames;
+        video.sourceOutFrame = 60;
+        video.speedNum = 1;
+        video.speedDen = 2;
+        video.track = {mvm::project::TrackKind::Video, 0};
+        auto sound = video;
+        sound.kind = mvm::project::TimelineClipKind::Audio;
+        sound.track = {mvm::project::TrackKind::Audio, 0};
+        sound.mediaPath = wave;
+        sound.id = "speed-audio";
+        sound.sourceFrameCount = 60;
+        project.timelineClips = {video, sound};
+        mvm::app::TimelineExportRequest speedRequest;
+        speedRequest.outputPath = testDirectory / L"speed-half.mp4";
+        speedRequest.width = 320;
+        speedRequest.height = 240;
+        const auto exported = mvm::app::exportTimeline(project, speedRequest);
+        check(exported.success, "50%のclipを書き出せません");
+        if (!exported.success)
+            std::fprintf(stderr, "  %s\n", exported.error.c_str());
+        if (exported.success) {
+            check(probeFrameCount(speedRequest.outputPath) == 120,
+                  "50%のclipの出力尺が2倍になりません");
+            const auto raw = testDirectory / L"speed-half.f32";
+            check(_wspawnl(_P_WAIT, ffmpeg.c_str(), ffmpeg.c_str(), L"-y", L"-loglevel", L"error",
+                           L"-i", speedRequest.outputPath.c_str(), L"-map", L"0:a:0", L"-ac", L"1",
+                           L"-ar", L"48000", L"-c:a", L"pcm_f32le", L"-f", L"f32le", raw.c_str(),
+                           static_cast<wchar_t*>(nullptr)) == 0,
+                  "50%書き出しのPCMを抽出できません");
+            std::ifstream stream(raw, std::ios::binary | std::ios::ate);
+            std::vector<float> samples;
+            if (stream) {
+                samples.resize(static_cast<std::size_t>(stream.tellg()) / sizeof(float));
+                stream.seekg(0);
+                stream.read(reinterpret_cast<char*>(samples.data()),
+                            static_cast<std::streamsize>(samples.size() * sizeof(float)));
+            }
+            // 中央の 1 秒 (0.5〜1.5 秒) の負 -> 正のゼロ交差を数える。
+            int crossings = 0;
+            if (samples.size() >= 72000) {
+                for (std::size_t i = 24001; i < 72000; ++i)
+                    crossings += samples[i - 1] < 0.0F && samples[i] >= 0.0F ? 1 : 0;
+            }
+            check(samples.size() >= 95000 && std::abs(crossings - 220) <= 3,
+                  "50%の音声が2倍の尺・半分の周波数になりません");
+            std::fprintf(stderr, "  50%%音声: %zu sample, 中央1秒のゼロ交差 %d\n", samples.size(),
+                         crossings);
         }
     }
 
