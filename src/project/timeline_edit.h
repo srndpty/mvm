@@ -132,6 +132,12 @@ TimelineEditResult slipTimelineClip(Project& project, const std::string& clipId,
 // それも追従させる。
 TimelineEditResult slideTimelineClip(Project& project, const std::string& clipId,
                                      std::int64_t projectFrameDelta, LinkMode linkMode);
+// スライド量を、前の clip の out・後ろの clip の in を動かせる範囲 (素材の範囲と 1 frame 以上の
+// 尺)、timeline 先頭、接していない clip との空白に止めた値にする。Linked ならリンク相手の
+// 制約も含める。操作した clip に前後の clip が無ければ失敗する。
+// slideTimelineClip の確定と drag 中の表示の両方がこれを使う。
+TimelineFrameResult clampSlideEdit(const Project& project, const std::string& clipId,
+                                   std::int64_t projectFrameDelta, LinkMode linkMode);
 
 enum class SelectDirection { Forward, Backward };
 

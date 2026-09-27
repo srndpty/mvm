@@ -3001,6 +3001,13 @@ void MvmController::endSlipPreview() {
         retiredSources_.push_back(*source);
 }
 
+qint64 MvmController::clampSlideDrag(const QString& clipId, qint64 projectFrameDelta,
+                                    bool linked) const {
+    const auto clamped = project::clampSlideEdit(project_, clipId.toStdString(),
+                                                 projectFrameDelta, linkModeFor(linked));
+    return clamped.success ? clamped.frame : 0;
+}
+
 bool MvmController::slideClip(const QString& clipId, qint64 projectFrameDelta, bool linked) {
     const std::string id = clipId.toStdString();
     return applyTimelineEdit(

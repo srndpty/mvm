@@ -278,6 +278,10 @@ public:
     Q_INVOKABLE qint64 previewSlip(qint64 projectFrameDelta);
     Q_INVOKABLE void endSlipPreview();
     Q_INVOKABLE bool slideClip(const QString& clipId, qint64 projectFrameDelta, bool linked);
+    // スライド量を確定時と同じ規則 (前後の clip の素材の端など) で止めた値。drag 中の表示に使う。
+    // スライドできない (前後に clip が無い) ときは 0。
+    Q_INVOKABLE qint64 clampSlideDrag(const QString& clipId, qint64 projectFrameDelta,
+                                      bool linked) const;
     // allTracks=true なら frame を内側に含む全 track の clip を分割する。
     Q_INVOKABLE bool splitClipAt(const QString& clipId, qint64 frame, bool allTracks,
                                  bool linked);

@@ -1163,6 +1163,75 @@ TimelineEditResult slipTimelineClip(Project& project, const std::string& clipId,
     return commitCandidate(project, std::move(candidate), index);
 }
 
+TimelineFrameResult clampSlideEdit(const Project& project, const std::string& clipId,
+                                   std::int64_t projectFrameDelta, LinkMode linkMode) {
+    TimelineFrameResult result;
+    const int index = indexOfId(project, clipId);
+    if (!validIndex(project, index)) {
+        result.error = "スライドする timeline clip がありません";
+        return result;
+    }
+    const std::vector<int> targets = editTargets(project, index, linkMode);
+    std::int64_t lower = std::numeric_limits<std::int64_t>::min();
+    std::int64_t upper = std::numeric_limits<std::int64_t>::max();
+    for (const int target : targets) {
+        const auto& clip = project.timelineClips[static_cast<std::size_t>(target)];
+        std::int64_t start = 0;
+        std::int64_t end = 0;
+        if (!clipInterval(project, clip, start, end, result.error))
+            return result;
+        const int previous = adjacentClipIndex(project, target, TrimEdge::Left, result.error);
+        if (!result.error.empty())
+            return result;
+        const int next = adjacentClipIndex(project, target, TrimEdge::Right, result.error);
+        if (!result.error.empty())
+            return result;
+        // スライドは前後の編集点を保ったまま中身だけを動かす編集である。操作した clip に
+        // 接している前後の clip が無ければ単なる移動になるので拒否する。リンク相手は
+        // L / J カットで編集点を持たないことがあり、その場合は相手の前後を追従させない。
+        if (target == index && (previous < 0 || next < 0)) {
+            result.error =
+                "スライドには前後に接している clip が必要です (移動は選択ツールで行ってください)";
+            return result;
+        }
+        lower = std::max(lower, -start);
+        std::int64_t neighborLower = 0;
+        std::int64_t neighborUpper = 0;
+        // 前の clip は out を、後ろの clip は in を同じ量だけ動かす。どちらも素材の範囲と
+        // 1 frame 以上の尺を保てる量までに止める。
+        if (previous >= 0) {
+            if (!edgeRange(project, project.timelineClips[static_cast<std::size_t>(previous)],
+                           TrimEdge::Right, neighborLower, neighborUpper, result.error))
+                return result;
+            narrowRange(lower, upper, neighborLower, neighborUpper);
+        }
+        if (next >= 0) {
+            if (!edgeRange(project, project.timelineClips[static_cast<std::size_t>(next)],
+                           TrimEdge::Left, neighborLower, neighborUpper, result.error))
+                return result;
+            narrowRange(lower, upper, neighborLower, neighborUpper);
+        }
+        // 接していない同じ track の clip とは、間の空白の分だけしか動けない。
+        for (std::size_t other = 0; other < project.timelineClips.size(); ++other) {
+            const auto& blocker = project.timelineClips[other];
+            if (static_cast<int>(other) == previous || static_cast<int>(other) == next ||
+                isTarget(targets, other) || !(blocker.track == clip.track))
+                continue;
+            std::int64_t blockerStart = 0;
+            std::int64_t blockerEnd = 0;
+            if (!clipInterval(project, blocker, blockerStart, blockerEnd, result.error))
+                return result;
+            if (blockerEnd <= start)
+                lower = std::max(lower, blockerEnd - start);
+            else if (blockerStart >= end)
+                upper = std::min(upper, blockerStart - end);
+        }
+    }
+    result.success = true;
+    result.frame = lower > upper ? 0 : std::clamp(projectFrameDelta, lower, upper);
+    return result;
+}
+
 TimelineEditResult slideTimelineClip(Project& project, const std::string& clipId,
                                      std::int64_t projectFrameDelta, LinkMode linkMode) {
     TimelineEditResult result;
@@ -1172,10 +1241,16 @@ TimelineEditResult slideTimelineClip(Project& project, const std::string& clipId
         result.error = "スライドする timeline clip がありません";
         return result;
     }
-    if (projectFrameDelta == 0) {
-        result.error = "スライド量が 0 です";
+    const auto clamped = clampSlideEdit(candidate, clipId, projectFrameDelta, linkMode);
+    if (!clamped.success) {
+        result.error = clamped.error;
         return result;
     }
+    if (clamped.frame == 0) {
+        result.error = "前後の clip の素材の端に達しているため、これ以上スライドできません";
+        return result;
+    }
+    projectFrameDelta = clamped.frame;
     const std::vector<int> targets = editTargets(candidate, index, linkMode);
     std::vector<bool> slid(candidate.timelineClips.size(), false);
     for (const int target : targets)
@@ -1199,15 +1274,6 @@ TimelineEditResult slideTimelineClip(Project& project, const std::string& clipId
             adjacentClipIndex(candidate, static_cast<int>(slide), TrimEdge::Right, result.error);
         if (!result.error.empty())
             return result;
-    }
-    // スライドは前後の編集点を保ったまま中身だけを動かす編集である。操作した clip に
-    // 接している前後の clip が無ければ単なる移動になるので拒否する。リンク相手は
-    // L / J カットで編集点を持たないことがあり、その場合は相手の前後を追従させない。
-    const auto& anchorNeighbors = neighbors[static_cast<std::size_t>(index)];
-    if (anchorNeighbors.previous < 0 || anchorNeighbors.next < 0) {
-        result.error =
-            "スライドには前後に接している clip が必要です (移動は選択ツールで行ってください)";
-        return result;
     }
     for (std::size_t slide = 0; slide < slid.size(); ++slide) {
         if (!slid[slide])

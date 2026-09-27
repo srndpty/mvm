@@ -973,6 +973,20 @@ void testLinkedToolEditing() {
               at(project, "pair-audio").timelineStartFrame == 320 &&
               clipEnd(project, at(project, "before-audio")) == 320,
           "Linkedのslideがリンク相手をスライドしません");
+    // リンク相手に接している clip が無い (L / J カット) 場合、相手は空白の分だけしか動けない。
+    project = base;
+    std::erase_if(project.timelineClips, [](const auto& value) {
+        return value.id == "id-before-audio" || value.id == "id-after-audio";
+    });
+    auto blocker = clip("audio-blocker", mvm::project::TimelineClipKind::Audio, kA1);
+    blocker.sourceOutFrame = 30;
+    blocker.timelineStartFrame = 250; // pair-audio (300 開始) との間に 20 frame の空白
+    project.timelineClips.push_back(blocker);
+    check(mvm::project::validateTimeline(project).success, "空白slide用のtimelineが不正です");
+    const auto gapRange =
+        mvm::project::clampSlideEdit(project, "id-pair-video", -1000, LinkMode::Linked);
+    check(gapRange.success && gapRange.frame == -20, "リンク相手の前の空白でslideを止めません");
+
     project = base;
     check(mvm::project::slideTimelineClip(project, "id-pair-video", 20, LinkMode::Single).success &&
               at(project, "pair-video").timelineStartFrame == 320 &&
@@ -1108,12 +1122,46 @@ void testSlideClip() {
               clipEnd(project, project.timelineClips[2]) == 900,
           "slideで前後clipのout/inを追従させられません");
 
+    // 動かせる範囲 = 前の clip の out と後ろの clip の in を動かせる範囲。+50 のスライド後は
+    // before (素材 [0, 350)) の out が [-349, +250]、after (素材 [150, 400)) の in が [-150,
+    // +249]。
+    auto range =
+        mvm::project::clampSlideEdit(project, "id-slide", 1000, mvm::project::LinkMode::Linked);
+    check(range.success && range.frame == 249, "slideの右方向の範囲が違います");
+    range =
+        mvm::project::clampSlideEdit(project, "id-slide", -1000, mvm::project::LinkMode::Linked);
+    check(range.success && range.frame == -150, "slideの左方向の範囲が違います");
+
+    // 範囲を越えるドラッグは失敗させず、後ろの clip の素材の先頭で止める。
+    check(mvm::project::slideTimelineClip(project, "id-slide", -400, mvm::project::LinkMode::Linked)
+                  .success &&
+              project.timelineClips[1].timelineStartFrame == 200 &&
+              clipEnd(project, project.timelineClips[0]) == 200 &&
+              project.timelineClips[2].timelineStartFrame == 500 &&
+              project.timelineClips[2].sourceInFrame == 0,
+          "範囲を越えるslideを後ろのclipの素材の先頭で止めません");
     const auto beforeReject = project;
+    check(!mvm::project::slideTimelineClip(project, "id-slide", -1, mvm::project::LinkMode::Linked)
+                  .success &&
+              project == beforeReject,
+          "後ろのclipの素材の先頭に達したslideを拒否しないか、拒否時にProjectが変化しました");
+
+    // 前の clip が素材の末尾まで使い切っていれば、右へはスライドできない。
+    mvm::project::Project exhausted = mvm::project::createDefaultProject();
+    exhausted.timelineClips = {roomyClip("before", 300, 0), roomyClip("slide", 100, 300),
+                               roomyClip("after", 100, 600)};
+    const auto beforeExhausted = exhausted;
     check(
-        !mvm::project::slideTimelineClip(project, "id-slide", -400, mvm::project::LinkMode::Linked)
+        !mvm::project::slideTimelineClip(exhausted, "id-slide", 50, mvm::project::LinkMode::Linked)
                 .success &&
-            project == beforeReject,
-        "前のclipを消すslideを拒否しないか、拒否時にProjectが変化しました");
+            exhausted == beforeExhausted &&
+            mvm::project::clampSlideEdit(exhausted, "id-slide", 50, mvm::project::LinkMode::Linked)
+                    .frame == 0,
+        "前のclipの素材が足りないslideを拒否しません");
+    check(
+        mvm::project::slideTimelineClip(exhausted, "id-slide", -50, mvm::project::LinkMode::Linked)
+            .success,
+        "前のclipの素材が足りなくても左へのslideができません");
 
     // 前後どちらかに接している clip が無ければ、単なる移動にせず拒否する。
     for (const bool withoutPrevious : {true, false}) {

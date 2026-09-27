@@ -1927,8 +1927,11 @@ ApplicationWindow {
                                             const frames = Math.round((now.x - clipItem.bodyPressPoint.x)
                                                                       / timelinePanel.pixelsPerFrame);
                                             // slide で clip を 0 frame より左へは描かない。
+                                            // slide は確定時と同じ規則 (前後の clip の素材の端など) で止めて見せる。
                                             clipItem.toolDragFrames = clipItem.bodyGesture === "slide"
-                                                                      ? Math.max(-clipItem.timelineStartFrame, frames)
+                                                                      ? root.mvmController.clampSlideDrag(
+                                                                            clipItem.clipId, frames,
+                                                                            clipItem.editLinked)
                                                                       : frames;
                                             if (clipItem.bodyGesture === "slide")
                                                 timelinePanel.adjacentEditDelta = clipItem.toolDragFrames;

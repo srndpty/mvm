@@ -802,3 +802,8 @@ QML はドラッグ量を制限しないので、分割前の位置を少しで�
 
 `[未検証]` 実機の再生で分割点が止まらなくなったことは確認していない。引き継げない場合の
 status 表示を手がかりに確認する。
+
+`[事実]` スライドも `clampSlideEdit` で、前の clip の out・後ろの clip の in を動かせる範囲
+(素材の範囲と 1 frame 以上の尺)、timeline 先頭、接していない clip との空白に止める。
+`slideTimelineClip` の確定と drag 中の表示 (`clampSlideDrag`) の両方がこれを使い、
+trim / リップル / ローリング (`clampEdgeEdit`)、スリップ (`previewSlip`) と揃えた。
