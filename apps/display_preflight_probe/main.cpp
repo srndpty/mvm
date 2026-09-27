@@ -119,8 +119,6 @@ int main(int argc, char** argv) {
     const int timeoutMs = args[timeoutIndex + 1].toInt(&timeoutOk);
     if (!timeoutOk || timeoutMs <= 0)
         return 2;
-
-    qmlRegisterType<CompositorRhiItem>("mvm.compositor", 1, 0, "CompositorSurface");
     QQmlApplicationEngine engine;
     engine.load(QUrl(QStringLiteral("qrc:/mvm/display_preflight_probe/Main.qml")));
     if (engine.rootObjects().isEmpty())

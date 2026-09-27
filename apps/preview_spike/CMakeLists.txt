@@ -10,10 +10,12 @@ qt_add_qml_module(mvm_preview_spike
     URI mvm.preview_spike
     VERSION 1.0
     RESOURCE_PREFIX /
+    SOURCES ${CMAKE_SOURCE_DIR}/src/app/preview/qml/preview_rhi_surface_qml.h
     QML_FILES Main.qml
 )
 
-target_include_directories(mvm_preview_spike PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(mvm_preview_spike PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/src/app/preview/qml)
 
 target_link_libraries(mvm_preview_spike PRIVATE
     mvm::gpu_preview

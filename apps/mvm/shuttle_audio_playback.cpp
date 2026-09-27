@@ -1,14 +1,7 @@
 #include "shuttle_audio_playback.h"
 
-#include "app/timeline_playback.h"
-#include "app/timeline_preview_mapping.h"
-#include "core/checked_output_timebase.h"
-#include "project/timeline_edit.h"
-
 #include <algorithm>
-#include <chrono>
 #include <cmath>
-#include <limits>
 
 namespace mvm::app {
 namespace {
@@ -27,51 +20,18 @@ ShuttleAudioPlayback::~ShuttleAudioPlayback() {
 
 bool ShuttleAudioPlayback::start(const project::Project& project, int rate, std::int64_t baseFrame,
                                  float volume, std::string& error) {
-    if (running_ ||
-        (rate != -4 && rate != -2 && rate != -1 && rate != 1 && rate != 2 && rate != 4)) {
-        error = "シャトル音声の再生速度が不正です";
+    if (running_) {
+        error = "シャトル音声はすでに再生中です";
         return false;
     }
-    const auto timebase = core::CheckedOutputTimebase::create(
-        project.timelineFpsNum, project.timelineFpsDen, audio::kInternalSampleRate);
-    if (!timebase) {
-        error = "シャトル音声のtimebaseを作成できません";
+    if (!planShuttleAudio(project, rate, baseFrame, plan_, error))
+        return false;
+    if (plan_.clips.empty()) {
+        error = "シャトル音声で鳴らすaudio clipがありません";
         return false;
     }
-    const auto timeline = project::validateTimeline(project);
-    const auto base = timebase.value().seekTargetSample(baseFrame);
-    const auto end = timeline.success ? timebase.value().seekTargetSample(timeline.totalFrames)
-                                      : decltype(base){};
-    if (!timeline.success || !base || !end || base.value() < 0 || end.value() <= 0 ||
-        base.value() >= end.value()) {
-        error = "シャトル音声のtimeline範囲が不正です";
-        return false;
-    }
-    baseSample_ = base.value();
-    endSample_ = end.value();
-    rate_ = rate;
-    for (const auto& clip : project.timelineClips) {
-        if (clip.track.kind != project::TrackKind::Audio ||
-            project.audioTracks[static_cast<std::size_t>(clip.track.index)].muted)
-            continue;
-        const auto duration = project::timelineClipDuration(project, clip);
-        if (!duration.success) {
-            error = duration.error;
-            return false;
-        }
-        const auto startSample = timebase.value().seekTargetSample(clip.timelineStartFrame);
-        const auto endSample =
-            timebase.value().seekTargetSample(clip.timelineStartFrame + duration.frame);
-        const auto offset = audioPreviewSampleOffset(project, clip);
-        if (!startSample || !endSample || !offset.success) {
-            error = "シャトル音声のclip位置を換算できません";
-            return false;
-        }
-        const auto utf8Path = clip.mediaPath.u8string();
-        clips_.push_back(
-            {std::string(reinterpret_cast<const char*>(utf8Path.data()), utf8Path.size()),
-             startSample.value(), endSample.value(), offset.sampleOffset, nullptr});
-    }
+    readers_.clear();
+    readers_.resize(plan_.clips.size());
     if (!sink_.open(error, volume))
         return false;
     running_ = true;
@@ -89,7 +49,7 @@ void ShuttleAudioPlayback::stop() {
     if (producer_.joinable())
         producer_.join();
     sink_.stop();
-    clips_.clear();
+    readers_.clear();
 }
 
 std::int64_t ShuttleAudioPlayback::elapsedSamples() const {
@@ -101,14 +61,25 @@ std::string ShuttleAudioPlayback::error() const {
     return error_;
 }
 
-bool ShuttleAudioPlayback::readSamples(Clip& clip, std::int64_t first, std::int64_t count,
-                                       std::vector<float>& pcm, std::string& error) {
+bool ShuttleAudioPlayback::readSamples(std::size_t clipIndex, std::int64_t first,
+                                       std::int64_t count, std::vector<float>& pcm,
+                                       std::string& error) {
+    auto& clip = readers_[clipIndex];
     if (!clip.worker) {
         clip.worker = std::make_unique<audio::AudioDecodeWorker>(
-            audio::SourceId{static_cast<std::uint64_t>(&clip - clips_.data()) + 2});
-        if (!clip.worker->start(clip.path, error))
+            audio::SourceId{static_cast<std::uint64_t>(clipIndex) + 2});
+        if (!clip.worker->start(plan_.clips[clipIndex].path, error))
             return false;
     }
+    // 前進シャトルでは前 block の続きから rate 未満しか離れていないので、
+    // seek せずに続きから読み、要求より前の分を捨てる。
+    const std::int64_t skipped =
+        plan_.rate > 0 && clip.nextSample >= 0 && first > clip.nextSample &&
+                first - clip.nextSample < plan_.rate
+            ? first - clip.nextSample
+            : 0;
+    first -= skipped;
+    count += skipped;
     audio::SourceGeneration generation = clip.worker->queue().generation();
     if (clip.nextSample != first) {
         clip.worker->pause();
@@ -160,54 +131,8 @@ bool ShuttleAudioPlayback::readSamples(Clip& clip, std::int64_t first, std::int6
         }
     }
     clip.nextSample = first + count;
+    pcm.erase(pcm.begin(), pcm.begin() + skipped * audio::kInternalChannels);
     return running_;
-}
-
-bool ShuttleAudioPlayback::fillBlock(std::int64_t outputStart, std::vector<float>& pcm,
-                                     std::string& error) {
-    pcm.assign(static_cast<std::size_t>(kBlockSamples) * audio::kInternalChannels, 0.0F);
-    for (auto& clip : clips_) {
-        std::int64_t first = std::numeric_limits<std::int64_t>::max();
-        std::int64_t last = -1;
-        for (std::int64_t i = 0; i < kBlockSamples; ++i) {
-            const auto timelineSample =
-                timelineShuttleSampleAt(baseSample_, rate_, outputStart + i);
-            if (!timelineSample || *timelineSample < clip.timelineStartSample ||
-                *timelineSample >= clip.timelineEndSample || *timelineSample >= endSample_)
-                continue;
-            const auto sourceSample = *timelineSample + clip.sourceOffset;
-            if (sourceSample < 0) {
-                error = "シャトル音声の素材sample位置が負です";
-                return false;
-            }
-            first = std::min(first, sourceSample);
-            last = std::max(last, sourceSample);
-        }
-        if (last < 0)
-            continue;
-        if (rate_ > 0 && clip.nextSample >= 0 && first >= clip.nextSample &&
-            first - clip.nextSample < rate_)
-            first = clip.nextSample;
-        std::vector<float> source;
-        if (!readSamples(clip, first, last - first + 1, source, error))
-            return false;
-        for (std::int64_t i = 0; i < kBlockSamples; ++i) {
-            const auto timelineSample =
-                timelineShuttleSampleAt(baseSample_, rate_, outputStart + i);
-            if (!timelineSample || *timelineSample < clip.timelineStartSample ||
-                *timelineSample >= clip.timelineEndSample || *timelineSample >= endSample_)
-                continue;
-            const auto index =
-                static_cast<std::size_t>(*timelineSample + clip.sourceOffset - first) *
-                audio::kInternalChannels;
-            const auto output = static_cast<std::size_t>(i) * audio::kInternalChannels;
-            pcm[output] += source[index];
-            pcm[output + 1] += source[index + 1];
-        }
-    }
-    for (auto& sample : pcm)
-        sample = std::clamp(sample, -1.0F, 1.0F);
-    return true;
 }
 
 void ShuttleAudioPlayback::produce() {
@@ -218,7 +143,11 @@ void ShuttleAudioPlayback::produce() {
             continue;
         std::vector<float> pcm;
         std::string error;
-        if (!fillBlock(next, pcm, error)) {
+        const auto read = [this](std::size_t clipIndex, std::int64_t first, std::int64_t count,
+                                 std::vector<float>& source, std::string& readError) {
+            return readSamples(clipIndex, first, count, source, readError);
+        };
+        if (!mixShuttleBlock(plan_, next, kBlockSamples, read, pcm, error)) {
             if (running_) {
                 std::lock_guard lock(errorMutex_);
                 error_ = error.empty() ? "シャトル音声を生成できません" : error;

@@ -18,6 +18,7 @@
 #include <QObject>
 #include <QString>
 #include <QTimer>
+#include <QtQml/qqmlregistration.h>
 
 #include <memory>
 #include <vector>
@@ -47,6 +48,8 @@ struct MeasureConfig {
 
 class SpikeController : public QObject {
     Q_OBJECT
+    QML_NAMED_ELEMENT(SpikeController)
+    QML_UNCREATABLE("main() が生成した controller を使用してください")
     Q_PROPERTY(QString mediaPath READ mediaPath NOTIFY statusChanged)
     Q_PROPERTY(QString statusText READ statusText NOTIFY statusChanged)
     Q_PROPERTY(QString deviceText READ deviceText NOTIFY statusChanged)

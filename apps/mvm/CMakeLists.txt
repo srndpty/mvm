@@ -3,6 +3,7 @@ qt_add_executable(mvm
     media_bin_model.cpp
     media_import.cpp
     mvm_controller.cpp
+    shuttle_audio_mix.cpp
     shuttle_audio_playback.cpp
     timeline_clip_model.cpp
     track_model.cpp

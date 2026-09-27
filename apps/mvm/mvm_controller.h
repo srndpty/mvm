@@ -358,6 +358,9 @@ private:
     void pollAudioMeter();
     void advanceTimelinePlayback();
     void advanceTimelineShuttle();
+    // timed shuttle の clock (音声があれば audio clock) から現在の timeline frame を求める。
+    bool shuttleFrameFromClock(std::int64_t& frame, QString& error) const;
+    QString shuttleStatusText() const;
     bool changeShuttleRate(int direction);
     void setStatus(QString status);
     void reportExportFailure(QString message);
@@ -525,6 +528,8 @@ private:
     QElapsedTimer shuttleClock_;
     QTimer shuttleTimer_;
     std::unique_ptr<ShuttleAudioPlayback> shuttleAudio_;
+    // 音声を開始できず無音でシャトルしている理由。空なら失敗していない。
+    QString shuttleAudioFailure_;
     bool pendingPlaybackStart_ = false;
     bool scrubbing_ = false;
     bool scrubPending_ = false;

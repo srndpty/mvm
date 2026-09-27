@@ -201,9 +201,23 @@ ApplicationWindow {
     // 左上パネルのタブ。0: エフェクトコントロール / 1: プロジェクト
     property int leftPanelTab: 0
     property real leftPanelWidth: 340
+    // 文字入力・選択肢・popup (dialog / menu) に focus がある間は、window 全体の
+    // 単一キーと矢印の shortcut にキーを奪わせない。個々の編集状態 (名前変更中など) を
+    // 並べず、focus を持つ control の種類だけで決める。
+    readonly property bool keyboardFocusTakesKeys: {
+        const item = root.activeFocusItem;
+        if (item instanceof TextInput || item instanceof TextEdit || item instanceof ComboBox
+                || item instanceof SpinBox)
+            return true;
+        for (let ancestor = item; ancestor; ancestor = ancestor.parent) {
+            if (ancestor === root.Overlay.overlay)
+                return true;
+        }
+        return false;
+    }
     readonly property bool timelineShortcutsEnabled: !root.mvmController.busy
                                                      && root.mvmController.clipCount > 0
-                                                     && projectPanel.renamingId === ""
+                                                     && !root.keyboardFocusTakesKeys
     readonly property string projectFileName: {
         const parts = root.mvmController.projectPath.split(/[\\/]/);
         return parts[parts.length - 1];
@@ -391,12 +405,14 @@ ApplicationWindow {
     Shortcut {
         sequence: "Delete"
         enabled: !root.mvmController.busy && root.mvmController.currentClipIndex >= 0
+                 && !root.keyboardFocusTakesKeys
         onActivated: root.mvmController.deleteCurrentClip()
     }
     Shortcut {
         sequence: "Space"
         autoRepeat: false
         enabled: !root.mvmController.busy && (root.mvmController.playing || root.mvmController.canPlay)
+                 && !root.keyboardFocusTakesKeys
         onActivated: {
             if (root.mvmController.playing)
                 root.mvmController.pauseTimeline();
@@ -413,7 +429,7 @@ ApplicationWindow {
     Shortcut {
         sequence: "K"
         autoRepeat: false
-        enabled: root.mvmController.playing
+        enabled: root.mvmController.playing && !root.keyboardFocusTakesKeys
         onActivated: root.mvmController.pauseTimeline()
     }
     Shortcut {

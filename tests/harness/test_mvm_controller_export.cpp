@@ -849,6 +849,64 @@ void testDeleteMultipleSelection(const std::filesystem::path& path) {
     check(controller.undoLastEdit() && controller.clipCount() == 3,
           "複数clip削除を1回のUndoで復元できません");
 }
+
+// -4x の timed shuttle を始め、tick で playhead が動き出すまで待つ。
+// 開始直後の status を startStatus へ返す (tick 後は preview の無い seek 失敗で上書きされる)。
+bool startReverseShuttle(mvm::app::MvmController& controller, QString* startStatus = nullptr) {
+    const auto start = controller.playheadFrame();
+    if (!controller.shuttleLeft() || !controller.shuttleLeft() || !controller.shuttleLeft() ||
+        controller.shuttleRate() != -4)
+        return false;
+    if (startStatus)
+        *startStatus = controller.statusText();
+    return pumpUntil([&controller, start] { return controller.playheadFrame() < start; }, 1000);
+}
+
+// playhead が動かないことを、shuttle の tick (40ms) を何度も処理して確かめる。
+bool playheadStaysAt(mvm::app::MvmController& controller, qint64 frame) {
+    return !pumpUntil([&controller, frame] { return controller.playheadFrame() != frame; }, 250);
+}
+
+// timed shuttle は tick の間にも進んでいる。停止や frame step が、最後の tick の
+// 古い位置を基準にしたり、止まらずに次の tick で上書きされたりしないこと。
+// preview surface が無いので seek 自体は失敗を返すが、playhead は更新される。
+void testShuttleStopAndStep(const std::filesystem::path& path) {
+    mvm::app::MvmController controller(path, {}, videoProject());
+    controller.seekTimelineFrame(110);
+    check(controller.playheadFrame() == 110, "shuttle試験の開始位置へ移動できません");
+
+    // audio clip が無いので、2x/4x 以下でも WASAPI に依存せず timer clock で動く。
+    QString startStatus;
+    check(startReverseShuttle(controller, &startStatus), "-4倍速のシャトルが進みません");
+    check(startStatus == QStringLiteral("シャトル -4 倍速（音声なし）"),
+          "audio clipの無いtimelineで音声経路を作りました");
+
+    // tick を処理させずに 50ms (-4x / 60fps で 12 frame) 待ってから止める。
+    auto lastTick = controller.playheadFrame();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    check(controller.pauseTimeline() && controller.shuttleRate() == 0,
+          "Kでシャトルを停止できません");
+    check(controller.playheadFrame() <= lastTick - 5,
+          "シャトル停止位置が最後のtickのまま (停止直前のclockを反映していません)");
+    check(playheadStaysAt(controller, controller.playheadFrame()),
+          "シャトル停止後もplayheadが動きます");
+
+    check(startReverseShuttle(controller), "2回目の-4倍速シャトルが進みません");
+    lastTick = controller.playheadFrame();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    controller.stepTimelineFrames(1);
+    const auto stepped = controller.playheadFrame();
+    check(controller.shuttleRate() == 0, "シャトル中のframe stepでシャトルが止まりません");
+    check(stepped <= lastTick - 4, "シャトル中のframe stepが停止前の古い位置を基準にしています");
+    check(playheadStaysAt(controller, stepped), "シャトル中のframe stepが次のtickで上書きされます");
+
+    check(startReverseShuttle(controller), "3回目の-4倍速シャトルが進みません");
+    controller.jumpToEditPoint(-1);
+    check(controller.shuttleRate() == 0 && controller.playheadFrame() == 0,
+          "シャトル中の編集点ジャンプでシャトルが止まらないか、編集点へ移動しません");
+    check(playheadStaysAt(controller, 0), "シャトル中の編集点ジャンプが次のtickで上書きされます");
+    controller.shutdown();
+}
 } // namespace
 
 QString binEntryKind(const mvm::app::MediaBinModel& model, const QString& id) {
@@ -990,6 +1048,7 @@ int main(int argc, char** argv) {
     testDiscardRecovery(directory / L"recovery-discard.mvm");
     testShiftSelectionToggle(directory / L"shift-selection.mvm");
     testDeleteMultipleSelection(directory / L"delete-multiple.mvm");
+    testShuttleStopAndStep(directory / L"shuttle-stop-step.mvm");
     // MLT を初期化するので最後に置く。ほかの試験は MLT 無しの前提で書かれている。
     testMediaBinImport(directory / L"media-bin-import.mvm", std::filesystem::path(argv[2]));
     return failures == 0 ? 0 : 1;

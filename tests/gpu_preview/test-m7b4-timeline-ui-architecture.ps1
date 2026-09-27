@@ -96,6 +96,25 @@ if (-not (Test-NavigationShortcuts $qml) -or
     throw 'タイムライン移動ショートカットの契約が崩れています'
 }
 
+# window 全体の単一キー / 矢印 shortcut は、文字入力や popup に focus があれば無効にする。
+function Test-TextInputGuard([string]$source) {
+    if ($source -notmatch 'readonly property bool timelineShortcutsEnabled:[^\n]*(\n\s*&&[^\n]*)*\n\s*&& !root\.keyboardFocusTakesKeys') {
+        return $false
+    }
+    foreach ($key in @('J', 'K', 'L', 'Left', 'Right', 'Shift+Left', 'Shift+Right', 'Up', 'Down',
+                       'Space', 'Delete')) {
+        $pattern = 'Shortcut\s*\{[^{}]*sequence:\s*"' + [regex]::Escape($key) +
+                   '"[^{}]*enabled:[^{}]*?(root\.timelineShortcutsEnabled|!root\.keyboardFocusTakesKeys)'
+        if ($source -notmatch $pattern) { return $false }
+    }
+    return $true
+}
+if (-not (Test-TextInputGuard $qml) -or
+    (Test-TextInputGuard $qml.Replace('enabled: root.mvmController.playing && !root.keyboardFocusTakesKeys',
+                                      'enabled: root.mvmController.playing'))) {
+    throw 'transport shortcutが文字入力中のfocusを除外していません'
+}
+
 # timeline UI は clip の配置を track/start から引く。vector 順を authority にしない。
 $requiredQml = @(
     'x: timelineStartFrame * timelinePanel.pixelsPerFrame',

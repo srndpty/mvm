@@ -18,7 +18,6 @@
 
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
-#include <QQmlContext>
 #include <QQuickWindow>
 #include <QSGRendererInterface>
 #include <QStringList>
@@ -155,15 +154,12 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    qmlRegisterType<PreviewRhiItem>("mvm.preview", 1, 0, "PreviewSurface");
-
     SpikeController controller;
     controller.setMeasureConfig(cfg);
 
     QQmlApplicationEngine engine;
-    engine.rootContext()->setContextProperty(QStringLiteral("spike"), &controller);
-    engine.rootContext()->setContextProperty(QStringLiteral("initialMedia"), mediaPath);
-    engine.rootContext()->setContextProperty(QStringLiteral("measureMode"), cfg.enabled);
+    engine.setInitialProperties({{QStringLiteral("spike"), QVariant::fromValue(&controller)},
+                                 {QStringLiteral("measureMode"), cfg.enabled}});
 
     engine.load(QUrl(QStringLiteral("qrc:/mvm/preview_spike/Main.qml")));
     if (engine.rootObjects().isEmpty()) {

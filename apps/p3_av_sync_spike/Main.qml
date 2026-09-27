@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Window
-import mvm.compositor 1.0
 
 Window {
     width: 1920

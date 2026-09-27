@@ -7,10 +7,12 @@ qt_add_qml_module(mvm_p4_composition_spike
     URI mvm.p4_composition_spike
     VERSION 1.0
     RESOURCE_PREFIX /
+    SOURCES ${CMAKE_SOURCE_DIR}/src/app/preview/qml/compositor_surface_qml.h
     QML_FILES Main.qml
 )
 
-target_include_directories(mvm_p4_composition_spike PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(mvm_p4_composition_spike PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/src/app/preview/qml)
 target_link_libraries(mvm_p4_composition_spike PRIVATE
     mvm::gpu_preview
     mvm::audio_preview
