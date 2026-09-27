@@ -44,7 +44,7 @@ using ShuttleSourceReader =
                        std::vector<float>& pcm, std::string& error)>;
 
 // 出力 sample [outputStart, outputStart + sampleCount) を合成する。
-// 重なった clip は加算し、最後に [-1, 1] へ clamp する。
+// 重なった clip は加算し、最後に [-1, 1] へ clamp する。sampleCount は正でなければならない。
 bool mixShuttleBlock(const ShuttleAudioPlan& plan, std::int64_t outputStart,
                      std::int64_t sampleCount, const ShuttleSourceReader& read,
                      std::vector<float>& pcm, std::string& error);

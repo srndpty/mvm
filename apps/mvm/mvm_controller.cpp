@@ -2427,11 +2427,14 @@ bool MvmController::pauseTimeline() {
         // 最後の tick から今までに進んだ分を playhead へ確定させてから止める。
         // tick の位置のまま止めると、停止位置が最大 1 tick 分 (16x で約 640ms) 古くなる。
         // audio clock を読むので、音声を止める前に行う。
+        // 確定できなくても transport は必ず止め、古い位置で止まったことを status に残す。
+        QString clockError;
         if (timedShuttle) {
             std::int64_t frame = 0;
-            QString ignored;
-            if (shuttleFrameFromClock(frame, ignored))
+            if (shuttleFrameFromClock(frame, clockError))
                 playheadFrame_ = frame;
+            else if (clockError.isEmpty())
+                clockError = QStringLiteral("原因を取得できませんでした");
         }
         shuttleTimer_.stop();
         shuttleClock_.invalidate();
@@ -2446,7 +2449,9 @@ bool MvmController::pauseTimeline() {
                 scrubPending_ = true;
                 scrubTimer_.start();
             }
-            setStatus(QStringLiteral("シャトルを停止しました"));
+            setStatus(clockError.isEmpty()
+                          ? QStringLiteral("シャトルを停止しました")
+                          : QStringLiteral("シャトル停止位置を確定できません: ") + clockError);
             return true;
         }
     }
@@ -2539,8 +2544,8 @@ void MvmController::advanceTimelineShuttle() {
     std::int64_t frame = 0;
     QString clockError;
     if (!shuttleFrameFromClock(frame, clockError)) {
+        // 停止時にもう一度 clock を読み、確定できなかったことを pauseTimeline が status へ出す。
         pauseTimeline();
-        setStatus(clockError);
         return;
     }
     shuttleSeeking_ = true;

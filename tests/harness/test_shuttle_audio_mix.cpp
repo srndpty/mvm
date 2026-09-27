@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -204,6 +205,24 @@ void testVideoOnlyHasNoAudibleClip() {
     check(!mvm::app::hasShuttleAudibleClip(project), "videoだけのtimelineを鳴らせる扱いにします");
 }
 
+void testRejectsInvalidSampleCount() {
+    const auto project = singleClipProject();
+    mvm::app::ShuttleAudioPlan plan;
+    std::string error;
+    check(mvm::app::planShuttleAudio(project, 1, 40, plan, error), "planを作れません");
+    for (const std::int64_t sampleCount :
+         {std::int64_t{0}, std::int64_t{-1}, std::numeric_limits<std::int64_t>::min(),
+          std::numeric_limits<std::int64_t>::max()}) {
+        std::vector<ReadCall> calls;
+        std::vector<float> pcm;
+        std::string countError;
+        check(!mvm::app::mixShuttleBlock(plan, 0, sampleCount, encodingReader(calls), pcm,
+                                         countError) &&
+                  !countError.empty() && calls.empty() && pcm.empty(),
+              "不正なblock sample数を拒否しないか、拒否する前に素材を読みます");
+    }
+}
+
 void testReaderFailure() {
     const auto project = singleClipProject();
     mvm::app::ShuttleAudioPlan plan;
@@ -236,6 +255,7 @@ int main() {
     testForwardStopsAtTimelineEnd();
     testMuteAndOverlap();
     testVideoOnlyHasNoAudibleClip();
+    testRejectsInvalidSampleCount();
     testReaderFailure();
     if (failures != 0)
         return 1;

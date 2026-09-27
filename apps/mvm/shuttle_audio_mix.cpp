@@ -76,6 +76,13 @@ bool planShuttleAudio(const project::Project& project, int rate, std::int64_t ba
 bool mixShuttleBlock(const ShuttleAudioPlan& plan, std::int64_t outputStart,
                      std::int64_t sampleCount, const ShuttleSourceReader& read,
                      std::vector<float>& pcm, std::string& error) {
+    // 64bit では SIZE_MAX / channels が int64 の最大値を超え上限にならないので、
+    // vector が実際に持てる要素数で判定する。
+    if (sampleCount <= 0 || static_cast<std::uint64_t>(sampleCount) >
+                                pcm.max_size() / static_cast<std::size_t>(audio::kInternalChannels)) {
+        error = "シャトル音声のblock sample数が不正です";
+        return false;
+    }
     pcm.assign(static_cast<std::size_t>(sampleCount) * audio::kInternalChannels, 0.0F);
     for (std::size_t clipIndex = 0; clipIndex < plan.clips.size(); ++clipIndex) {
         const auto& clip = plan.clips[clipIndex];
