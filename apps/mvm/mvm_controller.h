@@ -61,6 +61,10 @@ class MvmController final : public QObject {
     Q_PROPERTY(bool canPlay READ canPlay NOTIFY stateChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY stateChanged)
     Q_PROPERTY(bool dirty READ dirty NOTIFY stateChanged)
+    Q_PROPERTY(bool recoveryAvailable READ recoveryAvailable NOTIFY stateChanged)
+    Q_PROPERTY(bool recoveryCanonicalChanged READ recoveryCanonicalChanged NOTIFY stateChanged)
+    Q_PROPERTY(bool recoveryCorrupt READ recoveryCorrupt NOTIFY stateChanged)
+    Q_PROPERTY(QString recoveryProjectPath READ recoveryProjectPath NOTIFY stateChanged)
     Q_PROPERTY(bool canExport READ canExport NOTIFY stateChanged)
     Q_PROPERTY(bool exporting READ exporting NOTIFY stateChanged)
     Q_PROPERTY(bool exportCancelling READ exportCancelling NOTIFY stateChanged)
@@ -158,6 +162,16 @@ public:
 
     bool dirty() const { return currentRevision_ != savedRevision_; }
 
+    bool recoveryAvailable() const { return recoveryProject_.has_value(); }
+
+    bool recoveryCanonicalChanged() const { return recoveryCanonicalChanged_; }
+
+    bool recoveryCorrupt() const { return recoveryCorrupt_; }
+
+    bool holdsProjectLock() const { return projectLockHeld_; }
+
+    QString recoveryProjectPath() const;
+
     bool canExport() const { return !project_.timelineClips.empty() && !busy_; }
 
     bool exporting() const { return exporting_; }
@@ -251,6 +265,10 @@ public:
     Q_INVOKABLE bool saveProject();
     Q_INVOKABLE bool saveProjectAs(const QUrl& fileUrl);
     Q_INVOKABLE bool discardUnsavedChanges();
+    Q_INVOKABLE bool restoreRecovery();
+    Q_INVOKABLE bool discardRecovery();
+    // 確認を閉じるだけでrecovery fileは残す。次回Openで再度確認する。
+    Q_INVOKABLE bool dismissRecovery();
     Q_INVOKABLE QVariantMap projectSettingsForClip(const QString& clipId) const;
     Q_INVOKABLE bool setProjectVideoSettings(int width, int height, int fpsNum, int fpsDen);
     Q_INVOKABLE bool setTimelineFrameRate(int fpsNum, int fpsDen);
@@ -262,6 +280,7 @@ Q_SIGNALS:
     void stateChanged();
     void meterChanged();
     void exportFailed(const QString& message);
+    void recoveryDetected();
 
 private:
     bool startTimelineExport(const QUrl& outputUrl, int videoCrf);
@@ -314,7 +333,20 @@ private:
     // Manim asset が確定したら timeline 上の Manim clip を追従させる。
     // timeline と asset の対応を決める箇所はここだけにする。
     bool syncManimTimelineClip(bool addIfMissing);
-    bool saveProject(project::Project candidate, const QString& failurePrefix);
+    bool commitProjectEdit(project::Project candidate, const QString& failurePrefix);
+    bool writeCanonicalProject(const project::Project& project, const std::filesystem::path& path,
+                               QString& error) const;
+    std::filesystem::path recoveryPath() const;
+    bool removeRecoveryFile(QString& error);
+    bool removeRecoveryBeside(const std::filesystem::path& projectPath, QString& error);
+    bool acquireProjectLock(const std::filesystem::path& path, void*& acquired, QString& error);
+    void adoptProjectLock(void* acquired, const std::filesystem::path& path);
+    void releaseProjectLock();
+    static void releaseLockHandle(void* handle);
+    QString canonicalFileSha256(bool& readable) const;
+    void scheduleRecoveryAutosave();
+    void writeRecoveryAutosave();
+    void detectRecovery();
     void setCurrentClipSelection(int index);
     void setTimelineSelection(const std::vector<std::string>& clipIds);
     bool refreshPreviewAfterSavedEdit(const std::string& selectedClipId,
@@ -405,9 +437,17 @@ private:
 
     std::vector<UndoEntry> undoHistory_;
     project::Project savedProject_;
+    std::optional<project::Project> recoveryProject_;
+    bool recoveryCanonicalChanged_ = false;
+    bool recoveryCorrupt_ = false;
+    void* projectLockHandle_ = nullptr;
+    bool projectLockHeld_ = false;
+    std::filesystem::path projectLockPath_;
+    std::string sessionId_;
     std::uint64_t currentRevision_ = 0;
     std::uint64_t savedRevision_ = 0;
     std::uint64_t nextRevision_ = 1;
+    std::uint64_t recoveryRevision_ = 0;
     std::int64_t playheadFrame_ = 0;
     std::int64_t totalTimelineFrames_ = 0;
     double audioMeterDbLeft_ = kMeterSilenceDb;
@@ -442,6 +482,8 @@ private:
     QTimer stateTimer_;
     QTimer scrubTimer_;
     QTimer meterTimer_;
+    QTimer recoveryDebounceTimer_;
+    QTimer recoveryMaximumTimer_;
 };
 
 } // namespace mvm::app

@@ -18,12 +18,45 @@ ApplicationWindow {
     property url selectedManimScript
     property url pendingExportFile
     property bool closeConfirmed: false
+    property string pendingProjectAction: ""
+
+    Component.onCompleted: {
+        if (mvmController.recoveryAvailable || mvmController.recoveryCorrupt)
+            recoveryDialog.open();
+    }
 
     onClosing: close => {
         if (!closeConfirmed && mvmController.dirty) {
             close.accepted = false;
+            pendingProjectAction = "close";
             unsavedChangesDialog.open();
         }
+    }
+
+    function performProjectAction(action) {
+        if (action === "close") {
+            closeConfirmed = true;
+            close();
+        } else if (action === "new") {
+            newProjectDialog.open();
+        } else if (action === "open") {
+            openProjectDialog.open();
+        }
+    }
+
+    function requestProjectAction(action) {
+        if (mvmController.dirty) {
+            pendingProjectAction = action;
+            unsavedChangesDialog.open();
+            return;
+        }
+        performProjectAction(action);
+    }
+
+    function continuePendingProjectAction() {
+        const action = pendingProjectAction;
+        pendingProjectAction = "";
+        performProjectAction(action);
     }
 
     function isLocalFileUrl(url) {
@@ -145,12 +178,12 @@ ApplicationWindow {
             Button {
                 text: "新規"
                 enabled: !mvmController.busy
-                onClicked: newProjectDialog.open()
+                onClicked: root.requestProjectAction("new")
             }
             Button {
                 text: "開く"
                 enabled: !mvmController.busy
-                onClicked: openProjectDialog.open()
+                onClicked: root.requestProjectAction("open")
             }
             Button {
                 text: "保存"
@@ -532,25 +565,22 @@ ApplicationWindow {
                                                 0.35, 0.5, 0.75, 1.0, 1.5, 2, 3, 4,
                                                 6, 8, 12, 16, 24]
             property int zoomIndex: 10
-            // 最大zoom-outではclip全体をviewportの70%幅へ収める。離散倍率へ
-            // 切り上げると全体が収まらないため、下限の段階だけ正確なfit倍率を使う。
-            readonly property real fitPixelsPerFrame:
+            property int observedTimelineFrames: mvmController.totalTimelineFrames
+            onObservedTimelineFramesChanged: {
+                zoomIndex = Math.max(minimumZoomIndex,
+                                     Math.min(zoomLevels.length - 1, zoomIndex));
+            }
+            // 通常の最小倍率でも全体が収まらない長いtimelineだけ、70%幅へ収める
+            // 特別なfit倍率を使う。短いtimelineで最大倍率側へ固定しない。
+            readonly property real requestedFitPixelsPerFrame:
                 mvmController.totalTimelineFrames > 0 && timelineFlick.width > 0
                 ? timelineFlick.width * 0.7 / mvmController.totalTimelineFrames
                 : zoomLevels[0]
-            readonly property int minimumZoomIndex: {
-                for (let index = 0; index < zoomLevels.length; ++index) {
-                    if (zoomLevels[index] >= fitPixelsPerFrame)
-                        return index;
-                }
-                return zoomLevels.length - 1;
-            }
+            readonly property real fitPixelsPerFrame:
+                Math.min(zoomLevels[0], requestedFitPixelsPerFrame)
+            readonly property int minimumZoomIndex: 0
             readonly property real pixelsPerFrame:
                 zoomIndex === minimumZoomIndex ? fitPixelsPerFrame : zoomLevels[zoomIndex]
-            onMinimumZoomIndexChanged: {
-                if (zoomIndex < minimumZoomIndex)
-                    zoomIndex = minimumZoomIndex;
-            }
             property string activeDragLinkGroup: ""
             property string activeDragClipId: ""
             property real activeDragOffsetX: 0
@@ -1711,6 +1741,9 @@ ApplicationWindow {
             exportFailureDialog.message = message;
             exportFailureDialog.open();
         }
+        function onRecoveryDetected() {
+            recoveryDialog.open();
+        }
     }
 
     FileDialog {
@@ -1769,6 +1802,72 @@ ApplicationWindow {
     }
 
     Dialog {
+        id: recoveryDialog
+        anchors.centerIn: parent
+        width: Math.min(root.width - 40, 620)
+        modal: true
+        closePolicy: Popup.NoAutoClose
+        title: mvmController.recoveryCorrupt
+               ? "自動復旧データを読めません"
+               : (mvmController.recoveryCanonicalChanged
+                  ? "Project fileが外部で変更されています"
+                  : "自動保存された編集があります")
+
+        contentItem: Label {
+            text: mvmController.recoveryCorrupt
+                  ? "自動復旧データが壊れているため、最後に保存したProjectを開きました。復旧fileは残しています。\n"
+                    + mvmController.recoveryProjectPath
+                  : (mvmController.recoveryCanonicalChanged
+                     ? "自動保存のあとでProject fileの内容が変わっています。復元すると、その変更は明示保存するまでfileへ書き込まれません。\n"
+                       + mvmController.recoveryProjectPath
+                     : "前回、正常に保存されなかった編集が見つかりました。\n"
+                       + mvmController.recoveryProjectPath
+                       + "\n\n自動保存された編集を復元しますか？")
+            color: "white"
+            wrapMode: Text.Wrap
+        }
+
+        footer: DialogButtonBox {
+            Button {
+                visible: !mvmController.recoveryCorrupt
+                text: "復元する"
+                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+                onClicked: {
+                    if (mvmController.restoreRecovery())
+                        recoveryDialog.close();
+                }
+            }
+            Button {
+                visible: !mvmController.recoveryCorrupt
+                text: mvmController.recoveryCanonicalChanged ? "現在のProjectを開く" : "最後の保存状態を使う"
+                DialogButtonBox.buttonRole: DialogButtonBox.DestructiveRole
+                onClicked: {
+                    if (mvmController.discardRecovery())
+                        recoveryDialog.close();
+                }
+            }
+            Button {
+                visible: mvmController.recoveryCanonicalChanged && !mvmController.recoveryCorrupt
+                text: "キャンセル"
+                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
+                onClicked: {
+                    if (mvmController.dismissRecovery())
+                        recoveryDialog.close();
+                }
+            }
+            Button {
+                visible: mvmController.recoveryCorrupt
+                text: "OK"
+                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+                onClicked: {
+                    if (mvmController.dismissRecovery())
+                        recoveryDialog.close();
+                }
+            }
+        }
+    }
+
+    Dialog {
         id: unsavedChangesDialog
         anchors.centerIn: parent
         modal: true
@@ -1776,7 +1875,7 @@ ApplicationWindow {
         title: "未保存の変更"
 
         contentItem: Label {
-            text: "プロジェクトへの変更を保存してから終了しますか？"
+            text: "プロジェクトへの変更を保存しますか？"
             color: "white"
             wrapMode: Text.Wrap
         }
@@ -1788,8 +1887,7 @@ ApplicationWindow {
                 onClicked: {
                     if (mvmController.saveProject()) {
                         unsavedChangesDialog.close();
-                        root.closeConfirmed = true;
-                        root.close();
+                        root.continuePendingProjectAction();
                     }
                 }
             }
@@ -1799,15 +1897,17 @@ ApplicationWindow {
                 onClicked: {
                     if (mvmController.discardUnsavedChanges()) {
                         unsavedChangesDialog.close();
-                        root.closeConfirmed = true;
-                        root.close();
+                        root.continuePendingProjectAction();
                     }
                 }
             }
             Button {
                 text: "キャンセル"
                 DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
-                onClicked: unsavedChangesDialog.close()
+                onClicked: {
+                    root.pendingProjectAction = "";
+                    unsavedChangesDialog.close();
+                }
             }
         }
     }

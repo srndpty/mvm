@@ -34,13 +34,13 @@ struct ManimClipRestoreResult {
     std::string error;
 };
 
-// Manim renderからProject保存までを同期実行する。
+// Manim renderからProject working stateの更新までを同期実行する。
 // 途中で失敗した場合、projectは呼び出し前のまま維持する。
 ManimClipGenerationResult generateManimClip(project::Project& project,
                                             const ManimClipGenerationRequest& request);
 
 // 先頭のManim assetだけを現在のsource fingerprintで再評価する。
-// 状態変更の保存に失敗した場合、projectは呼び出し前のまま維持する。
+// 状態変更の検証に失敗した場合、projectは呼び出し前のまま維持する。
 ManimClipRestoreResult restoreFirstManimClip(project::Project& project,
                                              const std::filesystem::path& projectPath);
 

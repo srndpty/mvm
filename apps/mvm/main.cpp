@@ -10,7 +10,6 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
-#include <qqml.h>
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
@@ -18,6 +17,7 @@
 #include <QStringList>
 #include <QVariant>
 #include <QWheelEvent>
+#include <qqml.h>
 
 namespace {
 
@@ -70,9 +70,8 @@ protected:
             return true;
 
         if (arguments.size() == 2) {
-            QMetaObject::invokeMethod(
-                timelinePanel_, method, Qt::DirectConnection, Q_ARG(QVariant, arguments[0]),
-                Q_ARG(QVariant, arguments[1]));
+            QMetaObject::invokeMethod(timelinePanel_, method, Qt::DirectConnection,
+                                      Q_ARG(QVariant, arguments[0]), Q_ARG(QVariant, arguments[1]));
         } else {
             QMetaObject::invokeMethod(timelinePanel_, method, Qt::DirectConnection,
                                       Q_ARG(QVariant, arguments[0]));
@@ -160,6 +159,11 @@ int main(int argc, char** argv) {
     }
     mvm::app::MvmController controller(arguments.projectPath, arguments.manimExecutablePath,
                                        std::move(project));
+    if (!controller.holdsProjectLock()) {
+        std::fprintf(stderr, "%s\n", controller.statusText().toUtf8().constData());
+        mvm_mlt_runtime_shutdown();
+        return 6;
+    }
     qmlRegisterType<mvm::app::PreviewEngineRhiItem>("mvm.preview", 1, 0, "PreviewSurface");
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(QStringLiteral("mvmController"), &controller);
@@ -172,12 +176,12 @@ int main(int argc, char** argv) {
     auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().first());
     auto* timelinePanel =
         window ? window->findChild<QQuickItem*>(QStringLiteral("timelinePanel")) : nullptr;
-    auto* surface = window ? window->findChild<mvm::app::PreviewEngineRhiItem*>(
-                                 QStringLiteral("previewSurface"))
-                           : nullptr;
+    auto* surface =
+        window
+            ? window->findChild<mvm::app::PreviewEngineRhiItem*>(QStringLiteral("previewSurface"))
+            : nullptr;
     if (!window || !surface || !timelinePanel) {
-        std::fprintf(stderr,
-                     "mvmのWindow、Preview、またはtimeline panelが見つかりません\n");
+        std::fprintf(stderr, "mvmのWindow、Preview、またはtimeline panelが見つかりません\n");
         return 4;
     }
     TimelineWheelEventFilter timelineWheelFilter(window, timelinePanel);

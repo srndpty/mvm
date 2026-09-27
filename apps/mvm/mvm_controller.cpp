@@ -26,18 +26,36 @@
 #include <utility>
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
+#include <QDateTime>
 #include <QEventLoop>
+#include <QFile>
 #include <QFileInfo>
 #include <QMetaObject>
 #include <QPointer>
 #include <QUuid>
 #include <QVariantMap>
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
 namespace mvm::app {
 namespace {
 
 QString fromPath(const std::filesystem::path& path) {
     return QString::fromStdWString(path.wstring());
+}
+
+bool atomicSaveProject(const project::Project& project, const std::filesystem::path& path,
+                       QString& error) {
+    const auto saved = project::saveProjectJson(project, path);
+    if (!saved.success) {
+        error = QString::fromStdString(saved.error);
+        return false;
+    }
+    return true;
 }
 
 bool revealFileInExplorer(const std::filesystem::path& path, QString& error) {
@@ -223,12 +241,38 @@ MvmController::MvmController(std::filesystem::path projectPath,
               ? std::move(exportThreadFactory)
               : [](std::function<void()> task) { return std::thread(std::move(task)); }),
       fileRevealer_(fileRevealer ? std::move(fileRevealer) : revealFileInExplorer) {
+    sessionId_ = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+    QString lockError;
+    void* acquiredLock = nullptr;
+    const bool locked = acquireProjectLock(projectPath_, acquiredLock, lockError);
+    if (locked)
+        adoptProjectLock(acquiredLock, projectPath_);
+
+    recoveryDebounceTimer_.setSingleShot(true);
+    recoveryDebounceTimer_.setInterval(2000);
+    recoveryMaximumTimer_.setSingleShot(true);
+    recoveryMaximumTimer_.setInterval(30000);
+    connect(&recoveryDebounceTimer_, &QTimer::timeout, this, &MvmController::writeRecoveryAutosave);
+    connect(&recoveryMaximumTimer_, &QTimer::timeout, this, &MvmController::writeRecoveryAutosave);
+
     refreshTimelineModel();
     initializePreviewEngine(QStringLiteral("Preview初期化に失敗しました: "));
-    restoreFirstManimClip();
-    // 起動時のasset同期は利用者の編集ではないため、Undo履歴へ残さない。
-    undoHistory_.clear();
     savedProject_ = project_;
+    if (!projectLockHeld_) {
+        statusText_ = QStringLiteral("このProjectは他のプロセスが編集中です: ") + lockError;
+    } else {
+        detectRecovery();
+    }
+    if (projectLockHeld_ && !recoveryAvailable() && !recoveryCorrupt_) {
+        const project::Project beforeRestore = project_;
+        restoreFirstManimClip();
+        if (project_ != beforeRestore && currentRevision_ == savedRevision_) {
+            currentRevision_ = nextRevision_++;
+            scheduleRecoveryAutosave();
+        }
+        // 起動時のasset同期は利用者の編集ではないため、Undo履歴へ残さない。
+        undoHistory_.clear();
+    }
 
     playbackTimer_.setInterval(16);
     playbackTimer_.setTimerType(Qt::PreciseTimer);
@@ -278,6 +322,10 @@ void MvmController::attachPreview(PreviewEngineRhiItem* surface) {
 
 QString MvmController::projectPath() const {
     return fromPath(projectPath_);
+}
+
+QString MvmController::recoveryProjectPath() const {
+    return fromPath(recoveryPath());
 }
 
 const project::ClipEffects& MvmController::currentEffects() const {
@@ -586,20 +634,293 @@ void MvmController::refreshTimelineModel() {
         playheadFrame_ = std::clamp<std::int64_t>(playheadFrame_, 0, totalTimelineFrames_ - 1);
 }
 
-bool MvmController::saveProject(project::Project candidate, const QString& failurePrefix) {
-    UndoEntry undo{project_, selectedClipIds_, currentClipId(), playheadFrame_, currentRevision_};
-    const project::ProjectIoResult saved =
-        project::saveProjectJsonTransaction(project_, std::move(candidate), projectPath_);
-    if (!saved.success) {
-        setStatus(failurePrefix + QString::fromStdString(saved.error));
+bool MvmController::commitProjectEdit(project::Project candidate, const QString& failurePrefix) {
+    if (!projectLockHeld_) {
+        setStatus(failurePrefix + QStringLiteral("Projectを排他できません"));
         return false;
     }
+    UndoEntry undo{project_, selectedClipIds_, currentClipId(), playheadFrame_, currentRevision_};
+    const auto serialized = project::serializeProjectJson(candidate, projectPath_);
+    if (!serialized.success) {
+        setStatus(failurePrefix + QString::fromStdString(serialized.error));
+        return false;
+    }
+    project_ = std::move(candidate);
     undoHistory_.push_back(std::move(undo));
     constexpr std::size_t kMaximumUndoEntries = 100;
     if (undoHistory_.size() > kMaximumUndoEntries)
         undoHistory_.erase(undoHistory_.begin());
     currentRevision_ = nextRevision_++;
     refreshTimelineModel();
+    scheduleRecoveryAutosave();
+    return true;
+}
+
+bool MvmController::writeCanonicalProject(const project::Project& project,
+                                          const std::filesystem::path& path, QString& error) const {
+    return atomicSaveProject(project, path, error);
+}
+
+std::filesystem::path MvmController::recoveryPath() const {
+    std::filesystem::path path = projectPath_;
+    path += L".recovery";
+    return path;
+}
+
+bool MvmController::removeRecoveryBeside(const std::filesystem::path& projectPath, QString& error) {
+    std::filesystem::path path = projectPath;
+    path += L".recovery";
+    std::error_code removeError;
+    std::filesystem::remove(path, removeError);
+    if (removeError) {
+        error = QString::fromStdString(removeError.message());
+        return false;
+    }
+    return true;
+}
+
+bool MvmController::removeRecoveryFile(QString& error) {
+    if (!removeRecoveryBeside(projectPath_, error))
+        return false;
+    recoveryRevision_ = 0;
+    return true;
+}
+
+bool MvmController::acquireProjectLock(const std::filesystem::path& path, void*& acquired,
+                                       QString& error) {
+    acquired = nullptr;
+    std::error_code pathError;
+    const auto absolute = std::filesystem::absolute(path, pathError).lexically_normal();
+    if (pathError) {
+        error = QString::fromStdString(pathError.message());
+        return false;
+    }
+    if (projectLockHeld_ && projectLockPath_ == absolute)
+        return true;
+
+    const auto parent = absolute.parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent, pathError);
+        if (pathError) {
+            error = QString::fromStdString(pathError.message());
+            return false;
+        }
+    }
+
+    const std::wstring lockPath = absolute.wstring() + L".lock";
+    const HANDLE handle =
+        CreateFileW(lockPath.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS,
+                    FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        const DWORD code = GetLastError();
+        error = code == ERROR_SHARING_VIOLATION
+                    ? QStringLiteral("他のmvmがこのProjectを開いています")
+                    : QStringLiteral("Project lockを取得できません (Win32 error %1)").arg(code);
+        return false;
+    }
+    acquired = handle;
+    return true;
+}
+
+void MvmController::adoptProjectLock(void* acquired, const std::filesystem::path& path) {
+    if (!acquired)
+        return;
+    std::error_code pathError;
+    const auto absolute = std::filesystem::absolute(path, pathError).lexically_normal();
+    releaseProjectLock();
+    projectLockHandle_ = acquired;
+    projectLockPath_ = pathError ? path : absolute;
+    projectLockHeld_ = true;
+}
+
+void MvmController::releaseProjectLock() {
+    releaseLockHandle(projectLockHandle_);
+    projectLockHandle_ = nullptr;
+    projectLockHeld_ = false;
+    projectLockPath_.clear();
+}
+
+void MvmController::releaseLockHandle(void* handle) {
+    if (handle)
+        CloseHandle(static_cast<HANDLE>(handle));
+}
+
+QString MvmController::canonicalFileSha256(bool& readable) const {
+    readable = false;
+    QFile file(fromPath(projectPath_));
+    if (!file.exists()) {
+        readable = true;
+        return {};
+    }
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    if (!hash.addData(&file))
+        return {};
+    readable = true;
+    return QString::fromLatin1(hash.result().toHex());
+}
+
+void MvmController::scheduleRecoveryAutosave() {
+    if (!dirty()) {
+        recoveryDebounceTimer_.stop();
+        recoveryMaximumTimer_.stop();
+        QString ignored;
+        removeRecoveryFile(ignored);
+        return;
+    }
+    recoveryDebounceTimer_.start();
+    if (!recoveryMaximumTimer_.isActive())
+        recoveryMaximumTimer_.start();
+}
+
+void MvmController::writeRecoveryAutosave() {
+    recoveryDebounceTimer_.stop();
+    recoveryMaximumTimer_.stop();
+    if (!dirty()) {
+        QString ignored;
+        removeRecoveryFile(ignored);
+        return;
+    }
+    if (!projectLockHeld_ || recoveryRevision_ == currentRevision_)
+        return;
+
+    bool hashReadable = false;
+    const QString canonicalHash = canonicalFileSha256(hashReadable);
+    if (!hashReadable) {
+        setStatus(QStringLiteral("自動復旧データを保存できません: Project fileを照合できません"));
+        recoveryMaximumTimer_.start();
+        return;
+    }
+    const auto saved = project::saveProjectRecovery(
+        project_, recoveryPath(), projectPath_, canonicalHash.toStdString(),
+        QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs).toStdString(), sessionId_);
+    if (!saved.success) {
+        setStatus(QStringLiteral("自動復旧データを保存できません: ") +
+                  QString::fromStdString(saved.error));
+        recoveryMaximumTimer_.start();
+        return;
+    }
+    recoveryRevision_ = currentRevision_;
+}
+
+void MvmController::detectRecovery() {
+    recoveryProject_.reset();
+    recoveryCanonicalChanged_ = false;
+    recoveryCorrupt_ = false;
+    recoveryRevision_ = 0;
+    std::error_code existsError;
+    const bool exists = std::filesystem::exists(recoveryPath(), existsError);
+    if (existsError) {
+        statusText_ = QStringLiteral("自動復旧データを確認できません: ") +
+                      QString::fromStdString(existsError.message());
+        return;
+    }
+    if (!exists)
+        return;
+
+    const auto loaded = project::loadProjectRecovery(recoveryPath(), projectPath_);
+    if (!loaded.success) {
+        recoveryCorrupt_ = true;
+        statusText_ = QStringLiteral("自動復旧データが壊れています。fileは保持しました: ") +
+                      QString::fromStdString(loaded.error);
+        Q_EMIT stateChanged();
+        return;
+    }
+
+    bool hashReadable = false;
+    const QString canonicalHash = canonicalFileSha256(hashReadable);
+    if (!hashReadable) {
+        recoveryProject_ = loaded.project;
+        recoveryCanonicalChanged_ = true;
+        statusText_ =
+            QStringLiteral("Project fileを照合できないため、自動復旧の扱いを確認してください");
+        Q_EMIT recoveryDetected();
+        return;
+    }
+
+    const auto disposition = project::classifyRecovery(
+        loaded.project, savedProject_, loaded.canonicalSha256, canonicalHash.toStdString());
+    if (disposition == project::RecoveryDisposition::Stale) {
+        QString ignored;
+        if (!removeRecoveryFile(ignored)) {
+            statusText_ = QStringLiteral("同一内容の自動復旧データを削除できません: ") + ignored;
+            Q_EMIT stateChanged();
+        }
+        return;
+    }
+
+    recoveryProject_ = loaded.project;
+    recoveryCanonicalChanged_ = disposition == project::RecoveryDisposition::CanonicalChanged;
+    if (recoveryCanonicalChanged_) {
+        statusText_ = QStringLiteral(
+            "Project "
+            "fileが自動保存のあとで変わっています。復元するか、現在のfileを開くか選んでください");
+    }
+    Q_EMIT recoveryDetected();
+}
+
+bool MvmController::restoreRecovery() {
+    if (busy_ || !projectLockHeld_ || !recoveryProject_ || !pauseTimeline())
+        return false;
+    project_ = *recoveryProject_;
+    recoveryProject_.reset();
+    recoveryCanonicalChanged_ = false;
+    recoveryCorrupt_ = false;
+    currentRevision_ = nextRevision_++;
+    recoveryRevision_ = currentRevision_;
+    undoHistory_.clear();
+    selectedClipIds_.clear();
+    currentClipIndex_ = -1;
+    currentClipName_.clear();
+    currentClipPath_.clear();
+    playheadFrame_ = 0;
+    syncFirstManimAsset();
+    refreshTimelineModel();
+    if (!resetPreviewEngine()) {
+        const QString failure = statusText_;
+        setStatus(QStringLiteral("自動復旧データは復元しましたが、Previewを初期化できません: ") +
+                  failure);
+        return true;
+    }
+    Q_EMIT stateChanged();
+    setStatus(QStringLiteral(
+        "自動保存された編集を復元しました。保存するまで元のProject fileは変更されません"));
+    return true;
+}
+
+bool MvmController::discardRecovery() {
+    if (busy_ || !projectLockHeld_ || !recoveryProject_)
+        return false;
+    QString error;
+    if (!removeRecoveryFile(error)) {
+        setStatus(QStringLiteral("自動復旧データを破棄できません: ") + error);
+        return false;
+    }
+    recoveryProject_.reset();
+    recoveryCanonicalChanged_ = false;
+    recoveryCorrupt_ = false;
+    const project::Project beforeRestore = project_;
+    restoreFirstManimClip();
+    if (project_ != beforeRestore && currentRevision_ == savedRevision_) {
+        currentRevision_ = nextRevision_++;
+        scheduleRecoveryAutosave();
+    }
+    undoHistory_.clear();
+    Q_EMIT stateChanged();
+    if (!dirty())
+        setStatus(QStringLiteral("自動復旧データを破棄し、最後に保存したProjectを開きました"));
+    return true;
+}
+
+bool MvmController::dismissRecovery() {
+    if (!recoveryProject_ && !recoveryCorrupt_)
+        return false;
+    recoveryProject_.reset();
+    recoveryCanonicalChanged_ = false;
+    recoveryCorrupt_ = false;
+    Q_EMIT stateChanged();
+    setStatus(QStringLiteral("自動復旧データは残したまま、確認を閉じました"));
     return true;
 }
 
@@ -679,7 +1000,7 @@ bool MvmController::refreshPreviewAfterSavedEdit(const std::string& selectedClip
     const QString previewFailure = statusText_;
     setCurrentClipSelection(indexOfClipId(project_.timelineClips, selectedClipId));
     if (!refreshed) {
-        setStatus(QStringLiteral("編集は保存されましたが、Previewの更新に失敗しました: ") +
+        setStatus(QStringLiteral("編集は反映されましたが、Previewの更新に失敗しました: ") +
                   previewFailure);
         return true;
     }
@@ -734,7 +1055,7 @@ bool MvmController::syncManimTimelineClip(bool addIfMissing) {
             return false;
         }
     }
-    return saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: "));
+    return commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: "));
 }
 
 void MvmController::pollAudioMeter() {
@@ -1190,6 +1511,11 @@ bool MvmController::generateAndInstallManimClip(const std::filesystem::path& scr
         return false;
     }
 
+    if (!projectLockHeld_) {
+        setStatus(QStringLiteral("Projectを排他できないため、Manimを生成できません"));
+        return false;
+    }
+
     const bool addTimelinePlacement = project_.manimAssets.empty();
 
     busy_ = true;
@@ -1208,6 +1534,7 @@ bool MvmController::generateAndInstallManimClip(const std::filesystem::path& scr
     // 生成物は 30/1 になり Project の 30000/1001 と一致せず「Preview未対応」の
     // clip ができる。丸めて対応したことにせず、ここで fail-closed にする。
     request.fps = static_cast<int>(project_.timelineFpsNum / project_.timelineFpsDen);
+    UndoEntry undo{project_, selectedClipIds_, currentClipId(), playheadFrame_, currentRevision_};
     const ManimClipGenerationResult generated = mvm::app::generateManimClip(project_, request);
 
     busy_ = false;
@@ -1219,9 +1546,13 @@ bool MvmController::generateAndInstallManimClip(const std::filesystem::path& scr
         return false;
     }
 
-    // Manim workflow は生成物とassetを直接Projectへ反映するため、通常の編集
-    // transactionを通らない。この変更も終了確認の対象へ含める。
+    // 生成はworking stateだけを更新する。canonicalへは明示保存まで書かない。
+    undoHistory_.push_back(std::move(undo));
+    constexpr std::size_t kMaximumUndoEntries = 100;
+    if (undoHistory_.size() > kMaximumUndoEntries)
+        undoHistory_.erase(undoHistory_.begin());
     currentRevision_ = nextRevision_++;
+    scheduleRecoveryAutosave();
 
     syncFirstManimAsset();
     if (!syncManimTimelineClip(addTimelinePlacement))
@@ -1294,7 +1625,7 @@ bool MvmController::addManimToTimeline() {
         setStatus(QString::fromStdString(placed.error));
         return false;
     }
-    if (!saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: ")))
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
         return false;
 
     Q_EMIT stateChanged();
@@ -1398,7 +1729,7 @@ bool MvmController::addVideoClip(const QUrl& fileUrl) {
         }
     }
 
-    if (!saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: ")))
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
         return false;
 
     const int index = placed.selectedIndex;
@@ -1450,7 +1781,7 @@ bool MvmController::addAudioClip(const QUrl& fileUrl) {
         setStatus(QString::fromStdString(placed.error));
         return false;
     }
-    if (!saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: ")))
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
         return false;
 
     const int index = placed.selectedIndex;
@@ -1858,7 +2189,7 @@ bool MvmController::moveTimelineClip(const QString& clipId, const QString& track
         setStatus(QString::fromStdString(moved.error));
         return false;
     }
-    if (!saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: ")))
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
         return false;
     const QString status = movedIds.size() > 1 ? QString::number(movedIds.size()) +
                                                      QStringLiteral("個のclipを移動しました")
@@ -1887,7 +2218,7 @@ bool MvmController::trimClip(const QString& clipId, const QString& edge, qint64 
         setStatus(QString::fromStdString(trimmed.error));
         return false;
     }
-    if (!saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: ")))
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
         return false;
     return refreshPreviewAfterSavedEdit(clipId.toStdString(), QStringLiteral("clipをtrimしました"));
 }
@@ -1927,7 +2258,7 @@ bool MvmController::deleteCurrentClip() {
         return false;
     }
 
-    if (!saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: ")))
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
         return false;
 
     pendingVideoPath_.reset();
@@ -1984,7 +2315,7 @@ bool MvmController::unlinkTimelineClip(const QString& clipId) {
         setStatus(QString::fromStdString(unlinked.error));
         return false;
     }
-    if (!saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: ")))
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
         return false;
     setTimelineSelection({clipId.toStdString()});
     return refreshPreviewAfterSavedEdit(clipId.toStdString(),
@@ -1992,7 +2323,13 @@ bool MvmController::unlinkTimelineClip(const QString& clipId) {
 }
 
 bool MvmController::undoLastEdit() {
-    if (busy_ || !pauseTimeline())
+    if (busy_)
+        return false;
+    if (!projectLockHeld_) {
+        setStatus(QStringLiteral("編集を元に戻せません: Projectを排他できません"));
+        return false;
+    }
+    if (!pauseTimeline())
         return false;
     if (undoHistory_.empty()) {
         setStatus(QStringLiteral("元に戻せる編集がありません"));
@@ -2000,15 +2337,16 @@ bool MvmController::undoLastEdit() {
     }
 
     const UndoEntry& undo = undoHistory_.back();
-    const project::ProjectIoResult saved =
-        project::saveProjectJsonTransaction(project_, undo.project, projectPath_);
-    if (!saved.success) {
-        setStatus(QStringLiteral("編集を元に戻せません: ") + QString::fromStdString(saved.error));
+    const auto serialized = project::serializeProjectJson(undo.project, projectPath_);
+    if (!serialized.success) {
+        setStatus(QStringLiteral("編集を元に戻せません: ") +
+                  QString::fromStdString(serialized.error));
         return false;
     }
 
     const std::vector<std::string> previousSelection = undo.selectedClipIds;
     const std::string previousCurrentClipId = undo.currentClipId;
+    project_ = undo.project;
     playheadFrame_ = undo.playheadFrame;
     currentRevision_ = undo.revision;
     undoHistory_.pop_back();
@@ -2019,6 +2357,7 @@ bool MvmController::undoLastEdit() {
             selectedClipIds_.push_back(id);
     }
     refreshTimelineModel();
+    scheduleRecoveryAutosave();
     setCurrentClipSelection(indexOfClipId(project_.timelineClips, previousCurrentClipId));
 
     pendingVideoPath_.reset();
@@ -2052,7 +2391,7 @@ bool MvmController::addTrack(const QString& trackKind) {
         setStatus(QString::fromStdString(added.error));
         return false;
     }
-    if (!saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: ")))
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
         return false;
     setStatus(QStringLiteral("trackを追加しました"));
     return true;
@@ -2076,7 +2415,7 @@ bool MvmController::removeTrack(const QString& trackKind, int trackIndex) {
         setStatus(QString::fromStdString(removed.error));
         return false;
     }
-    if (!saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: ")))
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
         return false;
     // index の対応が変わったので cache を捨ててから現在位置で組み直す。
     trackSources_.clear();
@@ -2111,7 +2450,7 @@ bool MvmController::setTrackMuted(const QString& trackKind, int trackIndex, bool
         setStatus(QString::fromStdString(changed.error));
         return false;
     }
-    if (!saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: ")))
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
         return false;
     // mute は preview の layer 構成そのものを変える。現在位置で組み直す。
     QString error;
@@ -2154,7 +2493,7 @@ bool MvmController::rippleDeleteGap(const QString& trackKind, int trackIndex, qi
         setStatus(QString::fromStdString(rippled.error));
         return false;
     }
-    if (!saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: ")))
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
         return false;
     const std::string selectedId =
         (currentClipIndex_ >= 0 &&
@@ -2184,6 +2523,8 @@ bool MvmController::adoptProject(project::Project loaded, std::filesystem::path 
     pendingClipName_.clear();
     pendingClipIndex_ = -1;
     pendingSourceFrame_ = 0;
+    recoveryProject_.reset();
+    recoveryRevision_ = 0;
     refreshTimelineModel();
     // fps が変わりうるので engine を作り直す。output rate は initialize でしか決まらない。
     if (!resetPreviewEngine()) {
@@ -2192,68 +2533,132 @@ bool MvmController::adoptProject(project::Project loaded, std::filesystem::path 
                   failure);
         return true;
     }
-    restoreFirstManimClip();
-    // Project切り替え時のasset同期も新しいProjectの初期状態として扱う。
-    undoHistory_.clear();
-    savedProject_ = project_;
-    Q_EMIT stateChanged();
     setStatus(std::move(successStatus));
+    detectRecovery();
+    if (!recoveryAvailable() && !recoveryCorrupt_) {
+        const project::Project beforeRestore = project_;
+        restoreFirstManimClip();
+        if (project_ != beforeRestore && currentRevision_ == savedRevision_) {
+            currentRevision_ = nextRevision_++;
+            scheduleRecoveryAutosave();
+        }
+        // Project切り替え時のasset同期は利用者の編集ではないため、Undo履歴へ残さない。
+        undoHistory_.clear();
+    }
+    Q_EMIT stateChanged();
     return true;
 }
 
 bool MvmController::newProject(const QUrl& fileUrl) {
     if (busy_)
         return false;
+    if (dirty()) {
+        setStatus(
+            QStringLiteral("未保存の変更を保存または破棄してから新規Projectを作成してください"));
+        return false;
+    }
     if (!fileUrl.isLocalFile()) {
         setStatus(QStringLiteral("ローカルの保存先を指定してください"));
         return false;
     }
     const std::filesystem::path path(fileUrl.toLocalFile().toStdWString());
+    QString error;
+    void* acquiredLock = nullptr;
+    if (!acquireProjectLock(path, acquiredLock, error)) {
+        setStatus(QStringLiteral("新規Projectを作成できません: ") + error);
+        return false;
+    }
     project::Project fresh = project::createDefaultProject();
     fresh.timelineFpsNum = project_.timelineFpsNum;
     fresh.timelineFpsDen = project_.timelineFpsDen;
-    const auto saved = project::saveProjectJson(fresh, path);
-    if (!saved.success) {
-        setStatus(QStringLiteral("新規Projectを保存できません: ") +
-                  QString::fromStdString(saved.error));
+    if (!writeCanonicalProject(fresh, path, error)) {
+        releaseLockHandle(acquiredLock);
+        setStatus(QStringLiteral("新規Projectを保存できません: ") + error);
         return false;
     }
+    QString recoveryError;
+    removeRecoveryBeside(projectPath_, recoveryError);
+    removeRecoveryBeside(path, recoveryError);
+    adoptProjectLock(acquiredLock, path);
     return adoptProject(std::move(fresh), path, QStringLiteral("新規Projectを作成しました"));
 }
 
 bool MvmController::openProject(const QUrl& fileUrl) {
     if (busy_)
         return false;
+    if (dirty()) {
+        setStatus(QStringLiteral("未保存の変更を保存または破棄してからProjectを開いてください"));
+        return false;
+    }
     if (!fileUrl.isLocalFile()) {
         setStatus(QStringLiteral("ローカルのProjectファイルを指定してください"));
         return false;
     }
     const std::filesystem::path path(fileUrl.toLocalFile().toStdWString());
+    QString error;
+    void* acquiredLock = nullptr;
+    if (!acquireProjectLock(path, acquiredLock, error)) {
+        setStatus(QStringLiteral("Projectを開けません: ") + error);
+        return false;
+    }
     const auto loaded = project::loadProjectJson(path);
     if (!loaded.success) {
+        releaseLockHandle(acquiredLock);
         setStatus(QStringLiteral("Projectを開けません: ") + QString::fromStdString(loaded.error));
         return false;
     }
+    adoptProjectLock(acquiredLock, path);
     return adoptProject(loaded.project, path, QStringLiteral("Projectを開きました"));
 }
 
 bool MvmController::saveProjectAs(const QUrl& fileUrl) {
     if (busy_)
         return false;
+    if (!projectLockHeld_) {
+        setStatus(QStringLiteral("Projectを保存できません: Projectを排他できません"));
+        return false;
+    }
     if (!fileUrl.isLocalFile()) {
         setStatus(QStringLiteral("ローカルの保存先を指定してください"));
         return false;
     }
     const std::filesystem::path path(fileUrl.toLocalFile().toStdWString());
-    const auto saved = project::saveProjectJson(project_, path);
-    if (!saved.success) {
-        setStatus(QStringLiteral("Projectを保存できません: ") +
-                  QString::fromStdString(saved.error));
+    QString error;
+    void* acquiredLock = nullptr;
+    if (!acquireProjectLock(path, acquiredLock, error)) {
+        setStatus(QStringLiteral("Projectを保存できません: ") + error);
         return false;
     }
+    if (!writeCanonicalProject(project_, path, error)) {
+        releaseLockHandle(acquiredLock);
+        setStatus(QStringLiteral("Projectを保存できません: ") + error);
+        return false;
+    }
+    const auto previousPath = projectPath_;
+    QString recoveryError;
+    bool removedRecovery = removeRecoveryBeside(previousPath, recoveryError);
+    QString destinationError;
+    if (!removeRecoveryBeside(path, destinationError)) {
+        removedRecovery = false;
+        recoveryError = destinationError;
+    }
+    adoptProjectLock(acquiredLock, path);
     projectPath_ = path;
     savedProject_ = project_;
     savedRevision_ = currentRevision_;
+    recoveryRevision_ = 0;
+    recoveryProject_.reset();
+    recoveryCanonicalChanged_ = false;
+    recoveryCorrupt_ = false;
+    recoveryDebounceTimer_.stop();
+    recoveryMaximumTimer_.stop();
+    Q_EMIT stateChanged();
+    if (!removedRecovery) {
+        setStatus(
+            QStringLiteral("Projectは保存しましたが、以前の自動復旧データを削除できません: ") +
+            recoveryError);
+        return true;
+    }
     setStatus(QStringLiteral("Projectを保存しました: ") + fromPath(path));
     return true;
 }
@@ -2261,14 +2666,28 @@ bool MvmController::saveProjectAs(const QUrl& fileUrl) {
 bool MvmController::saveProject() {
     if (busy_)
         return false;
-    const auto saved = project::saveProjectJson(project_, projectPath_);
-    if (!saved.success) {
-        setStatus(QStringLiteral("Projectを保存できません: ") +
-                  QString::fromStdString(saved.error));
+    if (!projectLockHeld_) {
+        setStatus(QStringLiteral("Projectを保存できません: Projectを排他できません"));
+        return false;
+    }
+    QString error;
+    if (!writeCanonicalProject(project_, projectPath_, error)) {
+        setStatus(QStringLiteral("Projectを保存できません: ") + error);
         return false;
     }
     savedProject_ = project_;
     savedRevision_ = currentRevision_;
+    recoveryProject_.reset();
+    recoveryCanonicalChanged_ = false;
+    recoveryCorrupt_ = false;
+    recoveryDebounceTimer_.stop();
+    recoveryMaximumTimer_.stop();
+    QString recoveryError;
+    if (!removeRecoveryFile(recoveryError)) {
+        setStatus(QStringLiteral("Projectは保存しましたが、自動復旧データを削除できません: ") +
+                  recoveryError);
+        return true;
+    }
     setStatus(QStringLiteral("Projectを保存しました: ") + fromPath(projectPath_));
     return true;
 }
@@ -2276,10 +2695,13 @@ bool MvmController::saveProject() {
 bool MvmController::discardUnsavedChanges() {
     if (busy_)
         return false;
-    const auto restored = project::saveProjectJson(savedProject_, projectPath_);
-    if (!restored.success) {
-        setStatus(QStringLiteral("未保存の変更を破棄できません: ") +
-                  QString::fromStdString(restored.error));
+    if (!projectLockHeld_) {
+        setStatus(QStringLiteral("未保存の変更を破棄できません: Projectを排他できません"));
+        return false;
+    }
+    QString recoveryError;
+    if (!removeRecoveryFile(recoveryError)) {
+        setStatus(QStringLiteral("未保存の変更を破棄できません: ") + recoveryError);
         return false;
     }
     const std::string selectedId = currentClipId();
@@ -2287,8 +2709,20 @@ bool MvmController::discardUnsavedChanges() {
     undoHistory_.clear();
     selectedClipIds_.clear();
     currentRevision_ = savedRevision_;
+    recoveryProject_.reset();
+    recoveryCanonicalChanged_ = false;
+    recoveryCorrupt_ = false;
+    recoveryDebounceTimer_.stop();
+    recoveryMaximumTimer_.stop();
     refreshTimelineModel();
     setCurrentClipSelection(indexOfClipId(project_.timelineClips, selectedId));
+    if (!resetPreviewEngine()) {
+        const QString failure = statusText_;
+        setStatus(QStringLiteral("未保存の変更は破棄しましたが、Previewを初期化できません: ") +
+                  failure);
+        return true;
+    }
+    setStatus(QStringLiteral("未保存の変更を破棄しました"));
     return true;
 }
 
@@ -2343,12 +2777,11 @@ QVariantMap MvmController::projectSettingsForClip(const QString& clipId) const {
     if (media.sarNum != 1 || media.sarDen != 1)
         sourceText += QStringLiteral(" / SAR ") + QString::number(media.sarNum) +
                       QStringLiteral(":") + QString::number(media.sarDen);
-    sourceText += QStringLiteral(" / ") +
-                  QString::number(static_cast<double>(media.fpsNum) /
-                                      static_cast<double>(media.fpsDen),
-                                  'f',
-                                  media.fpsDen == 1 ? 0 : 2) +
-                  QStringLiteral(" fps");
+    sourceText +=
+        QStringLiteral(" / ") +
+        QString::number(static_cast<double>(media.fpsNum) / static_cast<double>(media.fpsDen), 'f',
+                        media.fpsDen == 1 ? 0 : 2) +
+        QStringLiteral(" fps");
 
     settings.insert(QStringLiteral("valid"), true);
     settings.insert(QStringLiteral("clipName"), QString::fromStdString(clip.name));
@@ -2387,7 +2820,7 @@ bool MvmController::setProjectVideoSettings(int width, int height, int fpsNum, i
         setStatus(QString::fromStdString(changed.error));
         return false;
     }
-    if (!saveProject(std::move(candidate), QStringLiteral("Projectを保存できません: ")))
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
         return false;
     playheadFrame_ = std::clamp<std::int64_t>(convertedPlayhead.frame, 0,
                                               std::max<std::int64_t>(0, totalTimelineFrames_ - 1));
@@ -2708,7 +3141,7 @@ bool MvmController::setEffectValue(const QString& key, double value, bool commit
         setStatus(QString::fromStdString(valid.error));
         return false;
     }
-    if (!saveProject(std::move(candidate), QStringLiteral("effectを保存できません: ")))
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("effectを更新できません: ")))
         return false;
     previewEffectsOverride_.reset();
     previewEffectsClipIndex_ = -1;
@@ -2742,6 +3175,8 @@ void MvmController::shutdown() {
     if (shutdownStarted_)
         return;
     shutdownStarted_ = true;
+    if (projectLockHeld_ && dirty())
+        writeRecoveryAutosave();
     exportCancelRequested_.store(true, std::memory_order_release);
     if (exportThread_.joinable())
         exportThread_.join();
@@ -2757,6 +3192,7 @@ void MvmController::shutdown() {
         previewEngine_->requestShutdown();
     if (previewSurface_)
         previewSurface_->setEngine({});
+    releaseProjectLock();
 }
 
 } // namespace mvm::app

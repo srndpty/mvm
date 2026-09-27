@@ -1,6 +1,7 @@
 #include "project/project_json.h"
 
 #include "project/timeline_edit.h"
+#include "util/mvm_atomic_write.h"
 
 #include <algorithm>
 #include <cctype>
@@ -907,8 +908,9 @@ private:
 
 } // namespace
 
-ProjectIoResult saveProjectJson(const Project& project, const std::filesystem::path& projectPath) {
-    ProjectIoResult result;
+ProjectSerializationResult serializeProjectJson(const Project& project,
+                                                const std::filesystem::path& projectPath) {
+    ProjectSerializationResult result;
     if (project.schemaVersion != kSchemaVersion) {
         result.error = "保存できない Project schema_version です";
         return result;
@@ -1032,18 +1034,33 @@ ProjectIoResult saveProjectJson(const Project& project, const std::filesystem::p
         json << '\n';
     json << "  ]\n}\n";
 
-    std::ofstream output(absoluteProjectPath, std::ios::binary | std::ios::trunc);
-    if (!output) {
-        result.error = "Project JSON を書き込めません: " + pathToUtf8(absoluteProjectPath);
-        return result;
-    }
-    output << json.str();
-    if (!output.good()) {
-        result.error = "Project JSON の書き込み中に失敗しました";
+    result.json = json.str();
+    result.success = true;
+    return result;
+}
+
+static ProjectIoResult writeUtf8FileAtomically(const std::filesystem::path& path,
+                                               const std::string& bytes) {
+    ProjectIoResult result;
+    char detail[512] = {};
+    if (mvm_atomic_write_file(path.c_str(), bytes.data(), bytes.size(), detail, sizeof(detail)) !=
+        0) {
+        result.error =
+            detail[0] != '\0' ? detail : "Project JSON を書き込めません: " + pathToUtf8(path);
         return result;
     }
     result.success = true;
     return result;
+}
+
+ProjectIoResult saveProjectJson(const Project& project, const std::filesystem::path& projectPath) {
+    const auto serialized = serializeProjectJson(project, projectPath);
+    if (!serialized.success) {
+        ProjectIoResult result;
+        result.error = serialized.error;
+        return result;
+    }
+    return writeUtf8FileAtomically(projectPath, serialized.json);
 }
 
 ProjectIoResult saveProjectJsonTransaction(Project& liveProject, Project candidate,
@@ -1054,7 +1071,8 @@ ProjectIoResult saveProjectJsonTransaction(Project& liveProject, Project candida
     return result;
 }
 
-ProjectLoadResult loadProjectJson(const std::filesystem::path& projectPath) {
+ProjectLoadResult parseProjectJsonText(const std::string& jsonText,
+                                       const std::filesystem::path& projectPath) {
     ProjectLoadResult result;
     std::error_code pathError;
     const auto absoluteProjectPath = std::filesystem::absolute(projectPath, pathError);
@@ -1062,16 +1080,8 @@ ProjectLoadResult loadProjectJson(const std::filesystem::path& projectPath) {
         result.error = "Project JSON path が不正です";
         return result;
     }
-    std::ifstream input(absoluteProjectPath, std::ios::binary);
-    if (!input) {
-        result.error = "Project JSON を読めません: " + pathToUtf8(absoluteProjectPath);
-        return result;
-    }
-    std::ostringstream contents;
-    contents << input.rdbuf();
 
     Project parsed;
-    const std::string jsonText = contents.str();
     ProjectJsonParser parser(jsonText);
     if (!parser.parse(parsed, result.error))
         return result;
@@ -1104,6 +1114,363 @@ ProjectLoadResult loadProjectJson(const std::filesystem::path& projectPath) {
     result.project = std::move(parsed);
     result.success = true;
     return result;
+}
+
+ProjectLoadResult loadProjectJson(const std::filesystem::path& projectPath) {
+    ProjectLoadResult result;
+    std::error_code pathError;
+    const auto absoluteProjectPath = std::filesystem::absolute(projectPath, pathError);
+    if (pathError) {
+        result.error = "Project JSON path が不正です";
+        return result;
+    }
+    std::ifstream input(absoluteProjectPath, std::ios::binary);
+    if (!input) {
+        result.error = "Project JSON を読めません: " + pathToUtf8(absoluteProjectPath);
+        return result;
+    }
+    std::ostringstream contents;
+    contents << input.rdbuf();
+    return parseProjectJsonText(contents.str(), absoluteProjectPath);
+}
+
+namespace {
+
+bool parseRecoveryString(const std::string& text, std::size_t& position, std::string& value,
+                         std::string& error) {
+    while (position < text.size() && (text[position] == ' ' || text[position] == '\t' ||
+                                      text[position] == '\n' || text[position] == '\r'))
+        ++position;
+    if (position >= text.size() || text[position] != '"') {
+        error = "自動復旧データの文字列が不正です";
+        return false;
+    }
+    ++position;
+    value.clear();
+    while (position < text.size()) {
+        const unsigned char character = static_cast<unsigned char>(text[position++]);
+        if (character == '"')
+            return true;
+        if (character == '\\') {
+            if (position >= text.size()) {
+                error = "自動復旧データのescapeが途中で終わっています";
+                return false;
+            }
+            const char escaped = text[position++];
+            switch (escaped) {
+            case '"':
+            case '\\':
+            case '/':
+                value += escaped;
+                break;
+            case 'b':
+                value += '\b';
+                break;
+            case 'f':
+                value += '\f';
+                break;
+            case 'n':
+                value += '\n';
+                break;
+            case 'r':
+                value += '\r';
+                break;
+            case 't':
+                value += '\t';
+                break;
+            case 'u': {
+                if (position + 4 > text.size()) {
+                    error = "自動復旧データのunicode escapeが途中で終わっています";
+                    return false;
+                }
+                int code = 0;
+                for (int index = 0; index < 4; ++index) {
+                    const char hex = text[position++];
+                    code <<= 4;
+                    if (hex >= '0' && hex <= '9')
+                        code += hex - '0';
+                    else if (hex >= 'a' && hex <= 'f')
+                        code += hex - 'a' + 10;
+                    else if (hex >= 'A' && hex <= 'F')
+                        code += hex - 'A' + 10;
+                    else {
+                        error = "自動復旧データのunicode escapeが不正です";
+                        return false;
+                    }
+                }
+                if (code > 0x7f) {
+                    error = "自動復旧metadataの非ASCII unicode escapeは読めません";
+                    return false;
+                }
+                value += static_cast<char>(code);
+                break;
+            }
+            default:
+                error = "自動復旧データのescapeが不正です";
+                return false;
+            }
+            continue;
+        }
+        if (character < 0x20) {
+            error = "自動復旧データの文字列に制御文字が含まれています";
+            return false;
+        }
+        value += static_cast<char>(character);
+    }
+    error = "自動復旧データの文字列が閉じられていません";
+    return false;
+}
+
+bool skipRecoveryWhitespace(const std::string& text, std::size_t& position) {
+    while (position < text.size() && (text[position] == ' ' || text[position] == '\t' ||
+                                      text[position] == '\n' || text[position] == '\r'))
+        ++position;
+    return true;
+}
+
+bool extractBalancedJson(const std::string& text, std::size_t& position, std::string& value,
+                         std::string& error) {
+    skipRecoveryWhitespace(text, position);
+    if (position >= text.size() || text[position] != '{') {
+        error = "自動復旧データのProject本体がobjectではありません";
+        return false;
+    }
+    const std::size_t start = position;
+    int depth = 0;
+    bool inString = false;
+    while (position < text.size()) {
+        const char character = text[position++];
+        if (inString) {
+            if (character == '\\') {
+                if (position >= text.size()) {
+                    error = "自動復旧データのProject本体が途中で終わっています";
+                    return false;
+                }
+                ++position;
+            } else if (character == '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (character == '"')
+            inString = true;
+        else if (character == '{')
+            ++depth;
+        else if (character == '}') {
+            --depth;
+            if (depth == 0) {
+                value = text.substr(start, position - start);
+                return true;
+            }
+        }
+    }
+    error = "自動復旧データのProject本体が閉じていません";
+    return false;
+}
+
+bool parseRecoveryEnvelope(const std::string& text, ProjectRecoveryLoadResult& result,
+                           const std::filesystem::path& canonicalPath) {
+    std::size_t position = 0;
+    skipRecoveryWhitespace(text, position);
+    if (position >= text.size() || text[position] != '{') {
+        result.error = "自動復旧データがobjectではありません";
+        return false;
+    }
+    ++position;
+
+    bool hasVersion = false;
+    bool hasHash = false;
+    bool hasSavedAt = false;
+    bool hasSession = false;
+    bool hasCanonicalPath = false;
+    bool hasProject = false;
+    int version = 0;
+    std::string projectJson;
+    skipRecoveryWhitespace(text, position);
+    if (position < text.size() && text[position] != '}') {
+        while (true) {
+            std::string key;
+            if (!parseRecoveryString(text, position, key, result.error))
+                return false;
+            skipRecoveryWhitespace(text, position);
+            if (position >= text.size() || text[position] != ':') {
+                result.error = "自動復旧データのfield区切りが不正です";
+                return false;
+            }
+            ++position;
+            if (key == "recovery_format_version") {
+                if (hasVersion) {
+                    result.error = "recovery_format_version が重複しています";
+                    return false;
+                }
+                skipRecoveryWhitespace(text, position);
+                const std::size_t start = position;
+                if (position >= text.size() ||
+                    !std::isdigit(static_cast<unsigned char>(text[position]))) {
+                    result.error = "recovery_format_version が不正です";
+                    return false;
+                }
+                while (position < text.size() &&
+                       std::isdigit(static_cast<unsigned char>(text[position])))
+                    ++position;
+                try {
+                    version = std::stoi(text.substr(start, position - start));
+                } catch (...) {
+                    result.error = "recovery_format_version が範囲外です";
+                    return false;
+                }
+                hasVersion = true;
+            } else if (key == "canonical_sha256") {
+                if (hasHash ||
+                    !parseRecoveryString(text, position, result.canonicalSha256, result.error)) {
+                    if (result.error.empty())
+                        result.error = "canonical_sha256 が重複または不正です";
+                    return false;
+                }
+                hasHash = true;
+            } else if (key == "saved_at") {
+                if (hasSavedAt ||
+                    !parseRecoveryString(text, position, result.savedAt, result.error)) {
+                    if (result.error.empty())
+                        result.error = "saved_at が重複または不正です";
+                    return false;
+                }
+                hasSavedAt = true;
+            } else if (key == "session_id") {
+                if (hasSession ||
+                    !parseRecoveryString(text, position, result.sessionId, result.error)) {
+                    if (result.error.empty())
+                        result.error = "session_id が重複または不正です";
+                    return false;
+                }
+                hasSession = true;
+            } else if (key == "canonical_path") {
+                if (hasCanonicalPath ||
+                    !parseRecoveryString(text, position, result.canonicalPath, result.error)) {
+                    if (result.error.empty())
+                        result.error = "canonical_path が重複または不正です";
+                    return false;
+                }
+                hasCanonicalPath = true;
+            } else if (key == "project") {
+                if (hasProject || !extractBalancedJson(text, position, projectJson, result.error)) {
+                    if (result.error.empty())
+                        result.error = "project が重複または不正です";
+                    return false;
+                }
+                hasProject = true;
+            } else {
+                result.error = "自動復旧データに未知のfieldがあります: " + key;
+                return false;
+            }
+            skipRecoveryWhitespace(text, position);
+            if (position < text.size() && text[position] == ',') {
+                ++position;
+                continue;
+            }
+            break;
+        }
+    }
+    skipRecoveryWhitespace(text, position);
+    if (position >= text.size() || text[position] != '}') {
+        result.error = "自動復旧データが閉じていません";
+        return false;
+    }
+    ++position;
+    skipRecoveryWhitespace(text, position);
+    if (position != text.size()) {
+        result.error = "自動復旧データの末尾に余分な値があります";
+        return false;
+    }
+    if (!hasVersion || version != 1 || !hasHash || !hasSavedAt || !hasSession ||
+        !hasCanonicalPath || !hasProject) {
+        result.error = "自動復旧データの必須fieldがありません";
+        return false;
+    }
+    if (result.savedAt.empty() || result.sessionId.empty() || result.canonicalPath.empty()) {
+        result.error = "自動復旧データの識別情報が空です";
+        return false;
+    }
+    if (!result.canonicalSha256.empty() && !isSha256(result.canonicalSha256)) {
+        result.error = "canonical_sha256 がSHA-256ではありません";
+        return false;
+    }
+    const auto project = parseProjectJsonText(projectJson, canonicalPath);
+    if (!project.success) {
+        result.error = project.error;
+        return false;
+    }
+    result.project = project.project;
+    result.legacy = false;
+    result.success = true;
+    return true;
+}
+
+} // namespace
+
+ProjectIoResult saveProjectRecovery(const Project& project,
+                                    const std::filesystem::path& recoveryPath,
+                                    const std::filesystem::path& canonicalPath,
+                                    const std::string& canonicalSha256, const std::string& savedAt,
+                                    const std::string& sessionId) {
+    ProjectIoResult result;
+    if (savedAt.empty() || sessionId.empty() ||
+        (!canonicalSha256.empty() && !isSha256(canonicalSha256))) {
+        result.error = "自動復旧データの識別情報が不正です";
+        return result;
+    }
+    const auto serialized = serializeProjectJson(project, canonicalPath);
+    if (!serialized.success) {
+        result.error = serialized.error;
+        return result;
+    }
+    std::ostringstream json;
+    json << "{\n"
+         << "  \"recovery_format_version\": 1,\n"
+         << "  \"canonical_sha256\": \"" << escapeJson(canonicalSha256) << "\",\n"
+         << "  \"saved_at\": \"" << escapeJson(savedAt) << "\",\n"
+         << "  \"session_id\": \"" << escapeJson(sessionId) << "\",\n"
+         << "  \"canonical_path\": \"" << escapeJson(pathToUtf8(canonicalPath)) << "\",\n"
+         << "  \"project\": " << serialized.json << "}\n";
+    return writeUtf8FileAtomically(recoveryPath, json.str());
+}
+
+ProjectRecoveryLoadResult loadProjectRecovery(const std::filesystem::path& recoveryPath,
+                                              const std::filesystem::path& canonicalPath) {
+    ProjectRecoveryLoadResult result;
+    std::ifstream input(recoveryPath, std::ios::binary);
+    if (!input) {
+        result.error = "自動復旧データを読めません: " + pathToUtf8(recoveryPath);
+        return result;
+    }
+    std::ostringstream contents;
+    contents << input.rdbuf();
+    const std::string text = contents.str();
+    if (text.find("\"recovery_format_version\"") != std::string::npos) {
+        parseRecoveryEnvelope(text, result, canonicalPath);
+        return result;
+    }
+
+    const auto legacy = parseProjectJsonText(text, canonicalPath);
+    if (!legacy.success) {
+        result.error = legacy.error.empty() ? "自動復旧データを解釈できません" : legacy.error;
+        return result;
+    }
+    result.project = legacy.project;
+    result.legacy = true;
+    result.success = true;
+    return result;
+}
+
+RecoveryDisposition classifyRecovery(const Project& recoveryProject,
+                                     const Project& canonicalProject,
+                                     const std::string& recordedHash,
+                                     const std::string& currentHash) {
+    if (recoveryProject == canonicalProject)
+        return RecoveryDisposition::Stale;
+    if (recordedHash == currentHash)
+        return RecoveryDisposition::Restorable;
+    return RecoveryDisposition::CanonicalChanged;
 }
 
 } // namespace mvm::project

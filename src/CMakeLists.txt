@@ -29,12 +29,15 @@ add_library(mvm::project ALIAS mvm_project)
 # --- Windows / UTF-8 ヘルパ -------------------------------------------------
 # Phase 0 スパイク用の小さなヘルパ。製品用の platform 層ではない。
 add_library(mvm_util STATIC
+    util/mvm_atomic_write.c
     util/mvm_win_utf8.c
     util/mvm_reveal_in_explorer.c
 )
 target_include_directories(mvm_util PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_util PRIVATE shell32 ole32)
 add_library(mvm::util ALIAS mvm_util)
+# Project JSONのatomic置換はWin32 helperに閉じる。QtやMLTはここへ入れない。
+target_link_libraries(mvm_project PRIVATE mvm::util)
 
 # --- Manim external renderer ------------------------------------------------
 # Python を埋め込まず、明示された Manim CLI を外部プロセスとして実行する。

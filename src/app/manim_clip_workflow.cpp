@@ -80,12 +80,12 @@ ManimClipGenerationResult generateManimClip(project::Project& project,
     else
         *existing = std::move(created.asset);
 
-    const project::ProjectIoResult saved =
-        project::saveProjectJsonTransaction(project, std::move(candidate), absoluteProjectPath);
-    if (!saved.success) {
-        result.error = saved.error;
+    const auto serialized = project::serializeProjectJson(candidate, absoluteProjectPath);
+    if (!serialized.success) {
+        result.error = serialized.error;
         return result;
     }
+    project = std::move(candidate);
     result.success = true;
     return result;
 }
@@ -121,12 +121,12 @@ ManimClipRestoreResult restoreFirstManimClip(project::Project& project,
     }
 
     if (candidateAsset.generationState != previousState) {
-        const project::ProjectIoResult saved =
-            project::saveProjectJsonTransaction(project, std::move(candidate), projectPath);
-        if (!saved.success) {
-            result.error = saved.error;
+        const auto serialized = project::serializeProjectJson(candidate, projectPath);
+        if (!serialized.success) {
+            result.error = serialized.error;
             return result;
         }
+        project = std::move(candidate);
     }
 
     result.success = true;
