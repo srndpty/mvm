@@ -3,6 +3,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Layouts
+import "TimelineGestures.js" as Gestures
 
 ApplicationWindow {
     id: root
@@ -975,6 +976,12 @@ ApplicationWindow {
             property real linkedRightDelta: 0
             property int linkedSlideFrames: 0
             property int linkedSlipDelta: 0
+            // ローリング / スライドで一緒に動く隣の clip の編集点。{kind, index, frame, side}。
+            // side="start" はその frame から始まる clip の左端、"end" はその frame で終わる
+            // clip の右端が adjacentEditDelta だけ動いて見える。確定は Project 側が行い、
+            // ここは drag 中の表示だけを受け持つ。
+            property var adjacentEditPoints: []
+            property int adjacentEditDelta: 0
             // clip の端のハンドルを使うツール。それ以外のツールでは端も clip 本体として扱う。
             readonly property bool edgeToolActive: tool === "select" || tool === "ripple"
                                                    || tool === "rolling"
@@ -1078,6 +1085,63 @@ ApplicationWindow {
                 setZoom(wheelDelta > 0 ? 1 : -1,
                         Math.max(0, localX - timelineFlick.x));
             }
+            // track 上で frame に side の端を持つ clip があるか。
+            function hasEditPoint(spans, kind, index, frame, side) {
+                for (const span of spans) {
+                    if (span.trackKind === kind && span.trackIndex === index
+                            && (side === "start" ? span.start : span.end) === frame)
+                        return true;
+                }
+                return false;
+            }
+            // source (とリンク相手) が動かす編集点を集める。mode は "rolling" / "slide"。
+            // ローリングでリンク相手が編集点を持たなければ (L / J カット)、Project と同じく
+            // 相手は動かさない。そのとき false を返す。
+            function beginAdjacentPreview(sourceClipId, mode, edge, linked) {
+                const spans = root.mvmController.timelineModel.clipSpans();
+                const source = spans.find(span => span.clipId === sourceClipId);
+                if (!source)
+                    return false;
+                const moving = [source];
+                if (linked && source.linkGroupId !== "") {
+                    for (const span of spans) {
+                        if (span !== source && span.linkGroupId === source.linkGroupId)
+                            moving.push(span);
+                    }
+                }
+                const points = [];
+                let partnerMoves = true;
+                for (const span of moving) {
+                    if (mode === "rolling") {
+                        const frame = edge === "right" ? span.end : span.start;
+                        const side = edge === "right" ? "start" : "end";
+                        if (span !== source && !hasEditPoint(spans, span.trackKind, span.trackIndex, frame, side)) {
+                            partnerMoves = false;
+                            continue;
+                        }
+                        points.push({ "kind": span.trackKind, "index": span.trackIndex,
+                                      "frame": frame, "side": side });
+                    } else {
+                        points.push({ "kind": span.trackKind, "index": span.trackIndex,
+                                      "frame": span.start, "side": "end" });
+                        points.push({ "kind": span.trackKind, "index": span.trackIndex,
+                                      "frame": span.end, "side": "start" });
+                    }
+                }
+                adjacentEditDelta = 0;
+                adjacentEditPoints = points;
+                return partnerMoves;
+            }
+            // 隣接 clip の見かけの伸縮。start / end はその clip の timeline 上の端。
+            function adjacentDeltaFor(kind, index, start, end, side) {
+                for (const point of adjacentEditPoints) {
+                    if (point.side === side && point.kind === kind && point.index === index
+                            && point.frame === (side === "start" ? start : end))
+                        return adjacentEditDelta;
+                }
+                return 0;
+            }
+
             // トラックの選択ツール。Shift なら押した track だけ、そうでなければ全 track。
             function selectFromFrame(frame, modifiers, trackKind, trackIndex) {
                 const singleTrack = (modifiers & Qt.ShiftModifier) !== 0;
@@ -1411,7 +1475,7 @@ ApplicationWindow {
                                     // 空白でも Shift なら、その位置に掛かる全 track の clip を切る。
                                     if ((mouse.modifiers & Qt.ShiftModifier) !== 0)
                                         root.mvmController.splitClipAt("", Math.round(mouse.x / timelinePanel.pixelsPerFrame), true,
-                                                                       (mouse.modifiers & Qt.AltModifier) === 0);
+                                                                       Gestures.linkedFor(mouse.modifiers));
                                     return;
                                 }
                                 timelinePanel.selectionStartX = mouse.x;
@@ -1555,6 +1619,8 @@ ApplicationWindow {
                                 property real razorHoverX: -1
                                 // 押した時点で Alt が無ければ、リンク相手にも同じ編集を適用する。
                                 property bool editLinked: true
+                                // clip 本体の press で決めた操作 (Gestures.bodyPress の戻り値)。
+                                property var gestureState: null
                                 readonly property bool linkedEditSource:
                                     timelinePanel.linkedEditClipId === clipId
                                 // リンク相手の clip を操作中。相手の途中経過をそのまま見せる。
@@ -1562,9 +1628,13 @@ ApplicationWindow {
                                     linkGroupId !== "" && linkGroupId === timelinePanel.linkedEditGroup
                                     && !linkedEditSource
                                 readonly property real shownLeftDelta:
-                                    linkedEditPartner ? timelinePanel.linkedLeftDelta : leftPreviewDelta
+                                    (linkedEditPartner ? timelinePanel.linkedLeftDelta : leftPreviewDelta)
+                                    + timelinePanel.adjacentDeltaFor(trackKind, trackIndex, timelineStartFrame,
+                                                     timelineStartFrame + timelineDurationFrames, "start")
                                 readonly property real shownRightDelta:
-                                    linkedEditPartner ? timelinePanel.linkedRightDelta : rightPreviewDelta
+                                    (linkedEditPartner ? timelinePanel.linkedRightDelta : rightPreviewDelta)
+                                    + timelinePanel.adjacentDeltaFor(trackKind, trackIndex, timelineStartFrame,
+                                                     timelineStartFrame + timelineDurationFrames, "end")
                                 readonly property int shownSlideFrames:
                                     bodyGesture === "slide" ? toolDragFrames
                                     : (linkedEditPartner ? timelinePanel.linkedSlideFrames : 0)
@@ -1715,33 +1785,42 @@ ApplicationWindow {
                                     when: clipItem.linkedEditSource
                                 }
 
-                                // 押した時点の Alt でリンク相手へ適用するかを決め、相手の追従を始める。
-                                function beginLinkedEdit(modifiers) {
-                                    clipItem.editLinked = (modifiers & Qt.AltModifier) === 0;
+                                // リンク相手へ適用するかを決め、相手の追従を始める。
+                                function beginLinkedEdit(linked) {
+                                    clipItem.editLinked = linked;
                                     timelinePanel.linkedEditGroup = clipItem.editLinked ? clipItem.linkGroupId : "";
                                     timelinePanel.linkedEditClipId = clipItem.clipId;
                                 }
                                 // controller 呼び出しより前に必ず呼ぶ (呼び出しは delegate を破棄し得る)。
+                                // リンク相手と隣の clip の途中表示をまとめて片付ける。
                                 function endLinkedEdit() {
                                     timelinePanel.linkedEditGroup = "";
                                     timelinePanel.linkedEditClipId = "";
+                                    timelinePanel.adjacentEditPoints = [];
+                                    timelinePanel.adjacentEditDelta = 0;
+                                }
+                                // 端のドラッグを始める。ローリングは隣の clip の追従を表示する。
+                                function beginEdgeDrag(edge, modifiers) {
+                                    clipItem.beginLinkedEdit(Gestures.linkedFor(modifiers));
+                                    if (timelinePanel.tool === "rolling"
+                                            && !timelinePanel.beginAdjacentPreview(clipItem.clipId, "rolling", edge,
+                                                                                   clipItem.editLinked))
+                                        timelinePanel.linkedEditGroup = "";
                                 }
 
                                 // 端のドラッグを現在のツールの編集として確定する。
                                 // controller 呼び出しは delegate を破棄し得るので、値は先に取り出す。
                                 function commitEdgeDrag(edge, delta) {
                                     const id = clipItem.clipId;
-                                    const tool = timelinePanel.tool;
-                                    const linked = clipItem.editLinked;
+                                    const action = Gestures.edgeRelease(timelinePanel.tool, edge, delta,
+                                                                        clipItem.editLinked);
                                     clipItem.endLinkedEdit();
-                                    if (delta === 0)
-                                        return;
-                                    if (tool === "ripple")
-                                        root.mvmController.rippleTrimClip(id, edge, delta, linked);
-                                    else if (tool === "rolling")
-                                        root.mvmController.rollClipEdge(id, edge, delta, linked);
-                                    else
-                                        root.mvmController.trimClip(id, edge, delta, linked);
+                                    if (action.action === "rippleTrim")
+                                        root.mvmController.rippleTrimClip(id, action.edge, action.delta, action.linked);
+                                    else if (action.action === "roll")
+                                        root.mvmController.rollClipEdge(id, action.edge, action.delta, action.linked);
+                                    else if (action.action === "trim")
+                                        root.mvmController.trimClip(id, action.edge, action.delta, action.linked);
                                 }
 
                                 // レーザーツールの切断位置。frame 境界へ寄せて表示する。
@@ -1794,15 +1873,18 @@ ApplicationWindow {
                                                                       + pressPoint.x / timelinePanel.pixelsPerFrame);
                                         clipItem.bodyPressPoint = mapToItem(trackArea, mouse.x, mouse.y);
                                         const tool = timelinePanel.tool;
-                                        clipItem.beginLinkedEdit(mouse.modifiers);
-                                        if (tool === "razor") {
-                                            clipItem.bodyGesture = "razor";
+                                        // 操作の種類と release で使う値 (分割位置など) はここで確定する。
+                                        clipItem.gestureState = Gestures.bodyPress(tool, mouse.modifiers, pressFrame);
+                                        clipItem.bodyGesture = clipItem.gestureState.gesture;
+                                        clipItem.beginLinkedEdit(clipItem.gestureState.linked);
+                                        if (tool === "razor")
                                             return;
-                                        }
                                         if (tool === "slip" || tool === "slide") {
-                                            clipItem.bodyGesture = tool;
                                             clipItem.toolDragFrames = 0;
                                             clipItem.slipSourceDelta = 0;
+                                            if (tool === "slide")
+                                                timelinePanel.beginAdjacentPreview(clipItem.clipId, "slide", "",
+                                                                                   clipItem.editLinked);
                                             if (!clipItem.selected || !clipItem.editLinked)
                                                 root.mvmController.selectTimelineClip(clipItem.clipId, pressFrame,
                                                                                       clipItem.editLinked);
@@ -1812,12 +1894,8 @@ ApplicationWindow {
                                                                                     clipItem.editLinked);
                                             return;
                                         }
-                                        clipItem.bodyGesture = timelinePanel.trackSelectToolActive
-                                                               ? "trackSelect" : "move";
                                         clipItem.bodyMoved = false;
-                                        clipItem.bodyAdditiveSelection =
-                                                clipItem.bodyGesture === "move"
-                                                && (mouse.modifiers & Qt.ShiftModifier) !== 0;
+                                        clipItem.bodyAdditiveSelection = clipItem.gestureState.additive;
                                         clipItem.bodyDragOffsetX = 0;
                                         clipItem.bodyDragOffsetY = 0;
                                         clipItem.rawBodyDragOffsetX = 0;
@@ -1830,9 +1908,7 @@ ApplicationWindow {
                                         } else if (!clipItem.bodyAdditiveSelection
                                                    && (!clipItem.selected || !clipItem.editLinked)) {
                                             // Alt+クリックはリンク相手を外して、この clip だけを選ぶ。
-                                            const point = bodyArea.mapToItem(clipItem, mouse.x, mouse.y);
-                                            const frame = Math.round(clipItem.timelineStartFrame
-                                                                     + point.x / timelinePanel.pixelsPerFrame);
+                                            const frame = pressFrame;
                                             root.mvmController.selectTimelineClip(clipItem.clipId, frame, clipItem.editLinked);
                                         }
                                         timelinePanel.activeDragLinkGroup = clipItem.editLinked ? clipItem.linkGroupId : "";
@@ -1854,6 +1930,8 @@ ApplicationWindow {
                                             clipItem.toolDragFrames = clipItem.bodyGesture === "slide"
                                                                       ? Math.max(-clipItem.timelineStartFrame, frames)
                                                                       : frames;
+                                            if (clipItem.bodyGesture === "slide")
+                                                timelinePanel.adjacentEditDelta = clipItem.toolDragFrames;
                                             if (clipItem.bodyGesture === "slip")
                                                 clipItem.slipSourceDelta = root.mvmController.previewSlip(frames);
                                             return;
@@ -1886,28 +1964,23 @@ ApplicationWindow {
                                     }
                                     onReleased: mouse => {
                                         const gesture = clipItem.bodyGesture;
-                                        const moved = clipItem.bodyMoved;
-                                        const additiveSelection = clipItem.bodyAdditiveSelection;
                                         const releasedClipId = clipItem.clipId;
                                         const destinationKind = clipItem.dragTrackKind;
                                         const destinationIndex = clipItem.dragTrackIndex;
-                                        const toolDragFrames = clipItem.toolDragFrames;
-                                        const linked = clipItem.editLinked;
-                                        let targetFrame = clipItem.timelineStartFrame;
-                                        if (clipItem.bodyMoved) {
-                                            const candidateX = clipItem.timelineStartFrame * timelinePanel.pixelsPerFrame + clipItem.bodyDragOffsetX;
-                                            targetFrame = Math.max(
-                                                0, Math.round(candidateX / timelinePanel.pixelsPerFrame));
-                                        } else {
-                                            const point = bodyArea.mapToItem(clipItem, mouse.x, mouse.y);
-                                            targetFrame = Math.round(
-                                                clipItem.timelineStartFrame
-                                                + point.x / timelinePanel.pixelsPerFrame);
-                                        }
+                                        const releasePoint = bodyArea.mapToItem(clipItem, mouse.x, mouse.y);
+                                        const releaseFrame = Math.round(clipItem.timelineStartFrame
+                                                                        + releasePoint.x / timelinePanel.pixelsPerFrame);
+                                        const movedToFrame = Math.max(
+                                            0, Math.round((clipItem.timelineStartFrame * timelinePanel.pixelsPerFrame
+                                                           + clipItem.bodyDragOffsetX) / timelinePanel.pixelsPerFrame));
+                                        const action = Gestures.bodyRelease(clipItem.gestureState, clipItem.bodyMoved,
+                                                                            movedToFrame, releaseFrame,
+                                                                            clipItem.toolDragFrames);
 
                                         // controller呼び出しはmodelを同期更新し、このdelegateを破棄し得る。
                                         // delegateが生きている間にdrag状態をすべて片付ける。
                                         clipItem.bodyGesture = "";
+                                        clipItem.gestureState = null;
                                         clipItem.toolDragFrames = 0;
                                         clipItem.slipSourceDelta = 0;
                                         clipItem.endLinkedEdit();
@@ -1922,33 +1995,40 @@ ApplicationWindow {
                                         timelinePanel.activeDragTrackKind = "";
                                         timelinePanel.activeDragOffsetY = 0;
 
-                                        if (gesture === "razor") {
-                                            root.mvmController.splitClipAt(
-                                                releasedClipId, targetFrame,
-                                                (mouse.modifiers & Qt.ShiftModifier) !== 0, linked);
-                                        } else if (gesture === "slip") {
+                                        // slip の preview は確定の有無によらず通常の表示へ戻す。
+                                        if (gesture === "slip")
                                             root.mvmController.endSlipPreview();
-                                            if (toolDragFrames !== 0)
-                                                root.mvmController.slipClip(releasedClipId, toolDragFrames, linked);
-                                        } else if (gesture === "slide") {
-                                            if (toolDragFrames !== 0)
-                                                root.mvmController.slideClip(releasedClipId, toolDragFrames, linked);
-                                        } else if (moved) {
+                                        switch (action.action) {
+                                        case "split":
+                                            root.mvmController.splitClipAt(releasedClipId, action.frame,
+                                                                           action.allTracks, action.linked);
+                                            break;
+                                        case "slip":
+                                            root.mvmController.slipClip(releasedClipId, action.delta, action.linked);
+                                            break;
+                                        case "slide":
+                                            root.mvmController.slideClip(releasedClipId, action.delta, action.linked);
+                                            break;
+                                        case "move":
                                             root.mvmController.moveTimelineClip(
                                                 releasedClipId, destinationKind, destinationIndex,
-                                                targetFrame, linked);
-                                        } else if (additiveSelection) {
+                                                action.frame, action.linked);
+                                            break;
+                                        case "toggle":
                                             root.mvmController.toggleTimelineClipSelection(
-                                                releasedClipId, targetFrame);
-                                        } else if (gesture === "move") {
+                                                releasedClipId, action.frame);
+                                            break;
+                                        case "select":
                                             root.mvmController.selectTimelineClip(releasedClipId,
-                                                                             targetFrame, linked);
+                                                                             action.frame, action.linked);
+                                            break;
                                         }
                                     }
                                     onCanceled: {
                                         if (clipItem.bodyGesture === "slip")
                                             root.mvmController.endSlipPreview();
                                         clipItem.bodyGesture = "";
+                                        clipItem.gestureState = null;
                                         clipItem.toolDragFrames = 0;
                                         clipItem.slipSourceDelta = 0;
                                         clipItem.endLinkedEdit();
@@ -1988,7 +2068,7 @@ ApplicationWindow {
                                         onPressed: mouse => {
                                             pressContentX = mapToItem(timelineContent, mouse.x, mouse.y).x;
                                             dragDelta = 0;
-                                            clipItem.beginLinkedEdit(mouse.modifiers);
+                                            clipItem.beginEdgeDrag("left", mouse.modifiers);
                                         }
                                         onPositionChanged: mouse => {
                                             const now = mapToItem(timelineContent, mouse.x, mouse.y).x;
@@ -1998,6 +2078,7 @@ ApplicationWindow {
                                                 clipItem.rightPreviewDelta = -dragDelta;
                                             else
                                                 clipItem.leftPreviewDelta = dragDelta;
+                                            timelinePanel.adjacentEditDelta = dragDelta;
                                         }
                                         onReleased: {
                                             const delta = dragDelta;
@@ -2032,11 +2113,12 @@ ApplicationWindow {
                                         enabled: !root.mvmController.busy
                                         onPressed: mouse => {
                                             pressContentX = mapToItem(timelineContent, mouse.x, mouse.y).x;
-                                            clipItem.beginLinkedEdit(mouse.modifiers);
+                                            clipItem.beginEdgeDrag("right", mouse.modifiers);
                                         }
                                         onPositionChanged: mouse => {
                                             const now = mapToItem(timelineContent, mouse.x, mouse.y).x;
                                             clipItem.rightPreviewDelta = Math.round((now - pressContentX) / timelinePanel.pixelsPerFrame);
+                                            timelinePanel.adjacentEditDelta = clipItem.rightPreviewDelta;
                                         }
                                         onReleased: {
                                             const delta = clipItem.rightPreviewDelta;

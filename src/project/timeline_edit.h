@@ -113,7 +113,9 @@ TimelineEditResult rollTimelineEdit(Project& project, const std::string& clipId,
 TimelineEditResult slipTimelineClip(Project& project, const std::string& clipId,
                                     std::int64_t projectFrameDelta, LinkMode linkMode);
 // スライド。clip を尺を変えずに横へ動かし、接している前後の clip の out / in を
-// 追従させる。Linked ならリンク相手も同じようにスライドする。
+// 追従させる。操作した clip に接している前後の clip が無ければ失敗する (単なる移動に
+// しない)。Linked ならリンク相手も同じようにスライドし、相手に接している clip があれば
+// それも追従させる。
 TimelineEditResult slideTimelineClip(Project& project, const std::string& clipId,
                                      std::int64_t projectFrameDelta, LinkMode linkMode);
 

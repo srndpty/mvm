@@ -1,5 +1,7 @@
 #include "timeline_clip_model.h"
 
+#include <QVariantMap>
+
 #include "project/timeline_edit.h"
 
 namespace mvm::app {
@@ -96,6 +98,21 @@ void TimelineClipModel::setProject(const project::Project& project) {
                        QString::fromStdWString(clip.mediaPath.wstring())});
     }
     endResetModel();
+}
+
+QVariantList TimelineClipModel::clipSpans() const {
+    QVariantList spans;
+    spans.reserve(items_.size());
+    for (const auto& item : items_) {
+        spans.append(QVariantMap{{QStringLiteral("clipId"), item.id},
+                                 {QStringLiteral("trackKind"), item.trackKind},
+                                 {QStringLiteral("trackIndex"), item.trackIndex},
+                                 {QStringLiteral("start"), item.timelineStartFrame},
+                                 {QStringLiteral("end"),
+                                  item.timelineStartFrame + item.timelineDurationFrames},
+                                 {QStringLiteral("linkGroupId"), item.linkGroupId}});
+    }
+    return spans;
 }
 
 void TimelineClipModel::setSelectedClipIds(const QSet<QString>& clipIds) {

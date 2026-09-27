@@ -561,6 +561,32 @@ void testUndoRemovesRecovery(const std::filesystem::path& path) {
           "保存済みrevisionまでUndoしてもrecoveryが残ります");
 }
 
+// Undo / Redo も working Project の変更である。recovery は切り替え後の Project を指す。
+void testUndoRedoRewritesRecovery(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "Undo/Redo復旧試験の初期Projectを保存できません");
+    std::filesystem::path recoveryPath = path;
+    recoveryPath += L".recovery";
+    const auto recoveredTracks = [&](std::size_t video, std::size_t audio) {
+        return pumpUntil(
+            [&] {
+                const auto recovery = mvm::project::loadProjectRecovery(recoveryPath, path);
+                return recovery.success && recovery.project.videoTracks.size() == video &&
+                       recovery.project.audioTracks.size() == audio;
+            },
+            4000);
+    };
+    mvm::app::MvmController controller(path, {}, initial);
+    check(controller.addTrack("video") && controller.addTrack("audio"),
+          "Undo/Redo復旧試験の編集ができません");
+    check(recoveredTracks(3, 2), "編集後のrecoveryが最新のProjectではありません");
+    check(controller.undoLastEdit() && controller.dirty(), "Undo/Redo復旧試験のUndoに失敗しました");
+    check(recoveredTracks(3, 1), "Undo後のrecoveryがUndo前のProjectのまま残っています");
+    check(controller.redoLastEdit(), "Undo/Redo復旧試験のRedoに失敗しました");
+    check(recoveredTracks(3, 2), "Redo後のrecoveryがRedo前のProjectのまま残っています");
+}
+
 void testCorruptRecoveryKept(const std::filesystem::path& path) {
     const auto initial = videoProject();
     check(mvm::project::saveProjectJson(initial, path).success,
@@ -1088,6 +1114,7 @@ int main(int argc, char** argv) {
     testRecoveryAutosave(directory / L"recovery-autosave.mvm");
     testExplicitSaveContract(directory / L"explicit-save.mvm");
     testUndoRemovesRecovery(directory / L"undo-recovery.mvm");
+    testUndoRedoRewritesRecovery(directory / L"undo-redo-recovery.mvm");
     testCorruptRecoveryKept(directory / L"corrupt-recovery.mvm");
     testStaleRecoveryRemoved(directory / L"stale-recovery.mvm");
     testCanonicalChangedRecovery(directory / L"canonical-changed.mvm");

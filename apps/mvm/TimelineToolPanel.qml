@@ -36,7 +36,7 @@ Rectangle {
           hint: "clipを左右にドラッグ: 位置と長さを保ったまま素材のイン/アウトをずらす",
           available: true },
         { tool: "slide", group: "view", key: "U", name: "スライドツール",
-          hint: "clipを左右にドラッグ: 長さを保って動かし、前後のclipの長さを追従させる",
+          hint: "前後のclipに接しているclipを左右にドラッグ: 長さを保って動かし、前後のclipの長さを追従させる",
           available: true },
         { tool: "pen", group: "view", key: "P", name: "ペンツール",
           hint: "", available: false,

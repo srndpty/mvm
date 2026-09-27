@@ -1034,6 +1034,26 @@ void testSlideClip() {
                 .success &&
             project == beforeReject,
         "前のclipを消すslideを拒否しないか、拒否時にProjectが変化しました");
+
+    // 前後どちらかに接している clip が無ければ、単なる移動にせず拒否する。
+    for (const bool withoutPrevious : {true, false}) {
+        mvm::project::Project oneSided = mvm::project::createDefaultProject();
+        oneSided.timelineClips = {roomyClip("slide", 100, 300)};
+        oneSided.timelineClips.push_back(withoutPrevious ? roomyClip("after", 100, 600)
+                                                         : roomyClip("before", 0, 0));
+        const auto beforeOneSided = oneSided;
+        check(!mvm::project::slideTimelineClip(oneSided, "id-slide", 20,
+                                               mvm::project::LinkMode::Linked)
+                      .success &&
+                  oneSided == beforeOneSided,
+              withoutPrevious ? "前のclipが無いslideを受理しました"
+                              : "後ろのclipが無いslideを受理しました");
+    }
+    mvm::project::Project alone = mvm::project::createDefaultProject();
+    alone.timelineClips = {roomyClip("slide", 100, 300)};
+    check(!mvm::project::slideTimelineClip(alone, "id-slide", 20, mvm::project::LinkMode::Linked)
+               .success,
+          "前後にclipが無いslideを移動として受理しました");
 }
 
 void testTrackSelectFromFrame() {

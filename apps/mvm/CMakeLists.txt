@@ -32,6 +32,7 @@ qt_add_qml_module(mvm
         DragNumberField.qml
         AudioMeter.qml
         MediaKindIcon.qml
+        TimelineGestures.js
         TimelineToolIcon.qml
         TimelineToolPanel.qml
         ProjectPanel.qml

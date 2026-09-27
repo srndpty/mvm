@@ -1081,6 +1081,15 @@ TimelineEditResult slideTimelineClip(Project& project, const std::string& clipId
         if (!result.error.empty())
             return result;
     }
+    // スライドは前後の編集点を保ったまま中身だけを動かす編集である。操作した clip に
+    // 接している前後の clip が無ければ単なる移動になるので拒否する。リンク相手は
+    // L / J カットで編集点を持たないことがあり、その場合は相手の前後を追従させない。
+    const auto& anchorNeighbors = neighbors[static_cast<std::size_t>(index)];
+    if (anchorNeighbors.previous < 0 || anchorNeighbors.next < 0) {
+        result.error =
+            "スライドには前後に接している clip が必要です (移動は選択ツールで行ってください)";
+        return result;
+    }
     for (std::size_t slide = 0; slide < slid.size(); ++slide) {
         if (!slid[slide])
             continue;

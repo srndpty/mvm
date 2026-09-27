@@ -759,3 +759,27 @@ audio は素材と sample offset)。レーザーで分割した直後のよう�
 
 `[未検証]` 分割点を再生して止まらないことは GUI で確認していない。判定関数の単体テストと、
 controller の契約テストまでを確認した。
+
+### 16.4 レビュー指摘への対応
+
+`[事実]` スライドは、操作した clip に接している前後の clip が両方無ければ拒否する。
+以前は前後が無くても成功し、単なる移動になっていた (ツールの説明と食い違っていた)。
+リンク相手の前後は、ローリングの L / J カットと同じく任意のまま。
+
+`[事実]` clip へのマウス操作をどの編集として確定するかを `apps/mvm/TimelineGestures.js`
+へ切り出し、`tests/qml/tst_timeline_gestures.qml` (qmltestrunner) で検査する。
+レーザーの分割位置と Alt / Shift の解釈は press 時点で確定する。
+qmltestrunner は test 関数 0 件でも成功を返し、Windows では stdout も CTest へ届かないので、
+`tests/qml/run-qml-test.ps1` が結果 file を読み、test 関数の通過件数と失敗 0 件で判定する。
+分割位置を release 位置へ変えた mutant と、test 関数が 0 件の file の両方で失敗することを確認した。
+
+`[事実]` Undo / Redo 後の recovery が切り替え後の Project を指すことを
+`testUndoRedoRewritesRecovery` で固定した。`stepEditHistory` から
+`scheduleRecoveryAutosave()` を外すと Redo 側の検査が落ちる
+(Undo 側は直前の編集で起動した上限 timer が書き直すため、この mutation では落ちない)。
+
+`[事実]` ローリング / スライドの drag 中、隣接 clip の端も同じ量だけ伸縮して見せる
+(`adjacentEditPoints`)。ローリングでリンク相手が編集点を持たない場合は、Project と同じく
+相手を動かして見せない。
+
+`[未検証]` 上記 QML の配線を実機のマウス操作で通したことはない。
