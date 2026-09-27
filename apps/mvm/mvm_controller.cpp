@@ -2387,36 +2387,54 @@ void MvmController::stopPlaybackWithError(QString error) {
     setStatus(std::move(error));
 }
 
-bool MvmController::handOffPlaybackSources(std::int64_t frame) {
+bool MvmController::handOffPlaybackSources(std::int64_t frame, QString& reason) {
     const auto mappedFrame = mapTimelinePreviewFrame(project_, frame);
-    if (!mappedFrame.success || mappedFrame.layers.size() != trackSources_.size())
+    if (!mappedFrame.success) {
+        reason = QString::fromStdString(mappedFrame.error);
         return false;
+    }
+    if (mappedFrame.layers.size() != trackSources_.size()) {
+        reason = QStringLiteral("表示するvideo trackの数が変わります");
+        return false;
+    }
     bool videoChanged = false;
     for (const auto& layer : mappedFrame.layers) {
         const auto installed = trackSources_.find(layer.videoTrackIndex);
-        if (installed == trackSources_.end())
+        if (installed == trackSources_.end()) {
+            reason = QStringLiteral("表示するvideo trackが変わります");
             return false;
+        }
         if (installed->second.clipId == layer.clipId)
             continue;
         const auto& clip = project_.timelineClips[static_cast<std::size_t>(layer.clipIndex)];
-        if (!previewVideoMappingCovers(project_, installed->second.mapping, clip))
+        if (!previewVideoMappingCovers(project_, installed->second.mapping, clip)) {
+            reason = QString::fromStdString(clip.name) +
+                     QStringLiteral(" は直前のclipと素材の位置が連続していません");
             return false;
+        }
         videoChanged = true;
     }
     const auto audioMapping = mapTimelinePreviewAudio(project_, frame);
-    if (!audioMapping.success || audioMapping.layers.size() != audioSources_.size())
+    if (!audioMapping.success) {
+        reason = QString::fromStdString(audioMapping.error);
         return false;
+    }
+    if (audioMapping.layers.size() != audioSources_.size()) {
+        reason = QStringLiteral("鳴らすaudio clipの数が変わります");
+        return false;
+    }
     bool audioChanged = false;
     for (std::size_t index = 0; index < audioSources_.size(); ++index)
         audioChanged = audioChanged || audioMapping.layers[index].clipId != audioSources_[index].clipId;
     if (audioChanged) {
         std::vector<AudioSourceIdentity> desired;
-        QString ignored;
-        if (!audioIdentitiesFor(audioMapping, desired, ignored))
+        if (!audioIdentitiesFor(audioMapping, desired, reason))
             return false;
         for (std::size_t index = 0; index < desired.size(); ++index) {
-            if (!(desired[index] == audioSources_[index].identity))
+            if (!(desired[index] == audioSources_[index].identity)) {
+                reason = QStringLiteral("audio clipの素材の位置が直前のclipと連続していません");
                 return false;
+            }
         }
     }
     if (!videoChanged && !audioChanged)
@@ -2432,8 +2450,11 @@ bool MvmController::handOffPlaybackSources(std::int64_t frame) {
     preview::PreviewFrameRequest unusedRequest;
     const auto composition = previewCompositionFor(mappedFrame, sources, unusedRequest);
     if (!submittedComposition_ || !(*submittedComposition_ == *composition)) {
-        if (!previewEngine_->submitComposition(composition))
+        const auto submitted = previewEngine_->submitComposition(composition);
+        if (!submitted) {
+            reason = previewErrorText(submitted.error());
             return false;
+        }
         submittedComposition_ = composition;
     }
     trackSources_ = std::move(sources);
@@ -2473,7 +2494,8 @@ void MvmController::advanceTimelinePlayback() {
     }
     // 次の clip を今の source のまま表示できる (分割直後の連続した clip など) なら、
     // 止めずに source を引き継ぐ。できなければ一時停止して source を組み直す。
-    if (handOffPlaybackSources(frame)) {
+    QString handOffFailure;
+    if (handOffPlaybackSources(frame, handOffFailure)) {
         if (playheadFrame_ != frame) {
             playheadFrame_ = frame;
             Q_EMIT stateChanged();
@@ -2496,6 +2518,9 @@ void MvmController::advanceTimelinePlayback() {
         stopPlaybackWithError(QStringLiteral("次のclipへ切り替えられません: ") + statusText_);
         return;
     }
+    // 引き継げずに組み直したことと、その理由を残す。境界で一瞬止まる原因の手がかりになる。
+    statusText_ = QStringLiteral("clip境界でPreviewを組み直しています: ") + handOffFailure;
+    Q_EMIT stateChanged();
 }
 
 bool MvmController::cancelPendingPlaybackForPause() {
@@ -2792,6 +2817,26 @@ bool MvmController::trimClip(const QString& clipId, const QString& edge, qint64 
                                              linkModeFor(linked));
         },
         id, QStringLiteral("clipをtrimしました"));
+}
+
+qint64 MvmController::clampEdgeDrag(const QString& clipId, const QString& edge,
+                                   const QString& tool, qint64 projectFrameDelta,
+                                   bool linked) const {
+    project::TrimEdge trimEdge;
+    if (edge == QStringLiteral("left"))
+        trimEdge = project::TrimEdge::Left;
+    else if (edge == QStringLiteral("right"))
+        trimEdge = project::TrimEdge::Right;
+    else
+        return 0;
+    const project::EdgeEditKind kind = tool == QStringLiteral("ripple")
+                                           ? project::EdgeEditKind::Ripple
+                                       : tool == QStringLiteral("rolling")
+                                           ? project::EdgeEditKind::Roll
+                                           : project::EdgeEditKind::Trim;
+    const auto clamped = project::clampEdgeEdit(project_, clipId.toStdString(), trimEdge, kind,
+                                                projectFrameDelta, linkModeFor(linked));
+    return clamped.success ? clamped.frame : 0;
 }
 
 bool MvmController::rippleTrimClip(const QString& clipId, const QString& edge,

@@ -783,3 +783,22 @@ qmltestrunner は test 関数 0 件でも成功を返し、Windows では stdout
 相手を動かして見せない。
 
 `[未検証]` 上記 QML の配線を実機のマウス操作で通したことはない。
+
+### 16.5 分割点での再生の引き継ぎ (fps 違い) と、端のドラッグの停止
+
+`[事実]` `previewVideoMappingCovers` は素材 fps = timeline fps のときだけ引き継ぎを許していた。
+再生は fps が違う clip も許すので、60fps timeline 上の 30fps 素材では分割点ごとに
+一時停止と seek (「再生開始のためseekしています」) を踏んでいた。
+source の写像 `start + ceil((s - in) R)` (R = timeline fps / 素材 fps) が全 frame で一致する
+条件「(in' - in) R が整数 k で start' - start = k」で判定するよう一般化した。
+30fps 素材を 60fps timeline で分割した右半分はこれを満たす。29.97fps 素材などは満たさず、
+境界で組み直す。組み直したときは理由を status へ出す。
+
+`[事実]` trim / リップル / ローリングは、素材の範囲を越える量を渡されると全体を失敗させていた。
+QML はドラッグ量を制限しないので、分割前の位置を少しでも越えて引き延ばすと clip が元へ戻っていた。
+`clampEdgeEdit` で素材の端・1 frame 以上の尺・timeline 先頭 (通常の trim の left 端だけ) に止め、
+確定と drag 中の表示の両方がこれを使う。`testTrimRestoresSplitClip` が
+「分割 → 前半削除 → left 端を大きく引き延ばす」で分割前の clip に戻ることを固定している。
+
+`[未検証]` 実機の再生で分割点が止まらなくなったことは確認していない。引き継げない場合の
+status 表示を手がかりに確認する。

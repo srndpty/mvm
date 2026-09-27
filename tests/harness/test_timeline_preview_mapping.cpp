@@ -234,6 +234,29 @@ void testSplitClipReusesPreviewSource() {
                                                  ntscRight),
             "fpsが違う素材で原点の違うsourceを使い回しました");
 
+    // 60fps timeline 上の 30fps 素材は timeline 2 frame = 素材 1 frame なので、分割直後の
+    // 右半分も左半分の source のまま表示できる。以前は fps 一致を要求していて境界で組み直していた。
+    mvm::project::Project halfRate = mvm::project::createDefaultProject();
+    auto thirty = clip("thirty", 0, 0, 0, 300);
+    thirty.sourceFpsNum = 30;
+    halfRate.timelineClips = {thirty};
+    require(mvm::project::splitTimelineClips(
+                halfRate, {"thirty"}, 241,
+                [&counter] { return "half-" + std::to_string(++counter); },
+                mvm::project::LinkMode::Linked)
+                    .success &&
+                halfRate.timelineClips.size() == 2,
+            "30fps素材のclipを分割できません");
+    require(mvm::app::previewVideoMappingCovers(
+                halfRate, mvm::app::previewVideoMappingOf(halfRate.timelineClips[0]),
+                halfRate.timelineClips[1]),
+            "60fps timeline上の30fps素材の分割直後を同じsourceで表示できると判定しません");
+    auto shiftedHalf = halfRate.timelineClips[1];
+    shiftedHalf.timelineStartFrame += 1;
+    require(!mvm::app::previewVideoMappingCovers(
+                halfRate, mvm::app::previewVideoMappingOf(halfRate.timelineClips[0]), shiftedHalf),
+            "1 frameずらした30fps素材の右半分を同じsourceで表示できると判定しました");
+
     // audio は offset が同じなら同じ source として扱える。
     const auto leftAudio = audioClip("take", 10, 100, 60, 60, 1);
     const auto rightAudio = audioClip("take", 70, 160, 60, 60, 1);

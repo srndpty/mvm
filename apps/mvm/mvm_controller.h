@@ -263,6 +263,11 @@ public:
     // タイムラインツール。edge は "left" / "right"。
     Q_INVOKABLE bool rippleTrimClip(const QString& clipId, const QString& edge,
                                     qint64 projectFrameDelta, bool linked);
+    // 端のドラッグ量を、確定時と同じ規則 (素材の端・1 frame 以上の尺) で止めた値。
+    // drag 中の表示に使う。tool は "select" / "ripple" / "rolling"。
+    Q_INVOKABLE qint64 clampEdgeDrag(const QString& clipId, const QString& edge,
+                                     const QString& tool, qint64 projectFrameDelta,
+                                     bool linked) const;
     Q_INVOKABLE bool rollClipEdge(const QString& clipId, const QString& edge,
                                   qint64 projectFrameDelta, bool linked);
     Q_INVOKABLE bool slipClip(const QString& clipId, qint64 projectFrameDelta, bool linked);
@@ -457,7 +462,8 @@ private:
                           preview::PreviewFrameRequest& request) const;
     // 再生中、frame の clip を今の source のまま表示できれば source を引き継いで true。
     // 引き継げなければ何も変更せず false (呼び出し側が一時停止して組み直す)。
-    bool handOffPlaybackSources(std::int64_t frame);
+    // 引き継げなかったら reason に理由を入れる。
+    bool handOffPlaybackSources(std::int64_t frame, QString& reason);
     // applyAudioSourceFor の結果を打ち消す。控えておいた descriptor をそのまま
     // 使い、現在の Project からは作り直さない。戻せなかった場合は黙って成功に
     // せず false を返す。

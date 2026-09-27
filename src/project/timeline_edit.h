@@ -78,7 +78,21 @@ TimelineEditResult placeLinkedAvPairAt(Project& project, TimelineClip video, Tra
                                        std::int64_t timelineStartFrame);
 TimelineEditResult deleteTimelineClip(Project& project, int selectedIndex);
 TimelineEditResult unlinkTimelineClip(Project& project, const std::string& clipId);
-// Linked ならリンク相手の同じ側の端も同じ量だけ動かす。
+// clip の端のドラッグの種類。動かせる範囲の決め方が違う。
+//   Trim   : 素材の範囲と 1 frame 以上の尺。left 端は timeline 先頭より前へ出さない
+//   Ripple : Trim と同じだが、left 端でも clip の開始位置は動かない
+//   Roll   : 操作した clip と接している clip の両方で素材の範囲と 1 frame 以上の尺
+enum class EdgeEditKind { Trim, Ripple, Roll };
+
+// 端のドラッグ量 (project frame) を、動かせる範囲で止めた値にする。Linked ならリンク相手も
+// 同じ量を動かせる範囲に止める。Premiere と同じく、素材の端を越えるドラッグは失敗させずに
+// 端で止める。trim / リップル / ローリングの確定と drag 中の表示の両方がこれを使う。
+TimelineFrameResult clampEdgeEdit(const Project& project, const std::string& clipId, TrimEdge edge,
+                                  EdgeEditKind kind, std::int64_t projectFrameDelta,
+                                  LinkMode linkMode);
+
+// Linked ならリンク相手の同じ側の端も同じ量だけ動かす。動かせる範囲を越える量は
+// clampEdgeEdit で止め、1 frame も動かせなければ失敗する。
 TimelineEditResult trimTimelineClip(Project& project, const std::string& clipId, TrimEdge edge,
                                     std::int64_t projectFrameDelta, LinkMode linkMode);
 

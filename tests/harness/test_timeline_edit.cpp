@@ -767,12 +767,20 @@ void testRippleTrim() {
               findClip(project, secondAudio.id)->sourceInFrame == 0,
           "left端のripple trimでclip開始位置を保てないか、リンク相手までtrimしました");
 
+    // 素材の範囲を越えるドラッグは失敗させず、素材の端で止める (Premiere と同じ)。
+    check(mvm::project::rippleTrimTimelineClip(project, first.id, mvm::project::TrimEdge::Right,
+                                               200, mvm::project::LinkMode::Single)
+                  .success &&
+              findClip(project, first.id)->sourceOutFrame == 300 &&
+              findClip(project, second.id)->timelineStartFrame == 300 &&
+              findClip(project, third.id)->timelineStartFrame == 650,
+          "素材の範囲を越えるripple trimを素材の端で止めません");
     const auto beforeReject = project;
-    check(!mvm::project::rippleTrimTimelineClip(project, first.id, mvm::project::TrimEdge::Right,
-                                                200, mvm::project::LinkMode::Single)
+    check(!mvm::project::rippleTrimTimelineClip(project, first.id, mvm::project::TrimEdge::Right, 1,
+                                                mvm::project::LinkMode::Single)
                   .success &&
               project == beforeReject,
-          "素材の範囲を超えるripple trimを拒否しないか、拒否時にProjectが変化しました");
+          "素材の端に達したripple trimを拒否しないか、拒否時にProjectが変化しました");
 }
 
 // 素材 600 frame のうち [in, in + 300) を start へ置いた clip。
@@ -814,11 +822,20 @@ void testRollEdit() {
                   .success &&
               project == beforeReject,
           "隣接clipが無いrolling編集を拒否しません");
-    check(!mvm::project::rollTimelineEdit(project, outgoing.id, mvm::project::TrimEdge::Right, 400,
+    // incoming を消すほどのドラッグは、incoming を 1 frame 残すところで止める。
+    check(mvm::project::rollTimelineEdit(project, outgoing.id, mvm::project::TrimEdge::Right, 400,
+                                         mvm::project::LinkMode::Single)
+                  .success &&
+              clipEnd(project, project.timelineClips[0]) == 599 &&
+              project.timelineClips[1].timelineStartFrame == 599 &&
+              clipEnd(project, project.timelineClips[1]) == 600,
+          "incoming clipを消すrolling編集を1 frame残して止めません");
+    const auto beforeMinimum = project;
+    check(!mvm::project::rollTimelineEdit(project, outgoing.id, mvm::project::TrimEdge::Right, 1,
                                           mvm::project::LinkMode::Single)
                   .success &&
-              project == beforeReject,
-          "incoming clipを消すrolling編集を拒否しないか、拒否時にProjectが変化しました");
+              project == beforeMinimum,
+          "incoming clipが1 frameのrolling編集を拒否しないか、拒否時にProjectが変化しました");
 
     // 29.97fps の outgoing は 60fps timeline の 602 frame 目に境界を置けない
     // (素材 300 frame = timeline 601、301 frame = 603)。隙間を作らず拒否する。
@@ -984,6 +1001,69 @@ void testLinkedToolEditing() {
                   .success &&
               at(project, "pair-audio").timelineStartFrame == 900,
           "Linkedの移動がリンク相手を動かしません");
+}
+
+// レーザーで分割し前半を削除した後、右の clip の left 端を大きく引き延ばすと、
+// 分割前の clip (素材の先頭、timeline 先頭) まで戻り、それを越える分は止まる。
+// 以前は越えた分で trim 全体が失敗し、clip が元の位置へ戻っていた。
+void testTrimRestoresSplitClip() {
+    using mvm::project::LinkMode;
+    using mvm::project::TrimEdge;
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    // 60fps timeline に 30fps 素材 (音声付き) を置く。
+    auto video = clip("restore-video");
+    auto audio = clip("restore-audio", mvm::project::TimelineClipKind::Audio, kA1);
+    for (auto* value : {&video, &audio}) {
+        value->sourceFpsNum = 30;
+        value->sourceFrameCount = 300;
+        value->sourceOutFrame = 300;
+        value->linkGroupId = "restore";
+    }
+    project.timelineClips = {video, audio};
+    check(mvm::project::validateTimeline(project).success, "復元試験のtimelineが不正です");
+    check(mvm::project::splitTimelineClips(project, {video.id}, 241, sequentialIds(),
+                                           LinkMode::Linked)
+                  .success &&
+              project.timelineClips.size() == 4,
+          "復元試験の分割に失敗しました");
+    const auto* left = findClip(project, video.id);
+    check(left &&
+              mvm::project::deleteTimelineClip(
+                  project, static_cast<int>(left - project.timelineClips.data()))
+                  .success &&
+              project.timelineClips.size() == 2,
+          "復元試験で前半を削除できません");
+    const std::string rightId =
+        project.timelineClips[0].kind == mvm::project::TimelineClipKind::Audio
+            ? project.timelineClips[1].id
+            : project.timelineClips[0].id;
+    check(
+        mvm::project::trimTimelineClip(project, rightId, TrimEdge::Left, -100000, LinkMode::Linked)
+            .success,
+        "素材の先頭を越えるleft trimを素材の先頭で止めません");
+    for (const auto& value : project.timelineClips) {
+        check(value.sourceInFrame == 0 && value.sourceOutFrame == 300 &&
+                  value.timelineStartFrame == 0 && clipEnd(project, value) == 600,
+              "分割前のclipまで引き延ばせません");
+    }
+
+    // 通常の trim は timeline 先頭より前へ出さない。リップルは開始位置を保つので制約を受けない。
+    mvm::project::Project offset = mvm::project::createDefaultProject();
+    offset.timelineClips = {roomyClip("offset", 200, 50)};
+    const auto trimRange =
+        mvm::project::clampEdgeEdit(offset, "id-offset", TrimEdge::Left,
+                                    mvm::project::EdgeEditKind::Trim, -1000, LinkMode::Single);
+    const auto rippleRange =
+        mvm::project::clampEdgeEdit(offset, "id-offset", TrimEdge::Left,
+                                    mvm::project::EdgeEditKind::Ripple, -1000, LinkMode::Single);
+    check(trimRange.success && trimRange.frame == -50 && rippleRange.success &&
+              rippleRange.frame == -200,
+          "left端の伸長をtimeline先頭または素材の先頭で止めません");
+    const auto shrinkRange =
+        mvm::project::clampEdgeEdit(offset, "id-offset", TrimEdge::Right,
+                                    mvm::project::EdgeEditKind::Trim, -1000, LinkMode::Single);
+    check(shrinkRange.success && shrinkRange.frame == -299,
+          "right端の短縮を1 frame残して止めません");
 }
 
 void testSlipClip() {
@@ -1348,6 +1428,7 @@ int main(int argc, char** argv) {
     testRippleTrim();
     testRollEdit();
     testLinkedToolEditing();
+    testTrimRestoresSplitClip();
     testSlipClip();
     testSlideClip();
     testTrackSelectFromFrame();

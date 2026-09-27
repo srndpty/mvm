@@ -790,6 +790,116 @@ bool slipClipSource(const Project& project, TimelineClip& clip, std::int64_t pro
 
 } // namespace
 
+namespace {
+
+// clip の edge を timeline 上で動かせる範囲 [lower, upper] (project frame)。
+// 素材の範囲を超えず、clip の尺を 1 frame 以上に保つ。
+bool edgeRange(const Project& project, const TimelineClip& clip, TrimEdge edge, std::int64_t& lower,
+               std::int64_t& upper, std::string& error) {
+    const auto in =
+        sourceBoundaryToTimelineBoundary(clip.sourceInFrame, clip.sourceFpsNum, clip.sourceFpsDen,
+                                         project.timelineFpsNum, project.timelineFpsDen);
+    const auto out =
+        sourceBoundaryToTimelineBoundary(clip.sourceOutFrame, clip.sourceFpsNum, clip.sourceFpsDen,
+                                         project.timelineFpsNum, project.timelineFpsDen);
+    const auto end = sourceBoundaryToTimelineBoundary(clip.sourceFrameCount, clip.sourceFpsNum,
+                                                      clip.sourceFpsDen, project.timelineFpsNum,
+                                                      project.timelineFpsDen);
+    if (!in.success || !out.success || !end.success) {
+        error = !in.success ? in.error : (!out.success ? out.error : end.error);
+        return false;
+    }
+    const std::int64_t duration = out.frame - in.frame;
+    if (edge == TrimEdge::Left) {
+        lower = -in.frame;
+        upper = duration - 1;
+    } else {
+        lower = -(duration - 1);
+        upper = end.frame - out.frame;
+    }
+    return true;
+}
+
+void narrowRange(std::int64_t& lower, std::int64_t& upper, std::int64_t otherLower,
+                 std::int64_t otherUpper) {
+    lower = std::max(lower, otherLower);
+    upper = std::min(upper, otherUpper);
+}
+
+} // namespace
+
+TimelineFrameResult clampEdgeEdit(const Project& project, const std::string& clipId, TrimEdge edge,
+                                  EdgeEditKind kind, std::int64_t projectFrameDelta,
+                                  LinkMode linkMode) {
+    TimelineFrameResult result;
+    const int index = indexOfId(project, clipId);
+    if (!validIndex(project, index)) {
+        result.error = "伸縮する timeline clip がありません";
+        return result;
+    }
+    std::int64_t lower = std::numeric_limits<std::int64_t>::min();
+    std::int64_t upper = std::numeric_limits<std::int64_t>::max();
+    for (const int target : editTargets(project, index, linkMode)) {
+        const auto& clip = project.timelineClips[static_cast<std::size_t>(target)];
+        std::int64_t clipLower = 0;
+        std::int64_t clipUpper = 0;
+        if (kind == EdgeEditKind::Roll) {
+            const int neighbor = adjacentClipIndex(project, target, edge, result.error);
+            if (!result.error.empty())
+                return result;
+            if (neighbor < 0) {
+                // リンク相手が編集点を持たない (L / J カット) なら、相手は範囲を縛らない。
+                if (target != index)
+                    continue;
+                result.error = "ローリング編集には接している隣の clip が必要です";
+                return result;
+            }
+            const int outgoing = edge == TrimEdge::Right ? target : neighbor;
+            const int incoming = edge == TrimEdge::Right ? neighbor : target;
+            if (!edgeRange(project, project.timelineClips[static_cast<std::size_t>(outgoing)],
+                           TrimEdge::Right, clipLower, clipUpper, result.error))
+                return result;
+            narrowRange(lower, upper, clipLower, clipUpper);
+            if (!edgeRange(project, project.timelineClips[static_cast<std::size_t>(incoming)],
+                           TrimEdge::Left, clipLower, clipUpper, result.error))
+                return result;
+            narrowRange(lower, upper, clipLower, clipUpper);
+            continue;
+        }
+        if (!edgeRange(project, clip, edge, clipLower, clipUpper, result.error))
+            return result;
+        narrowRange(lower, upper, clipLower, clipUpper);
+        // 通常の trim は left 端を動かすと clip の開始位置も動く。timeline 先頭より前へは出さない。
+        // リップルは開始位置を保つので、この制約を受けない。
+        if (kind == EdgeEditKind::Trim && edge == TrimEdge::Left)
+            lower = std::max(lower, -clip.timelineStartFrame);
+    }
+    result.success = true;
+    result.frame = lower > upper ? 0 : std::clamp(projectFrameDelta, lower, upper);
+    return result;
+}
+
+namespace {
+
+// clampEdgeEdit で止めた量を返す。1 frame も動かせなければ失敗にする。
+bool clampedEdgeDelta(const Project& project, const std::string& clipId, TrimEdge edge,
+                      EdgeEditKind kind, std::int64_t projectFrameDelta, LinkMode linkMode,
+                      std::int64_t& clamped, std::string& error) {
+    const auto range = clampEdgeEdit(project, clipId, edge, kind, projectFrameDelta, linkMode);
+    if (!range.success) {
+        error = range.error;
+        return false;
+    }
+    if (range.frame == 0) {
+        error = "素材の端または clip の最小尺に達しているため、これ以上伸縮できません";
+        return false;
+    }
+    clamped = range.frame;
+    return true;
+}
+
+} // namespace
+
 TimelineEditResult trimTimelineClip(Project& project, const std::string& clipId, TrimEdge edge,
                                     std::int64_t projectFrameDelta, LinkMode linkMode) {
     TimelineEditResult result;
@@ -799,6 +909,9 @@ TimelineEditResult trimTimelineClip(Project& project, const std::string& clipId,
         result.error = "trim する timeline clip がありません";
         return result;
     }
+    if (!clampedEdgeDelta(candidate, clipId, edge, EdgeEditKind::Trim, projectFrameDelta, linkMode,
+                          projectFrameDelta, result.error))
+        return result;
     for (const int target : editTargets(candidate, index, linkMode)) {
         if (!trimClipBoundary(candidate, candidate.timelineClips[static_cast<std::size_t>(target)],
                               edge, projectFrameDelta, result.error))
@@ -922,6 +1035,9 @@ TimelineEditResult rippleTrimTimelineClip(Project& project, const std::string& c
         result.error = "リップルトリムする timeline clip がありません";
         return result;
     }
+    if (!clampedEdgeDelta(candidate, clipId, edge, EdgeEditKind::Ripple, projectFrameDelta,
+                          linkMode, projectFrameDelta, result.error))
+        return result;
     const std::vector<int> targets = editTargets(candidate, index, linkMode);
 
     // trim した各 clip の track で、その clip の元の終端以降にある clip を後ろへ波及させる。
@@ -990,6 +1106,9 @@ TimelineEditResult rollTimelineEdit(Project& project, const std::string& clipId,
         result.error = "ローリング編集する timeline clip がありません";
         return result;
     }
+    if (!clampedEdgeDelta(candidate, clipId, edge, EdgeEditKind::Roll, projectFrameDelta, linkMode,
+                          projectFrameDelta, result.error))
+        return result;
     const std::vector<int> targets = editTargets(candidate, index, linkMode);
     for (std::size_t order = 0; order < targets.size(); ++order) {
         bool neighborFound = false;

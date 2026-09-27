@@ -2072,7 +2072,11 @@ ApplicationWindow {
                                         }
                                         onPositionChanged: mouse => {
                                             const now = mapToItem(timelineContent, mouse.x, mouse.y).x;
-                                            dragDelta = Math.round((now - pressContentX) / timelinePanel.pixelsPerFrame);
+                                            // 素材の端や最小尺を越える分は、確定時と同じ規則で止めて見せる。
+                                            dragDelta = root.mvmController.clampEdgeDrag(
+                                                clipItem.clipId, "left", timelinePanel.tool,
+                                                Math.round((now - pressContentX) / timelinePanel.pixelsPerFrame),
+                                                clipItem.editLinked);
                                             // リップルの left 端は clip の開始位置を保ち、右端側が伸び縮みする。
                                             if (timelinePanel.tool === "ripple")
                                                 clipItem.rightPreviewDelta = -dragDelta;
@@ -2117,7 +2121,10 @@ ApplicationWindow {
                                         }
                                         onPositionChanged: mouse => {
                                             const now = mapToItem(timelineContent, mouse.x, mouse.y).x;
-                                            clipItem.rightPreviewDelta = Math.round((now - pressContentX) / timelinePanel.pixelsPerFrame);
+                                            clipItem.rightPreviewDelta = root.mvmController.clampEdgeDrag(
+                                                clipItem.clipId, "right", timelinePanel.tool,
+                                                Math.round((now - pressContentX) / timelinePanel.pixelsPerFrame),
+                                                clipItem.editLinked);
                                             timelinePanel.adjacentEditDelta = clipItem.rightPreviewDelta;
                                         }
                                         onReleased: {
