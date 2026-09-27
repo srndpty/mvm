@@ -61,6 +61,7 @@ class MvmController final : public QObject {
     Q_PROPERTY(qint64 totalTimelineFrames READ totalTimelineFrames NOTIFY stateChanged)
     Q_PROPERTY(QString currentTimeText READ currentTimeText NOTIFY stateChanged)
     Q_PROPERTY(bool playing READ playing NOTIFY stateChanged)
+    Q_PROPERTY(int shuttleRate READ shuttleRate NOTIFY stateChanged)
     Q_PROPERTY(bool canPlay READ canPlay NOTIFY stateChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY stateChanged)
     Q_PROPERTY(bool dirty READ dirty NOTIFY stateChanged)
@@ -159,7 +160,9 @@ public:
 
     QString currentTimeText() const;
 
-    bool playing() const { return playing_; }
+    bool playing() const { return playing_ || shuttleRate_ != 0; }
+
+    int shuttleRate() const { return shuttleRate_; }
 
     bool canPlay() const;
 
@@ -237,6 +240,10 @@ public:
     Q_INVOKABLE void endScrub();
     Q_INVOKABLE bool playTimeline();
     Q_INVOKABLE bool pauseTimeline();
+    Q_INVOKABLE bool shuttleLeft();
+    Q_INVOKABLE bool shuttleRight();
+    Q_INVOKABLE bool stepTimelineFrames(int delta);
+    Q_INVOKABLE bool jumpToEditPoint(int direction);
     Q_INVOKABLE bool moveTimelineClip(const QString& clipId, const QString& trackKind,
                                       int trackIndex, qint64 timelineStartFrame);
     Q_INVOKABLE bool trimClip(const QString& clipId, const QString& edge, qint64 projectFrameDelta);
@@ -346,6 +353,8 @@ private:
     void pollPreviewState();
     void pollAudioMeter();
     void advanceTimelinePlayback();
+    void advanceTimelineShuttle();
+    bool changeShuttleRate(int direction);
     void setStatus(QString status);
     void reportExportFailure(QString message);
     bool initializePreviewEngine(const QString& failurePrefix);
@@ -506,6 +515,11 @@ private:
     bool previewReady_ = false;
     bool shutdownStarted_ = false;
     bool playing_ = false;
+    int shuttleRate_ = 0;
+    bool shuttleSeeking_ = false;
+    std::int64_t shuttleBaseFrame_ = 0;
+    QElapsedTimer shuttleClock_;
+    QTimer shuttleTimer_;
     bool pendingPlaybackStart_ = false;
     bool scrubbing_ = false;
     bool scrubPending_ = false;

@@ -132,6 +132,56 @@ ApplicationWindow {
             }
         }
         CompactMenu {
+            title: "再生"
+            CompactMenuItem {
+                text: "左へシャトル\tJ"
+                enabled: !mvmController.busy && mvmController.clipCount > 0
+                onTriggered: mvmController.shuttleLeft()
+            }
+            CompactMenuItem {
+                text: "停止\tK"
+                enabled: mvmController.playing
+                onTriggered: mvmController.pauseTimeline()
+            }
+            CompactMenuItem {
+                text: "右へシャトル\tL"
+                enabled: !mvmController.busy && mvmController.clipCount > 0
+                onTriggered: mvmController.shuttleRight()
+            }
+            CompactMenuSeparator {}
+            CompactMenuItem {
+                text: "1フレーム前へ\t←"
+                enabled: !mvmController.busy && mvmController.clipCount > 0
+                onTriggered: mvmController.stepTimelineFrames(-1)
+            }
+            CompactMenuItem {
+                text: "1フレーム先へ\t→"
+                enabled: !mvmController.busy && mvmController.clipCount > 0
+                onTriggered: mvmController.stepTimelineFrames(1)
+            }
+            CompactMenuItem {
+                text: "5フレーム前へ\tShift+←"
+                enabled: !mvmController.busy && mvmController.clipCount > 0
+                onTriggered: mvmController.stepTimelineFrames(-5)
+            }
+            CompactMenuItem {
+                text: "5フレーム先へ\tShift+→"
+                enabled: !mvmController.busy && mvmController.clipCount > 0
+                onTriggered: mvmController.stepTimelineFrames(5)
+            }
+            CompactMenuSeparator {}
+            CompactMenuItem {
+                text: "前の編集点へ\t↑"
+                enabled: !mvmController.busy && mvmController.clipCount > 0
+                onTriggered: mvmController.jumpToEditPoint(-1)
+            }
+            CompactMenuItem {
+                text: "次の編集点へ\t↓"
+                enabled: !mvmController.busy && mvmController.clipCount > 0
+                onTriggered: mvmController.jumpToEditPoint(1)
+            }
+        }
+        CompactMenu {
             title: "プロジェクト"
             CompactMenuItem {
                 text: "プロジェクト設定"
@@ -150,6 +200,9 @@ ApplicationWindow {
     // 左上パネルのタブ。0: エフェクトコントロール / 1: プロジェクト
     property int leftPanelTab: 0
     property real leftPanelWidth: 340
+    readonly property bool timelineShortcutsEnabled: !mvmController.busy
+                                                     && mvmController.clipCount > 0
+                                                     && projectPanel.renamingId === ""
     readonly property string projectFileName: {
         const parts = mvmController.projectPath.split(/[\\/]/);
         return parts[parts.length - 1];
@@ -349,6 +402,54 @@ ApplicationWindow {
             else
                 mvmController.playTimeline();
         }
+    }
+    Shortcut {
+        sequence: "J"
+        autoRepeat: false
+        enabled: root.timelineShortcutsEnabled
+        onActivated: mvmController.shuttleLeft()
+    }
+    Shortcut {
+        sequence: "K"
+        autoRepeat: false
+        enabled: mvmController.playing
+        onActivated: mvmController.pauseTimeline()
+    }
+    Shortcut {
+        sequence: "L"
+        autoRepeat: false
+        enabled: root.timelineShortcutsEnabled
+        onActivated: mvmController.shuttleRight()
+    }
+    Shortcut {
+        sequence: "Left"
+        enabled: root.timelineShortcutsEnabled
+        onActivated: mvmController.stepTimelineFrames(-1)
+    }
+    Shortcut {
+        sequence: "Right"
+        enabled: root.timelineShortcutsEnabled
+        onActivated: mvmController.stepTimelineFrames(1)
+    }
+    Shortcut {
+        sequence: "Shift+Left"
+        enabled: root.timelineShortcutsEnabled
+        onActivated: mvmController.stepTimelineFrames(-5)
+    }
+    Shortcut {
+        sequence: "Shift+Right"
+        enabled: root.timelineShortcutsEnabled
+        onActivated: mvmController.stepTimelineFrames(5)
+    }
+    Shortcut {
+        sequence: "Up"
+        enabled: root.timelineShortcutsEnabled
+        onActivated: mvmController.jumpToEditPoint(-1)
+    }
+    Shortcut {
+        sequence: "Down"
+        enabled: root.timelineShortcutsEnabled
+        onActivated: mvmController.jumpToEditPoint(1)
     }
     ColumnLayout {
         anchors.fill: parent

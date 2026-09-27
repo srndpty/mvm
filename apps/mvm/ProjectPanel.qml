@@ -208,10 +208,12 @@ Item {
                 ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
                 ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
 
-                // Main.qml の Delete (timeline clip 削除) より、このリストの操作を優先させる。
+                // リストにfocusがある間は削除・選択移動をtimelineのshortcutより優先する。
                 Keys.onShortcutOverride: event => {
                     event.accepted = panel.renamingId === ""
-                        && (event.key === Qt.Key_Delete || event.key === Qt.Key_F2);
+                        && (event.key === Qt.Key_Delete || event.key === Qt.Key_F2
+                            || event.key === Qt.Key_Left || event.key === Qt.Key_Right
+                            || event.key === Qt.Key_Up || event.key === Qt.Key_Down);
                 }
                 Keys.onPressed: event => {
                     if (panel.renamingId !== "")

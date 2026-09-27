@@ -282,6 +282,9 @@ MvmController::MvmController(std::filesystem::path projectPath,
     playbackTimer_.setInterval(16);
     playbackTimer_.setTimerType(Qt::PreciseTimer);
     connect(&playbackTimer_, &QTimer::timeout, this, &MvmController::advanceTimelinePlayback);
+    shuttleTimer_.setInterval(40);
+    shuttleTimer_.setTimerType(Qt::PreciseTimer);
+    connect(&shuttleTimer_, &QTimer::timeout, this, &MvmController::advanceTimelineShuttle);
 
     stateTimer_.setInterval(100);
     connect(&stateTimer_, &QTimer::timeout, this, &MvmController::pollPreviewState);
@@ -2172,6 +2175,8 @@ bool MvmController::seekTimelineFrame(qint64 frame) {
     }
     const qint64 clamped = std::clamp<qint64>(frame, 0, totalTimelineFrames_ - 1);
     playheadFrame_ = clamped;
+    if (scrubPending_ && !scrubbing_)
+        scrubTargetFrame_ = clamped;
     int index = -1;
     // 選択clipがactiveならaudio/videoを問わず維持する。videoだけを検索すると、
     // A1の見た目の選択を残したままcurrentClipIndex_だけV1へ変わってしまう。
@@ -2221,6 +2226,10 @@ bool MvmController::seekTimelineFrame(qint64 frame) {
         currentClipPath_.clear();
         setStatus(QStringLiteral("timeline gapを表示しています"));
     }
+    if (scrubPending_ && !scrubbing_) {
+        scrubPending_ = false;
+        scrubTimer_.stop();
+    }
     return true;
 }
 
@@ -2268,6 +2277,8 @@ void MvmController::startPendingPlayback() {
 }
 
 bool MvmController::playTimeline() {
+    if (shuttleRate_ != 0 && !pauseTimeline())
+        return false;
     if (busy_) {
         setStatus(QStringLiteral("処理中はtimelineを再生できません"));
         return false;
@@ -2311,6 +2322,7 @@ void MvmController::stopPlaybackWithError(QString error) {
                 QStringLiteral("\nPreviewも停止できません: ") + previewErrorText(paused.error());
     }
     playing_ = false;
+    shuttleRate_ = 0;
     pendingPlaybackStart_ = false;
     playbackClipIndex_ = -1;
     pendingPlaybackClipIndex_ = -1;
@@ -2333,6 +2345,7 @@ void MvmController::advanceTimelinePlayback() {
         previewEngine_->pause();
         playheadFrame_ = totalTimelineFrames_;
         playing_ = false;
+        shuttleRate_ = 0;
         playbackClipIndex_ = -1;
         statusText_ = QStringLiteral("timeline終端まで再生しました");
         Q_EMIT stateChanged();
@@ -2392,6 +2405,21 @@ bool MvmController::cancelPendingPlaybackForPause() {
 }
 
 bool MvmController::pauseTimeline() {
+    if (shuttleRate_ != 0 && !shuttleSeeking_) {
+        const bool silentShuttle = shuttleTimer_.isActive();
+        shuttleTimer_.stop();
+        shuttleClock_.invalidate();
+        shuttleRate_ = 0;
+        if (!playing_) {
+            if (silentShuttle) {
+                scrubTargetFrame_ = playheadFrame_;
+                scrubPending_ = true;
+                scrubTimer_.start();
+            }
+            setStatus(QStringLiteral("シャトルを停止しました"));
+            return true;
+        }
+    }
     if (!playing_)
         return true;
     if (cancelPendingPlaybackForPause())
@@ -2414,6 +2442,103 @@ bool MvmController::pauseTimeline() {
     statusText_ = QStringLiteral("timelineを一時停止しました");
     Q_EMIT stateChanged();
     return true;
+}
+
+bool MvmController::shuttleLeft() {
+    return changeShuttleRate(-1);
+}
+
+bool MvmController::shuttleRight() {
+    return changeShuttleRate(1);
+}
+
+bool MvmController::changeShuttleRate(int direction) {
+    if (busy_ || project_.timelineClips.empty() || totalTimelineFrames_ <= 0 || direction == 0)
+        return false;
+    if (shuttleTimer_.isActive())
+        advanceTimelineShuttle();
+    const int current = shuttleRate_ != 0 ? shuttleRate_ : (playing_ ? 1 : 0);
+    const auto next = nextShuttleRate(current, direction);
+    if (!next)
+        return false;
+    if (!pauseTimeline())
+        return false;
+    if (*next == 0)
+        return true;
+    scrubPending_ = false;
+    if (!scrubbing_)
+        scrubTimer_.stop();
+    if (*next == 1) {
+        if (!playTimeline())
+            return false;
+        shuttleRate_ = 1;
+        Q_EMIT stateChanged();
+        return true;
+    }
+    shuttleRate_ = *next;
+    shuttleBaseFrame_ = std::clamp<std::int64_t>(playheadFrame_, 0, totalTimelineFrames_ - 1);
+    shuttleClock_.restart();
+    shuttleTimer_.start();
+    setStatus(QStringLiteral("シャトル %1 倍速（音声なし）").arg(*next));
+    return true;
+}
+
+void MvmController::advanceTimelineShuttle() {
+    if (!shuttleTimer_.isActive() || !shuttleClock_.isValid())
+        return;
+    const auto mapped = timelineShuttleFrameFromElapsed(
+        shuttleBaseFrame_, shuttleClock_.nsecsElapsed(), project_.timelineFpsNum,
+        project_.timelineFpsDen, shuttleRate_, totalTimelineFrames_ - 1);
+    if (!mapped.success) {
+        pauseTimeline();
+        setStatus(QString::fromStdString(mapped.error));
+        return;
+    }
+    shuttleSeeking_ = true;
+    const bool updated = seekTimelineFrame(mapped.frame);
+    shuttleSeeking_ = false;
+    if (!updated) {
+        if (previewEngine_->status().state == preview::PreviewEngineState::Error) {
+            const QString failure = statusText_;
+            pauseTimeline();
+            setStatus(failure);
+        }
+        return;
+    }
+    if ((shuttleRate_ < 0 && mapped.frame == 0) ||
+        (shuttleRate_ > 0 && mapped.frame == totalTimelineFrames_ - 1)) {
+        pauseTimeline();
+        return;
+    }
+    statusText_ = QStringLiteral("シャトル %1 倍速（音声なし）").arg(shuttleRate_);
+    Q_EMIT stateChanged();
+}
+
+bool MvmController::stepTimelineFrames(int delta) {
+    if (busy_ || project_.timelineClips.empty() || totalTimelineFrames_ <= 0 || delta == 0)
+        return false;
+    const auto lastFrame = totalTimelineFrames_ - 1;
+    const auto baseFrame = std::clamp<std::int64_t>(playheadFrame_, 0, totalTimelineFrames_);
+    const auto amount = static_cast<std::int64_t>(delta);
+    const auto target =
+        amount > 0 ? baseFrame + std::min(amount, std::max<std::int64_t>(0, lastFrame - baseFrame))
+                   : baseFrame - std::min(-amount, baseFrame);
+    return seekTimelineFrame(std::min(target, lastFrame));
+}
+
+bool MvmController::jumpToEditPoint(int direction) {
+    if (busy_ || project_.timelineClips.empty() || totalTimelineFrames_ <= 0)
+        return false;
+    const auto lastFrame = totalTimelineFrames_ - 1;
+    if (playheadFrame_ == totalTimelineFrames_ && direction < 0)
+        return seekTimelineFrame(lastFrame);
+    const auto point = adjacentTimelineEditPoint(
+        project_, std::clamp<std::int64_t>(playheadFrame_, 0, lastFrame), direction, lastFrame);
+    if (!point.success) {
+        setStatus(QString::fromStdString(point.error));
+        return false;
+    }
+    return seekTimelineFrame(point.frame);
 }
 
 bool MvmController::moveTimelineClip(const QString& clipId, const QString& trackKind,
@@ -3481,9 +3606,11 @@ void MvmController::shutdown() {
     exportCancelling_ = false;
     busy_ = false;
     playbackTimer_.stop();
+    shuttleTimer_.stop();
     scrubTimer_.stop();
     meterTimer_.stop();
     playing_ = false;
+    shuttleRate_ = 0;
     stateTimer_.stop();
     if (previewEngine_)
         previewEngine_->requestShutdown();

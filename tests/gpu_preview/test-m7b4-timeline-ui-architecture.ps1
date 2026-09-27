@@ -70,6 +70,30 @@ if ($qml -match '// --- ツールバー' -or $qml -match 'Shortcut\s*\{\s*sequen
     throw '旧ツールバーまたは保存ショートカットの重複が残っています'
 }
 
+function Test-NavigationShortcuts([string]$source) {
+    foreach ($entry in @(
+        @{ Key = 'J'; Action = 'mvmController.shuttleLeft()' },
+        @{ Key = 'K'; Action = 'mvmController.pauseTimeline()' },
+        @{ Key = 'L'; Action = 'mvmController.shuttleRight()' },
+        @{ Key = 'Left'; Action = 'mvmController.stepTimelineFrames(-1)' },
+        @{ Key = 'Right'; Action = 'mvmController.stepTimelineFrames(1)' },
+        @{ Key = 'Shift+Left'; Action = 'mvmController.stepTimelineFrames(-5)' },
+        @{ Key = 'Shift+Right'; Action = 'mvmController.stepTimelineFrames(5)' },
+        @{ Key = 'Up'; Action = 'mvmController.jumpToEditPoint(-1)' },
+        @{ Key = 'Down'; Action = 'mvmController.jumpToEditPoint(1)' }
+    )) {
+        $pattern = 'Shortcut\s*\{[^{}]*sequence:\s*"' + [regex]::Escape($entry.Key) +
+                   '"[^{}]*onActivated:\s*' + [regex]::Escape($entry.Action)
+        if ($source -notmatch $pattern) { return $false }
+    }
+    return $true
+}
+if (-not (Test-NavigationShortcuts $qml) -or
+    (Test-NavigationShortcuts $qml.Replace('sequence: "Shift+Right"',
+                                           'sequence: "Ctrl+Shift+Right"'))) {
+    throw 'タイムライン移動ショートカットの契約が崩れています'
+}
+
 # timeline UI は clip の配置を track/start から引く。vector 順を authority にしない。
 $requiredQml = @(
     'x: timelineStartFrame * timelinePanel.pixelsPerFrame',
