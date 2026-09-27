@@ -329,6 +329,58 @@ void testUndo(const std::filesystem::path& path) {
     check(persisted.success && persisted.project.videoTracks.size() == 2 &&
               persisted.project.audioTracks.size() == 1,
           "Undoまでの未保存編集がcanonical Projectを書き換えました");
+
+    check(controller.canRedo() && controller.redoLastEdit() && controller.videoTrackCount() == 3 &&
+              controller.audioTrackCount() == 1,
+          "1回目のRedoが編集Aの後へ進みません");
+    check(controller.redoLastEdit() && controller.videoTrackCount() == 3 &&
+              controller.audioTrackCount() == 2 && !controller.canRedo() && controller.canUndo(),
+          "2回目のRedoが編集Bの後へ進みません");
+    check(!controller.redoLastEdit(), "やり直す編集が無いRedoを受理しました");
+
+    // Undo の後に新しい編集をしたら、やり直し先は無くなる。
+    check(controller.undoLastEdit() && controller.canRedo(), "Redo破棄試験のUndoに失敗しました");
+    check(controller.addTrack("video") && !controller.canRedo() &&
+              controller.videoTrackCount() == 4 && controller.audioTrackCount() == 1,
+          "新しい編集の後もRedoが残っています");
+    check(controller.undoLastEdit() && controller.videoTrackCount() == 3 &&
+              controller.audioTrackCount() == 1,
+          "新しい編集のUndoが編集Aの後へ戻りません");
+}
+
+// スリップの drag 中 preview は Project を変えず、確定時と同じ規則で素材の端に止めた
+// in の移動量を返す。
+void testSlipPreviewDoesNotEdit(const std::filesystem::path& path) {
+    auto initial = videoProject();
+    initial.timelineClips[0].sourceFrameCount = 300;
+    initial.timelineClips[0].sourceInFrame = 100;
+    initial.timelineClips[0].sourceOutFrame = 220;
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "slip preview試験の初期Projectを保存できません");
+    mvm::app::MvmController controller(path, {}, initial);
+    check(controller.previewSlip(10) == 0, "slip preview開始前にpreviewを受理しました");
+    check(controller.beginSlipPreview(QStringLiteral("video"), true),
+          "slip previewを開始できません");
+    check(controller.previewSlip(30) == 30, "slip previewの移動量が違います");
+    check(controller.previewSlip(1000) == 80 && controller.previewSlip(-1000) == -100,
+          "slip previewを素材の端で止めません");
+    controller.endSlipPreview();
+    check(!controller.dirty() && !controller.canUndo(), "slip previewがProjectを編集しました");
+    check(controller.slipClip(QStringLiteral("video"), 1000, true) && controller.dirty(),
+          "slip previewの後にslipを確定できません");
+}
+
+void testRedoRestoresDirtyState(const std::filesystem::path& path) {
+    const auto initial = videoProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "Redo dirty試験の初期Projectを保存できません");
+    mvm::app::MvmController controller(path, {}, initial);
+    check(controller.addTrack("video") && controller.saveProject() && !controller.dirty(),
+          "Redo dirty試験の保存済みチェックポイントを作れません");
+    check(controller.undoLastEdit() && controller.dirty(),
+          "保存済みチェックポイントより前へUndoしてもdirtyになりません");
+    check(controller.redoLastEdit() && !controller.dirty(),
+          "保存済みチェックポイントまでRedoしてもcleanになりません");
 }
 
 void testDirtyCheckpoint(const std::filesystem::path& path) {
@@ -397,7 +449,7 @@ void testUnlinkUndo(const std::filesystem::path& path) {
     check(mvm::project::saveProjectJson(initial, path).success,
           "リンク解除試験の初期Projectを保存できません");
     mvm::app::MvmController controller(path, {}, initial);
-    controller.selectTimelineClip("audio", 23);
+    controller.selectTimelineClip("audio", 23, true);
     check(controller.currentClipIndex() == 1 && controller.playheadFrame() == 23,
           "Undo前のaudio選択と再生位置を設定できません");
     check(controller.unlinkTimelineClip("audio"), "audioのリンク解除に失敗しました");
@@ -815,7 +867,7 @@ void testShiftSelectionToggle(const std::filesystem::path& path) {
         return selectedRole >= 0 && model->data(model->index(row, 0), selectedRole).toBool();
     };
 
-    controller.selectTimelineClip("other", 120);
+    controller.selectTimelineClip("other", 120, true);
     controller.toggleTimelineClipSelection("video", 0);
     check(selected(0) && selected(1) && selected(2),
           "Shift選択で既存選択へリンクclip一組を追加できません");
@@ -1028,6 +1080,8 @@ int main(int argc, char** argv) {
     testShutdown(directory / L"shutdown-finished.mvm", true);
     testThreadFailure(directory / L"thread-failure.mvm");
     testUndo(directory / L"undo.mvm");
+    testRedoRestoresDirtyState(directory / L"redo-dirty.mvm");
+    testSlipPreviewDoesNotEdit(directory / L"slip-preview.mvm");
     testDirtyCheckpoint(directory / L"dirty-checkpoint.mvm");
     testProjectVideoSettings(directory / L"project-video-settings.mvm");
     testUnlinkUndo(directory / L"unlink-undo.mvm");

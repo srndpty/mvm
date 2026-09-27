@@ -174,6 +174,11 @@ ProbedMedia probeAudioMedia(const std::filesystem::path& path, std::int64_t time
     return result;
 }
 
+// QML から渡る「リンク相手にも適用するか」をモデルの LinkMode へ写す。
+project::LinkMode linkModeFor(bool linked) {
+    return linked ? project::LinkMode::Linked : project::LinkMode::Single;
+}
+
 std::string newClipId() {
     return QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
 }
@@ -278,7 +283,7 @@ MvmController::MvmController(std::filesystem::path projectPath,
             scheduleRecoveryAutosave();
         }
         // 起動時のasset同期は利用者の編集ではないため、Undo履歴へ残さない。
-        undoHistory_.clear();
+        clearEditHistory();
     }
 
     playbackTimer_.setInterval(16);
@@ -318,6 +323,10 @@ MvmController::MvmController(std::filesystem::path projectPath,
     meterTimer_.setInterval(50);
     connect(&meterTimer_, &QTimer::timeout, this, &MvmController::pollAudioMeter);
     meterTimer_.start();
+
+    // slip preview も scrub と同じく最新の位置だけを反映し、Seeking 中は次の tick で再試行する。
+    slipPreviewTimer_.setInterval(16);
+    connect(&slipPreviewTimer_, &QTimer::timeout, this, &MvmController::applySlipPreview);
 }
 
 MvmController::~MvmController() {
@@ -514,6 +523,7 @@ bool MvmController::resetPreviewEngine() {
     currentSource_.reset();
     trackSources_.clear();
     audioSources_.clear();
+    submittedComposition_.reset();
     retiredSources_.clear();
     previewReady_ = false;
     if (previewSurface_)
@@ -662,6 +672,20 @@ void MvmController::refreshTimelineModel() {
         playheadFrame_ = std::clamp<std::int64_t>(playheadFrame_, 0, totalTimelineFrames_ - 1);
 }
 
+void MvmController::pushUndoEntry(UndoEntry entry) {
+    undoHistory_.push_back(std::move(entry));
+    constexpr std::size_t kMaximumUndoEntries = 100;
+    if (undoHistory_.size() > kMaximumUndoEntries)
+        undoHistory_.erase(undoHistory_.begin());
+    // 新しい編集をした時点で、やり直し先の未来は無くなる。
+    redoHistory_.clear();
+}
+
+void MvmController::clearEditHistory() {
+    undoHistory_.clear();
+    redoHistory_.clear();
+}
+
 bool MvmController::commitProjectEdit(project::Project candidate, const QString& failurePrefix) {
     if (!projectLockHeld_) {
         setStatus(failurePrefix + QStringLiteral("Projectを排他できません"));
@@ -674,10 +698,7 @@ bool MvmController::commitProjectEdit(project::Project candidate, const QString&
         return false;
     }
     project_ = std::move(candidate);
-    undoHistory_.push_back(std::move(undo));
-    constexpr std::size_t kMaximumUndoEntries = 100;
-    if (undoHistory_.size() > kMaximumUndoEntries)
-        undoHistory_.erase(undoHistory_.begin());
+    pushUndoEntry(std::move(undo));
     currentRevision_ = nextRevision_++;
     refreshTimelineModel();
     scheduleRecoveryAutosave();
@@ -946,7 +967,7 @@ bool MvmController::restoreRecovery() {
     recoveryForeign_ = false;
     currentRevision_ = nextRevision_++;
     recoveryRevision_ = currentRevision_;
-    undoHistory_.clear();
+    clearEditHistory();
     selectedClipIds_.clear();
     currentClipIndex_ = -1;
     currentClipName_.clear();
@@ -985,7 +1006,7 @@ bool MvmController::discardRecovery() {
         currentRevision_ = nextRevision_++;
         scheduleRecoveryAutosave();
     }
-    undoHistory_.clear();
+    clearEditHistory();
     Q_EMIT stateChanged();
     if (!dirty())
         setStatus(QStringLiteral("自動復旧データを破棄し、最後に保存したProjectを開きました"));
@@ -1048,7 +1069,8 @@ void MvmController::setCurrentClipSelection(int index) {
     Q_EMIT stateChanged();
 }
 
-void MvmController::setTimelineSelection(const std::vector<std::string>& clipIds) {
+void MvmController::setTimelineSelection(const std::vector<std::string>& clipIds,
+                                         bool expandLinks) {
     selectedClipIds_ = clipIds;
     std::vector<std::string> selectedLinkGroups;
     for (const auto& id : clipIds) {
@@ -1056,7 +1078,7 @@ void MvmController::setTimelineSelection(const std::vector<std::string>& clipIds
         if (index < 0)
             continue;
         const auto& linkGroup = project_.timelineClips[static_cast<std::size_t>(index)].linkGroupId;
-        if (!linkGroup.empty() && std::find(selectedLinkGroups.begin(), selectedLinkGroups.end(),
+        if (expandLinks && !linkGroup.empty() && std::find(selectedLinkGroups.begin(), selectedLinkGroups.end(),
                                             linkGroup) == selectedLinkGroups.end())
             selectedLinkGroups.push_back(linkGroup);
     }
@@ -1278,6 +1300,23 @@ bool MvmController::audioDescriptorFor(int clipIndex, preview::PreviewSourceDesc
     return true;
 }
 
+bool MvmController::audioIdentitiesFor(const TimelinePreviewAudioMapping& mapped,
+                                       std::vector<AudioSourceIdentity>& identities,
+                                       QString& error) const {
+    identities.clear();
+    identities.reserve(mapped.layers.size());
+    for (const auto& layer : mapped.layers) {
+        const auto& clip = project_.timelineClips[static_cast<std::size_t>(layer.clipIndex)];
+        const auto offset = audioPreviewSampleOffset(project_, clip);
+        if (!offset.success) {
+            error = QString::fromStdString(offset.error);
+            return false;
+        }
+        identities.push_back({clip.mediaPath, offset.sampleOffset});
+    }
+    return true;
+}
+
 bool MvmController::applyAudioSourceFor(std::int64_t timelineFrame, AudioSwitchUndo& undo,
                                         QString& error) {
     undo = AudioSwitchUndo{};
@@ -1288,19 +1327,16 @@ bool MvmController::applyAudioSourceFor(std::int64_t timelineFrame, AudioSwitchU
     }
 
     std::vector<AudioSourceIdentity> desired;
-    desired.reserve(mapped.layers.size());
-    for (const auto& layer : mapped.layers) {
-        const auto& clip = project_.timelineClips[static_cast<std::size_t>(layer.clipIndex)];
-        desired.push_back(AudioSourceIdentity{clip.id, clip.sourceInFrame, clip.timelineStartFrame,
-                                              clip.sourceFpsNum, clip.sourceFpsDen,
-                                              project_.timelineFpsNum, project_.timelineFpsDen});
-    }
+    if (!audioIdentitiesFor(mapped, desired, error))
+        return false;
     bool unchanged = audioSources_.size() == desired.size();
     for (std::size_t index = 0; unchanged && index < desired.size(); ++index)
         unchanged = audioSources_[index].identity == desired[index];
     if (unchanged) {
-        for (std::size_t index = 0; index < mapped.layers.size(); ++index)
+        for (std::size_t index = 0; index < mapped.layers.size(); ++index) {
+            audioSources_[index].clipId = mapped.layers[index].clipId;
             audioSources_[index].clipIndex = mapped.layers[index].clipIndex;
+        }
         return true;
     }
 
@@ -1310,7 +1346,8 @@ bool MvmController::applyAudioSourceFor(std::int64_t timelineFrame, AudioSwitchU
         preview::PreviewSourceDescriptor descriptor;
         if (!audioDescriptorFor(mapped.layers[index].clipIndex, descriptor, error))
             return false;
-        target.push_back({{}, desired[index], descriptor, mapped.layers[index].clipIndex});
+        target.push_back({{}, desired[index], descriptor, mapped.layers[index].clipId,
+                          mapped.layers[index].clipIndex});
     }
 
     undo.changed = true;
@@ -1377,6 +1414,48 @@ bool MvmController::revertAudioSource(const AudioSwitchUndo& undo, QString& erro
     return false;
 }
 
+std::shared_ptr<preview::CompositionSnapshot>
+MvmController::previewCompositionFor(const TimelinePreviewFrameMapping& mappedFrame,
+                                     const std::map<int, TrackPreviewSource>& sources,
+                                     preview::PreviewFrameRequest& request) const {
+    auto composition = std::make_shared<preview::CompositionSnapshot>();
+    request = preview::PreviewFrameRequest{};
+    request.outputFrameNumber = mappedFrame.outputFrameNumber;
+    // mappedFrame.layers は video track index の昇順であり、この挿入順が
+    // bottom/top の authority になる。
+    for (const auto& layerMapping : mappedFrame.layers) {
+        const auto& clip = project_.timelineClips[static_cast<std::size_t>(layerMapping.clipIndex)];
+        const auto slot = sources.find(layerMapping.videoTrackIndex);
+        if (slot == sources.end())
+            continue;
+        // drag 中の override はここでだけ効かせる。Project は書き換えない。
+        const project::ClipEffects effects = effectsForPreview(layerMapping.clipIndex);
+        preview::PreviewCompositionLayer layer;
+        layer.source = slot->second.source;
+        if (!project::clipEffectsAreDefault(effects)) {
+            const auto mapped = project::mapClipEffects(effects);
+            layer.destination = {static_cast<float>(mapped.destinationRect.x),
+                                 static_cast<float>(mapped.destinationRect.y),
+                                 static_cast<float>(mapped.destinationRect.width),
+                                 static_cast<float>(mapped.destinationRect.height)};
+            layer.sourceRect = {static_cast<float>(mapped.sourceRect.x),
+                                static_cast<float>(mapped.sourceRect.y),
+                                static_cast<float>(mapped.sourceRect.width),
+                                static_cast<float>(mapped.sourceRect.height)};
+            layer.opacity = static_cast<float>(mapped.baseOpacity);
+            layer.effectsEnabled = true;
+            layer.rotationDegrees = static_cast<float>(mapped.rotationDegrees);
+            layer.sourceInFrame = clip.sourceInFrame;
+            layer.sourceDurationFrames = clip.sourceOutFrame - clip.sourceInFrame;
+            layer.fadeInFrames = mapped.fadeInFrames;
+            layer.fadeOutFrames = mapped.fadeOutFrames;
+        }
+        composition->layers.push_back(layer);
+        request.sources.push_back({slot->second.source, layerMapping.sourceFrameNumber});
+    }
+    return composition;
+}
+
 bool MvmController::syncPreviewSourcesAt(std::int64_t timelineFrame, QString& error) {
     const auto mappedFrame = mapTimelinePreviewFrame(project_, timelineFrame);
     if (!mappedFrame.success) {
@@ -1412,11 +1491,9 @@ bool MvmController::syncPreviewSourcesAt(std::int64_t timelineFrame, QString& er
         const auto& clip = project_.timelineClips[static_cast<std::size_t>(layer.clipIndex)];
         desiredTracks.push_back(layer.videoTrackIndex);
         const auto existing = candidateSources.find(layer.videoTrackIndex);
-        if (existing != candidateSources.end() && existing->second.clipId == clip.id &&
-            existing->second.sourceInFrame == clip.sourceInFrame &&
-            existing->second.timelineStartFrame == clip.timelineStartFrame &&
-            existing->second.sourceFpsNum == clip.sourceFpsNum &&
-            existing->second.sourceFpsDen == clip.sourceFpsDen) {
+        if (existing != candidateSources.end() &&
+            previewVideoMappingCovers(project_, existing->second.mapping, clip)) {
+            existing->second.clipId = clip.id;
             existing->second.clipIndex = layer.clipIndex;
             continue;
         }
@@ -1447,9 +1524,8 @@ bool MvmController::syncPreviewSourcesAt(std::int64_t timelineFrame, QString& er
             return false;
         }
         newlyAdded.push_back(added.value());
-        candidateSources[layer.videoTrackIndex] = TrackPreviewSource{
-            added.value(),           clip.id,           layer.clipIndex,  clip.sourceInFrame,
-            clip.timelineStartFrame, clip.sourceFpsNum, clip.sourceFpsDen};
+        candidateSources[layer.videoTrackIndex] =
+            TrackPreviewSource{added.value(), clip.id, layer.clipIndex, previewVideoMappingOf(clip)};
     }
     for (auto entry = candidateSources.begin(); entry != candidateSources.end();) {
         if (std::find(desiredTracks.begin(), desiredTracks.end(), entry->first) ==
@@ -1459,47 +1535,15 @@ bool MvmController::syncPreviewSourcesAt(std::int64_t timelineFrame, QString& er
             ++entry;
     }
 
-    auto composition = std::make_shared<preview::CompositionSnapshot>();
     preview::PreviewFrameRequest request;
-    request.outputFrameNumber = timelineFrame;
-    // mappedFrame.layers は video track index の昇順であり、この挿入順が
-    // bottom/top の authority になる。
-    for (const auto& layerMapping : mappedFrame.layers) {
-        const auto& clip = project_.timelineClips[static_cast<std::size_t>(layerMapping.clipIndex)];
-        const auto slot = candidateSources.find(layerMapping.videoTrackIndex);
-        if (slot == candidateSources.end())
-            continue;
-        // drag 中の override はここでだけ効かせる。Project は書き換えない。
-        const project::ClipEffects effects = effectsForPreview(layerMapping.clipIndex);
-        preview::PreviewCompositionLayer layer;
-        layer.source = slot->second.source;
-        if (!project::clipEffectsAreDefault(effects)) {
-            const auto mapped = project::mapClipEffects(effects);
-            layer.destination = {static_cast<float>(mapped.destinationRect.x),
-                                 static_cast<float>(mapped.destinationRect.y),
-                                 static_cast<float>(mapped.destinationRect.width),
-                                 static_cast<float>(mapped.destinationRect.height)};
-            layer.sourceRect = {static_cast<float>(mapped.sourceRect.x),
-                                static_cast<float>(mapped.sourceRect.y),
-                                static_cast<float>(mapped.sourceRect.width),
-                                static_cast<float>(mapped.sourceRect.height)};
-            layer.opacity = static_cast<float>(mapped.baseOpacity);
-            layer.effectsEnabled = true;
-            layer.rotationDegrees = static_cast<float>(mapped.rotationDegrees);
-            layer.sourceInFrame = clip.sourceInFrame;
-            layer.sourceDurationFrames = clip.sourceOutFrame - clip.sourceInFrame;
-            layer.fadeInFrames = mapped.fadeInFrames;
-            layer.fadeOutFrames = mapped.fadeOutFrames;
-        }
-        composition->layers.push_back(layer);
-        request.sources.push_back({slot->second.source, layerMapping.sourceFrameNumber});
-    }
+    const auto composition = previewCompositionFor(mappedFrame, candidateSources, request);
     const auto submitted = previewEngine_->submitComposition(composition);
     if (!submitted) {
         error = previewErrorText(submitted.error());
         rollback();
         return false;
     }
+    submittedComposition_ = composition;
     // audio の差し替えはここまでの失敗を通り抜けてから行う。
     if (!applyAudioSourceFor(timelineFrame, audioUndo, error)) {
         rollback();
@@ -1631,10 +1675,7 @@ bool MvmController::generateAndInstallManimClip(const std::filesystem::path& scr
     }
 
     // 生成はworking stateだけを更新する。canonicalへは明示保存まで書かない。
-    undoHistory_.push_back(std::move(undo));
-    constexpr std::size_t kMaximumUndoEntries = 100;
-    if (undoHistory_.size() > kMaximumUndoEntries)
-        undoHistory_.erase(undoHistory_.begin());
+    pushUndoEntry(std::move(undo));
     currentRevision_ = nextRevision_++;
     scheduleRecoveryAutosave();
 
@@ -2071,13 +2112,13 @@ bool MvmController::selectClip(int index) {
     return seekTimelineFrame(clip.timelineStartFrame);
 }
 
-bool MvmController::selectTimelineClip(const QString& clipId, qint64 frame) {
+bool MvmController::selectTimelineClip(const QString& clipId, qint64 frame, bool linked) {
     const int index = indexOfClipId(project_.timelineClips, clipId.toStdString());
     if (index < 0) {
         setStatus(QStringLiteral("選択したclipがありません"));
         return false;
     }
-    setTimelineSelection({clipId.toStdString()});
+    setTimelineSelection({clipId.toStdString()}, linked);
     setCurrentClipSelection(index);
     return seekTimelineFrame(frame);
 }
@@ -2346,6 +2387,68 @@ void MvmController::stopPlaybackWithError(QString error) {
     setStatus(std::move(error));
 }
 
+bool MvmController::handOffPlaybackSources(std::int64_t frame) {
+    const auto mappedFrame = mapTimelinePreviewFrame(project_, frame);
+    if (!mappedFrame.success || mappedFrame.layers.size() != trackSources_.size())
+        return false;
+    bool videoChanged = false;
+    for (const auto& layer : mappedFrame.layers) {
+        const auto installed = trackSources_.find(layer.videoTrackIndex);
+        if (installed == trackSources_.end())
+            return false;
+        if (installed->second.clipId == layer.clipId)
+            continue;
+        const auto& clip = project_.timelineClips[static_cast<std::size_t>(layer.clipIndex)];
+        if (!previewVideoMappingCovers(project_, installed->second.mapping, clip))
+            return false;
+        videoChanged = true;
+    }
+    const auto audioMapping = mapTimelinePreviewAudio(project_, frame);
+    if (!audioMapping.success || audioMapping.layers.size() != audioSources_.size())
+        return false;
+    bool audioChanged = false;
+    for (std::size_t index = 0; index < audioSources_.size(); ++index)
+        audioChanged = audioChanged || audioMapping.layers[index].clipId != audioSources_[index].clipId;
+    if (audioChanged) {
+        std::vector<AudioSourceIdentity> desired;
+        QString ignored;
+        if (!audioIdentitiesFor(audioMapping, desired, ignored))
+            return false;
+        for (std::size_t index = 0; index < desired.size(); ++index) {
+            if (!(desired[index] == audioSources_[index].identity))
+                return false;
+        }
+    }
+    if (!videoChanged && !audioChanged)
+        return true;
+
+    // 引き継いだ clip の effect で composition を組み直す。同じなら出し直さない。
+    auto sources = trackSources_;
+    for (const auto& layer : mappedFrame.layers) {
+        auto& slot = sources[layer.videoTrackIndex];
+        slot.clipId = layer.clipId;
+        slot.clipIndex = layer.clipIndex;
+    }
+    preview::PreviewFrameRequest unusedRequest;
+    const auto composition = previewCompositionFor(mappedFrame, sources, unusedRequest);
+    if (!submittedComposition_ || !(*submittedComposition_ == *composition)) {
+        if (!previewEngine_->submitComposition(composition))
+            return false;
+        submittedComposition_ = composition;
+    }
+    trackSources_ = std::move(sources);
+    for (std::size_t index = 0; index < audioSources_.size(); ++index) {
+        audioSources_[index].clipId = audioMapping.layers[index].clipId;
+        audioSources_[index].clipIndex = audioMapping.layers[index].clipIndex;
+    }
+    currentSource_.reset();
+    for (const auto& [trackIndex, slot] : trackSources_) {
+        if (slot.clipIndex == currentClipIndex_)
+            currentSource_ = slot.source;
+    }
+    return true;
+}
+
 void MvmController::advanceTimelinePlayback() {
     if (!playing_ || !playbackClock_.isValid())
         return;
@@ -2368,23 +2471,9 @@ void MvmController::advanceTimelinePlayback() {
         Q_EMIT stateChanged();
         return;
     }
-    const auto activeVideo = project::activeClipsAt(project_, project::TrackKind::Video, frame);
-    bool sameSourceSet = true;
-    for (std::size_t track = 0; track < activeVideo.size(); ++track) {
-        const bool muted = project_.videoTracks[track].muted;
-        const std::string desired =
-            (activeVideo[track] && !muted) ? activeVideo[track]->id : std::string{};
-        const auto installed = trackSources_.find(static_cast<int>(track));
-        const std::string current =
-            installed == trackSources_.end() ? std::string{} : installed->second.clipId;
-        sameSourceSet = sameSourceSet && desired == current;
-    }
-    const auto audioMapping = mapTimelinePreviewAudio(project_, frame);
-    sameSourceSet =
-        sameSourceSet && audioMapping.success && audioMapping.layers.size() == audioSources_.size();
-    for (std::size_t index = 0; sameSourceSet && index < audioSources_.size(); ++index)
-        sameSourceSet = audioMapping.layers[index].clipId == audioSources_[index].identity.clipId;
-    if (sameSourceSet) {
+    // 次の clip を今の source のまま表示できる (分割直後の連続した clip など) なら、
+    // 止めずに source を引き継ぐ。できなければ一時停止して source を組み直す。
+    if (handOffPlaybackSources(frame)) {
         if (playheadFrame_ != frame) {
             playheadFrame_ = frame;
             Q_EMIT stateChanged();
@@ -2629,7 +2718,7 @@ bool MvmController::jumpToEditPoint(int direction) {
 }
 
 bool MvmController::moveTimelineClip(const QString& clipId, const QString& trackKind,
-                                     int trackIndex, qint64 timelineStartFrame) {
+                                     int trackIndex, qint64 timelineStartFrame, bool linked) {
     if (busy_)
         return false;
     if (!pauseTimeline())
@@ -2644,10 +2733,11 @@ bool MvmController::moveTimelineClip(const QString& clipId, const QString& track
     std::vector<std::string> movedIds = selectedClipIds_;
     if (std::find(movedIds.begin(), movedIds.end(), anchorId) == movedIds.end()) {
         movedIds = {anchorId};
-        setTimelineSelection(movedIds);
+        setTimelineSelection(movedIds, linked);
     }
     const auto moved = project::moveClips(candidate, movedIds, anchorId, destination,
-                                          std::max<qint64>(0, timelineStartFrame));
+                                          std::max<qint64>(0, timelineStartFrame),
+                                          linkModeFor(linked));
     if (!moved.success) {
         setStatus(QString::fromStdString(moved.error));
         return false;
@@ -2660,12 +2750,7 @@ bool MvmController::moveTimelineClip(const QString& clipId, const QString& track
     return refreshPreviewAfterSavedEdit(anchorId, status);
 }
 
-bool MvmController::trimClip(const QString& clipId, const QString& edge, qint64 projectFrameDelta) {
-    if (busy_)
-        return false;
-    if (!pauseTimeline())
-        return false;
-    project::TrimEdge trimEdge;
+bool MvmController::resolveTrimEdge(const QString& edge, project::TrimEdge& trimEdge) {
     if (edge == QStringLiteral("left"))
         trimEdge = project::TrimEdge::Left;
     else if (edge == QStringLiteral("right"))
@@ -2674,16 +2759,265 @@ bool MvmController::trimClip(const QString& clipId, const QString& edge, qint64 
         setStatus(QStringLiteral("trim edgeが不正です"));
         return false;
     }
+    return true;
+}
+
+bool MvmController::applyTimelineEdit(
+    const std::function<project::TimelineEditResult(project::Project&)>& edit,
+    const std::string& selectedClipId, const QString& successStatus) {
+    if (busy_)
+        return false;
+    if (!pauseTimeline())
+        return false;
     project::Project candidate = project_;
-    const auto trimmed =
-        project::trimTimelineClip(candidate, clipId.toStdString(), trimEdge, projectFrameDelta);
-    if (!trimmed.success) {
-        setStatus(QString::fromStdString(trimmed.error));
+    const auto edited = edit(candidate);
+    if (!edited.success) {
+        setStatus(QString::fromStdString(edited.error));
         return false;
     }
     if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
         return false;
-    return refreshPreviewAfterSavedEdit(clipId.toStdString(), QStringLiteral("clipをtrimしました"));
+    return refreshPreviewAfterSavedEdit(selectedClipId, successStatus);
+}
+
+bool MvmController::trimClip(const QString& clipId, const QString& edge, qint64 projectFrameDelta,
+                             bool linked) {
+    project::TrimEdge trimEdge;
+    if (!resolveTrimEdge(edge, trimEdge))
+        return false;
+    const std::string id = clipId.toStdString();
+    return applyTimelineEdit(
+        [&](project::Project& candidate) {
+            return project::trimTimelineClip(candidate, id, trimEdge, projectFrameDelta,
+                                             linkModeFor(linked));
+        },
+        id, QStringLiteral("clipをtrimしました"));
+}
+
+bool MvmController::rippleTrimClip(const QString& clipId, const QString& edge,
+                                   qint64 projectFrameDelta, bool linked) {
+    project::TrimEdge trimEdge;
+    if (!resolveTrimEdge(edge, trimEdge))
+        return false;
+    const std::string id = clipId.toStdString();
+    return applyTimelineEdit(
+        [&](project::Project& candidate) {
+            return project::rippleTrimTimelineClip(candidate, id, trimEdge, projectFrameDelta,
+                                                   linkModeFor(linked));
+        },
+        id, QStringLiteral("clipをリップルトリムしました"));
+}
+
+bool MvmController::rollClipEdge(const QString& clipId, const QString& edge,
+                                 qint64 projectFrameDelta, bool linked) {
+    project::TrimEdge trimEdge;
+    if (!resolveTrimEdge(edge, trimEdge))
+        return false;
+    const std::string id = clipId.toStdString();
+    return applyTimelineEdit(
+        [&](project::Project& candidate) {
+            return project::rollTimelineEdit(candidate, id, trimEdge, projectFrameDelta,
+                                             linkModeFor(linked));
+        },
+        id, QStringLiteral("編集点をローリングしました"));
+}
+
+bool MvmController::slipClip(const QString& clipId, qint64 projectFrameDelta, bool linked) {
+    const std::string id = clipId.toStdString();
+    return applyTimelineEdit(
+        [&](project::Project& candidate) {
+            return project::slipTimelineClip(candidate, id, projectFrameDelta,
+                                             linkModeFor(linked));
+        },
+        id, QStringLiteral("clipをスリップしました"));
+}
+
+bool MvmController::beginSlipPreview(const QString& clipId, bool linked) {
+    if (busy_ || !pauseTimeline())
+        return false;
+    if (indexOfClipId(project_.timelineClips, clipId.toStdString()) < 0) {
+        setStatus(QStringLiteral("スリップするclipがありません"));
+        return false;
+    }
+    endSlipPreview();
+    slipPreview_ = SlipPreview{clipId.toStdString(), linkModeFor(linked)};
+    return true;
+}
+
+qint64 MvmController::previewSlip(qint64 projectFrameDelta) {
+    if (!slipPreview_)
+        return 0;
+    const int index = indexOfClipId(project_.timelineClips, slipPreview_->clipId);
+    if (index < 0)
+        return 0;
+    const auto& original = project_.timelineClips[static_cast<std::size_t>(index)];
+    // 素材の端での止め方は確定時と同じ slipTimelineClip に任せる。1 frame も
+    // ずらせない (素材の端) 場合は失敗するので、元の in のまま表示する。
+    project::Project candidate = project_;
+    const bool slipped =
+        project::slipTimelineClip(candidate, slipPreview_->clipId, projectFrameDelta,
+                                  slipPreview_->linkMode)
+            .success;
+    const auto& clip =
+        slipped ? candidate.timelineClips[static_cast<std::size_t>(index)] : original;
+    const std::int64_t sourceDelta = clip.sourceInFrame - original.sourceInFrame;
+
+    // audio clip は timeline の波形だけで示す。preview は video の frame を出す。
+    if (clip.kind == project::TimelineClipKind::Audio)
+        return sourceDelta;
+    if (!project::sourceRateMatchesTimelineRate(project_, clip)) {
+        setStatus(timelineFpsText() +
+                  QStringLiteral(" ではない素材のclipはスリップ中のPreviewに未対応です"));
+        return sourceDelta;
+    }
+    if (slipPreview_->sourceFrame != clip.sourceInFrame || !slipPreview_->source) {
+        slipPreview_->mediaPath = clip.mediaPath;
+        slipPreview_->sourceFpsNum = clip.sourceFpsNum;
+        slipPreview_->sourceFpsDen = clip.sourceFpsDen;
+        slipPreview_->sourceFrame = clip.sourceInFrame;
+        slipPreview_->pending = true;
+        if (!slipPreviewTimer_.isActive()) {
+            applySlipPreview();
+            if (slipPreview_ && slipPreview_->pending)
+                slipPreviewTimer_.start();
+        }
+    }
+    return sourceDelta;
+}
+
+void MvmController::applySlipPreview() {
+    if (!slipPreview_ || !slipPreview_->pending) {
+        slipPreviewTimer_.stop();
+        return;
+    }
+    const auto state = previewEngine_->status().state;
+    if (state == preview::PreviewEngineState::Error) {
+        slipPreview_->pending = false;
+        slipPreviewTimer_.stop();
+        return;
+    }
+    // addSource / seek は ReadyPaused でしか受理されない。Seeking 中は次の tick へ回す。
+    if (state != preview::PreviewEngineState::ReadyPaused)
+        return;
+    if (!slipPreview_->source) {
+        // timeline frame N = 素材 frame N と写す source を 1 つだけ作る。drag 中は
+        // seek だけで新しい in の frame を出せ、位置が変わるたびに decoder を開き直さない。
+        preview::PreviewSourceDescriptor descriptor;
+        descriptor.mediaPath = slipPreview_->mediaPath;
+        descriptor.videoEnabled = true;
+        descriptor.videoTimelineMappingEnabled = true;
+        descriptor.videoSourceInFrame = 0;
+        descriptor.videoTimelineStartFrame = 0;
+        descriptor.expectedVideoSourceFrameRate = {
+            static_cast<std::uint32_t>(slipPreview_->sourceFpsNum),
+            static_cast<std::uint32_t>(slipPreview_->sourceFpsDen)};
+        const auto added = previewEngine_->addSource(descriptor);
+        if (!added) {
+            setStatus(QStringLiteral("スリップのPreviewを準備できません: ") +
+                      previewErrorText(added.error()));
+            slipPreview_->pending = false;
+            slipPreviewTimer_.stop();
+            return;
+        }
+        slipPreview_->source = added.value();
+    }
+    // スリップ中は clip の素材だけを全面に出す (Premiere のスリップ中のモニタと同じ)。
+    auto composition = std::make_shared<preview::CompositionSnapshot>();
+    preview::PreviewCompositionLayer layer;
+    layer.source = *slipPreview_->source;
+    composition->layers.push_back(layer);
+    const auto submitted = previewEngine_->submitComposition(composition);
+    if (!submitted)
+        return;
+    submittedComposition_ = composition;
+    preview::PreviewFrameRequest request;
+    request.outputFrameNumber = slipPreview_->sourceFrame;
+    request.sources.push_back({*slipPreview_->source, slipPreview_->sourceFrame});
+    if (!previewEngine_->seekFrameRequest(request))
+        return;
+    slipPreview_->pending = false;
+    statusText_ = QStringLiteral("スリップ: 新しいイン点は素材の ") +
+                  QString::number(slipPreview_->sourceFrame) + QStringLiteral(" frame目です");
+    Q_EMIT stateChanged();
+}
+
+void MvmController::endSlipPreview() {
+    if (!slipPreview_)
+        return;
+    slipPreviewTimer_.stop();
+    const std::optional<preview::PreviewSourceId> source = slipPreview_->source;
+    slipPreview_.reset();
+    if (!source)
+        return;
+    // 先に通常の composition へ戻し、slip 用 source を参照から外してから削除する。
+    // まだ参照中で拒否されたら retirement queue に回す。
+    seekTimelineFrame(playheadFrame_);
+    if (!previewEngine_->removeSource(*source))
+        retiredSources_.push_back(*source);
+}
+
+bool MvmController::slideClip(const QString& clipId, qint64 projectFrameDelta, bool linked) {
+    const std::string id = clipId.toStdString();
+    return applyTimelineEdit(
+        [&](project::Project& candidate) {
+            return project::slideTimelineClip(candidate, id, projectFrameDelta,
+                                              linkModeFor(linked));
+        },
+        id, QStringLiteral("clipをスライドしました"));
+}
+
+bool MvmController::splitClipAt(const QString& clipId, qint64 frame, bool allTracks,
+                                bool linked) {
+    const std::string id = clipId.toStdString();
+    const std::vector<std::string> clipIds =
+        allTracks ? project::clipIdsSpanningFrame(project_, frame) : std::vector<std::string>{id};
+    if (clipIds.empty()) {
+        setStatus(QStringLiteral("分割位置にclipがありません"));
+        return false;
+    }
+    const QString status = allTracks ? QString::number(clipIds.size()) +
+                                           QStringLiteral("個のclipを分割しました")
+                                     : QStringLiteral("clipを分割しました");
+    return applyTimelineEdit(
+        [&](project::Project& candidate) {
+            return project::splitTimelineClips(candidate, clipIds, frame, newClipId,
+                                               linkModeFor(linked));
+        },
+        allTracks ? currentClipId() : id, status);
+}
+
+bool MvmController::selectClipsFromFrame(qint64 frame, const QString& direction,
+                                         const QString& trackKind, int trackIndex) {
+    project::SelectDirection selectDirection;
+    if (direction == QStringLiteral("forward"))
+        selectDirection = project::SelectDirection::Forward;
+    else if (direction == QStringLiteral("backward"))
+        selectDirection = project::SelectDirection::Backward;
+    else {
+        setStatus(QStringLiteral("選択方向が不正です"));
+        return false;
+    }
+    // trackKind が空なら全 track を対象にする。
+    std::optional<project::TrackRef> track;
+    if (!trackKind.isEmpty()) {
+        project::TrackRef resolved;
+        if (!resolveTrackRef(trackKind, trackIndex, resolved)) {
+            setStatus(QStringLiteral("trackが不正です"));
+            return false;
+        }
+        track = resolved;
+    }
+    const auto ids = project::clipIdsFromFrame(project_, std::max<qint64>(0, frame),
+                                               selectDirection, track);
+    setTimelineSelection(ids);
+    if (ids.empty()) {
+        setCurrentClipSelection(-1);
+        setStatus(QStringLiteral("選択できるclipがありません"));
+        return true;
+    }
+    setCurrentClipSelection(indexOfClipId(project_.timelineClips, ids.front()));
+    setStatus(QString::number(selectedClipIds_.size()) + QStringLiteral("個のclipを選択しました"));
+    return true;
 }
 
 bool MvmController::deleteCurrentClip() {
@@ -2786,33 +3120,48 @@ bool MvmController::unlinkTimelineClip(const QString& clipId) {
 }
 
 bool MvmController::undoLastEdit() {
+    return stepEditHistory(undoHistory_, redoHistory_, false);
+}
+
+bool MvmController::redoLastEdit() {
+    return stepEditHistory(redoHistory_, undoHistory_, true);
+}
+
+bool MvmController::stepEditHistory(std::vector<UndoEntry>& from, std::vector<UndoEntry>& to,
+                                    bool redo) {
+    const QString failurePrefix =
+        redo ? QStringLiteral("編集をやり直せません: ") : QStringLiteral("編集を元に戻せません: ");
     if (busy_)
         return false;
     if (!projectLockHeld_) {
-        setStatus(QStringLiteral("編集を元に戻せません: Projectを排他できません"));
+        setStatus(failurePrefix + QStringLiteral("Projectを排他できません"));
         return false;
     }
     if (!pauseTimeline())
         return false;
-    if (undoHistory_.empty()) {
-        setStatus(QStringLiteral("元に戻せる編集がありません"));
+    if (from.empty()) {
+        setStatus(redo ? QStringLiteral("やり直せる編集がありません")
+                       : QStringLiteral("元に戻せる編集がありません"));
         return false;
     }
 
-    const UndoEntry& undo = undoHistory_.back();
-    const auto serialized = project::serializeProjectJson(undo.project, projectPath_);
+    const UndoEntry& entry = from.back();
+    const auto serialized = project::serializeProjectJson(entry.project, projectPath_);
     if (!serialized.success) {
-        setStatus(QStringLiteral("編集を元に戻せません: ") +
-                  QString::fromStdString(serialized.error));
+        setStatus(failurePrefix + QString::fromStdString(serialized.error));
         return false;
     }
 
-    const std::vector<std::string> previousSelection = undo.selectedClipIds;
-    const std::string previousCurrentClipId = undo.currentClipId;
-    project_ = undo.project;
-    playheadFrame_ = undo.playheadFrame;
-    currentRevision_ = undo.revision;
-    undoHistory_.pop_back();
+    // 戻した先から逆向きに辿れるよう、いまの状態を反対側の履歴へ積む。
+    UndoEntry current{project_, selectedClipIds_, currentClipId(), playheadFrame_,
+                      currentRevision_};
+    const std::vector<std::string> previousSelection = entry.selectedClipIds;
+    const std::string previousCurrentClipId = entry.currentClipId;
+    project_ = entry.project;
+    playheadFrame_ = entry.playheadFrame;
+    currentRevision_ = entry.revision;
+    from.pop_back();
+    to.push_back(std::move(current));
 
     selectedClipIds_.clear();
     for (const auto& id : previousSelection) {
@@ -2829,10 +3178,12 @@ bool MvmController::undoLastEdit() {
     pendingSourceFrame_ = 0;
     if (!resetPreviewEngine()) {
         const QString resetFailure = statusText_;
-        setStatus(QStringLiteral("編集は元に戻しましたが、") + resetFailure);
+        setStatus((redo ? QStringLiteral("編集はやり直しましたが、")
+                        : QStringLiteral("編集は元に戻しましたが、")) +
+                  resetFailure);
         return true;
     }
-    setStatus(QStringLiteral("編集を元に戻しました"));
+    setStatus(redo ? QStringLiteral("編集をやり直しました") : QStringLiteral("編集を元に戻しました"));
     return true;
 }
 
@@ -2978,7 +3329,7 @@ bool MvmController::adoptProject(project::Project loaded, std::filesystem::path 
     currentRevision_ = 0;
     savedRevision_ = 0;
     nextRevision_ = 1;
-    undoHistory_.clear();
+    clearEditHistory();
     selectedClipIds_.clear();
     currentClipIndex_ = -1;
     currentClipName_.clear();
@@ -3008,7 +3359,7 @@ bool MvmController::adoptProject(project::Project loaded, std::filesystem::path 
             scheduleRecoveryAutosave();
         }
         // Project切り替え時のasset同期は利用者の編集ではないため、Undo履歴へ残さない。
-        undoHistory_.clear();
+        clearEditHistory();
     }
     Q_EMIT stateChanged();
     return true;
@@ -3215,7 +3566,7 @@ bool MvmController::discardUnsavedChanges() {
     }
     const std::string selectedId = currentClipId();
     project_ = savedProject_;
-    undoHistory_.clear();
+    clearEditHistory();
     selectedClipIds_.clear();
     currentRevision_ = savedRevision_;
     recoveryProject_.reset();
@@ -3699,6 +4050,8 @@ void MvmController::shutdown() {
         shuttleAudio_.reset();
     }
     scrubTimer_.stop();
+    slipPreviewTimer_.stop();
+    slipPreview_.reset();
     meterTimer_.stop();
     playing_ = false;
     shuttleRate_ = 0;

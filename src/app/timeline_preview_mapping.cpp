@@ -46,6 +46,29 @@ TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& proj
     return result;
 }
 
+PreviewVideoMapping previewVideoMappingOf(const project::TimelineClip& clip) {
+    return {clip.mediaPath, clip.sourceInFrame, clip.timelineStartFrame, clip.sourceFpsNum,
+            clip.sourceFpsDen};
+}
+
+bool previewVideoMappingCovers(const project::Project& project,
+                               const PreviewVideoMapping& installed,
+                               const project::TimelineClip& clip) {
+    const PreviewVideoMapping wanted = previewVideoMappingOf(clip);
+    if (installed == wanted)
+        return true;
+    if (installed.mediaPath != wanted.mediaPath || installed.sourceFpsNum != wanted.sourceFpsNum ||
+        installed.sourceFpsDen != wanted.sourceFpsDen)
+        return false;
+    // 素材 fps と timeline fps が一致するときだけ対応は 1:1 の平行移動になり、
+    // 原点 (in, start) が違っても差 (start - in) が同じなら全 frame で同じ素材 frame を指す。
+    // 一致しない場合は frame 境界の丸めが原点に依存するので、使い回さない。
+    return project::sourceRateMatchesTimelineRate(project, clip) &&
+           wanted.sourceInFrame >= installed.sourceInFrame &&
+           wanted.timelineStartFrame - wanted.sourceInFrame ==
+               installed.timelineStartFrame - installed.sourceInFrame;
+}
+
 bool sameTimelinePreviewSourceSet(const TimelinePreviewFrameMapping& a,
                                   const TimelinePreviewFrameMapping& b) {
     if (!a.success || !b.success || a.layers.size() != b.layers.size())

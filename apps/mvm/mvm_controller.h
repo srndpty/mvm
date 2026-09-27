@@ -2,10 +2,12 @@
 #define MVM_APPS_MVM_MVM_CONTROLLER_H
 
 #include "app/timeline_export.h"
+#include "app/timeline_preview_mapping.h"
 #include "media_bin_model.h"
 #include "preview_engine/preview_engine.h"
 #include "project/media_bin.h"
 #include "project/project.h"
+#include "project/timeline_edit.h"
 #include "timeline_clip_model.h"
 
 #include <atomic>
@@ -68,6 +70,7 @@ class MvmController : public QObject {
     Q_PROPERTY(int shuttleRate READ shuttleRate NOTIFY stateChanged)
     Q_PROPERTY(bool canPlay READ canPlay NOTIFY stateChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY stateChanged)
+    Q_PROPERTY(bool canRedo READ canRedo NOTIFY stateChanged)
     Q_PROPERTY(bool dirty READ dirty NOTIFY stateChanged)
     Q_PROPERTY(bool recoveryAvailable READ recoveryAvailable NOTIFY stateChanged)
     Q_PROPERTY(bool recoveryCanonicalChanged READ recoveryCanonicalChanged NOTIFY stateChanged)
@@ -172,6 +175,8 @@ public:
 
     bool canUndo() const { return !undoHistory_.empty() && !busy_; }
 
+    bool canRedo() const { return !redoHistory_.empty() && !busy_; }
+
     bool dirty() const { return currentRevision_ != savedRevision_; }
 
     bool recoveryAvailable() const { return recoveryProject_.has_value(); }
@@ -234,7 +239,8 @@ public:
     Q_INVOKABLE bool addVideoClip(const QUrl& fileUrl);
     Q_INVOKABLE bool addAudioClip(const QUrl& fileUrl);
     Q_INVOKABLE bool selectClip(int index);
-    Q_INVOKABLE bool selectTimelineClip(const QString& clipId, qint64 frame);
+    // linked=false (Alt+クリック) ならリンク相手を選択に含めない。
+    Q_INVOKABLE bool selectTimelineClip(const QString& clipId, qint64 frame, bool linked);
     Q_INVOKABLE bool toggleTimelineClipSelection(const QString& clipId, qint64 frame);
     Q_INVOKABLE bool selectTimelineClips(const QStringList& clipIds);
     Q_INVOKABLE bool seekTimelineFrame(qint64 frame);
@@ -248,13 +254,36 @@ public:
     Q_INVOKABLE bool shuttleRight();
     Q_INVOKABLE bool stepTimelineFrames(int delta);
     Q_INVOKABLE bool jumpToEditPoint(int direction);
+    // 以下の編集は linked=true ならリンク相手にも同じ編集を適用する (Premiere の
+    // リンクされた選択)。QML は Alt を押しながらの操作で linked=false を渡す。
     Q_INVOKABLE bool moveTimelineClip(const QString& clipId, const QString& trackKind,
-                                      int trackIndex, qint64 timelineStartFrame);
-    Q_INVOKABLE bool trimClip(const QString& clipId, const QString& edge, qint64 projectFrameDelta);
+                                      int trackIndex, qint64 timelineStartFrame, bool linked);
+    Q_INVOKABLE bool trimClip(const QString& clipId, const QString& edge, qint64 projectFrameDelta,
+                              bool linked);
+    // タイムラインツール。edge は "left" / "right"。
+    Q_INVOKABLE bool rippleTrimClip(const QString& clipId, const QString& edge,
+                                    qint64 projectFrameDelta, bool linked);
+    Q_INVOKABLE bool rollClipEdge(const QString& clipId, const QString& edge,
+                                  qint64 projectFrameDelta, bool linked);
+    Q_INVOKABLE bool slipClip(const QString& clipId, qint64 projectFrameDelta, bool linked);
+    // スリップのドラッグ中 preview。Project は変更せず、新しい in の素材 frame を表示する。
+    // previewSlip は素材の端で止めた後の in の移動量 (素材 frame) を返す。
+    // endSlipPreview で通常の preview (playhead 位置) へ戻す。
+    Q_INVOKABLE bool beginSlipPreview(const QString& clipId, bool linked);
+    Q_INVOKABLE qint64 previewSlip(qint64 projectFrameDelta);
+    Q_INVOKABLE void endSlipPreview();
+    Q_INVOKABLE bool slideClip(const QString& clipId, qint64 projectFrameDelta, bool linked);
+    // allTracks=true なら frame を内側に含む全 track の clip を分割する。
+    Q_INVOKABLE bool splitClipAt(const QString& clipId, qint64 frame, bool allTracks,
+                                 bool linked);
+    // direction は "forward" / "backward"。trackKind が空なら全 track。
+    Q_INVOKABLE bool selectClipsFromFrame(qint64 frame, const QString& direction,
+                                          const QString& trackKind, int trackIndex);
     Q_INVOKABLE bool deleteCurrentClip();
     Q_INVOKABLE bool deleteTimelineClip(const QString& clipId);
     Q_INVOKABLE bool unlinkTimelineClip(const QString& clipId);
     Q_INVOKABLE bool undoLastEdit();
+    Q_INVOKABLE bool redoLastEdit();
     Q_INVOKABLE QVariantMap exportSettingsSummary() const;
     Q_INVOKABLE bool exportTimeline(const QUrl& outputUrl);
     Q_INVOKABLE bool exportTimelineWithQuality(const QUrl& outputUrl, const QString& quality);
@@ -320,26 +349,20 @@ private:
 
     struct TrackPreviewSource {
         preview::PreviewSourceId source;
+        // いま表示している clip。source を作った clip とは限らない (連続した clip へ引き継ぐ)。
         std::string clipId;
         int clipIndex = -1;
-        std::int64_t sourceInFrame = 0;
-        std::int64_t timelineStartFrame = 0;
-        std::int64_t sourceFpsNum = 0;
-        std::int64_t sourceFpsDen = 1;
+        // source の descriptor へ渡した対応。引き継いでも書き換えない。
+        PreviewVideoMapping mapping;
     };
 
-    // audio source を作り直すべきかの判定に使う identity。
-    // clip ID は media identity であって timing identity ではない。
-    // clip を動かす / trim する / Project fps が変わると offset が変わるため、
-    // offset を決めた入力そのものを identity に含める。
+    // audio source を作り直すべきかの判定に使う identity。descriptor を決める値そのもの。
+    // clip を動かす / trim する / Project fps が変わると offset が変わるので作り直す。
+    // 逆に clip が違っても素材と offset が同じ (分割直後の連続した clip) なら使い回す。
+    // offset の換算は audioPreviewSampleOffset に一本化している。
     struct AudioSourceIdentity {
-        std::string clipId;
-        std::int64_t sourceInFrame = 0;
-        std::int64_t timelineStartFrame = 0;
-        std::int64_t sourceFpsNum = 0;
-        std::int64_t sourceFpsDen = 1;
-        std::int64_t timelineFpsNum = 0;
-        std::int64_t timelineFpsDen = 1;
+        std::filesystem::path mediaPath;
+        std::int64_t sampleOffset = 0;
         bool operator==(const AudioSourceIdentity&) const = default;
     };
 
@@ -351,6 +374,8 @@ private:
         // timelineStartFrame が変わった後は「戻したはずの source」が新しい
         // offset を持ってしまい、identity と実体が食い違う。
         preview::PreviewSourceDescriptor descriptor;
+        // いま鳴らしている clip。source を作った clip とは限らない。
+        std::string clipId;
         int clipIndex = -1;
     };
 
@@ -372,6 +397,10 @@ private:
     // timeline と asset の対応を決める箇所はここだけにする。
     bool syncManimTimelineClip(bool addIfMissing);
     bool commitProjectEdit(project::Project candidate, const QString& failurePrefix);
+    // timeline 編集の共通手順。一時停止 -> candidate へ edit -> commit -> preview 更新。
+    bool applyTimelineEdit(const std::function<project::TimelineEditResult(project::Project&)>& edit,
+                           const std::string& selectedClipId, const QString& successStatus);
+    bool resolveTrimEdge(const QString& edge, project::TrimEdge& trimEdge);
     // bin 編集を candidate へ適用し、成功したら 1 つの undo として commit する。
     bool
     applyMediaBinEdit(const std::function<project::MediaBinEditResult(project::Project&)>& edit,
@@ -396,7 +425,8 @@ private:
     void writeRecoveryAutosave();
     void detectRecovery();
     void setCurrentClipSelection(int index);
-    void setTimelineSelection(const std::vector<std::string>& clipIds);
+    // expandLinks なら選んだ clip のリンク相手も選択に含める。
+    void setTimelineSelection(const std::vector<std::string>& clipIds, bool expandLinks = true);
     bool refreshPreviewAfterSavedEdit(const std::string& selectedClipId,
                                       const QString& successStatus);
     std::string currentClipId() const;
@@ -418,6 +448,16 @@ private:
     };
 
     bool applyAudioSourceFor(std::int64_t timelineFrame, AudioSwitchUndo& undo, QString& error);
+    bool audioIdentitiesFor(const TimelinePreviewAudioMapping& mapped,
+                            std::vector<AudioSourceIdentity>& identities, QString& error) const;
+    // mappedFrame の layer を sources で合成する composition と seek request を組む。
+    std::shared_ptr<preview::CompositionSnapshot>
+    previewCompositionFor(const TimelinePreviewFrameMapping& mappedFrame,
+                          const std::map<int, TrackPreviewSource>& sources,
+                          preview::PreviewFrameRequest& request) const;
+    // 再生中、frame の clip を今の source のまま表示できれば source を引き継いで true。
+    // 引き継げなければ何も変更せず false (呼び出し側が一時停止して組み直す)。
+    bool handOffPlaybackSources(std::int64_t frame);
     // applyAudioSourceFor の結果を打ち消す。控えておいた descriptor をそのまま
     // 使い、現在の Project からは作り直さない。戻せなかった場合は黙って成功に
     // せず false を返す。
@@ -458,6 +498,8 @@ private:
     // video track index -> preview source。track を増やしても添字を取り違えない。
     std::map<int, TrackPreviewSource> trackSources_;
     std::vector<AudioPreviewSource> audioSources_;
+    // 最後に engine が受理した composition。同じ内容を出し直さないために持つ。
+    std::shared_ptr<const preview::CompositionSnapshot> submittedComposition_;
     // drag 中だけ生きる effect の上書き。Project へは書かない。
     // これがあるのは currentClipIndex_ の clip に対してだけである。
     std::optional<project::ClipEffects> previewEffectsOverride_;
@@ -485,6 +527,12 @@ private:
     };
 
     std::vector<UndoEntry> undoHistory_;
+    // undo で戻した編集。新しい編集を commit すると捨てる。
+    std::vector<UndoEntry> redoHistory_;
+    void pushUndoEntry(UndoEntry entry);
+    void clearEditHistory();
+    // from の末尾へ戻し、いまの状態を to へ積む。undo / redo の共通手順。
+    bool stepEditHistory(std::vector<UndoEntry>& from, std::vector<UndoEntry>& to, bool redo);
     project::Project savedProject_;
     std::optional<project::Project> recoveryProject_;
     bool recoveryCanonicalChanged_ = false;
@@ -542,6 +590,24 @@ private:
     QTimer playbackTimer_;
     QTimer stateTimer_;
     QTimer scrubTimer_;
+
+    struct SlipPreview {
+        std::string clipId;
+        project::LinkMode linkMode = project::LinkMode::Linked;
+        // timeline frame N = 素材 frame N と写す preview 専用 source。
+        std::optional<preview::PreviewSourceId> source;
+        std::filesystem::path mediaPath;
+        std::int64_t sourceFpsNum = 0;
+        std::int64_t sourceFpsDen = 1;
+        // 表示したい素材 frame (新しい in)。
+        std::int64_t sourceFrame = -1;
+        // まだ engine へ反映できていない。
+        bool pending = false;
+    };
+
+    void applySlipPreview();
+    std::optional<SlipPreview> slipPreview_;
+    QTimer slipPreviewTimer_;
     QTimer meterTimer_;
     QTimer recoveryDebounceTimer_;
     QTimer recoveryMaximumTimer_;
