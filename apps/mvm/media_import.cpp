@@ -53,7 +53,13 @@ MediaImportResult classifyMediaProbe(const MvmMltProbeResult& probe,
         result.error = "音声の sample rate を取得できません";
         return result;
     }
-    const auto samples = std::llround(probe.duration_sec * probe.sample_rate);
+    // llround は int64 に収まらない値で未定義になる。2^63 未満であることを先に確かめる。
+    const double exactSamples = probe.duration_sec * static_cast<double>(probe.sample_rate);
+    if (!(exactSamples < 0x1p63)) {
+        result.error = "音声の尺が扱える範囲を超えています";
+        return result;
+    }
+    const auto samples = std::llround(exactSamples);
     if (samples <= 0) {
         result.error = "音声の尺が 1 sample に満たない素材です";
         return result;

@@ -4,6 +4,7 @@
 #include "project/project.h"
 
 #include <filesystem>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -34,10 +35,11 @@ MediaBinEditResult removeMediaBinEntries(Project& project,
                                          const std::vector<std::string>& entryIds);
 
 const MediaItem* findMediaItem(const Project& project, const std::string& itemId);
+// 同じ実体のファイルを指す素材を探す (path_identity.h の mediaFileKey で照合する)。
 const MediaItem* findMediaItemByPath(const Project& project, const std::filesystem::path& path);
 const MediaFolder* findMediaFolder(const Project& project, const std::string& folderId);
-// timeline clip がこの素材を参照しているか (mediaPath で照合する)。
-bool isMediaItemInUse(const Project& project, const MediaItem& item);
+// timeline clip が参照している素材の id。照合は mediaFileKey で行う。
+std::set<std::string> mediaItemsInUse(const Project& project);
 
 const char* mediaKindName(MediaKind kind);
 bool parseMediaKindName(const std::string& text, MediaKind& kind);

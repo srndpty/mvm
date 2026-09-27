@@ -1959,7 +1959,8 @@ bool MvmController::importMediaFiles(const QList<QUrl>& fileUrls, const QString&
     if (imported > 0 && !folderId.isEmpty())
         mediaBinModel_->setExpanded(folderId, true);
     Q_EMIT stateChanged();
-    return imported > 0 && failures.isEmpty();
+    // 一部が読めなくても、読めた素材は commit 済みである。false を「変更なし」の意味に保つ。
+    return imported > 0;
 }
 
 QString MvmController::createMediaFolder(const QString& parentFolderId) {

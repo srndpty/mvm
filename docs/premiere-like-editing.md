@@ -599,3 +599,38 @@ timeline へ直接追加する既存経路も同じ素材を動画として扱�
 `[事実]` drop で素材を移動すると model が作り直され、drop 元の delegate が破棄される。
 drop ハンドラの途中で破棄されて `ReferenceError: dragProxy is not defined` が出たため、
 移動は `Qt.callLater` で drag の後始末の後へ遅らせた。
+
+### 15.5 レビュー指摘への対応
+
+`[事実]` **schema 3 の hard break は維持した。** migration を入れるかは方針として判断し、
+AGENTS.md「後方互換のための分岐を残さない」を優先した。手元の開発用 Project は
+一度だけ手作業で変換した (元ファイルは `*.schema3.bak`)。
+
+`[事実]` 外部ファイルの drop は `CopyAction` で受理する。以前は
+`acceptProposedAction()` で、source が Move を提示するとそのまま Move を受理していた。
+mvm は元ファイルを参照するだけなので、Move を返すと source 側が「移動済み」として
+元ファイルを後始末しうる。source が Copy を許さない drag は受け付けない。
+`test-m7b4-timeline-ui-architecture.ps1` が `acceptProposedAction` を禁止している。
+
+`[未検証]` Explorer からの通常 drag / Shift+drag / Ctrl+drag で、実際に
+Explorer 側へ Copy が返ることは実機で確かめていない (合成入力で OLE drag を起こせない)。
+
+`[事実]` 素材の同一性は `src/project/path_identity.h` に一本化した。
+
+| key | 規則 | 使う場所 |
+| --- | ---- | -------- |
+| `canonicalPathKey` | absolute + lexically_normal + 区切り文字と大文字小文字を揃える。I/O なし | JSON 検証の重複判定、`sameCanonicalPath` |
+| `mediaFileKey` | 存在すれば volume serial + file ID、無ければ `canonicalPathKey` | 読み込み時の重複判定、timeline 使用中判定 |
+
+JSON 検証を実体に依存させないのは、保存済みの Project が disk 側の変化
+(後から hard link が張られた等) だけで開けなくなるのを避けるためである。
+hard link 経由の重複登録・使用中判定のすり抜けは、`mediaFileKey` を表記比較へ戻す
+mutation で `test_media_bin.cpp` の 4 検査が落ちることを確認した。
+
+`[事実]` 音声の尺は、取り込み時に sample 数が 2^63 未満であることを確かめてから
+`llround` する。表示は「秒」と「端数」に分けて換算し、`samples * 1000` を作らない。
+動画の公称 fps の切り上げも `num + den - 1` を使わない。
+
+`[事実]` `importMediaFiles` の戻り値は「1 件以上 commit したか」に変えた。
+一部が読めなくても読めた分は commit しており、以前はそれでも false を返していた。
+false は「Project を変更していない」の意味に保つ。

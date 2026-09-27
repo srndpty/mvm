@@ -126,26 +126,37 @@ ApplicationWindow {
         matchClipSettingsDialog.open();
     }
 
+    // mvm は drop されたファイルを移動も複製もせず、元の場所のまま参照する。
+    // drag source へ返す action は常に CopyAction に固定する。source が提示した
+    // action (Shift+drag の MoveAction など) をそのまま受理すると、source 側が
+    // 「移動が成功した」として元ファイルを後始末しうる。
     DropArea {
         id: videoDropArea
         property bool acceptingVideoDrag: false
         anchors.fill: parent
         z: 2000
 
+        function copyAllowed(drag) {
+            return (drag.supportedActions & Qt.CopyAction) !== 0;
+        }
+
         onEntered: drag => {
             acceptingVideoDrag = false;
             drag.accepted = false;
-            if (mvmController.busy || !drag.hasUrls)
+            if (mvmController.busy || !drag.hasUrls || !copyAllowed(drag))
                 return;
             for (let index = 0; index < drag.urls.length; ++index) {
                 if (root.isLocalFileUrl(drag.urls[index])) {
                     acceptingVideoDrag = true;
-                    drag.accepted = true;
+                    drag.accept(Qt.CopyAction);
                     return;
                 }
             }
         }
         onPositionChanged: drag => {
+            // move のたびに action を確定し直す。Qt は move event ごとに proposed action へ戻す。
+            if (acceptingVideoDrag)
+                drag.accept(Qt.CopyAction);
             projectPanel.externalDropHover = acceptingVideoDrag
                                              && root.isOverProjectPanel(drag.x, drag.y);
         }
@@ -156,6 +167,10 @@ ApplicationWindow {
         onDropped: drop => {
             acceptingVideoDrag = false;
             projectPanel.externalDropHover = false;
+            if (!copyAllowed(drop)) {
+                drop.accepted = false;
+                return;
+            }
             const toProjectPanel = root.isOverProjectPanel(drop.x, drop.y);
             const binUrls = [];
             let accepted = false;
@@ -172,7 +187,7 @@ ApplicationWindow {
             if (binUrls.length > 0)
                 projectPanel.importUrls(binUrls);
             if (accepted)
-                drop.acceptProposedAction();
+                drop.accept(Qt.CopyAction);
         }
     }
 

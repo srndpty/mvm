@@ -899,8 +899,15 @@ void testMediaBinImport(const std::filesystem::path& path, const std::filesystem
         const auto& bin = *controller.mediaBinModel();
 
         // 読めないファイルが混ざっても、読める素材は 1 つの編集として取り込む。
-        check(!controller.importMediaFiles({url(png), url(wav), url(mp4), url(bogus)}, {}),
-              "読めないファイルを含む読み込みが成功扱いになりました");
+        // 戻り値は「commit したか」であり、部分失敗は status で知らせる。
+        check(controller.importMediaFiles({url(png), url(wav), url(mp4), url(bogus)}, {}),
+              "一部の素材をcommitしたのにfalseを返しました");
+        check(controller.statusText().contains(QStringLiteral("1 件は読み込めません")),
+              "読めなかった素材がstatusで知らされません");
+        check(controller.canUndo() && controller.undoLastEdit() &&
+                  controller.mediaBinModel()->entryCount() == 0 &&
+                  controller.importMediaFiles({url(png), url(wav), url(mp4), url(bogus)}, {}),
+              "部分失敗した読み込みが1つのUndoになりません");
         check(bin.entryCount() == 3, "読める素材だけが読み込まれていません");
         const QString pngId = binEntryIdNamed(bin, QStringLiteral("png_alpha.png"));
         const QString wavId = binEntryIdNamed(bin, QStringLiteral("wav_48k.wav"));

@@ -4,6 +4,7 @@
 #include "media_bin_model.h"
 #include "media_import.h"
 
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 
@@ -87,6 +88,13 @@ void testClassify() {
           "音声のprobeをsample数付きのAudioへ分類できません");
 
     // 値が欠けた素材を推測で埋めない。
+    // sample 数が int64 に収まらない尺は、llround へ渡す前に拒否する。
+    auto huge = audio;
+    huge.sample_rate = 48000;
+    huge.duration_sec = 1.0e15;
+    check(!mvm::app::classifyMediaProbe(huge, "a.m4a").success,
+          "int64に収まらない音声尺を受理しました");
+
     auto noRate = audio;
     noRate.sample_rate = 0;
     check(!mvm::app::classifyMediaProbe(noRate, "a.m4a").success,
@@ -157,6 +165,16 @@ void testFormat() {
     check(mvm::app::formatMediaDuration(audio("a", 48000, 48000 * 269 + 24000)) ==
               QStringLiteral("00:04:29.500"),
           "音声の尺表示が違います");
+
+    // 手編集された巨大な値でも overflow しない。期待値は Python で別に計算した。
+    //   INT64_MAX / 48000 = 192153584100724 秒、端数 → 162 ms
+    check(mvm::app::formatMediaDuration(audio("a", 48000, INT64_MAX)) ==
+              QStringLiteral("53375995583:39:01.162"),
+          "巨大なsample数の尺表示がoverflowしました");
+    //   公称 fps = ceil(INT64_MAX / 2) = 2^62。num + den - 1 で切り上げると overflow する。
+    check(mvm::app::formatMediaDuration(video("a", INT64_MAX, 2, 10)) ==
+              QStringLiteral("00:00:00:10"),
+          "巨大なfpsの尺表示がoverflowしました");
 
     check(mvm::app::formatMediaSize(video("a", 60, 1, 1)) == QStringLiteral("1920 × 1080"),
           "解像度の表示が違います");

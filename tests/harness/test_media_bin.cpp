@@ -176,6 +176,56 @@ void testValidation() {
     check(!mvm::project::validateMediaBin(sharedId).success, "folderと同じidの素材を受理しました");
 }
 
+// Windows では大文字小文字違い・hard link は同じ実体を指す。lexically_normal だけで
+// 比べると別素材として二重に登録でき、使用中判定もすり抜ける。
+void testFileIdentity(const std::filesystem::path& root) {
+    const auto directory = root / "identity";
+    std::filesystem::create_directories(directory);
+    const auto original = directory / "Voice.wav";
+    writeText(original, "RIFF");
+    const auto link = directory / "voice-link.wav";
+    std::error_code linkError;
+    std::filesystem::create_hard_link(original, link, linkError);
+    check(!linkError, "hard link を作れません (NTFS 以外で実行していないか確認してください)");
+
+    Project project = mvm::project::createDefaultProject();
+    check(mvm::project::addMediaItem(project, audioItem("a", "placeholder")).success,
+          "識別試験の素材を追加できません");
+    project.mediaItems.front().mediaPath = original;
+
+    const auto upper = directory / "VOICE.WAV";
+    check(mvm::project::findMediaItemByPath(project, upper) != nullptr,
+          "大文字小文字だけが違うpathを別の素材として扱いました");
+    check(mvm::project::findMediaItemByPath(project, link) != nullptr,
+          "hard linkを別の素材として扱いました");
+    MediaItem viaLink = audioItem("c", "x");
+    viaLink.mediaPath = link;
+    check(!mvm::project::addMediaItem(project, viaLink).success && project.mediaItems.size() == 1,
+          "hard link経由で同じファイルを二重に登録できてしまいます");
+
+    // 対照: 別ファイルは別素材。
+    const auto other = directory / "other.wav";
+    writeText(other, "RIFF");
+    check(mvm::project::findMediaItemByPath(project, other) == nullptr,
+          "別のファイルを同じ素材として扱いました");
+
+    // timeline が hard link 経由で参照していても使用中とみなし、削除を拒否する。
+    mvm::project::TimelineClip clip;
+    clip.mediaPath = link;
+    project.timelineClips.push_back(clip);
+    check(mvm::project::mediaItemsInUse(project).contains("a"),
+          "hard link経由のtimeline参照を使用中と判定しません");
+    check(!mvm::project::removeMediaBinEntries(project, {"a"}).success,
+          "hard link経由で使用中の素材を削除できてしまいます");
+
+    // 存在しないファイルは表記で比べる。大文字小文字は区別しない。
+    Project missing = mvm::project::createDefaultProject();
+    missing.mediaItems = {audioItem("m1", "C:/mvm-missing/Tone.wav"),
+                          audioItem("m2", R"(c:\MVM-MISSING\tone.WAV)")};
+    check(!mvm::project::validateMediaBin(missing).success,
+          "大文字小文字と区切り文字だけが違う素材の重複を受理しました");
+}
+
 void testJson(const std::filesystem::path& root) {
     Project project = nestedProject();
     project.mediaItems[0].mediaPath = root / "media" / "v.mp4";
@@ -261,6 +311,7 @@ int main(int argc, char** argv) {
     testEdits();
     testRemove();
     testValidation();
+    testFileIdentity(root);
     testJson(root);
 
     if (failures == 0)

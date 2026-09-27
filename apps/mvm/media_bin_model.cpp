@@ -44,15 +44,21 @@ QString formatMediaDuration(const project::MediaItem& item) {
         if (item.fpsNum <= 0 || item.fpsDen <= 0)
             return {};
         // non-drop の timecode。frame 桁は公称 fps (23.976 なら 24) で数える。
-        const std::int64_t nominal = (item.fpsNum + item.fpsDen - 1) / item.fpsDen;
+        // 切り上げを num + den - 1 で書くと、手編集された巨大な fps で overflow する。
+        const std::int64_t nominal =
+            item.fpsNum / item.fpsDen + (item.fpsNum % item.fpsDen != 0 ? 1 : 0);
         return hms(item.frameCount / nominal) + u':' + twoDigits(item.frameCount % nominal);
     }
     case project::MediaKind::Audio: {
         if (item.sampleRate <= 0)
             return {};
-        const std::int64_t milliseconds = item.durationSamples * 1000 / item.sampleRate;
-        return hms(milliseconds / 1000) + u'.' +
-               QStringLiteral("%1").arg(milliseconds % 1000, 3, 10, QLatin1Char('0'));
+        // samples * 1000 は巨大な値で overflow するので、秒と端数に分けてから換算する。
+        // 端数は sampleRate (int) 未満なので 1000 倍しても int64 に収まる。
+        const std::int64_t seconds = item.durationSamples / item.sampleRate;
+        const std::int64_t milliseconds =
+            item.durationSamples % item.sampleRate * 1000 / item.sampleRate;
+        return hms(seconds) + u'.' +
+               QStringLiteral("%1").arg(milliseconds, 3, 10, QLatin1Char('0'));
     }
     case project::MediaKind::Image:
         return {};
@@ -126,10 +132,8 @@ void MediaBinModel::setProject(const project::Project& project) {
     folders_ = project.mediaFolders;
     items_ = project.mediaItems;
     inUseItems_.clear();
-    for (const auto& item : items_) {
-        if (project::isMediaItemInUse(project, item))
-            inUseItems_.insert(QString::fromStdString(item.id));
-    }
+    for (const auto& id : project::mediaItemsInUse(project))
+        inUseItems_.insert(QString::fromStdString(id));
     // 消えた folder の展開状態は持ち越さない。同じ id が将来再利用されても開かない。
     QSet<QString> liveFolders;
     for (const auto& folder : folders_)

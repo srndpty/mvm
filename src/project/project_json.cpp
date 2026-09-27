@@ -1,13 +1,13 @@
 #include "project/project_json.h"
 
 #include "project/media_bin.h"
+#include "project/path_identity.h"
 #include "project/timeline_edit.h"
 #include "util/mvm_atomic_write.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
-#include <cwctype>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -1689,21 +1689,8 @@ ProjectRecoveryLoadResult loadProjectRecovery(const std::filesystem::path& recov
 }
 
 bool sameCanonicalPath(const std::filesystem::path& left, const std::filesystem::path& right) {
-    std::error_code leftError;
-    std::error_code rightError;
-    const auto leftAbsolute = std::filesystem::absolute(left, leftError).lexically_normal();
-    const auto rightAbsolute = std::filesystem::absolute(right, rightError).lexically_normal();
-    if (leftError || rightError)
-        return false;
-    const auto leftText = leftAbsolute.generic_wstring();
-    const auto rightText = rightAbsolute.generic_wstring();
-    if (leftText.size() != rightText.size())
-        return false;
-    for (std::size_t index = 0; index < leftText.size(); ++index) {
-        if (towlower(leftText[index]) != towlower(rightText[index]))
-            return false;
-    }
-    return true;
+    const auto leftKey = canonicalPathKey(left);
+    return !leftKey.empty() && leftKey == canonicalPathKey(right);
 }
 
 RecoveryDisposition classifyRecovery(const Project& recoveryProject,

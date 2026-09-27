@@ -98,11 +98,16 @@ $requiredVideoDrop = @(
     'drag.hasUrls',
     'root.isLocalFileUrl(drag.urls[index])',
     'mvmController.addVideoClip(url)',
-    'drop.acceptProposedAction()',
+    'drop.accept(Qt.CopyAction)',
+    'drag.accept(Qt.CopyAction)',
+    '(drag.supportedActions & Qt.CopyAction) !== 0',
     'videoDropArea.acceptingVideoDrag'
 )
 
+# drop は参照登録であり移動ではない。source が提示した action (Move を含む) を
+# そのまま受理しない。
 $forbiddenVideoDrop = @(
+    'acceptProposedAction',
     'isSupportedVideoUrl',
     '/\.(mp4|mov|mkv|ts)$/i'
 )
@@ -180,7 +185,7 @@ foreach ($needle in ($requiredQml + $requiredInteractions + $requiredShortcuts +
 }
 foreach ($needle in $forbiddenVideoDrop) {
     if ($qml.Contains($needle)) {
-        throw "動画dropを拡張子で制限する旧契約が残っています: $needle"
+        throw "動画dropの旧契約 (拡張子による制限 / proposed action の受理) が残っています: $needle"
     }
 }
 foreach ($needle in $forbiddenQml) {

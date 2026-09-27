@@ -258,6 +258,8 @@ public:
 
     // プロジェクトパネル (素材とフォルダ)。folderId が空なら root。
     // 読み込みは timeline へ置かずに bin へ登録するだけ。1 回の呼び出しが 1 undo になる。
+    // 戻り値は「1 件以上 commit したか」。読めなかった素材や読み込み済みの素材は status で知らせ、
+    // 一部が失敗しても読めた分は commit する。false のときは Project を変更していない。
     Q_INVOKABLE bool importMediaFiles(const QList<QUrl>& fileUrls, const QString& folderId);
     // 作成した folder の id を返す。失敗時は空文字列。
     Q_INVOKABLE QString createMediaFolder(const QString& parentFolderId);

@@ -1,15 +1,13 @@
 #include "project/media_bin.h"
 
+#include "project/path_identity.h"
+
 #include <algorithm>
 #include <set>
 #include <utility>
 
 namespace mvm::project {
 namespace {
-
-bool samePath(const std::filesystem::path& left, const std::filesystem::path& right) {
-    return left.lexically_normal() == right.lexically_normal();
-}
 
 MediaBinEditResult failure(std::string error) {
     MediaBinEditResult result;
@@ -77,18 +75,22 @@ MediaBinEditResult validateMediaBin(const Project& project) {
             cursor = findMediaFolder(project, cursor)->parentId;
         }
     }
-    for (std::size_t index = 0; index < project.mediaItems.size(); ++index) {
-        const auto& item = project.mediaItems[index];
+    // 重複は表記上の key で判定する。検証の結果をファイルの有無や実体に依存させると、
+    // 保存済みの Project が disk 側の変化だけで開けなくなる。実体での判定は
+    // 読み込み時の findMediaItemByPath が担う。
+    std::set<std::wstring> pathKeys;
+    for (const auto& item : project.mediaItems) {
         if (item.id.empty() || !ids.insert(item.id).second)
             return failure("素材の id が空または重複しています: " + item.id);
         if (item.name.empty() || item.mediaPath.empty())
             return failure("素材の名前または media_path が空です");
         if (!item.folderId.empty() && !findMediaFolder(project, item.folderId))
             return failure("素材 \"" + item.name + "\" のフォルダがありません");
-        for (std::size_t other = 0; other < index; ++other) {
-            if (samePath(project.mediaItems[other].mediaPath, item.mediaPath))
-                return failure("同じファイルの素材が重複しています: " + item.name);
-        }
+        const auto key = canonicalPathKey(item.mediaPath);
+        if (key.empty())
+            return failure("素材 \"" + item.name + "\" の media_path を解決できません");
+        if (!pathKeys.insert(key).second)
+            return failure("同じファイルの素材が重複しています: " + item.name);
         const auto values = validateItemValues(item);
         if (!values.success)
             return values;
@@ -189,8 +191,9 @@ MediaBinEditResult removeMediaBinEntries(Project& project,
         if (removedFolders.contains(item.folderId))
             removedItems.insert(item.id);
     }
+    const auto inUse = mediaItemsInUse(project);
     for (const auto& item : project.mediaItems) {
-        if (removedItems.contains(item.id) && isMediaItemInUse(project, item))
+        if (removedItems.contains(item.id) && inUse.contains(item.id))
             return failure("タイムラインで使用中の素材は削除できません: " + item.name);
     }
 
@@ -211,8 +214,11 @@ const MediaItem* findMediaItem(const Project& project, const std::string& itemId
 }
 
 const MediaItem* findMediaItemByPath(const Project& project, const std::filesystem::path& path) {
+    const auto key = mediaFileKey(path);
+    if (key.empty())
+        return nullptr;
     for (const auto& item : project.mediaItems) {
-        if (samePath(item.mediaPath, path))
+        if (mediaFileKey(item.mediaPath) == key)
             return &item;
     }
     return nullptr;
@@ -226,10 +232,20 @@ const MediaFolder* findMediaFolder(const Project& project, const std::string& fo
     return nullptr;
 }
 
-bool isMediaItemInUse(const Project& project, const MediaItem& item) {
-    return std::any_of(
-        project.timelineClips.begin(), project.timelineClips.end(),
-        [&](const TimelineClip& clip) { return samePath(clip.mediaPath, item.mediaPath); });
+std::set<std::string> mediaItemsInUse(const Project& project) {
+    // clip と item の key をそれぞれ 1 回だけ求める。組ごとに求めると I/O が n×m 回になる。
+    std::set<std::wstring> clipKeys;
+    for (const auto& clip : project.timelineClips) {
+        auto key = mediaFileKey(clip.mediaPath);
+        if (!key.empty())
+            clipKeys.insert(std::move(key));
+    }
+    std::set<std::string> result;
+    for (const auto& item : project.mediaItems) {
+        if (clipKeys.contains(mediaFileKey(item.mediaPath)))
+            result.insert(item.id);
+    }
+    return result;
 }
 
 const char* mediaKindName(MediaKind kind) {
