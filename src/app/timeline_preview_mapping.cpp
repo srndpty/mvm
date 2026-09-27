@@ -46,6 +46,42 @@ TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& proj
     return result;
 }
 
+PreviewVideoMapping previewVideoMappingOf(const project::TimelineClip& clip) {
+    return {clip.mediaPath, clip.sourceInFrame, clip.timelineStartFrame, clip.sourceFpsNum,
+            clip.sourceFpsDen};
+}
+
+bool previewVideoMappingCovers(const project::Project& project,
+                               const PreviewVideoMapping& installed,
+                               const project::TimelineClip& clip) {
+    const PreviewVideoMapping wanted = previewVideoMappingOf(clip);
+    if (installed == wanted)
+        return true;
+    if (installed.mediaPath != wanted.mediaPath || installed.sourceFpsNum != wanted.sourceFpsNum ||
+        installed.sourceFpsDen != wanted.sourceFpsDen)
+        return false;
+    // source は素材 frame s を timeline 区間 [start + ceil((s - in) R), ...) へ写す
+    // (R = timeline fps / 素材 fps)。installed の原点から d = in' - in 進んだ位置で
+    // d R が整数 k なら ceil((s - in) R) = ceil((s - in') R) + k となり、start' = start + k
+    // のとき全 frame で同じ区間を指す。d R が整数でなければ丸めが原点に依存するので使い回さない。
+    // レーザーで分割した右半分は、素材 fps が timeline fps の整数分の 1 (60fps timeline の
+    // 30fps 素材など) ならこの条件を満たす。29.97fps 素材などでは満たさず、境界で組み直す。
+    const std::int64_t sourceAdvance = wanted.sourceInFrame - installed.sourceInFrame;
+    if (sourceAdvance < 0)
+        return false;
+    if (sourceAdvance == 0)
+        return wanted.timelineStartFrame == installed.timelineStartFrame;
+    // d R = d * timelineNum * sourceDen / (timelineDen * sourceNum)。fps は検証済みの正の値で、
+    // 積は 128 bit に収まる。
+    const __int128 numerator =
+        static_cast<__int128>(sourceAdvance) * project.timelineFpsNum * clip.sourceFpsDen;
+    const __int128 denominator = static_cast<__int128>(project.timelineFpsDen) * clip.sourceFpsNum;
+    if (denominator <= 0 || numerator % denominator != 0)
+        return false;
+    return static_cast<__int128>(wanted.timelineStartFrame) - installed.timelineStartFrame ==
+           numerator / denominator;
+}
+
 bool sameTimelinePreviewSourceSet(const TimelinePreviewFrameMapping& a,
                                   const TimelinePreviewFrameMapping& b) {
     if (!a.success || !b.success || a.layers.size() != b.layers.size())

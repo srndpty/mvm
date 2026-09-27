@@ -115,12 +115,73 @@ if (-not (Test-TextInputGuard $qml) -or
     throw 'transport shortcutが文字入力中のfocusを除外していません'
 }
 
+# タイムラインツールのキーと有効/無効は TimelineToolPanel.tools だけが決め、
+# Main.qml のショートカットはその配列から生成する。キー割り当てを 2 箇所に書かない。
+$toolPanel = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\apps\mvm\TimelineToolPanel.qml') -Raw
+function Test-TimelineToolContract([string]$panelSource, [string]$mainSource) {
+    foreach ($entry in @(
+        @{ Tool = 'select'; Key = 'V'; Available = 'true' },
+        @{ Tool = 'trackForward'; Key = 'A'; Available = 'true' },
+        @{ Tool = 'trackBackward'; Key = 'Shift+A'; Available = 'true' },
+        @{ Tool = 'razor'; Key = 'C'; Available = 'true' },
+        @{ Tool = 'ripple'; Key = 'B'; Available = 'true' },
+        @{ Tool = 'rolling'; Key = 'N'; Available = 'true' },
+        @{ Tool = 'rate'; Key = 'R'; Available = 'false' },
+        @{ Tool = 'slip'; Key = 'Y'; Available = 'true' },
+        @{ Tool = 'slide'; Key = 'U'; Available = 'true' },
+        @{ Tool = 'pen'; Key = 'P'; Available = 'false' },
+        @{ Tool = 'hand'; Key = 'H'; Available = 'true' },
+        @{ Tool = 'zoom'; Key = 'Z'; Available = 'true' },
+        @{ Tool = 'text'; Key = 'T'; Available = 'false' }
+    )) {
+        $pattern = '\{\s*tool:\s*"' + [regex]::Escape($entry.Tool) + '"[^{}]*key:\s*"' +
+                   [regex]::Escape($entry.Key) + '"[^{}]*available:\s*' + $entry.Available + '\b'
+        if ($panelSource -notmatch $pattern) { return $false }
+    }
+    $shortcut = 'Instantiator\s*\{\s*model:\s*timelineToolPanel\.tools\s*delegate:\s*Shortcut\s*\{' +
+                '[^{}]*sequence:\s*modelData\.key' +
+                '[^{}]*enabled:\s*modelData\.available && !root\.keyboardFocusTakesKeys' +
+                '[^{}]*onActivated:\s*timelineToolPanel\.requestTool\(modelData\.tool\)'
+    if ($mainSource -notmatch $shortcut) { return $false }
+    foreach ($needle in @('TimelineToolPanel {',
+                          'root.mvmController.splitClipAt(',
+                          'root.mvmController.rippleTrimClip(',
+                          'root.mvmController.rollClipEdge(',
+                          'root.mvmController.slipClip(',
+                          'root.mvmController.slideClip(',
+                          'root.mvmController.selectClipsFromFrame(',
+                          'id: viewToolArea')) {
+        if (-not $mainSource.Contains($needle)) { return $false }
+    }
+    return $true
+}
+if (-not (Test-TimelineToolContract $toolPanel $qml)) {
+    throw 'タイムラインツールのキー割り当てまたは実行先が崩れています'
+}
+# どれか 1 つを壊すと上の検査が落ちることを確かめる。
+foreach ($broken in @(
+    @{ Panel = $toolPanel.Replace('key: "C"', 'key: "X"'); Main = $qml },
+    @{ Panel = $toolPanel -replace '(tool:\s*"rate"[^{}]*available:\s*)false', '${1}true'; Main = $qml },
+    @{ Panel = $toolPanel; Main = $qml.Replace('enabled: modelData.available && !root.keyboardFocusTakesKeys',
+                                                'enabled: modelData.available') }
+)) {
+    if (($broken.Panel -eq $toolPanel -and $broken.Main -eq $qml) -or
+        (Test-TimelineToolContract $broken.Panel $broken.Main)) {
+        throw 'タイムラインツール検査の負例が効いていません'
+    }
+}
+
 # timeline UI は clip の配置を track/start から引く。vector 順を authority にしない。
 $requiredQml = @(
     'x: timelineStartFrame * timelinePanel.pixelsPerFrame',
     'y: timelinePanel.rowY(trackKind, trackIndex)',
     'function trackAtY(y)',
-    'root.mvmController.selectTimelineClip(clipItem.clipId, frame)',
+    'root.mvmController.selectTimelineClip(clipItem.clipId, frame, clipItem.editLinked)',
+    'import "TimelineGestures.js" as Gestures',
+    'Gestures.bodyPress(tool, mouse.modifiers, pressFrame)',
+    'Gestures.bodyRelease(clipItem.gestureState, clipItem.bodyMoved,',
+    'Gestures.edgeRelease(timelinePanel.tool, edge, delta,',
+    'Gestures.linkedFor(modifiers)',
     'root.mvmController.moveTimelineClip(',
     'releasedClipId, destinationKind, destinationIndex',
     'root.mvmController.selectTimelineClips(selectedIds)',
@@ -193,7 +254,13 @@ $requiredShortcuts = @(
     'autoRepeat: false',
     'shortcut: "Ctrl+Z"',
     'enabled: root.mvmController.canUndo',
-    'onTriggered: root.mvmController.undoLastEdit()'
+    'onTriggered: root.mvmController.undoLastEdit()',
+    'shortcut: "Ctrl+Shift+Z"',
+    'enabled: root.mvmController.canRedo',
+    'onTriggered: root.mvmController.redoLastEdit()',
+    'sequence: "Ctrl+Y"',
+    'onActivated: redoAction.trigger()',
+    'action: redoAction'
 )
 
 $requiredVideoDrop = @(
@@ -382,9 +449,13 @@ foreach ($needle in @('project::timelineClipIndexAt(project_, current.track, cla
                       'UndoEntry undo{project_, selectedClipIds_, currentClipId(), playheadFrame_, currentRevision_};',
                       'std::vector<std::string> deletedIds = selectedClipIds_;',
                       'for (const auto& id : deletedIds)',
-                      'project_ = undo.project;',
+                      'project_ = entry.project;',
                       'scheduleRecoveryAutosave();',
-                      'undoHistory_.pop_back();')) {
+                      'from.pop_back();',
+                      'to.push_back(std::move(current));',
+                      'return stepEditHistory(undoHistory_, redoHistory_, false);',
+                      'return stepEditHistory(redoHistory_, undoHistory_, true);',
+                      'redoHistory_.clear();')) {
     if (-not $controller.Contains($needle)) {
         throw "audio/video選択同期またはUndoの契約がありません: $needle"
     }

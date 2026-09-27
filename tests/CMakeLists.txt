@@ -141,6 +141,23 @@ add_test(NAME m7b_4_timeline_ui_architecture
             ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-m7b4-timeline-ui-architecture.ps1)
 set_tests_properties(m7b_4_timeline_ui_architecture PROPERTIES TIMEOUT 120)
 
+# clip へのマウス操作をどの編集として確定するか (apps/mvm/TimelineGestures.js)。
+# 判定は run-qml-test.ps1 が行う (test 関数 0 件の空振りを失敗にする)。
+find_program(MVM_QMLTESTRUNNER qmltestrunner HINTS "${MVM_UCRT64_ROOT}/bin" NO_DEFAULT_PATH)
+if(NOT MVM_QMLTESTRUNNER)
+    message(FATAL_ERROR
+        "qmltestrunner が ${MVM_UCRT64_ROOT}/bin に見つかりません。\n"
+        "  pacman -S mingw-w64-ucrt-x86_64-qt6-declarative")
+endif()
+add_test(NAME m7b_4_timeline_gestures_qml
+    COMMAND ${MVM_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/qml/run-qml-test.ps1
+            -Runner ${MVM_QMLTESTRUNNER}
+            -TestFile ${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_timeline_gestures.qml
+            -OutputFile ${CMAKE_CURRENT_BINARY_DIR}/m7b4-timeline-gestures-qml.txt)
+set_tests_properties(m7b_4_timeline_gestures_qml PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+
 add_test(NAME m7b_4_external_save_continuation
     COMMAND pwsh -NoProfile -File
             ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-m7b4-external-save-continuation.ps1)

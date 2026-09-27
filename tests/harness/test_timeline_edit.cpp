@@ -6,7 +6,9 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <limits>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -253,13 +255,14 @@ void testTrimAndLookup() {
     check(mvm::project::timelineClipIndexAt(project, kV2, 0) == -1,
           "別trackのframeをclip内と判定しました");
 
-    const auto left =
-        mvm::project::trimTimelineClip(project, "fractional-id", mvm::project::TrimEdge::Left, 3);
+    const auto left = mvm::project::trimTimelineClip(
+        project, "fractional-id", mvm::project::TrimEdge::Left, 3, mvm::project::LinkMode::Single);
     check(left.success && project.timelineClips.front().sourceInFrame == 1,
           "left trimをsource-native境界へsnapできません");
     const auto beforeInvalid = project;
-    const auto invalid = mvm::project::trimTimelineClip(project, "fractional-id",
-                                                        mvm::project::TrimEdge::Right, -10000);
+    const auto invalid =
+        mvm::project::trimTimelineClip(project, "fractional-id", mvm::project::TrimEdge::Right,
+                                       -10000, mvm::project::LinkMode::Single);
     check(!invalid.success, "sourceOut <= sourceInになるtrimを拒否しません");
     project = beforeInvalid;
 
@@ -270,7 +273,8 @@ void testTrimAndLookup() {
     const auto beforeUnrelated = project.timelineClips.back();
     const auto beforeRightStart = project.timelineClips.front().timelineStartFrame;
     const auto right =
-        mvm::project::trimTimelineClip(project, "fractional-id", mvm::project::TrimEdge::Right, -3);
+        mvm::project::trimTimelineClip(project, "fractional-id", mvm::project::TrimEdge::Right, -3,
+                                       mvm::project::LinkMode::Single);
     check(right.success && project.timelineClips.front().timelineStartFrame == beforeRightStart,
           "right trimでclip startが変化しました");
     check(project.timelineClips.back() == beforeUnrelated,
@@ -279,8 +283,8 @@ void testTrimAndLookup() {
     const auto oldEnd =
         project.timelineClips.front().timelineStartFrame +
         mvm::project::timelineClipDuration(project, project.timelineClips.front()).frame;
-    const auto secondLeft =
-        mvm::project::trimTimelineClip(project, "fractional-id", mvm::project::TrimEdge::Left, 4);
+    const auto secondLeft = mvm::project::trimTimelineClip(
+        project, "fractional-id", mvm::project::TrimEdge::Left, 4, mvm::project::LinkMode::Single);
     const auto newEnd =
         project.timelineClips.front().timelineStartFrame +
         mvm::project::timelineClipDuration(project, project.timelineClips.front()).frame;
@@ -346,8 +350,8 @@ void testMultipleClipMove() {
         second.timelineStartFrame = 500;
         project.timelineClips = {first, second};
 
-        const auto moved =
-            mvm::project::moveClips(project, {first.id, second.id}, first.id, kV2, 220);
+        const auto moved = mvm::project::moveClips(project, {first.id, second.id}, first.id, kV2,
+                                                   220, mvm::project::LinkMode::Linked);
         check(moved.success && project.timelineClips[0].track == kV2 &&
                   project.timelineClips[1].track == kV3 &&
                   project.timelineClips[0].timelineStartFrame == 220 &&
@@ -358,13 +362,13 @@ void testMultipleClipMove() {
         blocker.timelineStartFrame = 600;
         project.timelineClips.push_back(blocker);
         const auto beforeFailure = project.timelineClips;
-        const auto rejected =
-            mvm::project::moveClips(project, {first.id, second.id}, first.id, kV2, 500);
+        const auto rejected = mvm::project::moveClips(project, {first.id, second.id}, first.id, kV2,
+                                                      500, mvm::project::LinkMode::Linked);
         check(!rejected.success && project.timelineClips == beforeFailure,
               "複数移動の重なり拒否時にProjectの一部だけが変化しました");
 
-        const auto missingAnchor =
-            mvm::project::moveClips(project, {second.id}, first.id, kV1, 300);
+        const auto missingAnchor = mvm::project::moveClips(project, {second.id}, first.id, kV1, 300,
+                                                           mvm::project::LinkMode::Linked);
         check(!missingAnchor.success && project.timelineClips == beforeFailure,
               "選択外anchorを使う複数移動を拒否しません");
     }
@@ -376,8 +380,8 @@ void testMultipleClipMove() {
         second.timelineStartFrame = 400;
         project.timelineClips = {first, second};
         const auto beforeFailure = project.timelineClips;
-        const auto rejected =
-            mvm::project::moveClips(project, {first.id, second.id}, first.id, kV2, 100);
+        const auto rejected = mvm::project::moveClips(project, {first.id, second.id}, first.id, kV2,
+                                                      100, mvm::project::LinkMode::Linked);
         check(!rejected.success && project.timelineClips == beforeFailure,
               "V3が無い複数track移動を全体rejectしません");
     }
@@ -389,8 +393,8 @@ void testMultipleClipMove() {
         video.timelineStartFrame = 100;
         audio.timelineStartFrame = 500;
         project.timelineClips = {video, audio};
-        const auto moved =
-            mvm::project::moveClips(project, {video.id, audio.id}, video.id, kV2, 200);
+        const auto moved = mvm::project::moveClips(project, {video.id, audio.id}, video.id, kV2,
+                                                   200, mvm::project::LinkMode::Linked);
         check(moved.success && project.timelineClips[0].track == kV2 &&
                   project.timelineClips[1].track == kA1 &&
                   project.timelineClips[0].timelineStartFrame == 200 &&
@@ -408,14 +412,15 @@ void testMultipleClipMove() {
         audio.linkGroupId = "move-link";
         project.timelineClips = {video, audio};
 
-        const auto moved = mvm::project::moveClips(project, {video.id}, video.id, kV2, 250);
+        const auto moved = mvm::project::moveClips(project, {video.id}, video.id, kV2, 250,
+                                                   mvm::project::LinkMode::Linked);
         check(moved.success && project.timelineClips[0].timelineStartFrame == 250 &&
                   project.timelineClips[1].timelineStartFrame == 250 &&
                   project.timelineClips[0].track == kV2 && project.timelineClips[1].track == kA1,
               "片方だけ指定したlinked clipを同じ時間差で移動できません");
 
-        const auto movedWithDuplicateExpansion =
-            mvm::project::moveClips(project, {video.id, audio.id}, video.id, kV1, 300);
+        const auto movedWithDuplicateExpansion = mvm::project::moveClips(
+            project, {video.id, audio.id}, video.id, kV1, 300, mvm::project::LinkMode::Linked);
         check(movedWithDuplicateExpansion.success &&
                   project.timelineClips[0].timelineStartFrame == 300 &&
                   project.timelineClips[1].timelineStartFrame == 300,
@@ -429,8 +434,8 @@ void testMultipleClipMove() {
         anchor.timelineStartFrame = 100;
         leftmost.timelineStartFrame = 20;
         project.timelineClips = {anchor, leftmost};
-        const auto snapped =
-            mvm::project::moveClips(project, {anchor.id, leftmost.id}, anchor.id, kV1, 50);
+        const auto snapped = mvm::project::moveClips(project, {anchor.id, leftmost.id}, anchor.id,
+                                                     kV1, 50, mvm::project::LinkMode::Linked);
         check(snapped.success && project.timelineClips[0].timelineStartFrame == 80 &&
                   project.timelineClips[1].timelineStartFrame == 0,
               "複数移動の最左clipを0秒へスナップできません");
@@ -607,6 +612,596 @@ void testRippleDeleteWithLinkedClips() {
               unlinked.timelineClips[0].timelineStartFrame == 0 &&
               unlinked.timelineClips[1].timelineStartFrame == 100,
           "unlink後のripple削除が他trackのclipまで動かしました");
+}
+
+std::int64_t clipEnd(const mvm::project::Project& project,
+                     const mvm::project::TimelineClip& value) {
+    return value.timelineStartFrame + mvm::project::timelineClipDuration(project, value).frame;
+}
+
+const mvm::project::TimelineClip* findClip(const mvm::project::Project& project,
+                                           const std::string& id) {
+    for (const auto& value : project.timelineClips) {
+        if (value.id == id)
+            return &value;
+    }
+    return nullptr;
+}
+
+std::function<std::string()> sequentialIds() {
+    auto counter = std::make_shared<int>(0);
+    return [counter] { return "new-" + std::to_string(++*counter); };
+}
+
+void testSplitClips() {
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    auto video = clip("split-video");
+    video.effects.fadeInFrames = 30;
+    video.effects.fadeOutFrames = 40;
+    video.linkGroupId = "split-link";
+    auto audio = clip("split-audio", mvm::project::TimelineClipKind::Audio, kA1);
+    audio.linkGroupId = "split-link";
+    project.timelineClips = {video, audio};
+    check(mvm::project::validateTimeline(project).success, "分割用のtimelineが不正です");
+
+    const auto beforeReject = project;
+    check(!mvm::project::splitTimelineClips(project, {video.id}, 0, sequentialIds(),
+                                            mvm::project::LinkMode::Linked)
+                  .success &&
+              !mvm::project::splitTimelineClips(project, {video.id}, 300, sequentialIds(),
+                                                mvm::project::LinkMode::Linked)
+                   .success &&
+              project == beforeReject,
+          "clipの端での分割を拒否しないか、拒否時にProjectが変化しました");
+
+    const auto split = mvm::project::splitTimelineClips(project, {video.id}, 100, sequentialIds(),
+                                                        mvm::project::LinkMode::Linked);
+    check(split.success && project.timelineClips.size() == 4,
+          "linked clipを分割位置で相手ごと分割できません");
+    const auto* leftVideo = findClip(project, video.id);
+    const auto* leftAudio = findClip(project, audio.id);
+    const mvm::project::TimelineClip* rightVideo = nullptr;
+    const mvm::project::TimelineClip* rightAudio = nullptr;
+    for (const auto& value : project.timelineClips) {
+        if (value.id != video.id && value.id != audio.id) {
+            if (value.kind == mvm::project::TimelineClipKind::Audio)
+                rightAudio = &value;
+            else
+                rightVideo = &value;
+        }
+    }
+    check(leftVideo && leftAudio && rightVideo && rightAudio, "分割後のclipが見つかりません");
+    if (!leftVideo || !leftAudio || !rightVideo || !rightAudio)
+        return;
+    check(leftVideo->sourceOutFrame == 100 && rightVideo->sourceInFrame == 100 &&
+              rightVideo->sourceOutFrame == 300 && rightVideo->timelineStartFrame == 100 &&
+              clipEnd(project, *leftVideo) == 100,
+          "分割後の素材範囲または配置が違います");
+    check(leftVideo->effects.fadeInFrames == 30 && leftVideo->effects.fadeOutFrames == 0 &&
+              rightVideo->effects.fadeInFrames == 0 && rightVideo->effects.fadeOutFrames == 40,
+          "分割でfade in/outを左右へ振り分けられません");
+    check(leftVideo->linkGroupId == "split-link" && leftAudio->linkGroupId == "split-link" &&
+              !rightVideo->linkGroupId.empty() &&
+              rightVideo->linkGroupId == rightAudio->linkGroupId &&
+              rightVideo->linkGroupId != "split-link",
+          "分割後の右半分が新しいlink groupで結ばれません");
+
+    // リンク相手が分割位置を含まなければ相手は切らず、右半分は未リンクになる。
+    mvm::project::Project partial = mvm::project::createDefaultProject();
+    auto shortAudio = audio;
+    shortAudio.sourceOutFrame = 50;
+    partial.timelineClips = {video, shortAudio};
+    check(mvm::project::splitTimelineClips(partial, {video.id}, 100, sequentialIds(),
+                                           mvm::project::LinkMode::Linked)
+                  .success &&
+              partial.timelineClips.size() == 3 &&
+              partial.timelineClips.back().linkGroupId.empty() &&
+              findClip(partial, shortAudio.id)->sourceOutFrame == 50,
+          "分割位置を含まないリンク相手を切ったか、右半分をリンクしたままにしました");
+
+    // 29.97fps 素材を 60fps timeline で切っても左右が重ならない。
+    mvm::project::Project fractional = mvm::project::createDefaultProject();
+    auto ntsc = clip("ntsc");
+    ntsc.sourceFpsNum = 30000;
+    ntsc.sourceFpsDen = 1001;
+    fractional.timelineClips = {ntsc};
+    check(mvm::project::splitTimelineClips(fractional, {ntsc.id}, 101, sequentialIds(),
+                                           mvm::project::LinkMode::Linked)
+              .success,
+          "29.97fps clipを分割できません");
+    if (fractional.timelineClips.size() == 2) {
+        check(fractional.timelineClips[0].sourceOutFrame ==
+                      fractional.timelineClips[1].sourceInFrame &&
+                  clipEnd(fractional, fractional.timelineClips[0]) ==
+                      fractional.timelineClips[1].timelineStartFrame,
+              "29.97fps clipの分割で素材境界とtimeline境界が一致しません");
+    }
+
+    auto spanning = threeClips();
+    auto upper = clip("upper", mvm::project::TimelineClipKind::Video, kV2);
+    upper.timelineStartFrame = 200;
+    spanning.timelineClips.push_back(upper);
+    const auto ids = mvm::project::clipIdsSpanningFrame(spanning, 350);
+    check(ids == std::vector<std::string>({"id-Manim", "id-upper"}),
+          "全track分割の対象clipを正しく求められません");
+    check(mvm::project::clipIdsSpanningFrame(spanning, 300) ==
+              std::vector<std::string>({"id-upper"}),
+          "clip境界上のframeを分割対象に含めました");
+}
+
+void testRippleTrim() {
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    auto first = clip("first");
+    auto second = clip("second");
+    second.timelineStartFrame = 300;
+    second.linkGroupId = "ripple-trim-link";
+    auto secondAudio = clip("second-audio", mvm::project::TimelineClipKind::Audio, kA1);
+    secondAudio.timelineStartFrame = 300;
+    secondAudio.linkGroupId = "ripple-trim-link";
+    auto third = clip("third");
+    third.timelineStartFrame = 700;
+    auto other = clip("other", mvm::project::TimelineClipKind::Video, kV2);
+    other.timelineStartFrame = 350;
+    project.timelineClips = {first, second, secondAudio, third, other};
+    check(mvm::project::validateTimeline(project).success, "ripple trim用のtimelineが不正です");
+
+    check(mvm::project::rippleTrimTimelineClip(project, first.id, mvm::project::TrimEdge::Right,
+                                               -100, mvm::project::LinkMode::Single)
+              .success,
+          "right端のripple trimに失敗しました");
+    check(clipEnd(project, *findClip(project, first.id)) == 200 &&
+              findClip(project, second.id)->timelineStartFrame == 200 &&
+              findClip(project, secondAudio.id)->timelineStartFrame == 200 &&
+              findClip(project, third.id)->timelineStartFrame == 600 &&
+              findClip(project, other.id)->timelineStartFrame == 350,
+          "ripple trimで後続clipとリンク相手だけを詰められません");
+
+    check(mvm::project::rippleTrimTimelineClip(project, second.id, mvm::project::TrimEdge::Left, 50,
+                                               mvm::project::LinkMode::Single)
+              .success,
+          "left端のripple trimに失敗しました");
+    const auto* trimmed = findClip(project, second.id);
+    check(trimmed->timelineStartFrame == 200 && trimmed->sourceInFrame == 50 &&
+              findClip(project, third.id)->timelineStartFrame == 550 &&
+              findClip(project, secondAudio.id)->timelineStartFrame == 200 &&
+              findClip(project, secondAudio.id)->sourceInFrame == 0,
+          "left端のripple trimでclip開始位置を保てないか、リンク相手までtrimしました");
+
+    // 素材の範囲を越えるドラッグは失敗させず、素材の端で止める (Premiere と同じ)。
+    check(mvm::project::rippleTrimTimelineClip(project, first.id, mvm::project::TrimEdge::Right,
+                                               200, mvm::project::LinkMode::Single)
+                  .success &&
+              findClip(project, first.id)->sourceOutFrame == 300 &&
+              findClip(project, second.id)->timelineStartFrame == 300 &&
+              findClip(project, third.id)->timelineStartFrame == 650,
+          "素材の範囲を越えるripple trimを素材の端で止めません");
+    const auto beforeReject = project;
+    check(!mvm::project::rippleTrimTimelineClip(project, first.id, mvm::project::TrimEdge::Right, 1,
+                                                mvm::project::LinkMode::Single)
+                  .success &&
+              project == beforeReject,
+          "素材の端に達したripple trimを拒否しないか、拒否時にProjectが変化しました");
+}
+
+// 素材 600 frame のうち [in, in + 300) を start へ置いた clip。
+mvm::project::TimelineClip roomyClip(const char* name, std::int64_t in, std::int64_t start) {
+    auto value = clip(name);
+    value.sourceFrameCount = 600;
+    value.sourceInFrame = in;
+    value.sourceOutFrame = in + 300;
+    value.timelineStartFrame = start;
+    return value;
+}
+
+void testRollEdit() {
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    const auto outgoing = roomyClip("outgoing", 0, 0);
+    const auto incoming = roomyClip("incoming", 100, 300);
+    project.timelineClips = {outgoing, incoming};
+    check(mvm::project::validateTimeline(project).success, "rolling用のtimelineが不正です");
+
+    check(mvm::project::rollTimelineEdit(project, outgoing.id, mvm::project::TrimEdge::Right, 50,
+                                         mvm::project::LinkMode::Single)
+              .success,
+          "right端のrolling編集に失敗しました");
+    check(clipEnd(project, project.timelineClips[0]) == 350 &&
+              project.timelineClips[1].timelineStartFrame == 350 &&
+              project.timelineClips[1].sourceInFrame == 150 &&
+              clipEnd(project, project.timelineClips[1]) == 600,
+          "rolling編集で境界だけを動かせません");
+    check(mvm::project::rollTimelineEdit(project, incoming.id, mvm::project::TrimEdge::Left, -20,
+                                         mvm::project::LinkMode::Single)
+                  .success &&
+              clipEnd(project, project.timelineClips[0]) == 330 &&
+              project.timelineClips[1].timelineStartFrame == 330,
+          "incoming clipのleft端からrolling編集できません");
+
+    const auto beforeReject = project;
+    check(!mvm::project::rollTimelineEdit(project, outgoing.id, mvm::project::TrimEdge::Left, 10,
+                                          mvm::project::LinkMode::Single)
+                  .success &&
+              project == beforeReject,
+          "隣接clipが無いrolling編集を拒否しません");
+    // incoming を消すほどのドラッグは、incoming を 1 frame 残すところで止める。
+    check(mvm::project::rollTimelineEdit(project, outgoing.id, mvm::project::TrimEdge::Right, 400,
+                                         mvm::project::LinkMode::Single)
+                  .success &&
+              clipEnd(project, project.timelineClips[0]) == 599 &&
+              project.timelineClips[1].timelineStartFrame == 599 &&
+              clipEnd(project, project.timelineClips[1]) == 600,
+          "incoming clipを消すrolling編集を1 frame残して止めません");
+    const auto beforeMinimum = project;
+    check(!mvm::project::rollTimelineEdit(project, outgoing.id, mvm::project::TrimEdge::Right, 1,
+                                          mvm::project::LinkMode::Single)
+                  .success &&
+              project == beforeMinimum,
+          "incoming clipが1 frameのrolling編集を拒否しないか、拒否時にProjectが変化しました");
+
+    // 29.97fps の outgoing は 60fps timeline の 602 frame 目に境界を置けない
+    // (素材 300 frame = timeline 601、301 frame = 603)。隙間を作らず拒否する。
+    mvm::project::Project fractional = mvm::project::createDefaultProject();
+    auto ntsc = roomyClip("ntsc-outgoing", 0, 0);
+    ntsc.sourceFpsNum = 30000;
+    ntsc.sourceFpsDen = 1001;
+    fractional.timelineClips = {ntsc, roomyClip("after-ntsc", 100, 601)};
+    check(mvm::project::validateTimeline(fractional).success &&
+              clipEnd(fractional, fractional.timelineClips[0]) == 601,
+          "29.97fps rolling用のtimelineが不正です");
+    const auto beforeFractional = fractional;
+    check(!mvm::project::rollTimelineEdit(fractional, ntsc.id, mvm::project::TrimEdge::Right, 1,
+                                          mvm::project::LinkMode::Single)
+                  .success &&
+              fractional == beforeFractional,
+          "素材frameに揃わないrolling境界で隙間を作りました");
+}
+
+// V1 / A1 に [前 | リンク対 | 後] を並べる。リンク対は素材 600 frame の [100, 400) を 300 へ置く。
+mvm::project::Project linkedToolFixture() {
+    using mvm::project::TimelineClipKind;
+    const auto roomy = [](const char* name, TimelineClipKind kind, mvm::project::TrackRef track,
+                          std::int64_t in, std::int64_t start) {
+        auto value = clip(name, kind, track);
+        value.sourceFrameCount = 600;
+        value.sourceInFrame = in;
+        value.sourceOutFrame = in + 300;
+        value.timelineStartFrame = start;
+        return value;
+    };
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    auto video = roomy("pair-video", TimelineClipKind::Video, kV1, 100, 300);
+    auto audio = roomy("pair-audio", TimelineClipKind::Audio, kA1, 100, 300);
+    video.linkGroupId = "pair";
+    audio.linkGroupId = "pair";
+    project.timelineClips = {roomy("before-video", TimelineClipKind::Video, kV1, 0, 0),
+                             roomy("before-audio", TimelineClipKind::Audio, kA1, 0, 0),
+                             video,
+                             audio,
+                             roomy("after-video", TimelineClipKind::Video, kV1, 100, 600),
+                             roomy("after-audio", TimelineClipKind::Audio, kA1, 100, 600)};
+    return project;
+}
+
+// 既定 (Linked) はリンク相手にも同じ編集を適用し、Single (Alt) は操作した clip だけを編集する。
+void testLinkedToolEditing() {
+    using mvm::project::LinkMode;
+    using mvm::project::TrimEdge;
+    const auto base = linkedToolFixture();
+    check(mvm::project::validateTimeline(base).success, "リンク編集用のtimelineが不正です");
+    const auto at = [](const mvm::project::Project& project, const char* id) {
+        return *findClip(project, std::string("id-") + id);
+    };
+
+    auto project = base;
+    check(mvm::project::trimTimelineClip(project, "id-pair-video", TrimEdge::Right, -50,
+                                         LinkMode::Linked)
+                  .success &&
+              at(project, "pair-audio").sourceOutFrame == 350,
+          "Linkedのtrimがリンク相手の端を動かしません");
+    project = base;
+    check(mvm::project::trimTimelineClip(project, "id-pair-video", TrimEdge::Right, -50,
+                                         LinkMode::Single)
+                  .success &&
+              at(project, "pair-video").sourceOutFrame == 350 &&
+              at(project, "pair-audio").sourceOutFrame == 400,
+          "Singleのtrimがリンク相手まで動かしました");
+
+    project = base;
+    check(mvm::project::rippleTrimTimelineClip(project, "id-pair-video", TrimEdge::Right, -50,
+                                               LinkMode::Linked)
+                  .success &&
+              at(project, "pair-audio").sourceOutFrame == 350 &&
+              at(project, "after-video").timelineStartFrame == 550 &&
+              at(project, "after-audio").timelineStartFrame == 550,
+          "Linkedのripple trimがリンク相手のtrackを詰めません");
+    project = base;
+    check(mvm::project::rippleTrimTimelineClip(project, "id-pair-video", TrimEdge::Right, -50,
+                                               LinkMode::Single)
+                  .success &&
+              at(project, "pair-audio").sourceOutFrame == 400 &&
+              at(project, "after-video").timelineStartFrame == 550 &&
+              at(project, "after-audio").timelineStartFrame == 600,
+          "Singleのripple trimがリンク相手のtrackまで動かしました");
+
+    project = base;
+    check(mvm::project::rollTimelineEdit(project, "id-pair-video", TrimEdge::Right, 20,
+                                         LinkMode::Linked)
+                  .success &&
+              at(project, "pair-audio").sourceOutFrame == 420 &&
+              at(project, "after-audio").timelineStartFrame == 620 &&
+              at(project, "after-video").timelineStartFrame == 620,
+          "Linkedのrolling編集がリンク相手の編集点を動かしません");
+    project = base;
+    check(mvm::project::rollTimelineEdit(project, "id-pair-video", TrimEdge::Right, 20,
+                                         LinkMode::Single)
+                  .success &&
+              at(project, "pair-audio").sourceOutFrame == 400 &&
+              at(project, "after-audio").timelineStartFrame == 600,
+          "Singleのrolling編集がリンク相手の編集点まで動かしました");
+    // L カット: リンク相手が編集点を持たなければ、相手はそのまま残す。
+    project = base;
+    std::erase_if(project.timelineClips,
+                  [](const auto& value) { return value.id == "id-after-audio"; });
+    check(mvm::project::rollTimelineEdit(project, "id-pair-video", TrimEdge::Right, 20,
+                                         LinkMode::Linked)
+                  .success &&
+              at(project, "pair-video").sourceOutFrame == 420 &&
+              at(project, "pair-audio").sourceOutFrame == 400,
+          "編集点を持たないリンク相手でrolling編集を拒否したか、相手を動かしました");
+
+    project = base;
+    check(mvm::project::slipTimelineClip(project, "id-pair-video", 30, LinkMode::Linked).success &&
+              at(project, "pair-video").sourceInFrame == 130 &&
+              at(project, "pair-audio").sourceInFrame == 130,
+          "Linkedのslipがリンク相手をずらしません");
+    // 全員がずらせる範囲で止め、リンク相手と同期を崩さない。
+    project = base;
+    for (auto& value : project.timelineClips) {
+        if (value.id == "id-pair-audio")
+            value.sourceFrameCount = 420;
+    }
+    check(mvm::project::slipTimelineClip(project, "id-pair-video", 30, LinkMode::Linked).success &&
+              at(project, "pair-video").sourceInFrame == 120 &&
+              at(project, "pair-audio").sourceInFrame == 120,
+          "Linkedのslipをリンク相手の素材の端で止めません");
+    check(mvm::project::slipTimelineClip(project, "id-pair-video", 30, LinkMode::Single).success &&
+              at(project, "pair-video").sourceInFrame == 150 &&
+              at(project, "pair-audio").sourceInFrame == 120,
+          "Singleのslipがリンク相手までずらしました");
+
+    project = base;
+    check(mvm::project::slideTimelineClip(project, "id-pair-video", 20, LinkMode::Linked).success &&
+              at(project, "pair-audio").timelineStartFrame == 320 &&
+              clipEnd(project, at(project, "before-audio")) == 320,
+          "Linkedのslideがリンク相手をスライドしません");
+    // リンク相手に接している clip が無い (L / J カット) 場合、相手は空白の分だけしか動けない。
+    project = base;
+    std::erase_if(project.timelineClips, [](const auto& value) {
+        return value.id == "id-before-audio" || value.id == "id-after-audio";
+    });
+    auto blocker = clip("audio-blocker", mvm::project::TimelineClipKind::Audio, kA1);
+    blocker.sourceOutFrame = 30;
+    blocker.timelineStartFrame = 250; // pair-audio (300 開始) との間に 20 frame の空白
+    project.timelineClips.push_back(blocker);
+    check(mvm::project::validateTimeline(project).success, "空白slide用のtimelineが不正です");
+    const auto gapRange =
+        mvm::project::clampSlideEdit(project, "id-pair-video", -1000, LinkMode::Linked);
+    check(gapRange.success && gapRange.frame == -20, "リンク相手の前の空白でslideを止めません");
+
+    project = base;
+    check(mvm::project::slideTimelineClip(project, "id-pair-video", 20, LinkMode::Single).success &&
+              at(project, "pair-video").timelineStartFrame == 320 &&
+              at(project, "pair-audio").timelineStartFrame == 300,
+          "Singleのslideがリンク相手までスライドしました");
+
+    project = base;
+    check(mvm::project::splitTimelineClips(project, {"id-pair-video"}, 400, sequentialIds(),
+                                           LinkMode::Single)
+                  .success &&
+              project.timelineClips.size() == base.timelineClips.size() + 1 &&
+              project.timelineClips.back().linkGroupId.empty() &&
+              at(project, "pair-audio").sourceOutFrame == 400,
+          "Singleの分割がリンク相手まで切ったか、右半分をリンクしたままにしました");
+
+    project = base;
+    check(mvm::project::moveClips(project, {"id-pair-video"}, "id-pair-video", kV2, 900,
+                                  LinkMode::Single)
+                  .success &&
+              at(project, "pair-video").timelineStartFrame == 900 &&
+              at(project, "pair-audio").timelineStartFrame == 300,
+          "Singleの移動がリンク相手まで動かしました");
+    project = base;
+    check(mvm::project::moveClips(project, {"id-pair-video"}, "id-pair-video", kV2, 900,
+                                  LinkMode::Linked)
+                  .success &&
+              at(project, "pair-audio").timelineStartFrame == 900,
+          "Linkedの移動がリンク相手を動かしません");
+}
+
+// レーザーで分割し前半を削除した後、右の clip の left 端を大きく引き延ばすと、
+// 分割前の clip (素材の先頭、timeline 先頭) まで戻り、それを越える分は止まる。
+// 以前は越えた分で trim 全体が失敗し、clip が元の位置へ戻っていた。
+void testTrimRestoresSplitClip() {
+    using mvm::project::LinkMode;
+    using mvm::project::TrimEdge;
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    // 60fps timeline に 30fps 素材 (音声付き) を置く。
+    auto video = clip("restore-video");
+    auto audio = clip("restore-audio", mvm::project::TimelineClipKind::Audio, kA1);
+    for (auto* value : {&video, &audio}) {
+        value->sourceFpsNum = 30;
+        value->sourceFrameCount = 300;
+        value->sourceOutFrame = 300;
+        value->linkGroupId = "restore";
+    }
+    project.timelineClips = {video, audio};
+    check(mvm::project::validateTimeline(project).success, "復元試験のtimelineが不正です");
+    check(mvm::project::splitTimelineClips(project, {video.id}, 241, sequentialIds(),
+                                           LinkMode::Linked)
+                  .success &&
+              project.timelineClips.size() == 4,
+          "復元試験の分割に失敗しました");
+    const auto* left = findClip(project, video.id);
+    check(left &&
+              mvm::project::deleteTimelineClip(
+                  project, static_cast<int>(left - project.timelineClips.data()))
+                  .success &&
+              project.timelineClips.size() == 2,
+          "復元試験で前半を削除できません");
+    const std::string rightId =
+        project.timelineClips[0].kind == mvm::project::TimelineClipKind::Audio
+            ? project.timelineClips[1].id
+            : project.timelineClips[0].id;
+    check(
+        mvm::project::trimTimelineClip(project, rightId, TrimEdge::Left, -100000, LinkMode::Linked)
+            .success,
+        "素材の先頭を越えるleft trimを素材の先頭で止めません");
+    for (const auto& value : project.timelineClips) {
+        check(value.sourceInFrame == 0 && value.sourceOutFrame == 300 &&
+                  value.timelineStartFrame == 0 && clipEnd(project, value) == 600,
+              "分割前のclipまで引き延ばせません");
+    }
+
+    // 通常の trim は timeline 先頭より前へ出さない。リップルは開始位置を保つので制約を受けない。
+    mvm::project::Project offset = mvm::project::createDefaultProject();
+    offset.timelineClips = {roomyClip("offset", 200, 50)};
+    const auto trimRange =
+        mvm::project::clampEdgeEdit(offset, "id-offset", TrimEdge::Left,
+                                    mvm::project::EdgeEditKind::Trim, -1000, LinkMode::Single);
+    const auto rippleRange =
+        mvm::project::clampEdgeEdit(offset, "id-offset", TrimEdge::Left,
+                                    mvm::project::EdgeEditKind::Ripple, -1000, LinkMode::Single);
+    check(trimRange.success && trimRange.frame == -50 && rippleRange.success &&
+              rippleRange.frame == -200,
+          "left端の伸長をtimeline先頭または素材の先頭で止めません");
+    const auto shrinkRange =
+        mvm::project::clampEdgeEdit(offset, "id-offset", TrimEdge::Right,
+                                    mvm::project::EdgeEditKind::Trim, -1000, LinkMode::Single);
+    check(shrinkRange.success && shrinkRange.frame == -299,
+          "right端の短縮を1 frame残して止めません");
+}
+
+void testSlipClip() {
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    project.timelineClips = {roomyClip("slip", 100, 50)};
+    check(mvm::project::slipTimelineClip(project, "id-slip", 30, mvm::project::LinkMode::Single)
+                  .success &&
+              project.timelineClips[0].sourceInFrame == 130 &&
+              project.timelineClips[0].sourceOutFrame == 430 &&
+              project.timelineClips[0].timelineStartFrame == 50,
+          "slipでin/outだけをずらせません");
+    check(mvm::project::slipTimelineClip(project, "id-slip", 1000, mvm::project::LinkMode::Single)
+                  .success &&
+              project.timelineClips[0].sourceInFrame == 300 &&
+              project.timelineClips[0].sourceOutFrame == 600,
+          "slipを素材末尾で止められません");
+    const auto beforeReject = project;
+    check(!mvm::project::slipTimelineClip(project, "id-slip", 5, mvm::project::LinkMode::Single)
+                  .success &&
+              project == beforeReject,
+          "素材末尾でのslipを拒否しません");
+    check(mvm::project::slipTimelineClip(project, "id-slip", -1000, mvm::project::LinkMode::Single)
+                  .success &&
+              project.timelineClips[0].sourceInFrame == 0 &&
+              project.timelineClips[0].sourceOutFrame == 300,
+          "slipを素材先頭で止められません");
+}
+
+void testSlideClip() {
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    project.timelineClips = {roomyClip("before", 0, 0), roomyClip("slide", 100, 300),
+                             roomyClip("after", 100, 600)};
+    check(mvm::project::validateTimeline(project).success, "slide用のtimelineが不正です");
+    check(mvm::project::slideTimelineClip(project, "id-slide", 50, mvm::project::LinkMode::Linked)
+              .success,
+          "slideに失敗しました");
+    check(project.timelineClips[1].timelineStartFrame == 350 &&
+              project.timelineClips[1].sourceInFrame == 100 &&
+              clipEnd(project, project.timelineClips[0]) == 350 &&
+              project.timelineClips[2].timelineStartFrame == 650 &&
+              project.timelineClips[2].sourceInFrame == 150 &&
+              clipEnd(project, project.timelineClips[2]) == 900,
+          "slideで前後clipのout/inを追従させられません");
+
+    // 動かせる範囲 = 前の clip の out と後ろの clip の in を動かせる範囲。+50 のスライド後は
+    // before (素材 [0, 350)) の out が [-349, +250]、after (素材 [150, 400)) の in が [-150,
+    // +249]。
+    auto range =
+        mvm::project::clampSlideEdit(project, "id-slide", 1000, mvm::project::LinkMode::Linked);
+    check(range.success && range.frame == 249, "slideの右方向の範囲が違います");
+    range =
+        mvm::project::clampSlideEdit(project, "id-slide", -1000, mvm::project::LinkMode::Linked);
+    check(range.success && range.frame == -150, "slideの左方向の範囲が違います");
+
+    // 範囲を越えるドラッグは失敗させず、後ろの clip の素材の先頭で止める。
+    check(mvm::project::slideTimelineClip(project, "id-slide", -400, mvm::project::LinkMode::Linked)
+                  .success &&
+              project.timelineClips[1].timelineStartFrame == 200 &&
+              clipEnd(project, project.timelineClips[0]) == 200 &&
+              project.timelineClips[2].timelineStartFrame == 500 &&
+              project.timelineClips[2].sourceInFrame == 0,
+          "範囲を越えるslideを後ろのclipの素材の先頭で止めません");
+    const auto beforeReject = project;
+    check(!mvm::project::slideTimelineClip(project, "id-slide", -1, mvm::project::LinkMode::Linked)
+                  .success &&
+              project == beforeReject,
+          "後ろのclipの素材の先頭に達したslideを拒否しないか、拒否時にProjectが変化しました");
+
+    // 前の clip が素材の末尾まで使い切っていれば、右へはスライドできない。
+    mvm::project::Project exhausted = mvm::project::createDefaultProject();
+    exhausted.timelineClips = {roomyClip("before", 300, 0), roomyClip("slide", 100, 300),
+                               roomyClip("after", 100, 600)};
+    const auto beforeExhausted = exhausted;
+    check(
+        !mvm::project::slideTimelineClip(exhausted, "id-slide", 50, mvm::project::LinkMode::Linked)
+                .success &&
+            exhausted == beforeExhausted &&
+            mvm::project::clampSlideEdit(exhausted, "id-slide", 50, mvm::project::LinkMode::Linked)
+                    .frame == 0,
+        "前のclipの素材が足りないslideを拒否しません");
+    check(
+        mvm::project::slideTimelineClip(exhausted, "id-slide", -50, mvm::project::LinkMode::Linked)
+            .success,
+        "前のclipの素材が足りなくても左へのslideができません");
+
+    // 前後どちらかに接している clip が無ければ、単なる移動にせず拒否する。
+    for (const bool withoutPrevious : {true, false}) {
+        mvm::project::Project oneSided = mvm::project::createDefaultProject();
+        oneSided.timelineClips = {roomyClip("slide", 100, 300)};
+        oneSided.timelineClips.push_back(withoutPrevious ? roomyClip("after", 100, 600)
+                                                         : roomyClip("before", 0, 0));
+        const auto beforeOneSided = oneSided;
+        check(!mvm::project::slideTimelineClip(oneSided, "id-slide", 20,
+                                               mvm::project::LinkMode::Linked)
+                      .success &&
+                  oneSided == beforeOneSided,
+              withoutPrevious ? "前のclipが無いslideを受理しました"
+                              : "後ろのclipが無いslideを受理しました");
+    }
+    mvm::project::Project alone = mvm::project::createDefaultProject();
+    alone.timelineClips = {roomyClip("slide", 100, 300)};
+    check(!mvm::project::slideTimelineClip(alone, "id-slide", 20, mvm::project::LinkMode::Linked)
+               .success,
+          "前後にclipが無いslideを移動として受理しました");
+}
+
+void testTrackSelectFromFrame() {
+    auto project = threeClips();
+    auto upper = clip("upper", mvm::project::TimelineClipKind::Video, kV2);
+    upper.timelineStartFrame = 100;
+    project.timelineClips.push_back(upper);
+    using mvm::project::SelectDirection;
+    check(mvm::project::clipIdsFromFrame(project, 350, SelectDirection::Forward) ==
+              std::vector<std::string>({"id-Manim", "id-B", "id-upper"}),
+          "前方選択の対象が違います");
+    check(mvm::project::clipIdsFromFrame(project, 350, SelectDirection::Backward) ==
+              std::vector<std::string>({"id-A", "id-Manim", "id-upper"}),
+          "後方選択の対象が違います");
+    check(mvm::project::clipIdsFromFrame(project, 350, SelectDirection::Forward, kV1) ==
+              std::vector<std::string>({"id-Manim", "id-B"}),
+          "track指定の前方選択が他trackのclipを含みました");
+    check(mvm::project::clipIdsFromFrame(project, 300, SelectDirection::Forward, kV1) ==
+              std::vector<std::string>({"id-Manim", "id-B"}),
+          "前方選択がframe直前で終わるclipを含みました");
 }
 
 void testValidationFailures() {
@@ -877,6 +1472,14 @@ int main(int argc, char** argv) {
     testAudioClipPlacement();
     testRippleDelete();
     testRippleDeleteWithLinkedClips();
+    testSplitClips();
+    testRippleTrim();
+    testRollEdit();
+    testLinkedToolEditing();
+    testTrimRestoresSplitClip();
+    testSlipClip();
+    testSlideClip();
+    testTrackSelectFromFrame();
     testValidationFailures();
     testDeleteSelection();
     testLinkedClipEditing();

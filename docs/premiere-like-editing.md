@@ -669,3 +669,141 @@ fail-closed 検査 4 件が落ちることを確認した。
 
 `[未検証]` Save As で Unknown になる経路 (開いている Project の identity を取れない)
 は controller test で再現していない。
+
+## 16. タイムラインツールパネル
+
+`[事実]` タイムラインパネルの左端に、縦 1 列のツールパネル (`TimelineToolPanel.qml`) を置いた。
+ツール名・キー・有効/無効・操作ヒントは `TimelineToolPanel.tools` だけが持ち、
+Main.qml のショートカットは `Instantiator` でこの配列から生成する。
+キー割り当てを 2 箇所に書かない。
+
+| ツール | キー | 編集関数 (`src/project/timeline_edit`) | 状態 |
+| ------ | ---- | -------------------------------------- | ---- |
+| 選択 | V | 既存の `moveClips` / `trimTimelineClip` | 実装 |
+| 前方 / 後方トラック選択 | A / Shift+A | `clipIdsFromFrame` | 実装 |
+| レーザー | C | `splitTimelineClips` (Shift で `clipIdsSpanningFrame` の全 track) | 実装 |
+| リップル | B | `rippleTrimTimelineClip` | 実装 |
+| ローリング | N | `rollTimelineEdit` | 実装 |
+| スリップ | Y | `slipTimelineClip` | 実装 |
+| スライド | U | `slideTimelineClip` | 実装 |
+| ハンド / ズーム | H / Z | なし (表示だけを変える) | 実装 |
+| レート調整 | R | — | 無効 |
+| ペン | P | — | 無効 |
+| 横書き文字 | T | — | 無効 |
+
+`[事実]` R / P / T はボタンを表示するが選べない。いずれも Project schema 4 に表現が無い。
+
+- レート調整: clip は速度を持たず、尺は素材 fps → timeline fps の換算だけで決まる。
+  preview の frame 対応・書き出し (MLT)・音声の offset とピッチの 3 経路に手が入る
+- ペン: キーフレームの仕組みが無い。opacity はフェードから作る固定 key だけで、
+  clip 音量の属性も無い
+- 横書き文字: テキスト clip の種別が無く、preview (RHI) と書き出しの両方に描画が要る
+
+### 16.1 編集の契約
+
+`[事実]` どの関数も candidate 全体を `validateTimeline` で検証し、失敗時は Project を変更しない。
+trim の計算は内部関数 `trimClipBoundary` に一本化し、trim / 分割 / リップル / ローリング /
+スライドが同じ換算を使う。リンク相手の展開は `includeLinkedCounterparts` に一本化し、
+既存の `rippleDeleteGap` もこれを使うようにした。
+
+- 分割: リンク相手は分割位置を内側に含むときだけ一緒に切る。両方を切ったときだけ
+  右半分どうしを新しい link group で結び、片方だけなら右半分は未リンクにする。
+  フェードは左半分が in、右半分が out を引き継ぐ
+- リップル: 後ろの clip は同じ track の clip とそのリンク相手だけをずらす。
+  trim した clip 自身のリンク相手は trim もずらしもしない (trim は clip 固有という link の契約)
+- ローリング: 接している clip が無ければ失敗する。素材 fps が timeline と異なり、
+  境界を素材 frame に揃えられない場合は隙間を作らずに拒否する
+- スリップ: 素材上の長さ (out - in) を保つ。素材の端を超える分は端で止め、
+  1 frame もずらせなければ失敗する
+- スライド: 隣接関係は移動前の配置で決める。リンク相手も同じ量だけスライドし、
+  それぞれの前後 clip を追従させる
+
+`[事実]` `tests/harness/test_timeline_edit.cpp` に各操作の正常系と、拒否時に Project が
+変わらないことの検査を足した。29.97fps 素材でローリング境界が揃わない負例もある。
+`m7b_4_timeline_ui_architecture` はツールのキー割り当て・R/P/T の無効・文字入力中の
+ショートカット無効を検査し、それぞれを壊した負例で検査が落ちることも確かめる。
+
+`[事実]` release の通常 CTest (`-LE "performance|stability"`) は 1384/1384 通過。
+
+`[未検証]` GUI 上での手操作 (各ツールのドラッグ、Alt+クリックの縮小) は確かめていない。
+起動して QML の生成と起動時の警告 0 件までは確認した。
+
+### 16.2 リンクされた clip への適用 (Premiere の「リンクされた選択」)
+
+`[事実]` 編集関数は `LinkMode { Linked, Single }` を明示的に受け取る。既定の操作は
+Linked で、QML は Alt を押しながらの操作だけ Single を渡す。Alt+クリックの選択も
+リンク相手を含めない。Premiere はリンクされた選択が有効なとき video / audio を
+一緒に編集し、Alt でその場だけ片方にする (Adobe のヘルプ「Cut clips」「Trim clips」)。
+
+| 操作 | Linked の挙動 |
+| ---- | ------------- |
+| trim | リンク相手の同じ側の端も同じ量だけ動かす |
+| リップル | 相手も同じ量 trim し、両方の track の後ろを詰める。尺の変化量が相手と食い違えば拒否 |
+| ローリング | 相手の編集点も動かす。相手が編集点を持たない (L / J カット) なら相手は動かさない |
+| スリップ | 相手も同じ量ずらす。全員がずらせる範囲で止め、同期を崩さない |
+| スライド / 分割 / 移動 | 従来どおり相手も含める。Single なら操作した clip だけ |
+
+`[事実]` Premiere のリップルは、後ろをずらす track を同期ロックで決める。mvm には
+同期ロックが無いので、trim した clip の track とそのリンク相手だけを後ろへ波及させる。
+
+### 16.3 Redo と、分割後の再生の引き継ぎ
+
+`[事実]` Undo で戻した編集を Ctrl+Shift+Z / Ctrl+Y でやり直せる。新しい編集を commit すると
+やり直し履歴は捨てる。
+
+`[事実]` 再生中の clip 境界で、preview source の同一性を clip ID ではなく
+「素材と timeline -> 素材 frame の対応」で判定するようにした (`previewVideoMappingCovers`、
+audio は素材と sample offset)。レーザーで分割した直後のように同じ素材が連続していれば、
+一時停止と source の作り直しをせずに引き継ぎ、composition だけを差し替える。
+以前は境界ごとに pause -> seek -> play を踏み、分割点で再生が一瞬止まっていた。
+
+`[未検証]` 分割点を再生して止まらないことは GUI で確認していない。判定関数の単体テストと、
+controller の契約テストまでを確認した。
+
+### 16.4 レビュー指摘への対応
+
+`[事実]` スライドは、操作した clip に接している前後の clip が両方無ければ拒否する。
+以前は前後が無くても成功し、単なる移動になっていた (ツールの説明と食い違っていた)。
+リンク相手の前後は、ローリングの L / J カットと同じく任意のまま。
+
+`[事実]` clip へのマウス操作をどの編集として確定するかを `apps/mvm/TimelineGestures.js`
+へ切り出し、`tests/qml/tst_timeline_gestures.qml` (qmltestrunner) で検査する。
+レーザーの分割位置と Alt / Shift の解釈は press 時点で確定する。
+qmltestrunner は test 関数 0 件でも成功を返し、Windows では stdout も CTest へ届かないので、
+`tests/qml/run-qml-test.ps1` が結果 file を読み、test 関数の通過件数と失敗 0 件で判定する。
+分割位置を release 位置へ変えた mutant と、test 関数が 0 件の file の両方で失敗することを確認した。
+
+`[事実]` Undo / Redo 後の recovery が切り替え後の Project を指すことを
+`testUndoRedoRewritesRecovery` で固定した。`stepEditHistory` から
+`scheduleRecoveryAutosave()` を外すと Redo 側の検査が落ちる
+(Undo 側は直前の編集で起動した上限 timer が書き直すため、この mutation では落ちない)。
+
+`[事実]` ローリング / スライドの drag 中、隣接 clip の端も同じ量だけ伸縮して見せる
+(`adjacentEditPoints`)。ローリングでリンク相手が編集点を持たない場合は、Project と同じく
+相手を動かして見せない。
+
+`[未検証]` 上記 QML の配線を実機のマウス操作で通したことはない。
+
+### 16.5 分割点での再生の引き継ぎ (fps 違い) と、端のドラッグの停止
+
+`[事実]` `previewVideoMappingCovers` は素材 fps = timeline fps のときだけ引き継ぎを許していた。
+再生は fps が違う clip も許すので、60fps timeline 上の 30fps 素材では分割点ごとに
+一時停止と seek (「再生開始のためseekしています」) を踏んでいた。
+source の写像 `start + ceil((s - in) R)` (R = timeline fps / 素材 fps) が全 frame で一致する
+条件「(in' - in) R が整数 k で start' - start = k」で判定するよう一般化した。
+30fps 素材を 60fps timeline で分割した右半分はこれを満たす。29.97fps 素材などは満たさず、
+境界で組み直す。組み直したときは理由を status へ出す。
+
+`[事実]` trim / リップル / ローリングは、素材の範囲を越える量を渡されると全体を失敗させていた。
+QML はドラッグ量を制限しないので、分割前の位置を少しでも越えて引き延ばすと clip が元へ戻っていた。
+`clampEdgeEdit` で素材の端・1 frame 以上の尺・timeline 先頭 (通常の trim の left 端だけ) に止め、
+確定と drag 中の表示の両方がこれを使う。`testTrimRestoresSplitClip` が
+「分割 → 前半削除 → left 端を大きく引き延ばす」で分割前の clip に戻ることを固定している。
+
+`[未検証]` 実機の再生で分割点が止まらなくなったことは確認していない。引き継げない場合の
+status 表示を手がかりに確認する。
+
+`[事実]` スライドも `clampSlideEdit` で、前の clip の out・後ろの clip の in を動かせる範囲
+(素材の範囲と 1 frame 以上の尺)、timeline 先頭、接していない clip との空白に止める。
+`slideTimelineClip` の確定と drag 中の表示 (`clampSlideDrag`) の両方がこれを使い、
+trim / リップル / ローリング (`clampEdgeEdit`)、スリップ (`previewSlip`) と揃えた。

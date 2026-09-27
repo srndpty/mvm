@@ -4,6 +4,7 @@
 #include "project/project.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,27 @@ inline constexpr std::size_t kMaxPreviewVideoLayers = 2;
 
 TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& project,
                                                     std::int64_t timelineFrame);
+
+// video preview source が timeline frame を素材 frame へ写す規則。
+// descriptor へ渡した値そのもので、source を作った clip の ID は含めない。
+struct PreviewVideoMapping {
+    std::filesystem::path mediaPath;
+    std::int64_t sourceInFrame = 0;
+    std::int64_t timelineStartFrame = 0;
+    std::int64_t sourceFpsNum = 0;
+    std::int64_t sourceFpsDen = 1;
+    bool operator==(const PreviewVideoMapping&) const = default;
+};
+
+PreviewVideoMapping previewVideoMappingOf(const project::TimelineClip& clip);
+
+// installed の source で clip を表示できるか。レーザーで分割した直後のように同じ素材が
+// timeline 上で連続していれば、clip が違っても timeline -> 素材の対応は同じになる。
+// source は sourceInFrame より前の素材 frame を写せないので、clip 側の in が
+// installed 以上であることも要求する。
+bool previewVideoMappingCovers(const project::Project& project,
+                               const PreviewVideoMapping& installed,
+                               const project::TimelineClip& clip);
 bool sameTimelinePreviewSourceSet(const TimelinePreviewFrameMapping& a,
                                   const TimelinePreviewFrameMapping& b);
 

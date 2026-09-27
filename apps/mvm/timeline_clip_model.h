@@ -5,6 +5,7 @@
 
 #include <QAbstractListModel>
 #include <QSet>
+#include <QVariantList>
 #include <QtQml/qqmlregistration.h>
 
 namespace mvm::app {
@@ -43,6 +44,10 @@ public:
 
     // 範囲外の row は空文字列。Repeater の itemAt(index) と組で使う。
     Q_INVOKABLE QString clipIdAt(int row) const;
+    // 全 clip の {clipId, trackKind, trackIndex, start, end, linkGroupId}。
+    // drag 中の表示で隣接 clip やリンク相手を探すのに使う。delegate の item から
+    // 読むと QML の静的検査で型が QQuickItem にしかならない。
+    Q_INVOKABLE QVariantList clipSpans() const;
 
     void setProject(const project::Project& project);
     void setSelectedClipIds(const QSet<QString>& clipIds);

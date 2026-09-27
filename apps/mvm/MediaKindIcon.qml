@@ -68,12 +68,15 @@ Item {
         color: "#4fae7d"
         Row {
             anchors.centerIn: parent
+            height: 9
             spacing: 1
             Repeater {
                 model: [4, 8, 5, 9, 3]
+                // Repeater が作った直後の delegate は parent が null なので、parent へ
+                // anchor せず Row の固定の高さに対して中央へ置く。
                 Rectangle {
                     required property int modelData
-                    anchors.verticalCenter: parent.verticalCenter
+                    y: (9 - modelData) / 2
                     width: 1.5
                     height: modelData
                     color: "#1b1f25"

@@ -192,9 +192,85 @@ void testCrossRateVideoMapping() {
             "高fps timelineで必要なsource frameの重複を拒否しました");
 }
 
+// レーザーで分割した直後の連続した clip は、左半分の source のまま表示できる。
+// 再生中に clip 境界で source を作り直すと、そこで一瞬止まる。
+void testSplitClipReusesPreviewSource() {
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    auto whole = clip("whole", 0, 10, 100, 120);
+    project.timelineClips = {whole};
+    int counter = 0;
+    require(mvm::project::splitTimelineClips(
+                project, {"whole"}, 70, [&counter] { return "right-" + std::to_string(++counter); },
+                mvm::project::LinkMode::Linked)
+                    .success &&
+                project.timelineClips.size() == 2,
+            "mapping検査用のclipを分割できません");
+    const auto& left = project.timelineClips[0];
+    const auto& right = project.timelineClips[1];
+    const auto leftSource = mvm::app::previewVideoMappingOf(left);
+    require(mvm::app::previewVideoMappingCovers(project, leftSource, right),
+            "分割直後の右半分を左半分のsourceで表示できると判定しません");
+    // source は in より前の素材 frame を写せない。逆向きの使い回しは拒否する。
+    require(
+        !mvm::app::previewVideoMappingCovers(project, mvm::app::previewVideoMappingOf(right), left),
+        "右半分のsourceでinより前の左半分を表示できると判定しました");
+
+    // 右半分を 1 frame でも動かせば素材との対応が変わるので使い回さない。
+    auto moved = right;
+    moved.timelineStartFrame += 1;
+    require(!mvm::app::previewVideoMappingCovers(project, leftSource, moved),
+            "動かした右半分を左半分のsourceで表示できると判定しました");
+    auto otherMedia = right;
+    otherMedia.mediaPath = "other.mp4";
+    require(!mvm::app::previewVideoMappingCovers(project, leftSource, otherMedia),
+            "別素材のclipを同じsourceで表示できると判定しました");
+
+    // 素材 fps が timeline と違うと frame 境界の丸めが原点に依存する。原点が違えば使い回さない。
+    auto ntscLeft = left;
+    auto ntscRight = right;
+    ntscLeft.sourceFpsNum = ntscRight.sourceFpsNum = 30000;
+    ntscLeft.sourceFpsDen = ntscRight.sourceFpsDen = 1001;
+    require(!mvm::app::previewVideoMappingCovers(project, mvm::app::previewVideoMappingOf(ntscLeft),
+                                                 ntscRight),
+            "fpsが違う素材で原点の違うsourceを使い回しました");
+
+    // 60fps timeline 上の 30fps 素材は timeline 2 frame = 素材 1 frame なので、分割直後の
+    // 右半分も左半分の source のまま表示できる。以前は fps 一致を要求していて境界で組み直していた。
+    mvm::project::Project halfRate = mvm::project::createDefaultProject();
+    auto thirty = clip("thirty", 0, 0, 0, 300);
+    thirty.sourceFpsNum = 30;
+    halfRate.timelineClips = {thirty};
+    require(mvm::project::splitTimelineClips(
+                halfRate, {"thirty"}, 241,
+                [&counter] { return "half-" + std::to_string(++counter); },
+                mvm::project::LinkMode::Linked)
+                    .success &&
+                halfRate.timelineClips.size() == 2,
+            "30fps素材のclipを分割できません");
+    require(mvm::app::previewVideoMappingCovers(
+                halfRate, mvm::app::previewVideoMappingOf(halfRate.timelineClips[0]),
+                halfRate.timelineClips[1]),
+            "60fps timeline上の30fps素材の分割直後を同じsourceで表示できると判定しません");
+    auto shiftedHalf = halfRate.timelineClips[1];
+    shiftedHalf.timelineStartFrame += 1;
+    require(!mvm::app::previewVideoMappingCovers(
+                halfRate, mvm::app::previewVideoMappingOf(halfRate.timelineClips[0]), shiftedHalf),
+            "1 frameずらした30fps素材の右半分を同じsourceで表示できると判定しました");
+
+    // audio は offset が同じなら同じ source として扱える。
+    const auto leftAudio = audioClip("take", 10, 100, 60, 60, 1);
+    const auto rightAudio = audioClip("take", 70, 160, 60, 60, 1);
+    const auto leftOffset = mvm::app::audioPreviewSampleOffset(project, leftAudio);
+    const auto rightOffset = mvm::app::audioPreviewSampleOffset(project, rightAudio);
+    require(leftOffset.success && rightOffset.success &&
+                leftOffset.sampleOffset == rightOffset.sampleOffset,
+            "分割直後のaudio clipのsample offsetが一致しません");
+}
+
 } // namespace
 
 int main() {
+    testSplitClipReusesPreviewSource();
     testAudioPreviewSampleOffset();
     testAudioSourceFrameCount();
     testMutedTracks();

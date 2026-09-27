@@ -149,16 +149,27 @@ if (-not $sourceStruct.Contains('PreviewSourceDescriptor descriptor')) {
     throw 'AudioPreviewSource が descriptor を保持していません'
 }
 
-# --- 6. identity は timing に効く入力をすべて含む ------------------------------
+# --- 6. identity は descriptor を決める値そのもの ------------------------------
+# clip ID ではなく素材と sample offset で比べる。offset は timing に効く入力
+# (in / start / 素材 fps / timeline fps) をすべて反映した換算結果であり、
+# 換算は audioPreviewSampleOffset に一本化する。identity を別の式で作ると、
+# offset が変わっても再利用される。
 $identityStart = $header.IndexOf('struct AudioSourceIdentity {')
 if ($identityStart -lt 0) { throw 'AudioSourceIdentity がありません' }
 $identityEnd = $header.IndexOf('};', $identityStart)
 $identity = $header.Substring($identityStart, $identityEnd - $identityStart)
-foreach ($field in @('clipId', 'sourceInFrame', 'timelineStartFrame',
-                     'sourceFpsNum', 'sourceFpsDen', 'timelineFpsNum', 'timelineFpsDen')) {
+foreach ($field in @('mediaPath', 'sampleOffset')) {
     if (-not $identity.Contains($field)) {
         throw "AudioSourceIdentity に $field がありません (offset が変わっても再利用されます)"
     }
+}
+$identitiesStart = $controller.IndexOf('bool MvmController::audioIdentitiesFor(')
+if ($identitiesStart -lt 0) { throw 'audioIdentitiesFor がありません' }
+$identitiesEnd = $controller.IndexOf("`n}", $identitiesStart)
+$identitiesBody = $controller.Substring($identitiesStart, $identitiesEnd - $identitiesStart)
+if (-not $identitiesBody.Contains('audioPreviewSampleOffset(project_, clip)') -or
+    -not $identitiesBody.Contains('identities.push_back({clip.mediaPath, offset.sampleOffset})')) {
+    throw 'audio identity が audioPreviewSampleOffset の換算結果から作られていません'
 }
 
 Write-Output 'preview transaction contract: PASS'
