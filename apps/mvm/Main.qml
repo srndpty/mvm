@@ -16,6 +16,131 @@ ApplicationWindow {
     title: "mvm" + (mvmController.dirty ? " *" : "") + " — " + mvmController.projectPath
     color: "#15171b"
 
+    Action {
+        id: openProjectAction
+        text: "プロジェクトを開く"
+        shortcut: "Ctrl+O"
+        enabled: !mvmController.busy
+        onTriggered: root.requestProjectAction("open")
+    }
+    Action {
+        id: closeProjectAction
+        text: "プロジェクトを閉じる"
+        shortcut: "Ctrl+Shift+W"
+        enabled: !mvmController.busy
+        onTriggered: root.requestProjectAction("close")
+    }
+    Action {
+        id: saveProjectAction
+        text: "保存"
+        shortcut: "Ctrl+S"
+        enabled: !mvmController.busy && mvmController.dirty
+        onTriggered: mvmController.saveProject()
+    }
+    Action {
+        id: saveProjectAsAction
+        text: "名前を付けて保存"
+        shortcut: "Ctrl+Shift+S"
+        enabled: !mvmController.busy
+        onTriggered: saveProjectDialog.open()
+    }
+    Action {
+        id: exportMediaAction
+        text: "メディアを書き出し"
+        shortcut: "Ctrl+M"
+        enabled: mvmController.canExport
+        onTriggered: exportDialog.open()
+    }
+    Action {
+        id: undoAction
+        text: "元に戻す"
+        shortcut: "Ctrl+Z"
+        enabled: mvmController.canUndo
+        onTriggered: mvmController.undoLastEdit()
+    }
+
+    menuBar: MenuBar {
+        height: 33
+        padding: 3
+        spacing: 2
+        background: Rectangle {
+            color: "#25272b"
+        }
+        delegate: MenuBarItem {
+            id: barItem
+            implicitHeight: 27
+            leftPadding: 11
+            rightPadding: 11
+            font.pixelSize: 12
+            contentItem: Label {
+                text: barItem.text
+                color: barItem.highlighted ? "#ffffff" : "#d4d7dc"
+                font: barItem.font
+                verticalAlignment: Text.AlignVCenter
+            }
+            background: Rectangle {
+                color: barItem.highlighted ? "#414750" : "transparent"
+                radius: 4
+            }
+        }
+        CompactMenu {
+            title: "ファイル"
+            CompactMenuItem {
+                text: "新規プロジェクト"
+                enabled: !mvmController.busy
+                onTriggered: root.requestProjectAction("new")
+            }
+            CompactMenuItem {
+                action: openProjectAction
+            }
+            CompactMenuItem {
+                action: closeProjectAction
+            }
+            CompactMenuSeparator {}
+            CompactMenuItem {
+                action: saveProjectAction
+            }
+            CompactMenuItem {
+                action: saveProjectAsAction
+            }
+            CompactMenuSeparator {}
+            CompactMenuItem {
+                text: "動画を追加"
+                enabled: !mvmController.busy
+                onTriggered: videoDialog.open()
+            }
+            CompactMenuItem {
+                text: "音声を追加"
+                enabled: !mvmController.busy && mvmController.audioTrackCount > 0
+                onTriggered: audioDialog.open()
+            }
+            CompactMenuItem {
+                text: "Manim clip"
+                visible: !mvmController.hasManimAsset
+                enabled: mvmController.previewReady && !mvmController.busy
+                onTriggered: scriptDialog.open()
+            }
+            CompactMenuSeparator {}
+            CompactMenuItem {
+                action: exportMediaAction
+            }
+        }
+        CompactMenu {
+            title: "編集"
+            CompactMenuItem {
+                action: undoAction
+            }
+        }
+        CompactMenu {
+            title: "プロジェクト"
+            CompactMenuItem {
+                text: "プロジェクト設定"
+                enabled: !mvmController.busy
+                onTriggered: root.openProjectSettingsDialog()
+            }
+        }
+    }
+
     property url selectedManimScript
     property url pendingExportFile
     property bool closeConfirmed: false
@@ -225,76 +350,15 @@ ApplicationWindow {
                 mvmController.playTimeline();
         }
     }
-    Shortcut {
-        sequence: "Ctrl+Z"
-        enabled: mvmController.canUndo
-        onActivated: mvmController.undoLastEdit()
-    }
-    Shortcut {
-        sequence: "Ctrl+S"
-        enabled: !mvmController.busy && mvmController.dirty
-        onActivated: mvmController.saveProject()
-    }
-
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 10
         spacing: 8
 
-        // --- ツールバー ---------------------------------------------------
+        // --- 作業状態 -----------------------------------------------------
         RowLayout {
             Layout.fillWidth: true
             spacing: 6
-
-            Button {
-                text: "新規"
-                enabled: !mvmController.busy
-                onClicked: root.requestProjectAction("new")
-            }
-            Button {
-                text: "開く"
-                enabled: !mvmController.busy
-                onClicked: root.requestProjectAction("open")
-            }
-            Button {
-                text: "保存"
-                enabled: !mvmController.busy && mvmController.dirty
-                onClicked: mvmController.saveProject()
-            }
-            Button {
-                text: "名前を付けて保存"
-                enabled: !mvmController.busy
-                onClicked: saveProjectDialog.open()
-            }
-            ToolSeparator {}
-            Button {
-                text: "動画を追加"
-                enabled: !mvmController.busy
-                onClicked: videoDialog.open()
-            }
-            Button {
-                text: "音声を追加"
-                enabled: !mvmController.busy && mvmController.audioTrackCount > 0
-                onClicked: audioDialog.open()
-            }
-            Button {
-                text: "Manim clip"
-                visible: !mvmController.hasManimAsset
-                enabled: mvmController.previewReady && !mvmController.busy
-                onClicked: scriptDialog.open()
-            }
-            Button {
-                text: "書き出し"
-                enabled: mvmController.canExport
-                onClicked: exportDialog.open()
-            }
-            ToolSeparator {}
-            Button {
-                text: "プロジェクト設定: " + mvmController.outputWidth + "×"
-                      + mvmController.outputHeight + " / " + mvmController.timelineFpsText
-                enabled: !mvmController.busy
-                onClicked: root.openProjectSettingsDialog()
-            }
             BusyIndicator {
                 running: mvmController.busy
                 visible: running
@@ -1197,9 +1261,9 @@ ApplicationWindow {
                                 gapMenu.popup();
                             }
 
-                            Menu {
+                            CompactMenu {
                                 id: gapMenu
-                                MenuItem {
+                                CompactMenuItem {
                                     text: "リップル削除（空白を詰める）"
                                     enabled: mvmController.hasGapAt(emptyContextArea.menuTrackKind,
                                                                     emptyContextArea.menuTrackIndex,
@@ -1282,21 +1346,21 @@ ApplicationWindow {
                                     onTapped: clipMenu.popup()
                                 }
 
-                                Menu {
+                                CompactMenu {
                                     id: clipMenu
-                                    MenuItem {
+                                    CompactMenuItem {
                                         text: "プロジェクト設定をこの素材に合わせる"
                                         enabled: clipItem.clipKind !== "audio"
                                                  && !mvmController.busy
                                         onTriggered: root.confirmProjectSettingsFromClip(
                                                          clipItem.clipId)
                                     }
-                                    MenuSeparator {}
-                                    MenuItem {
+                                    CompactMenuSeparator {}
+                                    CompactMenuItem {
                                         text: "削除"
                                         onTriggered: mvmController.deleteTimelineClip(clipItem.clipId)
                                     }
-                                    MenuItem {
+                                    CompactMenuItem {
                                         text: "リンクを解除"
                                         enabled: clipItem.linked
                                         onTriggered: mvmController.unlinkTimelineClip(clipItem.clipId)

@@ -15,6 +15,9 @@ qt_add_qml_module(mvm
     RESOURCE_PREFIX /
     QML_FILES
         Main.qml
+        CompactMenu.qml
+        CompactMenuItem.qml
+        CompactMenuSeparator.qml
         DragNumberField.qml
         AudioMeter.qml
         MediaKindIcon.qml

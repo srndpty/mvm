@@ -526,32 +526,32 @@ Item {
         }
     }
 
-    Menu {
+    CompactMenu {
         id: contextMenu
         property string entryId: ""
         property string entryKind: ""
 
-        MenuItem {
+        CompactMenuItem {
             text: "タイムラインに追加"
             enabled: contextMenu.entryKind === "video" || contextMenu.entryKind === "audio"
             onTriggered: mvmController.addMediaItemToTimeline(contextMenu.entryId)
         }
-        MenuSeparator {}
-        MenuItem {
+        CompactMenuSeparator {}
+        CompactMenuItem {
             text: "読み込み…"
             onTriggered: importDialog.open()
         }
-        MenuItem {
+        CompactMenuItem {
             text: "新規フォルダ"
             onTriggered: panel.createFolder()
         }
-        MenuSeparator {}
-        MenuItem {
+        CompactMenuSeparator {}
+        CompactMenuItem {
             text: "名前を変更\tF2"
             enabled: panel.selectedIds.length === 1
             onTriggered: panel.startRename()
         }
-        MenuItem {
+        CompactMenuItem {
             text: "削除\tDelete"
             enabled: panel.selectedIds.length > 0
             onTriggered: panel.removeSelected()

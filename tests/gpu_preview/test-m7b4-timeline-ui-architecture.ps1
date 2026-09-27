@@ -6,11 +6,69 @@ $mainPath = Join-Path $PSScriptRoot '..\..\apps\mvm\main.cpp'
 $previewItemPath = Join-Path $PSScriptRoot '..\..\src\app\preview\preview_engine_rhi_item.cpp'
 $compositorPath = Join-Path $PSScriptRoot '..\..\src\media\gpu_preview\gpu_compositor.cpp'
 $qml = Get-Content -LiteralPath $qmlPath -Raw
+$projectPanel = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\apps\mvm\ProjectPanel.qml') -Raw
+$compactMenu = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\apps\mvm\CompactMenu.qml') -Raw
+$compactItem = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\apps\mvm\CompactMenuItem.qml') -Raw
+$compactSeparator = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\apps\mvm\CompactMenuSeparator.qml') -Raw
 $controller = Get-Content -LiteralPath $controllerPath -Raw
 $controllerHeader = Get-Content -LiteralPath $controllerHeaderPath -Raw
 $main = Get-Content -LiteralPath $mainPath -Raw
 $previewItem = Get-Content -LiteralPath $previewItemPath -Raw
 $compositor = Get-Content -LiteralPath $compositorPath -Raw
+
+function Test-CompactMenuStyle([string]$itemSource) {
+    return $itemSource.Contains('implicitHeight: 27') -and
+           $itemSource.Contains('item.highlighted && item.enabled') -and
+           $itemSource.Contains('shortcutLabel')
+}
+if (-not (Test-CompactMenuStyle $compactItem) -or
+    (Test-CompactMenuStyle $compactItem.Replace('implicitHeight: 27', 'implicitHeight: 44')) -or
+    $compactMenu -notmatch 'background:\s*Rectangle' -or
+    $compactSeparator -notmatch 'implicitHeight:\s*9') {
+    throw 'コンパクトメニューの行高・選択色・区切り線を確認できません'
+}
+foreach ($source in @($qml, $projectPanel)) {
+    if ($source -match '(?<!Compact)MenuItem\s*\{' -or
+        $source -match '(?<!Compact)MenuSeparator\s*\{' -or
+        $source -match '(?<!Compact)Menu\s*\{') {
+        throw '標準スタイルのメニューが残っています'
+    }
+}
+
+# メニューの表示、ショートカット、実行先を同じ項目内で検査する。
+function Test-ProjectMenuContract([string]$source) {
+    if ($source -notmatch 'menuBar:\s*MenuBar\s*\{') { return $false }
+    foreach ($item in @(
+        @{ Id = 'openProjectAction'; Text = 'プロジェクトを開く'; Key = 'Ctrl+O'; Action = 'root.requestProjectAction("open")' },
+        @{ Id = 'closeProjectAction'; Text = 'プロジェクトを閉じる'; Key = 'Ctrl+Shift+W'; Action = 'root.requestProjectAction("close")' },
+        @{ Id = 'saveProjectAction'; Text = '保存'; Key = 'Ctrl+S'; Action = 'mvmController.saveProject()' },
+        @{ Id = 'saveProjectAsAction'; Text = '名前を付けて保存'; Key = 'Ctrl+Shift+S'; Action = 'saveProjectDialog.open()' },
+        @{ Id = 'exportMediaAction'; Text = 'メディアを書き出し'; Key = 'Ctrl+M'; Action = 'exportDialog.open()' }
+    )) {
+        $pattern = 'Action\s*\{[^{}]*id:\s*' + [regex]::Escape($item.Id) +
+                   '[^{}]*text:\s*"' + [regex]::Escape($item.Text) +
+                   '"[^{}]*shortcut:\s*"' + [regex]::Escape($item.Key) +
+                   '"[^{}]*onTriggered:\s*' + [regex]::Escape($item.Action)
+        if ($source -notmatch $pattern -or
+            $source -notmatch ('CompactMenuItem\s*\{\s*action:\s*' + [regex]::Escape($item.Id))) {
+            return $false
+        }
+    }
+    return $true
+}
+if (-not (Test-ProjectMenuContract $qml)) {
+    throw 'プロジェクト操作のメニューとショートカットが一致しません'
+}
+# いずれか一つの指定が壊れた場合、上の検査が必ず落ちることを確かめる。
+foreach ($key in @('Ctrl+O', 'Ctrl+Shift+W', 'Ctrl+S', 'Ctrl+Shift+S', 'Ctrl+M')) {
+    $broken = $qml.Replace('shortcut: "' + $key + '"', 'shortcut: "Ctrl+Alt+X"')
+    if ($broken -eq $qml -or (Test-ProjectMenuContract $broken)) {
+        throw "メニュー検査の負例が効いていません: $key"
+    }
+}
+if ($qml -match '// --- ツールバー' -or $qml -match 'Shortcut\s*\{\s*sequence:\s*"Ctrl\+S"') {
+    throw '旧ツールバーまたは保存ショートカットの重複が残っています'
+}
 
 # timeline UI は clip の配置を track/start から引く。vector 順を authority にしない。
 $requiredQml = @(
@@ -88,9 +146,9 @@ $requiredShortcuts = @(
     'sequence: "Delete"',
     'sequence: "Space"',
     'autoRepeat: false',
-    'sequence: "Ctrl+Z"',
+    'shortcut: "Ctrl+Z"',
     'enabled: mvmController.canUndo',
-    'onActivated: mvmController.undoLastEdit()'
+    'onTriggered: mvmController.undoLastEdit()'
 )
 
 $requiredVideoDrop = @(
