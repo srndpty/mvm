@@ -1874,33 +1874,79 @@ TimelineFrameResult clampRateEdit(const Project& project, const std::string& cli
     return result;
 }
 
+namespace {
+
+// clampRateEdit で止めた量で伸縮した candidate を作る。表示と確定の両方がこれを使う。
+bool rateStretchCandidate(const Project& project, const std::string& clipId, TrimEdge edge,
+                          std::int64_t projectFrameDelta, LinkMode linkMode, Project& candidate,
+                          int& index, std::int64_t& appliedDelta, std::string& error) {
+    const auto clamped = clampRateEdit(project, clipId, edge, projectFrameDelta, linkMode);
+    if (!clamped.success) {
+        error = clamped.error;
+        return false;
+    }
+    candidate = project;
+    index = indexOfId(candidate, clipId);
+    appliedDelta = clamped.frame;
+    if (appliedDelta == 0)
+        return true;
+    const auto duration =
+        timelineClipDuration(candidate, candidate.timelineClips[static_cast<std::size_t>(index)]);
+    if (!duration.success) {
+        error = duration.error;
+        return false;
+    }
+    const std::int64_t newDuration =
+        duration.frame + (edge == TrimEdge::Right ? appliedDelta : -appliedDelta);
+    return applyRateStretch(candidate, index, edge, newDuration, linkMode, error);
+}
+
+} // namespace
+
+RateStretchPreview previewRateStretch(const Project& project, const std::string& clipId,
+                                      TrimEdge edge, std::int64_t projectFrameDelta,
+                                      LinkMode linkMode) {
+    RateStretchPreview result;
+    Project candidate;
+    int index = -1;
+    if (!rateStretchCandidate(project, clipId, edge, projectFrameDelta, linkMode, candidate, index,
+                              result.appliedDelta, result.error))
+        return result;
+    for (const int target : editTargets(candidate, index, linkMode)) {
+        const auto& clip = candidate.timelineClips[static_cast<std::size_t>(target)];
+        const auto& before = project.timelineClips[static_cast<std::size_t>(target)];
+        const auto duration = timelineClipDuration(candidate, clip);
+        const auto beforeDuration = timelineClipDuration(project, before);
+        if (!duration.success || !beforeDuration.success) {
+            result.error = duration.success ? beforeDuration.error : duration.error;
+            result.clips.clear();
+            return result;
+        }
+        result.clips.push_back({clip.id, clip.timelineStartFrame, duration.frame, clip.speedNum,
+                                clip.speedDen, clip.timelineStartFrame - before.timelineStartFrame,
+                                (clip.timelineStartFrame + duration.frame) -
+                                    (before.timelineStartFrame + beforeDuration.frame)});
+    }
+    result.success = true;
+    return result;
+}
+
 TimelineEditResult rateStretchTimelineClip(Project& project, const std::string& clipId,
                                            TrimEdge edge, std::int64_t projectFrameDelta,
                                            LinkMode linkMode) {
     TimelineEditResult result;
-    const auto clamped = clampRateEdit(project, clipId, edge, projectFrameDelta, linkMode);
-    if (!clamped.success) {
-        result.error = clamped.error;
+    Project candidate;
+    int index = -1;
+    std::int64_t appliedDelta = 0;
+    if (!rateStretchCandidate(project, clipId, edge, projectFrameDelta, linkMode, candidate, index,
+                              appliedDelta, result.error))
         return result;
-    }
-    if (clamped.frame == 0) {
+    if (appliedDelta == 0) {
         result.error = "速度の範囲 (" + std::to_string(kMinClipSpeedPercent) + "%〜" +
                        std::to_string(kMaxClipSpeedPercent) +
                        "%) または隣の clip に達しているため、これ以上伸縮できません";
         return result;
     }
-    Project candidate = project;
-    const int index = indexOfId(candidate, clipId);
-    const auto duration =
-        timelineClipDuration(candidate, candidate.timelineClips[static_cast<std::size_t>(index)]);
-    if (!duration.success) {
-        result.error = duration.error;
-        return result;
-    }
-    const std::int64_t newDuration =
-        duration.frame + (edge == TrimEdge::Right ? clamped.frame : -clamped.frame);
-    if (!applyRateStretch(candidate, index, edge, newDuration, linkMode, result.error))
-        return result;
     return commitCandidate(project, std::move(candidate), index);
 }
 

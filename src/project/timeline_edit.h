@@ -167,6 +167,32 @@ TimelineEditResult trimTimelineClip(Project& project, const std::string& clipId,
 // timeline 先頭で、Linked ならリンク相手の条件も含める。確定と drag 中の表示の両方が使う。
 TimelineFrameResult clampRateEdit(const Project& project, const std::string& clipId, TrimEdge edge,
                                   std::int64_t projectFrameDelta, LinkMode linkMode);
+
+// drag 中の表示。clampRateEdit で止めた量で伸縮した結果を、対象 clip (Linked ならリンク相手も)
+// ごとに返す。確定 (rateStretchTimelineClip) と同じ candidate から作るので、リンク相手の
+// 尺が操作した clip と違っても、表示と確定が食い違わない (相手は同じ速度で自分の尺になる)。
+struct RateStretchPreviewClip {
+    std::string clipId;
+    std::int64_t timelineStartFrame = 0;
+    std::int64_t durationFrames = 0;
+    std::int64_t speedNum = 1;
+    std::int64_t speedDen = 1;
+    // 開始 / 終端が現在の位置から動く frame 数 (drag 中の表示用)。
+    std::int64_t startDelta = 0;
+    std::int64_t endDelta = 0;
+};
+
+struct RateStretchPreview {
+    bool success = false;
+    // 操作した clip の端を実際に動かす量 (clampRateEdit の結果)。
+    std::int64_t appliedDelta = 0;
+    std::vector<RateStretchPreviewClip> clips;
+    std::string error;
+};
+
+RateStretchPreview previewRateStretch(const Project& project, const std::string& clipId,
+                                      TrimEdge edge, std::int64_t projectFrameDelta,
+                                      LinkMode linkMode);
 // clampRateEdit で止めた量で伸縮する。1 frame も伸縮できなければ失敗する。
 TimelineEditResult rateStretchTimelineClip(Project& project, const std::string& clipId,
                                            TrimEdge edge, std::int64_t projectFrameDelta,

@@ -976,6 +976,10 @@ ApplicationWindow {
             property real linkedLeftDelta: 0
             property real linkedRightDelta: 0
             property int linkedSlideFrames: 0
+            // レート調整の drag 中の表示。{clipId: {startDelta, endDelta, speed}}。
+            // リンク相手は同じ速度で自分の尺になるので、共有の linkedLeft/RightDelta では
+            // 表せない。確定と同じ計算 (mvmController.previewRateStretch) の結果をそのまま使う。
+            property var ratePreviewClips: ({})
             property int linkedSlipDelta: 0
             // ローリング / スライドで一緒に動く隣の clip の編集点。{kind, index, frame, side}。
             // side="start" はその frame から始まる clip の左端、"end" はその frame で終わる
@@ -1667,22 +1671,21 @@ ApplicationWindow {
                                 readonly property bool linkedEditPartner:
                                     linkGroupId !== "" && linkGroupId === timelinePanel.linkedEditGroup
                                     && !linkedEditSource
+                                // レート調整の drag 中なら、この clip の表示 (無ければ undefined)。
+                                readonly property var ratePreview: timelinePanel.ratePreviewClips[clipId]
                                 readonly property real shownLeftDelta:
-                                    (linkedEditPartner ? timelinePanel.linkedLeftDelta : leftPreviewDelta)
+                                    ratePreview !== undefined ? ratePreview.startDelta
+                                    : (linkedEditPartner ? timelinePanel.linkedLeftDelta : leftPreviewDelta)
                                     + timelinePanel.adjacentDeltaFor(trackKind, trackIndex, timelineStartFrame,
                                                      timelineStartFrame + timelineDurationFrames, "start")
                                 readonly property real shownRightDelta:
-                                    (linkedEditPartner ? timelinePanel.linkedRightDelta : rightPreviewDelta)
+                                    ratePreview !== undefined ? ratePreview.endDelta
+                                    : (linkedEditPartner ? timelinePanel.linkedRightDelta : rightPreviewDelta)
                                     + timelinePanel.adjacentDeltaFor(trackKind, trackIndex, timelineStartFrame,
                                                      timelineStartFrame + timelineDurationFrames, "end")
-                                // レート調整の drag 中の見かけの速度。素材範囲はそのままで尺だけが変わるので、
-                                // 速度 x 元の尺 / 表示中の尺。確定する速度 (out - in) R / D と同じ値になり、
-                                // 離した瞬間に波形の縮尺が変わらない。
+                                // レート調整の drag 中の速度。確定と同じ Project の計算から受け取る。
                                 readonly property real shownSpeed:
-                                    timelinePanel.tool === "rate"
-                                    ? speed * timelineDurationFrames
-                                      / Math.max(1, timelineDurationFrames - shownLeftDelta + shownRightDelta)
-                                    : speed
+                                    ratePreview !== undefined ? ratePreview.speed : speed
                                 readonly property int shownSlideFrames:
                                     bodyGesture === "slide" ? toolDragFrames
                                     : (linkedEditPartner ? timelinePanel.linkedSlideFrames : 0)
@@ -1847,6 +1850,7 @@ ApplicationWindow {
                                 // controller 呼び出しより前に必ず呼ぶ (呼び出しは delegate を破棄し得る)。
                                 // リンク相手と隣の clip の途中表示をまとめて片付ける。
                                 function endLinkedEdit() {
+                                    timelinePanel.ratePreviewClips = ({});
                                     timelinePanel.linkedEditGroup = "";
                                     timelinePanel.linkedEditClipId = "";
                                     timelinePanel.adjacentEditPoints = [];
@@ -2255,10 +2259,18 @@ ApplicationWindow {
                                         }
                                         onPositionChanged: mouse => {
                                             const now = mapToItem(timelineContent, mouse.x, mouse.y).x;
+                                            const requested = Math.round((now - pressContentX) / timelinePanel.pixelsPerFrame);
+                                            // レート調整は clip ごとの結果 (リンク相手を含む) を確定と同じ計算で受け取る。
+                                            if (timelinePanel.tool === "rate") {
+                                                const preview = root.mvmController.previewRateStretch(
+                                                    clipItem.clipId, "left", requested, clipItem.editLinked);
+                                                dragDelta = preview.delta;
+                                                timelinePanel.ratePreviewClips = preview.clips;
+                                                return;
+                                            }
                                             // 素材の端や最小尺を越える分は、確定時と同じ規則で止めて見せる。
                                             dragDelta = root.mvmController.clampEdgeDrag(
-                                                clipItem.clipId, "left", timelinePanel.tool,
-                                                Math.round((now - pressContentX) / timelinePanel.pixelsPerFrame),
+                                                clipItem.clipId, "left", timelinePanel.tool, requested,
                                                 clipItem.editLinked);
                                             // リップルの left 端は clip の開始位置を保ち、右端側が伸び縮みする。
                                             if (timelinePanel.tool === "ripple")
@@ -2304,9 +2316,16 @@ ApplicationWindow {
                                         }
                                         onPositionChanged: mouse => {
                                             const now = mapToItem(timelineContent, mouse.x, mouse.y).x;
+                                            const requested = Math.round((now - pressContentX) / timelinePanel.pixelsPerFrame);
+                                            if (timelinePanel.tool === "rate") {
+                                                const preview = root.mvmController.previewRateStretch(
+                                                    clipItem.clipId, "right", requested, clipItem.editLinked);
+                                                clipItem.rightPreviewDelta = preview.delta;
+                                                timelinePanel.ratePreviewClips = preview.clips;
+                                                return;
+                                            }
                                             clipItem.rightPreviewDelta = root.mvmController.clampEdgeDrag(
-                                                clipItem.clipId, "right", timelinePanel.tool,
-                                                Math.round((now - pressContentX) / timelinePanel.pixelsPerFrame),
+                                                clipItem.clipId, "right", timelinePanel.tool, requested,
                                                 clipItem.editLinked);
                                             timelinePanel.adjacentEditDelta = clipItem.rightPreviewDelta;
                                         }

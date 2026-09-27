@@ -2873,6 +2873,34 @@ bool MvmController::rateStretchClip(const QString& clipId, const QString& edge,
         id, QStringLiteral("clipの速度を変えました"));
 }
 
+QVariantMap MvmController::previewRateStretch(const QString& clipId, const QString& edge,
+                                              qint64 projectFrameDelta, bool linked) const {
+    QVariantMap result{{QStringLiteral("delta"), qint64{0}},
+                       {QStringLiteral("clips"), QVariantMap{}}};
+    project::TrimEdge trimEdge;
+    if (edge == QStringLiteral("left"))
+        trimEdge = project::TrimEdge::Left;
+    else if (edge == QStringLiteral("right"))
+        trimEdge = project::TrimEdge::Right;
+    else
+        return result;
+    const auto preview = project::previewRateStretch(project_, clipId.toStdString(), trimEdge,
+                                                     projectFrameDelta, linkModeFor(linked));
+    if (!preview.success)
+        return result;
+    QVariantMap clips;
+    for (const auto& shown : preview.clips) {
+        clips.insert(QString::fromStdString(shown.clipId),
+                     QVariantMap{{QStringLiteral("startDelta"), qint64{shown.startDelta}},
+                                 {QStringLiteral("endDelta"), qint64{shown.endDelta}},
+                                 {QStringLiteral("speed"), static_cast<double>(shown.speedNum) /
+                                                               static_cast<double>(shown.speedDen)}});
+    }
+    result.insert(QStringLiteral("delta"), qint64{preview.appliedDelta});
+    result.insert(QStringLiteral("clips"), clips);
+    return result;
+}
+
 qint64 MvmController::clampEdgeDrag(const QString& clipId, const QString& edge, const QString& tool,
                                     qint64 projectFrameDelta, bool linked) const {
     project::TrimEdge trimEdge;
@@ -2882,11 +2910,6 @@ qint64 MvmController::clampEdgeDrag(const QString& clipId, const QString& edge, 
         trimEdge = project::TrimEdge::Right;
     else
         return 0;
-    if (tool == QStringLiteral("rate")) {
-        const auto clamped = project::clampRateEdit(project_, clipId.toStdString(), trimEdge,
-                                                    projectFrameDelta, linkModeFor(linked));
-        return clamped.success ? clamped.frame : 0;
-    }
     const project::EdgeEditKind kind =
         tool == QStringLiteral("ripple")    ? project::EdgeEditKind::Ripple
         : tool == QStringLiteral("rolling") ? project::EdgeEditKind::Roll

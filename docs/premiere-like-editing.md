@@ -917,9 +917,13 @@ clip の尺、preview の frame 対応 (§16.7)、decode worker の区間、書�
   判定そのものは candidate に `validateTimeline` を掛けて行い、止める位置は二分探索で求める
   (各条件は尺の上限か下限なので、成り立つ範囲は現在の尺から連続している)
 - Linked はリンク相手にも同じ速度を適用する。相手の速度がもともと違う (Alt で片方だけ変えた) 場合は拒否する
-- drag 中は波形とラベルの速度も見かけの速度 (速度 x 元の尺 / 表示中の尺、QML の `shownSpeed`) で描き直す。
-  確定する速度と同じ値なので、離した瞬間に縮尺は変わらない。波形は 4 倍ずつ粗くした peak の階層から
-  1 列あたり高々 8 個程度を走査するだけで、再 decode は起きない (ズームと同じ負荷)
+- drag 中の表示は確定と同じ計算 (`previewRateStretch`) で作る。clamp して伸縮した candidate から、
+  対象 clip ごとの開始 / 終端のずれと速度を返し、QML は `ratePreviewClips` として clip ごとに使う
+  (幅、波形の縮尺 `shownSpeed`、ラベルの %)。確定 (`rateStretchTimelineClip`) も同じ candidate を作る。
+  以前は QML がリンク相手へ操作した clip と同じ端の移動量を配っており、尺の違うリンク対
+  (V 300f / A 240f) で V を +150 すると A を 390f / 61.54% と表示し、離すと 360f / 66.67% へ跳んだ
+- 波形は 4 倍ずつ粗くした peak の階層から 1 列あたり高々 8 個程度を走査するだけで、drag 中に縮尺を
+  変えても再 decode は起きない (ズームと同じ負荷)
 - opacity / volume の key は内容に付いて伸縮する (`rescaleClipKeys`、端は端へ写る)。丸めで同じ frame に
   重なった key は先の 1 つを残す。フェードは素材 frame 基準なので変えない
 
@@ -940,6 +944,10 @@ clip の尺、preview の frame 対応 (§16.7)、decode worker の区間、書�
 
 `[事実]` 次を検査に固定した。
 
+- `test_timeline_edit` (尺の違うリンク対): V 300f / A 240f の V を +150 すると preview も確定も
+  V 450f・A 360f・2/3 になること、left 端では A が終端を保って開始のずれ -120 になること
+- `m7b_4_timeline_ui_architecture`: 端ハンドルが rate のとき `previewRateStretch` を呼び、clip の幅・
+  `shownSpeed`・波形の縮尺がその結果を使い、drag の終了で消すこと (1 か所ずつ壊した負例つき)
 - `test_timeline_edit`: 50%・75%・1000%・10% の止め方、隣の clip とリンク相手の隣の clip で止まること、
   29.97fps 素材の尺がちょうど 250 になり速度 1001/1250 になること、key の伸縮、速度付き clip の trim と分割、
   速度の違うリンク相手の拒否、拒否時に Project が変わらないこと

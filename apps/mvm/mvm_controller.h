@@ -263,12 +263,17 @@ public:
     // レート調整ツール。素材範囲を変えずに速度を変えて、edge 側の端を動かす。
     Q_INVOKABLE bool rateStretchClip(const QString& clipId, const QString& edge,
                                      qint64 projectFrameDelta, bool linked);
+    // レート調整の drag 中の表示。確定と同じ Project の計算 (project::previewRateStretch) で、
+    // {delta: 実際に動かす量, clips: {clipId: {startDelta, endDelta, speed}}} を返す。
+    // startDelta / endDelta は clip の開始 / 終端が現在の位置から動く frame 数。リンク相手の
+    // 尺が違っても相手固有の値になる。伸縮できなければ delta 0 と空の clips。
+    Q_INVOKABLE QVariantMap previewRateStretch(const QString& clipId, const QString& edge,
+                                               qint64 projectFrameDelta, bool linked) const;
     // タイムラインツール。edge は "left" / "right"。
     Q_INVOKABLE bool rippleTrimClip(const QString& clipId, const QString& edge,
                                     qint64 projectFrameDelta, bool linked);
     // 端のドラッグ量を、確定時と同じ規則 (素材の端・1 frame 以上の尺) で止めた値。
-    // drag 中の表示に使う。tool は "select" / "ripple" / "rolling" / "rate"。
-    // "rate" は速度の範囲・隣の clip・timeline 先頭で止める (clampRateEdit)。
+    // drag 中の表示に使う。tool は "select" / "ripple" / "rolling"。
     Q_INVOKABLE qint64 clampEdgeDrag(const QString& clipId, const QString& edge,
                                      const QString& tool, qint64 projectFrameDelta,
                                      bool linked) const;
