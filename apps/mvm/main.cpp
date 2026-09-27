@@ -1,6 +1,8 @@
 #include "app/preview/preview_engine_rhi_item.h"
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "mvm_controller.h"
+#include "waveform_cache.h"
+#include "waveform_view.h"
 #include "project/project_json.h"
 
 #include <cstdio>
@@ -165,8 +167,18 @@ int main(int argc, char** argv) {
         return 6;
     }
     qmlRegisterType<mvm::app::PreviewEngineRhiItem>("mvm.preview", 1, 0, "PreviewSurface");
+    qmlRegisterType<mvm::app::WaveformView>("mvm.timeline", 1, 0, "WaveformView");
+    // engine より先に破棄されないよう、engine より前に宣言する。
+    mvm::app::WaveformCache waveformCache;
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(QStringLiteral("mvmController"), &controller);
+    engine.rootContext()->setContextProperty(QStringLiteral("waveformCache"), &waveformCache);
+    // 外部ツールで素材を差し替えて戻ってきたとき、古い波形を出し続けない。
+    QObject::connect(&application, &QGuiApplication::applicationStateChanged, &waveformCache,
+                     [&waveformCache](Qt::ApplicationState state) {
+                         if (state == Qt::ApplicationActive)
+                             waveformCache.revalidateAll();
+                     });
     engine.load(QUrl(QStringLiteral("qrc:/mvm/app/Main.qml")));
     if (engine.rootObjects().isEmpty()) {
         std::fprintf(stderr, "mvm QMLを読み込めませんでした\n");

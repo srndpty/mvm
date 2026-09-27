@@ -148,6 +148,22 @@ foreach ($needle in @('id: rectangleSelectionArea')) {
     }
 }
 
+# audio clip の波形。可視範囲だけに置かないと、長い clip の高倍率表示で巨大な texture を作る。
+foreach ($needle in @('import mvm.timeline 1.0', 'WaveformView {', 'cache: waveformCache',
+                      'mediaPath: clipItem.clipKind === "audio" ? clipItem.mediaPath : ""',
+                      'Math.max(0, timelineFlick.contentX - clipContentX)',
+                      'x: clipItem.renderOffsetX')) {
+    if (-not $qml.Contains($needle)) {
+        throw "audio波形の契約がありません: $needle"
+    }
+}
+foreach ($needle in @('qmlRegisterType<mvm::app::WaveformView>("mvm.timeline", 1, 0, "WaveformView")',
+                      'setContextProperty(QStringLiteral("waveformCache"), &waveformCache)')) {
+    if (-not $main.Contains($needle)) {
+        throw "audio波形の登録がありません: $needle"
+    }
+}
+
 foreach ($removed in @('spaceMoveToolActive', 'id: moveToolArea', 'sequence: "Ctrl+Space"',
                        'TimelineSpaceMoveState', 'acceptsTextInput(QGuiApplication::focusObject())')) {
     if ($qml.Contains($removed) -or $main.Contains($removed)) {

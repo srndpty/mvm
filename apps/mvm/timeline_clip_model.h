@@ -29,6 +29,7 @@ public:
         LinkedRole,
         LinkGroupIdRole,
         SelectedRole,
+        MediaPathRole,
     };
 
     explicit TimelineClipModel(QObject* parent = nullptr);
@@ -58,6 +59,7 @@ private:
         bool linked = false;
         QString linkGroupId;
         bool selected = false;
+        QString mediaPath;
     };
 
     QList<Item> items_;

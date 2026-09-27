@@ -102,6 +102,18 @@ set_tests_properties(m7b_4_timeline_clip_model_focused PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 120)
 
+add_executable(mvm_test_waveform_cache
+    harness/test_waveform_cache.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/waveform_cache.cpp)
+target_include_directories(mvm_test_waveform_cache PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_test_waveform_cache PRIVATE
+    mvm::audio_waveform mvm::util Qt6::Core mvm::warnings)
+set_target_properties(mvm_test_waveform_cache PROPERTIES AUTOMOC ON)
+add_test(NAME timeline_waveform_cache COMMAND mvm_test_waveform_cache)
+set_tests_properties(timeline_waveform_cache PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 60)
+
 add_test(NAME m7b_4_timeline_ui_architecture
     COMMAND pwsh -NoProfile -File
             ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-m7b4-timeline-ui-architecture.ps1)
@@ -2341,6 +2353,18 @@ message(STATUS "[mvm] P5-D1 testを${_mvm_p5d1_registered}件登録しました"
 
 add_executable(mvm_p3_audio_smoke audio_preview/mvm_p3_audio_smoke.cpp)
 target_link_libraries(mvm_p3_audio_smoke PRIVATE mvm::audio_preview mvm::warnings)
+
+# --- timeline 波形 -----------------------------------------------------------
+add_executable(mvm_test_waveform_peaks core/test_waveform_peaks.cpp)
+target_link_libraries(mvm_test_waveform_peaks PRIVATE mvm::core mvm::warnings)
+mvm_add_test(timeline_waveform_peaks_unit COMMAND mvm_test_waveform_peaks
+    PROPERTIES TIMEOUT 60)
+
+add_executable(mvm_test_audio_waveform_decoder audio_preview/test_audio_waveform_decoder.cpp)
+target_link_libraries(mvm_test_audio_waveform_decoder PRIVATE
+    mvm::audio_waveform mvm::warnings)
+mvm_add_test(timeline_audio_waveform_decoder COMMAND mvm_test_audio_waveform_decoder
+    PROPERTIES TIMEOUT 60)
 
 add_executable(mvm_test_audio_worker_wake audio_preview/test_audio_worker_wake.cpp)
 target_link_libraries(mvm_test_audio_worker_wake PRIVATE mvm::audio_preview mvm::warnings)
