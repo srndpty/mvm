@@ -1689,8 +1689,7 @@ ProjectRecoveryLoadResult loadProjectRecovery(const std::filesystem::path& recov
 }
 
 bool sameCanonicalPath(const std::filesystem::path& left, const std::filesystem::path& right) {
-    const auto leftKey = canonicalPathKey(left);
-    return !leftKey.empty() && leftKey == canonicalPathKey(right);
+    return comparePathIdentity(left, right) == PathSameness::Same;
 }
 
 RecoveryDisposition classifyRecovery(const Project& recoveryProject,

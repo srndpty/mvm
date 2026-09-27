@@ -51,8 +51,12 @@ struct ProjectRecoveryLoadResult {
     std::string error;
 };
 
-// 表記ゆれ（区切り文字、大文字小文字）を吸収したうえで同一pathか。
-// 片方が存在しなくても比較できる。equivalent()は使わない。
+// 同じ実体と確定できるか (path_identity.h の comparePathIdentity が Same)。
+// 両方存在すれば file identity (junction・8.3 名・hard link を吸収)、片方でも
+// 存在しなければ表記ゆれ (区切り文字、大文字小文字) を吸収した表記で比べる。
+// equivalent() は使わない (存在しない path で error になる)。
+// Unknown は false になる。「同じかもしれない」を安全側に倒したい呼び出し側は
+// comparePathIdentity を直接使う。
 bool sameCanonicalPath(const std::filesystem::path& left, const std::filesystem::path& right);
 
 enum class RecoveryDisposition { Stale, Restorable, CanonicalChanged };

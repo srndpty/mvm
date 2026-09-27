@@ -39,6 +39,8 @@ public:
         SizeTextRole,
         MediaPathRole,
         InUseRole,
+        // identity を取れず、timeline で使用中か確認できない。削除は拒否される。
+        UsageUnknownRole,
     };
 
     explicit MediaBinModel(QObject* parent = nullptr);
@@ -78,6 +80,7 @@ private:
         QString sizeText;
         QString mediaPath;
         bool inUse = false;
+        bool usageUnknown = false;
     };
 
     void rebuild();
@@ -86,6 +89,7 @@ private:
     std::vector<project::MediaFolder> folders_;
     std::vector<project::MediaItem> items_;
     QSet<QString> inUseItems_;
+    QSet<QString> usageUnknownItems_;
     QSet<QString> expandedFolders_;
     QList<Row> rows_;
 };

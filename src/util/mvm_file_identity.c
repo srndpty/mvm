@@ -9,15 +9,19 @@ static HANDLE open_shared(const wchar_t* path, DWORD access) {
                        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
 }
 
-int mvm_file_identity_query(const wchar_t* path, MvmFileIdentity* out) {
+MvmFileIdentityStatus mvm_file_identity_probe(const wchar_t* path, MvmFileIdentity* out) {
     if (!out)
-        return 1;
+        return MVM_FILE_IDENTITY_UNAVAILABLE;
     memset(out, 0, sizeof(*out));
     if (!path || !path[0])
-        return 1;
+        return MVM_FILE_IDENTITY_UNAVAILABLE;
     HANDLE file = open_shared(path, FILE_READ_ATTRIBUTES);
-    if (file == INVALID_HANDLE_VALUE)
-        return 1;
+    if (file == INVALID_HANDLE_VALUE) {
+        const DWORD error = GetLastError();
+        return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND
+                   ? MVM_FILE_IDENTITY_MISSING
+                   : MVM_FILE_IDENTITY_UNAVAILABLE;
+    }
     FILE_ID_INFO id;
     FILE_BASIC_INFO basic;
     FILE_STANDARD_INFO standard;
@@ -27,12 +31,16 @@ int mvm_file_identity_query(const wchar_t* path, MvmFileIdentity* out) {
         GetFileInformationByHandleEx(file, FileStandardInfo, &standard, sizeof(standard));
     CloseHandle(file);
     if (!ok || standard.Directory)
-        return 1;
+        return MVM_FILE_IDENTITY_UNAVAILABLE;
     out->volume_serial = id.VolumeSerialNumber;
     memcpy(out->file_id, id.FileId.Identifier, sizeof(out->file_id));
     out->size = standard.EndOfFile.QuadPart;
     out->last_write_time = basic.LastWriteTime.QuadPart;
-    return 0;
+    return MVM_FILE_IDENTITY_OK;
+}
+
+int mvm_file_identity_query(const wchar_t* path, MvmFileIdentity* out) {
+    return mvm_file_identity_probe(path, out) == MVM_FILE_IDENTITY_OK ? 0 : 1;
 }
 
 /* FNV-1a 64bit。 */

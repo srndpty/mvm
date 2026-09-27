@@ -295,6 +295,7 @@ Item {
                     required property string sizeText
                     required property string mediaPath
                     required property bool inUse
+                    required property bool usageUnknown
 
                     readonly property bool isFolder: entryKind === "folder"
                     readonly property bool selected: panel.selectedIds.indexOf(entryId) >= 0
@@ -308,7 +309,9 @@ Item {
                     ToolTip.visible: rowMouse.containsMouse && mediaPath !== ""
                                      && !rowMouse.pressed
                     ToolTip.delay: 800
-                    ToolTip.text: mediaPath + (inUse ? "\n(タイムラインで使用中)" : "")
+                    ToolTip.text: mediaPath + (inUse ? "\n(タイムラインで使用中)"
+                                               : usageUnknown ? "\n(ファイルを確認できず、使用中か不明)"
+                                               : "")
 
                     Row {
                         anchors.fill: parent

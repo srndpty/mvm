@@ -620,7 +620,7 @@ Explorer 側へ Copy が返ることは実機で確かめていない (合成入
 | key | 規則 | 使う場所 |
 | --- | ---- | -------- |
 | `canonicalPathKey` | absolute + lexically_normal + 区切り文字と大文字小文字を揃える。I/O なし | JSON 検証の重複判定、`sameCanonicalPath` |
-| `mediaFileKey` | 存在すれば volume serial + file ID、無ければ `canonicalPathKey` | 読み込み時の重複判定、timeline 使用中判定 |
+| `comparePathIdentity` | 両方存在すれば file ID、存在しなければ表記。取れなければ Unknown | 読み込み時の重複判定、timeline 使用中判定 |
 
 JSON 検証を実体に依存させないのは、保存済みの Project が disk 側の変化
 (後から hard link が張られた等) だけで開けなくなるのを避けるためである。
@@ -634,3 +634,38 @@ mutation で `test_media_bin.cpp` の 4 検査が落ちることを確認した�
 `[事実]` `importMediaFiles` の戻り値は「1 件以上 commit したか」に変えた。
 一部が読めなくても読めた分は commit しており、以前はそれでも false を返していた。
 false は「Project を変更していない」の意味に保つ。
+
+### 15.6 再レビュー指摘への対応
+
+`[事実]` identity を取れなかった理由を区別する。以前は取得失敗をすべて
+「存在しない」と同じ表記比較へ落としており、access denied 等で片方だけ
+file ID を取れないと、同じ実体でも別物と判定していた。使用中判定では、
+これが「使用中の素材を削除できる」fail-open になる。
+
+| `mvm_file_identity_probe` | 意味 | 比較 |
+| ------------------------- | ---- | ---- |
+| `OK` → `FileId` | 通常ファイル | file ID で比べる |
+| `MISSING` (FILE/PATH_NOT_FOUND のみ) | 何も指していない | 相手と表記が違えば Different |
+| `UNAVAILABLE` (それ以外) | 実体が分からない | 表記が同じでなければ Unknown |
+
+`[事実]` `comparePathIdentity` は Same / Different / Unknown を返し、
+Unknown の倒し方は呼び出し側が決める。
+
+| 呼び出し側 | Unknown の扱い | 理由 |
+| ---------- | -------------- | ---- |
+| `mediaItemUsage` (削除の可否) | 使用中か不明として削除を拒否 | 使用中の素材を消さない |
+| `findMediaItemByPath` (重複登録) | 一致としない | 重複登録は best effort。拒否すると取り込みが止まる |
+| `sameCanonicalPath` → recovery の foreign 判定 | 別 Project として復元しない | 別 Project へ rebase しない |
+| Save As の同一先判定 | 同じかもしれないとして外部変更を検査 | 検査なしで canonical を上書きしない |
+
+`[事実]` `sameCanonicalPath` も実体で比べるようにした (以前は表記のみで、
+junction・8.3 名・hard link を別物と判定していた)。JSON の検証だけは
+`canonicalPathKey` (I/O なし) のまま残す。
+
+`[事実]` Unavailable の再現にはディレクトリを指す素材 path を使う
+(存在するが通常ファイルの identity を取れない)。`fileIdentityKey` の
+Unavailable を Missing へ戻す mutation で、`test_media_bin.cpp` の
+fail-closed 検査 4 件が落ちることを確認した。
+
+`[未検証]` Save As で Unknown になる経路 (開いている Project の identity を取れない)
+は controller test で再現していない。

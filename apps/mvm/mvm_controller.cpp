@@ -11,6 +11,7 @@
 #include "media/mlt/mvm_mlt_probe.h"
 #include "media_import.h"
 #include "project/clip_effects.h"
+#include "project/path_identity.h"
 #include "project/project_json.h"
 #include "project/timeline_edit.h"
 #include "timeline_clip_model.h"
@@ -2879,7 +2880,10 @@ bool MvmController::saveProjectAs(const QUrl& fileUrl) {
         setStatus(QStringLiteral("Projectを保存できません: ") + error);
         return false;
     }
-    const bool sameTarget = project::sameCanonicalPath(path, projectPath_);
+    // 同じ実体か確定できないときも「同じかもしれない」として外部変更を検査する。
+    // 別物と決めつけると、開いている canonical を検査なしで上書きしうる。
+    const bool sameTarget =
+        project::comparePathIdentity(path, projectPath_) != project::PathSameness::Different;
     if (sameTarget) {
         QString mismatch;
         if (!canonicalBaseMatchesDisk(mismatch)) {

@@ -107,6 +107,8 @@ QVariant MediaBinModel::data(const QModelIndex& index, int role) const {
         return row.mediaPath;
     case InUseRole:
         return row.inUse;
+    case UsageUnknownRole:
+        return row.usageUnknown;
     default:
         return {};
     }
@@ -124,7 +126,8 @@ QHash<int, QByteArray> MediaBinModel::roleNames() const {
             {DurationTextRole, "durationText"},
             {SizeTextRole, "sizeText"},
             {MediaPathRole, "mediaPath"},
-            {InUseRole, "inUse"}};
+            {InUseRole, "inUse"},
+            {UsageUnknownRole, "usageUnknown"}};
 }
 
 void MediaBinModel::setProject(const project::Project& project) {
@@ -132,8 +135,12 @@ void MediaBinModel::setProject(const project::Project& project) {
     folders_ = project.mediaFolders;
     items_ = project.mediaItems;
     inUseItems_.clear();
-    for (const auto& id : project::mediaItemsInUse(project))
+    usageUnknownItems_.clear();
+    const auto usage = project::mediaItemUsage(project);
+    for (const auto& id : usage.inUse)
         inUseItems_.insert(QString::fromStdString(id));
+    for (const auto& id : usage.unknown)
+        usageUnknownItems_.insert(QString::fromStdString(id));
     // 消えた folder の展開状態は持ち越さない。同じ id が将来再利用されても開かない。
     QSet<QString> liveFolders;
     for (const auto& folder : folders_)
@@ -199,6 +206,7 @@ void MediaBinModel::appendChildren(const std::string& parentId, int depth, QList
         row.sizeText = formatMediaSize(*item);
         row.mediaPath = QString::fromStdWString(item->mediaPath.wstring());
         row.inUse = inUseItems_.contains(row.id);
+        row.usageUnknown = usageUnknownItems_.contains(row.id);
         rows.append(row);
     }
 }

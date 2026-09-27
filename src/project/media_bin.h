@@ -35,11 +35,21 @@ MediaBinEditResult removeMediaBinEntries(Project& project,
                                          const std::vector<std::string>& entryIds);
 
 const MediaItem* findMediaItem(const Project& project, const std::string& itemId);
-// 同じ実体のファイルを指す素材を探す (path_identity.h の mediaFileKey で照合する)。
+// 同じ実体のファイルを指す素材を探す (path_identity.h の comparePathIdentity が Same のもの)。
+// 同一性が Unknown の素材は一致とみなさない。重複登録の防止は best effort であり、
+// 安全判定 (使用中の素材を削除させない) は mediaItemUsage が fail-closed で担う。
 const MediaItem* findMediaItemByPath(const Project& project, const std::filesystem::path& path);
 const MediaFolder* findMediaFolder(const Project& project, const std::string& folderId);
-// timeline clip が参照している素材の id。照合は mediaFileKey で行う。
-std::set<std::string> mediaItemsInUse(const Project& project);
+
+// timeline clip からの参照状況。
+//   inUse   : どれかの clip と同じ実体 (Same)
+//   unknown : Same は無いが、identity を取れず Unknown の clip がある。未使用と断定しない
+struct MediaItemUsage {
+    std::set<std::string> inUse;
+    std::set<std::string> unknown;
+};
+
+MediaItemUsage mediaItemUsage(const Project& project);
 
 const char* mediaKindName(MediaKind kind);
 bool parseMediaKindName(const std::string& text, MediaKind& kind);

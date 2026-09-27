@@ -2,6 +2,7 @@
 // 操作は失敗時に Project を変更しないこと、JSON は欠損・矛盾を既定値で埋めないことを見る。
 
 #include "project/media_bin.h"
+#include "project/path_identity.h"
 #include "project/project_json.h"
 
 #include <cstdio>
@@ -213,10 +214,16 @@ void testFileIdentity(const std::filesystem::path& root) {
     mvm::project::TimelineClip clip;
     clip.mediaPath = link;
     project.timelineClips.push_back(clip);
-    check(mvm::project::mediaItemsInUse(project).contains("a"),
+    check(mvm::project::mediaItemUsage(project).inUse.contains("a"),
           "hard link経由のtimeline参照を使用中と判定しません");
     check(!mvm::project::removeMediaBinEntries(project, {"a"}).success,
           "hard link経由で使用中の素材を削除できてしまいます");
+
+    // canonical Project の比較も実体で行う (recovery の foreign 判定・Save As が使う)。
+    check(mvm::project::sameCanonicalPath(original, link),
+          "hard linkのProject pathを別物と判定しました");
+    check(!mvm::project::sameCanonicalPath(original, other),
+          "別ファイルのProject pathを同じと判定しました");
 
     // 存在しないファイルは表記で比べる。大文字小文字は区別しない。
     Project missing = mvm::project::createDefaultProject();
@@ -224,6 +231,54 @@ void testFileIdentity(const std::filesystem::path& root) {
                           audioItem("m2", R"(c:\MVM-MISSING\tone.WAV)")};
     check(!mvm::project::validateMediaBin(missing).success,
           "大文字小文字と区切り文字だけが違う素材の重複を受理しました");
+}
+
+// identity を取れなかったこと (Unavailable) を「存在しない」と同じに扱わない。
+// 同じにすると、同じ実体でも表記が違えば別物と判定し、使用中の素材を削除できてしまう。
+void testUnavailableIdentity(const std::filesystem::path& root) {
+    using mvm::project::FileIdentityStatus;
+    using mvm::project::PathSameness;
+    const auto directory = root / "unavailable";
+    std::filesystem::create_directories(directory);
+    const auto file = directory / "clip.wav";
+    writeText(file, "RIFF");
+    const auto missing = directory / "missing.wav";
+
+    // 状態の分類。ディレクトリは「存在するが通常ファイルの identity を取れない」例。
+    check(mvm::project::fileIdentityKey(file).status == FileIdentityStatus::FileId,
+          "通常ファイルのidentityを取れません");
+    check(mvm::project::fileIdentityKey(missing).status == FileIdentityStatus::Missing,
+          "存在しないpathをMissingと分類しません");
+    check(mvm::project::fileIdentityKey(directory).status == FileIdentityStatus::Unavailable,
+          "identityを取れないpathをUnavailableと分類しません");
+
+    check(mvm::project::comparePathIdentity(file, missing) == PathSameness::Different,
+          "存在するファイルと存在しないpathを別物と判定しません");
+    check(mvm::project::comparePathIdentity(file, directory) == PathSameness::Unknown,
+          "identityを取れないpathとの比較をUnknownにしません");
+    check(mvm::project::comparePathIdentity(directory, root / "UNAVAILABLE") == PathSameness::Same,
+          "表記が同じならidentityを取れなくても同じと判定しません");
+
+    // clip 側は identity 成功、item 側は取得不可。未使用と断定せず、削除を拒否する。
+    Project project = mvm::project::createDefaultProject();
+    MediaItem item = audioItem("u", "x");
+    item.mediaPath = directory;
+    project.mediaItems.push_back(item);
+    mvm::project::TimelineClip clip;
+    clip.mediaPath = file;
+    project.timelineClips.push_back(clip);
+    const auto usage = mvm::project::mediaItemUsage(project);
+    check(!usage.inUse.contains("u") && usage.unknown.contains("u"),
+          "identityを取れない素材を未使用と断定しました");
+    const Project before = project;
+    check(!mvm::project::removeMediaBinEntries(project, {"u"}).success && project == before,
+          "使用中か確認できない素材を削除できてしまいます");
+
+    // 対照: clip が無ければ Unknown の相手もいないので削除できる。
+    project.timelineClips.clear();
+    check(mvm::project::mediaItemUsage(project).unknown.empty() &&
+              mvm::project::removeMediaBinEntries(project, {"u"}).success,
+          "参照するclipが無い素材を削除できません (対照群)");
 }
 
 void testJson(const std::filesystem::path& root) {
@@ -312,6 +367,7 @@ int main(int argc, char** argv) {
     testRemove();
     testValidation();
     testFileIdentity(root);
+    testUnavailableIdentity(root);
     testJson(root);
 
     if (failures == 0)
