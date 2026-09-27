@@ -18,8 +18,15 @@ int mvm_reveal_in_explorer(const wchar_t* path, char* err, size_t err_size) {
         return 1;
     }
     const DWORD attributes = GetFileAttributesW(path);
-    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY)) {
-        set_err(err, err_size, "表示するファイルがありません", HRESULT_FROM_WIN32(GetLastError()));
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        /* GetLastError() は失敗した直後にだけ意味を持つ。他の API を挟まずに読む。 */
+        const DWORD error = GetLastError();
+        set_err(err, err_size, "表示するファイルがありません", HRESULT_FROM_WIN32(error));
+        return 1;
+    }
+    if (attributes & FILE_ATTRIBUTE_DIRECTORY) {
+        /* GetFileAttributesW は成功しているので GetLastError() は使えない。 */
+        set_err(err, err_size, "表示対象はファイルではありません", E_INVALIDARG);
         return 1;
     }
 
