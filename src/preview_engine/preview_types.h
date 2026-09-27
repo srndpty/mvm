@@ -66,6 +66,8 @@ struct PreviewSourceDescriptor {
     // false の場合は従来どおり source/output を1:1で扱う。
     bool videoTimelineMappingEnabled = false;
     std::int64_t videoSourceInFrame = 0;
+    // 素材の最終 frame を、丸めで存在しない frame を指す位置まで表示し続けるために使う。
+    std::int64_t videoSourceFrameCount = 0;
     std::int64_t videoTimelineStartFrame = 0;
     // Projectがmappingに用いたsource rate。decoder実測値との一致をopen後に検証する。
     PreviewFrameRate expectedVideoSourceFrameRate;

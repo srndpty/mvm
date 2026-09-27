@@ -69,9 +69,7 @@ bool planShuttleAudio(const project::Project& project, int rate, std::int64_t ba
         const auto utf8Path = clip.mediaPath.u8string();
         next.clips.push_back(
             {std::string(reinterpret_cast<const char*>(utf8Path.data()), utf8Path.size()),
-             startSample.value(), endSample.value(), offset.sampleOffset, clip.effects,
-             clip.timelineStartFrame, clip.sourceFpsNum, clip.sourceFpsDen,
-             clip.sourceOutFrame - clip.sourceInFrame});
+             startSample.value(), endSample.value(), offset.sampleOffset, clip});
     }
     plan = std::move(next);
     return true;
@@ -142,16 +140,17 @@ bool mixShuttleBlock(const ShuttleAudioPlan& plan, std::int64_t outputStart,
                 return false;
             }
             const auto frame = timebase.value().schedulerOutputFrame(*timelineSample);
-            const auto local = frame ? frame.value() - clip.timelineStartFrame : -1;
-            const auto sourceFrame = project::timelineBoundaryToSourceBoundary(
-                local, clip.sourceFpsNum, clip.sourceFpsDen, plan.timelineFpsNum,
-                plan.timelineFpsDen);
-            if (local < 0 || !sourceFrame.success || sourceFrame.frame >= clip.sourceDuration) {
+            const auto& timelineClip = clip.clip;
+            const auto local = frame ? frame.value() - timelineClip.timelineStartFrame : -1;
+            const auto sourceFrame = project::clipFadeSourceFrameAt(
+                timelineClip, plan.timelineFpsNum, plan.timelineFpsDen, local);
+            if (!sourceFrame.success) {
                 error = "シャトル音声の音量カーブ位置が不正です";
                 return false;
             }
             const float gain = static_cast<float>(project::evaluateClipVolume(
-                clip.effects, local, sourceFrame.frame, clip.sourceDuration));
+                timelineClip.effects, local, sourceFrame.frame,
+                timelineClip.sourceOutFrame - timelineClip.sourceInFrame));
             pcm[output] += source[index] * gain;
             pcm[output + 1] += source[index + 1] * gain;
         }

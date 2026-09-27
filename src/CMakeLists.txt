@@ -7,6 +7,7 @@ add_library(mvm_core STATIC
     core/checked_output_timebase.cpp
     core/export_eta.cpp
     core/presentation_opportunity_mapper.cpp
+    core/source_frame_mapping.cpp
     core/waveform_peaks.cpp
 )
 target_include_directories(mvm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

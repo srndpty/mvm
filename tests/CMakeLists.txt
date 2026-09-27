@@ -56,7 +56,7 @@ set_tests_properties(m1_project_manim_focused PROPERTIES
 # 実素材 2 本を順に並べて 1 本の MP4 にできることだけを見る。
 add_executable(mvm_test_timeline_export harness/test_timeline_export.cpp)
 target_link_libraries(mvm_test_timeline_export PRIVATE
-    mvm::timeline_export mvm::mlt mvm::util mvm::warnings)
+    mvm::timeline_export mvm::timeline_preview_mapping mvm::mlt mvm::util mvm::warnings)
 target_compile_definitions(mvm_test_timeline_export PRIVATE ${MVM_MLT_PATH_DEFS})
 add_test(NAME m4_timeline_export_focused
     COMMAND mvm_test_timeline_export
@@ -1924,6 +1924,10 @@ target_link_libraries(mvm_test_checked_output_timebase PRIVATE mvm::core mvm::wa
 mvm_add_test(preview_timebase_p5d1_unit COMMAND mvm_test_checked_output_timebase
     PROPERTIES LABELS p5d1)
 list(APPEND _mvm_p5d1_tests preview_timebase_p5d1_unit)
+
+add_executable(mvm_test_source_frame_mapping core/test_source_frame_mapping.cpp)
+target_link_libraries(mvm_test_source_frame_mapping PRIVATE mvm::core mvm::warnings)
+mvm_add_test(core_source_frame_mapping COMMAND mvm_test_source_frame_mapping)
 
 add_executable(mvm_test_preview_engine preview_engine/test_preview_engine.cpp)
 target_link_libraries(mvm_test_preview_engine PRIVATE mvm::preview_engine mvm::warnings)

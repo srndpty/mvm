@@ -617,6 +617,7 @@ private:
         std::filesystem::path mediaPath;
         std::int64_t sourceFpsNum = 0;
         std::int64_t sourceFpsDen = 1;
+        std::int64_t sourceFrameCount = 0;
         // 表示したい素材 frame (新しい in)。
         std::int64_t sourceFrame = -1;
         // まだ engine へ反映できていない。

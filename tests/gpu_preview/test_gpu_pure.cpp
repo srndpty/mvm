@@ -1762,26 +1762,39 @@ void testM7bOutputAndSourceIdentitySeparation() {
 
 void testCrossRateOutputIntervals() {
     std::fprintf(stderr, "[cross-rate output intervals]\n");
+    // 対応は書き出し (MLT) と同じ四捨五入。期待値は手で計算した値である。
+    // 23.976fps 素材を 60fps へ置く (R = 2.5025)。in = 100 の原点は ceil(250.25) = 251。
+    //   位置 251 -> 100.30 -> 100、252 -> 100.70 -> 101、254 -> 101.50 -> 101、255 -> 102
     const Rational source{24000, 1001};
     const Rational output{60, 1};
-    const auto first = sourceFrameOutputInterval(100, 100, 10, source, output);
-    const auto second = sourceFrameOutputInterval(101, 100, 10, source, output);
-    check(first.valid && first.begin == 10 && first.end == 13,
-          "23.976fps先頭frameを60fpsの3 outputへ展開");
-    check(second.valid && second.begin == 13 && second.end == 16,
+    const auto first = sourceFrameOutputInterval(100, 100, 1000, 10, source, output);
+    const auto second = sourceFrameOutputInterval(101, 100, 1000, 10, source, output);
+    check(first.valid && first.begin == 10 && first.end == 11,
+          "23.976fps先頭frameを四捨五入の区間へ写す");
+    check(second.valid && second.begin == 11 && second.end == 14,
           "23.976fps次frameのoutput区間が連続する");
 
-    const auto faster0 = sourceFrameOutputInterval(0, 0, 0, {120, 1}, output);
-    const auto faster1 = sourceFrameOutputInterval(1, 0, 0, {120, 1}, output);
+    const auto faster0 = sourceFrameOutputInterval(0, 0, 10, 0, {120, 1}, output);
+    const auto faster1 = sourceFrameOutputInterval(1, 0, 10, 0, {120, 1}, output);
     check(faster0.valid && faster0.begin == 0 && faster0.end == 1,
           "120fps先頭frameを60fpsへmapping");
     check(faster1.valid && faster1.begin == 1 && faster1.end == 1,
           "表示機会が無いsource frameを空区間にする");
-    check(!sourceFrameOutputInterval(99, 100, 10, source, output).valid,
+
+    // 25fps 素材の最終 frame 99 (N = 100, in = 90, 原点 216)。位置 239 は 99.58 で
+    // 存在しない frame 100 へ丸まるので、99 が ceil(100 * 2.4) = 240 まで表示し続ける。
+    const auto terminal = sourceFrameOutputInterval(99, 90, 100, 0, {25, 1}, output);
+    check(terminal.valid && terminal.begin == 21 && terminal.end == 24,
+          "素材の最終frameを存在しないframeの位置まで延ばす");
+
+    check(!sourceFrameOutputInterval(99, 100, 1000, 10, source, output).valid,
           "source inより前のframeを拒否する");
-    check(!sourceFrameOutputInterval(100, 100, 10, {0, 1}, output).valid,
+    check(!sourceFrameOutputInterval(100, 100, 100, 10, source, output).valid,
+          "素材frame数がin以下のmappingを拒否する");
+    check(!sourceFrameOutputInterval(100, 100, 1000, 10, {0, 1}, output).valid,
           "不正なsource rateを拒否する");
-    check(!sourceFrameOutputInterval(std::numeric_limits<long long>::max(), 0, 0,
+    check(!sourceFrameOutputInterval(std::numeric_limits<long long>::max() - 1, 0,
+                                     std::numeric_limits<long long>::max(), 0,
                                      {1, std::numeric_limits<long long>::max()},
                                      {std::numeric_limits<long long>::max(), 1})
                .valid,

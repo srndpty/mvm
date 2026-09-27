@@ -151,7 +151,10 @@ struct OutputFrameInterval {
 };
 
 // 1枚のsource frameを表示するtimeline output frameの半開区間へ変換する。
+// 対応はcore/source_frame_mapping.hの四捨五入 (書き出しのMLTと同じ)。
+// 速い素材では空区間になるframeがある。
 OutputFrameInterval sourceFrameOutputInterval(long long sourceFrame, long long sourceInFrame,
+                                              long long sourceFrameCount,
                                               long long timelineStartFrame,
                                               Rational sourceFrameRate, Rational outputFrameRate);
 
@@ -167,8 +170,9 @@ public:
     SourceDecodeWorker& operator=(const SourceDecodeWorker&) = delete;
 
     bool start(const std::string& utf8Path, std::string& err);
-    bool configureOutputMapping(long long sourceInFrame, long long timelineStartFrame,
-                                Rational outputFrameRate, std::string& err);
+    bool configureOutputMapping(long long sourceInFrame, long long sourceFrameCount,
+                                long long timelineStartFrame, Rational outputFrameRate,
+                                std::string& err);
     void stop();
     void play();
     void pause();
@@ -244,6 +248,7 @@ private:
     std::atomic<long long> outputFrameAnchor_{0};
     bool outputMappingEnabled_ = false;
     long long mappingSourceInFrame_ = 0;
+    long long mappingSourceFrameCount_ = 0;
     long long mappingTimelineStartFrame_ = 0;
     Rational mappingOutputFrameRate_{0, 1};
     Rational sourceFrameRate_{0, 1};

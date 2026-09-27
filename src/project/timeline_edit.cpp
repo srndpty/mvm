@@ -1,5 +1,7 @@
 #include "project/timeline_edit.h"
 
+#include "core/source_frame_mapping.h"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -15,13 +17,6 @@ bool validIndex(const Project& project, int index) {
     return index >= 0 && index < static_cast<int>(project.timelineClips.size());
 }
 
-bool checkedMultiply(std::uint64_t left, std::uint64_t right, std::uint64_t& result) {
-    if (left != 0 && right > std::numeric_limits<std::uint64_t>::max() / left)
-        return false;
-    result = left * right;
-    return true;
-}
-
 TimelineFrameResult convertBoundary(std::int64_t frame, std::int64_t fromNum, std::int64_t fromDen,
                                     std::int64_t toNum, std::int64_t toDen, bool roundUp) {
     TimelineFrameResult result;
@@ -29,43 +24,14 @@ TimelineFrameResult convertBoundary(std::int64_t frame, std::int64_t fromNum, st
         result.error = "frame または timebase が不正です";
         return result;
     }
-
-    std::uint64_t factors[3] = {static_cast<std::uint64_t>(frame),
-                                static_cast<std::uint64_t>(toNum),
-                                static_cast<std::uint64_t>(fromDen)};
-    std::uint64_t divisors[2] = {static_cast<std::uint64_t>(toDen),
-                                 static_cast<std::uint64_t>(fromNum)};
-    for (auto& divisor : divisors) {
-        for (auto& factor : factors) {
-            const std::uint64_t common = std::gcd(factor, divisor);
-            factor /= common;
-            divisor /= common;
-        }
-    }
-
-    std::uint64_t numerator = 1;
-    for (const auto factor : factors) {
-        if (!checkedMultiply(numerator, factor, numerator)) {
-            result.error = "frame timebase 変換が overflow しました";
-            return result;
-        }
-    }
-    std::uint64_t denominator = 1;
-    for (const auto divisor : divisors) {
-        if (!checkedMultiply(denominator, divisor, denominator) || denominator == 0) {
-            result.error = "frame timebase 変換が overflow しました";
-            return result;
-        }
-    }
-    std::uint64_t converted = numerator / denominator;
-    if (roundUp && numerator % denominator != 0)
-        ++converted;
-    if (converted > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
-        result.error = "frame timebase 変換が int64 範囲外です";
+    const auto converted =
+        core::convertFrameBoundary(frame, {fromNum, fromDen}, {toNum, toDen}, roundUp);
+    if (!converted) {
+        result.error = "frame timebase 変換が overflow しました";
         return result;
     }
     result.success = true;
-    result.frame = static_cast<std::int64_t>(converted);
+    result.frame = *converted;
     return result;
 }
 
@@ -199,6 +165,68 @@ TimelineFrameResult timelineClipDuration(const Project& project, const TimelineC
     }
     result.success = true;
     result.frame = end.frame - begin.frame;
+    return result;
+}
+
+TimelineFrameResult clipSourceFrameAt(const TimelineClip& clip, std::int64_t timelineFpsNum,
+                                      std::int64_t timelineFpsDen, std::int64_t clipLocalFrame) {
+    TimelineFrameResult result;
+    const auto origin = sourceBoundaryToTimelineBoundary(
+        clip.sourceInFrame, clip.sourceFpsNum, clip.sourceFpsDen, timelineFpsNum, timelineFpsDen);
+    if (!origin.success)
+        return origin;
+    const auto end = sourceBoundaryToTimelineBoundary(
+        clip.sourceOutFrame, clip.sourceFpsNum, clip.sourceFpsDen, timelineFpsNum, timelineFpsDen);
+    if (!end.success)
+        return end;
+    if (clipLocalFrame < 0 || clipLocalFrame >= end.frame - origin.frame) {
+        result.error = "clip の範囲外の frame です";
+        return result;
+    }
+    const auto source = core::sourceFrameAtOutputPosition(origin.frame + clipLocalFrame,
+                                                          {clip.sourceFpsNum, clip.sourceFpsDen},
+                                                          {timelineFpsNum, timelineFpsDen});
+    if (!source) {
+        result.error = "timeline frame を素材 frame へ換算できません";
+        return result;
+    }
+    result.success = true;
+    result.frame = std::min(*source, clip.sourceFrameCount - 1);
+    return result;
+}
+
+ClipProducerRange clipProducerRange(const TimelineClip& clip, std::int64_t timelineFpsNum,
+                                    std::int64_t timelineFpsDen) {
+    ClipProducerRange result;
+    const auto begin = sourceBoundaryToTimelineBoundary(
+        clip.sourceInFrame, clip.sourceFpsNum, clip.sourceFpsDen, timelineFpsNum, timelineFpsDen);
+    const auto end = sourceBoundaryToTimelineBoundary(
+        clip.sourceOutFrame, clip.sourceFpsNum, clip.sourceFpsDen, timelineFpsNum, timelineFpsDen);
+    const auto beyondSource = core::firstOutputPositionOfSourceFrame(
+        clip.sourceFrameCount, {clip.sourceFpsNum, clip.sourceFpsDen},
+        {timelineFpsNum, timelineFpsDen});
+    if (!begin.success || !end.success || !beyondSource) {
+        result.error = "clip の cut 範囲を換算できません";
+        return result;
+    }
+    result.begin = begin.frame;
+    result.end = std::min(end.frame, *beyondSource);
+    result.tailFrames = end.frame - result.end;
+    if (result.end <= result.begin) {
+        result.error = "clip の cut 範囲が 1 frame 未満です";
+        return result;
+    }
+    result.success = true;
+    return result;
+}
+
+TimelineFrameResult clipFadeSourceFrameAt(const TimelineClip& clip, std::int64_t timelineFpsNum,
+                                          std::int64_t timelineFpsDen,
+                                          std::int64_t clipLocalFrame) {
+    auto result = clipSourceFrameAt(clip, timelineFpsNum, timelineFpsDen, clipLocalFrame);
+    if (result.success)
+        result.frame = std::clamp(result.frame - clip.sourceInFrame, std::int64_t{0},
+                                  clip.sourceOutFrame - clip.sourceInFrame - 1);
     return result;
 }
 

@@ -27,18 +27,17 @@ TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& proj
         // mute した video track は「黒」ではなく layer から外す。
         if (project.videoTracks[index].muted)
             continue;
-        const auto sourceOffset = project::timelineBoundaryToSourceBoundary(
-            timelineFrame - clip->timelineStartFrame, clip->sourceFpsNum, clip->sourceFpsDen,
-            project.timelineFpsNum, project.timelineFpsDen);
-        if (!sourceOffset.success ||
-            sourceOffset.frame >= clip->sourceOutFrame - clip->sourceInFrame) {
+        const auto sourceFrame =
+            project::clipSourceFrameAt(*clip, project.timelineFpsNum, project.timelineFpsDen,
+                                       timelineFrame - clip->timelineStartFrame);
+        if (!sourceFrame.success) {
             result.layers.clear();
             result.error = clip->name + ": preview frameを素材frameへ換算できません";
             return result;
         }
         result.layers.push_back({static_cast<int>(index),
                                  static_cast<int>(clip - project.timelineClips.data()), clip->id,
-                                 clip->sourceInFrame + sourceOffset.frame});
+                                 sourceFrame.frame});
     }
     if (result.layers.size() > kMaxPreviewVideoLayers) {
         result.layers.clear();
@@ -64,27 +63,27 @@ bool previewVideoMappingCovers(const project::Project& project,
     if (installed.mediaPath != wanted.mediaPath || installed.sourceFpsNum != wanted.sourceFpsNum ||
         installed.sourceFpsDen != wanted.sourceFpsDen)
         return false;
-    // source は素材 frame s を timeline 区間 [start + ceil((s - in) R), ...) へ写す
-    // (R = timeline fps / 素材 fps)。installed の原点から d = in' - in 進んだ位置で
-    // d R が整数 k なら ceil((s - in) R) = ceil((s - in') R) + k となり、start' = start + k
-    // のとき全 frame で同じ区間を指す。d R が整数でなければ丸めが原点に依存するので使い回さない。
-    // レーザーで分割した右半分は、素材 fps が timeline fps の整数分の 1 (60fps timeline の
-    // 30fps 素材など) ならこの条件を満たす。29.97fps 素材などでは満たさず、境界で組み直す。
+    // source は素材 frame s を、素材の 0 frame から数えた output 位置の区間
+    // [ceil((s - 1/2) R), ceil((s + 1/2) R)) に写し、timeline 上では
+    // start - ceil(in R) だけずらす (R = timeline fps / 素材 fps、core/source_frame_mapping.h)。
+    // 位置を素材の絶対位置で数えるので、このずらし量が同じなら in が違っても全 frame で
+    // 同じ区間を指す。レーザーで分割した右半分は trim の境界も ceil(in R) で決まるため、
+    // 素材 fps によらず常にこれを満たす。installed の in より前の frame は source が
+    // 先頭で切っているので、in が戻る方向には使い回さない。
     const std::int64_t sourceAdvance = wanted.sourceInFrame - installed.sourceInFrame;
     if (sourceAdvance < 0)
         return false;
-    if (sourceAdvance == 0)
-        return wanted.timelineStartFrame == installed.timelineStartFrame;
-    // d R = d * timelineNum * sourceDen / (timelineDen * sourceNum)。fps は検証済みの正の値で、
-    // 積は 128 bit に収まる。
-    const WideInteger numerator =
-        static_cast<WideInteger>(sourceAdvance) * project.timelineFpsNum * clip.sourceFpsDen;
-    const WideInteger denominator =
-        static_cast<WideInteger>(project.timelineFpsDen) * clip.sourceFpsNum;
-    if (denominator <= 0 || numerator % denominator != 0)
+    const auto origin = [&](const PreviewVideoMapping& mapping) {
+        return project::sourceBoundaryToTimelineBoundary(
+            mapping.sourceInFrame, mapping.sourceFpsNum, mapping.sourceFpsDen,
+            project.timelineFpsNum, project.timelineFpsDen);
+    };
+    const auto installedOrigin = origin(installed);
+    const auto wantedOrigin = origin(wanted);
+    if (!installedOrigin.success || !wantedOrigin.success)
         return false;
-    return static_cast<WideInteger>(wanted.timelineStartFrame) - installed.timelineStartFrame ==
-           numerator / denominator;
+    return static_cast<WideInteger>(wanted.timelineStartFrame) - wantedOrigin.frame ==
+           static_cast<WideInteger>(installed.timelineStartFrame) - installedOrigin.frame;
 }
 
 bool sameTimelinePreviewSourceSet(const TimelinePreviewFrameMapping& a,

@@ -19,11 +19,8 @@ struct ShuttleAudioClip {
     std::int64_t timelineEndSample = 0;
     // 素材 sample = timeline sample + sourceOffset
     std::int64_t sourceOffset = 0;
-    project::ClipEffects effects;
-    std::int64_t timelineStartFrame = 0;
-    std::int64_t sourceFpsNum = 0;
-    std::int64_t sourceFpsDen = 1;
-    std::int64_t sourceDuration = 0;
+    // 音量カーブとフェードの評価に使う。
+    project::TimelineClip clip;
 };
 
 struct ShuttleAudioPlan {

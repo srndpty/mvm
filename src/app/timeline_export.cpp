@@ -38,16 +38,14 @@ bool mapExportEffects(const project::TimelineClip& clip, const TimelineExportReq
     output.rotationDegrees = mapped.rotationDegrees;
 
     for (std::int64_t frame = 0; frame < timelineDuration; ++frame) {
-        const auto source = project::timelineBoundaryToSourceBoundary(
-            frame, clip.sourceFpsNum, clip.sourceFpsDen, request.fpsNum, request.fpsDen);
-        if (!source.success) {
-            error = source.error;
+        const auto sourceLocal =
+            project::clipFadeSourceFrameAt(clip, request.fpsNum, request.fpsDen, frame);
+        if (!sourceLocal.success) {
+            error = sourceLocal.error;
             return false;
         }
-        const auto sourceLocal =
-            std::min(source.frame, clip.sourceOutFrame - clip.sourceInFrame - 1);
         output.opacityKeys.push_back(
-            {frame, project::evaluateClipOpacity(clip.effects, frame, sourceLocal,
+            {frame, project::evaluateClipOpacity(clip.effects, frame, sourceLocal.frame,
                                                  clip.sourceOutFrame - clip.sourceInFrame)});
     }
     return true;
@@ -112,21 +110,29 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
         mapped.videoTrackIndex = clip.track.index;
         mapped.timelineStartFrame = clip.timelineStartFrame;
         mapped.timelineDurationFrames = duration.frame;
+        const auto range = project::clipProducerRange(clip, request.fpsNum, request.fpsDen);
+        if (!range.success) {
+            plan.error = clip.name + ": " + range.error;
+            return plan;
+        }
+        mapped.producerInFrame = range.begin;
+        mapped.producerOutFrame = range.end;
+        mapped.tailPaddingFrames = range.tailFrames;
+        // 末尾の補完は tractor 経路だけが持つ。
+        if (range.tailFrames > 0)
+            plan.backend = TimelineExportResult::Backend::Tractor;
         if (mapped.audio) {
             anyAudio = true;
             for (std::int64_t frame = 0; frame < duration.frame; ++frame) {
-                const auto source = project::timelineBoundaryToSourceBoundary(
-                    frame, clip.sourceFpsNum, clip.sourceFpsDen, request.fpsNum, request.fpsDen);
-                if (!source.success) {
-                    plan.error = source.error;
+                const auto sourceLocal =
+                    project::clipFadeSourceFrameAt(clip, request.fpsNum, request.fpsDen, frame);
+                if (!sourceLocal.success) {
+                    plan.error = sourceLocal.error;
                     return plan;
                 }
                 mapped.gainKeys.push_back(
-                    {frame,
-                     project::evaluateClipVolume(
-                         clip.effects, frame,
-                         std::min(source.frame, clip.sourceOutFrame - clip.sourceInFrame - 1),
-                         clip.sourceOutFrame - clip.sourceInFrame)});
+                    {frame, project::evaluateClipVolume(clip.effects, frame, sourceLocal.frame,
+                                                        clip.sourceOutFrame - clip.sourceInFrame)});
             }
             plan.clips.push_back(std::move(mapped));
             continue;
@@ -207,6 +213,9 @@ TimelineExportResult exportTimeline(const project::Project& project,
         mapped.source_frame_count = clip.sourceFrameCount;
         mapped.source_in_frame = clip.sourceInFrame;
         mapped.source_out_frame = clip.sourceOutFrame;
+        mapped.producer_in_frame = planned.producerInFrame;
+        mapped.producer_out_frame = planned.producerOutFrame;
+        mapped.tail_padding_frames = planned.tailPaddingFrames;
         mapped.is_audio = planned.audio ? 1 : 0;
         mapped.video_track = planned.videoTrackIndex;
         mapped.timeline_start_frame = planned.timelineStartFrame;

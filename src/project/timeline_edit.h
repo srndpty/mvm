@@ -67,6 +67,31 @@ TimelineFrameResult timelineBoundaryToSourceBoundary(std::int64_t timelineFrame,
                                                      std::int64_t timelineFpsNum,
                                                      std::int64_t timelineFpsDen);
 TimelineFrameResult timelineClipDuration(const Project& project, const TimelineClip& clip);
+// clip 先頭から clipLocalFrame 番目の timeline frame が表示する素材 frame (素材の絶対 frame)。
+// core::sourceFrameAtOutputPosition の四捨五入で、書き出し (MLT) と同じ frame を返す。
+// 丸めで sourceOutFrame (trim で外した次の frame) を返すことがあるのも MLT と同じである。
+// 素材の末尾を越える分だけは最終 frame に止める。
+TimelineFrameResult clipSourceFrameAt(const TimelineClip& clip, std::int64_t timelineFpsNum,
+                                      std::int64_t timelineFpsDen, std::int64_t clipLocalFrame);
+
+// 書き出しの producer に渡す cut の範囲。位置は素材の 0 frame から数えた output 位置
+// (core/source_frame_mapping.h) で、[begin, end) が clipSourceFrameAt と同じ frame を出す。
+// 素材の末尾で、丸めると存在しない frame を指す位置は cut に含めない。その分の
+// tailFrames は最終 frame を繰り返して埋める (clipSourceFrameAt の最終 frame への止め方と同じ)。
+struct ClipProducerRange {
+    bool success = false;
+    std::int64_t begin = 0;
+    std::int64_t end = 0;
+    std::int64_t tailFrames = 0;
+    std::string error;
+};
+
+ClipProducerRange clipProducerRange(const TimelineClip& clip, std::int64_t timelineFpsNum,
+                                    std::int64_t timelineFpsDen);
+// フェードと音量カーブの評価に渡す素材 local frame (clipSourceFrameAt - in)。
+// 丸めで素材範囲の外を指す分は [0, out - in) に収める。
+TimelineFrameResult clipFadeSourceFrameAt(const TimelineClip& clip, std::int64_t timelineFpsNum,
+                                          std::int64_t timelineFpsDen, std::int64_t clipLocalFrame);
 bool sourceRateMatchesTimelineRate(const Project& project, const TimelineClip& clip);
 TimelineValidationResult validateTimeline(const Project& project);
 

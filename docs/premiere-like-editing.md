@@ -853,3 +853,47 @@ Shift を押しただけでマウスを動かさない間は、表示は吸着�
 clip では 1 clip あたり 43.2 万 key になる。preview と同じ `evaluateClipOpacity/Volume` を
 frame ごとに使うことで補間・フェード乗算・素材 fps の差を揃えている。キー・フェード境界・
 clip 端などの変化点だけへ圧縮する余地はあるが、preview との一致を壊しやすいので、計測してから判断する。
+
+### 16.7 素材 frame の対応を書き出し (MLT) に揃える (レート調整の前段)
+
+レート調整 (R) を入れると、timeline fps と素材 fps の比が整数でない clip が当たり前になる。
+その前に、preview と書き出しで「timeline frame がどの素材 frame を出すか」を一致させた。
+
+`[事実]` MLT (7.36.1) の avformat producer は、profile fps の位置 p (素材の 0 frame から数える) に
+素材 frame `floor(p × 素材fps / profile fps + 1/2)` を出す。preview は `floor(p / R)` だったので、
+fps が違う clip で最大 1 素材 frame 食い違っていた。25fps 素材を 60fps profile で出すと 239 frame 中
+118 frame がずれていた。再現手順: `testsrc2` で作った素材を `melt -profile <60fps> src.mp4
+-consumer avformat:out.nut vcodec=rawvideo` で出し、素材 fps の profile で出した frame と
+`framemd5` で照合する (ffmpeg で直接 decode した md5 とは変換が違うので照合に使えない)。
+
+`[事実]` 同じ理由で、書き出しの cut 開始を `floor(in R)` にしていたため、R < 2 の clip は先頭に
+in より前の frame を出していた。50fps 素材を 60fps へ置き in = 4 とすると frame 3 が出た。
+
+`[事実]` ちょうど 1/2 の境界では MLT が double で計算するため、まれに下へ丸まる
+(25fps→60fps の p = 138 は 57.5 で frame 57)。mvm は有理数で厳密に上へ丸め、これは再現しない。
+
+変更:
+
+- 対応の定義を `src/core/source_frame_mapping.h` の 1 か所にした。境界は `ceil(s R)`、表示は
+  `floor(p / R + 1/2)`。Project の `convertBoundary`、preview (`clipSourceFrameAt`)、
+  decode worker (`sourceFrameOutputInterval`)、書き出しの cut (`clipProducerRange`)、
+  フェード・音量カーブの評価 (`clipFadeSourceFrameAt`) がすべてこれを使う
+- 書き出しの cut は Project の境界と同じ `ceil(in R)` から始める。C 側の floor 換算
+  (`mvm_source_boundary_to_producer_boundary`) は削除し、C++ で決めた範囲を渡す
+- 素材の末尾で、丸めると存在しない frame を指す位置は cut に含めず、最終 frame を繰り返して埋める。
+  埋める数は clip ごとに決まる (以前の「0〜2 frame」の許容は廃止)。埋める clip は tractor 経路で書き出す
+- 丸めで trim の外側の frame (sourceOutFrame) を出す位置があるのも MLT と同じにしている
+- 位置を素材の絶対位置で数えるので、分割した右半分は素材 fps によらず左半分の preview source を
+  引き継げる (§16.5 の「(in' - in) R が整数」の条件は不要になった。29.97fps 素材も引き継ぐ)
+
+`[事実]` `m4_timeline_export_focused` に、48fps 素材を in = 3 から 60fps へ置いた clip を書き出し、
+全 8 frame が手計算の対応 3,4,5,6,6,7,8,9 と一致すること、preview も同じ列を返すことを足した。
+書き出しは色変換で輝度が変わるので、同じ輝度式の 60fps 素材を 1:1 で後ろに置いた校正表と照合する。
+cut 開始を floor に戻した mutant でこの検査が落ちることを確認した。
+
+`[事実]` timewarp producer (レート調整で使う予定) も同じ四捨五入だった。
+`timewarp:<speed>:src.mp4` を 60fps profile で出すと、length は素材尺 ÷ speed (端数切り上げ、
+0.73 で 329 frame)、frame は `floor(k × speed × 素材fps / profile fps + 1/2)` と一致した
+(0.73 で 328/328、1/3 で 716/717、不一致 1 件は 1/2 境界の double 誤差)。
+`warp_pitch=0` では 1000Hz の正弦波が 0.5x で 500Hz、2x で 2000Hz になり、
+`warp_pitch=1` では 1000Hz のまま保たれた (中央 1 秒のゼロ交差で測定)。

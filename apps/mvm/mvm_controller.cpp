@@ -1316,10 +1316,9 @@ bool MvmController::audioDescriptorFor(int clipIndex, preview::PreviewSourceDesc
         if (!frame)
             return 0.0F;
         const auto local = frame.value() - clip.timelineStartFrame;
-        const auto source = project::timelineBoundaryToSourceBoundary(
-            local, clip.sourceFpsNum, clip.sourceFpsDen, timelineFpsNum, timelineFpsDen);
-        if (local < 0 || !source.success ||
-            source.frame >= clip.sourceOutFrame - clip.sourceInFrame)
+        const auto source =
+            project::clipFadeSourceFrameAt(clip, timelineFpsNum, timelineFpsDen, local);
+        if (!source.success)
             return 0.0F;
         return static_cast<float>(project::evaluateClipVolume(
             clip.effects, local, source.frame, clip.sourceOutFrame - clip.sourceInFrame));
@@ -1542,6 +1541,7 @@ bool MvmController::syncPreviewSourcesAt(std::int64_t timelineFrame, QString& er
         descriptor.videoEnabled = true;
         descriptor.videoTimelineMappingEnabled = true;
         descriptor.videoSourceInFrame = clip.sourceInFrame;
+        descriptor.videoSourceFrameCount = clip.sourceFrameCount;
         descriptor.videoTimelineStartFrame = clip.timelineStartFrame;
         if (clip.sourceFpsNum > std::numeric_limits<std::uint32_t>::max() ||
             clip.sourceFpsDen > std::numeric_limits<std::uint32_t>::max()) {
@@ -2952,6 +2952,7 @@ qint64 MvmController::previewSlip(qint64 projectFrameDelta) {
         slipPreview_->mediaPath = clip.mediaPath;
         slipPreview_->sourceFpsNum = clip.sourceFpsNum;
         slipPreview_->sourceFpsDen = clip.sourceFpsDen;
+        slipPreview_->sourceFrameCount = clip.sourceFrameCount;
         slipPreview_->sourceFrame = clip.sourceInFrame;
         slipPreview_->pending = true;
         if (!slipPreviewTimer_.isActive()) {
@@ -2985,6 +2986,7 @@ void MvmController::applySlipPreview() {
         descriptor.videoEnabled = true;
         descriptor.videoTimelineMappingEnabled = true;
         descriptor.videoSourceInFrame = 0;
+        descriptor.videoSourceFrameCount = slipPreview_->sourceFrameCount;
         descriptor.videoTimelineStartFrame = 0;
         descriptor.expectedVideoSourceFrameRate = {
             static_cast<std::uint32_t>(slipPreview_->sourceFpsNum),

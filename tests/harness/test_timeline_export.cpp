@@ -9,10 +9,12 @@
 // 期待フレーム数は実装の式を再利用せず、入力を probe して独立に足し合わせる。
 
 #include "app/timeline_export.h"
+#include "app/timeline_preview_mapping.h"
 #include "media/mlt/mvm_mlt_export.h"
 #include "media/mlt/mvm_mlt_probe.h"
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "project/project.h"
+#include "project/timeline_edit.h"
 #include "util/mvm_win_utf8.h"
 
 #include <algorithm>
@@ -237,17 +239,37 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    long long producerBoundary = -1;
-    check(mvm_source_boundary_to_producer_boundary(30, 30000, 1001, 60, 1, &producerBoundary) ==
-                  0 &&
-              producerBoundary == 60,
-          "29.97fps source境界をMLT producer位置へ変換できません");
-    check(mvm_source_boundary_to_producer_boundary(60, 30000, 1001, 60, 1, &producerBoundary) ==
-                  0 &&
-              producerBoundary == 120,
-          "MLT producer境界変換がProject timelineのceil意味論と分離されていません");
-    check(mvm_source_boundary_to_producer_boundary(-1, 60, 1, 60, 1, &producerBoundary) != 0,
-          "負のMLT producer境界を拒否しません");
+    // cut の範囲は Project の境界 ceil(s R) で決める。期待値は手で計算した値である。
+    {
+        mvm::project::TimelineClip ntsc;
+        ntsc.sourceFpsNum = 30000;
+        ntsc.sourceFpsDen = 1001;
+        ntsc.sourceFrameCount = 300;
+        ntsc.sourceInFrame = 30;  // 30 * 60 * 1001 / 30000 = 60.06
+        ntsc.sourceOutFrame = 60; // 120.12
+        const auto range = mvm::project::clipProducerRange(ntsc, 60, 1);
+        check(range.success && range.begin == 61 && range.end == 121 && range.tailFrames == 0,
+              "29.97fps素材のcut範囲がProject境界のceilと一致しません");
+
+        // 25fps 素材の末尾 (N = 100) を 60fps へ置く。位置 239 は 239 / 2.4 = 99.58 で
+        // 存在しない frame 100 に丸まるので cut に含めず、最終 frame で 1 frame 埋める。
+        mvm::project::TimelineClip pal;
+        pal.sourceFpsNum = 25;
+        pal.sourceFpsDen = 1;
+        pal.sourceFrameCount = 100;
+        pal.sourceInFrame = 90;
+        pal.sourceOutFrame = 100;
+        const auto terminal = mvm::project::clipProducerRange(pal, 60, 1);
+        check(terminal.success && terminal.begin == 216 && terminal.end == 239 &&
+                  terminal.tailFrames == 1,
+              "素材末尾で存在しないframeへ丸まる位置をcutから外していません");
+
+        pal.sourceInFrame = 40; // ceil(96) = 96
+        pal.sourceOutFrame = 50;
+        const auto middle = mvm::project::clipProducerRange(pal, 60, 1);
+        check(middle.success && middle.end == 120 && middle.tailFrames == 0,
+              "素材の途中で終わるclipに末尾の補完を付けました");
+    }
     if (!std::filesystem::is_regular_file(firstClip) ||
         !std::filesystem::is_regular_file(secondClip) ||
         !std::filesystem::is_regular_file(ffmpeg)) {
@@ -423,6 +445,8 @@ int main(int argc, char** argv) {
             invalid.source_frame_count = 10;
             invalid.source_in_frame = 0;
             invalid.source_out_frame = 10;
+            invalid.producer_in_frame = 0;
+            invalid.producer_out_frame = 10;
             invalid.video_track = 1;
             invalid.timeline_start_frame = 0;
             invalid.timeline_duration_frames = 10;
@@ -600,6 +624,9 @@ int main(int argc, char** argv) {
         padded.source_frame_count = sourceFrames + 1;
         padded.source_in_frame = sourceFrames + 1 - kDuration;
         padded.source_out_frame = sourceFrames + 1;
+        // 60fps 素材を 60fps へ置くので producer 位置は素材 frame と同じ。
+        padded.producer_in_frame = padded.source_in_frame;
+        padded.producer_out_frame = padded.source_out_frame;
         padded.timeline_start_frame = 0;
         padded.timeline_duration_frames = kDuration;
         padded.opacity_keyframe_count = 2;
@@ -622,6 +649,8 @@ int main(int argc, char** argv) {
         v1Plain.source_frame_count = sourceFrames;
         v1Plain.source_in_frame = 0;
         v1Plain.source_out_frame = kDuration;
+        v1Plain.producer_in_frame = 0;
+        v1Plain.producer_out_frame = kDuration;
         v1Plain.timeline_duration_frames = kDuration;
         MvmExportClip v2Crop = padded;
         v2Crop.video_track = 1;
@@ -664,6 +693,108 @@ int main(int argc, char** argv) {
             check(mismatches == 0, "末尾補完frameが本体と同じcrop/effectを受けていません");
             if (mismatches != 0)
                 std::fprintf(stderr, "  %ls: 不一致画素 %d\n", paddingCase.name, mismatches);
+        }
+    }
+
+    // --- 非timeline fps素材で、書き出しとpreviewが同じ素材frameを出す -------------
+    // frame n の輝度を Y = 40 + 8n にした 48fps 素材を in = 3 から 60fps timeline へ置く。
+    // MLT は位置 p (素材の 0 frame から数えた 60fps 位置) に frame floor(p / 1.25 + 1/2) を出す。
+    // cut は ceil(3 * 1.25) = 4 から始まり、位置 4..11 は手計算で次の frame になる。
+    //   4:3.2 5:4.0 6:4.8 7:5.6 8:6.4 9:7.2 10:8.0 11:8.8
+    // 48fps -> 60fps では p / 1.25 がちょうど 1/2 にならないので、MLT の double 誤差に依存しない。
+    // 以前は書き出しの cut を floor(3.75) = 3 から始め (先頭で in より前の frame 2 が出た)、
+    // preview は floor で 3,3,4,... を出していた。どちらもこの検査で落ちる。
+    //
+    // 書き出しは色変換で輝度の絶対値が変わるので、同じ輝度式の 60fps 素材を 1:1 で後ろに置き、
+    // 同じ経路を通した「素材 frame -> 画素値」の表と照合する。
+    {
+        const auto generateRamp = [&](const std::filesystem::path& output, const wchar_t* rate) {
+            const std::wstring lavfi =
+                std::wstring(L"color=c=black:s=320x240:r=") + rate + L":d=0.5";
+            return _wspawnl(_P_WAIT, ffmpeg.c_str(), ffmpeg.c_str(), L"-y", L"-loglevel", L"error",
+                            L"-f", L"lavfi", L"-i", lavfi.c_str(), L"-vf",
+                            L"geq=lum='40+8*N':cb=128:cr=128", L"-c:v", L"libx264", L"-preset",
+                            L"ultrafast", L"-qp", L"0", L"-pix_fmt", L"yuv420p", output.c_str(),
+                            static_cast<wchar_t*>(nullptr)) == 0;
+        };
+        const auto source = testDirectory / L"frame-mapping-48fps.mp4";
+        const auto calibration = testDirectory / L"frame-mapping-60fps.mp4";
+        check(generateRamp(source, L"48") && generateRamp(calibration, L"60"),
+              "frame対応検査用のfixtureを生成できません");
+        const long long sourceFrames = probeFrameCount(source);
+        const long long calibrationFrames = probeFrameCount(calibration);
+        check(sourceFrames == 24 && calibrationFrames == 30,
+              "frame対応検査用fixtureのframe数が前提と違います");
+
+        const auto rampClip = [](const std::filesystem::path& path, const char* id,
+                                 std::int64_t fps, std::int64_t frames, std::int64_t in,
+                                 std::int64_t out, std::int64_t start) {
+            mvm::project::TimelineClip clip;
+            clip.kind = mvm::project::TimelineClipKind::Video;
+            clip.mediaPath = path;
+            clip.name = id;
+            clip.id = id;
+            clip.sourceFpsNum = fps;
+            clip.sourceFpsDen = 1;
+            clip.sourceFrameCount = frames;
+            clip.sourceInFrame = in;
+            clip.sourceOutFrame = out;
+            clip.timelineStartFrame = start;
+            clip.track = {mvm::project::TrackKind::Video, 0};
+            return clip;
+        };
+        const std::vector<long long> expected = {3, 4, 5, 6, 6, 7, 8, 9};
+        constexpr long long kCalibrationFrames = 12;
+        const auto mappedLength = static_cast<std::int64_t>(expected.size());
+        mvm::project::Project mapped = mvm::project::createDefaultProject();
+        mapped.timelineClips = {rampClip(source, "frame-mapping", 48, sourceFrames, 3, 9, 0),
+                                rampClip(calibration, "calibration", 60, calibrationFrames, 0,
+                                         kCalibrationFrames, mappedLength)};
+
+        for (std::int64_t frame = 0; frame < mappedLength; ++frame) {
+            const auto preview = mvm::app::mapTimelinePreviewFrame(mapped, frame);
+            check(preview.success && preview.layers.size() == 1 &&
+                      preview.layers[0].sourceFrameNumber ==
+                          expected[static_cast<std::size_t>(frame)],
+                  "previewの素材frameが手計算の対応と違います");
+        }
+
+        mvm::app::TimelineExportRequest mappedRequest;
+        mappedRequest.outputPath = testDirectory / L"frame-mapping-export.mp4";
+        mappedRequest.width = 320;
+        mappedRequest.height = 240;
+        const auto exported = mvm::app::exportTimeline(mapped, mappedRequest);
+        check(exported.success, "frame対応検査のclipを書き出せません");
+        if (exported.success) {
+            check(probeFrameCount(mappedRequest.outputPath) == mappedLength + kCalibrationFrames,
+                  "frame対応検査の出力尺が違います");
+            std::vector<int> table;
+            for (long long n = 0; n < kCalibrationFrames; ++n)
+                table.push_back(pixelAt(mappedRequest.outputPath, mappedLength + n, 160, 120).r);
+            // 表が素材 frame ごとに区別できること (隣の frame と 4 以上離れていること)。
+            bool distinct = true;
+            for (std::size_t n = 1; n < table.size(); ++n)
+                distinct = distinct && table[n] - table[n - 1] >= 4;
+            check(distinct, "校正表で素材frameを区別できません");
+            int compared = 0;
+            for (std::int64_t frame = 0; frame < mappedLength; ++frame) {
+                const int r = pixelAt(mappedRequest.outputPath, frame, 160, 120).r;
+                long long nearest = 0;
+                for (long long n = 1; n < kCalibrationFrames; ++n) {
+                    if (std::abs(table[static_cast<std::size_t>(n)] - r) <
+                        std::abs(table[static_cast<std::size_t>(nearest)] - r))
+                        nearest = n;
+                }
+                ++compared;
+                if (nearest != expected[static_cast<std::size_t>(frame)]) {
+                    check(false, "書き出しの素材frameが手計算の対応と違います");
+                    std::fprintf(stderr, "  timeline %lld: 素材 frame %lld (期待 %lld, r=%d)\n",
+                                 static_cast<long long>(frame), nearest,
+                                 expected[static_cast<std::size_t>(frame)], r);
+                }
+            }
+            check(compared == static_cast<int>(mappedLength),
+                  "書き出しのframe対応を全frame比較していません");
         }
     }
 
