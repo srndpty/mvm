@@ -17,9 +17,10 @@ ApplicationWindow {
 
     property url selectedManimScript
 
-    function isSupportedVideoUrl(url) {
-        const value = url.toString();
-        return /^file:/i.test(value) && /\.(mp4|mov|mkv|ts)$/i.test(value);
+    function isLocalFileUrl(url) {
+        // 対応形式は拡張子では決めない。drop 後に controller が MLT で内容を検査し、
+        // 映像 stream・有限尺・FPS を確認できた素材だけを timeline へ追加する。
+        return /^file:/i.test(url.toString());
     }
 
     DropArea {
@@ -34,7 +35,7 @@ ApplicationWindow {
             if (mvmController.busy || !drag.hasUrls)
                 return;
             for (let index = 0; index < drag.urls.length; ++index) {
-                if (root.isSupportedVideoUrl(drag.urls[index])) {
+                if (root.isLocalFileUrl(drag.urls[index])) {
                     acceptingVideoDrag = true;
                     drag.accepted = true;
                     return;
@@ -47,7 +48,7 @@ ApplicationWindow {
             let accepted = false;
             for (let index = 0; index < drop.urls.length; ++index) {
                 const url = drop.urls[index];
-                if (!root.isSupportedVideoUrl(url))
+                if (!root.isLocalFileUrl(url))
                     continue;
                 accepted = true;
                 mvmController.addVideoClip(url);
@@ -67,7 +68,7 @@ ApplicationWindow {
 
         Label {
             anchors.centerIn: parent
-            text: "動画をドロップしてタイムラインへ追加"
+            text: "メディアファイルをドロップして検査・追加"
             color: "white"
             font.pixelSize: 20
             font.bold: true
@@ -1137,8 +1138,13 @@ ApplicationWindow {
                                         const now = mapToItem(trackArea, mouse.x, mouse.y);
                                         clipItem.rawBodyDragOffsetX = now.x - clipItem.bodyPressPoint.x;
                                         // track移動時の小さな横ぶれは無視する。
-                                        clipItem.bodyDragOffsetX = Math.abs(clipItem.rawBodyDragOffsetX) < 12
+                                        const intendedOffset = Math.abs(clipItem.rawBodyDragOffsetX) < 12
                                                                    ? 0 : clipItem.rawBodyDragOffsetX;
+                                        // drag中もanchorを0秒より左へ描画しない。リンク・複数選択の
+                                        // 最左端はProject側が同じdeltaで最終スナップする。
+                                        clipItem.bodyDragOffsetX = Math.max(
+                                            -clipItem.timelineStartFrame * timelinePanel.pixelsPerFrame,
+                                            intendedOffset);
                                         timelinePanel.activeDragOffsetX = clipItem.bodyDragOffsetX;
                                         const rawCenterY = clipItem.y
                                                            + (now.y - clipItem.bodyPressPoint.y)
@@ -1157,30 +1163,42 @@ ApplicationWindow {
                                             clipItem.bodyMoved = true;
                                     }
                                     onReleased: mouse => {
+                                        const moved = clipItem.bodyMoved;
+                                        const releasedClipId = clipItem.clipId;
+                                        const destinationKind = clipItem.dragTrackKind;
+                                        const destinationIndex = clipItem.dragTrackIndex;
+                                        let targetFrame = clipItem.timelineStartFrame;
                                         if (clipItem.bodyMoved) {
                                             const candidateX = clipItem.timelineStartFrame * timelinePanel.pixelsPerFrame + clipItem.bodyDragOffsetX;
-                                            const destination = { "kind": clipItem.dragTrackKind,
-                                                                  "index": clipItem.dragTrackIndex };
-                                            clipItem.bodyDragOffsetX = 0;
-                                            clipItem.bodyDragOffsetY = 0;
-                                            clipItem.rawBodyDragOffsetX = 0;
-                                            clipItem.bodyMoved = false;
-                                            mvmController.moveTimelineClip(
-                                                clipItem.clipId, destination.kind, destination.index,
-                                                Math.max(0, Math.round(candidateX / timelinePanel.pixelsPerFrame)));
+                                            targetFrame = Math.max(
+                                                0, Math.round(candidateX / timelinePanel.pixelsPerFrame));
                                         } else {
-                                            clipItem.bodyDragOffsetX = 0;
-                                            clipItem.bodyDragOffsetY = 0;
-                                            clipItem.rawBodyDragOffsetX = 0;
                                             const point = bodyArea.mapToItem(clipItem, mouse.x, mouse.y);
-                                            const frame = Math.round(clipItem.timelineStartFrame + point.x / timelinePanel.pixelsPerFrame);
-                                            mvmController.selectTimelineClip(clipItem.clipId, frame);
+                                            targetFrame = Math.round(
+                                                clipItem.timelineStartFrame
+                                                + point.x / timelinePanel.pixelsPerFrame);
                                         }
+
+                                        // controller呼び出しはmodelを同期更新し、このdelegateを破棄し得る。
+                                        // delegateが生きている間にdrag状態をすべて片付ける。
+                                        clipItem.bodyDragOffsetX = 0;
+                                        clipItem.bodyDragOffsetY = 0;
+                                        clipItem.rawBodyDragOffsetX = 0;
+                                        clipItem.bodyMoved = false;
                                         timelinePanel.activeDragLinkGroup = "";
                                         timelinePanel.activeDragClipId = "";
                                         timelinePanel.activeDragOffsetX = 0;
                                         timelinePanel.activeDragTrackKind = "";
                                         timelinePanel.activeDragOffsetY = 0;
+
+                                        if (moved) {
+                                            mvmController.moveTimelineClip(
+                                                releasedClipId, destinationKind, destinationIndex,
+                                                targetFrame);
+                                        } else {
+                                            mvmController.selectTimelineClip(releasedClipId,
+                                                                             targetFrame);
+                                        }
                                     }
                                     onCanceled: {
                                         clipItem.bodyDragOffsetX = 0;
@@ -1357,6 +1375,30 @@ ApplicationWindow {
                 enabled: !mvmController.exportCancelling
                 onClicked: mvmController.cancelTimelineExport()
             }
+        }
+    }
+
+    Dialog {
+        id: exportFailureDialog
+        property string message: ""
+        anchors.centerIn: parent
+        width: Math.min(root.width - 40, 560)
+        modal: true
+        title: "書き出しに失敗しました"
+        standardButtons: Dialog.Ok
+
+        contentItem: Label {
+            width: exportFailureDialog.availableWidth
+            text: exportFailureDialog.message
+            wrapMode: Text.Wrap
+        }
+    }
+
+    Connections {
+        target: mvmController
+        function onExportFailed(message) {
+            exportFailureDialog.message = message;
+            exportFailureDialog.open();
         }
     }
 

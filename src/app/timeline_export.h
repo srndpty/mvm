@@ -44,6 +44,7 @@ struct TimelineExportOpacityKey {
 
 struct TimelineExportClipMapping {
     int projectClipIndex = -1;
+    bool audio = false;
     int videoTrackIndex = 0;
     std::int64_t timelineStartFrame = 0;
     std::int64_t timelineDurationFrames = 0;

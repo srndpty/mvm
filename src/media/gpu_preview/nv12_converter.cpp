@@ -1,6 +1,7 @@
 #include "media/gpu_preview/nv12_converter.h"
 
 #include "media/gpu_preview/color_metadata.h"
+#include "media/gpu_preview/visible_uv.h"
 
 #include <cmath>
 #include <cstdio>
@@ -484,8 +485,24 @@ bool Nv12Converter::drawInternal(const DecodedGpuFrame& frame, ID3D11RenderTarge
 
     const YuvToRgbCoefficients k = coefficientsFor(frame.colorSpace, frame.colorRange);
 
+    // decode textureは符号化alignment分だけ表示サイズより大きい (H.264 1080 -> 1088、
+    // HEVC 1080 -> 1152 を実測)。呼び出し側のuvは表示領域の0..1なので、ここで一度だけ
+    // allocation全体の正規化座標へ変換し、余白行を表示へ引き伸ばさない。
+    D3D11_TEXTURE2D_DESC textureDesc{};
+    frame.texture->GetDesc(&textureDesc);
+    const auto physicalUv = normalizeVisibleUv(
+        {uvRect[0], uvRect[1], uvRect[2], uvRect[3]}, frame.width, frame.height,
+        static_cast<int>(textureDesc.Width), static_cast<int>(textureDesc.Height));
+    if (!physicalUv) {
+        err = "decode textureのphysical extentがlogical visible extentより小さいです";
+        return false;
+    }
+
     ShaderParams params{};
-    std::memcpy(params.uvRect, uvRect, sizeof params.uvRect);
+    params.uvRect[0] = physicalUv->x;
+    params.uvRect[1] = physicalUv->y;
+    params.uvRect[2] = physicalUv->width;
+    params.uvRect[3] = physicalUv->height;
     params.lum[0] = k.yScale;
     params.lum[1] = k.yOffset;
     params.lum[2] = k.uvScale;

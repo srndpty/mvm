@@ -78,6 +78,10 @@ bool mapExportEffects(const project::TimelineClip& clip, const TimelineExportReq
         else
             output.opacityKeys.push_back({localFrame, opacity});
     }
+    // 素材fpsがtimelineより低いと、最終素材frameは複数のtimeline frameに跨る。
+    // その区間はpreviewと同じく最終素材frameのopacityを保持し、端keyをclip末尾へ置く。
+    if (output.opacityKeys.back().localFrame < timelineDuration - 1)
+        output.opacityKeys.push_back({timelineDuration - 1, output.opacityKeys.back().opacity});
     return true;
 }
 
@@ -106,13 +110,8 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
             }
         }
     }
-    for (const auto& clip : project.timelineClips) {
-        if (clip.track.kind == project::TrackKind::Audio) {
-            plan.error = "audio clip を含む timeline の書き出しは未対応です: " + clip.name;
-            return plan;
-        }
-    }
     bool anyOverlay = false;
+    bool anyAudio = false;
     std::int64_t v1Cursor = 0;
     std::vector<int> indices(project.timelineClips.size());
     for (std::size_t index = 0; index < indices.size(); ++index)
@@ -120,6 +119,8 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
     std::stable_sort(indices.begin(), indices.end(), [&](int left, int right) {
         const auto& a = project.timelineClips[static_cast<std::size_t>(left)];
         const auto& b = project.timelineClips[static_cast<std::size_t>(right)];
+        if (a.track.kind != b.track.kind)
+            return a.track.kind == project::TrackKind::Video;
         if (a.track.index != b.track.index)
             return a.track.index < b.track.index;
         return a.timelineStartFrame < b.timelineStartFrame;
@@ -133,9 +134,15 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
         }
         TimelineExportClipMapping mapped;
         mapped.projectClipIndex = index;
+        mapped.audio = clip.track.kind == project::TrackKind::Audio;
         mapped.videoTrackIndex = clip.track.index;
         mapped.timelineStartFrame = clip.timelineStartFrame;
         mapped.timelineDurationFrames = duration.frame;
+        if (mapped.audio) {
+            anyAudio = true;
+            plan.clips.push_back(std::move(mapped));
+            continue;
+        }
         const bool overlay = clip.track.index > 0;
         anyOverlay = anyOverlay || overlay;
         if (!overlay) {
@@ -147,7 +154,7 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
             return plan;
         plan.clips.push_back(std::move(mapped));
     }
-    if (anyOverlay)
+    if (anyOverlay || anyAudio)
         plan.backend = TimelineExportResult::Backend::Tractor;
     plan.success = true;
     return plan;
@@ -205,8 +212,10 @@ TimelineExportResult exportTimeline(const project::Project& project,
         mapped.path = clipPaths[index].c_str();
         mapped.source_fps_num = clip.sourceFpsNum;
         mapped.source_fps_den = clip.sourceFpsDen;
+        mapped.source_frame_count = clip.sourceFrameCount;
         mapped.source_in_frame = clip.sourceInFrame;
         mapped.source_out_frame = clip.sourceOutFrame;
+        mapped.is_audio = planned.audio ? 1 : 0;
         mapped.video_track = planned.videoTrackIndex;
         mapped.timeline_start_frame = planned.timelineStartFrame;
         mapped.timeline_duration_frames = planned.timelineDurationFrames;

@@ -19,6 +19,7 @@ target_include_directories(mvm PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm PRIVATE
     mvm::core
     mvm::project
+    mvm::util
     mvm::manim_clip_workflow
     mvm::timeline_playback
     mvm::timeline_preview_mapping

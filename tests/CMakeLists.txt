@@ -107,6 +107,28 @@ add_test(NAME m7b_4_timeline_ui_architecture
             ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-m7b4-timeline-ui-architecture.ps1)
 set_tests_properties(m7b_4_timeline_ui_architecture PROPERTIES TIMEOUT 120)
 
+# import 対応は拡張子一覧ではなく内容 probe で決める。MPG の positive、未知拡張子の
+# positive、拡張子だけ MPG の negative を同じ経路で固定する。
+add_executable(mvm_test_audio_nonzero_start_seek
+    audio_preview/test_audio_nonzero_start_seek.cpp)
+target_link_libraries(mvm_test_audio_nonzero_start_seek PRIVATE
+    mvm::audio_preview mvm::warnings)
+add_executable(mvm_test_mpg_export harness/test_mpg_export.cpp)
+target_link_libraries(mvm_test_mpg_export PRIVATE
+    mvm::timeline_export mvm::mlt mvm::warnings)
+target_compile_definitions(mvm_test_mpg_export PRIVATE ${MVM_MLT_PATH_DEFS})
+add_test(NAME m7b_4_media_import_content_probe
+    COMMAND pwsh -NoProfile -File
+            ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-media-import-content-probe.ps1
+            -Bench $<TARGET_FILE:mvm_bench>
+            -AudioSeekTest $<TARGET_FILE:mvm_test_audio_nonzero_start_seek>
+            -MpgExportTest $<TARGET_FILE:mvm_test_mpg_export>
+            -FFmpeg ${MVM_UCRT64_ROOT}/bin/ffmpeg.exe
+            -WorkDirectory ${CMAKE_CURRENT_BINARY_DIR}/media-import-content-probe)
+set_tests_properties(m7b_4_media_import_content_probe PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+
 qt_add_executable(mvm_test_controller_export
     harness/test_mvm_controller_export.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller.cpp
@@ -114,11 +136,20 @@ qt_add_executable(mvm_test_controller_export
     ${CMAKE_SOURCE_DIR}/apps/mvm/track_model.cpp)
 target_include_directories(mvm_test_controller_export PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
 target_link_libraries(mvm_test_controller_export PRIVATE
-    mvm::core mvm::project mvm::manim_clip_workflow
+    mvm::core mvm::project mvm::util mvm::manim_clip_workflow
     mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
     mvm::mlt mvm::preview_engine mvm::preview_qt
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 mvm::warnings)
 target_compile_definitions(mvm_test_controller_export PRIVATE ${MVM_MLT_PATH_DEFS})
+add_executable(mvm_test_export_eta core/test_export_eta.cpp)
+target_link_libraries(mvm_test_export_eta PRIVATE mvm::core mvm::warnings)
+add_test(NAME export_eta_unit COMMAND mvm_test_export_eta)
+
+add_executable(mvm_test_reveal_in_explorer util/test_reveal_in_explorer.cpp)
+target_link_libraries(mvm_test_reveal_in_explorer PRIVATE mvm::util mvm::warnings)
+add_test(NAME reveal_in_explorer_negative
+    COMMAND mvm_test_reveal_in_explorer ${CMAKE_BINARY_DIR}/tests/reveal-in-explorer)
+
 add_test(NAME m7b_4_controller_export_lifecycle
     COMMAND mvm_test_controller_export ${CMAKE_BINARY_DIR}/tests/controller-export)
 set_tests_properties(m7b_4_controller_export_lifecycle PROPERTIES

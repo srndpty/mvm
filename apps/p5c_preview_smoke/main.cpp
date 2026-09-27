@@ -307,8 +307,6 @@ int main(int argc, char** argv) {
             const auto removedSecond = second ? engine->removeSource(second.value())
                                               : mvm::preview::Result<void>::failure(
                                                     second.error());
-            const auto empty =
-                engine->submitComposition(std::make_shared<mvm::preview::CompositionSnapshot>());
             auto unknownSnapshot = std::make_shared<mvm::preview::CompositionSnapshot>();
             unknownSnapshot->layers.push_back(
                 {{source.value().value + 100}, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
@@ -317,11 +315,15 @@ int main(int argc, char** argv) {
             twoLayerSnapshot->layers.push_back({source.value(), {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
             twoLayerSnapshot->layers.push_back({source.value(), {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
             const auto twoLayer = engine->submitComposition(twoLayerSnapshot);
+            // 拒否されたsnapshotはaccepted compositionにならない。play/pauseの拒否は
+            // gap snapshotを受理する前に検査する。
             const auto playWithoutComposition = engine->play();
             const auto pauseOutsidePlaying = engine->pause();
-            if (!second || !removedSecond || empty || unknown || twoLayer ||
+            // timeline gapはlayer 0枚のcompositionとして受理する (e0abb84)。
+            const auto empty =
+                engine->submitComposition(std::make_shared<mvm::preview::CompositionSnapshot>());
+            if (!second || !removedSecond || !empty || unknown || twoLayer ||
                 playWithoutComposition || pauseOutsidePlaying ||
-                empty.error().category != mvm::preview::PreviewErrorCategory::CompositionFailure ||
                 unknown.error().category != mvm::preview::PreviewErrorCategory::InvalidSource ||
                 twoLayer.error().category !=
                     mvm::preview::PreviewErrorCategory::UnsupportedCapability ||
@@ -561,5 +563,10 @@ int main(int argc, char** argv) {
     });
     timer.start();
     app.exec();
+    // 早期失敗の経路はengineをshutdownしないため、engine破棄のstd::terminateが
+    // 終了コードを上書きする。原因を追えるよう、破棄より前に失敗コードを残す。
+    if (exitCode != 0)
+        std::fprintf(stderr, "P5-C smoke失敗: exit code %d (stage %d)\n", exitCode,
+                     static_cast<int>(stage));
     return exitCode;
 }

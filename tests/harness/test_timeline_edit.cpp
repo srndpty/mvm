@@ -414,11 +414,11 @@ void testMultipleClipMove() {
         anchor.timelineStartFrame = 100;
         leftmost.timelineStartFrame = 20;
         project.timelineClips = {anchor, leftmost};
-        const auto beforeFailure = project.timelineClips;
-        const auto rejected =
+        const auto snapped =
             mvm::project::moveClips(project, {anchor.id, leftmost.id}, anchor.id, kV1, 50);
-        check(!rejected.success && project.timelineClips == beforeFailure,
-              "最左clipが0を割る複数移動を全体rejectしません");
+        check(snapped.success && project.timelineClips[0].timelineStartFrame == 80 &&
+                  project.timelineClips[1].timelineStartFrame == 0,
+              "複数移動の最左clipを0秒へスナップできません");
     }
 
     {
@@ -436,6 +436,11 @@ void testMultipleClipMove() {
                   project.timelineClips[0].timelineStartFrame == 180 &&
                   project.timelineClips[1].timelineStartFrame == 180,
               "旧moveClipのlinked clip移動挙動が変わりました");
+
+        const auto snapped = mvm::project::moveClip(project, video.id, kV1, 0);
+        check(snapped.success && project.timelineClips[0].timelineStartFrame == 0 &&
+                  project.timelineClips[1].timelineStartFrame == 0,
+              "linked video/audioを0秒へ一体でスナップできません");
     }
 }
 

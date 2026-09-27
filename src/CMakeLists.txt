@@ -5,6 +5,7 @@
 add_library(mvm_core STATIC
     core/clip_fade.cpp
     core/checked_output_timebase.cpp
+    core/export_eta.cpp
     core/presentation_opportunity_mapper.cpp
 )
 target_include_directories(mvm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -29,8 +30,10 @@ add_library(mvm::project ALIAS mvm_project)
 # Phase 0 スパイク用の小さなヘルパ。製品用の platform 層ではない。
 add_library(mvm_util STATIC
     util/mvm_win_utf8.c
+    util/mvm_reveal_in_explorer.c
 )
 target_include_directories(mvm_util PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_util PRIVATE shell32 ole32)
 add_library(mvm::util ALIAS mvm_util)
 
 # --- Manim external renderer ------------------------------------------------

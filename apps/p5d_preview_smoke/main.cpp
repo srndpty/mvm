@@ -910,5 +910,10 @@ int main(int argc, char** argv) {
     });
     timer.start();
     app.exec();
+    // 早期失敗の経路はengineをshutdownしないため、engine破棄のstd::terminateが
+    // 終了コードを上書きする。原因を追えるよう、破棄より前に失敗コードを残す。
+    if (exitCode != 0)
+        std::fprintf(stderr, "P5-D smoke失敗: exit code %d (stage %d)\n", exitCode,
+                     static_cast<int>(stage));
     return exitCode;
 }

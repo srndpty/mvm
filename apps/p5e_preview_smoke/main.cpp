@@ -361,10 +361,19 @@ int main(int argc, char** argv) {
                 }
                 videoSourceB = second.value();
                 if (fault == Fault::ExceedSourceCount) {
+                    // active compositionの上限は2件だが、source-set切替用に登録slotは
+                    // 4件まで許す。5件目の登録だけをcapability超過として拒否させる。
                     const auto third = engine->addSource(descriptor);
-                    if (third || third.error().category !=
-                                     mvm::preview::PreviewErrorCategory::UnsupportedCapability) {
-                        std::fprintf(stderr, "capabilityを超えるvideo sourceを受理しました\n");
+                    const auto fourth = engine->addSource(descriptor);
+                    const auto fifth = engine->addSource(descriptor);
+                    const bool slotsRestored =
+                        third && fourth && engine->removeSource(third.value()) &&
+                        engine->removeSource(fourth.value());
+                    if (!slotsRestored || fifth ||
+                        fifth.error().category !=
+                            mvm::preview::PreviewErrorCategory::UnsupportedCapability) {
+                        std::fprintf(stderr,
+                                     "video source登録slotの上限4件が期待どおりではありません\n");
                         exitCode = 32;
                         app.quit();
                         return;
@@ -1288,5 +1297,9 @@ int main(int argc, char** argv) {
     });
     timer.start();
     app.exec();
+    // 早期失敗の経路はengineをshutdownしないため、engine破棄のstd::terminateが
+    // 終了コードを上書きする。原因を追えるよう、破棄より前に失敗コードを残す。
+    if (exitCode != 0)
+        std::fprintf(stderr, "P5-E smoke失敗: exit code %d\n", exitCode);
     return exitCode;
 }

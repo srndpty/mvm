@@ -7,7 +7,6 @@
 #include "media/gpu_preview/exact_frame_pairer.h"
 #include "media/gpu_preview/output_scheduler.h"
 #include "media/gpu_preview/qpc_clock.h"
-#include "media/gpu_preview/visible_uv.h"
 
 #include <algorithm>
 #include <cmath>
@@ -803,13 +802,6 @@ protected:
             }
         }
         std::string err;
-        if (state_->phase4Enabled.load(std::memory_order_acquire) &&
-            !normalizePhase4VisibleUv(frame, err)) {
-            state_->renderFailureCount.fetch_add(1, std::memory_order_relaxed);
-            noteDrop(gpu::OutputDropReason::RenderFailure);
-            fail(err);
-            return;
-        }
         const long long pairReadyQpc = gpu::qpcTicks();
         if (state_->p3SeekDiagnostics.active.load(std::memory_order_acquire) &&
             output == state_->p3SeekDiagnostics.expectedFrame.load(std::memory_order_relaxed))
@@ -1015,26 +1007,6 @@ private:
         if (nativeHook)
             nativeHook->recordDirtyPropagationStage(MVM_DIRTY_STAGE_TARGET_PIXEL_TOGGLE,
                                                     propagationSerial);
-        return true;
-    }
-
-    bool normalizePhase4VisibleUv(gpu::ComposedFrame& frame, std::string& err) const {
-        // D3D11VAのallocationはlogical heightより大きいことがある（実fixtureは
-        // 1920x1080に対して1920x1088）。catalogのfull visible UVをphysical
-        // textureのvisible extentへ変換する。Phase 4 branch限定で、P3 pathや
-        // destination/state/epoch/source identityは変更しない。
-        for (auto& layer : frame.layers) {
-            D3D11_TEXTURE2D_DESC desc{};
-            layer.frame.texture->GetDesc(&desc);
-            const auto normalized = gpu::normalizeVisibleUv(
-                layer.sourceUv, layer.frame.width, layer.frame.height, static_cast<int>(desc.Width),
-                static_cast<int>(desc.Height));
-            if (!normalized) {
-                err = "decode textureのphysical extentがlogical visible extentより小さいです";
-                return false;
-            }
-            layer.sourceUv = *normalized;
-        }
         return true;
     }
 
