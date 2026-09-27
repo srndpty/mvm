@@ -108,16 +108,39 @@ bool WaveformDecoder::open(const std::string& utf8Path, std::string& error) {
         error = "音声 decoder を初期化できません: " + ffError(result);
         return false;
     }
-    channels_ = codec_->ch_layout.nb_channels;
-    if (channels_ <= 0 || codec_->sample_rate <= 0) {
+    const int sourceChannels = codec_->ch_layout.nb_channels;
+    if (sourceChannels <= 0 || codec_->sample_rate <= 0) {
         error = "音声の channel 数または sample rate が不正です";
         return false;
     }
-    // channel 数と rate は保ち、sample format だけを planar float へそろえる。
+    // mono / stereo は素材の channel のまま描く (1 行 / 2 行)。
+    // 3ch 以上は stereo へ downmix して 2 行にする。先頭 2ch (5.1 なら FL/FR) だけを
+    // 取ると、台詞がほぼ FC にしか無い映像素材で台詞区間が無音に見えてしまう。
+    // preview の再生経路も stereo へ downmix しており、聞こえる音と見た目が揃う。
+    AVChannelLayout inputLayout{};
+    AVChannelLayout outputLayout{};
+    // 配置の分からない多 channel 素材は、channel 数の既定配置 (6ch なら 5.1) と
+    // みなさないと downmix の係数を決められない。
+    if (sourceChannels > 2 && codec_->ch_layout.order == AV_CHANNEL_ORDER_UNSPEC)
+        av_channel_layout_default(&inputLayout, sourceChannels);
+    else if ((result = av_channel_layout_copy(&inputLayout, &codec_->ch_layout)) < 0) {
+        error = "音声の channel 配置を複製できません: " + ffError(result);
+        return false;
+    }
+    if (sourceChannels > 2)
+        outputLayout = AV_CHANNEL_LAYOUT_STEREO;
+    else if ((result = av_channel_layout_copy(&outputLayout, &inputLayout)) < 0) {
+        av_channel_layout_uninit(&inputLayout);
+        error = "音声の channel 配置を複製できません: " + ffError(result);
+        return false;
+    }
+    channels_ = outputLayout.nb_channels;
+    // rate は保つ。変えるのは sample format (planar float) と、3ch 以上の channel 数だけ。
     SwrContext* resampler = nullptr;
-    result = swr_alloc_set_opts2(&resampler, &codec_->ch_layout, AV_SAMPLE_FMT_FLTP,
-                                 codec_->sample_rate, &codec_->ch_layout, codec_->sample_fmt,
-                                 codec_->sample_rate, 0, nullptr);
+    result = swr_alloc_set_opts2(&resampler, &outputLayout, AV_SAMPLE_FMT_FLTP, codec_->sample_rate,
+                                 &inputLayout, codec_->sample_fmt, codec_->sample_rate, 0, nullptr);
+    av_channel_layout_uninit(&inputLayout);
+    av_channel_layout_uninit(&outputLayout);
     resampler_.reset(resampler);
     if (result < 0 || !resampler_ || (result = swr_init(resampler_.get())) < 0) {
         error = "音声 format converter を初期化できません: " + ffError(result);
@@ -158,7 +181,8 @@ bool WaveformDecoder::convertFrame(std::string& error) {
 
     // sample の位置は各 frame の PTS から決める。converter が sample を持ち越すと、
     // 前の frame の残りを次の frame の PTS の位置へ置いてしまう。rate と layout を
-    // 変えない format 変換だけなので持ち越しは起きないはずだが、仮定せず検査する。
+    // 変えない変換 (format と channel の downmix) だけなので持ち越しは起きないはずだが、
+    // 仮定せず検査する。
     // (持ち越しが無いので、末尾で converter を flush する必要も無い。)
     const int capacity = frame_->nb_samples;
     std::vector<std::uint8_t*> output(static_cast<std::size_t>(channels_));

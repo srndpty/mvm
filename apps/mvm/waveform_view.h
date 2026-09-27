@@ -10,6 +10,7 @@
 namespace mvm::app {
 
 // audio clip 上の波形。channel ごとに 1 行 (mono 1 行、stereo 2 行) で描く。
+// 3ch 以上の素材は decoder が stereo へ downmix するので、最大 2 行。
 //
 // 長い clip を高倍率で表示すると clip 幅は数十万 pixel になり得る。painted item の
 // texture をその大きさで作らないよう、QML 側で viewport と重なる範囲だけに

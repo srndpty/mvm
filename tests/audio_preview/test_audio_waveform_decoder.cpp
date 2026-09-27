@@ -125,6 +125,43 @@ int main() {
               "stereo right が無音でない (channel を混ぜている)");
     }
 
+    // --- 5.1 (6ch) は stereo へ downmix して 2 行にする ---
+    // 先頭 2ch (FL/FR) だけを取る実装では、台詞の入る FC だけの素材が無音に見える。
+    {
+        const auto sixChannel = [&](int loudChannel, const char* name) {
+            std::vector<float> samples(48000 * 6, 0.0f);
+            for (int index = 0; index < 48000; ++index)
+                samples[static_cast<std::size_t>(index) * 6 +
+                        static_cast<std::size_t>(loudChannel)] =
+                    0.5f * static_cast<float>(std::sin(2.0 * kPi * 440.0 * index / 48000.0));
+            const auto path = directory / name;
+            check(writeWav(path, 48000, 6, samples), "6ch WAV を書けない");
+            const auto result = mvm::audio::decodeAudioWaveform(utf8(path));
+            if (!result.success)
+                std::fprintf(stderr, "  error: %s\n", result.error.c_str());
+            return result;
+        };
+
+        const auto center = sixChannel(2, "center.wav");
+        check(center.success, "6ch WAV を decode できない");
+        check(center.peaks.channels == 2, "6ch が 2 channel へ downmix されない");
+        const auto centerLeft = mvm::core::waveformColumn(center.peaks, 0, 0.0, 1.0);
+        const auto centerRight = mvm::core::waveformColumn(center.peaks, 1, 0.0, 1.0);
+        check(centerLeft.valid && centerLeft.maximum > 0.1f && centerRight.valid &&
+                  centerRight.maximum > 0.1f,
+              "FC だけの音が L/R に現れない (先頭 2ch だけを見ている)");
+        check(closeTo(centerLeft.maximum, centerRight.maximum), "FC が L/R へ均等に入らない");
+
+        const auto frontLeft = sixChannel(0, "front-left.wav");
+        check(frontLeft.success && frontLeft.peaks.channels == 2,
+              "FL だけの 6ch を decode できない");
+        const auto leftOnly = mvm::core::waveformColumn(frontLeft.peaks, 0, 0.0, 1.0);
+        const auto rightSilent = mvm::core::waveformColumn(frontLeft.peaks, 1, 0.0, 1.0);
+        check(leftOnly.valid && leftOnly.maximum > 0.1f, "FL の音が L に現れない");
+        check(rightSilent.valid && rightSilent.maximum == 0.0f && rightSilent.minimum == 0.0f,
+              "FL の音が R へ漏れている (全 channel を 1 本に混ぜている)");
+    }
+
     // --- 失敗は失敗として返す ---
     {
         const auto missing = mvm::audio::decodeAudioWaveform(utf8(directory / "missing.wav"));
