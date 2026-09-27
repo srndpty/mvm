@@ -5,11 +5,14 @@
 
 #include <QAbstractListModel>
 #include <QSet>
+#include <QtQml/qqmlregistration.h>
 
 namespace mvm::app {
 
-class TimelineClipModel final : public QAbstractListModel {
+class TimelineClipModel : public QAbstractListModel {
     Q_OBJECT
+    // QML からは mvmController.timelineModel 経由でだけ触る。型名は公開しない。
+    QML_ANONYMOUS
 
 public:
     enum Role {
@@ -37,6 +40,9 @@ public:
     int rowCount(const QModelIndex& parent = {}) const override;
     QVariant data(const QModelIndex& index, int role) const override;
     QHash<int, QByteArray> roleNames() const override;
+
+    // 範囲外の row は空文字列。Repeater の itemAt(index) と組で使う。
+    Q_INVOKABLE QString clipIdAt(int row) const;
 
     void setProject(const project::Project& project);
     void setSelectedClipIds(const QSet<QString>& clipIds);

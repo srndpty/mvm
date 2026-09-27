@@ -10,6 +10,7 @@
 #include <QObject>
 #include <QString>
 #include <QThreadPool>
+#include <QtQml/qqmlregistration.h>
 
 #include <atomic>
 #include <cstddef>
@@ -30,8 +31,10 @@ namespace mvm::app {
 //
 // 完成した peak は byte budget を超えたら、どの WaveformView も参照していない
 // ものから古い順に捨てる。表示中の波形は budget を超えても捨てない。
-class WaveformCache final : public QObject {
+class WaveformCache : public QObject {
     Q_OBJECT
+    QML_NAMED_ELEMENT(WaveformCache)
+    QML_UNCREATABLE("アプリが生成した波形キャッシュを使用してください")
 
 public:
     enum class State { Loading, Ready, Failed };

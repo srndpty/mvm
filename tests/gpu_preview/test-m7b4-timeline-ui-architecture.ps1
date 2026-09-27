@@ -15,6 +15,8 @@ $controllerHeader = Get-Content -LiteralPath $controllerHeaderPath -Raw
 $main = Get-Content -LiteralPath $mainPath -Raw
 $previewItem = Get-Content -LiteralPath $previewItemPath -Raw
 $compositor = Get-Content -LiteralPath $compositorPath -Raw
+$waveformView = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\apps\mvm\waveform_view.h') -Raw
+$previewSurface = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\apps\mvm\preview_surface_qml.h') -Raw
 
 function Test-CompactMenuStyle([string]$itemSource) {
     return $itemSource.Contains('implicitHeight: 27') -and
@@ -41,7 +43,7 @@ function Test-ProjectMenuContract([string]$source) {
     foreach ($item in @(
         @{ Id = 'openProjectAction'; Text = 'プロジェクトを開く'; Key = 'Ctrl+O'; Action = 'root.requestProjectAction("open")' },
         @{ Id = 'closeProjectAction'; Text = 'プロジェクトを閉じる'; Key = 'Ctrl+Shift+W'; Action = 'root.requestProjectAction("close")' },
-        @{ Id = 'saveProjectAction'; Text = '保存'; Key = 'Ctrl+S'; Action = 'mvmController.saveProject()' },
+        @{ Id = 'saveProjectAction'; Text = '保存'; Key = 'Ctrl+S'; Action = 'root.mvmController.saveProject()' },
         @{ Id = 'saveProjectAsAction'; Text = '名前を付けて保存'; Key = 'Ctrl+Shift+S'; Action = 'saveProjectDialog.open()' },
         @{ Id = 'exportMediaAction'; Text = 'メディアを書き出し'; Key = 'Ctrl+M'; Action = 'exportDialog.open()' }
     )) {
@@ -72,15 +74,15 @@ if ($qml -match '// --- ツールバー' -or $qml -match 'Shortcut\s*\{\s*sequen
 
 function Test-NavigationShortcuts([string]$source) {
     foreach ($entry in @(
-        @{ Key = 'J'; Action = 'mvmController.shuttleLeft()' },
-        @{ Key = 'K'; Action = 'mvmController.pauseTimeline()' },
-        @{ Key = 'L'; Action = 'mvmController.shuttleRight()' },
-        @{ Key = 'Left'; Action = 'mvmController.stepTimelineFrames(-1)' },
-        @{ Key = 'Right'; Action = 'mvmController.stepTimelineFrames(1)' },
-        @{ Key = 'Shift+Left'; Action = 'mvmController.stepTimelineFrames(-5)' },
-        @{ Key = 'Shift+Right'; Action = 'mvmController.stepTimelineFrames(5)' },
-        @{ Key = 'Up'; Action = 'mvmController.jumpToEditPoint(-1)' },
-        @{ Key = 'Down'; Action = 'mvmController.jumpToEditPoint(1)' }
+        @{ Key = 'J'; Action = 'root.mvmController.shuttleLeft()' },
+        @{ Key = 'K'; Action = 'root.mvmController.pauseTimeline()' },
+        @{ Key = 'L'; Action = 'root.mvmController.shuttleRight()' },
+        @{ Key = 'Left'; Action = 'root.mvmController.stepTimelineFrames(-1)' },
+        @{ Key = 'Right'; Action = 'root.mvmController.stepTimelineFrames(1)' },
+        @{ Key = 'Shift+Left'; Action = 'root.mvmController.stepTimelineFrames(-5)' },
+        @{ Key = 'Shift+Right'; Action = 'root.mvmController.stepTimelineFrames(5)' },
+        @{ Key = 'Up'; Action = 'root.mvmController.jumpToEditPoint(-1)' },
+        @{ Key = 'Down'; Action = 'root.mvmController.jumpToEditPoint(1)' }
     )) {
         $pattern = 'Shortcut\s*\{[^{}]*sequence:\s*"' + [regex]::Escape($entry.Key) +
                    '"[^{}]*onActivated:\s*' + [regex]::Escape($entry.Action)
@@ -99,10 +101,10 @@ $requiredQml = @(
     'x: timelineStartFrame * timelinePanel.pixelsPerFrame',
     'y: timelinePanel.rowY(trackKind, trackIndex)',
     'function trackAtY(y)',
-    'mvmController.selectTimelineClip(clipItem.clipId, frame)',
-    'mvmController.moveTimelineClip(',
+    'root.mvmController.selectTimelineClip(clipItem.clipId, frame)',
+    'root.mvmController.moveTimelineClip(',
     'releasedClipId, destinationKind, destinationIndex',
-    'mvmController.selectTimelineClips(selectedIds)',
+    'root.mvmController.selectTimelineClips(selectedIds)',
     'required property bool selected'
 )
 # track 数は固定しない。model から引き、行位置は rowY() だけが決める。
@@ -114,9 +116,9 @@ $forbiddenQml = @(
 )
 # premiere 相当の操作。どれか 1 つでも消えたら UI 契約が崩れている。
 $requiredInteractions = @(
-    'mvmController.beginScrub()',
-    'mvmController.scrubToFrame(',
-    'mvmController.endScrub()',
+    'root.mvmController.beginScrub()',
+    'root.mvmController.scrubToFrame(',
+    'root.mvmController.endScrub()',
     'height: timelineFlick.contentHeight',
     'y: timelineFlick.contentY',
     'id: ruler',
@@ -131,7 +133,7 @@ $requiredInteractions = @(
     'readonly property real fitPixelsPerFrame:',
     'Math.min(zoomLevels[0], requestedFitPixelsPerFrame)',
     'readonly property int minimumZoomIndex:',
-    'timelineFlick.width * 0.7 / mvmController.totalTimelineFrames',
+    'timelineFlick.width * 0.7 / root.mvmController.totalTimelineFrames',
     'zoomIndex === minimumZoomIndex ? fitPixelsPerFrame : zoomLevels[zoomIndex]',
     'onObservedTimelineFramesChanged:',
     'zoomIndex = Math.max(minimumZoomIndex,',
@@ -143,7 +145,7 @@ $requiredInteractions = @(
     '-clipItem.timelineStartFrame * timelinePanel.pixelsPerFrame',
     'clipItem.linkGroupId === timelinePanel.activeDragLinkGroup',
     '(mouse.modifiers & Qt.ShiftModifier) !== 0',
-    'mvmController.toggleTimelineClipSelection(',
+    'root.mvmController.toggleTimelineClipSelection(',
     'timelineFlick.contentY',
     'id: timelineHorizontalScrollBar',
     'policy: ScrollBar.AlwaysOn',
@@ -155,15 +157,15 @@ $requiredInteractions = @(
     'function trackForDrag(kind, trackAreaY)',
     'preventStealing: true',
     'acceptedButtons: Qt.LeftButton',
-    'mvmController.hasGapAt(',
-    'mvmController.hasClipAt(',
-    'mvmController.rippleDeleteGap(',
-    'mvmController.deleteTimelineClip(',
-    'mvmController.unlinkTimelineClip(',
-    'mvmController.setTrackMuted(',
-    'mvmController.addTrack(',
-    'mvmController.videoTrackModel',
-    'mvmController.audioTrackModel'
+    'root.mvmController.hasGapAt(',
+    'root.mvmController.hasClipAt(',
+    'root.mvmController.rippleDeleteGap(',
+    'root.mvmController.deleteTimelineClip(',
+    'root.mvmController.unlinkTimelineClip(',
+    'root.mvmController.setTrackMuted(',
+    'root.mvmController.addTrack(',
+    'root.mvmController.videoTrackModel',
+    'root.mvmController.audioTrackModel'
 )
 
 $requiredShortcuts = @(
@@ -171,15 +173,15 @@ $requiredShortcuts = @(
     'sequence: "Space"',
     'autoRepeat: false',
     'shortcut: "Ctrl+Z"',
-    'enabled: mvmController.canUndo',
-    'onTriggered: mvmController.undoLastEdit()'
+    'enabled: root.mvmController.canUndo',
+    'onTriggered: root.mvmController.undoLastEdit()'
 )
 
 $requiredVideoDrop = @(
     'id: videoDropArea',
     'drag.hasUrls',
     'root.isLocalFileUrl(drag.urls[index])',
-    'mvmController.addVideoClip(url)',
+    'root.mvmController.addVideoClip(url)',
     'drop.accept(Qt.CopyAction)',
     'drag.accept(Qt.CopyAction)',
     '(drag.supportedActions & Qt.CopyAction) !== 0',
@@ -195,10 +197,10 @@ $forbiddenVideoDrop = @(
 )
 
 $requiredExportProgress = @(
-    'visible: mvmController.exporting',
-    'value: mvmController.exportProgress',
-    'text: mvmController.exportProgressText',
-    'mvmController.cancelTimelineExport()'
+    'visible: root.mvmController.exporting',
+    'value: root.mvmController.exportProgress',
+    'text: root.mvmController.exportProgressText',
+    'root.mvmController.cancelTimelineExport()'
 )
 
 $requiredExportFailure = @(
@@ -215,8 +217,8 @@ $requiredExportSettings = @(
     'key: "high"',
     'key: "standard"',
     'key: "compact"',
-    'mvmController.exportSettingsSummary()',
-    'mvmController.exportTimelineWithQuality(',
+    'root.mvmController.exportSettingsSummary()',
+    'root.mvmController.exportTimelineWithQuality(',
     '品質は圧縮率だけを変更します。出力の解像度とfpsはプロジェクト設定のままです。'
 )
 
@@ -224,8 +226,8 @@ $requiredProjectSettings = @(
     'id: projectSettingsDialog',
     'id: matchClipSettingsDialog',
     'プロジェクト設定をこの素材に合わせる',
-    'mvmController.projectSettingsForClip(clipId)',
-    'mvmController.setProjectVideoSettings(',
+    'root.mvmController.projectSettingsForClip(clipId)',
+    'root.mvmController.setProjectVideoSettings(',
     '既存クリップの開始位置は秒位置を維持して換算します。素材のin/outは変更しません。続行しますか？'
 )
 
@@ -236,7 +238,7 @@ foreach ($needle in @('id: rectangleSelectionArea')) {
 }
 
 # audio clip の波形。可視範囲だけに置かないと、長い clip の高倍率表示で巨大な texture を作る。
-foreach ($needle in @('import mvm.timeline 1.0', 'WaveformView {', 'cache: waveformCache',
+foreach ($needle in @('WaveformView {', 'cache: root.waveformCache',
                       'mediaPath: clipItem.clipKind === "audio" ? clipItem.mediaPath : ""',
                       'Math.max(0, timelineFlick.contentX - clipContentX)',
                       'x: clipItem.renderOffsetX')) {
@@ -244,11 +246,11 @@ foreach ($needle in @('import mvm.timeline 1.0', 'WaveformView {', 'cache: wavef
         throw "audio波形の契約がありません: $needle"
     }
 }
-foreach ($needle in @('qmlRegisterType<mvm::app::WaveformView>("mvm.timeline", 1, 0, "WaveformView")',
-                      'setContextProperty(QStringLiteral("waveformCache"), &waveformCache)')) {
-    if (-not $main.Contains($needle)) {
-        throw "audio波形の登録がありません: $needle"
-    }
+# 型は QML module へ宣言的に登録し、cache は root の required property として注入する。
+if (-not $waveformView.Contains('QML_NAMED_ELEMENT(WaveformView)') -or
+    -not $main.Contains('{QStringLiteral("waveformCache"), QVariant::fromValue(&waveformCache)}') -or
+    -not $qml.Contains('required property WaveformCache waveformCache')) {
+    throw 'audio波形の登録がありません'
 }
 
 foreach ($removed in @('spaceMoveToolActive', 'id: moveToolArea', 'sequence: "Ctrl+Space"',
@@ -320,7 +322,7 @@ if ($qml -notmatch 'const anchorFrame = \(timelineFlick\.contentX \+ anchorItemX
 # 呼び出し後にdelegate contextのtimelinePanelを参照するとReferenceErrorになる。
 $bodyAreaIndex = $qml.IndexOf('id: bodyArea')
 $bodyReleaseIndex = $qml.IndexOf('onReleased: mouse => {', $bodyAreaIndex)
-$bodyMoveIndex = $qml.IndexOf('mvmController.moveTimelineClip(', $bodyReleaseIndex)
+$bodyMoveIndex = $qml.IndexOf('root.mvmController.moveTimelineClip(', $bodyReleaseIndex)
 $bodyDragResetIndex = $qml.IndexOf('timelinePanel.activeDragLinkGroup = "";', $bodyReleaseIndex)
 if ($bodyAreaIndex -lt 0 -or $bodyReleaseIndex -lt 0 -or $bodyMoveIndex -lt 0 -or
     $bodyDragResetIndex -lt 0 -or $bodyDragResetIndex -gt $bodyMoveIndex) {
@@ -341,11 +343,12 @@ if (-not $main.Contains('class TimelineWheelEventFilter final') -or
 }
 
 # native surfaceはQML scene graphへ宣言し、C++からwindow表示後に動的追加しない。
+# 型は QML module の静的登録なので engine.load より必ず前に登録済みになる。
 if (-not $qml.Contains('PreviewSurface {') -or
-    $main.IndexOf('qmlRegisterType<mvm::app::PreviewEngineRhiItem>') -lt 0 -or
-    $main.IndexOf('qmlRegisterType<mvm::app::PreviewEngineRhiItem>') -gt
-        $main.IndexOf('engine.load(') -or
-    $main.Contains('new mvm::app::PreviewEngineRhiItem')) {
+    -not $previewSurface.Contains('QML_NAMED_ELEMENT(PreviewSurface)') -or
+    -not $previewSurface.Contains('class PreviewSurfaceQml : public PreviewEngineRhiItem') -or
+    $main.Contains('new mvm::app::PreviewEngineRhiItem') -or
+    $main.Contains('new mvm::app::PreviewSurfaceQml')) {
     throw 'product GUIのnative preview surfaceがQML scene graphへ事前登録されていません'
 }
 
@@ -399,20 +402,20 @@ foreach ($needle in @('Q_PROPERTY(bool dirty READ dirty NOTIFY stateChanged)',
     }
 }
 foreach ($needle in @('onClosing: close => {',
-                      'if (!closeConfirmed && mvmController.dirty)',
+                      'if (!closeConfirmed && root.mvmController.dirty)',
                       'root.requestProjectAction("new")',
                       'root.requestProjectAction("open")',
-                      'mvmController.saveProject()',
-                      'mvmController.discardUnsavedChanges()',
+                      'root.mvmController.saveProject()',
+                      'root.mvmController.discardUnsavedChanges()',
                       'id: unsavedChangesDialog',
                       'id: recoveryDialog',
                       'id: externalSaveDialog',
-                      'mvmController.saveProjectOverwritingExternalChange()',
-                      'mvmController.recoveryForeign',
+                      'root.mvmController.saveProjectOverwritingExternalChange()',
+                      'root.mvmController.recoveryForeign',
                       'function onExternalCanonicalChangeOnSave()',
-                      'mvmController.recoveryCanonicalChanged',
-                      'mvmController.dismissRecovery()',
-                      'mvmController.recoveryCorrupt')) {
+                      'root.mvmController.recoveryCanonicalChanged',
+                      'root.mvmController.dismissRecovery()',
+                      'root.mvmController.recoveryCorrupt')) {
     if (-not $qml.Contains($needle)) {
         throw "未保存変更の終了確認UIがありません: $needle"
     }
@@ -448,8 +451,8 @@ if (-not $previewItem.Contains('setMirrorVertically(false)') -or
 if (-not $previewItem.Contains('PreviewRenderPort::renderFrameDue(*engine_)')) {
     throw '新しいoutput frameがない周期にもrender targetを黒でclearしています'
 }
-if (-not $qml.Contains('mvmController.outputWidth') -or
-    -not $qml.Contains('mvmController.outputHeight')) {
+if (-not $qml.Contains('root.mvmController.outputWidth') -or
+    -not $qml.Contains('root.mvmController.outputHeight')) {
     throw 'previewがProject output sizeの縦横比を使っていません'
 }
 if (-not $compositor.Contains('aspectFit(croppedWidth, croppedHeight, destinationBox.width,')) {

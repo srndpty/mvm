@@ -10,6 +10,10 @@ int TimelineClipModel::rowCount(const QModelIndex& parent) const {
     return parent.isValid() ? 0 : static_cast<int>(items_.size());
 }
 
+QString TimelineClipModel::clipIdAt(int row) const {
+    return row >= 0 && row < items_.size() ? items_[row].id : QString();
+}
+
 QVariant TimelineClipModel::data(const QModelIndex& index, int role) const {
     if (!index.isValid() || index.row() < 0 || index.row() >= items_.size())
         return {};

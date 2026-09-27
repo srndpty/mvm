@@ -8,6 +8,7 @@
 #include <QAbstractListModel>
 #include <QSet>
 #include <QString>
+#include <QtQml/qqmlregistration.h>
 
 namespace mvm::app {
 
@@ -21,8 +22,10 @@ QString formatMediaSize(const project::MediaItem& item);
 
 // プロジェクトパネルのリスト表示。folder の木を、展開中の folder だけ開いた
 // 1 次元の行へ平坦化して公開する。並びは folder が先、同種内は名前順。
-class MediaBinModel final : public QAbstractListModel {
+class MediaBinModel : public QAbstractListModel {
     Q_OBJECT
+    // QML からは mvmController.mediaBinModel 経由でだけ触る。型名は公開しない。
+    QML_ANONYMOUS
     Q_PROPERTY(int entryCount READ entryCount NOTIFY entryCountChanged)
 
 public:

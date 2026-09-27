@@ -12,7 +12,6 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
-#include <QQmlContext>
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
@@ -169,13 +168,11 @@ int main(int argc, char** argv) {
         mvm_mlt_runtime_shutdown();
         return 6;
     }
-    qmlRegisterType<mvm::app::PreviewEngineRhiItem>("mvm.preview", 1, 0, "PreviewSurface");
-    qmlRegisterType<mvm::app::WaveformView>("mvm.timeline", 1, 0, "WaveformView");
     // engine より先に破棄されないよう、engine より前に宣言する。
     mvm::app::WaveformCache waveformCache;
     QQmlApplicationEngine engine;
-    engine.rootContext()->setContextProperty(QStringLiteral("mvmController"), &controller);
-    engine.rootContext()->setContextProperty(QStringLiteral("waveformCache"), &waveformCache);
+    engine.setInitialProperties({{QStringLiteral("mvmController"), QVariant::fromValue(&controller)},
+                                 {QStringLiteral("waveformCache"), QVariant::fromValue(&waveformCache)}});
     // 外部ツールで素材を差し替えて戻ってきたとき、古い波形を出し続けない。
     QObject::connect(&application, &QGuiApplication::applicationStateChanged, &waveformCache,
                      [&waveformCache](Qt::ApplicationState state) {

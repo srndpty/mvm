@@ -13,6 +13,14 @@
     "C_Cpp.default.cppStandard": "c++20",
     "C_Cpp.default.intelliSenseMode": "windows-gcc-x64",
 
+    "//qml": "QML Language Server も MSYS2 UCRT64 と生成済み QML module を参照する。",
+    "qt-qml.qmlls.customExePath": "C:/msys64/ucrt64/bin/qmlls.exe",
+    "qt-qml.qmlls.customArgs": [
+        "--build-dir", "${workspaceFolder}/build/ucrt64-release",
+        "-I", "${workspaceFolder}/build/ucrt64-release/apps/mvm",
+        "--no-cmake-calls"
+    ],
+
     "files.encoding": "utf8",
     "files.eol": "\n",
     "[powershell]": { "files.eol": "\r\n" },

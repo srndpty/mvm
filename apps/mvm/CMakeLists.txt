@@ -14,6 +14,8 @@ qt_add_qml_module(mvm
     URI mvm.app
     VERSION 1.0
     RESOURCE_PREFIX /
+    SOURCES
+        preview_surface_qml.h
     QML_FILES
         Main.qml
         CompactMenu.qml

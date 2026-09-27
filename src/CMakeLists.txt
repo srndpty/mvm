@@ -240,5 +240,8 @@ if(MVM_ENABLE_QT)
         PUBLIC  mvm::gpu_preview mvm::audio_preview mvm::preview_engine Qt6::Quick Qt6::Gui
         PRIVATE Qt6::GuiPrivate mvm::warnings dwmapi
     )
+    # QML module 側 (apps/mvm の PreviewSurface) がこの層の型を基底に持つため、
+    # metatypes を出して qmltyperegistrar / qmllint から基底型が見えるようにする。
+    qt_extract_metatypes(mvm_preview_qt)
     add_library(mvm::preview_qt ALIAS mvm_preview_qt)
 endif()

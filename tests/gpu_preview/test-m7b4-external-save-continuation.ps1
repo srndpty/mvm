@@ -95,7 +95,7 @@ if ($overwriteAt -lt 0 -or $saveAsAt -le $overwriteAt -or $cancelAt -le $saveAsA
 $overwrite = $external.Substring($overwriteAt, $saveAsAt - $overwriteAt)
 $saveAsChoice = $external.Substring($saveAsAt, $cancelAt - $saveAsAt)
 $cancel = $external.Substring($cancelAt)
-if ($overwrite -notmatch 'root\.completeExternalSave\(\s*mvmController\.saveProjectOverwritingExternalChange\(\)\)') {
+if ($overwrite -notmatch 'root\.completeExternalSave\(\s*root\.mvmController\.saveProjectOverwritingExternalChange\(\)\)') {
     throw '上書き成功がpending actionの再開へ接続されていません'
 }
 if ($overwrite.Contains('continuePendingProjectAction')) {
@@ -116,7 +116,7 @@ if (-not $cancel.Contains('root.abandonExternalSaveContinuation();') -or
 
 $saveDialog = Get-IdBlock $qml 'saveProjectDialog'
 Assert-Order $saveDialog @(
-    'onAccepted: root.completeExternalSave(mvmController.saveProjectAs(selectedFile))',
+    'onAccepted: root.completeExternalSave(root.mvmController.saveProjectAs(selectedFile))',
     'onRejected: root.abandonExternalSaveContinuation()'
 ) 'saveProjectDialog'
 

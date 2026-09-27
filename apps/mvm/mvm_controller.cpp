@@ -582,7 +582,7 @@ QStringList MvmController::clipNames() const {
     return names;
 }
 
-QAbstractItemModel* MvmController::timelineModel() const {
+TimelineClipModel* MvmController::timelineModel() const {
     return timelineModel_.get();
 }
 

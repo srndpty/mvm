@@ -6,6 +6,7 @@
 #include "preview_engine/preview_engine.h"
 #include "project/media_bin.h"
 #include "project/project.h"
+#include "timeline_clip_model.h"
 
 #include <atomic>
 #include <chrono>
@@ -27,16 +28,18 @@
 #include <QUrl>
 #include <QVariantList>
 #include <QVariantMap>
+#include <QtQml/qqmlregistration.h>
 
 namespace mvm::app {
 
 class PreviewEngineRhiItem;
-class TimelineClipModel;
 class TrackModel;
 class ShuttleAudioPlayback;
 
-class MvmController final : public QObject {
+class MvmController : public QObject {
     Q_OBJECT
+    QML_NAMED_ELEMENT(MvmController)
+    QML_UNCREATABLE("アプリが生成したコントローラーを使用してください")
     Q_PROPERTY(QString projectPath READ projectPath NOTIFY stateChanged)
     Q_PROPERTY(QString statusText READ statusText NOTIFY stateChanged)
     Q_PROPERTY(QString currentClipName READ currentClipName NOTIFY stateChanged)
@@ -50,10 +53,10 @@ class MvmController final : public QObject {
     Q_PROPERTY(QString manimSceneName READ manimSceneName NOTIFY stateChanged)
     Q_PROPERTY(QString manimStateText READ manimStateText NOTIFY stateChanged)
     Q_PROPERTY(QStringList clipNames READ clipNames NOTIFY stateChanged)
-    Q_PROPERTY(QAbstractItemModel* timelineModel READ timelineModel CONSTANT)
+    Q_PROPERTY(mvm::app::TimelineClipModel* timelineModel READ timelineModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* videoTrackModel READ videoTrackModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* audioTrackModel READ audioTrackModel CONSTANT)
-    Q_PROPERTY(MediaBinModel* mediaBinModel READ mediaBinModel CONSTANT)
+    Q_PROPERTY(mvm::app::MediaBinModel* mediaBinModel READ mediaBinModel CONSTANT)
     Q_PROPERTY(int videoTrackCount READ videoTrackCount NOTIFY stateChanged)
     Q_PROPERTY(int audioTrackCount READ audioTrackCount NOTIFY stateChanged)
     Q_PROPERTY(int clipCount READ clipCount NOTIFY stateChanged)
@@ -142,7 +145,7 @@ public:
     QString manimStateText() const { return manimStateText_; }
 
     QStringList clipNames() const;
-    QAbstractItemModel* timelineModel() const;
+    TimelineClipModel* timelineModel() const;
     QAbstractItemModel* videoTrackModel() const;
     QAbstractItemModel* audioTrackModel() const;
     MediaBinModel* mediaBinModel() const;

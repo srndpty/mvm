@@ -6,6 +6,7 @@
 #include <QColor>
 #include <QPointer>
 #include <QQuickPaintedItem>
+#include <QtQml/qqmlregistration.h>
 
 namespace mvm::app {
 
@@ -17,6 +18,7 @@ namespace mvm::app {
 // 配置し、左端の素材時刻 (startSeconds) と 1 pixel あたりの秒数を渡す。
 class WaveformView : public QQuickPaintedItem {
     Q_OBJECT
+    QML_NAMED_ELEMENT(WaveformView)
     Q_PROPERTY(QObject* cache READ cache WRITE setCache NOTIFY cacheChanged)
     Q_PROPERTY(QString mediaPath READ mediaPath WRITE setMediaPath NOTIFY mediaPathChanged)
     Q_PROPERTY(double startSeconds READ startSeconds WRITE setStartSeconds NOTIFY

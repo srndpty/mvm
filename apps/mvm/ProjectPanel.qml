@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -7,8 +8,9 @@ import QtQuick.Layouts
 // 並び・開閉は mediaBinModel が決め、ここは選択・ドラッグ・入力だけを持つ。
 Item {
     id: panel
+    required property MvmController mvmController
 
-    readonly property var binModel: mvmController.mediaBinModel
+    readonly property var binModel: panel.mvmController.mediaBinModel
     // 選択は UI の状態であり Project には保存しない。
     property var selectedIds: []
     property string anchorId: ""
@@ -77,11 +79,11 @@ Item {
     }
 
     function importUrls(urls) {
-        mvmController.importMediaFiles(urls, targetFolder());
+        panel.mvmController.importMediaFiles(urls, targetFolder());
     }
 
     function createFolder() {
-        const folderId = mvmController.createMediaFolder(targetFolder());
+        const folderId = panel.mvmController.createMediaFolder(targetFolder());
         if (folderId === "")
             return;
         selectOnly(folderId);
@@ -93,7 +95,7 @@ Item {
 
     function removeSelected() {
         if (selectedIds.length > 0)
-            mvmController.removeMediaBinEntries(selectedIds);
+            panel.mvmController.removeMediaBinEntries(selectedIds);
     }
 
     function startRename() {
@@ -107,14 +109,14 @@ Item {
         renamingId = "";
         binList.forceActiveFocus();
         if (text.trim() !== "" && text.trim() !== originalName)
-            mvmController.renameMediaBinEntry(entryId, text);
+            panel.mvmController.renameMediaBinEntry(entryId, text);
     }
 
     function openEntry(entryId, entryKind) {
         if (entryKind === "folder")
             binModel.toggleExpanded(entryId);
         else
-            mvmController.addMediaItemToTimeline(entryId);
+            panel.mvmController.addMediaItemToTimeline(entryId);
     }
 
     // すでに行き先にある entry だけなら何もしない。空の移動を undo 履歴へ積まない。
@@ -124,7 +126,7 @@ Item {
         const moving = dragIds.filter(entryId => entryId !== folderId
                                       && binModel.parentFolderOf(entryId) !== folderId);
         if (moving.length > 0)
-            Qt.callLater(() => mvmController.moveMediaBinEntries(moving, folderId));
+            Qt.callLater(() => panel.mvmController.moveMediaBinEntries(moving, folderId));
     }
 
     function finishDrag(drop) {
@@ -158,13 +160,13 @@ Item {
             ToolButton {
                 text: "読み込み…"
                 font.pixelSize: 11
-                enabled: !mvmController.busy
+                enabled: !panel.mvmController.busy
                 onClicked: importDialog.open()
             }
             ToolButton {
                 text: "新規フォルダ"
                 font.pixelSize: 11
-                enabled: !mvmController.busy
+                enabled: !panel.mvmController.busy
                 onClicked: panel.createFolder()
             }
         }
@@ -536,7 +538,7 @@ Item {
         CompactMenuItem {
             text: "タイムラインに追加"
             enabled: contextMenu.entryKind === "video" || contextMenu.entryKind === "audio"
-            onTriggered: mvmController.addMediaItemToTimeline(contextMenu.entryId)
+            onTriggered: panel.mvmController.addMediaItemToTimeline(contextMenu.entryId)
         }
         CompactMenuSeparator {}
         CompactMenuItem {
