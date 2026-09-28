@@ -119,7 +119,8 @@ add_executable(mvm_test_image_clip harness/test_image_clip.cpp)
 target_link_libraries(mvm_test_image_clip PRIVATE
     mvm::project mvm::timeline_export mvm::timeline_preview_mapping mvm::mlt Qt6::Gui
     mvm::warnings)
-target_compile_definitions(mvm_test_image_clip PRIVATE ${MVM_MLT_PATH_DEFS})
+target_compile_definitions(mvm_test_image_clip PRIVATE ${MVM_MLT_PATH_DEFS}
+    MVM_TEST_FFMPEG_EXE="${MVM_UCRT64_ROOT}/bin/ffmpeg.exe")
 add_test(NAME image_clip_contract
     COMMAND mvm_test_image_clip "${CMAKE_SOURCE_DIR}/tests/assets/smoke/_import")
 set_tests_properties(image_clip_contract PROPERTIES

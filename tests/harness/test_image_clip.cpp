@@ -206,13 +206,21 @@ void testModel() {
 // 書き出した mp4 の先頭 frame を PNG へ復号する。
 QImage decodeFirstFrame(const fs::path& video, const QString& png) {
     QProcess decoder;
-    decoder.start(QStringLiteral("C:/msys64/ucrt64/bin/ffmpeg.exe"),
+    decoder.start(QStringLiteral(MVM_TEST_FFMPEG_EXE),
                   {QStringLiteral("-loglevel"), QStringLiteral("error"), QStringLiteral("-i"),
                    QString::fromStdWString(video.wstring()), QStringLiteral("-frames:v"),
                    QStringLiteral("1"), QStringLiteral("-y"), png});
-    if (!decoder.waitForFinished(30000) || decoder.exitCode() != 0)
+    if (!decoder.waitForFinished(30000) || decoder.exitStatus() != QProcess::NormalExit ||
+        decoder.exitCode() != 0) {
+        std::fprintf(stderr, "FFmpeg で frame を復号できません: %s: %s\n",
+                     decoder.errorString().toUtf8().constData(),
+                     decoder.readAllStandardError().constData());
         return {};
-    return QImage(png);
+    }
+    const QImage frame(png);
+    if (frame.isNull())
+        std::fprintf(stderr, "FFmpeg の出力画像を読めません: %s\n", png.toUtf8().constData());
+    return frame;
 }
 
 bool isRed(const QColor& c) {
