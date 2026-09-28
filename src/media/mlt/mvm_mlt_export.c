@@ -5,6 +5,7 @@
 #include "mvm_mlt_runtime.h"
 
 #include <windows.h>
+#include <limits.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -726,12 +727,22 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             clip->crop_top < 0 || clip->crop_right < 0 || clip->crop_bottom < 0 ||
             clip->producer_in_frame < 0 || clip->producer_out_frame <= clip->producer_in_frame ||
             clip->tail_padding_frames < 0 || clip->speed_num <= 0 || clip->speed_den <= 0 ||
+            /* 次の加算の signed overflow (未定義動作) を先に止める。 */
+            clip->tail_padding_frames >
+                LLONG_MAX - (clip->producer_out_frame - clip->producer_in_frame) ||
             clip->producer_out_frame - clip->producer_in_frame + clip->tail_padding_frames !=
                 clip->timeline_duration_frames) {
             set_err(err, err_size, "tractor clip %dのmappingが不正です", index);
             goto cleanup;
         }
-        /* 本体 cut 1 本、末尾の補完 frame ごとに 1 本、素材末尾の +1 丸めの補完 1 本。 */
+        /* 本体 cut 1 本、末尾の補完 frame ごとに 1 本、素材末尾の +1 丸めの補完 1 本。
+         * clip 数に上限が無いので、合計は加算前に表現範囲と確保可能な要素数を検査する。 */
+        if (clip->tail_padding_frames > LLONG_MAX - 2 - cut_capacity ||
+            (unsigned long long)(cut_capacity + 2 + clip->tail_padding_frames) >
+                SIZE_MAX / sizeof(*cuts)) {
+            set_err(err, err_size, "tractor clip %dまでのcut数が表現範囲を超えています", index);
+            goto cleanup;
+        }
         cut_capacity += 2 + clip->tail_padding_frames;
         if (!clip->is_audio && clip->timeline_start_frame < cursors[clip->video_track]) {
             set_err(err, err_size, "tractor clip %dが同一trackで重複または未sortです", index);

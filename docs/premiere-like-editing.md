@@ -1166,6 +1166,16 @@ frame 0 / 8 / 15 の書き出しと同じ frame の映像で preview を合成�
 - 書き出しは V2 以上の clip ごとに V1 との間へ affine transition を植える既存の方式のままで、clip は
   track 昇順に並べてから植えるので上の track ほど前面になる。V4 以上の切り抜きが黙って落ちる
   条件 (`track < 3`) があったので外した
+- clip 数の上限が無くなったので、tractor 書き出しの cut 配列の要素数 (clip ごとに 2 + 末尾補完 frame 数)
+  の合計は、加算前に long long の範囲と確保できる要素数 (`SIZE_MAX / 要素の大きさ`) を検査する。
+  signed overflow は未定義動作なので、calloc の失敗では防御にならない。producer 尺 + 末尾補完の
+  検算も同じく加算前に止める。`mlt_export_capacity_overflow` で、どれも配列の確保より前に
+  「表現範囲を超えています」で止まることを見る。検査を外すと、修正前の経路の
+  「cut 配列を確保できません」になって落ちることを確かめた
+- `[推測]` 書き出しは video track の番号をそのまま MLT の track 番号に使うので、V1 と V10000 にだけ
+  clip がある Project でも空の playlist を 10000 本作る。UI は track を 1 本ずつ足すので通常は
+  起きず、実害は測っていない。詰めるなら playlist の番号だけでなく、transition を植える
+  track 番号 (`mlt_field_plant_transition(..., 0, video_track)`) も一緒に写し替える
 - native present hook の `MVM_NATIVE_PRESENT_HOOK_MAX_SOURCES = 2` は据え置いた。patched Qt と共有する
   固定 ABI で、使うのは診断用の `CompositorRhiItem` だけである。製品の preview は通らない
 - `MeasuredPreviewEnvelope` (60/1 × 映像 2 × layer 2 × 音声 1) は変えていない。configured 値と一致しない
@@ -1176,6 +1186,12 @@ frame 0 / 8 / 15 の書き出しと同じ frame の映像で preview を合成�
 mute した track を飛ばすこと、V4 への移動の受理、V1～V5 映像の上の V6 文字の書き出し (画素)、
 1 frame の clip 70 本を V1～V5 に並べた書き出しを見る。`preview_engine_p5e_exceed_source_count` は
 17 slot を埋めて 18 本目を、`preview_engine_p5e_exceed_layer_count` は 17 layer を拒否させる。
+
+`[事実]` 上限ちょうどの受理と描画は `preview_engine_p5e_capacity_at_limit` (`mvm_p5e_capacity_smoke`)
+で固定した。映像 source 8 本 + 静止画 8 枚の 16 layer と音声 source 16 本で再生し、16 layer の
+frame を 30 枚提示する。同じ run で、音声 17 本目の登録、映像 9 本の composition (source 上限)、
+映像 8 + 静止画 9 の composition (layer 上限) を拒否することも見る。実行時間は約 1.6 秒。
+これは「受理して描画できる」ことの検査であり、fps や VRAM の余裕は下の `[未検証]` のまま。
 
 `[未検証]` 上限いっぱい (映像 8 本 + 文字 8 枚) で再生したときの fps・VRAM。source 1 本ごとに decode
 thread 1 本と D3D11 の frame pool (`extra_hw_frames = 16`) を持ち、source-set の切り替え中は旧 set と

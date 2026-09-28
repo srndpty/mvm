@@ -135,6 +135,9 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
 
 /* M7b製品経路。映像 track ごとの playlist (V1/V2 は常に作り、上は使う最上位 track まで) と、
  * V2 以上の clip ごとに V1 との間へ植える affine transition を使う。track 数・clip 数の上限は無い。
+ * playlist は video_track をそのまま MLT の track 番号に使うので、V1 と V10000 にだけ clip が
+ * あっても空の playlist を 10000 本作る (UI は track を連続で足すので通常は起きない)。
+ * 詰めるなら transition の track 番号も一緒に写し替える必要がある。
  * (関数名は 2 track 時代のまま。) */
 int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long long total_duration,
                              const MvmExportSpec* spec, const char* out_path, MvmExportResult* out,
