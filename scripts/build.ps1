@@ -24,7 +24,8 @@
     configure のみ行い、ビルドしない。
 
 .PARAMETER ReuseConfigure
-    CMakeCache.txt があれば明示的な configure を省く。Ninja が必要時に再 configure する。
+    preset と toolchain の署名、および cache の設定が一致すれば明示的な configure を省く。
+    Ninja が必要時に再 configure する。
 
 .EXAMPLE
     pwsh scripts/build.ps1
@@ -75,14 +76,26 @@ if ($Clean -and (Test-Path $BuildDir)) {
 Push-Location $RepoRoot
 try {
     $cachePath = Join-Path $BuildDir 'CMakeCache.txt'
-    if ($ReuseConfigure -and -not $Clean -and (Test-Path -LiteralPath $cachePath -PathType Leaf)) {
-        # configure を省く経路でも、別の Qt / compiler を含む cache は使わない。
-        Assert-MvmCachedToolchain -CachePath $cachePath -Ucrt64 $Ucrt64 -RepoRoot $RepoRoot
+    $signaturePath = Join-Path $BuildDir 'mvm-configure-signature.txt'
+    $signature = Get-MvmConfigureSignature -Preset $Preset -Ucrt64 $Ucrt64 `
+        -RepoRoot $RepoRoot -ToolchainArguments $toolchainArguments
+    $reuse = $ReuseConfigure -and -not $Clean -and
+        (Test-Path -LiteralPath $cachePath -PathType Leaf) -and
+        (Test-Path -LiteralPath $signaturePath -PathType Leaf) -and
+        ((Get-Content -LiteralPath $signaturePath -Raw).Trim() -eq $signature)
+    if ($reuse) {
+        Assert-MvmCachedToolchain -CachePath $cachePath `
+            -PresetsPath (Join-Path $RepoRoot 'CMakePresets.json') -Preset $Preset `
+            -RepoRoot $RepoRoot -ToolchainArguments $toolchainArguments
         Write-Host "`n--- configure は既存 cache を使用 ---" -ForegroundColor Yellow
     } else {
         Write-Host "`n--- configure ---" -ForegroundColor Yellow
         & $CMake --preset $Preset @toolchainArguments
         if ($LASTEXITCODE -ne 0) { throw "configure に失敗しました (exit $LASTEXITCODE)" }
+        Assert-MvmCachedToolchain -CachePath $cachePath `
+            -PresetsPath (Join-Path $RepoRoot 'CMakePresets.json') -Preset $Preset `
+            -RepoRoot $RepoRoot -ToolchainArguments $toolchainArguments
+        Set-Content -LiteralPath $signaturePath -Value $signature -Encoding utf8NoBOM
     }
 
     if ($ConfigureOnly) {

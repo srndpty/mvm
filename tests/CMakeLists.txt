@@ -20,6 +20,18 @@ add_test(NAME build_cached_toolchain_guard
         -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/cached-toolchain-guard")
 set_tests_properties(build_cached_toolchain_guard PROPERTIES TIMEOUT 30)
 
+add_test(NAME ctest_daily_selection_contract
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/test-ctest-selection.ps1"
+        -Library "${CMAKE_SOURCE_DIR}/scripts/lib/ctest-selection.ps1"
+        -Fixture "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/ctest-selection"
+        -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/ctest-selection"
+        -CMake "${MVM_UCRT64_ROOT}/bin/cmake.exe"
+        -CTest "${MVM_UCRT64_ROOT}/bin/ctest.exe"
+        -Ninja "${MVM_UCRT64_ROOT}/bin/ninja.exe"
+        -Pwsh "${MVM_PWSH}")
+set_tests_properties(ctest_daily_selection_contract PROPERTIES TIMEOUT 60)
+
 # --- mvm_bench --------------------------------------------------------------
 # Qt に依存しない C++20 CLI。MLT のヘッダは include しない。
 add_executable(mvm_bench
@@ -1614,13 +1626,13 @@ mvm_add_test(verify_audio_no_clipping
 # verdict / threshold / metric / window には影響しない (S2-g1a で検証済み)。
 # suite 条件下で handle 系列を捕捉するために一時的に付与している。
 # attribution 完了後に残置か除去かを判断すること。
-# 100 回反復し、memory check も無効なので日常の合否判定から外す。
+# 100 回反復するため日常から外し、全件の合否判定には残す。
 mvm_add_test(ownership_soak_100
     COMMAND mvm_bench soak "${MVM_S5_SCENARIO}" --iterations 100 --warmup-iterations 30
             --wav-dir "${MVM_AUDIO_OUT}" --no-memory-check --dump-all-samples
     PROPERTIES
         REQUIRED_FILES "${MVM_S5_SCENARIO}"
-        LABELS stability
+        LABELS extended
         TIMEOUT 1800)
 
 # S2-g1b: warmup が gate avoidance ではなく measurement-domain repair であることを

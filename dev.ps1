@@ -43,7 +43,7 @@ function Show-DevHelp {
   run    debug の mvm だけを増分ビルドして GUI を起動する
   gui    release ビルド済みの mvm GUI を起動する
   test       release の短縮テストを実行する（日常用）
-  test-full  release/debug の portable 通常テストをすべて実行する
+  test-full  release/debug の通常テストをすべて実行する
   lint   整形差分・静的検査・アーキテクチャ検査を実行する
   help   このヘルプを表示する
 
@@ -71,6 +71,8 @@ function Invoke-Tests {
     & $pwsh -NoProfile -File (Join-Path $scriptsDirectory 'test.ps1') -Ucrt64 $Ucrt64 @TestArgs
     exit $LASTEXITCODE
 }
+
+. (Join-Path $scriptsDirectory 'lib\ctest-selection.ps1')
 
 function Start-MvmGui {
     param(
@@ -121,11 +123,10 @@ switch ($Command.ToLowerInvariant()) {
             -MissingBuildHint '.\dev.ps1 run を再実行してください。'
     }
     'test' {
-        Invoke-Tests -TestArgs @('-Preset', 'ucrt64-release', '-Group', 'BuildDependent',
-            '-Portable', '-Fast')
+        Invoke-Tests -TestArgs @(Get-MvmDailyTestArguments)
     }
     'test-full' {
-        Invoke-Tests -TestArgs @('-Portable')
+        Invoke-Tests -TestArgs @(Get-MvmFullTestArguments)
     }
     'lint' {
         Invoke-CanonicalScript -Name 'lint.ps1'

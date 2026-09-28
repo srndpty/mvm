@@ -86,6 +86,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'lib\ctest-selection.ps1')
 
 $shardIndex = 0
 $shardCount = 1
@@ -114,10 +115,7 @@ $anyFailed = $false
 # 「通常テストが減っている」ことに気づけない。
 $summary = @()
 $lastGroupExit = 0
-$normalExcludes = @('performance', 'stability')
-if ($Portable) { $normalExcludes += 'workstation' }
-if ($Fast) { $normalExcludes += 'extended' }
-$normalExclude = $normalExcludes -join '|'
+$normalExclude = Get-MvmNormalExcludePattern -Portable:$Portable -Fast:$Fast
 $normalKind = if ($Fast) { '通常(短縮)' } elseif ($Portable) { '通常(portable)' } else { '通常' }
 
 # fail-closed。「測れなかった」を「通った」と報告しない。
@@ -157,11 +155,7 @@ function Invoke-CTestGroup {
     }
 
     if ($total -eq 0) {
-        $msg = if ($Required) {
-            '対象テストが 0 件です。この種別は 1 件以上あるはずなので失敗にします。'
-        } else {
-            '対象テストが 0 件です。ラベル指定を確認してください。'
-        }
+        try { Assert-MvmRequiredCTestCount -Total $total -Required:$Required } catch { $msg = $_.Exception.Message }
         Write-Host "${Kind}: $msg" -ForegroundColor Red
         $script:summary += [pscustomobject]@{
             Preset = $Preset; Kind = $Kind; Total = 0; Ran = 0
@@ -228,43 +222,7 @@ function Get-BuildIndependentTestNames {
     if ($LASTEXITCODE -ne 0) { throw "ctest --show-only=json-v1 が exit $LASTEXITCODE で失敗しました" }
     $tests = @((($jsonLines -join "`n") | ConvertFrom-Json).tests)
 
-    # build dir 配下を指す引数は、テスト出力先 (tests/ 以下) を除きビルド成果物とみなす。
-    # bin/ だけを見ると $<TARGET_FILE:...> の静的ライブラリ (src/*.a) を取りこぼす。
-    $buildPrefix = ($BuildDir -replace '\\', '/').ToLowerInvariant().TrimEnd('/') + '/'
-    $testOutputPrefix = $buildPrefix + 'tests/'
-
-    # DEPENDS で結ばれたテストは他のテストの出力を読むため、両端とも依存側に残す。
-    $dependsRelated = [System.Collections.Generic.HashSet[string]]::new()
-    foreach ($t in $tests) {
-        if (-not $t.PSObject.Properties['properties']) { continue }
-        foreach ($prop in @($t.properties)) {
-            if ($prop.name -ne 'DEPENDS') { continue }
-            [void]$dependsRelated.Add($t.name)
-            foreach ($d in @($prop.value)) { [void]$dependsRelated.Add("$d") }
-        }
-    }
-
-    $names = @()
-    foreach ($t in $tests) {
-        if (-not $t.PSObject.Properties['command']) { continue }
-        $command = @($t.command)
-        if ($command.Count -eq 0) { continue }
-        if ([IO.Path]::GetFileNameWithoutExtension("$($command[0])") -ne 'pwsh') { continue }
-        if ($dependsRelated.Contains($t.name)) { continue }
-        $usesBuildOutput = $false
-        foreach ($arg in $command) {
-            $normalized = ("$arg" -replace '\\', '/').ToLowerInvariant()
-            # '|' で連結された ChildArgs などに複数のパスが入るため、全出現位置を見る。
-            $at = $normalized.IndexOf($buildPrefix)
-            while ($at -ge 0) {
-                if ($normalized.IndexOf($testOutputPrefix, $at) -ne $at) { $usesBuildOutput = $true; break }
-                $at = $normalized.IndexOf($buildPrefix, $at + 1)
-            }
-            if ($usesBuildOutput) { break }
-        }
-        if (-not $usesBuildOutput) { $names += $t.name }
-    }
-    return , $names
+    return (Get-MvmBuildIndependentTestNames -Tests $tests -BuildDir $BuildDir)
 }
 
 # 非依存テストは 1 回の呼び出しで 1 度だけ実行する。
