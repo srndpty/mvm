@@ -73,16 +73,6 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
         return plan;
     }
     plan.totalDurationFrames = valid.totalFrames;
-    if (static_cast<int>(project.videoTracks.size()) > kMaxExportVideoTracks) {
-        for (const auto& clip : project.timelineClips) {
-            if (clip.track.kind == project::TrackKind::Video &&
-                clip.track.index >= kMaxExportVideoTracks) {
-                plan.error = "書き出しは video track を " + std::to_string(kMaxExportVideoTracks) +
-                             " 本までしか扱えません: " + clip.name;
-                return plan;
-            }
-        }
-    }
     bool anyOverlay = false;
     bool anyAudio = false;
     std::int64_t v1Cursor = 0;

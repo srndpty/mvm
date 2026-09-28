@@ -83,10 +83,22 @@ int main(int argc, char** argv) {
                 2,
         "V1/V2 の上に V3 文字 clip を配置できません");
     const auto beforeFull = placement;
+    // V1～V3 が埋まっていても、上へ track を足して V4 に置く (文字を置ける track に上限は無い)。
     textToPlace.id = "text-2";
-    require(!mvm::project::placeTextClipAt(placement, textToPlace, 0).success &&
-                placement == beforeFull,
-            "V1～V3 が埋まったときに Project を変更しました");
+    const auto placedOnV4 = mvm::project::placeTextClipAt(placement, textToPlace, 0);
+    require(placedOnV4.success && placement.videoTracks.size() == 4 &&
+                placement.timelineClips[static_cast<std::size_t>(placedOnV4.selectedIndex)]
+                        .track.index == 3,
+            "V1～V3 が埋まったときに V4 を足して文字 clip を置けません");
+    // mute された空き track は飛ばし、その上へ足す。
+    auto mutedGap = beforeFull;
+    mutedGap.videoTracks.push_back({"V4", true});
+    textToPlace.id = "text-muted-gap";
+    const auto placedAboveMuted = mvm::project::placeTextClipAt(mutedGap, textToPlace, 0);
+    require(placedAboveMuted.success && mutedGap.videoTracks.size() == 5 &&
+                mutedGap.timelineClips[static_cast<std::size_t>(placedAboveMuted.selectedIndex)]
+                        .track.index == 4,
+            "mute された V4 を飛ばして V5 に文字 clip を置けません");
 
     auto laterOverlap = mvm::project::createDefaultProject();
     laterOverlap.timelineClips.push_back(beforeFull.timelineClips[0]);
@@ -182,8 +194,13 @@ int main(int argc, char** argv) {
     require(compared > 100 && difference / (compared * 3) < 25.0,
             "文字ラスタと書き出しの画素が一致しません");
 
+    // 映像 V1～V5 の上の V6 に文字。旧実装の書き出しは V3 までしか扱えなかった。
     auto stacked = project;
-    for (int track = 0; track < 2; ++track) {
+    while (stacked.videoTracks.size() < 6)
+        stacked.videoTracks.push_back(
+            {"V" + std::to_string(stacked.videoTracks.size() + 1), false});
+    stacked.timelineClips[0].track.index = 5;
+    for (int track = 0; track < 5; ++track) {
         mvm::project::TimelineClip video;
         video.kind = mvm::project::TimelineClipKind::Video;
         video.mediaPath = MVM_TEXT_TEST_VIDEO;
@@ -197,17 +214,17 @@ int main(int argc, char** argv) {
         stacked.timelineClips.push_back(video);
     }
     require(mvm::project::validateTimeline(stacked).success,
-            "V1/V2 映像と V3 文字の構成を検証できません");
+            "V1～V5 映像と V6 文字の構成を検証できません");
     const auto preview = mvm::app::mapTimelinePreviewFrame(stacked, 0);
-    require(preview.success && preview.layers.size() == 2,
+    require(preview.success && preview.layers.size() == 5 && preview.textLayers.size() == 1,
             "preview の動画 source に文字 clip が混入しました");
     request.outputPath =
         std::filesystem::path(exported.filePath(QStringLiteral("stacked.mp4")).toStdWString());
     const auto stackedResult = mvm::app::exportTimeline(stacked, request);
     if (!stackedResult.success)
-        std::fprintf(stderr, "3トラック書き出し: %s\n", stackedResult.error.c_str());
+        std::fprintf(stderr, "6トラック書き出し: %s\n", stackedResult.error.c_str());
     require(stackedResult.success && stackedResult.frameCount == 30,
-            "V1/V2 映像と V3 文字を書き出せません");
+            "V1～V5 映像と V6 文字を書き出せません");
     const QString stackedFrame = exported.filePath(QStringLiteral("stacked-frame.png"));
     decoder.start(QStringLiteral("C:/msys64/ucrt64/bin/ffmpeg.exe"),
                   {QStringLiteral("-loglevel"), QStringLiteral("error"), QStringLiteral("-i"),
@@ -215,7 +232,7 @@ int main(int argc, char** argv) {
                    QStringLiteral("-frames:v"), QStringLiteral("1"), QStringLiteral("-y"),
                    stackedFrame});
     require(decoder.waitForFinished(30000) && decoder.exitCode() == 0,
-            "3トラックの書き出し frame を復号できません");
+            "6トラックの書き出し frame を復号できません");
     const QImage stackedDecoded(stackedFrame);
     int whiteTextPixels = 0;
     for (int y = 18; y < 120; ++y)
@@ -226,7 +243,42 @@ int main(int argc, char** argv) {
                 actual.green() > 215 && actual.blue() > 215)
                 ++whiteTextPixels;
         }
-    require(whiteTextPixels > 100, "V3 の文字が映像の上に描画されていません");
+    require(whiteTextPixels > 100, "V6 の文字が映像の上に描画されていません");
+
+    // clip 数にも上限が無いこと。旧実装は総 clip 64 本で書き出しを拒否した。
+    // 1 frame の clip 70 本を V1～V5 に互い違いに並べ、tractor 経路で書き出す。
+    {
+        auto many = mvm::project::createDefaultProject();
+        many.outputWidth = 320;
+        many.outputHeight = 240;
+        while (many.videoTracks.size() < 5)
+            many.videoTracks.push_back({"V" + std::to_string(many.videoTracks.size() + 1), false});
+        constexpr int kManyClips = 70;
+        for (int index = 0; index < kManyClips; ++index) {
+            mvm::project::TimelineClip video;
+            video.kind = mvm::project::TimelineClipKind::Video;
+            video.mediaPath = MVM_TEXT_TEST_VIDEO;
+            video.name = "短い映像 " + std::to_string(index);
+            video.id = "many-" + std::to_string(index);
+            video.sourceFpsNum = 60;
+            video.sourceFpsDen = 1;
+            video.sourceFrameCount = 300;
+            video.sourceInFrame = index;
+            video.sourceOutFrame = index + 1;
+            video.timelineStartFrame = index;
+            video.track = {mvm::project::TrackKind::Video, index % 5};
+            many.timelineClips.push_back(video);
+        }
+        require(mvm::project::validateTimeline(many).success,
+                "前提: 70 clip の Project が不正です");
+        request.outputPath =
+            std::filesystem::path(exported.filePath(QStringLiteral("many.mp4")).toStdWString());
+        const auto manyResult = mvm::app::exportTimeline(many, request);
+        if (!manyResult.success)
+            std::fprintf(stderr, "70 clip 書き出し: %s\n", manyResult.error.c_str());
+        require(manyResult.success && manyResult.frameCount == kManyClips,
+                "clip 70 本の timeline を書き出せません");
+    }
     mvm_mlt_runtime_shutdown();
 
     auto edited = project;
@@ -270,22 +322,19 @@ int main(int argc, char** argv) {
         require(!mvm::app::textPresetPlacement(telop, 320, 240, "top").success,
                 "未知の揃えを受理しました");
     }
-    // 文字は V1～V3 だけ。V4 を足して通常の移動で持っていこうとしても Project を変えない。
+    // 文字を置ける track に上限は無い。V4 への移動も、V4 の文字を持つ Project も受理する。
     {
         auto moved = project;
         require(mvm::project::addTrack(moved, mvm::project::TrackKind::Video).success,
                 "V4 を追加できません");
-        const auto before = moved;
         const auto toV4 =
             mvm::project::moveClip(moved, "text-1", {mvm::project::TrackKind::Video, 3}, 0);
-        require(!toV4.success && moved == before, "文字 clip を V4 へ移動できました");
-        // 対照: 同じ Project で V2 への移動は通る。
-        const auto toV2 =
-            mvm::project::moveClip(moved, "text-1", {mvm::project::TrackKind::Video, 1}, 0);
-        require(toV2.success, "対照: 文字 clip を V2 へ移動できません");
-        auto direct = before;
+        require(toV4.success && moved.timelineClips[0].track.index == 3,
+                "文字 clip を V4 へ移動できません");
+        auto direct = project;
+        direct.videoTracks.push_back({"V4", false});
         direct.timelineClips[0].track.index = 3;
-        require(!mvm::project::validateTimeline(direct).success, "V4 の文字 clip を受理しました");
+        require(mvm::project::validateTimeline(direct).success, "V4 の文字 clip を拒否しました");
     }
     // 文字の effect は不透明度 (値・key・fade) だけ。書き出しでだけ効く effect を持たせない。
     {
@@ -303,6 +352,7 @@ int main(int argc, char** argv) {
         require(!mvm::project::validateTimeline(withPosition).success,
                 "文字 clip の位置 effect を受理しました");
     }
-    std::puts("文字 clip の保存・描画・編集・定位置・track と effect の制約を確認しました");
+    std::puts("文字 clip の保存・描画・編集・定位置・track と effect の制約、"
+              "多 track / 多 clip の書き出しを確認しました");
     return 0;
 }

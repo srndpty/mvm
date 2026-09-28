@@ -2543,11 +2543,10 @@ bool MvmController::textClipVisible(int index) const {
 }
 
 QString MvmController::textClipAt(int x, int y) {
-    for (int track = project::kMaxTextVideoTracks - 1; track >= 0; --track) {
+    for (int track = static_cast<int>(project_.videoTracks.size()) - 1; track >= 0; --track) {
         for (int index = 0; index < static_cast<int>(project_.timelineClips.size()); ++index) {
             const auto& clip = project_.timelineClips[static_cast<std::size_t>(index)];
-            if (track >= static_cast<int>(project_.videoTracks.size()) ||
-                clip.kind != project::TimelineClipKind::Text || clip.track.index != track ||
+            if (clip.kind != project::TimelineClipKind::Text || clip.track.index != track ||
                 project_.videoTracks[static_cast<std::size_t>(track)].muted)
                 continue;
             const auto duration = project::timelineClipDuration(project_, clip);

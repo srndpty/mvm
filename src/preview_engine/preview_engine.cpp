@@ -597,15 +597,13 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     PreviewCapabilities capability = [] {
         PreviewCapabilities value;
         // decode する video source と合成する layer の上限は別の値である。
-        // 文字などの静止画 layer は decode source を増やさずに layer だけを増やすので、
-        // video source 2 本のまま layer を V1-V3 の 3 枚まで受理する。
-        // layer 3 は measuredEnvelope (layer 2) の外であり、未計測である。
-        value.configuredMaxActiveVideoSources = 2;
-        value.configuredMaxCompositionLayers = 3;
-        // P5-D2でaudio-master transportを接続したため、audio domainを公開する。
+        // 文字などの静止画 layer は decode source を増やさずに layer だけを増やす。
         // ここは「現在の構成で受理できる上限」であって qualification ではない。
-        // 実測した組は measuredEnvelope (既定値 = 60/1 cohort) が持つ。
-        value.configuredMaxActiveAudioSources = 8;
+        // 実測した組は measuredEnvelope (既定値 = 60/1 cohort) が持ち、この値はその外である。
+        value.configuredMaxActiveVideoSources = kProductMaxActiveVideoSources;
+        value.configuredMaxCompositionLayers = kProductMaxCompositionLayers;
+        // P5-D2でaudio-master transportを接続したため、audio domainを公開する。
+        value.configuredMaxActiveAudioSources = kProductMaxActiveAudioSources;
         value.configuredAudioSampleRate = audio::kInternalSampleRate;
         value.configuredAudioChannelCount = audio::kInternalChannels;
         return value;
@@ -1772,8 +1770,9 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
                       "native render deviceの準備前にsourceを登録できません"));
     }
     // source-set切替中は旧sourceを新composition提示まで保持する。active compositionの
-    // 上限は引き続きcapabilityの2件であり、登録slotだけを最大4件許す。
-    constexpr std::size_t maximumRegisteredVideoSources = 4;
+    // 上限は引き続きcapabilityの値であり、登録slotだけを旧set + 新set + slip preview 1本まで許す。
+    constexpr std::size_t maximumRegisteredVideoSources =
+        2 * std::size_t{kProductMaxActiveVideoSources} + 1;
     if (descriptor.videoEnabled && impl_->videoSources.size() >= maximumRegisteredVideoSources) {
         return Result<PreviewSourceId>::failure(
             makeError(PreviewErrorCategory::UnsupportedCapability, PreviewOperation::AddSource,

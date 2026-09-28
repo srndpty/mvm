@@ -114,6 +114,15 @@ add_test(NAME text_clip_contract COMMAND mvm_test_text_clip)
 set_tests_properties(text_clip_contract PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 120)
+# clip 数の上限を外した tractor 書き出しで、cut 数の計算が overflow する入力を確保前に拒否する。
+add_executable(mvm_test_mlt_export_capacity harness/test_mlt_export_capacity.cpp)
+target_link_libraries(mvm_test_mlt_export_capacity PRIVATE mvm::mlt mvm::warnings)
+target_compile_definitions(mvm_test_mlt_export_capacity PRIVATE ${MVM_MLT_PATH_DEFS}
+    MVM_CAPACITY_TEST_VIDEO="${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4")
+add_test(NAME mlt_export_capacity_overflow COMMAND mvm_test_mlt_export_capacity)
+set_tests_properties(mlt_export_capacity_overflow PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 60)
 target_link_libraries(mvm_test_timeline_edit PRIVATE
     mvm::project mvm::util mvm::warnings)
 add_test(NAME m5_timeline_edit_focused
@@ -2195,6 +2204,17 @@ if(MVM_ENABLE_QT)
         message(FATAL_ERROR
             "[mvm] P5-E product testの登録数が不正です: ${_mvm_p5e_product_registered}/17")
     endif()
+
+    # product capability (映像 8 / 合成 16 / 音声 16) を上限ちょうどで受理・描画し、
+    # 超過を拒否する。性能 (fps / VRAM) は見ない。
+    mvm_add_test(preview_engine_p5e_capacity_at_limit
+        COMMAND "${MVM_PWSH}" -NoProfile -File "${_p5c_fixture_wrapper}"
+                -RequiredFile "${_p5c_fixture_a}" -AdditionalRequiredFile "${_p5e_fixture_b}"
+                -Hint "${_p5c_fixture_hint}"
+                -Exe "$<TARGET_FILE:mvm_p5e_capacity_smoke>"
+        PROPERTIES TIMEOUT 120)
+    set_tests_properties(preview_engine_p5e_capacity_at_limit PROPERTIES
+        LABELS "p5e;workstation")
 endif()
 
 add_executable(mvm_test_gpu_pure gpu_preview/test_gpu_pure.cpp)
