@@ -211,10 +211,10 @@ int main(int argc, char** argv) {
     if (!engine->initialize({{{60, 1}}}, dispatcher) || !engine->attachEventSink(sink))
         return 3;
     const auto capabilities = engine->capabilities();
-    if (capabilities.configuredMaxActiveVideoSources != 2 ||
-        capabilities.configuredMaxCompositionLayers != 3 ||
+    if (capabilities.configuredMaxActiveVideoSources != 8 ||
+        capabilities.configuredMaxCompositionLayers != 16 ||
         capabilities.duplicateSourceLayersSupported) {
-        std::fprintf(stderr, "P5-E3 capabilityが2/3/duplicate=falseではありません\n");
+        std::fprintf(stderr, "P5-E3 capabilityが8/16/duplicate=falseではありません\n");
         return 3;
     }
 
@@ -361,19 +361,31 @@ int main(int argc, char** argv) {
                 }
                 videoSourceB = second.value();
                 if (fault == Fault::ExceedSourceCount) {
-                    // active compositionの上限は2件だが、source-set切替用に登録slotは
-                    // 4件まで許す。5件目の登録だけをcapability超過として拒否させる。
-                    const auto third = engine->addSource(descriptor);
-                    const auto fourth = engine->addSource(descriptor);
-                    const auto fifth = engine->addSource(descriptor);
-                    const bool slotsRestored =
-                        third && fourth && engine->removeSource(third.value()) &&
-                        engine->removeSource(fourth.value());
-                    if (!slotsRestored || fifth ||
-                        fifth.error().category !=
+                    // active compositionの上限は8件だが、source-set切替 (旧set + 新set) と
+                    // slip preview 1本のために登録slotは17件まで許す。登録済みの2件に
+                    // 15件足して満杯にし、18件目の登録だけをcapability超過として拒否させる。
+                    constexpr int kExpectedRegisteredSlots = 17;
+                    std::vector<mvm::preview::PreviewSourceId> extras;
+                    bool extrasOpened = true;
+                    for (int index = 2; index < kExpectedRegisteredSlots; ++index) {
+                        const auto extra = engine->addSource(descriptor);
+                        if (!extra) {
+                            std::fprintf(stderr, "%d件目のsource open失敗: %s\n", index + 1,
+                                         extra.error().detail.c_str());
+                            extrasOpened = false;
+                            break;
+                        }
+                        extras.push_back(extra.value());
+                    }
+                    const auto overflow = engine->addSource(descriptor);
+                    bool slotsRestored = extrasOpened;
+                    for (const auto& extra : extras)
+                        slotsRestored = engine->removeSource(extra) && slotsRestored;
+                    if (!slotsRestored || overflow ||
+                        overflow.error().category !=
                             mvm::preview::PreviewErrorCategory::UnsupportedCapability) {
                         std::fprintf(stderr,
-                                     "video source登録slotの上限4件が期待どおりではありません\n");
+                                     "video source登録slotの上限17件が期待どおりではありません\n");
                         exitCode = 32;
                         app.quit();
                         return;
@@ -428,15 +440,14 @@ int main(int argc, char** argv) {
                     {videoSourceB, {0.5F, 0, 0.5F, 1}, {0, 0, 1, 1}, 1.0F});
             }
             if (fault == Fault::ExceedLayerCount) {
-                // layer 上限は 3、video source 上限は 2。video 3 本では source 上限で
-                // 先に落ちて layer 上限を検査できないので、video 2 本 + 静止画 2 枚で
-                // layer 数だけを超えさせる。
+                // layer 上限は 16。video source 上限で先に落ちないよう、video 2 本 +
+                // 静止画 15 枚の 17 layer で layer 数だけを超えさせる。
                 auto excessive = std::make_shared<mvm::preview::CompositionSnapshot>(*snapshot);
                 auto still = std::make_shared<mvm::preview::PreviewStillImage>();
                 still->width = 2;
                 still->height = 2;
                 still->rgba.assign(16, 255);
-                for (int index = 0; index < 2; ++index) {
+                for (int index = 0; index < 15; ++index) {
                     mvm::preview::PreviewCompositionLayer stillLayer;
                     stillLayer.stillImage = still;
                     excessive->layers.push_back(stillLayer);

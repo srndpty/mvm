@@ -389,13 +389,6 @@ TimelineValidationResult validateTimeline(const Project& project) {
             result.error = "text clip の速度またはリンクが不正です: " + clip.name;
             return result;
         }
-        // 文字を扱える track は、配置 (placeTextClipAt)・書き出し・preview の文字の hit-test が
-        // すべて V1～V3 である。ここで Project の不変条件にして、移動などで V4 以上へ
-        // 出た Project を作らせない。広げるときはそれらをまとめて一般化する。
-        if (clip.kind == TimelineClipKind::Text && clip.track.index >= kMaxTextVideoTracks) {
-            result.error = "text clip は V1～V3 にだけ置けます: " + clip.name;
-            return result;
-        }
         // 文字の effect は不透明度 (値・key・fade) だけを扱う。位置・拡大・回転・切り抜きと
         // 音量は、書き出しでは効くが preview の静止画 layer では描けないので持たせない。
         if (clip.kind == TimelineClipKind::Text) {
@@ -740,8 +733,11 @@ TimelineEditResult placeTextClipAt(Project& project, TimelineClip clip,
     for (std::size_t index = 0; index < active.size(); ++index)
         if (active[index])
             highestActive = static_cast<int>(index);
-    for (int trackIndex = highestActive + 1; trackIndex < kMaxTextVideoTracks; ++trackIndex) {
-        while (trackIndex >= static_cast<int>(candidate.videoTracks.size())) {
+    // 既存 track に空きが無ければ上へ track を足していく。足した track は空で mute もされて
+    // いないので、そこへは必ず置ける (置けなければ別の理由の失敗としてそのまま返す)。
+    for (int trackIndex = highestActive + 1;; ++trackIndex) {
+        const bool addedTrack = trackIndex >= static_cast<int>(candidate.videoTracks.size());
+        if (addedTrack) {
             const auto added = addTrack(candidate, TrackKind::Video);
             if (!added.success) {
                 result.error = added.error;
@@ -756,9 +752,9 @@ TimelineEditResult placeTextClipAt(Project& project, TimelineClip clip,
             project = std::move(candidate);
             return result;
         }
+        if (addedTrack)
+            return result;
     }
-    result.error = "V1～V3に text clip を置ける空きトラックがありません";
-    return result;
 }
 
 TimelineEditResult placeLinkedAvPairAt(Project& project, TimelineClip video, TrackRef videoTrack,

@@ -118,6 +118,10 @@ preview 2 layer / export 2 track / export audio 無しが現在の上限であ�
 上限 (2) と合成する layer の上限を分けた。`configuredMaxCompositionLayers` は 3 になり、
 video source は 2 のままである。layer 3 は measured envelope (layer 2) の外である。
 
+`[事実]` (§17 で更新) 上の上限はすべて引き上げた。現在は preview が video source 8 本・合成 layer 16 枚・
+audio source 16 本、書き出しは track 数・clip 数とも上限なし、文字はどの映像 track にも置ける。
+この節の 2 / 3 という値と export の制約は当時の記録である。
+
 ## 4. audio
 
 `[事実]` `Project` に audio track と `TimelineClipKind::Audio` を追加した。
@@ -983,6 +987,7 @@ MLT `qimage` producer は同じ出力解像度の透過 PNG を使う。再読�
 必要なトラックは追加し、V1～V3 が埋まると Project を変更せずに拒否する。書き出しは V1～V3 を
 MLT のトラック順で合成する。固定素材の 3 トラック書き出しと文字だけの書き出しは
 `text_clip_contract` で画素を確認する。
+(§17 で変更: V1～V3 の制限を外し、空きが無ければ上へ track を足して置く。)
 
 `[事実]` (§16.10 で解消) 当初の preview は文字画像を `PreviewSurface` の上の Qt scene graph に
 置いていたため、文字トラックより上に映像トラックがある構成で重なり順が書き出しと一致しなかった。
@@ -1105,7 +1110,7 @@ Project は離したときだけ変わることを足した。前者は `selectC
   静止画 layer の effect は引き続き拒否し、最終の不透明度だけを渡す
 - (P1 の契約) 文字の effect は不透明度 (値・key・fade) だけにした。位置・拡大・回転・切り抜きと
   音量は、書き出しでは効くが preview の静止画 layer では描けないので、`validateTimeline` が拒否する
-- (P2) 文字は V1～V3 だけ、を Project の不変条件にした (`kMaxTextVideoTracks`)。以前は配置・
+- (P2、§17 で撤廃) 文字は V1～V3 だけ、を Project の不変条件にした (`kMaxTextVideoTracks`)。以前は配置・
   書き出し・preview の hit-test だけが V1～V3 で、V4 を足して通常の移動で文字を持っていくと
   Project としては正しいまま、hit-test では掴めず書き出しは失敗した。移動は検証で拒否される
 - (P3) 文字画像は出力解像度の全画面 RGBA である (1080p で約 8MiB、4K で約 32MiB)。controller は
@@ -1138,3 +1143,41 @@ frame 0 / 8 / 15 の書き出しと同じ frame の映像で preview を合成�
   3. 変換中 (未確定) のまま timeline をクリックして focus を移したとき、未確定文字列が本文に
      入るか消えるかを記録する (期待値は未決定。Qt の既定動作をまず観測する)
   4. 映像のある frame で 1〜3 を行い、確定後の文字が映像との track 順どおりに表示されること
+
+## 17. track / layer 上限の引き上げ
+
+`[事実]` 比較対象の Premiere は track 数に実質上限が無い。mvm は計測単位ごとに刻んだ上限
+(preview は映像 2 本・合成 3 枚、文字は V1～V3、書き出しは V1～V3 と総 clip 64 本) を持っていたので、
+使い勝手を優先して**決め打ちの大きめの値へ一度に引き上げた**。軸ごとに性能を測って決めた値ではない。
+
+| 軸 | 以前 | 現在 | 定義 |
+| --- | --- | --- | --- |
+| preview で同時に decode する映像 | 2 | 8 | `kProductMaxActiveVideoSources` |
+| preview で同時に合成する layer (映像 + 文字) | 3 | 16 | `kProductMaxCompositionLayers` |
+| preview で同時に mix する音声 | 8 | 16 | `kProductMaxActiveAudioSources` |
+| video source の登録 slot | 4 | 17 | 旧 set + 新 set + slip preview 1 本 |
+| 文字を置ける track | V1～V3 | 制限なし | 空きが無ければ上へ track を足す |
+| 書き出しの映像 track | 3 | 制限なし | playlist を使う最上位 track まで作る |
+| 書き出しの総 clip 数 | 64 | 制限なし | 配列を clip 数から確保する |
+
+- preview の上限の数値は `preview_engine/preview_types.h` にだけ書く。engine の capability と
+  `mapTimelinePreviewFrame` の fail-closed 判定 (`kMaxPreviewVideoLayers` / `kMaxPreviewCompositionLayers`)
+  はどちらもこの定数を参照する。上限を超える frame は引き続き成功に見せず失敗にする
+- 書き出しは V2 以上の clip ごとに V1 との間へ affine transition を植える既存の方式のままで、clip は
+  track 昇順に並べてから植えるので上の track ほど前面になる。V4 以上の切り抜きが黙って落ちる
+  条件 (`track < 3`) があったので外した
+- native present hook の `MVM_NATIVE_PRESENT_HOOK_MAX_SOURCES = 2` は据え置いた。patched Qt と共有する
+  固定 ABI で、使うのは診断用の `CompositorRhiItem` だけである。製品の preview は通らない
+- `MeasuredPreviewEnvelope` (60/1 × 映像 2 × layer 2 × 音声 1) は変えていない。configured 値と一致しない
+  ので、`matchesMeasuredEnvelope` は以前から false のまま (UI は「未計測」)
+
+検査の更新: `m7b_2_timeline_preview_mapping_focused` は映像 8 本の受理と 9 本目の拒否、映像 8 + 文字 8 の
+16 枚の受理と 17 枚目の拒否を見る。`text_clip_contract` は V1～V3 が埋まったときに V4 を足して置くこと、
+mute した track を飛ばすこと、V4 への移動の受理、V1～V5 映像の上の V6 文字の書き出し (画素)、
+1 frame の clip 70 本を V1～V5 に並べた書き出しを見る。`preview_engine_p5e_exceed_source_count` は
+17 slot を埋めて 18 本目を、`preview_engine_p5e_exceed_layer_count` は 17 layer を拒否させる。
+
+`[未検証]` 上限いっぱい (映像 8 本 + 文字 8 枚) で再生したときの fps・VRAM。source 1 本ごとに decode
+thread 1 本と D3D11 の frame pool (`extra_hw_frames = 16`) を持ち、source-set の切り替え中は旧 set と
+新 set が一時的に両方残る。文字 1 枚は 1080p で CPU / GPU それぞれ約 8MiB。4K 素材 8 本では VRAM が
+足りない可能性があり、その場合は値を決め打ちで下げる。

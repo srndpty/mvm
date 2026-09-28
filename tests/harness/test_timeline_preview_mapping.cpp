@@ -140,21 +140,36 @@ void testMutedTracks() {
             "mute した audio track を preview 対象から外していません");
 }
 
+// 映像 track を count 本にする (既定の Project は V1/V2)。
+void ensureVideoTracks(mvm::project::Project& project, int count) {
+    while (static_cast<int>(project.videoTracks.size()) < count)
+        require(mvm::project::addTrack(project, mvm::project::TrackKind::Video).success,
+                "映像 track を追加できません");
+}
+
 // 現在の構成の layer 上限を超えたら成功にしない。
+// 上限は決め打ちの 8 本。期待値は実装の定数を参照せずに書く。
 void testLayerLimit() {
     mvm::project::Project project = mvm::project::createDefaultProject();
-    require(mvm::project::addTrack(project, mvm::project::TrackKind::Video).success,
-            "V3を追加できません");
-    project.timelineClips = {clip("v1", 0, 0, 0, 100), clip("v2", 1, 0, 0, 100),
-                             clip("v3", 2, 0, 0, 100)};
+    ensureVideoTracks(project, 9);
+    project.timelineClips.clear();
+    for (int track = 0; track < 8; ++track)
+        project.timelineClips.push_back(clip("v" + std::to_string(track + 1), track, 0, 0, 100));
+    const auto eight = mvm::app::mapTimelinePreviewFrame(project, 10);
+    require(eight.success && eight.layers.size() == 8, "映像 8 本の重なりを拒否しました");
+    for (std::size_t index = 0; index < eight.layers.size(); ++index)
+        require(eight.layers[index].videoTrackIndex == static_cast<int>(index),
+                "映像 8 本の layer が track 昇順ではありません");
+
+    project.timelineClips.push_back(clip("v9", 8, 0, 0, 100));
     const auto tooMany = mvm::app::mapTimelinePreviewFrame(project, 10);
     require(!tooMany.success && tooMany.layers.empty(),
             "configured layer数を超えたframeを成功にしました");
 
-    // 3本目を mute すれば 2 layer に収まる。
-    project.videoTracks[2].muted = true;
+    // 9本目を mute すれば 8 layer に収まる。
+    project.videoTracks[8].muted = true;
     const auto withinLimit = mvm::app::mapTimelinePreviewFrame(project, 10);
-    require(withinLimit.success && withinLimit.layers.size() == 2,
+    require(withinLimit.success && withinLimit.layers.size() == 8,
             "mute で layer 数が上限内に収まりません");
 }
 
@@ -205,34 +220,38 @@ void testTextLayerStack() {
             "mute した track の文字 clip を合成対象に残しました");
 }
 
-// 文字は decode source の上限 (2) ではなく合成 layer の上限 (3) で数える。
+// 文字は decode source の上限 (8) ではなく合成 layer の上限 (16) で数える。
 void testTextLayerLimit() {
     mvm::project::Project project = mvm::project::createDefaultProject();
-    for (int track = 0; track < 2; ++track)
-        require(mvm::project::addTrack(project, mvm::project::TrackKind::Video).success,
-                "V3/V4を追加できません");
-    project.timelineClips = {clip("v1", 0, 0, 0, 100), clip("v2", 1, 0, 0, 100),
-                             textClip("t3", 2, 100)};
-    require(mvm::project::validateTimeline(project).success, "前提: V3 文字の Project が不正です");
-    const auto three = mvm::app::mapTimelinePreviewFrame(project, 10);
-    require(three.success && three.layers.size() == 2 && three.textLayers.size() == 1,
-            "映像 2 本と文字 1 枚の 3 layer を拒否しました");
+    ensureVideoTracks(project, 17);
+    // 映像 8 本 (V1-V8) + 文字 8 枚 (V9-V16) = 16 layer。文字は V4 以上にも置ける。
+    project.timelineClips.clear();
+    for (int track = 0; track < 8; ++track)
+        project.timelineClips.push_back(clip("v" + std::to_string(track + 1), track, 0, 0, 100));
+    for (int track = 8; track < 16; ++track)
+        project.timelineClips.push_back(textClip("t" + std::to_string(track + 1), track, 100));
+    require(mvm::project::validateTimeline(project).success,
+            "前提: V9-V16 文字の Project が不正です");
+    const auto sixteen = mvm::app::mapTimelinePreviewFrame(project, 10);
+    require(sixteen.success && sixteen.layers.size() == 8 && sixteen.textLayers.size() == 8,
+            "映像 8 本と文字 8 枚の 16 layer を拒否しました");
 
-    // 文字は V1～V3 だけなので、4 枚目は映像を上の track に置いて作る。
-    project.timelineClips = {textClip("t1", 0, 100), textClip("t2", 1, 100),
-                             clip("v3", 2, 0, 0, 100), clip("v4", 3, 0, 0, 100)};
-    require(mvm::project::validateTimeline(project).success, "前提: 4 track の Project が不正です");
-    const auto four = mvm::app::mapTimelinePreviewFrame(project, 10);
-    require(!four.success && four.layers.empty() && four.textLayers.empty(),
+    // 17 枚目の文字で合成 layer の上限を超える。
+    project.timelineClips.push_back(textClip("t17", 16, 100));
+    require(mvm::project::validateTimeline(project).success,
+            "前提: 17 track の Project が不正です");
+    const auto seventeen = mvm::app::mapTimelinePreviewFrame(project, 10);
+    require(!seventeen.success && seventeen.layers.empty() && seventeen.textLayers.empty(),
             "合成 layer の上限を超えた frame を成功にしました");
 
     // 映像の無い frame では文字は UI 側が重ねるので、枚数で拒否しない。
-    project.timelineClips = {textClip("t1", 0, 100), textClip("t2", 1, 100),
-                             textClip("t3", 2, 100)};
+    project.timelineClips.clear();
+    for (int track = 0; track < 17; ++track)
+        project.timelineClips.push_back(textClip("t" + std::to_string(track + 1), track, 100));
     require(mvm::project::validateTimeline(project).success,
-            "前提: 文字 3 枚の Project が不正です");
+            "前提: 文字 17 枚の Project が不正です");
     const auto textOnly = mvm::app::mapTimelinePreviewFrame(project, 10);
-    require(textOnly.success && textOnly.layers.empty() && textOnly.textLayers.size() == 3,
+    require(textOnly.success && textOnly.layers.empty() && textOnly.textLayers.size() == 17,
             "映像の無い frame の文字を拒否しました");
 }
 

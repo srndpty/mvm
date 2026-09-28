@@ -1,6 +1,7 @@
 #ifndef MVM_APP_TIMELINE_PREVIEW_MAPPING_H
 #define MVM_APP_TIMELINE_PREVIEW_MAPPING_H
 
+#include "preview_engine/preview_types.h"
 #include "project/project.h"
 
 #include <cstdint>
@@ -40,18 +41,16 @@ struct TimelinePreviewFrameMapping {
 
 // preview が同時に decode する video source の上限。
 //
-// GPU compositor 自体は N layer を描ける。この 2 という値は
-// **現在の configured limit** であり、それが実測済みなのは
+// 値は preview engine が受理する product 上限そのもの (数値は preview_types.h にだけ書く)。
+// これは **configured limit** であって qualification ではない。実測済みなのは
 // `MeasuredPreviewEnvelope` の組 (60/1 × 2 video source × 2 layer × 1 audio ×
-// 48kHz stereo) としてである。「2 layer が単独で qualify されている」ではない。
-// 上限を超える frame は成功に見せず失敗として返す。
-inline constexpr std::size_t kMaxPreviewVideoLayers = 2;
+// 48kHz stereo) だけである。上限を超える frame は成功に見せず失敗として返す。
+inline constexpr std::size_t kMaxPreviewVideoLayers = preview::kProductMaxActiveVideoSources;
 
 // preview が同時に合成する layer (video + 文字) の上限。文字は decode source を
-// 増やさないので video source の上限とは別に数える。V1-V3 に合わせた 3 であり、
-// measured envelope (layer 2) の外なので未計測である。
+// 増やさないので video source の上限とは別に数える。
 // video が無い frame では文字を合成に使わない (UI 側が重ねる) ため数えない。
-inline constexpr std::size_t kMaxPreviewCompositionLayers = 3;
+inline constexpr std::size_t kMaxPreviewCompositionLayers = preview::kProductMaxCompositionLayers;
 
 // preview の合成順の 1 要素。text が false なら layers[index]、true なら textLayers[index]。
 struct TimelinePreviewStackEntry {

@@ -14,9 +14,6 @@
 
 #include <framework/mlt.h>
 
-#define MVM_EXPORT_MAX_CLIPS 64
-#define MVM_EXPORT_MAX_TRACTOR_TRACKS (MVM_EXPORT_MAX_CLIPS + 3)
-
 static void set_err(char* err, size_t n, const char* fmt, ...) {
     if (!err || !n)
         return;
@@ -258,7 +255,7 @@ static int plant_export_overlay_affine(mlt_profile profile, mlt_tractor tractor,
                                          (mlt_position)clip->timeline_duration_frames,
                                          mlt_keyframe_linear) != 0) {
             mlt_transition_close(transition);
-            set_err(err, err_size, "V2 affine opacity keyframeを設定できません");
+            set_err(err, err_size, "上位track affine opacity keyframeを設定できません");
             return 1;
         }
     }
@@ -266,7 +263,7 @@ static int plant_export_overlay_affine(mlt_profile profile, mlt_tractor tractor,
     if (mlt_field_plant_transition(mlt_tractor_field(tractor), transition, 0, clip->video_track) !=
         0) {
         mlt_transition_close(transition);
-        set_err(err, err_size, "V2 affine transitionをV1/V2間へ配置できません");
+        set_err(err, err_size, "上位track affine transitionをV1との間へ配置できません");
         return 1;
     }
     mlt_transition_close(transition);
@@ -333,7 +330,7 @@ static int attach_tractor_clip_filters(mlt_profile profile, mlt_producer cut,
                attach_export_affine(profile, cut, clip, filter_in, clip->timeline_duration_frames,
                                     err, err_size) != 0;
     /* 上位映像trackへopaque-black affine filterをattachしない。cropだけをcutへ置く。 */
-    if (track > 0 && track < 3)
+    if (track > 0)
         return attach_export_crop(profile, cut, clip, err, err_size);
     return 0;
 }
@@ -343,8 +340,8 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
                             size_t err_size) {
     mlt_profile profile = NULL;
     mlt_playlist playlist = NULL;
-    mlt_producer producers[MVM_EXPORT_MAX_CLIPS];
-    mlt_producer cuts[MVM_EXPORT_MAX_CLIPS];
+    mlt_producer* producers = NULL;
+    mlt_producer* cuts = NULL;
     int producer_count = 0;
     int cut_count = 0;
     mlt_consumer consumer = NULL;
@@ -362,11 +359,6 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
     }
     if (clip_count <= 0) {
         set_err(err, err_size, "書き出す clip がありません");
-        return 1;
-    }
-    if (clip_count > MVM_EXPORT_MAX_CLIPS) {
-        set_err(err, err_size, "clip 数が上限を超えています: %d (上限 %d)", clip_count,
-                MVM_EXPORT_MAX_CLIPS);
         return 1;
     }
     if (spec->width <= 0 || spec->height <= 0 || spec->fps_num <= 0 || spec->fps_den <= 0 ||
@@ -416,13 +408,21 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
         }
     }
 
+    /* clip 数に上限を設けない。producer と cut は clip ごとに高々 1 本ずつ。 */
+    producers = (mlt_producer*)calloc((size_t)clip_count, sizeof(*producers));
+    cuts = (mlt_producer*)calloc((size_t)clip_count, sizeof(*cuts));
+    if (!producers || !cuts) {
+        set_err(err, err_size, "producer 配列を確保できません");
+        goto fail;
+    }
+
     /* --- profile ----------------------------------------------------------
      * mlt_profile_init は解決に失敗しても NULL を返さず既定値へ落ちる。
      * 名前付き profile に頼らず値を直接設定し、設定後に読み直して照合する。 */
     profile = mlt_profile_init(NULL);
     if (!profile) {
         set_err(err, err_size, "profile を作れません");
-        return 1;
+        goto fail;
     }
     profile->width = spec->width;
     profile->height = spec->height;
@@ -637,6 +637,8 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
         mlt_producer_close(cuts[i]);
     for (int i = 0; i < producer_count; i++)
         mlt_producer_close(producers[i]);
+    free(cuts);
+    free(producers);
     mlt_playlist_close(playlist);
     mlt_profile_close(profile);
     return 0;
@@ -650,6 +652,8 @@ fail:
         mlt_producer_close(cuts[i]);
     for (int i = 0; i < producer_count; i++)
         mlt_producer_close(producers[i]);
+    free(cuts);
+    free(producers);
     if (playlist)
         mlt_playlist_close(playlist);
     if (profile)
@@ -662,36 +666,57 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
                              char* err, size_t err_size) {
     mlt_profile profile = NULL;
     mlt_tractor tractor = NULL;
-    mlt_playlist playlists[MVM_EXPORT_MAX_TRACTOR_TRACKS] = {NULL};
-    int audio_tracks[MVM_EXPORT_MAX_TRACTOR_TRACKS] = {0};
+    /* track 数と clip 数に上限を設けない。配列は下で実数から確保する。 */
+    mlt_playlist* playlists = NULL;
+    int* audio_tracks = NULL;
     int video_playlist_count = 2;
-    int playlist_count = 2;
-    mlt_producer producers[MVM_EXPORT_MAX_CLIPS] = {NULL};
+    int audio_clip_count = 0;
+    int track_capacity = 0;
+    int playlist_count = 0;
+    mlt_producer* producers = NULL;
     mlt_producer* cuts = NULL;
     int producer_count = 0;
     int cut_count = 0;
     long long cut_capacity = 0;
     mlt_consumer consumer = NULL;
-    long long cursors[MVM_EXPORT_MAX_TRACTOR_TRACKS] = {0};
+    long long* cursors = NULL;
     int failed = MVM_EXPORT_FAILED;
 
     if (out)
         memset(out, 0, sizeof(*out));
     if (!mvm_mlt_runtime_is_ready() || !clips || !spec || !out_path || !*out_path ||
-        clip_count <= 0 || clip_count > MVM_EXPORT_MAX_CLIPS || total_duration <= 0 ||
-        spec->width <= 0 || spec->height <= 0 || spec->fps_num <= 0 || spec->fps_den <= 0 ||
-        spec->video_crf < 0 || spec->video_crf > 51 || spec->timeout_ms <= 0 ||
-        spec->render_threads <= 0 || spec->render_threads > 16 || spec->encoder_threads < 0 ||
-        spec->encoder_threads > 16) {
+        clip_count <= 0 || total_duration <= 0 || spec->width <= 0 || spec->height <= 0 ||
+        spec->fps_num <= 0 || spec->fps_den <= 0 || spec->video_crf < 0 || spec->video_crf > 51 ||
+        spec->timeout_ms <= 0 || spec->render_threads <= 0 || spec->render_threads > 16 ||
+        spec->encoder_threads < 0 || spec->encoder_threads > 16) {
         set_err(err, err_size, "M7b tractor export引数が不正です");
         return 1;
     }
+    /* 映像 playlist は V1/V2 を常に作り、それより上は使われている最上位 track まで作る。
+     * audio は clip ごとに 1 本の playlist を持つ。 */
     for (int index = 0; index < clip_count; ++index) {
         const MvmExportClip* clip = &clips[index];
-        if (!clip->is_audio && clip->video_track == 2)
-            video_playlist_count = 3;
+        if (clip->is_audio) {
+            ++audio_clip_count;
+        } else if (clip->video_track < 0 || clip->video_track >= INT32_MAX - clip_count) {
+            set_err(err, err_size, "tractor clip %dのmappingが不正です", index);
+            return 1;
+        } else if (clip->video_track + 1 > video_playlist_count) {
+            video_playlist_count = clip->video_track + 1;
+        }
+    }
+    track_capacity = video_playlist_count + audio_clip_count;
+    playlists = (mlt_playlist*)calloc((size_t)track_capacity, sizeof(*playlists));
+    audio_tracks = (int*)calloc((size_t)track_capacity, sizeof(*audio_tracks));
+    cursors = (long long*)calloc((size_t)track_capacity, sizeof(*cursors));
+    producers = (mlt_producer*)calloc((size_t)clip_count, sizeof(*producers));
+    if (!playlists || !audio_tracks || !cursors || !producers) {
+        set_err(err, err_size, "track 配列を確保できません");
+        goto cleanup;
+    }
+    for (int index = 0; index < clip_count; ++index) {
+        const MvmExportClip* clip = &clips[index];
         if (!clip->path || !clip->path[0] || !file_exists_utf8(clip->path) ||
-            (!clip->is_audio && (clip->video_track < 0 || clip->video_track > 2)) ||
             clip->timeline_start_frame < 0 || clip->timeline_duration_frames <= 0 ||
             clip->timeline_start_frame > total_duration - clip->timeline_duration_frames ||
             clip->source_fps_num <= 0 || clip->source_fps_den <= 0 ||
@@ -704,26 +729,26 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             clip->producer_out_frame - clip->producer_in_frame + clip->tail_padding_frames !=
                 clip->timeline_duration_frames) {
             set_err(err, err_size, "tractor clip %dのmappingが不正です", index);
-            return 1;
+            goto cleanup;
         }
         /* 本体 cut 1 本、末尾の補完 frame ごとに 1 本、素材末尾の +1 丸めの補完 1 本。 */
         cut_capacity += 2 + clip->tail_padding_frames;
         if (!clip->is_audio && clip->timeline_start_frame < cursors[clip->video_track]) {
             set_err(err, err_size, "tractor clip %dが同一trackで重複または未sortです", index);
-            return 1;
+            goto cleanup;
         }
         if (clip->is_audio) {
             if (!clip->gain_keyframes ||
                 clip->gain_keyframe_count != clip->timeline_duration_frames) {
                 set_err(err, err_size, "audio clip %dのgain key数が尺と一致しません", index);
-                return 1;
+                goto cleanup;
             }
             for (int key_index = 0; key_index < clip->gain_keyframe_count; ++key_index) {
                 const MvmExportGainKeyframe* key = &clip->gain_keyframes[key_index];
                 if (key->local_frame != key_index || !isfinite(key->gain) || key->gain < 0.0 ||
                     key->gain > 2.0) {
                     set_err(err, err_size, "audio clip %dのgain keyが不正です", index);
-                    return 1;
+                    goto cleanup;
                 }
             }
         }
@@ -734,7 +759,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             (clip->opacity_keyframe_count <= 0 || !clip->opacity_keyframes ||
              clip->rect_width <= 0.0 || clip->rect_height <= 0.0)) {
             set_err(err, err_size, "clip %dのeffect/transition mappingが不正です", index);
-            return 1;
+            goto cleanup;
         }
         for (int key_index = 0; key_index < clip->opacity_keyframe_count; ++key_index) {
             const MvmExportOpacityKeyframe* key = &clip->opacity_keyframes[key_index];
@@ -743,21 +768,21 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
                 (key_index > 0 &&
                  key->local_frame <= clip->opacity_keyframes[key_index - 1].local_frame)) {
                 set_err(err, err_size, "clip %dのopacity key domainが不正です", index);
-                return 1;
+                goto cleanup;
             }
         }
         if (!clip->is_audio && clip->video_track > 0 &&
             (clip->opacity_keyframes[0].local_frame != 0 ||
              clip->opacity_keyframes[clip->opacity_keyframe_count - 1].local_frame !=
                  clip->timeline_duration_frames - 1)) {
-            set_err(err, err_size, "V2 clip %dのtransition-local端keyがありません", index);
-            return 1;
+            set_err(err, err_size, "上位track clip %dのtransition-local端keyがありません", index);
+            goto cleanup;
         }
     }
     cuts = (mlt_producer*)calloc((size_t)cut_capacity, sizeof(*cuts));
     if (!cuts) {
         set_err(err, err_size, "cut 配列を確保できません");
-        return 1;
+        goto cleanup;
     }
 
     profile = mlt_profile_init(NULL);
@@ -798,23 +823,21 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     }
 
     tractor = mlt_tractor_new();
-    playlist_count = video_playlist_count;
     for (int track = 0; track < video_playlist_count; ++track) {
         playlists[track] = mlt_playlist_new(profile);
+        playlist_count = track + 1;
         if (!tractor || !playlists[track]) {
             set_err(err, err_size, "tractorまたは映像 playlistを作れません");
             goto cleanup;
         }
+        cursors[track] = 0;
     }
-    cursors[0] = 0;
-    cursors[1] = 0;
-    cursors[2] = 0;
     for (int index = 0; index < clip_count; ++index) {
         const MvmExportClip* clip = &clips[index];
         int track = clip->video_track;
         if (clip->is_audio) {
-            if (playlist_count >= MVM_EXPORT_MAX_TRACTOR_TRACKS) {
-                set_err(err, err_size, "audio track数が上限を超えています");
+            if (playlist_count >= track_capacity) {
+                set_err(err, err_size, "audio playlist数がaudio clip数と一致しません");
                 goto cleanup;
             }
             track = playlist_count++;
@@ -1028,6 +1051,10 @@ cleanup:
     for (int index = 0; index < producer_count; ++index)
         if (producers[index])
             mlt_producer_close(producers[index]);
+    free(producers);
+    free(cursors);
+    free(audio_tracks);
+    free(playlists);
     if (profile)
         mlt_profile_close(profile);
     return failed;

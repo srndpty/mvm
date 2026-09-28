@@ -68,7 +68,7 @@ typedef struct {
     int opacity_keyframe_count;
     const MvmExportGainKeyframe* gain_keyframes;
     int gain_keyframe_count;
-    int video_track; /* 0=V1, 1=V2, 2=V3 */
+    int video_track; /* 0=V1, 1=V2, ... (上限なし) */
     long long timeline_start_frame;
     long long timeline_duration_frames;
 } MvmExportClip;
@@ -133,7 +133,9 @@ typedef enum {
 int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const MvmExportSpec* spec,
                             const char* out_path, MvmExportResult* out, char* err, size_t err_size);
 
-/* M7b製品経路。2本の固定playlistとV2 clipごとのaffine transitionを使う。 */
+/* M7b製品経路。映像 track ごとの playlist (V1/V2 は常に作り、上は使う最上位 track まで) と、
+ * V2 以上の clip ごとに V1 との間へ植える affine transition を使う。track 数・clip 数の上限は無い。
+ * (関数名は 2 track 時代のまま。) */
 int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long long total_duration,
                              const MvmExportSpec* spec, const char* out_path, MvmExportResult* out,
                              char* err, size_t err_size);

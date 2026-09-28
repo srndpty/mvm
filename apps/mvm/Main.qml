@@ -1250,6 +1250,10 @@ ApplicationWindow {
             readonly property real labelWidth: 96
             readonly property real rulerHeight: 26
             readonly property real trackHeight: 54
+            // 最上段の video track (Vn) の上に置く「+V」の行。track と一緒に scroll する。
+            readonly property real addVideoRowHeight: 28
+            // track 領域の上端 (content 座標)。ruler と「+V」の行の下。
+            readonly property real tracksTop: rulerHeight + addVideoRowHeight
             readonly property int videoCount: root.mvmController.videoTrackCount
             readonly property int audioCount: root.mvmController.audioTrackCount
             readonly property int rowCount: videoCount + audioCount
@@ -1270,11 +1274,11 @@ ApplicationWindow {
                 return kind === "video" ? (videoCount - 1 - index) : (videoCount + index);
             }
             function rowY(kind, index) {
-                return rulerHeight + rowIndexFor(kind, index) * trackHeight;
+                return tracksTop + rowIndexFor(kind, index) * trackHeight;
             }
             // トラック領域内の y からトラックを引く。範囲外は null。
             function trackAtY(y) {
-                const row = Math.floor((y - rulerHeight) / trackHeight);
+                const row = Math.floor((y - tracksTop) / trackHeight);
                 if (row < 0 || row >= rowCount)
                     return null;
                 if (row < videoCount)
@@ -1545,7 +1549,7 @@ ApplicationWindow {
                 }
 
                 Rectangle {
-                    y: timelinePanel.rulerHeight + timelinePanel.videoCount * timelinePanel.trackHeight
+                    y: timelinePanel.tracksTop + timelinePanel.videoCount * timelinePanel.trackHeight
                        - timelineFlick.contentY - 2
                     width: parent.width
                     height: 4
@@ -1553,29 +1557,32 @@ ApplicationWindow {
                     z: 10
                 }
 
-                Row {
-                    y: timelinePanel.rulerHeight + timelinePanel.tracksHeight
+                // video は最上段 (Vn) の上に足すので、追加ボタンを Vn の上の専用行に置く。
+                Button {
+                    y: timelinePanel.rulerHeight - timelineFlick.contentY
+                       + (timelinePanel.addVideoRowHeight - height) / 2
+                    x: 3
+                    implicitHeight: 22
+                    implicitWidth: 42
+                    text: "+V"
+                    enabled: !root.mvmController.busy
+                    ToolTip.visible: hovered
+                    ToolTip.text: "video トラックを追加"
+                    onClicked: root.mvmController.addTrack("video")
+                }
+
+                // audio は最下段の下に足すので、追加ボタンも最下段の下に置く。
+                Button {
+                    y: timelinePanel.tracksTop + timelinePanel.tracksHeight
                        - timelineFlick.contentY + 4
                     x: 3
-                    spacing: 4
-                    Button {
-                        implicitHeight: 22
-                        implicitWidth: 42
-                        text: "+V"
-                        enabled: !root.mvmController.busy
-                        ToolTip.visible: hovered
-                        ToolTip.text: "video トラックを追加"
-                        onClicked: root.mvmController.addTrack("video")
-                    }
-                    Button {
-                        implicitHeight: 22
-                        implicitWidth: 42
-                        text: "+A"
-                        enabled: !root.mvmController.busy
-                        ToolTip.visible: hovered
-                        ToolTip.text: "audio トラックを追加"
-                        onClicked: root.mvmController.addTrack("audio")
-                    }
+                    implicitHeight: 22
+                    implicitWidth: 42
+                    text: "+A"
+                    enabled: !root.mvmController.busy
+                    ToolTip.visible: hovered
+                    ToolTip.text: "audio トラックを追加"
+                    onClicked: root.mvmController.addTrack("audio")
                 }
 
                 // track headerがscrollしてもruler領域へ描画されないよう覆う。
@@ -1598,7 +1605,7 @@ ApplicationWindow {
                 height: parent.height - 4
                 clip: true
                 contentWidth: Math.max(width, root.mvmController.totalTimelineFrames * timelinePanel.pixelsPerFrame + 240)
-                contentHeight: Math.max(height, timelinePanel.rulerHeight
+                contentHeight: Math.max(height, timelinePanel.tracksTop
                                         + timelinePanel.tracksHeight + 34)
                 boundsBehavior: Flickable.StopAtBounds
                 flickableDirection: Flickable.HorizontalAndVerticalFlick
@@ -1700,7 +1707,7 @@ ApplicationWindow {
                     Item {
                         id: trackArea
                         x: 0
-                        y: timelinePanel.rulerHeight
+                        y: timelinePanel.tracksTop
                         width: parent.width
                         height: timelinePanel.tracksHeight
 
@@ -1720,7 +1727,7 @@ ApplicationWindow {
                             onPressed: mouse => {
                                 const frame = Math.max(0, Math.floor(mouse.x / timelinePanel.pixelsPerFrame));
                                 if (timelinePanel.trackSelectToolActive) {
-                                    const track = timelinePanel.trackAtY(mouse.y + timelinePanel.rulerHeight);
+                                    const track = timelinePanel.trackAtY(mouse.y + timelinePanel.tracksTop);
                                     if (track)
                                         timelinePanel.selectFromFrame(frame, mouse.modifiers,
                                                                       track.kind, track.index);
@@ -1800,7 +1807,7 @@ ApplicationWindow {
                             property int menuFrame: 0
 
                             onPressed: mouse => {
-                                const track = timelinePanel.trackAtY(mouse.y + timelinePanel.rulerHeight);
+                                const track = timelinePanel.trackAtY(mouse.y + timelinePanel.tracksTop);
                                 if (!track)
                                     return;
                                 // hit test はclipの半開区間に合わせてfloorする。
@@ -1954,7 +1961,7 @@ ApplicationWindow {
                                           ? timelinePanel.activeDragOffsetX : 0))
 
                                 x: timelineStartFrame * timelinePanel.pixelsPerFrame
-                                y: timelinePanel.rowY(trackKind, trackIndex) - timelinePanel.rulerHeight + 3
+                                y: timelinePanel.rowY(trackKind, trackIndex) - timelinePanel.tracksTop + 3
                                 width: Math.max(2, (timelineDurationFrames - shownLeftDelta + shownRightDelta) * timelinePanel.pixelsPerFrame)
                                 height: timelinePanel.trackHeight - 6
                                 radius: 3
@@ -2615,7 +2622,7 @@ ApplicationWindow {
                         x: root.mvmController.playheadFrame * timelinePanel.pixelsPerFrame - 1
                         y: 0
                         width: 2
-                        height: timelinePanel.rulerHeight + timelinePanel.tracksHeight
+                        height: timelinePanel.tracksTop + timelinePanel.tracksHeight
                         color: "#f15b5b"
                         z: 200
 
@@ -2651,7 +2658,7 @@ ApplicationWindow {
                         // トラック行に重ねない。行の下の空き領域へ置く。
                         visible: root.mvmController.clipCount === 0
                         x: 24
-                        y: timelinePanel.rulerHeight + timelinePanel.tracksHeight + 12
+                        y: timelinePanel.tracksTop + timelinePanel.tracksHeight + 12
                         text: "クリップがありません。「動画を追加」から始めてください"
                         color: "#858b95"
                     }

@@ -300,12 +300,12 @@ void frameRateAndDescriptorValidation() {
     auto equivalentRateDispatcher = std::make_shared<ManualDispatcher>();
     require(equivalentRateEngine.initialize({{{120, 2}}}, equivalentRateDispatcher),
             "60/1と等価な120/2をinitializeで受理しませんでした");
-    // 8 audio mixはまだ正式計測の1 audio envelopeと別構成なので未計測とする。
+    // 16 audio mixはまだ正式計測の1 audio envelopeと別構成なので未計測とする。
     require(!equivalentRateEngine.capabilities().matchesMeasuredEnvelope(),
-            "8 audio構成を1 audioのmeasured envelope一致として公開しました");
+            "16 audio構成を1 audioのmeasured envelope一致として公開しました");
     require(equivalentRateEngine.capabilities().configuredOutputFrameRate ==
                     PreviewFrameRate{60, 1} &&
-                equivalentRateEngine.capabilities().configuredMaxActiveAudioSources == 8 &&
+                equivalentRateEngine.capabilities().configuredMaxActiveAudioSources == 16 &&
                 equivalentRateEngine.capabilities().configuredAudioSampleRate == 48000 &&
                 equivalentRateEngine.capabilities().configuredAudioChannelCount == 2,
             "等価rationalの受理で公開capabilityを変更しました");
@@ -828,9 +828,9 @@ void engineFacadeAndEvents() {
     requireFailure(engine.setMasterVolume(1.01F), PreviewErrorCategory::UnsupportedCapability,
                    "範囲外のmaster volumeを受理しました");
     const PreviewCapabilities productCapabilities = engine.capabilities();
-    require(productCapabilities.configuredMaxActiveVideoSources == 2 &&
-                productCapabilities.configuredMaxCompositionLayers == 3 &&
-                productCapabilities.configuredMaxActiveAudioSources == 8 &&
+    require(productCapabilities.configuredMaxActiveVideoSources == 8 &&
+                productCapabilities.configuredMaxCompositionLayers == 16 &&
+                productCapabilities.configuredMaxActiveAudioSources == 16 &&
                 productCapabilities.configuredAudioSampleRate == 48000 &&
                 productCapabilities.configuredAudioChannelCount == 2,
             "公開capabilityがP5-E3 product wiringの実装上限と一致しません");
@@ -1368,8 +1368,8 @@ void p5dAudioDomainAndCapabilities() {
     auto dispatcher = std::make_shared<ManualDispatcher>();
     require(engine.initialize({{{60, 1}}}, dispatcher), "initializeに失敗しました");
     const PreviewCapabilities capabilities = engine.capabilities();
-    require(capabilities.configuredMaxActiveAudioSources == 8,
-            "configured audio source数が8として公開されていません");
+    require(capabilities.configuredMaxActiveAudioSources == 16,
+            "configured audio source数が16として公開されていません");
     require(capabilities.configuredAudioSampleRate == 48000,
             "configured audio sample rateが48000として公開されていません");
     require(capabilities.configuredAudioChannelCount == 2,
@@ -1378,11 +1378,11 @@ void p5dAudioDomainAndCapabilities() {
             "device recoveryをsupport済みとして公開しました");
     // P5-E3 capability確定。active source数とlayer数は独立したliteralで固定する。
     // active source数とlayer数は別capabilityとして検査する (contract §21)。
-    require(capabilities.configuredMaxActiveVideoSources == 2,
-            "configured active video source数が2として公開されていません");
-    // layer 3 は静止画 (文字) を V1-V3 に置くため。decode source は 2 のまま増やさない。
-    require(capabilities.configuredMaxCompositionLayers == 3,
-            "configured composition layer数が3として公開されていません");
+    // 決め打ちの product 上限 (映像 8 本、映像 + 文字などの静止画で 16 枚)。
+    require(capabilities.configuredMaxActiveVideoSources == 8,
+            "configured active video source数が8として公開されていません");
+    require(capabilities.configuredMaxCompositionLayers == 16,
+            "configured composition layer数が16として公開されていません");
     require(!capabilities.duplicateSourceLayersSupported,
             "同一sourceの複数layer配置をsupport済みとして公開しました");
     require(capabilities.configuredOutputFrameRate.numerator == 60 &&
