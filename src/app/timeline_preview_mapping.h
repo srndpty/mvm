@@ -17,15 +17,25 @@ struct TimelinePreviewLayerMapping {
     std::int64_t sourceFrameNumber = -1;
 };
 
+// 文字 clip。decode source を持たず、静止画 layer として合成する。
+struct TimelinePreviewTextLayerMapping {
+    int videoTrackIndex = 0;
+    int clipIndex = -1;
+    std::string clipId;
+};
+
 struct TimelinePreviewFrameMapping {
     bool success = false;
     std::int64_t outputFrameNumber = -1;
-    // videoTrackIndex の昇順 (bottom -> top)。mute された track は含まない。
+    // 素材を decode する video clip。videoTrackIndex の昇順 (bottom -> top)。
+    // mute された track は含まない。
     std::vector<TimelinePreviewLayerMapping> layers;
+    // 文字 clip。videoTrackIndex の昇順。mute された track は含まない。
+    std::vector<TimelinePreviewTextLayerMapping> textLayers;
     std::string error;
 };
 
-// preview が同時に合成できる video layer の上限。
+// preview が同時に decode する video source の上限。
 //
 // GPU compositor 自体は N layer を描ける。この 2 という値は
 // **現在の configured limit** であり、それが実測済みなのは
@@ -33,6 +43,25 @@ struct TimelinePreviewFrameMapping {
 // 48kHz stereo) としてである。「2 layer が単独で qualify されている」ではない。
 // 上限を超える frame は成功に見せず失敗として返す。
 inline constexpr std::size_t kMaxPreviewVideoLayers = 2;
+
+// preview が同時に合成する layer (video + 文字) の上限。文字は decode source を
+// 増やさないので video source の上限とは別に数える。V1-V3 に合わせた 3 であり、
+// measured envelope (layer 2) の外なので未計測である。
+// video が無い frame では文字を合成に使わない (UI 側が重ねる) ため数えない。
+inline constexpr std::size_t kMaxPreviewCompositionLayers = 3;
+
+// preview の合成順の 1 要素。text が false なら layers[index]、true なら textLayers[index]。
+struct TimelinePreviewStackEntry {
+    bool text = false;
+    std::size_t index = 0;
+    int videoTrackIndex = 0;
+    bool operator==(const TimelinePreviewStackEntry&) const = default;
+};
+
+// video と文字を track の昇順 (背面 -> 前面) に並べる。書き出しと同じく
+// track index だけで前後を決める。preview の重なり順はここでだけ決める。
+std::vector<TimelinePreviewStackEntry>
+previewLayerStack(const TimelinePreviewFrameMapping& mapping);
 
 TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& project,
                                                     std::int64_t timelineFrame);

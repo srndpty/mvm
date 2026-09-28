@@ -167,6 +167,7 @@ add_library(mvm_gpu_preview STATIC
     media/gpu_preview/exact_frame_pairer.cpp
     media/gpu_preview/source_decode_worker.cpp
     media/gpu_preview/gpu_compositor.cpp
+    media/gpu_preview/still_image_frame.cpp
     media/gpu_preview/composition_display_ledger.cpp
     media/gpu_preview/transition_probe.cpp
     media/gpu_preview/validation_reference.cpp

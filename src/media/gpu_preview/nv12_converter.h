@@ -108,6 +108,11 @@ public:
     // 最後に使った submission serial とともに retirement queue へ渡す。
     void retireEntriesNotInEpoch(ResourceEpoch epoch, GpuRetirementQueue& queue);
 
+    // 指定 texture の entry だけを retire する。静止画 layer の texture は decoder の
+    // epoch を持たないので、所有者が texture を手放すときにこちらで外す。
+    // 外さないと SRV が texture の参照を持ち続け、文字を編集するたびに漏れる。
+    void retireEntriesForTexture(ID3D11Texture2D* texture, GpuRetirementQueue& queue);
+
     // draw で使った entry に、この submission serial を刻む。
     // **signalSubmission() の直後に呼ぶ。**
     void stampSubmissionSerial(unsigned long long serial);
@@ -175,6 +180,7 @@ private:
     ID3D11VertexShader* vs_ = nullptr;
     ID3D11VertexShader* effectVs_ = nullptr;
     ID3D11PixelShader* ps_ = nullptr;
+    ID3D11PixelShader* rgbaPs_ = nullptr;
     ID3D11Buffer* cbuffer_ = nullptr;
     ID3D11SamplerState* samplerPoint_ = nullptr;
     ID3D11SamplerState* samplerLinear_ = nullptr;

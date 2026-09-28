@@ -223,6 +223,12 @@ ApplicationWindow {
     property string timelineTool: "select"
     property string editingTextClipId: ""
     property bool textEditing: false
+    property string draggingTextClipId: ""
+    // 映像のある frame では文字を preview engine が track 順に合成する。
+    // 編集中・ドラッグ中の文字だけはここで重ねるので、engine の合成から外させる。
+    readonly property string textOverlayClipId: root.textEditing ? root.editingTextClipId
+                                                                 : root.draggingTextClipId
+    onTextOverlayClipIdChanged: root.mvmController.setTextOverlayClip(root.textOverlayClipId)
     property real textEditorX: 0
     property real textEditorY: 0
 
@@ -233,6 +239,11 @@ ApplicationWindow {
         const clipId = root.editingTextClipId;
         root.textEditing = false;
         root.editingTextClipId = "";
+        // 非表示になった editor に focus が残ると、V や T などの単キー操作が
+        // keyboardFocusTakesKeys に止められ続ける。editor が focus を持つとき
+        // (Esc / Ctrl+Enter) だけ window へ戻し、他の control へ移った focus は奪わない。
+        if (textEditor.activeFocus)
+            root.contentItem.forceActiveFocus();
         if (!save || content.trim().length === 0)
             return;
         if (clipId.length > 0)
@@ -616,8 +627,10 @@ ApplicationWindow {
                         ColumnLayout {
                             spacing: 6
 
+                            // 文字 clip の名前は本文の先頭なので、本文の欄と重複する。出さない。
                             Label {
                                 Layout.fillWidth: true
+                                visible: root.mvmController.selectedTextClip.clipId === undefined
                                 text: root.mvmController.currentClipIndex >= 0
                                       ? root.mvmController.currentClipName
                                       : "クリップ未選択"
@@ -871,7 +884,7 @@ ApplicationWindow {
 
                         Repeater {
                             model: root.mvmController.timelineModel
-                            delegate: Image {
+                            delegate: Item {
                                 id: textLayer
                                 required property int index
                                 required property string clipId
@@ -881,67 +894,132 @@ ApplicationWindow {
                                 required property var timelineDurationFrames
                                 property real dragOffsetX: 0
                                 property real dragOffsetY: 0
+                                readonly property bool selectedText:
+                                    root.mvmController.selectedTextClip.clipId === textLayer.clipId
+                                // 出力画素の描画範囲。Project が変わるたびに (stateChanged) 取り直す。
+                                readonly property rect bounds: {
+                                    root.mvmController.selectedTextClip;
+                                    // 見えない文字の画像を作らせない (clip ごとに 1 画面分の raster を描く)。
+                                    return textLayer.clipKind === "text" && textLayer.visible
+                                           ? root.mvmController.textClipBounds(textLayer.clipId)
+                                           : Qt.rect(0, 0, 0, 0);
+                                }
+                                // bounds を previewHost 上の矩形へ写したもの。
+                                readonly property rect hostBounds: Qt.rect(
+                                    textLayer.bounds.x * textLayer.width / root.mvmController.outputWidth,
+                                    textLayer.bounds.y * textLayer.height / root.mvmController.outputHeight,
+                                    textLayer.bounds.width * textLayer.width / root.mvmController.outputWidth,
+                                    textLayer.bounds.height * textLayer.height / root.mvmController.outputHeight)
                                 anchors.fill: previewHost
                                 z: trackIndex + 1
                                 transform: Translate {
                                     x: textLayer.dragOffsetX
                                     y: textLayer.dragOffsetY
                                 }
-                                source: clipKind === "text"
-                                        ? root.mvmController.textRasterUrl(index) : ""
-                                fillMode: Image.Stretch
                                 visible: clipKind === "text"
                                          && (!root.textEditing || root.editingTextClipId !== clipId)
                                          && root.mvmController.playheadFrame >= timelineStartFrame
                                          && root.mvmController.textClipVisible(index)
-                                MouseArea {
+
+                                // 映像が無い frame、またはドラッグ中の文字だけをここで描く。
+                                // それ以外は engine が track 順に合成済みなので透明にする。
+                                Image {
                                     anchors.fill: parent
+                                    // textPreviewSerial は数値のドラッグ中の描き直しで増える。
+                                    source: textLayer.clipKind === "text"
+                                            ? (root.mvmController.textPreviewSerial,
+                                               root.mvmController.textRasterUrl(textLayer.index))
+                                            : ""
+                                    cache: false
+                                    fillMode: Image.Stretch
+                                    opacity: !root.mvmController.previewVideoAtPlayhead
+                                             || root.textOverlayClipId === textLayer.clipId ? 1 : 0
+                                }
+
+                                // 選択中の文字の範囲 (Premiere の選択枠に相当)。掴める範囲と同じ。
+                                Rectangle {
+                                    visible: textLayer.selectedText && root.timelineTool === "select"
+                                             && textLayer.bounds.width > 0
+                                    x: textLayer.hostBounds.x - 1
+                                    y: textLayer.hostBounds.y - 1
+                                    width: textLayer.hostBounds.width + 2
+                                    height: textLayer.hostBounds.height + 2
+                                    color: "transparent"
+                                    border.color: "#4a90e2"
+                                    border.width: 1
+                                }
+
+                                // 文字の範囲だけを掴める。重なった文字は textClipAt が上の track を返す。
+                                MouseArea {
+                                    x: textLayer.hostBounds.x
+                                    y: textLayer.hostBounds.y
+                                    width: textLayer.hostBounds.width
+                                    height: textLayer.hostBounds.height
                                     enabled: root.timelineTool === "select" && textLayer.visible
-                                    cursorShape: Qt.OpenHandCursor
+                                    // 選択ツールで動かしていることが分かるよう、通常の矢印のままにする。
+                                    cursorShape: Qt.ArrowCursor
                                     property bool draggingText: false
                                     property real startX: 0
                                     property real startY: 0
                                     property int originalX: 0
                                     property int originalY: 0
+                                    function textAt(mouseX, mouseY) {
+                                        const p = mapToItem(textLayer, mouseX, mouseY);
+                                        const pixelX = Math.floor(p.x * root.mvmController.outputWidth / textLayer.width);
+                                        const pixelY = Math.floor(p.y * root.mvmController.outputHeight / textLayer.height);
+                                        return root.mvmController.textClipAt(pixelX, pixelY);
+                                    }
+                                    onPositionChanged: mouse => {
+                                        if (!draggingText)
+                                            return;
+                                        const current = mapToItem(previewHost, mouse.x, mouse.y);
+                                        textLayer.dragOffsetX = current.x - startX;
+                                        textLayer.dragOffsetY = current.y - startY;
+                                    }
                                     onPressed: mouse => {
-                                        const pixelX = Math.floor(mouse.x * root.mvmController.outputWidth / width);
-                                        const pixelY = Math.floor(mouse.y * root.mvmController.outputHeight / height);
-                                        if (root.mvmController.textClipAt(pixelX, pixelY) !== textLayer.clipId) {
+                                        if (textAt(mouse.x, mouse.y) !== textLayer.clipId) {
                                             mouse.accepted = false;
                                             return;
                                         }
                                         const data = root.mvmController.textClipData(textLayer.clipId);
                                         originalX = data.x;
                                         originalY = data.y;
-                                        startX = mouse.x;
-                                        startY = mouse.y;
+                                        // 移動量は動かない previewHost の座標で測る。この
+                                        // MouseArea は Translate で文字と一緒に動くので、
+                                        // 自身の座標で測ると移動量が打ち消し合い半分ほどになる。
+                                        const start = mapToItem(previewHost, mouse.x, mouse.y);
+                                        startX = start.x;
+                                        startY = start.y;
                                         draggingText = true;
-                                        root.mvmController.selectClip(textLayer.index);
-                                    }
-                                    onPositionChanged: mouse => {
-                                        if (!draggingText)
-                                            return;
-                                        textLayer.dragOffsetX = mouse.x - startX;
-                                        textLayer.dragOffsetY = mouse.y - startY;
+                                        root.draggingTextClipId = textLayer.clipId;
+                                        // selectClip は clip の先頭へ seek するので使わない。
+                                        // 再生位置は動かさず、選択だけを変える。
+                                        root.mvmController.selectTimelineClips([textLayer.clipId]);
                                     }
                                     onReleased: {
                                         if (!draggingText)
                                             return;
                                         draggingText = false;
+                                        const moved = textLayer.dragOffsetX !== 0 || textLayer.dragOffsetY !== 0;
                                         const x = Math.max(0, Math.min(root.mvmController.outputWidth - 1,
                                             Math.round(originalX + textLayer.dragOffsetX
-                                                       * root.mvmController.outputWidth / width)));
+                                                       * root.mvmController.outputWidth / textLayer.width)));
                                         const y = Math.max(0, Math.min(root.mvmController.outputHeight - 1,
                                             Math.round(originalY + textLayer.dragOffsetY
-                                                       * root.mvmController.outputHeight / height)));
+                                                       * root.mvmController.outputHeight / textLayer.height)));
                                         textLayer.dragOffsetX = 0;
                                         textLayer.dragOffsetY = 0;
-                                        root.mvmController.updateTextClip(textLayer.clipId, {x: x, y: y});
+                                        // 新しい位置を確定してから engine の合成へ戻す。
+                                        // クリックだけ (移動なし) なら選択だけにして Undo を積まない。
+                                        if (moved)
+                                            root.mvmController.updateTextClip(textLayer.clipId, {x: x, y: y});
+                                        root.draggingTextClipId = "";
                                     }
                                     onCanceled: {
                                         draggingText = false;
                                         textLayer.dragOffsetX = 0;
                                         textLayer.dragOffsetY = 0;
+                                        root.draggingTextClipId = "";
                                     }
                                 }
                             }
@@ -950,6 +1028,9 @@ ApplicationWindow {
                         MouseArea {
                             anchors.fill: parent
                             z: 8
+                            // 無効でも cursorShape は効くので、文字ツール以外では出さない。
+                            // 出したままだと選択ツールでも preview 上が文字カーソルになる。
+                            visible: root.timelineTool === "text"
                             enabled: root.timelineTool === "text" && !root.mvmController.busy
                             cursorShape: Qt.IBeamCursor
                             onClicked: mouse => {

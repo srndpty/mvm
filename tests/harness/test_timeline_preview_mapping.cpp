@@ -157,6 +157,78 @@ void testLayerLimit() {
             "mute で layer 数が上限内に収まりません");
 }
 
+mvm::project::TimelineClip textClip(std::string id, int videoTrackIndex, std::int64_t duration) {
+    mvm::project::TimelineClip value;
+    value.kind = mvm::project::TimelineClipKind::Text;
+    value.id = std::move(id);
+    value.name = value.id;
+    value.sourceFpsNum = 60;
+    value.sourceFpsDen = 1;
+    value.sourceFrameCount = duration;
+    value.sourceOutFrame = duration;
+    value.track = mvm::project::TrackRef{mvm::project::TrackKind::Video, videoTrackIndex};
+    value.text.content = value.id;
+    return value;
+}
+
+// 文字 clip は decode source ではなく textLayers に入り、合成順は track index だけで決まる。
+// 書き出しと同じく、文字より上の track の映像が文字を隠す順序になること。
+void testTextLayerStack() {
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    require(mvm::project::addTrack(project, mvm::project::TrackKind::Video).success,
+            "V3を追加できません");
+    project.timelineClips = {clip("v3", 2, 0, 0, 100), textClip("t2", 1, 100),
+                             clip("v1", 0, 0, 0, 100)};
+    const auto mapped = mvm::app::mapTimelinePreviewFrame(project, 10);
+    require(mapped.success && mapped.layers.size() == 2 && mapped.textLayers.size() == 1 &&
+                mapped.textLayers[0].clipId == "t2" && mapped.textLayers[0].clipIndex == 1,
+            "文字 clip を textLayers として取り出せません");
+    const auto stack = mvm::app::previewLayerStack(mapped);
+    const std::vector<mvm::app::TimelinePreviewStackEntry> expected{
+        {false, 0, 0}, {true, 0, 1}, {false, 1, 2}};
+    require(stack == expected, "V1 映像 / V2 文字 / V3 映像の合成順が track 順ではありません");
+
+    // 文字を最上段へ動かすと、文字が最前面になる (対照)。
+    project.timelineClips[0].track.index = 1;
+    project.timelineClips[1].track.index = 2;
+    const auto moved = mvm::app::mapTimelinePreviewFrame(project, 10);
+    const std::vector<mvm::app::TimelinePreviewStackEntry> textOnTop{
+        {false, 0, 0}, {false, 1, 1}, {true, 0, 2}};
+    require(moved.success && mvm::app::previewLayerStack(moved) == textOnTop,
+            "V3 の文字が最前面になりません");
+
+    // mute した track の文字は合成しない。
+    project.videoTracks[2].muted = true;
+    const auto muted = mvm::app::mapTimelinePreviewFrame(project, 10);
+    require(muted.success && muted.textLayers.empty() && muted.layers.size() == 2,
+            "mute した track の文字 clip を合成対象に残しました");
+}
+
+// 文字は decode source の上限 (2) ではなく合成 layer の上限 (3) で数える。
+void testTextLayerLimit() {
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    for (int track = 0; track < 2; ++track)
+        require(mvm::project::addTrack(project, mvm::project::TrackKind::Video).success,
+                "V3/V4を追加できません");
+    project.timelineClips = {clip("v1", 0, 0, 0, 100), clip("v2", 1, 0, 0, 100),
+                             textClip("t3", 2, 100)};
+    const auto three = mvm::app::mapTimelinePreviewFrame(project, 10);
+    require(three.success && three.layers.size() == 2 && three.textLayers.size() == 1,
+            "映像 2 本と文字 1 枚の 3 layer を拒否しました");
+
+    project.timelineClips.push_back(textClip("t4", 3, 100));
+    const auto four = mvm::app::mapTimelinePreviewFrame(project, 10);
+    require(!four.success && four.layers.empty() && four.textLayers.empty(),
+            "合成 layer の上限を超えた frame を成功にしました");
+
+    // 映像の無い frame では文字は UI 側が重ねるので、枚数で拒否しない。
+    project.timelineClips = {textClip("t1", 0, 100), textClip("t2", 1, 100), textClip("t3", 2, 100),
+                             textClip("t4", 3, 100)};
+    const auto textOnly = mvm::app::mapTimelinePreviewFrame(project, 10);
+    require(textOnly.success && textOnly.layers.empty() && textOnly.textLayers.size() == 4,
+            "映像の無い frame の文字を拒否しました");
+}
+
 // 重なったaudioをA1から順にすべてmix対象へ載せる。
 void testAudioOverlapSelectsA1() {
     mvm::project::Project project = mvm::project::createDefaultProject();
@@ -340,6 +412,8 @@ int main() {
     testAudioSourceFrameCount();
     testMutedTracks();
     testLayerLimit();
+    testTextLayerStack();
+    testTextLayerLimit();
     testAudioOverlapSelectsA1();
     testCrossRateVideoMapping();
 

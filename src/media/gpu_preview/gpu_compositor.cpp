@@ -352,6 +352,12 @@ bool GpuCompositor::poll(std::string& err) {
     return true;
 }
 
+void GpuCompositor::retireLayerTexture(ID3D11Texture2D* texture) {
+    if (!ready_ || !texture)
+        return;
+    converter_.retireEntriesForTexture(texture, retirement_);
+}
+
 bool GpuCompositor::shutdown(int timeoutMs, std::string& err) {
     if (!ready_)
         return true;

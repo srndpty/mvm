@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <numeric>
 #include <set>
@@ -653,7 +654,10 @@ bool MvmController::canPlay() const {
 }
 
 void MvmController::refreshTimelineModel() {
+    textPreviewOverride_.reset();
     textRasterImages_.clear();
+    textStillImages_.clear();
+    textRasterBounds_.clear();
     textRasterUrls_.clear();
     textRasterDirectory_.reset();
     if (timelineModel_) {
@@ -1229,6 +1233,8 @@ void MvmController::pollPreviewState() {
         installVideoClip(videoPath, clipName, clipIndex, sourceFrame);
     }
     const auto playbackState = previewEngine_->status().state;
+    if (textPreviewRefreshPending_ && playbackState == preview::PreviewEngineState::ReadyPaused)
+        refreshTextPreview();
     if (pendingPlaybackStart_ && playbackState == preview::PreviewEngineState::ReadyPaused)
         startPendingPlayback();
     if (status.state == preview::PreviewEngineState::Error && status.lastError) {
@@ -1454,13 +1460,29 @@ bool MvmController::revertAudioSource(const AudioSwitchUndo& undo, QString& erro
 std::shared_ptr<preview::CompositionSnapshot>
 MvmController::previewCompositionFor(const TimelinePreviewFrameMapping& mappedFrame,
                                      const std::map<int, TrackPreviewSource>& sources,
-                                     preview::PreviewFrameRequest& request) const {
+                                     preview::PreviewFrameRequest& request,
+                                     QString& error) const {
     auto composition = std::make_shared<preview::CompositionSnapshot>();
     request = preview::PreviewFrameRequest{};
     request.outputFrameNumber = mappedFrame.outputFrameNumber;
-    // mappedFrame.layers は video track index の昇順であり、この挿入順が
-    // bottom/top の authority になる。
-    for (const auto& layerMapping : mappedFrame.layers) {
+    error.clear();
+    // previewLayerStack が video と文字を track 順 (背面 -> 前面) に並べる。
+    // この挿入順が engine の z 順の authority になる。
+    for (const auto& entry : previewLayerStack(mappedFrame)) {
+        if (entry.text) {
+            const auto& textMapping = mappedFrame.textLayers[entry.index];
+            // UI が重ねている (ドラッグ・編集中の) 文字は二重に描かない。
+            if (QString::fromStdString(textMapping.clipId) == textOverlayClipId_)
+                continue;
+            auto image = textStillImage(textMapping.clipIndex, error);
+            if (!image)
+                return nullptr;
+            preview::PreviewCompositionLayer layer;
+            layer.stillImage = std::move(image);
+            composition->layers.push_back(std::move(layer));
+            continue;
+        }
+        const auto& layerMapping = mappedFrame.layers[entry.index];
         const auto& clip = project_.timelineClips[static_cast<std::size_t>(layerMapping.clipIndex)];
         const auto slot = sources.find(layerMapping.videoTrackIndex);
         if (slot == sources.end())
@@ -1584,7 +1606,12 @@ bool MvmController::syncPreviewSourcesAt(std::int64_t timelineFrame, QString& er
     }
 
     preview::PreviewFrameRequest request;
-    const auto composition = previewCompositionFor(mappedFrame, candidateSources, request);
+    const auto composition =
+        previewCompositionFor(mappedFrame, candidateSources, request, error);
+    if (!composition) {
+        rollback();
+        return false;
+    }
     const auto submitted = previewEngine_->submitComposition(composition);
     if (!submitted) {
         error = previewErrorText(submitted.error());
@@ -2219,21 +2246,15 @@ bool MvmController::createTextClip(const QString& content, int x, int y) {
     if (!commitProjectEdit(std::move(candidate), QStringLiteral("文字 clip を作成できません: ")))
         return false;
     Q_EMIT stateChanged();
+    refreshTextPreview();
     return selectClip(placed.selectedIndex);
 }
 
-bool MvmController::updateTextClip(const QString& clipId, const QVariantMap& values) {
-    if (busy_ || !pauseTimeline())
-        return false;
-    project::Project candidate = project_;
-    const auto id = clipId.toStdString();
-    const auto found = std::find_if(candidate.timelineClips.begin(), candidate.timelineClips.end(),
-                                    [&](const auto& clip) { return clip.id == id; });
-    if (found == candidate.timelineClips.end() || found->kind != project::TimelineClipKind::Text) {
-        setStatus(QStringLiteral("編集する文字 clip がありません"));
-        return false;
-    }
-    auto& data = found->text;
+namespace {
+
+// QML から来た書式の変更を TextClipData へ反映する。確定 (updateTextClip) と
+// ドラッグ中の preview (previewTextClip) の両方がこれを使う。
+void applyTextValues(project::TextClipData& data, const QVariantMap& values) {
     if (values.contains(QStringLiteral("content")))
         data.content = values.value(QStringLiteral("content")).toString().toStdString();
     if (values.contains(QStringLiteral("fontFamily")))
@@ -2257,6 +2278,23 @@ bool MvmController::updateTextClip(const QString& clipId, const QVariantMap& val
     if (values.contains(QStringLiteral("backgroundColor")))
         data.backgroundColor =
             values.value(QStringLiteral("backgroundColor")).toString().toStdString();
+}
+
+} // namespace
+
+bool MvmController::updateTextClip(const QString& clipId, const QVariantMap& values) {
+    if (busy_ || !pauseTimeline())
+        return false;
+    project::Project candidate = project_;
+    const auto id = clipId.toStdString();
+    const auto found = std::find_if(candidate.timelineClips.begin(), candidate.timelineClips.end(),
+                                    [&](const auto& clip) { return clip.id == id; });
+    if (found == candidate.timelineClips.end() || found->kind != project::TimelineClipKind::Text) {
+        setStatus(QStringLiteral("編集する文字 clip がありません"));
+        return false;
+    }
+    auto& data = found->text;
+    applyTextValues(data, values);
     if (data.content.empty()) {
         setStatus(QStringLiteral("文字 clip の本文を空にはできません"));
         return false;
@@ -2268,19 +2306,189 @@ bool MvmController::updateTextClip(const QString& clipId, const QVariantMap& val
         setStatus(rasterError);
         return false;
     }
+    // 確定したらドラッグ中の preview は不要になる。Project の値へ戻してから保存する。
+    textPreviewOverride_.reset();
     if (!commitProjectEdit(std::move(candidate), QStringLiteral("文字 clip を更新できません: ")))
         return false;
     Q_EMIT stateChanged();
+    refreshTextPreview();
     return true;
 }
 
-QUrl MvmController::textRasterUrl(int index) {
-    if (index < 0 || index >= static_cast<int>(project_.timelineClips.size()) ||
-        project_.timelineClips[static_cast<std::size_t>(index)].kind !=
-            project::TimelineClipKind::Text)
+bool MvmController::placeTextClip(const QString& clipId, const QString& alignment) {
+    const int index = indexOfClipId(project_.timelineClips, clipId.toStdString());
+    if (index < 0 || project_.timelineClips[static_cast<std::size_t>(index)].kind !=
+                         project::TimelineClipKind::Text) {
+        setStatus(QStringLiteral("配置する文字 clip がありません"));
+        return false;
+    }
+    // 揃えを変えると行の並びが変わるので、揃えを変えた後の書式で位置を求める。
+    project::TextClipData data = project_.timelineClips[static_cast<std::size_t>(index)].text;
+    data.alignment = alignment.toStdString();
+    const auto placement =
+        textPresetPlacement(data, project_.outputWidth, project_.outputHeight, data.alignment);
+    if (!placement.success) {
+        setStatus(placement.error);
+        return false;
+    }
+    return updateTextClip(clipId, {{QStringLiteral("alignment"), alignment},
+                                   {QStringLiteral("x"), placement.x},
+                                   {QStringLiteral("y"), placement.y}});
+}
+
+bool MvmController::previewTextClip(const QString& clipId, const QVariantMap& values) {
+    if (busy_ || playing_)
+        return false;
+    const int index = indexOfClipId(project_.timelineClips, clipId.toStdString());
+    if (index < 0 || project_.timelineClips[static_cast<std::size_t>(index)].kind !=
+                         project::TimelineClipKind::Text)
+        return false;
+    // 同じ clip のドラッグ中なら、前回の preview に重ねる (X と Y を別々に動かす場合など)。
+    project::TextClipData data =
+        textPreviewOverride_ && textPreviewOverride_->first == clipId.toStdString()
+            ? textPreviewOverride_->second
+            : project_.timelineClips[static_cast<std::size_t>(index)].text;
+    applyTextValues(data, values);
+    QString rasterError;
+    if (data.content.empty() ||
+        renderTextRaster(data, project_.outputWidth, project_.outputHeight, rasterError).isNull())
+        return false;
+    textPreviewOverride_ = std::make_pair(clipId.toStdString(), std::move(data));
+    applyTextPreview(clipId);
+    return true;
+}
+
+void MvmController::cancelTextPreview() {
+    if (!textPreviewOverride_)
+        return;
+    const QString clipId = QString::fromStdString(textPreviewOverride_->first);
+    textPreviewOverride_.reset();
+    applyTextPreview(clipId);
+}
+
+void MvmController::applyTextPreview(const QString& clipId) {
+    // 画像の cache は clip ID を key にしているので、その clip の分だけ捨てて描き直させる。
+    textRasterImages_.remove(clipId);
+    textStillImages_.remove(clipId);
+    textRasterBounds_.remove(clipId);
+    ++textPreviewSerial_;
+    Q_EMIT stateChanged();
+    refreshTextPreview();
+}
+
+void MvmController::refreshTextPreview() {
+    textPreviewRefreshPending_ = false;
+    // 映像の無い frame では UI が文字を重ねるので engine は触らない。
+    if (!previewVideoAtPlayhead() || playing_)
+        return;
+    // ドラッグ中や、保存の直後に続けて組み直すときは、前の seek の完了前に次の要求が来る。
+    // ReadyPaused 以外では失敗にせず、ReadyPaused になったら最新の状態で 1 回だけ
+    // 描き直す (pollPreviewState)。
+    if (previewEngine_->status().state != preview::PreviewEngineState::ReadyPaused) {
+        textPreviewRefreshPending_ = true;
+        return;
+    }
+    QString error;
+    if (!syncPreviewSourcesAt(playheadFrame_, error))
+        setStatus(QStringLiteral("文字のPreview更新に失敗しました: ") + error);
+}
+
+const QImage* MvmController::textRasterImage(int clipIndex, QString& error) const {
+    if (clipIndex < 0 || clipIndex >= static_cast<int>(project_.timelineClips.size()) ||
+        project_.timelineClips[static_cast<std::size_t>(clipIndex)].kind !=
+            project::TimelineClipKind::Text) {
+        error = QStringLiteral("文字 clip ではありません");
+        return nullptr;
+    }
+    const auto& clip = project_.timelineClips[static_cast<std::size_t>(clipIndex)];
+    // Project を変えると refreshTimelineModel が cache を捨てるので、key は clip ID で足りる。
+    // ドラッグ中の preview は applyTextPreview がその clip の分を捨てる。
+    const QString key = QString::fromStdString(clip.id);
+    const auto found = textRasterImages_.constFind(key);
+    if (found != textRasterImages_.constEnd())
+        return &found.value();
+    const project::TextClipData& data =
+        textPreviewOverride_ && textPreviewOverride_->first == clip.id ? textPreviewOverride_->second
+                                                                        : clip.text;
+    const QImage image = renderTextRaster(data, project_.outputWidth, project_.outputHeight, error);
+    if (image.isNull())
+        return nullptr;
+    return &textRasterImages_.insert(key, image).value();
+}
+
+QRect MvmController::textRasterBounds(int clipIndex) const {
+    QString rasterError;
+    const QImage* raster = textRasterImage(clipIndex, rasterError);
+    if (!raster)
         return {};
+    const QString key =
+        QString::fromStdString(project_.timelineClips[static_cast<std::size_t>(clipIndex)].id);
+    if (const auto found = textRasterBounds_.constFind(key); found != textRasterBounds_.constEnd())
+        return found.value();
+    // 不透明な画素 (文字・縁取り・背景) を囲む最小の矩形。
+    int left = raster->width();
+    int top = raster->height();
+    int right = -1;
+    int bottom = -1;
+    for (int y = 0; y < raster->height(); ++y) {
+        const auto* line = reinterpret_cast<const QRgb*>(raster->constScanLine(y));
+        for (int x = 0; x < raster->width(); ++x) {
+            if (qAlpha(line[x]) == 0)
+                continue;
+            left = std::min(left, x);
+            right = std::max(right, x);
+            top = std::min(top, y);
+            bottom = std::max(bottom, y);
+        }
+    }
+    const QRect bounds = right < 0 ? QRect{} : QRect(QPoint(left, top), QPoint(right, bottom));
+    textRasterBounds_.insert(key, bounds);
+    return bounds;
+}
+
+QRect MvmController::textClipBounds(const QString& clipId) const {
+    const int index = indexOfClipId(project_.timelineClips, clipId.toStdString());
+    return index < 0 ? QRect{} : textRasterBounds(index);
+}
+
+std::shared_ptr<const preview::PreviewStillImage>
+MvmController::textStillImage(int clipIndex, QString& error) const {
+    const QImage* raster = textRasterImage(clipIndex, error);
+    if (!raster)
+        return nullptr;
+    const QString key =
+        QString::fromStdString(project_.timelineClips[static_cast<std::size_t>(clipIndex)].id);
+    if (const auto found = textStillImages_.constFind(key); found != textStillImages_.constEnd())
+        return found.value();
+    // engine は straight alpha の RGBA8 を受け取る。書き出しの PNG も straight alpha である。
+    const QImage straight = raster->convertToFormat(QImage::Format_RGBA8888);
+    auto still = std::make_shared<preview::PreviewStillImage>();
+    still->width = straight.width();
+    still->height = straight.height();
+    const auto rowBytes = static_cast<std::size_t>(straight.width()) * 4U;
+    still->rgba.resize(rowBytes * static_cast<std::size_t>(straight.height()));
+    for (int y = 0; y < straight.height(); ++y)
+        std::memcpy(still->rgba.data() + rowBytes * static_cast<std::size_t>(y),
+                    straight.constScanLine(y), rowBytes);
+    textStillImages_.insert(key, still);
+    return still;
+}
+
+QUrl MvmController::textRasterUrl(int index) {
+    QString rasterError;
+    const QImage* image = textRasterImage(index, rasterError);
+    if (!image) {
+        if (index >= 0 && index < static_cast<int>(project_.timelineClips.size()) &&
+            project_.timelineClips[static_cast<std::size_t>(index)].kind ==
+                project::TimelineClipKind::Text)
+            setStatus(rasterError);
+        return {};
+    }
     const auto& clip = project_.timelineClips[static_cast<std::size_t>(index)];
-    const QString key = QString::number(currentRevision_) + u'-' + QString::fromStdString(clip.id);
+    // PNG は Image が URL で cache するので、ドラッグ中の preview ごとに別の名前にする。
+    const QString key = QString::number(currentRevision_) + u'-' +
+                        QString::number(textPreviewSerial_) + u'-' +
+                        QString::fromStdString(clip.id);
     if (textRasterUrls_.contains(key))
         return textRasterUrls_.value(key);
     if (!textRasterDirectory_)
@@ -2289,22 +2497,26 @@ QUrl MvmController::textRasterUrl(int index) {
         setStatus(QStringLiteral("文字画像の一時 directory を作成できません"));
         return {};
     }
-    QString rasterError;
-    const QImage image =
-        renderTextRaster(clip.text, project_.outputWidth, project_.outputHeight, rasterError);
-    if (image.isNull()) {
-        setStatus(rasterError);
-        return {};
-    }
     const QString path = textRasterDirectory_->filePath(key + QStringLiteral(".png"));
-    if (!image.save(path, "PNG")) {
+    if (!image->save(path, "PNG")) {
         setStatus(QStringLiteral("文字画像を保存できません"));
         return {};
     }
     const QUrl url = QUrl::fromLocalFile(path);
-    textRasterImages_.insert(key, image);
     textRasterUrls_.insert(key, url);
     return url;
+}
+
+void MvmController::setTextOverlayClip(const QString& clipId) {
+    if (textOverlayClipId_ == clipId)
+        return;
+    textOverlayClipId_ = clipId;
+    Q_EMIT stateChanged();
+    // 再生中は次の tick の handOffPlaybackSources が組み直す。
+    // ドラッグを離した直後は位置の保存で seek 中なので、直接 submit すると拒否され、
+    // 文字を外したままの composition が残って文字が消えていた。refreshTextPreview は
+    // seek の完了を待って組み直す。
+    refreshTextPreview();
 }
 
 bool MvmController::textClipVisible(int index) const {
@@ -2331,13 +2543,9 @@ QString MvmController::textClipAt(int x, int y) {
             if (!duration.success || playheadFrame_ < clip.timelineStartFrame ||
                 playheadFrame_ >= clip.timelineStartFrame + duration.frame)
                 continue;
-            if (textRasterUrl(index).isEmpty())
-                continue;
-            const QString key =
-                QString::number(currentRevision_) + u'-' + QString::fromStdString(clip.id);
-            const QImage& image = textRasterImages_[key];
-            if (x >= 0 && y >= 0 && x < image.width() && y < image.height() &&
-                qAlpha(image.pixel(x, y)) > 0)
+            // 字形の画素ではなく描画範囲の矩形で当てる。字間や字の内側を掴んでも
+            // 動かせるようにするため (Premiere の選択枠と同じ扱い)。
+            if (textRasterBounds(index).contains(x, y))
                 return QString::fromStdString(clip.id);
         }
     }
@@ -2695,10 +2903,9 @@ bool MvmController::handOffPlaybackSources(std::int64_t frame, QString& reason) 
             }
         }
     }
-    if (!videoChanged && !audioChanged)
-        return true;
-
-    // 引き継いだ clip の effect で composition を組み直す。同じなら出し直さない。
+    // 文字 clip は再生中にも出入りする。video / audio が変わらなくても composition は
+    // 毎回組み、前回と違うときだけ出し直す (同じ文字は同じ画像 instance なので安い)。
+    // 引き継いだ clip の effect もここで反映する。
     auto sources = trackSources_;
     for (const auto& layer : mappedFrame.layers) {
         auto& slot = sources[layer.videoTrackIndex];
@@ -2706,7 +2913,12 @@ bool MvmController::handOffPlaybackSources(std::int64_t frame, QString& reason) 
         slot.clipIndex = layer.clipIndex;
     }
     preview::PreviewFrameRequest unusedRequest;
-    const auto composition = previewCompositionFor(mappedFrame, sources, unusedRequest);
+    const auto composition = previewCompositionFor(mappedFrame, sources, unusedRequest, reason);
+    if (!composition)
+        return false;
+    if (!videoChanged && !audioChanged && submittedComposition_ &&
+        *submittedComposition_ == *composition)
+        return true;
     if (!submittedComposition_ || !(*submittedComposition_ == *composition)) {
         const auto submitted = previewEngine_->submitComposition(composition);
         if (!submitted) {

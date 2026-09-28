@@ -11,6 +11,8 @@ const char* toString(GpuPixelFormat f) {
         return "nv12";
     case GpuPixelFormat::P010:
         return "p010";
+    case GpuPixelFormat::RGBA8:
+        return "rgba8";
     case GpuPixelFormat::Unknown:
         break;
     }

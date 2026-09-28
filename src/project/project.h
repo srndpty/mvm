@@ -79,7 +79,7 @@ struct TimelineClip {
     // timeline との換算は必ず clipTimebase (timeline_edit.h) を通す。
     std::int64_t speedNum = 1;
     std::int64_t speedDen = 1;
-    TextClipData text;
+    TextClipData text{};
     bool operator==(const TimelineClip&) const = default;
 };
 

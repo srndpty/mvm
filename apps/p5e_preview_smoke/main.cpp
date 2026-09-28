@@ -212,9 +212,9 @@ int main(int argc, char** argv) {
         return 3;
     const auto capabilities = engine->capabilities();
     if (capabilities.configuredMaxActiveVideoSources != 2 ||
-        capabilities.configuredMaxCompositionLayers != 2 ||
+        capabilities.configuredMaxCompositionLayers != 3 ||
         capabilities.duplicateSourceLayersSupported) {
-        std::fprintf(stderr, "P5-E3 capabilityが2/2/duplicate=falseではありません\n");
+        std::fprintf(stderr, "P5-E3 capabilityが2/3/duplicate=falseではありません\n");
         return 3;
     }
 
@@ -428,9 +428,19 @@ int main(int argc, char** argv) {
                     {videoSourceB, {0.5F, 0, 0.5F, 1}, {0, 0, 1, 1}, 1.0F});
             }
             if (fault == Fault::ExceedLayerCount) {
+                // layer 上限は 3、video source 上限は 2。video 3 本では source 上限で
+                // 先に落ちて layer 上限を検査できないので、video 2 本 + 静止画 2 枚で
+                // layer 数だけを超えさせる。
                 auto excessive = std::make_shared<mvm::preview::CompositionSnapshot>(*snapshot);
-                excessive->layers.push_back(
-                    {videoSourceC, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
+                auto still = std::make_shared<mvm::preview::PreviewStillImage>();
+                still->width = 2;
+                still->height = 2;
+                still->rgba.assign(16, 255);
+                for (int index = 0; index < 2; ++index) {
+                    mvm::preview::PreviewCompositionLayer stillLayer;
+                    stillLayer.stillImage = still;
+                    excessive->layers.push_back(stillLayer);
+                }
                 const auto rejected = engine->submitComposition(excessive);
                 if (rejected || rejected.error().category !=
                                     mvm::preview::PreviewErrorCategory::UnsupportedCapability) {

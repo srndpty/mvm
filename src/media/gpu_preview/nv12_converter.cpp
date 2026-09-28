@@ -97,6 +97,15 @@ float4 ps_main(VSOut i) : SV_Target
     rgb.b = y + mat.w * c.x;
     return float4(saturate(rgb), saturate(misc.y));
 }
+
+// 静止画 layer (RGBA8 straight alpha)。YUV 変換を通さず、画素の alpha に
+// layer opacity を掛けるだけにする。blend state は video layer と共通。
+float4 ps_rgba(VSOut i) : SV_Target
+{
+    float2 uv = uvRect.xy + i.uv * uvRect.zw;
+    float4 c = texLuma.Sample(samp, float3(uv, 0));
+    return float4(c.rgb, saturate(c.a * misc.y));
+}
 )HLSL";
 
 struct ShaderParams {
@@ -149,6 +158,13 @@ bool planeFormats(GpuPixelFormat f, DXGI_FORMAT& luma, DXGI_FORMAT& chroma, floa
         sampleScale = 65535.0f / 65472.0f;
         // 10bit の中立点は 512/1023。
         chromaNeutral = 512.0f / 1023.0f;
+        return true;
+    case GpuPixelFormat::RGBA8:
+        // 単一平面。chroma の view は作らない。
+        luma = DXGI_FORMAT_R8G8B8A8_UNORM;
+        chroma = DXGI_FORMAT_UNKNOWN;
+        sampleScale = 1.0f;
+        chromaNeutral = 0.0f;
         return true;
     case GpuPixelFormat::Unknown:
         break;
@@ -222,6 +238,7 @@ bool Nv12Converter::ensureShaders(std::string& err) {
     ID3DBlob* vsBlob = nullptr;
     ID3DBlob* effectVsBlob = nullptr;
     ID3DBlob* psBlob = nullptr;
+    ID3DBlob* rgbaPsBlob = nullptr;
     if (!compile("vs_main", "vs_5_0", &vsBlob, err))
         return false;
     if (!compile("vs_effect", "vs_5_0", &effectVsBlob, err)) {
@@ -233,6 +250,12 @@ bool Nv12Converter::ensureShaders(std::string& err) {
         effectVsBlob->Release();
         return false;
     }
+    if (!compile("ps_rgba", "ps_5_0", &rgbaPsBlob, err)) {
+        vsBlob->Release();
+        effectVsBlob->Release();
+        psBlob->Release();
+        return false;
+    }
 
     HRESULT rc =
         dev->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &vs_);
@@ -242,9 +265,13 @@ bool Nv12Converter::ensureShaders(std::string& err) {
     if (SUCCEEDED(rc))
         rc = dev->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr,
                                     &ps_);
+    if (SUCCEEDED(rc))
+        rc = dev->CreatePixelShader(rgbaPsBlob->GetBufferPointer(), rgbaPsBlob->GetBufferSize(),
+                                    nullptr, &rgbaPs_);
     vsBlob->Release();
     effectVsBlob->Release();
     psBlob->Release();
+    rgbaPsBlob->Release();
     if (FAILED(rc)) {
         err = hr("shader オブジェクトの生成", rc);
         return false;
@@ -333,6 +360,7 @@ void Nv12Converter::release() {
     safeRelease(samplerLinear_);
     safeRelease(samplerPoint_);
     safeRelease(cbuffer_);
+    safeRelease(rgbaPs_);
     safeRelease(ps_);
     safeRelease(effectVs_);
     safeRelease(vs_);
@@ -391,7 +419,7 @@ bool Nv12Converter::acquireSrvs(const DecodedGpuFrame& frame, SrvPair& out, std:
     SrvPair pair;
     sd.Format = lumaFmt;
     HRESULT rc = shared_->device()->CreateShaderResourceView(frame.texture, &sd, &pair.luma);
-    if (SUCCEEDED(rc)) {
+    if (SUCCEEDED(rc) && chromaFmt != DXGI_FORMAT_UNKNOWN) {
         sd.Format = chromaFmt;
         rc = shared_->device()->CreateShaderResourceView(frame.texture, &sd, &pair.chroma);
     }
@@ -466,6 +494,31 @@ void Nv12Converter::retireEntriesNotInEpoch(ResourceEpoch epoch, GpuRetirementQu
     // 添字が変わるので、まだ刻んでいない参照は捨てる
     // (次の draw で刻み直される。刻み損ねた entry は serial 0 のまま
     //  retire されるが、それは「まだ一度も描いていない」= 解放して安全)。
+    pendingStamp_.clear();
+    srvCache_.swap(keep);
+}
+
+void Nv12Converter::retireEntriesForTexture(ID3D11Texture2D* texture, GpuRetirementQueue& queue) {
+    // retireEntriesNotInEpoch と同じく即 Release しない。最後に使った
+    // submission serial が完了するまで SRV (と SRV が持つ texture 参照) を残す。
+    std::vector<SrvCacheEntry> keep;
+    keep.reserve(srvCache_.size());
+    for (auto& e : srvCache_) {
+        if (e.texture != texture) {
+            keep.push_back(e);
+            continue;
+        }
+        auto* holder = new SrvPair{e.srv.luma, e.srv.chroma};
+        queue.retire(e.lastUsedSerial, std::shared_ptr<void>(holder, [](void* p) {
+                         auto* pair = static_cast<SrvPair*>(p);
+                         if (pair->luma)
+                             pair->luma->Release();
+                         if (pair->chroma)
+                             pair->chroma->Release();
+                         delete pair;
+                     }));
+        retiredSrvEntries_++;
+    }
     pendingStamp_.clear();
     srvCache_.swap(keep);
 }
@@ -558,7 +611,7 @@ bool Nv12Converter::drawInternal(const DecodedGpuFrame& frame, ID3D11RenderTarge
     ctx->VSSetShader(effectAware ? effectVs_ : vs_, nullptr, 0);
     if (effectAware)
         ctx->VSSetConstantBuffers(0, 1, &cbuffer_);
-    ctx->PSSetShader(ps_, nullptr, 0);
+    ctx->PSSetShader(frame.pixelFormat == GpuPixelFormat::RGBA8 ? rgbaPs_ : ps_, nullptr, 0);
     ctx->PSSetConstantBuffers(0, 1, &cbuffer_);
     ctx->PSSetShaderResources(0, 2, srvs);
     ctx->PSSetSamplers(0, 1, &samp);

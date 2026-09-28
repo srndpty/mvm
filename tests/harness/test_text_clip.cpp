@@ -5,6 +5,7 @@
 #include "project/project_json.h"
 #include "project/timeline_edit.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 
@@ -237,6 +238,38 @@ int main(int argc, char** argv) {
     require(!mvm::project::slipTimelineClip(edited, "text-1", 1, mvm::project::LinkMode::Single)
                  .success,
             "文字 clip の素材位置変更を受理しました");
-    std::puts("文字 clip の保存・描画・編集を確認しました");
+    // テロップの定位置。期待値は文字の矩形の大きさから独立に計算する。
+    {
+        auto telop = project.timelineClips[0].text;
+        const QSizeF block = mvm::app::textBlockSize(telop, error);
+        require(block.width() > 0 && block.height() > 0, "文字の矩形の大きさを求められません");
+        const int expectedY = static_cast<int>(std::lround(240 * 0.85 - block.height()));
+        const auto left = mvm::app::textPresetPlacement(telop, 320, 240, "left");
+        const auto center = mvm::app::textPresetPlacement(telop, 320, 240, "center");
+        const auto right = mvm::app::textPresetPlacement(telop, 320, 240, "right");
+        require(left.success && center.success && right.success, "定位置を求められません");
+        require(left.x == 16 && left.y == expectedY, "左の定位置が下 15% / 左 5% ではありません");
+        require(center.x == static_cast<int>(std::lround((320 - block.width()) / 2)) &&
+                    center.y == expectedY,
+                "中央の定位置が下 15% の中央ではありません");
+        require(right.x == static_cast<int>(std::lround(320 * 0.95 - block.width())) &&
+                    right.y == expectedY,
+                "右の定位置が下 15% / 右 5% ではありません");
+        // 描いた画像の矩形も、求めた位置に来ること (描画と配置が同じ寸法を使っている)。
+        telop.x = center.x;
+        telop.y = center.y;
+        telop.backgroundColor = "#FF000000";
+        const QImage placedImage = mvm::app::renderTextRaster(telop, 320, 240, error);
+        int bottom = -1;
+        for (int y = 0; y < placedImage.height(); ++y)
+            for (int x = 0; x < placedImage.width(); ++x)
+                if (qAlpha(placedImage.pixel(x, y)) > 0)
+                    bottom = y;
+        require(std::abs((bottom + 1) - static_cast<int>(std::lround(240 * 0.85))) <= 1,
+                "定位置に置いた文字の下端が画面の下から 15% にありません");
+        require(!mvm::app::textPresetPlacement(telop, 320, 240, "top").success,
+                "未知の揃えを受理しました");
+    }
+    std::puts("文字 clip の保存・描画・編集・定位置を確認しました");
     return 0;
 }

@@ -82,6 +82,13 @@ public:
                                    const ExternalCompositionTarget& target,
                                    GpuCompositorStageTiming& timing, std::string& err);
     bool poll(std::string& err);
+    // 静止画 layer の texture を所有者が手放す前に呼ぶ。converter の SRV を
+    // GPU 完了待ちの retirement へ移し、texture の参照を cache に残さない。
+    void retireLayerTexture(ID3D11Texture2D* texture);
+
+    // converter の SRV cache に残っている entry 数。静止画 texture の解放検査に使う。
+    size_t srvCacheEntries() const { return converter_.srvCacheEntries(); }
+
     bool shutdown(int timeoutMs, std::string& err);
     bool beginShutdown(int timeoutMs, std::string& err);
     GpuCompositorShutdownStatus pollShutdown(std::string& err);
