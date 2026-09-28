@@ -35,6 +35,7 @@ qt_add_qml_module(mvm
         TimelineGestures.js
         TimelineToolIcon.qml
         TimelineToolPanel.qml
+        TextClipInspector.qml
         ProjectPanel.qml
 )
 
@@ -47,6 +48,7 @@ target_link_libraries(mvm PRIVATE
     mvm::timeline_playback
     mvm::timeline_preview_mapping
     mvm::timeline_export
+    mvm::text_raster
     mvm::audio_waveform
     mvm::mlt
     mvm::preview_engine

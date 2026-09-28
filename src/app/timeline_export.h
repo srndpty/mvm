@@ -52,6 +52,7 @@ struct TimelineExportGainKey {
 struct TimelineExportClipMapping {
     int projectClipIndex = -1;
     bool audio = false;
+    bool text = false;
     int videoTrackIndex = 0;
     std::int64_t timelineStartFrame = 0;
     std::int64_t timelineDurationFrames = 0;
@@ -75,7 +76,7 @@ struct TimelineExportClipMapping {
 
 // MLT 側の書き出し経路が持つ playlist は V1 / V2 の 2 本だけである。
 // track を増やせるのは編集 model の話であり、書き出しはここで fail-closed にする。
-inline constexpr int kMaxExportVideoTracks = 2;
+inline constexpr int kMaxExportVideoTracks = 3;
 
 struct TimelineExportPlan {
     bool success = false;

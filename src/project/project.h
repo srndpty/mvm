@@ -23,7 +23,22 @@ struct ManimAsset {
     bool operator==(const ManimAsset&) const = default;
 };
 
-enum class TimelineClipKind { Video, Manim, Audio };
+enum class TimelineClipKind { Video, Manim, Audio, Text };
+
+struct TextClipData {
+    std::string content;
+    std::string fontFamily = "Meiryo";
+    int fontSize = 64;
+    int x = 0;
+    int y = 0;
+    std::string color = "#FFFFFFFF";
+    bool bold = false;
+    std::string alignment = "left";
+    std::string outlineColor = "#FF000000";
+    int outlineWidth = 0;
+    std::string backgroundColor = "#00000000";
+    bool operator==(const TextClipData&) const = default;
+};
 
 enum class TrackKind { Video, Audio };
 
@@ -64,6 +79,7 @@ struct TimelineClip {
     // timeline との換算は必ず clipTimebase (timeline_edit.h) を通す。
     std::int64_t speedNum = 1;
     std::int64_t speedDen = 1;
+    TextClipData text;
     bool operator==(const TimelineClip&) const = default;
 };
 
@@ -73,7 +89,7 @@ inline constexpr std::int64_t kMinClipSpeedPercent = 10;
 inline constexpr std::int64_t kMaxClipSpeedPercent = 1000;
 
 // Project JSON の schema。timeline 検証と JSON の読み書きが同じ値を参照する。
-inline constexpr int kProjectSchemaVersion = 6;
+inline constexpr int kProjectSchemaVersion = 7;
 
 // プロジェクトパネルの素材。timeline clip とは独立に存在し、mediaPath で対応づく。
 enum class MediaKind { Video, Audio, Image };

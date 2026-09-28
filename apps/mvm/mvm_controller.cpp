@@ -3,6 +3,7 @@
 #include "app/audio_source_set_transaction.h"
 #include "app/manim_clip_workflow.h"
 #include "app/preview/preview_engine_rhi_item.h"
+#include "app/text_raster.h"
 #include "app/timeline_export.h"
 #include "app/timeline_playback.h"
 #include "app/timeline_preview_mapping.h"
@@ -37,6 +38,7 @@
 #include <QFileInfo>
 #include <QMetaObject>
 #include <QPointer>
+#include <QTemporaryDir>
 #include <QUuid>
 #include <QVariantMap>
 
@@ -651,6 +653,9 @@ bool MvmController::canPlay() const {
 }
 
 void MvmController::refreshTimelineModel() {
+    textRasterImages_.clear();
+    textRasterUrls_.clear();
+    textRasterDirectory_.reset();
     if (timelineModel_) {
         timelineModel_->setProject(project_);
         QSet<QString> selectedIds;
@@ -1498,6 +1503,10 @@ bool MvmController::syncPreviewSourcesAt(std::int64_t timelineFrame, QString& er
         error = QString::fromStdString(mappedFrame.error);
         return false;
     }
+    if (mappedFrame.layers.empty()) {
+        error.clear();
+        return true;
+    }
     // 失敗しうる操作を先に済ませ、後戻りできない audio の差し替えを最後へ寄せる。
     //   video prepare -> composition submit -> audio 差し替え -> seek
     // audio は composition の layer ではないので submit の後でよい。
@@ -2140,6 +2149,201 @@ bool MvmController::addMediaItemToTimeline(const QString& itemId) {
     return false;
 }
 
+QVariantMap MvmController::textClipData(const QString& clipId) const {
+    for (const auto& clip : project_.timelineClips) {
+        if (clip.kind != project::TimelineClipKind::Text ||
+            QString::fromStdString(clip.id) != clipId)
+            continue;
+        const auto& data = clip.text;
+        return {{QStringLiteral("clipId"), clipId},
+                {QStringLiteral("content"), QString::fromStdString(data.content)},
+                {QStringLiteral("fontFamily"), QString::fromStdString(data.fontFamily)},
+                {QStringLiteral("fontSize"), data.fontSize},
+                {QStringLiteral("x"), data.x},
+                {QStringLiteral("y"), data.y},
+                {QStringLiteral("color"), QString::fromStdString(data.color)},
+                {QStringLiteral("bold"), data.bold},
+                {QStringLiteral("alignment"), QString::fromStdString(data.alignment)},
+                {QStringLiteral("outlineColor"), QString::fromStdString(data.outlineColor)},
+                {QStringLiteral("outlineWidth"), data.outlineWidth},
+                {QStringLiteral("backgroundColor"), QString::fromStdString(data.backgroundColor)}};
+    }
+    return {};
+}
+
+QVariantMap MvmController::selectedTextClip() const {
+    if (currentClipIndex_ < 0 ||
+        currentClipIndex_ >= static_cast<int>(project_.timelineClips.size()))
+        return {};
+    return textClipData(QString::fromStdString(
+        project_.timelineClips[static_cast<std::size_t>(currentClipIndex_)].id));
+}
+
+bool MvmController::previewVideoAtPlayhead() const {
+    const auto active = project::activeClipsAt(project_, project::TrackKind::Video, playheadFrame_);
+    for (std::size_t index = 0; index < active.size(); ++index)
+        if (active[index] && active[index]->kind != project::TimelineClipKind::Text &&
+            !project_.videoTracks[index].muted)
+            return true;
+    return false;
+}
+
+bool MvmController::createTextClip(const QString& content, int x, int y) {
+    if (busy_ || content.trimmed().isEmpty() || !pauseTimeline())
+        return false;
+    project::Project candidate = project_;
+    project::TimelineClip clip;
+    clip.kind = project::TimelineClipKind::Text;
+    clip.id = newClipId();
+    clip.name = content.simplified().left(32).toStdString();
+    clip.sourceFpsNum = candidate.timelineFpsNum;
+    clip.sourceFpsDen = candidate.timelineFpsDen;
+    clip.sourceFrameCount =
+        std::max<std::int64_t>(1, (5 * candidate.timelineFpsNum + candidate.timelineFpsDen / 2) /
+                                      candidate.timelineFpsDen);
+    clip.sourceOutFrame = clip.sourceFrameCount;
+    clip.text.content = content.toStdString();
+    clip.text.x = x;
+    clip.text.y = y;
+    QString rasterError;
+    if (renderTextRaster(clip.text, candidate.outputWidth, candidate.outputHeight, rasterError)
+            .isNull()) {
+        setStatus(rasterError);
+        return false;
+    }
+    const auto placed = project::placeTextClipAt(candidate, std::move(clip), playheadFrame_);
+    if (!placed.success) {
+        setStatus(QString::fromStdString(placed.error));
+        return false;
+    }
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("文字 clip を作成できません: ")))
+        return false;
+    Q_EMIT stateChanged();
+    return selectClip(placed.selectedIndex);
+}
+
+bool MvmController::updateTextClip(const QString& clipId, const QVariantMap& values) {
+    if (busy_ || !pauseTimeline())
+        return false;
+    project::Project candidate = project_;
+    const auto id = clipId.toStdString();
+    const auto found = std::find_if(candidate.timelineClips.begin(), candidate.timelineClips.end(),
+                                    [&](const auto& clip) { return clip.id == id; });
+    if (found == candidate.timelineClips.end() || found->kind != project::TimelineClipKind::Text) {
+        setStatus(QStringLiteral("編集する文字 clip がありません"));
+        return false;
+    }
+    auto& data = found->text;
+    if (values.contains(QStringLiteral("content")))
+        data.content = values.value(QStringLiteral("content")).toString().toStdString();
+    if (values.contains(QStringLiteral("fontFamily")))
+        data.fontFamily = values.value(QStringLiteral("fontFamily")).toString().toStdString();
+    if (values.contains(QStringLiteral("fontSize")))
+        data.fontSize = values.value(QStringLiteral("fontSize")).toInt();
+    if (values.contains(QStringLiteral("x")))
+        data.x = values.value(QStringLiteral("x")).toInt();
+    if (values.contains(QStringLiteral("y")))
+        data.y = values.value(QStringLiteral("y")).toInt();
+    if (values.contains(QStringLiteral("color")))
+        data.color = values.value(QStringLiteral("color")).toString().toStdString();
+    if (values.contains(QStringLiteral("bold")))
+        data.bold = values.value(QStringLiteral("bold")).toBool();
+    if (values.contains(QStringLiteral("alignment")))
+        data.alignment = values.value(QStringLiteral("alignment")).toString().toStdString();
+    if (values.contains(QStringLiteral("outlineColor")))
+        data.outlineColor = values.value(QStringLiteral("outlineColor")).toString().toStdString();
+    if (values.contains(QStringLiteral("outlineWidth")))
+        data.outlineWidth = values.value(QStringLiteral("outlineWidth")).toInt();
+    if (values.contains(QStringLiteral("backgroundColor")))
+        data.backgroundColor =
+            values.value(QStringLiteral("backgroundColor")).toString().toStdString();
+    if (data.content.empty()) {
+        setStatus(QStringLiteral("文字 clip の本文を空にはできません"));
+        return false;
+    }
+    found->name = QString::fromStdString(data.content).simplified().left(32).toStdString();
+    QString rasterError;
+    if (renderTextRaster(data, candidate.outputWidth, candidate.outputHeight, rasterError)
+            .isNull()) {
+        setStatus(rasterError);
+        return false;
+    }
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("文字 clip を更新できません: ")))
+        return false;
+    Q_EMIT stateChanged();
+    return true;
+}
+
+QUrl MvmController::textRasterUrl(int index) {
+    if (index < 0 || index >= static_cast<int>(project_.timelineClips.size()) ||
+        project_.timelineClips[static_cast<std::size_t>(index)].kind !=
+            project::TimelineClipKind::Text)
+        return {};
+    const auto& clip = project_.timelineClips[static_cast<std::size_t>(index)];
+    const QString key = QString::number(currentRevision_) + u'-' + QString::fromStdString(clip.id);
+    if (textRasterUrls_.contains(key))
+        return textRasterUrls_.value(key);
+    if (!textRasterDirectory_)
+        textRasterDirectory_ = std::make_unique<QTemporaryDir>();
+    if (!textRasterDirectory_->isValid()) {
+        setStatus(QStringLiteral("文字画像の一時 directory を作成できません"));
+        return {};
+    }
+    QString rasterError;
+    const QImage image =
+        renderTextRaster(clip.text, project_.outputWidth, project_.outputHeight, rasterError);
+    if (image.isNull()) {
+        setStatus(rasterError);
+        return {};
+    }
+    const QString path = textRasterDirectory_->filePath(key + QStringLiteral(".png"));
+    if (!image.save(path, "PNG")) {
+        setStatus(QStringLiteral("文字画像を保存できません"));
+        return {};
+    }
+    const QUrl url = QUrl::fromLocalFile(path);
+    textRasterImages_.insert(key, image);
+    textRasterUrls_.insert(key, url);
+    return url;
+}
+
+bool MvmController::textClipVisible(int index) const {
+    if (index < 0 || index >= static_cast<int>(project_.timelineClips.size()))
+        return false;
+    const auto& clip = project_.timelineClips[static_cast<std::size_t>(index)];
+    if (clip.kind != project::TimelineClipKind::Text ||
+        project_.videoTracks[static_cast<std::size_t>(clip.track.index)].muted)
+        return false;
+    const auto duration = project::timelineClipDuration(project_, clip);
+    return duration.success && playheadFrame_ >= clip.timelineStartFrame &&
+           playheadFrame_ < clip.timelineStartFrame + duration.frame;
+}
+
+QString MvmController::textClipAt(int x, int y) {
+    for (int track = 2; track >= 0; --track) {
+        for (int index = 0; index < static_cast<int>(project_.timelineClips.size()); ++index) {
+            const auto& clip = project_.timelineClips[static_cast<std::size_t>(index)];
+            if (track >= static_cast<int>(project_.videoTracks.size()) ||
+                clip.kind != project::TimelineClipKind::Text || clip.track.index != track ||
+                project_.videoTracks[static_cast<std::size_t>(track)].muted)
+                continue;
+            const auto duration = project::timelineClipDuration(project_, clip);
+            if (!duration.success || playheadFrame_ < clip.timelineStartFrame ||
+                playheadFrame_ >= clip.timelineStartFrame + duration.frame)
+                continue;
+            if (textRasterUrl(index).isEmpty())
+                continue;
+            const QString key =
+                QString::number(currentRevision_) + u'-' + QString::fromStdString(clip.id);
+            const QImage& image = textRasterImages_[key];
+            if (x >= 0 && y >= 0 && x < image.width() && y < image.height() &&
+                qAlpha(image.pixel(x, y)) > 0)
+                return QString::fromStdString(clip.id);
+        }
+    }
+    return {};
+}
+
 bool MvmController::selectClip(int index) {
     if (index < 0 || index >= static_cast<int>(project_.timelineClips.size())) {
         setStatus(QStringLiteral("選択したclipがありません"));
@@ -2343,6 +2547,19 @@ bool MvmController::prepareTimelineFrameForPlayback(int clipIndex, std::int64_t 
 bool MvmController::queuePreparedPlayback(int clipIndex, std::int64_t timelineFrame) {
     if (!prepareTimelineFrameForPlayback(clipIndex, timelineFrame))
         return false;
+    if (!previewVideoAtPlayhead()) {
+        pendingPlaybackStart_ = false;
+        clockOnlyPlayback_ = true;
+        playbackClipIndex_ = clipIndex;
+        playbackBaseFrame_ = timelineFrame;
+        playbackClock_.restart();
+        playbackTimer_.start();
+        playing_ = true;
+        statusText_ = QStringLiteral("timelineを再生しています");
+        Q_EMIT stateChanged();
+        return true;
+    }
+    clockOnlyPlayback_ = false;
     pendingPlaybackStart_ = true;
     pendingPlaybackClipIndex_ = clipIndex;
     pendingPlaybackBaseFrame_ = timelineFrame;
@@ -2419,6 +2636,7 @@ void MvmController::stopPlaybackWithError(QString error) {
                 QStringLiteral("\nPreviewも停止できません: ") + previewErrorText(paused.error());
     }
     playing_ = false;
+    clockOnlyPlayback_ = false;
     shuttleRate_ = 0;
     pendingPlaybackStart_ = false;
     playbackClipIndex_ = -1;
@@ -2523,13 +2741,41 @@ void MvmController::advanceTimelinePlayback() {
     if (frame >= totalTimelineFrames_) {
         playbackTimer_.stop();
         playbackClock_.invalidate();
-        previewEngine_->pause();
+        if (!clockOnlyPlayback_)
+            previewEngine_->pause();
         playheadFrame_ = totalTimelineFrames_;
         playing_ = false;
+        clockOnlyPlayback_ = false;
         shuttleRate_ = 0;
         playbackClipIndex_ = -1;
         statusText_ = QStringLiteral("timeline終端まで再生しました");
         Q_EMIT stateChanged();
+        return;
+    }
+    if (clockOnlyPlayback_) {
+        const auto activeVideo =
+            project::activeClipsAt(project_, project::TrackKind::Video, frame);
+        bool hasVideo = false;
+        for (std::size_t index = 0; index < activeVideo.size(); ++index)
+            hasVideo = hasVideo || (activeVideo[index] &&
+                                    activeVideo[index]->kind != project::TimelineClipKind::Text &&
+                                    !project_.videoTracks[index].muted);
+        if (!hasVideo || frame == playheadFrame_) {
+            if (playheadFrame_ != frame) {
+                playheadFrame_ = frame;
+                Q_EMIT stateChanged();
+            }
+            return;
+        }
+        playbackTimer_.stop();
+        playbackClock_.invalidate();
+        clockOnlyPlayback_ = false;
+        playheadFrame_ = frame;
+        const auto* selected = topVideoClipAt(project_, frame);
+        const int nextClip = selected ? static_cast<int>(selected - project_.timelineClips.data())
+                                      : -1;
+        if (!queuePreparedPlayback(nextClip, frame))
+            stopPlaybackWithError(QStringLiteral("次のclipへ切り替えられません: ") + statusText_);
         return;
     }
     // 次の clip を今の source のまま表示できる (分割直後の連続した clip など) なら、
@@ -2619,14 +2865,17 @@ bool MvmController::pauseTimeline() {
     if (cancelPendingPlaybackForPause())
         return true;
     playbackTimer_.stop();
-    const auto paused = previewEngine_->pause();
-    if (!paused) {
-        stopPlaybackWithError(QStringLiteral("timelineを一時停止できません: ") +
-                              previewErrorText(paused.error()));
-        return false;
+    if (!clockOnlyPlayback_) {
+        const auto paused = previewEngine_->pause();
+        if (!paused) {
+            stopPlaybackWithError(QStringLiteral("timelineを一時停止できません: ") +
+                                  previewErrorText(paused.error()));
+            return false;
+        }
     }
     playbackClock_.invalidate();
     playing_ = false;
+    clockOnlyPlayback_ = false;
     playbackClipIndex_ = -1;
     statusText_ = QStringLiteral("timelineを一時停止しました");
     Q_EMIT stateChanged();
@@ -2890,11 +3139,12 @@ QVariantMap MvmController::previewRateStretch(const QString& clipId, const QStri
         return result;
     QVariantMap clips;
     for (const auto& shown : preview.clips) {
-        clips.insert(QString::fromStdString(shown.clipId),
-                     QVariantMap{{QStringLiteral("startDelta"), qint64{shown.startDelta}},
-                                 {QStringLiteral("endDelta"), qint64{shown.endDelta}},
-                                 {QStringLiteral("speed"), static_cast<double>(shown.speedNum) /
-                                                               static_cast<double>(shown.speedDen)}});
+        clips.insert(
+            QString::fromStdString(shown.clipId),
+            QVariantMap{{QStringLiteral("startDelta"), qint64{shown.startDelta}},
+                        {QStringLiteral("endDelta"), qint64{shown.endDelta}},
+                        {QStringLiteral("speed"), static_cast<double>(shown.speedNum) /
+                                                      static_cast<double>(shown.speedDen)}});
     }
     result.insert(QStringLiteral("delta"), qint64{preview.appliedDelta});
     result.insert(QStringLiteral("clips"), clips);

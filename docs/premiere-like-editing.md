@@ -689,11 +689,9 @@ Main.qml のショートカットは `Instantiator` でこの配列から生成�
 | ハンド / ズーム | H / Z | なし (表示だけを変える) | 実装 |
 | レート調整 | R | `rateStretchTimelineClip` / `clampRateEdit` | 実装 |
 | ペン | P | `previewClipKeyEdit` / `editClipKey` | 実装 |
-| 横書き文字 | T | — | 無効 |
+| 横書き文字 | T | `placeTextClipAt` / `updateTextClip` | 一部実装 |
 
-`[事実]` T はボタンを表示するが選べない。ペンは Project schema 5、レート調整は schema 6 で有効にした。
-
-- 横書き文字: テキスト clip の種別が無く、preview (RHI) と書き出しの両方に描画が要る
+`[事実]` ペンは Project schema 5、レート調整は schema 6、横書き文字は schema 7 で有効にした。
 
 ### 16.1 編集の契約
 
@@ -962,3 +960,26 @@ clip の尺、preview の frame 対応 (§16.7)、decode worker の区間、書�
 
 `[未検証]` 実機のマウス操作、preview の音声を耳で確かめること、1000% での preview の decode 負荷
 (全 frame を decode するので、コマ落ちするかは測っていない)。
+
+### 16.9 横書き文字と Project schema 7
+
+`[事実]` `TimelineClipKind::Text` は素材ファイルを持たず、本文・フォント・画素単位のサイズと位置・
+文字色・太字・揃え・縁取り・背景色を `text` に保存する。schema 7 の各項目は必須で、
+不正値を保存・読込時に拒否する。既定の文字は Meiryo、64 px、白、左揃え、縁取りと背景は透明。
+5 秒相当の frame 数を初期尺とし、分割・トリム・移動・削除・Undo/Redo の Project 編集に乗せる。
+素材位置のない文字 clip のスリップと速度変更は拒否する。
+
+`[事実]` T でモニターの表示矩形をクリックすると、そこを左上とする複数行のエディターを表示する。
+Ctrl+Enter またはフォーカス移動で確定、Esc で破棄する。空文字は作らない。既存の文字をクリックすると
+その場で再編集し、選択ツールでドラッグすると位置を変更する。書式は左パネルで変更する。
+文字の描画とフォント検証は `renderTextRaster` に集約し、preview の Qt scene graph と書き出しの
+MLT `qimage` producer は同じ出力解像度の透過 PNG を使う。再読込時は文字データから再生成する。
+
+`[事実]` 配置は再生ヘッドから上の V1～V3 を順に調べ、clip の全尺が空いている最初のトラックを使う。
+必要なトラックは追加し、V1～V3 が埋まると Project を変更せずに拒否する。書き出しは V1～V3 を
+MLT のトラック順で合成する。固定素材の 3 トラック書き出しと文字だけの書き出しは
+`text_clip_contract` で画素を確認する。
+
+`[未検証]` preview 側は文字画像を `PreviewSurface` の上の Qt scene graph に置いている。
+したがって文字トラックより上に映像トラックがある構成では、preview の重なり順が書き出しと一致しない。
+この構成での preview 画素比較と実機の直接入力操作は未検証。

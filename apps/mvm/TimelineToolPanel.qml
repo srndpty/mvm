@@ -48,8 +48,8 @@ Rectangle {
           hint: "クリック: 拡大 / Alt+クリック: 縮小",
           available: true },
         { tool: "text", group: "text", key: "T", name: "横書き文字ツール",
-          hint: "", available: false,
-          unavailableReason: "テキストclipを描画できないため未対応です" }
+          hint: "プログラムモニターをクリックして入力 / Ctrl+Enter: 確定 / Esc: 取消",
+          available: true }
     ]
 
     signal toolRequested(string tool)

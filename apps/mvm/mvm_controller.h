@@ -23,6 +23,8 @@
 
 #include <QAbstractItemModel>
 #include <QElapsedTimer>
+#include <QHash>
+#include <QImage>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -31,6 +33,8 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
+
+class QTemporaryDir;
 
 namespace mvm::app {
 
@@ -46,6 +50,8 @@ class MvmController : public QObject {
     Q_PROPERTY(QString statusText READ statusText NOTIFY stateChanged)
     Q_PROPERTY(QString currentClipName READ currentClipName NOTIFY stateChanged)
     Q_PROPERTY(QString currentClipPath READ currentClipPath NOTIFY stateChanged)
+    Q_PROPERTY(QVariantMap selectedTextClip READ selectedTextClip NOTIFY stateChanged)
+    Q_PROPERTY(bool previewVideoAtPlayhead READ previewVideoAtPlayhead NOTIFY stateChanged)
     Q_PROPERTY(bool hasCurrentClip READ hasCurrentClip NOTIFY stateChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY stateChanged)
     Q_PROPERTY(bool previewReady READ previewReady NOTIFY stateChanged)
@@ -238,6 +244,14 @@ public:
     Q_INVOKABLE bool addManimToTimeline();
     Q_INVOKABLE bool addVideoClip(const QUrl& fileUrl);
     Q_INVOKABLE bool addAudioClip(const QUrl& fileUrl);
+    Q_INVOKABLE bool createTextClip(const QString& content, int x, int y);
+    Q_INVOKABLE bool updateTextClip(const QString& clipId, const QVariantMap& values);
+    Q_INVOKABLE QVariantMap textClipData(const QString& clipId) const;
+    Q_INVOKABLE QString textClipAt(int x, int y);
+    Q_INVOKABLE QUrl textRasterUrl(int index);
+    Q_INVOKABLE bool textClipVisible(int index) const;
+    QVariantMap selectedTextClip() const;
+    bool previewVideoAtPlayhead() const;
     Q_INVOKABLE bool selectClip(int index);
     // linked=false (Alt+クリック) ならリンク相手を選択に含めない。
     Q_INVOKABLE bool selectTimelineClip(const QString& clipId, qint64 frame, bool linked);
@@ -547,6 +561,9 @@ private:
     std::int64_t pendingSourceFrame_ = 0;
     int currentClipIndex_ = -1;
     std::vector<std::string> selectedClipIds_;
+    std::unique_ptr<QTemporaryDir> textRasterDirectory_;
+    QHash<QString, QImage> textRasterImages_;
+    QHash<QString, QUrl> textRasterUrls_;
 
     struct UndoEntry {
         project::Project project;
@@ -600,6 +617,7 @@ private:
     bool previewReady_ = false;
     bool shutdownStarted_ = false;
     bool playing_ = false;
+    bool clockOnlyPlayback_ = false;
     int shuttleRate_ = 0;
     bool shuttleSeeking_ = false;
     std::int64_t shuttleBaseFrame_ = 0;

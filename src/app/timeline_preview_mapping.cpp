@@ -24,6 +24,8 @@ TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& proj
         const project::TimelineClip* clip = active[index];
         if (!clip)
             continue;
+        if (clip->kind == project::TimelineClipKind::Text)
+            continue;
         // mute した video track は「黒」ではなく layer から外す。
         if (project.videoTracks[index].muted)
             continue;

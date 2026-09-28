@@ -79,6 +79,8 @@ const char* timelineClipKindName(TimelineClipKind kind) {
         return "manim";
     case TimelineClipKind::Audio:
         return "audio";
+    case TimelineClipKind::Text:
+        return "text";
     }
     return "";
 }

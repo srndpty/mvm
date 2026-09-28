@@ -15,7 +15,7 @@
 #include <framework/mlt.h>
 
 #define MVM_EXPORT_MAX_CLIPS 64
-#define MVM_EXPORT_MAX_TRACTOR_TRACKS (MVM_EXPORT_MAX_CLIPS + 2)
+#define MVM_EXPORT_MAX_TRACTOR_TRACKS (MVM_EXPORT_MAX_CLIPS + 3)
 
 static void set_err(char* err, size_t n, const char* fmt, ...) {
     if (!err || !n)
@@ -82,6 +82,8 @@ static int service_exists(mlt_properties list, const char* name) {
  * (resample) が付かない。timewarp は audio の sample rate を変えて速度を表すため、正規化が
  * 無いと tractor の mix で伸縮されずに元の速さで鳴る (§16.8 で実測)。 */
 static mlt_producer open_clip_producer(mlt_profile profile, const MvmExportClip* clip) {
+    if (clip->is_text)
+        return mlt_factory_producer(profile, "qimage", clip->path);
     if (clip->speed_num == 1 && clip->speed_den == 1)
         return mlt_factory_producer(profile, NULL, clip->path);
     size_t size = strlen(clip->path) + 64;
@@ -260,8 +262,9 @@ static int plant_export_overlay_affine(mlt_profile profile, mlt_tractor tractor,
             return 1;
         }
     }
-    mlt_transition_set_tracks(transition, 0, 1);
-    if (mlt_field_plant_transition(mlt_tractor_field(tractor), transition, 0, 1) != 0) {
+    mlt_transition_set_tracks(transition, 0, clip->video_track);
+    if (mlt_field_plant_transition(mlt_tractor_field(tractor), transition, 0, clip->video_track) !=
+        0) {
         mlt_transition_close(transition);
         set_err(err, err_size, "V2 affine transitionをV1/V2間へ配置できません");
         return 1;
@@ -329,8 +332,8 @@ static int attach_tractor_clip_filters(mlt_profile profile, mlt_producer cut,
         return attach_export_crop(profile, cut, clip, err, err_size) != 0 ||
                attach_export_affine(profile, cut, clip, filter_in, clip->timeline_duration_frames,
                                     err, err_size) != 0;
-    /* V2へopaque-black affine filterをattachしてはならない。cropだけをcutへ置く。 */
-    if (track == 1)
+    /* 上位映像trackへopaque-black affine filterをattachしない。cropだけをcutへ置く。 */
+    if (track > 0 && track < 3)
         return attach_export_crop(profile, cut, clip, err, err_size);
     return 0;
 }
@@ -661,6 +664,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     mlt_tractor tractor = NULL;
     mlt_playlist playlists[MVM_EXPORT_MAX_TRACTOR_TRACKS] = {NULL};
     int audio_tracks[MVM_EXPORT_MAX_TRACTOR_TRACKS] = {0};
+    int video_playlist_count = 2;
     int playlist_count = 2;
     mlt_producer producers[MVM_EXPORT_MAX_CLIPS] = {NULL};
     mlt_producer* cuts = NULL;
@@ -684,8 +688,10 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     }
     for (int index = 0; index < clip_count; ++index) {
         const MvmExportClip* clip = &clips[index];
+        if (!clip->is_audio && clip->video_track == 2)
+            video_playlist_count = 3;
         if (!clip->path || !clip->path[0] || !file_exists_utf8(clip->path) ||
-            (!clip->is_audio && clip->video_track != 0 && clip->video_track != 1) ||
+            (!clip->is_audio && (clip->video_track < 0 || clip->video_track > 2)) ||
             clip->timeline_start_frame < 0 || clip->timeline_duration_frames <= 0 ||
             clip->timeline_start_frame > total_duration - clip->timeline_duration_frames ||
             clip->source_fps_num <= 0 || clip->source_fps_den <= 0 ||
@@ -724,7 +730,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
         if (!clip->is_audio)
             cursors[clip->video_track] =
                 clip->timeline_start_frame + clip->timeline_duration_frames;
-        if (!clip->is_audio && (clip->video_track == 1 || clip->effects_enabled) &&
+        if (!clip->is_audio && (clip->video_track > 0 || clip->effects_enabled) &&
             (clip->opacity_keyframe_count <= 0 || !clip->opacity_keyframes ||
              clip->rect_width <= 0.0 || clip->rect_height <= 0.0)) {
             set_err(err, err_size, "clip %dのeffect/transition mappingが不正です", index);
@@ -740,7 +746,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
                 return 1;
             }
         }
-        if (!clip->is_audio && clip->video_track == 1 &&
+        if (!clip->is_audio && clip->video_track > 0 &&
             (clip->opacity_keyframes[0].local_frame != 0 ||
              clip->opacity_keyframes[clip->opacity_keyframe_count - 1].local_frame !=
                  clip->timeline_duration_frames - 1)) {
@@ -782,6 +788,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             !service_exists(mlt_repository_filters(repo), "affine") ||
             !service_exists(mlt_repository_transitions(repo), "affine") ||
             !service_exists(mlt_repository_transitions(repo), "mix") ||
+            !service_exists(mlt_repository_producers(repo), "qimage") ||
             (clips_need_timewarp(clips, clip_count) &&
              !service_exists(mlt_repository_producers(repo), "timewarp"))) {
             set_err(err, err_size,
@@ -791,14 +798,17 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     }
 
     tractor = mlt_tractor_new();
-    playlists[0] = mlt_playlist_new(profile);
-    playlists[1] = mlt_playlist_new(profile);
-    if (!tractor || !playlists[0] || !playlists[1]) {
-        set_err(err, err_size, "tractorまたはV1/V2 playlistを作れません");
-        goto cleanup;
+    playlist_count = video_playlist_count;
+    for (int track = 0; track < video_playlist_count; ++track) {
+        playlists[track] = mlt_playlist_new(profile);
+        if (!tractor || !playlists[track]) {
+            set_err(err, err_size, "tractorまたは映像 playlistを作れません");
+            goto cleanup;
+        }
     }
     cursors[0] = 0;
     cursors[1] = 0;
+    cursors[2] = 0;
     for (int index = 0; index < clip_count; ++index) {
         const MvmExportClip* clip = &clips[index];
         int track = clip->video_track;
@@ -906,14 +916,14 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
         }
     }
     for (int index = 0; index < clip_count; ++index) {
-        if (clips[index].is_audio || clips[index].video_track != 1)
+        if (clips[index].is_audio || clips[index].video_track == 0)
             continue;
         if (plant_export_overlay_affine(profile, tractor, &clips[index], err, err_size) != 0)
             goto cleanup;
         if (out)
             ++out->transition_count;
     }
-    for (int track = 2; track < playlist_count; ++track) {
+    for (int track = video_playlist_count; track < playlist_count; ++track) {
         mlt_transition mix = mlt_factory_transition(profile, "mix", NULL);
         if (!mix) {
             set_err(err, err_size, "audio track %d用mix transitionを作れません", track);
@@ -944,7 +954,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             set_err(err, err_size, "avformat consumerを作れません");
             goto cleanup;
         }
-        configure_mp4_consumer(consumer, out_path, spec, playlist_count > 2);
+        configure_mp4_consumer(consumer, out_path, spec, playlist_count > video_playlist_count);
         if (mlt_consumer_connect(consumer, MLT_PRODUCER_SERVICE(output)) != 0 ||
             mlt_consumer_start(consumer) != 0) {
             set_err(err, err_size, "tractor consumerを開始できません");
@@ -983,7 +993,8 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
         MvmMltProbeResult probe;
         if (!file_size_utf8(out_path, &size) || size == 0 ||
             mvm_mlt_probe_file(out_path, &probe) != 0 || !probe.ok || !probe.has_video ||
-            probe.frame_count <= 0 || (probe.has_audio != 0) != (playlist_count > 2)) {
+            probe.frame_count <= 0 ||
+            (probe.has_audio != 0) != (playlist_count > video_playlist_count)) {
             set_err(err, err_size, "tractor出力を検証できません");
             goto cleanup;
         }

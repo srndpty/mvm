@@ -3,6 +3,7 @@
 #include "core/source_frame_mapping.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <limits>
 #include <numeric>
@@ -14,6 +15,22 @@ namespace mvm::project {
 namespace {
 
 __extension__ using WideInteger = __int128;
+
+bool validTextColor(const std::string& color) {
+    if (color.size() != 9 || color[0] != '#')
+        return false;
+    return std::all_of(color.begin() + 1, color.end(),
+                       [](unsigned char digit) { return std::isxdigit(digit) != 0; });
+}
+
+bool validTextData(const Project& project, const TextClipData& text) {
+    return !text.content.empty() && !text.fontFamily.empty() && text.fontSize >= 1 &&
+           text.fontSize <= project.outputHeight && text.x >= 0 && text.x < project.outputWidth &&
+           text.y >= 0 && text.y < project.outputHeight &&
+           (text.alignment == "left" || text.alignment == "center" || text.alignment == "right") &&
+           text.outlineWidth >= 0 && text.outlineWidth <= 32 && validTextColor(text.color) &&
+           validTextColor(text.outlineColor) && validTextColor(text.backgroundColor);
+}
 
 bool validIndex(const Project& project, int index) {
     return index >= 0 && index < static_cast<int>(project.timelineClips.size());
@@ -78,6 +95,37 @@ bool trimClipBoundary(const Project& project, TimelineClip& clip, TrimEdge edge,
     if (!originalDuration.success) {
         error = originalDuration.error;
         return false;
+    }
+    if (clip.kind == TimelineClipKind::Text) {
+        const std::int64_t originalStart = clip.timelineStartFrame;
+        if (originalStart > std::numeric_limits<std::int64_t>::max() - originalDuration.frame) {
+            error = "text clip の終端が範囲外です";
+            return false;
+        }
+        const std::int64_t originalEnd = originalStart + originalDuration.frame;
+        const WideInteger newStartWide =
+            edge == TrimEdge::Left ? static_cast<WideInteger>(originalStart) + projectFrameDelta
+                                   : originalStart;
+        const WideInteger newEndWide =
+            edge == TrimEdge::Right ? static_cast<WideInteger>(originalEnd) + projectFrameDelta
+                                    : originalEnd;
+        if (newStartWide < 0 || newEndWide <= newStartWide ||
+            newEndWide > std::numeric_limits<std::int64_t>::max() ||
+            newEndWide - newStartWide > std::numeric_limits<std::int64_t>::max() / 2) {
+            error = "text clip の trim 範囲が不正です";
+            return false;
+        }
+        const auto newStart = static_cast<std::int64_t>(newStartWide);
+        const auto newEnd = static_cast<std::int64_t>(newEndWide);
+        clip.timelineStartFrame = newStart;
+        clip.sourceFpsNum = project.timelineFpsNum;
+        clip.sourceFpsDen = project.timelineFpsDen;
+        clip.sourceInFrame = 0;
+        clip.sourceOutFrame = newEnd - newStart;
+        clip.sourceFrameCount = clip.sourceOutFrame;
+        reframeClipKeys(clip.effects.opacityKeys, originalDuration.frame, clip.sourceOutFrame,
+                        newStart - originalStart);
+        return true;
     }
     const std::int64_t originalStart = clip.timelineStartFrame;
     const std::int64_t original = edge == TrimEdge::Left ? clip.sourceInFrame : clip.sourceOutFrame;
@@ -326,8 +374,19 @@ TimelineValidationResult validateTimeline(const Project& project) {
             result.error = "timeline clip ID が空または重複しています";
             return result;
         }
-        if (clip.mediaPath.empty() || clip.name.empty()) {
+        if (((clip.kind == TimelineClipKind::Text) != clip.mediaPath.empty()) ||
+            clip.name.empty()) {
             result.error = "timeline clip の path または name が空です";
+            return result;
+        }
+        if ((clip.kind == TimelineClipKind::Text && !validTextData(project, clip.text)) ||
+            (clip.kind != TimelineClipKind::Text && clip.text != TextClipData{})) {
+            result.error = "text clip のデータが不正です: " + clip.name;
+            return result;
+        }
+        if (clip.kind == TimelineClipKind::Text &&
+            (clip.speedNum != 1 || clip.speedDen != 1 || !clip.linkGroupId.empty())) {
+            result.error = "text clip の速度またはリンクが不正です: " + clip.name;
             return result;
         }
         if (clip.sourceFpsNum <= 0 || clip.sourceFpsDen <= 0 || clip.sourceFrameCount <= 0 ||
@@ -648,6 +707,40 @@ TimelineEditResult placeTimelineClipAt(Project& project, TimelineClip clip, Trac
     return result;
 }
 
+TimelineEditResult placeTextClipAt(Project& project, TimelineClip clip,
+                                   std::int64_t timelineStartFrame) {
+    TimelineEditResult result;
+    if (clip.kind != TimelineClipKind::Text || timelineStartFrame < 0) {
+        result.error = "配置する text clip または開始位置が不正です";
+        return result;
+    }
+    Project candidate = project;
+    int highestActive = -1;
+    const auto active = activeClipsAt(candidate, TrackKind::Video, timelineStartFrame);
+    for (std::size_t index = 0; index < active.size(); ++index)
+        if (active[index])
+            highestActive = static_cast<int>(index);
+    for (int trackIndex = highestActive + 1; trackIndex < 3; ++trackIndex) {
+        while (trackIndex >= static_cast<int>(candidate.videoTracks.size())) {
+            const auto added = addTrack(candidate, TrackKind::Video);
+            if (!added.success) {
+                result.error = added.error;
+                return result;
+            }
+        }
+        if (candidate.videoTracks[static_cast<std::size_t>(trackIndex)].muted)
+            continue;
+        result = placeTimelineClipAt(candidate, clip, {TrackKind::Video, trackIndex},
+                                     timelineStartFrame);
+        if (result.success) {
+            project = std::move(candidate);
+            return result;
+        }
+    }
+    result.error = "V1～V3に text clip を置ける空きトラックがありません";
+    return result;
+}
+
 TimelineEditResult placeLinkedAvPairAt(Project& project, TimelineClip video, TrackRef videoTrack,
                                        TimelineClip audio, TrackRef audioTrack,
                                        std::int64_t timelineStartFrame) {
@@ -887,6 +980,22 @@ namespace {
 // 素材の範囲を超えず、clip の尺を 1 frame 以上に保つ。
 bool edgeRange(const Project& project, const TimelineClip& clip, TrimEdge edge, std::int64_t& lower,
                std::int64_t& upper, std::string& error) {
+    if (clip.kind == TimelineClipKind::Text) {
+        const auto duration = timelineClipDuration(project, clip);
+        if (!duration.success) {
+            error = duration.error;
+            return false;
+        }
+        if (edge == TrimEdge::Left) {
+            lower = -clip.timelineStartFrame;
+            upper = duration.frame - 1;
+        } else {
+            lower = -(duration.frame - 1);
+            upper = std::numeric_limits<std::int64_t>::max() / 2 - clip.timelineStartFrame -
+                    duration.frame;
+        }
+        return true;
+    }
     const auto in = clipSourceBoundaryToTimeline(clip, clip.sourceInFrame, project.timelineFpsNum,
                                                  project.timelineFpsDen);
     const auto out = clipSourceBoundaryToTimeline(clip, clip.sourceOutFrame, project.timelineFpsNum,
@@ -1222,6 +1331,10 @@ TimelineEditResult slipTimelineClip(Project& project, const std::string& clipId,
         result.error = "スリップする timeline clip がありません";
         return result;
     }
+    if (candidate.timelineClips[static_cast<std::size_t>(index)].kind == TimelineClipKind::Text) {
+        result.error = "text clip は素材位置を持たないためスリップできません";
+        return result;
+    }
     const std::vector<int> targets = editTargets(candidate, index, linkMode);
     // リンク相手と同じ量だけずらさないと同期が崩れる。全員がずらせる範囲へ先に丸める。
     std::int64_t lower = std::numeric_limits<std::int64_t>::min();
@@ -1435,6 +1548,9 @@ TimelineEditResult appendManimTimelineClipAt(Project& project, const ManimAsset&
                                        timelineStartFrame,
                                        {},
                                        track,
+                                       {},
+                                       1,
+                                       1,
                                        {}});
     const auto valid = validateTimeline(candidate);
     if (!valid.success) {
@@ -1824,6 +1940,10 @@ TimelineFrameResult clampRateEdit(const Project& project, const std::string& cli
     const int index = indexOfId(project, clipId);
     if (!validIndex(project, index)) {
         result.error = "レート調整する timeline clip がありません";
+        return result;
+    }
+    if (project.timelineClips[static_cast<std::size_t>(index)].kind == TimelineClipKind::Text) {
+        result.error = "text clip の尺は trim で変更してください";
         return result;
     }
     const auto& clip = project.timelineClips[static_cast<std::size_t>(index)];

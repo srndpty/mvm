@@ -130,6 +130,10 @@ TimelineEditResult appendTimelineClip(Project& project, TimelineClip clip, Track
 // 指定位置へ配置する。既存 clip と重なる場合は fail-closed にする。
 TimelineEditResult placeTimelineClipAt(Project& project, TimelineClip clip, TrackRef track,
                                        std::int64_t timelineStartFrame);
+// 再生ヘッドで最上位の active clip より上の非 mute 映像 track に文字を置く。
+// V1～V3 に空きが無ければ Project を変えずに失敗する。
+TimelineEditResult placeTextClipAt(Project& project, TimelineClip clip,
+                                   std::int64_t timelineStartFrame);
 // link済みvideo/audioを一つのcandidateへ追加し、Project invariantを満たした状態だけをcommitする。
 TimelineEditResult placeLinkedAvPairAt(Project& project, TimelineClip video, TrackRef videoTrack,
                                        TimelineClip audio, TrackRef audioTrack,

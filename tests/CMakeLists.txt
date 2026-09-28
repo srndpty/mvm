@@ -82,6 +82,17 @@ set_tests_properties(m7b_3_product_export_architecture PROPERTIES TIMEOUT 120)
 
 # --- M5: minimal timeline editing ------------------------------------------
 add_executable(mvm_test_timeline_edit harness/test_timeline_edit.cpp)
+add_executable(mvm_test_text_clip harness/test_text_clip.cpp)
+target_link_libraries(mvm_test_text_clip PRIVATE
+    mvm::project mvm::text_raster mvm::timeline_export mvm::timeline_preview_mapping
+    mvm::mlt mvm::warnings)
+target_compile_definitions(mvm_test_text_clip PRIVATE ${MVM_MLT_PATH_DEFS})
+target_compile_definitions(mvm_test_text_clip PRIVATE
+    MVM_TEXT_TEST_VIDEO="${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4")
+add_test(NAME text_clip_contract COMMAND mvm_test_text_clip)
+set_tests_properties(text_clip_contract PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
 target_link_libraries(mvm_test_timeline_edit PRIVATE
     mvm::project mvm::util mvm::warnings)
 add_test(NAME m5_timeline_edit_focused

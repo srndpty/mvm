@@ -221,6 +221,27 @@ ApplicationWindow {
     property real leftPanelWidth: 340
     // タイムラインの現在のツール。取りうる値は TimelineToolPanel.tools の tool。
     property string timelineTool: "select"
+    property string editingTextClipId: ""
+    property bool textEditing: false
+    property real textEditorX: 0
+    property real textEditorY: 0
+
+    function finishTextEditing(save) {
+        if (!root.textEditing)
+            return;
+        const content = textEditor.text;
+        const clipId = root.editingTextClipId;
+        root.textEditing = false;
+        root.editingTextClipId = "";
+        if (!save || content.trim().length === 0)
+            return;
+        if (clipId.length > 0)
+            root.mvmController.updateTextClip(clipId, {content: content});
+        else
+            root.mvmController.createTextClip(content,
+                Math.round(root.textEditorX * root.mvmController.outputWidth / previewHost.width),
+                Math.round(root.textEditorY * root.mvmController.outputHeight / previewHost.height));
+    }
     // 文字入力・選択肢・popup (dialog / menu) に focus がある間は、window 全体の
     // 単一キーと矢印の shortcut にキーを奪わせない。個々の編集状態 (名前変更中など) を
     // 並べず、focus を持つ control の種類だけで決める。
@@ -605,9 +626,16 @@ ApplicationWindow {
                                 elide: Text.ElideMiddle
                             }
 
+                            TextClipInspector {
+                                Layout.fillWidth: true
+                                visible: root.mvmController.selectedTextClip.clipId !== undefined
+                                mvmController: root.mvmController
+                            }
+
                             GridLayout {
                                 id: inspectorGrid
                                 Layout.fillWidth: true
+                                visible: root.mvmController.selectedTextClip.clipId === undefined
                                 columns: 2
                                 columnSpacing: 6
                                 rowSpacing: 4
@@ -838,6 +866,143 @@ ApplicationWindow {
                             id: previewSurface
                             objectName: "previewSurface"
                             anchors.fill: parent
+                            visible: root.mvmController.previewVideoAtPlayhead
+                        }
+
+                        Repeater {
+                            model: root.mvmController.timelineModel
+                            delegate: Image {
+                                id: textLayer
+                                required property int index
+                                required property string clipId
+                                required property string clipKind
+                                required property int trackIndex
+                                required property var timelineStartFrame
+                                required property var timelineDurationFrames
+                                property real dragOffsetX: 0
+                                property real dragOffsetY: 0
+                                anchors.fill: previewHost
+                                z: trackIndex + 1
+                                transform: Translate {
+                                    x: textLayer.dragOffsetX
+                                    y: textLayer.dragOffsetY
+                                }
+                                source: clipKind === "text"
+                                        ? root.mvmController.textRasterUrl(index) : ""
+                                fillMode: Image.Stretch
+                                visible: clipKind === "text"
+                                         && (!root.textEditing || root.editingTextClipId !== clipId)
+                                         && root.mvmController.playheadFrame >= timelineStartFrame
+                                         && root.mvmController.textClipVisible(index)
+                                MouseArea {
+                                    anchors.fill: parent
+                                    enabled: root.timelineTool === "select" && textLayer.visible
+                                    cursorShape: Qt.OpenHandCursor
+                                    property bool draggingText: false
+                                    property real startX: 0
+                                    property real startY: 0
+                                    property int originalX: 0
+                                    property int originalY: 0
+                                    onPressed: mouse => {
+                                        const pixelX = Math.floor(mouse.x * root.mvmController.outputWidth / width);
+                                        const pixelY = Math.floor(mouse.y * root.mvmController.outputHeight / height);
+                                        if (root.mvmController.textClipAt(pixelX, pixelY) !== textLayer.clipId) {
+                                            mouse.accepted = false;
+                                            return;
+                                        }
+                                        const data = root.mvmController.textClipData(textLayer.clipId);
+                                        originalX = data.x;
+                                        originalY = data.y;
+                                        startX = mouse.x;
+                                        startY = mouse.y;
+                                        draggingText = true;
+                                        root.mvmController.selectClip(textLayer.index);
+                                    }
+                                    onPositionChanged: mouse => {
+                                        if (!draggingText)
+                                            return;
+                                        textLayer.dragOffsetX = mouse.x - startX;
+                                        textLayer.dragOffsetY = mouse.y - startY;
+                                    }
+                                    onReleased: {
+                                        if (!draggingText)
+                                            return;
+                                        draggingText = false;
+                                        const x = Math.max(0, Math.min(root.mvmController.outputWidth - 1,
+                                            Math.round(originalX + textLayer.dragOffsetX
+                                                       * root.mvmController.outputWidth / width)));
+                                        const y = Math.max(0, Math.min(root.mvmController.outputHeight - 1,
+                                            Math.round(originalY + textLayer.dragOffsetY
+                                                       * root.mvmController.outputHeight / height)));
+                                        textLayer.dragOffsetX = 0;
+                                        textLayer.dragOffsetY = 0;
+                                        root.mvmController.updateTextClip(textLayer.clipId, {x: x, y: y});
+                                    }
+                                    onCanceled: {
+                                        draggingText = false;
+                                        textLayer.dragOffsetX = 0;
+                                        textLayer.dragOffsetY = 0;
+                                    }
+                                }
+                            }
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            z: 8
+                            enabled: root.timelineTool === "text" && !root.mvmController.busy
+                            cursorShape: Qt.IBeamCursor
+                            onClicked: mouse => {
+                                if (root.textEditing)
+                                    root.finishTextEditing(true);
+                                const pixelX = Math.floor(mouse.x * root.mvmController.outputWidth / width);
+                                const pixelY = Math.floor(mouse.y * root.mvmController.outputHeight / height);
+                                const hit = root.mvmController.textClipAt(pixelX, pixelY);
+                                const data = hit.length > 0 ? root.mvmController.textClipData(hit) : null;
+                                root.editingTextClipId = hit;
+                                root.textEditorX = data ? data.x * width / root.mvmController.outputWidth : mouse.x;
+                                root.textEditorY = data ? data.y * height / root.mvmController.outputHeight : mouse.y;
+                                textEditor.text = data ? data.content : "";
+                                root.textEditing = true;
+                                textEditor.forceActiveFocus();
+                            }
+                        }
+
+                        Rectangle {
+                            id: textEditorFrame
+                            z: 9
+                            visible: root.textEditing
+                            x: root.textEditorX
+                            y: root.textEditorY
+                            width: Math.max(80, previewHost.width - x)
+                            height: Math.max(40, textEditor.contentHeight + 10)
+                            color: "#66000000"
+                            border.color: "#75baff"
+                            TextEdit {
+                                id: textEditor
+                                anchors.fill: parent
+                                anchors.margins: 5
+                                color: "white"
+                                font.family: root.editingTextClipId.length > 0
+                                             ? (root.mvmController.textClipData(root.editingTextClipId).fontFamily || "Meiryo")
+                                             : "Meiryo"
+                                font.pixelSize: Math.max(8, 64 * previewHost.height /
+                                                         root.mvmController.outputHeight)
+                                wrapMode: TextEdit.NoWrap
+                                selectByMouse: true
+                                Keys.onEscapePressed: root.finishTextEditing(false)
+                                Keys.onPressed: event => {
+                                    if ((event.modifiers & Qt.ControlModifier)
+                                            && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter)) {
+                                        root.finishTextEditing(true);
+                                        event.accepted = true;
+                                    }
+                                }
+                                onActiveFocusChanged: {
+                                    if (!activeFocus && root.textEditing)
+                                        root.finishTextEditing(true);
+                                }
+                            }
                         }
                     }
                 }
