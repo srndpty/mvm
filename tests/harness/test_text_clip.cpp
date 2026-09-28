@@ -270,6 +270,39 @@ int main(int argc, char** argv) {
         require(!mvm::app::textPresetPlacement(telop, 320, 240, "top").success,
                 "未知の揃えを受理しました");
     }
-    std::puts("文字 clip の保存・描画・編集・定位置を確認しました");
+    // 文字は V1～V3 だけ。V4 を足して通常の移動で持っていこうとしても Project を変えない。
+    {
+        auto moved = project;
+        require(mvm::project::addTrack(moved, mvm::project::TrackKind::Video).success,
+                "V4 を追加できません");
+        const auto before = moved;
+        const auto toV4 =
+            mvm::project::moveClip(moved, "text-1", {mvm::project::TrackKind::Video, 3}, 0);
+        require(!toV4.success && moved == before, "文字 clip を V4 へ移動できました");
+        // 対照: 同じ Project で V2 への移動は通る。
+        const auto toV2 =
+            mvm::project::moveClip(moved, "text-1", {mvm::project::TrackKind::Video, 1}, 0);
+        require(toV2.success, "対照: 文字 clip を V2 へ移動できません");
+        auto direct = before;
+        direct.timelineClips[0].track.index = 3;
+        require(!mvm::project::validateTimeline(direct).success, "V4 の文字 clip を受理しました");
+    }
+    // 文字の effect は不透明度 (値・key・fade) だけ。書き出しでだけ効く effect を持たせない。
+    {
+        auto withOpacity = project;
+        withOpacity.timelineClips[0].effects.opacityKeys = {{0, 100.0}, {15, 0.0}};
+        withOpacity.timelineClips[0].effects.fadeInFrames = 5;
+        require(mvm::project::validateTimeline(withOpacity).success,
+                "文字 clip の不透明度 key / fade を拒否しました");
+        auto withScale = project;
+        withScale.timelineClips[0].effects.scalePercent = 150.0;
+        require(!mvm::project::validateTimeline(withScale).success,
+                "文字 clip の拡大率を受理しました");
+        auto withPosition = project;
+        withPosition.timelineClips[0].effects.positionXPercent = 10.0;
+        require(!mvm::project::validateTimeline(withPosition).success,
+                "文字 clip の位置 effect を受理しました");
+    }
+    std::puts("文字 clip の保存・描画・編集・定位置・track と effect の制約を確認しました");
     return 0;
 }

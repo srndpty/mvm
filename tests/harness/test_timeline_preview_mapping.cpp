@@ -1,6 +1,7 @@
 #include "app/timeline_preview_mapping.h"
 #include "project/timeline_edit.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -212,21 +213,51 @@ void testTextLayerLimit() {
                 "V3/V4を追加できません");
     project.timelineClips = {clip("v1", 0, 0, 0, 100), clip("v2", 1, 0, 0, 100),
                              textClip("t3", 2, 100)};
+    require(mvm::project::validateTimeline(project).success, "前提: V3 文字の Project が不正です");
     const auto three = mvm::app::mapTimelinePreviewFrame(project, 10);
     require(three.success && three.layers.size() == 2 && three.textLayers.size() == 1,
             "映像 2 本と文字 1 枚の 3 layer を拒否しました");
 
-    project.timelineClips.push_back(textClip("t4", 3, 100));
+    // 文字は V1～V3 だけなので、4 枚目は映像を上の track に置いて作る。
+    project.timelineClips = {textClip("t1", 0, 100), textClip("t2", 1, 100),
+                             clip("v3", 2, 0, 0, 100), clip("v4", 3, 0, 0, 100)};
+    require(mvm::project::validateTimeline(project).success, "前提: 4 track の Project が不正です");
     const auto four = mvm::app::mapTimelinePreviewFrame(project, 10);
     require(!four.success && four.layers.empty() && four.textLayers.empty(),
             "合成 layer の上限を超えた frame を成功にしました");
 
     // 映像の無い frame では文字は UI 側が重ねるので、枚数で拒否しない。
-    project.timelineClips = {textClip("t1", 0, 100), textClip("t2", 1, 100), textClip("t3", 2, 100),
-                             textClip("t4", 3, 100)};
+    project.timelineClips = {textClip("t1", 0, 100), textClip("t2", 1, 100),
+                             textClip("t3", 2, 100)};
+    require(mvm::project::validateTimeline(project).success,
+            "前提: 文字 3 枚の Project が不正です");
     const auto textOnly = mvm::app::mapTimelinePreviewFrame(project, 10);
-    require(textOnly.success && textOnly.layers.empty() && textOnly.textLayers.size() == 4,
+    require(textOnly.success && textOnly.layers.empty() && textOnly.textLayers.size() == 3,
             "映像の無い frame の文字を拒否しました");
+}
+
+// 文字の不透明度は書き出しと同じ effects (値・key・fade) を frame ごとに評価する。
+// 期待値は key の直線補間を手で計算した値。
+void testTextLayerOpacity() {
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    auto text = textClip("t1", 1, 60);
+    text.timelineStartFrame = 10;
+    text.effects.opacityKeys = {{0, 100.0}, {20, 0.0}};
+    project.timelineClips = {clip("v1", 0, 0, 0, 100), text};
+    require(mvm::project::validateTimeline(project).success,
+            "前提: opacity key 付き文字が不正です");
+    const auto at = [&](std::int64_t frame) {
+        const auto mapped = mvm::app::mapTimelinePreviewFrame(project, frame);
+        require(mapped.success && mapped.textLayers.size() == 1, "文字を取り出せません");
+        return mapped.textLayers[0].opacity;
+    };
+    require(std::abs(at(10) - 1.0) < 1e-9, "key 0 (100%) の不透明度が 1 ではありません");
+    require(std::abs(at(20) - 0.5) < 1e-9, "key の中間 (50%) を補間していません");
+    require(std::abs(at(30)) < 1e-9, "key 20 (0%) の不透明度が 0 ではありません");
+
+    // 対照: key の無い文字は 1。
+    project.timelineClips[1].effects.opacityKeys.clear();
+    require(std::abs(at(20) - 1.0) < 1e-9, "対照: key の無い文字の不透明度が 1 ではありません");
 }
 
 // 重なったaudioをA1から順にすべてmix対象へ載せる。
@@ -414,6 +445,7 @@ int main() {
     testLayerLimit();
     testTextLayerStack();
     testTextLayerLimit();
+    testTextLayerOpacity();
     testAudioOverlapSelectsA1();
     testCrossRateVideoMapping();
 

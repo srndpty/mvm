@@ -389,6 +389,26 @@ TimelineValidationResult validateTimeline(const Project& project) {
             result.error = "text clip の速度またはリンクが不正です: " + clip.name;
             return result;
         }
+        // 文字を扱える track は、配置 (placeTextClipAt)・書き出し・preview の文字の hit-test が
+        // すべて V1～V3 である。ここで Project の不変条件にして、移動などで V4 以上へ
+        // 出た Project を作らせない。広げるときはそれらをまとめて一般化する。
+        if (clip.kind == TimelineClipKind::Text && clip.track.index >= kMaxTextVideoTracks) {
+            result.error = "text clip は V1～V3 にだけ置けます: " + clip.name;
+            return result;
+        }
+        // 文字の effect は不透明度 (値・key・fade) だけを扱う。位置・拡大・回転・切り抜きと
+        // 音量は、書き出しでは効くが preview の静止画 layer では描けないので持たせない。
+        if (clip.kind == TimelineClipKind::Text) {
+            ClipEffects opacityOnly;
+            opacityOnly.opacityPercent = clip.effects.opacityPercent;
+            opacityOnly.opacityKeys = clip.effects.opacityKeys;
+            opacityOnly.fadeInFrames = clip.effects.fadeInFrames;
+            opacityOnly.fadeOutFrames = clip.effects.fadeOutFrames;
+            if (clip.effects != opacityOnly) {
+                result.error = "text clip には不透明度以外の effect を設定できません: " + clip.name;
+                return result;
+            }
+        }
         if (clip.sourceFpsNum <= 0 || clip.sourceFpsDen <= 0 || clip.sourceFrameCount <= 0 ||
             clip.sourceInFrame < 0 || clip.sourceOutFrame <= clip.sourceInFrame ||
             clip.sourceOutFrame > clip.sourceFrameCount) {
@@ -720,7 +740,7 @@ TimelineEditResult placeTextClipAt(Project& project, TimelineClip clip,
     for (std::size_t index = 0; index < active.size(); ++index)
         if (active[index])
             highestActive = static_cast<int>(index);
-    for (int trackIndex = highestActive + 1; trackIndex < 3; ++trackIndex) {
+    for (int trackIndex = highestActive + 1; trackIndex < kMaxTextVideoTracks; ++trackIndex) {
         while (trackIndex >= static_cast<int>(candidate.videoTracks.size())) {
             const auto added = addTrack(candidate, TrackKind::Video);
             if (!added.success) {

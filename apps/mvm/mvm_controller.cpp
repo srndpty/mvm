@@ -1479,6 +1479,9 @@ MvmController::previewCompositionFor(const TimelinePreviewFrameMapping& mappedFr
                 return nullptr;
             preview::PreviewCompositionLayer layer;
             layer.stillImage = std::move(image);
+            // 書き出しと同じく opacity の値・key・fade を効かせる。位置や拡大などの effect は
+            // 文字では検証が拒否するので、静止画 layer には最終の不透明度だけを渡す。
+            layer.opacity = static_cast<float>(std::clamp(textMapping.opacity, 0.0, 1.0));
             composition->layers.push_back(std::move(layer));
             continue;
         }
@@ -2519,6 +2522,14 @@ void MvmController::setTextOverlayClip(const QString& clipId) {
     refreshTextPreview();
 }
 
+double MvmController::textClipOpacity(int index) const {
+    const auto mapped = mapTimelinePreviewFrame(project_, playheadFrame_);
+    for (const auto& text : mapped.textLayers)
+        if (text.clipIndex == index)
+            return std::clamp(text.opacity, 0.0, 1.0);
+    return 1.0;
+}
+
 bool MvmController::textClipVisible(int index) const {
     if (index < 0 || index >= static_cast<int>(project_.timelineClips.size()))
         return false;
@@ -2532,7 +2543,7 @@ bool MvmController::textClipVisible(int index) const {
 }
 
 QString MvmController::textClipAt(int x, int y) {
-    for (int track = 2; track >= 0; --track) {
+    for (int track = project::kMaxTextVideoTracks - 1; track >= 0; --track) {
         for (int index = 0; index < static_cast<int>(project_.timelineClips.size()); ++index) {
             const auto& clip = project_.timelineClips[static_cast<std::size_t>(index)];
             if (track >= static_cast<int>(project_.videoTracks.size()) ||

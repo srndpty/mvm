@@ -143,8 +143,8 @@ std::vector<std::pair<int, int>> glyphPixels(const QImage& raster) {
     return pixels;
 }
 
-QImage exportFrame(const project::Project& project, const QTemporaryDir& directory,
-                   const QString& name) {
+std::filesystem::path exportTo(const project::Project& project, const QTemporaryDir& directory,
+                               const QString& name) {
     app::TimelineExportRequest request;
     request.width = kW;
     request.height = kH;
@@ -154,18 +154,30 @@ QImage exportFrame(const project::Project& project, const QTemporaryDir& directo
     const auto rendered = app::exportTimeline(project, request);
     require(rendered.success && rendered.frameCount == 30,
             "書き出しに失敗しました: " + rendered.error);
-    const QString png = directory.filePath(name + QStringLiteral(".png"));
+    return request.outputPath;
+}
+
+// 書き出した動画の frameIndex 番目 (0 始まり) を画像にする。
+QImage extractFrame(const std::filesystem::path& video, const QTemporaryDir& directory,
+                    const QString& name, int frameIndex) {
+    const QString png = directory.filePath(name + QStringLiteral("-%1.png").arg(frameIndex));
     QProcess decoder;
     decoder.start(QStringLiteral("C:/msys64/ucrt64/bin/ffmpeg.exe"),
                   {QStringLiteral("-loglevel"), QStringLiteral("error"), QStringLiteral("-i"),
-                   QString::fromStdWString(request.outputPath.wstring()),
-                   QStringLiteral("-frames:v"), QStringLiteral("1"), QStringLiteral("-y"), png});
+                   QString::fromStdWString(video.wstring()), QStringLiteral("-vf"),
+                   QStringLiteral("select=eq(n\\,%1)").arg(frameIndex), QStringLiteral("-frames:v"),
+                   QStringLiteral("1"), QStringLiteral("-y"), png});
     require(decoder.waitForFinished(30000) && decoder.exitCode() == 0,
             "書き出し frame を復号できません");
     QImage frame(png);
     require(!frame.isNull() && frame.width() == kW && frame.height() == kH,
             "書き出し frame の寸法が違います");
     return frame.convertToFormat(QImage::Format_RGBA8888);
+}
+
+QImage exportFrame(const project::Project& project, const QTemporaryDir& directory,
+                   const QString& name) {
+    return extractFrame(exportTo(project, directory, name), directory, name, 0);
 }
 
 struct Preview {
@@ -176,28 +188,39 @@ struct Preview {
     gpu::DecodedGpuFrame video;
 };
 
+// 素材の frameIndex 番目を GPU へ復号する。書き出しと同じ frame の映像で比べるため。
+void decodeVideo(Preview& preview, long long frameIndex) {
+    std::string err;
+    preview.video = {};
+    preview.decoder =
+        std::make_unique<gpu::FFmpegD3D11Decoder>(preview.device.shared, gpu::SourceId{1});
+    require(preview.decoder->open(MVM_TEXT_TEST_VIDEO, err), "素材を開けません: " + err);
+    for (int attempt = 0; attempt < 600; ++attempt) {
+        const auto status = preview.decoder->requestFrame(preview.video, err);
+        if (status == gpu::DecodeStatus::Ok && preview.video.frameNumber == frameIndex)
+            return;
+        require(status == gpu::DecodeStatus::Ok || status == gpu::DecodeStatus::Again,
+                "素材の frame を復号できません: " + err);
+    }
+    failNow("素材の frame " + std::to_string(frameIndex) + " が出てきません");
+}
+
 void openPreview(Preview& preview) {
     std::string err;
     require(preview.device.create(err), err);
     require(preview.compositor.initialize(preview.device.shared, preview.readbacks, kW, kH, err),
             err);
-    preview.decoder =
-        std::make_unique<gpu::FFmpegD3D11Decoder>(preview.device.shared, gpu::SourceId{1});
-    require(preview.decoder->open(MVM_TEXT_TEST_VIDEO, err), "素材を開けません: " + err);
-    for (int attempt = 0; attempt < 240; ++attempt) {
-        const auto status = preview.decoder->requestFrame(preview.video, err);
-        if (status == gpu::DecodeStatus::Ok)
-            return;
-        require(status == gpu::DecodeStatus::Again, "素材の先頭 frame を復号できません: " + err);
-    }
-    failNow("素材の先頭 frame が出てきません");
+    decodeVideo(preview, 0);
 }
 
 // 製品の合成順どおりに 1 frame を合成し、kW x kH の RGBA を返す。
 // flipText が true なら文字を反対の端 (最前面なら最背面、それ以外なら最前面) へ動かす (対照)。
+// ignoreOpacity が true なら文字の不透明度を 1 にする (対照)。
 std::vector<unsigned char> composePreview(Preview& preview, const project::Project& project,
-                                          const gpu::DecodedGpuFrame& still, bool flipText) {
-    const auto mapped = app::mapTimelinePreviewFrame(project, 0);
+                                          const gpu::DecodedGpuFrame& still, bool flipText,
+                                          std::int64_t outputFrame = 0,
+                                          bool ignoreOpacity = false) {
+    const auto mapped = app::mapTimelinePreviewFrame(project, outputFrame);
     require(mapped.success && mapped.layers.size() == 2 && mapped.textLayers.size() == 1,
             "preview の対応づけが映像 2 本と文字 1 枚になりません");
     auto stack = app::previewLayerStack(mapped);
@@ -210,13 +233,16 @@ std::vector<unsigned char> composePreview(Preview& preview, const project::Proje
         stack.insert(wasTop ? stack.begin() : stack.end(), moved);
     }
     gpu::ComposedFrame frame;
-    frame.outputFrameNumber = 0;
+    frame.outputFrameNumber = outputFrame;
     frame.compositionEpoch = {1};
     int z = 0;
     for (const auto& entry : stack) {
         gpu::CompositionLayerFrame layer;
         // 同じ素材を 2 layer に使う。z 順以外の差を作らない。
         layer.frame = entry.text ? still : preview.video;
+        // 文字の不透明度は製品と同じく対応づけの評価値 (値・key・fade) を使う。
+        if (entry.text && !ignoreOpacity)
+            layer.opacity = static_cast<float>(mapped.textLayers[entry.index].opacity);
         layer.zOrder = z++;
         frame.layers.push_back(layer);
     }
@@ -277,6 +303,23 @@ Agreement compare(const std::vector<std::pair<int, int>>& glyphs,
         result.exportWhite += exportIsWhite ? 1 : 0;
     }
     return result;
+}
+
+// 文字の画素の平均輝度 (preview, 書き出し)。半透明の frame で濃さを比べる。
+std::pair<double, double> meanLuma(const std::vector<std::pair<int, int>>& glyphs,
+                                   const std::vector<unsigned char>& preview,
+                                   const QImage& exported) {
+    double previewSum = 0.0;
+    double exportSum = 0.0;
+    for (const auto& [x, y] : glyphs) {
+        const unsigned char* p =
+            &preview[(static_cast<std::size_t>(y) * kW + static_cast<std::size_t>(x)) * 4];
+        const QColor e = exported.pixelColor(x, y);
+        previewSum += 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+        exportSum += 0.2126 * e.red() + 0.7152 * e.green() + 0.0722 * e.blue();
+    }
+    const double count = static_cast<double>(glyphs.size());
+    return {previewSum / count, exportSum / count};
 }
 
 std::string describe(const Agreement& a) {
@@ -343,6 +386,63 @@ int main(int argc, char** argv) {
                     describe(flipped));
         preview.compositor.retireLayerTexture(still.texture);
     }
+    // case 2: V3 文字の不透明度を key で 100% (frame 0) -> 0% (frame 15) にする (Pen の
+    // automation)。
+    //         preview と書き出しで、各 frame の文字の見え方と濃さが一致すること。
+    {
+        auto project = makeProject(2);
+        project.timelineClips[0].effects.opacityKeys = {{0, 100.0}, {15, 0.0}};
+        require(project::validateTimeline(project).success, "opacity 付きの Project が不正です");
+        QString rasterError;
+        const QImage raster =
+            app::renderTextRaster(project.timelineClips[0].text, kW, kH, rasterError)
+                .convertToFormat(QImage::Format_RGBA8888);
+        require(!raster.isNull(), "文字画像を作れません: " + rasterError.toStdString());
+        const auto glyphs = glyphPixels(raster);
+        std::vector<unsigned char> pixels(static_cast<std::size_t>(kW) * kH * 4);
+        for (int y = 0; y < kH; ++y)
+            std::memcpy(pixels.data() + static_cast<std::size_t>(y) * kW * 4,
+                        raster.constScanLine(y), static_cast<std::size_t>(kW) * 4);
+        gpu::DecodedGpuFrame still;
+        std::string err;
+        require(gpu::makeStillImageFrame(preview.device.shared, kW, kH, pixels.data(),
+                                         pixels.size(), gpu::SourceId{}, still, err),
+                err);
+        const auto video = exportTo(project, directory, QStringLiteral("opacity"));
+        for (const int frameIndex : {0, 8, 15}) {
+            decodeVideo(preview, frameIndex);
+            const QImage exported =
+                extractFrame(video, directory, QStringLiteral("opacity"), frameIndex);
+            const auto rendered = composePreview(preview, project, still, false, frameIndex);
+            const Agreement agreement = compare(glyphs, rendered, exported);
+            const auto [previewLuma, exportLuma] = meanLuma(glyphs, rendered, exported);
+            std::printf("opacity frame %d: %s / 平均輝度 preview %.1f 書き出し %.1f\n", frameIndex,
+                        describe(agreement).c_str(), previewLuma, exportLuma);
+            require(agreement.agreed * 100 >= agreement.compared * 95,
+                    "opacity key 付き文字の見え方が preview と書き出しで一致しません: frame " +
+                        std::to_string(frameIndex));
+            require(std::abs(previewLuma - exportLuma) <= 12.0,
+                    "opacity key 付き文字の濃さが preview と書き出しで一致しません: frame " +
+                        std::to_string(frameIndex));
+            if (frameIndex == 0)
+                require(agreement.exportWhite * 10 >= agreement.compared * 9,
+                        "前提: frame 0 の書き出しで文字が見えません");
+            if (frameIndex == 15) {
+                require(agreement.exportWhite * 10 <= agreement.compared,
+                        "前提: frame 15 の書き出しで文字が消えていません");
+                // 対照: 不透明度を無視した preview は書き出しと食い違う。
+                const Agreement ignored = compare(
+                    glyphs, composePreview(preview, project, still, false, frameIndex, true),
+                    exported);
+                std::printf("opacity frame 15 (不透明度を無視した対照): %s\n",
+                            describe(ignored).c_str());
+                require(ignored.agreed * 2 <= ignored.compared,
+                        "対照: 不透明度を無視しても一致しました。比較が不透明度を判別していません");
+            }
+        }
+        preview.compositor.retireLayerTexture(still.texture);
+    }
+
     preview.decoder->close();
     preview.video = {};
     std::string err;

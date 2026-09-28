@@ -1,6 +1,7 @@
 #include "app/timeline_preview_mapping.h"
 
 #include "core/checked_output_timebase.h"
+#include "project/clip_effects.h"
 #include "project/timeline_edit.h"
 
 #include <algorithm>
@@ -29,9 +30,13 @@ TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& proj
         if (project.videoTracks[index].muted)
             continue;
         if (clip->kind == project::TimelineClipKind::Text) {
-            result.textLayers.push_back({static_cast<int>(index),
-                                         static_cast<int>(clip - project.timelineClips.data()),
-                                         clip->id});
+            // 文字は速度 1 で素材の in を持たないので、素材内の位置は clip 内の位置と同じ。
+            const std::int64_t local = timelineFrame - clip->timelineStartFrame;
+            result.textLayers.push_back(
+                {static_cast<int>(index), static_cast<int>(clip - project.timelineClips.data()),
+                 clip->id,
+                 project::evaluateClipOpacity(clip->effects, local, local,
+                                              clip->sourceOutFrame - clip->sourceInFrame)});
             continue;
         }
         const auto sourceFrame =

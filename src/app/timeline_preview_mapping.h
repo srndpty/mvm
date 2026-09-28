@@ -22,6 +22,9 @@ struct TimelinePreviewTextLayerMapping {
     int videoTrackIndex = 0;
     int clipIndex = -1;
     std::string clipId;
+    // この frame の不透明度 (0..1)。opacity の値・key・fade を評価したもの。
+    // 書き出しは同じ effects を MLT の経路で評価するので、preview もここで合わせる。
+    double opacity = 1.0;
 };
 
 struct TimelinePreviewFrameMapping {

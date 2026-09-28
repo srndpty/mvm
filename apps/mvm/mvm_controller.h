@@ -261,6 +261,8 @@ public:
     Q_INVOKABLE QString textClipAt(int x, int y);
     Q_INVOKABLE QUrl textRasterUrl(int index);
     Q_INVOKABLE bool textClipVisible(int index) const;
+    // 再生位置での文字の不透明度 (opacity の値・key・fade)。UI が文字を重ねるときに使う。
+    Q_INVOKABLE double textClipOpacity(int index) const;
     // 文字の描画範囲 (出力画素)。preview の選択枠と掴める範囲に使う。
     Q_INVOKABLE QRect textClipBounds(const QString& clipId) const;
     // 映像のある frame では文字を preview engine が track 順に合成する。

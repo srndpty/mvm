@@ -932,8 +932,11 @@ ApplicationWindow {
                                             : ""
                                     cache: false
                                     fillMode: Image.Stretch
-                                    opacity: !root.mvmController.previewVideoAtPlayhead
-                                             || root.textOverlayClipId === textLayer.clipId ? 1 : 0
+                                    // UI が描くときも、書き出しと同じ opacity (値・key・fade) を掛ける。
+                                    opacity: (!root.mvmController.previewVideoAtPlayhead
+                                              || root.textOverlayClipId === textLayer.clipId ? 1 : 0)
+                                             * (root.mvmController.playheadFrame,
+                                                root.mvmController.textClipOpacity(textLayer.index))
                                 }
 
                                 // 選択中の文字の範囲 (Premiere の選択枠に相当)。掴める範囲と同じ。

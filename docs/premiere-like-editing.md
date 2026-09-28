@@ -1095,6 +1095,32 @@ preview を押すと単キー操作が戻ることを足した。修正前の fo
 さらに、文字を掴んでも再生位置 (40) が動かないこと、X のドラッグ中に preview の文字範囲が動き
 Project は離したときだけ変わることを足した。前者は `selectClip` に戻すと落ちることを確かめた。
 
+`[事実]` レビュー指摘への対応。
+
+- (P1) 文字の不透明度 (値・Pen の key・fade) が preview に効いていなかった。書き出しは文字を
+  既存の video track の effect 経路へ載せるので、たとえば frame 0 で 100%、frame 15 で 0% の key を
+  付けると、書き出しだけがフェードしていた。不透明度は `mapTimelinePreviewFrame` が
+  `evaluateClipOpacity` で frame ごとに評価し (`TimelinePreviewTextLayerMapping::opacity`)、
+  engine の静止画 layer の opacity と、映像の無い frame で UI が重ねる文字の opacity の両方に使う。
+  静止画 layer の effect は引き続き拒否し、最終の不透明度だけを渡す
+- (P1 の契約) 文字の effect は不透明度 (値・key・fade) だけにした。位置・拡大・回転・切り抜きと
+  音量は、書き出しでは効くが preview の静止画 layer では描けないので、`validateTimeline` が拒否する
+- (P2) 文字は V1～V3 だけ、を Project の不変条件にした (`kMaxTextVideoTracks`)。以前は配置・
+  書き出し・preview の hit-test だけが V1～V3 で、V4 を足して通常の移動で文字を持っていくと
+  Project としては正しいまま、hit-test では掴めず書き出しは失敗した。移動は検証で拒否される
+- (P3) 文字画像は出力解像度の全画面 RGBA である (1080p で約 8MiB、4K で約 32MiB)。controller は
+  QImage・engine 用の RGBA・UI 用の PNG を持ち、GPU texture も作る。文字の矩形だけの画像にして
+  配置を composition へ持たせれば軽くなるが、preview と書き出しが同じ画像を使う今の構成を崩すので
+  見送った。`[未検証]` 4K で文字 clip が多いときのメモリと再描画時間は測っていない
+
+検査を足した。`text_preview_parity` に V3 文字の key (frame 0: 100% -> frame 15: 0%) を足し、
+frame 0 / 8 / 15 の書き出しと同じ frame の映像で preview を合成して比べる。一致は
+1363 / 1365、1365 / 1365、1365 / 1365、文字の平均輝度は 255.0 / 251.5、180.6 / 181.4、
+114.9 / 117.5 (preview / 書き出し)。対照として不透明度を無視すると frame 15 は 0 / 1365 になる。
+`m7b_2_timeline_preview_mapping_focused` に不透明度の補間 (1 / 0.5 / 0、key 無しは 1) を、
+`text_clip_contract` に V4 への移動と V4 の文字の拒否 (対照: V2 への移動は通る)、
+不透明度の key / fade の受理、拡大率・位置の拒否を足した。
+
 `[未検証]`
 
 - color picker のドラッグ中の描き直しが実際に何 ms で画面へ出るか。自動検査は、10ms 間隔で
