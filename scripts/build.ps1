@@ -23,6 +23,10 @@
 .PARAMETER ConfigureOnly
     configure のみ行い、ビルドしない。
 
+.PARAMETER ReuseConfigure
+    preset と toolchain の署名、および cache の設定が一致すれば明示的な configure を省く。
+    Ninja が必要時に再 configure する。
+
 .EXAMPLE
     pwsh scripts/build.ps1
     pwsh scripts/build.ps1 -Preset ucrt64-debug -Clean
@@ -34,6 +38,7 @@ param(
 
     [switch]$Clean,
     [switch]$ConfigureOnly,
+    [switch]$ReuseConfigure,
     [string]$Target,
     [string]$Ucrt64 = 'C:\msys64\ucrt64'
 )
@@ -70,9 +75,28 @@ if ($Clean -and (Test-Path $BuildDir)) {
 
 Push-Location $RepoRoot
 try {
-    Write-Host "`n--- configure ---" -ForegroundColor Yellow
-    & $CMake --preset $Preset @toolchainArguments
-    if ($LASTEXITCODE -ne 0) { throw "configure に失敗しました (exit $LASTEXITCODE)" }
+    $cachePath = Join-Path $BuildDir 'CMakeCache.txt'
+    $signaturePath = Join-Path $BuildDir 'mvm-configure-signature.txt'
+    $signature = Get-MvmConfigureSignature -Preset $Preset -Ucrt64 $Ucrt64 `
+        -RepoRoot $RepoRoot -ToolchainArguments $toolchainArguments
+    $reuse = $ReuseConfigure -and -not $Clean -and
+        (Test-Path -LiteralPath $cachePath -PathType Leaf) -and
+        (Test-Path -LiteralPath $signaturePath -PathType Leaf) -and
+        ((Get-Content -LiteralPath $signaturePath -Raw).Trim() -eq $signature)
+    if ($reuse) {
+        Assert-MvmCachedToolchain -CachePath $cachePath `
+            -PresetsPath (Join-Path $RepoRoot 'CMakePresets.json') -Preset $Preset `
+            -RepoRoot $RepoRoot -ToolchainArguments $toolchainArguments
+        Write-Host "`n--- configure は既存 cache を使用 ---" -ForegroundColor Yellow
+    } else {
+        Write-Host "`n--- configure ---" -ForegroundColor Yellow
+        & $CMake --preset $Preset @toolchainArguments
+        if ($LASTEXITCODE -ne 0) { throw "configure に失敗しました (exit $LASTEXITCODE)" }
+        Assert-MvmCachedToolchain -CachePath $cachePath `
+            -PresetsPath (Join-Path $RepoRoot 'CMakePresets.json') -Preset $Preset `
+            -RepoRoot $RepoRoot -ToolchainArguments $toolchainArguments
+        Set-Content -LiteralPath $signaturePath -Value $signature -Encoding utf8NoBOM
+    }
 
     if ($ConfigureOnly) {
         Write-Host "`nconfigure のみ実行しました。" -ForegroundColor Green
