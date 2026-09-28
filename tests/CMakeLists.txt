@@ -13,6 +13,13 @@ if(NOT MVM_PWSH)
         "pwsh が見つかりません。negative test の終了コード照合に必要です。")
 endif()
 
+add_test(NAME build_cached_toolchain_guard
+    COMMAND "${MVM_PWSH}" -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/test-cached-toolchain-guard.ps1"
+        -Library "${CMAKE_SOURCE_DIR}/scripts/lib/cmake-toolchain.ps1"
+        -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/cached-toolchain-guard")
+set_tests_properties(build_cached_toolchain_guard PROPERTIES TIMEOUT 30)
+
 # --- mvm_bench --------------------------------------------------------------
 # Qt に依存しない C++20 CLI。MLT のヘッダは include しない。
 add_executable(mvm_bench
@@ -53,7 +60,8 @@ set_tests_properties(m1_project_manim_focused PROPERTIES
     TIMEOUT 120)
 
 # --- M4: timeline export ----------------------------------------------------
-# 実素材 2 本を順に並べて 1 本の MP4 にできることだけを見る。
+# 実素材の MP4 書き出しを複数経路で検証する長い統合テスト。
+# 日常用では mapping の短い検査を残し、この検査は全件実行時に回す。
 add_executable(mvm_test_timeline_export harness/test_timeline_export.cpp)
 target_link_libraries(mvm_test_timeline_export PRIVATE
     mvm::timeline_export mvm::timeline_preview_mapping mvm::mlt mvm::util mvm::warnings)
@@ -66,6 +74,7 @@ add_test(NAME m4_timeline_export_focused
         "${MVM_UCRT64_ROOT}/bin/ffmpeg.exe")
 set_tests_properties(m4_timeline_export_focused PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS extended
     TIMEOUT 600)
 
 add_executable(mvm_test_timeline_export_mapping harness/test_timeline_export_mapping.cpp)
@@ -1605,11 +1614,13 @@ mvm_add_test(verify_audio_no_clipping
 # verdict / threshold / metric / window には影響しない (S2-g1a で検証済み)。
 # suite 条件下で handle 系列を捕捉するために一時的に付与している。
 # attribution 完了後に残置か除去かを判断すること。
+# 100 回反復し、memory check も無効なので日常の合否判定から外す。
 mvm_add_test(ownership_soak_100
     COMMAND mvm_bench soak "${MVM_S5_SCENARIO}" --iterations 100 --warmup-iterations 30
             --wav-dir "${MVM_AUDIO_OUT}" --no-memory-check --dump-all-samples
     PROPERTIES
         REQUIRED_FILES "${MVM_S5_SCENARIO}"
+        LABELS stability
         TIMEOUT 1800)
 
 # S2-g1b: warmup が gate avoidance ではなく measurement-domain repair であることを
@@ -1820,6 +1831,7 @@ mvm_add_exit_test(proxy_legacy_require_proxy_diagnostic EXIT 3
 
 # negative: メタデータが違う proxy を成功扱いしない。
 # 1080p 素材を 4K 素材の proxy と称して渡す。frame count も解像度も違う。
+# 4K 素材の probe が長いため、日常用では他の proxy 負例を残して全件へ移す。
 mvm_add_exit_test(proxy_mapping_metadata_mismatch_negative EXIT 3
     ARGS proxy-mapping
          --original "${MVM_SMOKE_DIR}/v1080p60_h264.mp4"
@@ -1827,6 +1839,7 @@ mvm_add_exit_test(proxy_mapping_metadata_mismatch_negative EXIT 3
          --random 0
     PROPERTIES REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_h264.mp4")
 set_tests_properties(proxy_mapping_metadata_mismatch_negative PROPERTIES
+    LABELS extended
     REQUIRED_FILES "${MVM_SMOKE_DIR}/v1080p60_h264.mp4;${MVM_SMOKE_DIR}/v4k60_h264.mp4")
 
 # --- performance ラベル ------------------------------------------------------
@@ -2584,25 +2597,25 @@ if(TARGET mvm_p3_av_sync_spike AND EXISTS "${MVM_P3_AUDIO_FIXTURE}" AND
             --source-a "${MVM_P3_AUDIO_FIXTURE}" --source-b "${MVM_P3_B_VIDEO_FIXTURE}"
             --metrics "${CMAKE_CURRENT_BINARY_DIR}/p3-b-playback-short.json"
             --mode playback --duration-seconds 3
-        PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 180)
+        PROPERTIES LABELS workstation RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 180)
     mvm_add_test(p3_b_pause_resume_integration
         COMMAND mvm_p3_av_sync_spike
             --source-a "${MVM_P3_AUDIO_FIXTURE}" --source-b "${MVM_P3_B_VIDEO_FIXTURE}"
             --metrics "${CMAKE_CURRENT_BINARY_DIR}/p3-b-pause.json" --mode pause-resume
-        PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 180)
+        PROPERTIES LABELS workstation RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 180)
     mvm_add_test(p3_b_seek_integration_short
         COMMAND mvm_p3_av_sync_spike
             --source-a "${MVM_P3_AUDIO_FIXTURE}" --source-b "${MVM_P3_B_VIDEO_FIXTURE}"
             --metrics "${CMAKE_CURRENT_BINARY_DIR}/p3-b-seek-short.json"
             --mode seek --seek-count 4
-        PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 300)
+        PROPERTIES LABELS workstation RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 300)
     mvm_add_test(p3_async_audio_failure_fail_close
         COMMAND pwsh -NoProfile -File
             "${CMAKE_CURRENT_SOURCE_DIR}/audio_preview/test-p3-async-audio-failure.ps1"
             -Executable "$<TARGET_FILE:mvm_p3_av_sync_spike>"
             -SourceA "${MVM_P3_AUDIO_FIXTURE}" -SourceB "${MVM_P3_B_VIDEO_FIXTURE}"
             -OutputDir "${CMAKE_CURRENT_BINARY_DIR}/p3-async-audio-failure"
-        PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120)
+        PROPERTIES LABELS workstation RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120)
 else()
     message(STATUS
         "[mvm] P3-B fixture 未生成のため integration は未登録です。\n"
@@ -2965,7 +2978,7 @@ foreach(_p2_shadow_case Good SupersedeGood NegativeAmbiguousSwap NegativeObserve
             -Output "${CMAKE_CURRENT_BINARY_DIR}/p2-vblank-shadow-${_p2_shadow_name}.json")
 endforeach()
 
-# 実displayとDXGI outputを要求するため workstation label を付ける。
+# 実 display と DXGI output を観測する診断。日常の回帰検査には含めない。
 if(TARGET mvm_p2_vblank_authority_probe)
     add_test(NAME p2_vblank_authority_probe_live
         COMMAND "${MVM_PWSH}" -NoProfile -File
@@ -2976,7 +2989,7 @@ if(TARGET mvm_p2_vblank_authority_probe)
             -DurationMs 4000)
     set_tests_properties(p2_vblank_authority_probe_live PROPERTIES
         ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
-        LABELS "p2;workstation" RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120)
+        LABELS "p2;workstation;stability" RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120)
 endif()
 
 # P2-D5-2/F3-B0.6-R1: Present IDをjoin keyにする完全oracle contract。
@@ -3012,7 +3025,7 @@ if(TARGET mvm_p2_present_identity_probe)
             -AuthorityMode "$<IF:$<CONFIG:Debug>,CORRECTNESS_ONLY,FULL_RELEASE>")
     set_tests_properties(p2_present_id_oracle_live PROPERTIES
         ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
-        LABELS "p2;workstation" RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 180)
+        LABELS "p2;workstation;stability" RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 180)
 endif()
 
 # P2-D5-2/F3-B0.6-R2: ETW event historyとapp swap sequenceのexact join contract。

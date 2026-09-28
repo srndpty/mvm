@@ -23,6 +23,9 @@
 .PARAMETER ConfigureOnly
     configure のみ行い、ビルドしない。
 
+.PARAMETER ReuseConfigure
+    CMakeCache.txt があれば明示的な configure を省く。Ninja が必要時に再 configure する。
+
 .EXAMPLE
     pwsh scripts/build.ps1
     pwsh scripts/build.ps1 -Preset ucrt64-debug -Clean
@@ -34,6 +37,7 @@ param(
 
     [switch]$Clean,
     [switch]$ConfigureOnly,
+    [switch]$ReuseConfigure,
     [string]$Target,
     [string]$Ucrt64 = 'C:\msys64\ucrt64'
 )
@@ -70,9 +74,16 @@ if ($Clean -and (Test-Path $BuildDir)) {
 
 Push-Location $RepoRoot
 try {
-    Write-Host "`n--- configure ---" -ForegroundColor Yellow
-    & $CMake --preset $Preset @toolchainArguments
-    if ($LASTEXITCODE -ne 0) { throw "configure に失敗しました (exit $LASTEXITCODE)" }
+    $cachePath = Join-Path $BuildDir 'CMakeCache.txt'
+    if ($ReuseConfigure -and -not $Clean -and (Test-Path -LiteralPath $cachePath -PathType Leaf)) {
+        # configure を省く経路でも、別の Qt / compiler を含む cache は使わない。
+        Assert-MvmCachedToolchain -CachePath $cachePath -Ucrt64 $Ucrt64 -RepoRoot $RepoRoot
+        Write-Host "`n--- configure は既存 cache を使用 ---" -ForegroundColor Yellow
+    } else {
+        Write-Host "`n--- configure ---" -ForegroundColor Yellow
+        & $CMake --preset $Preset @toolchainArguments
+        if ($LASTEXITCODE -ne 0) { throw "configure に失敗しました (exit $LASTEXITCODE)" }
+    }
 
     if ($ConfigureOnly) {
         Write-Host "`nconfigure のみ実行しました。" -ForegroundColor Green

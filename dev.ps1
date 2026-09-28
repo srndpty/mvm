@@ -11,6 +11,7 @@
     .\dev.ps1 run
     .\dev.ps1 gui
     .\dev.ps1 test
+    .\dev.ps1 test-full
     .\dev.ps1 lint
     .\dev.ps1 help
 #>
@@ -41,7 +42,8 @@ function Show-DevHelp {
   build  通常の release ビルドを実行する
   run    debug の mvm だけを増分ビルドして GUI を起動する
   gui    release ビルド済みの mvm GUI を起動する
-  test   release/debug の通常テストを実行する
+  test       release の短縮テストを実行する（日常用）
+  test-full  release/debug の portable 通常テストをすべて実行する
   lint   整形差分・静的検査・アーキテクチャ検査を実行する
   help   このヘルプを表示する
 
@@ -59,6 +61,14 @@ function Invoke-CanonicalScript {
     $scriptPath = Join-Path $scriptsDirectory $Name
     $pwsh = (Get-Process -Id $PID).Path
     & $pwsh -NoProfile -File $scriptPath -Ucrt64 $Ucrt64
+    exit $LASTEXITCODE
+}
+
+function Invoke-Tests {
+    param([string[]]$TestArgs)
+
+    $pwsh = (Get-Process -Id $PID).Path
+    & $pwsh -NoProfile -File (Join-Path $scriptsDirectory 'test.ps1') -Ucrt64 $Ucrt64 @TestArgs
     exit $LASTEXITCODE
 }
 
@@ -111,7 +121,11 @@ switch ($Command.ToLowerInvariant()) {
             -MissingBuildHint '.\dev.ps1 run を再実行してください。'
     }
     'test' {
-        Invoke-CanonicalScript -Name 'test.ps1'
+        Invoke-Tests -TestArgs @('-Preset', 'ucrt64-release', '-Group', 'BuildDependent',
+            '-Portable', '-Fast')
+    }
+    'test-full' {
+        Invoke-Tests -TestArgs @('-Portable')
     }
     'lint' {
         Invoke-CanonicalScript -Name 'lint.ps1'

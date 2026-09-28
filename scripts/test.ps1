@@ -11,7 +11,7 @@
     長時間の診断が混ざり、「通常テストが何件通ったか」が分からなくなる。
 
     -Portable は、特定の開発機環境 (Meiryo / D3D11VA hardware device) が必要な
-    workstation ラベルも除外する。GPUやフォントの無いCIでのみ使用する。
+    workstation ラベルも除外する。CI と日常の短縮検査で使用する。
 
     debug ビルドの性能値を判定に使わないため、-Performance は
     release でのみ意味を持つ。-Stability は診断が目的なので preset を問わない。
@@ -30,8 +30,7 @@
 
     workstation ラベル (実 GPU / audio endpoint / display を使うテスト) は
     RESOURCE_LOCK により、並列度に関わらず 1 件ずつ実行される。
-    それ以外は並列に走る。実測 (この開発機、非 workstation 379 件):
-    直列 7 分 20 秒 / -j4 122 秒 / -j8 83 秒 / -j16 66 秒。
+    それ以外は並列に走る。
 
 .PARAMETER Performance
     performance ラベルのテストも実行する。release のみ。
@@ -39,6 +38,11 @@
 .PARAMETER Stability
     stability ラベル (長時間のメモリ診断など) も実行する。
     現時点では合否判定に使えないため、既定では実行しない。
+
+.PARAMETER Fast
+    extended ラベルの長い統合検査を通常テストから除外する。
+    既存の CMake cache があれば明示的な再 configure を省く。
+    CI の全件検査では指定しない。
 
 .PARAMETER Group
     通常テストのうちどれを実行するか。
@@ -54,7 +58,7 @@
     pwsh scripts/test.ps1
     pwsh scripts/test.ps1 -Preset ucrt64-release -Performance
     pwsh scripts/test.ps1 -Preset ucrt64-release -Stability
-    pwsh scripts/test.ps1 -Preset ucrt64-release -Portable   # 反復用の最短経路
+    pwsh scripts/test.ps1 -Preset ucrt64-release -Group BuildDependent -Portable -Fast
     pwsh scripts/test.ps1 -Jobs 1                            # 直列に戻す
     pwsh scripts/test.ps1 -Preset ucrt64-release -Group BuildIndependent -Shard 1/3
 #>
@@ -69,6 +73,7 @@ param(
     [switch]$Performance,
     [switch]$Stability,
     [switch]$Portable,
+    [switch]$Fast,
 
     [ValidateSet('All', 'BuildDependent', 'BuildIndependent')]
     [string]$Group = 'All',
@@ -109,8 +114,11 @@ $anyFailed = $false
 # 「通常テストが減っている」ことに気づけない。
 $summary = @()
 $lastGroupExit = 0
-$normalExclude = if ($Portable) { 'performance|stability|workstation' } else { 'performance|stability' }
-$normalKind = if ($Portable) { '通常(portable)' } else { '通常' }
+$normalExcludes = @('performance', 'stability')
+if ($Portable) { $normalExcludes += 'workstation' }
+if ($Fast) { $normalExcludes += 'extended' }
+$normalExclude = $normalExcludes -join '|'
+$normalKind = if ($Fast) { '通常(短縮)' } elseif ($Portable) { '通常(portable)' } else { '通常' }
 
 # fail-closed。「測れなかった」を「通った」と報告しない。
 #
@@ -171,11 +179,14 @@ function Invoke-CTestGroup {
     # 全テストが通っていても失敗と判定される。実際に一度そうなった。
     # 終了コードは script スコープの変数で受け渡す。
     # Tee-Object -Variable は 2 回目以降の呼び出しで空になることがあった。
-    # 一旦すべて受け取ってから自分で表示する。
-    # 並列実行しても要約行の書式は変わらないため、件数照合はそのまま使える。
-    $outLines = & $script:CTest --output-on-failure -j $script:CTestJobs @CTestArgs 2>&1
+    # 各行を表示しながら要約照合用にも保持する。長い検査でも進捗が見える。
+    $outLines = [System.Collections.Generic.List[string]]::new()
+    & $script:CTest --output-on-failure -j $script:CTestJobs @CTestArgs 2>&1 | ForEach-Object {
+        $line = "$_"
+        Write-Host $line
+        [void]$outLines.Add($line)
+    }
     $code = $LASTEXITCODE
-    $outLines | ForEach-Object { Write-Host "$_" }
 
     # 実際に何件走ったかを ctest の要約行から取る。
     # 失敗が 0 件のときは "100% tests passed out of 88" となり
@@ -264,6 +275,7 @@ foreach ($p in $presets) {
     # 非依存テストだけなら実行ファイルは不要なので configure で止める。
     $buildArgs = @{ Preset = $p; Ucrt64 = $Ucrt64 }
     if ($Group -eq 'BuildIndependent') { $buildArgs.ConfigureOnly = $true }
+    if ($Fast -and $Group -ne 'BuildIndependent') { $buildArgs.ReuseConfigure = $true }
     & (Join-Path $PSScriptRoot 'build.ps1') @buildArgs
     if ($LASTEXITCODE -ne 0) { throw "ビルドに失敗しました: $p" }
 
@@ -273,6 +285,7 @@ foreach ($p in $presets) {
     Push-Location $buildDir
     try {
         # 通常テスト: performance と stability の両方を除外する
+        Write-Host "通常テストの除外ラベル: $normalExclude" -ForegroundColor Yellow
         $normalArgs = @('-LE', $normalExclude)
         $effectiveGroup = if ($Group -eq 'All' -and $independentDone) { 'BuildDependent' } else { $Group }
 
@@ -296,6 +309,13 @@ foreach ($p in $presets) {
                     $summary += [pscustomobject]@{
                         Preset = $p; Kind = "$normalKind 非依存"; Total = $independent.Count; Ran = 0
                         Failed = 0; Passed = 0; Exit = 0; Note = "$($presets[0]) で実行済み"
+                    }
+                } else {
+                    Write-Host "ビルド種別非依存の $($independent.Count) 件は今回の選定から除外します" `
+                        -ForegroundColor Yellow
+                    $summary += [pscustomobject]@{
+                        Preset = $p; Kind = "$normalKind 非依存"; Total = $independent.Count; Ran = 0
+                        Failed = 0; Passed = 0; Exit = 0; Note = '指定により対象外'
                     }
                 }
                 Invoke-CTestGroup -Preset $p -Kind "$normalKind 依存" -Required `

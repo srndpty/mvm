@@ -92,11 +92,12 @@ UCRT64 の gcc は依存 DLL を PATH から解決するため、これが無い
 これは既存の正式スクリプトを置き換えず、そのまま呼び出す薄い front-end である。
 
 ```powershell
-.\dev.ps1 build   # scripts/build.ps1
-.\dev.ps1 run     # debug の mvm だけを増分ビルドして起動
-.\dev.ps1 gui     # release ビルド済みの mvm GUI
-.\dev.ps1 test    # scripts/test.ps1（release/debug の通常 CTest）
-.\dev.ps1 lint    # scripts/lint.ps1
+.\dev.ps1 build      # scripts/build.ps1
+.\dev.ps1 run        # debug の mvm だけを増分ビルドして起動
+.\dev.ps1 gui        # release ビルド済みの mvm GUI
+.\dev.ps1 test       # release の短縮テスト（日常用）
+.\dev.ps1 test-full  # release/debug の portable 通常 CTest 全件
+.\dev.ps1 lint       # scripts/lint.ps1
 .\dev.ps1 help
 ```
 
@@ -129,10 +130,22 @@ pwsh scripts/make-testmedia.ps1 -Mode Benchmark   # 60 秒。S7 以降の性能�
 
 ## テスト
 
+`dev.ps1 test` は release のビルド成果物に依存するテストだけを実行し、
+`workstation`（実 GPU / 音声 endpoint / display）と `extended`（長い統合検査）を除外する。
+既存の CMake cache を検証して再利用し、Ninja が必要な場合だけ再 configure する。
+変更対象の個別テストを回した後、日常の回帰確認に使う。
+
+`dev.ps1 test-full` は release / debug の portable 通常 CTest を実行する。
+ビルド種別に依存しない契約・checker 検査は release で一度だけ実行する。
+CI は同じ全件をビルド依存群と3つのスクリプト群に分割する。
+`stability` は診断用、`performance` は性能計測用で、どちらも通常 CTest には含めない。
+実機 GPU / 音声 endpoint / display を使う `workstation` 群を含める場合は
+`pwsh scripts/test.ps1` を明示して実行する。
+
 ```powershell
 $env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
 cd build\ucrt64-release
-ctest --output-on-failure
+ctest -LE 'performance|stability' --output-on-failure
 ```
 
 素材が未生成のテストは実行されず、実行すべきコマンドが案内される。
