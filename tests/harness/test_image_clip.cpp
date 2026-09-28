@@ -1,7 +1,8 @@
 // 画像 clip (TimelineClipKind::Image) の契約。
 //   model: schema 8 の往復、検証の負例 (それぞれ正しい版を対照にする)、分割・trim・既定の尺
 //   preview: decode source ではなく静止画 layer に入ること
-//   書き出し: 静止画 decoder と同じ画素 (縦横比を保って中央に置き、EXIF の向きを反映) が出ること
+//   書き出し: 静止画 decoder と同じ画素 (縦横比を保って中央に置き、EXIF の向きを反映) が出ること。
+//             静止画でなくなった素材 (差し替え) は取り込みと同じ判定で拒否すること
 // 素材は scripts/make-testmedia.ps1 -Mode Smoke が _import/ へ作る。期待値は直書きする。
 #include "app/timeline_export.h"
 #include "app/timeline_preview_mapping.h"
@@ -273,6 +274,32 @@ void testExport() {
             check(isBlack(frame.pixelColor(40, 120)) && isBlack(frame.pixelColor(280, 120)),
                   "縦長の画像の左右の余白が黒ではありません");
         }
+    }
+
+    // 取り込んだ後に同じ path が動画・アニメーション画像・HDR 画像へ差し替えられた画像 clip。
+    // 取り込みと同じ判定で拒否し、先頭 frame を静止画として書き出さない。
+    // (正しい静止画を書き出せることは上の 2 件が対照になる)
+    struct Swap {
+        const char* file;
+        const char* reason;
+    };
+
+    const Swap swaps[] = {
+        {"gif_animated.gif", "アニメーション"},
+        {"apng_animated.png", "アニメーション"},
+        {"webp_animated.webp", "アニメーション"},
+        {"mp4_h264_with_cover.mp4", "静止画ではありません"},
+        {"exr_float.exr", "HDR"},
+    };
+    for (const auto& swap : swaps) {
+        const auto project = projectWith(imageClip("swapped", swap.file, 0, 0, 30));
+        check(valid(project), std::string("前提: 画像 clip の Project が不正です: ") + swap.file);
+        request.outputPath =
+            fs::path(exported.filePath(QStringLiteral("swapped.mp4")).toStdWString());
+        const auto rendered = mvm::app::exportTimeline(project, request);
+        check(!rendered.success && rendered.error.find(swap.reason) != std::string::npos,
+              std::string("静止画ではなくなった素材を画像 clip として書き出しました: ") +
+                  swap.file + " (" + rendered.error + ")");
     }
 }
 

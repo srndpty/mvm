@@ -99,6 +99,8 @@ int main(int argc, char** argv) {
     expectRejected(dir / "exr_float.exr", "HDR");
     // sRGB 以外の ICC profile は色が変わるので読み込まない。sRGB は読む (対照)。
     expectRejected(dir / "png_icc_display_p3.png", "ICC");
+    // 説明だけ sRGB を名乗る Display P3 も読み込まない。
+    expectRejected(dir / "png_icc_fake_srgb.png", "ICC");
     expectImage(dir / "png_icc_srgb.png", 64, 48);
     expectRejected(smoke / "_corrupt" / "text.mp4", "解析できません");
 

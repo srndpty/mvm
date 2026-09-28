@@ -30,13 +30,18 @@ struct StillImageDecodeResult {
 
 // 先頭の 1 frame を decode し、向きを反映した RGBA8 を返す。
 // アニメーションかどうかの判定は MediaStreamFacts が担う。ここでは見ない。
+// そのため素材の画素が要る経路は、これを直接呼ばずに loadStaticImage (static_image.h) を通す。
 StillImageDecodeResult decodeStillImage(const std::filesystem::path& path,
                                         const StillImageLimits& limits = {});
 
-// ICC profile が sRGB か。色空間が RGB で、説明 ('desc' tag) が "sRGB" を含むものだけを
-// sRGB とみなす。description には読めた説明を返す (読めなければ空)。
+// ICC profile が sRGB か。説明 ('desc' tag) の名乗りは信用せず、色を決める中身を調べる。
+// 表示装置用 (mntr) の RGB / XYZ matrix/TRC profile で、原色 (rXYZ / gXYZ / bXYZ) が sRGB、
+// 白色点が D50 か D65、3 本のトーンカーブ (curv / para) が sRGB の曲線と一致するものだけを
+// sRGB とみなす。LUT 型の tag を持つ profile は中身を検証できないので sRGB とみなさない。
+// description には読めた説明 (エラー文言用、読めなければ空)、reason には sRGB でない理由を返す。
 // decoder は色の変換をしないので、sRGB 以外の profile を持つ画像は decode で拒否する。
-bool iccProfileIsSrgb(const std::uint8_t* data, std::size_t size, std::string& description);
+bool iccProfileIsSrgb(const std::uint8_t* data, std::size_t size, std::string& description,
+                      std::string& reason);
 
 // EXIF orientation (1..8) を画素へ反映する。それ以外の値は拒否する。
 bool applyExifOrientation(StillImage& image, int orientation, std::string& error);

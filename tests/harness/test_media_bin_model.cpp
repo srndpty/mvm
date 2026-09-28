@@ -54,8 +54,8 @@ mvm::media::MediaStreamFacts stillFacts(int packets) {
 }
 
 void testRoute() {
-    using mvm::app::MediaRoute;
-    using mvm::app::routeMedia;
+    using mvm::media::MediaRoute;
+    using mvm::media::routeMedia;
 
     check(routeMedia(stillFacts(1)).route == MediaRoute::StillImage,
           "1 packet の静止画 codec をStillImageへ振り分けられません");

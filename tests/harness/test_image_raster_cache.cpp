@@ -4,7 +4,9 @@
 //   - 出力解像度を変えたら別の raster を作り、retainOnly で旧解像度を捨てる
 //   - 素材を差し替えたら作り直す。size と更新時刻が同じまま中身だけ変わったものは
 //     revalidateAll で見つける
-//   - byte budget を超えたら、誰も参照していないものから古い順に捨てる
+//   - 差し替えで動画・アニメーション画像・HDR 画像になった素材は、取り込みと同じ判定で拒否する
+//   - byte budget を超えたら、誰も参照していないものから古い順に捨てる。参照が外れた時点で
+//     再評価する (次の decode を待たない)
 // 素材は scripts/make-testmedia.ps1 -Mode Smoke が _import/ へ作る。
 
 #include "image_raster_cache.h"
@@ -194,25 +196,67 @@ int main(int argc, char** argv) {
     }
 
     {
-        // byte budget。参照されている raster は捨てず、参照されていないものから古い順に捨てる。
+        // 取り込み済みの静止画を、同じ path のまま動画・アニメーション画像・HDR 画像へ
+        // 差し替える。取り込み (probeMediaFile) と同じ判定で拒否し、先頭 frame を静止画と
+        // して受理しない。
+        struct Swap {
+            const char* file;
+            const char* reason;
+        };
+
+        const Swap swaps[] = {
+            {"gif_animated.gif", "アニメーション"},
+            {"apng_animated.png", "アニメーション"},
+            {"webp_animated.webp", "アニメーション"},
+            {"mp4_h264_with_cover.mp4", "静止画ではありません"},
+            {"exr_float.exr", "HDR"},
+        };
+        ImageRasterCache cache;
+        int index = 0;
+        for (const auto& swap : swaps) {
+            const fs::path target = work / ("swap-" + std::to_string(index++) + ".png");
+            fs::copy_file(dir / "png_rgb24.png", target, fs::copy_options::overwrite_existing);
+            const auto before = waitReady(cache, target, 64, 36);
+            check(before.state == ImageRasterCache::State::Ready,
+                  std::string("前提: 差し替え前の静止画を読めません: ") + swap.file);
+            fs::copy_file(dir / swap.file, target, fs::copy_options::overwrite_existing);
+            const auto after = waitReady(cache, target, 64, 36);
+            check(after.state == ImageRasterCache::State::Failed && !after.image &&
+                      after.error.contains(QString::fromUtf8(swap.reason)),
+                  std::string("静止画から差し替えた素材を画像として受理しました: ") + swap.file +
+                      " (" + after.error.toStdString() + ")");
+        }
+    }
+
+    {
+        // byte budget。参照されている raster は捨てず、参照されていないものは捨てる。
         ImageRasterCache cache(1, {});
         const fs::path a = dir / "bmp_24.bmp";
         const fs::path b = dir / "png_rgb24.png";
-        const fs::path c = dir / "qoi_rgb.qoi";
         auto held = waitReady(cache, a, 64, 36).image;
         waitReady(cache, b, 64, 36);
-        check(cache.entryCount() == 2 && cache.request(a, 64, 36).image == held,
-              "参照されている raster を budget 超過で捨てました");
+        // b の handle は受け取った直後に破棄されている。その時点で予算を再評価する。
+        check(waitUntil([&] { return cache.entryCount() == 1; }, 2000) &&
+                  cache.request(a, 64, 36).image == held,
+              "budget 超過で参照中の raster を捨てたか、参照されていない raster を捨てません");
+        // 最後の参照が外れたら、新しい decode を待たずに捨てる。
         held.reset();
-        waitReady(cache, c, 64, 36);
-        check(cache.entryCount() == 1 &&
-                  cache.request(c, 64, 36).state == ImageRasterCache::State::Ready,
-              "参照されなくなった raster を budget 超過で捨てません");
+        check(waitUntil([&] { return cache.entryCount() == 0; }, 2000),
+              "参照が外れた raster を、次の decode まで budget 超過のまま残しました");
+    }
+
+    {
+        // 対照: budget に収まっていれば、参照が外れても捨てない。
+        ImageRasterCache cache;
+        waitReady(cache, dir / "bmp_24.bmp", 64, 36);
+        waitReady(cache, dir / "png_rgb24.png", 64, 36);
+        waitUntil([] { return false; }, 100);
+        check(cache.entryCount() == 2, "budget 内の raster を捨てました");
     }
 
     fs::remove_all(work, error);
     if (failures == 0)
-        std::puts("画像 raster cache: 非同期生成・再利用・解像度・差し替え・再検証・budget "
-                  "を確認しました");
+        std::puts("画像 raster cache: 非同期生成・再利用・解像度・差し替え・種別の再判定・再検証・"
+                  "budget を確認しました");
     return failures == 0 ? 0 : 1;
 }

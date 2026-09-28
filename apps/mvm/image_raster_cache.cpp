@@ -1,6 +1,6 @@
 #include "image_raster_cache.h"
 
-#include "media/still_image/still_image_decoder.h"
+#include "media/still_image/static_image.h"
 
 #include <QMetaObject>
 
@@ -16,7 +16,8 @@ QString pathText(const std::filesystem::path& path) {
 
 ImageRasterCache::Entry decodeRaster(const std::filesystem::path& path, int width, int height) {
     ImageRasterCache::Entry entry;
-    const auto decoded = media::decodeStillImage(path);
+    // 取り込みと同じ authority。差し替えで動画やアニメーション画像になった素材は拒否する。
+    const auto decoded = media::loadStaticImage(path);
     if (!decoded.success) {
         entry.state = ImageRasterCache::State::Failed;
         entry.error = QString::fromStdString(decoded.error);
@@ -48,9 +49,16 @@ ImageRasterCache::ImageRasterCache(std::size_t budgetBytes, RasterFunction raste
         raster_ = decodeRaster;
     // 画像を一度に大量に置いても、decode が preview の CPU を食い尽くさないようにする。
     pool_.setMaxThreadCount(2);
+    releaseHub_->cache = this;
 }
 
 ImageRasterCache::~ImageRasterCache() {
+    {
+        // これ以降に参照が外れても通知しない。通知済みの queued call は this の破棄時に
+        // Qt が捨てる。
+        std::lock_guard lock(releaseHub_->mutex);
+        releaseHub_->cache = nullptr;
+    }
     shuttingDown_->store(true, std::memory_order_relaxed);
     for (const auto& record : std::as_const(records_)) {
         if (record.cancel)
@@ -73,7 +81,7 @@ ImageRasterCache::Entry ImageRasterCache::request(const std::filesystem::path& p
     auto found = records_.find(key);
     if (found != records_.end() && found->identity == source.identity) {
         found->lastUse = ++useClock_;
-        return found->entry;
+        return handOut(*found);
     }
 
     // 前回と素材が違う (差し替えられた)。生成中の job は結果ごと捨てる (ticket で見分ける)。
@@ -118,8 +126,33 @@ void ImageRasterCache::finish(const QString& key, std::uint64_t ticket,
     found->entry = std::move(entry);
     found->fingerprint = fingerprint;
     found->cancel.reset();
-    evictUnused(key);
+    trimToBudget();
     Q_EMIT entryChanged(key);
+}
+
+ImageRasterCache::Entry ImageRasterCache::handOut(Record& record) {
+    Entry entry = record.entry;
+    if (!entry.image)
+        return entry;
+    record.delivered = true;
+    // 同じ画素を指す handle。engine は image の address で raster を見分けるので、
+    // 同じ record からの handle は同じ raster として扱われる。handle が持つ owner の copy が
+    // 本体を生かし、最後の copy が破棄されたら cache に予算の再評価を頼む。
+    std::shared_ptr<const preview::PreviewStillImage> owner = record.entry.image;
+    const preview::PreviewStillImage* pixels = owner.get();
+    entry.image = std::shared_ptr<const preview::PreviewStillImage>(
+        pixels, [owner = std::move(owner), hub = releaseHub_](
+                    const preview::PreviewStillImage*) mutable {
+            // 先に本体の参照を外す。trimToBudget が参照数 1 と判定できるように。
+            owner.reset();
+            std::lock_guard lock(hub->mutex);
+            if (hub->cache) {
+                QMetaObject::invokeMethod(
+                    hub->cache, [cache = hub->cache] { cache->trimToBudget(); },
+                    Qt::QueuedConnection);
+            }
+        });
+    return entry;
 }
 
 void ImageRasterCache::retainOnly(const QSet<QString>& keys) {
@@ -183,15 +216,15 @@ std::size_t ImageRasterCache::readyBytes() const {
     return total;
 }
 
-void ImageRasterCache::evictUnused(const QString& keep) {
+void ImageRasterCache::trimToBudget() {
     std::size_t total = readyBytes();
     while (total > budgetBytes_) {
         // cache だけが raster を持っている (engine の composition も controller も参照して
-        // いない) ものから古い順に捨てる。完成したばかりの record はまだ誰も受け取っていないので残す。
+        // いない) ものから古い順に捨てる。まだ誰にも渡していない record は残す。
         auto victim = records_.end();
         std::uint64_t oldest = std::numeric_limits<std::uint64_t>::max();
         for (auto it = records_.begin(); it != records_.end(); ++it) {
-            if (it.key() == keep || !it->entry.image || it->entry.image.use_count() != 1)
+            if (!it->delivered || !it->entry.image || it->entry.image.use_count() != 1)
                 continue;
             if (it->lastUse < oldest) {
                 oldest = it->lastUse;

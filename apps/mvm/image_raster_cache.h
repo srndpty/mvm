@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 
 namespace mvm::app {
@@ -32,8 +33,11 @@ namespace mvm::app {
 //     照合し、差し替えられていれば作り直す。size と更新時刻が同じまま中身だけ変わったものは
 //     revalidateAll() の内容 fingerprint で見つける
 //   - retainOnly() で、現在の Project が使わない key (clip が消えた・出力解像度が変わった)
-//     を捨てる。さらに byte budget を超えたら、engine も controller も参照していない
-//     ものから古い順に捨てる
+//     を捨てる
+//   - byte budget を超えたら、engine も controller も参照していないものから古い順に捨てる。
+//     参照中の raster は捨てられないので、参照中のものだけで budget を超えている間は超えた
+//     ままになる。参照が外れた時点 (request が返した image の最後の copy が破棄された時点)
+//     で予算を再評価するので、参照されていない raster が budget を超えて残ることはない
 class ImageRasterCache : public QObject {
     Q_OBJECT
 
@@ -74,6 +78,10 @@ public:
     // アプリが前面へ戻ったときに呼ぶ。
     void revalidateAll();
 
+    // byte budget を超えていれば、参照されていない raster を古い順に捨てる。
+    // request が返した image の参照が外れるたびに queued で呼ばれる。
+    void trimToBudget();
+
     // 診断・テスト用。
     std::size_t readyBytes() const;
     int entryCount() const { return static_cast<int>(records_.size()); }
@@ -83,7 +91,16 @@ Q_SIGNALS:
     void entryChanged(const QString& key);
 
 private:
+    // request が渡した image の参照が外れたことを cache へ知らせる窓口。image の破棄は
+    // engine の render thread でも起こるので、cache の破棄と mutex で排他する。
+    struct ReleaseHub {
+        std::mutex mutex;
+        ImageRasterCache* cache = nullptr;
+    };
+
     struct Record {
+        // entry.image は cache が持つ本体。request はこれを直接渡さず、参照が外れたときに
+        // trimToBudget を呼ぶ handle で包んで渡す (handOut)。
         Entry entry;
         MediaSourceIdentity identity;
         std::filesystem::path path;
@@ -91,13 +108,16 @@ private:
         std::uint64_t ticket = 0;
         std::uint64_t lastUse = 0;
         std::size_t bytes = 0;
+        // 一度も request で渡していない raster は、controller が受け取る前なので捨てない。
+        bool delivered = false;
         std::shared_ptr<std::atomic<bool>> cancel;
     };
+
+    Entry handOut(Record& record);
 
     void finish(const QString& key, std::uint64_t ticket, std::optional<std::uint64_t> fingerprint,
                 Entry entry);
     void dropStale(const QList<QPair<QString, quint64>>& stale);
-    void evictUnused(const QString& keep);
 
     std::size_t budgetBytes_;
     RasterFunction raster_;
@@ -106,6 +126,7 @@ private:
     std::uint64_t nextTicket_ = 1;
     std::uint64_t useClock_ = 0;
     std::shared_ptr<std::atomic<bool>> shuttingDown_ = std::make_shared<std::atomic<bool>>(false);
+    std::shared_ptr<ReleaseHub> releaseHub_ = std::make_shared<ReleaseHub>();
 };
 
 } // namespace mvm::app

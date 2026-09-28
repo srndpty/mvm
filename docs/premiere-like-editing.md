@@ -1518,6 +1518,7 @@ V2 の回転だけ、V2 の非対称 crop だけ、V2 の非対称 crop + 回転
 - `refreshTimelineModel` で、現在の画像 clip と現在の出力解像度の組だけを残す (`retainOnly`)。
   出力解像度を変えると旧解像度の raster は捨てる
 - 512MiB の byte budget を超えたら、engine の composition も controller も参照していないものから古い順に捨てる
+  (§18.7 で、参照が外れた時点でも再評価するようにした)
 - 書き出しは以前から毎回 decode するので、差し替え後も preview と書き出しは同じ画素になる
 
 `[事実]` `image_raster_cache_focused` で、初回が Loading であること、同じ素材・解像度の再利用、解像度の変更と
@@ -1541,6 +1542,7 @@ request が size と更新時刻を無視する、`retainOnly` が何も捨て�
 decode で拒否する (「sRGB 以外の ICC profile を持つ画像には対応していません (Display P3)。色が変わるため
 読み込みません」)。header の色空間が RGB で、説明 ('desc' tag。v2 の desc 型と v4 の mluc 型を読む) が "sRGB" を
 含むものだけを sRGB とみなす。名乗りと中身が違う profile は見分けられない。
+(§18.7 で、説明ではなく中身で判定するように変えた)
 fixture は iCCP chunk を入れた PNG を byte で作る (Display P3 と、対照の sRGB)。FFmpeg 8.1.2 の png decoder は
 iCCP を ICC side data として出す (`ffprobe -show_frames` で確認)。`still_image_decode_unit` (85 件) と
 `media_import_files_focused` (27 件) で拒否と受理を見る。拒否をやめると落ちることを確認した。
@@ -1554,3 +1556,70 @@ iCCP を ICC side data として出す (`ffprobe -show_frames` で確認)。`sti
 `preview_engine_sourceless_playback`、`sourceless_timeline_playback`、p5e の preview smoke と capacity smoke
 (音声 16 本を同時に鳴らす) にも適用した。Windows の session volume なので PCM と meter は変わらず、
 検査の値には影響しない。
+
+### 18.7 再レビュー指摘への対応 (P2 2 件 / P3 1 件)
+
+#### 取り込み後に差し替えた素材が、種別の判定を通らずに画像として読まれる (P2)
+
+`[事実]` 静止画かどうかの判定 (`routeMedia`) を `apps/mvm/media_import` から `src/media/still_image/static_image`
+へ移し、「判定して静止画だけを decode する」`loadStaticImage` を置いた。画像の画素が要る 3 経路、
+取り込み (`probeMediaFile`)、preview の raster cache (`ImageRasterCache`)、書き出し (`exportTimeline`) は
+すべてこれを通す。以前は cache と書き出しが `decodeStillImage` を直接呼んでいたため、取り込んだ静止画を
+同じ path のまま animated GIF や mp4 に差し替えると、先頭 frame を静止画として受理していた。
+`decodeStillImage` は判定をしない (header にそう書いた) ので、apps と src/app からは直接呼ばない。
+
+`[事実]` 回帰テスト:
+
+- `image_raster_cache_focused`: 静止画 PNG を Ready にした後、同じ path を animated GIF / APNG / animated WebP /
+  mp4 / EXR に差し替えると Failed になり、理由 (アニメーション / 静止画ではありません / HDR) が付くこと
+- `image_clip_contract`: 同じ 5 種を指す画像 clip の書き出しが、同じ理由で失敗すること。
+  正しい静止画の書き出し 2 件が対照
+- `still_image_decode_unit`: `loadStaticImage` が上の 5 種と Motion JPEG の avi を拒否し、静止画 PNG は読むこと。
+  対照として、`decodeStillImage` 単体は animated GIF の先頭 frame を読めてしまうこと
+
+cache と書き出しを `decodeStillImage` に戻すと、上の 2 本が 5 種すべてで落ちることを確認した
+(animated WebP は decoder 単体でも失敗するが、理由が違うので落ちる)。
+
+`[推測]` 判定と decode はファイルを 2 回開く。その間に差し替えられた場合は decode 側の結果になるが、
+次の request (size と更新時刻の照合) で作り直される。
+
+#### ICC の判定が説明の文字列だけを見ている (P2)
+
+`[事実]` `iccProfileIsSrgb` は説明 ('desc') を判定に使わず (エラー文言に添えるだけ)、色を決める中身を調べる。
+次をすべて満たすものだけを sRGB とみなす。
+
+- header: profile size が buffer に収まる、class が `mntr`、色空間 `RGB `、PCS `XYZ `
+- LUT 型の tag (A2B0..2 / B2A0..2 / D2B0..3 / B2D0..3) が無い。色管理は LUT を matrix/TRC より優先するが、
+  中身を検証しないので拒否する
+- 原色 rXYZ / gXYZ / bXYZ が sRGB の D50 値 (Windows 同梱の sRGB profile と同じ値) と ±0.003 で一致。
+  Display P3 の赤は X が 0.079 違う
+- 白色点 wtpt が D50 か D65 (v2 の sRGB profile は D65 を書く) と ±0.003 で一致
+- トーンカーブ rTRC / gTRC / bTRC が、`curv` (2 点以上の表) なら各点、`para` (関数型 0..4) なら 1024 点で、
+  sRGB の式と ±0.002 で一致。gamma 2.2 は sRGB と最大 0.0085 違うので通らない。1 点の `curv` (単純な gamma)
+  と 0 点 (恒等) は通さない
+
+`[事実]` `still_image_decode_unit` (109 件) で、v2 / v4 それぞれの sRGB (説明の無いものを含む) の受理、
+Display P3 と「説明は sRGB、原色は Display P3」の拒否、sRGB の表の受理、gamma 2.2 (表と 1 点) の拒否、
+白色点 D65 の受理と A 光源の拒否、LUT 型・bXYZ 欠け・`scnr` class・短い buffer・外を指す tag の拒否を見る。
+実物として Windows 同梱の `sRGB Color Space Profile.icm` (HP の v2、`curv` 1024 点) を sRGB と判定することも見る。
+fixture は原色・白色点・トーンカーブを持つ matrix/TRC の v2 profile を組み直し、説明だけ sRGB を名乗る
+`png_icc_fake_srgb.png` を足した (`media_import_files_focused` でも拒否を見る)。
+説明の文字列で判定する実装に戻すと、上の拒否がすべて落ちることを確認した。
+
+`[未検証]` 実際の写真に付く sRGB profile のうち、LUT 型のもの (ICC の `sRGB_v4_ICC_preference.icc` など) は
+拒否される。カメラ・スマートフォンの出力で問題になるかは確かめていない。
+
+#### byte budget が次の decode 完了時にしか再評価されない (P3)
+
+`[事実]` request は cache の raster を直接渡さず、参照が外れたら cache に `trimToBudget` を queued で頼む handle で
+包んで渡す。同じ record からの handle は同じ address を指すので、engine の同一性の判定 (address で raster を
+見分ける) は変わらない。engine の render thread で最後の handle が破棄されても、cache の破棄と mutex で排他し、
+破棄後に届いた queued call は Qt が捨てる。まだ一度も渡していない raster は捨てない
+(完成直後に controller が受け取る前に消えないように)。
+
+これで「参照されていない raster が budget を超えて残る」ことは無くなった。参照中の raster は捨てられないので、
+参照中のものだけで 512MiB を超える間は超えたままになる (engine が使っている画素を消せないため)。
+
+`[事実]` `image_raster_cache_focused` で、budget 1 byte の cache に A (保持) と B (受け取ってすぐ破棄) を読むと
+B だけが捨てられ、A の保持をやめると新しい decode 無しに 0 件になることを見る。対照として既定の budget では
+捨てない。通知をやめると落ちることを確認した。

@@ -2,7 +2,7 @@
 
 #include "app/text_raster.h"
 #include "media/mlt/mvm_mlt_export.h"
-#include "media/still_image/still_image_decoder.h"
+#include "media/still_image/static_image.h"
 #include "project/timeline_edit.h"
 
 #include <algorithm>
@@ -259,8 +259,9 @@ TimelineExportResult exportTimeline(const project::Project& project,
                 clipPaths.push_back(found->second);
                 continue;
             }
-            // preview と同じ decoder と配置 (media/still_image) を通し、同じ画素を書き出す。
-            const auto decoded = media::decodeStillImage(clip.mediaPath);
+            // preview と同じ authority・decoder・配置 (media/still_image) を通し、同じ画素を
+            // 書き出す。取り込み後に動画やアニメーション画像へ差し替えられた素材は拒否する。
+            const auto decoded = media::loadStaticImage(clip.mediaPath);
             if (!decoded.success) {
                 result.error = clip.name + " を読めません: " + decoded.error;
                 return result;

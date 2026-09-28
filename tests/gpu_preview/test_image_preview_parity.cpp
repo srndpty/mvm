@@ -14,7 +14,7 @@
 #include "media/gpu_preview/gpu_compositor.h"
 #include "media/gpu_preview/still_image_frame.h"
 #include "media/mlt/mvm_mlt_runtime.h"
-#include "media/still_image/still_image_decoder.h"
+#include "media/still_image/static_image.h"
 #include "project/timeline_edit.h"
 
 #include <algorithm>
@@ -256,7 +256,7 @@ int main(int argc, char** argv) {
     require(directory.isValid(), "一時 directory を作れません");
 
     // preview。書き出しと同じ decoder と配置で raster を作る。
-    const auto decoded = media::decodeStillImage(image);
+    const auto decoded = media::loadStaticImage(image);
     require(decoded.success, "画像を decode できません: " + decoded.error);
     const auto fitted = media::fitStillImageToRaster(decoded.image, kW, kH);
     require(fitted.success, "画像を配置できません: " + fitted.error);

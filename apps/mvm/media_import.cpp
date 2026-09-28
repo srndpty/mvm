@@ -5,39 +5,6 @@
 
 namespace mvm::app {
 
-MediaRouteDecision routeMedia(const media::MediaStreamFacts& facts) {
-    MediaRouteDecision decision;
-    // FFmpeg が開けないアニメーション WebP もあるので、開けたかどうかより先に見る。
-    if (facts.webpAnimationFlag || (facts.stillImageCodec && facts.imagePacketCountUpTo2 >= 2)) {
-        decision.error = "アニメーション画像 (GIF / WebP / APNG) には対応していません。"
-                         "動画 (mp4 など) へ変換してから読み込んでください";
-        return decision;
-    }
-    if (!facts.ok) {
-        decision.error = "素材を解析できません: " + facts.error;
-        return decision;
-    }
-    if (facts.hdrImageCodec) {
-        decision.error = "HDR 画像 (EXR / Radiance HDR) には対応していません: " +
-                         facts.videoCodecName;
-        return decision;
-    }
-    if (facts.stillImageCodec) {
-        if (facts.imagePacketCountUpTo2 == 0) {
-            decision.error = "画像のデータがありません";
-            return decision;
-        }
-        decision.route = MediaRoute::StillImage;
-        return decision;
-    }
-    if (facts.videoStreamCount == 0 && facts.audioStreamCount == 0) {
-        decision.error = "映像も音声も持たない素材です";
-        return decision;
-    }
-    decision.route = MediaRoute::TimeBased;
-    return decision;
-}
-
 MediaImportResult classifyMediaProbe(const MvmMltProbeResult& probe,
                                      const media::MediaStreamFacts& facts,
                                      const std::filesystem::path& mediaPath) {
@@ -137,14 +104,15 @@ MediaImportResult classifyStillImage(const media::StillImageDecodeResult& decode
 
 MediaImportResult probeMediaFile(const std::filesystem::path& mediaPath) {
     const auto facts = media::probeMediaStreamFacts(mediaPath);
-    const auto decision = routeMedia(facts);
-    if (decision.route == MediaRoute::Rejected) {
+    const auto decision = media::routeMedia(facts);
+    if (decision.route == media::MediaRoute::Rejected) {
         MediaImportResult result;
         result.error = decision.error;
         return result;
     }
-    if (decision.route == MediaRoute::StillImage)
-        return classifyStillImage(media::decodeStillImage(mediaPath), mediaPath);
+    // 取り込み後の preview / 書き出しと同じ authority で decode する。
+    if (decision.route == media::MediaRoute::StillImage)
+        return classifyStillImage(media::loadStaticImage(mediaPath), mediaPath);
 
     const auto text = mediaPath.u8string();
     const std::string utf8(reinterpret_cast<const char*>(text.data()), text.size());

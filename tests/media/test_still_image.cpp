@@ -3,13 +3,18 @@
 // 期待値は実装の式を呼ばずに手で書く (向きは EXIF の定義から導いた表)。
 
 #include "media/still_image/media_stream_facts.h"
+#include "media/still_image/static_image.h"
 #include "media/still_image/still_image_decoder.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -204,69 +209,280 @@ void testDecodeIcc(const fs::path& dir) {
     check(!p3.success && p3.error.find("ICC") != std::string::npos &&
               p3.error.find("Display P3") != std::string::npos,
           "Display P3 の ICC profile を持つ画像を拒否しません: " + p3.error);
+    // 説明は sRGB を名乗るが原色は Display P3。説明ではなく中身で判定していること。
+    const auto fake = decodeStillImage(dir / "png_icc_fake_srgb.png");
+    check(!fake.success && fake.error.find("rXYZ") != std::string::npos,
+          "sRGB を名乗る Display P3 の ICC profile を持つ画像を拒否しません: " + fake.error);
     const auto srgb = decodeStillImage(dir / "png_icc_srgb.png");
     check(srgb.success && srgb.image.width == 64,
           "対照: sRGB の ICC profile を持つ画像を decode できません: " + srgb.error);
 }
 
-// 最小の ICC profile を組む。v2 は 'desc' 型、v4 は 'mluc' 型の説明を持つ。
-std::vector<std::uint8_t> iccProfile(const char* colourSpace, const std::string& description,
-                                     bool v4) {
-    const auto be32 = [](std::vector<std::uint8_t>& out, std::uint32_t value) {
+// 原色は D50 へ Bradford 変換した XYZ。
+constexpr double kSrgb[3][3] = {
+    {0.436066, 0.222488, 0.013916}, {0.385147, 0.716873, 0.097076}, {0.143066, 0.060608, 0.714096}};
+constexpr double kDisplayP3[3][3] = {{0.515121, 0.241196, -0.001053},
+                                     {0.291977, 0.692245, 0.041885},
+                                     {0.157104, 0.066574, 0.784073}};
+
+enum class Curve { SrgbParametric, SrgbTable, Gamma22Table, Gamma22Single };
+
+struct IccSpec {
+    const char* deviceClass = "mntr";
+    const char* colourSpace = "RGB ";
+    std::string description = "sRGB IEC61966-2.1";
+    bool v4 = false;
+    const double (*colorants)[3] = kSrgb;
+    double white[3] = {0.964203, 1.0, 0.824905};
+    Curve curve = Curve::SrgbParametric;
+    bool lut = false;      // A2B0 tag を持つ
+    bool omitBlue = false; // bXYZ tag が無い
+};
+
+double srgbCurve(double x) {
+    return x <= 0.04045 ? x / 12.92 : std::pow((x + 0.055) / 1.055, 2.4);
+}
+
+// matrix/TRC 型の ICC profile を組む。v2 は 'desc' 型、v4 は 'mluc' 型の説明を持つ。
+std::vector<std::uint8_t> iccProfile(const IccSpec& spec) {
+    using Bytes = std::vector<std::uint8_t>;
+    const auto be16 = [](Bytes& out, std::uint32_t value) {
+        out.push_back(static_cast<std::uint8_t>(value >> 8));
+        out.push_back(static_cast<std::uint8_t>(value));
+    };
+    const auto be32 = [](Bytes& out, std::uint32_t value) {
         for (int shift = 24; shift >= 0; shift -= 8)
             out.push_back(static_cast<std::uint8_t>(value >> shift));
     };
-    std::vector<std::uint8_t> tag;
-    if (v4) {
-        for (const char c : std::string("mluc"))
-            tag.push_back(static_cast<std::uint8_t>(c));
+    const auto fixed = [&](Bytes& out, double value) {
+        be32(out,
+             static_cast<std::uint32_t>(static_cast<std::int32_t>(std::lround(value * 65536))));
+    };
+    const auto text = [](Bytes& out, const std::string& value) {
+        out.insert(out.end(), value.begin(), value.end());
+    };
+    const auto xyz = [&](const double* value) {
+        Bytes tag;
+        text(tag, "XYZ ");
         be32(tag, 0);
-        be32(tag, 1);  // record 数
-        be32(tag, 12); // record の大きさ
-        tag.insert(tag.end(), {'e', 'n', 'U', 'S'});
-        be32(tag, static_cast<std::uint32_t>(description.size() * 2));
-        be32(tag, 28); // 文字列の位置 (tag の先頭から)
-        for (const char c : description) {
-            tag.push_back(0);
-            tag.push_back(static_cast<std::uint8_t>(c));
+        for (int i = 0; i < 3; ++i)
+            fixed(tag, value[i]);
+        return tag;
+    };
+
+    Bytes desc;
+    if (spec.v4) {
+        text(desc, "mluc");
+        be32(desc, 0);
+        be32(desc, 1);  // record 数
+        be32(desc, 12); // record の大きさ
+        text(desc, "enUS");
+        be32(desc, static_cast<std::uint32_t>(spec.description.size() * 2));
+        be32(desc, 28); // 文字列の位置 (tag の先頭から)
+        for (const char c : spec.description) {
+            desc.push_back(0);
+            desc.push_back(static_cast<std::uint8_t>(c));
         }
     } else {
-        for (const char c : std::string("desc"))
-            tag.push_back(static_cast<std::uint8_t>(c));
-        be32(tag, 0);
-        be32(tag, static_cast<std::uint32_t>(description.size() + 1));
-        tag.insert(tag.end(), description.begin(), description.end());
-        tag.push_back(0);
+        text(desc, "desc");
+        be32(desc, 0);
+        be32(desc, static_cast<std::uint32_t>(spec.description.size() + 1));
+        text(desc, spec.description);
+        desc.push_back(0);
     }
-    std::vector<std::uint8_t> profile(128, 0);
-    std::memcpy(profile.data() + 16, colourSpace, 4);
-    be32(profile, 1);
-    for (const char c : std::string("desc"))
-        profile.push_back(static_cast<std::uint8_t>(c));
-    be32(profile, 144);
-    be32(profile, static_cast<std::uint32_t>(tag.size()));
-    profile.insert(profile.end(), tag.begin(), tag.end());
+    Bytes trc;
+    switch (spec.curve) {
+    case Curve::SrgbParametric:
+        text(trc, "para");
+        be32(trc, 0);
+        be16(trc, 3);
+        be16(trc, 0);
+        for (const double value : {2.4, 1 / 1.055, 0.055 / 1.055, 1 / 12.92, 0.04045})
+            fixed(trc, value);
+        break;
+    case Curve::SrgbTable:
+    case Curve::Gamma22Table:
+        text(trc, "curv");
+        be32(trc, 0);
+        be32(trc, 1024);
+        for (int i = 0; i < 1024; ++i) {
+            const double x = i / 1023.0;
+            const double y = spec.curve == Curve::SrgbTable ? srgbCurve(x) : std::pow(x, 2.2);
+            be16(trc, static_cast<std::uint32_t>(std::lround(y * 65535)));
+        }
+        break;
+    case Curve::Gamma22Single:
+        text(trc, "curv");
+        be32(trc, 0);
+        be32(trc, 1);
+        be16(trc, 0x0233); // u8Fixed8 の 2.2
+        break;
+    }
+
+    std::vector<std::pair<std::string, Bytes>> tags = {
+        {"desc", desc},
+        {"wtpt", xyz(spec.white)},
+        {"rXYZ", xyz(spec.colorants[0])},
+        {"gXYZ", xyz(spec.colorants[1])},
+        {"rTRC", trc},
+        {"gTRC", trc},
+        {"bTRC", trc},
+    };
+    if (!spec.omitBlue)
+        tags.push_back({"bXYZ", xyz(spec.colorants[2])});
+    if (spec.lut) {
+        Bytes lut;
+        text(lut, "mft2");
+        lut.resize(52, 0);
+        tags.push_back({"A2B0", lut});
+    }
+
+    const std::size_t tableEnd = 128 + 4 + tags.size() * 12;
+    Bytes table;
+    Bytes body;
+    be32(table, static_cast<std::uint32_t>(tags.size()));
+    for (const auto& [signature, data] : tags) {
+        text(table, signature);
+        be32(table, static_cast<std::uint32_t>(tableEnd + body.size()));
+        be32(table, static_cast<std::uint32_t>(data.size()));
+        body.insert(body.end(), data.begin(), data.end());
+        while (body.size() % 4 != 0)
+            body.push_back(0);
+    }
+    Bytes profile;
+    be32(profile, static_cast<std::uint32_t>(tableEnd + body.size()));
+    profile.resize(12, 0);
+    text(profile, spec.deviceClass);
+    text(profile, spec.colourSpace);
+    text(profile, "XYZ ");
+    profile.resize(128, 0);
+    profile.insert(profile.end(), table.begin(), table.end());
+    profile.insert(profile.end(), body.begin(), body.end());
     return profile;
+}
+
+bool isSrgb(const IccSpec& spec, std::string& description, std::string& reason) {
+    const auto profile = iccProfile(spec);
+    return mvm::media::iccProfileIsSrgb(profile.data(), profile.size(), description, reason);
 }
 
 void testIccClassification() {
     using mvm::media::iccProfileIsSrgb;
     std::string description;
+    std::string reason;
     for (const bool v4 : {false, true}) {
-        const char* version = v4 ? " (v4 mluc)" : " (v2 desc)";
-        auto srgb = iccProfile("RGB ", "sRGB IEC61966-2.1", v4);
-        check(iccProfileIsSrgb(srgb.data(), srgb.size(), description) &&
-                  description == "sRGB IEC61966-2.1",
-              std::string("sRGB の profile を sRGB と判定しません") + version);
-        auto p3 = iccProfile("RGB ", "Display P3", v4);
-        check(!iccProfileIsSrgb(p3.data(), p3.size(), description) && description == "Display P3",
-              std::string("Display P3 を sRGB と判定しました") + version);
-        auto gray = iccProfile("GRAY", "sRGB gray", v4);
-        check(!iccProfileIsSrgb(gray.data(), gray.size(), description),
-              std::string("RGB でない profile を sRGB と判定しました") + version);
-        check(!iccProfileIsSrgb(srgb.data(), 100, description),
-              std::string("header に満たない profile を sRGB と判定しました") + version);
+        const std::string version = v4 ? " (v4 mluc)" : " (v2 desc)";
+        IccSpec srgb;
+        srgb.v4 = v4;
+        check(isSrgb(srgb, description, reason) && description == "sRGB IEC61966-2.1",
+              "sRGB の profile を sRGB と判定しません" + version + ": " + reason);
+        // 説明は判定に使わない。説明の無い sRGB も sRGB (対照)。
+        IccSpec unnamed = srgb;
+        unnamed.description = "";
+        check(isSrgb(unnamed, description, reason),
+              "説明の無い sRGB の profile を sRGB と判定しません" + version + ": " + reason);
+        IccSpec p3 = srgb;
+        p3.description = "Display P3";
+        p3.colorants = kDisplayP3;
+        check(!isSrgb(p3, description, reason) && description == "Display P3" &&
+                  reason.find("rXYZ") != std::string::npos,
+              "Display P3 を sRGB と判定しました" + version);
+        // 説明は sRGB を名乗るが中身は Display P3。
+        IccSpec fake = p3;
+        fake.description = "sRGB compatible profile";
+        check(!isSrgb(fake, description, reason) && description == "sRGB compatible profile",
+              "sRGB を名乗る Display P3 の profile を sRGB と判定しました" + version);
+        IccSpec gray = srgb;
+        gray.colourSpace = "GRAY";
+        check(!isSrgb(gray, description, reason),
+              "RGB でない profile を sRGB と判定しました" + version);
     }
+
+    const IccSpec base;
+    // トーンカーブ。sRGB の表 (1024 点) は通し、gamma 2.2 (表 / 1 点) は通さない。
+    IccSpec table = base;
+    table.curve = Curve::SrgbTable;
+    check(isSrgb(table, description, reason),
+          "sRGB の曲線を表で持つ profile を sRGB と判定しません: " + reason);
+    for (const Curve curve : {Curve::Gamma22Table, Curve::Gamma22Single}) {
+        IccSpec gamma = base;
+        gamma.curve = curve;
+        check(!isSrgb(gamma, description, reason) && reason.find("TRC") != std::string::npos,
+              "原色が sRGB で gamma 2.2 の profile を sRGB と判定しました");
+    }
+    // 白色点。v2 の sRGB profile が書く D65 は通し、それ以外は通さない。
+    IccSpec d65 = base;
+    d65.white[0] = 0.950455;
+    d65.white[2] = 1.089050;
+    check(isSrgb(d65, description, reason), "白色点 D65 の sRGB profile を拒否しました: " + reason);
+    IccSpec warm = base;
+    warm.white[0] = 1.0985; // A 光源
+    warm.white[2] = 0.3558;
+    check(!isSrgb(warm, description, reason) && reason.find("wtpt") != std::string::npos,
+          "白色点が D50 / D65 でない profile を sRGB と判定しました");
+    // 中身を検証できない LUT 型、原色の欠けた profile、表示装置用でない profile。
+    IccSpec lut = base;
+    lut.lut = true;
+    check(!isSrgb(lut, description, reason) && reason.find("A2B0") != std::string::npos,
+          "LUT 型の tag を持つ profile を sRGB と判定しました");
+    IccSpec missing = base;
+    missing.omitBlue = true;
+    check(!isSrgb(missing, description, reason) && reason.find("bXYZ") != std::string::npos,
+          "bXYZ の無い profile を sRGB と判定しました");
+    IccSpec scanner = base;
+    scanner.deviceClass = "scnr";
+    check(!isSrgb(scanner, description, reason), "表示装置用でない profile を sRGB と判定しました");
+
+    // 壊れた profile。header に満たない / 宣言した大きさが buffer を超える / tag が外を指す。
+    const auto good = iccProfile(base);
+    check(isSrgb(base, description, reason), "前提: 基準の profile が sRGB ではありません");
+    check(!iccProfileIsSrgb(good.data(), 100, description, reason),
+          "header に満たない profile を sRGB と判定しました");
+    check(!iccProfileIsSrgb(good.data(), good.size() - 4, description, reason),
+          "宣言より短い profile を sRGB と判定しました");
+    auto outside = good;
+    outside[132 + 12 * 2 + 4] = 0x7F; // rXYZ の offset を profile の外へ
+    check(!iccProfileIsSrgb(outside.data(), outside.size(), description, reason),
+          "外を指す tag を持つ profile を sRGB と判定しました");
+
+    // 実物: Windows 同梱の sRGB profile (HP の v2、curv 1024 点) は sRGB。
+    const fs::path windowsSrgb =
+        "C:/Windows/System32/spool/drivers/color/sRGB Color Space Profile.icm";
+    std::ifstream file(windowsSrgb, std::ios::binary);
+    const std::vector<std::uint8_t> real((std::istreambuf_iterator<char>(file)),
+                                         std::istreambuf_iterator<char>());
+    check(!real.empty() && iccProfileIsSrgb(real.data(), real.size(), description, reason),
+          "Windows 同梱の sRGB profile を sRGB と判定しません: " + reason);
+}
+
+// 静止画の authority。取り込み・preview・書き出しが共通に通す。静止画だけを decode し、
+// decodeStillImage なら先頭 frame を読めてしまう動画・アニメーション画像・HDR 画像を拒否する。
+void testLoadStaticImage(const fs::path& dir) {
+    using mvm::media::decodeStillImage;
+    using mvm::media::loadStaticImage;
+    const auto still = loadStaticImage(dir / "png_rgb24.png");
+    check(still.success && still.image.width == 64, "対照: 静止画を読めません: " + still.error);
+
+    struct Rejected {
+        const char* file;
+        const char* reason;
+    };
+
+    for (const Rejected& rejected :
+         {Rejected{"gif_animated.gif", "アニメーション"},
+          Rejected{"apng_animated.png", "アニメーション"},
+          Rejected{"webp_animated.webp", "アニメーション"},
+          Rejected{"mp4_h264_with_cover.mp4", "静止画ではありません"},
+          Rejected{"mjpeg_av.avi", "静止画ではありません"}, Rejected{"exr_float.exr", "HDR"}}) {
+        const auto result = loadStaticImage(dir / rejected.file);
+        check(!result.success && result.error.find(rejected.reason) != std::string::npos,
+              std::string("静止画でない素材を静止画として読みました: ") + rejected.file + " (" +
+                  result.error + ")");
+    }
+    // 対照: decoder 単体は animated GIF の先頭 frame を読める。authority を通さないと
+    // 受理してしまうことが、上の拒否の意味。
+    check(decodeStillImage(dir / "gif_animated.gif").success,
+          "前提: decoder 単体が animated GIF の先頭 frame を読めません");
 }
 
 void testDecodeLimits(const fs::path& dir) {
@@ -468,6 +684,7 @@ int main(int argc, char** argv) {
     testDecodeLimits(dir);
     testDecodeIcc(dir);
     testIccClassification();
+    testLoadStaticImage(dir);
     testOrientationTable();
     testFit();
     std::printf("still_image: %d 件の検査、失敗 %d 件\n", checks, failures);

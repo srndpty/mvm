@@ -230,6 +230,7 @@ add_library(mvm_still_image STATIC
     media/still_image/ffmpeg_input.cpp
     media/still_image/media_stream_facts.cpp
     media/still_image/still_image_decoder.cpp
+    media/still_image/static_image.cpp
 )
 target_include_directories(mvm_still_image PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_still_image

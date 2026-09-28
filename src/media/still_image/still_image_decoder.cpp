@@ -71,41 +71,157 @@ std::uint32_t readBe32(const std::uint8_t* bytes) {
            static_cast<std::uint32_t>(bytes[2]) << 8 | static_cast<std::uint32_t>(bytes[3]);
 }
 
-// ICC profile の説明 ('desc' tag)。v2 の 'desc' 型 (ASCII) と v4 の 'mluc' 型 (UTF-16BE の
-// 先頭 record、ASCII の範囲だけ) を読む。読めなければ空。
-std::string iccDescription(const std::uint8_t* data, std::size_t size) {
-    if (size < 132)
-        return {};
+std::uint16_t readBe16(const std::uint8_t* bytes) {
+    return static_cast<std::uint16_t>(bytes[0] << 8 | bytes[1]);
+}
+
+// s15Fixed16Number (ICC.1 §4.6)。
+double readS15Fixed16(const std::uint8_t* bytes) {
+    return static_cast<double>(static_cast<std::int32_t>(readBe32(bytes))) / 65536.0;
+}
+
+struct IccTag {
+    const std::uint8_t* data = nullptr;
+    std::size_t size = 0;
+};
+
+// tag table から signature の tag を探す。table か tag が profile の外を指していたら false。
+// 見つからなければ tag.data は nullptr のまま true。size は 132 以上であること。
+bool findIccTag(const std::uint8_t* data, std::size_t size, const char* signature, IccTag& tag) {
+    tag = {};
     const std::uint32_t tagCount = readBe32(data + 128);
+    if (tagCount > (size - 132) / 12)
+        return false;
     for (std::uint32_t index = 0; index < tagCount; ++index) {
-        const std::size_t entry = 132 + static_cast<std::size_t>(index) * 12;
-        if (entry + 12 > size)
-            return {};
-        if (std::memcmp(data + entry, "desc", 4) != 0)
+        const std::uint8_t* entry = data + 132 + static_cast<std::size_t>(index) * 12;
+        if (std::memcmp(entry, signature, 4) != 0)
             continue;
-        const std::size_t offset = readBe32(data + entry + 4);
-        const std::size_t length = readBe32(data + entry + 8);
-        if (offset > size || length > size - offset || length < 12)
-            return {};
-        const std::uint8_t* tag = data + offset;
-        std::string text;
-        if (std::memcmp(tag, "desc", 4) == 0) {
-            const std::size_t count = readBe32(tag + 8);
-            for (std::size_t i = 0; i < count && 12 + i < length && tag[12 + i] != 0; ++i)
-                text.push_back(static_cast<char>(tag[12 + i]));
-        } else if (std::memcmp(tag, "mluc", 4) == 0 && length >= 28 && readBe32(tag + 8) > 0) {
-            const std::size_t bytes = readBe32(tag + 20);
-            const std::size_t start = readBe32(tag + 24);
-            for (std::size_t i = 0; i + 1 < bytes && start + i + 1 < length; i += 2) {
-                const unsigned high = tag[start + i];
-                const unsigned low = tag[start + i + 1];
-                if (high == 0 && low != 0 && low < 0x80)
-                    text.push_back(static_cast<char>(low));
-            }
-        }
-        return text;
+        const std::size_t offset = readBe32(entry + 4);
+        const std::size_t length = readBe32(entry + 8);
+        if (offset > size || length > size - offset || length < 8)
+            return false;
+        tag = {data + offset, length};
+        return true;
     }
-    return {};
+    return true;
+}
+
+// ICC profile の説明 ('desc' tag)。v2 の 'desc' 型 (ASCII) と v4 の 'mluc' 型 (UTF-16BE の
+// 先頭 record、ASCII の範囲だけ) を読む。読めなければ空。エラー文言に添えるためだけに使い、
+// sRGB かどうかの判定には使わない (説明は名乗りでしかない)。
+std::string iccDescription(const std::uint8_t* data, std::size_t size) {
+    IccTag found;
+    if (!findIccTag(data, size, "desc", found) || !found.data || found.size < 12)
+        return {};
+    const std::uint8_t* tag = found.data;
+    const std::size_t length = found.size;
+    std::string text;
+    if (std::memcmp(tag, "desc", 4) == 0) {
+        const std::size_t count = readBe32(tag + 8);
+        for (std::size_t i = 0; i < count && 12 + i < length && tag[12 + i] != 0; ++i)
+            text.push_back(static_cast<char>(tag[12 + i]));
+    } else if (std::memcmp(tag, "mluc", 4) == 0 && length >= 28 && readBe32(tag + 8) > 0) {
+        const std::size_t bytes = readBe32(tag + 20);
+        const std::size_t start = readBe32(tag + 24);
+        for (std::size_t i = 0; i + 1 < bytes && start + i + 1 < length; i += 2) {
+            const unsigned high = tag[start + i];
+            const unsigned low = tag[start + i + 1];
+            if (high == 0 && low != 0 && low < 0x80)
+                text.push_back(static_cast<char>(low));
+        }
+    }
+    return text;
+}
+
+// sRGB (IEC 61966-2-1) の matrix/TRC profile の値。原色は D50 へ Bradford 変換した XYZ
+// (ICC の PCS は D50)。Windows 同梱の "sRGB IEC61966-2.1" profile と同じ値。
+constexpr double kSrgbColorants[3][3] = {
+    {0.436066, 0.222488, 0.013916}, {0.385147, 0.716873, 0.097076}, {0.143066, 0.060608, 0.714096}};
+constexpr double kWhiteD50[3] = {0.964203, 1.0, 0.824905};
+constexpr double kWhiteD65[3] = {0.950455, 1.0, 1.089050};
+// 原色・白色点の許容差。s15Fixed16 の丸めと、profile ごとの Bradford 行列の桁の違いを
+// 吸収する大きさ。Display P3 の赤は X が 0.079 違うので、広色域の profile はこれで弾ける。
+constexpr double kXyzTolerance = 0.003;
+// トーンカーブの許容差 (0..1 の出力に対して)。gamma 2.2 の曲線は sRGB と最大 0.0085 違う。
+constexpr double kCurveTolerance = 0.002;
+constexpr int kCurveSamples = 1024;
+
+double srgbToLinear(double value) {
+    return value <= 0.04045 ? value / 12.92 : std::pow((value + 0.055) / 1.055, 2.4);
+}
+
+bool readIccXyz(const IccTag& tag, double (&xyz)[3]) {
+    if (!tag.data || tag.size < 20 || std::memcmp(tag.data, "XYZ ", 4) != 0)
+        return false;
+    for (int i = 0; i < 3; ++i)
+        xyz[i] = readS15Fixed16(tag.data + 8 + i * 4);
+    return true;
+}
+
+bool nearXyz(const double (&value)[3], const double (&expected)[3]) {
+    for (int i = 0; i < 3; ++i) {
+        if (!(std::abs(value[i] - expected[i]) <= kXyzTolerance))
+            return false;
+    }
+    return true;
+}
+
+// parametricCurveType (ICC.1 §10.18) の関数型 0..4 を式のとおりに評価する。
+double evaluateParametricCurve(int type, const double (&p)[7], double x) {
+    const auto power = [&](double base) { return base > 0.0 ? std::pow(base, p[0]) : 0.0; };
+    switch (type) {
+    case 0:
+        return power(x);
+    case 1:
+        return x >= -p[2] / p[1] ? power(p[1] * x + p[2]) : 0.0;
+    case 2:
+        return x >= -p[2] / p[1] ? power(p[1] * x + p[2]) + p[3] : p[3];
+    case 3:
+        return x >= p[4] ? power(p[1] * x + p[2]) : p[3] * x;
+    default:
+        return x >= p[4] ? power(p[1] * x + p[2]) + p[5] : p[3] * x + p[6];
+    }
+}
+
+// TRC tag ('curv' か 'para') が sRGB の曲線か。標本点ごとに sRGB の式と比べる。
+bool curveIsSrgb(const IccTag& tag) {
+    if (!tag.data || tag.size < 12)
+        return false;
+    if (std::memcmp(tag.data, "curv", 4) == 0) {
+        const std::size_t count = readBe32(tag.data + 8);
+        // 0 点は恒等、1 点は単純な gamma。どちらも sRGB ではない。
+        if (count < 2 || count > (tag.size - 12) / 2)
+            return false;
+        for (std::size_t i = 0; i < count; ++i) {
+            const double x = static_cast<double>(i) / static_cast<double>(count - 1);
+            const double y = readBe16(tag.data + 12 + i * 2) / 65535.0;
+            if (!(std::abs(y - srgbToLinear(x)) <= kCurveTolerance))
+                return false;
+        }
+        return true;
+    }
+    if (std::memcmp(tag.data, "para", 4) == 0) {
+        constexpr int kParameterCounts[5] = {1, 3, 4, 5, 7};
+        const int type = readBe16(tag.data + 8);
+        if (type > 4)
+            return false;
+        const int count = kParameterCounts[type];
+        if (tag.size < 12 + static_cast<std::size_t>(count) * 4)
+            return false;
+        double p[7] = {};
+        for (int i = 0; i < count; ++i)
+            p[i] = readS15Fixed16(tag.data + 12 + i * 4);
+        if ((type == 1 || type == 2) && p[1] == 0.0)
+            return false;
+        for (int i = 0; i < kCurveSamples; ++i) {
+            const double x = static_cast<double>(i) / (kCurveSamples - 1);
+            if (!(std::abs(evaluateParametricCurve(type, p, x) - srgbToLinear(x)) <=
+                  kCurveTolerance))
+                return false;
+        }
+        return true;
+    }
+    return false;
 }
 
 // EXIF side data に残っている orientation (0x112)。無ければ 0。
@@ -432,9 +548,11 @@ StillImageDecodeResult decodeStillImage(const std::filesystem::path& path,
     if (const AVFrameSideData* icc =
             av_frame_get_side_data(frame.get(), AV_FRAME_DATA_ICC_PROFILE)) {
         std::string description;
-        if (!iccProfileIsSrgb(icc->data, icc->size, description)) {
+        std::string reason;
+        if (!iccProfileIsSrgb(icc->data, icc->size, description, reason)) {
             result.error = "sRGB 以外の ICC profile を持つ画像には対応していません (" +
-                           (description.empty() ? std::string("説明なし") : description) +
+                           (description.empty() ? std::string("説明なし") : description) + ": " +
+                           reason +
                            ")。色が変わるため読み込みません。sRGB へ変換してから読み込んでください";
             return result;
         }
@@ -449,15 +567,76 @@ StillImageDecodeResult decodeStillImage(const std::filesystem::path& path,
     return result;
 }
 
-bool iccProfileIsSrgb(const std::uint8_t* data, std::size_t size, std::string& description) {
+bool iccProfileIsSrgb(const std::uint8_t* data, std::size_t size, std::string& description,
+                      std::string& reason) {
     description.clear();
-    if (!data || size < 132)
+    reason.clear();
+    if (!data || size < 132) {
+        reason = "profile が短すぎます";
         return false;
+    }
+    // header の profile size が buffer に収まらなければ壊れている。以降はその範囲だけを読む。
+    const std::size_t declared = readBe32(data);
+    if (declared < 132 || declared > size) {
+        reason = "profile の大きさが不正です";
+        return false;
+    }
+    size = declared;
     description = iccDescription(data, size);
-    // header の data colour space (offset 16) が RGB で、説明が sRGB を名乗るものだけを通す。
-    // 名乗っていても中身が別物という profile は見分けられないが、Display P3 や Adobe RGB を
-    // 黙って sRGB として描く事故は防げる。
-    return std::memcmp(data + 16, "RGB ", 4) == 0 && description.find("sRGB") != std::string::npos;
+    // 説明 ('desc') は名乗りでしかないので判定に使わない。色を決める中身 (原色・白色点・
+    // トーンカーブ) が sRGB と一致する matrix/TRC 型の表示装置 profile だけを通す。
+    if (std::memcmp(data + 12, "mntr", 4) != 0) {
+        reason = "表示装置用 (mntr) の profile ではありません";
+        return false;
+    }
+    if (std::memcmp(data + 16, "RGB ", 4) != 0 || std::memcmp(data + 20, "XYZ ", 4) != 0) {
+        reason = "RGB / XYZ の profile ではありません";
+        return false;
+    }
+    // LUT 型の tag があると、色管理はそちらを matrix/TRC より優先して使う。LUT の中身は
+    // 検証しないので、あれば拒否する。
+    for (const char* lut : {"A2B0", "A2B1", "A2B2", "B2A0", "B2A1", "B2A2", "D2B0", "D2B1", "D2B2",
+                            "D2B3", "B2D0", "B2D1", "B2D2", "B2D3"}) {
+        IccTag tag;
+        if (!findIccTag(data, size, lut, tag) || tag.data) {
+            reason = std::string("LUT 型の profile (") + lut + ") は検証できません";
+            return false;
+        }
+    }
+    const char* colorantTags[3] = {"rXYZ", "gXYZ", "bXYZ"};
+    for (int channel = 0; channel < 3; ++channel) {
+        IccTag tag;
+        double xyz[3] = {};
+        if (!findIccTag(data, size, colorantTags[channel], tag) || !readIccXyz(tag, xyz)) {
+            reason = std::string("原色 (") + colorantTags[channel] + ") を読めません";
+            return false;
+        }
+        if (!nearXyz(xyz, kSrgbColorants[channel])) {
+            reason = std::string("原色 (") + colorantTags[channel] + ") が sRGB と違います";
+            return false;
+        }
+    }
+    {
+        IccTag tag;
+        double xyz[3] = {};
+        if (!findIccTag(data, size, "wtpt", tag) || !readIccXyz(tag, xyz)) {
+            reason = "白色点 (wtpt) を読めません";
+            return false;
+        }
+        // v4 は PCS の D50、v2 の sRGB profile は D65 を書く。
+        if (!nearXyz(xyz, kWhiteD50) && !nearXyz(xyz, kWhiteD65)) {
+            reason = "白色点 (wtpt) が D50 / D65 ではありません";
+            return false;
+        }
+    }
+    for (const char* trc : {"rTRC", "gTRC", "bTRC"}) {
+        IccTag tag;
+        if (!findIccTag(data, size, trc, tag) || !curveIsSrgb(tag)) {
+            reason = std::string("トーンカーブ (") + trc + ") が sRGB と違います";
+            return false;
+        }
+    }
+    return true;
 }
 
 StillRasterResult fitStillImageToRaster(const StillImage& image, int outputWidth,

@@ -598,8 +598,9 @@ if (-not (Test-Path $largePngPath) -or $Force) {
 }
 
 # ICC profile (iCCP chunk) を持つ PNG。decoder は色の変換をしないので、sRGB 以外は拒否し、
-# sRGB は受理する (対照)。profile は 'desc' tag だけを持つ最小の ICC v2 を byte で組む。
-# ffmpeg の png encoder は iCCP を書かないため。
+# sRGB は受理する (対照)。decoder は説明 ('desc') ではなく中身 (原色・白色点・トーンカーブ)
+# で判定するので、matrix/TRC 型の ICC v2 profile を byte で組む。ffmpeg の png encoder は
+# iCCP を書かないため。
 function Get-Crc32([byte[]]$Bytes) {
     [uint32]$crc = [uint32]::MaxValue
     foreach ($b in $Bytes) {
@@ -616,7 +617,27 @@ function Get-BigEndian32([uint32]$Value) {
     [Array]::Reverse($bytes)
     return $bytes
 }
-function New-IccProfile([string]$Description) {
+# s15Fixed16Number (符号付き 16.16 固定小数点、big endian)。
+function Get-S15Fixed16([double]$Value) {
+    $bytes = [BitConverter]::GetBytes([int32][math]::Round($Value * 65536))
+    [Array]::Reverse($bytes)
+    return $bytes
+}
+function New-IccXyzTag([double[]]$Xyz) {
+    $tag = [System.Collections.Generic.List[byte]]::new()
+    $tag.AddRange([System.Text.Encoding]::ASCII.GetBytes('XYZ '))
+    $tag.AddRange([byte[]]::new(4))
+    foreach ($v in $Xyz) { $tag.AddRange([byte[]](Get-S15Fixed16 $v)) }
+    return $tag.ToArray()
+}
+# 原色は D50 へ Bradford 変換した XYZ (ICC の PCS)。
+$IccColorants = @{
+    Srgb = @(@(0.436066, 0.222488, 0.013916), @(0.385147, 0.716873, 0.097076),
+             @(0.143066, 0.060608, 0.714096))
+    DisplayP3 = @(@(0.515121, 0.241196, -0.001053), @(0.291977, 0.692245, 0.041885),
+                  @(0.157104, 0.066574, 0.784073))
+}
+function New-IccProfile([string]$Description, [object[]]$Colorants) {
     $ascii = [System.Text.Encoding]::ASCII.GetBytes($Description)
     $desc = [System.Collections.Generic.List[byte]]::new()
     $desc.AddRange([System.Text.Encoding]::ASCII.GetBytes('desc'))
@@ -625,27 +646,55 @@ function New-IccProfile([string]$Description) {
     $desc.AddRange($ascii)
     $desc.Add([byte]0)
     $desc.AddRange([byte[]]::new(4 + 4 + 2 + 1 + 67))   # unicode / scriptcode は空
-    $tagOffset = 128 + 4 + 12
+    # sRGB の曲線 (parametricCurveType の関数型 3)。3 channel で共有する。
+    $trc = [System.Collections.Generic.List[byte]]::new()
+    $trc.AddRange([System.Text.Encoding]::ASCII.GetBytes('para'))
+    $trc.AddRange([byte[]](0, 0, 0, 0, 0, 3, 0, 0))
+    foreach ($v in @(2.4, (1 / 1.055), (0.055 / 1.055), (1 / 12.92), 0.04045)) {
+        $trc.AddRange([byte[]](Get-S15Fixed16 $v))
+    }
+    $tags = [ordered]@{
+        desc = $desc.ToArray()
+        wtpt = New-IccXyzTag @(0.950455, 1.0, 1.089050)   # v2 の sRGB profile と同じ D65
+        rXYZ = New-IccXyzTag $Colorants[0]
+        gXYZ = New-IccXyzTag $Colorants[1]
+        bXYZ = New-IccXyzTag $Colorants[2]
+        rTRC = $trc.ToArray()
+    }
+    $tableSize = 4 + 12 * ($tags.Count + 2)               # gTRC / bTRC は rTRC を指す
+    $body = [System.Collections.Generic.List[byte]]::new()
+    $table = [System.Collections.Generic.List[byte]]::new()
+    $table.AddRange([byte[]](Get-BigEndian32 ([uint32]($tags.Count + 2))))
+    $offsets = @{}
+    foreach ($name in $tags.Keys) {
+        $offsets[$name] = 128 + $tableSize + $body.Count
+        $body.AddRange([byte[]]$tags[$name])
+        while ($body.Count % 4 -ne 0) { $body.Add([byte]0) }
+    }
+    foreach ($name in @($tags.Keys) + @('gTRC', 'bTRC')) {
+        $source = if ($name -in @('gTRC', 'bTRC')) { 'rTRC' } else { $name }
+        $table.AddRange([System.Text.Encoding]::ASCII.GetBytes($name))
+        $table.AddRange([byte[]](Get-BigEndian32 ([uint32]$offsets[$source])))
+        $table.AddRange([byte[]](Get-BigEndian32 ([uint32]$tags[$source].Length)))
+    }
     $iccBytes = [System.Collections.Generic.List[byte]]::new()
-    $iccBytes.AddRange([byte[]](Get-BigEndian32 ([uint32]($tagOffset + $desc.Count))))
+    $iccBytes.AddRange([byte[]](Get-BigEndian32 ([uint32](128 + $tableSize + $body.Count))))
     $iccBytes.AddRange([byte[]]::new(4))                                   # CMM
     $iccBytes.AddRange([byte[]](0x02, 0x10, 0x00, 0x00))                   # version 2.1
     $iccBytes.AddRange([System.Text.Encoding]::ASCII.GetBytes('mntrRGB XYZ '))
     $iccBytes.AddRange([byte[]]::new(12))                                  # date
     $iccBytes.AddRange([System.Text.Encoding]::ASCII.GetBytes('acsp'))
     $iccBytes.AddRange([byte[]]::new(128 - $iccBytes.Count))
-    $iccBytes.AddRange([byte[]](Get-BigEndian32 1))                        # tag 数
-    $iccBytes.AddRange([System.Text.Encoding]::ASCII.GetBytes('desc'))
-    $iccBytes.AddRange([byte[]](Get-BigEndian32 ([uint32]$tagOffset)))
-    $iccBytes.AddRange([byte[]](Get-BigEndian32 ([uint32]$desc.Count)))
-    $iccBytes.AddRange($desc)
+    $iccBytes.AddRange($table)
+    $iccBytes.AddRange($body)
     return $iccBytes.ToArray()
 }
-function Add-PngIccProfile([string]$Source, [string]$Destination, [string]$Description) {
+function Add-PngIccProfile([string]$Source, [string]$Destination, [string]$Description,
+                           [object[]]$Colorants) {
     $png = [System.IO.File]::ReadAllBytes($Source)
     $compressed = [System.IO.MemoryStream]::new()
     $zlib = [System.IO.Compression.ZLibStream]::new($compressed, [System.IO.Compression.CompressionLevel]::Optimal)
-    $icc = New-IccProfile $Description
+    $icc = New-IccProfile -Description $Description -Colorants $Colorants
     $zlib.Write($icc, 0, $icc.Length)
     $zlib.Dispose()
     $data = [System.Collections.Generic.List[byte]]::new()
@@ -665,11 +714,14 @@ function Add-PngIccProfile([string]$Source, [string]$Destination, [string]$Descr
     [System.IO.File]::WriteAllBytes($Destination, $out.ToArray())
 }
 $iccSource = Join-Path $ImportDir 'png_rgb24.png'
-foreach ($icc in @(@{ Name = 'png_icc_display_p3.png'; Description = 'Display P3' },
-                   @{ Name = 'png_icc_srgb.png'; Description = 'sRGB IEC61966-2.1' })) {
+# fake_srgb は説明だけ sRGB を名乗り、原色は Display P3。説明で判定していると通ってしまう。
+foreach ($icc in @(@{ Name = 'png_icc_display_p3.png'; Description = 'Display P3'; Colorants = 'DisplayP3' },
+                   @{ Name = 'png_icc_srgb.png'; Description = 'sRGB IEC61966-2.1'; Colorants = 'Srgb' },
+                   @{ Name = 'png_icc_fake_srgb.png'; Description = 'sRGB compatible profile'; Colorants = 'DisplayP3' })) {
     $p = Join-Path $ImportDir $icc.Name
     if ((Test-Path $p) -and -not $Force) { continue }
-    Add-PngIccProfile -Source $iccSource -Destination $p -Description $icc.Description
+    Add-PngIccProfile -Source $iccSource -Destination $p -Description $icc.Description `
+        -Colorants $IccColorants[$icc.Colorants]
 }
 
 # 日本語名の複製。判定と decode が UTF-8 のパスを正しく渡していることを見る。
