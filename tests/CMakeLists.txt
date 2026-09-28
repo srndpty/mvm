@@ -82,6 +82,17 @@ set_tests_properties(m7b_3_product_export_architecture PROPERTIES TIMEOUT 120)
 
 # --- M5: minimal timeline editing ------------------------------------------
 add_executable(mvm_test_timeline_edit harness/test_timeline_edit.cpp)
+add_executable(mvm_test_text_clip harness/test_text_clip.cpp)
+target_link_libraries(mvm_test_text_clip PRIVATE
+    mvm::project mvm::text_raster mvm::timeline_export mvm::timeline_preview_mapping
+    mvm::mlt mvm::warnings)
+target_compile_definitions(mvm_test_text_clip PRIVATE ${MVM_MLT_PATH_DEFS})
+target_compile_definitions(mvm_test_text_clip PRIVATE
+    MVM_TEXT_TEST_VIDEO="${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4")
+add_test(NAME text_clip_contract COMMAND mvm_test_text_clip)
+set_tests_properties(text_clip_contract PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
 target_link_libraries(mvm_test_timeline_edit PRIVATE
     mvm::project mvm::util mvm::warnings)
 add_test(NAME m5_timeline_edit_focused
@@ -201,6 +212,14 @@ target_link_libraries(mvm_test_controller_export PRIVATE
     mvm::mlt mvm::preview_engine mvm::audio_preview mvm::preview_qt
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 mvm::warnings)
 target_compile_definitions(mvm_test_controller_export PRIVATE ${MVM_MLT_PATH_DEFS})
+# 横書き文字ツールの直接入力 (target は apps/mvm/CMakeLists.txt で定義)。
+# 実 window と GPU を使うので mvm_gpu を排他し、workstation label を付ける。
+add_test(NAME text_ui_direct_input COMMAND mvm_test_text_ui_input)
+set_tests_properties(text_ui_direct_input PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4"
+    LABELS workstation RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 120)
+
 add_executable(mvm_test_export_eta core/test_export_eta.cpp)
 target_link_libraries(mvm_test_export_eta PRIVATE mvm::core mvm::warnings)
 add_test(NAME export_eta_unit COMMAND mvm_test_export_eta)
@@ -2624,6 +2643,25 @@ mvm_add_test(source_decode_worker_test_barrier_stop
 add_executable(mvm_test_p2_gpu_compositor gpu_preview/test_p2_gpu_compositor.cpp)
 target_link_libraries(mvm_test_p2_gpu_compositor PRIVATE mvm::gpu_preview mvm::warnings)
 
+# 文字 clip の preview 経路。静止画 layer と video layer の前後関係を画素で検査する。
+add_executable(mvm_test_still_layer_compositor gpu_preview/test_still_layer_compositor.cpp)
+target_link_libraries(mvm_test_still_layer_compositor PRIVATE mvm::gpu_preview mvm::warnings)
+mvm_add_test(still_layer_compositor
+    COMMAND mvm_test_still_layer_compositor
+    PROPERTIES RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 60)
+
+# 文字と映像の重なり順を preview (GPU compositor) と書き出し (MLT) の画素で比較する。
+add_executable(mvm_test_text_preview_parity gpu_preview/test_text_preview_parity.cpp)
+target_link_libraries(mvm_test_text_preview_parity PRIVATE
+    mvm::gpu_preview mvm::text_raster mvm::timeline_export mvm::timeline_preview_mapping
+    mvm::project mvm::mlt mvm::warnings)
+target_compile_definitions(mvm_test_text_preview_parity PRIVATE ${MVM_MLT_PATH_DEFS}
+    MVM_TEXT_TEST_VIDEO="${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4")
+mvm_add_test(text_preview_parity
+    COMMAND mvm_test_text_preview_parity
+    PROPERTIES REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4"
+        RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 180)
+
 # deterministic fixture はリポジトリ管理なので常に必須。
 # 60秒 benchmark 動画は通常CIでは生成しないため、それを使う統合テストだけを
 # 条件付き登録する。Smoke 素材へ置き換えると frame 3599 の検査が空振りする。
@@ -3454,7 +3492,11 @@ set(MVM_WORKSTATION_TESTS
     gpu_soak_event_query_backend
     preview_spike_device_sharing_contract
     preview_spike_json_contract
-    preview_spike_1080p60_h264_smoke)
+    preview_spike_1080p60_h264_smoke
+    # 文字の描画は既定フォント (Meiryo) を要求し、無ければ代替せず失敗する。
+    text_clip_contract
+    # 上に加えて、書き出しと同じ frame の映像を D3D11VA で復号して比べる。
+    text_preview_parity)
 
 foreach(_workstation_test IN LISTS MVM_WORKSTATION_TESTS)
     if(TEST "${_workstation_test}")

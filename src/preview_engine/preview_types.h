@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -85,7 +86,17 @@ struct PreviewNormalizedRect {
     bool operator==(const PreviewNormalizedRect&) const = default;
 };
 
+// 静止画 layer の画素。文字 clip などを video layer と同じ z 順で合成するために使う。
+// decode を伴わないので source としては登録せず、composition snapshot が直接持つ。
+struct PreviewStillImage {
+    int width = 0;
+    int height = 0;
+    // RGBA8 straight alpha、行間の余白なし。width * height * 4 byte。
+    std::vector<std::uint8_t> rgba;
+};
+
 struct PreviewCompositionLayer {
+    // video layer が参照する source。静止画 layer では 0 のまま。
     PreviewSourceId source;
     PreviewNormalizedRect destination;
     PreviewNormalizedRect sourceRect;
@@ -96,6 +107,10 @@ struct PreviewCompositionLayer {
     std::int64_t sourceDurationFrames = 0;
     std::int64_t fadeInFrames = 0;
     std::int64_t fadeOutFrames = 0;
+    // 非 null なら静止画 layer。同一性は pointer で判定するので (operator==)、
+    // 同じ画素を出し直すときは同じ instance を渡すこと。
+    // 既存の集成体初期化の順序を崩さないよう末尾に置く。
+    std::shared_ptr<const PreviewStillImage> stillImage{};
     bool operator==(const PreviewCompositionLayer&) const = default;
 };
 

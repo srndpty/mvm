@@ -132,7 +132,7 @@ function Test-TimelineToolContract([string]$panelSource, [string]$mainSource) {
         @{ Tool = 'pen'; Key = 'P'; Available = 'true' },
         @{ Tool = 'hand'; Key = 'H'; Available = 'true' },
         @{ Tool = 'zoom'; Key = 'Z'; Available = 'true' },
-        @{ Tool = 'text'; Key = 'T'; Available = 'false' }
+        @{ Tool = 'text'; Key = 'T'; Available = 'true' }
     )) {
         $pattern = '\{\s*tool:\s*"' + [regex]::Escape($entry.Tool) + '"[^{}]*key:\s*"' +
                    [regex]::Escape($entry.Key) + '"[^{}]*available:\s*' + $entry.Available + '\b'

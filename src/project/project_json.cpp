@@ -667,6 +667,8 @@ private:
             kind = TimelineClipKind::Manim;
         else if (text == "audio")
             kind = TimelineClipKind::Audio;
+        else if (text == "text")
+            kind = TimelineClipKind::Text;
         else
             return fail("未知の timeline clip kind です: " + text);
         return true;
@@ -800,6 +802,70 @@ private:
         return consume(']');
     }
 
+    bool parseTextClipData(TextClipData& data) {
+        bool seen[11] = {};
+        if (!consume('{'))
+            return false;
+        skipWhitespace();
+        if (!peek('}')) {
+            while (true) {
+                std::string key;
+                if (!parseString(key) || !consume(':'))
+                    return false;
+                int index = -1;
+                if (key == "content")
+                    index = 0;
+                else if (key == "font_family")
+                    index = 1;
+                else if (key == "font_size")
+                    index = 2;
+                else if (key == "x")
+                    index = 3;
+                else if (key == "y")
+                    index = 4;
+                else if (key == "color")
+                    index = 5;
+                else if (key == "bold")
+                    index = 6;
+                else if (key == "alignment")
+                    index = 7;
+                else if (key == "outline_color")
+                    index = 8;
+                else if (key == "outline_width")
+                    index = 9;
+                else if (key == "background_color")
+                    index = 10;
+                if (index < 0 || index > 10)
+                    return fail("text clip に未知の field があります: " + key);
+                if (seen[index])
+                    return fail("text clip の field が重複しています: " + key);
+                seen[index] = true;
+                if ((index == 0 && !parseString(data.content)) ||
+                    (index == 1 && !parseString(data.fontFamily)) ||
+                    (index == 2 && !parseInteger(data.fontSize)) ||
+                    (index == 3 && !parseInteger(data.x)) ||
+                    (index == 4 && !parseInteger(data.y)) ||
+                    (index == 5 && !parseString(data.color)) ||
+                    (index == 6 && !parseBool(data.bold)) ||
+                    (index == 7 && !parseString(data.alignment)) ||
+                    (index == 8 && !parseString(data.outlineColor)) ||
+                    (index == 9 && !parseInteger(data.outlineWidth)) ||
+                    (index == 10 && !parseString(data.backgroundColor)))
+                    return false;
+                skipWhitespace();
+                if (consumeIf(','))
+                    continue;
+                break;
+            }
+        }
+        if (!consume('}'))
+            return false;
+        for (bool present : seen)
+            if (!present)
+                return fail("text clip の必須 field がありません");
+        return true;
+    }
+
     bool parseTimelineClip(TimelineClip& clip) {
         bool hasKind = false;
         bool hasMedia = false;
@@ -817,6 +883,7 @@ private:
         bool hasLinkGroupId = false;
         bool hasSpeedNum = false;
         bool hasSpeedDen = false;
+        bool hasText = false;
         std::string kind;
         std::string media;
         std::string trackKind;
@@ -897,6 +964,10 @@ private:
                     if (hasEffects || !parseClipEffects(clip.effects))
                         return fail("timeline clip の effects が重複または不正です");
                     hasEffects = true;
+                } else if (key == "text") {
+                    if (hasText || !parseTextClipData(clip.text))
+                        return fail("timeline clip の text が重複または不正です");
+                    hasText = true;
                 } else if (!skipValue()) {
                     return false;
                 }
@@ -912,15 +983,20 @@ private:
             !hasSourceFrameCount || !hasSourceIn || !hasSourceOut || !hasTimelineStart ||
             !hasTrackKind || !hasTrackIndex || !hasSpeedNum || !hasSpeedDen)
             return fail("timeline clip の必須 field がありません");
-        if (media.empty())
+        if (hasText != (kind == "text"))
+            return fail("timeline clip の text と kind が一致しません");
+        if (media.empty() && kind != "text")
             return fail("timeline clip の media_path が空です");
+        if (!media.empty() && kind == "text")
+            return fail("text clip に media_path は指定できません");
         if (clip.name.empty())
             return fail("timeline clip の name が空です");
         if (!parseClipKind(kind, clip.kind))
             return false;
         if (!parseTrackKind(trackKind, clip.track.kind))
             return false;
-        clip.mediaPath = pathFromUtf8(media);
+        if (!media.empty())
+            clip.mediaPath = pathFromUtf8(media);
         return true;
     }
 
@@ -1247,7 +1323,8 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
     };
     for (std::size_t index = 0; index < project.timelineClips.size(); ++index) {
         const auto& clip = project.timelineClips[index];
-        if (clip.mediaPath.empty() || clip.name.empty()) {
+        if ((clip.mediaPath.empty() && clip.kind != TimelineClipKind::Text) ||
+            (!clip.mediaPath.empty() && clip.kind == TimelineClipKind::Text) || clip.name.empty()) {
             result.error = "timeline clip の media_path または name が空です";
             return result;
         }
@@ -1259,7 +1336,10 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
         json << (index == 0 ? "\n" : ",\n") << "    {\n"
              << "      \"kind\": \"" << kindName << "\",\n"
              << "      \"media_path\": \""
-             << escapeJson(persistedSourcePath(clip.mediaPath, projectDirectory)) << "\",\n"
+             << (clip.kind == TimelineClipKind::Text
+                     ? std::string{}
+                     : escapeJson(persistedSourcePath(clip.mediaPath, projectDirectory)))
+             << "\",\n"
              << "      \"name\": \"" << escapeJson(clip.name) << "\",\n"
              << "      \"id\": \"" << escapeJson(clip.id) << "\",\n"
              << "      \"source_fps_num\": " << clip.sourceFpsNum << ",\n"
@@ -1290,8 +1370,24 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
         writeKeys(clip.effects.opacityKeys);
         json << ",\n        \"volume_keys\": ";
         writeKeys(clip.effects.volumeKeys);
-        json << "\n      }\n"
-             << "    }";
+        json << "\n      }";
+        if (clip.kind == TimelineClipKind::Text) {
+            const auto& text = clip.text;
+            json << ",\n      \"text\": {\n"
+                 << "        \"content\": \"" << escapeJson(text.content) << "\",\n"
+                 << "        \"font_family\": \"" << escapeJson(text.fontFamily) << "\",\n"
+                 << "        \"font_size\": " << text.fontSize << ",\n"
+                 << "        \"x\": " << text.x << ",\n"
+                 << "        \"y\": " << text.y << ",\n"
+                 << "        \"color\": \"" << escapeJson(text.color) << "\",\n"
+                 << "        \"bold\": " << (text.bold ? "true" : "false") << ",\n"
+                 << "        \"alignment\": \"" << escapeJson(text.alignment) << "\",\n"
+                 << "        \"outline_color\": \"" << escapeJson(text.outlineColor) << "\",\n"
+                 << "        \"outline_width\": " << text.outlineWidth << ",\n"
+                 << "        \"background_color\": \"" << escapeJson(text.backgroundColor)
+                 << "\"\n      }";
+        }
+        json << "\n    }";
     }
     if (!project.timelineClips.empty())
         json << '\n';
@@ -1402,7 +1498,8 @@ ProjectLoadResult parseProjectJsonText(const std::string& jsonText,
     }
 
     for (auto& clip : parsed.timelineClips)
-        clip.mediaPath = resolveSourcePath(clip.mediaPath, projectDirectory);
+        if (clip.kind != TimelineClipKind::Text)
+            clip.mediaPath = resolveSourcePath(clip.mediaPath, projectDirectory);
     for (auto& item : parsed.mediaItems)
         item.mediaPath = resolveSourcePath(item.mediaPath, projectDirectory);
     // media_path の重複は解決後の path で判定する。

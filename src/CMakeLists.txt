@@ -81,6 +81,11 @@ target_include_directories(mvm_timeline_preview_mapping PUBLIC ${CMAKE_CURRENT_S
 target_link_libraries(mvm_timeline_preview_mapping PUBLIC mvm::project PRIVATE mvm::warnings)
 add_library(mvm::timeline_preview_mapping ALIAS mvm_timeline_preview_mapping)
 
+add_library(mvm_text_raster STATIC app/text_raster.cpp)
+target_include_directories(mvm_text_raster PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_text_raster PUBLIC mvm::project Qt6::Gui PRIVATE mvm::warnings)
+add_library(mvm::text_raster ALIAS mvm_text_raster)
+
 # --- M4: timeline export orchestration --------------------------------------
 # Qt に依存しない。Project の clip 列を解決し、tmp へ書き出して検証してから
 # 正規名へ rename する順序だけを担う。MLT の呼び出しは mvm::mlt に閉じる。
@@ -90,7 +95,7 @@ add_library(mvm_timeline_export STATIC
 target_include_directories(mvm_timeline_export PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_timeline_export
     PUBLIC mvm::project
-    PRIVATE mvm::core mvm::mlt mvm::warnings)
+    PRIVATE mvm::core mvm::mlt mvm::text_raster mvm::warnings)
 add_library(mvm::timeline_export ALIAS mvm_timeline_export)
 
 # --- Phase 5 / P5-B: PreviewEngine product foundation -----------------------
@@ -162,6 +167,7 @@ add_library(mvm_gpu_preview STATIC
     media/gpu_preview/exact_frame_pairer.cpp
     media/gpu_preview/source_decode_worker.cpp
     media/gpu_preview/gpu_compositor.cpp
+    media/gpu_preview/still_image_frame.cpp
     media/gpu_preview/composition_display_ledger.cpp
     media/gpu_preview/transition_probe.cpp
     media/gpu_preview/validation_reference.cpp

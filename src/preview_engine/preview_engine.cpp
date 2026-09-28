@@ -12,6 +12,7 @@
 #include "media/gpu_preview/readback_counter.h"
 #include "media/gpu_preview/source_decode_worker.h"
 #include "media/gpu_preview/source_registry.h"
+#include "media/gpu_preview/still_image_frame.h"
 #include "preview_engine/preview_engine_internal.h"
 
 #include <algorithm>
@@ -418,7 +419,26 @@ CompositionAcceptanceState::submit(const std::shared_ptr<const CompositionSnapsh
     }
 
     std::set<std::uint64_t> distinctSources;
+    bool hasStillLayer = false;
     for (const PreviewCompositionLayer& layer : snapshot->layers) {
+        if (layer.stillImage) {
+            // 静止画 layer は decode source を持たない。画素と配置だけを検査する。
+            const PreviewStillImage& image = *layer.stillImage;
+            if (layer.source.value != 0 || image.width <= 0 || image.height <= 0 ||
+                image.rgba.size() != static_cast<std::size_t>(image.width) *
+                                         static_cast<std::size_t>(image.height) * 4U) {
+                return Result<AcceptedComposition>::failure(
+                    compositionError(PreviewErrorCategory::CompositionFailure,
+                                     "静止画 layerの画素または寸法が不正です"));
+            }
+            if (layer.effectsEnabled) {
+                return Result<AcceptedComposition>::failure(
+                    compositionError(PreviewErrorCategory::UnsupportedCapability,
+                                     "静止画 layerのeffectは未対応です"));
+            }
+            hasStillLayer = true;
+            continue;
+        }
         const auto source = sources.find(layer.source.value);
         if (source == sources.end() || !source->second.videoEnabled) {
             return Result<AcceptedComposition>::failure(
@@ -436,6 +456,13 @@ CompositionAcceptanceState::submit(const std::shared_ptr<const CompositionSnapsh
         return Result<AcceptedComposition>::failure(
             compositionError(PreviewErrorCategory::UnsupportedCapability,
                              "設定されたactive video source countを超えています"));
+    }
+    // 静止画だけの composition は提示の authority になる decode frame を持たない。
+    // gap として黙って黒を出さず、呼び出し側の誤りとして拒否する。
+    if (hasStillLayer && distinctSources.empty()) {
+        return Result<AcceptedComposition>::failure(
+            compositionError(PreviewErrorCategory::UnsupportedCapability,
+                             "静止画 layerだけのcompositionは未対応です"));
     }
 
     CompositionSnapshot canonical = *snapshot;
@@ -569,8 +596,12 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     bool dispatchScheduled = false;
     PreviewCapabilities capability = [] {
         PreviewCapabilities value;
+        // decode する video source と合成する layer の上限は別の値である。
+        // 文字などの静止画 layer は decode source を増やさずに layer だけを増やすので、
+        // video source 2 本のまま layer を V1-V3 の 3 枚まで受理する。
+        // layer 3 は measuredEnvelope (layer 2) の外であり、未計測である。
         value.configuredMaxActiveVideoSources = 2;
-        value.configuredMaxCompositionLayers = 2;
+        value.configuredMaxCompositionLayers = 3;
         // P5-D2でaudio-master transportを接続したため、audio domainを公開する。
         // ここは「現在の構成で受理できる上限」であって qualification ではない。
         // 実測した組は measuredEnvelope (既定値 = 60/1 cohort) が持つ。
@@ -600,6 +631,15 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     };
 
     std::map<std::uint64_t, VideoSourceEntry> videoSources;
+
+    // 静止画 layer の GPU frame。render thread だけが作り、捨てる。
+    // key の pointer が再利用されないよう、image 本体の所有権も entry が持つ。
+    struct StillImageEntry {
+        std::shared_ptr<const PreviewStillImage> image;
+        gpu::DecodedGpuFrame frame;
+    };
+
+    std::map<const PreviewStillImage*, StillImageEntry> stillImages;
 
     // P5-E1: compositionのepoch authority。engineは`CompositionEpoch`を
     // 直書きせず、coordinatorが採番した値をそのまま運ぶ。
@@ -859,6 +899,10 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         layout.reserve(snapshot.layers.size());
         for (std::size_t i = 0; i < snapshot.layers.size(); ++i) {
             const PreviewCompositionLayer& layer = snapshot.layers[i];
+            // 静止画 layer は pairing の対象外。zOrder は snapshot 全体の添字のまま
+            // 使うので、後で差し込む静止画との前後関係が崩れない。
+            if (layer.stillImage)
+                continue;
             const auto entry = videoSources.find(layer.source.value);
             if (entry == videoSources.end() || !entry->second.worker)
                 return std::nullopt;
@@ -906,6 +950,8 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
 
         std::vector<std::uint64_t> referenced;
         for (const auto& layer : snapshot.layers) {
+            if (layer.stillImage)
+                continue;
             if (std::find(referenced.begin(), referenced.end(), layer.source.value) ==
                 referenced.end()) {
                 referenced.push_back(layer.source.value);
@@ -941,6 +987,54 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                 return compositionFailure("composition参照sourceのbuffer集合が不正です");
             pairer = std::move(rebuilt);
             coordinatorSources = std::move(referenced);
+        }
+        return std::nullopt;
+    }
+
+    // pairing 済みの video layer へ静止画 layer を差し込み、snapshot の z 順に並べる。
+    // texture は初回だけ作る。現在の snapshot が参照しない静止画は compositor の
+    // SRV cache から外して捨てる (GPU 完了までは retirement が保持する)。
+    // render thread で、pairing と提示直前の検証を終えた後に呼ぶ。
+    std::optional<std::string> addStillLayersLocked(const CompositionSnapshot& snapshot,
+                                                    gpu::ComposedFrame& composed) {
+        std::set<const PreviewStillImage*> referenced;
+        for (std::size_t i = 0; i < snapshot.layers.size(); ++i) {
+            const PreviewCompositionLayer& layer = snapshot.layers[i];
+            if (!layer.stillImage)
+                continue;
+            const PreviewStillImage* key = layer.stillImage.get();
+            referenced.insert(key);
+            auto entry = stillImages.find(key);
+            if (entry == stillImages.end()) {
+                StillImageEntry created;
+                created.image = layer.stillImage;
+                std::string error;
+                if (!gpu::makeStillImageFrame(*renderDevice, key->width, key->height,
+                                              key->rgba.data(), key->rgba.size(), gpu::SourceId{},
+                                              created.frame, error))
+                    return error;
+                entry = stillImages.emplace(key, std::move(created)).first;
+            }
+            gpu::CompositionLayerFrame still;
+            still.frame = entry->second.frame;
+            still.destination = {layer.destination.x, layer.destination.y, layer.destination.width,
+                                 layer.destination.height};
+            still.sourceUv = {layer.sourceRect.x, layer.sourceRect.y, layer.sourceRect.width,
+                              layer.sourceRect.height};
+            still.opacity = layer.opacity;
+            still.zOrder = static_cast<int>(i);
+            composed.layers.push_back(std::move(still));
+        }
+        std::stable_sort(composed.layers.begin(), composed.layers.end(),
+                         gpu::deterministicLayerLess);
+        for (auto entry = stillImages.begin(); entry != stillImages.end();) {
+            if (referenced.contains(entry->first)) {
+                ++entry;
+                continue;
+            }
+            if (compositor)
+                compositor->retireLayerTexture(entry->second.frame.texture);
+            entry = stillImages.erase(entry);
         }
         return std::nullopt;
     }
@@ -2261,7 +2355,8 @@ Result<void> PreviewEngine::seek(PreviewPosition target) {
         const auto snapshot = impl_->compositionState.latestAcceptedSnapshot();
         if (snapshot) {
             for (const auto& layer : snapshot->layers)
-                request.sources.push_back({layer.source, target.outputFrame});
+                if (!layer.stillImage)
+                    request.sources.push_back({layer.source, target.outputFrame});
         }
     }
     return seekFrameRequest(request);
@@ -2305,7 +2400,8 @@ Result<void> PreviewEngine::seekFrameRequest(const PreviewFrameRequest& request)
         }
         std::set<std::uint64_t> expectedSources;
         for (const auto& layer : acceptedSnapshot->layers)
-            expectedSources.insert(layer.source.value);
+            if (!layer.stillImage)
+                expectedSources.insert(layer.source.value);
         for (const auto& sourceRequest : request.sources) {
             if (sourceRequest.source.value == 0 || sourceRequest.sourceFrameNumber < 0 ||
                 !requestedFrames
@@ -3095,6 +3191,10 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                     if (rejected)
                         return Result<RenderFrameResult>::success(result);
 
+                    // 静止画 layer は pairing と提示直前の検証の対象外なので、
+                    // 検証を通った後で snapshot の z 順どおりに差し込む。
+                    const std::optional<std::string> stillFailure =
+                        engine.impl_->addStillLayersLocked(*snapshot, composed);
                     gpu::ExternalCompositionTarget targetView{
                         static_cast<ID3D11RenderTargetView*>(renderTargetView), width, height};
                     std::string error;
@@ -3102,11 +3202,13 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                     // compose結果そのものではない。自己参照にすると層数の
                     // boundary checkがtautologyになる。
                     const std::size_t expectedLayerCount = snapshot->layers.size();
-                    if (!engine.impl_->compositor->composeLayersToTarget(
-                            composed, targetView, expectedLayerCount, error)) {
-                        PreviewError failure = makeError(PreviewErrorCategory::DeviceFailure,
-                                                         PreviewOperation::RenderDeviceAttach,
-                                                         "GPU compositionに失敗しました: " + error);
+                    if (stillFailure || !engine.impl_->compositor->composeLayersToTarget(
+                                            composed, targetView, expectedLayerCount, error)) {
+                        PreviewError failure = makeError(
+                            PreviewErrorCategory::DeviceFailure,
+                            PreviewOperation::RenderDeviceAttach,
+                            stillFailure ? "静止画 layerを準備できません: " + *stillFailure
+                                         : "GPU compositionに失敗しました: " + error);
                         failure.severity = PreviewErrorSeverity::FatalToSession;
                         fatal = failure;
                     } else {
@@ -3474,6 +3576,8 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
             (engine.impl_->publicAudioSource ? 1U : 0U) +
             static_cast<std::uint32_t>(engine.impl_->extraAudioSources.size());
         if (drained) {
+            // 静止画の texture は compositor の SRV cache と一緒に手放す。
+            engine.impl_->stillImages.clear();
             engine.impl_->compositor.reset();
             // pairerはbufferをraw pointerで握る。worker本体より先に手放す。
             engine.impl_->pairer.reset();

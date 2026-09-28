@@ -1,14 +1,19 @@
 #include "app/timeline_export.h"
 
+#include "app/text_raster.h"
 #include "media/mlt/mvm_mlt_export.h"
 #include "project/timeline_edit.h"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <string>
 #include <system_error>
 #include <vector>
+
+#include <QImageWriter>
+#include <QTemporaryDir>
 
 namespace mvm::app {
 namespace {
@@ -107,6 +112,7 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
         TimelineExportClipMapping mapped;
         mapped.projectClipIndex = index;
         mapped.audio = clip.track.kind == project::TrackKind::Audio;
+        mapped.text = clip.kind == project::TimelineClipKind::Text;
         mapped.videoTrackIndex = clip.track.index;
         mapped.timelineStartFrame = clip.timelineStartFrame;
         mapped.timelineDurationFrames = duration.frame;
@@ -120,6 +126,8 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
         mapped.tailPaddingFrames = range.tailFrames;
         // 末尾の補完は tractor 経路だけが持つ。
         if (range.tailFrames > 0)
+            plan.backend = TimelineExportResult::Backend::Tractor;
+        if (mapped.text)
             plan.backend = TimelineExportResult::Backend::Tractor;
         if (mapped.audio) {
             anyAudio = true;
@@ -187,9 +195,35 @@ TimelineExportResult exportTimeline(const project::Project& project,
 
     // clip のパス文字列は C API へ const char* で渡すため、
     // 呼び出しが終わるまで生存させる。
+    std::unique_ptr<QTemporaryDir> textStaging;
     std::vector<std::string> clipPaths;
     clipPaths.reserve(project.timelineClips.size());
-    for (const auto& clip : project.timelineClips) {
+    for (std::size_t index = 0; index < project.timelineClips.size(); ++index) {
+        const auto& clip = project.timelineClips[index];
+        if (clip.kind == project::TimelineClipKind::Text) {
+            if (!textStaging)
+                textStaging = std::make_unique<QTemporaryDir>();
+            if (!textStaging->isValid()) {
+                result.error = "文字画像の一時 directory を作成できません";
+                return result;
+            }
+            QString rasterError;
+            const QImage image =
+                renderTextRaster(clip.text, request.width, request.height, rasterError);
+            if (image.isNull()) {
+                result.error = rasterError.toStdString();
+                return result;
+            }
+            const QString pngPath = textStaging->filePath(QString::number(index) + ".png");
+            QImageWriter writer(pngPath, "PNG");
+            if (!writer.write(image)) {
+                result.error = "文字画像を PNG として保存できません: " + pngPath.toStdString() +
+                               ": " + writer.errorString().toStdString();
+                return result;
+            }
+            clipPaths.push_back(pathToUtf8(std::filesystem::path(pngPath.toStdWString())));
+            continue;
+        }
         if (clip.mediaPath.empty()) {
             result.error = "clip '" + clip.name + "' の media path が空です";
             return result;
@@ -219,6 +253,7 @@ TimelineExportResult exportTimeline(const project::Project& project,
         mapped.speed_num = clip.speedNum;
         mapped.speed_den = clip.speedDen;
         mapped.is_audio = planned.audio ? 1 : 0;
+        mapped.is_text = planned.text ? 1 : 0;
         mapped.video_track = planned.videoTrackIndex;
         mapped.timeline_start_frame = planned.timelineStartFrame;
         mapped.timeline_duration_frames = planned.timelineDurationFrames;

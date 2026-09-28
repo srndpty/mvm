@@ -114,6 +114,10 @@ audio clip を含む timeline の書き出しも現時点では拒否する。
 `[exit]` 「track を任意に追加できる」は編集モデルとして満たしているが、
 preview 2 layer / export 2 track / export audio 無しが現在の上限である。
 
+`[事実]` (§16.10 で更新) 文字 clip を静止画 layer として合成するため、decode する video source の
+上限 (2) と合成する layer の上限を分けた。`configuredMaxCompositionLayers` は 3 になり、
+video source は 2 のままである。layer 3 は measured envelope (layer 2) の外である。
+
 ## 4. audio
 
 `[事実]` `Project` に audio track と `TimelineClipKind::Audio` を追加した。
@@ -689,11 +693,9 @@ Main.qml のショートカットは `Instantiator` でこの配列から生成�
 | ハンド / ズーム | H / Z | なし (表示だけを変える) | 実装 |
 | レート調整 | R | `rateStretchTimelineClip` / `clampRateEdit` | 実装 |
 | ペン | P | `previewClipKeyEdit` / `editClipKey` | 実装 |
-| 横書き文字 | T | — | 無効 |
+| 横書き文字 | T | `placeTextClipAt` / `updateTextClip` | 一部実装 |
 
-`[事実]` T はボタンを表示するが選べない。ペンは Project schema 5、レート調整は schema 6 で有効にした。
-
-- 横書き文字: テキスト clip の種別が無く、preview (RHI) と書き出しの両方に描画が要る
+`[事実]` ペンは Project schema 5、レート調整は schema 6、横書き文字は schema 7 で有効にした。
 
 ### 16.1 編集の契約
 
@@ -962,3 +964,177 @@ clip の尺、preview の frame 対応 (§16.7)、decode worker の区間、書�
 
 `[未検証]` 実機のマウス操作、preview の音声を耳で確かめること、1000% での preview の decode 負荷
 (全 frame を decode するので、コマ落ちするかは測っていない)。
+
+### 16.9 横書き文字と Project schema 7
+
+`[事実]` `TimelineClipKind::Text` は素材ファイルを持たず、本文・フォント・画素単位のサイズと位置・
+文字色・太字・揃え・縁取り・背景色を `text` に保存する。schema 7 の各項目は必須で、
+不正値を保存・読込時に拒否する。既定の文字は Meiryo、64 px、白、左揃え、縁取りと背景は透明。
+5 秒相当の frame 数を初期尺とし、分割・トリム・移動・削除・Undo/Redo の Project 編集に乗せる。
+素材位置のない文字 clip のスリップと速度変更は拒否する。
+
+`[事実]` T でモニターの表示矩形をクリックすると、そこを左上とする複数行のエディターを表示する。
+Ctrl+Enter またはフォーカス移動で確定、Esc で破棄する。空文字は作らない。既存の文字をクリックすると
+その場で再編集し、選択ツールでドラッグすると位置を変更する。書式は左パネルで変更する。
+文字の描画とフォント検証は `renderTextRaster` に集約し、preview の Qt scene graph と書き出しの
+MLT `qimage` producer は同じ出力解像度の透過 PNG を使う。再読込時は文字データから再生成する。
+
+`[事実]` 配置は再生ヘッドから上の V1～V3 を順に調べ、clip の全尺が空いている最初のトラックを使う。
+必要なトラックは追加し、V1～V3 が埋まると Project を変更せずに拒否する。書き出しは V1～V3 を
+MLT のトラック順で合成する。固定素材の 3 トラック書き出しと文字だけの書き出しは
+`text_clip_contract` で画素を確認する。
+
+`[事実]` (§16.10 で解消) 当初の preview は文字画像を `PreviewSurface` の上の Qt scene graph に
+置いていたため、文字トラックより上に映像トラックがある構成で重なり順が書き出しと一致しなかった。
+
+### 16.10 文字を preview engine で track 順に合成する
+
+`[事実]` 映像のある frame では、文字を preview engine の静止画 layer として video layer と同じ
+composition に載せ、track index の順 (背面 -> 前面) に合成する。書き出しと同じく track index だけで
+前後が決まる。順序を決める箇所は `previewLayerStack` (`timeline_preview_mapping`) の 1 つだけである。
+
+- `PreviewCompositionLayer::stillImage` (RGBA8 straight alpha) を持つ layer が静止画 layer である。
+  decode source を持たないので pairing と提示直前の検証の対象外とし、検証を通った後で snapshot の
+  z 順どおりに差し込む。同一性は pointer で判定するので、controller は同じ文字に同じ instance を渡す
+- GPU 側は `GpuPixelFormat::RGBA8` と専用の pixel shader で描く。texture は初回提示時に作り、
+  snapshot が参照しなくなったら SRV cache から外す (`GpuCompositor::retireLayerTexture`)。
+  外さないと SRV が texture の参照を持ち続け、文字を編集するたびに漏れる
+- 受理条件: 静止画だけの composition、画素数と寸法の不一致、source との併用、effect 付きは拒否する
+- 上限: video source 2 本、合成 layer 3 枚 (`kMaxPreviewCompositionLayers`)。映像 2 本 + 文字 2 枚
+  のように 3 枚を超える frame は preview を失敗にする (fail-closed)
+
+`[事実]` 映像の無い frame では従来どおり UI (Qt scene graph) が文字を重ねる。重ねる相手が無いので
+順序の問題は起きない。また、ドラッグ中と編集中の文字だけは UI が重ね、engine の合成からは外す
+(`setTextOverlayClip`)。二重に描かないためであり、操作中の文字は一時的に最前面に見える。
+
+`[事実]` 次を検査に固定した。
+
+- `still_layer_compositor`: 静止画の z 順・alpha・opacity、V1 映像 / V2 静止画 / V3 映像の 3 layer で
+  V3 が覆う範囲だけ文字が隠れること、texture の retire で SRV cache から外れること (対照つき)
+- `text_preview_parity`: 同じ Project を GPU compositor (製品の `previewLayerStack` の順) と
+  書き出し (MLT) の両方で描き、文字の内側の画素で「白く見えるか」を比べる。
+  V2 文字 (V3 映像に隠れる) は 1365/1365、V3 文字 (最前面) は 1364/1365 が一致した。
+  対照として文字だけを反対の端へ動かすと 0/1365 と 1/1365 になり、比較が重なり順を判別している。
+  文字の縁は 4:2:0 圧縮でにじむため比較から外した (縁を含めると V3 文字で 2773/3045 に落ちた)
+- `preview_engine_p5b_unit` (`composition still layers`): 3 layer の受理、同一 instance の再送が no-op で
+  あること、静止画を video source として数えないこと、4 枚目・静止画だけ・画素不足・source 併用・
+  effect の拒否
+- `m7b_2_timeline_preview_mapping_focused`: 文字が `textLayers` に入ること、V2/V3 の入れ替えで
+  合成順が変わること、mute した track の文字を外すこと、合成 layer 上限と映像の無い frame の扱い
+- `p5e` の layer 上限超過 fault は、video 3 本だと source 上限で先に落ちて layer 上限を検査できない
+  ため、video 2 本 + 静止画 2 枚で layer 数だけを超えさせるよう変えた
+
+`[事実]` 直接入力は `text_ui_direct_input` (workstation) で、製品の `Main.qml` を D3D11 の window で
+起動して QTest の key / mouse event を送る。T -> クリック -> 入力 -> Ctrl+Enter で作成、
+Esc で破棄、V -> 文字のドラッグで移動 (ドラッグ中だけ UI が重ねる)、Ctrl+Z で位置が戻ることを見る。
+この検査で製品の不具合を 2 件見つけて直した。
+
+- Esc / Ctrl+Enter で入力を終えた後も非表示の editor が focus を持ち続け、V などの単キー操作が
+  別の場所をクリックするまで効かなかった。editor が focus を持つときだけ window へ戻す
+- 文字のドラッグで移動量が約半分になっていた。移動量を測る MouseArea 自身が Translate で文字と
+  一緒に動くため、自身の座標で測ると移動量が打ち消し合う。動かない `previewHost` の座標で測る。
+  修正前の実測は 40 x 20 px のドラッグで 60 x 30 (期待 119 x 60、出力画素)
+
+`[事実]` 文字 inspector と preview 上の操作を次のように変えた。
+
+- 書式欄を詰めた。本文 (枠付き、Ctrl+Enter で確定・Esc で取り消し)、フォント (インストール済み
+  書体のプルダウン。各行に書体の見本を出す) とサイズ、太字と揃え (左・中央・右の排他ボタン)、X / Y、
+  文字色・縁・背景 (見本を押すと color picker、横に `#AARRGGBB` の直接入力) の順に並べる。
+  clip 名は本文の先頭で重複するので、文字 clip では出さない
+- preview 上では、選択ツールで文字の描画範囲 (不透明な画素を囲む矩形) のどこを掴んでも動かせる。
+  以前は字形の画素の上だけで、字間や字の内側では掴めなかった。選択中の文字には範囲の枠を出す。
+  押しただけで動かさなければ選択だけにし、Undo を積まない
+- 入力欄の外を押すと focus を window へ戻す (`FocusReleaseFilter`)。数値欄も Enter / Esc で戻す。
+  以前は inspector の X / Y などを一度触ると、別の場所を押しても Space の再生や V / T が
+  効かないままだった (Qt Quick は timeline や preview を押しても focus を移さない)
+
+- サイズ・X・Y・縁の幅の左右ドラッグ中は、Project を変えずに preview だけを描き直す
+  (`previewTextClip`)。離したときに `updateTextClip` で 1 回だけ保存し、値が元に戻っていれば
+  取り消す。engine が Seeking の間に来た描き直しは失敗にせず、ReadyPaused になったら最新の値で
+  1 回描く
+- preview 上で文字を掴んでも再生位置を動かさない。以前は選択に `selectClip` を使っており、
+  文字 clip の先頭へ seek していた。ポインタは通常の矢印にした。文字ツール用の MouseArea は
+  無効でも I ビームの cursor を出していたので、文字ツール以外では出さない
+
+- preview 上で文字を動かした後に文字が消えていた。離すと位置の保存で engine が seek し、
+  その最中に「ドラッグ中の文字を合成から外す」指定を解除して composition を出し直すと
+  `composition submissionを受理できないstateです` で拒否され、文字を外した composition が残った。
+  解除も `refreshTextPreview` を通し、ReadyPaused 以外では完了を待ってから出し直す
+- 揃えのボタンはテロップの定位置ボタンにした (`placeTextClip` / `textPresetPlacement`)。
+  押すと文字の矩形の下端を画面の下から 15%、左右は画面幅の 5% の余白で左・中央・右へ置き、
+  行揃えも同じ向きにする。状態を持たないので、X / Y やドラッグで動かした後に押し直すと戻る。
+  15% / 5% は決め打ちの ad hoc 値で、YouTube の動画を実測して決めたものではない。
+  矩形の大きさは描画と同じ組版 (`layoutText`) から求める
+- 色の選択は共通部品 (`ModernDialog` / `ModernDialogField` / `ModernDialogButton`) で作った
+  `ModernColorPicker` にした。彩度・明度の面、色相、不透明度、テロップ向けの 8 色、変更前後の見本、
+  `#AARRGGBB` の入力を持つ
+
+- color picker は押した見本の右横に、背景を暗くせずに (非 modal) 出す。選んでいる途中の色は
+  `previewTextClip` で preview へ反映し、OK で保存、キャンセル・Esc・外側の押下で元の色へ戻す
+- フォント一覧は Photoshop と同じく、hover した書体を preview へ仮に反映する。選べば保存、
+  選ばずに閉じれば元の書体へ戻す。一覧を開くと一覧に focus を渡す (ComboBox 自身は focus を
+  取らないので、渡さないと Esc で閉じられなかった)
+- 色のドラッグや hover は短い間に何度も来る。最初の値はすぐ描き、その後は動かしている間も
+  200ms ごとに最新の値を描く (throttle)。当初は「止まって 40ms 経ったら描く」debounce にしており、
+  マウスの move は 40ms より短い間隔で来るので、ドラッグ中は 1 回も描き直されなかった
+
+`text_clip_contract` に定位置の計算 (左・中央・右の座標、描いた画像の下端が下から 15% に来ること、
+未知の揃えの拒否) を足した。`text_ui_direct_input` に、文字を動かした後に preview の更新が
+失敗しないこと、定位置ボタンで中央下へ置かれ、ずらした後に押し直しても戻ることを足した。
+色は、見本の横に非 modal で開くこと、候補を押すと preview が描き直され Project は変わらないこと、
+Esc で閉じて元へ戻ること、OK で保存されることを見る。フォントは、一覧の別の書体に hover すると
+preview が描き直され Project は変わらないこと、Esc で一覧が閉じて元へ戻ることを見る。
+
+`text_ui_direct_input` は key / mouse event を送るので、検査中に window が非アクティブになると
+event が届かない。途中で前面を奪われた run は FAIL の有無にかかわらず `PROTOCOL_INVALID`
+(終了コード 4) にする。実際に操作中の desktop で 4 回走らせると 2 回がこれになり、
+前面のままの 2 回は通った。
+
+`text_ui_direct_input` に、字形の無い所 (範囲内の透明な画素) で掴めること、本文欄を触った後に
+preview を押すと単キー操作が戻ることを足した。修正前の focus 処理では後者が落ちることを確かめた。
+さらに、文字を掴んでも再生位置 (40) が動かないこと、X のドラッグ中に preview の文字範囲が動き
+Project は離したときだけ変わることを足した。前者は `selectClip` に戻すと落ちることを確かめた。
+
+`[事実]` レビュー指摘への対応。
+
+- (P1) 文字の不透明度 (値・Pen の key・fade) が preview に効いていなかった。書き出しは文字を
+  既存の video track の effect 経路へ載せるので、たとえば frame 0 で 100%、frame 15 で 0% の key を
+  付けると、書き出しだけがフェードしていた。不透明度は `mapTimelinePreviewFrame` が
+  `evaluateClipOpacity` で frame ごとに評価し (`TimelinePreviewTextLayerMapping::opacity`)、
+  engine の静止画 layer の opacity と、映像の無い frame で UI が重ねる文字の opacity の両方に使う。
+  静止画 layer の effect は引き続き拒否し、最終の不透明度だけを渡す
+- (P1 の契約) 文字の effect は不透明度 (値・key・fade) だけにした。位置・拡大・回転・切り抜きと
+  音量は、書き出しでは効くが preview の静止画 layer では描けないので、`validateTimeline` が拒否する
+- (P2) 文字は V1～V3 だけ、を Project の不変条件にした (`kMaxTextVideoTracks`)。以前は配置・
+  書き出し・preview の hit-test だけが V1～V3 で、V4 を足して通常の移動で文字を持っていくと
+  Project としては正しいまま、hit-test では掴めず書き出しは失敗した。移動は検証で拒否される
+- (P3) 文字画像は出力解像度の全画面 RGBA である (1080p で約 8MiB、4K で約 32MiB)。controller は
+  QImage・engine 用の RGBA・UI 用の PNG を持ち、GPU texture も作る。文字の矩形だけの画像にして
+  配置を composition へ持たせれば軽くなるが、preview と書き出しが同じ画像を使う今の構成を崩すので
+  見送った。`[未検証]` 4K で文字 clip が多いときのメモリと再描画時間は測っていない
+
+検査を足した。`text_preview_parity` に V3 文字の key (frame 0: 100% -> frame 15: 0%) を足し、
+frame 0 / 8 / 15 の書き出しと同じ frame の映像で preview を合成して比べる。一致は
+1363 / 1365、1365 / 1365、1365 / 1365、文字の平均輝度は 255.0 / 251.5、180.6 / 181.4、
+114.9 / 117.5 (preview / 書き出し)。対照として不透明度を無視すると frame 15 は 0 / 1365 になる。
+`m7b_2_timeline_preview_mapping_focused` に不透明度の補間 (1 / 0.5 / 0、key 無しは 1) を、
+`text_clip_contract` に V4 への移動と V4 の文字の拒否 (対照: V2 への移動は通る)、
+不透明度の key / fade の受理、拡大率・位置の拒否を足した。
+
+`[未検証]`
+
+- color picker のドラッグ中の描き直しが実際に何 ms で画面へ出るか。自動検査は、10ms 間隔で
+  約 1.2 秒動かし続ける間に 3 回以上描き直すことまでを見る (debounce に戻すと 0 回で落ちることを
+  確かめた)。preview が seek 中なら、その描き直しは seek の完了まで遅れる
+- 合成 layer 3 枚の性能。measured envelope (layer 2) の外であり、`matchesMeasuredEnvelope` は
+  layer の相違でも false になる。計測するまで「layer 3 で 60fps が出る」と書かない
+- 再生中に文字 clip が出入りする frame の正確さ。composition は GUI の再生 tick で出し直すので、
+  文字の出入りが 1〜2 frame 遅れうる (映像 clip の引き継ぎと同じ経路)。停止中・scrub では
+  要求 frame の composition で seek するので一致する
+- IME の変換確定。OS の入力方式が要るので自動化していない。手動確認の手順は次のとおり
+  1. 文字ツール (T) でモニターをクリックし、日本語入力で「にほんご」と打って変換し、確定する前に
+     Esc を押す。変換だけが取り消され、editor は開いたままであること
+  2. 続けて変換を確定し、Ctrl+Enter で「日本語」の文字 clip ができること
+  3. 変換中 (未確定) のまま timeline をクリックして focus を移したとき、未確定文字列が本文に
+     入るか消えるかを記録する (期待値は未決定。Qt の既定動作をまず観測する)
+  4. 映像のある frame で 1〜3 を行い、確定後の文字が映像との track 順どおりに表示されること

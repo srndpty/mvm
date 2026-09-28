@@ -15,6 +15,9 @@ Item {
     property real stepPerPixel: 0.5
     property int decimals: 0
     property string suffix: ""
+    // 0 より大きいと label を左に置き、1 行 (高さ 24) にする。値は label の幅。
+    property real inlineLabelWidth: 0
+    readonly property bool inlineLabel: root.inlineLabelWidth > 0
     // enabled は Item から継承したものをそのまま使う。同名 property を足すと
     // 親 (GridLayout) の enabled が伝わらず、無効化しても drag できてしまう。
 
@@ -22,8 +25,8 @@ Item {
     // grab を奪われた等で release が来なかった場合。編集を確定させない。
     signal editCanceled()
 
-    implicitWidth: 116
-    implicitHeight: 38
+    implicitWidth: root.inlineLabel ? root.inlineLabelWidth + 64 : 116
+    implicitHeight: root.inlineLabel ? 24 : 38
 
     function clampValue(candidate) {
         return Math.max(root.minimumValue, Math.min(root.maximumValue, candidate));
@@ -36,7 +39,9 @@ Item {
     Label {
         id: caption
         x: 2
-        width: parent.width - 4
+        width: root.inlineLabel ? root.inlineLabelWidth - 4 : parent.width - 4
+        height: root.inlineLabel ? parent.height : implicitHeight
+        verticalAlignment: Text.AlignVCenter
         text: root.labelText
         color: "#9aa2ad"
         font.pixelSize: 10
@@ -45,9 +50,10 @@ Item {
 
     Rectangle {
         id: box
-        y: caption.height + 2
-        width: parent.width
-        height: parent.height - caption.height - 2
+        x: root.inlineLabel ? root.inlineLabelWidth : 0
+        y: root.inlineLabel ? 0 : caption.height + 2
+        width: parent.width - x
+        height: root.inlineLabel ? parent.height : parent.height - caption.height - 2
         radius: 3
         color: root.enabled ? (dragArea.pressed ? "#2f3945" : "#232830") : "#1c2026"
         border.color: dragArea.containsMouse || editor.visible ? "#5b9bd5" : "#3c424c"
@@ -68,11 +74,25 @@ Item {
             visible: false
             selectByMouse: true
             font.pixelSize: 13
+            topPadding: 0
+            bottomPadding: 0
+            leftPadding: 7
+            verticalAlignment: TextInput.AlignVCenter
             onAccepted: {
                 const parsed = parseFloat(text);
                 if (!isNaN(parsed))
                     root.valueEdited(root.clampValue(parsed), true);
+                editor.finish();
+            }
+            Keys.onEscapePressed: editor.finish()
+
+            // 非表示にした editor に focus が残ると、Space の再生や tool の単キー操作が
+            // 止まったままになる。確定・取り消しで window へ focus を戻す。
+            function finish() {
+                const hadFocus = editor.activeFocus;
                 editor.visible = false;
+                if (hadFocus && root.Window.window)
+                    root.Window.window.contentItem.forceActiveFocus();
             }
             onActiveFocusChanged: {
                 if (!activeFocus)

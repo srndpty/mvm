@@ -640,6 +640,96 @@ void compositionStructuralEqualityLiterals() {
     }
 }
 
+std::shared_ptr<const PreviewStillImage> stillImage(int width = 4, int height = 2) {
+    auto image = std::make_shared<PreviewStillImage>();
+    image->width = width;
+    image->height = height;
+    image->rgba.assign(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4U,
+                       255);
+    return image;
+}
+
+PreviewCompositionLayer stillLayer(std::shared_ptr<const PreviewStillImage> image) {
+    PreviewCompositionLayer value;
+    value.stillImage = std::move(image);
+    return value;
+}
+
+// 文字 clip は静止画 layer として video layer と同じ snapshot に載る。
+// decode source 数と layer 数を別の上限で数えることを固定する。
+void compositionStillLayers() {
+    const auto sources = twoSources();
+    PreviewCapabilities capabilities;
+    capabilities.configuredMaxActiveVideoSources = 2;
+    capabilities.configuredMaxCompositionLayers = 3;
+    const auto image = stillImage();
+
+    CompositionAcceptanceState stacked;
+    const auto accepted =
+        stacked.submit(snapshot({layer(1), stillLayer(image), layer(2)}), sources, capabilities);
+    require(accepted && accepted.value() == AcceptedComposition{{1}, 1},
+            "V1 映像 / V2 静止画 / V3 映像の 3 layer を受理しません");
+    const auto samePointer =
+        stacked.submit(snapshot({layer(1), stillLayer(image), layer(2)}), sources, capabilities);
+    require(samePointer && samePointer.value() == accepted.value(),
+            "同じ静止画 instance の再送で token が変わりました");
+    const auto otherPointer = stacked.submit(
+        snapshot({layer(1), stillLayer(stillImage()), layer(2)}), sources, capabilities);
+    require(otherPointer && otherPointer.value() == AcceptedComposition{{2}, 2},
+            "別の静止画 instance を同一 composition と見なしました");
+    const auto reordered =
+        stacked.submit(snapshot({layer(1), layer(2), stillLayer(image)}), sources, capabilities);
+    require(reordered && reordered.value() == AcceptedComposition{{3}, 3},
+            "静止画 layer の z 順の違いを構造比較していません");
+
+    // 静止画は decode source を増やさない。video source 1 本の上限でも受理する。
+    PreviewCapabilities oneSource = capabilities;
+    oneSource.configuredMaxActiveVideoSources = 1;
+    CompositionAcceptanceState sourceCap;
+    require(sourceCap.submit(snapshot({layer(1), stillLayer(image)}), sources, oneSource),
+            "静止画 layer を video source として数えました");
+    // 対照: video 2 本は同じ上限で拒否する。
+    CompositionAcceptanceState sourceCapControl;
+    requireFailure(sourceCapControl.submit(snapshot({layer(1), layer(2)}), sources, oneSource),
+                   PreviewErrorCategory::UnsupportedCapability,
+                   "対照: video source 上限を超えた composition を受理しました");
+
+    // 静止画も layer としては数える。
+    CompositionAcceptanceState layerCap;
+    requireFailure(
+        layerCap.submit(snapshot({layer(1), stillLayer(image), layer(2), stillLayer(stillImage())}),
+                        sources, capabilities),
+        PreviewErrorCategory::UnsupportedCapability,
+        "layer 上限を超える静止画 layer を受理しました");
+
+    CompositionAcceptanceState stillOnly;
+    requireFailure(stillOnly.submit(snapshot({stillLayer(image)}), sources, capabilities),
+                   PreviewErrorCategory::UnsupportedCapability,
+                   "静止画だけの composition を受理しました");
+
+    auto broken = std::make_shared<PreviewStillImage>(*image);
+    broken->rgba.pop_back();
+    CompositionAcceptanceState brokenPixels;
+    requireFailure(
+        brokenPixels.submit(snapshot({layer(1), stillLayer(broken)}), sources, capabilities),
+        PreviewErrorCategory::CompositionFailure, "画素数の足りない静止画を受理しました");
+
+    auto withSource = stillLayer(image);
+    withSource.source = {1};
+    CompositionAcceptanceState sourceAndStill;
+    requireFailure(sourceAndStill.submit(snapshot({layer(2), withSource}), sources, capabilities),
+                   PreviewErrorCategory::CompositionFailure,
+                   "source と静止画の両方を持つ layer を受理しました");
+
+    auto withEffects = stillLayer(image);
+    withEffects.effectsEnabled = true;
+    withEffects.sourceDurationFrames = 1;
+    CompositionAcceptanceState effects;
+    requireFailure(effects.submit(snapshot({layer(1), withEffects}), sources, capabilities),
+                   PreviewErrorCategory::UnsupportedCapability,
+                   "effect 付きの静止画 layer を受理しました");
+}
+
 void compositionIdentityAndCapabilities() {
     const auto sources = twoSources();
     PreviewCapabilities capabilities;
@@ -739,7 +829,7 @@ void engineFacadeAndEvents() {
                    "範囲外のmaster volumeを受理しました");
     const PreviewCapabilities productCapabilities = engine.capabilities();
     require(productCapabilities.configuredMaxActiveVideoSources == 2 &&
-                productCapabilities.configuredMaxCompositionLayers == 2 &&
+                productCapabilities.configuredMaxCompositionLayers == 3 &&
                 productCapabilities.configuredMaxActiveAudioSources == 8 &&
                 productCapabilities.configuredAudioSampleRate == 48000 &&
                 productCapabilities.configuredAudioChannelCount == 2,
@@ -1290,8 +1380,9 @@ void p5dAudioDomainAndCapabilities() {
     // active source数とlayer数は別capabilityとして検査する (contract §21)。
     require(capabilities.configuredMaxActiveVideoSources == 2,
             "configured active video source数が2として公開されていません");
-    require(capabilities.configuredMaxCompositionLayers == 2,
-            "configured composition layer数が2として公開されていません");
+    // layer 3 は静止画 (文字) を V1-V3 に置くため。decode source は 2 のまま増やさない。
+    require(capabilities.configuredMaxCompositionLayers == 3,
+            "configured composition layer数が3として公開されていません");
     require(!capabilities.duplicateSourceLayersSupported,
             "同一sourceの複数layer配置をsupport済みとして公開しました");
     require(capabilities.configuredOutputFrameRate.numerator == 60 &&
@@ -1359,6 +1450,7 @@ int main(int argc, char** argv) {
         {"event mailbox", mailboxOrderingAndBounds},
         {"composition domain", compositionDomains},
         {"composition identity", compositionIdentityAndCapabilities},
+        {"composition still layers", compositionStillLayers},
         {"composition structural equality literals", compositionStructuralEqualityLiterals},
         {"engine façade / events", engineFacadeAndEvents},
         {"event ownership / fatal", eventOwnershipAndFatalPath},

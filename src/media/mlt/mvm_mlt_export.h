@@ -53,6 +53,7 @@ typedef struct {
     long long speed_num;
     long long speed_den;
     int is_audio; /* 非0なら映像を隠して独立audio trackとしてmixする */
+    int is_text;  /* 非0なら明示した qimage producer で透過 PNG を開く */
     int effects_enabled;
     int crop_left;
     int crop_top;
@@ -67,7 +68,7 @@ typedef struct {
     int opacity_keyframe_count;
     const MvmExportGainKeyframe* gain_keyframes;
     int gain_keyframe_count;
-    int video_track; /* 0=V1, 1=V2 */
+    int video_track; /* 0=V1, 1=V2, 2=V3 */
     long long timeline_start_frame;
     long long timeline_duration_frames;
 } MvmExportClip;

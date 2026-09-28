@@ -27,12 +27,14 @@ struct Rational {
     constexpr bool valid() const { return num > 0 && den > 0; }
 };
 
-// decode 出力の画素形式。P1 が扱うのはこの 2 つだけ。
+// GPU 上の画素形式。decode 出力は NV12 / P010 の 2 つだけである。
 // software 形式は**意図的に持たない**。持つと fallback を書きたくなる。
+// RGBA8 は decode 出力ではなく、文字などの静止画 layer 専用 (straight alpha)。
 enum class GpuPixelFormat {
     Unknown = 0,
-    NV12, // 8bit  4:2:0 (DXGI_FORMAT_NV12)
-    P010, // 10bit 4:2:0 (DXGI_FORMAT_P010)
+    NV12,  // 8bit  4:2:0 (DXGI_FORMAT_NV12)
+    P010,  // 10bit 4:2:0 (DXGI_FORMAT_P010)
+    RGBA8, // 8bit RGBA straight alpha (DXGI_FORMAT_R8G8B8A8_UNORM)。静止画 layer 専用
 };
 
 enum class ColorSpace {

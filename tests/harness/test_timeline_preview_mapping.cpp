@@ -1,6 +1,7 @@
 #include "app/timeline_preview_mapping.h"
 #include "project/timeline_edit.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -155,6 +156,108 @@ void testLayerLimit() {
     const auto withinLimit = mvm::app::mapTimelinePreviewFrame(project, 10);
     require(withinLimit.success && withinLimit.layers.size() == 2,
             "mute で layer 数が上限内に収まりません");
+}
+
+mvm::project::TimelineClip textClip(std::string id, int videoTrackIndex, std::int64_t duration) {
+    mvm::project::TimelineClip value;
+    value.kind = mvm::project::TimelineClipKind::Text;
+    value.id = std::move(id);
+    value.name = value.id;
+    value.sourceFpsNum = 60;
+    value.sourceFpsDen = 1;
+    value.sourceFrameCount = duration;
+    value.sourceOutFrame = duration;
+    value.track = mvm::project::TrackRef{mvm::project::TrackKind::Video, videoTrackIndex};
+    value.text.content = value.id;
+    return value;
+}
+
+// 文字 clip は decode source ではなく textLayers に入り、合成順は track index だけで決まる。
+// 書き出しと同じく、文字より上の track の映像が文字を隠す順序になること。
+void testTextLayerStack() {
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    require(mvm::project::addTrack(project, mvm::project::TrackKind::Video).success,
+            "V3を追加できません");
+    project.timelineClips = {clip("v3", 2, 0, 0, 100), textClip("t2", 1, 100),
+                             clip("v1", 0, 0, 0, 100)};
+    const auto mapped = mvm::app::mapTimelinePreviewFrame(project, 10);
+    require(mapped.success && mapped.layers.size() == 2 && mapped.textLayers.size() == 1 &&
+                mapped.textLayers[0].clipId == "t2" && mapped.textLayers[0].clipIndex == 1,
+            "文字 clip を textLayers として取り出せません");
+    const auto stack = mvm::app::previewLayerStack(mapped);
+    const std::vector<mvm::app::TimelinePreviewStackEntry> expected{
+        {false, 0, 0}, {true, 0, 1}, {false, 1, 2}};
+    require(stack == expected, "V1 映像 / V2 文字 / V3 映像の合成順が track 順ではありません");
+
+    // 文字を最上段へ動かすと、文字が最前面になる (対照)。
+    project.timelineClips[0].track.index = 1;
+    project.timelineClips[1].track.index = 2;
+    const auto moved = mvm::app::mapTimelinePreviewFrame(project, 10);
+    const std::vector<mvm::app::TimelinePreviewStackEntry> textOnTop{
+        {false, 0, 0}, {false, 1, 1}, {true, 0, 2}};
+    require(moved.success && mvm::app::previewLayerStack(moved) == textOnTop,
+            "V3 の文字が最前面になりません");
+
+    // mute した track の文字は合成しない。
+    project.videoTracks[2].muted = true;
+    const auto muted = mvm::app::mapTimelinePreviewFrame(project, 10);
+    require(muted.success && muted.textLayers.empty() && muted.layers.size() == 2,
+            "mute した track の文字 clip を合成対象に残しました");
+}
+
+// 文字は decode source の上限 (2) ではなく合成 layer の上限 (3) で数える。
+void testTextLayerLimit() {
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    for (int track = 0; track < 2; ++track)
+        require(mvm::project::addTrack(project, mvm::project::TrackKind::Video).success,
+                "V3/V4を追加できません");
+    project.timelineClips = {clip("v1", 0, 0, 0, 100), clip("v2", 1, 0, 0, 100),
+                             textClip("t3", 2, 100)};
+    require(mvm::project::validateTimeline(project).success, "前提: V3 文字の Project が不正です");
+    const auto three = mvm::app::mapTimelinePreviewFrame(project, 10);
+    require(three.success && three.layers.size() == 2 && three.textLayers.size() == 1,
+            "映像 2 本と文字 1 枚の 3 layer を拒否しました");
+
+    // 文字は V1～V3 だけなので、4 枚目は映像を上の track に置いて作る。
+    project.timelineClips = {textClip("t1", 0, 100), textClip("t2", 1, 100),
+                             clip("v3", 2, 0, 0, 100), clip("v4", 3, 0, 0, 100)};
+    require(mvm::project::validateTimeline(project).success, "前提: 4 track の Project が不正です");
+    const auto four = mvm::app::mapTimelinePreviewFrame(project, 10);
+    require(!four.success && four.layers.empty() && four.textLayers.empty(),
+            "合成 layer の上限を超えた frame を成功にしました");
+
+    // 映像の無い frame では文字は UI 側が重ねるので、枚数で拒否しない。
+    project.timelineClips = {textClip("t1", 0, 100), textClip("t2", 1, 100),
+                             textClip("t3", 2, 100)};
+    require(mvm::project::validateTimeline(project).success,
+            "前提: 文字 3 枚の Project が不正です");
+    const auto textOnly = mvm::app::mapTimelinePreviewFrame(project, 10);
+    require(textOnly.success && textOnly.layers.empty() && textOnly.textLayers.size() == 3,
+            "映像の無い frame の文字を拒否しました");
+}
+
+// 文字の不透明度は書き出しと同じ effects (値・key・fade) を frame ごとに評価する。
+// 期待値は key の直線補間を手で計算した値。
+void testTextLayerOpacity() {
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    auto text = textClip("t1", 1, 60);
+    text.timelineStartFrame = 10;
+    text.effects.opacityKeys = {{0, 100.0}, {20, 0.0}};
+    project.timelineClips = {clip("v1", 0, 0, 0, 100), text};
+    require(mvm::project::validateTimeline(project).success,
+            "前提: opacity key 付き文字が不正です");
+    const auto at = [&](std::int64_t frame) {
+        const auto mapped = mvm::app::mapTimelinePreviewFrame(project, frame);
+        require(mapped.success && mapped.textLayers.size() == 1, "文字を取り出せません");
+        return mapped.textLayers[0].opacity;
+    };
+    require(std::abs(at(10) - 1.0) < 1e-9, "key 0 (100%) の不透明度が 1 ではありません");
+    require(std::abs(at(20) - 0.5) < 1e-9, "key の中間 (50%) を補間していません");
+    require(std::abs(at(30)) < 1e-9, "key 20 (0%) の不透明度が 0 ではありません");
+
+    // 対照: key の無い文字は 1。
+    project.timelineClips[1].effects.opacityKeys.clear();
+    require(std::abs(at(20) - 1.0) < 1e-9, "対照: key の無い文字の不透明度が 1 ではありません");
 }
 
 // 重なったaudioをA1から順にすべてmix対象へ載せる。
@@ -340,6 +443,9 @@ int main() {
     testAudioSourceFrameCount();
     testMutedTracks();
     testLayerLimit();
+    testTextLayerStack();
+    testTextLayerLimit();
+    testTextLayerOpacity();
     testAudioOverlapSelectsA1();
     testCrossRateVideoMapping();
 

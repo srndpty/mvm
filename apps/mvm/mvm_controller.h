@@ -23,7 +23,10 @@
 
 #include <QAbstractItemModel>
 #include <QElapsedTimer>
+#include <QHash>
+#include <QImage>
 #include <QObject>
+#include <QRect>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
@@ -31,6 +34,8 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
+
+class QTemporaryDir;
 
 namespace mvm::app {
 
@@ -46,6 +51,11 @@ class MvmController : public QObject {
     Q_PROPERTY(QString statusText READ statusText NOTIFY stateChanged)
     Q_PROPERTY(QString currentClipName READ currentClipName NOTIFY stateChanged)
     Q_PROPERTY(QString currentClipPath READ currentClipPath NOTIFY stateChanged)
+    Q_PROPERTY(QVariantMap selectedTextClip READ selectedTextClip NOTIFY stateChanged)
+    Q_PROPERTY(bool previewVideoAtPlayhead READ previewVideoAtPlayhead NOTIFY stateChanged)
+    Q_PROPERTY(QString textOverlayClip READ textOverlayClip NOTIFY stateChanged)
+    // ドラッグ中の文字 preview が変わるたびに増える。QML の文字画像の再読込に使う。
+    Q_PROPERTY(int textPreviewSerial READ textPreviewSerial NOTIFY stateChanged)
     Q_PROPERTY(bool hasCurrentClip READ hasCurrentClip NOTIFY stateChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY stateChanged)
     Q_PROPERTY(bool previewReady READ previewReady NOTIFY stateChanged)
@@ -238,6 +248,30 @@ public:
     Q_INVOKABLE bool addManimToTimeline();
     Q_INVOKABLE bool addVideoClip(const QUrl& fileUrl);
     Q_INVOKABLE bool addAudioClip(const QUrl& fileUrl);
+    Q_INVOKABLE bool createTextClip(const QString& content, int x, int y);
+    Q_INVOKABLE bool updateTextClip(const QString& clipId, const QVariantMap& values);
+    // 数値のドラッグ中に、Project を変えずに preview だけを values で描き直す。
+    // 確定は updateTextClip、取り消しは cancelTextPreview。
+    Q_INVOKABLE bool previewTextClip(const QString& clipId, const QVariantMap& values);
+    // テロップの定位置へ置く (textPresetPlacement)。揃えも同じ値にする。
+    Q_INVOKABLE bool placeTextClip(const QString& clipId, const QString& alignment);
+    Q_INVOKABLE void cancelTextPreview();
+    int textPreviewSerial() const { return textPreviewSerial_; }
+    Q_INVOKABLE QVariantMap textClipData(const QString& clipId) const;
+    Q_INVOKABLE QString textClipAt(int x, int y);
+    Q_INVOKABLE QUrl textRasterUrl(int index);
+    Q_INVOKABLE bool textClipVisible(int index) const;
+    // 再生位置での文字の不透明度 (opacity の値・key・fade)。UI が文字を重ねるときに使う。
+    Q_INVOKABLE double textClipOpacity(int index) const;
+    // 文字の描画範囲 (出力画素)。preview の選択枠と掴める範囲に使う。
+    Q_INVOKABLE QRect textClipBounds(const QString& clipId) const;
+    // 映像のある frame では文字を preview engine が track 順に合成する。
+    // ドラッグ中・編集中の文字だけは UI が重ねて表示するので、その clip を合成から外す。
+    // 空文字で解除する。
+    Q_INVOKABLE void setTextOverlayClip(const QString& clipId);
+    QString textOverlayClip() const { return textOverlayClipId_; }
+    QVariantMap selectedTextClip() const;
+    bool previewVideoAtPlayhead() const;
     Q_INVOKABLE bool selectClip(int index);
     // linked=false (Alt+クリック) ならリンク相手を選択に含めない。
     Q_INVOKABLE bool selectTimelineClip(const QString& clipId, qint64 frame, bool linked);
@@ -480,10 +514,23 @@ private:
     bool audioIdentitiesFor(const TimelinePreviewAudioMapping& mapped,
                             std::vector<AudioSourceIdentity>& identities, QString& error) const;
     // mappedFrame の layer を sources で合成する composition と seek request を組む。
+    // 文字は track 順で静止画 layer として挟む。文字画像を作れなければ nullptr と error。
     std::shared_ptr<preview::CompositionSnapshot>
     previewCompositionFor(const TimelinePreviewFrameMapping& mappedFrame,
                           const std::map<int, TrackPreviewSource>& sources,
-                          preview::PreviewFrameRequest& request) const;
+                          preview::PreviewFrameRequest& request, QString& error) const;
+    // 文字を編集した後、映像のある frame なら engine の composition を組み直す。
+    void refreshTextPreview();
+    // ドラッグ中の preview を反映する (その clip の画像 cache を捨てて描き直す)。
+    void applyTextPreview(const QString& clipId);
+    // 文字 clip の画像。revision と clip ID ごとに 1 度だけ描く。
+    const QImage* textRasterImage(int clipIndex, QString& error) const;
+    // 文字画像の不透明な画素を囲む矩形。clip ID ごとに 1 度だけ求める。
+    QRect textRasterBounds(int clipIndex) const;
+    // preview engine へ渡す静止画。同じ文字には同じ instance を返し、composition の
+    // 再送を no-op にする。
+    std::shared_ptr<const preview::PreviewStillImage> textStillImage(int clipIndex,
+                                                                     QString& error) const;
     // 再生中、frame の clip を今の source のまま表示できれば source を引き継いで true。
     // 引き継げなければ何も変更せず false (呼び出し側が一時停止して組み直す)。
     // 引き継げなかったら reason に理由を入れる。
@@ -547,6 +594,18 @@ private:
     std::int64_t pendingSourceFrame_ = 0;
     int currentClipIndex_ = -1;
     std::vector<std::string> selectedClipIds_;
+    std::unique_ptr<QTemporaryDir> textRasterDirectory_;
+    // preview の合成 (const) からも埋めるので mutable。Project を変えるたびに捨てる。
+    mutable QHash<QString, QImage> textRasterImages_;
+    mutable QHash<QString, std::shared_ptr<const preview::PreviewStillImage>> textStillImages_;
+    mutable QHash<QString, QRect> textRasterBounds_;
+    QHash<QString, QUrl> textRasterUrls_;
+    QString textOverlayClipId_;
+    // ドラッグ中の文字書式 (clip ID と、Project へまだ保存していない値)。
+    std::optional<std::pair<std::string, project::TextClipData>> textPreviewOverride_;
+    int textPreviewSerial_ = 0;
+    // engine が Seeking の間に来た文字 preview の描き直し要求。
+    bool textPreviewRefreshPending_ = false;
 
     struct UndoEntry {
         project::Project project;
@@ -600,6 +659,7 @@ private:
     bool previewReady_ = false;
     bool shutdownStarted_ = false;
     bool playing_ = false;
+    bool clockOnlyPlayback_ = false;
     int shuttleRate_ = 0;
     bool shuttleSeeking_ = false;
     std::int64_t shuttleBaseFrame_ = 0;
