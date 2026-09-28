@@ -80,7 +80,7 @@ static int service_exists(mlt_properties list, const char* name) {
  * (resample) が付かない。timewarp は audio の sample rate を変えて速度を表すため、正規化が
  * 無いと tractor の mix で伸縮されずに元の速さで鳴る (§16.8 で実測)。 */
 static mlt_producer open_clip_producer(mlt_profile profile, const MvmExportClip* clip) {
-    if (clip->is_text)
+    if (clip->is_still_image)
         return mlt_factory_producer(profile, "qimage", clip->path);
     if (clip->speed_num == 1 && clip->speed_den == 1)
         return mlt_factory_producer(profile, NULL, clip->path);
@@ -152,37 +152,44 @@ static int file_size_utf8(const char* path, unsigned long long* size) {
     return 1;
 }
 
+/* crop は qtcrop で「範囲の外を透明で塗る」形で掛け、frame の寸法を変えない。
+ * 以前の crop filter は frame の寸法そのものを変えていた。その後の affine は正方形でない
+ * 座標系で回転するため、crop と回転を組み合わせると平行四辺形 (shear) になっていた
+ * (docs/premiere-like-editing.md §18.6)。寸法を保てば affine の座標系は出力と同じになる。
+ * 配置の矩形 (rect_*) は呼び出し側が crop 前の全体の位置として渡す。 */
 static int attach_export_crop(mlt_profile profile, mlt_producer cut, const MvmExportClip* clip,
                               char* err, size_t err_size) {
     if (clip->crop_left == 0 && clip->crop_top == 0 && clip->crop_right == 0 &&
         clip->crop_bottom == 0)
         return 0;
-    mlt_filter parameters = mlt_factory_filter(profile, "crop", NULL);
-    mlt_filter active = mlt_factory_filter(profile, "crop", NULL);
-    if (!parameters || !active) {
-        if (parameters)
-            mlt_filter_close(parameters);
-        if (active)
-            mlt_filter_close(active);
-        set_err(err, err_size, "必須filter 'crop'を2 instance作れません");
+    if (!profile || profile->width <= 0 || profile->height <= 0) {
+        set_err(err, err_size, "crop の基準になる profile の寸法が不正です");
         return 1;
     }
-    mlt_properties props = MLT_FILTER_PROPERTIES(parameters);
-    mlt_properties_set_int(props, "active", 0);
-    mlt_properties_set_int(props, "use_profile", 1);
-    mlt_properties_set_int(props, "left", clip->crop_left);
-    mlt_properties_set_int(props, "top", clip->crop_top);
-    mlt_properties_set_int(props, "right", clip->crop_right);
-    mlt_properties_set_int(props, "bottom", clip->crop_bottom);
-    mlt_properties_set_int(MLT_FILTER_PROPERTIES(active), "active", 1);
-    if (mlt_producer_attach(cut, parameters) != 0 || mlt_producer_attach(cut, active) != 0) {
-        mlt_filter_close(parameters);
-        mlt_filter_close(active);
-        set_err(err, err_size, "crop filter pairをclipへattachできません");
+    mlt_filter filter = mlt_factory_filter(profile, "qtcrop", NULL);
+    if (!filter) {
+        set_err(err, err_size, "必須filter 'qtcrop'を作れません");
         return 1;
     }
-    mlt_filter_close(parameters);
-    mlt_filter_close(active);
+    /* frame に対する割合で指定する。crop の px は profile (= 出力) の寸法を基準にしている。 */
+    const double width = (double)profile->width;
+    const double height = (double)profile->height;
+    char rect[160];
+    snprintf(rect, sizeof(rect), "%.6f%%/%.6f%%:%.6f%%x%.6f%%", clip->crop_left * 100.0 / width,
+             clip->crop_top * 100.0 / height,
+             (width - clip->crop_left - clip->crop_right) * 100.0 / width,
+             (height - clip->crop_top - clip->crop_bottom) * 100.0 / height);
+    mlt_properties props = MLT_FILTER_PROPERTIES(filter);
+    mlt_properties_set(props, "rect", rect);
+    mlt_properties_set(props, "color", "#00000000");
+    mlt_properties_set_int(props, "circle", 0);
+    mlt_properties_set_double(props, "radius", 0.0);
+    if (mlt_producer_attach(cut, filter) != 0) {
+        mlt_filter_close(filter);
+        set_err(err, err_size, "qtcrop filterをclipへattachできません");
+        return 1;
+    }
+    mlt_filter_close(filter);
     return 0;
 }
 
@@ -203,7 +210,10 @@ static int attach_export_affine(mlt_profile profile, mlt_producer cut, const Mvm
     mlt_properties_set_int(props, "transition.mirror_off", 1);
     mlt_properties_set(props, "transition.halign", "center");
     mlt_properties_set(props, "transition.valign", "middle");
-    mlt_properties_set_double(props, "transition.fix_rotate_z", clip->rotation_degrees);
+    /* 画面内の 2D 回転は keyed=0 の fix_rotate_x が担う (docs/m7b-p0-findings.md の実画素結果)。
+     * fix_rotate_z は MLT 7.36.1 では実画素に現れず、V1 の回転が書き出されていなかった。 */
+    mlt_properties_set_int(props, "transition.keyed", 0);
+    mlt_properties_set_double(props, "transition.fix_rotate_x", clip->rotation_degrees);
     mlt_filter_set_in_and_out(filter, (mlt_position)producer_in,
                               (mlt_position)(producer_in + duration - 1));
     for (int i = 0; i < clip->opacity_keyframe_count; ++i) {
@@ -463,9 +473,9 @@ int mvm_mlt_export_sequence(const MvmExportClip* clips, int clip_count, const Mv
         }
         for (int i = 0; i < clip_count; ++i) {
             if (clips[i].effects_enabled &&
-                (!service_exists(mlt_repository_filters(repo), "crop") ||
+                (!service_exists(mlt_repository_filters(repo), "qtcrop") ||
                  !service_exists(mlt_repository_filters(repo), "affine"))) {
-                set_err(err, err_size, "effectに必要なfilter crop/affineがありません");
+                set_err(err, err_size, "effectに必要なfilter qtcrop/affineがありません");
                 goto fail;
             }
         }
@@ -662,6 +672,17 @@ fail:
     return cancelled ? MVM_EXPORT_CANCELLED : MVM_EXPORT_FAILED;
 }
 
+/* playlist に frames 分の空きを足す。V1 (track 0) は黒の背景で埋め、それ以外は blank にする。
+ * V1 を blank にすると、上位 track の affine transition が掛からない (上の定義を参照)。 */
+static int append_gap(mlt_playlist playlist, int track, mlt_producer v1_background,
+                      long long frames) {
+    if (frames <= 0)
+        return 1;
+    if (track == 0)
+        return mlt_playlist_append_io(playlist, v1_background, 0, (mlt_position)(frames - 1));
+    return mlt_playlist_blank(playlist, (mlt_position)(frames - 1));
+}
+
 int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long long total_duration,
                              const MvmExportSpec* spec, const char* out_path, MvmExportResult* out,
                              char* err, size_t err_size) {
@@ -681,6 +702,7 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     long long cut_capacity = 0;
     mlt_consumer consumer = NULL;
     long long* cursors = NULL;
+    mlt_producer v1_background = NULL;
     int failed = MVM_EXPORT_FAILED;
 
     if (out)
@@ -820,7 +842,8 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
         mlt_repository repo = mlt_factory_repository();
         if (!service_exists(mlt_repository_producers(repo), "avformat") ||
             !service_exists(mlt_repository_consumers(repo), "avformat") ||
-            !service_exists(mlt_repository_filters(repo), "crop") ||
+            !service_exists(mlt_repository_filters(repo), "qtcrop") ||
+            !service_exists(mlt_repository_producers(repo), "color") ||
             !service_exists(mlt_repository_filters(repo), "affine") ||
             !service_exists(mlt_repository_transitions(repo), "affine") ||
             !service_exists(mlt_repository_transitions(repo), "mix") ||
@@ -828,10 +851,24 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             (clips_need_timewarp(clips, clip_count) &&
              !service_exists(mlt_repository_producers(repo), "timewarp"))) {
             set_err(err, err_size,
-                    "tractor exportに必要なcrop/affine/mix/avformat/timewarpがありません");
+                    "tractor exportに必要なqtcrop/color/affine/mix/avformat/timewarpがありません");
             goto cleanup;
         }
     }
+
+    /* V1 の gap は blank ではなく黒の color producer で埋める。blank は test card になり、
+     * affine transition は下の frame が test card だと上の frame をそのまま返す (実測)。
+     * そのため V1 が空の区間では、V2 以上の clip の位置・拡大・回転・crop・不透明度が
+     * 書き出されていなかった (docs/premiere-like-editing.md §18.6)。 */
+    v1_background = mlt_factory_producer(profile, "color", "#000000");
+    if (!v1_background) {
+        set_err(err, err_size, "V1 の背景 (color producer) を作れません");
+        goto cleanup;
+    }
+    mlt_properties_set_position(MLT_PRODUCER_PROPERTIES(v1_background), "length",
+                                (mlt_position)total_duration + 1);
+    mlt_properties_set_position(MLT_PRODUCER_PROPERTIES(v1_background), "out",
+                                (mlt_position)total_duration);
 
     tractor = mlt_tractor_new();
     for (int track = 0; track < video_playlist_count; ++track) {
@@ -860,8 +897,8 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
             }
         }
         if (clip->timeline_start_frame > cursors[track]) {
-            if (mlt_playlist_blank(playlists[track], (mlt_position)(clip->timeline_start_frame -
-                                                                    cursors[track] - 1)) != 0) {
+            if (append_gap(playlists[track], track, v1_background,
+                           clip->timeline_start_frame - cursors[track]) != 0) {
                 set_err(err, err_size, "track %dへblankを追加できません", track);
                 goto cleanup;
             }
@@ -934,8 +971,8 @@ int mvm_mlt_export_two_track(const MvmExportClip* clips, int clip_count, long lo
     }
     for (int track = 0; track < playlist_count; ++track) {
         if (cursors[track] < total_duration) {
-            if (mlt_playlist_blank(playlists[track],
-                                   (mlt_position)(total_duration - cursors[track] - 1)) != 0) {
+            if (append_gap(playlists[track], track, v1_background,
+                           total_duration - cursors[track]) != 0) {
                 set_err(err, err_size, "track %dへ末尾blankを追加できません", track);
                 goto cleanup;
             }
@@ -1063,6 +1100,8 @@ cleanup:
         if (producers[index])
             mlt_producer_close(producers[index]);
     free(producers);
+    if (v1_background)
+        mlt_producer_close(v1_background);
     free(cursors);
     free(audio_tracks);
     free(playlists);

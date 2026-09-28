@@ -40,7 +40,7 @@ cbuffer Params : register(b0)
     float4 mat;      // x = vr, y = ug, z = vg, w = ub
     float4 misc;     // x = chroma neutral, y = straight layer opacity
     float4 destination; // effect quad: normalized x/y/w/h
-    float4 geometry;    // x = cos, y = sin
+    float4 geometry;    // x = cos, y = sin, z/w = 出力の幅/高さ (画素)
 };
 
 Texture2DArray<float4> texLuma   : register(t0);
@@ -68,9 +68,11 @@ VSOut vs_effect(uint id : SV_VertexID)
     float2 unit = corners[id];
     float2 p = destination.xy + unit * destination.zw;
     float2 center = destination.xy + destination.zw * 0.5;
-    float2 delta = p - center;
-    p = center + float2(geometry.x * delta.x - geometry.y * delta.y,
-                        geometry.y * delta.x + geometry.x * delta.y);
+    // 回転は画素空間で行う。正規化座標のまま回すと、正方形でない出力では shear になる。
+    float2 delta = (p - center) * geometry.zw;
+    delta = float2(geometry.x * delta.x - geometry.y * delta.y,
+                   geometry.y * delta.x + geometry.x * delta.y);
+    p = center + delta / geometry.zw;
     o.uv = unit;
     o.pos = float4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
     return o;
@@ -576,6 +578,8 @@ bool Nv12Converter::drawInternal(const DecodedGpuFrame& frame, ID3D11RenderTarge
         const float radians = rotationDegrees * 3.14159265358979323846f / 180.0f;
         params.geometry[0] = std::cos(radians);
         params.geometry[1] = std::sin(radians);
+        params.geometry[2] = static_cast<float>(targetWidth);
+        params.geometry[3] = static_cast<float>(targetHeight);
     }
 
     ID3D11DeviceContext* ctx = shared_->context();

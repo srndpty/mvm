@@ -221,12 +221,12 @@ std::vector<unsigned char> composePreview(Preview& preview, const project::Proje
                                           std::int64_t outputFrame = 0,
                                           bool ignoreOpacity = false) {
     const auto mapped = app::mapTimelinePreviewFrame(project, outputFrame);
-    require(mapped.success && mapped.layers.size() == 2 && mapped.textLayers.size() == 1,
+    require(mapped.success && mapped.layers.size() == 2 && mapped.stillLayers.size() == 1,
             "preview の対応づけが映像 2 本と文字 1 枚になりません");
     auto stack = app::previewLayerStack(mapped);
     if (flipText) {
         const auto text =
-            std::find_if(stack.begin(), stack.end(), [](const auto& entry) { return entry.text; });
+            std::find_if(stack.begin(), stack.end(), [](const auto& entry) { return entry.still; });
         const auto moved = *text;
         const bool wasTop = text + 1 == stack.end();
         stack.erase(text);
@@ -239,10 +239,10 @@ std::vector<unsigned char> composePreview(Preview& preview, const project::Proje
     for (const auto& entry : stack) {
         gpu::CompositionLayerFrame layer;
         // 同じ素材を 2 layer に使う。z 順以外の差を作らない。
-        layer.frame = entry.text ? still : preview.video;
+        layer.frame = entry.still ? still : preview.video;
         // 文字の不透明度は製品と同じく対応づけの評価値 (値・key・fade) を使う。
-        if (entry.text && !ignoreOpacity)
-            layer.opacity = static_cast<float>(mapped.textLayers[entry.index].opacity);
+        if (entry.still && !ignoreOpacity)
+            layer.opacity = static_cast<float>(mapped.stillLayers[entry.index].opacity);
         layer.zOrder = z++;
         frame.layers.push_back(layer);
     }

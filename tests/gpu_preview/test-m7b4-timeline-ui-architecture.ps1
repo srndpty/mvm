@@ -314,7 +314,7 @@ $requiredVideoDrop = @(
     'id: videoDropArea',
     'drag.hasUrls',
     'root.isLocalFileUrl(drag.urls[index])',
-    'root.mvmController.addVideoClip(url)',
+    'root.mvmController.addMediaFileToTimeline(url)',
     'drop.accept(Qt.CopyAction)',
     'drag.accept(Qt.CopyAction)',
     '(drag.supportedActions & Qt.CopyAction) !== 0',

@@ -565,11 +565,13 @@ struct MediaItem {
 | 削除 | folder は中身ごと。timeline で使用中の素材を 1 つでも含めば全体を拒否 |
 | 追加 | 同じファイル (lexically_normal で比較) の素材は 2 つ持たない |
 
-`[事実]` timeline へ素材を置く経路 (`addVideoClip` / `addAudioClip`) は、
-同じ transaction で bin にも登録する。既に bin にあれば何もしない。
+`[事実]` timeline へ素材を置く経路 (`addVideoClip` / `addAudioClip`、§18.5 以降は `addImageClip` と
+`addMediaFileToTimeline` も) は、同じ transaction で bin にも登録する。既に bin にあれば何もしない。
 bin 側の操作はすべて `commitProjectEdit` を通るため、1 操作 1 undo になる。
 
 ### 15.3 素材種別の判定
+
+§18.1 で置き換えた。以下は MLT の probe だけで判定していた当時の記録である。
 
 `[事実]` 拡張子ではなく MLT の probe で決める (`apps/mvm/media_import.cpp`)。
 `mvm_bench probe` で次を観測した。
@@ -1005,10 +1007,11 @@ composition に載せ、track index の順 (背面 -> 前面) に合成する。
   snapshot が参照しなくなったら SRV cache から外す (`GpuCompositor::retireLayerTexture`)。
   外さないと SRV が texture の参照を持ち続け、文字を編集するたびに漏れる
 - 受理条件: 静止画だけの composition、画素数と寸法の不一致、source との併用、effect 付きは拒否する
+  (§18.3 で変更: 静止画だけの composition と effect 付きの静止画は受理する。fade 付きは拒否する)
 - 上限: video source 2 本、合成 layer 3 枚 (`kMaxPreviewCompositionLayers`)。映像 2 本 + 文字 2 枚
   のように 3 枚を超える frame は preview を失敗にする (fail-closed)
 
-`[事実]` 映像の無い frame では従来どおり UI (Qt scene graph) が文字を重ねる。重ねる相手が無いので
+`[事実]` (§18.3 で変更: 映像の無い frame の文字も engine が合成する) 映像の無い frame では従来どおり UI (Qt scene graph) が文字を重ねる。重ねる相手が無いので
 順序の問題は起きない。また、ドラッグ中と編集中の文字だけは UI が重ね、engine の合成からは外す
 (`setTextOverlayClip`)。二重に描かないためであり、操作中の文字は一時的に最前面に見える。
 
@@ -1197,3 +1200,426 @@ frame を 30 枚提示する。同じ run で、音声 17 本目の登録、映�
 thread 1 本と D3D11 の frame pool (`extra_hw_frames = 16`) を持ち、source-set の切り替え中は旧 set と
 新 set が一時的に両方残る。文字 1 枚は 1080p で CPU / GPU それぞれ約 8MiB。4K 素材 8 本では VRAM が
 足りない可能性があり、その場合は値を決め打ちで下げる。
+
+## 18. 画像・音声の単体素材
+
+画像・音声のファイルを単体の素材として扱うための変更。段階は次のとおり。
+
+1. 素材種別の判定を FFmpeg の stream の事実で行う (18.1)。静止画 decoder を置く (18.2)
+2. decode source の無い composition (画像だけ・音声だけの区間) を engine が提示する
+3. Image clip を timeline・preview・書き出しへ通す
+4. 配置の経路と UI (拡張子の表を含む)
+
+この節は 4 までの記録である。
+
+### 18.1 判定の順序と許可表
+
+`[事実]` MLT の probe (avformat producer) は画像の判定に使えない。`mvm_bench probe` で次を観測した。
+素材は `pwsh scripts/make-testmedia.ps1 -Mode Smoke` が `tests/assets/smoke/_import/` へ作る。
+
+| 素材 | MLT の値 | 当時の判定 |
+| ---- | -------- | ---------- |
+| 静止画 GIF (1 frame) | 4 frame / 100fps / 有限尺 | Video (誤り) |
+| 静止画 WebP | 15000 frame / 600 秒 | Video (誤り) |
+| アニメーション APNG (3 frame) | 無限尺 (静止 PNG と同じ) | Image (誤り) |
+| アニメーション GIF (3 frame) | 3 frame / 10fps | Video |
+| アニメーション WebP | 開けない | 失敗 |
+| カバーアート付き mp3 / m4a / flac | has_video (mjpeg) / 60fps / 尺 1.0 秒 | Video (誤り) |
+| h264 + カバーアートの mp4 | h264 を選ぶ / 10 frame | Video |
+
+`[事実]` FFmpeg 8.1.2 (`ffprobe`) では次のとおりだった。
+
+- カバーアートの stream は `disposition.attached_pic = 1` で区別できる
+- 静止画は image 用の demuxer (`png_pipe` / `jpeg_pipe` / `webp_pipe` / `image2` (tga) / `gif` / `apng`)
+  で開かれ、packet は 1 つ。アニメーション GIF / APNG は frame 数だけ packet がある
+- **アニメーション WebP は 1 packet として demux され、decode もできない** (`image data not found`)。
+  そのため VP8X chunk の animation flag (`0x02`) を header から直接読む
+
+判定は `apps/mvm/media_import.cpp` の `probeMediaFile` だけで行う。拡張子は見ない。
+
+1. `probeMediaStreamFacts` (`src/media/still_image/media_stream_facts.cpp`) が FFmpeg で
+   stream の事実を取る。カバーアートを除いた映像 stream 数、カバーアート数、音声 stream 数、
+   codec、demuxer、静止画 codec の packet 数 (2 で打ち切る)、WebP の animation flag
+2. `routeMedia` がこれだけで振り分ける
+   - アニメーション (flag、または静止画 codec で 2 packet 以上) -> 拒否
+     「アニメーション画像 (GIF / WebP / APNG) には対応していません。動画 (mp4 など) へ変換してから
+     読み込んでください」
+   - HDR 画像 (`exr` / `hdr`) -> 拒否。scene-linear で tone map が要るため
+   - 静止画 codec -> StillImage。静止画 decoder で実際に decode し、向きを反映した寸法を Image に入れる
+   - 映像か音声の stream がある -> TimeBased
+3. TimeBased だけ MLT で probe し、`classifyMediaProbe` が Video / Audio を決める
+   - カバーアートを除いた映像 stream が無ければ Audio。MLT が映像ありと返しても音声として扱う
+   - 映像 stream があるのに MLT が映像を開けなければ失敗 (どちらかを選ばない)
+   - 無限尺、または 1 frame の映像は拒否する。以前は Image としていたが、静止画は MLT を通らなくなった
+
+静止画 codec の許可表 `kStillImageCodecs` は `media_stream_facts.cpp` の 1 か所にある。
+`mjpeg` などは動画の codec にもなるので、demuxer が画像用 (`*_pipe` / `image2` / `gif` / `apng` /
+`jpegxl_anim`) のときだけ静止画とする。Motion JPEG の avi は Video になる。
+
+`[事実]` controller の `probeMedia` / `probeAudioMedia` は独自に MLT の probe を解釈していたため、
+bin とタイムラインで判定が食い違っていた。どちらも `probeMediaFile` の結果から用途に合うかを
+見るだけにした。`addVideoClip` に JPEG を渡すと「静止画は動画として追加できません」で失敗する。
+
+`[事実]` カバーアート付きの音声の尺は、MLT (profile 60fps) と FFmpeg の両方で 1.0 秒だった。
+§15.3 で心配した 90000fps は profile に入らなかったので、尺の照合は入れていない。
+
+### 18.2 静止画 decoder
+
+`src/media/still_image/` (lib `mvm_still_image`) に置いた。FFmpeg (libavformat / libavcodec /
+libswscale) だけに依存し、Qt と MLT は使わない。lint が Qt の include を拒否する
+(`lint_still_image_isolation_negative` / `_control`)。preview と書き出しの両方がこの decoder の
+画素を使う予定であり (段階 2 / 3)、decoder の違いによる見た目の食い違いを起こさない。
+
+- `decodeStillImage`: 先頭の 1 frame を decode し、straight alpha の RGBA8 を返す。
+  画素形式の変換は swscale の `sws_scale_frame` (dynamic mode) で、range と行列は frame の属性から決まる
+- `applyExifOrientation`: EXIF orientation 1..8 を画素へ反映する。それ以外は拒否する
+- `fitStillImageToRaster`: 出力解像度の raster の中央へ縦横比を保って置き、余白を alpha 0 にする。
+  文字 clip の全画面 PNG と同じ形にして、crop / 変形の座標系を映像・文字と揃えるため
+
+`[事実]` EXIF の向き。orientation 6 の JPEG を FFmpeg 8.1.2 で decode すると、frame に
+`AV_FRAME_DATA_DISPLAYMATRIX` (rotation -90) と `AV_FRAME_DATA_EXIF` の両方が付く。
+EXIF 側は 14 byte の空の IFD で、FFmpeg は orientation を display matrix へ移して EXIF からは
+取り除いている (`ffprobe -show_frames` で確認)。画素は回転されない。
+向きは display matrix を `av_exif_matrix_to_orientation` で換算したものとし、EXIF 側に 0x112 が
+残っていれば一致を要求する (食い違えば失敗。どちらかを選ばない)。
+
+`[事実]` 寸法の上限 (既定 16384 px / 64 MiPx) は、画素を確保する前に効かせる。
+PNG は `avformat_find_stream_info` が寸法を知るために先頭 frame を decode するので、
+codec option の `max_pixels` をそこにも渡す。渡さないと 9000x9000 の PNG を decoder の検査より前に
+確保していた (`ffprobe` と `ffprobe -max_pixels 67108864` の比較で確認)。
+`still_image_decode_unit` は、上限 16M / 32M 画素で 4200x4200 の PNG の facts の寸法が 0 / 4200 になる
+ことでこれを見る。`find_stream_info` へ上限を渡すのをやめると落ちることを確認した。
+
+`[事実]` 縮拡は premultiplied alpha で行う。straight alpha のまま bicubic で拡大すると、
+不透明な赤と透明な緑の境目に `G = 0x5a` の緑が出た (ffmpeg の `scale=flags=bicubic` で確認)。
+premultiply をやめると検査 (`透明な画素の色が境目へにじみました`) が落ちることを確認した。
+なお幅 2 のような小さな画像では swscale の filter が縮退して最近傍と同じ結果になり、境目が
+できないため、検査は 16x4 を 4 倍にして半透明の画素があることも確かめている。
+
+`[事実]` `still_image_decode_unit` (75 件) と `media_import_files_focused` (25 件) で次を固定した。
+
+- 判定: 静止画 9 形式 (png / jpg / tga / bmp / qoi / tiff 48bit / webp / gif / pal8 png) が 1 packet の
+  静止画、アニメーション GIF / APNG が 2 packet、アニメーション WebP の flag、EXR の HDR、
+  カバーアート付き mp3 / m4a / flac の映像 0 本、対照として h264 + カバーアートの mp4 の映像 1 本と
+  Motion JPEG の avi
+- decode: orientation 1 (対照) と 6 (日本語名の複製を含む) の画素と寸法、full range の灰色 128
+  (JPEG と gray16 PNG で ±1)、pal8 の透明、上記の各形式が 64x48 で読めること、画素数と 1 辺の上限
+  (それぞれ上限ちょうど・対照つき)
+- 向きの 8 通りは 3x2 の画像で、EXIF の定義 (反転と回転) から手で書いた並びと比べる
+- 実素材での判定: 上の静止画 (寸法は向きを反映した値) / アニメーションと HDR と壊れた素材の拒否 /
+  カバーアート付きを含む音声 5 形式が Audio / Motion JPEG と h264 + カバーアートの mp4 が Video
+- `media_bin_model_focused` の分類の検査は、映像の有無を MLT の `has_video` で判断させるか、
+  1 frame の映像の拒否を外すと落ちることを確認した
+
+`[事実]` fixture の作り方で 2 つ踏んだ。
+
+- `drawbox` は rgba の alpha を書かず、`-pix_fmt pal8` への単純な変換は alpha を落とす。
+  透明を持つ pal8 PNG は `geq` で alpha を明示し、`palettegen=reserve_transparent=1` で作る
+- ffmpeg の mjpeg encoder は EXIF を書かない。向き付きの JPEG は SOI の直後へ最小の APP1 Exif を
+  byte で差し込んで作る (`Add-JpegExifOrientation`)
+
+`[未検証]` (§18.6 で変更: sRGB 以外の ICC profile を持つ画像は拒否する)
+ICC profile は無視している (Display P3 などの素材は彩度が落ちる)。CMYK JPEG、
+TIFF の associated alpha、JPEG XL、JPEG 2000、PSD は素材を作っておらず、読めるかも色が正しいかも
+測っていない。許可表に入れているが、実際に読めなければ decode の失敗として拒否される。
+SVG は許可表に入れていない (描画解像度を決める必要があるため)。
+上限 64 MiPx は決め打ちであり、実在する素材の大きさを調べて決めた値ではない。
+
+### 18.3 decode source の無い composition の提示
+
+`[事実]` 以前は映像の無い区間 (画像だけ・音声だけ・何も無い) で次のようになっていた。
+
+- controller の `syncPreviewSourcesAt` が、映像 layer が 0 なら composition も音声も入れずに戻っていた
+- 再生は engine を `play()` せず、controller の時計だけを進めていた (`clockOnlyPlayback_`)。
+  **このため音声だけの区間は 1x で無音だった**
+- `PreviewSurface` は `visible: previewVideoAtPlayhead` で、映像の無い frame では render されなかった
+- engine は静止画だけの composition と、effect 付きの静止画 layer を拒否していた
+
+`[事実]` 変更後は次のとおり。
+
+- engine (`src/preview_engine/preview_engine.cpp`)
+  - 静止画だけの composition を受理し、decode layer が 0 枚の分岐 (従来の gap) で静止画を
+    `composeLayersToTarget` で描く。提示の authority は scheduler の時計 (`docs/preview-engine-contract.md` §7.0)
+  - 静止画 layer の effect を受理し、`effectsEnabled` と `rotationDegrees` を compositor へ渡す。
+    compositor は RGBA8 を既に effect 経路で描けた (`drawInternal` の `rgbaPs_`)。fade は source frame
+    番号で評価されるので、静止画では 0 を要求する
+  - **gap の分岐の seek 完了が、再開する音声 transport を控えていなかった。** そのため音声だけの区間で
+    seek して再生を再開すると、音声が戻らず「audio master clockが停止しています」で fatal になった。
+    控える処理を decode layer の有る分岐と共用の `captureSeekAudioResume` にした
+- controller (`apps/mvm/mvm_controller.cpp`)
+  - `syncPreviewSourcesAt` の早期 return と `clockOnlyPlayback_` を撤去した。映像の無い区間でも
+    composition を出し、音声を差し替え、engine を再生する。gap から映像へ入るときは
+    `handOffPlaybackSources` が layer 数の違いで失敗し、既存の組み直しの経路へ落ちる
+  - 文字の preview 更新 (`refreshTextPreview`) も映像の有無で分けない
+- `mapTimelinePreviewFrame` の合成 layer 上限を、映像の無い frame にも掛ける (文字も engine が合成するため)
+- `Main.qml` の `PreviewSurface` を常に表示し、UI が文字を重ねるのはドラッグ・編集中の文字だけにした
+
+`[事実]` 次の検査で固定した。
+
+- `preview_engine_p5b_unit` (`composition still layers`): 静止画 2 枚だけの composition と effect 付きの
+  静止画を受理する。fade in / fade out 付きの静止画を拒否し、対照として同じ fade の video layer は受理する
+- `still_layer_compositor` の 6: video layer の無い composition で、左 1/4 が白の静止画を 180 度回すと
+  白が右端へ移る。対照として effect 無しでは左端に残る
+- `preview_engine_sourceless_playback` (`mvm_sourceless_playback_smoke`、workstation):
+  静止画 2 枚 (1 枚は回転付き) を音声なしで再生して 2 layer の frame を 30 枚、空の composition + 音声で
+  30 枚 (meter 0.5)、再生中に seek して seek 先より後で 30 枚を提示する。gap の分岐の
+  `captureSeekAudioResume()` を外すと、seek 後に「audio master clockが停止しています」で落ちることを確認した
+- `sourceless_timeline_playback` (workstation): 実際の preview surface を付けた controller で A1 の音声だけの
+  timeline を再生し、playhead が 0 -> 61 と進み meter の最大が -6.0 dB になる。
+  `syncPreviewSourcesAt` の早期 return を戻すと、playhead 0 -> 0、meter -60.0 dB で落ちることを確認した
+- `m7b_2_timeline_preview_mapping_focused`: 映像の無い frame の文字 16 枚を受理し、17 枚目で拒否する
+
+`[未検証]` 1x 再生中に gap から映像の区間へ入るとき、組み直しで一瞬止まる時間。
+静止画だけの区間で opacity key を再生したときの遅れ (再生中は GUI の tick で composition を出し直すので、
+文字と同じく 1〜2 frame 遅れうる)。`PreviewSurface` を常に表示したときの負荷の変化。
+
+### 18.4 Image clip と Project schema 8
+
+`[事実]` `TimelineClipKind::Image` (保存名 `"image"`) を足し、`kProjectSchemaVersion` を 8 にした。
+§1 と同じく互換分岐は持たず、schema 7 のファイルは読まない (`clip_effects_focused` の `schema7.mvm`)。
+
+- 文字と画像は「素材の時間軸を持たない clip」として同じ規則に従う (`isStillClipKind`)。
+  素材 frame domain は in = 0・out = 尺 の合成値で、速度 1/1・リンク無し・スリップとレート調整は不可。
+  fps は置いたときの timeline の値で、timeline の fps を変えても振り直さない (尺は clip の fps で換算され、
+  trim で現在の fps へ揃う)。これを `validateTimeline` で検査する
+- 画像は mediaPath が必須。effect は video と同じく位置・拡大・回転・crop・不透明度 (key・fade) を持ち、
+  音量は持たない。置いたときの既定の尺は 5 秒 (`defaultStillClipFrames`、文字と共有)
+- 置き場所は文字と同じ `placeStillClipAt` (旧 `placeTextClipAt`)
+
+`[事実]` **文字 clip の分割が常に失敗していた。** 文字の trim は両半分とも in = 0 に振り直すので、
+`splitTimelineClips` の「左の out と右の in が一致する」検査に必ず当たり、「分割位置を素材 frame へ
+一意に換算できません」になった (小さなプログラムで分割を呼んで確認)。文字・画像では境界の一致を
+timeline 上で見るようにした。
+
+`[事実]` preview は、画像を `mapTimelinePreviewFrame` の静止画 layer (`stillLayers`、旧 `textLayers`) に入れる。
+画素は静止画 decoder で decode し、出力解像度の raster へ配置したもの (§18.2) で、素材 path と
+出力解像度を key に controller が保持する。effect → layer の変換は `applyPreviewLayerEffects`
+(`timeline_preview_mapping`) に出し、video と画像で共有する。書き出しは同じ decoder の raster を PNG に
+stage し、文字と同じ qimage producer で開く (`MvmExportClip::is_still_image`、旧 `is_text`)。
+
+`[事実]` preview と書き出しの画素比較 (`image_preview_parity`) で、画像に限らない既存の不具合を 2 つ見つけて直した。
+
+1. **preview の回転が正規化座標で行われていた。** effect の vertex shader が 0..1 の座標のまま回していたため、
+   正方形でない出力では回転が shear になっていた。回転を画素空間で行うようにした
+   (`nv12_converter.cpp`、`geometry.zw` に出力の寸法)
+2. **書き出しの V1 の回転が効いていなかった。** V1 の affine filter は `transition.fix_rotate_z` を使っていたが、
+   MLT 7.36.1 では 2D 回転は keyed=0 の `fix_rotate_x` が担う (`docs/m7b-p0-findings.md`)。上位 track の
+   transition はこれに従っていたが、V1 だけ残っていた。既存の `m4_timeline_export_focused` は回転 25 度を
+   掛けて「外接矩形が 230 x 210 未満」だけを見ており、回転が無くても通っていた
+
+両方を直した後、V1 の画像 (位置 +12% / -8%、拡大 70%、回転 15 度、右 crop 10%) の preview と書き出しの
+画素の分類は 51080 / 51080 で一致した。対照として preview だけ位置を 25% ずらすと 32817 / 51080 に落ちる。
+書き出し側を `fix_rotate_z` に戻すと 46516 / 52358 で落ちることを確認した。
+`m4_timeline_export_focused` は外接矩形を手計算の期待値 (±5 px) と比べるようにし、回転を crop と分けた。
+回転 25 度の実測 x 82..314 / y 0..205 は期待 x 81..316 / y 0..207 と一致し、`fix_rotate_z` に戻すと
+x 112..285 / y 30..173 (回転なし) で落ちる。
+
+`[事実]` **crop と回転を同時に使うと、MLT の書き出しは shear になる。** 320x240 で crop (左 10 / 上 10 /
+右 20 / 下 5%) と回転 25 度を掛けると平行四辺形になり、crop を外すと正しい矩形になった
+(書き出した frame を目視で確認)。preview は crop を sourceUv で行うので shear にならず、この組み合わせだけ
+preview と書き出しが食い違う。V1 の回転が効いていなかった以前は、回転そのものが書き出されていなかった。
+
+`[推測]` crop filter が frame の寸法を変え、affine が正方形でない座標系で回転しているため。
+上位 track (transition 経路) も同じ crop filter を使うので同様と考えているが、測っていない。
+
+`[未検証]` (§18.6 で解消) crop + 回転の書き出しを直す方法 (crop を寸法を変えない方法で掛けるなど)。上位 track での同じ組み合わせ。
+
+`[事実]` `image_clip_contract` で次を固定した。
+
+- schema 8 の往復 (path は同じファイルを指すこと、他の field は完全一致)
+- 検証の負例 (path が空、速度 50%、in ≠ 0、out ≠ 尺、音量、audio track、文字データ、リンク付き。
+  リンク付きは対照としてリンクを外すと受理する)。位置・拡大・回転・crop・不透明度 key は受理する
+- 既定の尺 (60fps で 300、29.97fps で 150、24fps で 120)、trim で素材の尺を超えて伸ばせること、
+  スリップとレート調整の拒否、画像と文字の分割 (0-100 / 100-300)、V1 の画像の上 (V2) への配置、
+  preview で静止画 layer に入ること
+- 書き出しの画素: 64x32 の画像が 320x240 で上下 40 px の余白を持って中央に出ること、
+  EXIF orientation 6 の画像が縦長になり赤が右上に来ること
+- in / out の検査を外すか、分割の境界の検査を素材 frame に戻すと落ちることを確認した
+
+`[事実]` 途中で、MLT の shutdown (`mvm_mlt_runtime_shutdown`) の後に静止画 decoder を呼ぶと avformat の中で
+落ちた (gdb の backtrace で `openMediaInput` の中)。製品は終了時にだけ shutdown するので、検査側で順序を直した。
+`[推測]` MLT の avformat module が登録した log callback が、module の unload 後も残るため。
+
+`[未検証]` (§18.6 で解消: decode は worker、差し替えは同一性と再検証で見つける)
+大きな画像を最初に表示するときの GUI thread の停止時間 (decode と配置を同期で行う)。
+素材ファイルを外部で書き換えたときの preview の画素の更新 (path と出力解像度が同じなら保持したものを使う)。
+
+### 18.5 配置の経路と UI
+
+`[事実]` 素材を timeline へ置く経路を、内容の判定 (`probeMediaFile`) から振り分ける形にした。拡張子は見ない。
+
+- `addMediaFileToTimeline(url)`: 判定した種別で Video / Audio / Image のどれかとして置く。
+  メニューの「メディアを追加」(旧「動画を追加」「音声を追加」を統合) と、timeline への drop がここを通る。
+  以前の drop は常に `addVideoClip` を呼び、音声・画像の drop は失敗していた
+- `addImageClip(url)` / bin の「タイムラインに追加」: 画像を再生ヘッドの位置に、最上位の clip より上の
+  空いた映像 track (`placeStillClipAt`) へ 5 秒で置く。判定の結果を bin への登録にも渡し、decode を繰り返さない
+- `addAudioClip(url)`: 以前は A1 の末尾へ足し、audio track が無ければ失敗していた。再生ヘッドの位置に、
+  A1 から順に空いた非 mute の audio track へ置き、無ければ audio track を足す (`placeAudioClipAt`)
+- 置いた後の選択 (preview の seek) が失敗しても、置いた編集は commit 済みである (既存の `addVideoClip` と同じ)
+
+拡張子の表は `apps/mvm/media_file_filters.h` の 1 か所に置き、`MvmController::mediaFileNameFilters` として
+メニューのダイアログと bin の「読み込み…」の両方へ出す。表は選びやすさのためだけにあり、「すべて」も選べる。
+判定はあくまで内容で行う。
+
+`[事実]` `m7b_4_controller_export_lifecycle` に次を足した。
+
+- bin の画像を「タイムラインに追加」できる (以前は拒否を検査していた)
+- 再生ヘッド 30 で、画像が V1 の映像の上 (V2) に 30 から 300 frame で置かれる
+- audio track の無い Project で音声が A1 を足して置かれ、同じ位置へもう 1 つ置くと A2 を足して置かれる
+- アニメーション GIF は「アニメーション」を含む理由で拒否され、Project は変わらない。画像は `addVideoClip` で
+  動画として置けない
+- 音声の配置を A1 の末尾への追加に戻すと「追加先の track が存在しません」で落ちることを確認した
+- UI 構造の検査 (`m7b_4_timeline_ui_architecture`) は、drop が `addMediaFileToTimeline(url)` を呼ぶことを要求する
+
+`[事実]` この検査で MLT を 1 プロセス内で 2 回初期化したところ、2 回目の初期化の途中で
+`GGML_ASSERT(prev != ggml_uncaught_exception)` により落ちた (gdb で ggml-base.dll の読み込み中の例外を確認)。
+ggml は UCRT64 の FFmpeg の whisper filter の依存である。製品は MLT を 1 回だけ初期化するので、
+検査側で初期化を 1 回にまとめた。
+
+`[未検証]` (§18.6 で CPU 側に budget を入れた) 画像を多数 (数十枚) 置いた timeline での preview の memory。
+画像 1 枚は出力解像度の RGBA8 (1080p で約 8MiB、4K で約 32MiB) を CPU と GPU にそれぞれ持つ。
+
+### 18.6 レビュー指摘への対応 (P1 1 件 / P2 3 件 / P3 1 件)
+
+#### crop + 回転の書き出しの shear (P1)
+
+`[事実]` 書き出しの crop を、寸法を変える MLT の `crop` filter から、範囲外を透明で塗って寸法を保つ
+`qtcrop` filter に替えた (`attach_export_crop`)。affine へ渡す矩形は crop 範囲ではなく crop 前の frame 全体を
+置く位置にし (`mapExportEffects`)、MLT は矩形の中心で回すので、preview と同じく crop 範囲の中心で回るよう
+中心の差 d について全体を d - Rd ずらす。`qtcrop` は必須 service に加えた。
+
+`[事実]` 以前の shear は動画素材でだけ起きていた。画像 (qimage producer) は以前の crop filter でも
+非対称 crop + 回転 25 度で preview と一致した (`image_preview_parity` を変更前の書き出しで実行して確認)。
+`[推測]` producer によって crop filter の後の frame の扱いが違うため。そこで動画の検査は
+`m4_timeline_export_focused` に置いた: 320x240 の動画に crop (10/10/20/5%) と回転 25 度を掛け、外接矩形が
+手計算の x 96..269 / y 23..191 (±5 px) になること。変更前の書き出しでは x 58..305 / y 41..171 で落ちる。
+
+`[事実]` 途中で、**V1 が空の区間では V2 以上の clip の effect が書き出されていなかった**ことが分かった。
+V1 の gap は blank (test card) で、affine transition は下の frame が test card だと上の frame をそのまま返す。
+画像を V2 に置いて V1 を空けると、位置・拡大・回転・crop・不透明度が掛からずに全画面で出ていた。
+V1 の gap を黒の `color` producer で埋めるようにした (`append_gap`)。gap の数 (`playlist_blank_count`) は
+以前と同じく数える。
+
+`[事実]` `image_preview_parity` を 6 case に広げた: V1 の右 crop + 回転 15 度、V1 の非対称 crop + 回転 25 度、
+V2 の回転だけ、V2 の非対称 crop だけ、V2 の非対称 crop + 回転 25 度 (V1 に灰色の背景)、同じく V1 が空。
+画素の分類 (赤・青・黒) が境界を除いてすべて一致し、対照 (preview だけ位置を 25% ずらす) では 34〜64% に落ちる。
+書き出しを変更前に戻すと V1 が空の case が 12931 / 37390 で落ちる。
+
+#### 画像 cache が素材の差し替えと旧解像度を扱えない (P2) / 大きな画像の decode が GUI を止める (P3)
+
+`[事実]` preview 用の raster を `ImageRasterCache` (`apps/mvm/image_raster_cache.*`) に移した。
+`WaveformCache` と同じ規則で、素材の同一性の判定 (`media_source_identity.h`) は両者で共有する。
+
+- decode と配置は worker thread。完成までは request が Loading を返し、controller はその画像を合成に
+  入れず、完成 (`entryChanged`) で preview を組み直す
+- key は素材の実体 (volume + file ID) と出力解像度。request のたびに size と更新時刻 (100ns) を照合し、
+  差し替えられていれば作り直す。size と更新時刻が同じまま中身だけ変わったものは、アプリが前面へ戻ったときの
+  `revalidateMedia` → `revalidateAll` の内容 fingerprint で見つける (`main.cpp` から波形と同じ契機で呼ぶ)
+- `refreshTimelineModel` で、現在の画像 clip と現在の出力解像度の組だけを残す (`retainOnly`)。
+  出力解像度を変えると旧解像度の raster は捨てる
+- 512MiB の byte budget を超えたら、engine の composition も controller も参照していないものから古い順に捨てる
+  (§18.7 で、参照が外れた時点でも再評価するようにした)
+- 書き出しは以前から毎回 decode するので、差し替え後も preview と書き出しは同じ画素になる
+
+`[事実]` `image_raster_cache_focused` で、初回が Loading であること、同じ素材・解像度の再利用、解像度の変更と
+`retainOnly`、差し替え (BMP → 左上が赤の JPEG) での作り直し、size と更新時刻を戻した中身の変更を `revalidateAll`
+で見つけること、読めない画像の Failed、budget で参照中のものを残し参照されなくなったものを捨てることを見る。
+request が size と更新時刻を無視する、`retainOnly` が何も捨てない、のどちらでも落ちることを確認した。
+更新時刻は Win32 で読み書きする (std::filesystem は秒精度のことがあり戻せない)。
+
+#### fps 変更後の静止画の fade (P2)
+
+`[事実]` 文字・画像の素材 frame domain は置いたときの fps のままなので、preview の不透明度も書き出しと同じく
+`clipFadeSourceFrameAt` で素材 frame へ換算してから評価するようにした。以前は clip 内の timeline 位置を
+そのまま渡していたため、60fps で作った画像を 30fps の Project に置くと、fade in 1 秒の 0.5 秒地点が 0.508 では
+なく 0.254、fade out の最終 frame が 0.017 ではなく 1.0 になっていた。
+`m7b_2_timeline_preview_mapping_focused` で 60 → 30fps と 30 → 60fps、文字と画像の 0.5 秒・1 秒・最終 frame を
+手計算の値で固定した。換算をやめると落ちることを確認した。
+
+#### ICC profile を持つ画像を黙って違う色で描く (P2)
+
+`[事実]` decoder は色の変換をしないので、sRGB 以外の ICC profile (`AV_FRAME_DATA_ICC_PROFILE`) を持つ画像は
+decode で拒否する (「sRGB 以外の ICC profile を持つ画像には対応していません (Display P3)。色が変わるため
+読み込みません」)。header の色空間が RGB で、説明 ('desc' tag。v2 の desc 型と v4 の mluc 型を読む) が "sRGB" を
+含むものだけを sRGB とみなす。名乗りと中身が違う profile は見分けられない。
+(§18.7 で、説明ではなく中身で判定するように変えた)
+fixture は iCCP chunk を入れた PNG を byte で作る (Display P3 と、対照の sRGB)。FFmpeg 8.1.2 の png decoder は
+iCCP を ICC side data として出す (`ffprobe -show_frames` で確認)。`still_image_decode_unit` (85 件) と
+`media_import_files_focused` (27 件) で拒否と受理を見る。拒否をやめると落ちることを確認した。
+
+`[未検証]` ICC を sRGB へ変換して受理すること (LittleCMS などが要る)。JPEG の APP2 に入った ICC
+(同じ side data になるはずだが、fixture を作っていない)。
+
+#### テストの音量
+
+`[事実]` 検証アプリの音量 `kVerificationSessionVolume` を 0.15 から 0.1 にし、これを使っていなかった
+`preview_engine_sourceless_playback`、`sourceless_timeline_playback`、p5e の preview smoke と capacity smoke
+(音声 16 本を同時に鳴らす) にも適用した。Windows の session volume なので PCM と meter は変わらず、
+検査の値には影響しない。
+
+### 18.7 再レビュー指摘への対応 (P2 2 件 / P3 1 件)
+
+#### 取り込み後に差し替えた素材が、種別の判定を通らずに画像として読まれる (P2)
+
+`[事実]` 静止画かどうかの判定 (`routeMedia`) を `apps/mvm/media_import` から `src/media/still_image/static_image`
+へ移し、「判定して静止画だけを decode する」`loadStaticImage` を置いた。画像の画素が要る 3 経路、
+取り込み (`probeMediaFile`)、preview の raster cache (`ImageRasterCache`)、書き出し (`exportTimeline`) は
+すべてこれを通す。以前は cache と書き出しが `decodeStillImage` を直接呼んでいたため、取り込んだ静止画を
+同じ path のまま animated GIF や mp4 に差し替えると、先頭 frame を静止画として受理していた。
+`decodeStillImage` は判定をしない (header にそう書いた) ので、apps と src/app からは直接呼ばない。
+
+`[事実]` 回帰テスト:
+
+- `image_raster_cache_focused`: 静止画 PNG を Ready にした後、同じ path を animated GIF / APNG / animated WebP /
+  mp4 / EXR に差し替えると Failed になり、理由 (アニメーション / 静止画ではありません / HDR) が付くこと
+- `image_clip_contract`: 同じ 5 種を指す画像 clip の書き出しが、同じ理由で失敗すること。
+  正しい静止画の書き出し 2 件が対照
+- `still_image_decode_unit`: `loadStaticImage` が上の 5 種と Motion JPEG の avi を拒否し、静止画 PNG は読むこと。
+  対照として、`decodeStillImage` 単体は animated GIF の先頭 frame を読めてしまうこと
+
+cache と書き出しを `decodeStillImage` に戻すと、上の 2 本が 5 種すべてで落ちることを確認した
+(animated WebP は decoder 単体でも失敗するが、理由が違うので落ちる)。
+
+`[推測]` 判定と decode はファイルを 2 回開く。その間に差し替えられた場合は decode 側の結果になるが、
+次の request (size と更新時刻の照合) で作り直される。
+
+#### ICC の判定が説明の文字列だけを見ている (P2)
+
+`[事実]` `iccProfileIsSrgb` は説明 ('desc') を判定に使わず (エラー文言に添えるだけ)、色を決める中身を調べる。
+次をすべて満たすものだけを sRGB とみなす。
+
+- header: profile size が buffer に収まる、class が `mntr`、色空間 `RGB `、PCS `XYZ `
+- LUT 型の tag (A2B0..2 / B2A0..2 / D2B0..3 / B2D0..3) が無い。色管理は LUT を matrix/TRC より優先するが、
+  中身を検証しないので拒否する
+- 原色 rXYZ / gXYZ / bXYZ が sRGB の D50 値 (Windows 同梱の sRGB profile と同じ値) と ±0.003 で一致。
+  Display P3 の赤は X が 0.079 違う
+- 白色点 wtpt が D50 か D65 (v2 の sRGB profile は D65 を書く) と ±0.003 で一致
+- トーンカーブ rTRC / gTRC / bTRC が、`curv` (2 点以上の表) なら各点、`para` (関数型 0..4) なら 1024 点で、
+  sRGB の式と ±0.002 で一致。gamma 2.2 は sRGB と最大 0.0085 違うので通らない。1 点の `curv` (単純な gamma)
+  と 0 点 (恒等) は通さない
+
+`[事実]` `still_image_decode_unit` (109 件) で、v2 / v4 それぞれの sRGB (説明の無いものを含む) の受理、
+Display P3 と「説明は sRGB、原色は Display P3」の拒否、sRGB の表の受理、gamma 2.2 (表と 1 点) の拒否、
+白色点 D65 の受理と A 光源の拒否、LUT 型・bXYZ 欠け・`scnr` class・短い buffer・外を指す tag の拒否を見る。
+実物として Windows 同梱の `sRGB Color Space Profile.icm` (HP の v2、`curv` 1024 点) を sRGB と判定することも見る。
+fixture は原色・白色点・トーンカーブを持つ matrix/TRC の v2 profile を組み直し、説明だけ sRGB を名乗る
+`png_icc_fake_srgb.png` を足した (`media_import_files_focused` でも拒否を見る)。
+説明の文字列で判定する実装に戻すと、上の拒否がすべて落ちることを確認した。
+
+`[未検証]` 実際の写真に付く sRGB profile のうち、LUT 型のもの (ICC の `sRGB_v4_ICC_preference.icc` など) は
+拒否される。カメラ・スマートフォンの出力で問題になるかは確かめていない。
+
+#### byte budget が次の decode 完了時にしか再評価されない (P3)
+
+`[事実]` request は cache の raster を直接渡さず、参照が外れたら cache に `trimToBudget` を queued で頼む handle で
+包んで渡す。同じ record からの handle は同じ address を指すので、engine の同一性の判定 (address で raster を
+見分ける) は変わらない。engine の render thread で最後の handle が破棄されても、cache の破棄と mutex で排他し、
+破棄後に届いた queued call は Qt が捨てる。まだ一度も渡していない raster は捨てない
+(完成直後に controller が受け取る前に消えないように)。
+
+これで「参照されていない raster が budget を超えて残る」ことは無くなった。参照中の raster は捨てられないので、
+参照中のものだけで 512MiB を超える間は超えたままになる (engine が使っている画素を消せないため)。
+
+`[事実]` `image_raster_cache_focused` で、budget 1 byte の cache に A (保持) と B (受け取ってすぐ破棄) を読むと
+B だけが捨てられ、A の保持をやめると新しい decode 無しに 0 件になることを見る。対照として既定の budget では
+捨てない。通知をやめると落ちることを確認した。

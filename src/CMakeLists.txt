@@ -95,7 +95,7 @@ add_library(mvm_timeline_export STATIC
 target_include_directories(mvm_timeline_export PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_timeline_export
     PUBLIC mvm::project
-    PRIVATE mvm::core mvm::mlt mvm::text_raster mvm::warnings)
+    PRIVATE mvm::core mvm::mlt mvm::text_raster mvm_still_image mvm::warnings)
 add_library(mvm::timeline_export ALIAS mvm_timeline_export)
 
 # --- Phase 5 / P5-B: PreviewEngine product foundation -----------------------
@@ -222,6 +222,21 @@ target_link_libraries(mvm_audio_waveform
     PRIVATE PkgConfig::MVM_FFMPEG mvm::warnings
 )
 add_library(mvm::audio_waveform ALIAS mvm_audio_waveform)
+
+# --- 画像素材 -----------------------------------------------------------------
+# 素材の stream 構成の判定と、静止画の decode。preview と書き出しの両方がここを通り、
+# 同じ画素を使う。Qt にも MLT にも依存しない (lint が Qt の include を検査する)。
+add_library(mvm_still_image STATIC
+    media/still_image/ffmpeg_input.cpp
+    media/still_image/media_stream_facts.cpp
+    media/still_image/still_image_decoder.cpp
+    media/still_image/static_image.cpp
+)
+target_include_directories(mvm_still_image PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mvm_still_image
+    PRIVATE PkgConfig::MVM_FFMPEG PkgConfig::MVM_SWSCALE mvm::warnings
+)
+add_library(mvm::still_image ALIAS mvm_still_image)
 
 # --- Qt probe ---------------------------------------------------------------
 # Qt が UCRT64 版であり、実際にリンク・起動できることを確認する。

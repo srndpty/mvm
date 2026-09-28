@@ -419,7 +419,6 @@ CompositionAcceptanceState::submit(const std::shared_ptr<const CompositionSnapsh
     }
 
     std::set<std::uint64_t> distinctSources;
-    bool hasStillLayer = false;
     for (const PreviewCompositionLayer& layer : snapshot->layers) {
         if (layer.stillImage) {
             // 静止画 layer は decode source を持たない。画素と配置だけを検査する。
@@ -431,12 +430,13 @@ CompositionAcceptanceState::submit(const std::shared_ptr<const CompositionSnapsh
                     compositionError(PreviewErrorCategory::CompositionFailure,
                                      "静止画 layerの画素または寸法が不正です"));
             }
-            if (layer.effectsEnabled) {
-                return Result<AcceptedComposition>::failure(
-                    compositionError(PreviewErrorCategory::UnsupportedCapability,
-                                     "静止画 layerのeffectは未対応です"));
+            // 静止画には decode した source frame が無く、compositor は fade を source frame
+            // 番号から評価する。fade は呼び出し側が opacity へ評価済みの値で渡す。
+            if (layer.effectsEnabled && (layer.fadeInFrames != 0 || layer.fadeOutFrames != 0)) {
+                return Result<AcceptedComposition>::failure(compositionError(
+                    PreviewErrorCategory::CompositionFailure,
+                    "静止画 layerのfadeは受理しません。opacityへ評価済みの値を渡してください"));
             }
-            hasStillLayer = true;
             continue;
         }
         const auto source = sources.find(layer.source.value);
@@ -457,13 +457,8 @@ CompositionAcceptanceState::submit(const std::shared_ptr<const CompositionSnapsh
             compositionError(PreviewErrorCategory::UnsupportedCapability,
                              "設定されたactive video source countを超えています"));
     }
-    // 静止画だけの composition は提示の authority になる decode frame を持たない。
-    // gap として黙って黒を出さず、呼び出し側の誤りとして拒否する。
-    if (hasStillLayer && distinctSources.empty()) {
-        return Result<AcceptedComposition>::failure(
-            compositionError(PreviewErrorCategory::UnsupportedCapability,
-                             "静止画 layerだけのcompositionは未対応です"));
-    }
+    // decode source を持たない composition (静止画だけ、または空) の提示の authority は
+    // scheduler の時計 (音声があれば audio master) である。docs/preview-engine-contract.md。
 
     CompositionSnapshot canonical = *snapshot;
     for (PreviewCompositionLayer& layer : canonical.layers) {
@@ -1021,6 +1016,8 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                               layer.sourceRect.height};
             still.opacity = layer.opacity;
             still.zOrder = static_cast<int>(i);
+            still.effectsEnabled = layer.effectsEnabled;
+            still.rotationDegrees = layer.rotationDegrees;
             composed.layers.push_back(std::move(still));
         }
         std::stable_sort(composed.layers.begin(), composed.layers.end(),
@@ -2965,6 +2962,17 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                 engine.impl_->telemetrySnapshot.droppedFrameCount += skipped;
             engine.impl_->lastSchedulerTarget = target;
         };
+        // seek 完了後に再生を再開する音声 transport を、lock の外で使うために控える。
+        // decode layer の有無に関わらず同じにする。控え忘れると、音声だけの区間で
+        // seek してから再開したときに音が戻らない。
+        const auto captureSeekAudioResume = [&] {
+            seekAudioWorker = engine.impl_->audioWorker;
+            seekAudioSink = engine.impl_->audioSink;
+            for (const auto& [id, entry] : engine.impl_->extraAudioSources) {
+                (void)id;
+                seekExtraAudioWorkers.push_back(entry.worker);
+            }
+        };
         if (proceed) {
             // compositionのruntime authorityを先に確定させる。layoutとstateが
             // 決まっていないとexact pairingの対象sourceも決まらない。
@@ -2975,9 +2983,32 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                     PreviewErrorCategory::CompositionFailure, PreviewOperation::RenderDeviceAttach,
                     "accepted compositionが見つかりません"));
             }
-            if (snapshot->layers.empty()) {
-                // gapはrender passの既存background clearをそのまま表示する。
-                // decode sourceをpresentation identityの代用にしない。
+            const bool hasDecodeLayer =
+                std::any_of(snapshot->layers.begin(), snapshot->layers.end(),
+                            [](const PreviewCompositionLayer& layer) { return !layer.stillImage; });
+            std::optional<std::string> sourcelessFailure;
+            if (!hasDecodeLayer) {
+                // decode layer の無い composition (gap、または静止画だけ)。背景は render pass の
+                // 既存の clear をそのまま使い、静止画があればその上に描く。
+                // 提示の authority は scheduler の時計であり、decode source を代用にしない。
+                gpu::ComposedFrame composed;
+                sourcelessFailure = engine.impl_->addStillLayersLocked(*snapshot, composed);
+                if (!sourcelessFailure && !composed.layers.empty()) {
+                    gpu::ExternalCompositionTarget targetView{
+                        static_cast<ID3D11RenderTargetView*>(renderTargetView), width, height};
+                    std::string error;
+                    if (!engine.impl_->compositor->composeLayersToTarget(
+                            composed, targetView, snapshot->layers.size(), error))
+                        sourcelessFailure = "GPU compositionに失敗しました: " + error;
+                }
+            }
+            if (sourcelessFailure) {
+                PreviewError failure = makeError(
+                    PreviewErrorCategory::DeviceFailure, PreviewOperation::RenderDeviceAttach,
+                    "静止画 layerを描画できません: " + *sourcelessFailure);
+                failure.severity = PreviewErrorSeverity::FatalToSession;
+                fatal = failure;
+            } else if (!hasDecodeLayer) {
                 engine.impl_->pairer.reset();
                 engine.impl_->coordinatorSources.clear();
                 engine.impl_->compositionState.markPresented(*token, snapshot);
@@ -2990,7 +3021,11 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                 engine.impl_->telemetrySnapshot.status.lastPresentedComposition = *token;
                 result.presented = true;
                 result.sourceFrame = -1;
-                result.frame = {engine.impl_->presentationSequence, {target}, *token, 0};
+                // layer 数は描いた静止画の枚数 (gap なら 0)。decode layer は無い。
+                result.frame = {engine.impl_->presentationSequence,
+                                {target},
+                                *token,
+                                static_cast<std::uint32_t>(snapshot->layers.size())};
                 if (seeking) {
                     ++engine.impl_->seekCompletedCount;
                     engine.impl_->lastSeekPresentedFrame = target;
@@ -3001,6 +3036,7 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                     engine.impl_->lastSchedulerTarget = target;
                     engine.impl_->schedulerBaseFrame = target + 1;
                     engine.impl_->resumeAudioSample = seekResumeSample;
+                    captureSeekAudioResume();
                     if (seekResumePlaying) {
                         seekAwaitingResume = true;
                     } else {
@@ -3248,12 +3284,7 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                             engine.impl_->lastSchedulerTarget = target;
                             engine.impl_->schedulerBaseFrame = target + 1;
                             engine.impl_->resumeAudioSample = seekResumeSample;
-                            seekAudioWorker = engine.impl_->audioWorker;
-                            seekAudioSink = engine.impl_->audioSink;
-                            for (const auto& [id, entry] : engine.impl_->extraAudioSources) {
-                                (void)id;
-                                seekExtraAudioWorkers.push_back(entry.worker);
-                            }
+                            captureSeekAudioResume();
                             if (seekResumePlaying) {
                                 // transportを再開できる前に`Playing`を公開しない。
                                 // stateはSeekingのまま保持し、resume成功後にcommitする。

@@ -185,11 +185,13 @@ int main(int argc, char** argv) {
     engine.setInitialProperties(
         {{QStringLiteral("mvmController"), QVariant::fromValue(&controller)},
          {QStringLiteral("waveformCache"), QVariant::fromValue(&waveformCache)}});
-    // 外部ツールで素材を差し替えて戻ってきたとき、古い波形を出し続けない。
+    // 外部ツールで素材を差し替えて戻ってきたとき、古い波形・画像を出し続けない。
     QObject::connect(&application, &QGuiApplication::applicationStateChanged, &waveformCache,
-                     [&waveformCache](Qt::ApplicationState state) {
-                         if (state == Qt::ApplicationActive)
+                     [&waveformCache, &controller](Qt::ApplicationState state) {
+                         if (state == Qt::ApplicationActive) {
                              waveformCache.revalidateAll();
+                             controller.revalidateMedia();
+                         }
                      });
     engine.load(QUrl(QStringLiteral("qrc:/mvm/app/Main.qml")));
     if (engine.rootObjects().isEmpty()) {

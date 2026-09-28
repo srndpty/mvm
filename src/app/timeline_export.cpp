@@ -2,16 +2,19 @@
 
 #include "app/text_raster.h"
 #include "media/mlt/mvm_mlt_export.h"
+#include "media/still_image/static_image.h"
 #include "project/timeline_edit.h"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <memory>
 #include <string>
 #include <system_error>
 #include <vector>
 
+#include <QImage>
 #include <QImageWriter>
 #include <QTemporaryDir>
 
@@ -36,10 +39,37 @@ bool mapExportEffects(const project::TimelineClip& clip, const TimelineExportReq
         std::lround((1.0 - mapped.sourceRect.x - mapped.sourceRect.width) * request.width));
     output.cropBottom = static_cast<int>(
         std::lround((1.0 - mapped.sourceRect.y - mapped.sourceRect.height) * request.height));
-    output.rectX = mapped.destinationRect.x * request.width;
-    output.rectY = mapped.destinationRect.y * request.height;
-    output.rectWidth = mapped.destinationRect.width * request.width;
-    output.rectHeight = mapped.destinationRect.height * request.height;
+    // crop は frame の寸法を変えずに範囲外を透明にする (qtcrop)。そのため affine へ渡す矩形は
+    // crop 範囲ではなく、crop 前の frame 全体を置く位置にする。crop 範囲が destinationRect に
+    // 重なるよう、全体を同じ倍率で拡縮して置く。
+    const double width = request.width;
+    const double height = request.height;
+    const double scaleX = mapped.destinationRect.width / mapped.sourceRect.width;
+    const double scaleY = mapped.destinationRect.height / mapped.sourceRect.height;
+    double fullX = (mapped.destinationRect.x - mapped.sourceRect.x * scaleX) * width;
+    double fullY = (mapped.destinationRect.y - mapped.sourceRect.y * scaleY) * height;
+    const double fullWidth = scaleX * width;
+    const double fullHeight = scaleY * height;
+    // MLT は矩形の中心を軸に回す (docs/m7a-p0-findings.md)。preview は crop 範囲の中心で回す。
+    // 中心の差 d について、全体の矩形を d - R d だけずらすと、全体の中心で回した結果が
+    // crop 範囲の中心で回した結果と一致する。R は画素空間 (y 下向き) の時計回りの回転で、
+    // preview の shader と同じ向き。
+    if (mapped.rotationDegrees != 0.0) {
+        const double radians = mapped.rotationDegrees * 3.14159265358979323846 / 180.0;
+        const double cosine = std::cos(radians);
+        const double sine = std::sin(radians);
+        const double dx = (mapped.destinationRect.x + mapped.destinationRect.width * 0.5) * width -
+                          (fullX + fullWidth * 0.5);
+        const double dy =
+            (mapped.destinationRect.y + mapped.destinationRect.height * 0.5) * height -
+            (fullY + fullHeight * 0.5);
+        fullX += dx - (cosine * dx - sine * dy);
+        fullY += dy - (sine * dx + cosine * dy);
+    }
+    output.rectX = fullX;
+    output.rectY = fullY;
+    output.rectWidth = fullWidth;
+    output.rectHeight = fullHeight;
     output.rotationDegrees = mapped.rotationDegrees;
 
     for (std::int64_t frame = 0; frame < timelineDuration; ++frame) {
@@ -102,7 +132,7 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
         TimelineExportClipMapping mapped;
         mapped.projectClipIndex = index;
         mapped.audio = clip.track.kind == project::TrackKind::Audio;
-        mapped.text = clip.kind == project::TimelineClipKind::Text;
+        mapped.still = project::isStillClipKind(clip.kind);
         mapped.videoTrackIndex = clip.track.index;
         mapped.timelineStartFrame = clip.timelineStartFrame;
         mapped.timelineDurationFrames = duration.frame;
@@ -117,7 +147,7 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
         // 末尾の補完は tractor 経路だけが持つ。
         if (range.tailFrames > 0)
             plan.backend = TimelineExportResult::Backend::Tractor;
-        if (mapped.text)
+        if (mapped.still)
             plan.backend = TimelineExportResult::Backend::Tractor;
         if (mapped.audio) {
             anyAudio = true;
@@ -185,18 +215,32 @@ TimelineExportResult exportTimeline(const project::Project& project,
 
     // clip のパス文字列は C API へ const char* で渡すため、
     // 呼び出しが終わるまで生存させる。
-    std::unique_ptr<QTemporaryDir> textStaging;
+    // 文字・画像は出力解像度の透過 PNG を stage し、qimage producer で開く。
+    std::unique_ptr<QTemporaryDir> stillStaging;
+    // 同じ画像素材を使う clip は同じ PNG を共有する (decode は素材ごとに 1 回)。
+    std::map<std::filesystem::path, std::string> stagedImages;
     std::vector<std::string> clipPaths;
     clipPaths.reserve(project.timelineClips.size());
+    const auto stagePng = [&](const QImage& image, const QString& name, std::string& staged) {
+        if (!stillStaging)
+            stillStaging = std::make_unique<QTemporaryDir>();
+        if (!stillStaging->isValid()) {
+            result.error = "文字・画像の一時 directory を作成できません";
+            return false;
+        }
+        const QString pngPath = stillStaging->filePath(name);
+        QImageWriter writer(pngPath, "PNG");
+        if (!writer.write(image)) {
+            result.error = "文字・画像を PNG として保存できません: " + pngPath.toStdString() +
+                           ": " + writer.errorString().toStdString();
+            return false;
+        }
+        staged = pathToUtf8(std::filesystem::path(pngPath.toStdWString()));
+        return true;
+    };
     for (std::size_t index = 0; index < project.timelineClips.size(); ++index) {
         const auto& clip = project.timelineClips[index];
         if (clip.kind == project::TimelineClipKind::Text) {
-            if (!textStaging)
-                textStaging = std::make_unique<QTemporaryDir>();
-            if (!textStaging->isValid()) {
-                result.error = "文字画像の一時 directory を作成できません";
-                return result;
-            }
             QString rasterError;
             const QImage image =
                 renderTextRaster(clip.text, request.width, request.height, rasterError);
@@ -204,14 +248,38 @@ TimelineExportResult exportTimeline(const project::Project& project,
                 result.error = rasterError.toStdString();
                 return result;
             }
-            const QString pngPath = textStaging->filePath(QString::number(index) + ".png");
-            QImageWriter writer(pngPath, "PNG");
-            if (!writer.write(image)) {
-                result.error = "文字画像を PNG として保存できません: " + pngPath.toStdString() +
-                               ": " + writer.errorString().toStdString();
+            std::string staged;
+            if (!stagePng(image, QString::number(index) + ".png", staged))
+                return result;
+            clipPaths.push_back(std::move(staged));
+            continue;
+        }
+        if (clip.kind == project::TimelineClipKind::Image) {
+            if (const auto found = stagedImages.find(clip.mediaPath); found != stagedImages.end()) {
+                clipPaths.push_back(found->second);
+                continue;
+            }
+            // preview と同じ authority・decoder・配置 (media/still_image) を通し、同じ画素を
+            // 書き出す。取り込み後に動画やアニメーション画像へ差し替えられた素材は拒否する。
+            const auto decoded = media::loadStaticImage(clip.mediaPath);
+            if (!decoded.success) {
+                result.error = clip.name + " を読めません: " + decoded.error;
                 return result;
             }
-            clipPaths.push_back(pathToUtf8(std::filesystem::path(pngPath.toStdWString())));
+            const auto fitted =
+                media::fitStillImageToRaster(decoded.image, request.width, request.height);
+            if (!fitted.success) {
+                result.error = clip.name + " を配置できません: " + fitted.error;
+                return result;
+            }
+            // straight alpha の RGBA8。QImage は画素を参照するだけなので、書き終えるまで保持する。
+            const QImage image(fitted.raster.rgba.data(), fitted.raster.width, fitted.raster.height,
+                               fitted.raster.width * 4, QImage::Format_RGBA8888);
+            std::string staged;
+            if (!stagePng(image, QString::number(index) + "-image.png", staged))
+                return result;
+            stagedImages.emplace(clip.mediaPath, staged);
+            clipPaths.push_back(std::move(staged));
             continue;
         }
         if (clip.mediaPath.empty()) {
@@ -243,7 +311,7 @@ TimelineExportResult exportTimeline(const project::Project& project,
         mapped.speed_num = clip.speedNum;
         mapped.speed_den = clip.speedDen;
         mapped.is_audio = planned.audio ? 1 : 0;
-        mapped.is_text = planned.text ? 1 : 0;
+        mapped.is_still_image = planned.still ? 1 : 0;
         mapped.video_track = planned.videoTrackIndex;
         mapped.timeline_start_frame = planned.timelineStartFrame;
         mapped.timeline_duration_frames = planned.timelineDurationFrames;

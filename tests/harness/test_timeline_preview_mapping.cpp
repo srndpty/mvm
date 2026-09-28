@@ -187,7 +187,7 @@ mvm::project::TimelineClip textClip(std::string id, int videoTrackIndex, std::in
     return value;
 }
 
-// 文字 clip は decode source ではなく textLayers に入り、合成順は track index だけで決まる。
+// 文字 clip は decode source ではなく stillLayers に入り、合成順は track index だけで決まる。
 // 書き出しと同じく、文字より上の track の映像が文字を隠す順序になること。
 void testTextLayerStack() {
     mvm::project::Project project = mvm::project::createDefaultProject();
@@ -196,9 +196,9 @@ void testTextLayerStack() {
     project.timelineClips = {clip("v3", 2, 0, 0, 100), textClip("t2", 1, 100),
                              clip("v1", 0, 0, 0, 100)};
     const auto mapped = mvm::app::mapTimelinePreviewFrame(project, 10);
-    require(mapped.success && mapped.layers.size() == 2 && mapped.textLayers.size() == 1 &&
-                mapped.textLayers[0].clipId == "t2" && mapped.textLayers[0].clipIndex == 1,
-            "文字 clip を textLayers として取り出せません");
+    require(mapped.success && mapped.layers.size() == 2 && mapped.stillLayers.size() == 1 &&
+                mapped.stillLayers[0].clipId == "t2" && mapped.stillLayers[0].clipIndex == 1,
+            "文字 clip を stillLayers として取り出せません");
     const auto stack = mvm::app::previewLayerStack(mapped);
     const std::vector<mvm::app::TimelinePreviewStackEntry> expected{
         {false, 0, 0}, {true, 0, 1}, {false, 1, 2}};
@@ -216,7 +216,7 @@ void testTextLayerStack() {
     // mute した track の文字は合成しない。
     project.videoTracks[2].muted = true;
     const auto muted = mvm::app::mapTimelinePreviewFrame(project, 10);
-    require(muted.success && muted.textLayers.empty() && muted.layers.size() == 2,
+    require(muted.success && muted.stillLayers.empty() && muted.layers.size() == 2,
             "mute した track の文字 clip を合成対象に残しました");
 }
 
@@ -233,7 +233,7 @@ void testTextLayerLimit() {
     require(mvm::project::validateTimeline(project).success,
             "前提: V9-V16 文字の Project が不正です");
     const auto sixteen = mvm::app::mapTimelinePreviewFrame(project, 10);
-    require(sixteen.success && sixteen.layers.size() == 8 && sixteen.textLayers.size() == 8,
+    require(sixteen.success && sixteen.layers.size() == 8 && sixteen.stillLayers.size() == 8,
             "映像 8 本と文字 8 枚の 16 layer を拒否しました");
 
     // 17 枚目の文字で合成 layer の上限を超える。
@@ -241,18 +241,22 @@ void testTextLayerLimit() {
     require(mvm::project::validateTimeline(project).success,
             "前提: 17 track の Project が不正です");
     const auto seventeen = mvm::app::mapTimelinePreviewFrame(project, 10);
-    require(!seventeen.success && seventeen.layers.empty() && seventeen.textLayers.empty(),
+    require(!seventeen.success && seventeen.layers.empty() && seventeen.stillLayers.empty(),
             "合成 layer の上限を超えた frame を成功にしました");
 
-    // 映像の無い frame では文字は UI 側が重ねるので、枚数で拒否しない。
+    // 映像の無い frame の文字も engine が静止画 layer として合成するので、同じ上限で数える。
     project.timelineClips.clear();
-    for (int track = 0; track < 17; ++track)
+    for (int track = 0; track < 16; ++track)
         project.timelineClips.push_back(textClip("t" + std::to_string(track + 1), track, 100));
     require(mvm::project::validateTimeline(project).success,
-            "前提: 文字 17 枚の Project が不正です");
+            "前提: 文字 16 枚の Project が不正です");
     const auto textOnly = mvm::app::mapTimelinePreviewFrame(project, 10);
-    require(textOnly.success && textOnly.layers.empty() && textOnly.textLayers.size() == 17,
-            "映像の無い frame の文字を拒否しました");
+    require(textOnly.success && textOnly.layers.empty() && textOnly.stillLayers.size() == 16,
+            "映像の無い frame の文字 16 枚を拒否しました");
+    project.timelineClips.push_back(textClip("t17", 16, 100));
+    const auto textOnlyOver = mvm::app::mapTimelinePreviewFrame(project, 10);
+    require(!textOnlyOver.success && textOnlyOver.stillLayers.empty(),
+            "映像の無い frame で合成 layer の上限を超えた文字を成功にしました");
 }
 
 // 文字の不透明度は書き出しと同じ effects (値・key・fade) を frame ごとに評価する。
@@ -267,8 +271,8 @@ void testTextLayerOpacity() {
             "前提: opacity key 付き文字が不正です");
     const auto at = [&](std::int64_t frame) {
         const auto mapped = mvm::app::mapTimelinePreviewFrame(project, frame);
-        require(mapped.success && mapped.textLayers.size() == 1, "文字を取り出せません");
-        return mapped.textLayers[0].opacity;
+        require(mapped.success && mapped.stillLayers.size() == 1, "文字を取り出せません");
+        return mapped.stillLayers[0].opacity;
     };
     require(std::abs(at(10) - 1.0) < 1e-9, "key 0 (100%) の不透明度が 1 ではありません");
     require(std::abs(at(20) - 0.5) < 1e-9, "key の中間 (50%) を補間していません");
@@ -277,6 +281,71 @@ void testTextLayerOpacity() {
     // 対照: key の無い文字は 1。
     project.timelineClips[1].effects.opacityKeys.clear();
     require(std::abs(at(20) - 1.0) < 1e-9, "対照: key の無い文字の不透明度が 1 ではありません");
+}
+
+// 文字・画像は置いたときの fps を素材 frame domain として持ち、Project の fps を変えても
+// 振り直さない。fade は素材 frame で数えるので、fps が違っても秒単位で同じ位置に効くこと。
+// 期待値は clipFadeFactor の定義 (距離 / (fade frame 数 - 1)) から手で計算する。
+void testStillFadeAcrossFrameRates() {
+    using mvm::project::TimelineClipKind;
+
+    struct Case {
+        const char* name;
+        std::int64_t projectFps;
+        std::int64_t sourceFps;
+        std::int64_t fadeFrames; // 素材 frame で 1 秒
+        std::int64_t halfSecond; // timeline の 0.5 秒
+        double halfExpected;     // 0.5 秒の fade in
+        std::int64_t oneSecond;
+        std::int64_t last;   // timeline の最終 frame
+        double lastExpected; // 最終 frame の fade out
+    };
+
+    // 60fps で作った 5 秒 (300 frame) を 30fps の Project へ: timeline 15 = 素材 30 -> 30/59。
+    // 最終 frame 149 = 素材 298 -> 末尾まで 1 frame -> 1/59。
+    // 30fps で作った 5 秒 (150 frame) を 60fps の Project へ: timeline 30 = 素材 15 -> 15/29。
+    // 最終 frame 299 = 素材 149 -> 末尾まで 0 frame -> 0。
+    const Case cases[] = {
+        {"60fps の clip を 30fps の Project で", 30, 60, 60, 15, 30.0 / 59.0, 30, 149, 1.0 / 59.0},
+        {"30fps の clip を 60fps の Project で", 60, 30, 30, 30, 15.0 / 29.0, 60, 299, 0.0},
+    };
+    for (const auto& entry : cases) {
+        for (const auto kind : {TimelineClipKind::Text, TimelineClipKind::Image}) {
+            mvm::project::Project project = mvm::project::createDefaultProject();
+            project.timelineFpsNum = entry.projectFps;
+            project.timelineFpsDen = 1;
+            auto still = textClip("still", 0, entry.sourceFps * 5);
+            still.sourceFpsNum = entry.sourceFps;
+            if (kind == TimelineClipKind::Image) {
+                still.kind = TimelineClipKind::Image;
+                still.text = {};
+                still.mediaPath = "still.png";
+            }
+            const auto opacityAt = [&](std::int64_t frame) {
+                const auto mapped = mvm::app::mapTimelinePreviewFrame(project, frame);
+                require(mapped.success && mapped.stillLayers.size() == 1,
+                        "fade の検査で静止画を取り出せません");
+                return mapped.stillLayers[0].opacity;
+            };
+            const std::string label =
+                std::string(entry.name) + (kind == TimelineClipKind::Image ? " (画像)" : " (文字)");
+
+            still.effects.fadeInFrames = entry.fadeFrames;
+            project.timelineClips = {still};
+            require(mvm::project::validateTimeline(project).success,
+                    ("前提: fade 付きの静止画が不正です: " + label).c_str());
+            require(std::abs(opacityAt(entry.halfSecond) - entry.halfExpected) < 1e-9,
+                    ("0.5 秒の fade in が素材 frame で評価されていません: " + label).c_str());
+            require(std::abs(opacityAt(entry.oneSecond) - 1.0) < 1e-9,
+                    ("1 秒で fade in が終わっていません: " + label).c_str());
+
+            still.effects.fadeInFrames = 0;
+            still.effects.fadeOutFrames = entry.fadeFrames;
+            project.timelineClips = {still};
+            require(std::abs(opacityAt(entry.last) - entry.lastExpected) < 1e-9,
+                    ("最終 frame の fade out が素材 frame で評価されていません: " + label).c_str());
+        }
+    }
 }
 
 // 重なったaudioをA1から順にすべてmix対象へ載せる。
@@ -465,6 +534,7 @@ int main() {
     testTextLayerStack();
     testTextLayerLimit();
     testTextLayerOpacity();
+    testStillFadeAcrossFrameRates();
     testAudioOverlapSelectsA1();
     testCrossRateVideoMapping();
 

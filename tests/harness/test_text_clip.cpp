@@ -56,7 +56,7 @@ int main(int argc, char** argv) {
     auto project = makeProject();
     require(mvm::project::validateTimeline(project).success, "文字 clip を検証できません");
     const auto serialized = mvm::project::serializeProjectJson(project, "text-test.mvm");
-    require(serialized.success, "schema 7 を保存できません");
+    require(serialized.success, "schema 8 を保存できません");
     const auto parsed = mvm::project::parseProjectJsonText(serialized.json, "text-test.mvm");
     require(parsed.success && parsed.project == project, "文字データが round-trip しません");
 
@@ -76,7 +76,7 @@ int main(int argc, char** argv) {
         placement.timelineClips.push_back(video);
     }
     auto textToPlace = project.timelineClips[0];
-    const auto placed = mvm::project::placeTextClipAt(placement, textToPlace, 0);
+    const auto placed = mvm::project::placeStillClipAt(placement, textToPlace, 0);
     require(
         placed.success && placement.videoTracks.size() == 3 &&
             placement.timelineClips[static_cast<std::size_t>(placed.selectedIndex)].track.index ==
@@ -85,7 +85,7 @@ int main(int argc, char** argv) {
     const auto beforeFull = placement;
     // V1～V3 が埋まっていても、上へ track を足して V4 に置く (文字を置ける track に上限は無い)。
     textToPlace.id = "text-2";
-    const auto placedOnV4 = mvm::project::placeTextClipAt(placement, textToPlace, 0);
+    const auto placedOnV4 = mvm::project::placeStillClipAt(placement, textToPlace, 0);
     require(placedOnV4.success && placement.videoTracks.size() == 4 &&
                 placement.timelineClips[static_cast<std::size_t>(placedOnV4.selectedIndex)]
                         .track.index == 3,
@@ -94,7 +94,7 @@ int main(int argc, char** argv) {
     auto mutedGap = beforeFull;
     mutedGap.videoTracks.push_back({"V4", true});
     textToPlace.id = "text-muted-gap";
-    const auto placedAboveMuted = mvm::project::placeTextClipAt(mutedGap, textToPlace, 0);
+    const auto placedAboveMuted = mvm::project::placeStillClipAt(mutedGap, textToPlace, 0);
     require(placedAboveMuted.success && mutedGap.videoTracks.size() == 5 &&
                 mutedGap.timelineClips[static_cast<std::size_t>(placedAboveMuted.selectedIndex)]
                         .track.index == 4,
@@ -106,7 +106,7 @@ int main(int argc, char** argv) {
     laterVideo.timelineStartFrame = 10;
     laterOverlap.timelineClips.push_back(laterVideo);
     textToPlace.id = "text-3";
-    const auto placedAboveOverlap = mvm::project::placeTextClipAt(laterOverlap, textToPlace, 0);
+    const auto placedAboveOverlap = mvm::project::placeStillClipAt(laterOverlap, textToPlace, 0);
     require(
         placedAboveOverlap.success && laterOverlap.videoTracks.size() == 3 &&
             laterOverlap.timelineClips[static_cast<std::size_t>(placedAboveOverlap.selectedIndex)]
@@ -149,7 +149,7 @@ int main(int argc, char** argv) {
     request.height = 240;
     const auto plan = mvm::app::mapTimelineExportPlan(project, request);
     require(plan.success && plan.backend == mvm::app::TimelineExportResult::Backend::Tractor &&
-                plan.clips.size() == 1 && plan.clips[0].text && plan.clips[0].videoTrackIndex == 2,
+                plan.clips.size() == 1 && plan.clips[0].still && plan.clips[0].videoTrackIndex == 2,
             "V3 文字 clip を tractor に写せません");
     require(mvm_mlt_runtime_init(MVM_MLT_MODULE_DIR, MVM_MLT_DATA_DIR) == 0,
             "MLT runtime を初期化できません");
@@ -216,7 +216,7 @@ int main(int argc, char** argv) {
     require(mvm::project::validateTimeline(stacked).success,
             "V1～V5 映像と V6 文字の構成を検証できません");
     const auto preview = mvm::app::mapTimelinePreviewFrame(stacked, 0);
-    require(preview.success && preview.layers.size() == 5 && preview.textLayers.size() == 1,
+    require(preview.success && preview.layers.size() == 5 && preview.stillLayers.size() == 1,
             "preview の動画 source に文字 clip が混入しました");
     request.outputPath =
         std::filesystem::path(exported.filePath(QStringLiteral("stacked.mp4")).toStdWString());

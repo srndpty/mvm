@@ -18,11 +18,12 @@ struct TimelinePreviewLayerMapping {
     std::int64_t sourceFrameNumber = -1;
 };
 
-// 文字 clip。decode source を持たず、静止画 layer として合成する。
-struct TimelinePreviewTextLayerMapping {
+// 文字・画像 clip。decode source を持たず、静止画 layer として合成する。
+struct TimelinePreviewStillLayerMapping {
     int videoTrackIndex = 0;
     int clipIndex = -1;
     std::string clipId;
+    project::TimelineClipKind kind = project::TimelineClipKind::Text;
     // この frame の不透明度 (0..1)。opacity の値・key・fade を評価したもの。
     // 書き出しは同じ effects を MLT の経路で評価するので、preview もここで合わせる。
     double opacity = 1.0;
@@ -34,8 +35,8 @@ struct TimelinePreviewFrameMapping {
     // 素材を decode する video clip。videoTrackIndex の昇順 (bottom -> top)。
     // mute された track は含まない。
     std::vector<TimelinePreviewLayerMapping> layers;
-    // 文字 clip。videoTrackIndex の昇順。mute された track は含まない。
-    std::vector<TimelinePreviewTextLayerMapping> textLayers;
+    // 文字・画像 clip。videoTrackIndex の昇順。mute された track は含まない。
+    std::vector<TimelinePreviewStillLayerMapping> stillLayers;
     std::string error;
 };
 
@@ -47,23 +48,28 @@ struct TimelinePreviewFrameMapping {
 // 48kHz stereo) だけである。上限を超える frame は成功に見せず失敗として返す。
 inline constexpr std::size_t kMaxPreviewVideoLayers = preview::kProductMaxActiveVideoSources;
 
-// preview が同時に合成する layer (video + 文字) の上限。文字は decode source を
-// 増やさないので video source の上限とは別に数える。
-// video が無い frame では文字を合成に使わない (UI 側が重ねる) ため数えない。
+// preview が同時に合成する layer (video + 文字・画像) の上限。文字・画像は decode source を
+// 増やさないので video source の上限とは別に数える。video の無い frame でも数える。
 inline constexpr std::size_t kMaxPreviewCompositionLayers = preview::kProductMaxCompositionLayers;
 
-// preview の合成順の 1 要素。text が false なら layers[index]、true なら textLayers[index]。
+// preview の合成順の 1 要素。still が false なら layers[index]、true なら stillLayers[index]。
 struct TimelinePreviewStackEntry {
-    bool text = false;
+    bool still = false;
     std::size_t index = 0;
     int videoTrackIndex = 0;
     bool operator==(const TimelinePreviewStackEntry&) const = default;
 };
 
-// video と文字を track の昇順 (背面 -> 前面) に並べる。書き出しと同じく
+// video と文字・画像を track の昇順 (背面 -> 前面) に並べる。書き出しと同じく
 // track index だけで前後を決める。preview の重なり順はここでだけ決める。
 std::vector<TimelinePreviewStackEntry>
 previewLayerStack(const TimelinePreviewFrameMapping& mapping);
+
+// clip の effect (位置・拡大・回転・crop) を preview layer へ写す。opacity は Project で評価済みの
+// 値 (値・key・fade) を渡し、compositor では fade を二重に掛けない。video と画像で共有する。
+void applyPreviewLayerEffects(preview::PreviewCompositionLayer& layer,
+                              const project::ClipEffects& effects, double opacity,
+                              std::int64_t sourceInFrame, std::int64_t sourceDurationFrames);
 
 TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& project,
                                                     std::int64_t timelineFrame);

@@ -1,5 +1,6 @@
 qt_add_executable(mvm
     main.cpp
+    image_raster_cache.cpp
     media_bin_model.cpp
     media_import.cpp
     mvm_controller.cpp
@@ -51,6 +52,7 @@ target_link_libraries(mvm PRIVATE
     mvm::timeline_export
     mvm::text_raster
     mvm::audio_waveform
+    mvm::still_image
     mvm::mlt
     mvm::preview_engine
     mvm::audio_preview
@@ -76,6 +78,7 @@ set_target_properties(mvm PROPERTIES WIN32_EXECUTABLE OFF)
 find_package(Qt6 REQUIRED COMPONENTS Test)
 qt_add_executable(mvm_test_text_ui_input
     ${CMAKE_SOURCE_DIR}/tests/harness/test_text_ui_input.cpp
+    image_raster_cache.cpp
     media_bin_model.cpp
     media_import.cpp
     mvm_controller.cpp
@@ -119,7 +122,8 @@ target_include_directories(mvm_test_text_ui_input PRIVATE ${CMAKE_CURRENT_SOURCE
 target_link_libraries(mvm_test_text_ui_input PRIVATE
     mvm::core mvm::project mvm::util mvm::manim_clip_workflow
     mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
-    mvm::text_raster mvm::audio_waveform mvm::mlt mvm::preview_engine mvm::audio_preview
+    mvm::text_raster mvm::audio_waveform mvm::still_image mvm::mlt mvm::preview_engine
+    mvm::audio_preview
     mvm::preview_qt Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::Test
     mvm::warnings)
 target_compile_definitions(mvm_test_text_ui_input PRIVATE ${MVM_MLT_PATH_DEFS}

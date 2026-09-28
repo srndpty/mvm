@@ -1029,11 +1029,8 @@ QString binEntryIdNamed(const mvm::app::MediaBinModel& model, const QString& nam
 }
 
 // 実素材を内容 probe で読み込み、bin の編集が 1 操作 1 undo になることを見る。
+// MLT の初期化と終了は main が 1 回だけ行う (下の testMediaFilePlacement と共有する)。
 void testMediaBinImport(const std::filesystem::path& path, const std::filesystem::path& smoke) {
-    if (mvm_mlt_runtime_init(MVM_MLT_MODULE_DIR, MVM_MLT_DATA_DIR) != 0) {
-        check(false, "素材読み込み試験のMLTを初期化できません");
-        return;
-    }
     const auto png = smoke / L"png_alpha.png";
     const auto wav = smoke / L"wav_48k.wav";
     const auto mp4 = smoke / L"v1080p60_h264.mp4";
@@ -1041,7 +1038,6 @@ void testMediaBinImport(const std::filesystem::path& path, const std::filesystem
         !std::filesystem::exists(mp4)) {
         check(false, "Smoke素材がありません。pwsh scripts/make-testmedia.ps1 -Mode Smoke を"
                      "実行してください");
-        mvm_mlt_runtime_shutdown();
         return;
     }
     auto bogus = path;
@@ -1094,7 +1090,16 @@ void testMediaBinImport(const std::filesystem::path& path, const std::filesystem
         check(controller.undoLastEdit() && bin.parentFolderOf(pngId).isEmpty(),
               "素材の移動をUndoできません");
 
-        check(!controller.addMediaItemToTimeline(pngId), "静止画をtimelineへ配置できてしまいます");
+        // 画像は再生ヘッドの位置に画像 clip として置ける。後続のフォルダ削除 (使用中なら拒否) を
+        // 変えないよう、確かめたら Undo で戻す。
+        {
+            // preview を付けていないので戻り値ではなく clip の増減で見る (addAudioClip と同じ)。
+            const int beforeImage = controller.clipCount();
+            controller.addMediaItemToTimeline(pngId);
+            check(controller.clipCount() == beforeImage + 1, "画像をtimelineへ配置できません");
+            check(controller.undoLastEdit() && controller.clipCount() == beforeImage,
+                  "画像の配置をUndoできません");
+        }
 
         // timeline へ置いた素材は bin に重複登録しない。使用中になり削除を拒否する。
         const int clipsBefore = controller.clipCount();
@@ -1114,7 +1119,118 @@ void testMediaBinImport(const std::filesystem::path& path, const std::filesystem
         controller.shutdown();
     }
     std::filesystem::remove(bogus);
-    mvm_mlt_runtime_shutdown();
+}
+
+// timeline model の行から、指定した clip 種別の行を数える / 取り出す。
+struct PlacedClip {
+    QString kind;
+    QString trackKind;
+    int trackIndex = -1;
+    qint64 start = -1;
+    qint64 duration = -1;
+};
+
+std::vector<PlacedClip> placedClips(const mvm::app::MvmController& controller) {
+    auto* model = controller.timelineModel();
+    const auto roles = model->roleNames();
+    const auto roleOf = [&](const char* name) {
+        for (auto role = roles.cbegin(); role != roles.cend(); ++role)
+            if (role.value() == name)
+                return role.key();
+        return -1;
+    };
+    std::vector<PlacedClip> clips;
+    for (int row = 0; row < model->rowCount(); ++row) {
+        const auto index = model->index(row, 0);
+        clips.push_back({model->data(index, roleOf("clipKind")).toString(),
+                         model->data(index, roleOf("trackKind")).toString(),
+                         model->data(index, roleOf("trackIndex")).toInt(),
+                         model->data(index, roleOf("timelineStartFrame")).toLongLong(),
+                         model->data(index, roleOf("timelineDurationFrames")).toLongLong()});
+    }
+    return clips;
+}
+
+// 素材を内容で判定して timeline へ置く経路 (メニューのダイアログと drop)。
+void testMediaFilePlacement(const std::filesystem::path& path, const std::filesystem::path& smoke) {
+    const auto importDir = smoke / L"_import";
+    const auto jpg = importDir / L"jpg_quadrant.jpg";
+    const auto gif = importDir / L"gif_animated.gif";
+    const auto wav = smoke / L"wav_48k.wav";
+    if (!std::filesystem::exists(jpg) || !std::filesystem::exists(gif) ||
+        !std::filesystem::exists(wav)) {
+        check(false,
+              "読み込み判定用素材がありません。pwsh scripts/make-testmedia.ps1 -Mode Smoke を"
+              "実行してください");
+        return;
+    }
+    const auto url = [](const std::filesystem::path& file) {
+        return QUrl::fromLocalFile(QString::fromStdWString(file.wstring()));
+    };
+    {
+        // V1 に 0..120 の映像。A track は無い (音声は track を足して置く)。
+        auto initial = videoProject();
+        initial.audioTracks.clear();
+        check(mvm::project::saveProjectJson(initial, path).success,
+              "配置試験の初期Projectを保存できません");
+        mvm::app::MvmController controller(path, {}, initial);
+        const auto countKind = [&](const char* kind) {
+            int count = 0;
+            for (const auto& clip : placedClips(controller))
+                count += clip.kind == QLatin1String(kind) ? 1 : 0;
+            return count;
+        };
+        // preview を付けていないので戻り値は見ない (playhead は動く。testShuttleStopAndStep
+        // と同じ)。
+        controller.seekTimelineFrame(30);
+        check(controller.playheadFrame() == 30, "再生ヘッドを動かせません");
+
+        // preview を付けていないので、配置後の選択 (preview の seek) は失敗しうる。
+        // 既存の addAudioClip の検査と同じく、戻り値ではなく clip の増減で見る。
+        // 増えなかったときは controller の status を出す (原因の手がかり)。
+        const auto placeFile = [&](const std::filesystem::path& file) {
+            const auto before = placedClips(controller).size();
+            controller.addMediaFileToTimeline(url(file));
+            const bool placed = placedClips(controller).size() == before + 1;
+            if (!placed)
+                std::fprintf(stderr, "  status: %s\n",
+                             controller.statusText().toUtf8().constData());
+            return placed;
+        };
+
+        // 画像: 再生ヘッドの位置に、V1 の映像の上 (V2) へ 5 秒 (60fps で 300 frame)。
+        check(placeFile(jpg) && countKind("image") == 1, "画像を内容で判定して置けません");
+        for (const auto& clip : placedClips(controller)) {
+            if (clip.kind == QLatin1String("image"))
+                check(clip.trackKind == QLatin1String("video") && clip.trackIndex == 1 &&
+                          clip.start == 30 && clip.duration == 300,
+                      "画像が再生ヘッドの V2 に 5 秒で置かれていません");
+        }
+
+        // 音声: A track が無くても、再生ヘッドの位置に A1 を足して置く。
+        // 同じ位置へもう 1 つ置くと、A1 は使用中なので A2 を足す。
+        check(placeFile(wav) && countKind("audio") == 1 && controller.audioTrackCount() == 1,
+              "音声を内容で判定して置けません");
+        check(placeFile(wav) && countKind("audio") == 2 && controller.audioTrackCount() == 2,
+              "使用中の A1 を避けて A2 に置けません");
+        bool atPlayhead = true;
+        for (const auto& clip : placedClips(controller))
+            if (clip.kind == QLatin1String("audio"))
+                atPlayhead =
+                    atPlayhead && clip.start == 30 && clip.trackKind == QLatin1String("audio");
+        check(atPlayhead, "音声が再生ヘッドの位置に置かれていません");
+
+        // アニメーション画像は理由を添えて拒否し、Project を変えない。
+        const auto before = placedClips(controller).size();
+        check(!controller.addMediaFileToTimeline(url(gif)) &&
+                  placedClips(controller).size() == before &&
+                  controller.statusText().contains(QStringLiteral("アニメーション")),
+              "アニメーション GIF を拒否しません");
+        // 画像を動画として追加する経路は拒否する (内容で判定し、種別をすり替えない)。
+        check(!controller.addVideoClip(url(jpg)) && placedClips(controller).size() == before,
+              "画像を動画として追加できてしまいます");
+        controller.shutdown();
+    }
 }
 
 int main(int argc, char** argv) {
@@ -1159,6 +1275,15 @@ int main(int argc, char** argv) {
     testDeleteMultipleSelection(directory / L"delete-multiple.mvm");
     testShuttleStopAndStep(directory / L"shuttle-stop-step.mvm");
     // MLT を初期化するので最後に置く。ほかの試験は MLT 無しの前提で書かれている。
-    testMediaBinImport(directory / L"media-bin-import.mvm", std::filesystem::path(argv[2]));
+    // 初期化は 1 回だけにする。1 プロセスで init / shutdown を繰り返すと、2 回目の init で
+    // 読み込み直された ggml (FFmpeg の whisper filter の依存) の静的初期化が assert して落ちた。
+    if (mvm_mlt_runtime_init(MVM_MLT_MODULE_DIR, MVM_MLT_DATA_DIR) != 0) {
+        check(false, "素材読み込み試験のMLTを初期化できません");
+    } else {
+        testMediaBinImport(directory / L"media-bin-import.mvm", std::filesystem::path(argv[2]));
+        testMediaFilePlacement(directory / L"media-file-placement.mvm",
+                               std::filesystem::path(argv[2]));
+        mvm_mlt_runtime_shutdown();
+    }
     return failures == 0 ? 0 : 1;
 }

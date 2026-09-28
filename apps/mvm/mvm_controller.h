@@ -40,6 +40,8 @@ class QTemporaryDir;
 namespace mvm::app {
 
 class PreviewEngineRhiItem;
+class ImageRasterCache;
+struct MediaImportResult;
 class TrackModel;
 class ShuttleAudioPlayback;
 
@@ -98,6 +100,8 @@ class MvmController : public QObject {
     // 現在の frame rate が実測済みか。設定できること != 計測済み。
     Q_PROPERTY(bool frameRateMeasured READ frameRateMeasured NOTIFY stateChanged)
     Q_PROPERTY(QVariantList supportedFrameRates READ supportedFrameRates CONSTANT)
+    // ファイル選択ダイアログの拡張子の表 (media_file_filters.h)。判定には使わない。
+    Q_PROPERTY(QStringList mediaFileNameFilters READ mediaFileNameFilters CONSTANT)
     // audio meter。dBFS。無音時は kMeterSilenceDb を返す。
     Q_PROPERTY(double audioMeterDbLeft READ audioMeterDbLeft NOTIFY meterChanged)
     Q_PROPERTY(double audioMeterDbRight READ audioMeterDbRight NOTIFY meterChanged)
@@ -218,6 +222,7 @@ public:
     QString timelineFpsText() const;
     bool frameRateMeasured() const;
     QVariantList supportedFrameRates() const;
+    QStringList mediaFileNameFilters() const;
 
     double audioMeterDbLeft() const { return audioMeterDbLeft_; }
 
@@ -248,6 +253,11 @@ public:
     Q_INVOKABLE bool addManimToTimeline();
     Q_INVOKABLE bool addVideoClip(const QUrl& fileUrl);
     Q_INVOKABLE bool addAudioClip(const QUrl& fileUrl);
+    // 画像を再生ヘッドの位置へ、最上位の clip より上の空いた映像 track に 5 秒で置く。
+    Q_INVOKABLE bool addImageClip(const QUrl& fileUrl);
+    // 素材の種別を内容で判定し、動画・音声・画像のどれかとして timeline へ置く。
+    // メニューのダイアログと timeline への drop はここを通る。拡張子は見ない。
+    Q_INVOKABLE bool addMediaFileToTimeline(const QUrl& fileUrl);
     Q_INVOKABLE bool createTextClip(const QString& content, int x, int y);
     Q_INVOKABLE bool updateTextClip(const QString& clipId, const QVariantMap& values);
     // 数値のドラッグ中に、Project を変えずに preview だけを values で描き直す。
@@ -392,6 +402,9 @@ public:
 
 public Q_SLOTS:
     void shutdown();
+    // 外部で差し替えられた画像素材を見つけて preview を描き直す。
+    // アプリが前面へ戻ったときに呼ぶ (WaveformCache::revalidateAll と同じ契機)。
+    void revalidateMedia();
 
 Q_SIGNALS:
     void stateChanged();
@@ -469,8 +482,14 @@ private:
     applyMediaBinEdit(const std::function<project::MediaBinEditResult(project::Project&)>& edit,
                       const QString& successStatus);
     // timeline へ置いた素材を bin にも登録する。既に同じ file の素材があれば何もしない。
+    // probed を渡すとそれを使い、素材を調べ直さない (画像の decode は重い)。
     bool registerMediaItem(project::Project& candidate, const std::filesystem::path& mediaPath,
-                           QString& error) const;
+                           QString& error, const MediaImportResult* probed = nullptr) const;
+    // 呼び出し側が確かめたローカルファイルを、判定済みの結果で画像 clip として置く。
+    bool placeImageClip(const std::filesystem::path& mediaPath, const QString& fileName,
+                        const MediaImportResult& probed);
+    // url がローカルに存在するファイルなら path を返す。そうでなければ status を出して空。
+    std::filesystem::path localMediaFile(const QUrl& fileUrl, const QString& missingText);
     bool writeCanonicalProject(const project::Project& project, const std::filesystem::path& path,
                                QString& error) const;
     bool saveCurrentProject(bool overwriteExternalChange);
@@ -531,6 +550,11 @@ private:
     // 再送を no-op にする。
     std::shared_ptr<const preview::PreviewStillImage> textStillImage(int clipIndex,
                                                                      QString& error) const;
+    // 画像 clip の画素。素材を decode し、出力解像度の raster へ縦横比を保って置いたもの
+    // (書き出しと同じ画素)。decode は ImageRasterCache が worker で行う。まだ生成中なら
+    // nullptr を返して pending を true にする (error は空)。読めなければ error を入れる。
+    std::shared_ptr<const preview::PreviewStillImage>
+    imageStillImage(int clipIndex, QString& error, bool& pending) const;
     // 再生中、frame の clip を今の source のまま表示できれば source を引き継いで true。
     // 引き継げなければ何も変更せず false (呼び出し側が一時停止して組み直す)。
     // 引き継げなかったら reason に理由を入れる。
@@ -598,6 +622,9 @@ private:
     // preview の合成 (const) からも埋めるので mutable。Project を変えるたびに捨てる。
     mutable QHash<QString, QImage> textRasterImages_;
     mutable QHash<QString, std::shared_ptr<const preview::PreviewStillImage>> textStillImages_;
+    // 画像 clip の preview 用 raster。decode が重いので Project の変更では捨てず、
+    // 現在の画像 clip と出力解像度が使わない key だけを refreshTimelineModel で捨てる。
+    std::unique_ptr<ImageRasterCache> imageRasters_;
     mutable QHash<QString, QRect> textRasterBounds_;
     QHash<QString, QUrl> textRasterUrls_;
     QString textOverlayClipId_;
@@ -659,7 +686,6 @@ private:
     bool previewReady_ = false;
     bool shutdownStarted_ = false;
     bool playing_ = false;
-    bool clockOnlyPlayback_ = false;
     int shuttleRate_ = 0;
     bool shuttleSeeking_ = false;
     std::int64_t shuttleBaseFrame_ = 0;

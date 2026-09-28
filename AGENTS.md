@@ -45,6 +45,15 @@ Phase 1 で追加した層:
 | `src/app/preview`       | QRhi / QQuickRhiItem との唯一の接点        | Qt（private API を含む）            |
 | `apps/preview_spike`    | P1 の検証アプリ                            | 上記の公開ヘッダと Qt               |
 
+画像・音声の単体素材で追加した層:
+
+| 層                     | 責務                                              | 依存してよいもの                   |
+| ---------------------- | ------------------------------------------------- | ---------------------------------- |
+| `src/media/still_image` | 素材種別の判定 (stream の事実) と静止画の decode | FFmpeg C API。**Qt と MLT は不可** |
+
+素材種別の判定は `apps/mvm/media_import.cpp` の `probeMediaFile` に一本化している。
+画像の画素は preview と書き出しの両方がこの層の decoder から得る (Qt の画像 reader を使わない)。
+
 **MLT のヘッダを include してよいのは `src/media/mlt/` だけ。**
 同様に、**QRhi（Qt の private API）を include してよいのは `src/app/preview/` だけ。**
 QRhi は patch release 間でも互換保証が無いため、壊れる範囲を限定する。

@@ -12,6 +12,7 @@
 // **その output frame を実際に提示しなかったこと**である。counter だけでは
 // 「reject を数えたうえでそのまま描画する」bug を検出できない。
 #include "app/preview/preview_engine_rhi_item.h"
+#include "media/audio_preview/audio_types.h"
 #include "preview_engine/preview_engine.h"
 #include "preview_engine/preview_engine_internal.h"
 
@@ -209,6 +210,9 @@ int main(int argc, char** argv) {
     auto dispatcher = std::make_shared<QtDispatcher>(&app);
     auto sink = std::make_shared<SmokeSink>();
     if (!engine->initialize({{{60, 1}}}, dispatcher) || !engine->attachEventSink(sink))
+        return 3;
+    // 検証用の音量 (audio_types.h)。Windows の session volume なので PCM と meter は変わらない。
+    if (!engine->setMasterVolume(mvm::audio::kVerificationSessionVolume))
         return 3;
     const auto capabilities = engine->capabilities();
     if (capabilities.configuredMaxActiveVideoSources != 8 ||

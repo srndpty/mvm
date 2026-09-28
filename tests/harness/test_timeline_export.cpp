@@ -577,10 +577,27 @@ int main(int argc, char** argv) {
         effects.scalePercent = 60;
         effects.positionXPercent = 12;
         effects.positionYPercent = -8;
-        effects.rotationDegrees = 25;
         effects.opacityPercent = 50;
         effects.fadeInFrames = 10;
         effects.fadeOutFrames = 10;
+        // 外接矩形の期待値は mapClipEffects の式を呼ばずに手で計算する (320x240)。
+        //   crop 後の範囲: 幅 70% / 高さ 85%。60% に縮めて 134.4 x 122.4 px。
+        //   中心は crop 範囲の中心 (45%, 52.5%) に位置 (+12%, -8%) を足した (182.4, 106.8)。
+        //   -> x 115..249 / y 46..168
+        // 以前は回転 25 度も同時に掛けて「230 x 210 未満」だけを見ていた。V1 の回転は
+        // fix_rotate_z で書き出されておらず、この緩い上限では回転の有無を判別できなかった。
+        const auto expectBox = [&](const EffectFrameMetrics& metrics, int minX, int maxX, int minY,
+                                   int maxY, const char* what) {
+            // 縮小と半透明で縁がぼけるので ±5 px。回転の有無の差は数十 px ある。
+            const bool ok =
+                std::abs(metrics.minX - minX) <= 5 && std::abs(metrics.maxX - maxX) <= 5 &&
+                std::abs(metrics.minY - minY) <= 5 && std::abs(metrics.maxY - maxY) <= 5;
+            if (!ok)
+                std::fprintf(stderr, "  %s: 実測 x %d..%d / y %d..%d、期待 x %d..%d / y %d..%d\n",
+                             what, metrics.minX, metrics.maxX, metrics.minY, metrics.maxY, minX,
+                             maxX, minY, maxY);
+            check(ok, what);
+        };
         mvm::app::TimelineExportRequest effectRequest;
         effectRequest.outputPath = testDirectory / L"m7a-effects.mp4";
         effectRequest.width = 320;
@@ -596,10 +613,41 @@ int main(int argc, char** argv) {
             check(middle.mean > 5.0, "effect出力の中間frameが空です");
             check(first.mean < middle.mean * 0.2 && last.mean < middle.mean * 0.2,
                   "source-native Fade In/Outが実画素へ反映されません");
-            check(middle.maxX > middle.minX && middle.maxY > middle.minY &&
-                      middle.maxX - middle.minX < 230 && middle.maxY - middle.minY < 210,
-                  "非zoom crop/scale/rotationの外接矩形が反映されません");
+            expectBox(middle, 115, 249, 46, 168, "crop/scale/position の外接矩形が期待と違います");
         }
+
+        // crop と回転を同時に掛ける。crop 範囲 134.4 x 122.4 px を中心 (182.4, 106.8) で 25 度
+        // 回すと、外接矩形は 134.4cos25+122.4sin25 = 173.5 x 134.4sin25+122.4cos25 = 167.7 px。
+        //   -> x 96..269 / y 23..191
+        // 以前は crop filter が frame の寸法を変え、平行四辺形 (x 58..305 / y 41..171)
+        // になっていた。
+        {
+            auto both = effected;
+            both.timelineClips.front().effects.rotationDegrees = 25;
+            effectRequest.outputPath = testDirectory / L"m7a-effects-crop-rotated.mp4";
+            const auto bothExport = mvm::app::exportTimeline(both, effectRequest);
+            check(bothExport.success, "crop + 回転の clip を書き出せません");
+            if (bothExport.success)
+                expectBox(effectMetrics(effectRequest.outputPath, 30), 96, 269, 23, 191,
+                          "crop + 回転の外接矩形が回転した矩形になりません (shear)");
+        }
+
+        // 回転は crop 無しでも見る。192 x 144 px (60%) を中心 (198.4, 100.8) で 25 度回すと、
+        // 外接矩形は 192cos25+144sin25 = 234.9 x 192sin25+144cos25 = 211.6 px。
+        //   -> x 81..316 / y -5..207 (上は画面で切れて 0)
+        // crop と回転を同時に使うと MLT の書き出しは shear になる (docs/premiere-like-editing.md
+        // §18.4 の [事実])。ここでは組み合わせない。
+        auto rotated = effected;
+        auto& rotation = rotated.timelineClips.front().effects;
+        rotation.cropLeftPercent = rotation.cropTopPercent = 0;
+        rotation.cropRightPercent = rotation.cropBottomPercent = 0;
+        rotation.rotationDegrees = 25;
+        effectRequest.outputPath = testDirectory / L"m7a-effects-rotated.mp4";
+        const auto rotatedExport = mvm::app::exportTimeline(rotated, effectRequest);
+        check(rotatedExport.success, "回転付きclipを書き出せません");
+        if (rotatedExport.success)
+            expectBox(effectMetrics(effectRequest.outputPath, 30), 81, 316, 0, 207,
+                      "V1 の回転が外接矩形に反映されません");
     }
 
     // --- tractor末尾補完frameにもcrop/effectが掛かる ------------------------

@@ -131,11 +131,11 @@ int main(int argc, char** argv) {
     const auto partial = directory / "partial.mvm";
     std::ofstream partialFile(partial);
     partialFile
-        << R"({"schema_version":7,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,"speed_num":1,"speed_den":1,"track_kind":"video","track_index":0,"effects":{"scale_percent":60}}]})";
+        << R"({"schema_version":8,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,"speed_num":1,"speed_den":1,"track_kind":"video","track_index":0,"effects":{"scale_percent":60}}]})";
     partialFile.close();
     check(!loadProjectJson(partial).success, "部分effects objectをfail-closedで拒否する");
 
-    // schema 7 の clip は速度 (speed_num / speed_den) を必須にする。どの負例も対照群から
+    // schema 7 以降の clip は速度 (speed_num / speed_den) を必須にする。どの負例も対照群から
     // 1 か所だけ変えて作るので、壊した箇所で落ちていることが分かる。
     const auto speedProject = [&](const std::string& version, const std::string& speed) {
         return R"({"schema_version":)" + version +
@@ -150,33 +150,36 @@ int main(int argc, char** argv) {
         return loadProjectJson(projectPath);
     };
     const auto halfSpeed =
-        loadText("speed-half.mvm", speedProject("7", R"("speed_num":1,"speed_den":2,)"));
+        loadText("speed-half.mvm", speedProject("8", R"("speed_num":1,"speed_den":2,)"));
     check(halfSpeed.success && halfSpeed.project.timelineClips.size() == 1 &&
               halfSpeed.project.timelineClips[0].speedNum == 1 &&
               halfSpeed.project.timelineClips[0].speedDen == 2,
           "対照群: 50%のclipを読めない");
     check(!loadText("schema5.mvm", speedProject("5", R"("speed_num":1,"speed_den":2,)")).success,
           "schema 5を拒否する");
+    // schema 8 で image clip を足した。版を上げたので旧版は読まない (互換分岐を持たない)。
+    check(!loadText("schema7.mvm", speedProject("7", R"("speed_num":1,"speed_den":2,)")).success,
+          "schema 7を拒否する");
     // 旧ファイルは速度の field を持たない。後続の field で落ちる前に、版の違いとして報告する。
     const auto legacyClip = loadText("schema5-legacy.mvm", speedProject("5", ""));
     check(!legacyClip.success &&
               legacyClip.error.find("対応していない schema_version です: 5") != std::string::npos,
           (std::string("schema 5の旧ファイルを版の違いとして報告しない: ") + legacyClip.error)
               .c_str());
-    check(!loadText("speed-missing.mvm", speedProject("7", "")).success,
+    check(!loadText("speed-missing.mvm", speedProject("8", "")).success,
           "速度の無いclipを既定値で受理しない");
     check(
-        !loadText("speed-slow.mvm", speedProject("7", R"("speed_num":1,"speed_den":11,)")).success,
+        !loadText("speed-slow.mvm", speedProject("8", R"("speed_num":1,"speed_den":11,)")).success,
         "10%未満の速度を拒否する");
     check(
-        !loadText("speed-fast.mvm", speedProject("7", R"("speed_num":11,"speed_den":1,)")).success,
+        !loadText("speed-fast.mvm", speedProject("8", R"("speed_num":11,"speed_den":1,)")).success,
         "1000%を超える速度を拒否する");
     check(
-        loadText("speed-edge.mvm", speedProject("7", R"("speed_num":10,"speed_den":1,)")).success &&
-            loadText("speed-edge-slow.mvm", speedProject("7", R"("speed_num":1,"speed_den":10,)"))
+        loadText("speed-edge.mvm", speedProject("8", R"("speed_num":10,"speed_den":1,)")).success &&
+            loadText("speed-edge-slow.mvm", speedProject("8", R"("speed_num":1,"speed_den":10,)"))
                 .success,
         "10%と1000%ちょうどを受理する");
-    check(!loadText("speed-unreduced.mvm", speedProject("7", R"("speed_num":2,"speed_den":4,)"))
+    check(!loadText("speed-unreduced.mvm", speedProject("8", R"("speed_num":2,"speed_den":4,)"))
                .success,
           "約分されていない速度を拒否する");
 

@@ -30,7 +30,77 @@ MvmMltProbeResult okProbe() {
     return probe;
 }
 
+// FFmpeg で調べた stream の事実。classify の前提として手で組む。
+mvm::media::MediaStreamFacts factsWith(int video, int attached, int audio) {
+    mvm::media::MediaStreamFacts facts;
+    facts.ok = true;
+    facts.formatName = "mov,mp4,m4a,3gp,3g2,mj2";
+    facts.videoStreamCount = video;
+    facts.attachedPictureCount = attached;
+    facts.audioStreamCount = audio;
+    facts.videoCodecName = video > 0 ? "h264" : "";
+    return facts;
+}
+
+mvm::media::MediaStreamFacts stillFacts(int packets) {
+    mvm::media::MediaStreamFacts facts;
+    facts.ok = true;
+    facts.formatName = "png_pipe";
+    facts.videoStreamCount = 1;
+    facts.videoCodecName = "png";
+    facts.stillImageCodec = true;
+    facts.imagePacketCountUpTo2 = packets;
+    return facts;
+}
+
+void testRoute() {
+    using mvm::media::MediaRoute;
+    using mvm::media::routeMedia;
+
+    check(routeMedia(stillFacts(1)).route == MediaRoute::StillImage,
+          "1 packet の静止画 codec をStillImageへ振り分けられません");
+    const auto animated = routeMedia(stillFacts(2));
+    check(animated.route == MediaRoute::Rejected &&
+              animated.error.find("アニメーション") != std::string::npos,
+          "2 packet の画像をアニメーションとして拒否しません");
+    check(routeMedia(stillFacts(0)).route == MediaRoute::Rejected,
+          "packet の無い画像を受理しました");
+
+    // FFmpeg が開けないアニメーション WebP でも、header の flag で理由を添えて拒否する。
+    mvm::media::MediaStreamFacts webp;
+    webp.ok = false;
+    webp.error = "stream 情報を取得できません";
+    webp.webpAnimationFlag = true;
+    const auto webpDecision = routeMedia(webp);
+    check(webpDecision.route == MediaRoute::Rejected &&
+              webpDecision.error.find("アニメーション") != std::string::npos,
+          "開けないアニメーション WebP をアニメーションとして拒否しません");
+    // 対照: flag が無ければ「解析できません」で拒否する。
+    webp.webpAnimationFlag = false;
+    check(routeMedia(webp).error.find("解析できません") != std::string::npos,
+          "開けない素材の拒否理由が解析失敗になっていません");
+
+    auto exr = stillFacts(1);
+    exr.stillImageCodec = false;
+    exr.hdrImageCodec = true;
+    exr.videoCodecName = "exr";
+    check(routeMedia(exr).route == MediaRoute::Rejected, "HDR 画像を受理しました");
+
+    // 対照: Motion JPEG の動画は静止画 codec 扱いにならず、時間を持つ素材へ回る。
+    auto motionJpeg = factsWith(1, 0, 1);
+    motionJpeg.videoCodecName = "mjpeg";
+    check(routeMedia(motionJpeg).route == MediaRoute::TimeBased,
+          "Motion JPEG の動画を時間を持つ素材へ振り分けられません");
+    check(routeMedia(factsWith(0, 1, 1)).route == MediaRoute::TimeBased,
+          "カバーアート付きの音声を時間を持つ素材へ振り分けられません");
+    check(routeMedia(factsWith(0, 0, 0)).route == MediaRoute::Rejected,
+          "映像も音声も無い素材を受理しました");
+}
+
 void testClassify() {
+    const auto avFacts = factsWith(1, 0, 1);
+    const auto audioFacts = factsWith(0, 0, 1);
+
     auto video = okProbe();
     video.has_video = 1;
     video.has_audio = 1;
@@ -39,52 +109,52 @@ void testClassify() {
     video.fps_num = 48000;
     video.fps_den = 2002;
     video.frame_count = 598;
-    const auto videoResult = mvm::app::classifyMediaProbe(video, "v.mp4");
+    video.sar_num = 64;
+    video.sar_den = 48;
+    const auto videoResult = mvm::app::classifyMediaProbe(video, avFacts, "v.mp4");
     check(videoResult.success && videoResult.item.kind == MediaKind::Video &&
               videoResult.item.fpsNum == 24000 && videoResult.item.fpsDen == 1001 &&
-              videoResult.item.frameCount == 598 && videoResult.item.sampleRate == 0,
+              videoResult.item.frameCount == 598 && videoResult.item.sampleRate == 0 &&
+              videoResult.hasAudio && videoResult.sarNum == 4 && videoResult.sarDen == 3,
           "動画のprobeを約分済みfps付きのVideoへ分類できません");
 
-    // MLT は静止画の length を INT_MAX で返す。尺として扱わない。
-    auto still = okProbe();
-    still.has_video = 1;
-    still.width = 800;
-    still.height = 600;
-    still.fps_num = 25;
-    still.fps_den = 1;
-    still.frame_count = 0x7FFFFFFF;
-    still.is_unbounded_length = 1;
-    const auto stillResult = mvm::app::classifyMediaProbe(still, "still.png");
-    check(stillResult.success && stillResult.item.kind == MediaKind::Image &&
-              stillResult.item.width == 800 && stillResult.item.frameCount == 0 &&
-              stillResult.item.fpsNum == 0,
-          "無限尺の映像をImageへ分類できません");
+    // 静止画は MLT を通さない。映像 stream があるのに無限尺・1 frame なら動画として扱えない。
+    auto unbounded = video;
+    unbounded.is_unbounded_length = 1;
+    unbounded.frame_count = 0x7FFFFFFF;
+    check(!mvm::app::classifyMediaProbe(unbounded, avFacts, "v.mp4").success,
+          "無限尺の映像を受理しました");
+    auto oneFrame = video;
+    oneFrame.frame_count = 1;
+    const auto oneFrameResult = mvm::app::classifyMediaProbe(oneFrame, avFacts, "v.mp4");
+    check(!oneFrameResult.success && oneFrameResult.error.find("1 frame") != std::string::npos,
+          "1 frame だけの映像を拒否しません");
 
-    // JPEG は image2 demuxer 経由で 1 frame・有限尺として返る。
-    auto jpeg = okProbe();
-    jpeg.has_video = 1;
-    jpeg.width = 640;
-    jpeg.height = 360;
-    jpeg.fps_num = 25;
-    jpeg.fps_den = 1;
-    jpeg.frame_count = 1;
-    const auto jpegResult = mvm::app::classifyMediaProbe(jpeg, "still.jpg");
-    check(jpegResult.success && jpegResult.item.kind == MediaKind::Image &&
-              jpegResult.item.frameCount == 0,
-          "音声なし1 frameの映像をImageへ分類できません");
-    // 対照: 音声付きなら 1 frame でも静止画扱いしない。
-    auto oneFrameWithAudio = jpeg;
-    oneFrameWithAudio.has_audio = 1;
-    check(mvm::app::classifyMediaProbe(oneFrameWithAudio, "a.mp4").item.kind == MediaKind::Video,
-          "音声付き1 frameの素材をImageへ分類しました");
-
+    // カバーアート付きの音声: MLT は映像ありと返すが (実測)、本物の映像が無いので Audio。
     auto audio = okProbe();
     audio.has_audio = 1;
     audio.sample_rate = 44100;
     audio.duration_sec = 2.5;
-    const auto audioResult = mvm::app::classifyMediaProbe(audio, "a.m4a");
+    auto cover = audio;
+    cover.has_video = 1;
+    cover.width = 600;
+    cover.height = 600;
+    cover.fps_num = 60;
+    cover.fps_den = 1;
+    cover.frame_count = 150;
+    const auto coverResult = mvm::app::classifyMediaProbe(cover, factsWith(0, 1, 1), "a.mp3");
+    check(coverResult.success && coverResult.item.kind == MediaKind::Audio &&
+              coverResult.item.width == 0 && coverResult.item.durationSamples == 110250,
+          "カバーアート付きの音声をAudioへ分類できません");
+    // 対照: 本物の映像 stream があれば、同じ probe でも Video。
+    check(mvm::app::classifyMediaProbe(cover, factsWith(1, 1, 1), "v.mp4").item.kind ==
+              MediaKind::Video,
+          "映像 stream のある素材をVideoへ分類できません");
+
+    const auto audioResult = mvm::app::classifyMediaProbe(audio, audioFacts, "a.m4a");
     check(audioResult.success && audioResult.item.kind == MediaKind::Audio &&
-              audioResult.item.sampleRate == 44100 && audioResult.item.durationSamples == 110250,
+              audioResult.item.sampleRate == 44100 && audioResult.item.durationSamples == 110250 &&
+              audioResult.durationSec == 2.5,
           "音声のprobeをsample数付きのAudioへ分類できません");
 
     // 値が欠けた素材を推測で埋めない。
@@ -92,28 +162,51 @@ void testClassify() {
     auto huge = audio;
     huge.sample_rate = 48000;
     huge.duration_sec = 1.0e15;
-    check(!mvm::app::classifyMediaProbe(huge, "a.m4a").success,
+    check(!mvm::app::classifyMediaProbe(huge, audioFacts, "a.m4a").success,
           "int64に収まらない音声尺を受理しました");
 
     auto noRate = audio;
     noRate.sample_rate = 0;
-    check(!mvm::app::classifyMediaProbe(noRate, "a.m4a").success,
+    check(!mvm::app::classifyMediaProbe(noRate, audioFacts, "a.m4a").success,
           "sample rateの無い音声を受理しました");
     auto unboundedAudio = audio;
     unboundedAudio.is_unbounded_length = 1;
-    check(!mvm::app::classifyMediaProbe(unboundedAudio, "a.m4a").success,
+    check(!mvm::app::classifyMediaProbe(unboundedAudio, audioFacts, "a.m4a").success,
           "無限尺の音声を受理しました");
+    // facts は映像ありなのに MLT が映像を開けていない。どちらかを選ばずに失敗させる。
+    check(!mvm::app::classifyMediaProbe(audio, avFacts, "v.mp4").success,
+          "MLTが映像を開けていない動画を受理しました");
     auto noFps = video;
     noFps.fps_num = 0;
-    check(!mvm::app::classifyMediaProbe(noFps, "v.mp4").success, "fpsの無い動画を受理しました");
-    auto noSize = still;
+    check(!mvm::app::classifyMediaProbe(noFps, avFacts, "v.mp4").success,
+          "fpsの無い動画を受理しました");
+    auto noSize = video;
     noSize.width = 0;
-    check(!mvm::app::classifyMediaProbe(noSize, "still.png").success,
-          "解像度の無い静止画を受理しました");
+    check(!mvm::app::classifyMediaProbe(noSize, avFacts, "v.mp4").success,
+          "解像度の無い動画を受理しました");
     auto failed = video;
     failed.ok = 0;
     std::strcpy(failed.error, "broken");
-    check(!mvm::app::classifyMediaProbe(failed, "v.mp4").success, "probe失敗の結果を受理しました");
+    check(!mvm::app::classifyMediaProbe(failed, avFacts, "v.mp4").success,
+          "probe失敗の結果を受理しました");
+}
+
+void testClassifyStillImage() {
+    mvm::media::StillImageDecodeResult decoded;
+    decoded.success = true;
+    decoded.image.width = 600;
+    decoded.image.height = 800;
+    decoded.image.rgba.assign(600U * 800U * 4U, 255);
+    const auto still = mvm::app::classifyStillImage(decoded, "p.jpg");
+    check(still.success && still.item.kind == MediaKind::Image && still.item.width == 600 &&
+              still.item.height == 800 && still.item.fpsNum == 0 && still.item.frameCount == 0,
+          "decode した静止画をImageへ分類できません");
+    auto failed = decoded;
+    failed.success = false;
+    failed.error = "壊れています";
+    const auto failedResult = mvm::app::classifyStillImage(failed, "p.jpg");
+    check(!failedResult.success && failedResult.error == "壊れています",
+          "decode に失敗した静止画を受理しました");
 }
 
 mvm::project::MediaItem video(const char* id, std::int64_t fpsNum, std::int64_t fpsDen,
@@ -261,7 +354,9 @@ void testModel() {
 
 int main(int argc, char** argv) {
     QCoreApplication application(argc, argv);
+    testRoute();
     testClassify();
+    testClassifyStillImage();
     testFormat();
     testModel();
     if (failures == 0)

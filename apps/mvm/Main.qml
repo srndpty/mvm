@@ -121,14 +121,9 @@ ApplicationWindow {
             }
             CompactMenuSeparator {}
             CompactMenuItem {
-                text: "動画を追加"
+                text: "メディアを追加"
                 enabled: !root.mvmController.busy
-                onTriggered: videoDialog.open()
-            }
-            CompactMenuItem {
-                text: "音声を追加"
-                enabled: !root.mvmController.busy && root.mvmController.audioTrackCount > 0
-                onTriggered: audioDialog.open()
+                onTriggered: mediaDialog.open()
             }
             CompactMenuItem {
                 text: "Manim clip"
@@ -427,7 +422,8 @@ ApplicationWindow {
                 if (toProjectPanel)
                     binUrls.push(url);
                 else
-                    root.mvmController.addVideoClip(url);
+                    // 動画・音声・画像は内容で判定する (拡張子は見ない)。
+                    root.mvmController.addMediaFileToTimeline(url);
             }
             if (binUrls.length > 0)
                 projectPanel.importUrls(binUrls);
@@ -879,7 +875,8 @@ ApplicationWindow {
                             id: previewSurface
                             objectName: "previewSurface"
                             anchors.fill: parent
-                            visible: root.mvmController.previewVideoAtPlayhead
+                            // 映像の無い frame (画像・文字だけ、音声だけ) も engine が提示する。
+                            // 隠すと render されず、seek が完了しない。
                         }
 
                         Repeater {
@@ -921,7 +918,7 @@ ApplicationWindow {
                                          && root.mvmController.playheadFrame >= timelineStartFrame
                                          && root.mvmController.textClipVisible(index)
 
-                                // 映像が無い frame、またはドラッグ中の文字だけをここで描く。
+                                // ドラッグ・編集中の文字だけをここで描く。
                                 // それ以外は engine が track 順に合成済みなので透明にする。
                                 Image {
                                     anchors.fill: parent
@@ -933,8 +930,7 @@ ApplicationWindow {
                                     cache: false
                                     fillMode: Image.Stretch
                                     // UI が描くときも、書き出しと同じ opacity (値・key・fade) を掛ける。
-                                    opacity: (!root.mvmController.previewVideoAtPlayhead
-                                              || root.textOverlayClipId === textLayer.clipId ? 1 : 0)
+                                    opacity: (root.textOverlayClipId === textLayer.clipId ? 1 : 0)
                                              * (root.mvmController.playheadFrame,
                                                 root.mvmController.textClipOpacity(textLayer.index))
                                 }
@@ -3055,17 +3051,10 @@ ApplicationWindow {
     }
 
     FileDialog {
-        id: videoDialog
-        title: "動画ファイルを選択"
-        nameFilters: ["動画 (*.mp4 *.mov *.mkv *.ts)", "すべて (*)"]
-        onAccepted: root.mvmController.addVideoClip(selectedFile)
-    }
-
-    FileDialog {
-        id: audioDialog
-        title: "音声ファイルを選択"
-        nameFilters: ["音声 (*.wav *.mp3 *.m4a *.aac *.flac)", "すべて (*)"]
-        onAccepted: root.mvmController.addAudioClip(selectedFile)
+        id: mediaDialog
+        title: "メディアファイルを選択"
+        nameFilters: root.mvmController.mediaFileNameFilters
+        onAccepted: root.mvmController.addMediaFileToTimeline(selectedFile)
     }
 
     FileDialog {
