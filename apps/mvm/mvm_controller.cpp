@@ -9,7 +9,7 @@
 #include "app/timeline_preview_mapping.h"
 #include "core/checked_output_timebase.h"
 #include "core/export_eta.h"
-#include "media/still_image/still_image_decoder.h"
+#include "image_raster_cache.h"
 #include "media_file_filters.h"
 #include "media_import.h"
 #include "project/clip_effects.h"
@@ -244,6 +244,13 @@ MvmController::MvmController(std::filesystem::path projectPath,
               ? std::move(exportThreadFactory)
               : [](std::function<void()> task) { return std::thread(std::move(task)); }),
       fileRevealer_(fileRevealer ? std::move(fileRevealer) : revealFileInExplorer) {
+    imageRasters_ = std::make_unique<ImageRasterCache>();
+    // 画像の raster ができた (または素材が変わった) ら preview を組み直す。再生中は
+    // 毎 tick composition を組み直すので、そこで拾われる。
+    connect(imageRasters_.get(), &ImageRasterCache::entryChanged, this, [this] {
+        if (!playing_)
+            refreshTextPreview();
+    });
     sessionId_ = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
     QString lockError;
     void* acquiredLock = nullptr;
@@ -651,13 +658,15 @@ void MvmController::refreshTimelineModel() {
     textPreviewOverride_.reset();
     textRasterImages_.clear();
     textStillImages_.clear();
-    for (auto entry = imageStillImages_.begin(); entry != imageStillImages_.end();) {
-        const bool referenced = std::any_of(
-            project_.timelineClips.begin(), project_.timelineClips.end(), [&](const auto& clip) {
-                return clip.kind == project::TimelineClipKind::Image &&
-                       entry.key().startsWith(fromPath(clip.mediaPath) + u'|');
-            });
-        entry = referenced ? std::next(entry) : imageStillImages_.erase(entry);
+    // 画像の raster は、現在の画像 clip の素材と現在の出力解像度の組だけを残す。
+    // 出力解像度を変えたら旧解像度の raster は捨てる。
+    if (imageRasters_) {
+        QSet<QString> keep;
+        for (const auto& clip : project_.timelineClips)
+            if (clip.kind == project::TimelineClipKind::Image)
+                keep.insert(ImageRasterCache::keyFor(clip.mediaPath, project_.outputWidth,
+                                                     project_.outputHeight));
+        imageRasters_->retainOnly(keep);
     }
     textRasterBounds_.clear();
     textRasterUrls_.clear();
@@ -1476,7 +1485,12 @@ MvmController::previewCompositionFor(const TimelinePreviewFrameMapping& mappedFr
             const double opacity = std::clamp(stillMapping.opacity, 0.0, 1.0);
             preview::PreviewCompositionLayer layer;
             if (stillMapping.kind == project::TimelineClipKind::Image) {
-                layer.stillImage = imageStillImage(stillMapping.clipIndex, error);
+                bool pending = false;
+                layer.stillImage = imageStillImage(stillMapping.clipIndex, error, pending);
+                // raster を worker で生成中。できるまではこの画像を合成に入れず、
+                // できたら entryChanged で組み直す。
+                if (pending)
+                    continue;
                 if (!layer.stillImage)
                     return nullptr;
                 const auto& clip =
@@ -2557,7 +2571,8 @@ MvmController::textStillImage(int clipIndex, QString& error) const {
 }
 
 std::shared_ptr<const preview::PreviewStillImage>
-MvmController::imageStillImage(int clipIndex, QString& error) const {
+MvmController::imageStillImage(int clipIndex, QString& error, bool& pending) const {
+    pending = false;
     if (clipIndex < 0 || clipIndex >= static_cast<int>(project_.timelineClips.size()) ||
         project_.timelineClips[static_cast<std::size_t>(clipIndex)].kind !=
             project::TimelineClipKind::Image) {
@@ -2565,30 +2580,25 @@ MvmController::imageStillImage(int clipIndex, QString& error) const {
         return nullptr;
     }
     const auto& clip = project_.timelineClips[static_cast<std::size_t>(clipIndex)];
-    const QString key = fromPath(clip.mediaPath) + u'|' + QString::number(project_.outputWidth) +
-                        u'x' + QString::number(project_.outputHeight);
-    if (const auto found = imageStillImages_.constFind(key); found != imageStillImages_.constEnd())
-        return found.value();
-    // 書き出しと同じ decoder と配置 (media/still_image) を通し、同じ画素を使う。
-    const auto decoded = media::decodeStillImage(clip.mediaPath);
-    if (!decoded.success) {
-        error = QString::fromStdString(clip.name) + QStringLiteral(" を読めません: ") +
-                QString::fromStdString(decoded.error);
+    // 書き出しと同じ decoder と配置 (media/still_image) を worker で通し、同じ画素を使う。
+    const auto entry =
+        imageRasters_->request(clip.mediaPath, project_.outputWidth, project_.outputHeight);
+    switch (entry.state) {
+    case ImageRasterCache::State::Loading:
+        pending = true;
         return nullptr;
+    case ImageRasterCache::State::Ready:
+        return entry.image;
+    case ImageRasterCache::State::Failed:
+        break;
     }
-    auto fitted =
-        media::fitStillImageToRaster(decoded.image, project_.outputWidth, project_.outputHeight);
-    if (!fitted.success) {
-        error = QString::fromStdString(clip.name) + QStringLiteral(" を配置できません: ") +
-                QString::fromStdString(fitted.error);
-        return nullptr;
-    }
-    auto still = std::make_shared<preview::PreviewStillImage>();
-    still->width = fitted.raster.width;
-    still->height = fitted.raster.height;
-    still->rgba = std::move(fitted.raster.rgba);
-    imageStillImages_.insert(key, still);
-    return still;
+    error = QString::fromStdString(clip.name) + QStringLiteral(" を読めません: ") + entry.error;
+    return nullptr;
+}
+
+void MvmController::revalidateMedia() {
+    if (imageRasters_)
+        imageRasters_->revalidateAll();
 }
 
 QUrl MvmController::textRasterUrl(int index) {

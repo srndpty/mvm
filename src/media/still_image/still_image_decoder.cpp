@@ -66,6 +66,48 @@ bool withinLimits(int width, int height, const StillImageLimits& limits, std::st
     return true;
 }
 
+std::uint32_t readBe32(const std::uint8_t* bytes) {
+    return static_cast<std::uint32_t>(bytes[0]) << 24 | static_cast<std::uint32_t>(bytes[1]) << 16 |
+           static_cast<std::uint32_t>(bytes[2]) << 8 | static_cast<std::uint32_t>(bytes[3]);
+}
+
+// ICC profile の説明 ('desc' tag)。v2 の 'desc' 型 (ASCII) と v4 の 'mluc' 型 (UTF-16BE の
+// 先頭 record、ASCII の範囲だけ) を読む。読めなければ空。
+std::string iccDescription(const std::uint8_t* data, std::size_t size) {
+    if (size < 132)
+        return {};
+    const std::uint32_t tagCount = readBe32(data + 128);
+    for (std::uint32_t index = 0; index < tagCount; ++index) {
+        const std::size_t entry = 132 + static_cast<std::size_t>(index) * 12;
+        if (entry + 12 > size)
+            return {};
+        if (std::memcmp(data + entry, "desc", 4) != 0)
+            continue;
+        const std::size_t offset = readBe32(data + entry + 4);
+        const std::size_t length = readBe32(data + entry + 8);
+        if (offset > size || length > size - offset || length < 12)
+            return {};
+        const std::uint8_t* tag = data + offset;
+        std::string text;
+        if (std::memcmp(tag, "desc", 4) == 0) {
+            const std::size_t count = readBe32(tag + 8);
+            for (std::size_t i = 0; i < count && 12 + i < length && tag[12 + i] != 0; ++i)
+                text.push_back(static_cast<char>(tag[12 + i]));
+        } else if (std::memcmp(tag, "mluc", 4) == 0 && length >= 28 && readBe32(tag + 8) > 0) {
+            const std::size_t bytes = readBe32(tag + 20);
+            const std::size_t start = readBe32(tag + 24);
+            for (std::size_t i = 0; i + 1 < bytes && start + i + 1 < length; i += 2) {
+                const unsigned high = tag[start + i];
+                const unsigned low = tag[start + i + 1];
+                if (high == 0 && low != 0 && low < 0x80)
+                    text.push_back(static_cast<char>(low));
+            }
+        }
+        return text;
+    }
+    return {};
+}
+
 // EXIF side data に残っている orientation (0x112)。無ければ 0。
 bool exifOrientationTag(const AVFrameSideData& sideData, int& orientation, std::string& error) {
     orientation = 0;
@@ -385,6 +427,18 @@ StillImageDecodeResult decodeStillImage(const std::filesystem::path& path,
     result.sourcePixelFormat = formatName ? formatName : "";
     if (!frameOrientation(*frame, result.orientation, result.error))
         return result;
+    // 色の変換 (ICC) はしない。sRGB 以外の profile を持つ画像を sRGB として描くと、
+    // decode には成功して色だけが静かに変わる。読み込み時点で理由を添えて拒否する。
+    if (const AVFrameSideData* icc =
+            av_frame_get_side_data(frame.get(), AV_FRAME_DATA_ICC_PROFILE)) {
+        std::string description;
+        if (!iccProfileIsSrgb(icc->data, icc->size, description)) {
+            result.error = "sRGB 以外の ICC profile を持つ画像には対応していません (" +
+                           (description.empty() ? std::string("説明なし") : description) +
+                           ")。色が変わるため読み込みません。sRGB へ変換してから読み込んでください";
+            return result;
+        }
+    }
     if (!convertToRgba(*frame, frame->width, frame->height,
                        SWS_BICUBIC | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT, result.image,
                        result.error))
@@ -393,6 +447,17 @@ StillImageDecodeResult decodeStillImage(const std::filesystem::path& path,
         return result;
     result.success = true;
     return result;
+}
+
+bool iccProfileIsSrgb(const std::uint8_t* data, std::size_t size, std::string& description) {
+    description.clear();
+    if (!data || size < 132)
+        return false;
+    description = iccDescription(data, size);
+    // header の data colour space (offset 16) が RGB で、説明が sRGB を名乗るものだけを通す。
+    // 名乗っていても中身が別物という profile は見分けられないが、Display P3 や Adobe RGB を
+    // 黙って sRGB として描く事故は防げる。
+    return std::memcmp(data + 16, "RGB ", 4) == 0 && description.find("sRGB") != std::string::npos;
 }
 
 StillRasterResult fitStillImageToRaster(const StillImage& image, int outputWidth,

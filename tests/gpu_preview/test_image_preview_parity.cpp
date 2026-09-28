@@ -17,6 +17,7 @@
 #include "media/still_image/still_image_decoder.h"
 #include "project/timeline_edit.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
@@ -93,12 +94,33 @@ project::Project makeProject(const fs::path& image) {
     clip.effects.positionXPercent = 12.0;
     clip.effects.positionYPercent = -8.0;
     clip.effects.scalePercent = 70.0;
-    clip.effects.rotationDegrees = 15.0;
-    clip.effects.cropRightPercent = 10.0;
     clip.effects.opacityPercent = 100.0;
     project.timelineClips.push_back(clip);
     return project;
 }
+
+struct ParityCase {
+    const char* name;
+    int track = 0;
+    double rotation = 0.0;
+    double cropLeft = 0.0;
+    double cropTop = 0.0;
+    double cropRight = 0.0;
+    double cropBottom = 0.0;
+    bool withBackground = true;
+};
+
+// crop が非対称で回転も掛かる組み合わせで、以前の書き出しは平行四辺形になっていた
+// (MLT の crop filter が frame の寸法を変えるため)。V1 は affine filter、V2 以上は affine
+// transition と経路が違うので両方を見る。
+constexpr ParityCase kCases[] = {
+    {"V1 右 crop + 回転 15 度", 0, 15.0, 0.0, 0.0, 10.0, 0.0},
+    {"V1 非対称 crop + 回転 25 度", 0, 25.0, 10.0, 10.0, 20.0, 5.0},
+    {"V2 回転 25 度 (crop なし)", 1, 25.0, 0.0, 0.0, 0.0, 0.0},
+    {"V2 非対称 crop (回転なし)", 1, 0.0, 10.0, 10.0, 20.0, 5.0},
+    {"V2 非対称 crop + 回転 25 度", 1, 25.0, 10.0, 10.0, 20.0, 5.0},
+    {"V2 非対称 crop + 回転 25 度 (V1 が空)", 1, 25.0, 10.0, 10.0, 20.0, 5.0, false},
+};
 
 enum class Kind { Red, Blue, Black, Other };
 
@@ -150,15 +172,18 @@ std::string describe(const Agreement& a) {
 // shiftX は対照用に preview だけ位置をずらす量 (%)。
 std::vector<Kind> composePreview(OwnedDevice& device, gpu::GpuCompositor& compositor,
                                  const project::Project& project, const gpu::DecodedGpuFrame& still,
-                                 double shiftX) {
+                                 double shiftX, int caseIndex) {
+    // 比べるのは画像 clip ("image") だけ。V1 の灰色の背景は比較から外れるので描かない。
     const auto mapped = app::mapTimelinePreviewFrame(project, 0);
-    require(mapped.success && mapped.layers.empty() && mapped.stillLayers.size() == 1 &&
-                mapped.stillLayers[0].kind == project::TimelineClipKind::Image,
-            "preview の対応づけが画像 1 枚になりません");
+    const auto target = std::find_if(mapped.stillLayers.begin(), mapped.stillLayers.end(),
+                                     [](const auto& entry) { return entry.clipId == "image"; });
+    require(mapped.success && mapped.layers.empty() && target != mapped.stillLayers.end() &&
+                target->kind == project::TimelineClipKind::Image,
+            "preview の対応づけに画像 clip がありません");
     auto effects = project.timelineClips[0].effects;
     effects.positionXPercent += shiftX;
     preview::PreviewCompositionLayer layer;
-    app::applyPreviewLayerEffects(layer, effects, mapped.stillLayers[0].opacity, 0, 30);
+    app::applyPreviewLayerEffects(layer, effects, target->opacity, 0, 30);
 
     gpu::CompositionLayerFrame frameLayer;
     frameLayer.frame = still;
@@ -206,7 +231,8 @@ std::vector<Kind> composePreview(OwnedDevice& device, gpu::GpuCompositor& compos
     // MVM_PARITY_DUMP に directory を渡すと、比較した画像を保存する (食い違いの調査用)。
     if (const char* dump = std::getenv("MVM_PARITY_DUMP")) {
         QImage(rgba.data(), kW, kH, kW * 4, QImage::Format_RGBA8888)
-            .save(QString::fromUtf8(dump) + QStringLiteral("/preview-%1.png").arg(shiftX));
+            .save(QString::fromUtf8(dump) +
+                  QStringLiteral("/preview-%1-%2.png").arg(caseIndex).arg(shiftX));
     }
     std::vector<Kind> kinds;
     for (std::size_t i = 0; i < rgba.size(); i += 4)
@@ -224,41 +250,10 @@ int main(int argc, char** argv) {
         return 2;
     }
     const fs::path image = fs::absolute(fs::path(reinterpret_cast<const char8_t*>(argv[1])));
-    const auto project = makeProject(image);
-    require(project::validateTimeline(project).success, "前提: 画像 clip の Project が不正です");
-
-    // 書き出し。
     require(mvm_mlt_runtime_init(MVM_MLT_MODULE_DIR, MVM_MLT_DATA_DIR) == 0,
             "MLT runtime を初期化できません");
     QTemporaryDir directory;
     require(directory.isValid(), "一時 directory を作れません");
-    app::TimelineExportRequest request;
-    request.width = kW;
-    request.height = kH;
-    request.timeoutMs = 120000;
-    request.outputPath = fs::path(directory.filePath(QStringLiteral("image.mp4")).toStdWString());
-    const auto rendered = app::exportTimeline(project, request);
-    require(rendered.success, "画像 clip を書き出せません: " + rendered.error);
-    const QString framePath = directory.filePath(QStringLiteral("frame.png"));
-    QProcess decoder;
-    decoder.start(QStringLiteral("C:/msys64/ucrt64/bin/ffmpeg.exe"),
-                  {QStringLiteral("-loglevel"), QStringLiteral("error"), QStringLiteral("-i"),
-                   QString::fromStdWString(request.outputPath.wstring()),
-                   QStringLiteral("-frames:v"), QStringLiteral("1"), QStringLiteral("-y"),
-                   framePath});
-    require(decoder.waitForFinished(30000) && decoder.exitCode() == 0,
-            "書き出し frame を復号できません");
-    const QImage exportedImage(framePath);
-    if (const char* dump = std::getenv("MVM_PARITY_DUMP"))
-        exportedImage.save(QString::fromUtf8(dump) + QStringLiteral("/exported.png"));
-    require(exportedImage.width() == kW && exportedImage.height() == kH,
-            "書き出し frame の寸法が違います");
-    std::vector<Kind> exported;
-    for (int y = 0; y < kH; ++y)
-        for (int x = 0; x < kW; ++x) {
-            const QColor c = exportedImage.pixelColor(x, y);
-            exported.push_back(classify(c.red(), c.green(), c.blue()));
-        }
 
     // preview。書き出しと同じ decoder と配置で raster を作る。
     const auto decoded = media::decodeStillImage(image);
@@ -276,19 +271,83 @@ int main(int argc, char** argv) {
                                      fitted.raster.rgba.size(), {200}, still, err),
             err);
 
-    const Agreement same =
-        compare(composePreview(device, compositor, project, still, 0.0), exported);
-    const Agreement shifted =
-        compare(composePreview(device, compositor, project, still, 25.0), exported);
-    std::printf("同じ effect: %s\n位置をずらした対照: %s\n", describe(same).c_str(),
-                describe(shifted).c_str());
-    // 空振りしていないこと: 画像の画素を十分に比べている。
-    require(same.coloured > 2000, "画像の画素がほとんど比較されていません: " + describe(same));
-    require(same.agreed * 100 >= same.compared * 97,
-            "preview と書き出しで画像の配置が一致しません: " + describe(same));
-    require(shifted.agreed * 100 <= shifted.compared * 85,
-            "対照: 位置をずらしても一致したままです (比較が配置を判別していません): " +
-                describe(shifted));
+    int caseIndex = 0;
+    for (const auto& parity : kCases) {
+        auto project = makeProject(image);
+        auto& clip = project.timelineClips[0];
+        clip.track = {project::TrackKind::Video, parity.track};
+        clip.effects.rotationDegrees = parity.rotation;
+        clip.effects.cropLeftPercent = parity.cropLeft;
+        clip.effects.cropTopPercent = parity.cropTop;
+        clip.effects.cropRightPercent = parity.cropRight;
+        clip.effects.cropBottomPercent = parity.cropBottom;
+        // V2 以上は V1 との間の affine transition で合成する。withBackground なら V1 に灰色の
+        // 背景を置く。灰色は赤・青・黒のどれでもないので比較から外れ、画像の画素だけを比べる。
+        // V1 が空の区間でも transition が掛かることは、背景の無い case で見る (以前は掛からず、
+        // 上の画像が全画面のまま書き出されていた)。
+        if (parity.track > 0 && parity.withBackground) {
+            auto background = clip;
+            background.id = "background";
+            background.name = "背景";
+            background.mediaPath = image.parent_path() / "jpg_gray128.jpg";
+            background.track = {project::TrackKind::Video, 0};
+            background.effects = {};
+            project.timelineClips.push_back(background);
+        }
+        require(project::validateTimeline(project).success,
+                std::string("前提: Project が不正です: ") + parity.name);
+
+        // 書き出し。
+        app::TimelineExportRequest request;
+        request.width = kW;
+        request.height = kH;
+        request.timeoutMs = 120000;
+        request.outputPath = fs::path(
+            directory.filePath(QStringLiteral("image-%1.mp4").arg(caseIndex)).toStdWString());
+        const auto rendered = app::exportTimeline(project, request);
+        require(rendered.success,
+                std::string("書き出せません (") + parity.name + "): " + rendered.error);
+        const QString framePath = directory.filePath(QStringLiteral("frame-%1.png").arg(caseIndex));
+        QProcess decoder;
+        decoder.start(QStringLiteral("C:/msys64/ucrt64/bin/ffmpeg.exe"),
+                      {QStringLiteral("-loglevel"), QStringLiteral("error"), QStringLiteral("-i"),
+                       QString::fromStdWString(request.outputPath.wstring()),
+                       QStringLiteral("-frames:v"), QStringLiteral("1"), QStringLiteral("-y"),
+                       framePath});
+        require(decoder.waitForFinished(30000) && decoder.exitCode() == 0,
+                "書き出し frame を復号できません");
+        const QImage exportedImage(framePath);
+        if (const char* dump = std::getenv("MVM_PARITY_DUMP"))
+            exportedImage.save(QString::fromUtf8(dump) +
+                               QStringLiteral("/exported-%1.png").arg(caseIndex));
+        require(exportedImage.width() == kW && exportedImage.height() == kH,
+                "書き出し frame の寸法が違います");
+        std::vector<Kind> exported;
+        for (int y = 0; y < kH; ++y)
+            for (int x = 0; x < kW; ++x) {
+                const QColor c = exportedImage.pixelColor(x, y);
+                exported.push_back(classify(c.red(), c.green(), c.blue()));
+            }
+
+        const Agreement same =
+            compare(composePreview(device, compositor, project, still, 0.0, caseIndex), exported);
+        const Agreement shifted =
+            compare(composePreview(device, compositor, project, still, 25.0, caseIndex), exported);
+        std::printf("%s\n  同じ effect: %s\n  位置をずらした対照: %s\n", parity.name,
+                    describe(same).c_str(), describe(shifted).c_str());
+        // 空振りしていないこと: 画像の画素を十分に比べている。
+        require(same.coloured > 2000,
+                std::string(parity.name) +
+                    ": 画像の画素がほとんど比較されていません: " + describe(same));
+        require(same.agreed * 100 >= same.compared * 97,
+                std::string(parity.name) +
+                    ": preview と書き出しで画像の配置が一致しません: " + describe(same));
+        require(shifted.agreed * 100 <= shifted.compared * 85,
+                std::string(parity.name) +
+                    ": 対照: 位置をずらしても一致したままです (比較が配置を判別していません): " +
+                    describe(shifted));
+        ++caseIndex;
+    }
     compositor.retireLayerTexture(still.texture);
     still = {};
     require(compositor.shutdown(5000, err), err);

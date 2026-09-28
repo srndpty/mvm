@@ -3,6 +3,7 @@
 
 #include "core/waveform_peaks.h"
 #include "media/audio_waveform/audio_waveform_decoder.h"
+#include "media_source_identity.h"
 
 #include <QHash>
 #include <QList>
@@ -77,17 +78,9 @@ Q_SIGNALS:
     void entryChanged(const QString& sourceKey);
 
 private:
-    struct SourceIdentity {
-        bool exists = false;
-        qint64 size = -1;
-        // FILETIME (100ns)。ms へ丸めると同じ size の素早い差し替えを見逃す。
-        qint64 lastWriteTime = -1;
-        bool operator==(const SourceIdentity&) const = default;
-    };
-
     struct Record {
         Entry entry;
-        SourceIdentity identity;
+        MediaSourceIdentity identity;
         QString path;
         // 生成に使った内容の fingerprint。取れなかったら nullopt (再検証しない)。
         std::optional<std::uint64_t> fingerprint;
@@ -97,13 +90,6 @@ private:
         std::shared_ptr<std::atomic<bool>> cancel;
     };
 
-    struct SourceProbe {
-        QString key;
-        SourceIdentity identity;
-    };
-
-    static SourceProbe probe(const QString& mediaPath);
-    static std::optional<std::uint64_t> fingerprintOf(const QString& mediaPath);
     void finish(const QString& key, std::uint64_t ticket, std::optional<std::uint64_t> fingerprint,
                 Entry entry);
     void dropStale(const QList<QPair<QString, quint64>>& stale);

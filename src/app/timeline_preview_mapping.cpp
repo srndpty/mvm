@@ -30,12 +30,23 @@ TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& proj
         if (project.videoTracks[index].muted)
             continue;
         if (project::isStillClipKind(clip->kind)) {
-            // 文字・画像は速度 1 で素材の in を持たないので、素材内の位置は clip 内の位置と同じ。
+            // 文字・画像の素材 frame domain は置いたときの timeline の fps のままで、Project の
+            // fps を後から変えても振り直さない。fade は素材 frame で数えるので、書き出しと同じく
+            // clipFadeSourceFrameAt で素材 frame へ換算してから評価する。clip 内の位置をそのまま
+            // 渡すと、fps が違うときに fade の進み方が書き出しとずれる。
             const std::int64_t local = timelineFrame - clip->timelineStartFrame;
+            const auto sourceLocal = project::clipFadeSourceFrameAt(*clip, project.timelineFpsNum,
+                                                                    project.timelineFpsDen, local);
+            if (!sourceLocal.success) {
+                result.layers.clear();
+                result.stillLayers.clear();
+                result.error = clip->name + ": preview frameを素材frameへ換算できません";
+                return result;
+            }
             result.stillLayers.push_back(
                 {static_cast<int>(index), static_cast<int>(clip - project.timelineClips.data()),
                  clip->id, clip->kind,
-                 project::evaluateClipOpacity(clip->effects, local, local,
+                 project::evaluateClipOpacity(clip->effects, local, sourceLocal.frame,
                                               clip->sourceOutFrame - clip->sourceInFrame)});
             continue;
         }

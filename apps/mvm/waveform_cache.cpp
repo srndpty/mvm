@@ -1,6 +1,6 @@
 #include "waveform_cache.h"
 
-#include "util/mvm_file_identity.h"
+#include "media_source_identity.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -35,39 +35,8 @@ WaveformCache::~WaveformCache() {
     pool_.waitForDone();
 }
 
-WaveformCache::SourceProbe WaveformCache::probe(const QString& mediaPath) {
-    SourceProbe result;
-    if (mediaPath.isEmpty())
-        return result;
-    MvmFileIdentity identity{};
-    const std::wstring widePath = mediaPath.toStdWString();
-    if (mvm_file_identity_query(widePath.c_str(), &identity) == 0) {
-        // 実在する file は実体 (volume + file ID) で区別する。hard link / junction
-        // 経由の別 path は同じ素材、case-sensitive directory の別名 file は別素材になる。
-        const QByteArray fileId(reinterpret_cast<const char*>(identity.file_id),
-                                sizeof(identity.file_id));
-        result.key = QStringLiteral("file:%1:%2")
-                         .arg(identity.volume_serial, 16, 16, QLatin1Char('0'))
-                         .arg(QString::fromLatin1(fileId.toHex()));
-        result.identity = {true, identity.size, identity.last_write_time};
-        return result;
-    }
-    // 実体が取れない (存在しない等) ときだけ path の字面で区別する。
-    // 大文字小文字は畳まない。区別するかどうかは directory ごとに違う。
-    result.key = QStringLiteral("path:") + QDir::cleanPath(QFileInfo(mediaPath).absoluteFilePath());
-    return result;
-}
-
 QString WaveformCache::sourceKey(const QString& mediaPath) {
-    return probe(mediaPath).key;
-}
-
-std::optional<std::uint64_t> WaveformCache::fingerprintOf(const QString& mediaPath) {
-    unsigned long long fingerprint = 0;
-    const std::wstring widePath = mediaPath.toStdWString();
-    if (mvm_file_content_fingerprint(widePath.c_str(), &fingerprint) != 0)
-        return std::nullopt;
-    return fingerprint;
+    return probeMediaSource(mediaPath).key;
 }
 
 void WaveformCache::revalidateAll() {
@@ -94,7 +63,7 @@ void WaveformCache::revalidateAll() {
         for (const auto& target : targets) {
             if (shuttingDown->load(std::memory_order_relaxed))
                 return;
-            const auto current = fingerprintOf(target.path);
+            const auto current = mediaContentFingerprint(target.path);
             if (!current || *current != target.fingerprint)
                 stale.append({target.key, target.ticket});
         }
@@ -126,9 +95,9 @@ std::size_t WaveformCache::readyBytes() const {
 WaveformCache::Entry WaveformCache::request(const QString& mediaPath) {
     if (mediaPath.isEmpty())
         return {State::Failed, {}, QStringLiteral("素材の path がありません")};
-    const SourceProbe source = probe(mediaPath);
+    const MediaSourceProbe source = probeMediaSource(mediaPath);
     const QString& key = source.key;
-    const SourceIdentity& identity = source.identity;
+    const MediaSourceIdentity& identity = source.identity;
     auto found = records_.find(key);
     if (found != records_.end() && found->identity == identity) {
         found->lastUse = ++useClock_;
@@ -148,7 +117,7 @@ WaveformCache::Entry WaveformCache::request(const QString& mediaPath) {
 
     pool_.start([this, key, ticket = record.ticket, cancel = record.cancel, mediaPath] {
         // decode より前に取る。decode 中に差し替えられても、次の再検証で必ず不一致になる。
-        const auto fingerprint = fingerprintOf(mediaPath);
+        const auto fingerprint = mediaContentFingerprint(mediaPath);
         auto result = decode_(mediaPath.toStdString(), cancel.get());
         if (result.cancelled || cancel->load(std::memory_order_relaxed))
             return;

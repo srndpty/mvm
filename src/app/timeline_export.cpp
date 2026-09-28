@@ -39,10 +39,37 @@ bool mapExportEffects(const project::TimelineClip& clip, const TimelineExportReq
         std::lround((1.0 - mapped.sourceRect.x - mapped.sourceRect.width) * request.width));
     output.cropBottom = static_cast<int>(
         std::lround((1.0 - mapped.sourceRect.y - mapped.sourceRect.height) * request.height));
-    output.rectX = mapped.destinationRect.x * request.width;
-    output.rectY = mapped.destinationRect.y * request.height;
-    output.rectWidth = mapped.destinationRect.width * request.width;
-    output.rectHeight = mapped.destinationRect.height * request.height;
+    // crop は frame の寸法を変えずに範囲外を透明にする (qtcrop)。そのため affine へ渡す矩形は
+    // crop 範囲ではなく、crop 前の frame 全体を置く位置にする。crop 範囲が destinationRect に
+    // 重なるよう、全体を同じ倍率で拡縮して置く。
+    const double width = request.width;
+    const double height = request.height;
+    const double scaleX = mapped.destinationRect.width / mapped.sourceRect.width;
+    const double scaleY = mapped.destinationRect.height / mapped.sourceRect.height;
+    double fullX = (mapped.destinationRect.x - mapped.sourceRect.x * scaleX) * width;
+    double fullY = (mapped.destinationRect.y - mapped.sourceRect.y * scaleY) * height;
+    const double fullWidth = scaleX * width;
+    const double fullHeight = scaleY * height;
+    // MLT は矩形の中心を軸に回す (docs/m7a-p0-findings.md)。preview は crop 範囲の中心で回す。
+    // 中心の差 d について、全体の矩形を d - R d だけずらすと、全体の中心で回した結果が
+    // crop 範囲の中心で回した結果と一致する。R は画素空間 (y 下向き) の時計回りの回転で、
+    // preview の shader と同じ向き。
+    if (mapped.rotationDegrees != 0.0) {
+        const double radians = mapped.rotationDegrees * 3.14159265358979323846 / 180.0;
+        const double cosine = std::cos(radians);
+        const double sine = std::sin(radians);
+        const double dx = (mapped.destinationRect.x + mapped.destinationRect.width * 0.5) * width -
+                          (fullX + fullWidth * 0.5);
+        const double dy =
+            (mapped.destinationRect.y + mapped.destinationRect.height * 0.5) * height -
+            (fullY + fullHeight * 0.5);
+        fullX += dx - (cosine * dx - sine * dy);
+        fullY += dy - (sine * dx + cosine * dy);
+    }
+    output.rectX = fullX;
+    output.rectY = fullY;
+    output.rectWidth = fullWidth;
+    output.rectHeight = fullHeight;
     output.rotationDegrees = mapped.rotationDegrees;
 
     for (std::int64_t frame = 0; frame < timelineDuration; ++frame) {

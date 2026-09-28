@@ -597,6 +597,81 @@ if (-not (Test-Path $largePngPath) -or $Force) {
     if ($LASTEXITCODE -ne 0) { throw '読み込み判定用素材の生成に失敗: png_gray_4200.png' }
 }
 
+# ICC profile (iCCP chunk) を持つ PNG。decoder は色の変換をしないので、sRGB 以外は拒否し、
+# sRGB は受理する (対照)。profile は 'desc' tag だけを持つ最小の ICC v2 を byte で組む。
+# ffmpeg の png encoder は iCCP を書かないため。
+function Get-Crc32([byte[]]$Bytes) {
+    [uint32]$crc = [uint32]::MaxValue
+    foreach ($b in $Bytes) {
+        $crc = [uint32]($crc -bxor [uint32]$b)
+        for ($k = 0; $k -lt 8; $k++) {
+            if (($crc -band 1) -ne 0) { $crc = [uint32](($crc -shr 1) -bxor [uint32]3988292384) }
+            else { $crc = $crc -shr 1 }
+        }
+    }
+    return [uint32]($crc -bxor [uint32]::MaxValue)
+}
+function Get-BigEndian32([uint32]$Value) {
+    $bytes = [BitConverter]::GetBytes($Value)
+    [Array]::Reverse($bytes)
+    return $bytes
+}
+function New-IccProfile([string]$Description) {
+    $ascii = [System.Text.Encoding]::ASCII.GetBytes($Description)
+    $desc = [System.Collections.Generic.List[byte]]::new()
+    $desc.AddRange([System.Text.Encoding]::ASCII.GetBytes('desc'))
+    $desc.AddRange([byte[]](0, 0, 0, 0))
+    $desc.AddRange([byte[]](Get-BigEndian32 ([uint32]($ascii.Length + 1))))
+    $desc.AddRange($ascii)
+    $desc.Add([byte]0)
+    $desc.AddRange([byte[]]::new(4 + 4 + 2 + 1 + 67))   # unicode / scriptcode は空
+    $tagOffset = 128 + 4 + 12
+    $iccBytes = [System.Collections.Generic.List[byte]]::new()
+    $iccBytes.AddRange([byte[]](Get-BigEndian32 ([uint32]($tagOffset + $desc.Count))))
+    $iccBytes.AddRange([byte[]]::new(4))                                   # CMM
+    $iccBytes.AddRange([byte[]](0x02, 0x10, 0x00, 0x00))                   # version 2.1
+    $iccBytes.AddRange([System.Text.Encoding]::ASCII.GetBytes('mntrRGB XYZ '))
+    $iccBytes.AddRange([byte[]]::new(12))                                  # date
+    $iccBytes.AddRange([System.Text.Encoding]::ASCII.GetBytes('acsp'))
+    $iccBytes.AddRange([byte[]]::new(128 - $iccBytes.Count))
+    $iccBytes.AddRange([byte[]](Get-BigEndian32 1))                        # tag 数
+    $iccBytes.AddRange([System.Text.Encoding]::ASCII.GetBytes('desc'))
+    $iccBytes.AddRange([byte[]](Get-BigEndian32 ([uint32]$tagOffset)))
+    $iccBytes.AddRange([byte[]](Get-BigEndian32 ([uint32]$desc.Count)))
+    $iccBytes.AddRange($desc)
+    return $iccBytes.ToArray()
+}
+function Add-PngIccProfile([string]$Source, [string]$Destination, [string]$Description) {
+    $png = [System.IO.File]::ReadAllBytes($Source)
+    $compressed = [System.IO.MemoryStream]::new()
+    $zlib = [System.IO.Compression.ZLibStream]::new($compressed, [System.IO.Compression.CompressionLevel]::Optimal)
+    $icc = New-IccProfile $Description
+    $zlib.Write($icc, 0, $icc.Length)
+    $zlib.Dispose()
+    $data = [System.Collections.Generic.List[byte]]::new()
+    $data.AddRange([System.Text.Encoding]::ASCII.GetBytes('ICC Profile'))
+    $data.AddRange([byte[]](0, 0))                                        # 区切りと圧縮方式 0
+    $data.AddRange($compressed.ToArray())
+    $typeAndData = [byte[]]([System.Text.Encoding]::ASCII.GetBytes('iCCP') + $data.ToArray())
+    $chunk = [System.Collections.Generic.List[byte]]::new()
+    $chunk.AddRange([byte[]](Get-BigEndian32 ([uint32]$data.Count)))
+    $chunk.AddRange($typeAndData)
+    $chunk.AddRange([byte[]](Get-BigEndian32 (Get-Crc32 $typeAndData)))
+    # signature (8) + IHDR chunk (4 + 4 + 13 + 4) の直後へ差し込む。
+    $out = [System.Collections.Generic.List[byte]]::new()
+    $out.AddRange([byte[]]$png[0..32])
+    $out.AddRange($chunk)
+    $out.AddRange([byte[]]$png[33..($png.Length - 1)])
+    [System.IO.File]::WriteAllBytes($Destination, $out.ToArray())
+}
+$iccSource = Join-Path $ImportDir 'png_rgb24.png'
+foreach ($icc in @(@{ Name = 'png_icc_display_p3.png'; Description = 'Display P3' },
+                   @{ Name = 'png_icc_srgb.png'; Description = 'sRGB IEC61966-2.1' })) {
+    $p = Join-Path $ImportDir $icc.Name
+    if ((Test-Path $p) -and -not $Force) { continue }
+    Add-PngIccProfile -Source $iccSource -Destination $p -Description $icc.Description
+}
+
 # 日本語名の複製。判定と decode が UTF-8 のパスを正しく渡していることを見る。
 $importJpPath = Join-Path $ImportDir '写真　縦向き＆EXIF.jpg'
 Copy-Item -Path (Join-Path $ImportDir 'jpg_exif_orient6.jpg') -Destination $importJpPath -Force

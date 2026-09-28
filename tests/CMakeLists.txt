@@ -192,6 +192,21 @@ set_tests_properties(media_import_files_focused PROPERTIES
     REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/smoke/_import/jpg_exif_orient6.jpg"
     TIMEOUT 120)
 
+add_executable(mvm_test_image_raster_cache
+    harness/test_image_raster_cache.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/image_raster_cache.cpp)
+target_include_directories(mvm_test_image_raster_cache PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_test_image_raster_cache PRIVATE
+    mvm::still_image mvm::preview_engine mvm::util Qt6::Core mvm::warnings)
+set_target_properties(mvm_test_image_raster_cache PROPERTIES AUTOMOC ON)
+add_test(NAME image_raster_cache_focused
+    COMMAND mvm_test_image_raster_cache "${CMAKE_SOURCE_DIR}/tests/assets/smoke/_import"
+            "${CMAKE_CURRENT_BINARY_DIR}/image-raster-cache")
+set_tests_properties(image_raster_cache_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/smoke/_import/png_icc_display_p3.png"
+    TIMEOUT 120)
+
 add_executable(mvm_test_waveform_cache
     harness/test_waveform_cache.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/waveform_cache.cpp)
@@ -257,6 +272,7 @@ qt_add_executable(mvm_test_controller_export
     harness/test_mvm_controller_export.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/media_bin_model.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/media_import.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/image_raster_cache.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_mix.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_playback.cpp
@@ -275,6 +291,7 @@ qt_add_executable(mvm_test_sourceless_timeline_playback
     harness/test_sourceless_timeline_playback.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/media_bin_model.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/media_import.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/image_raster_cache.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_mix.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_playback.cpp

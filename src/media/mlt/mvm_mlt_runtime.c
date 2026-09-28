@@ -27,6 +27,7 @@ static const char* const kRequiredFilters[] = {
     "avfilter.scale",
     "affine",      /* transform / scale : V7 (plus モジュール) */
     "crop",        /* crop              : V7 */
+    "qtcrop",      /* 書き出しの crop (frame の寸法を保つ) : §18.6 */
     "brightness",  /* opacity / fade    : V7 */
     "volume",      /* audio gain        : V7 */
     "dynamictext", /* 文字レイヤ        : V3 (plus モジュール) */

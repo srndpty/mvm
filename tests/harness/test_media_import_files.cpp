@@ -97,6 +97,9 @@ int main(int argc, char** argv) {
     for (const char* name : {"gif_animated.gif", "apng_animated.png", "webp_animated.webp"})
         expectRejected(dir / name, "アニメーション");
     expectRejected(dir / "exr_float.exr", "HDR");
+    // sRGB 以外の ICC profile は色が変わるので読み込まない。sRGB は読む (対照)。
+    expectRejected(dir / "png_icc_display_p3.png", "ICC");
+    expectImage(dir / "png_icc_srgb.png", 64, 48);
     expectRejected(smoke / "_corrupt" / "text.mp4", "解析できません");
 
     // カバーアート付きの音声は、MLT が映像ありと返しても Audio になる。

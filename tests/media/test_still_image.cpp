@@ -7,6 +7,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -193,6 +194,78 @@ void testDecodeColor(const fs::path& dir) {
         check(decoded.success && decoded.image.width == 64 && decoded.image.height == 48 &&
                   decoded.image.rgba.size() == 64U * 48U * 4U,
               std::string("64x48 の画像として decode できません: ") + name + " " + decoded.error);
+    }
+}
+
+// ICC profile を持つ画像。色の変換はしないので、sRGB 以外は拒否し sRGB は受理する (対照)。
+void testDecodeIcc(const fs::path& dir) {
+    using mvm::media::decodeStillImage;
+    const auto p3 = decodeStillImage(dir / "png_icc_display_p3.png");
+    check(!p3.success && p3.error.find("ICC") != std::string::npos &&
+              p3.error.find("Display P3") != std::string::npos,
+          "Display P3 の ICC profile を持つ画像を拒否しません: " + p3.error);
+    const auto srgb = decodeStillImage(dir / "png_icc_srgb.png");
+    check(srgb.success && srgb.image.width == 64,
+          "対照: sRGB の ICC profile を持つ画像を decode できません: " + srgb.error);
+}
+
+// 最小の ICC profile を組む。v2 は 'desc' 型、v4 は 'mluc' 型の説明を持つ。
+std::vector<std::uint8_t> iccProfile(const char* colourSpace, const std::string& description,
+                                     bool v4) {
+    const auto be32 = [](std::vector<std::uint8_t>& out, std::uint32_t value) {
+        for (int shift = 24; shift >= 0; shift -= 8)
+            out.push_back(static_cast<std::uint8_t>(value >> shift));
+    };
+    std::vector<std::uint8_t> tag;
+    if (v4) {
+        for (const char c : std::string("mluc"))
+            tag.push_back(static_cast<std::uint8_t>(c));
+        be32(tag, 0);
+        be32(tag, 1);  // record 数
+        be32(tag, 12); // record の大きさ
+        tag.insert(tag.end(), {'e', 'n', 'U', 'S'});
+        be32(tag, static_cast<std::uint32_t>(description.size() * 2));
+        be32(tag, 28); // 文字列の位置 (tag の先頭から)
+        for (const char c : description) {
+            tag.push_back(0);
+            tag.push_back(static_cast<std::uint8_t>(c));
+        }
+    } else {
+        for (const char c : std::string("desc"))
+            tag.push_back(static_cast<std::uint8_t>(c));
+        be32(tag, 0);
+        be32(tag, static_cast<std::uint32_t>(description.size() + 1));
+        tag.insert(tag.end(), description.begin(), description.end());
+        tag.push_back(0);
+    }
+    std::vector<std::uint8_t> profile(128, 0);
+    std::memcpy(profile.data() + 16, colourSpace, 4);
+    be32(profile, 1);
+    for (const char c : std::string("desc"))
+        profile.push_back(static_cast<std::uint8_t>(c));
+    be32(profile, 144);
+    be32(profile, static_cast<std::uint32_t>(tag.size()));
+    profile.insert(profile.end(), tag.begin(), tag.end());
+    return profile;
+}
+
+void testIccClassification() {
+    using mvm::media::iccProfileIsSrgb;
+    std::string description;
+    for (const bool v4 : {false, true}) {
+        const char* version = v4 ? " (v4 mluc)" : " (v2 desc)";
+        auto srgb = iccProfile("RGB ", "sRGB IEC61966-2.1", v4);
+        check(iccProfileIsSrgb(srgb.data(), srgb.size(), description) &&
+                  description == "sRGB IEC61966-2.1",
+              std::string("sRGB の profile を sRGB と判定しません") + version);
+        auto p3 = iccProfile("RGB ", "Display P3", v4);
+        check(!iccProfileIsSrgb(p3.data(), p3.size(), description) && description == "Display P3",
+              std::string("Display P3 を sRGB と判定しました") + version);
+        auto gray = iccProfile("GRAY", "sRGB gray", v4);
+        check(!iccProfileIsSrgb(gray.data(), gray.size(), description),
+              std::string("RGB でない profile を sRGB と判定しました") + version);
+        check(!iccProfileIsSrgb(srgb.data(), 100, description),
+              std::string("header に満たない profile を sRGB と判定しました") + version);
     }
 }
 
@@ -393,6 +466,8 @@ int main(int argc, char** argv) {
     testDecodeOrientation(dir);
     testDecodeColor(dir);
     testDecodeLimits(dir);
+    testDecodeIcc(dir);
+    testIccClassification();
     testOrientationTable();
     testFit();
     std::printf("still_image: %d 件の検査、失敗 %d 件\n", checks, failures);

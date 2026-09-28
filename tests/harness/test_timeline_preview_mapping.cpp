@@ -283,6 +283,71 @@ void testTextLayerOpacity() {
     require(std::abs(at(20) - 1.0) < 1e-9, "対照: key の無い文字の不透明度が 1 ではありません");
 }
 
+// 文字・画像は置いたときの fps を素材 frame domain として持ち、Project の fps を変えても
+// 振り直さない。fade は素材 frame で数えるので、fps が違っても秒単位で同じ位置に効くこと。
+// 期待値は clipFadeFactor の定義 (距離 / (fade frame 数 - 1)) から手で計算する。
+void testStillFadeAcrossFrameRates() {
+    using mvm::project::TimelineClipKind;
+
+    struct Case {
+        const char* name;
+        std::int64_t projectFps;
+        std::int64_t sourceFps;
+        std::int64_t fadeFrames; // 素材 frame で 1 秒
+        std::int64_t halfSecond; // timeline の 0.5 秒
+        double halfExpected;     // 0.5 秒の fade in
+        std::int64_t oneSecond;
+        std::int64_t last;   // timeline の最終 frame
+        double lastExpected; // 最終 frame の fade out
+    };
+
+    // 60fps で作った 5 秒 (300 frame) を 30fps の Project へ: timeline 15 = 素材 30 -> 30/59。
+    // 最終 frame 149 = 素材 298 -> 末尾まで 1 frame -> 1/59。
+    // 30fps で作った 5 秒 (150 frame) を 60fps の Project へ: timeline 30 = 素材 15 -> 15/29。
+    // 最終 frame 299 = 素材 149 -> 末尾まで 0 frame -> 0。
+    const Case cases[] = {
+        {"60fps の clip を 30fps の Project で", 30, 60, 60, 15, 30.0 / 59.0, 30, 149, 1.0 / 59.0},
+        {"30fps の clip を 60fps の Project で", 60, 30, 30, 30, 15.0 / 29.0, 60, 299, 0.0},
+    };
+    for (const auto& entry : cases) {
+        for (const auto kind : {TimelineClipKind::Text, TimelineClipKind::Image}) {
+            mvm::project::Project project = mvm::project::createDefaultProject();
+            project.timelineFpsNum = entry.projectFps;
+            project.timelineFpsDen = 1;
+            auto still = textClip("still", 0, entry.sourceFps * 5);
+            still.sourceFpsNum = entry.sourceFps;
+            if (kind == TimelineClipKind::Image) {
+                still.kind = TimelineClipKind::Image;
+                still.text = {};
+                still.mediaPath = "still.png";
+            }
+            const auto opacityAt = [&](std::int64_t frame) {
+                const auto mapped = mvm::app::mapTimelinePreviewFrame(project, frame);
+                require(mapped.success && mapped.stillLayers.size() == 1,
+                        "fade の検査で静止画を取り出せません");
+                return mapped.stillLayers[0].opacity;
+            };
+            const std::string label =
+                std::string(entry.name) + (kind == TimelineClipKind::Image ? " (画像)" : " (文字)");
+
+            still.effects.fadeInFrames = entry.fadeFrames;
+            project.timelineClips = {still};
+            require(mvm::project::validateTimeline(project).success,
+                    ("前提: fade 付きの静止画が不正です: " + label).c_str());
+            require(std::abs(opacityAt(entry.halfSecond) - entry.halfExpected) < 1e-9,
+                    ("0.5 秒の fade in が素材 frame で評価されていません: " + label).c_str());
+            require(std::abs(opacityAt(entry.oneSecond) - 1.0) < 1e-9,
+                    ("1 秒で fade in が終わっていません: " + label).c_str());
+
+            still.effects.fadeInFrames = 0;
+            still.effects.fadeOutFrames = entry.fadeFrames;
+            project.timelineClips = {still};
+            require(std::abs(opacityAt(entry.last) - entry.lastExpected) < 1e-9,
+                    ("最終 frame の fade out が素材 frame で評価されていません: " + label).c_str());
+        }
+    }
+}
+
 // 重なったaudioをA1から順にすべてmix対象へ載せる。
 void testAudioOverlapSelectsA1() {
     mvm::project::Project project = mvm::project::createDefaultProject();
@@ -469,6 +534,7 @@ int main() {
     testTextLayerStack();
     testTextLayerLimit();
     testTextLayerOpacity();
+    testStillFadeAcrossFrameRates();
     testAudioOverlapSelectsA1();
     testCrossRateVideoMapping();
 

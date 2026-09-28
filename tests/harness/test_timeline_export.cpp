@@ -616,7 +616,23 @@ int main(int argc, char** argv) {
             expectBox(middle, 115, 249, 46, 168, "crop/scale/position の外接矩形が期待と違います");
         }
 
-        // 回転は crop 無しで見る。192 x 144 px (60%) を中心 (198.4, 100.8) で 25 度回すと、
+        // crop と回転を同時に掛ける。crop 範囲 134.4 x 122.4 px を中心 (182.4, 106.8) で 25 度
+        // 回すと、外接矩形は 134.4cos25+122.4sin25 = 173.5 x 134.4sin25+122.4cos25 = 167.7 px。
+        //   -> x 96..269 / y 23..191
+        // 以前は crop filter が frame の寸法を変え、平行四辺形 (x 58..305 / y 41..171)
+        // になっていた。
+        {
+            auto both = effected;
+            both.timelineClips.front().effects.rotationDegrees = 25;
+            effectRequest.outputPath = testDirectory / L"m7a-effects-crop-rotated.mp4";
+            const auto bothExport = mvm::app::exportTimeline(both, effectRequest);
+            check(bothExport.success, "crop + 回転の clip を書き出せません");
+            if (bothExport.success)
+                expectBox(effectMetrics(effectRequest.outputPath, 30), 96, 269, 23, 191,
+                          "crop + 回転の外接矩形が回転した矩形になりません (shear)");
+        }
+
+        // 回転は crop 無しでも見る。192 x 144 px (60%) を中心 (198.4, 100.8) で 25 度回すと、
         // 外接矩形は 192cos25+144sin25 = 234.9 x 192sin25+144cos25 = 211.6 px。
         //   -> x 81..316 / y -5..207 (上は画面で切れて 0)
         // crop と回転を同時に使うと MLT の書き出しは shear になる (docs/premiere-like-editing.md

@@ -1318,7 +1318,8 @@ premultiply をやめると検査 (`透明な画素の色が境目へにじみ�
 - ffmpeg の mjpeg encoder は EXIF を書かない。向き付きの JPEG は SOI の直後へ最小の APP1 Exif を
   byte で差し込んで作る (`Add-JpegExifOrientation`)
 
-`[未検証]` ICC profile は無視している (Display P3 などの素材は彩度が落ちる)。CMYK JPEG、
+`[未検証]` (§18.6 で変更: sRGB 以外の ICC profile を持つ画像は拒否する)
+ICC profile は無視している (Display P3 などの素材は彩度が落ちる)。CMYK JPEG、
 TIFF の associated alpha、JPEG XL、JPEG 2000、PSD は素材を作っておらず、読めるかも色が正しいかも
 測っていない。許可表に入れているが、実際に読めなければ decode の失敗として拒否される。
 SVG は許可表に入れていない (描画解像度を決める必要があるため)。
@@ -1421,7 +1422,7 @@ preview と書き出しが食い違う。V1 の回転が効いていなかった
 `[推測]` crop filter が frame の寸法を変え、affine が正方形でない座標系で回転しているため。
 上位 track (transition 経路) も同じ crop filter を使うので同様と考えているが、測っていない。
 
-`[未検証]` crop + 回転の書き出しを直す方法 (crop を寸法を変えない方法で掛けるなど)。上位 track での同じ組み合わせ。
+`[未検証]` (§18.6 で解消) crop + 回転の書き出しを直す方法 (crop を寸法を変えない方法で掛けるなど)。上位 track での同じ組み合わせ。
 
 `[事実]` `image_clip_contract` で次を固定した。
 
@@ -1439,7 +1440,8 @@ preview と書き出しが食い違う。V1 の回転が効いていなかった
 落ちた (gdb の backtrace で `openMediaInput` の中)。製品は終了時にだけ shutdown するので、検査側で順序を直した。
 `[推測]` MLT の avformat module が登録した log callback が、module の unload 後も残るため。
 
-`[未検証]` 大きな画像を最初に表示するときの GUI thread の停止時間 (decode と配置を同期で行う)。
+`[未検証]` (§18.6 で解消: decode は worker、差し替えは同一性と再検証で見つける)
+大きな画像を最初に表示するときの GUI thread の停止時間 (decode と配置を同期で行う)。
 素材ファイルを外部で書き換えたときの preview の画素の更新 (path と出力解像度が同じなら保持したものを使う)。
 
 ### 18.5 配置の経路と UI
@@ -1474,5 +1476,81 @@ preview と書き出しが食い違う。V1 の回転が効いていなかった
 ggml は UCRT64 の FFmpeg の whisper filter の依存である。製品は MLT を 1 回だけ初期化するので、
 検査側で初期化を 1 回にまとめた。
 
-`[未検証]` 画像を多数 (数十枚) 置いた timeline での preview の memory。画像 1 枚は出力解像度の RGBA8
-(1080p で約 8MiB、4K で約 32MiB) を CPU と GPU にそれぞれ持つ。
+`[未検証]` (§18.6 で CPU 側に budget を入れた) 画像を多数 (数十枚) 置いた timeline での preview の memory。
+画像 1 枚は出力解像度の RGBA8 (1080p で約 8MiB、4K で約 32MiB) を CPU と GPU にそれぞれ持つ。
+
+### 18.6 レビュー指摘への対応 (P1 1 件 / P2 3 件 / P3 1 件)
+
+#### crop + 回転の書き出しの shear (P1)
+
+`[事実]` 書き出しの crop を、寸法を変える MLT の `crop` filter から、範囲外を透明で塗って寸法を保つ
+`qtcrop` filter に替えた (`attach_export_crop`)。affine へ渡す矩形は crop 範囲ではなく crop 前の frame 全体を
+置く位置にし (`mapExportEffects`)、MLT は矩形の中心で回すので、preview と同じく crop 範囲の中心で回るよう
+中心の差 d について全体を d - Rd ずらす。`qtcrop` は必須 service に加えた。
+
+`[事実]` 以前の shear は動画素材でだけ起きていた。画像 (qimage producer) は以前の crop filter でも
+非対称 crop + 回転 25 度で preview と一致した (`image_preview_parity` を変更前の書き出しで実行して確認)。
+`[推測]` producer によって crop filter の後の frame の扱いが違うため。そこで動画の検査は
+`m4_timeline_export_focused` に置いた: 320x240 の動画に crop (10/10/20/5%) と回転 25 度を掛け、外接矩形が
+手計算の x 96..269 / y 23..191 (±5 px) になること。変更前の書き出しでは x 58..305 / y 41..171 で落ちる。
+
+`[事実]` 途中で、**V1 が空の区間では V2 以上の clip の effect が書き出されていなかった**ことが分かった。
+V1 の gap は blank (test card) で、affine transition は下の frame が test card だと上の frame をそのまま返す。
+画像を V2 に置いて V1 を空けると、位置・拡大・回転・crop・不透明度が掛からずに全画面で出ていた。
+V1 の gap を黒の `color` producer で埋めるようにした (`append_gap`)。gap の数 (`playlist_blank_count`) は
+以前と同じく数える。
+
+`[事実]` `image_preview_parity` を 6 case に広げた: V1 の右 crop + 回転 15 度、V1 の非対称 crop + 回転 25 度、
+V2 の回転だけ、V2 の非対称 crop だけ、V2 の非対称 crop + 回転 25 度 (V1 に灰色の背景)、同じく V1 が空。
+画素の分類 (赤・青・黒) が境界を除いてすべて一致し、対照 (preview だけ位置を 25% ずらす) では 34〜64% に落ちる。
+書き出しを変更前に戻すと V1 が空の case が 12931 / 37390 で落ちる。
+
+#### 画像 cache が素材の差し替えと旧解像度を扱えない (P2) / 大きな画像の decode が GUI を止める (P3)
+
+`[事実]` preview 用の raster を `ImageRasterCache` (`apps/mvm/image_raster_cache.*`) に移した。
+`WaveformCache` と同じ規則で、素材の同一性の判定 (`media_source_identity.h`) は両者で共有する。
+
+- decode と配置は worker thread。完成までは request が Loading を返し、controller はその画像を合成に
+  入れず、完成 (`entryChanged`) で preview を組み直す
+- key は素材の実体 (volume + file ID) と出力解像度。request のたびに size と更新時刻 (100ns) を照合し、
+  差し替えられていれば作り直す。size と更新時刻が同じまま中身だけ変わったものは、アプリが前面へ戻ったときの
+  `revalidateMedia` → `revalidateAll` の内容 fingerprint で見つける (`main.cpp` から波形と同じ契機で呼ぶ)
+- `refreshTimelineModel` で、現在の画像 clip と現在の出力解像度の組だけを残す (`retainOnly`)。
+  出力解像度を変えると旧解像度の raster は捨てる
+- 512MiB の byte budget を超えたら、engine の composition も controller も参照していないものから古い順に捨てる
+- 書き出しは以前から毎回 decode するので、差し替え後も preview と書き出しは同じ画素になる
+
+`[事実]` `image_raster_cache_focused` で、初回が Loading であること、同じ素材・解像度の再利用、解像度の変更と
+`retainOnly`、差し替え (BMP → 左上が赤の JPEG) での作り直し、size と更新時刻を戻した中身の変更を `revalidateAll`
+で見つけること、読めない画像の Failed、budget で参照中のものを残し参照されなくなったものを捨てることを見る。
+request が size と更新時刻を無視する、`retainOnly` が何も捨てない、のどちらでも落ちることを確認した。
+更新時刻は Win32 で読み書きする (std::filesystem は秒精度のことがあり戻せない)。
+
+#### fps 変更後の静止画の fade (P2)
+
+`[事実]` 文字・画像の素材 frame domain は置いたときの fps のままなので、preview の不透明度も書き出しと同じく
+`clipFadeSourceFrameAt` で素材 frame へ換算してから評価するようにした。以前は clip 内の timeline 位置を
+そのまま渡していたため、60fps で作った画像を 30fps の Project に置くと、fade in 1 秒の 0.5 秒地点が 0.508 では
+なく 0.254、fade out の最終 frame が 0.017 ではなく 1.0 になっていた。
+`m7b_2_timeline_preview_mapping_focused` で 60 → 30fps と 30 → 60fps、文字と画像の 0.5 秒・1 秒・最終 frame を
+手計算の値で固定した。換算をやめると落ちることを確認した。
+
+#### ICC profile を持つ画像を黙って違う色で描く (P2)
+
+`[事実]` decoder は色の変換をしないので、sRGB 以外の ICC profile (`AV_FRAME_DATA_ICC_PROFILE`) を持つ画像は
+decode で拒否する (「sRGB 以外の ICC profile を持つ画像には対応していません (Display P3)。色が変わるため
+読み込みません」)。header の色空間が RGB で、説明 ('desc' tag。v2 の desc 型と v4 の mluc 型を読む) が "sRGB" を
+含むものだけを sRGB とみなす。名乗りと中身が違う profile は見分けられない。
+fixture は iCCP chunk を入れた PNG を byte で作る (Display P3 と、対照の sRGB)。FFmpeg 8.1.2 の png decoder は
+iCCP を ICC side data として出す (`ffprobe -show_frames` で確認)。`still_image_decode_unit` (85 件) と
+`media_import_files_focused` (27 件) で拒否と受理を見る。拒否をやめると落ちることを確認した。
+
+`[未検証]` ICC を sRGB へ変換して受理すること (LittleCMS などが要る)。JPEG の APP2 に入った ICC
+(同じ side data になるはずだが、fixture を作っていない)。
+
+#### テストの音量
+
+`[事実]` 検証アプリの音量 `kVerificationSessionVolume` を 0.15 から 0.1 にし、これを使っていなかった
+`preview_engine_sourceless_playback`、`sourceless_timeline_playback`、p5e の preview smoke と capacity smoke
+(音声 16 本を同時に鳴らす) にも適用した。Windows の session volume なので PCM と meter は変わらず、
+検査の値には影響しない。

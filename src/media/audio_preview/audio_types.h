@@ -24,7 +24,8 @@ inline constexpr std::int64_t kNoAudioPts = INT64_MIN;
 // CTest を回すと驚くほど大きい。これは Windows の per-process session volume
 // であり、PCM そのものは変えないため、計測値・marker 判定には影響しない。
 // 製品既定は unity のままとし、この値を使うのは検証アプリだけである。
-inline constexpr float kVerificationSessionVolume = 0.15F;
+// 0.15 でもまだ大きく耳が痛いとの報告を受けて 0.1 にした (1/10 でも十分聞こえる)。
+inline constexpr float kVerificationSessionVolume = 0.1F;
 
 struct SourceId {
     std::uint64_t value = 0;

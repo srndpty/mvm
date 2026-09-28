@@ -33,6 +33,11 @@ struct StillImageDecodeResult {
 StillImageDecodeResult decodeStillImage(const std::filesystem::path& path,
                                         const StillImageLimits& limits = {});
 
+// ICC profile が sRGB か。色空間が RGB で、説明 ('desc' tag) が "sRGB" を含むものだけを
+// sRGB とみなす。description には読めた説明を返す (読めなければ空)。
+// decoder は色の変換をしないので、sRGB 以外の profile を持つ画像は decode で拒否する。
+bool iccProfileIsSrgb(const std::uint8_t* data, std::size_t size, std::string& description);
+
 // EXIF orientation (1..8) を画素へ反映する。それ以外の値は拒否する。
 bool applyExifOrientation(StillImage& image, int orientation, std::string& error);
 

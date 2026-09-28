@@ -9,6 +9,7 @@
 //
 // 期待する枚数は直書きする。
 #include "app/preview/preview_engine_rhi_item.h"
+#include "media/audio_preview/audio_types.h"
 #include "preview_engine/preview_engine.h"
 
 #include <chrono>
@@ -97,6 +98,9 @@ int main(int argc, char** argv) {
     auto dispatcher = std::make_shared<QtDispatcher>(&app);
     auto sink = std::make_shared<RecordingSink>();
     if (!engine->initialize({{{60, 1}}}, dispatcher) || !engine->attachEventSink(sink))
+        return 3;
+    // 検証用の音量 (audio_types.h)。Windows の session volume なので PCM と meter は変わらない。
+    if (!engine->setMasterVolume(mvm::audio::kVerificationSessionVolume))
         return 3;
 
     QQuickWindow window;

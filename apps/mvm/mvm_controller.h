@@ -40,6 +40,7 @@ class QTemporaryDir;
 namespace mvm::app {
 
 class PreviewEngineRhiItem;
+class ImageRasterCache;
 struct MediaImportResult;
 class TrackModel;
 class ShuttleAudioPlayback;
@@ -401,6 +402,9 @@ public:
 
 public Q_SLOTS:
     void shutdown();
+    // 外部で差し替えられた画像素材を見つけて preview を描き直す。
+    // アプリが前面へ戻ったときに呼ぶ (WaveformCache::revalidateAll と同じ契機)。
+    void revalidateMedia();
 
 Q_SIGNALS:
     void stateChanged();
@@ -547,9 +551,10 @@ private:
     std::shared_ptr<const preview::PreviewStillImage> textStillImage(int clipIndex,
                                                                      QString& error) const;
     // 画像 clip の画素。素材を decode し、出力解像度の raster へ縦横比を保って置いたもの
-    // (書き出しと同じ画素)。素材と出力解像度が同じなら同じ instance を返す。
-    std::shared_ptr<const preview::PreviewStillImage> imageStillImage(int clipIndex,
-                                                                      QString& error) const;
+    // (書き出しと同じ画素)。decode は ImageRasterCache が worker で行う。まだ生成中なら
+    // nullptr を返して pending を true にする (error は空)。読めなければ error を入れる。
+    std::shared_ptr<const preview::PreviewStillImage>
+    imageStillImage(int clipIndex, QString& error, bool& pending) const;
     // 再生中、frame の clip を今の source のまま表示できれば source を引き継いで true。
     // 引き継げなければ何も変更せず false (呼び出し側が一時停止して組み直す)。
     // 引き継げなかったら reason に理由を入れる。
@@ -617,9 +622,9 @@ private:
     // preview の合成 (const) からも埋めるので mutable。Project を変えるたびに捨てる。
     mutable QHash<QString, QImage> textRasterImages_;
     mutable QHash<QString, std::shared_ptr<const preview::PreviewStillImage>> textStillImages_;
-    // key は素材 path と出力解像度。decode が重いので Project の変更では捨てず、
-    // どの画像 clip からも参照されなくなった key だけを refreshTimelineModel で捨てる。
-    mutable QHash<QString, std::shared_ptr<const preview::PreviewStillImage>> imageStillImages_;
+    // 画像 clip の preview 用 raster。decode が重いので Project の変更では捨てず、
+    // 現在の画像 clip と出力解像度が使わない key だけを refreshTimelineModel で捨てる。
+    std::unique_ptr<ImageRasterCache> imageRasters_;
     mutable QHash<QString, QRect> textRasterBounds_;
     QHash<QString, QUrl> textRasterUrls_;
     QString textOverlayClipId_;

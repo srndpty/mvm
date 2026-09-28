@@ -7,6 +7,7 @@
 //   - endpoint へ送った PCM の meter が振れること (無音なら下限のまま)
 // を見る。期待する値は直書きする。
 #include "app/preview/preview_engine_rhi_item.h"
+#include "media/audio_preview/audio_types.h"
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "mvm_controller.h"
 
@@ -94,6 +95,8 @@ int main(int argc, char** argv) {
         surface->setHeight(360);
         window.show();
         controller.attachPreview(surface);
+        // 検証用の音量 (audio_types.h)。session volume なので meter の値は変わらない。
+        controller.setMasterVolume(mvm::audio::kVerificationSessionVolume);
 
         const auto run = [&]() -> int {
             if (!pumpUntil([&] { return controller.previewReady(); }, 30000)) {
