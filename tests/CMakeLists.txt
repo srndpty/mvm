@@ -3492,7 +3492,11 @@ set(MVM_WORKSTATION_TESTS
     gpu_soak_event_query_backend
     preview_spike_device_sharing_contract
     preview_spike_json_contract
-    preview_spike_1080p60_h264_smoke)
+    preview_spike_1080p60_h264_smoke
+    # 文字の描画は既定フォント (Meiryo) を要求し、無ければ代替せず失敗する。
+    text_clip_contract
+    # 上に加えて、書き出しと同じ frame の映像を D3D11VA で復号して比べる。
+    text_preview_parity)
 
 foreach(_workstation_test IN LISTS MVM_WORKSTATION_TESTS)
     if(TEST "${_workstation_test}")
