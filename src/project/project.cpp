@@ -81,8 +81,20 @@ const char* timelineClipKindName(TimelineClipKind kind) {
         return "audio";
     case TimelineClipKind::Text:
         return "text";
+    case TimelineClipKind::Image:
+        return "image";
     }
     return "";
+}
+
+bool isStillClipKind(TimelineClipKind kind) {
+    return kind == TimelineClipKind::Text || kind == TimelineClipKind::Image;
+}
+
+std::int64_t defaultStillClipFrames(std::int64_t timelineFpsNum, std::int64_t timelineFpsDen) {
+    if (timelineFpsNum <= 0 || timelineFpsDen <= 0)
+        return 1;
+    return std::max<std::int64_t>(1, (5 * timelineFpsNum + timelineFpsDen / 2) / timelineFpsDen);
 }
 
 const char* trackKindName(TrackKind kind) {

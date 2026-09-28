@@ -52,7 +52,7 @@ struct TimelineExportGainKey {
 struct TimelineExportClipMapping {
     int projectClipIndex = -1;
     bool audio = false;
-    bool text = false;
+    bool still = false; // 文字・画像。全画面の透過 PNG を stage して qimage で開く
     int videoTrackIndex = 0;
     std::int64_t timelineStartFrame = 0;
     std::int64_t timelineDurationFrames = 0;

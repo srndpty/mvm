@@ -702,10 +702,11 @@ void compositionStillLayers() {
         PreviewErrorCategory::UnsupportedCapability,
         "layer 上限を超える静止画 layer を受理しました");
 
+    // 画像だけの区間。decode source の無い composition も受理する (提示は scheduler の時計)。
     CompositionAcceptanceState stillOnly;
-    requireFailure(stillOnly.submit(snapshot({stillLayer(image)}), sources, capabilities),
-                   PreviewErrorCategory::UnsupportedCapability,
-                   "静止画だけの composition を受理しました");
+    require(stillOnly.submit(snapshot({stillLayer(image), stillLayer(stillImage())}), sources,
+                             capabilities),
+            "静止画だけの composition を受理しません");
 
     auto broken = std::make_shared<PreviewStillImage>(*image);
     broken->rgba.pop_back();
@@ -721,13 +722,34 @@ void compositionStillLayers() {
                    PreviewErrorCategory::CompositionFailure,
                    "source と静止画の両方を持つ layer を受理しました");
 
+    // 画像 clip の位置・拡大・回転・crop は静止画 layer の effect として描く。
     auto withEffects = stillLayer(image);
     withEffects.effectsEnabled = true;
     withEffects.sourceDurationFrames = 1;
+    withEffects.rotationDegrees = 15.0F;
     CompositionAcceptanceState effects;
-    requireFailure(effects.submit(snapshot({layer(1), withEffects}), sources, capabilities),
-                   PreviewErrorCategory::UnsupportedCapability,
-                   "effect 付きの静止画 layer を受理しました");
+    require(effects.submit(snapshot({layer(1), withEffects}), sources, capabilities),
+            "effect 付きの静止画 layer を受理しません");
+    // fade は source frame 番号で評価されるので、source frame を持たない静止画では受理しない。
+    // 呼び出し側が opacity へ評価済みの値を渡す。
+    for (const bool fadeIn : {true, false}) {
+        auto withFade = withEffects;
+        withFade.sourceDurationFrames = 10;
+        (fadeIn ? withFade.fadeInFrames : withFade.fadeOutFrames) = 3;
+        CompositionAcceptanceState fade;
+        requireFailure(fade.submit(snapshot({layer(1), withFade}), sources, capabilities),
+                       PreviewErrorCategory::CompositionFailure,
+                       fadeIn ? "fade in 付きの静止画 layer を受理しました"
+                              : "fade out 付きの静止画 layer を受理しました");
+    }
+    // 対照: 同じ fade を video layer に付ければ受理する。
+    auto videoFade = layer(1);
+    videoFade.effectsEnabled = true;
+    videoFade.sourceDurationFrames = 10;
+    videoFade.fadeInFrames = 3;
+    CompositionAcceptanceState videoFadeState;
+    require(videoFadeState.submit(snapshot({videoFade}), sources, capabilities),
+            "対照: fade 付きの video layer を受理しません");
 }
 
 void compositionIdentityAndCapabilities() {

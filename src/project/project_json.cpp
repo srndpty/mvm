@@ -669,6 +669,8 @@ private:
             kind = TimelineClipKind::Audio;
         else if (text == "text")
             kind = TimelineClipKind::Text;
+        else if (text == "image")
+            kind = TimelineClipKind::Image;
         else
             return fail("未知の timeline clip kind です: " + text);
         return true;

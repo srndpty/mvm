@@ -23,7 +23,15 @@ struct ManimAsset {
     bool operator==(const ManimAsset&) const = default;
 };
 
-enum class TimelineClipKind { Video, Manim, Audio, Text };
+enum class TimelineClipKind { Video, Manim, Audio, Text, Image };
+
+// 素材の時間軸を持たない clip (文字と静止画)。尺は timeline 上で自由に伸縮し、
+// 素材 frame domain は in = 0・out = 尺 の合成値にする (fps は置いたときの timeline の値)。
+// 速度・リンク・スリップ・レート調整を持たない。
+bool isStillClipKind(TimelineClipKind kind);
+
+// 文字・静止画を置いたときの既定の尺 (5 秒、最低 1 frame)。
+std::int64_t defaultStillClipFrames(std::int64_t timelineFpsNum, std::int64_t timelineFpsDen);
 
 struct TextClipData {
     std::string content;
@@ -89,7 +97,7 @@ inline constexpr std::int64_t kMinClipSpeedPercent = 10;
 inline constexpr std::int64_t kMaxClipSpeedPercent = 1000;
 
 // Project JSON の schema。timeline 検証と JSON の読み書きが同じ値を参照する。
-inline constexpr int kProjectSchemaVersion = 7;
+inline constexpr int kProjectSchemaVersion = 8;
 
 // プロジェクトパネルの素材。timeline clip とは独立に存在し、mediaPath で対応づく。
 enum class MediaKind { Video, Audio, Image };

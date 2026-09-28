@@ -27,7 +27,7 @@ param(
     # -Path で与えたフィクスチャを、どの層にあるものとして検査するか。
     # 層の判定はパスで行うため、リポジトリ外のフィクスチャでは
     # そのままでは検査が発火しない。negative test を書けるようにするための指定。
-    [ValidateSet('', 'gpu_preview', 'preview_qt')]
+    [ValidateSet('', 'gpu_preview', 'still_image', 'preview_qt')]
     [string]$AsLayer = ''
 )
 
@@ -110,6 +110,7 @@ Write-Section '層の隔離検査 (Qt / QRhi)'
 # 規約 (docs/phase1-plan.md §7, AGENTS.md):
 #
 #   src/media/gpu_preview/ : Qt を一切 include しない
+#   src/media/still_image/ : Qt を一切 include しない (画像の decode は FFmpeg に一本化する)
 #   src/app/preview/       : QRhi (Qt の private API) を include してよい唯一の場所
 #
 # QRhi は patch release 間でも互換保証が無い。隔離しても「壊れないこと」は
@@ -117,6 +118,7 @@ Write-Section '層の隔離検査 (Qt / QRhi)'
 # 人間のレビューでは必ず漏れるので機械的に強制する。
 
 $gpuPreviewDir = Join-Path $RepoRoot 'src\media\gpu_preview'
+$stillImageDir = Join-Path $RepoRoot 'src\media\still_image'
 $previewQtDir  = Join-Path $RepoRoot 'src\app\preview'
 
 # Qt のヘッダ: <QObject> / <QtCore/...> / <QtQuick/...> / "qquickrhiitem.h" など
@@ -134,6 +136,8 @@ foreach ($f in $sources) {
         $layer = $AsLayer
     } elseif ($f.FullName.StartsWith($gpuPreviewDir, [StringComparison]::OrdinalIgnoreCase)) {
         $layer = 'gpu_preview'
+    } elseif ($f.FullName.StartsWith($stillImageDir, [StringComparison]::OrdinalIgnoreCase)) {
+        $layer = 'still_image'
     } elseif ($f.FullName.StartsWith($previewQtDir, [StringComparison]::OrdinalIgnoreCase)) {
         $layer = 'preview_qt'
     } else {
@@ -144,6 +148,9 @@ foreach ($f in $sources) {
 
     if ($layer -eq 'gpu_preview' -and $text -match $qtIncludePattern) {
         $layerViolations += "$rel : src/media/gpu_preview は Qt を include してはいけない"
+    }
+    if ($layer -eq 'still_image' -and $text -match $qtIncludePattern) {
+        $layerViolations += "$rel : src/media/still_image は Qt を include してはいけない"
     }
     if ($layer -ne 'preview_qt' -and $text -match $qrhiIncludePattern) {
         $layerViolations += "$rel : QRhi (Qt の private API) は src/app/preview/ でのみ使える"

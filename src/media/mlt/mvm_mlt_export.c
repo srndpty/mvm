@@ -80,7 +80,7 @@ static int service_exists(mlt_properties list, const char* name) {
  * (resample) が付かない。timewarp は audio の sample rate を変えて速度を表すため、正規化が
  * 無いと tractor の mix で伸縮されずに元の速さで鳴る (§16.8 で実測)。 */
 static mlt_producer open_clip_producer(mlt_profile profile, const MvmExportClip* clip) {
-    if (clip->is_text)
+    if (clip->is_still_image)
         return mlt_factory_producer(profile, "qimage", clip->path);
     if (clip->speed_num == 1 && clip->speed_den == 1)
         return mlt_factory_producer(profile, NULL, clip->path);
@@ -203,7 +203,10 @@ static int attach_export_affine(mlt_profile profile, mlt_producer cut, const Mvm
     mlt_properties_set_int(props, "transition.mirror_off", 1);
     mlt_properties_set(props, "transition.halign", "center");
     mlt_properties_set(props, "transition.valign", "middle");
-    mlt_properties_set_double(props, "transition.fix_rotate_z", clip->rotation_degrees);
+    /* 画面内の 2D 回転は keyed=0 の fix_rotate_x が担う (docs/m7b-p0-findings.md の実画素結果)。
+     * fix_rotate_z は MLT 7.36.1 では実画素に現れず、V1 の回転が書き出されていなかった。 */
+    mlt_properties_set_int(props, "transition.keyed", 0);
+    mlt_properties_set_double(props, "transition.fix_rotate_x", clip->rotation_degrees);
     mlt_filter_set_in_and_out(filter, (mlt_position)producer_in,
                               (mlt_position)(producer_in + duration - 1));
     for (int i = 0; i < clip->opacity_keyframe_count; ++i) {

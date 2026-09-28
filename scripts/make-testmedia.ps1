@@ -455,6 +455,155 @@ foreach ($j in $diagJobs) {
 }
 Write-Host "  音声切り分け用素材: $($diagJobs.Count) 件 -> _diag\ (A1 997/613Hz, A2 1429/823Hz)" -ForegroundColor Green
 
+# --- 画像・音声の読み込み判定用素材 (_import) --------------------------------
+# 素材種別の判定 (media_stream_facts) と静止画 decoder の検査に使う。
+# manifest には載せない (verify-media の対象外)。MLT が開けない素材も含むため。
+#
+# 向きの検査用画像は 64x32 で、左上 32x16 だけが赤、残りが青。
+# 向きを反映すると赤の位置と縦横が変わるので、画素で向きを判別できる。
+
+$ImportDir = Join-Path $OutputRoot '_import'
+New-Item -ItemType Directory -Force -Path $ImportDir | Out-Null
+
+$ImportQuadrant = 'color=c=blue:s=64x32,drawbox=x=0:y=0:w=32:h=16:color=red@1:t=fill'
+$ImportTest     = 'testsrc2=s=64x48'
+$ImportAnim     = 'testsrc2=s=64x48:r=10:d=0.3'
+$ImportTone     = 'sine=f=997:d=1:sample_rate=48000'
+$ImportBase     = @('-hide_banner', '-y', '-loglevel', 'error', '-nostdin')
+
+$importJobs = @(
+    @{ Name = 'jpg_quadrant.jpg'
+       Args = @('-f','lavfi','-i',$ImportQuadrant,'-frames:v','1','-q:v','2') }
+    # full range の灰色 128。limited range と取り違えると 128 から大きくずれる。
+    @{ Name = 'jpg_gray128.jpg'
+       Args = @('-f','lavfi','-i','color=c=0x808080:s=64x32','-frames:v','1','-q:v','2') }
+    @{ Name = 'png_rgb24.png'
+       Args = @('-f','lavfi','-i',$ImportTest,'-frames:v','1') }
+    # 透明な背景に不透明な赤の四角。palette が透明色を持つ。
+    # drawbox は rgba の alpha を書かず、-pix_fmt pal8 への単純な変換は alpha を落とす (実測)。
+    # geq で alpha を明示し、palettegen で透明色を palette に予約する。
+    @{ Name = 'png_pal8_alpha.png'
+       Args = @('-f','lavfi','-i',("color=c=black:s=64x32:d=0.04,format=rgba," +
+                "geq=r='if(lt(X\,32)*lt(Y\,16)\,255\,0)':g=0:b=0:a='if(lt(X\,32)*lt(Y\,16)\,255\,0)'," +
+                'split[a][b];[a]palettegen=reserve_transparent=1[p];[b][p]paletteuse=alpha_threshold=128'),
+                '-frames:v','1','-pix_fmt','pal8') }
+    @{ Name = 'png_gray16.png'
+       Args = @('-f','lavfi','-i','color=c=0x808080:s=64x32','-frames:v','1','-pix_fmt','gray16be') }
+    @{ Name = 'tiff_rgb48.tif'
+       Args = @('-f','lavfi','-i',$ImportTest,'-frames:v','1','-pix_fmt','rgb48le') }
+    @{ Name = 'bmp_24.bmp'
+       Args = @('-f','lavfi','-i',$ImportTest,'-frames:v','1') }
+    @{ Name = 'tga_24.tga'
+       Args = @('-f','lavfi','-i',$ImportTest,'-frames:v','1') }
+    @{ Name = 'qoi_rgb.qoi'
+       Args = @('-f','lavfi','-i',$ImportTest,'-frames:v','1') }
+    @{ Name = 'webp_static.webp'
+       Args = @('-f','lavfi','-i',$ImportTest,'-frames:v','1','-c:v','libwebp') }
+    @{ Name = 'gif_static.gif'
+       Args = @('-f','lavfi','-i',$ImportTest,'-frames:v','1') }
+    @{ Name = 'webp_animated.webp'
+       Args = @('-f','lavfi','-i',$ImportAnim,'-c:v','libwebp_anim','-loop','0') }
+    @{ Name = 'gif_animated.gif'
+       Args = @('-f','lavfi','-i',$ImportAnim) }
+    @{ Name = 'apng_animated.png'
+       Args = @('-f','lavfi','-i',$ImportAnim,'-f','apng','-plays','0') }
+    # scene-linear の HDR 画像。tone map が要るので拒否される側。
+    @{ Name = 'exr_float.exr'
+       Args = @('-f','lavfi','-i',$ImportTest,'-frames:v','1','-pix_fmt','gbrpf32le') }
+    @{ Name = 'opus_48k.opus'
+       Args = @('-f','lavfi','-i',$ImportTone,'-c:a','libopus') }
+    @{ Name = 'vorbis_48k.ogg'
+       Args = @('-f','lavfi','-i',$ImportTone,'-c:a','libvorbis') }
+    # 対照: 本物の Motion JPEG 動画。codec は JPEG と同じだが動画として扱う。
+    @{ Name = 'mjpeg_av.avi'
+       Args = @('-f','lavfi','-i','testsrc2=s=64x48:r=10:d=1','-f','lavfi','-i',$ImportTone,
+                '-c:v','mjpeg','-c:a','pcm_s16le') }
+)
+
+foreach ($j in $importJobs) {
+    $p = Join-Path $ImportDir $j.Name
+    if ((Test-Path $p) -and -not $Force) { continue }
+    & $FFmpeg @($ImportBase + $j.Args + @($p))
+    if ($LASTEXITCODE -ne 0) { throw "読み込み判定用素材の生成に失敗: $($j.Name)" }
+}
+
+# カバーアート (attached_pic) 付きの音声と、本物の映像 + カバーアートの mp4。
+# 絵は jpg_quadrant.jpg を流用する。
+$coverSource = Join-Path $ImportDir 'jpg_quadrant.jpg'
+$coverJobs = @(
+    @{ Name = 'mp3_cover.mp3';  Audio = @('-c:a','libmp3lame') }
+    @{ Name = 'm4a_cover.m4a';  Audio = @('-c:a','aac') }
+    @{ Name = 'flac_cover.flac'; Audio = @('-c:a','flac') }
+)
+foreach ($j in $coverJobs) {
+    $p = Join-Path $ImportDir $j.Name
+    if ((Test-Path $p) -and -not $Force) { continue }
+    & $FFmpeg @($ImportBase + @('-f','lavfi','-i',$ImportTone,'-i',$coverSource,'-map','0','-map','1') +
+                $j.Audio + @('-c:v','copy','-disposition:v','attached_pic',$p))
+    if ($LASTEXITCODE -ne 0) { throw "読み込み判定用素材の生成に失敗: $($j.Name)" }
+}
+$coverVideoPath = Join-Path $ImportDir 'mp4_h264_with_cover.mp4'
+if (-not (Test-Path $coverVideoPath) -or $Force) {
+    & $FFmpeg @($ImportBase + @('-f','lavfi','-i','testsrc2=s=64x48:r=10:d=1','-i',$coverSource,
+                                '-map','0','-map','1','-c:v:0','libx264','-pix_fmt','yuv420p',
+                                '-c:v:1','copy','-disposition:v:1','attached_pic',$coverVideoPath))
+    if ($LASTEXITCODE -ne 0) { throw '読み込み判定用素材の生成に失敗: mp4_h264_with_cover.mp4' }
+}
+
+# JPEG の SOI 直後へ、Orientation (0x0112) だけを持つ最小の APP1 Exif を差し込む。
+# ffmpeg の mjpeg encoder は EXIF を書かないため、byte で組む。
+function Add-JpegExifOrientation([string]$Source, [string]$Destination, [int]$Orientation) {
+    $jpeg = [System.IO.File]::ReadAllBytes($Source)
+    if ($jpeg.Length -lt 2 -or $jpeg[0] -ne 0xFF -or $jpeg[1] -ne 0xD8) {
+        throw "JPEG ではありません: $Source"
+    }
+    $tiff = [System.Collections.Generic.List[byte]]::new()
+    $tiff.AddRange([byte[]](0x49, 0x49, 0x2A, 0x00))           # "II" little endian, 42
+    $tiff.AddRange([BitConverter]::GetBytes([uint32]8))        # IFD0 の位置
+    $tiff.AddRange([BitConverter]::GetBytes([uint16]1))        # entry 数
+    $tiff.AddRange([BitConverter]::GetBytes([uint16]0x0112))   # Orientation
+    $tiff.AddRange([BitConverter]::GetBytes([uint16]3))        # SHORT
+    $tiff.AddRange([BitConverter]::GetBytes([uint32]1))        # count
+    $tiff.AddRange([BitConverter]::GetBytes([uint16]$Orientation))
+    $tiff.AddRange([byte[]](0x00, 0x00))                       # 4 byte への詰め
+    $tiff.AddRange([BitConverter]::GetBytes([uint32]0))        # 次の IFD は無い
+    $app1 = [System.Collections.Generic.List[byte]]::new()
+    $app1.AddRange([System.Text.Encoding]::ASCII.GetBytes("Exif"))
+    $app1.AddRange([byte[]](0x00, 0x00))
+    $app1.AddRange($tiff)
+    $segmentLength = $app1.Count + 2
+    $out = [System.Collections.Generic.List[byte]]::new()
+    $out.AddRange([byte[]](0xFF, 0xD8, 0xFF, 0xE1))
+    $out.Add([byte](($segmentLength -shr 8) -band 0xFF))
+    $out.Add([byte]($segmentLength -band 0xFF))
+    $out.AddRange($app1)
+    $out.AddRange([byte[]]$jpeg[2..($jpeg.Length - 1)])
+    [System.IO.File]::WriteAllBytes($Destination, $out.ToArray())
+}
+
+foreach ($orientation in @(1, 6)) {
+    $p = Join-Path $ImportDir "jpg_exif_orient$orientation.jpg"
+    if ((Test-Path $p) -and -not $Force) { continue }
+    Add-JpegExifOrientation -Source $coverSource -Destination $p -Orientation $orientation
+}
+
+# 4200x4200 (約 1764 万画素) の PNG。decoder の画素数上限を小さくして、上限で拒否されることと、
+# 上限を上げれば通ること (対照) を検査する。PNG は寸法を知るために stream 情報の取得でも
+# decode されるので、そこへ上限が渡っていなければ確保が先に起きる。
+$largePngPath = Join-Path $ImportDir 'png_gray_4200.png'
+if (-not (Test-Path $largePngPath) -or $Force) {
+    & $FFmpeg @($ImportBase + @('-f','lavfi','-i','color=c=0x808080:s=4200x4200','-frames:v','1',
+                                $largePngPath))
+    if ($LASTEXITCODE -ne 0) { throw '読み込み判定用素材の生成に失敗: png_gray_4200.png' }
+}
+
+# 日本語名の複製。判定と decode が UTF-8 のパスを正しく渡していることを見る。
+$importJpPath = Join-Path $ImportDir '写真　縦向き＆EXIF.jpg'
+Copy-Item -Path (Join-Path $ImportDir 'jpg_exif_orient6.jpg') -Destination $importJpPath -Force
+
+$importCount = @(Get-ChildItem -Path $ImportDir -File).Count
+Write-Host "  読み込み判定用素材: $importCount 件 -> _import\" -ForegroundColor Green
+
 # --- manifest ---------------------------------------------------------------
 
 $ffVersion = (& $FFmpeg -hide_banner -version 2>&1 | Select-Object -First 1)

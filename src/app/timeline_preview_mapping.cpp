@@ -29,12 +29,12 @@ TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& proj
         // mute した video track は「黒」ではなく layer から外す。
         if (project.videoTracks[index].muted)
             continue;
-        if (clip->kind == project::TimelineClipKind::Text) {
-            // 文字は速度 1 で素材の in を持たないので、素材内の位置は clip 内の位置と同じ。
+        if (project::isStillClipKind(clip->kind)) {
+            // 文字・画像は速度 1 で素材の in を持たないので、素材内の位置は clip 内の位置と同じ。
             const std::int64_t local = timelineFrame - clip->timelineStartFrame;
-            result.textLayers.push_back(
+            result.stillLayers.push_back(
                 {static_cast<int>(index), static_cast<int>(clip - project.timelineClips.data()),
-                 clip->id,
+                 clip->id, clip->kind,
                  project::evaluateClipOpacity(clip->effects, local, local,
                                               clip->sourceOutFrame - clip->sourceInFrame)});
             continue;
@@ -53,16 +53,17 @@ TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& proj
     }
     if (result.layers.size() > kMaxPreviewVideoLayers) {
         result.layers.clear();
-        result.textLayers.clear();
+        result.stillLayers.clear();
         result.error = "同時に重なる video track が " + std::to_string(kMaxPreviewVideoLayers) +
                        " 本を超えています。preview はここまでしか合成できません";
         return result;
     }
-    if (!result.layers.empty() &&
-        result.layers.size() + result.textLayers.size() > kMaxPreviewCompositionLayers) {
+    // 映像の無い frame の文字も engine が合成するので、映像の有無に関わらず上限を見る。
+    if (result.layers.size() + result.stillLayers.size() > kMaxPreviewCompositionLayers) {
         result.layers.clear();
-        result.textLayers.clear();
-        result.error = "同時に重なる映像と文字が " + std::to_string(kMaxPreviewCompositionLayers) +
+        result.stillLayers.clear();
+        result.error = "同時に重なる映像・文字・画像が " +
+                       std::to_string(kMaxPreviewCompositionLayers) +
                        " 枚を超えています。preview はここまでしか合成できません";
         return result;
     }
@@ -70,14 +71,34 @@ TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& proj
     return result;
 }
 
+void applyPreviewLayerEffects(preview::PreviewCompositionLayer& layer,
+                              const project::ClipEffects& effects, double opacity,
+                              std::int64_t sourceInFrame, std::int64_t sourceDurationFrames) {
+    const auto mapped = project::mapClipEffects(effects);
+    layer.destination = {static_cast<float>(mapped.destinationRect.x),
+                         static_cast<float>(mapped.destinationRect.y),
+                         static_cast<float>(mapped.destinationRect.width),
+                         static_cast<float>(mapped.destinationRect.height)};
+    layer.sourceRect = {
+        static_cast<float>(mapped.sourceRect.x), static_cast<float>(mapped.sourceRect.y),
+        static_cast<float>(mapped.sourceRect.width), static_cast<float>(mapped.sourceRect.height)};
+    layer.opacity = static_cast<float>(opacity);
+    layer.effectsEnabled = true;
+    layer.rotationDegrees = static_cast<float>(mapped.rotationDegrees);
+    layer.sourceInFrame = sourceInFrame;
+    layer.sourceDurationFrames = sourceDurationFrames;
+    layer.fadeInFrames = 0;
+    layer.fadeOutFrames = 0;
+}
+
 std::vector<TimelinePreviewStackEntry>
 previewLayerStack(const TimelinePreviewFrameMapping& mapping) {
     std::vector<TimelinePreviewStackEntry> stack;
-    stack.reserve(mapping.layers.size() + mapping.textLayers.size());
+    stack.reserve(mapping.layers.size() + mapping.stillLayers.size());
     for (std::size_t index = 0; index < mapping.layers.size(); ++index)
         stack.push_back({false, index, mapping.layers[index].videoTrackIndex});
-    for (std::size_t index = 0; index < mapping.textLayers.size(); ++index)
-        stack.push_back({true, index, mapping.textLayers[index].videoTrackIndex});
+    for (std::size_t index = 0; index < mapping.stillLayers.size(); ++index)
+        stack.push_back({true, index, mapping.stillLayers[index].videoTrackIndex});
     // 1 track に同時に載る clip は 1 つなので track index だけで順序が決まる。
     std::stable_sort(stack.begin(), stack.end(), [](const auto& a, const auto& b) {
         return a.videoTrackIndex < b.videoTrackIndex;

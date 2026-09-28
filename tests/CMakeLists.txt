@@ -114,6 +114,18 @@ add_test(NAME text_clip_contract COMMAND mvm_test_text_clip)
 set_tests_properties(text_clip_contract PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 120)
+# 画像 clip の model・preview mapping・書き出しの画素。素材は make-testmedia.ps1 の _import/。
+add_executable(mvm_test_image_clip harness/test_image_clip.cpp)
+target_link_libraries(mvm_test_image_clip PRIVATE
+    mvm::project mvm::timeline_export mvm::timeline_preview_mapping mvm::mlt Qt6::Gui
+    mvm::warnings)
+target_compile_definitions(mvm_test_image_clip PRIVATE ${MVM_MLT_PATH_DEFS})
+add_test(NAME image_clip_contract
+    COMMAND mvm_test_image_clip "${CMAKE_SOURCE_DIR}/tests/assets/smoke/_import")
+set_tests_properties(image_clip_contract PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/smoke/_import/jpg_exif_orient6.jpg"
+    TIMEOUT 120)
 # clip 数の上限を外した tractor 書き出しで、cut 数の計算が overflow する入力を確保前に拒否する。
 add_executable(mvm_test_mlt_export_capacity harness/test_mlt_export_capacity.cpp)
 target_link_libraries(mvm_test_mlt_export_capacity PRIVATE mvm::mlt mvm::warnings)
@@ -158,12 +170,27 @@ add_executable(mvm_test_media_bin_model
     ${CMAKE_SOURCE_DIR}/apps/mvm/media_import.cpp)
 target_include_directories(mvm_test_media_bin_model PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
 target_link_libraries(mvm_test_media_bin_model PRIVATE
-    mvm::project mvm::mlt Qt6::Core mvm::warnings)
+    mvm::project mvm::mlt mvm::still_image Qt6::Core mvm::warnings)
 set_target_properties(mvm_test_media_bin_model PROPERTIES AUTOMOC ON)
 add_test(NAME media_bin_model_focused COMMAND mvm_test_media_bin_model)
 set_tests_properties(media_bin_model_focused PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 60)
+
+# 実素材で素材種別の判定 (probeMediaFile) を通す。_import/ は make-testmedia.ps1 が作る。
+add_executable(mvm_test_media_import_files
+    harness/test_media_import_files.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/media_import.cpp)
+target_include_directories(mvm_test_media_import_files PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_test_media_import_files PRIVATE
+    mvm::project mvm::mlt mvm::still_image mvm::warnings)
+target_compile_definitions(mvm_test_media_import_files PRIVATE ${MVM_MLT_PATH_DEFS})
+add_test(NAME media_import_files_focused
+    COMMAND mvm_test_media_import_files "${CMAKE_SOURCE_DIR}/tests/assets/smoke")
+set_tests_properties(media_import_files_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/smoke/_import/jpg_exif_orient6.jpg"
+    TIMEOUT 120)
 
 add_executable(mvm_test_waveform_cache
     harness/test_waveform_cache.cpp
@@ -239,9 +266,38 @@ target_include_directories(mvm_test_controller_export PRIVATE ${CMAKE_SOURCE_DIR
 target_link_libraries(mvm_test_controller_export PRIVATE
     mvm::core mvm::project mvm::util mvm::manim_clip_workflow
     mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
-    mvm::mlt mvm::preview_engine mvm::audio_preview mvm::preview_qt
+    mvm::mlt mvm::still_image mvm::preview_engine mvm::audio_preview mvm::preview_qt
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 mvm::warnings)
 target_compile_definitions(mvm_test_controller_export PRIVATE ${MVM_MLT_PATH_DEFS})
+# 映像 clip の無い timeline を controller 経由で 1x 再生し、音声が鳴ること。
+# 実 GPU と audio endpoint を使うので workstation label を付ける。
+qt_add_executable(mvm_test_sourceless_timeline_playback
+    harness/test_sourceless_timeline_playback.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/media_bin_model.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/media_import.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_mix.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_playback.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/timeline_clip_model.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/track_model.cpp)
+target_include_directories(mvm_test_sourceless_timeline_playback PRIVATE
+    ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_test_sourceless_timeline_playback PRIVATE
+    mvm::core mvm::project mvm::util mvm::manim_clip_workflow
+    mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
+    mvm::mlt mvm::still_image mvm::preview_engine mvm::audio_preview mvm::preview_qt
+    Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 mvm::warnings)
+target_compile_definitions(mvm_test_sourceless_timeline_playback PRIVATE ${MVM_MLT_PATH_DEFS})
+set_target_properties(mvm_test_sourceless_timeline_playback PROPERTIES WIN32_EXECUTABLE OFF)
+add_test(NAME sourceless_timeline_playback
+    COMMAND mvm_test_sourceless_timeline_playback
+            "${CMAKE_SOURCE_DIR}/tests/assets/smoke/wav_48k.wav")
+set_tests_properties(sourceless_timeline_playback PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/smoke/wav_48k.wav"
+    LABELS "workstation"
+    TIMEOUT 120)
+
 # 横書き文字ツールの直接入力 (target は apps/mvm/CMakeLists.txt で定義)。
 # 実 window と GPU を使うので mvm_gpu を排他し、workstation label を付ける。
 add_test(NAME text_ui_direct_input COMMAND mvm_test_text_ui_input)
@@ -2215,6 +2271,13 @@ if(MVM_ENABLE_QT)
         PROPERTIES TIMEOUT 120)
     set_tests_properties(preview_engine_p5e_capacity_at_limit PROPERTIES
         LABELS "p5e;workstation")
+
+    # decode source の無い composition (静止画だけ・音声だけ) の再生と、音声だけの区間の
+    # seek 後の再開。実 GPU と audio endpoint を使う。
+    mvm_add_test(preview_engine_sourceless_playback
+        COMMAND mvm_sourceless_playback_smoke "${MVM_SMOKE_DIR}/wav_48k.wav"
+        PROPERTIES TIMEOUT 120 REQUIRED_FILES "${MVM_SMOKE_DIR}/wav_48k.wav")
+    set_tests_properties(preview_engine_sourceless_playback PROPERTIES LABELS "workstation")
 endif()
 
 add_executable(mvm_test_gpu_pure gpu_preview/test_gpu_pure.cpp)
@@ -2517,6 +2580,14 @@ target_link_libraries(mvm_test_audio_waveform_decoder PRIVATE
 mvm_add_test(timeline_audio_waveform_decoder COMMAND mvm_test_audio_waveform_decoder
     PROPERTIES TIMEOUT 60)
 
+# --- 画像素材の判定と decode -------------------------------------------------
+# 素材は make-testmedia.ps1 が _import/ へ作る (manifest の対象外)。
+set(MVM_IMPORT_DIR "${MVM_SMOKE_DIR}/_import")
+add_executable(mvm_test_still_image media/test_still_image.cpp)
+target_link_libraries(mvm_test_still_image PRIVATE mvm::still_image mvm::warnings)
+mvm_add_test(still_image_decode_unit COMMAND mvm_test_still_image "${MVM_IMPORT_DIR}"
+    PROPERTIES TIMEOUT 60 REQUIRED_FILES "${MVM_IMPORT_DIR}/jpg_exif_orient6.jpg")
+
 add_executable(mvm_test_audio_worker_wake audio_preview/test_audio_worker_wake.cpp)
 target_link_libraries(mvm_test_audio_worker_wake PRIVATE mvm::audio_preview mvm::warnings)
 
@@ -2706,6 +2777,17 @@ mvm_add_test(text_preview_parity
     COMMAND mvm_test_text_preview_parity
     PROPERTIES REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4"
         RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 180)
+
+# 画像 clip の effect を preview (GPU compositor) と書き出し (MLT) の画素で比較する。
+add_executable(mvm_test_image_preview_parity gpu_preview/test_image_preview_parity.cpp)
+target_link_libraries(mvm_test_image_preview_parity PRIVATE
+    mvm::gpu_preview mvm::timeline_export mvm::timeline_preview_mapping mvm::still_image
+    mvm::project mvm::mlt Qt6::Gui mvm::warnings)
+target_compile_definitions(mvm_test_image_preview_parity PRIVATE ${MVM_MLT_PATH_DEFS})
+mvm_add_test(image_preview_parity
+    COMMAND mvm_test_image_preview_parity "${MVM_IMPORT_DIR}/jpg_quadrant.jpg"
+    PROPERTIES REQUIRED_FILES "${MVM_IMPORT_DIR}/jpg_quadrant.jpg"
+        RESOURCE_LOCK mvm_gpu RUN_SERIAL TRUE TIMEOUT 180 LABELS "workstation")
 
 # deterministic fixture はリポジトリ管理なので常に必須。
 # 60秒 benchmark 動画は通常CIでは生成しないため、それを使う統合テストだけを
@@ -3588,6 +3670,21 @@ add_test(NAME lint_layer_isolation_negative
 add_test(NAME lint_layer_isolation_control
     COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/lint.ps1"
             -Path "${CMAKE_SOURCE_DIR}/tests/lint-negative/layer-good" -AsLayer gpu_preview)
+
+# 「src/media/still_image は Qt を include しない」の negative test。
+# still-image-bad/ は Qt だけを含み QRhi を含まないので、still_image の規則でだけ落ちる。
+add_test(NAME lint_still_image_isolation_negative
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/expect-exit.ps1"
+            -ExpectExit 1 -Exe "${MVM_PWSH}"
+            -ChildArgs "|-NoProfile|-File|${CMAKE_SOURCE_DIR}/scripts/lint.ps1|-Path|${CMAKE_SOURCE_DIR}/tests/lint-negative/still-image-bad|-AsLayer|still_image")
+
+# 対照群: 同じ fixture でも Qt を許す層 (preview_qt) として見れば落ちない。
+# 落ちるなら、上の negative test は still_image の規則以外で落ちている。
+# (-AsLayer に未知の値を渡すと ValidateSet の失敗でも exit 1 になり、negative test が
+#  空振りで緑になる。実際に一度そうなっていた。)
+add_test(NAME lint_still_image_isolation_control
+    COMMAND "${MVM_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/lint.ps1"
+            -Path "${CMAKE_SOURCE_DIR}/tests/lint-negative/still-image-bad" -AsLayer preview_qt)
 
 # --- workstation テストの排他制御 -------------------------------------------
 # workstation ラベルは「この開発機の実 GPU / audio endpoint / display を使う」

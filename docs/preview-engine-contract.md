@@ -219,6 +219,20 @@ rectangle、opacity、layer orderだけである。
 transition、keyframe、effect graph、S0/S1/S2/S3、formal boundary、fixture catalog、Phase 4 schedule
 kindは含めない。
 
+### 7.0 decode source を持たない composition
+
+layer が 0 枚の composition (gap) と、静止画 layer (`PreviewCompositionLayer::stillImage`) だけの
+composition も受理する。画像だけ・音声だけの timeline の区間がこれにあたる。
+
+- 提示の authority は scheduler の時計である。音声 source があれば audio master、無ければ wall clock。
+  decode source を presentation identity の代用にしない
+- 背景は render pass の clear をそのまま使い、静止画があればその上に track 順で描く
+- 静止画 layer は effect (位置・拡大・回転・crop) を持てる。fade は source frame 番号で評価される
+  ため受理しない。呼び出し側が opacity へ評価済みの値を渡す
+- `PresentedFrameInfo::activeLayerCount` は描いた静止画の枚数 (gap なら 0)
+- seek の完了と再生の再開は decode layer の有る composition と同じ簿記を通る。
+  seek 後の音声 transport の再開もここで行う
+
 ### 7.1 Composition value domain
 
 初期Phase 5では、`destination`と`sourceRect`の両方に同じnormalized containment ruleを適用する。

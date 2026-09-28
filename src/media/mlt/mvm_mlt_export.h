@@ -52,8 +52,8 @@ typedef struct {
      * 音程は速度に連動させる (warp_pitch=0)。 */
     long long speed_num;
     long long speed_den;
-    int is_audio; /* 非0なら映像を隠して独立audio trackとしてmixする */
-    int is_text;  /* 非0なら明示した qimage producer で透過 PNG を開く */
+    int is_audio;       /* 非0なら映像を隠して独立audio trackとしてmixする */
+    int is_still_image; /* 非0なら明示した qimage producer で透過 PNG を開く (文字・画像) */
     int effects_enabled;
     int crop_left;
     int crop_top;

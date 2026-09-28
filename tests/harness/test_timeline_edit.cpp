@@ -1648,7 +1648,7 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
     const auto loaded = mvm::project::loadProjectJson(projectFile);
     check(loaded.success, "保存した .mvm を読み込めません");
     bool timelineFieldsMatch =
-        loaded.success && loaded.project.schemaVersion == 7 &&
+        loaded.success && loaded.project.schemaVersion == 8 &&
         loaded.project.timelineFpsNum == 60 && loaded.project.timelineFpsDen == 1 &&
         loaded.project.outputWidth == 3840 && loaded.project.outputHeight == 2160 &&
         loaded.project.videoTracks == live.videoTracks &&
@@ -1672,7 +1672,7 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
         }
     }
     check(timelineFieldsMatch,
-          "schema 7のoutput "
+          "schema 8のoutput "
           "size・track構成・mute・clip種別・trim・effects・速度がround-tripしません");
 
     auto invalidOutput = mvm::project::createDefaultProject();
@@ -1684,7 +1684,7 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
     const auto strangerPath = root / "stranger.mvm";
     {
         std::ofstream stranger(strangerPath, std::ios::binary);
-        stranger << R"({"schema_version": 7, "timeline_fps_num": 60, "timeline_fps_den": 1,)"
+        stranger << R"({"schema_version": 8, "timeline_fps_num": 60, "timeline_fps_den": 1,)"
                  << R"("video_tracks": [{"name": "V1", "muted": false}], "audio_tracks": [],)"
                  << R"("manim_assets": [], "timeline_clips": [],)"
                  << R"("media_folders": [], "media_items": []})";

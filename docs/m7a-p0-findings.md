@@ -48,6 +48,10 @@ rect opacity、clip-local rect opacity animationは実MP4へ反映された。
 rotationの中心markerは非回転時のrect中心と一致し、pivotはaffine rect中心だった。
 今回の単一producer probeではcrop/affineのattach順を逆にしても観測結果は一致した。
 
+> 注記 (後日): 製品の書き出し (V1 の affine filter) では `transition.fix_rotate_z` の回転は
+> 実画素に現れなかった (`docs/m7b-p0-findings.md` と `docs/premiere-like-editing.md` §18.4)。
+> 2D 回転は keyed=0 の `fix_rotate_x` へ置き換えた。上の記述は当時の probe の記録として残す。
+
 **[回避策]** `affine` filterの背景はopaque blackを明示する。transparent背景では、
 MP4 consumerがalphaを捨てた後に元のRGBが残り、opacityが画面上の暗化として現れない。
 

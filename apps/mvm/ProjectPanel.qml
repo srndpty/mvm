@@ -538,6 +538,7 @@ Item {
         CompactMenuItem {
             text: "タイムラインに追加"
             enabled: contextMenu.entryKind === "video" || contextMenu.entryKind === "audio"
+                     || contextMenu.entryKind === "image"
             onTriggered: panel.mvmController.addMediaItemToTimeline(contextMenu.entryId)
         }
         CompactMenuSeparator {}
@@ -566,7 +567,7 @@ Item {
         id: importDialog
         title: "素材を読み込み"
         fileMode: FileDialog.OpenFiles
-        nameFilters: ["すべて (*)"]
+        nameFilters: panel.mvmController.mediaFileNameFilters
         onAccepted: panel.importUrls(selectedFiles)
     }
 }

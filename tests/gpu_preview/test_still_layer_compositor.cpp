@@ -293,8 +293,47 @@ int main() {
     if (!compositor.compose({0, {1}, {layer(bottom, 0), layer(top, 1)}, {}}, err))
         return fail(err);
 
+    // 6. 画像だけの区間: video layer の無い composition で、effect (回転) 付きの静止画を描く。
+    //    素材は左 1/4 が不透明の白。180 度回すと白は右 1/4 へ移る。
+    //    対照として同じ layer を effect 無しで描き、白が左に残ることを見る。
+    {
+        DecodedGpuFrame image;
+        if (!makeStillImageFrame(device.shared, kW, kH, pixels.data(), pixels.size(), {101}, image,
+                                 err))
+            return fail(err);
+        const auto drawOnly = [&](bool rotated) {
+            CompositionLayerFrame only{image, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0f, 0};
+            only.effectsEnabled = rotated;
+            only.rotationDegrees = rotated ? 180.0f : 0.0f;
+            {
+                std::lock_guard<D3D11Lock> guard(device.shared.lock());
+                const float black[4] = {0, 0, 0, 1};
+                device.context->ClearRenderTargetView(target.rtv, black);
+            }
+            return compositor.composeLayersToTarget({0, {1}, {only}, {}}, {target.rtv, kW, kH}, 1,
+                                                    err);
+        };
+        const Rgba8 black{0, 0, 0, 255};
+        if (!drawOnly(true))
+            return fail(err);
+        if (!expectAt(compositor, target.texture, 56, 16, white, 3,
+                      "回転した静止画の白が右端にありません", err) ||
+            !expectAt(compositor, target.texture, 8, 16, black, 3,
+                      "回転した静止画の透明部が左端に来ていません", err))
+            return fail(err);
+        if (!drawOnly(false))
+            return fail(err);
+        if (!expectAt(compositor, target.texture, 8, 16, white, 3,
+                      "対照: effect 無しの静止画の白が左端にありません", err) ||
+            !expectAt(compositor, target.texture, 56, 16, black, 3,
+                      "対照: effect 無しの静止画の透明部が右端にありません", err))
+            return fail(err);
+        compositor.retireLayerTexture(image.texture);
+    }
+
     if (!compositor.shutdown(5000, err))
         return fail(err);
-    std::puts("静止画 layer の z 順・alpha・opacity・3 layer 合成・texture 解放を確認しました");
+    std::puts("静止画 layer の z 順・alpha・opacity・3 layer 合成・texture 解放・"
+              "映像の無い合成での回転を確認しました");
     return 0;
 }
