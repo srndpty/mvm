@@ -4,6 +4,7 @@
 #include "test_media_fixture.h"
 #include "util/mvm_win_utf8.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -177,6 +178,25 @@ void testSpeedDurationAndFrameHold() {
     check(!setClipSpeedDuration(project, "id-A", edit, LinkMode::Linked).success &&
               project == before,
           "変化のない速度指定を拒否できません");
+    {
+        // 等速のピッチ保持は preview だけが stretcher を通す食い違いになるので持たせない。
+        Project pitched = before;
+        pitched.timelineClips[0].preservePitch = true;
+        check(!validateTimeline(pitched).success, "等速のピッチ保持を受理しました");
+        pitched = before;
+        ClipSpeedDurationEdit pitch;
+        pitch.speedNum = 1;
+        pitch.speedDen = 2;
+        pitch.preservePitch = true;
+        pitch.ripple = true;
+        check(setClipSpeedDuration(pitched, "id-A", pitch, LinkMode::Linked).success &&
+                  pitched.timelineClips[0].preservePitch,
+              "50% のピッチ保持を設定できません");
+        pitch.speedDen = 1;
+        check(setClipSpeedDuration(pitched, "id-A", pitch, LinkMode::Linked).success &&
+                  !pitched.timelineClips[0].preservePitch && validateTimeline(pitched).success,
+              "等速へ戻したときにピッチ保持を落とせません");
+    }
 
     Project held = createDefaultProject();
     held.timelineClips = {clip("hold-source")};
@@ -191,6 +211,35 @@ void testSpeedDurationAndFrameHold() {
               held.timelineClips[2].timelineStartFrame == 120 &&
               clipSourceFrameAt(held.timelineClips[2], 60, 1, 119).frame == 120,
           "フレーム保持の分割・配置・素材 frame が正しくありません");
+    {
+        // 保持は挿入位置の見た目 (不透明度) で止める。fade-in 240 frame の中央 (120) なら約 50%、
+        // key 0:100% -> 200:0% の 120 なら 40%。automation は捨て、この値を基本値へ焼き込む。
+        const auto heldOpacity = [&](const std::function<void(TimelineClip&)>& setup) {
+            Project faded = createDefaultProject();
+            faded.timelineClips = {clip("fade-source")};
+            setup(faded.timelineClips[0]);
+            int fadeId = 0;
+            const auto result = insertFrameHold(faded, "id-fade-source", 120, 120,
+                                                [&] { return "fade-" + std::to_string(++fadeId); });
+            const auto hold = std::find_if(faded.timelineClips.begin(), faded.timelineClips.end(),
+                                           [](const auto& value) { return value.frameHold; });
+            return result.success && hold != faded.timelineClips.end() &&
+                           hold->effects.opacityKeys.empty() && hold->effects.fadeInFrames == 0 &&
+                           hold->effects.fadeOutFrames == 0
+                       ? hold->effects.opacityPercent
+                       : -1.0;
+        };
+        const double fadeHeld =
+            heldOpacity([](TimelineClip& value) { value.effects.fadeInFrames = 240; });
+        check(std::abs(fadeHeld - 50.0) <= 1.0,
+              ("fade の途中の保持が挿入位置の不透明度になりません: " + std::to_string(fadeHeld))
+                  .c_str());
+        const double keyHeld = heldOpacity(
+            [](TimelineClip& value) { value.effects.opacityKeys = {{0, 100.0}, {200, 0.0}}; });
+        check(std::abs(keyHeld - 40.0) <= 1.0,
+              ("key の途中の保持が挿入位置の不透明度になりません: " + std::to_string(keyHeld))
+                  .c_str());
+    }
     const Project heldBefore = held;
     check(!insertFrameHold(
                held, "id-hold-source", 0, 120,
@@ -218,6 +267,35 @@ void testSpeedDurationAndFrameHold() {
     check(!frameHoldProducerPosition(invalidHold.timelineClips[2], 60, 1).success &&
               !validateTimeline(invalidHold).success,
           "出力位置へ換算できない素材 frame を受理しました");
+    // 同じ 120 fps の frame 1 でも、保持元が 50% (実効 60 fps) なら timeline の 1 frame 目に出る。
+    invalidHold.timelineClips[2].frameHold->speedNum = 1;
+    invalidHold.timelineClips[2].frameHold->speedDen = 2;
+    const auto slowPosition = frameHoldProducerPosition(invalidHold.timelineClips[2], 60, 1);
+    check(slowPosition.success && slowPosition.frame == 1 && validateTimeline(invalidHold).success,
+          "slow motion の保持元速度で素材 frame を出力位置へ換算できません");
+    invalidHold.timelineClips[2].frameHold->speedDen = 1000;
+    check(!validateTimeline(invalidHold).success, "範囲外の保持元速度を受理しました");
+    {
+        // 120 fps 素材を 50% にした clip の奇数 frame (素材 fps のままでは 60 fps timeline へ
+        // 出せない) でも、表示中の frame を保持できる。
+        Project slow = createDefaultProject();
+        slow.timelineClips = {clip("slow")};
+        auto& source = slow.timelineClips[0];
+        source.sourceFpsNum = 120;
+        source.sourceFrameCount = 600;
+        source.sourceOutFrame = 600;
+        source.speedNum = 1;
+        source.speedDen = 2;
+        int slowId = 0;
+        const auto slowHeld = insertFrameHold(slow, "id-slow", 61, 120,
+                                              [&] { return "slow-" + std::to_string(++slowId); });
+        const auto hold = std::find_if(slow.timelineClips.begin(), slow.timelineClips.end(),
+                                       [](const auto& value) { return value.frameHold; });
+        check(slowHeld.success && hold != slow.timelineClips.end() &&
+                  hold->frameHold->sourceFrame == 61 && hold->frameHold->speedNum == 1 &&
+                  hold->frameHold->speedDen == 2 && validateTimeline(slow).success,
+              "slow motion の高 fps 素材で表示中の frame を保持できません");
+    }
     check(!insertFrameHold(
                held, held.timelineClips[2].id, 180, 120,
                [&] {
@@ -1787,6 +1865,9 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
     candidate.audioTracks[0].muted = true;
     auto audio = clip("voice", mvm::project::TimelineClipKind::Audio, kA1);
     audio.timelineStartFrame = 42;
+    // ピッチ保持は等速では持てないので、保存を確かめるために 50% にする。
+    audio.speedNum = 1;
+    audio.speedDen = 2;
     audio.preservePitch = true;
     audio.linkGroupId = "round-trip-link";
     candidate.timelineClips[2].linkGroupId = "round-trip-link";

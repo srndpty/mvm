@@ -348,6 +348,8 @@ TimelineExportResult exportTimeline(const project::Project& project,
                 return result;
             }
             mapped.hold_position = holdPosition.frame;
+            mapped.hold_speed_num = clip.frameHold->speedNum;
+            mapped.hold_speed_den = clip.frameHold->speedDen;
         }
         mapped.is_audio = planned.audio ? 1 : 0;
         mapped.is_still_image = planned.still ? 1 : 0;

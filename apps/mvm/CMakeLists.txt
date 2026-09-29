@@ -3,11 +3,13 @@ qt_add_executable(mvm
     image_raster_cache.cpp
     media_bin_model.cpp
     media_import.cpp
+    press_focus.cpp
     mvm_controller.cpp
     shuttle_audio_mix.cpp
     shuttle_audio_playback.cpp
     timeline_clip_model.cpp
     track_model.cpp
+    trim_cursor.cpp
     waveform_cache.cpp
     waveform_view.cpp
 )
@@ -83,11 +85,13 @@ qt_add_executable(mvm_test_text_ui_input
     image_raster_cache.cpp
     media_bin_model.cpp
     media_import.cpp
+    press_focus.cpp
     mvm_controller.cpp
     shuttle_audio_mix.cpp
     shuttle_audio_playback.cpp
     timeline_clip_model.cpp
     track_model.cpp
+    trim_cursor.cpp
     waveform_cache.cpp
     waveform_view.cpp
 )

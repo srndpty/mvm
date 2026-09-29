@@ -284,6 +284,17 @@ TimelineFrameResult clipSourceFrameAt(const TimelineClip& clip, std::int64_t tim
     return result;
 }
 
+namespace {
+// 速度が約分済みの正の有理数で、10%〜1000% の範囲にあるか。clip と保持元の速度で共有する。
+bool clipSpeedInRange(std::int64_t speedNum, std::int64_t speedDen) {
+    return speedNum > 0 && speedDen > 0 && std::gcd(speedNum, speedDen) == 1 &&
+           static_cast<WideInteger>(speedNum) * 100 >=
+               static_cast<WideInteger>(speedDen) * kMinClipSpeedPercent &&
+           static_cast<WideInteger>(speedNum) * 100 <=
+               static_cast<WideInteger>(speedDen) * kMaxClipSpeedPercent;
+}
+} // namespace
+
 TimelineFrameResult frameHoldProducerPosition(const TimelineClip& clip, std::int64_t timelineFpsNum,
                                               std::int64_t timelineFpsDen) {
     TimelineFrameResult result;
@@ -293,15 +304,23 @@ TimelineFrameResult frameHoldProducerPosition(const TimelineClip& clip, std::int
     }
     const auto& hold = *clip.frameHold;
     if (hold.sourceFrame < 0 || hold.sourceFpsNum <= 0 || hold.sourceFpsDen <= 0 ||
-        hold.sourceFrameCount <= hold.sourceFrame) {
+        hold.sourceFrameCount <= hold.sourceFrame ||
+        !clipSpeedInRange(hold.speedNum, hold.speedDen)) {
         result.error = "保持する素材 frame が不正です";
         return result;
     }
-    const core::FrameRate source{hold.sourceFpsNum, hold.sourceFpsDen};
+    // 位置は保持元 clip と同じ「速度込みの実効 fps」で数える (書き出しは同じ速度の timewarp で
+    // 保持する)。元 clip で表示できた frame は、同じ実効 fps なら必ず出力位置を持つ。
+    const auto source = core::multiplyFrameRate({hold.sourceFpsNum, hold.sourceFpsDen},
+                                                {hold.speedNum, hold.speedDen});
+    if (!source) {
+        result.error = "保持元の実効 fps を表せません";
+        return result;
+    }
     const core::FrameRate output{timelineFpsNum, timelineFpsDen};
-    const auto position = core::firstOutputPositionOfSourceFrame(hold.sourceFrame, source, output);
+    const auto position = core::firstOutputPositionOfSourceFrame(hold.sourceFrame, *source, output);
     const auto reverse =
-        position ? core::sourceFrameAtOutputPosition(*position, source, output) : std::nullopt;
+        position ? core::sourceFrameAtOutputPosition(*position, *source, output) : std::nullopt;
     if (!reverse || *reverse != hold.sourceFrame) {
         result.error = "保持する素材 frame を出力位置へ一意に換算できません";
         return result;
@@ -483,15 +502,16 @@ TimelineValidationResult validateTimeline(const Project& project) {
             result.error = "timeline clip の source range または FPS が不正です: " + clip.name;
             return result;
         }
-        if (clip.speedNum <= 0 || clip.speedDen <= 0 ||
-            std::gcd(clip.speedNum, clip.speedDen) != 1 || !clipTimebase(clip) ||
-            static_cast<WideInteger>(clip.speedNum) * 100 <
-                static_cast<WideInteger>(clip.speedDen) * kMinClipSpeedPercent ||
-            static_cast<WideInteger>(clip.speedNum) * 100 >
-                static_cast<WideInteger>(clip.speedDen) * kMaxClipSpeedPercent) {
+        if (!clipSpeedInRange(clip.speedNum, clip.speedDen) || !clipTimebase(clip)) {
             result.error = "timeline clip の速度が不正です (約分済みの " +
                            std::to_string(kMinClipSpeedPercent) + "%〜" +
                            std::to_string(kMaxClipSpeedPercent) + "%): " + clip.name;
+            return result;
+        }
+        // 等速のピッチ保持は preview だけが stretcher を通し書き出しは通さない、という食い違いの
+        // 元になるので持たせない (速度を変える編集は等速へ戻すときに落とす)。
+        if (clip.preservePitch && clip.speedNum == clip.speedDen) {
+            result.error = "等速の clip はピッチ保持を持てません: " + clip.name;
             return result;
         }
         if (clip.frameHold &&
@@ -2142,6 +2162,9 @@ bool applyClipSpeed(Project& candidate, int index, TrimEdge edge, std::int64_t s
         }
         clip.speedNum = speedNum;
         clip.speedDen = speedDen;
+        // 等速では伸縮しないのでピッチ保持は意味を持たない (validateTimeline が拒否する)。
+        if (speedNum == speedDen)
+            clip.preservePitch = false;
         const auto after = timelineClipDuration(candidate, clip);
         if (!after.success) {
             error = after.error;
@@ -2436,9 +2459,10 @@ bool speedDurationCandidate(const Project& project, const std::string& clipId,
         den /= divisor;
         if (!applyClipSpeed(candidate, index, TrimEdge::Right, num, den, linkMode, error))
             return false;
+        // 等速ではピッチ保持を持たせない。preview と書き出しの両方が 1/1 では伸縮しない。
         for (int target : targets)
             candidate.timelineClips[static_cast<std::size_t>(target)].preservePitch =
-                edit.preservePitch;
+                edit.preservePitch && num != den;
     }
     std::int64_t shift = 0;
     for (std::size_t order = 0; order < targets.size(); ++order) {
@@ -2549,6 +2573,18 @@ TimelineEditResult insertFrameHold(Project& project, const std::string& clipId, 
         result.error = sourceFrame.error;
         return result;
     }
+    // 保持は素材 frame と一緒に見た目も止める。挿入位置で評価した不透明度 (key と fade 込み) を
+    // 保持 clip の基本値へ焼き込む。automation を捨てるだけだと、fade の途中などで保持へ
+    // 入った瞬間に基本値へ跳び、右側の clip へ戻るとまた元の値へ跳ぶ。
+    const auto fadeFrame = clipFadeSourceFrameAt(original, project.timelineFpsNum,
+                                                 project.timelineFpsDen, frame - start);
+    if (!fadeFrame.success) {
+        result.error = fadeFrame.error;
+        return result;
+    }
+    const double heldOpacityPercent =
+        100.0 * evaluateClipOpacity(original.effects, frame - start, fadeFrame.frame,
+                                    original.sourceOutFrame - original.sourceInFrame);
     Project candidate = project;
     const auto spanning = clipIdsSpanningFrame(candidate, frame);
     const auto split = splitTimelineClips(candidate, spanning, frame, newId, LinkMode::Linked);
@@ -2572,8 +2608,10 @@ TimelineEditResult insertFrameHold(Project& project, const std::string& clipId, 
     hold.speedNum = 1;
     hold.speedDen = 1;
     hold.preservePitch = false;
-    hold.frameHold = FrameHold{sourceFrame.frame, original.sourceFpsNum, original.sourceFpsDen,
-                               original.sourceFrameCount};
+    hold.frameHold =
+        FrameHold{sourceFrame.frame,         original.sourceFpsNum, original.sourceFpsDen,
+                  original.sourceFrameCount, original.speedNum,     original.speedDen};
+    hold.effects.opacityPercent = heldOpacityPercent;
     hold.effects.opacityKeys.clear();
     hold.effects.volumeKeys.clear();
     hold.effects.fadeInFrames = 0;

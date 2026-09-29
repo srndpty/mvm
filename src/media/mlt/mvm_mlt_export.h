@@ -54,7 +54,11 @@ typedef struct {
     long long speed_den;
     int preserve_pitch;
     int is_frame_hold;
+    /* 保持する producer 位置。保持元 clip の速度 (hold_speed_num/den) の timewarp で数える。
+     * 0/0 (未設定) は等速として扱わず拒否する。 */
     long long hold_position;
+    long long hold_speed_num;
+    long long hold_speed_den;
     int is_audio;       /* 非0なら映像を隠して独立audio trackとしてmixする */
     int is_still_image; /* 非0なら明示した qimage producer で透過 PNG を開く (文字・画像) */
     int effects_enabled;

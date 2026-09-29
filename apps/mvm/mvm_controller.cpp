@@ -4477,14 +4477,17 @@ bool MvmController::applyClipSpeedDuration(const QString& clipId, const QString&
 
 bool MvmController::canInsertFrameHold(const QString& clipId) const {
     const std::string id = clipId.isEmpty() ? currentClipId() : clipId.toStdString();
-    const int index = indexOfClipId(project_.timelineClips, id);
-    if (index < 0)
+    if (busy_ || indexOfClipId(project_.timelineClips, id) < 0)
         return false;
-    const auto& clip = project_.timelineClips[static_cast<std::size_t>(index)];
-    const auto duration = project::timelineClipDuration(project_, clip);
-    return !busy_ && clip.kind == project::TimelineClipKind::Video && !clip.frameHold &&
-           duration.success && playheadFrame_ > clip.timelineStartFrame &&
-           playheadFrame_ < clip.timelineStartFrame + duration.frame;
+    // 判定を別に書かず、複製した Project で実際の挿入を試す。「押せるのに実行すると失敗する」
+    // メニューにしない (保持できない frame 等も同じ規則で弾く)。
+    project::Project candidate = project_;
+    int nextId = 0;
+    return project::insertFrameHold(
+               candidate, id, playheadFrame_,
+               project::defaultFrameHoldFrames(candidate.timelineFpsNum, candidate.timelineFpsDen),
+               [&] { return "can-insert-" + std::to_string(++nextId); })
+        .success;
 }
 
 bool MvmController::insertFrameHoldAtPlayhead(const QString& clipId) {

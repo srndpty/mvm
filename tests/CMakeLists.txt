@@ -158,6 +158,19 @@ set_tests_properties(m7b_4_timeline_clip_model_focused PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 120)
 
+# clip の端のカーソル。画面を出さないので offscreen で動かす。
+add_executable(mvm_test_trim_cursor
+    harness/test_trim_cursor.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/trim_cursor.cpp)
+target_include_directories(mvm_test_trim_cursor PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_test_trim_cursor PRIVATE
+    Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick mvm::warnings)
+set_target_properties(mvm_test_trim_cursor PROPERTIES AUTOMOC ON)
+add_test(NAME trim_cursor_focused COMMAND mvm_test_trim_cursor)
+set_tests_properties(trim_cursor_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH};QT_QPA_PLATFORM=offscreen"
+    TIMEOUT 60)
+
 # --- プロジェクトパネル (素材とフォルダ) ------------------------------------
 add_executable(mvm_test_media_bin harness/test_media_bin.cpp)
 target_link_libraries(mvm_test_media_bin PRIVATE mvm::project mvm::util mvm::warnings)

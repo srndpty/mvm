@@ -1027,8 +1027,8 @@ private:
                         FrameHold hold;
                         if (!consume('{'))
                             return fail("frame_hold は object または null です");
-                        bool seen[4]{};
-                        for (int field = 0; field < 4; ++field) {
+                        bool seen[6]{};
+                        for (int field = 0; field < 6; ++field) {
                             std::string holdKey;
                             if (field > 0 && !consume(','))
                                 return false;
@@ -1048,6 +1048,12 @@ private:
                             } else if (holdKey == "source_frame_count") {
                                 slot = 3;
                                 value = &hold.sourceFrameCount;
+                            } else if (holdKey == "speed_num") {
+                                slot = 4;
+                                value = &hold.speedNum;
+                            } else if (holdKey == "speed_den") {
+                                slot = 5;
+                                value = &hold.speedDen;
                             }
                             if (slot < 0 || seen[slot] || !parseInteger64(*value))
                                 return fail("frame_hold の field が重複または不正です");
@@ -1479,7 +1485,9 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
             json << "{ \"source_frame\": " << clip.frameHold->sourceFrame
                  << ", \"source_fps_num\": " << clip.frameHold->sourceFpsNum
                  << ", \"source_fps_den\": " << clip.frameHold->sourceFpsDen
-                 << ", \"source_frame_count\": " << clip.frameHold->sourceFrameCount << " }";
+                 << ", \"source_frame_count\": " << clip.frameHold->sourceFrameCount
+                 << ", \"speed_num\": " << clip.frameHold->speedNum
+                 << ", \"speed_den\": " << clip.frameHold->speedDen << " }";
         } else {
             json << "null";
         }

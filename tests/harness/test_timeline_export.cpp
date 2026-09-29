@@ -1117,6 +1117,65 @@ int main(int argc, char** argv) {
         }
     }
 
+    // 120 fps 素材を 50% にした clip の奇数 frame を保持する。素材 fps のまま (120 -> 60) では
+    // 奇数 frame は timeline へ出せないので、保持元と同じ速度の timewarp で保持できることを画素で
+    // 確かめる。素材は偶数 frame が赤、奇数 frame が青で、隣の frame を取り違えると色が変わる。
+    {
+        const auto source = testDirectory / L"hold-alternate-120.mp4";
+        const intptr_t generated =
+            _wspawnl(_P_WAIT, ffmpeg.c_str(), ffmpeg.c_str(), L"-y", L"-loglevel", L"error", L"-f",
+                     L"lavfi", L"-i",
+                     L"color=c=red:s=64x64:r=120:d=1,drawbox=x=0:y=0:w=iw:h=ih:color=blue:t=fill:"
+                     L"enable='mod(n\\,2)'",
+                     L"-c:v", L"libx264", L"-pix_fmt", L"yuv420p", source.c_str(),
+                     static_cast<wchar_t*>(nullptr));
+        check(generated == 0 && std::filesystem::is_regular_file(source),
+              "赤青交互の120fps素材を生成できません");
+        auto project = mvm::project::createDefaultProject();
+        mvm::project::TimelineClip video;
+        video.kind = mvm::project::TimelineClipKind::Video;
+        video.mediaPath = source;
+        video.name = "slow-hold";
+        video.id = "slow-hold";
+        video.sourceFpsNum = 120;
+        video.sourceFpsDen = 1;
+        video.sourceFrameCount = 120;
+        video.sourceOutFrame = 120;
+        video.speedNum = 1;
+        video.speedDen = 2;
+        video.track = {mvm::project::TrackKind::Video, 0};
+        project.timelineClips.push_back(video);
+        int nextId = 0;
+        // 60 fps timeline の 61 は、実効 60 fps の素材 frame 61 (奇数 = 青)。
+        const auto inserted = mvm::project::insertFrameHold(
+            project, video.id, 61, 30, [&] { return "slow-new-" + std::to_string(++nextId); });
+        check(inserted.success, "slow motion 素材の奇数 frame を保持できません");
+        if (inserted.success) {
+            mvm::app::TimelineExportRequest request;
+            request.outputPath = testDirectory / L"hold-alternate-120-out.mp4";
+            request.width = 64;
+            request.height = 64;
+            request.fpsNum = 60;
+            request.fpsDen = 1;
+            const auto exported = mvm::app::exportTimeline(project, request);
+            check(exported.success, "slow motion の保持を書き出せません");
+            if (!exported.success)
+                std::fprintf(stderr, "  %s\n", exported.error.c_str());
+            if (exported.success) {
+                // 対照: 直前の timeline frame 60 は素材 frame 60 (偶数 = 赤)。
+                check(!frameIsBlue(request.outputPath, 60),
+                      "保持直前の偶数frameが赤ではありません (素材の交互色を検査できていません)");
+                int compared = 0;
+                for (long long frame = 61; frame < 91; ++frame) {
+                    check(frameIsBlue(request.outputPath, frame),
+                          "slow motion の保持区間が奇数frame (青) ではありません");
+                    ++compared;
+                }
+                check(compared == 30, "slow motion の保持区間の全frameを比較していません");
+            }
+        }
+    }
+
     mvm_mlt_runtime_shutdown();
 
     if (gFailures != 0) {

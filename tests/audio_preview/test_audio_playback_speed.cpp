@@ -8,6 +8,7 @@
 #include "media/audio_preview/audio_decode_worker.h"
 
 #include <windows.h>
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -196,6 +197,76 @@ int main(int argc, char** argv) {
             check(rms < 0.02, label + ": seek波形が連続再生と違います: " + std::to_string(rms));
         }
         worker.stop();
+    }
+    // ピッチ保持の seek は、伸縮した 48 kHz の位置を素材 rate (44.1 kHz) の位置へ戻す。
+    // 速度だけを戻すと位置が 48000/44100 倍後ろへずれ、ずれが preroll (1 秒) を超える遠い
+    // 位置では要求位置より後ろから decode して seek が成立しない。1 秒の素材ではずれが
+    // preroll に収まり検出できないので、30 秒の素材で遠い位置へ seek する。
+    // stretcher は seek で reset するので、純音の位相は連続再生と揃わない。位置は 3 Hz の
+    // 振幅変調の包絡 (10 ms ごとの RMS) で比べる。位置が 1 frame 分ずれても包絡は変わる。
+    const auto longSource = work / L"speed-am-44100-30s.wav";
+    if (_wspawnl(_P_WAIT, ffmpeg.c_str(), ffmpeg.c_str(), L"-y", L"-loglevel", L"error", L"-f",
+                 L"lavfi", L"-i", L"aevalsrc=(0.5+0.4*sin(2*PI*3*t))*sin(2*PI*1000*t):d=30:s=44100",
+                 L"-c:a", L"pcm_s16le", longSource.c_str(), static_cast<wchar_t*>(nullptr)) != 0) {
+        check(false, "長い検証用WAVを生成できません");
+    } else {
+        int farSeeks = 0;
+        for (const Speed speed : {Speed{1, 2}, Speed{2, 1}}) {
+            const std::string label =
+                "pitch far " + std::to_string(speed.num) + "/" + std::to_string(speed.den);
+            mvm::audio::AudioDecodeWorker worker({1});
+            std::string error;
+            if (!worker.setPlaybackSpeed(speed.num, speed.den, true, error) ||
+                !worker.start(toUtf8(longSource), error)) {
+                check(false, label + ": workerを開始できません: " + error);
+                continue;
+            }
+            // 伸縮後の尺の 80% の位置。素材上では 24 秒で、誤った換算では約 26.1 秒になる。
+            const std::int64_t outputLength = 48000LL * 30 * speed.den / speed.num;
+            const std::int64_t target = outputLength * 4 / 5;
+            std::vector<float> whole;
+            check(readFrom(worker, 0, outputLength, whole, error),
+                  label + ": 全体を読めません: " + error);
+            std::vector<float> seeked;
+            const bool seekRead = readFrom(worker, target, 4800, seeked, error);
+            check(seekRead && seeked.size() == 4800,
+                  label + ": 遠い位置へ seek できません: " + error);
+            if (seekRead && seeked.size() == 4800 &&
+                whole.size() >= static_cast<std::size_t>(target) + seeked.size()) {
+                const auto windowRms = [](const float* samples) {
+                    double sum = 0.0;
+                    for (int i = 0; i < 480; ++i)
+                        sum += static_cast<double>(samples[i]) * samples[i];
+                    return std::sqrt(sum / 480.0);
+                };
+                double worst = 0.0;
+                for (std::size_t window = 0; window < 10; ++window) {
+                    const double got = windowRms(seeked.data() + window * 480);
+                    const double want =
+                        windowRms(whole.data() + static_cast<std::size_t>(target) + window * 480);
+                    worst = std::max(worst, std::abs(got - want));
+                }
+                check(worst < 0.03,
+                      label + ": 遠い seek の包絡が連続再生と違います: " + std::to_string(worst));
+                // 対照: 連続再生側を 50 ms ずらすと包絡の差が閾値を超える (比較が空振りしない)。
+                double shiftedWorst = 0.0;
+                if (whole.size() >= static_cast<std::size_t>(target) + 2400 + seeked.size()) {
+                    for (std::size_t window = 0; window < 10; ++window) {
+                        const double got = windowRms(seeked.data() + window * 480);
+                        const double want = windowRms(
+                            whole.data() + static_cast<std::size_t>(target) + 2400 + window * 480);
+                        shiftedWorst = std::max(shiftedWorst, std::abs(got - want));
+                    }
+                }
+                check(shiftedWorst >= 0.03, label + ": 50 ms ずれを包絡で検出できません: " +
+                                                std::to_string(shiftedWorst));
+                std::fprintf(stderr, "  %s: 包絡の最大差 %.4f (50 ms ずらすと %.4f)\n",
+                             label.c_str(), worst, shiftedWorst);
+                ++farSeeks;
+            }
+            worker.stop();
+        }
+        check(farSeeks == 2, "ピッチ保持の遠い seek を全速度で比較していません");
     }
     std::fprintf(stderr, "audio playback speed: 検査 %d 件 / 失敗 %d 件\n", gChecks, gFailures);
     return gChecks > 0 && gFailures == 0 ? 0 : 1;

@@ -79,9 +79,32 @@ static int service_exists(mlt_properties list, const char* name) {
  * loader へ渡す。service 名 "timewarp" を直接指定すると loader が付ける音声の正規化
  * (resample) が付かない。timewarp は audio の sample rate を変えて速度を表すため、正規化が
  * 無いと tractor の mix で伸縮されずに元の速さで鳴る (§16.8 で実測)。 */
+/* loader へ渡す resource。等速なら素材のパス、それ以外は "timewarp:<speed>:<path>"。
+ * 呼び出し側が free する。速度が不正なら NULL。 */
+static char* clip_resource(const char* path, long long speed_num, long long speed_den) {
+    if (speed_num <= 0 || speed_den <= 0)
+        return NULL;
+    size_t size = strlen(path) + 64;
+    char* resource = (char*)malloc(size);
+    if (!resource)
+        return NULL;
+    if (speed_num == speed_den)
+        snprintf(resource, size, "%s", path);
+    else
+        snprintf(resource, size, "timewarp:%.17g:%s", (double)speed_num / (double)speed_den, path);
+    return resource;
+}
+
 static mlt_producer open_clip_producer(mlt_profile profile, const MvmExportClip* clip) {
     if (clip->is_frame_hold) {
-        mlt_producer producer = mlt_factory_producer(profile, "hold", clip->path);
+        /* hold は resource を loader で開く。保持元 clip と同じ速度の timewarp にすると、
+         * hold_position は元 clip と同じ実効 fps の位置になる (高 fps 素材の slow motion で、
+         * 素材 fps のままでは timeline へ出せない frame も保持できる)。 */
+        char* resource = clip_resource(clip->path, clip->hold_speed_num, clip->hold_speed_den);
+        if (!resource)
+            return NULL;
+        mlt_producer producer = mlt_factory_producer(profile, "hold", resource);
+        free(resource);
         if (!producer)
             return NULL;
         mlt_properties properties = MLT_PRODUCER_PROPERTIES(producer);
@@ -104,12 +127,9 @@ static mlt_producer open_clip_producer(mlt_profile profile, const MvmExportClip*
         return mlt_factory_producer(profile, "qimage", clip->path);
     if (clip->speed_num == 1 && clip->speed_den == 1)
         return mlt_factory_producer(profile, NULL, clip->path);
-    size_t size = strlen(clip->path) + 64;
-    char* resource = (char*)malloc(size);
+    char* resource = clip_resource(clip->path, clip->speed_num, clip->speed_den);
     if (!resource)
         return NULL;
-    snprintf(resource, size, "timewarp:%.17g:%s", (double)clip->speed_num / (double)clip->speed_den,
-             clip->path);
     mlt_producer producer = mlt_factory_producer(profile, NULL, resource);
     free(resource);
     if (!producer)
@@ -130,6 +150,8 @@ static mlt_producer open_clip_producer(mlt_profile profile, const MvmExportClip*
 static int clips_need_timewarp(const MvmExportClip* clips, int clip_count) {
     for (int i = 0; i < clip_count; ++i) {
         if (clips[i].speed_num != 1 || clips[i].speed_den != 1)
+            return 1;
+        if (clips[i].is_frame_hold && clips[i].hold_speed_num != clips[i].hold_speed_den)
             return 1;
     }
     return 0;

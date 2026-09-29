@@ -76,6 +76,10 @@ struct FrameHold {
     std::int64_t sourceFpsNum = 0;
     std::int64_t sourceFpsDen = 1;
     std::int64_t sourceFrameCount = 0;
+    // 保持元 clip の速度。書き出しは同じ速度の timewarp の位置で保持する。高 fps 素材を
+    // slow motion にした clip では、素材 fps のままでは timeline へ出せない frame があるため。
+    std::int64_t speedNum = 1;
+    std::int64_t speedDen = 1;
     bool operator==(const FrameHold&) const = default;
 };
 

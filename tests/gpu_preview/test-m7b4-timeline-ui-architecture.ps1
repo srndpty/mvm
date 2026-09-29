@@ -23,7 +23,8 @@ function Test-SpeedHoldUiContract([string]$qmlSource, [string]$controllerSource,
     return ($qmlSource -match '(?s)Action\s*\{\s*id:\s*speedDurationAction\b.*?shortcut:\s*"Ctrl\+R".*?onTriggered:\s*root\.openSpeedDurationDialog\(""\)') -and
            $qmlSource.Contains('action: speedDurationAction') -and
            $qmlSource.Contains('root.openSpeedDurationDialog(clipItem.clipId)') -and
-           $qmlSource.Contains('enabled: root.mvmController.playheadFrame > clipItem.timelineStartFrame') -and
+           $qmlSource.Contains('enabled: clipMenu.visible') -and
+           $qmlSource.Contains('&& root.mvmController.playheadFrame > clipItem.timelineStartFrame') -and
            $qmlSource.Contains('root.mvmController.insertFrameHoldAtPlayhead(clipItem.clipId)') -and
            $qmlSource.Contains('root.mvmController.applyClipSpeedDuration(') -and
            $controllerSource.Contains('MvmController::insertFrameHoldAtPlayhead(') -and
@@ -34,7 +35,7 @@ function Test-SpeedHoldUiContract([string]$qmlSource, [string]$controllerSource,
 if (-not (Test-SpeedHoldUiContract $qml $controller $controllerHeader) -or
     (Test-SpeedHoldUiContract ($qml.Replace('shortcut: "Ctrl+R"', 'shortcut: "Ctrl+Alt+R"')) $controller $controllerHeader) -or
     (Test-SpeedHoldUiContract ($qml.Replace('root.mvmController.insertFrameHoldAtPlayhead(clipItem.clipId)', '')) $controller $controllerHeader) -or
-    (Test-SpeedHoldUiContract ($qml.Replace('enabled: root.mvmController.playheadFrame > clipItem.timelineStartFrame', 'enabled: true')) $controller $controllerHeader) -or
+    (Test-SpeedHoldUiContract ($qml.Replace('&& root.mvmController.playheadFrame > clipItem.timelineStartFrame', '')) $controller $controllerHeader) -or
     (Test-SpeedHoldUiContract $qml $controller ($controllerHeader.Replace('applyClipSpeedDuration(', 'removedSpeedDuration(')))) {
     throw '速度・デュレーションとフレーム保持の UI 契約が崩れています'
 }

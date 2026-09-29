@@ -133,11 +133,14 @@ bool AudioDecodeWorker::openInput(const std::string& path, std::string& error) {
     }
     // 速度 s = p / q の素材を「rate が素材 rate x s の入力」として 48 kHz へ変換すると、
     // 出力は伸縮した時間軸の sample になる。rate は整数比 (素材 rate x p) : (48000 x q)。
+    // ピッチ保持は等速の 48 kHz へ変換してから stretcher で伸縮する。速度 1/1 (約分済みなので
+    // p == q) では伸縮しないので stretcher を通さない。書き出しも 1/1 では timewarp を
+    // 通らないため、preview だけに余計な DSP と遅延が入らないようにする。
+    const bool stretch = preservePitch_ && speedNum_ != speedDen_;
     if (codec_->sample_rate <= 0 ||
-        !resamplerRates(
-            static_cast<WideInteger>(codec_->sample_rate) * (preservePitch_ ? 1 : speedNum_),
-            static_cast<WideInteger>(kInternalSampleRate) * (preservePitch_ ? 1 : speedDen_),
-            resamplerInputRate_, resamplerOutputRate_)) {
+        !resamplerRates(static_cast<WideInteger>(codec_->sample_rate) * (stretch ? 1 : speedNum_),
+                        static_cast<WideInteger>(kInternalSampleRate) * (stretch ? 1 : speedDen_),
+                        resamplerInputRate_, resamplerOutputRate_)) {
         error = "音声の再生速度をresamplerのrateへ換算できません";
         return false;
     }
@@ -149,7 +152,7 @@ bool AudioDecodeWorker::openInput(const std::string& path, std::string& error) {
         error = "音声 format converter を初期化できません: " + ffError(result);
         return false;
     }
-    if (preservePitch_) {
+    if (stretch) {
         stretcher_ = std::make_unique<PitchPreservingStretcher>(static_cast<double>(speedDen_) /
                                                                 static_cast<double>(speedNum_));
         if (!stretcher_->valid()) {
@@ -479,9 +482,15 @@ AudioSeekCompletion AudioDecodeWorker::executeSeek(const AudioSeekTicket& ticket
     const std::int64_t begin = qpcNow();
     AVStream* stream = format_->streams[streamIndex_];
     // 伸縮した時間軸の出力 sample を素材の入力 sample へ戻してから時刻にする。
+    // ピッチ保持では resampler が素材 rate -> 48 kHz の等速なので、速度に加えて
+    // 48 kHz -> 素材 rate の換算も要る (速度だけ戻すと 44.1 kHz 素材で位置が後ろへずれ、
+    // preroll の 1 秒を超えると要求位置より後ろから decode してしまう)。
     const std::int64_t inputSample =
-        preservePitch_ ? av_rescale_rnd(ticket.targetSample, speedNum_, speedDen_, AV_ROUND_DOWN)
-                       : av_rescale(ticket.targetSample, resamplerInputRate_, resamplerOutputRate_);
+        stretcher_ ? av_rescale_rnd(ticket.targetSample,
+                                    static_cast<std::int64_t>(codec_->sample_rate) * speedNum_,
+                                    static_cast<std::int64_t>(kInternalSampleRate) * speedDen_,
+                                    AV_ROUND_DOWN)
+                   : av_rescale(ticket.targetSample, resamplerInputRate_, resamplerOutputRate_);
     const std::int64_t relativeTimestamp =
         av_rescale_q(inputSample, AVRational{1, codec_->sample_rate}, stream->time_base);
     const std::int64_t streamStart = stream->start_time == AV_NOPTS_VALUE ? 0 : stream->start_time;
