@@ -12,6 +12,7 @@
 #include "app/text_raster.h"
 #include "focus_release_filter.h"
 #include "media/mlt/mvm_mlt_runtime.h"
+#include "media_import.h"
 #include "mvm_controller.h"
 #include "project/timeline_edit.h"
 #include "test_media_fixture.h"
@@ -125,6 +126,22 @@ int main(int argc, char** argv) {
     video.sourceOutFrame = 120;
     project.timelineClips.push_back(video);
     mvm::test::attachFixtureMedia(project);
+    // この試験はパネルの素材を置き直す。使用中の素材は時間軸が実物と違うと置けないので、
+    // 素材の値は実際のファイルを調べた値にする (id・名前は fixture のまま)。
+    {
+        const auto probed = mvm::app::probeMediaFile(video.mediaPath);
+        if (!probed.success) {
+            std::fprintf(stderr, "FAIL: 試験の動画を調べられません: %s\n", probed.error.c_str());
+            return 3;
+        }
+        auto& item = project.mediaItems.front();
+        const auto id = item.id;
+        const auto name = item.name;
+        item = probed.item;
+        item.id = id;
+        item.name = name;
+        item.mediaPath = video.mediaPath;
+    }
     const std::filesystem::path projectPath =
         directory.filePath(QStringLiteral("ui.mvm")).toStdWString();
 

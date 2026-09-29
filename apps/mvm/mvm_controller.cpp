@@ -3083,12 +3083,27 @@ bool MvmController::selectClip(int index) {
 bool MvmController::refreshPreviewAtPlayhead(QString& error) {
     if (!previewEngine_)
         return true;
-    const auto state = previewEngine_->status().state;
-    if (state != preview::PreviewEngineState::ReadyPaused) {
-        // seek の途中などで受けられない。要求は捨てずに保留し、ReadyPaused になったら
+    const auto status = previewEngine_->status();
+    switch (status.state) {
+    case preview::PreviewEngineState::ReadyPaused:
+        break;
+    case preview::PreviewEngineState::Seeking:
+    case preview::PreviewEngineState::Playing:
+    case preview::PreviewEngineState::WaitingForRenderDevice:
+        // いずれ ReadyPaused になる一時的な状態。要求は捨てずに保留し、ReadyPaused になったら
         // その時点の Project (と drag 中の override) で 1 回だけ作り直す。途中の状態は出さない。
         previewRefreshPending_ = true;
         return true;
+    case preview::PreviewEngineState::Error:
+    case preview::PreviewEngineState::ShuttingDown:
+    case preview::PreviewEngineState::Shutdown:
+    case preview::PreviewEngineState::Uninitialized:
+        // 待っても ReadyPaused にならない。保留せずに失敗として返す (fail-closed)。
+        previewRefreshPending_ = false;
+        error = status.state == preview::PreviewEngineState::Error && status.lastError
+                    ? previewErrorText(*status.lastError)
+                    : QStringLiteral("Previewが使える状態ではありません");
+        return false;
     }
     previewRefreshPending_ = false;
     if (!syncPreviewSourcesAt(playheadFrame_, error))

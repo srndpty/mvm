@@ -1706,6 +1706,37 @@ void testMediaFilePlacement(const std::filesystem::path& path, const std::filesy
         check(sizeText().startsWith(QStringLiteral("180")),
               "差し替え後もプロジェクトパネルの解像度が古いままです");
         std::filesystem::remove(reshaped);
+
+        // timeline で使っている音声が、同じ path の別の長さの音声へ差し替わったら置かない。
+        // 既存の clip の素材範囲は元の長さで決めてあり、素材だけを新しくすると食い違う。
+        const auto flac = importDir / L"flac_cover.flac";
+        const auto retimed = path.parent_path() / L"retimed-voice.wav";
+        std::filesystem::copy_file(wav, retimed, std::filesystem::copy_options::overwrite_existing,
+                                   copyError);
+        check(!copyError && controller.importMediaFiles({url(retimed)}, {}),
+              "差し替え試験の音声を登録できません");
+        const QString retimedId = binEntryIdNamed(bin, QStringLiteral("retimed-voice.wav"));
+        const auto beforeUse = placedClips(controller).size();
+        controller.addMediaItemsToTimelineAt({retimedId}, QStringLiteral("audio"), 0, 5000);
+        check(placedClips(controller).size() == beforeUse + 1,
+              "前提: 差し替え試験の音声を置けません");
+        std::filesystem::copy_file(flac, retimed, std::filesystem::copy_options::overwrite_existing,
+                                   copyError);
+        const auto beforeRetimed = placedClips(controller).size();
+        const auto durationBefore = bin.data(bin.index(bin.rowOfEntry(retimedId), 0),
+                                             mvm::app::MediaBinModel::DurationTextRole)
+                                        .toString();
+        check(!copyError &&
+                  !controller.addMediaItemsToTimelineAt({retimedId}, QStringLiteral("audio"), 0,
+                                                        7000) &&
+                  placedClips(controller).size() == beforeRetimed &&
+                  controller.statusText().contains(QStringLiteral("差し替わっています")),
+              "使用中の音声が別の長さへ差し替わったのに置けた、または理由を示しません");
+        check(bin.data(bin.index(bin.rowOfEntry(retimedId), 0),
+                       mvm::app::MediaBinModel::DurationTextRole)
+                      .toString() == durationBefore,
+              "差し替えを拒否したのにプロジェクトパネルの尺が変わりました");
+        std::filesystem::remove(retimed);
         controller.shutdown();
     }
 }
@@ -1793,6 +1824,11 @@ void testPreviewTransform(const std::filesystem::path& path) {
         check(!controller.setClipEffectValues(QStringLiteral("missing"), values, true),
               "存在しないclipへeffectを適用できてしまいます");
         controller.shutdown();
+        // 止めた preview は待っても使えるようにならない。作り直しを保留して成功扱いに
+        // せず、失敗として理由を返す。
+        check(!controller.selectClip(0) && controller.statusText().contains(
+                                               QStringLiteral("Previewが使える状態ではありません")),
+              "止めたpreviewへの作り直しを保留して成功扱いにしました");
     }
 }
 

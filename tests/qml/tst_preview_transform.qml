@@ -220,6 +220,28 @@ TestCase {
         fuzzyCompare(scaled.y + scaled.height / 4, pivotY, 1e-9, "aspect pivot y");
     }
 
+    // Ctrl だけ (Alt なし) では回転の中心を固定しない。幅 1.5 倍に合わせた高さは、見えている
+    // 矩形の中心 (y = 200) を保って伸びる。回転の中心 (y = 150) を保つと 25px 動いてしまう。
+    function test_keepAspectWithoutAltIgnoresPivot() {
+        const ctrl = { "keepAspect": true, "fromCenter": false, "pivot": { "x": 200, "y": 150 } };
+        compareRect(Transform.resizeRect(rect, "r", { "x": 700, "y": 0 }, ctrl, 1),
+                    100, 50, 600, 300, "r ctrl only");
+        // 吸着でも同じ (右辺 1916 -> 1920)。
+        const wide = Transform.resizeRect(rect, "r", { "x": 1916, "y": 0 }, ctrl, 1);
+        const snapped = Transform.snapResize(rect, wide, "r", canvasLines, 8, ctrl, 1);
+        compareRect(snapped.rect, 100, 200 - 910 / 2, 1820, 910, "r ctrl only snapped");
+    }
+
+    // 回転の中心が見えている矩形の外 (左側の余白を含む crop) にあっても、Alt の拡縮は潰れない。
+    // 中心 x = 50 から左辺 (100) までの距離 50 が 100 になるように左辺を 150 へ引くと倍率 2。
+    function test_resizeFromCenterWithPivotOutsideRect() {
+        const alt = { "keepAspect": false, "fromCenter": true, "pivot": { "x": 50, "y": 150 } };
+        compareRect(Transform.resizeRect(rect, "l", { "x": 150, "y": 0 }, alt, 1),
+                    150, 100, 800, 200, "l with pivot outside");
+        compareRect(Transform.resizeRect(rect, "r", { "x": 950, "y": 0 }, alt, 1),
+                    150, 100, 800, 200, "r with pivot outside");
+    }
+
     function test_thresholdScalesToOutputPixels() {
         compare(Transform.thresholdOutputPx(8, 1920, 960), 16);
         compare(Transform.thresholdOutputPx(8, 1920, 0), 8);

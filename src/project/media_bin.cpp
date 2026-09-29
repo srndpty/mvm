@@ -144,6 +144,13 @@ MediaBinEditResult refreshMediaItem(Project& project, const std::string& itemId,
     for (auto& item : candidate.mediaItems) {
         if (item.id != itemId)
             continue;
+        const bool timingChanged =
+            item.kind != probed.kind || item.fpsNum != probed.fpsNum ||
+            item.fpsDen != probed.fpsDen || item.frameCount != probed.frameCount ||
+            item.sampleRate != probed.sampleRate || item.durationSamples != probed.durationSamples;
+        if (timingChanged && mediaItemsInUse(project).contains(itemId))
+            return failure("タイムラインで使用中の素材 \"" + item.name +
+                           "\" のファイルが別の長さ・fps・種類のものに差し替わっています");
         item.kind = probed.kind;
         item.fpsNum = probed.fpsNum;
         item.fpsDen = probed.fpsDen;

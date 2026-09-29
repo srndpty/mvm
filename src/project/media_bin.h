@@ -35,6 +35,10 @@ MediaBinEditResult addMediaItem(Project& project, MediaItem item);
 // 素材の技術的な値 (種別・fps・尺・解像度・sample rate) を、調べ直した probed の値へ
 // 置き換える。id・名前・フォルダ・ファイルは変えない。外部でファイルが差し替わっていても、
 // パネルの値と timeline の計算 (枠の寸法など) を実物に合わせる。
+// ただし timeline の clip が使っている素材の時間軸 (種別・fps・尺・sample rate) が変わって
+// いれば失敗する。使っている clip の素材範囲 (in/out・fps) は元の時間軸で決めてあり、
+// 素材だけを新しくすると clip と実物が食い違う (clip の見直しは明示の操作で行う)。
+// 解像度だけの変化は clip の時間軸に関わらないので更新する。
 MediaBinEditResult refreshMediaItem(Project& project, const std::string& itemId,
                                     const MediaItem& probed);
 MediaBinEditResult renameMediaBinEntry(Project& project, const std::string& entryId,

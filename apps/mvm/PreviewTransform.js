@@ -81,11 +81,13 @@ function handleSides(handle) {
     };
 }
 
-// Alt で固定する点。素材の回転の中心 (pivot) があればそれ、無ければ矩形の中心。
-// 回転の中心は crop 範囲の中心なので、非対称な crop では見えている矩形の中心と違う。
-// 描画 (preview / 書き出し) と同じ点を固定しないと、回転した素材が動いてしまう。
+// 拡縮で動かさない点。Alt (fromCenter) なら素材の回転の中心 (pivot) があればそれ、
+// それ以外 (Ctrl だけで縦横比を保つときの、もう一方の軸を含む) は見えている矩形の中心。
+// 回転の中心は crop 範囲の中心なので、非対称な crop では見えている矩形の中心と違う
+// (矩形の外のこともある)。Alt で描画 (preview / 書き出し) と同じ点を固定しないと、
+// 回転した素材が動いてしまう。
 function fixedPoint(start, options) {
-    const pivot = options ? options.pivot : null;
+    const pivot = options && options.fromCenter ? options.pivot : null;
     return {
         "x": pivot && finite(pivot.x) ? pivot.x : start.x + start.width / 2,
         "y": pivot && finite(pivot.y) ? pivot.y : start.y + start.height / 2
@@ -142,11 +144,12 @@ function resizeRect(start, handle, pointer, options, minSize) {
     const fixed = fixedPoint(start, options);
     let left = start.x, right = start.x + start.width;
     let top = start.y, bottom = start.y + start.height;
-    // 固定点から掴んだ辺までの距離の比で、両側を同じ倍率にする。
+    // 両側を同じ倍率にする。固定点が矩形の外 (letterbox の余白を含む crop) にあることもあるので、距離の符号は
+    // 決め打ちせず、固定点から掴んだ辺までと pointer までの比をそのまま倍率にする。
     const scaleAbout = (low, high, point, grabbedHigh, target, size) => {
-        const reach = grabbedHigh ? high - point : point - low;
-        const want = grabbedHigh ? target - point : point - target;
-        const scale = reach > 0 ? Math.max(minimum / size, want / reach) : minimum / size;
+        const reach = (grabbedHigh ? high : low) - point;
+        const scale = Math.abs(reach) < 1e-9 ? minimum / size
+                                              : Math.max(minimum / size, (target - point) / reach);
         return [point - (point - low) * scale, point + (high - point) * scale];
     };
     if (options.fromCenter) {

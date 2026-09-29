@@ -245,6 +245,38 @@ void testRemove() {
           "存在しないentryの削除見積もりが成功しました");
 }
 
+// 使っている素材の時間軸が外部で変わったときは、素材だけを更新しない。
+void testRefreshTiming() {
+    // timeline で使っている動画の時間軸 (fps・尺・種類) が変わった更新は拒否する。
+    // clip の素材範囲は元の時間軸で決めてあり、素材だけ新しくすると食い違う。
+    Project used = usedProject(); // v.mp4 (24000/1001, 598 frame) をリンク対が使う
+    const Project beforeTiming = used;
+    auto retimed = *mvm::project::findMediaItem(used, "v");
+    retimed.fpsNum = 30;
+    retimed.fpsDen = 1;
+    retimed.frameCount = 120;
+    check(!mvm::project::refreshMediaItem(used, "v", retimed).success && used == beforeTiming,
+          "使用中の動画の fps・尺の変化で素材だけを更新しました");
+    auto recast = *mvm::project::findMediaItem(used, "a");
+    recast.durationSamples = 48000;
+    check(!mvm::project::refreshMediaItem(used, "a", recast).success && used == beforeTiming,
+          "使用中の音声の尺の変化で素材だけを更新しました");
+    // 解像度だけなら clip の時間軸に関わらないので更新する。
+    auto resized = *mvm::project::findMediaItem(used, "v");
+    resized.width = 1280;
+    resized.height = 720;
+    check(mvm::project::refreshMediaItem(used, "v", resized).success &&
+              mvm::project::findMediaItem(used, "v")->width == 1280,
+          "使用中の動画の解像度だけの変化を更新できません");
+    // 使われていない素材なら時間軸が変わっても更新する。
+    Project unusedMedia = usedProject();
+    unusedMedia.timelineClips.erase(unusedMedia.timelineClips.begin(),
+                                    unusedMedia.timelineClips.begin() + 2);
+    check(mvm::project::refreshMediaItem(unusedMedia, "v", retimed).success &&
+              mvm::project::findMediaItem(unusedMedia, "v")->fpsNum == 30,
+          "使われていない素材の時間軸の変化を更新できません");
+}
+
 void testValidation() {
     // 種別ごとに意味の無い値を持つ素材は拒否する。
     Project audioWithSize = nestedProject();
@@ -519,6 +551,7 @@ int main(int argc, char** argv) {
     testValidation();
     testFileIdentity(root);
     testMediaReferences();
+    testRefreshTiming();
     testUnavailableIdentity(root);
     testJson(root);
 
