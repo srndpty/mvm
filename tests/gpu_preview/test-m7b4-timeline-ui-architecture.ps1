@@ -223,7 +223,7 @@ $requiredQml = @(
     'x: timelineStartFrame * timelinePanel.pixelsPerFrame',
     'y: timelinePanel.rowY(trackKind, trackIndex)',
     'function trackAtY(y)',
-    'root.mvmController.selectTimelineClip(clipItem.clipId, frame, clipItem.editLinked)',
+    'root.mvmController.selectTimelineClip(clipItem.clipId, clipItem.editLinked)',
     'import "TimelineGestures.js" as Gestures',
     'Gestures.bodyPress(tool, mouse.modifiers, pressFrame)',
     'Gestures.bodyRelease(clipItem.gestureState, clipItem.bodyMoved,',
@@ -592,6 +592,19 @@ if (-not $previewItem.Contains('setMirrorVertically(false)') -or
 if (-not $previewItem.Contains('PreviewRenderPort::renderFrameDue(*engine_)')) {
     throw '新しいoutput frameがない周期にもrender targetを黒でclearしています'
 }
+# seek 中も、decode の完了を回収できるまでは render pass を始めない (黒い frame を提示しない)。
+# 完了の回収は一度きりなので、renderFrameDue で見つけた失敗は renderFrame へ引き継ぐ。
+$engineSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\src\preview_engine\preview_engine.cpp') -Raw
+function Test-SeekPresentsOnlyWhenReady([string]$source) {
+    return $source -match 'if \(!pending\.decodeReady && !pending\.dueFailure\)\s*pending\.dueFailure = engine\.impl_->advanceSeekLocked\(' -and
+           $source.Contains('return pending.decodeReady || pending.dueFailure.has_value();') -and
+           $source.Contains('dueFailure ? std::exchange(dueFailure, std::nullopt)')
+}
+if (-not (Test-SeekPresentsOnlyWhenReady $engineSource) -or
+    (Test-SeekPresentsOnlyWhenReady $engineSource.Replace('return pending.decodeReady || pending.dueFailure.has_value();', 'return pending.active;')) -or
+    (Test-SeekPresentsOnlyWhenReady $engineSource.Replace('dueFailure ? std::exchange(dueFailure, std::nullopt)', 'false ? std::nullopt'))) {
+    throw 'seek中にdecode完了前のrender targetを黒でclearして提示しています'
+}
 if (-not $qml.Contains('root.mvmController.outputWidth') -or
     -not $qml.Contains('root.mvmController.outputHeight')) {
     throw 'previewがProject output sizeの縦横比を使っていません'
@@ -678,12 +691,17 @@ function Test-PreviewTransformContract([string]$mainSource, [string]$overlay) {
            $overlay -match 'Transform\.snapMove\([\s\S]*?!\(mouse\.modifiers & Qt\.ControlModifier\)\)' -and
            $overlay.Contains('"keepAspect": (mouse.modifiers & Qt.ControlModifier) !== 0') -and
            $overlay.Contains('"fromCenter": (mouse.modifiers & Qt.AltModifier) !== 0') -and
-           $overlay -match 'mvmController\.setEffectValues\(values, false\)' -and
-           $overlay -match 'if \(commit\)\s*mvmController\.setEffectValues\(lastValues, true\);'
+           $overlay -match 'mvmController\.setClipEffectValues\(dragClipId, values, false\)' -and
+           $overlay -match 'if \(commit\)\s*mvmController\.setClipEffectValues\(dragClipId, lastValues, true\);' -and
+           $overlay -notmatch 'mvmController\.setEffectValues\(' -and
+           # 回転した素材もハンドルで拡縮する (回転を理由にハンドルを隠さない)。
+           $overlay.Contains('Transform.resizeRotatedRect(') -and
+           $overlay -notmatch 'rotation\s*===\s*0'
 }
 if (-not (Test-PreviewTransformContract $qml $overlaySource) -or
+    (Test-PreviewTransformContract $qml ($overlaySource + "`n    readonly property bool resizable: shown && geometry.rotation === 0")) -or
     (Test-PreviewTransformContract $qml $overlaySource.Replace('!(mouse.modifiers & Qt.ControlModifier)', 'true')) -or
-    (Test-PreviewTransformContract $qml $overlaySource.Replace('setEffectValues(values, false)', 'setEffectValues(values, true)')) -or
+    (Test-PreviewTransformContract $qml $overlaySource.Replace('setClipEffectValues(dragClipId, values, false)', 'setEffectValues(values, false)')) -or
     (Test-PreviewTransformContract $qml $overlaySource.Replace('Qt.AltModifier', 'Qt.ShiftModifier')) -or
     (Test-PreviewTransformContract $qml.Replace('!(mouse.modifiers & Qt.ControlModifier)', 'true') $overlaySource)) {
     throw 'プレビュー上の枠 (移動・拡縮・吸着) の契約が崩れています'

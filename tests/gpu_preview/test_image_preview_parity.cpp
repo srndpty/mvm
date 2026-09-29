@@ -108,6 +108,9 @@ struct ParityCase {
     double cropRight = 0.0;
     double cropBottom = 0.0;
     bool withBackground = true;
+    // 縦横の拡大率。プレビューの枠のハンドルで縦横を別々に伸縮できるので、違う値も見る。
+    double scaleX = 70.0;
+    double scaleY = 70.0;
 };
 
 // crop が非対称で回転も掛かる組み合わせで、以前の書き出しは平行四辺形になっていた
@@ -120,6 +123,13 @@ constexpr ParityCase kCases[] = {
     {"V2 非対称 crop (回転なし)", 1, 0.0, 10.0, 10.0, 20.0, 5.0},
     {"V2 非対称 crop + 回転 25 度", 1, 25.0, 10.0, 10.0, 20.0, 5.0},
     {"V2 非対称 crop + 回転 25 度 (V1 が空)", 1, 25.0, 10.0, 10.0, 20.0, 5.0, false},
+    {"V1 縦横別の拡大率 150/50 + 非対称 crop", 0, 0.0, 10.0, 5.0, 20.0, 10.0, true, 150.0, 50.0},
+    // 縦横の倍率が違う回転は、MLT では fix_shear_x の補正で剛体回転にしている。V1 (filter) と
+    // V2 (transition) の両方を見る。
+    {"V1 縦横別の拡大率 130/60 + 非対称 crop + 回転 35 度", 0, 35.0, 5.0, 10.0, 15.0, 5.0, true,
+     130.0, 60.0},
+    {"V2 縦横別の拡大率 60/120 + 非対称 crop + 回転 20 度", 1, 20.0, 10.0, 5.0, 20.0, 10.0, true,
+     60.0, 120.0},
 };
 
 enum class Kind { Red, Blue, Black, Other };
@@ -281,6 +291,8 @@ int main(int argc, char** argv) {
         clip.effects.cropTopPercent = parity.cropTop;
         clip.effects.cropRightPercent = parity.cropRight;
         clip.effects.cropBottomPercent = parity.cropBottom;
+        clip.effects.scaleXPercent = parity.scaleX;
+        clip.effects.scaleYPercent = parity.scaleY;
         // V2 以上は V1 との間の affine transition で合成する。withBackground なら V1 に灰色の
         // 背景を置く。灰色は赤・青・黒のどれでもないので比較から外れ、画像の画素だけを比べる。
         // V1 が空の区間でも transition が掛かることは、背景の無い case で見る (以前は掛からず、

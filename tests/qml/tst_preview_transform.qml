@@ -157,6 +157,35 @@ TestCase {
         compareRect(Transform.rotatedBounds(rect, 300, 200, 0), 100, 100, 400, 200, "0 deg");
     }
 
+    // 90° 回した (100, 100, 400, 200) (中心 (300, 200)) の右辺を、画面上で (300, 500) まで引く。
+    // 素材の座標では右辺が 600 になり、幅 500。固定する左辺の中点は画面上の (300, 0) のまま。
+    function test_resizeRotatedKeepsAnchorOnScreen() {
+        const plain = { "keepAspect": false, "fromCenter": false };
+        const resized = Transform.resizeRotatedRect(rect, 300, 200, 90, "r",
+                                                    { "x": 300, "y": 500 }, plain, 1);
+        compareRect(resized, 50, 150, 500, 200, "r rotated 90");
+        // 画面上の位置を独立に確かめる: 新しい中心 (矩形の中央) の周りに 90° 回す。
+        const pivotX = resized.x + resized.width / 2;
+        const pivotY = resized.y + resized.height / 2;
+        const anchor = Transform.rotatePoint(resized.x, pivotY, pivotX, pivotY, 90);
+        fuzzyCompare(anchor.x, 300, 1e-9, "anchor x");
+        fuzzyCompare(anchor.y, 0, 1e-9, "anchor y");
+        const dragged = Transform.rotatePoint(resized.x + resized.width, pivotY, pivotX, pivotY, 90);
+        fuzzyCompare(dragged.x, 300, 1e-9, "dragged x");
+        fuzzyCompare(dragged.y, 500, 1e-9, "dragged y");
+    }
+
+    // 回転 0 なら通常の拡縮と同じ。pointer が NaN なら変えない。
+    function test_resizeRotatedWithoutRotation() {
+        const plain = { "keepAspect": false, "fromCenter": false };
+        compareRect(Transform.resizeRotatedRect(rect, 300, 200, 0, "br", { "x": 600, "y": 400 },
+                                                plain, 1),
+                    100, 100, 500, 300, "br 0 deg");
+        compareRect(Transform.resizeRotatedRect(rect, 300, 200, 30, "br", { "x": NaN, "y": 0 },
+                                                plain, 1),
+                    100, 100, 400, 200, "NaN pointer");
+    }
+
     function test_thresholdScalesToOutputPixels() {
         compare(Transform.thresholdOutputPx(8, 1920, 960), 16);
         compare(Transform.thresholdOutputPx(8, 1920, 0), 8);

@@ -317,8 +317,8 @@ public:
     bool previewVideoAtPlayhead() const;
     Q_INVOKABLE bool selectClip(int index);
     // linked=false (Alt+クリック) ならリンク相手を選択に含めない。
-    Q_INVOKABLE bool selectTimelineClip(const QString& clipId, qint64 frame, bool linked);
-    Q_INVOKABLE bool toggleTimelineClipSelection(const QString& clipId, qint64 frame);
+    Q_INVOKABLE bool selectTimelineClip(const QString& clipId, bool linked);
+    Q_INVOKABLE bool toggleTimelineClipSelection(const QString& clipId);
     Q_INVOKABLE bool selectTimelineClips(const QStringList& clipIds);
     Q_INVOKABLE bool seekTimelineFrame(qint64 frame);
     // scrub。drag 中は最新位置だけを coalesce して seek し、release で確定する。
@@ -414,6 +414,10 @@ public:
     // 複数の項目 ({"positionX": 10, "scaleX": 120} など) を 1 つの変更として適用する。
     // commit なら 1 つの undo、そうでなければ preview だけを更新する。
     Q_INVOKABLE bool setEffectValues(const QVariantMap& values, bool commit);
+    // 対象の clip を ID で明示する版。選択 (current clip) に頼らない。プレビューの枠は
+    // 掴んだ clip を最後までこれで指す。
+    Q_INVOKABLE bool setClipEffectValues(const QString& clipId, const QVariantMap& values,
+                                         bool commit);
     // drag が release されずに終わった場合に override を捨てる。
     Q_INVOKABLE bool cancelEffectPreview();
 
@@ -549,15 +553,21 @@ private:
     bool
     applyMediaBinEdit(const std::function<project::MediaBinEditResult(project::Project&)>& edit,
                       const QString& successStatus);
-    // timeline へ置いた素材を bin にも登録する。既に同じ file の素材があれば何もしない。
+    // timeline へ置く素材を bin に登録し、その素材を返す (clip は素材の id を持つ)。
+    // 既に同じ file の素材があればそれを返す。失敗したら nullptr (error に理由)。
     // probed を渡すとそれを使い、素材を調べ直さない (画像の decode は重い)。
-    bool registerMediaItem(project::Project& candidate, const std::filesystem::path& mediaPath,
-                           QString& error, const MediaImportResult* probed = nullptr) const;
-    // 置く素材。probed は判定済みの結果 (あれば bin 登録で調べ直さない)。
+    // 戻り値は candidate.mediaItems の中を指すので、candidate を変える前に使うこと。
+    const project::MediaItem* registerMediaItem(project::Project& candidate,
+                                                const std::filesystem::path& mediaPath,
+                                                QString& error,
+                                                const MediaImportResult* probed = nullptr) const;
+    // 置く素材。itemId はプロジェクトパネルの素材 (空なら path を登録する)。
+    // probed は判定済みの結果 (あれば bin 登録で調べ直さない)。
     struct DropMedia {
         std::filesystem::path path;
         project::MediaKind kind = project::MediaKind::Video;
         const MediaImportResult* probed = nullptr;
+        std::string itemId;
     };
     bool placeMediaAtDropPoint(const std::vector<DropMedia>& media, const QString& trackKind,
                                int trackIndex, qint64 frame);
@@ -646,7 +656,6 @@ private:
     // clip から audio source descriptor を組む。offset の換算は mapping 側へ委譲する。
     bool audioDescriptorFor(int clipIndex, preview::PreviewSourceDescriptor& descriptor,
                             QString& error);
-    bool refreshCurrentClipEffectsPreview(QString& error);
     void refreshTimelineModel();
     // trackKind 文字列を TrackRef へ解決する。失敗時は status を設定して false。
     bool resolveTrackRef(const QString& trackKind, int trackIndex, project::TrackRef& track) const;

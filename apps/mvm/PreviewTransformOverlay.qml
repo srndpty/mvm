@@ -31,14 +31,16 @@ Item {
         return overlay.clipId !== "" ? mvmController.clipVisualGeometry(overlay.clipId) : ({});
     }
     readonly property bool shown: active && geometry.visible === true
-    // 回転中はハンドルで拡縮しない (拡縮の軸が画面の軸と一致しないため)。移動はできる。
-    readonly property bool resizable: shown && geometry.rotation === 0
 
     // ドラッグの状態。mode は "move" かハンドル名。
     property string mode: ""
     property string dragClipId: ""
     property var startRect: null
     property var startBounds: null
+    // 押した時点の回転 (中心と角度)。回転した素材の拡縮は素材の座標で計算する。
+    property real startPivotX: 0
+    property real startPivotY: 0
+    property real startRotation: 0
     property point startPointer
     property point grabOffset
     property var lines: null
@@ -61,6 +63,9 @@ Item {
         mode = nextMode;
         dragClipId = id;
         startRect = rectOf(current);
+        startPivotX = current.pivotX;
+        startPivotY = current.pivotY;
+        startRotation = current.rotation;
         startBounds = Transform.rotatedBounds(startRect, current.pivotX, current.pivotY,
                                               current.rotation);
         startPointer = pointer;
@@ -75,7 +80,7 @@ Item {
                                                           rect.width, rect.height);
         if (values.positionX === undefined)
             return;
-        if (mvmController.setEffectValues(values, false))
+        if (mvmController.setClipEffectValues(dragClipId, values, false))
             lastValues = values;
     }
 
@@ -83,7 +88,7 @@ Item {
     function finish(commit) {
         if (mode !== "" && lastValues !== null) {
             if (commit)
-                mvmController.setEffectValues(lastValues, true);
+                mvmController.setClipEffectValues(dragClipId, lastValues, true);
             else
                 mvmController.cancelEffectPreview();
         }
@@ -175,70 +180,78 @@ Item {
             height: 16
             color: "#4a90e2"
         }
-    }
 
-    // 8 つのハンドル (四隅と四辺)。
-    Repeater {
-        model: Transform.handles()
-        delegate: Rectangle {
-            id: handle
-            required property var modelData
-            readonly property string name: modelData.name
-            visible: overlay.resizable
-            x: overlay.resizable ? (overlay.geometry.x + overlay.geometry.width * modelData.fx)
-                                   * overlay.toHostX - width / 2 : 0
-            y: overlay.resizable ? (overlay.geometry.y + overlay.geometry.height * modelData.fy)
-                                   * overlay.toHostY - height / 2 : 0
-            width: 9
-            height: 9
-            radius: 4.5
-            color: "white"
-            border.color: "#4a90e2"
-            border.width: 1
+        // 8 つのハンドル (四隅と四辺)。枠と一緒に回るので、回転した素材も同じ手触りで拡縮できる。
+        Repeater {
+            model: Transform.handles()
+            delegate: Rectangle {
+                id: handle
+                required property var modelData
+                readonly property string name: modelData.name
+                x: frame.width * modelData.fx - width / 2
+                y: frame.height * modelData.fy - height / 2
+                width: 9
+                height: 9
+                radius: 4.5
+                color: "white"
+                border.color: "#4a90e2"
+                border.width: 1
 
-            MouseArea {
-                id: handleArea
-                // 掴みやすいよう、見た目より少し広く取る。
-                anchors.fill: parent
-                anchors.margins: -4
-                enabled: overlay.resizable
-                acceptedButtons: Qt.LeftButton
-                preventStealing: true
-                cursorShape: handle.name === "tl" || handle.name === "br" ? Qt.SizeFDiagCursor
-                             : handle.name === "tr" || handle.name === "bl" ? Qt.SizeBDiagCursor
-                             : handle.name === "l" || handle.name === "r" ? Qt.SizeHorCursor
-                             : Qt.SizeVerCursor
-                onPressed: mouse => {
-                    const pointer = overlay.pointerAt(handleArea, mouse.x, mouse.y);
-                    if (!overlay.begin(handle.name, overlay.clipId, pointer)) {
-                        mouse.accepted = false;
-                        return;
+                MouseArea {
+                    id: handleArea
+                    // 掴みやすいよう、見た目より少し広く取る。
+                    anchors.fill: parent
+                    anchors.margins: -4
+                    enabled: overlay.shown
+                    acceptedButtons: Qt.LeftButton
+                    preventStealing: true
+                    cursorShape: handle.name === "tl" || handle.name === "br" ? Qt.SizeFDiagCursor
+                                 : handle.name === "tr" || handle.name === "bl" ? Qt.SizeBDiagCursor
+                                 : handle.name === "l" || handle.name === "r" ? Qt.SizeHorCursor
+                                 : Qt.SizeVerCursor
+                    onPressed: mouse => {
+                        const pointer = overlay.pointerAt(handleArea, mouse.x, mouse.y);
+                        if (!overlay.begin(handle.name, overlay.clipId, pointer)) {
+                            mouse.accepted = false;
+                            return;
+                        }
+                        // ハンドルの中心からずれた位置を掴んでも、辺が指へ跳ばないようにする。
+                        // 回転していればハンドルの中心も画面上で回っている。
+                        const start = overlay.startRect;
+                        const center = Transform.rotatePoint(
+                            start.x + start.width * handle.modelData.fx,
+                            start.y + start.height * handle.modelData.fy, overlay.startPivotX,
+                            overlay.startPivotY, overlay.startRotation);
+                        overlay.grabOffset = Qt.point(center.x - pointer.x, center.y - pointer.y);
                     }
-                    // ハンドルの中心からずれた位置を掴んでも、辺が指へ跳ばないようにする。
-                    const start = overlay.startRect;
-                    overlay.grabOffset = Qt.point(
-                        start.x + start.width * handle.modelData.fx - pointer.x,
-                        start.y + start.height * handle.modelData.fy - pointer.y);
+                    onPositionChanged: mouse => {
+                        if (overlay.mode !== handle.name)
+                            return;
+                        const pointer = overlay.pointerAt(handleArea, mouse.x, mouse.y);
+                        const options = {
+                            "keepAspect": (mouse.modifiers & Qt.ControlModifier) !== 0,
+                            "fromCenter": (mouse.modifiers & Qt.AltModifier) !== 0
+                        };
+                        const target = { "x": pointer.x + overlay.grabOffset.x,
+                                         "y": pointer.y + overlay.grabOffset.y };
+                        if (overlay.startRotation % 360 !== 0) {
+                            // 回転した辺は画面の軸と揃わないので吸着しない。
+                            overlay.apply(Transform.resizeRotatedRect(
+                                              overlay.startRect, overlay.startPivotX,
+                                              overlay.startPivotY, overlay.startRotation, handle.name,
+                                              target, options, overlay.minimumSize), [], []);
+                            return;
+                        }
+                        const resized = Transform.resizeRect(overlay.startRect, handle.name, target,
+                                                             options, overlay.minimumSize);
+                        const snapped = Transform.snapResize(overlay.startRect, resized, handle.name,
+                                                             overlay.lines, overlay.snapThreshold,
+                                                             options, overlay.minimumSize);
+                        overlay.apply(snapped.rect, snapped.guidesX, snapped.guidesY);
+                    }
+                    onReleased: overlay.finish(true)
+                    onCanceled: overlay.finish(false)
                 }
-                onPositionChanged: mouse => {
-                    if (overlay.mode !== handle.name)
-                        return;
-                    const pointer = overlay.pointerAt(handleArea, mouse.x, mouse.y);
-                    const options = {
-                        "keepAspect": (mouse.modifiers & Qt.ControlModifier) !== 0,
-                        "fromCenter": (mouse.modifiers & Qt.AltModifier) !== 0
-                    };
-                    const target = { "x": pointer.x + overlay.grabOffset.x,
-                                     "y": pointer.y + overlay.grabOffset.y };
-                    const resized = Transform.resizeRect(overlay.startRect, handle.name, target,
-                                                         options, overlay.minimumSize);
-                    const snapped = Transform.snapResize(overlay.startRect, resized, handle.name,
-                                                         overlay.lines, overlay.snapThreshold,
-                                                         options, overlay.minimumSize);
-                    overlay.apply(snapped.rect, snapped.guidesX, snapped.guidesY);
-                }
-                onReleased: overlay.finish(true)
-                onCanceled: overlay.finish(false)
             }
         }
     }

@@ -290,6 +290,7 @@ void testModel() {
                           video("inner", 60, 1, 10, "f-a"), audio("deep", 48000, 10, "f-sub")};
     mvm::project::TimelineClip clip;
     clip.mediaPath = "C:/media/b-clip.mp4";
+    clip.mediaItemId = "b-clip";
     project.timelineClips.push_back(clip);
 
     MediaBinModel model;

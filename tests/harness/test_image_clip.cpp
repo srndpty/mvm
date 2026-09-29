@@ -9,6 +9,7 @@
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "project/project_json.h"
 #include "project/timeline_edit.h"
+#include "test_media_fixture.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -59,6 +60,7 @@ mvm::project::Project projectWith(mvm::project::TimelineClip clip) {
     project.outputWidth = 320;
     project.outputHeight = 240;
     project.timelineClips.push_back(std::move(clip));
+    mvm::test::attachFixtureMedia(project);
     return project;
 }
 

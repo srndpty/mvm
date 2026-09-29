@@ -824,30 +824,46 @@ TimelineEditResult placeMediaAtDrop(Project& project, TimelineClip primary,
     // リンク対は、ドロップした行の種別に合う側をその track へ置く。
     const TimelineClip& onTarget =
         linkedAudio && target.kind == TrackKind::Audio ? *linkedAudio : primary;
-    if (!clipKindFitsTrackKind(onTarget.kind, target.kind)) {
-        result.error = target.kind == TrackKind::Video ? "この素材は映像トラックへ置けません"
-                                                       : "この素材は音声トラックへ置けません";
-        return result;
-    }
+    const TrackKind ownKind =
+        onTarget.kind == TimelineClipKind::Audio ? TrackKind::Audio : TrackKind::Video;
+    TimelineClip alone = onTarget;
+    alone.linkGroupId.clear();
+    const auto fitsAt = [&](const Project& base, TrackRef track) {
+        Project probe = base;
+        return placeTimelineClipAt(probe, alone, track, timelineStartFrame).success;
+    };
 
     Project candidate = project;
-    if (target.index == trackCount) {
+    const bool kindFits = clipKindFitsTrackKind(onTarget.kind, target.kind);
+    if (kindFits && target.index == trackCount) {
         const auto added = addTrack(candidate, target.kind);
         if (!added.success) {
             result.error = added.error;
             return result;
         }
     }
-    // ドロップ先に重なる clip があれば、上書きも別 track への退避もせずに失敗する。
-    {
-        Project probe = candidate;
-        TimelineClip alone = onTarget;
-        alone.linkGroupId.clear();
-        const auto fits = placeTimelineClipAt(probe, std::move(alone), target, timelineStartFrame);
-        if (!fits.success) {
-            result.error = "ドロップ先に既存のクリップがあります: " + fits.error;
+    // ドロップした行に置けない (種別が違う・既存の clip と重なる) ときは、上書きせずに
+    // 同じ種別で空いている track (無ければ新しい track) へ回す。時刻はドロップした位置のまま。
+    if (!kindFits || !fitsAt(candidate, target)) {
+        int chosen = -1;
+        Project scratch = candidate;
+        const auto found =
+            placeOnFirstFreeTrack(scratch, ownKind, 0, [&](Project& attempt, int index) {
+                chosen = index;
+                return placeTimelineClipAt(attempt, alone, {ownKind, index}, timelineStartFrame);
+            });
+        if (!found.success) {
+            result.error = found.error;
             return result;
         }
+        while (static_cast<int>(tracksOfKind(candidate, ownKind).size()) <= chosen) {
+            const auto added = addTrack(candidate, ownKind);
+            if (!added.success) {
+                result.error = added.error;
+                return result;
+            }
+        }
+        target = {ownKind, chosen};
     }
     if (!linkedAudio) {
         result = placeTimelineClipAt(candidate, std::move(primary), target, timelineStartFrame);
@@ -1672,6 +1688,7 @@ TimelineEditResult appendManimTimelineClipAt(Project& project, const ManimAsset&
                                        asset.generatedVideoPath,
                                        asset.sceneName,
                                        std::move(clipId),
+                                       {}, // Manim は素材 (mediaItemId) を指さない
                                        sourceFpsNum,
                                        sourceFpsDen,
                                        sourceFrameCount,

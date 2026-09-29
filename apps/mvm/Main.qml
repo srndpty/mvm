@@ -1037,6 +1037,18 @@ ApplicationWindow {
                     id: previewArea
                     anchors.fill: parent
 
+                    // タイムラインと同じく、押したらキーボードの宛先をここへ移す。press は下へ流す。
+                    MouseArea {
+                        anchors.fill: parent
+                        z: 10000
+                        acceptedButtons: Qt.AllButtons
+                        onPressed: mouse => {
+                            if (!root.textEditing)
+                                previewArea.forceActiveFocus();
+                            mouse.accepted = false;
+                        }
+                    }
+
                     Item {
                         id: previewHost
                         objectName: "previewHost"
@@ -1368,6 +1380,18 @@ ApplicationWindow {
             radius: 5
             color: "#20242a"
             border.color: "#3c424c"
+
+            // タイムラインを押したらキーボードの宛先をここへ移す。プロジェクトパネルに
+            // フォーカスが残ったままだと、Delete が素材の削除になる。press は下へ流す。
+            MouseArea {
+                anchors.fill: parent
+                z: 10000
+                acceptedButtons: Qt.AllButtons
+                onPressed: mouse => {
+                    timelinePanel.forceActiveFocus();
+                    mouse.accepted = false;
+                }
+            }
 
             // 離散段階で管理し、下限へ到達した後も逆方向のwheelを確実に受理する。
             readonly property var zoomLevels: [0.005, 0.01, 0.02, 0.05, 0.1, 0.2,
@@ -2618,7 +2642,7 @@ ApplicationWindow {
                                                                                      deletedFrame);
                                                 else if (penGesture === "select")
                                                     root.mvmController.selectTimelineClip(
-                                                        clipItem.clipId, pressFrame, true);
+                                                        clipItem.clipId, true);
                                                 return;
                                             }
                                             clipItem.penFrame = clipItem.penState.frame;
@@ -2647,7 +2671,7 @@ ApplicationWindow {
                                                 timelinePanel.beginAdjacentPreview(clipItem.clipId, "slide", "",
                                                                                    clipItem.editLinked);
                                             if (!clipItem.selected || !clipItem.editLinked)
-                                                root.mvmController.selectTimelineClip(clipItem.clipId, pressFrame,
+                                                root.mvmController.selectTimelineClip(clipItem.clipId,
                                                                                       clipItem.editLinked);
                                             // スリップ中は preview に新しいイン点の frame を出す。
                                             if (tool === "slip")
@@ -2669,8 +2693,7 @@ ApplicationWindow {
                                         } else if (!clipItem.bodyAdditiveSelection
                                                    && !clipItem.selected) {
                                             // Alt+クリックはリンク相手を外して、この clip だけを選ぶ。
-                                            const frame = pressFrame;
-                                            root.mvmController.selectTimelineClip(clipItem.clipId, frame, clipItem.editLinked);
+                                            root.mvmController.selectTimelineClip(clipItem.clipId, clipItem.editLinked);
                                         }
                                         // 選択を確定した後で、一緒に動く群の端を取る。
                                         clipItem.bodyDragBounds = root.mvmController.timelineDragBounds(clipItem.clipId);
@@ -2836,11 +2859,11 @@ ApplicationWindow {
                                             break;
                                         case "toggle":
                                             root.mvmController.toggleTimelineClipSelection(
-                                                releasedClipId, action.frame);
+                                                releasedClipId);
                                             break;
                                         case "select":
                                             root.mvmController.selectTimelineClip(releasedClipId,
-                                                                             action.frame, action.linked);
+                                                                                  action.linked);
                                             break;
                                         }
                                     }

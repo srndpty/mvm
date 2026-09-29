@@ -87,6 +87,11 @@ const char* timelineClipKindName(TimelineClipKind kind) {
     return "";
 }
 
+bool clipUsesMediaItem(TimelineClipKind kind) {
+    return kind == TimelineClipKind::Video || kind == TimelineClipKind::Audio ||
+           kind == TimelineClipKind::Image;
+}
+
 bool isStillClipKind(TimelineClipKind kind) {
     return kind == TimelineClipKind::Text || kind == TimelineClipKind::Image;
 }

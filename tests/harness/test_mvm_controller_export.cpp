@@ -2,6 +2,7 @@
 #include "mvm_controller.h"
 #include "project/project_json.h"
 #include "project/timeline_edit.h"
+#include "test_media_fixture.h"
 
 #include <algorithm>
 #include <atomic>
@@ -52,6 +53,7 @@ mvm::project::Project videoProject() {
     video.sourceFrameCount = 120;
     video.sourceOutFrame = 120;
     project.timelineClips.push_back(video);
+    mvm::test::attachFixtureMedia(project);
     return project;
 }
 
@@ -68,7 +70,7 @@ mvm::project::Project linkedProject() {
 }
 
 // 素材を Project パネルへ登録済みにする。貼り付けは bin を照合するので、中身が偽の
-// 素材を調べ直させない。
+// 素材を調べ直させない。media を指すように変えた clip は、この素材を指すよう付け替える。
 void registerFixtureMedia(mvm::project::Project& project, const std::filesystem::path& media,
                           const std::string& folderId = {}) {
     mvm::project::MediaItem item;
@@ -80,6 +82,14 @@ void registerFixtureMedia(mvm::project::Project& project, const std::filesystem:
     item.frameCount = 120;
     item.width = 1920;
     item.height = 1080;
+    for (auto& clip : project.timelineClips)
+        if (clip.mediaPath == media)
+            clip.mediaItemId = item.id;
+    // 付け替えで使われなくなった素材は残さない (同じ試験の Project に余計な素材を増やさない)。
+    const auto used = mvm::project::mediaItemsInUse(project);
+    std::erase_if(project.mediaItems, [&](const mvm::project::MediaItem& existing) {
+        return !used.contains(existing.id);
+    });
     project.mediaItems.push_back(item);
 }
 
@@ -607,7 +617,7 @@ void testLinkedClipboard(const std::filesystem::path& path) {
     check(mvm::project::saveProjectJson(source, path).success,
           "リンク複製試験のProjectを保存できません");
     mvm::app::MvmController controller(path, {}, source);
-    controller.selectTimelineClip(QStringLiteral("video"), 0, false);
+    controller.selectTimelineClip(QStringLiteral("video"), false);
     check(controller.copySelectedClips() && controller.pasteClips() && controller.clipCount() == 3,
           "リンク片側を単独でコピー・貼り付けできません");
     check(controller.saveProject(), "単独コピー結果を保存できません");
@@ -786,7 +796,8 @@ void testUnlinkUndo(const std::filesystem::path& path) {
     check(mvm::project::saveProjectJson(initial, path).success,
           "リンク解除試験の初期Projectを保存できません");
     mvm::app::MvmController controller(path, {}, initial);
-    controller.selectTimelineClip("audio", 23, true);
+    controller.seekTimelineFrame(23);
+    controller.selectTimelineClip("audio", true);
     check(controller.currentClipIndex() == 1 && controller.playheadFrame() == 23,
           "Undo前のaudio選択と再生位置を設定できません");
     check(controller.unlinkTimelineClip("audio"), "audioのリンク解除に失敗しました");
@@ -1230,13 +1241,18 @@ void testShiftSelectionToggle(const std::filesystem::path& path) {
         return selectedRole >= 0 && model->data(model->index(row, 0), selectedRole).toBool();
     };
 
-    controller.selectTimelineClip("other", 120, true);
-    controller.toggleTimelineClipSelection("video", 0);
+    // 再生位置はルーラーの操作でだけ動く。clip の選択 (通常・Shift) では動かさない。
+    controller.seekTimelineFrame(37);
+    const auto playheadBefore = controller.playheadFrame();
+    controller.selectTimelineClip("other", true);
+    controller.toggleTimelineClipSelection("video");
     check(selected(0) && selected(1) && selected(2),
           "Shift選択で既存選択へリンクclip一組を追加できません");
-    controller.toggleTimelineClipSelection("audio", 0);
+    controller.toggleTimelineClipSelection("audio");
     check(!selected(0) && !selected(1) && selected(2),
           "選択済みリンクclipのShift選択で一組を解除できません");
+    check(playheadBefore == 37 && controller.playheadFrame() == playheadBefore,
+          "clipの選択で再生位置が動きました");
 }
 
 void testDeleteMultipleSelection(const std::filesystem::path& path) {
@@ -1361,7 +1377,8 @@ void testMediaBinImport(const std::filesystem::path& path, const std::filesystem
     };
 
     {
-        const auto initial = videoProject();
+        // 素材の数を数えるので、素材の無い Project から始める。
+        const auto initial = mvm::project::createDefaultProject();
         check(mvm::project::saveProjectJson(initial, path).success,
               "素材読み込み試験の初期Projectを保存できません");
         mvm::app::MvmController controller(path, {}, initial);
@@ -1565,6 +1582,7 @@ void testMediaFilePlacement(const std::filesystem::path& path, const std::filesy
         mvm::app::MvmController controller(path, {}, initial);
         const auto& bin = *controller.mediaBinModel();
         const auto clipsBefore = placedClips(controller).size();
+        const int binBefore = bin.entryCount();
 
         controller.addMediaFilesToTimelineAt({url(jpg), url(jpg)}, QStringLiteral("video"), 1, 200);
         std::vector<qint64> imageStarts;
@@ -1573,10 +1591,10 @@ void testMediaFilePlacement(const std::filesystem::path& path, const std::filesy
                 clip.trackIndex == 1)
                 imageStarts.push_back(clip.start);
         std::sort(imageStarts.begin(), imageStarts.end());
-        check(imageStarts == std::vector<qint64>{200, 500} && bin.entryCount() == 1,
+        check(imageStarts == std::vector<qint64>{200, 500} && bin.entryCount() == binBefore + 1,
               "ドロップした画像がV2の指定位置から並ばない、またはbinへ1件だけ登録されません");
         check(controller.undoLastEdit() && placedClips(controller).size() == clipsBefore &&
-                  bin.entryCount() == 0,
+                  bin.entryCount() == binBefore,
               "ドロップ配置を1回のUndoで戻せません");
 
         // 最下段より下へのドロップは audio track を足して置く。
@@ -1607,15 +1625,50 @@ void testMediaFilePlacement(const std::filesystem::path& path, const std::filesy
                   placedClips(controller).size() == beforeFailure &&
                   bin.entryCount() == binBeforeFailure,
               "判定できない素材のドロップで何かが登録・配置されました");
-        check(!controller.addMediaItemsToTimelineAt({wavId}, QStringLiteral("video"), 1, 0) &&
-                  placedClips(controller).size() == beforeFailure,
-              "音声を映像trackへ置けてしまいます");
-        check(!controller.addMediaItemsToTimelineAt({wavId}, QStringLiteral("audio"), 0, 450) &&
-                  placedClips(controller).size() == beforeFailure,
-              "既存clipと重なる位置へ置けてしまいます");
+        // 置けない行 (種別違い・使用中) へ落とした素材は、置ける track へ回す。無言で失敗しない。
+        const auto audioStartsAt = [&](qint64 frame) {
+            for (const auto& clip : placedClips(controller))
+                if (clip.kind == QLatin1String("audio") && clip.start == frame)
+                    return clip.trackKind == QLatin1String("audio");
+            return false;
+        };
+        controller.addMediaItemsToTimelineAt({wavId}, QStringLiteral("video"), 1, 900);
+        check(placedClips(controller).size() == beforeFailure + 1 && audioStartsAt(900),
+              "映像trackへ落とした音声を音声trackへ回せません");
+        controller.addMediaItemsToTimelineAt({wavId}, QStringLiteral("audio"), 0, 450);
+        check(placedClips(controller).size() == beforeFailure + 2 && audioStartsAt(450),
+              "使用中の音声trackへ落とした音声を空いているtrackへ回せません");
         check(!controller.addMediaItemsToTimelineAt({QStringLiteral("missing")},
                                                     QStringLiteral("audio"), 0, 0),
               "存在しない素材のドロップが成功しました");
+
+        // 登録後に中身が差し替わった・消えた画像は、保存済みの種別を信じて置かない。
+        const auto swapped = path.parent_path() / L"swap-still.jpg";
+        std::error_code copyError;
+        std::filesystem::copy_file(jpg, swapped, std::filesystem::copy_options::overwrite_existing,
+                                   copyError);
+        check(!copyError && controller.importMediaFiles({url(swapped)}, {}),
+              "差し替え試験の静止画を登録できません");
+        const QString swappedId = binEntryIdNamed(bin, QStringLiteral("swap-still.jpg"));
+        // 対照: 差し替える前なら置ける。
+        const auto beforeControl = placedClips(controller).size();
+        controller.addMediaItemsToTimelineAt({swappedId}, QStringLiteral("video"), 1, 2000);
+        check(placedClips(controller).size() == beforeControl + 1 && controller.undoLastEdit() &&
+                  placedClips(controller).size() == beforeControl,
+              "差し替え前の静止画をパネルから置けません (対照群)");
+        std::filesystem::copy_file(gif, swapped, std::filesystem::copy_options::overwrite_existing,
+                                   copyError);
+        const auto beforeSwap = placedClips(controller).size();
+        check(!copyError &&
+                  !controller.addMediaItemsToTimelineAt({swappedId}, QStringLiteral("video"), 1,
+                                                        2000) &&
+                  placedClips(controller).size() == beforeSwap,
+              "動く画像へ差し替わった素材をパネルから置けてしまいます");
+        std::filesystem::remove(swapped);
+        check(
+            !controller.addMediaItemsToTimelineAt({swappedId}, QStringLiteral("video"), 1, 2000) &&
+                placedClips(controller).size() == beforeSwap,
+            "消えた画像をパネルから置けてしまいます");
         controller.shutdown();
     }
 }
@@ -1626,8 +1679,7 @@ void testPreviewTransform(const std::filesystem::path& path) {
     const auto near = [](const QVariant& value, double expected) {
         return std::abs(value.toDouble() - expected) < 1e-6;
     };
-    auto initial = videoProject(); // V1 に 0..120 の 1920x1080 動画
-    registerFixtureMedia(initial, initial.timelineClips.front().mediaPath);
+    const auto initial = videoProject(); // V1 に 0..120 の 1920x1080 動画 (素材付き)
     check(mvm::project::saveProjectJson(initial, path).success,
           "枠の試験の初期Projectを保存できません");
     {
@@ -1684,15 +1736,25 @@ void testPreviewTransform(const std::filesystem::path& path) {
         controller.shutdown();
     }
     {
-        // 素材がプロジェクトパネルに無ければ寸法が分からないので、枠を出さない。
-        auto orphan = videoProject();
-        check(mvm::project::saveProjectJson(orphan, path).success,
-              "素材の無い試験のProjectを保存できません");
-        mvm::app::MvmController controller(path, {}, orphan);
-        controller.selectTimelineClips({QStringLiteral("video")});
-        check(controller.clipVisualGeometry(QStringLiteral("video")).isEmpty() &&
-                  controller.visualClipAt(100, 100).isEmpty(),
-              "寸法の分からない素材に枠を出しました");
+        // リンクした音声側を選んでも枠は映像に出る。ハンドルの変更は映像だけに効き、
+        // 選択 (current clip = 音声) に引きずられない。
+        const auto linked = linkedProject();
+        check(mvm::project::saveProjectJson(linked, path).success,
+              "リンク対の枠の試験のProjectを保存できません");
+        mvm::app::MvmController controller(path, {}, linked);
+        controller.selectTimelineClip(QStringLiteral("audio"), true);
+        check(controller.currentClipIndex() == 1 &&
+                  controller.transformClipId() == QStringLiteral("video"),
+              "リンク対の音声を選んだとき枠が映像に出ません");
+        const auto values =
+            controller.effectsForVisualRect(QStringLiteral("video"), 0, 0, 960, 1080);
+        check(controller.setClipEffectValues(QStringLiteral("video"), values, true),
+              "枠の対象clipを指定してeffectを確定できません");
+        check(near(controller.clipVisualGeometry(QStringLiteral("video")).value("width"), 960) &&
+                  near(controller.effectScaleX(), 100) && controller.currentClipIndex() == 1,
+              "枠の変更が映像以外 (選択中の音声) に効きました");
+        check(!controller.setClipEffectValues(QStringLiteral("missing"), values, true),
+              "存在しないclipへeffectを適用できてしまいます");
         controller.shutdown();
     }
 }

@@ -934,6 +934,7 @@ private:
         bool hasTrackKind = false;
         bool hasTrackIndex = false;
         bool hasLinkGroupId = false;
+        bool hasMediaItemId = false;
         bool hasSpeedNum = false;
         bool hasSpeedDen = false;
         bool hasText = false;
@@ -1009,6 +1010,10 @@ private:
                     if (hasSpeedDen || !parseInteger64(clip.speedDen))
                         return fail("timeline clip の speed_den が重複または不正です");
                     hasSpeedDen = true;
+                } else if (key == "media_item_id") {
+                    if (hasMediaItemId || !parseString(clip.mediaItemId))
+                        return fail("timeline clip の media_item_id が重複または不正です");
+                    hasMediaItemId = true;
                 } else if (key == "link_group_id") {
                     if (hasLinkGroupId || !parseString(clip.linkGroupId))
                         return fail("timeline clip の link_group_id が重複または不正です");
@@ -1034,7 +1039,7 @@ private:
             return false;
         if (!hasKind || !hasMedia || !hasName || !hasId || !hasSourceFpsNum || !hasSourceFpsDen ||
             !hasSourceFrameCount || !hasSourceIn || !hasSourceOut || !hasTimelineStart ||
-            !hasTrackKind || !hasTrackIndex || !hasSpeedNum || !hasSpeedDen)
+            !hasTrackKind || !hasTrackIndex || !hasSpeedNum || !hasSpeedDen || !hasMediaItemId)
             return fail("timeline clip の必須 field がありません");
         if (hasText != (kind == "text"))
             return fail("timeline clip の text と kind が一致しません");
@@ -1422,6 +1427,7 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
              << "      \"speed_den\": " << clip.speedDen << ",\n"
              << "      \"track_kind\": \"" << trackKindName(clip.track.kind) << "\",\n"
              << "      \"track_index\": " << clip.track.index << ",\n"
+             << "      \"media_item_id\": \"" << escapeJson(clip.mediaItemId) << "\",\n"
              << "      \"link_group_id\": \"" << escapeJson(clip.linkGroupId) << "\",\n"
              << "      \"effects\": {\n"
              << "        \"position_x_percent\": " << clip.effects.positionXPercent << ",\n"

@@ -15,21 +15,15 @@ function copyRect(rect) {
 function rotatedBounds(rect, pivotX, pivotY, degrees) {
     if (!finite(degrees) || degrees === 0)
         return copyRect(rect);
-    const radians = degrees * Math.PI / 180;
-    const cosine = Math.cos(radians);
-    const sine = Math.sin(radians);
     const corners = [[rect.x, rect.y], [rect.x + rect.width, rect.y],
                      [rect.x, rect.y + rect.height], [rect.x + rect.width, rect.y + rect.height]];
     let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
     for (let index = 0; index < corners.length; ++index) {
-        const dx = corners[index][0] - pivotX;
-        const dy = corners[index][1] - pivotY;
-        const x = pivotX + cosine * dx - sine * dy;
-        const y = pivotY + sine * dx + cosine * dy;
-        left = Math.min(left, x);
-        right = Math.max(right, x);
-        top = Math.min(top, y);
-        bottom = Math.max(bottom, y);
+        const point = rotatePoint(corners[index][0], corners[index][1], pivotX, pivotY, degrees);
+        left = Math.min(left, point.x);
+        right = Math.max(right, point.x);
+        top = Math.min(top, point.y);
+        bottom = Math.max(bottom, point.y);
     }
     return { "x": left, "y": top, "width": right - left, "height": bottom - top };
 }
@@ -222,6 +216,34 @@ function snapResize(start, rect, handle, lines, threshold, options, minSize) {
         "guidesX": useX ? [snapX.line] : [],
         "guidesY": useY ? [snapY.line] : []
     };
+}
+
+// (x, y) を pivot を中心に degrees だけ回した点 (時計回り、画面の y 下向き)。
+function rotatePoint(x, y, pivotX, pivotY, degrees) {
+    const radians = degrees * Math.PI / 180;
+    const dx = x - pivotX;
+    const dy = y - pivotY;
+    return { "x": pivotX + Math.cos(radians) * dx - Math.sin(radians) * dy,
+             "y": pivotY + Math.sin(radians) * dx + Math.cos(radians) * dy };
+}
+
+// 回転した素材の拡縮。画面上の pointer を回転前 (素材の座標) へ戻してから resizeRect で
+// 拡縮し、回転の中心が動いた分をずらして、固定する側 (反対の角・辺、Alt なら中心) を
+// 画面上で動かさない。回転の中心は矩形の中の同じ割合の位置にある (crop 範囲の中心)。
+// 回転した辺は画面の軸と揃わないので吸着はしない。
+function resizeRotatedRect(start, pivotX, pivotY, degrees, handle, pointer, options, minSize) {
+    if (!pointer || !finite(pointer.x) || !finite(pointer.y) || !finite(degrees))
+        return copyRect(start);
+    const local = rotatePoint(pointer.x, pointer.y, pivotX, pivotY, -degrees);
+    const resized = resizeRect(start, handle, local, options, minSize);
+    // 新しい矩形の回転の中心 P'。画面上の位置を保つには (I - R)(P - P') だけずらす。
+    const fractionX = (pivotX - start.x) / start.width;
+    const fractionY = (pivotY - start.y) / start.height;
+    const dx = pivotX - (resized.x + fractionX * resized.width);
+    const dy = pivotY - (resized.y + fractionY * resized.height);
+    const turned = rotatePoint(dx, dy, 0, 0, degrees);
+    return { "x": resized.x + dx - turned.x, "y": resized.y + dy - turned.y,
+             "width": resized.width, "height": resized.height };
 }
 
 // 画面上の吸着距離 (px) を出力画素へ換算する。

@@ -142,8 +142,9 @@ TimelineEditResult placeAudioClipAt(Project& project, TimelineClip clip,
 //   target.index が track 数と等しければ、その種別の track を末尾に足して置く
 //   linkedAudio があれば、ドロップした行の種別に合う側を target へ置き、相手は
 //   もう一方の種別で空いている最初の非 mute track (無ければ新しい track) へ置く
-//   target に重なる clip があれば失敗する (上書きも退避もしない)
-//   開始位置が負なら 0 へ寄せる
+//   target に置けない (種別が違う・既存の clip と重なる) ときは上書きせず、同じ種別で
+//   空いている最初の非 mute track (無ければ新しい track) へ置く。時刻は変えない
+//   開始位置が負なら 0 へ寄せる。target.index が範囲外なら失敗する
 TimelineEditResult placeMediaAtDrop(Project& project, TimelineClip primary,
                                     std::optional<TimelineClip> linkedAudio, TrackRef target,
                                     std::int64_t timelineStartFrame);

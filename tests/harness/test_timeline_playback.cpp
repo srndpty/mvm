@@ -21,6 +21,7 @@ mvm::project::TimelineClip clip(const char* name, const char* id) {
             std::string(name) + ".mp4",
             name,
             id,
+            {},
             60,
             1,
             60,

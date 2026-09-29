@@ -226,9 +226,12 @@ Item {
                 ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
 
                 // リストにfocusがある間は削除・選択移動をtimelineのshortcutより優先する。
+                // Delete は素材を選んでいる時だけ受ける。選んでいなければ window の
+                // Shortcut (clip の削除) へ回す。
                 Keys.onShortcutOverride: event => {
                     event.accepted = panel.renamingId === ""
-                        && (event.key === Qt.Key_Delete || event.key === Qt.Key_F2
+                        && ((event.key === Qt.Key_Delete && panel.selectedIds.length > 0)
+                            || event.key === Qt.Key_F2
                             || event.key === Qt.Key_Left || event.key === Qt.Key_Right
                             || event.key === Qt.Key_Up || event.key === Qt.Key_Down);
                 }
@@ -314,7 +317,6 @@ Item {
                     required property string sizeText
                     required property string mediaPath
                     required property bool inUse
-                    required property bool usageUnknown
 
                     readonly property bool isFolder: entryKind === "folder"
                     readonly property bool selected: panel.selectedIds.indexOf(entryId) >= 0
@@ -328,9 +330,7 @@ Item {
                     ToolTip.visible: rowMouse.containsMouse && mediaPath !== ""
                                      && !rowMouse.pressed
                     ToolTip.delay: 800
-                    ToolTip.text: mediaPath + (inUse ? "\n(タイムラインで使用中)"
-                                               : usageUnknown ? "\n(ファイルを確認できず、使用中か不明)"
-                                               : "")
+                    ToolTip.text: mediaPath + (inUse ? "\n(タイムラインで使用中)" : "")
 
                     Row {
                         anchors.fill: parent
