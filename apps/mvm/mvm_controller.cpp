@@ -3464,7 +3464,7 @@ bool MvmController::placeCopiedClips(const std::vector<project::TimelineClip>& c
                                      const std::vector<project::MediaItem>& mediaItems,
                                      std::int64_t sourceFpsNum, std::int64_t sourceFpsDen,
                                      std::int64_t destinationFrame, int videoTrackDelta,
-                                     int audioTrackDelta) {
+                                     int audioTrackDelta, CopyPlacement placement) {
     if (busy_ || !pauseTimeline())
         return false;
     if (clips.empty()) {
@@ -3533,12 +3533,22 @@ bool MvmController::placeCopiedClips(const std::vector<project::TimelineClip>& c
         auto& tracks = project::tracksOfKind(candidate, kind);
         int chosen = -1;
         std::vector<int> trackOrder;
-        if (laneClips.front().track.index <= static_cast<int>(tracks.size()))
+        if (placement == CopyPlacement::ExactTrack) {
+            // ドラッグで見せた track にそのまま置く。重なりは validateTimeline が拒否する。
+            if (laneClips.front().track.index >= static_cast<int>(tracks.size())) {
+                setStatus(QStringLiteral("配置先のtrackが範囲外です"));
+                return false;
+            }
+        } else if (laneClips.front().track.index <= static_cast<int>(tracks.size()))
             trackOrder.push_back(laneClips.front().track.index);
-        for (int index = 0; index <= static_cast<int>(tracks.size()); ++index) {
+        for (int index = 0; placement == CopyPlacement::FindFreeTrack &&
+                            index <= static_cast<int>(tracks.size());
+             ++index) {
             if (std::find(trackOrder.begin(), trackOrder.end(), index) == trackOrder.end())
                 trackOrder.push_back(index);
         }
+        if (placement == CopyPlacement::ExactTrack)
+            chosen = laneClips.front().track.index;
         for (const int index : trackOrder) {
             if (index < static_cast<int>(tracks.size()) &&
                 tracks[static_cast<std::size_t>(index)].muted)
@@ -3641,12 +3651,13 @@ bool MvmController::placeCopiedClips(const std::vector<project::TimelineClip>& c
 
 bool MvmController::pasteClips() {
     return placeCopiedClips(clipboardClips_, clipboardMediaItems_, clipboardFpsNum_,
-                            clipboardFpsDen_, playheadFrame_, 0, 0);
+                            clipboardFpsDen_, playheadFrame_, 0, 0, CopyPlacement::FindFreeTrack);
 }
 
 bool MvmController::duplicateSelectedClips() {
     return placeCopiedClips(selectedTimelineClipsInOrder({}), project_.mediaItems,
-                            project_.timelineFpsNum, project_.timelineFpsDen, playheadFrame_, 0, 0);
+                            project_.timelineFpsNum, project_.timelineFpsDen, playheadFrame_, 0, 0,
+                            CopyPlacement::FindFreeTrack);
 }
 
 QVariantMap MvmController::timelineDragBounds(const QString& clipId) const {
@@ -3694,15 +3705,16 @@ bool MvmController::duplicateTimelineClipsAt(const QString& clipId, const QStrin
         std::min_element(clips.begin(), clips.end(), [](const auto& a, const auto& b) {
             return a.timelineStartFrame < b.timelineStartFrame;
         });
-    // 位置を後から寄せると、ドラッグ中に見せた位置と確定位置がずれる。QML が
-    // timelineDragBounds で丸めた値を渡すので、範囲外は placeCopiedClips が拒否する。
+    // 位置や track を後から寄せると、ドラッグ中に見せた位置と確定位置がずれる。QML が
+    // timelineDragBounds で丸めた値を渡すので、範囲外や既存 clip との重なりは拒否する。
     const qint64 destinationFirst =
         timelineStartFrame - (anchor.timelineStartFrame - first->timelineStartFrame);
     return placeCopiedClips(
         clips, project_.mediaItems, project_.timelineFpsNum, project_.timelineFpsDen,
         destinationFirst,
         destination.kind == project::TrackKind::Video ? destination.index - anchor.track.index : 0,
-        destination.kind == project::TrackKind::Audio ? destination.index - anchor.track.index : 0);
+        destination.kind == project::TrackKind::Audio ? destination.index - anchor.track.index : 0,
+        CopyPlacement::ExactTrack);
 }
 
 bool MvmController::addTimelineMarker() {

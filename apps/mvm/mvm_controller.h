@@ -662,12 +662,19 @@ private:
     std::vector<project::TimelineClip>
     selectedTimelineClipsInOrder(const std::string& anchorId) const;
     void storeClipboard(std::vector<project::TimelineClip> clips);
+    // 貼り付け先の track の決め方。
+    //   FindFreeTrack: 希望 track が塞がっていれば空き track を探し、無ければ足す
+    //                  (Ctrl+V / Ctrl+D。置き場所を見せていない)。
+    //   ExactTrack   : 希望 track にそのまま置き、重なれば拒否する
+    //                  (Alt+ドラッグ。ghost で見せた場所と確定を一致させる)。
+    enum class CopyPlacement { FindFreeTrack, ExactTrack };
     // clips を destinationFrame / track delta の位置へ新しい id で置き、mediaItems を使って
     // 素材を bin にも登録する。すべて 1 つの undo になる。
     bool placeCopiedClips(const std::vector<project::TimelineClip>& clips,
                           const std::vector<project::MediaItem>& mediaItems,
                           std::int64_t sourceFpsNum, std::int64_t sourceFpsDen,
-                          std::int64_t destinationFrame, int videoTrackDelta, int audioTrackDelta);
+                          std::int64_t destinationFrame, int videoTrackDelta, int audioTrackDelta,
+                          CopyPlacement placement);
     std::unique_ptr<QTemporaryDir> textRasterDirectory_;
     // preview の合成 (const) からも埋めるので mutable。Project を変えるたびに捨てる。
     mutable QHash<QString, QImage> textRasterImages_;

@@ -539,6 +539,8 @@ void testGroupDuplicateBounds(const std::filesystem::path& path) {
     upper.track = {mvm::project::TrackKind::Video, 1};
     upper.timelineStartFrame = 100;
     source.timelineClips.push_back(upper);
+    // 空き track 探しは mute 中の track を飛ばす。Alt+ドラッグでは飛ばさないことを見る。
+    source.videoTracks[1].muted = true;
     check(mvm::project::saveProjectJson(source, path).success,
           "複数clip複製の境界試験のProjectを保存できません");
     mvm::app::MvmController controller(path, {}, source);
@@ -566,18 +568,28 @@ void testGroupDuplicateBounds(const std::filesystem::path& path) {
                                                300) &&
               controller.clipCount() == 2,
           "群の下端がtrack範囲外になる複製を確定しました");
-    // 群の左端が 0 に接する位置 (QML が丸めた値) なら、そのまま置く。
+    // 元と同じ位置 (ghost は元の V1 / V2 に重なって見える) は、別 track へ逃がさず拒否する。
+    check(!controller.duplicateTimelineClipsAt(QStringLiteral("upper"), QStringLiteral("video"), 1,
+                                               100) &&
+              controller.clipCount() == 2 && controller.videoTrackCount() == 2,
+          "元clipと重なるAlt+ドラッグ複製を別trackへ移して確定しました");
+    // 少しだけ右へずらして一部が重なる場合も同じ。
+    check(!controller.duplicateTimelineClipsAt(QStringLiteral("upper"), QStringLiteral("video"), 1,
+                                               150) &&
+              controller.clipCount() == 2 && controller.videoTrackCount() == 2,
+          "一部が重なるAlt+ドラッグ複製を別trackへ移して確定しました");
+    // 空いている位置なら ghost と同じ track (mute 中の V2 を含む) へそのまま置く。
     check(controller.duplicateTimelineClipsAt(QStringLiteral("upper"), QStringLiteral("video"), 1,
-                                              100) &&
-              controller.clipCount() == 4 && controller.saveProject(),
-          "丸めた位置での複数clip複製ができません");
+                                              400) &&
+              controller.clipCount() == 4 && controller.videoTrackCount() == 2 &&
+              controller.saveProject(),
+          "空いた位置へのAlt+ドラッグ複製ができません");
     const auto placed = mvm::project::loadProjectJson(path);
     if (placed.success && placed.project.timelineClips.size() == 4) {
         const auto& clips = placed.project.timelineClips;
-        // 元の 2 本と重なるので、2 本とも空き track (V3, V4) へ上下関係を保って置かれる。
-        check(clips[2].timelineStartFrame == 0 && clips[3].timelineStartFrame == 100 &&
-                  clips[2].track.index < clips[3].track.index,
-              "複製した群の時間差または上下関係が崩れました");
+        check(clips[2].timelineStartFrame == 300 && clips[2].track.index == 0 &&
+                  clips[3].timelineStartFrame == 400 && clips[3].track.index == 1,
+              "Alt+ドラッグ複製がghostと違う位置またはtrackへ置かれました");
     } else {
         check(false, "複数clip複製の結果を読み込めません");
     }
