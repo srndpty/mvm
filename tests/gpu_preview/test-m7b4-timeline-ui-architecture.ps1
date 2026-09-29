@@ -269,7 +269,10 @@ $requiredInteractions = @(
     'const desiredContentX = anchorFrame * pixelsPerFrame - anchorItemX;',
     'Math.min(nextMaxContentX, desiredContentX)',
     'timelinePanel.activeDragOffsetX = clipItem.bodyDragOffsetX',
-    '-clipItem.timelineStartFrame * timelinePanel.pixelsPerFrame',
+    # drag 中の 0 frame / track 範囲の丸めは、選択群全体の端で行う (tst_timeline_gestures.qml)。
+    'clipItem.bodyDragBounds = root.mvmController.timelineDragBounds(clipItem.clipId);',
+    'clipItem.bodyDragOffsetX = Gestures.groupDragOffsetX(',
+    'snapped.index = Gestures.groupDragTrackIndex(',
     'clipItem.linkGroupId === timelinePanel.activeDragLinkGroup',
     '(mouse.modifiers & Qt.ShiftModifier) !== 0',
     'root.mvmController.toggleTimelineClipSelection(',
