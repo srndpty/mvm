@@ -1304,6 +1304,8 @@ ApplicationWindow {
                 zoomIndex === minimumZoomIndex ? fitPixelsPerFrame : zoomLevels[zoomIndex]
             property string activeDragLinkGroup: ""
             property string activeDragClipId: ""
+            property bool activeDragDuplicate: false
+            property bool activeDragMoved: false
             property real activeDragOffsetX: 0
             property string activeDragTrackKind: ""
             property real activeDragOffsetY: 0
@@ -1822,21 +1824,60 @@ ApplicationWindow {
 
                         // ルーラー上はクリックでもドラッグでもスクラブできる。
                         MouseArea {
+                            id: rulerArea
                             anchors.fill: parent
                             enabled: !root.mvmController.busy
                                      && root.mvmController.navigationTimelineFrames > 0
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
                             cursorShape: Qt.SizeHorCursor
                             preventStealing: true
+                            property var menuMarkerFrame: -1
                             onPressed: mouse => {
+                                if (mouse.button === Qt.RightButton) {
+                                    menuMarkerFrame = Gestures.markerNearRulerX(
+                                        mouse.x, timelinePanel.pixelsPerFrame,
+                                        root.mvmController.timelineMarkers, 9);
+                                    rulerMarkMenu.popup();
+                                    return;
+                                }
                                 root.mvmController.beginScrub();
                                 root.mvmController.scrubToFrame(timelinePanel.frameAtContentX(mouse.x));
                             }
                             onPositionChanged: mouse => {
-                                if (pressed)
+                                if (pressedButtons & Qt.LeftButton)
                                     root.mvmController.scrubToFrame(timelinePanel.frameAtContentX(mouse.x));
                             }
-                            onReleased: root.mvmController.endScrub()
+                            onReleased: mouse => {
+                                if (mouse.button === Qt.LeftButton)
+                                    root.mvmController.endScrub();
+                            }
                             onCanceled: root.mvmController.endScrub()
+
+                            CompactMenu {
+                                id: rulerMarkMenu
+                                CompactMenuItem {
+                                    text: "マーカーを削除"
+                                    visible: rulerArea.menuMarkerFrame >= 0
+                                    onTriggered: root.mvmController.deleteTimelineMarker(
+                                                     rulerArea.menuMarkerFrame)
+                                }
+                                CompactMenuItem {
+                                    text: "インを消去"
+                                    enabled: root.mvmController.inFrame >= 0
+                                    onTriggered: root.mvmController.clearIn()
+                                }
+                                CompactMenuItem {
+                                    text: "アウトを消去"
+                                    enabled: root.mvmController.outFrame >= 0
+                                    onTriggered: root.mvmController.clearOut()
+                                }
+                                CompactMenuItem {
+                                    text: "イン・アウトを消去"
+                                    enabled: root.mvmController.inFrame >= 0
+                                             || root.mvmController.outFrame >= 0
+                                    onTriggered: root.mvmController.clearInOut()
+                                }
+                            }
                         }
                     }
 
@@ -2089,13 +2130,13 @@ ApplicationWindow {
                                 readonly property real renderOffsetX:
                                     shownLeftDelta * timelinePanel.pixelsPerFrame
                                     + shownSlideFrames * timelinePanel.pixelsPerFrame
-                                    + (bodyMoved
+                                    + (timelinePanel.activeDragDuplicate ? 0 : (bodyMoved
                                        ? bodyDragOffsetX
                                        : ((selected
                                            || (timelinePanel.activeDragLinkGroup !== ""
                                                && clipItem.linkGroupId === timelinePanel.activeDragLinkGroup))
                                           && clipId !== timelinePanel.activeDragClipId
-                                          ? timelinePanel.activeDragOffsetX : 0))
+                                          ? timelinePanel.activeDragOffsetX : 0)))
 
                                 x: timelineStartFrame * timelinePanel.pixelsPerFrame
                                 y: timelinePanel.rowY(trackKind, trackIndex) - timelinePanel.tracksTop + 3
@@ -2109,12 +2150,38 @@ ApplicationWindow {
                                 z: bodyMoved ? 20 : 1
                                 transform: Translate {
                                     x: clipItem.renderOffsetX
-                                    y: clipItem.bodyMoved
+                                    y: timelinePanel.activeDragDuplicate ? 0 : (clipItem.bodyMoved
                                        ? clipItem.bodyDragOffsetY
                                        : (clipItem.selected
                                           && clipItem.trackKind === timelinePanel.activeDragTrackKind
                                           && clipItem.clipId !== timelinePanel.activeDragClipId
-                                          ? timelinePanel.activeDragOffsetY : 0)
+                                          ? timelinePanel.activeDragOffsetY : 0))
+                                }
+
+                                Rectangle {
+                                    visible: timelinePanel.activeDragDuplicate && timelinePanel.activeDragMoved
+                                             && clipItem.selected
+                                    x: timelinePanel.activeDragOffsetX
+                                    y: clipItem.trackKind === timelinePanel.activeDragTrackKind
+                                       ? timelinePanel.activeDragOffsetY : 0
+                                    width: clipItem.width
+                                    height: clipItem.height
+                                    radius: clipItem.radius
+                                    color: clipItem.color
+                                    border.color: clipItem.border.color
+                                    opacity: 0.55
+                                    z: 40
+                                    Label {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 12
+                                        anchors.rightMargin: 12
+                                        anchors.topMargin: 5
+                                        text: clipItem.displayName
+                                        color: "white"
+                                        font.bold: true
+                                        font.pixelSize: 12
+                                        elide: Text.ElideMiddle
+                                    }
                                 }
 
                                 TapHandler {
@@ -2449,6 +2516,8 @@ ApplicationWindow {
                                         }
                                         timelinePanel.activeDragLinkGroup = clipItem.editLinked ? clipItem.linkGroupId : "";
                                         timelinePanel.activeDragClipId = clipItem.clipId;
+                                        timelinePanel.activeDragDuplicate = clipItem.gestureState.duplicate;
+                                        timelinePanel.activeDragMoved = false;
                                         timelinePanel.activeDragOffsetX = 0;
                                         timelinePanel.activeDragTrackKind = clipItem.trackKind;
                                         timelinePanel.activeDragOffsetY = 0;
@@ -2524,6 +2593,7 @@ ApplicationWindow {
                                         if (Math.abs(clipItem.rawBodyDragOffsetX) > 5
                                                 || snapped.index !== clipItem.trackIndex)
                                             clipItem.bodyMoved = true;
+                                        timelinePanel.activeDragMoved = clipItem.bodyMoved;
                                     }
                                     onReleased: mouse => {
                                         if (timelinePanel.tool === "pen" && clipItem.penState === null)
@@ -2569,6 +2639,8 @@ ApplicationWindow {
                                         clipItem.bodyAdditiveSelection = false;
                                         timelinePanel.activeDragLinkGroup = "";
                                         timelinePanel.activeDragClipId = "";
+                                        timelinePanel.activeDragDuplicate = false;
+                                        timelinePanel.activeDragMoved = false;
                                         timelinePanel.activeDragOffsetX = 0;
                                         timelinePanel.activeDragTrackKind = "";
                                         timelinePanel.activeDragOffsetY = 0;
@@ -2627,6 +2699,8 @@ ApplicationWindow {
                                         clipItem.dragTrackIndex = clipItem.trackIndex;
                                         timelinePanel.activeDragLinkGroup = "";
                                         timelinePanel.activeDragClipId = "";
+                                        timelinePanel.activeDragDuplicate = false;
+                                        timelinePanel.activeDragMoved = false;
                                         timelinePanel.activeDragOffsetX = 0;
                                         timelinePanel.activeDragTrackKind = "";
                                         timelinePanel.activeDragOffsetY = 0;

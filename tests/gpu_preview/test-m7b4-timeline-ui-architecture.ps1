@@ -596,4 +596,30 @@ if (-not $compositor.Contains('aspectFit(croppedWidth, croppedHeight, destinatio
     throw '製品compositorが素材の縦横比を保持していません'
 }
 
+function Test-RulerMarkMenu([string]$source) {
+    return $source.Contains('acceptedButtons: Qt.LeftButton | Qt.RightButton') -and
+           $source.Contains('menuMarkerFrame = Gestures.markerNearRulerX(') -and
+           $source.Contains('rulerMarkMenu.popup();') -and
+           $source.Contains('visible: rulerArea.menuMarkerFrame >= 0') -and
+           $source.Contains('text: "インを消去"') -and
+           $source.Contains('text: "アウトを消去"') -and
+           $source.Contains('text: "イン・アウトを消去"') -and
+           $source.Contains('onTriggered: root.mvmController.clearInOut()')
+}
+if (-not (Test-RulerMarkMenu $qml) -or
+    (Test-RulerMarkMenu $qml.Replace('rulerMarkMenu.popup();', ''))) {
+    throw 'ルーラーの右クリックメニュー契約が崩れています'
+}
+
+function Test-DuplicatePreview([string]$source) {
+    return $source.Contains('timelinePanel.activeDragDuplicate ? 0 : (bodyMoved') -and
+           $source.Contains('y: timelinePanel.activeDragDuplicate ? 0 : (clipItem.bodyMoved') -and
+           $source.Contains('visible: timelinePanel.activeDragDuplicate && timelinePanel.activeDragMoved') -and
+           $source.Contains('opacity: 0.55')
+}
+if (-not (Test-DuplicatePreview $qml) -or
+    (Test-DuplicatePreview $qml.Replace('opacity: 0.55', 'opacity: 1'))) {
+    throw 'Alt+ドラッグ複製の元clipと半透明previewの契約が崩れています'
+}
+
 Write-Output 'timeline UI architecture: PASS'

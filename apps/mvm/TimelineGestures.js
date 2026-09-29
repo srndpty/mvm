@@ -9,6 +9,20 @@ function linkedFor(modifiers) {
     return (modifiers & Qt.AltModifier) === 0;
 }
 
+// ルーラーのマーカーだけは右クリック位置の近くにあるものを選ぶ。
+function markerNearRulerX(x, pixelsPerFrame, markers, radius) {
+    let nearest = radius + 1;
+    let result = -1;
+    for (const frame of markers) {
+        const distance = Math.abs(x - frame * pixelsPerFrame);
+        if (distance <= radius && distance < nearest) {
+            nearest = distance;
+            result = frame;
+        }
+    }
+    return result;
+}
+
 // press の時点で、操作の種類と release で使う値をすべて決める。
 //   tool       : TimelineToolPanel.tools の tool
 //   modifiers  : 押した時点の Qt.KeyboardModifiers

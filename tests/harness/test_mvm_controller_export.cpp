@@ -384,12 +384,33 @@ void testClipboardAndMarks(const std::filesystem::path& path) {
     const bool atPreviousMarker = controller.playheadFrame() == 0;
     controller.jumpToMarker(1);
     check(atPreviousMarker && controller.playheadFrame() == 100, "前後のマーカーへ移動できません");
+    check(!controller.deleteTimelineMarker(99) && controller.timelineMarkers().size() == 2,
+          "存在しないマーカーの削除でProjectが変わりました");
+    check(controller.deleteTimelineMarker(100) && controller.timelineMarkers().size() == 1 &&
+              controller.undoLastEdit() && controller.timelineMarkers().size() == 2 &&
+              controller.redoLastEdit() && controller.timelineMarkers().size() == 1,
+          "マーカー削除を一回のUndo/Redoで戻せません");
+    controller.seekTimelineFrame(90);
+    check(controller.playheadFrame() == 90, "マーカー試験の開始位置へ移動できません");
+    check(controller.addTimelineMarker() && controller.timelineMarkers().size() == 2,
+          "編集点として使うマーカーを追加できません");
+    controller.seekTimelineFrame(100);
+    check(controller.playheadFrame() == 100, "マーカーの次のframeへ移動できません");
+    controller.jumpToEditPoint(-1);
+    check(controller.playheadFrame() == 90, "マーカーを編集点として移動できません");
     controller.jumpToIn();
     const bool atIn = controller.playheadFrame() == 0;
     controller.jumpToOut();
-    check(atIn && controller.playheadFrame() == 100 && controller.clearInOut() &&
-              controller.inFrame() == -1 && controller.outFrame() == -1,
-          "イン・アウトの移動と消去ができません");
+    check(atIn && controller.playheadFrame() == 100 && controller.clearIn() &&
+              controller.inFrame() == -1 && controller.outFrame() == 100 &&
+              controller.undoLastEdit() && controller.inFrame() == 0,
+          "インだけを消去してUndoできません");
+    check(controller.clearOut() && controller.inFrame() == 0 && controller.outFrame() == -1 &&
+              controller.undoLastEdit() && controller.outFrame() == 100,
+          "アウトだけを消去してUndoできません");
+    check(controller.clearInOut() && controller.inFrame() == -1 && controller.outFrame() == -1 &&
+              !controller.clearIn() && !controller.clearOut(),
+          "イン・アウトの消去と未設定時の拒否ができません");
 }
 
 void testClipboardAcrossProject(const std::filesystem::path& sourcePath) {

@@ -179,6 +179,19 @@ void testShuttleClockAndEditPoints() {
     check(!adjacentTimelineEditPoint(project, 0, -1, 179).success,
           "先頭より前に編集点を見つけました");
     check(!adjacentTimelineEditPoint(project, 90, 0, 179).success, "方向0を受理しました");
+    project.timelineMarkers = {45, 200};
+    check(adjacentTimelineEditPoint(project, 30, 1, 200).frame == 45 &&
+              adjacentTimelineEditPoint(project, 60, -1, 200).frame == 45 &&
+              adjacentTimelineEditPoint(project, 180, 1, 200).frame == 200,
+          "マーカーを前後の編集点として探索できません");
+    check(!adjacentTimelineEditPoint(project, 200, 1, 200).success,
+          "最終マーカーの先に編集点を見つけました");
+    project.timelineClips.clear();
+    check(adjacentTimelineEditPoint(project, 0, 1, 200).frame == 45,
+          "clipが無いとマーカーへ移動できません");
+    project.timelineMarkers = {201};
+    check(!adjacentTimelineEditPoint(project, 0, 1, 200).success, "範囲外のマーカーを受理しました");
+    project = threeClips();
     project.timelineClips[0].sourceOutFrame = 0;
     check(!adjacentTimelineEditPoint(project, 30, 1, 179).success,
           "不正clipの編集点を黙って飛ばしました");

@@ -3323,13 +3323,14 @@ bool MvmController::stepTimelineFrames(int delta) {
 }
 
 bool MvmController::jumpToEditPoint(int direction) {
-    if (busy_ || project_.timelineClips.empty() || totalTimelineFrames_ <= 0)
+    if (busy_ || navigationTimelineFrames() <= 0)
         return false;
     // 再生・シャトル中は止めてから、止まった位置を基準に動かす。
     if (!pauseTimeline())
         return false;
-    const auto lastFrame = totalTimelineFrames_ - 1;
-    if (playheadFrame_ == totalTimelineFrames_ && direction < 0)
+    const auto lastFrame = navigationTimelineFrames() - 1;
+    if (playheadFrame_ == totalTimelineFrames_ && direction < 0 &&
+        navigationTimelineFrames() == totalTimelineFrames_)
         return seekTimelineFrame(lastFrame);
     const auto point = adjacentTimelineEditPoint(
         project_, std::clamp<std::int64_t>(playheadFrame_, 0, lastFrame), direction, lastFrame);
@@ -3637,6 +3638,21 @@ bool MvmController::addTimelineMarker() {
     return true;
 }
 
+bool MvmController::deleteTimelineMarker(qint64 frame) {
+    if (busy_ || !pauseTimeline())
+        return false;
+    project::Project candidate = project_;
+    const auto at = std::lower_bound(candidate.timelineMarkers.begin(),
+                                     candidate.timelineMarkers.end(), frame);
+    if (at == candidate.timelineMarkers.end() || *at != frame)
+        return false;
+    candidate.timelineMarkers.erase(at);
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("マーカーを削除できません: ")))
+        return false;
+    setStatus(QStringLiteral("マーカーを削除しました"));
+    return true;
+}
+
 bool MvmController::jumpToMarker(int direction) {
     if (busy_ || direction == 0 || project_.timelineMarkers.empty())
         return false;
@@ -3702,6 +3718,28 @@ bool MvmController::clearInOut() {
     if (!commitProjectEdit(std::move(candidate), QStringLiteral("イン・アウトを消去できません: ")))
         return false;
     setStatus(QStringLiteral("イン・アウトを消去しました"));
+    return true;
+}
+
+bool MvmController::clearIn() {
+    if (busy_ || !pauseTimeline() || !project_.inFrame)
+        return false;
+    project::Project candidate = project_;
+    candidate.inFrame.reset();
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("インを消去できません: ")))
+        return false;
+    setStatus(QStringLiteral("インを消去しました"));
+    return true;
+}
+
+bool MvmController::clearOut() {
+    if (busy_ || !pauseTimeline() || !project_.outFrame)
+        return false;
+    project::Project candidate = project_;
+    candidate.outFrame.reset();
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("アウトを消去できません: ")))
+        return false;
+    setStatus(QStringLiteral("アウトを消去しました"));
     return true;
 }
 

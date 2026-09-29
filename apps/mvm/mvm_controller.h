@@ -324,12 +324,15 @@ public:
     Q_INVOKABLE bool duplicateTimelineClipsAt(const QString& clipId, const QString& trackKind,
                                               int trackIndex, qint64 timelineStartFrame);
     Q_INVOKABLE bool addTimelineMarker();
+    Q_INVOKABLE bool deleteTimelineMarker(qint64 frame);
     Q_INVOKABLE bool jumpToMarker(int direction);
     Q_INVOKABLE bool markIn();
     Q_INVOKABLE bool markOut();
     Q_INVOKABLE bool jumpToIn();
     Q_INVOKABLE bool jumpToOut();
     Q_INVOKABLE bool clearInOut();
+    Q_INVOKABLE bool clearIn();
+    Q_INVOKABLE bool clearOut();
     Q_INVOKABLE bool trimClip(const QString& clipId, const QString& edge, qint64 projectFrameDelta,
                               bool linked);
     // レート調整ツール。素材範囲を変えずに速度を変えて、edge 側の端を動かす。

@@ -8,6 +8,13 @@ import "../../apps/mvm/TimelineGestures.js" as Gestures
 TestCase {
     name: "TimelineGestures"
 
+    function test_rulerMarkerHitIsLocal() {
+        compare(Gestures.markerNearRulerX(201, 2, [10, 100, 110], 9), 100);
+        compare(Gestures.markerNearRulerX(212, 2, [10, 100, 110], 9), 110);
+        compare(Gestures.markerNearRulerX(180, 2, [10, 100, 110], 9), -1);
+        compare(Gestures.markerNearRulerX(200, 2, [], 9), -1);
+    }
+
     // レーザーは押した位置で切る。release までにマウスが動いても、離した位置や
     // clip の先頭へずれない。
     function test_razorSplitsAtPressFrame() {
