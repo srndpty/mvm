@@ -113,9 +113,8 @@ struct ProbedMedia {
 };
 
 // 素材の種別は probeMediaFile (media_import) だけが決める。ここでは用途に合うかを見る。
-ProbedMedia probeMedia(const std::filesystem::path& path) {
+ProbedMedia videoFacts(const MediaImportResult& probed) {
     ProbedMedia result;
-    const auto probed = probeMediaFile(path);
     if (!probed.success) {
         result.error = QString::fromStdString(probed.error);
         return result;
@@ -138,13 +137,16 @@ ProbedMedia probeMedia(const std::filesystem::path& path) {
     return result;
 }
 
+ProbedMedia probeMedia(const std::filesystem::path& path) {
+    return videoFacts(probeMediaFile(path));
+}
+
 // audio 素材には映像 fps が無い。Project timeline の fps を素材の frame domain と
 // して採用し、尺だけを duration から求める。frame 算術を 1 種類に保つための選択で
 // あり、素材側に fps があると主張しているわけではない。
-ProbedMedia probeAudioMedia(const std::filesystem::path& path, std::int64_t timelineFpsNum,
-                            std::int64_t timelineFpsDen) {
+ProbedMedia audioFacts(const MediaImportResult& probed, std::int64_t timelineFpsNum,
+                       std::int64_t timelineFpsDen) {
     ProbedMedia result;
-    const auto probed = probeMediaFile(path);
     if (!probed.success) {
         result.error = QString::fromStdString(probed.error);
         return result;
@@ -166,6 +168,7 @@ ProbedMedia probeAudioMedia(const std::filesystem::path& path, std::int64_t time
     result.success = true;
     return result;
 }
+
 
 // QML から渡る「リンク相手にも適用するか」をモデルの LinkMode へ写す。
 project::LinkMode linkModeFor(bool linked) {
@@ -203,58 +206,71 @@ project::TimelineClip mediaClip(project::TimelineClipKind kind, const project::M
     return clip;
 }
 
-// item はプロジェクトパネルに登録済みの素材。kind は作る clip の種別 (動画素材の音声だけを
-// 置くなら Audio)。prebuilt は同じファイルを判定済みの結果 (あれば調べ直さない。画像の
-// decode は重い)。
-MediaClips buildMediaClips(const project::Project& project, const project::MediaItem& item,
-                           project::MediaKind kind, const MediaImportResult* prebuilt = nullptr) {
+// プロジェクトパネルの素材 itemId から、timeline へ置く clip を作る。kind は作る clip の種別
+// (動画素材の音声だけを置くなら Audio)。使う時点でファイルを調べ直し、素材の値 (種別・fps・
+// 尺・解像度) を実物に合わせて candidate 上で更新してから clip を作る。登録後に消えた・
+// 別の種類へ差し替わったファイルは置かず、同じ種類の別の中身 (縦横が違う画像など) なら
+// 素材の値が新しくなる。prebuilt は同じファイルを判定済みの結果 (あれば調べ直さない。
+// 画像の decode は重い)。
+MediaClips prepareMediaClips(project::Project& candidate, const std::string& itemId,
+                             project::MediaKind kind, const MediaImportResult* prebuilt = nullptr) {
     MediaClips result;
-    const auto& mediaPath = item.mediaPath;
+    const auto* found = project::findMediaItem(candidate, itemId);
+    if (!found) {
+        result.error = QStringLiteral("素材がありません");
+        return result;
+    }
+    const auto probed = prebuilt ? *prebuilt : probeMediaFile(found->mediaPath);
+    if (!probed.success) {
+        result.error = QString::fromStdString(probed.error);
+        return result;
+    }
+    // 種別が clip の用途に合うかを先に見る (合わない差し替えで素材の値を書き換えない)。
+    ProbedMedia facts;
     switch (kind) {
-    case project::MediaKind::Video: {
-        const ProbedMedia media = probeMedia(mediaPath);
-        if (!media.success) {
-            result.error = media.error;
-            return result;
-        }
-        result.primary = mediaClip(project::TimelineClipKind::Video, item, media.fpsNum,
-                                   media.fpsDen, media.frameCount);
-        if (media.hasAudio) {
-            result.linkedAudio = mediaClip(project::TimelineClipKind::Audio, item, media.fpsNum,
-                                           media.fpsDen, media.frameCount);
+    case project::MediaKind::Video:
+        facts = videoFacts(probed);
+        break;
+    case project::MediaKind::Audio:
+        facts = audioFacts(probed, candidate.timelineFpsNum, candidate.timelineFpsDen);
+        break;
+    case project::MediaKind::Image:
+        facts.success = probed.item.kind == project::MediaKind::Image;
+        if (!facts.success)
+            facts.error = QStringLiteral("画像ではありません");
+        break;
+    }
+    if (!facts.success) {
+        result.error = facts.error;
+        return result;
+    }
+    const auto refreshed = project::refreshMediaItem(candidate, itemId, probed.item);
+    if (!refreshed.success) {
+        result.error = QStringLiteral("素材の情報を更新できません: ") +
+                       QString::fromStdString(refreshed.error);
+        return result;
+    }
+    const auto& item = *project::findMediaItem(candidate, itemId);
+    switch (kind) {
+    case project::MediaKind::Video:
+        result.primary = mediaClip(project::TimelineClipKind::Video, item, facts.fpsNum,
+                                   facts.fpsDen, facts.frameCount);
+        if (facts.hasAudio) {
+            result.linkedAudio = mediaClip(project::TimelineClipKind::Audio, item, facts.fpsNum,
+                                           facts.fpsDen, facts.frameCount);
             result.primary.linkGroupId = result.linkedAudio->linkGroupId = newClipId();
         }
         break;
-    }
-    case project::MediaKind::Audio: {
-        const ProbedMedia media =
-            probeAudioMedia(mediaPath, project.timelineFpsNum, project.timelineFpsDen);
-        if (!media.success) {
-            result.error = media.error;
-            return result;
-        }
-        result.primary = mediaClip(project::TimelineClipKind::Audio, item, media.fpsNum,
-                                   media.fpsDen, media.frameCount);
+    case project::MediaKind::Audio:
+        result.primary = mediaClip(project::TimelineClipKind::Audio, item, facts.fpsNum,
+                                   facts.fpsDen, facts.frameCount);
         break;
-    }
-    case project::MediaKind::Image: {
-        // 動画・音声と同じく、使う時点でファイルを調べ直す。登録後に消えた・動く画像や
-        // 別の種類へ差し替わったファイルを、保存済みの種別を信じて置かない。
-        const auto probed = prebuilt ? *prebuilt : probeMediaFile(mediaPath);
-        if (!probed.success) {
-            result.error = QString::fromStdString(probed.error);
-            return result;
-        }
-        if (probed.item.kind != project::MediaKind::Image) {
-            result.error = QStringLiteral("画像ではありません");
-            return result;
-        }
+    case project::MediaKind::Image:
         result.primary = mediaClip(
-            project::TimelineClipKind::Image, item, project.timelineFpsNum,
-            project.timelineFpsDen,
-            project::defaultStillClipFrames(project.timelineFpsNum, project.timelineFpsDen));
+            project::TimelineClipKind::Image, item, candidate.timelineFpsNum,
+            candidate.timelineFpsDen,
+            project::defaultStillClipFrames(candidate.timelineFpsNum, candidate.timelineFpsDen));
         break;
-    }
     }
     result.success = true;
     return result;
@@ -1337,6 +1353,12 @@ void MvmController::pollPreviewState() {
     const auto playbackState = previewEngine_->status().state;
     if (textPreviewRefreshPending_ && playbackState == preview::PreviewEngineState::ReadyPaused)
         refreshTextPreview();
+    if (previewRefreshPending_ && previewEngine_->status().state ==
+                                      preview::PreviewEngineState::ReadyPaused) {
+        QString error;
+        if (!refreshPreviewAtPlayhead(error))
+            setStatus(QStringLiteral("Previewを更新できません: ") + error);
+    }
     if (pendingPlaybackStart_ && playbackState == preview::PreviewEngineState::ReadyPaused)
         startPendingPlayback();
     if (status.state == preview::PreviewEngineState::Error && status.lastError) {
@@ -1958,7 +1980,7 @@ bool MvmController::addVideoClip(const QUrl& fileUrl) {
         setStatus(registerError);
         return false;
     }
-    auto clips = buildMediaClips(candidate, *item, project::MediaKind::Video);
+    auto clips = prepareMediaClips(candidate, std::string(item->id), project::MediaKind::Video);
     if (!clips.success) {
         setStatus(clips.error);
         return false;
@@ -2038,7 +2060,7 @@ bool MvmController::addAudioClip(const QUrl& fileUrl) {
         setStatus(registerError);
         return false;
     }
-    auto clips = buildMediaClips(candidate, *item, project::MediaKind::Audio);
+    auto clips = prepareMediaClips(candidate, std::string(item->id), project::MediaKind::Audio);
     if (!clips.success) {
         setStatus(clips.error);
         return false;
@@ -2318,7 +2340,7 @@ bool MvmController::placeMediaAtDropPoint(const std::vector<DropMedia>& media,
             setStatus(entry.itemId.empty() ? registerError : QStringLiteral("素材がありません"));
             return false;
         }
-        auto clips = buildMediaClips(candidate, *item, entry.kind, entry.probed);
+        auto clips = prepareMediaClips(candidate, std::string(item->id), entry.kind, entry.probed);
         if (!clips.success) {
             setStatus(name + QStringLiteral(": ") + clips.error);
             return false;
@@ -2428,7 +2450,7 @@ bool MvmController::placeImageClip(const std::filesystem::path& mediaPath, const
         setStatus(registerError);
         return false;
     }
-    auto clips = buildMediaClips(candidate, *item, project::MediaKind::Image, &probed);
+    auto clips = prepareMediaClips(candidate, std::string(item->id), project::MediaKind::Image, &probed);
     if (!clips.success) {
         setStatus(clips.error);
         return false;
@@ -3047,9 +3069,60 @@ bool MvmController::selectClip(int index) {
     const project::TimelineClip& clip = project_.timelineClips[static_cast<std::size_t>(index)];
     setTimelineSelection({clip.id});
     setCurrentClipSelection(index);
-    // 再生位置はルーラーの操作でだけ動かす。選択では動かさず、今の位置で preview を
-    // 作り直す (追加・削除で clip の並びが変わっていることがある)。
-    return seekTimelineFrame(playheadFrame_);
+    // 再生位置はルーラーの操作でだけ動かす。seekTimelineFrame は再生位置の clip を current に
+    // 選び直すので使わず、選択を保ったまま今の位置の preview だけを作り直す (追加・削除で
+    // clip の並びが変わっていることがある)。
+    QString error;
+    if (!refreshPreviewAtPlayhead(error)) {
+        setStatus(QStringLiteral("Previewを更新できません: ") + error);
+        return false;
+    }
+    return true;
+}
+
+bool MvmController::refreshPreviewAtPlayhead(QString& error) {
+    if (!previewEngine_)
+        return true;
+    const auto state = previewEngine_->status().state;
+    if (state != preview::PreviewEngineState::ReadyPaused) {
+        // seek の途中などで受けられない。要求は捨てずに保留し、ReadyPaused になったら
+        // その時点の Project (と drag 中の override) で 1 回だけ作り直す。途中の状態は出さない。
+        previewRefreshPending_ = true;
+        return true;
+    }
+    previewRefreshPending_ = false;
+    if (!syncPreviewSourcesAt(playheadFrame_, error))
+        return false;
+    currentSource_.reset();
+    for (const auto& [trackIndex, slot] : trackSources_) {
+        if (slot.clipIndex == currentClipIndex_)
+            currentSource_ = slot.source;
+    }
+    return true;
+}
+
+bool MvmController::previewPresentedLatest() const {
+    if (!previewEngine_ || previewRefreshPending_)
+        return false;
+    const auto status = previewEngine_->status();
+    return status.state == preview::PreviewEngineState::ReadyPaused &&
+           status.latestAcceptedDesiredComposition &&
+           status.lastPresentedComposition == status.latestAcceptedDesiredComposition;
+}
+
+std::optional<QRectF> MvmController::submittedLayerDestination(const QString& clipId) const {
+    if (!submittedComposition_)
+        return std::nullopt;
+    for (const auto& [trackIndex, slot] : trackSources_) {
+        if (QString::fromStdString(slot.clipId) != clipId)
+            continue;
+        for (const auto& layer : submittedComposition_->layers) {
+            if (layer.source == slot.source)
+                return QRectF(layer.destination.x, layer.destination.y, layer.destination.width,
+                              layer.destination.height);
+        }
+    }
+    return std::nullopt;
 }
 
 bool MvmController::selectTimelineClip(const QString& clipId, bool linked) {
@@ -5606,7 +5679,7 @@ bool MvmController::commitClipKeyCandidate(project::Project candidate) {
     if (!commitProjectEdit(std::move(candidate), QStringLiteral("キーフレームを保存できません: ")))
         return false;
     QString previewError;
-    if (!syncPreviewSourcesAt(playheadFrame_, previewError))
+    if (!refreshPreviewAtPlayhead(previewError))
         setStatus(QStringLiteral("キーフレームのPreview更新に失敗しました: ") + previewError);
     return true;
 }
@@ -5658,7 +5731,7 @@ bool MvmController::setClipEffectValues(const QString& clipId, const QVariantMap
         previewEffectsClipIndex_ = clipIndex;
         Q_EMIT stateChanged();
         QString previewError;
-        if (!syncPreviewSourcesAt(playheadFrame_, previewError))
+        if (!refreshPreviewAtPlayhead(previewError))
             setStatus(QStringLiteral("effectのPreview更新に失敗しました: ") + previewError);
         return true;
     }
@@ -5677,7 +5750,7 @@ bool MvmController::setClipEffectValues(const QString& clipId, const QVariantMap
     Q_EMIT stateChanged();
 
     QString previewError;
-    if (!syncPreviewSourcesAt(playheadFrame_, previewError)) {
+    if (!refreshPreviewAtPlayhead(previewError)) {
         setStatus(QStringLiteral("effectのPreview更新に失敗しました: ") + previewError);
         return true;
     }
@@ -5692,7 +5765,7 @@ bool MvmController::cancelEffectPreview() {
     previewEffectsClipIndex_ = -1;
     Q_EMIT stateChanged();
     QString previewError;
-    if (!syncPreviewSourcesAt(playheadFrame_, previewError)) {
+    if (!refreshPreviewAtPlayhead(previewError)) {
         setStatus(QStringLiteral("effectのPreview更新に失敗しました: ") + previewError);
         return true;
     }

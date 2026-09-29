@@ -213,6 +213,7 @@ Item {
 
             ListView {
                 id: binList
+                objectName: "mediaBinList"
                 anchors.fill: parent
                 anchors.margins: 1
                 clip: true
@@ -303,6 +304,7 @@ Item {
 
                 delegate: Rectangle {
                     id: rowItem
+                    objectName: "mediaBinRow_" + entryId
 
                     required property int index
                     required property string entryId
@@ -590,6 +592,7 @@ Item {
     }
     ModernDialog {
         id: removeConfirmDialog
+        objectName: "mediaBinRemoveDialog"
         property var entryIds: []
         property int clipCount: 0
         parent: Overlay.overlay

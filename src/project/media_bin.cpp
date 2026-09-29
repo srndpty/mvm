@@ -138,6 +138,25 @@ MediaBinEditResult addMediaItem(Project& project, MediaItem item) {
     return commitCandidate(project, std::move(candidate));
 }
 
+MediaBinEditResult refreshMediaItem(Project& project, const std::string& itemId,
+                                    const MediaItem& probed) {
+    Project candidate = project;
+    for (auto& item : candidate.mediaItems) {
+        if (item.id != itemId)
+            continue;
+        item.kind = probed.kind;
+        item.fpsNum = probed.fpsNum;
+        item.fpsDen = probed.fpsDen;
+        item.frameCount = probed.frameCount;
+        item.width = probed.width;
+        item.height = probed.height;
+        item.sampleRate = probed.sampleRate;
+        item.durationSamples = probed.durationSamples;
+        return commitCandidate(project, std::move(candidate));
+    }
+    return failure("調べ直す素材がありません");
+}
+
 MediaBinEditResult renameMediaBinEntry(Project& project, const std::string& entryId,
                                        std::string name) {
     if (name.empty())

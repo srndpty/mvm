@@ -155,30 +155,35 @@ Item {
             border.color: "#4a90e2"
             border.width: 1
         }
-        // 中心の目印 (円と十字)。
-        Rectangle {
-            x: frame.width / 2 - width / 2
-            y: frame.height / 2 - height / 2
-            width: 12
-            height: 12
-            radius: 6
-            color: "transparent"
-            border.color: "#4a90e2"
-            border.width: 1
-        }
-        Rectangle {
-            x: frame.width / 2 - 8
-            y: frame.height / 2
-            width: 16
-            height: 1
-            color: "#4a90e2"
-        }
-        Rectangle {
-            x: frame.width / 2
-            y: frame.height / 2 - 8
-            width: 1
-            height: 16
-            color: "#4a90e2"
+        // 中心の目印 (円と十字)。回転と Alt の拡縮の中心 (crop 範囲の中心) に描く。
+        Item {
+            x: overlay.shown ? (overlay.geometry.pivotX - overlay.geometry.x) * overlay.toHostX : 0
+            y: overlay.shown ? (overlay.geometry.pivotY - overlay.geometry.y) * overlay.toHostY : 0
+
+            Rectangle {
+                x: -6
+                y: -6
+                width: 12
+                height: 12
+                radius: 6
+                color: "transparent"
+                border.color: "#4a90e2"
+                border.width: 1
+            }
+            Rectangle {
+                x: -8
+                y: 0
+                width: 16
+                height: 1
+                color: "#4a90e2"
+            }
+            Rectangle {
+                x: 0
+                y: -8
+                width: 1
+                height: 16
+                color: "#4a90e2"
+            }
         }
 
         // 8 つのハンドル (四隅と四辺)。枠と一緒に回るので、回転した素材も同じ手触りで拡縮できる。
@@ -230,7 +235,9 @@ Item {
                         const pointer = overlay.pointerAt(handleArea, mouse.x, mouse.y);
                         const options = {
                             "keepAspect": (mouse.modifiers & Qt.ControlModifier) !== 0,
-                            "fromCenter": (mouse.modifiers & Qt.AltModifier) !== 0
+                            "fromCenter": (mouse.modifiers & Qt.AltModifier) !== 0,
+                            // Alt で固定するのは描画の回転の中心 (中央の目印と同じ点)。
+                            "pivot": { "x": overlay.startPivotX, "y": overlay.startPivotY }
                         };
                         const target = { "x": pointer.x + overlay.grabOffset.x,
                                          "y": pointer.y + overlay.grabOffset.y };

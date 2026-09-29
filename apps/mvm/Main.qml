@@ -989,6 +989,7 @@ ApplicationWindow {
 
                         ProjectPanel {
                             id: projectPanel
+                            objectName: "projectPanel"
                             mvmController: root.mvmController
                         }
                     }
@@ -2199,6 +2200,7 @@ ApplicationWindow {
 
                             delegate: Rectangle {
                                 id: clipItem
+                                objectName: "timelineClip_" + clipId
                                 required property int index
                                 required property string clipId
                                 required property string displayName

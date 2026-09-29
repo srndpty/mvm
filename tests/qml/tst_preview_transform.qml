@@ -186,6 +186,40 @@ TestCase {
                     100, 100, 400, 200, "NaN pointer");
     }
 
+    // 非対称な crop では回転の中心 (200, 150) が見えている矩形の中心 (300, 200) と違う。
+    // Alt はその中心を固定する: 右辺を 800 へ引くと倍率 2 (中心から右辺まで 300 -> 600)。
+    function test_resizeFromCenterKeepsOffCenterPivot() {
+        const centered = { "keepAspect": false, "fromCenter": true, "pivot": { "x": 200, "y": 150 } };
+        compareRect(Transform.resizeRect(rect, "r", { "x": 800, "y": 0 }, centered, 1),
+                    0, 100, 800, 200, "r about pivot");
+        // 吸着でも固定点との比を保つ: 右辺 1916 -> 1920 (中心から 1720 = 倍率 1720/300)。
+        const wide = Transform.resizeRect(rect, "r", { "x": 1916, "y": 0 }, centered, 1);
+        const snapped = Transform.snapResize(rect, wide, "r", canvasLines, 8, centered, 1);
+        const scale = 1720 / 300;
+        compareRect(snapped.rect, 200 - 100 * scale, 100, 1720 + 100 * scale, 200,
+                    "r snapped about pivot");
+    }
+
+    // 回転 30° + 回転の中心が矩形の中心から外れている + Alt。回転の中心は画面上で動かない。
+    function test_resizeRotatedFromCenterKeepsPivotOnScreen() {
+        const pivotX = 200, pivotY = 150, degrees = 30;
+        const pointer = Transform.rotatePoint(800, 150, pivotX, pivotY, degrees);
+        const alt = { "keepAspect": false, "fromCenter": true };
+        const resized = Transform.resizeRotatedRect(rect, pivotX, pivotY, degrees, "r", pointer,
+                                                    alt, 1);
+        compareRect(resized, 0, 100, 800, 200, "r rotated about pivot");
+        // 新しい回転の中心 (矩形の中の同じ割合 1/4, 1/4) が元の中心と同じ点。
+        fuzzyCompare(resized.x + resized.width / 4, pivotX, 1e-9, "pivot x");
+        fuzzyCompare(resized.y + resized.height / 4, pivotY, 1e-9, "pivot y");
+        // Ctrl+Alt: 縦横比を保ち、回転の中心を固定する。
+        const both = { "keepAspect": true, "fromCenter": true };
+        const scaled = Transform.resizeRotatedRect(rect, pivotX, pivotY, degrees, "r", pointer,
+                                                   both, 1);
+        compareRect(scaled, 0, 50, 800, 400, "r rotated keep aspect about pivot");
+        fuzzyCompare(scaled.x + scaled.width / 4, pivotX, 1e-9, "aspect pivot x");
+        fuzzyCompare(scaled.y + scaled.height / 4, pivotY, 1e-9, "aspect pivot y");
+    }
+
     function test_thresholdScalesToOutputPixels() {
         compare(Transform.thresholdOutputPx(8, 1920, 960), 16);
         compare(Transform.thresholdOutputPx(8, 1920, 0), 8);

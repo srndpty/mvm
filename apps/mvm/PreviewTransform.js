@@ -81,11 +81,22 @@ function handleSides(handle) {
     };
 }
 
+// Alt で固定する点。素材の回転の中心 (pivot) があればそれ、無ければ矩形の中心。
+// 回転の中心は crop 範囲の中心なので、非対称な crop では見えている矩形の中心と違う。
+// 描画 (preview / 書き出し) と同じ点を固定しないと、回転した素材が動いてしまう。
+function fixedPoint(start, options) {
+    const pivot = options ? options.pivot : null;
+    return {
+        "x": pivot && finite(pivot.x) ? pivot.x : start.x + start.width / 2,
+        "y": pivot && finite(pivot.y) ? pivot.y : start.y + start.height / 2
+    };
+}
+
 // start の縦横比を保って rect を直す。drive は倍率を決める軸 ("x" / "y")。
 // 省略時は角なら大きく変わった方、辺ならその辺の軸。
-// fromCenter なら中心を、そうでなければ掴んだ側の反対の角・辺を固定する。
-// 辺のハンドルでは、もう一方の軸は中心を保って伸縮する。
-function keepAspectRect(start, rect, handle, fromCenter, minSize, drive) {
+// fromCenter なら固定点 (fixedPoint) を、そうでなければ掴んだ側の反対の角・辺を固定する。
+// 辺のハンドルでは、もう一方の軸は固定点を保って伸縮する。
+function keepAspectRect(start, rect, handle, fromCenter, minSize, drive, fixed) {
     const sides = handleSides(handle);
     const horizontal = sides.left || sides.right;
     const vertical = sides.top || sides.bottom;
@@ -101,10 +112,10 @@ function keepAspectRect(start, rect, handle, fromCenter, minSize, drive) {
                                                       : rect.height / start.height);
     const width = start.width * scale;
     const height = start.height * scale;
-    const centerX = start.x + start.width / 2;
-    const centerY = start.y + start.height / 2;
-    let x = centerX - width / 2;
-    let y = centerY - height / 2;
+    const point = fixed || fixedPoint(start, null);
+    // 固定点との位置関係 (矩形の中の割合) を保って拡縮する。
+    let x = point.x - (point.x - start.x) * scale;
+    let y = point.y - (point.y - start.y) * scale;
     if (!fromCenter) {
         if (sides.left)
             x = start.x + start.width - width;
@@ -120,7 +131,7 @@ function keepAspectRect(start, rect, handle, fromCenter, minSize, drive) {
 
 // ハンドル (tl, t, tr, r, br, b, bl, l) を pointer まで動かしたときの矩形。
 //   既定       : 反対側の角・辺を固定する
-//   fromCenter : 中心を固定して対称に伸縮する (Alt)
+//   fromCenter : 固定点 (options.pivot、無ければ中心) を動かさずに伸縮する (Alt)
 //   keepAspect : 縦横比を保つ (Ctrl)
 // 反対側を越えて裏返さず、minSize で止める。
 function resizeRect(start, handle, pointer, options, minSize) {
@@ -128,21 +139,21 @@ function resizeRect(start, handle, pointer, options, minSize) {
         return copyRect(start);
     const minimum = finite(minSize) && minSize > 0 ? minSize : 1;
     const sides = handleSides(handle);
-    const centerX = start.x + start.width / 2;
-    const centerY = start.y + start.height / 2;
+    const fixed = fixedPoint(start, options);
     let left = start.x, right = start.x + start.width;
     let top = start.y, bottom = start.y + start.height;
+    // 固定点から掴んだ辺までの距離の比で、両側を同じ倍率にする。
+    const scaleAbout = (low, high, point, grabbedHigh, target, size) => {
+        const reach = grabbedHigh ? high - point : point - low;
+        const want = grabbedHigh ? target - point : point - target;
+        const scale = reach > 0 ? Math.max(minimum / size, want / reach) : minimum / size;
+        return [point - (point - low) * scale, point + (high - point) * scale];
+    };
     if (options.fromCenter) {
-        if (sides.left || sides.right) {
-            const half = Math.max(minimum / 2, sides.right ? pointer.x - centerX : centerX - pointer.x);
-            left = centerX - half;
-            right = centerX + half;
-        }
-        if (sides.top || sides.bottom) {
-            const half = Math.max(minimum / 2, sides.bottom ? pointer.y - centerY : centerY - pointer.y);
-            top = centerY - half;
-            bottom = centerY + half;
-        }
+        if (sides.left || sides.right)
+            [left, right] = scaleAbout(left, right, fixed.x, sides.right, pointer.x, start.width);
+        if (sides.top || sides.bottom)
+            [top, bottom] = scaleAbout(top, bottom, fixed.y, sides.bottom, pointer.y, start.height);
     } else {
         if (sides.right)
             right = Math.max(pointer.x, left + minimum);
@@ -155,11 +166,11 @@ function resizeRect(start, handle, pointer, options, minSize) {
     }
     const rect = { "x": left, "y": top, "width": right - left, "height": bottom - top };
     if (options.keepAspect)
-        return keepAspectRect(start, rect, handle, options.fromCenter, minimum);
+        return keepAspectRect(start, rect, handle, options.fromCenter, minimum, undefined, fixed);
     return rect;
 }
 
-// 掴んだ辺だけを線へ吸着させる。fromCenter なら反対の辺も対称に動かし、
+// 掴んだ辺だけを線へ吸着させる。fromCenter なら固定点を保って反対の辺も同じ倍率で動かし、
 // keepAspect なら近い方の軸だけを吸着させてもう一方は比率で決める。
 function snapResize(start, rect, handle, lines, threshold, options, minSize) {
     const minimum = finite(minSize) && minSize > 0 ? minSize : 1;
@@ -179,38 +190,29 @@ function snapResize(start, rect, handle, lines, threshold, options, minSize) {
     if (!useX && !useY)
         return { "rect": copyRect(rect), "guidesX": [], "guidesY": [] };
 
+    const fixed = fixedPoint(start, options);
+    // 掴んだ辺を delta だけ動かす。fromCenter なら固定点との比を保って反対の辺も動かす。
+    const moveEdge = (low, high, point, grabbedHigh, delta) => {
+        if (!options.fromCenter)
+            return grabbedHigh ? [low, high + delta] : [low + delta, high];
+        const edge = grabbedHigh ? high : low;
+        if (edge === point)
+            return [low, high];
+        const scale = (edge + delta - point) / (edge - point);
+        return [point - (point - low) * scale, point + (high - point) * scale];
+    };
     let left = rect.x, newRight = right, top = rect.y, newBottom = bottom;
-    if (useX) {
-        const delta = snapX.delta;
-        if (sides.left) {
-            left += delta;
-            if (options.fromCenter)
-                newRight -= delta;
-        } else {
-            newRight += delta;
-            if (options.fromCenter)
-                left -= delta;
-        }
-    }
-    if (useY) {
-        const delta = snapY.delta;
-        if (sides.top) {
-            top += delta;
-            if (options.fromCenter)
-                newBottom -= delta;
-        } else {
-            newBottom += delta;
-            if (options.fromCenter)
-                top -= delta;
-        }
-    }
+    if (useX)
+        [left, newRight] = moveEdge(left, newRight, fixed.x, sides.right, snapX.delta);
+    if (useY)
+        [top, newBottom] = moveEdge(top, newBottom, fixed.y, sides.bottom, snapY.delta);
     // 吸着で裏返る・潰れるなら吸着しない。
     if (newRight - left < minimum || newBottom - top < minimum)
         return { "rect": copyRect(rect), "guidesX": [], "guidesY": [] };
     let snapped = { "x": left, "y": top, "width": newRight - left, "height": newBottom - top };
     if (options.keepAspect)
         snapped = keepAspectRect(start, snapped, handle, options.fromCenter, minimum,
-                                 useX ? "x" : "y");
+                                 useX ? "x" : "y", fixed);
     return {
         "rect": snapped,
         "guidesX": useX ? [snapX.line] : [],
@@ -235,7 +237,9 @@ function resizeRotatedRect(start, pivotX, pivotY, degrees, handle, pointer, opti
     if (!pointer || !finite(pointer.x) || !finite(pointer.y) || !finite(degrees))
         return copyRect(start);
     const local = rotatePoint(pointer.x, pointer.y, pivotX, pivotY, -degrees);
-    const resized = resizeRect(start, handle, local, options, minSize);
+    // Alt で固定するのは回転の中心そのもの (動かなければ下の補正は 0 になる)。
+    const aboutPivot = Object.assign({}, options, { "pivot": { "x": pivotX, "y": pivotY } });
+    const resized = resizeRect(start, handle, local, aboutPivot, minSize);
     // 新しい矩形の回転の中心 P'。画面上の位置を保つには (I - R)(P - P') だけずらす。
     const fractionX = (pivotX - start.x) / start.width;
     const fractionY = (pivotY - start.y) / start.height;

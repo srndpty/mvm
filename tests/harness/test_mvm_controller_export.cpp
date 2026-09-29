@@ -20,6 +20,7 @@
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QFile>
+#include <QImage>
 #include <QUrl>
 
 namespace {
@@ -1583,6 +1584,8 @@ void testMediaFilePlacement(const std::filesystem::path& path, const std::filesy
         const auto& bin = *controller.mediaBinModel();
         const auto clipsBefore = placedClips(controller).size();
         const int binBefore = bin.entryCount();
+        const int firstNewIndex = controller.clipCount();
+        check(controller.playheadFrame() == 0, "前提: 再生位置が先頭ではありません");
 
         controller.addMediaFilesToTimelineAt({url(jpg), url(jpg)}, QStringLiteral("video"), 1, 200);
         std::vector<qint64> imageStarts;
@@ -1593,6 +1596,10 @@ void testMediaFilePlacement(const std::filesystem::path& path, const std::filesy
         std::sort(imageStarts.begin(), imageStarts.end());
         check(imageStarts == std::vector<qint64>{200, 500} && bin.entryCount() == binBefore + 1,
               "ドロップした画像がV2の指定位置から並ばない、またはbinへ1件だけ登録されません");
+        // 置いた clip が選択 (current) になり、再生位置 (0) は動かない。再生位置の clip へ
+        // current を選び直さない (timeline の選択と inspector の対象が食い違わない)。
+        check(controller.playheadFrame() == 0 && controller.currentClipIndex() == firstNewIndex,
+              "ドロップ後に再生位置が動いた、または置いたclipがcurrentになりません");
         check(controller.undoLastEdit() && placedClips(controller).size() == clipsBefore &&
                   bin.entryCount() == binBefore,
               "ドロップ配置を1回のUndoで戻せません");
@@ -1669,6 +1676,36 @@ void testMediaFilePlacement(const std::filesystem::path& path, const std::filesy
             !controller.addMediaItemsToTimelineAt({swappedId}, QStringLiteral("video"), 1, 2000) &&
                 placedClips(controller).size() == beforeSwap,
             "消えた画像をパネルから置けてしまいます");
+
+        // 同じ種類の別の中身 (横長 -> 縦長の画像) へ差し替わった素材は、使う時点で素材の値を
+        // 実物に合わせる。枠の寸法は素材の値で決まるので、古いままだと横長の枠になる。
+        const auto reshaped = path.parent_path() / L"reshaped-still.png";
+        const QString reshapedPath = QString::fromStdWString(reshaped.wstring());
+        check(QImage(320, 180, QImage::Format_RGB32).save(reshapedPath) &&
+                  controller.importMediaFiles({url(reshaped)}, {}),
+              "差し替え試験の横長画像を登録できません");
+        const QString reshapedId = binEntryIdNamed(bin, QStringLiteral("reshaped-still.png"));
+        const auto sizeText = [&] {
+            return bin
+                .data(bin.index(bin.rowOfEntry(reshapedId), 0),
+                      mvm::app::MediaBinModel::SizeTextRole)
+                .toString();
+        };
+        check(sizeText().startsWith(QStringLiteral("320")),
+              "前提: 横長画像の解像度が登録されていません");
+        check(QImage(180, 320, QImage::Format_RGB32).save(reshapedPath),
+              "縦長画像へ差し替えられません");
+        const auto beforeReshape = placedClips(controller).size();
+        controller.addMediaItemsToTimelineAt({reshapedId}, QStringLiteral("video"), 1, 3000);
+        const auto reshapedGeometry = controller.clipVisualGeometry(controller.transformClipId());
+        // 縦長 180x320 を 1920x1080 へ収めると高さ 1080・幅 607.5。
+        check(placedClips(controller).size() == beforeReshape + 1 &&
+                  std::abs(reshapedGeometry.value("height").toDouble() - 1080.0) < 1e-6 &&
+                  std::abs(reshapedGeometry.value("width").toDouble() - 607.5) < 1e-6,
+              "差し替え後の縦長画像の枠が古い (横長の) 寸法のままです");
+        check(sizeText().startsWith(QStringLiteral("180")),
+              "差し替え後もプロジェクトパネルの解像度が古いままです");
+        std::filesystem::remove(reshaped);
         controller.shutdown();
     }
 }

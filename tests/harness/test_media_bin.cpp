@@ -119,6 +119,29 @@ void testEdits() {
           "同じファイルの素材を重複して追加しました");
     check(mvm::project::addMediaItem(project, imageItem("i", "C:/media/still.png")).success,
           "静止画素材を追加できません");
+
+    // 調べ直した値で技術的な値だけを置き換える。id・名前・フォルダ・ファイルは変えない。
+    check(mvm::project::moveMediaBinEntries(project, {"i"}, "A").success &&
+              mvm::project::renameMediaBinEntry(project, "i", "表紙").success,
+          "前提: 画像素材をフォルダへ移して名前を変えられません");
+    auto portrait = imageItem("other-id", "C:/elsewhere/other.png");
+    portrait.width = 600;
+    portrait.height = 800;
+    check(mvm::project::refreshMediaItem(project, "i", portrait).success,
+          "調べ直した値で素材を更新できません");
+    const auto* refreshed = mvm::project::findMediaItem(project, "i");
+    check(refreshed && refreshed->width == 600 && refreshed->height == 800 &&
+              refreshed->name == "表紙" && refreshed->folderId == "A" &&
+              refreshed->mediaPath == "C:/media/still.png",
+          "素材の更新で技術的な値以外が変わった、または値が更新されません");
+    const Project beforeRefresh = project;
+    auto broken = portrait;
+    broken.width = 0;
+    check(!mvm::project::refreshMediaItem(project, "i", broken).success && project == beforeRefresh,
+          "不正な値で素材を更新できてしまいます");
+    check(!mvm::project::refreshMediaItem(project, "missing", portrait).success &&
+              project == beforeRefresh,
+          "存在しない素材を更新できてしまいます");
 }
 
 mvm::project::TimelineClip timelineClip(const char* id, mvm::project::TimelineClipKind kind,

@@ -32,6 +32,11 @@ MediaBinEditResult validateMediaReferences(const Project& project);
 MediaBinEditResult addMediaFolder(Project& project, MediaFolder folder);
 // 同じ mediaPath の item が既にあれば失敗する。
 MediaBinEditResult addMediaItem(Project& project, MediaItem item);
+// 素材の技術的な値 (種別・fps・尺・解像度・sample rate) を、調べ直した probed の値へ
+// 置き換える。id・名前・フォルダ・ファイルは変えない。外部でファイルが差し替わっていても、
+// パネルの値と timeline の計算 (枠の寸法など) を実物に合わせる。
+MediaBinEditResult refreshMediaItem(Project& project, const std::string& itemId,
+                                    const MediaItem& probed);
 MediaBinEditResult renameMediaBinEntry(Project& project, const std::string& entryId,
                                        std::string name);
 // targetFolderId が空なら root へ移す。folder を自分自身や子孫へは移せない。

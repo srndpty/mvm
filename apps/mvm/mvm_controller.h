@@ -27,6 +27,7 @@
 #include <QImage>
 #include <QObject>
 #include <QRect>
+#include <QRectF>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
@@ -308,6 +309,11 @@ public:
     Q_INVOKABLE QVariantList previewSnapRects(const QString& excludeClipId);
     // 見えている矩形を (x, y, width, height) にする {positionX, positionY, scaleX, scaleY}。
     // 決められなければ空。setEffectValues へそのまま渡せる。
+    // 最後に preview engine へ渡した composition で、動画 clip の layer を置いた矩形
+    // (出力を 0..1 とした座標)。preview が最新の effect を受け取ったかを試験で確かめる。
+    std::optional<QRectF> submittedLayerDestination(const QString& clipId) const;
+    // 保留中の作り直しが無く、engine が最後に受理した composition を提示し終えて止まっている。
+    bool previewPresentedLatest() const;
     Q_INVOKABLE QVariantMap effectsForVisualRect(const QString& clipId, double x, double y,
                                                  double width, double height) const;
 
@@ -546,6 +552,10 @@ private:
     applyTimelineEdit(const std::function<project::TimelineEditResult(project::Project&)>& edit,
                       const std::string& selectedClipId, const QString& successStatus);
     bool resolveTrimEdge(const QString& edge, project::TrimEdge& trimEdge);
+    // 再生位置の preview を、選択 (current clip) を変えずに今の Project で作り直す。
+    // engine が seek 中などで受けられなければ保留し、受けられるようになったら最新の状態で
+    // 1 回だけ行う (drag 中の連続した effect 変更の最後を取りこぼさない)。
+    bool refreshPreviewAtPlayhead(QString& error);
     // clip を削除する commit の後始末。preview が削除済み clip を掴んだままにしない。
     // preview を作り直せなかったときはその理由を返す (成功なら空)。
     QString resetAfterClipRemoval();
@@ -690,6 +700,8 @@ private:
     std::vector<AudioPreviewSource> audioSources_;
     // 最後に engine が受理した composition。同じ内容を出し直さないために持つ。
     std::shared_ptr<const preview::CompositionSnapshot> submittedComposition_;
+    // refreshPreviewAtPlayhead を engine が受けられず保留している。pollPreviewState が行う。
+    bool previewRefreshPending_ = false;
     // drag 中だけ生きる effect の上書き。Project へは書かない。
     // これがあるのは currentClipIndex_ の clip に対してだけである。
     std::optional<project::ClipEffects> previewEffectsOverride_;
