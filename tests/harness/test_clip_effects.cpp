@@ -183,5 +183,28 @@ int main(int argc, char** argv) {
                .success,
           "約分されていない速度を拒否する");
 
+    {
+        // fps の違う Project へ移した key は同じ秒位置へ来る。0.5 秒 / 1 秒 / 末尾。
+        std::vector<ClipKeyframe> keys = {{0, 100.0}, {30, 50.0}, {60, 20.0}, {119, 0.0}};
+        check(retimeClipKeys(keys, 60, 1, 30, 1, 60) &&
+                  keys == std::vector<ClipKeyframe>{{0, 100.0}, {15, 50.0}, {30, 20.0}, {59, 0.0}},
+              "60fps -> 30fps で key を同じ秒位置へ移す (尺を超えた末尾は最終 frame)");
+        check(retimeClipKeys(keys, 30, 1, 60, 1, 120) &&
+                  keys == std::vector<ClipKeyframe>{{0, 100.0}, {30, 50.0}, {60, 20.0}, {118, 0.0}},
+              "30fps -> 60fps で key を同じ秒位置へ移す");
+        keys = {{9, 10.0}, {10, 20.0}, {11, 30.0}};
+        check(retimeClipKeys(keys, 60, 1, 30, 1, 60) &&
+                  keys == std::vector<ClipKeyframe>{{5, 10.0}, {6, 30.0}},
+              "同じ frame に重なった key は先の 1 つを残し、ちょうど 1/2 は後ろへ丸める");
+        keys = {{30, 40.0}};
+        check(retimeClipKeys(keys, 30000, 1001, 30, 1, 60) &&
+                  keys == std::vector<ClipKeyframe>{{30, 40.0}},
+              "29.97fps -> 30fps で最も近い frame へ移す");
+        const std::vector<ClipKeyframe> original = {{3, 50.0}};
+        keys = original;
+        check(!retimeClipKeys(keys, 0, 1, 30, 1, 60) && keys == original,
+              "不正な fps では失敗し、key を変えない");
+    }
+
     return failures == 0 ? 0 : 1;
 }

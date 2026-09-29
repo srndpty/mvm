@@ -2082,6 +2082,8 @@ ApplicationWindow {
                                 property real bodyDragOffsetX: 0
                                 property real bodyDragOffsetY: 0
                                 property real rawBodyDragOffsetX: 0
+                                // press 時点で一緒に動く clip 群の端 (controller.timelineDragBounds)。
+                                property var bodyDragBounds: ({})
                                 property bool bodyMoved: false
                                 property bool bodyAdditiveSelection: false
                                 property string dragTrackKind: trackKind
@@ -2515,6 +2517,8 @@ ApplicationWindow {
                                             const frame = pressFrame;
                                             root.mvmController.selectTimelineClip(clipItem.clipId, frame, clipItem.editLinked);
                                         }
+                                        // 選択を確定した後で、一緒に動く群の端を取る。
+                                        clipItem.bodyDragBounds = root.mvmController.timelineDragBounds(clipItem.clipId);
                                         timelinePanel.activeDragLinkGroup = clipItem.editLinked ? clipItem.linkGroupId : "";
                                         timelinePanel.activeDragClipId = clipItem.clipId;
                                         timelinePanel.activeDragDuplicate = clipItem.gestureState.duplicate;
@@ -2573,17 +2577,22 @@ ApplicationWindow {
                                         // track移動時の小さな横ぶれは無視する。
                                         const intendedOffset = Math.abs(clipItem.rawBodyDragOffsetX) < 12
                                                                    ? 0 : clipItem.rawBodyDragOffsetX;
-                                        // drag中もanchorを0秒より左へ描画しない。リンク・複数選択の
-                                        // 最左端はProject側が同じdeltaで最終スナップする。
-                                        clipItem.bodyDragOffsetX = Math.max(
-                                            -clipItem.timelineStartFrame * timelinePanel.pixelsPerFrame,
-                                            intendedOffset);
+                                        // リンク・複数選択の群全体が 0 frame と既存 track に収まる量で
+                                        // 止める。確定にも同じ量を渡すので、見えている位置のまま置かれる。
+                                        clipItem.bodyDragOffsetX = Gestures.groupDragOffsetX(
+                                            intendedOffset, timelinePanel.pixelsPerFrame,
+                                            clipItem.bodyDragBounds);
                                         timelinePanel.activeDragOffsetX = clipItem.bodyDragOffsetX;
                                         const rawCenterY = clipItem.y
                                                            + (now.y - clipItem.bodyPressPoint.y)
                                                            + clipItem.height / 2;
                                         const snapped = timelinePanel.trackForDrag(clipItem.trackKind,
                                                                                     rawCenterY);
+                                        snapped.index = Gestures.groupDragTrackIndex(
+                                            snapped.kind, clipItem.trackIndex, snapped.index,
+                                            snapped.kind === "video" ? timelinePanel.videoCount
+                                                                     : timelinePanel.audioCount,
+                                            clipItem.bodyDragBounds);
                                         clipItem.dragTrackKind = snapped.kind;
                                         clipItem.dragTrackIndex = snapped.index;
                                         clipItem.bodyDragOffsetY = timelinePanel.rowY(snapped.kind,

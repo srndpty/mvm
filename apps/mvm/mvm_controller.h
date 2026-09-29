@@ -321,6 +321,9 @@ public:
     Q_INVOKABLE bool cutSelectedClips();
     Q_INVOKABLE bool pasteClips();
     Q_INVOKABLE bool duplicateSelectedClips();
+    // clipId をドラッグしたとき一緒に動く clip 群の端。minStartFrame と、含まれる種別ごとの
+    // videoMinTrack / videoMaxTrack / audioMinTrack / audioMaxTrack。clip が無ければ空。
+    Q_INVOKABLE QVariantMap timelineDragBounds(const QString& clipId) const;
     Q_INVOKABLE bool duplicateTimelineClipsAt(const QString& clipId, const QString& trackKind,
                                               int trackIndex, qint64 timelineStartFrame);
     Q_INVOKABLE bool addTimelineMarker();
@@ -650,9 +653,19 @@ private:
     int currentClipIndex_ = -1;
     std::vector<std::string> selectedClipIds_;
     std::vector<project::TimelineClip> clipboardClips_;
+    // コピー元 Project の bin にあった、clipboardClips_ の素材。
+    std::vector<project::MediaItem> clipboardMediaItems_;
     std::int64_t clipboardFpsNum_ = 0;
     std::int64_t clipboardFpsDen_ = 1;
+    // anchorId が選択中 (または空) なら選択中の clip、そうでなければ anchor だけを
+    // Project の並び順で返す。
+    std::vector<project::TimelineClip>
+    selectedTimelineClipsInOrder(const std::string& anchorId) const;
+    void storeClipboard(std::vector<project::TimelineClip> clips);
+    // clips を destinationFrame / track delta の位置へ新しい id で置き、mediaItems を使って
+    // 素材を bin にも登録する。すべて 1 つの undo になる。
     bool placeCopiedClips(const std::vector<project::TimelineClip>& clips,
+                          const std::vector<project::MediaItem>& mediaItems,
                           std::int64_t sourceFpsNum, std::int64_t sourceFpsDen,
                           std::int64_t destinationFrame, int videoTrackDelta, int audioTrackDelta);
     std::unique_ptr<QTemporaryDir> textRasterDirectory_;

@@ -15,6 +15,28 @@ TestCase {
         compare(Gestures.markerNearRulerX(200, 2, [], 9), -1);
     }
 
+    // 複数選択のドラッグは群全体で丸める。A(frame 0) と B(frame 100) の B を掴んで
+    // 左へ寄せても、A が 0 に接したところで止まる (B は 100 のまま)。
+    function test_groupDragStopsAtEarliestClip() {
+        const bounds = { "minStartFrame": 0, "videoMinTrack": 0, "videoMaxTrack": 1 };
+        compare(Gestures.groupDragOffsetX(-200, 2, bounds), 0);
+        compare(Gestures.groupDragOffsetX(80, 2, bounds), 80);
+        const later = { "minStartFrame": 30 };
+        compare(Gestures.groupDragOffsetX(-200, 2, later), -60);
+        compare(Gestures.groupDragOffsetX(-200, 2, {}), -200);
+    }
+
+    // V1/V2 を選んで V2 を V1 へ下ろすと V1 の clip が範囲外になるので、動かさない。
+    // 上端も既存 track の最上段で止める。
+    function test_groupDragTrackStaysInRange() {
+        const bounds = { "videoMinTrack": 0, "videoMaxTrack": 1 };
+        compare(Gestures.groupDragTrackIndex("video", 1, 0, 3, bounds), 1);
+        compare(Gestures.groupDragTrackIndex("video", 1, 2, 3, bounds), 2);
+        compare(Gestures.groupDragTrackIndex("video", 0, 2, 3, bounds), 1);
+        // bounds に無い種別は丸めない。
+        compare(Gestures.groupDragTrackIndex("audio", 0, 1, 2, bounds), 1);
+    }
+
     // レーザーは押した位置で切る。release までにマウスが動いても、離した位置や
     // clip の先頭へずれない。
     function test_razorSplitsAtPressFrame() {

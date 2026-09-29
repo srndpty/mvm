@@ -23,6 +23,24 @@ function markerNearRulerX(x, pixelsPerFrame, markers, radius) {
     return result;
 }
 
+// ドラッグ中の clip 群 (controller.timelineDragBounds) を丸ごと同じ量だけ動かせる範囲へ
+// 横のドラッグ量 (px) を丸める。最も左の clip が 0 frame に接したところで止める。
+function groupDragOffsetX(offsetX, pixelsPerFrame, bounds) {
+    if (bounds.minStartFrame === undefined)
+        return offsetX;
+    return Math.max(-bounds.minStartFrame * pixelsPerFrame, offsetX);
+}
+
+// 縦も同じく、群の最下段・最上段の clip が既存 track からはみ出さない index へ丸める。
+function groupDragTrackIndex(kind, anchorIndex, snappedIndex, trackCount, bounds) {
+    const minTrack = bounds[kind + "MinTrack"];
+    const maxTrack = bounds[kind + "MaxTrack"];
+    if (minTrack === undefined || maxTrack === undefined)
+        return snappedIndex;
+    const delta = Math.max(-minTrack, Math.min(trackCount - 1 - maxTrack, snappedIndex - anchorIndex));
+    return anchorIndex + delta;
+}
+
 // press の時点で、操作の種類と release で使う値をすべて決める。
 //   tool       : TimelineToolPanel.tools の tool
 //   modifiers  : 押した時点の Qt.KeyboardModifiers

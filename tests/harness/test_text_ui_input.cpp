@@ -5,6 +5,7 @@
 //   Esc では何も作らない
 //   選択ツールでドラッグすると位置が変わり、ドラッグ中だけ UI が文字を重ねる
 //   Ctrl+Z で位置が戻る
+//   入力欄の編集中は timeline の shortcut (Ctrl+C/V/D, M, I, O) が効かない
 // を確かめる。IME の変換確定は OS の入力方式が要るのでここでは扱わない
 // (docs/premiere-like-editing.md の手動確認手順を参照)。
 #include "app/preview/preview_engine_rhi_item.h"
@@ -21,6 +22,7 @@
 #include <functional>
 #include <thread>
 
+#include <QClipboard>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQuickItem>
@@ -592,6 +594,46 @@ int main(int argc, char** argv) {
                 pump();
                 check(window->property("timelineTool").toString() == QStringLiteral("text"),
                       "本文欄の後で T が効きません");
+
+                // 11. 本文欄の入力中は、timeline の shortcut (Ctrl+C/V/X/D, M, I, O) が
+                //     Action へ流れず、文字入力側だけが受ける。
+                const QString savedContent = textValue("content");
+                const int clipsBefore = controller.clipCount();
+                const qint64 inBefore = controller.inFrame();
+                const qint64 outBefore = controller.outFrame();
+                const int markersBefore = static_cast<int>(controller.timelineMarkers().size());
+                QTest::mouseClick(window, Qt::LeftButton, {}, editorPoint);
+                pump();
+                check(window->property("keyboardFocusTakesKeys").toBool(),
+                      "前提: 本文欄を押し直しても入力 focus になりません");
+                typeText(window, "mio");
+                pump();
+                const QString typed = contentEditor->property("text").toString();
+                check(typed.contains(QStringLiteral("mio")), "M / I / O が本文欄へ入力されません");
+                check(static_cast<int>(controller.timelineMarkers().size()) == markersBefore &&
+                          controller.inFrame() == inBefore && controller.outFrame() == outBefore,
+                      "入力中の M / I / O で timeline のマーカー・イン・アウトが変わりました");
+                QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+                QTest::keyClick(window, Qt::Key_C, Qt::ControlModifier);
+                pump();
+                check(QGuiApplication::clipboard()->text() == typed,
+                      "入力中の Ctrl+C が本文をコピーしません");
+                QTest::keyClick(window, Qt::Key_D, Qt::ControlModifier);
+                QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier);
+                pump(300);
+                check(contentEditor->property("text").toString() == typed,
+                      "入力中の Ctrl+V が本文へ貼り付けられません");
+                check(controller.clipCount() == clipsBefore,
+                      "入力中の Ctrl+D / Ctrl+V で timeline の clip が増えました");
+                // Esc で入力を取り消す。timeline の clipboard
+                // は空のままなので貼り付けは拒否される。
+                QTest::keyClick(window, Qt::Key_Escape);
+                pump(300);
+                check(!window->property("keyboardFocusTakesKeys").toBool() &&
+                          textValue("content") == savedContent,
+                      "Esc で本文の入力を取り消せません");
+                check(!controller.pasteClips() && controller.clipCount() == clipsBefore,
+                      "入力中の Ctrl+C が timeline の clip をコピーしました");
             }
             return failures == 0 ? 0 : 1;
         };
@@ -610,6 +652,6 @@ int main(int argc, char** argv) {
     mvm_mlt_runtime_shutdown();
     if (exitCode == 0)
         std::puts("文字ツールの直接入力 (作成・Esc・ドラッグ・範囲で掴む・Undo・focus 解放) "
-                  "を確認しました");
+                  "・入力中の shortcut 抑止を確認しました");
     return exitCode;
 }

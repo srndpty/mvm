@@ -3359,24 +3359,50 @@ QVariantList MvmController::timelineMarkers() const {
     return frames;
 }
 
+std::vector<project::TimelineClip>
+MvmController::selectedTimelineClipsInOrder(const std::string& anchorId) const {
+    const bool anchorSelected =
+        anchorId.empty() || std::find(selectedClipIds_.begin(), selectedClipIds_.end(),
+                                      anchorId) != selectedClipIds_.end();
+    std::vector<project::TimelineClip> clips;
+    for (const auto& clip : project_.timelineClips) {
+        if (clip.id == anchorId ||
+            (anchorSelected && std::find(selectedClipIds_.begin(), selectedClipIds_.end(),
+                                         clip.id) != selectedClipIds_.end()))
+            clips.push_back(clip);
+    }
+    return clips;
+}
+
+void MvmController::storeClipboard(std::vector<project::TimelineClip> clips) {
+    // 別 Project へ貼ったときに Project パネルへ同じ素材を登録できるよう、bin の項目も持つ。
+    clipboardMediaItems_.clear();
+    for (const auto& clip : clips) {
+        if (clip.kind == project::TimelineClipKind::Text)
+            continue;
+        const auto* item = project::findMediaItemByPath(project_, clip.mediaPath);
+        if (item && !std::any_of(clipboardMediaItems_.begin(), clipboardMediaItems_.end(),
+                                 [&](const project::MediaItem& stored) {
+                                     return stored.mediaPath == item->mediaPath;
+                                 }))
+            clipboardMediaItems_.push_back(*item);
+    }
+    clipboardClips_ = std::move(clips);
+    clipboardFpsNum_ = project_.timelineFpsNum;
+    clipboardFpsDen_ = project_.timelineFpsDen;
+}
+
 bool MvmController::copySelectedClips() {
     if (busy_ || selectedClipIds_.empty()) {
         setStatus(QStringLiteral("コピーするclipがありません"));
         return false;
     }
-    std::vector<project::TimelineClip> copied;
-    for (const auto& clip : project_.timelineClips) {
-        if (std::find(selectedClipIds_.begin(), selectedClipIds_.end(), clip.id) !=
-            selectedClipIds_.end())
-            copied.push_back(clip);
-    }
+    auto copied = selectedTimelineClipsInOrder({});
     if (copied.size() != selectedClipIds_.size()) {
         setStatus(QStringLiteral("選択clipがProjectにありません"));
         return false;
     }
-    clipboardClips_ = std::move(copied);
-    clipboardFpsNum_ = project_.timelineFpsNum;
-    clipboardFpsDen_ = project_.timelineFpsDen;
+    storeClipboard(std::move(copied));
     setStatus(QString::number(clipboardClips_.size()) + QStringLiteral("個のclipをコピーしました"));
     return true;
 }
@@ -3388,13 +3414,8 @@ bool MvmController::cutSelectedClips() {
         setStatus(QStringLiteral("カットするclipがありません"));
         return false;
     }
-    std::vector<project::TimelineClip> copied;
+    auto copied = selectedTimelineClipsInOrder({});
     project::Project candidate = project_;
-    for (const auto& clip : project_.timelineClips) {
-        if (std::find(selectedClipIds_.begin(), selectedClipIds_.end(), clip.id) !=
-            selectedClipIds_.end())
-            copied.push_back(clip);
-    }
     if (copied.size() != selectedClipIds_.size()) {
         setStatus(QStringLiteral("カットするclipがProjectにありません"));
         return false;
@@ -3419,9 +3440,8 @@ bool MvmController::cutSelectedClips() {
     }
     if (!commitProjectEdit(std::move(candidate), QStringLiteral("カットできません: ")))
         return false;
-    clipboardClips_ = std::move(copied);
-    clipboardFpsNum_ = project_.timelineFpsNum;
-    clipboardFpsDen_ = project_.timelineFpsDen;
+    // cut は bin を変えないので、commit 後の Project から素材を控えてよい。
+    storeClipboard(std::move(copied));
     setTimelineSelection({});
     if (project_.timelineClips.empty()) {
         const bool reset = resetPreviewEngine();
@@ -3441,6 +3461,7 @@ bool MvmController::cutSelectedClips() {
 }
 
 bool MvmController::placeCopiedClips(const std::vector<project::TimelineClip>& clips,
+                                     const std::vector<project::MediaItem>& mediaItems,
                                      std::int64_t sourceFpsNum, std::int64_t sourceFpsDen,
                                      std::int64_t destinationFrame, int videoTrackDelta,
                                      int audioTrackDelta) {
@@ -3480,7 +3501,26 @@ bool MvmController::placeCopiedClips(const std::vector<project::TimelineClip>& c
         placed.timelineStartFrame = destinationFrame + offset.frame;
         const int delta =
             clip.track.kind == project::TrackKind::Video ? videoTrackDelta : audioTrackDelta;
-        placed.track.index = std::max(0, clip.track.index + delta);
+        // 個別に 0 へ丸めると clip 同士の上下関係が崩れる。範囲はドラッグ側で揃えておく。
+        if (clip.track.index + delta < 0) {
+            setStatus(QStringLiteral("配置先のtrackが範囲外です"));
+            return false;
+        }
+        placed.track.index = clip.track.index + delta;
+        if (sourceFpsNum != candidate.timelineFpsNum || sourceFpsDen != candidate.timelineFpsDen) {
+            // key は clip 先頭からの timeline frame なので、fps が違えば同じ秒位置へ移す。
+            const auto duration = project::timelineClipDuration(candidate, placed);
+            if (!duration.success ||
+                !project::retimeClipKeys(placed.effects.opacityKeys, sourceFpsNum, sourceFpsDen,
+                                         candidate.timelineFpsNum, candidate.timelineFpsDen,
+                                         duration.frame) ||
+                !project::retimeClipKeys(placed.effects.volumeKeys, sourceFpsNum, sourceFpsDen,
+                                         candidate.timelineFpsNum, candidate.timelineFpsDen,
+                                         duration.frame)) {
+                setStatus(QStringLiteral("キーフレームを貼り付け先のfpsへ変換できません"));
+                return false;
+            }
+        }
         lanes[{clip.track.kind, clip.track.index}].push_back(std::move(placed));
         if (!clip.linkGroupId.empty())
             ++linkCounts[clip.linkGroupId];
@@ -3560,6 +3600,33 @@ bool MvmController::placeCopiedClips(const std::vector<project::TimelineClip>& c
             candidate.timelineClips.push_back(std::move(copy));
         }
     }
+    // 素材の追加と同じく、timeline へ置いた素材は同じ編集で Project パネルにも載せる。
+    // コピー元の bin 項目があればそれを使い (folder は移し先に無いので root)、無ければ調べ直す。
+    for (const auto& clip : clips) {
+        if (clip.kind == project::TimelineClipKind::Text ||
+            project::findMediaItemByPath(candidate, clip.mediaPath))
+            continue;
+        const auto copied = std::find_if(
+            mediaItems.begin(), mediaItems.end(),
+            [&](const project::MediaItem& item) { return item.mediaPath == clip.mediaPath; });
+        if (copied == mediaItems.end()) {
+            QString registerError;
+            if (!registerMediaItem(candidate, clip.mediaPath, registerError)) {
+                setStatus(registerError);
+                return false;
+            }
+            continue;
+        }
+        auto item = *copied;
+        item.id = newClipId();
+        item.folderId.clear();
+        const auto added = project::addMediaItem(candidate, std::move(item));
+        if (!added.success) {
+            setStatus(QStringLiteral("素材をプロジェクトへ登録できません: ") +
+                      QString::fromStdString(added.error));
+            return false;
+        }
+    }
     const auto valid = project::validateTimeline(candidate);
     if (!valid.success) {
         setStatus(QStringLiteral("clipを配置できません: ") + QString::fromStdString(valid.error));
@@ -3573,19 +3640,39 @@ bool MvmController::placeCopiedClips(const std::vector<project::TimelineClip>& c
 }
 
 bool MvmController::pasteClips() {
-    return placeCopiedClips(clipboardClips_, clipboardFpsNum_, clipboardFpsDen_, playheadFrame_, 0,
-                            0);
+    return placeCopiedClips(clipboardClips_, clipboardMediaItems_, clipboardFpsNum_,
+                            clipboardFpsDen_, playheadFrame_, 0, 0);
 }
 
 bool MvmController::duplicateSelectedClips() {
-    std::vector<project::TimelineClip> clips;
-    for (const auto& clip : project_.timelineClips) {
-        if (std::find(selectedClipIds_.begin(), selectedClipIds_.end(), clip.id) !=
-            selectedClipIds_.end())
-            clips.push_back(clip);
+    return placeCopiedClips(selectedTimelineClipsInOrder({}), project_.mediaItems,
+                            project_.timelineFpsNum, project_.timelineFpsDen, playheadFrame_, 0, 0);
+}
+
+QVariantMap MvmController::timelineDragBounds(const QString& clipId) const {
+    // ドラッグで一緒に動く clip 群 (anchor が選択中なら選択全体) の端。QML はこれで
+    // ドラッグ量を先に丸め、表示した位置のまま移動・複製を確定させる。
+    const auto clips = selectedTimelineClipsInOrder(clipId.toStdString());
+    QVariantMap bounds;
+    if (clips.empty())
+        return bounds;
+    qint64 minStart = std::numeric_limits<qint64>::max();
+    std::map<project::TrackKind, std::pair<int, int>> trackRange;
+    for (const auto& clip : clips) {
+        minStart = std::min<qint64>(minStart, clip.timelineStartFrame);
+        const auto [range, inserted] =
+            trackRange.try_emplace(clip.track.kind, clip.track.index, clip.track.index);
+        range->second.first = std::min(range->second.first, clip.track.index);
+        range->second.second = std::max(range->second.second, clip.track.index);
     }
-    return placeCopiedClips(clips, project_.timelineFpsNum, project_.timelineFpsDen, playheadFrame_,
-                            0, 0);
+    bounds.insert(QStringLiteral("minStartFrame"), minStart);
+    for (const auto& [kind, range] : trackRange) {
+        const QString prefix =
+            kind == project::TrackKind::Video ? QStringLiteral("video") : QStringLiteral("audio");
+        bounds.insert(prefix + QStringLiteral("MinTrack"), range.first);
+        bounds.insert(prefix + QStringLiteral("MaxTrack"), range.second);
+    }
+    return bounds;
 }
 
 bool MvmController::duplicateTimelineClipsAt(const QString& clipId, const QString& trackKind,
@@ -3602,23 +3689,18 @@ bool MvmController::duplicateTimelineClipsAt(const QString& clipId, const QStrin
         setStatus(QStringLiteral("異なる種別のtrackへ複製できません"));
         return false;
     }
-    std::vector<project::TimelineClip> clips;
-    const bool selected = std::find(selectedClipIds_.begin(), selectedClipIds_.end(), anchorId) !=
-                          selectedClipIds_.end();
-    for (const auto& clip : project_.timelineClips) {
-        if (clip.id == anchorId ||
-            (selected && std::find(selectedClipIds_.begin(), selectedClipIds_.end(), clip.id) !=
-                             selectedClipIds_.end()))
-            clips.push_back(clip);
-    }
+    const auto clips = selectedTimelineClipsInOrder(anchorId);
     const auto first =
         std::min_element(clips.begin(), clips.end(), [](const auto& a, const auto& b) {
             return a.timelineStartFrame < b.timelineStartFrame;
         });
-    const auto destinationFirst = std::max<qint64>(
-        0, timelineStartFrame - (anchor.timelineStartFrame - first->timelineStartFrame));
+    // 位置を後から寄せると、ドラッグ中に見せた位置と確定位置がずれる。QML が
+    // timelineDragBounds で丸めた値を渡すので、範囲外は placeCopiedClips が拒否する。
+    const qint64 destinationFirst =
+        timelineStartFrame - (anchor.timelineStartFrame - first->timelineStartFrame);
     return placeCopiedClips(
-        clips, project_.timelineFpsNum, project_.timelineFpsDen, destinationFirst,
+        clips, project_.mediaItems, project_.timelineFpsNum, project_.timelineFpsDen,
+        destinationFirst,
         destination.kind == project::TrackKind::Video ? destination.index - anchor.track.index : 0,
         destination.kind == project::TrackKind::Audio ? destination.index - anchor.track.index : 0);
 }
