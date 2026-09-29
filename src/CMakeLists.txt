@@ -9,6 +9,7 @@ add_library(mvm_core STATIC
     core/layer_placement.cpp
     core/presentation_opportunity_mapper.cpp
     core/source_frame_mapping.cpp
+    core/timecode.cpp
     core/waveform_peaks.cpp
 )
 target_include_directories(mvm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -202,12 +203,13 @@ add_library(mvm_audio_preview STATIC
     media/audio_preview/audio_video_scheduler.cpp
     media/audio_preview/checked_audio_video_scheduler.cpp
     media/audio_preview/audio_decode_worker.cpp
+    media/audio_preview/pitch_preserving_stretcher.cpp
     media/audio_preview/wasapi_audio_sink.cpp
 )
 target_include_directories(mvm_audio_preview PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mvm_audio_preview
     PUBLIC PkgConfig::MVM_FFMPEG mvm::core
-    PRIVATE ole32 uuid avrt mvm::warnings
+    PRIVATE PkgConfig::MVM_RUBBERBAND ole32 uuid avrt mvm::warnings
 )
 add_library(mvm::audio_preview ALIAS mvm_audio_preview)
 

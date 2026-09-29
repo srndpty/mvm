@@ -79,27 +79,67 @@ static int service_exists(mlt_properties list, const char* name) {
  * loader へ渡す。service 名 "timewarp" を直接指定すると loader が付ける音声の正規化
  * (resample) が付かない。timewarp は audio の sample rate を変えて速度を表すため、正規化が
  * 無いと tractor の mix で伸縮されずに元の速さで鳴る (§16.8 で実測)。 */
+/* loader へ渡す resource。等速なら素材のパス、それ以外は "timewarp:<speed>:<path>"。
+ * 呼び出し側が free する。速度が不正なら NULL。 */
+static char* clip_resource(const char* path, long long speed_num, long long speed_den) {
+    if (speed_num <= 0 || speed_den <= 0)
+        return NULL;
+    size_t size = strlen(path) + 64;
+    char* resource = (char*)malloc(size);
+    if (!resource)
+        return NULL;
+    if (speed_num == speed_den)
+        snprintf(resource, size, "%s", path);
+    else
+        snprintf(resource, size, "timewarp:%.17g:%s", (double)speed_num / (double)speed_den, path);
+    return resource;
+}
+
 static mlt_producer open_clip_producer(mlt_profile profile, const MvmExportClip* clip) {
+    if (clip->is_frame_hold) {
+        /* hold は resource を loader で開く。保持元 clip と同じ速度の timewarp にすると、
+         * hold_position は元 clip と同じ実効 fps の位置になる (高 fps 素材の slow motion で、
+         * 素材 fps のままでは timeline へ出せない frame も保持できる)。 */
+        char* resource = clip_resource(clip->path, clip->hold_speed_num, clip->hold_speed_den);
+        if (!resource)
+            return NULL;
+        mlt_producer producer = mlt_factory_producer(profile, "hold", resource);
+        free(resource);
+        if (!producer)
+            return NULL;
+        mlt_properties properties = MLT_PRODUCER_PROPERTIES(producer);
+        mlt_properties_set_int64(properties, "frame", clip->hold_position);
+        mlt_properties_set_int64(properties, "length", clip->timeline_duration_frames);
+        if (mlt_producer_set_in_and_out(producer, 0,
+                                        (mlt_position)(clip->timeline_duration_frames - 1)) != 0) {
+            mlt_producer_close(producer);
+            return NULL;
+        }
+        if (mlt_properties_get_int64(properties, "frame") != clip->hold_position ||
+            mlt_properties_get_int64(properties, "length") != clip->timeline_duration_frames ||
+            mlt_producer_get_playtime(producer) != clip->timeline_duration_frames) {
+            mlt_producer_close(producer);
+            return NULL;
+        }
+        return producer;
+    }
     if (clip->is_still_image)
         return mlt_factory_producer(profile, "qimage", clip->path);
     if (clip->speed_num == 1 && clip->speed_den == 1)
         return mlt_factory_producer(profile, NULL, clip->path);
-    size_t size = strlen(clip->path) + 64;
-    char* resource = (char*)malloc(size);
+    char* resource = clip_resource(clip->path, clip->speed_num, clip->speed_den);
     if (!resource)
         return NULL;
-    snprintf(resource, size, "timewarp:%.17g:%s", (double)clip->speed_num / (double)clip->speed_den,
-             clip->path);
     mlt_producer producer = mlt_factory_producer(profile, NULL, resource);
     free(resource);
     if (!producer)
         return NULL;
     /* 既定値は 0 だが、音程の扱いは仕様なので明示して読み戻す。 */
     mlt_properties properties = MLT_PRODUCER_PROPERTIES(producer);
-    mlt_properties_set_int(properties, "warp_pitch", 0);
+    mlt_properties_set_int(properties, "warp_pitch", clip->preserve_pitch ? 1 : 0);
     const double speed = mlt_properties_get_double(properties, "warp_speed");
     const double wanted = (double)clip->speed_num / (double)clip->speed_den;
-    if (mlt_properties_get_int(properties, "warp_pitch") != 0 ||
+    if (mlt_properties_get_int(properties, "warp_pitch") != (clip->preserve_pitch ? 1 : 0) ||
         fabs(speed - wanted) > 1e-9 * wanted) {
         mlt_producer_close(producer);
         return NULL;
@@ -110,6 +150,8 @@ static mlt_producer open_clip_producer(mlt_profile profile, const MvmExportClip*
 static int clips_need_timewarp(const MvmExportClip* clips, int clip_count) {
     for (int i = 0; i < clip_count; ++i) {
         if (clips[i].speed_num != 1 || clips[i].speed_den != 1)
+            return 1;
+        if (clips[i].is_frame_hold && clips[i].hold_speed_num != clips[i].hold_speed_den)
             return 1;
     }
     return 0;

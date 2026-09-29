@@ -102,6 +102,8 @@ add_test(NAME m7b_3_product_export_architecture
 set_tests_properties(m7b_3_product_export_architecture PROPERTIES TIMEOUT 120)
 
 # --- M5: minimal timeline editing ------------------------------------------
+add_executable(mvm_test_timecode core/test_timecode.cpp)
+target_link_libraries(mvm_test_timecode PRIVATE mvm::core mvm::warnings)
 add_executable(mvm_test_timeline_edit harness/test_timeline_edit.cpp)
 add_executable(mvm_test_text_clip harness/test_text_clip.cpp)
 target_link_libraries(mvm_test_text_clip PRIVATE
@@ -155,6 +157,19 @@ add_test(NAME m7b_4_timeline_clip_model_focused COMMAND mvm_test_timeline_clip_m
 set_tests_properties(m7b_4_timeline_clip_model_focused PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 120)
+
+# clip の端のカーソル。画面を出さないので offscreen で動かす。
+add_executable(mvm_test_trim_cursor
+    harness/test_trim_cursor.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/trim_cursor.cpp)
+target_include_directories(mvm_test_trim_cursor PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_test_trim_cursor PRIVATE
+    Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick mvm::warnings)
+set_target_properties(mvm_test_trim_cursor PROPERTIES AUTOMOC ON)
+add_test(NAME trim_cursor_focused COMMAND mvm_test_trim_cursor)
+set_tests_properties(trim_cursor_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH};QT_QPA_PLATFORM=offscreen"
+    TIMEOUT 60)
 
 # --- プロジェクトパネル (素材とフォルダ) ------------------------------------
 add_executable(mvm_test_media_bin harness/test_media_bin.cpp)
@@ -337,11 +352,15 @@ set_tests_properties(text_ui_direct_input PROPERTIES
 add_executable(mvm_test_export_eta core/test_export_eta.cpp)
 target_link_libraries(mvm_test_export_eta PRIVATE mvm::core mvm::warnings)
 add_test(NAME export_eta_unit COMMAND mvm_test_export_eta)
+set_tests_properties(export_eta_unit PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}")
 
 add_executable(mvm_test_reveal_in_explorer util/test_reveal_in_explorer.cpp)
 target_link_libraries(mvm_test_reveal_in_explorer PRIVATE mvm::util mvm::warnings)
 add_test(NAME reveal_in_explorer_negative
     COMMAND mvm_test_reveal_in_explorer ${CMAKE_BINARY_DIR}/tests/reveal-in-explorer)
+set_tests_properties(reveal_in_explorer_negative PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}")
 
 add_test(NAME m7b_4_controller_export_lifecycle
     COMMAND mvm_test_controller_export ${CMAKE_BINARY_DIR}/tests/controller-export
@@ -360,6 +379,8 @@ target_link_libraries(mvm_test_shuttle_audio_mix PRIVATE
     mvm::audio_preview mvm::timeline_playback mvm::timeline_preview_mapping
     mvm::project mvm::warnings)
 add_test(NAME m6b_shuttle_audio_mix COMMAND mvm_test_shuttle_audio_mix)
+set_tests_properties(m6b_shuttle_audio_mix PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}")
 
 # 実際の WASAPI endpoint へ 6 速度を出して audio clock の進行を見る。
 # endpoint の無い環境では成立しないので workstation label を付ける (-Portable で除外)。
@@ -611,6 +632,8 @@ function(mvm_add_test name)
         ${T_PROPERTIES}
     )
 endfunction()
+
+mvm_add_test(timecode_contract COMMAND mvm_test_timecode PROPERTIES TIMEOUT 30)
 
 # --- negative test は終了コードを厳密に照合する -----------------------------
 #
@@ -2150,6 +2173,9 @@ if(MVM_ENABLE_QT)
         ARGS --renderer-recreation)
     mvm_add_p5c_product_test(preview_engine_p5c_decoder_eof
         ARGS --decoder-eof)
+    # フレーム保持の source が保持の終端を越えても session を閉じず、seek 後も再生できる。
+    mvm_add_p5c_product_test(preview_engine_p5c_frame_hold
+        ARGS --frame-hold)
 
     # wall-clockでrender idleを測るtestは、count採取時点でin-flightだったrender pass
     # が後から完了すると偽陽性になる。並列実行のCPU競合で実際に表面化した。
@@ -2159,9 +2185,9 @@ if(MVM_ENABLE_QT)
                          PROPERTIES RUN_SERIAL TRUE)
 
     list(LENGTH _mvm_p5c_product_tests _mvm_p5c_product_registered)
-    if(NOT _mvm_p5c_product_registered EQUAL 9)
+    if(NOT _mvm_p5c_product_registered EQUAL 10)
         message(FATAL_ERROR
-            "[mvm] P5-C product testの登録数が不正です: ${_mvm_p5c_product_registered}/9")
+            "[mvm] P5-C product testの登録数が不正です: ${_mvm_p5c_product_registered}/10")
     endif()
 
     # --- Phase 5 / P5-D2: audio-master transport ----------------------------
@@ -2576,6 +2602,12 @@ endif()
 # レート調整の音声。速度 s の素材を伸縮した時間軸の 48 kHz sample で出すことを実 PCM で測る。
 add_executable(mvm_test_audio_playback_speed audio_preview/test_audio_playback_speed.cpp)
 target_link_libraries(mvm_test_audio_playback_speed PRIVATE mvm::audio_preview mvm::warnings)
+add_executable(mvm_test_pitch_preserving_stretcher
+    audio_preview/test_pitch_preserving_stretcher.cpp)
+target_link_libraries(mvm_test_pitch_preserving_stretcher PRIVATE
+    mvm::audio_preview mvm::warnings)
+mvm_add_test(pitch_preserving_stretcher COMMAND mvm_test_pitch_preserving_stretcher
+    PROPERTIES TIMEOUT 30)
 add_test(NAME audio_playback_speed
     COMMAND mvm_test_audio_playback_speed
         "${CMAKE_CURRENT_BINARY_DIR}/audio-playback-speed"

@@ -83,10 +83,13 @@ struct PreviewVideoMapping {
     // 速度込みの実効 fps (project::clipTimebase)。速度が違えば別の対応になる。
     std::int64_t timebaseNum = 0;
     std::int64_t timebaseDen = 1;
+    std::int64_t holdFrames = 0;
     bool operator==(const PreviewVideoMapping&) const = default;
 };
 
 PreviewVideoMapping previewVideoMappingOf(const project::TimelineClip& clip);
+preview::PreviewSourceDescriptor previewVideoDescriptorOf(const project::Project& project,
+                                                          const project::TimelineClip& clip);
 
 // installed の source で clip を表示できるか。レーザーで分割した直後のように同じ素材が
 // timeline 上で連続していれば、clip が違っても timeline -> 素材の対応は同じになる。

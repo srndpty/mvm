@@ -1,7 +1,8 @@
 import QtQuick
 import QtQuick.Controls
 
-// 数値を左右ドラッグで変更できるフィールド。ダブルクリックで直接入力へ切り替わる。
+// 数値を左右ドラッグで変更できるフィールド。ダブルクリック (clickToEdit ならシングルクリック)
+// で直接入力へ切り替わる。
 // ドラッグ中は commit=false で通知し、離した時だけ commit=true にする。
 // 保存のたびに Project を書き直さないための区別であり、表示上の都合ではない。
 Item {
@@ -18,6 +19,44 @@ Item {
     // 0 より大きいと label を左に置き、1 行 (高さ 24) にする。値は label の幅。
     property real inlineLabelWidth: 0
     readonly property bool inlineLabel: root.inlineLabelWidth > 0
+    // true ならドラッグせずに離したクリック 1 回で直接入力へ切り替える (ダイアログ用)。
+    // 既定の false は、パネル上で値を誤って入力モードにしないためダブルクリックを要求する。
+    property bool clickToEdit: false
+
+    // 直接入力の文字列全体を数値として読む。末尾の単位 (suffix) だけは付いていてよい。
+    // parseFloat は "50foo" を 50 と読んでしまうので使わない。読めなければ NaN。
+    function parseEditorText(text) {
+        let body = text.trim();
+        const unit = root.suffix.trim();
+        if (unit.length > 0 && body.endsWith(unit))
+            body = body.slice(0, body.length - unit.length).trim();
+        if (body.length === 0)
+            return NaN;
+        const parsed = Number(body);
+        return isFinite(parsed) ? parsed : NaN;
+    }
+
+    // 直接入力中の文字列を確定する。入力中に別のボタンで確定するダイアログは、
+    // Enter を待たずにこれを呼んで値を取り込む。
+    // 入力していなければ、または数値として読めて確定したら true。読めなければ入力欄を
+    // 開いたまま false を返す (古い値のまま閉じて、呼び出し側が古い値で処理を続けないように)。
+    function commitEditing() {
+        if (!editor.visible)
+            return true;
+        const parsed = root.parseEditorText(editor.text);
+        if (isNaN(parsed))
+            return false;
+        root.valueEdited(root.clampValue(parsed), true);
+        editor.finish();
+        return true;
+    }
+
+    function beginEditing() {
+        editor.text = root.value.toFixed(root.decimals);
+        editor.visible = true;
+        editor.forceActiveFocus();
+        editor.selectAll();
+    }
     // enabled は Item から継承したものをそのまま使う。同名 property を足すと
     // 親 (GridLayout) の enabled が伝わらず、無効化しても drag できてしまう。
 
@@ -78,12 +117,7 @@ Item {
             bottomPadding: 0
             leftPadding: 7
             verticalAlignment: TextInput.AlignVCenter
-            onAccepted: {
-                const parsed = parseFloat(text);
-                if (!isNaN(parsed))
-                    root.valueEdited(root.clampValue(parsed), true);
-                editor.finish();
-            }
+            onAccepted: root.commitEditing()
             Keys.onEscapePressed: editor.finish()
 
             // 非表示にした editor に focus が残ると、Space の再生や tool の単キー操作が
@@ -94,8 +128,14 @@ Item {
                 if (hadFocus && root.Window.window)
                     root.Window.window.contentItem.forceActiveFocus();
             }
+            // ダイアログ (clickToEdit) では、入力中に「適用」を押すと先に focus が外れる。
+            // そこで捨てると入力した値が失われるので確定する。パネルでは従来どおり取り消す。
             onActiveFocusChanged: {
-                if (!activeFocus)
+                if (activeFocus || !editor.visible)
+                    return;
+                if (root.clickToEdit)
+                    root.commitEditing();
+                else
                     editor.visible = false;
             }
         }
@@ -129,6 +169,8 @@ Item {
             onReleased: {
                 if (dragged)
                     root.valueEdited(root.value, true);
+                else if (root.clickToEdit)
+                    root.beginEditing();
                 dragged = false;
             }
             onCanceled: {
@@ -136,12 +178,7 @@ Item {
                     root.editCanceled();
                 dragged = false;
             }
-            onDoubleClicked: {
-                editor.text = root.value.toFixed(root.decimals);
-                editor.visible = true;
-                editor.forceActiveFocus();
-                editor.selectAll();
-            }
+            onDoubleClicked: root.beginEditing()
         }
     }
 }

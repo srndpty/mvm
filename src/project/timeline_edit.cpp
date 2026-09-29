@@ -96,7 +96,7 @@ bool trimClipBoundary(const Project& project, TimelineClip& clip, TrimEdge edge,
         error = originalDuration.error;
         return false;
     }
-    if (isStillClipKind(clip.kind)) {
+    if (hasSyntheticSourceDomain(clip)) {
         const std::int64_t originalStart = clip.timelineStartFrame;
         if (originalStart > std::numeric_limits<std::int64_t>::max() - originalDuration.frame) {
             error = "text / image clip の終端が範囲外です";
@@ -247,8 +247,9 @@ TimelineFrameResult timelineClipDuration(const Project& project, const TimelineC
     return result;
 }
 
-TimelineFrameResult clipSourceFrameAt(const TimelineClip& clip, std::int64_t timelineFpsNum,
-                                      std::int64_t timelineFpsDen, std::int64_t clipLocalFrame) {
+namespace {
+TimelineFrameResult mappedSourceFrameAt(const TimelineClip& clip, std::int64_t timelineFpsNum,
+                                        std::int64_t timelineFpsDen, std::int64_t clipLocalFrame) {
     TimelineFrameResult result;
     const auto origin =
         clipSourceBoundaryToTimeline(clip, clip.sourceInFrame, timelineFpsNum, timelineFpsDen);
@@ -272,6 +273,74 @@ TimelineFrameResult clipSourceFrameAt(const TimelineClip& clip, std::int64_t tim
     result.success = true;
     result.frame = std::min(*source, clip.sourceFrameCount - 1);
     return result;
+}
+} // namespace
+
+TimelineFrameResult clipSourceFrameAt(const TimelineClip& clip, std::int64_t timelineFpsNum,
+                                      std::int64_t timelineFpsDen, std::int64_t clipLocalFrame) {
+    auto result = mappedSourceFrameAt(clip, timelineFpsNum, timelineFpsDen, clipLocalFrame);
+    if (result.success && clip.frameHold)
+        result.frame = clip.frameHold->sourceFrame;
+    return result;
+}
+
+namespace {
+// 速度が約分済みの正の有理数で、10%〜1000% の範囲にあるか。clip と保持元の速度で共有する。
+bool clipSpeedInRange(std::int64_t speedNum, std::int64_t speedDen) {
+    return speedNum > 0 && speedDen > 0 && std::gcd(speedNum, speedDen) == 1 &&
+           static_cast<WideInteger>(speedNum) * 100 >=
+               static_cast<WideInteger>(speedDen) * kMinClipSpeedPercent &&
+           static_cast<WideInteger>(speedNum) * 100 <=
+               static_cast<WideInteger>(speedDen) * kMaxClipSpeedPercent;
+}
+} // namespace
+
+TimelineFrameResult frameHoldProducerPosition(const TimelineClip& clip, std::int64_t timelineFpsNum,
+                                              std::int64_t timelineFpsDen) {
+    TimelineFrameResult result;
+    if (!clip.frameHold) {
+        result.error = "フレーム保持がありません";
+        return result;
+    }
+    const auto& hold = *clip.frameHold;
+    if (hold.sourceFrame < 0 || hold.sourceFpsNum <= 0 || hold.sourceFpsDen <= 0 ||
+        hold.sourceFrameCount <= hold.sourceFrame ||
+        !clipSpeedInRange(hold.speedNum, hold.speedDen)) {
+        result.error = "保持する素材 frame が不正です";
+        return result;
+    }
+    // 位置は保持元 clip と同じ「速度込みの実効 fps」で数える (書き出しは同じ速度の timewarp で
+    // 保持する)。元 clip で表示できた frame は、同じ実効 fps なら必ず出力位置を持つ。
+    const auto source = core::multiplyFrameRate({hold.sourceFpsNum, hold.sourceFpsDen},
+                                                {hold.speedNum, hold.speedDen});
+    if (!source) {
+        result.error = "保持元の実効 fps を表せません";
+        return result;
+    }
+    const core::FrameRate output{timelineFpsNum, timelineFpsDen};
+    const auto position = core::firstOutputPositionOfSourceFrame(hold.sourceFrame, *source, output);
+    const auto reverse =
+        position ? core::sourceFrameAtOutputPosition(*position, *source, output) : std::nullopt;
+    if (!reverse || *reverse != hold.sourceFrame) {
+        result.error = "保持する素材 frame を出力位置へ一意に換算できません";
+        return result;
+    }
+    result.success = true;
+    result.frame = *position;
+    return result;
+}
+
+TimelineClip clipVideoSource(const TimelineClip& clip) {
+    TimelineClip source = clip;
+    if (source.frameHold) {
+        source.sourceFpsNum = source.frameHold->sourceFpsNum;
+        source.sourceFpsDen = source.frameHold->sourceFpsDen;
+        source.sourceFrameCount = source.frameHold->sourceFrameCount;
+        source.sourceInFrame = source.frameHold->sourceFrame;
+        source.sourceOutFrame = source.sourceInFrame + 1;
+        source.frameHold.reset();
+    }
+    return source;
 }
 
 ClipProducerRange clipProducerRange(const TimelineClip& clip, std::int64_t timelineFpsNum,
@@ -305,7 +374,7 @@ ClipProducerRange clipProducerRange(const TimelineClip& clip, std::int64_t timel
 TimelineFrameResult clipFadeSourceFrameAt(const TimelineClip& clip, std::int64_t timelineFpsNum,
                                           std::int64_t timelineFpsDen,
                                           std::int64_t clipLocalFrame) {
-    auto result = clipSourceFrameAt(clip, timelineFpsNum, timelineFpsDen, clipLocalFrame);
+    auto result = mappedSourceFrameAt(clip, timelineFpsNum, timelineFpsDen, clipLocalFrame);
     if (result.success)
         result.frame = std::clamp(result.frame - clip.sourceInFrame, std::int64_t{0},
                                   clip.sourceOutFrame - clip.sourceInFrame - 1);
@@ -401,14 +470,15 @@ TimelineValidationResult validateTimeline(const Project& project) {
             return result;
         }
         if (isStillClipKind(clip.kind) &&
-            (clip.speedNum != 1 || clip.speedDen != 1 || !clip.linkGroupId.empty())) {
+            (clip.speedNum != 1 || clip.speedDen != 1 || !clip.linkGroupId.empty() ||
+             clip.preservePitch || clip.frameHold)) {
             result.error = "text / image clip の速度またはリンクが不正です: " + clip.name;
             return result;
         }
         // 素材の時間軸を持たないので、素材 frame domain は in = 0・out = 尺。
         // fps は置いたときの timeline の値で、timeline の fps を変えても振り直さない
         // (尺は clip の fps で換算される)。trim すると現在の timeline の fps へ揃う。
-        if (isStillClipKind(clip.kind) &&
+        if (hasSyntheticSourceDomain(clip) &&
             (clip.sourceInFrame != 0 || clip.sourceOutFrame != clip.sourceFrameCount)) {
             result.error = "text / image clip の素材範囲が尺と一致しません: " + clip.name;
             return result;
@@ -432,15 +502,24 @@ TimelineValidationResult validateTimeline(const Project& project) {
             result.error = "timeline clip の source range または FPS が不正です: " + clip.name;
             return result;
         }
-        if (clip.speedNum <= 0 || clip.speedDen <= 0 ||
-            std::gcd(clip.speedNum, clip.speedDen) != 1 || !clipTimebase(clip) ||
-            static_cast<WideInteger>(clip.speedNum) * 100 <
-                static_cast<WideInteger>(clip.speedDen) * kMinClipSpeedPercent ||
-            static_cast<WideInteger>(clip.speedNum) * 100 >
-                static_cast<WideInteger>(clip.speedDen) * kMaxClipSpeedPercent) {
+        if (!clipSpeedInRange(clip.speedNum, clip.speedDen) || !clipTimebase(clip)) {
             result.error = "timeline clip の速度が不正です (約分済みの " +
                            std::to_string(kMinClipSpeedPercent) + "%〜" +
                            std::to_string(kMaxClipSpeedPercent) + "%): " + clip.name;
+            return result;
+        }
+        // 等速のピッチ保持は preview だけが stretcher を通し書き出しは通さない、という食い違いの
+        // 元になるので持たせない (速度を変える編集は等速へ戻すときに落とす)。
+        if (clip.preservePitch && clip.speedNum == clip.speedDen) {
+            result.error = "等速の clip はピッチ保持を持てません: " + clip.name;
+            return result;
+        }
+        if (clip.frameHold &&
+            (clip.kind != TimelineClipKind::Video || clip.speedNum != 1 || clip.speedDen != 1 ||
+             !clip.linkGroupId.empty() || clip.preservePitch ||
+             !frameHoldProducerPosition(clip, project.timelineFpsNum, project.timelineFpsDen)
+                  .success)) {
+            result.error = "フレーム保持 clip が不正です: " + clip.name;
             return result;
         }
         std::string effectsError;
@@ -1124,7 +1203,7 @@ namespace {
 // 素材の範囲を超えず、clip の尺を 1 frame 以上に保つ。
 bool edgeRange(const Project& project, const TimelineClip& clip, TrimEdge edge, std::int64_t& lower,
                std::int64_t& upper, std::string& error) {
-    if (isStillClipKind(clip.kind)) {
+    if (hasSyntheticSourceDomain(clip)) {
         const auto duration = timelineClipDuration(project, clip);
         if (!duration.success) {
             error = duration.error;
@@ -1331,7 +1410,7 @@ TimelineEditResult splitTimelineClips(Project& project, const std::vector<std::s
         // 両半分とも同じ timeline 境界から換算するので、素材上の境界は一致するはずである。
         // 文字・静止画は素材の時間軸を持たず、trim が両半分とも in = 0 に振り直す。
         // 境界の一致は timeline 上で見る。
-        if (isStillClipKind(left.kind)
+        if (hasSyntheticSourceDomain(left)
                 ? left.timelineStartFrame + left.sourceOutFrame != right.timelineStartFrame
                 : left.sourceOutFrame != right.sourceInFrame) {
             result.error = "分割位置を素材 frame へ一意に換算できません: " + left.name;
@@ -1370,6 +1449,37 @@ std::vector<std::string> clipIdsSpanningFrame(const Project& project, std::int64
     return ids;
 }
 
+struct RippleSource {
+    TrackRef track;
+    std::int64_t originalEnd = 0;
+};
+
+bool shiftFollowingClips(Project& candidate, const std::vector<RippleSource>& sources,
+                         const std::vector<int>& targets, int index, std::int64_t shift,
+                         std::string& error) {
+    if (shift == 0)
+        return true;
+    std::vector<bool> shifted(candidate.timelineClips.size(), false);
+    for (std::size_t other = 0; other < shifted.size(); ++other) {
+        const auto& clip = candidate.timelineClips[other];
+        for (const auto& source : sources)
+            if (clip.track == source.track && clip.timelineStartFrame >= source.originalEnd)
+                shifted[other] = true;
+    }
+    includeLinkedCounterparts(candidate, shifted);
+    const auto& edited = candidate.timelineClips[static_cast<std::size_t>(index)];
+    for (std::size_t other = 0; other < shifted.size(); ++other) {
+        const auto& clip = candidate.timelineClips[other];
+        if (isTarget(targets, other) ||
+            (!edited.linkGroupId.empty() && clip.linkGroupId == edited.linkGroupId))
+            shifted[other] = false;
+    }
+    for (std::size_t other = 0; other < shifted.size(); ++other)
+        if (shifted[other] && !shiftStart(candidate.timelineClips[other], shift, error))
+            return false;
+    return true;
+}
+
 TimelineEditResult rippleTrimTimelineClip(Project& project, const std::string& clipId,
                                           TrimEdge edge, std::int64_t projectFrameDelta,
                                           LinkMode linkMode) {
@@ -1386,11 +1496,6 @@ TimelineEditResult rippleTrimTimelineClip(Project& project, const std::string& c
     const std::vector<int> targets = editTargets(candidate, index, linkMode);
 
     // trim した各 clip の track で、その clip の元の終端以降にある clip を後ろへ波及させる。
-    struct RippleSource {
-        TrackRef track;
-        std::int64_t originalEnd = 0;
-    };
-
     std::vector<RippleSource> sources;
     std::int64_t shift = 0;
     for (std::size_t order = 0; order < targets.size(); ++order) {
@@ -1416,29 +1521,8 @@ TimelineEditResult rippleTrimTimelineClip(Project& project, const std::string& c
         sources.push_back({clip.track, originalEnd});
     }
 
-    std::vector<bool> shifted(candidate.timelineClips.size(), false);
-    for (std::size_t other = 0; other < candidate.timelineClips.size(); ++other) {
-        const auto& following = candidate.timelineClips[other];
-        for (const auto& source : sources) {
-            if (following.track == source.track &&
-                following.timelineStartFrame >= source.originalEnd)
-                shifted[other] = true;
-        }
-    }
-    includeLinkedCounterparts(candidate, shifted);
-    // trim した clip 自身は開始位置を保つ。Single のときのリンク相手も動かさない。
-    for (std::size_t other = 0; other < shifted.size(); ++other) {
-        const auto& clip = candidate.timelineClips[other];
-        if (isTarget(targets, other) ||
-            (!clip.linkGroupId.empty() &&
-             clip.linkGroupId ==
-                 candidate.timelineClips[static_cast<std::size_t>(index)].linkGroupId))
-            shifted[other] = false;
-    }
-    for (std::size_t other = 0; other < shifted.size(); ++other) {
-        if (shifted[other] && !shiftStart(candidate.timelineClips[other], shift, result.error))
-            return result;
-    }
+    if (!shiftFollowingClips(candidate, sources, targets, index, shift, result.error))
+        return result;
     return commitCandidate(project, std::move(candidate), index);
 }
 
@@ -1479,7 +1563,7 @@ TimelineEditResult slipTimelineClip(Project& project, const std::string& clipId,
         result.error = "スリップする timeline clip がありません";
         return result;
     }
-    if (isStillClipKind(candidate.timelineClips[static_cast<std::size_t>(index)].kind)) {
+    if (hasSyntheticSourceDomain(candidate.timelineClips[static_cast<std::size_t>(index)])) {
         result.error = "text / image clip は素材位置を持たないためスリップできません";
         return result;
     }
@@ -1700,6 +1784,8 @@ TimelineEditResult appendManimTimelineClipAt(Project& project, const ManimAsset&
                                        {},
                                        1,
                                        1,
+                                       false,
+                                       {},
                                        {}});
     const auto valid = validateTimeline(candidate);
     if (!valid.success) {
@@ -2057,15 +2143,9 @@ bool speedForDuration(const Project& project, const TimelineClip& clip, std::int
 
 // 操作した clip の尺が newDuration になるよう、対象 clip へ速度を適用する。
 // left 端なら各 clip の終端を、right 端なら開始位置を保つ。key は尺に合わせて伸縮する。
-bool applyRateStretch(Project& candidate, int index, TrimEdge edge, std::int64_t newDuration,
-                      LinkMode linkMode, std::string& error) {
+bool applyClipSpeed(Project& candidate, int index, TrimEdge edge, std::int64_t speedNum,
+                    std::int64_t speedDen, LinkMode linkMode, std::string& error) {
     const auto& operated = candidate.timelineClips[static_cast<std::size_t>(index)];
-    std::int64_t speedNum = 0;
-    std::int64_t speedDen = 0;
-    if (!speedForDuration(candidate, operated, newDuration, speedNum, speedDen)) {
-        error = "この尺にする速度を表せません";
-        return false;
-    }
     const std::int64_t originalNum = operated.speedNum;
     const std::int64_t originalDen = operated.speedDen;
     for (const int target : editTargets(candidate, index, linkMode)) {
@@ -2082,6 +2162,9 @@ bool applyRateStretch(Project& candidate, int index, TrimEdge edge, std::int64_t
         }
         clip.speedNum = speedNum;
         clip.speedDen = speedDen;
+        // 等速では伸縮しないのでピッチ保持は意味を持たない (validateTimeline が拒否する)。
+        if (speedNum == speedDen)
+            clip.preservePitch = false;
         const auto after = timelineClipDuration(candidate, clip);
         if (!after.success) {
             error = after.error;
@@ -2095,6 +2178,18 @@ bool applyRateStretch(Project& candidate, int index, TrimEdge edge, std::int64_t
         rescaleClipKeys(clip.effects.volumeKeys, before.frame, after.frame);
     }
     return true;
+}
+
+bool applyRateStretch(Project& candidate, int index, TrimEdge edge, std::int64_t newDuration,
+                      LinkMode linkMode, std::string& error) {
+    std::int64_t speedNum = 0;
+    std::int64_t speedDen = 0;
+    if (!speedForDuration(candidate, candidate.timelineClips[static_cast<std::size_t>(index)],
+                          newDuration, speedNum, speedDen)) {
+        error = "この尺にする速度を表せません";
+        return false;
+    }
+    return applyClipSpeed(candidate, index, edge, speedNum, speedDen, linkMode, error);
 }
 
 // 尺 D で伸縮した candidate が成り立つか。判定は validateTimeline に一本化する
@@ -2117,7 +2212,7 @@ TimelineFrameResult clampRateEdit(const Project& project, const std::string& cli
         result.error = "レート調整する timeline clip がありません";
         return result;
     }
-    if (isStillClipKind(project.timelineClips[static_cast<std::size_t>(index)].kind)) {
+    if (hasSyntheticSourceDomain(project.timelineClips[static_cast<std::size_t>(index)])) {
         result.error = "text / image clip の尺は trim で変更してください";
         return result;
     }
@@ -2243,6 +2338,292 @@ TimelineEditResult rateStretchTimelineClip(Project& project, const std::string& 
         return result;
     }
     return commitCandidate(project, std::move(candidate), index);
+}
+
+namespace {
+// 伸ばした targets の区間に掛かる、同じ track の targets 以外の clip の ID。
+bool clipsCoveredByTargets(const Project& candidate, const std::vector<int>& targets,
+                           std::vector<std::string>& covered, std::string& error) {
+    for (const int target : targets) {
+        const auto& clip = candidate.timelineClips[static_cast<std::size_t>(target)];
+        std::int64_t start = 0, end = 0;
+        if (!clipInterval(candidate, clip, start, end, error))
+            return false;
+        for (std::size_t other = 0; other < candidate.timelineClips.size(); ++other) {
+            const auto& following = candidate.timelineClips[other];
+            if (isTarget(targets, other) || following.track != clip.track)
+                continue;
+            std::int64_t otherStart = 0, otherEnd = 0;
+            if (!clipInterval(candidate, following, otherStart, otherEnd, error))
+                return false;
+            if (otherStart < end && otherEnd > start)
+                covered.push_back(following.id);
+        }
+    }
+    return true;
+}
+
+// covered を targets の終端まで上書きする。丸ごと覆われた clip は消し、リンク相手は
+// 片方だけのリンクにならないよう未リンクにする。はみ出す clip は左端を targets の終端まで削る
+// (effect は残す。縮めた尺に収まらない fade だけ詰める)。
+bool overwriteCoveredClips(Project& candidate, const std::vector<int>& targets,
+                           const std::vector<std::string>& covered, std::string& error) {
+    std::vector<std::pair<TrackRef, std::int64_t>> ends;
+    for (const int target : targets) {
+        const auto& clip = candidate.timelineClips[static_cast<std::size_t>(target)];
+        std::int64_t start = 0, end = 0;
+        if (!clipInterval(candidate, clip, start, end, error))
+            return false;
+        ends.emplace_back(clip.track, end);
+    }
+    std::vector<std::string> removed;
+    for (const auto& id : covered) {
+        const int index = indexOfId(candidate, id);
+        auto& clip = candidate.timelineClips[static_cast<std::size_t>(index)];
+        std::int64_t start = 0, end = 0;
+        if (!clipInterval(candidate, clip, start, end, error))
+            return false;
+        const auto found = std::find_if(
+            ends.begin(), ends.end(), [&](const auto& entry) { return entry.first == clip.track; });
+        const std::int64_t coverEnd = found->second;
+        if (end <= coverEnd) {
+            removed.push_back(id);
+            continue;
+        }
+        if (!trimClipBoundary(candidate, clip, TrimEdge::Left, coverEnd - start, error))
+            return false;
+        // 通常の左 trim と同じく、上書きは尺を縮めるだけで effect は消さない。縮めた尺に
+        // fade が収まらないときだけ詰める。末尾は動かないので fade out を優先して残し、
+        // fade in は残りの尺までにする (validateClipEffects の fade in + fade out <= 尺)。
+        const std::int64_t length = clip.sourceOutFrame - clip.sourceInFrame;
+        clip.effects.fadeOutFrames = std::min(clip.effects.fadeOutFrames, length);
+        clip.effects.fadeInFrames =
+            std::min(clip.effects.fadeInFrames, length - clip.effects.fadeOutFrames);
+    }
+    for (const auto& id : removed) {
+        const auto& group =
+            candidate.timelineClips[static_cast<std::size_t>(indexOfId(candidate, id))].linkGroupId;
+        if (group.empty())
+            continue;
+        const std::string groupId = group;
+        for (auto& clip : candidate.timelineClips)
+            if (clip.linkGroupId == groupId)
+                clip.linkGroupId.clear();
+    }
+    std::erase_if(candidate.timelineClips, [&](const TimelineClip& clip) {
+        return std::find(removed.begin(), removed.end(), clip.id) != removed.end();
+    });
+    return true;
+}
+
+bool speedDurationCandidate(const Project& project, const std::string& clipId,
+                            const ClipSpeedDurationEdit& edit, LinkMode linkMode,
+                            Project& candidate, int& index, bool& overlapsFollowing,
+                            std::string& error) {
+    overlapsFollowing = false;
+    candidate = project;
+    index = indexOfId(candidate, clipId);
+    if (!validIndex(candidate, index)) {
+        error = "速度を変更する clip がありません";
+        return false;
+    }
+    const auto targets = editTargets(candidate, index, linkMode);
+    std::vector<std::pair<TrackRef, std::int64_t>> oldEnds;
+    for (int target : targets) {
+        const auto& clip = candidate.timelineClips[static_cast<std::size_t>(target)];
+        std::int64_t start = 0, end = 0;
+        if (!clipInterval(candidate, clip, start, end, error))
+            return false;
+        oldEnds.emplace_back(clip.track, end);
+    }
+    const auto& operated = candidate.timelineClips[static_cast<std::size_t>(index)];
+    if (hasSyntheticSourceDomain(operated)) {
+        if (edit.input != ClipSpeedDurationEdit::Input::Duration || edit.preservePitch ||
+            edit.durationFrames < 1) {
+            error = "静止 clip は尺だけ変更できます";
+            return false;
+        }
+        const auto before = timelineClipDuration(candidate, operated);
+        if (!before.success ||
+            !trimClipBoundary(candidate, candidate.timelineClips[static_cast<std::size_t>(index)],
+                              TrimEdge::Right, edit.durationFrames - before.frame, error))
+            return false;
+    } else {
+        std::int64_t num = edit.speedNum, den = edit.speedDen;
+        if (edit.input == ClipSpeedDurationEdit::Input::Duration &&
+            !speedForDuration(candidate, operated, edit.durationFrames, num, den)) {
+            error = "この尺にする速度を表せません";
+            return false;
+        }
+        if (num <= 0 || den <= 0) {
+            error = "速度が不正です";
+            return false;
+        }
+        const auto divisor = std::gcd(num, den);
+        num /= divisor;
+        den /= divisor;
+        if (!applyClipSpeed(candidate, index, TrimEdge::Right, num, den, linkMode, error))
+            return false;
+        // 等速ではピッチ保持を持たせない。preview と書き出しの両方が 1/1 では伸縮しない。
+        for (int target : targets)
+            candidate.timelineClips[static_cast<std::size_t>(target)].preservePitch =
+                edit.preservePitch && num != den;
+    }
+    std::int64_t shift = 0;
+    for (std::size_t order = 0; order < targets.size(); ++order) {
+        std::int64_t start = 0, end = 0;
+        if (!clipInterval(candidate,
+                          candidate.timelineClips[static_cast<std::size_t>(targets[order])], start,
+                          end, error))
+            return false;
+        const auto delta = end - oldEnds[order].second;
+        if (order == 0)
+            shift = delta;
+        else if (shift != delta) {
+            error = "リンク相手と尺の変化量が一致しません";
+            return false;
+        }
+    }
+    if (edit.ripple && shift != 0) {
+        std::vector<RippleSource> sources;
+        for (const auto& [track, oldEnd] : oldEnds)
+            sources.push_back({track, oldEnd});
+        if (!shiftFollowingClips(candidate, sources, targets, index, shift, error))
+            return false;
+    }
+    if (!edit.ripple && shift > 0) {
+        std::vector<std::string> covered;
+        if (!clipsCoveredByTargets(candidate, targets, covered, error))
+            return false;
+        if (!covered.empty()) {
+            if (!edit.overwrite) {
+                overlapsFollowing = true;
+                error = "後続の clip と重なります";
+                return false;
+            }
+            if (!overwriteCoveredClips(candidate, targets, covered, error))
+                return false;
+            // 削除で後ろの index がずれるので、操作した clip を ID で引き直す。
+            index = indexOfId(candidate, clipId);
+        }
+    }
+    if (candidate == project) {
+        error = "変更がありません";
+        return false;
+    }
+    const auto valid = validateTimeline(candidate);
+    if (!valid.success) {
+        error = valid.error;
+        return false;
+    }
+    return true;
+}
+} // namespace
+
+ClipSpeedDurationPreview previewClipSpeedDuration(const Project& project, const std::string& clipId,
+                                                  const ClipSpeedDurationEdit& edit,
+                                                  LinkMode linkMode) {
+    ClipSpeedDurationPreview preview;
+    Project candidate;
+    int index = -1;
+    if (!speedDurationCandidate(project, clipId, edit, linkMode, candidate, index,
+                                preview.overlapsFollowing, preview.error))
+        return preview;
+    const auto& clip = candidate.timelineClips[static_cast<std::size_t>(index)];
+    const auto duration = timelineClipDuration(candidate, clip);
+    if (!duration.success) {
+        preview.error = duration.error;
+        return preview;
+    }
+    preview.success = true;
+    preview.durationFrames = duration.frame;
+    preview.speedNum = clip.speedNum;
+    preview.speedDen = clip.speedDen;
+    return preview;
+}
+
+TimelineEditResult setClipSpeedDuration(Project& project, const std::string& clipId,
+                                        const ClipSpeedDurationEdit& edit, LinkMode linkMode) {
+    TimelineEditResult result;
+    Project candidate;
+    int index = -1;
+    bool overlapsFollowing = false;
+    if (!speedDurationCandidate(project, clipId, edit, linkMode, candidate, index,
+                                overlapsFollowing, result.error))
+        return result;
+    return commitCandidate(project, std::move(candidate), index);
+}
+
+TimelineEditResult insertFrameHold(Project& project, const std::string& clipId, std::int64_t frame,
+                                   std::int64_t holdFrames,
+                                   const std::function<std::string()>& newId) {
+    TimelineEditResult result;
+    const int index = indexOfId(project, clipId);
+    if (!validIndex(project, index) || holdFrames < 1) {
+        result.error = "保持する映像 clip または尺が不正です";
+        return result;
+    }
+    const auto& original = project.timelineClips[static_cast<std::size_t>(index)];
+    std::int64_t start = 0, end = 0;
+    if (!clipInterval(project, original, start, end, result.error))
+        return result;
+    if (original.kind != TimelineClipKind::Video || original.frameHold || frame <= start ||
+        frame >= end) {
+        result.error = "再生ヘッドは通常の映像 clip の内側に置いてください";
+        return result;
+    }
+    const auto sourceFrame =
+        clipSourceFrameAt(original, project.timelineFpsNum, project.timelineFpsDen, frame - start);
+    if (!sourceFrame.success) {
+        result.error = sourceFrame.error;
+        return result;
+    }
+    // 保持は素材 frame と一緒に見た目も止める。挿入位置で評価した不透明度 (key と fade 込み) を
+    // 保持 clip の基本値へ焼き込む。automation を捨てるだけだと、fade の途中などで保持へ
+    // 入った瞬間に基本値へ跳び、右側の clip へ戻るとまた元の値へ跳ぶ。
+    const auto fadeFrame = clipFadeSourceFrameAt(original, project.timelineFpsNum,
+                                                 project.timelineFpsDen, frame - start);
+    if (!fadeFrame.success) {
+        result.error = fadeFrame.error;
+        return result;
+    }
+    const double heldOpacityPercent =
+        100.0 * evaluateClipOpacity(original.effects, frame - start, fadeFrame.frame,
+                                    original.sourceOutFrame - original.sourceInFrame);
+    Project candidate = project;
+    const auto spanning = clipIdsSpanningFrame(candidate, frame);
+    const auto split = splitTimelineClips(candidate, spanning, frame, newId, LinkMode::Linked);
+    if (!split.success)
+        return split;
+    for (auto& clip : candidate.timelineClips) {
+        if (clip.timelineStartFrame >= frame && !shiftStart(clip, holdFrames, result.error))
+            return result;
+    }
+    TimelineClip hold =
+        candidate.timelineClips[static_cast<std::size_t>(indexOfId(candidate, clipId))];
+    hold.id = newId();
+    hold.name += " (保持)";
+    hold.linkGroupId.clear();
+    hold.timelineStartFrame = frame;
+    hold.sourceFpsNum = project.timelineFpsNum;
+    hold.sourceFpsDen = project.timelineFpsDen;
+    hold.sourceFrameCount = holdFrames;
+    hold.sourceInFrame = 0;
+    hold.sourceOutFrame = holdFrames;
+    hold.speedNum = 1;
+    hold.speedDen = 1;
+    hold.preservePitch = false;
+    hold.frameHold =
+        FrameHold{sourceFrame.frame,         original.sourceFpsNum, original.sourceFpsDen,
+                  original.sourceFrameCount, original.speedNum,     original.speedDen};
+    hold.effects.opacityPercent = heldOpacityPercent;
+    hold.effects.opacityKeys.clear();
+    hold.effects.volumeKeys.clear();
+    hold.effects.fadeInFrames = 0;
+    hold.effects.fadeOutFrames = 0;
+    candidate.timelineClips.push_back(std::move(hold));
+    const int holdIndex = static_cast<int>(candidate.timelineClips.size()) - 1;
+    return commitCandidate(project, std::move(candidate), holdIndex);
 }
 
 } // namespace mvm::project

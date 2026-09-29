@@ -18,6 +18,7 @@ static const char* const kRequiredProducers[] = {
     "xml",      /* デバッグ用ダンプの読み戻し */
     "color",    /* 単色生成 (テスト用背景) */
     "timewarp", /* clip の再生速度 (レート調整) */
+    "hold",     /* フレーム保持 */
     NULL,
 };
 
@@ -32,6 +33,7 @@ static const char* const kRequiredFilters[] = {
     "volume",      /* audio gain        : V7 */
     "dynamictext", /* 文字レイヤ        : V3 (plus モジュール) */
     "qtext",       /* 文字レイヤ (Qt 描画。日本語のシェーピングに必要) : V3 */
+    "rbpitch",     /* timewarp のピッチ保持 */
     NULL,
 };
 

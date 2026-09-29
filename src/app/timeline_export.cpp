@@ -175,6 +175,8 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
             plan.backend = TimelineExportResult::Backend::Tractor;
         if (mapped.still)
             plan.backend = TimelineExportResult::Backend::Tractor;
+        if (clip.frameHold)
+            plan.backend = TimelineExportResult::Backend::Tractor;
         if (mapped.audio) {
             anyAudio = true;
             for (std::int64_t frame = 0; frame < duration.frame; ++frame) {
@@ -336,6 +338,19 @@ TimelineExportResult exportTimeline(const project::Project& project,
         mapped.tail_padding_frames = planned.tailPaddingFrames;
         mapped.speed_num = clip.speedNum;
         mapped.speed_den = clip.speedDen;
+        mapped.preserve_pitch = clip.preservePitch ? 1 : 0;
+        mapped.is_frame_hold = clip.frameHold ? 1 : 0;
+        if (clip.frameHold) {
+            const auto holdPosition = project::frameHoldProducerPosition(
+                clip, project.timelineFpsNum, project.timelineFpsDen);
+            if (!holdPosition.success) {
+                result.error = holdPosition.error;
+                return result;
+            }
+            mapped.hold_position = holdPosition.frame;
+            mapped.hold_speed_num = clip.frameHold->speedNum;
+            mapped.hold_speed_den = clip.frameHold->speedDen;
+        }
         mapped.is_audio = planned.audio ? 1 : 0;
         mapped.is_still_image = planned.still ? 1 : 0;
         mapped.video_track = planned.videoTrackIndex;
@@ -372,7 +387,12 @@ TimelineExportResult exportTimeline(const project::Project& project,
         .fps_den = request.fpsDen,
         .video_crf = request.videoCrf,
         .timeout_ms = request.timeoutMs,
-        .render_threads = request.renderThreads,
+        // MLT hold producer は real_frame を共有する。複数 render thread で同時に読むと
+        // 2 frame 目以降の画素が壊れるため、保持を含む書き出しは 1 thread に固定する。
+        .render_threads = std::any_of(project.timelineClips.begin(), project.timelineClips.end(),
+                                      [](const auto& clip) { return clip.frameHold.has_value(); })
+                              ? 1
+                              : request.renderThreads,
         .encoder_threads = request.encoderThreads,
         .progress_callback =
             [](long long completed, long long total, void* opaque) {

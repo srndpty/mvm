@@ -1801,6 +1801,17 @@ void testCrossRateOutputIntervals() {
           "rate換算の中間積overflowを拒否する");
 }
 
+void testHoldOutputInterval() {
+    const auto interval = holdFrameOutputInterval(23, 23, 100, 120);
+    check(interval.valid && interval.begin == 100 && interval.end == 220,
+          "保持 frame が指定した timeline 区間全体へ写りません");
+    check(!holdFrameOutputInterval(24, 23, 100, 120).valid,
+          "隣の素材 frame を保持区間へ写しました");
+    check(!holdFrameOutputInterval(23, 23, 100, 0).valid, "尺ゼロの保持区間を受理しました");
+    check(!holdFrameOutputInterval(23, 23, std::numeric_limits<long long>::max(), 2).valid,
+          "保持区間終端の overflow を受理しました");
+}
+
 } // namespace
 
 int main() {
@@ -1831,6 +1842,7 @@ int main() {
     testM7aSourceNativeFadeAuthority();
     testM7bOutputAndSourceIdentitySeparation();
     testCrossRateOutputIntervals();
+    testHoldOutputInterval();
 
     std::fprintf(stderr, "\n検査 %d 件 / 失敗 %d 件\n", gChecks, gFailures);
     if (gChecks == 0) {

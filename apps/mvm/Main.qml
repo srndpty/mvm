@@ -98,6 +98,30 @@ ApplicationWindow {
         onTriggered: root.mvmController.duplicateSelectedClips()
     }
     Action {
+        id: speedDurationAction
+        text: "速度・デュレーション..."
+        shortcut: "Ctrl+R"
+        enabled: !root.mvmController.busy && root.mvmController.currentClipIndex >= 0
+                 && !root.keyboardFocusTakesKeys
+        onTriggered: root.openSpeedDurationDialog("")
+    }
+
+    function openSpeedDurationDialog(clipId) {
+        const state = root.mvmController.clipSpeedDurationState(clipId);
+        if (!state.clipId)
+            return;
+        speedDurationDialog.clipId = state.clipId;
+        speedDurationDialog.still = state.still;
+        speedDurationDialog.lastInput = state.still ? "duration" : "speed";
+        speedDurationDialog.syncing = true;
+        speedField.value = state.speedPercent;
+        durationField.text = state.durationText;
+        preservePitchBox.checked = state.preservePitch;
+        rippleBox.checked = false;
+        speedDurationDialog.syncing = false;
+        speedDurationDialog.open();
+    }
+    Action {
         id: addMarkerAction
         text: "マーカーを追加"
         shortcut: "M"
@@ -236,6 +260,7 @@ ApplicationWindow {
             CompactMenuItem { action: cutClipsAction }
             CompactMenuItem { action: pasteClipsAction }
             CompactMenuItem { action: duplicateClipsAction }
+            CompactMenuItem { action: speedDurationAction }
             CompactMenuSeparator {}
             // 実行は Shortcut "Delete" が担う。ここは表示だけで sequence を持たせない (二重発火を防ぐ)。
             CompactMenuItem {
@@ -777,214 +802,234 @@ ApplicationWindow {
                         Layout.fillHeight: true
                         currentIndex: root.leftPanelTab
 
-                        ColumnLayout {
-                            spacing: 6
-
-                            // 文字 clip の名前は本文の先頭なので、本文の欄と重複する。出さない。
-                            Label {
-                                Layout.fillWidth: true
-                                visible: root.mvmController.selectedTextClip.clipId === undefined
-                                text: root.mvmController.currentClipIndex >= 0
-                                      ? root.mvmController.currentClipName
-                                      : "クリップ未選択"
-                                color: "#9aa2ad"
-                                font.pixelSize: 11
-                                elide: Text.ElideMiddle
+                        // 項目が増えるとパネルの高さを超え、下の再生時間の表示に重なっていた。
+                        // 縦にスクロールさせ、はみ出した分は切り取る。端では跳ね返らずにそのまま止める。
+                        Flickable {
+                            id: effectControlsScroll
+                            clip: true
+                            contentWidth: width
+                            contentHeight: effectControlsColumn.implicitHeight
+                            flickableDirection: Flickable.VerticalFlick
+                            boundsBehavior: Flickable.StopAtBounds
+                            boundsMovement: Flickable.StopAtBounds
+                            ScrollBar.vertical: ScrollBar {
+                                id: effectControlsScrollBar
+                                policy: ScrollBar.AsNeeded
                             }
 
-                            TextClipInspector {
-                                Layout.fillWidth: true
-                                visible: root.mvmController.selectedTextClip.clipId !== undefined
-                                mvmController: root.mvmController
-                            }
+                            ColumnLayout {
+                                id: effectControlsColumn
+                                // scrollbar が出ている間は、その幅だけ項目を狭めて重ならないようにする。
+                                width: effectControlsScroll.width
+                                       - (effectControlsScrollBar.visible ? effectControlsScrollBar.width : 0)
+                                spacing: 6
 
-                            GridLayout {
-                                id: inspectorGrid
-                                Layout.fillWidth: true
-                                visible: root.mvmController.selectedTextClip.clipId === undefined
-                                columns: 2
-                                columnSpacing: 6
-                                rowSpacing: 4
-                                enabled: root.mvmController.currentClipIndex >= 0 && !root.mvmController.busy
-                                         && !root.mvmController.playing
-
-                                DragNumberField {
+                                // 文字 clip の名前は本文の先頭なので、本文の欄と重複する。出さない。
+                                Label {
                                     Layout.fillWidth: true
-                                    labelText: "位置 X"
-                                    suffix: " %"
-                                    value: root.mvmController.effectPositionX
-                                    minimumValue: -1000
-                                    maximumValue: 1000
-                                    stepPerPixel: 0.5
-                                    onEditCanceled: root.mvmController.cancelEffectPreview()
-                                    onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("positionX", newValue, commit)
-                                }
-                                DragNumberField {
-                                    Layout.fillWidth: true
-                                    labelText: "位置 Y"
-                                    suffix: " %"
-                                    value: root.mvmController.effectPositionY
-                                    minimumValue: -1000
-                                    maximumValue: 1000
-                                    stepPerPixel: 0.5
-                                    onEditCanceled: root.mvmController.cancelEffectPreview()
-                                    onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("positionY", newValue, commit)
-                                }
-                                DragNumberField {
-                                    Layout.fillWidth: true
-                                    labelText: "拡大率 X"
-                                    suffix: " %"
-                                    value: root.mvmController.effectScaleX
-                                    minimumValue: 1
-                                    maximumValue: 1000
-                                    stepPerPixel: 0.5
-                                    onEditCanceled: root.mvmController.cancelEffectPreview()
-                                    onValueEdited: (newValue, commit) => root.setEffectScale("scaleX", newValue, commit)
-                                }
-                                DragNumberField {
-                                    Layout.fillWidth: true
-                                    labelText: "拡大率 Y"
-                                    suffix: " %"
-                                    value: root.mvmController.effectScaleY
-                                    minimumValue: 1
-                                    maximumValue: 1000
-                                    stepPerPixel: 0.5
-                                    onEditCanceled: root.mvmController.cancelEffectPreview()
-                                    onValueEdited: (newValue, commit) => root.setEffectScale("scaleY", newValue, commit)
-                                }
-                                CheckBox {
-                                    Layout.columnSpan: 2
-                                    text: "縦横比を固定"
-                                    checked: root.lockEffectScaleAspect
+                                    visible: root.mvmController.selectedTextClip.clipId === undefined
+                                    text: root.mvmController.currentClipIndex >= 0
+                                          ? root.mvmController.currentClipName
+                                          : "クリップ未選択"
+                                    color: "#9aa2ad"
                                     font.pixelSize: 11
-                                    onToggled: root.lockEffectScaleAspect = checked
+                                    elide: Text.ElideMiddle
                                 }
-                                DragNumberField {
-                                    Layout.fillWidth: true
-                                    labelText: "回転"
-                                    suffix: " °"
-                                    value: root.mvmController.effectRotation
-                                    minimumValue: -360
-                                    maximumValue: 360
-                                    stepPerPixel: 0.5
-                                    onEditCanceled: root.mvmController.cancelEffectPreview()
-                                    onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("rotation", newValue, commit)
-                                }
-                                DragNumberField {
-                                    Layout.fillWidth: true
-                                    labelText: "不透明度"
-                                    suffix: " %"
-                                    value: root.mvmController.effectOpacity
-                                    minimumValue: 0
-                                    maximumValue: 100
-                                    stepPerPixel: 0.3
-                                    onEditCanceled: root.mvmController.cancelEffectPreview()
-                                    onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("opacity", newValue, commit)
-                                }
-                                Item { Layout.fillWidth: true; implicitHeight: 1 }
 
-                                DragNumberField {
+                                TextClipInspector {
                                     Layout.fillWidth: true
-                                    labelText: "Crop 左"
-                                    suffix: " %"
-                                    value: root.mvmController.effectCropLeft
-                                    minimumValue: 0
-                                    maximumValue: 99
-                                    stepPerPixel: 0.2
-                                    onEditCanceled: root.mvmController.cancelEffectPreview()
-                                    onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("cropLeft", newValue, commit)
+                                    visible: root.mvmController.selectedTextClip.clipId !== undefined
+                                    mvmController: root.mvmController
                                 }
-                                DragNumberField {
-                                    Layout.fillWidth: true
-                                    labelText: "Crop 右"
-                                    suffix: " %"
-                                    value: root.mvmController.effectCropRight
-                                    minimumValue: 0
-                                    maximumValue: 99
-                                    stepPerPixel: 0.2
-                                    onEditCanceled: root.mvmController.cancelEffectPreview()
-                                    onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("cropRight", newValue, commit)
-                                }
-                                DragNumberField {
-                                    Layout.fillWidth: true
-                                    labelText: "Crop 上"
-                                    suffix: " %"
-                                    value: root.mvmController.effectCropTop
-                                    minimumValue: 0
-                                    maximumValue: 99
-                                    stepPerPixel: 0.2
-                                    onEditCanceled: root.mvmController.cancelEffectPreview()
-                                    onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("cropTop", newValue, commit)
-                                }
-                                DragNumberField {
-                                    Layout.fillWidth: true
-                                    labelText: "Crop 下"
-                                    suffix: " %"
-                                    value: root.mvmController.effectCropBottom
-                                    minimumValue: 0
-                                    maximumValue: 99
-                                    stepPerPixel: 0.2
-                                    onEditCanceled: root.mvmController.cancelEffectPreview()
-                                    onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("cropBottom", newValue, commit)
-                                }
-                                DragNumberField {
-                                    Layout.fillWidth: true
-                                    labelText: "フェードイン (素材f)"
-                                    value: root.mvmController.effectFadeIn
-                                    minimumValue: 0
-                                    maximumValue: 1000000
-                                    stepPerPixel: 1
-                                    onEditCanceled: root.mvmController.cancelEffectPreview()
-                                    onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("fadeIn", newValue, commit)
-                                }
-                                DragNumberField {
-                                    Layout.fillWidth: true
-                                    labelText: "フェードアウト (素材f)"
-                                    value: root.mvmController.effectFadeOut
-                                    minimumValue: 0
-                                    maximumValue: 1000000
-                                    stepPerPixel: 1
-                                    onEditCanceled: root.mvmController.cancelEffectPreview()
-                                    onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("fadeOut", newValue, commit)
-                                }
-                            }
 
-                            Frame {
-                                Layout.fillWidth: true
-                                visible: root.mvmController.hasManimAsset
-                                padding: 6
+                                GridLayout {
+                                    id: inspectorGrid
+                                    Layout.fillWidth: true
+                                    visible: root.mvmController.selectedTextClip.clipId === undefined
+                                    columns: 2
+                                    columnSpacing: 6
+                                    rowSpacing: 4
+                                    enabled: root.mvmController.currentClipIndex >= 0 && !root.mvmController.busy
+                                             && !root.mvmController.playing
 
-                                contentItem: ColumnLayout {
-                                    spacing: 4
-                                    Label {
+                                    DragNumberField {
                                         Layout.fillWidth: true
-                                        text: "Manim: " + root.mvmController.manimSceneName
-                                        color: "#e6e8ec"
-                                        elide: Text.ElideRight
-                                        font.pixelSize: 11
+                                        labelText: "位置 X"
+                                        suffix: " %"
+                                        value: root.mvmController.effectPositionX
+                                        minimumValue: -1000
+                                        maximumValue: 1000
+                                        stepPerPixel: 0.5
+                                        onEditCanceled: root.mvmController.cancelEffectPreview()
+                                        onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("positionX", newValue, commit)
                                     }
-                                    Label {
-                                        text: root.mvmController.manimStateText
-                                        color: root.mvmController.manimStateText === "SourceChanged" ? "#f2c66d" : "#a8d5a2"
-                                        font.pixelSize: 11
+                                    DragNumberField {
+                                        Layout.fillWidth: true
+                                        labelText: "位置 Y"
+                                        suffix: " %"
+                                        value: root.mvmController.effectPositionY
+                                        minimumValue: -1000
+                                        maximumValue: 1000
+                                        stepPerPixel: 0.5
+                                        onEditCanceled: root.mvmController.cancelEffectPreview()
+                                        onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("positionY", newValue, commit)
                                     }
-                                    RowLayout {
-                                        Button {
-                                            text: root.mvmController.busy ? "生成中…" : "再生成"
-                                            enabled: !root.mvmController.busy
-                                            onClicked: root.mvmController.regenerateManimClip()
+                                    DragNumberField {
+                                        Layout.fillWidth: true
+                                        labelText: "拡大率 X"
+                                        suffix: " %"
+                                        value: root.mvmController.effectScaleX
+                                        minimumValue: 1
+                                        maximumValue: 1000
+                                        stepPerPixel: 0.5
+                                        onEditCanceled: root.mvmController.cancelEffectPreview()
+                                        onValueEdited: (newValue, commit) => root.setEffectScale("scaleX", newValue, commit)
+                                    }
+                                    DragNumberField {
+                                        Layout.fillWidth: true
+                                        labelText: "拡大率 Y"
+                                        suffix: " %"
+                                        value: root.mvmController.effectScaleY
+                                        minimumValue: 1
+                                        maximumValue: 1000
+                                        stepPerPixel: 0.5
+                                        onEditCanceled: root.mvmController.cancelEffectPreview()
+                                        onValueEdited: (newValue, commit) => root.setEffectScale("scaleY", newValue, commit)
+                                    }
+                                    CheckBox {
+                                        Layout.columnSpan: 2
+                                        text: "縦横比を固定"
+                                        checked: root.lockEffectScaleAspect
+                                        font.pixelSize: 11
+                                        onToggled: root.lockEffectScaleAspect = checked
+                                    }
+                                    DragNumberField {
+                                        Layout.fillWidth: true
+                                        labelText: "回転"
+                                        suffix: " °"
+                                        value: root.mvmController.effectRotation
+                                        minimumValue: -360
+                                        maximumValue: 360
+                                        stepPerPixel: 0.5
+                                        onEditCanceled: root.mvmController.cancelEffectPreview()
+                                        onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("rotation", newValue, commit)
+                                    }
+                                    DragNumberField {
+                                        Layout.fillWidth: true
+                                        labelText: "不透明度"
+                                        suffix: " %"
+                                        value: root.mvmController.effectOpacity
+                                        minimumValue: 0
+                                        maximumValue: 100
+                                        stepPerPixel: 0.3
+                                        onEditCanceled: root.mvmController.cancelEffectPreview()
+                                        onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("opacity", newValue, commit)
+                                    }
+                                    Item { Layout.fillWidth: true; implicitHeight: 1 }
+
+                                    DragNumberField {
+                                        Layout.fillWidth: true
+                                        labelText: "Crop 左"
+                                        suffix: " %"
+                                        value: root.mvmController.effectCropLeft
+                                        minimumValue: 0
+                                        maximumValue: 99
+                                        stepPerPixel: 0.2
+                                        onEditCanceled: root.mvmController.cancelEffectPreview()
+                                        onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("cropLeft", newValue, commit)
+                                    }
+                                    DragNumberField {
+                                        Layout.fillWidth: true
+                                        labelText: "Crop 右"
+                                        suffix: " %"
+                                        value: root.mvmController.effectCropRight
+                                        minimumValue: 0
+                                        maximumValue: 99
+                                        stepPerPixel: 0.2
+                                        onEditCanceled: root.mvmController.cancelEffectPreview()
+                                        onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("cropRight", newValue, commit)
+                                    }
+                                    DragNumberField {
+                                        Layout.fillWidth: true
+                                        labelText: "Crop 上"
+                                        suffix: " %"
+                                        value: root.mvmController.effectCropTop
+                                        minimumValue: 0
+                                        maximumValue: 99
+                                        stepPerPixel: 0.2
+                                        onEditCanceled: root.mvmController.cancelEffectPreview()
+                                        onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("cropTop", newValue, commit)
+                                    }
+                                    DragNumberField {
+                                        Layout.fillWidth: true
+                                        labelText: "Crop 下"
+                                        suffix: " %"
+                                        value: root.mvmController.effectCropBottom
+                                        minimumValue: 0
+                                        maximumValue: 99
+                                        stepPerPixel: 0.2
+                                        onEditCanceled: root.mvmController.cancelEffectPreview()
+                                        onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("cropBottom", newValue, commit)
+                                    }
+                                    DragNumberField {
+                                        Layout.fillWidth: true
+                                        labelText: "フェードイン (素材f)"
+                                        value: root.mvmController.effectFadeIn
+                                        minimumValue: 0
+                                        maximumValue: 1000000
+                                        stepPerPixel: 1
+                                        onEditCanceled: root.mvmController.cancelEffectPreview()
+                                        onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("fadeIn", newValue, commit)
+                                    }
+                                    DragNumberField {
+                                        Layout.fillWidth: true
+                                        labelText: "フェードアウト (素材f)"
+                                        value: root.mvmController.effectFadeOut
+                                        minimumValue: 0
+                                        maximumValue: 1000000
+                                        stepPerPixel: 1
+                                        onEditCanceled: root.mvmController.cancelEffectPreview()
+                                        onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("fadeOut", newValue, commit)
+                                    }
+                                }
+
+                                Frame {
+                                    Layout.fillWidth: true
+                                    visible: root.mvmController.hasManimAsset
+                                    padding: 6
+
+                                    contentItem: ColumnLayout {
+                                        spacing: 4
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: "Manim: " + root.mvmController.manimSceneName
+                                            color: "#e6e8ec"
+                                            elide: Text.ElideRight
+                                            font.pixelSize: 11
                                         }
-                                        Button {
-                                            text: "timelineへ"
-                                            visible: !root.mvmController.hasManimTimelineClip
-                                            enabled: visible && !root.mvmController.busy
-                                            onClicked: root.mvmController.addManimToTimeline()
+                                        Label {
+                                            text: root.mvmController.manimStateText
+                                            color: root.mvmController.manimStateText === "SourceChanged" ? "#f2c66d" : "#a8d5a2"
+                                            font.pixelSize: 11
+                                        }
+                                        RowLayout {
+                                            Button {
+                                                text: root.mvmController.busy ? "生成中…" : "再生成"
+                                                enabled: !root.mvmController.busy
+                                                onClicked: root.mvmController.regenerateManimClip()
+                                            }
+                                            Button {
+                                                text: "timelineへ"
+                                                visible: !root.mvmController.hasManimTimelineClip
+                                                enabled: visible && !root.mvmController.busy
+                                                onClicked: root.mvmController.addManimToTimeline()
+                                            }
                                         }
                                     }
                                 }
-                            }
 
-                            Item { Layout.fillHeight: true }
+                                Item { Layout.fillHeight: true }
+                            }
                         }
 
                         ProjectPanel {
@@ -1038,16 +1083,9 @@ ApplicationWindow {
                     id: previewArea
                     anchors.fill: parent
 
-                    // タイムラインと同じく、押したらキーボードの宛先をここへ移す。press は下へ流す。
-                    MouseArea {
-                        anchors.fill: parent
-                        z: 10000
-                        acceptedButtons: Qt.AllButtons
-                        onPressed: mouse => {
-                            if (!root.textEditing)
-                                previewArea.forceActiveFocus();
-                            mouse.accepted = false;
-                        }
+                    // タイムラインと同じく、押したらキーボードの宛先をここへ移す (文字の入力中は除く)。
+                    PressFocus {
+                        enabled: !root.textEditing
                     }
 
                     Item {
@@ -1383,16 +1421,10 @@ ApplicationWindow {
             border.color: "#3c424c"
 
             // タイムラインを押したらキーボードの宛先をここへ移す。プロジェクトパネルに
-            // フォーカスが残ったままだと、Delete が素材の削除になる。press は下へ流す。
-            MouseArea {
-                anchors.fill: parent
-                z: 10000
-                acceptedButtons: Qt.AllButtons
-                onPressed: mouse => {
-                    timelinePanel.forceActiveFocus();
-                    mouse.accepted = false;
-                }
-            }
+            // フォーカスが残ったままだと、Delete が素材の削除になる。最前面の MouseArea で
+            // 受けると hover とカーソルが下の clip・ruler へ届かないので、PressFocus (window の
+            // press を先に見る) にする。
+            PressFocus {}
 
             // 離散段階で管理し、下限へ到達した後も逆方向のwheelを確実に受理する。
             readonly property var zoomLevels: [0.005, 0.01, 0.02, 0.05, 0.1, 0.2,
@@ -1454,6 +1486,13 @@ ApplicationWindow {
                                                           || tool === "trackBackward"
             // timeline の表示だけを変えるツール。clip や ruler への操作を受けない。
             readonly property bool viewToolActive: tool === "hand" || tool === "zoom"
+            // 端を掴むときのカーソル (TrimCursor)。premiere と同じく、選択ツールの trim は赤、
+            // リップルは黄のブラケット。ブラケットは端の種類 (左端 "[" / 右端 "]")、矢印は pointer の
+            // ある側を向く: 右端の内側 <-]・外側 [->、左端の内側 [->・外側 <-]。どちらの側でも
+            // 同じ端を動かす。ローリングとレート調整は挙動が違うので従来の形のまま。
+            readonly property string edgeCursorMode: tool === "rolling" ? "split"
+                                                     : tool === "rate" ? "sizeHor" : "trim"
+            readonly property color edgeCursorColor: tool === "ripple" ? "#f2c94c" : "#e8413c"
             readonly property color edgeHandleColor: tool === "ripple" ? "#e8c15a"
                                                      : tool === "rolling" ? "#e27d6a"
                                                      : tool === "rate" ? "#b99af0" : "#85c4ee"
@@ -2212,6 +2251,7 @@ ApplicationWindow {
                                 required property real sourceFpsNum
                                 required property real sourceFpsDen
                                 required property real speed
+                                required property bool frameHold
                                 required property bool previewSupported
                                 required property string trackKind
                                 required property int trackIndex
@@ -2376,6 +2416,23 @@ ApplicationWindow {
                                 CompactMenu {
                                     id: clipMenu
                                     CompactMenuItem {
+                                        text: "速度・デュレーション...\tCtrl+R"
+                                        enabled: !root.mvmController.busy
+                                        onTriggered: root.openSpeedDurationDialog(clipItem.clipId)
+                                    }
+                                    CompactMenuItem {
+                                        text: "フレーム保持を挿入"
+                                        // canInsertFrameHold は Project を複製して試すので、
+                                        // 再生中に全 clip で評価しないようメニューを開いている間だけ見る。
+                                        enabled: clipMenu.visible
+                                                 && root.mvmController.playheadFrame > clipItem.timelineStartFrame
+                                                 && root.mvmController.playheadFrame
+                                                    < clipItem.timelineStartFrame + clipItem.timelineDurationFrames
+                                                 && root.mvmController.canInsertFrameHold(clipItem.clipId)
+                                        onTriggered: root.mvmController.insertFrameHoldAtPlayhead(clipItem.clipId)
+                                    }
+                                    CompactMenuSeparator {}
+                                    CompactMenuItem {
                                         text: "プロジェクト設定をこの素材に合わせる"
                                         enabled: clipItem.clipKind !== "audio"
                                                  && !root.mvmController.busy
@@ -2448,7 +2505,8 @@ ApplicationWindow {
                                         width: parent.width
                                         // audio clip は波形を優先し、尺の表示を重ねない。
                                             visible: clipItem.clipKind !== "audio"
-                                            text: (clipItem.shownSpeed !== 1
+                                            text: (clipItem.frameHold ? "保持  |  " : "")
+                                                + (clipItem.shownSpeed !== 1
                                                    ? (Math.round(clipItem.shownSpeed * 10000) / 100) + "%  |  " : "")
                                                 + (clipItem.clipKind === "audio"
                                                    ? Math.round(clipItem.timelineDurationFrames) + "f"
@@ -2910,10 +2968,22 @@ ApplicationWindow {
                                     MouseArea {
                                         property real pressContentX: 0
                                         property int dragDelta: 0
-                                        anchors.fill: parent
-                                        cursorShape: timelinePanel.tool === "rolling" ? Qt.SplitHCursor
-                                                                                      : Qt.SizeHorCursor
+                                        // 端の線をまたいで内側 8px (見えているハンドル) と外側 8px を掴める。どちらも同じ
+                                        // 端を動かし、カーソルだけが pointer のある側を示す (内側 [-> / 外側 <-])。
+                                        x: -8
+                                        width: 16
+                                        height: parent.height
                                         enabled: !root.mvmController.busy
+                                        // timeline の clip では cursorShape も hover も window から届かない。
+                                        // TrimCursor が mouse の位置を自分で見て、この帯にある間と押している
+                                        // 間だけ application のカーソルを出す。
+                                        TrimCursor {
+                                            anchors.fill: parent
+                                            edge: "in"
+                                            mode: timelinePanel.edgeCursorMode
+                                            color: timelinePanel.edgeCursorColor
+                                            held: parent.pressed
+                                        }
                                         onPressed: mouse => {
                                             pressContentX = mapToItem(timelineContent, mouse.x, mouse.y).x;
                                             dragDelta = 0;
@@ -2968,10 +3038,18 @@ ApplicationWindow {
 
                                     MouseArea {
                                         property real pressContentX: 0
-                                        anchors.fill: parent
-                                        cursorShape: timelinePanel.tool === "rolling" ? Qt.SplitHCursor
-                                                                                      : Qt.SizeHorCursor
+                                        // 内側 8px (見えているハンドル) と外側 8px。内側 <-] / 外側 [->。
+                                        x: 0
+                                        width: 16
+                                        height: parent.height
                                         enabled: !root.mvmController.busy
+                                        TrimCursor {
+                                            anchors.fill: parent
+                                            edge: "out"
+                                            mode: timelinePanel.edgeCursorMode
+                                            color: timelinePanel.edgeCursorColor
+                                            held: parent.pressed
+                                        }
                                         onPressed: mouse => {
                                             pressContentX = mapToItem(timelineContent, mouse.x, mouse.y).x;
                                             clipItem.beginEdgeDrag("right", mouse.modifiers);
@@ -3117,6 +3195,154 @@ ApplicationWindow {
     }
 
     // --- ダイアログ --------------------------------------------------------
+    ModernDialog {
+        id: speedDurationDialog
+        anchors.centerIn: parent
+        width: Math.min(root.width - 40, 440)
+        modal: true
+        title: "速度・デュレーション"
+        property string clipId: ""
+        property bool still: false
+        property bool syncing: false
+        property string lastInput: "speed"
+
+        function updatePair(input) {
+            if (syncing)
+                return;
+            lastInput = input;
+            const preview = root.mvmController.previewClipSpeedDuration(
+                                clipId, input, speedField.value, durationField.text,
+                                preservePitchBox.checked, rippleBox.checked);
+            if (preview.error)
+                return;
+            syncing = true;
+            if (input === "speed")
+                durationField.text = preview.durationText;
+            else
+                speedField.value = preview.speedPercent;
+            syncing = false;
+        }
+
+        function currentInput() {
+            return still ? "duration" : lastInput;
+        }
+
+        // 適用の入口。リップルしない変更が後続 clip と重なるなら、上書きの確認を挟む。
+        function requestApply() {
+            // 速度の直接入力が数値として読めなければ、古い値で適用せずに止める (入力欄は開いたまま)。
+            if (!speedField.commitEditing()) {
+                errorText = "速度を数値で入力してください";
+                return;
+            }
+            errorText = "";
+            if (!rippleBox.checked
+                    && root.mvmController.clipSpeedDurationNeedsOverwrite(
+                        clipId, currentInput(), speedField.value, durationField.text)) {
+                speedOverwriteDialog.open();
+                return;
+            }
+            apply(false);
+        }
+
+        function apply(overwrite) {
+            if (root.mvmController.applyClipSpeedDuration(
+                        clipId, currentInput(), speedField.value, durationField.text,
+                        preservePitchBox.checked, rippleBox.checked, overwrite)) {
+                close();
+                return;
+            }
+            // status bar はダイアログの陰になるので、失敗理由をダイアログ内に出す。
+            errorText = root.mvmController.statusText;
+        }
+
+        property string errorText: ""
+        onOpened: errorText = ""
+
+        contentItem: ColumnLayout {
+            spacing: 10
+            DragNumberField {
+                id: speedField
+                objectName: "speedDurationSpeedField"
+                Layout.fillWidth: true
+                clickToEdit: true
+                labelText: "速度"
+                minimumValue: 10
+                maximumValue: 1000
+                decimals: 2
+                suffix: "%"
+                enabled: !speedDurationDialog.still
+                onValueEdited: (newValue, commit) => {
+                    speedField.value = newValue;
+                    speedDurationDialog.updatePair("speed");
+                }
+            }
+            Label { text: "デュレーション" }
+            ModernDialogField {
+                id: durationField
+                Layout.fillWidth: true
+                placeholderText: "00:00:05:00"
+                onTextEdited: speedDurationDialog.updatePair("duration")
+            }
+            CheckBox {
+                id: preservePitchBox
+                text: "オーディオのピッチを維持"
+                // 等速では伸縮しないので保存時に落とされる。押せても効かない状態にしない。
+                enabled: !speedDurationDialog.still && Math.abs(speedField.value - 100) > 1e-9
+            }
+            CheckBox {
+                id: rippleBox
+                text: "リップル編集 (後続クリップをシフト)"
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: speedDurationDialog.errorText !== ""
+                text: speedDurationDialog.errorText
+                wrapMode: Text.Wrap
+                color: "#f0b870"
+            }
+        }
+        footer: ModernDialogFooter {
+            ModernDialogButton {
+                text: "キャンセル"
+                onClicked: speedDurationDialog.close()
+            }
+            ModernDialogButton {
+                text: "適用"
+                prominent: true
+                onClicked: speedDurationDialog.requestApply()
+            }
+        }
+    }
+
+    // 速度・尺の変更で延びた先の clip と重なるとき、上書きしてよいかを確かめる。
+    ModernDialog {
+        id: speedOverwriteDialog
+        anchors.centerIn: parent
+        width: Math.min(root.width - 40, 420)
+        modal: true
+        title: "後続のクリップを上書き"
+        contentItem: Label {
+            text: "変更後のクリップが後ろのクリップと重なります。\n"
+                  + "重なった部分を上書き (後ろのクリップを削除または短縮) してよいですか？"
+            wrapMode: Text.Wrap
+            color: "#e6e8ec"
+        }
+        footer: ModernDialogFooter {
+            ModernDialogButton {
+                text: "キャンセル"
+                onClicked: speedOverwriteDialog.close()
+            }
+            ModernDialogButton {
+                text: "上書きする"
+                prominent: true
+                onClicked: {
+                    speedOverwriteDialog.close();
+                    speedDurationDialog.apply(true);
+                }
+            }
+        }
+    }
+
     ModernDialog {
         id: projectSettingsDialog
         anchors.centerIn: parent

@@ -111,6 +111,7 @@ pkg_check_modules(MVM_FFMPEG REQUIRED IMPORTED_TARGET
 message(STATUS "[mvm] FFmpeg: libavcodec ${MVM_FFMPEG_libavcodec_VERSION}")
 # 画素形式の変換 (静止画素材の decode) だけが使う。他の target へは渡さない。
 pkg_check_modules(MVM_SWSCALE REQUIRED IMPORTED_TARGET libswscale)
+pkg_check_modules(MVM_RUBBERBAND REQUIRED IMPORTED_TARGET rubberband)
 
 add_subdirectory(src)
 

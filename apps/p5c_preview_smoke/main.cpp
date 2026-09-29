@@ -66,7 +66,8 @@ enum class Stage {
     WaitRenderIdle,
     WaitRendererInvalidation,
     WaitRendererResume,
-    WaitEofIdle
+    WaitEofIdle,
+    WaitHoldSeek
 };
 enum class Fault {
     None,
@@ -77,8 +78,14 @@ enum class Fault {
     PreAttachShutdown,
     EngineLifetimeDetach,
     RendererRecreation,
-    DecoderEof
+    DecoderEof,
+    // フレーム保持の source。保持の終端を越えて再生しても session を閉じないこと。
+    FrameHold
 };
+
+// --frame-hold の保持長と、保持の終端を越えたと見なす表示数。
+constexpr std::int64_t kHoldOutputFrames = 10;
+constexpr std::uint64_t kBeyondHoldPresented = 40;
 
 } // namespace
 
@@ -92,7 +99,7 @@ int main(int argc, char** argv) {
                              "[--fault-gpu-drain|--fault-device|--fault-decoder|"
                              "--shutdown-source-startup|"
                              "--shutdown-before-attach|--engine-lifetime-detach|"
-                             "--renderer-recreation|--decoder-eof]\n");
+                             "--renderer-recreation|--decoder-eof|--frame-hold]\n");
         return 2;
     }
     Fault fault = Fault::None;
@@ -113,6 +120,8 @@ int main(int argc, char** argv) {
             fault = Fault::RendererRecreation;
         else if (arguments[2] == "--decoder-eof")
             fault = Fault::DecoderEof;
+        else if (arguments[2] == "--frame-hold")
+            fault = Fault::FrameHold;
         else
             return 2;
     }
@@ -173,6 +182,8 @@ int main(int argc, char** argv) {
     std::chrono::steady_clock::time_point quiescedAt{};
     std::uint64_t eofDroppedFrameCount = 0;
     std::int64_t pausePosition = -1;
+    mvm::preview::PreviewSourceId holdSource{};
+    int holdSeekCount = 0;
     mvm::preview::internal::P5CRuntimeDiagnostics activeDiagnostics;
     const auto started = std::chrono::steady_clock::now();
     auto stageStarted = started;
@@ -294,7 +305,18 @@ int main(int argc, char** argv) {
             mvm::preview::PreviewSourceDescriptor descriptor;
             descriptor.mediaPath = arguments[1].toStdWString();
             descriptor.videoEnabled = true;
+            if (fault == Fault::FrameHold) {
+                // fixture A (60 fps, 3900 frame) の素材 frame 30 を timeline 0 から保持する。
+                descriptor.videoTimelineMappingEnabled = true;
+                descriptor.videoSourceInFrame = 30;
+                descriptor.videoSourceFrameCount = 3900;
+                descriptor.videoTimelineStartFrame = 0;
+                descriptor.videoHoldOutputFrames = kHoldOutputFrames;
+                descriptor.expectedVideoSourceFrameRate = {60, 1};
+            }
             auto source = engine->addSource(descriptor);
+            if (source)
+                holdSource = source.value();
             if (!source) {
                 std::fprintf(stderr, "source open失敗: %s\n", source.error().detail.c_str());
                 exitCode = 4;
@@ -350,17 +372,62 @@ int main(int argc, char** argv) {
             // P5-D3でseekは受理対象になった。P5-C smokeはvideo-only経路の回帰なので
             // seekは行わず、引数検査がfail-closedであることだけを確認する。
             const auto seek = engine->seek({-1});
+            // 保持は製品 (controller) と同じく、保持の先頭へ素材 frame を明示して seek して
+            // から再生する。seek せずに素材の先頭から decode する経路は製品では通らない。
+            mvm::preview::PreviewFrameRequest initialHoldSeek;
+            initialHoldSeek.outputFrameNumber = 0;
+            initialHoldSeek.sources.push_back({holdSource, 30});
             if (!composition || seek ||
                 seek.error().category != mvm::preview::PreviewErrorCategory::SeekFailure ||
-                !engine->play()) {
+                (fault == Fault::FrameHold ? !engine->seekFrameRequest(initialHoldSeek)
+                                           : !engine->play())) {
                 exitCode = 5;
                 app.quit();
                 return;
             }
             accepted = composition.value();
-            stage = Stage::WaitInitial;
+            stage = fault == Fault::FrameHold ? Stage::WaitHoldSeek : Stage::WaitInitial;
             stageStarted = now;
-        } else if (stage == Stage::WaitInitial && telemetry.presentedFrameCount >= 12) {
+        } else if (fault == Fault::FrameHold &&
+                   (stage == Stage::WaitInitial || stage == Stage::WaitResume) &&
+                   status.state != mvm::preview::PreviewEngineState::Playing) {
+            // 保持の終端 (10 frame) で worker が EOF を立てると、engine は再生の終端と
+            // 見なして session を閉じる。以後は seek も再生もできないので失敗にする。
+            std::fprintf(stderr, "保持の再生中に engine が Playing を外れました (state %d, "
+                                 "presented %llu)\n",
+                         static_cast<int>(status.state),
+                         static_cast<unsigned long long>(telemetry.presentedFrameCount));
+            exitCode = 23;
+            app.quit();
+            return;
+        } else if (fault == Fault::FrameHold && stage == Stage::WaitInitial &&
+                   telemetry.presentedFrameCount >= kBeyondHoldPresented) {
+            // 保持の終端を越えても再生が続いた。保持の途中へ seek して、seek 経路でも
+            // 保持を出し直してから終端を越えられることを確かめる。製品 (controller) と同じく
+            // 素材 frame を明示する (保持の途中でも素材 frame は保持する 30 のまま)。
+            mvm::preview::PreviewFrameRequest holdSeek;
+            holdSeek.outputFrameNumber = 5;
+            holdSeek.sources.push_back({holdSource, 30});
+            if (!engine->pause() || !engine->seekFrameRequest(holdSeek)) {
+                exitCode = 24;
+                app.quit();
+                return;
+            }
+            stage = Stage::WaitHoldSeek;
+            stageStarted = now;
+        } else if (stage == Stage::WaitHoldSeek &&
+                   status.state == mvm::preview::PreviewEngineState::ReadyPaused) {
+            // 1 回目は保持の先頭から、2 回目は保持の途中から再生して終端を越える。
+            pausePresentedCount = telemetry.presentedFrameCount;
+            if (!engine->play()) {
+                exitCode = 25;
+                app.quit();
+                return;
+            }
+            stage = holdSeekCount++ == 0 ? Stage::WaitInitial : Stage::WaitResume;
+            stageStarted = now;
+        } else if (stage == Stage::WaitInitial && fault != Fault::FrameHold &&
+                   telemetry.presentedFrameCount >= 12) {
             if (fault == Fault::EngineLifetimeDetach) {
                 detachedEngine = engine;
                 surface->setEngine({});
@@ -455,7 +522,9 @@ int main(int argc, char** argv) {
                 stage = Stage::WaitShutdown;
             }
         } else if (stage == Stage::WaitResume &&
-                   telemetry.presentedFrameCount >= pausePresentedCount + 8) {
+                   telemetry.presentedFrameCount >=
+                       pausePresentedCount +
+                           (fault == Fault::FrameHold ? kBeyondHoldPresented : 8)) {
             activeDiagnostics =
                 mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
             if (!engine->requestShutdown()) {

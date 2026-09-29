@@ -96,10 +96,26 @@ bool isStillClipKind(TimelineClipKind kind) {
     return kind == TimelineClipKind::Text || kind == TimelineClipKind::Image;
 }
 
-std::int64_t defaultStillClipFrames(std::int64_t timelineFpsNum, std::int64_t timelineFpsDen) {
+namespace {
+std::int64_t roundedClipFrames(std::int64_t seconds, std::int64_t timelineFpsNum,
+                               std::int64_t timelineFpsDen) {
     if (timelineFpsNum <= 0 || timelineFpsDen <= 0)
         return 1;
-    return std::max<std::int64_t>(1, (5 * timelineFpsNum + timelineFpsDen / 2) / timelineFpsDen);
+    return std::max<std::int64_t>(1,
+                                  (seconds * timelineFpsNum + timelineFpsDen / 2) / timelineFpsDen);
+}
+} // namespace
+
+std::int64_t defaultStillClipFrames(std::int64_t timelineFpsNum, std::int64_t timelineFpsDen) {
+    return roundedClipFrames(5, timelineFpsNum, timelineFpsDen);
+}
+
+std::int64_t defaultFrameHoldFrames(std::int64_t timelineFpsNum, std::int64_t timelineFpsDen) {
+    return roundedClipFrames(2, timelineFpsNum, timelineFpsDen);
+}
+
+bool hasSyntheticSourceDomain(const TimelineClip& clip) {
+    return isStillClipKind(clip.kind) || clip.frameHold.has_value();
 }
 
 const char* trackKindName(TrackKind kind) {

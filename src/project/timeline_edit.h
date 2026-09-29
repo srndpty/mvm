@@ -86,6 +86,9 @@ TimelineFrameResult timelineClipDuration(const Project& project, const TimelineC
 // 素材の末尾を越える分だけは最終 frame に止める。
 TimelineFrameResult clipSourceFrameAt(const TimelineClip& clip, std::int64_t timelineFpsNum,
                                       std::int64_t timelineFpsDen, std::int64_t clipLocalFrame);
+TimelineFrameResult frameHoldProducerPosition(const TimelineClip& clip, std::int64_t timelineFpsNum,
+                                              std::int64_t timelineFpsDen);
+TimelineClip clipVideoSource(const TimelineClip& clip);
 
 // 書き出しの producer に渡す cut の範囲。位置は素材の 0 frame から数えた output 位置
 // (core/source_frame_mapping.h) で、[begin, end) が clipSourceFrameAt と同じ frame を出す。
@@ -215,6 +218,38 @@ RateStretchPreview previewRateStretch(const Project& project, const std::string&
 TimelineEditResult rateStretchTimelineClip(Project& project, const std::string& clipId,
                                            TrimEdge edge, std::int64_t projectFrameDelta,
                                            LinkMode linkMode);
+
+struct ClipSpeedDurationEdit {
+    enum class Input { Speed, Duration } input = Input::Speed;
+    std::int64_t speedNum = 1;
+    std::int64_t speedDen = 1;
+    std::int64_t durationFrames = 0;
+    bool preservePitch = false;
+    bool ripple = false;
+    // ripple しないで延びた先にある clip を上書きする。開始位置は固定なので、重なるのは
+    // 元の終端以降に始まる clip だけであり、丸ごと覆えば削除、はみ出せば左端を削る。
+    bool overwrite = false;
+};
+
+struct ClipSpeedDurationPreview {
+    bool success = false;
+    std::int64_t durationFrames = 0;
+    std::int64_t speedNum = 1;
+    std::int64_t speedDen = 1;
+    // ripple も overwrite もしないとき、延びた先の clip と重なるために失敗したか。
+    // UI はこれを見て上書きの確認を出す。
+    bool overlapsFollowing = false;
+    std::string error;
+};
+
+ClipSpeedDurationPreview previewClipSpeedDuration(const Project& project, const std::string& clipId,
+                                                  const ClipSpeedDurationEdit& edit,
+                                                  LinkMode linkMode);
+TimelineEditResult setClipSpeedDuration(Project& project, const std::string& clipId,
+                                        const ClipSpeedDurationEdit& edit, LinkMode linkMode);
+TimelineEditResult insertFrameHold(Project& project, const std::string& clipId, std::int64_t frame,
+                                   std::int64_t holdFrames,
+                                   const std::function<std::string()>& newId);
 
 // --- Premiere 風の編集ツール ---------------------------------------------
 // いずれも candidate 全体を validateTimeline で検証し、失敗時は Project を変更しない。

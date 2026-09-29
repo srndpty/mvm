@@ -8,6 +8,7 @@
 #include "media/audio_preview/audio_decode_worker.h"
 
 #include <windows.h>
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -115,7 +116,7 @@ int main(int argc, char** argv) {
         const std::string label = std::to_string(speed.num) + "/" + std::to_string(speed.den);
         mvm::audio::AudioDecodeWorker worker({1});
         std::string error;
-        if (!worker.setPlaybackSpeed(speed.num, speed.den, error) ||
+        if (!worker.setPlaybackSpeed(speed.num, speed.den, false, error) ||
             !worker.start(toUtf8(source), error)) {
             check(false, label + ": workerを開始できません: " + error);
             continue;
@@ -157,6 +158,137 @@ int main(int argc, char** argv) {
     }
     check(measured == static_cast<int>(sizeof(speeds) / sizeof(speeds[0])),
           "全速度を測っていません");
+    for (const Speed speed : {Speed{1, 2}, Speed{2, 1}}) {
+        const std::string label =
+            "pitch " + std::to_string(speed.num) + "/" + std::to_string(speed.den);
+        mvm::audio::AudioDecodeWorker worker({1});
+        std::string error;
+        if (!worker.setPlaybackSpeed(speed.num, speed.den, true, error) ||
+            !worker.start(toUtf8(source), error)) {
+            check(false, label + ": workerを開始できません: " + error);
+            continue;
+        }
+        std::vector<float> whole;
+        const bool read = readFrom(worker, 0, 48000 * 20, whole, error);
+        check(read, label + ": 全体を読めません: " + error);
+        const double expectedSamples = 48000.0 * speed.den / speed.num;
+        // 末尾の遅延を押し出さないと 2 倍速で約 500 sample 欠けた。等速と同じ桁まで詰める。
+        check(std::abs(static_cast<double>(whole.size()) - expectedSamples) <= 256.0,
+              label + ": sample数が伸縮後の尺と違います: " + std::to_string(whole.size()));
+        const std::size_t begin = whole.size() / 4;
+        const std::size_t end = whole.size() * 3 / 4;
+        const double frequency = static_cast<double>(risingCrossings(whole, begin, end)) /
+                                 (static_cast<double>(end - begin) / 48000.0);
+        check(std::abs(frequency - 1000.0) <= 20.0,
+              label + ": 1000Hzを保てません: " + std::to_string(frequency));
+        std::fprintf(stderr, "  %s: %zu sample, %.1f Hz\n", label.c_str(), whole.size(), frequency);
+        const auto target = static_cast<std::int64_t>(expectedSamples / 3.0);
+        std::vector<float> seeked;
+        const bool seekRead = readFrom(worker, target, 4800, seeked, error);
+        check(seekRead && seeked.size() == 4800, label + ": seek後のsampleが揃いません: " + error);
+        if (seekRead && seeked.size() == 4800 &&
+            whole.size() >= static_cast<std::size_t>(target) + seeked.size()) {
+            double difference = 0.0;
+            for (std::size_t i = 0; i < seeked.size(); ++i) {
+                const double d = seeked[i] - whole[static_cast<std::size_t>(target) + i];
+                difference += d * d;
+            }
+            const double rms = std::sqrt(difference / seeked.size());
+            check(rms < 0.02, label + ": seek波形が連続再生と違います: " + std::to_string(rms));
+        }
+        worker.stop();
+    }
+    // ピッチ保持の seek は、伸縮した 48 kHz の位置を素材 rate (44.1 kHz) の位置へ戻す。
+    // 速度だけを戻すと位置が 48000/44100 倍後ろへずれ、ずれが preroll (1 秒) を超える遠い
+    // 位置では要求位置より後ろから decode して seek が成立しない。1 秒の素材ではずれが
+    // preroll に収まり検出できないので、30 秒の素材で遠い位置へ seek する。
+    // stretcher は seek で reset するので、純音の位相は連続再生と揃わない。位置は 3 Hz の
+    // 振幅変調の包絡 (10 ms ごとの RMS) で比べる。位置が 1 frame 分ずれても包絡は変わる。
+    const auto longSource = work / L"speed-am-44100-30s.wav";
+    if (_wspawnl(_P_WAIT, ffmpeg.c_str(), ffmpeg.c_str(), L"-y", L"-loglevel", L"error", L"-f",
+                 L"lavfi", L"-i", L"aevalsrc=(0.5+0.4*sin(2*PI*3*t))*sin(2*PI*1000*t):d=30:s=44100",
+                 L"-c:a", L"pcm_s16le", longSource.c_str(), static_cast<wchar_t*>(nullptr)) != 0) {
+        check(false, "長い検証用WAVを生成できません");
+    } else {
+        int farSeeks = 0;
+        for (const Speed speed : {Speed{1, 2}, Speed{2, 1}}) {
+            const std::string label =
+                "pitch far " + std::to_string(speed.num) + "/" + std::to_string(speed.den);
+            mvm::audio::AudioDecodeWorker worker({1});
+            std::string error;
+            if (!worker.setPlaybackSpeed(speed.num, speed.den, true, error) ||
+                !worker.start(toUtf8(longSource), error)) {
+                check(false, label + ": workerを開始できません: " + error);
+                continue;
+            }
+            // 伸縮後の尺の 80% の位置。素材上では 24 秒で、誤った換算では約 26.1 秒になる。
+            const std::int64_t outputLength = 48000LL * 30 * speed.den / speed.num;
+            const std::int64_t target = outputLength * 4 / 5;
+            std::vector<float> whole;
+            check(readFrom(worker, 0, outputLength, whole, error),
+                  label + ": 全体を読めません: " + error);
+            std::vector<float> seeked;
+            const bool seekRead = readFrom(worker, target, 4800, seeked, error);
+            check(seekRead && seeked.size() == 4800,
+                  label + ": 遠い位置へ seek できません: " + error);
+            if (seekRead && seeked.size() == 4800 &&
+                whole.size() >= static_cast<std::size_t>(target) + seeked.size()) {
+                const auto windowRms = [](const float* samples) {
+                    double sum = 0.0;
+                    for (int i = 0; i < 480; ++i)
+                        sum += static_cast<double>(samples[i]) * samples[i];
+                    return std::sqrt(sum / 480.0);
+                };
+                double worst = 0.0;
+                for (std::size_t window = 0; window < 10; ++window) {
+                    const double got = windowRms(seeked.data() + window * 480);
+                    const double want =
+                        windowRms(whole.data() + static_cast<std::size_t>(target) + window * 480);
+                    worst = std::max(worst, std::abs(got - want));
+                }
+                check(worst < 0.03,
+                      label + ": 遠い seek の包絡が連続再生と違います: " + std::to_string(worst));
+                // 対照: 連続再生側を 50 ms ずらすと包絡の差が閾値を超える (比較が空振りしない)。
+                double shiftedWorst = 0.0;
+                if (whole.size() >= static_cast<std::size_t>(target) + 2400 + seeked.size()) {
+                    for (std::size_t window = 0; window < 10; ++window) {
+                        const double got = windowRms(seeked.data() + window * 480);
+                        const double want = windowRms(
+                            whole.data() + static_cast<std::size_t>(target) + 2400 + window * 480);
+                        shiftedWorst = std::max(shiftedWorst, std::abs(got - want));
+                    }
+                }
+                check(shiftedWorst >= 0.03, label + ": 50 ms ずれを包絡で検出できません: " +
+                                                std::to_string(shiftedWorst));
+                std::fprintf(stderr, "  %s: 包絡の最大差 %.4f (50 ms ずらすと %.4f)\n",
+                             label.c_str(), worst, shiftedWorst);
+                ++farSeeks;
+            }
+            worker.stop();
+        }
+        check(farSeeks == 2, "ピッチ保持の遠い seek を全速度で比較していません");
+    }
+    // 比率は約 1 倍でも、約分済みの分子・分母が巨大な速度 (duration 指定や Project JSON から
+    // 作られうる)。ピッチ保持の seek 換算 (素材 rate x p) / (48000 x q) は int64 に収まらないので、
+    // 開始の時点で拒否する (換算を int64 で作ると signed overflow になっていた)。
+    {
+        const Speed huge{(std::int64_t{1} << 62) + 1, (std::int64_t{1} << 62) + 3};
+        mvm::audio::AudioDecodeWorker pitched({1});
+        std::string error;
+        const bool started = pitched.setPlaybackSpeed(huge.num, huge.den, true, error) &&
+                             pitched.start(toUtf8(source), error);
+        check(!started && error.find("seek") != std::string::npos,
+              "巨大な約分済み速度のピッチ保持を拒否できません: " + error);
+        pitched.stop();
+        // 対照: 同じ速度でもピッチ保持なし (テープ方式) は resampler の近似で開始できる。
+        // 拒否がピッチ保持の換算に限られることを示す。
+        mvm::audio::AudioDecodeWorker tape({1});
+        std::string tapeError;
+        const bool tapeStarted = tape.setPlaybackSpeed(huge.num, huge.den, false, tapeError) &&
+                                 tape.start(toUtf8(source), tapeError);
+        check(tapeStarted, "対照: 巨大な約分済み速度のテープ方式を開始できません: " + tapeError);
+        tape.stop();
+    }
     std::fprintf(stderr, "audio playback speed: 検査 %d 件 / 失敗 %d 件\n", gChecks, gFailures);
     return gChecks > 0 && gFailures == 0 ? 0 : 1;
 }

@@ -365,6 +365,22 @@ public:
     // レート調整ツール。素材範囲を変えずに速度を変えて、edge 側の端を動かす。
     Q_INVOKABLE bool rateStretchClip(const QString& clipId, const QString& edge,
                                      qint64 projectFrameDelta, bool linked);
+    Q_INVOKABLE QVariantMap clipSpeedDurationState(const QString& clipId) const;
+    Q_INVOKABLE QVariantMap previewClipSpeedDuration(const QString& clipId,
+                                                    const QString& input,
+                                                    double speedPercent,
+                                                    const QString& durationText,
+                                                    bool preservePitch, bool ripple) const;
+    // ripple しない速度・尺の変更が、延びた先の clip と重なるか。UI は上書きの確認に使う。
+    Q_INVOKABLE bool clipSpeedDurationNeedsOverwrite(const QString& clipId, const QString& input,
+                                                     double speedPercent,
+                                                     const QString& durationText) const;
+    // overwrite は、重なる後続 clip を削ってよいとユーザーが確認した場合だけ true にする。
+    Q_INVOKABLE bool applyClipSpeedDuration(const QString& clipId, const QString& input,
+                                            double speedPercent, const QString& durationText,
+                                            bool preservePitch, bool ripple, bool overwrite);
+    Q_INVOKABLE bool canInsertFrameHold(const QString& clipId) const;
+    Q_INVOKABLE bool insertFrameHoldAtPlayhead(const QString& clipId);
     // レート調整の drag 中の表示。確定と同じ Project の計算 (project::previewRateStretch) で、
     // {delta: 実際に動かす量, clips: {clipId: {startDelta, endDelta, speed}}} を返す。
     // startDelta / endDelta は clip の開始 / 終端が現在の位置から動く frame 数。リンク相手の
@@ -511,6 +527,7 @@ private:
         // 速度が違えば decoder の伸縮が違うので別の source になる。
         std::int64_t speedNum = 1;
         std::int64_t speedDen = 1;
+        bool preservePitch = false;
         bool operator==(const AudioSourceIdentity&) const = default;
     };
 

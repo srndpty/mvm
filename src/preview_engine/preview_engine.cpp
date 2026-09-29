@@ -154,6 +154,14 @@ Result<void> validatePreviewSourceDescriptor(const PreviewSourceDescriptor& desc
             makeError(PreviewErrorCategory::InvalidSource, PreviewOperation::AddSource,
                       "timeline mappingには素材inより大きい素材frame数が必要です"));
     }
+    if (descriptor.videoHoldOutputFrames < 0 ||
+        (descriptor.videoHoldOutputFrames > 0 &&
+         (!descriptor.videoEnabled || !descriptor.videoTimelineMappingEnabled ||
+          descriptor.speedNum != 1 || descriptor.speedDen != 1))) {
+        return Result<void>::failure(makeError(PreviewErrorCategory::InvalidSource,
+                                               PreviewOperation::AddSource,
+                                               "フレーム保持の映像設定が不正です"));
+    }
     return Result<void>::success();
 }
 
@@ -1815,7 +1823,7 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
                 {descriptor.speedNum, descriptor.speedDen}, descriptor.videoTimelineStartFrame,
                 {static_cast<long long>(impl_->configuredFrameRate.numerator),
                  static_cast<long long>(impl_->configuredFrameRate.denominator)},
-                openError)) {
+                descriptor.videoHoldOutputFrames, openError)) {
             impl_->sourceRegistry.unregisterSource(internalVideo);
             return Result<PreviewSourceId>::failure(makeError(
                 PreviewErrorCategory::InvalidSource, PreviewOperation::AddSource, openError));
@@ -1865,7 +1873,7 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
         newAudioWorker->queue().setGainAtSample(descriptor.audioGainAtMediaSample);
         std::string audioError;
         if (!newAudioWorker->setPlaybackSpeed(descriptor.speedNum, descriptor.speedDen,
-                                              audioError) ||
+                                              descriptor.audioPreservePitch, audioError) ||
             !newAudioWorker->start(path, audioError)) {
             newAudioWorker->stop();
             rollbackVideo();

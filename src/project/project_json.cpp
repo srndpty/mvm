@@ -937,6 +937,8 @@ private:
         bool hasMediaItemId = false;
         bool hasSpeedNum = false;
         bool hasSpeedDen = false;
+        bool hasPreservePitch = false;
+        bool hasFrameHold = false;
         bool hasText = false;
         std::string kind;
         std::string media;
@@ -1010,6 +1012,57 @@ private:
                     if (hasSpeedDen || !parseInteger64(clip.speedDen))
                         return fail("timeline clip の speed_den が重複または不正です");
                     hasSpeedDen = true;
+                } else if (key == "preserve_pitch") {
+                    if (hasPreservePitch || !parseBool(clip.preservePitch))
+                        return fail("timeline clip の preserve_pitch が重複または不正です");
+                    hasPreservePitch = true;
+                } else if (key == "frame_hold") {
+                    if (hasFrameHold)
+                        return fail("timeline clip の frame_hold が重複しています");
+                    hasFrameHold = true;
+                    skipWhitespace();
+                    if (text_.compare(position_, 4, "null") == 0) {
+                        position_ += 4;
+                    } else {
+                        FrameHold hold;
+                        if (!consume('{'))
+                            return fail("frame_hold は object または null です");
+                        bool seen[6]{};
+                        for (int field = 0; field < 6; ++field) {
+                            std::string holdKey;
+                            if (field > 0 && !consume(','))
+                                return false;
+                            if (!parseString(holdKey) || !consume(':'))
+                                return false;
+                            std::int64_t* value = nullptr;
+                            int slot = -1;
+                            if (holdKey == "source_frame") {
+                                slot = 0;
+                                value = &hold.sourceFrame;
+                            } else if (holdKey == "source_fps_num") {
+                                slot = 1;
+                                value = &hold.sourceFpsNum;
+                            } else if (holdKey == "source_fps_den") {
+                                slot = 2;
+                                value = &hold.sourceFpsDen;
+                            } else if (holdKey == "source_frame_count") {
+                                slot = 3;
+                                value = &hold.sourceFrameCount;
+                            } else if (holdKey == "speed_num") {
+                                slot = 4;
+                                value = &hold.speedNum;
+                            } else if (holdKey == "speed_den") {
+                                slot = 5;
+                                value = &hold.speedDen;
+                            }
+                            if (slot < 0 || seen[slot] || !parseInteger64(*value))
+                                return fail("frame_hold の field が重複または不正です");
+                            seen[slot] = true;
+                        }
+                        if (!consume('}'))
+                            return false;
+                        clip.frameHold = hold;
+                    }
                 } else if (key == "media_item_id") {
                     if (hasMediaItemId || !parseString(clip.mediaItemId))
                         return fail("timeline clip の media_item_id が重複または不正です");
@@ -1039,7 +1092,8 @@ private:
             return false;
         if (!hasKind || !hasMedia || !hasName || !hasId || !hasSourceFpsNum || !hasSourceFpsDen ||
             !hasSourceFrameCount || !hasSourceIn || !hasSourceOut || !hasTimelineStart ||
-            !hasTrackKind || !hasTrackIndex || !hasSpeedNum || !hasSpeedDen || !hasMediaItemId)
+            !hasTrackKind || !hasTrackIndex || !hasSpeedNum || !hasSpeedDen || !hasMediaItemId ||
+            !hasPreservePitch || !hasFrameHold)
             return fail("timeline clip の必須 field がありません");
         if (hasText != (kind == "text"))
             return fail("timeline clip の text と kind が一致しません");
@@ -1425,6 +1479,19 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
              << "      \"timeline_start_frame\": " << clip.timelineStartFrame << ",\n"
              << "      \"speed_num\": " << clip.speedNum << ",\n"
              << "      \"speed_den\": " << clip.speedDen << ",\n"
+             << "      \"preserve_pitch\": " << (clip.preservePitch ? "true" : "false") << ",\n"
+             << "      \"frame_hold\": ";
+        if (clip.frameHold) {
+            json << "{ \"source_frame\": " << clip.frameHold->sourceFrame
+                 << ", \"source_fps_num\": " << clip.frameHold->sourceFpsNum
+                 << ", \"source_fps_den\": " << clip.frameHold->sourceFpsDen
+                 << ", \"source_frame_count\": " << clip.frameHold->sourceFrameCount
+                 << ", \"speed_num\": " << clip.frameHold->speedNum
+                 << ", \"speed_den\": " << clip.frameHold->speedDen << " }";
+        } else {
+            json << "null";
+        }
+        json << ",\n"
              << "      \"track_kind\": \"" << trackKindName(clip.track.kind) << "\",\n"
              << "      \"track_index\": " << clip.track.index << ",\n"
              << "      \"media_item_id\": \"" << escapeJson(clip.mediaItemId) << "\",\n"

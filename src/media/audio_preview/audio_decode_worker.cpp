@@ -133,9 +133,13 @@ bool AudioDecodeWorker::openInput(const std::string& path, std::string& error) {
     }
     // 速度 s = p / q の素材を「rate が素材 rate x s の入力」として 48 kHz へ変換すると、
     // 出力は伸縮した時間軸の sample になる。rate は整数比 (素材 rate x p) : (48000 x q)。
+    // ピッチ保持は等速の 48 kHz へ変換してから stretcher で伸縮する。速度 1/1 (約分済みなので
+    // p == q) では伸縮しないので stretcher を通さない。書き出しも 1/1 では timewarp を
+    // 通らないため、preview だけに余計な DSP と遅延が入らないようにする。
+    const bool stretch = preservePitch_ && speedNum_ != speedDen_;
     if (codec_->sample_rate <= 0 ||
-        !resamplerRates(static_cast<WideInteger>(codec_->sample_rate) * speedNum_,
-                        static_cast<WideInteger>(kInternalSampleRate) * speedDen_,
+        !resamplerRates(static_cast<WideInteger>(codec_->sample_rate) * (stretch ? 1 : speedNum_),
+                        static_cast<WideInteger>(kInternalSampleRate) * (stretch ? 1 : speedDen_),
                         resamplerInputRate_, resamplerOutputRate_)) {
         error = "音声の再生速度をresamplerのrateへ換算できません";
         return false;
@@ -147,6 +151,32 @@ bool AudioDecodeWorker::openInput(const std::string& path, std::string& error) {
     if (result < 0 || !resampler_ || (result = swr_init(resampler_)) < 0) {
         error = "音声 format converter を初期化できません: " + ffError(result);
         return false;
+    }
+    if (stretch) {
+        // seek は伸縮後の 48 kHz の位置を素材 rate の位置へ戻す: x (素材 rate x p) / (48000 x q)。
+        // 積を int64 で作ると巨大な約分済み速度で signed overflow になるので、WideInteger で
+        // 作って約分し、int64 に収まらなければ開始を拒否する (seek の途中で失敗させない)。
+        WideInteger seekNum = static_cast<WideInteger>(codec_->sample_rate) * speedNum_;
+        WideInteger seekDen = static_cast<WideInteger>(kInternalSampleRate) * speedDen_;
+        const WideInteger common = gcdWide(seekNum, seekDen);
+        seekNum /= common;
+        seekDen /= common;
+        if (seekNum > std::numeric_limits<std::int64_t>::max() ||
+            seekDen > std::numeric_limits<std::int64_t>::max()) {
+            error = "ピッチ保持の速度を seek 位置の換算へ表せません";
+            return false;
+        }
+        pitchSeekNum_ = static_cast<std::int64_t>(seekNum);
+        pitchSeekDen_ = static_cast<std::int64_t>(seekDen);
+        stretcher_ = std::make_unique<PitchPreservingStretcher>(static_cast<double>(speedDen_) /
+                                                                static_cast<double>(speedNum_));
+        if (!stretcher_->valid()) {
+            error = "ピッチ保持処理を初期化できません";
+            return false;
+        }
+        pitchNextOutputSample_ = -1;
+        pitchExpectedEndSample_ = -1;
+        pitchFlushDone_ = false;
     }
     frame_ = av_frame_alloc();
     packet_ = av_packet_alloc();
@@ -161,7 +191,7 @@ bool AudioDecodeWorker::openInput(const std::string& path, std::string& error) {
 }
 
 bool AudioDecodeWorker::setPlaybackSpeed(std::int64_t speedNum, std::int64_t speedDen,
-                                         std::string& error) {
+                                         bool preservePitch, std::string& error) {
     std::lock_guard lock(mutex_);
     if (running_ || speedNum <= 0 || speedDen <= 0) {
         error = "音声の再生速度が不正、または開始後です";
@@ -169,6 +199,7 @@ bool AudioDecodeWorker::setPlaybackSpeed(std::int64_t speedNum, std::int64_t spe
     }
     speedNum_ = speedNum;
     speedDen_ = speedDen;
+    preservePitch_ = preservePitch;
     return true;
 }
 
@@ -320,7 +351,7 @@ bool AudioDecodeWorker::decodeOne(AudioChunk& chunk, std::string& error) {
                 av_frame_unref(frame_);
                 return false;
             }
-            const std::int64_t start = av_rescale(nextOutputTimestamp, 1, resamplerInputRate_);
+            std::int64_t start = av_rescale(nextOutputTimestamp, 1, resamplerInputRate_);
             const std::int64_t delay = swr_get_delay(resampler_, resamplerInputRate_);
             const int capacity =
                 static_cast<int>(av_rescale_rnd(delay + frame_->nb_samples, resamplerOutputRate_,
@@ -337,11 +368,30 @@ bool AudioDecodeWorker::decodeOne(AudioChunk& chunk, std::string& error) {
                 return false;
             }
             pcm->resize(static_cast<std::size_t>(converted) * kInternalChannels);
+            int outputCount = converted;
+            if (stretcher_) {
+                pitchExpectedEndSample_ =
+                    av_rescale_rnd(start + converted, speedDen_, speedNum_, AV_ROUND_NEAR_INF);
+                if (pitchNextOutputSample_ < 0) {
+                    pitchNextOutputSample_ =
+                        av_rescale_rnd(start, speedDen_, speedNum_, AV_ROUND_DOWN);
+                }
+                auto stretched =
+                    stretcher_->process(pcm->data(), static_cast<std::size_t>(converted), false);
+                pcm = std::make_shared<std::vector<float>>(std::move(stretched));
+                start = pitchNextOutputSample_;
+                outputCount = static_cast<int>(pcm->size() / kInternalChannels);
+                pitchNextOutputSample_ += outputCount;
+                if (outputCount == 0) {
+                    av_frame_unref(frame_);
+                    continue;
+                }
+            }
             chunk = {sourceId_,
                      generation_,
                      resourceEpoch_,
                      start,
-                     converted,
+                     outputCount,
                      pts,
                      {stream->time_base.num, stream->time_base.den},
                      kInternalSampleRate,
@@ -363,6 +413,32 @@ bool AudioDecodeWorker::decodeOne(AudioChunk& chunk, std::string& error) {
             return true;
         }
         if (result == AVERROR_EOF) {
+            if (stretcher_ && !pitchFlushDone_) {
+                pitchFlushDone_ = true;
+                auto stretched = stretcher_->finish();
+                if (pitchExpectedEndSample_ >= pitchNextOutputSample_) {
+                    const auto remaining = pitchExpectedEndSample_ - pitchNextOutputSample_;
+                    stretched.resize(std::min(
+                        stretched.size(), static_cast<std::size_t>(remaining) * kInternalChannels));
+                }
+                if (!stretched.empty()) {
+                    const int count = static_cast<int>(stretched.size() / kInternalChannels);
+                    auto pcm = std::make_shared<std::vector<float>>(std::move(stretched));
+                    chunk = {sourceId_,
+                             generation_,
+                             resourceEpoch_,
+                             pitchNextOutputSample_,
+                             count,
+                             0,
+                             {1, 1},
+                             kInternalSampleRate,
+                             kInternalChannels,
+                             std::move(pcm),
+                             0};
+                    pitchNextOutputSample_ += count;
+                    return true;
+                }
+            }
             std::int64_t actualDecodedEnd = -1;
             {
                 std::lock_guard lock(mutex_);
@@ -421,8 +497,13 @@ AudioSeekCompletion AudioDecodeWorker::executeSeek(const AudioSeekTicket& ticket
     const std::int64_t begin = qpcNow();
     AVStream* stream = format_->streams[streamIndex_];
     // 伸縮した時間軸の出力 sample を素材の入力 sample へ戻してから時刻にする。
+    // ピッチ保持では resampler が素材 rate -> 48 kHz の等速なので、速度に加えて
+    // 48 kHz -> 素材 rate の換算も要る (速度だけ戻すと 44.1 kHz 素材で位置が後ろへずれ、
+    // preroll の 1 秒を超えると要求位置より後ろから decode してしまう)。
     const std::int64_t inputSample =
-        av_rescale(ticket.targetSample, resamplerInputRate_, resamplerOutputRate_);
+        stretcher_
+            ? av_rescale_rnd(ticket.targetSample, pitchSeekNum_, pitchSeekDen_, AV_ROUND_DOWN)
+            : av_rescale(ticket.targetSample, resamplerInputRate_, resamplerOutputRate_);
     const std::int64_t relativeTimestamp =
         av_rescale_q(inputSample, AVRational{1, codec_->sample_rate}, stream->time_base);
     const std::int64_t streamStart = stream->start_time == AV_NOPTS_VALUE ? 0 : stream->start_time;
@@ -451,6 +532,11 @@ AudioSeekCompletion AudioDecodeWorker::executeSeek(const AudioSeekTicket& ticket
         completion.error = "seek 後の resampler reset に失敗しました";
         return completion;
     }
+    if (stretcher_)
+        stretcher_->reset();
+    pitchNextOutputSample_ = -1;
+    pitchExpectedEndSample_ = -1;
+    pitchFlushDone_ = false;
     demuxEof_ = false;
     ++generation_.value;
     queue_.setGeneration(generation_);
@@ -556,12 +642,21 @@ void AudioDecodeWorker::run() {
             chunk.sampleCount -= trim;
         }
         const auto count = chunk.sampleCount;
+        const auto end = chunk.startSample + count;
         const auto result = queue_.push(std::move(chunk));
         if (result == AudioQueuePushResult::RejectedOverflow)
             continue;
         if (result != AudioQueuePushResult::Accepted) {
             fail("decoded audio chunk を queue が拒否しました");
             continue;
+        }
+        if (stretcher_ && pitchFlushDone_) {
+            if (!queue_.markEndOfStream(generation_, end))
+                fail("ピッチ保持後の音声終端を確定できません");
+            playing_ = false;
+            std::lock_guard lock(mutex_);
+            metrics_.eof = true;
+            metrics_.actualLastDecodedSampleExclusive = end;
         }
         std::lock_guard lock(mutex_);
         ++metrics_.decodedChunkCount;
@@ -586,6 +681,7 @@ AudioDecoderSnapshot AudioDecodeWorker::snapshot() const {
 }
 
 void AudioDecodeWorker::closeInput() {
+    stretcher_.reset();
     av_packet_free(&packet_);
     av_frame_free(&frame_);
     swr_free(&resampler_);
