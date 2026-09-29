@@ -195,14 +195,12 @@ QCursor TrimCursor::bracketCursor(bool openBracket, bool arrowRight, const QColo
 }
 
 bool TrimCursor::cursorForKind(const QString& kind, const QColor& color, QCursor& cursor) {
-    if (kind == QStringLiteral("inInner"))
+    // premiere と同じく、形は端の線のどちら側かだけで決まる: 線の左は <-]、右は [->。
+    // (左端の外側と右端の内側は線の左、左端の内側と右端の外側は線の右)
+    if (kind == QStringLiteral("inInner") || kind == QStringLiteral("outOuter"))
         cursor = bracketCursor(true, true, color);
-    else if (kind == QStringLiteral("inOuter"))
-        cursor = bracketCursor(true, false, color);
-    else if (kind == QStringLiteral("outInner"))
+    else if (kind == QStringLiteral("inOuter") || kind == QStringLiteral("outInner"))
         cursor = bracketCursor(false, false, color);
-    else if (kind == QStringLiteral("outOuter"))
-        cursor = bracketCursor(false, true, color);
     else if (kind == QStringLiteral("split"))
         cursor = QCursor(Qt::SplitHCursor);
     else if (kind == QStringLiteral("sizeHor"))

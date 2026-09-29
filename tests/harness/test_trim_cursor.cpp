@@ -1,7 +1,8 @@
 // clip の端のカーソル (TrimCursor)。画像のブラケットと矢印の向き、pointer の位置による形の
 // 切り替え、押している間の保持、override cursor の出し入れを確かめる。
-// 期待値は仕様 (右端: 内側 <-] / 外側 ]->、左端: 内側 [-> / 外側 <-[) から直接書き、描画の
-// 座標定数は使わない (hot spot に対する左右の画素の有無だけを見る)。
+// 期待値は仕様 (premiere と同じく端の線の左は <-]、右は [->。右端: 内側 <-] / 外側 [->、左端: 内側
+// [-> / 外側 <-]) から直接書き、描画の 座標定数は使わない (hot spot
+// に対する左右の画素の有無だけを見る)。
 
 #include "trim_cursor.h"
 
@@ -93,17 +94,17 @@ int main(int argc, char** argv) {
 
     // 画像: ブラケットは端の種類、矢印は pointer のある側。
     const auto inInner = shapeOf(cursorOf("inInner", red), red);   // [->
-    const auto inOuter = shapeOf(cursorOf("inOuter", red), red);   // <-[
+    const auto inOuter = shapeOf(cursorOf("inOuter", red), red);   // <-]
     const auto outInner = shapeOf(cursorOf("outInner", red), red); // <-]
-    const auto outOuter = shapeOf(cursorOf("outOuter", red), red); // ]->
+    const auto outOuter = shapeOf(cursorOf("outOuter", red), red); // [->
     check(inInner.armsRight && !inInner.armsLeft && inInner.arrowRight && !inInner.arrowLeft,
           "左端の内側が [-> になっていません");
-    check(inOuter.armsRight && !inOuter.armsLeft && inOuter.arrowLeft && !inOuter.arrowRight,
-          "左端の外側が <-[ になっていません");
+    check(inOuter.armsLeft && !inOuter.armsRight && inOuter.arrowLeft && !inOuter.arrowRight,
+          "左端の外側が <-] になっていません");
     check(outInner.armsLeft && !outInner.armsRight && outInner.arrowLeft && !outInner.arrowRight,
           "右端の内側が <-] になっていません");
-    check(outOuter.armsLeft && !outOuter.armsRight && outOuter.arrowRight && !outOuter.arrowLeft,
-          "右端の外側が ]-> になっていません");
+    check(outOuter.armsRight && !outOuter.armsLeft && outOuter.arrowRight && !outOuter.arrowLeft,
+          "右端の外側が [-> になっていません");
     check(inInner.colored && outOuter.colored, "カーソルが指定した色で描かれていません");
     // 対照: 別の色を指定すると赤としては検出されない (色の検査が空振りしない)。
     check(!shapeOf(cursorOf("outInner", QColor(Qt::blue)), red).colored,
@@ -130,7 +131,7 @@ int main(int argc, char** argv) {
               "右端の線の左 (内側) で <-] になりません");
         moveTo(window, {112, 70});
         check(overrideKind(*right) == QStringLiteral("outOuter"),
-              "右端の線の右 (外側) で ]-> になりません");
+              "右端の線の右 (外側) で [-> になりません");
         // 押している間は範囲の外へ出ても形を保つ。
         right->setHeld(true);
         moveTo(window, {300, 70});
@@ -146,7 +147,7 @@ int main(int argc, char** argv) {
               "左端の線の右 (内側) で [-> になりません");
         moveTo(window, {104, 70});
         check(overrideKind(*right) == QStringLiteral("inOuter"),
-              "左端の線の左 (外側) で <-[ になりません");
+              "左端の線の左 (外側) で <-] になりません");
         right->setMode(QStringLiteral("split"));
         check(QGuiApplication::overrideCursor() &&
                   QGuiApplication::overrideCursor()->shape() == Qt::SplitHCursor,

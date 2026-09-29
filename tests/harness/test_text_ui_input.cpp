@@ -789,7 +789,8 @@ int main(int argc, char** argv) {
                 }
             }
             // 13. clip の端は、クリックせずに hover するだけでカーソルが変わる。右端は内側 <-] /
-            //     外側 ]->、左端は内側 [-> / 外側 <-[。押している間は範囲の外へ出ても形を保ち、
+            //     外側 [->、左端は内側 [-> / 外側 <-] (線の左は <-]、右は
+            //     [->)。押している間は範囲の外へ出ても形を保ち、
             //     端から離れれば元に戻る。左に空きのある文字 clip (frame 10 から) で試す。
             {
                 QTest::keyClick(window, Qt::Key_Escape);
@@ -829,11 +830,11 @@ int main(int argc, char** argv) {
                     hover(-3, true);
                     check(isCursor("outInner"), "右端の内側を hover しても <-] になりません");
                     hover(3, true);
-                    check(isCursor("outOuter"), "右端の外側を hover しても ]-> になりません");
+                    check(isCursor("outOuter"), "右端の外側を hover しても [-> になりません");
                     hover(3, false);
                     check(isCursor("inInner"), "左端の内側を hover しても [-> になりません");
                     hover(-3, false);
-                    check(isCursor("inOuter"), "左端の外側を hover しても <-[ になりません");
+                    check(isCursor("inOuter"), "左端の外側を hover しても <-] になりません");
 
                     // 押したまま右端から大きく外へ動かしても、押した側の形を保つ。元の位置で離す。
                     const QPoint grab = pointAt(-3, true);

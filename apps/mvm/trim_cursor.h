@@ -19,8 +19,8 @@ namespace mvm::app {
 // (containsMouse) も window から届かなかった。そのため Qt の hover とカーソル探索には頼らず、
 // window へ届く mouse の移動を event filter で見て、自分の範囲かを判定する。
 //
-// 形: ブラケットは端の種類 (edge "in" = 左端 "[" / "out" = 右端 "]")、矢印は pointer のある側を
-// 向く。右端の内側 <-]・外側 ]->、左端の内側 [->・外側 <-[。mode が "split" / "sizeHor" なら
+// 形: premiere と同じく、端の線のどちら側に pointer があるかで決まる。線の左は <-]、右は [->
+// (右端の内側 <-]・外側 [->、左端の内側 [->・外側 <-])。mode が "split" / "sizeHor" なら
 // Qt の標準形 (ローリング / レート調整)、"" なら出さない。
 class TrimCursor : public QQuickItem {
     Q_OBJECT
@@ -47,7 +47,7 @@ public:
     QString shownKind() const { return shownKind_; }
 
     // ブラケットのカーソル画像。hot spot はブラケットの縦線 (clip の端) に置く。
-    // openBracket: "[" (in 点) か "]" (out 点)。arrowRight: 矢印が右を向くか。
+    // openBracket: "[" か "]"。arrowRight: 矢印が右を向くか。
     static QCursor bracketCursor(bool openBracket, bool arrowRight, const QColor& color);
     // 形の名前に対応するカーソル。不明・空なら false。
     static bool cursorForKind(const QString& kind, const QColor& color, QCursor& cursor);

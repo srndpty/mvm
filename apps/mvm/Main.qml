@@ -1488,7 +1488,7 @@ ApplicationWindow {
             readonly property bool viewToolActive: tool === "hand" || tool === "zoom"
             // 端を掴むときのカーソル (TrimCursor)。premiere と同じく、選択ツールの trim は赤、
             // リップルは黄のブラケット。ブラケットは端の種類 (左端 "[" / 右端 "]")、矢印は pointer の
-            // ある側を向く: 右端の内側 <-]・外側 ]->、左端の内側 [->・外側 <-[。どちらの側でも
+            // ある側を向く: 右端の内側 <-]・外側 [->、左端の内側 [->・外側 <-]。どちらの側でも
             // 同じ端を動かす。ローリングとレート調整は挙動が違うので従来の形のまま。
             readonly property string edgeCursorMode: tool === "rolling" ? "split"
                                                      : tool === "rate" ? "sizeHor" : "trim"
@@ -2969,7 +2969,7 @@ ApplicationWindow {
                                         property real pressContentX: 0
                                         property int dragDelta: 0
                                         // 端の線をまたいで内側 8px (見えているハンドル) と外側 8px を掴める。どちらも同じ
-                                        // 端を動かし、カーソルだけが pointer のある側を示す (内側 [-> / 外側 <-[)。
+                                        // 端を動かし、カーソルだけが pointer のある側を示す (内側 [-> / 外側 <-])。
                                         x: -8
                                         width: 16
                                         height: parent.height
@@ -3038,7 +3038,7 @@ ApplicationWindow {
 
                                     MouseArea {
                                         property real pressContentX: 0
-                                        // 内側 8px (見えているハンドル) と外側 8px。内側 <-] / 外側 ]->。
+                                        // 内側 8px (見えているハンドル) と外側 8px。内側 <-] / 外側 [->。
                                         x: 0
                                         width: 16
                                         height: parent.height
