@@ -108,6 +108,16 @@ PlaybackFrameResult adjacentTimelineEditPoint(const project::Project& project,
                 nearest = edge;
         }
     }
+    for (const auto marker : project.timelineMarkers) {
+        if (marker < 0 || marker > lastFrame) {
+            result.error = "マーカーの編集点が不正です";
+            return result;
+        }
+        if (direction > 0 && marker > playheadFrame && (!nearest || marker < *nearest))
+            nearest = marker;
+        if (direction < 0 && marker < playheadFrame && (!nearest || marker > *nearest))
+            nearest = marker;
+    }
     if (!nearest) {
         result.error = direction > 0 ? "次の編集点はありません" : "前の編集点はありません";
         return result;

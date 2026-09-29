@@ -68,6 +68,92 @@ ApplicationWindow {
         enabled: root.mvmController.canRedo
         onTriggered: root.mvmController.redoLastEdit()
     }
+    Action {
+        id: copyClipsAction
+        text: "クリップをコピー"
+        shortcut: "Ctrl+C"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.copySelectedClips()
+    }
+    Action {
+        id: cutClipsAction
+        text: "クリップをカット"
+        shortcut: "Ctrl+X"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.cutSelectedClips()
+    }
+    Action {
+        id: pasteClipsAction
+        text: "クリップをペースト"
+        shortcut: "Ctrl+V"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.pasteClips()
+    }
+    Action {
+        id: duplicateClipsAction
+        text: "クリップを複製"
+        shortcut: "Ctrl+D"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.duplicateSelectedClips()
+    }
+    Action {
+        id: addMarkerAction
+        text: "マーカーを追加"
+        shortcut: "M"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.addTimelineMarker()
+    }
+    Action {
+        id: nextMarkerAction
+        text: "次のマーカーへ移動"
+        shortcut: "Shift+M"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.jumpToMarker(1)
+    }
+    Action {
+        id: previousMarkerAction
+        text: "前のマーカーへ移動"
+        shortcut: "Ctrl+Shift+M"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.jumpToMarker(-1)
+    }
+    Action {
+        id: markInAction
+        text: "インをマーク"
+        shortcut: "I"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.markIn()
+    }
+    Action {
+        id: markOutAction
+        text: "アウトをマーク"
+        shortcut: "O"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.markOut()
+    }
+    Action {
+        id: jumpInAction
+        text: "インへ移動"
+        shortcut: "Shift+I"
+        enabled: !root.mvmController.busy && root.mvmController.inFrame >= 0
+                 && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.jumpToIn()
+    }
+    Action {
+        id: jumpOutAction
+        text: "アウトへ移動"
+        shortcut: "Shift+O"
+        enabled: !root.mvmController.busy && root.mvmController.outFrame >= 0
+                 && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.jumpToOut()
+    }
+    Action {
+        id: clearInOutAction
+        text: "インとアウトを消去"
+        shortcut: "Alt+X"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.clearInOut()
+    }
     // Windows で一般的な Ctrl+Y も同じやり直しにする。Action は shortcut を 1 つしか持てない。
     Shortcut {
         sequence: "Ctrl+Y"
@@ -144,9 +230,23 @@ ApplicationWindow {
             CompactMenuItem {
                 action: redoAction
             }
+            CompactMenuSeparator {}
+            CompactMenuItem { action: copyClipsAction }
+            CompactMenuItem { action: cutClipsAction }
+            CompactMenuItem { action: pasteClipsAction }
+            CompactMenuItem { action: duplicateClipsAction }
         }
         CompactMenu {
             title: "再生"
+            CompactMenuItem { action: addMarkerAction }
+            CompactMenuItem { action: nextMarkerAction }
+            CompactMenuItem { action: previousMarkerAction }
+            CompactMenuItem { action: markInAction }
+            CompactMenuItem { action: markOutAction }
+            CompactMenuItem { action: jumpInAction }
+            CompactMenuItem { action: jumpOutAction }
+            CompactMenuItem { action: clearInOutAction }
+            CompactMenuSeparator {}
             CompactMenuItem {
                 text: "左へシャトル\tJ"
                 enabled: !root.mvmController.busy && root.mvmController.clipCount > 0
@@ -1186,7 +1286,7 @@ ApplicationWindow {
                                                 0.35, 0.5, 0.75, 1.0, 1.5, 2, 3, 4,
                                                 6, 8, 12, 16, 24]
             property int zoomIndex: 10
-            property int observedTimelineFrames: root.mvmController.totalTimelineFrames
+            property int observedTimelineFrames: root.mvmController.navigationTimelineFrames
             onObservedTimelineFramesChanged: {
                 zoomIndex = Math.max(minimumZoomIndex,
                                      Math.min(zoomLevels.length - 1, zoomIndex));
@@ -1204,6 +1304,8 @@ ApplicationWindow {
                 zoomIndex === minimumZoomIndex ? fitPixelsPerFrame : zoomLevels[zoomIndex]
             property string activeDragLinkGroup: ""
             property string activeDragClipId: ""
+            property bool activeDragDuplicate: false
+            property bool activeDragMoved: false
             property real activeDragOffsetX: 0
             property string activeDragTrackKind: ""
             property real activeDragOffsetY: 0
@@ -1304,7 +1406,7 @@ ApplicationWindow {
                 zoomIndex = nextIndex;
                 const nextContentWidth = Math.max(
                     timelineFlick.width,
-                    root.mvmController.totalTimelineFrames * pixelsPerFrame + 240);
+                    root.mvmController.navigationTimelineFrames * pixelsPerFrame + 240);
                 const nextMaxContentX = Math.max(0, nextContentWidth - timelineFlick.width);
                 const desiredContentX = anchorFrame * pixelsPerFrame - anchorItemX;
                 timelineFlick.contentX = Math.max(
@@ -1600,7 +1702,7 @@ ApplicationWindow {
                 width: parent.width - x - 4
                 height: parent.height - 4
                 clip: true
-                contentWidth: Math.max(width, root.mvmController.totalTimelineFrames * timelinePanel.pixelsPerFrame + 240)
+                contentWidth: Math.max(width, root.mvmController.navigationTimelineFrames * timelinePanel.pixelsPerFrame + 240)
                 contentHeight: Math.max(height, timelinePanel.tracksTop
                                         + timelinePanel.tracksHeight + 34)
                 boundsBehavior: Flickable.StopAtBounds
@@ -1680,22 +1782,103 @@ ApplicationWindow {
                             }
                         }
 
+                        Rectangle {
+                            visible: root.mvmController.inFrame >= 0
+                                     && root.mvmController.outFrame > root.mvmController.inFrame
+                            x: root.mvmController.inFrame * timelinePanel.pixelsPerFrame
+                            width: Math.max(1, (root.mvmController.outFrame
+                                                - root.mvmController.inFrame)
+                                               * timelinePanel.pixelsPerFrame)
+                            height: 4
+                            anchors.bottom: parent.bottom
+                            color: "#56a5e8"
+                        }
+                        Repeater {
+                            model: root.mvmController.timelineMarkers
+                            Rectangle {
+                                required property var modelData
+                                x: modelData * timelinePanel.pixelsPerFrame - 3
+                                y: 2
+                                width: 7
+                                height: 12
+                                color: "#f3bd54"
+                                radius: 2
+                            }
+                        }
+                        Rectangle {
+                            visible: root.mvmController.inFrame >= 0
+                            x: root.mvmController.inFrame * timelinePanel.pixelsPerFrame - 2
+                            y: 0
+                            width: 4
+                            height: parent.height
+                            color: "#56a5e8"
+                        }
+                        Rectangle {
+                            visible: root.mvmController.outFrame >= 0
+                            x: root.mvmController.outFrame * timelinePanel.pixelsPerFrame - 2
+                            y: 0
+                            width: 4
+                            height: parent.height
+                            color: "#56a5e8"
+                        }
+
                         // ルーラー上はクリックでもドラッグでもスクラブできる。
                         MouseArea {
+                            id: rulerArea
                             anchors.fill: parent
-                            enabled: !root.mvmController.busy && root.mvmController.clipCount > 0
+                            enabled: !root.mvmController.busy
+                                     && root.mvmController.navigationTimelineFrames > 0
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
                             cursorShape: Qt.SizeHorCursor
                             preventStealing: true
+                            property var menuMarkerFrame: -1
                             onPressed: mouse => {
+                                if (mouse.button === Qt.RightButton) {
+                                    menuMarkerFrame = Gestures.markerNearRulerX(
+                                        mouse.x, timelinePanel.pixelsPerFrame,
+                                        root.mvmController.timelineMarkers, 9);
+                                    rulerMarkMenu.popup();
+                                    return;
+                                }
                                 root.mvmController.beginScrub();
                                 root.mvmController.scrubToFrame(timelinePanel.frameAtContentX(mouse.x));
                             }
                             onPositionChanged: mouse => {
-                                if (pressed)
+                                if (pressedButtons & Qt.LeftButton)
                                     root.mvmController.scrubToFrame(timelinePanel.frameAtContentX(mouse.x));
                             }
-                            onReleased: root.mvmController.endScrub()
+                            onReleased: mouse => {
+                                if (mouse.button === Qt.LeftButton)
+                                    root.mvmController.endScrub();
+                            }
                             onCanceled: root.mvmController.endScrub()
+
+                            CompactMenu {
+                                id: rulerMarkMenu
+                                CompactMenuItem {
+                                    text: "マーカーを削除"
+                                    visible: rulerArea.menuMarkerFrame >= 0
+                                    height: visible ? implicitHeight : 0
+                                    onTriggered: root.mvmController.deleteTimelineMarker(
+                                                     rulerArea.menuMarkerFrame)
+                                }
+                                CompactMenuItem {
+                                    text: "インを消去"
+                                    enabled: root.mvmController.inFrame >= 0
+                                    onTriggered: root.mvmController.clearIn()
+                                }
+                                CompactMenuItem {
+                                    text: "アウトを消去"
+                                    enabled: root.mvmController.outFrame >= 0
+                                    onTriggered: root.mvmController.clearOut()
+                                }
+                                CompactMenuItem {
+                                    text: "イン・アウトを消去"
+                                    enabled: root.mvmController.inFrame >= 0
+                                             || root.mvmController.outFrame >= 0
+                                    onTriggered: root.mvmController.clearInOut()
+                                }
+                            }
                         }
                     }
 
@@ -1899,6 +2082,8 @@ ApplicationWindow {
                                 property real bodyDragOffsetX: 0
                                 property real bodyDragOffsetY: 0
                                 property real rawBodyDragOffsetX: 0
+                                // press 時点で一緒に動く clip 群の端 (controller.timelineDragBounds)。
+                                property var bodyDragBounds: ({})
                                 property bool bodyMoved: false
                                 property bool bodyAdditiveSelection: false
                                 property string dragTrackKind: trackKind
@@ -1948,13 +2133,13 @@ ApplicationWindow {
                                 readonly property real renderOffsetX:
                                     shownLeftDelta * timelinePanel.pixelsPerFrame
                                     + shownSlideFrames * timelinePanel.pixelsPerFrame
-                                    + (bodyMoved
+                                    + (timelinePanel.activeDragDuplicate ? 0 : (bodyMoved
                                        ? bodyDragOffsetX
                                        : ((selected
                                            || (timelinePanel.activeDragLinkGroup !== ""
                                                && clipItem.linkGroupId === timelinePanel.activeDragLinkGroup))
                                           && clipId !== timelinePanel.activeDragClipId
-                                          ? timelinePanel.activeDragOffsetX : 0))
+                                          ? timelinePanel.activeDragOffsetX : 0)))
 
                                 x: timelineStartFrame * timelinePanel.pixelsPerFrame
                                 y: timelinePanel.rowY(trackKind, trackIndex) - timelinePanel.tracksTop + 3
@@ -1968,12 +2153,38 @@ ApplicationWindow {
                                 z: bodyMoved ? 20 : 1
                                 transform: Translate {
                                     x: clipItem.renderOffsetX
-                                    y: clipItem.bodyMoved
+                                    y: timelinePanel.activeDragDuplicate ? 0 : (clipItem.bodyMoved
                                        ? clipItem.bodyDragOffsetY
                                        : (clipItem.selected
                                           && clipItem.trackKind === timelinePanel.activeDragTrackKind
                                           && clipItem.clipId !== timelinePanel.activeDragClipId
-                                          ? timelinePanel.activeDragOffsetY : 0)
+                                          ? timelinePanel.activeDragOffsetY : 0))
+                                }
+
+                                Rectangle {
+                                    visible: timelinePanel.activeDragDuplicate && timelinePanel.activeDragMoved
+                                             && clipItem.selected
+                                    x: timelinePanel.activeDragOffsetX
+                                    y: clipItem.trackKind === timelinePanel.activeDragTrackKind
+                                       ? timelinePanel.activeDragOffsetY : 0
+                                    width: clipItem.width
+                                    height: clipItem.height
+                                    radius: clipItem.radius
+                                    color: clipItem.color
+                                    border.color: clipItem.border.color
+                                    opacity: 0.55
+                                    z: 40
+                                    Label {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 12
+                                        anchors.rightMargin: 12
+                                        anchors.topMargin: 5
+                                        text: clipItem.displayName
+                                        color: "white"
+                                        font.bold: true
+                                        font.pixelSize: 12
+                                        elide: Text.ElideMiddle
+                                    }
                                 }
 
                                 TapHandler {
@@ -2301,13 +2512,17 @@ ApplicationWindow {
                                             timelinePanel.selectFromFrame(pressFrame, mouse.modifiers,
                                                                           clipItem.trackKind, clipItem.trackIndex);
                                         } else if (!clipItem.bodyAdditiveSelection
-                                                   && (!clipItem.selected || !clipItem.editLinked)) {
+                                                   && !clipItem.selected) {
                                             // Alt+クリックはリンク相手を外して、この clip だけを選ぶ。
                                             const frame = pressFrame;
                                             root.mvmController.selectTimelineClip(clipItem.clipId, frame, clipItem.editLinked);
                                         }
+                                        // 選択を確定した後で、一緒に動く群の端を取る。
+                                        clipItem.bodyDragBounds = root.mvmController.timelineDragBounds(clipItem.clipId);
                                         timelinePanel.activeDragLinkGroup = clipItem.editLinked ? clipItem.linkGroupId : "";
                                         timelinePanel.activeDragClipId = clipItem.clipId;
+                                        timelinePanel.activeDragDuplicate = clipItem.gestureState.duplicate;
+                                        timelinePanel.activeDragMoved = false;
                                         timelinePanel.activeDragOffsetX = 0;
                                         timelinePanel.activeDragTrackKind = clipItem.trackKind;
                                         timelinePanel.activeDragOffsetY = 0;
@@ -2362,17 +2577,22 @@ ApplicationWindow {
                                         // track移動時の小さな横ぶれは無視する。
                                         const intendedOffset = Math.abs(clipItem.rawBodyDragOffsetX) < 12
                                                                    ? 0 : clipItem.rawBodyDragOffsetX;
-                                        // drag中もanchorを0秒より左へ描画しない。リンク・複数選択の
-                                        // 最左端はProject側が同じdeltaで最終スナップする。
-                                        clipItem.bodyDragOffsetX = Math.max(
-                                            -clipItem.timelineStartFrame * timelinePanel.pixelsPerFrame,
-                                            intendedOffset);
+                                        // リンク・複数選択の群全体が 0 frame と既存 track に収まる量で
+                                        // 止める。確定にも同じ量を渡すので、見えている位置のまま置かれる。
+                                        clipItem.bodyDragOffsetX = Gestures.groupDragOffsetX(
+                                            intendedOffset, timelinePanel.pixelsPerFrame,
+                                            clipItem.bodyDragBounds);
                                         timelinePanel.activeDragOffsetX = clipItem.bodyDragOffsetX;
                                         const rawCenterY = clipItem.y
                                                            + (now.y - clipItem.bodyPressPoint.y)
                                                            + clipItem.height / 2;
                                         const snapped = timelinePanel.trackForDrag(clipItem.trackKind,
                                                                                     rawCenterY);
+                                        snapped.index = Gestures.groupDragTrackIndex(
+                                            snapped.kind, clipItem.trackIndex, snapped.index,
+                                            snapped.kind === "video" ? timelinePanel.videoCount
+                                                                     : timelinePanel.audioCount,
+                                            clipItem.bodyDragBounds);
                                         clipItem.dragTrackKind = snapped.kind;
                                         clipItem.dragTrackIndex = snapped.index;
                                         clipItem.bodyDragOffsetY = timelinePanel.rowY(snapped.kind,
@@ -2383,6 +2603,7 @@ ApplicationWindow {
                                         if (Math.abs(clipItem.rawBodyDragOffsetX) > 5
                                                 || snapped.index !== clipItem.trackIndex)
                                             clipItem.bodyMoved = true;
+                                        timelinePanel.activeDragMoved = clipItem.bodyMoved;
                                     }
                                     onReleased: mouse => {
                                         if (timelinePanel.tool === "pen" && clipItem.penState === null)
@@ -2428,6 +2649,8 @@ ApplicationWindow {
                                         clipItem.bodyAdditiveSelection = false;
                                         timelinePanel.activeDragLinkGroup = "";
                                         timelinePanel.activeDragClipId = "";
+                                        timelinePanel.activeDragDuplicate = false;
+                                        timelinePanel.activeDragMoved = false;
                                         timelinePanel.activeDragOffsetX = 0;
                                         timelinePanel.activeDragTrackKind = "";
                                         timelinePanel.activeDragOffsetY = 0;
@@ -2450,6 +2673,11 @@ ApplicationWindow {
                                             root.mvmController.moveTimelineClip(
                                                 releasedClipId, destinationKind, destinationIndex,
                                                 action.frame, action.linked);
+                                            break;
+                                        case "duplicate":
+                                            root.mvmController.duplicateTimelineClipsAt(
+                                                releasedClipId, destinationKind, destinationIndex,
+                                                action.frame);
                                             break;
                                         case "toggle":
                                             root.mvmController.toggleTimelineClipSelection(
@@ -2481,6 +2709,8 @@ ApplicationWindow {
                                         clipItem.dragTrackIndex = clipItem.trackIndex;
                                         timelinePanel.activeDragLinkGroup = "";
                                         timelinePanel.activeDragClipId = "";
+                                        timelinePanel.activeDragDuplicate = false;
+                                        timelinePanel.activeDragMoved = false;
                                         timelinePanel.activeDragOffsetX = 0;
                                         timelinePanel.activeDragTrackKind = "";
                                         timelinePanel.activeDragOffsetY = 0;

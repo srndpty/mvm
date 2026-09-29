@@ -65,6 +65,22 @@ mvm::project::Project linkedProject() {
     return project;
 }
 
+// 素材を Project パネルへ登録済みにする。貼り付けは bin を照合するので、中身が偽の
+// 素材を調べ直させない。
+void registerFixtureMedia(mvm::project::Project& project, const std::filesystem::path& media,
+                          const std::string& folderId = {}) {
+    mvm::project::MediaItem item;
+    item.id = "media-" + std::to_string(project.mediaItems.size());
+    item.mediaPath = media;
+    item.name = "fixture.mp4";
+    item.folderId = folderId;
+    item.fpsNum = 60;
+    item.frameCount = 120;
+    item.width = 1920;
+    item.height = 1080;
+    project.mediaItems.push_back(item);
+}
+
 // testで本物のExplorerを開かないよう、全export testは記録するだけのrevealerを渡す。
 struct RevealRecorder {
     int calls = 0;
@@ -346,6 +362,298 @@ void testUndo(const std::filesystem::path& path) {
     check(controller.undoLastEdit() && controller.videoTrackCount() == 3 &&
               controller.audioTrackCount() == 1,
           "新しい編集のUndoが編集Aの後へ戻りません");
+}
+
+void testClipboardAndMarks(const std::filesystem::path& path) {
+    auto initial = videoProject();
+    const auto media = path.parent_path() / L"clipboard-fixture.mp4";
+    std::ofstream(media, std::ios::binary).put('x');
+    initial.timelineClips[0].mediaPath = media;
+    registerFixtureMedia(initial, media);
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "コピー試験のProjectを保存できません");
+    mvm::app::MvmController controller(path, {}, initial);
+    check(controller.selectTimelineClips({QStringLiteral("video")}) &&
+              controller.copySelectedClips(),
+          "選択clipをコピーできません");
+    check(controller.duplicateSelectedClips() && controller.clipCount() == 2 &&
+              controller.videoTrackCount() == 2,
+          "重なる位置の複製で空き映像trackを使えません");
+    check(controller.undoLastEdit() && controller.clipCount() == 1 && controller.redoLastEdit() &&
+              controller.clipCount() == 2,
+          "複製全体を一回のUndo/Redoで戻せません");
+    check(controller.duplicateSelectedClips() && controller.clipCount() == 3 &&
+              controller.videoTrackCount() == 3 && controller.undoLastEdit(),
+          "空きtrackがない複製で新しい映像trackを追加できません");
+    check(controller.cutSelectedClips() && controller.clipCount() == 1 && controller.pasteClips() &&
+              controller.clipCount() == 2,
+          "カット後にclipを再生ヘッドへペーストできません");
+    check(controller.addTimelineMarker() && controller.timelineMarkers().size() == 1 &&
+              controller.addTimelineMarker() && controller.timelineMarkers().size() == 1,
+          "同じframeのマーカーを重複させました");
+    check(controller.markIn() && !controller.markOut(), "同じframeのイン・アウトを受理しました");
+    controller.seekTimelineFrame(100);
+    check(controller.playheadFrame() == 100 && controller.markOut() && controller.outFrame() == 100,
+          "アウトを再生ヘッドに設定できません");
+    check(controller.addTimelineMarker() && controller.timelineMarkers().size() == 2,
+          "別frameのマーカーを追加できません");
+    controller.jumpToMarker(-1);
+    const bool atPreviousMarker = controller.playheadFrame() == 0;
+    controller.jumpToMarker(1);
+    check(atPreviousMarker && controller.playheadFrame() == 100, "前後のマーカーへ移動できません");
+    check(!controller.deleteTimelineMarker(99) && controller.timelineMarkers().size() == 2,
+          "存在しないマーカーの削除でProjectが変わりました");
+    check(controller.deleteTimelineMarker(100) && controller.timelineMarkers().size() == 1 &&
+              controller.undoLastEdit() && controller.timelineMarkers().size() == 2 &&
+              controller.redoLastEdit() && controller.timelineMarkers().size() == 1,
+          "マーカー削除を一回のUndo/Redoで戻せません");
+    controller.seekTimelineFrame(90);
+    check(controller.playheadFrame() == 90, "マーカー試験の開始位置へ移動できません");
+    check(controller.addTimelineMarker() && controller.timelineMarkers().size() == 2,
+          "編集点として使うマーカーを追加できません");
+    controller.seekTimelineFrame(100);
+    check(controller.playheadFrame() == 100, "マーカーの次のframeへ移動できません");
+    controller.jumpToEditPoint(-1);
+    check(controller.playheadFrame() == 90, "マーカーを編集点として移動できません");
+    controller.jumpToIn();
+    const bool atIn = controller.playheadFrame() == 0;
+    controller.jumpToOut();
+    check(atIn && controller.playheadFrame() == 100 && controller.clearIn() &&
+              controller.inFrame() == -1 && controller.outFrame() == 100 &&
+              controller.undoLastEdit() && controller.inFrame() == 0,
+          "インだけを消去してUndoできません");
+    check(controller.clearOut() && controller.inFrame() == 0 && controller.outFrame() == -1 &&
+              controller.undoLastEdit() && controller.outFrame() == 100,
+          "アウトだけを消去してUndoできません");
+    check(controller.clearInOut() && controller.inFrame() == -1 && controller.outFrame() == -1 &&
+              !controller.clearIn() && !controller.clearOut(),
+          "イン・アウトの消去と未設定時の拒否ができません");
+}
+
+void testClipboardAcrossProject(const std::filesystem::path& sourcePath) {
+    auto source = videoProject();
+    const auto media = sourcePath.parent_path() / L"cross-project-fixture.mp4";
+    std::ofstream(media, std::ios::binary).put('x');
+    source.timelineClips[0].mediaPath = media;
+    source.mediaFolders.push_back({"folder", "素材", ""});
+    registerFixtureMedia(source, media, "folder");
+    const auto destinationPath = sourcePath.parent_path() / L"clipboard-destination.mvm";
+    check(mvm::project::saveProjectJson(source, sourcePath).success &&
+              mvm::project::saveProjectJson(mvm::project::createDefaultProject(), destinationPath)
+                  .success,
+          "別Project貼り付け用のProjectを保存できません");
+    mvm::app::MvmController controller(sourcePath, {}, source);
+    check(controller.selectTimelineClips({QStringLiteral("video")}) &&
+              controller.copySelectedClips(),
+          "別Projectへ移すclipをコピーできません");
+    const auto destinationUrl =
+        QUrl::fromLocalFile(QString::fromStdWString(destinationPath.wstring()));
+    check(controller.openProject(destinationUrl) && controller.clipCount() == 0 &&
+              controller.pasteClips() && controller.clipCount() == 1,
+          "Projectを切り替えた後もコピー内容を貼り付けられません");
+    check(controller.saveProject(), "別Projectへの貼り付け結果を保存できません");
+    const auto pasted = mvm::project::loadProjectJson(destinationPath);
+    check(pasted.success && pasted.project.mediaItems.size() == 1 &&
+              pasted.project.mediaItems[0].mediaPath == media &&
+              pasted.project.mediaItems[0].folderId.empty() &&
+              pasted.project.mediaItems[0].frameCount == 120,
+          "別Projectへ貼ったclipの素材をProjectパネルのrootへ登録しません");
+    check(controller.undoLastEdit() && controller.clipCount() == 0 && controller.saveProject(),
+          "別Projectへの貼り付けを一回のUndoで戻せません");
+    const auto undone = mvm::project::loadProjectJson(destinationPath);
+    check(undone.success && undone.project.mediaItems.empty(),
+          "貼り付けのUndoでProjectパネルの素材が残りました");
+    check(controller.redoLastEdit() && controller.pasteClips() && controller.clipCount() == 2 &&
+              controller.saveProject(),
+          "同じ素材を再度貼り付けできません");
+    const auto again = mvm::project::loadProjectJson(destinationPath);
+    check(again.success && again.project.mediaItems.size() == 1,
+          "登録済みの素材をProjectパネルへ重複登録しました");
+    check(controller.undoLastEdit() && controller.clipCount() == 1, "再貼り付けを戻せません");
+    const auto firstId = again.success && !again.project.timelineClips.empty()
+                             ? QString::fromStdString(again.project.timelineClips.front().id)
+                             : QString();
+    check(controller.selectTimelineClips({firstId}) && controller.cutSelectedClips() &&
+              controller.clipCount() == 0 && controller.pasteClips() && controller.clipCount() == 1,
+          "最後のclipをカットしてから再配置できません");
+}
+
+// fps の違う Project へ貼ると、自動化 key も同じ秒位置へ移る。60 -> 30 -> 60 の往復。
+void testClipboardAcrossFps(const std::filesystem::path& sourcePath) {
+    auto source = videoProject();
+    const auto media = sourcePath.parent_path() / L"cross-fps-fixture.mp4";
+    std::ofstream(media, std::ios::binary).put('x');
+    source.timelineClips[0].mediaPath = media;
+    // 2 秒の clip。0 秒 / 0.5 秒 / 1 秒 / 末尾 (119 frame) に key を置く。
+    source.timelineClips[0].effects.opacityKeys = {{0, 100.0}, {30, 50.0}, {60, 20.0}, {119, 0.0}};
+    registerFixtureMedia(source, media);
+    auto thirty = mvm::project::createDefaultProject();
+    thirty.timelineFpsNum = 30;
+    const auto thirtyPath = sourcePath.parent_path() / L"clipboard-30fps.mvm";
+    auto sixty = mvm::project::createDefaultProject();
+    const auto sixtyPath = sourcePath.parent_path() / L"clipboard-60fps.mvm";
+    check(mvm::project::saveProjectJson(source, sourcePath).success &&
+              mvm::project::saveProjectJson(thirty, thirtyPath).success &&
+              mvm::project::saveProjectJson(sixty, sixtyPath).success,
+          "fps違いの貼り付け試験のProjectを保存できません");
+    mvm::app::MvmController controller(sourcePath, {}, source);
+    const auto urlOf = [](const std::filesystem::path& path) {
+        return QUrl::fromLocalFile(QString::fromStdWString(path.wstring()));
+    };
+    check(controller.selectTimelineClips({QStringLiteral("video")}) &&
+              controller.copySelectedClips() && controller.openProject(urlOf(thirtyPath)) &&
+              controller.pasteClips() && controller.clipCount() == 1 && controller.saveProject(),
+          "60fpsのclipを30fpsのProjectへ貼り付けられません");
+    const auto down = mvm::project::loadProjectJson(thirtyPath);
+    const std::vector<mvm::project::ClipKeyframe> downKeys = {
+        {0, 100.0}, {15, 50.0}, {30, 20.0}, {59, 0.0}};
+    check(down.success && down.project.timelineClips.size() == 1 &&
+              down.project.timelineClips[0].effects.opacityKeys == downKeys,
+          "60fps -> 30fps でkeyが同じ秒位置へ移りません");
+    if (!down.success || down.project.timelineClips.empty())
+        return;
+    const auto thirtyClip = QString::fromStdString(down.project.timelineClips[0].id);
+    check(controller.selectTimelineClips({thirtyClip}) && controller.copySelectedClips() &&
+              controller.openProject(urlOf(sixtyPath)) && controller.pasteClips() &&
+              controller.saveProject(),
+          "30fpsのclipを60fpsのProjectへ貼り付けられません");
+    const auto up = mvm::project::loadProjectJson(sixtyPath);
+    const std::vector<mvm::project::ClipKeyframe> upKeys = {
+        {0, 100.0}, {30, 50.0}, {60, 20.0}, {118, 0.0}};
+    check(up.success && up.project.timelineClips.size() == 1 &&
+              up.project.timelineClips[0].effects.opacityKeys == upKeys,
+          "30fps -> 60fps でkeyが同じ秒位置へ移りません");
+}
+
+// Alt+ドラッグの複数 clip 複製。QML は timelineDragBounds で群全体のドラッグ量を丸め、
+// 確定は渡された位置のまま置く (後から寄せない)。範囲外の位置は拒否する。
+void testGroupDuplicateBounds(const std::filesystem::path& path) {
+    auto source = videoProject();
+    const auto media = path.parent_path() / L"group-duplicate-fixture.mp4";
+    std::ofstream(media, std::ios::binary).put('x');
+    source.timelineClips[0].mediaPath = media;
+    registerFixtureMedia(source, media);
+    auto upper = source.timelineClips[0];
+    upper.id = "upper";
+    upper.name = "upper";
+    upper.track = {mvm::project::TrackKind::Video, 1};
+    upper.timelineStartFrame = 100;
+    source.timelineClips.push_back(upper);
+    // 空き track 探しは mute 中の track を飛ばす。Alt+ドラッグでは飛ばさないことを見る。
+    source.videoTracks[1].muted = true;
+    check(mvm::project::saveProjectJson(source, path).success,
+          "複数clip複製の境界試験のProjectを保存できません");
+    mvm::app::MvmController controller(path, {}, source);
+    check(controller.selectTimelineClips({QStringLiteral("video")}), "前提: clipを選択できません");
+    const auto alone = controller.timelineDragBounds(QStringLiteral("upper"));
+    check(alone.value(QStringLiteral("minStartFrame")).toLongLong() == 100 &&
+              alone.value(QStringLiteral("videoMinTrack")).toInt() == 1 &&
+              alone.value(QStringLiteral("videoMaxTrack")).toInt() == 1 &&
+              !alone.contains(QStringLiteral("audioMinTrack")),
+          "未選択のclipを掴んだときの範囲がそのclipだけになりません");
+    check(controller.selectTimelineClips({QStringLiteral("video"), QStringLiteral("upper")}),
+          "前提: 2つのclipを選択できません");
+    const auto group = controller.timelineDragBounds(QStringLiteral("upper"));
+    check(group.value(QStringLiteral("minStartFrame")).toLongLong() == 0 &&
+              group.value(QStringLiteral("videoMinTrack")).toInt() == 0 &&
+              group.value(QStringLiteral("videoMaxTrack")).toInt() == 1,
+          "選択全体のドラッグ範囲を返しません");
+    // upper を frame 0 へ: video は -100 になるので、後から右へ寄せずに拒否する。
+    check(!controller.duplicateTimelineClipsAt(QStringLiteral("upper"), QStringLiteral("video"), 1,
+                                               0) &&
+              controller.clipCount() == 2,
+          "群の左端が0未満になる複製を右へ寄せて確定しました");
+    // upper を V1 へ: video は V0 より下になるので拒否する。
+    check(!controller.duplicateTimelineClipsAt(QStringLiteral("upper"), QStringLiteral("video"), 0,
+                                               300) &&
+              controller.clipCount() == 2,
+          "群の下端がtrack範囲外になる複製を確定しました");
+    // 元と同じ位置 (ghost は元の V1 / V2 に重なって見える) は、別 track へ逃がさず拒否する。
+    check(!controller.duplicateTimelineClipsAt(QStringLiteral("upper"), QStringLiteral("video"), 1,
+                                               100) &&
+              controller.clipCount() == 2 && controller.videoTrackCount() == 2,
+          "元clipと重なるAlt+ドラッグ複製を別trackへ移して確定しました");
+    // 少しだけ右へずらして一部が重なる場合も同じ。
+    check(!controller.duplicateTimelineClipsAt(QStringLiteral("upper"), QStringLiteral("video"), 1,
+                                               150) &&
+              controller.clipCount() == 2 && controller.videoTrackCount() == 2,
+          "一部が重なるAlt+ドラッグ複製を別trackへ移して確定しました");
+    // 空いている位置なら ghost と同じ track (mute 中の V2 を含む) へそのまま置く。
+    check(controller.duplicateTimelineClipsAt(QStringLiteral("upper"), QStringLiteral("video"), 1,
+                                              400) &&
+              controller.clipCount() == 4 && controller.videoTrackCount() == 2 &&
+              controller.saveProject(),
+          "空いた位置へのAlt+ドラッグ複製ができません");
+    const auto placed = mvm::project::loadProjectJson(path);
+    if (placed.success && placed.project.timelineClips.size() == 4) {
+        const auto& clips = placed.project.timelineClips;
+        check(clips[2].timelineStartFrame == 300 && clips[2].track.index == 0 &&
+                  clips[3].timelineStartFrame == 400 && clips[3].track.index == 1,
+              "Alt+ドラッグ複製がghostと違う位置またはtrackへ置かれました");
+    } else {
+        check(false, "複数clip複製の結果を読み込めません");
+    }
+}
+
+void testLinkedClipboard(const std::filesystem::path& path) {
+    auto source = linkedProject();
+    const auto media = path.parent_path() / L"linked-clipboard-fixture.mp4";
+    std::ofstream(media, std::ios::binary).put('x');
+    for (auto& clip : source.timelineClips)
+        clip.mediaPath = media;
+    registerFixtureMedia(source, media);
+    check(mvm::project::saveProjectJson(source, path).success,
+          "リンク複製試験のProjectを保存できません");
+    mvm::app::MvmController controller(path, {}, source);
+    controller.selectTimelineClip(QStringLiteral("video"), 0, false);
+    check(controller.copySelectedClips() && controller.pasteClips() && controller.clipCount() == 3,
+          "リンク片側を単独でコピー・貼り付けできません");
+    check(controller.saveProject(), "単独コピー結果を保存できません");
+    const auto single = mvm::project::loadProjectJson(path);
+    check(single.success && single.project.timelineClips.back().linkGroupId.empty(),
+          "片側だけをコピーしたclipに壊れたリンクが残りました");
+    check(controller.selectTimelineClips({QStringLiteral("video"), QStringLiteral("audio")}) &&
+              controller.copySelectedClips() && controller.pasteClips() &&
+              controller.clipCount() == 5,
+          "リンク組を一括コピー・貼り付けできません");
+    check(controller.saveProject(), "リンク組のコピー結果を保存できません");
+    const auto paired = mvm::project::loadProjectJson(path);
+    if (paired.success) {
+        const auto& clips = paired.project.timelineClips;
+        check(clips[3].linkGroupId == clips[4].linkGroupId && !clips[3].linkGroupId.empty() &&
+                  clips[3].linkGroupId != clips[0].linkGroupId,
+              "複製したリンク組へ新しい共通IDを付けられません");
+    } else {
+        check(false, "リンク組を保存後に読み込めません");
+    }
+}
+
+void testMultipleClipClipboard(const std::filesystem::path& path) {
+    auto source = videoProject();
+    const auto media = path.parent_path() / L"multiple-clipboard-fixture.mp4";
+    std::ofstream(media, std::ios::binary).put('x');
+    source.timelineClips[0].mediaPath = media;
+    registerFixtureMedia(source, media);
+    auto overlay = source.timelineClips[0];
+    overlay.id = "overlay";
+    overlay.name = "overlay";
+    overlay.track = {mvm::project::TrackKind::Video, 1};
+    overlay.timelineStartFrame = 40;
+    source.timelineClips.push_back(overlay);
+    check(mvm::project::saveProjectJson(source, path).success,
+          "複数clip複製試験のProjectを保存できません");
+    mvm::app::MvmController controller(path, {}, source);
+    check(controller.selectTimelineClips({QStringLiteral("video"), QStringLiteral("overlay")}) &&
+              controller.copySelectedClips() && controller.pasteClips() &&
+              controller.clipCount() == 4 && controller.videoTrackCount() == 4,
+          "複数clipを相対位置ごと空きtrackへ配置できません");
+    check(controller.saveProject(), "複数clipの貼り付け結果を保存できません");
+    const auto placed = mvm::project::loadProjectJson(path);
+    check(placed.success && placed.project.timelineClips[2].timelineStartFrame == 0 &&
+              placed.project.timelineClips[3].timelineStartFrame == 40,
+          "複数clipの時間差を保持できません");
+    check(controller.undoLastEdit() && controller.clipCount() == 2,
+          "複数clipと新規trackを一回のUndoで戻せません");
 }
 
 // スリップの drag 中 preview は Project を変えず、確定時と同じ規則で素材の端に止めた
@@ -1249,6 +1557,12 @@ int main(int argc, char** argv) {
     testShutdown(directory / L"shutdown-finished.mvm", true);
     testThreadFailure(directory / L"thread-failure.mvm");
     testUndo(directory / L"undo.mvm");
+    testClipboardAndMarks(directory / L"clipboard-marks.mvm");
+    testClipboardAcrossProject(directory / L"clipboard-source.mvm");
+    testClipboardAcrossFps(directory / L"clipboard-fps-source.mvm");
+    testGroupDuplicateBounds(directory / L"clipboard-group-bounds.mvm");
+    testLinkedClipboard(directory / L"clipboard-linked.mvm");
+    testMultipleClipClipboard(directory / L"clipboard-multiple.mvm");
     testRedoRestoresDirtyState(directory / L"redo-dirty.mvm");
     testSlipPreviewDoesNotEdit(directory / L"slip-preview.mvm");
     testPenKeyUndoRedo(directory / L"pen-undo-redo.mvm");

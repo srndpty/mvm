@@ -8,6 +8,35 @@ import "../../apps/mvm/TimelineGestures.js" as Gestures
 TestCase {
     name: "TimelineGestures"
 
+    function test_rulerMarkerHitIsLocal() {
+        compare(Gestures.markerNearRulerX(201, 2, [10, 100, 110], 9), 100);
+        compare(Gestures.markerNearRulerX(212, 2, [10, 100, 110], 9), 110);
+        compare(Gestures.markerNearRulerX(180, 2, [10, 100, 110], 9), -1);
+        compare(Gestures.markerNearRulerX(200, 2, [], 9), -1);
+    }
+
+    // 複数選択のドラッグは群全体で丸める。A(frame 0) と B(frame 100) の B を掴んで
+    // 左へ寄せても、A が 0 に接したところで止まる (B は 100 のまま)。
+    function test_groupDragStopsAtEarliestClip() {
+        const bounds = { "minStartFrame": 0, "videoMinTrack": 0, "videoMaxTrack": 1 };
+        compare(Gestures.groupDragOffsetX(-200, 2, bounds), 0);
+        compare(Gestures.groupDragOffsetX(80, 2, bounds), 80);
+        const later = { "minStartFrame": 30 };
+        compare(Gestures.groupDragOffsetX(-200, 2, later), -60);
+        compare(Gestures.groupDragOffsetX(-200, 2, {}), -200);
+    }
+
+    // V1/V2 を選んで V2 を V1 へ下ろすと V1 の clip が範囲外になるので、動かさない。
+    // 上端も既存 track の最上段で止める。
+    function test_groupDragTrackStaysInRange() {
+        const bounds = { "videoMinTrack": 0, "videoMaxTrack": 1 };
+        compare(Gestures.groupDragTrackIndex("video", 1, 0, 3, bounds), 1);
+        compare(Gestures.groupDragTrackIndex("video", 1, 2, 3, bounds), 2);
+        compare(Gestures.groupDragTrackIndex("video", 0, 2, 3, bounds), 1);
+        // bounds に無い種別は丸めない。
+        compare(Gestures.groupDragTrackIndex("audio", 0, 1, 2, bounds), 1);
+    }
+
     // レーザーは押した位置で切る。release までにマウスが動いても、離した位置や
     // clip の先頭へずれない。
     function test_razorSplitsAtPressFrame() {
@@ -26,15 +55,20 @@ TestCase {
         compare(Gestures.bodyRelease(single, false, 0, 40, 0).linked, false);
     }
 
-    // 選択ツールは既定でリンク相手ごと、Alt なら片方だけを動かす。
-    function test_moveUsesDragTargetAndLinkMode() {
+    // 選択ツールの Alt+ドラッグは複製。Alt+クリックは単独選択に残す。
+    function test_moveAndDuplicateUseDragTarget() {
         const linked = Gestures.bodyPress("select", Qt.NoModifier, 10);
         const moved = Gestures.bodyRelease(linked, true, 240, 12, 0);
         compare(moved.action, "move");
         compare(moved.frame, 240);
         compare(moved.linked, true);
         const single = Gestures.bodyPress("select", Qt.AltModifier, 10);
-        compare(Gestures.bodyRelease(single, true, 240, 12, 0).linked, false);
+        const copied = Gestures.bodyRelease(single, true, 240, 12, 0);
+        compare(copied.action, "duplicate");
+        compare(copied.frame, 240);
+        const selected = Gestures.bodyRelease(single, false, 10, 12, 0);
+        compare(selected.action, "select");
+        compare(selected.linked, false);
     }
 
     function test_clickSelectsAtReleaseFrame() {

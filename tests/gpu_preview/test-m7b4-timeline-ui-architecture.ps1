@@ -269,7 +269,10 @@ $requiredInteractions = @(
     'const desiredContentX = anchorFrame * pixelsPerFrame - anchorItemX;',
     'Math.min(nextMaxContentX, desiredContentX)',
     'timelinePanel.activeDragOffsetX = clipItem.bodyDragOffsetX',
-    '-clipItem.timelineStartFrame * timelinePanel.pixelsPerFrame',
+    # drag 中の 0 frame / track 範囲の丸めは、選択群全体の端で行う (tst_timeline_gestures.qml)。
+    'clipItem.bodyDragBounds = root.mvmController.timelineDragBounds(clipItem.clipId);',
+    'clipItem.bodyDragOffsetX = Gestures.groupDragOffsetX(',
+    'snapped.index = Gestures.groupDragTrackIndex(',
     'clipItem.linkGroupId === timelinePanel.activeDragLinkGroup',
     '(mouse.modifiers & Qt.ShiftModifier) !== 0',
     'root.mvmController.toggleTimelineClipSelection(',
@@ -594,6 +597,34 @@ if (-not $qml.Contains('root.mvmController.outputWidth') -or
 }
 if (-not $compositor.Contains('aspectFit(croppedWidth, croppedHeight, destinationBox.width,')) {
     throw '製品compositorが素材の縦横比を保持していません'
+}
+
+function Test-RulerMarkMenu([string]$source) {
+    return $source.Contains('acceptedButtons: Qt.LeftButton | Qt.RightButton') -and
+           $source.Contains('menuMarkerFrame = Gestures.markerNearRulerX(') -and
+           $source.Contains('rulerMarkMenu.popup();') -and
+           $source.Contains('visible: rulerArea.menuMarkerFrame >= 0') -and
+           $source.Contains('height: visible ? implicitHeight : 0') -and
+           $source.Contains('text: "インを消去"') -and
+           $source.Contains('text: "アウトを消去"') -and
+           $source.Contains('text: "イン・アウトを消去"') -and
+           $source.Contains('onTriggered: root.mvmController.clearInOut()')
+}
+if (-not (Test-RulerMarkMenu $qml) -or
+    (Test-RulerMarkMenu $qml.Replace('rulerMarkMenu.popup();', '')) -or
+    (Test-RulerMarkMenu $qml.Replace('height: visible ? implicitHeight : 0', ''))) {
+    throw 'ルーラーの右クリックメニュー契約が崩れています'
+}
+
+function Test-DuplicatePreview([string]$source) {
+    return $source.Contains('timelinePanel.activeDragDuplicate ? 0 : (bodyMoved') -and
+           $source.Contains('y: timelinePanel.activeDragDuplicate ? 0 : (clipItem.bodyMoved') -and
+           $source.Contains('visible: timelinePanel.activeDragDuplicate && timelinePanel.activeDragMoved') -and
+           $source.Contains('opacity: 0.55')
+}
+if (-not (Test-DuplicatePreview $qml) -or
+    (Test-DuplicatePreview $qml.Replace('opacity: 0.55', 'opacity: 1'))) {
+    throw 'Alt+ドラッグ複製の元clipと半透明previewの契約が崩れています'
 }
 
 Write-Output 'timeline UI architecture: PASS'

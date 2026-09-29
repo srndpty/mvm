@@ -131,7 +131,7 @@ int main(int argc, char** argv) {
     const auto partial = directory / "partial.mvm";
     std::ofstream partialFile(partial);
     partialFile
-        << R"({"schema_version":8,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,"speed_num":1,"speed_den":1,"track_kind":"video","track_index":0,"effects":{"scale_percent":60}}]})";
+        << R"({"schema_version":9,"timeline_markers":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,"speed_num":1,"speed_den":1,"track_kind":"video","track_index":0,"effects":{"scale_percent":60}}]})";
     partialFile.close();
     check(!loadProjectJson(partial).success, "部分effects objectをfail-closedで拒否する");
 
@@ -139,7 +139,7 @@ int main(int argc, char** argv) {
     // 1 か所だけ変えて作るので、壊した箇所で落ちていることが分かる。
     const auto speedProject = [&](const std::string& version, const std::string& speed) {
         return R"({"schema_version":)" + version +
-               R"(,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,)" +
+               R"(,"timeline_markers":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],"timeline_clips":[{"kind":"video","media_path":"a.mp4","name":"a","id":"a","source_fps_num":60,"source_fps_den":1,"source_frame_count":10,"source_in_frame":0,"source_out_frame":10,"timeline_start_frame":0,)" +
                speed + R"("track_kind":"video","track_index":0}]})";
     };
     const auto loadText = [&](const char* name, const std::string& text) {
@@ -150,7 +150,7 @@ int main(int argc, char** argv) {
         return loadProjectJson(projectPath);
     };
     const auto halfSpeed =
-        loadText("speed-half.mvm", speedProject("8", R"("speed_num":1,"speed_den":2,)"));
+        loadText("speed-half.mvm", speedProject("9", R"("speed_num":1,"speed_den":2,)"));
     check(halfSpeed.success && halfSpeed.project.timelineClips.size() == 1 &&
               halfSpeed.project.timelineClips[0].speedNum == 1 &&
               halfSpeed.project.timelineClips[0].speedDen == 2,
@@ -166,22 +166,45 @@ int main(int argc, char** argv) {
               legacyClip.error.find("対応していない schema_version です: 5") != std::string::npos,
           (std::string("schema 5の旧ファイルを版の違いとして報告しない: ") + legacyClip.error)
               .c_str());
-    check(!loadText("speed-missing.mvm", speedProject("8", "")).success,
+    check(!loadText("speed-missing.mvm", speedProject("9", "")).success,
           "速度の無いclipを既定値で受理しない");
     check(
-        !loadText("speed-slow.mvm", speedProject("8", R"("speed_num":1,"speed_den":11,)")).success,
+        !loadText("speed-slow.mvm", speedProject("9", R"("speed_num":1,"speed_den":11,)")).success,
         "10%未満の速度を拒否する");
     check(
-        !loadText("speed-fast.mvm", speedProject("8", R"("speed_num":11,"speed_den":1,)")).success,
+        !loadText("speed-fast.mvm", speedProject("9", R"("speed_num":11,"speed_den":1,)")).success,
         "1000%を超える速度を拒否する");
     check(
-        loadText("speed-edge.mvm", speedProject("8", R"("speed_num":10,"speed_den":1,)")).success &&
-            loadText("speed-edge-slow.mvm", speedProject("8", R"("speed_num":1,"speed_den":10,)"))
+        loadText("speed-edge.mvm", speedProject("9", R"("speed_num":10,"speed_den":1,)")).success &&
+            loadText("speed-edge-slow.mvm", speedProject("9", R"("speed_num":1,"speed_den":10,)"))
                 .success,
         "10%と1000%ちょうどを受理する");
-    check(!loadText("speed-unreduced.mvm", speedProject("8", R"("speed_num":2,"speed_den":4,)"))
+    check(!loadText("speed-unreduced.mvm", speedProject("9", R"("speed_num":2,"speed_den":4,)"))
                .success,
           "約分されていない速度を拒否する");
+
+    {
+        // fps の違う Project へ移した key は同じ秒位置へ来る。0.5 秒 / 1 秒 / 末尾。
+        std::vector<ClipKeyframe> keys = {{0, 100.0}, {30, 50.0}, {60, 20.0}, {119, 0.0}};
+        check(retimeClipKeys(keys, 60, 1, 30, 1, 60) &&
+                  keys == std::vector<ClipKeyframe>{{0, 100.0}, {15, 50.0}, {30, 20.0}, {59, 0.0}},
+              "60fps -> 30fps で key を同じ秒位置へ移す (尺を超えた末尾は最終 frame)");
+        check(retimeClipKeys(keys, 30, 1, 60, 1, 120) &&
+                  keys == std::vector<ClipKeyframe>{{0, 100.0}, {30, 50.0}, {60, 20.0}, {118, 0.0}},
+              "30fps -> 60fps で key を同じ秒位置へ移す");
+        keys = {{9, 10.0}, {10, 20.0}, {11, 30.0}};
+        check(retimeClipKeys(keys, 60, 1, 30, 1, 60) &&
+                  keys == std::vector<ClipKeyframe>{{5, 10.0}, {6, 30.0}},
+              "同じ frame に重なった key は先の 1 つを残し、ちょうど 1/2 は後ろへ丸める");
+        keys = {{30, 40.0}};
+        check(retimeClipKeys(keys, 30000, 1001, 30, 1, 60) &&
+                  keys == std::vector<ClipKeyframe>{{30, 40.0}},
+              "29.97fps -> 30fps で最も近い frame へ移す");
+        const std::vector<ClipKeyframe> original = {{3, 50.0}};
+        keys = original;
+        check(!retimeClipKeys(keys, 0, 1, 30, 1, 60) && keys == original,
+              "不正な fps では失敗し、key を変えない");
+    }
 
     return failures == 0 ? 0 : 1;
 }

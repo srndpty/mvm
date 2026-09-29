@@ -1,6 +1,7 @@
 #include "project/clip_effects.h"
 
 #include "core/clip_fade.h"
+#include "core/source_frame_mapping.h"
 
 #include <algorithm>
 #include <cmath>
@@ -154,6 +155,27 @@ void reframeClipKeys(std::vector<ClipKeyframe>& keys, std::int64_t oldDuration,
     if (newDuration > 1)
         append(newDuration - 1, evaluateClipKeys(old, old.back().valuePercent,
                                                  newStartInOldFrames + newDuration - 1));
+}
+
+bool retimeClipKeys(std::vector<ClipKeyframe>& keys, std::int64_t fromFpsNum,
+                    std::int64_t fromFpsDen, std::int64_t toFpsNum, std::int64_t toFpsDen,
+                    std::int64_t newDuration) {
+    if (newDuration <= 0)
+        return false;
+    std::vector<ClipKeyframe> retimed;
+    for (const auto& key : keys) {
+        // floor(k to / from + 1/2)。表示 frame の四捨五入と同じ有理数計算を使うため、
+        // 移し先を「素材」、移し元を「output」として渡す。
+        const auto frame = core::sourceFrameAtOutputPosition(key.frame, {toFpsNum, toFpsDen},
+                                                             {fromFpsNum, fromFpsDen});
+        if (!frame)
+            return false;
+        const auto clamped = std::min(*frame, newDuration - 1);
+        if (retimed.empty() || retimed.back().frame != clamped)
+            retimed.push_back({clamped, key.valuePercent});
+    }
+    keys = std::move(retimed);
+    return true;
 }
 
 ClipEffectMapping mapClipEffects(const ClipEffects& effects) {

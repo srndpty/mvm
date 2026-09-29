@@ -9,6 +9,38 @@ function linkedFor(modifiers) {
     return (modifiers & Qt.AltModifier) === 0;
 }
 
+// ルーラーのマーカーだけは右クリック位置の近くにあるものを選ぶ。
+function markerNearRulerX(x, pixelsPerFrame, markers, radius) {
+    let nearest = radius + 1;
+    let result = -1;
+    for (const frame of markers) {
+        const distance = Math.abs(x - frame * pixelsPerFrame);
+        if (distance <= radius && distance < nearest) {
+            nearest = distance;
+            result = frame;
+        }
+    }
+    return result;
+}
+
+// ドラッグ中の clip 群 (controller.timelineDragBounds) を丸ごと同じ量だけ動かせる範囲へ
+// 横のドラッグ量 (px) を丸める。最も左の clip が 0 frame に接したところで止める。
+function groupDragOffsetX(offsetX, pixelsPerFrame, bounds) {
+    if (bounds.minStartFrame === undefined)
+        return offsetX;
+    return Math.max(-bounds.minStartFrame * pixelsPerFrame, offsetX);
+}
+
+// 縦も同じく、群の最下段・最上段の clip が既存 track からはみ出さない index へ丸める。
+function groupDragTrackIndex(kind, anchorIndex, snappedIndex, trackCount, bounds) {
+    const minTrack = bounds[kind + "MinTrack"];
+    const maxTrack = bounds[kind + "MaxTrack"];
+    if (minTrack === undefined || maxTrack === undefined)
+        return snappedIndex;
+    const delta = Math.max(-minTrack, Math.min(trackCount - 1 - maxTrack, snappedIndex - anchorIndex));
+    return anchorIndex + delta;
+}
+
 // press の時点で、操作の種類と release で使う値をすべて決める。
 //   tool       : TimelineToolPanel.tools の tool
 //   modifiers  : 押した時点の Qt.KeyboardModifiers
@@ -26,6 +58,7 @@ function bodyPress(tool, modifiers, pressFrame) {
         "gesture": gesture,
         "pressFrame": pressFrame,
         "linked": linkedFor(modifiers),
+        "duplicate": tool === "select" && (modifiers & Qt.AltModifier) !== 0,
         // レーザーの Shift は全 track、選択ツールの Shift は選択への追加。
         "allTracks": gesture === "razor" && shift,
         "additive": gesture === "move" && shift
@@ -51,7 +84,8 @@ function bodyRelease(state, moved, movedToFrame, releaseFrame, toolDragFrames) {
         return { "action": state.gesture, "delta": toolDragFrames, "linked": state.linked };
     }
     if (moved)
-        return { "action": "move", "frame": movedToFrame, "linked": state.linked };
+        return { "action": state.duplicate ? "duplicate" : "move",
+                 "frame": movedToFrame, "linked": state.linked };
     if (state.additive)
         return { "action": "toggle", "frame": releaseFrame };
     // トラックの選択ツールは press で選択済み。離しただけで選択を 1 つに戻さない。

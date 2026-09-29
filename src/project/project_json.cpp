@@ -172,6 +172,9 @@ public:
         bool hasAudioTracks = false;
         bool hasAssets = false;
         bool hasClips = false;
+        bool hasMarkers = false;
+        bool hasIn = false;
+        bool hasOut = false;
         bool hasMediaFolders = false;
         bool hasMediaItems = false;
         std::string format;
@@ -228,6 +231,18 @@ public:
                     if (hasClips || !parseTimelineClips(project.timelineClips))
                         return failAndFinish("timeline_clips が重複または不正です", error);
                     hasClips = true;
+                } else if (key == "timeline_markers") {
+                    if (hasMarkers || !parseFrameList(project.timelineMarkers))
+                        return failAndFinish("timeline_markers が重複または不正です", error);
+                    hasMarkers = true;
+                } else if (key == "in_frame") {
+                    if (hasIn || !parseOptionalFrame(project.inFrame))
+                        return failAndFinish("in_frame が重複または不正です", error);
+                    hasIn = true;
+                } else if (key == "out_frame") {
+                    if (hasOut || !parseOptionalFrame(project.outFrame))
+                        return failAndFinish("out_frame が重複または不正です", error);
+                    hasOut = true;
                 } else if (key == "media_folders") {
                     if (hasMediaFolders || !parseMediaFolders(project.mediaFolders))
                         return failAndFinish("media_folders が重複または不正です", error);
@@ -258,7 +273,8 @@ public:
             return failAndFinish("mvm project ファイルではありません (format marker 不一致)",
                                  error);
         if (!hasTimelineFpsNum || !hasTimelineFpsDen || !hasVideoTracks || !hasAudioTracks ||
-            !hasAssets || !hasClips || !hasMediaFolders || !hasMediaItems) {
+            !hasAssets || !hasClips || !hasMarkers || !hasIn || !hasOut || !hasMediaFolders ||
+            !hasMediaItems) {
             return failAndFinish("Project schema " + std::to_string(kSchemaVersion) +
                                      " の必須 field がありません",
                                  error);
@@ -441,6 +457,37 @@ private:
             return fail("JSON integer が範囲外です");
         }
         return true;
+    }
+
+    bool parseOptionalFrame(std::optional<std::int64_t>& frame) {
+        skipWhitespace();
+        if (text_.compare(position_, 4, "null") == 0) {
+            position_ += 4;
+            frame.reset();
+            return true;
+        }
+        std::int64_t value = 0;
+        if (!parseInteger64(value))
+            return false;
+        frame = value;
+        return true;
+    }
+
+    bool parseFrameList(std::vector<std::int64_t>& frames) {
+        if (!consume('['))
+            return false;
+        if (consumeIf(']'))
+            return true;
+        while (true) {
+            std::int64_t frame = 0;
+            if (!parseInteger64(frame))
+                return false;
+            frames.push_back(frame);
+            if (consumeIf(']'))
+                return true;
+            if (!consume(','))
+                return false;
+        }
     }
 
     bool parseNumber(double& value) {
@@ -1277,6 +1324,23 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
          << "  \"timeline_fps_den\": " << project.timelineFpsDen << ",\n";
     json << "  \"output_width\": " << project.outputWidth << ",\n"
          << "  \"output_height\": " << project.outputHeight << ",\n";
+    json << "  \"timeline_markers\": [";
+    for (std::size_t index = 0; index < project.timelineMarkers.size(); ++index) {
+        if (index != 0)
+            json << ", ";
+        json << project.timelineMarkers[index];
+    }
+    json << "],\n  \"in_frame\": ";
+    if (project.inFrame)
+        json << *project.inFrame;
+    else
+        json << "null";
+    json << ",\n  \"out_frame\": ";
+    if (project.outFrame)
+        json << *project.outFrame;
+    else
+        json << "null";
+    json << ",\n";
     writeTracks("video_tracks", project.videoTracks);
     writeTracks("audio_tracks", project.audioTracks);
     json << "  \"manim_assets\": [";

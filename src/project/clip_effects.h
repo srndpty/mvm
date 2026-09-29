@@ -66,6 +66,13 @@ void rescaleClipKeys(std::vector<ClipKeyframe>& keys, std::int64_t oldDuration,
                      std::int64_t newDuration);
 void reframeClipKeys(std::vector<ClipKeyframe>& keys, std::int64_t oldDuration,
                      std::int64_t newDuration, std::int64_t newStartInOldFrames);
+// timeline fps の違う Project へ clip を移すときの key 換算。key は clip 先頭からの timeline
+// frame なので、同じ秒位置に最も近い移し先の frame へ写す (ちょうど 1/2 は後ろへ)。尺
+// newDuration の外へ出た key は末尾 frame に寄せ、同じ frame に重なった key は rescaleClipKeys
+// と同じく先の 1 つを残す。fps が不正または換算が overflow したら false (keys は変えない)。
+bool retimeClipKeys(std::vector<ClipKeyframe>& keys, std::int64_t fromFpsNum,
+                    std::int64_t fromFpsDen, std::int64_t toFpsNum, std::int64_t toFpsDen,
+                    std::int64_t newDuration);
 ClipEffectMapping mapClipEffects(const ClipEffects& effects);
 
 } // namespace mvm::project
