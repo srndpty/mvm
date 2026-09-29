@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -157,6 +158,8 @@ OutputFrameInterval sourceFrameOutputInterval(long long sourceFrame, long long s
                                               long long sourceFrameCount,
                                               long long timelineStartFrame,
                                               Rational sourceFrameRate, Rational outputFrameRate);
+OutputFrameInterval holdFrameOutputInterval(long long sourceFrame, long long heldSourceFrame,
+                                            long long timelineStartFrame, long long holdFrames);
 
 // 1 sourceだけを駆動するworker。SharedD3D11Deviceは借用し、decoderとbufferは
 // このworkerが所有する。他sourceやglobal PreviewFrameQueueへ触れるAPIを持たない。
@@ -173,7 +176,7 @@ public:
     // speed は clip の再生速度。区間は decoder の実 fps x speed (実効 fps) で計算する。
     bool configureOutputMapping(long long sourceInFrame, long long sourceFrameCount, Rational speed,
                                 long long timelineStartFrame, Rational outputFrameRate,
-                                std::string& err);
+                                long long holdOutputFrames, std::string& err);
     void stop();
     void play();
     void pause();
@@ -212,7 +215,8 @@ private:
     void run();
     SeekCompletion executeSeek(const SeekTicket& ticket, long long requestQpc);
     void refreshSnapshotLocked();
-    bool submitWithBackpressure(const DecodedGpuFrame& frame, std::string& err);
+    bool submitWithBackpressure(const DecodedGpuFrame& frame, std::string& err,
+                                bool anchorOnly = false, long long resumeFrom = -1);
     bool validateTextureDevice(const DecodedGpuFrame& frame, std::string& err);
     void noteFatal(const std::string& err);
     void setSeekPhase(SeekExecutionPhase phase, const SeekTicket& ticket);
@@ -253,6 +257,9 @@ private:
     Rational mappingSpeed_{1, 1};
     long long mappingTimelineStartFrame_ = 0;
     Rational mappingOutputFrameRate_{0, 1};
+    long long mappingHoldOutputFrames_ = 0;
+    std::optional<DecodedGpuFrame> pendingRepeat_;
+    long long pendingRepeatNext_ = 0;
     Rational sourceFrameRate_{0, 1};
     std::atomic<long long> seekPhaseEnterQpc_{0};
     std::atomic<long long> seekLastProgressQpc_{0};

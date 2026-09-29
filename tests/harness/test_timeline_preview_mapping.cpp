@@ -428,6 +428,35 @@ void testSlowedClipMapping() {
             "50%のaudio clipのsample offsetが伸縮した時間軸になっていません");
 }
 
+void testHeldVideoMapping() {
+    auto project = mvm::project::createDefaultProject();
+    auto held = clip("held", 0, 100, 0, 120);
+    held.frameHold = mvm::project::FrameHold{20, 60, 1, 100};
+    project.timelineClips = {held};
+    const auto mapped = mvm::app::mapTimelinePreviewFrame(project, 160);
+    require(mapped.success && mapped.layers.size() == 1 && mapped.layers[0].sourceFrameNumber == 20,
+            "保持区間の中間で素材 frame が変わりました");
+    const auto fadeFrame = mvm::project::clipFadeSourceFrameAt(held, 60, 1, 60);
+    require(fadeFrame.success && fadeFrame.frame == 60,
+            "保持 clip の fade が合成尺ではなく固定素材 frame を参照しました");
+    const auto descriptor = mvm::app::previewVideoDescriptorOf(project, held);
+    require(descriptor.videoSourceInFrame == 20 && descriptor.videoSourceFrameCount == 100 &&
+                descriptor.videoHoldOutputFrames == 120,
+            "保持 descriptor に素材 domain と保持尺を渡せません");
+    const auto heldMapping = mvm::app::previewVideoMappingOf(held);
+    require(mvm::app::previewVideoMappingCovers(project, heldMapping, held),
+            "同じ保持 clip の source を使い回せません");
+    auto normal = held;
+    normal.frameHold.reset();
+    normal.sourceInFrame = 20;
+    normal.sourceOutFrame = 100;
+    normal.sourceFrameCount = 100;
+    require(!mvm::app::previewVideoMappingCovers(project, heldMapping, normal) &&
+                !mvm::app::previewVideoMappingCovers(project,
+                                                     mvm::app::previewVideoMappingOf(normal), held),
+            "通常 clip と保持 clip の source を共有しました");
+}
+
 // レーザーで分割した直後の連続した clip は、左半分の source のまま表示できる。
 // 再生中に clip 境界で source を作り直すと、そこで一瞬止まる。
 void testSplitClipReusesPreviewSource() {
@@ -525,6 +554,7 @@ void testSplitClipReusesPreviewSource() {
 } // namespace
 
 int main() {
+    testHeldVideoMapping();
     testSplitClipReusesPreviewSource();
     testSlowedClipMapping();
     testAudioPreviewSampleOffset();

@@ -39,6 +39,8 @@ public:
         // 再生速度の倍率 (1.0 が等速)。表示と波形の素材秒の換算だけに使う。
         // frame の換算は C++ 側 (project::clipTimebase) で行い、QML で有理数を再現しない。
         SpeedRole,
+        FrameHoldRole,
+        PreservePitchRole,
     };
 
     explicit TimelineClipModel(QObject* parent = nullptr);
@@ -79,6 +81,8 @@ private:
         QVariantList automationKeys;
         double automationBase = 100.0;
         double speed = 1.0;
+        bool frameHold = false;
+        bool preservePitch = false;
     };
 
     QList<Item> items_;

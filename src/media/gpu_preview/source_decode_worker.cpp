@@ -56,6 +56,18 @@ OutputFrameInterval sourceFrameOutputInterval(long long sourceFrame, long long s
     return result;
 }
 
+OutputFrameInterval holdFrameOutputInterval(long long sourceFrame, long long heldSourceFrame,
+                                            long long timelineStartFrame, long long holdFrames) {
+    OutputFrameInterval result;
+    if (sourceFrame != heldSourceFrame || heldSourceFrame < 0 || timelineStartFrame < 0 ||
+        holdFrames <= 0 || timelineStartFrame > std::numeric_limits<long long>::max() - holdFrames)
+        return result;
+    result.valid = true;
+    result.begin = timelineStartFrame;
+    result.end = timelineStartFrame + holdFrames;
+    return result;
+}
+
 const char* toString(SeekCompletionPublishResult result) {
     switch (result) {
     case SeekCompletionPublishResult::Published:
@@ -228,9 +240,11 @@ SourceDecodeWorker::~SourceDecodeWorker() {
 
 bool SourceDecodeWorker::configureOutputMapping(long long sourceInFrame, long long sourceFrameCount,
                                                 Rational speed, long long timelineStartFrame,
-                                                Rational outputFrameRate, std::string& err) {
+                                                Rational outputFrameRate,
+                                                long long holdOutputFrames, std::string& err) {
     if (startedOnce_ || sourceInFrame < 0 || sourceInFrame >= sourceFrameCount || !speed.valid() ||
-        timelineStartFrame < 0 || !outputFrameRate.valid()) {
+        timelineStartFrame < 0 || !outputFrameRate.valid() || holdOutputFrames < 0 ||
+        (holdOutputFrames > 0 && (speed.num != 1 || speed.den != 1))) {
         err = "video output mappingの設定が不正または開始後です";
         return false;
     }
@@ -240,6 +254,7 @@ bool SourceDecodeWorker::configureOutputMapping(long long sourceInFrame, long lo
     mappingSpeed_ = speed;
     mappingTimelineStartFrame_ = timelineStartFrame;
     mappingOutputFrameRate_ = outputFrameRate;
+    mappingHoldOutputFrames_ = holdOutputFrames;
     err.clear();
     return true;
 }
@@ -478,7 +493,8 @@ void SourceDecodeWorker::injectEofForTest() {
     wake_.notify_all();
 }
 
-bool SourceDecodeWorker::submitWithBackpressure(const DecodedGpuFrame& frame, std::string& err) {
+bool SourceDecodeWorker::submitWithBackpressure(const DecodedGpuFrame& frame, std::string& err,
+                                                bool anchorOnly, long long resumeFrom) {
     if (!validateTextureDevice(frame, err)) {
         noteFatal(err);
         return false;
@@ -489,7 +505,10 @@ bool SourceDecodeWorker::submitWithBackpressure(const DecodedGpuFrame& frame, st
         const auto effectiveRate =
             core::multiplyFrameRate(coreRate(sourceFrameRate_), coreRate(mappingSpeed_));
         const auto interval =
-            effectiveRate
+            mappingHoldOutputFrames_ > 0
+                ? holdFrameOutputInterval(frame.frameNumber, mappingSourceInFrame_,
+                                          mappingTimelineStartFrame_, mappingHoldOutputFrames_)
+            : effectiveRate
                 ? sourceFrameOutputInterval(frame.frameNumber, mappingSourceInFrame_,
                                             mappingSourceFrameCount_, mappingTimelineStartFrame_,
                                             {effectiveRate->num, effectiveRate->den},
@@ -501,6 +520,8 @@ bool SourceDecodeWorker::submitWithBackpressure(const DecodedGpuFrame& frame, st
             return false;
         }
         outputBegin = std::max(interval.begin, outputFrameAnchor_.load(std::memory_order_acquire));
+        if (resumeFrom >= 0)
+            outputBegin = std::max(outputBegin, resumeFrom);
         outputEnd = interval.end;
     } else {
         const long long sourceAnchor = sourceFrameAnchor_.load(std::memory_order_acquire);
@@ -517,6 +538,14 @@ bool SourceDecodeWorker::submitWithBackpressure(const DecodedGpuFrame& frame, st
             err = "output frame区間の終端がoverflowします";
             noteFatal(err);
             return false;
+        }
+        outputEnd = outputBegin + 1;
+    }
+    if (anchorOnly && outputBegin < outputEnd) {
+        pendingRepeat_.reset();
+        if (outputBegin + 1 < outputEnd) {
+            pendingRepeat_ = frame;
+            pendingRepeatNext_ = outputBegin + 1;
         }
         outputEnd = outputBegin + 1;
     }
@@ -662,7 +691,8 @@ SeekCompletion SourceDecodeWorker::executeSeek(const SeekTicket& ticket, long lo
     }
     completion.decodedFrameNumber = frame.frameNumber;
     setSeekPhase(SeekExecutionPhase::SubmitExactFrame, ticket);
-    if (!submitWithBackpressure(frame, completion.error)) {
+    pendingRepeat_.reset();
+    if (!submitWithBackpressure(frame, completion.error, true)) {
         refreshSnapshotLocked();
         completion.status =
             running() ? SeekCompletionStatus::Failed : SeekCompletionStatus::Stopped;
@@ -777,6 +807,15 @@ void SourceDecodeWorker::run() {
         if (!running())
             break;
 
+        if (pendingRepeat_) {
+            DecodedGpuFrame frame = *pendingRepeat_;
+            pendingRepeat_.reset();
+            std::string err;
+            if (!submitWithBackpressure(frame, err, false, pendingRepeatNext_))
+                refreshSnapshotLocked();
+            continue;
+        }
+
         std::lock_guard<std::mutex> lock(decoderMutex_);
         if (!decoder_)
             break;
@@ -793,6 +832,12 @@ void SourceDecodeWorker::run() {
         }
         if (status != DecodeStatus::Ok) {
             noteFatal(err.empty() ? "decodeに失敗しました" : err);
+            refreshSnapshotLocked();
+            continue;
+        }
+        if (mappingHoldOutputFrames_ > 0 && frame.frameNumber > mappingSourceInFrame_) {
+            eof_.store(true, std::memory_order_release);
+            playing_.store(false, std::memory_order_release);
             refreshSnapshotLocked();
             continue;
         }

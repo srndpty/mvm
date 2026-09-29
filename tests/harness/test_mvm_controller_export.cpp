@@ -718,6 +718,55 @@ void testPenKeyUndoRedo(const std::filesystem::path& path) {
           "ペンのキーを再読込できません");
 }
 
+// 速度・デュレーションとフレーム保持は、リンク相手や分割を含めて 1 回の Undo で完全に戻る。
+// 比較の基準は同じ保存・読込を通した Project にする (保存時の正規化を差分と誤認しない)。
+void testSpeedDurationAndFrameHoldUndo(const std::filesystem::path& path) {
+    const auto initial = linkedProject();
+    check(mvm::project::saveProjectJson(initial, path).success,
+          "速度・保持試験の初期Projectを保存できません");
+    const auto baseline = mvm::project::loadProjectJson(path);
+    check(baseline.success, "速度・保持試験の基準Projectを読めません");
+    mvm::app::MvmController controller(path, {}, initial);
+
+    check(controller.applyClipSpeedDuration(QStringLiteral("video"), QStringLiteral("speed"), 50.0,
+                                            {}, true, false) &&
+              controller.clipCount() == 2,
+          "速度 50% とピッチ保持を適用できません");
+    check(controller.saveProject(), "速度変更後のProjectを保存できません");
+    const auto slowed = mvm::project::loadProjectJson(path);
+    check(slowed.success &&
+              std::all_of(slowed.project.timelineClips.begin(), slowed.project.timelineClips.end(),
+                          [](const auto& clip) {
+                              return clip.speedNum == 1 && clip.speedDen == 2 && clip.preservePitch;
+                          }),
+          "速度とピッチ保持がリンク相手へ揃いません");
+    check(controller.undoLastEdit() && controller.saveProject(), "速度変更をUndoできません");
+    const auto restored = mvm::project::loadProjectJson(path);
+    check(restored.success && baseline.success &&
+              restored.project.timelineClips == baseline.project.timelineClips,
+          "速度変更を一回のUndoで完全に戻せません");
+
+    // 再生ヘッドが clip の先頭では挿入できない (境界は内側に限る)。
+    controller.seekTimelineFrame(0);
+    check(!controller.canInsertFrameHold(QStringLiteral("video")) &&
+              !controller.insertFrameHoldAtPlayhead(QStringLiteral("video")),
+          "clip 先頭でフレーム保持を受理しました");
+    check(!controller.canInsertFrameHold(QStringLiteral("audio")),
+          "音声 clip へのフレーム保持を受理しました");
+    controller.seekTimelineFrame(30);
+    check(controller.canInsertFrameHold(QStringLiteral("video")) &&
+              controller.insertFrameHoldAtPlayhead(QStringLiteral("video")) &&
+              controller.clipCount() == 5,
+          "再生ヘッドでフレーム保持を挿入できません");
+    check(controller.undoLastEdit() && controller.clipCount() == 2 && controller.saveProject(),
+          "フレーム保持をUndoできません");
+    const auto unheld = mvm::project::loadProjectJson(path);
+    check(unheld.success && baseline.success &&
+              unheld.project.timelineClips == baseline.project.timelineClips,
+          "フレーム保持を一回のUndoで完全に戻せません");
+    check(controller.redoLastEdit() && controller.clipCount() == 5, "フレーム保持をRedoできません");
+}
+
 void testRedoRestoresDirtyState(const std::filesystem::path& path) {
     const auto initial = videoProject();
     check(mvm::project::saveProjectJson(initial, path).success,
@@ -1857,6 +1906,7 @@ int main(int argc, char** argv) {
     testRedoRestoresDirtyState(directory / L"redo-dirty.mvm");
     testSlipPreviewDoesNotEdit(directory / L"slip-preview.mvm");
     testPenKeyUndoRedo(directory / L"pen-undo-redo.mvm");
+    testSpeedDurationAndFrameHoldUndo(directory / L"speed-hold-undo.mvm");
     testDirtyCheckpoint(directory / L"dirty-checkpoint.mvm");
     testProjectVideoSettings(directory / L"project-video-settings.mvm");
     testUnlinkUndo(directory / L"unlink-undo.mvm");

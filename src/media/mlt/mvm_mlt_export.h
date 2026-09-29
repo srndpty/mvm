@@ -49,9 +49,12 @@ typedef struct {
     long long tail_padding_frames;
     /* 再生速度 (約分済みの正の有理数)。1/1 以外は timewarp producer で開き、
      * producer の位置は「速度込みの実効 fps」で数える (producer_in/out もその位置)。
-     * 音程は速度に連動させる (warp_pitch=0)。 */
+     * preserve_pitch が非0なら timewarp の pitch を保つ。 */
     long long speed_num;
     long long speed_den;
+    int preserve_pitch;
+    int is_frame_hold;
+    long long hold_position;
     int is_audio;       /* 非0なら映像を隠して独立audio trackとしてmixする */
     int is_still_image; /* 非0なら明示した qimage producer で透過 PNG を開く (文字・画像) */
     int effects_enabled;

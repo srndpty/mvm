@@ -98,6 +98,30 @@ ApplicationWindow {
         onTriggered: root.mvmController.duplicateSelectedClips()
     }
     Action {
+        id: speedDurationAction
+        text: "速度・デュレーション..."
+        shortcut: "Ctrl+R"
+        enabled: !root.mvmController.busy && root.mvmController.currentClipIndex >= 0
+                 && !root.keyboardFocusTakesKeys
+        onTriggered: root.openSpeedDurationDialog("")
+    }
+
+    function openSpeedDurationDialog(clipId) {
+        const state = root.mvmController.clipSpeedDurationState(clipId);
+        if (!state.clipId)
+            return;
+        speedDurationDialog.clipId = state.clipId;
+        speedDurationDialog.still = state.still;
+        speedDurationDialog.lastInput = state.still ? "duration" : "speed";
+        speedDurationDialog.syncing = true;
+        speedField.value = state.speedPercent;
+        durationField.text = state.durationText;
+        preservePitchBox.checked = state.preservePitch;
+        rippleBox.checked = false;
+        speedDurationDialog.syncing = false;
+        speedDurationDialog.open();
+    }
+    Action {
         id: addMarkerAction
         text: "マーカーを追加"
         shortcut: "M"
@@ -236,6 +260,7 @@ ApplicationWindow {
             CompactMenuItem { action: cutClipsAction }
             CompactMenuItem { action: pasteClipsAction }
             CompactMenuItem { action: duplicateClipsAction }
+            CompactMenuItem { action: speedDurationAction }
             CompactMenuSeparator {}
             // 実行は Shortcut "Delete" が担う。ここは表示だけで sequence を持たせない (二重発火を防ぐ)。
             CompactMenuItem {
@@ -2212,6 +2237,7 @@ ApplicationWindow {
                                 required property real sourceFpsNum
                                 required property real sourceFpsDen
                                 required property real speed
+                                required property bool frameHold
                                 required property bool previewSupported
                                 required property string trackKind
                                 required property int trackIndex
@@ -2376,6 +2402,20 @@ ApplicationWindow {
                                 CompactMenu {
                                     id: clipMenu
                                     CompactMenuItem {
+                                        text: "速度・デュレーション...\tCtrl+R"
+                                        enabled: !root.mvmController.busy
+                                        onTriggered: root.openSpeedDurationDialog(clipItem.clipId)
+                                    }
+                                    CompactMenuItem {
+                                        text: "フレーム保持を挿入"
+                                        enabled: root.mvmController.playheadFrame > clipItem.timelineStartFrame
+                                                 && root.mvmController.playheadFrame
+                                                    < clipItem.timelineStartFrame + clipItem.timelineDurationFrames
+                                                 && root.mvmController.canInsertFrameHold(clipItem.clipId)
+                                        onTriggered: root.mvmController.insertFrameHoldAtPlayhead(clipItem.clipId)
+                                    }
+                                    CompactMenuSeparator {}
+                                    CompactMenuItem {
                                         text: "プロジェクト設定をこの素材に合わせる"
                                         enabled: clipItem.clipKind !== "audio"
                                                  && !root.mvmController.busy
@@ -2448,7 +2488,8 @@ ApplicationWindow {
                                         width: parent.width
                                         // audio clip は波形を優先し、尺の表示を重ねない。
                                             visible: clipItem.clipKind !== "audio"
-                                            text: (clipItem.shownSpeed !== 1
+                                            text: (clipItem.frameHold ? "保持  |  " : "")
+                                                + (clipItem.shownSpeed !== 1
                                                    ? (Math.round(clipItem.shownSpeed * 10000) / 100) + "%  |  " : "")
                                                 + (clipItem.clipKind === "audio"
                                                    ? Math.round(clipItem.timelineDurationFrames) + "f"
@@ -3117,6 +3158,88 @@ ApplicationWindow {
     }
 
     // --- ダイアログ --------------------------------------------------------
+    ModernDialog {
+        id: speedDurationDialog
+        anchors.centerIn: parent
+        width: Math.min(root.width - 40, 440)
+        modal: true
+        title: "速度・デュレーション"
+        property string clipId: ""
+        property bool still: false
+        property bool syncing: false
+        property string lastInput: "speed"
+
+        function updatePair(input) {
+            if (syncing)
+                return;
+            lastInput = input;
+            const preview = root.mvmController.previewClipSpeedDuration(
+                                clipId, input, speedField.value, durationField.text,
+                                preservePitchBox.checked, rippleBox.checked);
+            if (preview.error)
+                return;
+            syncing = true;
+            if (input === "speed")
+                durationField.text = preview.durationText;
+            else
+                speedField.value = preview.speedPercent;
+            syncing = false;
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 10
+            DragNumberField {
+                id: speedField
+                Layout.fillWidth: true
+                labelText: "速度"
+                minimumValue: 10
+                maximumValue: 1000
+                decimals: 2
+                suffix: "%"
+                enabled: !speedDurationDialog.still
+                onValueEdited: (newValue, commit) => {
+                    speedField.value = newValue;
+                    speedDurationDialog.updatePair("speed");
+                }
+            }
+            Label { text: "デュレーション" }
+            ModernDialogField {
+                id: durationField
+                Layout.fillWidth: true
+                placeholderText: "00:00:05:00"
+                onTextEdited: speedDurationDialog.updatePair("duration")
+            }
+            CheckBox {
+                id: preservePitchBox
+                text: "オーディオのピッチを維持"
+                enabled: !speedDurationDialog.still
+            }
+            CheckBox {
+                id: rippleBox
+                text: "リップル編集 (後続クリップをシフト)"
+            }
+        }
+        footer: ModernDialogFooter {
+            ModernDialogButton {
+                text: "キャンセル"
+                onClicked: speedDurationDialog.close()
+            }
+            ModernDialogButton {
+                text: "適用"
+                prominent: true
+                onClicked: {
+                    const input = speedDurationDialog.still ? "duration" :
+                                  speedDurationDialog.lastInput;
+                    if (root.mvmController.applyClipSpeedDuration(
+                                speedDurationDialog.clipId, input, speedField.value,
+                                durationField.text, preservePitchBox.checked,
+                                rippleBox.checked))
+                        speedDurationDialog.close();
+                }
+            }
+        }
+    }
+
     ModernDialog {
         id: projectSettingsDialog
         anchors.centerIn: parent

@@ -80,6 +80,26 @@ static int service_exists(mlt_properties list, const char* name) {
  * (resample) が付かない。timewarp は audio の sample rate を変えて速度を表すため、正規化が
  * 無いと tractor の mix で伸縮されずに元の速さで鳴る (§16.8 で実測)。 */
 static mlt_producer open_clip_producer(mlt_profile profile, const MvmExportClip* clip) {
+    if (clip->is_frame_hold) {
+        mlt_producer producer = mlt_factory_producer(profile, "hold", clip->path);
+        if (!producer)
+            return NULL;
+        mlt_properties properties = MLT_PRODUCER_PROPERTIES(producer);
+        mlt_properties_set_int64(properties, "frame", clip->hold_position);
+        mlt_properties_set_int64(properties, "length", clip->timeline_duration_frames);
+        if (mlt_producer_set_in_and_out(producer, 0,
+                                        (mlt_position)(clip->timeline_duration_frames - 1)) != 0) {
+            mlt_producer_close(producer);
+            return NULL;
+        }
+        if (mlt_properties_get_int64(properties, "frame") != clip->hold_position ||
+            mlt_properties_get_int64(properties, "length") != clip->timeline_duration_frames ||
+            mlt_producer_get_playtime(producer) != clip->timeline_duration_frames) {
+            mlt_producer_close(producer);
+            return NULL;
+        }
+        return producer;
+    }
     if (clip->is_still_image)
         return mlt_factory_producer(profile, "qimage", clip->path);
     if (clip->speed_num == 1 && clip->speed_den == 1)
@@ -96,10 +116,10 @@ static mlt_producer open_clip_producer(mlt_profile profile, const MvmExportClip*
         return NULL;
     /* 既定値は 0 だが、音程の扱いは仕様なので明示して読み戻す。 */
     mlt_properties properties = MLT_PRODUCER_PROPERTIES(producer);
-    mlt_properties_set_int(properties, "warp_pitch", 0);
+    mlt_properties_set_int(properties, "warp_pitch", clip->preserve_pitch ? 1 : 0);
     const double speed = mlt_properties_get_double(properties, "warp_speed");
     const double wanted = (double)clip->speed_num / (double)clip->speed_den;
-    if (mlt_properties_get_int(properties, "warp_pitch") != 0 ||
+    if (mlt_properties_get_int(properties, "warp_pitch") != (clip->preserve_pitch ? 1 : 0) ||
         fabs(speed - wanted) > 1e-9 * wanted) {
         mlt_producer_close(producer);
         return NULL;

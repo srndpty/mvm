@@ -18,6 +18,27 @@ $compositor = Get-Content -LiteralPath $compositorPath -Raw
 $waveformView = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\apps\mvm\waveform_view.h') -Raw
 $previewSurface = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\apps\mvm\preview_surface_qml.h') -Raw
 
+function Test-SpeedHoldUiContract([string]$qmlSource, [string]$controllerSource,
+                                  [string]$headerSource) {
+    return ($qmlSource -match '(?s)Action\s*\{\s*id:\s*speedDurationAction\b.*?shortcut:\s*"Ctrl\+R".*?onTriggered:\s*root\.openSpeedDurationDialog\(""\)') -and
+           $qmlSource.Contains('action: speedDurationAction') -and
+           $qmlSource.Contains('root.openSpeedDurationDialog(clipItem.clipId)') -and
+           $qmlSource.Contains('enabled: root.mvmController.playheadFrame > clipItem.timelineStartFrame') -and
+           $qmlSource.Contains('root.mvmController.insertFrameHoldAtPlayhead(clipItem.clipId)') -and
+           $qmlSource.Contains('root.mvmController.applyClipSpeedDuration(') -and
+           $controllerSource.Contains('MvmController::insertFrameHoldAtPlayhead(') -and
+           $controllerSource.Contains('MvmController::applyClipSpeedDuration(') -and
+           $headerSource.Contains('insertFrameHoldAtPlayhead(') -and
+           $headerSource.Contains('applyClipSpeedDuration(')
+}
+if (-not (Test-SpeedHoldUiContract $qml $controller $controllerHeader) -or
+    (Test-SpeedHoldUiContract ($qml.Replace('shortcut: "Ctrl+R"', 'shortcut: "Ctrl+Alt+R"')) $controller $controllerHeader) -or
+    (Test-SpeedHoldUiContract ($qml.Replace('root.mvmController.insertFrameHoldAtPlayhead(clipItem.clipId)', '')) $controller $controllerHeader) -or
+    (Test-SpeedHoldUiContract ($qml.Replace('enabled: root.mvmController.playheadFrame > clipItem.timelineStartFrame', 'enabled: true')) $controller $controllerHeader) -or
+    (Test-SpeedHoldUiContract $qml $controller ($controllerHeader.Replace('applyClipSpeedDuration(', 'removedSpeedDuration(')))) {
+    throw '速度・デュレーションとフレーム保持の UI 契約が崩れています'
+}
+
 function Test-CompactMenuStyle([string]$itemSource) {
     return $itemSource.Contains('implicitHeight: 27') -and
            $itemSource.Contains('item.highlighted && item.enabled') -and

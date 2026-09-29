@@ -111,6 +111,115 @@ mvm::project::Project threeClips() {
     return project;
 }
 
+void testSpeedDurationAndFrameHold() {
+    using namespace mvm::project;
+    Project project = threeClips();
+    const Project before = project;
+    ClipSpeedDurationEdit edit;
+    edit.speedNum = 1;
+    edit.speedDen = 2;
+    check(!setClipSpeedDuration(project, "id-A", edit, LinkMode::Linked).success &&
+              project == before,
+          "リップル無効時の重なりを拒否し、Project を保てません");
+    edit.ripple = true;
+    const auto changed = setClipSpeedDuration(project, "id-A", edit, LinkMode::Linked);
+    check(changed.success && project.timelineClips[0].timelineStartFrame == 0 &&
+              timelineClipDuration(project, project.timelineClips[0]).frame == 600 &&
+              project.timelineClips[1].timelineStartFrame == 600 &&
+              project.timelineClips[2].timelineStartFrame == 900,
+          "50% のリップル速度変更が正しくありません");
+    edit.speedNum = 1;
+    edit.speedDen = 1;
+    check(setClipSpeedDuration(project, "id-A", edit, LinkMode::Linked).success &&
+              project == before,
+          "速度を元に戻して後続 clip を詰められません");
+    check(!setClipSpeedDuration(project, "id-A", edit, LinkMode::Linked).success &&
+              project == before,
+          "変化のない速度指定を拒否できません");
+
+    Project held = createDefaultProject();
+    held.timelineClips = {clip("hold-source")};
+    int id = 0;
+    const auto inserted = insertFrameHold(held, "id-hold-source", 120, 120,
+                                          [&] { return "new-" + std::to_string(++id); });
+    check(inserted.success && held.timelineClips.size() == 3 &&
+              held.timelineClips[0].sourceOutFrame == 120 &&
+              held.timelineClips[1].timelineStartFrame == 240 &&
+              held.timelineClips[1].sourceInFrame == 120 && held.timelineClips[2].frameHold &&
+              held.timelineClips[2].frameHold->sourceFrame == 120 &&
+              held.timelineClips[2].timelineStartFrame == 120 &&
+              clipSourceFrameAt(held.timelineClips[2], 60, 1, 119).frame == 120,
+          "フレーム保持の分割・配置・素材 frame が正しくありません");
+    const Project heldBefore = held;
+    check(!insertFrameHold(
+               held, "id-hold-source", 0, 120,
+               [&] {
+                   return "bad-" + std::to_string(++id);
+               }).success &&
+              held == heldBefore,
+          "clip の端へのフレーム保持を拒否できません");
+
+    auto invalidHold = held;
+    invalidHold.timelineClips[2].speedNum = 2;
+    check(!validateTimeline(invalidHold).success, "保持 clip の速度変更を受理しました");
+    invalidHold = held;
+    invalidHold.timelineClips[2].frameHold->sourceFrame = 300;
+    check(!validateTimeline(invalidHold).success, "素材範囲外の保持 frame を受理しました");
+    invalidHold = held;
+    invalidHold.timelineClips[2].preservePitch = true;
+    check(!validateTimeline(invalidHold).success, "保持 clip の pitch flag を受理しました");
+    invalidHold = held;
+    invalidHold.timelineClips[2].linkGroupId = "bad";
+    check(!validateTimeline(invalidHold).success, "保持 clip の link を受理しました");
+    invalidHold = held;
+    invalidHold.timelineClips[2].frameHold->sourceFrame = 1;
+    invalidHold.timelineClips[2].frameHold->sourceFpsNum = 120;
+    check(!frameHoldProducerPosition(invalidHold.timelineClips[2], 60, 1).success &&
+              !validateTimeline(invalidHold).success,
+          "出力位置へ換算できない素材 frame を受理しました");
+    check(!insertFrameHold(
+               held, held.timelineClips[2].id, 180, 120,
+               [&] {
+                   return "bad-" + std::to_string(++id);
+               }).success &&
+              held == heldBefore,
+          "保持 clip からの再挿入を拒否できません");
+
+    Project multi = createDefaultProject();
+    check(addTrack(multi, TrackKind::Video).success, "V2 を追加できません");
+    multi.timelineClips = {clip("main"), clip("overlay", TimelineClipKind::Video, kV2),
+                           clip("music", TimelineClipKind::Audio, kA1)};
+    const auto multiInserted = insertFrameHold(multi, "id-main", 120, 120,
+                                               [&] { return "multi-" + std::to_string(++id); });
+    check(multiInserted.success && multi.timelineClips.size() == 7,
+          "全トラックを分割して保持区間を作れません");
+    int shiftedVideo = 0, shiftedAudio = 0;
+    for (const auto& piece : multi.timelineClips) {
+        if (piece.id == "id-overlay" || piece.id == "id-music")
+            continue;
+        if (piece.frameHold)
+            continue;
+        if (piece.timelineStartFrame == 240 && piece.track == kV2)
+            ++shiftedVideo;
+        if (piece.timelineStartFrame == 240 && piece.track == kA1)
+            ++shiftedAudio;
+    }
+    check(shiftedVideo == 1 && shiftedAudio == 1 && validateTimeline(multi).success,
+          "保持区間の他トラックに映像・音声の空きを作れません");
+
+    mvm::test::attachFixtureMedia(held);
+    const auto holdJson = serializeProjectJson(held, "hold.mvm");
+    check(holdJson.success, "保持 clip の JSON を出力できません");
+    if (holdJson.success) {
+        const auto restored = parseProjectJsonText(holdJson.json, "hold.mvm");
+        check(restored.success && restored.project.timelineClips.size() == 3 &&
+                  restored.project.timelineClips[2].frameHold == held.timelineClips[2].frameHold &&
+                  restored.project.timelineClips[2].sourceInFrame == 0 &&
+                  restored.project.timelineClips[2].sourceOutFrame == 120,
+              "保持 clip の JSON が round-trip しません");
+    }
+}
+
 void testFrameConversions() {
     const std::pair<std::int64_t, std::int64_t> rates[] = {
         {24, 1}, {25, 1}, {30000, 1001}, {30, 1}, {60, 1}};
@@ -1637,6 +1746,7 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
     candidate.audioTracks[0].muted = true;
     auto audio = clip("voice", mvm::project::TimelineClipKind::Audio, kA1);
     audio.timelineStartFrame = 42;
+    audio.preservePitch = true;
     audio.linkGroupId = "round-trip-link";
     candidate.timelineClips[2].linkGroupId = "round-trip-link";
     candidate.timelineClips.push_back(audio);
@@ -1651,7 +1761,7 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
     const auto loaded = mvm::project::loadProjectJson(projectFile);
     check(loaded.success, "保存した .mvm を読み込めません");
     bool timelineFieldsMatch =
-        loaded.success && loaded.project.schemaVersion == 11 &&
+        loaded.success && loaded.project.schemaVersion == mvm::project::kProjectSchemaVersion &&
         loaded.project.timelineFpsNum == 60 && loaded.project.timelineFpsDen == 1 &&
         loaded.project.outputWidth == 3840 && loaded.project.outputHeight == 2160 &&
         loaded.project.videoTracks == live.videoTracks &&
@@ -1671,12 +1781,41 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
                 actual.timelineStartFrame == expected.timelineStartFrame &&
                 actual.track == expected.track && actual.effects == expected.effects &&
                 actual.linkGroupId == expected.linkGroupId &&
-                actual.speedNum == expected.speedNum && actual.speedDen == expected.speedDen;
+                actual.speedNum == expected.speedNum && actual.speedDen == expected.speedDen &&
+                actual.preservePitch == expected.preservePitch &&
+                actual.frameHold == expected.frameHold;
         }
     }
     check(timelineFieldsMatch,
-          "schema 11のoutput "
+          "現在のschemaのoutput "
           "size・track構成・mute・clip種別・trim・effects・速度がround-tripしません");
+
+    const auto serialized = mvm::project::serializeProjectJson(live, projectFile);
+    check(serialized.success, "schema 検査用 JSON を作成できません");
+    if (serialized.success) {
+        auto withoutField = [&](std::string field) {
+            auto text = serialized.json;
+            const auto fieldStart = text.find("      \"" + field + "\": ");
+            check(fieldStart != std::string::npos, "必須 JSON field が出力されません");
+            if (fieldStart != std::string::npos) {
+                const auto fieldEnd = text.find('\n', fieldStart);
+                text.erase(fieldStart, fieldEnd - fieldStart + 1);
+                check(!mvm::project::parseProjectJsonText(text, projectFile).success,
+                      "必須 JSON field の欠落を受理しました");
+            }
+        };
+        withoutField("preserve_pitch");
+        withoutField("frame_hold");
+        auto oldSchema = serialized.json;
+        const auto schema = oldSchema.find("\"schema_version\": 12");
+        check(schema != std::string::npos, "schema 12 が出力されません");
+        if (schema != std::string::npos) {
+            oldSchema.replace(schema, std::string("\"schema_version\": 12").size(),
+                              "\"schema_version\": 11");
+            check(!mvm::project::parseProjectJsonText(oldSchema, projectFile).success,
+                  "schema 11 を受理しました");
+        }
+    }
 
     auto invalidOutput = mvm::project::createDefaultProject();
     invalidOutput.outputWidth = 0;
@@ -1988,6 +2127,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     testFrameConversions();
+    testSpeedDurationAndFrameHold();
     testTimelineMarks(fromUtf8(argv[1]));
     testClipKeyEditing();
     testAudioSourceSetCompensation();

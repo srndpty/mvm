@@ -70,7 +70,8 @@ bool ShuttleAudioPlayback::readSamples(std::size_t clipIndex, std::int64_t first
             audio::SourceId{static_cast<std::uint64_t>(clipIndex) + 2});
         // 素材 sample は通常再生と同じく速度で伸縮した時間軸で数える (sourceOffset も同じ)。
         const auto& timelineClip = plan_.clips[clipIndex].clip;
-        if (!clip.worker->setPlaybackSpeed(timelineClip.speedNum, timelineClip.speedDen, error) ||
+        if (!clip.worker->setPlaybackSpeed(timelineClip.speedNum, timelineClip.speedDen,
+                                           timelineClip.preservePitch, error) ||
             !clip.worker->start(plan_.clips[clipIndex].path, error))
             return false;
     }

@@ -120,8 +120,34 @@ previewLayerStack(const TimelinePreviewFrameMapping& mapping) {
 PreviewVideoMapping previewVideoMappingOf(const project::TimelineClip& clip) {
     // 検証済みの clip では timebase は必ずある。無ければ 0 のまま使い回し判定に失敗させる。
     const auto timebase = project::clipTimebase(clip).value_or(core::FrameRate{0, 1});
-    return {clip.mediaPath, clip.sourceInFrame, clip.timelineStartFrame, timebase.num,
-            timebase.den};
+    const auto source = project::clipVideoSource(clip);
+    return {clip.mediaPath,
+            source.sourceInFrame,
+            clip.timelineStartFrame,
+            clip.frameHold ? source.sourceFpsNum : timebase.num,
+            clip.frameHold ? source.sourceFpsDen : timebase.den,
+            clip.frameHold ? clip.sourceOutFrame - clip.sourceInFrame : 0};
+}
+
+preview::PreviewSourceDescriptor previewVideoDescriptorOf(const project::Project& project,
+                                                          const project::TimelineClip& clip) {
+    const auto source = project::clipVideoSource(clip);
+    preview::PreviewSourceDescriptor descriptor;
+    descriptor.mediaPath = clip.mediaPath;
+    descriptor.videoEnabled = true;
+    descriptor.videoTimelineMappingEnabled = true;
+    descriptor.videoSourceInFrame = source.sourceInFrame;
+    descriptor.videoSourceFrameCount = source.sourceFrameCount;
+    descriptor.videoTimelineStartFrame = clip.timelineStartFrame;
+    descriptor.speedNum = clip.speedNum;
+    descriptor.speedDen = clip.speedDen;
+    if (clip.frameHold) {
+        const auto duration = project::timelineClipDuration(project, clip);
+        descriptor.videoHoldOutputFrames = duration.success ? duration.frame : 0;
+    }
+    descriptor.expectedVideoSourceFrameRate = {static_cast<std::uint32_t>(source.sourceFpsNum),
+                                               static_cast<std::uint32_t>(source.sourceFpsDen)};
+    return descriptor;
 }
 
 bool previewVideoMappingCovers(const project::Project& project,
@@ -130,6 +156,8 @@ bool previewVideoMappingCovers(const project::Project& project,
     const PreviewVideoMapping wanted = previewVideoMappingOf(clip);
     if (installed == wanted)
         return true;
+    if (installed.holdFrames > 0 || wanted.holdFrames > 0)
+        return false;
     if (installed.mediaPath != wanted.mediaPath || installed.timebaseNum != wanted.timebaseNum ||
         installed.timebaseDen != wanted.timebaseDen || wanted.timebaseNum <= 0)
         return false;

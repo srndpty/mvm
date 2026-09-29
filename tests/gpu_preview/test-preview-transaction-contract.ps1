@@ -161,7 +161,7 @@ if ($identityStart -lt 0) { throw 'AudioSourceIdentity がありません' }
 $identityEnd = $header.IndexOf('};', $identityStart)
 $identity = $header.Substring($identityStart, $identityEnd - $identityStart)
 # 速度が違えば decoder の伸縮が違うので、速度も identity に含める。
-foreach ($field in @('mediaPath', 'sampleOffset', 'effects', 'speedNum', 'speedDen')) {
+foreach ($field in @('mediaPath', 'sampleOffset', 'effects', 'speedNum', 'speedDen', 'preservePitch')) {
     if (-not $identity.Contains($field)) {
         throw "AudioSourceIdentity に $field がありません (offset が変わっても再利用されます)"
     }
@@ -171,7 +171,7 @@ if ($identitiesStart -lt 0) { throw 'audioIdentitiesFor がありません' }
 $identitiesEnd = $controller.IndexOf("`n}", $identitiesStart)
 $identitiesBody = $controller.Substring($identitiesStart, $identitiesEnd - $identitiesStart)
 if (-not $identitiesBody.Contains('audioPreviewSampleOffset(project_, clip)') -or
-    -not $identitiesBody.Contains('{clip.mediaPath, offset.sampleOffset, clip.effects, clip.speedNum, clip.speedDen}')) {
+    -not ($identitiesBody -match '(?s)\{clip\.mediaPath, offset\.sampleOffset, clip\.effects, clip\.speedNum, clip\.speedDen,\s*clip\.preservePitch\}')) {
     throw 'audio identity が audioPreviewSampleOffset の換算結果から作られていません'
 }
 

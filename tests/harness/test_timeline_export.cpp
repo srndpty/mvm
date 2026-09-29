@@ -938,6 +938,34 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "  50%%音声: %zu sample, 中央1秒のゼロ交差 %d\n", samples.size(),
                          crossings);
         }
+        project.timelineClips[1].preservePitch = true;
+        speedRequest.outputPath = testDirectory / L"speed-half-pitch.mp4";
+        const auto preserved = mvm::app::exportTimeline(project, speedRequest);
+        check(preserved.success, "ピッチ保持付き50%音声を書き出せません");
+        if (!preserved.success)
+            std::fprintf(stderr, "  %s\n", preserved.error.c_str());
+        if (preserved.success) {
+            const auto raw = testDirectory / L"speed-half-pitch.f32";
+            check(_wspawnl(_P_WAIT, ffmpeg.c_str(), ffmpeg.c_str(), L"-y", L"-loglevel", L"error",
+                           L"-i", speedRequest.outputPath.c_str(), L"-map", L"0:a:0", L"-ac", L"1",
+                           L"-ar", L"48000", L"-c:a", L"pcm_f32le", L"-f", L"f32le", raw.c_str(),
+                           static_cast<wchar_t*>(nullptr)) == 0,
+                  "ピッチ保持書き出しのPCMを抽出できません");
+            std::ifstream stream(raw, std::ios::binary | std::ios::ate);
+            std::vector<float> samples;
+            if (stream) {
+                samples.resize(static_cast<std::size_t>(stream.tellg()) / sizeof(float));
+                stream.seekg(0);
+                stream.read(reinterpret_cast<char*>(samples.data()),
+                            static_cast<std::streamsize>(samples.size() * sizeof(float)));
+            }
+            int crossings = 0;
+            if (samples.size() >= 72000)
+                for (std::size_t i = 24001; i < 72000; ++i)
+                    crossings += samples[i - 1] < 0.0F && samples[i] >= 0.0F ? 1 : 0;
+            check(samples.size() >= 95000 && std::abs(crossings - 440) <= 9,
+                  "50%の音声がピッチを保てません");
+        }
     }
 
     // --- 3. 負: clip が 0 本 ----------------------------------------------
@@ -1040,6 +1068,53 @@ int main(int argc, char** argv) {
         check(rms(boosted, 20000, 8000) > reference * 1.6, "音量200%が実際のPCMを増幅していません");
         check(rms(ramp, 4000, 4000) < rms(ramp, 38000, 4000) * 0.3,
               "時間変化する音量が実際のPCMへ反映されていません");
+    }
+
+    // 保持 producer が指定 frame を全区間へ出し、元の右半分へ戻ることを画素で確認する。
+    {
+        const auto source = testDirectory / L"hold-red-blue.mp4";
+        check(generateFractionalFixture(ffmpeg, source), "保持検証用の2色素材を生成できません");
+        auto project = mvm::project::createDefaultProject();
+        project.timelineFpsNum = 30000;
+        project.timelineFpsDen = 1001;
+        mvm::project::TimelineClip video;
+        video.kind = mvm::project::TimelineClipKind::Video;
+        video.mediaPath = source;
+        video.name = "hold-video";
+        video.id = "hold-video";
+        video.sourceFpsNum = 30000;
+        video.sourceFpsDen = 1001;
+        video.sourceFrameCount = 60;
+        video.sourceOutFrame = 60;
+        video.track = {mvm::project::TrackKind::Video, 0};
+        project.timelineClips.push_back(video);
+        int nextId = 0;
+        const auto inserted = mvm::project::insertFrameHold(
+            project, video.id, 35, 30, [&] { return "hold-new-" + std::to_string(++nextId); });
+        check(inserted.success, "色素材のフレーム保持を挿入できません");
+        if (inserted.success) {
+            mvm::app::TimelineExportRequest request;
+            request.outputPath = testDirectory / L"hold-red-blue-out.mp4";
+            request.width = 64;
+            request.height = 64;
+            request.fpsNum = 30000;
+            request.fpsDen = 1001;
+            const auto exported = mvm::app::exportTimeline(project, request);
+            check(exported.success &&
+                      exported.backend == mvm::app::TimelineExportResult::Backend::Tractor,
+                  "保持クリップをtractorで書き出せません");
+            if (!exported.success)
+                std::fprintf(stderr, "  %s\n", exported.error.c_str());
+            if (exported.success) {
+                int compared = 0;
+                for (long long frame = 35; frame < 65; ++frame) {
+                    check(frameIsBlue(request.outputPath, frame),
+                          "保持区間の画素が指定した青frameと違います");
+                    ++compared;
+                }
+                check(compared == 30, "保持区間の全frameを比較していません");
+            }
+        }
     }
 
     mvm_mlt_runtime_shutdown();

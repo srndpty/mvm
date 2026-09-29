@@ -380,9 +380,12 @@ if (-not (Test-Path $restModules)) {
             ($profileOk -eq 1 -and $profileGeom -eq '1920x1080@60/1' -and $sar -eq '1/1') `
             "profile=$profileGeom sar=$sar profile_ok=$profileOk"
 
-        # optional 扱いだった依存の DLL がロードできるか。
+        # rubberband はピッチ保持の必須モジュールとして検査する。
         # modules_failed=0 はこれを含むが、明示的に個別確認もする。
-        $optionalModules = @('libmltplus.dll','libmltresample.dll','libmltrubberband.dll',
+        $requiredRubberband = Test-Path (Join-Path $restModules 'libmltrubberband.dll')
+        Add-Result 'R0-7A' 'ピッチ保持に必要な rubberband モジュールがある' `
+            $requiredRubberband 'libmltrubberband.dll'
+        $optionalModules = @('libmltplus.dll','libmltresample.dll',
                              'libmltsox.dll','libmltrtaudio.dll')
         $missingOpt = @($optionalModules | Where-Object { -not (Test-Path (Join-Path $restModules $_)) })
         $optOk = ($missingOpt.Count -eq 0 -and $modFailed -eq 0)

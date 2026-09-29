@@ -9,6 +9,7 @@
 #include "app/timeline_preview_mapping.h"
 #include "core/checked_output_timebase.h"
 #include "core/export_eta.h"
+#include "core/timecode.h"
 #include "image_raster_cache.h"
 #include "media_file_filters.h"
 #include "media_import.h"
@@ -177,6 +178,31 @@ project::LinkMode linkModeFor(bool linked) {
 
 std::string newClipId() {
     return QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+}
+
+std::optional<project::ClipSpeedDurationEdit>
+speedDurationEdit(const QString& input, double speedPercent, const QString& durationText,
+                  bool preservePitch, bool ripple, std::int64_t fpsNum, std::int64_t fpsDen) {
+    project::ClipSpeedDurationEdit edit;
+    edit.preservePitch = preservePitch;
+    edit.ripple = ripple;
+    if (input == QStringLiteral("speed")) {
+        if (!std::isfinite(speedPercent) || speedPercent < 10.0 || speedPercent > 1000.0)
+            return std::nullopt;
+        const auto hundredths = static_cast<std::int64_t>(std::llround(speedPercent * 100.0));
+        edit.input = project::ClipSpeedDurationEdit::Input::Speed;
+        edit.speedNum = hundredths;
+        edit.speedDen = 10000;
+    } else if (input == QStringLiteral("duration")) {
+        const auto frames = core::parseTimecode(durationText.toStdString(), fpsNum, fpsDen);
+        if (!frames || *frames < 1)
+            return std::nullopt;
+        edit.input = project::ClipSpeedDurationEdit::Input::Duration;
+        edit.durationFrames = *frames;
+    } else {
+        return std::nullopt;
+    }
+    return edit;
 }
 
 // 素材 1 つを timeline へ置くときの clip。音声を持つ動画は linkedAudio にリンク相手を持つ。
@@ -743,17 +769,8 @@ QVariantList MvmController::supportedFrameRates() const {
 }
 
 QString MvmController::currentTimeText() const {
-    const qint64 frames = std::max<qint64>(0, playheadFrame_);
-    // non-drop-frame timecode。29.97 等は 30 として数え、実時間とはずれる。
-    const qint64 nominalFps = std::max<qint64>(
-        1, static_cast<qint64>(std::llround(static_cast<double>(project_.timelineFpsNum) /
-                                            static_cast<double>(project_.timelineFpsDen))));
-    const qint64 totalSeconds = frames / nominalFps;
-    return QStringLiteral("%1:%2:%3:%4")
-        .arg(totalSeconds / 3600, 2, 10, QLatin1Char('0'))
-        .arg((totalSeconds / 60) % 60, 2, 10, QLatin1Char('0'))
-        .arg(totalSeconds % 60, 2, 10, QLatin1Char('0'))
-        .arg(frames % nominalFps, 2, 10, QLatin1Char('0'));
+    return QString::fromStdString(core::formatTimecode(
+        playheadFrame_, project_.timelineFpsNum, project_.timelineFpsDen));
 }
 
 bool MvmController::canPlay() const {
@@ -1435,6 +1452,7 @@ bool MvmController::audioDescriptorFor(int clipIndex, preview::PreviewSourceDesc
     descriptor.audioSampleOffset = offset.sampleOffset;
     descriptor.speedNum = clip.speedNum;
     descriptor.speedDen = clip.speedDen;
+    descriptor.audioPreservePitch = clip.preservePitch;
     const auto timebase = core::CheckedOutputTimebase::create(
         project_.timelineFpsNum, project_.timelineFpsDen, audio::kInternalSampleRate);
     if (!timebase) {
@@ -1476,7 +1494,8 @@ bool MvmController::audioIdentitiesFor(const TimelinePreviewAudioMapping& mapped
             return false;
         }
         identities.push_back(
-            {clip.mediaPath, offset.sampleOffset, clip.effects, clip.speedNum, clip.speedDen});
+            {clip.mediaPath, offset.sampleOffset, clip.effects, clip.speedNum, clip.speedDen,
+             clip.preservePitch});
     }
     return true;
 }
@@ -1640,11 +1659,18 @@ MvmController::previewCompositionFor(const TimelinePreviewFrameMapping& mappedFr
         preview::PreviewCompositionLayer layer;
         layer.source = slot->second.source;
         if (!project::clipEffectsAreDefault(effects)) {
+            const auto fadeFrame = project::clipFadeSourceFrameAt(
+                clip, project_.timelineFpsNum, project_.timelineFpsDen,
+                mappedFrame.outputFrameNumber - clip.timelineStartFrame);
+            if (!fadeFrame.success) {
+                error = QString::fromStdString(fadeFrame.error);
+                return nullptr;
+            }
             applyPreviewLayerEffects(layer, effects,
                                      project::evaluateClipOpacity(
                                          effects,
                                          mappedFrame.outputFrameNumber - clip.timelineStartFrame,
-                                         layerMapping.sourceFrameNumber - clip.sourceInFrame,
+                                         fadeFrame.frame,
                                          clip.sourceOutFrame - clip.sourceInFrame),
                                      clip.sourceInFrame, clip.sourceOutFrame - clip.sourceInFrame);
         }
@@ -1703,23 +1729,14 @@ bool MvmController::syncPreviewSourcesAt(std::int64_t timelineFrame, QString& er
             rollback();
             return false;
         }
-        preview::PreviewSourceDescriptor descriptor;
-        descriptor.mediaPath = clip.mediaPath;
-        descriptor.videoEnabled = true;
-        descriptor.videoTimelineMappingEnabled = true;
-        descriptor.videoSourceInFrame = clip.sourceInFrame;
-        descriptor.videoSourceFrameCount = clip.sourceFrameCount;
-        descriptor.videoTimelineStartFrame = clip.timelineStartFrame;
-        descriptor.speedNum = clip.speedNum;
-        descriptor.speedDen = clip.speedDen;
-        if (clip.sourceFpsNum > std::numeric_limits<std::uint32_t>::max() ||
-            clip.sourceFpsDen > std::numeric_limits<std::uint32_t>::max()) {
+        const auto videoSource = project::clipVideoSource(clip);
+        if (videoSource.sourceFpsNum > std::numeric_limits<std::uint32_t>::max() ||
+            videoSource.sourceFpsDen > std::numeric_limits<std::uint32_t>::max()) {
             error = QStringLiteral("source FPSをpreview descriptorへ格納できません");
             rollback();
             return false;
         }
-        descriptor.expectedVideoSourceFrameRate = {static_cast<std::uint32_t>(clip.sourceFpsNum),
-                                                   static_cast<std::uint32_t>(clip.sourceFpsDen)};
+        preview::PreviewSourceDescriptor descriptor = previewVideoDescriptorOf(project_, clip);
         const auto added = previewEngine_->addSource(descriptor);
         if (!added) {
             error = previewErrorText(added.error());
@@ -4386,6 +4403,88 @@ bool MvmController::rateStretchClip(const QString& clipId, const QString& edge,
                                                     linkModeFor(linked));
         },
         id, QStringLiteral("clipの速度を変えました"));
+}
+
+QVariantMap MvmController::clipSpeedDurationState(const QString& clipId) const {
+    const std::string id = clipId.isEmpty() ? currentClipId() : clipId.toStdString();
+    const int index = indexOfClipId(project_.timelineClips, id);
+    if (index < 0)
+        return {};
+    const auto& clip = project_.timelineClips[static_cast<std::size_t>(index)];
+    const auto duration = project::timelineClipDuration(project_, clip);
+    if (!duration.success)
+        return {};
+    return {{QStringLiteral("clipId"), QString::fromStdString(id)},
+            {QStringLiteral("speedPercent"), 100.0 * static_cast<double>(clip.speedNum) /
+                                                    static_cast<double>(clip.speedDen)},
+            {QStringLiteral("durationText"), QString::fromStdString(core::formatTimecode(
+                 duration.frame, project_.timelineFpsNum, project_.timelineFpsDen))},
+            {QStringLiteral("preservePitch"), clip.preservePitch},
+            {QStringLiteral("still"), project::hasSyntheticSourceDomain(clip)}};
+}
+
+QVariantMap MvmController::previewClipSpeedDuration(const QString& clipId,
+                                                    const QString& input,
+                                                    double speedPercent,
+                                                    const QString& durationText,
+                                                    bool preservePitch, bool ripple) const {
+    const std::string id = clipId.isEmpty() ? currentClipId() : clipId.toStdString();
+    const auto edit = speedDurationEdit(input, speedPercent, durationText, preservePitch, ripple,
+                                        project_.timelineFpsNum, project_.timelineFpsDen);
+    if (!edit)
+        return {{QStringLiteral("error"), QStringLiteral("速度または尺が不正です")}};
+    auto previewEdit = *edit;
+    previewEdit.ripple = true;
+    const auto preview = project::previewClipSpeedDuration(project_, id, previewEdit,
+                                                            project::LinkMode::Linked);
+    if (!preview.success)
+        return {{QStringLiteral("error"), QString::fromStdString(preview.error)}};
+    return {{QStringLiteral("durationText"), QString::fromStdString(core::formatTimecode(
+                 preview.durationFrames, project_.timelineFpsNum, project_.timelineFpsDen))},
+            {QStringLiteral("speedPercent"),
+             100.0 * static_cast<double>(preview.speedNum) /
+                 static_cast<double>(preview.speedDen)}};
+}
+
+bool MvmController::applyClipSpeedDuration(const QString& clipId, const QString& input,
+                                            double speedPercent, const QString& durationText,
+                                            bool preservePitch, bool ripple) {
+    const std::string id = clipId.isEmpty() ? currentClipId() : clipId.toStdString();
+    const auto edit = speedDurationEdit(input, speedPercent, durationText, preservePitch, ripple,
+                                        project_.timelineFpsNum, project_.timelineFpsDen);
+    if (!edit) {
+        setStatus(QStringLiteral("速度または尺が不正です"));
+        return false;
+    }
+    return applyTimelineEdit(
+        [&](project::Project& candidate) {
+            return project::setClipSpeedDuration(candidate, id, *edit, project::LinkMode::Linked);
+        }, id, QStringLiteral("clip の速度と尺を変更しました"));
+}
+
+bool MvmController::canInsertFrameHold(const QString& clipId) const {
+    const std::string id = clipId.isEmpty() ? currentClipId() : clipId.toStdString();
+    const int index = indexOfClipId(project_.timelineClips, id);
+    if (index < 0)
+        return false;
+    const auto& clip = project_.timelineClips[static_cast<std::size_t>(index)];
+    const auto duration = project::timelineClipDuration(project_, clip);
+    return !busy_ && clip.kind == project::TimelineClipKind::Video && !clip.frameHold &&
+           duration.success && playheadFrame_ > clip.timelineStartFrame &&
+           playheadFrame_ < clip.timelineStartFrame + duration.frame;
+}
+
+bool MvmController::insertFrameHoldAtPlayhead(const QString& clipId) {
+    if (!canInsertFrameHold(clipId))
+        return false;
+    const std::string id = clipId.isEmpty() ? currentClipId() : clipId.toStdString();
+    return applyTimelineEdit(
+        [&](project::Project& candidate) {
+            return project::insertFrameHold(
+                candidate, id, playheadFrame_,
+                project::defaultFrameHoldFrames(candidate.timelineFpsNum, candidate.timelineFpsDen),
+                newClipId);
+        }, id, QStringLiteral("フレーム保持を挿入しました"));
 }
 
 QVariantMap MvmController::previewRateStretch(const QString& clipId, const QString& edge,

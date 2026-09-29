@@ -115,7 +115,7 @@ int main(int argc, char** argv) {
         const std::string label = std::to_string(speed.num) + "/" + std::to_string(speed.den);
         mvm::audio::AudioDecodeWorker worker({1});
         std::string error;
-        if (!worker.setPlaybackSpeed(speed.num, speed.den, error) ||
+        if (!worker.setPlaybackSpeed(speed.num, speed.den, false, error) ||
             !worker.start(toUtf8(source), error)) {
             check(false, label + ": workerを開始できません: " + error);
             continue;
@@ -157,6 +157,46 @@ int main(int argc, char** argv) {
     }
     check(measured == static_cast<int>(sizeof(speeds) / sizeof(speeds[0])),
           "全速度を測っていません");
+    for (const Speed speed : {Speed{1, 2}, Speed{2, 1}}) {
+        const std::string label =
+            "pitch " + std::to_string(speed.num) + "/" + std::to_string(speed.den);
+        mvm::audio::AudioDecodeWorker worker({1});
+        std::string error;
+        if (!worker.setPlaybackSpeed(speed.num, speed.den, true, error) ||
+            !worker.start(toUtf8(source), error)) {
+            check(false, label + ": workerを開始できません: " + error);
+            continue;
+        }
+        std::vector<float> whole;
+        const bool read = readFrom(worker, 0, 48000 * 20, whole, error);
+        check(read, label + ": 全体を読めません: " + error);
+        const double expectedSamples = 48000.0 * speed.den / speed.num;
+        // 末尾の遅延を押し出さないと 2 倍速で約 500 sample 欠けた。等速と同じ桁まで詰める。
+        check(std::abs(static_cast<double>(whole.size()) - expectedSamples) <= 256.0,
+              label + ": sample数が伸縮後の尺と違います: " + std::to_string(whole.size()));
+        const std::size_t begin = whole.size() / 4;
+        const std::size_t end = whole.size() * 3 / 4;
+        const double frequency = static_cast<double>(risingCrossings(whole, begin, end)) /
+                                 (static_cast<double>(end - begin) / 48000.0);
+        check(std::abs(frequency - 1000.0) <= 20.0,
+              label + ": 1000Hzを保てません: " + std::to_string(frequency));
+        std::fprintf(stderr, "  %s: %zu sample, %.1f Hz\n", label.c_str(), whole.size(), frequency);
+        const auto target = static_cast<std::int64_t>(expectedSamples / 3.0);
+        std::vector<float> seeked;
+        const bool seekRead = readFrom(worker, target, 4800, seeked, error);
+        check(seekRead && seeked.size() == 4800, label + ": seek後のsampleが揃いません: " + error);
+        if (seekRead && seeked.size() == 4800 &&
+            whole.size() >= static_cast<std::size_t>(target) + seeked.size()) {
+            double difference = 0.0;
+            for (std::size_t i = 0; i < seeked.size(); ++i) {
+                const double d = seeked[i] - whole[static_cast<std::size_t>(target) + i];
+                difference += d * d;
+            }
+            const double rms = std::sqrt(difference / seeked.size());
+            check(rms < 0.02, label + ": seek波形が連続再生と違います: " + std::to_string(rms));
+        }
+        worker.stop();
+    }
     std::fprintf(stderr, "audio playback speed: 検査 %d 件 / 失敗 %d 件\n", gChecks, gFailures);
     return gChecks > 0 && gFailures == 0 ? 0 : 1;
 }

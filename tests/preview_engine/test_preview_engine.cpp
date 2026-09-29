@@ -323,6 +323,17 @@ void frameRateAndDescriptorValidation() {
             "video descriptorをrejectしました");
     require(validatePreviewSourceDescriptor({"voice.wav", false, true}),
             "audio descriptorをrejectしました");
+    PreviewSourceDescriptor held{"movie.mp4", true, false};
+    held.videoTimelineMappingEnabled = true;
+    held.videoSourceInFrame = 23;
+    held.videoSourceFrameCount = 100;
+    held.videoTimelineStartFrame = 50;
+    held.videoHoldOutputFrames = 120;
+    held.expectedVideoSourceFrameRate = {60, 1};
+    require(validatePreviewSourceDescriptor(held), "正しい保持 descriptor を拒否しました");
+    held.speedNum = 2;
+    requireFailure(validatePreviewSourceDescriptor(held), PreviewErrorCategory::InvalidSource,
+                   "倍速の保持 descriptor を受理しました");
 }
 
 void resultAndErrorValues() {

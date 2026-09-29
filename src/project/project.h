@@ -36,6 +36,7 @@ bool clipUsesMediaItem(TimelineClipKind kind);
 
 // 文字・静止画を置いたときの既定の尺 (5 秒、最低 1 frame)。
 std::int64_t defaultStillClipFrames(std::int64_t timelineFpsNum, std::int64_t timelineFpsDen);
+std::int64_t defaultFrameHoldFrames(std::int64_t timelineFpsNum, std::int64_t timelineFpsDen);
 
 struct TextClipData {
     std::string content;
@@ -70,6 +71,14 @@ struct TrackRef {
     bool operator==(const TrackRef&) const = default;
 };
 
+struct FrameHold {
+    std::int64_t sourceFrame = 0;
+    std::int64_t sourceFpsNum = 0;
+    std::int64_t sourceFpsDen = 1;
+    std::int64_t sourceFrameCount = 0;
+    bool operator==(const FrameHold&) const = default;
+};
+
 struct TimelineClip {
     TimelineClipKind kind = TimelineClipKind::Video;
     std::filesystem::path mediaPath; // 解決済みの実ファイル
@@ -94,6 +103,8 @@ struct TimelineClip {
     // timeline との換算は必ず clipTimebase (timeline_edit.h) を通す。
     std::int64_t speedNum = 1;
     std::int64_t speedDen = 1;
+    bool preservePitch = false;
+    std::optional<FrameHold> frameHold;
     TextClipData text{};
     bool operator==(const TimelineClip&) const = default;
 };
@@ -104,7 +115,9 @@ inline constexpr std::int64_t kMinClipSpeedPercent = 10;
 inline constexpr std::int64_t kMaxClipSpeedPercent = 1000;
 
 // Project JSON の schema。timeline 検証と JSON の読み書きが同じ値を参照する。
-inline constexpr int kProjectSchemaVersion = 11;
+inline constexpr int kProjectSchemaVersion = 12;
+
+bool hasSyntheticSourceDomain(const TimelineClip& clip);
 
 // プロジェクトパネルの素材。timeline clip とは独立に存在し、mediaPath で対応づく。
 enum class MediaKind { Video, Audio, Image };
