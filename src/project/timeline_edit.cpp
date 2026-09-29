@@ -344,6 +344,22 @@ TimelineValidationResult validateTimeline(const Project& project) {
         result.error = "Project output size が不正です";
         return result;
     }
+    if ((project.inFrame &&
+         (*project.inFrame < 0 || *project.inFrame == std::numeric_limits<std::int64_t>::max())) ||
+        (project.outFrame && (*project.outFrame < 0 ||
+                              *project.outFrame == std::numeric_limits<std::int64_t>::max())) ||
+        (project.inFrame && project.outFrame && *project.inFrame >= *project.outFrame)) {
+        result.error = "イン・アウトの範囲が不正です";
+        return result;
+    }
+    std::int64_t previousMarker = -1;
+    for (const auto marker : project.timelineMarkers) {
+        if (marker <= previousMarker || marker == std::numeric_limits<std::int64_t>::max()) {
+            result.error = "マーカーは重複せず昇順である必要があります";
+            return result;
+        }
+        previousMarker = marker;
+    }
     if (project.videoTracks.empty()) {
         result.error = "video track が 1 本もありません";
         return result;
@@ -1645,6 +1661,32 @@ TimelineEditResult setProjectVideoSettings(Project& project, int width, int heig
     }
     Project candidate = project;
     if (project.timelineFpsNum != fpsNum || project.timelineFpsDen != fpsDen) {
+        const auto convertFrame = [&](std::int64_t& frame) {
+            const auto converted = sourceBoundaryToTimelineBoundary(
+                frame, project.timelineFpsNum, project.timelineFpsDen, fpsNum, fpsDen);
+            if (!converted.success)
+                return false;
+            frame = converted.frame;
+            return true;
+        };
+        for (auto& marker : candidate.timelineMarkers) {
+            if (!convertFrame(marker)) {
+                result.error = "マーカーを新しいtimeline frame rateへ変換できません";
+                return result;
+            }
+        }
+        candidate.timelineMarkers.erase(
+            std::unique(candidate.timelineMarkers.begin(), candidate.timelineMarkers.end()),
+            candidate.timelineMarkers.end());
+        if ((candidate.inFrame && !convertFrame(*candidate.inFrame)) ||
+            (candidate.outFrame && !convertFrame(*candidate.outFrame))) {
+            result.error = "イン・アウトを新しいtimeline frame rateへ変換できません";
+            return result;
+        }
+        if (candidate.inFrame && candidate.outFrame && *candidate.inFrame >= *candidate.outFrame) {
+            result.error = "frame rate変更でイン・アウトの範囲が空になります";
+            return result;
+        }
         for (auto& clip : candidate.timelineClips) {
             const auto converted =
                 sourceBoundaryToTimelineBoundary(clip.timelineStartFrame, project.timelineFpsNum,

@@ -26,15 +26,20 @@ TestCase {
         compare(Gestures.bodyRelease(single, false, 0, 40, 0).linked, false);
     }
 
-    // 選択ツールは既定でリンク相手ごと、Alt なら片方だけを動かす。
-    function test_moveUsesDragTargetAndLinkMode() {
+    // 選択ツールの Alt+ドラッグは複製。Alt+クリックは単独選択に残す。
+    function test_moveAndDuplicateUseDragTarget() {
         const linked = Gestures.bodyPress("select", Qt.NoModifier, 10);
         const moved = Gestures.bodyRelease(linked, true, 240, 12, 0);
         compare(moved.action, "move");
         compare(moved.frame, 240);
         compare(moved.linked, true);
         const single = Gestures.bodyPress("select", Qt.AltModifier, 10);
-        compare(Gestures.bodyRelease(single, true, 240, 12, 0).linked, false);
+        const copied = Gestures.bodyRelease(single, true, 240, 12, 0);
+        compare(copied.action, "duplicate");
+        compare(copied.frame, 240);
+        const selected = Gestures.bodyRelease(single, false, 10, 12, 0);
+        compare(selected.action, "select");
+        compare(selected.linked, false);
     }
 
     function test_clickSelectsAtReleaseFrame() {

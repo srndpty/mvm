@@ -77,6 +77,10 @@ class MvmController : public QObject {
     Q_PROPERTY(int currentClipIndex READ currentClipIndex NOTIFY stateChanged)
     Q_PROPERTY(qint64 playheadFrame READ playheadFrame NOTIFY stateChanged)
     Q_PROPERTY(qint64 totalTimelineFrames READ totalTimelineFrames NOTIFY stateChanged)
+    Q_PROPERTY(qint64 navigationTimelineFrames READ navigationTimelineFrames NOTIFY stateChanged)
+    Q_PROPERTY(QVariantList timelineMarkers READ timelineMarkers NOTIFY stateChanged)
+    Q_PROPERTY(qint64 inFrame READ inFrame NOTIFY stateChanged)
+    Q_PROPERTY(qint64 outFrame READ outFrame NOTIFY stateChanged)
     Q_PROPERTY(QString currentTimeText READ currentTimeText NOTIFY stateChanged)
     Q_PROPERTY(bool playing READ playing NOTIFY stateChanged)
     Q_PROPERTY(int shuttleRate READ shuttleRate NOTIFY stateChanged)
@@ -177,6 +181,13 @@ public:
 
     qint64 playheadFrame() const { return playheadFrame_; }
 
+    qint64 navigationTimelineFrames() const;
+    QVariantList timelineMarkers() const;
+
+    qint64 inFrame() const { return project_.inFrame.value_or(-1); }
+
+    qint64 outFrame() const { return project_.outFrame.value_or(-1); }
+
     qint64 totalTimelineFrames() const { return totalTimelineFrames_; }
 
     QString currentTimeText() const;
@@ -266,7 +277,9 @@ public:
     // テロップの定位置へ置く (textPresetPlacement)。揃えも同じ値にする。
     Q_INVOKABLE bool placeTextClip(const QString& clipId, const QString& alignment);
     Q_INVOKABLE void cancelTextPreview();
+
     int textPreviewSerial() const { return textPreviewSerial_; }
+
     Q_INVOKABLE QVariantMap textClipData(const QString& clipId) const;
     Q_INVOKABLE QString textClipAt(int x, int y);
     Q_INVOKABLE QUrl textRasterUrl(int index);
@@ -279,7 +292,9 @@ public:
     // ドラッグ中・編集中の文字だけは UI が重ねて表示するので、その clip を合成から外す。
     // 空文字で解除する。
     Q_INVOKABLE void setTextOverlayClip(const QString& clipId);
+
     QString textOverlayClip() const { return textOverlayClipId_; }
+
     QVariantMap selectedTextClip() const;
     bool previewVideoAtPlayhead() const;
     Q_INVOKABLE bool selectClip(int index);
@@ -302,6 +317,19 @@ public:
     // リンクされた選択)。QML は Alt を押しながらの操作で linked=false を渡す。
     Q_INVOKABLE bool moveTimelineClip(const QString& clipId, const QString& trackKind,
                                       int trackIndex, qint64 timelineStartFrame, bool linked);
+    Q_INVOKABLE bool copySelectedClips();
+    Q_INVOKABLE bool cutSelectedClips();
+    Q_INVOKABLE bool pasteClips();
+    Q_INVOKABLE bool duplicateSelectedClips();
+    Q_INVOKABLE bool duplicateTimelineClipsAt(const QString& clipId, const QString& trackKind,
+                                              int trackIndex, qint64 timelineStartFrame);
+    Q_INVOKABLE bool addTimelineMarker();
+    Q_INVOKABLE bool jumpToMarker(int direction);
+    Q_INVOKABLE bool markIn();
+    Q_INVOKABLE bool markOut();
+    Q_INVOKABLE bool jumpToIn();
+    Q_INVOKABLE bool jumpToOut();
+    Q_INVOKABLE bool clearInOut();
     Q_INVOKABLE bool trimClip(const QString& clipId, const QString& edge, qint64 projectFrameDelta,
                               bool linked);
     // レート調整ツール。素材範囲を変えずに速度を変えて、edge 側の端を動かす。
@@ -553,8 +581,8 @@ private:
     // 画像 clip の画素。素材を decode し、出力解像度の raster へ縦横比を保って置いたもの
     // (書き出しと同じ画素)。decode は ImageRasterCache が worker で行う。まだ生成中なら
     // nullptr を返して pending を true にする (error は空)。読めなければ error を入れる。
-    std::shared_ptr<const preview::PreviewStillImage>
-    imageStillImage(int clipIndex, QString& error, bool& pending) const;
+    std::shared_ptr<const preview::PreviewStillImage> imageStillImage(int clipIndex, QString& error,
+                                                                      bool& pending) const;
     // 再生中、frame の clip を今の source のまま表示できれば source を引き継いで true。
     // 引き継げなければ何も変更せず false (呼び出し側が一時停止して組み直す)。
     // 引き継げなかったら reason に理由を入れる。
@@ -618,6 +646,12 @@ private:
     std::int64_t pendingSourceFrame_ = 0;
     int currentClipIndex_ = -1;
     std::vector<std::string> selectedClipIds_;
+    std::vector<project::TimelineClip> clipboardClips_;
+    std::int64_t clipboardFpsNum_ = 0;
+    std::int64_t clipboardFpsDen_ = 1;
+    bool placeCopiedClips(const std::vector<project::TimelineClip>& clips,
+                          std::int64_t sourceFpsNum, std::int64_t sourceFpsDen,
+                          std::int64_t destinationFrame, int videoTrackDelta, int audioTrackDelta);
     std::unique_ptr<QTemporaryDir> textRasterDirectory_;
     // preview の合成 (const) からも埋めるので mutable。Project を変えるたびに捨てる。
     mutable QHash<QString, QImage> textRasterImages_;

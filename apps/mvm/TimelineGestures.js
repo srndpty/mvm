@@ -26,6 +26,7 @@ function bodyPress(tool, modifiers, pressFrame) {
         "gesture": gesture,
         "pressFrame": pressFrame,
         "linked": linkedFor(modifiers),
+        "duplicate": tool === "select" && (modifiers & Qt.AltModifier) !== 0,
         // レーザーの Shift は全 track、選択ツールの Shift は選択への追加。
         "allTracks": gesture === "razor" && shift,
         "additive": gesture === "move" && shift
@@ -51,7 +52,8 @@ function bodyRelease(state, moved, movedToFrame, releaseFrame, toolDragFrames) {
         return { "action": state.gesture, "delta": toolDragFrames, "linked": state.linked };
     }
     if (moved)
-        return { "action": "move", "frame": movedToFrame, "linked": state.linked };
+        return { "action": state.duplicate ? "duplicate" : "move",
+                 "frame": movedToFrame, "linked": state.linked };
     if (state.additive)
         return { "action": "toggle", "frame": releaseFrame };
     // トラックの選択ツールは press で選択済み。離しただけで選択を 1 つに戻さない。

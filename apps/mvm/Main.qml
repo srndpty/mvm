@@ -68,6 +68,92 @@ ApplicationWindow {
         enabled: root.mvmController.canRedo
         onTriggered: root.mvmController.redoLastEdit()
     }
+    Action {
+        id: copyClipsAction
+        text: "クリップをコピー"
+        shortcut: "Ctrl+C"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.copySelectedClips()
+    }
+    Action {
+        id: cutClipsAction
+        text: "クリップをカット"
+        shortcut: "Ctrl+X"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.cutSelectedClips()
+    }
+    Action {
+        id: pasteClipsAction
+        text: "クリップをペースト"
+        shortcut: "Ctrl+V"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.pasteClips()
+    }
+    Action {
+        id: duplicateClipsAction
+        text: "クリップを複製"
+        shortcut: "Ctrl+D"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.duplicateSelectedClips()
+    }
+    Action {
+        id: addMarkerAction
+        text: "マーカーを追加"
+        shortcut: "M"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.addTimelineMarker()
+    }
+    Action {
+        id: nextMarkerAction
+        text: "次のマーカーへ移動"
+        shortcut: "Shift+M"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.jumpToMarker(1)
+    }
+    Action {
+        id: previousMarkerAction
+        text: "前のマーカーへ移動"
+        shortcut: "Ctrl+Shift+M"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.jumpToMarker(-1)
+    }
+    Action {
+        id: markInAction
+        text: "インをマーク"
+        shortcut: "I"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.markIn()
+    }
+    Action {
+        id: markOutAction
+        text: "アウトをマーク"
+        shortcut: "O"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.markOut()
+    }
+    Action {
+        id: jumpInAction
+        text: "インへ移動"
+        shortcut: "Shift+I"
+        enabled: !root.mvmController.busy && root.mvmController.inFrame >= 0
+                 && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.jumpToIn()
+    }
+    Action {
+        id: jumpOutAction
+        text: "アウトへ移動"
+        shortcut: "Shift+O"
+        enabled: !root.mvmController.busy && root.mvmController.outFrame >= 0
+                 && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.jumpToOut()
+    }
+    Action {
+        id: clearInOutAction
+        text: "インとアウトを消去"
+        shortcut: "Alt+X"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.clearInOut()
+    }
     // Windows で一般的な Ctrl+Y も同じやり直しにする。Action は shortcut を 1 つしか持てない。
     Shortcut {
         sequence: "Ctrl+Y"
@@ -144,9 +230,23 @@ ApplicationWindow {
             CompactMenuItem {
                 action: redoAction
             }
+            CompactMenuSeparator {}
+            CompactMenuItem { action: copyClipsAction }
+            CompactMenuItem { action: cutClipsAction }
+            CompactMenuItem { action: pasteClipsAction }
+            CompactMenuItem { action: duplicateClipsAction }
         }
         CompactMenu {
             title: "再生"
+            CompactMenuItem { action: addMarkerAction }
+            CompactMenuItem { action: nextMarkerAction }
+            CompactMenuItem { action: previousMarkerAction }
+            CompactMenuItem { action: markInAction }
+            CompactMenuItem { action: markOutAction }
+            CompactMenuItem { action: jumpInAction }
+            CompactMenuItem { action: jumpOutAction }
+            CompactMenuItem { action: clearInOutAction }
+            CompactMenuSeparator {}
             CompactMenuItem {
                 text: "左へシャトル\tJ"
                 enabled: !root.mvmController.busy && root.mvmController.clipCount > 0
@@ -1186,7 +1286,7 @@ ApplicationWindow {
                                                 0.35, 0.5, 0.75, 1.0, 1.5, 2, 3, 4,
                                                 6, 8, 12, 16, 24]
             property int zoomIndex: 10
-            property int observedTimelineFrames: root.mvmController.totalTimelineFrames
+            property int observedTimelineFrames: root.mvmController.navigationTimelineFrames
             onObservedTimelineFramesChanged: {
                 zoomIndex = Math.max(minimumZoomIndex,
                                      Math.min(zoomLevels.length - 1, zoomIndex));
@@ -1304,7 +1404,7 @@ ApplicationWindow {
                 zoomIndex = nextIndex;
                 const nextContentWidth = Math.max(
                     timelineFlick.width,
-                    root.mvmController.totalTimelineFrames * pixelsPerFrame + 240);
+                    root.mvmController.navigationTimelineFrames * pixelsPerFrame + 240);
                 const nextMaxContentX = Math.max(0, nextContentWidth - timelineFlick.width);
                 const desiredContentX = anchorFrame * pixelsPerFrame - anchorItemX;
                 timelineFlick.contentX = Math.max(
@@ -1600,7 +1700,7 @@ ApplicationWindow {
                 width: parent.width - x - 4
                 height: parent.height - 4
                 clip: true
-                contentWidth: Math.max(width, root.mvmController.totalTimelineFrames * timelinePanel.pixelsPerFrame + 240)
+                contentWidth: Math.max(width, root.mvmController.navigationTimelineFrames * timelinePanel.pixelsPerFrame + 240)
                 contentHeight: Math.max(height, timelinePanel.tracksTop
                                         + timelinePanel.tracksHeight + 34)
                 boundsBehavior: Flickable.StopAtBounds
@@ -1680,10 +1780,51 @@ ApplicationWindow {
                             }
                         }
 
+                        Rectangle {
+                            visible: root.mvmController.inFrame >= 0
+                                     && root.mvmController.outFrame > root.mvmController.inFrame
+                            x: root.mvmController.inFrame * timelinePanel.pixelsPerFrame
+                            width: Math.max(1, (root.mvmController.outFrame
+                                                - root.mvmController.inFrame)
+                                               * timelinePanel.pixelsPerFrame)
+                            height: 4
+                            anchors.bottom: parent.bottom
+                            color: "#56a5e8"
+                        }
+                        Repeater {
+                            model: root.mvmController.timelineMarkers
+                            Rectangle {
+                                required property var modelData
+                                x: modelData * timelinePanel.pixelsPerFrame - 3
+                                y: 2
+                                width: 7
+                                height: 12
+                                color: "#f3bd54"
+                                radius: 2
+                            }
+                        }
+                        Rectangle {
+                            visible: root.mvmController.inFrame >= 0
+                            x: root.mvmController.inFrame * timelinePanel.pixelsPerFrame - 2
+                            y: 0
+                            width: 4
+                            height: parent.height
+                            color: "#56a5e8"
+                        }
+                        Rectangle {
+                            visible: root.mvmController.outFrame >= 0
+                            x: root.mvmController.outFrame * timelinePanel.pixelsPerFrame - 2
+                            y: 0
+                            width: 4
+                            height: parent.height
+                            color: "#56a5e8"
+                        }
+
                         // ルーラー上はクリックでもドラッグでもスクラブできる。
                         MouseArea {
                             anchors.fill: parent
-                            enabled: !root.mvmController.busy && root.mvmController.clipCount > 0
+                            enabled: !root.mvmController.busy
+                                     && root.mvmController.navigationTimelineFrames > 0
                             cursorShape: Qt.SizeHorCursor
                             preventStealing: true
                             onPressed: mouse => {
@@ -2301,7 +2442,7 @@ ApplicationWindow {
                                             timelinePanel.selectFromFrame(pressFrame, mouse.modifiers,
                                                                           clipItem.trackKind, clipItem.trackIndex);
                                         } else if (!clipItem.bodyAdditiveSelection
-                                                   && (!clipItem.selected || !clipItem.editLinked)) {
+                                                   && !clipItem.selected) {
                                             // Alt+クリックはリンク相手を外して、この clip だけを選ぶ。
                                             const frame = pressFrame;
                                             root.mvmController.selectTimelineClip(clipItem.clipId, frame, clipItem.editLinked);
@@ -2450,6 +2591,11 @@ ApplicationWindow {
                                             root.mvmController.moveTimelineClip(
                                                 releasedClipId, destinationKind, destinationIndex,
                                                 action.frame, action.linked);
+                                            break;
+                                        case "duplicate":
+                                            root.mvmController.duplicateTimelineClipsAt(
+                                                releasedClipId, destinationKind, destinationIndex,
+                                                action.frame);
                                             break;
                                         case "toggle":
                                             root.mvmController.toggleTimelineClipSelection(

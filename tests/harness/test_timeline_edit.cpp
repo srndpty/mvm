@@ -1648,7 +1648,7 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
     const auto loaded = mvm::project::loadProjectJson(projectFile);
     check(loaded.success, "保存した .mvm を読み込めません");
     bool timelineFieldsMatch =
-        loaded.success && loaded.project.schemaVersion == 8 &&
+        loaded.success && loaded.project.schemaVersion == 9 &&
         loaded.project.timelineFpsNum == 60 && loaded.project.timelineFpsDen == 1 &&
         loaded.project.outputWidth == 3840 && loaded.project.outputHeight == 2160 &&
         loaded.project.videoTracks == live.videoTracks &&
@@ -1672,7 +1672,7 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
         }
     }
     check(timelineFieldsMatch,
-          "schema 8のoutput "
+          "schema 9のoutput "
           "size・track構成・mute・clip種別・trim・effects・速度がround-tripしません");
 
     auto invalidOutput = mvm::project::createDefaultProject();
@@ -1684,10 +1684,11 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
     const auto strangerPath = root / "stranger.mvm";
     {
         std::ofstream stranger(strangerPath, std::ios::binary);
-        stranger << R"({"schema_version": 8, "timeline_fps_num": 60, "timeline_fps_den": 1,)"
-                 << R"("video_tracks": [{"name": "V1", "muted": false}], "audio_tracks": [],)"
-                 << R"("manim_assets": [], "timeline_clips": [],)"
-                 << R"("media_folders": [], "media_items": []})";
+        stranger
+            << R"({"schema_version": 9, "timeline_markers": [], "in_frame": null, "out_frame": null, "timeline_fps_num": 60, "timeline_fps_den": 1,)"
+            << R"("video_tracks": [{"name": "V1", "muted": false}], "audio_tracks": [],)"
+            << R"("manim_assets": [], "timeline_clips": [],)"
+            << R"("media_folders": [], "media_items": []})";
     }
     check(!mvm::project::loadProjectJson(strangerPath).success,
           "format markerが無いファイルを .mvm として受理しました");
@@ -1803,6 +1804,50 @@ void testClipKeyEditing() {
     check(!validateTimeline(malformed).success, "映像clipの音量キーを拒否する");
 }
 
+void testTimelineMarks(const std::filesystem::path& root) {
+    using namespace mvm::project;
+    auto project = createDefaultProject();
+    project.timelineMarkers = {5, 15, 40};
+    project.inFrame = 5;
+    project.outFrame = 40;
+    check(validateTimeline(project).success, "正しいマーカーとイン・アウトを受理する");
+    const auto projectPath = root / "marks.mvm";
+    const auto serialized = serializeProjectJson(project, projectPath);
+    check(serialized.success, "マーカー付きProjectを保存形式へ変換する");
+    if (serialized.success) {
+        const auto loaded = parseProjectJsonText(serialized.json, projectPath);
+        check(loaded.success && loaded.project.timelineMarkers == project.timelineMarkers &&
+                  loaded.project.inFrame == project.inFrame &&
+                  loaded.project.outFrame == project.outFrame,
+              "マーカーとイン・アウトを往復する");
+        auto missing = serialized.json;
+        const auto markerKey = missing.find("\"timeline_markers\":");
+        if (markerKey != std::string::npos) {
+            const auto end = missing.find("],", markerKey);
+            missing.erase(markerKey, end + 2 - markerKey);
+            check(!parseProjectJsonText(missing, projectPath).success,
+                  "マーカーfield欠損を拒否する");
+        }
+    }
+    auto invalid = project;
+    invalid.timelineMarkers = {5, 5};
+    check(!validateTimeline(invalid).success, "重複マーカーを拒否する");
+    invalid = project;
+    invalid.timelineMarkers = {15, 5};
+    check(!validateTimeline(invalid).success, "昇順でないマーカーを拒否する");
+    invalid = project;
+    invalid.inFrame = 40;
+    check(!validateTimeline(invalid).success, "空のイン・アウト範囲を拒否する");
+    check(setProjectVideoSettings(project, 1920, 1080, 30, 1).success &&
+              project.timelineMarkers == std::vector<std::int64_t>({3, 8, 20}) &&
+              project.inFrame == 3 && project.outFrame == 20,
+          "フレームレート変更でマーカーとイン・アウトを変換する");
+    // clip が無くなっても保存位置は保持し、再生尺には加えない。
+    const auto timeline = validateTimeline(project);
+    check(timeline.success && timeline.totalFrames == 0 && project.timelineMarkers.back() == 20,
+          "clip末尾より後のマーカーを保持し、再生尺を延ばさない");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1811,6 +1856,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     testFrameConversions();
+    testTimelineMarks(fromUtf8(argv[1]));
     testClipKeyEditing();
     testAudioSourceSetCompensation();
     testTimelineFrameRates();
