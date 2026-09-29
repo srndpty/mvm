@@ -94,33 +94,34 @@ void WaveformView::paint(QPainter* painter) {
     if (!peaks || peaks->channels <= 0 || !(secondsPerPixel_ > 0.0))
         return;
 
+    // Premiere と同じく、各 channel 行の下端を基線にして振幅の大きさを上へ描く。
     const int channels = peaks->channels;
     const double rowHeight = h / channels;
     QColor guide = color_;
     guide.setAlphaF(0.25);
     painter->setPen(QPen(guide, 1.0));
     for (int channel = 0; channel < channels; ++channel) {
-        const double center = rowHeight * (channel + 0.5);
-        painter->drawLine(QPointF(0.0, center), QPointF(w, center));
-        if (channel > 0)
-            painter->drawLine(QPointF(0.0, rowHeight * channel), QPointF(w, rowHeight * channel));
+        // 1 pixel の線が行の外へはみ出さないよう、基線は下端の半 pixel 内側に引く。
+        const double baseline = rowHeight * (channel + 1) - 0.5;
+        painter->drawLine(QPointF(0.0, baseline), QPointF(w, baseline));
     }
 
     const int columns = static_cast<int>(std::ceil(w));
     std::vector<QLineF> lines;
     lines.reserve(static_cast<std::size_t>(columns) * static_cast<std::size_t>(channels));
     for (int channel = 0; channel < channels; ++channel) {
-        const double center = rowHeight * (channel + 0.5);
-        const double halfHeight = std::max(0.5, rowHeight / 2.0 - 1.0);
+        const double bottom = rowHeight * (channel + 1);
+        const double fullHeight = std::max(1.0, rowHeight - 1.0);
         for (int x = 0; x < columns; ++x) {
             const double begin = startSeconds_ + x * secondsPerPixel_;
             const auto column =
                 core::waveformColumn(*peaks, channel, begin, begin + secondsPerPixel_);
             if (!column.valid)
                 continue;
-            // 無音でも中心線より 1 pixel は描き、音のある区間と区別しやすくする。
-            const double top = center - std::max(0.5, static_cast<double>(column.maximum) * halfHeight);
-            const double bottom = center - std::min(-0.5, static_cast<double>(column.minimum) * halfHeight);
+            const double amplitude = std::max(std::abs(static_cast<double>(column.minimum)),
+                                              std::abs(static_cast<double>(column.maximum)));
+            // 無音でも基線から 1 pixel は描き、音のある区間と区別しやすくする。
+            const double top = bottom - std::max(1.0, std::min(1.0, amplitude) * fullHeight);
             lines.emplace_back(x + 0.5, top, x + 0.5, bottom);
         }
     }

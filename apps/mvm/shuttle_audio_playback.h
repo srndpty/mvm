@@ -1,15 +1,14 @@
 #ifndef MVM_APPS_MVM_SHUTTLE_AUDIO_PLAYBACK_H
 #define MVM_APPS_MVM_SHUTTLE_AUDIO_PLAYBACK_H
 
+#include "clip_sample_reader.h"
 #include "media/audio_preview/audio_clock.h"
-#include "media/audio_preview/audio_decode_worker.h"
 #include "media/audio_preview/wasapi_audio_sink.h"
 #include "project/project.h"
 #include "shuttle_audio_mix.h"
 
 #include <atomic>
 #include <cstdint>
-#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -41,21 +40,13 @@ public:
     std::string error() const;
 
 private:
-    // plan_.clips と同じ添字で並ぶ decode 状態。
-    struct ClipReader {
-        std::unique_ptr<audio::AudioDecodeWorker> worker;
-        std::int64_t nextSample = -1;
-    };
-
-    bool readSamples(std::size_t clipIndex, std::int64_t first, std::int64_t count,
-                     std::vector<float>& pcm, std::string& error);
     void produce();
 
     audio::AudioFrameQueue queue_;
     audio::AudioMasterClock clock_;
     audio::WasapiAudioSink sink_;
     ShuttleAudioPlan plan_;
-    std::vector<ClipReader> readers_;
+    ClipSampleReaders readers_;
     std::thread producer_;
     std::atomic<bool> running_{false};
     std::atomic<std::uint64_t> nonSilentSamples_{0};

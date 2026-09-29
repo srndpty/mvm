@@ -302,6 +302,9 @@ qt_add_executable(mvm_test_controller_export
     ${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_mix.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_playback.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/clip_sample_reader.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/scrub_audio_grain.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/scrub_audio_playback.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/timeline_clip_model.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/track_model.cpp)
 target_include_directories(mvm_test_controller_export PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
@@ -321,6 +324,9 @@ qt_add_executable(mvm_test_sourceless_timeline_playback
     ${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_mix.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_playback.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/clip_sample_reader.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/scrub_audio_grain.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/scrub_audio_playback.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/timeline_clip_model.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/track_model.cpp)
 target_include_directories(mvm_test_sourceless_timeline_playback PRIVATE
@@ -387,7 +393,8 @@ set_tests_properties(m6b_shuttle_audio_mix PROPERTIES
 add_executable(mvm_test_shuttle_audio
     harness/test_shuttle_audio.cpp
     ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_mix.cpp
-    ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_playback.cpp)
+    ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_playback.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/clip_sample_reader.cpp)
 target_include_directories(mvm_test_shuttle_audio PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
 target_link_libraries(mvm_test_shuttle_audio PRIVATE
     mvm::audio_preview mvm::timeline_playback mvm::timeline_preview_mapping
@@ -395,6 +402,34 @@ target_link_libraries(mvm_test_shuttle_audio PRIVATE
 add_test(NAME m6b_shuttle_audio_focused
     COMMAND mvm_test_shuttle_audio ${CMAKE_SOURCE_DIR}/tests/assets/smoke/wav_48k.wav)
 set_tests_properties(m6b_shuttle_audio_focused PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    LABELS workstation
+    TIMEOUT 120)
+
+# scrub 音声の grain 生成規則 (fade・位置の latch・差し替え)。WASAPI も decoder も要らない。
+add_executable(mvm_test_scrub_audio_grain
+    harness/test_scrub_audio_grain.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/scrub_audio_grain.cpp)
+target_include_directories(mvm_test_scrub_audio_grain PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_test_scrub_audio_grain PRIVATE mvm::audio_preview mvm::warnings)
+add_test(NAME m6b_scrub_audio_grain COMMAND mvm_test_scrub_audio_grain)
+set_tests_properties(m6b_scrub_audio_grain PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}")
+
+# 実際の WASAPI endpoint で scrub 音声を鳴らし、drag 中だけ音が出て止めたら鳴らないことを見る。
+add_executable(mvm_test_scrub_audio
+    harness/test_scrub_audio.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_mix.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/clip_sample_reader.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/scrub_audio_grain.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/scrub_audio_playback.cpp)
+target_include_directories(mvm_test_scrub_audio PRIVATE ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_test_scrub_audio PRIVATE
+    mvm::audio_preview mvm::timeline_playback mvm::timeline_preview_mapping
+    mvm::project mvm::warnings)
+add_test(NAME m6b_scrub_audio_focused
+    COMMAND mvm_test_scrub_audio ${CMAKE_SOURCE_DIR}/tests/assets/smoke/wav_48k.wav)
+set_tests_properties(m6b_scrub_audio_focused PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     LABELS workstation
     TIMEOUT 120)

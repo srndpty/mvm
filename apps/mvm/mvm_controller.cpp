@@ -17,6 +17,7 @@
 #include "project/path_identity.h"
 #include "project/project_json.h"
 #include "project/timeline_edit.h"
+#include "scrub_audio_playback.h"
 #include "shuttle_audio_mix.h"
 #include "shuttle_audio_playback.h"
 #include "timeline_clip_model.h"
@@ -427,6 +428,12 @@ MvmController::MvmController(std::filesystem::path projectPath,
     // seek は engine の Seeking state を挟むため、coalesce しないと詰まる。
     scrubTimer_.setInterval(40);
     connect(&scrubTimer_, &QTimer::timeout, this, [this] {
+        if (scrubAudio_ && !scrubAudio_->error().empty()) {
+            // 映像の scrub は続け、音声だけ止めて理由を出す。
+            const QString error = QString::fromStdString(scrubAudio_->error());
+            stopScrubAudio();
+            setStatus(QStringLiteral("scrub音声を再生できません: ") + error);
+        }
         if (!scrubPending_) {
             // drag 終了後は、最後の位置を反映し終えてから timer を止める。
             if (!scrubbing_)
@@ -1310,11 +1317,15 @@ void MvmController::pollAudioMeter() {
     if (!previewEngine_)
         return;
     const auto telemetry = previewEngine_->telemetry();
-    const auto shuttle = shuttleAudio_ ? shuttleAudio_->sinkSnapshot() : audio::WasapiSnapshot{};
-    const double left = linearToDb(
-        shuttleAudio_ ? shuttle.meterPeakLeft : telemetry.audioMeterPeakLeft, kMeterSilenceDb);
-    const double right = linearToDb(
-        shuttleAudio_ ? shuttle.meterPeakRight : telemetry.audioMeterPeakRight, kMeterSilenceDb);
+    // シャトルと scrub は preview engine と別の endpoint で鳴らすので、鳴っている側の peak を出す。
+    const bool ownSink = shuttleAudio_ || scrubAudio_;
+    const auto own = shuttleAudio_ ? shuttleAudio_->sinkSnapshot()
+                     : scrubAudio_ ? scrubAudio_->sinkSnapshot()
+                                   : audio::WasapiSnapshot{};
+    const double left =
+        linearToDb(ownSink ? own.meterPeakLeft : telemetry.audioMeterPeakLeft, kMeterSilenceDb);
+    const double right =
+        linearToDb(ownSink ? own.meterPeakRight : telemetry.audioMeterPeakRight, kMeterSilenceDb);
     if (std::abs(left - audioMeterDbLeft_) < 0.05 && std::abs(right - audioMeterDbRight_) < 0.05)
         return;
     audioMeterDbLeft_ = left;
@@ -3241,7 +3252,27 @@ void MvmController::beginScrub() {
     pauseTimeline();
     scrubbing_ = true;
     scrubPending_ = false;
+    stopScrubAudio();
+    // Premiere と同じく drag 位置の音を短い断片で鳴らす。鳴らす clip が無ければ WASAPI を開かない。
+    if (!project_.timelineClips.empty() && hasShuttleAudibleClip(project_)) {
+        auto scrubAudio = std::make_unique<ScrubAudioPlayback>();
+        std::string audioError;
+        if (scrubAudio->start(project_, static_cast<float>(masterVolume_), audioError)) {
+            scrubAudio_ = std::move(scrubAudio);
+        } else {
+            // 音声 device の障害で映像の scrub まで止めない。無音であることは status に残す。
+            setStatus(QStringLiteral("scrub音声を開始できないため無音です: ") +
+                      QString::fromStdString(audioError));
+        }
+    }
     scrubTimer_.start();
+}
+
+void MvmController::stopScrubAudio() {
+    if (!scrubAudio_)
+        return;
+    scrubAudio_->stop();
+    scrubAudio_.reset();
 }
 
 void MvmController::scrubToFrame(qint64 frame) {
@@ -3257,12 +3288,15 @@ void MvmController::scrubToFrame(qint64 frame) {
     }
     scrubTargetFrame_ = clamped;
     scrubPending_ = true;
+    if (scrubAudio_)
+        scrubAudio_->setTarget(clamped);
 }
 
 void MvmController::endScrub() {
     if (!scrubbing_)
         return;
     scrubbing_ = false;
+    stopScrubAudio();
     // 最後の位置は必ず反映する。drag の途中で落とした frame を最終位置にしない。
     // ここで seek が Seeking 中に弾かれても timer が引き継いで反映する。
     if (scrubPending_ && seekTimelineFrame(scrubTargetFrame_))
@@ -3395,6 +3429,8 @@ bool MvmController::playTimeline() {
     }
     if (playing_)
         return true;
+    // drag 中に再生を始めたら scrub の断片と通常再生が二重に鳴らないようにする。
+    stopScrubAudio();
     if (project_.timelineClips.empty()) {
         setStatus(QStringLiteral("再生するclipがありません"));
         return false;
@@ -3674,6 +3710,7 @@ bool MvmController::changeShuttleRate(int direction) {
     scrubPending_ = false;
     if (!scrubbing_)
         scrubTimer_.stop();
+    stopScrubAudio();
     if (*next == 1) {
         if (!playTimeline())
             return false;
@@ -5921,6 +5958,7 @@ void MvmController::shutdown() {
         shuttleAudio_->stop();
         shuttleAudio_.reset();
     }
+    stopScrubAudio();
     scrubTimer_.stop();
     slipPreviewTimer_.stop();
     slipPreview_.reset();

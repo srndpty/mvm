@@ -30,8 +30,8 @@ bool ShuttleAudioPlayback::start(const project::Project& project, int rate, std:
         error = "シャトル音声で鳴らすaudio clipがありません";
         return false;
     }
-    readers_.clear();
-    readers_.resize(plan_.clips.size());
+    // 前進シャトルでは前 block の続きから rate 未満しか離れていないので、seek せずに読む。
+    readers_.reset(plan_.clips.size(), std::max(0, plan_.rate));
     if (!sink_.open(error, volume))
         return false;
     running_ = true;
@@ -61,84 +61,6 @@ std::string ShuttleAudioPlayback::error() const {
     return error_;
 }
 
-bool ShuttleAudioPlayback::readSamples(std::size_t clipIndex, std::int64_t first,
-                                       std::int64_t count, std::vector<float>& pcm,
-                                       std::string& error) {
-    auto& clip = readers_[clipIndex];
-    if (!clip.worker) {
-        clip.worker = std::make_unique<audio::AudioDecodeWorker>(
-            audio::SourceId{static_cast<std::uint64_t>(clipIndex) + 2});
-        // 素材 sample は通常再生と同じく速度で伸縮した時間軸で数える (sourceOffset も同じ)。
-        const auto& timelineClip = plan_.clips[clipIndex].clip;
-        if (!clip.worker->setPlaybackSpeed(timelineClip.speedNum, timelineClip.speedDen,
-                                           timelineClip.preservePitch, error) ||
-            !clip.worker->start(plan_.clips[clipIndex].path, error))
-            return false;
-    }
-    // 前進シャトルでは前 block の続きから rate 未満しか離れていないので、
-    // seek せずに続きから読み、要求より前の分を捨てる。
-    const std::int64_t skipped =
-        plan_.rate > 0 && clip.nextSample >= 0 && first > clip.nextSample &&
-                first - clip.nextSample < plan_.rate
-            ? first - clip.nextSample
-            : 0;
-    first -= skipped;
-    count += skipped;
-    audio::SourceGeneration generation = clip.worker->queue().generation();
-    if (clip.nextSample != first) {
-        clip.worker->pause();
-        audio::AudioSeekTicket ticket;
-        if (clip.worker->requestSeek(first, ticket, error) !=
-            audio::AudioSeekRequestResult::Accepted) {
-            error = error.empty() ? "シャトル音声のseekを要求できません" : error;
-            return false;
-        }
-        audio::AudioSeekCompletion completion;
-        for (int attempts = 0; running_ && attempts < 25; ++attempts) {
-            const auto result = clip.worker->waitSeek(ticket, 200, completion);
-            if (result == audio::AudioSeekWaitResult::Ready)
-                break;
-            if (result != audio::AudioSeekWaitResult::Timeout) {
-                error = "シャトル音声のseek結果が失効しました";
-                return false;
-            }
-        }
-        if (!running_)
-            return false;
-        if (!completion.completed) {
-            error = completion.error.empty() ? "シャトル音声のseekがタイムアウトしました"
-                                             : completion.error;
-            return false;
-        }
-        generation = completion.seekGeneration;
-    }
-    clip.worker->play();
-    pcm.assign(static_cast<std::size_t>(count) * audio::kInternalChannels, 0.0F);
-    std::int64_t consumed = 0;
-    int waits = 0;
-    while (running_ && consumed < count) {
-        const auto result = clip.worker->queue().consume(
-            pcm.data() + consumed * audio::kInternalChannels, first + consumed,
-            std::min<std::int64_t>(count - consumed, 2048), generation);
-        consumed += result.audioSamples;
-        if (consumed == count)
-            break;
-        if (result.shortageKind == audio::AudioShortageKind::TerminalEof)
-            break;
-        if (result.audioSamples > 0) {
-            waits = 0;
-            continue;
-        }
-        if (++waits > 25 || !clip.worker->queue().waitForSamples(1, 200)) {
-            error = "シャトル音声のdecodeが必要なsampleを供給できません";
-            return false;
-        }
-    }
-    clip.nextSample = first + count;
-    pcm.erase(pcm.begin(), pcm.begin() + skipped * audio::kInternalChannels);
-    return running_;
-}
-
 void ShuttleAudioPlayback::produce() {
     std::int64_t next = 0;
     while (running_) {
@@ -149,7 +71,8 @@ void ShuttleAudioPlayback::produce() {
         std::string error;
         const auto read = [this](std::size_t clipIndex, std::int64_t first, std::int64_t count,
                                  std::vector<float>& source, std::string& readError) {
-            return readSamples(clipIndex, first, count, source, readError);
+            return readers_.read(plan_.clips[clipIndex], clipIndex, first, count, source,
+                                 running_, readError);
         };
         if (!mixShuttleBlock(plan_, next, kBlockSamples, read, pcm, error)) {
             if (running_) {
