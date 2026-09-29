@@ -497,7 +497,7 @@ int main(int argc, char** argv) {
                                        {},
                                        {}};
         top.track = mvm::project::TrackRef{mvm::project::TrackKind::Video, 1};
-        top.effects.scalePercent = 60;
+        top.effects.scaleXPercent = top.effects.scaleYPercent = 60;
         top.effects.positionXPercent = 10;
         top.effects.cropLeftPercent = 15;
         top.effects.opacityPercent = 50;
@@ -574,7 +574,7 @@ int main(int argc, char** argv) {
         effects.cropTopPercent = 10;
         effects.cropRightPercent = 20;
         effects.cropBottomPercent = 5;
-        effects.scalePercent = 60;
+        effects.scaleXPercent = effects.scaleYPercent = 60;
         effects.positionXPercent = 12;
         effects.positionYPercent = -8;
         effects.opacityPercent = 50;

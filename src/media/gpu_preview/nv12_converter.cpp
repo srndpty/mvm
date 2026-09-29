@@ -41,6 +41,7 @@ cbuffer Params : register(b0)
     float4 misc;     // x = chroma neutral, y = straight layer opacity
     float4 destination; // effect quad: normalized x/y/w/h
     float4 geometry;    // x = cos, y = sin, z/w = 出力の幅/高さ (画素)
+    float4 pivot;       // xy = 回転の中心 (正規化座標)
 };
 
 Texture2DArray<float4> texLuma   : register(t0);
@@ -67,7 +68,8 @@ VSOut vs_effect(uint id : SV_VertexID)
     VSOut o;
     float2 unit = corners[id];
     float2 p = destination.xy + unit * destination.zw;
-    float2 center = destination.xy + destination.zw * 0.5;
+    // 回転の中心は描く矩形の中心とは限らない (crop が letterbox の外へ出た場合)。
+    float2 center = pivot.xy;
     // 回転は画素空間で行う。正規化座標のまま回すと、正方形でない出力では shear になる。
     float2 delta = (p - center) * geometry.zw;
     delta = float2(geometry.x * delta.x - geometry.y * delta.y,
@@ -117,6 +119,7 @@ struct ShaderParams {
     float misc[4];
     float destination[4];
     float geometry[4];
+    float pivot[4];
 };
 
 bool compile(const char* entry, const char* target, ID3DBlob** out, std::string& err) {
@@ -528,7 +531,8 @@ void Nv12Converter::retireEntriesForTexture(ID3D11Texture2D* texture, GpuRetirem
 bool Nv12Converter::drawInternal(const DecodedGpuFrame& frame, ID3D11RenderTargetView* rtv,
                                  const FitRect& viewport, const float uvRect[4], bool linearFilter,
                                  float opacity, std::string& err, bool effectAware, int targetWidth,
-                                 int targetHeight, float rotationDegrees) {
+                                 int targetHeight, float rotationDegrees, float pivotX,
+                                 float pivotY) {
     SrvPair srv;
     if (!acquireSrvs(frame, srv, err))
         return false;
@@ -580,6 +584,8 @@ bool Nv12Converter::drawInternal(const DecodedGpuFrame& frame, ID3D11RenderTarge
         params.geometry[1] = std::sin(radians);
         params.geometry[2] = static_cast<float>(targetWidth);
         params.geometry[3] = static_cast<float>(targetHeight);
+        params.pivot[0] = pivotX;
+        params.pivot[1] = pivotY;
     }
 
     ID3D11DeviceContext* ctx = shared_->context();
@@ -675,16 +681,17 @@ bool Nv12Converter::drawLayer(const DecodedGpuFrame& frame, ID3D11RenderTargetVi
 bool Nv12Converter::drawEffectLayer(const DecodedGpuFrame& frame, ID3D11RenderTargetView* rtv,
                                     int targetWidth, int targetHeight, const FitRect& destination,
                                     const float sourceUv[4], float opacity, float rotationDegrees,
-                                    bool linearFilter, std::string& err) {
+                                    float pivotX, float pivotY, bool linearFilter,
+                                    std::string& err) {
     if (!ready_ || !rtv || !frame.valid() || targetWidth <= 0 || targetHeight <= 0 ||
         destination.width <= 0 || destination.height <= 0 || opacity < 0.0f || opacity > 1.0f ||
-        !std::isfinite(rotationDegrees)) {
+        !std::isfinite(rotationDegrees) || !std::isfinite(pivotX) || !std::isfinite(pivotY)) {
         err = "effect-aware compositor layerの引数が不正です";
         return false;
     }
     std::lock_guard<D3D11Lock> guard(shared_->lock());
     return drawInternal(frame, rtv, destination, sourceUv, linearFilter, opacity, err, true,
-                        targetWidth, targetHeight, rotationDegrees);
+                        targetWidth, targetHeight, rotationDegrees, pivotX, pivotY);
 }
 
 bool Nv12Converter::readSourceProbe(const DecodedGpuFrame& frame, float u, float v,

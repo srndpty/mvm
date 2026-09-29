@@ -724,7 +724,7 @@ private:
     }
 
     bool parseClipEffects(ClipEffects& effects) {
-        bool seen[14] = {};
+        bool seen[15] = {};
         if (!consume('{'))
             return false;
         skipWhitespace();
@@ -738,8 +738,10 @@ private:
                     field = 0;
                 else if (key == "position_y_percent")
                     field = 1;
-                else if (key == "scale_percent")
+                else if (key == "scale_x_percent")
                     field = 2;
+                else if (key == "scale_y_percent")
+                    field = 14;
                 else if (key == "rotation_degrees")
                     field = 3;
                 else if (key == "opacity_percent")
@@ -771,7 +773,9 @@ private:
                     return false;
                 if (field == 1 && !parseNumber(effects.positionYPercent))
                     return false;
-                if (field == 2 && !parseNumber(effects.scalePercent))
+                if (field == 2 && !parseNumber(effects.scaleXPercent))
+                    return false;
+                if (field == 14 && !parseNumber(effects.scaleYPercent))
                     return false;
                 if (field == 3 && !parseNumber(effects.rotationDegrees))
                     return false;
@@ -1422,7 +1426,8 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
              << "      \"effects\": {\n"
              << "        \"position_x_percent\": " << clip.effects.positionXPercent << ",\n"
              << "        \"position_y_percent\": " << clip.effects.positionYPercent << ",\n"
-             << "        \"scale_percent\": " << clip.effects.scalePercent << ",\n"
+             << "        \"scale_x_percent\": " << clip.effects.scaleXPercent << ",\n"
+             << "        \"scale_y_percent\": " << clip.effects.scaleYPercent << ",\n"
              << "        \"rotation_degrees\": " << clip.effects.rotationDegrees << ",\n"
              << "        \"opacity_percent\": " << clip.effects.opacityPercent << ",\n"
              << "        \"volume_percent\": " << clip.effects.volumePercent << ",\n"

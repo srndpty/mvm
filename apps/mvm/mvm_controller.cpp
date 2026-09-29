@@ -176,6 +176,72 @@ std::string newClipId() {
     return QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
 }
 
+// 素材 1 つを timeline へ置くときの clip。音声を持つ動画は linkedAudio にリンク相手を持つ。
+// 置き場所 (track / 開始位置) は呼び出し側が決める。
+struct MediaClips {
+    bool success = false;
+    QString error;
+    project::TimelineClip primary;
+    std::optional<project::TimelineClip> linkedAudio;
+};
+
+project::TimelineClip mediaClip(project::TimelineClipKind kind,
+                                const std::filesystem::path& mediaPath, std::int64_t fpsNum,
+                                std::int64_t fpsDen, std::int64_t frameCount) {
+    project::TimelineClip clip;
+    clip.kind = kind;
+    clip.mediaPath = mediaPath;
+    clip.name = QString::fromStdWString(mediaPath.filename().wstring()).toStdString();
+    clip.id = newClipId();
+    clip.sourceFpsNum = fpsNum;
+    clip.sourceFpsDen = fpsDen;
+    clip.sourceFrameCount = frameCount;
+    clip.sourceInFrame = 0;
+    clip.sourceOutFrame = frameCount;
+    return clip;
+}
+
+MediaClips buildMediaClips(const project::Project& project, const std::filesystem::path& mediaPath,
+                           project::MediaKind kind) {
+    MediaClips result;
+    switch (kind) {
+    case project::MediaKind::Video: {
+        const ProbedMedia media = probeMedia(mediaPath);
+        if (!media.success) {
+            result.error = media.error;
+            return result;
+        }
+        result.primary = mediaClip(project::TimelineClipKind::Video, mediaPath, media.fpsNum,
+                                   media.fpsDen, media.frameCount);
+        if (media.hasAudio) {
+            result.linkedAudio = mediaClip(project::TimelineClipKind::Audio, mediaPath,
+                                           media.fpsNum, media.fpsDen, media.frameCount);
+            result.primary.linkGroupId = result.linkedAudio->linkGroupId = newClipId();
+        }
+        break;
+    }
+    case project::MediaKind::Audio: {
+        const ProbedMedia media =
+            probeAudioMedia(mediaPath, project.timelineFpsNum, project.timelineFpsDen);
+        if (!media.success) {
+            result.error = media.error;
+            return result;
+        }
+        result.primary = mediaClip(project::TimelineClipKind::Audio, mediaPath, media.fpsNum,
+                                   media.fpsDen, media.frameCount);
+        break;
+    }
+    case project::MediaKind::Image:
+        result.primary = mediaClip(
+            project::TimelineClipKind::Image, mediaPath, project.timelineFpsNum,
+            project.timelineFpsDen,
+            project::defaultStillClipFrames(project.timelineFpsNum, project.timelineFpsDen));
+        break;
+    }
+    result.success = true;
+    return result;
+}
+
 class QtEventDispatcher final : public preview::PreviewEventDispatcher {
 public:
     explicit QtEventDispatcher(QObject* context) : context_(context) {}
@@ -369,8 +435,10 @@ bool MvmController::applyEffectKey(project::ClipEffects& effects, const QString&
         effects.positionXPercent = value;
     else if (key == QStringLiteral("positionY"))
         effects.positionYPercent = value;
-    else if (key == QStringLiteral("scale"))
-        effects.scalePercent = value;
+    else if (key == QStringLiteral("scaleX"))
+        effects.scaleXPercent = value;
+    else if (key == QStringLiteral("scaleY"))
+        effects.scaleYPercent = value;
     else if (key == QStringLiteral("rotation"))
         effects.rotationDegrees = value;
     else if (key == QStringLiteral("opacity"))
@@ -408,8 +476,12 @@ double MvmController::effectPositionY() const {
     return currentEffects().positionYPercent;
 }
 
-double MvmController::effectScale() const {
-    return currentEffects().scalePercent;
+double MvmController::effectScaleX() const {
+    return currentEffects().scaleXPercent;
+}
+
+double MvmController::effectScaleY() const {
+    return currentEffects().scaleYPercent;
 }
 
 double MvmController::effectRotation() const {
@@ -1869,9 +1941,9 @@ bool MvmController::addVideoClip(const QUrl& fileUrl) {
     }
 
     const std::filesystem::path mediaPath(localFile.toStdWString());
-    const ProbedMedia media = probeMedia(mediaPath);
-    if (!media.success) {
-        setStatus(media.error);
+    auto clips = buildMediaClips(project_, mediaPath, project::MediaKind::Video);
+    if (!clips.success) {
+        setStatus(clips.error);
         return false;
     }
     project::Project candidate = project_;
@@ -1888,20 +1960,8 @@ bool MvmController::addVideoClip(const QUrl& fileUrl) {
         }
         videoTrackIndex = addedTrack.selectedIndex;
     }
-    const std::string linkGroupId = media.hasAudio ? newClipId() : std::string{};
-    project::TimelineClip clip;
-    clip.kind = project::TimelineClipKind::Video;
-    clip.mediaPath = mediaPath;
-    clip.name = info.fileName().toStdString();
-    clip.id = newClipId();
-    clip.sourceFpsNum = media.fpsNum;
-    clip.sourceFpsDen = media.fpsDen;
-    clip.sourceFrameCount = media.frameCount;
-    clip.sourceInFrame = 0;
-    clip.sourceOutFrame = media.frameCount;
-    clip.linkGroupId = linkGroupId;
     project::TimelineEditResult placed;
-    if (media.hasAudio) {
+    if (clips.linkedAudio) {
         if (candidate.audioTracks.empty()) {
             const auto addedTrack = project::addTrack(candidate, project::TrackKind::Audio);
             if (!addedTrack.success) {
@@ -1909,28 +1969,17 @@ bool MvmController::addVideoClip(const QUrl& fileUrl) {
                 return false;
             }
         }
-        project::TimelineClip audioClip;
-        audioClip.kind = project::TimelineClipKind::Audio;
-        audioClip.mediaPath = mediaPath;
-        audioClip.name = info.fileName().toStdString();
-        audioClip.id = newClipId();
-        audioClip.sourceFpsNum = media.fpsNum;
-        audioClip.sourceFpsDen = media.fpsDen;
-        audioClip.sourceFrameCount = media.frameCount;
-        audioClip.sourceInFrame = 0;
-        audioClip.sourceOutFrame = media.frameCount;
-        audioClip.linkGroupId = linkGroupId;
         placed = project::placeLinkedAvPairAt(
-            candidate, clip, project::TrackRef{project::TrackKind::Video, videoTrackIndex},
-            audioClip, project::TrackRef{project::TrackKind::Audio, 0}, playheadFrame_);
+            candidate, clips.primary, project::TrackRef{project::TrackKind::Video, videoTrackIndex},
+            *clips.linkedAudio, project::TrackRef{project::TrackKind::Audio, 0}, playheadFrame_);
         // A1 が使用中なら既存 clip を壊さず、新しい audio track に同じ位置で置く。
         if (!placed.success) {
             const auto addedTrack = project::addTrack(candidate, project::TrackKind::Audio);
             if (addedTrack.success)
                 placed = project::placeLinkedAvPairAt(
-                    candidate, std::move(clip),
+                    candidate, std::move(clips.primary),
                     project::TrackRef{project::TrackKind::Video, videoTrackIndex},
-                    std::move(audioClip),
+                    std::move(*clips.linkedAudio),
                     project::TrackRef{project::TrackKind::Audio, addedTrack.selectedIndex},
                     playheadFrame_);
         }
@@ -1941,7 +1990,7 @@ bool MvmController::addVideoClip(const QUrl& fileUrl) {
         }
     } else {
         placed = project::placeTimelineClipAt(
-            candidate, std::move(clip),
+            candidate, std::move(clips.primary),
             project::TrackRef{project::TrackKind::Video, videoTrackIndex}, playheadFrame_);
         if (!placed.success) {
             setStatus(QString::fromStdString(placed.error));
@@ -1971,26 +2020,15 @@ bool MvmController::addAudioClip(const QUrl& fileUrl) {
         localMediaFile(fileUrl, QStringLiteral("存在する音声ファイルを選択してください"));
     if (mediaPath.empty())
         return false;
-    const QFileInfo info(QString::fromStdWString(mediaPath.wstring()));
-    const ProbedMedia media =
-        probeAudioMedia(mediaPath, project_.timelineFpsNum, project_.timelineFpsDen);
-    if (!media.success) {
-        setStatus(media.error);
+    auto clips = buildMediaClips(project_, mediaPath, project::MediaKind::Audio);
+    if (!clips.success) {
+        setStatus(clips.error);
         return false;
     }
     project::Project candidate = project_;
-    project::TimelineClip clip;
-    clip.kind = project::TimelineClipKind::Audio;
-    clip.mediaPath = mediaPath;
-    clip.name = info.fileName().toStdString();
-    clip.id = newClipId();
-    clip.sourceFpsNum = media.fpsNum;
-    clip.sourceFpsDen = media.fpsDen;
-    clip.sourceFrameCount = media.frameCount;
-    clip.sourceInFrame = 0;
-    clip.sourceOutFrame = media.frameCount;
     // 動画・画像と同じく再生ヘッドの位置に置く。空いた audio track が無ければ足す。
-    const auto placed = project::placeAudioClipAt(candidate, std::move(clip), playheadFrame_);
+    const auto placed =
+        project::placeAudioClipAt(candidate, std::move(clips.primary), playheadFrame_);
     if (!placed.success) {
         setStatus(QString::fromStdString(placed.error));
         return false;
@@ -2157,13 +2195,58 @@ bool MvmController::moveMediaBinEntries(const QStringList& entryIds, const QStri
     return moved;
 }
 
+namespace {
+
+std::vector<std::string> toStdIds(const QStringList& ids) {
+    std::vector<std::string> result;
+    result.reserve(static_cast<std::size_t>(ids.size()));
+    for (const auto& id : ids)
+        result.push_back(id.toStdString());
+    return result;
+}
+
+} // namespace
+
+int MvmController::mediaBinRemovalClipCount(const QStringList& entryIds) {
+    const auto plan = project::planMediaBinRemoval(project_, toStdIds(entryIds));
+    if (!plan.success) {
+        setStatus(QString::fromStdString(plan.error));
+        return -1;
+    }
+    return static_cast<int>(plan.clipIds.size());
+}
+
 bool MvmController::removeMediaBinEntries(const QStringList& entryIds) {
-    std::vector<std::string> ids;
-    for (const auto& id : entryIds)
-        ids.push_back(id.toStdString());
-    return applyMediaBinEdit(
-        [&](project::Project& candidate) { return project::removeMediaBinEntries(candidate, ids); },
+    if (busy_)
+        return false;
+    const auto ids = toStdIds(entryIds);
+    const auto plan = project::planMediaBinRemoval(project_, ids);
+    if (!plan.success) {
+        setStatus(QString::fromStdString(plan.error));
+        return false;
+    }
+    // 再生中の source が削除する clip を掴んだまま進まないよう、先に止める。
+    if (!plan.clipIds.empty() && !pauseTimeline())
+        return false;
+    std::size_t removedClips = 0;
+    const bool removed = applyMediaBinEdit(
+        [&](project::Project& candidate) {
+            auto result = project::removeMediaBinEntries(candidate, ids);
+            removedClips = result.removedClipIds.size();
+            return result;
+        },
         QStringLiteral("%1 件を削除しました").arg(entryIds.size()));
+    if (!removed || removedClips == 0)
+        return removed;
+    const QString resetFailure = resetAfterClipRemoval();
+    if (!resetFailure.isEmpty()) {
+        setStatus(QStringLiteral("素材とclipは削除しましたが、") + resetFailure);
+        return true;
+    }
+    setStatus(QStringLiteral("%1 件の素材と %2 個のclipを削除しました")
+                  .arg(entryIds.size())
+                  .arg(removedClips));
+    return true;
 }
 
 bool MvmController::addMediaItemToTimeline(const QString& itemId) {
@@ -2183,6 +2266,104 @@ bool MvmController::addMediaItemToTimeline(const QString& itemId) {
     }
     setStatus(QStringLiteral("素材の種別が不正です"));
     return false;
+}
+
+bool MvmController::placeMediaAtDropPoint(const std::vector<DropMedia>& media,
+                                          const QString& trackKind, int trackIndex,
+                                          qint64 frame) {
+    if (busy_)
+        return false;
+    if (media.empty()) {
+        setStatus(QStringLiteral("タイムラインへ置く素材がありません"));
+        return false;
+    }
+    project::TrackRef target;
+    if (trackKind == QStringLiteral("video"))
+        target.kind = project::TrackKind::Video;
+    else if (trackKind == QStringLiteral("audio"))
+        target.kind = project::TrackKind::Audio;
+    else {
+        setStatus(QStringLiteral("ドロップ先の track 種別が不正です"));
+        return false;
+    }
+    target.index = trackIndex;
+    if (!pauseTimeline())
+        return false;
+
+    project::Project candidate = project_;
+    std::int64_t start = std::max<qint64>(frame, 0);
+    int firstIndex = -1;
+    for (const auto& entry : media) {
+        const QString name = QString::fromStdWString(entry.path.filename().wstring());
+        auto clips = buildMediaClips(candidate, entry.path, entry.kind);
+        if (!clips.success) {
+            setStatus(name + QStringLiteral(": ") + clips.error);
+            return false;
+        }
+        const auto placed = project::placeMediaAtDrop(candidate, std::move(clips.primary),
+                                                      std::move(clips.linkedAudio), target, start);
+        if (!placed.success) {
+            setStatus(name + QStringLiteral(": ") + QString::fromStdString(placed.error));
+            return false;
+        }
+        // track を足して置いた場合も、その track は同じ index にあるので続きも同じ行へ並ぶ。
+        const auto duration = project::timelineClipDuration(
+            candidate, candidate.timelineClips[static_cast<std::size_t>(placed.selectedIndex)]);
+        if (!duration.success) {
+            setStatus(QString::fromStdString(duration.error));
+            return false;
+        }
+        if (firstIndex < 0)
+            firstIndex = placed.selectedIndex;
+        start += duration.frame;
+        QString registerError;
+        if (!registerMediaItem(candidate, entry.path, registerError, entry.probed)) {
+            setStatus(registerError);
+            return false;
+        }
+    }
+    if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
+        return false;
+    Q_EMIT stateChanged();
+    return selectClip(firstIndex);
+}
+
+bool MvmController::addMediaItemsToTimelineAt(const QStringList& itemIds,
+                                              const QString& trackKind, int trackIndex,
+                                              qint64 frame) {
+    std::vector<DropMedia> media;
+    for (const auto& id : itemIds) {
+        // フォルダは中身を展開せずに飛ばす (どの順で並べるかを決められないため)。
+        const auto* item = project::findMediaItem(project_, id.toStdString());
+        if (item)
+            media.push_back({item->mediaPath, item->kind, nullptr});
+    }
+    return placeMediaAtDropPoint(media, trackKind, trackIndex, frame);
+}
+
+bool MvmController::addMediaFilesToTimelineAt(const QList<QUrl>& fileUrls,
+                                              const QString& trackKind, int trackIndex,
+                                              qint64 frame) {
+    if (busy_)
+        return false;
+    // probed は media から指されるので、途中で再配置されないよう先に確保する。
+    std::vector<MediaImportResult> probed;
+    probed.reserve(static_cast<std::size_t>(fileUrls.size()));
+    std::vector<DropMedia> media;
+    for (const auto& url : fileUrls) {
+        const std::filesystem::path mediaPath =
+            localMediaFile(url, QStringLiteral("存在するファイルを選択してください"));
+        if (mediaPath.empty())
+            return false;
+        probed.push_back(probeMediaFile(mediaPath));
+        if (!probed.back().success) {
+            setStatus(QFileInfo(url.toLocalFile()).fileName() + QStringLiteral(": ") +
+                      QString::fromStdString(probed.back().error));
+            return false;
+        }
+        media.push_back({mediaPath, probed.back().item.kind, &probed.back()});
+    }
+    return placeMediaAtDropPoint(media, trackKind, trackIndex, frame);
 }
 
 std::filesystem::path MvmController::localMediaFile(const QUrl& fileUrl,
@@ -2223,17 +2404,10 @@ bool MvmController::addImageClip(const QUrl& fileUrl) {
 bool MvmController::placeImageClip(const std::filesystem::path& mediaPath, const QString& fileName,
                                    const MediaImportResult& probed) {
     project::Project candidate = project_;
-    project::TimelineClip clip;
-    clip.kind = project::TimelineClipKind::Image;
-    clip.mediaPath = mediaPath;
-    clip.name = fileName.toStdString();
-    clip.id = newClipId();
-    clip.sourceFpsNum = candidate.timelineFpsNum;
-    clip.sourceFpsDen = candidate.timelineFpsDen;
-    clip.sourceFrameCount =
-        project::defaultStillClipFrames(candidate.timelineFpsNum, candidate.timelineFpsDen);
-    clip.sourceOutFrame = clip.sourceFrameCount;
-    const auto placed = project::placeStillClipAt(candidate, std::move(clip), playheadFrame_);
+    auto clips = buildMediaClips(candidate, mediaPath, project::MediaKind::Image);
+    clips.primary.name = fileName.toStdString();
+    const auto placed =
+        project::placeStillClipAt(candidate, std::move(clips.primary), playheadFrame_);
     if (!placed.success) {
         setStatus(QString::fromStdString(placed.error));
         return false;
@@ -2657,10 +2831,16 @@ double MvmController::textClipOpacity(int index) const {
 }
 
 bool MvmController::textClipVisible(int index) const {
-    if (index < 0 || index >= static_cast<int>(project_.timelineClips.size()))
+    return clipVisibleAtPlayhead(index) &&
+           project_.timelineClips[static_cast<std::size_t>(index)].kind ==
+               project::TimelineClipKind::Text;
+}
+
+bool MvmController::clipVisibleAtPlayhead(int clipIndex) const {
+    if (clipIndex < 0 || clipIndex >= static_cast<int>(project_.timelineClips.size()))
         return false;
-    const auto& clip = project_.timelineClips[static_cast<std::size_t>(index)];
-    if (clip.kind != project::TimelineClipKind::Text ||
+    const auto& clip = project_.timelineClips[static_cast<std::size_t>(clipIndex)];
+    if (clip.track.kind != project::TrackKind::Video ||
         project_.videoTracks[static_cast<std::size_t>(clip.track.index)].muted)
         return false;
     const auto duration = project::timelineClipDuration(project_, clip);
@@ -2668,16 +2848,178 @@ bool MvmController::textClipVisible(int index) const {
            playheadFrame_ < clip.timelineStartFrame + duration.frame;
 }
 
+namespace {
+
+// clip の素材 (プロジェクトパネル)。表記が同じものを先に探し、見つからなければ
+// 実体で照合する (ファイルを開くので後にする)。
+const project::MediaItem* mediaItemForClip(const project::Project& project,
+                                           const project::TimelineClip& clip) {
+    for (const auto& item : project.mediaItems) {
+        if (item.mediaPath == clip.mediaPath)
+            return &item;
+    }
+    return project::findMediaItemByPath(project, clip.mediaPath);
+}
+
+} // namespace
+
+project::ClipVisualGeometry MvmController::visualGeometryOf(int clipIndex) const {
+    if (clipIndex < 0 || clipIndex >= static_cast<int>(project_.timelineClips.size()))
+        return {};
+    const auto& clip = project_.timelineClips[static_cast<std::size_t>(clipIndex)];
+    if (clip.kind != project::TimelineClipKind::Video &&
+        clip.kind != project::TimelineClipKind::Image)
+        return {};
+    const auto* item = mediaItemForClip(project_, clip);
+    if (!item)
+        return {};
+    return project::clipVisualGeometry(effectsForPreview(clipIndex), item->width, item->height,
+                                       project_.outputWidth, project_.outputHeight);
+}
+
+QString MvmController::transformClipId() const {
+    // リンクした音声を含む選択でも、映像が 1 つならその映像を動かす。
+    QString found;
+    for (const auto& id : selectedClipIds_) {
+        const int index = indexOfClipId(project_.timelineClips, id);
+        if (index < 0)
+            continue;
+        const auto kind = project_.timelineClips[static_cast<std::size_t>(index)].kind;
+        if (kind == project::TimelineClipKind::Audio)
+            continue;
+        if (!found.isEmpty() || (kind != project::TimelineClipKind::Video &&
+                                 kind != project::TimelineClipKind::Image))
+            return {};
+        found = QString::fromStdString(id);
+    }
+    return found;
+}
+
+QVariantMap MvmController::clipVisualGeometry(const QString& clipId) const {
+    const int index = indexOfClipId(project_.timelineClips, clipId.toStdString());
+    const auto geometry = visualGeometryOf(index);
+    if (!geometry.valid)
+        return {};
+    return {{QStringLiteral("x"), geometry.x},
+            {QStringLiteral("y"), geometry.y},
+            {QStringLiteral("width"), geometry.width},
+            {QStringLiteral("height"), geometry.height},
+            {QStringLiteral("pivotX"), geometry.pivotX},
+            {QStringLiteral("pivotY"), geometry.pivotY},
+            {QStringLiteral("rotation"), geometry.rotationDegrees},
+            {QStringLiteral("visible"), clipVisibleAtPlayhead(index)}};
+}
+
+namespace {
+
+// 回転した矩形 (pivot 中心に時計回り) の中に点があるか。点を逆に回して比べる。
+bool rotatedRectContains(const project::ClipVisualGeometry& geometry, double x, double y) {
+    const double radians = -geometry.rotationDegrees * 3.14159265358979323846 / 180.0;
+    const double dx = x - geometry.pivotX;
+    const double dy = y - geometry.pivotY;
+    const double localX = geometry.pivotX + std::cos(radians) * dx - std::sin(radians) * dy;
+    const double localY = geometry.pivotY + std::sin(radians) * dx + std::cos(radians) * dy;
+    return localX >= geometry.x && localX < geometry.x + geometry.width && localY >= geometry.y &&
+           localY < geometry.y + geometry.height;
+}
+
+// 回転した矩形の外接矩形。
+QVariantMap rotatedBounds(const project::ClipVisualGeometry& geometry) {
+    const double radians = geometry.rotationDegrees * 3.14159265358979323846 / 180.0;
+    const double cosine = std::cos(radians);
+    const double sine = std::sin(radians);
+    double left = std::numeric_limits<double>::infinity();
+    double top = left;
+    double right = -left;
+    double bottom = -left;
+    for (const double cornerX : {geometry.x, geometry.x + geometry.width}) {
+        for (const double cornerY : {geometry.y, geometry.y + geometry.height}) {
+            const double dx = cornerX - geometry.pivotX;
+            const double dy = cornerY - geometry.pivotY;
+            const double x = geometry.pivotX + cosine * dx - sine * dy;
+            const double y = geometry.pivotY + sine * dx + cosine * dy;
+            left = std::min(left, x);
+            right = std::max(right, x);
+            top = std::min(top, y);
+            bottom = std::max(bottom, y);
+        }
+    }
+    return {{QStringLiteral("x"), left},
+            {QStringLiteral("y"), top},
+            {QStringLiteral("width"), right - left},
+            {QStringLiteral("height"), bottom - top}};
+}
+
+} // namespace
+
+QString MvmController::visualClipAt(double x, double y) {
+    for (int track = static_cast<int>(project_.videoTracks.size()) - 1; track >= 0; --track) {
+        for (int index = 0; index < static_cast<int>(project_.timelineClips.size()); ++index) {
+            const auto& clip = project_.timelineClips[static_cast<std::size_t>(index)];
+            if (clip.track.kind != project::TrackKind::Video || clip.track.index != track ||
+                !clipVisibleAtPlayhead(index))
+                continue;
+            const bool hit =
+                clip.kind == project::TimelineClipKind::Text
+                    ? textRasterBounds(index).contains(static_cast<int>(std::floor(x)),
+                                                       static_cast<int>(std::floor(y)))
+                    : [&] {
+                          const auto geometry = visualGeometryOf(index);
+                          return geometry.valid && rotatedRectContains(geometry, x, y);
+                      }();
+            if (hit)
+                return QString::fromStdString(clip.id);
+        }
+    }
+    return {};
+}
+
+QVariantList MvmController::previewSnapRects(const QString& excludeClipId) {
+    QVariantList rects;
+    for (int index = 0; index < static_cast<int>(project_.timelineClips.size()); ++index) {
+        const auto& clip = project_.timelineClips[static_cast<std::size_t>(index)];
+        if (QString::fromStdString(clip.id) == excludeClipId || !clipVisibleAtPlayhead(index))
+            continue;
+        if (clip.kind == project::TimelineClipKind::Text) {
+            const QRect bounds = textRasterBounds(index);
+            if (!bounds.isEmpty())
+                rects.push_back(QVariantMap{{QStringLiteral("x"), bounds.x()},
+                                            {QStringLiteral("y"), bounds.y()},
+                                            {QStringLiteral("width"), bounds.width()},
+                                            {QStringLiteral("height"), bounds.height()}});
+            continue;
+        }
+        const auto geometry = visualGeometryOf(index);
+        if (geometry.valid)
+            rects.push_back(rotatedBounds(geometry));
+    }
+    return rects;
+}
+
+QVariantMap MvmController::effectsForVisualRect(const QString& clipId, double x, double y,
+                                                double width, double height) const {
+    const int index = indexOfClipId(project_.timelineClips, clipId.toStdString());
+    if (!visualGeometryOf(index).valid)
+        return {};
+    const auto* item =
+        mediaItemForClip(project_, project_.timelineClips[static_cast<std::size_t>(index)]);
+    auto effects = effectsForPreview(index);
+    if (!item || !project::effectsForVisualRect(effects, item->width, item->height,
+                                                project_.outputWidth, project_.outputHeight, x, y,
+                                                width, height))
+        return {};
+    return {{QStringLiteral("positionX"), effects.positionXPercent},
+            {QStringLiteral("positionY"), effects.positionYPercent},
+            {QStringLiteral("scaleX"), effects.scaleXPercent},
+            {QStringLiteral("scaleY"), effects.scaleYPercent}};
+}
+
 QString MvmController::textClipAt(int x, int y) {
     for (int track = static_cast<int>(project_.videoTracks.size()) - 1; track >= 0; --track) {
         for (int index = 0; index < static_cast<int>(project_.timelineClips.size()); ++index) {
             const auto& clip = project_.timelineClips[static_cast<std::size_t>(index)];
             if (clip.kind != project::TimelineClipKind::Text || clip.track.index != track ||
-                project_.videoTracks[static_cast<std::size_t>(track)].muted)
-                continue;
-            const auto duration = project::timelineClipDuration(project_, clip);
-            if (!duration.success || playheadFrame_ < clip.timelineStartFrame ||
-                playheadFrame_ >= clip.timelineStartFrame + duration.frame)
+                !clipVisibleAtPlayhead(index))
                 continue;
             // 字形の画素ではなく描画範囲の矩形で当てる。字間や字の内側を掴んでも
             // 動かせるようにするため (Premiere の選択枠と同じ扱い)。
@@ -4247,18 +4589,8 @@ bool MvmController::deleteCurrentClip() {
     if (!commitProjectEdit(std::move(candidate), QStringLiteral("Projectを更新できません: ")))
         return false;
 
-    pendingVideoPath_.reset();
-    pendingClipName_.clear();
-    pendingClipIndex_ = -1;
-    pendingSourceFrame_ = 0;
-    const bool previewReset = resetPreviewEngine();
-    currentSource_.reset();
-    currentClipName_.clear();
-    currentClipPath_.clear();
-    currentClipIndex_ = -1;
-    Q_EMIT stateChanged();
-    if (!previewReset) {
-        const QString resetFailure = statusText_;
+    const QString resetFailure = resetAfterClipRemoval();
+    if (!resetFailure.isEmpty()) {
         setStatus(QStringLiteral("clipは削除しましたが、") + resetFailure);
         return true;
     }
@@ -4280,6 +4612,24 @@ bool MvmController::deleteCurrentClip() {
     setStatus(QString::number(deletedCount) +
               QStringLiteral("個のclipを削除し、timelineが空になりました"));
     return true;
+}
+
+QString MvmController::resetAfterClipRemoval() {
+    pendingVideoPath_.reset();
+    pendingClipName_.clear();
+    pendingClipIndex_ = -1;
+    pendingSourceFrame_ = 0;
+    const bool previewReset = resetPreviewEngine();
+    const QString resetFailure = previewReset ? QString() : statusText_;
+    currentSource_.reset();
+    currentClipName_.clear();
+    currentClipPath_.clear();
+    currentClipIndex_ = -1;
+    std::erase_if(selectedClipIds_, [&](const std::string& id) {
+        return indexOfClipId(project_.timelineClips, id) < 0;
+    });
+    Q_EMIT stateChanged();
+    return resetFailure;
 }
 
 bool MvmController::deleteTimelineClip(const QString& clipId) {
@@ -5232,6 +5582,10 @@ bool MvmController::commitClipKeyCandidate(project::Project candidate) {
 }
 
 bool MvmController::setEffectValue(const QString& key, double value, bool commit) {
+    return setEffectValues({{key, value}}, commit);
+}
+
+bool MvmController::setEffectValues(const QVariantMap& values, bool commit) {
     if (busy_ || currentClipIndex_ < 0 ||
         currentClipIndex_ >= static_cast<int>(project_.timelineClips.size())) {
         setStatus(QStringLiteral("effectを適用するclipがありません"));
@@ -5240,11 +5594,20 @@ bool MvmController::setEffectValue(const QString& key, double value, bool commit
     if (!pauseTimeline())
         return false;
 
+    if (values.isEmpty()) {
+        setStatus(QStringLiteral("変更するeffect項目がありません"));
+        return false;
+    }
     const int clipIndex = currentClipIndex_;
     project::ClipEffects candidateEffects = effectsForPreview(clipIndex);
-    if (!applyEffectKey(candidateEffects, key, value)) {
-        setStatus(QStringLiteral("未知のeffect項目です: ") + key);
-        return false;
+    // 複数の項目 (位置と拡大率など) を 1 つの変更として検証し、1 つの undo にする。
+    for (auto entry = values.cbegin(); entry != values.cend(); ++entry) {
+        bool numeric = false;
+        const double value = entry.value().toDouble(&numeric);
+        if (!numeric || !applyEffectKey(candidateEffects, entry.key(), value)) {
+            setStatus(QStringLiteral("未知または数値でないeffect項目です: ") + entry.key());
+            return false;
+        }
     }
 
     const auto& clip = project_.timelineClips[static_cast<std::size_t>(clipIndex)];

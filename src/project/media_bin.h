@@ -16,6 +16,8 @@ namespace mvm::project {
 struct MediaBinEditResult {
     bool success = false;
     std::string error;
+    // removeMediaBinEntries が素材と一緒に削除した timeline clip の id。
+    std::vector<std::string> removedClipIds;
 };
 
 // folder / item の id 一意性、親子関係 (循環なし)、種別ごとの値を検査する。
@@ -30,18 +32,34 @@ MediaBinEditResult renameMediaBinEntry(Project& project, const std::string& entr
 // targetFolderId が空なら root へ移す。folder を自分自身や子孫へは移せない。
 MediaBinEditResult moveMediaBinEntries(Project& project, const std::vector<std::string>& entryIds,
                                        const std::string& targetFolderId);
-// folder は中身ごと削除する。timeline で使用中の素材が 1 つでも含まれれば全体を拒否する。
+
+// 削除で消えるもの。folder は子孫と中身ごと、素材はそれを参照する timeline clip
+// (とそのリンク相手) ごと消す。プロジェクトパネルを素材の唯一の出どころにするため、
+// パネルに無い素材を timeline に残さない。
+struct MediaBinRemovalPlan {
+    bool success = false;
+    std::string error;
+    std::set<std::string> folderIds;
+    std::set<std::string> itemIds;
+    std::vector<std::string> clipIds; // timeline の並び順
+};
+
+// 同じ実体か確認できない (Unknown) clip が 1 つでもあれば失敗する。
+// 残すべき clip を消す / 消すべき clip を残す のどちらも起こさないため。
+MediaBinRemovalPlan planMediaBinRemoval(const Project& project,
+                                        const std::vector<std::string>& entryIds);
+// planMediaBinRemoval の内容を 1 つの candidate として適用する。
 MediaBinEditResult removeMediaBinEntries(Project& project,
                                          const std::vector<std::string>& entryIds);
 
 const MediaItem* findMediaItem(const Project& project, const std::string& itemId);
 // 同じ実体のファイルを指す素材を探す (path_identity.h の comparePathIdentity が Same のもの)。
 // 同一性が Unknown の素材は一致とみなさない。重複登録の防止は best effort であり、
-// 安全判定 (使用中の素材を削除させない) は mediaItemUsage が fail-closed で担う。
+// 削除時にどの clip を巻き込むかの判定は planMediaBinRemoval が fail-closed で担う。
 const MediaItem* findMediaItemByPath(const Project& project, const std::filesystem::path& path);
 const MediaFolder* findMediaFolder(const Project& project, const std::string& folderId);
 
-// timeline clip からの参照状況。
+// timeline clip からの参照状況 (パネルの「使用中」表示用)。
 //   inUse   : どれかの clip と同じ実体 (Same)
 //   unknown : Same は無いが、identity を取れず Unknown の clip がある。未使用と断定しない
 struct MediaItemUsage {

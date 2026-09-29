@@ -63,9 +63,11 @@ public:
     bool drawLayer(const DecodedGpuFrame& frame, ID3D11RenderTargetView* rtv,
                    const FitRect& destination, const float sourceUv[4], float opacity,
                    bool linearFilter, std::string& err);
+    // pivot は回転の中心 (出力を 0..1 に正規化した座標)。
     bool drawEffectLayer(const DecodedGpuFrame& frame, ID3D11RenderTargetView* rtv, int targetWidth,
                          int targetHeight, const FitRect& destination, const float sourceUv[4],
-                         float opacity, float rotationDegrees, bool linearFilter, std::string& err);
+                         float opacity, float rotationDegrees, float pivotX, float pivotY,
+                         bool linearFilter, std::string& err);
 
     // composition の issue 前準備。SRV 生成を含む失敗しうる resource 準備を
     // clear/draw より前に完了させる。drawLayer は同じ cache entry を再利用する。
@@ -171,7 +173,8 @@ private:
     bool drawInternal(const DecodedGpuFrame& frame, ID3D11RenderTargetView* rtv,
                       const FitRect& viewport, const float uvRect[4], bool linearFilter,
                       float opacity, std::string& err, bool effectAware = false,
-                      int targetWidth = 0, int targetHeight = 0, float rotationDegrees = 0.0f);
+                      int targetWidth = 0, int targetHeight = 0, float rotationDegrees = 0.0f,
+                      float pivotX = 0.5f, float pivotY = 0.5f);
 
     SharedD3D11Device* shared_ = nullptr;
     ReadbackCounters* counters_ = nullptr;

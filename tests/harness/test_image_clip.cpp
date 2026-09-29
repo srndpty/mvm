@@ -129,7 +129,7 @@ void testModel() {
         auto effects = base;
         auto& clip = effects.timelineClips[0];
         clip.effects.positionXPercent = 10.0;
-        clip.effects.scalePercent = 50.0;
+        clip.effects.scaleXPercent = clip.effects.scaleYPercent = 50.0;
         clip.effects.rotationDegrees = 15.0;
         clip.effects.cropLeftPercent = 10.0;
         clip.effects.opacityKeys = {{0, 0.0}, {60, 100.0}};

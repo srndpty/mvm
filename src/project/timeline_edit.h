@@ -138,6 +138,15 @@ TimelineEditResult placeStillClipAt(Project& project, TimelineClip clip,
 // 空きが無ければ audio track を足して置く。audio track が 1 本も無くても置ける。
 TimelineEditResult placeAudioClipAt(Project& project, TimelineClip clip,
                                     std::int64_t timelineStartFrame);
+// プロジェクトパネルや外部からのドロップで、指定した track・位置へ素材を置く。
+//   target.index が track 数と等しければ、その種別の track を末尾に足して置く
+//   linkedAudio があれば、ドロップした行の種別に合う側を target へ置き、相手は
+//   もう一方の種別で空いている最初の非 mute track (無ければ新しい track) へ置く
+//   target に重なる clip があれば失敗する (上書きも退避もしない)
+//   開始位置が負なら 0 へ寄せる
+TimelineEditResult placeMediaAtDrop(Project& project, TimelineClip primary,
+                                    std::optional<TimelineClip> linkedAudio, TrackRef target,
+                                    std::int64_t timelineStartFrame);
 // link済みvideo/audioを一つのcandidateへ追加し、Project invariantを満たした状態だけをcommitする。
 TimelineEditResult placeLinkedAvPairAt(Project& project, TimelineClip video, TrackRef videoTrack,
                                        TimelineClip audio, TrackRef audioTrack,

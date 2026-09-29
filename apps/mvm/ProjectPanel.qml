@@ -18,6 +18,8 @@ Item {
     property var dragIds: []
     // 外部ファイルのドラッグがこのパネル上にあるか。Main.qml の DropArea が立てる。
     property bool externalDropHover: false
+    // 素材のドラッグ表示の文言。timeline など panel の外の drop 先が差し替える。
+    property string dragLabelOverride: ""
 
     readonly property int rowHeight: 22
     readonly property int indentWidth: 14
@@ -93,9 +95,21 @@ Item {
             binList.positionViewAtIndex(row, ListView.Contain);
     }
 
+    // 使用中の素材は、それを使う timeline clip ごと消える。消える clip があるときだけ確認する。
     function removeSelected() {
-        if (selectedIds.length > 0)
-            panel.mvmController.removeMediaBinEntries(selectedIds);
+        if (selectedIds.length === 0)
+            return;
+        const ids = selectedIds.slice();
+        const clipCount = panel.mvmController.mediaBinRemovalClipCount(ids);
+        if (clipCount < 0)
+            return;
+        if (clipCount === 0) {
+            panel.mvmController.removeMediaBinEntries(ids);
+            return;
+        }
+        removeConfirmDialog.entryIds = ids;
+        removeConfirmDialog.clipCount = clipCount;
+        removeConfirmDialog.open();
     }
 
     function startRename() {
@@ -134,6 +148,7 @@ Item {
             dragProxy.Drag.drop();
         dragProxy.Drag.active = false;
         dragIds = [];
+        dragLabelOverride = "";
     }
 
     Connections {
@@ -456,7 +471,7 @@ Item {
                         onPositionChanged: mouse => {
                             if (!(mouse.buttons & Qt.LeftButton))
                                 return;
-                            const point = mapToItem(panel, mouse.x, mouse.y);
+                            const point = mapToItem(dragProxy.parent, mouse.x, mouse.y);
                             if (!dragging) {
                                 if (Math.abs(mouse.x - pressPoint.x) + Math.abs(mouse.y - pressPoint.y) < 6)
                                     return;
@@ -510,6 +525,8 @@ Item {
     // drag 中にカーソルへ付いてくる札。Drag.active の間だけ見える。
     Rectangle {
         id: dragProxy
+        // list は clip するため、timeline まで運べるよう window 全体の overlay に描く。
+        parent: Overlay.overlay
         z: 100
         visible: Drag.active
         width: dragLabel.implicitWidth + 16
@@ -524,7 +541,8 @@ Item {
         Label {
             id: dragLabel
             anchors.centerIn: parent
-            text: panel.dragIds.length + " 件を移動"
+            text: panel.dragLabelOverride !== "" ? panel.dragLabelOverride
+                                                 : panel.dragIds.length + " 件を移動"
             color: "white"
             font.pixelSize: 11
         }
@@ -569,5 +587,35 @@ Item {
         fileMode: FileDialog.OpenFiles
         nameFilters: panel.mvmController.mediaFileNameFilters
         onAccepted: panel.importUrls(selectedFiles)
+    }
+    ModernDialog {
+        id: removeConfirmDialog
+        property var entryIds: []
+        property int clipCount: 0
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(parent ? parent.width - 40 : 460, 460)
+        title: "素材を削除"
+
+        contentItem: Label {
+            width: removeConfirmDialog.availableWidth
+            text: "選択した素材を削除すると、タイムライン上の "
+                  + removeConfirmDialog.clipCount + " 個のクリップも削除されます。"
+            wrapMode: Text.Wrap
+        }
+        footer: ModernDialogFooter {
+            ModernDialogButton {
+                text: "キャンセル"
+                onClicked: removeConfirmDialog.close()
+            }
+            ModernDialogButton {
+                text: "削除"
+                prominent: true
+                onClicked: {
+                    removeConfirmDialog.close();
+                    panel.mvmController.removeMediaBinEntries(removeConfirmDialog.entryIds);
+                }
+            }
+        }
     }
 }

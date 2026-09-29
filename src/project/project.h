@@ -98,7 +98,7 @@ inline constexpr std::int64_t kMinClipSpeedPercent = 10;
 inline constexpr std::int64_t kMaxClipSpeedPercent = 1000;
 
 // Project JSON の schema。timeline 検証と JSON の読み書きが同じ値を参照する。
-inline constexpr int kProjectSchemaVersion = 9;
+inline constexpr int kProjectSchemaVersion = 10;
 
 // プロジェクトパネルの素材。timeline clip とは独立に存在し、mediaPath で対応づく。
 enum class MediaKind { Video, Audio, Image };

@@ -16,7 +16,9 @@ struct ClipKeyframe {
 struct ClipEffects {
     double positionXPercent = 0.0;
     double positionYPercent = 0.0;
-    double scalePercent = 100.0;
+    // 縦横の拡大率は別々に持つ (プレビューの枠のハンドルで片方だけ伸縮できる)。
+    double scaleXPercent = 100.0;
+    double scaleYPercent = 100.0;
     double rotationDegrees = 0.0;
     double opacityPercent = 100.0;
     double volumePercent = 100.0;
@@ -74,6 +76,29 @@ bool retimeClipKeys(std::vector<ClipKeyframe>& keys, std::int64_t fromFpsNum,
                     std::int64_t fromFpsDen, std::int64_t toFpsNum, std::int64_t toFpsDen,
                     std::int64_t newDuration);
 ClipEffectMapping mapClipEffects(const ClipEffects& effects);
+
+// 素材を canvas に置いたときに見えている矩形 (出力画素、回転前)。preview の枠と
+// ハンドルが使う。幾何は preview / 書き出しと同じ core::placeLayer で決める。
+//   pivotX/Y        : 回転の中心 (出力画素)
+//   valid = false   : 寸法が不正、または crop で何も見えていない
+struct ClipVisualGeometry {
+    bool valid = false;
+    double x = 0.0;
+    double y = 0.0;
+    double width = 0.0;
+    double height = 0.0;
+    double pivotX = 0.0;
+    double pivotY = 0.0;
+    double rotationDegrees = 0.0;
+};
+
+ClipVisualGeometry clipVisualGeometry(const ClipEffects& effects, int sourceWidth, int sourceHeight,
+                                      int canvasWidth, int canvasHeight);
+// clipVisualGeometry の逆。見えている矩形を (x, y, width, height) にする位置と拡大率を返す。
+// crop と回転は変えない。拡大率は 1..1000%、位置は -1000..1000% に収める
+// (収めた分だけ指定の矩形からずれる)。寸法が不正なら false で effects を変えない。
+bool effectsForVisualRect(ClipEffects& effects, int sourceWidth, int sourceHeight, int canvasWidth,
+                          int canvasHeight, double x, double y, double width, double height);
 
 } // namespace mvm::project
 

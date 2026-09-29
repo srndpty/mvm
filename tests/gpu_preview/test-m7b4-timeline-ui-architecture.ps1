@@ -317,7 +317,8 @@ $requiredVideoDrop = @(
     'id: videoDropArea',
     'drag.hasUrls',
     'root.isLocalFileUrl(drag.urls[index])',
-    'root.mvmController.addMediaFileToTimeline(url)',
+    'root.mvmController.addMediaFilesToTimelineAt(urls, target.kind, target.index',
+    'projectPanel.importUrls(urls)',
     'drop.accept(Qt.CopyAction)',
     'drag.accept(Qt.CopyAction)',
     '(drag.supportedActions & Qt.CopyAction) !== 0',
@@ -625,6 +626,73 @@ function Test-DuplicatePreview([string]$source) {
 if (-not (Test-DuplicatePreview $qml) -or
     (Test-DuplicatePreview $qml.Replace('opacity: 0.55', 'opacity: 1'))) {
     throw 'Alt+ドラッグ複製の元clipと半透明previewの契約が崩れています'
+}
+
+# 再生とクリップ削除はメニューとショートカットで行い、タイムライン上部の大きなボタンは置かない。
+# メニュー項目は表示だけで sequence を持たない (Shortcut と二重に発火させない)。
+function Test-TransportMenuContract([string]$source) {
+    $playItem = 'CompactMenuItem\s*\{\s*text:\s*\(root\.mvmController\.playing \? "一時停止" : "再生"\) \+ "\\tSpace"[^{}]*onTriggered:\s*\{[^{}]*root\.mvmController\.playTimeline\(\)'
+    $deleteItem = 'CompactMenuItem\s*\{\s*text:\s*"クリップを削除\\tDelete"[^{}]*onTriggered:\s*root\.mvmController\.deleteCurrentClip\(\)'
+    if ($source -notmatch $playItem -or $source -notmatch $deleteItem) { return $false }
+    foreach ($item in [regex]::Matches($source, 'CompactMenuItem\s*\{\s*text:\s*[^\n]*\\t(Space|Delete)"[^{}]*')) {
+        if ($item.Value -match 'shortcut:|sequence:') { return $false }
+    }
+    if ($source -match 'Button\s*\{\s*text:\s*"クリップ削除"' -or
+        $source -match 'Button\s*\{\s*text:\s*root\.mvmController\.playing \? "一時停止" : "再生"') {
+        return $false
+    }
+    return $true
+}
+$transportButtons = $qml.Replace('        // --- タイムライン ---', "            Button {`n                text: `"クリップ削除`"`n            }`n        // --- タイムライン ---")
+if (-not (Test-TransportMenuContract $qml) -or
+    (Test-TransportMenuContract $transportButtons) -or
+    (Test-TransportMenuContract $qml.Replace('text: "クリップを削除\tDelete"', 'text: "クリップを削除\tDelete"; shortcut: "Delete"')) -or
+    (Test-TransportMenuContract $qml.Replace('+ "\tSpace"', ''))) {
+    throw '再生・クリップ削除のメニュー契約が崩れています'
+}
+
+# 素材はドロップした位置へ置く。外部ファイルもプロジェクトパネルからの素材も、
+# タイムライン上なら位置 (track と frame) を渡し、それ以外はパネルへの登録だけにする。
+function Test-MediaDropContract([string]$source) {
+    $external = 'const target = root\.timelineDropTarget\(videoDropArea, drop\.x, drop\.y\);[\s\S]*?if \(target\)\s*root\.mvmController\.addMediaFilesToTimelineAt\(urls, target\.kind, target\.index,\s*target\.frame\);\s*else\s*projectPanel\.importUrls\(urls\);'
+    $bin = 'DropArea\s*\{\s*id:\s*mediaBinDropArea[\s\S]*?keys:\s*\["mvm-media-bin"\][\s\S]*?const ids = projectPanel\.dragIds\.slice\(\);[\s\S]*?Qt\.callLater\(\(\) => root\.mvmController\.addMediaItemsToTimelineAt\(\s*ids, target\.kind, target\.index, target\.frame\)\)'
+    return $source -match $external -and $source -match $bin -and
+           $source.Contains('function timelineDropTarget(item, x, y)') -and
+           $source -notmatch 'addMediaFileToTimeline\(url\)'
+}
+if (-not (Test-MediaDropContract $qml) -or
+    (Test-MediaDropContract $qml.Replace('keys: ["mvm-media-bin"]', 'keys: ["other"]')) -or
+    (Test-MediaDropContract $qml.Replace('const ids = projectPanel.dragIds.slice();', 'const ids = projectPanel.dragIds;')) -or
+    (Test-MediaDropContract ($qml -replace '\s*else\s*projectPanel\.importUrls\(urls\);', '')) -or
+    (Test-MediaDropContract ($qml + "`nroot.mvmController.addMediaFileToTimeline(url)"))) {
+    throw '素材ドロップの配置契約が崩れています'
+}
+# プレビュー上の枠: 画像・動画は枠とハンドルで動かし、文字も同じ吸着を使う。
+# 吸着は Ctrl で切り、ドラッグ中は preview だけを更新して離したときに 1 つの undo で確定する。
+$overlaySource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\apps\mvm\PreviewTransformOverlay.qml') -Raw
+function Test-PreviewTransformContract([string]$mainSource, [string]$overlay) {
+    return $mainSource.Contains('import "PreviewTransform.js" as Transform') -and
+           $mainSource -match 'PreviewTransformOverlay\s*\{\s*id:\s*previewTransform' -and
+           $mainSource -match 'Transform\.snapMove\(\s*textLayer\.bounds[\s\S]*?!\(mouse\.modifiers & Qt\.ControlModifier\)\)' -and
+           $overlay.Contains('import "PreviewTransform.js" as Transform') -and
+           $overlay -match 'Transform\.snapMove\([\s\S]*?!\(mouse\.modifiers & Qt\.ControlModifier\)\)' -and
+           $overlay.Contains('"keepAspect": (mouse.modifiers & Qt.ControlModifier) !== 0') -and
+           $overlay.Contains('"fromCenter": (mouse.modifiers & Qt.AltModifier) !== 0') -and
+           $overlay -match 'mvmController\.setEffectValues\(values, false\)' -and
+           $overlay -match 'if \(commit\)\s*mvmController\.setEffectValues\(lastValues, true\);'
+}
+if (-not (Test-PreviewTransformContract $qml $overlaySource) -or
+    (Test-PreviewTransformContract $qml $overlaySource.Replace('!(mouse.modifiers & Qt.ControlModifier)', 'true')) -or
+    (Test-PreviewTransformContract $qml $overlaySource.Replace('setEffectValues(values, false)', 'setEffectValues(values, true)')) -or
+    (Test-PreviewTransformContract $qml $overlaySource.Replace('Qt.AltModifier', 'Qt.ShiftModifier')) -or
+    (Test-PreviewTransformContract $qml.Replace('!(mouse.modifiers & Qt.ControlModifier)', 'true') $overlaySource)) {
+    throw 'プレビュー上の枠 (移動・拡縮・吸着) の契約が崩れています'
+}
+
+$panelDrag = 'id:\s*dragProxy\s*//[^\n]*\n\s*parent:\s*Overlay\.overlay'
+if ($projectPanel -notmatch $panelDrag -or
+    $projectPanel.Replace('parent: Overlay.overlay', '') -match $panelDrag) {
+    throw 'プロジェクトパネルのドラッグ表示がタイムラインまで届きません'
 }
 
 Write-Output 'timeline UI architecture: PASS'

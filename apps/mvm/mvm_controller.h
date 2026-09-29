@@ -56,6 +56,8 @@ class MvmController : public QObject {
     Q_PROPERTY(QVariantMap selectedTextClip READ selectedTextClip NOTIFY stateChanged)
     Q_PROPERTY(bool previewVideoAtPlayhead READ previewVideoAtPlayhead NOTIFY stateChanged)
     Q_PROPERTY(QString textOverlayClip READ textOverlayClip NOTIFY stateChanged)
+    // プレビューで移動・拡縮できる選択中の素材 (画像・動画が 1 つだけ選ばれているとき)。
+    Q_PROPERTY(QString transformClipId READ transformClipId NOTIFY stateChanged)
     // ドラッグ中の文字 preview が変わるたびに増える。QML の文字画像の再読込に使う。
     Q_PROPERTY(int textPreviewSerial READ textPreviewSerial NOTIFY stateChanged)
     Q_PROPERTY(bool hasCurrentClip READ hasCurrentClip NOTIFY stateChanged)
@@ -114,7 +116,8 @@ class MvmController : public QObject {
     Q_PROPERTY(int outputHeight READ outputHeight NOTIFY stateChanged)
     Q_PROPERTY(double effectPositionX READ effectPositionX NOTIFY stateChanged)
     Q_PROPERTY(double effectPositionY READ effectPositionY NOTIFY stateChanged)
-    Q_PROPERTY(double effectScale READ effectScale NOTIFY stateChanged)
+    Q_PROPERTY(double effectScaleX READ effectScaleX NOTIFY stateChanged)
+    Q_PROPERTY(double effectScaleY READ effectScaleY NOTIFY stateChanged)
     Q_PROPERTY(double effectRotation READ effectRotation NOTIFY stateChanged)
     Q_PROPERTY(double effectOpacity READ effectOpacity NOTIFY stateChanged)
     Q_PROPERTY(double effectCropLeft READ effectCropLeft NOTIFY stateChanged)
@@ -249,7 +252,8 @@ public:
 
     double effectPositionX() const;
     double effectPositionY() const;
-    double effectScale() const;
+    double effectScaleX() const;
+    double effectScaleY() const;
     double effectRotation() const;
     double effectOpacity() const;
     double effectCropLeft() const;
@@ -292,6 +296,20 @@ public:
     // ドラッグ中・編集中の文字だけは UI が重ねて表示するので、その clip を合成から外す。
     // 空文字で解除する。
     Q_INVOKABLE void setTextOverlayClip(const QString& clipId);
+
+    // --- プレビュー上の素材の枠 (出力画素) ---------------------------------------
+    QString transformClipId() const;
+    // 画像・動画の見えている矩形 {x, y, width, height, pivotX, pivotY, rotation, visible}。
+    // drag 中の override を含む。素材の寸法が分からない・何も見えていないときは空。
+    Q_INVOKABLE QVariantMap clipVisualGeometry(const QString& clipId) const;
+    // 再生位置で (x, y) に見えている最も上の素材 (文字・画像・動画)。無ければ空。
+    Q_INVOKABLE QString visualClipAt(double x, double y);
+    // 再生位置で見えている excludeClipId 以外の素材の外接矩形 (吸着の相手)。
+    Q_INVOKABLE QVariantList previewSnapRects(const QString& excludeClipId);
+    // 見えている矩形を (x, y, width, height) にする {positionX, positionY, scaleX, scaleY}。
+    // 決められなければ空。setEffectValues へそのまま渡せる。
+    Q_INVOKABLE QVariantMap effectsForVisualRect(const QString& clipId, double x, double y,
+                                                 double width, double height) const;
 
     QString textOverlayClip() const { return textOverlayClipId_; }
 
@@ -393,6 +411,9 @@ public:
     //                  追従させる (drag 中)。
     //   commit=true  : override を確定して Project transaction にする。
     Q_INVOKABLE bool setEffectValue(const QString& key, double value, bool commit);
+    // 複数の項目 ({"positionX": 10, "scaleX": 120} など) を 1 つの変更として適用する。
+    // commit なら 1 つの undo、そうでなければ preview だけを更新する。
+    Q_INVOKABLE bool setEffectValues(const QVariantMap& values, bool commit);
     // drag が release されずに終わった場合に override を捨てる。
     Q_INVOKABLE bool cancelEffectPreview();
 
@@ -405,8 +426,18 @@ public:
     Q_INVOKABLE QString createMediaFolder(const QString& parentFolderId);
     Q_INVOKABLE bool renameMediaBinEntry(const QString& entryId, const QString& name);
     Q_INVOKABLE bool moveMediaBinEntries(const QStringList& entryIds, const QString& folderId);
+    // 削除すると一緒に消える timeline clip の数。削除できないときは -1 (status に理由)。
+    Q_INVOKABLE int mediaBinRemovalClipCount(const QStringList& entryIds);
     Q_INVOKABLE bool removeMediaBinEntries(const QStringList& entryIds);
     Q_INVOKABLE bool addMediaItemToTimeline(const QString& itemId);
+    // ドロップした位置 (track と frame) へ素材を置く。複数なら frame から順に後ろへ並べる。
+    // trackIndex が track 数と等しければ track を足して置く。全体を 1 つの undo にする。
+    Q_INVOKABLE bool addMediaItemsToTimelineAt(const QStringList& itemIds, const QString& trackKind,
+                                               int trackIndex, qint64 frame);
+    // 外部ファイルのドロップ。プロジェクトパネルへ登録してから置く。
+    Q_INVOKABLE bool addMediaFilesToTimelineAt(const QList<QUrl>& fileUrls,
+                                               const QString& trackKind, int trackIndex,
+                                               qint64 frame);
 
     // track 編集
     Q_INVOKABLE bool addTrack(const QString& trackKind);
@@ -511,6 +542,9 @@ private:
     applyTimelineEdit(const std::function<project::TimelineEditResult(project::Project&)>& edit,
                       const std::string& selectedClipId, const QString& successStatus);
     bool resolveTrimEdge(const QString& edge, project::TrimEdge& trimEdge);
+    // clip を削除する commit の後始末。preview が削除済み clip を掴んだままにしない。
+    // preview を作り直せなかったときはその理由を返す (成功なら空)。
+    QString resetAfterClipRemoval();
     // bin 編集を candidate へ適用し、成功したら 1 つの undo として commit する。
     bool
     applyMediaBinEdit(const std::function<project::MediaBinEditResult(project::Project&)>& edit,
@@ -519,6 +553,14 @@ private:
     // probed を渡すとそれを使い、素材を調べ直さない (画像の decode は重い)。
     bool registerMediaItem(project::Project& candidate, const std::filesystem::path& mediaPath,
                            QString& error, const MediaImportResult* probed = nullptr) const;
+    // 置く素材。probed は判定済みの結果 (あれば bin 登録で調べ直さない)。
+    struct DropMedia {
+        std::filesystem::path path;
+        project::MediaKind kind = project::MediaKind::Video;
+        const MediaImportResult* probed = nullptr;
+    };
+    bool placeMediaAtDropPoint(const std::vector<DropMedia>& media, const QString& trackKind,
+                               int trackIndex, qint64 frame);
     // 呼び出し側が確かめたローカルファイルを、判定済みの結果で画像 clip として置く。
     bool placeImageClip(const std::filesystem::path& mediaPath, const QString& fileName,
                         const MediaImportResult& probed);
@@ -580,6 +622,10 @@ private:
     const QImage* textRasterImage(int clipIndex, QString& error) const;
     // 文字画像の不透明な画素を囲む矩形。clip ID ごとに 1 度だけ求める。
     QRect textRasterBounds(int clipIndex) const;
+    // 再生位置で表示される clip か (mute されていない映像 track で、再生位置が範囲内)。
+    bool clipVisibleAtPlayhead(int clipIndex) const;
+    // 画像・動画の見えている矩形。素材の寸法はプロジェクトパネルの素材から取る。
+    project::ClipVisualGeometry visualGeometryOf(int clipIndex) const;
     // preview engine へ渡す静止画。同じ文字には同じ instance を返し、composition の
     // 再送を no-op にする。
     std::shared_ptr<const preview::PreviewStillImage> textStillImage(int clipIndex,

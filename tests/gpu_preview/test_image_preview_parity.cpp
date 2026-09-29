@@ -93,7 +93,7 @@ project::Project makeProject(const fs::path& image) {
     clip.track = {project::TrackKind::Video, 0};
     clip.effects.positionXPercent = 12.0;
     clip.effects.positionYPercent = -8.0;
-    clip.effects.scalePercent = 70.0;
+    clip.effects.scaleXPercent = clip.effects.scaleYPercent = 70.0;
     clip.effects.opacityPercent = 100.0;
     project.timelineClips.push_back(clip);
     return project;

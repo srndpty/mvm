@@ -53,7 +53,7 @@ int main() {
 
     mvm::project::Project overlay = mvm::project::createDefaultProject();
     auto bottom = clip("bottom", 0, 0, 0, 100);
-    bottom.effects.scalePercent = 80;
+    bottom.effects.scaleXPercent = bottom.effects.scaleYPercent = 80;
     auto topLate = clip("top-late", 1, 60, 20, 20);
     auto topEarly = clip("top-early", 1, 10, 30, 20);
     topEarly.effects.opacityPercent = 50;

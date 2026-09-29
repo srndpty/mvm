@@ -1,0 +1,240 @@
+.pragma library
+
+// プレビュー上で素材を動かす・拡縮するときの計算。座標はすべて出力画素で、
+// 矩形は {x, y, width, height}。QML から切り離して tst_preview_transform.qml で検査する。
+
+function finite(value) {
+    return typeof value === "number" && isFinite(value);
+}
+
+function copyRect(rect) {
+    return { "x": rect.x, "y": rect.y, "width": rect.width, "height": rect.height };
+}
+
+// 回転した矩形を囲む軸平行の矩形。回転は pivot を中心に時計回り (画面の y 下向き)。
+function rotatedBounds(rect, pivotX, pivotY, degrees) {
+    if (!finite(degrees) || degrees === 0)
+        return copyRect(rect);
+    const radians = degrees * Math.PI / 180;
+    const cosine = Math.cos(radians);
+    const sine = Math.sin(radians);
+    const corners = [[rect.x, rect.y], [rect.x + rect.width, rect.y],
+                     [rect.x, rect.y + rect.height], [rect.x + rect.width, rect.y + rect.height]];
+    let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+    for (let index = 0; index < corners.length; ++index) {
+        const dx = corners[index][0] - pivotX;
+        const dy = corners[index][1] - pivotY;
+        const x = pivotX + cosine * dx - sine * dy;
+        const y = pivotY + sine * dx + cosine * dy;
+        left = Math.min(left, x);
+        right = Math.max(right, x);
+        top = Math.min(top, y);
+        bottom = Math.max(bottom, y);
+    }
+    return { "x": left, "y": top, "width": right - left, "height": bottom - top };
+}
+
+// 吸着先の線。出力の端と中央、他の素材の端と中央 (Photoshop のスマートガイドと同じ)。
+function snapLines(canvasWidth, canvasHeight, rects) {
+    const xs = [0, canvasWidth / 2, canvasWidth];
+    const ys = [0, canvasHeight / 2, canvasHeight];
+    for (let index = 0; index < (rects ? rects.length : 0); ++index) {
+        const rect = rects[index];
+        xs.push(rect.x, rect.x + rect.width / 2, rect.x + rect.width);
+        ys.push(rect.y, rect.y + rect.height / 2, rect.y + rect.height);
+    }
+    return { "xs": xs, "ys": ys };
+}
+
+// values のどれかを lines のどれかへ寄せる、閾値以内で最小のずれ。無ければ null。
+function nearestSnap(values, lines, threshold) {
+    let best = null;
+    for (let valueIndex = 0; valueIndex < values.length; ++valueIndex) {
+        for (let lineIndex = 0; lineIndex < lines.length; ++lineIndex) {
+            const delta = lines[lineIndex] - values[valueIndex];
+            if (Math.abs(delta) <= threshold && (best === null || Math.abs(delta) < Math.abs(best.delta)))
+                best = { "delta": delta, "line": lines[lineIndex] };
+        }
+    }
+    return best;
+}
+
+// rect を (dx, dy) 動かしたとき、端か中央が線に近ければ吸着させた移動量を返す。
+// enabled = false (Ctrl を押している) なら吸着しない。
+function snapMove(rect, dx, dy, lines, threshold, enabled) {
+    if (!finite(dx) || !finite(dy))
+        return { "dx": 0, "dy": 0, "guidesX": [], "guidesY": [] };
+    if (!enabled)
+        return { "dx": dx, "dy": dy, "guidesX": [], "guidesY": [] };
+    const x = rect.x + dx;
+    const y = rect.y + dy;
+    const snapX = nearestSnap([x, x + rect.width / 2, x + rect.width], lines.xs, threshold);
+    const snapY = nearestSnap([y, y + rect.height / 2, y + rect.height], lines.ys, threshold);
+    return {
+        "dx": dx + (snapX ? snapX.delta : 0),
+        "dy": dy + (snapY ? snapY.delta : 0),
+        "guidesX": snapX ? [snapX.line] : [],
+        "guidesY": snapY ? [snapY.line] : []
+    };
+}
+
+function handleSides(handle) {
+    return {
+        "left": handle.indexOf("l") >= 0,
+        "right": handle.indexOf("r") >= 0,
+        "top": handle.indexOf("t") >= 0,
+        "bottom": handle.indexOf("b") >= 0
+    };
+}
+
+// start の縦横比を保って rect を直す。drive は倍率を決める軸 ("x" / "y")。
+// 省略時は角なら大きく変わった方、辺ならその辺の軸。
+// fromCenter なら中心を、そうでなければ掴んだ側の反対の角・辺を固定する。
+// 辺のハンドルでは、もう一方の軸は中心を保って伸縮する。
+function keepAspectRect(start, rect, handle, fromCenter, minSize, drive) {
+    const sides = handleSides(handle);
+    const horizontal = sides.left || sides.right;
+    const vertical = sides.top || sides.bottom;
+    let axis = drive;
+    if (!axis) {
+        if (horizontal && vertical)
+            axis = rect.width / start.width >= rect.height / start.height ? "x" : "y";
+        else
+            axis = horizontal ? "x" : "y";
+    }
+    const minimumScale = minSize / Math.min(start.width, start.height);
+    const scale = Math.max(minimumScale, axis === "x" ? rect.width / start.width
+                                                      : rect.height / start.height);
+    const width = start.width * scale;
+    const height = start.height * scale;
+    const centerX = start.x + start.width / 2;
+    const centerY = start.y + start.height / 2;
+    let x = centerX - width / 2;
+    let y = centerY - height / 2;
+    if (!fromCenter) {
+        if (sides.left)
+            x = start.x + start.width - width;
+        else if (sides.right)
+            x = start.x;
+        if (sides.top)
+            y = start.y + start.height - height;
+        else if (sides.bottom)
+            y = start.y;
+    }
+    return { "x": x, "y": y, "width": width, "height": height };
+}
+
+// ハンドル (tl, t, tr, r, br, b, bl, l) を pointer まで動かしたときの矩形。
+//   既定       : 反対側の角・辺を固定する
+//   fromCenter : 中心を固定して対称に伸縮する (Alt)
+//   keepAspect : 縦横比を保つ (Ctrl)
+// 反対側を越えて裏返さず、minSize で止める。
+function resizeRect(start, handle, pointer, options, minSize) {
+    if (!pointer || !finite(pointer.x) || !finite(pointer.y))
+        return copyRect(start);
+    const minimum = finite(minSize) && minSize > 0 ? minSize : 1;
+    const sides = handleSides(handle);
+    const centerX = start.x + start.width / 2;
+    const centerY = start.y + start.height / 2;
+    let left = start.x, right = start.x + start.width;
+    let top = start.y, bottom = start.y + start.height;
+    if (options.fromCenter) {
+        if (sides.left || sides.right) {
+            const half = Math.max(minimum / 2, sides.right ? pointer.x - centerX : centerX - pointer.x);
+            left = centerX - half;
+            right = centerX + half;
+        }
+        if (sides.top || sides.bottom) {
+            const half = Math.max(minimum / 2, sides.bottom ? pointer.y - centerY : centerY - pointer.y);
+            top = centerY - half;
+            bottom = centerY + half;
+        }
+    } else {
+        if (sides.right)
+            right = Math.max(pointer.x, left + minimum);
+        if (sides.left)
+            left = Math.min(pointer.x, right - minimum);
+        if (sides.bottom)
+            bottom = Math.max(pointer.y, top + minimum);
+        if (sides.top)
+            top = Math.min(pointer.y, bottom - minimum);
+    }
+    const rect = { "x": left, "y": top, "width": right - left, "height": bottom - top };
+    if (options.keepAspect)
+        return keepAspectRect(start, rect, handle, options.fromCenter, minimum);
+    return rect;
+}
+
+// 掴んだ辺だけを線へ吸着させる。fromCenter なら反対の辺も対称に動かし、
+// keepAspect なら近い方の軸だけを吸着させてもう一方は比率で決める。
+function snapResize(start, rect, handle, lines, threshold, options, minSize) {
+    const minimum = finite(minSize) && minSize > 0 ? minSize : 1;
+    const sides = handleSides(handle);
+    const right = rect.x + rect.width;
+    const bottom = rect.y + rect.height;
+    const snapX = sides.left ? nearestSnap([rect.x], lines.xs, threshold)
+                : sides.right ? nearestSnap([right], lines.xs, threshold) : null;
+    const snapY = sides.top ? nearestSnap([rect.y], lines.ys, threshold)
+                : sides.bottom ? nearestSnap([bottom], lines.ys, threshold) : null;
+    let useX = snapX !== null;
+    let useY = snapY !== null;
+    if (options.keepAspect && useX && useY) {
+        useX = Math.abs(snapX.delta) <= Math.abs(snapY.delta);
+        useY = !useX;
+    }
+    if (!useX && !useY)
+        return { "rect": copyRect(rect), "guidesX": [], "guidesY": [] };
+
+    let left = rect.x, newRight = right, top = rect.y, newBottom = bottom;
+    if (useX) {
+        const delta = snapX.delta;
+        if (sides.left) {
+            left += delta;
+            if (options.fromCenter)
+                newRight -= delta;
+        } else {
+            newRight += delta;
+            if (options.fromCenter)
+                left -= delta;
+        }
+    }
+    if (useY) {
+        const delta = snapY.delta;
+        if (sides.top) {
+            top += delta;
+            if (options.fromCenter)
+                newBottom -= delta;
+        } else {
+            newBottom += delta;
+            if (options.fromCenter)
+                top -= delta;
+        }
+    }
+    // 吸着で裏返る・潰れるなら吸着しない。
+    if (newRight - left < minimum || newBottom - top < minimum)
+        return { "rect": copyRect(rect), "guidesX": [], "guidesY": [] };
+    let snapped = { "x": left, "y": top, "width": newRight - left, "height": newBottom - top };
+    if (options.keepAspect)
+        snapped = keepAspectRect(start, snapped, handle, options.fromCenter, minimum,
+                                 useX ? "x" : "y");
+    return {
+        "rect": snapped,
+        "guidesX": useX ? [snapX.line] : [],
+        "guidesY": useY ? [snapY.line] : []
+    };
+}
+
+// 画面上の吸着距離 (px) を出力画素へ換算する。
+function thresholdOutputPx(screenPx, outputWidth, hostWidth) {
+    return hostWidth > 0 ? screenPx * outputWidth / hostWidth : screenPx;
+}
+
+// 各ハンドルの名前と、矩形に対する位置 (0..1)。
+function handles() {
+    return [
+        { "name": "tl", "fx": 0, "fy": 0 }, { "name": "t", "fx": 0.5, "fy": 0 },
+        { "name": "tr", "fx": 1, "fy": 0 }, { "name": "r", "fx": 1, "fy": 0.5 },
+        { "name": "br", "fx": 1, "fy": 1 }, { "name": "b", "fx": 0.5, "fy": 1 },
+        { "name": "bl", "fx": 0, "fy": 1 }, { "name": "l", "fx": 0, "fy": 0.5 }
+    ];
+}

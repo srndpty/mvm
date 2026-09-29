@@ -344,7 +344,8 @@ int main(int argc, char** argv) {
         require(mvm::project::validateTimeline(withOpacity).success,
                 "文字 clip の不透明度 key / fade を拒否しました");
         auto withScale = project;
-        withScale.timelineClips[0].effects.scalePercent = 150.0;
+        withScale.timelineClips[0].effects.scaleXPercent =
+            withScale.timelineClips[0].effects.scaleYPercent = 150.0;
         require(!mvm::project::validateTimeline(withScale).success,
                 "文字 clip の拡大率を受理しました");
         auto withPosition = project;

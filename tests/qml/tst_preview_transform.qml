@@ -1,0 +1,164 @@
+import QtQuick
+import QtTest
+import "../../apps/mvm/PreviewTransform.js" as Transform
+
+// プレビュー上で素材を動かす・拡縮するときの計算 (apps/mvm/PreviewTransform.js)。
+// 期待値は手で計算した値で、実装の式を呼んで作らない。
+TestCase {
+    name: "PreviewTransform"
+
+    // 1920x1080 の出力に、(100, 100, 400, 200) の素材と、別の素材 (1000, 600, 300, 300)。
+    readonly property var canvasLines: Transform.snapLines(1920, 1080, [])
+    readonly property var otherLines: Transform.snapLines(1920, 1080,
+                                                          [{ "x": 1000, "y": 600, "width": 300, "height": 300 }])
+    readonly property var rect: ({ "x": 100, "y": 100, "width": 400, "height": 200 })
+
+    function compareRect(actual, x, y, width, height, message) {
+        fuzzyCompare(actual.x, x, 1e-9, message + " x");
+        fuzzyCompare(actual.y, y, 1e-9, message + " y");
+        fuzzyCompare(actual.width, width, 1e-9, message + " width");
+        fuzzyCompare(actual.height, height, 1e-9, message + " height");
+    }
+
+    function test_snapLinesIncludeCanvasAndOtherClips() {
+        compare(canvasLines.xs, [0, 960, 1920]);
+        compare(canvasLines.ys, [0, 540, 1080]);
+        compare(otherLines.xs, [0, 960, 1920, 1000, 1150, 1300]);
+        compare(otherLines.ys, [0, 540, 1080, 600, 750, 900]);
+    }
+
+    // 中央が画面中央 (960) の 4px 手前に来る移動は、画面中央へ吸着する。
+    function test_moveSnapsCenterToCanvasCenter() {
+        const snapped = Transform.snapMove(rect, 656, 0, canvasLines, 8, true);
+        compare(snapped.dx, 660);
+        compare(snapped.guidesX, [960]);
+    }
+
+    // 左端が画面の左端 (0) へ、下端が他の素材の上端 (600) へ吸着する。
+    function test_moveSnapsEdgesToCanvasAndOtherClip() {
+        const snapped = Transform.snapMove(rect, -95, 297, otherLines, 8, true);
+        compare(snapped.dx, -100);
+        compare(snapped.dy, 300);
+        compare(snapped.guidesX, [0]);
+        compare(snapped.guidesY, [600]);
+    }
+
+    // 負例: 閾値の外は吸着しない。Ctrl (enabled = false) なら閾値内でも吸着しない。
+    function test_moveDoesNotSnapOutsideThresholdOrWithCtrl() {
+        const far = Transform.snapMove(rect, 640, 0, canvasLines, 8, true);
+        compare(far.dx, 640);
+        compare(far.guidesX, []);
+        const free = Transform.snapMove(rect, 656, 0, canvasLines, 8, false);
+        compare(free.dx, 656);
+        compare(free.guidesX, []);
+        const invalid = Transform.snapMove(rect, NaN, 5, canvasLines, 8, true);
+        compare(invalid.dx, 0);
+        compare(invalid.dy, 0);
+    }
+
+    // 既定は反対側の角・辺を固定する。8 つのハンドルすべて。
+    function test_resizeKeepsOppositeSideFixed() {
+        const plain = { "keepAspect": false, "fromCenter": false };
+        compareRect(Transform.resizeRect(rect, "br", { "x": 600, "y": 400 }, plain, 1),
+                    100, 100, 500, 300, "br");
+        compareRect(Transform.resizeRect(rect, "tl", { "x": 50, "y": 20 }, plain, 1),
+                    50, 20, 450, 280, "tl");
+        compareRect(Transform.resizeRect(rect, "tr", { "x": 700, "y": 50 }, plain, 1),
+                    100, 50, 600, 250, "tr");
+        compareRect(Transform.resizeRect(rect, "bl", { "x": 0, "y": 500 }, plain, 1),
+                    0, 100, 500, 400, "bl");
+        // 辺は掴んだ軸だけが変わる。
+        compareRect(Transform.resizeRect(rect, "r", { "x": 800, "y": 999 }, plain, 1),
+                    100, 100, 700, 200, "r");
+        compareRect(Transform.resizeRect(rect, "l", { "x": 200, "y": -50 }, plain, 1),
+                    200, 100, 300, 200, "l");
+        compareRect(Transform.resizeRect(rect, "t", { "x": 0, "y": 0 }, plain, 1),
+                    100, 0, 400, 300, "t");
+        compareRect(Transform.resizeRect(rect, "b", { "x": 0, "y": 250 }, plain, 1),
+                    100, 100, 400, 150, "b");
+    }
+
+    // Alt: 中心 (300, 200) を固定して対称に伸縮する。
+    function test_resizeFromCenterIsSymmetric() {
+        const centered = { "keepAspect": false, "fromCenter": true };
+        compareRect(Transform.resizeRect(rect, "r", { "x": 600, "y": 0 }, centered, 1),
+                    0, 100, 600, 200, "r from center");
+        compareRect(Transform.resizeRect(rect, "br", { "x": 350, "y": 260 }, centered, 1),
+                    250, 140, 100, 120, "br from center");
+    }
+
+    // Ctrl: 縦横比 (2:1) を保つ。角は大きく変わった軸に合わせ、辺はもう一方を中心で伸縮する。
+    function test_resizeKeepsAspect() {
+        const aspect = { "keepAspect": true, "fromCenter": false };
+        compareRect(Transform.resizeRect(rect, "br", { "x": 900, "y": 350 }, aspect, 1),
+                    100, 100, 800, 400, "br aspect");
+        compareRect(Transform.resizeRect(rect, "tl", { "x": 300, "y": 0 }, aspect, 1),
+                    -100, 0, 600, 300, "tl aspect");
+        compareRect(Transform.resizeRect(rect, "r", { "x": 300, "y": 0 }, aspect, 1),
+                    100, 150, 200, 100, "r aspect");
+        const both = { "keepAspect": true, "fromCenter": true };
+        compareRect(Transform.resizeRect(rect, "r", { "x": 700, "y": 0 }, both, 1),
+                    -100, 0, 800, 400, "r aspect from center");
+    }
+
+    // 負例: 反対側を越えて裏返さず、最小の大きさで止まる。pointer が NaN なら変えない。
+    function test_resizeDoesNotFlip() {
+        const plain = { "keepAspect": false, "fromCenter": false };
+        compareRect(Transform.resizeRect(rect, "r", { "x": -500, "y": 0 }, plain, 4),
+                    100, 100, 4, 200, "r past left");
+        compareRect(Transform.resizeRect(rect, "t", { "x": 0, "y": 900 }, plain, 4),
+                    100, 296, 400, 4, "t past bottom");
+        compareRect(Transform.resizeRect(rect, "l", { "x": 5000, "y": 0 },
+                                         { "keepAspect": false, "fromCenter": true }, 4),
+                    298, 100, 4, 200, "l past center");
+        compareRect(Transform.resizeRect(rect, "br", { "x": NaN, "y": 5 }, plain, 4),
+                    100, 100, 400, 200, "NaN pointer");
+    }
+
+    // 拡縮の吸着は掴んだ辺だけを動かす。右端 954 は画面中央 960 へ吸着し、左端は動かない。
+    function test_resizeSnapsOnlyDraggedEdge() {
+        const plain = { "keepAspect": false, "fromCenter": false };
+        const resized = Transform.resizeRect(rect, "r", { "x": 954, "y": 0 }, plain, 1);
+        const snapped = Transform.snapResize(rect, resized, "r", canvasLines, 8, plain, 1);
+        compareRect(snapped.rect, 100, 100, 860, 200, "r snapped");
+        compare(snapped.guidesX, [960]);
+        compare(snapped.guidesY, []);
+        // Alt なら反対側も同じだけ動く (中心 300 を保つ)。
+        const centered = { "keepAspect": false, "fromCenter": true };
+        const wide = Transform.resizeRect(rect, "r", { "x": 954, "y": 0 }, centered, 1);
+        const centeredSnap = Transform.snapResize(rect, wide, "r", canvasLines, 8, centered, 1);
+        compareRect(centeredSnap.rect, -360, 100, 1320, 200, "r snapped from center");
+    }
+
+    // Ctrl で比率を保つときは、近い方の軸だけを吸着させてもう一方は比率で決める。
+    function test_resizeSnapKeepsAspect() {
+        const aspect = { "keepAspect": true, "fromCenter": false };
+        const resized = Transform.resizeRect(rect, "br", { "x": 1916, "y": 0 }, aspect, 1);
+        const snapped = Transform.snapResize(rect, resized, "br", canvasLines, 8, aspect, 1);
+        compareRect(snapped.rect, 100, 100, 1820, 910, "br aspect snapped");
+        compare(snapped.guidesX, [1920]);
+    }
+
+    // 負例: 閾値の外なら拡縮は吸着しない。辺が無い軸 (右辺の y) は吸着しない。
+    function test_resizeSnapOutsideThreshold() {
+        const plain = { "keepAspect": false, "fromCenter": false };
+        const resized = Transform.resizeRect(rect, "r", { "x": 940, "y": 0 }, plain, 1);
+        const snapped = Transform.snapResize(rect, resized, "r", canvasLines, 8, plain, 1);
+        compareRect(snapped.rect, 100, 100, 840, 200, "r not snapped");
+        compare(snapped.guidesX, []);
+        const nearY = { "x": 100, "y": 536, "width": 400, "height": 200 };
+        const edgeOnly = Transform.snapResize(nearY, nearY, "r", canvasLines, 8, plain, 1);
+        compare(edgeOnly.guidesY, []);
+    }
+
+    // 回転した矩形の外接矩形 (吸着の相手・自分に使う)。90° なら縦横が入れ替わる。
+    function test_rotatedBounds() {
+        compareRect(Transform.rotatedBounds(rect, 300, 200, 90), 200, 0, 200, 400, "90 deg");
+        compareRect(Transform.rotatedBounds(rect, 300, 200, 0), 100, 100, 400, 200, "0 deg");
+    }
+
+    function test_thresholdScalesToOutputPixels() {
+        compare(Transform.thresholdOutputPx(8, 1920, 960), 16);
+        compare(Transform.thresholdOutputPx(8, 1920, 0), 8);
+    }
+}
