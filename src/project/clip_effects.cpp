@@ -1,6 +1,7 @@
 #include "project/clip_effects.h"
 
 #include "core/clip_fade.h"
+#include "core/layer_placement.h"
 #include "core/source_frame_mapping.h"
 
 #include <algorithm>
@@ -28,8 +29,9 @@ bool validateClipEffects(const ClipEffects& effects, std::int64_t sourceNativeDu
         error = "位置 X/Y は -1000% 以上 1000% 以下である必要があります";
         return false;
     }
-    if (!inRange(effects.scalePercent, 1.0, 1000.0)) {
-        error = "拡大率は 1% 以上 1000% 以下である必要があります";
+    if (!inRange(effects.scaleXPercent, 1.0, 1000.0) ||
+        !inRange(effects.scaleYPercent, 1.0, 1000.0)) {
+        error = "拡大率 X/Y は 1% 以上 1000% 以下である必要があります";
         return false;
     }
     if (!inRange(effects.rotationDegrees, -360.0, 360.0)) {
@@ -183,11 +185,10 @@ ClipEffectMapping mapClipEffects(const ClipEffects& effects) {
     const double top = effects.cropTopPercent / 100.0;
     const double width = 1.0 - left - effects.cropRightPercent / 100.0;
     const double height = 1.0 - top - effects.cropBottomPercent / 100.0;
-    const double scale = effects.scalePercent / 100.0;
     const double centerX = left + width * 0.5;
     const double centerY = top + height * 0.5;
-    const double scaledWidth = width * scale;
-    const double scaledHeight = height * scale;
+    const double scaledWidth = width * effects.scaleXPercent / 100.0;
+    const double scaledHeight = height * effects.scaleYPercent / 100.0;
 
     ClipEffectMapping result;
     result.sourceRect = {left, top, width, height};
@@ -199,6 +200,62 @@ ClipEffectMapping mapClipEffects(const ClipEffects& effects) {
     result.fadeInFrames = effects.fadeInFrames;
     result.fadeOutFrames = effects.fadeOutFrames;
     return result;
+}
+
+namespace {
+
+core::LayerRect layerRect(const NormalizedEffectRect& rect) {
+    return {rect.x, rect.y, rect.width, rect.height};
+}
+
+} // namespace
+
+ClipVisualGeometry clipVisualGeometry(const ClipEffects& effects, int sourceWidth, int sourceHeight,
+                                      int canvasWidth, int canvasHeight) {
+    ClipVisualGeometry result;
+    const auto mapped = mapClipEffects(effects);
+    const auto placed =
+        core::placeLayer(sourceWidth, sourceHeight, canvasWidth, canvasHeight,
+                         layerRect(mapped.sourceRect), layerRect(mapped.destinationRect));
+    if (placed.empty)
+        return result;
+    result.x = placed.destination.x * canvasWidth;
+    result.y = placed.destination.y * canvasHeight;
+    result.width = placed.destination.width * canvasWidth;
+    result.height = placed.destination.height * canvasHeight;
+    result.pivotX = placed.pivotX * canvasWidth;
+    result.pivotY = placed.pivotY * canvasHeight;
+    result.rotationDegrees = mapped.rotationDegrees;
+    result.valid = true;
+    return result;
+}
+
+bool effectsForVisualRect(ClipEffects& effects, int sourceWidth, int sourceHeight, int canvasWidth,
+                          int canvasHeight, double x, double y, double width, double height) {
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(width) || !std::isfinite(height) ||
+        width <= 0.0 || height <= 0.0)
+        return false;
+    const auto crop = mapClipEffects(effects).sourceRect;
+    // crop 範囲をそのまま置いたときに見える範囲 (letterbox との重なり)。拡縮と位置に依らない。
+    const auto visible = core::placeLayer(sourceWidth, sourceHeight, canvasWidth, canvasHeight,
+                                          layerRect(crop), layerRect(crop));
+    if (visible.empty)
+        return false;
+    const auto& seen = visible.destination;
+    const double scaleX = std::clamp(width / canvasWidth / seen.width, 0.01, 10.0);
+    const double scaleY = std::clamp(height / canvasHeight / seen.height, 0.01, 10.0);
+    // 見える範囲の左上が x, y に来るように、crop 範囲の置き場所 (destination) を決める。
+    const double destinationX = x / canvasWidth - (seen.x - crop.x) * scaleX;
+    const double destinationY = y / canvasHeight - (seen.y - crop.y) * scaleY;
+    // mapClipEffects: destination = crop 中心 - 拡縮後の半分 + 位置。
+    const double positionX = destinationX - (crop.x + crop.width * 0.5) + crop.width * scaleX * 0.5;
+    const double positionY =
+        destinationY - (crop.y + crop.height * 0.5) + crop.height * scaleY * 0.5;
+    effects.scaleXPercent = scaleX * 100.0;
+    effects.scaleYPercent = scaleY * 100.0;
+    effects.positionXPercent = std::clamp(positionX * 100.0, -1000.0, 1000.0);
+    effects.positionYPercent = std::clamp(positionY * 100.0, -1000.0, 1000.0);
+    return true;
 }
 
 } // namespace mvm::project

@@ -31,6 +31,9 @@ enum class TimelineClipKind { Video, Manim, Audio, Text, Image };
 // 速度・リンク・スリップ・レート調整を持たない。
 bool isStillClipKind(TimelineClipKind kind);
 
+// プロジェクトパネルの素材から作る clip か (動画・音声・画像)。これらは mediaItemId が必須。
+bool clipUsesMediaItem(TimelineClipKind kind);
+
 // 文字・静止画を置いたときの既定の尺 (5 秒、最低 1 frame)。
 std::int64_t defaultStillClipFrames(std::int64_t timelineFpsNum, std::int64_t timelineFpsDen);
 
@@ -72,6 +75,9 @@ struct TimelineClip {
     std::filesystem::path mediaPath; // 解決済みの実ファイル
     std::string name;                // UI 表示名
     std::string id;                  // Project 内で一意な永続 ID
+    // 素材の出どころ (プロジェクトパネルの MediaItem::id)。動画・音声・画像の clip は必須で、
+    // mediaPath はその素材と同じファイルを指す。文字と Manim の clip は空。
+    std::string mediaItemId;
     std::int64_t sourceFpsNum = 0;
     std::int64_t sourceFpsDen = 1;
     std::int64_t sourceFrameCount = 0;
@@ -98,7 +104,7 @@ inline constexpr std::int64_t kMinClipSpeedPercent = 10;
 inline constexpr std::int64_t kMaxClipSpeedPercent = 1000;
 
 // Project JSON の schema。timeline 検証と JSON の読み書きが同じ値を参照する。
-inline constexpr int kProjectSchemaVersion = 9;
+inline constexpr int kProjectSchemaVersion = 11;
 
 // プロジェクトパネルの素材。timeline clip とは独立に存在し、mediaPath で対応づく。
 enum class MediaKind { Video, Audio, Image };

@@ -1,6 +1,7 @@
 #include "app/audio_source_set_transaction.h"
 #include "project/project_json.h"
 #include "project/timeline_edit.h"
+#include "test_media_fixture.h"
 #include "util/mvm_win_utf8.h"
 
 #include <cmath>
@@ -1626,7 +1627,8 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
     candidate.timelineClips[1].speedDen = 5;
     candidate.timelineClips[2].track = kV2;
     candidate.timelineClips[2].timelineStartFrame = 90;
-    candidate.timelineClips[2].effects.scalePercent = 60.0;
+    candidate.timelineClips[2].effects.scaleXPercent =
+        candidate.timelineClips[2].effects.scaleYPercent = 60.0;
     candidate.timelineClips[2].effects.opacityPercent = 55.0;
     candidate.outputWidth = 3840;
     candidate.outputHeight = 2160;
@@ -1638,6 +1640,7 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
     audio.linkGroupId = "round-trip-link";
     candidate.timelineClips[2].linkGroupId = "round-trip-link";
     candidate.timelineClips.push_back(audio);
+    mvm::test::attachFixtureMedia(candidate);
     check(mvm::project::validateTimeline(candidate).success,
           "複数track配置とeffectsを持つ保存candidateが不正です");
 
@@ -1648,7 +1651,7 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
     const auto loaded = mvm::project::loadProjectJson(projectFile);
     check(loaded.success, "保存した .mvm を読み込めません");
     bool timelineFieldsMatch =
-        loaded.success && loaded.project.schemaVersion == 9 &&
+        loaded.success && loaded.project.schemaVersion == 11 &&
         loaded.project.timelineFpsNum == 60 && loaded.project.timelineFpsDen == 1 &&
         loaded.project.outputWidth == 3840 && loaded.project.outputHeight == 2160 &&
         loaded.project.videoTracks == live.videoTracks &&
@@ -1672,7 +1675,7 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
         }
     }
     check(timelineFieldsMatch,
-          "schema 9のoutput "
+          "schema 11のoutput "
           "size・track構成・mute・clip種別・trim・effects・速度がround-tripしません");
 
     auto invalidOutput = mvm::project::createDefaultProject();
@@ -1685,7 +1688,7 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
     {
         std::ofstream stranger(strangerPath, std::ios::binary);
         stranger
-            << R"({"schema_version": 9, "timeline_markers": [], "in_frame": null, "out_frame": null, "timeline_fps_num": 60, "timeline_fps_den": 1,)"
+            << R"({"schema_version": 11, "timeline_markers": [], "in_frame": null, "out_frame": null, "timeline_fps_num": 60, "timeline_fps_den": 1,)"
             << R"("video_tracks": [{"name": "V1", "muted": false}], "audio_tracks": [],)"
             << R"("manim_assets": [], "timeline_clips": [],)"
             << R"("media_folders": [], "media_items": []})";
@@ -1850,6 +1853,135 @@ void testTimelineMarks(const std::filesystem::path& root) {
 
 } // namespace
 
+// ドロップ位置への配置。行の種別に合う側をその track へ置き、重なりは上書きせずに失敗する。
+void testPlaceMediaAtDrop() {
+    using mvm::project::TimelineClipKind;
+    using mvm::project::TrackKind;
+    const auto find = [](const mvm::project::Project& project, const std::string& id) {
+        for (const auto& value : project.timelineClips)
+            if (value.id == id)
+                return value;
+        return mvm::project::TimelineClip{};
+    };
+    const auto pair = [] {
+        auto video = clip("drop", TimelineClipKind::Video);
+        auto audio = clip("drop-audio", TimelineClipKind::Audio);
+        video.linkGroupId = audio.linkGroupId = "drop-link";
+        return std::make_pair(video, audio);
+    };
+
+    // 映像行 (V2) へのリンク対。音声は空いている A1 へ入る。
+    {
+        auto project = mvm::project::createDefaultProject();
+        auto [video, audio] = pair();
+        const auto placed = mvm::project::placeMediaAtDrop(project, video, audio, kV2, 120);
+        check(placed.success && find(project, "id-drop").track == kV2 &&
+                  find(project, "id-drop").timelineStartFrame == 120 &&
+                  find(project, "id-drop-audio").track == kA1 &&
+                  find(project, "id-drop-audio").timelineStartFrame == 120,
+              "映像行へのドロップでリンク対を置けません");
+    }
+    // A1 が使用中なら、リンク音声は新しい A2 へ入る。
+    {
+        auto project = mvm::project::createDefaultProject();
+        project.timelineClips = {clip("busy", TimelineClipKind::Audio, kA1)};
+        auto [video, audio] = pair();
+        const auto placed = mvm::project::placeMediaAtDrop(project, video, audio, kV1, 100);
+        check(placed.success && project.audioTracks.size() == 2 &&
+                  find(project, "id-drop-audio").track ==
+                      mvm::project::TrackRef{TrackKind::Audio, 1},
+              "A1使用中のリンク音声を空いたtrackへ置けません");
+    }
+    // 音声行へのリンク対。音声がその行へ、映像は空いている V1 へ入る。
+    {
+        auto project = mvm::project::createDefaultProject();
+        auto [video, audio] = pair();
+        const auto placed = mvm::project::placeMediaAtDrop(project, video, audio, kA1, 30);
+        check(placed.success && find(project, "id-drop-audio").track == kA1 &&
+                  find(project, "id-drop").track == kV1,
+              "音声行へのドロップでリンク対を置けません");
+    }
+    // 最後の行より外 (index == track 数) は、その種別の track を足して置く。負の位置は 0 へ寄せる。
+    {
+        auto project = mvm::project::createDefaultProject();
+        const auto placed = mvm::project::placeMediaAtDrop(
+            project, clip("image", TimelineClipKind::Image), std::nullopt, kV3, -5);
+        check(placed.success && project.videoTracks.size() == 3 &&
+                  find(project, "id-image").track == kV3 &&
+                  find(project, "id-image").timelineStartFrame == 0,
+              "新しいtrackへのドロップ、または負の位置の補正ができません");
+    }
+    {
+        auto project = mvm::project::createDefaultProject();
+        const auto placed = mvm::project::placeMediaAtDrop(
+            project, clip("voice", TimelineClipKind::Audio, kA1), std::nullopt, kA1, 10);
+        check(placed.success && find(project, "id-voice").track == kA1, "音声行へ音声を置けません");
+    }
+
+    // ドロップした行に置けないときは、上書きせずに置ける track へ回す (時刻はそのまま)。
+    auto base = mvm::project::createDefaultProject();
+    base.timelineClips = {clip("existing", TimelineClipKind::Video, kV1)};
+    const auto before = base;
+    {
+        auto project = base;
+        const auto placed = mvm::project::placeMediaAtDrop(
+            project, clip("voice", TimelineClipKind::Audio), std::nullopt, kV2, 40);
+        check(placed.success && find(project, "id-voice").track == kA1 &&
+                  find(project, "id-voice").timelineStartFrame == 40,
+              "映像行へ落とした音声を音声trackへ回せません");
+    }
+    {
+        auto project = base;
+        const auto placed = mvm::project::placeMediaAtDrop(
+            project, clip("image", TimelineClipKind::Image), std::nullopt, kA1, 40);
+        check(placed.success && find(project, "id-image").track == kV2 &&
+                  find(project, "id-image").timelineStartFrame == 40,
+              "音声行へ落とした画像を空いている映像trackへ回せません");
+    }
+    {
+        // 最下段より下 (新しい audio track の位置) へ画像を落としても、audio track は足さない。
+        auto project = base;
+        const auto placed =
+            mvm::project::placeMediaAtDrop(project, clip("image", TimelineClipKind::Image),
+                                           std::nullopt, {TrackKind::Audio, 1}, 40);
+        check(placed.success && project.audioTracks.size() == 1 &&
+                  find(project, "id-image").track == kV2,
+              "音声の新しい行へ落とした画像で余計なaudio trackを足しました");
+    }
+    {
+        // V1 は使用中。V2 が空いていればそこへ、同じ時刻で置く。
+        auto project = base;
+        const auto placed = mvm::project::placeMediaAtDrop(
+            project, clip("over", TimelineClipKind::Video), std::nullopt, kV1, 100);
+        check(placed.success && find(project, "id-over").track == kV2 &&
+                  find(project, "id-over").timelineStartFrame == 100 &&
+                  find(project, "id-existing") == base.timelineClips.front(),
+              "使用中の行へ落とした素材を空いているtrackへ回せない、または既存clipを変えました");
+    }
+    {
+        // 空いている映像 track が無ければ新しい track を足す。リンク音声は A1 へ。
+        auto project = base;
+        project.timelineClips.push_back(clip("upper", TimelineClipKind::Video, kV2));
+        auto [video, audio] = pair();
+        const auto placed = mvm::project::placeMediaAtDrop(project, video, audio, kV1, 100);
+        check(placed.success && project.videoTracks.size() == 3 &&
+                  find(project, "id-drop").track == kV3 &&
+                  find(project, "id-drop").timelineStartFrame == 100 &&
+                  find(project, "id-drop-audio").track == kA1,
+              "空きの無い映像trackへ落としたリンク対を新しいtrackへ置けません");
+    }
+
+    // 失敗は Project を変えない。
+    check(!mvm::project::placeMediaAtDrop(base, clip("far", TimelineClipKind::Video), std::nullopt,
+                                          {TrackKind::Video, 3}, 0)
+                  .success &&
+              !mvm::project::placeMediaAtDrop(base, clip("neg", TimelineClipKind::Video),
+                                              std::nullopt, {TrackKind::Video, -1}, 0)
+                   .success &&
+              base == before,
+          "存在しないtrackへ置けてしまいます");
+}
+
 int main(int argc, char** argv) {
     if (argc != 2) {
         std::fprintf(stderr, "使い方: mvm_test_timeline_edit <work-directory>\n");
@@ -1866,6 +1998,7 @@ int main(int argc, char** argv) {
     testMultipleClipMove();
     testTrackEditing();
     testAudioClipPlacement();
+    testPlaceMediaAtDrop();
     testRippleDelete();
     testRippleDeleteWithLinkedClips();
     testSplitClips();

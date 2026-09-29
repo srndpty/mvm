@@ -214,6 +214,7 @@ static int attach_export_affine(mlt_profile profile, mlt_producer cut, const Mvm
      * fix_rotate_z は MLT 7.36.1 では実画素に現れず、V1 の回転が書き出されていなかった。 */
     mlt_properties_set_int(props, "transition.keyed", 0);
     mlt_properties_set_double(props, "transition.fix_rotate_x", clip->rotation_degrees);
+    mlt_properties_set_double(props, "transition.fix_shear_x", clip->shear_degrees);
     mlt_filter_set_in_and_out(filter, (mlt_position)producer_in,
                               (mlt_position)(producer_in + duration - 1));
     for (int i = 0; i < clip->opacity_keyframe_count; ++i) {
@@ -255,6 +256,7 @@ static int plant_export_overlay_affine(mlt_profile profile, mlt_tractor tractor,
     mlt_properties_set(props, "valign", "middle");
     /* M7b-P0実画素結果がauthority。名前からfix_rotate_zへ置換しない。 */
     mlt_properties_set_double(props, "fix_rotate_x", clip->rotation_degrees);
+    mlt_properties_set_double(props, "fix_shear_x", clip->shear_degrees);
     mlt_transition_set_in_and_out(
         transition, (mlt_position)clip->timeline_start_frame,
         (mlt_position)(clip->timeline_start_frame + clip->timeline_duration_frames - 1));

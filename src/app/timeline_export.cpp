@@ -54,6 +54,8 @@ bool mapExportEffects(const project::TimelineClip& clip, const TimelineExportReq
     // 中心の差 d について、全体の矩形を d - R d だけずらすと、全体の中心で回した結果が
     // crop 範囲の中心で回した結果と一致する。R は画素空間 (y 下向き) の時計回りの回転で、
     // preview の shader と同じ向き。
+    double rectWidth = fullWidth;
+    double rectHeight = fullHeight;
     if (mapped.rotationDegrees != 0.0) {
         const double radians = mapped.rotationDegrees * 3.14159265358979323846 / 180.0;
         const double cosine = std::cos(radians);
@@ -65,12 +67,36 @@ bool mapExportEffects(const project::TimelineClip& clip, const TimelineExportReq
             (fullY + fullHeight * 0.5);
         fullX += dx - (cosine * dx - sine * dy);
         fullY += dy - (sine * dx + cosine * dy);
+        // MLT の affine は回転してから矩形へ拡縮するので、縦横の倍率が違うと平行四辺形に
+        // なる (preview は拡縮してから回す)。欲しい変換 A = R(θ)·diag(sx, sy) (画素空間、
+        // 倍率は frame 全体に対する値) を、affine が表せる形へ分解する。
+        // transition_affine.c は出力→素材の写像を rotate_x・shear・scale の順に
+        // affine_multiply (右から転置を掛ける) で作るので、素材→出力の写像は
+        // diag(sx', sy')·[[1, 0], [-t, 1]]·R(φ) (t = tan(fix_shear_x)) になる。
+        // A·R(φ)^T が下三角になる φ を選べば (1 行 2 列を消す)、残りが diag と t になる。
+        // 倍率が同じなら φ = θ・t = 0 になり、従来と変わらない。
+        const double a = cosine * scaleX;
+        const double b = -sine * scaleY;
+        const double c = sine * scaleX;
+        const double d = cosine * scaleY;
+        const double phi = std::atan2(-b, a);
+        const double cosPhi = std::cos(phi);
+        const double sinPhi = std::sin(phi);
+        const double scaleXAfter = a * cosPhi - b * sinPhi;
+        const double scaleYAfter = c * sinPhi + d * cosPhi;
+        const double lower = c * cosPhi - d * sinPhi;
+        rectWidth = scaleXAfter * width;
+        rectHeight = scaleYAfter * height;
+        output.rotationDegrees = phi * 180.0 / 3.14159265358979323846;
+        output.shearDegrees = std::atan(-lower / scaleYAfter) * 180.0 / 3.14159265358979323846;
+        // 中心は変えずに、分解後の大きさで矩形を置き直す。
+        fullX += (fullWidth - rectWidth) * 0.5;
+        fullY += (fullHeight - rectHeight) * 0.5;
     }
     output.rectX = fullX;
     output.rectY = fullY;
-    output.rectWidth = fullWidth;
-    output.rectHeight = fullHeight;
-    output.rotationDegrees = mapped.rotationDegrees;
+    output.rectWidth = rectWidth;
+    output.rectHeight = rectHeight;
 
     for (std::int64_t frame = 0; frame < timelineDuration; ++frame) {
         const auto sourceLocal =
@@ -325,6 +351,7 @@ TimelineExportResult exportTimeline(const project::Project& project,
         mapped.rect_width = planned.rectWidth;
         mapped.rect_height = planned.rectHeight;
         mapped.rotation_degrees = planned.rotationDegrees;
+        mapped.shear_degrees = planned.shearDegrees;
         auto& opacityKeys = opacityStorage.emplace_back();
         for (const auto& key : planned.opacityKeys)
             opacityKeys.push_back({key.localFrame, key.opacity});

@@ -102,13 +102,13 @@ void testInvalidJson(const std::filesystem::path& root) {
     const auto missingField = root / L"missing-field.json";
     writeText(
         missingField,
-        R"({"schema_version":9,"timeline_markers":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[{"script_path":"scene.py"}],"timeline_clips":[]})");
+        R"({"schema_version":11,"timeline_markers":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[{"script_path":"scene.py"}],"timeline_clips":[]})");
     check(!mvm::project::loadProjectJson(missingField).success, "必須 field 欠損を拒否する");
 
     const auto unknownState = root / L"unknown-state.json";
     writeText(
         unknownState,
-        R"({"schema_version":9,"timeline_markers":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[{"script_path":"scene.py","scene_name":"Scene","generated_video_path":"cache/out.mp4","generation_state":"Unknown","source_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],"timeline_clips":[]})");
+        R"({"schema_version":11,"timeline_markers":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,"timeline_fps_den":1,"video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[{"script_path":"scene.py","scene_name":"Scene","generated_video_path":"cache/out.mp4","generation_state":"Unknown","source_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],"timeline_clips":[]})");
     check(!mvm::project::loadProjectJson(unknownState).success,
           "未知の generation state を拒否する");
 }

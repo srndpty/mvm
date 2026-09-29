@@ -64,6 +64,8 @@ typedef struct {
     double rect_width;
     double rect_height;
     double rotation_degrees;
+    /* 縦横の拡大率が違う回転を剛体回転にする補正 (affine の fix_shear_x)。0 なら補正なし。 */
+    double shear_degrees;
     const MvmExportOpacityKeyframe* opacity_keyframes;
     int opacity_keyframe_count;
     const MvmExportGainKeyframe* gain_keyframes;

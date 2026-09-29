@@ -12,8 +12,10 @@
 #include "app/text_raster.h"
 #include "focus_release_filter.h"
 #include "media/mlt/mvm_mlt_runtime.h"
+#include "media_import.h"
 #include "mvm_controller.h"
 #include "project/timeline_edit.h"
+#include "test_media_fixture.h"
 #include "waveform_cache.h"
 
 #include <chrono>
@@ -123,6 +125,23 @@ int main(int argc, char** argv) {
     video.sourceFrameCount = 300;
     video.sourceOutFrame = 120;
     project.timelineClips.push_back(video);
+    mvm::test::attachFixtureMedia(project);
+    // この試験はパネルの素材を置き直す。使用中の素材は時間軸が実物と違うと置けないので、
+    // 素材の値は実際のファイルを調べた値にする (id・名前は fixture のまま)。
+    {
+        const auto probed = mvm::app::probeMediaFile(video.mediaPath);
+        if (!probed.success) {
+            std::fprintf(stderr, "FAIL: 試験の動画を調べられません: %s\n", probed.error.c_str());
+            return 3;
+        }
+        auto& item = project.mediaItems.front();
+        const auto id = item.id;
+        const auto name = item.name;
+        item = probed.item;
+        item.id = id;
+        item.name = name;
+        item.mediaPath = video.mediaPath;
+    }
     const std::filesystem::path projectPath =
         directory.filePath(QStringLiteral("ui.mvm")).toStdWString();
 
@@ -190,6 +209,53 @@ int main(int argc, char** argv) {
             }
             pump(300);
             check(controller.previewVideoAtPlayhead(), "前提: playhead に映像がありません");
+
+            // 0. 枠のドラッグのように effect を続けて変えると、先の変更の seek が終わる前に次が
+            //    来る。途中の変更は捨ててよいが、最後の値 (C) は必ず preview に出る。
+            {
+                const QString videoId = QStringLiteral("video");
+                controller.selectTimelineClips({videoId});
+                pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                const QVariantMap a{{QStringLiteral("scaleX"), 90.0},
+                                    {QStringLiteral("scaleY"), 90.0}};
+                const QVariantMap b{{QStringLiteral("scaleX"), 70.0},
+                                    {QStringLiteral("scaleY"), 70.0}};
+                const QVariantMap c{{QStringLiteral("scaleX"), 50.0},
+                                    {QStringLiteral("scaleY"), 40.0}};
+                // event loop を回さずに 3 回続けて渡す (A の seek の途中で B・C が来る)。
+                const bool accepted = controller.setClipEffectValues(videoId, a, false) &&
+                                      controller.setClipEffectValues(videoId, b, false) &&
+                                      controller.setClipEffectValues(videoId, c, false);
+                check(accepted && !controller.previewPresentedLatest(),
+                      "前提: 連続した effect 変更が seek の途中に重なっていません");
+                // C: 幅 50%・高さ 40% を中央に置く。
+                const auto showsC = [&] {
+                    const auto destination = controller.submittedLayerDestination(videoId);
+                    return destination && std::abs(destination->x() - 0.25) < 1e-4 &&
+                           std::abs(destination->y() - 0.3) < 1e-4 &&
+                           std::abs(destination->width() - 0.5) < 1e-4 &&
+                           std::abs(destination->height() - 0.4) < 1e-4;
+                };
+                pumpUntil([&] { return controller.previewPresentedLatest() && showsC(); }, 10000);
+                check(controller.previewPresentedLatest() && showsC(),
+                      "seek の途中に重ねた最後の effect が preview に出ません");
+                controller.cancelEffectPreview();
+                pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+
+                // 再生位置 (10) から離れた frame 200 へ素材を置く。置いた clip が current になり、
+                // 再生位置も current も再生位置の clip (V1) へ戻らない。
+                const qint64 playheadBefore = controller.playheadFrame();
+                const int placedIndex = controller.clipCount();
+                controller.addMediaItemsToTimelineAt({QStringLiteral("fixture-media-0")},
+                                                     QStringLiteral("video"), 1, 200);
+                pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                check(controller.clipCount() > placedIndex &&
+                          controller.playheadFrame() == playheadBefore &&
+                          controller.currentClipIndex() == placedIndex,
+                      "離れた位置へ置いたclipがcurrentにならない、または再生位置が動きました");
+                controller.undoLastEdit();
+                pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+            }
 
             const auto scenePoint = [host](double fx, double fy) {
                 return host->mapToScene(QPointF(host->width() * fx, host->height() * fy)).toPoint();
@@ -590,10 +656,16 @@ int main(int argc, char** argv) {
                 pump();
                 check(!window->property("keyboardFocusTakesKeys").toBool(),
                       "preview を押しても本文欄が focus を持ち続け、単キー操作が止まったままです");
+                // 選択ツールで preview の映像を押すと、その映像 (V1) が選ばれて枠が出る。
+                check(controller.transformClipId() == QStringLiteral("video"),
+                      "preview で押した映像が選ばれません");
                 QTest::keyClick(window, Qt::Key_T);
                 pump();
                 check(window->property("timelineTool").toString() == QStringLiteral("text"),
                       "本文欄の後で T が効きません");
+                // 以降は文字の inspector を使うので、文字 clip を選び直す (再生位置は動かない)。
+                controller.selectTimelineClips({clipId});
+                pump();
 
                 // 11. 本文欄の入力中は、timeline の shortcut (Ctrl+C/V/X/D, M, I, O) が
                 //     Action へ流れず、文字入力側だけが受ける。
@@ -634,6 +706,86 @@ int main(int argc, char** argv) {
                       "Esc で本文の入力を取り消せません");
                 check(!controller.pasteClips() && controller.clipCount() == clipsBefore,
                       "入力中の Ctrl+C が timeline の clip をコピーしました");
+            }
+
+            // 12. Delete の宛先は最後に押した場所で決まる。プロジェクトパネルに素材の選択が
+            //     残っていても、timeline の clip を押した後の Delete は clip を消す。
+            {
+                QTest::keyClick(window, Qt::Key_Escape);
+                QTest::keyClick(window, Qt::Key_V);
+                window->setProperty("leftPanelTab", 1);
+                pump(300);
+                const QString mediaId = QStringLiteral("fixture-media-0");
+                const auto center = [](QQuickItem* item) {
+                    return item->mapToScene(QPointF(item->width() / 2, item->height() / 2))
+                        .toPoint();
+                };
+                const auto hasMedia = [&] {
+                    return controller.mediaBinModel()->rowOfEntry(mediaId) >= 0;
+                };
+                auto* panel = findVisualItem(window, QStringLiteral("projectPanel"));
+                auto* dialog = window->findChild<QObject*>(QStringLiteral("mediaBinRemoveDialog"));
+                const auto dialogOpen = [&] {
+                    return dialog && dialog->property("visible").toBool();
+                };
+                const auto mediaRow = [&] {
+                    return findVisualItem(window, QStringLiteral("mediaBinRow_") + mediaId);
+                };
+                auto* clipItem = findVisualItem(window, QStringLiteral("timelineClip_video"));
+                check(panel && mediaRow() && clipItem && dialog,
+                      "前提: プロジェクトパネルの素材・timeline の clip・削除確認がありません");
+                if (panel && mediaRow() && clipItem && dialog) {
+                    // a. 素材 A を選び、timeline の clip B を押して Delete。B だけが消え、
+                    //    素材の削除確認は出ない。
+                    QTest::mouseClick(window, Qt::LeftButton, {}, center(mediaRow()));
+                    pump();
+                    check(panel->property("selectedIds").toList().size() == 1,
+                          "前提: プロジェクトパネルの素材を選べません");
+                    QTest::mouseClick(window, Qt::LeftButton, {}, center(clipItem));
+                    pump();
+                    const int clipsBefore = controller.clipCount();
+                    QTest::keyClick(window, Qt::Key_Delete);
+                    pump(300);
+                    check(
+                        controller.clipCount() < clipsBefore && !dialogOpen() && hasMedia(),
+                        "素材を選んだ後に timeline の clip を押しても Delete が clip を消しません");
+                    controller.undoLastEdit();
+                    pump(300);
+
+                    // b. プロジェクトパネルへ戻って素材 A を押し、Delete。素材の削除確認が出る
+                    //    (使っている clip も消えるため)。閉じれば何も消えない。
+                    QTest::mouseClick(window, Qt::LeftButton, {}, center(mediaRow()));
+                    pump();
+                    const int clipsBeforePanel = controller.clipCount();
+                    QTest::keyClick(window, Qt::Key_Delete);
+                    pump(300);
+                    check(dialogOpen() && controller.clipCount() == clipsBeforePanel,
+                          "プロジェクトパネルの素材を選んで Delete しても削除確認が出ません");
+                    QMetaObject::invokeMethod(dialog, "close");
+                    pump(300);
+                    check(!dialogOpen() && hasMedia() && controller.clipCount() == clipsBeforePanel,
+                          "削除確認を閉じても素材か clip が消えました");
+
+                    // c. パネルの空白 (行のすぐ下。一覧の下端は横スクロールバー) を押して素材の
+                    //    選択を外し (focus はパネルのまま)、Delete。選択中の timeline の clip
+                    //    が消える。
+                    controller.selectTimelineClips({QStringLiteral("video")});
+                    pump();
+                    auto* row = mediaRow();
+                    QTest::mouseClick(window, Qt::LeftButton, {},
+                                      row->mapToScene(QPointF(10, row->height() + 30)).toPoint());
+                    pump();
+                    check(panel->property("selectedIds").toList().isEmpty(),
+                          "前提: パネルの空白を押しても素材の選択が外れません");
+                    const int clipsBeforeEmpty = controller.clipCount();
+                    QTest::keyClick(window, Qt::Key_Delete);
+                    pump(300);
+                    check(
+                        controller.clipCount() < clipsBeforeEmpty && !dialogOpen() && hasMedia(),
+                        "パネルで素材を選んでいないときの Delete が timeline の clip を消しません");
+                    controller.undoLastEdit();
+                    pump(300);
+                }
             }
             return failures == 0 ? 0 : 1;
         };

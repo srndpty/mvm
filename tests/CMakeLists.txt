@@ -242,6 +242,16 @@ set_tests_properties(m7b_4_timeline_gestures_qml PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     TIMEOUT 120)
 
+# プレビュー上で素材を動かす・拡縮するときの吸着と拡縮 (apps/mvm/PreviewTransform.js)。
+add_test(NAME m7b_4_preview_transform_qml
+    COMMAND ${MVM_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/qml/run-qml-test.ps1
+            -Runner ${MVM_QMLTESTRUNNER}
+            -TestFile ${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_preview_transform.qml
+            -OutputFile ${CMAKE_CURRENT_BINARY_DIR}/m7b4-preview-transform-qml.txt)
+set_tests_properties(m7b_4_preview_transform_qml PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    TIMEOUT 120)
+
 add_test(NAME m7b_4_external_save_continuation
     COMMAND pwsh -NoProfile -File
             ${CMAKE_CURRENT_SOURCE_DIR}/gpu_preview/test-m7b4-external-save-continuation.ps1)
@@ -2055,6 +2065,10 @@ list(APPEND _mvm_p5d1_tests preview_timebase_p5d1_unit)
 add_executable(mvm_test_source_frame_mapping core/test_source_frame_mapping.cpp)
 target_link_libraries(mvm_test_source_frame_mapping PRIVATE mvm::core mvm::warnings)
 mvm_add_test(core_source_frame_mapping COMMAND mvm_test_source_frame_mapping)
+
+add_executable(mvm_test_layer_placement core/test_layer_placement.cpp)
+target_link_libraries(mvm_test_layer_placement PRIVATE mvm::core mvm::warnings)
+mvm_add_test(core_layer_placement COMMAND mvm_test_layer_placement)
 
 add_executable(mvm_test_preview_engine preview_engine/test_preview_engine.cpp)
 target_link_libraries(mvm_test_preview_engine PRIVATE mvm::preview_engine mvm::warnings)

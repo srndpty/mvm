@@ -1,5 +1,6 @@
 #include "media/gpu_preview/gpu_compositor.h"
 
+#include "core/layer_placement.h"
 #include "media/gpu_preview/qpc_clock.h"
 
 #include <algorithm>
@@ -261,6 +262,24 @@ bool GpuCompositor::issueComposition(const ComposedFrame& frame,
     }
     int layerIndex = 0;
     for (const auto& layer : frame.layers) {
+        // effect のある layer は書き出しと同じ幾何 (letterbox -> canvas 上の crop -> 縦横別の
+        // 拡縮) で置く。crop が素材の外だけを指すなら何も描かない。
+        core::LayerPlacement placement;
+        if (layer.effectsEnabled) {
+            placement = core::placeLayer(
+                layer.frame.width, layer.frame.height, target.width, target.height,
+                {layer.sourceUv.x, layer.sourceUv.y, layer.sourceUv.width, layer.sourceUv.height},
+                {layer.destination.x, layer.destination.y, layer.destination.width,
+                 layer.destination.height});
+            const int placedWidth = static_cast<int>(
+                std::lround(placement.destination.width * static_cast<double>(target.width)));
+            const int placedHeight = static_cast<int>(
+                std::lround(placement.destination.height * static_cast<double>(target.height)));
+            if (placement.empty || placedWidth <= 0 || placedHeight <= 0) {
+                ++layerIndex;
+                continue;
+            }
+        }
         const FitRect destinationBox{
             static_cast<int>(std::lround(layer.destination.x * static_cast<float>(target.width))),
             static_cast<int>(std::lround(layer.destination.y * static_cast<float>(target.height))),
@@ -282,15 +301,30 @@ bool GpuCompositor::issueComposition(const ComposedFrame& frame,
             aspectFit(croppedWidth, croppedHeight, destinationBox.width, destinationBox.height);
         destination.x += destinationBox.x;
         destination.y += destinationBox.y;
+        const float placedUv[4] = {static_cast<float>(placement.sourceUv.x),
+                                   static_cast<float>(placement.sourceUv.y),
+                                   static_cast<float>(placement.sourceUv.width),
+                                   static_cast<float>(placement.sourceUv.height)};
+        if (layer.effectsEnabled) {
+            destination = {static_cast<int>(std::lround(placement.destination.x *
+                                                        static_cast<double>(target.width))),
+                           static_cast<int>(std::lround(placement.destination.y *
+                                                        static_cast<double>(target.height))),
+                           static_cast<int>(std::lround(placement.destination.width *
+                                                        static_cast<double>(target.width))),
+                           static_cast<int>(std::lround(placement.destination.height *
+                                                        static_cast<double>(target.height)))};
+        }
         const bool injectedFailure = testFaults_.failBeforeLayerDraw == layerIndex;
         if (injectedFailure)
             err = "test fault: issue開始後のlayer描画失敗";
         const bool drawn =
             !injectedFailure &&
             (layer.effectsEnabled
-                 ? converter_.drawEffectLayer(layer.frame, target.rtv, target.width, target.height,
-                                              destination, uv, layer.opacity, layer.rotationDegrees,
-                                              true, err)
+                 ? converter_.drawEffectLayer(
+                       layer.frame, target.rtv, target.width, target.height, destination, placedUv,
+                       layer.opacity, layer.rotationDegrees, static_cast<float>(placement.pivotX),
+                       static_cast<float>(placement.pivotY), true, err)
                  : converter_.drawLayer(layer.frame, target.rtv, destination, uv, layer.opacity,
                                         true, err));
         if (injectedFailure || !drawn) {

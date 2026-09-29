@@ -1072,6 +1072,9 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         std::map<std::uint64_t, gpu::SourceGeneration> expectedVideoGenerations;
         audio::SourceGeneration expectedAudioGeneration{};
         std::chrono::steady_clock::time_point deadline;
+        // renderFrameDue が完了の回収中に見つけた失敗。renderFrame が引き取って表面化する
+        // (完了は一度しか回収できないので、ここに置かないと失敗を取りこぼす)。
+        std::optional<PreviewError> dueFailure;
     };
 
     PendingSeek pendingSeek;
@@ -2917,7 +2920,10 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
         if (seeking) {
             // decode completionを非blockingで回収する。decode readyでも
             // exact frameを提示するまでcompleteにしない。
-            std::optional<PreviewError> seekFatal = engine.impl_->advanceSeekLocked(renderNow);
+            auto& dueFailure = engine.impl_->pendingSeek.dueFailure;
+            std::optional<PreviewError> seekFatal =
+                dueFailure ? std::exchange(dueFailure, std::nullopt)
+                           : engine.impl_->advanceSeekLocked(renderNow);
             if (seekFatal) {
                 fatal = *seekFatal;
             } else if (engine.impl_->pendingSeek.decodeReady) {
@@ -3454,8 +3460,17 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
 bool PreviewRenderPort::renderFrameDue(PreviewEngine& engine) {
     std::lock_guard<std::mutex> lock(engine.impl_->mutex);
     const PreviewEngineState state = engine.impl_->machine.state();
-    if (state == PreviewEngineState::Seeking)
-        return engine.impl_->pendingSeek.active;
+    if (state == PreviewEngineState::Seeking) {
+        auto& pending = engine.impl_->pendingSeek;
+        if (!pending.active)
+            return false;
+        // decode の完了前に render pass を始めると、何も描かないまま背景色で clear した
+        // frame が提示される。effect の編集は同じ frame への seek を繰り返すので、そのたびに
+        // 画面が黒く瞬く。完了 (または失敗・期限切れ) を回収できた時だけ描く。
+        if (!pending.decodeReady && !pending.dueFailure)
+            pending.dueFailure = engine.impl_->advanceSeekLocked(std::chrono::steady_clock::now());
+        return pending.decodeReady || pending.dueFailure.has_value();
+    }
     if (state != PreviewEngineState::Playing || !engine.impl_->schedulerEnabled)
         return false;
     const auto scheduled = engine.impl_->schedulerTargetLocked(std::chrono::steady_clock::now());

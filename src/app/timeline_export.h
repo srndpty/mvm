@@ -70,6 +70,7 @@ struct TimelineExportClipMapping {
     double rectWidth = 0.0;
     double rectHeight = 0.0;
     double rotationDegrees = 0.0;
+    double shearDegrees = 0.0;
     std::vector<TimelineExportOpacityKey> opacityKeys;
     std::vector<TimelineExportGainKey> gainKeys;
 };

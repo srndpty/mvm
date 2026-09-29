@@ -6,6 +6,7 @@ add_library(mvm_core STATIC
     core/clip_fade.cpp
     core/checked_output_timebase.cpp
     core/export_eta.cpp
+    core/layer_placement.cpp
     core/presentation_opportunity_mapper.cpp
     core/source_frame_mapping.cpp
     core/waveform_peaks.cpp

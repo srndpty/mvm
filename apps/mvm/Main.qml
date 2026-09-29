@@ -5,6 +5,7 @@ import QtQuick.Dialogs
 import QtQuick.Layouts
 import QtQuick.Shapes
 import "TimelineGestures.js" as Gestures
+import "PreviewTransform.js" as Transform
 
 ApplicationWindow {
     id: root
@@ -235,9 +236,29 @@ ApplicationWindow {
             CompactMenuItem { action: cutClipsAction }
             CompactMenuItem { action: pasteClipsAction }
             CompactMenuItem { action: duplicateClipsAction }
+            CompactMenuSeparator {}
+            // 実行は Shortcut "Delete" が担う。ここは表示だけで sequence を持たせない (二重発火を防ぐ)。
+            CompactMenuItem {
+                text: "クリップを削除\tDelete"
+                enabled: !root.mvmController.busy && root.mvmController.currentClipIndex >= 0
+                onTriggered: root.mvmController.deleteCurrentClip()
+            }
         }
         CompactMenu {
             title: "再生"
+            // 実行は Shortcut "Space" が担う。ここは表示だけで sequence を持たせない (二重発火を防ぐ)。
+            CompactMenuItem {
+                text: (root.mvmController.playing ? "一時停止" : "再生") + "\tSpace"
+                enabled: !root.mvmController.busy
+                         && (root.mvmController.playing || root.mvmController.canPlay)
+                onTriggered: {
+                    if (root.mvmController.playing)
+                        root.mvmController.pauseTimeline();
+                    else
+                        root.mvmController.playTimeline();
+                }
+            }
+            CompactMenuSeparator {}
             CompactMenuItem { action: addMarkerAction }
             CompactMenuItem { action: nextMarkerAction }
             CompactMenuItem { action: previousMarkerAction }
@@ -430,6 +451,9 @@ ApplicationWindow {
         continuePendingProjectAction();
     }
 
+    // インスペクタの拡大率 X/Y を連動させるか。UI の状態であり Project には保存しない。
+    property bool lockEffectScaleAspect: true
+
     // 外部ファイルのドロップ位置がプロジェクトパネル上か。そこへ落とした素材は
     // timeline へは置かず、bin へ読み込むだけにする。
     function isOverProjectPanel(x, y) {
@@ -437,6 +461,36 @@ ApplicationWindow {
             return false;
         const point = projectPanel.mapFromItem(videoDropArea, x, y);
         return projectPanel.contains(point);
+    }
+
+    // item 上の点がタイムラインのどこへのドロップになるか。タイムラインの外なら null。
+    //   トラックの行           -> その track
+    //   最上段 video より上     -> 新しい video track (index == videoCount)
+    //   最下段 audio より下     -> 新しい audio track (index == audioCount)
+    function timelineDropTarget(item, x, y) {
+        const visible = timelineFlick.mapFromItem(item, x, y);
+        if (!timelineFlick.contains(visible))
+            return null;
+        const point = timelineContent.mapFromItem(item, x, y);
+        const frame = timelinePanel.frameAtContentX(point.x);
+        if (point.y < timelinePanel.tracksTop)
+            return { "kind": "video", "index": timelinePanel.videoCount, "frame": frame };
+        const track = timelinePanel.trackAtY(point.y);
+        if (!track)
+            return { "kind": "audio", "index": timelinePanel.audioCount, "frame": frame };
+        return { "kind": track.kind, "index": track.index, "frame": frame };
+    }
+
+    // 拡大率の入力。縦横比を固定しているときは、もう一方も同じ比で変えて 1 つの変更にする。
+    function setEffectScale(key, value, commit) {
+        if (!root.lockEffectScaleAspect)
+            return root.mvmController.setEffectValue(key, value, commit);
+        const x = root.mvmController.effectScaleX;
+        const y = root.mvmController.effectScaleY;
+        const clamp = v => Math.max(1, Math.min(1000, v));
+        const values = key === "scaleX" ? { "scaleX": value, "scaleY": clamp(y * value / x) }
+                                        : { "scaleX": clamp(x * value / y), "scaleY": value };
+        return root.mvmController.setEffectValues(values, commit);
     }
 
     function isLocalFileUrl(url) {
@@ -499,36 +553,40 @@ ApplicationWindow {
                 drag.accept(Qt.CopyAction);
             projectPanel.externalDropHover = acceptingVideoDrag
                                              && root.isOverProjectPanel(drag.x, drag.y);
+            timelinePanel.dropTarget = acceptingVideoDrag
+                                       ? root.timelineDropTarget(videoDropArea, drag.x, drag.y)
+                                       : null;
         }
         onExited: {
             acceptingVideoDrag = false;
             projectPanel.externalDropHover = false;
+            timelinePanel.dropTarget = null;
         }
+        // 素材は必ずプロジェクトパネルへ登録する (パネルが素材の唯一の出どころ)。
+        // タイムライン上へ落とした場合は、登録したうえでその位置へ置く。
         onDropped: drop => {
             acceptingVideoDrag = false;
             projectPanel.externalDropHover = false;
+            timelinePanel.dropTarget = null;
             if (!copyAllowed(drop)) {
                 drop.accepted = false;
                 return;
             }
-            const toProjectPanel = root.isOverProjectPanel(drop.x, drop.y);
-            const binUrls = [];
-            let accepted = false;
+            const target = root.timelineDropTarget(videoDropArea, drop.x, drop.y);
+            const urls = [];
             for (let index = 0; index < drop.urls.length; ++index) {
-                const url = drop.urls[index];
-                if (!root.isLocalFileUrl(url))
-                    continue;
-                accepted = true;
-                if (toProjectPanel)
-                    binUrls.push(url);
-                else
-                    // 動画・音声・画像は内容で判定する (拡張子は見ない)。
-                    root.mvmController.addMediaFileToTimeline(url);
+                // 動画・音声・画像は内容で判定する (拡張子は見ない)。
+                if (root.isLocalFileUrl(drop.urls[index]))
+                    urls.push(drop.urls[index]);
             }
-            if (binUrls.length > 0)
-                projectPanel.importUrls(binUrls);
-            if (accepted)
-                drop.accept(Qt.CopyAction);
+            if (urls.length === 0)
+                return;
+            if (target)
+                root.mvmController.addMediaFilesToTimelineAt(urls, target.kind, target.index,
+                                                             target.frame);
+            else
+                projectPanel.importUrls(urls);
+            drop.accept(Qt.CopyAction);
         }
     }
 
@@ -542,8 +600,7 @@ ApplicationWindow {
 
         Label {
             anchors.centerIn: parent
-            text: projectPanel.externalDropHover ? "プロジェクトへ読み込み"
-                                                 : "メディアファイルをドロップして検査・追加"
+            text: timelinePanel.dropTarget ? "タイムラインへ配置" : "プロジェクトへ読み込み"
             color: "white"
             font.pixelSize: 20
             font.bold: true
@@ -775,14 +832,32 @@ ApplicationWindow {
                                 }
                                 DragNumberField {
                                     Layout.fillWidth: true
-                                    labelText: "拡大率"
+                                    labelText: "拡大率 X"
                                     suffix: " %"
-                                    value: root.mvmController.effectScale
+                                    value: root.mvmController.effectScaleX
                                     minimumValue: 1
                                     maximumValue: 1000
                                     stepPerPixel: 0.5
                                     onEditCanceled: root.mvmController.cancelEffectPreview()
-                                    onValueEdited: (newValue, commit) => root.mvmController.setEffectValue("scale", newValue, commit)
+                                    onValueEdited: (newValue, commit) => root.setEffectScale("scaleX", newValue, commit)
+                                }
+                                DragNumberField {
+                                    Layout.fillWidth: true
+                                    labelText: "拡大率 Y"
+                                    suffix: " %"
+                                    value: root.mvmController.effectScaleY
+                                    minimumValue: 1
+                                    maximumValue: 1000
+                                    stepPerPixel: 0.5
+                                    onEditCanceled: root.mvmController.cancelEffectPreview()
+                                    onValueEdited: (newValue, commit) => root.setEffectScale("scaleY", newValue, commit)
+                                }
+                                CheckBox {
+                                    Layout.columnSpan: 2
+                                    text: "縦横比を固定"
+                                    checked: root.lockEffectScaleAspect
+                                    font.pixelSize: 11
+                                    onToggled: root.lockEffectScaleAspect = checked
                                 }
                                 DragNumberField {
                                     Layout.fillWidth: true
@@ -914,6 +989,7 @@ ApplicationWindow {
 
                         ProjectPanel {
                             id: projectPanel
+                            objectName: "projectPanel"
                             mvmController: root.mvmController
                         }
                     }
@@ -961,6 +1037,18 @@ ApplicationWindow {
                 Item {
                     id: previewArea
                     anchors.fill: parent
+
+                    // タイムラインと同じく、押したらキーボードの宛先をここへ移す。press は下へ流す。
+                    MouseArea {
+                        anchors.fill: parent
+                        z: 10000
+                        acceptedButtons: Qt.AllButtons
+                        onPressed: mouse => {
+                            if (!root.textEditing)
+                                previewArea.forceActiveFocus();
+                            mouse.accepted = false;
+                        }
+                    }
 
                     Item {
                         id: previewHost
@@ -1062,6 +1150,8 @@ ApplicationWindow {
                                     property real startY: 0
                                     property int originalX: 0
                                     property int originalY: 0
+                                    // 吸着先の線 (出力画素)。押した時点の他の素材で決める。
+                                    property var snapLines: null
                                     function textAt(mouseX, mouseY) {
                                         const p = mapToItem(textLayer, mouseX, mouseY);
                                         const pixelX = Math.floor(p.x * root.mvmController.outputWidth / textLayer.width);
@@ -1071,9 +1161,20 @@ ApplicationWindow {
                                     onPositionChanged: mouse => {
                                         if (!draggingText)
                                             return;
+                                        // 画像・動画と同じく、端・中央を出力と他の素材へ吸着させる
+                                        // (Ctrl で吸着しない)。計算は出力画素で行う。
                                         const current = mapToItem(previewHost, mouse.x, mouse.y);
-                                        textLayer.dragOffsetX = current.x - startX;
-                                        textLayer.dragOffsetY = current.y - startY;
+                                        const scaleX = root.mvmController.outputWidth / textLayer.width;
+                                        const scaleY = root.mvmController.outputHeight / textLayer.height;
+                                        const snapped = Transform.snapMove(
+                                            textLayer.bounds, (current.x - startX) * scaleX,
+                                            (current.y - startY) * scaleY, snapLines,
+                                            previewTransform.snapThreshold,
+                                            !(mouse.modifiers & Qt.ControlModifier));
+                                        textLayer.dragOffsetX = snapped.dx / scaleX;
+                                        textLayer.dragOffsetY = snapped.dy / scaleY;
+                                        previewTransform.guides = { "xs": snapped.guidesX,
+                                                                    "ys": snapped.guidesY };
                                     }
                                     onPressed: mouse => {
                                         if (textAt(mouse.x, mouse.y) !== textLayer.clipId) {
@@ -1089,6 +1190,10 @@ ApplicationWindow {
                                         const start = mapToItem(previewHost, mouse.x, mouse.y);
                                         startX = start.x;
                                         startY = start.y;
+                                        snapLines = Transform.snapLines(
+                                            root.mvmController.outputWidth,
+                                            root.mvmController.outputHeight,
+                                            root.mvmController.previewSnapRects(textLayer.clipId));
                                         draggingText = true;
                                         root.draggingTextClipId = textLayer.clipId;
                                         // selectClip は clip の先頭へ seek するので使わない。
@@ -1113,15 +1218,26 @@ ApplicationWindow {
                                         if (moved)
                                             root.mvmController.updateTextClip(textLayer.clipId, {x: x, y: y});
                                         root.draggingTextClipId = "";
+                                        previewTransform.guides = { "xs": [], "ys": [] };
                                     }
                                     onCanceled: {
                                         draggingText = false;
                                         textLayer.dragOffsetX = 0;
                                         textLayer.dragOffsetY = 0;
                                         root.draggingTextClipId = "";
+                                        previewTransform.guides = { "xs": [], "ys": [] };
                                     }
                                 }
                             }
+                        }
+
+                        PreviewTransformOverlay {
+                            id: previewTransform
+                            anchors.fill: parent
+                            z: 50
+                            mvmController: root.mvmController
+                            active: root.timelineTool === "select" && !root.mvmController.busy
+                                    && !root.textEditing
                         }
 
                         MouseArea {
@@ -1222,16 +1338,6 @@ ApplicationWindow {
             Layout.fillWidth: true
             spacing: 8
 
-            Button {
-                text: root.mvmController.playing ? "一時停止" : "再生"
-                enabled: root.mvmController.playing || root.mvmController.canPlay
-                onClicked: {
-                    if (root.mvmController.playing)
-                        root.mvmController.pauseTimeline();
-                    else
-                        root.mvmController.playTimeline();
-                }
-            }
             Label {
                 text: root.mvmController.currentTimeText
                 color: "#e6e8ec"
@@ -1262,11 +1368,6 @@ ApplicationWindow {
                 elide: Text.ElideLeft
                 Layout.maximumWidth: timelinePanel.width * 0.75
             }
-            Button {
-                text: "クリップ削除"
-                enabled: !root.mvmController.busy && root.mvmController.currentClipIndex >= 0
-                onClicked: root.mvmController.deleteCurrentClip()
-            }
         }
 
         // --- タイムライン ---------------------------------------------------
@@ -1280,6 +1381,18 @@ ApplicationWindow {
             radius: 5
             color: "#20242a"
             border.color: "#3c424c"
+
+            // タイムラインを押したらキーボードの宛先をここへ移す。プロジェクトパネルに
+            // フォーカスが残ったままだと、Delete が素材の削除になる。press は下へ流す。
+            MouseArea {
+                anchors.fill: parent
+                z: 10000
+                acceptedButtons: Qt.AllButtons
+                onPressed: mouse => {
+                    timelinePanel.forceActiveFocus();
+                    mouse.accepted = false;
+                }
+            }
 
             // 離散段階で管理し、下限へ到達した後も逆方向のwheelを確実に受理する。
             readonly property var zoomLevels: [0.005, 0.01, 0.02, 0.05, 0.1, 0.2,
@@ -1344,6 +1457,8 @@ ApplicationWindow {
             readonly property color edgeHandleColor: tool === "ripple" ? "#e8c15a"
                                                      : tool === "rolling" ? "#e27d6a"
                                                      : tool === "rate" ? "#b99af0" : "#85c4ee"
+            // 素材ドラッグ中のドロップ先 ({kind, index, frame})。null ならタイムライン外。
+            property var dropTarget: null
             readonly property real toolPanelWidth: 34
             readonly property real labelWidth: 96
             readonly property real rulerHeight: 26
@@ -1882,6 +1997,71 @@ ApplicationWindow {
                         }
                     }
 
+                    // --- 素材ドロップ ---
+                    // プロジェクトパネルの素材を受ける。外部ファイルは window 全体の videoDropArea が受ける。
+                    DropArea {
+                        id: mediaBinDropArea
+                        anchors.fill: parent
+                        keys: ["mvm-media-bin"]
+                        onPositionChanged: drag => {
+                            timelinePanel.dropTarget = root.timelineDropTarget(mediaBinDropArea,
+                                                                               drag.x, drag.y);
+                            projectPanel.dragLabelOverride = timelinePanel.dropTarget
+                                                             ? "タイムラインへ追加" : "";
+                        }
+                        onExited: {
+                            timelinePanel.dropTarget = null;
+                            projectPanel.dragLabelOverride = "";
+                        }
+                        onDropped: drop => {
+                            const target = root.timelineDropTarget(mediaBinDropArea, drop.x, drop.y);
+                            const ids = projectPanel.dragIds.slice();
+                            timelinePanel.dropTarget = null;
+                            if (!target || ids.length === 0)
+                                return;
+                            drop.accept();
+                            // 配置は timeline model を作り直す。drag の後始末が終わってから行う。
+                            Qt.callLater(() => root.mvmController.addMediaItemsToTimelineAt(
+                                             ids, target.kind, target.index, target.frame));
+                        }
+                    }
+                    Item {
+                        id: dropTargetHint
+                        anchors.fill: parent
+                        z: 90
+                        visible: timelinePanel.dropTarget !== null
+
+                        Rectangle {
+                            readonly property var target: timelinePanel.dropTarget
+                            readonly property int rowCount: !target ? 0
+                                                            : target.kind === "video"
+                                                              ? timelinePanel.videoCount
+                                                              : timelinePanel.audioCount
+                            x: 0
+                            width: parent.width
+                            y: !target ? 0
+                               : target.index < rowCount
+                                 ? timelinePanel.rowY(target.kind, target.index)
+                                 : target.kind === "video"
+                                   ? timelinePanel.tracksTop - timelinePanel.addVideoRowHeight
+                                   : timelinePanel.tracksTop + timelinePanel.tracksHeight
+                            height: target && target.kind === "video" && target.index >= rowCount
+                                    ? timelinePanel.addVideoRowHeight : timelinePanel.trackHeight
+                            color: "#3364a8e8"
+                            border.color: "#64a8e8"
+                            border.width: 1
+                        }
+                        Rectangle {
+                            x: timelinePanel.dropTarget
+                               ? timelinePanel.dropTarget.frame * timelinePanel.pixelsPerFrame : 0
+                            y: timelinePanel.tracksTop - timelinePanel.addVideoRowHeight
+                            width: 2
+                            height: timelinePanel.tracksHeight + timelinePanel.addVideoRowHeight
+                                    + timelinePanel.trackHeight
+                            color: "#64a8e8"
+                        }
+                    }
+
                     // --- トラック背景 ---
                     Item {
                         id: trackArea
@@ -2020,6 +2200,7 @@ ApplicationWindow {
 
                             delegate: Rectangle {
                                 id: clipItem
+                                objectName: "timelineClip_" + clipId
                                 required property int index
                                 required property string clipId
                                 required property string displayName
@@ -2463,7 +2644,7 @@ ApplicationWindow {
                                                                                      deletedFrame);
                                                 else if (penGesture === "select")
                                                     root.mvmController.selectTimelineClip(
-                                                        clipItem.clipId, pressFrame, true);
+                                                        clipItem.clipId, true);
                                                 return;
                                             }
                                             clipItem.penFrame = clipItem.penState.frame;
@@ -2492,7 +2673,7 @@ ApplicationWindow {
                                                 timelinePanel.beginAdjacentPreview(clipItem.clipId, "slide", "",
                                                                                    clipItem.editLinked);
                                             if (!clipItem.selected || !clipItem.editLinked)
-                                                root.mvmController.selectTimelineClip(clipItem.clipId, pressFrame,
+                                                root.mvmController.selectTimelineClip(clipItem.clipId,
                                                                                       clipItem.editLinked);
                                             // スリップ中は preview に新しいイン点の frame を出す。
                                             if (tool === "slip")
@@ -2514,8 +2695,7 @@ ApplicationWindow {
                                         } else if (!clipItem.bodyAdditiveSelection
                                                    && !clipItem.selected) {
                                             // Alt+クリックはリンク相手を外して、この clip だけを選ぶ。
-                                            const frame = pressFrame;
-                                            root.mvmController.selectTimelineClip(clipItem.clipId, frame, clipItem.editLinked);
+                                            root.mvmController.selectTimelineClip(clipItem.clipId, clipItem.editLinked);
                                         }
                                         // 選択を確定した後で、一緒に動く群の端を取る。
                                         clipItem.bodyDragBounds = root.mvmController.timelineDragBounds(clipItem.clipId);
@@ -2681,11 +2861,11 @@ ApplicationWindow {
                                             break;
                                         case "toggle":
                                             root.mvmController.toggleTimelineClipSelection(
-                                                releasedClipId, action.frame);
+                                                releasedClipId);
                                             break;
                                         case "select":
                                             root.mvmController.selectTimelineClip(releasedClipId,
-                                                                             action.frame, action.linked);
+                                                                                  action.linked);
                                             break;
                                         }
                                     }

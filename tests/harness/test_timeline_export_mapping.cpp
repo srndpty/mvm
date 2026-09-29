@@ -1,5 +1,6 @@
 #include "app/timeline_export.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 
@@ -53,7 +54,7 @@ int main() {
 
     mvm::project::Project overlay = mvm::project::createDefaultProject();
     auto bottom = clip("bottom", 0, 0, 0, 100);
-    bottom.effects.scalePercent = 80;
+    bottom.effects.scaleXPercent = bottom.effects.scaleYPercent = 80;
     auto topLate = clip("top-late", 1, 60, 20, 20);
     auto topEarly = clip("top-early", 1, 10, 30, 20);
     topEarly.effects.opacityPercent = 50;
@@ -85,6 +86,27 @@ int main() {
     require(tractor.clips[1].timelineStartFrame + tractor.clips[1].timelineDurationFrames <
                 tractor.clips[2].timelineStartFrame,
             "two V2 clip間gapのmapping fixtureが成立していません");
+
+    // 回転の補正: 縦横の倍率が同じなら MLT の回転をそのまま使い (shear 0)、違えば shear で
+    // 剛体回転に直す。実画素の一致は image_preview_parity が見る。
+    {
+        mvm::project::Project rotatedProject = mvm::project::createDefaultProject();
+        auto uniform = clip("uniform", 0, 0, 0, 10);
+        uniform.effects.scaleXPercent = uniform.effects.scaleYPercent = 70;
+        uniform.effects.rotationDegrees = 30;
+        rotatedProject.timelineClips = {uniform};
+        const auto uniformPlan = mvm::app::mapTimelineExportPlan(rotatedProject, request);
+        require(uniformPlan.success && uniformPlan.clips.size() == 1 &&
+                    std::abs(uniformPlan.clips[0].rotationDegrees - 30.0) < 1e-9 &&
+                    std::abs(uniformPlan.clips[0].shearDegrees) < 1e-9,
+                "縦横同じ倍率の回転に shear の補正が掛かりました");
+        rotatedProject.timelineClips[0].effects.scaleYPercent = 35;
+        const auto stretchedPlan = mvm::app::mapTimelineExportPlan(rotatedProject, request);
+        require(stretchedPlan.success && stretchedPlan.clips.size() == 1 &&
+                    std::abs(stretchedPlan.clips[0].shearDegrees) > 1.0 &&
+                    std::abs(stretchedPlan.clips[0].rotationDegrees - 30.0) > 1.0,
+                "縦横別の倍率の回転に shear の補正が掛かりません");
+    }
 
     // 30fps素材を60fps timelineのV2へ置くと、最終素材frameはtimeline 2 frameに跨る。
     // 端keyはclip末尾(timeline-local 19)に置き、最終素材frameのopacityを保持する。

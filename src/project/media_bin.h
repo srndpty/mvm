@@ -16,40 +16,64 @@ namespace mvm::project {
 struct MediaBinEditResult {
     bool success = false;
     std::string error;
+    // removeMediaBinEntries が素材と一緒に削除した timeline clip の id。
+    std::vector<std::string> removedClipIds;
 };
 
-// folder / item の id 一意性、親子関係 (循環なし)、種別ごとの値を検査する。
+// folder / item の id 一意性、親子関係 (循環なし)、種別ごとの値と、
+// timeline clip の素材参照 (validateMediaReferences) を検査する。
 // Project JSON の読み書き (= commitProjectEdit) の双方がこれを通す。
 MediaBinEditResult validateMediaBin(const Project& project);
+// 動画・音声・画像の clip がプロジェクトパネルの素材を mediaItemId で指し、その素材と
+// 種別・ファイルが一致すること。文字・Manim の clip は素材を指さないこと。
+// プロジェクトパネルを素材の唯一の出どころにする不変条件。
+MediaBinEditResult validateMediaReferences(const Project& project);
 
 MediaBinEditResult addMediaFolder(Project& project, MediaFolder folder);
 // 同じ mediaPath の item が既にあれば失敗する。
 MediaBinEditResult addMediaItem(Project& project, MediaItem item);
+// 素材の技術的な値 (種別・fps・尺・解像度・sample rate) を、調べ直した probed の値へ
+// 置き換える。id・名前・フォルダ・ファイルは変えない。外部でファイルが差し替わっていても、
+// パネルの値と timeline の計算 (枠の寸法など) を実物に合わせる。
+// ただし timeline の clip が使っている素材の時間軸 (種別・fps・尺・sample rate) が変わって
+// いれば失敗する。使っている clip の素材範囲 (in/out・fps) は元の時間軸で決めてあり、
+// 素材だけを新しくすると clip と実物が食い違う (clip の見直しは明示の操作で行う)。
+// 解像度だけの変化は clip の時間軸に関わらないので更新する。
+MediaBinEditResult refreshMediaItem(Project& project, const std::string& itemId,
+                                    const MediaItem& probed);
 MediaBinEditResult renameMediaBinEntry(Project& project, const std::string& entryId,
                                        std::string name);
 // targetFolderId が空なら root へ移す。folder を自分自身や子孫へは移せない。
 MediaBinEditResult moveMediaBinEntries(Project& project, const std::vector<std::string>& entryIds,
                                        const std::string& targetFolderId);
-// folder は中身ごと削除する。timeline で使用中の素材が 1 つでも含まれれば全体を拒否する。
+
+// 削除で消えるもの。folder は子孫と中身ごと、素材はそれを参照する timeline clip
+// (とそのリンク相手) ごと消す。プロジェクトパネルを素材の唯一の出どころにするため、
+// パネルに無い素材を timeline に残さない。
+struct MediaBinRemovalPlan {
+    bool success = false;
+    std::string error;
+    std::set<std::string> folderIds;
+    std::set<std::string> itemIds;
+    std::vector<std::string> clipIds; // timeline の並び順
+};
+
+// 消える clip は mediaItemId で決まる (ファイルの実体は調べない)。
+MediaBinRemovalPlan planMediaBinRemoval(const Project& project,
+                                        const std::vector<std::string>& entryIds);
+// planMediaBinRemoval の内容を 1 つの candidate として適用する。
 MediaBinEditResult removeMediaBinEntries(Project& project,
                                          const std::vector<std::string>& entryIds);
 
 const MediaItem* findMediaItem(const Project& project, const std::string& itemId);
 // 同じ実体のファイルを指す素材を探す (path_identity.h の comparePathIdentity が Same のもの)。
-// 同一性が Unknown の素材は一致とみなさない。重複登録の防止は best effort であり、
-// 安全判定 (使用中の素材を削除させない) は mediaItemUsage が fail-closed で担う。
+// 同一性が Unknown の素材は一致とみなさない。素材の重複登録の防止に使う (best effort)。
+// clip と素材の対応は mediaItemId が担い、これには依存しない。
 const MediaItem* findMediaItemByPath(const Project& project, const std::filesystem::path& path);
 const MediaFolder* findMediaFolder(const Project& project, const std::string& folderId);
 
-// timeline clip からの参照状況。
-//   inUse   : どれかの clip と同じ実体 (Same)
-//   unknown : Same は無いが、identity を取れず Unknown の clip がある。未使用と断定しない
-struct MediaItemUsage {
-    std::set<std::string> inUse;
-    std::set<std::string> unknown;
-};
-
-MediaItemUsage mediaItemUsage(const Project& project);
+// timeline のどこかの clip が使っている素材の id (パネルの「使用中」表示用)。
+std::set<std::string> mediaItemsInUse(const Project& project);
 
 const char* mediaKindName(MediaKind kind);
 bool parseMediaKindName(const std::string& text, MediaKind& kind);

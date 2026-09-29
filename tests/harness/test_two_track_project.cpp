@@ -1,5 +1,6 @@
 #include "project/project_json.h"
 #include "project/timeline_edit.h"
+#include "test_media_fixture.h"
 #include "util/mvm_win_utf8.h"
 
 #include <cstdio>
@@ -70,10 +71,10 @@ std::string readText(const std::filesystem::path& path) {
 // 欠けたファイルを暗黙の既定値で読まないことを確認する。
 void testSchemaIsFailClosed(const std::filesystem::path& root) {
     const std::string header =
-        R"JSON({"schema_version":9,"timeline_markers":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,"timeline_fps_den":1,)JSON"
+        R"JSON({"schema_version":11,"timeline_markers":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[{"id":"m-a","kind":"video","media_path":"a.mp4","name":"a","folder_id":"","fps_num":60,"fps_den":1,"frame_count":100,"width":1920,"height":1080,"sample_rate":0,"duration_samples":0}],"timeline_fps_num":60,"timeline_fps_den":1,)JSON"
         R"JSON("video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],)JSON";
     const std::string clipHead =
-        R"JSON("timeline_clips":[{"kind":"video","media_path":"a.mp4","name":"A","id":"a",)JSON"
+        R"JSON("timeline_clips":[{"kind":"video","media_path":"a.mp4","media_item_id":"m-a","name":"A","id":"a",)JSON"
         R"JSON("source_fps_num":60,"source_fps_den":1,"source_frame_count":100,"source_in_frame":0,)JSON"
         R"JSON("source_out_frame":100,"timeline_start_frame":25,"speed_num":1,"speed_den":1)JSON";
 
@@ -92,7 +93,7 @@ void testSchemaIsFailClosed(const std::filesystem::path& root) {
     const auto missingTracks = root / "missing-tracks.mvm";
     writeText(
         missingTracks,
-        R"JSON({"schema_version":9,"timeline_markers":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,)JSON"
+        R"JSON({"schema_version":11,"timeline_markers":[],"in_frame":null,"out_frame":null,"format":"mvm-project","media_folders":[],"media_items":[],"timeline_fps_num":60,)JSON"
         R"JSON("timeline_fps_den":1,"manim_assets":[],"timeline_clips":[]})JSON");
     check(!mvm::project::loadProjectJson(missingTracks).success,
           "track配列が無いProjectを受理しました");
@@ -182,7 +183,7 @@ void testTransactionalMove() {
     first.sourceInFrame = 10;
     first.sourceOutFrame = 90;
     first.effects.positionXPercent = 12.5;
-    first.effects.scalePercent = 60.0;
+    first.effects.scaleXPercent = first.effects.scaleYPercent = 60.0;
     first.effects.opacityPercent = 55.0;
     first.effects.fadeInFrames = 7;
     project.timelineClips = {first, clip("second", kV1, 200)};
@@ -222,13 +223,14 @@ void testRoundTrip(const std::filesystem::path& root) {
     voice.mediaPath = root / "voice.wav";
     top.kind = TimelineClipKind::Manim;
     top.effects.positionYPercent = -18.0;
-    top.effects.scalePercent = 60.0;
+    top.effects.scaleXPercent = top.effects.scaleYPercent = 60.0;
     top.effects.rotationDegrees = 22.0;
     top.effects.opacityPercent = 70.0;
     top.effects.cropLeftPercent = 5.0;
     top.effects.fadeInFrames = 8;
     top.effects.fadeOutFrames = 9;
     project.timelineClips = {bottom, top, voice};
+    mvm::test::attachFixtureMedia(project);
 
     const auto path = root / "multi-track.mvm";
     check(mvm::project::saveProjectJson(project, path).success,

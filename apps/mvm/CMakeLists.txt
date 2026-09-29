@@ -34,6 +34,8 @@ qt_add_qml_module(mvm
         AudioMeter.qml
         MediaKindIcon.qml
         TimelineGestures.js
+        PreviewTransform.js
+        PreviewTransformOverlay.qml
         TimelineToolIcon.qml
         TimelineToolPanel.qml
         TextClipInspector.qml
@@ -112,6 +114,8 @@ qt_add_qml_module(mvm_test_text_ui_input
         AudioMeter.qml
         MediaKindIcon.qml
         TimelineGestures.js
+        PreviewTransform.js
+        PreviewTransformOverlay.qml
         TimelineToolIcon.qml
         TimelineToolPanel.qml
         TextClipInspector.qml

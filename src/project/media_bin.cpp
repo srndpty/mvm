@@ -1,6 +1,7 @@
 #include "project/media_bin.h"
 
 #include "project/path_identity.h"
+#include "project/timeline_edit.h"
 
 #include <algorithm>
 #include <set>
@@ -48,7 +49,7 @@ MediaBinEditResult validateItemValues(const MediaItem& item) {
             return failure(label + "は静止画なのに尺を持っています");
         break;
     }
-    return {true, {}};
+    return {true, {}, {}};
 }
 
 } // namespace
@@ -95,7 +96,32 @@ MediaBinEditResult validateMediaBin(const Project& project) {
         if (!values.success)
             return values;
     }
-    return {true, {}};
+    return validateMediaReferences(project);
+}
+
+MediaBinEditResult validateMediaReferences(const Project& project) {
+    for (const auto& clip : project.timelineClips) {
+        if (!clipUsesMediaItem(clip.kind)) {
+            if (!clip.mediaItemId.empty())
+                return failure("文字・Manim の clip は素材を参照できません: " + clip.name);
+            continue;
+        }
+        const auto* item = findMediaItem(project, clip.mediaItemId);
+        if (!item)
+            return failure("clip \"" + clip.name + "\" の素材がプロジェクトパネルにありません");
+        // 映像のある素材からは音声 clip も作れる (リンクした音声)。
+        const bool kindMatches =
+            (clip.kind == TimelineClipKind::Video && item->kind == MediaKind::Video) ||
+            (clip.kind == TimelineClipKind::Audio &&
+             (item->kind == MediaKind::Audio || item->kind == MediaKind::Video)) ||
+            (clip.kind == TimelineClipKind::Image && item->kind == MediaKind::Image);
+        if (!kindMatches)
+            return failure("clip \"" + clip.name + "\" の種別が素材の種別と一致しません");
+        // clip は素材と同じファイルを指す。表記で比べ、ファイルの有無には依存させない。
+        if (canonicalPathKey(clip.mediaPath) != canonicalPathKey(item->mediaPath))
+            return failure("clip \"" + clip.name + "\" のファイルが素材と一致しません");
+    }
+    return {true, {}, {}};
 }
 
 MediaBinEditResult addMediaFolder(Project& project, MediaFolder folder) {
@@ -110,6 +136,32 @@ MediaBinEditResult addMediaItem(Project& project, MediaItem item) {
     Project candidate = project;
     candidate.mediaItems.push_back(std::move(item));
     return commitCandidate(project, std::move(candidate));
+}
+
+MediaBinEditResult refreshMediaItem(Project& project, const std::string& itemId,
+                                    const MediaItem& probed) {
+    Project candidate = project;
+    for (auto& item : candidate.mediaItems) {
+        if (item.id != itemId)
+            continue;
+        const bool timingChanged =
+            item.kind != probed.kind || item.fpsNum != probed.fpsNum ||
+            item.fpsDen != probed.fpsDen || item.frameCount != probed.frameCount ||
+            item.sampleRate != probed.sampleRate || item.durationSamples != probed.durationSamples;
+        if (timingChanged && mediaItemsInUse(project).contains(itemId))
+            return failure("タイムラインで使用中の素材 \"" + item.name +
+                           "\" のファイルが別の長さ・fps・種類のものに差し替わっています");
+        item.kind = probed.kind;
+        item.fpsNum = probed.fpsNum;
+        item.fpsDen = probed.fpsDen;
+        item.frameCount = probed.frameCount;
+        item.width = probed.width;
+        item.height = probed.height;
+        item.sampleRate = probed.sampleRate;
+        item.durationSamples = probed.durationSamples;
+        return commitCandidate(project, std::move(candidate));
+    }
+    return failure("調べ直す素材がありません");
 }
 
 MediaBinEditResult renameMediaBinEntry(Project& project, const std::string& entryId,
@@ -165,49 +217,77 @@ MediaBinEditResult moveMediaBinEntries(Project& project, const std::vector<std::
     return commitCandidate(project, std::move(candidate));
 }
 
-MediaBinEditResult removeMediaBinEntries(Project& project,
-                                         const std::vector<std::string>& entryIds) {
-    if (entryIds.empty())
-        return failure("削除する素材がありません");
+MediaBinRemovalPlan planMediaBinRemoval(const Project& project,
+                                        const std::vector<std::string>& entryIds) {
+    MediaBinRemovalPlan plan;
+    if (entryIds.empty()) {
+        plan.error = "削除する素材がありません";
+        return plan;
+    }
     // 指定 folder の子孫を広げて、削除対象の folder id 集合を確定させる。
-    std::set<std::string> removedFolders;
-    std::set<std::string> removedItems;
     for (const auto& id : entryIds) {
-        if (findMediaFolder(project, id))
-            removedFolders.insert(id);
-        else if (findMediaItem(project, id))
-            removedItems.insert(id);
-        else
-            return failure("削除する素材がありません");
+        if (findMediaFolder(project, id)) {
+            plan.folderIds.insert(id);
+        } else if (findMediaItem(project, id)) {
+            plan.itemIds.insert(id);
+        } else {
+            plan.error = "削除する素材がありません";
+            return plan;
+        }
     }
     for (bool grew = true; grew;) {
         grew = false;
         for (const auto& folder : project.mediaFolders) {
-            if (removedFolders.contains(folder.parentId) && removedFolders.insert(folder.id).second)
+            if (plan.folderIds.contains(folder.parentId) && plan.folderIds.insert(folder.id).second)
                 grew = true;
         }
     }
     for (const auto& item : project.mediaItems) {
-        if (removedFolders.contains(item.folderId))
-            removedItems.insert(item.id);
+        if (plan.folderIds.contains(item.folderId))
+            plan.itemIds.insert(item.id);
     }
-    const auto usage = mediaItemUsage(project);
-    for (const auto& item : project.mediaItems) {
-        if (!removedItems.contains(item.id))
+
+    // clip は mediaItemId で素材を指すので、ファイルの実体を調べずに決まる。
+    std::set<std::string> linkGroups;
+    std::set<std::string> clipIds;
+    for (const auto& clip : project.timelineClips) {
+        if (clip.mediaItemId.empty() || !plan.itemIds.contains(clip.mediaItemId))
             continue;
-        if (usage.inUse.contains(item.id))
-            return failure("タイムラインで使用中の素材は削除できません: " + item.name);
-        // ファイルの identity が取れず、使用中でないと言い切れない。削除を安全側で拒否する。
-        if (usage.unknown.contains(item.id))
-            return failure("タイムラインで使用中か確認できない素材は削除できません: " + item.name);
+        clipIds.insert(clip.id);
+        if (!clip.linkGroupId.empty())
+            linkGroups.insert(clip.linkGroupId);
     }
+    // リンク相手も消す。片側だけ残すと deleteTimelineClip と挙動が食い違う。
+    for (const auto& clip : project.timelineClips) {
+        if (clipIds.contains(clip.id) ||
+            (!clip.linkGroupId.empty() && linkGroups.contains(clip.linkGroupId)))
+            plan.clipIds.push_back(clip.id);
+    }
+    plan.success = true;
+    return plan;
+}
+
+MediaBinEditResult removeMediaBinEntries(Project& project,
+                                         const std::vector<std::string>& entryIds) {
+    const auto plan = planMediaBinRemoval(project, entryIds);
+    if (!plan.success)
+        return failure(plan.error);
 
     Project candidate = project;
     std::erase_if(candidate.mediaFolders,
-                  [&](const MediaFolder& folder) { return removedFolders.contains(folder.id); });
+                  [&](const MediaFolder& folder) { return plan.folderIds.contains(folder.id); });
     std::erase_if(candidate.mediaItems,
-                  [&](const MediaItem& item) { return removedItems.contains(item.id); });
-    return commitCandidate(project, std::move(candidate));
+                  [&](const MediaItem& item) { return plan.itemIds.contains(item.id); });
+    const std::set<std::string> clipIds(plan.clipIds.begin(), plan.clipIds.end());
+    std::erase_if(candidate.timelineClips,
+                  [&](const TimelineClip& clip) { return clipIds.contains(clip.id); });
+    const auto timeline = validateTimeline(candidate);
+    if (!timeline.success)
+        return failure(timeline.error);
+    auto result = commitCandidate(project, std::move(candidate));
+    if (result.success)
+        result.removedClipIds = plan.clipIds;
+    return result;
 }
 
 const MediaItem* findMediaItem(const Project& project, const std::string& itemId) {
@@ -235,31 +315,13 @@ const MediaFolder* findMediaFolder(const Project& project, const std::string& fo
     return nullptr;
 }
 
-MediaItemUsage mediaItemUsage(const Project& project) {
-    // identity は clip と item でそれぞれ 1 回だけ求める。組ごとに求めると I/O が n×m 回になる。
-    std::vector<FileIdentityKey> clipKeys;
-    clipKeys.reserve(project.timelineClips.size());
-    for (const auto& clip : project.timelineClips)
-        clipKeys.push_back(fileIdentityKey(clip.mediaPath));
-    MediaItemUsage usage;
-    for (const auto& item : project.mediaItems) {
-        const auto itemKey = fileIdentityKey(item.mediaPath);
-        bool unknown = false;
-        bool used = false;
-        for (const auto& clipKey : clipKeys) {
-            const auto sameness = comparePathIdentity(itemKey, clipKey);
-            if (sameness == PathSameness::Same) {
-                used = true;
-                break;
-            }
-            unknown = unknown || sameness == PathSameness::Unknown;
-        }
-        if (used)
-            usage.inUse.insert(item.id);
-        else if (unknown)
-            usage.unknown.insert(item.id);
+std::set<std::string> mediaItemsInUse(const Project& project) {
+    std::set<std::string> used;
+    for (const auto& clip : project.timelineClips) {
+        if (!clip.mediaItemId.empty())
+            used.insert(clip.mediaItemId);
     }
-    return usage;
+    return used;
 }
 
 const char* mediaKindName(MediaKind kind) {

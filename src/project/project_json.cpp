@@ -724,7 +724,7 @@ private:
     }
 
     bool parseClipEffects(ClipEffects& effects) {
-        bool seen[14] = {};
+        bool seen[15] = {};
         if (!consume('{'))
             return false;
         skipWhitespace();
@@ -738,8 +738,10 @@ private:
                     field = 0;
                 else if (key == "position_y_percent")
                     field = 1;
-                else if (key == "scale_percent")
+                else if (key == "scale_x_percent")
                     field = 2;
+                else if (key == "scale_y_percent")
+                    field = 14;
                 else if (key == "rotation_degrees")
                     field = 3;
                 else if (key == "opacity_percent")
@@ -771,7 +773,9 @@ private:
                     return false;
                 if (field == 1 && !parseNumber(effects.positionYPercent))
                     return false;
-                if (field == 2 && !parseNumber(effects.scalePercent))
+                if (field == 2 && !parseNumber(effects.scaleXPercent))
+                    return false;
+                if (field == 14 && !parseNumber(effects.scaleYPercent))
                     return false;
                 if (field == 3 && !parseNumber(effects.rotationDegrees))
                     return false;
@@ -930,6 +934,7 @@ private:
         bool hasTrackKind = false;
         bool hasTrackIndex = false;
         bool hasLinkGroupId = false;
+        bool hasMediaItemId = false;
         bool hasSpeedNum = false;
         bool hasSpeedDen = false;
         bool hasText = false;
@@ -1005,6 +1010,10 @@ private:
                     if (hasSpeedDen || !parseInteger64(clip.speedDen))
                         return fail("timeline clip の speed_den が重複または不正です");
                     hasSpeedDen = true;
+                } else if (key == "media_item_id") {
+                    if (hasMediaItemId || !parseString(clip.mediaItemId))
+                        return fail("timeline clip の media_item_id が重複または不正です");
+                    hasMediaItemId = true;
                 } else if (key == "link_group_id") {
                     if (hasLinkGroupId || !parseString(clip.linkGroupId))
                         return fail("timeline clip の link_group_id が重複または不正です");
@@ -1030,7 +1039,7 @@ private:
             return false;
         if (!hasKind || !hasMedia || !hasName || !hasId || !hasSourceFpsNum || !hasSourceFpsDen ||
             !hasSourceFrameCount || !hasSourceIn || !hasSourceOut || !hasTimelineStart ||
-            !hasTrackKind || !hasTrackIndex || !hasSpeedNum || !hasSpeedDen)
+            !hasTrackKind || !hasTrackIndex || !hasSpeedNum || !hasSpeedDen || !hasMediaItemId)
             return fail("timeline clip の必須 field がありません");
         if (hasText != (kind == "text"))
             return fail("timeline clip の text と kind が一致しません");
@@ -1418,11 +1427,13 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
              << "      \"speed_den\": " << clip.speedDen << ",\n"
              << "      \"track_kind\": \"" << trackKindName(clip.track.kind) << "\",\n"
              << "      \"track_index\": " << clip.track.index << ",\n"
+             << "      \"media_item_id\": \"" << escapeJson(clip.mediaItemId) << "\",\n"
              << "      \"link_group_id\": \"" << escapeJson(clip.linkGroupId) << "\",\n"
              << "      \"effects\": {\n"
              << "        \"position_x_percent\": " << clip.effects.positionXPercent << ",\n"
              << "        \"position_y_percent\": " << clip.effects.positionYPercent << ",\n"
-             << "        \"scale_percent\": " << clip.effects.scalePercent << ",\n"
+             << "        \"scale_x_percent\": " << clip.effects.scaleXPercent << ",\n"
+             << "        \"scale_y_percent\": " << clip.effects.scaleYPercent << ",\n"
              << "        \"rotation_degrees\": " << clip.effects.rotationDegrees << ",\n"
              << "        \"opacity_percent\": " << clip.effects.opacityPercent << ",\n"
              << "        \"volume_percent\": " << clip.effects.volumePercent << ",\n"

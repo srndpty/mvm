@@ -744,34 +744,29 @@ TimelineEditResult placeTimelineClipAt(Project& project, TimelineClip clip, Trac
     return result;
 }
 
-TimelineEditResult placeStillClipAt(Project& project, TimelineClip clip,
-                                    std::int64_t timelineStartFrame) {
+namespace {
+
+// kind の track を firstIndex から順に試し、mute されていない track で place が成功したら確定する。
+// 既存 track に空きが無ければ track を上へ足していく。足した track は空で mute もされて
+// いないので、そこへは必ず置ける (置けなければ別の理由の失敗としてそのまま返す)。
+TimelineEditResult
+placeOnFirstFreeTrack(Project& project, TrackKind kind, int firstIndex,
+                      const std::function<TimelineEditResult(Project&, int)>& place) {
     TimelineEditResult result;
-    if (!isStillClipKind(clip.kind) || timelineStartFrame < 0) {
-        result.error = "配置する text / image clip または開始位置が不正です";
-        return result;
-    }
     Project candidate = project;
-    int highestActive = -1;
-    const auto active = activeClipsAt(candidate, TrackKind::Video, timelineStartFrame);
-    for (std::size_t index = 0; index < active.size(); ++index)
-        if (active[index])
-            highestActive = static_cast<int>(index);
-    // 既存 track に空きが無ければ上へ track を足していく。足した track は空で mute もされて
-    // いないので、そこへは必ず置ける (置けなければ別の理由の失敗としてそのまま返す)。
-    for (int trackIndex = highestActive + 1;; ++trackIndex) {
-        const bool addedTrack = trackIndex >= static_cast<int>(candidate.videoTracks.size());
+    for (int trackIndex = std::max(firstIndex, 0);; ++trackIndex) {
+        const bool addedTrack =
+            trackIndex >= static_cast<int>(tracksOfKind(candidate, kind).size());
         if (addedTrack) {
-            const auto added = addTrack(candidate, TrackKind::Video);
+            const auto added = addTrack(candidate, kind);
             if (!added.success) {
                 result.error = added.error;
                 return result;
             }
         }
-        if (candidate.videoTracks[static_cast<std::size_t>(trackIndex)].muted)
+        if (tracksOfKind(candidate, kind)[static_cast<std::size_t>(trackIndex)].muted)
             continue;
-        result = placeTimelineClipAt(candidate, clip, {TrackKind::Video, trackIndex},
-                                     timelineStartFrame);
+        result = place(candidate, trackIndex);
         if (result.success) {
             project = std::move(candidate);
             return result;
@@ -781,6 +776,27 @@ TimelineEditResult placeStillClipAt(Project& project, TimelineClip clip,
     }
 }
 
+} // namespace
+
+TimelineEditResult placeStillClipAt(Project& project, TimelineClip clip,
+                                    std::int64_t timelineStartFrame) {
+    TimelineEditResult result;
+    if (!isStillClipKind(clip.kind) || timelineStartFrame < 0) {
+        result.error = "配置する text / image clip または開始位置が不正です";
+        return result;
+    }
+    int highestActive = -1;
+    const auto active = activeClipsAt(project, TrackKind::Video, timelineStartFrame);
+    for (std::size_t index = 0; index < active.size(); ++index)
+        if (active[index])
+            highestActive = static_cast<int>(index);
+    return placeOnFirstFreeTrack(
+        project, TrackKind::Video, highestActive + 1, [&](Project& candidate, int trackIndex) {
+            return placeTimelineClipAt(candidate, clip, {TrackKind::Video, trackIndex},
+                                       timelineStartFrame);
+        });
+}
+
 TimelineEditResult placeAudioClipAt(Project& project, TimelineClip clip,
                                     std::int64_t timelineStartFrame) {
     TimelineEditResult result;
@@ -788,27 +804,85 @@ TimelineEditResult placeAudioClipAt(Project& project, TimelineClip clip,
         result.error = "配置する audio clip または開始位置が不正です";
         return result;
     }
+    return placeOnFirstFreeTrack(
+        project, TrackKind::Audio, 0, [&](Project& candidate, int trackIndex) {
+            return placeTimelineClipAt(candidate, clip, {TrackKind::Audio, trackIndex},
+                                       timelineStartFrame);
+        });
+}
+
+TimelineEditResult placeMediaAtDrop(Project& project, TimelineClip primary,
+                                    std::optional<TimelineClip> linkedAudio, TrackRef target,
+                                    std::int64_t timelineStartFrame) {
+    TimelineEditResult result;
+    const int trackCount = static_cast<int>(tracksOfKind(project, target.kind).size());
+    if (target.index < 0 || target.index > trackCount) {
+        result.error = "ドロップ先の track が不正です";
+        return result;
+    }
+    timelineStartFrame = std::max<std::int64_t>(timelineStartFrame, 0);
+    // リンク対は、ドロップした行の種別に合う側をその track へ置く。
+    const TimelineClip& onTarget =
+        linkedAudio && target.kind == TrackKind::Audio ? *linkedAudio : primary;
+    const TrackKind ownKind =
+        onTarget.kind == TimelineClipKind::Audio ? TrackKind::Audio : TrackKind::Video;
+    TimelineClip alone = onTarget;
+    alone.linkGroupId.clear();
+    const auto fitsAt = [&](const Project& base, TrackRef track) {
+        Project probe = base;
+        return placeTimelineClipAt(probe, alone, track, timelineStartFrame).success;
+    };
+
     Project candidate = project;
-    for (int trackIndex = 0;; ++trackIndex) {
-        const bool addedTrack = trackIndex >= static_cast<int>(candidate.audioTracks.size());
-        if (addedTrack) {
-            const auto added = addTrack(candidate, TrackKind::Audio);
+    const bool kindFits = clipKindFitsTrackKind(onTarget.kind, target.kind);
+    if (kindFits && target.index == trackCount) {
+        const auto added = addTrack(candidate, target.kind);
+        if (!added.success) {
+            result.error = added.error;
+            return result;
+        }
+    }
+    // ドロップした行に置けない (種別が違う・既存の clip と重なる) ときは、上書きせずに
+    // 同じ種別で空いている track (無ければ新しい track) へ回す。時刻はドロップした位置のまま。
+    if (!kindFits || !fitsAt(candidate, target)) {
+        int chosen = -1;
+        Project scratch = candidate;
+        const auto found =
+            placeOnFirstFreeTrack(scratch, ownKind, 0, [&](Project& attempt, int index) {
+                chosen = index;
+                return placeTimelineClipAt(attempt, alone, {ownKind, index}, timelineStartFrame);
+            });
+        if (!found.success) {
+            result.error = found.error;
+            return result;
+        }
+        while (static_cast<int>(tracksOfKind(candidate, ownKind).size()) <= chosen) {
+            const auto added = addTrack(candidate, ownKind);
             if (!added.success) {
                 result.error = added.error;
                 return result;
             }
         }
-        if (candidate.audioTracks[static_cast<std::size_t>(trackIndex)].muted)
-            continue;
-        result = placeTimelineClipAt(candidate, clip, {TrackKind::Audio, trackIndex},
-                                     timelineStartFrame);
-        if (result.success) {
-            project = std::move(candidate);
-            return result;
-        }
-        if (addedTrack)
-            return result;
+        target = {ownKind, chosen};
     }
+    if (!linkedAudio) {
+        result = placeTimelineClipAt(candidate, std::move(primary), target, timelineStartFrame);
+    } else {
+        // リンク相手は、もう一方の種別で空いている最初の track (無ければ新しい track) へ置く。
+        const TrackKind partnerKind =
+            target.kind == TrackKind::Video ? TrackKind::Audio : TrackKind::Video;
+        result = placeOnFirstFreeTrack(
+            candidate, partnerKind, 0, [&](Project& attempt, int partnerIndex) {
+                const TrackRef partner{partnerKind, partnerIndex};
+                return placeLinkedAvPairAt(
+                    attempt, primary, target.kind == TrackKind::Video ? target : partner,
+                    *linkedAudio, target.kind == TrackKind::Audio ? target : partner,
+                    timelineStartFrame);
+            });
+    }
+    if (result.success)
+        project = std::move(candidate);
+    return result;
 }
 
 TimelineEditResult placeLinkedAvPairAt(Project& project, TimelineClip video, TrackRef videoTrack,
@@ -1614,6 +1688,7 @@ TimelineEditResult appendManimTimelineClipAt(Project& project, const ManimAsset&
                                        asset.generatedVideoPath,
                                        asset.sceneName,
                                        std::move(clipId),
+                                       {}, // Manim は素材 (mediaItemId) を指さない
                                        sourceFpsNum,
                                        sourceFpsDen,
                                        sourceFrameCount,

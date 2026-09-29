@@ -4,11 +4,15 @@
 #include "project/media_bin.h"
 #include "project/path_identity.h"
 #include "project/project_json.h"
+#include "project/timeline_edit.h"
 
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <set>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -115,6 +119,75 @@ void testEdits() {
           "同じファイルの素材を重複して追加しました");
     check(mvm::project::addMediaItem(project, imageItem("i", "C:/media/still.png")).success,
           "静止画素材を追加できません");
+
+    // 調べ直した値で技術的な値だけを置き換える。id・名前・フォルダ・ファイルは変えない。
+    check(mvm::project::moveMediaBinEntries(project, {"i"}, "A").success &&
+              mvm::project::renameMediaBinEntry(project, "i", "表紙").success,
+          "前提: 画像素材をフォルダへ移して名前を変えられません");
+    auto portrait = imageItem("other-id", "C:/elsewhere/other.png");
+    portrait.width = 600;
+    portrait.height = 800;
+    check(mvm::project::refreshMediaItem(project, "i", portrait).success,
+          "調べ直した値で素材を更新できません");
+    const auto* refreshed = mvm::project::findMediaItem(project, "i");
+    check(refreshed && refreshed->width == 600 && refreshed->height == 800 &&
+              refreshed->name == "表紙" && refreshed->folderId == "A" &&
+              refreshed->mediaPath == "C:/media/still.png",
+          "素材の更新で技術的な値以外が変わった、または値が更新されません");
+    const Project beforeRefresh = project;
+    auto broken = portrait;
+    broken.width = 0;
+    check(!mvm::project::refreshMediaItem(project, "i", broken).success && project == beforeRefresh,
+          "不正な値で素材を更新できてしまいます");
+    check(!mvm::project::refreshMediaItem(project, "missing", portrait).success &&
+              project == beforeRefresh,
+          "存在しない素材を更新できてしまいます");
+}
+
+mvm::project::TimelineClip timelineClip(const char* id, mvm::project::TimelineClipKind kind,
+                                        const std::filesystem::path& path,
+                                        mvm::project::TrackKind track, std::int64_t start) {
+    mvm::project::TimelineClip clip;
+    clip.kind = kind;
+    clip.mediaPath = path;
+    clip.name = id;
+    clip.id = id;
+    clip.sourceFpsNum = 60;
+    clip.sourceFpsDen = 1;
+    clip.sourceFrameCount = 60;
+    clip.sourceInFrame = 0;
+    clip.sourceOutFrame = 60;
+    clip.timelineStartFrame = start;
+    clip.track = {track, 0};
+    return clip;
+}
+
+// v.mp4 のリンク対 (映像と音声)、a.wav の音声、文字を timeline に置いた Project。
+Project usedProject() {
+    using mvm::project::TimelineClipKind;
+    using mvm::project::TrackKind;
+    Project project = nestedProject();
+    auto video =
+        timelineClip("clip-v", TimelineClipKind::Video, "C:/media/v.mp4", TrackKind::Video, 0);
+    auto videoAudio = timelineClip("clip-v-audio", TimelineClipKind::Audio, "C:/media/v.mp4",
+                                   TrackKind::Audio, 0);
+    video.linkGroupId = videoAudio.linkGroupId = "pair";
+    video.mediaItemId = videoAudio.mediaItemId = "v";
+    auto audio =
+        timelineClip("clip-a", TimelineClipKind::Audio, "C:/media/a.wav", TrackKind::Audio, 100);
+    audio.mediaItemId = "a";
+    auto text = timelineClip("clip-text", TimelineClipKind::Text, {}, TrackKind::Video, 100);
+    text.text.content = "字幕";
+    project.timelineClips = {video, videoAudio, audio, text};
+    return project;
+}
+
+bool hasClip(const Project& project, const char* id) {
+    for (const auto& clip : project.timelineClips) {
+        if (clip.id == id)
+            return true;
+    }
+    return false;
 }
 
 void testRemove() {
@@ -125,17 +198,83 @@ void testRemove() {
               project.mediaItems.front().id == "a",
           "folder削除で子孫が残る、または無関係な素材が消えました");
 
-    // timeline が使っている素材を含む削除は、全体を拒否する。
-    Project used = nestedProject();
-    mvm::project::TimelineClip clip;
-    clip.mediaPath = "C:/media/v.mp4";
-    used.timelineClips.push_back(clip);
-    const Project beforeRemove = used;
-    check(!mvm::project::removeMediaBinEntries(used, {"A", "a"}).success,
-          "timelineで使用中の素材を含むfolderを削除できてしまいます");
-    check(used == beforeRemove, "拒否した削除で一部だけ消えました");
-    check(!mvm::project::removeMediaBinEntries(used, {"missing"}).success,
-          "存在しないentryの削除が成功しました");
+    // 使用中の素材は、それを参照する clip (とリンク相手) ごと消える。
+    Project used = usedProject();
+    check(mvm::project::validateTimeline(used).success &&
+              mvm::project::validateMediaBin(used).success,
+          "使用中素材の試験用Projectが不正です");
+    check(mvm::project::mediaItemsInUse(used) == std::set<std::string>{"v", "a"},
+          "使用中の素材の判定が違います");
+    const auto plan = mvm::project::planMediaBinRemoval(used, {"v"});
+    check(plan.success && plan.clipIds == std::vector<std::string>{"clip-v", "clip-v-audio"},
+          "使用中素材の削除で消えるclipの見積もりが違います");
+    const auto removed = mvm::project::removeMediaBinEntries(used, {"v"});
+    check(removed.success && removed.removedClipIds == plan.clipIds,
+          "使用中素材をclipごと削除できません");
+    check(!mvm::project::findMediaItem(used, "v") && !hasClip(used, "clip-v") &&
+              !hasClip(used, "clip-v-audio"),
+          "削除した素材を参照するclipが残りました");
+    // 対照: 別素材の clip と、ファイルを参照しない文字 clip は残る。
+    check(hasClip(used, "clip-a") && hasClip(used, "clip-text") &&
+              mvm::project::findMediaItem(used, "a"),
+          "削除した素材と無関係なclipや素材が消えました");
+
+    // folder の削除は、その中の素材を参照する clip も消す。
+    Project viaFolder = usedProject();
+    const auto folderRemoved = mvm::project::removeMediaBinEntries(viaFolder, {"A"});
+    check(folderRemoved.success && folderRemoved.removedClipIds.size() == 2 &&
+              !hasClip(viaFolder, "clip-v") && hasClip(viaFolder, "clip-a"),
+          "folder削除で中の素材を参照するclipを削除できません");
+
+    // 未使用の素材なら clip は消えない。
+    Project unused = usedProject();
+    unused.timelineClips.erase(unused.timelineClips.begin(), unused.timelineClips.begin() + 2);
+    const auto unusedPlan = mvm::project::planMediaBinRemoval(unused, {"v"});
+    check(unusedPlan.success && unusedPlan.clipIds.empty(),
+          "未使用の素材の削除でclipを巻き込む見積もりになりました");
+
+    // 失敗時は Project を変えない。
+    Project invalid = usedProject();
+    const Project beforeInvalid = invalid;
+    check(!mvm::project::removeMediaBinEntries(invalid, {"v", "missing"}).success &&
+              invalid == beforeInvalid,
+          "存在しないentryを含む削除で一部だけ消えました");
+    check(!mvm::project::removeMediaBinEntries(invalid, {}).success && invalid == beforeInvalid,
+          "空の削除が成功しました");
+    check(!mvm::project::planMediaBinRemoval(invalid, {"missing"}).success,
+          "存在しないentryの削除見積もりが成功しました");
+}
+
+// 使っている素材の時間軸が外部で変わったときは、素材だけを更新しない。
+void testRefreshTiming() {
+    // timeline で使っている動画の時間軸 (fps・尺・種類) が変わった更新は拒否する。
+    // clip の素材範囲は元の時間軸で決めてあり、素材だけ新しくすると食い違う。
+    Project used = usedProject(); // v.mp4 (24000/1001, 598 frame) をリンク対が使う
+    const Project beforeTiming = used;
+    auto retimed = *mvm::project::findMediaItem(used, "v");
+    retimed.fpsNum = 30;
+    retimed.fpsDen = 1;
+    retimed.frameCount = 120;
+    check(!mvm::project::refreshMediaItem(used, "v", retimed).success && used == beforeTiming,
+          "使用中の動画の fps・尺の変化で素材だけを更新しました");
+    auto recast = *mvm::project::findMediaItem(used, "a");
+    recast.durationSamples = 48000;
+    check(!mvm::project::refreshMediaItem(used, "a", recast).success && used == beforeTiming,
+          "使用中の音声の尺の変化で素材だけを更新しました");
+    // 解像度だけなら clip の時間軸に関わらないので更新する。
+    auto resized = *mvm::project::findMediaItem(used, "v");
+    resized.width = 1280;
+    resized.height = 720;
+    check(mvm::project::refreshMediaItem(used, "v", resized).success &&
+              mvm::project::findMediaItem(used, "v")->width == 1280,
+          "使用中の動画の解像度だけの変化を更新できません");
+    // 使われていない素材なら時間軸が変わっても更新する。
+    Project unusedMedia = usedProject();
+    unusedMedia.timelineClips.erase(unusedMedia.timelineClips.begin(),
+                                    unusedMedia.timelineClips.begin() + 2);
+    check(mvm::project::refreshMediaItem(unusedMedia, "v", retimed).success &&
+              mvm::project::findMediaItem(unusedMedia, "v")->fpsNum == 30,
+          "使われていない素材の時間軸の変化を更新できません");
 }
 
 void testValidation() {
@@ -210,15 +349,6 @@ void testFileIdentity(const std::filesystem::path& root) {
     check(mvm::project::findMediaItemByPath(project, other) == nullptr,
           "別のファイルを同じ素材として扱いました");
 
-    // timeline が hard link 経由で参照していても使用中とみなし、削除を拒否する。
-    mvm::project::TimelineClip clip;
-    clip.mediaPath = link;
-    project.timelineClips.push_back(clip);
-    check(mvm::project::mediaItemUsage(project).inUse.contains("a"),
-          "hard link経由のtimeline参照を使用中と判定しません");
-    check(!mvm::project::removeMediaBinEntries(project, {"a"}).success,
-          "hard link経由で使用中の素材を削除できてしまいます");
-
     // canonical Project の比較も実体で行う (recovery の foreign 判定・Save As が使う)。
     check(mvm::project::sameCanonicalPath(original, link),
           "hard linkのProject pathを別物と判定しました");
@@ -259,26 +389,79 @@ void testUnavailableIdentity(const std::filesystem::path& root) {
     check(mvm::project::comparePathIdentity(directory, root / "UNAVAILABLE") == PathSameness::Same,
           "表記が同じならidentityを取れなくても同じと判定しません");
 
-    // clip 側は identity 成功、item 側は取得不可。未使用と断定せず、削除を拒否する。
+    // 素材の重複登録の判定でも、identity を取れない相手を同じ素材とみなさない。
     Project project = mvm::project::createDefaultProject();
     MediaItem item = audioItem("u", "x");
     item.mediaPath = directory;
     project.mediaItems.push_back(item);
-    mvm::project::TimelineClip clip;
-    clip.mediaPath = file;
-    project.timelineClips.push_back(clip);
-    const auto usage = mvm::project::mediaItemUsage(project);
-    check(!usage.inUse.contains("u") && usage.unknown.contains("u"),
-          "identityを取れない素材を未使用と断定しました");
-    const Project before = project;
-    check(!mvm::project::removeMediaBinEntries(project, {"u"}).success && project == before,
-          "使用中か確認できない素材を削除できてしまいます");
+    check(mvm::project::findMediaItemByPath(project, file) == nullptr,
+          "identityを取れない素材を同じ素材とみなしました");
+}
 
-    // 対照: clip が無ければ Unknown の相手もいないので削除できる。
-    project.timelineClips.clear();
-    check(mvm::project::mediaItemUsage(project).unknown.empty() &&
-              mvm::project::removeMediaBinEntries(project, {"u"}).success,
-          "参照するclipが無い素材を削除できません (対照群)");
+// 動画・音声・画像の clip はプロジェクトパネルの素材を mediaItemId で指す。
+// 素材の無い clip・種別やファイルの食い違い・文字の素材参照を拒否する。
+void testMediaReferences() {
+    using mvm::project::TimelineClipKind;
+    const Project control = usedProject();
+    check(mvm::project::validateMediaReferences(control).success,
+          "正しい素材参照を拒否しました (対照群)");
+
+    Project orphan = control;
+    orphan.timelineClips[2].mediaItemId.clear();
+    check(!mvm::project::validateMediaReferences(orphan).success,
+          "素材を指さない音声clipを受理しました");
+    Project missing = control;
+    missing.timelineClips[2].mediaItemId = "missing";
+    check(!mvm::project::validateMediaBin(missing).success,
+          "プロジェクトパネルに無い素材を指すclipを受理しました");
+    Project wrongKind = control;
+    wrongKind.timelineClips[0].mediaItemId = "a"; // 動画 clip が音声素材を指す
+    wrongKind.timelineClips[0].mediaPath = "C:/media/a.wav";
+    check(!mvm::project::validateMediaReferences(wrongKind).success,
+          "種別の違う素材を指すclipを受理しました");
+    Project wrongFile = control;
+    wrongFile.timelineClips[2].mediaPath = "C:/media/other.wav";
+    check(!mvm::project::validateMediaReferences(wrongFile).success,
+          "素材と違うファイルを指すclipを受理しました");
+    // 表記ゆれ (大文字小文字・..) は同じファイル。
+    Project spelling = control;
+    spelling.timelineClips[2].mediaPath = "c:/MEDIA/x/../A.WAV";
+    check(mvm::project::validateMediaReferences(spelling).success,
+          "表記だけが違う同じファイルを拒否しました");
+    Project textWithItem = control;
+    textWithItem.timelineClips[3].mediaItemId = "a";
+    check(!mvm::project::validateMediaReferences(textWithItem).success,
+          "文字clipが素材を指しています");
+
+    // 保存も読み込みも同じ規則を通す。
+    const auto path = std::filesystem::temp_directory_path() / "mvm-media-reference-orphan.mvm";
+    check(!mvm::project::saveProjectJson(missing, path).success,
+          "素材の無いclipを持つProjectを保存できてしまいます");
+
+    // media_item_id は JSON を往復する。欠けた clip は既定値で埋めずに拒否する。
+    const auto roundTrip = std::filesystem::temp_directory_path() / "mvm-media-reference.mvm";
+    check(mvm::project::saveProjectJson(control, roundTrip).success,
+          "素材参照を持つProjectを保存できません");
+    const auto loaded = mvm::project::loadProjectJson(roundTrip);
+    check(loaded.success && loaded.project.timelineClips.size() == control.timelineClips.size() &&
+              loaded.project.timelineClips[0].mediaItemId == "v" &&
+              loaded.project.timelineClips[1].mediaItemId == "v" &&
+              loaded.project.timelineClips[2].mediaItemId == "a" &&
+              loaded.project.timelineClips[3].mediaItemId.empty(),
+          "media_item_idがJSON round-tripしません");
+    std::ifstream saved(roundTrip, std::ios::binary);
+    std::string json((std::istreambuf_iterator<char>(saved)), std::istreambuf_iterator<char>());
+    saved.close();
+    const std::string field = "\"media_item_id\": \"a\",";
+    const auto fieldAt = json.find(field);
+    check(fieldAt != std::string::npos, "保存JSONにmedia_item_idが書かれていません");
+    if (fieldAt != std::string::npos) {
+        json.erase(fieldAt, field.size());
+        writeText(roundTrip, json);
+        check(!mvm::project::loadProjectJson(roundTrip).success,
+              "media_item_idの無いclipを読み込めてしまいます");
+    }
+    std::filesystem::remove(roundTrip);
 }
 
 void testJson(const std::filesystem::path& root) {
@@ -307,7 +490,7 @@ void testJson(const std::filesystem::path& root) {
           "project配下の素材pathがrelativeで保存されていません");
 
     const std::string header =
-        R"JSON({"schema_version":9,"timeline_markers":[],"in_frame":null,"out_frame":null,"format":"mvm-project","timeline_fps_num":60,"timeline_fps_den":1,)JSON"
+        R"JSON({"schema_version":11,"timeline_markers":[],"in_frame":null,"out_frame":null,"format":"mvm-project","timeline_fps_num":60,"timeline_fps_den":1,)JSON"
         R"JSON("video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],)JSON"
         R"JSON("timeline_clips":[],"media_folders":[],)JSON";
     const std::string item =
@@ -367,6 +550,8 @@ int main(int argc, char** argv) {
     testRemove();
     testValidation();
     testFileIdentity(root);
+    testMediaReferences();
+    testRefreshTiming();
     testUnavailableIdentity(root);
     testJson(root);
 
