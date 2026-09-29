@@ -23,15 +23,32 @@ Item {
     // 既定の false は、パネル上で値を誤って入力モードにしないためダブルクリックを要求する。
     property bool clickToEdit: false
 
+    // 直接入力の文字列全体を数値として読む。末尾の単位 (suffix) だけは付いていてよい。
+    // parseFloat は "50foo" を 50 と読んでしまうので使わない。読めなければ NaN。
+    function parseEditorText(text) {
+        let body = text.trim();
+        const unit = root.suffix.trim();
+        if (unit.length > 0 && body.endsWith(unit))
+            body = body.slice(0, body.length - unit.length).trim();
+        if (body.length === 0)
+            return NaN;
+        const parsed = Number(body);
+        return isFinite(parsed) ? parsed : NaN;
+    }
+
     // 直接入力中の文字列を確定する。入力中に別のボタンで確定するダイアログは、
     // Enter を待たずにこれを呼んで値を取り込む。
+    // 入力していなければ、または数値として読めて確定したら true。読めなければ入力欄を
+    // 開いたまま false を返す (古い値のまま閉じて、呼び出し側が古い値で処理を続けないように)。
     function commitEditing() {
         if (!editor.visible)
-            return;
-        const parsed = parseFloat(editor.text);
-        if (!isNaN(parsed))
-            root.valueEdited(root.clampValue(parsed), true);
+            return true;
+        const parsed = root.parseEditorText(editor.text);
+        if (isNaN(parsed))
+            return false;
+        root.valueEdited(root.clampValue(parsed), true);
         editor.finish();
+        return true;
     }
 
     function beginEditing() {

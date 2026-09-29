@@ -268,6 +268,27 @@ int main(int argc, char** argv) {
         }
         check(farSeeks == 2, "ピッチ保持の遠い seek を全速度で比較していません");
     }
+    // 比率は約 1 倍でも、約分済みの分子・分母が巨大な速度 (duration 指定や Project JSON から
+    // 作られうる)。ピッチ保持の seek 換算 (素材 rate x p) / (48000 x q) は int64 に収まらないので、
+    // 開始の時点で拒否する (換算を int64 で作ると signed overflow になっていた)。
+    {
+        const Speed huge{(std::int64_t{1} << 62) + 1, (std::int64_t{1} << 62) + 3};
+        mvm::audio::AudioDecodeWorker pitched({1});
+        std::string error;
+        const bool started = pitched.setPlaybackSpeed(huge.num, huge.den, true, error) &&
+                             pitched.start(toUtf8(source), error);
+        check(!started && error.find("seek") != std::string::npos,
+              "巨大な約分済み速度のピッチ保持を拒否できません: " + error);
+        pitched.stop();
+        // 対照: 同じ速度でもピッチ保持なし (テープ方式) は resampler の近似で開始できる。
+        // 拒否がピッチ保持の換算に限られることを示す。
+        mvm::audio::AudioDecodeWorker tape({1});
+        std::string tapeError;
+        const bool tapeStarted = tape.setPlaybackSpeed(huge.num, huge.den, false, tapeError) &&
+                                 tape.start(toUtf8(source), tapeError);
+        check(tapeStarted, "対照: 巨大な約分済み速度のテープ方式を開始できません: " + tapeError);
+        tape.stop();
+    }
     std::fprintf(stderr, "audio playback speed: 検査 %d 件 / 失敗 %d 件\n", gChecks, gFailures);
     return gChecks > 0 && gFailures == 0 ? 0 : 1;
 }

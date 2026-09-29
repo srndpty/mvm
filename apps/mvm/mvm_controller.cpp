@@ -4480,13 +4480,13 @@ bool MvmController::canInsertFrameHold(const QString& clipId) const {
     if (busy_ || indexOfClipId(project_.timelineClips, id) < 0)
         return false;
     // 判定を別に書かず、複製した Project で実際の挿入を試す。「押せるのに実行すると失敗する」
-    // メニューにしない (保持できない frame 等も同じ規則で弾く)。
+    // メニューにしない (保持できない frame 等も同じ規則で弾く)。ID も本番と同じ生成器にする。
+    // 固定の ID だと、同じ ID の clip を持つ Project でだけ試行が重複で失敗していた。
     project::Project candidate = project_;
-    int nextId = 0;
     return project::insertFrameHold(
                candidate, id, playheadFrame_,
                project::defaultFrameHoldFrames(candidate.timelineFpsNum, candidate.timelineFpsDen),
-               [&] { return "can-insert-" + std::to_string(++nextId); })
+               newClipId)
         .success;
 }
 

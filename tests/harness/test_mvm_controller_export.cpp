@@ -765,6 +765,24 @@ void testSpeedDurationAndFrameHoldUndo(const std::filesystem::path& path) {
               unheld.project.timelineClips == baseline.project.timelineClips,
           "フレーム保持を一回のUndoで完全に戻せません");
     check(controller.redoLastEdit() && controller.clipCount() == 5, "フレーム保持をRedoできません");
+
+    // 挿入できるかの判定は本番と同じ ID 生成器で試す。以前は試行だけが固定 ID
+    // (can-insert-1 ...) を使い、同じ ID の clip を持つ合法な Project でだけ重複で失敗して、
+    // 実際には挿入できるのにメニューが無効になっていた。旧生成器は 1 番目をリンク相手の
+    // 右半分どうしの link group に使い、2 番目を最初の右半分の clip ID に使うので、
+    // 既存の clip を can-insert-2 にしておくと旧実装では必ず重複する。
+    {
+        auto withId = linkedProject();
+        withId.timelineClips[1].id = "can-insert-2";
+        const auto idPath = path.parent_path() / L"speed-hold-id.mvm";
+        check(mvm::project::saveProjectJson(withId, idPath).success,
+              "ID 衝突試験の初期Projectを保存できません");
+        mvm::app::MvmController idController(idPath, {}, withId);
+        idController.seekTimelineFrame(30);
+        check(idController.canInsertFrameHold(QStringLiteral("video")) &&
+                  idController.insertFrameHoldAtPlayhead(QStringLiteral("video")),
+              "can-insert-2 という clip があるとフレーム保持を挿入できると判定しません");
+    }
 }
 
 void testRedoRestoresDirtyState(const std::filesystem::path& path) {

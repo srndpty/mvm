@@ -147,6 +147,25 @@ void testSpeedDurationAndFrameHold() {
                   overwritten.timelineClips[1].sourceInFrame == 150 &&
                   overwritten.timelineClips[1].sourceOutFrame == 300,
               "はみ出す clip の左端を上書きで削れません");
+        // 上書きの短縮は通常の左 trim と同じく effect を消さない。B (300 frame) を 150 frame へ
+        // 縮める。fade in 100 は収まるので残す。fade in 200 + fade out 100 は収まらないので、
+        // 末尾側の fade out 100 を残して fade in を 50 に詰める。
+        const auto overwrittenFades = [&](std::int64_t fadeIn, std::int64_t fadeOut) {
+            Project faded = project;
+            faded.timelineClips[2].effects.fadeInFrames = fadeIn;
+            faded.timelineClips[2].effects.fadeOutFrames = fadeOut;
+            const bool ok =
+                setClipSpeedDuration(faded, "id-A", overwrite, LinkMode::Linked).success;
+            const auto b = std::find_if(faded.timelineClips.begin(), faded.timelineClips.end(),
+                                        [](const auto& value) { return value.id == "id-B"; });
+            return ok && b != faded.timelineClips.end()
+                       ? std::pair{b->effects.fadeInFrames, b->effects.fadeOutFrames}
+                       : std::pair<std::int64_t, std::int64_t>{-1, -1};
+        };
+        check(overwrittenFades(100, 0) == std::pair<std::int64_t, std::int64_t>{100, 0},
+              "上書きで短縮した clip の fade in が消えました");
+        check(overwrittenFades(200, 100) == std::pair<std::int64_t, std::int64_t>{50, 100},
+              "上書きで短縮した clip の fade が縮めた尺へ収まりません");
         // 削除した clip のリンク相手は片方だけのリンクにならないよう未リンクにする。
         overwritten = project;
         overwritten.timelineClips[1].kind = TimelineClipKind::Video;

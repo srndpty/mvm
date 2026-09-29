@@ -153,6 +153,21 @@ bool AudioDecodeWorker::openInput(const std::string& path, std::string& error) {
         return false;
     }
     if (stretch) {
+        // seek は伸縮後の 48 kHz の位置を素材 rate の位置へ戻す: x (素材 rate x p) / (48000 x q)。
+        // 積を int64 で作ると巨大な約分済み速度で signed overflow になるので、WideInteger で
+        // 作って約分し、int64 に収まらなければ開始を拒否する (seek の途中で失敗させない)。
+        WideInteger seekNum = static_cast<WideInteger>(codec_->sample_rate) * speedNum_;
+        WideInteger seekDen = static_cast<WideInteger>(kInternalSampleRate) * speedDen_;
+        const WideInteger common = gcdWide(seekNum, seekDen);
+        seekNum /= common;
+        seekDen /= common;
+        if (seekNum > std::numeric_limits<std::int64_t>::max() ||
+            seekDen > std::numeric_limits<std::int64_t>::max()) {
+            error = "ピッチ保持の速度を seek 位置の換算へ表せません";
+            return false;
+        }
+        pitchSeekNum_ = static_cast<std::int64_t>(seekNum);
+        pitchSeekDen_ = static_cast<std::int64_t>(seekDen);
         stretcher_ = std::make_unique<PitchPreservingStretcher>(static_cast<double>(speedDen_) /
                                                                 static_cast<double>(speedNum_));
         if (!stretcher_->valid()) {
@@ -486,11 +501,9 @@ AudioSeekCompletion AudioDecodeWorker::executeSeek(const AudioSeekTicket& ticket
     // 48 kHz -> 素材 rate の換算も要る (速度だけ戻すと 44.1 kHz 素材で位置が後ろへずれ、
     // preroll の 1 秒を超えると要求位置より後ろから decode してしまう)。
     const std::int64_t inputSample =
-        stretcher_ ? av_rescale_rnd(ticket.targetSample,
-                                    static_cast<std::int64_t>(codec_->sample_rate) * speedNum_,
-                                    static_cast<std::int64_t>(kInternalSampleRate) * speedDen_,
-                                    AV_ROUND_DOWN)
-                   : av_rescale(ticket.targetSample, resamplerInputRate_, resamplerOutputRate_);
+        stretcher_
+            ? av_rescale_rnd(ticket.targetSample, pitchSeekNum_, pitchSeekDen_, AV_ROUND_DOWN)
+            : av_rescale(ticket.targetSample, resamplerInputRate_, resamplerOutputRate_);
     const std::int64_t relativeTimestamp =
         av_rescale_q(inputSample, AVRational{1, codec_->sample_rate}, stream->time_base);
     const std::int64_t streamStart = stream->start_time == AV_NOPTS_VALUE ? 0 : stream->start_time;

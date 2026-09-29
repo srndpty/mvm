@@ -854,6 +854,51 @@ int main(int argc, char** argv) {
                           "端から離れても端のカーソルが残ります");
                 }
             }
+            // 14. 速度の直接入力は、文字列全体が数値のときだけ確定する。"50foo" は拒否して
+            //     入力欄を開いたまま古い値を残す (以前は parseFloat が 50 と読み、読めない
+            //     入力でも黙って閉じて古い値で適用していた)。
+            {
+                QMetaObject::invokeMethod(window, "openSpeedDurationDialog",
+                                          Q_ARG(QVariant, QVariant(QStringLiteral("video"))));
+                pump(300);
+                auto* field = findVisualItem(window, QStringLiteral("speedDurationSpeedField"));
+                check(field != nullptr && field->isVisible(), "前提: 速度の入力欄がありません");
+                if (field) {
+                    QMetaObject::invokeMethod(field, "beginEditing");
+                    pump();
+                    QQuickItem* editor = nullptr;
+                    QList<QQuickItem*> children;
+                    collectItems(field, children);
+                    for (QQuickItem* child : children)
+                        if (child->inherits("QQuickTextField"))
+                            editor = child;
+                    check(editor && editor->isVisible(), "前提: 速度の直接入力欄が開きません");
+                    const auto commit = [&](const char* text) {
+                        editor->setProperty("text", QString::fromUtf8(text));
+                        QVariant accepted;
+                        QMetaObject::invokeMethod(field, "commitEditing",
+                                                  Q_RETURN_ARG(QVariant, accepted));
+                        pump();
+                        return accepted.toBool();
+                    };
+                    if (editor) {
+                        const double before = field->property("value").toDouble();
+                        check(!commit("50foo") && editor->isVisible() &&
+                                  field->property("value").toDouble() == before,
+                              "数値でない速度入力を受理した、または入力欄を閉じました");
+                        check(!commit("") && editor->isVisible(), "空の速度入力を受理しました");
+                        check(commit("50") && !editor->isVisible() &&
+                                  field->property("value").toDouble() == 50.0,
+                              "数値の速度入力を確定できません");
+                        QMetaObject::invokeMethod(field, "beginEditing");
+                        pump();
+                        check(commit("75 %") && field->property("value").toDouble() == 75.0,
+                              "単位付きの速度入力を確定できません");
+                    }
+                }
+                QTest::keyClick(window, Qt::Key_Escape);
+                pump(300);
+            }
             return failures == 0 ? 0 : 1;
         };
         exitCode = run();

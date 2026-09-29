@@ -3229,7 +3229,11 @@ ApplicationWindow {
 
         // 適用の入口。リップルしない変更が後続 clip と重なるなら、上書きの確認を挟む。
         function requestApply() {
-            speedField.commitEditing();
+            // 速度の直接入力が数値として読めなければ、古い値で適用せずに止める (入力欄は開いたまま)。
+            if (!speedField.commitEditing()) {
+                errorText = "速度を数値で入力してください";
+                return;
+            }
             errorText = "";
             if (!rippleBox.checked
                     && root.mvmController.clipSpeedDurationNeedsOverwrite(
@@ -3258,6 +3262,7 @@ ApplicationWindow {
             spacing: 10
             DragNumberField {
                 id: speedField
+                objectName: "speedDurationSpeedField"
                 Layout.fillWidth: true
                 clickToEdit: true
                 labelText: "速度"

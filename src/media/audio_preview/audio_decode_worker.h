@@ -112,6 +112,9 @@ private:
     std::int64_t speedDen_ = 1;
     bool preservePitch_ = false;
     std::unique_ptr<PitchPreservingStretcher> stretcher_;
+    // ピッチ保持の seek 換算 (伸縮後 48 kHz -> 素材 rate)。openInput で約分して確定する。
+    std::int64_t pitchSeekNum_ = 1;
+    std::int64_t pitchSeekDen_ = 1;
     std::int64_t pitchNextOutputSample_ = -1;
     std::int64_t pitchExpectedEndSample_ = -1;
     bool pitchFlushDone_ = false;

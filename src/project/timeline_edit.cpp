@@ -2364,7 +2364,8 @@ bool clipsCoveredByTargets(const Project& candidate, const std::vector<int>& tar
 }
 
 // covered を targets の終端まで上書きする。丸ごと覆われた clip は消し、リンク相手は
-// 片方だけのリンクにならないよう未リンクにする。はみ出す clip は左端を targets の終端まで削る。
+// 片方だけのリンクにならないよう未リンクにする。はみ出す clip は左端を targets の終端まで削る
+// (effect は残す。縮めた尺に収まらない fade だけ詰める)。
 bool overwriteCoveredClips(Project& candidate, const std::vector<int>& targets,
                            const std::vector<std::string>& covered, std::string& error) {
     std::vector<std::pair<TrackRef, std::int64_t>> ends;
@@ -2391,9 +2392,13 @@ bool overwriteCoveredClips(Project& candidate, const std::vector<int>& targets,
         }
         if (!trimClipBoundary(candidate, clip, TrimEdge::Left, coverEnd - start, error))
             return false;
-        clip.effects.fadeInFrames = 0;
-        clip.effects.fadeOutFrames =
-            std::min(clip.effects.fadeOutFrames, clip.sourceOutFrame - clip.sourceInFrame);
+        // 通常の左 trim と同じく、上書きは尺を縮めるだけで effect は消さない。縮めた尺に
+        // fade が収まらないときだけ詰める。末尾は動かないので fade out を優先して残し、
+        // fade in は残りの尺までにする (validateClipEffects の fade in + fade out <= 尺)。
+        const std::int64_t length = clip.sourceOutFrame - clip.sourceInFrame;
+        clip.effects.fadeOutFrames = std::min(clip.effects.fadeOutFrames, length);
+        clip.effects.fadeInFrames =
+            std::min(clip.effects.fadeInFrames, length - clip.effects.fadeOutFrames);
     }
     for (const auto& id : removed) {
         const auto& group =
