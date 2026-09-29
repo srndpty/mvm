@@ -1858,6 +1858,7 @@ ApplicationWindow {
                                 CompactMenuItem {
                                     text: "マーカーを削除"
                                     visible: rulerArea.menuMarkerFrame >= 0
+                                    height: visible ? implicitHeight : 0
                                     onTriggered: root.mvmController.deleteTimelineMarker(
                                                      rulerArea.menuMarkerFrame)
                                 }

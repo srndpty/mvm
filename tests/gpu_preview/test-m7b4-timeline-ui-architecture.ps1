@@ -601,13 +601,15 @@ function Test-RulerMarkMenu([string]$source) {
            $source.Contains('menuMarkerFrame = Gestures.markerNearRulerX(') -and
            $source.Contains('rulerMarkMenu.popup();') -and
            $source.Contains('visible: rulerArea.menuMarkerFrame >= 0') -and
+           $source.Contains('height: visible ? implicitHeight : 0') -and
            $source.Contains('text: "インを消去"') -and
            $source.Contains('text: "アウトを消去"') -and
            $source.Contains('text: "イン・アウトを消去"') -and
            $source.Contains('onTriggered: root.mvmController.clearInOut()')
 }
 if (-not (Test-RulerMarkMenu $qml) -or
-    (Test-RulerMarkMenu $qml.Replace('rulerMarkMenu.popup();', ''))) {
+    (Test-RulerMarkMenu $qml.Replace('rulerMarkMenu.popup();', '')) -or
+    (Test-RulerMarkMenu $qml.Replace('height: visible ? implicitHeight : 0', ''))) {
     throw 'ルーラーの右クリックメニュー契約が崩れています'
 }
 
