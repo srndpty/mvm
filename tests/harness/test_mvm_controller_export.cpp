@@ -729,7 +729,7 @@ void testSpeedDurationAndFrameHoldUndo(const std::filesystem::path& path) {
     mvm::app::MvmController controller(path, {}, initial);
 
     check(controller.applyClipSpeedDuration(QStringLiteral("video"), QStringLiteral("speed"), 50.0,
-                                            {}, true, false) &&
+                                            {}, true, false, false) &&
               controller.clipCount() == 2,
           "速度 50% とピッチ保持を適用できません");
     check(controller.saveProject(), "速度変更後のProjectを保存できません");

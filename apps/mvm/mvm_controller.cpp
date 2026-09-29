@@ -4446,16 +4446,29 @@ QVariantMap MvmController::previewClipSpeedDuration(const QString& clipId,
                  static_cast<double>(preview.speedDen)}};
 }
 
+bool MvmController::clipSpeedDurationNeedsOverwrite(const QString& clipId, const QString& input,
+                                                     double speedPercent,
+                                                     const QString& durationText) const {
+    const std::string id = clipId.isEmpty() ? currentClipId() : clipId.toStdString();
+    const auto edit = speedDurationEdit(input, speedPercent, durationText, false, false,
+                                        project_.timelineFpsNum, project_.timelineFpsDen);
+    if (!edit)
+        return false;
+    return project::previewClipSpeedDuration(project_, id, *edit, project::LinkMode::Linked)
+        .overlapsFollowing;
+}
+
 bool MvmController::applyClipSpeedDuration(const QString& clipId, const QString& input,
                                             double speedPercent, const QString& durationText,
-                                            bool preservePitch, bool ripple) {
+                                            bool preservePitch, bool ripple, bool overwrite) {
     const std::string id = clipId.isEmpty() ? currentClipId() : clipId.toStdString();
-    const auto edit = speedDurationEdit(input, speedPercent, durationText, preservePitch, ripple,
-                                        project_.timelineFpsNum, project_.timelineFpsDen);
+    auto edit = speedDurationEdit(input, speedPercent, durationText, preservePitch, ripple,
+                                  project_.timelineFpsNum, project_.timelineFpsDen);
     if (!edit) {
         setStatus(QStringLiteral("速度または尺が不正です"));
         return false;
     }
+    edit->overwrite = overwrite;
     return applyTimelineEdit(
         [&](project::Project& candidate) {
             return project::setClipSpeedDuration(candidate, id, *edit, project::LinkMode::Linked);

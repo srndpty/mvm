@@ -121,6 +121,47 @@ void testSpeedDurationAndFrameHold() {
     check(!setClipSpeedDuration(project, "id-A", edit, LinkMode::Linked).success &&
               project == before,
           "リップル無効時の重なりを拒否し、Project を保てません");
+    const auto overlapPreview = previewClipSpeedDuration(project, "id-A", edit, LinkMode::Linked);
+    check(!overlapPreview.success && overlapPreview.overlapsFollowing,
+          "後続 clip との重なりを上書き確認の対象として返しません");
+    {
+        // 50% で A は 0-600 になり、300-600 の Manim を丸ごと覆う。B (600-900) は触らない。
+        Project overwritten = project;
+        auto overwrite = edit;
+        overwrite.overwrite = true;
+        check(setClipSpeedDuration(overwritten, "id-A", overwrite, LinkMode::Linked).success &&
+                  overwritten.timelineClips.size() == 2 &&
+                  overwritten.timelineClips[0].id == "id-A" &&
+                  overwritten.timelineClips[1].id == "id-B" &&
+                  overwritten.timelineClips[1].timelineStartFrame == 600 &&
+                  overwritten.timelineClips[1].sourceInFrame == 0,
+              "覆われた clip を上書きで削除できません");
+        // 40% で A は 0-750 になり、B の先頭 150 frame を削る (B の終端 900 は動かない)。
+        overwritten = project;
+        overwrite.speedNum = 2;
+        overwrite.speedDen = 5;
+        check(setClipSpeedDuration(overwritten, "id-A", overwrite, LinkMode::Linked).success &&
+                  overwritten.timelineClips.size() == 2 &&
+                  overwritten.timelineClips[1].timelineStartFrame == 750 &&
+                  overwritten.timelineClips[1].sourceInFrame == 150 &&
+                  overwritten.timelineClips[1].sourceOutFrame == 300,
+              "はみ出す clip の左端を上書きで削れません");
+        // 削除した clip のリンク相手は片方だけのリンクにならないよう未リンクにする。
+        overwritten = project;
+        overwritten.timelineClips[1].kind = TimelineClipKind::Video;
+        overwritten.timelineClips[1].linkGroupId = "covered";
+        auto partner = clip("partner", TimelineClipKind::Audio, kA1);
+        partner.timelineStartFrame = 300;
+        partner.linkGroupId = "covered";
+        overwritten.timelineClips.push_back(partner);
+        overwrite.speedNum = 1;
+        overwrite.speedDen = 2;
+        check(setClipSpeedDuration(overwritten, "id-A", overwrite, LinkMode::Linked).success &&
+                  overwritten.timelineClips.size() == 3 &&
+                  overwritten.timelineClips[2].id == "id-partner" &&
+                  overwritten.timelineClips[2].linkGroupId.empty(),
+              "上書きで消した clip のリンク相手を未リンクにできません");
+    }
     edit.ripple = true;
     const auto changed = setClipSpeedDuration(project, "id-A", edit, LinkMode::Linked);
     check(changed.success && project.timelineClips[0].timelineStartFrame == 0 &&

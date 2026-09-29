@@ -2318,9 +2318,81 @@ TimelineEditResult rateStretchTimelineClip(Project& project, const std::string& 
 }
 
 namespace {
+// 伸ばした targets の区間に掛かる、同じ track の targets 以外の clip の ID。
+bool clipsCoveredByTargets(const Project& candidate, const std::vector<int>& targets,
+                           std::vector<std::string>& covered, std::string& error) {
+    for (const int target : targets) {
+        const auto& clip = candidate.timelineClips[static_cast<std::size_t>(target)];
+        std::int64_t start = 0, end = 0;
+        if (!clipInterval(candidate, clip, start, end, error))
+            return false;
+        for (std::size_t other = 0; other < candidate.timelineClips.size(); ++other) {
+            const auto& following = candidate.timelineClips[other];
+            if (isTarget(targets, other) || following.track != clip.track)
+                continue;
+            std::int64_t otherStart = 0, otherEnd = 0;
+            if (!clipInterval(candidate, following, otherStart, otherEnd, error))
+                return false;
+            if (otherStart < end && otherEnd > start)
+                covered.push_back(following.id);
+        }
+    }
+    return true;
+}
+
+// covered を targets の終端まで上書きする。丸ごと覆われた clip は消し、リンク相手は
+// 片方だけのリンクにならないよう未リンクにする。はみ出す clip は左端を targets の終端まで削る。
+bool overwriteCoveredClips(Project& candidate, const std::vector<int>& targets,
+                           const std::vector<std::string>& covered, std::string& error) {
+    std::vector<std::pair<TrackRef, std::int64_t>> ends;
+    for (const int target : targets) {
+        const auto& clip = candidate.timelineClips[static_cast<std::size_t>(target)];
+        std::int64_t start = 0, end = 0;
+        if (!clipInterval(candidate, clip, start, end, error))
+            return false;
+        ends.emplace_back(clip.track, end);
+    }
+    std::vector<std::string> removed;
+    for (const auto& id : covered) {
+        const int index = indexOfId(candidate, id);
+        auto& clip = candidate.timelineClips[static_cast<std::size_t>(index)];
+        std::int64_t start = 0, end = 0;
+        if (!clipInterval(candidate, clip, start, end, error))
+            return false;
+        const auto found = std::find_if(
+            ends.begin(), ends.end(), [&](const auto& entry) { return entry.first == clip.track; });
+        const std::int64_t coverEnd = found->second;
+        if (end <= coverEnd) {
+            removed.push_back(id);
+            continue;
+        }
+        if (!trimClipBoundary(candidate, clip, TrimEdge::Left, coverEnd - start, error))
+            return false;
+        clip.effects.fadeInFrames = 0;
+        clip.effects.fadeOutFrames =
+            std::min(clip.effects.fadeOutFrames, clip.sourceOutFrame - clip.sourceInFrame);
+    }
+    for (const auto& id : removed) {
+        const auto& group =
+            candidate.timelineClips[static_cast<std::size_t>(indexOfId(candidate, id))].linkGroupId;
+        if (group.empty())
+            continue;
+        const std::string groupId = group;
+        for (auto& clip : candidate.timelineClips)
+            if (clip.linkGroupId == groupId)
+                clip.linkGroupId.clear();
+    }
+    std::erase_if(candidate.timelineClips, [&](const TimelineClip& clip) {
+        return std::find(removed.begin(), removed.end(), clip.id) != removed.end();
+    });
+    return true;
+}
+
 bool speedDurationCandidate(const Project& project, const std::string& clipId,
                             const ClipSpeedDurationEdit& edit, LinkMode linkMode,
-                            Project& candidate, int& index, std::string& error) {
+                            Project& candidate, int& index, bool& overlapsFollowing,
+                            std::string& error) {
+    overlapsFollowing = false;
     candidate = project;
     index = indexOfId(candidate, clipId);
     if (!validIndex(candidate, index)) {
@@ -2390,15 +2462,29 @@ bool speedDurationCandidate(const Project& project, const std::string& clipId,
         if (!shiftFollowingClips(candidate, sources, targets, index, shift, error))
             return false;
     }
+    if (!edit.ripple && shift > 0) {
+        std::vector<std::string> covered;
+        if (!clipsCoveredByTargets(candidate, targets, covered, error))
+            return false;
+        if (!covered.empty()) {
+            if (!edit.overwrite) {
+                overlapsFollowing = true;
+                error = "後続の clip と重なります";
+                return false;
+            }
+            if (!overwriteCoveredClips(candidate, targets, covered, error))
+                return false;
+            // 削除で後ろの index がずれるので、操作した clip を ID で引き直す。
+            index = indexOfId(candidate, clipId);
+        }
+    }
     if (candidate == project) {
         error = "変更がありません";
         return false;
     }
     const auto valid = validateTimeline(candidate);
     if (!valid.success) {
-        error = !edit.ripple && shift > 0 && valid.error.find("重複") != std::string::npos
-                    ? "後続の clip と重なります。リップル編集を有効にしてください"
-                    : valid.error;
+        error = valid.error;
         return false;
     }
     return true;
@@ -2411,7 +2497,8 @@ ClipSpeedDurationPreview previewClipSpeedDuration(const Project& project, const 
     ClipSpeedDurationPreview preview;
     Project candidate;
     int index = -1;
-    if (!speedDurationCandidate(project, clipId, edit, linkMode, candidate, index, preview.error))
+    if (!speedDurationCandidate(project, clipId, edit, linkMode, candidate, index,
+                                preview.overlapsFollowing, preview.error))
         return preview;
     const auto& clip = candidate.timelineClips[static_cast<std::size_t>(index)];
     const auto duration = timelineClipDuration(candidate, clip);
@@ -2431,7 +2518,9 @@ TimelineEditResult setClipSpeedDuration(Project& project, const std::string& cli
     TimelineEditResult result;
     Project candidate;
     int index = -1;
-    if (!speedDurationCandidate(project, clipId, edit, linkMode, candidate, index, result.error))
+    bool overlapsFollowing = false;
+    if (!speedDurationCandidate(project, clipId, edit, linkMode, candidate, index,
+                                overlapsFollowing, result.error))
         return result;
     return commitCandidate(project, std::move(candidate), index);
 }

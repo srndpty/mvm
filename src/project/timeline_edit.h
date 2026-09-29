@@ -226,6 +226,9 @@ struct ClipSpeedDurationEdit {
     std::int64_t durationFrames = 0;
     bool preservePitch = false;
     bool ripple = false;
+    // ripple しないで延びた先にある clip を上書きする。開始位置は固定なので、重なるのは
+    // 元の終端以降に始まる clip だけであり、丸ごと覆えば削除、はみ出せば左端を削る。
+    bool overwrite = false;
 };
 
 struct ClipSpeedDurationPreview {
@@ -233,6 +236,9 @@ struct ClipSpeedDurationPreview {
     std::int64_t durationFrames = 0;
     std::int64_t speedNum = 1;
     std::int64_t speedDen = 1;
+    // ripple も overwrite もしないとき、延びた先の clip と重なるために失敗したか。
+    // UI はこれを見て上書きの確認を出す。
+    bool overlapsFollowing = false;
     std::string error;
 };
 

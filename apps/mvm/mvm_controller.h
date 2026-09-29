@@ -371,9 +371,14 @@ public:
                                                     double speedPercent,
                                                     const QString& durationText,
                                                     bool preservePitch, bool ripple) const;
+    // ripple しない速度・尺の変更が、延びた先の clip と重なるか。UI は上書きの確認に使う。
+    Q_INVOKABLE bool clipSpeedDurationNeedsOverwrite(const QString& clipId, const QString& input,
+                                                     double speedPercent,
+                                                     const QString& durationText) const;
+    // overwrite は、重なる後続 clip を削ってよいとユーザーが確認した場合だけ true にする。
     Q_INVOKABLE bool applyClipSpeedDuration(const QString& clipId, const QString& input,
                                             double speedPercent, const QString& durationText,
-                                            bool preservePitch, bool ripple);
+                                            bool preservePitch, bool ripple, bool overwrite);
     Q_INVOKABLE bool canInsertFrameHold(const QString& clipId) const;
     Q_INVOKABLE bool insertFrameHoldAtPlayhead(const QString& clipId);
     // レート調整の drag 中の表示。確定と同じ Project の計算 (project::previewRateStretch) で、

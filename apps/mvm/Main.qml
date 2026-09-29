@@ -3186,11 +3186,43 @@ ApplicationWindow {
             syncing = false;
         }
 
+        function currentInput() {
+            return still ? "duration" : lastInput;
+        }
+
+        // 適用の入口。リップルしない変更が後続 clip と重なるなら、上書きの確認を挟む。
+        function requestApply() {
+            speedField.commitEditing();
+            errorText = "";
+            if (!rippleBox.checked
+                    && root.mvmController.clipSpeedDurationNeedsOverwrite(
+                        clipId, currentInput(), speedField.value, durationField.text)) {
+                speedOverwriteDialog.open();
+                return;
+            }
+            apply(false);
+        }
+
+        function apply(overwrite) {
+            if (root.mvmController.applyClipSpeedDuration(
+                        clipId, currentInput(), speedField.value, durationField.text,
+                        preservePitchBox.checked, rippleBox.checked, overwrite)) {
+                close();
+                return;
+            }
+            // status bar はダイアログの陰になるので、失敗理由をダイアログ内に出す。
+            errorText = root.mvmController.statusText;
+        }
+
+        property string errorText: ""
+        onOpened: errorText = ""
+
         contentItem: ColumnLayout {
             spacing: 10
             DragNumberField {
                 id: speedField
                 Layout.fillWidth: true
+                clickToEdit: true
                 labelText: "速度"
                 minimumValue: 10
                 maximumValue: 1000
@@ -3218,6 +3250,13 @@ ApplicationWindow {
                 id: rippleBox
                 text: "リップル編集 (後続クリップをシフト)"
             }
+            Label {
+                Layout.fillWidth: true
+                visible: speedDurationDialog.errorText !== ""
+                text: speedDurationDialog.errorText
+                wrapMode: Text.Wrap
+                color: "#f0b870"
+            }
         }
         footer: ModernDialogFooter {
             ModernDialogButton {
@@ -3227,14 +3266,35 @@ ApplicationWindow {
             ModernDialogButton {
                 text: "適用"
                 prominent: true
+                onClicked: speedDurationDialog.requestApply()
+            }
+        }
+    }
+
+    // 速度・尺の変更で延びた先の clip と重なるとき、上書きしてよいかを確かめる。
+    ModernDialog {
+        id: speedOverwriteDialog
+        anchors.centerIn: parent
+        width: Math.min(root.width - 40, 420)
+        modal: true
+        title: "後続のクリップを上書き"
+        contentItem: Label {
+            text: "変更後のクリップが後ろのクリップと重なります。\n"
+                  + "重なった部分を上書き (後ろのクリップを削除または短縮) してよいですか？"
+            wrapMode: Text.Wrap
+            color: "#e6e8ec"
+        }
+        footer: ModernDialogFooter {
+            ModernDialogButton {
+                text: "キャンセル"
+                onClicked: speedOverwriteDialog.close()
+            }
+            ModernDialogButton {
+                text: "上書きする"
+                prominent: true
                 onClicked: {
-                    const input = speedDurationDialog.still ? "duration" :
-                                  speedDurationDialog.lastInput;
-                    if (root.mvmController.applyClipSpeedDuration(
-                                speedDurationDialog.clipId, input, speedField.value,
-                                durationField.text, preservePitchBox.checked,
-                                rippleBox.checked))
-                        speedDurationDialog.close();
+                    speedOverwriteDialog.close();
+                    speedDurationDialog.apply(true);
                 }
             }
         }

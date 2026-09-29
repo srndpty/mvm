@@ -523,6 +523,12 @@ bool SourceDecodeWorker::submitWithBackpressure(const DecodedGpuFrame& frame, st
         if (resumeFrom >= 0)
             outputBegin = std::max(outputBegin, resumeFrom);
         outputEnd = interval.end;
+        // 保持は区間の後ろも同じ frame を出し続ける。通常の clip が clip の終端を越えて
+        // 後続の素材 frame を出すのと同じで、次の clip への切り替えは controller が行う。
+        // 保持の終端で止めて EOF にすると、切り替え前に描画が 1 frame でも先へ進んだ時点で
+        // engine が「再生の終端」と判断して session を閉じ、以後 seek も再生もできなくなる。
+        if (mappingHoldOutputFrames_ > 0)
+            outputEnd = std::numeric_limits<long long>::max();
     } else {
         const long long sourceAnchor = sourceFrameAnchor_.load(std::memory_order_acquire);
         const long long outputAnchor = outputFrameAnchor_.load(std::memory_order_acquire);
@@ -835,9 +841,10 @@ void SourceDecodeWorker::run() {
             refreshSnapshotLocked();
             continue;
         }
-        if (mappingHoldOutputFrames_ > 0 && frame.frameNumber > mappingSourceInFrame_) {
-            eof_.store(true, std::memory_order_release);
-            playing_.store(false, std::memory_order_release);
+        // 保持は保持する frame だけを出す。それ以外の frame (seek 前の先頭からの decode 等) は
+        // 捨てて読み進める。保持する frame を出した後は上の pendingRepeat が出し続けるので、
+        // 素材の終端 (EOF) まで読み進めることはない。
+        if (mappingHoldOutputFrames_ > 0 && frame.frameNumber != mappingSourceInFrame_) {
             refreshSnapshotLocked();
             continue;
         }

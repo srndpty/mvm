@@ -2160,6 +2160,9 @@ if(MVM_ENABLE_QT)
         ARGS --renderer-recreation)
     mvm_add_p5c_product_test(preview_engine_p5c_decoder_eof
         ARGS --decoder-eof)
+    # フレーム保持の source が保持の終端を越えても session を閉じず、seek 後も再生できる。
+    mvm_add_p5c_product_test(preview_engine_p5c_frame_hold
+        ARGS --frame-hold)
 
     # wall-clockでrender idleを測るtestは、count採取時点でin-flightだったrender pass
     # が後から完了すると偽陽性になる。並列実行のCPU競合で実際に表面化した。
@@ -2169,9 +2172,9 @@ if(MVM_ENABLE_QT)
                          PROPERTIES RUN_SERIAL TRUE)
 
     list(LENGTH _mvm_p5c_product_tests _mvm_p5c_product_registered)
-    if(NOT _mvm_p5c_product_registered EQUAL 9)
+    if(NOT _mvm_p5c_product_registered EQUAL 10)
         message(FATAL_ERROR
-            "[mvm] P5-C product testの登録数が不正です: ${_mvm_p5c_product_registered}/9")
+            "[mvm] P5-C product testの登録数が不正です: ${_mvm_p5c_product_registered}/10")
     endif()
 
     # --- Phase 5 / P5-D2: audio-master transport ----------------------------
