@@ -14,6 +14,7 @@
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "mvm_controller.h"
 #include "project/timeline_edit.h"
+#include "test_media_fixture.h"
 #include "waveform_cache.h"
 
 #include <chrono>
@@ -123,6 +124,7 @@ int main(int argc, char** argv) {
     video.sourceFrameCount = 300;
     video.sourceOutFrame = 120;
     project.timelineClips.push_back(video);
+    mvm::test::attachFixtureMedia(project);
     const std::filesystem::path projectPath =
         directory.filePath(QStringLiteral("ui.mvm")).toStdWString();
 
@@ -590,10 +592,16 @@ int main(int argc, char** argv) {
                 pump();
                 check(!window->property("keyboardFocusTakesKeys").toBool(),
                       "preview を押しても本文欄が focus を持ち続け、単キー操作が止まったままです");
+                // 選択ツールで preview の映像を押すと、その映像 (V1) が選ばれて枠が出る。
+                check(controller.transformClipId() == QStringLiteral("video"),
+                      "preview で押した映像が選ばれません");
                 QTest::keyClick(window, Qt::Key_T);
                 pump();
                 check(window->property("timelineTool").toString() == QStringLiteral("text"),
                       "本文欄の後で T が効きません");
+                // 以降は文字の inspector を使うので、文字 clip を選び直す (再生位置は動かない)。
+                controller.selectTimelineClips({clipId});
+                pump();
 
                 // 11. 本文欄の入力中は、timeline の shortcut (Ctrl+C/V/X/D, M, I, O) が
                 //     Action へ流れず、文字入力側だけが受ける。
