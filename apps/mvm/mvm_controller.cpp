@@ -1440,13 +1440,11 @@ bool MvmController::installVideoClip(const std::filesystem::path& videoPath,
     return true;
 }
 
-bool MvmController::audioDescriptorFor(int clipIndex, preview::PreviewSourceDescriptor& descriptor,
+bool MvmController::audioDescriptorFor(const TimelinePreviewAudioLayerMapping& layer,
+                                       preview::PreviewSourceDescriptor& descriptor,
                                        QString& error) {
-    if (clipIndex < 0 || clipIndex >= static_cast<int>(project_.timelineClips.size())) {
-        error = QStringLiteral("audio clipがありません");
-        return false;
-    }
-    const auto& clip = project_.timelineClips[static_cast<std::size_t>(clipIndex)];
+    // 鳴らす区間の clip (クロスフェードで延ばした素材範囲を含む)。
+    const auto& clip = layer.segment.clip;
     if (!std::filesystem::is_regular_file(clip.mediaPath)) {
         error = QString::fromStdString(clip.name) + QStringLiteral(" のファイルがありません: ") +
                 fromPath(clip.mediaPath);
@@ -1473,22 +1471,19 @@ bool MvmController::audioDescriptorFor(int clipIndex, preview::PreviewSourceDesc
     }
     const auto timelineFpsNum = project_.timelineFpsNum;
     const auto timelineFpsDen = project_.timelineFpsDen;
+    // 音量カーブ・フェード・クロスフェードは書き出しと同じ区間の評価を使う。
     descriptor.audioGainAtMediaSample =
-        [clip, sampleOffset = offset.sampleOffset, timelineFpsNum, timelineFpsDen,
-         timebase = timebase.value()](std::int64_t mediaSample) -> float {
+        [segment = layer.segment, sampleOffset = offset.sampleOffset, timelineFpsNum,
+         timelineFpsDen, timebase = timebase.value()](std::int64_t mediaSample) -> float {
         const auto timelineSample = mediaSample - sampleOffset;
         if (timelineSample < 0)
             return 0.0F;
         const auto frame = timebase.schedulerOutputFrame(timelineSample);
         if (!frame)
             return 0.0F;
-        const auto local = frame.value() - clip.timelineStartFrame;
-        const auto source =
-            project::clipFadeSourceFrameAt(clip, timelineFpsNum, timelineFpsDen, local);
-        if (!source.success)
-            return 0.0F;
-        return static_cast<float>(project::evaluateClipVolume(
-            clip.effects, local, source.frame, clip.sourceOutFrame - clip.sourceInFrame));
+        const auto gain =
+            project::renderSegmentGain(segment, timelineFpsNum, timelineFpsDen, frame.value());
+        return gain ? static_cast<float>(*gain) : 0.0F;
     };
     return true;
 }
@@ -1499,15 +1494,15 @@ bool MvmController::audioIdentitiesFor(const TimelinePreviewAudioMapping& mapped
     identities.clear();
     identities.reserve(mapped.layers.size());
     for (const auto& layer : mapped.layers) {
-        const auto& clip = project_.timelineClips[static_cast<std::size_t>(layer.clipIndex)];
+        const auto& clip = layer.segment.clip;
         const auto offset = audioPreviewSampleOffset(project_, clip);
         if (!offset.success) {
             error = QString::fromStdString(offset.error);
             return false;
         }
-        identities.push_back(
-            {clip.mediaPath, offset.sampleOffset, clip.effects, clip.speedNum, clip.speedDen,
-             clip.preservePitch});
+        identities.push_back({clip.mediaPath, offset.sampleOffset, layer.segment.original.effects,
+                              clip.speedNum, clip.speedDen, clip.preservePitch,
+                              layer.segment.fadeIn, layer.segment.fadeOut});
     }
     return true;
 }
@@ -1539,7 +1534,7 @@ bool MvmController::applyAudioSourceFor(std::int64_t timelineFrame, AudioSwitchU
     target.reserve(desired.size());
     for (std::size_t index = 0; index < desired.size(); ++index) {
         preview::PreviewSourceDescriptor descriptor;
-        if (!audioDescriptorFor(mapped.layers[index].clipIndex, descriptor, error))
+        if (!audioDescriptorFor(mapped.layers[index], descriptor, error))
             return false;
         target.push_back({{},
                           desired[index],
@@ -1663,28 +1658,37 @@ MvmController::previewCompositionFor(const TimelinePreviewFrameMapping& mappedFr
         }
         const auto& layerMapping = mappedFrame.layers[entry.index];
         const auto& clip = project_.timelineClips[static_cast<std::size_t>(layerMapping.clipIndex)];
-        const auto slot = sources.find(layerMapping.videoTrackIndex);
+        const auto slot = sources.find(layerMapping.slot);
         if (slot == sources.end())
             continue;
         // drag 中の override はここでだけ効かせる。Project は書き換えない。
         const project::ClipEffects effects = effectsForPreview(layerMapping.clipIndex);
         preview::PreviewCompositionLayer layer;
         layer.source = slot->second.source;
-        if (!project::clipEffectsAreDefault(effects)) {
+        // トランジションの incoming は不透明度を進み具合で上げる。effect が既定値でも掛ける。
+        if (!project::clipEffectsAreDefault(effects) || layerMapping.transitionOpacity != 1.0) {
+            // トランジションで延ばした区間は clip の端の値のまま評価する (書き出しと同じ)。
+            const auto duration = project::timelineClipDuration(project_, clip);
+            if (!duration.success) {
+                error = QString::fromStdString(duration.error);
+                return nullptr;
+            }
+            const std::int64_t local =
+                std::clamp(mappedFrame.outputFrameNumber - clip.timelineStartFrame,
+                           std::int64_t{0}, duration.frame - 1);
             const auto fadeFrame = project::clipFadeSourceFrameAt(
-                clip, project_.timelineFpsNum, project_.timelineFpsDen,
-                mappedFrame.outputFrameNumber - clip.timelineStartFrame);
+                clip, project_.timelineFpsNum, project_.timelineFpsDen, local);
             if (!fadeFrame.success) {
                 error = QString::fromStdString(fadeFrame.error);
                 return nullptr;
             }
+            const auto& shown = layerMapping.renderClip;
             applyPreviewLayerEffects(layer, effects,
                                      project::evaluateClipOpacity(
-                                         effects,
-                                         mappedFrame.outputFrameNumber - clip.timelineStartFrame,
-                                         fadeFrame.frame,
-                                         clip.sourceOutFrame - clip.sourceInFrame),
-                                     clip.sourceInFrame, clip.sourceOutFrame - clip.sourceInFrame);
+                                         effects, local, fadeFrame.frame,
+                                         clip.sourceOutFrame - clip.sourceInFrame) *
+                                         layerMapping.transitionOpacity,
+                                     shown.sourceInFrame, shown.sourceOutFrame - shown.sourceInFrame);
         }
         composition->layers.push_back(layer);
         request.sources.push_back({slot->second.source, layerMapping.sourceFrameNumber});
@@ -1724,11 +1728,13 @@ bool MvmController::syncPreviewSourcesAt(std::int64_t timelineFrame, QString& er
         }
     };
 
-    std::vector<int> desiredTracks;
+    std::vector<int> desiredSlots;
     for (const auto& layer : mappedFrame.layers) {
-        const auto& clip = project_.timelineClips[static_cast<std::size_t>(layer.clipIndex)];
-        desiredTracks.push_back(layer.videoTrackIndex);
-        const auto existing = candidateSources.find(layer.videoTrackIndex);
+        // source はトランジションで延ばした区間の clip で作る (source は in より前の素材を
+        // 写せないので、incoming の頭の区間は延ばした in から始める)。
+        const auto& clip = layer.renderClip;
+        desiredSlots.push_back(layer.slot);
+        const auto existing = candidateSources.find(layer.slot);
         if (existing != candidateSources.end() &&
             previewVideoMappingCovers(project_, existing->second.mapping, clip)) {
             existing->second.clipId = clip.id;
@@ -1756,12 +1762,12 @@ bool MvmController::syncPreviewSourcesAt(std::int64_t timelineFrame, QString& er
             return false;
         }
         newlyAdded.push_back(added.value());
-        candidateSources[layer.videoTrackIndex] = TrackPreviewSource{
+        candidateSources[layer.slot] = TrackPreviewSource{
             added.value(), clip.id, layer.clipIndex, previewVideoMappingOf(clip)};
     }
     for (auto entry = candidateSources.begin(); entry != candidateSources.end();) {
-        if (std::find(desiredTracks.begin(), desiredTracks.end(), entry->first) ==
-            desiredTracks.end())
+        if (std::find(desiredSlots.begin(), desiredSlots.end(), entry->first) ==
+            desiredSlots.end())
             entry = candidateSources.erase(entry);
         else
             ++entry;
@@ -3169,6 +3175,15 @@ std::optional<QRectF> MvmController::submittedLayerDestination(const QString& cl
     return std::nullopt;
 }
 
+std::vector<float> MvmController::submittedLayerOpacities() const {
+    std::vector<float> opacities;
+    if (submittedComposition_) {
+        for (const auto& layer : submittedComposition_->layers)
+            opacities.push_back(layer.opacity);
+    }
+    return opacities;
+}
+
 bool MvmController::selectTimelineClip(const QString& clipId, bool linked) {
     const int index = indexOfClipId(project_.timelineClips, clipId.toStdString());
     if (index < 0) {
@@ -3505,14 +3520,14 @@ bool MvmController::handOffPlaybackSources(std::int64_t frame, QString& reason) 
     }
     bool videoChanged = false;
     for (const auto& layer : mappedFrame.layers) {
-        const auto installed = trackSources_.find(layer.videoTrackIndex);
+        const auto installed = trackSources_.find(layer.slot);
         if (installed == trackSources_.end()) {
             reason = QStringLiteral("表示するvideo trackが変わります");
             return false;
         }
         if (installed->second.clipId == layer.clipId)
             continue;
-        const auto& clip = project_.timelineClips[static_cast<std::size_t>(layer.clipIndex)];
+        const auto& clip = layer.renderClip;
         if (!previewVideoMappingCovers(project_, installed->second.mapping, clip)) {
             reason = QString::fromStdString(clip.name) +
                      QStringLiteral(" は直前のclipと素材の位置が連続していません");
@@ -3549,7 +3564,7 @@ bool MvmController::handOffPlaybackSources(std::int64_t frame, QString& reason) 
     // 引き継いだ clip の effect もここで反映する。
     auto sources = trackSources_;
     for (const auto& layer : mappedFrame.layers) {
-        auto& slot = sources[layer.videoTrackIndex];
+        auto& slot = sources[layer.slot];
         slot.clipId = layer.clipId;
         slot.clipIndex = layer.clipIndex;
     }

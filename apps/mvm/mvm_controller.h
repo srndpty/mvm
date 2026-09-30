@@ -313,6 +313,9 @@ public:
     // 最後に preview engine へ渡した composition で、動画 clip の layer を置いた矩形
     // (出力を 0..1 とした座標)。preview が最新の effect を受け取ったかを試験で確かめる。
     std::optional<QRectF> submittedLayerDestination(const QString& clipId) const;
+    // 最後に preview engine へ渡した composition の layer の不透明度 (背面 -> 前面)。
+    // トランジションの incoming が重なって上がっていくことを試験で確かめる。
+    std::vector<float> submittedLayerOpacities() const;
     // 保留中の作り直しが無く、engine が最後に受理した composition を提示し終えて止まっている。
     bool previewPresentedLatest() const;
     Q_INVOKABLE QVariantMap effectsForVisualRect(const QString& clipId, double x, double y,
@@ -545,6 +548,9 @@ private:
         std::int64_t speedNum = 1;
         std::int64_t speedDen = 1;
         bool preservePitch = false;
+        // クロスフェードの区間。gain の評価が変わるので別の source になる。
+        std::optional<project::TransitionEnvelope> fadeIn;
+        std::optional<project::TransitionEnvelope> fadeOut;
         bool operator==(const AudioSourceIdentity&) const = default;
     };
 
@@ -700,8 +706,8 @@ private:
     // せず false を返す。
     bool revertAudioSource(const AudioSwitchUndo& undo, QString& error);
     // clip から audio source descriptor を組む。offset の換算は mapping 側へ委譲する。
-    bool audioDescriptorFor(int clipIndex, preview::PreviewSourceDescriptor& descriptor,
-                            QString& error);
+    bool audioDescriptorFor(const TimelinePreviewAudioLayerMapping& layer,
+                            preview::PreviewSourceDescriptor& descriptor, QString& error);
     void refreshTimelineModel();
     // trackKind 文字列を TrackRef へ解決する。失敗時は status を設定して false。
     bool resolveTrackRef(const QString& trackKind, int trackIndex, project::TrackRef& track) const;

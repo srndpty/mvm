@@ -1722,5 +1722,27 @@ affine の overlay (per-frame の不透明度) で合成する。音声は既存
   前後で青・赤になる
 - 不透明度・gain の掛け算を外すと 3 つとも落ちる
 
-`[回避策]` preview (映像と通常再生の音声) はまだトランジションを描けないので、mapping を失敗させたまま
-(§19.1)。Phase 7 で preview の source を track ごとから (track, lane) ごとに分ける。
+preview は §19.5 で対応した。
+
+### 19.5 preview でのトランジション
+
+`[事実]` preview の mapping も `timelineRenderSegments` の区間から作る。layer には (track, lane) を下から
+数えた `slot` を持たせ、合成順 (`previewLayerStack`) と preview source の置き場所 (`trackSources_` の key) を
+slot で決める (書き出しの MLT layer と同じ数え方。トランジションが無ければ track の index と同じ)。
+
+- decode source は延ばした区間の clip (`renderClip`) で作る。source は in より前の素材を写せないので、
+  incoming の頭の区間は延ばした in から始める。同じ素材を分割してディゾルブすると、同じファイルの
+  source が 2 つ同時に要る
+- incoming の不透明度は、effect が既定値でも進み具合を掛けて渡す。延ばした区間の effect は clip の端の値
+- 音声は同じ track の 2 clip を開始の早い順に重ね、gain は書き出しと同じ `renderSegmentGain`。
+  クロスフェードの区間は audio source の identity に含める (区間が変われば作り直す)
+- 暫定の描画ガード (`unsupportedTimelineRenderFeature`) は外した
+
+`[事実]` `transition_preview` (workstation、実 D3D11 surface): 同じ動画を 2 つに分けた clip の cut に前後
+10 frame のディゾルブを置き、区間の中 (frame 125) で 2 layer を合成して不透明度が 1.0 / 0.775 になること、
+区間の後は 1 layer になること、区間の前 (frame 90) から再生して区間を通り抜けても再生が続くこと
+(frame 151 まで) を確認した。音声も同じ WAV を 2 つに分けてクロスフェードさせている。incoming の不透明度の
+掛け算を外すとこの試験が落ちる。
+
+`[未検証]` 区間に出入りするたびに layer 数が変わるので、再生中は source を組み直す (clip 境界と同じ経路)。
+試験では再生が止まらないことだけを見ており、組み直しの間に frame が落ちるか (表示の滑らかさ) は測っていない。

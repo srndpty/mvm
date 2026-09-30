@@ -564,12 +564,6 @@ void reconcileTimelineTransitions(Project& candidate) {
     candidate.timelineTransitions = std::move(kept);
 }
 
-std::string unsupportedTimelineRenderFeature(const Project& project) {
-    if (!project.timelineTransitions.empty())
-        return "トランジションの描画はまだ対応していません";
-    return {};
-}
-
 TimelineValidationResult finalizeTimelineCandidate(Project& candidate) {
     reconcileTimelineTransitions(candidate);
     return validateTimeline(candidate);

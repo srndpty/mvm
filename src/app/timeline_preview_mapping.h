@@ -3,6 +3,7 @@
 
 #include "preview_engine/preview_types.h"
 #include "project/project.h"
+#include "project/timeline_render.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -11,20 +12,29 @@
 
 namespace mvm::app {
 
+// 同じ track の 2 clip がトランジションで重なるので、1 track に lane を 2 本持つ。slot は
+// (track, lane) を下から数えた番号で、合成順と preview source の置き場所を決める
+// (書き出しの MLT layer と同じ数え方)。トランジションが無ければ slot は track の index と同じ。
 struct TimelinePreviewLayerMapping {
     int videoTrackIndex = 0;
+    int slot = 0;
     int clipIndex = -1;
     std::string clipId;
     std::int64_t sourceFrameNumber = -1;
+    // 描画区間に合わせた clip (トランジションで延ばした素材範囲を含む)。decode source はこちらで作る。
+    project::TimelineClip renderClip;
+    // トランジションの進み具合 (0..1)。clip の不透明度に掛ける。トランジションの外は 1。
+    double transitionOpacity = 1.0;
 };
 
 // 文字・画像 clip。decode source を持たず、静止画 layer として合成する。
 struct TimelinePreviewStillLayerMapping {
     int videoTrackIndex = 0;
+    int slot = 0;
     int clipIndex = -1;
     std::string clipId;
     project::TimelineClipKind kind = project::TimelineClipKind::Text;
-    // この frame の不透明度 (0..1)。opacity の値・key・fade を評価したもの。
+    // この frame の不透明度 (0..1)。opacity の値・key・fade とトランジションを評価したもの。
     // 書き出しは同じ effects を MLT の経路で評価するので、preview もここで合わせる。
     double opacity = 1.0;
 };
@@ -56,12 +66,12 @@ inline constexpr std::size_t kMaxPreviewCompositionLayers = preview::kProductMax
 struct TimelinePreviewStackEntry {
     bool still = false;
     std::size_t index = 0;
-    int videoTrackIndex = 0;
+    int slot = 0;
     bool operator==(const TimelinePreviewStackEntry&) const = default;
 };
 
-// video と文字・画像を track の昇順 (背面 -> 前面) に並べる。書き出しと同じく
-// track index だけで前後を決める。preview の重なり順はここでだけ決める。
+// video と文字・画像を slot の昇順 (背面 -> 前面) に並べる。書き出しと同じく
+// (track, lane) だけで前後を決める。preview の重なり順はここでだけ決める。
 std::vector<TimelinePreviewStackEntry>
 previewLayerStack(const TimelinePreviewFrameMapping& mapping);
 
@@ -106,9 +116,12 @@ struct TimelinePreviewAudioLayerMapping {
     int clipIndex = -1;
     std::string clipId;
     std::int64_t sourceFrameNumber = -1;
+    // 鳴らす区間 (トランジションで延ばした clip と、音量・クロスフェードの評価)。
+    project::TimelineRenderSegment segment;
 };
 
-// preview 対象になる全audio clip。A1から順にmixする。
+// preview 対象になる全audio clip。A1から順に、同じ track では開始の早い順に mix する
+// (クロスフェードでは同じ track の 2 clip が重なる)。
 struct TimelinePreviewAudioMapping {
     bool success = false;
     std::vector<TimelinePreviewAudioLayerMapping> layers;

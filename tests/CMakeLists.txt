@@ -347,6 +347,40 @@ set_tests_properties(sourceless_timeline_playback PROPERTIES
     LABELS "workstation"
     TIMEOUT 120)
 
+# トランジションの preview (同じ素材の decode source を 2 つ重ねる)。実 window と GPU を使う。
+qt_add_executable(mvm_test_transition_preview
+    harness/test_transition_preview.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/media_bin_model.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/media_import.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/image_raster_cache.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/mvm_controller.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_mix.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/shuttle_audio_playback.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/clip_sample_reader.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/scrub_audio_grain.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/scrub_audio_playback.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/timeline_clip_model.cpp
+    ${CMAKE_SOURCE_DIR}/apps/mvm/track_model.cpp)
+target_include_directories(mvm_test_transition_preview PRIVATE
+    ${CMAKE_SOURCE_DIR}/apps/mvm)
+target_link_libraries(mvm_test_transition_preview PRIVATE
+    mvm::core mvm::project mvm::util mvm::manim_clip_workflow
+    mvm::timeline_playback mvm::timeline_preview_mapping mvm::timeline_export
+    mvm::mlt mvm::still_image mvm::preview_engine mvm::audio_preview mvm::preview_qt
+    Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 mvm::warnings)
+target_compile_definitions(mvm_test_transition_preview PRIVATE ${MVM_MLT_PATH_DEFS})
+set_target_properties(mvm_test_transition_preview PROPERTIES WIN32_EXECUTABLE OFF)
+add_test(NAME transition_preview
+    COMMAND mvm_test_transition_preview
+            "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4"
+            "${CMAKE_SOURCE_DIR}/tests/assets/smoke/wav_48k.wav")
+set_tests_properties(transition_preview PROPERTIES
+    ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
+    REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4;${CMAKE_SOURCE_DIR}/tests/assets/smoke/wav_48k.wav"
+    LABELS "workstation"
+    RESOURCE_LOCK mvm_gpu
+    TIMEOUT 120)
+
 # 横書き文字ツールの直接入力 (target は apps/mvm/CMakeLists.txt で定義)。
 # 実 window と GPU を使うので mvm_gpu を排他し、workstation label を付ける。
 add_test(NAME text_ui_direct_input COMMAND mvm_test_text_ui_input)

@@ -117,9 +117,6 @@ TimelineValidationResult validateTimeline(const Project& project);
 void reconcileTimelineTransitions(Project& candidate);
 // 編集の確定前に使う検証。reconcileTimelineTransitions の後に validateTimeline を行う。
 TimelineValidationResult finalizeTimelineCandidate(Project& candidate);
-// 描画側 (preview・音声・書き出し) がまだ扱えない timeline の内容の説明。扱えるなら空。
-// 扱えない内容を黙って無視して描くと、見えている結果と保存内容が食い違うので止める。
-std::string unsupportedTimelineRenderFeature(const Project& project);
 
 int timelineClipIndexAt(const Project& project, TrackRef track, std::int64_t timelineFrame);
 const TimelineClip* activeClipAt(const Project& project, TrackRef track,
