@@ -7,6 +7,7 @@
 #include "app/timeline_export.h"
 #include "app/timeline_playback.h"
 #include "app/timeline_preview_mapping.h"
+#include "core/checked_integer.h"
 #include "core/checked_output_timebase.h"
 #include "core/export_eta.h"
 #include "core/timecode.h"
@@ -17,6 +18,7 @@
 #include "project/path_identity.h"
 #include "project/project_json.h"
 #include "project/timeline_edit.h"
+#include "preview_engine/preview_engine_internal.h"
 #include "scrub_audio_playback.h"
 #include "shuttle_audio_mix.h"
 #include "shuttle_audio_playback.h"
@@ -171,7 +173,6 @@ ProbedMedia audioFacts(const MediaImportResult& probed, std::int64_t timelineFps
     return result;
 }
 
-
 // QML から渡る「リンク相手にも適用するか」をモデルの LinkMode へ写す。
 project::LinkMode linkModeFor(bool linked) {
     return linked ? project::LinkMode::Linked : project::LinkMode::Single;
@@ -216,8 +217,7 @@ struct MediaClips {
 };
 
 project::TimelineClip mediaClip(project::TimelineClipKind kind, const project::MediaItem& item,
-                                std::int64_t fpsNum, std::int64_t fpsDen,
-                                std::int64_t frameCount) {
+                                std::int64_t fpsNum, std::int64_t fpsDen, std::int64_t frameCount) {
     project::TimelineClip clip;
     clip.kind = kind;
     // clip は素材と同じファイルを指す (validateMediaReferences の不変条件)。
@@ -663,6 +663,9 @@ bool MvmController::resetPreviewEngine() {
     currentSource_.reset();
     trackSources_.clear();
     audioSources_.clear();
+    preparedVideoSources_.clear();
+    preparedAudioSources_.clear();
+    playbackPreparationFailure_.clear();
     submittedComposition_.reset();
     retiredSources_.clear();
     previewReady_ = false;
@@ -777,8 +780,8 @@ QVariantList MvmController::supportedFrameRates() const {
 }
 
 QString MvmController::currentTimeText() const {
-    return QString::fromStdString(core::formatTimecode(
-        playheadFrame_, project_.timelineFpsNum, project_.timelineFpsDen));
+    return QString::fromStdString(
+        core::formatTimecode(playheadFrame_, project_.timelineFpsNum, project_.timelineFpsDen));
 }
 
 bool MvmController::canPlay() const {
@@ -794,8 +797,9 @@ const TimelinePreviewPlan& MvmController::previewPlan() const {
 void MvmController::refreshTimelineModel() {
     previewPlan_.reset();
     if (!selectedTransitionId_.empty() &&
-        std::none_of(project_.timelineTransitions.begin(), project_.timelineTransitions.end(),
-                     [&](const auto& transition) { return transition.id == selectedTransitionId_; }))
+        std::none_of(
+            project_.timelineTransitions.begin(), project_.timelineTransitions.end(),
+            [&](const auto& transition) { return transition.id == selectedTransitionId_; }))
         selectedTransitionId_.clear();
     if (!selectedEditOutgoing_.empty() &&
         project::touchingClipId(project_, selectedEditOutgoing_, project::TrimEdge::Right) !=
@@ -1380,6 +1384,7 @@ void MvmController::pollPreviewState() {
         // engine reset 直後に seek が弾かれて選択だけ残った状態を拾えない。
         const bool showInitialFrame = ready && !busy_ && !pendingVideoPath_ &&
                                       trackSources_.empty() && audioSources_.empty() &&
+                                      !pendingCapacityRebuildFrame_ &&
                                       !project_.timelineClips.empty();
         Q_EMIT stateChanged();
         if (showInitialFrame) {
@@ -1389,6 +1394,17 @@ void MvmController::pollPreviewState() {
         if (ready && !busy_ && currentClipPath_.isEmpty() && !hasManimAsset())
             statusText_ = QStringLiteral("素材を追加してください");
         Q_EMIT stateChanged();
+    }
+    if (ready && pendingCapacityRebuildFrame_) {
+        const auto frame = *pendingCapacityRebuildFrame_;
+        pendingCapacityRebuildFrame_.reset();
+        const auto* selected = topVideoClipAt(project_, frame);
+        const int clipIndex = selected
+                                  ? static_cast<int>(selected - project_.timelineClips.data())
+                                  : -1;
+        if (!queuePreparedPlayback(clipIndex, frame))
+            stopPlaybackWithError(QStringLiteral("登録上限後のPreviewを準備できません: ") + statusText_);
+        return;
     }
     if (status.state == preview::PreviewEngineState::ReadyPaused && pendingVideoPath_) {
         const std::filesystem::path videoPath = std::move(*pendingVideoPath_);
@@ -1404,8 +1420,8 @@ void MvmController::pollPreviewState() {
     const auto playbackState = previewEngine_->status().state;
     if (textPreviewRefreshPending_ && playbackState == preview::PreviewEngineState::ReadyPaused)
         refreshTextPreview();
-    if (previewRefreshPending_ && previewEngine_->status().state ==
-                                      preview::PreviewEngineState::ReadyPaused) {
+    if (previewRefreshPending_ &&
+        previewEngine_->status().state == preview::PreviewEngineState::ReadyPaused) {
         QString error;
         if (!refreshPreviewAtPlayhead(error))
             setStatus(QStringLiteral("Previewを更新できません: ") + error);
@@ -1493,15 +1509,29 @@ bool MvmController::audioDescriptorFor(const TimelinePreviewAudioLayerMapping& l
     }
     const auto timelineFpsNum = project_.timelineFpsNum;
     const auto timelineFpsDen = project_.timelineFpsDen;
+    const auto duration = project::timelineClipDuration(project_, clip);
+    if (!duration.success) {
+        error = QString::fromStdString(duration.error);
+        return false;
+    }
+    const auto segmentStart = clip.timelineStartFrame;
+    std::int64_t segmentEnd = 0;
+    if (!core::checkedAdd(segmentStart, duration.frame, segmentEnd)) {
+        error = QStringLiteral("音声区間の終端を表せません");
+        return false;
+    }
     // 音量カーブ・フェード・クロスフェードは書き出しと同じ区間の評価を使う。
     descriptor.audioGainAtMediaSample =
         [segment = layer.segment, sampleOffset = offset.sampleOffset, timelineFpsNum,
-         timelineFpsDen, timebase = timebase.value()](std::int64_t mediaSample) -> float {
+         timelineFpsDen, segmentStart, segmentEnd,
+         timebase = timebase.value()](std::int64_t mediaSample) -> float {
         const auto timelineSample = mediaSample - sampleOffset;
         if (timelineSample < 0)
             return 0.0F;
         const auto frame = timebase.schedulerOutputFrame(timelineSample);
         if (!frame)
+            return 0.0F;
+        if (frame.value() < segmentStart || frame.value() >= segmentEnd)
             return 0.0F;
         const auto gain =
             project::renderSegmentGain(segment, timelineFpsNum, timelineFpsDen, frame.value());
@@ -1522,9 +1552,18 @@ bool MvmController::audioIdentitiesFor(const TimelinePreviewAudioMapping& mapped
             error = QString::fromStdString(offset.error);
             return false;
         }
-        identities.push_back({clip.mediaPath, offset.sampleOffset, layer.segment.original.effects,
-                              clip.speedNum, clip.speedDen, clip.preservePitch,
-                              layer.segment.fadeIn, layer.segment.fadeOut});
+        const auto duration = project::timelineClipDuration(project_, clip);
+        std::int64_t segmentEnd = 0;
+        if (!duration.success ||
+            !core::checkedAdd(clip.timelineStartFrame, duration.frame, segmentEnd)) {
+            error = duration.success ? QStringLiteral("音声区間の終端を表せません")
+                                     : QString::fromStdString(duration.error);
+            return false;
+        }
+        identities.push_back({clip.mediaPath, offset.sampleOffset, clip.timelineStartFrame,
+                              segmentEnd, layer.segment.original.effects, clip.speedNum,
+                              clip.speedDen, clip.preservePitch, layer.segment.fadeIn,
+                              layer.segment.fadeOut});
     }
     return true;
 }
@@ -1696,21 +1735,21 @@ MvmController::previewCompositionFor(const TimelinePreviewFrameMapping& mappedFr
                 return nullptr;
             }
             const std::int64_t local =
-                std::clamp(mappedFrame.outputFrameNumber - clip.timelineStartFrame,
-                           std::int64_t{0}, duration.frame - 1);
-            const auto fadeFrame = project::clipFadeSourceFrameAt(
-                clip, project_.timelineFpsNum, project_.timelineFpsDen, local);
+                std::clamp(mappedFrame.outputFrameNumber - clip.timelineStartFrame, std::int64_t{0},
+                           duration.frame - 1);
+            const auto fadeFrame = project::clipFadeSourceFrameAt(clip, project_.timelineFpsNum,
+                                                                  project_.timelineFpsDen, local);
             if (!fadeFrame.success) {
                 error = QString::fromStdString(fadeFrame.error);
                 return nullptr;
             }
             const auto& shown = layerMapping.renderClip;
-            applyPreviewLayerEffects(layer, effects,
-                                     project::evaluateClipOpacity(
-                                         effects, local, fadeFrame.frame,
-                                         clip.sourceOutFrame - clip.sourceInFrame) *
-                                         layerMapping.transitionOpacity,
-                                     shown.sourceInFrame, shown.sourceOutFrame - shown.sourceInFrame);
+            applyPreviewLayerEffects(
+                layer, effects,
+                project::evaluateClipOpacity(effects, local, fadeFrame.frame,
+                                             clip.sourceOutFrame - clip.sourceInFrame) *
+                    layerMapping.transitionOpacity,
+                shown.sourceInFrame, shown.sourceOutFrame - shown.sourceInFrame);
         }
         composition->layers.push_back(layer);
         request.sources.push_back({slot->second.source, layerMapping.sourceFrameNumber});
@@ -1784,12 +1823,11 @@ bool MvmController::syncPreviewSourcesAt(std::int64_t timelineFrame, QString& er
             return false;
         }
         newlyAdded.push_back(added.value());
-        candidateSources[layer.slot] = TrackPreviewSource{
-            added.value(), clip.id, layer.clipIndex, previewVideoMappingOf(clip)};
+        candidateSources[layer.slot] = TrackPreviewSource{added.value(), clip.id, layer.clipIndex,
+                                                          previewVideoMappingOf(clip)};
     }
     for (auto entry = candidateSources.begin(); entry != candidateSources.end();) {
-        if (std::find(desiredSlots.begin(), desiredSlots.end(), entry->first) ==
-            desiredSlots.end())
+        if (std::find(desiredSlots.begin(), desiredSlots.end(), entry->first) == desiredSlots.end())
             entry = candidateSources.erase(entry);
         else
             ++entry;
@@ -2362,8 +2400,7 @@ bool MvmController::addMediaItemToTimeline(const QString& itemId) {
 }
 
 bool MvmController::placeMediaAtDropPoint(const std::vector<DropMedia>& media,
-                                          const QString& trackKind, int trackIndex,
-                                          qint64 frame) {
+                                          const QString& trackKind, int trackIndex, qint64 frame) {
     if (busy_)
         return false;
     if (media.empty()) {
@@ -2389,10 +2426,9 @@ bool MvmController::placeMediaAtDropPoint(const std::vector<DropMedia>& media,
     for (const auto& entry : media) {
         const QString name = QString::fromStdWString(entry.path.filename().wstring());
         QString registerError;
-        const auto* item =
-            entry.itemId.empty()
-                ? registerMediaItem(candidate, entry.path, registerError, entry.probed)
-                : project::findMediaItem(candidate, entry.itemId);
+        const auto* item = entry.itemId.empty() ? registerMediaItem(candidate, entry.path,
+                                                                    registerError, entry.probed)
+                                                : project::findMediaItem(candidate, entry.itemId);
         if (!item) {
             setStatus(entry.itemId.empty() ? registerError : QStringLiteral("素材がありません"));
             return false;
@@ -2425,9 +2461,8 @@ bool MvmController::placeMediaAtDropPoint(const std::vector<DropMedia>& media,
     return selectClip(firstIndex);
 }
 
-bool MvmController::addMediaItemsToTimelineAt(const QStringList& itemIds,
-                                              const QString& trackKind, int trackIndex,
-                                              qint64 frame) {
+bool MvmController::addMediaItemsToTimelineAt(const QStringList& itemIds, const QString& trackKind,
+                                              int trackIndex, qint64 frame) {
     std::vector<DropMedia> media;
     for (const auto& id : itemIds) {
         // フォルダは中身を展開せずに飛ばす (どの順で並べるかを決められないため)。
@@ -2438,9 +2473,8 @@ bool MvmController::addMediaItemsToTimelineAt(const QStringList& itemIds,
     return placeMediaAtDropPoint(media, trackKind, trackIndex, frame);
 }
 
-bool MvmController::addMediaFilesToTimelineAt(const QList<QUrl>& fileUrls,
-                                              const QString& trackKind, int trackIndex,
-                                              qint64 frame) {
+bool MvmController::addMediaFilesToTimelineAt(const QList<QUrl>& fileUrls, const QString& trackKind,
+                                              int trackIndex, qint64 frame) {
     if (busy_)
         return false;
     // probed は media から指されるので、途中で再配置されないよう先に確保する。
@@ -2507,7 +2541,8 @@ bool MvmController::placeImageClip(const std::filesystem::path& mediaPath, const
         setStatus(registerError);
         return false;
     }
-    auto clips = prepareMediaClips(candidate, std::string(item->id), project::MediaKind::Image, &probed);
+    auto clips =
+        prepareMediaClips(candidate, std::string(item->id), project::MediaKind::Image, &probed);
     if (!clips.success) {
         setStatus(clips.error);
         return false;
@@ -2975,8 +3010,8 @@ QString MvmController::transformClipId() const {
         const auto kind = project_.timelineClips[static_cast<std::size_t>(index)].kind;
         if (kind == project::TimelineClipKind::Audio)
             continue;
-        if (!found.isEmpty() || (kind != project::TimelineClipKind::Video &&
-                                 kind != project::TimelineClipKind::Image))
+        if (!found.isEmpty() ||
+            (kind != project::TimelineClipKind::Video && kind != project::TimelineClipKind::Image))
             return {};
         found = QString::fromStdString(id);
     }
@@ -3047,14 +3082,13 @@ QString MvmController::visualClipAt(double x, double y) {
             if (clip.track.kind != project::TrackKind::Video || clip.track.index != track ||
                 !clipVisibleAtPlayhead(index))
                 continue;
-            const bool hit =
-                clip.kind == project::TimelineClipKind::Text
-                    ? textRasterBounds(index).contains(static_cast<int>(std::floor(x)),
-                                                       static_cast<int>(std::floor(y)))
-                    : [&] {
-                          const auto geometry = visualGeometryOf(index);
-                          return geometry.valid && rotatedRectContains(geometry, x, y);
-                      }();
+            const bool hit = clip.kind == project::TimelineClipKind::Text
+                                 ? textRasterBounds(index).contains(static_cast<int>(std::floor(x)),
+                                                                    static_cast<int>(std::floor(y)))
+                                 : [&] {
+                                       const auto geometry = visualGeometryOf(index);
+                                       return geometry.valid && rotatedRectContains(geometry, x, y);
+                                   }();
             if (hit)
                 return QString::fromStdString(clip.id);
         }
@@ -3092,9 +3126,9 @@ QVariantMap MvmController::effectsForVisualRect(const QString& clipId, double x,
     const auto* item = project::findMediaItem(
         project_, project_.timelineClips[static_cast<std::size_t>(index)].mediaItemId);
     auto effects = effectsForPreview(index);
-    if (!item || !project::effectsForVisualRect(effects, item->width, item->height,
-                                                project_.outputWidth, project_.outputHeight, x, y,
-                                                width, height))
+    if (!item ||
+        !project::effectsForVisualRect(effects, item->width, item->height, project_.outputWidth,
+                                       project_.outputHeight, x, y, width, height))
         return {};
     return {{QStringLiteral("positionX"), effects.positionXPercent},
             {QStringLiteral("positionY"), effects.positionYPercent},
@@ -3471,6 +3505,7 @@ void MvmController::startPendingPlayback() {
     playbackBaseFrame_ = baseFrame;
     playbackClock_.restart();
     playbackTimer_.start();
+    playbackPreparationFailure_.clear();
     statusText_ = QStringLiteral("timelineを再生しています");
     Q_EMIT stateChanged();
 }
@@ -3527,7 +3562,147 @@ void MvmController::stopPlaybackWithError(QString error) {
     pendingPlaybackStart_ = false;
     playbackClipIndex_ = -1;
     pendingPlaybackClipIndex_ = -1;
+    pendingCapacityRebuildFrame_.reset();
+    retirePreparedPlaybackSources();
     setStatus(std::move(error));
+}
+
+void MvmController::retirePreparedPlaybackSources() {
+    for (const auto& source : preparedVideoSources_)
+        if (!previewEngine_->removeSource(source.source))
+            retiredSources_.push_back(source.source);
+    for (const auto& source : preparedAudioSources_)
+        if (!previewEngine_->removeSource(source.source))
+            retiredSources_.push_back(source.source);
+    preparedVideoSources_.clear();
+    preparedAudioSources_.clear();
+    playbackPreparationFailure_.clear();
+    failedPreparationStart_.reset();
+    playbackCapacityFailure_ = false;
+}
+
+bool MvmController::setPreviewRegistrationLimitForTest(std::size_t limit) {
+    if (!previewEngine_)
+        return false;
+    return static_cast<bool>(
+        preview::internal::PreviewRenderPort::setRegisteredVideoSourceLimitForTest(
+            *previewEngine_, limit));
+}
+
+std::vector<std::int64_t> MvmController::presentedFrameHistoryForTest() const {
+    if (!previewEngine_)
+        return {};
+    return preview::internal::PreviewRenderPort::runtimeDiagnostics(*previewEngine_)
+        .recentPresentedOutputFrames;
+}
+
+std::vector<std::int64_t> MvmController::unpairedFrameHistoryForTest() const {
+    if (!previewEngine_)
+        return {};
+    return preview::internal::PreviewRenderPort::runtimeDiagnostics(*previewEngine_)
+        .recentUnpairedOutputFrames;
+}
+
+bool MvmController::preparePlaybackSourcesAt(std::int64_t frame, QString& reason) {
+    const auto video = mapTimelinePreviewFrame(project_, previewPlan(), frame);
+    const auto audio = mapTimelinePreviewAudio(project_, previewPlan(), frame);
+    if (!video.success || !audio.success) {
+        reason = QString::fromStdString(video.success ? audio.error : video.error);
+        return false;
+    }
+    std::set<std::uint64_t> usedVideoSources;
+    for (const auto& layer : video.layers) {
+        const auto covers = [&](const TrackPreviewSource& entry) {
+            return !usedVideoSources.contains(entry.source.value) &&
+                   previewVideoMappingCovers(project_, entry.mapping, layer.renderClip);
+        };
+        const auto active = std::find_if(trackSources_.begin(), trackSources_.end(),
+                                         [&](const auto& entry) { return covers(entry.second); });
+        const auto prepared =
+            std::find_if(preparedVideoSources_.begin(), preparedVideoSources_.end(), covers);
+        if (active != trackSources_.end()) {
+            usedVideoSources.insert(active->second.source.value);
+            continue;
+        }
+        if (prepared != preparedVideoSources_.end()) {
+            usedVideoSources.insert(prepared->source.value);
+            continue;
+        }
+        const auto& clip = layer.renderClip;
+        if (!std::filesystem::is_regular_file(clip.mediaPath)) {
+            reason = QString::fromStdString(clip.name) + QStringLiteral(" のファイルがありません");
+            return false;
+        }
+        const auto began = std::chrono::steady_clock::now();
+        const auto added = previewEngine_->addSource(previewVideoDescriptorOf(project_, clip));
+        playbackMaxPreparationMs_ = std::max(
+            playbackMaxPreparationMs_,
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began)
+                .count());
+        if (!added) {
+            playbackCapacityFailure_ =
+                added.error().category == preview::PreviewErrorCategory::UnsupportedCapability;
+            reason = previewErrorText(added.error());
+            return false;
+        }
+        preparedVideoSources_.push_back(
+            {added.value(), layer.clipId, layer.clipIndex, previewVideoMappingOf(clip)});
+        usedVideoSources.insert(added.value().value);
+    }
+    std::vector<AudioSourceIdentity> identities;
+    if (!audioIdentitiesFor(audio, identities, reason))
+        return false;
+    for (std::size_t index = 0; index < identities.size(); ++index) {
+        const auto matches = [&](const AudioPreviewSource& entry) {
+            return entry.identity == identities[index];
+        };
+        if (std::any_of(audioSources_.begin(), audioSources_.end(), matches) ||
+            std::any_of(preparedAudioSources_.begin(), preparedAudioSources_.end(), matches))
+            continue;
+        preview::PreviewSourceDescriptor descriptor;
+        if (!audioDescriptorFor(audio.layers[index], descriptor, reason))
+            return false;
+        const auto began = std::chrono::steady_clock::now();
+        const auto added = previewEngine_->addSource(descriptor);
+        playbackMaxPreparationMs_ = std::max(
+            playbackMaxPreparationMs_,
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began)
+                .count());
+        if (!added) {
+            playbackCapacityFailure_ =
+                added.error().category == preview::PreviewErrorCategory::UnsupportedCapability;
+            reason = previewErrorText(added.error());
+            return false;
+        }
+        preparedAudioSources_.push_back({added.value(), identities[index], descriptor,
+                                         audio.layers[index].clipId,
+                                         audio.layers[index].clipIndex});
+    }
+    return true;
+}
+
+bool MvmController::prepareUpcomingPlaybackSources(std::int64_t frame, QString& reason) {
+    const auto& plan = previewPlan();
+    if (!plan.success) {
+        reason = QString::fromStdString(plan.error);
+        return false;
+    }
+    const std::int64_t lead =
+        (2 * project_.timelineFpsNum + project_.timelineFpsDen - 1) / project_.timelineFpsDen;
+    const std::int64_t horizon = std::min(totalTimelineFrames_, frame + lead);
+    std::set<std::int64_t> starts;
+    for (const auto& entry : plan.video)
+        if (entry.start > frame && entry.start <= horizon)
+            starts.insert(entry.start);
+    for (const auto& entry : plan.audio)
+        if (entry.start > frame && entry.start <= horizon)
+            starts.insert(entry.start);
+    for (const auto start : starts)
+        if (!preparePlaybackSourcesAt(start, reason)) {
+            failedPreparationStart_ = start;
+            return false;
+        }
+    return true;
 }
 
 bool MvmController::handOffPlaybackSources(std::int64_t frame, QString& reason) {
@@ -3536,80 +3711,93 @@ bool MvmController::handOffPlaybackSources(std::int64_t frame, QString& reason) 
         reason = QString::fromStdString(mappedFrame.error);
         return false;
     }
-    if (mappedFrame.layers.size() != trackSources_.size()) {
-        reason = QStringLiteral("表示するvideo trackの数が変わります");
-        return false;
-    }
-    bool videoChanged = false;
+    std::map<int, TrackPreviewSource> sources;
+    std::set<std::uint64_t> usedVideoSources;
     for (const auto& layer : mappedFrame.layers) {
-        const auto installed = trackSources_.find(layer.slot);
-        if (installed == trackSources_.end()) {
-            reason = QStringLiteral("表示するvideo trackが変わります");
+        const auto active =
+            std::find_if(trackSources_.begin(), trackSources_.end(), [&](const auto& entry) {
+                return !usedVideoSources.contains(entry.second.source.value) &&
+                       previewVideoMappingCovers(project_, entry.second.mapping, layer.renderClip);
+            });
+        const auto prepared = std::find_if(
+            preparedVideoSources_.begin(), preparedVideoSources_.end(), [&](const auto& entry) {
+                return !usedVideoSources.contains(entry.source.value) &&
+                       previewVideoMappingCovers(project_, entry.mapping, layer.renderClip);
+            });
+        if (active == trackSources_.end() && prepared == preparedVideoSources_.end()) {
+            reason = QString::fromStdString(layer.renderClip.name) +
+                     QStringLiteral(" のvideo sourceを準備できませんでした");
             return false;
         }
-        if (installed->second.clipId == layer.clipId)
-            continue;
-        const auto& clip = layer.renderClip;
-        if (!previewVideoMappingCovers(project_, installed->second.mapping, clip)) {
-            reason = QString::fromStdString(clip.name) +
-                     QStringLiteral(" は直前のclipと素材の位置が連続していません");
-            return false;
-        }
-        videoChanged = true;
+        auto selected = active != trackSources_.end() ? active->second : *prepared;
+        selected.clipId = layer.clipId;
+        selected.clipIndex = layer.clipIndex;
+        sources[layer.slot] = std::move(selected);
+        usedVideoSources.insert(sources[layer.slot].source.value);
     }
     const auto audioMapping = mapTimelinePreviewAudio(project_, previewPlan(), frame);
     if (!audioMapping.success) {
         reason = QString::fromStdString(audioMapping.error);
         return false;
     }
-    if (audioMapping.layers.size() != audioSources_.size()) {
-        reason = QStringLiteral("鳴らすaudio clipの数が変わります");
+    std::vector<AudioSourceIdentity> desired;
+    if (!audioIdentitiesFor(audioMapping, desired, reason))
         return false;
-    }
-    bool audioChanged = false;
-    for (std::size_t index = 0; index < audioSources_.size(); ++index)
-        audioChanged =
-            audioChanged || audioMapping.layers[index].clipId != audioSources_[index].clipId;
-    if (audioChanged) {
-        std::vector<AudioSourceIdentity> desired;
-        if (!audioIdentitiesFor(audioMapping, desired, reason))
+    std::vector<AudioPreviewSource> audio;
+    for (std::size_t index = 0; index < desired.size(); ++index) {
+        const auto active =
+            std::find_if(audioSources_.begin(), audioSources_.end(),
+                         [&](const auto& entry) { return entry.identity == desired[index]; });
+        const auto prepared =
+            std::find_if(preparedAudioSources_.begin(), preparedAudioSources_.end(),
+                         [&](const auto& entry) { return entry.identity == desired[index]; });
+        if (active == audioSources_.end() && prepared == preparedAudioSources_.end()) {
+            reason = QString::fromStdString(audioMapping.layers[index].segment.clip.name) +
+                     QStringLiteral(" のaudio sourceを準備できませんでした");
             return false;
-        for (std::size_t index = 0; index < desired.size(); ++index) {
-            if (!(desired[index] == audioSources_[index].identity)) {
-                reason = QStringLiteral("audio clipの素材の位置が直前のclipと連続していません");
-                return false;
-            }
         }
+        auto selected = active != audioSources_.end() ? *active : *prepared;
+        selected.clipId = audioMapping.layers[index].clipId;
+        selected.clipIndex = audioMapping.layers[index].clipIndex;
+        audio.push_back(std::move(selected));
     }
     // 文字 clip は再生中にも出入りする。video / audio が変わらなくても composition は
     // 毎回組み、前回と違うときだけ出し直す (同じ文字は同じ画像 instance なので安い)。
     // 引き継いだ clip の effect もここで反映する。
-    auto sources = trackSources_;
-    for (const auto& layer : mappedFrame.layers) {
-        auto& slot = sources[layer.slot];
-        slot.clipId = layer.clipId;
-        slot.clipIndex = layer.clipIndex;
-    }
     preview::PreviewFrameRequest unusedRequest;
     const auto composition = previewCompositionFor(mappedFrame, sources, unusedRequest, reason);
     if (!composition)
         return false;
-    if (!videoChanged && !audioChanged && submittedComposition_ &&
-        *submittedComposition_ == *composition)
-        return true;
     if (!submittedComposition_ || !(*submittedComposition_ == *composition)) {
-        const auto submitted = previewEngine_->submitComposition(composition);
+        auto scheduled = std::make_shared<preview::CompositionSnapshot>(*composition);
+        scheduled->activationOutputFrame = frame;
+        const auto submitted = previewEngine_->submitComposition(scheduled);
         if (!submitted) {
             reason = previewErrorText(submitted.error());
             return false;
         }
         submittedComposition_ = composition;
     }
+    const auto selectedVideo = [&](preview::PreviewSourceId source) {
+        return std::any_of(sources.begin(), sources.end(),
+                           [&](const auto& entry) { return entry.second.source == source; });
+    };
+    const auto selectedAudio = [&](preview::PreviewSourceId source) {
+        return std::any_of(audio.begin(), audio.end(),
+                           [&](const auto& entry) { return entry.source == source; });
+    };
+    for (const auto& [slot, source] : trackSources_)
+        if (!selectedVideo(source.source))
+            retiredSources_.push_back(source.source);
+    for (const auto& source : audioSources_)
+        if (!selectedAudio(source.source))
+            retiredSources_.push_back(source.source);
+    std::erase_if(preparedVideoSources_,
+                  [&](const auto& entry) { return selectedVideo(entry.source); });
+    std::erase_if(preparedAudioSources_,
+                  [&](const auto& entry) { return selectedAudio(entry.source); });
     trackSources_ = std::move(sources);
-    for (std::size_t index = 0; index < audioSources_.size(); ++index) {
-        audioSources_[index].clipId = audioMapping.layers[index].clipId;
-        audioSources_[index].clipIndex = audioMapping.layers[index].clipIndex;
-    }
+    audioSources_ = std::move(audio);
     currentSource_.reset();
     for (const auto& [trackIndex, slot] : trackSources_) {
         if (slot.clipIndex == currentClipIndex_)
@@ -3636,14 +3824,26 @@ void MvmController::advanceTimelinePlayback() {
         playing_ = false;
         shuttleRate_ = 0;
         playbackClipIndex_ = -1;
+        retirePreparedPlaybackSources();
         statusText_ = QStringLiteral("timeline終端まで再生しました");
         Q_EMIT stateChanged();
         return;
     }
-    // 次の clip を今の source のまま表示できる (分割直後の連続した clip など) なら、
-    // 止めずに source を引き継ぐ。できなければ一時停止して source を組み直す。
+    QString preparationFailure;
+    if (!prepareUpcomingPlaybackSources(frame, preparationFailure))
+        playbackPreparationFailure_ = preparationFailure;
+    else if (failedPreparationStart_ && *failedPreparationStart_ > frame) {
+        playbackPreparationFailure_.clear();
+        failedPreparationStart_.reset();
+        playbackCapacityFailure_ = false;
+    }
     QString handOffFailure;
     if (handOffPlaybackSources(frame, handOffFailure)) {
+        if (failedPreparationStart_ && frame >= *failedPreparationStart_) {
+            playbackPreparationFailure_.clear();
+            failedPreparationStart_.reset();
+            playbackCapacityFailure_ = false;
+        }
         if (playheadFrame_ != frame) {
             playheadFrame_ = frame;
             Q_EMIT stateChanged();
@@ -3651,6 +3851,12 @@ void MvmController::advanceTimelinePlayback() {
         return;
     }
 
+    if (!playbackPreparationFailure_.isEmpty())
+        handOffFailure += QStringLiteral("; 先読み: ") + playbackPreparationFailure_;
+    lastPlaybackRebuildReason_ = handOffFailure;
+    ++playbackRebuildCount_;
+    const bool capacityFailure = playbackCapacityFailure_;
+    retirePreparedPlaybackSources();
     playbackTimer_.stop();
     playbackClock_.invalidate();
     const auto paused = previewEngine_->pause();
@@ -3660,10 +3866,25 @@ void MvmController::advanceTimelinePlayback() {
         return;
     }
     playheadFrame_ = frame;
+    if (capacityFailure) {
+        if (!resetPreviewEngine()) {
+            stopPlaybackWithError(QStringLiteral("登録上限でPreviewを再初期化できません: ") +
+                                  statusText_);
+            return;
+        }
+        playbackTimer_.stop();
+        playing_ = false;
+        pendingCapacityRebuildFrame_ = frame;
+        statusText_ = QStringLiteral("登録上限でPreviewを組み直しています: ") +
+                      handOffFailure;
+        Q_EMIT stateChanged();
+        return;
+    }
     const auto* selected = topVideoClipAt(project_, frame);
     const int nextClip = selected ? static_cast<int>(selected - project_.timelineClips.data()) : -1;
     if (!queuePreparedPlayback(nextClip, frame)) {
-        stopPlaybackWithError(QStringLiteral("次のclipへ切り替えられません: ") + statusText_);
+        stopPlaybackWithError(QStringLiteral("次のclipへ切り替えられません: ") + handOffFailure +
+                              QStringLiteral("; ") + statusText_);
         return;
     }
     // 引き継げずに組み直したことと、その理由を残す。境界で一瞬止まる原因の手がかりになる。
@@ -3736,6 +3957,7 @@ bool MvmController::pauseTimeline() {
     playbackClock_.invalidate();
     playing_ = false;
     playbackClipIndex_ = -1;
+    retirePreparedPlaybackSources();
     statusText_ = QStringLiteral("timelineを一時停止しました");
     Q_EMIT stateChanged();
     return true;
@@ -3913,8 +4135,8 @@ QVariantList MvmController::timelineMarkers() const {
 std::vector<project::TimelineClip>
 MvmController::selectedTimelineClipsInOrder(const std::string& anchorId) const {
     const bool anchorSelected =
-        anchorId.empty() || std::find(selectedClipIds_.begin(), selectedClipIds_.end(),
-                                      anchorId) != selectedClipIds_.end();
+        anchorId.empty() || std::find(selectedClipIds_.begin(), selectedClipIds_.end(), anchorId) !=
+                                selectedClipIds_.end();
     std::vector<project::TimelineClip> clips;
     for (const auto& clip : project_.timelineClips) {
         if (clip.id == anchorId ||
@@ -4083,9 +4305,10 @@ bool MvmController::placeCopiedClips(const std::vector<project::TimelineClip>& c
         if (!project::clipUsesMediaItem(clip.kind) ||
             project::findMediaItemByPath(candidate, clip.mediaPath))
             continue;
-        const auto copied = std::find_if(
-            mediaItems.begin(), mediaItems.end(),
-            [&](const project::MediaItem& item) { return item.mediaPath == clip.mediaPath; });
+        const auto copied =
+            std::find_if(mediaItems.begin(), mediaItems.end(), [&](const project::MediaItem& item) {
+                return item.mediaPath == clip.mediaPath;
+            });
         if (copied == mediaItems.end()) {
             QString registerError;
             if (!registerMediaItem(candidate, clip.mediaPath, registerError)) {
@@ -4120,8 +4343,8 @@ bool MvmController::placeCopiedClips(const std::vector<project::TimelineClip>& c
             }
         } else if (laneClips.front().track.index <= static_cast<int>(tracks.size()))
             trackOrder.push_back(laneClips.front().track.index);
-        for (int index = 0; placement == CopyPlacement::FindFreeTrack &&
-                            index <= static_cast<int>(tracks.size());
+        for (int index = 0;
+             placement == CopyPlacement::FindFreeTrack && index <= static_cast<int>(tracks.size());
              ++index) {
             if (std::find(trackOrder.begin(), trackOrder.end(), index) == trackOrder.end())
                 trackOrder.push_back(index);
@@ -4309,8 +4532,8 @@ bool MvmController::deleteTimelineMarker(qint64 frame) {
     if (busy_ || !pauseTimeline())
         return false;
     project::Project candidate = project_;
-    const auto at = std::lower_bound(candidate.timelineMarkers.begin(),
-                                     candidate.timelineMarkers.end(), frame);
+    const auto at =
+        std::lower_bound(candidate.timelineMarkers.begin(), candidate.timelineMarkers.end(), frame);
     if (at == candidate.timelineMarkers.end() || *at != frame)
         return false;
     candidate.timelineMarkers.erase(at);
@@ -4428,10 +4651,9 @@ bool MvmController::moveTimelineClip(const QString& clipId, const QString& track
         movedIds = {anchorId};
         setTimelineSelection(movedIds);
     }
-    const auto moved =
-        project::moveClips(candidate, movedIds, anchorId, destination,
-                           std::max<qint64>(0, timelineStartFrame), project::LinkMode::Single,
-                           newClipId);
+    const auto moved = project::moveClips(candidate, movedIds, anchorId, destination,
+                                          std::max<qint64>(0, timelineStartFrame),
+                                          project::LinkMode::Single, newClipId);
     if (!moved.success) {
         setStatus(QString::fromStdString(moved.error));
         return false;
@@ -4512,19 +4734,19 @@ QVariantMap MvmController::clipSpeedDurationState(const QString& clipId) const {
     if (!duration.success)
         return {};
     return {{QStringLiteral("clipId"), QString::fromStdString(id)},
-            {QStringLiteral("speedPercent"), 100.0 * static_cast<double>(clip.speedNum) /
-                                                    static_cast<double>(clip.speedDen)},
-            {QStringLiteral("durationText"), QString::fromStdString(core::formatTimecode(
-                 duration.frame, project_.timelineFpsNum, project_.timelineFpsDen))},
+            {QStringLiteral("speedPercent"),
+             100.0 * static_cast<double>(clip.speedNum) / static_cast<double>(clip.speedDen)},
+            {QStringLiteral("durationText"),
+             QString::fromStdString(core::formatTimecode(duration.frame, project_.timelineFpsNum,
+                                                         project_.timelineFpsDen))},
             {QStringLiteral("preservePitch"), clip.preservePitch},
             {QStringLiteral("still"), project::hasSyntheticSourceDomain(clip)}};
 }
 
-QVariantMap MvmController::previewClipSpeedDuration(const QString& clipId,
-                                                    const QString& input,
+QVariantMap MvmController::previewClipSpeedDuration(const QString& clipId, const QString& input,
                                                     double speedPercent,
-                                                    const QString& durationText,
-                                                    bool preservePitch, bool ripple) const {
+                                                    const QString& durationText, bool preservePitch,
+                                                    bool ripple) const {
     const std::string id = clipId.isEmpty() ? currentClipId() : clipId.toStdString();
     const auto edit = speedDurationEdit(input, speedPercent, durationText, preservePitch, ripple,
                                         project_.timelineFpsNum, project_.timelineFpsDen);
@@ -4532,20 +4754,20 @@ QVariantMap MvmController::previewClipSpeedDuration(const QString& clipId,
         return {{QStringLiteral("error"), QStringLiteral("速度または尺が不正です")}};
     auto previewEdit = *edit;
     previewEdit.ripple = true;
-    const auto preview = project::previewClipSpeedDuration(project_, id, previewEdit,
-                                                            project::LinkMode::Linked);
+    const auto preview =
+        project::previewClipSpeedDuration(project_, id, previewEdit, project::LinkMode::Linked);
     if (!preview.success)
         return {{QStringLiteral("error"), QString::fromStdString(preview.error)}};
-    return {{QStringLiteral("durationText"), QString::fromStdString(core::formatTimecode(
+    return {{QStringLiteral("durationText"),
+             QString::fromStdString(core::formatTimecode(
                  preview.durationFrames, project_.timelineFpsNum, project_.timelineFpsDen))},
-            {QStringLiteral("speedPercent"),
-             100.0 * static_cast<double>(preview.speedNum) /
-                 static_cast<double>(preview.speedDen)}};
+            {QStringLiteral("speedPercent"), 100.0 * static_cast<double>(preview.speedNum) /
+                                                 static_cast<double>(preview.speedDen)}};
 }
 
 bool MvmController::clipSpeedDurationNeedsOverwrite(const QString& clipId, const QString& input,
-                                                     double speedPercent,
-                                                     const QString& durationText) const {
+                                                    double speedPercent,
+                                                    const QString& durationText) const {
     const std::string id = clipId.isEmpty() ? currentClipId() : clipId.toStdString();
     const auto edit = speedDurationEdit(input, speedPercent, durationText, false, false,
                                         project_.timelineFpsNum, project_.timelineFpsDen);
@@ -4556,8 +4778,8 @@ bool MvmController::clipSpeedDurationNeedsOverwrite(const QString& clipId, const
 }
 
 bool MvmController::applyClipSpeedDuration(const QString& clipId, const QString& input,
-                                            double speedPercent, const QString& durationText,
-                                            bool preservePitch, bool ripple, bool overwrite) {
+                                           double speedPercent, const QString& durationText,
+                                           bool preservePitch, bool ripple, bool overwrite) {
     const std::string id = clipId.isEmpty() ? currentClipId() : clipId.toStdString();
     auto edit = speedDurationEdit(input, speedPercent, durationText, preservePitch, ripple,
                                   project_.timelineFpsNum, project_.timelineFpsDen);
@@ -4569,7 +4791,8 @@ bool MvmController::applyClipSpeedDuration(const QString& clipId, const QString&
     return applyTimelineEdit(
         [&](project::Project& candidate) {
             return project::setClipSpeedDuration(candidate, id, *edit, project::LinkMode::Linked);
-        }, id, QStringLiteral("clip の速度と尺を変更しました"));
+        },
+        id, QStringLiteral("clip の速度と尺を変更しました"));
 }
 
 bool MvmController::canInsertFrameHold(const QString& clipId) const {
@@ -4597,7 +4820,8 @@ bool MvmController::insertFrameHoldAtPlayhead(const QString& clipId) {
                 candidate, id, playheadFrame_,
                 project::defaultFrameHoldFrames(candidate.timelineFpsNum, candidate.timelineFpsDen),
                 newClipId);
-        }, id, QStringLiteral("フレーム保持を挿入しました"));
+        },
+        id, QStringLiteral("フレーム保持を挿入しました"));
 }
 
 QVariantMap MvmController::previewRateStretch(const QString& clipId, const QString& edge,
@@ -4937,8 +5161,8 @@ bool MvmController::applyDefaultTransition() {
         QString status = QString::number(placed.frames) +
                          QStringLiteral("フレームのトランジションを作成しました");
         if (placed.transitionCount > 1)
-            status += QStringLiteral(" (リンク相手を含む") + QString::number(placed.transitionCount) +
-                      QStringLiteral("個)");
+            status += QStringLiteral(" (リンク相手を含む") +
+                      QString::number(placed.transitionCount) + QStringLiteral("個)");
         if (placed.frames < defaultFrames)
             status += QStringLiteral("。素材の余白が足りないため短くしました");
         setStatus(status);
@@ -5037,13 +5261,14 @@ QVariantList MvmController::timelineTransitions() const {
         if (!duration.success)
             continue;
         const qint64 cut = clip.timelineStartFrame + duration.frame;
-        list.append(QVariantMap{
-            {QStringLiteral("transitionId"), QString::fromStdString(transition.id)},
-            {QStringLiteral("trackKind"), QString::fromLatin1(project::trackKindName(clip.track.kind))},
-            {QStringLiteral("trackIndex"), clip.track.index},
-            {QStringLiteral("start"), cut - transition.framesBeforeCut},
-            {QStringLiteral("cut"), cut},
-            {QStringLiteral("end"), cut + transition.framesAfterCut}});
+        list.append(
+            QVariantMap{{QStringLiteral("transitionId"), QString::fromStdString(transition.id)},
+                        {QStringLiteral("trackKind"),
+                         QString::fromLatin1(project::trackKindName(clip.track.kind))},
+                        {QStringLiteral("trackIndex"), clip.track.index},
+                        {QStringLiteral("start"), cut - transition.framesBeforeCut},
+                        {QStringLiteral("cut"), cut},
+                        {QStringLiteral("end"), cut + transition.framesAfterCut}});
     }
     return list;
 }
@@ -5056,9 +5281,10 @@ QVariantMap MvmController::selectedEditPoint() const {
     const auto duration = project::timelineClipDuration(project_, clip);
     if (!duration.success)
         return {};
-    return {{QStringLiteral("trackKind"), QString::fromLatin1(project::trackKindName(clip.track.kind))},
-            {QStringLiteral("trackIndex"), clip.track.index},
-            {QStringLiteral("frame"), clip.timelineStartFrame + duration.frame}};
+    return {
+        {QStringLiteral("trackKind"), QString::fromLatin1(project::trackKindName(clip.track.kind))},
+        {QStringLiteral("trackIndex"), clip.track.index},
+        {QStringLiteral("frame"), clip.timelineStartFrame + duration.frame}};
 }
 
 bool MvmController::canDeleteSelection() const {

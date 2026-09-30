@@ -77,6 +77,9 @@ enum class Stage {
     WaitRecovered,
     WaitResume,
     WaitReplacement,
+    WaitHotReplacement,
+    WaitHotContinued,
+    WaitHotSilent,
     WaitMissingPair,
     WaitSeek,
     WaitSeekContinued,
@@ -90,6 +93,7 @@ enum class Fault {
     DuplicateSourceLayer,
     MissingPair,
     RemoveReleasedSource,
+    HotSwap,
     SeekTwoSource,
     SeekPartialGeneration,
     SeekPartialRequest,
@@ -112,8 +116,9 @@ bool usesTwoVideoSources(Fault fault) {
 
 // audio sourceを伴うremoval faultかどうか。
 bool needsAudioSource(Fault fault) {
-    return fault == Fault::RemoveAudioSource || fault == Fault::RemoveAudioStopFailure ||
-           fault == Fault::RemoveShutdownRace || fault == Fault::RemoveFatalEventOrder;
+    return fault == Fault::HotSwap || fault == Fault::RemoveAudioSource ||
+           fault == Fault::RemoveAudioStopFailure || fault == Fault::RemoveShutdownRace ||
+           fault == Fault::RemoveFatalEventOrder;
 }
 
 // pauseしてからremoval検査を行うfaultかどうか。
@@ -134,6 +139,7 @@ int main(int argc, char** argv) {
                              "|--exceed-source-count|--exceed-layer-count"
                              "|--duplicate-source-layer|--fault-missing-pair"
                              "|--remove-released-source|--seek-two-source"
+                             "|--hot-swap"
                              "|--fault-seek-partial-generation|--fault-seek-partial-request"
                              "|--fault-stale-composition-epoch|--remove-unreferenced-source"
                              "|--remove-referenced-source|--remove-audio-source"
@@ -154,8 +160,7 @@ int main(int argc, char** argv) {
             fault = Fault::SingleLayer;
             adHocFixtureA = true;
             adHocTimelineSeek = true;
-        }
-        else if (arguments[3] == "--exceed-source-count")
+        } else if (arguments[3] == "--exceed-source-count")
             fault = Fault::ExceedSourceCount;
         else if (arguments[3] == "--exceed-layer-count")
             fault = Fault::ExceedLayerCount;
@@ -165,6 +170,8 @@ int main(int argc, char** argv) {
             fault = Fault::MissingPair;
         else if (arguments[3] == "--remove-released-source")
             fault = Fault::RemoveReleasedSource;
+        else if (arguments[3] == "--hot-swap")
+            fault = Fault::HotSwap;
         else if (arguments[3] == "--seek-two-source")
             fault = Fault::SeekTwoSource;
         else if (arguments[3] == "--fault-seek-partial-generation")
@@ -240,6 +247,7 @@ int main(int argc, char** argv) {
     mvm::preview::PreviewSourceId videoSourceC{};
     mvm::preview::PreviewSourceId firstSource{};
     mvm::preview::PreviewSourceId audioSource{};
+    mvm::preview::PreviewSourceId audioSourceB{};
     std::uint64_t presentedAtPause = 0;
     std::chrono::steady_clock::time_point modeStarted;
     bool missingPairSettled = false;
@@ -294,8 +302,7 @@ int main(int argc, char** argv) {
                 // 削除 -> 再登録で ID が使い回されないことも同時に固定する。
                 const auto first = engine->addSource(descriptor);
                 if (!first) {
-                    std::fprintf(stderr, "初回source open失敗: %s\n",
-                                 first.error().detail.c_str());
+                    std::fprintf(stderr, "初回source open失敗: %s\n", first.error().detail.c_str());
                     exitCode = 4;
                     app.quit();
                     return;
@@ -337,8 +344,7 @@ int main(int argc, char** argv) {
             }
             if (fault == Fault::SeekTwoSource) {
                 auto aOnly = std::make_shared<mvm::preview::CompositionSnapshot>();
-                aOnly->layers.push_back(
-                    {videoSource, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
+                aOnly->layers.push_back({videoSource, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
                 const auto aOnlyToken = engine->submitComposition(aOnly);
                 if (!aOnlyToken || aOnlyToken.value().id.value != 1 ||
                     aOnlyToken.value().revision != 1 || !engine->seek({60})) {
@@ -436,12 +442,12 @@ int main(int argc, char** argv) {
                 return;
             }
             auto snapshot = std::make_shared<mvm::preview::CompositionSnapshot>();
-            snapshot->layers.push_back(
-                {source.value(), {0, 0, usesTwoVideoSources(fault) ? 0.5F : 1.0F, 1},
-                 {0, 0, 1, 1}, 1.0F});
+            snapshot->layers.push_back({source.value(),
+                                        {0, 0, usesTwoVideoSources(fault) ? 0.5F : 1.0F, 1},
+                                        {0, 0, 1, 1},
+                                        1.0F});
             if (usesTwoVideoSources(fault)) {
-                snapshot->layers.push_back(
-                    {videoSourceB, {0.5F, 0, 0.5F, 1}, {0, 0, 1, 1}, 1.0F});
+                snapshot->layers.push_back({videoSourceB, {0.5F, 0, 0.5F, 1}, {0, 0, 1, 1}, 1.0F});
             }
             if (fault == Fault::ExceedLayerCount) {
                 // layer 上限は 16。video source 上限で先に落ちないよう、video 2 本 +
@@ -467,10 +473,8 @@ int main(int argc, char** argv) {
             }
             if (fault == Fault::DuplicateSourceLayer) {
                 auto duplicate = std::make_shared<mvm::preview::CompositionSnapshot>();
-                duplicate->layers.push_back(
-                    {videoSource, {0, 0, 0.5F, 1}, {0, 0, 1, 1}, 1.0F});
-                duplicate->layers.push_back(
-                    {videoSource, {0.5F, 0, 0.5F, 1}, {0, 0, 1, 1}, 1.0F});
+                duplicate->layers.push_back({videoSource, {0, 0, 0.5F, 1}, {0, 0, 1, 1}, 1.0F});
+                duplicate->layers.push_back({videoSource, {0.5F, 0, 0.5F, 1}, {0, 0, 1, 1}, 1.0F});
                 const auto rejected = engine->submitComposition(duplicate);
                 if (rejected || rejected.error().category !=
                                     mvm::preview::PreviewErrorCategory::UnsupportedCapability) {
@@ -565,7 +569,8 @@ int main(int argc, char** argv) {
             const auto generationB = divergent.videoSourceGenerations.find(videoSourceB.value);
             if (currentA == divergent.videoSourceGenerations.end() ||
                 generationB == divergent.videoSourceGenerations.end() ||
-                currentA->second != generationA->second || currentA->second == generationB->second) {
+                currentA->second != generationA->second ||
+                currentA->second == generationB->second) {
                 std::fprintf(stderr, "A/Bのseek前generationが分岐していません\n");
                 exitCode = 54;
                 app.quit();
@@ -573,10 +578,8 @@ int main(int argc, char** argv) {
             }
 
             auto twoSource = std::make_shared<mvm::preview::CompositionSnapshot>();
-            twoSource->layers.push_back(
-                {videoSource, {0, 0, 0.5F, 1}, {0, 0, 1, 1}, 1.0F});
-            twoSource->layers.push_back(
-                {videoSourceB, {0.5F, 0, 0.5F, 1}, {0, 0, 1, 1}, 1.0F});
+            twoSource->layers.push_back({videoSource, {0, 0, 0.5F, 1}, {0, 0, 1, 1}, 1.0F});
+            twoSource->layers.push_back({videoSourceB, {0.5F, 0, 0.5F, 1}, {0, 0, 1, 1}, 1.0F});
             const auto composition = engine->submitComposition(twoSource);
             if (!composition || composition.value().id.value != 2 ||
                 composition.value().revision != 2 || !engine->play()) {
@@ -589,6 +592,45 @@ int main(int argc, char** argv) {
             return;
         }
         if (stage == Stage::WaitInitial && telemetry.presentedFrameCount >= 12) {
+            if (fault == Fault::HotSwap) {
+                const auto referenced = engine->removeSource(videoSource);
+                if (referenced || referenced.error().category !=
+                                      mvm::preview::PreviewErrorCategory::InvalidState) {
+                    std::fprintf(stderr, "再生中の参照source削除を拒否しませんでした\n");
+                    exitCode = 58;
+                    app.quit();
+                    return;
+                }
+                mvm::preview::PreviewSourceDescriptor nextVideo;
+                nextVideo.mediaPath = arguments[2].toStdWString();
+                nextVideo.videoEnabled = true;
+                const auto addedVideo = engine->addSource(nextVideo);
+                mvm::preview::PreviewSourceDescriptor nextAudio;
+                nextAudio.mediaPath = arguments[1].toStdWString();
+                nextAudio.audioEnabled = true;
+                const auto addedAudio = engine->addSource(nextAudio);
+                if (!addedVideo || !addedAudio) {
+                    std::fprintf(stderr, "再生中のsource追加に失敗しました: %s / %s\n",
+                                 addedVideo ? "" : addedVideo.error().detail.c_str(),
+                                 addedAudio ? "" : addedAudio.error().detail.c_str());
+                    exitCode = 59;
+                    app.quit();
+                    return;
+                }
+                videoSourceB = addedVideo.value();
+                audioSourceB = addedAudio.value();
+                auto replacement = std::make_shared<mvm::preview::CompositionSnapshot>();
+                replacement->layers.push_back({videoSourceB, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
+                const auto submitted = engine->submitComposition(replacement);
+                if (!submitted) {
+                    exitCode = 60;
+                    app.quit();
+                    return;
+                }
+                accepted = submitted.value();
+                stage = Stage::WaitHotReplacement;
+                return;
+            }
             if (fault == Fault::MissingPair) {
                 if (!mvm::preview::internal::PreviewRenderPort::suspendVideoSourceForTest(
                         *engine, videoSourceB)) {
@@ -602,8 +644,7 @@ int main(int argc, char** argv) {
             }
             if (fault == Fault::RemoveReleasedSource) {
                 auto replacement = std::make_shared<mvm::preview::CompositionSnapshot>();
-                replacement->layers.push_back(
-                    {videoSourceB, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
+                replacement->layers.push_back({videoSourceB, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
                 const auto replacementToken = engine->submitComposition(replacement);
                 if (!replacementToken) {
                     exitCode = 37;
@@ -687,10 +728,10 @@ int main(int argc, char** argv) {
                 // active / pending compositionが参照しているsourceは解放できない。
                 const auto referenced = engine->removeSource(videoSource);
                 if (unknown ||
-                    unknown.error().category !=
-                        mvm::preview::PreviewErrorCategory::InvalidSource ||
-                    referenced || referenced.error().category !=
-                                      mvm::preview::PreviewErrorCategory::InvalidState) {
+                    unknown.error().category != mvm::preview::PreviewErrorCategory::InvalidSource ||
+                    referenced ||
+                    referenced.error().category !=
+                        mvm::preview::PreviewErrorCategory::InvalidState) {
                     std::fprintf(stderr, "参照中sourceのremoval guardが効いていません\n");
                     exitCode = 18;
                     app.quit();
@@ -759,40 +800,42 @@ int main(int argc, char** argv) {
                     // mailbox snapshotから3つのeventのinsertion位置を取る。
                     // ErrorOccurredは「最初の1件」ではなくremoval由来のものだけを
                     // 識別する。別要因のerrorが先に入っていても誤判定しない。
-                    const auto orderIndices = [&](const std::vector<
-                                                      mvm::preview::internal::PreviewEvent>& queued,
-                                                  std::size_t& removeErrorIndex,
-                                                  std::size_t& shuttingDownIndex,
-                                                  std::size_t& terminalErrorIndex) {
-                        removeErrorIndex = queued.size();
-                        shuttingDownIndex = queued.size();
-                        terminalErrorIndex = queued.size();
-                        for (std::size_t i = 0; i < queued.size(); ++i) {
-                            const auto* occurred =
-                                std::get_if<mvm::preview::internal::ErrorOccurredEvent>(&queued[i]);
-                            if (occurred != nullptr && removeErrorIndex == queued.size() &&
-                                occurred->error.operation ==
-                                    mvm::preview::PreviewOperation::RemoveSource &&
-                                occurred->error.category ==
-                                    mvm::preview::PreviewErrorCategory::AudioFailure &&
-                                occurred->error.source && *occurred->error.source == audioSource) {
-                                removeErrorIndex = i;
+                    const auto orderIndices =
+                        [&](const std::vector<mvm::preview::internal::PreviewEvent>& queued,
+                            std::size_t& removeErrorIndex, std::size_t& shuttingDownIndex,
+                            std::size_t& terminalErrorIndex) {
+                            removeErrorIndex = queued.size();
+                            shuttingDownIndex = queued.size();
+                            terminalErrorIndex = queued.size();
+                            for (std::size_t i = 0; i < queued.size(); ++i) {
+                                const auto* occurred =
+                                    std::get_if<mvm::preview::internal::ErrorOccurredEvent>(
+                                        &queued[i]);
+                                if (occurred != nullptr && removeErrorIndex == queued.size() &&
+                                    occurred->error.operation ==
+                                        mvm::preview::PreviewOperation::RemoveSource &&
+                                    occurred->error.category ==
+                                        mvm::preview::PreviewErrorCategory::AudioFailure &&
+                                    occurred->error.source &&
+                                    *occurred->error.source == audioSource) {
+                                    removeErrorIndex = i;
+                                }
+                                const auto* queuedState =
+                                    std::get_if<mvm::preview::internal::StateChangedEvent>(
+                                        &queued[i]);
+                                if (queuedState == nullptr)
+                                    continue;
+                                if (queuedState->state ==
+                                        mvm::preview::PreviewEngineState::ShuttingDown &&
+                                    shuttingDownIndex == queued.size()) {
+                                    shuttingDownIndex = i;
+                                }
+                                if (queuedState->state == mvm::preview::PreviewEngineState::Error &&
+                                    terminalErrorIndex == queued.size()) {
+                                    terminalErrorIndex = i;
+                                }
                             }
-                            const auto* queuedState =
-                                std::get_if<mvm::preview::internal::StateChangedEvent>(&queued[i]);
-                            if (queuedState == nullptr)
-                                continue;
-                            if (queuedState->state ==
-                                    mvm::preview::PreviewEngineState::ShuttingDown &&
-                                shuttingDownIndex == queued.size()) {
-                                shuttingDownIndex = i;
-                            }
-                            if (queuedState->state == mvm::preview::PreviewEngineState::Error &&
-                                terminalErrorIndex == queued.size()) {
-                                terminalErrorIndex = i;
-                            }
-                        }
-                    };
+                        };
                     std::thread racer([&] {
                         if (!mvm::preview::internal::PreviewRenderPort::
                                 waitFatalPublishBarrierEnteredForTest(*engine, 5000)) {
@@ -804,8 +847,9 @@ int main(int argc, char** argv) {
                         // 入っていること。空なら state commit と mailbox insertion が
                         // 分離しており、後続の terminal event に追い越される。
                         {
-                            const auto queued = mvm::preview::internal::PreviewRenderPort::
-                                mailboxEventsForTest(*engine);
+                            const auto queued =
+                                mvm::preview::internal::PreviewRenderPort::mailboxEventsForTest(
+                                    *engine);
                             std::size_t removeErrorIndex = 0;
                             std::size_t shuttingDownIndex = 0;
                             std::size_t terminalErrorIndex = 0;
@@ -821,8 +865,7 @@ int main(int argc, char** argv) {
                         const auto deadline =
                             std::chrono::steady_clock::now() + std::chrono::seconds(5);
                         while (std::chrono::steady_clock::now() < deadline) {
-                            if (engine->status().state ==
-                                mvm::preview::PreviewEngineState::Error) {
+                            if (engine->status().state == mvm::preview::PreviewEngineState::Error) {
                                 reachedTerminal = true;
                                 break;
                             }
@@ -837,8 +880,9 @@ int main(int argc, char** argv) {
                             const auto terminalDeadline =
                                 std::chrono::steady_clock::now() + std::chrono::seconds(5);
                             while (std::chrono::steady_clock::now() < terminalDeadline) {
-                                const auto queued = mvm::preview::internal::PreviewRenderPort::
-                                    mailboxEventsForTest(*engine);
+                                const auto queued =
+                                    mvm::preview::internal::PreviewRenderPort::mailboxEventsForTest(
+                                        *engine);
                                 std::size_t removeErrorIndex = 0;
                                 std::size_t shuttingDownIndex = 0;
                                 std::size_t terminalErrorIndex = 0;
@@ -871,16 +915,13 @@ int main(int argc, char** argv) {
                         return;
                     }
                     if (!linearizedAtCommit) {
-                        std::fprintf(stderr,
-                                     "state commitとmailbox insertionが分離しています\n");
+                        std::fprintf(stderr, "state commitとmailbox insertionが分離しています\n");
                         exitCode = 29;
                         app.quit();
                         return;
                     }
                     if (!orderedAcrossTerminal) {
-                        std::fprintf(
-                            stderr,
-                            "ShuttingDownがterminal Errorに追い越されています\n");
+                        std::fprintf(stderr, "ShuttingDownがterminal Errorに追い越されています\n");
                         exitCode = 30;
                         app.quit();
                         return;
@@ -892,8 +933,8 @@ int main(int argc, char** argv) {
                 if (fault == Fault::RemoveShutdownRace) {
                     // audio停止フェーズ (engine lockを持たない窓) で止め、
                     // その間に別threadからfatalを入れる。removalはcommitされない。
-                    if (!mvm::preview::internal::PreviewRenderPort::
-                            armSourceRemovalBarrierForTest(*engine)) {
+                    if (!mvm::preview::internal::PreviewRenderPort::armSourceRemovalBarrierForTest(
+                            *engine)) {
                         exitCode = 25;
                         app.quit();
                         return;
@@ -974,8 +1015,7 @@ int main(int argc, char** argv) {
             }
             const auto removed = engine->removeSource(videoSource);
             auto removedSnapshot = std::make_shared<mvm::preview::CompositionSnapshot>();
-            removedSnapshot->layers.push_back(
-                {videoSource, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
+            removedSnapshot->layers.push_back({videoSource, {0, 0, 1, 1}, {0, 0, 1, 1}, 1.0F});
             const auto rejected = engine->submitComposition(removedSnapshot);
             if (!removed || rejected ||
                 rejected.error().category != mvm::preview::PreviewErrorCategory::InvalidSource) {
@@ -989,6 +1029,62 @@ int main(int argc, char** argv) {
                 mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
             if (!engine->requestShutdown()) {
                 exitCode = 42;
+                app.quit();
+                return;
+            }
+            stage = Stage::WaitShutdown;
+            return;
+        }
+        if (stage == Stage::WaitHotReplacement) {
+            if (!status.lastPresentedComposition || *status.lastPresentedComposition != accepted)
+                return;
+            const auto removedVideo = engine->removeSource(videoSource);
+            const auto removedAudio = engine->removeSource(audioSource);
+            if (!removedVideo || !removedAudio ||
+                engine->status().state != mvm::preview::PreviewEngineState::Playing) {
+                std::fprintf(stderr, "再生中に参照解除済みsourceを削除できません: %s / %s\n",
+                             removedVideo ? "" : removedVideo.error().detail.c_str(),
+                             removedAudio ? "" : removedAudio.error().detail.c_str());
+                exitCode = 61;
+                app.quit();
+                return;
+            }
+            presentedAtInjection = telemetry.presentedFrameCount;
+            stage = Stage::WaitHotContinued;
+            return;
+        }
+        if (stage == Stage::WaitHotContinued) {
+            if (telemetry.presentedFrameCount < presentedAtInjection + 12)
+                return;
+            if (status.state != mvm::preview::PreviewEngineState::Playing ||
+                !sink->errors.empty()) {
+                exitCode = 62;
+                app.quit();
+                return;
+            }
+            if (!engine->removeSource(audioSourceB)) {
+                exitCode = 63;
+                app.quit();
+                return;
+            }
+            presentedAtInjection = telemetry.presentedFrameCount;
+            stage = Stage::WaitHotSilent;
+            return;
+        }
+        if (stage == Stage::WaitHotSilent) {
+            if (telemetry.presentedFrameCount < presentedAtInjection + 12)
+                return;
+            if (status.state != mvm::preview::PreviewEngineState::Playing ||
+                !sink->errors.empty()) {
+                exitCode = 64;
+                app.quit();
+                return;
+            }
+            removalChecked = true;
+            activeDiagnostics =
+                mvm::preview::internal::PreviewRenderPort::runtimeDiagnostics(*engine);
+            if (!engine->requestShutdown()) {
+                exitCode = 65;
                 app.quit();
                 return;
             }
@@ -1036,13 +1132,12 @@ int main(int argc, char** argv) {
             if (fault == Fault::SeekPartialGeneration) {
                 if (status.state != mvm::preview::PreviewEngineState::Error)
                     return;
-                const bool classified = status.lastError &&
-                                        status.lastError->category ==
-                                            mvm::preview::PreviewErrorCategory::SeekFailure &&
-                                        status.lastError->operation ==
-                                            mvm::preview::PreviewOperation::Seek &&
-                                        status.lastError->severity ==
-                                            mvm::preview::PreviewErrorSeverity::FatalToSession;
+                const bool classified =
+                    status.lastError &&
+                    status.lastError->category == mvm::preview::PreviewErrorCategory::SeekFailure &&
+                    status.lastError->operation == mvm::preview::PreviewOperation::Seek &&
+                    status.lastError->severity ==
+                        mvm::preview::PreviewErrorSeverity::FatalToSession;
                 if (!classified || seekDiagnostics.seekRequestCount != 1 ||
                     seekDiagnostics.seekDecodeReadyCount != 1 ||
                     seekDiagnostics.seekCompletedCount != 0 ||
@@ -1060,8 +1155,8 @@ int main(int argc, char** argv) {
                 status.state != mvm::preview::PreviewEngineState::Playing ||
                 seekDiagnostics.seekCancelledByShutdownCount != 0)
                 return;
-            if (seekDiagnostics.lastSeekPresentedFrame != 120 ||
-                !status.lastPresentedComposition || *status.lastPresentedComposition != accepted) {
+            if (seekDiagnostics.lastSeekPresentedFrame != 120 || !status.lastPresentedComposition ||
+                *status.lastPresentedComposition != accepted) {
                 std::fprintf(stderr, "二source exact seekのcompletionが不正です\n");
                 exitCode = 46;
                 app.quit();
@@ -1090,8 +1185,7 @@ int main(int argc, char** argv) {
                 app.quit();
                 return;
             }
-            if (activeDiagnostics.seekCancelledByShutdownCount != 0 ||
-                !engine->requestShutdown()) {
+            if (activeDiagnostics.seekCancelledByShutdownCount != 0 || !engine->requestShutdown()) {
                 exitCode = 47;
                 app.quit();
                 return;
@@ -1120,8 +1214,7 @@ int main(int argc, char** argv) {
                 // 製品経路にvalidateForDisplay()が効いていない。timeoutではなく
                 // 即座にFAILとして落とす。
                 if (telemetry.presentedFrameCount >= presentedAtInjection + 60) {
-                    std::fprintf(
-                        stderr, "stale composition epochが提示前に拒否されませんでした\n");
+                    std::fprintf(stderr, "stale composition epochが提示前に拒否されませんでした\n");
                     exitCode = 8;
                     app.quit();
                 }
@@ -1174,11 +1267,10 @@ int main(int argc, char** argv) {
                           diagnostics.lastStaleCompositionRejectedFrame == -1;
 
             // fatalを伴うfaultはterminal Errorで終わる。
-            const bool fatalFault = fault == Fault::RemoveAudioStopFailure ||
-                                    fault == Fault::RemoveShutdownRace ||
-                                    fault == Fault::RemoveFatalEventOrder ||
-                                    fault == Fault::SeekPartialGeneration ||
-                                    fault == Fault::SeekPartialRequest;
+            const bool fatalFault =
+                fault == Fault::RemoveAudioStopFailure || fault == Fault::RemoveShutdownRace ||
+                fault == Fault::RemoveFatalEventOrder || fault == Fault::SeekPartialGeneration ||
+                fault == Fault::SeekPartialRequest;
             // event streamの順序を固定する。ShuttingDownはErrorより前に出る。
             // state commitとmailbox insertionをlinearizeしていないと、先に進んだ
             // teardownのErrorがShuttingDownを追い越し得る。
@@ -1200,8 +1292,7 @@ int main(int argc, char** argv) {
             // mailbox insertion順で別途固定する。
             const bool stateOrderPass =
                 fatalFault ? (shuttingDownIndex == sink->states.size() ||
-                              errorIndex == sink->states.size() ||
-                              shuttingDownIndex < errorIndex)
+                              errorIndex == sink->states.size() || shuttingDownIndex < errorIndex)
                            : errorIndex == sink->states.size();
             const bool fatalPass =
                 fault == Fault::RemoveFatalEventOrder
@@ -1209,48 +1300,51 @@ int main(int argc, char** argv) {
                     // pending eventはcontractどおり破棄され得る。ここで固定するのは
                     // counter authorityであり、deliveryではない。
                     ? diagnostics.audioTransportFailureCount == 1
-                : fault == Fault::RemoveAudioStopFailure
-                    // sink停止失敗はtransport failureとして1件だけ数える。
-                    ? sink->errors.size() == 1 &&
-                          sink->errors.front().category ==
-                              mvm::preview::PreviewErrorCategory::AudioFailure &&
-                          sink->errors.front().operation ==
-                              mvm::preview::PreviewOperation::RemoveSource &&
-                          sink->errors.front().severity ==
-                              mvm::preview::PreviewErrorSeverity::FatalToSession &&
-                          diagnostics.audioTransportFailureCount == 1
-                : fault == Fault::RemoveShutdownRace
-                    // raceで止めたのはremovalであり、removal自体はfailureではない。
-                    ? sink->errors.size() == 1 &&
-                          sink->errors.front().category ==
-                              mvm::preview::PreviewErrorCategory::DeviceFailure &&
-                          diagnostics.audioTransportFailureCount == 0
-                : fault == Fault::SeekPartialGeneration
-                    ? sink->errors.size() == 1 &&
-                          sink->errors.front().category ==
-                              mvm::preview::PreviewErrorCategory::SeekFailure &&
-                          sink->errors.front().operation == mvm::preview::PreviewOperation::Seek &&
-                          sink->errors.front().severity ==
-                              mvm::preview::PreviewErrorSeverity::FatalToSession &&
-                          diagnostics.seekRequestCount == 1 &&
-                          diagnostics.seekDecodeReadyCount == 1 &&
-                          diagnostics.seekCompletedCount == 0 &&
-                          diagnostics.seekStaleGenerationRejectCount > 0
-                : fault == Fault::SeekPartialRequest
-                    ? partialRequestFailureValid && sink->errors.size() == 1 &&
-                          sink->errors.front().category ==
-                              mvm::preview::PreviewErrorCategory::SeekFailure &&
-                          sink->errors.front().operation ==
-                              mvm::preview::PreviewOperation::Seek &&
-                          sink->errors.front().severity ==
-                              mvm::preview::PreviewErrorSeverity::FatalToSession &&
-                          sink->errors.front().source == videoSourceB &&
-                          diagnostics.seekVideoRequestAcceptedCount == 1 &&
-                          diagnostics.seekRequestCount == 0 &&
-                          diagnostics.seekCompletedCount == 0
-                    : sink->errors.empty();
+                    : fault == Fault::RemoveAudioStopFailure
+                          // sink停止失敗はtransport failureとして1件だけ数える。
+                          ? sink->errors.size() == 1 &&
+                                sink->errors.front().category ==
+                                    mvm::preview::PreviewErrorCategory::AudioFailure &&
+                                sink->errors.front().operation ==
+                                    mvm::preview::PreviewOperation::RemoveSource &&
+                                sink->errors.front().severity ==
+                                    mvm::preview::PreviewErrorSeverity::FatalToSession &&
+                                diagnostics.audioTransportFailureCount == 1
+                          : fault == Fault::RemoveShutdownRace
+                                // raceで止めたのはremovalであり、removal自体はfailureではない。
+                                ? sink->errors.size() == 1 &&
+                                      sink->errors.front().category ==
+                                          mvm::preview::PreviewErrorCategory::DeviceFailure &&
+                                      diagnostics.audioTransportFailureCount == 0
+                                : fault == Fault::SeekPartialGeneration
+                                      ? sink->errors.size() == 1 &&
+                                            sink->errors.front().category ==
+                                                mvm::preview::PreviewErrorCategory::SeekFailure &&
+                                            sink->errors.front().operation ==
+                                                mvm::preview::PreviewOperation::Seek &&
+                                            sink->errors.front().severity ==
+                                                mvm::preview::PreviewErrorSeverity::
+                                                    FatalToSession &&
+                                            diagnostics.seekRequestCount == 1 &&
+                                            diagnostics.seekDecodeReadyCount == 1 &&
+                                            diagnostics.seekCompletedCount == 0 &&
+                                            diagnostics.seekStaleGenerationRejectCount > 0
+                                  : fault == Fault::SeekPartialRequest
+                                      ? partialRequestFailureValid && sink->errors.size() == 1 &&
+                                            sink->errors.front().category ==
+                                                mvm::preview::PreviewErrorCategory::SeekFailure &&
+                                            sink->errors.front().operation ==
+                                                mvm::preview::PreviewOperation::Seek &&
+                                            sink->errors.front().severity ==
+                                                mvm::preview::PreviewErrorSeverity::
+                                                    FatalToSession &&
+                                            sink->errors.front().source == videoSourceB &&
+                                            diagnostics.seekVideoRequestAcceptedCount == 1 &&
+                                            diagnostics.seekRequestCount == 0 &&
+                                            diagnostics.seekCompletedCount == 0
+                                      : sink->errors.empty();
             const bool removalFault =
-                fault == Fault::RemoveUnreferencedSource ||
+                fault == Fault::HotSwap || fault == Fault::RemoveUnreferencedSource ||
                 fault == Fault::RemoveReferencedSource || fault == Fault::RemoveAudioSource ||
                 fault == Fault::RemoveAudioStopFailure || fault == Fault::RemoveShutdownRace ||
                 fault == Fault::RemoveFatalEventOrder || fault == Fault::RemoveReleasedSource;
@@ -1273,9 +1367,10 @@ int main(int argc, char** argv) {
             const std::uint32_t expectedLayerCount =
                 fault == Fault::RemoveReleasedSource || !usesTwoVideoSources(fault) ? 1U : 2U;
             const std::uint64_t expectedVideoSourceCount =
-                fault == Fault::RemoveReleasedSource
-                    ? 1U
-                    : fault == Fault::ExceedLayerCount ? 3U : usesTwoVideoSources(fault) ? 2U : 1U;
+                fault == Fault::HotSwap || fault == Fault::RemoveReleasedSource ? 1U
+                : fault == Fault::ExceedLayerCount                              ? 3U
+                : usesTwoVideoSources(fault)                                    ? 2U
+                                                                                : 1U;
             const bool pass =
                 status.state == (fatalFault ? mvm::preview::PreviewEngineState::Error
                                             : mvm::preview::PreviewEngineState::Shutdown) &&
@@ -1299,23 +1394,22 @@ int main(int argc, char** argv) {
                 (fault == Fault::StaleCompositionEpoch ||
                  diagnostics.lifecycleViolationCount == 0) &&
                 terminalTelemetry.eventDeliveryFailureCount == 0;
-            std::printf("{\"verdict\":\"%s\",\"presented\":%llu,"
-                        "\"stale_composition_epoch_rejects\":%llu,"
-                        "\"rejected_frame\":%lld,\"rejected_frame_presented\":%s,"
-                        "\"removal_checked\":%s,\"audio_sources\":%llu,"
-                        "\"state_order_ok\":%s,"
-                        "\"lifecycle_violations\":%llu,\"errors\":%zu,\"terminal\":%d}\n",
-                        pass ? "PASS" : "FAIL",
-                        static_cast<unsigned long long>(terminalTelemetry.presentedFrameCount),
-                        static_cast<unsigned long long>(
-                            diagnostics.staleCompositionEpochRejectCount),
-                        static_cast<long long>(diagnostics.lastStaleCompositionRejectedFrame),
-                        rejectedFramePresented ? "true" : "false",
-                        removalChecked ? "true" : "false",
-                        static_cast<unsigned long long>(diagnostics.registeredAudioSourceCount),
-                        stateOrderPass ? "true" : "false",
-                        static_cast<unsigned long long>(diagnostics.lifecycleViolationCount),
-                        sink->errors.size(), static_cast<int>(status.state));
+            std::printf(
+                "{\"verdict\":\"%s\",\"presented\":%llu,"
+                "\"stale_composition_epoch_rejects\":%llu,"
+                "\"rejected_frame\":%lld,\"rejected_frame_presented\":%s,"
+                "\"removal_checked\":%s,\"audio_sources\":%llu,"
+                "\"state_order_ok\":%s,"
+                "\"lifecycle_violations\":%llu,\"errors\":%zu,\"terminal\":%d}\n",
+                pass ? "PASS" : "FAIL",
+                static_cast<unsigned long long>(terminalTelemetry.presentedFrameCount),
+                static_cast<unsigned long long>(diagnostics.staleCompositionEpochRejectCount),
+                static_cast<long long>(diagnostics.lastStaleCompositionRejectedFrame),
+                rejectedFramePresented ? "true" : "false", removalChecked ? "true" : "false",
+                static_cast<unsigned long long>(diagnostics.registeredAudioSourceCount),
+                stateOrderPass ? "true" : "false",
+                static_cast<unsigned long long>(diagnostics.lifecycleViolationCount),
+                sink->errors.size(), static_cast<int>(status.state));
             exitCode = pass ? 0 : 9;
             app.quit();
         }

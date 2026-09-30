@@ -115,6 +115,8 @@ struct P5CRuntimeDiagnostics {
     bool deviceReleased = true;
     bool unsafeGpuResourcesRetained = false;
     std::uint64_t registeredVideoSourceCount = 0;
+    std::vector<std::int64_t> recentPresentedOutputFrames;
+    std::vector<std::int64_t> recentUnpairedOutputFrames;
     // public source IDごとの現在のdecode generation。per-source provenanceを
     // product testが実測するためのinternal診断であり、public APIには出さない。
     std::map<std::uint64_t, std::uint64_t> videoSourceGenerations;
@@ -307,6 +309,8 @@ public:
     // layer-count product negativeで3 distinct sourceを登録するため、source上限だけを
     // ReadyPausedかつsource未登録時に変更する。layer上限は2のまま保持する。
     static Result<void> setVideoSourceLimitForTest(PreviewEngine& engine, std::uint32_t limit);
+    static Result<void> setRegisteredVideoSourceLimitForTest(PreviewEngine& engine,
+                                                             std::size_t limit);
     // seek completionで得たaudio generationをengineが実際にenforceしているか
     // 検査するseam。要求generationが決して揃わない状況を作る。
     static Result<void> injectSeekAudioGenerationMismatchForTest(PreviewEngine& engine);

@@ -1807,7 +1807,7 @@ VS Code の JavaScript 検査 (TypeScript) が "Unexpected keyword or identifier
 (`scripts/lint.ps1` の検査ではない)。どちらも状態を持たない関数だけなので、import した QML ごとに別の instance に
 なっても振る舞いは変わらない (`tst_timeline_gestures` / `tst_preview_transform` が通る)。
 
-### 19.9 トランジション・clip 境界での再生の一瞬の停止 (未解決)
+### 19.9 トランジション・clip 境界での再生の一瞬の停止
 
 `[事実]` 再生中に表示する decode source が変わる (トランジションの区間に入る、別ファイルの clip へ切り替わる) と、
 controller は preview を一時停止して source を組み直す ("clip境界でPreviewを組み直しています")。engine の
@@ -1820,7 +1820,24 @@ controller は preview を一時停止して source を組み直す ("clip境界
   出力区間へ換算できず fatal になる (`sourceFrameOutputInterval` が無効を返す)
 - 不透明度 0 で合成に入れておくと、その source の frame が無い間は exact pairing が frame 全体を落とす
 
-`[未検証]` engine が再生中の source の追加・削除を受理するようにする対応は、別ブランチで行う。
+`[事実]` `feature/playing-source-handoff` で engine が `Playing` 中の source 追加・削除を受理するようにした。
+映像は mapping の最初の素材 frame へ seek し、output anchor を設定してから worker を再生する。
+controller は `timelineRenderSegments` に基づく次の区間開始を 2 秒前から準備し、境界では
+composition を切り替える。旧 source は新 composition の提示後に削除する。音声入力は callback と
+排他して差し替え、主音声の交代と無音区間でも timeline sample の時計を進める。
+
+`[事実]` release の `transition_preview` を実行し、トランジション、別ファイルへの cut、
+無音から音声、音声から無音の 4 条件すべてで境界前後の提示が続き、境界 ±1 frame の
+source pairing 欠落は 0、controller の組み直しは 0 回だった。続けて同じ試験を 3 回実行し、
+3/3 通過した。代表 run の区間全体の engine drop は順に 0 / 0 / 18 / 19 frame で、
+scheduler や OS 負荷による drop を含む。
+source 準備の最大観測時間は順に 28.3 / 14.2 / 21.6 / 11.5 ms で、いずれも 1 秒未満だったため
+先読み幅 2 秒を採用した。再現手順は
+`pwsh scripts/build.ps1 -Target mvm_test_transition_preview`、
+`ctest --test-dir build/ucrt64-release -R '^transition_preview$' -V --timeout 120`。
+登録上限を 1 本にした負例では、理由に登録上限を含む組み直しが 1 回発生し、再生を再開した。
+
+`[未検証]` 他の GPU / 音声 endpoint、長尺素材、操作中の高負荷環境での境界欠落率は未測定。
 
 ### 19.10 レビュー指摘への対応 (P1 1 件 / P2 4 件)
 

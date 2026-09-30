@@ -73,7 +73,7 @@ std::int64_t currentQpc() {
 } // namespace
 
 WasapiAudioSink::WasapiAudioSink(AudioFrameQueue& queue, AudioMasterClock& clock)
-    : queue_(queue), clock_(clock) {}
+    : queue_(&queue), clock_(clock) {}
 
 WasapiAudioSink::~WasapiAudioSink() {
     stop();
@@ -230,7 +230,7 @@ bool WasapiAudioSink::play(std::int64_t mediaStartSample, SourceGeneration gener
             barrierChanged_.wait(barrierLock, [this] { return !playBarrierArmed_; });
         }
     }
-    if (!queue_.waitForSamples(kAudioPrerollSamples, kPrerollTimeoutMs)) {
+    if (queue_ && !queue_->waitForSamples(kAudioPrerollSamples, kPrerollTimeoutMs)) {
         error = "固定 100 ms の audio pre-roll を 5000 ms 以内に満たせません";
         return false;
     }
@@ -443,10 +443,6 @@ bool WasapiAudioSink::setSessionVolume(float volume, std::string& error) {
 bool WasapiAudioSink::addMixInput(AudioFrameQueue& queue, std::int64_t sampleOffsetDelta,
                                   SourceGeneration generation, std::string& error) {
     std::lock_guard clientLock(clientMutex_);
-    if (playing_) {
-        error = "再生中にaudio mix inputを追加できません";
-        return false;
-    }
     if (std::any_of(mixInputs_.begin(), mixInputs_.end(),
                     [&queue](const MixInput& input) { return input.queue == &queue; })) {
         error = "audio mix inputは既に登録されています";
@@ -463,10 +459,6 @@ bool WasapiAudioSink::addMixInput(AudioFrameQueue& queue, std::int64_t sampleOff
 
 bool WasapiAudioSink::removeMixInput(AudioFrameQueue& queue, std::string& error) {
     std::lock_guard clientLock(clientMutex_);
-    if (playing_) {
-        error = "再生中にaudio mix inputを解除できません";
-        return false;
-    }
     const auto found =
         std::find_if(mixInputs_.begin(), mixInputs_.end(),
                      [&queue](const MixInput& input) { return input.queue == &queue; });
@@ -475,6 +467,16 @@ bool WasapiAudioSink::removeMixInput(AudioFrameQueue& queue, std::string& error)
         return false;
     }
     mixInputs_.erase(found);
+    return true;
+}
+
+bool WasapiAudioSink::detachPrimaryInput(AudioFrameQueue& queue, std::string& error) {
+    std::lock_guard clientLock(clientMutex_);
+    if (queue_ != &queue) {
+        error = "主audio inputが登録されていません";
+        return false;
+    }
+    queue_ = nullptr;
     return true;
 }
 
@@ -496,8 +498,19 @@ bool WasapiAudioSink::updateMixInput(AudioFrameQueue& queue, SourceGeneration ge
 AudioConsumeResult WasapiAudioSink::consumeMixed(std::int64_t requestedSampleStart,
                                                  std::int64_t samples,
                                                  SourceGeneration primaryGeneration) {
-    AudioConsumeResult primary =
-        queue_.consume(sourceScratch_.data(), requestedSampleStart, samples, primaryGeneration);
+    AudioConsumeResult primary;
+    if (queue_) {
+        primary = queue_->consume(sourceScratch_.data(), requestedSampleStart, samples,
+                                  primaryGeneration);
+    } else {
+        std::fill_n(sourceScratch_.begin(), static_cast<std::size_t>(samples) * kInternalChannels,
+                    0.0F);
+        primary.requestedSamples = samples;
+        primary.audioSamples = samples;
+        primary.firstSample = requestedSampleStart;
+        primary.lastSampleExclusive = requestedSampleStart + samples;
+        primary.silenceSamples = samples;
+    }
     for (auto& input : mixInputs_) {
         const std::size_t valueCount = static_cast<std::size_t>(samples) * kInternalChannels;
         std::fill_n(input.scratch.begin(), valueCount, 0.0F);
@@ -507,10 +520,23 @@ AudioConsumeResult WasapiAudioSink::consumeMixed(std::int64_t requestedSampleSta
             input.queue->noteSampleAddressOverflow();
             continue;
         }
-        const AudioConsumeResult mixed =
-            input.queue->consume(input.scratch.data(), requested, samples, input.generation);
-        if (mixed.shortageKind == AudioShortageKind::Starvation)
-            input.queue->noteUnderflow(samples - mixed.audioSamples);
+        if (requested >= 0) {
+            const std::int64_t available = input.queue->discardBefore(requested, input.generation);
+            if (available < 0) {
+                input.queue->noteUnderflow(samples);
+                continue;
+            }
+            if (available > requested)
+                input.queue->noteUnderflow(std::min(samples, available - requested));
+            if (available >= 0 && available - requested < samples) {
+                const std::int64_t gap = available - requested;
+                const AudioConsumeResult mixed = input.queue->consume(
+                    input.scratch.data() + static_cast<std::size_t>(gap) * kInternalChannels,
+                    available, samples - gap, input.generation);
+                if (mixed.shortageKind == AudioShortageKind::Starvation)
+                    input.queue->noteUnderflow(samples - gap - mixed.audioSamples);
+            }
+        }
         for (std::size_t index = 0; index < valueCount; ++index)
             sourceScratch_[index] += input.scratch[index];
     }
@@ -673,7 +699,8 @@ bool WasapiAudioSink::renderAvailable() {
     recentConsumeTraceCount_ = std::min(recentConsumeTraceCount_ + 1, kAudioConsumeTraceCapacity);
     nextRequestedSample_ = requestedSampleStart < 0 ? -1 : requestedSampleStart + sourceNeeded;
     if (consumed.shortageKind == AudioShortageKind::Starvation) {
-        queue_.noteUnderflow(sourceNeeded - consumed.audioSamples);
+        if (queue_)
+            queue_->noteUnderflow(sourceNeeded - consumed.audioSamples);
         if (attribution_) {
             const auto clock = clock_.snapshot();
             AudioUnderflowFirstSnapshot snapshot;

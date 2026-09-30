@@ -2348,6 +2348,7 @@ if(MVM_ENABLE_QT)
         ARGS --fault-missing-pair)
     mvm_add_p5e_product_test(preview_engine_p5e_remove_released_source
         ARGS --remove-released-source)
+    mvm_add_p5e_product_test(preview_engine_p5e_hot_swap ARGS --hot-swap)
     mvm_add_p5e_product_test(preview_engine_p5e_seek_two_source ARGS --seek-two-source)
     mvm_add_p5e_product_test(preview_engine_p5e_seek_partial_generation_fail_closed
         ARGS --fault-seek-partial-generation)
@@ -2383,9 +2384,9 @@ if(MVM_ENABLE_QT)
         ARGS --remove-fatal-event-order)
 
     list(LENGTH _mvm_p5e_product_tests _mvm_p5e_product_registered)
-    if(NOT _mvm_p5e_product_registered EQUAL 17)
+    if(NOT _mvm_p5e_product_registered EQUAL 18)
         message(FATAL_ERROR
-            "[mvm] P5-E product testの登録数が不正です: ${_mvm_p5e_product_registered}/17")
+            "[mvm] P5-E product testの登録数が不正です: ${_mvm_p5e_product_registered}/18")
     endif()
 
     # product capability (映像 8 / 合成 16 / 音声 16) を上限ちょうどで受理・描画し、

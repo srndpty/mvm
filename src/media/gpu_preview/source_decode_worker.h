@@ -186,6 +186,8 @@ public:
                                   SeekTicket& ticket, std::string& err);
     SeekWaitResult waitSeek(const SeekTicket& ticket, int timeoutMs, SeekCompletion& completion);
     bool seekBlocking(long long frameNumber, double& decodeReadyMs, std::string& err);
+    bool seekBlocking(long long sourceFrameNumber, long long outputFrameNumber,
+                      double& decodeReadyMs, std::string& err);
     bool flushBlocking(std::string& err);
 
     SourceFrameBuffer& buffer() { return buffer_; }

@@ -82,8 +82,10 @@ struct PreviewSourceDescriptor {
 - `PreviewSourceId`はengineだけが発行する
 - media openとdescriptor validationが全て成功するまでpublic source IDを返さず、source tableへ成功登録しない
 - open/validation failureはfailure `Result`を返し、失敗したsourceを後続APIから参照可能にしない
-- source registrationは`ReadyPaused`だけで受理する
-- `Playing`中のdynamic source registration、switching、removalは未contractである
+- source registrationは`ReadyPaused`と`Playing`で受理する。`Playing`中の映像は最初の素材frameへseekし、timeline開始frameをoutput anchorにしてから公開する
+- `Playing`中に追加した未参照映像sourceは、compositionが参照するまでpairingとEOF判定に入れない
+- 再生中に受理したcompositionが`activationOutputFrame`を持つ場合、そのframeまでは直前に提示したcompositionを描く。controllerとengineの時計差で新sourceを1 frame早く要求しない
+- `Playing`中の音声入力は現在のtimeline sampleに対応する素材位置へseekしてからmixへ公開する。入力の追加・削除はWASAPI callbackと排他する
 
 public product headerに次を公開しない。
 
@@ -133,12 +135,11 @@ format conversionやresamplingを実装都合のfallbackとして黙って有効
 入力domain、出力domain、quality、clock/seek semanticsを別途contractで明示する。
 
 初期Phase 5では、最初に登録成功した`audioEnabled == true`のsourceをauthoritative active audio sourceと
-する。authoritative audio sourceが登録済みの間、二件目の`audioEnabled == true` sourceの登録は
-`UnsupportedCapability`で拒否する。暗黙に先着sourceを切り替えたり、二sourceをmixしたりしない。
+する。現在は複数のaudio sourceをmixでき、`Playing`中にも入力を追加・削除できる。
+最初の入力を削除してもendpointと時計はsession中に保持し、残る入力または無音を同じ時計で再生する。
 
 `CompositionSnapshot`はvideo compositionだけを表し、audio layer、audio graph、audio source selectionを
-表現しない。authoritative audio sourceの切り替えと`Playing`中のdynamic audio source変更は将来の
-独立contractとする。
+表現しない。audio inputのidentityとtimeline上の位置ずれはengineのsource tableが保持する。
 
 ## 6. Source identity
 
@@ -158,11 +159,11 @@ PreviewSourceId
 source removalは、active compositionまたはacceptedだが未提示のpending compositionがそのsourceを
 参照している場合に`InvalidState`で拒否する。Phase 5でsupportするのは安全に参照が外れたsourceの
 削除である。authoritative audio sourceを`ReadyPaused`で安全に削除した場合はaudio authorityを空へ戻す。
-再生中の一般的なdynamic removalは将来の独立contractとする。
+`Playing`中も、compositionが参照しないsourceを削除できる。audio入力はcallbackから外してからworkerを停止する。
 
 P5-E3 implementation時点で、参照が外れたvideo sourceの削除、未参照video sourceの削除、およびauthoritative
 audio sourceの安全な削除とaudio authorityの返却をproduct経路へ実装済みである。active/pending参照中、
-seek進行中、`ReadyPaused`以外、未登録/削除済みIDは上記contractに従ってfail-closedで拒否する。
+seek進行中、`ReadyPaused`/`Playing`以外、未登録/削除済みIDは上記contractに従ってfail-closedで拒否する。
 
 参照が外れる時点は「新しいcompositionをacceptした時点」ではなく「新しいcompositionを実際に提示した
 時点」である。提示中のcompositionを差し替えてacceptしただけでは、古いcompositionがまだ画面に出ている
@@ -171,7 +172,7 @@ seek進行中、`ReadyPaused`以外、未登録/削除済みIDは上記contract�
 削除した`PreviewSourceId`は同一session内で再利用しない。再利用すると、削除前のIDを保持していた
 呼び出し側の参照が別のsourceへ黙って結び付く。
 
-removalが受理される前提は次のとおりである。engine stateが`ReadyPaused`であること、seekが進行中でない
+removalが受理される前提は次のとおりである。engine stateが`ReadyPaused`または`Playing`であること、seekが進行中でない
 こと、`PreviewSourceId`が登録済みであることを、この順で検査する。未登録IDは`InvalidSource`であり、
 stateの都合で別のerrorへすり替えない。
 
@@ -491,8 +492,8 @@ attachmentのcontractは次のとおりである。
 | `attachEventSink` | `WaitingForRenderDevice`, `ReadyPaused`, `Playing`, `Seeking` | sink generation更新。state維持 |
 | `detachEventSink` | `Uninitialized`以外 | idempotent detach。state維持 |
 | private device attach | `WaitingForRenderDevice` | `ReadyPaused` |
-| `addSource` | `ReadyPaused` | state維持 |
-| `removeSource` | `ReadyPaused`かつ未参照 | state維持 |
+| `addSource` | `ReadyPaused`, `Playing` | state維持。公開前に初期seekを完了 |
+| `removeSource` | `ReadyPaused`, `Playing`かつ未参照 | state維持 |
 | `submitComposition` | `ReadyPaused`, `Playing` | accepted tokenを発行。state維持 |
 | `play` | `ReadyPaused` | `Playing` |
 | `pause` | `Playing` | `ReadyPaused` |

@@ -75,6 +75,7 @@ public:
     bool waitForSamples(std::int64_t requiredSamples, int timeoutMs);
     AudioConsumeResult consume(float* destination, std::int64_t requestedSampleStart,
                                std::int64_t samples, SourceGeneration expectedGeneration);
+    std::int64_t discardBefore(std::int64_t sample, SourceGeneration expectedGeneration);
     void setGainAtSample(std::function<float(std::int64_t)> gainAtSample);
     bool markEndOfStream(SourceGeneration generation, std::int64_t endSampleExclusive);
     bool setGeneration(SourceGeneration generation);

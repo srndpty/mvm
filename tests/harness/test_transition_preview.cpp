@@ -10,12 +10,15 @@
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "mvm_controller.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <filesystem>
 #include <functional>
 #include <thread>
+#include <vector>
 
 #include <QGuiApplication>
 #include <QQuickWindow>
@@ -25,6 +28,31 @@
 namespace {
 
 int failures = 0;
+
+bool crossesBoundaryWithoutPairingMiss(const std::vector<std::int64_t>& presented,
+                                       std::size_t presentedFrom,
+                                       const std::vector<std::int64_t>& unpaired,
+                                       std::size_t unpairedFrom, std::int64_t boundary) {
+    const auto first = presented.begin() + static_cast<std::ptrdiff_t>(presentedFrom);
+    const bool before =
+        std::any_of(first, presented.end(), [&](std::int64_t frame) { return frame < boundary; });
+    const bool after =
+        std::any_of(first, presented.end(), [&](std::int64_t frame) { return frame >= boundary; });
+    const bool missed = std::any_of(
+        unpaired.begin() + static_cast<std::ptrdiff_t>(unpairedFrom), unpaired.end(),
+        [&](std::int64_t frame) { return frame >= boundary - 1 && frame <= boundary + 1; });
+    if (!before || !after || missed)
+        std::fprintf(
+            stderr,
+            "境界 %lld の前後提示またはpairingに失敗しました (前=%d 後=%d pairing欠落=%d)\n",
+            static_cast<long long>(boundary), before, after, missed);
+    if (missed)
+        for (auto it = unpaired.begin() + static_cast<std::ptrdiff_t>(unpairedFrom);
+             it != unpaired.end(); ++it)
+            if (*it >= boundary - 1 && *it <= boundary + 1)
+                std::fprintf(stderr, "  pairing欠落 frame=%lld\n", static_cast<long long>(*it));
+    return before && after && !missed;
+}
 
 void check(bool value, const char* message) {
     if (!value) {
@@ -162,17 +190,144 @@ int main(int argc, char** argv) {
                              controller.statusText().toUtf8().constData());
                 return 1;
             }
+            const auto before = controller.previewTelemetry();
+            const auto beforeEvents = controller.presentedFrameHistoryForTest().size();
+            const auto beforeUnpaired = controller.unpairedFrameHistoryForTest().size();
             const bool passed = pumpUntil(
                 [&] { return !controller.playing() || controller.playheadFrame() >= 150; }, 15000);
             check(passed && controller.playing(), "トランジションの区間を通して再生が続きません");
-            std::printf("再生: playhead %lld、status: %s\n",
-                        static_cast<long long>(controller.playheadFrame()),
-                        controller.statusText().toUtf8().constData());
+            const auto after = controller.previewTelemetry();
+            check(controller.playbackRebuildCount() == 0,
+                  "トランジションの境界でPreviewを組み直しました");
+            check(after.presentedFrameCount > before.presentedFrameCount,
+                  "トランジションを通してframeを提示しませんでした");
+            const auto history = controller.presentedFrameHistoryForTest();
+            const auto unpaired = controller.unpairedFrameHistoryForTest();
+            check(crossesBoundaryWithoutPairingMiss(history, beforeEvents, unpaired, beforeUnpaired,
+                                                    110) &&
+                      crossesBoundaryWithoutPairingMiss(history, beforeEvents, unpaired,
+                                                        beforeUnpaired, 130),
+                  "トランジションの境界で提示またはpairingが途切れました");
+            std::printf(
+                "再生: playhead %lld、提示 %llu、drop %llu、組み直し %llu、準備最大 "
+                "%.1fms、status: %s\n",
+                static_cast<long long>(controller.playheadFrame()),
+                static_cast<unsigned long long>(after.presentedFrameCount -
+                                                before.presentedFrameCount),
+                static_cast<unsigned long long>(after.droppedFrameCount - before.droppedFrameCount),
+                static_cast<unsigned long long>(controller.playbackRebuildCount()),
+                controller.playbackMaxPreparationMs(),
+                controller.statusText().toUtf8().constData());
             controller.pauseTimeline();
             return failures == 0 ? 0 : 1;
         };
         exitCode = run();
         controller.shutdown();
+    }
+    const auto copiedVideo = video.parent_path() / "v1080p60_hevc.mp4";
+    const auto copiedWav =
+        video.parent_path() /
+        fromUtf8("素材/日本語 テスト/第1回　微分積分＆演習/ナレーション　音声.wav");
+    if (!std::filesystem::is_regular_file(copiedVideo) ||
+        !std::filesystem::is_regular_file(copiedWav)) {
+        std::fprintf(stderr, "FAIL: 別ファイルの cut 試験素材がありません\n");
+        exitCode = 1;
+    } else {
+        const auto runCut = [&](const char* label, bool firstAudio, bool secondAudio,
+                                bool forceCapacity) {
+            auto cutProject = mvm::project::createDefaultProject();
+            cutProject.timelineClips = {half(video, "cut-v-out", TrackKind::Video, 0, 0),
+                                        half(copiedVideo, "cut-v-in", TrackKind::Video, 120, 120)};
+            if (firstAudio)
+                cutProject.timelineClips.push_back(half(wav, "cut-a-out", TrackKind::Audio, 0, 0));
+            if (secondAudio)
+                cutProject.timelineClips.push_back(
+                    half(copiedWav, "cut-a-in", TrackKind::Audio, 120, 120));
+            check(mvm::project::validateTimeline(cutProject).success,
+                  "cut 試験の timeline が不正です");
+            const auto cutPath = std::filesystem::path(
+                directory.filePath(QString::fromUtf8(label) + QStringLiteral(".mvm"))
+                    .toStdWString());
+            mvm::app::MvmController controller(cutPath, {}, cutProject);
+            QQuickWindow window;
+            window.setWidth(640);
+            window.setHeight(360);
+            auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
+            surface->setWidth(640);
+            surface->setHeight(360);
+            window.show();
+            controller.attachPreview(surface);
+            const bool ready = pumpUntil([&] { return controller.previewReady(); }, 30000);
+            const bool sought =
+                ready &&
+                retryUntilAccepted([&] { return controller.seekTimelineFrame(90); }, 30000) &&
+                pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+            const bool limited =
+                !forceCapacity || (sought && controller.setPreviewRegistrationLimitForTest(1));
+            const bool started =
+                sought && limited &&
+                retryUntilAccepted([&] { return controller.playTimeline(); }, 30000);
+            check(started, "cut の前から再生を開始できません");
+            if (started) {
+                const auto before = controller.previewTelemetry();
+                const auto beforeEvents = controller.presentedFrameHistoryForTest().size();
+                const auto beforeUnpaired = controller.unpairedFrameHistoryForTest().size();
+                const bool passed =
+                    pumpUntil([&] { return controller.playheadFrame() >= 150; }, 15000);
+                const auto after = controller.previewTelemetry();
+                check(passed && controller.playing(), "cut を通して再生が続きません");
+                if (forceCapacity) {
+                    check(controller.playbackRebuildCount() > 0 &&
+                              controller.lastPlaybackRebuildReason().contains(
+                                  QStringLiteral("登録上限")),
+                          "登録上限で理由付きの組み直しに戻りませんでした");
+                } else {
+                    check(controller.playbackRebuildCount() == 0,
+                          "cut の境界でPreviewを組み直しました");
+                }
+                check(after.presentedFrameCount > before.presentedFrameCount,
+                      "cut の前後でframeを提示しませんでした");
+                if (!forceCapacity)
+                    check(crossesBoundaryWithoutPairingMiss(
+                              controller.presentedFrameHistoryForTest(), beforeEvents,
+                              controller.unpairedFrameHistoryForTest(), beforeUnpaired, 120),
+                          "cut の境界で提示またはpairingが途切れました");
+                std::printf("%s: 提示 %llu、drop %llu、組み直し %llu、準備最大 %.1fms、理由: "
+                            "%s、status: %s\n",
+                            label,
+                            static_cast<unsigned long long>(after.presentedFrameCount -
+                                                            before.presentedFrameCount),
+                            static_cast<unsigned long long>(after.droppedFrameCount -
+                                                            before.droppedFrameCount),
+                            static_cast<unsigned long long>(controller.playbackRebuildCount()),
+                            controller.playbackMaxPreparationMs(),
+                            controller.lastPlaybackRebuildReason().toUtf8().constData(),
+                            controller.statusText().toUtf8().constData());
+                controller.pauseTimeline();
+                if (firstAudio && secondAudio) {
+                    const bool resumed =
+                        retryUntilAccepted([&] { return controller.playTimeline(); }, 30000);
+                    const bool advanced =
+                        resumed && pumpUntil(
+                                       [&] {
+                                           return !controller.playing() ||
+                                                  controller.playheadFrame() >= 175;
+                                       },
+                                       15000);
+                    check(advanced && controller.playing(),
+                          "主音声の交代後に一時停止から再生できません");
+                    if (controller.playing())
+                        controller.pauseTimeline();
+                }
+            }
+            controller.shutdown();
+        };
+        runCut("cut-av", true, true, false);
+        runCut("cut-silent-to-audio", false, true, false);
+        runCut("cut-audio-to-silent", true, false, false);
+        runCut("cut-capacity-fallback", false, false, true);
+        if (failures != 0)
+            exitCode = 1;
     }
     mvm_mlt_runtime_shutdown();
     if (exitCode == 0)

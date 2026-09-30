@@ -87,8 +87,8 @@ class MvmController : public QObject {
     // 選択は selectedTransitionId と比べる (選択で model を変えない)。
     // Repeater の model なので stateChanged (再生中も頻繁に出る) では通知しない。通知のたびに
     // delegate が作り直される。
-    Q_PROPERTY(QVariantList timelineTransitions READ timelineTransitions NOTIFY
-                   timelineTransitionsChanged)
+    Q_PROPERTY(
+        QVariantList timelineTransitions READ timelineTransitions NOTIFY timelineTransitionsChanged)
     // 選択中の編集点 {trackKind, trackIndex, frame}。無ければ空。clip の選択とは排他。
     Q_PROPERTY(QVariantMap selectedEditPoint READ selectedEditPoint NOTIFY stateChanged)
     Q_PROPERTY(QString selectedTransitionId READ selectedTransitionId NOTIFY stateChanged)
@@ -161,6 +161,17 @@ public:
 
     QString statusText() const { return statusText_; }
 
+    std::uint64_t playbackRebuildCount() const { return playbackRebuildCount_; }
+
+    QString lastPlaybackRebuildReason() const { return lastPlaybackRebuildReason_; }
+
+    double playbackMaxPreparationMs() const { return playbackMaxPreparationMs_; }
+    bool setPreviewRegistrationLimitForTest(std::size_t limit);
+    std::vector<std::int64_t> presentedFrameHistoryForTest() const;
+    std::vector<std::int64_t> unpairedFrameHistoryForTest() const;
+
+    preview::PreviewTelemetry previewTelemetry() const { return previewEngine_->telemetry(); }
+
     QString currentClipName() const { return currentClipName_; }
 
     QString currentClipPath() const { return currentClipPath_; }
@@ -201,7 +212,9 @@ public:
     QVariantList timelineMarkers() const;
     QVariantList timelineTransitions() const;
     QVariantMap selectedEditPoint() const;
+
     QString selectedTransitionId() const { return QString::fromStdString(selectedTransitionId_); }
+
     bool canDeleteSelection() const;
 
     qint64 inFrame() const { return project_.inFrame.value_or(-1); }
@@ -388,11 +401,10 @@ public:
     Q_INVOKABLE bool rateStretchClip(const QString& clipId, const QString& edge,
                                      qint64 projectFrameDelta, bool linked);
     Q_INVOKABLE QVariantMap clipSpeedDurationState(const QString& clipId) const;
-    Q_INVOKABLE QVariantMap previewClipSpeedDuration(const QString& clipId,
-                                                    const QString& input,
-                                                    double speedPercent,
-                                                    const QString& durationText,
-                                                    bool preservePitch, bool ripple) const;
+    Q_INVOKABLE QVariantMap previewClipSpeedDuration(const QString& clipId, const QString& input,
+                                                     double speedPercent,
+                                                     const QString& durationText,
+                                                     bool preservePitch, bool ripple) const;
     // ripple しない速度・尺の変更が、延びた先の clip と重なるか。UI は上書きの確認に使う。
     Q_INVOKABLE bool clipSpeedDurationNeedsOverwrite(const QString& clipId, const QString& input,
                                                      double speedPercent,
@@ -446,8 +458,8 @@ public:
     Q_INVOKABLE bool toggleTimelineClipEnabled(const QString& clipId);
     // 既定のトランジションを適用する (Shift+D)。clip を選択していれば、その clip (とリンク相手)
     // の先頭と末尾に 1 秒のフェードを付ける。1 回が 1 undo。
-    // 編集点 (またはトランジション) を選んでいれば、そこへ 1 秒のクロスディゾルブ / クロスフェードを
-    // 置く (リンク相手も同じ cut なら一緒に)。
+    // 編集点 (またはトランジション) を選んでいれば、そこへ 1 秒のクロスディゾルブ /
+    // クロスフェードを 置く (リンク相手も同じ cut なら一緒に)。
     Q_INVOKABLE bool applyDefaultTransition();
     Q_INVOKABLE QVariantMap previewClipKey(const QString& clipId, qint64 originalFrame,
                                            qint64 requestedFrame, double valuePercent) const;
@@ -567,6 +579,8 @@ private:
     struct AudioSourceIdentity {
         std::filesystem::path mediaPath;
         std::int64_t sampleOffset = 0;
+        std::int64_t segmentStart = 0;
+        std::int64_t segmentEnd = 0;
         project::ClipEffects effects;
         // 速度が違えば decoder の伸縮が違うので別の source になる。
         std::int64_t speedNum = 1;
@@ -594,6 +608,9 @@ private:
     void pollPreviewState();
     void pollAudioMeter();
     void advanceTimelinePlayback();
+    bool prepareUpcomingPlaybackSources(std::int64_t frame, QString& reason);
+    bool preparePlaybackSourcesAt(std::int64_t frame, QString& reason);
+    void retirePreparedPlaybackSources();
     void advanceTimelineShuttle();
     // timed shuttle の clock (音声があれば audio clock) から現在の timeline frame を求める。
     bool shuttleFrameFromClock(std::int64_t& frame, QString& error) const;
@@ -636,6 +653,7 @@ private:
                                                 const std::filesystem::path& mediaPath,
                                                 QString& error,
                                                 const MediaImportResult* probed = nullptr) const;
+
     // 置く素材。itemId はプロジェクトパネルの素材 (空なら path を登録する)。
     // probed は判定済みの結果 (あれば bin 登録で調べ直さない)。
     struct DropMedia {
@@ -644,6 +662,7 @@ private:
         const MediaImportResult* probed = nullptr;
         std::string itemId;
     };
+
     bool placeMediaAtDropPoint(const std::vector<DropMedia>& media, const QString& trackKind,
                                int trackIndex, qint64 frame);
     // 呼び出し側が確かめたローカルファイルを、判定済みの結果で画像 clip として置く。
@@ -764,6 +783,15 @@ private:
     // video track index -> preview source。track を増やしても添字を取り違えない。
     std::map<int, TrackPreviewSource> trackSources_;
     std::vector<AudioPreviewSource> audioSources_;
+    std::vector<TrackPreviewSource> preparedVideoSources_;
+    std::vector<AudioPreviewSource> preparedAudioSources_;
+    QString playbackPreparationFailure_;
+    std::optional<std::int64_t> failedPreparationStart_;
+    bool playbackCapacityFailure_ = false;
+    std::optional<std::int64_t> pendingCapacityRebuildFrame_;
+    QString lastPlaybackRebuildReason_;
+    std::uint64_t playbackRebuildCount_ = 0;
+    double playbackMaxPreparationMs_ = 0.0;
     // 最後に engine が受理した composition。同じ内容を出し直さないために持つ。
     std::shared_ptr<const preview::CompositionSnapshot> submittedComposition_;
     // refreshPreviewAtPlayhead を engine が受けられず保留している。pollPreviewState が行う。

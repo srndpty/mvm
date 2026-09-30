@@ -72,6 +72,8 @@ public:
     bool addMixInput(AudioFrameQueue& queue, std::int64_t sampleOffsetDelta,
                      SourceGeneration generation, std::string& error);
     bool removeMixInput(AudioFrameQueue& queue, std::string& error);
+    // 主入力だけを外し、endpoint と clock は無音のまま継続する。
+    bool detachPrimaryInput(AudioFrameQueue& queue, std::string& error);
     bool updateMixInput(AudioFrameQueue& queue, SourceGeneration generation,
                         std::int64_t sampleOffsetDelta, std::string& error);
     void stop();
@@ -110,7 +112,7 @@ private:
     // mutex_ を呼び出し側が保持している前提。open() の失敗経路から使う。
     void releaseDeviceLocked();
 
-    AudioFrameQueue& queue_;
+    AudioFrameQueue* queue_ = nullptr;
     AudioMasterClock& clock_;
     mutable std::mutex mutex_;
     std::mutex clientMutex_;

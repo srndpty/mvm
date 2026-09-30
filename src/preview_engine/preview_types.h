@@ -118,6 +118,8 @@ struct PreviewCompositionLayer {
 
 struct CompositionSnapshot {
     std::vector<PreviewCompositionLayer> layers;
+    // 再生中の区間切替では、このoutput frameから新しいlayer集合を使う。
+    std::int64_t activationOutputFrame = -1;
     bool operator==(const CompositionSnapshot&) const = default;
 };
 
