@@ -42,7 +42,10 @@ struct WasapiSnapshot {
     std::uint64_t audioRenderThreadJoinLeak = 0;
     std::uint64_t audioDeviceReleaseBeforeJoin = 0;
     std::uint64_t audioLifecycleViolation = 0;
+    // 要求された session volume。
     float sessionVolume = 1.0F;
+    // 実際に endpoint へ設定した値 (sessionVolume x 試験用の倍率 MVM_TEST_AUDIO_VOLUME_SCALE)。
+    float endpointVolume = 1.0F;
     // 直近に endpoint へ送った PCM の channel ごと peak (linear, 0..1)。
     // UI の polling 間隔で peak を取りこぼさないよう、減衰は render 側で行う。
     float meterPeakLeft = 0.0F;
@@ -62,7 +65,8 @@ public:
     WasapiAudioSink& operator=(const WasapiAudioSink&) = delete;
 
     // sessionVolume は Windows の per-process endpoint session volume である。
-    // 既定は unity で、その場合は一切設定しない (既存の挙動を変えない)。
+    // 既定は unity で、その場合は一切設定しない (既存の挙動を変えない)。試験では環境変数
+    // MVM_TEST_AUDIO_VOLUME_SCALE の倍率を掛けて endpoint へ設定する (tests/CMakeLists.txt)。
     // 非 unity を要求して適用できなかった場合は、黙って全音量で鳴らさず失敗する。
     bool open(std::string& error, float sessionVolume = 1.0F);
     bool play(std::int64_t mediaStartSample, SourceGeneration generation, std::string& error);

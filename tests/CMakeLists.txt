@@ -373,7 +373,8 @@ set_target_properties(mvm_test_transition_preview PROPERTIES WIN32_EXECUTABLE OF
 add_test(NAME transition_preview
     COMMAND mvm_test_transition_preview
             "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4"
-            "${CMAKE_SOURCE_DIR}/tests/assets/smoke/wav_48k.wav")
+            "${CMAKE_SOURCE_DIR}/tests/assets/smoke/wav_48k.wav"
+            "${MVM_UCRT64_ROOT}/bin/ffmpeg.exe")
 set_tests_properties(transition_preview PROPERTIES
     ENVIRONMENT "PATH=${MVM_UCRT64_ROOT}/bin;$ENV{PATH}"
     REQUIRED_FILES "${CMAKE_SOURCE_DIR}/tests/assets/smoke/v1080p60_h264.mp4;${CMAKE_SOURCE_DIR}/tests/assets/smoke/wav_48k.wav"
@@ -3859,3 +3860,16 @@ if(_mvm_workstation_exclusive EQUAL 0)
 endif()
 message(STATUS
     "[mvm] workstation テスト ${_mvm_workstation_exclusive} 件へ RESOURCE_LOCK を設定しました")
+
+# --- 試験で鳴らす音量 -------------------------------------------------------
+# 実 audio endpoint で鳴らす試験が大きな音で驚かせないよう、全試験で WASAPI の session volume に
+# 倍率を掛ける (media/audio_preview/wasapi_audio_sink.cpp)。controller の既定 0.35 は 0.0875、
+# engine 単体の 1.0 は 0.25、検証アプリの 0.1 は 0.025 になる。PCM は変えないので判定には
+# 影響しない。RESOURCE_LOCK と同じく、新しい試験にも付け忘れないよう機械的に付ける。
+# ENVIRONMENT (PATH) を上書きしないよう ENVIRONMENT_MODIFICATION で足す。
+set(MVM_TEST_AUDIO_VOLUME_SCALE 0.25 CACHE STRING
+    "試験で鳴らす音の session volume に掛ける倍率 (0 < x <= 1)")
+foreach(_mvm_test IN LISTS _mvm_all_tests)
+    set_property(TEST ${_mvm_test} APPEND PROPERTY ENVIRONMENT_MODIFICATION
+        "MVM_TEST_AUDIO_VOLUME_SCALE=set:${MVM_TEST_AUDIO_VOLUME_SCALE}")
+endforeach()

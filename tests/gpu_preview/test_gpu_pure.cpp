@@ -1714,6 +1714,21 @@ void testM7aSourceNativeFadeAuthority() {
           "FadeはPreview output ordinalではなくdecoded source frameをauthorityにする");
     check(std::abs(actual - 0.8f * (10.0f / 11.0f)) < 0.0001f,
           "FadeはsourceFrame-sourceInFrameとsource-native durationで評価する");
+    // 最後の timeline frame が丸めで素材範囲のすぐ外 (in + duration) を表示しても layer を消さず、
+    // 端の frame の値で評価する (23.976fps を 60fps に置いたディゾルブの incoming で起きた)。
+    LayerLayout plain;
+    plain.opacity = 0.99f;
+    plain.effectsEnabled = true;
+    plain.sourceInFrame = 100;
+    plain.sourceDurationFrames = 20;
+    check(std::abs(resolveLayerOpacity(plain, 120) - 0.99f) < 0.0001f,
+          "素材範囲のすぐ外のframeでlayerの不透明度を0にしました");
+    check(std::abs(resolveLayerOpacity(plain, 99) - 0.99f) < 0.0001f,
+          "素材範囲の直前のframeでlayerの不透明度を0にしました");
+    LayerLayout fadingOut = plain;
+    fadingOut.fadeOutFrames = 4;
+    check(resolveLayerOpacity(fadingOut, 120) == 0.0f,
+          "fade-outの末尾より外は端 (0) の値で評価します");
 }
 
 void testM7bOutputAndSourceIdentitySeparation() {

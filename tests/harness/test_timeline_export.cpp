@@ -143,8 +143,8 @@ bool generateEffectsFixture(const std::filesystem::path& ffmpeg,
 }
 
 bool generateSolidFixture(const std::filesystem::path& ffmpeg, const std::filesystem::path& output,
-                          const wchar_t* color) {
-    const std::wstring source = std::wstring(L"color=c=") + color + L":s=320x240:r=60:d=2";
+                          const wchar_t* color, const wchar_t* size = L"320x240") {
+    const std::wstring source = std::wstring(L"color=c=") + color + L":s=" + size + L":r=60:d=2";
     return _wspawnl(_P_WAIT, ffmpeg.c_str(), ffmpeg.c_str(), L"-y", L"-loglevel", L"error", L"-f",
                     L"lavfi", L"-i", source.c_str(), L"-c:v", L"libx264", L"-preset", L"ultrafast",
                     L"-crf", L"8", L"-pix_fmt", L"yuv420p", output.c_str(),
@@ -589,6 +589,38 @@ int main(int argc, char** argv) {
                 check(early.b > early.r && late.r > late.b, "ディゾルブが青から赤へ進みません");
                 const auto after = pixelAt(dissolveRequest.outputPath, 75, 160, 120);
                 check(after.r > 180 && after.b < 80, "ディゾルブの後にincomingが表示されません");
+            }
+            // incoming が縦長 (120x240) で左右に余白が出る場合。余白は不透明な黒として重なり、
+            // outgoing の青も余白の所で 1 - p に減る (Premiere の A(1 - p) + B p)。余白が透明だと
+            // 青が区間の終わりまで 100% 残り、区間の後で突然黒になる。
+            const auto portraitPath = testDirectory / L"m7b-portrait-red.mp4";
+            check(generateSolidFixture(ffmpeg, portraitPath, L"red", L"120x240"),
+                  "縦長の fixture を生成できません");
+            dissolved.timelineClips[1].mediaPath = portraitPath;
+            dissolveRequest.outputPath = testDirectory / L"m7b-dissolve-portrait.mp4";
+            const auto portraitExport = mvm::app::exportTimeline(dissolved, dissolveRequest);
+            check(portraitExport.success, "縦長の incoming へのクロスディゾルブを書き出せません");
+            if (!portraitExport.success)
+                std::fprintf(stderr, "  error: %s\n", portraitExport.error.c_str());
+            if (portraitExport.success) {
+                const auto path = dissolveRequest.outputPath;
+                check(blue(pixelAt(path, 45, 20, 120)),
+                      "ディゾルブの前に余白の所が青ではありません");
+                // frame 60: p = 0.525。余白の所は青 x 0.475 (b 約 120)、中央は赤と青が半々。
+                const auto middleBar = pixelAt(path, 60, 20, 120);
+                check(middleBar.b > 70 && middleBar.b < 170 && middleBar.r < 60,
+                      "ディゾルブの中央で余白の outgoing が 1 - p に減りません");
+                const auto middle = pixelAt(path, 60, 160, 120);
+                check(middle.r > 100 && middle.b > 100,
+                      "縦長の incoming で素材の所が半々に混ざりません");
+                // frame 67: p = 0.875。余白はほぼ黒 (b 約 32)。
+                const auto lateBar = pixelAt(path, 67, 20, 120);
+                check(lateBar.b < 80, "ディゾルブの終わり近くで余白に outgoing が残っています");
+                const auto afterBar = pixelAt(path, 75, 20, 120);
+                check(afterBar.r < 40 && afterBar.g < 40 && afterBar.b < 40,
+                      "ディゾルブの後に余白が黒ではありません");
+                std::printf("縦長ディゾルブの余白: frame 60 = %d,%d,%d、frame 67 = %d,%d,%d\n",
+                            middleBar.r, middleBar.g, middleBar.b, lateBar.r, lateBar.g, lateBar.b);
             }
         }
     }

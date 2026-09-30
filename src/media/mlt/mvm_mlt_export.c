@@ -280,6 +280,65 @@ static int attach_export_affine(mlt_profile profile, mlt_producer cut, const Mvm
     return 0;
 }
 
+/* クロスディゾルブの incoming を、素材の余白を不透明な黒で埋めた出力全体の 1 枚にする。
+ * 黒背景の affine filter で素材を縦横比を保った矩形へ置く (上の layer へ重ねる affine transition
+ * が出力全体と不透明度を掛ける)。余白が透明のままだと、incoming を不透明度 p で重ねても余白の
+ * 所で outgoing が 100% 見え続け、区間の終わりで突然消える。
+ * 矩形は素材の寸法からここで求めて distort=1 で置く。distort=0 で MLT に縦横比を任せると、
+ * 上の transition が frame に設定する distort に左右されて引き伸ばされる・縮むことがあった。 */
+static int attach_export_backdrop(mlt_profile profile, mlt_producer cut, const MvmExportClip* clip,
+                                  long long producer_in, long long duration, char* err,
+                                  size_t err_size) {
+    /* 書き出しの producer は loader で開くので meta.media.* を持たない。素材を probe する。 */
+    MvmMltProbeResult media;
+    memset(&media, 0, sizeof(media));
+    if (mvm_mlt_probe_file(clip->path, &media) != 0 || media.width <= 0 || media.height <= 0 ||
+        profile->width <= 0 || profile->height <= 0) {
+        set_err(err, err_size, "トランジションの incoming の素材寸法が分かりません: %s",
+                media.error);
+        return 1;
+    }
+    const int media_width = media.width;
+    const int media_height = media.height;
+    int sar_num = media.sar_num;
+    int sar_den = media.sar_den;
+    if (sar_num <= 0 || sar_den <= 0)
+        sar_num = sar_den = 1;
+    /* 表示上の縦横比 (画素の縦横比を含む) を出力の枠へ収める。 */
+    const double display_width = (double)media_width * sar_num / sar_den;
+    const double scale = fmin((double)profile->width / display_width,
+                              (double)profile->height / (double)media_height);
+    const double rect_width = display_width * scale;
+    const double rect_height = (double)media_height * scale;
+    mlt_filter filter = mlt_factory_filter(profile, "affine", NULL);
+    if (!filter) {
+        set_err(err, err_size, "必須filter 'affine'を作れません");
+        return 1;
+    }
+    mlt_properties props = MLT_FILTER_PROPERTIES(filter);
+    mlt_properties_set(props, "background", "colour:#000000");
+    mlt_properties_set_int(props, "transition.fill", 1);
+    mlt_properties_set_int(props, "transition.distort", 1);
+    mlt_properties_set_int(props, "transition.b_alpha", 0);
+    mlt_properties_set_int(props, "transition.repeat_off", 1);
+    mlt_properties_set_int(props, "transition.mirror_off", 1);
+    mlt_properties_set(props, "transition.halign", "center");
+    mlt_properties_set(props, "transition.valign", "middle");
+    mlt_properties_set_int(props, "transition.keyed", 0);
+    mlt_rect rect = {((double)profile->width - rect_width) * 0.5,
+                     ((double)profile->height - rect_height) * 0.5, rect_width, rect_height, 1.0};
+    mlt_properties_set_rect(props, "transition.rect", rect);
+    mlt_filter_set_in_and_out(filter, (mlt_position)producer_in,
+                              (mlt_position)(producer_in + duration - 1));
+    if (mlt_producer_attach(cut, filter) != 0) {
+        mlt_filter_close(filter);
+        set_err(err, err_size, "backdrop affine filterをclipへattachできません");
+        return 1;
+    }
+    mlt_filter_close(filter);
+    return 0;
+}
+
 static int plant_export_overlay_affine(mlt_profile profile, mlt_tractor tractor,
                                        const MvmExportClip* clip, char* err, size_t err_size) {
     mlt_transition transition = mlt_factory_transition(profile, "affine", NULL);
@@ -384,9 +443,13 @@ static int attach_tractor_clip_filters(mlt_profile profile, mlt_producer cut,
         return attach_export_crop(profile, cut, clip, err, err_size) != 0 ||
                attach_export_affine(profile, cut, clip, filter_in, clip->timeline_duration_frames,
                                     err, err_size) != 0;
-    /* 上位映像trackへopaque-black affine filterをattachしない。cropだけをcutへ置く。 */
+    /* 上位映像trackへopaque-black affine filterをattachしない。cropだけをcutへ置く。
+     * クロスディゾルブの incoming だけは余白を黒で埋める (attach_export_backdrop)。 */
     if (track > 0)
-        return attach_export_crop(profile, cut, clip, err, err_size);
+        return attach_export_crop(profile, cut, clip, err, err_size) != 0 ||
+               (clip->opaque_backdrop &&
+                attach_export_backdrop(profile, cut, clip, filter_in,
+                                       clip->timeline_duration_frames, err, err_size) != 0);
     return 0;
 }
 

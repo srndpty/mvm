@@ -45,6 +45,8 @@ struct CompositionLayerFrame {
     int zOrder = 0;
     bool effectsEnabled = false;
     float rotationDegrees = 0.0f;
+    // 配置矩形の外を不透明な黒で埋め、出力全体を覆う 1 枚として描く (回転なし)。
+    bool opaqueBackdrop = false;
 };
 
 struct ComposedFrame {

@@ -85,6 +85,7 @@ struct PreviewSourceDescriptor {
 - source registrationは`ReadyPaused`と`Playing`で受理する。`Playing`中の映像は最初の素材frameへseekし、timeline開始frameをoutput anchorにしてから公開する
 - `Playing`中に追加した未参照映像sourceは、compositionが参照するまでpairingとEOF判定に入れない
 - 再生中に受理したcompositionが`activationOutputFrame`を持つ場合、そのframeまでは直前に提示したcompositionを描く。controllerとengineの時計差で新sourceを1 frame早く要求しない
+- 保留するcompositionは最新の1つだけである。activation前に次のcompositionを受理すると前の保留は捨てる。重ねるsourceが同じで値だけ変わる出し直しは、呼び出し側が前の`activationOutputFrame`を引き継ぐ (毎回先のframeを指定すると、提示が追いつく前に上書きされ続けて反映されない)
 - `Playing`中の音声入力は現在のtimeline sampleに対応する素材位置へseekしてからmixへ公開する。入力の追加・削除はWASAPI callbackと排他する
 
 public product headerに次を公開しない。
@@ -264,6 +265,10 @@ validation用epsilonを導入して境界外値をacceptしてはならない。
 
 `opacity`は有限かつ`0.0 <= opacity <= 1.0`を満たす場合だけvalidとし、両端を含む。範囲外、NaN、
 正負Infinityはrejectし、暗黙clampしない。
+
+`opaqueBackdrop == true`のlayerは、配置矩形の外 (素材の余白) を不透明な黒で埋めた出力全体の1枚として
+`opacity`で重ねる。クロスディゾルブのincomingに使い、余白の所でも下のlayerを`1 - opacity`に減らす。
+静止画layer、または`rotationDegrees != 0`のlayerに付けたsnapshotは`CompositionFailure`でrejectする。
 
 `opacity == 0.0`のlayerもsnapshot内に存在するlayerとして扱う。canonicalizationで削除せず、構造比較、
 layer count、distinct active video source count、token/no-op判定の全てに含める。したがってopacity 0のlayerと

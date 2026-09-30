@@ -22,9 +22,11 @@ struct TransitionEnvelope {
 // トランジションの無い clip は clip そのものが 1 区間になる。トランジションがあると clip は
 // 余白の分だけ延び (outgoing は cut の後ろへ、incoming は cut の前へ)、同じ track の 2 clip が
 // 重なる。映像はクロスディゾルブにするため incoming の頭の区間 [cut - before, cut + after) を
-// lane 1 (outgoing の上) に切り出し、outgoing は下 (lane 0) で不透明のまま残す。不透明な clip
-// どうしなら incoming を不透明度 p で重ねた結果が A(1 - p) + B p になる。両方を 1 - p / p に
-// すると中央で暗くなる (0.25 A + 0.5 B)。音声は clip ごとに 1 区間で、等パワー
+// lane 1 (outgoing の上) に切り出し、outgoing は下 (lane 0) で不透明のまま残す。incoming は
+// 素材の余白 (縦横比が出力と違うときの左右・上下) を不透明な黒で埋めた出力全体の 1 枚として
+// 不透明度 p で重ねる (preview の opaqueBackdrop、書き出しの attach_export_backdrop)。これで
+// 余白の所も含めて A(1 - p) + B p になる (V1 では下が黒なので Premiere と同じ)。両方を
+// 1 - p / p にすると中央で暗くなる (0.25 A + 0.5 B)。音声は clip ごとに 1 区間で、等パワー
 // (sin / cos) の gain で重ねて加算する。
 struct TimelineRenderSegment {
     int clipIndex = -1;    // project.timelineClips の index

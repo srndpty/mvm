@@ -183,7 +183,9 @@ void testTransitionMapping() {
     const auto cut = mvm::app::mapTimelinePreviewFrame(project, 50);
     require(cut.success && cut.layers.size() == 3 && cut.layers[0].clipId == "out" &&
                 cut.layers[0].sourceFrameNumber == 50 && cut.layers[0].transitionOpacity == 1.0 &&
-                std::abs(cut.layers[1].transitionOpacity - 0.525) < 1e-12,
+                std::abs(cut.layers[1].transitionOpacity - 0.525) < 1e-12 &&
+                !cut.layers[0].dissolveIncoming && cut.layers[1].dissolveIncoming &&
+                !cut.layers[2].dissolveIncoming,
             "cutでoutを尻の余白で延ばし、inを半分重ねません");
     const auto last = mvm::app::mapTimelinePreviewFrame(project, 59);
     require(last.success && last.layers.size() == 3 && last.layers[0].sourceFrameNumber == 59 &&
@@ -192,7 +194,7 @@ void testTransitionMapping() {
     const auto after = mvm::app::mapTimelinePreviewFrame(project, 60);
     require(after.success && after.layers.size() == 2 && after.layers[0].clipId == "in" &&
                 after.layers[0].slot == 0 && after.layers[0].sourceFrameNumber == 60 &&
-                after.layers[0].transitionOpacity == 1.0,
+                after.layers[0].transitionOpacity == 1.0 && !after.layers[0].dissolveIncoming,
             "区間の後はinをslot 0で描きません");
     const auto stack = mvm::app::previewLayerStack(cut);
     require(stack.size() == 3 && stack[0].slot == 0 && stack[1].slot == 1 && stack[2].slot == 2,

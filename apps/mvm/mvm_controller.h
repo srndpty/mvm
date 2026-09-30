@@ -19,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <QAbstractItemModel>
@@ -169,6 +170,21 @@ public:
     bool setPreviewRegistrationLimitForTest(std::size_t limit);
     std::vector<std::int64_t> presentedFrameHistoryForTest() const;
     std::vector<std::int64_t> unpairedFrameHistoryForTest() const;
+    // 直近に提示した output frame と、そのとき提示した composition の最前面 layer の不透明度。
+    // layer が 1 枚以下の frame は負の値にする。
+    std::vector<std::pair<std::int64_t, float>> presentedOverlayOpacityHistoryForTest() const;
+    // 最後に提示した output frame、そのときの composition の layer 数、最背面の decode layer の
+    // 素材 frame (無ければ -1)。
+    struct PresentedFrameForTest {
+        std::int64_t outputFrame = -1;
+        std::uint32_t layerCount = 0;
+        std::int64_t baseSourceFrame = -1;
+    };
+    PresentedFrameForTest lastPresentedFrameForTest() const;
+    // 音声の endpoint へ実際に設定した音量 (試験用の倍率を掛けた値)。
+    float audioEndpointVolumeForTest() const;
+    // 直近に提示した frame (古い順、最大 256)。
+    std::vector<PresentedFrameForTest> presentedFramesForTest() const;
 
     preview::PreviewTelemetry previewTelemetry() const { return previewEngine_->telemetry(); }
 

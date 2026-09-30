@@ -49,6 +49,7 @@ struct LayerLayout {
     long long sourceDurationFrames = 0;
     long long fadeInFrames = 0;
     long long fadeOutFrames = 0;
+    bool opaqueBackdrop = false;
 };
 
 struct CompositorCoordinatorTestAccess;

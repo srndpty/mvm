@@ -81,6 +81,9 @@ typedef struct {
                         (上限なし) */
     long long timeline_start_frame;
     long long timeline_duration_frames;
+    /* 非0なら素材の余白を不透明な黒で埋めてから上の layer として重ねる (クロスディゾルブの
+     * incoming)。余白の所でも下の layer が 1 - 不透明度に減る。video_track > 0 のときだけ使う。 */
+    int opaque_backdrop;
 } MvmExportClip;
 
 typedef struct {

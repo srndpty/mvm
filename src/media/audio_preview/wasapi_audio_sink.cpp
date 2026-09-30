@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functiondiscoverykeys_devpkey.h>
 #include <initguid.h>
@@ -24,6 +25,27 @@ extern "C" {
 
 namespace mvm::audio {
 namespace {
+
+// 試験で鳴らす音を小さくする倍率。CTest が全試験の環境へ MVM_TEST_AUDIO_VOLUME_SCALE を渡す
+// (tests/CMakeLists.txt)。製品の起動では設定されず 1 のまま。session volume に掛けるだけで
+// PCM は変えないので、計測値・marker 判定・meter には影響しない。不正な値は全音量で鳴らさず
+// open / 音量変更を失敗させる。
+bool testVolumeScale(float& scale, std::string& error) {
+    scale = 1.0F;
+    const char* text = std::getenv("MVM_TEST_AUDIO_VOLUME_SCALE");
+    if (!text || !*text)
+        return true;
+    char* end = nullptr;
+    const float value = std::strtof(text, &end);
+    if (end == text || *end != '\0' || !(value > 0.0F) || value > 1.0F) {
+        error =
+            std::string("MVM_TEST_AUDIO_VOLUME_SCALE は 0 より大きく 1 以下で指定してください: ") +
+            text;
+        return false;
+    }
+    scale = value;
+    return true;
+}
 
 template<class T>
 void releaseCom(T*& value) {
@@ -85,6 +107,10 @@ bool WasapiAudioSink::open(std::string& error, float sessionVolume) {
         error = "session volume は 0.0〜1.0 の範囲で指定してください";
         return false;
     }
+    float scale = 1.0F;
+    if (!testVolumeScale(scale, error))
+        return false;
+    const float endpointVolume = sessionVolume * scale;
     std::lock_guard lock(mutex_);
     if (metrics_.open) {
         error = "WASAPI endpoint は既に open されています";
@@ -137,7 +163,7 @@ bool WasapiAudioSink::open(std::string& error, float sessionVolume) {
         releaseDeviceLocked();
         return false;
     }
-    if (sessionVolume != 1.0F) {
+    if (endpointVolume != 1.0F) {
         ISimpleAudioVolume* sessionVolumeControl = nullptr;
         hr = client_->GetService(IID_ISimpleAudioVolume,
                                  reinterpret_cast<void**>(&sessionVolumeControl));
@@ -146,7 +172,7 @@ bool WasapiAudioSink::open(std::string& error, float sessionVolume) {
             releaseDeviceLocked();
             return false;
         }
-        hr = sessionVolumeControl->SetMasterVolume(sessionVolume, nullptr);
+        hr = sessionVolumeControl->SetMasterVolume(endpointVolume, nullptr);
         releaseCom(sessionVolumeControl);
         if (FAILED(hr)) {
             // 適用できないまま全音量で再生しない。
@@ -156,6 +182,7 @@ bool WasapiAudioSink::open(std::string& error, float sessionVolume) {
         }
         // open() 入口で mutex_ を保持済みのため、ここで再取得しない。
         metrics_.sessionVolume = sessionVolume;
+        metrics_.endpointVolume = endpointVolume;
     }
     audioEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -418,6 +445,9 @@ bool WasapiAudioSink::setSessionVolume(float volume, std::string& error) {
         error = "master volume は 0.0〜1.0 の範囲で指定してください";
         return false;
     }
+    float scale = 1.0F;
+    if (!testVolumeScale(scale, error))
+        return false;
     std::lock_guard clientLock(clientMutex_);
     if (!client_) {
         error = "WASAPI endpoint は open されていません";
@@ -429,7 +459,7 @@ bool WasapiAudioSink::setSessionVolume(float volume, std::string& error) {
         error = "endpoint master volume を取得できません: " + hresultText(hr);
         return false;
     }
-    hr = control->SetMasterVolume(volume, nullptr);
+    hr = control->SetMasterVolume(volume * scale, nullptr);
     releaseCom(control);
     if (FAILED(hr)) {
         error = "endpoint master volume を設定できません: " + hresultText(hr);
@@ -437,6 +467,7 @@ bool WasapiAudioSink::setSessionVolume(float volume, std::string& error) {
     }
     std::lock_guard lock(mutex_);
     metrics_.sessionVolume = volume;
+    metrics_.endpointVolume = volume * scale;
     return true;
 }
 

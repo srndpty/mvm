@@ -116,6 +116,13 @@ struct P5CRuntimeDiagnostics {
     bool unsafeGpuResourcesRetained = false;
     std::uint64_t registeredVideoSourceCount = 0;
     std::vector<std::int64_t> recentPresentedOutputFrames;
+    // recentPresentedOutputFrames と同じ順に、提示した composition の layer 数と最前面 layer の
+    // 不透明度。
+    std::vector<std::uint32_t> recentPresentedLayerCounts;
+    std::vector<float> recentPresentedTopLayerOpacities;
+    // 同じ順に、最背面の decode layer の public source ID と素材 frame。
+    std::vector<std::uint64_t> recentPresentedBaseSources;
+    std::vector<std::int64_t> recentPresentedBaseSourceFrames;
     std::vector<std::int64_t> recentUnpairedOutputFrames;
     // public source IDごとの現在のdecode generation。per-source provenanceを
     // product testが実測するためのinternal診断であり、public APIには出さない。
@@ -165,6 +172,9 @@ struct P5CRuntimeDiagnostics {
     // endpointへ実際に適用されたsession volume。要求しただけで適用されて
     // いない状態をPASSにしないために報告する。
     float audioSessionVolume = 1.0F;
+    // 実際に endpoint へ設定した値 (audioSessionVolume x 試験用の倍率
+    // MVM_TEST_AUDIO_VOLUME_SCALE)。
+    float audioEndpointVolume = 1.0F;
     // 実際に実行されたshutdown stepを、実行順にそのまま積んだもの。
     // 重複を畳まないので、誤った再実行や並べ替えはexact比較でそのまま失敗する。
     std::vector<ShutdownStep> shutdownSequence;

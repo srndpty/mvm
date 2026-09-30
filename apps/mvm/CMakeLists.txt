@@ -17,6 +17,13 @@ qt_add_executable(mvm
     waveform_view.cpp
 )
 
+# 状態を持たない JS の関数集。QML からは相対パスで import する (`import "TimelineGestures.js" as
+# Gestures`) ので、module の qmldir には載せない。載せると Qt は `.pragma library` の無い JS を
+# 各 QML 文書で評価し直すと警告する。`.pragma library` は VS Code の JavaScript 検査が構文エラーに
+# するため書かない (docs/premiere-like-editing.md §19.8)。下の mvm_test_text_ui_input も同じ。
+set_source_files_properties(TimelineGestures.js PreviewTransform.js
+    PROPERTIES QT_QML_SKIP_QMLDIR_ENTRY TRUE)
+
 qt_add_qml_module(mvm
     URI mvm.app
     VERSION 1.0

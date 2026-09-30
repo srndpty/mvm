@@ -59,6 +59,14 @@ QString fromPath(const std::filesystem::path& path) {
     return QString::fromStdWString(path.wstring());
 }
 
+// 同じ source・静止画を同じ順に重ねているか (不透明度や位置などの値は問わない)。
+bool sameLayerSources(const preview::CompositionSnapshot& a, const preview::CompositionSnapshot& b) {
+    return std::equal(a.layers.begin(), a.layers.end(), b.layers.begin(), b.layers.end(),
+                      [](const auto& x, const auto& y) {
+                          return x.source == y.source && x.stillImage == y.stillImage;
+                      });
+}
+
 bool atomicSaveProject(const project::Project& project, const std::filesystem::path& path,
                        QString& error) {
     const auto saved = project::saveProjectJson(project, path);
@@ -1751,6 +1759,7 @@ MvmController::previewCompositionFor(const TimelinePreviewFrameMapping& mappedFr
                     layerMapping.transitionOpacity,
                 shown.sourceInFrame, shown.sourceOutFrame - shown.sourceInFrame);
         }
+        layer.opaqueBackdrop = layerMapping.dissolveIncoming;
         composition->layers.push_back(layer);
         request.sources.push_back({slot->second.source, layerMapping.sourceFrameNumber});
     }
@@ -3596,6 +3605,46 @@ std::vector<std::int64_t> MvmController::presentedFrameHistoryForTest() const {
         .recentPresentedOutputFrames;
 }
 
+std::vector<std::pair<std::int64_t, float>>
+MvmController::presentedOverlayOpacityHistoryForTest() const {
+    if (!previewEngine_)
+        return {};
+    const auto diagnostics =
+        preview::internal::PreviewRenderPort::runtimeDiagnostics(*previewEngine_);
+    std::vector<std::pair<std::int64_t, float>> history;
+    for (std::size_t index = 0; index < diagnostics.recentPresentedOutputFrames.size(); ++index)
+        history.emplace_back(diagnostics.recentPresentedOutputFrames[index],
+                             diagnostics.recentPresentedLayerCounts[index] > 1
+                                 ? diagnostics.recentPresentedTopLayerOpacities[index]
+                                 : -1.0F);
+    return history;
+}
+
+std::vector<MvmController::PresentedFrameForTest> MvmController::presentedFramesForTest() const {
+    if (!previewEngine_)
+        return {};
+    const auto diagnostics =
+        preview::internal::PreviewRenderPort::runtimeDiagnostics(*previewEngine_);
+    std::vector<PresentedFrameForTest> frames;
+    for (std::size_t index = 0; index < diagnostics.recentPresentedOutputFrames.size(); ++index)
+        frames.push_back({diagnostics.recentPresentedOutputFrames[index],
+                          diagnostics.recentPresentedLayerCounts[index],
+                          diagnostics.recentPresentedBaseSourceFrames[index]});
+    return frames;
+}
+
+float MvmController::audioEndpointVolumeForTest() const {
+    if (!previewEngine_)
+        return -1.0F;
+    return preview::internal::PreviewRenderPort::runtimeDiagnostics(*previewEngine_)
+        .audioEndpointVolume;
+}
+
+MvmController::PresentedFrameForTest MvmController::lastPresentedFrameForTest() const {
+    const auto frames = presentedFramesForTest();
+    return frames.empty() ? PresentedFrameForTest{} : frames.back();
+}
+
 std::vector<std::int64_t> MvmController::unpairedFrameHistoryForTest() const {
     if (!previewEngine_)
         return {};
@@ -3768,15 +3817,23 @@ bool MvmController::handOffPlaybackSources(std::int64_t frame, QString& reason) 
     const auto composition = previewCompositionFor(mappedFrame, sources, unusedRequest, reason);
     if (!composition)
         return false;
-    if (!submittedComposition_ || !(*submittedComposition_ == *composition)) {
+    if (!submittedComposition_ || submittedComposition_->layers != composition->layers) {
         auto scheduled = std::make_shared<preview::CompositionSnapshot>(*composition);
-        scheduled->activationOutputFrame = frame;
+        // engine は activation の frame に届くまで前に提示した composition を使い続け、保留は
+        // 最新の 1 つしか持たない。engine の提示はこの tick の frame より遅れているので、
+        // トランジションや fade で毎 tick 変わる不透明度を毎回この frame から有効にすると、
+        // 届く前に次の tick で上書きされ続けて区間の終わりまで反映されない。重ねる source が
+        // 変わらない出し直しは、重ね方が変わった frame の activation を引き継ぐ。
+        scheduled->activationOutputFrame =
+            submittedComposition_ && sameLayerSources(*submittedComposition_, *composition)
+                ? submittedComposition_->activationOutputFrame
+                : frame;
         const auto submitted = previewEngine_->submitComposition(scheduled);
         if (!submitted) {
             reason = previewErrorText(submitted.error());
             return false;
         }
-        submittedComposition_ = composition;
+        submittedComposition_ = std::move(scheduled);
     }
     const auto selectedVideo = [&](preview::PreviewSourceId source) {
         return std::any_of(sources.begin(), sources.end(),

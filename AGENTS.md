@@ -191,6 +191,11 @@ ctest --output-on-failure
   （メモリ測定など）。通常実行は `-LE 'performance|stability'` で
   **両方を除外する**。除外しないと「通常テストが何件通ったか」が分からなくなる
 - テスト件数は種別ごとに分けて報告する（`scripts/test.ps1` が出力する）
+- 実 audio endpoint で鳴らす試験の音量は、CTest が全試験へ渡す
+  `MVM_TEST_AUDIO_VOLUME_SCALE`（既定 0.25、`tests/CMakeLists.txt`）で
+  WASAPI の session volume に掛けて下げる。PCM は変えないので判定には影響しない。
+  試験ごとに音量を大きくしない。CTest を通さず試験の exe を直接起動したときは
+  掛からない（製品の起動と同じ音量で鳴る）
 - **性能値を exit criteria に使うときは release / RelWithDebInfo で測る。**
   debug ビルドの数値を判定に使わない
 

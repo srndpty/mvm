@@ -18,7 +18,8 @@ bool sameLayout(const LayerLayout& a, const LayerLayout& b) {
            sameRect(a.sourceUv, b.sourceUv) && a.opacity == b.opacity && a.zOrder == b.zOrder &&
            a.effectsEnabled == b.effectsEnabled && a.rotationDegrees == b.rotationDegrees &&
            a.sourceInFrame == b.sourceInFrame && a.sourceDurationFrames == b.sourceDurationFrames &&
-           a.fadeInFrames == b.fadeInFrames && a.fadeOutFrames == b.fadeOutFrames;
+           a.fadeInFrames == b.fadeInFrames && a.fadeOutFrames == b.fadeOutFrames &&
+           a.opaqueBackdrop == b.opaqueBackdrop;
 }
 
 bool validLayout(const std::vector<LayerLayout>& layout,
@@ -42,7 +43,15 @@ bool sameLayouts(const std::vector<LayerLayout>& a, const std::vector<LayerLayou
 float resolveLayerOpacity(const LayerLayout& layout, long long decodedSourceFrame) {
     double opacity = layout.opacity;
     if (layout.effectsEnabled) {
-        const long long localFrame = decodedSourceFrame - layout.sourceInFrame;
+        // timeline frame は最も近い素材 frame を表示するので、clip の最後の timeline frame が
+        // 素材範囲のすぐ外 (次の clip の最初の素材 frame) を表示することがある (素材 fps と
+        // timeline fps が違うとき)。clipFadeFactor は範囲外を 0 にするため、そのまま渡すと
+        // その 1 frame だけ layer が消える (ディゾルブの incoming が消えて outgoing が全面に出た)。
+        // 範囲外は端の frame の値で評価する (Project が延ばした区間を端の値で評価するのと同じ)。
+        const long long localFrame = layout.sourceDurationFrames > 0
+                                         ? std::clamp(decodedSourceFrame - layout.sourceInFrame,
+                                                      0LL, layout.sourceDurationFrames - 1)
+                                         : decodedSourceFrame - layout.sourceInFrame;
         opacity *= core::clipFadeFactor(localFrame, layout.sourceDurationFrames,
                                         layout.fadeInFrames, layout.fadeOutFrames);
     }
@@ -257,6 +266,7 @@ CompositorCoordinator::composeEnvelopes(long long outputFrameNumber,
         layer.zOrder = spec.zOrder;
         layer.effectsEnabled = spec.effectsEnabled;
         layer.rotationDegrees = spec.rotationDegrees;
+        layer.opaqueBackdrop = spec.opaqueBackdrop;
         out.layers.push_back(std::move(layer));
     }
     std::stable_sort(out.layers.begin(), out.layers.end(), deterministicLayerLess);

@@ -80,10 +80,8 @@ VSOut vs_effect(uint id : SV_VertexID)
     return o;
 }
 
-float4 ps_main(VSOut i) : SV_Target
+float3 videoRgb(float2 uv)
 {
-    float2 uv = uvRect.xy + i.uv * uvRect.zw;
-
     // sampleScale は P010 (10bit を 16bit の上位へ詰める) の補正。
     // NV12 では 1.0。
     float  y  = texLuma.Sample(samp, float3(uv, 0)).r * lum.w;
@@ -99,7 +97,37 @@ float4 ps_main(VSOut i) : SV_Target
     rgb.r = y + mat.x * c.y;
     rgb.g = y - mat.y * c.x - mat.z * c.y;
     rgb.b = y + mat.w * c.x;
-    return float4(saturate(rgb), saturate(misc.y));
+    return saturate(rgb);
+}
+
+float4 ps_main(VSOut i) : SV_Target
+{
+    return float4(videoRgb(uvRect.xy + i.uv * uvRect.zw), saturate(misc.y));
+}
+
+// 出力全体に描き、destination の外は不透明な黒にする (ディゾルブの incoming)。
+// 素材の余白を黒で埋めた 1 枚として layer opacity で重ねるので、余白の所でも下の layer が
+// 1 - opacity に減る。i.uv は出力全体の正規化座標 (vs_main を出力全体の viewport で使う)。
+float2 backdropLocal(VSOut i, out float inside)
+{
+    float2 local = (i.uv - destination.xy) / destination.zw;
+    inside = all(local >= 0.0) && all(local <= 1.0) ? 1.0 : 0.0;
+    return saturate(local);
+}
+
+float4 ps_backdrop(VSOut i) : SV_Target
+{
+    float inside;
+    float2 local = backdropLocal(i, inside);
+    return float4(videoRgb(uvRect.xy + local * uvRect.zw) * inside, saturate(misc.y));
+}
+
+float4 ps_backdrop_rgba(VSOut i) : SV_Target
+{
+    float inside;
+    float2 local = backdropLocal(i, inside);
+    float4 c = texLuma.Sample(samp, float3(uvRect.xy + local * uvRect.zw, 0));
+    return float4(c.rgb * c.a * inside, saturate(misc.y));
 }
 
 // 静止画 layer (RGBA8 straight alpha)。YUV 変換を通さず、画素の alpha に
@@ -281,6 +309,22 @@ bool Nv12Converter::ensureShaders(std::string& err) {
         err = hr("shader オブジェクトの生成", rc);
         return false;
     }
+    const auto pixelShader = [&](const char* entry, ID3D11PixelShader*& out) {
+        ID3DBlob* blob = nullptr;
+        if (!compile(entry, "ps_5_0", &blob, err))
+            return false;
+        const HRESULT created =
+            dev->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, &out);
+        blob->Release();
+        if (FAILED(created)) {
+            err = hr("shader オブジェクトの生成", created);
+            return false;
+        }
+        return true;
+    };
+    if (!pixelShader("ps_backdrop", backdropPs_) ||
+        !pixelShader("ps_backdrop_rgba", backdropRgbaPs_))
+        return false;
 
     D3D11_BUFFER_DESC bd{};
     bd.ByteWidth = sizeof(ShaderParams);
@@ -365,6 +409,8 @@ void Nv12Converter::release() {
     safeRelease(samplerLinear_);
     safeRelease(samplerPoint_);
     safeRelease(cbuffer_);
+    safeRelease(backdropRgbaPs_);
+    safeRelease(backdropPs_);
     safeRelease(rgbaPs_);
     safeRelease(ps_);
     safeRelease(effectVs_);
@@ -532,7 +578,7 @@ bool Nv12Converter::drawInternal(const DecodedGpuFrame& frame, ID3D11RenderTarge
                                  const FitRect& viewport, const float uvRect[4], bool linearFilter,
                                  float opacity, std::string& err, bool effectAware, int targetWidth,
                                  int targetHeight, float rotationDegrees, float pivotX,
-                                 float pivotY) {
+                                 float pivotY, bool backdrop) {
     SrvPair srv;
     if (!acquireSrvs(frame, srv, err))
         return false;
@@ -572,7 +618,7 @@ bool Nv12Converter::drawInternal(const DecodedGpuFrame& frame, ID3D11RenderTarge
     params.mat[3] = k.ub;
     params.misc[0] = chromaNeutral;
     params.misc[1] = opacity;
-    if (effectAware) {
+    if (effectAware || backdrop) {
         params.destination[0] = static_cast<float>(viewport.x) / static_cast<float>(targetWidth);
         params.destination[1] = static_cast<float>(viewport.y) / static_cast<float>(targetHeight);
         params.destination[2] =
@@ -599,11 +645,13 @@ bool Nv12Converter::drawInternal(const DecodedGpuFrame& frame, ID3D11RenderTarge
     std::memcpy(m.pData, &params, sizeof params);
     ctx->Unmap(cbuffer_, 0);
 
+    // effect と backdrop は出力全体を viewport にし、shader が destination で位置を決める。
+    const bool wholeTarget = effectAware || backdrop;
     D3D11_VIEWPORT vp{};
-    vp.TopLeftX = effectAware ? 0.0f : static_cast<float>(viewport.x);
-    vp.TopLeftY = effectAware ? 0.0f : static_cast<float>(viewport.y);
-    vp.Width = static_cast<float>(effectAware ? targetWidth : viewport.width);
-    vp.Height = static_cast<float>(effectAware ? targetHeight : viewport.height);
+    vp.TopLeftX = wholeTarget ? 0.0f : static_cast<float>(viewport.x);
+    vp.TopLeftY = wholeTarget ? 0.0f : static_cast<float>(viewport.y);
+    vp.Width = static_cast<float>(wholeTarget ? targetWidth : viewport.width);
+    vp.Height = static_cast<float>(wholeTarget ? targetHeight : viewport.height);
     vp.MinDepth = 0.0f;
     vp.MaxDepth = 1.0f;
 
@@ -621,7 +669,9 @@ bool Nv12Converter::drawInternal(const DecodedGpuFrame& frame, ID3D11RenderTarge
     ctx->VSSetShader(effectAware ? effectVs_ : vs_, nullptr, 0);
     if (effectAware)
         ctx->VSSetConstantBuffers(0, 1, &cbuffer_);
-    ctx->PSSetShader(frame.pixelFormat == GpuPixelFormat::RGBA8 ? rgbaPs_ : ps_, nullptr, 0);
+    const bool rgba = frame.pixelFormat == GpuPixelFormat::RGBA8;
+    ctx->PSSetShader(backdrop ? (rgba ? backdropRgbaPs_ : backdropPs_) : (rgba ? rgbaPs_ : ps_),
+                     nullptr, 0);
     ctx->PSSetConstantBuffers(0, 1, &cbuffer_);
     ctx->PSSetShaderResources(0, 2, srvs);
     ctx->PSSetSamplers(0, 1, &samp);
@@ -692,6 +742,20 @@ bool Nv12Converter::drawEffectLayer(const DecodedGpuFrame& frame, ID3D11RenderTa
     std::lock_guard<D3D11Lock> guard(shared_->lock());
     return drawInternal(frame, rtv, destination, sourceUv, linearFilter, opacity, err, true,
                         targetWidth, targetHeight, rotationDegrees, pivotX, pivotY);
+}
+
+bool Nv12Converter::drawBackdropLayer(const DecodedGpuFrame& frame, ID3D11RenderTargetView* rtv,
+                                      int targetWidth, int targetHeight, const FitRect& destination,
+                                      const float sourceUv[4], float opacity, bool linearFilter,
+                                      std::string& err) {
+    if (!ready_ || !rtv || !frame.valid() || targetWidth <= 0 || targetHeight <= 0 ||
+        destination.width <= 0 || destination.height <= 0 || opacity < 0.0f || opacity > 1.0f) {
+        err = "backdrop compositor layerの引数が不正です";
+        return false;
+    }
+    std::lock_guard<D3D11Lock> guard(shared_->lock());
+    return drawInternal(frame, rtv, destination, sourceUv, linearFilter, opacity, err, false,
+                        targetWidth, targetHeight, 0.0f, 0.5f, 0.5f, true);
 }
 
 bool Nv12Converter::readSourceProbe(const DecodedGpuFrame& frame, float u, float v,

@@ -293,6 +293,43 @@ int main() {
     if (!compositor.compose({0, {1}, {layer(bottom, 0), layer(top, 1)}, {}}, err))
         return fail(err);
 
+    // 5b. クロスディゾルブの incoming (opaqueBackdrop)。中央 32x32 の枠に 2:1 の素材が 32x16 で
+    //     入り、左右と上下が余白になる。余白は不透明な黒として opacity で重なるので、下の映像も
+    //     余白の所で 1 - opacity に減る (Premiere の A(1 - p) + B p)。対照として backdrop 無しでは
+    //     余白に下の映像がそのまま残る (区間の終わりで突然消える元の不具合)。
+    //     effect 経路 (preview の incoming は不透明度を掛けるので effect 経路を通る) でも見る。
+    {
+        const Rgba8 black{0, 0, 0, 255};
+        const auto dissolve = [&](bool backdrop, bool effects) {
+            CompositionLayerFrame incoming = layer(top, 1, {0.25f, 0.0f, 0.5f, 1.0f}, 0.5f);
+            incoming.opaqueBackdrop = backdrop;
+            incoming.effectsEnabled = effects;
+            return compositor.compose({0, {1}, {layer(bottom, 0), incoming}, {}}, err);
+        };
+        for (const bool effects : {false, true}) {
+            if (!dissolve(true, effects))
+                return fail(err);
+            if (!expectAt(compositor, nullptr, 2, 16, mix(black, redColor, 0.5), 6,
+                          "ディゾルブの余白で outgoing が 1 - p に減りません", err) ||
+                !expectAt(compositor, nullptr, 32, 16, mix(blueColor, redColor, 0.5), 6,
+                          "ディゾルブの素材の所で 2 clip が混ざりません", err))
+                return fail(err + (effects ? " (effect 経路)" : " (effect 無し)"));
+        }
+        if (!dissolve(false, false))
+            return fail(err);
+        if (!expectAt(compositor, nullptr, 2, 16, redColor, 3,
+                      "対照: backdrop 無しの余白に下の映像が残りません", err))
+            return fail(err);
+        // 回転した backdrop は受理しない (余白を出力の軸に沿った矩形の外として塗るため)。
+        CompositionLayerFrame rotated = layer(top, 1, {0.25f, 0.0f, 0.5f, 1.0f}, 0.5f);
+        rotated.opaqueBackdrop = true;
+        rotated.effectsEnabled = true;
+        rotated.rotationDegrees = 90.0f;
+        if (compositor.compose({0, {1}, {layer(bottom, 0), rotated}, {}}, err))
+            return fail("回転した backdrop layer を受理しました");
+        err.clear();
+    }
+
     // 6. 画像だけの区間: video layer の無い composition で、effect (回転) 付きの静止画を描く。
     //    素材は左 1/4 が不透明の白。180 度回すと白は右 1/4 へ移る。
     //    対照として同じ layer を effect 無しで描き、白が左に残ることを見る。

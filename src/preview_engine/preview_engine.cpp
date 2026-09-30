@@ -494,6 +494,11 @@ CompositionAcceptanceState::submit(const std::shared_ptr<const CompositionSnapsh
                 PreviewErrorCategory::CompositionFailure,
                 "source-native effect timingまたはrotationが不正です", layer.source));
         }
+        if (layer.opaqueBackdrop && (layer.stillImage || layer.rotationDegrees != 0.0F)) {
+            return Result<AcceptedComposition>::failure(compositionError(
+                PreviewErrorCategory::CompositionFailure,
+                "opaque backdropは回転の無いvideo layerだけに使えます", layer.source));
+        }
         layer.destination = canonicalRect(layer.destination);
         layer.sourceRect = canonicalRect(layer.sourceRect);
         layer.opacity = canonicalFloat(layer.opacity);
@@ -614,17 +619,45 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     }();
     PreviewTelemetry telemetrySnapshot;
     std::array<std::int64_t, 256> presentedOutputFrames{};
+    // presentedOutputFrames と同じ位置に、その frame で提示した composition の layer 数と
+    // 最前面 layer の不透明度を持つ。再生中の不透明度の変化が提示に届いたかを試験が見る。
+    std::array<std::uint32_t, 256> presentedLayerCounts{};
+    std::array<float, 256> presentedTopLayerOpacities{};
+    // 最背面の decode layer の public source ID と素材 frame (decode layer が無ければ 0 / -1)。
+    std::array<std::uint64_t, 256> presentedBaseSources{};
+    std::array<std::int64_t, 256> presentedBaseSourceFrames{};
     std::size_t presentedOutputFrameCount = 0;
     std::size_t presentedOutputFrameNext = 0;
     std::array<std::int64_t, 256> unpairedOutputFrames{};
     std::size_t unpairedOutputFrameCount = 0;
     std::size_t unpairedOutputFrameNext = 0;
 
-    void notePresentedOutputFrameLocked(std::int64_t frame) {
+    void notePresentedOutputFrameLocked(std::int64_t frame, const CompositionSnapshot& snapshot) {
         presentedOutputFrames[presentedOutputFrameNext] = frame;
+        presentedLayerCounts[presentedOutputFrameNext] =
+            static_cast<std::uint32_t>(snapshot.layers.size());
+        presentedTopLayerOpacities[presentedOutputFrameNext] =
+            snapshot.layers.empty() ? 0.0F : snapshot.layers.back().opacity;
+        presentedBaseSources[presentedOutputFrameNext] = 0;
+        presentedBaseSourceFrames[presentedOutputFrameNext] = -1;
         presentedOutputFrameNext = (presentedOutputFrameNext + 1) % presentedOutputFrames.size();
         presentedOutputFrameCount =
             std::min(presentedOutputFrameCount + 1, presentedOutputFrames.size());
+    }
+
+    // notePresentedOutputFrameLocked の直後に呼び、同じ位置へ最背面の decode layer を記録する。
+    void notePresentedBaseLayerLocked(const gpu::ComposedFrame& composed) {
+        const std::size_t at = (presentedOutputFrameNext + presentedOutputFrames.size() - 1) %
+                               presentedOutputFrames.size();
+        for (const auto& layer : composed.layers) {
+            if (layer.frame.pixelFormat == gpu::GpuPixelFormat::RGBA8 &&
+                !layer.frame.sourceId.value)
+                continue;
+            const auto publicSource = publicIdForInternalLocked(layer.frame.sourceId);
+            presentedBaseSources[at] = publicSource ? publicSource->value : 0;
+            presentedBaseSourceFrames[at] = layer.frame.frameNumber;
+            return;
+        }
     }
 
     void noteUnpairedOutputFrameLocked(std::int64_t frame) {
@@ -944,6 +977,7 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
             mapped.sourceDurationFrames = layer.sourceDurationFrames;
             mapped.fadeInFrames = layer.fadeInFrames;
             mapped.fadeOutFrames = layer.fadeOutFrames;
+            mapped.opaqueBackdrop = layer.opaqueBackdrop;
             layout.push_back(mapped);
         }
         return layout;
@@ -3185,7 +3219,7 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                 engine.impl_->pairer.reset();
                 engine.impl_->coordinatorSources.clear();
                 engine.impl_->compositionState.markPresented(*token, snapshot);
-                engine.impl_->notePresentedOutputFrameLocked(target);
+                engine.impl_->notePresentedOutputFrameLocked(target, *snapshot);
                 commitSchedulerTarget();
                 engine.impl_->distinctPresentedFrames.note(target);
                 ++engine.impl_->presentationSequence;
@@ -3427,7 +3461,8 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                         for (gpu::SourceDecodeWorker* worker : workers)
                             worker->buffer().noteDisplayed(target);
                         engine.impl_->compositionState.markPresented(*token, snapshot);
-                        engine.impl_->notePresentedOutputFrameLocked(target);
+                        engine.impl_->notePresentedOutputFrameLocked(target, *snapshot);
+                        engine.impl_->notePresentedBaseLayerLocked(composed);
                         commitSchedulerTarget();
                         engine.impl_->distinctPresentedFrames.note(target);
                         ++engine.impl_->presentationSequence;
@@ -3774,6 +3809,7 @@ Result<bool> PreviewRenderPort::completeRuntimeTeardown(PreviewEngine& engine) {
             engine.impl_->finalRuntimeDiagnostics.audioSinkDeviceFailureCount =
                 endpoint.deviceFailureCount;
             engine.impl_->finalRuntimeDiagnostics.audioSessionVolume = endpoint.sessionVolume;
+            engine.impl_->finalRuntimeDiagnostics.audioEndpointVolume = endpoint.endpointVolume;
         }
         engine.impl_->finalRuntimeDiagnostics.audioTransportFailureCount =
             engine.impl_->audioTransportFailureCount;
@@ -4065,10 +4101,16 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
         (engine.impl_->presentedOutputFrameNext + engine.impl_->presentedOutputFrames.size() -
          engine.impl_->presentedOutputFrameCount) %
         engine.impl_->presentedOutputFrames.size();
-    for (std::size_t index = 0; index < engine.impl_->presentedOutputFrameCount; ++index)
-        result.recentPresentedOutputFrames.push_back(
-            engine.impl_->presentedOutputFrames[(first + index) %
-                                                engine.impl_->presentedOutputFrames.size()]);
+    for (std::size_t index = 0; index < engine.impl_->presentedOutputFrameCount; ++index) {
+        const std::size_t at = (first + index) % engine.impl_->presentedOutputFrames.size();
+        result.recentPresentedOutputFrames.push_back(engine.impl_->presentedOutputFrames[at]);
+        result.recentPresentedLayerCounts.push_back(engine.impl_->presentedLayerCounts[at]);
+        result.recentPresentedTopLayerOpacities.push_back(
+            engine.impl_->presentedTopLayerOpacities[at]);
+        result.recentPresentedBaseSources.push_back(engine.impl_->presentedBaseSources[at]);
+        result.recentPresentedBaseSourceFrames.push_back(
+            engine.impl_->presentedBaseSourceFrames[at]);
+    }
     const std::size_t firstUnpaired =
         (engine.impl_->unpairedOutputFrameNext + engine.impl_->unpairedOutputFrames.size() -
          engine.impl_->unpairedOutputFrameCount) %
@@ -4116,6 +4158,7 @@ P5CRuntimeDiagnostics PreviewRenderPort::runtimeDiagnostics(const PreviewEngine&
         const audio::WasapiSnapshot endpoint = diagSink->snapshot();
         result.audioSinkDeviceFailureCount = endpoint.deviceFailureCount;
         result.audioSessionVolume = endpoint.sessionVolume;
+        result.audioEndpointVolume = endpoint.endpointVolume;
     }
     result.fullCpuReadbackCount =
         static_cast<std::uint64_t>(engine.impl_->readbacks.fullFrameReadbacks());

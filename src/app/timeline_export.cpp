@@ -252,6 +252,7 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
         if (!mapExportEffects(segment->original, request, duration.frame, overlay, opacityAt,
                               mapped, plan.error))
             return plan;
+        mapped.opaqueBackdrop = segment->fadeIn.has_value();
         plan.clips.push_back(std::move(mapped));
     }
     if (plan.clips.empty()) {
@@ -421,6 +422,7 @@ TimelineExportResult exportTimeline(const project::Project& project,
         mapped.rect_height = planned.rectHeight;
         mapped.rotation_degrees = planned.rotationDegrees;
         mapped.shear_degrees = planned.shearDegrees;
+        mapped.opaque_backdrop = planned.opaqueBackdrop ? 1 : 0;
         auto& opacityKeys = opacityStorage.emplace_back();
         for (const auto& key : planned.opacityKeys)
             opacityKeys.push_back({key.localFrame, key.opacity});

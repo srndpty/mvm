@@ -113,6 +113,10 @@ struct PreviewCompositionLayer {
     // 同じ画素を出し直すときは同じ instance を渡すこと。
     // 既存の集成体初期化の順序を崩さないよう末尾に置く。
     std::shared_ptr<const PreviewStillImage> stillImage{};
+    // true なら素材の余白 (配置矩形の外) を不透明な黒で埋めた出力全体の 1 枚として重ねる。
+    // クロスディゾルブの incoming に使い、余白の所でも下の layer を 1 - opacity に減らす。
+    // video layer で回転が 0 のときだけ受理する。
+    bool opaqueBackdrop = false;
     bool operator==(const PreviewCompositionLayer&) const = default;
 };
 

@@ -100,6 +100,9 @@ if(MVM_ENABLE_QT)
     # Phase 1 の PreviewRhiItem は QRhi (QtGui の private API) を使う。
     # 互換保証が弱いことは docs/phase1-plan.md §7 に記録し、
     # 依存を src/app/preview/ の 2 ファイルへ隔離している。
+    # private module を使うことへの Qt の警告は、上の判断と mvm_guard_qt の版固定で扱っているので
+    # 毎回の configure では出さない。
+    set(QT_NO_PRIVATE_MODULE_WARNING ON)
     find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick Svg GuiPrivate Qml QuickControls2)
     mvm_guard_qt()
 endif()
