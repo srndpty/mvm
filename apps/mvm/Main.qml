@@ -98,6 +98,27 @@ ApplicationWindow {
         onTriggered: root.mvmController.duplicateSelectedClips()
     }
     Action {
+        id: selectAllClipsAction
+        text: "すべてを選択"
+        shortcut: "Ctrl+A"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.selectAllClips()
+    }
+    Action {
+        id: splitAtPlayheadAction
+        text: "編集点を追加"
+        shortcut: "Ctrl+K"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.splitSelectionAtPlayhead()
+    }
+    Action {
+        id: splitAllTracksAction
+        text: "編集点をすべてのトラックに追加"
+        shortcut: "Ctrl+Shift+K"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.splitClipAt("", root.mvmController.playheadFrame, true, true)
+    }
+    Action {
         id: speedDurationAction
         text: "速度・デュレーション..."
         shortcut: "Ctrl+R"
@@ -261,6 +282,10 @@ ApplicationWindow {
             CompactMenuItem { action: pasteClipsAction }
             CompactMenuItem { action: duplicateClipsAction }
             CompactMenuItem { action: speedDurationAction }
+            CompactMenuSeparator {}
+            CompactMenuItem { action: splitAtPlayheadAction }
+            CompactMenuItem { action: splitAllTracksAction }
+            CompactMenuItem { action: selectAllClipsAction }
             CompactMenuSeparator {}
             // 実行は Shortcut "Delete" が担う。ここは表示だけで sequence を持たせない (二重発火を防ぐ)。
             CompactMenuItem {

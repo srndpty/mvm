@@ -264,6 +264,10 @@ TimelineEditResult splitTimelineClips(Project& project, const std::vector<std::s
                                       LinkMode linkMode);
 // frame を内側に含む clip (全 track)。Shift+クリックの全 track 分割に使う。
 std::vector<std::string> clipIdsSpanningFrame(const Project& project, std::int64_t frame);
+// among のうち frame を内側 (start < frame < end) に含む clip。順序は among のまま。
+// 存在しない ID は含めない。再生ヘッドでの分割 (Ctrl+K) に使う。
+std::vector<std::string> clipIdsSpanningFrame(const Project& project, std::int64_t frame,
+                                              const std::vector<std::string>& among);
 
 // リップルトリム。trim した尺の増減だけ、trim した clip の track で後ろにある clip
 // (とそのリンク相手) をずらす。left 端を trim しても clip の開始位置は動かない。

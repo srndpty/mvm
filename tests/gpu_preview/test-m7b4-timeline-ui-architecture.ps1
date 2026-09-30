@@ -137,6 +137,29 @@ if (-not (Test-TextInputGuard $qml) -or
     throw 'transport shortcutが文字入力中のfocusを除外していません'
 }
 
+# 編集ショートカットは Action として定義してメニューに出し、文字入力中は無効にする。
+# Ctrl+A などを text field から奪わないため、enabled に keyboardFocusTakesKeys を必ず含める。
+$editActions = @(
+    @{ Id = 'selectAllClipsAction'; Key = 'Ctrl+A'; Call = 'root.mvmController.selectAllClips()' },
+    @{ Id = 'splitAtPlayheadAction'; Key = 'Ctrl+K'; Call = 'root.mvmController.splitSelectionAtPlayhead()' },
+    @{ Id = 'splitAllTracksAction'; Key = 'Ctrl+Shift+K'; Call = 'root.mvmController.splitClipAt("", root.mvmController.playheadFrame, true, true)' }
+)
+function Test-EditActionGuard([string]$source) {
+    foreach ($entry in $editActions) {
+        $pattern = 'Action\s*\{\s*id:\s*' + [regex]::Escape($entry.Id) + '\b[^{}]*shortcut:\s*"' +
+                   [regex]::Escape($entry.Key) + '"[^{}]*enabled:[^\n]*!root\.keyboardFocusTakesKeys' +
+                   '[^{}]*onTriggered:\s*' + [regex]::Escape($entry.Call)
+        if ($source -notmatch $pattern) { return $false }
+        if (-not $source.Contains('CompactMenuItem { action: ' + $entry.Id + ' }')) { return $false }
+    }
+    return $true
+}
+if (-not (Test-EditActionGuard $qml) -or
+    (Test-EditActionGuard ($qml -replace '(?s)(id: selectAllClipsAction.*?enabled: [^\n]*?) && !root\.keyboardFocusTakesKeys', '$1')) -or
+    (Test-EditActionGuard $qml.Replace('CompactMenuItem { action: splitAtPlayheadAction }', ''))) {
+    throw '編集ショートカットの Action が文字入力中の focus を除外していないか、メニューに出ていません'
+}
+
 # タイムラインツールのキーと有効/無効は TimelineToolPanel.tools だけが決め、
 # Main.qml のショートカットはその配列から生成する。キー割り当てを 2 箇所に書かない。
 $toolPanel = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\apps\mvm\TimelineToolPanel.qml') -Raw

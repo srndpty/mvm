@@ -1323,6 +1323,60 @@ void testShiftSelectionToggle(const std::filesystem::path& path) {
           "clipの選択で再生位置が動きました");
 }
 
+// Ctrl+K は再生ヘッドを含む選択 clip (とリンク相手) だけを切り、選択に無ければ current clip を切る。
+// Ctrl+A は timeline の全 clip を選ぶ。
+void testSplitAtPlayheadAndSelectAll(const std::filesystem::path& path) {
+    auto project = linkedProject();
+    auto other = project.timelineClips[0];
+    other.id = "other";
+    other.name = "other";
+    other.linkGroupId.clear();
+    other.track = {mvm::project::TrackKind::Video, 1};
+    project.timelineClips.push_back(std::move(other));
+    check(mvm::project::saveProjectJson(project, path).success,
+          "再生ヘッド分割試験のProjectを保存できません");
+    mvm::app::MvmController controller(path, {}, project);
+
+    const auto* model = controller.timelineModel();
+    const int selectedRole = model->roleNames().key("selected", -1);
+    const auto selectedCount = [&] {
+        int count = 0;
+        for (int row = 0; row < model->rowCount(); ++row)
+            count += model->data(model->index(row, 0), selectedRole).toBool() ? 1 : 0;
+        return count;
+    };
+    check(selectedRole >= 0 && controller.selectAllClips() && selectedCount() == 3,
+          "すべてを選択でtimelineの全clipを選択できません");
+
+    // 境界 (frame 0) は内側ではないので切らない。Project は変わらない。
+    controller.seekTimelineFrame(0);
+    check(!controller.splitSelectionAtPlayhead() && controller.clipCount() == 3 &&
+              !controller.canUndo(),
+          "再生ヘッドがclip境界にあるのに分割しました");
+
+    controller.seekTimelineFrame(60);
+    controller.selectTimelineClip(QStringLiteral("other"), false);
+    check(controller.splitSelectionAtPlayhead() && controller.clipCount() == 4,
+          "選択clipだけを再生ヘッドで分割できません");
+    check(controller.undoLastEdit() && controller.clipCount() == 3 && !controller.canUndo(),
+          "再生ヘッドでの分割を一回のUndoで戻せません");
+
+    controller.selectTimelineClip(QStringLiteral("video"), true);
+    check(controller.splitSelectionAtPlayhead() && controller.clipCount() == 5,
+          "選択clipとリンク相手を再生ヘッドで分割できません");
+    check(controller.undoLastEdit() && controller.clipCount() == 3, "リンク分割を戻せません");
+
+    // 選択も current clip も無ければ切らない。current clip への fallback は preview の seek が
+    // current を選び直す経路なので、実 preview を持つ test_text_ui_input で検査する。
+    check(controller.selectTimelineClips({}) && controller.currentClipIndex() < 0,
+          "前提: clipの選択を解除できません");
+    check(!controller.splitSelectionAtPlayhead() && controller.clipCount() == 3,
+          "選択もcurrent clipも無いのに分割しました");
+
+    check(controller.splitClipAt(QString(), 30, true, true) && controller.clipCount() > 5,
+          "全trackを再生ヘッドで分割できません");
+}
+
 void testDeleteMultipleSelection(const std::filesystem::path& path) {
     auto project = videoProject();
     auto audio = project.timelineClips[0];
@@ -1946,6 +2000,7 @@ int main(int argc, char** argv) {
     testDiscardRecovery(directory / L"recovery-discard.mvm");
     testShiftSelectionToggle(directory / L"shift-selection.mvm");
     testDeleteMultipleSelection(directory / L"delete-multiple.mvm");
+    testSplitAtPlayheadAndSelectAll(directory / L"split-playhead.mvm");
     testShuttleStopAndStep(directory / L"shuttle-stop-step.mvm");
     testPreviewTransform(directory / L"preview-transform.mvm");
     // MLT を初期化するので最後に置く。ほかの試験は MLT 無しの前提で書かれている。

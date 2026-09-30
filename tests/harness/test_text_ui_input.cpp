@@ -256,6 +256,20 @@ int main(int argc, char** argv) {
                       "離れた位置へ置いたclipがcurrentにならない、または再生位置が動きました");
                 controller.undoLastEdit();
                 pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+
+                // Ctrl+K: 選択が無ければ、seek が選んだ再生ヘッド位置の current clip を切る。
+                controller.selectTimelineClips({});
+                check(seekAccepted(), "前提: Ctrl+K 試験の seek が受理されません");
+                pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                const int clipsBeforeSplit = controller.clipCount();
+                check(controller.currentClipIndex() >= 0,
+                      "前提: seek で再生ヘッド位置の clip が current になりません");
+                QTest::keyClick(window, Qt::Key_K, Qt::ControlModifier);
+                pumpUntil([&] { return controller.clipCount() == clipsBeforeSplit + 1; }, 10000);
+                check(controller.clipCount() == clipsBeforeSplit + 1,
+                      "Ctrl+K で選択の無いときに current clip を再生ヘッドで分割しません");
+                controller.undoLastEdit();
+                pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
             }
 
             const auto scenePoint = [host](double fx, double fy) {

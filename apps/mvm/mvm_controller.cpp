@@ -3246,6 +3246,23 @@ bool MvmController::selectTimelineClips(const QStringList& clipIds) {
     return true;
 }
 
+bool MvmController::selectAllClips() {
+    if (project_.timelineClips.empty()) {
+        setStatus(QStringLiteral("選択できるclipがありません"));
+        return false;
+    }
+    std::vector<std::string> ids;
+    ids.reserve(project_.timelineClips.size());
+    for (const auto& clip : project_.timelineClips)
+        ids.push_back(clip.id);
+    const std::string current = currentClipId();
+    setTimelineSelection(ids, false);
+    setCurrentClipSelection(
+        indexOfClipId(project_.timelineClips, current.empty() ? ids.front() : current));
+    setStatus(QString::number(selectedClipIds_.size()) + QStringLiteral("個のclipを選択しました"));
+    return true;
+}
+
 void MvmController::beginScrub() {
     if (navigationTimelineFrames() == 0)
         return;
@@ -4785,6 +4802,28 @@ bool MvmController::splitClipAt(const QString& clipId, qint64 frame, bool allTra
                                                linkModeFor(linked));
         },
         allTracks ? currentClipId() : id, status);
+}
+
+bool MvmController::splitSelectionAtPlayhead() {
+    const qint64 frame = playheadFrame_;
+    std::vector<std::string> clipIds =
+        project::clipIdsSpanningFrame(project_, frame, selectedClipIds_);
+    if (clipIds.empty()) {
+        const std::string current = currentClipId();
+        if (!current.empty())
+            clipIds = project::clipIdsSpanningFrame(project_, frame, {current});
+    }
+    if (clipIds.empty()) {
+        setStatus(QStringLiteral("再生ヘッド位置に分割できる選択clipがありません"));
+        return false;
+    }
+    const std::string selectedId = clipIds.front();
+    return applyTimelineEdit(
+        [&](project::Project& candidate) {
+            return project::splitTimelineClips(candidate, clipIds, frame, newClipId,
+                                               project::LinkMode::Linked);
+        },
+        selectedId, QStringLiteral("再生ヘッド位置でclipを分割しました"));
 }
 
 bool MvmController::selectClipsFromFrame(qint64 frame, const QString& direction,

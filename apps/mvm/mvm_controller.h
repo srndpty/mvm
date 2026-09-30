@@ -327,6 +327,8 @@ public:
     Q_INVOKABLE bool selectTimelineClip(const QString& clipId, bool linked);
     Q_INVOKABLE bool toggleTimelineClipSelection(const QString& clipId);
     Q_INVOKABLE bool selectTimelineClips(const QStringList& clipIds);
+    // timeline の全 clip を選択する (Ctrl+A)。
+    Q_INVOKABLE bool selectAllClips();
     Q_INVOKABLE bool seekTimelineFrame(qint64 frame);
     // scrub。drag 中は最新位置だけを coalesce して seek し、release で確定する。
     Q_INVOKABLE void beginScrub();
@@ -412,6 +414,9 @@ public:
                                       bool linked) const;
     // allTracks=true なら frame を内側に含む全 track の clip を分割する。
     Q_INVOKABLE bool splitClipAt(const QString& clipId, qint64 frame, bool allTracks, bool linked);
+    // 再生ヘッドを内側に含む選択 clip (リンク相手を含む) を再生ヘッドで分割する (Ctrl+K)。
+    // 該当する選択 clip が無ければ、再生ヘッドを含む current clip を分割する。
+    Q_INVOKABLE bool splitSelectionAtPlayhead();
     Q_INVOKABLE QVariantMap previewClipKey(const QString& clipId, qint64 originalFrame,
                                            qint64 requestedFrame, double valuePercent) const;
     Q_INVOKABLE bool commitClipKey(const QString& clipId, qint64 originalFrame,

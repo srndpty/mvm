@@ -1449,6 +1449,24 @@ std::vector<std::string> clipIdsSpanningFrame(const Project& project, std::int64
     return ids;
 }
 
+std::vector<std::string> clipIdsSpanningFrame(const Project& project, std::int64_t frame,
+                                              const std::vector<std::string>& among) {
+    std::vector<std::string> ids;
+    for (const auto& id : among) {
+        const int index = indexOfId(project, id);
+        if (!validIndex(project, index))
+            continue;
+        std::int64_t start = 0;
+        std::int64_t end = 0;
+        std::string ignored;
+        if (clipInterval(project, project.timelineClips[static_cast<std::size_t>(index)], start,
+                         end, ignored) &&
+            frame > start && frame < end)
+            ids.push_back(id);
+    }
+    return ids;
+}
+
 struct RippleSource {
     TrackRef track;
     std::int64_t originalEnd = 0;

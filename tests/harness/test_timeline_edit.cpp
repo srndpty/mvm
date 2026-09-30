@@ -1221,6 +1221,15 @@ void testSplitClips() {
     check(mvm::project::clipIdsSpanningFrame(spanning, 300) ==
               std::vector<std::string>({"id-upper"}),
           "clip境界上のframeを分割対象に含めました");
+    // 選択で絞る版: among の順序を保ち、境界ちょうどの clip と存在しない ID を含めない。
+    check(mvm::project::clipIdsSpanningFrame(spanning, 350, {"id-upper", "missing", "id-Manim"}) ==
+              std::vector<std::string>({"id-upper", "id-Manim"}),
+          "選択clipのうち再生ヘッドを含むclipを正しく求められません");
+    check(mvm::project::clipIdsSpanningFrame(spanning, 300, {"id-Manim", "id-upper"}) ==
+              std::vector<std::string>({"id-upper"}),
+          "選択clipの絞り込みでclip境界上のframeを分割対象に含めました");
+    check(mvm::project::clipIdsSpanningFrame(spanning, 350, {}).empty(),
+          "選択が空なのに分割対象を返しました");
 }
 
 void testRippleTrim() {
