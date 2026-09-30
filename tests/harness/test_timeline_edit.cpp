@@ -1608,6 +1608,114 @@ void testClipWithEdgeAt() {
     check(!beyond, "素材の範囲を超える位置を受理しました");
 }
 
+// Shift+D (編集点)。transitionProject の A / B は cut の前後に 300 frame ずつ余白がある。
+// 期待値は手で数えた値である。
+void testApplyDefaultEditTransition() {
+    using mvm::project::LinkMode;
+    auto base = transitionProject();
+    base.timelineTransitions.clear();
+    check(mvm::project::touchingClipId(base, "id-A", mvm::project::TrimEdge::Right) == "id-B" &&
+              mvm::project::touchingClipId(base, "id-B", mvm::project::TrimEdge::Left) == "id-A" &&
+              mvm::project::touchingClipId(base, "id-A", mvm::project::TrimEdge::Left).empty(),
+          "接しているclipを求められません");
+
+    auto centered = base;
+    centered.timelineClips[0].effects.fadeOutFrames = 10;
+    const auto placed = mvm::project::applyDefaultEditTransition(centered, "id-A", "id-B", 60,
+                                                                 LinkMode::Linked, sequentialIds());
+    check(placed.success && placed.frames == 60 && placed.transitionCount == 1 &&
+              centered.timelineTransitions.size() == 1 &&
+              centered.timelineTransitions[0].id == placed.transitionId &&
+              centered.timelineTransitions[0].framesBeforeCut == 30 &&
+              centered.timelineTransitions[0].framesAfterCut == 30 &&
+              centered.timelineClips[0].effects.fadeOutFrames == 0,
+          "編集点に中央揃えの60 frameのトランジションを置き、端のフェードを消しません");
+    const auto replaced = mvm::project::applyDefaultEditTransition(
+        centered, "id-A", "id-B", 20, LinkMode::Linked, sequentialIds());
+    check(replaced.success && centered.timelineTransitions.size() == 1 &&
+              centered.timelineTransitions[0].framesBeforeCut == 10 &&
+              centered.timelineTransitions[0].framesAfterCut == 10,
+          "同じ編集点の既存のトランジションを置き換えません");
+
+    // outgoing の尻の余白が 10 frame しか無ければ、残りを cut の前へ寄せる。
+    auto shortTail = base;
+    shortTail.timelineClips[0].sourceFrameCount = 310;
+    const auto shifted = mvm::project::applyDefaultEditTransition(
+        shortTail, "id-A", "id-B", 60, LinkMode::Linked, sequentialIds());
+    check(shifted.success && shifted.frames == 60 &&
+              shortTail.timelineTransitions[0].framesBeforeCut == 50 &&
+              shortTail.timelineTransitions[0].framesAfterCut == 10,
+          "片側の余白が足りないときにもう片側へ寄せません");
+
+    // 両側とも余白が無ければ作らない。
+    auto noHandles = base;
+    noHandles.timelineClips[0].sourceFrameCount = 300;
+    noHandles.timelineClips[1].sourceInFrame = 0;
+    noHandles.timelineClips[1].sourceOutFrame = 300;
+    const auto noHandlesBefore = noHandles;
+    const auto refused = mvm::project::applyDefaultEditTransition(
+        noHandles, "id-A", "id-B", 60, LinkMode::Linked, sequentialIds());
+    check(!refused.success && refused.error.find("余白が足りない") != std::string::npos &&
+              noHandles == noHandlesBefore,
+          "余白の無い編集点にトランジションを作りました");
+    check(!mvm::project::applyDefaultEditTransition(base, "id-A", "missing", 60, LinkMode::Linked,
+                                                    sequentialIds())
+               .success,
+          "存在しないclipの編集点にトランジションを作りました");
+
+    // 30fps 素材は 60fps timeline で 2 frame 単位にしか延ばせない。61 frame は 60 frame に縮める。
+    auto halfRate = base;
+    for (auto& value : halfRate.timelineClips) {
+        value.sourceFpsNum = 30;
+        value.sourceFrameCount = 300;
+    }
+    halfRate.timelineClips[0].sourceOutFrame = 150;
+    halfRate.timelineClips[1].sourceInFrame = 150;
+    halfRate.timelineClips[1].sourceOutFrame = 300;
+    check(mvm::project::validateTimeline(halfRate).success, "前提: 30fps素材のtimelineが不正です");
+    const auto aligned = mvm::project::applyDefaultEditTransition(
+        halfRate, "id-A", "id-B", 61, LinkMode::Linked, sequentialIds());
+    check(aligned.success && aligned.frames == 60 &&
+              halfRate.timelineTransitions[0].framesBeforeCut == 30 &&
+              halfRate.timelineTransitions[0].framesAfterCut == 30,
+          "素材frameに乗らない長さを縮めません");
+
+    // リンク相手 (音声) も同じ cut で接していれば一緒に置く。
+    auto linked = base;
+    auto audioA = linked.timelineClips[0];
+    audioA.id = "id-audio-A";
+    audioA.kind = mvm::project::TimelineClipKind::Audio;
+    audioA.track = kA1;
+    auto audioB = linked.timelineClips[1];
+    audioB.id = "id-audio-B";
+    audioB.kind = mvm::project::TimelineClipKind::Audio;
+    audioB.track = kA1;
+    linked.timelineClips[0].linkGroupId = audioA.linkGroupId = "link-A";
+    linked.timelineClips[1].linkGroupId = audioB.linkGroupId = "link-B";
+    linked.timelineClips.push_back(audioA);
+    linked.timelineClips.push_back(audioB);
+    check(mvm::project::validateTimeline(linked).success, "前提: リンクしたtimelineが不正です");
+    const auto both = mvm::project::applyDefaultEditTransition(linked, "id-A", "id-B", 60,
+                                                               LinkMode::Linked, sequentialIds());
+    check(both.success && both.transitionCount == 2 && linked.timelineTransitions.size() == 2,
+          "リンク相手の編集点にもトランジションを置きません");
+    auto single = linked;
+    single.timelineTransitions.clear();
+    check(mvm::project::applyDefaultEditTransition(single, "id-A", "id-B", 60, LinkMode::Single,
+                                                   sequentialIds())
+                  .transitionCount == 1 &&
+              single.timelineTransitions.size() == 1,
+          "Singleでリンク相手にもトランジションを置きました");
+
+    check(mvm::project::deleteTimelineTransition(linked, both.transitionId).success &&
+              linked.timelineTransitions.size() == 1,
+          "トランジションを削除できません");
+    const auto beforeMissing = linked;
+    check(!mvm::project::deleteTimelineTransition(linked, "missing").success &&
+              linked == beforeMissing,
+          "存在しないトランジションの削除を受理しました");
+}
+
 void testRippleTrim() {
     mvm::project::Project project = mvm::project::createDefaultProject();
     auto first = clip("first");
@@ -2687,6 +2795,7 @@ int main(int argc, char** argv) {
     testToggleClipsEnabled();
     testApplyDefaultClipFades();
     testClipWithEdgeAt();
+    testApplyDefaultEditTransition();
     testTimelineTransitions(std::filesystem::path(argv[1]));
     testRippleTrim();
     testRollEdit();

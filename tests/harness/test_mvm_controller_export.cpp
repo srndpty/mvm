@@ -1456,6 +1456,51 @@ void testApplyDefaultTransitionToClips(const std::filesystem::path& path) {
           "フェードの適用を1回のUndoで戻せません");
 }
 
+// 編集点を選んで Shift+D。分割した映像・音声の cut にクロスディゾルブとクロスフェードを 1 undo で
+// 置き、置いたトランジションを選ぶ。Delete で選んだトランジションだけを消す。
+void testEditPointTransition(const std::filesystem::path& path) {
+    const auto project = linkedProject(); // 映像と音声、素材 120 frame
+    check(mvm::project::saveProjectJson(project, path).success,
+          "編集点試験のProjectを保存できません");
+    mvm::app::MvmController controller(path, {}, project);
+    check(controller.splitClipAt(QStringLiteral("video"), 60, false, true) &&
+              controller.clipCount() == 4,
+          "前提: 映像と音声を分割できません");
+    const auto undoBefore = controller.canUndo();
+    check(controller.selectEditPoint(QStringLiteral("video"), QStringLiteral("right")) &&
+              controller.selectedEditPoint().value(QStringLiteral("frame")).toLongLong() == 60 &&
+              controller.currentClipIndex() < 0 && !controller.canDeleteSelection(),
+          "編集点を選べないか、clipの選択が残っています");
+    check(controller.applyDefaultTransition() && controller.timelineTransitions().size() == 2 &&
+              !controller.selectedTransitionId().isEmpty() &&
+              controller.selectedEditPoint().isEmpty() && controller.canDeleteSelection(),
+          "編集点に映像と音声のトランジションを置いて選びません");
+    const auto shown = controller.timelineTransitions();
+    const auto first = shown.isEmpty() ? QVariantMap{} : shown.front().toMap();
+    check(first.value(QStringLiteral("start")).toLongLong() == 30 &&
+              first.value(QStringLiteral("cut")).toLongLong() == 60 &&
+              first.value(QStringLiteral("end")).toLongLong() == 90,
+          "1秒のトランジションをcutの前後30 frameに置きません");
+    check(controller.undoLastEdit() && controller.timelineTransitions().isEmpty() &&
+              controller.selectedTransitionId().isEmpty() && controller.canUndo() == undoBefore,
+          "トランジションの作成を1回のUndoで戻せません");
+    check(controller.redoLastEdit() && controller.timelineTransitions().size() == 2,
+          "トランジションの作成をRedoできません");
+    const auto target = controller.timelineTransitions().front().toMap()
+                            .value(QStringLiteral("transitionId")).toString();
+    check(controller.selectTransition(target) && controller.deleteSelection() &&
+              controller.timelineTransitions().size() == 1 && controller.clipCount() == 4,
+          "選んだトランジションだけをDeleteで消せません");
+    // clip を選ぶと編集点の選択は外れる。接している clip の無い端は clip の選択になる。
+    check(controller.selectEditPoint(QStringLiteral("video"), QStringLiteral("right")) &&
+              controller.selectTimelineClip(QStringLiteral("video"), true) &&
+              controller.selectedEditPoint().isEmpty(),
+          "clipを選んでも編集点の選択が残ります");
+    check(controller.selectEditPoint(QStringLiteral("video"), QStringLiteral("left")) &&
+              controller.selectedEditPoint().isEmpty() && controller.currentClipIndex() >= 0,
+          "接しているclipの無い端を編集点として選びました");
+}
+
 void testDeleteMultipleSelection(const std::filesystem::path& path) {
     auto project = videoProject();
     auto audio = project.timelineClips[0];
@@ -2086,6 +2131,7 @@ int main(int argc, char** argv) {
     testStepSelectedClipVolume(directory / L"step-volume.mvm");
     testToggleSelectedClipsEnabled(directory / L"toggle-enabled.mvm");
     testApplyDefaultTransitionToClips(directory / L"default-fades.mvm");
+    testEditPointTransition(directory / L"edit-point-transition.mvm");
     testShuttleStopAndStep(directory / L"shuttle-stop-step.mvm");
     testPreviewTransform(directory / L"preview-transform.mvm");
     // MLT を初期化するので最後に置く。ほかの試験は MLT 無しの前提で書かれている。

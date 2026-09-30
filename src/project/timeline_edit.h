@@ -302,6 +302,28 @@ std::int64_t defaultTransitionFrames(std::int64_t timelineFpsNum, std::int64_t t
 TimelineEditResult applyDefaultClipFades(Project& project, const std::vector<std::string>& clipIds,
                                          std::int64_t timelineFrames);
 
+// clip の edge 側で接している同じ track の clip の ID。無ければ空。
+std::string touchingClipId(const Project& project, const std::string& clipId, TrimEdge edge);
+
+struct TransitionEditResult {
+    bool success = false;
+    std::string transitionId; // outgoing / incoming に置いたトランジション
+    std::int64_t frames = 0;  // 置いた長さ (余白が足りなければ求めた長さより短い)
+    int transitionCount = 0;  // リンク相手の分を含めて置いた数
+    std::string error;
+};
+
+// 編集点 (outgoing の終端 = incoming の先頭) に長さ timelineFrames の既定のトランジションを置く
+// (Shift+D を編集点で押したとき)。cut を中央にし、片側の余白が足りなければもう片側へ寄せる。
+// 素材 frame へ一意に換算できる長さになるまで縮める。0 frame になれば失敗する。
+// その編集点の既存のトランジションは置き換え、両 clip のその端のフェードは消す。
+// Linked で、リンク相手どうしも同じ cut で接していれば同じ長さで置く (映像と音声を一緒に)。
+TransitionEditResult applyDefaultEditTransition(Project& project, const std::string& outgoingId,
+                                                const std::string& incomingId,
+                                                std::int64_t timelineFrames, LinkMode linkMode,
+                                                const std::function<std::string()>& newId);
+TimelineEditResult deleteTimelineTransition(Project& project, const std::string& transitionId);
+
 // リップルトリム。trim した尺の増減だけ、trim した clip の track で後ろにある clip
 // (とそのリンク相手) をずらす。left 端を trim しても clip の開始位置は動かない。
 // Linked ならリンク相手も同じ量 trim し、相手の track の後ろもずらす。

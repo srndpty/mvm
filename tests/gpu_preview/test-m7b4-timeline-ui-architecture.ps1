@@ -694,9 +694,9 @@ if (-not (Test-DuplicatePreview $qml) -or
 # メニュー項目は表示だけで sequence を持たない (Shortcut と二重に発火させない)。
 function Test-TransportMenuContract([string]$source) {
     $playItem = 'CompactMenuItem\s*\{\s*text:\s*\(root\.mvmController\.playing \? "一時停止" : "再生"\) \+ "\\tSpace"[^{}]*onTriggered:\s*\{[^{}]*root\.mvmController\.playTimeline\(\)'
-    $deleteItem = 'CompactMenuItem\s*\{\s*text:\s*"クリップを削除\\tDelete"[^{}]*onTriggered:\s*root\.mvmController\.deleteCurrentClip\(\)'
+    $deleteItem = 'CompactMenuItem\s*\{\s*text:\s*\(root\.mvmController\.selectedTransitionId !== "" \? "トランジションを削除"\s*:\s*"クリップを削除"\) \+ "\\tDelete"[^{}]*onTriggered:\s*root\.mvmController\.deleteSelection\(\)'
     if ($source -notmatch $playItem -or $source -notmatch $deleteItem) { return $false }
-    foreach ($item in [regex]::Matches($source, 'CompactMenuItem\s*\{\s*text:\s*[^\n]*\\t(Space|Delete)"[^{}]*')) {
+    foreach ($item in [regex]::Matches($source, 'CompactMenuItem\s*\{\s*text:\s*[^\n]*(\n[^\n]*)?\\t(Space|Delete)"[^{}]*')) {
         if ($item.Value -match 'shortcut:|sequence:') { return $false }
     }
     if ($source -match 'Button\s*\{\s*text:\s*"クリップ削除"' -or
@@ -708,7 +708,7 @@ function Test-TransportMenuContract([string]$source) {
 $transportButtons = $qml.Replace('        // --- タイムライン ---', "            Button {`n                text: `"クリップ削除`"`n            }`n        // --- タイムライン ---")
 if (-not (Test-TransportMenuContract $qml) -or
     (Test-TransportMenuContract $transportButtons) -or
-    (Test-TransportMenuContract $qml.Replace('text: "クリップを削除\tDelete"', 'text: "クリップを削除\tDelete"; shortcut: "Delete"')) -or
+    (Test-TransportMenuContract $qml.Replace('+ "\tDelete"', '+ "\tDelete"; shortcut: "Delete"')) -or
     (Test-TransportMenuContract $qml.Replace('+ "\tSpace"', ''))) {
     throw '再生・クリップ削除のメニュー契約が崩れています'
 }

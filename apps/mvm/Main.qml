@@ -322,9 +322,10 @@ ApplicationWindow {
             CompactMenuSeparator {}
             // 実行は Shortcut "Delete" が担う。ここは表示だけで sequence を持たせない (二重発火を防ぐ)。
             CompactMenuItem {
-                text: "クリップを削除\tDelete"
-                enabled: !root.mvmController.busy && root.mvmController.currentClipIndex >= 0
-                onTriggered: root.mvmController.deleteCurrentClip()
+                text: (root.mvmController.selectedTransitionId !== "" ? "トランジションを削除"
+                                                                      : "クリップを削除") + "\tDelete"
+                enabled: root.mvmController.canDeleteSelection
+                onTriggered: root.mvmController.deleteSelection()
             }
         }
         CompactMenu {
@@ -692,9 +693,8 @@ ApplicationWindow {
 
     Shortcut {
         sequence: "Delete"
-        enabled: !root.mvmController.busy && root.mvmController.currentClipIndex >= 0
-                 && !root.keyboardFocusTakesKeys
-        onActivated: root.mvmController.deleteCurrentClip()
+        enabled: root.mvmController.canDeleteSelection && !root.keyboardFocusTakesKeys
+        onActivated: root.mvmController.deleteSelection()
     }
     Shortcut {
         sequence: "Space"
@@ -2640,7 +2640,9 @@ ApplicationWindow {
                                     const action = Gestures.edgeRelease(timelinePanel.tool, edge, delta,
                                                                         clipItem.editLinked);
                                     clipItem.endLinkedEdit();
-                                    if (action.action === "rippleTrim")
+                                    if (action.action === "selectEdit")
+                                        root.mvmController.selectEditPoint(id, action.edge);
+                                    else if (action.action === "rippleTrim")
                                         root.mvmController.rippleTrimClip(id, action.edge, action.delta, action.linked);
                                     else if (action.action === "roll")
                                         root.mvmController.rollClipEdge(id, action.edge, action.delta, action.linked);
@@ -3147,6 +3149,81 @@ ApplicationWindow {
                                     }
                                 }
                             }
+                        }
+
+                        // --- トランジション ---
+                        // cut の前後の区間に重ねて描く。押すと選択し、Delete で消せる。
+                        Repeater {
+                            model: root.mvmController.timelineTransitions
+
+                            delegate: Rectangle {
+                                id: transitionItem
+                                required property var modelData
+                                readonly property bool selected:
+                                    modelData.transitionId === root.mvmController.selectedTransitionId
+                                objectName: "timelineTransition_" + modelData.transitionId
+                                x: modelData.start * timelinePanel.pixelsPerFrame
+                                y: timelinePanel.rowY(modelData.trackKind, modelData.trackIndex)
+                                   - timelinePanel.tracksTop + 3
+                                width: Math.max(4, (modelData.end - modelData.start)
+                                                   * timelinePanel.pixelsPerFrame)
+                                height: timelinePanel.trackHeight - 6
+                                radius: 2
+                                color: selected ? "#c0e0b040" : "#80c89a3c"
+                                border.color: selected ? "#ffe08a" : "#d8b35a"
+                                border.width: selected ? 2 : 1
+                                z: 35
+
+                                // 左下から右上への斜線 (Premiere のトランジションの表示)。
+                                Canvas {
+                                    anchors.fill: parent
+                                    onPaint: {
+                                        const context = getContext("2d");
+                                        context.reset();
+                                        context.strokeStyle = "#fff3cf";
+                                        context.lineWidth = 1;
+                                        context.beginPath();
+                                        context.moveTo(0, height);
+                                        context.lineTo(width, 0);
+                                        context.stroke();
+                                    }
+                                    onWidthChanged: requestPaint()
+                                    onHeightChanged: requestPaint()
+                                }
+                                Label {
+                                    anchors.centerIn: parent
+                                    visible: parent.width > 70
+                                    text: transitionItem.modelData.trackKind === "audio"
+                                          ? "クロスフェード" : "クロスディゾルブ"
+                                    color: "white"
+                                    font.pixelSize: 11
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    enabled: !root.mvmController.busy
+                                    acceptedButtons: Qt.LeftButton
+                                    onClicked: root.mvmController.selectTransition(
+                                                   transitionItem.modelData.transitionId)
+                                }
+                            }
+                        }
+
+                        // 選択中の編集点。cut の位置に括弧を描く。
+                        Rectangle {
+                            readonly property var point: root.mvmController.selectedEditPoint
+                            visible: point.frame !== undefined
+                            x: (point.frame !== undefined ? point.frame : 0)
+                               * timelinePanel.pixelsPerFrame - 3
+                            y: point.frame !== undefined
+                               ? timelinePanel.rowY(point.trackKind, point.trackIndex)
+                                 - timelinePanel.tracksTop + 1
+                               : 0
+                            width: 6
+                            height: timelinePanel.trackHeight - 2
+                            color: "transparent"
+                            border.color: "#ffe08a"
+                            border.width: 2
+                            z: 36
                         }
 
                         Rectangle {

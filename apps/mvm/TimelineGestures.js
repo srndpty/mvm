@@ -95,9 +95,14 @@ function bodyRelease(state, moved, movedToFrame, releaseFrame, toolDragFrames) {
 }
 
 // clip の端のドラッグを、現在のツールの編集として確定する。
+// 動かさずに離したら、選択・リップル・ローリングでは編集点を選ぶ (Shift+D のクロスディゾルブの
+// 対象になる)。レート調整では何もしない。
 function edgeRelease(tool, edge, delta, linked) {
-    if (delta === 0)
+    if (delta === 0) {
+        if (tool === "select" || tool === "ripple" || tool === "rolling")
+            return { "action": "selectEdit", "edge": edge };
         return { "action": "none" };
+    }
     const action = tool === "ripple" ? "rippleTrim"
                  : tool === "rolling" ? "roll"
                  : tool === "rate" ? "rateStretch"

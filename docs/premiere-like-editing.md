@@ -1746,3 +1746,35 @@ slot で決める (書き出しの MLT layer と同じ数え方。トランジ�
 
 `[未検証]` 区間に出入りするたびに layer 数が変わるので、再生中は source を組み直す (clip 境界と同じ経路)。
 試験では再生が止まらないことだけを見ており、組み直しの間に frame が落ちるか (表示の滑らかさ) は測っていない。
+
+### 19.6 編集点の選択と、編集点での既定のトランジション (Shift+D)
+
+`[事実]` 選択・リップル・ローリングのツールで clip の端を動かさずに離すと編集点を選ぶ
+(`TimelineGestures.edgeRelease` が `selectEdit` を返す。レート調整では何もしない)。接している clip の無い端は
+clip の選択になる。編集点・トランジションの選択は clip の選択と排他で、`setTimelineSelection` が外す。
+編集・undo の後に無くなった編集点・トランジションの選択は `refreshTimelineModel` で外す。
+
+- 編集点 (またはトランジション) を選んで Shift+D を押すと `applyDefaultEditTransition` が 1 秒のトランジションを
+  置き、置いたトランジションを選ぶ。cut を中央にし、片側の余白が足りなければもう片側へ寄せる
+  (尻の余白 10 frame なら 50 / 10)。両側とも余白が無ければ「素材の余白が足りないため
+  トランジションを作れません」で失敗する。既存のトランジションは置き換え、その端のフェードは消す
+- 速度や fps の違いで延ばした端が素材 frame に乗らない長さは、描画区間を作れるまで長い側から 1 frame ずつ縮める
+  (30fps 素材を 60fps timeline に置くと 61 frame は 60 frame になる)
+- リンク相手どうしも同じ cut で接していれば、同じ長さで一緒に置く (映像のディゾルブと音声のクロスフェード)。
+  ずらして置いた音声は別の編集点なので置かない
+- timeline は cut の前後の区間にトランジションを描き、押すと選ぶ。Delete は選んだトランジションを消し、
+  そうでなければ従来どおり clip を消す。編集点を選んだ Delete は何も消さない
+
+`[事実]` Repeater の model (`timelineTransitions`) は `stateChanged` ではなく専用の
+`timelineTransitionsChanged` で、中身が変わったときだけ通知する。`stateChanged` で通知すると、再生中や
+clip の選択のたびに delegate が作り直される (`text_ui_direct_input` で、押そうとした item が選択の変更で
+作り直されて消えることを見つけた)。選択の表示は model に入れず、delegate が `selectedTransitionId` と比べる。
+
+`[事実]` 確認したこと:
+- `m5_timeline_edit_focused`: 中央揃え 30 / 30、置き換え、片側の余白不足での寄せ、余白なしの拒否、
+  61 → 60 frame への縮め (縮めを外すと落ちる)、リンク相手への作成と Single、削除
+- `m7b_4_controller_export_lifecycle`: 分割した映像・音声の編集点で 2 つ作成・選択、1 undo、redo、
+  選んだトランジションだけを Delete、clip の選択で編集点の選択が外れる
+- `text_ui_direct_input` (workstation): 実 window で clip の端を押して編集点を選び、Shift+D で置き、
+  描いたトランジションを押して選び、Delete で消す (clip は消えない)
+- `tst_timeline_gestures`: 動かさずに離したときの `selectEdit` と、レート調整の `none`

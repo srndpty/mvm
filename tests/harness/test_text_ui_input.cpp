@@ -270,6 +270,58 @@ int main(int argc, char** argv) {
                       "Ctrl+K で選択の無いときに current clip を再生ヘッドで分割しません");
                 controller.undoLastEdit();
                 pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+
+                // 編集点: cut の端を押すと編集点を選び、Shift+D でクロスディゾルブを置く。
+                // トランジションを押して選び、Delete で消す。
+                check(controller.splitClipAt(QStringLiteral("video"), 60, false, true),
+                      "前提: 編集点の試験で clip を分割できません");
+                pump(300);
+                auto* leftHalf = findVisualItem(window, QStringLiteral("timelineClip_video"));
+                check(leftHalf != nullptr, "前提: timeline の clip がありません");
+                if (leftHalf) {
+                    QTest::mouseClick(window, Qt::LeftButton, {},
+                                      leftHalf
+                                          ->mapToScene(QPointF(leftHalf->width() - 3,
+                                                               leftHalf->height() / 2))
+                                          .toPoint());
+                    pump();
+                    check(controller.selectedEditPoint().value(QStringLiteral("frame")).toLongLong() ==
+                              60,
+                          "clip の端を押しても編集点を選びません");
+                    QTest::keyClick(window, Qt::Key_D, Qt::ShiftModifier);
+                    pump(300);
+                    const auto transitions = controller.timelineTransitions();
+                    check(transitions.size() == 1, "編集点で Shift+D を押してもトランジションを置きません");
+                    if (transitions.size() == 1) {
+                        const QString id =
+                            transitions.front().toMap().value(QStringLiteral("transitionId")).toString();
+                        auto* drawn = findVisualItem(window, QStringLiteral("timelineTransition_") + id);
+                        check(drawn && drawn->isVisible() && drawn->width() > 0,
+                              "置いたトランジションを timeline に描きません");
+                        controller.selectTimelineClips({});
+                        pump();
+                        // 選択を外しても delegate は作り直さない (同じ item のまま)。
+                        check(findVisualItem(window, QStringLiteral("timelineTransition_") + id) == drawn,
+                              "clip の選択を変えただけでトランジションの表示を作り直しました");
+                        if (drawn) {
+                            QTest::mouseClick(
+                                window, Qt::LeftButton, {},
+                                drawn->mapToScene(QPointF(drawn->width() / 2, drawn->height() / 2))
+                                    .toPoint());
+                            pump();
+                        }
+                        check(controller.selectedTransitionId() == id,
+                              "トランジションを押しても選びません");
+                        QTest::keyClick(window, Qt::Key_Delete);
+                        pump(300);
+                        check(controller.timelineTransitions().isEmpty() && controller.clipCount() > 1,
+                              "選んだトランジションを Delete で消しません (clip を消した)");
+                        controller.undoLastEdit(); // Delete
+                        controller.undoLastEdit(); // Shift+D
+                    }
+                }
+                controller.undoLastEdit(); // 分割
+                pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
             }
 
             const auto scenePoint = [host](double fx, double fy) {

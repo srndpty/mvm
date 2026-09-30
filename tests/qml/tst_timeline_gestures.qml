@@ -108,7 +108,13 @@ TestCase {
         compare(roll.edge, "right");
         compare(roll.delta, 2);
         compare(roll.linked, false);
-        compare(Gestures.edgeRelease("ripple", "left", 0, true).action, "none");
+        // 動かさずに離したら編集点を選ぶ (Shift+D の対象)。レート調整では何もしない。
+        const click = Gestures.edgeRelease("ripple", "left", 0, true);
+        compare(click.action, "selectEdit");
+        compare(click.edge, "left");
+        compare(Gestures.edgeRelease("select", "right", 0, true).action, "selectEdit");
+        compare(Gestures.edgeRelease("rolling", "right", 0, true).action, "selectEdit");
+        compare(Gestures.edgeRelease("rate", "left", 0, true).action, "none");
         const rate = Gestures.edgeRelease("rate", "left", -5, true);
         compare(rate.action, "rateStretch");
         compare(rate.edge, "left");

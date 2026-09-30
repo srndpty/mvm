@@ -83,6 +83,17 @@ class MvmController : public QObject {
     Q_PROPERTY(qint64 totalTimelineFrames READ totalTimelineFrames NOTIFY stateChanged)
     Q_PROPERTY(qint64 navigationTimelineFrames READ navigationTimelineFrames NOTIFY stateChanged)
     Q_PROPERTY(QVariantList timelineMarkers READ timelineMarkers NOTIFY stateChanged)
+    // timeline に描くトランジション。{transitionId, trackKind, trackIndex, start, cut, end}。
+    // 選択は selectedTransitionId と比べる (選択で model を変えない)。
+    // Repeater の model なので stateChanged (再生中も頻繁に出る) では通知しない。通知のたびに
+    // delegate が作り直される。
+    Q_PROPERTY(QVariantList timelineTransitions READ timelineTransitions NOTIFY
+                   timelineTransitionsChanged)
+    // 選択中の編集点 {trackKind, trackIndex, frame}。無ければ空。clip の選択とは排他。
+    Q_PROPERTY(QVariantMap selectedEditPoint READ selectedEditPoint NOTIFY stateChanged)
+    Q_PROPERTY(QString selectedTransitionId READ selectedTransitionId NOTIFY stateChanged)
+    // Delete で消せるもの (トランジション、または clip) が選ばれている。
+    Q_PROPERTY(bool canDeleteSelection READ canDeleteSelection NOTIFY stateChanged)
     Q_PROPERTY(qint64 inFrame READ inFrame NOTIFY stateChanged)
     Q_PROPERTY(qint64 outFrame READ outFrame NOTIFY stateChanged)
     Q_PROPERTY(QString currentTimeText READ currentTimeText NOTIFY stateChanged)
@@ -188,6 +199,10 @@ public:
 
     qint64 navigationTimelineFrames() const;
     QVariantList timelineMarkers() const;
+    QVariantList timelineTransitions() const;
+    QVariantMap selectedEditPoint() const;
+    QString selectedTransitionId() const { return QString::fromStdString(selectedTransitionId_); }
+    bool canDeleteSelection() const;
 
     qint64 inFrame() const { return project_.inFrame.value_or(-1); }
 
@@ -430,6 +445,8 @@ public:
     Q_INVOKABLE bool toggleTimelineClipEnabled(const QString& clipId);
     // 既定のトランジションを適用する (Shift+D)。clip を選択していれば、その clip (とリンク相手)
     // の先頭と末尾に 1 秒のフェードを付ける。1 回が 1 undo。
+    // 編集点 (またはトランジション) を選んでいれば、そこへ 1 秒のクロスディゾルブ / クロスフェードを
+    // 置く (リンク相手も同じ cut なら一緒に)。
     Q_INVOKABLE bool applyDefaultTransition();
     Q_INVOKABLE QVariantMap previewClipKey(const QString& clipId, qint64 originalFrame,
                                            qint64 requestedFrame, double valuePercent) const;
@@ -440,6 +457,11 @@ public:
     Q_INVOKABLE bool selectClipsFromFrame(qint64 frame, const QString& direction,
                                           const QString& trackKind, int trackIndex);
     Q_INVOKABLE bool deleteCurrentClip();
+    // clip の edge ("left" / "right") の編集点を選ぶ。接している clip が無ければ clip を選ぶ。
+    Q_INVOKABLE bool selectEditPoint(const QString& clipId, const QString& edge);
+    Q_INVOKABLE bool selectTransition(const QString& transitionId);
+    // Delete。トランジションを選んでいればそれを消し、そうでなければ clip を消す。
+    Q_INVOKABLE bool deleteSelection();
     Q_INVOKABLE bool deleteTimelineClip(const QString& clipId);
     Q_INVOKABLE bool unlinkTimelineClip(const QString& clipId);
     Q_INVOKABLE bool undoLastEdit();
@@ -519,6 +541,7 @@ public Q_SLOTS:
 
 Q_SIGNALS:
     void stateChanged();
+    void timelineTransitionsChanged();
     void meterChanged();
     void exportFailed(const QString& message);
     void recoveryDetected();
@@ -761,6 +784,14 @@ private:
     std::int64_t pendingSourceFrame_ = 0;
     int currentClipIndex_ = -1;
     std::vector<std::string> selectedClipIds_;
+    // 選択中の編集点 (outgoing / incoming の clip ID) とトランジション。clip の選択とは排他で、
+    // setTimelineSelection が消す。
+    std::string selectedEditOutgoing_;
+    std::string selectedEditIncoming_;
+    std::string selectedTransitionId_;
+    // 最後に通知した timelineTransitions。変わったときだけ timelineTransitionsChanged を出す。
+    QVariantList shownTransitions_;
+    void notifyTimelineTransitions();
     std::vector<project::TimelineClip> clipboardClips_;
     // コピー元 Project の bin にあった、clipboardClips_ の素材。
     std::vector<project::MediaItem> clipboardMediaItems_;

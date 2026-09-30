@@ -786,6 +786,17 @@ bool MvmController::canPlay() const {
 }
 
 void MvmController::refreshTimelineModel() {
+    if (!selectedTransitionId_.empty() &&
+        std::none_of(project_.timelineTransitions.begin(), project_.timelineTransitions.end(),
+                     [&](const auto& transition) { return transition.id == selectedTransitionId_; }))
+        selectedTransitionId_.clear();
+    if (!selectedEditOutgoing_.empty() &&
+        project::touchingClipId(project_, selectedEditOutgoing_, project::TrimEdge::Right) !=
+            selectedEditIncoming_) {
+        selectedEditOutgoing_.clear();
+        selectedEditIncoming_.clear();
+    }
+    notifyTimelineTransitions();
     textPreviewOverride_.reset();
     textRasterImages_.clear();
     textStillImages_.clear();
@@ -1223,6 +1234,9 @@ void MvmController::setCurrentClipSelection(int index) {
 
 void MvmController::setTimelineSelection(const std::vector<std::string>& clipIds,
                                          bool expandLinks) {
+    selectedEditOutgoing_.clear();
+    selectedEditIncoming_.clear();
+    selectedTransitionId_.clear();
     selectedClipIds_ = clipIds;
     std::vector<std::string> selectedLinkGroups;
     for (const auto& id : clipIds) {
@@ -1247,6 +1261,7 @@ void MvmController::setTimelineSelection(const std::vector<std::string>& clipIds
     for (const auto& id : selectedClipIds_)
         selectedIds.insert(QString::fromStdString(id));
     timelineModel_->setSelectedClipIds(selectedIds);
+    notifyTimelineTransitions();
 }
 
 bool MvmController::refreshPreviewAfterSavedEdit(const std::string& selectedClipId,
@@ -4877,6 +4892,48 @@ bool MvmController::toggleClipsEnabled(const std::vector<std::string>& clipIds) 
 }
 
 bool MvmController::applyDefaultTransition() {
+    const std::int64_t defaultFrames =
+        project::defaultTransitionFrames(project_.timelineFpsNum, project_.timelineFpsDen);
+    // 選んだトランジションは、その編集点へ既定の長さで置き直す。
+    std::string outgoing = selectedEditOutgoing_;
+    std::string incoming = selectedEditIncoming_;
+    for (const auto& transition : project_.timelineTransitions) {
+        if (!selectedTransitionId_.empty() && transition.id == selectedTransitionId_) {
+            outgoing = transition.outgoingClipId;
+            incoming = transition.incomingClipId;
+        }
+    }
+    if (!outgoing.empty()) {
+        project::TransitionEditResult placed;
+        const bool applied = applyTimelineEdit(
+            [&](project::Project& candidate) {
+                placed = project::applyDefaultEditTransition(candidate, outgoing, incoming,
+                                                             defaultFrames,
+                                                             project::LinkMode::Linked, newClipId);
+                project::TimelineEditResult result;
+                result.success = placed.success;
+                result.error = placed.error;
+                return result;
+            },
+            std::string{}, QString());
+        if (!applied)
+            return false;
+        // 置いたトランジションを選ぶ (続けて Delete で消せる)。
+        selectedEditOutgoing_.clear();
+        selectedEditIncoming_.clear();
+        selectedTransitionId_ = placed.transitionId;
+        QString status = QString::number(placed.frames) +
+                         QStringLiteral("フレームのトランジションを作成しました");
+        if (placed.transitionCount > 1)
+            status += QStringLiteral(" (リンク相手を含む") + QString::number(placed.transitionCount) +
+                      QStringLiteral("個)");
+        if (placed.frames < defaultFrames)
+            status += QStringLiteral("。素材の余白が足りないため短くしました");
+        setStatus(status);
+        notifyTimelineTransitions();
+        Q_EMIT stateChanged();
+        return true;
+    }
     std::vector<std::string> clipIds = selectedClipIds_;
     if (clipIds.empty() && !currentClipId().empty())
         clipIds.push_back(currentClipId());
@@ -4887,11 +4944,9 @@ bool MvmController::applyDefaultTransition() {
     std::string selectedId = currentClipId();
     if (selectedId.empty())
         selectedId = clipIds.front();
-    const std::int64_t frames =
-        project::defaultTransitionFrames(project_.timelineFpsNum, project_.timelineFpsDen);
     return applyTimelineEdit(
         [&](project::Project& candidate) {
-            return project::applyDefaultClipFades(candidate, clipIds, frames);
+            return project::applyDefaultClipFades(candidate, clipIds, defaultFrames);
         },
         selectedId, QStringLiteral("clipの先頭と末尾にフェードを付けました"));
 }
@@ -4949,6 +5004,114 @@ bool MvmController::selectClipsFromFrame(qint64 frame, const QString& direction,
     setCurrentClipSelection(indexOfClipId(project_.timelineClips, ids.front()));
     setStatus(QString::number(selectedClipIds_.size()) + QStringLiteral("個のclipを選択しました"));
     return true;
+}
+
+void MvmController::notifyTimelineTransitions() {
+    auto shown = timelineTransitions();
+    if (shown == shownTransitions_)
+        return;
+    shownTransitions_ = std::move(shown);
+    Q_EMIT timelineTransitionsChanged();
+}
+
+QVariantList MvmController::timelineTransitions() const {
+    QVariantList list;
+    for (const auto& transition : project_.timelineTransitions) {
+        const int outgoing = indexOfClipId(project_.timelineClips, transition.outgoingClipId);
+        if (outgoing < 0)
+            continue;
+        const auto& clip = project_.timelineClips[static_cast<std::size_t>(outgoing)];
+        const auto duration = project::timelineClipDuration(project_, clip);
+        if (!duration.success)
+            continue;
+        const qint64 cut = clip.timelineStartFrame + duration.frame;
+        list.append(QVariantMap{
+            {QStringLiteral("transitionId"), QString::fromStdString(transition.id)},
+            {QStringLiteral("trackKind"), QString::fromLatin1(project::trackKindName(clip.track.kind))},
+            {QStringLiteral("trackIndex"), clip.track.index},
+            {QStringLiteral("start"), cut - transition.framesBeforeCut},
+            {QStringLiteral("cut"), cut},
+            {QStringLiteral("end"), cut + transition.framesAfterCut}});
+    }
+    return list;
+}
+
+QVariantMap MvmController::selectedEditPoint() const {
+    const int outgoing = indexOfClipId(project_.timelineClips, selectedEditOutgoing_);
+    if (outgoing < 0)
+        return {};
+    const auto& clip = project_.timelineClips[static_cast<std::size_t>(outgoing)];
+    const auto duration = project::timelineClipDuration(project_, clip);
+    if (!duration.success)
+        return {};
+    return {{QStringLiteral("trackKind"), QString::fromLatin1(project::trackKindName(clip.track.kind))},
+            {QStringLiteral("trackIndex"), clip.track.index},
+            {QStringLiteral("frame"), clip.timelineStartFrame + duration.frame}};
+}
+
+bool MvmController::canDeleteSelection() const {
+    return !busy_ && (!selectedTransitionId_.empty() ||
+                      (selectedEditOutgoing_.empty() && currentClipIndex_ >= 0));
+}
+
+bool MvmController::selectEditPoint(const QString& clipId, const QString& edge) {
+    project::TrimEdge trimEdge;
+    if (!resolveTrimEdge(edge, trimEdge))
+        return false;
+    const std::string id = clipId.toStdString();
+    if (indexOfClipId(project_.timelineClips, id) < 0) {
+        setStatus(QStringLiteral("選択したclipがありません"));
+        return false;
+    }
+    const std::string neighbor = project::touchingClipId(project_, id, trimEdge);
+    // 接している clip が無い端は編集点ではない。clip の選択として扱う。
+    if (neighbor.empty())
+        return selectTimelineClip(clipId, true);
+    setTimelineSelection({}, false);
+    setCurrentClipSelection(-1);
+    selectedEditOutgoing_ = trimEdge == project::TrimEdge::Right ? id : neighbor;
+    selectedEditIncoming_ = trimEdge == project::TrimEdge::Right ? neighbor : id;
+    setStatus(QStringLiteral("編集点を選択しました"));
+    Q_EMIT stateChanged();
+    return true;
+}
+
+bool MvmController::selectTransition(const QString& transitionId) {
+    const std::string id = transitionId.toStdString();
+    if (std::none_of(project_.timelineTransitions.begin(), project_.timelineTransitions.end(),
+                     [&](const auto& transition) { return transition.id == id; })) {
+        setStatus(QStringLiteral("選択したトランジションがありません"));
+        return false;
+    }
+    setTimelineSelection({}, false);
+    setCurrentClipSelection(-1);
+    selectedTransitionId_ = id;
+    setStatus(QStringLiteral("トランジションを選択しました"));
+    notifyTimelineTransitions();
+    Q_EMIT stateChanged();
+    return true;
+}
+
+bool MvmController::deleteSelection() {
+    if (!selectedTransitionId_.empty()) {
+        const std::string id = selectedTransitionId_;
+        const bool deleted = applyTimelineEdit(
+            [&](project::Project& candidate) {
+                return project::deleteTimelineTransition(candidate, id);
+            },
+            std::string{}, QStringLiteral("トランジションを削除しました"));
+        if (deleted) {
+            selectedTransitionId_.clear();
+            notifyTimelineTransitions();
+            Q_EMIT stateChanged();
+        }
+        return deleted;
+    }
+    if (!selectedEditOutgoing_.empty()) {
+        setStatus(QStringLiteral("編集点は削除できません"));
+        return false;
+    }
+    return deleteCurrentClip();
 }
 
 bool MvmController::deleteCurrentClip() {
