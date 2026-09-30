@@ -334,12 +334,13 @@ int indexOfClipId(const std::vector<project::TimelineClip>& clips, const std::st
     return -1;
 }
 
-// timeline 上で最も上の video track に載っている clip。inspector の対象を決める。
+// timeline 上で最も上の video track に載っている有効な clip。inspector の対象と再生開始の
+// clip を決める。無効にした clip は映らないので選ばない。
 const project::TimelineClip* topVideoClipAt(const project::Project& project,
                                             std::int64_t timelineFrame) {
     const auto active = project::activeClipsAt(project, project::TrackKind::Video, timelineFrame);
     for (auto entry = active.rbegin(); entry != active.rend(); ++entry)
-        if (*entry)
+        if (*entry && (*entry)->enabled)
             return *entry;
     return nullptr;
 }
@@ -2555,8 +2556,8 @@ QVariantMap MvmController::selectedTextClip() const {
 bool MvmController::previewVideoAtPlayhead() const {
     const auto active = project::activeClipsAt(project_, project::TrackKind::Video, playheadFrame_);
     for (std::size_t index = 0; index < active.size(); ++index)
-        if (active[index] && !project::isStillClipKind(active[index]->kind) &&
-            !project_.videoTracks[index].muted)
+        if (active[index] && active[index]->enabled &&
+            !project::isStillClipKind(active[index]->kind) && !project_.videoTracks[index].muted)
             return true;
     return false;
 }
@@ -2913,7 +2914,7 @@ bool MvmController::clipVisibleAtPlayhead(int clipIndex) const {
     if (clipIndex < 0 || clipIndex >= static_cast<int>(project_.timelineClips.size()))
         return false;
     const auto& clip = project_.timelineClips[static_cast<std::size_t>(clipIndex)];
-    if (clip.track.kind != project::TrackKind::Video ||
+    if (!clip.enabled || clip.track.kind != project::TrackKind::Video ||
         project_.videoTracks[static_cast<std::size_t>(clip.track.index)].muted)
         return false;
     const auto duration = project::timelineClipDuration(project_, clip);
@@ -4824,6 +4825,40 @@ bool MvmController::splitSelectionAtPlayhead() {
                                                project::LinkMode::Linked);
         },
         selectedId, QStringLiteral("再生ヘッド位置でclipを分割しました"));
+}
+
+bool MvmController::toggleSelectedClipsEnabled() {
+    std::vector<std::string> clipIds = selectedClipIds_;
+    if (clipIds.empty() && !currentClipId().empty())
+        clipIds.push_back(currentClipId());
+    return toggleClipsEnabled(clipIds);
+}
+
+bool MvmController::toggleTimelineClipEnabled(const QString& clipId) {
+    return toggleClipsEnabled({clipId.toStdString()});
+}
+
+bool MvmController::toggleClipsEnabled(const std::vector<std::string>& clipIds) {
+    if (clipIds.empty()) {
+        setStatus(QStringLiteral("有効/無効を切り換えるclipが選択されていません"));
+        return false;
+    }
+    const int first = indexOfClipId(project_.timelineClips, clipIds.front());
+    std::string selectedId = currentClipId();
+    if (selectedId.empty())
+        selectedId = clipIds.front();
+    // 結果の向きは project 側が決める。status は確定後の状態から作る。
+    const bool succeeded = applyTimelineEdit(
+        [&](project::Project& candidate) {
+            return project::toggleClipsEnabled(candidate, clipIds);
+        },
+        selectedId, QString());
+    if (succeeded && first >= 0) {
+        const bool enabled = project_.timelineClips[static_cast<std::size_t>(first)].enabled;
+        setStatus(enabled ? QStringLiteral("clipを有効にしました")
+                          : QStringLiteral("clipを無効にしました"));
+    }
+    return succeeded;
 }
 
 bool MvmController::stepSelectedClipVolume(double stepDb) {

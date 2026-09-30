@@ -285,6 +285,10 @@ std::vector<std::string> clipIdsSpanningFrame(const Project& project, std::int64
 // 対象が無い、または全対象が既に上限・下限で何も変わらないなら失敗し、Project を変えない。
 TimelineEditResult stepClipVolume(Project& project, const std::vector<std::string>& clipIds,
                                   double stepDb);
+// clip (とリンク相手) の有効/無効を切り換える (Shift+E)。対象に 1 つでも有効な clip があれば
+// 全部を無効にし、全部が無効なら全部を有効にする (選択が混ざっていても 1 回で揃う)。
+// 存在しない ID が含まれる、または clipIds が空なら失敗する。
+TimelineEditResult toggleClipsEnabled(Project& project, const std::vector<std::string>& clipIds);
 
 // リップルトリム。trim した尺の増減だけ、trim した clip の track で後ろにある clip
 // (とそのリンク相手) をずらす。left 端を trim しても clip の開始位置は動かない。

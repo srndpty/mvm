@@ -420,6 +420,11 @@ public:
     // 選択 clip (無ければ current clip) の音量を stepDb だけ変える ([ / ])。映像はリンク相手の
     // audio clip を変える。1 回の呼び出しが 1 undo。
     Q_INVOKABLE bool stepSelectedClipVolume(double stepDb);
+    // 選択 clip (無ければ current clip) とリンク相手の有効/無効を切り換える (Shift+E)。
+    // 1 つでも有効なら全部を無効にし、全部が無効なら全部を有効にする。1 回が 1 undo。
+    Q_INVOKABLE bool toggleSelectedClipsEnabled();
+    // 右クリックメニュー用。指定した clip (とリンク相手) だけを切り換える。
+    Q_INVOKABLE bool toggleTimelineClipEnabled(const QString& clipId);
     Q_INVOKABLE QVariantMap previewClipKey(const QString& clipId, qint64 originalFrame,
                                            qint64 requestedFrame, double valuePercent) const;
     Q_INVOKABLE bool commitClipKey(const QString& clipId, qint64 originalFrame,
@@ -635,6 +640,7 @@ private:
     bool refreshPreviewAfterSavedEdit(const std::string& selectedClipId,
                                       const QString& successStatus);
     std::string currentClipId() const;
+    bool toggleClipsEnabled(const std::vector<std::string>& clipIds);
     const project::ClipEffects& currentEffects() const;
     // preview override を適用した effects を返す。composition はこれを使う。
     project::ClipEffects effectsForPreview(int clipIndex) const;

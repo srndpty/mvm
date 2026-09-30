@@ -140,7 +140,25 @@ void testMutedTracks() {
             "mute した audio track を preview 対象から外していません");
 }
 
-// トランジションと無効 clip は描画が対応するまで mapping を失敗させる (黙って無視しない)。
+// 無効にした clip は layer / audio から外す。上の track の clip を無効にすると下の track が見える。
+void testDisabledClips() {
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    project.timelineClips = {clip("v1", 0, 0, 0, 100), clip("v2", 1, 0, 0, 100),
+                             audioClip("a1", 0, 0, 100, 60, 1)};
+    const auto before = mvm::app::mapTimelinePreviewFrame(project, 10);
+    require(before.success && before.layers.size() == 2, "対照: 2 layerを取得できません");
+    project.timelineClips[1].enabled = false;
+    const auto disabledTop = mvm::app::mapTimelinePreviewFrame(project, 10);
+    require(disabledTop.success && disabledTop.layers.size() == 1 &&
+                disabledTop.layers[0].clipId == "v1",
+            "無効にした上のclipを外して下のclipを見せていません");
+    project.timelineClips[2].enabled = false;
+    const auto disabledAudio = mvm::app::mapTimelinePreviewAudio(project, 10);
+    require(disabledAudio.success && disabledAudio.layers.empty(),
+            "無効にしたaudio clipをpreviewで鳴らします");
+}
+
+// トランジションは描画が対応するまで mapping を失敗させる (黙って無視しない)。
 void testUnsupportedRenderFeatures() {
     mvm::project::Project project = mvm::project::createDefaultProject();
     project.timelineClips = {clip("v1", 0, 0, 0, 100), audioClip("a1", 0, 0, 100, 60, 1)};
@@ -154,11 +172,6 @@ void testUnsupportedRenderFeatures() {
     require(!video.success && video.error.find("トランジション") != std::string::npos &&
                 !audio.success && audio.error.find("トランジション") != std::string::npos,
             "トランジションのあるtimelineを黙ってpreviewしました");
-    auto disabled = project;
-    disabled.timelineClips[1].enabled = false;
-    const auto disabledAudio = mvm::app::mapTimelinePreviewAudio(disabled, 10);
-    require(!disabledAudio.success && disabledAudio.error.find("無効") != std::string::npos,
-            "無効clipのあるtimelineを黙ってpreviewしました");
 }
 
 // 映像 track を count 本にする (既定の Project は V1/V2)。
@@ -582,6 +595,7 @@ int main() {
     testAudioSourceFrameCount();
     testMutedTracks();
     testUnsupportedRenderFeatures();
+    testDisabledClips();
     testLayerLimit();
     testTextLayerStack();
     testTextLayerLimit();

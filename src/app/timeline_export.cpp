@@ -151,6 +151,12 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
     });
     for (const int index : indices) {
         const auto& clip = project.timelineClips[static_cast<std::size_t>(index)];
+        // 無効にした clip は書き出さない。尺は timeline 全体のまま保つので、穴を黒・無音で
+        // 埋められる tractor にする (sequential は V1 の clip を詰めて並べるだけ)。
+        if (!clip.enabled) {
+            plan.backend = TimelineExportResult::Backend::Tractor;
+            continue;
+        }
         const auto duration = project::timelineClipDuration(project, clip);
         if (!duration.success) {
             plan.error = duration.error;
@@ -208,6 +214,10 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
         if (!mapExportEffects(clip, request, duration.frame, overlay, mapped, plan.error))
             return plan;
         plan.clips.push_back(std::move(mapped));
+    }
+    if (plan.clips.empty()) {
+        plan.error = "書き出す有効なclipがありません";
+        return plan;
     }
     if (anyOverlay || anyAudio)
         plan.backend = TimelineExportResult::Backend::Tractor;

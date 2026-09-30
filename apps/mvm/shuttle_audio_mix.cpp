@@ -13,7 +13,7 @@
 namespace mvm::app {
 
 bool isShuttleAudibleClip(const project::Project& project, const project::TimelineClip& clip) {
-    return clip.track.kind == project::TrackKind::Audio &&
+    return clip.enabled && clip.track.kind == project::TrackKind::Audio &&
            !project.audioTracks[static_cast<std::size_t>(clip.track.index)].muted;
 }
 

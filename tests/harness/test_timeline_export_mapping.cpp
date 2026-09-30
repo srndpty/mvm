@@ -61,11 +61,25 @@ int main() {
         const auto rejected = mvm::app::mapTimelineExportPlan(withTransition, request);
         require(!rejected.success && rejected.error.find("トランジション") != std::string::npos,
                 "トランジションを描かずに書き出しました");
-        withTransition.timelineTransitions.clear();
-        withTransition.timelineClips[1].enabled = false;
-        const auto disabled = mvm::app::mapTimelineExportPlan(withTransition, request);
-        require(!disabled.success && disabled.error.find("無効") != std::string::npos,
-                "無効clipを描いて書き出しました");
+    }
+    {
+        // 無効にした clip は書き出さない。尺は timeline 全体のまま (穴は tractor が埋める)。
+        mvm::project::Project disabledProject = mvm::project::createDefaultProject();
+        disabledProject.timelineClips = {clip("first", 0, 0, 0, 10), clip("second", 0, 10, 0, 10)};
+        const auto control = mvm::app::mapTimelineExportPlan(disabledProject, request);
+        require(control.success && control.clips.size() == 2 &&
+                    control.backend == mvm::app::TimelineExportResult::Backend::Sequential,
+                "対照: 有効な2clipをsequentialで書き出せません");
+        disabledProject.timelineClips[1].enabled = false;
+        const auto disabled = mvm::app::mapTimelineExportPlan(disabledProject, request);
+        require(disabled.success && disabled.clips.size() == 1 &&
+                    disabled.clips[0].projectClipIndex == 0 && disabled.totalDurationFrames == 20 &&
+                    disabled.backend == mvm::app::TimelineExportResult::Backend::Tractor,
+                "無効clipを外し、timelineの尺のままtractorで書き出す計画になりません");
+        disabledProject.timelineClips[0].enabled = false;
+        const auto none = mvm::app::mapTimelineExportPlan(disabledProject, request);
+        require(!none.success && none.error.find("有効なclip") != std::string::npos,
+                "全clipが無効なのに書き出す計画を作りました");
     }
 
     auto gapProject = contiguous;

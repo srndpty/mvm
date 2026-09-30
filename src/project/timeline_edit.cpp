@@ -567,10 +567,6 @@ void reconcileTimelineTransitions(Project& candidate) {
 std::string unsupportedTimelineRenderFeature(const Project& project) {
     if (!project.timelineTransitions.empty())
         return "トランジションの描画はまだ対応していません";
-    for (const auto& clip : project.timelineClips) {
-        if (!clip.enabled)
-            return "無効にした clip の描画はまだ対応していません: " + clip.name;
-    }
     return {};
 }
 
@@ -1710,6 +1706,33 @@ TimelineEditResult stepClipVolume(Project& project, const std::vector<std::strin
         return result;
     }
     return commitCandidate(project, std::move(candidate), firstTarget);
+}
+
+TimelineEditResult toggleClipsEnabled(Project& project, const std::vector<std::string>& clipIds) {
+    TimelineEditResult result;
+    if (clipIds.empty()) {
+        result.error = "有効/無効を切り換える timeline clip がありません";
+        return result;
+    }
+    Project candidate = project;
+    std::vector<bool> marked(candidate.timelineClips.size(), false);
+    for (const auto& id : clipIds) {
+        const int index = indexOfId(candidate, id);
+        if (!validIndex(candidate, index)) {
+            result.error = "有効/無効を切り換える timeline clip がありません";
+            return result;
+        }
+        marked[static_cast<std::size_t>(index)] = true;
+    }
+    includeLinkedCounterparts(candidate, marked);
+    bool anyEnabled = false;
+    for (std::size_t index = 0; index < marked.size(); ++index)
+        anyEnabled = anyEnabled || (marked[index] && candidate.timelineClips[index].enabled);
+    for (std::size_t index = 0; index < marked.size(); ++index) {
+        if (marked[index])
+            candidate.timelineClips[index].enabled = !anyEnabled;
+    }
+    return commitCandidate(project, std::move(candidate), indexOfId(project, clipIds.front()));
 }
 
 struct RippleSource {

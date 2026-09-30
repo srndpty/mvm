@@ -133,6 +133,13 @@ ApplicationWindow {
         onTriggered: root.mvmController.stepSelectedClipVolume(-1)
     }
     Action {
+        id: toggleClipEnabledAction
+        text: "有効/無効を切り換え"
+        shortcut: "Shift+E"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.toggleSelectedClipsEnabled()
+    }
+    Action {
         id: speedDurationAction
         text: "速度・デュレーション..."
         shortcut: "Ctrl+R"
@@ -303,6 +310,7 @@ ApplicationWindow {
             CompactMenuSeparator {}
             CompactMenuItem { action: volumeUpAction }
             CompactMenuItem { action: volumeDownAction }
+            CompactMenuItem { action: toggleClipEnabledAction }
             CompactMenuSeparator {}
             // 実行は Shortcut "Delete" が担う。ここは表示だけで sequence を持たせない (二重発火を防ぐ)。
             CompactMenuItem {
@@ -2303,6 +2311,7 @@ ApplicationWindow {
                                 required property string mediaPath
                                 required property var automationKeys
                                 required property real automationBase
+                                required property bool clipEnabled
 
                                 property var previewKeys: null
                                 property var penState: null
@@ -2413,6 +2422,8 @@ ApplicationWindow {
                                        ? "#315f86"
                                        : (trackKind === "audio" ? "#2b3a33" : "#2b3038")
                                 border.color: previewSupported ? "#65a8dc" : "#c88b4a"
+                                // 無効にした clip は timeline に残したまま暗くする (Shift+E)。
+                                opacity: clipEnabled ? 1 : 0.4
                                 z: bodyMoved ? 20 : 1
                                 transform: Translate {
                                     x: clipItem.renderOffsetX
@@ -2482,6 +2493,11 @@ ApplicationWindow {
                                                          clipItem.clipId)
                                     }
                                     CompactMenuSeparator {}
+                                    CompactMenuItem {
+                                        text: clipItem.clipEnabled ? "無効にする\tShift+E" : "有効にする\tShift+E"
+                                        enabled: !root.mvmController.busy
+                                        onTriggered: root.mvmController.toggleTimelineClipEnabled(clipItem.clipId)
+                                    }
                                     CompactMenuItem {
                                         text: "削除"
                                         onTriggered: root.mvmController.deleteTimelineClip(clipItem.clipId)

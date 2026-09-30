@@ -1645,10 +1645,30 @@ B だけが捨てられ、A の保持をやめると新しい decode 無しに 0
 - effect の変更 (`setClipEffectValues`) は reconcile を通さない。トランジションのある端へフェードを
   付けようとするとエラーになる
 
-`[回避策]` 描画 (preview・音声・シャトル/スクラブ・書き出し) はまだトランジションと無効 clip を扱えない。
+`[回避策]` 描画 (preview・音声・シャトル/スクラブ・書き出し) はまだトランジションと無効 clip を扱えない
+(無効 clip は §19.2 で対応した)。
 黙って無視すると見えるものと保存内容が食い違うので、`unsupportedTimelineRenderFeature` で
 mapping を失敗させている。UI からはまだどちらも作れないので、手で編集したファイルでだけ起きる。
 
 `[事実]` 手元の `build/ucrt64-debug/m6a-gui/project.mvm` は使い捨てのスクリプトで一度だけテキスト変換した
 (clip 8 件に `"enabled": true`、`"timeline_transitions": []` を追加。元ファイルは `*.schema12.bak`)。
 変換後のファイルが現在の loader で読めることを確認した (schema 13、clip 8、トランジション 0)。
+
+### 19.2 clip の有効/無効 (Shift+E)
+
+`[事実]` `toggleClipsEnabled` は対象 (選択、無ければ current clip) とリンク相手のうち 1 つでも有効なら
+全部を無効に、全部が無効なら全部を有効にする。1 回が 1 undo。右クリックメニューからは押した clip だけを
+切り換える。
+
+- 無効にした clip は timeline に残し、暗く表示する (model の role は `clipEnabled`。`enabled` にすると
+  delegate の `Item.enabled` を隠して MouseArea まで止まり、選び直せなくなる)
+- preview は layer / audio から外す (上の track の clip を無効にすると下の track が見える)。シャトル・スクラブの
+  音声、再生ヘッドの映像判定 (`previewVideoAtPlayhead` / `clipVisibleAtPlayhead`)、inspector と再生開始の
+  clip (`topVideoClipAt`) も無効 clip を選ばない。編集 (`activeClipAt`) は無効 clip も対象にする
+- 書き出しは無効 clip を外し、尺は timeline 全体のまま保つ。穴は tractor が黒・無音で埋めるので、
+  1 つでも外したら tractor にする。全部が無効なら「書き出す有効なclipがありません」で失敗する
+
+`[事実]` 除外の検査を外すと `m7b_2_timeline_preview_mapping_focused` が落ちることを確認した。
+
+`[未検証]` track の mute は書き出しで無視されている (preview では外す)。無効 clip とは別の既存の食い違いで、
+今回は変えていない。

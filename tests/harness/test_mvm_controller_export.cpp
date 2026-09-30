@@ -1401,6 +1401,39 @@ void testStepSelectedClipVolume(const std::filesystem::path& path) {
           "音量の変更を1回ずつUndoできません");
 }
 
+// Shift+E は選択 (リンク組) を 1 undo で無効/有効にし、timeline の表示 (clipEnabled) に出る。
+void testToggleSelectedClipsEnabled(const std::filesystem::path& path) {
+    const auto project = linkedProject();
+    check(mvm::project::saveProjectJson(project, path).success,
+          "有効/無効試験のProjectを保存できません");
+    mvm::app::MvmController controller(path, {}, project);
+    const auto* model = controller.timelineModel();
+    const int enabledRole = model->roleNames().key("clipEnabled", -1);
+    const auto shownEnabled = [&](int row) {
+        return model->data(model->index(row, 0), enabledRole).toBool();
+    };
+    check(enabledRole >= 0 && shownEnabled(0) && shownEnabled(1),
+          "timelineのclipEnabledが既定で有効になっていません");
+    check(controller.selectTimelineClips({}) && !controller.toggleSelectedClipsEnabled() &&
+              !controller.canUndo(),
+          "選択の無い有効/無効の切り換えを受理しました");
+    controller.selectTimelineClip(QStringLiteral("video"), true);
+    check(controller.previewVideoAtPlayhead(), "対照: 再生ヘッドに映像がありません");
+    check(controller.toggleSelectedClipsEnabled() && !shownEnabled(0) && !shownEnabled(1),
+          "選択clipとリンク相手を無効にできません");
+    check(!controller.previewVideoAtPlayhead(), "無効にした映像を再生ヘッドの映像として扱いました");
+    check(controller.saveProject(), "無効にしたProjectを保存できません");
+    const auto saved = mvm::project::loadProjectJson(path);
+    check(saved.success && !saved.project.timelineClips[0].enabled &&
+              !saved.project.timelineClips[1].enabled,
+          "無効にしたclipが保存されません");
+    check(controller.undoLastEdit() && shownEnabled(0) && shownEnabled(1) && !controller.canUndo(),
+          "有効/無効の切り換えを1回のUndoで戻せません");
+    check(controller.toggleTimelineClipEnabled(QStringLiteral("audio")) && !shownEnabled(0) &&
+              !shownEnabled(1),
+          "右クリックの対象clipとリンク相手を無効にできません");
+}
+
 void testDeleteMultipleSelection(const std::filesystem::path& path) {
     auto project = videoProject();
     auto audio = project.timelineClips[0];
@@ -2029,6 +2062,7 @@ int main(int argc, char** argv) {
     testDeleteMultipleSelection(directory / L"delete-multiple.mvm");
     testSplitAtPlayheadAndSelectAll(directory / L"split-playhead.mvm");
     testStepSelectedClipVolume(directory / L"step-volume.mvm");
+    testToggleSelectedClipsEnabled(directory / L"toggle-enabled.mvm");
     testShuttleStopAndStep(directory / L"shuttle-stop-step.mvm");
     testPreviewTransform(directory / L"preview-transform.mvm");
     // MLT を初期化するので最後に置く。ほかの試験は MLT 無しの前提で書かれている。

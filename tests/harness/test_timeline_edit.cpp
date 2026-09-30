@@ -1499,6 +1499,33 @@ void testTimelineTransitions(const std::filesystem::path& root) {
     }
 }
 
+// Shift+E。1 つでも有効なら全部を無効に、全部が無効なら全部を有効にする。リンク相手も揃える。
+void testToggleClipsEnabled() {
+    using mvm::project::TimelineClipKind;
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    auto video = clip("video");
+    video.linkGroupId = "enabled-link";
+    auto audio = clip("audio", TimelineClipKind::Audio, kA1);
+    audio.linkGroupId = "enabled-link";
+    auto other = clip("other", TimelineClipKind::Video, kV2);
+    other.enabled = false;
+    project.timelineClips = {video, audio, other};
+    const auto enabledOf = [&](const std::string& id) { return findClip(project, id)->enabled; };
+
+    check(mvm::project::toggleClipsEnabled(project, {video.id, other.id}).success &&
+              !enabledOf(video.id) && !enabledOf(audio.id) && !enabledOf(other.id),
+          "有効と無効の混ざった選択を全部無効にしません (リンク相手を含む)");
+    check(mvm::project::toggleClipsEnabled(project, {video.id, other.id}).success &&
+              enabledOf(video.id) && enabledOf(audio.id) && enabledOf(other.id),
+          "全部無効の選択を全部有効にしません");
+    const auto before = project;
+    check(!mvm::project::toggleClipsEnabled(project, {}).success && project == before,
+          "空の選択で有効/無効を切り換えました");
+    check(!mvm::project::toggleClipsEnabled(project, {video.id, "missing"}).success &&
+              project == before,
+          "存在しないclipを含む選択で有効/無効を切り換えました");
+}
+
 void testRippleTrim() {
     mvm::project::Project project = mvm::project::createDefaultProject();
     auto first = clip("first");
@@ -2575,6 +2602,7 @@ int main(int argc, char** argv) {
     testRateStretch();
     testRateStretchLinkedDifferentDurations();
     testStepClipVolume();
+    testToggleClipsEnabled();
     testTimelineTransitions(std::filesystem::path(argv[1]));
     testRippleTrim();
     testRollEdit();

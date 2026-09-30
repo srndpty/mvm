@@ -29,9 +29,10 @@ TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& proj
     const auto active = project::activeClipsAt(project, project::TrackKind::Video, timelineFrame);
     for (std::size_t index = 0; index < active.size(); ++index) {
         const project::TimelineClip* clip = active[index];
-        if (!clip)
+        // 無効にした clip と mute した video track は「黒」ではなく layer から外す
+        // (下の track が見える)。
+        if (!clip || !clip->enabled)
             continue;
-        // mute した video track は「黒」ではなく layer から外す。
         if (project.videoTracks[index].muted)
             continue;
         if (project::isStillClipKind(clip->kind)) {
@@ -216,7 +217,7 @@ TimelinePreviewAudioMapping mapTimelinePreviewAudio(const project::Project& proj
     const auto active = project::activeClipsAt(project, project::TrackKind::Audio, timelineFrame);
     for (std::size_t index = 0; index < active.size(); ++index) {
         const project::TimelineClip* clip = active[index];
-        if (!clip || project.audioTracks[index].muted)
+        if (!clip || !clip->enabled || project.audioTracks[index].muted)
             continue;
         result.layers.push_back({static_cast<int>(index),
                                  static_cast<int>(clip - project.timelineClips.data()), clip->id,

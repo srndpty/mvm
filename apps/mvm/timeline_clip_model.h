@@ -41,6 +41,9 @@ public:
         SpeedRole,
         FrameHoldRole,
         PreservePitchRole,
+        // 名前は clipEnabled。enabled にすると delegate の Item.enabled を隠し、
+        // 無効にした clip の MouseArea まで止まる (選び直せなくなる)。
+        ClipEnabledRole,
     };
 
     explicit TimelineClipModel(QObject* parent = nullptr);
@@ -83,6 +86,7 @@ private:
         double speed = 1.0;
         bool frameHold = false;
         bool preservePitch = false;
+        bool enabled = true;
     };
 
     QList<Item> items_;

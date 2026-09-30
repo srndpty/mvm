@@ -95,9 +95,9 @@ void testPlan() {
         disabled.timelineClips[0].enabled = false;
         mvm::app::ShuttleAudioPlan rejected;
         std::string disabledError;
-        check(!mvm::app::planShuttleAudio(disabled, 2, 40, rejected, disabledError) &&
-                  disabledError.find("無効") != std::string::npos,
-              "無効clipを黙ってシャトル再生しました");
+        check(mvm::app::planShuttleAudio(disabled, 2, 40, rejected, disabledError) &&
+                  rejected.clips.empty() && !mvm::app::hasShuttleAudibleClip(disabled),
+              "無効にしたclipをシャトルで鳴らします");
     }
     mvm::app::ShuttleAudioPlan outside;
     std::string outsideError;
