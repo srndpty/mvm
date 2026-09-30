@@ -3,6 +3,13 @@
 #include <algorithm>
 
 namespace mvm::app {
+namespace {
+// decode 待ちは短く区切って running を見る。scrub の release で stop が
+// 待たされないようにするため。打ち切るまでの時間は区切る前と同じにする。
+constexpr int kWaitPollMs = 20;
+constexpr int kSeekWaitLimitMs = 5000;
+constexpr int kSampleStallLimitMs = 200;
+} // namespace
 
 void ClipSampleReaders::reset(std::size_t clipCount, std::int64_t maxForwardSkip) {
     maxForwardSkip_ = maxForwardSkip;
@@ -29,10 +36,10 @@ bool ClipSampleReaders::read(const ShuttleAudioClip& source, std::size_t clipInd
             return false;
     }
     // 前回の続きから近い要求は seek せずに続きから読み、要求より前の分を捨てる。
-    const std::int64_t skipped = clip.nextSample >= 0 && first > clip.nextSample &&
-                                         first - clip.nextSample < maxForwardSkip_
-                                     ? first - clip.nextSample
-                                     : 0;
+    const std::int64_t skipped =
+        clip.nextSample >= 0 && first > clip.nextSample && first - clip.nextSample < maxForwardSkip_
+            ? first - clip.nextSample
+            : 0;
     first -= skipped;
     count += skipped;
     audio::SourceGeneration generation = clip.worker->queue().generation();
@@ -45,8 +52,8 @@ bool ClipSampleReaders::read(const ShuttleAudioClip& source, std::size_t clipInd
             return false;
         }
         audio::AudioSeekCompletion completion;
-        for (int attempts = 0; running && attempts < 25; ++attempts) {
-            const auto result = clip.worker->waitSeek(ticket, 200, completion);
+        for (int attempts = 0; running && attempts < kSeekWaitLimitMs / kWaitPollMs; ++attempts) {
+            const auto result = clip.worker->waitSeek(ticket, kWaitPollMs, completion);
             if (result == audio::AudioSeekWaitResult::Ready)
                 break;
             if (result != audio::AudioSeekWaitResult::Timeout) {
@@ -57,8 +64,8 @@ bool ClipSampleReaders::read(const ShuttleAudioClip& source, std::size_t clipInd
         if (!running)
             return false;
         if (!completion.completed) {
-            error = completion.error.empty() ? "音声のseekがタイムアウトしました"
-                                             : completion.error;
+            error =
+                completion.error.empty() ? "音声のseekがタイムアウトしました" : completion.error;
             return false;
         }
         generation = completion.seekGeneration;
@@ -80,9 +87,17 @@ bool ClipSampleReaders::read(const ShuttleAudioClip& source, std::size_t clipInd
             waits = 0;
             continue;
         }
-        if (++waits > 25 || !clip.worker->queue().waitForSamples(1, 200)) {
+        if (++waits > 25) {
             error = "音声のdecodeが必要なsampleを供給できません";
             return false;
+        }
+        int stalledMs = 0;
+        while (running && !clip.worker->queue().waitForSamples(1, kWaitPollMs)) {
+            stalledMs += kWaitPollMs;
+            if (stalledMs >= kSampleStallLimitMs) {
+                error = "音声のdecodeが必要なsampleを供給できません";
+                return false;
+            }
         }
     }
     clip.nextSample = first + count;

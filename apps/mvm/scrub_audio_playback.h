@@ -9,7 +9,6 @@
 #include "shuttle_audio_mix.h"
 
 #include <atomic>
-#include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -36,14 +35,17 @@ public:
     // drag 位置 (timeline frame)。前回と同じ位置なら新しい grain は鳴らさない。
     void setTarget(std::int64_t frame);
 
+    // endpoint へ渡す前の PCM で数えた値。実際に render されたかは sinkSnapshot で見る。
     std::uint64_t nonSilentSamples() const { return nonSilentSamples_.load(); }
-    std::uint64_t grainCount() const { return grainCount_.load(); }
+
+    std::uint64_t grainCount() const { return grains_.publishedCount(); }
+
     audio::WasapiSnapshot sinkSnapshot() const { return sink_.snapshot(); }
+
     std::string error() const;
 
 private:
     void pushLoop();
-    void grainLoop();
     bool makeGrain(std::int64_t frame, std::vector<float>& pcm, std::string& error);
     void fail(const std::string& error);
 
@@ -53,18 +55,13 @@ private:
     ShuttleAudioPlan plan_;
     ClipSampleReaders readers_;
     std::thread pusher_;
-    std::thread grainThread_;
     std::atomic<bool> running_{false};
     // play() の pre-roll を満たすまでは深く、再生が始まったら浅く保つ。
     std::atomic<std::int64_t> queueTargetSamples_{0};
 
-    std::mutex mutex_;
-    std::condition_variable targetChanged_;
-    ScrubTargetLatch target_;
-    ScrubGrainStream stream_;
+    ScrubGrainScheduler grains_;
 
     std::atomic<std::uint64_t> nonSilentSamples_{0};
-    std::atomic<std::uint64_t> grainCount_{0};
     mutable std::mutex errorMutex_;
     std::string error_;
 };

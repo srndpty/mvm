@@ -20,6 +20,7 @@ public:
     // 前回読んだ位置から maxForwardSkip sample 未満だけ先の要求は、seek せずに
     // 続きから decode して手前を捨てる。seek より速い範囲だけに限る。
     void reset(std::size_t clipCount, std::int64_t maxForwardSkip);
+
     void clear() { readers_.clear(); }
 
     // clip の素材 sample [first, first + count) を stereo interleave で返す。

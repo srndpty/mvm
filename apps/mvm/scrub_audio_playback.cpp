@@ -4,7 +4,6 @@
 
 #include <cmath>
 #include <memory>
-#include <optional>
 #include <utility>
 #include <vector>
 
@@ -24,7 +23,10 @@ constexpr std::int64_t kForwardSkipSamples = audio::kInternalSampleRate / 2;
 } // namespace
 
 ScrubAudioPlayback::ScrubAudioPlayback()
-    : queue_(kOutputSource, kOutputGeneration), sink_(queue_, clock_) {}
+    : queue_(kOutputSource, kOutputGeneration), sink_(queue_, clock_),
+      grains_([this](std::int64_t frame, std::vector<float>& pcm, std::string& error) {
+          return makeGrain(frame, pcm, error);
+      }) {}
 
 ScrubAudioPlayback::~ScrubAudioPlayback() {
     stop();
@@ -35,7 +37,8 @@ bool ScrubAudioPlayback::start(const project::Project& project, float volume, st
         error = "scrub音声はすでに再生中です";
         return false;
     }
-    // scrub の grain は等速で鳴らすので rate = 1 で plan を作り、grain ごとに基準位置だけ差し替える。
+    // scrub の grain は等速で鳴らすので rate = 1 で plan を作り、grain
+    // ごとに基準位置だけ差し替える。
     if (!planShuttleAudio(project, 1, 0, plan_, error))
         return false;
     if (plan_.clips.empty()) {
@@ -48,7 +51,7 @@ bool ScrubAudioPlayback::start(const project::Project& project, float volume, st
     queueTargetSamples_ = kStartQueueSamples;
     running_ = true;
     pusher_ = std::thread(&ScrubAudioPlayback::pushLoop, this);
-    grainThread_ = std::thread(&ScrubAudioPlayback::grainLoop, this);
+    grains_.start();
     if (!sink_.play(0, kOutputGeneration, error)) {
         stop();
         return false;
@@ -58,31 +61,28 @@ bool ScrubAudioPlayback::start(const project::Project& project, float volume, st
 }
 
 void ScrubAudioPlayback::stop() {
-    {
-        std::lock_guard lock(mutex_);
-        running_ = false;
-    }
-    targetChanged_.notify_all();
+    running_ = false;
+    grains_.requestStop();
     queue_.stop();
+    // mouse を離したら音はすぐ止める。decode 待ちの thread を join するより先に endpoint を止める。
+    sink_.stop();
     if (pusher_.joinable())
         pusher_.join();
-    if (grainThread_.joinable())
-        grainThread_.join();
-    sink_.stop();
+    grains_.join();
     readers_.clear();
 }
 
 void ScrubAudioPlayback::setTarget(std::int64_t frame) {
-    {
-        std::lock_guard lock(mutex_);
-        target_.set(frame);
-    }
-    targetChanged_.notify_all();
+    grains_.setTarget(frame);
 }
 
 std::string ScrubAudioPlayback::error() const {
-    std::lock_guard lock(errorMutex_);
-    return error_;
+    {
+        std::lock_guard lock(errorMutex_);
+        if (!error_.empty())
+            return error_;
+    }
+    return grains_.error();
 }
 
 void ScrubAudioPlayback::fail(const std::string& error) {
@@ -117,33 +117,6 @@ bool ScrubAudioPlayback::makeGrain(std::int64_t frame, std::vector<float>& pcm,
     return true;
 }
 
-void ScrubAudioPlayback::grainLoop() {
-    while (true) {
-        std::optional<std::int64_t> frame;
-        {
-            std::unique_lock lock(mutex_);
-            targetChanged_.wait(lock, [&] {
-                if (!running_)
-                    return true;
-                frame = target_.take();
-                return frame.has_value();
-            });
-            if (!running_)
-                return;
-        }
-        std::vector<float> pcm;
-        std::string error;
-        if (!makeGrain(*frame, pcm, error)) {
-            if (running_)
-                fail(error);
-            return;
-        }
-        std::lock_guard lock(mutex_);
-        stream_.replace(std::move(pcm));
-        grainCount_.fetch_add(1, std::memory_order_relaxed);
-    }
-}
-
 void ScrubAudioPlayback::pushLoop() {
     std::int64_t next = 0;
     while (running_) {
@@ -155,12 +128,9 @@ void ScrubAudioPlayback::pushLoop() {
             fail("scrub音声の供給が途切れました");
             return;
         }
-        auto pcm = std::make_shared<std::vector<float>>(
-            static_cast<std::size_t>(kBlockSamples) * audio::kInternalChannels);
-        {
-            std::lock_guard lock(mutex_);
-            stream_.fill(pcm->data(), kBlockSamples);
-        }
+        auto pcm = std::make_shared<std::vector<float>>(static_cast<std::size_t>(kBlockSamples) *
+                                                        audio::kInternalChannels);
+        grains_.fill(pcm->data(), kBlockSamples);
         std::uint64_t audible = 0;
         for (const float sample : *pcm) {
             if (std::abs(sample) > 0.00001F)

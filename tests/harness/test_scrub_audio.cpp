@@ -2,6 +2,7 @@
 #include "project/timeline_edit.h"
 #include "scrub_audio_playback.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -56,17 +57,37 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "scrub音声を開始できません: %s\n", error.c_str());
         return 1;
     }
+    // nonSilentSamples は endpoint へ渡す前の PCM で数える。実際に render されたかは
+    // sink の meter peak で見る。meter は render した PCM から取り、Windows の session volume
+    // (ここでは 0 にして無音で走らせている) より前なので、無音設定でも値が出る。
+    float peakBeforeDrag = 0.0F;
+    float peakDuringDrag = 0.0F;
+    const auto observePeak = [&playback](float& peak) {
+        const auto sink = playback.sinkSnapshot();
+        peak = std::max({peak, sink.meterPeakLeft, sink.meterPeakRight});
+    };
     // 位置が来る前は grain を作らない。
-    sleepMs(200);
+    for (int i = 0; i < 20; ++i) {
+        observePeak(peakBeforeDrag);
+        sleepMs(10);
+    }
     const auto beforeDrag = playback.nonSilentSamples();
+    const auto renderedBeforeDrag = playback.sinkSnapshot().audioRenderedSamples;
     // drag: 40 ms ごとに位置を進める (controller の scrub timer と同じ間隔)。
     for (std::int64_t frame = 30; frame < 90; frame += 6) {
         playback.setTarget(frame);
-        sleepMs(40);
+        for (int i = 0; i < 4; ++i) {
+            observePeak(peakDuringDrag);
+            sleepMs(10);
+        }
     }
-    sleepMs(300);
+    for (int i = 0; i < 30; ++i) {
+        observePeak(peakDuringDrag);
+        sleepMs(10);
+    }
     const auto afterDrag = playback.nonSilentSamples();
     const auto grainsAfterDrag = playback.grainCount();
+    const auto renderedAfterDrag = playback.sinkSnapshot().audioRenderedSamples;
     // drag を止めて同じ位置が来続けても、新しい grain は鳴らさない。
     for (int i = 0; i < 5; ++i) {
         playback.setTarget(84);
@@ -77,7 +98,13 @@ int main(int argc, char** argv) {
     const auto grainsAfterHold = playback.grainCount();
     // 供給が途切れた (underflow) 場合も error になる。
     error = playback.error();
+    // 遠い位置 (seek が要る) へ動かした直後に離す。decode 待ちで release が引っ掛からないこと。
+    playback.setTarget(250);
+    const auto stopBegin = std::chrono::steady_clock::now();
     playback.stop();
+    const auto stopMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - stopBegin)
+                            .count();
 
     if (!error.empty()) {
         std::fprintf(stderr, "scrub音声が失敗しました: %s\n", error.c_str());
@@ -102,8 +129,24 @@ int main(int argc, char** argv) {
             static_cast<unsigned long long>(afterDrag), static_cast<unsigned long long>(afterHold));
         return 1;
     }
-    std::printf("scrub音声: grains=%llu audible=%llu PASS\n",
+    if (peakBeforeDrag != 0.0F || peakDuringDrag < 0.01F ||
+        renderedAfterDrag <= renderedBeforeDrag) {
+        std::fprintf(stderr,
+                     "endpointへscrub音声がrenderされていません: peak before=%.4f during=%.4f "
+                     "rendered %llu -> %llu\n",
+                     static_cast<double>(peakBeforeDrag), static_cast<double>(peakDuringDrag),
+                     static_cast<unsigned long long>(renderedBeforeDrag),
+                     static_cast<unsigned long long>(renderedAfterDrag));
+        return 1;
+    }
+    if (stopMs > 100) {
+        std::fprintf(stderr, "scrub音声の停止に時間がかかっています: %lld ms\n",
+                     static_cast<long long>(stopMs));
+        return 1;
+    }
+    std::printf("scrub音声: grains=%llu audible=%llu peak=%.4f stop=%lldms PASS\n",
                 static_cast<unsigned long long>(grainsAfterDrag),
-                static_cast<unsigned long long>(afterDrag));
+                static_cast<unsigned long long>(afterDrag), static_cast<double>(peakDuringDrag),
+                static_cast<long long>(stopMs));
     return 0;
 }
