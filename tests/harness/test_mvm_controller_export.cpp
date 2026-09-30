@@ -1533,6 +1533,35 @@ void testMoveOverwritesAndDragBounds(const std::filesystem::path& path) {
           "上書き移動を1回のUndoで戻せません");
 }
 
+// preview の描画区間は Project が変わるたびに作り直す (再生中は 1 度作った区間を引くだけ)。
+// 作り直さないと、編集した後も古い不透明度・位置で preview を組む。
+void testPreviewPlanFollowsEdits(const std::filesystem::path& path) {
+    // 静止画 layer (画像) の不透明度は preview の区間から求める (textClipOpacity)。
+    auto project = mvm::project::createDefaultProject();
+    mvm::project::TimelineClip image;
+    image.kind = mvm::project::TimelineClipKind::Image;
+    image.id = "image";
+    image.name = "image";
+    image.mediaPath = L"C:/mvm-test-image.png";
+    image.sourceFpsNum = 60;
+    image.sourceFpsDen = 1;
+    image.sourceFrameCount = 120;
+    image.sourceOutFrame = 120;
+    project.timelineClips.push_back(image);
+    mvm::test::attachFixtureMedia(project);
+    check(mvm::project::saveProjectJson(project, path).success,
+          "preview区間試験のProjectを保存できません");
+    mvm::app::MvmController controller(path, {}, project);
+    check(std::abs(controller.textClipOpacity(0) - 1.0) < 1e-9,
+          "前提: 画像clipの不透明度が1ではありません");
+    check(controller.setClipEffectValues(QStringLiteral("image"),
+                                         {{QStringLiteral("opacity"), 50.0}}, true) &&
+              std::abs(controller.textClipOpacity(0) - 0.5) < 1e-9,
+          "不透明度を変えた後もpreviewの区間が古いままです");
+    check(controller.undoLastEdit() && std::abs(controller.textClipOpacity(0) - 1.0) < 1e-9,
+          "Undoした後もpreviewの区間が古いままです");
+}
+
 void testDeleteMultipleSelection(const std::filesystem::path& path) {
     auto project = videoProject();
     auto audio = project.timelineClips[0];
@@ -2165,6 +2194,7 @@ int main(int argc, char** argv) {
     testApplyDefaultTransitionToClips(directory / L"default-fades.mvm");
     testEditPointTransition(directory / L"edit-point-transition.mvm");
     testMoveOverwritesAndDragBounds(directory / L"move-overwrite.mvm");
+    testPreviewPlanFollowsEdits(directory / L"preview-plan.mvm");
     testShuttleStopAndStep(directory / L"shuttle-stop-step.mvm");
     testPreviewTransform(directory / L"preview-transform.mvm");
     // MLT を初期化するので最後に置く。ほかの試験は MLT 無しの前提で書かれている。

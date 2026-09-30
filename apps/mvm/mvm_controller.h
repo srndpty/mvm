@@ -785,6 +785,10 @@ private:
     std::int64_t pendingSourceFrame_ = 0;
     int currentClipIndex_ = -1;
     std::vector<std::string> selectedClipIds_;
+    // preview の frame 問い合わせに使う描画区間。project_ が変わると refreshTimelineModel が捨て、
+    // 次の問い合わせで 1 度だけ作り直す (再生中の毎 frame に timeline 全体を組み直さない)。
+    mutable std::optional<TimelinePreviewPlan> previewPlan_;
+    const TimelinePreviewPlan& previewPlan() const;
     // 選択中の編集点 (outgoing / incoming の clip ID) とトランジション。clip の選択とは排他で、
     // setTimelineSelection が消す。
     std::string selectedEditOutgoing_;

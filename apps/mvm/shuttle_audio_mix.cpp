@@ -143,10 +143,14 @@ bool mixShuttleBlock(const ShuttleAudioPlan& plan, std::int64_t outputStart,
                 error = "シャトル音声のtimeline sampleを換算できません";
                 return false;
             }
+            // frame へ換算できない位置を別の位置 (clip 先頭など) の gain で鳴らさない。
             const auto frame = timebase.value().schedulerOutputFrame(*timelineSample);
-            const auto evaluated =
-                project::renderSegmentGain(clip.segment, plan.timelineFpsNum, plan.timelineFpsDen,
-                                           frame ? frame.value() : clip.clip.timelineStartFrame);
+            if (!frame) {
+                error = "シャトル音声のtimeline frameを換算できません";
+                return false;
+            }
+            const auto evaluated = project::renderSegmentGain(
+                clip.segment, plan.timelineFpsNum, plan.timelineFpsDen, frame.value());
             if (!evaluated) {
                 error = "シャトル音声の音量カーブ位置が不正です";
                 return false;

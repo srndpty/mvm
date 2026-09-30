@@ -626,8 +626,9 @@ foreach ($needle in @('previewStatus.state == preview::PreviewEngineState::Error
         throw "Preview error時のscrub停止契約がありません: $needle"
     }
 }
-# preview の layer 構成は mapTimelinePreviewFrame に一本化する。
-if (-not $controller.Contains('mapTimelinePreviewFrame(project_, timelineFrame)')) {
+# preview の layer 構成は mapTimelinePreviewFrame に一本化する。描画区間は Project ごとに
+# 1 度作った plan (previewPlan) を渡す。
+if (-not $controller.Contains('mapTimelinePreviewFrame(project_, previewPlan(), timelineFrame)')) {
     throw 'controllerがpreview layer mappingを経由していません'
 }
 if (-not $controller.Contains('project::placeLinkedAvPairAt(')) {

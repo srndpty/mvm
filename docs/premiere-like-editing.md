@@ -1702,7 +1702,8 @@ mapping を失敗させている。UI からはまだどちらも作れないの
 - 映像: incoming の頭の区間 `[cut - before, cut + after)` を lane 1 に切り出して outgoing の上へ重ね、
   不透明度を `p = (f - start + 0.5) / frames` で上げる。outgoing は lane 0 で不透明のまま残す。不透明な
   clip どうしなら `A(1 - p) + B p` になる。両方を `1 - p` / `p` にすると中央で暗くなる
-  (`0.25 A + 0.5 B`)。incoming が透過・変形しているときは下の outgoing が減らないので Premiere と一致しない
+  (`0.25 A + 0.5 B`)。incoming が透過・変形していると下の outgoing が減らず、区間の終わりの 1 frame で
+  突然消えるので、映像のトランジションは画面全体を覆う不透明な clip どうしに限る (§19.10)
 - 音声: clip ごとに 1 区間で、incoming に `sin(p π/2)`、outgoing に `cos(p π/2)` を掛けて加算する
   (等パワー、二乗和が 1)
 - 延ばした区間の effect (key・フェード) は clip の端の値のまま評価する
@@ -1820,3 +1821,33 @@ controller は preview を一時停止して source を組み直す ("clip境界
 - 不透明度 0 で合成に入れておくと、その source の frame が無い間は exact pairing が frame 全体を落とす
 
 `[未検証]` engine が再生中の source の追加・削除を受理するようにする対応は、別ブランチで行う。
+
+### 19.10 レビュー指摘への対応 (P1 1 件 / P2 4 件)
+
+`[事実]` P1: クロスディゾルブは incoming を不透明度 p で outgoing の上に重ねて作るので、incoming が透過・縮小・
+移動・切り抜きされていると、覆わない所で outgoing が 100% 見え続け、区間の終わりの 1 frame で突然背景へ
+切り替わる。各 clip を別々に描いてから混ぜる合成 (compositor の dissolve) を持つまでは、映像のトランジションを
+「画面全体を覆う不透明な映像 clip どうし」に限る (`validateTimeline` の規則)。
+- 文字・画像・フレーム保持は不可。位置・拡大・回転・切り抜きは既定値、区間の中の不透明度 (値・key・fade) は 1
+- 作成 (Shift+D) は余白不足と取り違えずにこの理由で断る。既にトランジションのある clip へ効果を付けると
+  効果の確定 (`setClipEffectValues`) が同じ理由で失敗する (先にトランジションを消す)
+- 音声のクロスフェードは制限しない
+- `[未検証]` alpha を持つ動画素材 (ProRes 4444 など) は判定していない
+
+`[事実]` P2-2: リンクした映像・音声の編集点へ置くとき、両方の編集点の余白から cut の前後それぞれの上限を
+先に求め、同じ長さ・同じ前後で置く。以前は主の編集点の長さをリンク相手へ要求し、相手が縮めても主は
+元の長さのままだった (音声の尻の余白 20 frame で、映像 30 / 30・音声 30 / 20)。今は両方 40 / 20。
+
+`[事実]` P2-3: シャトル音声の gain を求める frame への換算が失敗したら、clip 先頭の gain で鳴らさずに
+失敗させる (fail-closed に戻した)。`[未検証]` 有効な timebase ではこの換算は int64 を超えないと失敗しない
+ので、公開 API から失敗させる負例は作れていない。
+
+`[事実]` P2-4: preview の frame 問い合わせは、Project が変わったときに 1 度だけ作る `TimelinePreviewPlan`
+(描画区間と、その timeline 上の範囲・slot の起点) を引く。controller は `refreshTimelineModel` (project_ を
+変える全経路が通る) で捨て、次の問い合わせで作り直す。区間の作り方は `timelineRenderSegments` に一本化した
+まま。`timeline_preview_plan_bench` (label performance、release) で 2000 clip・各 cut にディゾルブの
+timeline を 2000 frame 問い合わせると、1 frame あたり 36000 µs (毎回作り直し) → 1.7 µs (使い回し)、
+作るのは 1 回 23 ms だった。作り直しを外すと `m7b_4_controller_export_lifecycle` が落ちる。
+
+`[事実]` P2-5 (`[` / `]` の向き): 変えない。利用者の判断で、キーボードで上にある `[` を音量を上げる操作に
+している (Premiere とは逆)。

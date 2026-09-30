@@ -13,35 +13,50 @@ namespace {
 __extension__ using WideInteger = __int128;
 } // namespace
 
-namespace {
-
-// frame を含む区間。track の mute は呼び出し側で見る。
-bool segmentCovers(const project::Project& project, const project::TimelineRenderSegment& segment,
-                   std::int64_t timelineFrame) {
-    const auto duration = project::timelineClipDuration(project, segment.clip);
-    return duration.success && timelineFrame >= segment.clip.timelineStartFrame &&
-           timelineFrame < segment.clip.timelineStartFrame + duration.frame;
-}
-
-// (track, lane) を下から数えた slot の起点。トランジションのある track は lane を 2 本持つ。
-std::vector<int> slotBases(const project::Project& project,
-                           const std::vector<project::TimelineRenderSegment>& segments) {
+TimelinePreviewPlan buildTimelinePreviewPlan(const project::Project& project) {
+    TimelinePreviewPlan plan;
+    std::vector<project::TimelineRenderSegment> video;
+    std::vector<project::TimelineRenderSegment> audio;
+    if (!project::timelineRenderSegments(project, project::TrackKind::Video, video, plan.error) ||
+        !project::timelineRenderSegments(project, project::TrackKind::Audio, audio, plan.error))
+        return plan;
+    const auto entries = [&](std::vector<project::TimelineRenderSegment>& segments,
+                             std::vector<TimelinePreviewPlan::Entry>& out) {
+        out.reserve(segments.size());
+        for (auto& segment : segments) {
+            const auto duration = project::timelineClipDuration(project, segment.clip);
+            if (!duration.success) {
+                plan.error = segment.clip.name + ": " + duration.error;
+                return false;
+            }
+            const auto start = segment.clip.timelineStartFrame;
+            out.push_back({std::move(segment), start, start + duration.frame});
+        }
+        return true;
+    };
+    if (!entries(video, plan.video) || !entries(audio, plan.audio))
+        return plan;
     std::vector<bool> usesOverLane(project.videoTracks.size(), false);
-    for (const auto& segment : segments)
-        if (segment.lane > 0)
-            usesOverLane[static_cast<std::size_t>(segment.original.track.index)] = true;
-    std::vector<int> bases(project.videoTracks.size(), 0);
+    for (const auto& entry : plan.video)
+        if (entry.segment.lane > 0)
+            usesOverLane[static_cast<std::size_t>(entry.segment.original.track.index)] = true;
+    plan.slotBases.assign(project.videoTracks.size(), 0);
     int next = 0;
-    for (std::size_t track = 0; track < bases.size(); ++track) {
-        bases[track] = next;
+    for (std::size_t track = 0; track < plan.slotBases.size(); ++track) {
+        plan.slotBases[track] = next;
         next += usesOverLane[track] ? 2 : 1;
     }
-    return bases;
+    plan.success = true;
+    return plan;
 }
 
-} // namespace
+TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& project,
+                                                    std::int64_t timelineFrame) {
+    return mapTimelinePreviewFrame(project, buildTimelinePreviewPlan(project), timelineFrame);
+}
 
 TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& project,
+                                                    const TimelinePreviewPlan& plan,
                                                     std::int64_t timelineFrame) {
     TimelinePreviewFrameMapping result;
     result.outputFrameNumber = timelineFrame;
@@ -49,19 +64,19 @@ TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& proj
         result.error = "Preview timeline frameは0以上である必要があります";
         return result;
     }
-    std::vector<project::TimelineRenderSegment> segments;
-    if (!project::timelineRenderSegments(project, project::TrackKind::Video, segments,
-                                         result.error))
+    if (!plan.success) {
+        result.error = plan.error;
         return result;
-    const auto bases = slotBases(project, segments);
-    for (const auto& segment : segments) {
+    }
+    for (const auto& entry : plan.video) {
         // 無効にした clip は区間に含まれない。mute した video track は「黒」ではなく layer から
         // 外す (下の track が見える)。
+        const auto& segment = entry.segment;
         const int track = segment.original.track.index;
-        if (project.videoTracks[static_cast<std::size_t>(track)].muted ||
-            !segmentCovers(project, segment, timelineFrame))
+        if (timelineFrame < entry.start || timelineFrame >= entry.end ||
+            project.videoTracks[static_cast<std::size_t>(track)].muted)
             continue;
-        const int slot = bases[static_cast<std::size_t>(track)] + segment.lane;
+        const int slot = plan.slotBases[static_cast<std::size_t>(track)] + segment.lane;
         const auto& clip = segment.clip;
         const double transitionOpacity =
             segment.fadeIn ? project::transitionProgress(*segment.fadeIn, timelineFrame) : 1.0;
@@ -228,19 +243,26 @@ bool sameTimelinePreviewSourceSet(const TimelinePreviewFrameMapping& a,
 
 TimelinePreviewAudioMapping mapTimelinePreviewAudio(const project::Project& project,
                                                     std::int64_t timelineFrame) {
+    return mapTimelinePreviewAudio(project, buildTimelinePreviewPlan(project), timelineFrame);
+}
+
+TimelinePreviewAudioMapping mapTimelinePreviewAudio(const project::Project& project,
+                                                    const TimelinePreviewPlan& plan,
+                                                    std::int64_t timelineFrame) {
     TimelinePreviewAudioMapping result;
     if (timelineFrame < 0) {
         result.error = "Preview timeline frameは0以上である必要があります";
         return result;
     }
-    std::vector<project::TimelineRenderSegment> segments;
-    if (!project::timelineRenderSegments(project, project::TrackKind::Audio, segments,
-                                         result.error))
+    if (!plan.success) {
+        result.error = plan.error;
         return result;
-    for (const auto& segment : segments) {
+    }
+    for (const auto& entry : plan.audio) {
+        const auto& segment = entry.segment;
         const int track = segment.original.track.index;
-        if (project.audioTracks[static_cast<std::size_t>(track)].muted ||
-            !segmentCovers(project, segment, timelineFrame))
+        if (timelineFrame < entry.start || timelineFrame >= entry.end ||
+            project.audioTracks[static_cast<std::size_t>(track)].muted)
             continue;
         const auto& clip = segment.clip;
         result.layers.push_back({track, segment.clipIndex, clip.id,

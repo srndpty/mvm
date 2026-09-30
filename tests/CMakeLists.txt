@@ -2422,6 +2422,14 @@ target_link_libraries(mvm_test_timeline_preview_mapping PRIVATE
 mvm_add_test(m7b_2_timeline_preview_mapping_focused
     COMMAND mvm_test_timeline_preview_mapping)
 
+# preview の frame 問い合わせで描画区間を使い回す効果 (長い timeline)。速度では合否を決めない。
+add_executable(mvm_bench_timeline_preview_plan harness/bench_timeline_preview_plan.cpp)
+target_link_libraries(mvm_bench_timeline_preview_plan PRIVATE
+    mvm::timeline_preview_mapping mvm::warnings)
+mvm_add_test(timeline_preview_plan_bench
+    COMMAND mvm_bench_timeline_preview_plan
+    PROPERTIES LABELS performance TIMEOUT 600)
+
 # P2-Q4はproduction schedulerを変更せず、offline modelの契約を先に固定する。
 add_executable(mvm_test_p2_render_opportunity
     harness/test_p2_render_opportunity_replay.cpp

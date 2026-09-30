@@ -81,6 +81,30 @@ void applyPreviewLayerEffects(preview::PreviewCompositionLayer& layer,
                               const project::ClipEffects& effects, double opacity,
                               std::int64_t sourceInFrame, std::int64_t sourceDurationFrames);
 
+// preview の frame 問い合わせに使う描画区間の一覧 (project::timelineRenderSegments) と、各区間の
+// timeline 上の範囲・slot の起点。Project が変わったときに 1 度だけ作り、frame ごとの問い合わせは
+// これを引くだけにする (区間の作り方は timelineRenderSegments に一本化したまま)。
+struct TimelinePreviewPlan {
+    bool success = false;
+    std::string error;
+    struct Entry {
+        project::TimelineRenderSegment segment;
+        std::int64_t start = 0;
+        std::int64_t end = 0;
+    };
+    std::vector<Entry> video;
+    std::vector<Entry> audio;
+    // video track ごとの slot の起点 (トランジションのある track は lane を 2 本持つ)。
+    std::vector<int> slotBases;
+};
+
+TimelinePreviewPlan buildTimelinePreviewPlan(const project::Project& project);
+
+// plan は同じ project から作ったものを渡す。plan を持たない呼び出し側 (試験など) 向けに、
+// 毎回 plan を作る版も残す。
+TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& project,
+                                                    const TimelinePreviewPlan& plan,
+                                                    std::int64_t timelineFrame);
 TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& project,
                                                     std::int64_t timelineFrame);
 
@@ -128,6 +152,9 @@ struct TimelinePreviewAudioMapping {
     std::string error;
 };
 
+TimelinePreviewAudioMapping mapTimelinePreviewAudio(const project::Project& project,
+                                                    const TimelinePreviewPlan& plan,
+                                                    std::int64_t timelineFrame);
 TimelinePreviewAudioMapping mapTimelinePreviewAudio(const project::Project& project,
                                                     std::int64_t timelineFrame);
 

@@ -1409,6 +1409,47 @@ void testTimelineTransitions(const std::filesystem::path& root) {
               "同じclip端の複数トランジションを受理しました");
     }
     {
+        // クロスディゾルブは画面全体を覆う不透明な映像どうしでだけ置ける (incoming を不透明度 p で
+        // 重ねる作りなので、透過・変形していると区間の終わりで不連続になる)。
+        auto scaled = base;
+        scaled.timelineClips[1].effects.scaleXPercent = 80;
+        check(failsWith(scaled, "画面全体を覆う不透明"), "縮小したincomingのディゾルブを受理しました");
+        auto moved = base;
+        moved.timelineClips[0].effects.positionXPercent = 10;
+        check(failsWith(moved, "画面全体を覆う不透明"), "移動したoutgoingのディゾルブを受理しました");
+        auto cropped = base;
+        cropped.timelineClips[1].effects.cropLeftPercent = 5;
+        check(failsWith(cropped, "画面全体を覆う不透明"), "切り抜いたincomingのディゾルブを受理しました");
+        auto translucent = base;
+        translucent.timelineClips[1].effects.opacityPercent = 50;
+        check(failsWith(translucent, "画面全体を覆う不透明"),
+              "半透明のincomingのディゾルブを受理しました");
+        // 区間 (outgoing の最後の 30 frame) に掛かる不透明度 key は拒否し、掛からなければ許す。
+        auto keyedNear = base;
+        keyedNear.timelineClips[0].effects.opacityKeys = {{0, 100.0}, {299, 90.0}};
+        check(failsWith(keyedNear, "画面全体を覆う不透明"),
+              "区間で不透明度の下がるoutgoingのディゾルブを受理しました");
+        auto keyedFar = base;
+        keyedFar.timelineClips[0].effects.opacityKeys = {{0, 50.0}, {100, 100.0}};
+        check(mvm::project::validateTimeline(keyedFar).success,
+              "区間の外の不透明度keyでディゾルブを拒否しました");
+        // 音声のクロスフェードは映像の見た目に関係しないので制限しない。
+        auto audio = base;
+        for (auto& value : audio.timelineClips) {
+            value.kind = mvm::project::TimelineClipKind::Audio;
+            value.track = kA1;
+            value.effects.volumePercent = 50;
+        }
+        check(mvm::project::validateTimeline(audio).success, "音量を変えた音声のクロスフェードを拒否しました");
+        // 作るときも同じ理由で断る (余白不足と取り違えない)。
+        auto refusedScaled = scaled;
+        refusedScaled.timelineTransitions.clear();
+        const auto refused = mvm::project::applyDefaultEditTransition(
+            refusedScaled, "id-A", "id-B", 60, LinkMode::Linked, sequentialIds());
+        check(!refused.success && refused.error.find("画面全体を覆う不透明") != std::string::npos,
+              "縮小したclipへのディゾルブの作成を正しい理由で断りません");
+    }
+    {
         // フレーム保持 clip の端には置けない。
         auto held = base;
         held.timelineTransitions.clear();
@@ -1699,6 +1740,22 @@ void testApplyDefaultEditTransition() {
                                                                LinkMode::Linked, sequentialIds());
     check(both.success && both.transitionCount == 2 && linked.timelineTransitions.size() == 2,
           "リンク相手の編集点にもトランジションを置きません");
+    // 音声の尻の余白が 20 frame しか無くても、映像と音声は同じ長さ・同じ cut の前後で置く
+    // (映像だけ 30 / 30 で音声が 40 / 20 のように食い違わない)。
+    auto shortAudio = linked;
+    shortAudio.timelineTransitions.clear();
+    for (auto& value : shortAudio.timelineClips)
+        if (value.id == "id-audio-A")
+            value.sourceFrameCount = 320;
+    const auto matched = mvm::project::applyDefaultEditTransition(
+        shortAudio, "id-A", "id-B", 60, LinkMode::Linked, sequentialIds());
+    check(matched.success && matched.frames == 60 && matched.transitionCount == 2 &&
+              shortAudio.timelineTransitions.size() == 2 &&
+              shortAudio.timelineTransitions[0].framesBeforeCut == 40 &&
+              shortAudio.timelineTransitions[0].framesAfterCut == 20 &&
+              shortAudio.timelineTransitions[1].framesBeforeCut == 40 &&
+              shortAudio.timelineTransitions[1].framesAfterCut == 20,
+          "リンク相手の余白に合わせて映像と音声のトランジションを同じ長さにしません");
     auto single = linked;
     single.timelineTransitions.clear();
     check(mvm::project::applyDefaultEditTransition(single, "id-A", "id-B", 60, LinkMode::Single,

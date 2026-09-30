@@ -785,7 +785,14 @@ bool MvmController::canPlay() const {
     return timelineCanPlay(project_, busy_, playing_, playheadFrame_, totalTimelineFrames_);
 }
 
+const TimelinePreviewPlan& MvmController::previewPlan() const {
+    if (!previewPlan_)
+        previewPlan_ = buildTimelinePreviewPlan(project_);
+    return *previewPlan_;
+}
+
 void MvmController::refreshTimelineModel() {
+    previewPlan_.reset();
     if (!selectedTransitionId_.empty() &&
         std::none_of(project_.timelineTransitions.begin(), project_.timelineTransitions.end(),
                      [&](const auto& transition) { return transition.id == selectedTransitionId_; }))
@@ -1525,7 +1532,7 @@ bool MvmController::audioIdentitiesFor(const TimelinePreviewAudioMapping& mapped
 bool MvmController::applyAudioSourceFor(std::int64_t timelineFrame, AudioSwitchUndo& undo,
                                         QString& error) {
     undo = AudioSwitchUndo{};
-    const auto mapped = mapTimelinePreviewAudio(project_, timelineFrame);
+    const auto mapped = mapTimelinePreviewAudio(project_, previewPlan(), timelineFrame);
     if (!mapped.success) {
         error = QString::fromStdString(mapped.error);
         return false;
@@ -1712,7 +1719,7 @@ MvmController::previewCompositionFor(const TimelinePreviewFrameMapping& mappedFr
 }
 
 bool MvmController::syncPreviewSourcesAt(std::int64_t timelineFrame, QString& error) {
-    const auto mappedFrame = mapTimelinePreviewFrame(project_, timelineFrame);
+    const auto mappedFrame = mapTimelinePreviewFrame(project_, previewPlan(), timelineFrame);
     if (!mappedFrame.success) {
         error = QString::fromStdString(mappedFrame.error);
         return false;
@@ -2918,7 +2925,7 @@ void MvmController::setTextOverlayClip(const QString& clipId) {
 }
 
 double MvmController::textClipOpacity(int index) const {
-    const auto mapped = mapTimelinePreviewFrame(project_, playheadFrame_);
+    const auto mapped = mapTimelinePreviewFrame(project_, previewPlan(), playheadFrame_);
     for (const auto& text : mapped.stillLayers)
         if (text.clipIndex == index)
             return std::clamp(text.opacity, 0.0, 1.0);
@@ -3524,7 +3531,7 @@ void MvmController::stopPlaybackWithError(QString error) {
 }
 
 bool MvmController::handOffPlaybackSources(std::int64_t frame, QString& reason) {
-    const auto mappedFrame = mapTimelinePreviewFrame(project_, frame);
+    const auto mappedFrame = mapTimelinePreviewFrame(project_, previewPlan(), frame);
     if (!mappedFrame.success) {
         reason = QString::fromStdString(mappedFrame.error);
         return false;
@@ -3550,7 +3557,7 @@ bool MvmController::handOffPlaybackSources(std::int64_t frame, QString& reason) 
         }
         videoChanged = true;
     }
-    const auto audioMapping = mapTimelinePreviewAudio(project_, frame);
+    const auto audioMapping = mapTimelinePreviewAudio(project_, previewPlan(), frame);
     if (!audioMapping.success) {
         reason = QString::fromStdString(audioMapping.error);
         return false;

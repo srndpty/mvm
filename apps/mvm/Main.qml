@@ -118,6 +118,8 @@ ApplicationWindow {
         enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
         onTriggered: root.mvmController.splitClipAt("", root.mvmController.playheadFrame, true, true)
     }
+    // Premiere は ] で上げるが、ここでは [ で上げる (キーボードで [ が上にあり、上げる操作として
+    // 直感的なため。利用者の判断で意図的に逆にしている)。
     Action {
         id: volumeUpAction
         text: "クリップの音量を上げる"
