@@ -142,7 +142,9 @@ if (-not (Test-TextInputGuard $qml) -or
 $editActions = @(
     @{ Id = 'selectAllClipsAction'; Key = 'Ctrl+A'; Call = 'root.mvmController.selectAllClips()' },
     @{ Id = 'splitAtPlayheadAction'; Key = 'Ctrl+K'; Call = 'root.mvmController.splitSelectionAtPlayhead()' },
-    @{ Id = 'splitAllTracksAction'; Key = 'Ctrl+Shift+K'; Call = 'root.mvmController.splitClipAt("", root.mvmController.playheadFrame, true, true)' }
+    @{ Id = 'splitAllTracksAction'; Key = 'Ctrl+Shift+K'; Call = 'root.mvmController.splitClipAt("", root.mvmController.playheadFrame, true, true)' },
+    @{ Id = 'volumeUpAction'; Key = '['; Call = 'root.mvmController.stepSelectedClipVolume(1)' },
+    @{ Id = 'volumeDownAction'; Key = ']'; Call = 'root.mvmController.stepSelectedClipVolume(-1)' }
 )
 function Test-EditActionGuard([string]$source) {
     foreach ($entry in $editActions) {

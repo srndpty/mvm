@@ -1232,6 +1232,61 @@ void testSplitClips() {
           "選択が空なのに分割対象を返しました");
 }
 
+// [ / ] の音量。映像を選ぶとリンク相手の audio を変え、映像の音量は 100 のまま
+// (映像 clip の音量は validateTimeline が 100 に固定している)。
+void testStepClipVolume() {
+    using mvm::project::TimelineClipKind;
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    auto video = clip("video");
+    video.linkGroupId = "volume-link";
+    auto audio = clip("audio", TimelineClipKind::Audio, kA1);
+    audio.linkGroupId = "volume-link";
+    auto keyed = clip("keyed", TimelineClipKind::Audio, kA1);
+    keyed.timelineStartFrame = 300;
+    keyed.effects.volumeKeys = {{0, 0.0}, {10, 100.0}, {20, 199.0}};
+    auto lone = clip("lone", TimelineClipKind::Video, kV2);
+    project.timelineClips = {video, audio, keyed, lone};
+    check(mvm::project::validateTimeline(project).success, "音量試験用のtimelineが不正です");
+    const auto volumeOf = [&](const std::string& id) {
+        return findClip(project, id)->effects.volumePercent;
+    };
+
+    check(mvm::project::stepClipVolume(project, {video.id}, 1.0).success &&
+              std::abs(volumeOf(audio.id) - 112.20184543019634) < 1e-9 &&
+              volumeOf(video.id) == 100.0,
+          "映像を選んだ+1dBでリンク相手のaudioだけを変えません");
+
+    // key は 0% を保ち、他は同じ規則 (上限 200) で変える。base も変える。
+    check(mvm::project::stepClipVolume(project, {keyed.id}, 1.0).success,
+          "音量keyのあるaudio clipを+1dBできません");
+    const auto& keys = findClip(project, keyed.id)->effects.volumeKeys;
+    check(keys.size() == 3 && keys[0].valuePercent == 0.0 &&
+              std::abs(keys[1].valuePercent - 112.20184543019634) < 1e-9 &&
+              keys[2].valuePercent == 200.0 &&
+              std::abs(volumeOf(keyed.id) - 112.20184543019634) < 1e-9,
+          "音量keyを0%を保ったまま同じ規則で変えません");
+
+    // 対象外だけ・上限で変化なし・存在しない ID は失敗し、Project を変えない。
+    const auto before = project;
+    check(!mvm::project::stepClipVolume(project, {lone.id}, 1.0).success &&
+              project == before,
+          "audioの無い選択で音量の変更を受理しました");
+    auto atMaximum = project;
+    for (auto& value : atMaximum.timelineClips)
+        if (value.id == audio.id)
+            value.effects.volumePercent = 200.0;
+    const auto maximumBefore = atMaximum;
+    check(!mvm::project::stepClipVolume(atMaximum, {audio.id}, 1.0).success &&
+              atMaximum == maximumBefore,
+          "上限の音量を上げる操作を変更ありとして受理しました");
+    check(!mvm::project::stepClipVolume(project, {"missing"}, 1.0).success && project == before,
+          "存在しないclipの音量変更を受理しました");
+
+    check(mvm::project::stepClipVolume(project, {audio.id, keyed.id}, -1.0).success &&
+              std::abs(volumeOf(audio.id) - 100.0) < 1e-9,
+          "複数clipを-1dBで元に戻せません");
+}
+
 void testRippleTrim() {
     mvm::project::Project project = mvm::project::createDefaultProject();
     auto first = clip("first");
@@ -2294,6 +2349,7 @@ int main(int argc, char** argv) {
     testSplitClips();
     testRateStretch();
     testRateStretchLinkedDifferentDurations();
+    testStepClipVolume();
     testRippleTrim();
     testRollEdit();
     testLinkedToolEditing();

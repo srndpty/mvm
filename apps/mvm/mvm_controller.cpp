@@ -4826,6 +4826,27 @@ bool MvmController::splitSelectionAtPlayhead() {
         selectedId, QStringLiteral("再生ヘッド位置でclipを分割しました"));
 }
 
+bool MvmController::stepSelectedClipVolume(double stepDb) {
+    std::vector<std::string> clipIds = selectedClipIds_;
+    if (clipIds.empty() && !currentClipId().empty())
+        clipIds.push_back(currentClipId());
+    if (clipIds.empty()) {
+        setStatus(QStringLiteral("音量を変えるclipが選択されていません"));
+        return false;
+    }
+    std::string selectedId = currentClipId();
+    if (selectedId.empty())
+        selectedId = clipIds.front();
+    const QString sign = stepDb > 0.0 ? QStringLiteral("+") : QString();
+    return applyTimelineEdit(
+        [&](project::Project& candidate) {
+            return project::stepClipVolume(candidate, clipIds, stepDb);
+        },
+        selectedId,
+        QStringLiteral("clipの音量を") + sign + QString::number(stepDb) +
+            QStringLiteral("dB変えました"));
+}
+
 bool MvmController::selectClipsFromFrame(qint64 frame, const QString& direction,
                                          const QString& trackKind, int trackIndex) {
     project::SelectDirection selectDirection;

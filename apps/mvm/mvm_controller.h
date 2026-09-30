@@ -417,6 +417,9 @@ public:
     // 再生ヘッドを内側に含む選択 clip (リンク相手を含む) を再生ヘッドで分割する (Ctrl+K)。
     // 該当する選択 clip が無ければ、再生ヘッドを含む current clip を分割する。
     Q_INVOKABLE bool splitSelectionAtPlayhead();
+    // 選択 clip (無ければ current clip) の音量を stepDb だけ変える ([ / ])。映像はリンク相手の
+    // audio clip を変える。1 回の呼び出しが 1 undo。
+    Q_INVOKABLE bool stepSelectedClipVolume(double stepDb);
     Q_INVOKABLE QVariantMap previewClipKey(const QString& clipId, qint64 originalFrame,
                                            qint64 requestedFrame, double valuePercent) const;
     Q_INVOKABLE bool commitClipKey(const QString& clipId, qint64 originalFrame,

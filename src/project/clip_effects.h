@@ -2,6 +2,7 @@
 #define MVM_PROJECT_CLIP_EFFECTS_H
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -76,6 +77,15 @@ bool retimeClipKeys(std::vector<ClipKeyframe>& keys, std::int64_t fromFpsNum,
                     std::int64_t fromFpsDen, std::int64_t toFpsNum, std::int64_t toFpsDen,
                     std::int64_t newDuration);
 ClipEffectMapping mapClipEffects(const ClipEffects& effects);
+
+// 音量を dB 単位で 1 段上げ下げするときの下限 (-60 dB)。0% からは倍率で上げられないので、
+// 上げるときは下限から始める。下げても下限より下 (0% を含む) へは行かない。
+inline constexpr double kVolumeStepFloorPercent = 0.1;
+inline constexpr double kVolumeMaximumPercent = 200.0;
+// percent を stepDb だけ変えた値。上げるときは下限未満を下限へ寄せてから掛け、上限で止める。
+// 下げるときは下限で止め、既に下限以下の値は変えない。percent が 0..上限の外、stepDb が
+// 有限でない・0 のときは nullopt。
+std::optional<double> stepVolumePercentByDb(double percent, double stepDb);
 
 // 素材を canvas に置いたときに見えている矩形 (出力画素、回転前)。preview の枠と
 // ハンドルが使う。幾何は preview / 書き出しと同じ core::placeLayer で決める。

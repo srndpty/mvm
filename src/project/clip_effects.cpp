@@ -180,6 +180,17 @@ bool retimeClipKeys(std::vector<ClipKeyframe>& keys, std::int64_t fromFpsNum,
     return true;
 }
 
+std::optional<double> stepVolumePercentByDb(double percent, double stepDb) {
+    if (!inRange(percent, 0.0, kVolumeMaximumPercent) || !std::isfinite(stepDb) || stepDb == 0.0)
+        return std::nullopt;
+    const double gain = std::pow(10.0, stepDb / 20.0);
+    if (stepDb > 0.0)
+        return std::min(kVolumeMaximumPercent, std::max(percent, kVolumeStepFloorPercent) * gain);
+    if (percent <= kVolumeStepFloorPercent)
+        return percent;
+    return std::max(kVolumeStepFloorPercent, percent * gain);
+}
+
 ClipEffectMapping mapClipEffects(const ClipEffects& effects) {
     const double left = effects.cropLeftPercent / 100.0;
     const double top = effects.cropTopPercent / 100.0;

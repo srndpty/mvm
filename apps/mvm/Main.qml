@@ -119,6 +119,20 @@ ApplicationWindow {
         onTriggered: root.mvmController.splitClipAt("", root.mvmController.playheadFrame, true, true)
     }
     Action {
+        id: volumeUpAction
+        text: "クリップの音量を上げる"
+        shortcut: "["
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.stepSelectedClipVolume(1)
+    }
+    Action {
+        id: volumeDownAction
+        text: "クリップの音量を下げる"
+        shortcut: "]"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.stepSelectedClipVolume(-1)
+    }
+    Action {
         id: speedDurationAction
         text: "速度・デュレーション..."
         shortcut: "Ctrl+R"
@@ -286,6 +300,9 @@ ApplicationWindow {
             CompactMenuItem { action: splitAtPlayheadAction }
             CompactMenuItem { action: splitAllTracksAction }
             CompactMenuItem { action: selectAllClipsAction }
+            CompactMenuSeparator {}
+            CompactMenuItem { action: volumeUpAction }
+            CompactMenuItem { action: volumeDownAction }
             CompactMenuSeparator {}
             // 実行は Shortcut "Delete" が担う。ここは表示だけで sequence を持たせない (二重発火を防ぐ)。
             CompactMenuItem {

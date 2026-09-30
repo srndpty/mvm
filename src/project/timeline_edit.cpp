@@ -1467,6 +1467,58 @@ std::vector<std::string> clipIdsSpanningFrame(const Project& project, std::int64
     return ids;
 }
 
+TimelineEditResult stepClipVolume(Project& project, const std::vector<std::string>& clipIds,
+                                  double stepDb) {
+    TimelineEditResult result;
+    Project candidate = project;
+    std::vector<bool> marked(candidate.timelineClips.size(), false);
+    for (const auto& id : clipIds) {
+        const int index = indexOfId(candidate, id);
+        if (!validIndex(candidate, index)) {
+            result.error = "音量を変える timeline clip がありません";
+            return result;
+        }
+        marked[static_cast<std::size_t>(index)] = true;
+    }
+    includeLinkedCounterparts(candidate, marked);
+    int firstTarget = -1;
+    bool changed = false;
+    for (std::size_t index = 0; index < marked.size(); ++index) {
+        auto& clip = candidate.timelineClips[index];
+        if (!marked[index] || clip.kind != TimelineClipKind::Audio)
+            continue;
+        if (firstTarget < 0)
+            firstTarget = static_cast<int>(index);
+        const auto stepped = stepVolumePercentByDb(clip.effects.volumePercent, stepDb);
+        if (!stepped) {
+            result.error = "音量を段階的に変えられません: " + clip.name;
+            return result;
+        }
+        changed = changed || *stepped != clip.effects.volumePercent;
+        clip.effects.volumePercent = *stepped;
+        for (auto& key : clip.effects.volumeKeys) {
+            if (key.valuePercent == 0.0)
+                continue;
+            const auto steppedKey = stepVolumePercentByDb(key.valuePercent, stepDb);
+            if (!steppedKey) {
+                result.error = "音量キーを段階的に変えられません: " + clip.name;
+                return result;
+            }
+            changed = changed || *steppedKey != key.valuePercent;
+            key.valuePercent = *steppedKey;
+        }
+    }
+    if (firstTarget < 0) {
+        result.error = "音量を変えられる audio clip がありません";
+        return result;
+    }
+    if (!changed) {
+        result.error = stepDb > 0.0 ? "音量は既に上限です" : "音量は既に下限です";
+        return result;
+    }
+    return commitCandidate(project, std::move(candidate), firstTarget);
+}
+
 struct RippleSource {
     TrackRef track;
     std::int64_t originalEnd = 0;

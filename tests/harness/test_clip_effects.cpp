@@ -61,6 +61,31 @@ int main(int argc, char** argv) {
         keyed.volumePercent = 50.0;
         check(!clipEffectsAreDefault(keyed), "音量だけのeffectをdefaultにしない");
     }
+    {
+        // 音量の 1dB 刻み。期待値は 10^(±1/20) を独立に計算した値 (実装の式を呼ばない)。
+        const auto near = [](std::optional<double> value, double expected) {
+            return value && std::abs(*value - expected) < 1e-9;
+        };
+        check(near(stepVolumePercentByDb(100.0, 1.0), 112.20184543019634),
+              "音量を+1dBできません");
+        check(near(stepVolumePercentByDb(100.0, -1.0), 89.12509381337456),
+              "音量を-1dBできません");
+        check(near(stepVolumePercentByDb(0.0, 1.0), 0.11220184543019634),
+              "0%から上げると下限(-60dB)から+1dBになりません");
+        check(near(stepVolumePercentByDb(0.0, -1.0), 0.0),
+              "0%を下げたときに値を変えました");
+        check(near(stepVolumePercentByDb(0.1, -1.0), 0.1),
+              "下限の音量を下限より下げました");
+        check(near(stepVolumePercentByDb(0.105, -1.0), 0.1),
+              "下限の近くから下げたときに下限で止まりません");
+        check(near(stepVolumePercentByDb(190.0, 1.0), 200.0), "音量を上限で止めません");
+        check(near(stepVolumePercentByDb(200.0, 1.0), 200.0), "上限の音量を上げました");
+        check(!stepVolumePercentByDb(-1.0, 1.0) && !stepVolumePercentByDb(201.0, -1.0) &&
+                  !stepVolumePercentByDb(std::nan(""), 1.0) &&
+                  !stepVolumePercentByDb(100.0, 0.0) &&
+                  !stepVolumePercentByDb(100.0, std::nan("")),
+              "範囲外の音量・段差を受理しました");
+    }
     std::string error;
     check(validateClipEffects(effects, 100, error), "既定effectが有効");
     effects.cropLeftPercent = 10;

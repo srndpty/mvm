@@ -1377,6 +1377,30 @@ void testSplitAtPlayheadAndSelectAll(const std::filesystem::path& path) {
           "全trackを再生ヘッドで分割できません");
 }
 
+// [ / ] は選択 (リンク組) の audio clip の音量を 1 undo で変える。
+void testStepSelectedClipVolume(const std::filesystem::path& path) {
+    const auto project = linkedProject();
+    check(mvm::project::saveProjectJson(project, path).success,
+          "音量試験のProjectを保存できません");
+    mvm::app::MvmController controller(path, {}, project);
+    check(controller.selectTimelineClips({}) && !controller.stepSelectedClipVolume(1.0) &&
+              !controller.canUndo(),
+          "選択の無い音量変更を受理しました");
+
+    controller.selectTimelineClip(QStringLiteral("video"), true);
+    check(controller.stepSelectedClipVolume(1.0) && controller.stepSelectedClipVolume(1.0) &&
+              controller.saveProject(),
+          "選択clipの音量を上げられません");
+    const auto raised = mvm::project::loadProjectJson(path);
+    check(raised.success &&
+              std::abs(raised.project.timelineClips[1].effects.volumePercent -
+                       125.89254117941675) < 1e-9 &&
+              raised.project.timelineClips[0].effects.volumePercent == 100.0,
+          "+2dBの音量がリンク相手のaudioに保存されません");
+    check(controller.undoLastEdit() && controller.undoLastEdit() && !controller.canUndo(),
+          "音量の変更を1回ずつUndoできません");
+}
+
 void testDeleteMultipleSelection(const std::filesystem::path& path) {
     auto project = videoProject();
     auto audio = project.timelineClips[0];
@@ -2001,6 +2025,7 @@ int main(int argc, char** argv) {
     testShiftSelectionToggle(directory / L"shift-selection.mvm");
     testDeleteMultipleSelection(directory / L"delete-multiple.mvm");
     testSplitAtPlayheadAndSelectAll(directory / L"split-playhead.mvm");
+    testStepSelectedClipVolume(directory / L"step-volume.mvm");
     testShuttleStopAndStep(directory / L"shuttle-stop-step.mvm");
     testPreviewTransform(directory / L"preview-transform.mvm");
     // MLT を初期化するので最後に置く。ほかの試験は MLT 無しの前提で書かれている。

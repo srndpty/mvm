@@ -269,6 +269,13 @@ std::vector<std::string> clipIdsSpanningFrame(const Project& project, std::int64
 std::vector<std::string> clipIdsSpanningFrame(const Project& project, std::int64_t frame,
                                               const std::vector<std::string>& among);
 
+// clip の音量を stepDb だけ上げ下げする (stepVolumePercentByDb の規則)。音量を持つのは audio
+// clip だけなので、映像側はリンク相手の audio clip を変える。リンクの無い映像・文字・静止画は
+// 対象外。音量 key があれば base と全 key を同じ規則で変え、0% の key (無音の形) は変えない。
+// 対象が無い、または全対象が既に上限・下限で何も変わらないなら失敗し、Project を変えない。
+TimelineEditResult stepClipVolume(Project& project, const std::vector<std::string>& clipIds,
+                                  double stepDb);
+
 // リップルトリム。trim した尺の増減だけ、trim した clip の track で後ろにある clip
 // (とそのリンク相手) をずらす。left 端を trim しても clip の開始位置は動かない。
 // Linked ならリンク相手も同じ量 trim し、相手の track の後ろもずらす。
