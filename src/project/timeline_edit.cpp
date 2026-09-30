@@ -1,12 +1,14 @@
 #include "project/timeline_edit.h"
 
 #include "core/source_frame_mapping.h"
+#include "project/timeline_render.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <limits>
 #include <numeric>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -392,6 +394,253 @@ bool sourceRateMatchesTimelineRate(const Project& project, const TimelineClip& c
            timebase->den == project.timelineFpsDen / timelineDivisor;
 }
 
+namespace {
+
+bool edgeRange(const Project& project, const TimelineClip& clip, TrimEdge edge, std::int64_t& lower,
+               std::int64_t& upper, std::string& error);
+
+// トランジションが参照する 2 clip。cut と、トランジションに使える素材の余白・clip の尺
+// (いずれも timeline frame)。
+struct TransitionClips {
+    int outgoing = -1;
+    int incoming = -1;
+    std::int64_t cut = 0;
+    std::int64_t outgoingDuration = 0;
+    std::int64_t incomingDuration = 0;
+    std::int64_t headHandle = 0; // incoming の先頭より前に使える素材
+    std::int64_t tailHandle = 0; // outgoing の終端より後に使える素材
+};
+
+bool resolveTransitionClips(const Project& project, const TimelineTransition& transition,
+                            TransitionClips& clips, std::string& error) {
+    clips.outgoing = indexOfId(project, transition.outgoingClipId);
+    clips.incoming = indexOfId(project, transition.incomingClipId);
+    if (!validIndex(project, clips.outgoing) || !validIndex(project, clips.incoming) ||
+        clips.outgoing == clips.incoming) {
+        error = "トランジションの clip がありません: " + transition.id;
+        return false;
+    }
+    const auto& outgoing = project.timelineClips[static_cast<std::size_t>(clips.outgoing)];
+    const auto& incoming = project.timelineClips[static_cast<std::size_t>(clips.incoming)];
+    if (!(outgoing.track == incoming.track)) {
+        error = "トランジションの clip が同じ track にありません: " + transition.id;
+        return false;
+    }
+    if (outgoing.frameHold || incoming.frameHold) {
+        error = "フレーム保持 clip にはトランジションを置けません: " + transition.id;
+        return false;
+    }
+    std::int64_t outgoingStart = 0;
+    std::int64_t outgoingEnd = 0;
+    std::int64_t incomingStart = 0;
+    std::int64_t incomingEnd = 0;
+    if (!clipInterval(project, outgoing, outgoingStart, outgoingEnd, error) ||
+        !clipInterval(project, incoming, incomingStart, incomingEnd, error))
+        return false;
+    if (outgoingEnd != incomingStart) {
+        error = "トランジションの clip が接していません: " + transition.id;
+        return false;
+    }
+    std::int64_t lower = 0;
+    std::int64_t upper = 0;
+    if (!edgeRange(project, incoming, TrimEdge::Left, lower, upper, error))
+        return false;
+    clips.headHandle = -lower;
+    if (!edgeRange(project, outgoing, TrimEdge::Right, lower, upper, error))
+        return false;
+    clips.tailHandle = upper;
+    clips.cut = outgoingEnd;
+    clips.outgoingDuration = outgoingEnd - outgoingStart;
+    clips.incomingDuration = incomingEnd - incomingStart;
+    return true;
+}
+
+// クロスディゾルブは outgoing を不透明のまま残し、incoming を不透明度 p で上に重ねて作る
+// (timeline_render.h)。これが A(1 - p) + B p になるのは、両 clip が画面全体を覆う不透明な映像で、
+// トランジションの区間の中で不透明度が 1 のときだけである。incoming が透過・縮小・移動・切り抜き
+// されていると、覆わない所で outgoing が 100% 見え続け、区間の終わりの 1 frame で突然消える。
+// 各 clip を別々に描いてから混ぜる合成 (compositor の dissolve)
+// を持つまでは、この条件で置かせない。 localBegin..localEnd は元の clip の local frame
+// (延ばした区間は端の値で評価する)。
+const char* const kDissolveRequirement =
+    "クロスディゾルブは画面全体を覆う不透明な映像 clip どうしでだけ使えます "
+    "(文字・画像は不可。位置・拡大・回転・切り抜き・不透明度を既定値に戻してください): ";
+
+// 長さに依らない条件 (種別・位置・拡大・回転・切り抜き)。
+bool dissolveClipShapeEligible(const TimelineClip& clip, std::string& error) {
+    const auto& effects = clip.effects;
+    if ((clip.kind != TimelineClipKind::Video && clip.kind != TimelineClipKind::Manim) ||
+        clip.frameHold || effects.positionXPercent != 0.0 || effects.positionYPercent != 0.0 ||
+        effects.scaleXPercent != 100.0 || effects.scaleYPercent != 100.0 ||
+        effects.rotationDegrees != 0.0 || effects.cropLeftPercent != 0.0 ||
+        effects.cropTopPercent != 0.0 || effects.cropRightPercent != 0.0 ||
+        effects.cropBottomPercent != 0.0) {
+        error = kDissolveRequirement + clip.name;
+        return false;
+    }
+    return true;
+}
+
+// local frame [localBegin, localEnd) で不透明度 (値・key・fade) が 1 か。
+bool dissolveClipOpaqueOver(const Project& project, const TimelineClip& clip,
+                            std::int64_t localBegin, std::int64_t localEnd, std::string& error) {
+    for (std::int64_t local = localBegin; local < localEnd; ++local) {
+        const auto sourceLocal =
+            clipFadeSourceFrameAt(clip, project.timelineFpsNum, project.timelineFpsDen, local);
+        if (!sourceLocal.success) {
+            error = sourceLocal.error;
+            return false;
+        }
+        if (evaluateClipOpacity(clip.effects, local, sourceLocal.frame,
+                                clip.sourceOutFrame - clip.sourceInFrame) < 1.0) {
+            error = kDissolveRequirement + clip.name;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool dissolveClipCoversOpaque(const Project& project, const TimelineClip& clip,
+                              std::int64_t localBegin, std::int64_t localEnd, std::string& error) {
+    return dissolveClipShapeEligible(clip, error) &&
+           dissolveClipOpaqueOver(project, clip, localBegin, localEnd, error);
+}
+
+bool dissolveClipsEligible(const Project& project, const TransitionClips& clips,
+                           std::int64_t before, std::int64_t after, std::string& error) {
+    const auto& outgoing = project.timelineClips[static_cast<std::size_t>(clips.outgoing)];
+    const auto& incoming = project.timelineClips[static_cast<std::size_t>(clips.incoming)];
+    if (outgoing.track.kind != TrackKind::Video)
+        return true;
+    // 延ばした区間は端の frame の値なので、端の frame は必ず含める。
+    const auto outgoingBegin = std::max<std::int64_t>(
+        0, std::min(clips.outgoingDuration - before, clips.outgoingDuration - 1));
+    return dissolveClipCoversOpaque(project, outgoing, outgoingBegin, clips.outgoingDuration,
+                                    error) &&
+           dissolveClipCoversOpaque(
+               project, incoming, 0,
+               std::min(std::max<std::int64_t>(after, 1), clips.incomingDuration), error);
+}
+
+bool validateTimelineTransitions(const Project& project, std::string& error) {
+    std::unordered_set<std::string> ids;
+    // clip ID -> その clip の内側に入るトランジションの frame 数 (先頭側 / 終端側)。
+    std::unordered_map<std::string, std::int64_t> headInside;
+    std::unordered_map<std::string, std::int64_t> tailInside;
+    std::unordered_map<std::string, std::int64_t> durations;
+    for (const auto& transition : project.timelineTransitions) {
+        if (transition.id.empty() || !ids.insert(transition.id).second) {
+            error = "トランジション ID が空または重複しています";
+            return false;
+        }
+        TransitionClips clips;
+        if (!resolveTransitionClips(project, transition, clips, error))
+            return false;
+        const auto before = transition.framesBeforeCut;
+        const auto after = transition.framesAfterCut;
+        if (before < 0 || after < 0 || before > std::numeric_limits<std::int64_t>::max() - after ||
+            before + after < 1) {
+            error = "トランジションの長さが不正です: " + transition.id;
+            return false;
+        }
+        if (before > clips.headHandle || after > clips.tailHandle) {
+            error = "トランジションに使う素材の余白が足りません: " + transition.id;
+            return false;
+        }
+        if (before > clips.outgoingDuration || after > clips.incomingDuration) {
+            error = "トランジションが clip の尺を超えています: " + transition.id;
+            return false;
+        }
+        const auto& outgoing = project.timelineClips[static_cast<std::size_t>(clips.outgoing)];
+        const auto& incoming = project.timelineClips[static_cast<std::size_t>(clips.incoming)];
+        if (!tailInside.emplace(outgoing.id, before).second ||
+            !headInside.emplace(incoming.id, after).second) {
+            error = "同じ clip 端に複数のトランジションがあります: " + transition.id;
+            return false;
+        }
+        // 同じ clip 端の減衰を 2 通りに表さない (掛け合わさって二重に暗くなる)。
+        if (outgoing.effects.fadeOutFrames != 0 || incoming.effects.fadeInFrames != 0) {
+            error = "トランジションのある clip 端にはフェードを設定できません: " + transition.id;
+            return false;
+        }
+        if (!dissolveClipsEligible(project, clips, before, after, error))
+            return false;
+        durations[outgoing.id] = clips.outgoingDuration;
+        durations[incoming.id] = clips.incomingDuration;
+    }
+    for (const auto& [clipId, head] : headInside) {
+        const auto tail = tailInside.find(clipId);
+        if (tail != tailInside.end() && head > durations[clipId] - tail->second) {
+            error = "clip の前後のトランジションが重なっています";
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+void reconcileTimelineTransitions(Project& candidate) {
+    struct Entry {
+        std::size_t index = 0;
+        TransitionClips clips;
+    };
+
+    std::vector<Entry> entries;
+    for (std::size_t index = 0; index < candidate.timelineTransitions.size(); ++index) {
+        Entry entry{index, {}};
+        std::string ignored;
+        if (resolveTransitionClips(candidate, candidate.timelineTransitions[index], entry.clips,
+                                   ignored))
+            entries.push_back(entry);
+    }
+    std::stable_sort(entries.begin(), entries.end(), [&](const Entry& left, const Entry& right) {
+        const auto& leftTrack =
+            candidate.timelineClips[static_cast<std::size_t>(left.clips.outgoing)].track;
+        const auto& rightTrack =
+            candidate.timelineClips[static_cast<std::size_t>(right.clips.outgoing)].track;
+        return std::tuple(static_cast<int>(leftTrack.kind), leftTrack.index, left.clips.cut) <
+               std::tuple(static_cast<int>(rightTrack.kind), rightTrack.index, right.clips.cut);
+    });
+    std::vector<bool> keep(candidate.timelineTransitions.size(), false);
+    std::unordered_set<int> outgoingUsed;
+    std::unordered_set<int> incomingUsed;
+    // clip index -> 先頭側のトランジションが clip の内側に使う frame 数。
+    std::unordered_map<int, std::int64_t> headInside;
+    for (const auto& entry : entries) {
+        auto& transition = candidate.timelineTransitions[entry.index];
+        const auto& clips = entry.clips;
+        if (outgoingUsed.contains(clips.outgoing) || incomingUsed.contains(clips.incoming))
+            continue;
+        const auto usedHead = headInside.contains(clips.outgoing) ? headInside[clips.outgoing] : 0;
+        const auto maxBefore = std::max<std::int64_t>(
+            0, std::min(clips.headHandle, clips.outgoingDuration - usedHead));
+        const auto maxAfter =
+            std::max<std::int64_t>(0, std::min(clips.tailHandle, clips.incomingDuration));
+        transition.framesBeforeCut =
+            std::clamp(transition.framesBeforeCut, std::int64_t{0}, maxBefore);
+        transition.framesAfterCut =
+            std::clamp(transition.framesAfterCut, std::int64_t{0}, maxAfter);
+        if (transition.framesBeforeCut + transition.framesAfterCut < 1)
+            continue;
+        outgoingUsed.insert(clips.outgoing);
+        incomingUsed.insert(clips.incoming);
+        headInside[clips.incoming] = transition.framesAfterCut;
+        keep[entry.index] = true;
+    }
+    std::vector<TimelineTransition> kept;
+    for (std::size_t index = 0; index < keep.size(); ++index) {
+        if (keep[index])
+            kept.push_back(std::move(candidate.timelineTransitions[index]));
+    }
+    candidate.timelineTransitions = std::move(kept);
+}
+
+TimelineValidationResult finalizeTimelineCandidate(Project& candidate) {
+    reconcileTimelineTransitions(candidate);
+    return validateTimeline(candidate);
+}
+
 TimelineValidationResult validateTimeline(const Project& project) {
     TimelineValidationResult result;
     if (project.schemaVersion != kProjectSchemaVersion) {
@@ -583,6 +832,8 @@ TimelineValidationResult validateTimeline(const Project& project) {
             return result;
         }
     }
+    if (!validateTimelineTransitions(project, result.error))
+        return result;
     result.success = true;
     result.totalFrames = totalEnd;
     return result;
@@ -653,9 +904,91 @@ TimelineEditResult moveClip(Project& project, const std::string& clipId, TrackRe
     return moveClips(project, {clipId}, clipId, destinationTrack, newStartFrame, LinkMode::Linked);
 }
 
+namespace {
+
+// trim した clip の fade を縮めた尺に収める。先頭側を優先して残す。
+void clampFadesToLength(TimelineClip& clip) {
+    const std::int64_t length = clip.sourceOutFrame - clip.sourceInFrame;
+    clip.effects.fadeInFrames = std::min(clip.effects.fadeInFrames, length);
+    clip.effects.fadeOutFrames =
+        std::min(clip.effects.fadeOutFrames, length - clip.effects.fadeInFrames);
+}
+
+// track の [start, end) を上書きする。keep の clip (上に置く clip) は触らない。
+bool overwriteTrackRange(Project& candidate, TrackRef track, std::int64_t start, std::int64_t end,
+                         const std::unordered_set<std::string>& keep,
+                         const std::function<std::string()>& newId, std::string& error) {
+    std::vector<std::string> removed;
+    const std::size_t originalCount = candidate.timelineClips.size();
+    for (std::size_t index = 0; index < originalCount; ++index) {
+        auto& clip = candidate.timelineClips[index];
+        if (keep.contains(clip.id) || !(clip.track == track))
+            continue;
+        std::int64_t clipStart = 0;
+        std::int64_t clipEnd = 0;
+        if (!clipInterval(candidate, clip, clipStart, clipEnd, error))
+            return false;
+        if (clipEnd <= start || clipStart >= end)
+            continue;
+        if (clipStart >= start && clipEnd <= end) {
+            removed.push_back(clip.id);
+            continue;
+        }
+        if (clipStart < start && clipEnd > end) {
+            // 中に置いた: 左を start で止め、右を end から始まる別 clip にする。
+            TimelineClip right = clip;
+            right.id = newId();
+            if (right.id.empty() || right.id == clip.id) {
+                error = "上書きで分けた clip の ID を作れません";
+                return false;
+            }
+            right.linkGroupId.clear();
+            if (!trimClipBoundary(candidate, right, TrimEdge::Left, end - clipStart, error))
+                return false;
+            right.effects.fadeInFrames = 0;
+            clampFadesToLength(right);
+            for (auto& transition : candidate.timelineTransitions) {
+                if (transition.outgoingClipId == clip.id)
+                    transition.outgoingClipId = right.id;
+            }
+            auto& left = candidate.timelineClips[index];
+            if (!trimClipBoundary(candidate, left, TrimEdge::Right, start - clipEnd, error))
+                return false;
+            left.effects.fadeOutFrames = 0;
+            clampFadesToLength(left);
+            candidate.timelineClips.push_back(std::move(right));
+            continue;
+        }
+        if (clipStart < start) {
+            if (!trimClipBoundary(candidate, clip, TrimEdge::Right, start - clipEnd, error))
+                return false;
+        } else if (!trimClipBoundary(candidate, clip, TrimEdge::Left, end - clipStart, error)) {
+            return false;
+        }
+        clampFadesToLength(clip);
+    }
+    for (const auto& id : removed) {
+        const auto& group =
+            candidate.timelineClips[static_cast<std::size_t>(indexOfId(candidate, id))].linkGroupId;
+        if (group.empty())
+            continue;
+        const std::string groupId = group;
+        for (auto& clip : candidate.timelineClips)
+            if (clip.linkGroupId == groupId)
+                clip.linkGroupId.clear();
+    }
+    std::erase_if(candidate.timelineClips, [&](const TimelineClip& clip) {
+        return std::find(removed.begin(), removed.end(), clip.id) != removed.end();
+    });
+    return true;
+}
+
+} // namespace
+
 TimelineEditResult moveClips(Project& project, const std::vector<std::string>& clipIds,
                              const std::string& anchorClipId, TrackRef destinationTrack,
-                             std::int64_t newStartFrame, LinkMode linkMode) {
+                             std::int64_t newStartFrame, LinkMode linkMode,
+                             const std::function<std::string()>& newId) {
     TimelineEditResult result;
     if (clipIds.empty() || !isValidTrackRef(project, destinationTrack) || newStartFrame < 0) {
         result.error = "timeline clip の移動先 track または start frame が不正です";
@@ -728,14 +1061,36 @@ TimelineEditResult moveClips(Project& project, const std::vector<std::string>& c
             clip.track = translatedTrack;
         }
     }
-    const auto validation = validateTimeline(candidate);
+    if (newId) {
+        struct Span {
+            TrackRef track;
+            std::int64_t start = 0;
+            std::int64_t end = 0;
+        };
+
+        std::vector<Span> spans;
+        for (const auto& clip : candidate.timelineClips) {
+            if (!movedIds.contains(clip.id))
+                continue;
+            Span span{clip.track};
+            if (!clipInterval(candidate, clip, span.start, span.end, result.error))
+                return result;
+            spans.push_back(span);
+        }
+        for (const auto& span : spans) {
+            if (!overwriteTrackRange(candidate, span.track, span.start, span.end, movedIds, newId,
+                                     result.error))
+                return result;
+        }
+    }
+    const auto validation = finalizeTimelineCandidate(candidate);
     if (!validation.success) {
         result.error = validation.error;
         return result;
     }
     project = std::move(candidate);
     result.success = true;
-    result.selectedIndex = index;
+    result.selectedIndex = indexOfId(project, anchorClipId);
     return result;
 }
 
@@ -758,7 +1113,7 @@ TimelineEditResult appendTimelineClip(Project& project, TimelineClip clip, Track
     clip.track = track;
     clip.timelineStartFrame = start.frame;
     candidate.timelineClips.push_back(std::move(clip));
-    const auto validation = validateTimeline(candidate);
+    const auto validation = finalizeTimelineCandidate(candidate);
     if (!validation.success) {
         result.error = validation.error;
         return result;
@@ -784,7 +1139,7 @@ TimelineEditResult deleteTimelineClip(Project& project, int selectedIndex) {
         std::erase_if(candidate.timelineClips,
                       [&](const TimelineClip& clip) { return clip.linkGroupId == linkGroupId; });
     }
-    const auto valid = validateTimeline(candidate);
+    const auto valid = finalizeTimelineCandidate(candidate);
     if (!valid.success) {
         result.error = valid.error;
         return result;
@@ -812,7 +1167,7 @@ TimelineEditResult placeTimelineClipAt(Project& project, TimelineClip clip, Trac
     clip.track = track;
     clip.timelineStartFrame = timelineStartFrame;
     candidate.timelineClips.push_back(std::move(clip));
-    const auto validation = validateTimeline(candidate);
+    const auto validation = finalizeTimelineCandidate(candidate);
     if (!validation.success) {
         result.error = validation.error;
         return result;
@@ -988,7 +1343,7 @@ TimelineEditResult placeLinkedAvPairAt(Project& project, TimelineClip video, Tra
     const int videoIndex = static_cast<int>(candidate.timelineClips.size());
     candidate.timelineClips.push_back(std::move(video));
     candidate.timelineClips.push_back(std::move(audio));
-    const auto validation = validateTimeline(candidate);
+    const auto validation = finalizeTimelineCandidate(candidate);
     if (!validation.success) {
         result.error = validation.error;
         return result;
@@ -1017,7 +1372,7 @@ TimelineEditResult unlinkTimelineClip(Project& project, const std::string& clipI
         if (clip.linkGroupId == linkGroupId)
             clip.linkGroupId.clear();
     }
-    const auto valid = validateTimeline(candidate);
+    const auto valid = finalizeTimelineCandidate(candidate);
     if (!valid.success) {
         result.error = valid.error;
         return result;
@@ -1098,7 +1453,7 @@ bool shiftStart(TimelineClip& clip, std::int64_t delta, std::string& error) {
 
 TimelineEditResult commitCandidate(Project& project, Project candidate, int selectedIndex) {
     TimelineEditResult result;
-    const auto valid = validateTimeline(candidate);
+    const auto valid = finalizeTimelineCandidate(candidate);
     if (!valid.success) {
         result.error = valid.error;
         return result;
@@ -1340,6 +1695,31 @@ TimelineEditResult trimTimelineClip(Project& project, const std::string& clipId,
     return commitCandidate(project, std::move(candidate), index);
 }
 
+std::optional<TimelineClip> clipWithEdgeAt(const Project& project, const TimelineClip& clip,
+                                           TrimEdge edge, std::int64_t timelineFrame,
+                                           std::string& error) {
+    std::int64_t start = 0;
+    std::int64_t end = 0;
+    if (!clipInterval(project, clip, start, end, error))
+        return std::nullopt;
+    TimelineClip moved = clip;
+    const std::int64_t delta = timelineFrame - (edge == TrimEdge::Left ? start : end);
+    if (delta != 0 && !trimClipBoundary(project, moved, edge, delta, error))
+        return std::nullopt;
+    std::int64_t movedStart = 0;
+    std::int64_t movedEnd = 0;
+    if (!clipInterval(project, moved, movedStart, movedEnd, error))
+        return std::nullopt;
+    const bool exact = edge == TrimEdge::Left ? movedStart == timelineFrame && movedEnd == end
+                                              : movedStart == start && movedEnd == timelineFrame;
+    if (!exact || moved.sourceInFrame < 0 || moved.sourceOutFrame <= moved.sourceInFrame ||
+        moved.sourceOutFrame > moved.sourceFrameCount) {
+        error = "clip の端を素材 frame へ一意に換算できません: " + clip.name;
+        return std::nullopt;
+    }
+    return moved;
+}
+
 TimelineEditResult splitTimelineClips(Project& project, const std::vector<std::string>& clipIds,
                                       std::int64_t frame, const std::function<std::string()>& newId,
                                       LinkMode linkMode) {
@@ -1431,6 +1811,10 @@ TimelineEditResult splitTimelineClips(Project& project, const std::vector<std::s
             const auto found = rightLinkGroups.find(right.linkGroupId);
             right.linkGroupId = found == rightLinkGroups.end() ? std::string{} : found->second;
         }
+        for (auto& transition : candidate.timelineTransitions) {
+            if (transition.outgoingClipId == left.id)
+                transition.outgoingClipId = right.id;
+        }
         candidate.timelineClips[index] = std::move(left);
         candidate.timelineClips.push_back(std::move(right));
     }
@@ -1447,6 +1831,447 @@ std::vector<std::string> clipIdsSpanningFrame(const Project& project, std::int64
             ids.push_back(clip.id);
     }
     return ids;
+}
+
+std::vector<std::string> clipIdsSpanningFrame(const Project& project, std::int64_t frame,
+                                              const std::vector<std::string>& among) {
+    std::vector<std::string> ids;
+    for (const auto& id : among) {
+        const int index = indexOfId(project, id);
+        if (!validIndex(project, index))
+            continue;
+        std::int64_t start = 0;
+        std::int64_t end = 0;
+        std::string ignored;
+        if (clipInterval(project, project.timelineClips[static_cast<std::size_t>(index)], start,
+                         end, ignored) &&
+            frame > start && frame < end)
+            ids.push_back(id);
+    }
+    return ids;
+}
+
+TimelineEditResult stepClipVolume(Project& project, const std::vector<std::string>& clipIds,
+                                  double stepDb) {
+    TimelineEditResult result;
+    Project candidate = project;
+    std::vector<bool> marked(candidate.timelineClips.size(), false);
+    for (const auto& id : clipIds) {
+        const int index = indexOfId(candidate, id);
+        if (!validIndex(candidate, index)) {
+            result.error = "音量を変える timeline clip がありません";
+            return result;
+        }
+        marked[static_cast<std::size_t>(index)] = true;
+    }
+    includeLinkedCounterparts(candidate, marked);
+    int firstTarget = -1;
+    bool changed = false;
+    for (std::size_t index = 0; index < marked.size(); ++index) {
+        auto& clip = candidate.timelineClips[index];
+        if (!marked[index] || clip.kind != TimelineClipKind::Audio)
+            continue;
+        if (firstTarget < 0)
+            firstTarget = static_cast<int>(index);
+        const auto stepped = stepVolumePercentByDb(clip.effects.volumePercent, stepDb);
+        if (!stepped) {
+            result.error = "音量を段階的に変えられません: " + clip.name;
+            return result;
+        }
+        changed = changed || *stepped != clip.effects.volumePercent;
+        clip.effects.volumePercent = *stepped;
+        for (auto& key : clip.effects.volumeKeys) {
+            if (key.valuePercent == 0.0)
+                continue;
+            const auto steppedKey = stepVolumePercentByDb(key.valuePercent, stepDb);
+            if (!steppedKey) {
+                result.error = "音量キーを段階的に変えられません: " + clip.name;
+                return result;
+            }
+            changed = changed || *steppedKey != key.valuePercent;
+            key.valuePercent = *steppedKey;
+        }
+    }
+    if (firstTarget < 0) {
+        result.error = "音量を変えられる audio clip がありません";
+        return result;
+    }
+    if (!changed) {
+        result.error = stepDb > 0.0 ? "音量は既に上限です" : "音量は既に下限です";
+        return result;
+    }
+    return commitCandidate(project, std::move(candidate), firstTarget);
+}
+
+TimelineEditResult toggleClipsEnabled(Project& project, const std::vector<std::string>& clipIds) {
+    TimelineEditResult result;
+    if (clipIds.empty()) {
+        result.error = "有効/無効を切り換える timeline clip がありません";
+        return result;
+    }
+    Project candidate = project;
+    std::vector<bool> marked(candidate.timelineClips.size(), false);
+    for (const auto& id : clipIds) {
+        const int index = indexOfId(candidate, id);
+        if (!validIndex(candidate, index)) {
+            result.error = "有効/無効を切り換える timeline clip がありません";
+            return result;
+        }
+        marked[static_cast<std::size_t>(index)] = true;
+    }
+    includeLinkedCounterparts(candidate, marked);
+    bool anyEnabled = false;
+    for (std::size_t index = 0; index < marked.size(); ++index)
+        anyEnabled = anyEnabled || (marked[index] && candidate.timelineClips[index].enabled);
+    for (std::size_t index = 0; index < marked.size(); ++index) {
+        if (marked[index])
+            candidate.timelineClips[index].enabled = !anyEnabled;
+    }
+    return commitCandidate(project, std::move(candidate), indexOfId(project, clipIds.front()));
+}
+
+std::int64_t defaultTransitionFrames(std::int64_t timelineFpsNum, std::int64_t timelineFpsDen) {
+    if (timelineFpsNum <= 0 || timelineFpsDen <= 0)
+        return 1;
+    return std::max<std::int64_t>(1, (timelineFpsNum + timelineFpsDen / 2) / timelineFpsDen);
+}
+
+TimelineEditResult applyDefaultClipFades(Project& project, const std::vector<std::string>& clipIds,
+                                         std::int64_t timelineFrames) {
+    TimelineEditResult result;
+    if (clipIds.empty() || timelineFrames < 1) {
+        result.error = "フェードを付ける timeline clip がありません";
+        return result;
+    }
+    Project candidate = project;
+    std::vector<bool> marked(candidate.timelineClips.size(), false);
+    for (const auto& id : clipIds) {
+        const int index = indexOfId(candidate, id);
+        if (!validIndex(candidate, index)) {
+            result.error = "フェードを付ける timeline clip がありません";
+            return result;
+        }
+        marked[static_cast<std::size_t>(index)] = true;
+    }
+    includeLinkedCounterparts(candidate, marked);
+    std::unordered_set<std::string> headTransitions;
+    std::unordered_set<std::string> tailTransitions;
+    for (const auto& transition : candidate.timelineTransitions) {
+        headTransitions.insert(transition.incomingClipId);
+        tailTransitions.insert(transition.outgoingClipId);
+    }
+    const auto fpsNum = candidate.timelineFpsNum;
+    const auto fpsDen = candidate.timelineFpsDen;
+    for (std::size_t index = 0; index < marked.size(); ++index) {
+        if (!marked[index])
+            continue;
+        auto& clip = candidate.timelineClips[index];
+        const std::int64_t duration = clip.sourceOutFrame - clip.sourceInFrame;
+        // timeline 上の境界から timelineFrames だけ内側の位置を素材 frame へ戻した差が、
+        // その端のフェードの素材 frame 数になる (速度 2 倍なら素材は 2 倍進む)。
+        const auto inBoundary =
+            clipSourceBoundaryToTimeline(clip, clip.sourceInFrame, fpsNum, fpsDen);
+        const auto outBoundary =
+            clipSourceBoundaryToTimeline(clip, clip.sourceOutFrame, fpsNum, fpsDen);
+        if (!inBoundary.success || !outBoundary.success) {
+            result.error =
+                clip.name + ": " + (!inBoundary.success ? inBoundary.error : outBoundary.error);
+            return result;
+        }
+        // 内側の位置は clip の中に収める (1 秒より短い clip で反対側の端を越えない)。
+        const auto clipFrames = outBoundary.frame - inBoundary.frame;
+        const auto inner = std::min(timelineFrames, clipFrames);
+        const auto headSource =
+            clipTimelineBoundaryToSource(clip, inBoundary.frame + inner, fpsNum, fpsDen);
+        const auto tailSource =
+            clipTimelineBoundaryToSource(clip, outBoundary.frame - inner, fpsNum, fpsDen);
+        if (!headSource.success || !tailSource.success) {
+            result.error =
+                clip.name + ": " + (!headSource.success ? headSource.error : tailSource.error);
+            return result;
+        }
+        const std::int64_t wantedIn =
+            std::clamp(headSource.frame - clip.sourceInFrame, std::int64_t{0}, duration);
+        const std::int64_t wantedOut =
+            std::clamp(clip.sourceOutFrame - tailSource.frame, std::int64_t{0}, duration);
+        const bool keepHead = headTransitions.contains(clip.id);
+        const bool keepTail = tailTransitions.contains(clip.id);
+        std::int64_t fadeIn = keepHead ? clip.effects.fadeInFrames : wantedIn;
+        std::int64_t fadeOut = keepTail ? clip.effects.fadeOutFrames : wantedOut;
+        if (!keepHead && !keepTail) {
+            fadeIn = std::min(fadeIn, (duration + 1) / 2);
+            fadeOut = std::min(fadeOut, duration - fadeIn);
+        } else if (keepHead) {
+            fadeOut = std::min(fadeOut, duration - fadeIn);
+        } else {
+            fadeIn = std::min(fadeIn, duration - fadeOut);
+        }
+        clip.effects.fadeInFrames = fadeIn;
+        clip.effects.fadeOutFrames = fadeOut;
+    }
+    if (candidate == project) {
+        result.error = "フェードは既に付いています";
+        return result;
+    }
+    return commitCandidate(project, std::move(candidate), indexOfId(project, clipIds.front()));
+}
+
+std::string touchingClipId(const Project& project, const std::string& clipId, TrimEdge edge) {
+    const int index = indexOfId(project, clipId);
+    if (!validIndex(project, index))
+        return {};
+    std::string ignored;
+    const int neighbor = adjacentClipIndex(project, index, edge, ignored);
+    return neighbor >= 0 ? project.timelineClips[static_cast<std::size_t>(neighbor)].id
+                         : std::string{};
+}
+
+namespace {
+
+// 編集点にトランジションを置く準備。その編集点の既存のトランジションを外し、両 clip のその端の
+// フェードを消して、cut の前後に置ける長さの上限 (余白と、clip の反対側の端のトランジションが
+// 内側に使っていない分) を求める。
+bool prepareEditTransition(Project& candidate, const std::string& outgoingId,
+                           const std::string& incomingId, std::int64_t frames,
+                           std::int64_t& maxBefore, std::int64_t& maxAfter, std::string& error) {
+    std::erase_if(candidate.timelineTransitions, [&](const TimelineTransition& transition) {
+        return transition.outgoingClipId == outgoingId || transition.incomingClipId == incomingId;
+    });
+    const TimelineTransition probe{"probe", outgoingId, incomingId, 0, 0};
+    TransitionClips clips;
+    if (!resolveTransitionClips(candidate, probe, clips, error))
+        return false;
+    candidate.timelineClips[static_cast<std::size_t>(clips.outgoing)].effects.fadeOutFrames = 0;
+    candidate.timelineClips[static_cast<std::size_t>(clips.incoming)].effects.fadeInFrames = 0;
+    std::int64_t outgoingHeadInside = 0;
+    std::int64_t incomingTailInside = 0;
+    for (const auto& other : candidate.timelineTransitions) {
+        if (other.incomingClipId == outgoingId)
+            outgoingHeadInside = other.framesAfterCut;
+        if (other.outgoingClipId == incomingId)
+            incomingTailInside = other.framesBeforeCut;
+    }
+    maxBefore = std::max<std::int64_t>(
+        0, std::min(clips.headHandle, clips.outgoingDuration - outgoingHeadInside));
+    maxAfter = std::max<std::int64_t>(
+        0, std::min(clips.tailHandle, clips.incomingDuration - incomingTailInside));
+    maxBefore = std::min(maxBefore, frames);
+    maxAfter = std::min(maxAfter, frames);
+    return true;
+}
+
+// 同じ link group の相手。無ければ -1。
+int linkPartnerIndex(const Project& project, int index) {
+    const auto& clip = project.timelineClips[static_cast<std::size_t>(index)];
+    if (clip.linkGroupId.empty())
+        return -1;
+    for (std::size_t other = 0; other < project.timelineClips.size(); ++other) {
+        if (static_cast<int>(other) != index &&
+            project.timelineClips[other].linkGroupId == clip.linkGroupId)
+            return static_cast<int>(other);
+    }
+    return -1;
+}
+
+} // namespace
+
+TransitionEditResult applyDefaultEditTransition(Project& project, const std::string& outgoingId,
+                                                const std::string& incomingId,
+                                                std::int64_t timelineFrames, LinkMode linkMode,
+                                                const std::function<std::string()>& newId) {
+    TransitionEditResult result;
+    if (timelineFrames < 1 || !newId) {
+        result.error = "トランジションの長さが不正です";
+        return result;
+    }
+
+    // リンク相手も同じ cut で接していれば一緒に置く (ずらして置いた音声は別の編集点)。
+    struct EditPoint {
+        std::string outgoing;
+        std::string incoming;
+    };
+
+    std::vector<EditPoint> points{{outgoingId, incomingId}};
+    if (linkMode == LinkMode::Linked) {
+        const int outgoingIndex = indexOfId(project, outgoingId);
+        const int incomingIndex = indexOfId(project, incomingId);
+        const int outgoingPartner =
+            validIndex(project, outgoingIndex) ? linkPartnerIndex(project, outgoingIndex) : -1;
+        const int incomingPartner =
+            validIndex(project, incomingIndex) ? linkPartnerIndex(project, incomingIndex) : -1;
+        if (outgoingPartner >= 0 && incomingPartner >= 0) {
+            const TimelineTransition mainProbe{"probe", outgoingId, incomingId, 0, 0};
+            const TimelineTransition partnerProbe{
+                "probe", project.timelineClips[static_cast<std::size_t>(outgoingPartner)].id,
+                project.timelineClips[static_cast<std::size_t>(incomingPartner)].id, 0, 0};
+            TransitionClips mainClips;
+            TransitionClips partnerClips;
+            std::string ignored;
+            if (resolveTransitionClips(project, mainProbe, mainClips, ignored) &&
+                resolveTransitionClips(project, partnerProbe, partnerClips, ignored) &&
+                partnerClips.cut == mainClips.cut)
+                points.push_back({partnerProbe.outgoingClipId, partnerProbe.incomingClipId});
+        }
+    }
+    // 映像と音声は同じ長さ・同じ cut の前後で置く。上限は両方の編集点の小さい方。
+    Project prepared = project;
+    std::int64_t maxBefore = timelineFrames;
+    std::int64_t maxAfter = timelineFrames;
+    for (const auto& point : points) {
+        std::int64_t pointBefore = 0;
+        std::int64_t pointAfter = 0;
+        if (!prepareEditTransition(prepared, point.outgoing, point.incoming, timelineFrames,
+                                   pointBefore, pointAfter, result.error))
+            return result;
+        maxBefore = std::min(maxBefore, pointBefore);
+        maxAfter = std::min(maxAfter, pointAfter);
+    }
+
+    // 置ける長さは cut の前 (before) と後 (after) で独立に決まる。
+    //   before: incoming を cut - before まで延ばせる (素材 frame にちょうど乗る) こと、
+    //           映像なら outgoing の最後の before frame が不透明であること
+    //   after : outgoing を cut + after まで延ばせること、映像なら incoming を cut + after で
+    //           分けられる (lane 1 の区間の終わり) ことと、incoming の最初の after frame
+    //           が不透明であること
+    // それぞれで置ける長さを求めてから、合計が最大で cut に最も近い中央の組を選ぶ。
+    // 長さに依らない条件 (映像の形と、区間の端の frame の不透明度) は先に理由を付けて断る。
+    struct PointClips {
+        TimelineClip outgoing;
+        TimelineClip incoming;
+        TransitionClips clips;
+    };
+
+    std::vector<PointClips> resolved;
+    for (const auto& point : points) {
+        const TimelineTransition probe{"probe", point.outgoing, point.incoming, 0, 0};
+        PointClips entry;
+        if (!resolveTransitionClips(prepared, probe, entry.clips, result.error))
+            return result;
+        entry.outgoing = prepared.timelineClips[static_cast<std::size_t>(entry.clips.outgoing)];
+        entry.incoming = prepared.timelineClips[static_cast<std::size_t>(entry.clips.incoming)];
+        if (entry.outgoing.track.kind == TrackKind::Video &&
+            !dissolveClipsEligible(prepared, entry.clips, 0, 0, result.error))
+            return result;
+        resolved.push_back(std::move(entry));
+    }
+    const auto beforeFits = [&](std::int64_t before, bool checkOpacity) {
+        std::string ignored;
+        for (const auto& entry : resolved) {
+            const auto cut = entry.clips.cut;
+            if (before > 0 &&
+                !clipWithEdgeAt(prepared, entry.incoming, TrimEdge::Left, cut - before, ignored))
+                return false;
+            if (checkOpacity && entry.outgoing.track.kind == TrackKind::Video &&
+                !dissolveClipOpaqueOver(prepared, entry.outgoing,
+                                        entry.clips.outgoingDuration - before,
+                                        entry.clips.outgoingDuration, ignored))
+                return false;
+        }
+        return true;
+    };
+    const auto afterFits = [&](std::int64_t after, bool checkOpacity) {
+        std::string ignored;
+        for (const auto& entry : resolved) {
+            const auto cut = entry.clips.cut;
+            if (after > 0 &&
+                !clipWithEdgeAt(prepared, entry.outgoing, TrimEdge::Right, cut + after, ignored))
+                return false;
+            if (entry.outgoing.track.kind != TrackKind::Video)
+                continue;
+            if (after > 0 && after < entry.clips.incomingDuration &&
+                !clipWithEdgeAt(prepared, entry.incoming, TrimEdge::Right, cut + after, ignored))
+                return false;
+            if (checkOpacity &&
+                !dissolveClipOpaqueOver(prepared, entry.incoming, 0, after, ignored))
+                return false;
+        }
+        return true;
+    };
+    const auto choose = [&](bool checkOpacity, std::int64_t& before, std::int64_t& after) {
+        std::vector<bool> beforeOk(static_cast<std::size_t>(maxBefore) + 1);
+        std::vector<bool> afterOk(static_cast<std::size_t>(maxAfter) + 1);
+        for (std::int64_t value = 0; value <= maxBefore; ++value)
+            beforeOk[static_cast<std::size_t>(value)] = beforeFits(value, checkOpacity);
+        for (std::int64_t value = 0; value <= maxAfter; ++value)
+            afterOk[static_cast<std::size_t>(value)] = afterFits(value, checkOpacity);
+        for (std::int64_t total = std::min(timelineFrames, maxBefore + maxAfter); total >= 1;
+             --total) {
+            // 合計 total の組のうち、cut を中央に置く組から順に試す。
+            for (std::int64_t offset = 0; offset <= total; ++offset) {
+                for (const std::int64_t candidate :
+                     {total / 2 + offset, total / 2 - offset, (total + 1) / 2 + offset}) {
+                    const std::int64_t other = total - candidate;
+                    if (candidate < 0 || other < 0 || candidate > maxBefore || other > maxAfter ||
+                        !beforeOk[static_cast<std::size_t>(candidate)] ||
+                        !afterOk[static_cast<std::size_t>(other)])
+                        continue;
+                    before = candidate;
+                    after = other;
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+    std::int64_t before = 0;
+    std::int64_t after = 0;
+    if (!choose(true, before, after)) {
+        // 不透明度を見なければ置けるなら、余白ではなく不透明度が理由である。
+        std::int64_t ignoredBefore = 0;
+        std::int64_t ignoredAfter = 0;
+        result.error = choose(false, ignoredBefore, ignoredAfter)
+                           ? std::string(kDissolveRequirement) +
+                                 "トランジションの区間で不透明度が下がっています"
+                           : "素材の余白が足りないためトランジションを作れません";
+        return result;
+    }
+    Project trial = prepared;
+    std::string firstId;
+    for (const auto& point : points) {
+        const std::string id = newId();
+        if (id.empty()) {
+            result.error = "トランジションの ID を作れません";
+            return result;
+        }
+        if (firstId.empty())
+            firstId = id;
+        trial.timelineTransitions.push_back({id, point.outgoing, point.incoming, before, after});
+    }
+    // 選んだ長さは描画区間を作れるはずである。作れなければ理由をそのまま返す (黙って縮めない)。
+    std::vector<TimelineRenderSegment> segments;
+    const auto valid = validateTimeline(trial);
+    if (!valid.success) {
+        result.error = valid.error;
+        return result;
+    }
+    if (!timelineRenderSegments(trial, TrackKind::Video, segments, result.error) ||
+        !timelineRenderSegments(trial, TrackKind::Audio, segments, result.error))
+        return result;
+    const auto committed =
+        commitCandidate(project, std::move(trial), indexOfId(project, incomingId));
+    if (!committed.success) {
+        result.error = committed.error;
+        return result;
+    }
+    result.success = true;
+    result.transitionId = firstId;
+    result.frames = before + after;
+    result.transitionCount = static_cast<int>(points.size());
+    return result;
+}
+
+TimelineEditResult deleteTimelineTransition(Project& project, const std::string& transitionId) {
+    TimelineEditResult result;
+    Project candidate = project;
+    const auto removed =
+        std::erase_if(candidate.timelineTransitions, [&](const TimelineTransition& transition) {
+            return transition.id == transitionId;
+        });
+    if (removed == 0) {
+        result.error = "削除するトランジションがありません";
+        return result;
+    }
+    return commitCandidate(project, std::move(candidate), -1);
 }
 
 struct RippleSource {
@@ -1787,7 +2612,7 @@ TimelineEditResult appendManimTimelineClipAt(Project& project, const ManimAsset&
                                        false,
                                        {},
                                        {}});
-    const auto valid = validateTimeline(candidate);
+    const auto valid = finalizeTimelineCandidate(candidate);
     if (!valid.success) {
         result.error = valid.error;
         return result;
@@ -1859,12 +2684,19 @@ TimelineEditResult setProjectVideoSettings(Project& project, int width, int heig
             }
             clip.timelineStartFrame = converted.frame;
         }
+        for (auto& transition : candidate.timelineTransitions) {
+            if (!convertFrame(transition.framesBeforeCut) ||
+                !convertFrame(transition.framesAfterCut)) {
+                result.error = "トランジションを新しいtimeline frame rateへ変換できません";
+                return result;
+            }
+        }
     }
     candidate.outputWidth = width;
     candidate.outputHeight = height;
     candidate.timelineFpsNum = fpsNum;
     candidate.timelineFpsDen = fpsDen;
-    const auto valid = validateTimeline(candidate);
+    const auto valid = finalizeTimelineCandidate(candidate);
     if (!valid.success) {
         result.error = "Project設定変更後のtimelineが不正です: " + valid.error;
         return result;
@@ -1880,7 +2712,7 @@ TimelineEditResult addTrack(Project& project, TrackKind kind) {
     auto& tracks = tracksOfKind(candidate, kind);
     const int index = static_cast<int>(tracks.size());
     tracks.push_back(Track{defaultTrackName(kind, index), false});
-    const auto valid = validateTimeline(candidate);
+    const auto valid = finalizeTimelineCandidate(candidate);
     if (!valid.success) {
         result.error = valid.error;
         return result;
@@ -1917,7 +2749,7 @@ TimelineEditResult removeTrack(Project& project, TrackRef track) {
         if (clip.track.kind == track.kind && clip.track.index > track.index)
             --clip.track.index;
     }
-    const auto valid = validateTimeline(candidate);
+    const auto valid = finalizeTimelineCandidate(candidate);
     if (!valid.success) {
         result.error = valid.error;
         return result;
@@ -2009,7 +2841,7 @@ TimelineEditResult rippleDeleteGap(Project& project, TrackRef track, std::int64_
         }
         clip.timelineStartFrame -= shift;
     }
-    const auto valid = validateTimeline(candidate);
+    const auto valid = finalizeTimelineCandidate(candidate);
     if (!valid.success) {
         result.error = valid.error;
         return result;
@@ -2071,7 +2903,7 @@ ClipKeyEditPreview previewClipKeyEdit(const Project& project, const std::string&
     }
     Project candidate = project;
     candidate.timelineClips[static_cast<std::size_t>(index)].effects = result.effects;
-    const auto valid = validateTimeline(candidate);
+    const auto valid = finalizeTimelineCandidate(candidate);
     if (!valid.success) {
         result.error = valid.error;
         return result;
@@ -2199,7 +3031,7 @@ bool rateStretchFeasible(const Project& project, int index, TrimEdge edge, std::
     Project candidate = project;
     std::string error;
     return applyRateStretch(candidate, index, edge, newDuration, linkMode, error) &&
-           validateTimeline(candidate).success;
+           finalizeTimelineCandidate(candidate).success;
 }
 
 } // namespace
@@ -2511,7 +3343,7 @@ bool speedDurationCandidate(const Project& project, const std::string& clipId,
         error = "変更がありません";
         return false;
     }
-    const auto valid = validateTimeline(candidate);
+    const auto valid = finalizeTimelineCandidate(candidate);
     if (!valid.success) {
         error = valid.error;
         return false;

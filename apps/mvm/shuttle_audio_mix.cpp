@@ -13,7 +13,7 @@
 namespace mvm::app {
 
 bool isShuttleAudibleClip(const project::Project& project, const project::TimelineClip& clip) {
-    return clip.track.kind == project::TrackKind::Audio &&
+    return clip.enabled && clip.track.kind == project::TrackKind::Audio &&
            !project.audioTracks[static_cast<std::size_t>(clip.track.index)].muted;
 }
 
@@ -50,8 +50,12 @@ bool planShuttleAudio(const project::Project& project, int rate, std::int64_t ba
     next.rate = rate;
     next.timelineFpsNum = project.timelineFpsNum;
     next.timelineFpsDen = project.timelineFpsDen;
-    for (const auto& clip : project.timelineClips) {
-        if (!isShuttleAudibleClip(project, clip))
+    std::vector<project::TimelineRenderSegment> segments;
+    if (!project::timelineRenderSegments(project, project::TrackKind::Audio, segments, error))
+        return false;
+    for (const auto& segment : segments) {
+        const auto& clip = segment.clip;
+        if (!isShuttleAudibleClip(project, segment.original))
             continue;
         const auto duration = project::timelineClipDuration(project, clip);
         if (!duration.success) {
@@ -69,7 +73,7 @@ bool planShuttleAudio(const project::Project& project, int rate, std::int64_t ba
         const auto utf8Path = clip.mediaPath.u8string();
         next.clips.push_back(
             {std::string(reinterpret_cast<const char*>(utf8Path.data()), utf8Path.size()),
-             startSample.value(), endSample.value(), offset.sampleOffset, clip});
+             startSample.value(), endSample.value(), offset.sampleOffset, clip, segment});
     }
     plan = std::move(next);
     return true;
@@ -139,18 +143,19 @@ bool mixShuttleBlock(const ShuttleAudioPlan& plan, std::int64_t outputStart,
                 error = "シャトル音声のtimeline sampleを換算できません";
                 return false;
             }
+            // frame へ換算できない位置を別の位置 (clip 先頭など) の gain で鳴らさない。
             const auto frame = timebase.value().schedulerOutputFrame(*timelineSample);
-            const auto& timelineClip = clip.clip;
-            const auto local = frame ? frame.value() - timelineClip.timelineStartFrame : -1;
-            const auto sourceFrame = project::clipFadeSourceFrameAt(
-                timelineClip, plan.timelineFpsNum, plan.timelineFpsDen, local);
-            if (!sourceFrame.success) {
+            if (!frame) {
+                error = "シャトル音声のtimeline frameを換算できません";
+                return false;
+            }
+            const auto evaluated = project::renderSegmentGain(
+                clip.segment, plan.timelineFpsNum, plan.timelineFpsDen, frame.value());
+            if (!evaluated) {
                 error = "シャトル音声の音量カーブ位置が不正です";
                 return false;
             }
-            const float gain = static_cast<float>(project::evaluateClipVolume(
-                timelineClip.effects, local, sourceFrame.frame,
-                timelineClip.sourceOutFrame - timelineClip.sourceInFrame));
+            const float gain = static_cast<float>(*evaluated);
             pcm[output] += source[index] * gain;
             pcm[output + 1] += source[index + 1] * gain;
         }

@@ -4,12 +4,15 @@
 #include "media/mlt/mvm_mlt_export.h"
 #include "media/still_image/static_image.h"
 #include "project/timeline_edit.h"
+#include "project/timeline_render.h"
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -26,8 +29,11 @@ std::string pathToUtf8(const std::filesystem::path& path) {
     return {text.begin(), text.end()};
 }
 
+// clip は幾何 (位置・拡大・回転・crop) を決める元の clip。不透明度は opacityAt が区間の
+// local frame ごとに返す (トランジションの進み具合を含む)。
 bool mapExportEffects(const project::TimelineClip& clip, const TimelineExportRequest& request,
                       std::int64_t timelineDuration, bool requireOverlay,
+                      const std::function<std::optional<double>(std::int64_t)>& opacityAt,
                       TimelineExportClipMapping& output, std::string& error) {
     if (project::clipEffectsAreDefault(clip.effects) && !requireOverlay)
         return true;
@@ -99,15 +105,12 @@ bool mapExportEffects(const project::TimelineClip& clip, const TimelineExportReq
     output.rectHeight = rectHeight;
 
     for (std::int64_t frame = 0; frame < timelineDuration; ++frame) {
-        const auto sourceLocal =
-            project::clipFadeSourceFrameAt(clip, request.fpsNum, request.fpsDen, frame);
-        if (!sourceLocal.success) {
-            error = sourceLocal.error;
+        const auto opacity = opacityAt(frame);
+        if (!opacity) {
+            error = clip.name + ": 不透明度を評価できません";
             return false;
         }
-        output.opacityKeys.push_back(
-            {frame, project::evaluateClipOpacity(clip.effects, frame, sourceLocal.frame,
-                                                 clip.sourceOutFrame - clip.sourceInFrame)});
+        output.opacityKeys.push_back({frame, *opacity});
     }
     return true;
 }
@@ -129,23 +132,66 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
         return plan;
     }
     plan.totalDurationFrames = valid.totalFrames;
+    std::vector<project::TimelineRenderSegment> videoSegments;
+    std::vector<project::TimelineRenderSegment> audioSegments;
+    if (!project::timelineRenderSegments(project, project::TrackKind::Video, videoSegments,
+                                         plan.error) ||
+        !project::timelineRenderSegments(project, project::TrackKind::Audio, audioSegments,
+                                         plan.error))
+        return plan;
+    // 映像 layer: track ごとに lane 0 を置き、トランジションのある track は lane 1 を重ねる。
+    std::vector<int> layerBase(project.videoTracks.size(), 0);
+    {
+        std::vector<bool> usesOverLane(project.videoTracks.size(), false);
+        for (const auto& segment : videoSegments)
+            if (segment.lane > 0)
+                usesOverLane[static_cast<std::size_t>(segment.original.track.index)] = true;
+        int next = 0;
+        for (std::size_t track = 0; track < layerBase.size(); ++track) {
+            layerBase[track] = next;
+            next += usesOverLane[track] ? 2 : 1;
+        }
+    }
+    const auto layerOf = [&](const project::TimelineRenderSegment& segment) {
+        return layerBase[static_cast<std::size_t>(segment.original.track.index)] + segment.lane;
+    };
+    // 無効にした clip は区間に含まれない。尺は timeline 全体のまま保つので、穴を黒・無音で
+    // 埋められる tractor にする (sequential は V1 の clip を詰めて並べるだけ)。
+    const bool anyDisabled =
+        std::any_of(project.timelineClips.begin(), project.timelineClips.end(),
+                    [](const project::TimelineClip& clip) { return !clip.enabled; });
+    if (anyDisabled || project::hasRenderedTransitions(project, project::TrackKind::Video) ||
+        project::hasRenderedTransitions(project, project::TrackKind::Audio))
+        plan.backend = TimelineExportResult::Backend::Tractor;
+
+    std::vector<const project::TimelineRenderSegment*> ordered;
+    for (const auto& segment : videoSegments)
+        ordered.push_back(&segment);
+    for (const auto& segment : audioSegments)
+        ordered.push_back(&segment);
+    std::stable_sort(ordered.begin(), ordered.end(),
+                     [&](const project::TimelineRenderSegment* left,
+                         const project::TimelineRenderSegment* right) {
+                         const auto leftKind = left->original.track.kind;
+                         const auto rightKind = right->original.track.kind;
+                         if (leftKind != rightKind)
+                             return leftKind == project::TrackKind::Video;
+                         const int leftTrack = leftKind == project::TrackKind::Video
+                                                   ? layerOf(*left)
+                                                   : left->original.track.index;
+                         const int rightTrack = rightKind == project::TrackKind::Video
+                                                    ? layerOf(*right)
+                                                    : right->original.track.index;
+                         if (leftTrack != rightTrack)
+                             return leftTrack < rightTrack;
+                         return left->clip.timelineStartFrame < right->clip.timelineStartFrame;
+                     });
+
     bool anyOverlay = false;
     bool anyAudio = false;
     std::int64_t v1Cursor = 0;
-    std::vector<int> indices(project.timelineClips.size());
-    for (std::size_t index = 0; index < indices.size(); ++index)
-        indices[index] = static_cast<int>(index);
-    std::stable_sort(indices.begin(), indices.end(), [&](int left, int right) {
-        const auto& a = project.timelineClips[static_cast<std::size_t>(left)];
-        const auto& b = project.timelineClips[static_cast<std::size_t>(right)];
-        if (a.track.kind != b.track.kind)
-            return a.track.kind == project::TrackKind::Video;
-        if (a.track.index != b.track.index)
-            return a.track.index < b.track.index;
-        return a.timelineStartFrame < b.timelineStartFrame;
-    });
-    for (const int index : indices) {
-        const auto& clip = project.timelineClips[static_cast<std::size_t>(index)];
+    for (const auto* segment : ordered) {
+        const auto& clip = segment->clip;
         const auto duration = project::timelineClipDuration(project, clip);
         if (!duration.success) {
             plan.error = duration.error;
@@ -156,10 +202,11 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
             return plan;
         }
         TimelineExportClipMapping mapped;
-        mapped.projectClipIndex = index;
+        mapped.projectClipIndex = segment->clipIndex;
+        mapped.renderClip = clip;
         mapped.audio = clip.track.kind == project::TrackKind::Audio;
         mapped.still = project::isStillClipKind(clip.kind);
-        mapped.videoTrackIndex = clip.track.index;
+        mapped.videoTrackIndex = mapped.audio ? clip.track.index : layerOf(*segment);
         mapped.timelineStartFrame = clip.timelineStartFrame;
         mapped.timelineDurationFrames = duration.frame;
         const auto range = project::clipProducerRange(clip, request.fpsNum, request.fpsDen);
@@ -180,29 +227,36 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
         if (mapped.audio) {
             anyAudio = true;
             for (std::int64_t frame = 0; frame < duration.frame; ++frame) {
-                const auto sourceLocal =
-                    project::clipFadeSourceFrameAt(clip, request.fpsNum, request.fpsDen, frame);
-                if (!sourceLocal.success) {
-                    plan.error = sourceLocal.error;
+                const auto gain = project::renderSegmentGain(
+                    *segment, request.fpsNum, request.fpsDen, clip.timelineStartFrame + frame);
+                if (!gain) {
+                    plan.error = clip.name + ": 音量を評価できません";
                     return plan;
                 }
-                mapped.gainKeys.push_back(
-                    {frame, project::evaluateClipVolume(clip.effects, frame, sourceLocal.frame,
-                                                        clip.sourceOutFrame - clip.sourceInFrame)});
+                mapped.gainKeys.push_back({frame, *gain});
             }
             plan.clips.push_back(std::move(mapped));
             continue;
         }
-        const bool overlay = clip.track.index > 0;
+        const bool overlay = mapped.videoTrackIndex > 0;
         anyOverlay = anyOverlay || overlay;
         if (!overlay) {
             if (clip.timelineStartFrame != v1Cursor)
                 plan.backend = TimelineExportResult::Backend::Tractor;
             v1Cursor = clip.timelineStartFrame + duration.frame;
         }
-        if (!mapExportEffects(clip, request, duration.frame, overlay, mapped, plan.error))
+        const auto opacityAt = [&](std::int64_t localFrame) {
+            return project::renderSegmentOpacity(*segment, request.fpsNum, request.fpsDen,
+                                                 clip.timelineStartFrame + localFrame);
+        };
+        if (!mapExportEffects(segment->original, request, duration.frame, overlay, opacityAt,
+                              mapped, plan.error))
             return plan;
         plan.clips.push_back(std::move(mapped));
+    }
+    if (plan.clips.empty()) {
+        plan.error = "書き出す有効なclipがありません";
+        return plan;
     }
     if (anyOverlay || anyAudio)
         plan.backend = TimelineExportResult::Backend::Tractor;
@@ -325,7 +379,7 @@ TimelineExportResult exportTimeline(const project::Project& project,
     gainStorage.reserve(plan.clips.size());
     for (const auto& planned : plan.clips) {
         const auto index = static_cast<std::size_t>(planned.projectClipIndex);
-        const auto& clip = project.timelineClips[index];
+        const auto& clip = planned.renderClip;
         MvmExportClip mapped{};
         mapped.path = clipPaths[index].c_str();
         mapped.source_fps_num = clip.sourceFpsNum;

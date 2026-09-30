@@ -5,6 +5,7 @@
 #include "project/project.h"
 #include "shuttle_audio_mix.h"
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <limits>
@@ -89,6 +90,15 @@ void testPlan() {
         check(!mvm::app::planShuttleAudio(project, rate, 40, rejected, rateError) &&
                   !rateError.empty(),
               "音声経路の無い速度を拒否しません");
+    }
+    {
+        auto disabled = project;
+        disabled.timelineClips[0].enabled = false;
+        mvm::app::ShuttleAudioPlan rejected;
+        std::string disabledError;
+        check(mvm::app::planShuttleAudio(disabled, 2, 40, rejected, disabledError) &&
+                  rejected.clips.empty() && !mvm::app::hasShuttleAudibleClip(disabled),
+              "無効にしたclipをシャトルで鳴らします");
     }
     mvm::app::ShuttleAudioPlan outside;
     std::string outsideError;
@@ -268,6 +278,30 @@ void testAutomationGain() {
 }
 } // namespace
 
+// クロスフェード: 2 clip を余白の分だけ延ばして重ね、等パワーの gain で加算する。
+// 区間 [90, 111) の中央 frame 100 では p = 10.5 / 21 = 0.5 で、両方の gain が 1/sqrt(2)。
+void testCrossfade() {
+    auto project = mvm::project::createDefaultProject();
+    project.timelineClips = {audioClip("a-out", 0, 0, 0, 100), audioClip("a-in", 0, 100, 100, 200)};
+    project.timelineTransitions = {{"t", "a-out", "a-in", 10, 11}};
+    mvm::app::ShuttleAudioPlan plan;
+    std::string error;
+    check(mvm::app::planShuttleAudio(project, 1, 0, plan, error),
+          "クロスフェードのplanを作れません");
+    check(plan.clips.size() == 2 && plan.clips[0].timelineEndSample == 111 * 800 &&
+              plan.clips[1].timelineStartSample == 90 * 800,
+          "クロスフェードの2clipを余白の分だけ延ばしていません");
+    const auto constantReader = [](std::size_t, std::int64_t, std::int64_t count,
+                                   std::vector<float>& pcm, std::string&) {
+        pcm.assign(static_cast<std::size_t>(count) * 2, 0.5F);
+        return true;
+    };
+    std::vector<float> pcm;
+    check(mvm::app::mixShuttleBlock(plan, 100 * 800 + 400, 1, constantReader, pcm, error) &&
+              pcm.size() == 2 && std::abs(pcm[0] - 0.70710678F) < 1e-5F,
+          "クロスフェードの中央で等パワーのgainで加算しません");
+}
+
 int main() {
     testPlan();
     testAutomationGain();
@@ -275,6 +309,7 @@ int main() {
     testReverseStopsAtClipStart();
     testForwardStopsAtTimelineEnd();
     testMuteAndOverlap();
+    testCrossfade();
     testVideoOnlyHasNoAudibleClip();
     testRejectsInvalidSampleCount();
     testReaderFailure();

@@ -110,6 +110,13 @@ TimelineFrameResult clipFadeSourceFrameAt(const TimelineClip& clip, std::int64_t
                                           std::int64_t timelineFpsDen, std::int64_t clipLocalFrame);
 bool sourceRateMatchesTimelineRate(const Project& project, const TimelineClip& clip);
 TimelineValidationResult validateTimeline(const Project& project);
+// 編集後の candidate のトランジションを clip に合わせる。clip が無い・同じ track で接して
+// いない・フレーム保持を含むトランジションは消し、余白や尺が足りなければ縮める (0 frame に
+// なれば消す)。track ごとに cut の昇順で処理するので結果は決まる。JSON の読み込みでは
+// 呼ばない (読み込みは validateTimeline で fail-closed にする)。
+void reconcileTimelineTransitions(Project& candidate);
+// 編集の確定前に使う検証。reconcileTimelineTransitions の後に validateTimeline を行う。
+TimelineValidationResult finalizeTimelineCandidate(Project& candidate);
 
 int timelineClipIndexAt(const Project& project, TrackRef track, std::int64_t timelineFrame);
 const TimelineClip* activeClipAt(const Project& project, TrackRef track,
@@ -125,9 +132,13 @@ TimelineEditResult moveClip(Project& project, const std::string& clipId, TrackRe
                             std::int64_t newStartFrame);
 // anchor clip の移動量を選択 clip 全体へ適用する。Linked ならリンク相手も同じ時間差で
 // 移動する。全変更を一つの candidate として検証する。
+// newId を渡すと上書きで置く (Premiere の上書き)。動かした clip の下になる他の clip は、
+// 丸ごと覆われれば消し (リンク相手は未リンクにする)、端が掛かれば削り、中に置けば 2 つに
+// 分ける (右側は newId() の ID で未リンク)。newId が空なら重なりを拒否する。
 TimelineEditResult moveClips(Project& project, const std::vector<std::string>& clipIds,
                              const std::string& anchorClipId, TrackRef destinationTrack,
-                             std::int64_t newStartFrame, LinkMode linkMode);
+                             std::int64_t newStartFrame, LinkMode linkMode,
+                             const std::function<std::string()>& newId = {});
 // track 末尾へ追加する。clip.track と clip.timelineStartFrame はここで確定させる。
 TimelineEditResult appendTimelineClip(Project& project, TimelineClip clip, TrackRef track);
 // 指定位置へ配置する。既存 clip と重なる場合は fail-closed にする。
@@ -174,6 +185,12 @@ TimelineFrameResult clampEdgeEdit(const Project& project, const std::string& cli
 // clampEdgeEdit で止め、1 frame も動かせなければ失敗する。
 TimelineEditResult trimTimelineClip(Project& project, const std::string& clipId, TrimEdge edge,
                                     std::int64_t projectFrameDelta, LinkMode linkMode);
+// clip の片端を timeline frame の位置 timelineFrame へ動かした clip (Project は変えない)。
+// 素材範囲は trim・分割と同じ規則で決める。端がちょうどその位置に来ない (速度や fps の違いで
+// 丸まる)、または素材の範囲を超えるなら nullopt。トランジションの描画区間を作るのに使う。
+std::optional<TimelineClip> clipWithEdgeAt(const Project& project, const TimelineClip& clip,
+                                           TrimEdge edge, std::int64_t timelineFrame,
+                                           std::string& error);
 
 // --- レート調整 (Premiere の Rate Stretch) --------------------------------
 // 端をドラッグして、素材範囲 (in/out) を変えずに速度を変えて尺を伸縮する。反対側の端は動かさず、
@@ -264,6 +281,52 @@ TimelineEditResult splitTimelineClips(Project& project, const std::vector<std::s
                                       LinkMode linkMode);
 // frame を内側に含む clip (全 track)。Shift+クリックの全 track 分割に使う。
 std::vector<std::string> clipIdsSpanningFrame(const Project& project, std::int64_t frame);
+// among のうち frame を内側 (start < frame < end) に含む clip。順序は among のまま。
+// 存在しない ID は含めない。再生ヘッドでの分割 (Ctrl+K) に使う。
+std::vector<std::string> clipIdsSpanningFrame(const Project& project, std::int64_t frame,
+                                              const std::vector<std::string>& among);
+
+// clip の音量を stepDb だけ上げ下げする (stepVolumePercentByDb の規則)。音量を持つのは audio
+// clip だけなので、映像側はリンク相手の audio clip を変える。リンクの無い映像・文字・静止画は
+// 対象外。音量 key があれば base と全 key を同じ規則で変え、0% の key (無音の形) は変えない。
+// 対象が無い、または全対象が既に上限・下限で何も変わらないなら失敗し、Project を変えない。
+TimelineEditResult stepClipVolume(Project& project, const std::vector<std::string>& clipIds,
+                                  double stepDb);
+// clip (とリンク相手) の有効/無効を切り換える (Shift+E)。対象に 1 つでも有効な clip があれば
+// 全部を無効にし、全部が無効なら全部を有効にする (選択が混ざっていても 1 回で揃う)。
+// 存在しない ID が含まれる、または clipIds が空なら失敗する。
+TimelineEditResult toggleClipsEnabled(Project& project, const std::vector<std::string>& clipIds);
+
+// 既定のトランジションの長さ (1 秒) を timeline frame で表した値。最低 1 frame。
+std::int64_t defaultTransitionFrames(std::int64_t timelineFpsNum, std::int64_t timelineFpsDen);
+// clip (とリンク相手) の先頭と末尾に timelineFrames の長さのフェードを付ける (Shift+D を clip
+// 選択で押したとき)。フェードは素材 frame で持つので、clip ごとに速度込みで換算する。尺が
+// 足りなければ前後で分け合う (先頭が半分を切り上げで取る)。トランジションのある端は変えない。
+// 何も変わらなければ失敗し、Project を変えない。
+TimelineEditResult applyDefaultClipFades(Project& project, const std::vector<std::string>& clipIds,
+                                         std::int64_t timelineFrames);
+
+// clip の edge 側で接している同じ track の clip の ID。無ければ空。
+std::string touchingClipId(const Project& project, const std::string& clipId, TrimEdge edge);
+
+struct TransitionEditResult {
+    bool success = false;
+    std::string transitionId; // outgoing / incoming に置いたトランジション
+    std::int64_t frames = 0;  // 置いた長さ (余白が足りなければ求めた長さより短い)
+    int transitionCount = 0;  // リンク相手の分を含めて置いた数
+    std::string error;
+};
+
+// 編集点 (outgoing の終端 = incoming の先頭) に長さ timelineFrames の既定のトランジションを置く
+// (Shift+D を編集点で押したとき)。cut を中央にし、片側の余白が足りなければもう片側へ寄せる。
+// 素材 frame へ一意に換算できる長さになるまで縮める。0 frame になれば失敗する。
+// その編集点の既存のトランジションは置き換え、両 clip のその端のフェードは消す。
+// Linked で、リンク相手どうしも同じ cut で接していれば同じ長さで置く (映像と音声を一緒に)。
+TransitionEditResult applyDefaultEditTransition(Project& project, const std::string& outgoingId,
+                                                const std::string& incomingId,
+                                                std::int64_t timelineFrames, LinkMode linkMode,
+                                                const std::function<std::string()>& newId);
+TimelineEditResult deleteTimelineTransition(Project& project, const std::string& transitionId);
 
 // リップルトリム。trim した尺の増減だけ、trim した clip の track で後ろにある clip
 // (とそのリンク相手) をずらす。left 端を trim しても clip の開始位置は動かない。

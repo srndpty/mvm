@@ -518,6 +518,17 @@ $importJobs = @(
     @{ Name = 'mjpeg_av.avi'
        Args = @('-f','lavfi','-i','testsrc2=s=64x48:r=10:d=1','-f','lavfi','-i',$ImportTone,
                 '-c:v','mjpeg','-c:a','pcm_s16le') }
+    # 透過のある動画 (取り込みで断る側)。VP9 は画素形式が yuv420p のまま alpha を別に持ち、
+    # webm の alpha_mode=1 で示される。ProRes 4444 は画素形式に alpha がある。
+    @{ Name = 'vp9_alpha.webm'
+       Args = @('-f','lavfi','-i','color=c=red@0.5:s=64x48:r=10:d=1,format=yuva420p',
+                '-c:v','libvpx-vp9','-pix_fmt','yuva420p') }
+    @{ Name = 'prores4444_alpha.mov'
+       Args = @('-f','lavfi','-i','color=c=red@0.5:s=64x48:r=10:d=1,format=yuva444p10le',
+                '-c:v','prores_ks','-profile:v','4444','-pix_fmt','yuva444p10le') }
+    # 対照: 透過の無い VP9。codec と器は同じで alpha だけが違う。
+    @{ Name = 'vp9_opaque.webm'
+       Args = @('-f','lavfi','-i','testsrc2=s=64x48:r=10:d=1','-c:v','libvpx-vp9','-pix_fmt','yuv420p') }
 )
 
 foreach ($j in $importJobs) {

@@ -110,7 +110,23 @@ struct TimelineClip {
     bool preservePitch = false;
     std::optional<FrameHold> frameHold;
     TextClipData text{};
+    // 無効にした clip は timeline に残るが、preview・書き出し・音声に出さない (Shift+E)。
+    bool enabled = true;
     bool operator==(const TimelineClip&) const = default;
+};
+
+// 同じ track で接している 2 clip の編集点に置くトランジション。種類は track の種別で
+// 決まる (映像: クロスディゾルブ、音声: 等パワーのクロスフェード)。区間は timeline frame で
+// [cut - framesBeforeCut, cut + framesAfterCut)。cut は outgoing の終端 = incoming の先頭。
+// cut より前は incoming の先頭より前の素材 (頭の余白)、cut より後は outgoing の終端より後の
+// 素材 (尻の余白) を使う。前後を別々に持つので、中央・cut 始まり・cut 終わりを表せる。
+struct TimelineTransition {
+    std::string id;
+    std::string outgoingClipId;
+    std::string incomingClipId;
+    std::int64_t framesBeforeCut = 0;
+    std::int64_t framesAfterCut = 0;
+    bool operator==(const TimelineTransition&) const = default;
 };
 
 // 速度の範囲 (10%〜1000%)。rbpitch の pitchscale 0.1〜10 に収め、後から音程保持を
@@ -119,7 +135,7 @@ inline constexpr std::int64_t kMinClipSpeedPercent = 10;
 inline constexpr std::int64_t kMaxClipSpeedPercent = 1000;
 
 // Project JSON の schema。timeline 検証と JSON の読み書きが同じ値を参照する。
-inline constexpr int kProjectSchemaVersion = 12;
+inline constexpr int kProjectSchemaVersion = 13;
 
 bool hasSyntheticSourceDomain(const TimelineClip& clip);
 
@@ -166,6 +182,7 @@ struct Project {
     std::vector<Track> audioTracks;
     std::vector<ManimAsset> manimAssets;
     std::vector<TimelineClip> timelineClips;
+    std::vector<TimelineTransition> timelineTransitions;
     std::vector<std::int64_t> timelineMarkers;
     std::optional<std::int64_t> inFrame;
     std::optional<std::int64_t> outFrame;

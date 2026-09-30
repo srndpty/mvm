@@ -34,6 +34,13 @@ MediaImportResult classifyMediaProbe(const MvmMltProbeResult& probe,
             result.error = "1 frame だけの動画は読み込めません";
             return result;
         }
+        // 透過のある動画は扱わない。preview の decode (D3D11VA) は alpha を持たず、MLT の書き出しは
+        // alpha を残すので見た目が食い違う (docs/premiere-like-editing.md §19.11)。画素形式に
+        // alpha がある素材と、MLT が decode した frame に透過のある素材の両方を断る。
+        if (facts.videoAlphaCapable || probe.has_alpha) {
+            result.error = "透過 (アルファ) のある動画には対応していません";
+            return result;
+        }
         const auto divisor = std::gcd(probe.fps_num, probe.fps_den);
         item.kind = project::MediaKind::Video;
         item.width = probe.width;

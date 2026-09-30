@@ -161,7 +161,9 @@ if ($identityStart -lt 0) { throw 'AudioSourceIdentity がありません' }
 $identityEnd = $header.IndexOf('};', $identityStart)
 $identity = $header.Substring($identityStart, $identityEnd - $identityStart)
 # 速度が違えば decoder の伸縮が違うので、速度も identity に含める。
-foreach ($field in @('mediaPath', 'sampleOffset', 'effects', 'speedNum', 'speedDen', 'preservePitch')) {
+# クロスフェードの区間が違えば gain の評価が違うので、区間 (fadeIn / fadeOut) も含める。
+foreach ($field in @('mediaPath', 'sampleOffset', 'effects', 'speedNum', 'speedDen', 'preservePitch',
+                     'fadeIn', 'fadeOut')) {
     if (-not $identity.Contains($field)) {
         throw "AudioSourceIdentity に $field がありません (offset が変わっても再利用されます)"
     }
@@ -171,7 +173,8 @@ if ($identitiesStart -lt 0) { throw 'audioIdentitiesFor がありません' }
 $identitiesEnd = $controller.IndexOf("`n}", $identitiesStart)
 $identitiesBody = $controller.Substring($identitiesStart, $identitiesEnd - $identitiesStart)
 if (-not $identitiesBody.Contains('audioPreviewSampleOffset(project_, clip)') -or
-    -not ($identitiesBody -match '(?s)\{clip\.mediaPath, offset\.sampleOffset, clip\.effects, clip\.speedNum, clip\.speedDen,\s*clip\.preservePitch\}')) {
+    -not ($identitiesBody -match '(?s)const auto& clip = layer\.segment\.clip;') -or
+    -not ($identitiesBody -match '(?s)\{clip\.mediaPath, offset\.sampleOffset, layer\.segment\.original\.effects,\s*clip\.speedNum, clip\.speedDen, clip\.preservePitch,\s*layer\.segment\.fadeIn, layer\.segment\.fadeOut\}')) {
     throw 'audio identity が audioPreviewSampleOffset の換算結果から作られていません'
 }
 

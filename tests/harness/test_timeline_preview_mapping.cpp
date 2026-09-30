@@ -140,6 +140,83 @@ void testMutedTracks() {
             "mute した audio track を preview 対象から外していません");
 }
 
+// 無効にした clip は layer / audio から外す。上の track の clip を無効にすると下の track が見える。
+void testDisabledClips() {
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    project.timelineClips = {clip("v1", 0, 0, 0, 100), clip("v2", 1, 0, 0, 100),
+                             audioClip("a1", 0, 0, 100, 60, 1)};
+    const auto before = mvm::app::mapTimelinePreviewFrame(project, 10);
+    require(before.success && before.layers.size() == 2, "対照: 2 layerを取得できません");
+    project.timelineClips[1].enabled = false;
+    const auto disabledTop = mvm::app::mapTimelinePreviewFrame(project, 10);
+    require(disabledTop.success && disabledTop.layers.size() == 1 &&
+                disabledTop.layers[0].clipId == "v1",
+            "無効にした上のclipを外して下のclipを見せていません");
+    project.timelineClips[2].enabled = false;
+    const auto disabledAudio = mvm::app::mapTimelinePreviewAudio(project, 10);
+    require(disabledAudio.success && disabledAudio.layers.empty(),
+            "無効にしたaudio clipをpreviewで鳴らします");
+}
+
+// トランジション: V1 の out [0, 50) と in [50, 100) の cut に前後 10 frame。区間 [40, 60) では
+// out を slot 0 (延ばした素材) に、in の頭を slot 1 に重ね、V2 は slot 2 へ上がる。
+// 期待値は手で数えた値である。
+void testTransitionMapping() {
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    auto outgoing = clip("out", 0, 0, 0, 50);
+    outgoing.sourceFrameCount = 100;
+    project.timelineClips = {outgoing, clip("in", 0, 50, 50, 50), clip("upper", 1, 0, 0, 100)};
+    project.timelineTransitions = {{"t", "out", "in", 10, 10}};
+    require(mvm::project::validateTimeline(project).success, "前提: トランジションが不正です");
+
+    const auto before = mvm::app::mapTimelinePreviewFrame(project, 39);
+    require(before.success && before.layers.size() == 2 && before.layers[0].clipId == "out" &&
+                before.layers[0].slot == 0 && before.layers[1].clipId == "upper" &&
+                before.layers[1].slot == 2,
+            "区間の前はoutとV2だけを描きます");
+    const auto start = mvm::app::mapTimelinePreviewFrame(project, 40);
+    require(start.success && start.layers.size() == 3 && start.layers[1].clipId == "in" &&
+                start.layers[1].slot == 1 && start.layers[1].sourceFrameNumber == 40 &&
+                start.layers[1].renderClip.sourceInFrame == 40 &&
+                std::abs(start.layers[1].transitionOpacity - 0.025) < 1e-12,
+            "区間の先頭でinの頭を延ばしてslot 1に重ねません");
+    const auto cut = mvm::app::mapTimelinePreviewFrame(project, 50);
+    require(cut.success && cut.layers.size() == 3 && cut.layers[0].clipId == "out" &&
+                cut.layers[0].sourceFrameNumber == 50 && cut.layers[0].transitionOpacity == 1.0 &&
+                std::abs(cut.layers[1].transitionOpacity - 0.525) < 1e-12,
+            "cutでoutを尻の余白で延ばし、inを半分重ねません");
+    const auto last = mvm::app::mapTimelinePreviewFrame(project, 59);
+    require(last.success && last.layers.size() == 3 && last.layers[0].sourceFrameNumber == 59 &&
+                std::abs(last.layers[1].transitionOpacity - 0.975) < 1e-12,
+            "区間の最後のframeが違います");
+    const auto after = mvm::app::mapTimelinePreviewFrame(project, 60);
+    require(after.success && after.layers.size() == 2 && after.layers[0].clipId == "in" &&
+                after.layers[0].slot == 0 && after.layers[0].sourceFrameNumber == 60 &&
+                after.layers[0].transitionOpacity == 1.0,
+            "区間の後はinをslot 0で描きません");
+    const auto stack = mvm::app::previewLayerStack(cut);
+    require(stack.size() == 3 && stack[0].slot == 0 && stack[1].slot == 1 && stack[2].slot == 2,
+            "合成順がslotの昇順になりません");
+    require(!mvm::app::sameTimelinePreviewSourceSet(before, start),
+            "トランジションの区間に入ってもsourceの組を変えません");
+
+    // 音声は同じ track の 2 clip を開始の早い順に重ね、それぞれクロスフェードの区間を持つ。
+    mvm::project::Project audio = mvm::project::createDefaultProject();
+    auto audioOut = audioClip("a-out", 0, 0, 50, 60, 1);
+    audioOut.sourceFrameCount = 100;
+    audio.timelineClips = {audioClip("a-in", 50, 50, 50, 60, 1), audioOut};
+    audio.timelineTransitions = {{"ta", "a-out", "a-in", 10, 10}};
+    const auto mixed = mvm::app::mapTimelinePreviewAudio(audio, 50);
+    require(mixed.success && mixed.layers.size() == 2 && mixed.layers[0].clipId == "a-out" &&
+                mixed.layers[0].sourceFrameNumber == 50 && mixed.layers[0].segment.fadeOut &&
+                mixed.layers[1].clipId == "a-in" && mixed.layers[1].sourceFrameNumber == 50 &&
+                mixed.layers[1].segment.fadeIn,
+            "クロスフェードの2clipを重ねて鳴らしません");
+    const auto single = mvm::app::mapTimelinePreviewAudio(audio, 60);
+    require(single.success && single.layers.size() == 1 && single.layers[0].clipId == "a-in",
+            "クロスフェードの後はincomingだけを鳴らします");
+}
+
 // 映像 track を count 本にする (既定の Project は V1/V2)。
 void ensureVideoTracks(mvm::project::Project& project, int count) {
     while (static_cast<int>(project.videoTracks.size()) < count)
@@ -560,6 +637,8 @@ int main() {
     testAudioPreviewSampleOffset();
     testAudioSourceFrameCount();
     testMutedTracks();
+    testTransitionMapping();
+    testDisabledClips();
     testLayerLimit();
     testTextLayerStack();
     testTextLayerLimit();

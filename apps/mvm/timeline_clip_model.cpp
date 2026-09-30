@@ -65,6 +65,8 @@ QVariant TimelineClipModel::data(const QModelIndex& index, int role) const {
         return item.frameHold;
     case PreservePitchRole:
         return item.preservePitch;
+    case ClipEnabledRole:
+        return item.enabled;
     default:
         return {};
     }
@@ -92,7 +94,8 @@ QHash<int, QByteArray> TimelineClipModel::roleNames() const {
             {AutomationBaseRole, "automationBase"},
             {SpeedRole, "speed"},
             {FrameHoldRole, "frameHold"},
-            {PreservePitchRole, "preservePitch"}};
+            {PreservePitchRole, "preservePitch"},
+            {ClipEnabledRole, "clipEnabled"}};
 }
 
 void TimelineClipModel::setProject(const project::Project& project) {
@@ -119,7 +122,7 @@ void TimelineClipModel::setProject(const project::Project& project) {
                        QString::fromStdWString(clip.mediaPath.wstring()), automationKeys,
                        audio ? clip.effects.volumePercent : clip.effects.opacityPercent,
                        static_cast<double>(clip.speedNum) / static_cast<double>(clip.speedDen),
-                       clip.frameHold.has_value(), clip.preservePitch});
+                       clip.frameHold.has_value(), clip.preservePitch, clip.enabled});
     }
     endResetModel();
 }

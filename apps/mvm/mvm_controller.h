@@ -83,6 +83,17 @@ class MvmController : public QObject {
     Q_PROPERTY(qint64 totalTimelineFrames READ totalTimelineFrames NOTIFY stateChanged)
     Q_PROPERTY(qint64 navigationTimelineFrames READ navigationTimelineFrames NOTIFY stateChanged)
     Q_PROPERTY(QVariantList timelineMarkers READ timelineMarkers NOTIFY stateChanged)
+    // timeline に描くトランジション。{transitionId, trackKind, trackIndex, start, cut, end}。
+    // 選択は selectedTransitionId と比べる (選択で model を変えない)。
+    // Repeater の model なので stateChanged (再生中も頻繁に出る) では通知しない。通知のたびに
+    // delegate が作り直される。
+    Q_PROPERTY(QVariantList timelineTransitions READ timelineTransitions NOTIFY
+                   timelineTransitionsChanged)
+    // 選択中の編集点 {trackKind, trackIndex, frame}。無ければ空。clip の選択とは排他。
+    Q_PROPERTY(QVariantMap selectedEditPoint READ selectedEditPoint NOTIFY stateChanged)
+    Q_PROPERTY(QString selectedTransitionId READ selectedTransitionId NOTIFY stateChanged)
+    // Delete で消せるもの (トランジション、または clip) が選ばれている。
+    Q_PROPERTY(bool canDeleteSelection READ canDeleteSelection NOTIFY stateChanged)
     Q_PROPERTY(qint64 inFrame READ inFrame NOTIFY stateChanged)
     Q_PROPERTY(qint64 outFrame READ outFrame NOTIFY stateChanged)
     Q_PROPERTY(QString currentTimeText READ currentTimeText NOTIFY stateChanged)
@@ -188,6 +199,10 @@ public:
 
     qint64 navigationTimelineFrames() const;
     QVariantList timelineMarkers() const;
+    QVariantList timelineTransitions() const;
+    QVariantMap selectedEditPoint() const;
+    QString selectedTransitionId() const { return QString::fromStdString(selectedTransitionId_); }
+    bool canDeleteSelection() const;
 
     qint64 inFrame() const { return project_.inFrame.value_or(-1); }
 
@@ -313,6 +328,9 @@ public:
     // 最後に preview engine へ渡した composition で、動画 clip の layer を置いた矩形
     // (出力を 0..1 とした座標)。preview が最新の effect を受け取ったかを試験で確かめる。
     std::optional<QRectF> submittedLayerDestination(const QString& clipId) const;
+    // 最後に preview engine へ渡した composition の layer の不透明度 (背面 -> 前面)。
+    // トランジションの incoming が重なって上がっていくことを試験で確かめる。
+    std::vector<float> submittedLayerOpacities() const;
     // 保留中の作り直しが無く、engine が最後に受理した composition を提示し終えて止まっている。
     bool previewPresentedLatest() const;
     Q_INVOKABLE QVariantMap effectsForVisualRect(const QString& clipId, double x, double y,
@@ -327,6 +345,8 @@ public:
     Q_INVOKABLE bool selectTimelineClip(const QString& clipId, bool linked);
     Q_INVOKABLE bool toggleTimelineClipSelection(const QString& clipId);
     Q_INVOKABLE bool selectTimelineClips(const QStringList& clipIds);
+    // timeline の全 clip を選択する (Ctrl+A)。
+    Q_INVOKABLE bool selectAllClips();
     Q_INVOKABLE bool seekTimelineFrame(qint64 frame);
     // scrub。drag 中は最新位置だけを coalesce して seek し、release で確定する。
     Q_INVOKABLE void beginScrub();
@@ -347,7 +367,8 @@ public:
     Q_INVOKABLE bool pasteClips();
     Q_INVOKABLE bool duplicateSelectedClips();
     // clipId をドラッグしたとき一緒に動く clip 群の端。minStartFrame と、含まれる種別ごとの
-    // videoMinTrack / videoMaxTrack / audioMinTrack / audioMaxTrack。clip が無ければ空。
+    // videoMinTrack / videoMaxTrack / audioMinTrack / audioMaxTrack、一緒に動く clipIds。
+    // clip が無ければ空。
     Q_INVOKABLE QVariantMap timelineDragBounds(const QString& clipId) const;
     Q_INVOKABLE bool duplicateTimelineClipsAt(const QString& clipId, const QString& trackKind,
                                               int trackIndex, qint64 timelineStartFrame);
@@ -412,6 +433,22 @@ public:
                                       bool linked) const;
     // allTracks=true なら frame を内側に含む全 track の clip を分割する。
     Q_INVOKABLE bool splitClipAt(const QString& clipId, qint64 frame, bool allTracks, bool linked);
+    // 再生ヘッドを内側に含む選択 clip (リンク相手を含む) を再生ヘッドで分割する (Ctrl+K)。
+    // 該当する選択 clip が無ければ、再生ヘッドを含む current clip を分割する。
+    Q_INVOKABLE bool splitSelectionAtPlayhead();
+    // 選択 clip (無ければ current clip) の音量を stepDb だけ変える ([ / ])。映像はリンク相手の
+    // audio clip を変える。1 回の呼び出しが 1 undo。
+    Q_INVOKABLE bool stepSelectedClipVolume(double stepDb);
+    // 選択 clip (無ければ current clip) とリンク相手の有効/無効を切り換える (Shift+E)。
+    // 1 つでも有効なら全部を無効にし、全部が無効なら全部を有効にする。1 回が 1 undo。
+    Q_INVOKABLE bool toggleSelectedClipsEnabled();
+    // 右クリックメニュー用。指定した clip (とリンク相手) だけを切り換える。
+    Q_INVOKABLE bool toggleTimelineClipEnabled(const QString& clipId);
+    // 既定のトランジションを適用する (Shift+D)。clip を選択していれば、その clip (とリンク相手)
+    // の先頭と末尾に 1 秒のフェードを付ける。1 回が 1 undo。
+    // 編集点 (またはトランジション) を選んでいれば、そこへ 1 秒のクロスディゾルブ / クロスフェードを
+    // 置く (リンク相手も同じ cut なら一緒に)。
+    Q_INVOKABLE bool applyDefaultTransition();
     Q_INVOKABLE QVariantMap previewClipKey(const QString& clipId, qint64 originalFrame,
                                            qint64 requestedFrame, double valuePercent) const;
     Q_INVOKABLE bool commitClipKey(const QString& clipId, qint64 originalFrame,
@@ -421,6 +458,11 @@ public:
     Q_INVOKABLE bool selectClipsFromFrame(qint64 frame, const QString& direction,
                                           const QString& trackKind, int trackIndex);
     Q_INVOKABLE bool deleteCurrentClip();
+    // clip の edge ("left" / "right") の編集点を選ぶ。接している clip が無ければ clip を選ぶ。
+    Q_INVOKABLE bool selectEditPoint(const QString& clipId, const QString& edge);
+    Q_INVOKABLE bool selectTransition(const QString& transitionId);
+    // Delete。トランジションを選んでいればそれを消し、そうでなければ clip を消す。
+    Q_INVOKABLE bool deleteSelection();
     Q_INVOKABLE bool deleteTimelineClip(const QString& clipId);
     Q_INVOKABLE bool unlinkTimelineClip(const QString& clipId);
     Q_INVOKABLE bool undoLastEdit();
@@ -500,6 +542,7 @@ public Q_SLOTS:
 
 Q_SIGNALS:
     void stateChanged();
+    void timelineTransitionsChanged();
     void meterChanged();
     void exportFailed(const QString& message);
     void recoveryDetected();
@@ -529,6 +572,9 @@ private:
         std::int64_t speedNum = 1;
         std::int64_t speedDen = 1;
         bool preservePitch = false;
+        // クロスフェードの区間。gain の評価が変わるので別の source になる。
+        std::optional<project::TransitionEnvelope> fadeIn;
+        std::optional<project::TransitionEnvelope> fadeOut;
         bool operator==(const AudioSourceIdentity&) const = default;
     };
 
@@ -627,6 +673,7 @@ private:
     bool refreshPreviewAfterSavedEdit(const std::string& selectedClipId,
                                       const QString& successStatus);
     std::string currentClipId() const;
+    bool toggleClipsEnabled(const std::vector<std::string>& clipIds);
     const project::ClipEffects& currentEffects() const;
     // preview override を適用した effects を返す。composition はこれを使う。
     project::ClipEffects effectsForPreview(int clipIndex) const;
@@ -683,8 +730,8 @@ private:
     // せず false を返す。
     bool revertAudioSource(const AudioSwitchUndo& undo, QString& error);
     // clip から audio source descriptor を組む。offset の換算は mapping 側へ委譲する。
-    bool audioDescriptorFor(int clipIndex, preview::PreviewSourceDescriptor& descriptor,
-                            QString& error);
+    bool audioDescriptorFor(const TimelinePreviewAudioLayerMapping& layer,
+                            preview::PreviewSourceDescriptor& descriptor, QString& error);
     void refreshTimelineModel();
     // trackKind 文字列を TrackRef へ解決する。失敗時は status を設定して false。
     bool resolveTrackRef(const QString& trackKind, int trackIndex, project::TrackRef& track) const;
@@ -738,6 +785,18 @@ private:
     std::int64_t pendingSourceFrame_ = 0;
     int currentClipIndex_ = -1;
     std::vector<std::string> selectedClipIds_;
+    // preview の frame 問い合わせに使う描画区間。project_ が変わると refreshTimelineModel が捨て、
+    // 次の問い合わせで 1 度だけ作り直す (再生中の毎 frame に timeline 全体を組み直さない)。
+    mutable std::optional<TimelinePreviewPlan> previewPlan_;
+    const TimelinePreviewPlan& previewPlan() const;
+    // 選択中の編集点 (outgoing / incoming の clip ID) とトランジション。clip の選択とは排他で、
+    // setTimelineSelection が消す。
+    std::string selectedEditOutgoing_;
+    std::string selectedEditIncoming_;
+    std::string selectedTransitionId_;
+    // 最後に通知した timelineTransitions。変わったときだけ timelineTransitionsChanged を出す。
+    QVariantList shownTransitions_;
+    void notifyTimelineTransitions();
     std::vector<project::TimelineClip> clipboardClips_;
     // コピー元 Project の bin にあった、clipboardClips_ の素材。
     std::vector<project::MediaItem> clipboardMediaItems_;

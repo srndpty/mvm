@@ -100,6 +100,29 @@ TestCase {
         compare(Gestures.bodyRelease(slide, false, 0, 10, 5).action, "slide");
     }
 
+    // clip 移動の吸着。動かす群の端 (100, 160) と、他の clip の端・再生ヘッド・先頭。
+    function test_dragSnapsEdgesWithinThreshold() {
+        const spans = [{ "clipId": "moving", "start": 100, "end": 160 },
+                       { "clipId": "other", "start": 300, "end": 420 }];
+        const snap = Gestures.dragSnapFrames(spans, ["moving"], 250);
+        compare(snap.moving, [100, 160]);
+        compare(snap.targets, [0, 250, 300, 420]);
+        // 2 px/frame。右端 160 を 300 へ寄せる量は 280 px。275 px (5 px 手前) なら吸着する。
+        const near = Gestures.snapDragOffsetX(275, 2, snap, 8);
+        compare(near.offsetX, 280);
+        compare(near.frame, 300);
+        // 閾値の外 (270 px は 10 px 手前) では動かさない。
+        const far = Gestures.snapDragOffsetX(270, 2, snap, 8);
+        compare(far.offsetX, 270);
+        compare(far.frame, -1);
+        // 左端 100 を再生ヘッド 250 へ (300 px)。右端を 300 (280 px) より近い方を選ぶ。
+        const playhead = Gestures.snapDragOffsetX(297, 2, snap, 8);
+        compare(playhead.offsetX, 300);
+        compare(playhead.frame, 250);
+        // 自分の端には吸着しない (0 px のずらしを吸着として返さない)。
+        compare(Gestures.snapDragOffsetX(3, 2, snap, 8).frame, -1);
+    }
+
     function test_edgeReleaseFollowsTool() {
         compare(Gestures.edgeRelease("select", "left", 3, true).action, "trim");
         compare(Gestures.edgeRelease("ripple", "right", -4, true).action, "rippleTrim");
@@ -108,7 +131,13 @@ TestCase {
         compare(roll.edge, "right");
         compare(roll.delta, 2);
         compare(roll.linked, false);
-        compare(Gestures.edgeRelease("ripple", "left", 0, true).action, "none");
+        // 動かさずに離したら編集点を選ぶ (Shift+D の対象)。レート調整では何もしない。
+        const click = Gestures.edgeRelease("ripple", "left", 0, true);
+        compare(click.action, "selectEdit");
+        compare(click.edge, "left");
+        compare(Gestures.edgeRelease("select", "right", 0, true).action, "selectEdit");
+        compare(Gestures.edgeRelease("rolling", "right", 0, true).action, "selectEdit");
+        compare(Gestures.edgeRelease("rate", "left", 0, true).action, "none");
         const rate = Gestures.edgeRelease("rate", "left", -5, true);
         compare(rate.action, "rateStretch");
         compare(rate.edge, "left");

@@ -1323,6 +1323,249 @@ void testShiftSelectionToggle(const std::filesystem::path& path) {
           "clipの選択で再生位置が動きました");
 }
 
+// Ctrl+K は再生ヘッドを含む選択 clip (とリンク相手) だけを切り、選択に無ければ current clip
+// を切る。 Ctrl+A は timeline の全 clip を選ぶ。
+void testSplitAtPlayheadAndSelectAll(const std::filesystem::path& path) {
+    auto project = linkedProject();
+    auto other = project.timelineClips[0];
+    other.id = "other";
+    other.name = "other";
+    other.linkGroupId.clear();
+    other.track = {mvm::project::TrackKind::Video, 1};
+    project.timelineClips.push_back(std::move(other));
+    check(mvm::project::saveProjectJson(project, path).success,
+          "再生ヘッド分割試験のProjectを保存できません");
+    mvm::app::MvmController controller(path, {}, project);
+
+    const auto* model = controller.timelineModel();
+    const int selectedRole = model->roleNames().key("selected", -1);
+    const auto selectedCount = [&] {
+        int count = 0;
+        for (int row = 0; row < model->rowCount(); ++row)
+            count += model->data(model->index(row, 0), selectedRole).toBool() ? 1 : 0;
+        return count;
+    };
+    check(selectedRole >= 0 && controller.selectAllClips() && selectedCount() == 3,
+          "すべてを選択でtimelineの全clipを選択できません");
+
+    // 境界 (frame 0) は内側ではないので切らない。Project は変わらない。
+    controller.seekTimelineFrame(0);
+    check(!controller.splitSelectionAtPlayhead() && controller.clipCount() == 3 &&
+              !controller.canUndo(),
+          "再生ヘッドがclip境界にあるのに分割しました");
+
+    controller.seekTimelineFrame(60);
+    controller.selectTimelineClip(QStringLiteral("other"), false);
+    check(controller.splitSelectionAtPlayhead() && controller.clipCount() == 4,
+          "選択clipだけを再生ヘッドで分割できません");
+    check(controller.undoLastEdit() && controller.clipCount() == 3 && !controller.canUndo(),
+          "再生ヘッドでの分割を一回のUndoで戻せません");
+
+    controller.selectTimelineClip(QStringLiteral("video"), true);
+    check(controller.splitSelectionAtPlayhead() && controller.clipCount() == 5,
+          "選択clipとリンク相手を再生ヘッドで分割できません");
+    check(controller.undoLastEdit() && controller.clipCount() == 3, "リンク分割を戻せません");
+
+    // 選択も current clip も無ければ切らない。current clip への fallback は preview の seek が
+    // current を選び直す経路なので、実 preview を持つ test_text_ui_input で検査する。
+    check(controller.selectTimelineClips({}) && controller.currentClipIndex() < 0,
+          "前提: clipの選択を解除できません");
+    check(!controller.splitSelectionAtPlayhead() && controller.clipCount() == 3,
+          "選択もcurrent clipも無いのに分割しました");
+
+    check(controller.splitClipAt(QString(), 30, true, true) && controller.clipCount() > 5,
+          "全trackを再生ヘッドで分割できません");
+}
+
+// [ / ] は選択 (リンク組) の audio clip の音量を 1 undo で変える。
+void testStepSelectedClipVolume(const std::filesystem::path& path) {
+    const auto project = linkedProject();
+    check(mvm::project::saveProjectJson(project, path).success,
+          "音量試験のProjectを保存できません");
+    mvm::app::MvmController controller(path, {}, project);
+    check(controller.selectTimelineClips({}) && !controller.stepSelectedClipVolume(1.0) &&
+              !controller.canUndo(),
+          "選択の無い音量変更を受理しました");
+
+    controller.selectTimelineClip(QStringLiteral("video"), true);
+    check(controller.stepSelectedClipVolume(1.0) && controller.stepSelectedClipVolume(1.0) &&
+              controller.saveProject(),
+          "選択clipの音量を上げられません");
+    const auto raised = mvm::project::loadProjectJson(path);
+    check(raised.success &&
+              std::abs(raised.project.timelineClips[1].effects.volumePercent - 125.89254117941675) <
+                  1e-9 &&
+              raised.project.timelineClips[0].effects.volumePercent == 100.0,
+          "+2dBの音量がリンク相手のaudioに保存されません");
+    check(controller.undoLastEdit() && controller.undoLastEdit() && !controller.canUndo(),
+          "音量の変更を1回ずつUndoできません");
+}
+
+// Shift+E は選択 (リンク組) を 1 undo で無効/有効にし、timeline の表示 (clipEnabled) に出る。
+void testToggleSelectedClipsEnabled(const std::filesystem::path& path) {
+    const auto project = linkedProject();
+    check(mvm::project::saveProjectJson(project, path).success,
+          "有効/無効試験のProjectを保存できません");
+    mvm::app::MvmController controller(path, {}, project);
+    const auto* model = controller.timelineModel();
+    const int enabledRole = model->roleNames().key("clipEnabled", -1);
+    const auto shownEnabled = [&](int row) {
+        return model->data(model->index(row, 0), enabledRole).toBool();
+    };
+    check(enabledRole >= 0 && shownEnabled(0) && shownEnabled(1),
+          "timelineのclipEnabledが既定で有効になっていません");
+    check(controller.selectTimelineClips({}) && !controller.toggleSelectedClipsEnabled() &&
+              !controller.canUndo(),
+          "選択の無い有効/無効の切り換えを受理しました");
+    controller.selectTimelineClip(QStringLiteral("video"), true);
+    check(controller.previewVideoAtPlayhead(), "対照: 再生ヘッドに映像がありません");
+    check(controller.toggleSelectedClipsEnabled() && !shownEnabled(0) && !shownEnabled(1),
+          "選択clipとリンク相手を無効にできません");
+    check(!controller.previewVideoAtPlayhead(), "無効にした映像を再生ヘッドの映像として扱いました");
+    check(controller.saveProject(), "無効にしたProjectを保存できません");
+    const auto saved = mvm::project::loadProjectJson(path);
+    check(saved.success && !saved.project.timelineClips[0].enabled &&
+              !saved.project.timelineClips[1].enabled,
+          "無効にしたclipが保存されません");
+    check(controller.undoLastEdit() && shownEnabled(0) && shownEnabled(1) && !controller.canUndo(),
+          "有効/無効の切り換えを1回のUndoで戻せません");
+    check(controller.toggleTimelineClipEnabled(QStringLiteral("audio")) && !shownEnabled(0) &&
+              !shownEnabled(1),
+          "右クリックの対象clipとリンク相手を無効にできません");
+}
+
+// Shift+D (clip 選択) は選択 clip とリンク相手へ 1 秒のフェードを 1 undo で付ける。
+void testApplyDefaultTransitionToClips(const std::filesystem::path& path) {
+    const auto project = linkedProject(); // 60fps、120 frame
+    check(mvm::project::saveProjectJson(project, path).success,
+          "フェード試験のProjectを保存できません");
+    mvm::app::MvmController controller(path, {}, project);
+    check(controller.selectTimelineClips({}) && !controller.applyDefaultTransition() &&
+              !controller.canUndo(),
+          "選択の無いトランジションの適用を受理しました");
+    controller.selectTimelineClip(QStringLiteral("video"), true);
+    check(controller.applyDefaultTransition() && controller.saveProject(),
+          "選択clipへフェードを付けられません");
+    const auto saved = mvm::project::loadProjectJson(path);
+    check(saved.success && saved.project.timelineClips[0].effects.fadeInFrames == 60 &&
+              saved.project.timelineClips[0].effects.fadeOutFrames == 60 &&
+              saved.project.timelineClips[1].effects.fadeInFrames == 60 &&
+              saved.project.timelineClips[1].effects.fadeOutFrames == 60,
+          "映像とリンク相手の音声に1秒のフェードが保存されません");
+    check(controller.undoLastEdit() && !controller.canUndo(),
+          "フェードの適用を1回のUndoで戻せません");
+}
+
+// 編集点を選んで Shift+D。分割した映像・音声の cut にクロスディゾルブとクロスフェードを 1 undo で
+// 置き、置いたトランジションを選ぶ。Delete で選んだトランジションだけを消す。
+void testEditPointTransition(const std::filesystem::path& path) {
+    const auto project = linkedProject(); // 映像と音声、素材 120 frame
+    check(mvm::project::saveProjectJson(project, path).success,
+          "編集点試験のProjectを保存できません");
+    mvm::app::MvmController controller(path, {}, project);
+    check(controller.splitClipAt(QStringLiteral("video"), 60, false, true) &&
+              controller.clipCount() == 4,
+          "前提: 映像と音声を分割できません");
+    const auto undoBefore = controller.canUndo();
+    check(controller.selectEditPoint(QStringLiteral("video"), QStringLiteral("right")) &&
+              controller.selectedEditPoint().value(QStringLiteral("frame")).toLongLong() == 60 &&
+              controller.currentClipIndex() < 0 && !controller.canDeleteSelection(),
+          "編集点を選べないか、clipの選択が残っています");
+    check(controller.applyDefaultTransition() && controller.timelineTransitions().size() == 2 &&
+              !controller.selectedTransitionId().isEmpty() &&
+              controller.selectedEditPoint().isEmpty() && controller.canDeleteSelection(),
+          "編集点に映像と音声のトランジションを置いて選びません");
+    const auto shown = controller.timelineTransitions();
+    const auto first = shown.isEmpty() ? QVariantMap{} : shown.front().toMap();
+    check(first.value(QStringLiteral("start")).toLongLong() == 30 &&
+              first.value(QStringLiteral("cut")).toLongLong() == 60 &&
+              first.value(QStringLiteral("end")).toLongLong() == 90,
+          "1秒のトランジションをcutの前後30 frameに置きません");
+    check(controller.undoLastEdit() && controller.timelineTransitions().isEmpty() &&
+              controller.selectedTransitionId().isEmpty() && controller.canUndo() == undoBefore,
+          "トランジションの作成を1回のUndoで戻せません");
+    check(controller.redoLastEdit() && controller.timelineTransitions().size() == 2,
+          "トランジションの作成をRedoできません");
+    const auto target = controller.timelineTransitions()
+                            .front()
+                            .toMap()
+                            .value(QStringLiteral("transitionId"))
+                            .toString();
+    check(controller.selectTransition(target) && controller.deleteSelection() &&
+              controller.timelineTransitions().size() == 1 && controller.clipCount() == 4,
+          "選んだトランジションだけをDeleteで消せません");
+    // clip を選ぶと編集点の選択は外れる。接している clip の無い端は clip の選択になる。
+    check(controller.selectEditPoint(QStringLiteral("video"), QStringLiteral("right")) &&
+              controller.selectTimelineClip(QStringLiteral("video"), true) &&
+              controller.selectedEditPoint().isEmpty(),
+          "clipを選んでも編集点の選択が残ります");
+    check(controller.selectEditPoint(QStringLiteral("video"), QStringLiteral("left")) &&
+              controller.selectedEditPoint().isEmpty() && controller.currentClipIndex() >= 0,
+          "接しているclipの無い端を編集点として選びました");
+}
+
+// clip の移動は上書きで置く (重なった下の clip を削る)。ドラッグの吸着候補から外す clip ID も返す。
+void testMoveOverwritesAndDragBounds(const std::filesystem::path& path) {
+    auto project = linkedProject(); // 映像と音声 [0, 120)
+    auto other = project.timelineClips[0];
+    other.id = "other";
+    other.name = "other";
+    other.linkGroupId.clear();
+    other.track = {mvm::project::TrackKind::Video, 1};
+    project.timelineClips.push_back(std::move(other));
+    check(mvm::project::saveProjectJson(project, path).success,
+          "上書き移動試験のProjectを保存できません");
+    mvm::app::MvmController controller(path, {}, project);
+    controller.selectTimelineClip(QStringLiteral("video"), true);
+    const auto bounds = controller.timelineDragBounds(QStringLiteral("video"));
+    const auto ids = bounds.value(QStringLiteral("clipIds")).toStringList();
+    check(ids.size() == 2 && ids.contains(QStringLiteral("video")) &&
+              ids.contains(QStringLiteral("audio")),
+          "ドラッグで一緒に動くclip IDを返しません");
+
+    controller.selectTimelineClip(QStringLiteral("other"), true);
+    check(controller.moveTimelineClip(QStringLiteral("other"), QStringLiteral("video"), 0, 60,
+                                      true) &&
+              controller.clipCount() == 3 && controller.saveProject(),
+          "下のclipに重なる位置へ移動できません");
+    const auto saved = mvm::project::loadProjectJson(path);
+    check(saved.success && saved.project.timelineClips[0].sourceOutFrame == 60 &&
+              saved.project.timelineClips[2].timelineStartFrame == 60 &&
+              saved.project.timelineClips[2].track.index == 0,
+          "上書きした下のclipの末尾を削りません");
+    check(controller.undoLastEdit() && controller.clipCount() == 3,
+          "上書き移動を1回のUndoで戻せません");
+}
+
+// preview の描画区間は Project が変わるたびに作り直す (再生中は 1 度作った区間を引くだけ)。
+// 作り直さないと、編集した後も古い不透明度・位置で preview を組む。
+void testPreviewPlanFollowsEdits(const std::filesystem::path& path) {
+    // 静止画 layer (画像) の不透明度は preview の区間から求める (textClipOpacity)。
+    auto project = mvm::project::createDefaultProject();
+    mvm::project::TimelineClip image;
+    image.kind = mvm::project::TimelineClipKind::Image;
+    image.id = "image";
+    image.name = "image";
+    image.mediaPath = L"C:/mvm-test-image.png";
+    image.sourceFpsNum = 60;
+    image.sourceFpsDen = 1;
+    image.sourceFrameCount = 120;
+    image.sourceOutFrame = 120;
+    project.timelineClips.push_back(image);
+    mvm::test::attachFixtureMedia(project);
+    check(mvm::project::saveProjectJson(project, path).success,
+          "preview区間試験のProjectを保存できません");
+    mvm::app::MvmController controller(path, {}, project);
+    check(std::abs(controller.textClipOpacity(0) - 1.0) < 1e-9,
+          "前提: 画像clipの不透明度が1ではありません");
+    check(controller.setClipEffectValues(QStringLiteral("image"),
+                                         {{QStringLiteral("opacity"), 50.0}}, true) &&
+              std::abs(controller.textClipOpacity(0) - 0.5) < 1e-9,
+          "不透明度を変えた後もpreviewの区間が古いままです");
+    check(controller.undoLastEdit() && std::abs(controller.textClipOpacity(0) - 1.0) < 1e-9,
+          "Undoした後もpreviewの区間が古いままです");
+}
+
 void testDeleteMultipleSelection(const std::filesystem::path& path) {
     auto project = videoProject();
     auto audio = project.timelineClips[0];
@@ -1904,6 +2147,9 @@ int main(int argc, char** argv) {
     if (argc != 3)
         return 2;
     const std::filesystem::path directory = std::filesystem::path(argv[1]);
+    // 前回の run の自動復旧データ (*.recovery) が残っていると、「作成された」の検査が古い
+    // ファイルで空振りに通る (schema を上げた直後は古いファイルを読めず落ちる)。毎回空から始める。
+    std::filesystem::remove_all(directory);
     std::filesystem::create_directories(directory);
     testCompleteAndRestart(directory / L"complete.mvm");
     testExportQualitySelection(directory / L"quality.mvm");
@@ -1946,6 +2192,13 @@ int main(int argc, char** argv) {
     testDiscardRecovery(directory / L"recovery-discard.mvm");
     testShiftSelectionToggle(directory / L"shift-selection.mvm");
     testDeleteMultipleSelection(directory / L"delete-multiple.mvm");
+    testSplitAtPlayheadAndSelectAll(directory / L"split-playhead.mvm");
+    testStepSelectedClipVolume(directory / L"step-volume.mvm");
+    testToggleSelectedClipsEnabled(directory / L"toggle-enabled.mvm");
+    testApplyDefaultTransitionToClips(directory / L"default-fades.mvm");
+    testEditPointTransition(directory / L"edit-point-transition.mvm");
+    testMoveOverwritesAndDragBounds(directory / L"move-overwrite.mvm");
+    testPreviewPlanFollowsEdits(directory / L"preview-plan.mvm");
     testShuttleStopAndStep(directory / L"shuttle-stop-step.mvm");
     testPreviewTransform(directory / L"preview-transform.mvm");
     // MLT を初期化するので最後に置く。ほかの試験は MLT 無しの前提で書かれている。

@@ -77,7 +77,8 @@ typedef struct {
     int opacity_keyframe_count;
     const MvmExportGainKeyframe* gain_keyframes;
     int gain_keyframe_count;
-    int video_track; /* 0=V1, 1=V2, ... (上限なし) */
+    int video_track; /* 映像 layer。0 が最下層 (V1)。トランジションの incoming は上の layer に積む
+                        (上限なし) */
     long long timeline_start_frame;
     long long timeline_duration_frames;
 } MvmExportClip;

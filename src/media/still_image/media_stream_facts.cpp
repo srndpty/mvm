@@ -11,7 +11,9 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/dict.h>
 #include <libavutil/error.h>
+#include <libavutil/pixdesc.h>
 }
 
 namespace mvm::media {
@@ -107,6 +109,13 @@ MediaStreamFacts probeMediaStreamFacts(const std::filesystem::path& path,
             facts.videoCodecName = avcodec_get_name(codecpar->codec_id);
             facts.width = codecpar->width;
             facts.height = codecpar->height;
+            const AVPixFmtDescriptor* pixel =
+                av_pix_fmt_desc_get(static_cast<AVPixelFormat>(codecpar->format));
+            // VP9 の alpha は画素形式 (yuv420p) に出ず、webm の alpha_mode で示される (実測)。
+            const AVDictionaryEntry* alphaMode =
+                av_dict_get(stream->metadata, "alpha_mode", nullptr, 0);
+            facts.videoAlphaCapable = (pixel && (pixel->flags & AV_PIX_FMT_FLAG_ALPHA) != 0) ||
+                                      (alphaMode && std::string(alphaMode->value) == "1");
             imageStreamIndex = static_cast<int>(index);
         }
     }

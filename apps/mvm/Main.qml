@@ -98,6 +98,57 @@ ApplicationWindow {
         onTriggered: root.mvmController.duplicateSelectedClips()
     }
     Action {
+        id: selectAllClipsAction
+        text: "すべてを選択"
+        shortcut: "Ctrl+A"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.selectAllClips()
+    }
+    Action {
+        id: splitAtPlayheadAction
+        text: "編集点を追加"
+        shortcut: "Ctrl+K"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.splitSelectionAtPlayhead()
+    }
+    Action {
+        id: splitAllTracksAction
+        text: "編集点をすべてのトラックに追加"
+        shortcut: "Ctrl+Shift+K"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.splitClipAt("", root.mvmController.playheadFrame, true, true)
+    }
+    // Premiere は ] で上げるが、ここでは [ で上げる (キーボードで [ が上にあり、上げる操作として
+    // 直感的なため。利用者の判断で意図的に逆にしている)。
+    Action {
+        id: volumeUpAction
+        text: "クリップの音量を上げる"
+        shortcut: "["
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.stepSelectedClipVolume(1)
+    }
+    Action {
+        id: volumeDownAction
+        text: "クリップの音量を下げる"
+        shortcut: "]"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.stepSelectedClipVolume(-1)
+    }
+    Action {
+        id: toggleClipEnabledAction
+        text: "有効/無効を切り換え"
+        shortcut: "Shift+E"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.toggleSelectedClipsEnabled()
+    }
+    Action {
+        id: defaultTransitionAction
+        text: "デフォルトのトランジションを適用"
+        shortcut: "Shift+D"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.applyDefaultTransition()
+    }
+    Action {
         id: speedDurationAction
         text: "速度・デュレーション..."
         shortcut: "Ctrl+R"
@@ -262,11 +313,21 @@ ApplicationWindow {
             CompactMenuItem { action: duplicateClipsAction }
             CompactMenuItem { action: speedDurationAction }
             CompactMenuSeparator {}
+            CompactMenuItem { action: splitAtPlayheadAction }
+            CompactMenuItem { action: splitAllTracksAction }
+            CompactMenuItem { action: selectAllClipsAction }
+            CompactMenuSeparator {}
+            CompactMenuItem { action: volumeUpAction }
+            CompactMenuItem { action: volumeDownAction }
+            CompactMenuItem { action: toggleClipEnabledAction }
+            CompactMenuItem { action: defaultTransitionAction }
+            CompactMenuSeparator {}
             // 実行は Shortcut "Delete" が担う。ここは表示だけで sequence を持たせない (二重発火を防ぐ)。
             CompactMenuItem {
-                text: "クリップを削除\tDelete"
-                enabled: !root.mvmController.busy && root.mvmController.currentClipIndex >= 0
-                onTriggered: root.mvmController.deleteCurrentClip()
+                text: (root.mvmController.selectedTransitionId !== "" ? "トランジションを削除"
+                                                                      : "クリップを削除") + "\tDelete"
+                enabled: root.mvmController.canDeleteSelection
+                onTriggered: root.mvmController.deleteSelection()
             }
         }
         CompactMenu {
@@ -634,9 +695,8 @@ ApplicationWindow {
 
     Shortcut {
         sequence: "Delete"
-        enabled: !root.mvmController.busy && root.mvmController.currentClipIndex >= 0
-                 && !root.keyboardFocusTakesKeys
-        onActivated: root.mvmController.deleteCurrentClip()
+        enabled: root.mvmController.canDeleteSelection && !root.keyboardFocusTakesKeys
+        onActivated: root.mvmController.deleteSelection()
     }
     Shortcut {
         sequence: "Space"
@@ -1453,6 +1513,10 @@ ApplicationWindow {
             property bool activeDragMoved: false
             property real activeDragOffsetX: 0
             property string activeDragTrackKind: ""
+            // clip 移動で吸着した frame (吸着の目印を描く)。吸着していなければ -1。
+            property real snapGuideFrame: -1
+            // 吸着させる距離 (px)。Ctrl を押している間は吸着しない (プレビューの枠と同じ)。
+            readonly property real snapThresholdPixels: 8
             property real activeDragOffsetY: 0
             property real selectionStartX: 0
             property real selectionStartY: 0
@@ -2261,6 +2325,7 @@ ApplicationWindow {
                                 required property string mediaPath
                                 required property var automationKeys
                                 required property real automationBase
+                                required property bool clipEnabled
 
                                 property var previewKeys: null
                                 property var penState: null
@@ -2305,6 +2370,8 @@ ApplicationWindow {
                                 property real rawBodyDragOffsetX: 0
                                 // press 時点で一緒に動く clip 群の端 (controller.timelineDragBounds)。
                                 property var bodyDragBounds: ({})
+                                // press 時点の吸着の候補 (Gestures.dragSnapFrames)。
+                                property var bodySnap: null
                                 property bool bodyMoved: false
                                 property bool bodyAdditiveSelection: false
                                 property string dragTrackKind: trackKind
@@ -2371,6 +2438,8 @@ ApplicationWindow {
                                        ? "#315f86"
                                        : (trackKind === "audio" ? "#2b3a33" : "#2b3038")
                                 border.color: previewSupported ? "#65a8dc" : "#c88b4a"
+                                // 無効にした clip は timeline に残したまま暗くする (Shift+E)。
+                                opacity: clipEnabled ? 1 : 0.4
                                 z: bodyMoved ? 20 : 1
                                 transform: Translate {
                                     x: clipItem.renderOffsetX
@@ -2440,6 +2509,11 @@ ApplicationWindow {
                                                          clipItem.clipId)
                                     }
                                     CompactMenuSeparator {}
+                                    CompactMenuItem {
+                                        text: clipItem.clipEnabled ? "無効にする\tShift+E" : "有効にする\tShift+E"
+                                        enabled: !root.mvmController.busy
+                                        onTriggered: root.mvmController.toggleTimelineClipEnabled(clipItem.clipId)
+                                    }
                                     CompactMenuItem {
                                         text: "削除"
                                         onTriggered: root.mvmController.deleteTimelineClip(clipItem.clipId)
@@ -2574,7 +2648,9 @@ ApplicationWindow {
                                     const action = Gestures.edgeRelease(timelinePanel.tool, edge, delta,
                                                                         clipItem.editLinked);
                                     clipItem.endLinkedEdit();
-                                    if (action.action === "rippleTrim")
+                                    if (action.action === "selectEdit")
+                                        root.mvmController.selectEditPoint(id, action.edge);
+                                    else if (action.action === "rippleTrim")
                                         root.mvmController.rippleTrimClip(id, action.edge, action.delta, action.linked);
                                     else if (action.action === "roll")
                                         root.mvmController.rollClipEdge(id, action.edge, action.delta, action.linked);
@@ -2757,6 +2833,10 @@ ApplicationWindow {
                                         }
                                         // 選択を確定した後で、一緒に動く群の端を取る。
                                         clipItem.bodyDragBounds = root.mvmController.timelineDragBounds(clipItem.clipId);
+                                        clipItem.bodySnap = Gestures.dragSnapFrames(
+                                            root.mvmController.timelineModel.clipSpans(),
+                                            clipItem.bodyDragBounds.clipIds || [],
+                                            root.mvmController.playheadFrame);
                                         timelinePanel.activeDragLinkGroup = clipItem.editLinked ? clipItem.linkGroupId : "";
                                         timelinePanel.activeDragClipId = clipItem.clipId;
                                         timelinePanel.activeDragDuplicate = clipItem.gestureState.duplicate;
@@ -2817,9 +2897,23 @@ ApplicationWindow {
                                                                    ? 0 : clipItem.rawBodyDragOffsetX;
                                         // リンク・複数選択の群全体が 0 frame と既存 track に収まる量で
                                         // 止める。確定にも同じ量を渡すので、見えている位置のまま置かれる。
-                                        clipItem.bodyDragOffsetX = Gestures.groupDragOffsetX(
+                                        const boundedOffset = Gestures.groupDragOffsetX(
                                             intendedOffset, timelinePanel.pixelsPerFrame,
                                             clipItem.bodyDragBounds);
+                                        // 他の clip の端・再生ヘッドの近くでは端を吸着させる。吸着した
+                                        // 量も同じ規則で丸め直す (0 frame より左へは出さない)。
+                                        const edgeSnap = clipItem.bodySnap !== null
+                                                        && (mouse.modifiers & Qt.ControlModifier) === 0
+                                                        ? Gestures.snapDragOffsetX(
+                                                              boundedOffset, timelinePanel.pixelsPerFrame,
+                                                              clipItem.bodySnap,
+                                                              timelinePanel.snapThresholdPixels)
+                                                        : { "offsetX": boundedOffset, "frame": -1 };
+                                        clipItem.bodyDragOffsetX = Gestures.groupDragOffsetX(
+                                            edgeSnap.offsetX, timelinePanel.pixelsPerFrame,
+                                            clipItem.bodyDragBounds);
+                                        timelinePanel.snapGuideFrame =
+                                            clipItem.bodyDragOffsetX === edgeSnap.offsetX ? edgeSnap.frame : -1;
                                         timelinePanel.activeDragOffsetX = clipItem.bodyDragOffsetX;
                                         const rawCenterY = clipItem.y
                                                            + (now.y - clipItem.bodyPressPoint.y)
@@ -2892,6 +2986,8 @@ ApplicationWindow {
                                         timelinePanel.activeDragOffsetX = 0;
                                         timelinePanel.activeDragTrackKind = "";
                                         timelinePanel.activeDragOffsetY = 0;
+                                        timelinePanel.snapGuideFrame = -1;
+                                        clipItem.bodySnap = null;
 
                                         // slip の preview は確定の有無によらず通常の表示へ戻す。
                                         if (gesture === "slip")
@@ -3081,6 +3177,91 @@ ApplicationWindow {
                                     }
                                 }
                             }
+                        }
+
+                        // --- トランジション ---
+                        // cut の前後の区間に重ねて描く。押すと選択し、Delete で消せる。
+                        Repeater {
+                            model: root.mvmController.timelineTransitions
+
+                            delegate: Rectangle {
+                                id: transitionItem
+                                required property var modelData
+                                readonly property bool selected:
+                                    modelData.transitionId === root.mvmController.selectedTransitionId
+                                objectName: "timelineTransition_" + modelData.transitionId
+                                x: modelData.start * timelinePanel.pixelsPerFrame
+                                y: timelinePanel.rowY(modelData.trackKind, modelData.trackIndex)
+                                   - timelinePanel.tracksTop + 3
+                                width: Math.max(4, (modelData.end - modelData.start)
+                                                   * timelinePanel.pixelsPerFrame)
+                                height: timelinePanel.trackHeight - 6
+                                radius: 2
+                                color: selected ? "#c0e0b040" : "#80c89a3c"
+                                border.color: selected ? "#ffe08a" : "#d8b35a"
+                                border.width: selected ? 2 : 1
+                                z: 35
+
+                                // 左下から右上への斜線 (Premiere のトランジションの表示)。
+                                Canvas {
+                                    anchors.fill: parent
+                                    onPaint: {
+                                        const context = getContext("2d");
+                                        context.reset();
+                                        context.strokeStyle = "#fff3cf";
+                                        context.lineWidth = 1;
+                                        context.beginPath();
+                                        context.moveTo(0, height);
+                                        context.lineTo(width, 0);
+                                        context.stroke();
+                                    }
+                                    onWidthChanged: requestPaint()
+                                    onHeightChanged: requestPaint()
+                                }
+                                Label {
+                                    anchors.centerIn: parent
+                                    visible: parent.width > 70
+                                    text: transitionItem.modelData.trackKind === "audio"
+                                          ? "クロスフェード" : "クロスディゾルブ"
+                                    color: "white"
+                                    font.pixelSize: 11
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    enabled: !root.mvmController.busy
+                                    acceptedButtons: Qt.LeftButton
+                                    onClicked: root.mvmController.selectTransition(
+                                                   transitionItem.modelData.transitionId)
+                                }
+                            }
+                        }
+
+                        // clip 移動の吸着の目印。吸着した frame に縦線を描く。
+                        Rectangle {
+                            visible: timelinePanel.snapGuideFrame >= 0 && timelinePanel.activeDragMoved
+                            x: timelinePanel.snapGuideFrame * timelinePanel.pixelsPerFrame
+                            width: 1
+                            height: parent.height
+                            color: "#ffe08a"
+                            z: 95
+                        }
+
+                        // 選択中の編集点。cut の位置に括弧を描く。
+                        Rectangle {
+                            readonly property var point: root.mvmController.selectedEditPoint
+                            visible: point.frame !== undefined
+                            x: (point.frame !== undefined ? point.frame : 0)
+                               * timelinePanel.pixelsPerFrame - 3
+                            y: point.frame !== undefined
+                               ? timelinePanel.rowY(point.trackKind, point.trackIndex)
+                                 - timelinePanel.tracksTop + 1
+                               : 0
+                            width: 6
+                            height: timelinePanel.trackHeight - 2
+                            color: "transparent"
+                            border.color: "#ffe08a"
+                            border.width: 2
+                            z: 36
                         }
 
                         Rectangle {

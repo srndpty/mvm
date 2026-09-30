@@ -1,4 +1,6 @@
-.pragma library
+// .pragma library は付けない。QML 専用の指示なので VS Code の JavaScript 検査が構文エラー
+// ("Unexpected keyword or identifier") にする。ここは状態を持たない関数だけなので、import した
+// QML ごとに別の instance になっても振る舞いは変わらない。
 
 // プレビュー上で素材を動かす・拡縮するときの計算。座標はすべて出力画素で、
 // 矩形は {x, y, width, height}。QML から切り離して tst_preview_transform.qml で検査する。

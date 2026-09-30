@@ -172,6 +172,7 @@ public:
         bool hasAudioTracks = false;
         bool hasAssets = false;
         bool hasClips = false;
+        bool hasTransitions = false;
         bool hasMarkers = false;
         bool hasIn = false;
         bool hasOut = false;
@@ -231,6 +232,10 @@ public:
                     if (hasClips || !parseTimelineClips(project.timelineClips))
                         return failAndFinish("timeline_clips が重複または不正です", error);
                     hasClips = true;
+                } else if (key == "timeline_transitions") {
+                    if (hasTransitions || !parseTimelineTransitions(project.timelineTransitions))
+                        return failAndFinish("timeline_transitions が重複または不正です", error);
+                    hasTransitions = true;
                 } else if (key == "timeline_markers") {
                     if (hasMarkers || !parseFrameList(project.timelineMarkers))
                         return failAndFinish("timeline_markers が重複または不正です", error);
@@ -273,8 +278,8 @@ public:
             return failAndFinish("mvm project ファイルではありません (format marker 不一致)",
                                  error);
         if (!hasTimelineFpsNum || !hasTimelineFpsDen || !hasVideoTracks || !hasAudioTracks ||
-            !hasAssets || !hasClips || !hasMarkers || !hasIn || !hasOut || !hasMediaFolders ||
-            !hasMediaItems) {
+            !hasAssets || !hasClips || !hasTransitions || !hasMarkers || !hasIn || !hasOut ||
+            !hasMediaFolders || !hasMediaItems) {
             return failAndFinish("Project schema " + std::to_string(kSchemaVersion) +
                                      " の必須 field がありません",
                                  error);
@@ -938,6 +943,7 @@ private:
         bool hasSpeedNum = false;
         bool hasSpeedDen = false;
         bool hasPreservePitch = false;
+        bool hasEnabled = false;
         bool hasFrameHold = false;
         bool hasText = false;
         std::string kind;
@@ -1016,6 +1022,10 @@ private:
                     if (hasPreservePitch || !parseBool(clip.preservePitch))
                         return fail("timeline clip の preserve_pitch が重複または不正です");
                     hasPreservePitch = true;
+                } else if (key == "enabled") {
+                    if (hasEnabled || !parseBool(clip.enabled))
+                        return fail("timeline clip の enabled が重複または不正です");
+                    hasEnabled = true;
                 } else if (key == "frame_hold") {
                     if (hasFrameHold)
                         return fail("timeline clip の frame_hold が重複しています");
@@ -1093,7 +1103,7 @@ private:
         if (!hasKind || !hasMedia || !hasName || !hasId || !hasSourceFpsNum || !hasSourceFpsDen ||
             !hasSourceFrameCount || !hasSourceIn || !hasSourceOut || !hasTimelineStart ||
             !hasTrackKind || !hasTrackIndex || !hasSpeedNum || !hasSpeedDen || !hasMediaItemId ||
-            !hasPreservePitch || !hasFrameHold)
+            !hasPreservePitch || !hasEnabled || !hasFrameHold)
             return fail("timeline clip の必須 field がありません");
         if (hasText != (kind == "text"))
             return fail("timeline clip の text と kind が一致しません");
@@ -1123,6 +1133,75 @@ private:
             if (!parseTimelineClip(clip))
                 return false;
             clips.push_back(std::move(clip));
+            skipWhitespace();
+            if (consumeIf(','))
+                continue;
+            break;
+        }
+        return consume(']');
+    }
+
+    bool parseTimelineTransition(TimelineTransition& transition) {
+        bool seen[5] = {};
+        if (!consume('{'))
+            return false;
+        skipWhitespace();
+        if (!peek('}')) {
+            while (true) {
+                std::string key;
+                if (!parseString(key) || !consume(':'))
+                    return false;
+                int field = -1;
+                bool parsed = false;
+                if (key == "id") {
+                    field = 0;
+                    parsed = !seen[field] && parseString(transition.id);
+                } else if (key == "outgoing_clip_id") {
+                    field = 1;
+                    parsed = !seen[field] && parseString(transition.outgoingClipId);
+                } else if (key == "incoming_clip_id") {
+                    field = 2;
+                    parsed = !seen[field] && parseString(transition.incomingClipId);
+                } else if (key == "frames_before_cut") {
+                    field = 3;
+                    parsed = !seen[field] && parseInteger64(transition.framesBeforeCut);
+                } else if (key == "frames_after_cut") {
+                    field = 4;
+                    parsed = !seen[field] && parseInteger64(transition.framesAfterCut);
+                } else if (!skipValue()) {
+                    return false;
+                }
+                if (field >= 0) {
+                    if (!parsed)
+                        return fail("timeline transition の " + key + " が重複または不正です");
+                    seen[field] = true;
+                }
+                skipWhitespace();
+                if (consumeIf(','))
+                    continue;
+                break;
+            }
+        }
+        if (!consume('}'))
+            return false;
+        for (const bool field : seen) {
+            if (!field)
+                return fail("timeline transition の必須 field がありません");
+        }
+        return true;
+    }
+
+    bool parseTimelineTransitions(std::vector<TimelineTransition>& transitions) {
+        if (!consume('['))
+            return false;
+        skipWhitespace();
+        if (consumeIf(']'))
+            return true;
+        while (true) {
+            TimelineTransition transition;
+            if (!parseTimelineTransition(transition))
+                return false;
+            transitions.push_back(std::move(transition));
             skipWhitespace();
             if (consumeIf(','))
                 continue;
@@ -1480,6 +1559,7 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
              << "      \"speed_num\": " << clip.speedNum << ",\n"
              << "      \"speed_den\": " << clip.speedDen << ",\n"
              << "      \"preserve_pitch\": " << (clip.preservePitch ? "true" : "false") << ",\n"
+             << "      \"enabled\": " << (clip.enabled ? "true" : "false") << ",\n"
              << "      \"frame_hold\": ";
         if (clip.frameHold) {
             json << "{ \"source_frame\": " << clip.frameHold->sourceFrame
@@ -1534,6 +1614,17 @@ ProjectSerializationResult serializeProjectJson(const Project& project,
         json << "\n    }";
     }
     if (!project.timelineClips.empty())
+        json << '\n';
+    json << "  ],\n  \"timeline_transitions\": [";
+    for (std::size_t index = 0; index < project.timelineTransitions.size(); ++index) {
+        const auto& transition = project.timelineTransitions[index];
+        json << (index == 0 ? "\n" : ",\n") << "    { \"id\": \"" << escapeJson(transition.id)
+             << "\", \"outgoing_clip_id\": \"" << escapeJson(transition.outgoingClipId)
+             << "\", \"incoming_clip_id\": \"" << escapeJson(transition.incomingClipId)
+             << "\", \"frames_before_cut\": " << transition.framesBeforeCut
+             << ", \"frames_after_cut\": " << transition.framesAfterCut << " }";
+    }
+    if (!project.timelineTransitions.empty())
         json << '\n';
     json << "  ],\n  \"media_folders\": [";
     for (std::size_t index = 0; index < project.mediaFolders.size(); ++index) {

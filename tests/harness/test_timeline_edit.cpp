@@ -1221,6 +1221,674 @@ void testSplitClips() {
     check(mvm::project::clipIdsSpanningFrame(spanning, 300) ==
               std::vector<std::string>({"id-upper"}),
           "clip境界上のframeを分割対象に含めました");
+    // 選択で絞る版: among の順序を保ち、境界ちょうどの clip と存在しない ID を含めない。
+    check(mvm::project::clipIdsSpanningFrame(spanning, 350, {"id-upper", "missing", "id-Manim"}) ==
+              std::vector<std::string>({"id-upper", "id-Manim"}),
+          "選択clipのうち再生ヘッドを含むclipを正しく求められません");
+    check(mvm::project::clipIdsSpanningFrame(spanning, 300, {"id-Manim", "id-upper"}) ==
+              std::vector<std::string>({"id-upper"}),
+          "選択clipの絞り込みでclip境界上のframeを分割対象に含めました");
+    check(mvm::project::clipIdsSpanningFrame(spanning, 350, {}).empty(),
+          "選択が空なのに分割対象を返しました");
+}
+
+// [ / ] の音量。映像を選ぶとリンク相手の audio を変え、映像の音量は 100 のまま
+// (映像 clip の音量は validateTimeline が 100 に固定している)。
+void testStepClipVolume() {
+    using mvm::project::TimelineClipKind;
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    auto video = clip("video");
+    video.linkGroupId = "volume-link";
+    auto audio = clip("audio", TimelineClipKind::Audio, kA1);
+    audio.linkGroupId = "volume-link";
+    auto keyed = clip("keyed", TimelineClipKind::Audio, kA1);
+    keyed.timelineStartFrame = 300;
+    keyed.effects.volumeKeys = {{0, 0.0}, {10, 100.0}, {20, 199.0}};
+    auto lone = clip("lone", TimelineClipKind::Video, kV2);
+    project.timelineClips = {video, audio, keyed, lone};
+    check(mvm::project::validateTimeline(project).success, "音量試験用のtimelineが不正です");
+    const auto volumeOf = [&](const std::string& id) {
+        return findClip(project, id)->effects.volumePercent;
+    };
+
+    check(mvm::project::stepClipVolume(project, {video.id}, 1.0).success &&
+              std::abs(volumeOf(audio.id) - 112.20184543019634) < 1e-9 &&
+              volumeOf(video.id) == 100.0,
+          "映像を選んだ+1dBでリンク相手のaudioだけを変えません");
+
+    // key は 0% を保ち、他は同じ規則 (上限 200) で変える。base も変える。
+    check(mvm::project::stepClipVolume(project, {keyed.id}, 1.0).success,
+          "音量keyのあるaudio clipを+1dBできません");
+    const auto& keys = findClip(project, keyed.id)->effects.volumeKeys;
+    check(keys.size() == 3 && keys[0].valuePercent == 0.0 &&
+              std::abs(keys[1].valuePercent - 112.20184543019634) < 1e-9 &&
+              keys[2].valuePercent == 200.0 &&
+              std::abs(volumeOf(keyed.id) - 112.20184543019634) < 1e-9,
+          "音量keyを0%を保ったまま同じ規則で変えません");
+
+    // 対象外だけ・上限で変化なし・存在しない ID は失敗し、Project を変えない。
+    const auto before = project;
+    check(!mvm::project::stepClipVolume(project, {lone.id}, 1.0).success && project == before,
+          "audioの無い選択で音量の変更を受理しました");
+    auto atMaximum = project;
+    for (auto& value : atMaximum.timelineClips)
+        if (value.id == audio.id)
+            value.effects.volumePercent = 200.0;
+    const auto maximumBefore = atMaximum;
+    check(!mvm::project::stepClipVolume(atMaximum, {audio.id}, 1.0).success &&
+              atMaximum == maximumBefore,
+          "上限の音量を上げる操作を変更ありとして受理しました");
+    check(!mvm::project::stepClipVolume(project, {"missing"}, 1.0).success && project == before,
+          "存在しないclipの音量変更を受理しました");
+
+    check(mvm::project::stepClipVolume(project, {audio.id, keyed.id}, -1.0).success &&
+              std::abs(volumeOf(audio.id) - 100.0) < 1e-9,
+          "複数clipを-1dBで元に戻せません");
+}
+
+// トランジションの検証と、編集後の整合 (reconcile)。
+// A [0,300) と B [300,600) は同じ 600 frame の素材の前半と後半で、cut の前後に 300 frame ずつ
+// 余白がある。期待値は手で数えた値である。
+mvm::project::Project transitionProject() {
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    auto a = clip("A");
+    a.sourceFrameCount = 600;
+    a.sourceOutFrame = 300;
+    auto b = clip("B");
+    b.sourceFrameCount = 600;
+    b.sourceInFrame = 300;
+    b.sourceOutFrame = 600;
+    b.timelineStartFrame = 300;
+    project.timelineClips = {a, b};
+    project.timelineTransitions = {{"t1", a.id, b.id, 30, 30}};
+    return project;
+}
+
+bool failsWith(const mvm::project::Project& project, const char* fragment) {
+    const auto valid = mvm::project::validateTimeline(project);
+    if (valid.success || valid.error.find(fragment) == std::string::npos) {
+        std::fprintf(stderr, "  期待: %s / 実際: %s\n", fragment,
+                     valid.success ? "(成功)" : valid.error.c_str());
+        return false;
+    }
+    return true;
+}
+
+void testTimelineTransitions(const std::filesystem::path& root) {
+    using mvm::project::LinkMode;
+    using mvm::project::TrimEdge;
+    const auto base = transitionProject();
+    check(mvm::project::validateTimeline(base).success, "対照: 正しいトランジションを拒否しました");
+
+    // JSON を往復する (enabled=false も一緒に見る)。
+    {
+        auto saved = base;
+        saved.timelineClips[1].enabled = false;
+        mvm::test::attachFixtureMedia(saved);
+        const auto path = root / "transitions.mvm";
+        const auto serialized = mvm::project::serializeProjectJson(saved, path);
+        const auto loaded = serialized.success
+                                ? mvm::project::parseProjectJsonText(serialized.json, path)
+                                : mvm::project::ProjectLoadResult{};
+        check(loaded.success && loaded.project.timelineTransitions == saved.timelineTransitions &&
+                  !loaded.project.timelineClips[1].enabled &&
+                  loaded.project.timelineClips[0].enabled,
+              "トランジションと無効clipがJSONを往復しません");
+        if (serialized.success) {
+            auto missing = serialized.json;
+            const auto at = missing.find("\"frames_after_cut\": 30");
+            check(at != std::string::npos, "frames_after_cut が出力されません");
+            if (at != std::string::npos) {
+                missing.erase(at, std::string("\"frames_after_cut\": 30").size());
+                // 直前の ", " が残るので JSON としても壊れる。どちらでも読み込みは失敗する。
+                check(!mvm::project::parseProjectJsonText(missing, path).success,
+                      "frames_after_cut の無いトランジションを受理しました");
+            }
+        }
+    }
+
+    // 検証の負例。いずれも対照群から 1 か所だけ変える。
+    auto invalid = base;
+    invalid.timelineTransitions.push_back(invalid.timelineTransitions[0]);
+    check(failsWith(invalid, "ID が空または重複"), "重複したトランジションIDを受理しました");
+    invalid = base;
+    invalid.timelineTransitions[0].incomingClipId = "missing";
+    check(failsWith(invalid, "clip がありません"), "存在しないclipのトランジションを受理しました");
+    invalid = base;
+    invalid.timelineClips[1].track = kV2;
+    check(failsWith(invalid, "同じ track にありません"), "別trackのトランジションを受理しました");
+    invalid = base;
+    invalid.timelineClips[1].timelineStartFrame = 301;
+    check(failsWith(invalid, "接していません"), "接していないclipのトランジションを受理しました");
+    invalid = base;
+    invalid.timelineTransitions[0].framesBeforeCut = 0;
+    invalid.timelineTransitions[0].framesAfterCut = 0;
+    check(failsWith(invalid, "長さが不正"), "0 frameのトランジションを受理しました");
+    invalid = base;
+    invalid.timelineTransitions[0].framesBeforeCut = -1;
+    check(failsWith(invalid, "長さが不正"), "負の長さのトランジションを受理しました");
+    invalid = base;
+    invalid.timelineTransitions[0].framesBeforeCut = 301;
+    check(failsWith(invalid, "余白が足りません"), "頭の余白を超えるトランジションを受理しました");
+    invalid = base;
+    invalid.timelineTransitions[0].framesAfterCut = 301;
+    check(failsWith(invalid, "余白が足りません"), "尻の余白を超えるトランジションを受理しました");
+    invalid = base;
+    invalid.timelineClips[0].sourceInFrame = 280; // A を [0,20) にする (尻の余白は 300 のまま)
+    invalid.timelineClips[1].timelineStartFrame = 20;
+    check(failsWith(invalid, "尺を超えています"), "clipの尺を超えるトランジションを受理しました");
+    invalid = base;
+    invalid.timelineClips[0].effects.fadeOutFrames = 10;
+    check(failsWith(invalid, "フェードを設定できません"),
+          "フェードとトランジションの併用を受理しました");
+    invalid = base;
+    invalid.timelineClips[1].effects.fadeInFrames = 10;
+    check(failsWith(invalid, "フェードを設定できません"),
+          "incoming側のフェードとトランジションの併用を受理しました");
+    {
+        // B を 60 frame にし、前後のトランジションが B の内側で 40 + 40 = 80 frame 重なる。
+        auto overlap = base;
+        overlap.timelineClips[1].sourceOutFrame = 360;
+        auto c = clip("C");
+        c.sourceFrameCount = 600;
+        c.sourceInFrame = 300;
+        c.sourceOutFrame = 600;
+        c.timelineStartFrame = 360;
+        overlap.timelineClips.push_back(c);
+        overlap.timelineTransitions = {{"t1", "id-A", "id-B", 20, 40},
+                                       {"t2", "id-B", c.id, 40, 20}};
+        check(failsWith(overlap, "前後のトランジションが重なって"),
+              "clipの内側で重なるトランジションを受理しました");
+        overlap.timelineTransitions[1].framesBeforeCut = 20;
+        check(mvm::project::validateTimeline(overlap).success,
+              "対照: clipの内側で重ならない前後のトランジションを拒否しました");
+        overlap.timelineTransitions.push_back({"t3", "id-A", c.id, 1, 0});
+        check(failsWith(overlap, "接していません"), "接していない組のトランジションを受理しました");
+        overlap.timelineTransitions.back() = {"t3", "id-A", "id-B", 1, 1};
+        check(failsWith(overlap, "複数のトランジション"),
+              "同じclip端の複数トランジションを受理しました");
+    }
+    {
+        // クロスディゾルブは画面全体を覆う不透明な映像どうしでだけ置ける (incoming を不透明度 p で
+        // 重ねる作りなので、透過・変形していると区間の終わりで不連続になる)。
+        auto scaled = base;
+        scaled.timelineClips[1].effects.scaleXPercent = 80;
+        check(failsWith(scaled, "画面全体を覆う不透明"),
+              "縮小したincomingのディゾルブを受理しました");
+        auto moved = base;
+        moved.timelineClips[0].effects.positionXPercent = 10;
+        check(failsWith(moved, "画面全体を覆う不透明"),
+              "移動したoutgoingのディゾルブを受理しました");
+        auto cropped = base;
+        cropped.timelineClips[1].effects.cropLeftPercent = 5;
+        check(failsWith(cropped, "画面全体を覆う不透明"),
+              "切り抜いたincomingのディゾルブを受理しました");
+        auto translucent = base;
+        translucent.timelineClips[1].effects.opacityPercent = 50;
+        check(failsWith(translucent, "画面全体を覆う不透明"),
+              "半透明のincomingのディゾルブを受理しました");
+        // 区間 (outgoing の最後の 30 frame) に掛かる不透明度 key は拒否し、掛からなければ許す。
+        auto keyedNear = base;
+        keyedNear.timelineClips[0].effects.opacityKeys = {{0, 100.0}, {299, 90.0}};
+        check(failsWith(keyedNear, "画面全体を覆う不透明"),
+              "区間で不透明度の下がるoutgoingのディゾルブを受理しました");
+        auto keyedFar = base;
+        keyedFar.timelineClips[0].effects.opacityKeys = {{0, 50.0}, {100, 100.0}};
+        check(mvm::project::validateTimeline(keyedFar).success,
+              "区間の外の不透明度keyでディゾルブを拒否しました");
+        // 音声のクロスフェードは映像の見た目に関係しないので制限しない。
+        auto audio = base;
+        for (auto& value : audio.timelineClips) {
+            value.kind = mvm::project::TimelineClipKind::Audio;
+            value.track = kA1;
+            value.effects.volumePercent = 50;
+        }
+        check(mvm::project::validateTimeline(audio).success,
+              "音量を変えた音声のクロスフェードを拒否しました");
+        // 作るときも同じ理由で断る (余白不足と取り違えない)。
+        auto refusedScaled = scaled;
+        refusedScaled.timelineTransitions.clear();
+        const auto refused = mvm::project::applyDefaultEditTransition(
+            refusedScaled, "id-A", "id-B", 60, LinkMode::Linked, sequentialIds());
+        check(!refused.success && refused.error.find("画面全体を覆う不透明") != std::string::npos,
+              "縮小したclipへのディゾルブの作成を正しい理由で断りません");
+    }
+    {
+        // フレーム保持 clip の端には置けない。
+        auto held = base;
+        held.timelineTransitions.clear();
+        mvm::test::attachFixtureMedia(held);
+        check(mvm::project::insertFrameHold(held, "id-A", 100, 30, sequentialIds()).success,
+              "前提: フレーム保持を挿入できません");
+        const auto* hold = [&]() -> const mvm::project::TimelineClip* {
+            for (const auto& value : held.timelineClips)
+                if (value.frameHold)
+                    return &value;
+            return nullptr;
+        }();
+        check(hold != nullptr, "前提: フレーム保持clipがありません");
+        if (hold) {
+            held.timelineTransitions = {{"t-hold", "id-A", hold->id, 0, 1}};
+            check(failsWith(held, "フレーム保持"),
+                  "フレーム保持clipのトランジションを受理しました");
+        }
+    }
+
+    // 編集後の整合。
+    const auto transitionsOf = [](const mvm::project::Project& project) {
+        return project.timelineTransitions;
+    };
+    {
+        auto edited = base;
+        check(mvm::project::deleteTimelineClip(edited, 1).success &&
+                  edited.timelineTransitions.empty(),
+              "clipの削除でトランジションを消しません");
+    }
+    {
+        auto edited = base;
+        check(mvm::project::moveClip(edited, "id-B", kV1, 400).success &&
+                  edited.timelineTransitions.empty(),
+              "片側の移動で離れたclipのトランジションを消しません");
+    }
+    {
+        auto edited = base;
+        check(mvm::project::moveClips(edited, {"id-A", "id-B"}, "id-A", kV2, 0, LinkMode::Linked)
+                      .success &&
+                  transitionsOf(edited) == transitionsOf(base),
+              "両clipを一緒に動かしたらトランジションが変わりました");
+    }
+    {
+        // roll で cut を +290 動かすと、A の尻の余白が 10 frame になる。
+        auto edited = base;
+        check(mvm::project::rollTimelineEdit(edited, "id-A", TrimEdge::Right, 290, LinkMode::Linked)
+                      .success &&
+                  edited.timelineTransitions.size() == 1 &&
+                  edited.timelineTransitions[0].framesBeforeCut == 30 &&
+                  edited.timelineTransitions[0].framesAfterCut == 10,
+              "余白の減ったトランジションを縮めません");
+    }
+    {
+        // A を分割すると、トランジションの outgoing は右半分になる。
+        auto edited = base;
+        check(mvm::project::splitTimelineClips(edited, {"id-A"}, 100, sequentialIds(),
+                                               LinkMode::Linked)
+                      .success &&
+                  edited.timelineTransitions.size() == 1 &&
+                  edited.timelineTransitions[0].outgoingClipId == "new-1" &&
+                  edited.timelineTransitions[0].incomingClipId == "id-B" &&
+                  edited.timelineTransitions[0].framesBeforeCut == 30,
+              "分割した右半分へトランジションを付け替えません");
+    }
+    {
+        // トランジションの区間の中 (cut + 10) で B を切ると、B の左半分は 10 frame になる。
+        auto edited = base;
+        check(mvm::project::splitTimelineClips(edited, {"id-B"}, 310, sequentialIds(),
+                                               LinkMode::Linked)
+                      .success &&
+                  edited.timelineTransitions.size() == 1 &&
+                  edited.timelineTransitions[0].framesAfterCut == 10,
+              "区間の中の分割でトランジションを縮めません");
+    }
+    {
+        // 60fps -> 30fps で長さも秒位置で換算する (30 frame = 0.5 秒 -> 15 frame)。
+        auto edited = base;
+        check(mvm::project::setTimelineFrameRate(edited, 30, 1).success &&
+                  edited.timelineTransitions.size() == 1 &&
+                  edited.timelineTransitions[0].framesBeforeCut == 15 &&
+                  edited.timelineTransitions[0].framesAfterCut == 15,
+              "fps変更でトランジションの長さを換算しません");
+    }
+    {
+        // reconcile は変える必要の無いトランジションを変えない。
+        auto untouched = base;
+        mvm::project::reconcileTimelineTransitions(untouched);
+        check(untouched == base, "変更の要らないトランジションをreconcileが変えました");
+    }
+}
+
+// Shift+E。1 つでも有効なら全部を無効に、全部が無効なら全部を有効にする。リンク相手も揃える。
+void testToggleClipsEnabled() {
+    using mvm::project::TimelineClipKind;
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    auto video = clip("video");
+    video.linkGroupId = "enabled-link";
+    auto audio = clip("audio", TimelineClipKind::Audio, kA1);
+    audio.linkGroupId = "enabled-link";
+    auto other = clip("other", TimelineClipKind::Video, kV2);
+    other.enabled = false;
+    project.timelineClips = {video, audio, other};
+    const auto enabledOf = [&](const std::string& id) { return findClip(project, id)->enabled; };
+
+    check(mvm::project::toggleClipsEnabled(project, {video.id, other.id}).success &&
+              !enabledOf(video.id) && !enabledOf(audio.id) && !enabledOf(other.id),
+          "有効と無効の混ざった選択を全部無効にしません (リンク相手を含む)");
+    check(mvm::project::toggleClipsEnabled(project, {video.id, other.id}).success &&
+              enabledOf(video.id) && enabledOf(audio.id) && enabledOf(other.id),
+          "全部無効の選択を全部有効にしません");
+    const auto before = project;
+    check(!mvm::project::toggleClipsEnabled(project, {}).success && project == before,
+          "空の選択で有効/無効を切り換えました");
+    check(!mvm::project::toggleClipsEnabled(project, {video.id, "missing"}).success &&
+              project == before,
+          "存在しないclipを含む選択で有効/無効を切り換えました");
+}
+
+// Shift+D (clip 選択)。期待値は手で数えた値である。
+void testApplyDefaultClipFades() {
+    using mvm::project::TimelineClipKind;
+    check(mvm::project::defaultTransitionFrames(60, 1) == 60 &&
+              mvm::project::defaultTransitionFrames(30000, 1001) == 30 &&
+              mvm::project::defaultTransitionFrames(24000, 1001) == 24,
+          "1秒のtimeline frame数が違います");
+
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    auto video = clip("video"); // 60fps 素材、300 frame、等速
+    video.linkGroupId = "fade-link";
+    auto audio = clip("audio", TimelineClipKind::Audio, kA1);
+    audio.linkGroupId = "fade-link";
+    auto fast = clip("fast", TimelineClipKind::Video, kV2); // 2 倍速: timeline 150 frame
+    fast.speedNum = 2;
+    auto shortClip = clip("short", TimelineClipKind::Video, kV2); // 50 frame
+    shortClip.sourceOutFrame = 50;
+    shortClip.timelineStartFrame = 200;
+    project.timelineClips = {video, audio, fast, shortClip};
+    check(mvm::project::validateTimeline(project).success, "フェード試験用のtimelineが不正です");
+    const auto fadesOf = [&](const std::string& id) {
+        const auto& effects = findClip(project, id)->effects;
+        return std::pair<std::int64_t, std::int64_t>{effects.fadeInFrames, effects.fadeOutFrames};
+    };
+
+    check(mvm::project::applyDefaultClipFades(project, {video.id}, 60).success &&
+              fadesOf(video.id) == std::pair<std::int64_t, std::int64_t>{60, 60} &&
+              fadesOf(audio.id) == std::pair<std::int64_t, std::int64_t>{60, 60},
+          "等速clipとリンク相手に60/60のフェードを付けません");
+    check(mvm::project::applyDefaultClipFades(project, {fast.id}, 60).success &&
+              fadesOf(fast.id) == std::pair<std::int64_t, std::int64_t>{120, 120},
+          "2倍速clipのフェードを素材120 frameにしません");
+    check(mvm::project::applyDefaultClipFades(project, {shortClip.id}, 60).success &&
+              fadesOf(shortClip.id) == std::pair<std::int64_t, std::int64_t>{25, 25},
+          "尺の足りないclipで前後を半分ずつにしません");
+    const auto before = project;
+    check(!mvm::project::applyDefaultClipFades(project, {video.id}, 60).success &&
+              project == before,
+          "変化の無いフェードの適用を受理しました");
+
+    // 1 frame の clip は先頭だけが取る。
+    auto single = mvm::project::createDefaultProject();
+    auto one = clip("one");
+    one.sourceOutFrame = 1;
+    single.timelineClips = {one};
+    check(mvm::project::applyDefaultClipFades(single, {one.id}, 60).success &&
+              single.timelineClips[0].effects.fadeInFrames == 1 &&
+              single.timelineClips[0].effects.fadeOutFrames == 0,
+          "1 frameのclipのフェードが検証を通る形になりません");
+
+    // トランジションのある端は変えない。
+    auto withTransition = transitionProject();
+    check(mvm::project::applyDefaultClipFades(withTransition, {"id-A", "id-B"}, 60).success,
+          "トランジションのあるclipにフェードを付けられません");
+    const auto& a = *findClip(withTransition, "id-A");
+    const auto& b = *findClip(withTransition, "id-B");
+    check(a.effects.fadeInFrames == 60 && a.effects.fadeOutFrames == 0 &&
+              b.effects.fadeInFrames == 0 && b.effects.fadeOutFrames == 60 &&
+              withTransition.timelineTransitions.size() == 1,
+          "トランジションのある端のフェードを変えました");
+}
+
+// clip の端を指定位置へ動かす。30fps 素材は 60fps timeline で 2 frame 単位にしか動けない。
+void testClipWithEdgeAt() {
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    auto half = clip("half");
+    half.sourceFpsNum = 30;
+    half.sourceFrameCount = 100;
+    half.sourceOutFrame = 50; // timeline [0, 100)
+    std::string error;
+    const auto aligned =
+        mvm::project::clipWithEdgeAt(project, half, mvm::project::TrimEdge::Right, 102, error);
+    check(aligned && aligned->sourceOutFrame == 51 && aligned->sourceInFrame == 0,
+          "2 frame単位の位置へ端を動かせません");
+    const auto rounded =
+        mvm::project::clipWithEdgeAt(project, half, mvm::project::TrimEdge::Right, 101, error);
+    check(!rounded && !error.empty(), "素材frameへ一意に換算できない位置を受理しました");
+    error.clear();
+    const auto beyond =
+        mvm::project::clipWithEdgeAt(project, half, mvm::project::TrimEdge::Right, 202, error);
+    check(!beyond, "素材の範囲を超える位置を受理しました");
+}
+
+// Shift+D (編集点)。transitionProject の A / B は cut の前後に 300 frame ずつ余白がある。
+// 期待値は手で数えた値である。
+void testApplyDefaultEditTransition() {
+    using mvm::project::LinkMode;
+    auto base = transitionProject();
+    base.timelineTransitions.clear();
+    check(mvm::project::touchingClipId(base, "id-A", mvm::project::TrimEdge::Right) == "id-B" &&
+              mvm::project::touchingClipId(base, "id-B", mvm::project::TrimEdge::Left) == "id-A" &&
+              mvm::project::touchingClipId(base, "id-A", mvm::project::TrimEdge::Left).empty(),
+          "接しているclipを求められません");
+
+    auto centered = base;
+    centered.timelineClips[0].effects.fadeOutFrames = 10;
+    const auto placed = mvm::project::applyDefaultEditTransition(centered, "id-A", "id-B", 60,
+                                                                 LinkMode::Linked, sequentialIds());
+    check(placed.success && placed.frames == 60 && placed.transitionCount == 1 &&
+              centered.timelineTransitions.size() == 1 &&
+              centered.timelineTransitions[0].id == placed.transitionId &&
+              centered.timelineTransitions[0].framesBeforeCut == 30 &&
+              centered.timelineTransitions[0].framesAfterCut == 30 &&
+              centered.timelineClips[0].effects.fadeOutFrames == 0,
+          "編集点に中央揃えの60 frameのトランジションを置き、端のフェードを消しません");
+    const auto replaced = mvm::project::applyDefaultEditTransition(
+        centered, "id-A", "id-B", 20, LinkMode::Linked, sequentialIds());
+    check(replaced.success && centered.timelineTransitions.size() == 1 &&
+              centered.timelineTransitions[0].framesBeforeCut == 10 &&
+              centered.timelineTransitions[0].framesAfterCut == 10,
+          "同じ編集点の既存のトランジションを置き換えません");
+
+    // outgoing の尻の余白が 10 frame しか無ければ、残りを cut の前へ寄せる。
+    auto shortTail = base;
+    shortTail.timelineClips[0].sourceFrameCount = 310;
+    const auto shifted = mvm::project::applyDefaultEditTransition(
+        shortTail, "id-A", "id-B", 60, LinkMode::Linked, sequentialIds());
+    check(shifted.success && shifted.frames == 60 &&
+              shortTail.timelineTransitions[0].framesBeforeCut == 50 &&
+              shortTail.timelineTransitions[0].framesAfterCut == 10,
+          "片側の余白が足りないときにもう片側へ寄せません");
+
+    // 両側とも余白が無ければ作らない。
+    auto noHandles = base;
+    noHandles.timelineClips[0].sourceFrameCount = 300;
+    noHandles.timelineClips[1].sourceInFrame = 0;
+    noHandles.timelineClips[1].sourceOutFrame = 300;
+    const auto noHandlesBefore = noHandles;
+    const auto refused = mvm::project::applyDefaultEditTransition(
+        noHandles, "id-A", "id-B", 60, LinkMode::Linked, sequentialIds());
+    check(!refused.success && refused.error.find("余白が足りない") != std::string::npos &&
+              noHandles == noHandlesBefore,
+          "余白の無い編集点にトランジションを作りました");
+    check(!mvm::project::applyDefaultEditTransition(base, "id-A", "missing", 60, LinkMode::Linked,
+                                                    sequentialIds())
+               .success,
+          "存在しないclipの編集点にトランジションを作りました");
+
+    // 30fps 素材は 60fps timeline で 2 frame 単位にしか延ばせない。61 frame は 60 frame に縮める。
+    auto halfRate = base;
+    for (auto& value : halfRate.timelineClips) {
+        value.sourceFpsNum = 30;
+        value.sourceFrameCount = 300;
+    }
+    halfRate.timelineClips[0].sourceOutFrame = 150;
+    halfRate.timelineClips[1].sourceInFrame = 150;
+    halfRate.timelineClips[1].sourceOutFrame = 300;
+    check(mvm::project::validateTimeline(halfRate).success, "前提: 30fps素材のtimelineが不正です");
+    const auto aligned = mvm::project::applyDefaultEditTransition(
+        halfRate, "id-A", "id-B", 61, LinkMode::Linked, sequentialIds());
+    check(aligned.success && aligned.frames == 60 &&
+              halfRate.timelineTransitions[0].framesBeforeCut == 30 &&
+              halfRate.timelineTransitions[0].framesAfterCut == 30,
+          "素材frameに乗らない長さを縮めません");
+
+    // 置く区間 (30 / 30) だけが不透明なら置ける。outgoing は最後の 30 frame だけが不透明
+    // (local 269 以前は 99%)。求めた長さ 60 を事前に丸ごと検査して断らない。
+    auto opaqueTail = base;
+    opaqueTail.timelineClips[0].effects.opacityKeys = {{269, 99.0}, {270, 100.0}};
+    const auto opaquePlaced = mvm::project::applyDefaultEditTransition(
+        opaqueTail, "id-A", "id-B", 60, LinkMode::Linked, sequentialIds());
+    check(opaquePlaced.success && opaquePlaced.frames == 60 &&
+              opaqueTail.timelineTransitions[0].framesBeforeCut == 30 &&
+              opaqueTail.timelineTransitions[0].framesAfterCut == 30,
+          "置く区間だけが不透明なoutgoingへのディゾルブを断りました");
+    // 80 frame なら cut の前は不透明な 30 frame まで、残りを後ろへ寄せる。
+    auto opaqueLonger = base;
+    opaqueLonger.timelineClips[0].effects.opacityKeys = {{269, 99.0}, {270, 100.0}};
+    const auto shiftedByOpacity = mvm::project::applyDefaultEditTransition(
+        opaqueLonger, "id-A", "id-B", 80, LinkMode::Linked, sequentialIds());
+    check(shiftedByOpacity.success && shiftedByOpacity.frames == 80 &&
+              opaqueLonger.timelineTransitions[0].framesBeforeCut == 30 &&
+              opaqueLonger.timelineTransitions[0].framesAfterCut == 50,
+          "不透明な範囲に合わせてcutの前後を寄せません");
+
+    // 素材 frame に乗る長さは cut の前後で別々に決まる。outgoing が 30fps (尻へは 2 frame 単位)、
+    // incoming が 60fps (頭の余白 40) なら、61 frame は 31 / 30 で置ける (60 へ縮めない)。
+    auto mixedRate = base;
+    mixedRate.timelineClips[0].sourceFpsNum = 30;
+    mixedRate.timelineClips[0].sourceFrameCount = 300;
+    mixedRate.timelineClips[0].sourceOutFrame = 150;
+    mixedRate.timelineClips[1].sourceFrameCount = 600;
+    mixedRate.timelineClips[1].sourceInFrame = 40;
+    mixedRate.timelineClips[1].sourceOutFrame = 340;
+    check(mvm::project::validateTimeline(mixedRate).success, "前提: fpsの違うtimelineが不正です");
+    const auto mixedPlaced = mvm::project::applyDefaultEditTransition(
+        mixedRate, "id-A", "id-B", 61, LinkMode::Linked, sequentialIds());
+    check(mixedPlaced.success && mixedPlaced.frames == 61 &&
+              mixedRate.timelineTransitions[0].framesBeforeCut == 31 &&
+              mixedRate.timelineTransitions[0].framesAfterCut == 30,
+          "素材frameに乗る組があるのに必要以上に縮めました");
+    // ID は置いたトランジションの数だけ作る (長さを探す間に使い捨てない)。
+    check(mixedPlaced.transitionId == "new-1", "長さの探索でトランジションIDを使い捨てました");
+
+    // リンク相手 (音声) も同じ cut で接していれば一緒に置く。
+    auto linked = base;
+    auto audioA = linked.timelineClips[0];
+    audioA.id = "id-audio-A";
+    audioA.kind = mvm::project::TimelineClipKind::Audio;
+    audioA.track = kA1;
+    auto audioB = linked.timelineClips[1];
+    audioB.id = "id-audio-B";
+    audioB.kind = mvm::project::TimelineClipKind::Audio;
+    audioB.track = kA1;
+    linked.timelineClips[0].linkGroupId = audioA.linkGroupId = "link-A";
+    linked.timelineClips[1].linkGroupId = audioB.linkGroupId = "link-B";
+    linked.timelineClips.push_back(audioA);
+    linked.timelineClips.push_back(audioB);
+    check(mvm::project::validateTimeline(linked).success, "前提: リンクしたtimelineが不正です");
+    const auto both = mvm::project::applyDefaultEditTransition(linked, "id-A", "id-B", 60,
+                                                               LinkMode::Linked, sequentialIds());
+    check(both.success && both.transitionCount == 2 && linked.timelineTransitions.size() == 2,
+          "リンク相手の編集点にもトランジションを置きません");
+    // 音声の尻の余白が 20 frame しか無くても、映像と音声は同じ長さ・同じ cut の前後で置く
+    // (映像だけ 30 / 30 で音声が 40 / 20 のように食い違わない)。
+    auto shortAudio = linked;
+    shortAudio.timelineTransitions.clear();
+    for (auto& value : shortAudio.timelineClips)
+        if (value.id == "id-audio-A")
+            value.sourceFrameCount = 320;
+    const auto matched = mvm::project::applyDefaultEditTransition(
+        shortAudio, "id-A", "id-B", 60, LinkMode::Linked, sequentialIds());
+    check(matched.success && matched.frames == 60 && matched.transitionCount == 2 &&
+              shortAudio.timelineTransitions.size() == 2 &&
+              shortAudio.timelineTransitions[0].framesBeforeCut == 40 &&
+              shortAudio.timelineTransitions[0].framesAfterCut == 20 &&
+              shortAudio.timelineTransitions[1].framesBeforeCut == 40 &&
+              shortAudio.timelineTransitions[1].framesAfterCut == 20,
+          "リンク相手の余白に合わせて映像と音声のトランジションを同じ長さにしません");
+    auto single = linked;
+    single.timelineTransitions.clear();
+    check(mvm::project::applyDefaultEditTransition(single, "id-A", "id-B", 60, LinkMode::Single,
+                                                   sequentialIds())
+                      .transitionCount == 1 &&
+              single.timelineTransitions.size() == 1,
+          "Singleでリンク相手にもトランジションを置きました");
+
+    check(mvm::project::deleteTimelineTransition(linked, both.transitionId).success &&
+              linked.timelineTransitions.size() == 1,
+          "トランジションを削除できません");
+    const auto beforeMissing = linked;
+    check(!mvm::project::deleteTimelineTransition(linked, "missing").success &&
+              linked == beforeMissing,
+          "存在しないトランジションの削除を受理しました");
+}
+
+// 上書き移動。V1 の long [0, 300) の上へ V2 の mover (60 frame) を動かす。期待値は手で数えた値。
+void testMoveOverwrite() {
+    using mvm::project::LinkMode;
+    const auto base = [] {
+        auto project = mvm::project::createDefaultProject();
+        auto mover = clip("mover", mvm::project::TimelineClipKind::Video, kV2);
+        mover.sourceOutFrame = 60;
+        project.timelineClips = {clip("long"), mover};
+        return project;
+    };
+    const auto spanOf = [](const mvm::project::Project& project, const std::string& id) {
+        const auto* found = findClip(project, id);
+        return found ? std::pair<std::int64_t, std::int64_t>{found->timelineStartFrame,
+                                                             clipEnd(project, *found)}
+                     : std::pair<std::int64_t, std::int64_t>{-1, -1};
+    };
+
+    auto inside = base();
+    check(mvm::project::moveClips(inside, {"id-mover"}, "id-mover", kV1, 100, LinkMode::Linked,
+                                  sequentialIds())
+                  .success &&
+              spanOf(inside, "id-long") == std::pair<std::int64_t, std::int64_t>{0, 100} &&
+              spanOf(inside, "id-mover") == std::pair<std::int64_t, std::int64_t>{100, 160} &&
+              spanOf(inside, "new-1") == std::pair<std::int64_t, std::int64_t>{160, 300} &&
+              findClip(inside, "new-1")->sourceInFrame == 160,
+          "clipの中へ上書き移動して前後に分けません");
+
+    auto tail = base();
+    check(mvm::project::moveClips(tail, {"id-mover"}, "id-mover", kV1, 250, LinkMode::Linked,
+                                  sequentialIds())
+                  .success &&
+              spanOf(tail, "id-long") == std::pair<std::int64_t, std::int64_t>{0, 250} &&
+              tail.timelineClips.size() == 2,
+          "clipの末尾へ上書き移動して末尾を削りません");
+
+    auto head = base();
+    check(mvm::project::moveClips(head, {"id-mover"}, "id-mover", kV1, 0, LinkMode::Linked,
+                                  sequentialIds())
+                  .success &&
+              spanOf(head, "id-long") == std::pair<std::int64_t, std::int64_t>{60, 300} &&
+              findClip(head, "id-long")->sourceInFrame == 60,
+          "clipの先頭へ上書き移動して先頭を削りません");
+
+    // 丸ごと覆った clip は消し、リンク相手は未リンクにする。
+    auto covered = base();
+    auto tiny = clip("tiny");
+    tiny.sourceOutFrame = 30;
+    tiny.timelineStartFrame = 400;
+    tiny.linkGroupId = "tiny-link";
+    auto tinyAudio = clip("tiny-audio", mvm::project::TimelineClipKind::Audio, kA1);
+    tinyAudio.sourceOutFrame = 30;
+    tinyAudio.timelineStartFrame = 400;
+    tinyAudio.linkGroupId = "tiny-link";
+    covered.timelineClips.push_back(tiny);
+    covered.timelineClips.push_back(tinyAudio);
+    check(mvm::project::validateTimeline(covered).success, "前提: 上書き試験のtimelineが不正です");
+    check(mvm::project::moveClips(covered, {"id-mover"}, "id-mover", kV1, 390, LinkMode::Linked,
+                                  sequentialIds())
+                  .success &&
+              findClip(covered, "id-tiny") == nullptr &&
+              findClip(covered, "id-tiny-audio")->linkGroupId.empty(),
+          "丸ごと覆ったclipを消してリンク相手を未リンクにしません");
+
+    // newId を渡さなければ従来どおり重なりを拒否する。
+    auto rejected = base();
+    const auto before = rejected;
+    check(!mvm::project::moveClips(rejected, {"id-mover"}, "id-mover", kV1, 100, LinkMode::Linked)
+                  .success &&
+              rejected == before,
+          "上書きを指定しない移動で重なりを受理しました");
 }
 
 void testRippleTrim() {
@@ -1946,15 +2614,28 @@ void testPersistenceTransaction(const std::filesystem::path& root) {
             }
         };
         withoutField("preserve_pitch");
+        withoutField("enabled");
         withoutField("frame_hold");
+        {
+            // トップレベルの timeline_transitions も必須。
+            auto text = serialized.json;
+            const auto key = text.find("  \"timeline_transitions\": [");
+            check(key != std::string::npos, "timeline_transitions が出力されません");
+            if (key != std::string::npos) {
+                const auto end = text.find("],\n", key);
+                text.erase(key, end + 3 - key);
+                check(!mvm::project::parseProjectJsonText(text, projectFile).success,
+                      "timeline_transitions の欠落を受理しました");
+            }
+        }
         auto oldSchema = serialized.json;
-        const auto schema = oldSchema.find("\"schema_version\": 12");
-        check(schema != std::string::npos, "schema 12 が出力されません");
+        const auto schema = oldSchema.find("\"schema_version\": 13");
+        check(schema != std::string::npos, "schema 13 が出力されません");
         if (schema != std::string::npos) {
-            oldSchema.replace(schema, std::string("\"schema_version\": 12").size(),
-                              "\"schema_version\": 11");
+            oldSchema.replace(schema, std::string("\"schema_version\": 13").size(),
+                              "\"schema_version\": 12");
             check(!mvm::project::parseProjectJsonText(oldSchema, projectFile).success,
-                  "schema 11 を受理しました");
+                  "schema 12 を受理しました");
         }
     }
 
@@ -2285,6 +2966,13 @@ int main(int argc, char** argv) {
     testSplitClips();
     testRateStretch();
     testRateStretchLinkedDifferentDurations();
+    testStepClipVolume();
+    testToggleClipsEnabled();
+    testApplyDefaultClipFades();
+    testClipWithEdgeAt();
+    testApplyDefaultEditTransition();
+    testMoveOverwrite();
+    testTimelineTransitions(std::filesystem::path(argv[1]));
     testRippleTrim();
     testRollEdit();
     testLinkedToolEditing();

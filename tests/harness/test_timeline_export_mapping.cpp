@@ -1,4 +1,5 @@
 #include "app/timeline_export.h"
+#include "project/timeline_edit.h"
 
 #include <cmath>
 #include <cstdio>
@@ -45,6 +46,122 @@ int main() {
             "contiguous V1-onlyがsequential fast pathではありません");
     require(sequential.clips[0].projectClipIndex == 1 && sequential.clips[1].projectClipIndex == 0,
             "shuffled Project vectorをtimeline startで解決していません");
+
+    {
+        mvm::project::Project withTransition = mvm::project::createDefaultProject();
+        auto outgoing = clip("out", 0, 0, 0, 50);
+        outgoing.sourceFrameCount = 100;
+        auto incoming = clip("in", 0, 50, 50, 50);
+        withTransition.timelineClips = {outgoing, incoming};
+        require(mvm::app::mapTimelineExportPlan(withTransition, request).success,
+                "対照: トランジションの無い2clipを書き出せません");
+        withTransition.timelineTransitions = {{"t", "out", "in", 10, 10}};
+        require(mvm::project::validateTimeline(withTransition).success,
+                "前提: 書き出し試験のトランジションが不正です");
+        // cut = 50、区間 [40, 60)。期待値は手で数えた値である。
+        //   layer 0: out を [0, 60) に延ばす (素材 0..60)、in の残りを [60, 100) (素材 60..100)
+        //   layer 1: in の頭を [40, 60) (素材 40..60) に重ね、不透明度を (k + 0.5) / 20 で上げる
+        const auto plan = mvm::app::mapTimelineExportPlan(withTransition, request);
+        require(plan.success && plan.backend == mvm::app::TimelineExportResult::Backend::Tractor &&
+                    plan.clips.size() == 3 && plan.totalDurationFrames == 100,
+                "ディゾルブを3区間のtractorへmappingしません");
+        if (plan.clips.size() == 3) {
+            const auto& base = plan.clips[0];
+            const auto& rest = plan.clips[1];
+            const auto& over = plan.clips[2];
+            require(base.projectClipIndex == 0 && base.videoTrackIndex == 0 &&
+                        base.timelineStartFrame == 0 && base.timelineDurationFrames == 60 &&
+                        base.renderClip.sourceInFrame == 0 && base.renderClip.sourceOutFrame == 60,
+                    "outgoingを尻の余白へ延ばしていません");
+            require(rest.projectClipIndex == 1 && rest.videoTrackIndex == 0 &&
+                        rest.timelineStartFrame == 60 && rest.timelineDurationFrames == 40 &&
+                        rest.renderClip.sourceInFrame == 60 &&
+                        rest.renderClip.sourceOutFrame == 100,
+                    "incomingの残りをlayer 0の区間の後ろへ置いていません");
+            require(over.projectClipIndex == 1 && over.videoTrackIndex == 1 &&
+                        over.timelineStartFrame == 40 && over.timelineDurationFrames == 20 &&
+                        over.renderClip.sourceInFrame == 40 && over.renderClip.sourceOutFrame == 60,
+                    "incomingの頭の区間をlayer 1へ重ねていません");
+            require(over.opacityKeys.size() == 20 &&
+                        std::abs(over.opacityKeys.front().opacity - 0.025) < 1e-12 &&
+                        std::abs(over.opacityKeys[10].opacity - 0.525) < 1e-12 &&
+                        std::abs(over.opacityKeys.back().opacity - 0.975) < 1e-12,
+                    "incomingの不透明度が区間の中で上がりません");
+        }
+        // V2 は incoming を重ねる layer の上へずれる (V1 の lane 1 = layer 1、V2 = layer 2)。
+        auto withUpper = withTransition;
+        withUpper.timelineClips.push_back(clip("upper", 1, 0, 0, 10));
+        const auto upperPlan = mvm::app::mapTimelineExportPlan(withUpper, request);
+        require(upperPlan.success && upperPlan.clips.size() == 4 &&
+                    upperPlan.clips.back().projectClipIndex == 2 &&
+                    upperPlan.clips.back().videoTrackIndex == 2,
+                "ディゾルブのあるtrackより上の映像trackをlayerの上へ置きません");
+        // 2 倍速の outgoing は素材を 2 倍進めて延ばす (timeline 10 frame = 素材 20 frame)。
+        auto fast = withTransition;
+        fast.timelineClips[0].speedNum = 2;
+        fast.timelineClips[0].sourceFrameCount = 200;
+        fast.timelineClips[0].sourceOutFrame = 100;
+        const auto fastPlan = mvm::app::mapTimelineExportPlan(fast, request);
+        require(fastPlan.success && fastPlan.clips.size() == 3 &&
+                    fastPlan.clips[0].timelineDurationFrames == 60 &&
+                    fastPlan.clips[0].renderClip.sourceOutFrame == 120,
+                "2倍速のoutgoingを素材の速度で延ばしません");
+    }
+    {
+        // 音声のクロスフェード: 2 clip を重ねて等パワーの gain で加算する。
+        mvm::project::Project crossfade = mvm::project::createDefaultProject();
+        auto outgoing = clip("a-out", 0, 0, 0, 50);
+        outgoing.sourceFrameCount = 100;
+        auto incoming = clip("a-in", 0, 50, 50, 50);
+        for (auto* value : {&outgoing, &incoming}) {
+            value->kind = mvm::project::TimelineClipKind::Audio;
+            value->track = {mvm::project::TrackKind::Audio, 0};
+        }
+        crossfade.timelineClips = {outgoing, incoming};
+        crossfade.timelineTransitions = {{"ta", "a-out", "a-in", 10, 10}};
+        const auto plan = mvm::app::mapTimelineExportPlan(crossfade, request);
+        require(plan.success && plan.clips.size() == 2 && plan.clips[0].audio &&
+                    plan.clips[0].timelineDurationFrames == 60 &&
+                    plan.clips[1].timelineStartFrame == 40 &&
+                    plan.clips[1].timelineDurationFrames == 60,
+                "クロスフェードの2clipを延ばして重ねません");
+        if (plan.success && plan.clips.size() == 2) {
+            const auto& fadingOut = plan.clips[0].gainKeys;
+            const auto& fadingIn = plan.clips[1].gainKeys;
+            require(fadingOut[39].gain == 1.0 && fadingIn[20].gain == 1.0,
+                    "クロスフェードの区間の外でgainを変えました");
+            // frame 50 (p = 10.5 / 20): cos(0.525 * pi / 2) = 0.678801 (手で計算)。
+            require(std::abs(fadingOut[50].gain - 0.678801) < 1e-5,
+                    "outgoingのgainが等パワーで下がりません");
+            bool powerKept = true;
+            for (int frame = 40; frame < 60; ++frame) {
+                const double outGain = fadingOut[static_cast<std::size_t>(frame)].gain;
+                const double inGain = fadingIn[static_cast<std::size_t>(frame - 40)].gain;
+                powerKept =
+                    powerKept && std::abs(outGain * outGain + inGain * inGain - 1.0) < 1e-12;
+            }
+            require(powerKept, "クロスフェードの区間で2clipのgainの二乗和が1になりません");
+        }
+    }
+    {
+        // 無効にした clip は書き出さない。尺は timeline 全体のまま (穴は tractor が埋める)。
+        mvm::project::Project disabledProject = mvm::project::createDefaultProject();
+        disabledProject.timelineClips = {clip("first", 0, 0, 0, 10), clip("second", 0, 10, 0, 10)};
+        const auto control = mvm::app::mapTimelineExportPlan(disabledProject, request);
+        require(control.success && control.clips.size() == 2 &&
+                    control.backend == mvm::app::TimelineExportResult::Backend::Sequential,
+                "対照: 有効な2clipをsequentialで書き出せません");
+        disabledProject.timelineClips[1].enabled = false;
+        const auto disabled = mvm::app::mapTimelineExportPlan(disabledProject, request);
+        require(disabled.success && disabled.clips.size() == 1 &&
+                    disabled.clips[0].projectClipIndex == 0 && disabled.totalDurationFrames == 20 &&
+                    disabled.backend == mvm::app::TimelineExportResult::Backend::Tractor,
+                "無効clipを外し、timelineの尺のままtractorで書き出す計画になりません");
+        disabledProject.timelineClips[0].enabled = false;
+        const auto none = mvm::app::mapTimelineExportPlan(disabledProject, request);
+        require(!none.success && none.error.find("有効なclip") != std::string::npos,
+                "全clipが無効なのに書き出す計画を作りました");
+    }
 
     auto gapProject = contiguous;
     gapProject.timelineClips[0].timelineStartFrame = 12;

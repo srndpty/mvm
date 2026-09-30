@@ -13,7 +13,50 @@ namespace {
 __extension__ using WideInteger = __int128;
 } // namespace
 
+TimelinePreviewPlan buildTimelinePreviewPlan(const project::Project& project) {
+    TimelinePreviewPlan plan;
+    std::vector<project::TimelineRenderSegment> video;
+    std::vector<project::TimelineRenderSegment> audio;
+    if (!project::timelineRenderSegments(project, project::TrackKind::Video, video, plan.error) ||
+        !project::timelineRenderSegments(project, project::TrackKind::Audio, audio, plan.error))
+        return plan;
+    const auto entries = [&](std::vector<project::TimelineRenderSegment>& segments,
+                             std::vector<TimelinePreviewPlan::Entry>& out) {
+        out.reserve(segments.size());
+        for (auto& segment : segments) {
+            const auto duration = project::timelineClipDuration(project, segment.clip);
+            if (!duration.success) {
+                plan.error = segment.clip.name + ": " + duration.error;
+                return false;
+            }
+            const auto start = segment.clip.timelineStartFrame;
+            out.push_back({std::move(segment), start, start + duration.frame});
+        }
+        return true;
+    };
+    if (!entries(video, plan.video) || !entries(audio, plan.audio))
+        return plan;
+    std::vector<bool> usesOverLane(project.videoTracks.size(), false);
+    for (const auto& entry : plan.video)
+        if (entry.segment.lane > 0)
+            usesOverLane[static_cast<std::size_t>(entry.segment.original.track.index)] = true;
+    plan.slotBases.assign(project.videoTracks.size(), 0);
+    int next = 0;
+    for (std::size_t track = 0; track < plan.slotBases.size(); ++track) {
+        plan.slotBases[track] = next;
+        next += usesOverLane[track] ? 2 : 1;
+    }
+    plan.success = true;
+    return plan;
+}
+
 TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& project,
+                                                    std::int64_t timelineFrame) {
+    return mapTimelinePreviewFrame(project, buildTimelinePreviewPlan(project), timelineFrame);
+}
+
+TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& project,
+                                                    const TimelinePreviewPlan& plan,
                                                     std::int64_t timelineFrame) {
     TimelinePreviewFrameMapping result;
     result.outputFrameNumber = timelineFrame;
@@ -21,52 +64,56 @@ TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& proj
         result.error = "Preview timeline frameは0以上である必要があります";
         return result;
     }
-    const auto active = project::activeClipsAt(project, project::TrackKind::Video, timelineFrame);
-    for (std::size_t index = 0; index < active.size(); ++index) {
-        const project::TimelineClip* clip = active[index];
-        if (!clip)
+    if (!plan.success) {
+        result.error = plan.error;
+        return result;
+    }
+    for (const auto& entry : plan.video) {
+        // 無効にした clip は区間に含まれない。mute した video track は「黒」ではなく layer から
+        // 外す (下の track が見える)。
+        const auto& segment = entry.segment;
+        const int track = segment.original.track.index;
+        if (timelineFrame < entry.start || timelineFrame >= entry.end ||
+            project.videoTracks[static_cast<std::size_t>(track)].muted)
             continue;
-        // mute した video track は「黒」ではなく layer から外す。
-        if (project.videoTracks[index].muted)
-            continue;
-        if (project::isStillClipKind(clip->kind)) {
-            // 文字・画像の素材 frame domain は置いたときの timeline の fps のままで、Project の
-            // fps を後から変えても振り直さない。fade は素材 frame で数えるので、書き出しと同じく
-            // clipFadeSourceFrameAt で素材 frame へ換算してから評価する。clip 内の位置をそのまま
-            // 渡すと、fps が違うときに fade の進み方が書き出しとずれる。
-            const std::int64_t local = timelineFrame - clip->timelineStartFrame;
-            const auto sourceLocal = project::clipFadeSourceFrameAt(*clip, project.timelineFpsNum,
-                                                                    project.timelineFpsDen, local);
-            if (!sourceLocal.success) {
+        const int slot = plan.slotBases[static_cast<std::size_t>(track)] + segment.lane;
+        const auto& clip = segment.clip;
+        const double transitionOpacity =
+            segment.fadeIn ? project::transitionProgress(*segment.fadeIn, timelineFrame) : 1.0;
+        if (project::isStillClipKind(clip.kind)) {
+            // 文字・画像の不透明度は書き出しと同じ区間の評価 (値・key・fade を素材 frame で
+            // 数え、トランジションを掛ける) を使う。
+            const auto opacity = project::renderSegmentOpacity(
+                segment, project.timelineFpsNum, project.timelineFpsDen, timelineFrame);
+            if (!opacity) {
                 result.layers.clear();
                 result.stillLayers.clear();
-                result.error = clip->name + ": preview frameを素材frameへ換算できません";
+                result.error = clip.name + ": preview frameを素材frameへ換算できません";
                 return result;
             }
             result.stillLayers.push_back(
-                {static_cast<int>(index), static_cast<int>(clip - project.timelineClips.data()),
-                 clip->id, clip->kind,
-                 project::evaluateClipOpacity(clip->effects, local, sourceLocal.frame,
-                                              clip->sourceOutFrame - clip->sourceInFrame)});
+                {track, slot, segment.clipIndex, clip.id, clip.kind, *opacity});
             continue;
         }
         const auto sourceFrame =
-            project::clipSourceFrameAt(*clip, project.timelineFpsNum, project.timelineFpsDen,
-                                       timelineFrame - clip->timelineStartFrame);
+            project::clipSourceFrameAt(clip, project.timelineFpsNum, project.timelineFpsDen,
+                                       timelineFrame - clip.timelineStartFrame);
         if (!sourceFrame.success) {
             result.layers.clear();
-            result.error = clip->name + ": preview frameを素材frameへ換算できません";
+            result.error = clip.name + ": preview frameを素材frameへ換算できません";
             return result;
         }
-        result.layers.push_back({static_cast<int>(index),
-                                 static_cast<int>(clip - project.timelineClips.data()), clip->id,
-                                 sourceFrame.frame});
+        result.layers.push_back(
+            {track, slot, segment.clipIndex, clip.id, sourceFrame.frame, clip, transitionOpacity});
     }
+    const auto bySlot = [](const auto& a, const auto& b) { return a.slot < b.slot; };
+    std::stable_sort(result.layers.begin(), result.layers.end(), bySlot);
+    std::stable_sort(result.stillLayers.begin(), result.stillLayers.end(), bySlot);
     if (result.layers.size() > kMaxPreviewVideoLayers) {
         result.layers.clear();
         result.stillLayers.clear();
-        result.error = "同時に重なる video track が " + std::to_string(kMaxPreviewVideoLayers) +
-                       " 本を超えています。preview はここまでしか合成できません";
+        result.error = "同時に重なる video layer が " + std::to_string(kMaxPreviewVideoLayers) +
+                       " 枚を超えています。preview はここまでしか合成できません";
         return result;
     }
     // 映像の無い frame の文字も engine が合成するので、映像の有無に関わらず上限を見る。
@@ -107,13 +154,12 @@ previewLayerStack(const TimelinePreviewFrameMapping& mapping) {
     std::vector<TimelinePreviewStackEntry> stack;
     stack.reserve(mapping.layers.size() + mapping.stillLayers.size());
     for (std::size_t index = 0; index < mapping.layers.size(); ++index)
-        stack.push_back({false, index, mapping.layers[index].videoTrackIndex});
+        stack.push_back({false, index, mapping.layers[index].slot});
     for (std::size_t index = 0; index < mapping.stillLayers.size(); ++index)
-        stack.push_back({true, index, mapping.stillLayers[index].videoTrackIndex});
-    // 1 track に同時に載る clip は 1 つなので track index だけで順序が決まる。
-    std::stable_sort(stack.begin(), stack.end(), [](const auto& a, const auto& b) {
-        return a.videoTrackIndex < b.videoTrackIndex;
-    });
+        stack.push_back({true, index, mapping.stillLayers[index].slot});
+    // 1 slot に同時に載る区間は 1 つなので slot だけで順序が決まる。
+    std::stable_sort(stack.begin(), stack.end(),
+                     [](const auto& a, const auto& b) { return a.slot < b.slot; });
     return stack;
 }
 
@@ -189,8 +235,7 @@ bool sameTimelinePreviewSourceSet(const TimelinePreviewFrameMapping& a,
     if (!a.success || !b.success || a.layers.size() != b.layers.size())
         return false;
     for (std::size_t i = 0; i < a.layers.size(); ++i) {
-        if (a.layers[i].videoTrackIndex != b.layers[i].videoTrackIndex ||
-            a.layers[i].clipId != b.layers[i].clipId)
+        if (a.layers[i].slot != b.layers[i].slot || a.layers[i].clipId != b.layers[i].clipId)
             return false;
     }
     return true;
@@ -198,20 +243,37 @@ bool sameTimelinePreviewSourceSet(const TimelinePreviewFrameMapping& a,
 
 TimelinePreviewAudioMapping mapTimelinePreviewAudio(const project::Project& project,
                                                     std::int64_t timelineFrame) {
+    return mapTimelinePreviewAudio(project, buildTimelinePreviewPlan(project), timelineFrame);
+}
+
+TimelinePreviewAudioMapping mapTimelinePreviewAudio(const project::Project& project,
+                                                    const TimelinePreviewPlan& plan,
+                                                    std::int64_t timelineFrame) {
     TimelinePreviewAudioMapping result;
     if (timelineFrame < 0) {
         result.error = "Preview timeline frameは0以上である必要があります";
         return result;
     }
-    const auto active = project::activeClipsAt(project, project::TrackKind::Audio, timelineFrame);
-    for (std::size_t index = 0; index < active.size(); ++index) {
-        const project::TimelineClip* clip = active[index];
-        if (!clip || project.audioTracks[index].muted)
-            continue;
-        result.layers.push_back({static_cast<int>(index),
-                                 static_cast<int>(clip - project.timelineClips.data()), clip->id,
-                                 clip->sourceInFrame + (timelineFrame - clip->timelineStartFrame)});
+    if (!plan.success) {
+        result.error = plan.error;
+        return result;
     }
+    for (const auto& entry : plan.audio) {
+        const auto& segment = entry.segment;
+        const int track = segment.original.track.index;
+        if (timelineFrame < entry.start || timelineFrame >= entry.end ||
+            project.audioTracks[static_cast<std::size_t>(track)].muted)
+            continue;
+        const auto& clip = segment.clip;
+        result.layers.push_back({track, segment.clipIndex, clip.id,
+                                 clip.sourceInFrame + (timelineFrame - clip.timelineStartFrame),
+                                 segment});
+    }
+    std::stable_sort(result.layers.begin(), result.layers.end(), [](const auto& a, const auto& b) {
+        return a.audioTrackIndex != b.audioTrackIndex
+                   ? a.audioTrackIndex < b.audioTrackIndex
+                   : a.segment.clip.timelineStartFrame < b.segment.clip.timelineStartFrame;
+    });
     result.success = true;
     return result;
 }

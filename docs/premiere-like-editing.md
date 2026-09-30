@@ -1623,3 +1623,274 @@ fixture は原色・白色点・トーンカーブを持つ matrix/TRC の v2 pr
 `[事実]` `image_raster_cache_focused` で、budget 1 byte の cache に A (保持) と B (受け取ってすぐ破棄) を読むと
 B だけが捨てられ、A の保持をやめると新しい decode 無しに 0 件になることを見る。対照として既定の budget では
 捨てない。通知をやめると落ちることを確認した。
+
+## 19. 編集ショートカットとトランジション
+
+### 19.1 Project schema 13 (clip の有効/無効とトランジション)
+
+`[事実]` `kProjectSchemaVersion` を 13 にした。clip に `enabled` (必須)、Project に
+`timeline_transitions` (必須、空配列可) を足した。互換分岐は持たず、schema 12 のファイルは読まない
+(`m5_timeline_edit_focused` と `m7a_1_clip_effects_focused` が出力の版を 12 に書き換えて拒否を確かめる)。
+2 つを同じ版に入れたのは、手元のファイルの移行を 1 回で済ませるため。
+
+- トランジションは同じ track で接している 2 clip の編集点に置き、`framesBeforeCut` / `framesAfterCut`
+  (timeline frame) で区間 `[cut - before, cut + after)` を持つ。cut より前は incoming の頭の余白、
+  後は outgoing の尻の余白を使う。種類 (ディゾルブ / クロスフェード) は track 種別で決まるので保存しない
+- `validateTimeline` の検査: ID の重複、clip の存在・同じ track・接していること、フレーム保持でないこと、
+  長さ (負でなく 1 frame 以上)、素材の余白、clip の尺、同じ clip 端に 1 つだけ、同じ clip 端のフェードとの
+  併用禁止、1 clip の前後のトランジションが内側で重ならないこと。規則ごとに負例がある
+- 編集の確定は `finalizeTimelineCandidate` (= `reconcileTimelineTransitions` + `validateTimeline`) を通す。
+  離れた・clip が消えたトランジションは消し、余白や尺が減れば縮める。分割は outgoing 側を右半分へ
+  付け替え、fps 変更は長さを秒位置で換算する。JSON の読み込みは reconcile せず fail-closed にする
+- effect の変更 (`setClipEffectValues`) は reconcile を通さない。トランジションのある端へフェードを
+  付けようとするとエラーになる
+
+`[回避策]` 描画 (preview・音声・シャトル/スクラブ・書き出し) はまだトランジションと無効 clip を扱えない
+(無効 clip は §19.2 で対応した)。
+黙って無視すると見えるものと保存内容が食い違うので、`unsupportedTimelineRenderFeature` で
+mapping を失敗させている。UI からはまだどちらも作れないので、手で編集したファイルでだけ起きる。
+
+`[事実]` 手元の `build/ucrt64-debug/m6a-gui/project.mvm` は使い捨てのスクリプトで一度だけテキスト変換した
+(clip 8 件に `"enabled": true`、`"timeline_transitions": []` を追加。元ファイルは `*.schema12.bak`)。
+変換後のファイルが現在の loader で読めることを確認した (schema 13、clip 8、トランジション 0)。
+
+### 19.2 clip の有効/無効 (Shift+E)
+
+`[事実]` `toggleClipsEnabled` は対象 (選択、無ければ current clip) とリンク相手のうち 1 つでも有効なら
+全部を無効に、全部が無効なら全部を有効にする。1 回が 1 undo。右クリックメニューからは押した clip だけを
+切り換える。
+
+- 無効にした clip は timeline に残し、暗く表示する (model の role は `clipEnabled`。`enabled` にすると
+  delegate の `Item.enabled` を隠して MouseArea まで止まり、選び直せなくなる)
+- preview は layer / audio から外す (上の track の clip を無効にすると下の track が見える)。シャトル・スクラブの
+  音声、再生ヘッドの映像判定 (`previewVideoAtPlayhead` / `clipVisibleAtPlayhead`)、inspector と再生開始の
+  clip (`topVideoClipAt`) も無効 clip を選ばない。編集 (`activeClipAt`) は無効 clip も対象にする
+- 書き出しは無効 clip を外し、尺は timeline 全体のまま保つ。穴は tractor が黒・無音で埋めるので、
+  1 つでも外したら tractor にする。全部が無効なら「書き出す有効なclipがありません」で失敗する
+
+`[事実]` 除外の検査を外すと `m7b_2_timeline_preview_mapping_focused` が落ちることを確認した。
+
+`[未検証]` track の mute は書き出しで無視されている (preview では外す)。無効 clip とは別の既存の食い違いで、
+今回は変えていない。
+
+### 19.3 既定のトランジション: clip 選択時のフェード (Shift+D)
+
+`[事実]` clip を選んで Shift+D を押すと、選択 clip とリンク相手の先頭と末尾に 1 秒 (timeline frame で
+`round(fps)`、`defaultTransitionFrames`) のフェードを付ける。黒・無音からの片側のトランジションは clip 内の
+減衰そのものなので、新しい表現を作らず既存の `fadeInFrames` / `fadeOutFrames` を使う (preview・シャトル・
+書き出しが既に同じ規則で扱っている)。
+
+- フェードは素材 frame で持つので、clip ごとに timeline の境界から 1 秒内側の位置を素材 frame へ戻して
+  換算する (2 倍速なら素材 120 frame)。リンク相手も自分の素材 frame で換算する
+- 1 秒より短い clip は前後で分け合う (先頭が半分を切り上げで取る。1 frame の clip は 1 / 0)
+- トランジションのある端は変えない (同じ端でフェードとトランジションを併用しない、§19.1)
+- 何も変わらなければ「フェードは既に付いています」で失敗し、undo を積まない
+
+`[事実]` 1 秒より短い clip で末尾側の内側の位置が clip の先頭を越えて負になり、換算が失敗していた
+(`m5_timeline_edit_focused` の 50 frame / 1 frame の clip で検出)。内側の位置を clip の中に収めて直した。
+
+`[事実]` 音声のフェードは直線 (等パワーではない)。無音への片側のフェードなので許容し、等パワーは 2 clip の
+クロスフェード (トランジション) だけで使う。
+
+### 19.4 トランジションの描画区間 (書き出し・シャトル・スクラブ)
+
+`[事実]` 描画は `project::timelineRenderSegments` (src/project/timeline_render) が作る区間に一本化した。
+トランジションの無い clip は clip そのものが 1 区間。トランジションがあると clip を余白の分だけ延ばし
+(outgoing は cut の後ろへ、incoming は cut の前へ)、同じ track の 2 clip を重ねる。延ばした clip は
+`clipWithEdgeAt` (trim・分割と同じ `trimClipBoundary`) で作り、端がちょうどその位置に来なければ失敗する。
+
+- 映像: incoming の頭の区間 `[cut - before, cut + after)` を lane 1 に切り出して outgoing の上へ重ね、
+  不透明度を `p = (f - start + 0.5) / frames` で上げる。outgoing は lane 0 で不透明のまま残す。不透明な
+  clip どうしなら `A(1 - p) + B p` になる。両方を `1 - p` / `p` にすると中央で暗くなる
+  (`0.25 A + 0.5 B`)。incoming が透過・変形していると下の outgoing が減らず、区間の終わりの 1 frame で
+  突然消えるので、映像のトランジションは画面全体を覆う不透明な clip どうしに限る (§19.10)
+- 音声: clip ごとに 1 区間で、incoming に `sin(p π/2)`、outgoing に `cos(p π/2)` を掛けて加算する
+  (等パワー、二乗和が 1)
+- 延ばした区間の effect (key・フェード) は clip の端の値のまま評価する
+- 無効な clip を含むトランジションは描かない (両側とも cut で切り替わる)
+
+`[事実]` 書き出しは MLT の luma / mix の dissolve を使わない。track ごとに lane 0 と、トランジションの
+ある track は lane 1 を MLT の layer として積み (`video_track` は layer 番号)、lane 1 は既存の V2 以上と同じ
+affine の overlay (per-frame の不透明度) で合成する。音声は既存どおり clip ごとの playlist を `mix sum=1`
+で加算する。トランジションがあれば tractor を使う。
+
+`[事実]` 確認したこと:
+- `m7b_3_timeline_export_mapping_focused`: 3 区間の配置 (素材範囲・layer・不透明度 0.025 / 0.525 / 0.975)、
+  上の track の layer のずれ、2 倍速の延長 (timeline 10 frame = 素材 20 frame)、クロスフェードの gain
+  (cos(0.525 π/2) = 0.678801 と二乗和 1)
+- `m6b_shuttle_audio_mix`: 重なった 2 clip を区間中央 (p = 0.5) で 1/√2 ずつ加算する
+- `m4_timeline_export_focused` (実 MLT、label extended): 青→赤のディゾルブの中央 (frame 60) が半々に混ざり、
+  前後で青・赤になる
+- 不透明度・gain の掛け算を外すと 3 つとも落ちる
+
+preview は §19.5 で対応した。
+
+### 19.5 preview でのトランジション
+
+`[事実]` preview の mapping も `timelineRenderSegments` の区間から作る。layer には (track, lane) を下から
+数えた `slot` を持たせ、合成順 (`previewLayerStack`) と preview source の置き場所 (`trackSources_` の key) を
+slot で決める (書き出しの MLT layer と同じ数え方。トランジションが無ければ track の index と同じ)。
+
+- decode source は延ばした区間の clip (`renderClip`) で作る。source は in より前の素材を写せないので、
+  incoming の頭の区間は延ばした in から始める。同じ素材を分割してディゾルブすると、同じファイルの
+  source が 2 つ同時に要る
+- incoming の不透明度は、effect が既定値でも進み具合を掛けて渡す。延ばした区間の effect は clip の端の値
+- 音声は同じ track の 2 clip を開始の早い順に重ね、gain は書き出しと同じ `renderSegmentGain`。
+  クロスフェードの区間は audio source の identity に含める (区間が変われば作り直す)
+- 暫定の描画ガード (`unsupportedTimelineRenderFeature`) は外した
+
+`[事実]` `transition_preview` (workstation、実 D3D11 surface): 同じ動画を 2 つに分けた clip の cut に前後
+10 frame のディゾルブを置き、区間の中 (frame 125) で 2 layer を合成して不透明度が 1.0 / 0.775 になること、
+区間の後は 1 layer になること、区間の前 (frame 90) から再生して区間を通り抜けても再生が続くこと
+(frame 151 まで) を確認した。音声も同じ WAV を 2 つに分けてクロスフェードさせている。incoming の不透明度の
+掛け算を外すとこの試験が落ちる。
+
+`[未検証]` 区間に出入りするたびに layer 数が変わるので、再生中は source を組み直す (clip 境界と同じ経路)。
+試験では再生が止まらないことだけを見ており、組み直しの間に frame が落ちるか (表示の滑らかさ) は測っていない。
+
+### 19.6 編集点の選択と、編集点での既定のトランジション (Shift+D)
+
+`[事実]` 選択・リップル・ローリングのツールで clip の端を動かさずに離すと編集点を選ぶ
+(`TimelineGestures.edgeRelease` が `selectEdit` を返す。レート調整では何もしない)。接している clip の無い端は
+clip の選択になる。編集点・トランジションの選択は clip の選択と排他で、`setTimelineSelection` が外す。
+編集・undo の後に無くなった編集点・トランジションの選択は `refreshTimelineModel` で外す。
+
+- 編集点 (またはトランジション) を選んで Shift+D を押すと `applyDefaultEditTransition` が 1 秒のトランジションを
+  置き、置いたトランジションを選ぶ。cut を中央にし、片側の余白が足りなければもう片側へ寄せる
+  (尻の余白 10 frame なら 50 / 10)。両側とも余白が無ければ「素材の余白が足りないため
+  トランジションを作れません」で失敗する。既存のトランジションは置き換え、その端のフェードは消す
+- 速度や fps の違いで延ばした端が素材 frame に乗らない長さは、描画区間を作れるまで長い側から 1 frame ずつ縮める
+  (30fps 素材を 60fps timeline に置くと 61 frame は 60 frame になる)
+- リンク相手どうしも同じ cut で接していれば、同じ長さで一緒に置く (映像のディゾルブと音声のクロスフェード)。
+  ずらして置いた音声は別の編集点なので置かない
+- timeline は cut の前後の区間にトランジションを描き、押すと選ぶ。Delete は選んだトランジションを消し、
+  そうでなければ従来どおり clip を消す。編集点を選んだ Delete は何も消さない
+
+`[事実]` Repeater の model (`timelineTransitions`) は `stateChanged` ではなく専用の
+`timelineTransitionsChanged` で、中身が変わったときだけ通知する。`stateChanged` で通知すると、再生中や
+clip の選択のたびに delegate が作り直される (`text_ui_direct_input` で、押そうとした item が選択の変更で
+作り直されて消えることを見つけた)。選択の表示は model に入れず、delegate が `selectedTransitionId` と比べる。
+
+`[事実]` 確認したこと:
+- `m5_timeline_edit_focused`: 中央揃え 30 / 30、置き換え、片側の余白不足での寄せ、余白なしの拒否、
+  61 → 60 frame への縮め (縮めを外すと落ちる)、リンク相手への作成と Single、削除
+- `m7b_4_controller_export_lifecycle`: 分割した映像・音声の編集点で 2 つ作成・選択、1 undo、redo、
+  選んだトランジションだけを Delete、clip の選択で編集点の選択が外れる
+- `text_ui_direct_input` (workstation): 実 window で clip の端を押して編集点を選び、Shift+D で置き、
+  描いたトランジションを押して選び、Delete で消す (clip は消えない)
+- `tst_timeline_gestures`: 動かさずに離したときの `selectEdit` と、レート調整の `none`
+
+### 19.7 上書き移動と、移動時の吸着
+
+`[事実]` clip の移動は上書きで置く (Premiere の上書き)。`moveClips` に `newId` を渡すと、動かした clip の下になる
+他の clip を、丸ごと覆えば消し (リンク相手は未リンク)、端が掛かれば削り、中に置けば 2 つに分ける (右側は新しい
+ID で未リンク、outgoing 側のトランジションは右側へ付け替え)。`newId` を渡さなければ従来どおり重なりを拒否する。
+controller の移動 (`moveTimelineClip`) は上書きで呼ぶ。複製 (Alt ドラッグ) は変えていない。
+
+`[事実]` 移動のドラッグ中、動かす clip 群の両端が他の clip の両端・再生ヘッド・timeline 先頭から 8 px 以内に来たら、
+端がちょうど重なる量へ寄せ、吸着した位置に縦線を出す (`Gestures.dragSnapFrames` / `snapDragOffsetX`)。
+Ctrl を押している間は吸着しない (プレビューの枠と同じ)。一緒に動く clip は `timelineDragBounds` の `clipIds` で
+候補から外す。
+
+`[事実]` 確認したこと:
+- `m5_timeline_edit_focused`: 中へ置いたときの分割 (0-100 / 100-160 / 160-300、右側の素材 in = 160)、末尾・先頭の
+  削り、丸ごと覆った clip の削除とリンク相手の未リンク、`newId` 無しの拒否
+- `m7b_4_controller_export_lifecycle`: 重なる位置への移動で下の clip の末尾を削る、1 undo、`clipIds`
+- `tst_timeline_gestures`: 閾値の内外、最も近い吸着先の選択、自分の端に吸着しないこと
+- `text_ui_direct_input` (workstation): 実 window で V2 の clip を V1 の終端の 4 frame (6 px) 手前で離すと、
+  ちょうど終端 (120) から始まる
+
+### 19.8 JavaScript の `.pragma library`
+
+`[事実]` `TimelineGestures.js` と `PreviewTransform.js` の `.pragma library` を外した。QML 専用の指示なので、
+VS Code の JavaScript 検査 (TypeScript) が "Unexpected keyword or identifier" の構文エラーにしていた
+(`scripts/lint.ps1` の検査ではない)。どちらも状態を持たない関数だけなので、import した QML ごとに別の instance に
+なっても振る舞いは変わらない (`tst_timeline_gestures` / `tst_preview_transform` が通る)。
+
+### 19.9 トランジション・clip 境界での再生の一瞬の停止 (未解決)
+
+`[事実]` 再生中に表示する decode source が変わる (トランジションの区間に入る、別ファイルの clip へ切り替わる) と、
+controller は preview を一時停止して source を組み直す ("clip境界でPreviewを組み直しています")。engine の
+`addSource` / `removeSource` が `ReadyPaused` でしか受理しないため。
+
+`[事実]` engine を変えずに、再生前に先の source を登録しておく案は成立しない:
+- `seekFrameRequest` は accepted composition の source 集合と一致する要求しか受理しない
+  ("source frame requestがaccepted compositionのsource集合と一致しません")。合成に使っていない source を seek できない
+- seek していない `SourceDecodeWorker` は素材の先頭から decode し、timeline 対応の in より前の frame は
+  出力区間へ換算できず fatal になる (`sourceFrameOutputInterval` が無効を返す)
+- 不透明度 0 で合成に入れておくと、その source の frame が無い間は exact pairing が frame 全体を落とす
+
+`[未検証]` engine が再生中の source の追加・削除を受理するようにする対応は、別ブランチで行う。
+
+### 19.10 レビュー指摘への対応 (P1 1 件 / P2 4 件)
+
+`[事実]` P1: クロスディゾルブは incoming を不透明度 p で outgoing の上に重ねて作るので、incoming が透過・縮小・
+移動・切り抜きされていると、覆わない所で outgoing が 100% 見え続け、区間の終わりの 1 frame で突然背景へ
+切り替わる。各 clip を別々に描いてから混ぜる合成 (compositor の dissolve) を持つまでは、映像のトランジションを
+「画面全体を覆う不透明な映像 clip どうし」に限る (`validateTimeline` の規則)。
+- 文字・画像・フレーム保持は不可。位置・拡大・回転・切り抜きは既定値、区間の中の不透明度 (値・key・fade) は 1
+- 作成 (Shift+D) は余白不足と取り違えずにこの理由で断る。既にトランジションのある clip へ効果を付けると
+  効果の確定 (`setClipEffectValues`) が同じ理由で失敗する (先にトランジションを消す)
+- 音声のクロスフェードは制限しない
+- alpha を持つ動画素材は取り込みで断る (§19.11)
+
+`[事実]` P2-2: リンクした映像・音声の編集点へ置くとき、両方の編集点の余白から cut の前後それぞれの上限を
+先に求め、同じ長さ・同じ前後で置く。以前は主の編集点の長さをリンク相手へ要求し、相手が縮めても主は
+元の長さのままだった (音声の尻の余白 20 frame で、映像 30 / 30・音声 30 / 20)。今は両方 40 / 20。
+
+`[事実]` P2-3: シャトル音声の gain を求める frame への換算が失敗したら、clip 先頭の gain で鳴らさずに
+失敗させる (fail-closed に戻した)。`[未検証]` 有効な timebase ではこの換算は int64 を超えないと失敗しない
+ので、公開 API から失敗させる負例は作れていない。
+
+`[事実]` P2-4: preview の frame 問い合わせは、Project が変わったときに 1 度だけ作る `TimelinePreviewPlan`
+(描画区間と、その timeline 上の範囲・slot の起点) を引く。controller は `refreshTimelineModel` (project_ を
+変える全経路が通る) で捨て、次の問い合わせで作り直す。区間の作り方は `timelineRenderSegments` に一本化した
+まま。`timeline_preview_plan_bench` (label performance、release) で 2000 clip・各 cut にディゾルブの
+timeline を 2000 frame 問い合わせると、1 frame あたり 36000 µs (毎回作り直し) → 1.7 µs (使い回し)、
+作るのは 1 回 23 ms だった。作り直しを外すと `m7b_4_controller_export_lifecycle` が落ちる。
+
+`[事実]` P2-5 (`[` / `]` の向き): 変えない。利用者の判断で、キーボードで上にある `[` を音量を上げる操作に
+している (Premiere とは逆)。
+
+### 19.11 透過 (alpha) のある動画は未対応とする
+
+`[事実]` preview と書き出しで alpha の扱いが食い違うので、透過のある動画は取り込みで断る
+(「透過 (アルファ) のある動画には対応していません」)。scratchpad で作った半透明の赤 (alpha 50%) で実測した:
+
+| 形式 | preview の decode (`mvm_test_gpu_decode`) | MLT (`mvm_bench probe`) |
+| --- | --- | --- |
+| ProRes 4444 (yuva444p12le) | D3D11VA が無く開けない | alpha 50% を残す |
+| PNG in MOV (rgba) / QuickTime RLE (argb) | 同上 | alpha 50% を残す |
+| VP9 alpha (webm、yuv420p + alpha_mode=1) | NV12 で開き alpha を捨てる (不透明) | libvpx で alpha 50% を残す |
+
+preview は D3D11VA の hardware decode だけで NV12 / P010 (alpha 無し) を出し、書き出しの MLT は software decode で
+alpha を残す。VP9 alpha は preview で不透明、書き出しで半透明になり、クロスディゾルブの条件 (§19.10) もすり抜けていた。
+HEVC alpha は手元の x265 が alpha を encode できず試していない。
+
+- 判定は 2 つ: stream の事実 (`MediaStreamFacts::videoAlphaCapable`。画素形式の `AV_PIX_FMT_FLAG_ALPHA`、または
+  VP8 / VP9 の webm の `alpha_mode=1`) と、MLT が decode した frame の実測 (`MvmMltProbeResult::has_alpha`)。
+  どちらかが真なら断る
+- 取り込み済みの素材は検査しない (Project の読み込みでは判定しない)
+- 対応するには preview に alpha を持てる decode 経路 (software decode から GPU への upload) と、clip を別々に
+  描いてから混ぜる合成が要る (規模が大きいので当面行わない)
+
+`[事実]` 確認したこと: `still_image_decode_unit` が `vp9_alpha.webm` / `prores4444_alpha.mov` を透過ありと、
+`vp9_opaque.webm` / H.264 / Motion JPEG を透過なしと判定する (素材は `make-testmedia.ps1 -Mode Smoke` が生成する)。
+`media_bin_model` の分類が、どちらの判定でも断る。
+
+### 19.12 再レビュー指摘への対応 (P2 2 件 / P3 1 件)
+
+`[事実]` P2-1: 編集点へ置くときの不透明度の検査を、実際に置く区間だけで行う。以前は求めた長さ (60) を cut の前後
+それぞれで丸ごと検査し、最後の 30 frame だけが不透明な outgoing への 30 / 30 のディゾルブを断っていた。
+長さに依らない条件 (種別・位置・拡大・回転・切り抜き、区間の端の frame の不透明度) は先に理由を付けて断る。
+
+`[事実]` P2-2: 置ける長さは cut の前 (incoming を左へ延ばせる・outgoing の最後の frame 群が不透明) と後 (outgoing を
+右へ延ばせる・incoming を区間の終わりで分けられる・incoming の最初の frame 群が不透明) で独立に決まる。
+それぞれで置ける長さを求め、合計が最大で cut に最も近い中央の組を選ぶ。以前は描画区間を作れないと長い側を
+1 frame ずつ削り、outgoing が 30fps・incoming が 60fps の 61 frame を 30 / 30 (60) まで縮めていた。今は 31 / 30。
+選んだ組で描画区間を作れなければ、黙って縮めずに理由を返す。
+
+`[事実]` P3: トランジション ID は置く数だけ作る (長さを探す間に使い捨てない)。
+
+`[事実]` 不透明度の検査を求めた長さで行うと、また中央の組だけを試すと、`m5_timeline_edit_focused` の新しい試験が
+落ちることを確認した。

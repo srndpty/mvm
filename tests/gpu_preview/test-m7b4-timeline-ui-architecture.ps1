@@ -137,6 +137,33 @@ if (-not (Test-TextInputGuard $qml) -or
     throw 'transport shortcutが文字入力中のfocusを除外していません'
 }
 
+# 編集ショートカットは Action として定義してメニューに出し、文字入力中は無効にする。
+# Ctrl+A などを text field から奪わないため、enabled に keyboardFocusTakesKeys を必ず含める。
+$editActions = @(
+    @{ Id = 'selectAllClipsAction'; Key = 'Ctrl+A'; Call = 'root.mvmController.selectAllClips()' },
+    @{ Id = 'splitAtPlayheadAction'; Key = 'Ctrl+K'; Call = 'root.mvmController.splitSelectionAtPlayhead()' },
+    @{ Id = 'splitAllTracksAction'; Key = 'Ctrl+Shift+K'; Call = 'root.mvmController.splitClipAt("", root.mvmController.playheadFrame, true, true)' },
+    @{ Id = 'volumeUpAction'; Key = '['; Call = 'root.mvmController.stepSelectedClipVolume(1)' },
+    @{ Id = 'volumeDownAction'; Key = ']'; Call = 'root.mvmController.stepSelectedClipVolume(-1)' },
+    @{ Id = 'toggleClipEnabledAction'; Key = 'Shift+E'; Call = 'root.mvmController.toggleSelectedClipsEnabled()' },
+    @{ Id = 'defaultTransitionAction'; Key = 'Shift+D'; Call = 'root.mvmController.applyDefaultTransition()' }
+)
+function Test-EditActionGuard([string]$source) {
+    foreach ($entry in $editActions) {
+        $pattern = 'Action\s*\{\s*id:\s*' + [regex]::Escape($entry.Id) + '\b[^{}]*shortcut:\s*"' +
+                   [regex]::Escape($entry.Key) + '"[^{}]*enabled:[^\n]*!root\.keyboardFocusTakesKeys' +
+                   '[^{}]*onTriggered:\s*' + [regex]::Escape($entry.Call)
+        if ($source -notmatch $pattern) { return $false }
+        if (-not $source.Contains('CompactMenuItem { action: ' + $entry.Id + ' }')) { return $false }
+    }
+    return $true
+}
+if (-not (Test-EditActionGuard $qml) -or
+    (Test-EditActionGuard ($qml -replace '(?s)(id: selectAllClipsAction.*?enabled: [^\n]*?) && !root\.keyboardFocusTakesKeys', '$1')) -or
+    (Test-EditActionGuard $qml.Replace('CompactMenuItem { action: splitAtPlayheadAction }', ''))) {
+    throw '編集ショートカットの Action が文字入力中の focus を除外していないか、メニューに出ていません'
+}
+
 # タイムラインツールのキーと有効/無効は TimelineToolPanel.tools だけが決め、
 # Main.qml のショートカットはその配列から生成する。キー割り当てを 2 箇所に書かない。
 $toolPanel = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\apps\mvm\TimelineToolPanel.qml') -Raw
@@ -599,8 +626,9 @@ foreach ($needle in @('previewStatus.state == preview::PreviewEngineState::Error
         throw "Preview error時のscrub停止契約がありません: $needle"
     }
 }
-# preview の layer 構成は mapTimelinePreviewFrame に一本化する。
-if (-not $controller.Contains('mapTimelinePreviewFrame(project_, timelineFrame)')) {
+# preview の layer 構成は mapTimelinePreviewFrame に一本化する。描画区間は Project ごとに
+# 1 度作った plan (previewPlan) を渡す。
+if (-not $controller.Contains('mapTimelinePreviewFrame(project_, previewPlan(), timelineFrame)')) {
     throw 'controllerがpreview layer mappingを経由していません'
 }
 if (-not $controller.Contains('project::placeLinkedAvPairAt(')) {
@@ -667,9 +695,9 @@ if (-not (Test-DuplicatePreview $qml) -or
 # メニュー項目は表示だけで sequence を持たない (Shortcut と二重に発火させない)。
 function Test-TransportMenuContract([string]$source) {
     $playItem = 'CompactMenuItem\s*\{\s*text:\s*\(root\.mvmController\.playing \? "一時停止" : "再生"\) \+ "\\tSpace"[^{}]*onTriggered:\s*\{[^{}]*root\.mvmController\.playTimeline\(\)'
-    $deleteItem = 'CompactMenuItem\s*\{\s*text:\s*"クリップを削除\\tDelete"[^{}]*onTriggered:\s*root\.mvmController\.deleteCurrentClip\(\)'
+    $deleteItem = 'CompactMenuItem\s*\{\s*text:\s*\(root\.mvmController\.selectedTransitionId !== "" \? "トランジションを削除"\s*:\s*"クリップを削除"\) \+ "\\tDelete"[^{}]*onTriggered:\s*root\.mvmController\.deleteSelection\(\)'
     if ($source -notmatch $playItem -or $source -notmatch $deleteItem) { return $false }
-    foreach ($item in [regex]::Matches($source, 'CompactMenuItem\s*\{\s*text:\s*[^\n]*\\t(Space|Delete)"[^{}]*')) {
+    foreach ($item in [regex]::Matches($source, 'CompactMenuItem\s*\{\s*text:\s*[^\n]*(\n[^\n]*)?\\t(Space|Delete)"[^{}]*')) {
         if ($item.Value -match 'shortcut:|sequence:') { return $false }
     }
     if ($source -match 'Button\s*\{\s*text:\s*"クリップ削除"' -or
@@ -681,7 +709,7 @@ function Test-TransportMenuContract([string]$source) {
 $transportButtons = $qml.Replace('        // --- タイムライン ---', "            Button {`n                text: `"クリップ削除`"`n            }`n        // --- タイムライン ---")
 if (-not (Test-TransportMenuContract $qml) -or
     (Test-TransportMenuContract $transportButtons) -or
-    (Test-TransportMenuContract $qml.Replace('text: "クリップを削除\tDelete"', 'text: "クリップを削除\tDelete"; shortcut: "Delete"')) -or
+    (Test-TransportMenuContract $qml.Replace('+ "\tDelete"', '+ "\tDelete"; shortcut: "Delete"')) -or
     (Test-TransportMenuContract $qml.Replace('+ "\tSpace"', ''))) {
     throw '再生・クリップ削除のメニュー契約が崩れています'
 }

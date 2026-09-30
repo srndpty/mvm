@@ -555,6 +555,42 @@ int main(int argc, char** argv) {
             check(second.r > 180 && second.b < 80,
                   "default V2 clipがoverlay transitionで表示されません");
         }
+        // クロスディゾルブ: 青 [0, 60) と赤 [60, 120) の cut に前後 10 frame のトランジション。
+        // 区間 [50, 70) の中央 (frame 60, p = 0.525) は青と赤がほぼ半々に混ざる。両方を下げる
+        // 誤った実装だと中央で暗くなる (r・b とも 70 前後)。
+        {
+            mvm::project::Project dissolved = mvm::project::createDefaultProject();
+            auto outgoing = bottom;
+            outgoing.id = "dissolve-out";
+            outgoing.sourceOutFrame = 60;
+            auto incoming = bottom;
+            incoming.id = "dissolve-in";
+            incoming.mediaPath = topPath;
+            incoming.sourceInFrame = 60;
+            incoming.timelineStartFrame = 60;
+            dissolved.timelineClips = {outgoing, incoming};
+            dissolved.timelineTransitions = {{"dissolve", outgoing.id, incoming.id, 10, 10}};
+            mvm::app::TimelineExportRequest dissolveRequest;
+            dissolveRequest.outputPath = testDirectory / L"m7b-dissolve.mp4";
+            dissolveRequest.width = 320;
+            dissolveRequest.height = 240;
+            const auto dissolveExport = mvm::app::exportTimeline(dissolved, dissolveRequest);
+            check(dissolveExport.success, "クロスディゾルブを書き出せません");
+            if (!dissolveExport.success)
+                std::fprintf(stderr, "  error: %s\n", dissolveExport.error.c_str());
+            if (dissolveExport.success) {
+                check(blue(pixelAt(dissolveRequest.outputPath, 45, 160, 120)),
+                      "ディゾルブの前にoutgoingが表示されません");
+                const auto middle = pixelAt(dissolveRequest.outputPath, 60, 160, 120);
+                check(middle.r > 100 && middle.b > 100,
+                      "ディゾルブの中央で2clipが半々に混ざりません (暗くなるか片方だけ)");
+                const auto early = pixelAt(dissolveRequest.outputPath, 52, 160, 120);
+                const auto late = pixelAt(dissolveRequest.outputPath, 67, 160, 120);
+                check(early.b > early.r && late.r > late.b, "ディゾルブが青から赤へ進みません");
+                const auto after = pixelAt(dissolveRequest.outputPath, 75, 160, 120);
+                check(after.r > 180 && after.b < 80, "ディゾルブの後にincomingが表示されません");
+            }
+        }
     }
 
     // --- 3. 負: clip が 0 本 ----------------------------------------------
