@@ -44,6 +44,7 @@ class PreviewEngineRhiItem;
 class ImageRasterCache;
 struct MediaImportResult;
 class TrackModel;
+class ScrubAudioPlayback;
 class ShuttleAudioPlayback;
 
 class MvmController : public QObject {
@@ -551,6 +552,7 @@ private:
     // timed shuttle の clock (音声があれば audio clock) から現在の timeline frame を求める。
     bool shuttleFrameFromClock(std::int64_t& frame, QString& error) const;
     QString shuttleStatusText() const;
+    void stopScrubAudio();
     bool changeShuttleRate(int direction);
     void setStatus(QString status);
     void reportExportFailure(QString message);
@@ -837,6 +839,8 @@ private:
     QString shuttleAudioFailure_;
     bool pendingPlaybackStart_ = false;
     bool scrubbing_ = false;
+    // scrub 中の音声。鳴らす clip が無いか開始に失敗したら null (映像の scrub は続ける)。
+    std::unique_ptr<ScrubAudioPlayback> scrubAudio_;
     bool scrubPending_ = false;
     std::int64_t scrubTargetFrame_ = 0;
     int playbackClipIndex_ = -1;

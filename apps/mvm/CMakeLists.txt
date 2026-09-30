@@ -7,6 +7,9 @@ qt_add_executable(mvm
     mvm_controller.cpp
     shuttle_audio_mix.cpp
     shuttle_audio_playback.cpp
+    clip_sample_reader.cpp
+    scrub_audio_grain.cpp
+    scrub_audio_playback.cpp
     timeline_clip_model.cpp
     track_model.cpp
     trim_cursor.cpp
@@ -89,6 +92,9 @@ qt_add_executable(mvm_test_text_ui_input
     mvm_controller.cpp
     shuttle_audio_mix.cpp
     shuttle_audio_playback.cpp
+    clip_sample_reader.cpp
+    scrub_audio_grain.cpp
+    scrub_audio_playback.cpp
     timeline_clip_model.cpp
     track_model.cpp
     trim_cursor.cpp
