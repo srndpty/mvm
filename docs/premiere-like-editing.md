@@ -1832,7 +1832,7 @@ controller は preview を一時停止して source を組み直す ("clip境界
 - 作成 (Shift+D) は余白不足と取り違えずにこの理由で断る。既にトランジションのある clip へ効果を付けると
   効果の確定 (`setClipEffectValues`) が同じ理由で失敗する (先にトランジションを消す)
 - 音声のクロスフェードは制限しない
-- `[未検証]` alpha を持つ動画素材 (ProRes 4444 など) は判定していない
+- alpha を持つ動画素材は取り込みで断る (§19.11)
 
 `[事実]` P2-2: リンクした映像・音声の編集点へ置くとき、両方の編集点の余白から cut の前後それぞれの上限を
 先に求め、同じ長さ・同じ前後で置く。以前は主の編集点の長さをリンク相手へ要求し、相手が縮めても主は
@@ -1851,3 +1851,46 @@ timeline を 2000 frame 問い合わせると、1 frame あたり 36000 µs (毎
 
 `[事実]` P2-5 (`[` / `]` の向き): 変えない。利用者の判断で、キーボードで上にある `[` を音量を上げる操作に
 している (Premiere とは逆)。
+
+### 19.11 透過 (alpha) のある動画は未対応とする
+
+`[事実]` preview と書き出しで alpha の扱いが食い違うので、透過のある動画は取り込みで断る
+(「透過 (アルファ) のある動画には対応していません」)。scratchpad で作った半透明の赤 (alpha 50%) で実測した:
+
+| 形式 | preview の decode (`mvm_test_gpu_decode`) | MLT (`mvm_bench probe`) |
+| --- | --- | --- |
+| ProRes 4444 (yuva444p12le) | D3D11VA が無く開けない | alpha 50% を残す |
+| PNG in MOV (rgba) / QuickTime RLE (argb) | 同上 | alpha 50% を残す |
+| VP9 alpha (webm、yuv420p + alpha_mode=1) | NV12 で開き alpha を捨てる (不透明) | libvpx で alpha 50% を残す |
+
+preview は D3D11VA の hardware decode だけで NV12 / P010 (alpha 無し) を出し、書き出しの MLT は software decode で
+alpha を残す。VP9 alpha は preview で不透明、書き出しで半透明になり、クロスディゾルブの条件 (§19.10) もすり抜けていた。
+HEVC alpha は手元の x265 が alpha を encode できず試していない。
+
+- 判定は 2 つ: stream の事実 (`MediaStreamFacts::videoAlphaCapable`。画素形式の `AV_PIX_FMT_FLAG_ALPHA`、または
+  VP8 / VP9 の webm の `alpha_mode=1`) と、MLT が decode した frame の実測 (`MvmMltProbeResult::has_alpha`)。
+  どちらかが真なら断る
+- 取り込み済みの素材は検査しない (Project の読み込みでは判定しない)
+- 対応するには preview に alpha を持てる decode 経路 (software decode から GPU への upload) と、clip を別々に
+  描いてから混ぜる合成が要る (規模が大きいので当面行わない)
+
+`[事実]` 確認したこと: `still_image_decode_unit` が `vp9_alpha.webm` / `prores4444_alpha.mov` を透過ありと、
+`vp9_opaque.webm` / H.264 / Motion JPEG を透過なしと判定する (素材は `make-testmedia.ps1 -Mode Smoke` が生成する)。
+`media_bin_model` の分類が、どちらの判定でも断る。
+
+### 19.12 再レビュー指摘への対応 (P2 2 件 / P3 1 件)
+
+`[事実]` P2-1: 編集点へ置くときの不透明度の検査を、実際に置く区間だけで行う。以前は求めた長さ (60) を cut の前後
+それぞれで丸ごと検査し、最後の 30 frame だけが不透明な outgoing への 30 / 30 のディゾルブを断っていた。
+長さに依らない条件 (種別・位置・拡大・回転・切り抜き、区間の端の frame の不透明度) は先に理由を付けて断る。
+
+`[事実]` P2-2: 置ける長さは cut の前 (incoming を左へ延ばせる・outgoing の最後の frame 群が不透明) と後 (outgoing を
+右へ延ばせる・incoming を区間の終わりで分けられる・incoming の最初の frame 群が不透明) で独立に決まる。
+それぞれで置ける長さを求め、合計が最大で cut に最も近い中央の組を選ぶ。以前は描画区間を作れないと長い側を
+1 frame ずつ削り、outgoing が 30fps・incoming が 60fps の 61 frame を 30 / 30 (60) まで縮めていた。今は 31 / 30。
+選んだ組で描画区間を作れなければ、黙って縮めずに理由を返す。
+
+`[事実]` P3: トランジション ID は置く数だけ作る (長さを探す間に使い捨てない)。
+
+`[事実]` 不透明度の検査を求めた長さで行うと、また中央の組だけを試すと、`m5_timeline_edit_focused` の新しい試験が
+落ちることを確認した。

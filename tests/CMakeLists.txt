@@ -2727,7 +2727,10 @@ set(MVM_IMPORT_DIR "${MVM_SMOKE_DIR}/_import")
 add_executable(mvm_test_still_image media/test_still_image.cpp)
 target_link_libraries(mvm_test_still_image PRIVATE mvm::still_image mvm::warnings)
 mvm_add_test(still_image_decode_unit COMMAND mvm_test_still_image "${MVM_IMPORT_DIR}"
-    PROPERTIES TIMEOUT 60 REQUIRED_FILES "${MVM_IMPORT_DIR}/jpg_exif_orient6.jpg")
+    PROPERTIES TIMEOUT 60)
+# 素材が古い (透過の動画を足す前に生成した) ときは、原因不明の失敗にせず未生成として止める。
+set_tests_properties(still_image_decode_unit PROPERTIES
+    REQUIRED_FILES "${MVM_IMPORT_DIR}/jpg_exif_orient6.jpg;${MVM_IMPORT_DIR}/vp9_alpha.webm")
 
 add_executable(mvm_test_audio_worker_wake audio_preview/test_audio_worker_wake.cpp)
 target_link_libraries(mvm_test_audio_worker_wake PRIVATE mvm::audio_preview mvm::warnings)

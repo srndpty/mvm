@@ -24,6 +24,9 @@ struct MediaStreamFacts {
     int attachedPictureCount = 0; // カバーアート
     int audioStreamCount = 0;
     std::string videoCodecName; // attached_pic を除いた先頭の video stream
+    // 先頭の video stream が透過を持ちうる形式か (画素形式に alpha がある、または VP8 / VP9 の
+    // webm が alpha_mode=1 で alpha を別に持つ)。値が実際に透過しているかは見ない。
+    bool videoAlphaCapable = false;
     // 単一画像を格納する形式の静止画 codec (png / mjpeg を jpeg_pipe で開いた場合など)。
     // mjpeg を avi で開いた場合のように、同じ codec でも動画の器なら false。
     bool stillImageCodec = false;

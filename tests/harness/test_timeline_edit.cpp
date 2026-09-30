@@ -1721,6 +1721,45 @@ void testApplyDefaultEditTransition() {
               halfRate.timelineTransitions[0].framesAfterCut == 30,
           "素材frameに乗らない長さを縮めません");
 
+    // 置く区間 (30 / 30) だけが不透明なら置ける。outgoing は最後の 30 frame だけが不透明
+    // (local 269 以前は 99%)。求めた長さ 60 を事前に丸ごと検査して断らない。
+    auto opaqueTail = base;
+    opaqueTail.timelineClips[0].effects.opacityKeys = {{269, 99.0}, {270, 100.0}};
+    const auto opaquePlaced = mvm::project::applyDefaultEditTransition(
+        opaqueTail, "id-A", "id-B", 60, LinkMode::Linked, sequentialIds());
+    check(opaquePlaced.success && opaquePlaced.frames == 60 &&
+              opaqueTail.timelineTransitions[0].framesBeforeCut == 30 &&
+              opaqueTail.timelineTransitions[0].framesAfterCut == 30,
+          "置く区間だけが不透明なoutgoingへのディゾルブを断りました");
+    // 80 frame なら cut の前は不透明な 30 frame まで、残りを後ろへ寄せる。
+    auto opaqueLonger = base;
+    opaqueLonger.timelineClips[0].effects.opacityKeys = {{269, 99.0}, {270, 100.0}};
+    const auto shiftedByOpacity = mvm::project::applyDefaultEditTransition(
+        opaqueLonger, "id-A", "id-B", 80, LinkMode::Linked, sequentialIds());
+    check(shiftedByOpacity.success && shiftedByOpacity.frames == 80 &&
+              opaqueLonger.timelineTransitions[0].framesBeforeCut == 30 &&
+              opaqueLonger.timelineTransitions[0].framesAfterCut == 50,
+          "不透明な範囲に合わせてcutの前後を寄せません");
+
+    // 素材 frame に乗る長さは cut の前後で別々に決まる。outgoing が 30fps (尻へは 2 frame 単位)、
+    // incoming が 60fps (頭の余白 40) なら、61 frame は 31 / 30 で置ける (60 へ縮めない)。
+    auto mixedRate = base;
+    mixedRate.timelineClips[0].sourceFpsNum = 30;
+    mixedRate.timelineClips[0].sourceFrameCount = 300;
+    mixedRate.timelineClips[0].sourceOutFrame = 150;
+    mixedRate.timelineClips[1].sourceFrameCount = 600;
+    mixedRate.timelineClips[1].sourceInFrame = 40;
+    mixedRate.timelineClips[1].sourceOutFrame = 340;
+    check(mvm::project::validateTimeline(mixedRate).success, "前提: fpsの違うtimelineが不正です");
+    const auto mixedPlaced = mvm::project::applyDefaultEditTransition(
+        mixedRate, "id-A", "id-B", 61, LinkMode::Linked, sequentialIds());
+    check(mixedPlaced.success && mixedPlaced.frames == 61 &&
+              mixedRate.timelineTransitions[0].framesBeforeCut == 31 &&
+              mixedRate.timelineTransitions[0].framesAfterCut == 30,
+          "素材frameに乗る組があるのに必要以上に縮めました");
+    // ID は置いたトランジションの数だけ作る (長さを探す間に使い捨てない)。
+    check(mixedPlaced.transitionId == "new-1", "長さの探索でトランジションIDを使い捨てました");
+
     // リンク相手 (音声) も同じ cut で接していれば一緒に置く。
     auto linked = base;
     auto audioA = linked.timelineClips[0];

@@ -124,6 +124,17 @@ void testClassify() {
     unbounded.frame_count = 0x7FFFFFFF;
     check(!mvm::app::classifyMediaProbe(unbounded, avFacts, "v.mp4").success,
           "無限尺の映像を受理しました");
+    // 透過のある動画は断る。画素形式に alpha がある (stream の事実) か、MLT が decode した frame に
+    // 透過がある (probe の実測) かのどちらでも。
+    auto alphaFacts = avFacts;
+    alphaFacts.videoAlphaCapable = true;
+    const auto alphaFormat = mvm::app::classifyMediaProbe(video, alphaFacts, "v.webm");
+    check(!alphaFormat.success && alphaFormat.error.find("透過") != std::string::npos,
+          "画素形式に透過のある動画を受理しました");
+    auto measuredAlpha = video;
+    measuredAlpha.has_alpha = 1;
+    check(!mvm::app::classifyMediaProbe(measuredAlpha, avFacts, "v.mov").success,
+          "decode した frame に透過のある動画を受理しました");
     auto oneFrame = video;
     oneFrame.frame_count = 1;
     const auto oneFrameResult = mvm::app::classifyMediaProbe(oneFrame, avFacts, "v.mp4");

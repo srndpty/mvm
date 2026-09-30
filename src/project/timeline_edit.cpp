@@ -461,24 +461,28 @@ bool resolveTransitionClips(const Project& project, const TimelineTransition& tr
 // されていると、覆わない所で outgoing が 100% 見え続け、区間の終わりの 1 frame で突然消える。
 // 各 clip を別々に描いてから混ぜる合成 (compositor の dissolve) を持つまでは、この条件で置かせない。
 // localBegin..localEnd は元の clip の local frame (延ばした区間は端の値で評価する)。
-bool dissolveClipCoversOpaque(const Project& project, const TimelineClip& clip,
-                              std::int64_t localBegin, std::int64_t localEnd, std::string& error) {
-    const auto reject = [&] {
-        error = "クロスディゾルブは画面全体を覆う不透明な映像 clip どうしでだけ使えます "
-                "(文字・画像は不可。位置・拡大・回転・切り抜き・不透明度を既定値に戻してください): " +
-                clip.name;
-        return false;
-    };
-    if ((clip.kind != TimelineClipKind::Video && clip.kind != TimelineClipKind::Manim) ||
-        clip.frameHold)
-        return reject();
+const char* const kDissolveRequirement =
+    "クロスディゾルブは画面全体を覆う不透明な映像 clip どうしでだけ使えます "
+    "(文字・画像は不可。位置・拡大・回転・切り抜き・不透明度を既定値に戻してください): ";
+
+// 長さに依らない条件 (種別・位置・拡大・回転・切り抜き)。
+bool dissolveClipShapeEligible(const TimelineClip& clip, std::string& error) {
     const auto& effects = clip.effects;
-    if (effects.positionXPercent != 0.0 || effects.positionYPercent != 0.0 ||
+    if ((clip.kind != TimelineClipKind::Video && clip.kind != TimelineClipKind::Manim) ||
+        clip.frameHold || effects.positionXPercent != 0.0 || effects.positionYPercent != 0.0 ||
         effects.scaleXPercent != 100.0 || effects.scaleYPercent != 100.0 ||
         effects.rotationDegrees != 0.0 || effects.cropLeftPercent != 0.0 ||
         effects.cropTopPercent != 0.0 || effects.cropRightPercent != 0.0 ||
-        effects.cropBottomPercent != 0.0)
-        return reject();
+        effects.cropBottomPercent != 0.0) {
+        error = kDissolveRequirement + clip.name;
+        return false;
+    }
+    return true;
+}
+
+// local frame [localBegin, localEnd) で不透明度 (値・key・fade) が 1 か。
+bool dissolveClipOpaqueOver(const Project& project, const TimelineClip& clip,
+                            std::int64_t localBegin, std::int64_t localEnd, std::string& error) {
     for (std::int64_t local = localBegin; local < localEnd; ++local) {
         const auto sourceLocal =
             clipFadeSourceFrameAt(clip, project.timelineFpsNum, project.timelineFpsDen, local);
@@ -486,11 +490,19 @@ bool dissolveClipCoversOpaque(const Project& project, const TimelineClip& clip,
             error = sourceLocal.error;
             return false;
         }
-        if (evaluateClipOpacity(effects, local, sourceLocal.frame,
-                                clip.sourceOutFrame - clip.sourceInFrame) < 1.0)
-            return reject();
+        if (evaluateClipOpacity(clip.effects, local, sourceLocal.frame,
+                                clip.sourceOutFrame - clip.sourceInFrame) < 1.0) {
+            error = kDissolveRequirement + clip.name;
+            return false;
+        }
     }
     return true;
+}
+
+bool dissolveClipCoversOpaque(const Project& project, const TimelineClip& clip,
+                              std::int64_t localBegin, std::int64_t localEnd, std::string& error) {
+    return dissolveClipShapeEligible(clip, error) &&
+           dissolveClipOpaqueOver(project, clip, localBegin, localEnd, error);
 }
 
 bool dissolveClipsEligible(const Project& project, const TransitionClips& clips,
@@ -2039,10 +2051,8 @@ bool prepareEditTransition(Project& candidate, const std::string& outgoingId,
         0, std::min(clips.headHandle, clips.outgoingDuration - outgoingHeadInside));
     maxAfter = std::max<std::int64_t>(
         0, std::min(clips.tailHandle, clips.incomingDuration - incomingTailInside));
-    // 置けない組み合わせ (透過・変形した映像のディゾルブ) は、長さを縮めても直らないので先に返す。
-    if (!dissolveClipsEligible(candidate, clips, std::min(maxBefore, frames),
-                               std::min(maxAfter, frames), error))
-        return false;
+    maxBefore = std::min(maxBefore, frames);
+    maxAfter = std::min(maxAfter, frames);
     return true;
 }
 
@@ -2110,47 +2120,134 @@ TransitionEditResult applyDefaultEditTransition(Project& project, const std::str
         maxBefore = std::min(maxBefore, pointBefore);
         maxAfter = std::min(maxAfter, pointAfter);
     }
-    // cut を中央にし、片側が足りなければもう片側へ寄せる。
-    std::int64_t before = std::min(timelineFrames / 2, maxBefore);
-    std::int64_t after = std::min(timelineFrames - before, maxAfter);
-    before = std::min(maxBefore, timelineFrames - after);
-    // 速度や fps の違いで、延ばした端が素材 frame にちょうど乗らない長さがある。
-    // 全部の編集点で描画区間を作れる長さまで、長い側から 1 frame ずつ縮める。
-    while (before + after > 0) {
-        Project trial = prepared;
-        std::vector<std::string> ids;
-        for (const auto& point : points) {
-            ids.push_back(newId());
-            if (ids.back().empty()) {
-                result.error = "トランジションの ID を作れません";
-                return result;
-            }
-            trial.timelineTransitions.push_back(
-                {ids.back(), point.outgoing, point.incoming, before, after});
+    // 置ける長さは cut の前 (before) と後 (after) で独立に決まる。
+    //   before: incoming を cut - before まで延ばせる (素材 frame にちょうど乗る) こと、
+    //           映像なら outgoing の最後の before frame が不透明であること
+    //   after : outgoing を cut + after まで延ばせること、映像なら incoming を cut + after で
+    //           分けられる (lane 1 の区間の終わり) ことと、incoming の最初の after frame が不透明であること
+    // それぞれで置ける長さを求めてから、合計が最大で cut に最も近い中央の組を選ぶ。
+    // 長さに依らない条件 (映像の形と、区間の端の frame の不透明度) は先に理由を付けて断る。
+    struct PointClips {
+        TimelineClip outgoing;
+        TimelineClip incoming;
+        TransitionClips clips;
+    };
+    std::vector<PointClips> resolved;
+    for (const auto& point : points) {
+        const TimelineTransition probe{"probe", point.outgoing, point.incoming, 0, 0};
+        PointClips entry;
+        if (!resolveTransitionClips(prepared, probe, entry.clips, result.error))
+            return result;
+        entry.outgoing = prepared.timelineClips[static_cast<std::size_t>(entry.clips.outgoing)];
+        entry.incoming = prepared.timelineClips[static_cast<std::size_t>(entry.clips.incoming)];
+        if (entry.outgoing.track.kind == TrackKind::Video &&
+            !dissolveClipsEligible(prepared, entry.clips, 0, 0, result.error))
+            return result;
+        resolved.push_back(std::move(entry));
+    }
+    const auto beforeFits = [&](std::int64_t before, bool checkOpacity) {
+        std::string ignored;
+        for (const auto& entry : resolved) {
+            const auto cut = entry.clips.cut;
+            if (before > 0 &&
+                !clipWithEdgeAt(prepared, entry.incoming, TrimEdge::Left, cut - before, ignored))
+                return false;
+            if (checkOpacity && entry.outgoing.track.kind == TrackKind::Video &&
+                !dissolveClipOpaqueOver(prepared, entry.outgoing,
+                                        entry.clips.outgoingDuration - before,
+                                        entry.clips.outgoingDuration, ignored))
+                return false;
         }
-        std::vector<TimelineRenderSegment> segments;
-        std::string renderError;
-        if (validateTimeline(trial).success &&
-            timelineRenderSegments(trial, TrackKind::Video, segments, renderError) &&
-            timelineRenderSegments(trial, TrackKind::Audio, segments, renderError)) {
-            const auto committed =
-                commitCandidate(project, std::move(trial), indexOfId(project, incomingId));
-            if (!committed.success) {
-                result.error = committed.error;
-                return result;
+        return true;
+    };
+    const auto afterFits = [&](std::int64_t after, bool checkOpacity) {
+        std::string ignored;
+        for (const auto& entry : resolved) {
+            const auto cut = entry.clips.cut;
+            if (after > 0 &&
+                !clipWithEdgeAt(prepared, entry.outgoing, TrimEdge::Right, cut + after, ignored))
+                return false;
+            if (entry.outgoing.track.kind != TrackKind::Video)
+                continue;
+            if (after > 0 && after < entry.clips.incomingDuration &&
+                !clipWithEdgeAt(prepared, entry.incoming, TrimEdge::Right, cut + after, ignored))
+                return false;
+            if (checkOpacity &&
+                !dissolveClipOpaqueOver(prepared, entry.incoming, 0, after, ignored))
+                return false;
+        }
+        return true;
+    };
+    const auto choose = [&](bool checkOpacity, std::int64_t& before, std::int64_t& after) {
+        std::vector<bool> beforeOk(static_cast<std::size_t>(maxBefore) + 1);
+        std::vector<bool> afterOk(static_cast<std::size_t>(maxAfter) + 1);
+        for (std::int64_t value = 0; value <= maxBefore; ++value)
+            beforeOk[static_cast<std::size_t>(value)] = beforeFits(value, checkOpacity);
+        for (std::int64_t value = 0; value <= maxAfter; ++value)
+            afterOk[static_cast<std::size_t>(value)] = afterFits(value, checkOpacity);
+        for (std::int64_t total = std::min(timelineFrames, maxBefore + maxAfter); total >= 1;
+             --total) {
+            // 合計 total の組のうち、cut を中央に置く組から順に試す。
+            for (std::int64_t offset = 0; offset <= total; ++offset) {
+                for (const std::int64_t candidate :
+                     {total / 2 + offset, total / 2 - offset, (total + 1) / 2 + offset}) {
+                    const std::int64_t other = total - candidate;
+                    if (candidate < 0 || other < 0 || candidate > maxBefore || other > maxAfter ||
+                        !beforeOk[static_cast<std::size_t>(candidate)] ||
+                        !afterOk[static_cast<std::size_t>(other)])
+                        continue;
+                    before = candidate;
+                    after = other;
+                    return true;
+                }
             }
-            result.success = true;
-            result.transitionId = ids.front();
-            result.frames = before + after;
-            result.transitionCount = static_cast<int>(points.size());
+        }
+        return false;
+    };
+    std::int64_t before = 0;
+    std::int64_t after = 0;
+    if (!choose(true, before, after)) {
+        // 不透明度を見なければ置けるなら、余白ではなく不透明度が理由である。
+        std::int64_t ignoredBefore = 0;
+        std::int64_t ignoredAfter = 0;
+        result.error = choose(false, ignoredBefore, ignoredAfter)
+                           ? std::string(kDissolveRequirement) +
+                                 "トランジションの区間で不透明度が下がっています"
+                           : "素材の余白が足りないためトランジションを作れません";
+        return result;
+    }
+    Project trial = prepared;
+    std::string firstId;
+    for (const auto& point : points) {
+        const std::string id = newId();
+        if (id.empty()) {
+            result.error = "トランジションの ID を作れません";
             return result;
         }
-        if (before >= after)
-            --before;
-        else
-            --after;
+        if (firstId.empty())
+            firstId = id;
+        trial.timelineTransitions.push_back({id, point.outgoing, point.incoming, before, after});
     }
-    result.error = "素材の余白が足りないためトランジションを作れません";
+    // 選んだ長さは描画区間を作れるはずである。作れなければ理由をそのまま返す (黙って縮めない)。
+    std::vector<TimelineRenderSegment> segments;
+    const auto valid = validateTimeline(trial);
+    if (!valid.success) {
+        result.error = valid.error;
+        return result;
+    }
+    if (!timelineRenderSegments(trial, TrackKind::Video, segments, result.error) ||
+        !timelineRenderSegments(trial, TrackKind::Audio, segments, result.error))
+        return result;
+    const auto committed =
+        commitCandidate(project, std::move(trial), indexOfId(project, incomingId));
+    if (!committed.success) {
+        result.error = committed.error;
+        return result;
+    }
+    result.success = true;
+    result.transitionId = firstId;
+    result.frames = before + after;
+    result.transitionCount = static_cast<int>(points.size());
     return result;
 }
 

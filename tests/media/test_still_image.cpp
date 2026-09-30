@@ -89,6 +89,19 @@ void testFacts(const fs::path& dir) {
     check(!probeMediaStreamFacts(dir / "webp_static.webp").webpAnimationFlag,
           "静止画 WebP にアニメーション flag を立てました");
 
+    // 透過を持ちうる動画。VP9 は alpha_mode、ProRes 4444 は画素形式で分かる。
+    for (const char* name : {"vp9_alpha.webm", "prores4444_alpha.mov"}) {
+        const auto facts = probeMediaStreamFacts(dir / name);
+        check(facts.ok && facts.videoStreamCount == 1 && facts.videoAlphaCapable,
+              std::string("透過のある動画を判定できません: ") + name);
+    }
+    // 対照: 同じ VP9 でも透過が無ければ、また H.264 / Motion JPEG も透過を持たない。
+    for (const char* name : {"vp9_opaque.webm", "mp4_h264_with_cover.mp4", "mjpeg_av.avi"}) {
+        const auto facts = probeMediaStreamFacts(dir / name);
+        check(facts.ok && facts.videoStreamCount == 1 && !facts.videoAlphaCapable,
+              std::string("透過の無い動画を透過ありと判定しました: ") + name);
+    }
+
     const auto exr = probeMediaStreamFacts(dir / "exr_float.exr");
     check(exr.ok && exr.hdrImageCodec && !exr.stillImageCodec,
           "EXR を HDR 画像として判定できません");
