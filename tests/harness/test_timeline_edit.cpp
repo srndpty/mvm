@@ -1716,6 +1716,78 @@ void testApplyDefaultEditTransition() {
           "存在しないトランジションの削除を受理しました");
 }
 
+// 上書き移動。V1 の long [0, 300) の上へ V2 の mover (60 frame) を動かす。期待値は手で数えた値。
+void testMoveOverwrite() {
+    using mvm::project::LinkMode;
+    const auto base = [] {
+        auto project = mvm::project::createDefaultProject();
+        auto mover = clip("mover", mvm::project::TimelineClipKind::Video, kV2);
+        mover.sourceOutFrame = 60;
+        project.timelineClips = {clip("long"), mover};
+        return project;
+    };
+    const auto spanOf = [](const mvm::project::Project& project, const std::string& id) {
+        const auto* found = findClip(project, id);
+        return found ? std::pair<std::int64_t, std::int64_t>{found->timelineStartFrame,
+                                                            clipEnd(project, *found)}
+                     : std::pair<std::int64_t, std::int64_t>{-1, -1};
+    };
+
+    auto inside = base();
+    check(mvm::project::moveClips(inside, {"id-mover"}, "id-mover", kV1, 100, LinkMode::Linked,
+                                  sequentialIds())
+                  .success &&
+              spanOf(inside, "id-long") == std::pair<std::int64_t, std::int64_t>{0, 100} &&
+              spanOf(inside, "id-mover") == std::pair<std::int64_t, std::int64_t>{100, 160} &&
+              spanOf(inside, "new-1") == std::pair<std::int64_t, std::int64_t>{160, 300} &&
+              findClip(inside, "new-1")->sourceInFrame == 160,
+          "clipの中へ上書き移動して前後に分けません");
+
+    auto tail = base();
+    check(mvm::project::moveClips(tail, {"id-mover"}, "id-mover", kV1, 250, LinkMode::Linked,
+                                  sequentialIds())
+                  .success &&
+              spanOf(tail, "id-long") == std::pair<std::int64_t, std::int64_t>{0, 250} &&
+              tail.timelineClips.size() == 2,
+          "clipの末尾へ上書き移動して末尾を削りません");
+
+    auto head = base();
+    check(mvm::project::moveClips(head, {"id-mover"}, "id-mover", kV1, 0, LinkMode::Linked,
+                                  sequentialIds())
+                  .success &&
+              spanOf(head, "id-long") == std::pair<std::int64_t, std::int64_t>{60, 300} &&
+              findClip(head, "id-long")->sourceInFrame == 60,
+          "clipの先頭へ上書き移動して先頭を削りません");
+
+    // 丸ごと覆った clip は消し、リンク相手は未リンクにする。
+    auto covered = base();
+    auto tiny = clip("tiny");
+    tiny.sourceOutFrame = 30;
+    tiny.timelineStartFrame = 400;
+    tiny.linkGroupId = "tiny-link";
+    auto tinyAudio = clip("tiny-audio", mvm::project::TimelineClipKind::Audio, kA1);
+    tinyAudio.sourceOutFrame = 30;
+    tinyAudio.timelineStartFrame = 400;
+    tinyAudio.linkGroupId = "tiny-link";
+    covered.timelineClips.push_back(tiny);
+    covered.timelineClips.push_back(tinyAudio);
+    check(mvm::project::validateTimeline(covered).success, "前提: 上書き試験のtimelineが不正です");
+    check(mvm::project::moveClips(covered, {"id-mover"}, "id-mover", kV1, 390, LinkMode::Linked,
+                                  sequentialIds())
+                  .success &&
+              findClip(covered, "id-tiny") == nullptr &&
+              findClip(covered, "id-tiny-audio")->linkGroupId.empty(),
+          "丸ごと覆ったclipを消してリンク相手を未リンクにしません");
+
+    // newId を渡さなければ従来どおり重なりを拒否する。
+    auto rejected = base();
+    const auto before = rejected;
+    check(!mvm::project::moveClips(rejected, {"id-mover"}, "id-mover", kV1, 100, LinkMode::Linked)
+               .success &&
+              rejected == before,
+          "上書きを指定しない移動で重なりを受理しました");
+}
+
 void testRippleTrim() {
     mvm::project::Project project = mvm::project::createDefaultProject();
     auto first = clip("first");
@@ -2796,6 +2868,7 @@ int main(int argc, char** argv) {
     testApplyDefaultClipFades();
     testClipWithEdgeAt();
     testApplyDefaultEditTransition();
+    testMoveOverwrite();
     testTimelineTransitions(std::filesystem::path(argv[1]));
     testRippleTrim();
     testRollEdit();

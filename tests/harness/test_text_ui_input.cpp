@@ -20,6 +20,7 @@
 #include "waveform_cache.h"
 
 #include <chrono>
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <functional>
@@ -322,6 +323,53 @@ int main(int argc, char** argv) {
                 }
                 controller.undoLastEdit(); // 分割
                 pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+
+                // clip 移動の吸着: V2 の [200, 500) を V1 の clip の終端 (120) の数 frame 手前まで
+                // ドラッグして離すと、ちょうど 120 から始まる。吸着が無ければ離した位置になる。
+                {
+                    const int placedRow = controller.clipCount();
+                    controller.addMediaItemsToTimelineAt({QStringLiteral("fixture-media-0")},
+                                                         QStringLiteral("video"), 1, 200);
+                    pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                    pump(300);
+                    auto* model = controller.timelineModel();
+                    const int startRole = model->roleNames().key("timelineStartFrame", -1);
+                    const QString placedId = model->clipIdAt(placedRow);
+                    auto* placed = findVisualItem(window, QStringLiteral("timelineClip_") + placedId);
+                    const auto startOf = [&] {
+                        return model->data(model->index(placedRow, 0), startRole).toLongLong();
+                    };
+                    check(placed && startRole >= 0 && startOf() == 200,
+                          "前提: 吸着の試験の clip を置けません");
+                    if (placed && startRole >= 0) {
+                        const int durationRole = model->roleNames().key("timelineDurationFrames", -1);
+                        const double durationFrames =
+                            model->data(model->index(placedRow, 0), durationRole).toDouble();
+                        const double pixelsPerFrame = placed->width() / std::max(1.0, durationFrames);
+                        // 吸着の距離は 8 px。ちょうどの位置から 6 px 以内で、1 frame 以上ずれた量。
+                        const int shortFrames = std::max(1, static_cast<int>(6.0 / pixelsPerFrame));
+                        check(shortFrames * pixelsPerFrame <= 8.0,
+                              "前提: 拡大率が大きく、吸着の距離の中で frame をずらせません");
+                        const QPoint grab =
+                            placed->mapToScene(QPointF(30, placed->height() / 2)).toPoint();
+                        const QPoint delta(static_cast<int>(std::lround((-80 + shortFrames) *
+                                                                        pixelsPerFrame)),
+                                           0);
+                        QTest::mousePress(window, Qt::LeftButton, {}, grab);
+                        for (int step = 1; step <= 8; ++step)
+                            QTest::mouseMove(window, grab + delta * step / 8);
+                        QTest::mouseRelease(window, Qt::LeftButton, {}, grab + delta);
+                        pump(300);
+                        std::printf("吸着: %.2f px/frame、%d frame 手前で離して start=%lld\n",
+                                    pixelsPerFrame, shortFrames,
+                                    static_cast<long long>(startOf()));
+                        check(startOf() == 120,
+                              "clip を別の clip の終端の近くで離しても端に吸着しません");
+                    }
+                    controller.undoLastEdit(); // 移動
+                    controller.undoLastEdit(); // 配置
+                    pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                }
             }
 
             const auto scenePoint = [host](double fx, double fy) {

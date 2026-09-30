@@ -1511,6 +1511,10 @@ ApplicationWindow {
             property bool activeDragMoved: false
             property real activeDragOffsetX: 0
             property string activeDragTrackKind: ""
+            // clip 移動で吸着した frame (吸着の目印を描く)。吸着していなければ -1。
+            property real snapGuideFrame: -1
+            // 吸着させる距離 (px)。Ctrl を押している間は吸着しない (プレビューの枠と同じ)。
+            readonly property real snapThresholdPixels: 8
             property real activeDragOffsetY: 0
             property real selectionStartX: 0
             property real selectionStartY: 0
@@ -2364,6 +2368,8 @@ ApplicationWindow {
                                 property real rawBodyDragOffsetX: 0
                                 // press 時点で一緒に動く clip 群の端 (controller.timelineDragBounds)。
                                 property var bodyDragBounds: ({})
+                                // press 時点の吸着の候補 (Gestures.dragSnapFrames)。
+                                property var bodySnap: null
                                 property bool bodyMoved: false
                                 property bool bodyAdditiveSelection: false
                                 property string dragTrackKind: trackKind
@@ -2825,6 +2831,10 @@ ApplicationWindow {
                                         }
                                         // 選択を確定した後で、一緒に動く群の端を取る。
                                         clipItem.bodyDragBounds = root.mvmController.timelineDragBounds(clipItem.clipId);
+                                        clipItem.bodySnap = Gestures.dragSnapFrames(
+                                            root.mvmController.timelineModel.clipSpans(),
+                                            clipItem.bodyDragBounds.clipIds || [],
+                                            root.mvmController.playheadFrame);
                                         timelinePanel.activeDragLinkGroup = clipItem.editLinked ? clipItem.linkGroupId : "";
                                         timelinePanel.activeDragClipId = clipItem.clipId;
                                         timelinePanel.activeDragDuplicate = clipItem.gestureState.duplicate;
@@ -2885,9 +2895,23 @@ ApplicationWindow {
                                                                    ? 0 : clipItem.rawBodyDragOffsetX;
                                         // リンク・複数選択の群全体が 0 frame と既存 track に収まる量で
                                         // 止める。確定にも同じ量を渡すので、見えている位置のまま置かれる。
-                                        clipItem.bodyDragOffsetX = Gestures.groupDragOffsetX(
+                                        const boundedOffset = Gestures.groupDragOffsetX(
                                             intendedOffset, timelinePanel.pixelsPerFrame,
                                             clipItem.bodyDragBounds);
+                                        // 他の clip の端・再生ヘッドの近くでは端を吸着させる。吸着した
+                                        // 量も同じ規則で丸め直す (0 frame より左へは出さない)。
+                                        const edgeSnap = clipItem.bodySnap !== null
+                                                        && (mouse.modifiers & Qt.ControlModifier) === 0
+                                                        ? Gestures.snapDragOffsetX(
+                                                              boundedOffset, timelinePanel.pixelsPerFrame,
+                                                              clipItem.bodySnap,
+                                                              timelinePanel.snapThresholdPixels)
+                                                        : { "offsetX": boundedOffset, "frame": -1 };
+                                        clipItem.bodyDragOffsetX = Gestures.groupDragOffsetX(
+                                            edgeSnap.offsetX, timelinePanel.pixelsPerFrame,
+                                            clipItem.bodyDragBounds);
+                                        timelinePanel.snapGuideFrame =
+                                            clipItem.bodyDragOffsetX === edgeSnap.offsetX ? edgeSnap.frame : -1;
                                         timelinePanel.activeDragOffsetX = clipItem.bodyDragOffsetX;
                                         const rawCenterY = clipItem.y
                                                            + (now.y - clipItem.bodyPressPoint.y)
@@ -2960,6 +2984,8 @@ ApplicationWindow {
                                         timelinePanel.activeDragOffsetX = 0;
                                         timelinePanel.activeDragTrackKind = "";
                                         timelinePanel.activeDragOffsetY = 0;
+                                        timelinePanel.snapGuideFrame = -1;
+                                        clipItem.bodySnap = null;
 
                                         // slip の preview は確定の有無によらず通常の表示へ戻す。
                                         if (gesture === "slip")
@@ -3206,6 +3232,16 @@ ApplicationWindow {
                                                    transitionItem.modelData.transitionId)
                                 }
                             }
+                        }
+
+                        // clip 移動の吸着の目印。吸着した frame に縦線を描く。
+                        Rectangle {
+                            visible: timelinePanel.snapGuideFrame >= 0 && timelinePanel.activeDragMoved
+                            x: timelinePanel.snapGuideFrame * timelinePanel.pixelsPerFrame
+                            width: 1
+                            height: parent.height
+                            color: "#ffe08a"
+                            z: 95
                         }
 
                         // 選択中の編集点。cut の位置に括弧を描く。

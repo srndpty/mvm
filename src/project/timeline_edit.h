@@ -132,9 +132,13 @@ TimelineEditResult moveClip(Project& project, const std::string& clipId, TrackRe
                             std::int64_t newStartFrame);
 // anchor clip の移動量を選択 clip 全体へ適用する。Linked ならリンク相手も同じ時間差で
 // 移動する。全変更を一つの candidate として検証する。
+// newId を渡すと上書きで置く (Premiere の上書き)。動かした clip の下になる他の clip は、
+// 丸ごと覆われれば消し (リンク相手は未リンクにする)、端が掛かれば削り、中に置けば 2 つに
+// 分ける (右側は newId() の ID で未リンク)。newId が空なら重なりを拒否する。
 TimelineEditResult moveClips(Project& project, const std::vector<std::string>& clipIds,
                              const std::string& anchorClipId, TrackRef destinationTrack,
-                             std::int64_t newStartFrame, LinkMode linkMode);
+                             std::int64_t newStartFrame, LinkMode linkMode,
+                             const std::function<std::string()>& newId = {});
 // track 末尾へ追加する。clip.track と clip.timelineStartFrame はここで確定させる。
 TimelineEditResult appendTimelineClip(Project& project, TimelineClip clip, TrackRef track);
 // 指定位置へ配置する。既存 clip と重なる場合は fail-closed にする。

@@ -367,7 +367,8 @@ public:
     Q_INVOKABLE bool pasteClips();
     Q_INVOKABLE bool duplicateSelectedClips();
     // clipId をドラッグしたとき一緒に動く clip 群の端。minStartFrame と、含まれる種別ごとの
-    // videoMinTrack / videoMaxTrack / audioMinTrack / audioMaxTrack。clip が無ければ空。
+    // videoMinTrack / videoMaxTrack / audioMinTrack / audioMaxTrack、一緒に動く clipIds。
+    // clip が無ければ空。
     Q_INVOKABLE QVariantMap timelineDragBounds(const QString& clipId) const;
     Q_INVOKABLE bool duplicateTimelineClipsAt(const QString& clipId, const QString& trackKind,
                                               int trackIndex, qint64 timelineStartFrame);

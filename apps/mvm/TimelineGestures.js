@@ -1,4 +1,6 @@
-.pragma library
+// .pragma library は付けない。QML 専用の指示なので VS Code の JavaScript 検査が構文エラー
+// ("Unexpected keyword or identifier") にする。ここは状態を持たない関数だけなので、import した
+// QML ごとに別の instance になっても振る舞いは変わらない。
 
 // タイムラインの clip に対するマウス操作を、どの編集として確定するかの判定。
 // QML の delegate は press / release でここを呼び、返った内容どおりに controller を呼ぶだけにする。
@@ -29,6 +31,39 @@ function groupDragOffsetX(offsetX, pixelsPerFrame, bounds) {
     if (bounds.minStartFrame === undefined)
         return offsetX;
     return Math.max(-bounds.minStartFrame * pixelsPerFrame, offsetX);
+}
+
+// clip 移動の吸着。動かす clip 群 (movingIds) の両端と、吸着先 (他の clip の両端・再生ヘッド・
+// timeline 先頭) の frame を集める。spans は timelineModel.clipSpans() の値。
+function dragSnapFrames(spans, movingIds, playheadFrame) {
+    const moving = [];
+    const targets = [0, playheadFrame];
+    for (const span of spans) {
+        if (movingIds.indexOf(span.clipId) >= 0)
+            moving.push(span.start, span.end);
+        else
+            targets.push(span.start, span.end);
+    }
+    return { "moving": moving, "targets": targets };
+}
+
+// 横のドラッグ量 (px) を、動かす端のどれかが吸着先から thresholdPx 以内に来たら、端が吸着先に
+// ちょうど重なる量へ寄せる。最も近いものを選ぶ。戻り値は {offsetX, frame} で、frame は吸着した
+// 吸着先の frame (吸着しなければ -1)。
+function snapDragOffsetX(offsetX, pixelsPerFrame, snap, thresholdPx) {
+    let result = { "offsetX": offsetX, "frame": -1 };
+    let nearest = thresholdPx;
+    for (const edge of snap.moving) {
+        for (const target of snap.targets) {
+            const candidate = (target - edge) * pixelsPerFrame;
+            const distance = Math.abs(candidate - offsetX);
+            if (distance <= nearest) {
+                nearest = distance;
+                result = { "offsetX": candidate, "frame": target };
+            }
+        }
+    }
+    return result;
 }
 
 // 縦も同じく、群の最下段・最上段の clip が既存 track からはみ出さない index へ丸める。

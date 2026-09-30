@@ -833,9 +833,91 @@ TimelineEditResult moveClip(Project& project, const std::string& clipId, TrackRe
     return moveClips(project, {clipId}, clipId, destinationTrack, newStartFrame, LinkMode::Linked);
 }
 
+namespace {
+
+// trim した clip の fade を縮めた尺に収める。先頭側を優先して残す。
+void clampFadesToLength(TimelineClip& clip) {
+    const std::int64_t length = clip.sourceOutFrame - clip.sourceInFrame;
+    clip.effects.fadeInFrames = std::min(clip.effects.fadeInFrames, length);
+    clip.effects.fadeOutFrames =
+        std::min(clip.effects.fadeOutFrames, length - clip.effects.fadeInFrames);
+}
+
+// track の [start, end) を上書きする。keep の clip (上に置く clip) は触らない。
+bool overwriteTrackRange(Project& candidate, TrackRef track, std::int64_t start, std::int64_t end,
+                         const std::unordered_set<std::string>& keep,
+                         const std::function<std::string()>& newId, std::string& error) {
+    std::vector<std::string> removed;
+    const std::size_t originalCount = candidate.timelineClips.size();
+    for (std::size_t index = 0; index < originalCount; ++index) {
+        auto& clip = candidate.timelineClips[index];
+        if (keep.contains(clip.id) || !(clip.track == track))
+            continue;
+        std::int64_t clipStart = 0;
+        std::int64_t clipEnd = 0;
+        if (!clipInterval(candidate, clip, clipStart, clipEnd, error))
+            return false;
+        if (clipEnd <= start || clipStart >= end)
+            continue;
+        if (clipStart >= start && clipEnd <= end) {
+            removed.push_back(clip.id);
+            continue;
+        }
+        if (clipStart < start && clipEnd > end) {
+            // 中に置いた: 左を start で止め、右を end から始まる別 clip にする。
+            TimelineClip right = clip;
+            right.id = newId();
+            if (right.id.empty() || right.id == clip.id) {
+                error = "上書きで分けた clip の ID を作れません";
+                return false;
+            }
+            right.linkGroupId.clear();
+            if (!trimClipBoundary(candidate, right, TrimEdge::Left, end - clipStart, error))
+                return false;
+            right.effects.fadeInFrames = 0;
+            clampFadesToLength(right);
+            for (auto& transition : candidate.timelineTransitions) {
+                if (transition.outgoingClipId == clip.id)
+                    transition.outgoingClipId = right.id;
+            }
+            auto& left = candidate.timelineClips[index];
+            if (!trimClipBoundary(candidate, left, TrimEdge::Right, start - clipEnd, error))
+                return false;
+            left.effects.fadeOutFrames = 0;
+            clampFadesToLength(left);
+            candidate.timelineClips.push_back(std::move(right));
+            continue;
+        }
+        if (clipStart < start) {
+            if (!trimClipBoundary(candidate, clip, TrimEdge::Right, start - clipEnd, error))
+                return false;
+        } else if (!trimClipBoundary(candidate, clip, TrimEdge::Left, end - clipStart, error)) {
+            return false;
+        }
+        clampFadesToLength(clip);
+    }
+    for (const auto& id : removed) {
+        const auto& group =
+            candidate.timelineClips[static_cast<std::size_t>(indexOfId(candidate, id))].linkGroupId;
+        if (group.empty())
+            continue;
+        const std::string groupId = group;
+        for (auto& clip : candidate.timelineClips)
+            if (clip.linkGroupId == groupId)
+                clip.linkGroupId.clear();
+    }
+    std::erase_if(candidate.timelineClips, [&](const TimelineClip& clip) {
+        return std::find(removed.begin(), removed.end(), clip.id) != removed.end();
+    });
+    return true;
+}
+
+} // namespace
+
 TimelineEditResult moveClips(Project& project, const std::vector<std::string>& clipIds,
                              const std::string& anchorClipId, TrackRef destinationTrack,
-                             std::int64_t newStartFrame, LinkMode linkMode) {
+                             std::int64_t newStartFrame, LinkMode linkMode,
+                             const std::function<std::string()>& newId) {
     TimelineEditResult result;
     if (clipIds.empty() || !isValidTrackRef(project, destinationTrack) || newStartFrame < 0) {
         result.error = "timeline clip の移動先 track または start frame が不正です";
@@ -908,6 +990,27 @@ TimelineEditResult moveClips(Project& project, const std::vector<std::string>& c
             clip.track = translatedTrack;
         }
     }
+    if (newId) {
+        struct Span {
+            TrackRef track;
+            std::int64_t start = 0;
+            std::int64_t end = 0;
+        };
+        std::vector<Span> spans;
+        for (const auto& clip : candidate.timelineClips) {
+            if (!movedIds.contains(clip.id))
+                continue;
+            Span span{clip.track};
+            if (!clipInterval(candidate, clip, span.start, span.end, result.error))
+                return result;
+            spans.push_back(span);
+        }
+        for (const auto& span : spans) {
+            if (!overwriteTrackRange(candidate, span.track, span.start, span.end, movedIds, newId,
+                                     result.error))
+                return result;
+        }
+    }
     const auto validation = finalizeTimelineCandidate(candidate);
     if (!validation.success) {
         result.error = validation.error;
@@ -915,7 +1018,7 @@ TimelineEditResult moveClips(Project& project, const std::vector<std::string>& c
     }
     project = std::move(candidate);
     result.success = true;
-    result.selectedIndex = index;
+    result.selectedIndex = indexOfId(project, anchorClipId);
     return result;
 }
 

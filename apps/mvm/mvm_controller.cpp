@@ -4231,7 +4231,9 @@ QVariantMap MvmController::timelineDragBounds(const QString& clipId) const {
         return bounds;
     qint64 minStart = std::numeric_limits<qint64>::max();
     std::map<project::TrackKind, std::pair<int, int>> trackRange;
+    QStringList clipIds;
     for (const auto& clip : clips) {
+        clipIds.append(QString::fromStdString(clip.id));
         minStart = std::min<qint64>(minStart, clip.timelineStartFrame);
         const auto [range, inserted] =
             trackRange.try_emplace(clip.track.kind, clip.track.index, clip.track.index);
@@ -4239,6 +4241,8 @@ QVariantMap MvmController::timelineDragBounds(const QString& clipId) const {
         range->second.second = std::max(range->second.second, clip.track.index);
     }
     bounds.insert(QStringLiteral("minStartFrame"), minStart);
+    // 一緒に動く clip の ID。QML は吸着の候補から外す (自分の端には吸着しない)。
+    bounds.insert(QStringLiteral("clipIds"), clipIds);
     for (const auto& [kind, range] : trackRange) {
         const QString prefix =
             kind == project::TrackKind::Video ? QStringLiteral("video") : QStringLiteral("audio");
@@ -4419,7 +4423,8 @@ bool MvmController::moveTimelineClip(const QString& clipId, const QString& track
     }
     const auto moved =
         project::moveClips(candidate, movedIds, anchorId, destination,
-                           std::max<qint64>(0, timelineStartFrame), project::LinkMode::Single);
+                           std::max<qint64>(0, timelineStartFrame), project::LinkMode::Single,
+                           newClipId);
     if (!moved.success) {
         setStatus(QString::fromStdString(moved.error));
         return false;

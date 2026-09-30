@@ -1778,3 +1778,45 @@ clip の選択のたびに delegate が作り直される (`text_ui_direct_input
 - `text_ui_direct_input` (workstation): 実 window で clip の端を押して編集点を選び、Shift+D で置き、
   描いたトランジションを押して選び、Delete で消す (clip は消えない)
 - `tst_timeline_gestures`: 動かさずに離したときの `selectEdit` と、レート調整の `none`
+
+### 19.7 上書き移動と、移動時の吸着
+
+`[事実]` clip の移動は上書きで置く (Premiere の上書き)。`moveClips` に `newId` を渡すと、動かした clip の下になる
+他の clip を、丸ごと覆えば消し (リンク相手は未リンク)、端が掛かれば削り、中に置けば 2 つに分ける (右側は新しい
+ID で未リンク、outgoing 側のトランジションは右側へ付け替え)。`newId` を渡さなければ従来どおり重なりを拒否する。
+controller の移動 (`moveTimelineClip`) は上書きで呼ぶ。複製 (Alt ドラッグ) は変えていない。
+
+`[事実]` 移動のドラッグ中、動かす clip 群の両端が他の clip の両端・再生ヘッド・timeline 先頭から 8 px 以内に来たら、
+端がちょうど重なる量へ寄せ、吸着した位置に縦線を出す (`Gestures.dragSnapFrames` / `snapDragOffsetX`)。
+Ctrl を押している間は吸着しない (プレビューの枠と同じ)。一緒に動く clip は `timelineDragBounds` の `clipIds` で
+候補から外す。
+
+`[事実]` 確認したこと:
+- `m5_timeline_edit_focused`: 中へ置いたときの分割 (0-100 / 100-160 / 160-300、右側の素材 in = 160)、末尾・先頭の
+  削り、丸ごと覆った clip の削除とリンク相手の未リンク、`newId` 無しの拒否
+- `m7b_4_controller_export_lifecycle`: 重なる位置への移動で下の clip の末尾を削る、1 undo、`clipIds`
+- `tst_timeline_gestures`: 閾値の内外、最も近い吸着先の選択、自分の端に吸着しないこと
+- `text_ui_direct_input` (workstation): 実 window で V2 の clip を V1 の終端の 4 frame (6 px) 手前で離すと、
+  ちょうど終端 (120) から始まる
+
+### 19.8 JavaScript の `.pragma library`
+
+`[事実]` `TimelineGestures.js` と `PreviewTransform.js` の `.pragma library` を外した。QML 専用の指示なので、
+VS Code の JavaScript 検査 (TypeScript) が "Unexpected keyword or identifier" の構文エラーにしていた
+(`scripts/lint.ps1` の検査ではない)。どちらも状態を持たない関数だけなので、import した QML ごとに別の instance に
+なっても振る舞いは変わらない (`tst_timeline_gestures` / `tst_preview_transform` が通る)。
+
+### 19.9 トランジション・clip 境界での再生の一瞬の停止 (未解決)
+
+`[事実]` 再生中に表示する decode source が変わる (トランジションの区間に入る、別ファイルの clip へ切り替わる) と、
+controller は preview を一時停止して source を組み直す ("clip境界でPreviewを組み直しています")。engine の
+`addSource` / `removeSource` が `ReadyPaused` でしか受理しないため。
+
+`[事実]` engine を変えずに、再生前に先の source を登録しておく案は成立しない:
+- `seekFrameRequest` は accepted composition の source 集合と一致する要求しか受理しない
+  ("source frame requestがaccepted compositionのsource集合と一致しません")。合成に使っていない source を seek できない
+- seek していない `SourceDecodeWorker` は素材の先頭から decode し、timeline 対応の in より前の frame は
+  出力区間へ換算できず fatal になる (`sourceFrameOutputInterval` が無効を返す)
+- 不透明度 0 で合成に入れておくと、その source の frame が無い間は exact pairing が frame 全体を落とす
+
+`[未検証]` engine が再生中の source の追加・削除を受理するようにする対応は、別ブランチで行う。

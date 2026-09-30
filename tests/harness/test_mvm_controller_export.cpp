@@ -1501,6 +1501,38 @@ void testEditPointTransition(const std::filesystem::path& path) {
           "接しているclipの無い端を編集点として選びました");
 }
 
+// clip の移動は上書きで置く (重なった下の clip を削る)。ドラッグの吸着候補から外す clip ID も返す。
+void testMoveOverwritesAndDragBounds(const std::filesystem::path& path) {
+    auto project = linkedProject(); // 映像と音声 [0, 120)
+    auto other = project.timelineClips[0];
+    other.id = "other";
+    other.name = "other";
+    other.linkGroupId.clear();
+    other.track = {mvm::project::TrackKind::Video, 1};
+    project.timelineClips.push_back(std::move(other));
+    check(mvm::project::saveProjectJson(project, path).success,
+          "上書き移動試験のProjectを保存できません");
+    mvm::app::MvmController controller(path, {}, project);
+    controller.selectTimelineClip(QStringLiteral("video"), true);
+    const auto bounds = controller.timelineDragBounds(QStringLiteral("video"));
+    const auto ids = bounds.value(QStringLiteral("clipIds")).toStringList();
+    check(ids.size() == 2 && ids.contains(QStringLiteral("video")) &&
+              ids.contains(QStringLiteral("audio")),
+          "ドラッグで一緒に動くclip IDを返しません");
+
+    controller.selectTimelineClip(QStringLiteral("other"), true);
+    check(controller.moveTimelineClip(QStringLiteral("other"), QStringLiteral("video"), 0, 60, true) &&
+              controller.clipCount() == 3 && controller.saveProject(),
+          "下のclipに重なる位置へ移動できません");
+    const auto saved = mvm::project::loadProjectJson(path);
+    check(saved.success && saved.project.timelineClips[0].sourceOutFrame == 60 &&
+              saved.project.timelineClips[2].timelineStartFrame == 60 &&
+              saved.project.timelineClips[2].track.index == 0,
+          "上書きした下のclipの末尾を削りません");
+    check(controller.undoLastEdit() && controller.clipCount() == 3,
+          "上書き移動を1回のUndoで戻せません");
+}
+
 void testDeleteMultipleSelection(const std::filesystem::path& path) {
     auto project = videoProject();
     auto audio = project.timelineClips[0];
@@ -2132,6 +2164,7 @@ int main(int argc, char** argv) {
     testToggleSelectedClipsEnabled(directory / L"toggle-enabled.mvm");
     testApplyDefaultTransitionToClips(directory / L"default-fades.mvm");
     testEditPointTransition(directory / L"edit-point-transition.mvm");
+    testMoveOverwritesAndDragBounds(directory / L"move-overwrite.mvm");
     testShuttleStopAndStep(directory / L"shuttle-stop-step.mvm");
     testPreviewTransform(directory / L"preview-transform.mvm");
     // MLT を初期化するので最後に置く。ほかの試験は MLT 無しの前提で書かれている。
