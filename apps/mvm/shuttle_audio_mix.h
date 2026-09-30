@@ -2,6 +2,7 @@
 #define MVM_APPS_MVM_SHUTTLE_AUDIO_MIX_H
 
 #include "project/project.h"
+#include "project/timeline_render.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -19,8 +20,10 @@ struct ShuttleAudioClip {
     std::int64_t timelineEndSample = 0;
     // 素材 sample = timeline sample + sourceOffset
     std::int64_t sourceOffset = 0;
-    // 音量カーブとフェードの評価に使う。
+    // 鳴らす区間に合わせた clip (トランジションで延ばした分を含む)。decoder の速度に使う。
     project::TimelineClip clip;
+    // 音量カーブ・フェード・クロスフェードの評価に使う。
+    project::TimelineRenderSegment segment;
 };
 
 struct ShuttleAudioPlan {

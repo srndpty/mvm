@@ -1587,6 +1587,27 @@ void testApplyDefaultClipFades() {
           "トランジションのある端のフェードを変えました");
 }
 
+// clip の端を指定位置へ動かす。30fps 素材は 60fps timeline で 2 frame 単位にしか動けない。
+void testClipWithEdgeAt() {
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    auto half = clip("half");
+    half.sourceFpsNum = 30;
+    half.sourceFrameCount = 100;
+    half.sourceOutFrame = 50; // timeline [0, 100)
+    std::string error;
+    const auto aligned =
+        mvm::project::clipWithEdgeAt(project, half, mvm::project::TrimEdge::Right, 102, error);
+    check(aligned && aligned->sourceOutFrame == 51 && aligned->sourceInFrame == 0,
+          "2 frame単位の位置へ端を動かせません");
+    const auto rounded =
+        mvm::project::clipWithEdgeAt(project, half, mvm::project::TrimEdge::Right, 101, error);
+    check(!rounded && !error.empty(), "素材frameへ一意に換算できない位置を受理しました");
+    error.clear();
+    const auto beyond =
+        mvm::project::clipWithEdgeAt(project, half, mvm::project::TrimEdge::Right, 202, error);
+    check(!beyond, "素材の範囲を超える位置を受理しました");
+}
+
 void testRippleTrim() {
     mvm::project::Project project = mvm::project::createDefaultProject();
     auto first = clip("first");
@@ -2665,6 +2686,7 @@ int main(int argc, char** argv) {
     testStepClipVolume();
     testToggleClipsEnabled();
     testApplyDefaultClipFades();
+    testClipWithEdgeAt();
     testTimelineTransitions(std::filesystem::path(argv[1]));
     testRippleTrim();
     testRollEdit();

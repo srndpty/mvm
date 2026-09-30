@@ -51,8 +51,13 @@ struct TimelineExportGainKey {
 
 struct TimelineExportClipMapping {
     int projectClipIndex = -1;
+    // 書き出す区間に合わせた clip (project::TimelineRenderSegment::clip)。トランジションで
+    // 延ばした分の素材範囲を含む。producer に渡す素材範囲・速度はこちらを使う。
+    project::TimelineClip renderClip;
     bool audio = false;
     bool still = false; // 文字・画像。全画面の透過 PNG を stage して qimage で開く
+    // MLT の映像 layer (下から 0, 1, ...)。track ごとに lane 0 と、トランジションがあれば
+    // lane 1 (incoming を重ねる) を積む。トランジションが無ければ track の index と同じ。
     int videoTrackIndex = 0;
     std::int64_t timelineStartFrame = 0;
     std::int64_t timelineDurationFrames = 0;

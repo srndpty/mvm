@@ -1525,6 +1525,31 @@ TimelineEditResult trimTimelineClip(Project& project, const std::string& clipId,
     return commitCandidate(project, std::move(candidate), index);
 }
 
+std::optional<TimelineClip> clipWithEdgeAt(const Project& project, const TimelineClip& clip,
+                                           TrimEdge edge, std::int64_t timelineFrame,
+                                           std::string& error) {
+    std::int64_t start = 0;
+    std::int64_t end = 0;
+    if (!clipInterval(project, clip, start, end, error))
+        return std::nullopt;
+    TimelineClip moved = clip;
+    const std::int64_t delta = timelineFrame - (edge == TrimEdge::Left ? start : end);
+    if (delta != 0 && !trimClipBoundary(project, moved, edge, delta, error))
+        return std::nullopt;
+    std::int64_t movedStart = 0;
+    std::int64_t movedEnd = 0;
+    if (!clipInterval(project, moved, movedStart, movedEnd, error))
+        return std::nullopt;
+    const bool exact = edge == TrimEdge::Left ? movedStart == timelineFrame && movedEnd == end
+                                              : movedStart == start && movedEnd == timelineFrame;
+    if (!exact || moved.sourceInFrame < 0 || moved.sourceOutFrame <= moved.sourceInFrame ||
+        moved.sourceOutFrame > moved.sourceFrameCount) {
+        error = "clip の端を素材 frame へ一意に換算できません: " + clip.name;
+        return std::nullopt;
+    }
+    return moved;
+}
+
 TimelineEditResult splitTimelineClips(Project& project, const std::vector<std::string>& clipIds,
                                       std::int64_t frame, const std::function<std::string()>& newId,
                                       LinkMode linkMode) {

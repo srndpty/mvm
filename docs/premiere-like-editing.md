@@ -1691,3 +1691,36 @@ mapping を失敗させている。UI からはまだどちらも作れないの
 
 `[事実]` 音声のフェードは直線 (等パワーではない)。無音への片側のフェードなので許容し、等パワーは 2 clip の
 クロスフェード (トランジション) だけで使う。
+
+### 19.4 トランジションの描画区間 (書き出し・シャトル・スクラブ)
+
+`[事実]` 描画は `project::timelineRenderSegments` (src/project/timeline_render) が作る区間に一本化した。
+トランジションの無い clip は clip そのものが 1 区間。トランジションがあると clip を余白の分だけ延ばし
+(outgoing は cut の後ろへ、incoming は cut の前へ)、同じ track の 2 clip を重ねる。延ばした clip は
+`clipWithEdgeAt` (trim・分割と同じ `trimClipBoundary`) で作り、端がちょうどその位置に来なければ失敗する。
+
+- 映像: incoming の頭の区間 `[cut - before, cut + after)` を lane 1 に切り出して outgoing の上へ重ね、
+  不透明度を `p = (f - start + 0.5) / frames` で上げる。outgoing は lane 0 で不透明のまま残す。不透明な
+  clip どうしなら `A(1 - p) + B p` になる。両方を `1 - p` / `p` にすると中央で暗くなる
+  (`0.25 A + 0.5 B`)。incoming が透過・変形しているときは下の outgoing が減らないので Premiere と一致しない
+- 音声: clip ごとに 1 区間で、incoming に `sin(p π/2)`、outgoing に `cos(p π/2)` を掛けて加算する
+  (等パワー、二乗和が 1)
+- 延ばした区間の effect (key・フェード) は clip の端の値のまま評価する
+- 無効な clip を含むトランジションは描かない (両側とも cut で切り替わる)
+
+`[事実]` 書き出しは MLT の luma / mix の dissolve を使わない。track ごとに lane 0 と、トランジションの
+ある track は lane 1 を MLT の layer として積み (`video_track` は layer 番号)、lane 1 は既存の V2 以上と同じ
+affine の overlay (per-frame の不透明度) で合成する。音声は既存どおり clip ごとの playlist を `mix sum=1`
+で加算する。トランジションがあれば tractor を使う。
+
+`[事実]` 確認したこと:
+- `m7b_3_timeline_export_mapping_focused`: 3 区間の配置 (素材範囲・layer・不透明度 0.025 / 0.525 / 0.975)、
+  上の track の layer のずれ、2 倍速の延長 (timeline 10 frame = 素材 20 frame)、クロスフェードの gain
+  (cos(0.525 π/2) = 0.678801 と二乗和 1)
+- `m6b_shuttle_audio_mix`: 重なった 2 clip を区間中央 (p = 0.5) で 1/√2 ずつ加算する
+- `m4_timeline_export_focused` (実 MLT、label extended): 青→赤のディゾルブの中央 (frame 60) が半々に混ざり、
+  前後で青・赤になる
+- 不透明度・gain の掛け算を外すと 3 つとも落ちる
+
+`[回避策]` preview (映像と通常再生の音声) はまだトランジションを描けないので、mapping を失敗させたまま
+(§19.1)。Phase 7 で preview の source を track ごとから (track, lane) ごとに分ける。

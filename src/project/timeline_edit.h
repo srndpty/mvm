@@ -184,6 +184,12 @@ TimelineFrameResult clampEdgeEdit(const Project& project, const std::string& cli
 // clampEdgeEdit で止め、1 frame も動かせなければ失敗する。
 TimelineEditResult trimTimelineClip(Project& project, const std::string& clipId, TrimEdge edge,
                                     std::int64_t projectFrameDelta, LinkMode linkMode);
+// clip の片端を timeline frame の位置 timelineFrame へ動かした clip (Project は変えない)。
+// 素材範囲は trim・分割と同じ規則で決める。端がちょうどその位置に来ない (速度や fps の違いで
+// 丸まる)、または素材の範囲を超えるなら nullopt。トランジションの描画区間を作るのに使う。
+std::optional<TimelineClip> clipWithEdgeAt(const Project& project, const TimelineClip& clip,
+                                           TrimEdge edge, std::int64_t timelineFrame,
+                                           std::string& error);
 
 // --- レート調整 (Premiere の Rate Stretch) --------------------------------
 // 端をドラッグして、素材範囲 (in/out) を変えずに速度を変えて尺を伸縮する。反対側の端は動かさず、

@@ -25,6 +25,7 @@ add_library(mvm_project STATIC
     project/project.cpp
     project/project_json.cpp
     project/timeline_edit.cpp
+    project/timeline_render.cpp
 )
 target_include_directories(mvm_project PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # output frame rate の表 (measured / configurable) は mvm::core に一本化している
