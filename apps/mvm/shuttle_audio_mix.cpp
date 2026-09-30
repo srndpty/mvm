@@ -29,6 +29,11 @@ bool planShuttleAudio(const project::Project& project, int rate, std::int64_t ba
         error = "シャトル音声の再生速度が不正です";
         return false;
     }
+    if (auto unsupported = project::unsupportedTimelineRenderFeature(project);
+        !unsupported.empty()) {
+        error = std::move(unsupported);
+        return false;
+    }
     const auto timebase = core::CheckedOutputTimebase::create(
         project.timelineFpsNum, project.timelineFpsDen, audio::kInternalSampleRate);
     if (!timebase) {

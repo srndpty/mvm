@@ -1,4 +1,5 @@
 #include "app/timeline_export.h"
+#include "project/timeline_edit.h"
 
 #include <cmath>
 #include <cstdio>
@@ -45,6 +46,27 @@ int main() {
             "contiguous V1-onlyがsequential fast pathではありません");
     require(sequential.clips[0].projectClipIndex == 1 && sequential.clips[1].projectClipIndex == 0,
             "shuffled Project vectorをtimeline startで解決していません");
+
+    {
+        mvm::project::Project withTransition = mvm::project::createDefaultProject();
+        auto outgoing = clip("out", 0, 0, 0, 50);
+        outgoing.sourceFrameCount = 100;
+        auto incoming = clip("in", 0, 50, 50, 50);
+        withTransition.timelineClips = {outgoing, incoming};
+        require(mvm::app::mapTimelineExportPlan(withTransition, request).success,
+                "対照: トランジションの無い2clipを書き出せません");
+        withTransition.timelineTransitions = {{"t", "out", "in", 10, 10}};
+        require(mvm::project::validateTimeline(withTransition).success,
+                "前提: 書き出し試験のトランジションが不正です");
+        const auto rejected = mvm::app::mapTimelineExportPlan(withTransition, request);
+        require(!rejected.success && rejected.error.find("トランジション") != std::string::npos,
+                "トランジションを描かずに書き出しました");
+        withTransition.timelineTransitions.clear();
+        withTransition.timelineClips[1].enabled = false;
+        const auto disabled = mvm::app::mapTimelineExportPlan(withTransition, request);
+        require(!disabled.success && disabled.error.find("無効") != std::string::npos,
+                "無効clipを描いて書き出しました");
+    }
 
     auto gapProject = contiguous;
     gapProject.timelineClips[0].timelineStartFrame = 12;

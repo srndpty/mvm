@@ -1982,6 +1982,9 @@ int main(int argc, char** argv) {
     if (argc != 3)
         return 2;
     const std::filesystem::path directory = std::filesystem::path(argv[1]);
+    // 前回の run の自動復旧データ (*.recovery) が残っていると、「作成された」の検査が古い
+    // ファイルで空振りに通る (schema を上げた直後は古いファイルを読めず落ちる)。毎回空から始める。
+    std::filesystem::remove_all(directory);
     std::filesystem::create_directories(directory);
     testCompleteAndRestart(directory / L"complete.mvm");
     testExportQualitySelection(directory / L"quality.mvm");

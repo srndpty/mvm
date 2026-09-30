@@ -1623,3 +1623,32 @@ fixture は原色・白色点・トーンカーブを持つ matrix/TRC の v2 pr
 `[事実]` `image_raster_cache_focused` で、budget 1 byte の cache に A (保持) と B (受け取ってすぐ破棄) を読むと
 B だけが捨てられ、A の保持をやめると新しい decode 無しに 0 件になることを見る。対照として既定の budget では
 捨てない。通知をやめると落ちることを確認した。
+
+## 19. 編集ショートカットとトランジション
+
+### 19.1 Project schema 13 (clip の有効/無効とトランジション)
+
+`[事実]` `kProjectSchemaVersion` を 13 にした。clip に `enabled` (必須)、Project に
+`timeline_transitions` (必須、空配列可) を足した。互換分岐は持たず、schema 12 のファイルは読まない
+(`m5_timeline_edit_focused` と `m7a_1_clip_effects_focused` が出力の版を 12 に書き換えて拒否を確かめる)。
+2 つを同じ版に入れたのは、手元のファイルの移行を 1 回で済ませるため。
+
+- トランジションは同じ track で接している 2 clip の編集点に置き、`framesBeforeCut` / `framesAfterCut`
+  (timeline frame) で区間 `[cut - before, cut + after)` を持つ。cut より前は incoming の頭の余白、
+  後は outgoing の尻の余白を使う。種類 (ディゾルブ / クロスフェード) は track 種別で決まるので保存しない
+- `validateTimeline` の検査: ID の重複、clip の存在・同じ track・接していること、フレーム保持でないこと、
+  長さ (負でなく 1 frame 以上)、素材の余白、clip の尺、同じ clip 端に 1 つだけ、同じ clip 端のフェードとの
+  併用禁止、1 clip の前後のトランジションが内側で重ならないこと。規則ごとに負例がある
+- 編集の確定は `finalizeTimelineCandidate` (= `reconcileTimelineTransitions` + `validateTimeline`) を通す。
+  離れた・clip が消えたトランジションは消し、余白や尺が減れば縮める。分割は outgoing 側を右半分へ
+  付け替え、fps 変更は長さを秒位置で換算する。JSON の読み込みは reconcile せず fail-closed にする
+- effect の変更 (`setClipEffectValues`) は reconcile を通さない。トランジションのある端へフェードを
+  付けようとするとエラーになる
+
+`[回避策]` 描画 (preview・音声・シャトル/スクラブ・書き出し) はまだトランジションと無効 clip を扱えない。
+黙って無視すると見えるものと保存内容が食い違うので、`unsupportedTimelineRenderFeature` で
+mapping を失敗させている。UI からはまだどちらも作れないので、手で編集したファイルでだけ起きる。
+
+`[事実]` 手元の `build/ucrt64-debug/m6a-gui/project.mvm` は使い捨てのスクリプトで一度だけテキスト変換した
+(clip 8 件に `"enabled": true`、`"timeline_transitions": []` を追加。元ファイルは `*.schema12.bak`)。
+変換後のファイルが現在の loader で読めることを確認した (schema 13、clip 8、トランジション 0)。

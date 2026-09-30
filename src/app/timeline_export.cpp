@@ -128,6 +128,11 @@ TimelineExportPlan mapTimelineExportPlan(const project::Project& project,
         plan.error = valid.error;
         return plan;
     }
+    if (auto unsupported = project::unsupportedTimelineRenderFeature(project);
+        !unsupported.empty()) {
+        plan.error = std::move(unsupported);
+        return plan;
+    }
     plan.totalDurationFrames = valid.totalFrames;
     bool anyOverlay = false;
     bool anyAudio = false;

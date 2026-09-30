@@ -21,6 +21,11 @@ TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& proj
         result.error = "Preview timeline frameは0以上である必要があります";
         return result;
     }
+    if (auto unsupported = project::unsupportedTimelineRenderFeature(project);
+        !unsupported.empty()) {
+        result.error = std::move(unsupported);
+        return result;
+    }
     const auto active = project::activeClipsAt(project, project::TrackKind::Video, timelineFrame);
     for (std::size_t index = 0; index < active.size(); ++index) {
         const project::TimelineClip* clip = active[index];
@@ -201,6 +206,11 @@ TimelinePreviewAudioMapping mapTimelinePreviewAudio(const project::Project& proj
     TimelinePreviewAudioMapping result;
     if (timelineFrame < 0) {
         result.error = "Preview timeline frameは0以上である必要があります";
+        return result;
+    }
+    if (auto unsupported = project::unsupportedTimelineRenderFeature(project);
+        !unsupported.empty()) {
+        result.error = std::move(unsupported);
         return result;
     }
     const auto active = project::activeClipsAt(project, project::TrackKind::Audio, timelineFrame);

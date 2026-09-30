@@ -140,6 +140,27 @@ void testMutedTracks() {
             "mute した audio track を preview 対象から外していません");
 }
 
+// トランジションと無効 clip は描画が対応するまで mapping を失敗させる (黙って無視しない)。
+void testUnsupportedRenderFeatures() {
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    project.timelineClips = {clip("v1", 0, 0, 0, 100), audioClip("a1", 0, 0, 100, 60, 1)};
+    require(mvm::app::mapTimelinePreviewFrame(project, 10).success &&
+                mvm::app::mapTimelinePreviewAudio(project, 10).success,
+            "対照: 通常のclipをmappingできません");
+    auto transition = project;
+    transition.timelineTransitions = {{"t", "v1", "v1-next", 1, 0}};
+    const auto video = mvm::app::mapTimelinePreviewFrame(transition, 10);
+    const auto audio = mvm::app::mapTimelinePreviewAudio(transition, 10);
+    require(!video.success && video.error.find("トランジション") != std::string::npos &&
+                !audio.success && audio.error.find("トランジション") != std::string::npos,
+            "トランジションのあるtimelineを黙ってpreviewしました");
+    auto disabled = project;
+    disabled.timelineClips[1].enabled = false;
+    const auto disabledAudio = mvm::app::mapTimelinePreviewAudio(disabled, 10);
+    require(!disabledAudio.success && disabledAudio.error.find("無効") != std::string::npos,
+            "無効clipのあるtimelineを黙ってpreviewしました");
+}
+
 // 映像 track を count 本にする (既定の Project は V1/V2)。
 void ensureVideoTracks(mvm::project::Project& project, int count) {
     while (static_cast<int>(project.videoTracks.size()) < count)
@@ -560,6 +581,7 @@ int main() {
     testAudioPreviewSampleOffset();
     testAudioSourceFrameCount();
     testMutedTracks();
+    testUnsupportedRenderFeatures();
     testLayerLimit();
     testTextLayerStack();
     testTextLayerLimit();

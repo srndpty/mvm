@@ -90,6 +90,15 @@ void testPlan() {
                   !rateError.empty(),
               "音声経路の無い速度を拒否しません");
     }
+    {
+        auto disabled = project;
+        disabled.timelineClips[0].enabled = false;
+        mvm::app::ShuttleAudioPlan rejected;
+        std::string disabledError;
+        check(!mvm::app::planShuttleAudio(disabled, 2, 40, rejected, disabledError) &&
+                  disabledError.find("無効") != std::string::npos,
+              "無効clipを黙ってシャトル再生しました");
+    }
     mvm::app::ShuttleAudioPlan outside;
     std::string outsideError;
     check(!mvm::app::planShuttleAudio(project, 1, 270, outside, outsideError),

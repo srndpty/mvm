@@ -490,7 +490,7 @@ void testJson(const std::filesystem::path& root) {
           "project配下の素材pathがrelativeで保存されていません");
 
     const std::string header =
-        R"JSON({"schema_version":12,"timeline_markers":[],"in_frame":null,"out_frame":null,"format":"mvm-project","timeline_fps_num":60,"timeline_fps_den":1,)JSON"
+        R"JSON({"schema_version":13,"timeline_markers":[],"timeline_transitions":[],"in_frame":null,"out_frame":null,"format":"mvm-project","timeline_fps_num":60,"timeline_fps_den":1,)JSON"
         R"JSON("video_tracks":[{"name":"V1","muted":false}],"audio_tracks":[],"manim_assets":[],)JSON"
         R"JSON("timeline_clips":[],"media_folders":[],)JSON";
     const std::string item =

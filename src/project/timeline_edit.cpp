@@ -7,6 +7,7 @@
 #include <cmath>
 #include <limits>
 #include <numeric>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -392,6 +393,192 @@ bool sourceRateMatchesTimelineRate(const Project& project, const TimelineClip& c
            timebase->den == project.timelineFpsDen / timelineDivisor;
 }
 
+namespace {
+
+bool edgeRange(const Project& project, const TimelineClip& clip, TrimEdge edge, std::int64_t& lower,
+               std::int64_t& upper, std::string& error);
+
+// トランジションが参照する 2 clip。cut と、トランジションに使える素材の余白・clip の尺
+// (いずれも timeline frame)。
+struct TransitionClips {
+    int outgoing = -1;
+    int incoming = -1;
+    std::int64_t cut = 0;
+    std::int64_t outgoingDuration = 0;
+    std::int64_t incomingDuration = 0;
+    std::int64_t headHandle = 0; // incoming の先頭より前に使える素材
+    std::int64_t tailHandle = 0; // outgoing の終端より後に使える素材
+};
+
+bool resolveTransitionClips(const Project& project, const TimelineTransition& transition,
+                            TransitionClips& clips, std::string& error) {
+    clips.outgoing = indexOfId(project, transition.outgoingClipId);
+    clips.incoming = indexOfId(project, transition.incomingClipId);
+    if (!validIndex(project, clips.outgoing) || !validIndex(project, clips.incoming) ||
+        clips.outgoing == clips.incoming) {
+        error = "トランジションの clip がありません: " + transition.id;
+        return false;
+    }
+    const auto& outgoing = project.timelineClips[static_cast<std::size_t>(clips.outgoing)];
+    const auto& incoming = project.timelineClips[static_cast<std::size_t>(clips.incoming)];
+    if (!(outgoing.track == incoming.track)) {
+        error = "トランジションの clip が同じ track にありません: " + transition.id;
+        return false;
+    }
+    if (outgoing.frameHold || incoming.frameHold) {
+        error = "フレーム保持 clip にはトランジションを置けません: " + transition.id;
+        return false;
+    }
+    std::int64_t outgoingStart = 0;
+    std::int64_t outgoingEnd = 0;
+    std::int64_t incomingStart = 0;
+    std::int64_t incomingEnd = 0;
+    if (!clipInterval(project, outgoing, outgoingStart, outgoingEnd, error) ||
+        !clipInterval(project, incoming, incomingStart, incomingEnd, error))
+        return false;
+    if (outgoingEnd != incomingStart) {
+        error = "トランジションの clip が接していません: " + transition.id;
+        return false;
+    }
+    std::int64_t lower = 0;
+    std::int64_t upper = 0;
+    if (!edgeRange(project, incoming, TrimEdge::Left, lower, upper, error))
+        return false;
+    clips.headHandle = -lower;
+    if (!edgeRange(project, outgoing, TrimEdge::Right, lower, upper, error))
+        return false;
+    clips.tailHandle = upper;
+    clips.cut = outgoingEnd;
+    clips.outgoingDuration = outgoingEnd - outgoingStart;
+    clips.incomingDuration = incomingEnd - incomingStart;
+    return true;
+}
+
+bool validateTimelineTransitions(const Project& project, std::string& error) {
+    std::unordered_set<std::string> ids;
+    // clip ID -> その clip の内側に入るトランジションの frame 数 (先頭側 / 終端側)。
+    std::unordered_map<std::string, std::int64_t> headInside;
+    std::unordered_map<std::string, std::int64_t> tailInside;
+    std::unordered_map<std::string, std::int64_t> durations;
+    for (const auto& transition : project.timelineTransitions) {
+        if (transition.id.empty() || !ids.insert(transition.id).second) {
+            error = "トランジション ID が空または重複しています";
+            return false;
+        }
+        TransitionClips clips;
+        if (!resolveTransitionClips(project, transition, clips, error))
+            return false;
+        const auto before = transition.framesBeforeCut;
+        const auto after = transition.framesAfterCut;
+        if (before < 0 || after < 0 || before > std::numeric_limits<std::int64_t>::max() - after ||
+            before + after < 1) {
+            error = "トランジションの長さが不正です: " + transition.id;
+            return false;
+        }
+        if (before > clips.headHandle || after > clips.tailHandle) {
+            error = "トランジションに使う素材の余白が足りません: " + transition.id;
+            return false;
+        }
+        if (before > clips.outgoingDuration || after > clips.incomingDuration) {
+            error = "トランジションが clip の尺を超えています: " + transition.id;
+            return false;
+        }
+        const auto& outgoing = project.timelineClips[static_cast<std::size_t>(clips.outgoing)];
+        const auto& incoming = project.timelineClips[static_cast<std::size_t>(clips.incoming)];
+        if (!tailInside.emplace(outgoing.id, before).second ||
+            !headInside.emplace(incoming.id, after).second) {
+            error = "同じ clip 端に複数のトランジションがあります: " + transition.id;
+            return false;
+        }
+        // 同じ clip 端の減衰を 2 通りに表さない (掛け合わさって二重に暗くなる)。
+        if (outgoing.effects.fadeOutFrames != 0 || incoming.effects.fadeInFrames != 0) {
+            error = "トランジションのある clip 端にはフェードを設定できません: " + transition.id;
+            return false;
+        }
+        durations[outgoing.id] = clips.outgoingDuration;
+        durations[incoming.id] = clips.incomingDuration;
+    }
+    for (const auto& [clipId, head] : headInside) {
+        const auto tail = tailInside.find(clipId);
+        if (tail != tailInside.end() && head > durations[clipId] - tail->second) {
+            error = "clip の前後のトランジションが重なっています";
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+void reconcileTimelineTransitions(Project& candidate) {
+    struct Entry {
+        std::size_t index = 0;
+        TransitionClips clips;
+    };
+    std::vector<Entry> entries;
+    for (std::size_t index = 0; index < candidate.timelineTransitions.size(); ++index) {
+        Entry entry{index, {}};
+        std::string ignored;
+        if (resolveTransitionClips(candidate, candidate.timelineTransitions[index], entry.clips,
+                                   ignored))
+            entries.push_back(entry);
+    }
+    std::stable_sort(entries.begin(), entries.end(), [&](const Entry& left, const Entry& right) {
+        const auto& leftTrack =
+            candidate.timelineClips[static_cast<std::size_t>(left.clips.outgoing)].track;
+        const auto& rightTrack =
+            candidate.timelineClips[static_cast<std::size_t>(right.clips.outgoing)].track;
+        return std::tuple(static_cast<int>(leftTrack.kind), leftTrack.index, left.clips.cut) <
+               std::tuple(static_cast<int>(rightTrack.kind), rightTrack.index, right.clips.cut);
+    });
+    std::vector<bool> keep(candidate.timelineTransitions.size(), false);
+    std::unordered_set<int> outgoingUsed;
+    std::unordered_set<int> incomingUsed;
+    // clip index -> 先頭側のトランジションが clip の内側に使う frame 数。
+    std::unordered_map<int, std::int64_t> headInside;
+    for (const auto& entry : entries) {
+        auto& transition = candidate.timelineTransitions[entry.index];
+        const auto& clips = entry.clips;
+        if (outgoingUsed.contains(clips.outgoing) || incomingUsed.contains(clips.incoming))
+            continue;
+        const auto usedHead = headInside.contains(clips.outgoing) ? headInside[clips.outgoing] : 0;
+        const auto maxBefore =
+            std::max<std::int64_t>(0, std::min(clips.headHandle, clips.outgoingDuration - usedHead));
+        const auto maxAfter =
+            std::max<std::int64_t>(0, std::min(clips.tailHandle, clips.incomingDuration));
+        transition.framesBeforeCut =
+            std::clamp(transition.framesBeforeCut, std::int64_t{0}, maxBefore);
+        transition.framesAfterCut = std::clamp(transition.framesAfterCut, std::int64_t{0}, maxAfter);
+        if (transition.framesBeforeCut + transition.framesAfterCut < 1)
+            continue;
+        outgoingUsed.insert(clips.outgoing);
+        incomingUsed.insert(clips.incoming);
+        headInside[clips.incoming] = transition.framesAfterCut;
+        keep[entry.index] = true;
+    }
+    std::vector<TimelineTransition> kept;
+    for (std::size_t index = 0; index < keep.size(); ++index) {
+        if (keep[index])
+            kept.push_back(std::move(candidate.timelineTransitions[index]));
+    }
+    candidate.timelineTransitions = std::move(kept);
+}
+
+std::string unsupportedTimelineRenderFeature(const Project& project) {
+    if (!project.timelineTransitions.empty())
+        return "トランジションの描画はまだ対応していません";
+    for (const auto& clip : project.timelineClips) {
+        if (!clip.enabled)
+            return "無効にした clip の描画はまだ対応していません: " + clip.name;
+    }
+    return {};
+}
+
+TimelineValidationResult finalizeTimelineCandidate(Project& candidate) {
+    reconcileTimelineTransitions(candidate);
+    return validateTimeline(candidate);
+}
+
 TimelineValidationResult validateTimeline(const Project& project) {
     TimelineValidationResult result;
     if (project.schemaVersion != kProjectSchemaVersion) {
@@ -583,6 +770,8 @@ TimelineValidationResult validateTimeline(const Project& project) {
             return result;
         }
     }
+    if (!validateTimelineTransitions(project, result.error))
+        return result;
     result.success = true;
     result.totalFrames = totalEnd;
     return result;
@@ -728,7 +917,7 @@ TimelineEditResult moveClips(Project& project, const std::vector<std::string>& c
             clip.track = translatedTrack;
         }
     }
-    const auto validation = validateTimeline(candidate);
+    const auto validation = finalizeTimelineCandidate(candidate);
     if (!validation.success) {
         result.error = validation.error;
         return result;
@@ -758,7 +947,7 @@ TimelineEditResult appendTimelineClip(Project& project, TimelineClip clip, Track
     clip.track = track;
     clip.timelineStartFrame = start.frame;
     candidate.timelineClips.push_back(std::move(clip));
-    const auto validation = validateTimeline(candidate);
+    const auto validation = finalizeTimelineCandidate(candidate);
     if (!validation.success) {
         result.error = validation.error;
         return result;
@@ -784,7 +973,7 @@ TimelineEditResult deleteTimelineClip(Project& project, int selectedIndex) {
         std::erase_if(candidate.timelineClips,
                       [&](const TimelineClip& clip) { return clip.linkGroupId == linkGroupId; });
     }
-    const auto valid = validateTimeline(candidate);
+    const auto valid = finalizeTimelineCandidate(candidate);
     if (!valid.success) {
         result.error = valid.error;
         return result;
@@ -812,7 +1001,7 @@ TimelineEditResult placeTimelineClipAt(Project& project, TimelineClip clip, Trac
     clip.track = track;
     clip.timelineStartFrame = timelineStartFrame;
     candidate.timelineClips.push_back(std::move(clip));
-    const auto validation = validateTimeline(candidate);
+    const auto validation = finalizeTimelineCandidate(candidate);
     if (!validation.success) {
         result.error = validation.error;
         return result;
@@ -988,7 +1177,7 @@ TimelineEditResult placeLinkedAvPairAt(Project& project, TimelineClip video, Tra
     const int videoIndex = static_cast<int>(candidate.timelineClips.size());
     candidate.timelineClips.push_back(std::move(video));
     candidate.timelineClips.push_back(std::move(audio));
-    const auto validation = validateTimeline(candidate);
+    const auto validation = finalizeTimelineCandidate(candidate);
     if (!validation.success) {
         result.error = validation.error;
         return result;
@@ -1017,7 +1206,7 @@ TimelineEditResult unlinkTimelineClip(Project& project, const std::string& clipI
         if (clip.linkGroupId == linkGroupId)
             clip.linkGroupId.clear();
     }
-    const auto valid = validateTimeline(candidate);
+    const auto valid = finalizeTimelineCandidate(candidate);
     if (!valid.success) {
         result.error = valid.error;
         return result;
@@ -1098,7 +1287,7 @@ bool shiftStart(TimelineClip& clip, std::int64_t delta, std::string& error) {
 
 TimelineEditResult commitCandidate(Project& project, Project candidate, int selectedIndex) {
     TimelineEditResult result;
-    const auto valid = validateTimeline(candidate);
+    const auto valid = finalizeTimelineCandidate(candidate);
     if (!valid.success) {
         result.error = valid.error;
         return result;
@@ -1430,6 +1619,10 @@ TimelineEditResult splitTimelineClips(Project& project, const std::vector<std::s
         if (!right.linkGroupId.empty()) {
             const auto found = rightLinkGroups.find(right.linkGroupId);
             right.linkGroupId = found == rightLinkGroups.end() ? std::string{} : found->second;
+        }
+        for (auto& transition : candidate.timelineTransitions) {
+            if (transition.outgoingClipId == left.id)
+                transition.outgoingClipId = right.id;
         }
         candidate.timelineClips[index] = std::move(left);
         candidate.timelineClips.push_back(std::move(right));
@@ -1857,7 +2050,7 @@ TimelineEditResult appendManimTimelineClipAt(Project& project, const ManimAsset&
                                        false,
                                        {},
                                        {}});
-    const auto valid = validateTimeline(candidate);
+    const auto valid = finalizeTimelineCandidate(candidate);
     if (!valid.success) {
         result.error = valid.error;
         return result;
@@ -1929,12 +2122,19 @@ TimelineEditResult setProjectVideoSettings(Project& project, int width, int heig
             }
             clip.timelineStartFrame = converted.frame;
         }
+        for (auto& transition : candidate.timelineTransitions) {
+            if (!convertFrame(transition.framesBeforeCut) ||
+                !convertFrame(transition.framesAfterCut)) {
+                result.error = "トランジションを新しいtimeline frame rateへ変換できません";
+                return result;
+            }
+        }
     }
     candidate.outputWidth = width;
     candidate.outputHeight = height;
     candidate.timelineFpsNum = fpsNum;
     candidate.timelineFpsDen = fpsDen;
-    const auto valid = validateTimeline(candidate);
+    const auto valid = finalizeTimelineCandidate(candidate);
     if (!valid.success) {
         result.error = "Project設定変更後のtimelineが不正です: " + valid.error;
         return result;
@@ -1950,7 +2150,7 @@ TimelineEditResult addTrack(Project& project, TrackKind kind) {
     auto& tracks = tracksOfKind(candidate, kind);
     const int index = static_cast<int>(tracks.size());
     tracks.push_back(Track{defaultTrackName(kind, index), false});
-    const auto valid = validateTimeline(candidate);
+    const auto valid = finalizeTimelineCandidate(candidate);
     if (!valid.success) {
         result.error = valid.error;
         return result;
@@ -1987,7 +2187,7 @@ TimelineEditResult removeTrack(Project& project, TrackRef track) {
         if (clip.track.kind == track.kind && clip.track.index > track.index)
             --clip.track.index;
     }
-    const auto valid = validateTimeline(candidate);
+    const auto valid = finalizeTimelineCandidate(candidate);
     if (!valid.success) {
         result.error = valid.error;
         return result;
@@ -2079,7 +2279,7 @@ TimelineEditResult rippleDeleteGap(Project& project, TrackRef track, std::int64_
         }
         clip.timelineStartFrame -= shift;
     }
-    const auto valid = validateTimeline(candidate);
+    const auto valid = finalizeTimelineCandidate(candidate);
     if (!valid.success) {
         result.error = valid.error;
         return result;
@@ -2141,7 +2341,7 @@ ClipKeyEditPreview previewClipKeyEdit(const Project& project, const std::string&
     }
     Project candidate = project;
     candidate.timelineClips[static_cast<std::size_t>(index)].effects = result.effects;
-    const auto valid = validateTimeline(candidate);
+    const auto valid = finalizeTimelineCandidate(candidate);
     if (!valid.success) {
         result.error = valid.error;
         return result;
@@ -2269,7 +2469,7 @@ bool rateStretchFeasible(const Project& project, int index, TrimEdge edge, std::
     Project candidate = project;
     std::string error;
     return applyRateStretch(candidate, index, edge, newDuration, linkMode, error) &&
-           validateTimeline(candidate).success;
+           finalizeTimelineCandidate(candidate).success;
 }
 
 } // namespace
@@ -2581,7 +2781,7 @@ bool speedDurationCandidate(const Project& project, const std::string& clipId,
         error = "変更がありません";
         return false;
     }
-    const auto valid = validateTimeline(candidate);
+    const auto valid = finalizeTimelineCandidate(candidate);
     if (!valid.success) {
         error = valid.error;
         return false;

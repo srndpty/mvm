@@ -110,6 +110,16 @@ TimelineFrameResult clipFadeSourceFrameAt(const TimelineClip& clip, std::int64_t
                                           std::int64_t timelineFpsDen, std::int64_t clipLocalFrame);
 bool sourceRateMatchesTimelineRate(const Project& project, const TimelineClip& clip);
 TimelineValidationResult validateTimeline(const Project& project);
+// 編集後の candidate のトランジションを clip に合わせる。clip が無い・同じ track で接して
+// いない・フレーム保持を含むトランジションは消し、余白や尺が足りなければ縮める (0 frame に
+// なれば消す)。track ごとに cut の昇順で処理するので結果は決まる。JSON の読み込みでは
+// 呼ばない (読み込みは validateTimeline で fail-closed にする)。
+void reconcileTimelineTransitions(Project& candidate);
+// 編集の確定前に使う検証。reconcileTimelineTransitions の後に validateTimeline を行う。
+TimelineValidationResult finalizeTimelineCandidate(Project& candidate);
+// 描画側 (preview・音声・書き出し) がまだ扱えない timeline の内容の説明。扱えるなら空。
+// 扱えない内容を黙って無視して描くと、見えている結果と保存内容が食い違うので止める。
+std::string unsupportedTimelineRenderFeature(const Project& project);
 
 int timelineClipIndexAt(const Project& project, TrackRef track, std::int64_t timelineFrame);
 const TimelineClip* activeClipAt(const Project& project, TrackRef track,

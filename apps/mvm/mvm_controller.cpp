@@ -1304,7 +1304,7 @@ bool MvmController::syncManimTimelineClip(bool addIfMissing) {
         existing.mediaPath = asset.generatedVideoPath;
         existing.name = asset.sceneName;
         existing.sourceFrameCount = media.frameCount;
-        const auto valid = project::validateTimeline(candidate);
+        const auto valid = project::finalizeTimelineCandidate(candidate);
         if (!valid.success) {
             setStatus(QString::fromStdString(valid.error));
             return false;
@@ -4168,7 +4168,7 @@ bool MvmController::placeCopiedClips(const std::vector<project::TimelineClip>& c
         clip.mediaItemId = item->id;
         clip.mediaPath = item->mediaPath;
     }
-    const auto valid = project::validateTimeline(candidate);
+    const auto valid = project::finalizeTimelineCandidate(candidate);
     if (!valid.success) {
         setStatus(QStringLiteral("clipを配置できません: ") + QString::fromStdString(valid.error));
         return false;

@@ -281,7 +281,7 @@ MediaBinEditResult removeMediaBinEntries(Project& project,
     const std::set<std::string> clipIds(plan.clipIds.begin(), plan.clipIds.end());
     std::erase_if(candidate.timelineClips,
                   [&](const TimelineClip& clip) { return clipIds.contains(clip.id); });
-    const auto timeline = validateTimeline(candidate);
+    const auto timeline = finalizeTimelineCandidate(candidate);
     if (!timeline.success)
         return failure(timeline.error);
     auto result = commitCandidate(project, std::move(candidate));
