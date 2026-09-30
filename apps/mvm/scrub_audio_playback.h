@@ -40,6 +40,8 @@ public:
 
     std::uint64_t grainCount() const { return grains_.publishedCount(); }
 
+    std::uint64_t seekWaitCount() const { return readers_.seekWaitCount(); }
+
     audio::WasapiSnapshot sinkSnapshot() const { return sink_.snapshot(); }
 
     std::string error() const;

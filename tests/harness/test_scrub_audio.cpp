@@ -98,8 +98,21 @@ int main(int argc, char** argv) {
     const auto grainsAfterHold = playback.grainCount();
     // 供給が途切れた (underflow) 場合も error になる。
     error = playback.error();
-    // 遠い位置 (seek が要る) へ動かした直後に離す。decode 待ちで release が引っ掛からないこと。
-    playback.setTarget(250);
+    // 後ろ (続きから読めず seek が要る) へ戻した直後に離す。decode 待ちで release
+    // が引っ掛からないこと。
+    const auto seekWaitsBefore = playback.seekWaitCount();
+    playback.setTarget(5);
+    // stop より先に scheduler が位置を拾わないと、decode を一度も通らずに PASS してしまう。
+    // seek の完了待ちへ入ったことを観測してから止める。入らなければ失敗にする。
+    // 待ちは回数ではなく経過時間で打ち切る。1 ms 未満の sleep は即座に返ることがあり、
+    // 回数で数えると scheduler が動く前に打ち切ってしまう。
+    bool enteredSeekWait = false;
+    const auto seekDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!enteredSeekWait && std::chrono::steady_clock::now() < seekDeadline) {
+        enteredSeekWait = playback.seekWaitCount() > seekWaitsBefore;
+        if (!enteredSeekWait)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
     const auto stopBegin = std::chrono::steady_clock::now();
     playback.stop();
     const auto stopMs = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -137,6 +150,10 @@ int main(int argc, char** argv) {
                      static_cast<double>(peakBeforeDrag), static_cast<double>(peakDuringDrag),
                      static_cast<unsigned long long>(renderedBeforeDrag),
                      static_cast<unsigned long long>(renderedAfterDrag));
+        return 1;
+    }
+    if (!enteredSeekWait) {
+        std::fprintf(stderr, "停止前にscrub音声のseek待ちへ入りませんでした\n");
         return 1;
     }
     if (stopMs > 100) {

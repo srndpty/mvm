@@ -118,7 +118,9 @@ void testCrossfade() {
 }
 
 // decode 中に位置が動いたら、古い位置の grain を一度も鳴らさないこと。
-void testStaleGrainIsDiscarded() {
+// staleFails のときは、古くなった位置 100 の decode が失敗しても
+// 最新の位置 200 は巻き添えにならず鳴ること。
+void testStaleGrainIsDiscarded(bool staleFails) {
     std::mutex mutex;
     std::condition_variable changed;
     bool firstEntered = false;
@@ -129,6 +131,8 @@ void testStaleGrainIsDiscarded() {
             firstEntered = true;
             changed.notify_all();
             changed.wait(lock, [&] { return releaseFirst; });
+            if (staleFails)
+                return false;
         }
         pcm = grainOf({static_cast<float>(frame) / 1000.0F});
         return true;
@@ -161,6 +165,26 @@ void testStaleGrainIsDiscarded() {
     expect(scheduler.error().empty(), "error にしない");
 }
 
+// 最新の位置で失敗したら error にし、thread が終わったことを running にも反映する。
+void testLatestFailureStops() {
+    const auto maker = [](std::int64_t, std::vector<float>&, std::string& error) {
+        error = "decode失敗";
+        return false;
+    };
+    mvm::app::ScrubGrainScheduler scheduler(maker, 0);
+    scheduler.start();
+    expect(scheduler.running(), "開始後は running");
+    scheduler.setTarget(100);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (scheduler.running() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    expect(!scheduler.running(), "最新の位置で失敗したら running を落とす");
+    expect(scheduler.error() == "decode失敗", "失敗理由を残す");
+    expect(scheduler.publishedCount() == 0 && scheduler.discardedCount() == 0,
+           "失敗した grain は鳴らさない");
+    scheduler.join();
+}
+
 } // namespace
 
 int main() {
@@ -168,7 +192,9 @@ int main() {
     testLatch();
     testStream();
     testCrossfade();
-    testStaleGrainIsDiscarded();
+    testStaleGrainIsDiscarded(false);
+    testStaleGrainIsDiscarded(true);
+    testLatestFailureStops();
     if (failures != 0) {
         std::fprintf(stderr, "scrub音声grain: %d件失敗\n", failures);
         return 1;

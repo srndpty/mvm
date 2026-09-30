@@ -29,6 +29,9 @@ public:
               std::int64_t count, std::vector<float>& pcm, const std::atomic<bool>& running,
               std::string& error);
 
+    // seek の完了待ちへ入った回数。decode 待ち中の停止を test で確かめるために使う。
+    std::uint64_t seekWaitCount() const { return seekWaits_.load(); }
+
 private:
     struct ClipReader {
         std::unique_ptr<audio::AudioDecodeWorker> worker;
@@ -37,6 +40,7 @@ private:
 
     std::int64_t maxForwardSkip_ = 0;
     std::vector<ClipReader> readers_;
+    std::atomic<std::uint64_t> seekWaits_{0};
 };
 
 } // namespace mvm::app

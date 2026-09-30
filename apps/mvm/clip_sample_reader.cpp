@@ -52,6 +52,7 @@ bool ClipSampleReaders::read(const ShuttleAudioClip& source, std::size_t clipInd
             return false;
         }
         audio::AudioSeekCompletion completion;
+        seekWaits_.fetch_add(1, std::memory_order_relaxed);
         for (int attempts = 0; running && attempts < kSeekWaitLimitMs / kWaitPollMs; ++attempts) {
             const auto result = clip.worker->waitSeek(ticket, kWaitPollMs, completion);
             if (result == audio::AudioSeekWaitResult::Ready)

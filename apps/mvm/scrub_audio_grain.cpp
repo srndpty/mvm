@@ -114,6 +114,11 @@ std::int64_t ScrubGrainScheduler::fill(float* destination, std::int64_t count) {
     return stream_.fill(destination, count);
 }
 
+bool ScrubGrainScheduler::running() const {
+    std::lock_guard lock(mutex_);
+    return running_;
+}
+
 std::string ScrubGrainScheduler::error() const {
     std::lock_guard lock(mutex_);
     return error_;
@@ -133,20 +138,23 @@ void ScrubGrainScheduler::run() {
             if (!running_)
                 return;
         }
+        started_.fetch_add(1, std::memory_order_relaxed);
         std::vector<float> pcm;
         std::string error;
         const bool made = maker_(target->frame, pcm, error);
         std::lock_guard lock(mutex_);
         if (!running_)
             return;
-        if (!made) {
-            error_ = error.empty() ? "scrub音声を生成できません" : error;
-            return;
-        }
-        // decode 中に位置が動いていたら、古い位置の音は一度も鳴らさずに捨てる。
+        // decode 中に位置が動いていたら、古い位置の結果は成否を問わず捨てて最新の位置へ進む。
+        // 既に離れた位置の失敗で、最新の位置まで鳴らなくしない。
         if (!target_.isLatest(target->revision)) {
             discarded_.fetch_add(1, std::memory_order_relaxed);
             continue;
+        }
+        if (!made) {
+            error_ = error.empty() ? "scrub音声を生成できません" : error;
+            running_ = false;
+            return;
         }
         stream_.replace(std::move(pcm));
         published_.fetch_add(1, std::memory_order_relaxed);

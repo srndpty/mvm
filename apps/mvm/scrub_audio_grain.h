@@ -88,10 +88,15 @@ public:
     void setTarget(std::int64_t frame);
     std::int64_t fill(float* destination, std::int64_t count);
 
+    // maker を呼び始めた回数。decode に入ったことを test が待つために使う。
+    std::uint64_t startedCount() const { return started_.load(); }
+
     std::uint64_t publishedCount() const { return published_.load(); }
 
     std::uint64_t discardedCount() const { return discarded_.load(); }
 
+    // 最新の位置の grain を作れずに thread が終わったら false。
+    bool running() const;
     std::string error() const;
 
 private:
@@ -105,6 +110,7 @@ private:
     ScrubTargetLatch target_;
     ScrubGrainStream stream_;
     std::string error_;
+    std::atomic<std::uint64_t> started_{0};
     std::atomic<std::uint64_t> published_{0};
     std::atomic<std::uint64_t> discarded_{0};
 };
