@@ -4861,6 +4861,26 @@ bool MvmController::toggleClipsEnabled(const std::vector<std::string>& clipIds) 
     return succeeded;
 }
 
+bool MvmController::applyDefaultTransition() {
+    std::vector<std::string> clipIds = selectedClipIds_;
+    if (clipIds.empty() && !currentClipId().empty())
+        clipIds.push_back(currentClipId());
+    if (clipIds.empty()) {
+        setStatus(QStringLiteral("トランジションを適用するclipが選択されていません"));
+        return false;
+    }
+    std::string selectedId = currentClipId();
+    if (selectedId.empty())
+        selectedId = clipIds.front();
+    const std::int64_t frames =
+        project::defaultTransitionFrames(project_.timelineFpsNum, project_.timelineFpsDen);
+    return applyTimelineEdit(
+        [&](project::Project& candidate) {
+            return project::applyDefaultClipFades(candidate, clipIds, frames);
+        },
+        selectedId, QStringLiteral("clipの先頭と末尾にフェードを付けました"));
+}
+
 bool MvmController::stepSelectedClipVolume(double stepDb) {
     std::vector<std::string> clipIds = selectedClipIds_;
     if (clipIds.empty() && !currentClipId().empty())

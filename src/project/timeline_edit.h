@@ -290,6 +290,15 @@ TimelineEditResult stepClipVolume(Project& project, const std::vector<std::strin
 // 存在しない ID が含まれる、または clipIds が空なら失敗する。
 TimelineEditResult toggleClipsEnabled(Project& project, const std::vector<std::string>& clipIds);
 
+// 既定のトランジションの長さ (1 秒) を timeline frame で表した値。最低 1 frame。
+std::int64_t defaultTransitionFrames(std::int64_t timelineFpsNum, std::int64_t timelineFpsDen);
+// clip (とリンク相手) の先頭と末尾に timelineFrames の長さのフェードを付ける (Shift+D を clip
+// 選択で押したとき)。フェードは素材 frame で持つので、clip ごとに速度込みで換算する。尺が
+// 足りなければ前後で分け合う (先頭が半分を切り上げで取る)。トランジションのある端は変えない。
+// 何も変わらなければ失敗し、Project を変えない。
+TimelineEditResult applyDefaultClipFades(Project& project, const std::vector<std::string>& clipIds,
+                                         std::int64_t timelineFrames);
+
 // リップルトリム。trim した尺の増減だけ、trim した clip の track で後ろにある clip
 // (とそのリンク相手) をずらす。left 端を trim しても clip の開始位置は動かない。
 // Linked ならリンク相手も同じ量 trim し、相手の track の後ろもずらす。

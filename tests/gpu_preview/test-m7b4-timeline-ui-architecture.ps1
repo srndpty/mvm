@@ -145,7 +145,8 @@ $editActions = @(
     @{ Id = 'splitAllTracksAction'; Key = 'Ctrl+Shift+K'; Call = 'root.mvmController.splitClipAt("", root.mvmController.playheadFrame, true, true)' },
     @{ Id = 'volumeUpAction'; Key = '['; Call = 'root.mvmController.stepSelectedClipVolume(1)' },
     @{ Id = 'volumeDownAction'; Key = ']'; Call = 'root.mvmController.stepSelectedClipVolume(-1)' },
-    @{ Id = 'toggleClipEnabledAction'; Key = 'Shift+E'; Call = 'root.mvmController.toggleSelectedClipsEnabled()' }
+    @{ Id = 'toggleClipEnabledAction'; Key = 'Shift+E'; Call = 'root.mvmController.toggleSelectedClipsEnabled()' },
+    @{ Id = 'defaultTransitionAction'; Key = 'Shift+D'; Call = 'root.mvmController.applyDefaultTransition()' }
 )
 function Test-EditActionGuard([string]$source) {
     foreach ($entry in $editActions) {

@@ -1434,6 +1434,28 @@ void testToggleSelectedClipsEnabled(const std::filesystem::path& path) {
           "右クリックの対象clipとリンク相手を無効にできません");
 }
 
+// Shift+D (clip 選択) は選択 clip とリンク相手へ 1 秒のフェードを 1 undo で付ける。
+void testApplyDefaultTransitionToClips(const std::filesystem::path& path) {
+    const auto project = linkedProject(); // 60fps、120 frame
+    check(mvm::project::saveProjectJson(project, path).success,
+          "フェード試験のProjectを保存できません");
+    mvm::app::MvmController controller(path, {}, project);
+    check(controller.selectTimelineClips({}) && !controller.applyDefaultTransition() &&
+              !controller.canUndo(),
+          "選択の無いトランジションの適用を受理しました");
+    controller.selectTimelineClip(QStringLiteral("video"), true);
+    check(controller.applyDefaultTransition() && controller.saveProject(),
+          "選択clipへフェードを付けられません");
+    const auto saved = mvm::project::loadProjectJson(path);
+    check(saved.success && saved.project.timelineClips[0].effects.fadeInFrames == 60 &&
+              saved.project.timelineClips[0].effects.fadeOutFrames == 60 &&
+              saved.project.timelineClips[1].effects.fadeInFrames == 60 &&
+              saved.project.timelineClips[1].effects.fadeOutFrames == 60,
+          "映像とリンク相手の音声に1秒のフェードが保存されません");
+    check(controller.undoLastEdit() && !controller.canUndo(),
+          "フェードの適用を1回のUndoで戻せません");
+}
+
 void testDeleteMultipleSelection(const std::filesystem::path& path) {
     auto project = videoProject();
     auto audio = project.timelineClips[0];
@@ -2063,6 +2085,7 @@ int main(int argc, char** argv) {
     testSplitAtPlayheadAndSelectAll(directory / L"split-playhead.mvm");
     testStepSelectedClipVolume(directory / L"step-volume.mvm");
     testToggleSelectedClipsEnabled(directory / L"toggle-enabled.mvm");
+    testApplyDefaultTransitionToClips(directory / L"default-fades.mvm");
     testShuttleStopAndStep(directory / L"shuttle-stop-step.mvm");
     testPreviewTransform(directory / L"preview-transform.mvm");
     // MLT を初期化するので最後に置く。ほかの試験は MLT 無しの前提で書かれている。

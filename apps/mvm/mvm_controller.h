@@ -425,6 +425,9 @@ public:
     Q_INVOKABLE bool toggleSelectedClipsEnabled();
     // 右クリックメニュー用。指定した clip (とリンク相手) だけを切り換える。
     Q_INVOKABLE bool toggleTimelineClipEnabled(const QString& clipId);
+    // 既定のトランジションを適用する (Shift+D)。clip を選択していれば、その clip (とリンク相手)
+    // の先頭と末尾に 1 秒のフェードを付ける。1 回が 1 undo。
+    Q_INVOKABLE bool applyDefaultTransition();
     Q_INVOKABLE QVariantMap previewClipKey(const QString& clipId, qint64 originalFrame,
                                            qint64 requestedFrame, double valuePercent) const;
     Q_INVOKABLE bool commitClipKey(const QString& clipId, qint64 originalFrame,

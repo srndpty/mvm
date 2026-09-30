@@ -1735,6 +1735,91 @@ TimelineEditResult toggleClipsEnabled(Project& project, const std::vector<std::s
     return commitCandidate(project, std::move(candidate), indexOfId(project, clipIds.front()));
 }
 
+std::int64_t defaultTransitionFrames(std::int64_t timelineFpsNum, std::int64_t timelineFpsDen) {
+    if (timelineFpsNum <= 0 || timelineFpsDen <= 0)
+        return 1;
+    return std::max<std::int64_t>(1, (timelineFpsNum + timelineFpsDen / 2) / timelineFpsDen);
+}
+
+TimelineEditResult applyDefaultClipFades(Project& project, const std::vector<std::string>& clipIds,
+                                         std::int64_t timelineFrames) {
+    TimelineEditResult result;
+    if (clipIds.empty() || timelineFrames < 1) {
+        result.error = "フェードを付ける timeline clip がありません";
+        return result;
+    }
+    Project candidate = project;
+    std::vector<bool> marked(candidate.timelineClips.size(), false);
+    for (const auto& id : clipIds) {
+        const int index = indexOfId(candidate, id);
+        if (!validIndex(candidate, index)) {
+            result.error = "フェードを付ける timeline clip がありません";
+            return result;
+        }
+        marked[static_cast<std::size_t>(index)] = true;
+    }
+    includeLinkedCounterparts(candidate, marked);
+    std::unordered_set<std::string> headTransitions;
+    std::unordered_set<std::string> tailTransitions;
+    for (const auto& transition : candidate.timelineTransitions) {
+        headTransitions.insert(transition.incomingClipId);
+        tailTransitions.insert(transition.outgoingClipId);
+    }
+    const auto fpsNum = candidate.timelineFpsNum;
+    const auto fpsDen = candidate.timelineFpsDen;
+    for (std::size_t index = 0; index < marked.size(); ++index) {
+        if (!marked[index])
+            continue;
+        auto& clip = candidate.timelineClips[index];
+        const std::int64_t duration = clip.sourceOutFrame - clip.sourceInFrame;
+        // timeline 上の境界から timelineFrames だけ内側の位置を素材 frame へ戻した差が、
+        // その端のフェードの素材 frame 数になる (速度 2 倍なら素材は 2 倍進む)。
+        const auto inBoundary = clipSourceBoundaryToTimeline(clip, clip.sourceInFrame, fpsNum, fpsDen);
+        const auto outBoundary =
+            clipSourceBoundaryToTimeline(clip, clip.sourceOutFrame, fpsNum, fpsDen);
+        if (!inBoundary.success || !outBoundary.success) {
+            result.error = clip.name + ": " +
+                           (!inBoundary.success ? inBoundary.error : outBoundary.error);
+            return result;
+        }
+        // 内側の位置は clip の中に収める (1 秒より短い clip で反対側の端を越えない)。
+        const auto clipFrames = outBoundary.frame - inBoundary.frame;
+        const auto inner = std::min(timelineFrames, clipFrames);
+        const auto headSource =
+            clipTimelineBoundaryToSource(clip, inBoundary.frame + inner, fpsNum, fpsDen);
+        const auto tailSource =
+            clipTimelineBoundaryToSource(clip, outBoundary.frame - inner, fpsNum, fpsDen);
+        if (!headSource.success || !tailSource.success) {
+            result.error = clip.name + ": " +
+                           (!headSource.success ? headSource.error : tailSource.error);
+            return result;
+        }
+        const std::int64_t wantedIn =
+            std::clamp(headSource.frame - clip.sourceInFrame, std::int64_t{0}, duration);
+        const std::int64_t wantedOut =
+            std::clamp(clip.sourceOutFrame - tailSource.frame, std::int64_t{0}, duration);
+        const bool keepHead = headTransitions.contains(clip.id);
+        const bool keepTail = tailTransitions.contains(clip.id);
+        std::int64_t fadeIn = keepHead ? clip.effects.fadeInFrames : wantedIn;
+        std::int64_t fadeOut = keepTail ? clip.effects.fadeOutFrames : wantedOut;
+        if (!keepHead && !keepTail) {
+            fadeIn = std::min(fadeIn, (duration + 1) / 2);
+            fadeOut = std::min(fadeOut, duration - fadeIn);
+        } else if (keepHead) {
+            fadeOut = std::min(fadeOut, duration - fadeIn);
+        } else {
+            fadeIn = std::min(fadeIn, duration - fadeOut);
+        }
+        clip.effects.fadeInFrames = fadeIn;
+        clip.effects.fadeOutFrames = fadeOut;
+    }
+    if (candidate == project) {
+        result.error = "フェードは既に付いています";
+        return result;
+    }
+    return commitCandidate(project, std::move(candidate), indexOfId(project, clipIds.front()));
+}
+
 struct RippleSource {
     TrackRef track;
     std::int64_t originalEnd = 0;

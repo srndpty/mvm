@@ -140,6 +140,13 @@ ApplicationWindow {
         onTriggered: root.mvmController.toggleSelectedClipsEnabled()
     }
     Action {
+        id: defaultTransitionAction
+        text: "デフォルトのトランジションを適用"
+        shortcut: "Shift+D"
+        enabled: !root.mvmController.busy && !root.keyboardFocusTakesKeys
+        onTriggered: root.mvmController.applyDefaultTransition()
+    }
+    Action {
         id: speedDurationAction
         text: "速度・デュレーション..."
         shortcut: "Ctrl+R"
@@ -311,6 +318,7 @@ ApplicationWindow {
             CompactMenuItem { action: volumeUpAction }
             CompactMenuItem { action: volumeDownAction }
             CompactMenuItem { action: toggleClipEnabledAction }
+            CompactMenuItem { action: defaultTransitionAction }
             CompactMenuSeparator {}
             // 実行は Shortcut "Delete" が担う。ここは表示だけで sequence を持たせない (二重発火を防ぐ)。
             CompactMenuItem {

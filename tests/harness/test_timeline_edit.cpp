@@ -1526,6 +1526,67 @@ void testToggleClipsEnabled() {
           "存在しないclipを含む選択で有効/無効を切り換えました");
 }
 
+// Shift+D (clip 選択)。期待値は手で数えた値である。
+void testApplyDefaultClipFades() {
+    using mvm::project::TimelineClipKind;
+    check(mvm::project::defaultTransitionFrames(60, 1) == 60 &&
+              mvm::project::defaultTransitionFrames(30000, 1001) == 30 &&
+              mvm::project::defaultTransitionFrames(24000, 1001) == 24,
+          "1秒のtimeline frame数が違います");
+
+    mvm::project::Project project = mvm::project::createDefaultProject();
+    auto video = clip("video"); // 60fps 素材、300 frame、等速
+    video.linkGroupId = "fade-link";
+    auto audio = clip("audio", TimelineClipKind::Audio, kA1);
+    audio.linkGroupId = "fade-link";
+    auto fast = clip("fast", TimelineClipKind::Video, kV2); // 2 倍速: timeline 150 frame
+    fast.speedNum = 2;
+    auto shortClip = clip("short", TimelineClipKind::Video, kV2); // 50 frame
+    shortClip.sourceOutFrame = 50;
+    shortClip.timelineStartFrame = 200;
+    project.timelineClips = {video, audio, fast, shortClip};
+    check(mvm::project::validateTimeline(project).success, "フェード試験用のtimelineが不正です");
+    const auto fadesOf = [&](const std::string& id) {
+        const auto& effects = findClip(project, id)->effects;
+        return std::pair<std::int64_t, std::int64_t>{effects.fadeInFrames, effects.fadeOutFrames};
+    };
+
+    check(mvm::project::applyDefaultClipFades(project, {video.id}, 60).success &&
+              fadesOf(video.id) == std::pair<std::int64_t, std::int64_t>{60, 60} &&
+              fadesOf(audio.id) == std::pair<std::int64_t, std::int64_t>{60, 60},
+          "等速clipとリンク相手に60/60のフェードを付けません");
+    check(mvm::project::applyDefaultClipFades(project, {fast.id}, 60).success &&
+              fadesOf(fast.id) == std::pair<std::int64_t, std::int64_t>{120, 120},
+          "2倍速clipのフェードを素材120 frameにしません");
+    check(mvm::project::applyDefaultClipFades(project, {shortClip.id}, 60).success &&
+              fadesOf(shortClip.id) == std::pair<std::int64_t, std::int64_t>{25, 25},
+          "尺の足りないclipで前後を半分ずつにしません");
+    const auto before = project;
+    check(!mvm::project::applyDefaultClipFades(project, {video.id}, 60).success && project == before,
+          "変化の無いフェードの適用を受理しました");
+
+    // 1 frame の clip は先頭だけが取る。
+    auto single = mvm::project::createDefaultProject();
+    auto one = clip("one");
+    one.sourceOutFrame = 1;
+    single.timelineClips = {one};
+    check(mvm::project::applyDefaultClipFades(single, {one.id}, 60).success &&
+              single.timelineClips[0].effects.fadeInFrames == 1 &&
+              single.timelineClips[0].effects.fadeOutFrames == 0,
+          "1 frameのclipのフェードが検証を通る形になりません");
+
+    // トランジションのある端は変えない。
+    auto withTransition = transitionProject();
+    check(mvm::project::applyDefaultClipFades(withTransition, {"id-A", "id-B"}, 60).success,
+          "トランジションのあるclipにフェードを付けられません");
+    const auto& a = *findClip(withTransition, "id-A");
+    const auto& b = *findClip(withTransition, "id-B");
+    check(a.effects.fadeInFrames == 60 && a.effects.fadeOutFrames == 0 &&
+              b.effects.fadeInFrames == 0 && b.effects.fadeOutFrames == 60 &&
+              withTransition.timelineTransitions.size() == 1,
+          "トランジションのある端のフェードを変えました");
+}
+
 void testRippleTrim() {
     mvm::project::Project project = mvm::project::createDefaultProject();
     auto first = clip("first");
@@ -2603,6 +2664,7 @@ int main(int argc, char** argv) {
     testRateStretchLinkedDifferentDurations();
     testStepClipVolume();
     testToggleClipsEnabled();
+    testApplyDefaultClipFades();
     testTimelineTransitions(std::filesystem::path(argv[1]));
     testRippleTrim();
     testRollEdit();
