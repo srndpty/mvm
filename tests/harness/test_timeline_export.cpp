@@ -586,8 +586,7 @@ int main(int argc, char** argv) {
                       "ディゾルブの中央で2clipが半々に混ざりません (暗くなるか片方だけ)");
                 const auto early = pixelAt(dissolveRequest.outputPath, 52, 160, 120);
                 const auto late = pixelAt(dissolveRequest.outputPath, 67, 160, 120);
-                check(early.b > early.r && late.r > late.b,
-                      "ディゾルブが青から赤へ進みません");
+                check(early.b > early.r && late.r > late.b, "ディゾルブが青から赤へ進みません");
                 const auto after = pixelAt(dissolveRequest.outputPath, 75, 160, 120);
                 check(after.r > 180 && after.b < 80, "ディゾルブの後にincomingが表示されません");
             }

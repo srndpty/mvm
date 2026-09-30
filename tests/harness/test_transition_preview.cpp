@@ -132,7 +132,8 @@ int main(int argc, char** argv) {
                 return 3;
             }
             // 起動直後の初回 seek が終わるまで受理しないことがある。
-            if (!retryUntilAccepted([&] { return controller.seekTimelineFrame(kInsideFrame); }, 30000)) {
+            if (!retryUntilAccepted([&] { return controller.seekTimelineFrame(kInsideFrame); },
+                                    30000)) {
                 std::fprintf(stderr, "FAIL: トランジションの区間へ seek できません: %s\n",
                              controller.statusText().toUtf8().constData());
                 return 1;
@@ -163,8 +164,7 @@ int main(int argc, char** argv) {
             }
             const bool passed = pumpUntil(
                 [&] { return !controller.playing() || controller.playheadFrame() >= 150; }, 15000);
-            check(passed && controller.playing(),
-                  "トランジションの区間を通して再生が続きません");
+            check(passed && controller.playing(), "トランジションの区間を通して再生が続きません");
             std::printf("再生: playhead %lld、status: %s\n",
                         static_cast<long long>(controller.playheadFrame()),
                         controller.statusText().toUtf8().constData());

@@ -1268,8 +1268,7 @@ void testStepClipVolume() {
 
     // 対象外だけ・上限で変化なし・存在しない ID は失敗し、Project を変えない。
     const auto before = project;
-    check(!mvm::project::stepClipVolume(project, {lone.id}, 1.0).success &&
-              project == before,
+    check(!mvm::project::stepClipVolume(project, {lone.id}, 1.0).success && project == before,
           "audioの無い選択で音量の変更を受理しました");
     auto atMaximum = project;
     for (auto& value : atMaximum.timelineClips)
@@ -1396,7 +1395,8 @@ void testTimelineTransitions(const std::filesystem::path& root) {
         c.sourceOutFrame = 600;
         c.timelineStartFrame = 360;
         overlap.timelineClips.push_back(c);
-        overlap.timelineTransitions = {{"t1", "id-A", "id-B", 20, 40}, {"t2", "id-B", c.id, 40, 20}};
+        overlap.timelineTransitions = {{"t1", "id-A", "id-B", 20, 40},
+                                       {"t2", "id-B", c.id, 40, 20}};
         check(failsWith(overlap, "前後のトランジションが重なって"),
               "clipの内側で重なるトランジションを受理しました");
         overlap.timelineTransitions[1].framesBeforeCut = 20;
@@ -1413,13 +1413,16 @@ void testTimelineTransitions(const std::filesystem::path& root) {
         // 重ねる作りなので、透過・変形していると区間の終わりで不連続になる)。
         auto scaled = base;
         scaled.timelineClips[1].effects.scaleXPercent = 80;
-        check(failsWith(scaled, "画面全体を覆う不透明"), "縮小したincomingのディゾルブを受理しました");
+        check(failsWith(scaled, "画面全体を覆う不透明"),
+              "縮小したincomingのディゾルブを受理しました");
         auto moved = base;
         moved.timelineClips[0].effects.positionXPercent = 10;
-        check(failsWith(moved, "画面全体を覆う不透明"), "移動したoutgoingのディゾルブを受理しました");
+        check(failsWith(moved, "画面全体を覆う不透明"),
+              "移動したoutgoingのディゾルブを受理しました");
         auto cropped = base;
         cropped.timelineClips[1].effects.cropLeftPercent = 5;
-        check(failsWith(cropped, "画面全体を覆う不透明"), "切り抜いたincomingのディゾルブを受理しました");
+        check(failsWith(cropped, "画面全体を覆う不透明"),
+              "切り抜いたincomingのディゾルブを受理しました");
         auto translucent = base;
         translucent.timelineClips[1].effects.opacityPercent = 50;
         check(failsWith(translucent, "画面全体を覆う不透明"),
@@ -1440,7 +1443,8 @@ void testTimelineTransitions(const std::filesystem::path& root) {
             value.track = kA1;
             value.effects.volumePercent = 50;
         }
-        check(mvm::project::validateTimeline(audio).success, "音量を変えた音声のクロスフェードを拒否しました");
+        check(mvm::project::validateTimeline(audio).success,
+              "音量を変えた音声のクロスフェードを拒否しました");
         // 作るときも同じ理由で断る (余白不足と取り違えない)。
         auto refusedScaled = scaled;
         refusedScaled.timelineTransitions.clear();
@@ -1465,7 +1469,8 @@ void testTimelineTransitions(const std::filesystem::path& root) {
         check(hold != nullptr, "前提: フレーム保持clipがありません");
         if (hold) {
             held.timelineTransitions = {{"t-hold", "id-A", hold->id, 0, 1}};
-            check(failsWith(held, "フレーム保持"), "フレーム保持clipのトランジションを受理しました");
+            check(failsWith(held, "フレーム保持"),
+                  "フレーム保持clipのトランジションを受理しました");
         }
     }
 
@@ -1475,7 +1480,8 @@ void testTimelineTransitions(const std::filesystem::path& root) {
     };
     {
         auto edited = base;
-        check(mvm::project::deleteTimelineClip(edited, 1).success && edited.timelineTransitions.empty(),
+        check(mvm::project::deleteTimelineClip(edited, 1).success &&
+                  edited.timelineTransitions.empty(),
               "clipの削除でトランジションを消しません");
     }
     {
@@ -1603,7 +1609,8 @@ void testApplyDefaultClipFades() {
               fadesOf(shortClip.id) == std::pair<std::int64_t, std::int64_t>{25, 25},
           "尺の足りないclipで前後を半分ずつにしません");
     const auto before = project;
-    check(!mvm::project::applyDefaultClipFades(project, {video.id}, 60).success && project == before,
+    check(!mvm::project::applyDefaultClipFades(project, {video.id}, 60).success &&
+              project == before,
           "変化の無いフェードの適用を受理しました");
 
     // 1 frame の clip は先頭だけが取る。
@@ -1799,7 +1806,7 @@ void testApplyDefaultEditTransition() {
     single.timelineTransitions.clear();
     check(mvm::project::applyDefaultEditTransition(single, "id-A", "id-B", 60, LinkMode::Single,
                                                    sequentialIds())
-                  .transitionCount == 1 &&
+                      .transitionCount == 1 &&
               single.timelineTransitions.size() == 1,
           "Singleでリンク相手にもトランジションを置きました");
 
@@ -1825,7 +1832,7 @@ void testMoveOverwrite() {
     const auto spanOf = [](const mvm::project::Project& project, const std::string& id) {
         const auto* found = findClip(project, id);
         return found ? std::pair<std::int64_t, std::int64_t>{found->timelineStartFrame,
-                                                            clipEnd(project, *found)}
+                                                             clipEnd(project, *found)}
                      : std::pair<std::int64_t, std::int64_t>{-1, -1};
     };
 
@@ -1879,7 +1886,7 @@ void testMoveOverwrite() {
     auto rejected = base();
     const auto before = rejected;
     check(!mvm::project::moveClips(rejected, {"id-mover"}, "id-mover", kV1, 100, LinkMode::Linked)
-               .success &&
+                  .success &&
               rejected == before,
           "上書きを指定しない移動で重なりを受理しました");
 }

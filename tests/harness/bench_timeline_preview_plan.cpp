@@ -35,10 +35,9 @@ mvm::project::Project longTimeline() {
         clip.timelineStartFrame = index * kClipFrames;
         project.timelineClips.push_back(std::move(clip));
         if (index > 0)
-            project.timelineTransitions.push_back({"t-" + std::to_string(index),
-                                                   "clip-" + std::to_string(index - 1),
-                                                   "clip-" + std::to_string(index),
-                                                   kHalfTransition, kHalfTransition});
+            project.timelineTransitions.push_back(
+                {"t-" + std::to_string(index), "clip-" + std::to_string(index - 1),
+                 "clip-" + std::to_string(index), kHalfTransition, kHalfTransition});
     }
     return project;
 }

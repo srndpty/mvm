@@ -114,9 +114,8 @@ MediaStreamFacts probeMediaStreamFacts(const std::filesystem::path& path,
             // VP9 の alpha は画素形式 (yuv420p) に出ず、webm の alpha_mode で示される (実測)。
             const AVDictionaryEntry* alphaMode =
                 av_dict_get(stream->metadata, "alpha_mode", nullptr, 0);
-            facts.videoAlphaCapable =
-                (pixel && (pixel->flags & AV_PIX_FMT_FLAG_ALPHA) != 0) ||
-                (alphaMode && std::string(alphaMode->value) == "1");
+            facts.videoAlphaCapable = (pixel && (pixel->flags & AV_PIX_FMT_FLAG_ALPHA) != 0) ||
+                                      (alphaMode && std::string(alphaMode->value) == "1");
             imageStreamIndex = static_cast<int>(index);
         }
     }

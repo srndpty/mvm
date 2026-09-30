@@ -52,8 +52,7 @@ double transitionProgress(const TransitionEnvelope& envelope, std::int64_t timel
 // timelineFrame での不透明度 (0..1) と音量 (0..2)。元の clip の effect (key・フェード) を、
 // 延ばした区間では clip の端の値のまま評価し、トランジションの進み具合を掛ける。
 std::optional<double> renderSegmentOpacity(const TimelineRenderSegment& segment,
-                                           std::int64_t timelineFpsNum,
-                                           std::int64_t timelineFpsDen,
+                                           std::int64_t timelineFpsNum, std::int64_t timelineFpsDen,
                                            std::int64_t timelineFrame);
 std::optional<double> renderSegmentGain(const TimelineRenderSegment& segment,
                                         std::int64_t timelineFpsNum, std::int64_t timelineFpsDen,

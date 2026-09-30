@@ -75,7 +75,8 @@ int main() {
                     "outgoingを尻の余白へ延ばしていません");
             require(rest.projectClipIndex == 1 && rest.videoTrackIndex == 0 &&
                         rest.timelineStartFrame == 60 && rest.timelineDurationFrames == 40 &&
-                        rest.renderClip.sourceInFrame == 60 && rest.renderClip.sourceOutFrame == 100,
+                        rest.renderClip.sourceInFrame == 60 &&
+                        rest.renderClip.sourceOutFrame == 100,
                     "incomingの残りをlayer 0の区間の後ろへ置いていません");
             require(over.projectClipIndex == 1 && over.videoTrackIndex == 1 &&
                         over.timelineStartFrame == 40 && over.timelineDurationFrames == 20 &&
@@ -136,7 +137,8 @@ int main() {
             for (int frame = 40; frame < 60; ++frame) {
                 const double outGain = fadingOut[static_cast<std::size_t>(frame)].gain;
                 const double inGain = fadingIn[static_cast<std::size_t>(frame - 40)].gain;
-                powerKept = powerKept && std::abs(outGain * outGain + inGain * inGain - 1.0) < 1e-12;
+                powerKept =
+                    powerKept && std::abs(outGain * outGain + inGain * inGain - 1.0) < 1e-12;
             }
             require(powerKept, "クロスフェードの区間で2clipのgainの二乗和が1になりません");
         }

@@ -19,8 +19,8 @@
 #include "trim_cursor.h"
 #include "waveform_cache.h"
 
-#include <chrono>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <functional>
@@ -280,29 +280,34 @@ int main(int argc, char** argv) {
                 auto* leftHalf = findVisualItem(window, QStringLiteral("timelineClip_video"));
                 check(leftHalf != nullptr, "前提: timeline の clip がありません");
                 if (leftHalf) {
-                    QTest::mouseClick(window, Qt::LeftButton, {},
-                                      leftHalf
-                                          ->mapToScene(QPointF(leftHalf->width() - 3,
-                                                               leftHalf->height() / 2))
-                                          .toPoint());
+                    QTest::mouseClick(
+                        window, Qt::LeftButton, {},
+                        leftHalf->mapToScene(QPointF(leftHalf->width() - 3, leftHalf->height() / 2))
+                            .toPoint());
                     pump();
-                    check(controller.selectedEditPoint().value(QStringLiteral("frame")).toLongLong() ==
-                              60,
+                    check(controller.selectedEditPoint()
+                                  .value(QStringLiteral("frame"))
+                                  .toLongLong() == 60,
                           "clip の端を押しても編集点を選びません");
                     QTest::keyClick(window, Qt::Key_D, Qt::ShiftModifier);
                     pump(300);
                     const auto transitions = controller.timelineTransitions();
-                    check(transitions.size() == 1, "編集点で Shift+D を押してもトランジションを置きません");
+                    check(transitions.size() == 1,
+                          "編集点で Shift+D を押してもトランジションを置きません");
                     if (transitions.size() == 1) {
-                        const QString id =
-                            transitions.front().toMap().value(QStringLiteral("transitionId")).toString();
-                        auto* drawn = findVisualItem(window, QStringLiteral("timelineTransition_") + id);
+                        const QString id = transitions.front()
+                                               .toMap()
+                                               .value(QStringLiteral("transitionId"))
+                                               .toString();
+                        auto* drawn =
+                            findVisualItem(window, QStringLiteral("timelineTransition_") + id);
                         check(drawn && drawn->isVisible() && drawn->width() > 0,
                               "置いたトランジションを timeline に描きません");
                         controller.selectTimelineClips({});
                         pump();
                         // 選択を外しても delegate は作り直さない (同じ item のまま)。
-                        check(findVisualItem(window, QStringLiteral("timelineTransition_") + id) == drawn,
+                        check(findVisualItem(window, QStringLiteral("timelineTransition_") + id) ==
+                                  drawn,
                               "clip の選択を変えただけでトランジションの表示を作り直しました");
                         if (drawn) {
                             QTest::mouseClick(
@@ -315,7 +320,8 @@ int main(int argc, char** argv) {
                               "トランジションを押しても選びません");
                         QTest::keyClick(window, Qt::Key_Delete);
                         pump(300);
-                        check(controller.timelineTransitions().isEmpty() && controller.clipCount() > 1,
+                        check(controller.timelineTransitions().isEmpty() &&
+                                  controller.clipCount() > 1,
                               "選んだトランジションを Delete で消しません (clip を消した)");
                         controller.undoLastEdit(); // Delete
                         controller.undoLastEdit(); // Shift+D
@@ -335,34 +341,35 @@ int main(int argc, char** argv) {
                     auto* model = controller.timelineModel();
                     const int startRole = model->roleNames().key("timelineStartFrame", -1);
                     const QString placedId = model->clipIdAt(placedRow);
-                    auto* placed = findVisualItem(window, QStringLiteral("timelineClip_") + placedId);
+                    auto* placed =
+                        findVisualItem(window, QStringLiteral("timelineClip_") + placedId);
                     const auto startOf = [&] {
                         return model->data(model->index(placedRow, 0), startRole).toLongLong();
                     };
                     check(placed && startRole >= 0 && startOf() == 200,
                           "前提: 吸着の試験の clip を置けません");
                     if (placed && startRole >= 0) {
-                        const int durationRole = model->roleNames().key("timelineDurationFrames", -1);
+                        const int durationRole =
+                            model->roleNames().key("timelineDurationFrames", -1);
                         const double durationFrames =
                             model->data(model->index(placedRow, 0), durationRole).toDouble();
-                        const double pixelsPerFrame = placed->width() / std::max(1.0, durationFrames);
+                        const double pixelsPerFrame =
+                            placed->width() / std::max(1.0, durationFrames);
                         // 吸着の距離は 8 px。ちょうどの位置から 6 px 以内で、1 frame 以上ずれた量。
                         const int shortFrames = std::max(1, static_cast<int>(6.0 / pixelsPerFrame));
                         check(shortFrames * pixelsPerFrame <= 8.0,
                               "前提: 拡大率が大きく、吸着の距離の中で frame をずらせません");
                         const QPoint grab =
                             placed->mapToScene(QPointF(30, placed->height() / 2)).toPoint();
-                        const QPoint delta(static_cast<int>(std::lround((-80 + shortFrames) *
-                                                                        pixelsPerFrame)),
-                                           0);
+                        const QPoint delta(
+                            static_cast<int>(std::lround((-80 + shortFrames) * pixelsPerFrame)), 0);
                         QTest::mousePress(window, Qt::LeftButton, {}, grab);
                         for (int step = 1; step <= 8; ++step)
                             QTest::mouseMove(window, grab + delta * step / 8);
                         QTest::mouseRelease(window, Qt::LeftButton, {}, grab + delta);
                         pump(300);
                         std::printf("吸着: %.2f px/frame、%d frame 手前で離して start=%lld\n",
-                                    pixelsPerFrame, shortFrames,
-                                    static_cast<long long>(startOf()));
+                                    pixelsPerFrame, shortFrames, static_cast<long long>(startOf()));
                         check(startOf() == 120,
                               "clip を別の clip の終端の近くで離しても端に吸着しません");
                     }

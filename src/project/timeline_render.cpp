@@ -74,8 +74,8 @@ std::optional<OriginalFrame> originalFrameAt(const TimelineClip& original,
     if (!duration.success)
         return std::nullopt;
     OriginalFrame result;
-    result.local =
-        std::clamp(timelineFrame - original.timelineStartFrame, std::int64_t{0}, duration.frame - 1);
+    result.local = std::clamp(timelineFrame - original.timelineStartFrame, std::int64_t{0},
+                              duration.frame - 1);
     const auto sourceLocal =
         clipFadeSourceFrameAt(original, timelineFpsNum, timelineFpsDen, result.local);
     if (!sourceLocal.success)
@@ -109,8 +109,8 @@ bool timelineRenderSegments(const Project& project, TrackKind kind,
             continue;
         std::int64_t start = 0;
         std::int64_t cut = 0;
-        if (!clipSpan(project, project.timelineClips[static_cast<std::size_t>(outgoing)], start, cut,
-                      error))
+        if (!clipSpan(project, project.timelineClips[static_cast<std::size_t>(outgoing)], start,
+                      cut, error))
             return false;
         heads[incoming] = {&transition, cut};
         tails[outgoing] = {&transition, cut};
@@ -184,14 +184,14 @@ double transitionProgress(const TransitionEnvelope& envelope, std::int64_t timel
 }
 
 std::optional<double> renderSegmentOpacity(const TimelineRenderSegment& segment,
-                                           std::int64_t timelineFpsNum,
-                                           std::int64_t timelineFpsDen,
+                                           std::int64_t timelineFpsNum, std::int64_t timelineFpsDen,
                                            std::int64_t timelineFrame) {
-    const auto at = originalFrameAt(segment.original, timelineFpsNum, timelineFpsDen, timelineFrame);
+    const auto at =
+        originalFrameAt(segment.original, timelineFpsNum, timelineFpsDen, timelineFrame);
     if (!at)
         return std::nullopt;
-    double opacity =
-        evaluateClipOpacity(segment.original.effects, at->local, at->sourceLocal, at->sourceDuration);
+    double opacity = evaluateClipOpacity(segment.original.effects, at->local, at->sourceLocal,
+                                         at->sourceDuration);
     if (segment.fadeIn)
         opacity *= transitionProgress(*segment.fadeIn, timelineFrame);
     return opacity;
@@ -200,11 +200,12 @@ std::optional<double> renderSegmentOpacity(const TimelineRenderSegment& segment,
 std::optional<double> renderSegmentGain(const TimelineRenderSegment& segment,
                                         std::int64_t timelineFpsNum, std::int64_t timelineFpsDen,
                                         std::int64_t timelineFrame) {
-    const auto at = originalFrameAt(segment.original, timelineFpsNum, timelineFpsDen, timelineFrame);
+    const auto at =
+        originalFrameAt(segment.original, timelineFpsNum, timelineFpsDen, timelineFrame);
     if (!at)
         return std::nullopt;
-    double gain =
-        evaluateClipVolume(segment.original.effects, at->local, at->sourceLocal, at->sourceDuration);
+    double gain = evaluateClipVolume(segment.original.effects, at->local, at->sourceLocal,
+                                     at->sourceDuration);
     // 等パワー: 重なった 2 clip の gain の二乗和が 1 になる。
     if (segment.fadeIn)
         gain *= std::sin(transitionProgress(*segment.fadeIn, timelineFrame) * kHalfPi);

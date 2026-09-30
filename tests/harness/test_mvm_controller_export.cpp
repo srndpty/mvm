@@ -1323,8 +1323,8 @@ void testShiftSelectionToggle(const std::filesystem::path& path) {
           "clipの選択で再生位置が動きました");
 }
 
-// Ctrl+K は再生ヘッドを含む選択 clip (とリンク相手) だけを切り、選択に無ければ current clip を切る。
-// Ctrl+A は timeline の全 clip を選ぶ。
+// Ctrl+K は再生ヘッドを含む選択 clip (とリンク相手) だけを切り、選択に無ければ current clip
+// を切る。 Ctrl+A は timeline の全 clip を選ぶ。
 void testSplitAtPlayheadAndSelectAll(const std::filesystem::path& path) {
     auto project = linkedProject();
     auto other = project.timelineClips[0];
@@ -1393,8 +1393,8 @@ void testStepSelectedClipVolume(const std::filesystem::path& path) {
           "選択clipの音量を上げられません");
     const auto raised = mvm::project::loadProjectJson(path);
     check(raised.success &&
-              std::abs(raised.project.timelineClips[1].effects.volumePercent -
-                       125.89254117941675) < 1e-9 &&
+              std::abs(raised.project.timelineClips[1].effects.volumePercent - 125.89254117941675) <
+                  1e-9 &&
               raised.project.timelineClips[0].effects.volumePercent == 100.0,
           "+2dBの音量がリンク相手のaudioに保存されません");
     check(controller.undoLastEdit() && controller.undoLastEdit() && !controller.canUndo(),
@@ -1486,8 +1486,11 @@ void testEditPointTransition(const std::filesystem::path& path) {
           "トランジションの作成を1回のUndoで戻せません");
     check(controller.redoLastEdit() && controller.timelineTransitions().size() == 2,
           "トランジションの作成をRedoできません");
-    const auto target = controller.timelineTransitions().front().toMap()
-                            .value(QStringLiteral("transitionId")).toString();
+    const auto target = controller.timelineTransitions()
+                            .front()
+                            .toMap()
+                            .value(QStringLiteral("transitionId"))
+                            .toString();
     check(controller.selectTransition(target) && controller.deleteSelection() &&
               controller.timelineTransitions().size() == 1 && controller.clipCount() == 4,
           "選んだトランジションだけをDeleteで消せません");
@@ -1521,7 +1524,8 @@ void testMoveOverwritesAndDragBounds(const std::filesystem::path& path) {
           "ドラッグで一緒に動くclip IDを返しません");
 
     controller.selectTimelineClip(QStringLiteral("other"), true);
-    check(controller.moveTimelineClip(QStringLiteral("other"), QStringLiteral("video"), 0, 60, true) &&
+    check(controller.moveTimelineClip(QStringLiteral("other"), QStringLiteral("video"), 0, 60,
+                                      true) &&
               controller.clipCount() == 3 && controller.saveProject(),
           "下のclipに重なる位置へ移動できません");
     const auto saved = mvm::project::loadProjectJson(path);

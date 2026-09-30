@@ -286,7 +286,8 @@ void testCrossfade() {
     project.timelineTransitions = {{"t", "a-out", "a-in", 10, 11}};
     mvm::app::ShuttleAudioPlan plan;
     std::string error;
-    check(mvm::app::planShuttleAudio(project, 1, 0, plan, error), "クロスフェードのplanを作れません");
+    check(mvm::app::planShuttleAudio(project, 1, 0, plan, error),
+          "クロスフェードのplanを作れません");
     check(plan.clips.size() == 2 && plan.clips[0].timelineEndSample == 111 * 800 &&
               plan.clips[1].timelineStartSample == 90 * 800,
           "クロスフェードの2clipを余白の分だけ延ばしていません");

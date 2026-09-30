@@ -279,8 +279,7 @@ public:
                                  error);
         if (!hasTimelineFpsNum || !hasTimelineFpsDen || !hasVideoTracks || !hasAudioTracks ||
             !hasAssets || !hasClips || !hasTransitions || !hasMarkers || !hasIn || !hasOut ||
-            !hasMediaFolders ||
-            !hasMediaItems) {
+            !hasMediaFolders || !hasMediaItems) {
             return failAndFinish("Project schema " + std::to_string(kSchemaVersion) +
                                      " の必須 field がありません",
                                  error);

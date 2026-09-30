@@ -21,7 +21,8 @@ struct TimelinePreviewLayerMapping {
     int clipIndex = -1;
     std::string clipId;
     std::int64_t sourceFrameNumber = -1;
-    // 描画区間に合わせた clip (トランジションで延ばした素材範囲を含む)。decode source はこちらで作る。
+    // 描画区間に合わせた clip (トランジションで延ばした素材範囲を含む)。decode source
+    // はこちらで作る。
     project::TimelineClip renderClip;
     // トランジションの進み具合 (0..1)。clip の不透明度に掛ける。トランジションの外は 1。
     double transitionOpacity = 1.0;
@@ -87,11 +88,13 @@ void applyPreviewLayerEffects(preview::PreviewCompositionLayer& layer,
 struct TimelinePreviewPlan {
     bool success = false;
     std::string error;
+
     struct Entry {
         project::TimelineRenderSegment segment;
         std::int64_t start = 0;
         std::int64_t end = 0;
     };
+
     std::vector<Entry> video;
     std::vector<Entry> audio;
     // video track ごとの slot の起点 (トランジションのある track は lane を 2 本持つ)。
