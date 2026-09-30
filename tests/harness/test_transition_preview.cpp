@@ -58,6 +58,30 @@ bool crossesBoundaryWithoutPairingMiss(const std::vector<std::int64_t>& presente
     return before && after && !missed;
 }
 
+// cut の前後で続けて提示した frame の差の上限。先読みした音声の時計へ早く切り替えると、提示は
+// 境界まで (先読み幅 2 秒 = 120 frame 以内の) 数十 frame 飛ぶ。scheduler の数 frame の drop
+// と分ける。
+constexpr std::int64_t kMaxPresentedStep = 10;
+// 1 回の source 準備にかかってよい時間。controller は境界の 2 秒前から準備するので、その半分に
+// 収まれば境界までに準備が終わる。先読み幅の根拠を文書の転記ではなくこの検査で持つ。
+constexpr double kMaxPreparationMs = 1000.0;
+
+// [from, to] の中で続けて提示した 2 つの output frame の差の最大。時計が先へ飛ぶと大きくなる。
+std::int64_t maxPresentedStep(const std::vector<std::int64_t>& presented, std::size_t presentedFrom,
+                              std::int64_t from, std::int64_t to) {
+    std::int64_t previous = -1;
+    std::int64_t maximum = 0;
+    for (auto it = presented.begin() + static_cast<std::ptrdiff_t>(presentedFrom);
+         it != presented.end(); ++it) {
+        if (*it < from || *it > to)
+            continue;
+        if (previous >= 0)
+            maximum = std::max(maximum, *it - previous);
+        previous = *it;
+    }
+    return maximum;
+}
+
 void check(bool value, const char* message) {
     if (!value) {
         std::fprintf(stderr, "FAIL: %s\n", message);
@@ -346,8 +370,11 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "FAIL: 別ファイルの cut 試験素材がありません\n");
         exitCode = 1;
     } else {
+        // secondAudioIn は後ろの音声 clip の素材 in。0
+        // は後ろに置いた素材を先頭から使う普通の置き方で、 先読みした時点の素材位置が負になる
+        // (開始前に時計を切り替えると映像が境界まで飛ぶ)。
         const auto runCut = [&](const char* label, bool firstAudio, bool secondAudio,
-                                bool forceCapacity) {
+                                std::int64_t secondAudioIn, bool forceCapacity) {
             auto cutProject = mvm::project::createDefaultProject();
             cutProject.timelineClips = {half(video, "cut-v-out", TrackKind::Video, 0, 0),
                                         half(copiedVideo, "cut-v-in", TrackKind::Video, 120, 120)};
@@ -355,7 +382,7 @@ int main(int argc, char** argv) {
                 cutProject.timelineClips.push_back(half(wav, "cut-a-out", TrackKind::Audio, 0, 0));
             if (secondAudio)
                 cutProject.timelineClips.push_back(
-                    half(copiedWav, "cut-a-in", TrackKind::Audio, 120, 120));
+                    half(copiedWav, "cut-a-in", TrackKind::Audio, 120, secondAudioIn));
             check(mvm::project::validateTimeline(cutProject).success,
                   "cut 試験の timeline が不正です");
             const auto cutPath = std::filesystem::path(
@@ -400,24 +427,32 @@ int main(int argc, char** argv) {
                 }
                 check(after.presentedFrameCount > before.presentedFrameCount,
                       "cut の前後でframeを提示しませんでした");
-                if (!forceCapacity)
+                const auto maxStep = maxPresentedStep(controller.presentedFrameHistoryForTest(),
+                                                      beforeEvents, 90, 150);
+                if (!forceCapacity) {
                     check(crossesBoundaryWithoutPairingMiss(
                               controller.presentedFrameHistoryForTest(), beforeEvents,
                               controller.unpairedFrameHistoryForTest(), beforeUnpaired, 120),
                           "cut の境界で提示またはpairingが途切れました");
-                std::printf("%s: 提示 %llu、drop %llu、組み直し %llu、準備最大 %.1fms、理由: "
-                            "%s、status: %s\n",
+                    // 先読みした音声の時計へ境界の前に切り替えると、提示が境界の先まで飛ぶ。
+                    check(maxStep <= kMaxPresentedStep, "cut の前後で提示した frame が飛びました");
+                    check(controller.playbackMaxPreparationMs() < kMaxPreparationMs,
+                          "source の準備が先読み幅の半分を超えました");
+                }
+                std::printf("%s: 提示 %llu、drop %llu、最大の提示間隔 %lld frame、組み直し %llu、"
+                            "準備最大 %.1fms、理由: %s、status: %s\n",
                             label,
                             static_cast<unsigned long long>(after.presentedFrameCount -
                                                             before.presentedFrameCount),
                             static_cast<unsigned long long>(after.droppedFrameCount -
                                                             before.droppedFrameCount),
+                            static_cast<long long>(maxStep),
                             static_cast<unsigned long long>(controller.playbackRebuildCount()),
                             controller.playbackMaxPreparationMs(),
                             controller.lastPlaybackRebuildReason().toUtf8().constData(),
                             controller.statusText().toUtf8().constData());
                 controller.pauseTimeline();
-                if (firstAudio && secondAudio) {
+                if (secondAudio) {
                     const bool resumed =
                         retryUntilAccepted([&] { return controller.playTimeline(); }, 30000);
                     const bool advanced =
@@ -428,17 +463,131 @@ int main(int argc, char** argv) {
                                        },
                                        15000);
                     check(advanced && controller.playing(),
-                          "主音声の交代後に一時停止から再生できません");
+                          "音声の区間に入った後に一時停止から再生できません");
                     if (controller.playing())
                         controller.pauseTimeline();
                 }
             }
             controller.shutdown();
         };
-        runCut("cut-av", true, true, false);
-        runCut("cut-silent-to-audio", false, true, false);
-        runCut("cut-audio-to-silent", true, false, false);
-        runCut("cut-capacity-fallback", false, false, true);
+        runCut("cut-av", true, true, 120, false);
+        runCut("cut-silent-to-audio", false, true, 120, false);
+        runCut("cut-silent-to-head-audio", false, true, 0, false);
+        runCut("cut-audio-to-silent", true, false, 120, false);
+        runCut("cut-capacity-fallback", false, false, 120, true);
+
+        const auto playFrom =
+            [&](const char* label, const mvm::project::Project& playProject, qint64 from,
+                const std::function<void()>& beforePlay,
+                const std::function<void(mvm::app::MvmController&)>& whilePlaying) {
+                const auto playPath = std::filesystem::path(
+                    directory.filePath(QString::fromUtf8(label) + QStringLiteral(".mvm"))
+                        .toStdWString());
+                mvm::app::MvmController controller(playPath, {}, playProject);
+                QQuickWindow window;
+                window.setWidth(640);
+                window.setHeight(360);
+                auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
+                surface->setWidth(640);
+                surface->setHeight(360);
+                window.show();
+                controller.attachPreview(surface);
+                const bool sought =
+                    pumpUntil([&] { return controller.previewReady(); }, 30000) &&
+                    retryUntilAccepted([&] { return controller.seekTimelineFrame(from); }, 30000) &&
+                    pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                if (sought)
+                    beforePlay();
+                const bool started =
+                    sought && retryUntilAccepted([&] { return controller.playTimeline(); }, 30000);
+                if (!started)
+                    std::fprintf(stderr, "FAIL: %s: 再生を開始できません: %s\n", label,
+                                 controller.statusText().toUtf8().constData());
+                check(started, "再生を開始できません");
+                if (started)
+                    whilePlaying(controller);
+                if (controller.playing())
+                    controller.pauseTimeline();
+                controller.shutdown();
+            };
+
+        // 別の clip を先読み幅 (2 秒) より密に並べる (100ms の clip を 24 個)。先読み幅の中の境界を
+        // 全部準備すると、使う前の source を engine の既定の登録上限 (2 × 8 + 1) まで積み、同期の
+        // 準備を毎 tick 重ねる。準備するのは次の境界の source だけで、組み直しも起こさない。
+        {
+            constexpr int kClips = 24;
+            constexpr std::int64_t kClipFrames = 6;
+            auto montage = mvm::project::createDefaultProject();
+            for (int index = 0; index < kClips; ++index) {
+                const std::string id = "montage-" + std::to_string(index);
+                // 隣と別のファイル・離れた素材位置にして、前の clip の source
+                // で覆えないようにする。
+                auto clip = half(index % 2 == 0 ? video : copiedVideo, id.c_str(), TrackKind::Video,
+                                 index * kClipFrames, (index * 37) % 200);
+                clip.sourceOutFrame = clip.sourceInFrame + kClipFrames;
+                montage.timelineClips.push_back(clip);
+            }
+            check(mvm::project::validateTimeline(montage).success,
+                  "短い clip の timeline が不正です");
+            const std::int64_t last = (kClips - 1) * kClipFrames;
+            playFrom(
+                "montage", montage, 0, [] {},
+                [&](mvm::app::MvmController& controller) {
+                    const bool passed = pumpUntil(
+                        [&] { return !controller.playing() || controller.playheadFrame() >= last; },
+                        15000);
+                    check(passed && controller.playing(),
+                          "短い clip の連続を通して再生が続きません");
+                    check(controller.playbackRebuildCount() == 0,
+                          "短い clip の連続でPreviewを組み直しました");
+                    // 各境界で変わる source は video 1 つ。次の境界の分だけを先に準備している。
+                    check(controller.playbackMaxPreparedSourceCount() == 1,
+                          "短い clip の連続で次の境界より先の source まで準備しました");
+                    check(controller.playbackMaxPreparationMs() < kMaxPreparationMs,
+                          "短い clip の source の準備が先読み幅の半分を超えました");
+                    std::printf(
+                        "短い clip %d 個: playhead %lld、組み直し %llu、先に準備した source "
+                        "最大 %zu、準備最大 %.1fms、理由: %s\n",
+                        kClips, static_cast<long long>(controller.playheadFrame()),
+                        static_cast<unsigned long long>(controller.playbackRebuildCount()),
+                        controller.playbackMaxPreparedSourceCount(),
+                        controller.playbackMaxPreparationMs(),
+                        controller.lastPlaybackRebuildReason().toUtf8().constData());
+                });
+        }
+
+        // 準備に失敗した境界は、越えるまで準備し直さない。境界の素材を再生の直前に消しておく。
+        // 毎 tick 準備し直すと、境界までの約 30 frame (tick 16ms) の間に失敗が積み上がる。
+        {
+            const auto doomed = std::filesystem::path(
+                directory.filePath(QStringLiteral("doomed.mp4")).toStdWString());
+            std::filesystem::copy_file(copiedVideo, doomed,
+                                       std::filesystem::copy_options::overwrite_existing);
+            auto doomedProject = mvm::project::createDefaultProject();
+            doomedProject.timelineClips = {half(video, "doomed-out", TrackKind::Video, 0, 0),
+                                           half(doomed, "doomed-in", TrackKind::Video, 120, 120)};
+            check(mvm::project::validateTimeline(doomedProject).success,
+                  "準備失敗の試験の timeline が不正です");
+            playFrom(
+                "prepare-failure", doomedProject, 90,
+                [&] {
+                    std::error_code removeError;
+                    check(std::filesystem::remove(doomed, removeError), "境界の素材を消せません");
+                },
+                [&](mvm::app::MvmController& controller) {
+                    pumpUntil(
+                        [&] { return !controller.playing() || controller.playheadFrame() >= 115; },
+                        15000);
+                    check(controller.playheadFrame() >= 115 && controller.playing(),
+                          "準備に失敗した境界の手前まで再生が続きません");
+                    check(controller.playbackPreparationFailureCount() == 1,
+                          "準備に失敗した境界を境界の前に準備し直しました");
+                    std::printf("準備失敗: playhead %lld、失敗 %llu 回\n",
+                                static_cast<long long>(controller.playheadFrame()),
+                                static_cast<unsigned long long>(
+                                    controller.playbackPreparationFailureCount()));
+                });
+        }
         if (failures != 0)
             exitCode = 1;
     }

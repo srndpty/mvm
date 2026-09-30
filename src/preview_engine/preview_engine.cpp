@@ -787,6 +787,10 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
     // addSource で受け取った audio source の timeline 上の位置ずれ (sample)。
     // output frame <-> audio media sample の換算はこの 1 つの値だけで補正する。
     std::int64_t audioSampleOffset = 0;
+    std::int64_t primaryAudioSampleOffset = 0;
+    bool primaryAudioAsMix = false;
+    std::int64_t primaryAudioActivationFrame = -1;
+    std::optional<std::int64_t> pendingAudioActivationFrame;
 
     struct ExtraAudioSourceEntry {
         audio::SourceId internal;
@@ -1125,6 +1129,7 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         bool active = false;
         PreviewPosition target;
         std::int64_t audioSample = 0;
+        std::int64_t primaryAudioWorkerSample = 0;
         std::map<std::uint64_t, gpu::SeekTicket> videoTickets;
         std::map<std::uint64_t, std::int64_t> expectedSourceFrames;
         audio::AudioSeekTicket audioTicket;
@@ -1213,7 +1218,7 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                 ? audio::VideoMasterSource::AudioDeviceClock
                 : audio::VideoMasterSource::Qpc;
         const bool masterAccepted = audio::acceptsVideoMasterSource(masterSource);
-        if (publicAudioSource && !masterAccepted) {
+        if (publicAudioSource && !masterAccepted && !pendingAudioActivationFrame) {
             ++videoMasterQpcFallbackCount;
             result.error =
                 makeError(PreviewErrorCategory::AudioFailure, PreviewOperation::RenderDeviceAttach,
@@ -1281,6 +1286,11 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
         result.valid = true;
         result.frame =
             schedulerBaseFrame > maximum - advanced ? maximum : schedulerBaseFrame + advanced;
+        if (pendingAudioActivationFrame && result.frame >= *pendingAudioActivationFrame) {
+            pendingAudioActivationFrame.reset();
+            audioMasterActive = true;
+            return schedulerTargetLocked(now);
+        }
         return result;
     }
 
@@ -1454,11 +1464,18 @@ struct PreviewEngine::Impl : std::enable_shared_from_this<PreviewEngine::Impl> {
                 if (result == audio::AudioSeekWaitResult::Ready) {
                     if (!completion.completed)
                         return seekFailure("audio seekが完了しませんでした: " + completion.error);
-                    if (completion.firstOutputSample != pending.audioSample) {
+                    if (completion.firstOutputSample != pending.primaryAudioWorkerSample) {
                         return seekFailure(
                             "audio seekがrequested sampleを返しませんでした (requested=" +
-                            std::to_string(pending.audioSample) +
+                            std::to_string(pending.primaryAudioWorkerSample) +
                             ", first=" + std::to_string(completion.firstOutputSample) + ")");
+                    }
+                    if (primaryAudioAsMix && audioSink) {
+                        std::string mixError;
+                        if (!audioSink->updateMixInput(audioWorker->queue(),
+                                                       completion.seekGeneration,
+                                                       primaryAudioSampleOffset, mixError))
+                            return seekFailure("audio mix inputを更新できません: " + mixError);
                     }
                     pending.expectedAudioGeneration = completion.seekGeneration;
                     pending.audioReady = true;
@@ -1943,6 +1960,8 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
     std::shared_ptr<audio::WasapiAudioSink> newAudioSink;
     audio::SourceId internalAudio{};
     std::int64_t newAudioStartSample = 0;
+    bool futureFirstAudio = false;
+    std::int64_t futureAudioActivationFrame = -1;
     if (descriptor.audioEnabled) {
         const auto rollbackVideo = [&] {
             if (!newVideoWorker)
@@ -1980,8 +1999,34 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
                     makeError(PreviewErrorCategory::InvalidSource, PreviewOperation::AddSource,
                               "再生中のaudio source位置を換算できません"));
             }
+            if (!impl_->audioSink) {
+                futureAudioActivationFrame = descriptor.audioTimelineStartFrame;
+                if (futureAudioActivationFrame < 0 && mediaSample < 0) {
+                    std::int64_t firstTimelineSample = 0;
+                    if (!core::checkedSubtract(std::int64_t{0}, descriptor.audioSampleOffset,
+                                               firstTimelineSample)) {
+                        newAudioWorker->stop();
+                        rollbackVideo();
+                        return Result<PreviewSourceId>::failure(makeError(
+                            PreviewErrorCategory::InvalidSource, PreviewOperation::AddSource,
+                            "audio sourceの開始sampleを表せません"));
+                    }
+                    const auto firstFrame =
+                        impl_->timebase->schedulerOutputFrame(firstTimelineSample);
+                    if (!firstFrame) {
+                        newAudioWorker->stop();
+                        rollbackVideo();
+                        return Result<PreviewSourceId>::failure(makeError(
+                            PreviewErrorCategory::InvalidSource, PreviewOperation::AddSource,
+                            "audio sourceの開始frameを換算できません"));
+                    }
+                    futureAudioActivationFrame = firstFrame.value();
+                }
+                futureFirstAudio = futureAudioActivationFrame >
+                                   impl_->telemetrySnapshot.status.position.outputFrame + 1;
+            }
             mediaSample = std::max<std::int64_t>(0, mediaSample);
-            newAudioStartSample = mediaSample;
+            newAudioStartSample = futureFirstAudio ? timelineSample.value() : mediaSample;
             audio::AudioSeekTicket ticket;
             if (newAudioWorker->requestSeek(mediaSample, ticket, audioError) !=
                 audio::AudioSeekRequestResult::Accepted) {
@@ -2036,6 +2081,19 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
                     "WASAPI shared event-driven endpointをopenできません: " + audioError));
             }
             if (addingWhilePlaying) {
+                if (futureFirstAudio) {
+                    if (!newAudioSink->detachPrimaryInput(newAudioWorker->queue(), audioError) ||
+                        !newAudioSink->addMixInput(
+                            newAudioWorker->queue(), descriptor.audioSampleOffset,
+                            newAudioWorker->snapshot().sourceGeneration, audioError)) {
+                        newAudioSink->stop();
+                        newAudioWorker->stop();
+                        rollbackVideo();
+                        return Result<PreviewSourceId>::failure(makeError(
+                            PreviewErrorCategory::AudioFailure, PreviewOperation::AddSource,
+                            "先読みaudio inputを登録できません: " + audioError));
+                    }
+                }
                 lock.unlock();
                 const bool endpointPlaying = newAudioSink->play(
                     newAudioStartSample, newAudioWorker->snapshot().sourceGeneration, audioError);
@@ -2115,9 +2173,15 @@ Result<PreviewSourceId> PreviewEngine::addSource(const PreviewSourceDescriptor& 
         impl_->audioSinkJoined = false;
         impl_->audioWorkerJoined = false;
         impl_->resumeAudioSample = 0;
-        impl_->audioSampleOffset = descriptor.audioSampleOffset;
+        impl_->audioSampleOffset = futureFirstAudio ? 0 : descriptor.audioSampleOffset;
+        impl_->primaryAudioSampleOffset = descriptor.audioSampleOffset;
+        impl_->primaryAudioAsMix = futureFirstAudio;
+        if (futureFirstAudio) {
+            impl_->primaryAudioActivationFrame = futureAudioActivationFrame;
+            impl_->pendingAudioActivationFrame = futureAudioActivationFrame;
+        }
         if (addingWhilePlaying)
-            impl_->audioMasterActive = true;
+            impl_->audioMasterActive = !futureFirstAudio;
         const audio::WasapiSnapshot endpoint = impl_->audioSink->snapshot();
         impl_->deviceSnapshot.audioSampleRate =
             static_cast<std::uint32_t>(endpoint.deviceFormat.sampleRate);
@@ -2153,6 +2217,7 @@ Result<void> PreviewEngine::removeSource(PreviewSourceId source) {
     bool removingAudio = false;
     bool removingExtraAudio = false;
     bool removingWhilePlaying = false;
+    bool removingPrimaryAsMix = false;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         Result<void> affinity = impl_->requireControlThread(PreviewOperation::RemoveSource);
@@ -2183,6 +2248,7 @@ Result<void> PreviewEngine::removeSource(PreviewSourceId source) {
 
         removingAudio = impl_->publicAudioSource && *impl_->publicAudioSource == source;
         if (removingAudio) {
+            removingPrimaryAsMix = impl_->primaryAudioAsMix;
             if (!removingWhilePlaying && !impl_->extraAudioSources.empty()) {
                 return invalidState(PreviewOperation::RemoveSource,
                                     "mix inputより先にmaster audio sourceを削除できません");
@@ -2212,7 +2278,9 @@ Result<void> PreviewEngine::removeSource(PreviewSourceId source) {
         if (removingExtraAudio && audioSink && audioWorker) {
             audioStopped = audioSink->removeMixInput(audioWorker->queue(), audioError);
         } else if (removingAudio && removingWhilePlaying && audioSink && audioWorker) {
-            audioStopped = audioSink->detachPrimaryInput(audioWorker->queue(), audioError);
+            audioStopped = removingPrimaryAsMix
+                               ? audioSink->removeMixInput(audioWorker->queue(), audioError)
+                               : audioSink->detachPrimaryInput(audioWorker->queue(), audioError);
         } else if (audioSink) {
             audioStopped = audioSink->pause(audioError);
             audioSink->stop();
@@ -2283,6 +2351,12 @@ Result<void> PreviewEngine::removeSource(PreviewSourceId source) {
                     impl_->audioClock.reset();
                 impl_->publicAudioSource.reset();
                 impl_->internalAudioSource = audio::SourceId{};
+                impl_->primaryAudioAsMix = false;
+                impl_->primaryAudioSampleOffset = 0;
+                impl_->primaryAudioActivationFrame = -1;
+                impl_->pendingAudioActivationFrame.reset();
+                if (removingWhilePlaying)
+                    impl_->audioMasterActive = true;
                 if (!removingWhilePlaying) {
                     impl_->resumeAudioSample = 0;
                     impl_->audioSampleOffset = 0;
@@ -2448,7 +2522,8 @@ Result<void> PreviewEngine::play() {
         }
         impl_->schedulerEnabled = true;
         // audio sourceが登録されている場合だけ`IAudioClock`がmasterになる。
-        impl_->audioMasterActive = impl_->audioSink != nullptr && impl_->audioClock != nullptr;
+        impl_->audioMasterActive = impl_->audioSink != nullptr && impl_->audioClock != nullptr &&
+                                   !impl_->pendingAudioActivationFrame;
         impl_->schedulerStart = std::chrono::steady_clock::now();
         impl_->schedulerBaseFrame = impl_->telemetrySnapshot.presentedFrameCount == 0
                                         ? 0
@@ -2570,6 +2645,7 @@ Result<void> PreviewEngine::seekFrameRequest(const PreviewFrameRequest& request)
 
     std::vector<ExtraAudioSeekTarget> extraAudioTargets;
     std::int64_t audioSample = 0;
+    std::int64_t audioClockSample = 0;
     bool resumePlaying = false;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -2626,16 +2702,20 @@ Result<void> PreviewEngine::seekFrameRequest(const PreviewFrameRequest& request)
                                                    PreviewOperation::Seek,
                                                    "outputFrameをaudio sampleへ換算できません"));
         }
-        // output frame -> media sample。audio clip の timeline 位置ずれをここで足す。
-        if (impl_->audioSampleOffset > 0 &&
-            sample.value() > std::numeric_limits<std::int64_t>::max() - impl_->audioSampleOffset) {
+        // workerは素材sample、sinkのclockは先読みaudioではtimeline sampleを指す。
+        if (!core::checkedAdd(sample.value(), impl_->primaryAudioSampleOffset, audioSample)) {
             return Result<void>::failure(makeError(PreviewErrorCategory::SeekFailure,
                                                    PreviewOperation::Seek,
                                                    "audio sample offsetの加算がoverflowしました"));
         }
-        audioSample = sample.value() + impl_->audioSampleOffset;
         if (audioSample < 0)
             audioSample = 0;
+        if (!core::checkedAdd(sample.value(), impl_->audioSampleOffset, audioClockSample)) {
+            return Result<void>::failure(
+                makeError(PreviewErrorCategory::SeekFailure, PreviewOperation::Seek,
+                          "audio clock sample offsetの加算がoverflowしました"));
+        }
+        audioClockSample = std::max<std::int64_t>(0, audioClockSample);
         resumePlaying = state == PreviewEngineState::Playing;
         audioWorker = impl_->audioWorker;
         audioSink = impl_->audioSink;
@@ -2699,6 +2779,12 @@ Result<void> PreviewEngine::seekFrameRequest(const PreviewFrameRequest& request)
             Result<void> moved = impl_->machine.seek();
             if (!moved)
                 return moved;
+            if (impl_->primaryAudioAsMix) {
+                if (target.outputFrame < impl_->primaryAudioActivationFrame)
+                    impl_->pendingAudioActivationFrame = impl_->primaryAudioActivationFrame;
+                else
+                    impl_->pendingAudioActivationFrame.reset();
+            }
 
             std::string requestError;
             bool videoRequestsAccepted = true;
@@ -2766,7 +2852,8 @@ Result<void> PreviewEngine::seekFrameRequest(const PreviewFrameRequest& request)
                 Impl::PendingSeek& pending = impl_->pendingSeek;
                 pending.active = true;
                 pending.target = target;
-                pending.audioSample = audioSample;
+                pending.audioSample = audioClockSample;
+                pending.primaryAudioWorkerSample = audioSample;
                 pending.expectedVideoGenerations.clear();
                 pending.audioReady = audioWorker == nullptr;
                 pending.decodeReady = false;
@@ -3617,8 +3704,9 @@ Result<RenderFrameResult> PreviewRenderPort::renderFrame(PreviewEngine& engine,
                     for (gpu::SourceDecodeWorker* worker : engine.impl_->videoWorkersLocked())
                         worker->play();
                     engine.impl_->schedulerEnabled = true;
-                    engine.impl_->audioMasterActive =
-                        engine.impl_->audioSink != nullptr && engine.impl_->audioClock != nullptr;
+                    engine.impl_->audioMasterActive = engine.impl_->audioSink != nullptr &&
+                                                      engine.impl_->audioClock != nullptr &&
+                                                      !engine.impl_->pendingAudioActivationFrame;
                     engine.impl_->schedulerStart = std::chrono::steady_clock::now();
                     engine.impl_->telemetrySnapshot.status.state = engine.impl_->machine.state();
                     seekCompletedState = engine.impl_->machine.state();

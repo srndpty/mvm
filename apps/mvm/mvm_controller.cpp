@@ -1506,6 +1506,7 @@ bool MvmController::audioDescriptorFor(const TimelinePreviewAudioLayerMapping& l
     descriptor.mediaPath = clip.mediaPath;
     descriptor.audioEnabled = true;
     descriptor.audioSampleOffset = offset.sampleOffset;
+    descriptor.audioTimelineStartFrame = clip.timelineStartFrame;
     descriptor.speedNum = clip.speedNum;
     descriptor.speedDen = clip.speedDen;
     descriptor.audioPreservePitch = clip.preservePitch;
@@ -3652,7 +3653,9 @@ std::vector<std::int64_t> MvmController::unpairedFrameHistoryForTest() const {
         .recentUnpairedOutputFrames;
 }
 
-bool MvmController::preparePlaybackSourcesAt(std::int64_t frame, QString& reason) {
+bool MvmController::preparePlaybackSourcesAt(std::int64_t frame, bool& needsHandOff,
+                                             QString& reason) {
+    needsHandOff = false;
     const auto video = mapTimelinePreviewFrame(project_, previewPlan(), frame);
     const auto audio = mapTimelinePreviewAudio(project_, previewPlan(), frame);
     if (!video.success || !audio.success) {
@@ -3673,6 +3676,7 @@ bool MvmController::preparePlaybackSourcesAt(std::int64_t frame, QString& reason
             usedVideoSources.insert(active->second.source.value);
             continue;
         }
+        needsHandOff = true;
         if (prepared != preparedVideoSources_.end()) {
             usedVideoSources.insert(prepared->source.value);
             continue;
@@ -3705,8 +3709,10 @@ bool MvmController::preparePlaybackSourcesAt(std::int64_t frame, QString& reason
         const auto matches = [&](const AudioPreviewSource& entry) {
             return entry.identity == identities[index];
         };
-        if (std::any_of(audioSources_.begin(), audioSources_.end(), matches) ||
-            std::any_of(preparedAudioSources_.begin(), preparedAudioSources_.end(), matches))
+        if (std::any_of(audioSources_.begin(), audioSources_.end(), matches))
+            continue;
+        needsHandOff = true;
+        if (std::any_of(preparedAudioSources_.begin(), preparedAudioSources_.end(), matches))
             continue;
         preview::PreviewSourceDescriptor descriptor;
         if (!audioDescriptorFor(audio.layers[index], descriptor, reason))
@@ -3727,6 +3733,9 @@ bool MvmController::preparePlaybackSourcesAt(std::int64_t frame, QString& reason
                                          audio.layers[index].clipId,
                                          audio.layers[index].clipIndex});
     }
+    playbackMaxPreparedSourceCount_ =
+        std::max(playbackMaxPreparedSourceCount_,
+                 preparedVideoSources_.size() + preparedAudioSources_.size());
     return true;
 }
 
@@ -3746,11 +3755,25 @@ bool MvmController::prepareUpcomingPlaybackSources(std::int64_t frame, QString& 
     for (const auto& entry : plan.audio)
         if (entry.start > frame && entry.start <= horizon)
             starts.insert(entry.start);
-    for (const auto start : starts)
-        if (!preparePlaybackSourcesAt(start, reason)) {
-            failedPreparationStart_ = start;
+    // 準備するのは source 集合が次に変わる境界 1 つだけにする。先読み幅の中の境界を全部準備すると、
+    // 短い clip が続く timeline では使う前の source で engine の登録上限を踏み、境界で Preview の
+    // 組み直しへ戻ってしまう。その境界を越えて引き継いだ後の tick で、さらに次を準備する。
+    for (const auto start : starts) {
+        // 失敗した境界は越えるまで準備し直さない。seek の待ちを毎 tick 繰り返すと、壊れた素材で
+        // 境界の手前から再生が引っ掛かり続ける。境界では引き継ぎに失敗して組み直しへ回る。
+        if (failedPreparationStart_ && *failedPreparationStart_ == start) {
+            reason = playbackPreparationFailure_;
             return false;
         }
+        bool needsHandOff = false;
+        if (!preparePlaybackSourcesAt(start, needsHandOff, reason)) {
+            failedPreparationStart_ = start;
+            ++playbackPreparationFailureCount_;
+            return false;
+        }
+        if (needsHandOff)
+            return true;
+    }
     return true;
 }
 
@@ -3886,14 +3909,6 @@ void MvmController::advanceTimelinePlayback() {
         Q_EMIT stateChanged();
         return;
     }
-    QString preparationFailure;
-    if (!prepareUpcomingPlaybackSources(frame, preparationFailure))
-        playbackPreparationFailure_ = preparationFailure;
-    else if (failedPreparationStart_ && *failedPreparationStart_ > frame) {
-        playbackPreparationFailure_.clear();
-        failedPreparationStart_.reset();
-        playbackCapacityFailure_ = false;
-    }
     QString handOffFailure;
     if (handOffPlaybackSources(frame, handOffFailure)) {
         if (failedPreparationStart_ && frame >= *failedPreparationStart_) {
@@ -3901,6 +3916,11 @@ void MvmController::advanceTimelinePlayback() {
             failedPreparationStart_.reset();
             playbackCapacityFailure_ = false;
         }
+        // 先読みは引き継ぎの後に行う。境界の tick で先に行うと、まだ引き継いでいない境界の source に
+        // 加えてその次の境界まで準備してしまう。
+        QString preparationFailure;
+        if (!prepareUpcomingPlaybackSources(frame, preparationFailure))
+            playbackPreparationFailure_ = preparationFailure;
         if (playheadFrame_ != frame) {
             playheadFrame_ = frame;
             Q_EMIT stateChanged();

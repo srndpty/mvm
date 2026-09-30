@@ -167,6 +167,13 @@ public:
     QString lastPlaybackRebuildReason() const { return lastPlaybackRebuildReason_; }
 
     double playbackMaxPreparationMs() const { return playbackMaxPreparationMs_; }
+    // 先読みの準備に失敗した回数。同じ境界を何度も準備し直していないことの検査に使う。
+    std::uint64_t playbackPreparationFailureCount() const {
+        return playbackPreparationFailureCount_;
+    }
+    // 境界の前に準備して、まだ引き継いでいない source の数の最大。先読みが次の境界だけに
+    // 留まっていることの検査に使う。
+    std::size_t playbackMaxPreparedSourceCount() const { return playbackMaxPreparedSourceCount_; }
     bool setPreviewRegistrationLimitForTest(std::size_t limit);
     std::vector<std::int64_t> presentedFrameHistoryForTest() const;
     std::vector<std::int64_t> unpairedFrameHistoryForTest() const;
@@ -625,7 +632,9 @@ private:
     void pollAudioMeter();
     void advanceTimelinePlayback();
     bool prepareUpcomingPlaybackSources(std::int64_t frame, QString& reason);
-    bool preparePlaybackSourcesAt(std::int64_t frame, QString& reason);
+    // frame で使う source のうち active でないものを準備する。needsHandOff は active だけでは
+    // 足りない (境界で source 集合が変わる) ことを返す。
+    bool preparePlaybackSourcesAt(std::int64_t frame, bool& needsHandOff, QString& reason);
     void retirePreparedPlaybackSources();
     void advanceTimelineShuttle();
     // timed shuttle の clock (音声があれば audio clock) から現在の timeline frame を求める。
@@ -802,7 +811,11 @@ private:
     std::vector<TrackPreviewSource> preparedVideoSources_;
     std::vector<AudioPreviewSource> preparedAudioSources_;
     QString playbackPreparationFailure_;
+    // 準備に失敗した境界。その境界を越えるまで準備し直さない (壊れた素材の seek 待ちを
+    // 毎 tick 繰り返さない)。
     std::optional<std::int64_t> failedPreparationStart_;
+    std::uint64_t playbackPreparationFailureCount_ = 0;
+    std::size_t playbackMaxPreparedSourceCount_ = 0;
     bool playbackCapacityFailure_ = false;
     std::optional<std::int64_t> pendingCapacityRebuildFrame_;
     QString lastPlaybackRebuildReason_;

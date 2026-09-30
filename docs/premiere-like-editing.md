@@ -1827,20 +1827,37 @@ controller は preview を一時停止して source を組み直す ("clip境界
 
 `[事実]` `feature/playing-source-handoff` で engine が `Playing` 中の source 追加・削除を受理するようにした。
 映像は mapping の最初の素材 frame へ seek し、output anchor を設定してから worker を再生する。
-controller は `timelineRenderSegments` に基づく次の区間開始を 2 秒前から準備し、境界では
-composition を切り替える。旧 source は新 composition の提示後に削除する。音声入力は callback と
-排他して差し替え、主音声の交代と無音区間でも timeline sample の時計を進める。
+controller は `timelineRenderSegments` に基づき、2 秒先までにある区間開始のうち
+source 集合が次に変わる境界 1 つだけを準備し、境界では composition を切り替える。引き継いだ後の
+tick でその次の境界を準備する。先読み幅の中の境界を全部準備すると、短い clip が続く timeline で
+使う前の source を engine の登録上限まで積んでしまう。準備に失敗した境界は越えるまで準備し直さない
+(壊れた素材の seek 待ちを毎 tick 繰り返さない)。旧 source は新 composition の提示後に削除する。
+音声入力は callback と排他して差し替え、主音声の交代と無音区間でも timeline sample の時計を進める。
+無音の区間で先読みした音声は、区間の開始 frame に届くまで audio master にせず、mix 入力として
+timeline sample の時計に合わせて置く (素材を先頭から使う音声 clip では、先読みした時点の素材位置が
+負になり、早く切り替えると映像の時計が境界まで飛ぶ)。
 
-`[事実]` release の `transition_preview` を実行し、トランジション、別ファイルへの cut、
-無音から音声、音声から無音の 4 条件すべてで境界前後の提示が続き、境界 ±1 frame の
-source pairing 欠落は 0、controller の組み直しは 0 回だった。続けて同じ試験を 3 回実行し、
-3/3 通過した。代表 run の区間全体の engine drop は順に 0 / 0 / 18 / 19 frame で、
-scheduler や OS 負荷による drop を含む。
-source 準備の最大観測時間は順に 28.3 / 14.2 / 21.6 / 11.5 ms で、いずれも 1 秒未満だったため
-先読み幅 2 秒を採用した。再現手順は
-`pwsh scripts/build.ps1 -Target mvm_test_transition_preview`、
-`ctest --test-dir build/ucrt64-release -R '^transition_preview$' -V --timeout 120`。
-登録上限を 1 本にした負例では、理由に登録上限を含む組み直しが 1 回発生し、再生を再開した。
+`[事実]` `transition_preview` は次を検査する (合否は試験が決め、値は試験出力に出る):
+- トランジション、別ファイルへの cut、無音から音声 (素材 in が区間開始と同じもの・素材の先頭からのもの)、
+  音声から無音の各条件で、境界前後の提示が続き、境界 ±1 frame の source pairing 欠落が無く、
+  controller の組み直しが 0 回
+- cut の前後 (90〜150) で続けて提示した frame の差が 10 frame 以下 (時計の飛びの検出)
+- 1 回の source 準備が 1 秒 (先読み幅の半分) 未満。先読み幅 2 秒の根拠はこの検査で持つ
+- 100ms の別 clip を 24 個並べた timeline で、組み直しが 0 回、先に準備した source が最大 1 つ
+- 境界の素材を再生直前に消すと、境界までの準備失敗が 1 回だけ
+- 登録上限を 1 本にした負例で、理由に登録上限を含む組み直しが起こり、再生を続ける
+
+再現手順は `pwsh scripts/build.ps1 -Target mvm_test_transition_preview`、
+`ctest --test-dir build/ucrt64-release -R '^transition_preview$' -V --timeout 180`。
+
+`[事実]` 上の検査の効き目は、修正を一時的に外して確かめた。次の境界で止めずに全部を準備すると、
+短い clip の試験で先に準備した source が上限近くまで積まれ、登録上限による組み直しで落ちる。
+失敗した境界を毎 tick 準備し直すと準備失敗の試験が落ち、先読みした音声で audio master を
+すぐ切り替えると素材の先頭からの無音から音声の条件が提示の飛びで落ちる。
+
+`[未検証]` source の準備 (`addSource` の open / seek) は control thread で同期に待つ。
+境界での停止は避けたが、待ち時間そのものは境界の前へ移っただけで、playhead 更新や入力処理を
+その間止めうる。open / seek を worker で進め、準備完了を control thread で公開する形は未実装。
 
 `[未検証]` 他の GPU / 音声 endpoint、長尺素材、操作中の高負荷環境での境界欠落率は未測定。
 

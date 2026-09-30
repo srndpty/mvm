@@ -62,6 +62,9 @@ struct PreviewSourceDescriptor {
     // timeline 上で 0 以外の位置に置いた audio clip を鳴らすために使う。
     // videoEnabled のみの source では無視する。
     std::int64_t audioSampleOffset = 0;
+    // 再生中の先読みでは、このoutput frameに達するまでaudio masterを切り替えない。
+    // -1は区間指定なしのsourceを表す。
+    std::int64_t audioTimelineStartFrame = -1;
     // clip の再生速度 (約分済みの正の有理数)。video の timeline mapping と audio の
     // 伸縮の両方に使う。audio の media sample は速度で伸縮した時間軸の位置になる。
     std::int64_t speedNum = 1;
