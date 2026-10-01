@@ -62,6 +62,9 @@ struct PreviewSourceDescriptor {
     // timeline 上で 0 以外の位置に置いた audio clip を鳴らすために使う。
     // videoEnabled のみの source では無視する。
     std::int64_t audioSampleOffset = 0;
+    // 再生中の先読みでは、このoutput frameに達するまでaudio masterを切り替えない。
+    // -1は区間指定なしのsourceを表す。
+    std::int64_t audioTimelineStartFrame = -1;
     // clip の再生速度 (約分済みの正の有理数)。video の timeline mapping と audio の
     // 伸縮の両方に使う。audio の media sample は速度で伸縮した時間軸の位置になる。
     std::int64_t speedNum = 1;
@@ -113,11 +116,17 @@ struct PreviewCompositionLayer {
     // 同じ画素を出し直すときは同じ instance を渡すこと。
     // 既存の集成体初期化の順序を崩さないよう末尾に置く。
     std::shared_ptr<const PreviewStillImage> stillImage{};
+    // true なら素材の余白 (配置矩形の外) を不透明な黒で埋めた出力全体の 1 枚として重ねる。
+    // クロスディゾルブの incoming に使い、余白の所でも下の layer を 1 - opacity に減らす。
+    // video layer で回転が 0 のときだけ受理する。
+    bool opaqueBackdrop = false;
     bool operator==(const PreviewCompositionLayer&) const = default;
 };
 
 struct CompositionSnapshot {
     std::vector<PreviewCompositionLayer> layers;
+    // 再生中の区間切替では、このoutput frameから新しいlayer集合を使う。
+    std::int64_t activationOutputFrame = -1;
     bool operator==(const CompositionSnapshot&) const = default;
 };
 

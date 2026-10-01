@@ -87,6 +87,9 @@ int main() {
                         std::abs(over.opacityKeys[10].opacity - 0.525) < 1e-12 &&
                         std::abs(over.opacityKeys.back().opacity - 0.975) < 1e-12,
                     "incomingの不透明度が区間の中で上がりません");
+            // 余白を黒で埋めて重ねるのは incoming の頭の区間だけ。
+            require(over.opaqueBackdrop && !base.opaqueBackdrop && !rest.opaqueBackdrop,
+                    "incomingの頭の区間だけを余白を黒で埋めて重ねていません");
         }
         // V2 は incoming を重ねる layer の上へずれる (V1 の lane 1 = layer 1、V2 = layer 2)。
         auto withUpper = withTransition;

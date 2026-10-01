@@ -151,7 +151,8 @@ bool GpuCompositor::prepareComposition(const ComposedFrame& frame,
             layer.sourceUv.x < 0 || layer.sourceUv.y < 0 ||
             layer.sourceUv.x + layer.sourceUv.width > 1.0f ||
             layer.sourceUv.y + layer.sourceUv.height > 1.0f || layer.opacity < 0.0f ||
-            layer.opacity > 1.0f || !std::isfinite(layer.rotationDegrees)) {
+            layer.opacity > 1.0f || !std::isfinite(layer.rotationDegrees) ||
+            (layer.opaqueBackdrop && layer.rotationDegrees != 0.0f)) {
             err = "composition layerの値が不正です";
             return false;
         }
@@ -320,7 +321,11 @@ bool GpuCompositor::issueComposition(const ComposedFrame& frame,
             err = "test fault: issue開始後のlayer描画失敗";
         const bool drawn =
             !injectedFailure &&
-            (layer.effectsEnabled
+            (layer.opaqueBackdrop
+                 ? converter_.drawBackdropLayer(
+                       layer.frame, target.rtv, target.width, target.height, destination,
+                       layer.effectsEnabled ? placedUv : uv, layer.opacity, true, err)
+             : layer.effectsEnabled
                  ? converter_.drawEffectLayer(
                        layer.frame, target.rtv, target.width, target.height, destination, placedUv,
                        layer.opacity, layer.rotationDegrees, static_cast<float>(placement.pivotX),

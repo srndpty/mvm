@@ -76,6 +76,8 @@ struct TimelineExportClipMapping {
     double rectHeight = 0.0;
     double rotationDegrees = 0.0;
     double shearDegrees = 0.0;
+    // クロスディゾルブの incoming。素材の余白を黒で埋めた全画面として重ねる (preview と同じ)。
+    bool opaqueBackdrop = false;
     std::vector<TimelineExportOpacityKey> opacityKeys;
     std::vector<TimelineExportGainKey> gainKeys;
 };

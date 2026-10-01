@@ -718,6 +718,11 @@ SeekCompletion SourceDecodeWorker::executeSeek(const SeekTicket& ticket, long lo
 
 bool SourceDecodeWorker::seekBlocking(long long frameNumber, double& decodeReadyMs,
                                       std::string& err) {
+    return seekBlocking(frameNumber, frameNumber, decodeReadyMs, err);
+}
+
+bool SourceDecodeWorker::seekBlocking(long long sourceFrameNumber, long long outputFrameNumber,
+                                      double& decodeReadyMs, std::string& err) {
     if (!running()) {
         err = "停止中のworkerへseekを要求できません";
         return false;
@@ -728,8 +733,9 @@ bool SourceDecodeWorker::seekBlocking(long long frameNumber, double& decodeReady
     }
     pause();
     const long long requestQpc = qpcTicks();
-    const SeekCompletion completion = executeSeek({0, frameNumber, frameNumber}, requestQpc);
-    setSeekPhase(SeekExecutionPhase::Completed, {0, frameNumber, frameNumber});
+    const SeekCompletion completion =
+        executeSeek({0, sourceFrameNumber, outputFrameNumber}, requestQpc);
+    setSeekPhase(SeekExecutionPhase::Completed, {0, sourceFrameNumber, outputFrameNumber});
     decodeReadyMs = completion.decodeReadyMs;
     err = completion.error;
     return completion.status == SeekCompletionStatus::Completed;

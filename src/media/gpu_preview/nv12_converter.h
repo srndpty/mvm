@@ -69,6 +69,14 @@ public:
                          float opacity, float rotationDegrees, float pivotX, float pivotY,
                          bool linearFilter, std::string& err);
 
+    // 出力全体に描き、destination の外を不透明な黒で埋める (回転なし)。素材の余白を黒で埋めた
+    // 1 枚を opacity で重ねるので、余白の所でも下の layer が 1 - opacity に減る。
+    // ディゾルブの incoming に使う。
+    bool drawBackdropLayer(const DecodedGpuFrame& frame, ID3D11RenderTargetView* rtv,
+                           int targetWidth, int targetHeight, const FitRect& destination,
+                           const float sourceUv[4], float opacity, bool linearFilter,
+                           std::string& err);
+
     // composition の issue 前準備。SRV 生成を含む失敗しうる resource 準備を
     // clear/draw より前に完了させる。drawLayer は同じ cache entry を再利用する。
     bool prepareLayer(const DecodedGpuFrame& frame, std::string& err);
@@ -174,7 +182,7 @@ private:
                       const FitRect& viewport, const float uvRect[4], bool linearFilter,
                       float opacity, std::string& err, bool effectAware = false,
                       int targetWidth = 0, int targetHeight = 0, float rotationDegrees = 0.0f,
-                      float pivotX = 0.5f, float pivotY = 0.5f);
+                      float pivotX = 0.5f, float pivotY = 0.5f, bool backdrop = false);
 
     SharedD3D11Device* shared_ = nullptr;
     ReadbackCounters* counters_ = nullptr;
@@ -184,6 +192,8 @@ private:
     ID3D11VertexShader* effectVs_ = nullptr;
     ID3D11PixelShader* ps_ = nullptr;
     ID3D11PixelShader* rgbaPs_ = nullptr;
+    ID3D11PixelShader* backdropPs_ = nullptr;
+    ID3D11PixelShader* backdropRgbaPs_ = nullptr;
     ID3D11Buffer* cbuffer_ = nullptr;
     ID3D11SamplerState* samplerPoint_ = nullptr;
     ID3D11SamplerState* samplerLinear_ = nullptr;

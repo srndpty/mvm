@@ -7,15 +7,23 @@
 //   - 区間を通して再生が止まらずに進むこと (区間の出入りで source を組み直す)
 // を見る。音声も同じ WAV を 2 つに分けてクロスフェードさせる。期待する値は直書きする。
 #include "app/preview/preview_engine_rhi_item.h"
+#include "media/mlt/mvm_mlt_probe.h"
 #include "media/mlt/mvm_mlt_runtime.h"
 #include "mvm_controller.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <filesystem>
 #include <functional>
+#include <optional>
+#include <process.h>
+#include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include <QGuiApplication>
 #include <QQuickWindow>
@@ -25,6 +33,74 @@
 namespace {
 
 int failures = 0;
+
+bool crossesBoundaryWithoutPairingMiss(const std::vector<std::int64_t>& presented,
+                                       std::size_t presentedFrom,
+                                       const std::vector<std::int64_t>& unpaired,
+                                       std::size_t unpairedFrom, std::int64_t boundary) {
+    const auto first = presented.begin() + static_cast<std::ptrdiff_t>(presentedFrom);
+    const bool before =
+        std::any_of(first, presented.end(), [&](std::int64_t frame) { return frame < boundary; });
+    const bool after =
+        std::any_of(first, presented.end(), [&](std::int64_t frame) { return frame >= boundary; });
+    const bool missed = std::any_of(
+        unpaired.begin() + static_cast<std::ptrdiff_t>(unpairedFrom), unpaired.end(),
+        [&](std::int64_t frame) { return frame >= boundary - 1 && frame <= boundary + 1; });
+    if (!before || !after || missed)
+        std::fprintf(
+            stderr,
+            "境界 %lld の前後提示またはpairingに失敗しました (前=%d 後=%d pairing欠落=%d)\n",
+            static_cast<long long>(boundary), before, after, missed);
+    if (missed)
+        for (auto it = unpaired.begin() + static_cast<std::ptrdiff_t>(unpairedFrom);
+             it != unpaired.end(); ++it)
+            if (*it >= boundary - 1 && *it <= boundary + 1)
+                std::fprintf(stderr, "  pairing欠落 frame=%lld\n", static_cast<long long>(*it));
+    return before && after && !missed;
+}
+
+// cut の前後で続けて提示した frame の差の上限。先読みした音声の時計へ早く切り替えると、提示は
+// 境界まで (先読み幅 2 秒 = 120 frame 以内の) 数十 frame 飛ぶ。scheduler の数 frame の drop
+// と分ける。
+constexpr std::int64_t kMaxPresentedStep = 10;
+// 1 回の source 準備にかかってよい時間。controller は境界の 2 秒前から準備するので、その半分に
+// 収まれば境界までに準備が終わる。先読み幅の根拠を文書の転記ではなくこの検査で持つ。
+constexpr double kMaxPreparationMs = 1000.0;
+
+struct PresentedSteps {
+    // 続けて提示した 2 つの output frame の差の最大 (先へ進んだ量)。
+    std::int64_t maxForward = 0;
+    // 前に提示した frame より前の frame を提示した (時計の切り替えで戻った)。
+    bool backward = false;
+};
+
+// from 以上で最初に提示した frame から、to を最初に越えた frame までの続けて提示した組を調べる。
+// to を越えた frame も組に入れる。範囲内の frame だけを見ると、範囲の外への飛び (100 -> 170) を
+// 見逃す。時計が先へ飛ぶと maxForward が大きくなり、戻ると backward になる。
+PresentedSteps presentedSteps(const std::vector<std::int64_t>& presented, std::size_t presentedFrom,
+                              std::int64_t from, std::int64_t to) {
+    PresentedSteps steps;
+    std::optional<std::int64_t> previous;
+    for (auto it = presented.begin() + static_cast<std::ptrdiff_t>(presentedFrom);
+         it != presented.end(); ++it) {
+        if (!previous) {
+            if (*it >= from)
+                previous = *it;
+            continue;
+        }
+        if (*it < *previous) {
+            steps.backward = true;
+            std::fprintf(stderr, "  提示が戻りました: %lld -> %lld\n",
+                         static_cast<long long>(*previous), static_cast<long long>(*it));
+        } else {
+            steps.maxForward = std::max(steps.maxForward, *it - *previous);
+        }
+        previous = *it;
+        if (*it > to)
+            break;
+    }
+    return steps;
+}
 
 void check(bool value, const char* message) {
     if (!value) {
@@ -78,13 +154,90 @@ mvm::project::TimelineClip half(const std::filesystem::path& media, const char* 
 constexpr qint64 kInsideFrame = 125; // p = (125 - 110 + 0.5) / 20 = 0.775
 constexpr float kInsideOpacity = 0.775F;
 
+// 再生中に提示した区間の frame が、2 layer で、incoming の不透明度を進み具合
+// p = (f - 110 + 0.5) / 20 で上げていること。controller は tick の時点の frame で不透明度を
+// 求めるので、提示との差を 3 frame (0.15) まで許す。区間に入った composition のまま
+// 不透明度が上がらないと、outgoing が区間の終わりまで残って突然 incoming へ切り替わる。
+bool dissolvesWhilePlaying(const std::vector<std::pair<std::int64_t, float>>& presented) {
+    int inside = 0;
+    float maxError = 0.0F;
+    bool ok = true;
+    for (const auto& [frame, opacity] : presented) {
+        if (frame < 110 || frame >= 130)
+            continue;
+        ++inside;
+        const float expected = (static_cast<float>(frame - 110) + 0.5F) / 20.0F;
+        maxError = std::max(maxError, std::abs(opacity - expected));
+        if (opacity < 0.0F || std::abs(opacity - expected) > 0.15F) {
+            std::fprintf(stderr, "  frame %lld: incoming の不透明度 %.3f (期待 %.3f)\n",
+                         static_cast<long long>(frame), opacity, expected);
+            ok = false;
+        }
+    }
+    std::printf("再生中のディゾルブ: 区間の提示 %d frame、不透明度の最大誤差 %.3f\n", inside,
+                maxError);
+    // 60fps の再生で区間の 20 frame のうち半分以上は提示しているはず。
+    if (inside < 10) {
+        std::fprintf(stderr, "  区間の中で提示した frame が %d しかありません\n", inside);
+        ok = false;
+    }
+    return ok;
+}
+
+// frame へ送り (フレーム送りと同じ一時停止中の seek)、提示した composition の layer 数と最背面の
+// 素材 frame が、その frame の mapping (mapTimelinePreviewFrame) と一致するかを見る。
+// 区間の出入りで違う clip の frame を 1 frame だけ出す不具合を検出する。
+std::pair<mvm::app::MvmController::PresentedFrameForTest, bool>
+stepAndCompare(mvm::app::MvmController& controller, const mvm::project::Project& project,
+               qint64 frame) {
+    const auto countBefore = controller.previewTelemetry().presentedFrameCount;
+    if (!retryUntilAccepted([&] { return controller.seekTimelineFrame(frame); }, 10000)) {
+        std::fprintf(stderr, "  frame %lld へ送れません: %s\n", static_cast<long long>(frame),
+                     controller.statusText().toUtf8().constData());
+        return {{}, false};
+    }
+    const bool presented = pumpUntil(
+        [&] {
+            return controller.previewPresentedLatest() &&
+                   controller.lastPresentedFrameForTest().outputFrame == frame;
+        },
+        10000);
+    // 送りの間に提示したもの全部 (目的の frame の前に別の frame を挟んでいないか)。
+    const auto history = controller.presentedFramesForTest();
+    const auto added = static_cast<std::size_t>(std::min<std::uint64_t>(
+        controller.previewTelemetry().presentedFrameCount - countBefore, history.size()));
+    bool onlyTarget = true;
+    for (std::size_t index = history.size() - added; index < history.size(); ++index) {
+        const auto& entry = history[index];
+        if (entry.outputFrame != frame) {
+            onlyTarget = false;
+            std::printf("  途中で提示: frame %lld、layer %u、最背面の素材 frame %lld\n",
+                        static_cast<long long>(entry.outputFrame), entry.layerCount,
+                        static_cast<long long>(entry.baseSourceFrame));
+        }
+    }
+    const auto shown = controller.lastPresentedFrameForTest();
+    const auto mapped = mvm::app::mapTimelinePreviewFrame(project, frame);
+    const std::int64_t expected =
+        mapped.success && !mapped.layers.empty() ? mapped.layers.front().sourceFrameNumber : -1;
+    const std::size_t expectedLayers = mapped.layers.size() + mapped.stillLayers.size();
+    std::printf("フレーム送り %lld: 提示 %lld、layer %u (期待 %zu)、最背面の素材 frame %lld "
+                "(期待 %lld)\n",
+                static_cast<long long>(frame), static_cast<long long>(shown.outputFrame),
+                shown.layerCount, expectedLayers, static_cast<long long>(shown.baseSourceFrame),
+                static_cast<long long>(expected));
+    return {shown, presented && onlyTarget && mapped.success &&
+                       shown.layerCount == expectedLayers && shown.baseSourceFrame == expected};
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
     QGuiApplication application(argc, argv);
-    if (argc != 3) {
-        std::fprintf(stderr, "使い方: mvm_test_transition_preview <video 5s 60fps> <wav 5s>\n");
+    if (argc != 4) {
+        std::fprintf(stderr,
+                     "使い方: mvm_test_transition_preview <video 5s 60fps> <wav 5s> <ffmpeg>\n");
         return 2;
     }
     if (mvm_mlt_runtime_init(MVM_MLT_MODULE_DIR, MVM_MLT_DATA_DIR) != 0) {
@@ -101,7 +254,9 @@ int main(int argc, char** argv) {
     using mvm::project::TrackKind;
     auto project = mvm::project::createDefaultProject();
     project.timelineClips = {half(video, "v-out", TrackKind::Video, 0, 0),
-                             half(video, "v-in", TrackKind::Video, 120, 120),
+                             // incoming は素材の別の位置 (170) から使う。区間の前後で最背面に
+                             // 出ている clip を素材 frame で見分けるため (A: f、B: f + 50)。
+                             half(video, "v-in", TrackKind::Video, 120, 170),
                              half(wav, "a-out", TrackKind::Audio, 0, 0),
                              half(wav, "a-in", TrackKind::Audio, 120, 120)};
     project.timelineTransitions = {{"dissolve", "v-out", "v-in", 10, 10},
@@ -154,6 +309,21 @@ int main(int argc, char** argv) {
             check(controller.submittedLayerOpacities().size() == 1,
                   "区間の後で incoming だけを表示しません");
 
+            // フレーム送り: 区間の中から 1 frame ずつ送り、提示した frame の最背面の素材 frame が
+            // outgoing (f) か incoming (f + 50) かを見る。区間 [110, 130) の最背面は outgoing、
+            // 130 以降は incoming。区間の直後に outgoing を 1 frame 出していた不具合を検出する。
+            if (!retryUntilAccepted([&] { return controller.seekTimelineFrame(126); }, 10000) ||
+                !pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000)) {
+                std::fprintf(stderr, "FAIL: フレーム送りの起点へ seek できません: %s\n",
+                             controller.statusText().toUtf8().constData());
+                return 1;
+            }
+            for (qint64 frame = 127; frame <= 134; ++frame) {
+                const auto [shown, ok] = stepAndCompare(controller, project, frame);
+                (void)shown;
+                check(ok, "フレーム送りで mapping と違う frame を提示しました");
+            }
+
             // 区間の前から再生し、区間を通り抜けても再生が続くこと。
             if (!retryUntilAccepted([&] { return controller.seekTimelineFrame(90); }, 10000) ||
                 !pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000) ||
@@ -162,17 +332,491 @@ int main(int argc, char** argv) {
                              controller.statusText().toUtf8().constData());
                 return 1;
             }
+            const auto before = controller.previewTelemetry();
+            const auto beforeEvents = controller.presentedFrameHistoryForTest().size();
+            const auto beforeUnpaired = controller.unpairedFrameHistoryForTest().size();
             const bool passed = pumpUntil(
                 [&] { return !controller.playing() || controller.playheadFrame() >= 150; }, 15000);
             check(passed && controller.playing(), "トランジションの区間を通して再生が続きません");
-            std::printf("再生: playhead %lld、status: %s\n",
-                        static_cast<long long>(controller.playheadFrame()),
-                        controller.statusText().toUtf8().constData());
+            // CTest が渡す倍率 (tests/CMakeLists.txt) で、既定の音量より小さく鳴らしている。
+            {
+                const float scale =
+                    qEnvironmentVariable("MVM_TEST_AUDIO_VOLUME_SCALE", QStringLiteral("1"))
+                        .toFloat();
+                const float endpoint = controller.audioEndpointVolumeForTest();
+                const float expected = static_cast<float>(controller.masterVolume()) * scale;
+                std::printf("音量: master %.3f x 倍率 %.3f = endpoint %.4f\n",
+                            controller.masterVolume(), scale, endpoint);
+                check(std::abs(endpoint - expected) < 1e-4F &&
+                          endpoint <= controller.masterVolume() * 0.5,
+                      "試験の音量を既定の半分以下へ下げていません");
+            }
+            const auto after = controller.previewTelemetry();
+            check(controller.playbackRebuildCount() == 0,
+                  "トランジションの境界でPreviewを組み直しました");
+            check(after.presentedFrameCount > before.presentedFrameCount,
+                  "トランジションを通してframeを提示しませんでした");
+            const auto history = controller.presentedFrameHistoryForTest();
+            const auto unpaired = controller.unpairedFrameHistoryForTest();
+            check(dissolvesWhilePlaying(controller.presentedOverlayOpacityHistoryForTest()),
+                  "再生中のトランジションで incoming の不透明度が進み具合で上がりません");
+            check(crossesBoundaryWithoutPairingMiss(history, beforeEvents, unpaired, beforeUnpaired,
+                                                    110) &&
+                      crossesBoundaryWithoutPairingMiss(history, beforeEvents, unpaired,
+                                                        beforeUnpaired, 130),
+                  "トランジションの境界で提示またはpairingが途切れました");
+            std::printf(
+                "再生: playhead %lld、提示 %llu、drop %llu、組み直し %llu、準備最大 "
+                "%.1fms、status: %s\n",
+                static_cast<long long>(controller.playheadFrame()),
+                static_cast<unsigned long long>(after.presentedFrameCount -
+                                                before.presentedFrameCount),
+                static_cast<unsigned long long>(after.droppedFrameCount - before.droppedFrameCount),
+                static_cast<unsigned long long>(controller.playbackRebuildCount()),
+                controller.playbackMaxPreparationMs(),
+                controller.statusText().toUtf8().constData());
             controller.pauseTimeline();
             return failures == 0 ? 0 : 1;
         };
         exitCode = run();
         controller.shutdown();
+    }
+    const auto copiedVideo = video.parent_path() / "v1080p60_hevc.mp4";
+    const auto copiedWav =
+        video.parent_path() /
+        fromUtf8("素材/日本語 テスト/第1回　微分積分＆演習/ナレーション　音声.wav");
+    if (!std::filesystem::is_regular_file(copiedVideo) ||
+        !std::filesystem::is_regular_file(copiedWav)) {
+        std::fprintf(stderr, "FAIL: 別ファイルの cut 試験素材がありません\n");
+        exitCode = 1;
+    } else {
+        // secondAudioIn は後ろの音声 clip の素材 in。0
+        // は後ろに置いた素材を先頭から使う普通の置き方で、 先読みした時点の素材位置が負になる
+        // (開始前に時計を切り替えると映像が境界まで飛ぶ)。
+        const auto runCut = [&](const char* label, bool firstAudio, bool secondAudio,
+                                std::int64_t secondAudioIn, bool forceCapacity) {
+            auto cutProject = mvm::project::createDefaultProject();
+            cutProject.timelineClips = {half(video, "cut-v-out", TrackKind::Video, 0, 0),
+                                        half(copiedVideo, "cut-v-in", TrackKind::Video, 120, 120)};
+            if (firstAudio)
+                cutProject.timelineClips.push_back(half(wav, "cut-a-out", TrackKind::Audio, 0, 0));
+            if (secondAudio)
+                cutProject.timelineClips.push_back(
+                    half(copiedWav, "cut-a-in", TrackKind::Audio, 120, secondAudioIn));
+            check(mvm::project::validateTimeline(cutProject).success,
+                  "cut 試験の timeline が不正です");
+            const auto cutPath = std::filesystem::path(
+                directory.filePath(QString::fromUtf8(label) + QStringLiteral(".mvm"))
+                    .toStdWString());
+            mvm::app::MvmController controller(cutPath, {}, cutProject);
+            QQuickWindow window;
+            window.setWidth(640);
+            window.setHeight(360);
+            auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
+            surface->setWidth(640);
+            surface->setHeight(360);
+            window.show();
+            controller.attachPreview(surface);
+            const bool ready = pumpUntil([&] { return controller.previewReady(); }, 30000);
+            const bool sought =
+                ready &&
+                retryUntilAccepted([&] { return controller.seekTimelineFrame(90); }, 30000) &&
+                pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+            const bool limited =
+                !forceCapacity || (sought && controller.setPreviewRegistrationLimitForTest(1));
+            const bool started =
+                sought && limited &&
+                retryUntilAccepted([&] { return controller.playTimeline(); }, 30000);
+            check(started, "cut の前から再生を開始できません");
+            if (started) {
+                const auto before = controller.previewTelemetry();
+                const auto beforeEvents = controller.presentedFrameHistoryForTest().size();
+                const auto beforeUnpaired = controller.unpairedFrameHistoryForTest().size();
+                const bool passed =
+                    pumpUntil([&] { return controller.playheadFrame() >= 150; }, 15000);
+                const auto after = controller.previewTelemetry();
+                check(passed && controller.playing(), "cut を通して再生が続きません");
+                if (forceCapacity) {
+                    check(controller.playbackRebuildCount() > 0 &&
+                              controller.lastPlaybackRebuildReason().contains(
+                                  QStringLiteral("登録上限")),
+                          "登録上限で理由付きの組み直しに戻りませんでした");
+                } else {
+                    check(controller.playbackRebuildCount() == 0,
+                          "cut の境界でPreviewを組み直しました");
+                }
+                check(after.presentedFrameCount > before.presentedFrameCount,
+                      "cut の前後でframeを提示しませんでした");
+                // 組み直しの負例は seek を挟むので、提示の連続性は見ない。
+                PresentedSteps steps;
+                if (!forceCapacity) {
+                    steps = presentedSteps(controller.presentedFrameHistoryForTest(), beforeEvents,
+                                           90, 150);
+                    check(crossesBoundaryWithoutPairingMiss(
+                              controller.presentedFrameHistoryForTest(), beforeEvents,
+                              controller.unpairedFrameHistoryForTest(), beforeUnpaired, 120),
+                          "cut の境界で提示またはpairingが途切れました");
+                    // 先読みした音声の時計へ境界の前に切り替えると、提示が境界の先まで飛ぶ。
+                    // 時計の切り替えで戻るのも検出する。
+                    check(steps.maxForward <= kMaxPresentedStep,
+                          "cut の前後で提示した frame が飛びました");
+                    check(!steps.backward, "cut の前後で提示した frame が戻りました");
+                    check(controller.playbackMaxPreparationMs() < kMaxPreparationMs,
+                          "source の準備が先読み幅の半分を超えました");
+                }
+                std::printf("%s: 提示 %llu、drop %llu、最大の提示間隔 %lld frame、組み直し %llu、"
+                            "準備最大 %.1fms、理由: %s、status: %s\n",
+                            label,
+                            static_cast<unsigned long long>(after.presentedFrameCount -
+                                                            before.presentedFrameCount),
+                            static_cast<unsigned long long>(after.droppedFrameCount -
+                                                            before.droppedFrameCount),
+                            static_cast<long long>(steps.maxForward),
+                            static_cast<unsigned long long>(controller.playbackRebuildCount()),
+                            controller.playbackMaxPreparationMs(),
+                            controller.lastPlaybackRebuildReason().toUtf8().constData(),
+                            controller.statusText().toUtf8().constData());
+                controller.pauseTimeline();
+                if (secondAudio) {
+                    const bool resumed =
+                        retryUntilAccepted([&] { return controller.playTimeline(); }, 30000);
+                    const bool advanced =
+                        resumed && pumpUntil(
+                                       [&] {
+                                           return !controller.playing() ||
+                                                  controller.playheadFrame() >= 175;
+                                       },
+                                       15000);
+                    check(advanced && controller.playing(),
+                          "音声の区間に入った後に一時停止から再生できません");
+                    if (controller.playing())
+                        controller.pauseTimeline();
+                }
+            }
+            controller.shutdown();
+        };
+        runCut("cut-av", true, true, 120, false);
+        runCut("cut-silent-to-audio", false, true, 120, false);
+        runCut("cut-silent-to-head-audio", false, true, 0, false);
+        runCut("cut-audio-to-silent", true, false, 120, false);
+        runCut("cut-capacity-fallback", false, false, 120, true);
+
+        const auto playFrom =
+            [&](const char* label, const mvm::project::Project& playProject, qint64 from,
+                const std::function<void()>& beforePlay,
+                const std::function<void(mvm::app::MvmController&)>& whilePlaying) {
+                const auto playPath = std::filesystem::path(
+                    directory.filePath(QString::fromUtf8(label) + QStringLiteral(".mvm"))
+                        .toStdWString());
+                mvm::app::MvmController controller(playPath, {}, playProject);
+                QQuickWindow window;
+                window.setWidth(640);
+                window.setHeight(360);
+                auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
+                surface->setWidth(640);
+                surface->setHeight(360);
+                window.show();
+                controller.attachPreview(surface);
+                // 準備ができた直後に controller が初期 frame の seek を始めるので、ready はすぐ
+                // false に戻りうる。ready で打ち切らず、seek を受理されるまで繰り返す。
+                const bool ready = pumpUntil([&] { return controller.previewReady(); }, 30000);
+                const bool seekAccepted =
+                    retryUntilAccepted([&] { return controller.seekTimelineFrame(from); }, 30000);
+                const bool sought =
+                    seekAccepted &&
+                    pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
+                if (sought)
+                    beforePlay();
+                const bool started =
+                    sought && retryUntilAccepted([&] { return controller.playTimeline(); }, 30000);
+                if (!started) {
+                    const auto telemetry = controller.previewTelemetry();
+                    std::fprintf(stderr,
+                                 "FAIL: %s: 再生を開始できません (準備=%d seek受理=%d 提示=%d "
+                                 "engine state=%d 提示 frame=%lld decode失敗=%llu error=%s): %s\n",
+                                 label, ready, seekAccepted, sought,
+                                 static_cast<int>(telemetry.status.state),
+                                 static_cast<long long>(telemetry.status.position.outputFrame),
+                                 static_cast<unsigned long long>(telemetry.decodeFailureCount),
+                                 telemetry.status.lastError
+                                     ? telemetry.status.lastError->detail.c_str()
+                                     : "-",
+                                 controller.statusText().toUtf8().constData());
+                }
+                check(started, "再生を開始できません");
+                if (started)
+                    whilePlaying(controller);
+                if (controller.playing())
+                    controller.pauseTimeline();
+                controller.shutdown();
+            };
+
+        // 別の clip を先読み幅 (2 秒) より密に並べる (100ms の clip を 24 個)。先読み幅の中の境界を
+        // 全部準備すると、使う前の source を engine の既定の登録上限 (2 × 8 + 1) まで積み、同期の
+        // 準備を毎 tick 重ねる。準備するのは次の境界の source だけで、組み直しも起こさない。
+        {
+            constexpr int kClips = 24;
+            constexpr std::int64_t kClipFrames = 6;
+            auto montage = mvm::project::createDefaultProject();
+            for (int index = 0; index < kClips; ++index) {
+                const std::string id = "montage-" + std::to_string(index);
+                // 隣と別のファイル・離れた素材位置にして、前の clip の source
+                // で覆えないようにする。
+                auto clip = half(index % 2 == 0 ? video : copiedVideo, id.c_str(), TrackKind::Video,
+                                 index * kClipFrames, (index * 37) % 200);
+                clip.sourceOutFrame = clip.sourceInFrame + kClipFrames;
+                montage.timelineClips.push_back(clip);
+            }
+            check(mvm::project::validateTimeline(montage).success,
+                  "短い clip の timeline が不正です");
+            const std::int64_t last = (kClips - 1) * kClipFrames;
+            playFrom(
+                "montage", montage, 0, [] {},
+                [&](mvm::app::MvmController& controller) {
+                    const bool passed = pumpUntil(
+                        [&] { return !controller.playing() || controller.playheadFrame() >= last; },
+                        15000);
+                    check(passed && controller.playing(),
+                          "短い clip の連続を通して再生が続きません");
+                    check(controller.playbackRebuildCount() == 0,
+                          "短い clip の連続でPreviewを組み直しました");
+                    // 各境界で変わる source は video 1 つ。次の境界の分だけを先に準備している。
+                    check(controller.playbackMaxPreparedSourceCount() == 1,
+                          "短い clip の連続で次の境界より先の source まで準備しました");
+                    check(controller.playbackMaxPreparationMs() < kMaxPreparationMs,
+                          "短い clip の source の準備が先読み幅の半分を超えました");
+                    std::printf(
+                        "短い clip %d 個: playhead %lld、組み直し %llu、先に準備した source "
+                        "最大 %zu、準備最大 %.1fms、理由: %s\n",
+                        kClips, static_cast<long long>(controller.playheadFrame()),
+                        static_cast<unsigned long long>(controller.playbackRebuildCount()),
+                        controller.playbackMaxPreparedSourceCount(),
+                        controller.playbackMaxPreparationMs(),
+                        controller.lastPlaybackRebuildReason().toUtf8().constData());
+                });
+        }
+
+        // 8 video track が同時に cut する世代を 3 つ並べる (A -> B -> C)。A -> B
+        // を引き継いだ直後は、 A の 8 本が B の提示まで登録枠を使い続け、C の準備は既定の登録上限
+        // (2 × 8 + 1) の途中で 断られる。この一時的な不足を失敗の境界として覚えると、A
+        // を削除した後も C を準備し直さず、 B -> C の境界で Preview を組み直してしまう。
+        {
+            constexpr int kTracks = 8;
+            constexpr int kGenerations = 3;
+            constexpr std::int64_t kGenerationFrames = 60;
+            auto layered = mvm::project::createDefaultProject();
+            while (layered.videoTracks.size() < static_cast<std::size_t>(kTracks))
+                layered.videoTracks.push_back(
+                    {"V" + std::to_string(layered.videoTracks.size() + 1), false});
+            for (int generation = 0; generation < kGenerations; ++generation) {
+                for (int track = 0; track < kTracks; ++track) {
+                    const std::string id =
+                        "layer-" + std::to_string(generation) + "-" + std::to_string(track);
+                    const int serial = generation * kTracks + track;
+                    auto clip =
+                        half(track % 2 == 0 ? video : copiedVideo, id.c_str(), TrackKind::Video,
+                             generation * kGenerationFrames, (serial * 7) % 200);
+                    clip.sourceOutFrame = clip.sourceInFrame + kGenerationFrames;
+                    clip.track = {TrackKind::Video, track};
+                    layered.timelineClips.push_back(clip);
+                }
+            }
+            const auto layeredValid = mvm::project::validateTimeline(layered);
+            check(layeredValid.success, "8 track の timeline が不正です");
+            if (!layeredValid.success)
+                std::fprintf(stderr, "  %s\n", layeredValid.error.c_str());
+            const std::int64_t pastLastCut = (kGenerations - 1) * kGenerationFrames + 20;
+            playFrom(
+                "layered-cut", layered, 30, [] {},
+                [&](mvm::app::MvmController& controller) {
+                    const bool passed = pumpUntil(
+                        [&] {
+                            return !controller.playing() ||
+                                   controller.playheadFrame() >= pastLastCut;
+                        },
+                        20000);
+                    check(passed && controller.playing(),
+                          "8 track の cut を通して再生が続きません");
+                    check(controller.playbackRebuildCount() == 0,
+                          "8 track の cut でPreviewを組み直しました");
+                    check(controller.playbackPreparationFailureCount() == 0,
+                          "8 track の cut で旧 source の削除待ちを準備の失敗にしました");
+                    std::printf("8 track x %d 世代: playhead %lld、組み直し %llu、準備失敗 %llu、"
+                                "先に準備した source 最大 %zu、準備最大 %.1fms、理由: %s\n",
+                                kGenerations, static_cast<long long>(controller.playheadFrame()),
+                                static_cast<unsigned long long>(controller.playbackRebuildCount()),
+                                static_cast<unsigned long long>(
+                                    controller.playbackPreparationFailureCount()),
+                                controller.playbackMaxPreparedSourceCount(),
+                                controller.playbackMaxPreparationMs(),
+                                controller.lastPlaybackRebuildReason().toUtf8().constData());
+                });
+        }
+
+        // 準備に失敗した境界は、越えるまで準備し直さない。境界の素材を再生の直前に消しておく。
+        // 毎 tick 準備し直すと、境界までの約 30 frame (tick 16ms) の間に失敗が積み上がる。
+        {
+            const auto doomed = std::filesystem::path(
+                directory.filePath(QStringLiteral("doomed.mp4")).toStdWString());
+            std::filesystem::copy_file(copiedVideo, doomed,
+                                       std::filesystem::copy_options::overwrite_existing);
+            auto doomedProject = mvm::project::createDefaultProject();
+            doomedProject.timelineClips = {half(video, "doomed-out", TrackKind::Video, 0, 0),
+                                           half(doomed, "doomed-in", TrackKind::Video, 120, 120)};
+            check(mvm::project::validateTimeline(doomedProject).success,
+                  "準備失敗の試験の timeline が不正です");
+            playFrom(
+                "prepare-failure", doomedProject, 90,
+                [&] {
+                    std::error_code removeError;
+                    check(std::filesystem::remove(doomed, removeError), "境界の素材を消せません");
+                },
+                [&](mvm::app::MvmController& controller) {
+                    pumpUntil(
+                        [&] { return !controller.playing() || controller.playheadFrame() >= 115; },
+                        15000);
+                    check(controller.playheadFrame() >= 115 && controller.playing(),
+                          "準備に失敗した境界の手前まで再生が続きません");
+                    check(controller.playbackPreparationFailureCount() == 1,
+                          "準備に失敗した境界を境界の前に準備し直しました");
+                    std::printf("準備失敗: playhead %lld、失敗 %llu 回\n",
+                                static_cast<long long>(controller.playheadFrame()),
+                                static_cast<unsigned long long>(
+                                    controller.playbackPreparationFailureCount()));
+                });
+        }
+        if (failures != 0)
+            exitCode = 1;
+    }
+    // 23.976fps の素材を 60fps の timeline に置き、同じ素材の離れた 2 か所を Shift+D と同じ
+    // 既定のトランジション (60 frame) でつなぐ。素材 1 frame が timeline 2〜3 frame に当たるので、
+    // 区間の端の timeline frame が素材 frame の途中になる。区間の前後を 1 frame ずつ送る。
+    {
+        // outgoing は横長、incoming は縦長 (shorts のような) の別ファイル。
+        const auto ffmpeg = fromUtf8(argv[3]);
+        const auto makeFixture = [&](const QString& name, const wchar_t* size,
+                                     MvmMltProbeResult& probed) {
+            const auto path = std::filesystem::path(directory.filePath(name).toStdWString());
+            const std::wstring video = std::wstring(L"testsrc2=s=") + size + L":r=24000/1001:d=12";
+            const bool generated =
+                _wspawnl(_P_WAIT, ffmpeg.c_str(), ffmpeg.c_str(), L"-y", L"-loglevel", L"error",
+                         L"-f", L"lavfi", L"-i", video.c_str(), L"-f", L"lavfi", L"-i",
+                         L"sine=frequency=440:sample_rate=48000:d=12", L"-c:v", L"libx264",
+                         L"-preset", L"ultrafast", L"-pix_fmt", L"yuv420p", L"-c:a", L"aac",
+                         L"-shortest", path.c_str(), static_cast<wchar_t*>(nullptr)) == 0;
+            const auto utf8 = path.u8string();
+            const std::string text(utf8.begin(), utf8.end());
+            const bool ok = generated && mvm_mlt_probe_file(text.c_str(), &probed) == 0 &&
+                            probed.frame_count > 0;
+            check(ok, "23.976fps の fixture を生成できません");
+            return ok ? path : std::filesystem::path();
+        };
+        MvmMltProbeResult landscapeProbe{};
+        MvmMltProbeResult portraitProbe{};
+        const auto landscape =
+            makeFixture(QStringLiteral("ntsc-landscape.mp4"), L"640x360", landscapeProbe);
+        const auto portrait =
+            makeFixture(QStringLiteral("ntsc-portrait.mp4"), L"360x640", portraitProbe);
+        if (!landscape.empty() && !portrait.empty()) {
+            auto ntscProject = mvm::project::createDefaultProject();
+            auto a = half(landscape, "ntsc-out", TrackKind::Video, 0, 0);
+            a.sourceFpsNum = 24000;
+            a.sourceFpsDen = 1001;
+            a.sourceFrameCount = landscapeProbe.frame_count;
+            auto b = a;
+            b.id = b.name = "ntsc-in";
+            b.mediaPath = portrait;
+            b.sourceFrameCount = portraitProbe.frame_count;
+            b.sourceInFrame = 150;
+            b.sourceOutFrame = 250;
+            b.timelineStartFrame = mvm::project::timelineClipDuration(ntscProject, a).frame;
+            // 映像と音声をリンクし、Shift+D と同じく両方にトランジションを置く。
+            a.linkGroupId = "ntsc-link-a";
+            b.linkGroupId = "ntsc-link-b";
+            // 音声 clip は取り込みと同じく timeline fps の単位で素材範囲を持つ。
+            const auto audioOf = [&](const mvm::project::TimelineClip& video, const char* id) {
+                auto audio = video;
+                audio.id = audio.name = id;
+                audio.kind = mvm::project::TimelineClipKind::Audio;
+                audio.track = {TrackKind::Audio, 0};
+                audio.sourceFpsNum = ntscProject.timelineFpsNum;
+                audio.sourceFpsDen = ntscProject.timelineFpsDen;
+                audio.sourceFrameCount = 12 * 60;
+                audio.sourceInFrame = mvm::project::sourceBoundaryToTimelineBoundary(
+                                          video.sourceInFrame, 24000, 1001,
+                                          ntscProject.timelineFpsNum, ntscProject.timelineFpsDen)
+                                          .frame;
+                audio.sourceOutFrame = audio.sourceInFrame +
+                                       mvm::project::timelineClipDuration(ntscProject, video).frame;
+                return audio;
+            };
+            const auto aAudio = audioOf(a, "ntsc-out-audio");
+            const auto bAudio = audioOf(b, "ntsc-in-audio");
+            ntscProject.timelineClips = {a, b, aAudio, bAudio};
+            int nextId = 0;
+            const auto placed = mvm::project::applyDefaultEditTransition(
+                ntscProject, a.id, b.id, 60, mvm::project::LinkMode::Linked,
+                [&] { return "ntsc-t" + std::to_string(nextId++); });
+            check(placed.success && placed.transitionCount == 2,
+                  "23.976fps の編集点へ映像と音声のトランジションを置けません");
+            if (!placed.success)
+                std::fprintf(stderr, "  %s\n", placed.error.c_str());
+            if (placed.success) {
+                const auto& transition = ntscProject.timelineTransitions.front();
+                const qint64 cut = b.timelineStartFrame;
+                const qint64 regionStart = cut - transition.framesBeforeCut;
+                const qint64 regionEnd = cut + transition.framesAfterCut;
+                std::printf("23.976fps: cut %lld、区間 [%lld, %lld)\n", static_cast<long long>(cut),
+                            static_cast<long long>(regionStart), static_cast<long long>(regionEnd));
+                mvm::app::MvmController controller(
+                    std::filesystem::path(
+                        directory.filePath(QStringLiteral("ntsc.mvm")).toStdWString()),
+                    {}, ntscProject);
+                QQuickWindow window;
+                window.setWidth(640);
+                window.setHeight(360);
+                auto* surface = new mvm::app::PreviewEngineRhiItem(window.contentItem());
+                surface->setWidth(640);
+                surface->setHeight(360);
+                window.show();
+                controller.attachPreview(surface);
+                // 起動直後の frame 0 の提示を送りの計測に混ぜない。
+                check(pumpUntil([&] { return controller.previewReady(); }, 30000) &&
+                          pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000),
+                      "23.976fps の preview が準備できません");
+                for (qint64 frame = regionStart - 3; frame <= regionStart + 3; ++frame)
+                    check(stepAndCompare(controller, ntscProject, frame).second,
+                          "23.976fps: 区間の始まりのフレーム送りで mapping と違う frame "
+                          "を提示しました");
+                // 画面に実際に出た画素も見る。左端は outgoing (横長) なら絵柄、incoming (縦長) なら
+                // 余白の黒。区間の後に outgoing が出ると左端が明るくなる。
+                for (qint64 frame = regionEnd - 4; frame <= regionEnd + 4; ++frame) {
+                    check(stepAndCompare(controller, ntscProject, frame).second,
+                          "23.976fps: 区間の終わりのフレーム送りで mapping と違う frame "
+                          "を提示しました");
+                    pumpUntil([] { return false; }, 100);
+                    const QImage shot = window.grabWindow();
+                    const QColor left = shot.isNull() ? QColor() : shot.pixelColor(8, 180);
+                    const int level = std::max({left.red(), left.green(), left.blue()});
+                    std::printf("  画面の左端 frame %lld: %d,%d,%d\n",
+                                static_cast<long long>(frame), left.red(), left.green(),
+                                left.blue());
+                    if (frame >= regionEnd)
+                        check(!shot.isNull() && level < 24,
+                              "23.976fps: 区間の後の画面に outgoing が見えています");
+                    else {
+                        // 余白の所の outgoing は 1 - p 以下 (p は区間の進み具合)。
+                        const double p = (static_cast<double>(frame - regionStart) + 0.5) /
+                                         static_cast<double>(regionEnd - regionStart);
+                        check(!shot.isNull() && level <= 255.0 * (1.0 - p) + 16.0,
+                              "23.976fps: 区間の中で余白の outgoing が 1 - p に減っていません");
+                    }
+                }
+                controller.shutdown();
+            }
+        }
+        if (failures != 0)
+            exitCode = 1;
     }
     mvm_mlt_runtime_shutdown();
     if (exitCode == 0)

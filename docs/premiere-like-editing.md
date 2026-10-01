@@ -1807,7 +1807,12 @@ VS Code の JavaScript 検査 (TypeScript) が "Unexpected keyword or identifier
 (`scripts/lint.ps1` の検査ではない)。どちらも状態を持たない関数だけなので、import した QML ごとに別の instance に
 なっても振る舞いは変わらない (`tst_timeline_gestures` / `tst_preview_transform` が通る)。
 
-### 19.9 トランジション・clip 境界での再生の一瞬の停止 (未解決)
+`[事実]` `.pragma library` を外したため、configure のたびに Qt が「各 QML 文書で評価し直す」と警告していた
+(`qt_add_qml_module` の 2 target × 2 file)。どちらの JS も QML からは相対パスで import しているので、
+`QT_QML_SKIP_QMLDIR_ENTRY TRUE` で module の qmldir に載せないようにして警告を消した。あわせて、意図して
+使っている GuiPrivate の警告も `QT_NO_PRIVATE_MODULE_WARNING` で止めた (版は `mvm_guard_qt` が固定する)。
+
+### 19.9 トランジション・clip 境界での再生の一瞬の停止
 
 `[事実]` 再生中に表示する decode source が変わる (トランジションの区間に入る、別ファイルの clip へ切り替わる) と、
 controller は preview を一時停止して source を組み直す ("clip境界でPreviewを組み直しています")。engine の
@@ -1820,7 +1825,47 @@ controller は preview を一時停止して source を組み直す ("clip境界
   出力区間へ換算できず fatal になる (`sourceFrameOutputInterval` が無効を返す)
 - 不透明度 0 で合成に入れておくと、その source の frame が無い間は exact pairing が frame 全体を落とす
 
-`[未検証]` engine が再生中の source の追加・削除を受理するようにする対応は、別ブランチで行う。
+`[事実]` `feature/playing-source-handoff` で engine が `Playing` 中の source 追加・削除を受理するようにした。
+映像は mapping の最初の素材 frame へ seek し、output anchor を設定してから worker を再生する。
+controller は `timelineRenderSegments` に基づき、2 秒先までにある区間開始のうち
+source 集合が次に変わる境界 1 つだけを準備し、境界では composition を切り替える。引き継いだ後の
+tick でその次の境界を準備する。先読み幅の中の境界を全部準備すると、短い clip が続く timeline で
+使う前の source を engine の登録上限まで積んでしまう。準備に失敗した境界は越えるまで準備し直さない
+(壊れた素材の seek 待ちを毎 tick 繰り返さない)。ただし旧 source の削除待ちの間に登録上限で断られた
+準備は一時的な不足として覚えず、削除後の tick で準備し直す。旧 source は新 composition の提示後に
+削除し、この削除は状態の poll (100ms) だけでなく再生の tick でも行う (8 layer の cut の直後は
+旧 8 + 新 8 が登録枠を使い、既定の登録上限 2 × 8 + 1 では次の境界の 2 本目が断られる)。
+音声入力は callback と排他して差し替え、主音声の交代と無音区間でも timeline sample の時計を進める。
+無音の区間で先読みした音声は、区間の開始 frame に届くまで audio master にせず、mix 入力として
+timeline sample の時計に合わせて置く (素材を先頭から使う音声 clip では、先読みした時点の素材位置が
+負になり、早く切り替えると映像の時計が境界まで飛ぶ)。
+
+`[事実]` `transition_preview` は次を検査する (合否は試験が決め、値は試験出力に出る):
+- トランジション、別ファイルへの cut、無音から音声 (素材 in が区間開始と同じもの・素材の先頭からのもの)、
+  音声から無音の各条件で、境界前後の提示が続き、境界 ±1 frame の source pairing 欠落が無く、
+  controller の組み直しが 0 回
+- cut の前後で続けて提示した frame の差が 10 frame 以下で、前の frame へ戻らない (時計の飛び・
+  戻りの検出)。90 以上で最初に提示した frame から、150 を最初に越えた frame までの組を調べる
+- 1 回の source 準備が 1 秒 (先読み幅の半分) 未満。先読み幅 2 秒の根拠はこの検査で持つ
+- 100ms の別 clip を 24 個並べた timeline で、組み直しが 0 回、先に準備した source が最大 1 つ
+- 境界の素材を再生直前に消すと、境界までの準備失敗が 1 回だけ
+- 8 video track が同時に cut する世代を 3 つ並べた timeline で、組み直しも準備失敗も 0 回
+- 登録上限を 1 本にした負例で、理由に登録上限を含む組み直しが起こり、再生を続ける
+
+再現手順は `pwsh scripts/build.ps1 -Target mvm_test_transition_preview`、
+`ctest --test-dir build/ucrt64-release -R '^transition_preview$' -V --timeout 180`。
+
+`[事実]` 上の検査の効き目は、修正を一時的に外して確かめた。次の境界で止めずに全部を準備すると、
+短い clip の試験で先に準備した source が上限近くまで積まれ、登録上限による組み直しで落ちる。
+失敗した境界を毎 tick 準備し直すと準備失敗の試験が落ち、先読みした音声で audio master を
+すぐ切り替えると素材の先頭からの無音から音声の条件が提示の飛びで落ちる。削除待ちの間の登録上限を
+失敗として覚えると、8 track の試験が 3 世代目の 2 本目で準備失敗と組み直しを起こして落ちる。
+
+`[未検証]` source の準備 (`addSource` の open / seek) は control thread で同期に待つ。
+境界での停止は避けたが、待ち時間そのものは境界の前へ移っただけで、playhead 更新や入力処理を
+その間止めうる。open / seek を worker で進め、準備完了を control thread で公開する形は未実装。
+
+`[未検証]` 他の GPU / 音声 endpoint、長尺素材、操作中の高負荷環境での境界欠落率は未測定。
 
 ### 19.10 レビュー指摘への対応 (P1 1 件 / P2 4 件)
 
@@ -1894,3 +1939,82 @@ HEVC alpha は手元の x265 が alpha を encode できず試していない。
 
 `[事実]` 不透明度の検査を求めた長さで行うと、また中央の組だけを試すと、`m5_timeline_edit_focused` の新しい試験が
 落ちることを確認した。
+
+### 19.13 再生中のディゾルブで outgoing が区間の終わりまで残る
+
+`[事実]` 再生中にディゾルブを通ると、区間の間ずっと outgoing だけが表示され、区間の終わりで incoming へ
+突然切り替わっていた (Premiere のように A が薄れながら B が現れない)。描画の式 (§19.4) は正しく、止めて
+区間の中へ seek すれば混ざっていた。
+
+- 原因: controller は再生の tick (16 ms) ごとに、その tick の frame の不透明度で composition を組み、
+  `activationOutputFrame` をその frame にして出し直していた。engine は activation の frame に届くまで前に
+  提示した composition を描き、保留は最新の 1 つしか持たない。engine の提示は controller の frame より
+  遅れているので、incoming の不透明度が毎 tick 変わる区間では、保留が有効になる前に次の tick で上書き
+  され続け、区間に入る前の 1 layer の composition を描き続けた。区間が終わって composition が変わらなく
+  なった所で初めて追いつく
+- 修正: 重ねる source・静止画が同じ順のまま値 (不透明度など) だけ変わる出し直しは、重ね方が変わった
+  frame の `activationOutputFrame` を引き継ぐ (`handOffPlaybackSources`)。source が変わる境界では従来どおり
+  その frame から有効にし、新しい source を早く要求しない
+- clip の fade や不透明度のキーも毎 tick 変わるので、再生中は同じ理由で止まっていたはず (`[未検証]`)。
+  この修正で同じく反映される
+
+`[事実]` `transition_preview` (workstation、release) に、再生中に提示した区間の frame が 2 layer で、
+incoming の不透明度が進み具合 `p = (f - 110 + 0.5) / 20` から 0.15 (3 frame) 以内であることの検査を足した。
+engine の診断に、提示した frame ごとの layer 数と最前面の不透明度を持たせて見る。修正前は区間の 20 frame
+すべてが 1 layer で落ち、修正後は 3 回続けて通って最大の差は 0.05 (1 frame 分) だった。
+
+`[未検証]` 不透明度は controller の tick の frame で求めるので、提示とは engine との時計差の分 (実測 1 frame)
+ずれる。engine が提示する frame で評価するには、区間の不透明度の変化を composition に持たせる必要がある。
+
+### 19.14 余白のある素材のディゾルブで outgoing が区間の終わりまで残る
+
+`[事実]` 縦長の素材 (横長の Project に置くと左右に余白が出る) へディゾルブすると、余白の所で outgoing が
+不透明度 1 のまま見え続け、区間の終わりで突然黒へ切り替わっていた (preview・書き出しとも)。§19.13 の
+再生中の反映とは別の原因で、止めて seek しても同じだった。
+- 原因: incoming は余白が透明のまま不透明度 p で重なるので、余白の所では outgoing が減らない。
+  §19.10 の「画面全体を覆う不透明な映像どうし」の検査は位置・拡大などの effect だけを見ており、
+  素材の縦横比による余白は判定できない (Project は素材の寸法を持たない)
+- 修正: incoming (トランジションの区間で lane 1 に重ねる側) を、余白を不透明な黒で埋めた出力全体の
+  1 枚として p で重ねる。余白の所は `(1 - p) A + p 黒`、素材の所は `(1 - p) A + p B` になり、V1 では
+  下が黒なので Premiere のクロスディゾルブ (A がフェードアウトしながら B がフェードイン) と一致する
+- preview: composition の layer に `opaqueBackdrop` を足し、compositor は出力全体に描いて配置矩形の外を
+  黒にする shader (`ps_backdrop`) を使う。回転した layer には使えない (受理しない)
+- 書き出し: lane 1 の clip に黒背景の affine filter を付けて余白を埋める (`attach_export_backdrop`)。
+  矩形は素材を probe した寸法 (画素の縦横比を含む) から縦横比を保って求め、`distort=1` で置く。
+  `distort=0` で MLT に任せると、上の affine transition が frame に設定する distort が伝わって素材が
+  出力全体へ引き伸ばされ、`distort=0` を両方に付けると余白が透明に戻った (いずれも実測)
+
+`[事実]` 確認したこと:
+- `still_layer_compositor` (実 D3D11): 中央の枠に 2:1 の素材を置いた incoming を p = 0.5 で重ね、余白が
+  `0.5 赤`、素材の所が赤と青の半々になる。effect 経路と effect 無しの両方。対照として backdrop 無しでは
+  余白が赤のまま残る。回転した backdrop layer は拒否する
+- `m4_timeline_export_focused` (実 MLT): 青 → 縦長 (120x240) の赤のディゾルブで、余白の画素が frame 60
+  (p = 0.525) で `0,1,121`、frame 67 (p = 0.875) で `0,0,32`、区間の後は黒。修正前は区間の中で
+  `0,0,255` (青のまま) だった。同じ縦横比どうしの既存の検査も通る
+- `m7b_2` / `m7b_3`: incoming の頭の区間だけに flag が立つ
+
+`[未検証]` V2 以上のトランジションで incoming に余白があると、余白の所では下の track が黒へ向けて
+薄れ、区間の後に下の track へ戻る (Premiere では下の track が見えたまま)。V2 以上で余白のある素材どうしを
+正しく混ぜるには、各 clip を下の track ごと別々に描いてから混ぜる合成が要る。
+
+### 19.15 素材 fps と timeline fps が違うディゾルブで、区間の最後の 1 frame に outgoing が全面に出る
+
+`[事実]` 23.976fps の素材を 60fps の timeline に置いてディゾルブし、フレーム送りすると、区間の最後の
+frame だけ outgoing が不透明度 1 で出て、次の frame から incoming になっていた。
+- 原因: timeline frame は最も近い素材 frame を表示するので、incoming の頭の区間 (lane 1) の最後の timeline
+  frame は、区間の素材範囲のすぐ外 (続きの区間の最初の素材 frame) を表示する (mapping の実測: 区間
+  [749, 809) の frame 808 が素材 411 を指し、頭の区間の素材範囲は [387, 411))。compositor は表示する素材
+  frame から clip 内の位置を求めて `clipFadeFactor` へ渡しており、範囲外は 0 を返すので、その 1 frame
+  だけ incoming が不透明度 0 で描かれていた
+- 修正: `resolveLayerOpacity` で、範囲外の素材 frame は端の frame の値で評価する (`clipFadeFactor` の
+  範囲外 = 0 の契約は変えない)。effect 付きの clip 一般で、最後の 1 frame が消えていたのも同じ原因で直る
+  (`[未検証]` ディゾルブ以外では確かめていない)
+- 書き出しは timeline の local frame で不透明度を決めるので影響しない
+
+`[事実]` `transition_preview` に、23.976fps の横長 → 縦長の別ファイル (音声とリンク、Shift+D と同じ
+`applyDefaultEditTransition` の 60 frame) の区間の始まりと終わりを 1 frame ずつ送る検査を足した。各 frame で
+engine が提示した layer 数と最背面の素材 frame が mapping と一致し、送りの間に別の frame を提示しないこと、
+画面 (`grabWindow`) の左端 (縦長の incoming では余白) が区間の中で `255 (1 - p)` 以下、区間の後で黒で
+あることを見る。修正前は区間の最後の frame で左端が 254 になって落ち、修正後は 2 (p = 0.99) で 3 回続けて
+通った。engine の提示の記録だけでは検出できなかった (layer 数も素材 frame も正しく、不透明度だけが違う)。
+`test_gpu_pure` に範囲外の frame の評価を足した。

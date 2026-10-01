@@ -7,6 +7,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -299,6 +300,18 @@ int main() {
               "検証用session volumeがunity未満の有効値である");
         check(volumeSink.snapshot().sessionVolume == 1.0F,
               "open失敗時にsession volumeを適用済みとして記録しない negative test");
+        // 試験用の音量倍率 (CTest が渡す) が不正なら、全音量で鳴らさず endpoint
+        // に触る前に失敗する。
+        const char* savedScale = std::getenv("MVM_TEST_AUDIO_VOLUME_SCALE");
+        const std::string restoreScale = savedScale ? savedScale : "";
+        for (const char* invalid : {"2", "0", "-0.5", "abc", "0.5x"}) {
+            _putenv_s("MVM_TEST_AUDIO_VOLUME_SCALE", invalid);
+            volumeError.clear();
+            check(!volumeSink.open(volumeError, 1.0F) &&
+                      volumeError.find("MVM_TEST_AUDIO_VOLUME_SCALE") != std::string::npos,
+                  "不正な試験用の音量倍率を拒否する negative test");
+        }
+        _putenv_s("MVM_TEST_AUDIO_VOLUME_SCALE", restoreScale.c_str());
     }
 
     if (failures == 0)

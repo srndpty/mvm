@@ -103,8 +103,8 @@ TimelinePreviewFrameMapping mapTimelinePreviewFrame(const project::Project& proj
             result.error = clip.name + ": preview frameを素材frameへ換算できません";
             return result;
         }
-        result.layers.push_back(
-            {track, slot, segment.clipIndex, clip.id, sourceFrame.frame, clip, transitionOpacity});
+        result.layers.push_back({track, slot, segment.clipIndex, clip.id, sourceFrame.frame, clip,
+                                 transitionOpacity, segment.fadeIn.has_value()});
     }
     const auto bySlot = [](const auto& a, const auto& b) { return a.slot < b.slot; };
     std::stable_sort(result.layers.begin(), result.layers.end(), bySlot);

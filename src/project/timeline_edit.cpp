@@ -455,12 +455,12 @@ bool resolveTransitionClips(const Project& project, const TimelineTransition& tr
     return true;
 }
 
-// クロスディゾルブは outgoing を不透明のまま残し、incoming を不透明度 p で上に重ねて作る
-// (timeline_render.h)。これが A(1 - p) + B p になるのは、両 clip が画面全体を覆う不透明な映像で、
-// トランジションの区間の中で不透明度が 1 のときだけである。incoming が透過・縮小・移動・切り抜き
-// されていると、覆わない所で outgoing が 100% 見え続け、区間の終わりの 1 frame で突然消える。
-// 各 clip を別々に描いてから混ぜる合成 (compositor の dissolve)
-// を持つまでは、この条件で置かせない。 localBegin..localEnd は元の clip の local frame
+// クロスディゾルブは outgoing を不透明のまま残し、incoming を「素材の余白を黒で埋めた出力全体の
+// 1 枚」として不透明度 p で上に重ねて作る (timeline_render.h)。素材の縦横比が出力と違って出る
+// 余白はこれで A(1 - p) + B p になる。一方、incoming が透過・縮小・移動・切り抜き・回転されて
+// いると、その形を出力全体の黒で囲むことになり Premiere の見た目 (下の track が見える) と違う。
+// 各 clip を別々に描いてから混ぜる合成 (compositor の dissolve) を持つまでは、これらの効果と
+// 区間の中の不透明度 1 未満は置かせない。 localBegin..localEnd は元の clip の local frame
 // (延ばした区間は端の値で評価する)。
 const char* const kDissolveRequirement =
     "クロスディゾルブは画面全体を覆う不透明な映像 clip どうしでだけ使えます "

@@ -26,6 +26,9 @@ struct TimelinePreviewLayerMapping {
     project::TimelineClip renderClip;
     // トランジションの進み具合 (0..1)。clip の不透明度に掛ける。トランジションの外は 1。
     double transitionOpacity = 1.0;
+    // ディゾルブの incoming (トランジションの区間で outgoing の上に重ねる側)。素材の余白を
+    // 黒で埋めた全画面として重ね、余白の所でも outgoing を 1 - p に減らす (書き出しと同じ)。
+    bool dissolveIncoming = false;
 };
 
 // 文字・画像 clip。decode source を持たず、静止画 layer として合成する。

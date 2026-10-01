@@ -168,6 +168,36 @@ AudioConsumeResult AudioFrameQueue::consume(float* destination, std::int64_t req
     return result;
 }
 
+std::int64_t AudioFrameQueue::discardBefore(std::int64_t sample,
+                                            SourceGeneration expectedGeneration) {
+    std::lock_guard lock(mutex_);
+    if (sample < 0 || expectedGeneration != generation_)
+        return -1;
+    while (!chunks_.empty()) {
+        AudioChunk& chunk = chunks_.front();
+        const std::int64_t end = chunk.startSample + chunk.sampleCount;
+        if (chunk.sourceGeneration != generation_ || end <= sample) {
+            metrics_.queuedSamples -= chunk.sampleCount;
+            chunks_.pop_front();
+            ++metrics_.popCount;
+            continue;
+        }
+        if (chunk.startSample < sample) {
+            const auto skipped = sample - chunk.startSample;
+            chunk.startSample = sample;
+            chunk.offsetSamples += static_cast<std::size_t>(skipped);
+            chunk.sampleCount -= skipped;
+            metrics_.queuedSamples -= skipped;
+        }
+        metrics_.queuedDurationMs = toMs(metrics_.queuedSamples);
+        changed_.notify_all();
+        return chunk.startSample;
+    }
+    metrics_.queuedDurationMs = toMs(metrics_.queuedSamples);
+    changed_.notify_all();
+    return -1;
+}
+
 void AudioFrameQueue::setGainAtSample(std::function<float(std::int64_t)> gainAtSample) {
     std::lock_guard lock(mutex_);
     gainAtSample_ = std::move(gainAtSample);
