@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <process.h>
 #include <string>
 #include <thread>
@@ -66,20 +67,39 @@ constexpr std::int64_t kMaxPresentedStep = 10;
 // 収まれば境界までに準備が終わる。先読み幅の根拠を文書の転記ではなくこの検査で持つ。
 constexpr double kMaxPreparationMs = 1000.0;
 
-// [from, to] の中で続けて提示した 2 つの output frame の差の最大。時計が先へ飛ぶと大きくなる。
-std::int64_t maxPresentedStep(const std::vector<std::int64_t>& presented, std::size_t presentedFrom,
+struct PresentedSteps {
+    // 続けて提示した 2 つの output frame の差の最大 (先へ進んだ量)。
+    std::int64_t maxForward = 0;
+    // 前に提示した frame より前の frame を提示した (時計の切り替えで戻った)。
+    bool backward = false;
+};
+
+// from 以上で最初に提示した frame から、to を最初に越えた frame までの続けて提示した組を調べる。
+// to を越えた frame も組に入れる。範囲内の frame だけを見ると、範囲の外への飛び (100 -> 170) を
+// 見逃す。時計が先へ飛ぶと maxForward が大きくなり、戻ると backward になる。
+PresentedSteps presentedSteps(const std::vector<std::int64_t>& presented, std::size_t presentedFrom,
                               std::int64_t from, std::int64_t to) {
-    std::int64_t previous = -1;
-    std::int64_t maximum = 0;
+    PresentedSteps steps;
+    std::optional<std::int64_t> previous;
     for (auto it = presented.begin() + static_cast<std::ptrdiff_t>(presentedFrom);
          it != presented.end(); ++it) {
-        if (*it < from || *it > to)
+        if (!previous) {
+            if (*it >= from)
+                previous = *it;
             continue;
-        if (previous >= 0)
-            maximum = std::max(maximum, *it - previous);
+        }
+        if (*it < *previous) {
+            steps.backward = true;
+            std::fprintf(stderr, "  提示が戻りました: %lld -> %lld\n",
+                         static_cast<long long>(*previous), static_cast<long long>(*it));
+        } else {
+            steps.maxForward = std::max(steps.maxForward, *it - *previous);
+        }
         previous = *it;
+        if (*it > to)
+            break;
     }
-    return maximum;
+    return steps;
 }
 
 void check(bool value, const char* message) {
@@ -427,15 +447,20 @@ int main(int argc, char** argv) {
                 }
                 check(after.presentedFrameCount > before.presentedFrameCount,
                       "cut の前後でframeを提示しませんでした");
-                const auto maxStep = maxPresentedStep(controller.presentedFrameHistoryForTest(),
-                                                      beforeEvents, 90, 150);
+                // 組み直しの負例は seek を挟むので、提示の連続性は見ない。
+                PresentedSteps steps;
                 if (!forceCapacity) {
+                    steps = presentedSteps(controller.presentedFrameHistoryForTest(), beforeEvents,
+                                           90, 150);
                     check(crossesBoundaryWithoutPairingMiss(
                               controller.presentedFrameHistoryForTest(), beforeEvents,
                               controller.unpairedFrameHistoryForTest(), beforeUnpaired, 120),
                           "cut の境界で提示またはpairingが途切れました");
                     // 先読みした音声の時計へ境界の前に切り替えると、提示が境界の先まで飛ぶ。
-                    check(maxStep <= kMaxPresentedStep, "cut の前後で提示した frame が飛びました");
+                    // 時計の切り替えで戻るのも検出する。
+                    check(steps.maxForward <= kMaxPresentedStep,
+                          "cut の前後で提示した frame が飛びました");
+                    check(!steps.backward, "cut の前後で提示した frame が戻りました");
                     check(controller.playbackMaxPreparationMs() < kMaxPreparationMs,
                           "source の準備が先読み幅の半分を超えました");
                 }
@@ -446,7 +471,7 @@ int main(int argc, char** argv) {
                                                             before.presentedFrameCount),
                             static_cast<unsigned long long>(after.droppedFrameCount -
                                                             before.droppedFrameCount),
-                            static_cast<long long>(maxStep),
+                            static_cast<long long>(steps.maxForward),
                             static_cast<unsigned long long>(controller.playbackRebuildCount()),
                             controller.playbackMaxPreparationMs(),
                             controller.lastPlaybackRebuildReason().toUtf8().constData(),
@@ -492,17 +517,31 @@ int main(int argc, char** argv) {
                 surface->setHeight(360);
                 window.show();
                 controller.attachPreview(surface);
+                const bool ready = pumpUntil([&] { return controller.previewReady(); }, 30000);
+                const bool seekAccepted =
+                    ready &&
+                    retryUntilAccepted([&] { return controller.seekTimelineFrame(from); }, 30000);
                 const bool sought =
-                    pumpUntil([&] { return controller.previewReady(); }, 30000) &&
-                    retryUntilAccepted([&] { return controller.seekTimelineFrame(from); }, 30000) &&
+                    seekAccepted &&
                     pumpUntil([&] { return controller.previewPresentedLatest(); }, 10000);
                 if (sought)
                     beforePlay();
                 const bool started =
                     sought && retryUntilAccepted([&] { return controller.playTimeline(); }, 30000);
-                if (!started)
-                    std::fprintf(stderr, "FAIL: %s: 再生を開始できません: %s\n", label,
+                if (!started) {
+                    const auto telemetry = controller.previewTelemetry();
+                    std::fprintf(stderr,
+                                 "FAIL: %s: 再生を開始できません (準備=%d seek受理=%d 提示=%d "
+                                 "engine state=%d 提示 frame=%lld decode失敗=%llu error=%s): %s\n",
+                                 label, ready, seekAccepted, sought,
+                                 static_cast<int>(telemetry.status.state),
+                                 static_cast<long long>(telemetry.status.position.outputFrame),
+                                 static_cast<unsigned long long>(telemetry.decodeFailureCount),
+                                 telemetry.status.lastError
+                                     ? telemetry.status.lastError->detail.c_str()
+                                     : "-",
                                  controller.statusText().toUtf8().constData());
+                }
                 check(started, "再生を開始できません");
                 if (started)
                     whilePlaying(controller);
@@ -553,6 +592,63 @@ int main(int argc, char** argv) {
                         controller.playbackMaxPreparedSourceCount(),
                         controller.playbackMaxPreparationMs(),
                         controller.lastPlaybackRebuildReason().toUtf8().constData());
+                });
+        }
+
+        // 8 video track が同時に cut する世代を 3 つ並べる (A -> B -> C)。A -> B
+        // を引き継いだ直後は、 A の 8 本が B の提示まで登録枠を使い続け、C の準備は既定の登録上限
+        // (2 × 8 + 1) の途中で 断られる。この一時的な不足を失敗の境界として覚えると、A
+        // を削除した後も C を準備し直さず、 B -> C の境界で Preview を組み直してしまう。
+        {
+            constexpr int kTracks = 8;
+            constexpr int kGenerations = 3;
+            constexpr std::int64_t kGenerationFrames = 60;
+            auto layered = mvm::project::createDefaultProject();
+            while (layered.videoTracks.size() < static_cast<std::size_t>(kTracks))
+                layered.videoTracks.push_back(
+                    {"V" + std::to_string(layered.videoTracks.size() + 1), false});
+            for (int generation = 0; generation < kGenerations; ++generation) {
+                for (int track = 0; track < kTracks; ++track) {
+                    const std::string id =
+                        "layer-" + std::to_string(generation) + "-" + std::to_string(track);
+                    const int serial = generation * kTracks + track;
+                    auto clip =
+                        half(track % 2 == 0 ? video : copiedVideo, id.c_str(), TrackKind::Video,
+                             generation * kGenerationFrames, (serial * 7) % 200);
+                    clip.sourceOutFrame = clip.sourceInFrame + kGenerationFrames;
+                    clip.track = {TrackKind::Video, track};
+                    layered.timelineClips.push_back(clip);
+                }
+            }
+            const auto layeredValid = mvm::project::validateTimeline(layered);
+            check(layeredValid.success, "8 track の timeline が不正です");
+            if (!layeredValid.success)
+                std::fprintf(stderr, "  %s\n", layeredValid.error.c_str());
+            const std::int64_t pastLastCut = (kGenerations - 1) * kGenerationFrames + 20;
+            playFrom(
+                "layered-cut", layered, 30, [] {},
+                [&](mvm::app::MvmController& controller) {
+                    const bool passed = pumpUntil(
+                        [&] {
+                            return !controller.playing() ||
+                                   controller.playheadFrame() >= pastLastCut;
+                        },
+                        20000);
+                    check(passed && controller.playing(),
+                          "8 track の cut を通して再生が続きません");
+                    check(controller.playbackRebuildCount() == 0,
+                          "8 track の cut でPreviewを組み直しました");
+                    check(controller.playbackPreparationFailureCount() == 0,
+                          "8 track の cut で旧 source の削除待ちを準備の失敗にしました");
+                    std::printf("8 track x %d 世代: playhead %lld、組み直し %llu、準備失敗 %llu、"
+                                "先に準備した source 最大 %zu、準備最大 %.1fms、理由: %s\n",
+                                kGenerations, static_cast<long long>(controller.playheadFrame()),
+                                static_cast<unsigned long long>(controller.playbackRebuildCount()),
+                                static_cast<unsigned long long>(
+                                    controller.playbackPreparationFailureCount()),
+                                controller.playbackMaxPreparedSourceCount(),
+                                controller.playbackMaxPreparationMs(),
+                                controller.lastPlaybackRebuildReason().toUtf8().constData());
                 });
         }
 

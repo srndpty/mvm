@@ -629,6 +629,8 @@ private:
     };
 
     void pollPreviewState();
+    // 引き継ぎで外した旧 source を、新しい composition の提示を見届けてから engine から削除する。
+    void removeRetiredSources(const preview::PreviewStatus& status);
     void pollAudioMeter();
     void advanceTimelinePlayback();
     bool prepareUpcomingPlaybackSources(std::int64_t frame, QString& reason);

@@ -1368,20 +1368,24 @@ void MvmController::pollAudioMeter() {
     Q_EMIT meterChanged();
 }
 
+void MvmController::removeRetiredSources(const preview::PreviewStatus& status) {
+    if (status.lastPresentedComposition != status.latestAcceptedDesiredComposition ||
+        retiredSources_.empty())
+        return;
+    const auto pendingRetirement = std::move(retiredSources_);
+    retiredSources_.clear();
+    for (const auto source : pendingRetirement) {
+        const auto removed = previewEngine_->removeSource(source);
+        if (!removed)
+            retiredSources_.push_back(source);
+    }
+}
+
 void MvmController::pollPreviewState() {
     if (!previewEngine_)
         return;
     const auto status = previewEngine_->status();
-    if (status.lastPresentedComposition == status.latestAcceptedDesiredComposition &&
-        !retiredSources_.empty()) {
-        const auto pendingRetirement = std::move(retiredSources_);
-        retiredSources_.clear();
-        for (const auto source : pendingRetirement) {
-            const auto removed = previewEngine_->removeSource(source);
-            if (!removed)
-                retiredSources_.push_back(source);
-        }
-    }
+    removeRetiredSources(status);
     const bool ready = status.state == preview::PreviewEngineState::ReadyPaused ||
                        status.state == preview::PreviewEngineState::Playing;
     if (previewReady_ != ready) {
@@ -3656,6 +3660,7 @@ std::vector<std::int64_t> MvmController::unpairedFrameHistoryForTest() const {
 bool MvmController::preparePlaybackSourcesAt(std::int64_t frame, bool& needsHandOff,
                                              QString& reason) {
     needsHandOff = false;
+    playbackCapacityFailure_ = false;
     const auto video = mapTimelinePreviewFrame(project_, previewPlan(), frame);
     const auto audio = mapTimelinePreviewAudio(project_, previewPlan(), frame);
     if (!video.success || !audio.success) {
@@ -3767,6 +3772,12 @@ bool MvmController::prepareUpcomingPlaybackSources(std::int64_t frame, QString& 
         }
         bool needsHandOff = false;
         if (!preparePlaybackSourcesAt(start, needsHandOff, reason)) {
+            // 引き継いだ直後は、旧 source が新しい composition の提示まで登録枠を使い続ける
+            // (8 layer の cut なら旧 8 + 新 8)。この間の登録上限は一時的な不足なので失敗として
+            // 覚えず、旧 source を削除した後の tick で準備し直す。登録上限の検査は open の前に
+            // 行われるので、準備し直しても待たない。
+            if (playbackCapacityFailure_ && !retiredSources_.empty())
+                return false;
             failedPreparationStart_ = start;
             ++playbackPreparationFailureCount_;
             return false;
@@ -3917,10 +3928,14 @@ void MvmController::advanceTimelinePlayback() {
             playbackCapacityFailure_ = false;
         }
         // 先読みは引き継ぎの後に行う。境界の tick で先に行うと、まだ引き継いでいない境界の source に
-        // 加えてその次の境界まで準備してしまう。
+        // 加えてその次の境界まで準備してしまう。旧 source の削除は状態の poll (100ms) を待たず
+        // ここでも行い、次の境界の準備に登録枠を早く返す。
+        removeRetiredSources(previewEngine_->status());
         QString preparationFailure;
         if (!prepareUpcomingPlaybackSources(frame, preparationFailure))
             playbackPreparationFailure_ = preparationFailure;
+        else
+            playbackPreparationFailure_.clear();
         if (playheadFrame_ != frame) {
             playheadFrame_ = frame;
             Q_EMIT stateChanged();
