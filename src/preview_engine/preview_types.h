@@ -17,6 +17,12 @@ struct PreviewSourceId {
     bool operator==(const PreviewSourceId&) const = default;
 };
 
+// requestSourcePreparation が返す準備の番号。公開された source の番号とは別の名前空間。
+struct PreviewPreparationId {
+    std::uint64_t value = 0;
+    bool operator==(const PreviewPreparationId&) const = default;
+};
+
 struct PreviewFrameRate {
     std::uint32_t numerator = 0;
     std::uint32_t denominator = 1;
@@ -179,6 +185,9 @@ enum class PreviewErrorCode {
     Unspecified,
     // source の登録枠が埋まっている。登録済みの source を外せば同じ要求が通りうる。
     RegistrationCapacityExceeded,
+    // 先読みの準備が、完了する前に pause / seek / shutdown / 取り消しで古くなった。
+    // 準備した source は公開せずに捨てた。
+    PreparationStale,
 };
 
 enum class PreviewErrorSeverity {

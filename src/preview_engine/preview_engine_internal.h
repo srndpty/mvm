@@ -115,6 +115,12 @@ struct P5CRuntimeDiagnostics {
     bool deviceReleased = true;
     bool unsafeGpuResourcesRetained = false;
     std::uint64_t registeredVideoSourceCount = 0;
+    // 先読みの準備のうち、まだ公開も破棄もしていないもの。
+    std::uint64_t pendingSourcePreparationCount = 0;
+    // 取り消し・pause / seek / shutdown で古くなり、公開せずに捨てた準備の数。
+    std::uint64_t staleSourcePreparationRejectCount = 0;
+    // 公開している source (video / audio) の数。捨てた準備が登録を残していないことを見る。
+    std::uint64_t publishedSourceCount = 0;
     std::vector<std::int64_t> recentPresentedOutputFrames;
     // recentPresentedOutputFrames と同じ順に、提示した composition の layer 数と最前面 layer の
     // 不透明度。
@@ -324,6 +330,9 @@ public:
     // audio source を扱えない構成 (UnsupportedCapability だが登録枠の不足ではない) を作る seam。
     // 恒久的な非対応を登録枠の不足と取り違えないことを controller で検査する。
     static Result<void> disableAudioSourcesForTest(PreviewEngine& engine);
+    // 先読みの準備用の thread を open の前で止める / 再開する。止めている間に pause / seek など
+    // を起こし、古くなった完了が公開されないことを決定論的に確かめる。
+    static void holdSourcePreparationsForTest(PreviewEngine& engine, bool held);
     // seek completionで得たaudio generationをengineが実際にenforceしているか
     // 検査するseam。要求generationが決して揃わない状況を作る。
     static Result<void> injectSeekAudioGenerationMismatchForTest(PreviewEngine& engine);

@@ -677,6 +677,10 @@ bool MvmController::resetPreviewEngine() {
     audioSources_.clear();
     preparedVideoSources_.clear();
     preparedAudioSources_.clear();
+    // 準備は古い engine の requestShutdown が取り消して捨てた。新しい engine には無い。
+    pendingVideoPreparations_.clear();
+    pendingAudioPreparations_.clear();
+    ++playbackPreparationGeneration_;
     playbackPreparationFailure_.clear();
     submittedComposition_.reset();
     retiredSources_.clear();
@@ -812,6 +816,8 @@ const TimelinePreviewPlan& MvmController::previewPlan() const {
 
 void MvmController::refreshTimelineModel() {
     previewPlan_.reset();
+    // 準備中の source は変わる前の Project で決めた。完了しても使わずに外す。
+    ++playbackPreparationGeneration_;
     if (!selectedTransitionId_.empty() &&
         std::none_of(
             project_.timelineTransitions.begin(), project_.timelineTransitions.end(),
@@ -1412,6 +1418,7 @@ void MvmController::pollPreviewState() {
     if (!previewEngine_)
         return;
     const auto status = previewEngine_->status();
+    collectSourcePreparations();
     removeRetiredSources(status);
     const bool ready = status.state == preview::PreviewEngineState::ReadyPaused ||
                        status.state == preview::PreviewEngineState::Playing;
@@ -3611,6 +3618,7 @@ void MvmController::stopPlaybackWithError(QString error) {
 }
 
 void MvmController::retirePreparedPlaybackSources() {
+    cancelSourcePreparations();
     for (const auto& source : preparedVideoSources_)
         if (!previewEngine_->removeSource(source.source))
             retiredSources_.push_back(source.source);
@@ -3630,6 +3638,114 @@ bool MvmController::setPreviewRegistrationLimitForTest(std::size_t limit) {
     return static_cast<bool>(
         preview::internal::PreviewRenderPort::setRegisteredVideoSourceLimitForTest(
             *previewEngine_, limit));
+}
+
+void MvmController::cancelSourcePreparations() {
+    for (const auto& pending : pendingVideoPreparations_)
+        previewEngine_->cancelSourcePreparation(pending.id);
+    for (const auto& pending : pendingAudioPreparations_)
+        previewEngine_->cancelSourcePreparation(pending.id);
+    pendingVideoPreparations_.clear();
+    pendingAudioPreparations_.clear();
+    ++playbackPreparationGeneration_;
+}
+
+void MvmController::adoptPreparationOutcome(preview::PreviewPreparationId id,
+                                            preview::Result<preview::PreviewSourceId> outcome) {
+    const auto video =
+        std::find_if(pendingVideoPreparations_.begin(), pendingVideoPreparations_.end(),
+                     [&](const auto& pending) { return pending.id == id; });
+    const auto audio =
+        std::find_if(pendingAudioPreparations_.begin(), pendingAudioPreparations_.end(),
+                     [&](const auto& pending) { return pending.id == id; });
+    const bool known =
+        video != pendingVideoPreparations_.end() || audio != pendingAudioPreparations_.end();
+    const std::uint64_t generation = video != pendingVideoPreparations_.end() ? video->generation
+                                     : audio != pendingAudioPreparations_.end()
+                                         ? audio->generation
+                                         : 0;
+    const std::int64_t boundary = video != pendingVideoPreparations_.end() ? video->boundary
+                                  : audio != pendingAudioPreparations_.end() ? audio->boundary
+                                                                               : 0;
+    std::optional<TrackPreviewSource> videoEntry;
+    std::optional<AudioPreviewSource> audioEntry;
+    if (video != pendingVideoPreparations_.end()) {
+        videoEntry = video->entry;
+        pendingVideoPreparations_.erase(video);
+    } else if (audio != pendingAudioPreparations_.end()) {
+        audioEntry = audio->entry;
+        pendingAudioPreparations_.erase(audio);
+    }
+    if (!outcome) {
+        // 古くなった準備 (取り消し・pause / seek) は失敗として覚えない。境界までに準備し直す。
+        if (!known || outcome.error().code == preview::PreviewErrorCode::PreparationStale)
+            return;
+        playbackCapacityFailure_ =
+            outcome.error().code == preview::PreviewErrorCode::RegistrationCapacityExceeded;
+        playbackPreparationFailure_ = previewErrorText(outcome.error());
+        failedPreparationStart_ = boundary;
+        ++playbackPreparationFailureCount_;
+        return;
+    }
+    // 取り消した後に届いた完了、要求の後に再生や Project が変わった準備は使わない。
+    if (!known || generation != playbackPreparationGeneration_) {
+        ++playbackStalePreparationCount_;
+        if (!previewEngine_->removeSource(outcome.value()))
+            retiredSources_.push_back(outcome.value());
+        return;
+    }
+    if (videoEntry) {
+        videoEntry->source = outcome.value();
+        preparedVideoSources_.push_back(std::move(*videoEntry));
+    } else {
+        audioEntry->source = outcome.value();
+        preparedAudioSources_.push_back(std::move(*audioEntry));
+    }
+}
+
+void MvmController::collectSourcePreparations() {
+    for (auto& completed : previewEngine_->takeCompletedSourcePreparations())
+        adoptPreparationOutcome(completed.preparation, std::move(completed.source));
+}
+
+void MvmController::waitDueSourcePreparations(std::int64_t frame) {
+    std::vector<preview::PreviewPreparationId> due;
+    for (const auto& pending : pendingVideoPreparations_)
+        if (pending.boundary <= frame)
+            due.push_back(pending.id);
+    for (const auto& pending : pendingAudioPreparations_)
+        if (pending.boundary <= frame)
+            due.push_back(pending.id);
+    if (due.empty())
+        return;
+    // 先読みの幅 (2 秒) の間に open / seek が終わらなかった。境界ではこの source が要るので待つ。
+    ++playbackPreparationWaitCount_;
+    const auto began = std::chrono::steady_clock::now();
+    for (const auto id : due)
+        adoptPreparationOutcome(id, previewEngine_->waitSourcePreparation(id));
+    playbackMaxPreparationMs_ = std::max(
+        playbackMaxPreparationMs_,
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began)
+            .count());
+}
+
+void MvmController::holdSourcePreparationsForTest(bool held) {
+    if (previewEngine_)
+        preview::internal::PreviewRenderPort::holdSourcePreparationsForTest(*previewEngine_, held);
+}
+
+std::uint64_t MvmController::publishedPreviewSourceCountForTest() const {
+    return previewEngine_
+               ? preview::internal::PreviewRenderPort::runtimeDiagnostics(*previewEngine_)
+                     .publishedSourceCount
+               : 0;
+}
+
+std::uint64_t MvmController::engineStaleSourcePreparationCountForTest() const {
+    return previewEngine_
+               ? preview::internal::PreviewRenderPort::runtimeDiagnostics(*previewEngine_)
+                     .staleSourcePreparationRejectCount
+               : 0;
 }
 
 bool MvmController::disablePreviewAudioSourcesForTest() {
@@ -3704,6 +3820,7 @@ bool MvmController::preparePlaybackSourcesAt(std::int64_t frame, bool& needsHand
         return false;
     }
     std::set<std::uint64_t> usedVideoSources;
+    std::set<std::uint64_t> usedVideoPreparations;
     for (const auto& layer : video.layers) {
         const auto covers = [&](const TrackPreviewSource& entry) {
             return !usedVideoSources.contains(entry.source.value) &&
@@ -3722,26 +3839,42 @@ bool MvmController::preparePlaybackSourcesAt(std::int64_t frame, bool& needsHand
             usedVideoSources.insert(prepared->source.value);
             continue;
         }
+        const auto pending = std::find_if(
+            pendingVideoPreparations_.begin(), pendingVideoPreparations_.end(),
+            [&](const PendingVideoPreparation& entry) {
+                return !usedVideoPreparations.contains(entry.id.value) &&
+                       previewVideoMappingCovers(project_, entry.entry.mapping, layer.renderClip);
+            });
+        if (pending != pendingVideoPreparations_.end()) {
+            usedVideoPreparations.insert(pending->id.value);
+            continue;
+        }
         const auto& clip = layer.renderClip;
         if (!std::filesystem::is_regular_file(clip.mediaPath)) {
             reason = QString::fromStdString(clip.name) + QStringLiteral(" のファイルがありません");
             return false;
         }
+        // open / seek は engine の準備用の thread が行う。ここで測るのは control thread が
+        // 要求に使った時間だけ (完了を待たない)。
         const auto began = std::chrono::steady_clock::now();
-        const auto added = previewEngine_->addSource(previewVideoDescriptorOf(project_, clip));
+        const auto requested =
+            previewEngine_->requestSourcePreparation(previewVideoDescriptorOf(project_, clip));
         playbackMaxPreparationMs_ = std::max(
             playbackMaxPreparationMs_,
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began)
                 .count());
-        if (!added) {
+        if (!requested) {
             playbackCapacityFailure_ =
-                added.error().code == preview::PreviewErrorCode::RegistrationCapacityExceeded;
-            reason = previewErrorText(added.error());
+                requested.error().code == preview::PreviewErrorCode::RegistrationCapacityExceeded;
+            reason = previewErrorText(requested.error());
             return false;
         }
-        preparedVideoSources_.push_back(
-            {added.value(), layer.clipId, layer.clipIndex, previewVideoMappingOf(clip)});
-        usedVideoSources.insert(added.value().value);
+        pendingVideoPreparations_.push_back(
+            {requested.value(),
+             {{}, layer.clipId, layer.clipIndex, previewVideoMappingOf(clip)},
+             frame,
+             playbackPreparationGeneration_});
+        usedVideoPreparations.insert(requested.value().value);
     }
     std::vector<AudioSourceIdentity> identities;
     if (!audioIdentitiesFor(audio, identities, reason))
@@ -3755,28 +3888,37 @@ bool MvmController::preparePlaybackSourcesAt(std::int64_t frame, bool& needsHand
         needsHandOff = true;
         if (std::any_of(preparedAudioSources_.begin(), preparedAudioSources_.end(), matches))
             continue;
+        if (std::any_of(pendingAudioPreparations_.begin(), pendingAudioPreparations_.end(),
+                        [&](const PendingAudioPreparation& entry) { return matches(entry.entry); }))
+            continue;
         preview::PreviewSourceDescriptor descriptor;
         if (!audioDescriptorFor(audio.layers[index], descriptor, reason))
             return false;
         const auto began = std::chrono::steady_clock::now();
-        const auto added = previewEngine_->addSource(descriptor);
+        const auto requested = previewEngine_->requestSourcePreparation(descriptor);
         playbackMaxPreparationMs_ = std::max(
             playbackMaxPreparationMs_,
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began)
                 .count());
-        if (!added) {
+        if (!requested) {
             playbackCapacityFailure_ =
-                added.error().code == preview::PreviewErrorCode::RegistrationCapacityExceeded;
-            reason = previewErrorText(added.error());
+                requested.error().code == preview::PreviewErrorCode::RegistrationCapacityExceeded;
+            reason = previewErrorText(requested.error());
             return false;
         }
-        preparedAudioSources_.push_back({added.value(), identities[index], descriptor,
-                                         audio.layers[index].clipId,
-                                         audio.layers[index].clipIndex});
+        pendingAudioPreparations_.push_back({requested.value(),
+                                             {{},
+                                              identities[index],
+                                              descriptor,
+                                              audio.layers[index].clipId,
+                                              audio.layers[index].clipIndex},
+                                             frame,
+                                             playbackPreparationGeneration_});
     }
     playbackMaxPreparedSourceCount_ =
         std::max(playbackMaxPreparedSourceCount_,
-                 preparedVideoSources_.size() + preparedAudioSources_.size());
+                 preparedVideoSources_.size() + preparedAudioSources_.size() +
+                     pendingVideoPreparations_.size() + pendingAudioPreparations_.size());
     return true;
 }
 
@@ -3825,6 +3967,9 @@ bool MvmController::prepareUpcomingPlaybackSources(std::int64_t frame, QString& 
 }
 
 bool MvmController::handOffPlaybackSources(std::int64_t frame, QString& reason) {
+    // 完了した準備を受け取り、この境界までに終わらなかったものだけを待つ。
+    collectSourcePreparations();
+    waitDueSourcePreparations(frame);
     const auto mappedFrame = mapTimelinePreviewFrame(project_, previewPlan(), frame);
     if (!mappedFrame.success) {
         reason = QString::fromStdString(mappedFrame.error);

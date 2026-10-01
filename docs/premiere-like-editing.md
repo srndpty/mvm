@@ -1861,9 +1861,8 @@ timeline sample の時計に合わせて置く (素材を先頭から使う音�
 すぐ切り替えると素材の先頭からの無音から音声の条件が提示の飛びで落ちる。削除待ちの間の登録上限を
 失敗として覚えると、8 track の試験が 3 世代目の 2 本目で準備失敗と組み直しを起こして落ちる。
 
-`[未検証]` source の準備 (`addSource` の open / seek) は control thread で同期に待つ。
-境界での停止は避けたが、待ち時間そのものは境界の前へ移っただけで、playhead 更新や入力処理を
-その間止めうる。open / seek を worker で進め、準備完了を control thread で公開する形は未実装。
+`[当時]` source の準備 (`addSource` の open / seek) は control thread で同期に待っていた。
+§21.4 で準備用の thread へ移した。
 
 `[未検証]` 他の GPU / 音声 endpoint、長尺素材、操作中の高負荷環境での境界欠落率は未測定。
 
@@ -2251,10 +2250,43 @@ delegate が 58 個 (末尾へスクロールした後は 52 個) であるこ�
 
 ### 21.4 再生中の source の準備を control thread で同期に待つ (#4)
 
-`[未検証]` 対応していない (20.3 の `[未検証]` と同じ)。`addSource` の open / seek を worker で進め、
-世代番号付きの完了だけを control thread へ公開し、seek・編集・pause・reset の後に届いた古い完了を
-捨てる形が必要である。preview engine の thread 境界を変える変更なので、古い完了を確実に捨てる
-negative test と合わせて別の作業で行う。
+`[事実]` 先読み (次の clip 境界の source の準備) は、decoder の open と初期 seek を engine の準備用の
+thread で行い、control thread では待たなくした。
+
+- `PreviewEngine::addSource` を 3 段に分けた。begin (engine lock 内で検査し worker を作り、再生位置から
+  決まる seek 先を確定する)、run (lock 外で open / seek を待つ)、publish (lock 内で state を検査し直し、
+  audio mix / sink へ繋いで公開する)。同期の `addSource` と先読みの準備は同じ段を通る
+- `requestSourcePreparation` は begin だけを control thread で行い、run を準備用の thread へ渡す。
+  完了は `takeCompletedSourcePreparations` (controller の毎 tick と 100ms の poll) が control thread で
+  公開する。境界までに終わらなかった準備だけを `waitSourcePreparation` で境界で待つ
+- 要求した時点の transport の世代 (pause / seek / shutdown で進む) を準備に持たせ、公開する時点と
+  違えば公開せずに捨てる (`PreviewErrorCode::PreparationStale`)。取り消した準備も同じ。controller も
+  停止・組み直し・engine の作り直し・Project の変更で世代を進め、古い世代の完了は使わずに外す
+- 準備中の source も登録枠を使うものとして数える。public source ID は begin で予約する (並行する準備の
+  audio worker の内部 ID を重ねない)。公開しなかった ID は、後に別の予約が無ければ戻す
+- `requestShutdown` は最初に準備を取り消して準備用の thread を join し、作りかけの worker を止めてから
+  teardown へ進む (準備用の thread は render device を使う)
+- WASAPI endpoint の open は、COM を初期化した thread で open / 解放する必要があるため、publish
+  (control thread) に残した。audio sink がまだ無い再生中に、これから始まる区間の audio を初めて公開する
+  ときだけ、endpoint の open をそこで待つ。sink が無く区間が既に始まっている audio (主入力は sample の
+  連続を要求する) は先読みでは受け付けない
+
+`transition_preview` (workstation) が、準備用の thread を open の前で止めた状態で、engine だけの pause、
+engine だけの seek、controller の pause、再生中の track 編集、engine の作り直しを起こしてから再開し、
+次を見る。engine だけの pause / seek では engine が 2 件 (video / audio) とも捨てて controller へ
+届けないこと、track 編集では controller が 2 件とも外して準備し直し、組み直しなしで境界を越えること、
+作り直しでは止まった準備を待ち続けずに戻ること。engine の世代の照合を外す mutant では engine だけの
+pause / seek が、controller の世代の照合を外す mutant では track 編集が落ちる。
+
+`[事実]` control thread が先読みの準備に使った最大時間 (`playbackMaxPreparationMs`、境界での待ちを含む)
+は、同じ試験で変更前 10〜58ms (cut 15〜19ms、8 track x 3 世代 58ms) から 0.0〜3.2ms になった
+(1 回ずつの測定)。
+
+`[事実]` cut の前後の drop は変更前後ともに 0〜20 の範囲でばらついた。cut-av は変更前 4 回で
+0 / 19 / 0 / 0、変更後 10 回で 6 / 3 / 20 / 20 / 20 / 0 / 8 / 5 / 0 / 12。他の cut の条件も変更前後で
+0〜20。drop が増えたとも減ったとも言えない。提示の飛び・戻り・pairing の検査はどちらも全回通過した。
+
+`[未検証]` audio sink が無い状態からの最初の audio の公開で待つ endpoint の open の時間は測っていない。
 
 ### 21.5 登録枠の不足ではない UnsupportedCapability で engine を作り直していた (#5)
 

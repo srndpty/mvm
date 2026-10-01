@@ -188,6 +188,21 @@ public:
     // 境界の前に準備して、まだ引き継いでいない source の数の最大。先読みが次の境界だけに
     // 留まっていることの検査に使う。
     std::size_t playbackMaxPreparedSourceCount() const { return playbackMaxPreparedSourceCount_; }
+    // 先読みの準備が完了したが、要求の後に再生や Project が変わっていたので使わずに外した回数
+    // (engine が pause / seek で捨てたものは含まない)。
+    std::uint64_t playbackStalePreparationCount() const { return playbackStalePreparationCount_; }
+    // clip 境界までに先読みの準備が終わらず、境界で完了を待った回数。
+    std::uint64_t playbackPreparationWaitCount() const { return playbackPreparationWaitCount_; }
+    std::size_t pendingSourcePreparationCount() const {
+        return pendingVideoPreparations_.size() + pendingAudioPreparations_.size();
+    }
+    void holdSourcePreparationsForTest(bool held);
+    // controller を通さずに engine の transport を変える負例 (engine 側の古さの判定) に使う。
+    std::shared_ptr<preview::PreviewEngine> previewEngineForTest() const { return previewEngine_; }
+    bool resetPreviewEngineForTest() { return resetPreviewEngine(); }
+    // engine が公開している source の数と、古くなって捨てた準備の数。
+    std::uint64_t publishedPreviewSourceCountForTest() const;
+    std::uint64_t engineStaleSourcePreparationCountForTest() const;
     // clip 境界で登録枠の不足と判定して Preview engine を作り直した回数。登録枠の不足ではない
     // 失敗 (恒久的に扱えない構成など) で作り直していないことの検査に使う。
     std::uint64_t playbackCapacityResetCount() const { return playbackCapacityResetCount_; }
@@ -858,6 +873,36 @@ private:
     std::vector<AudioPreviewSource> audioSources_;
     std::vector<TrackPreviewSource> preparedVideoSources_;
     std::vector<AudioPreviewSource> preparedAudioSources_;
+    // 先読みを要求して engine の準備用の thread が open / seek している source。完了は
+    // collectSourcePreparations が受け取り、prepared*Sources_ へ移す。
+    struct PendingVideoPreparation {
+        preview::PreviewPreparationId id;
+        TrackPreviewSource entry; // source は完了するまで未定
+        std::int64_t boundary = 0;
+        std::uint64_t generation = 0;
+    };
+
+    struct PendingAudioPreparation {
+        preview::PreviewPreparationId id;
+        AudioPreviewSource entry; // source は完了するまで未定
+        std::int64_t boundary = 0;
+        std::uint64_t generation = 0;
+    };
+
+    std::vector<PendingVideoPreparation> pendingVideoPreparations_;
+    std::vector<PendingAudioPreparation> pendingAudioPreparations_;
+    // 停止・組み直し・engine の作り直し・Project の変更で進める。要求した後にこれが進んだ
+    // 準備の完了は使わずに外す (古い Project・古い再生で決めた source を残さない)。
+    std::uint64_t playbackPreparationGeneration_ = 0;
+    std::uint64_t playbackStalePreparationCount_ = 0;
+    std::uint64_t playbackPreparationWaitCount_ = 0;
+    void collectSourcePreparations();
+    // boundary までに完了しなかった準備を待って受け取る (境界でだけ待つ)。
+    void waitDueSourcePreparations(std::int64_t frame);
+    // 準備の完了を受け取る。使えるなら prepared*Sources_ へ移し、古ければ source を外す。
+    void adoptPreparationOutcome(preview::PreviewPreparationId id,
+                                 preview::Result<preview::PreviewSourceId> outcome);
+    void cancelSourcePreparations();
     QString playbackPreparationFailure_;
     // 準備に失敗した境界。その境界を越えるまで準備し直さない (壊れた素材の seek 待ちを
     // 毎 tick 繰り返さない)。
