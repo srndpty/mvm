@@ -328,6 +328,42 @@ TransitionEditResult applyDefaultEditTransition(Project& project, const std::str
                                                 const std::function<std::string()>& newId);
 TimelineEditResult deleteTimelineTransition(Project& project, const std::string& transitionId);
 
+struct TransitionSpanLimits {
+    bool success = false;
+    std::int64_t maxBefore = 0; // cut の前に置ける最大の長さ (timeline frame)
+    std::int64_t maxAfter = 0;  // cut の後に置ける最大の長さ
+    std::string error;
+};
+
+// 既存のトランジションの cut 前後に置ける長さの上限。素材の余白と、clip の反対側の端の
+// トランジションが内側に使っていない分で決まる。Linked ならリンク相手の既存トランジションの
+// 上限との小さい方。上限の内側でも、速度変更で素材 frame に乗らない長さや不透明度の下がる
+// 区間は setTimelineTransitionSpan が断る。
+TransitionSpanLimits transitionSpanLimits(const Project& project, const std::string& transitionId,
+                                          LinkMode linkMode);
+
+struct TransitionSpanFit {
+    bool success = false;
+    std::int64_t framesBeforeCut = 0;
+    std::int64_t framesAfterCut = 0;
+    std::string error;
+};
+
+// 指定した cut 前後の長さに最も近い、置ける長さ (上限・素材 frame・不透明度を満たす)。
+// 前と後は独立に選び、同じ距離なら今の値から離れる側 (変えようとした向き) を選ぶ。
+// 数値欄やドラッグの値を、素材 frame に乗る長さへ吸着させるのに使う。setTimelineTransitionSpan
+// 自体は丸めないので、吸着は呼び出し側がこれで明示的に行う。
+TransitionSpanFit nearestTransitionSpan(const Project& project, const std::string& transitionId,
+                                        std::int64_t framesBeforeCut, std::int64_t framesAfterCut,
+                                        LinkMode linkMode);
+// 既存のトランジションの cut 前後の長さを変える (エフェクトコントロールの長さ・配置)。
+// ID は変えない。Linked ならリンク相手の編集点の既存トランジションも同じ値にする (無ければ
+// 作らない)。合計 1 frame 未満・上限超え・素材 frame に乗らない・不透明度が下がる・値が
+// 変わらない場合は理由付きで失敗し、Project を変えない (置ける長さへ黙って丸めない)。
+TransitionEditResult setTimelineTransitionSpan(Project& project, const std::string& transitionId,
+                                               std::int64_t framesBeforeCut,
+                                               std::int64_t framesAfterCut, LinkMode linkMode);
+
 // リップルトリム。trim した尺の増減だけ、trim した clip の track で後ろにある clip
 // (とそのリンク相手) をずらす。left 端を trim しても clip の開始位置は動かない。
 // Linked ならリンク相手も同じ量 trim し、相手の track の後ろもずらす。

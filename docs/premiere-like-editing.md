@@ -2018,3 +2018,68 @@ engine が提示した layer 数と最背面の素材 frame が mapping と一�
 あることを見る。修正前は区間の最後の frame で左端が 254 になって落ち、修正後は 2 (p = 0.99) で 3 回続けて
 通った。engine の提示の記録だけでは検出できなかった (layer 数も素材 frame も正しく、不透明度だけが違う)。
 `test_gpu_pure` に範囲外の frame の評価を足した。
+
+### 19.16 エフェクトコントロールでのトランジションの長さと配置
+
+`[事実]` timeline のトランジションを押すと、左パネルがエフェクトコントロールのタブへ切り替わり、clip の項目の
+代わりに `TransitionInspector.qml` を出す (`selectedTransitionId` が空でない間)。Premiere の Effect Controls
+と同じく、長さ・配置の数値と、A (outgoing) / トランジション / B (incoming) のミニタイムラインを持つ。
+
+- 配置は enum を持たず、`framesBeforeCut` / `framesAfterCut` の比そのものとして表示する
+  (前 0 = cut で開始、後 0 = cut で終了、差 1 以内 = 中央、それ以外 = カスタム)
+- 長さ欄は配置を保って長さを変える (カスタムは cut の前の割合を保つ)。片側の余白が足りなければもう片側へ
+  寄せる (§19.6 と同じ規則)。配置の選択は長さを保って配置だけを変える。長さ欄は 1 回のクリックで
+  直接入力になる (`DragNumberField.clickToEdit`)
+- ミニタイムラインは左端 = 開始だけ、右端 = 終了だけ、本体 = 長さを保ってずらす。ドラッグ中は QML の中だけで
+  仮の値を描き、離したときに `setTransitionSpan` を 1 回呼ぶ (1 undo)。A は cut の後ろへ、B は cut の前へ
+  延ばして使っている素材を斜線で、延ばせる上限までを薄い帯で描く
+- ミニタイムラインの A を動かすと A の終端、B を動かすと B の先頭のリップルトリム、cut 線を動かすと
+  ローリング編集 (Premiere のエフェクトコントロールと同じ)。ドラッグ中は確定と同じ `clampEdgeDrag` で
+  止めた量を表示し、離したときに `rippleTrimClip` / `rollClipEdge` を 1 回呼ぶ。トランジションは
+  reconcile で残る (余白が減れば縮む)
+- ミニタイムラインの再生ヘッドは timeline と同じ `playheadFrame`。ルーラーを押すと
+  `beginScrub` / `scrubToFrame` / `endScrub` でそこへ scrub する
+- 計算は `TransitionEditorMath.js` (状態を持たない関数) に置き、`tst_transition_editor` で検査する
+
+`[事実]` project 層の `setTimelineTransitionSpan` は既存のトランジションの ID を保ったまま値だけを変え、
+Linked ならリンク相手の編集点の**既存の**トランジションも同じ値にする (無ければ作らない)。
+上限は `transitionSpanLimits` で、余白と、clip の反対側の端のトランジションが内側に使っていない分で決まる。
+上限の内側でも、速度変更で素材 frame に乗らない長さと、不透明度の下がる区間は理由を付けて断り、
+置ける長さへ黙って丸めない。編集点の列挙・上限・前後の可否判定は `applyDefaultEditTransition` と同じ関数を使う。
+
+`[事実]` 数値欄・ドラッグの値は素材 frame に乗るとは限らない。30fps 素材を 60fps timeline に置くと cut の前後は
+2 frame 単位でしか延ばせず、最初の実装では長さをドラッグすると「この長さは素材のフレームに合わないため
+設定できません」で断られ、60 f に戻っていた (利用者の報告)。controller の `setTransitionSpan` は
+`nearestTransitionSpan` で最も近い置ける長さ (前後は独立、同じ距離なら今の値から離れる側 = 変えようとした向き)
+へ吸着させてから確定し、吸着したことを status に出す。project 層の `setTimelineTransitionSpan` は丸めない
+ままにして、吸着を呼び出し側の明示的な操作にしている。
+
+`[事実]` timeline のトランジションは track の上寄りの低い帯 (高さの 55%) に描き、下側で cut の端を掴める
+(Premiere と同じ)。cut の端は incoming の先頭 (outgoing の上に重なる端の帯) で、縮めて接しなくなると
+reconcile がトランジションを消す。このとき、通常の trim が接している隣の clip の方へ延ばすと止まらずに
+「同じ track の timeline clip が重複しています」で失敗していたので、`clampEdgeEdit` の Trim で接している
+隣の方へは 0 で止めるようにした (トランジションの有無に依らない既存の不具合)。
+
+`[事実]` controller の `selectedTransition` は上限の計算で Project を複写するので、再生中も出る
+`stateChanged` ではなく専用の `selectedTransitionChanged` で、中身が変わったときだけ通知する
+(`notifyTimelineTransitions` で `timelineTransitions` と一緒に比べる)。
+
+`[事実]` 確認したこと:
+- `m5_timeline_edit_focused`: 吸着 (30fps 素材で 31 → 32、29 → 28、不透明度と余白の内側へ)、trim で離れると
+  トランジションが消えること、接している隣への trim を止めること (縮め・ローリングは止めない)、
+  上限 (300 / 300、反対端のトランジションがあると後ろ 200)、cut で開始への変更と
+  ID の維持、上限ちょうど、同じ値・0 frame・負・上限超え・未知 ID の拒否 (Project 不変)、不透明度と
+  素材 frame での拒否、リンク相手の追従と Single、相手に無いトランジションを作らないこと。
+  不透明度・素材 frame・上限・リンクの各検査を外す mutant 4 件はいずれも落ちる
+  (不透明度は最後の `validateTimeline` も別の文言で断るので、固有の文言まで照合している)
+- `m7b_4_controller_export_lifecycle`: `selectedTransition` の値、映像と音声が 1 undo で変わること、
+  上限超えを上限へ吸着させること、同じ長さでは undo を積まないこと、未選択では変えないこと
+- `tst_transition_editor`: 配置の判定、長さ・配置・ドラッグから求める前後の frame 数 (手で数えた値)、
+  A / B / cut 線のドラッグの編集の種類
+- `text_ui_direct_input` (workstation): 実 window でトランジションを押すとタブが切り替わり、長さ欄の
+  1 回のクリックと入力で中央のまま 20 frame (10 / 10)、右端のドラッグで後ろだけが延び 1 undo で戻る、
+  ルーラーを押すと再生ヘッドがそこへ動く、A のドラッグでリップルトリムし cut が手前へ来る、timeline で
+  トランジションの下側から cut の端を trim すると離れたトランジションが消える。長さ欄の objectName・右端の
+  上限・`clickToEdit`・帯の高さ・隣の clip で止める規則をそれぞれ壊す mutant は落ちる
+
+`[未検証]` 手で GUI を操作した見た目 (パネル幅 340 px での配置、斜線の描画、ドラッグの手触り) は確かめていない。

@@ -1504,6 +1504,63 @@ void testEditPointTransition(const std::filesystem::path& path) {
           "接しているclipの無い端を編集点として選びました");
 }
 
+// エフェクトコントロールからトランジションの長さと配置を変える。素材 120 frame を 60 で分けた
+// cut なので、前後とも 60 frame まで置ける。期待値は手で数えた値。
+void testTransitionSpanEdit(const std::filesystem::path& path) {
+    const auto project = linkedProject(); // 映像と音声、素材 120 frame
+    check(mvm::project::saveProjectJson(project, path).success,
+          "トランジション長さ試験のProjectを保存できません");
+    mvm::app::MvmController controller(path, {}, project);
+    check(controller.splitClipAt(QStringLiteral("video"), 60, false, true) &&
+              controller.selectEditPoint(QStringLiteral("video"), QStringLiteral("right")) &&
+              controller.applyDefaultTransition(),
+          "前提: 編集点にトランジションを置けません");
+    auto selected = controller.selectedTransition();
+    const auto frameOf = [&](const char* key) {
+        return selected.value(QString::fromLatin1(key)).toLongLong();
+    };
+    check(selected.value(QStringLiteral("transitionId")).toString() ==
+                  controller.selectedTransitionId() &&
+              selected.value(QStringLiteral("trackKind")).toString() == QStringLiteral("video") &&
+              frameOf("cut") == 60 && frameOf("framesBeforeCut") == 30 &&
+              frameOf("framesAfterCut") == 30 && frameOf("maxBefore") == 60 &&
+              frameOf("maxAfter") == 60 && frameOf("outgoingStart") == 0 &&
+              frameOf("outgoingEnd") == 60 && frameOf("incomingStart") == 60 &&
+              frameOf("incomingEnd") == 120 &&
+              selected.value(QStringLiteral("outgoingClipId")).toString() ==
+                  QStringLiteral("video"),
+          "選択中のトランジションの値が正しくありません");
+
+    // cut で開始 (前 0 / 後 40)。映像と音声の両方が 1 undo で変わる。
+    check(controller.setTransitionSpan(0, 40), "トランジションの長さを変えられません");
+    selected = controller.selectedTransition();
+    const auto shown = controller.timelineTransitions();
+    check(frameOf("framesBeforeCut") == 0 && frameOf("framesAfterCut") == 40 && shown.size() == 2 &&
+              shown[0].toMap().value(QStringLiteral("start")).toLongLong() == 60 &&
+              shown[0].toMap().value(QStringLiteral("end")).toLongLong() == 100 &&
+              shown[1].toMap().value(QStringLiteral("start")).toLongLong() == 60 &&
+              shown[1].toMap().value(QStringLiteral("end")).toLongLong() == 100,
+          "映像と音声のトランジションが同じ長さに変わりません");
+    check(controller.undoLastEdit(), "トランジションの長さの変更をUndoできません");
+    selected = controller.selectedTransition();
+    check(frameOf("framesBeforeCut") == 30 && frameOf("framesAfterCut") == 30,
+          "Undoで選択中のトランジションの値が戻りません");
+
+    // 上限を超える長さは上限 (前 60) へ吸着させる。
+    check(controller.setTransitionSpan(61, 0), "上限を超える長さを上限へ吸着させません");
+    selected = controller.selectedTransition();
+    check(frameOf("framesBeforeCut") == 60 && frameOf("framesAfterCut") == 0,
+          "上限を超える長さが前 60 / 後 0 になりません");
+    check(controller.undoLastEdit(), "吸着した長さの変更をUndoできません");
+    // 同じ長さは変更にならず、undo を積まない。
+    check(!controller.setTransitionSpan(30, 30), "同じ長さの変更を受理しました");
+
+    // トランジションを選んでいなければ変えない。
+    controller.selectTimelineClip(QStringLiteral("video"), true);
+    check(controller.selectedTransition().isEmpty() && !controller.setTransitionSpan(10, 10),
+          "トランジションを選んでいないのに長さを変えました");
+}
+
 // clip の移動は上書きで置く (重なった下の clip を削る)。ドラッグの吸着候補から外す clip ID も返す。
 void testMoveOverwritesAndDragBounds(const std::filesystem::path& path) {
     auto project = linkedProject(); // 映像と音声 [0, 120)
@@ -2197,6 +2254,7 @@ int main(int argc, char** argv) {
     testToggleSelectedClipsEnabled(directory / L"toggle-enabled.mvm");
     testApplyDefaultTransitionToClips(directory / L"default-fades.mvm");
     testEditPointTransition(directory / L"edit-point-transition.mvm");
+    testTransitionSpanEdit(directory / L"transition-span-edit.mvm");
     testMoveOverwritesAndDragBounds(directory / L"move-overwrite.mvm");
     testPreviewPlanFollowsEdits(directory / L"preview-plan.mvm");
     testShuttleStopAndStep(directory / L"shuttle-stop-step.mvm");

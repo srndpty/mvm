@@ -1819,6 +1819,210 @@ void testApplyDefaultEditTransition() {
           "存在しないトランジションの削除を受理しました");
 }
 
+// 既存のトランジションの長さと配置を変える (エフェクトコントロール)。期待値は手で数えた値。
+void testSetTransitionSpan() {
+    using mvm::project::LinkMode;
+    const auto base = transitionProject();
+
+    // A [0,300) と B [300,600) は cut の前後に 300 frame ずつ余白があり、反対端は空いている。
+    const auto limits = mvm::project::transitionSpanLimits(base, "t1", LinkMode::Linked);
+    check(limits.success && limits.maxBefore == 300 && limits.maxAfter == 300,
+          "トランジションの上限が余白と一致しません");
+    check(!mvm::project::transitionSpanLimits(base, "missing", LinkMode::Linked).success,
+          "存在しないトランジションの上限を返しました");
+
+    // cut で開始 (前 0 / 後 40)。ID と数は変えない。
+    auto startAtCut = base;
+    const auto started =
+        mvm::project::setTimelineTransitionSpan(startAtCut, "t1", 0, 40, LinkMode::Linked);
+    check(started.success && started.frames == 40 && started.transitionId == "t1" &&
+              started.transitionCount == 1 && startAtCut.timelineTransitions.size() == 1 &&
+              startAtCut.timelineTransitions[0].id == "t1" &&
+              startAtCut.timelineTransitions[0].framesBeforeCut == 0 &&
+              startAtCut.timelineTransitions[0].framesAfterCut == 40,
+          "トランジションをcutで開始する長さにできません");
+    // 上限ちょうどは置ける。
+    auto atLimit = base;
+    check(mvm::project::setTimelineTransitionSpan(atLimit, "t1", 300, 300, LinkMode::Linked)
+                  .success &&
+              atLimit.timelineTransitions[0].framesBeforeCut == 300 &&
+              atLimit.timelineTransitions[0].framesAfterCut == 300,
+          "上限ちょうどの長さを断りました");
+
+    // 断る場合は理由を返し、Project を変えない。
+    const auto refuses = [&](mvm::project::Project project, const char* id, std::int64_t before,
+                             std::int64_t after, const char* fragment) {
+        const auto original = project;
+        const auto result =
+            mvm::project::setTimelineTransitionSpan(project, id, before, after, LinkMode::Linked);
+        if (result.success || result.error.find(fragment) == std::string::npos ||
+            !(project == original)) {
+            std::fprintf(stderr, "  期待: %s / 実際: %s\n", fragment,
+                         result.success ? "(成功)" : result.error.c_str());
+            return false;
+        }
+        return true;
+    };
+    check(refuses(base, "t1", 30, 30, "変わっていません"), "同じ長さの変更を受理しました");
+    check(refuses(base, "t1", 0, 0, "1 フレーム以上"), "0 frameのトランジションを受理しました");
+    check(refuses(base, "t1", -1, 40, "1 フレーム以上"), "負の長さを受理しました");
+    check(refuses(base, "t1", 301, 0, "余白が足りません"), "余白を超える長さ(前)を受理しました");
+    check(refuses(base, "t1", 0, 301, "余白が足りません"), "余白を超える長さ(後)を受理しました");
+    check(refuses(base, "missing", 10, 10, "ありません"), "存在しないトランジションを変更しました");
+
+    // B の尻に B→C のトランジションが B の内側 100 frame を使っていれば、t1 の後ろは 200 まで。
+    auto chained = base;
+    auto c = chained.timelineClips[1];
+    c.id = "id-C";
+    c.name = "C";
+    c.timelineStartFrame = 600;
+    chained.timelineClips.push_back(c);
+    chained.timelineTransitions.push_back({"t2", "id-B", "id-C", 100, 0});
+    check(mvm::project::validateTimeline(chained).success,
+          "前提: 連続したトランジションが不正です");
+    const auto chainedLimits = mvm::project::transitionSpanLimits(chained, "t1", LinkMode::Linked);
+    check(chainedLimits.success && chainedLimits.maxBefore == 300 && chainedLimits.maxAfter == 200,
+          "反対端のトランジションが使う分を上限から引きません");
+    check(refuses(chained, "t1", 0, 201, "余白が足りません"),
+          "反対端のトランジションと重なる長さを受理しました");
+    check(mvm::project::setTimelineTransitionSpan(chained, "t1", 0, 200, LinkMode::Linked).success,
+          "反対端のトランジションに接する長さを断りました");
+
+    // outgoing は最後の 30 frame だけが不透明。前 31 は不透明度で断り、前 30 は置ける。
+    auto opaqueTail = base;
+    opaqueTail.timelineClips[0].effects.opacityKeys = {{269, 99.0}, {270, 100.0}};
+    check(mvm::project::validateTimeline(opaqueTail).success,
+          "前提: 不透明な尻のtimelineが不正です");
+    // 最終の validateTimeline も断るが、ここでは区間の不透明度という理由まで返す。
+    check(refuses(opaqueTail, "t1", 31, 0, "区間で不透明度が下がっています"),
+          "不透明度の下がる区間を受理しました");
+    check(
+        mvm::project::setTimelineTransitionSpan(opaqueTail, "t1", 30, 0, LinkMode::Linked).success,
+        "不透明な区間だけのトランジションを断りました");
+
+    // 30fps 素材は 60fps timeline で 2 frame 単位。31 は黙って 30 へ丸めず断る。
+    auto halfRate = base;
+    for (auto& value : halfRate.timelineClips) {
+        value.sourceFpsNum = 30;
+        value.sourceFrameCount = 300;
+    }
+    halfRate.timelineClips[0].sourceOutFrame = 150;
+    halfRate.timelineClips[1].sourceInFrame = 150;
+    halfRate.timelineClips[1].sourceOutFrame = 300;
+    check(mvm::project::validateTimeline(halfRate).success, "前提: 30fps素材のtimelineが不正です");
+    check(refuses(halfRate, "t1", 31, 30, "フレームに合わない"),
+          "素材frameに乗らない長さを受理しました");
+    check(mvm::project::setTimelineTransitionSpan(halfRate, "t1", 32, 30, LinkMode::Linked).success,
+          "素材frameに乗る長さを断りました");
+
+    // 数値欄・ドラッグの値は、置ける最も近い長さへ吸着させる (前後は独立)。同じ距離なら
+    // 今の値から離れる側。30fps 素材は 2 frame 単位なので 31 は 32 (増やす向き)、29 は 28。
+    // halfRate は上で 32 / 30 にしたので、30 / 30 へ戻した複写で見る。
+    auto halfRateAt30 = halfRate;
+    halfRateAt30.timelineTransitions[0].framesBeforeCut = 30;
+    const auto fitUp =
+        mvm::project::nearestTransitionSpan(halfRateAt30, "t1", 31, 30, LinkMode::Linked);
+    check(fitUp.success && fitUp.framesBeforeCut == 32 && fitUp.framesAfterCut == 30,
+          "増やした長さを素材frameの次の値へ吸着させません");
+    const auto fitDown =
+        mvm::project::nearestTransitionSpan(halfRateAt30, "t1", 29, 33, LinkMode::Linked);
+    check(fitDown.success && fitDown.framesBeforeCut == 28 && fitDown.framesAfterCut == 34,
+          "減らした長さ・増やした長さをそれぞれの向きへ吸着させません");
+    // 不透明な区間 (前 30 まで) と余白 (後 300 まで) の内側へ止める。
+    const auto fitOpaque =
+        mvm::project::nearestTransitionSpan(opaqueTail, "t1", 40, 400, LinkMode::Linked);
+    check(fitOpaque.success && fitOpaque.framesBeforeCut == 30 && fitOpaque.framesAfterCut == 300,
+          "不透明度と余白の範囲へ吸着させません");
+    check(!mvm::project::nearestTransitionSpan(base, "t1", 0, 0, LinkMode::Linked).success,
+          "0 frameの長さを吸着で受理しました");
+    check(!mvm::project::nearestTransitionSpan(base, "missing", 10, 10, LinkMode::Linked).success,
+          "存在しないトランジションの長さを吸着しました");
+
+    // clip の端を trim して cut で接しなくなれば、トランジションは消える (Premiere と同じ)。
+    auto trimmedTail = base;
+    check(mvm::project::trimTimelineClip(trimmedTail, "id-A", mvm::project::TrimEdge::Right, -10,
+                                         LinkMode::Linked)
+                  .success &&
+              trimmedTail.timelineTransitions.empty(),
+          "outgoingの終端をtrimして離れたのにトランジションが残りました");
+    // 接している隣の clip の方へは延ばさない (止める)。動かせる量が 0 なので失敗し、変えない。
+    auto touching = base;
+    const auto touchingBefore = touching;
+    check(mvm::project::clampEdgeEdit(touching, "id-B", mvm::project::TrimEdge::Left,
+                                      mvm::project::EdgeEditKind::Trim, -10, LinkMode::Linked)
+                      .frame == 0 &&
+              mvm::project::clampEdgeEdit(touching, "id-A", mvm::project::TrimEdge::Right,
+                                          mvm::project::EdgeEditKind::Trim, 10, LinkMode::Linked)
+                      .frame == 0 &&
+              !mvm::project::trimTimelineClip(touching, "id-B", mvm::project::TrimEdge::Left, -10,
+                                              LinkMode::Linked)
+                   .success &&
+              touching == touchingBefore,
+          "接している隣のclipへ端を延ばしました");
+    // 縮める向きと、リップル・ローリングは止めない。
+    check(mvm::project::clampEdgeEdit(touching, "id-B", mvm::project::TrimEdge::Left,
+                                      mvm::project::EdgeEditKind::Trim, 10, LinkMode::Linked)
+                      .frame == 10 &&
+              mvm::project::clampEdgeEdit(touching, "id-A", mvm::project::TrimEdge::Right,
+                                          mvm::project::EdgeEditKind::Roll, 10, LinkMode::Linked)
+                      .frame == 10,
+          "接している端の縮めやローリングを止めました");
+    auto trimmedHead = base;
+    check(mvm::project::trimTimelineClip(trimmedHead, "id-B", mvm::project::TrimEdge::Left, 10,
+                                         LinkMode::Linked)
+                  .success &&
+              trimmedHead.timelineTransitions.empty(),
+          "incomingの先頭をtrimして離れたのにトランジションが残りました");
+
+    // リンク相手 (音声) の既存のトランジションも同じ値にする。Single なら本体だけ。
+    auto linked = base;
+    linked.timelineTransitions.clear();
+    auto audioA = linked.timelineClips[0];
+    audioA.id = "id-audio-A";
+    audioA.kind = mvm::project::TimelineClipKind::Audio;
+    audioA.track = kA1;
+    auto audioB = linked.timelineClips[1];
+    audioB.id = "id-audio-B";
+    audioB.kind = mvm::project::TimelineClipKind::Audio;
+    audioB.track = kA1;
+    linked.timelineClips[0].linkGroupId = audioA.linkGroupId = "link-A";
+    linked.timelineClips[1].linkGroupId = audioB.linkGroupId = "link-B";
+    linked.timelineClips.push_back(audioA);
+    linked.timelineClips.push_back(audioB);
+    const auto placed = mvm::project::applyDefaultEditTransition(linked, "id-A", "id-B", 60,
+                                                                 LinkMode::Linked, sequentialIds());
+    check(placed.success && linked.timelineTransitions.size() == 2,
+          "前提: リンクしたトランジションを置けません");
+    const auto videoId = linked.timelineTransitions[0].id;
+    const auto audioId = linked.timelineTransitions[1].id;
+    auto single = linked;
+    const auto changedBoth =
+        mvm::project::setTimelineTransitionSpan(linked, videoId, 10, 50, LinkMode::Linked);
+    check(changedBoth.success && changedBoth.transitionCount == 2 &&
+              linked.timelineTransitions.size() == 2 &&
+              linked.timelineTransitions[0].id == videoId &&
+              linked.timelineTransitions[1].id == audioId &&
+              linked.timelineTransitions[0].framesBeforeCut == 10 &&
+              linked.timelineTransitions[0].framesAfterCut == 50 &&
+              linked.timelineTransitions[1].framesBeforeCut == 10 &&
+              linked.timelineTransitions[1].framesAfterCut == 50,
+          "リンク相手のトランジションを同じ長さにしません");
+    const auto changedOne =
+        mvm::project::setTimelineTransitionSpan(single, videoId, 10, 50, LinkMode::Single);
+    check(changedOne.success && changedOne.transitionCount == 1 &&
+              single.timelineTransitions[0].framesAfterCut == 50 &&
+              single.timelineTransitions[1].framesAfterCut == 30,
+          "Singleでリンク相手のトランジションも変えました");
+    // 相手の編集点にトランジションが無ければ作らない。
+    auto videoOnly = linked;
+    std::erase_if(videoOnly.timelineTransitions,
+                  [&](const auto& transition) { return transition.id == audioId; });
+    check(mvm::project::setTimelineTransitionSpan(videoOnly, videoId, 20, 20, LinkMode::Linked)
+                  .success &&
+              videoOnly.timelineTransitions.size() == 1,
+          "長さの変更でリンク相手にトランジションを作りました");
+}
+
 // 上書き移動。V1 の long [0, 300) の上へ V2 の mover (60 frame) を動かす。期待値は手で数えた値。
 void testMoveOverwrite() {
     using mvm::project::LinkMode;
@@ -2971,6 +3175,7 @@ int main(int argc, char** argv) {
     testApplyDefaultClipFades();
     testClipWithEdgeAt();
     testApplyDefaultEditTransition();
+    testSetTransitionSpan();
     testMoveOverwrite();
     testTimelineTransitions(std::filesystem::path(argv[1]));
     testRippleTrim();
