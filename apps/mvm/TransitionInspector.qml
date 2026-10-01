@@ -43,11 +43,22 @@ ColumnLayout {
     property string edgeGesture: ""
     property int edgeDelta: 0
     readonly property var edgeEdit: SpanMath.edgeEditFor(root.edgeGesture)
-    readonly property int shownCut: root.cut
-                                    + (root.edgeEdit ? root.edgeEdit.cutShift * root.edgeDelta : 0)
+    function shownShift(key) {
+        return root.edgeEdit ? root.edgeEdit[key] * root.edgeDelta : 0;
+    }
+    // cut 線とトランジションは B の先頭に付けて描く (A のリップル・ローリングでは A の終端と同じ)。
+    readonly property int shownCut: root.cut + root.shownShift("incomingStartShift")
+    readonly property int shownOutgoingEnd: root.cut + root.shownShift("outgoingEndShift")
     readonly property int shownIncomingEnd: (root.transition.incomingEnd ?? 0)
-                                            + (root.edgeEdit ? root.edgeEdit.incomingEndShift
-                                                               * root.edgeDelta : 0)
+                                            + root.shownShift("incomingEndShift")
+
+    // 長さの入力単位。既定は秒で、フレームへ切り替えられる。秒は timeline の fps で frame に丸める。
+    property bool frameUnit: false
+    readonly property int fpsNum: root.mvmController.timelineFpsNum
+    readonly property int fpsDen: root.mvmController.timelineFpsDen
+    function secondsOf(frames) {
+        return SpanMath.framesToSeconds(frames, root.fpsNum, root.fpsDen);
+    }
 
     spacing: 6
 
@@ -115,16 +126,22 @@ ColumnLayout {
             objectName: "transitionDurationField"
             Layout.fillWidth: true
             labelText: "長さ"
-            suffix: " f"
-            value: root.shownBefore + root.shownAfter
-            minimumValue: 1
-            maximumValue: Math.max(1, root.maxBefore + root.maxAfter)
-            stepPerPixel: 0.25
+            readonly property int frames: root.shownBefore + root.shownAfter
+            readonly property int maxFrames: Math.max(1, root.maxBefore + root.maxAfter)
+            // 単位は横のボタンが示すので、欄には数字だけを出す。
+            decimals: root.frameUnit ? 0 : 2
+            value: root.frameUnit ? durationField.frames : root.secondsOf(durationField.frames)
+            minimumValue: root.frameUnit ? 1 : root.secondsOf(1)
+            maximumValue: root.frameUnit ? durationField.maxFrames : root.secondsOf(durationField.maxFrames)
+            stepPerPixel: root.frameUnit ? 0.25 : 0.005
             // 1 回のクリックで直接入力にする (ドラッグせずに離したとき)。
             clickToEdit: true
             onValueEdited: (newValue, commit) => {
+                const frames = root.frameUnit
+                    ? Math.round(newValue)
+                    : SpanMath.secondsToFrames(newValue, root.fpsNum, root.fpsDen);
                 const span = SpanMath.spanForDuration(
-                    newValue, SpanMath.alignmentOf(root.committedBefore, root.committedAfter),
+                    frames, SpanMath.alignmentOf(root.committedBefore, root.committedAfter),
                     root.committedBefore, root.committedAfter, root.maxBefore, root.maxAfter);
                 if (commit)
                     root.commitSpan(span);
@@ -134,12 +151,26 @@ ColumnLayout {
             onEditCanceled: root.dragging = false
         }
 
-        Label {
+        // 単位の切り替え。押すと秒 ⇔ フレーム。
+        Button {
+            objectName: "transitionDurationUnit"
             Layout.alignment: Qt.AlignBottom
-            Layout.bottomMargin: 6
-            text: root.transition.durationText ?? ""
-            color: "#9aa2ad"
+            Layout.preferredHeight: 26
+            flat: true
+            text: root.frameUnit ? "フレーム" : "秒"
             font.pixelSize: 11
+            onClicked: root.frameUnit = !root.frameUnit
+        }
+
+        // もう一方の単位と timecode を並べて出す。
+        Label {
+            Layout.columnSpan: 2
+            text: (root.frameUnit
+                   ? root.secondsOf(durationField.frames).toFixed(2) + " 秒"
+                   : durationField.frames + " f")
+                  + "  ·  " + (root.transition.durationText ?? "")
+            color: "#9aa2ad"
+            font.pixelSize: 10
         }
 
         Label {
@@ -186,9 +217,9 @@ ColumnLayout {
         objectName: "transitionMiniTimeline"
         Layout.fillWidth: true
         Layout.topMargin: 4
-        implicitHeight: 96
+        implicitHeight: 104
 
-        readonly property real rulerHeight: 16
+        readonly property real rulerHeight: 24
         readonly property real rowHeight: 22
         readonly property real rowGap: 4
         readonly property real rowAY: lane.rulerHeight + lane.rowGap
@@ -233,13 +264,45 @@ ColumnLayout {
             onCanceled: root.mvmController.endScrub()
         }
 
+        // ルーラー。目盛りは frame 単位まで細かくなり、文字の目盛りに timecode を書く (Premiere と同じ)。
         Rectangle {
+            objectName: "transitionMiniRuler"
             x: 0
             y: 0
             width: lane.width
             height: lane.rulerHeight
             color: "#20242b"
             radius: 3
+            clip: true
+
+            Repeater {
+                model: root.hasTransition
+                       ? SpanMath.rulerTicks(root.viewStart, root.viewEnd, lane.width,
+                                             root.fpsNum / Math.max(1, root.fpsDen), 96)
+                       : []
+                Item {
+                    id: tick
+                    required property var modelData
+                    x: lane.xAt(tick.modelData.frame)
+                    width: 1
+                    height: lane.rulerHeight
+
+                    Rectangle {
+                        anchors.bottom: parent.bottom
+                        width: 1
+                        height: tick.modelData.major ? 9 : 4
+                        color: tick.modelData.major ? "#8a919c" : "#5a616c"
+                    }
+                    Label {
+                        visible: tick.modelData.major
+                        x: 3
+                        y: 1
+                        text: root.mvmController.frameTimecode(tick.modelData.frame)
+                        color: "#aab1ba"
+                        font.pixelSize: 10
+                    }
+                }
+            }
         }
 
         // A: cut までの clip と、cut の後ろへ延ばした素材。
@@ -250,11 +313,11 @@ ColumnLayout {
             gesture: "rippleA"
             y: lane.rowAY
             clipFrom: root.transition.outgoingStart ?? 0
-            clipTo: root.shownCut
-            usedFrom: root.shownCut
-            usedTo: root.shownCut + root.shownAfter
-            availableFrom: root.shownCut + root.shownAfter
-            availableTo: root.shownCut + root.maxAfter
+            clipTo: root.shownOutgoingEnd
+            usedFrom: root.shownOutgoingEnd
+            usedTo: root.shownOutgoingEnd + root.shownAfter
+            availableFrom: root.shownOutgoingEnd + root.shownAfter
+            availableTo: root.shownOutgoingEnd + root.maxAfter
             title: "A  " + (root.transition.outgoingName ?? "")
         }
 

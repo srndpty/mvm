@@ -3205,12 +3205,13 @@ ApplicationWindow {
                                     modelData.transitionId === root.mvmController.selectedTransitionId
                                 objectName: "timelineTransition_" + modelData.transitionId
                                 x: modelData.start * timelinePanel.pixelsPerFrame
+                                // Premiere と同じく clip の中央に低い帯で描く。上下に残した clip の部分で
+                                // cut の端を掴んで trim できる (離れればトランジションは消える)。
                                 y: timelinePanel.rowY(modelData.trackKind, modelData.trackIndex)
                                    - timelinePanel.tracksTop + 3
+                                   + Math.round((timelinePanel.trackHeight - 6 - height) / 2)
                                 width: Math.max(4, (modelData.end - modelData.start)
                                                    * timelinePanel.pixelsPerFrame)
-                                // Premiere と同じく track の上寄りの低い帯にする。下側に残した clip の
-                                // 部分で cut の端を掴んで trim できる (離れればトランジションは消える)。
                                 height: Math.round((timelinePanel.trackHeight - 6) * 0.55)
                                 radius: 2
                                 color: selected ? "#c0e0b040" : "#80c89a3c"

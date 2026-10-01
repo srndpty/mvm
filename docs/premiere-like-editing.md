@@ -2029,14 +2029,20 @@ engine が提示した layer 数と最背面の素材 frame が mapping と一�
   (前 0 = cut で開始、後 0 = cut で終了、差 1 以内 = 中央、それ以外 = カスタム)
 - 長さ欄は配置を保って長さを変える (カスタムは cut の前の割合を保つ)。片側の余白が足りなければもう片側へ
   寄せる (§19.6 と同じ規則)。配置の選択は長さを保って配置だけを変える。長さ欄は 1 回のクリックで
-  直接入力になる (`DragNumberField.clickToEdit`)
+  直接入力になる (`DragNumberField.clickToEdit`)。単位は既定が秒 (timeline の fps で frame に丸める)で、
+  横のボタンでフレームへ切り替えられる。下にもう一方の単位と timecode を出す
 - ミニタイムラインは左端 = 開始だけ、右端 = 終了だけ、本体 = 長さを保ってずらす。ドラッグ中は QML の中だけで
   仮の値を描き、離したときに `setTransitionSpan` を 1 回呼ぶ (1 undo)。A は cut の後ろへ、B は cut の前へ
   延ばして使っている素材を斜線で、延ばせる上限までを薄い帯で描く
 - ミニタイムラインの A を動かすと A の終端、B を動かすと B の先頭のリップルトリム、cut 線を動かすと
   ローリング編集 (Premiere のエフェクトコントロールと同じ)。ドラッグ中は確定と同じ `clampEdgeDrag` で
   止めた量を表示し、離したときに `rippleTrimClip` / `rollClipEdge` を 1 回呼ぶ。トランジションは
-  reconcile で残る (余白が減れば縮む)
+  reconcile で残る (余白が減れば縮む)。ドラッグ中は掴んだ端がマウスに付いてくるように描く。B の
+  リップルは確定後に B の先頭が cut に残って後ろが詰まるので、それをそのまま描くとドラッグ中に何も
+  動いて見えなかった (利用者の報告)。B の先頭とトランジションを動かして描く
+- ミニタイムラインのルーラーは目盛りと timecode を書く。間隔は 1 / 2 / 5 / 10 frame と 0.5〜60 秒
+  (公称 fps の倍数) から、細かい目盛りは 8 px 以上、文字は 96 px 以上空くものを選ぶ (`rulerTicks`)。
+  文字は controller の `frameTimecode` (`currentTimeText` と同じ `core::formatTimecode`) で作る
 - ミニタイムラインの再生ヘッドは timeline と同じ `playheadFrame`。ルーラーを押すと
   `beginScrub` / `scrubToFrame` / `endScrub` でそこへ scrub する
 - 計算は `TransitionEditorMath.js` (状態を持たない関数) に置き、`tst_transition_editor` で検査する
@@ -2054,7 +2060,7 @@ Linked ならリンク相手の編集点の**既存の**トランジションも
 へ吸着させてから確定し、吸着したことを status に出す。project 層の `setTimelineTransitionSpan` は丸めない
 ままにして、吸着を呼び出し側の明示的な操作にしている。
 
-`[事実]` timeline のトランジションは track の上寄りの低い帯 (高さの 55%) に描き、下側で cut の端を掴める
+`[事実]` timeline のトランジションは clip の縦中央の低い帯 (高さの 55%) に描き、上下で cut の端を掴める
 (Premiere と同じ)。cut の端は incoming の先頭 (outgoing の上に重なる端の帯) で、縮めて接しなくなると
 reconcile がトランジションを消す。このとき、通常の trim が接している隣の clip の方へ延ばすと止まらずに
 「同じ track の timeline clip が重複しています」で失敗していたので、`clampEdgeEdit` の Trim で接している
@@ -2075,11 +2081,14 @@ reconcile がトランジションを消す。このとき、通常の trim が�
 - `m7b_4_controller_export_lifecycle`: `selectedTransition` の値、映像と音声が 1 undo で変わること、
   上限超えを上限へ吸着させること、同じ長さでは undo を積まないこと、未選択では変えないこと
 - `tst_transition_editor`: 配置の判定、長さ・配置・ドラッグから求める前後の frame 数 (手で数えた値)、
-  A / B / cut 線のドラッグの編集の種類
+  A / B / cut 線のドラッグの編集の種類、秒と frame の換算、ルーラーの目盛りの間隔
 - `text_ui_direct_input` (workstation): 実 window でトランジションを押すとタブが切り替わり、長さ欄の
   1 回のクリックと入力で中央のまま 20 frame (10 / 10)、右端のドラッグで後ろだけが延び 1 undo で戻る、
   ルーラーを押すと再生ヘッドがそこへ動く、A のドラッグでリップルトリムし cut が手前へ来る、timeline で
-  トランジションの下側から cut の端を trim すると離れたトランジションが消える。長さ欄の objectName・右端の
-  上限・`clickToEdit`・帯の高さ・隣の clip で止める規則をそれぞれ壊す mutant は落ちる
+  トランジションの下側から cut の端を trim すると離れたトランジションが消える。長さ欄に秒 (0.5 → 15 / 15) と
+  フレーム (20 → 10 / 10) で入力できる、ルーラーに cut の timecode を書く、B のドラッグ中に表示が動き
+  離すと B の先頭をリップルトリムする、帯が clip の縦中央にある。長さ欄の objectName・右端の上限・
+  `clickToEdit`・帯の高さと中央寄せ・隣の clip で止める規則・ルーラーの文字・B のドラッグ中の表示を
+  それぞれ壊す mutant は落ちる
 
 `[未検証]` 手で GUI を操作した見た目 (パネル幅 340 px での配置、斜線の描画、ドラッグの手触り) は確かめていない。

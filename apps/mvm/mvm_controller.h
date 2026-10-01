@@ -395,6 +395,8 @@ public:
     Q_INVOKABLE bool selectAllClips();
     Q_INVOKABLE bool seekTimelineFrame(qint64 frame);
     // scrub。drag 中は最新位置だけを coalesce して seek し、release で確定する。
+    // timeline の frame を timecode (currentTimeText と同じ書式) にする。ルーラーの目盛りの文字に使う。
+    Q_INVOKABLE QString frameTimecode(qint64 frame) const;
     Q_INVOKABLE void beginScrub();
     Q_INVOKABLE void scrubToFrame(qint64 frame);
     Q_INVOKABLE void endScrub();

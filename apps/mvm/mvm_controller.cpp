@@ -788,8 +788,12 @@ QVariantList MvmController::supportedFrameRates() const {
 }
 
 QString MvmController::currentTimeText() const {
+    return frameTimecode(playheadFrame_);
+}
+
+QString MvmController::frameTimecode(qint64 frame) const {
     return QString::fromStdString(
-        core::formatTimecode(playheadFrame_, project_.timelineFpsNum, project_.timelineFpsDen));
+        core::formatTimecode(frame, project_.timelineFpsNum, project_.timelineFpsDen));
 }
 
 bool MvmController::canPlay() const {

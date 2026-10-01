@@ -62,15 +62,44 @@ TestCase {
         compare(SpanMath.spanForDrag("right", 2.6, 30, 30, 40, 35), { "before": 30, "after": 33 });
     }
 
-    // A / B はリップルトリム、cut 線はローリング。B の先頭を詰めると B の終端が手前へ来る。
+    // A / B はリップルトリム、cut 線はローリング。ドラッグ中は掴んだ端がマウスに付いてくる。
     function test_edgeEditFor() {
-        compare(SpanMath.edgeEditFor("rippleA"), { "side": "outgoing", "edge": "right", "tool": "ripple",
-                                                   "cutShift": 1, "incomingEndShift": 1 });
-        compare(SpanMath.edgeEditFor("rippleB"), { "side": "incoming", "edge": "left", "tool": "ripple",
-                                                   "cutShift": 0, "incomingEndShift": -1 });
-        compare(SpanMath.edgeEditFor("roll"), { "side": "outgoing", "edge": "right", "tool": "rolling",
-                                                "cutShift": 1, "incomingEndShift": 0 });
+        compare(SpanMath.edgeEditFor("rippleA"),
+                { "side": "outgoing", "edge": "right", "tool": "ripple",
+                  "outgoingEndShift": 1, "incomingStartShift": 1, "incomingEndShift": 1 });
+        compare(SpanMath.edgeEditFor("rippleB"),
+                { "side": "incoming", "edge": "left", "tool": "ripple",
+                  "outgoingEndShift": 0, "incomingStartShift": 1, "incomingEndShift": 0 });
+        compare(SpanMath.edgeEditFor("roll"),
+                { "side": "outgoing", "edge": "right", "tool": "rolling",
+                  "outgoingEndShift": 1, "incomingStartShift": 1, "incomingEndShift": 0 });
         compare(SpanMath.edgeEditFor(""), null);
+    }
+
+    // 60fps では 0.5 秒 = 30 frame。23.976fps (24000/1001) の 1 秒は 23.976 frame で 24 に丸める。
+    function test_secondsAndFrames() {
+        compare(SpanMath.secondsToFrames(0.5, 60, 1), 30);
+        compare(SpanMath.secondsToFrames(1, 24000, 1001), 24);
+        compare(SpanMath.framesToSeconds(30, 60, 1), 0.5);
+        fuzzyCompare(SpanMath.framesToSeconds(24, 24000, 1001), 1.001, 1e-9);
+        compare(SpanMath.secondsToFrames(1, 0, 1), 0);
+    }
+
+    // 60fps、frame [0, 120] を 240 px (2 px / frame)。細かい目盛りは 5 frame (10 px)、文字は 80 px 以上の
+    // 30 frame (60 px) では足りず 60 frame (120 px)。
+    function test_rulerTicks() {
+        const ticks = SpanMath.rulerTicks(0, 120, 240, 60, 80);
+        compare(ticks.length, 25);
+        compare(ticks[0], { "frame": 0, "major": true });
+        compare(ticks[1], { "frame": 5, "major": false });
+        compare(ticks[12], { "frame": 60, "major": true });
+        compare(ticks[24], { "frame": 120, "major": true });
+        // 負の frame は描かず、細かい目盛りの倍数から始める。
+        const shifted = SpanMath.rulerTicks(-7, 13, 200, 60, 80);
+        compare(shifted[0], { "frame": 0, "major": true });
+        compare(shifted[1], { "frame": 1, "major": false });
+        // 1 frame あたり 10 px なら細かい目盛りは毎 frame、文字は 10 frame (100 px)。
+        compare(shifted[10], { "frame": 10, "major": true });
     }
 
     function test_spanForDragBody() {

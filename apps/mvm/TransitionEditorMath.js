@@ -64,18 +64,63 @@ function spanForAlignment(alignment, before, after, maxBefore, maxAfter) {
 //   "rippleB" B を動かす: B の先頭のリップルトリム
 //   "roll"    cut 線を動かす: ローリング編集 (A の終端と B の先頭を一緒に動かす)
 // edge / tool は controller.clampEdgeDrag と rippleTrimClip / rollClipEdge に渡す値。
-// cutShift / incomingEndShift は、動かした量 delta に対する cut と B の終端の移動の係数。
+// *Shift はドラッグ中の表示で、動かした量 delta に対する A の終端・B の先頭・B の終端の移動の係数。
+// 掴んだ端がマウスに付いてくるように描く (B のリップルは確定すると B の先頭が cut に残り後ろが
+// 詰まるが、それをそのまま描くとドラッグ中に何も動いて見えない)。
 function edgeEditFor(gesture) {
     if (gesture === "rippleA")
         return { "side": "outgoing", "edge": "right", "tool": "ripple",
-                 "cutShift": 1, "incomingEndShift": 1 };
+                 "outgoingEndShift": 1, "incomingStartShift": 1, "incomingEndShift": 1 };
     if (gesture === "rippleB")
         return { "side": "incoming", "edge": "left", "tool": "ripple",
-                 "cutShift": 0, "incomingEndShift": -1 };
+                 "outgoingEndShift": 0, "incomingStartShift": 1, "incomingEndShift": 0 };
     if (gesture === "roll")
         return { "side": "outgoing", "edge": "right", "tool": "rolling",
-                 "cutShift": 1, "incomingEndShift": 0 };
+                 "outgoingEndShift": 1, "incomingStartShift": 1, "incomingEndShift": 0 };
     return null;
+}
+
+// 長さの入力単位の換算。秒は timeline の fps (fpsNum / fpsDen) で frame に丸める。
+function framesToSeconds(frames, fpsNum, fpsDen) {
+    return fpsNum > 0 && fpsDen > 0 ? frames * fpsDen / fpsNum : 0;
+}
+
+function secondsToFrames(seconds, fpsNum, fpsDen) {
+    return fpsNum > 0 && fpsDen > 0 ? Math.round(seconds * fpsNum / fpsDen) : 0;
+}
+
+// ルーラーの目盛り。表示範囲 [viewStart, viewEnd] の frame を幅 width px に描くとき、
+// 細かい目盛りは 8 px 以上、文字を付ける目盛りは labelSpacing px 以上空ける。間隔は
+// 1 / 2 / 5 / 10 frame、0.5 / 1 / 2 / 5 / 10 / 30 / 60 秒 (公称 fps の倍数) から選ぶ。
+// 文字の目盛りは細かい目盛りの倍数にする。[{frame, major}] を frame 順に返す (負の frame は除く)。
+function rulerTicks(viewStart, viewEnd, width, nominalFps, labelSpacing) {
+    const fps = Math.max(1, Math.round(nominalFps));
+    const pixelsPerFrame = width / Math.max(1, viewEnd - viewStart);
+    const candidates = [1, 2, 5, 10, Math.max(1, Math.round(fps / 2)), fps, fps * 2, fps * 5,
+                        fps * 10, fps * 30, fps * 60]
+        .filter((value, index, all) => all.indexOf(value) === index)
+        .sort((left, right) => left - right);
+    let minor = candidates[candidates.length - 1];
+    for (const candidate of candidates) {
+        if (candidate * pixelsPerFrame >= 8) {
+            minor = candidate;
+            break;
+        }
+    }
+    let major = minor;
+    for (const candidate of candidates) {
+        if (candidate >= minor && candidate % minor === 0 && candidate * pixelsPerFrame >= labelSpacing) {
+            major = candidate;
+            break;
+        }
+    }
+    if (major * pixelsPerFrame < labelSpacing)
+        major = minor * Math.ceil(labelSpacing / (minor * pixelsPerFrame));
+    const ticks = [];
+    const first = Math.max(0, Math.ceil(viewStart / minor) * minor);
+    for (let frame = first; frame <= viewEnd; frame += minor)
+        ticks.push({ "frame": frame, "major": frame % major === 0 });
+    return ticks;
 }
 
 // ミニタイムラインのドラッグ。deltaFrames は右向きが正。
